@@ -2119,11 +2119,12 @@ export class PlanetariumMode {
       begin: (tex) => beginSlicedUpload(renderer, tex),
       step: (job, budgetMs) => stepSlicedUpload(job, budgetMs),
     });
-    // The 8K compressed tier's loader (see PlanetFactory's TIER_FILE_OVERRIDES),
+    // The compressed tiers' loader (see PlanetFactory's TIER_FILE_OVERRIDES),
     // bound lazily: the KTX2 machinery — loader chunk, transcoder worker, wasm —
-    // loads only if a session actually earns that tier. Fail-open at every step:
-    // a failed import or load lands in the ladder's own onError, whose cooldown
-    // and one-rung-short worst case are the same as any 8K network failure.
+    // loads only if a session actually earns a rung above its boot map. Fail-open
+    // at every step: a failed import or load lands in the ladder's own onError,
+    // whose cooldown and one-rung-short worst case are the same as any network
+    // failure on a rung.
     bindKtx2TierLoader((url, onLoad, onError) => {
       this.ktx2Loader ??= import('three/examples/jsm/loaders/KTX2Loader.js').then(({ KTX2Loader }) =>
         new KTX2Loader()
@@ -2783,8 +2784,9 @@ export class PlanetariumMode {
           // dropped, and the browser may cancel the transfer with it — the
           // bytes only reliably reach the HTTP/service-worker cache once the
           // stream has been drained. Through resolveTierFile, so the bytes
-          // pulled in are the ones the ladder will later ask for: a tier that
-          // ships as a compressed container has no classic file to warm.
+          // pulled in are the ones the ladder will later ask for: where a rung
+          // ships as a compressed container this session fetches the container
+          // and never the webp beside it.
           if (tier) {
             fetch(resolveTextureUrl(resolveTierFile(up.key, tier), tier))
               .then((r) => r.arrayBuffer())

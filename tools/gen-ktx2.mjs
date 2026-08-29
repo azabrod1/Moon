@@ -1,27 +1,36 @@
-// Regenerate the GPU-compressed 8K colour rungs under public/textures/8k/.
+// Regenerate the GPU-compressed colour rungs under public/textures/<tier>/.
 //
-// Why these files exist: uploading an 8K albedo as raw RGBA is the largest
-// unsliceable main-thread bill in the app — ~134MB through texImage2D plus a
-// runtime mipmap build, measured as THE dropped frame right after a Moon
-// teleport — and 170.7 MiB of a device's texture envelope for as long as it
-// is held. A KTX2 container (UASTC, full mip chain baked at build time)
-// uploads in a few milliseconds and stays compressed in VRAM at 42.7 MiB,
-// which is what lets four 8K maps be resident where two used to be the
-// ceiling. The trade is network size: UASTC+zstd is a few times larger on the
-// wire than a webp — paid only when a session actually earns the 8K tier, and
-// cached by the service worker after the first visit.
+// Why these files exist: uploading a big albedo as raw RGBA is the largest
+// unsliceable main-thread bill in the app. The driver charges an sRGB
+// conversion per upload call over the whole source, so the cost cannot be
+// spread across frames by banding the rows: an 8K map is ~134MB through
+// texImage2D plus a runtime mipmap build, measured as THE dropped frame right
+// after a Moon teleport, and even a 4K one costs 2.9 to 4.0 ms in a single
+// shot (measured through renderer.initTexture on an Apple GPU under
+// Chromium) — a missed refresh at 120 Hz, and more on a device with less to
+// spend, paid per map by the boot warm and by every arrival. A KTX2 container (UASTC, full mip chain baked at build time)
+// uploads as a memcpy of already-encoded blocks — a millisecond or so for a
+// 4K, a few for an 8K, and it bands — and stays compressed in VRAM: 10.7 MiB
+// for a 4K rung instead of 42.7, 42.7 for an 8K instead of 170.7, which is
+// what lets four 8K maps be resident where two used to be the ceiling. The
+// trade is network size: UASTC is a fixed 8 bits a texel whatever the picture
+// holds, so a container is several times the webp on the wire and a
+// low-frequency map (Venus, Saturn) is many times it. Paid only when a
+// session actually earns the tier, and cached by the service worker after the
+// first visit.
 //
 // Where a job's pixels come from is the one thing that differs between them,
 // and it follows one rule: the container ships THE SAME PIXELS the rung would
-// otherwise have. Where an 8K webp is also on disk (the Moon, the cloud deck,
-// which predate this pipeline and stay as the fallback for a device with no
-// KTX2 loader), the container is a pure transcode of that file, so the two
-// paths draw the same map. Where none ships — Earth's day and night maps,
-// which exist at 8K only as a container — the source is the graded level-0
-// equirect tools/gen-tiles.mjs cuts its tiles and its 4K rung from, resampled
-// here exactly as that tool resamples its own downsamples. So an 8K rung is a
-// pure sharpen of the 4K below it, and neither the ocean grade nor the night
-// map's no-data mask can drift between the globe and the sectors over it.
+// otherwise have. Where a webp of that tier is also on disk (every 4K rung,
+// and the 8K Moon and cloud deck, which stay as the fallback for a device
+// with no KTX2 loader), the container is a pure transcode of that file, so
+// the two paths draw the same map. Where none ships — Earth's 8K day and
+// night maps, which exist at that tier only as a container — the source is
+// the graded level-0 equirect tools/gen-tiles.mjs cuts its tiles and its 4K
+// rung from, resampled here exactly as that tool resamples its own
+// downsamples. So an 8K rung is a pure sharpen of the 4K below it, and
+// neither the ocean grade nor the night map's no-data mask can drift between
+// the globe and the sectors over it.
 //
 // -y_flip bakes the vertical flip: three's CompressedTexture cannot flipY at
 // upload, so the file itself must store what a flipY'd image texture presents.
@@ -29,7 +38,7 @@
 // Name the jobs to run: basisu's output is not identical across its own
 // builds (a 1.16.3 and a 1.16.4 encoder differ by a few dozen bytes on the
 // same input), so a blanket run on a machine with a different binary rewrites
-// every container and pushes 25 MB of re-download per map for a picture
+// every container and pushes megabytes of re-download per map for a picture
 // nobody can tell apart.
 //
 // Usage: node tools/gen-ktx2.mjs <job...> | --all  [--keep-png]
@@ -64,27 +73,90 @@ const TEX = path.join(repo, 'public/textures');
  *  produce identical bytes. BASISU overrides it for a host neither covers. */
 const basisu = process.env.BASISU
   ?? path.join(repo, 'node_modules/@gpu-tex-enc/basis/bin', `${process.platform}-${process.arch}`, 'basisu');
-// Every rung this tool writes is the 8K tier; the width is the tier's, not a
-// per-job choice, because the ladder charges and draws it as that tier.
-const WIDTH = 8192;
-const HEIGHT = WIDTH / 2;
+// A rung's width is its TIER's, never a per-job choice, because the ladder
+// charges and draws it as that tier: a container a size off would be charged
+// one tier's bytes and sampled at another's.
+const TIER_WIDTH = { '4k': 4096, '8k': 8192 };
 
-/** A job whose pixels are an 8K webp already on disk: the container is a pure
- *  transcode of exactly those bytes, so the fallback and the compressed rung
- *  are the same map. */
-const fromWebp = (file) => ({ kind: 'webp', file: path.join(TEX, '8k', file) });
+/** A job whose pixels are a webp of the same tier already on disk: the
+ *  container is a pure transcode of exactly those bytes, so the fallback and
+ *  the compressed rung are the same map. */
+const fromWebp = (tier, file) => ({ kind: 'webp', file: path.join(TEX, tier, file) });
 
-/** A job with no 8K webp: the pixels come from the level-0 equirect
+/** A job with no webp at its tier: the pixels come from the level-0 equirect
  *  gen-tiles builds for that job — graded and masked as its tiles are — and
- *  are resampled to 8192 with the kernel gen-tiles uses for its own
- *  downsamples, so this rung and the 4K below it are one resample apart. */
+ *  are resampled to the tier's width with the kernel gen-tiles uses for its
+ *  own downsamples, so this rung and the one below it are one resample
+ *  apart. */
 const fromLevel = (job) => ({ kind: 'level', job });
 
+/** RDO lambda where a job does not name one. Higher trades a little picture
+ *  for a smaller file: the UASTC blocks are a fixed 8 bits a texel either
+ *  way, and what RDO buys is blocks that repeat, which is what zstd behind it
+ *  compresses. */
+const DEFAULT_RDO_LAMBDA = 1.0;
+
+/** RDO match-window in bytes where a job does not name one. Larger finds more
+ *  repeats for zstd behind it and costs only encode time. */
+const DEFAULT_RDO_DICT = 8192;
+
+/** One job per compressed rung the ladder can ask for. The 8K jobs keep the
+ *  bare names they were first run under; a 4K job says its tier, because a
+ *  key can now have a rung at both. */
 const JOBS = {
-  moon: { source: fromWebp('moon.webp'), out: '8k/moon.ktx2' },
-  earthClouds: { source: fromWebp('earth-clouds.webp'), out: '8k/earth-clouds.ktx2' },
-  earthDay: { source: fromLevel('earth'), out: '8k/earth-day.v2.ktx2' },
-  earthNight: { source: fromLevel('earth-night'), out: '8k/earth-night.v2.ktx2' },
+  moon: { tier: '8k', source: fromWebp('8k', 'moon.webp'), out: '8k/moon.ktx2' },
+  earthClouds: { tier: '8k', source: fromWebp('8k', 'earth-clouds.webp'), out: '8k/earth-clouds.ktx2' },
+  earthDay: { tier: '8k', source: fromLevel('earth'), out: '8k/earth-day.v2.ktx2' },
+  earthNight: { tier: '8k', source: fromLevel('earth-night'), out: '8k/earth-night.v2.ktx2' },
+  // The 4K rungs whose container earns its place on the wire. A rung a
+  // session TOURS may cost at most four times its webp twin to download: the
+  // twin has to keep shipping (a device with no transcoder climbs it), and a
+  // tour of six planets pulling tens of megabytes where it pulled a few is a
+  // bill on mobile data that a smoother upload does not settle.
+  //
+  // Only two of the toured maps clear it, and the reason is UASTC's shape
+  // rather than the encoder's settings: the blocks are a fixed 8 bits a texel
+  // whatever the picture holds, so a 4096x2048 container has a floor near
+  // 1.6 MB however smooth the map is, while a webp of smooth content is a
+  // hundred-odd KB. The cap is therefore only reachable where the webp is
+  // itself large. Measured across the whole set at RDO lambda 1, 2 and 4
+  // (and, for the nearest misses, a 64K RDO dictionary as well): Venus and
+  // Saturn barely move at all — 2.30 to 2.29 MB and 1.96 to 1.95 — because
+  // they are already at that floor, and they sit at 17x their webp. Jupiter
+  // lands at 11x, Pluto at 5.05x. Every one of them was well inside the
+  // picture gate the whole way (worst |mean| 0.25 and RMS 2.09 against a
+  // limit of 2 and 6), so it is the wire that rules them out and nothing
+  // else. They keep their webp rung.
+  //
+  // Mercury clears it at the default lambda. Mars needs lambda 4 (4.53x at 1,
+  // 4.24x at 2, 3.81x at 4) and is unharmed by it.
+  mercury4k: { tier: '4k', source: fromWebp('4k', 'mercury.webp'), out: '4k/mercury.ktx2' },
+  mars4k: { tier: '4k', rdo: 4.0, source: fromWebp('4k', 'mars.v2.webp'), out: '4k/mars.v2.ktx2' },
+  // The three the boot warm uploads, which is why the toured cap does not
+  // rule them: the idle after boot fetches these on EVERY session, so a
+  // device downloads each one once and the worker serves it thereafter, while
+  // the frame their upload costs is paid every session until the container
+  // takes it away. Their bar is five times the twin, and the lambda ladder
+  // plus the 64K dictionary is what gets them there — the Moon comes down
+  // 7.05 MB at lambda 1 to 5.30 at 4 with the dictionary (4.8x), the cloud
+  // deck 7.58 to 6.58 (4.9x). The night map is the stubborn one: 1.84 down to
+  // 1.61 on that ladder and only 1.47 at lambda 16, which is 5.3x — over the
+  // bar on ratio, 1.2 MB over it in bytes, and the encoder has nothing left
+  // to give at this format. That trade is the row's, not this table's
+  // (src/planetarium/PlanetFactory.ts).
+  //
+  // ETC1S was the other way out and was tried on all three: it is a few times
+  // smaller, and it is refused on picture. Its shared codebook has to spend a
+  // block index per distinct shade, so a slow ramp comes back as steps — and
+  // a slow ramp is exactly what these three are made of (the maria, the
+  // deck's soft edges, the night map's falloff into unlit land). A container
+  // that quietly shipped ETC1S would put a WORSE picture on the globe than
+  // the webp rung it replaced, which is why the format is pinned rather than
+  // merely preferred: textureTiers.assets.test.ts reads colorModel out of
+  // every container and fails on anything but UASTC.
+  moon4k: { tier: '4k', rdo: 4.0, rdoDict: 65536, source: fromWebp('4k', 'moon.webp'), out: '4k/moon.ktx2' },
+  earthClouds4k: { tier: '4k', rdo: 4.0, rdoDict: 65536, source: fromWebp('4k', 'earth-clouds.webp'), out: '4k/earth-clouds.ktx2' },
+  earthNight4k: { tier: '4k', rdo: 16.0, rdoDict: 65536, source: fromWebp('4k', 'earth-night.v2.webp'), out: '4k/earth-night.v2.ktx2' },
 };
 
 const args = process.argv.slice(2);
@@ -140,10 +212,10 @@ async function decodeToPng(srcFile, mime, pngOut) {
   }
 }
 
-/** The level-0 equirect of a gen-tiles job, resampled to the 8K tier. Same
- *  kernel and same `fit` as that tool's own downsamples: the 4K rung under
+/** The level-0 equirect of a gen-tiles job, resampled to the rung's tier.
+ *  Same kernel and same `fit` as that tool's own downsamples: the rung under
  *  this one is the identical call at half the width. */
-async function levelToPng(jobName, pngOut) {
+async function levelToPng(jobName, pngOut, width) {
   const [{ default: sharp }, tiles] = await Promise.all([
     import('sharp'),
     import('./gen-tiles.mjs'),
@@ -152,10 +224,10 @@ async function levelToPng(jobName, pngOut) {
   if (!job) throw new Error(`gen-tiles has no ${jobName} job`);
   const { rows } = await tiles.levelRowSource(job, job.levels[0]);
   try {
-    console.log(`  level 0 is ${rows.width}x${rows.height}; resampling to ${WIDTH}x${HEIGHT}`);
+    console.log(`  level 0 is ${rows.width}x${rows.height}; resampling to ${width}x${width / 2}`);
     const whole = await rows.whole();
     await sharp(whole, { raw: { width: rows.width, height: rows.height, channels: 3 }, limitInputPixels: false })
-      .resize(WIDTH, HEIGHT, { fit: 'fill', kernel: 'lanczos3' })
+      .resize(width, width / 2, { fit: 'fill', kernel: 'lanczos3' })
       .png({ compressionLevel: 1 })
       .toFile(pngOut);
   } finally {
@@ -163,43 +235,60 @@ async function levelToPng(jobName, pngOut) {
   }
 }
 
-async function sourcePng(source, pngOut) {
+async function sourcePng(source, pngOut, width) {
   if (source.kind === 'webp') {
     if (!existsSync(source.file)) throw new Error(`${source.file} is not on disk`);
     console.log('  decoding', path.relative(repo, source.file));
     await decodeToPng(source.file, 'image/webp', pngOut);
     return;
   }
-  await levelToPng(source.job, pngOut);
+  await levelToPng(source.job, pngOut, width);
 }
 
 /**
- * Encode. UASTC (the high-quality mode — ETC1S bands on the maria), level 2
- * with mild RDO, zstd supercompressed. The mip chain deliberately uses a BOX
- * filter on raw sRGB bytes — radiometrically naive, but exactly what the GPU's
- * generateMipmap builds for the webp tiers (the 4K rung included), and the
- * tier ladder's no-brightness-pop rule binds to the shipped look, not to
- * linear-light purity (a -mip_srgb kaiser chain measured ~5/255 brighter on
- * lit pixels than the webp 8K at the same pose; box-on-sRGB brings the swap
- * back to compression noise).
+ * Encode, in one of the two modes basisu offers.
+ *
+ * UASTC is the high-quality one: fixed 8 bits a texel, level 2 with mild RDO,
+ * zstd supercompressed. Size on the wire is what it costs, and it does not
+ * depend on the picture — which is why a map whose webp is small can never
+ * reach a container worth downloading.
+ *
+ * ETC1S is the small one: a shared codebook of 4x4 blocks, BasisLZ
+ * supercompressed, a few times smaller than the same map in UASTC. What it
+ * costs is smooth gradients — the codebook has to spend a block index on
+ * every distinct shade, so a slow ramp comes back as steps. No job ships it:
+ * the mode is here because the question is worth re-asking whenever a map is
+ * too big for its rung, and the job table records where it was asked and what
+ * the answer was. Nothing can ship it by accident either — the container's
+ * colour model is pinned in textureTiers.assets.test.ts.
+ *
+ * The mip chain deliberately uses a BOX filter on raw sRGB bytes in both —
+ * radiometrically naive, but exactly what the GPU's generateMipmap builds for
+ * a webp map: the boot map every body starts on, and the webp rung a device
+ * with no transcoder still climbs to. The tier ladder's no-brightness-pop rule
+ * binds to the shipped look, not to linear-light purity (a -mip_srgb kaiser
+ * chain measured ~5/255 brighter on lit pixels than the webp 8K at the same
+ * pose; box-on-sRGB brings the swap back to compression noise).
  */
-function encode(png, out) {
+function encode(png, out, mode, rdoLambda, rdoDict) {
   if (!existsSync(basisu)) {
     throw new Error(`no basisu for ${process.platform}-${process.arch} at ${basisu}; set BASISU to one`);
   }
   chmodSync(basisu, 0o755);
+  // basisu's own supercompression for ETC1S (BasisLZ, which the container
+  // records as scheme 1); zstd is the UASTC path's and does nothing here.
+  const modeArgs = mode === 'etc1s'
+    ? ['-q', '255', '-comp_level', '5']
+    : ['-uastc', '-uastc_level', '2', '-uastc_rdo_l', String(rdoLambda), '-uastc_rdo_d', String(rdoDict),
+      '-ktx2_zstandard_level', '18'];
   execFileSync(
     basisu,
     [
       '-ktx2',
-      '-uastc',
-      '-uastc_level', '2',
-      '-uastc_rdo_l', '1.0',
-      '-uastc_rdo_d', '8192',
+      ...modeArgs,
       '-mipmap',
       '-mip_filter', 'box',
       '-y_flip',
-      '-ktx2_zstandard_level', '18',
       '-output_file', out,
       png,
     ],
@@ -209,15 +298,15 @@ function encode(png, out) {
 
 /** KTX2 magic, the tier's own dimensions, and a full mip chain: the three
  *  things the app assumes of a container before it has read a byte of it. */
-function checkContainer(out) {
+function checkContainer(out, want) {
   const buf = readFileSync(out);
   const magic = [0xab, 0x4b, 0x54, 0x58, 0x20, 0x32, 0x30, 0xbb];
   if (!magic.every((b, i) => buf[i] === b)) throw new Error(`${out} is not a KTX2 file`);
   const width = buf.readUInt32LE(20);
   const height = buf.readUInt32LE(24);
   const levels = buf.readUInt32LE(40);
-  if (width !== WIDTH || height !== HEIGHT) throw new Error(`${out} is ${width}x${height}, not ${WIDTH}x${HEIGHT}`);
-  if (levels !== Math.log2(WIDTH) + 1) throw new Error(`${out} carries ${levels} mip levels, not a full chain`);
+  if (width !== want || height !== want / 2) throw new Error(`${out} is ${width}x${height}, not ${want}x${want / 2}`);
+  if (levels !== Math.log2(want) + 1) throw new Error(`${out} carries ${levels} mip levels, not a full chain`);
   return buf;
 }
 
@@ -228,16 +317,18 @@ for (const name of wanted) {
   const work = mkdtempSync(path.join(tmpdir(), `ktx2-${name}-`));
   const png = path.join(work, `${name}.png`);
   const t0 = Date.now();
-  console.log(`== ${name} -> ${job.out}`);
+  const width = TIER_WIDTH[job.tier];
+  console.log(`== ${name} -> ${job.out} (${width}x${width / 2})`);
   try {
-    await sourcePng(job.source, png);
+    await sourcePng(job.source, png, width);
     console.log('  source PNG:', (statSync(png).size / 1e6).toFixed(1), 'MB');
     const tEncode = Date.now();
-    encode(png, out);
-    const buf = checkContainer(out);
+    encode(png, out, job.mode ?? 'uastc', job.rdo ?? DEFAULT_RDO_LAMBDA, job.rdoDict ?? DEFAULT_RDO_DICT);
+    const buf = checkContainer(out, width);
     const after = createHash('sha256').update(buf).digest('hex');
     console.log(
       `  wrote ${job.out} ${(buf.length / 1e6).toFixed(1)} MB` +
+      ` as ${job.mode ?? 'uastc'}${(job.mode ?? 'uastc') === 'uastc' ? ` rdo ${job.rdo ?? DEFAULT_RDO_LAMBDA}` : ''}` +
       ` (encode ${((Date.now() - tEncode) / 1000).toFixed(0)} s, job ${((Date.now() - t0) / 1000).toFixed(0)} s)`,
     );
     console.log(`  sha256 ${after}${before === null ? ' (new)' : before === after ? ' (unchanged)' : ` (was ${before})`}`);

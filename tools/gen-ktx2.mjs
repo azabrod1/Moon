@@ -90,6 +90,16 @@ const fromWebp = (tier, file) => ({ kind: 'webp', file: path.join(TEX, tier, fil
  *  apart. */
 const fromLevel = (job) => ({ kind: 'level', job });
 
+/** RDO lambda where a job does not name one. Higher trades a little picture
+ *  for a smaller file: the UASTC blocks are a fixed 8 bits a texel either
+ *  way, and what RDO buys is blocks that repeat, which is what zstd behind it
+ *  compresses. */
+const DEFAULT_RDO_LAMBDA = 1.0;
+
+/** RDO match-window in bytes where a job does not name one. Larger finds more
+ *  repeats for zstd behind it and costs only encode time. */
+const DEFAULT_RDO_DICT = 8192;
+
 /** One job per compressed rung the ladder can ask for. The 8K jobs keep the
  *  bare names they were first run under; a 4K job says its tier, because a
  *  key can now have a rung at both. */
@@ -98,19 +108,55 @@ const JOBS = {
   earthClouds: { tier: '8k', source: fromWebp('8k', 'earth-clouds.webp'), out: '8k/earth-clouds.ktx2' },
   earthDay: { tier: '8k', source: fromLevel('earth'), out: '8k/earth-day.v2.ktx2' },
   earthNight: { tier: '8k', source: fromLevel('earth-night'), out: '8k/earth-night.v2.ktx2' },
-  // Every 4K COLOUR rung the ladder names, and only those: the boot maps in
-  // the flat textures/ folder are not rungs, and the normal and bump maps
-  // beside these carry linear data a colour-space-tagged container would
-  // misdeclare.
+  // The 4K rungs whose container earns its place on the wire. A rung a
+  // session TOURS may cost at most four times its webp twin to download: the
+  // twin has to keep shipping (a device with no transcoder climbs it), and a
+  // tour of six planets pulling tens of megabytes where it pulled a few is a
+  // bill on mobile data that a smoother upload does not settle.
+  //
+  // Only two of the toured maps clear it, and the reason is UASTC's shape
+  // rather than the encoder's settings: the blocks are a fixed 8 bits a texel
+  // whatever the picture holds, so a 4096x2048 container has a floor near
+  // 1.6 MB however smooth the map is, while a webp of smooth content is a
+  // hundred-odd KB. The cap is therefore only reachable where the webp is
+  // itself large. Measured across the whole set at RDO lambda 1, 2 and 4
+  // (and, for the nearest misses, a 64K RDO dictionary as well): Venus and
+  // Saturn barely move at all — 2.30 to 2.29 MB and 1.96 to 1.95 — because
+  // they are already at that floor, and they sit at 17x their webp. Jupiter
+  // lands at 11x, Pluto at 5.05x. Every one of them was well inside the
+  // picture gate the whole way (worst |mean| 0.25 and RMS 2.09 against a
+  // limit of 2 and 6), so it is the wire that rules them out and nothing
+  // else. They keep their webp rung.
+  //
+  // Mercury clears it at the default lambda. Mars needs lambda 4 (4.53x at 1,
+  // 4.24x at 2, 3.81x at 4) and is unharmed by it.
   mercury4k: { tier: '4k', source: fromWebp('4k', 'mercury.webp'), out: '4k/mercury.ktx2' },
-  venus4k: { tier: '4k', source: fromWebp('4k', 'venus.webp'), out: '4k/venus.ktx2' },
-  mars4k: { tier: '4k', source: fromWebp('4k', 'mars.v2.webp'), out: '4k/mars.v2.ktx2' },
-  jupiter4k: { tier: '4k', source: fromWebp('4k', 'jupiter.webp'), out: '4k/jupiter.ktx2' },
-  saturn4k: { tier: '4k', source: fromWebp('4k', 'saturn.webp'), out: '4k/saturn.ktx2' },
-  pluto4k: { tier: '4k', source: fromWebp('4k', 'pluto.webp'), out: '4k/pluto.ktx2' },
-  moon4k: { tier: '4k', source: fromWebp('4k', 'moon.webp'), out: '4k/moon.ktx2' },
-  earthClouds4k: { tier: '4k', source: fromWebp('4k', 'earth-clouds.webp'), out: '4k/earth-clouds.ktx2' },
-  earthNight4k: { tier: '4k', source: fromWebp('4k', 'earth-night.v2.webp'), out: '4k/earth-night.v2.ktx2' },
+  mars4k: { tier: '4k', rdo: 4.0, source: fromWebp('4k', 'mars.v2.webp'), out: '4k/mars.v2.ktx2' },
+  // The three the boot warm uploads, which is why the toured cap does not
+  // rule them: the idle after boot fetches these on EVERY session, so a
+  // device downloads each one once and the worker serves it thereafter, while
+  // the frame their upload costs is paid every session until the container
+  // takes it away. Their bar is five times the twin, and the lambda ladder
+  // plus the 64K dictionary is what gets them there — the Moon comes down
+  // 7.05 MB at lambda 1 to 5.30 at 4 with the dictionary (4.8x), the cloud
+  // deck 7.58 to 6.58 (4.9x). The night map is the stubborn one: 1.84 down to
+  // 1.61 on that ladder and only 1.47 at lambda 16, which is 5.3x — over the
+  // bar on ratio, 1.2 MB over it in bytes, and the encoder has nothing left
+  // to give at this format. That trade is the row's, not this table's
+  // (src/planetarium/PlanetFactory.ts).
+  //
+  // ETC1S was the other way out and was tried on all three: it is a few times
+  // smaller, and it is refused on picture. Its shared codebook has to spend a
+  // block index per distinct shade, so a slow ramp comes back as steps — and
+  // a slow ramp is exactly what these three are made of (the maria, the
+  // deck's soft edges, the night map's falloff into unlit land). A container
+  // that quietly shipped ETC1S would put a WORSE picture on the globe than
+  // the webp rung it replaced, which is why the format is pinned rather than
+  // merely preferred: textureTiers.assets.test.ts reads colorModel out of
+  // every container and fails on anything but UASTC.
+  moon4k: { tier: '4k', rdo: 4.0, rdoDict: 65536, source: fromWebp('4k', 'moon.webp'), out: '4k/moon.ktx2' },
+  earthClouds4k: { tier: '4k', rdo: 4.0, rdoDict: 65536, source: fromWebp('4k', 'earth-clouds.webp'), out: '4k/earth-clouds.ktx2' },
+  earthNight4k: { tier: '4k', rdo: 16.0, rdoDict: 65536, source: fromWebp('4k', 'earth-night.v2.webp'), out: '4k/earth-night.v2.ktx2' },
 };
 
 const args = process.argv.slice(2);
@@ -200,33 +246,49 @@ async function sourcePng(source, pngOut, width) {
 }
 
 /**
- * Encode. UASTC (the high-quality mode — ETC1S bands on the maria), level 2
- * with mild RDO, zstd supercompressed. The mip chain deliberately uses a BOX
- * filter on raw sRGB bytes — radiometrically naive, but exactly what the GPU's
- * generateMipmap builds for a webp map: the boot map every body starts on, and
- * the webp rung a device with no transcoder still climbs to. The tier ladder's
- * no-brightness-pop rule binds to the shipped look, not to linear-light purity
- * (a -mip_srgb kaiser chain measured ~5/255 brighter on lit pixels than the
- * webp 8K at the same pose; box-on-sRGB brings the swap back to compression
- * noise).
+ * Encode, in one of the two modes basisu offers.
+ *
+ * UASTC is the high-quality one: fixed 8 bits a texel, level 2 with mild RDO,
+ * zstd supercompressed. Size on the wire is what it costs, and it does not
+ * depend on the picture — which is why a map whose webp is small can never
+ * reach a container worth downloading.
+ *
+ * ETC1S is the small one: a shared codebook of 4x4 blocks, BasisLZ
+ * supercompressed, a few times smaller than the same map in UASTC. What it
+ * costs is smooth gradients — the codebook has to spend a block index on
+ * every distinct shade, so a slow ramp comes back as steps. No job ships it:
+ * the mode is here because the question is worth re-asking whenever a map is
+ * too big for its rung, and the job table records where it was asked and what
+ * the answer was. Nothing can ship it by accident either — the container's
+ * colour model is pinned in textureTiers.assets.test.ts.
+ *
+ * The mip chain deliberately uses a BOX filter on raw sRGB bytes in both —
+ * radiometrically naive, but exactly what the GPU's generateMipmap builds for
+ * a webp map: the boot map every body starts on, and the webp rung a device
+ * with no transcoder still climbs to. The tier ladder's no-brightness-pop rule
+ * binds to the shipped look, not to linear-light purity (a -mip_srgb kaiser
+ * chain measured ~5/255 brighter on lit pixels than the webp 8K at the same
+ * pose; box-on-sRGB brings the swap back to compression noise).
  */
-function encode(png, out) {
+function encode(png, out, mode, rdoLambda, rdoDict) {
   if (!existsSync(basisu)) {
     throw new Error(`no basisu for ${process.platform}-${process.arch} at ${basisu}; set BASISU to one`);
   }
   chmodSync(basisu, 0o755);
+  // basisu's own supercompression for ETC1S (BasisLZ, which the container
+  // records as scheme 1); zstd is the UASTC path's and does nothing here.
+  const modeArgs = mode === 'etc1s'
+    ? ['-q', '255', '-comp_level', '5']
+    : ['-uastc', '-uastc_level', '2', '-uastc_rdo_l', String(rdoLambda), '-uastc_rdo_d', String(rdoDict),
+      '-ktx2_zstandard_level', '18'];
   execFileSync(
     basisu,
     [
       '-ktx2',
-      '-uastc',
-      '-uastc_level', '2',
-      '-uastc_rdo_l', '1.0',
-      '-uastc_rdo_d', '8192',
+      ...modeArgs,
       '-mipmap',
       '-mip_filter', 'box',
       '-y_flip',
-      '-ktx2_zstandard_level', '18',
       '-output_file', out,
       png,
     ],
@@ -261,11 +323,12 @@ for (const name of wanted) {
     await sourcePng(job.source, png, width);
     console.log('  source PNG:', (statSync(png).size / 1e6).toFixed(1), 'MB');
     const tEncode = Date.now();
-    encode(png, out);
+    encode(png, out, job.mode ?? 'uastc', job.rdo ?? DEFAULT_RDO_LAMBDA, job.rdoDict ?? DEFAULT_RDO_DICT);
     const buf = checkContainer(out, width);
     const after = createHash('sha256').update(buf).digest('hex');
     console.log(
       `  wrote ${job.out} ${(buf.length / 1e6).toFixed(1)} MB` +
+      ` as ${job.mode ?? 'uastc'}${(job.mode ?? 'uastc') === 'uastc' ? ` rdo ${job.rdo ?? DEFAULT_RDO_LAMBDA}` : ''}` +
       ` (encode ${((Date.now() - tEncode) / 1000).toFixed(0)} s, job ${((Date.now() - t0) / 1000).toFixed(0)} s)`,
     );
     console.log(`  sha256 ${after}${before === null ? ' (new)' : before === after ? ' (unchanged)' : ` (was ${before})`}`);

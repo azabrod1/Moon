@@ -34,6 +34,15 @@ import {
   surfacePerfFrameStart,
   surfacePerfSnapshot,
 } from './planetarium/surfacePerf';
+import { beginSlicedUpload, stepSlicedUpload } from './planetarium/world/slicedUpload';
+import { invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm } from './planetarium/world/textureWarmer';
+import {
+  smoothTraceFrameStart,
+  smoothTraceEvent,
+  smoothTraceSnapshot,
+  smoothTraceStart,
+  smoothTraceStop,
+} from './planetarium/smoothnessTrace';
 
 // ================================================================
 // Top-level mode
@@ -816,6 +825,18 @@ function installDevHooks() {
       programs: renderer.info.programs?.length ?? 0,
       exposure: renderer.toneMappingExposure,
     }),
+    // Whole-run frame trace behind the smoothness gate: every frame's raf
+    // gap, the veil windows, and a one-word cause per frame. smoothStart
+    // arms it here; ?smooth=1 arms it before the first frame instead, which
+    // is the only way to see a cold boot. smoothMark labels the scenario
+    // phase a frame belongs to.
+    smoothStart: (maxFrames?: number) => smoothTraceStart(
+      { armedBy: 'bridge', userAgent: navigator.userAgent, viewport: `${window.innerWidth}x${window.innerHeight}`, pixelRatio: renderer.getPixelRatio() },
+      maxFrames,
+    ),
+    smoothMark: (label: string) => smoothTraceEvent('mark', label),
+    smoothSnapshot: () => smoothTraceSnapshot(),
+    smoothStop: () => smoothTraceStop(),
     // Low-overhead Surface timing ring buffer. Usage:
     //   surfacePerf('start') → reproduce → surfacePerf() / surfacePerf('stop')
     surfacePerf: (command: 'start' | 'stop' | 'clear' | 'snapshot' = 'snapshot') => {
@@ -846,6 +867,13 @@ function installDevHooks() {
   if (new URLSearchParams(window.location.search).get('surfacePerf') === '1') {
     (window as any).__moon.surfacePerf('start');
   }
+  // Upload-parity harness hooks: the sliced uploader has to be driven directly
+  // against a one-shot upload of the same source, which needs the renderer and
+  // three itself. DEV-only, like the rest of the bridge.
+  (window as any).__moonThree = THREE;
+  (window as any).__moonRenderer = renderer;
+  (window as any).__moonSlice = { begin: beginSlicedUpload, step: stepSlicedUpload };
+  (window as any).__moonWarm = { queueTextureWarm, pumpTextureWarmQueue, invalidateTextureWarmCache };
   debugLog('Dev hooks installed (window.__moon)');
 }
 
@@ -880,6 +908,7 @@ async function init() {
   function animate(rafTimestamp = performance.now()) {
     requestAnimationFrame(animate);
     if (import.meta.env.DEV) surfacePerfFrameStart(rafTimestamp);
+    if (import.meta.env.DEV) smoothTraceFrameStart(rafTimestamp);
     // Drift poll on a countdown: innerWidth/innerHeight are cheap but not
     // free at once-per-frame, and the events below re-arm an immediate check
     // for every transition that announces itself (visualViewport covers the

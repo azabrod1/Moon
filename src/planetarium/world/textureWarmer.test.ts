@@ -6,7 +6,56 @@ import {
   pumpTextureWarmQueue,
   queueTextureWarm,
   resetTextureWarmer,
+  abandonSlicedUpload,
+  bindSlicedUploader,
+  warmBudgetMs,
+  warmPumpAllowed,
+  WARM_BUDGET_CAP_MS,
+  WARM_BUDGET_FLOOR_MS,
+  WARM_STARVE_MS,
 } from './textureWarmer';
+
+describe('warmBudgetMs', () => {
+  it('gives a 60 Hz frame the budget the fixed figure used to', () => {
+    expect(warmBudgetMs(16.7)).toBeCloseTo(5.845, 3);
+  });
+
+  it('spends less of a shorter frame, so 120 Hz is not eaten by uploads', () => {
+    expect(warmBudgetMs(8.33)).toBeCloseTo(2.9155, 3);
+  });
+
+  it('never exceeds the cap however long the frame', () => {
+    expect(warmBudgetMs(100)).toBe(WARM_BUDGET_CAP_MS);
+  });
+
+  it('never falls below the floor, or the queue would never drain', () => {
+    expect(warmBudgetMs(1)).toBe(WARM_BUDGET_FLOOR_MS);
+  });
+
+  it('falls back to the cap when the interval is not a usable number', () => {
+    expect(warmBudgetMs(Number.NaN)).toBe(WARM_BUDGET_CAP_MS);
+    expect(warmBudgetMs(0)).toBe(WARM_BUDGET_CAP_MS);
+    expect(warmBudgetMs(-5)).toBe(WARM_BUDGET_CAP_MS);
+  });
+});
+
+describe('warmPumpAllowed', () => {
+  it('lets the pump run when it owes nothing', () => {
+    expect(warmPumpAllowed(1_000, 0, 900)).toBe(true);
+  });
+
+  it('holds the pump back while an overrun is still being repaid', () => {
+    expect(warmPumpAllowed(1_000, 1_010, 995)).toBe(false);
+  });
+
+  it('forces an upload through rather than starve the queue', () => {
+    expect(warmPumpAllowed(1_000, 5_000, 1_000 - WARM_STARVE_MS)).toBe(true);
+  });
+
+  it('treats a queue that has never uploaded as starving', () => {
+    expect(warmPumpAllowed(1_000, 5_000, null)).toBe(true);
+  });
+});
 
 describe('textureWarmer', () => {
   let uploaded: THREE.Texture[];
@@ -42,7 +91,7 @@ describe('textureWarmer', () => {
     expect(uploaded).toEqual([t]);
   });
 
-  it('drains FIFO across pumps when the budget forces one upload per call', () => {
+  it('repays an overrun before paying the next unsliceable upload', () => {
     bindTextureWarmer(upload);
     uploadCostMs = 10; // every upload alone exceeds the budget
     const a = new THREE.Texture();
@@ -50,9 +99,29 @@ describe('textureWarmer', () => {
     queueTextureWarm(a);
     queueTextureWarm(b);
     pumpTextureWarmQueue(6);
-    expect(uploaded).toEqual([a]);
+    expect(uploaded).toEqual([a]); // 10 ms paid against a 6 ms budget: 4 ms owed
     pumpTextureWarmQueue(6);
-    expect(uploaded).toEqual([a, b]);
+    expect(uploaded).toEqual([a]); // the very next frame sits the overrun out
+    clock += 4;
+    pumpTextureWarmQueue(6);
+    expect(uploaded).toEqual([a, b]); // debt served, FIFO order kept
+  });
+
+  it('forces an upload through rather than let the queue starve', () => {
+    bindTextureWarmer(upload);
+    uploadCostMs = 5_000; // an absurd cost, so the debt would outlast the wait
+    const a = new THREE.Texture();
+    const b = new THREE.Texture();
+    queueTextureWarm(a);
+    queueTextureWarm(b);
+    pumpTextureWarmQueue(6);
+    expect(uploaded).toEqual([a]);
+    clock += WARM_STARVE_MS - 1;
+    pumpTextureWarmQueue(6);
+    expect(uploaded).toEqual([a]); // still repaying
+    clock += 1;
+    pumpTextureWarmQueue(6);
+    expect(uploaded).toEqual([a, b]); // a quarter second is the longest wait
   });
 
   it('always uploads at least one, and batches small uploads within budget', () => {
@@ -214,5 +283,112 @@ describe('textureWarmer onOutcome', () => {
     pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
     expect(calls.length).toBe(2);
     expect(uploaded).toEqual([]);
+  });
+});
+
+describe('sliced uploads through the pump', () => {
+  let uploaded: THREE.Texture[];
+  let steps: number;
+  let plan: Array<'more' | 'done' | 'failed'>;
+
+  const stubSlicer = (sliceable: (t: THREE.Texture) => boolean) => ({
+    begin: (t: THREE.Texture) => (sliceable(t) ? { t } : null),
+    step: () => {
+      steps++;
+      return plan.shift() ?? 'done';
+    },
+  });
+
+  beforeEach(() => {
+    resetTextureWarmer();
+    uploaded = [];
+    steps = 0;
+    plan = [];
+    bindTextureWarmer((t) => { uploaded.push(t); });
+  });
+
+  afterEach(() => {
+    resetTextureWarmer();
+  });
+
+  it('settles warmed only after the last band, never mid-slice', () => {
+    bindSlicedUploader(stubSlicer(() => true));
+    const outcomes: string[] = [];
+    const big = new THREE.Texture();
+    queueTextureWarm(big, (o) => outcomes.push(o));
+    plan = ['more', 'more', 'done'];
+
+    pumpTextureWarmQueue(6);
+    expect(outcomes).toEqual([]); // band 1: nothing may draw it yet
+    pumpTextureWarmQueue(6);
+    expect(outcomes).toEqual([]); // band 2
+    pumpTextureWarmQueue(6);
+    expect(outcomes).toEqual(['warmed']); // mip chain in, and only now
+    expect(steps).toBe(3);
+    expect(uploaded).toEqual([]); // never went through the one-shot path
+  });
+
+  it('leaves a small texture to the single-shot path', () => {
+    bindSlicedUploader(stubSlicer(() => false));
+    const small = new THREE.Texture();
+    queueTextureWarm(small);
+    pumpTextureWarmQueue(6);
+    expect(uploaded).toEqual([small]);
+    expect(steps).toBe(0);
+  });
+
+  it('holds the queue behind the slice in flight', () => {
+    bindSlicedUploader(stubSlicer((t) => t.name === 'big'));
+    const big = new THREE.Texture();
+    big.name = 'big';
+    const small = new THREE.Texture();
+    queueTextureWarm(big);
+    queueTextureWarm(small);
+    plan = ['more', 'done'];
+
+    pumpTextureWarmQueue(6);
+    expect(uploaded).toEqual([]); // the small one waits its turn
+    pumpTextureWarmQueue(6);
+    pumpTextureWarmQueue(6);
+    expect(uploaded).toEqual([small]);
+  });
+
+  it('reports failed rather than resident when a step gives up', () => {
+    bindSlicedUploader(stubSlicer(() => true));
+    const outcomes: string[] = [];
+    const big = new THREE.Texture();
+    queueTextureWarm(big, (o) => outcomes.push(o));
+    plan = ['failed'];
+    pumpTextureWarmQueue(6);
+    expect(outcomes).toEqual(['failed']);
+  });
+
+  it('re-queues a slice a lost context abandoned, and never settles it warmed', () => {
+    bindSlicedUploader(stubSlicer(() => true));
+    const outcomes: string[] = [];
+    const big = new THREE.Texture();
+    queueTextureWarm(big, (o) => outcomes.push(o));
+    plan = ['more'];
+    pumpTextureWarmQueue(6);
+    expect(outcomes).toEqual([]);
+
+    abandonSlicedUpload();
+    expect(outcomes).toEqual([]); // abandoning is not an outcome
+
+    plan = ['done'];
+    pumpTextureWarmQueue(6); // the texture is back on the queue, so it restarts
+    expect(outcomes).toEqual(['warmed']);
+  });
+
+  it('settles disposed, not warmed, for a texture freed mid-slice', () => {
+    bindSlicedUploader(stubSlicer(() => true));
+    const outcomes: string[] = [];
+    const big = new THREE.Texture();
+    queueTextureWarm(big, (o) => outcomes.push(o));
+    plan = ['more', 'done'];
+    pumpTextureWarmQueue(6);
+    big.dispose();
+    pumpTextureWarmQueue(6);
+    expect(outcomes).toEqual(['disposed']);
   });
 });

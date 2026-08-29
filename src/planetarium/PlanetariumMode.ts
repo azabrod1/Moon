@@ -39,7 +39,9 @@ import { appliedTierHeldBytes, applySunGlowTier, armArrivalWarmGoal, arrivalUpgr
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { bindSurfaceAir, clearSurfaceAir, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
-import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
+import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer, warmBudgetMs } from './world/textureWarmer';
+import { beginSlicedUpload, stepSlicedUpload } from './world/slicedUpload';
+import { smoothTraceVeil } from './smoothnessTrace';
 import {
   SECTOR_NIGHT_SETS, SECTOR_SETS, SectorStreamer, sectorFamilyKey,
   type SectorMeasure, type SectorStats, type SectorSuspend,
@@ -822,7 +824,18 @@ export class PlanetariumMode {
 
   // Per-frame time budget for warm texture uploads: small maps batch within
   // it, a big one takes its frame alone (the pump always uploads at least one).
-  private static readonly TEXTURE_WARM_BUDGET_MS = 6;
+  /**
+   * A slow average of the frame interval, for anything that must size work
+   * against the refresh rather than a fixed millisecond figure.
+   *
+   * Averaged rather than read live, and clamped before folding in, because a
+   * single hitch would otherwise raise the estimate and licence more work on
+   * exactly the frames that are already late.
+   */
+  private frameIntervalMs = 16.7;
+  private static readonly FRAME_INTERVAL_EMA_ALPHA = 0.05;
+  private static readonly FRAME_INTERVAL_MIN_MS = 4;
+  private static readonly FRAME_INTERVAL_MAX_MS = 40;
   /** Above this rotation rate on screen (degrees of body spin per real
    *  second — Earth at 900 s/s) a globe turns visibly under the camera, so
    *  admitting sector tiles would only churn 21 MiB uploads — residents hold,
@@ -2094,6 +2107,13 @@ export class PlanetariumMode {
     // Warm uploads go through the renderer so freshly loaded maps reach the
     // GPU on quiet frames instead of inside a gesture's first draw.
     bindTextureWarmer((tex) => renderer.initTexture(tex));
+    // A map too big to upload inside one frame is filled band by band instead.
+    // Nothing draws it until the last band and the mip chain are in — the warm
+    // pump settles its 'warmed' callback there and not before.
+    bindSlicedUploader({
+      begin: (tex) => beginSlicedUpload(renderer, tex),
+      step: (job, budgetMs) => stepSlicedUpload(job, budgetMs),
+    });
     // The 8K compressed tier's loader (see PlanetFactory's TIER_FILE_OVERRIDES),
     // bound lazily: the KTX2 machinery — loader chunk, transcoder worker, wasm —
     // loads only if a session actually earns that tier. Fail-open at every step:
@@ -2106,7 +2126,14 @@ export class PlanetariumMode {
           .detectSupport(renderer),
       );
       this.ktx2Loader.then(
-        (loader) => loader.load(url, onLoad, undefined, onError),
+        // Stamp the file the texture came from, exactly as the bitmap loader
+        // does: a KTX2 texture carries no name and no image src, so without
+        // this every compressed rung is an anonymous upload in the timing
+        // traces and no hitch can be pinned to the map that caused it.
+        (loader) => loader.load(url, (tex) => {
+          tex.userData.sourceUrl = url;
+          onLoad(tex);
+        }, undefined, onError),
         (err) => onError(err),
       );
     }, ktx2TranscodesCompressed(renderer));
@@ -3882,7 +3909,14 @@ export class PlanetariumMode {
 
   update(dt: number): void {
     if (!this.active || !this.solarSystem) return;
+    // Written inside the frame it describes: a frame trace that scored the
+    // veil a frame late would blame the world for the cut's first hitch.
+    if (import.meta.env.DEV) smoothTraceVeil(this.arrivalVeilUp());
     this.lastFrameDtMs = dt * 1000;
+    this.frameIntervalMs += (Math.min(
+      PlanetariumMode.FRAME_INTERVAL_MAX_MS,
+      Math.max(PlanetariumMode.FRAME_INTERVAL_MIN_MS, this.lastFrameDtMs),
+    ) - this.frameIntervalMs) * PlanetariumMode.FRAME_INTERVAL_EMA_ALPHA;
     this.frameStamp++;
     if (this.shaderWarmupProgramCount !== null && ++this.framesSinceShaderWarmup >= 3) {
       const now = this.renderer.info.programs?.length ?? 0;
@@ -3904,7 +3938,7 @@ export class PlanetariumMode {
     // being asked of the frame — otherwise the whole decode+upload bill lands
     // inside whatever gesture first draws the map. Runs in every mode so
     // landed sessions warm up too.
-    pumpTextureWarmQueue(PlanetariumMode.TEXTURE_WARM_BUDGET_MS);
+    pumpTextureWarmQueue(warmBudgetMs(this.frameIntervalMs));
     // Climb any committed destination's warm ladder (see
     // warmArrivalDestination) — a no-op the moment every goal has disarmed.
     this.pumpArrivalWarmGoals();

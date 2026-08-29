@@ -3154,15 +3154,41 @@ export class PlanetariumMode {
     return bytes;
   }
 
-  /** Every colour-tier handle in the scene, planets and moons alike. */
-  private forEachTextureUpgrade(fn: (up: TextureUpgrade) => void): void {
+  /**
+   * Every body a ladder pass walks, planets then moons, with what those
+   * passes need of it: its catalog name, its colour handles — which may be
+   * none, since a body with no finer map on disk carries no rung — the object
+   * whose position stands for it, its radius at the scale it is drawn, and
+   * whether it is being drawn at all.
+   *
+   * A hidden moon sits at its parent's centre (updateMoonPositions skips it),
+   * so its position stands for the system it is in, which is the right
+   * distance for a body nobody is looking at. That is stated once here rather
+   * than re-derived by each pass.
+   */
+  private forEachLadderBody(
+    fn: (
+      name: string,
+      ups: readonly TextureUpgrade[],
+      mesh: THREE.Object3D,
+      radiusAU: number,
+      visible: boolean,
+    ) => void,
+  ): void {
     if (!this.solarSystem) return;
     for (const planet of this.solarSystem.planets) {
-      for (const up of planet.textureUpgrades) fn(up);
+      fn(planet.data.name, planet.textureUpgrades, planet.group, planet.data.radiusAU, planet.mesh.visible);
     }
     for (const moons of this.planetMoons.values()) {
-      for (const m of moons) for (const up of m.textureUpgrades) fn(up);
+      for (const m of moons) {
+        fn(m.data.name, m.textureUpgrades, m.mesh, m.data.radiusAU * m.mesh.scale.x, m.mesh.visible);
+      }
     }
+  }
+
+  /** Every colour-tier handle in the scene, planets and moons alike. */
+  private forEachTextureUpgrade(fn: (up: TextureUpgrade) => void): void {
+    this.forEachLadderBody((_name, ups) => { for (const up of ups) fn(up); });
   }
 
   /** Every relief handle in the scene: Earth's cloud deck and the Moon. */
@@ -3262,14 +3288,9 @@ export class PlanetariumMode {
     const candidates: ReleaseCandidate[] = [];
     const victims = new Map<string, TextureUpgrade>();
 
-    const visit = (
-      name: string,
-      ups: readonly TextureUpgrade[],
-      mesh: THREE.Object3D,
-      radiusAU: number,
-      visible: boolean,
-    ): void => {
+    this.forEachLadderBody((name, ups, mesh, radiusAU, drawn) => {
       if (ups.length === 0) return;
+      const visible = drawing && drawn;
       mesh.getWorldPosition(this.bodyLODTmp);
       const distance = this.bodyLODTmp.length();
       // The cheap conservative overestimate, never the 32-ray footprint: an
@@ -3311,22 +3332,7 @@ export class PlanetariumMode {
         });
         victims.set(id, up);
       }
-    };
-
-    for (const planet of this.solarSystem.planets) {
-      visit(planet.data.name, planet.textureUpgrades, planet.group, planet.data.radiusAU, drawing && planet.mesh.visible);
-    }
-    for (const moons of this.planetMoons.values()) {
-      for (const m of moons) {
-        // A hidden moon sits at its parent's centre (updateMoonPositions
-        // skips it), so its position stands for the system it is in — which
-        // is the right distance for a body nobody is looking at.
-        visit(
-          m.data.name, m.textureUpgrades, m.mesh, m.data.radiusAU * m.mesh.scale.x,
-          drawing && m.mesh.visible,
-        );
-      }
-    }
+    });
 
     const plan = planLadderPressure({
       ladderBytes,
@@ -3398,18 +3404,12 @@ export class PlanetariumMode {
    */
   private queueReleasedTierRefetch(): void {
     const entries: Array<{ up: TextureUpgrade; tex: THREE.Texture | null; distance: number }> = [];
-    const visit = (ups: readonly TextureUpgrade[], mesh: THREE.Object3D): void => {
+    this.forEachLadderBody((_name, ups, mesh) => {
       if (ups.length === 0) return;
       mesh.getWorldPosition(this.bodyLODTmp);
       const distance = this.bodyLODTmp.length();
       for (const up of ups) entries.push({ up, tex: materialColorMap(up.material), distance });
-    };
-    if (this.solarSystem) {
-      for (const planet of this.solarSystem.planets) visit(planet.textureUpgrades, planet.group);
-      for (const moons of this.planetMoons.values()) {
-        for (const m of moons) visit(m.textureUpgrades, m.mesh);
-      }
-    }
+    });
     this.restoreRefetch.length = 0;
     this.restoreRefetch.push(...buildRestoreQueue(entries));
   }
@@ -3521,8 +3521,7 @@ export class PlanetariumMode {
       });
     };
     walk(this.solarSystem.sun);
-    for (const planet of this.solarSystem.planets) walk(planet.group);
-    for (const moons of this.planetMoons.values()) for (const m of moons) walk(m.mesh);
+    this.forEachLadderBody((_name, _ups, mesh) => walk(mesh));
     return bytes;
   }
 

@@ -24,19 +24,20 @@
  *    the deflection's change is rate-limited, to
  *    min(AIM_RATE_CAP_RAD_PER_S·dt, AIM_STEP_MAX_RAD).
  *
- * The arrival look is ENGAGE-GATED (moonArrivalTrackEngage): its weight is
+ * The arrival look is ENGAGE-GATED (arrivalTrackEngage): its weight is
  * EXACTLY zero at the teleport standoff, so a fresh arrival's first input
- * finds zero deflection and pays nothing — the retired always-on postcard
- * put ~20° between the arrival and settled poses, and every first input
- * paid it as a visible adjust. The tracking shot fades in only as a
- * hands-off flythrough closes inside the engage band, holds the moon
- * through closest approach, and fades back out on the receding leg.
+ * finds zero deflection and pays nothing — an always-on look puts ~20°
+ * between the arrival and settled poses, and every first input pays it as
+ * a visible adjust. The tracking shot fades in only as a hands-off flyby
+ * closes inside the engage band, holds the target through closest
+ * approach, and fades back out on the receding leg.
  *
- * The look's target is fed ANALYTICALLY (parent world position +
- * ephemeris offset, heliocentric) rather than from the mesh transform:
- * updateMoonPositions skips invisible unpainted moons, and a cold jump's
- * mesh is invisible by design for the whole veiled paint window — the look
- * must hold full weight there so veil-lift opens already aimed. The frame
+ * The look's target is fed ANALYTICALLY (a moon: parent world position +
+ * ephemeris offset; a planet: its live ephemeris position), heliocentric,
+ * never from the mesh transform: updateMoonPositions skips invisible
+ * unpainted moons, and a cold jump's mesh is invisible by design for the
+ * whole veiled paint window — the look must hold full weight there so
+ * veil-lift opens already aimed. The frame
  * conversion (heliocentric world → scene) happens in exactly one place,
  * inside the step. A look whose target genuinely cannot be resolved latches
  * release and fades out from the last known world position; a clock jump or
@@ -53,9 +54,9 @@
  */
 import * as THREE from 'three';
 import {
-  moonArrivalCameraLookWeight,
-  moonArrivalReleaseFade,
-  moonArrivalTrackEngage,
+  arrivalCameraLookWeight,
+  arrivalLookReleaseFade,
+  arrivalTrackEngage,
 } from './arrivalLogic';
 import { FLIGHT_UP_SCENE } from './flightFrame';
 
@@ -85,10 +86,14 @@ export const LOOK_WARP_RELEASE_RAD = (8 * Math.PI) / 180;
  *  pin at 1 chasing a moon the flyby never "reached". */
 export const LOOK_RECEDE_BACKSTOP_RATIO = 2;
 
-/** Moon-arrival look bookkeeping (the former PlanetariumMode
- *  `moonArrivalCameraLook`, moved here whole). */
+/** Arrival-look bookkeeping for the engage-gated tracking shot. */
 export interface ArrivalLookState {
+  /** Which catalog the target lives in: a moon resolves through its parent
+   *  + the ephemeris seam, a planet straight from the planet positions. The
+   *  moon-only consumers (dots, label incumbency) key off this. */
+  kind: 'planet' | 'moon';
   name: string;
+  /** Parent planet name for moon targets; '' for planets. */
   parentPlanet: string;
   arrivalDistanceAU: number;
   previousDistanceAU: number;
@@ -131,19 +136,19 @@ export function createCruiseAimState(): CruiseAimState {
   };
 }
 
-/** A moon teleport begins tracking (engage-gated: weight is zero until the
- *  flythrough closes inside the engage band). Does NOT restore a cut aim —
+/** A flyby teleport begins tracking (engage-gated: weight is zero until the
+ *  flyby closes inside the engage band). Does NOT restore a cut aim —
  *  the jump funnel cuts deliberately and the first step must adopt the
  *  desired aim exactly, not sweep toward it. */
 export function startArrivalLook(
   state: CruiseAimState,
-  name: string,
-  parentPlanet: string,
+  body: { kind: 'planet' | 'moon'; name: string; parentPlanet?: string },
   arrivalDistanceAU: number,
 ): void {
   state.look = {
-    name,
-    parentPlanet,
+    kind: body.kind,
+    name: body.name,
+    parentPlanet: body.parentPlanet ?? '',
     arrivalDistanceAU,
     previousDistanceAU: arrivalDistanceAU,
     approached: false,
@@ -292,16 +297,16 @@ export function stepCruiseAim(
       // zero-weight look waiting for the hands-off pass to develop, and
       // must NOT be dropped as "handoff complete".
       const disengage =
-        moonArrivalCameraLookWeight(
+        arrivalCameraLookWeight(
           camToMoonLen,
           look.arrivalDistanceAU,
           look.receding,
-        ) * moonArrivalReleaseFade(look.releaseElapsedS ?? 0);
+        ) * arrivalLookReleaseFade(look.releaseElapsedS ?? 0);
       if (disengage <= 0) {
         state.look = null; // handoff complete; residual eases out below
       } else {
         const weight =
-          disengage * moonArrivalTrackEngage(camToMoonLen, look.arrivalDistanceAU);
+          disengage * arrivalTrackEngage(camToMoonLen, look.arrivalDistanceAU);
         if (weight > 0) {
           // The shipped composition, expressed as a direction: the aim
           // point interpolates moon→origin, viewed from the camera.

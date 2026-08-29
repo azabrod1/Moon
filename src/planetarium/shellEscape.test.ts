@@ -25,7 +25,7 @@ import {
   grazeDeflectAim,
   initialBodyCapState,
   movingBodySpeedCap,
-  MOON_APPROACH_K_PER_S,
+  BODY_APPROACH_K_PER_S,
   BODY_APPROACH_V_MIN_AU_S,
   sweepSegmentSphere,
   type BodyCapState,
@@ -81,7 +81,7 @@ function timeToEscape(
       dist - EARTH_ENVELOPE, EARTH_ENVELOPE, cos,
       planetVelAUPerS.dot(fwd),
       planetVelAUPerS.dot(to) / dist,
-      MOON_APPROACH_K_PER_S, BODY_APPROACH_V_MIN_AU_S,
+      BODY_APPROACH_K_PER_S, BODY_APPROACH_V_MIN_AU_S,
     );
     bodyCap = advanceBodyCap(bodyCap, geomCap, COMMANDED, false, dt);
 

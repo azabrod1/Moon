@@ -23,10 +23,13 @@
  * last push a slow glide, and pulling back restores full sharpness. Scaling
  * deeper again waits on a level below 32K, or on detail synthesis.
  *
- * The chase distance is also the unit the moon-arrival split is measured in
- * (MOON_FLYTHROUGH_MIN_IMPACT_CAM_DISTS), so halving it moved that line: 26
- * more of the moonlet swarm now get the flyby rather than a planet-style
- * park.
+ * The chase distance is also the arrival's camera correction: the standoff
+ * is measured from back here, so halving the trail drops the ship one boom
+ * length farther out. It is the arrival's floor as well as its correction —
+ * no authored pass may miss by less than one boom, or the body would fly
+ * between the camera and the ship rather than past the bow
+ * (arrivalLogic.arrivalPose). Every body flies that same pass; there is no
+ * park class.
  */
 import { KM_PER_AU } from '../astronomy/constants';
 import { DEG2RAD } from '../shared/math/angles';
@@ -43,10 +46,11 @@ export const SHIP_CLEARANCE_AU = SHIP_REFERENCE_RADIUS_AU * 1.5;
 
 /** Chase-camera trail distance behind the ship (also the moon-arrival
  *  standoff's camera correction — the apparent size the user sees is
- *  measured from back here, not from the ship). Kept as the legacy literal
- *  × scale, NOT a "clean" multiple of the reference radius: it is 8.094
- *  reference radii, and rounding would visibly change the ship's on-screen
- *  size, which this refactor must not. */
+ *  measured from back here, not from the ship — and the floor under every
+ *  authored flyby miss, so no pass crosses inside the camera's trail).
+ *  Kept as the legacy literal × scale, NOT a "clean" multiple of the
+ *  reference radius: it is 8.094 reference radii, and rounding would
+ *  visibly change the ship's on-screen size. */
 export const CRUISE_CAM_DIST_AU = 0.000094 * SHIP_RIG_SCALE;
 
 /** Conservative disc radius for ship occlusion (label culling). Default hull

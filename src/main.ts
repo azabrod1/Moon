@@ -628,6 +628,8 @@ function installDevHooks() {
     },
     probe: (name: string) => planetariumMode?.devProbe(name) ?? null,
     travelTo: (name: string) => planetariumMode?.devTravelTo(name) ?? false,
+    arrivalPose: () => planetariumMode?.devArrivalPose() ?? null,
+    governorOwner: () => planetariumMode?.devGovernorOwner() ?? null,
     land: (name: string) => planetariumMode?.devLand(name) ?? false,
     observe: (name: string) => planetariumMode?.devObserve(name) ?? false,
     device: () => planetariumMode?.devDeviceProfile() ?? null,

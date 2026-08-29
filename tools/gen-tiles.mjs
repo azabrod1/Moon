@@ -39,6 +39,11 @@
 // <root>/sets.v1.json and src/planetarium/world/sectorSets.generated.ts from
 // the folders on disk, which is where the app reads the hashes it puts in URLs.
 //
+// Every gate here throws, and that is the whole failure discipline: the index
+// step at the bottom is what puts a set's name in front of the app, so a gate
+// that reported a failure and returned would publish the name of a set that
+// failed it. See the Gates section.
+//
 // Prereq (not a package.json dependency — this runs once per asset drop):
 //   npm i --no-save sharp@0.35.4
 // Usage:
@@ -57,6 +62,7 @@
 import sharp from 'sharp';
 import { mkdir, writeFile, access, stat, readFile, readdir, rename, rm, open } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { fileDigest, setHash8, tileNames } from './tileSetHash.mjs';
 
 sharp.cache(false);
@@ -94,7 +100,7 @@ const GRID_16K = { cols: 8, rows: 4 };
 // Surface px per sector inside the gutter, for a colour level of any grid: the
 // tile size is fixed at 2048², so the equirect a level is cut from is
 // cols × CONTENT wide.
-const CONTENT = 2032;
+export const CONTENT = 2032;
 const PHOTO_WEBP = { quality: 85, effort: 5 };
 const DATA_WEBP = { lossless: true, effort: 5 };
 
@@ -809,6 +815,21 @@ async function indexSets() {
 
 // ---------------------------------------------------------------------------
 // Gates
+//
+// One failure discipline for all of them, geometry and no-data alike: a gate
+// that does not pass throws, and the run stops there.
+//
+// It has to. A set is renamed into the folder its own hash names as soon as it
+// is cut (finalizeSet), and the last thing every run does — whatever ran, and
+// whether or not anything was cut — is write the folders on disk into
+// sets.v1.json and into the table the app reads its URLs out of. A gate that
+// merely flagged a failure and let the run continue would reach that index
+// step, so the app would name, and a CDN would cache forever, a set whose own
+// check said its tiles are in the wrong places. A content address is a promise
+// about bytes; it cannot be handed out over bytes nothing vouches for.
+//
+// The cost is that a failing run reports the first bad gate rather than all of
+// them. Re-run with --verify after a fix: it re-checks without re-encoding.
 // ---------------------------------------------------------------------------
 
 /** Per-channel mean delta and RMS between two equal-size RGB rasters, in
@@ -866,7 +887,9 @@ async function verify(key, tier, grid, content, refPath) {
     .removeAlpha().resize(W, H, { fit: 'fill', kernel: 'lanczos3' }).raw().toBuffer();
   const d = rasterDiff(mosaic, ref, W * H);
   console.log(`  verify ${key}/${tier}: mean delta [${d.mean.map((m) => m.toFixed(2))}] RMS ${d.rms.toFixed(2)} -> ${d.ok ? 'PASS' : 'FAIL'}`);
-  if (!d.ok) process.exitCode = 1;
+  if (!d.ok) {
+    throw new Error(`${key}/${tier}: the tiles reassemble to mean [${d.mean.map((m) => m.toFixed(2))}] RMS ${d.rms.toFixed(2)} against ${path.relative(process.cwd(), refPath)} (limits 2 and 6) — a tile is in the wrong slot or the wrong orientation`);
+  }
 }
 
 /**
@@ -924,7 +947,9 @@ async function seamGate(key, tier, grid, content) {
   const limit = 3;
   const ok = worstV <= limit && worstH <= limit;
   console.log(`  seams ${key}/${tier}: worst mean |Δ| vertical ${worstV.toFixed(2)} horizontal ${worstH.toFixed(2)} (${worstAt}) -> ${ok ? 'PASS' : 'FAIL'}`);
-  if (!ok) process.exitCode = 1;
+  if (!ok) {
+    throw new Error(`${key}/${tier}: worst gutter mean |Δ| vertical ${worstV.toFixed(2)} horizontal ${worstH.toFixed(2)} at ${worstAt}, over the limit of ${limit} — a gutter does not hold the neighbouring pixels it claims to`);
+  }
 }
 
 /**
@@ -970,7 +995,9 @@ async function childGroupGate(key, parentTier, parentGrid, parentContent, childT
     }
   }
   console.log(`  child groups ${key}/${childTier} vs ${parentTier}: ${parentGrid.cols * parentGrid.rows - failed}/${parentGrid.cols * parentGrid.rows} pass; worst ${worst.c}_${worst.r} mean [${worst.d.mean.map((m) => m.toFixed(2))}] RMS ${worst.d.rms.toFixed(2)} max |Δ| ${worst.d.worst} -> ${failed ? 'FAIL' : 'PASS'}`);
-  if (failed) process.exitCode = 1;
+  if (failed) {
+    throw new Error(`${key}/${childTier} vs ${parentTier}: ${failed} of ${parentGrid.cols * parentGrid.rows} child groups do not resample onto the parent tile they sit on — the two levels are not the same world`);
+  }
 }
 
 /** Fetch one WMS GetMap tile into the cache (skipped when cached). */
@@ -1203,7 +1230,7 @@ const cache = (...p) => path.join(CACHE, ...p);
  *  (north to south) of 21600² tiles — the whole equirect is 86400x43200. */
 const NASA_500M_TILES = (name) => ['A1', 'B1', 'C1', 'D1', 'A2', 'B2', 'C2', 'D2'].map((t) => cache(name(t)));
 
-const JOBS = {
+export const JOBS = {
   // Blue Marble Next Generation, August 2004, plain (flat ocean) — the NASA
   // product NASA Eyes ships. Level 0 from the 21600x10800 whole-world JPEG,
   // level 1 from the eight 500 m tiles (86400x43200), both
@@ -1311,7 +1338,7 @@ const JOBS = {
  *  memory — the downsamples and the derived gloss mask are made from the same
  *  buffer — and a finer level's is written to the source cache as a raw file
  *  first, because it is gigabytes. */
-async function levelRowSource(job, level) {
+export async function levelRowSource(job, level) {
   const { width, height } = gridSize(level.grid, CONTENT);
   const src = level.source;
   // A mask keys SOURCE values, and these two branches only ever see a source
@@ -1365,87 +1392,98 @@ async function levelRowSource(job, level) {
 const wantedLevel = opt('level', null);
 const levelsOf = (job) => (job.levels ?? []).filter((_, i) => wantedLevel === null || Number(wantedLevel) === i);
 
-const names = flag('all') ? Object.keys(JOBS) : jobsWanted;
-if (names.length === 0 && !flag('index')) {
-  console.error('usage: node tools/gen-tiles.mjs <job...> | --all | --index  [--verify | --crops] [--level=n] [--cache=dir] [--root=dir]');
-  process.exit(2);
-}
-for (const name of names) {
-  const job = JOBS[name];
-  if (!job) { console.error(`unknown job ${name}`); process.exit(2); }
-  const t0 = Date.now();
-  console.log(`== ${name}`);
-  if (flag('verify')) {
-    // Check only: a flat job has no tile set to verify, and must not be
-    // re-encoded by a verification run.
-    if (!job.flat) {
-      for (const level of levelsOf(job)) {
-        await verify(job.key, level.tier, level.grid, CONTENT, job.ref);
-        await seamGate(job.key, level.tier, level.grid, CONTENT);
-        if (job.mask) await polarTileGate(job.key, level.tier, level.grid, CONTENT);
-      }
-      // A level against the one it sits on: both have to be on disk, so a
-      // run pinned to one level checks only that level's own gates.
-      for (let i = 1; wantedLevel === null && i < (job.levels ?? []).length; i++) {
-        await childGroupGate(job.key, job.levels[i - 1].tier, job.levels[i - 1].grid, CONTENT, job.levels[i].tier, CONTENT);
-      }
-    }
-  } else if (flag('crops')) {
-    // Data crops only: a relief / roughness map changed under an unchanged
-    // colour set (the tiles and downsamples are left alone). A derived map
-    // needs the graded source again, but not its tiles.
-    for (const d of job.dataCrops ?? []) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1);
-    if (job.derive && job.grade && job.levels?.[0]) {
-      const { rows, water } = await levelRowSource(job, job.levels[0]);
-      await job.derive(water, rows.width, rows.height);
-      await rows.close();
-    }
-  } else if (job.flat) {
-    await writeWebp(sharp(job.flat.src(), { limitInputPixels: false }).removeAlpha()
-      .resize(4096, 2048, { fit: 'fill', kernel: 'lanczos3' }), job.flat.out);
-  } else {
-    for (const [index, level] of (job.levels ?? []).entries()) {
-      if (wantedLevel !== null && Number(wantedLevel) !== index) continue;
-      console.log(`-- level ${index} (${level.tier}, ${level.grid.cols}x${level.grid.rows})`);
-      const { rows, water } = await levelRowSource(job, level);
-      try {
-        // The boot map and the ladder rungs come from level 0: they are the
-        // same product one resample coarser, which is what makes every step
-        // up the ladder a pure sharpen.
-        if (index === 0) {
-          // One read of the level: the mask makes a fresh masked copy per
-          // call, and this one is a third of a gigabyte.
-          const whole = await rows.whole();
-          if (job.mask) noDataGateRaw(whole, rows.width, rows.height, `${job.key} level 0`);
-          await writeDownsamples(whole, rows.width, rows.height, job.downsamples ?? []);
-          if (job.mask) for (const d of job.downsamples ?? []) await polarBandGate(d.out);
+/** Everything a run does, once its arguments are known. Wrapped in a function
+ *  — rather than left at module scope — so another tool can import this
+ *  module for its job table and its resample chain without a bare `import`
+ *  cutting tiles or exiting the process. */
+async function main() {
+  const names = flag('all') ? Object.keys(JOBS) : jobsWanted;
+  if (names.length === 0 && !flag('index')) {
+    console.error('usage: node tools/gen-tiles.mjs <job...> | --all | --index  [--verify | --crops] [--level=n] [--cache=dir] [--root=dir]');
+    process.exit(2);
+  }
+  for (const name of names) {
+    const job = JOBS[name];
+    if (!job) { console.error(`unknown job ${name}`); process.exit(2); }
+    const t0 = Date.now();
+    console.log(`== ${name}`);
+    if (flag('verify')) {
+      // Check only: a flat job has no tile set to verify, and must not be
+      // re-encoded by a verification run.
+      if (!job.flat) {
+        for (const level of levelsOf(job)) {
+          await verify(job.key, level.tier, level.grid, CONTENT, job.ref);
+          await seamGate(job.key, level.tier, level.grid, CONTENT);
+          if (job.mask) await polarTileGate(job.key, level.tier, level.grid, CONTENT);
         }
-        await cutGrid(rows, level.grid, CONTENT, job.key, level.tier, job.webp ?? PHOTO_WEBP);
-        // Every level, not only the one the whole-map gate can read: the mask
-        // runs for all of them, and a run pinned to a finer level with
-        // --level=n has nothing else standing between it and an unmasked cap.
-        if (job.mask) await polarTileGate(job.key, level.tier, level.grid, CONTENT);
-        await verify(job.key, level.tier, level.grid, CONTENT, job.ref);
-        await seamGate(job.key, level.tier, level.grid, CONTENT);
-        if (index > 0) {
-          await childGroupGate(job.key, job.levels[index - 1].tier, job.levels[index - 1].grid, CONTENT, level.tier, CONTENT);
+        // A level against the one it sits on: both have to be on disk, so a
+        // run pinned to one level checks only that level's own gates.
+        for (let i = 1; wantedLevel === null && i < (job.levels ?? []).length; i++) {
+          await childGroupGate(job.key, job.levels[i - 1].tier, job.levels[i - 1].grid, CONTENT, job.levels[i].tier, CONTENT);
         }
-        if (index === 0 && job.derive) await job.derive(water, rows.width, rows.height);
-      } finally {
+      }
+    } else if (flag('crops')) {
+      // Data crops only: a relief / roughness map changed under an unchanged
+      // colour set (the tiles and downsamples are left alone). A derived map
+      // needs the graded source again, but not its tiles.
+      for (const d of job.dataCrops ?? []) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1);
+      if (job.derive && job.grade && job.levels?.[0]) {
+        const { rows, water } = await levelRowSource(job, job.levels[0]);
+        await job.derive(water, rows.width, rows.height);
         await rows.close();
       }
+    } else if (job.flat) {
+      await writeWebp(sharp(job.flat.src(), { limitInputPixels: false }).removeAlpha()
+        .resize(4096, 2048, { fit: 'fill', kernel: 'lanczos3' }), job.flat.out);
+    } else {
+      for (const [index, level] of (job.levels ?? []).entries()) {
+        if (wantedLevel !== null && Number(wantedLevel) !== index) continue;
+        console.log(`-- level ${index} (${level.tier}, ${level.grid.cols}x${level.grid.rows})`);
+        const { rows, water } = await levelRowSource(job, level);
+        try {
+          // The boot map and the ladder rungs come from level 0: they are the
+          // same product one resample coarser, which is what makes every step
+          // up the ladder a pure sharpen.
+          if (index === 0) {
+            // One read of the level: the mask makes a fresh masked copy per
+            // call, and this one is a third of a gigabyte.
+            const whole = await rows.whole();
+            if (job.mask) noDataGateRaw(whole, rows.width, rows.height, `${job.key} level 0`);
+            await writeDownsamples(whole, rows.width, rows.height, job.downsamples ?? []);
+            if (job.mask) for (const d of job.downsamples ?? []) await polarBandGate(d.out);
+          }
+          await cutGrid(rows, level.grid, CONTENT, job.key, level.tier, job.webp ?? PHOTO_WEBP);
+          // Every level, not only the one the whole-map gate can read: the mask
+          // runs for all of them, and a run pinned to a finer level with
+          // --level=n has nothing else standing between it and an unmasked cap.
+          if (job.mask) await polarTileGate(job.key, level.tier, level.grid, CONTENT);
+          await verify(job.key, level.tier, level.grid, CONTENT, job.ref);
+          await seamGate(job.key, level.tier, level.grid, CONTENT);
+          if (index > 0) {
+            await childGroupGate(job.key, job.levels[index - 1].tier, job.levels[index - 1].grid, CONTENT, level.tier, CONTENT);
+          }
+          if (index === 0 && job.derive) await job.derive(water, rows.width, rows.height);
+        } finally {
+          await rows.close();
+        }
+      }
+      // Crops belong to level 0 (mesh uvs are global, so every level samples
+      // the level-0 ancestor's crop), so a run for a finer level alone leaves
+      // them where they are.
+      if (wantedLevel === null || Number(wantedLevel) === 0) {
+        for (const d of job.dataCrops ?? []) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1);
+      }
     }
-    // Crops belong to level 0 (mesh uvs are global, so every level samples
-    // the level-0 ancestor's crop), so a run for a finer level alone leaves
-    // them where they are.
-    if (wantedLevel === null || Number(wantedLevel) === 0) {
-      for (const d of job.dataCrops ?? []) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1);
-    }
+    console.log(`  ${((Date.now() - t0) / 1000).toFixed(0)} s`);
   }
-  console.log(`  ${((Date.now() - t0) / 1000).toFixed(0)} s`);
+  // Always last, whatever ran: the app reads its set hashes out of the
+  // generated table, so a cut that did not refresh it would leave every URL
+  // pointing at the set it replaced.
+  console.log('== index');
+  await indexSets();
 }
-// Always last, whatever ran: the app reads its set hashes out of the
-// generated table, so a cut that did not refresh it would leave every URL
-// pointing at the set it replaced.
-console.log('== index');
-await indexSets();
+
+// Run only when this file IS the command; an importer calls nothing.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await main();
+}

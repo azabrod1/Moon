@@ -35,7 +35,7 @@ import {
   type PlanetData,
   LIGHT_SPEED_AU_PER_S,
 } from './planets/planetData';
-import { appliedTierHeldBytes, applySunGlowTier, armArrivalWarmGoal, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, firstUpgradeTier, ladderMapReferenceWidth, lodMeasurementRelevant, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, retainedSourceBytes, resolveUpgradeTier, setWarmEligibleMoonParents, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade, type TierAdmission } from './PlanetFactory';
+import { appliedTierHeldBytes, applySunGlowTier, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, lodMeasurementRelevant, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, retainedSourceBytes, resolveTierFile, resolveUpgradeTier, setWarmEligibleMoonParents, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade, type TierAdmission } from './PlanetFactory';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
@@ -515,6 +515,10 @@ interface LadderRungReadout {
   tier: string | null;
   top: string | null;
   bytes: number;
+  /** The map on the material is a GPU-compressed upload. What separates a
+   *  43 MiB 8K rung from a 171 MiB one, and the only place a session says
+   *  out loud that its transcoder is working. */
+  compressed: boolean;
   retained: number;
   sourceWidth: number;
   releasing: string | null;
@@ -565,7 +569,7 @@ function ktx2TranscodesCompressed(renderer: THREE.WebGLRenderer): boolean {
 function topMapWidthOf(
   ups: readonly TextureUpgrade[],
   material: THREE.Material,
-): (() => number | undefined) | undefined {
+): (() => number) | undefined {
   const up = ups.find((u) => u.material === material);
   if (!up) return undefined;
   return () => ladderMapReferenceWidth(up);
@@ -2676,16 +2680,18 @@ export class PlanetariumMode {
         // can start the same transfer twice — bounded, and the second ride
         // comes off the cache it is filling.
         if (!canAttempt(up, performance.now())) continue;
-        const first = firstUpgradeTier(up);
+        const first = arrivalUpgradeTier(up);
         if (!first) continue;
         if (cacheOnly) {
           const tier = resolveUpgradeTier(up, first);
           // The body must be read to completion: an unread Response is
           // dropped, and the browser may cancel the transfer with it — the
           // bytes only reliably reach the HTTP/service-worker cache once the
-          // stream has been drained.
+          // stream has been drained. Through resolveTierFile, so the bytes
+          // pulled in are the ones the ladder will later ask for: a tier that
+          // ships as a compressed container has no classic file to warm.
           if (tier) {
-            fetch(resolveTextureUrl(PLANET_TEXTURE_FILES[up.key], tier))
+            fetch(resolveTextureUrl(resolveTierFile(up.key, tier), tier))
               .then((r) => r.arrayBuffer())
               .catch(() => {});
           }
@@ -3020,6 +3026,29 @@ export class PlanetariumMode {
     const others = this.liveGlobalMapBytes() - appliedTierHeldBytes(up);
     return others + bytes <= ceiling ? 'admit' : 'blocked';
   };
+
+  /**
+   * The world-presentation memory passes, in the one order that is correct,
+   * for every frame path that has them (cruise and landed).
+   *
+   * Giving a map back is not world presentation, so the pressure planner runs
+   * whether or not the chart owns the frame: the ladder holds its maps behind
+   * the chart too, and a planner gated on the spheres being drawn would let
+   * the chart squeeze the tiles with nothing able to hand a map back.
+   * Measuring IS world presentation — nothing draws the spheres under the
+   * chart, so a schematic-view zoom must not fetch for a surface nobody sees
+   * — and what the streamer is owed regardless (its byte budget, its load
+   * deadlines) is what `maintain` covers on those frames.
+   */
+  private updateMemoryPasses(mapOpen: boolean): void {
+    this.updateLadderPressure(performance.now());
+    if (!mapOpen) {
+      this.updateBodyLOD();
+      this.updateSectorStreaming();
+    } else {
+      this.maintainSectorStreaming();
+    }
+  }
 
   /**
    * Give a rung back when the ladder is holding more than its share.
@@ -3489,6 +3518,7 @@ export class PlanetariumMode {
         tier: up.appliedTier,
         top: reachableTopTier(up),
         bytes: appliedTierHeldBytes(up),
+        compressed: (drawn as THREE.CompressedTexture | null | undefined)?.isCompressedTexture === true,
         // What the decoded image behind the map still holds. A rung closes
         // its source once the upload is paid, leaving a thumbnail to
         // re-upload from after a context loss — so this reads 0 and the
@@ -3923,21 +3953,7 @@ export class PlanetariumMode {
     // world composer is bypassed entirely while the chart owns the frame, so
     // per-frame work whose only output is the world render is pure waste.)
     const mapOpen = this.isMapOpen();
-    // Outside the gate on purpose: the ladder holds its maps behind the chart
-    // too, and a planner that ran only where the spheres are drawn would let
-    // the chart squeeze the tiles with nothing able to hand a map back.
-    this.updateLadderPressure(performance.now());
-    if (!mapOpen) {
-      this.updateBodyLOD();
-      // Sector tiles are world render too: nothing to measure or fetch for a
-      // chart that never draws the spheres.
-      this.updateSectorStreaming();
-    } else {
-      // What the streamer is owed regardless: the ladder keeps applying globe
-      // maps behind the chart and the tile fetches keep ageing, so the byte
-      // budget and the load deadlines stay current while the measuring stops.
-      this.maintainSectorStreaming();
-    }
+    this.updateMemoryPasses(mapOpen);
     this.reportMemoryDebug(performance.now());
 
     // The HTML label/marker projections below read camera.matrixWorldInverse,
@@ -15463,7 +15479,7 @@ export class PlanetariumMode {
     ups: readonly TextureUpgrade[] = this.landedPairUpgrades(),
   ): Array<{ up: TextureUpgrade; generation: number }> {
     return ups.flatMap((up) =>
-      up.attempt && up.attempt.tier === firstUpgradeTier(up)
+      up.attempt && up.attempt.tier === arrivalUpgradeTier(up)
         ? [{ up, generation: up.attempt.generation }]
         : [],
     );
@@ -15560,7 +15576,7 @@ export class PlanetariumMode {
     // goal — the companion's higher rungs stay demand-driven.
     for (const up of this.landingPairUpgrades(target)) {
       if (targetUps.includes(up)) continue;
-      const first = firstUpgradeTier(up);
+      const first = arrivalUpgradeTier(up);
       if (first) upgradeTextureOnApproach(up, first, nowMs);
     }
     // First rung starts now — under the veil, or with the teleport cut.
@@ -15847,7 +15863,7 @@ export class PlanetariumMode {
     // the first step — the tiers above it ride the on-screen trigger, so no
     // goal can hold a landing behind its cover.
     for (const up of this.landedPairUpgrades()) {
-      const first = firstUpgradeTier(up);
+      const first = arrivalUpgradeTier(up);
       if (first) upgradeTextureOnApproach(up, first);
     }
     // The reticle's screen position belongs to the previous target — drop it
@@ -16530,17 +16546,7 @@ export class PlanetariumMode {
     // should fetch for it.
     // World-presentation passes are gated while the map owns the frame.
     const mapOpen = this.isMapOpen();
-
-    // Same as the cruise path: giving a map back is not world presentation.
-    this.updateLadderPressure(performance.now());
-    if (!mapOpen) {
-      this.updateBodyLOD();
-      this.updateSectorStreaming();
-    } else {
-      // Same as the cruise branch: the streamer's budget and load deadlines
-      // keep moving while the chart owns the frame and nothing is measured.
-      this.maintainSectorStreaming();
-    }
+    this.updateMemoryPasses(mapOpen);
     // Shadow spots/guides live in the world scene, which the map never draws —
     // same gate as the cruise branch, and they rebuild on the first frame back.
     if (!mapOpen) this.updateShadowVisuals();

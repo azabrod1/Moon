@@ -1,10 +1,14 @@
 /**
  * Texture loading policy for the Planetarium, in one place: device capability
- * capture (anisotropy, max size), colour-space by map kind, and the
- * resolution-tier → URL mapping. Centralising it keeps every creation site
- * (planet, moon, ring, procedural fallback) consistent, and lets a new
- * resolution ship as a folder plus a tier entry instead of an edit to each
- * loader.
+ * capture (anisotropy, max size) and the session's device memory profile,
+ * colour-space by map kind, the resolution-tier → URL mapping, the origin
+ * sector tiles are served from (VITE_TILE_ORIGIN, or ?tiles= in DEV) with the
+ * tile URL formula built on it, and the accessors that read a generated set's
+ * hash and layout out of sectorSets.generated.ts. Centralising it keeps every
+ * creation site (planet, moon, ring, procedural fallback) consistent, lets a
+ * new resolution ship as a folder plus a tier entry instead of an edit to each
+ * loader, and keeps one definition of the path a tile is fetched from — a
+ * second one would be a second opinion about what a tile pathname promises.
  */
 import * as THREE from 'three';
 import { SECTOR_SET_TABLE } from './sectorSets.generated';

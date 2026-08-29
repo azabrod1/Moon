@@ -23,13 +23,15 @@
  * suite exists to catch.
  */
 import { describe, it, expect } from 'vitest';
-import { createHash } from 'node:crypto';
 import { closeSync, openSync, readSync, readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { SECTOR_GRID_16K, SECTOR_TILE, dataCropLayout, type SectorGrid } from './sectorGrid';
 import { SECTOR_NIGHT_SETS, SECTOR_SETS, levelSourceWidth, type SectorSetSpec, type SectorSide, type SectorTileSet } from './sectorStreamer';
 import { SECTOR_SET_TABLE, type GeneratedSectorSet } from './sectorSets.generated';
 import { PLANET_TEXTURE_FILES } from '../PlanetFactory';
+// The function that names a set on disk, not a copy of its formula: two
+// implementations would be two opinions about what a folder name promises.
+import { setHash8, tileNames } from '../../../tools/tileSetHash.mjs';
 
 const TEXTURES = resolve(__dirname, '../../../public/textures');
 /** The tiles root this run reads. A finer level is gigabytes and is published
@@ -112,14 +114,18 @@ function appSpecs(): Array<[string, SectorSide, SectorSetSpec]> {
 
 /** Why a set the app names may legitimately have no folder under the tiles
  *  root being read — and nothing else may. A finer colour level is hundreds
- *  of megabytes published from the tile host; a root named by TILES_ROOT is
- *  being checked instead of the app's own. The night family is the host's at
- *  every level: it sharpens a night map the app already ships, so a device
+ *  of megabytes published from the tile host. The night family is the host's
+ *  at every level: it sharpens a night map the app already ships, so a device
  *  that gets none of it draws exactly what it draws today. A DAY level-0 set
  *  or a crop ships inside the app, so its absence is a 404'd quarter of a
- *  globe, not a configuration. */
+ *  globe, not a configuration.
+ *
+ *  The same list whichever root is read. TILES_ROOT names a full tiles root
+ *  of its own — the published level-0 folders beside the levels being staged
+ *  — so it chooses which bytes are checked and excuses nothing: a blanket
+ *  excuse for a named root leaves every set absent-and-allowed, `present`
+ *  empty, and the tests below looping over nothing. */
 export function absenceAllowed(set: Pick<AppSet, 'level' | 'side'>): string | null {
-  if (process.env.TILES_ROOT) return `TILES_ROOT points at ${process.env.TILES_ROOT}, not the app's own tiles`;
   if (set.side === 'night') return 'the night family is published from the tile host at every level';
   if (set.level !== null && set.level > 0) return `level ${set.level} is published from the tile host, not from public/`;
   return null;
@@ -332,8 +338,13 @@ describe('sector tile sets: the files on disk', () => {
       expect(absenceAllowed({ level: null, side: 'day' })).toBeNull();
       expect(absenceAllowed({ level: 1, side: 'day' })).toContain('tile host');
       expect(absenceAllowed({ level: 0, side: 'night' })).toContain('tile host');
+      // And exactly the same rule under a staging root: naming another root
+      // changes which bytes are read, never which of them may be missing.
       process.env.TILES_ROOT = '/somewhere/else';
-      expect(absenceAllowed({ level: 0, side: 'day' })).toContain('/somewhere/else');
+      expect(absenceAllowed({ level: 0, side: 'day' })).toBeNull();
+      expect(absenceAllowed({ level: null, side: 'day' })).toBeNull();
+      expect(absenceAllowed({ level: 1, side: 'day' })).toContain('tile host');
+      expect(absenceAllowed({ level: 0, side: 'night' })).toContain('tile host');
     } finally {
       if (before === undefined) delete process.env.TILES_ROOT;
       else process.env.TILES_ROOT = before;
@@ -343,6 +354,13 @@ describe('sector tile sets: the files on disk', () => {
   it('every named set is a full grid of tiles at its declared size', () => {
     const { present, skipped } = setsOnDiskForApp();
     for (const line of skipped) console.log(`  skipped (not under ${TILES_ROOT}) ${line}`);
+    // A loop over a list that came back empty is a green test that checked
+    // nothing, and the sets that ship inside the app are exactly the ones no
+    // absence may excuse — so the run has to have read some.
+    expect(
+      present.length,
+      `no set under ${TILES_ROOT} to read (${skipped.join('; ') || 'nothing skipped'})`,
+    ).toBeGreaterThan(0);
     for (const { body, slot, set, entry } of present) {
       const dir = setDir(set);
       const files = readdirSync(dir).filter((f) => f.endsWith('.webp')).sort();
@@ -367,6 +385,13 @@ describe('sector tile sets: the files on disk', () => {
     // folder the app is asking for. A root publishes the sets that are IN it,
     // so the file is the table restricted to this root: every entry identical,
     // naming every folder the root holds and no folder it does not.
+    // Named rather than read blind: without this the missing file is an
+    // unguarded ENOENT out of readFileSync, which reads as a broken test
+    // rather than as a root that was never indexed.
+    expect(
+      existsSync(SETS_JSON),
+      `${SETS_JSON}: every tiles root publishes the table of the sets in it — gen-tiles --index writes it`,
+    ).toBe(true);
     const published: Record<string, GeneratedSectorSet> = JSON.parse(readFileSync(SETS_JSON, 'utf8'));
     for (const [id, entry] of Object.entries(published)) {
       expect(entry, `${id} in sets.v1.json`).toEqual(SECTOR_SET_TABLE[id]);
@@ -399,19 +424,20 @@ describe('sector tile sets: the files on disk', () => {
     }
   });
 
-  it('every set folder is named for the bytes inside it', () => {
-    // gen-tiles' recipe: SHA-256 over the sorted `<name>\0<file sha256>\n`
-    // list of the whole set, first 8 hex. One changed tile moves the folder,
-    // which is what lets a tile URL be cached with no expiry.
-    for (const { body, slot, set } of setsOnDiskForApp().present) {
+  it('every set folder is named for the bytes inside it', async () => {
+    // Hashed by gen-tiles' own function, over the file list gen-tiles' own
+    // function picks: one changed tile moves the folder, which is what lets a
+    // tile URL be cached with no expiry, and a copy of that formula here
+    // could agree with the folder name while disagreeing with the tool.
+    const { present, skipped } = setsOnDiskForApp();
+    expect(
+      present.length,
+      `no set under ${TILES_ROOT} to hash — a loop over an empty list checks nothing (${skipped.join('; ') || 'nothing skipped'})`,
+    ).toBeGreaterThan(0);
+    for (const { body, slot, set } of present) {
       const dir = setDir(set);
-      const files = readdirSync(dir).filter((f) => f.endsWith('.webp')).sort();
-      const hash = createHash('sha256');
-      for (const name of files) {
-        const digest = createHash('sha256').update(readFileSync(resolve(dir, name))).digest('hex');
-        hash.update(`${name}\0${digest}\n`);
-      }
-      expect(hash.digest('hex').slice(0, 8), `${body} ${slot} ${set.key}/${set.tier}`).toBe(set.hash);
+      const hash = await setHash8(dir, tileNames(readdirSync(dir)));
+      expect(hash, `${body} ${slot} ${set.key}/${set.tier}`).toBe(set.hash);
     }
   });
 });

@@ -25,7 +25,15 @@ jobs:
       - run: npm ci
       - run: npx tsc
       - run: npm test
+      # Sector tile sets ship from their own repo through jsDelivr (see
+      # "Publishing tiles" in CLAUDE.md): only 7 of the 10 sets the app names
+      # are small enough to live in public/, and with no origin set the build
+      # throws for each of the other three rather than deploy a 404. The repo
+      # below is not published yet — until it is, every tile request fails and
+      # each body draws its own base map, the same picture as ?sectors=0.
       - run: npx vite build --base=/Moon/
+        env:
+          VITE_TILE_ORIGIN: https://cdn.jsdelivr.net/gh/azabrod1/moon-tiles@main
       # upload-pages-artifact@v4+ drops dotfiles from the artifact — fine here,
       # dist/ has none (deploy-pages serves the artifact as-is, no Jekyll).
       - uses: actions/upload-pages-artifact@v5

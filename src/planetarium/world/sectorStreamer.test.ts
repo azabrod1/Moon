@@ -1794,7 +1794,36 @@ describe('SectorStreamer', () => {
     run(poseC, 3);
     const stats = s.stats();
     expect(stats.residentBytes + stats.reserved).toBeLessThanOrEqual(stats.budget);
+    recordTrace(events);
     return { events, stats };
+  }
+
+  /** Re-records the traces instead of leaving them to be transcribed by hand:
+   *
+   *    UPDATE_TRACES=1 npx vitest run --dir src --disableConsoleIntercept \
+   *      -t 'golden trace'
+   *
+   *  (the intercept flag is what lets a passing test's output through).
+   *
+   *  Three literals hold one script and nothing keeps them consistent with
+   *  each other, so a legitimate change to what level 0 admits means
+   *  re-recording all three — and a change nobody is willing to re-record by
+   *  hand is a change nobody makes.
+   *
+   *  It prints, and never writes: the narrative markers interleaved in the
+   *  literals below are what makes them readable, and only a person can carry
+   *  those across to a new recording. Unset — every ordinary run, CI included
+   *  — nothing prints and the literals below are the assertion. */
+  function recordTrace(events: string[]): void {
+    if (!process.env.UPDATE_TRACES) return;
+    // Single quotes except where the entry has an apostrophe in it, which is
+    // what the literals below already do.
+    const quote = (e: string) => (e.includes("'") ? JSON.stringify(e) : `'${e}'`);
+    const lines = events.map((e) => `      ${quote(e)},`).join('\n');
+    console.log(
+      `\n// re-recorded: ${expect.getState().currentTestName ?? 'golden trace'}\n` +
+      `    expect(events).toEqual([\n${lines}\n    ]);\n`,
+    );
   }
 
   it('takes the same level-0 decisions in the same order: a golden trace', () => {

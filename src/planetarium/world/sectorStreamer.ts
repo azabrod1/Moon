@@ -145,7 +145,7 @@ import { applyTextureDefaults, resolveTileUrl, sectorSetHash, sectorSetLayout } 
 import { TIER_RANK } from '../PlanetFactory';
 import { debugWarn } from '../../shared/debug';
 import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
-import { sectorBudgetBytes, type SectorMemoryLimits } from './gpuEnvelope';
+import { sectorBudgetBytes, type SectorStreamerLimits } from './gpuEnvelope';
 import { smoothTraceEvent } from '../smoothnessTrace';
 
 /** The material slots a sector may carry a crop of, in a fixed order. */
@@ -513,7 +513,7 @@ export interface SectorBodyHandle {
    *  upload is paid and says nothing about the map. Omitted where there is no
    *  ladder: the boot map is then the finest, is never swapped, and the
    *  family's own drawnColorMapWidth is the truth. */
-  topMapWidth?: () => number | undefined;
+  topMapWidth?: () => number;
   /** Rebuild the globe on its fine grid now (idempotent); sectors must not
    *  show over a coarse globe, whose chords they would float above. */
   ensureFineGeometry: () => void;
@@ -610,7 +610,7 @@ interface SectorBody {
 
 export interface SectorStreamerOptions {
   /** This device's memory numbers (world/gpuEnvelope). */
-  limits: SectorMemoryLimits;
+  limits: SectorStreamerLimits;
   load?: TextureLoad;
   warm?: (tex: THREE.Texture, onOutcome: (o: WarmOutcome) => void) => void;
 }
@@ -799,9 +799,10 @@ function cropsReady(mat: THREE.Material, spec: SectorSetSpec): boolean {
  *  night shell's uniform for Earth's night one), whose boot map is its finest
  *  and is never swapped under it. */
 function baseTexelLength(body: SectorBody): number {
-  const reference = body.handle.topMapWidth?.();
-  let width = reference && reference > 0 ? reference : 0;
-  if (!width && !body.handle.topMapWidth) width = Math.max(0, body.family.drawnColorMapWidth());
+  // One source or the other, never a fall-through between them: a ladder that
+  // answered 0 would otherwise be silently re-measured against the drawn
+  // stand-in, which is the very reading the ladder's answer exists to replace.
+  const width = Math.max(0, body.handle.topMapWidth?.() ?? body.family.drawnColorMapWidth());
   return (2 * Math.PI * body.handle.radiusAU) / (width || SECTOR_FALLBACK_MAP_WIDTH);
 }
 

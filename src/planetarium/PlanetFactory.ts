@@ -1,9 +1,26 @@
 /**
- * Async mesh construction for all Planetarium bodies: planet spheres with
- * per-body texture + atmosphere glow, Earth-specific night-lights/clouds,
- * Saturn rings, major moons, and the Planetarium's Sun (bigger, animated
- * corona, optional bloom). Falls back to procedurally generated canvas
- * textures on load failure so the app never blocks on a missing file.
+ * Two subsystems in one file, both named here: a header covering only the
+ * first sends a reader hunting for the second in a module that does not exist.
+ *
+ * 1. Async mesh construction for all Planetarium bodies: planet spheres with
+ *    per-body texture + atmosphere glow, Earth-specific night-lights/clouds,
+ *    Saturn rings, major moons, and the Planetarium's Sun (bigger, animated
+ *    corona, optional bloom). Falls back to procedurally generated canvas
+ *    textures on load failure so the app never blocks on a missing file.
+ *
+ * 2. The globe texture ladder those meshes climb, and everything that prices
+ *    it: a TextureUpgrade per material holding the 2K/4K/8K rungs and at most
+ *    one in-flight attempt; the GPU byte ledger that says what a rung costs
+ *    before anything is fetched; the admission gate a device's memory profile
+ *    installs over that ledger (bindTierAdmission — whose default admits
+ *    everything, so an unbound ladder has no ceiling); the release state
+ *    machine that hands a rung back under pressure (banner: "Giving a rung
+ *    back"); the restore queue that re-fetches a rung the pressure took; and
+ *    the arrival warm goals (banner: "Arrival warm goals").
+ *
+ * The sector streamer (world/sectorStreamer.ts) is the other allocator on the
+ * same device envelope. The two meet at exactly two numbers — the ladder's
+ * held bytes and ladderMapReferenceWidth — and nowhere else.
  */
 import * as THREE from 'three';
 import { smoothTraceEvent } from './smoothnessTrace';
@@ -507,12 +524,15 @@ export function upgradeComplete(up: TextureUpgrade): boolean {
 // under-imaged far hemisphere is left as the real low-res data — soft, but
 // honest (synthetic relief/detail was tried and dropped: it read as fake
 // craters at grazing light). Both its tiers bake from one source, so 4K is a
-// pure sharpen. Earth's day map has no 8K step: the only 8K product available
-// is a different one (no bathymetry or sea ice), which the same-product rule
-// forbids — its close-range detail comes from the 16K sector tiles instead,
-// which is why the cloud deck climbs to 8K: with the ground streamed at 16K,
-// a 4K deck is the soft layer on top of it. The 8K deck is the SSS product
-// itself (the 4K is its downsample: RMS 7 against it, equal means).
+// pure sharpen. The cloud deck climbs to 8K because the ground under it is
+// streamed at 16K and a 4K deck is then the soft layer on top; the 8K deck is
+// the SSS product itself (the 4K is its downsample: RMS 7 against it, equal
+// means). Earth's day map has ONE rung and it is 8K: the globe boots on the
+// 4096 map, which is where every other body's first rung arrives, so the only
+// step left is the same graded Blue Marble one resample coarser than its 16K
+// sector tiles. There is no 8K product from a different vendor in it — the
+// same-product rule holds — because it is cut from the source the 4K and the
+// tiles are cut from, through the same ocean grade.
 export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
   mercury: ['4k'],
   venus: ['4k'],
@@ -522,15 +542,14 @@ export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
   pluto: ['4k'],
   moon: ['4k', '8k'],
   earthClouds: ['4k', '8k'],
+  earthDay: ['8k'],
   // Black Marble 2016 at 500 m. The 2K night map the app booted on for years
   // is 20 km per pixel — from the near band that is a smear where a lit
-  // coastline should be — which the 4K rung answers for 42.7 MiB. There is no
-  // 8K rung: uncompressed it holds 170.7 MiB of the 768 MiB sector envelope
-  // on every desktop that has flown past the night side, and the near band it
-  // would serve is the night tile family's to carry. A GPU-compressed rung
-  // costs a quarter of that and can take the step when that pipeline covers
-  // maps other than the Moon's.
-  earthNight: ['4k'],
+  // coastline should be — which the 4K rung answers for 42.7 MiB. The 8K rung
+  // ships GPU-compressed only: uncompressed it would hold 170.7 MiB of the
+  // 768 MiB sector envelope on every desktop that has flown past the night
+  // side, where the compressed container holds 42.7.
+  earthNight: ['4k', '8k'],
 };
 
 // A device profile may cap a key below its ladder's top, over the GL clamp:
@@ -538,18 +557,36 @@ export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
 // total residency rather than of whether one map fits. The caps and their
 // reasoning are the profile's (world/gpuEnvelope).
 
-// The Moon's 8K tier ships GPU-compressed (KTX2/UASTC, mip chain baked by
-// tools/gen-moon-ktx2.mjs): the raw upload of a 33MP RGBA map is the largest
+// Every 8K colour tier ships GPU-compressed (KTX2/UASTC, mip chain baked by
+// tools/gen-ktx2.mjs): the raw upload of a 33MP RGBA map is the largest
 // unsliceable main-thread bill in the app — measured as THE dropped frame
 // right after a Moon teleport — while a compressed upload takes a few
-// milliseconds and stays compressed in VRAM (~45MB instead of ~180MB). The
+// milliseconds and stays compressed in VRAM (~43 MiB instead of ~171). The
 // wire cost is real (UASTC+zstd is a few times the webp), paid only when a
 // session earns the tier and cached by the service worker thereafter. The
-// webp stays on disk as the runtime fallback: the override is consulted only
-// while a KTX2 loader is bound, so tests and a session whose transcoder
-// failed to load fetch the classic map instead.
-const TIER_FILE_OVERRIDES: Record<string, Partial<Record<TextureTier, string>>> = {
-  moon: { '8k': 'moon.ktx2' },
+// override is consulted only while a KTX2 loader is bound, so tests and a
+// session whose transcoder failed to load never ask for a container they
+// cannot read.
+//
+// `webp` says whether a classic map of the same resolution also ships, which
+// is what an unbound loader falls back to. Where it does not, the rung is
+// ABSENT rather than merely expensive: the ladder's top drops to the rung
+// below (or the boot map) instead of fetching a URL that 404s, and the
+// memory arithmetic never charges an uncompressed 8K for a map that does not
+// exist in that form. Only the two maps that predate the compressed pipeline
+// carry a webp twin — new 8K rungs ship as one file, because a second copy of
+// a 33MP map on disk is 4 MB nothing with a working transcoder fetches.
+export interface CompressedRung {
+  /** Filename under the tier's folder — resolveTextureUrl adds the rest. */
+  file: string;
+  /** A classic map of the same resolution ships beside it. */
+  webp: boolean;
+}
+export const TIER_FILE_OVERRIDES: Record<string, Partial<Record<TextureTier, CompressedRung>>> = {
+  moon: { '8k': { file: 'moon.ktx2', webp: true } },
+  earthClouds: { '8k': { file: 'earth-clouds.ktx2', webp: true } },
+  earthDay: { '8k': { file: 'earth-day.v2.ktx2', webp: false } },
+  earthNight: { '8k': { file: 'earth-night.v2.ktx2', webp: false } },
 };
 
 type Ktx2TierLoad = (
@@ -579,8 +616,25 @@ export function bindKtx2TierLoader(fn: Ktx2TierLoad | null, compressedTarget = f
  *  loader is bound, the key's shared classic file otherwise. */
 export function resolveTierFile(key: string, tier: TextureTier): string {
   const override = ktx2TierLoader ? TIER_FILE_OVERRIDES[key]?.[tier] : undefined;
-  return override ?? PLANET_TEXTURE_FILES[key];
+  return override?.file ?? PLANET_TEXTURE_FILES[key];
 }
+
+/** Whether a tier has a file this session can actually fetch. False only for
+ *  a rung that ships as a compressed container alone while no KTX2 loader is
+ *  bound: there is no map of that resolution on disk to fall back to, so the
+ *  rung is not part of this session's ladder at all. */
+export function tierAvailable(key: string, tier: TextureTier): boolean {
+  const rung = TIER_FILE_OVERRIDES[key]?.[tier];
+  return !rung || rung.webp || ktx2TierLoader !== null;
+}
+
+/** Real width of a body's BOOT map where it is wider than the boot tier's
+ *  nominal 2048. Earth's globe ships its 4096 day map as the first-paint one,
+ *  so the tier name says 2K and the surface is drawing 4K. The sector tiles
+ *  measure their magnification against this floor: read as 2048 the day tiles
+ *  would be wanted at half the distance they are sized for, which is a 21 MiB
+ *  upload apiece for texels the globe already has. */
+const BOOT_MAP_WIDTH: Record<string, number> = { earthDay: 4096 };
 
 // Colour-map precedence: procedural floor 0, then one rank per tier. Ranks are
 // what make every apply order-independent — a late boot-map arrival can't
@@ -766,7 +820,7 @@ export function reachableTopTier(up: TextureUpgrade): TextureTier | null {
  */
 export function ladderMapReferenceWidth(up: TextureUpgrade): number {
   const top = reachableTopTier(up);
-  const drawn = TIER_MAP_WIDTH[up.appliedTier ?? BOOT_TIER];
+  const drawn = Math.max(TIER_MAP_WIDTH[up.appliedTier ?? BOOT_TIER], BOOT_MAP_WIDTH[up.key] ?? 0);
   return Math.max(drawn, top ? TIER_MAP_WIDTH[top] : 0);
 }
 
@@ -808,8 +862,12 @@ export function makeTextureUpgrade(
   material: THREE.Material,
 ): TextureUpgrade | undefined {
   if (!key) return undefined;
-  const tiers = TEXTURE_UPGRADE_TIERS[key];
-  if (!tiers) return undefined;
+  // Resolved once, with the ladder's ceiling, because both are facts about
+  // this session: the KTX2 loader is bound before any body is built and
+  // cleared only at dispose, so a rung filtered out here is one this session
+  // has no file for at all.
+  const tiers = TEXTURE_UPGRADE_TIERS[key]?.filter((tier) => tierAvailable(key, tier));
+  if (!tiers || tiers.length === 0) return undefined;
   let top = tiers[tiers.length - 1];
   const cap = deviceTextureProfile().tierCaps[key];
   if (cap && TIER_RANK[cap] < TIER_RANK[top]) top = cap;
@@ -871,9 +929,16 @@ export const UPGRADE_TRIGGER_FRACTION: Partial<Record<TextureTier, number>> = { 
  * a 2x display), so the Moon's 0.22 gate would pull 4.7 MB and 171 MiB of GPU
  * memory for every boot-view Earth. 0.5 is that 2x figure with fetch lead,
  * which is also where the 16K ground sectors start arriving.
+ *
+ * Earth's globe takes the same number for the same arithmetic: its day map
+ * boots 4096 wide on the same sphere the deck wraps, so its texels reach one
+ * device pixel at the same disc size the deck's do. A rung raised above its
+ * tier's own gate is also how a key declares the rung approach work rather
+ * than arrival work — see arrivalUpgradeTier.
  */
 const UPGRADE_TRIGGER_FRACTION_BY_KEY: Record<string, Partial<Record<TextureTier, number>>> = {
   earthClouds: { '8k': 0.5 },
+  earthDay: { '8k': 0.5 },
 };
 
 /** The screen fraction at which `tier` earns its download for `key`. */
@@ -925,9 +990,29 @@ export function canAttempt(up: TextureUpgrade, nowMs: number): boolean {
  * handles this returns true for.
  */
 export function needsUpgradeCover(up: TextureUpgrade): boolean {
-  const first = firstUpgradeTier(up);
+  const first = arrivalUpgradeTier(up);
   if (!first || up.appliedTier !== null) return false;
   return !up.attempt || up.attempt.tier === first;
+}
+
+/**
+ * The step an ARRIVAL pre-fetches and a cover may wait on — the handle's
+ * first, but only while that rung is what an arrival is revealed into.
+ *
+ * A key that holds its first rung back past the tier's own trigger gate has
+ * said the rung is approach work: the body is revealed onto a map still right
+ * for the distance, and the rung earns itself later, from the on-screen
+ * trigger or a committed arrival's warm goal. Earth's globe is the case —
+ * one rung, 8K, gated where the near approach begins — and holding a landing
+ * behind 25 MB of container, or spending those bytes on a boot the session
+ * may never fly to Earth on, buys a map the reveal cannot show.
+ */
+export function arrivalUpgradeTier(up: TextureUpgrade): TextureTier | null {
+  const first = firstUpgradeTier(up);
+  if (!first) return null;
+  const gate = upgradeTriggerFraction(up.key, first);
+  const standard = UPGRADE_TRIGGER_FRACTION[first];
+  return gate !== undefined && standard !== undefined && gate > standard ? null : first;
 }
 
 /**

@@ -114,6 +114,16 @@ interface NightFill {
 // Wider terminators on bodies with air (light wraps); tight on airless worlds.
 // Keyed to surface class, not atmosphere depth, so Venus and Titan (thick haze)
 // sit tighter here than reality; the atmosphere phase models their wrap properly.
+//
+// Where a body has tables this fill is switched off and the sky's own ambient
+// stands in its place, and the swap is level-neutral — measured, not intended.
+// At the new-Moon night pose, with the night-lights shell's own transmittance
+// taken out of both frames, the mean over every lit pixel is 2.61/12.28/23.99
+// of 255 without the tables against 2.69/12.54/23.91 with them: a third of one
+// 8-bit step apart. What DOES take light off the night hemisphere on the tier
+// with tables is that shell — an additive layer seen through ten airmasses of
+// air at the limb runs 3.1 green and 8.7 blue darker across the whole
+// hemisphere, and this fill's own worth is an order of magnitude under that.
 const NIGHT_FILL: Record<SurfaceArchetype, NightFill> = {
   airless: { color: 0x223044, strength: 0.05, termWidth: 0.10 },
   rocky:   { color: 0x243246, strength: 0.06, termWidth: 0.16 },

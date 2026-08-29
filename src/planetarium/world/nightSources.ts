@@ -347,13 +347,27 @@ export const LUNAR_IRRADIANCE_RATIO = 1 / 4.4e5;
 /**
  * The gain that makes the night side a long exposure. AUTHORED: the ISS night
  * frames it is drawn against are seconds at f/1.4 and ISO 6400 where a daylight
- * frame is a thousandth at f/8 and ISO 200 — about 2e5x — and this is a little
- * over half of that, set at the night golden against the photograph. Full
- * moonlight lands at 0.27 of sunlight on this scale, which is under two stops
- * down: the moonlit ocean and the moonlit cloud tops read, and the city lights
- * over them still read brighter, as they do in the photograph.
+ * frame is a thousandth at f/8 and ISO 200 — about 2e5x — and this is most of
+ * that. Full moonlight lands at 0.40 of sunlight on this scale, 1.3 stops down.
+ *
+ * Set by measuring the picture rather than by taste. In the ISS pose the app is
+ * held to — 1.05 R over the night side under a full Moon — the moonlit cloud
+ * tops now read 0.42 of full scale after the tone curve, which is what the same
+ * measurement gives on the reference photograph: the upper quartile of display
+ * luminance over a field of cloud, cities left out. At the earlier 1.2e5 they
+ * read 0.32 and the frame was visibly darker than the photograph. The moonlit
+ * ground showing between the clouds moves 0.10 to 0.15 and stays a third of the
+ * tops, which is the order the two read in from orbit.
+ *
+ * The ceiling is the bloom threshold, not the picture. A night fragment is the
+ * ground's own light plus the air in front of it plus the airglow, and all of
+ * the moon-sourced part of that scales with this number; the binding channel is
+ * red at a low Moon, where the aureole is the longest path the table has. The
+ * composed sum reaches 1.0 at 1.85e5, so this sits at 0.95 of the ceiling, and
+ * the test below re-derives both rather than remembering either. Raising it
+ * further is not a taste question — past that line a night source blooms.
  */
-export const MOONLIGHT_NIGHT_GAIN = 1.2e5;
+export const MOONLIGHT_NIGHT_GAIN = 1.75e5;
 
 /**
  * Lunar light is redder than solar, and this is by how much. B-V is 0.92 for

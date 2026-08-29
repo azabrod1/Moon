@@ -662,6 +662,8 @@ describe('the bloom threshold', () => {
       ...(['airless', 'rocky', 'gas', 'icy', 'earth', 'cloud'] as const)
         .map((archetype) => NIGHT_FILL[archetype].strength),
     );
+    /** The largest exposure gain any fragment in the sweep still admits. */
+    let maxGain = Infinity;
     for (const muS of [1, 0.6, 0.3, 0.1, 0.05, 0]) {
       // The moonlit sky's irradiance on the ground, from the module's own
       // reference rather than from the bound: at the horizon it is a fortieth
@@ -680,7 +682,23 @@ describe('the bloom threshold', () => {
         const composed = fill + ground + haze[c] * full[c]
           + (glow.green[c] + glow.orange[c]) * AIRGLOW_LIMB_CAP;
         expect(composed, `muS ${muS} channel ${'rgb'[c]}`).toBeLessThan(BLOOM_THRESHOLD);
+        // ...and how much of the way to the threshold the exposure gain has
+        // taken it. Everything in `composed` except the fill and the airglow is
+        // proportional to the gain, so the largest gain this fragment admits
+        // falls straight out of the same numbers — which is what makes the
+        // headroom a measurement rather than a memory.
+        const perGain = (composed - fill - (glow.green[c] + glow.orange[c]) * AIRGLOW_LIMB_CAP)
+          / MOONLIGHT_NIGHT_GAIN;
+        const constant = fill + (glow.green[c] + glow.orange[c]) * AIRGLOW_LIMB_CAP;
+        maxGain = Math.min(maxGain, (BLOOM_THRESHOLD - constant) / perGain);
       }
     }
+    // The ceiling the module's own comment quotes, re-derived, and where the
+    // gain sits under it. Both bounds, so neither a raised gain nor a ceiling
+    // that quietly moved can pass unremarked.
+    expect(maxGain).toBeGreaterThan(1.8e5);
+    expect(maxGain).toBeLessThan(1.9e5);
+    expect(MOONLIGHT_NIGHT_GAIN).toBeLessThan(maxGain);
+    expect(MOONLIGHT_NIGHT_GAIN / maxGain).toBeGreaterThan(0.9);
   });
 });

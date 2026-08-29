@@ -306,7 +306,14 @@ export function bakeSliceBudgetMs(frameIntervalMs: number): number {
  * The price of a weight unit comes from the passes that WERE measured — their
  * mean measured-ms-per-weight — so a device that timed only some of them still
  * plans the rest against its own speed rather than against a constant tuned on
- * another GPU. With nothing measured at all it falls back to that constant.
+ * another GPU. That derived price is never allowed BELOW the constant, though:
+ * the queries a disjoint discards are whichever were in flight, so a probe can
+ * come back holding the 64x16 irradiance quad and not the density layer, and a
+ * unit priced off the quad alone would admit eight density layers to a slice —
+ * the 20 ms frame this budget exists to prevent. Under-pricing an unmeasured
+ * pass drops frames; over-pricing it costs bake wall time behind a complete
+ * look, so the constant is a floor. With nothing measured at all it is the
+ * price.
  */
 export function bakePassCostsMs(
   measuredMs: Readonly<Partial<Record<AtmospherePass, number>>>,
@@ -322,7 +329,9 @@ export function bakePassCostsMs(
     const ms = usable(pass);
     if (ms !== null) ratios.push(ms / ATMOSPHERE_PASS_WEIGHTS[pass]);
   }
-  if (ratios.length > 0) unit = ratios.reduce((a, b) => a + b, 0) / ratios.length;
+  if (ratios.length > 0) {
+    unit = Math.max(ATMOSPHERE_UNIT_COST_MS, ratios.reduce((a, b) => a + b, 0) / ratios.length);
+  }
   const costs = {} as Record<AtmospherePass, number>;
   for (const pass of passes) {
     costs[pass] = usable(pass) ?? ATMOSPHERE_PASS_WEIGHTS[pass] * unit;

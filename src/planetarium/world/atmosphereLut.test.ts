@@ -237,9 +237,27 @@ describe('what a slice of the bake may cost', () => {
     );
     // Two measurements that disagree about the unit average, rather than the
     // last one winning.
-    const both = bakePassCostsMs({ singleScattering: 1.2, transmittance: 0.1 });
-    const unit = ((1.2 / 4) + (0.1 / 1)) / 2;
+    const both = bakePassCostsMs({ singleScattering: 2.4, transmittance: 0.2 });
+    const unit = ((2.4 / 4) + (0.2 / 1)) / 2;
+    expect(unit).toBeGreaterThan(ATMOSPHERE_UNIT_COST_MS);
     expect(both.combine).toBeCloseTo(unit * ATMOSPHERE_PASS_WEIGHTS.combine, 9);
+  });
+
+  it('never prices an unmeasured pass below the weight table', () => {
+    // A disjoint discards the queries in flight, so a probe can come back with
+    // the cheap irradiance quad timed and the density layer not. Pricing the
+    // density layer off the quad's unit would put eight of them in one slice.
+    const quadOnly = bakePassCostsMs({ directIrradiance: 0.011 });
+    expect(quadOnly.directIrradiance).toBeCloseTo(0.011, 9);
+    expect(quadOnly.scatteringDensity).toBeCloseTo(
+      ATMOSPHERE_PASS_WEIGHTS.scatteringDensity * ATMOSPHERE_UNIT_COST_MS, 9,
+    );
+    // A fast GPU whose measured unit is genuinely above the constant still
+    // prices from its own measurements — the constant is only a floor.
+    const fast = bakePassCostsMs({ scatteringDensity: 4 });
+    expect(fast.multipleScattering).toBeCloseTo(
+      (4 / ATMOSPHERE_PASS_WEIGHTS.scatteringDensity) * ATMOSPHERE_PASS_WEIGHTS.multipleScattering, 9,
+    );
   });
 
   it('ignores a measurement that is not a positive number', () => {

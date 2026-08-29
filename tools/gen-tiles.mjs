@@ -1233,7 +1233,7 @@ const NASA_500M_TILES = (name) => ['A1', 'B1', 'C1', 'D1', 'A2', 'B2', 'C2', 'D2
 export const JOBS = {
   // Blue Marble Next Generation, August 2004, plain (flat ocean) — the NASA
   // product NASA Eyes ships. Level 0 from the 21600x10800 whole-world JPEG,
-  // level 1 from the eight 500 m tiles (86400x43200), both
+  // levels 1 and 2 from the eight 500 m tiles (86400x43200), both
   // assets.science.nasa.gov.
   earth: {
     key: 'earth-day.v2',
@@ -1246,6 +1246,16 @@ export const JOBS = {
       {
         tier: '32k',
         grid: doubled(GRID_16K, 1),
+        source: { kind: 'mosaic', files: () => NASA_500M_TILES((t) => `bmng_200408_21600x21600_${t}.jpg`), across: 4, down: 2 },
+      },
+      // 65024 px around, from the same 86400-wide mosaic: still a downsample
+      // of the source (0.75x), so this level sharpens rather than invents.
+      // It is the level the near band is actually flown at — at 400 km a
+      // 32512-wide texel covers about three device pixels on a 2x display,
+      // and doubling the width once more is what brings that back to ~1.5.
+      {
+        tier: '64k',
+        grid: doubled(GRID_16K, 2),
         source: { kind: 'mosaic', files: () => NASA_500M_TILES((t) => `bmng_200408_21600x21600_${t}.jpg`), across: 4, down: 2 },
       },
     ],
@@ -1284,6 +1294,16 @@ export const JOBS = {
       {
         tier: '32k',
         grid: doubled(GRID_16K, 1),
+        source: { kind: 'mosaic', files: () => NASA_500M_TILES((t) => `BlackMarble_2016_${t}_geo.tif`), across: 4, down: 2 },
+      },
+      // The day family's finest level, matched sector for sector: the two are
+      // streamed onto the same ground at the same moment (the night shell
+      // sharpens where the globe does), so a level the day side has and the
+      // night side does not would put a 1.2 km smear of lights beside 600 m
+      // of coastline across the terminator.
+      {
+        tier: '64k',
+        grid: doubled(GRID_16K, 2),
         source: { kind: 'mosaic', files: () => NASA_500M_TILES((t) => `BlackMarble_2016_${t}_geo.tif`), across: 4, down: 2 },
       },
     ],

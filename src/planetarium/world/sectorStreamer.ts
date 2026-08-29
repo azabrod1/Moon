@@ -267,6 +267,15 @@ export function sectorLevel32k(key: string): SectorLevel {
   return { set: tileSet(key, '32k'), grid: finerGrid(SECTOR_GRID_16K), layout: SECTOR_TILE };
 }
 
+/** A key's 64K colour level: the grid doubled again — 32 × 16 sectors of a
+ *  65024-wide equirect, and the deepest a set may declare (SECTOR_MAX_LEVEL).
+ *  It is the level the near band is flown at: from 400 km one texel of the
+ *  32512-wide level spans about three device pixels on a 2x display, and this
+ *  brings that back to roughly one and a half. */
+export function sectorLevel64k(key: string): SectorLevel {
+  return { set: tileSet(key, '64k'), grid: finerGrid(finerGrid(SECTOR_GRID_16K)), layout: SECTOR_TILE };
+}
+
 /** The bodies that ship a sector set, by catalog name. Colour tiles are the
  *  16K sets; every crop is the base map it names, sector-cut with the same
  *  gutter (tools/gen-tiles.mjs writes both).
@@ -285,9 +294,15 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
       bumpMap: tileSet('earth-bump', '2k'),
       roughnessMap: tileSet('earth-roughness.v2', '4k'),
     },
-    // Level 1 is the same NASA product at 500 m (the eight 21600² Blue Marble
-    // tiles), so the child under a parent is a sharpen, not another world.
-    levels: [sectorLevel16k('earth-day.v2'), sectorLevel32k('earth-day.v2')],
+    // Levels 1 and 2 are the same NASA product at 500 m (the eight 21600²
+    // Blue Marble tiles), so the child under a parent is a sharpen, not
+    // another world; level 2 is 0.75x the source's own width, which is the
+    // last doubling that stays a downsample of it.
+    levels: [
+      sectorLevel16k('earth-day.v2'),
+      sectorLevel32k('earth-day.v2'),
+      sectorLevel64k('earth-day.v2'),
+    ],
   },
   Mars: {
     crops: { normalMap: tileSet('mars-normal.v2', '2k') },
@@ -306,13 +321,19 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
  *  a night sector costs its colour tile and nothing else. */
 export const SECTOR_NIGHT_SETS: Record<string, SectorSetSpec> = {
   // NASA Black Marble 2016 at 500 m, the same eight-tile product the day
-  // levels come from and the same two levels, so a night sector sharpens
-  // exactly where a day one does. The shipped night map is 4K — 10 km per
-  // pixel — which from the near band is a smear where a lit coastline should
-  // be; these are 1.2 km and 600 m.
+  // levels come from and the same three levels, so a night sector sharpens
+  // exactly where a day one does — a level one family had and the other did
+  // not would draw a smear of lights beside a sharp coastline across the
+  // terminator. The shipped night map is 4K — 10 km per pixel — which from
+  // the near band is a smear where a lit coastline should be; these are
+  // 2.5 km, 1.2 km and 600 m.
   Earth: {
     crops: {},
-    levels: [sectorLevel16k('earth-night.v2'), sectorLevel32k('earth-night.v2')],
+    levels: [
+      sectorLevel16k('earth-night.v2'),
+      sectorLevel32k('earth-night.v2'),
+      sectorLevel64k('earth-night.v2'),
+    ],
   },
 };
 

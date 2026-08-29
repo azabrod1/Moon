@@ -118,7 +118,7 @@ describe('the injected surface shader', () => {
     expect(hash(shader.vertexShader))
       .toBe('862f7224fafb480070aebf0c7c125dddbd78c879780eb072e96988333154322a');
     expect(hash(shader.fragmentShader))
-      .toBe('7e43c8d85338f25ca5715198ca451c143e4e2f01bcf6beb516ac8e83dc458015');
+      .toBe('a926d0aaf66cf25ee6dbc7cc4ccd355e044767df1ba60bd3b6c6c1b8141b6786');
   });
 
   it('reuses the tables\' own lookup GLSL rather than a second transcription', () => {
@@ -285,7 +285,11 @@ describe('the cloud deck', () => {
     );
     expect(cloudBlock).not.toBe('');
     expect(cloudBlock).not.toContain('premultipliedAlpha');
-    expect(cloudBlock).toContain('opacity: 0.35');
+    // ...and its alpha is the coverage its own map states, not a flat fraction:
+    // a constant here dims clear sky by it everywhere and caps the thickest
+    // cloud at it, which is the wash the deck used to be.
+    expect(cloudBlock).toContain('opacity: 1,');
+    expect(cloudBlock).not.toMatch(/opacity: 0\.\d/);
     // And the deck carries none of the ground's own night terms: the globe
     // shows through it, so a second starlight floor or limb darkening there
     // would count the same thing twice.

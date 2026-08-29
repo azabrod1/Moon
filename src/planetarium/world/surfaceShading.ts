@@ -71,11 +71,14 @@ import {
   type AtmosphereTables,
 } from './atmosphereLut';
 import { AIRLIGHT_SCALE } from './atmosphereModel';
+import { CLOUD_COVERAGE_GLSL, LUMINANCE_WEIGHTS } from './cloudDeck';
 import { MOON_UP_GLSL, NIGHT_WEIGHT_GLSL, SUN_DOWN_GLSL } from './nightSources';
 import { PLANETS } from '../planets/planetData';
 
-/** The cloud deck is a surface class of its own: it hazes and eclipses like the
- *  ground under it, and it draws the same night terms every other surface does
+/** The cloud deck is a surface class of its own: its alpha is the coverage its
+ *  own map states rather than a flat opacity (world/cloudDeck), it hazes and
+ *  eclipses like the ground under it, and it draws the same night terms every
+ *  other surface does
  *  — the sky's ambient and the Moon — which is what makes moonlit cloud tops
  *  read silver. What it does NOT carry is an authored starlight fill of its own
  *  (`NIGHT_FILL.cloud` is zero): the globe beneath it already has one, and the
@@ -219,9 +222,9 @@ const EARTH_RADIUS_KM = PLANETS.find((p) => p.name === 'Earth')!.radiusKm;
 // the deck, not the globe, is the body's silhouette — and 1.01 R is 64 km,
 // above 99.97 % of the Rayleigh column and all of the Mie and the ozone. Look
 // the air up there and `x T + S` is a no-op in every pose the app can reach,
-// while the deck's own 0.35 alpha still takes 35 % of the ground's airlight
-// off every pixel of the day disc, and 35 % of every pixel at the horizon is
-// an unhazed cloud image in the one band a photograph washes out. So the deck
+// while the deck's own alpha still takes that fraction of the ground's airlight
+// off every pixel it covers, and a covered pixel at the horizon is then an
+// unhazed cloud image in the one band a photograph washes out. So the deck
 // looks its air up at the physical cloud top instead: the same ray in the same
 // direction, with the radius substituted for the segment's far end.
 //
@@ -343,6 +346,7 @@ uniform vec3 uMoonDirWorld;
 uniform vec3 uMoonIrradiance;
 uniform float uAirDensity;
 uniform float uAirLookupRadius;
+uniform float uCloudDeck;
 uniform float uPlanetRadius;
 uniform float uSolarIrradiance;
 uniform vec3 uAirlightScale;
@@ -355,12 +359,23 @@ varying vec3 vObjPos;
 varying vec3 vPlanetshineViewDir;
 varying vec3 vAirCam;
 varying vec3 vAirFrag;
-${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}`;
+${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}`;
 
 // Injected after lighting but before <opaque_fragment> writes outgoingLight into
 // gl_FragColor — so terms land in linear radiance (tone-mapped downstream) and
 // read the perturbed view-space `normal`.
 const SURFACE_FRAGMENT_BODY = /* glsl */ `{
+  // The cloud deck's alpha is the coverage its own map states, and every other
+  // surface keeps the alpha it already had. A deck at a flat opacity dims clear
+  // sky by that fraction everywhere and caps the thickest cloud at it; reading
+  // the map means a pixel over clear sky has no deck on it at all. The alpha is
+  // 1 on every other surface, so the terms below that scale by it are the
+  // deck's alone without a second branch.
+  float cloudAlpha = 1.0;
+  if (uCloudDeck > 0.0) {
+    cloudAlpha = cloudCoverage(dot(diffuseColor.rgb, vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')})));
+    diffuseColor.a *= cloudAlpha;
+  }
   // The sine of the Sun's elevation at this fragment, off the perturbed normal:
   // the Sun's own Lambert term, which is what the day factor and the Moon's
   // weight below both read so the two describe one crossing.
@@ -643,6 +658,7 @@ export function augmentSurfaceMaterial(
   const uIcyRim = { value: archetype === 'icy' ? 1 : 0 };
   const uLimbDarkening = { value: LIMB_DARKENING[archetype] };
   const uAirLookupRadius = { value: AIR_LOOKUP_RADIUS[archetype] };
+  const uCloudDeck = { value: archetype === 'cloud' ? 1 : 0 };
 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uSunDirWorld = fx.uSunDirWorld;
@@ -662,6 +678,7 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uIcyRim = uIcyRim;
     shader.uniforms.uLimbDarkening = uLimbDarkening;
     shader.uniforms.uAirLookupRadius = uAirLookupRadius;
+    shader.uniforms.uCloudDeck = uCloudDeck;
     shader.uniforms.uFrameSpin = uFrameSpin;
     for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];
 

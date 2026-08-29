@@ -2429,7 +2429,11 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     const cloudMat = new THREE.MeshStandardMaterial({
       map: cloudTex,
       transparent: true,
-      opacity: 0.35,
+      // The deck's alpha is the coverage its own map states, read in the
+      // surface augmentation (world/cloudDeck) — clear sky ends up with no
+      // deck on it at all. A fraction here would scale that curve down again
+      // and put the flat veil back, one factor further along.
+      opacity: 1,
       depthWrite: false,
       roughness: 1.0,
     });

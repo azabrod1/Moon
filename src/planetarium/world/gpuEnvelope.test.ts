@@ -16,8 +16,8 @@ import {
   DEVICE_PROFILES,
   SECTOR_SET_FLOOR_UNIT_BYTES,
   FILL_RATE_TIER_CAP,
-  LEGACY_DESKTOP_PROFILE,
-  LEGACY_TOUCH_PROFILE,
+  UNMEASURED_DESKTOP_PROFILE,
+  UNMEASURED_TOUCH_PROFILE,
   LIMITED_PROFILE,
   type DeviceClass,
   type DeviceProfile,
@@ -80,7 +80,7 @@ interface Fixture {
   row: DeviceProfile['id'];
   /** And which numbers the app gave it before the class was allowed to size
    *  anything — the reference the switch is measured against. */
-  legacy: 'legacy-touch' | 'legacy-desktop';
+  legacy: 'unmeasured-touch' | 'unmeasured-desktop';
 }
 
 /**
@@ -102,7 +102,7 @@ const FIXTURES: Fixture[] = [
     deviceClass: 'phone',
     family: 'apple',
     row: 'apple-phone',
-    legacy: 'legacy-touch',
+    legacy: 'unmeasured-touch',
   },
   {
     name: 'iPhone with Request Desktop Website — a Mac UA on a phone chassis',
@@ -114,7 +114,7 @@ const FIXTURES: Fixture[] = [
     deviceClass: 'phone',
     family: 'apple',
     row: 'apple-phone',
-    legacy: 'legacy-touch',
+    legacy: 'unmeasured-touch',
   },
   {
     name: 'iPad Pro 13", which always sends a desktop UA',
@@ -126,7 +126,7 @@ const FIXTURES: Fixture[] = [
     deviceClass: 'tablet',
     family: 'apple',
     row: 'apple-tablet',
-    legacy: 'legacy-touch',
+    legacy: 'unmeasured-touch',
   },
   {
     name: 'iPad mini',
@@ -138,7 +138,7 @@ const FIXTURES: Fixture[] = [
     deviceClass: 'tablet',
     family: 'apple',
     row: 'apple-tablet',
-    legacy: 'legacy-touch',
+    legacy: 'unmeasured-touch',
   },
   {
     // The phone the 768 MiB row was measured on: 46 maps of 42.7 MiB —
@@ -153,7 +153,7 @@ const FIXTURES: Fixture[] = [
     deviceClass: 'phone',
     family: 'apple',
     row: 'apple-phone',
-    legacy: 'legacy-touch',
+    legacy: 'unmeasured-touch',
   },
   {
     // And the tablet: 95 maps — 4053.3 MiB, the probe's own 4 GiB stop —
@@ -169,7 +169,7 @@ const FIXTURES: Fixture[] = [
     deviceClass: 'tablet',
     family: 'apple',
     row: 'apple-tablet',
-    legacy: 'legacy-touch',
+    legacy: 'unmeasured-touch',
   },
   {
     name: 'Pixel 8, Chrome',
@@ -182,8 +182,8 @@ const FIXTURES: Fixture[] = [
     }),
     deviceClass: 'phone',
     family: 'android',
-    row: 'legacy-touch',
-    legacy: 'legacy-touch',
+    row: 'unmeasured-touch',
+    legacy: 'unmeasured-touch',
   },
   {
     name: 'Android tablet',
@@ -196,8 +196,8 @@ const FIXTURES: Fixture[] = [
     }),
     deviceClass: 'tablet',
     family: 'android',
-    row: 'legacy-touch',
-    legacy: 'legacy-touch',
+    row: 'unmeasured-touch',
+    legacy: 'unmeasured-touch',
   },
   {
     name: 'Android tablet with a mouse — its PRIMARY pointer is now fine',
@@ -210,8 +210,8 @@ const FIXTURES: Fixture[] = [
     }),
     deviceClass: 'tablet',
     family: 'android',
-    row: 'legacy-touch',
-    legacy: 'legacy-touch',
+    row: 'unmeasured-touch',
+    legacy: 'unmeasured-touch',
   },
   {
     name: 'Samsung DeX: an Android phone driving a 1920x1080 desktop',
@@ -224,8 +224,8 @@ const FIXTURES: Fixture[] = [
     }),
     deviceClass: 'tablet',
     family: 'android',
-    row: 'legacy-touch',
-    legacy: 'legacy-desktop',
+    row: 'unmeasured-touch',
+    legacy: 'unmeasured-desktop',
   },
   {
     name: 'Windows touch laptop, window dragged to 1024 CSS px',
@@ -238,8 +238,8 @@ const FIXTURES: Fixture[] = [
     }),
     deviceClass: 'desktop',
     family: 'other',
-    row: 'legacy-desktop',
-    legacy: 'legacy-touch',
+    row: 'unmeasured-desktop',
+    legacy: 'unmeasured-touch',
   },
   {
     name: 'The same Windows touch laptop, window at full width',
@@ -252,8 +252,8 @@ const FIXTURES: Fixture[] = [
     }),
     deviceClass: 'desktop',
     family: 'other',
-    row: 'legacy-desktop',
-    legacy: 'legacy-desktop',
+    row: 'unmeasured-desktop',
+    legacy: 'unmeasured-desktop',
   },
   {
     name: 'Chromebook with a touchscreen, 1366x768',
@@ -266,8 +266,8 @@ const FIXTURES: Fixture[] = [
     }),
     deviceClass: 'tablet',
     family: 'other',
-    row: 'legacy-touch',
-    legacy: 'legacy-desktop',
+    row: 'unmeasured-touch',
+    legacy: 'unmeasured-desktop',
   },
   {
     name: 'MacBook Pro, Chrome',
@@ -280,8 +280,8 @@ const FIXTURES: Fixture[] = [
     }),
     deviceClass: 'desktop',
     family: 'apple',
-    row: 'legacy-desktop',
-    legacy: 'legacy-desktop',
+    row: 'unmeasured-desktop',
+    legacy: 'unmeasured-desktop',
   },
   {
     name: 'Playwright WebKit, desktop context (the Safari oracle)',
@@ -292,8 +292,8 @@ const FIXTURES: Fixture[] = [
     }),
     deviceClass: 'desktop',
     family: 'apple',
-    row: 'legacy-desktop',
-    legacy: 'legacy-desktop',
+    row: 'unmeasured-desktop',
+    legacy: 'unmeasured-desktop',
   },
   {
     name: 'Playwright WebKit, emulated iPhone with the iOS UA',
@@ -305,7 +305,7 @@ const FIXTURES: Fixture[] = [
     deviceClass: 'phone',
     family: 'apple',
     row: 'apple-phone',
-    legacy: 'legacy-touch',
+    legacy: 'unmeasured-touch',
   },
   {
     name: 'Playwright WebKit, phone viewport with its own desktop UA',
@@ -317,7 +317,7 @@ const FIXTURES: Fixture[] = [
     deviceClass: 'phone',
     family: 'apple',
     row: 'apple-phone',
-    legacy: 'legacy-desktop',
+    legacy: 'unmeasured-desktop',
   },
   {
     name: 'Firefox with fingerprinting resistance: no renderer, no memory',
@@ -329,8 +329,8 @@ const FIXTURES: Fixture[] = [
     }),
     deviceClass: 'desktop',
     family: 'other',
-    row: 'legacy-desktop',
-    legacy: 'legacy-desktop',
+    row: 'unmeasured-desktop',
+    legacy: 'unmeasured-desktop',
   },
   {
     name: 'SwiftShader: no GPU at all',
@@ -343,7 +343,7 @@ const FIXTURES: Fixture[] = [
     deviceClass: 'limited',
     family: 'other',
     row: 'limited',
-    legacy: 'legacy-desktop',
+    legacy: 'unmeasured-desktop',
   },
   {
     name: 'A 2 GB Android phone',
@@ -357,7 +357,7 @@ const FIXTURES: Fixture[] = [
     deviceClass: 'limited',
     family: 'android',
     row: 'limited',
-    legacy: 'legacy-touch',
+    legacy: 'unmeasured-touch',
   },
 ];
 
@@ -481,7 +481,7 @@ describe('the class table', () => {
     // difference, and it is about fill rate rather than memory.
     for (const row of [APPLE_PHONE_PROFILE, APPLE_TABLET_PROFILE]) {
       expect(numbersOf(row)).toEqual({
-        ...numbersOf(LEGACY_DESKTOP_PROFILE),
+        ...numbersOf(UNMEASURED_DESKTOP_PROFILE),
         tierCaps: { earthClouds: '4k' },
       });
       expect(row.envelopeBytes).toBe(768 * MiB);
@@ -499,12 +499,12 @@ describe('the class table', () => {
     for (const family of ['android', 'other'] as PlatformFamily[]) {
       for (const cls of ['phone', 'tablet'] as DeviceClass[]) {
         const row = deviceProfileFor(cls, family);
-        expect(row.id, `${family}/${cls}`).toBe('legacy-touch');
-        expect(numbersOf(row), `${family}/${cls}`).toEqual(numbersOf(LEGACY_TOUCH_PROFILE));
-        expect(row.provenance, `${family}/${cls}`).toBe('legacy');
+        expect(row.id, `${family}/${cls}`).toBe('unmeasured-touch');
+        expect(numbersOf(row), `${family}/${cls}`).toEqual(numbersOf(UNMEASURED_TOUCH_PROFILE));
+        expect(row.provenance, `${family}/${cls}`).toBe('unmeasured');
       }
     }
-    expect(numbersOf(LEGACY_TOUCH_PROFILE)).toEqual({
+    expect(numbersOf(UNMEASURED_TOUCH_PROFILE)).toEqual({
       envelopeBytes: 320 * MiB,
       ceilingBytes: 144 * MiB,
       sectorFloorBytes: 2 * SECTOR_SET_FLOOR_UNIT_BYTES,
@@ -522,7 +522,7 @@ describe('the class table', () => {
     // A desktop is a desktop, and a software rasteriser is a fact about the
     // renderer that no platform measurement reaches past.
     for (const family of ['apple', 'android', 'other'] as PlatformFamily[]) {
-      expect(deviceProfileFor('desktop', family)).toBe(LEGACY_DESKTOP_PROFILE);
+      expect(deviceProfileFor('desktop', family)).toBe(UNMEASURED_DESKTOP_PROFILE);
       expect(deviceProfileFor('limited', family)).toBe(LIMITED_PROFILE);
     }
     expect(LIMITED_PROFILE.envelopeBytes).toBe(192 * MiB);
@@ -562,9 +562,9 @@ describe('the class table', () => {
   });
 
   it('pins the two legacy rows verbatim, labels and all', () => {
-    expect(LEGACY_TOUCH_PROFILE).toEqual({
-      id: 'legacy-touch',
-      provenance: 'legacy',
+    expect(UNMEASURED_TOUCH_PROFILE).toEqual({
+      id: 'unmeasured-touch',
+      provenance: 'unmeasured',
       envelopeBytes: 320 * MiB,
       ceilingBytes: 144 * MiB,
       sectorFloorBytes: 2 * SECTOR_SET_FLOOR_UNIT_BYTES,
@@ -580,9 +580,9 @@ describe('the class table', () => {
       // deck's cap stays, and is about fill rate rather than memory.
       tierCaps: { earthClouds: '4k' },
     });
-    expect(LEGACY_DESKTOP_PROFILE).toEqual({
-      id: 'legacy-desktop',
-      provenance: 'legacy',
+    expect(UNMEASURED_DESKTOP_PROFILE).toEqual({
+      id: 'unmeasured-desktop',
+      provenance: 'unmeasured',
       envelopeBytes: 768 * MiB,
       ceilingBytes: 256 * MiB,
       sectorFloorBytes: 3 * SECTOR_SET_FLOOR_UNIT_BYTES,
@@ -620,19 +620,19 @@ describe('the class table', () => {
       .filter((f) => JSON.stringify(numbersOf(legacyProfile(f.signals))) !== JSON.stringify(numbersOf(profileForDevice(f.signals))))
       .map((f) => `${f.name}: ${legacyProfile(f.signals).id} -> ${profileForDevice(f.signals).id}`);
     expect(moved).toEqual([
-      'iPhone 15 Pro, Safari: legacy-touch -> apple-phone',
-      'iPhone with Request Desktop Website — a Mac UA on a phone chassis: legacy-touch -> apple-phone',
-      'iPad Pro 13", which always sends a desktop UA: legacy-touch -> apple-tablet',
-      'iPad mini: legacy-touch -> apple-tablet',
-      "Alex's iPhone, as probe.html read it: legacy-touch -> apple-phone",
-      "Alex's iPad, as probe.html read it: legacy-touch -> apple-tablet",
-      'Samsung DeX: an Android phone driving a 1920x1080 desktop: legacy-desktop -> legacy-touch',
-      'Windows touch laptop, window dragged to 1024 CSS px: legacy-touch -> legacy-desktop',
-      'Chromebook with a touchscreen, 1366x768: legacy-desktop -> legacy-touch',
-      'Playwright WebKit, emulated iPhone with the iOS UA: legacy-touch -> apple-phone',
-      'Playwright WebKit, phone viewport with its own desktop UA: legacy-desktop -> apple-phone',
-      'SwiftShader: no GPU at all: legacy-desktop -> limited',
-      'A 2 GB Android phone: legacy-touch -> limited',
+      'iPhone 15 Pro, Safari: unmeasured-touch -> apple-phone',
+      'iPhone with Request Desktop Website — a Mac UA on a phone chassis: unmeasured-touch -> apple-phone',
+      'iPad Pro 13", which always sends a desktop UA: unmeasured-touch -> apple-tablet',
+      'iPad mini: unmeasured-touch -> apple-tablet',
+      "Alex's iPhone, as probe.html read it: unmeasured-touch -> apple-phone",
+      "Alex's iPad, as probe.html read it: unmeasured-touch -> apple-tablet",
+      'Samsung DeX: an Android phone driving a 1920x1080 desktop: unmeasured-desktop -> unmeasured-touch',
+      'Windows touch laptop, window dragged to 1024 CSS px: unmeasured-touch -> unmeasured-desktop',
+      'Chromebook with a touchscreen, 1366x768: unmeasured-desktop -> unmeasured-touch',
+      'Playwright WebKit, emulated iPhone with the iOS UA: unmeasured-touch -> apple-phone',
+      'Playwright WebKit, phone viewport with its own desktop UA: unmeasured-desktop -> apple-phone',
+      'SwiftShader: no GPU at all: unmeasured-desktop -> limited',
+      'A 2 GB Android phone: unmeasured-touch -> limited',
     ]);
     // The Android tablet with a mouse changes class — the primary pointer is
     // fine and only `any-pointer` sees its screen — but not its numbers: its
@@ -659,25 +659,25 @@ describe('the class table', () => {
       if (!seen.has(key)) seen.set(key, `${key}\n    was ${shape(was)}\n    now ${shape(now)}`);
     }
     expect([...seen.values()]).toEqual([
-      'legacy-touch -> apple-phone\n' +
+      'unmeasured-touch -> apple-phone\n' +
       '    was 320/144 MiB, floor 2 sets, 8/1/3, want 1.25/0.8, warm cached, caps {"earthClouds":"4k"}\n' +
       '    now 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {"earthClouds":"4k"}',
-      'legacy-touch -> apple-tablet\n' +
+      'unmeasured-touch -> apple-tablet\n' +
       '    was 320/144 MiB, floor 2 sets, 8/1/3, want 1.25/0.8, warm cached, caps {"earthClouds":"4k"}\n' +
       '    now 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {"earthClouds":"4k"}',
-      'legacy-desktop -> legacy-touch\n' +
+      'unmeasured-desktop -> unmeasured-touch\n' +
       '    was 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}\n' +
       '    now 320/144 MiB, floor 2 sets, 8/1/3, want 1.25/0.8, warm cached, caps {"earthClouds":"4k"}',
-      'legacy-touch -> legacy-desktop\n' +
+      'unmeasured-touch -> unmeasured-desktop\n' +
       '    was 320/144 MiB, floor 2 sets, 8/1/3, want 1.25/0.8, warm cached, caps {"earthClouds":"4k"}\n' +
       '    now 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}',
-      'legacy-desktop -> apple-phone\n' +
+      'unmeasured-desktop -> apple-phone\n' +
       '    was 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}\n' +
       '    now 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {"earthClouds":"4k"}',
-      'legacy-desktop -> limited\n' +
+      'unmeasured-desktop -> limited\n' +
       '    was 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}\n' +
       '    now 192/46 MiB, floor 1 set, 4/1/2, want 1.25/0.8, warm cached, caps {}',
-      'legacy-touch -> limited\n' +
+      'unmeasured-touch -> limited\n' +
       '    was 320/144 MiB, floor 2 sets, 8/1/3, want 1.25/0.8, warm cached, caps {"earthClouds":"4k"}\n' +
       '    now 192/46 MiB, floor 1 set, 4/1/2, want 1.25/0.8, warm cached, caps {}',
     ]);
@@ -685,8 +685,8 @@ describe('the class table', () => {
 });
 
 describe('the envelope arithmetic', () => {
-  const DESKTOP = LEGACY_DESKTOP_PROFILE;
-  const TOUCH = LEGACY_TOUCH_PROFILE;
+  const DESKTOP = UNMEASURED_DESKTOP_PROFILE;
+  const TOUCH = UNMEASURED_TOUCH_PROFILE;
   const SET = sectorSetGpuBytes(SECTOR_SETS.Earth);
 
   it('states one Earth sector set in bytes, and the floors in whole sets of it', () => {

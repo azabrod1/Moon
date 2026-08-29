@@ -24,7 +24,7 @@ import {
   type SectorMeasure,
   type SectorSetSpec,
 } from './sectorStreamer';
-import { APPLE_PHONE_PROFILE, LEGACY_DESKTOP_PROFILE, LEGACY_TOUCH_PROFILE } from './gpuEnvelope';
+import { APPLE_PHONE_PROFILE, UNMEASURED_DESKTOP_PROFILE, UNMEASURED_TOUCH_PROFILE } from './gpuEnvelope';
 import {
   appliedTierHeldBytes,
   bindTierAdmission,
@@ -83,10 +83,10 @@ const R = 1;
 // of the bump and roughness crops) and how many of them each device holds.
 /** The two sets of device numbers the streamer is built with today. The
  *  streamer takes numbers, not a device guess, so a test says which. */
-const DESKTOP = LEGACY_DESKTOP_PROFILE;
+const DESKTOP = UNMEASURED_DESKTOP_PROFILE;
 /** An Android or other-platform phone or tablet: the numbers the app shipped
  *  with, kept because no device on those platforms has been measured. */
-const TOUCH = LEGACY_TOUCH_PROFILE;
+const TOUCH = UNMEASURED_TOUCH_PROFILE;
 /** An Apple phone, which holds the desktop numbers on a measurement. */
 const APPLE_PHONE = APPLE_PHONE_PROFILE;
 /** The same desktop numbers with no sector floor. Most of the tests below
@@ -382,8 +382,8 @@ describe('SectorStreamer', () => {
     for (let f = 0; f < 12; f++) streamer.update('Earth', new THREE.Vector3(0, 0, 0), measureOf(sizes), f * 16);
     expect(streamer.stats().resident).toBe(EARTH_FITS_DESKTOP);
     const stats = streamer.stats();
-    expect(stats.residentBytes).toBe(EARTH_FITS_DESKTOP * EARTH_SET_BYTES);
-    expect(stats.residentBytes + stats.reserved).toBeLessThanOrEqual(stats.budget);
+    expect(stats.budgetedBytes).toBe(EARTH_FITS_DESKTOP * EARTH_SET_BYTES);
+    expect(stats.budgetedBytes + stats.reserved).toBeLessThanOrEqual(stats.budget);
     const before = stats.bodies.Earth.resident.slice().sort();
     // A new sector slightly larger than the weakest resident does not evict it…
     const weakestPx = Math.min(...before.map((id) => sizes[id]));
@@ -413,7 +413,7 @@ describe('SectorStreamer', () => {
     for (let c = 0; c < 8; c++) sizes[`${c}_1`] = 2 + 0.01 * c;
     for (let f = 0; f < 12; f++) s.update('Earth', new THREE.Vector3(0, 0, 0), measureOf(sizes), f * 16);
     expect(s.stats().resident).toBe(EARTH_FITS_TOUCH);
-    expect(s.stats().residentBytes).toBeLessThanOrEqual(TOUCH.ceilingBytes);
+    expect(s.stats().budgetedBytes).toBeLessThanOrEqual(TOUCH.ceilingBytes);
   });
 
   it('a load superseded by release never materializes and drops its bytes', () => {
@@ -624,14 +624,14 @@ describe('SectorStreamer', () => {
     // One colour tile plus two crops (bump, roughness), RGBA8 with mips.
     const tile = Math.round(2048 * 2048 * 4 * (4 / 3));
     const crop = Math.round(272 * 272 * 4 * (4 / 3));
-    expect(s.stats().bodies.Earth.gpuBytes).toBe(tile + 2 * crop);
-    expect(s.stats().gpuBytes).toBe(tile + 2 * crop);
+    expect(s.stats().bodies.Earth.measuredGpuBytes).toBe(tile + 2 * crop);
+    expect(s.stats().measuredGpuBytes).toBe(tile + 2 * crop);
     // The figure survives the bitmap being closed after upload.
     const mat = (earth.mesh.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
     mat.map!.image = undefined;
-    expect(s.stats().gpuBytes).toBe(tile + 2 * crop);
+    expect(s.stats().measuredGpuBytes).toBe(tile + 2 * crop);
     s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 0.1 }), 16);
-    expect(s.stats().gpuBytes).toBe(0);
+    expect(s.stats().measuredGpuBytes).toBe(0);
   });
 
   it('aborts the fetches of a sector released while they are in the air', () => {
@@ -693,7 +693,7 @@ describe('SectorStreamer', () => {
     const s = streamer.stats();
     expect(s.budget).toBe(2 * EARTH_SET_BYTES);
     expect(s.resident).toBe(2);
-    expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
+    expect(s.budgetedBytes + s.reserved).toBeLessThanOrEqual(s.budget);
   });
 
   it('counts an in-place reload against the in-flight cap', () => {
@@ -1146,7 +1146,7 @@ describe('SectorStreamer', () => {
     warm.settle('warmed');
     const s = streamer.stats();
     expect(s.reserved).toBe(0);
-    expect(s.residentBytes).toBe(2 * childBytes);
+    expect(s.budgetedBytes).toBe(2 * childBytes);
     expect(s.bodies.Moon.resident).toEqual(['L1/4_2', 'L1/5_2']);
     // The colour tile reads through its own NPOT layout, the crop through
     // the parent's two-sector-wide one.
@@ -1190,7 +1190,7 @@ describe('SectorStreamer', () => {
     const body = streamer.stats().bodies.Earth;
     expect(body.resident.slice().sort()).toEqual(['2_1', 'L1/4_2', 'L1/4_3', 'L1/5_2', 'L1/5_3']);
     expect(body.byLevel.map((l) => l.resident)).toEqual([1, 4]);
-    expect(body.byLevel[1].gpuBytes).toBe(0); // the fakes carry no image
+    expect(body.byLevel[1].measuredGpuBytes).toBe(0); // the fakes carry no image
     // A single-level body still reports one level and bare ids.
     const mars = marsWithoutRelief();
     streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
@@ -1264,7 +1264,7 @@ describe('SectorStreamer', () => {
     expect(s.bodies.Earth.resident).toContain('2_1');
     expect(s.bodies.Earth.byLevel[1].resident).toBe(4);
     expect(s.resident).toBe(EARTH_FITS_DESKTOP);
-    expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
+    expect(s.budgetedBytes + s.reserved).toBeLessThanOrEqual(s.budget);
   });
 
   it('never evicts a sector a finer one is drawing over', () => {
@@ -1336,7 +1336,7 @@ describe('SectorStreamer', () => {
     expect(s.bodies.Big.resident).toEqual(['0_0']);
     expect(s.bodies.Earth.resident).toEqual([]);
     expect(dropped).toEqual(['Earth sector L1/4_2', 'Earth sector 2_1']);
-    expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
+    expect(s.budgetedBytes + s.reserved).toBeLessThanOrEqual(s.budget);
   });
 
   it('suppresses a parent every child of which is resident, and wants it back the moment one is lost', () => {
@@ -1409,20 +1409,20 @@ describe('SectorStreamer', () => {
     // on a budget with room for one.
     expect(s.loading).toBe(DESKTOP.inflightCap);
     expect(s.reserved).toBe(DESKTOP.inflightCap * EARTH_SET_BYTES);
-    expect(s.residentBytes).toBe(0);
-    expect(s.gpuBytes).toBe(0);
-    expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
+    expect(s.budgetedBytes).toBe(0);
+    expect(s.measuredGpuBytes).toBe(0);
+    expect(s.budgetedBytes + s.reserved).toBeLessThanOrEqual(s.budget);
     loader.failAll();
     expect(streamer.stats().reserved).toBe(0);
     // What lands is held as resident bytes instead, and dropAll gives back both.
     loader.auto = true;
     streamer.update('Earth', INSIDE, measureOf({ '2_1': 2 }), SECTOR_RETRY_MS + 1);
     s = streamer.stats();
-    expect(s.residentBytes).toBe(EARTH_SET_BYTES);
+    expect(s.budgetedBytes).toBe(EARTH_SET_BYTES);
     expect(s.reserved).toBe(0);
     streamer.dropAll();
     s = streamer.stats();
-    expect(s.residentBytes).toBe(0);
+    expect(s.budgetedBytes).toBe(0);
     expect(s.reserved).toBe(0);
   });
 
@@ -1440,7 +1440,7 @@ describe('SectorStreamer', () => {
     streamer.update('Earth', INSIDE, measureOf(sizes), 16);
     const s = streamer.stats();
     expect(s.resident).toBe(3);
-    expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
+    expect(s.budgetedBytes + s.reserved).toBeLessThanOrEqual(s.budget);
     // The three kept are the strongest.
     expect(s.bodies.Earth.resident.slice().sort()).toEqual(['5_2', '6_2', '7_2']);
   });
@@ -1471,7 +1471,7 @@ describe('SectorStreamer', () => {
     // Four Earth sectors, all past the dwell and all ranking together.
     const earthSizes = { '2_1': 3, '3_1': 3, '4_1': 3, '5_1': 3 };
     for (let f = 0; f < 8; f++) streamer.update('Earth', INSIDE, measureOf(earthSizes), f * 16);
-    const held = streamer.stats().residentBytes;
+    const held = streamer.stats().budgetedBytes;
     expect(streamer.stats().resident).toBe(4);
     // Leave room for one small set and nothing like an Earth one.
     streamer.setGlobalMapBytes(DESKTOP.envelopeBytes - held - 2 * small);
@@ -1485,7 +1485,7 @@ describe('SectorStreamer', () => {
     const s = streamer.stats();
     expect(s.bodies.Earth.resident).not.toContain('0_0'); // blocked by the margin
     expect(s.bodies.Small.resident.concat(s.bodies.Small.loading)).toEqual(['0_0']);
-    expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
+    expect(s.budgetedBytes + s.reserved).toBeLessThanOrEqual(s.budget);
   });
 
   it('gives back a whole pyramid in one call, parents included', () => {
@@ -1501,7 +1501,7 @@ describe('SectorStreamer', () => {
     streamer.setGlobalMapBytes(DESKTOP.envelopeBytes);
     const s = streamer.stats();
     expect(s.budget).toBe(0);
-    expect(s.residentBytes + s.reserved).toBe(0);
+    expect(s.budgetedBytes + s.reserved).toBe(0);
     expect(s.resident).toBe(0);
   });
 
@@ -1538,7 +1538,7 @@ describe('SectorStreamer', () => {
     streamer.setGlobalMapBytes(DESKTOP.envelopeBytes - 2 * EARTH_SET_BYTES);
     const s = streamer.stats();
     expect(s.resident).toBe(2);
-    expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
+    expect(s.budgetedBytes + s.reserved).toBeLessThanOrEqual(s.budget);
   });
 
   it('a budget collapse and a base map landing in the same frame never overshoot the budget', () => {
@@ -1558,7 +1558,7 @@ describe('SectorStreamer', () => {
     streamer.setGlobalMapBytes(DESKTOP.envelopeBytes - Math.round(0.6 * EARTH_SET_BYTES));
     streamer.update('Earth', INSIDE, measureOf(sizes), 10_000);
     const s = streamer.stats();
-    expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
+    expect(s.budgetedBytes + s.reserved).toBeLessThanOrEqual(s.budget);
     // …and nothing is in the air for a slot that gave its maps up.
     expect(loader.requests).toEqual([]);
     expect(s.inflight).toBe(0);
@@ -1698,7 +1698,7 @@ describe('SectorStreamer', () => {
       expect(s.bodies.Earth.resident).toContain(id);
     }
     expect(s.bodies.Earth.byLevel[1].resident).toBe(4);
-    expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
+    expect(s.budgetedBytes + s.reserved).toBeLessThanOrEqual(s.budget);
     expect(s.resident).toBe(EARTH_FITS_DESKTOP);
   });
 
@@ -1712,12 +1712,12 @@ describe('SectorStreamer', () => {
     streamer.dropAll();
     let s = streamer.stats();
     expect(s.resident).toBe(0);
-    expect(s.residentBytes).toBe(0);
+    expect(s.budgetedBytes).toBe(0);
     expect(s.reserved).toBe(0);
     for (let f = 6; f < 12; f++) streamer.update('Earth', overLevel1(5, 3), measure, f * 16);
     s = streamer.stats();
     expect(s.bodies.Earth.resident.slice().sort()).toEqual(before);
-    expect(s.residentBytes).toBe(5 * EARTH_SET_BYTES);
+    expect(s.budgetedBytes).toBe(5 * EARTH_SET_BYTES);
   });
 
   /** The scripted level-0 session both golden traces run — a pose, a pan, a
@@ -1795,7 +1795,7 @@ describe('SectorStreamer', () => {
     s.dropAll();
     run(poseC, 3);
     const stats = s.stats();
-    expect(stats.residentBytes + stats.reserved).toBeLessThanOrEqual(stats.budget);
+    expect(stats.budgetedBytes + stats.reserved).toBeLessThanOrEqual(stats.budget);
     recordTrace(events);
     return { events, stats };
   }
@@ -2137,7 +2137,7 @@ describe('a body\'s night family: a second set of sectors on the night shell', (
     expect(loader.requests).toHaveLength(1);
     expect(streamer.stats().reserved).toBe(NIGHT_SET_BYTES);
     loader.resolveAll();
-    expect(streamer.stats().residentBytes).toBe(NIGHT_SET_BYTES);
+    expect(streamer.stats().budgetedBytes).toBe(NIGHT_SET_BYTES);
     const mesh = night.mesh.children[0] as THREE.Mesh;
     expect(mesh.renderOrder).toBe(SECTOR_RENDER_ORDER);
   });
@@ -2199,10 +2199,10 @@ describe('a body\'s night family: a second set of sectors on the night shell', (
     expect(earth.byFamily.day?.resident).toBe(1);
     expect(earth.byFamily.night?.resident).toBe(1);
     // Both views count the same slots.
-    expect((earth.byFamily.day?.residentBytes ?? 0) + (earth.byFamily.night?.residentBytes ?? 0))
-      .toBe(streamer.stats().residentBytes);
-    expect((earth.byFamily.day?.gpuBytes ?? 0) + (earth.byFamily.night?.gpuBytes ?? 0))
-      .toBe(earth.gpuBytes);
+    expect((earth.byFamily.day?.budgetedBytes ?? 0) + (earth.byFamily.night?.budgetedBytes ?? 0))
+      .toBe(streamer.stats().budgetedBytes);
+    expect((earth.byFamily.day?.measuredGpuBytes ?? 0) + (earth.byFamily.night?.measuredGpuBytes ?? 0))
+      .toBe(earth.measuredGpuBytes);
   });
 
   it('lists only the sides a body actually has', () => {
@@ -2276,7 +2276,7 @@ describe('the sector floor', () => {
     s.setGlobalMapBytes(DESKTOP.envelopeBytes);
     const held = s.stats();
     expect(held.resident).toBe(3);
-    expect(held.residentBytes + held.reserved).toBeLessThanOrEqual(held.budget);
+    expect(held.budgetedBytes + held.reserved).toBeLessThanOrEqual(held.budget);
   });
 
   it('owes nothing while no body can want a tile', () => {
@@ -2389,7 +2389,7 @@ describe('the transient of a globe-map swap', () => {
     expect(seen.globalBytes).toBe(HIGH + LOW);
     expect(seen.budget).toBe(3 * SET - LOW);
     expect(seen.resident).toBe(2);
-    expect(seen.residentBytes + seen.reserved).toBeLessThanOrEqual(seen.budget);
+    expect(seen.budgetedBytes + seen.reserved).toBeLessThanOrEqual(seen.budget);
 
     tellStreamer();
     const after = streamer.stats();
@@ -2397,7 +2397,7 @@ describe('the transient of a globe-map swap', () => {
     // ladder's optional weight: the tiles have the whole envelope again.
     expect(after.globalBytes).toBe(0);
     expect(up.appliedTier).toBeNull();
-    expect(after.residentBytes + after.reserved).toBeLessThanOrEqual(after.budget);
+    expect(after.budgetedBytes + after.reserved).toBeLessThanOrEqual(after.budget);
     material.dispose();
   });
 });

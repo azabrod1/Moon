@@ -3581,7 +3581,7 @@ export class PlanetariumMode {
     // Whatever the line below prints, so a figure cannot move without the
     // line being reprinted.
     const figures = stats
-      ? [globalBytes, stats.residentBytes, stats.reserved,
+      ? [globalBytes, stats.budgetedBytes, stats.reserved,
         envelope.sectorBudget, envelope.floorBytes, envelope.envelopeBytes]
       : [globalBytes, envelope.floorBytes, envelope.envelopeBytes];
     const previous = this.memoryDebugLast;
@@ -3605,7 +3605,7 @@ export class PlanetariumMode {
       globeMapsMiB: mib(globalBytes),
       ...(stats
         ? {
-          tilesMiB: mib(stats.residentBytes),
+          tilesMiB: mib(stats.budgetedBytes),
           reservedMiB: mib(stats.reserved),
           budgetMiB: mib(envelope.sectorBudget),
         }

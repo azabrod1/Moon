@@ -12,7 +12,7 @@
  */
 import * as THREE from 'three';
 import { SECTOR_SET_TABLE } from './sectorSets.generated';
-import { LEGACY_DESKTOP_PROFILE, type DeviceProfile } from './gpuEnvelope';
+import { UNMEASURED_DESKTOP_PROFILE, type DeviceProfile } from './gpuEnvelope';
 
 /** Every resolution tier that exists, ascending. This list names them and
  *  fixes that ascending convention: the device clamp walks it directly, and a
@@ -118,7 +118,7 @@ export const TIER_MAP_WIDTH: Record<TextureTier, number> = { '2k': 2048, '4k': 4
 // arrives.
 let chosenAnisotropy = 1;
 let maxTextureSize = 4096;
-let deviceProfile: DeviceProfile = LEGACY_DESKTOP_PROFILE;
+let deviceProfile: DeviceProfile = UNMEASURED_DESKTOP_PROFILE;
 let capsCaptured = false;
 
 /**
@@ -153,7 +153,7 @@ export function deviceTextureProfile(): DeviceProfile {
 export function resetDeviceCapsForTests(): void {
   chosenAnisotropy = 1;
   maxTextureSize = 4096;
-  deviceProfile = LEGACY_DESKTOP_PROFILE;
+  deviceProfile = UNMEASURED_DESKTOP_PROFILE;
   capsCaptured = false;
 }
 

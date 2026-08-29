@@ -19,7 +19,7 @@ import {
   TIER_MAP_WIDTH,
   type TextureTier,
 } from '../world/texturePolicy';
-import { LEGACY_DESKTOP_PROFILE, LEGACY_TOUCH_PROFILE } from '../world/gpuEnvelope';
+import { UNMEASURED_DESKTOP_PROFILE, UNMEASURED_TOUCH_PROFILE } from '../world/gpuEnvelope';
 import {
   makeTextureUpgrade,
   resolveTierFile,
@@ -43,7 +43,7 @@ export function withMaxTextureSize(size: number, touch = false): void {
   resetDeviceCapsForTests();
   captureDeviceCaps({
     capabilities: { getMaxAnisotropy: () => 8, maxTextureSize: size },
-  } as unknown as THREE.WebGLRenderer, touch ? LEGACY_TOUCH_PROFILE : LEGACY_DESKTOP_PROFILE);
+  } as unknown as THREE.WebGLRenderer, touch ? UNMEASURED_TOUCH_PROFILE : UNMEASURED_DESKTOP_PROFILE);
 }
 
 const tracked: THREE.Material[] = [];

@@ -76,7 +76,7 @@ import {
 import { equirectMapGpuBytes, retainedSourceBytes, textureGpuBytes } from './world/textureBytes';
 import { retryDelayMs, urlSpread } from './world/textureRetryPolicy';
 import { TIER_MAP_WIDTH, type TextureTier } from './world/texturePolicy';
-import { ladderCeilingBytes, LEGACY_DESKTOP_PROFILE, LEGACY_TOUCH_PROFILE } from './world/gpuEnvelope';
+import { ladderCeilingBytes, UNMEASURED_DESKTOP_PROFILE, UNMEASURED_TOUCH_PROFILE } from './world/gpuEnvelope';
 import { SECTOR_SETS, sectorSetGpuBytes } from './world/sectorStreamer';
 import {
   AIR_LOOKUP_RADIUS,
@@ -1492,12 +1492,12 @@ describe('the ladder against the sector memory envelope', () => {
       + 4 * mib(equirectMapGpuBytes(8192, true)),
       1,
     );
-    const budget = LEGACY_DESKTOP_PROFILE.envelopeBytes - real;
+    const budget = UNMEASURED_DESKTOP_PROFILE.envelopeBytes - real;
     // The streamer runs at its own cap, eleven Earth sets, with the envelope
     // no longer the binding limit.
-    expect(mib(Math.min(budget, LEGACY_DESKTOP_PROFILE.ceilingBytes))).toBeCloseTo(256.0, 1);
-    expect(budget).toBeGreaterThan(LEGACY_DESKTOP_PROFILE.ceilingBytes);
-    expect(LEGACY_DESKTOP_PROFILE.ceilingBytes / sectorSetGpuBytes(SECTOR_SETS.Earth))
+    expect(mib(Math.min(budget, UNMEASURED_DESKTOP_PROFILE.ceilingBytes))).toBeCloseTo(256.0, 1);
+    expect(budget).toBeGreaterThan(UNMEASURED_DESKTOP_PROFILE.ceilingBytes);
+    expect(UNMEASURED_DESKTOP_PROFILE.ceilingBytes / sectorSetGpuBytes(SECTOR_SETS.Earth))
       .toBeGreaterThanOrEqual(11);
 
     // And with no transcoder at all: the two rungs that keep a webp twin
@@ -1510,9 +1510,9 @@ describe('the ladder against the sector memory envelope', () => {
     const worst = ladderWorstCaseBytes(false, false);
     expect(mib(worst)).toBeCloseTo(640.0, 1);
     expect(worst).toBeLessThanOrEqual(
-      ladderCeilingBytes(LEGACY_DESKTOP_PROFILE, LEGACY_DESKTOP_PROFILE.sectorFloorBytes),
+      ladderCeilingBytes(UNMEASURED_DESKTOP_PROFILE, UNMEASURED_DESKTOP_PROFILE.sectorFloorBytes),
     );
-    const worstBudget = LEGACY_DESKTOP_PROFILE.envelopeBytes - worst;
+    const worstBudget = UNMEASURED_DESKTOP_PROFILE.envelopeBytes - worst;
     expect(mib(worstBudget)).toBeCloseTo(128.0, 1);
     expect(worstBudget / sectorSetGpuBytes(SECTOR_SETS.Earth)).toBeGreaterThanOrEqual(5);
   });
@@ -1523,7 +1523,7 @@ describe('the ladder against the sector memory envelope', () => {
     // ever asked whether the next map fit.
     const worst = ladderWorstCaseBytes(true, false);
     expect(mib(worst)).toBeCloseTo(512.0, 1);
-    expect(mib(worst)).toBeGreaterThan(mib(LEGACY_TOUCH_PROFILE.envelopeBytes));
+    expect(mib(worst)).toBeGreaterThan(mib(UNMEASURED_TOUCH_PROFILE.envelopeBytes));
     // Nor with one. The containers take 181.3 MiB off that: three of this
     // profile's 4K rungs ship as one — Mercury, Mars, and the cloud deck,
     // which fill rate holds at 4K on a phone however much memory is free — at
@@ -1532,14 +1532,14 @@ describe('the ladder against the sector memory envelope', () => {
     // all). 330.7 MiB is still past a 320 MiB envelope, so the arithmetic is
     // what settles a phone's ladder either way.
     expect(mib(ladderWorstCaseBytes(true, true))).toBeCloseTo(330.7, 1);
-    expect(ladderWorstCaseBytes(true, true)).toBeGreaterThan(LEGACY_TOUCH_PROFILE.envelopeBytes);
+    expect(ladderWorstCaseBytes(true, true)).toBeGreaterThan(UNMEASURED_TOUCH_PROFILE.envelopeBytes);
     // It is now unreachable. The rung that would cross the envelope less the
     // tiles' floor is refused before it is fetched, so the ladder settles
     // under that line and the tiles keep their floor whatever the session
     // has toured.
-    const ceiling = ladderCeilingBytes(LEGACY_TOUCH_PROFILE, LEGACY_TOUCH_PROFILE.sectorFloorBytes);
+    const ceiling = ladderCeilingBytes(UNMEASURED_TOUCH_PROFILE, UNMEASURED_TOUCH_PROFILE.sectorFloorBytes);
     expect(mib(ceiling)).toBeCloseTo(273.7, 1);
-    expect(LEGACY_TOUCH_PROFILE.envelopeBytes - ceiling)
+    expect(UNMEASURED_TOUCH_PROFILE.envelopeBytes - ceiling)
       .toBeGreaterThanOrEqual(2 * sectorSetGpuBytes(SECTOR_SETS.Earth));
     // Six 4K maps fit under it; the seventh does not.
     const map4k = equirectMapGpuBytes(4096);

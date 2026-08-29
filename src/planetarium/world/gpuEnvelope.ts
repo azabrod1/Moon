@@ -120,14 +120,15 @@ export interface SectorStreamerLimits {
  *  two ladder decisions that are about total residency rather than a single
  *  map's size. */
 export interface DeviceProfile extends SectorStreamerLimits {
-  /** Which row of the table these numbers came from, for the debug line. */
-  id: 'apple-phone' | 'apple-tablet' | 'legacy-touch' | 'legacy-desktop' | 'limited';
+  /** Which row of the table these numbers came from, for the debug line. The
+   *  two `unmeasured-` rows are the numbers the app shipped with; the rest
+   *  name what they were measured on or what forced them. */
+  id: 'apple-phone' | 'apple-tablet' | 'unmeasured-touch' | 'unmeasured-desktop' | 'limited';
   /** Where the row's numbers come from, in a form the debug overlay can show
    *  on a device with no console: the device and date they were measured on,
-   *  or that they are the numbers the app shipped with and no run has
-   *  replaced. A phone showing `legacy` is a phone whose numbers are still a
-   *  guess. */
-  provenance: 'measured 2026-08-29 iPhone' | 'measured 2026-08-29 iPad' | 'legacy' | 'unmeasured';
+   *  or that no run has replaced the numbers the app shipped with. A phone
+   *  showing `unmeasured` is a phone whose numbers are still a guess. */
+  provenance: 'measured 2026-08-29 iPhone' | 'measured 2026-08-29 iPad' | 'unmeasured';
   /** The speculative boot warm pulls its bytes into the HTTP cache only,
    *  rather than decoding and uploading maps a session may never visit. */
   cacheOnlyWarm: boolean;
@@ -187,9 +188,9 @@ export function fillRateTierCaps(cls: DeviceClass): Partial<Record<string, Textu
  * one, and it stands only while the cost is unmeasured — which on Android and
  * on everything that is neither Apple nor Android it still is.
  */
-export const LEGACY_TOUCH_PROFILE: DeviceProfile = {
-  id: 'legacy-touch',
-  provenance: 'legacy',
+export const UNMEASURED_TOUCH_PROFILE: DeviceProfile = {
+  id: 'unmeasured-touch',
+  provenance: 'unmeasured',
   envelopeBytes: 320 * MiB,
   ceilingBytes: 144 * MiB,
   sectorFloorBytes: 2 * SECTOR_SET_FLOOR_UNIT_BYTES,
@@ -209,9 +210,9 @@ export const LEGACY_TOUCH_PROFILE: DeviceProfile = {
  * point where a finer map first shows, and the fetch after that is the only
  * delay.
  */
-export const LEGACY_DESKTOP_PROFILE: DeviceProfile = {
-  id: 'legacy-desktop',
-  provenance: 'legacy',
+export const UNMEASURED_DESKTOP_PROFILE: DeviceProfile = {
+  id: 'unmeasured-desktop',
+  provenance: 'unmeasured',
   envelopeBytes: 768 * MiB,
   ceilingBytes: 256 * MiB,
   sectorFloorBytes: 3 * SECTOR_SET_FLOOR_UNIT_BYTES,
@@ -341,19 +342,19 @@ export const DEVICE_PROFILES: Readonly<Record<PlatformFamily, Readonly<Record<De
   apple: {
     phone: APPLE_PHONE_PROFILE,
     tablet: APPLE_TABLET_PROFILE,
-    desktop: LEGACY_DESKTOP_PROFILE,
+    desktop: UNMEASURED_DESKTOP_PROFILE,
     limited: LIMITED_PROFILE,
   },
   android: {
-    phone: LEGACY_TOUCH_PROFILE,
-    tablet: LEGACY_TOUCH_PROFILE,
-    desktop: LEGACY_DESKTOP_PROFILE,
+    phone: UNMEASURED_TOUCH_PROFILE,
+    tablet: UNMEASURED_TOUCH_PROFILE,
+    desktop: UNMEASURED_DESKTOP_PROFILE,
     limited: LIMITED_PROFILE,
   },
   other: {
-    phone: LEGACY_TOUCH_PROFILE,
-    tablet: LEGACY_TOUCH_PROFILE,
-    desktop: LEGACY_DESKTOP_PROFILE,
+    phone: UNMEASURED_TOUCH_PROFILE,
+    tablet: UNMEASURED_TOUCH_PROFILE,
+    desktop: UNMEASURED_DESKTOP_PROFILE,
     limited: LIMITED_PROFILE,
   },
 };
@@ -620,7 +621,7 @@ export function legacyTouchFirst(s: DeviceSignals): boolean {
 
 /** The profile the legacy test picked. Reference only; see above. */
 export function legacyProfile(s: DeviceSignals): DeviceProfile {
-  return legacyTouchFirst(s) ? LEGACY_TOUCH_PROFILE : LEGACY_DESKTOP_PROFILE;
+  return legacyTouchFirst(s) ? UNMEASURED_TOUCH_PROFILE : UNMEASURED_DESKTOP_PROFILE;
 }
 
 /** Read the signals off the live browser. The one function here that touches

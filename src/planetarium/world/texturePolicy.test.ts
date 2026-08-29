@@ -14,7 +14,7 @@ import {
   type TextureTier,
 } from './texturePolicy';
 import { SECTOR_SET_TABLE } from './sectorSets.generated';
-import { LEGACY_DESKTOP_PROFILE, LEGACY_TOUCH_PROFILE } from './gpuEnvelope';
+import { UNMEASURED_DESKTOP_PROFILE, UNMEASURED_TOUCH_PROFILE } from './gpuEnvelope';
 import { withMaxTextureSize } from '../testing/upgradeHarness';
 
 // 4096 is the pre-capture default — restore it so test order can't leak a
@@ -35,17 +35,17 @@ describe('captureDeviceCaps', () => {
     // planetarium's memory profile for the rest of the session, while every
     // ladder handle already built kept the old one.
     resetDeviceCapsForTests();
-    expect(captureDeviceCaps(fakeRenderer(16384), LEGACY_TOUCH_PROFILE)).toBe(LEGACY_TOUCH_PROFILE);
-    expect(deviceTextureProfile()).toBe(LEGACY_TOUCH_PROFILE);
-    expect(captureDeviceCaps(fakeRenderer(4096), LEGACY_DESKTOP_PROFILE)).toBe(LEGACY_TOUCH_PROFILE);
-    expect(deviceTextureProfile()).toBe(LEGACY_TOUCH_PROFILE);
+    expect(captureDeviceCaps(fakeRenderer(16384), UNMEASURED_TOUCH_PROFILE)).toBe(UNMEASURED_TOUCH_PROFILE);
+    expect(deviceTextureProfile()).toBe(UNMEASURED_TOUCH_PROFILE);
+    expect(captureDeviceCaps(fakeRenderer(4096), UNMEASURED_DESKTOP_PROFILE)).toBe(UNMEASURED_TOUCH_PROFILE);
+    expect(deviceTextureProfile()).toBe(UNMEASURED_TOUCH_PROFILE);
     // The GL caps of that first capture stand too: 8K stays loadable.
     expect(clampTier('8k')).toBe('8k');
   });
 
   it('spends the desktop numbers until a real device is read', () => {
     resetDeviceCapsForTests();
-    expect(deviceTextureProfile()).toBe(LEGACY_DESKTOP_PROFILE);
+    expect(deviceTextureProfile()).toBe(UNMEASURED_DESKTOP_PROFILE);
   });
 });
 

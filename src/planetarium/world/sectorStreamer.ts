@@ -630,15 +630,16 @@ export interface SectorStats {
   inflight: number;
   /** GPU memory the sector textures hold, estimated from their dimensions
    *  (RGBA8 plus a third for mips) — resident sets and what loads have
-   *  decoded so far. Measured after the decode, so it lags the two figures
+   *  decoded so far. MEASURED after the decode, so it lags the two figures
    *  below; ten colour tiles alone are ~213 MiB. */
-  gpuBytes: number;
+  measuredGpuBytes: number;
   /** What the budget actually counts: the bytes the resident sets hold and
-   *  the bytes the loads in flight have reserved, both from the tile
-   *  layouts. `residentBytes + reserved <= budget` holds whenever this is
-   *  read: every path that admits, reloads or shrinks the budget leaves the
-   *  working set inside it before it returns, a pyramid of levels included. */
-  residentBytes: number;
+   *  the bytes the loads in flight have reserved, both BUDGETED from the tile
+   *  layouts before a byte decodes. `budgetedBytes + reserved <= budget`
+   *  holds whenever this is read: every path that admits, reloads or shrinks
+   *  the budget leaves the working set inside it before it returns, a pyramid
+   *  of levels included. */
+  budgetedBytes: number;
   reserved: number;
   /** This device's sector budget right now — its ceiling, or what the total
    *  envelope leaves over the globe maps (globalBytes), whichever is less,
@@ -660,23 +661,23 @@ export interface SectorStats {
     /** Largest device-px-per-base-texel measured for the body this frame
      *  (0 while nothing faces the camera or the body is gated off). */
     maxTexelPx: number;
-    gpuBytes: number;
+    measuredGpuBytes: number;
     /** The same counts split by pyramid level, coarsest first — per BODY like
      *  everything here, so a body with two families adds both into one level:
      *  only the ids in `resident` say which family a slot belongs to. */
-    byLevel: Array<{ resident: number; loading: number; gpuBytes: number }>;
+    byLevel: Array<{ resident: number; loading: number; measuredGpuBytes: number }>;
     /** The same figures split by LIGHTING SIDE, which the merged view above
      *  cannot show. At the terminator a body's day and night families compete
      *  on one budget and one ranking, and the merged entry says only that the
      *  body holds ten sets — not that six of them are night. Only the sides a
      *  body actually has appear, so a one-family body still reads as one line.
-     *  `residentBytes` is what the budget counts; `gpuBytes` is measured after
-     *  the decode and lags it. */
+     *  `budgetedBytes` is what the budget counts; `measuredGpuBytes` is read
+     *  after the decode and lags it. */
     byFamily: Partial<Record<SectorSide, {
       resident: number;
       loading: number;
-      gpuBytes: number;
-      residentBytes: number;
+      measuredGpuBytes: number;
+      budgetedBytes: number;
     }>>;
     /** Every slot the last selection WANTED, by id, with the screen-space
      *  error that ranked it — resident, loading and blocked alike. The lists
@@ -1462,8 +1463,8 @@ export class SectorStreamer {
       resident: 0,
       loading: 0,
       inflight: 0,
-      gpuBytes: 0,
-      residentBytes: 0,
+      measuredGpuBytes: 0,
+      budgetedBytes: 0,
       reserved: 0,
       budget: this.budget(),
       floor: this.floorBytes(),
@@ -1476,18 +1477,18 @@ export class SectorStreamer {
       // holds gets everything Earth holds, day and night, and the ids inside
       // say which family each slot belongs to.
       const entry = out.bodies[body.handle.name] ??= {
-        resident: [], loading: [], reloading: [], maxTexelPx: 0, gpuBytes: 0, byLevel: [],
+        resident: [], loading: [], reloading: [], maxTexelPx: 0, measuredGpuBytes: 0, byLevel: [],
         byFamily: {}, scores: {},
       };
       const { resident, loading, reloading, byLevel, scores } = entry;
-      while (byLevel.length < body.levels.length) byLevel.push({ resident: 0, loading: 0, gpuBytes: 0 });
+      while (byLevel.length < body.levels.length) byLevel.push({ resident: 0, loading: 0, measuredGpuBytes: 0 });
       // One family per (name, side), so this entry is this family's alone —
       // written through the merged one so a reader sees both views of the
       // same slots rather than two totals that could drift apart.
       const family = entry.byFamily[body.family.side] ??= {
-        resident: 0, loading: 0, gpuBytes: 0, residentBytes: 0,
+        resident: 0, loading: 0, measuredGpuBytes: 0, budgetedBytes: 0,
       };
-      let gpuBytes = 0;
+      let measuredGpuBytes = 0;
       for (const s of body.slots) {
         const id = slotId(s, body.family.side);
         if (s.score > 0) scores[id] = s.score;
@@ -1505,16 +1506,16 @@ export class SectorStreamer {
         let slotBytes = 0;
         for (const tex of Object.values(s.maps)) slotBytes += textureGpuBytes(tex);
         for (const tex of s.loading?.owned ?? []) slotBytes += textureGpuBytes(tex);
-        level.gpuBytes += slotBytes;
-        family.gpuBytes += slotBytes;
-        gpuBytes += slotBytes;
-        family.residentBytes += s.bytes;
-        out.residentBytes += s.bytes;
+        level.measuredGpuBytes += slotBytes;
+        family.measuredGpuBytes += slotBytes;
+        measuredGpuBytes += slotBytes;
+        family.budgetedBytes += s.bytes;
+        out.budgetedBytes += s.bytes;
         out.reserved += s.reserved;
       }
       entry.maxTexelPx = Math.max(entry.maxTexelPx, body.maxTexelPx);
-      entry.gpuBytes += gpuBytes;
-      out.gpuBytes += gpuBytes;
+      entry.measuredGpuBytes += measuredGpuBytes;
+      out.measuredGpuBytes += measuredGpuBytes;
     }
     for (const entry of Object.values(out.bodies)) {
       out.resident += entry.resident.length;

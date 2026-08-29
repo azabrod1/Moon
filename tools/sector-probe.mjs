@@ -224,7 +224,7 @@ async function budgetGate(r, page, { poses, longSamples = 40, shortSamples = 8, 
     let last = null;
     for (let i = 0; i < samples; i++) {
       const s = await stats(page);
-      const held = s.residentBytes + s.reserved;
+      const held = s.budgetedBytes + s.reserved;
       if (held > s.budget) r.fail(`${body} ${mult}: held ${mib(held)} > budget ${mib(s.budget)} MiB`);
       if (held > ceilingBytes) r.fail(`${body} ${mult}: held ${mib(held)} MiB over this row's ${mib(ceilingBytes)} MiB ceiling`);
       peak = Math.max(peak, held);
@@ -309,7 +309,7 @@ const SCENARIOS = {
           r.fail(`${where}: globe maps ${mib(l.heldBytes)} over the ladder ceiling ${mib(l.ceilingBytes)} MiB`);
         }
         if (s.budget < s.floor) r.fail(`${where}: budget ${mib(s.budget)} under the floor ${mib(s.floor)} MiB`);
-        if (s.residentBytes + s.reserved > s.budget) r.fail(`${where}: held over budget`);
+        if (s.budgetedBytes + s.reserved > s.budget) r.fail(`${where}: held over budget`);
         peakMaps = Math.max(peakMaps, l.heldBytes);
         minBudget = Math.min(minBudget, s.budget);
         minSectorRoom = Math.min(minSectorRoom, Math.floor(s.budget / EARTH_SET_BYTES));
@@ -334,9 +334,9 @@ const SCENARIOS = {
       if (!end) return r;
       const earth = end.s.bodies.Earth ?? { resident: [], maxTexelPx: 0 };
       const want = row ? row.wantTexelPx : 1;
-      const room = Math.floor((end.s.budget - end.s.residentBytes - end.s.reserved) / EARTH_SET_BYTES);
+      const room = Math.floor((end.s.budget - end.s.budgetedBytes - end.s.reserved) / EARTH_SET_BYTES);
       r.say(`Earth 0.3: globe maps ${mib(end.l.heldBytes)} of ${mib(end.l.ceilingBytes)},`
-        + ` tiles ${end.s.resident} = ${mib(end.s.residentBytes)} MiB in a budget of ${mib(end.s.budget)}`
+        + ` tiles ${end.s.resident} = ${mib(end.s.budgetedBytes)} MiB in a budget of ${mib(end.s.budget)}`
         + ` (floor ${mib(end.s.floor)}), maxTexelPx ${earth.maxTexelPx.toFixed(2)} against a want of ${want},`
         + ` room for ${room} more set(s)`);
       r.say(`   rungs ${end.l.rungs.map((x) => `${x.key}:${x.tier ?? 'boot'}`).join(' ')}`);
@@ -396,11 +396,11 @@ const SCENARIOS = {
       await apple.page.waitForTimeout(22_000);
       const [s, l] = await apple.page.evaluate(() => [window.__moon.sectors(), window.__moon.ladder()]);
       const e = s.bodies.Earth ?? { resident: [], byLevel: [] };
-      r.say(`  Earth 0.13: ${s.resident} tiles = ${mib(s.residentBytes)} MiB of budget ${mib(s.budget)}`
+      r.say(`  Earth 0.13: ${s.resident} tiles = ${mib(s.budgetedBytes)} MiB of budget ${mib(s.budget)}`
         + ` (floor ${mib(s.floor)}), globe maps ${mib(l.heldBytes)} of ${mib(l.ceilingBytes)}`);
       r.say(`     Earth [${e.resident.slice().sort().join(',')}] byLevel ${JSON.stringify(e.byLevel.map((x) => x.resident))}`);
       r.say(`     rungs ${l.rungs.map((x) => `${x.key}:${x.tier ?? 'boot'}${x.top && x.top !== x.tier ? `(top ${x.top})` : ''}`).join(' ')}`);
-      if (s.residentBytes + s.reserved > s.budget) r.fail('apple phone: held over budget');
+      if (s.budgetedBytes + s.reserved > s.budget) r.fail('apple phone: held over budget');
       if (s.resident === 0) r.fail('apple phone Earth 0.13: no tiles at all');
       const clouds = l.rungs.find((x) => x.key === 'earthClouds');
       if (clouds && clouds.tier === '8k') r.fail('apple phone: the cloud deck reached 8K past its fill-rate cap');
@@ -413,8 +413,8 @@ const SCENARIOS = {
       const s2 = await apple.page.evaluate(() => window.__moon.sectors());
       const e2 = s2.bodies.Earth ?? { resident: [], scores: {} };
       const ranked = Object.entries(e2.scores).sort((a, b) => b[1] - a[1]);
-      r.say(`  Earth 0.13 after 42 s: ${s2.resident} tiles = ${mib(s2.residentBytes)} MiB of ${mib(s2.budget)},`
-        + ` room for ${Math.floor((s2.budget - s2.residentBytes - s2.reserved) / EARTH_SET_BYTES)} more sets`);
+      r.say(`  Earth 0.13 after 42 s: ${s2.resident} tiles = ${mib(s2.budgetedBytes)} MiB of ${mib(s2.budget)},`
+        + ` room for ${Math.floor((s2.budget - s2.budgetedBytes - s2.reserved) / EARTH_SET_BYTES)} more sets`);
       r.say(`     wanted, strongest first: ${ranked.slice(0, 14).map(([k, v]) => `${k}:${v.toFixed(2)}${e2.resident.includes(k) ? '*' : ''}`).join(' ')}`);
       r.say(`     (* = resident) ${ranked.length} slots asked, ${e2.resident.length} in`);
     } finally { await apple.ctx.close(); }
@@ -433,9 +433,9 @@ const SCENARIOS = {
         const rung = l.rungs.find((x) => x.key === 'moon');
         r.say(`  Moon 0.5 then 1.6: rung ${rung ? `${rung.tier} (top ${rung.top}, ${mib(rung.bytes)} MiB, source ${rung.sourceWidth})` : 'boot'},`
           + ` globe maps ${mib(l.heldBytes)} of ${mib(l.ceilingBytes)}`);
-        r.say(`     tiles ${s.resident} = ${mib(s.residentBytes)} MiB of ${mib(s.budget)},`
+        r.say(`     tiles ${s.resident} = ${mib(s.budgetedBytes)} MiB of ${mib(s.budget)},`
           + ` Moon [${(s.bodies.Moon?.resident ?? []).slice().sort().join(',')}]`);
-        if (s.residentBytes + s.reserved > s.budget) r.fail(`${label}: held over budget`);
+        if (s.budgetedBytes + s.reserved > s.budget) r.fail(`${label}: held over budget`);
         return rung ? rung.tier : 'boot';
       } finally { await run.ctx.close(); }
     };
@@ -444,7 +444,7 @@ const SCENARIOS = {
       hasTouch: true, isMobile: true, userAgent: IPHONE_UA,
     }, { deviceClass: 'phone', family: 'apple', profile: 'apple-phone' });
     const desktopMoon = await atTheMoon('Desktop at the Moon (control)', CONTEXTS.desktop,
-      { deviceClass: 'desktop', profile: 'legacy-desktop' });
+      { deviceClass: 'desktop', profile: 'unmeasured-desktop' });
     if (phoneMoon !== desktopMoon) r.fail(`the Moon rung differs: apple phone ${phoneMoon}, desktop ${desktopMoon}`);
     if (phoneMoon !== '8k') r.say(`  NOTE: neither reaches 8K at this pose (both ${phoneMoon})`);
 
@@ -460,7 +460,7 @@ const SCENARIOS = {
 
     // 3. An Android phone, which nobody has measured: the legacy row, unchanged.
     const pixel = await readRow('Pixel 412x915 DPR 2.625', CONTEXTS.android, {
-      deviceClass: 'phone', family: 'android', profile: 'legacy-touch',
+      deviceClass: 'phone', family: 'android', profile: 'unmeasured-touch',
       envelopeBytes: 320 * MiB, ceilingBytes: 144 * MiB, cacheOnlyWarm: true,
     });
     await pixel.ctx.close();

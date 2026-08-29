@@ -92,7 +92,7 @@ import {
   type ShadowEventSpec,
 } from '../astronomy/shadows';
 import { ShadowVisuals, createShadowVisualsWarmupProbes, type GuideSlotInput } from './world/ShadowVisuals';
-import { warmUpSceneShaders } from './world/shaderWarmup';
+import { warmUpSceneShaders, type ProgramResolveTiming } from './world/shaderWarmup';
 import { OBSERVATORY_JUMP_LEAD_MS, resolveLiveEvent, stepperSearchFromUtcMs } from './observatoryTime';
 import { resolveShowVantage } from './observatoryJump';
 import { surfacePerfBeginSpan, surfacePerfEndSpan } from './surfacePerf';
@@ -595,6 +595,34 @@ function topMapWidthOf(
 /** One animation frame, awaited — the unit the boot idle spends its costs in. */
 function nextFrame(): Promise<void> {
   return new Promise((resolve) => { requestAnimationFrame(() => resolve()); });
+}
+
+/** What a warm-up's resolve phase cost, one line per warm-up. A first visit
+ *  links every program cold and a later one links none, so the two are
+ *  different runs of the app; without this the difference is invisible from
+ *  outside and every claim about it is a guess. */
+function logShaderResolve(
+  which: string,
+  resolved: readonly ProgramResolveTiming[],
+  warmDrawMs: number,
+): void {
+  const round = (v: number): number => Math.round(v * 100) / 100;
+  let total = 0;
+  let max = 0;
+  for (const row of resolved) {
+    total += row.ms;
+    max = Math.max(max, row.ms);
+  }
+  debugLog(`${which} shader links resolved`, {
+    programs: resolved.length,
+    totalMs: round(total),
+    maxMs: round(max),
+    warmDrawMs: round(warmDrawMs),
+    slowest: [...resolved]
+      .sort((a, b) => b.ms - a.ms)
+      .slice(0, 5)
+      .map((row) => `${row.name || '?'} ${round(row.ms)}`),
+  });
 }
 
 /** True once boot has handed the frame to the user. Speculative GPU work waits
@@ -2704,11 +2732,18 @@ export class PlanetariumMode {
       // program on it) and force the links with one 1-pixel draw — see
       // world/shaderWarmup.ts for the why and the pinned contract. Fail-open:
       // on any failure lazy first-draw compilation remains the fallback.
-      const { compiled } = await warmUpSceneShaders(this.renderer, this.scene, this.camera, {
-        drawsThroughComposer: this.rendersThroughComposer(),
-        probeGroups: [probes.group, shadowProbes.group],
-        onError: (stage, err) => debugError(`Shader warm-up ${stage} failed`, err),
-      });
+      const { compiled, resolved, warmDrawMs } = await warmUpSceneShaders(
+        this.renderer, this.scene, this.camera, {
+          drawsThroughComposer: this.rendersThroughComposer(),
+          probeGroups: [probes.group, shadowProbes.group],
+          // Every pending program in this task, no frame yielded: the load
+          // screen is up, so a yielded frame is boot time, and the driver's
+          // deferred pipeline builds are paid under it either way.
+          resolvePerFrame: Number.POSITIVE_INFINITY,
+          onError: (stage, err) => debugError(`Shader warm-up ${stage} failed`, err),
+        },
+      );
+      logShaderResolve('Boot', resolved, warmDrawMs);
       this.shaderWarmupProgramCount = this.renderer.info.programs?.length ?? null;
       this.framesSinceShaderWarmup = 0;
       // Probe materials are disposed only once compileAsync's poll has fully
@@ -2828,11 +2863,11 @@ export class PlanetariumMode {
     }, PlanetariumMode.ATMOSPHERE_BAKE_DELAY_MS);
   }
 
-  /** Bring the table tier up across the idle, one cost to a frame. Three of
-   *  them are each a dropped frame on their own — the capability probe, the
-   *  shell program's link, and the bake, which then spreads its own programs
-   *  one to a frame before its first layer draw — and the arming frame used to
-   *  carry the first two together. */
+  /** Bring the table tier up across the idle, one cost to a frame: probe,
+   *  then the shell program's compile and its resolve phase (one program's
+   *  driver-side build per frame), then the bake, which spreads its own
+   *  programs one to a frame before its first layer draw. Each is a dropped
+   *  frame on its own, and the arming frame used to carry several together. */
   private async armAtmosphereTier(): Promise<void> {
     const lut = this.atmosphereLut;
     if (!lut) return;
@@ -2854,17 +2889,24 @@ export class PlanetariumMode {
    *  program is freed with the material that holds it, so a throwaway probe
    *  material would take its own program down with it.
    *
+   *  One program's driver-side build to a frame here, not all of them on the
+   *  warm draw: a compile reporting ready has only had its link job finished,
+   *  and the build behind it is paid by the first call that needs the program.
+   *
    *  Fail-open throughout — this only buys a smooth swap, and lazy first-draw
    *  compilation is the fallback. */
   private async warmAtmosphereShellProgram(): Promise<void> {
     const atmoProbes = this.createAtmosphereWarmupProbes();
     if (!atmoProbes) return;
     this.scene.add(atmoProbes.group);
-    const { compiled } = await warmUpSceneShaders(this.renderer, this.scene, this.camera, {
-      drawsThroughComposer: this.rendersThroughComposer(),
-      probeGroups: [atmoProbes.group],
-      onError: (stage, err) => debugError(`Atmosphere shell warm-up ${stage} failed`, err),
-    });
+    const { compiled, resolved, warmDrawMs } = await warmUpSceneShaders(
+      this.renderer, this.scene, this.camera, {
+        drawsThroughComposer: this.rendersThroughComposer(),
+        probeGroups: [atmoProbes.group],
+        onError: (stage, err) => debugError(`Atmosphere shell warm-up ${stage} failed`, err),
+      },
+    );
+    logShaderResolve('Atmosphere shell', resolved, warmDrawMs);
     // Disposal waits on compileAsync's own poll: disposing mid-poll throws
     // inside a timer callback no try/catch here could reach.
     void compiled.then(() => {

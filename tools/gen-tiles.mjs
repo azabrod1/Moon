@@ -39,6 +39,11 @@
 // <root>/sets.v1.json and src/planetarium/world/sectorSets.generated.ts from
 // the folders on disk, which is where the app reads the hashes it puts in URLs.
 //
+// Every gate here throws, and that is the whole failure discipline: the index
+// step at the bottom is what puts a set's name in front of the app, so a gate
+// that reported a failure and returned would publish the name of a set that
+// failed it. See the Gates section.
+//
 // Prereq (not a package.json dependency — this runs once per asset drop):
 //   npm i --no-save sharp@0.35.4
 // Usage:
@@ -809,6 +814,21 @@ async function indexSets() {
 
 // ---------------------------------------------------------------------------
 // Gates
+//
+// One failure discipline for all of them, geometry and no-data alike: a gate
+// that does not pass throws, and the run stops there.
+//
+// It has to. A set is renamed into the folder its own hash names as soon as it
+// is cut (finalizeSet), and the last thing every run does — whatever ran, and
+// whether or not anything was cut — is write the folders on disk into
+// sets.v1.json and into the table the app reads its URLs out of. A gate that
+// merely flagged a failure and let the run continue would reach that index
+// step, so the app would name, and a CDN would cache forever, a set whose own
+// check said its tiles are in the wrong places. A content address is a promise
+// about bytes; it cannot be handed out over bytes nothing vouches for.
+//
+// The cost is that a failing run reports the first bad gate rather than all of
+// them. Re-run with --verify after a fix: it re-checks without re-encoding.
 // ---------------------------------------------------------------------------
 
 /** Per-channel mean delta and RMS between two equal-size RGB rasters, in
@@ -866,7 +886,9 @@ async function verify(key, tier, grid, content, refPath) {
     .removeAlpha().resize(W, H, { fit: 'fill', kernel: 'lanczos3' }).raw().toBuffer();
   const d = rasterDiff(mosaic, ref, W * H);
   console.log(`  verify ${key}/${tier}: mean delta [${d.mean.map((m) => m.toFixed(2))}] RMS ${d.rms.toFixed(2)} -> ${d.ok ? 'PASS' : 'FAIL'}`);
-  if (!d.ok) process.exitCode = 1;
+  if (!d.ok) {
+    throw new Error(`${key}/${tier}: the tiles reassemble to mean [${d.mean.map((m) => m.toFixed(2))}] RMS ${d.rms.toFixed(2)} against ${path.relative(process.cwd(), refPath)} (limits 2 and 6) — a tile is in the wrong slot or the wrong orientation`);
+  }
 }
 
 /**
@@ -924,7 +946,9 @@ async function seamGate(key, tier, grid, content) {
   const limit = 3;
   const ok = worstV <= limit && worstH <= limit;
   console.log(`  seams ${key}/${tier}: worst mean |Δ| vertical ${worstV.toFixed(2)} horizontal ${worstH.toFixed(2)} (${worstAt}) -> ${ok ? 'PASS' : 'FAIL'}`);
-  if (!ok) process.exitCode = 1;
+  if (!ok) {
+    throw new Error(`${key}/${tier}: worst gutter mean |Δ| vertical ${worstV.toFixed(2)} horizontal ${worstH.toFixed(2)} at ${worstAt}, over the limit of ${limit} — a gutter does not hold the neighbouring pixels it claims to`);
+  }
 }
 
 /**
@@ -970,7 +994,9 @@ async function childGroupGate(key, parentTier, parentGrid, parentContent, childT
     }
   }
   console.log(`  child groups ${key}/${childTier} vs ${parentTier}: ${parentGrid.cols * parentGrid.rows - failed}/${parentGrid.cols * parentGrid.rows} pass; worst ${worst.c}_${worst.r} mean [${worst.d.mean.map((m) => m.toFixed(2))}] RMS ${worst.d.rms.toFixed(2)} max |Δ| ${worst.d.worst} -> ${failed ? 'FAIL' : 'PASS'}`);
-  if (failed) process.exitCode = 1;
+  if (failed) {
+    throw new Error(`${key}/${childTier} vs ${parentTier}: ${failed} of ${parentGrid.cols * parentGrid.rows} child groups do not resample onto the parent tile they sit on — the two levels are not the same world`);
+  }
 }
 
 /** Fetch one WMS GetMap tile into the cache (skipped when cached). */

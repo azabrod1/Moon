@@ -13,7 +13,7 @@ import {
   APPLE_PHONE_PROFILE,
   APPLE_TABLET_PROFILE,
   DEVICE_PROFILES,
-  EARTH_SECTOR_SET_BYTES,
+  SECTOR_SET_FLOOR_UNIT_BYTES,
   FILL_RATE_TIER_CAP,
   LEGACY_DESKTOP_PROFILE,
   LEGACY_TOUCH_PROFILE,
@@ -485,7 +485,7 @@ describe('the class table', () => {
       });
       expect(row.envelopeBytes).toBe(768 * MiB);
       expect(row.ceilingBytes).toBe(256 * MiB);
-      expect(row.sectorFloorBytes).toBe(3 * EARTH_SECTOR_SET_BYTES);
+      expect(row.sectorFloorBytes).toBe(3 * SECTOR_SET_FLOOR_UNIT_BYTES);
       expect(row.cacheOnlyWarm).toBe(false);
     }
     expect(APPLE_PHONE_PROFILE.provenance).toBe('measured 2026-08-29 iPhone');
@@ -506,7 +506,7 @@ describe('the class table', () => {
     expect(numbersOf(LEGACY_TOUCH_PROFILE)).toEqual({
       envelopeBytes: 320 * MiB,
       ceilingBytes: 144 * MiB,
-      sectorFloorBytes: 2 * EARTH_SECTOR_SET_BYTES,
+      sectorFloorBytes: 2 * SECTOR_SET_FLOOR_UNIT_BYTES,
       residentCap: 8,
       inflightCap: 1,
       fetchPool: 3,
@@ -525,8 +525,8 @@ describe('the class table', () => {
       expect(deviceProfileFor('limited', family)).toBe(LIMITED_PROFILE);
     }
     expect(LIMITED_PROFILE.envelopeBytes).toBe(192 * MiB);
-    expect(LIMITED_PROFILE.ceilingBytes).toBe(2 * EARTH_SECTOR_SET_BYTES);
-    expect(LIMITED_PROFILE.sectorFloorBytes).toBe(EARTH_SECTOR_SET_BYTES);
+    expect(LIMITED_PROFILE.ceilingBytes).toBe(2 * SECTOR_SET_FLOOR_UNIT_BYTES);
+    expect(LIMITED_PROFILE.sectorFloorBytes).toBe(SECTOR_SET_FLOOR_UNIT_BYTES);
     // It needs no cloud-deck cap of its own: the 8K deck is 171 MiB and the
     // ladder may hold 192 less the tiles' floor, so the arithmetic refuses it
     // before any fill-rate argument is reached.
@@ -566,7 +566,7 @@ describe('the class table', () => {
       provenance: 'legacy',
       envelopeBytes: 320 * MiB,
       ceilingBytes: 144 * MiB,
-      sectorFloorBytes: 2 * EARTH_SECTOR_SET_BYTES,
+      sectorFloorBytes: 2 * SECTOR_SET_FLOOR_UNIT_BYTES,
       residentCap: 8,
       inflightCap: 1,
       fetchPool: 3,
@@ -584,7 +584,7 @@ describe('the class table', () => {
       provenance: 'legacy',
       envelopeBytes: 768 * MiB,
       ceilingBytes: 256 * MiB,
-      sectorFloorBytes: 3 * EARTH_SECTOR_SET_BYTES,
+      sectorFloorBytes: 3 * SECTOR_SET_FLOOR_UNIT_BYTES,
       residentCap: 16,
       inflightCap: 2,
       fetchPool: 6,
@@ -644,7 +644,7 @@ describe('the class table', () => {
 
   it('states each of those moves in numbers', () => {
     const shape = (p: DeviceProfile) => {
-      const sets = Math.round(p.sectorFloorBytes / EARTH_SECTOR_SET_BYTES);
+      const sets = Math.round(p.sectorFloorBytes / SECTOR_SET_FLOOR_UNIT_BYTES);
       return `${Math.round(p.envelopeBytes / MiB)}/${Math.round(p.ceilingBytes / MiB)} MiB, floor ${sets === 1 ? '1 set' : `${sets} sets`}, ` +
         `${p.residentCap}/${p.inflightCap}/${p.fetchPool}, want ${p.wantTexelPx}/${p.releaseTexelPx}, ` +
         `warm ${p.cacheOnlyWarm ? 'cached' : 'full'}, caps ${JSON.stringify(p.tierCaps)}`;
@@ -691,7 +691,7 @@ describe('the envelope arithmetic', () => {
   it('states one Earth sector set in bytes, and the floors in whole sets of it', () => {
     // The constant is policy and the layout is the streamer's; they have to
     // be the same number or a floor is a fraction of a set.
-    expect(EARTH_SECTOR_SET_BYTES).toBe(SET);
+    expect(SECTOR_SET_FLOOR_UNIT_BYTES).toBe(SET);
     expect(TOUCH.sectorFloorBytes).toBe(2 * SET);
     expect(DESKTOP.sectorFloorBytes).toBe(3 * SET);
   });

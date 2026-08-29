@@ -11,6 +11,8 @@
     "gen:constellations": "node gen-constellations.mjs",
     "gen:maps": "node gen-maps.mjs",
     "gen:ktx2": "node tools/gen-moon-ktx2.mjs",
+    "gen:tiles": "node tools/gen-tiles.mjs",
+    "publish:tiles": "node tools/publish-tiles.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run src"

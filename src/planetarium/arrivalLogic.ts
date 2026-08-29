@@ -6,11 +6,17 @@
  * functions give every body its own approach AND departure dynamics — both
  * tied to distance, so arrivals glide and departures pull away instead of
  * detonating off a time ramp — and every teleportable body its arrival
- * pose: one shared drive-by for planets and moons (authored past-the-limb
- * pass, lane-scored drop so no bystander body ever owns the arrival's
- * speed cap, one-shot aim lead so the pass geometry survives the target's
- * own orbital motion), and the legacy "postcard" framing kept verbatim for
- * authored scenes (tutorial, historic journeys, the dev screenshot bridge).
+ * pose: one arrival law for planets and moons (authored past-the-limb pass,
+ * lane-scored drop so no bystander body ever owns the arrival's speed cap,
+ * one-shot aim lead so the pass geometry survives the target's own orbital
+ * motion) in two pose builders that share their standoff, their scoring and
+ * their aim helpers but not their candidate search — the planet path fans
+ * azimuth and elevation around the sun line and filters the fan against the
+ * rings; the moon path tries the sun side and falls back to the outward
+ * radial. Unifying the two searches would reorder the candidates, which is a
+ * different pose, so the law is what is shared and the search is not. Plus
+ * the legacy "postcard" framing kept verbatim for authored scenes (tutorial,
+ * historic journeys, the dev screenshot bridge).
  * Alongside them, the shell-contact graze and the moving-body speed credit
  * keep a bump a deflection rather than a reversal or a trap.
  * PlanetariumMode feeds live positions and applies the results.
@@ -805,12 +811,7 @@ export function arrivalPose(inp: ArrivalInputs): ArrivalPose {
       }
     }
   }
-  return {
-    position,
-    aimPoint,
-    impactParameterAU: impactParameterAU(inp, position.distanceTo(targetPos)),
-    aimCenter: ledTargetPos(inp, position),
-  };
+  return flybyPose(inp, position, aimPoint);
 }
 
 /** A lane reading at or above this keeps the arrival's pacing effectively
@@ -911,6 +912,24 @@ function ledTargetPos(inp: ArrivalInputs, position: THREE.Vector3): THREE.Vector
   );
   return inp.targetPos.clone()
     .addScaledVector(vel, passS * (inp.timeRate ?? 1));
+}
+
+/** The tail every drive-by pose ends with, planet or moon: the drop, the aim,
+ *  and the two figures derived from them — the impact parameter the pass is
+ *  authored around and the led centre the aim was taken against. Both builders
+ *  finish here so a change to what a pose carries cannot land in one search
+ *  and not the other. */
+function flybyPose(
+  inp: ArrivalInputs,
+  position: THREE.Vector3,
+  aimPoint: THREE.Vector3,
+): ArrivalPose {
+  return {
+    position,
+    aimPoint,
+    impactParameterAU: impactParameterAU(inp, position.distanceTo(inp.targetPos)),
+    aimCenter: ledTargetPos(inp, position),
+  };
 }
 
 /** The moons' flyby aim for a given drop: perp toward the parent so the moon
@@ -1047,13 +1066,6 @@ function planetFlybyPose(inp: ArrivalInputs): ArrivalPose {
     return out;
   };
 
-  const withB = (position: THREE.Vector3, aimPoint: THREE.Vector3): ArrivalPose => ({
-    position,
-    aimPoint,
-    impactParameterAU: impactParameterAU(inp, position.distanceTo(targetPos)),
-    aimCenter: ledTargetPos(inp, position),
-  });
-
   let best: ArrivalPose | null = null;
   let bestLane = -1;
   // Fail-closed datum for the (unreachable-in-catalog) case where the ring
@@ -1076,17 +1088,17 @@ function planetFlybyPose(inp: ArrivalInputs): ArrivalPose {
         const altitude = ringPassAltitudeAU(position, aimPoint, targetPos, inp.ringNormal);
         if (altitude > bestRejectedAltitude) {
           bestRejectedAltitude = altitude;
-          bestRejected = withB(position, aimPoint);
+          bestRejected = flybyPose(inp, position, aimPoint);
         }
         continue;
       }
       const lane = inp.laneBodies?.length
         ? poseLaneScore(inp, position, aimPoint)
         : 1;
-      if (lane >= LANE_CLEAN_RATIO) return withB(position, aimPoint);
+      if (lane >= LANE_CLEAN_RATIO) return flybyPose(inp, position, aimPoint);
       if (lane > bestLane) {
         bestLane = lane;
-        best = withB(position, aimPoint);
+        best = flybyPose(inp, position, aimPoint);
       }
     }
     return null;
@@ -1104,7 +1116,7 @@ function planetFlybyPose(inp: ArrivalInputs): ArrivalPose {
   if (best) return best;
   if (bestRejected) return bestRejected;
   const position = targetPos.clone().addScaledVector(sunDir, dist);
-  return withB(position, planetFlybyAim(inp, position));
+  return flybyPose(inp, position, planetFlybyAim(inp, position));
 }
 
 /** Ring-plane altitude of the aim ray's closest approach to the center. */

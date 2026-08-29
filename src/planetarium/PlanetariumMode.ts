@@ -564,7 +564,7 @@ function ktx2TranscodesCompressed(renderer: THREE.WebGLRenderer): boolean {
 function topMapWidthOf(
   ups: readonly TextureUpgrade[],
   material: THREE.Material,
-): (() => number | undefined) | undefined {
+): (() => number) | undefined {
   const up = ups.find((u) => u.material === material);
   if (!up) return undefined;
   return () => ladderMapReferenceWidth(up);
@@ -3021,6 +3021,29 @@ export class PlanetariumMode {
   };
 
   /**
+   * The world-presentation memory passes, in the one order that is correct,
+   * for every frame path that has them (cruise and landed).
+   *
+   * Giving a map back is not world presentation, so the pressure planner runs
+   * whether or not the chart owns the frame: the ladder holds its maps behind
+   * the chart too, and a planner gated on the spheres being drawn would let
+   * the chart squeeze the tiles with nothing able to hand a map back.
+   * Measuring IS world presentation — nothing draws the spheres under the
+   * chart, so a schematic-view zoom must not fetch for a surface nobody sees
+   * — and what the streamer is owed regardless (its byte budget, its load
+   * deadlines) is what `maintain` covers on those frames.
+   */
+  private updateMemoryPasses(mapOpen: boolean): void {
+    this.updateLadderPressure(performance.now());
+    if (!mapOpen) {
+      this.updateBodyLOD();
+      this.updateSectorStreaming();
+    } else {
+      this.maintainSectorStreaming();
+    }
+  }
+
+  /**
    * Give a rung back when the ladder is holding more than its share.
    *
    * Runs every frame, on world frames and chart frames alike: the ladder goes
@@ -3919,21 +3942,7 @@ export class PlanetariumMode {
     // world composer is bypassed entirely while the chart owns the frame, so
     // per-frame work whose only output is the world render is pure waste.)
     const mapOpen = this.isMapOpen();
-    // Outside the gate on purpose: the ladder holds its maps behind the chart
-    // too, and a planner that ran only where the spheres are drawn would let
-    // the chart squeeze the tiles with nothing able to hand a map back.
-    this.updateLadderPressure(performance.now());
-    if (!mapOpen) {
-      this.updateBodyLOD();
-      // Sector tiles are world render too: nothing to measure or fetch for a
-      // chart that never draws the spheres.
-      this.updateSectorStreaming();
-    } else {
-      // What the streamer is owed regardless: the ladder keeps applying globe
-      // maps behind the chart and the tile fetches keep ageing, so the byte
-      // budget and the load deadlines stay current while the measuring stops.
-      this.maintainSectorStreaming();
-    }
+    this.updateMemoryPasses(mapOpen);
     this.reportMemoryDebug(performance.now());
 
     // The HTML label/marker projections below read camera.matrixWorldInverse,
@@ -16526,17 +16535,7 @@ export class PlanetariumMode {
     // should fetch for it.
     // World-presentation passes are gated while the map owns the frame.
     const mapOpen = this.isMapOpen();
-
-    // Same as the cruise path: giving a map back is not world presentation.
-    this.updateLadderPressure(performance.now());
-    if (!mapOpen) {
-      this.updateBodyLOD();
-      this.updateSectorStreaming();
-    } else {
-      // Same as the cruise branch: the streamer's budget and load deadlines
-      // keep moving while the chart owns the frame and nothing is measured.
-      this.maintainSectorStreaming();
-    }
+    this.updateMemoryPasses(mapOpen);
     // Shadow spots/guides live in the world scene, which the map never draws —
     // same gate as the cruise branch, and they rebuild on the first frame back.
     if (!mapOpen) this.updateShadowVisuals();

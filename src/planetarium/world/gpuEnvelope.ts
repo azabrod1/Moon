@@ -52,7 +52,14 @@ export type PlatformFamily = 'apple' | 'android' | 'other';
 /** Everything the classifier reads, as literal values, so a device can be
  *  recorded once and replayed in a test. Fields a browser withholds are null
  *  rather than a default: "unreadable" and "reported low" are different
- *  answers and only the second one may move a device down a class. */
+ *  answers and only the second one may move a device down a class.
+ *
+ *  Wider than the classifier: innerWidth, pointerCoarse, devicePixelRatio,
+ *  hardwareConcurrency and uaMobile are recorded and no live decision reads
+ *  them. Deliberately — a recorded device is worth more complete than minimal,
+ *  since the struct exists to be replayed, and two of the five are the signals
+ *  that were tried and rejected, each with the reason on its own field below.
+ *  What a class is actually decided on is what classifyDevice reads. */
 export interface DeviceSignals {
   userAgent: string;
   /** `navigator.platform`: 'MacIntel' on a Mac AND on an iPad. */
@@ -81,10 +88,11 @@ export interface DeviceSignals {
   uaMobile: boolean | null;
 }
 
-/** The numbers the sector streamer is built with. It takes these rather than
- *  a device guess so its tests state what they mean, and so one table is the
- *  only place a device becomes a number. */
-export interface SectorMemoryLimits {
+/** The numbers the sector streamer is built with — memory limits, the demand
+ *  thresholds in device pixels per texel, and the concurrency caps. It takes
+ *  these rather than a device guess so its tests state what they mean, and so
+ *  one table is the only place a device becomes a number. */
+export interface SectorStreamerLimits {
   /** Sector tiles and the ladder's globe maps together may not exceed this. */
   envelopeBytes: number;
   /** What the tiles alone may hold, whatever the envelope leaves free. */
@@ -111,7 +119,7 @@ export interface SectorMemoryLimits {
 /** A class's whole memory policy: what the streamer is built with, plus the
  *  two ladder decisions that are about total residency rather than a single
  *  map's size. */
-export interface DeviceProfile extends SectorMemoryLimits {
+export interface DeviceProfile extends SectorStreamerLimits {
   /** Which row of the table these numbers came from, for the debug line. */
   id: 'apple-phone' | 'apple-tablet' | 'legacy-touch' | 'legacy-desktop' | 'limited';
   /** Where the row's numbers come from, in a form the debug overlay can show
@@ -131,12 +139,16 @@ export interface DeviceProfile extends SectorMemoryLimits {
 
 const MiB = 1024 * 1024;
 
-/** GPU bytes one Earth surface sector set holds — its 2048² colour tile plus
- *  its own copies of the bump and roughness crops. The floors below are
- *  whole sets of it, because a fraction of a set buys nothing: half a set
- *  admits no tile. Pinned against the streamer's own layout arithmetic in
- *  gpuEnvelope.test.ts. */
-export const EARTH_SECTOR_SET_BYTES = 24_251_050;
+/** The unit the sector floors below are counted in: one representative full
+ *  set, the largest the app cuts — an Earth day sector, its 2048² colour tile
+ *  plus its own copies of the bump and roughness crops. A unit of account, not
+ *  any particular set's cost: a night sector carries no crops and comes in
+ *  nearer 21 MiB, so a floor of three sets reserves a little more than three
+ *  night sectors would need. Whole sets because a fraction of one buys
+ *  nothing — half a set admits no tile. Pinned against the streamer's own
+ *  layout arithmetic in gpuEnvelope.test.ts, which is what keeps a
+ *  transcribed number honest in a file that must not import a body's layout. */
+export const SECTOR_SET_FLOOR_UNIT_BYTES = 24_251_050;
 
 /**
  * The one ladder cap that is NOT about memory. Whether a device holds an 8K
@@ -180,7 +192,7 @@ export const LEGACY_TOUCH_PROFILE: DeviceProfile = {
   provenance: 'legacy',
   envelopeBytes: 320 * MiB,
   ceilingBytes: 144 * MiB,
-  sectorFloorBytes: 2 * EARTH_SECTOR_SET_BYTES,
+  sectorFloorBytes: 2 * SECTOR_SET_FLOOR_UNIT_BYTES,
   residentCap: 8,
   inflightCap: 1,
   fetchPool: 3,
@@ -202,7 +214,7 @@ export const LEGACY_DESKTOP_PROFILE: DeviceProfile = {
   provenance: 'legacy',
   envelopeBytes: 768 * MiB,
   ceilingBytes: 256 * MiB,
-  sectorFloorBytes: 3 * EARTH_SECTOR_SET_BYTES,
+  sectorFloorBytes: 3 * SECTOR_SET_FLOOR_UNIT_BYTES,
   residentCap: 16,
   inflightCap: 2,
   fetchPool: 6,
@@ -235,7 +247,7 @@ export const APPLE_PHONE_PROFILE: DeviceProfile = {
   provenance: 'measured 2026-08-29 iPhone',
   envelopeBytes: 768 * MiB,
   ceilingBytes: 256 * MiB,
-  sectorFloorBytes: 3 * EARTH_SECTOR_SET_BYTES,
+  sectorFloorBytes: 3 * SECTOR_SET_FLOOR_UNIT_BYTES,
   residentCap: 16,
   inflightCap: 2,
   fetchPool: 6,
@@ -261,7 +273,7 @@ export const APPLE_TABLET_PROFILE: DeviceProfile = {
   provenance: 'measured 2026-08-29 iPad',
   envelopeBytes: 768 * MiB,
   ceilingBytes: 256 * MiB,
-  sectorFloorBytes: 3 * EARTH_SECTOR_SET_BYTES,
+  sectorFloorBytes: 3 * SECTOR_SET_FLOOR_UNIT_BYTES,
   residentCap: 16,
   inflightCap: 2,
   fetchPool: 6,
@@ -284,8 +296,8 @@ export const LIMITED_PROFILE: DeviceProfile = {
   id: 'limited',
   provenance: 'unmeasured',
   envelopeBytes: 192 * MiB,
-  ceilingBytes: 2 * EARTH_SECTOR_SET_BYTES,
-  sectorFloorBytes: 1 * EARTH_SECTOR_SET_BYTES,
+  ceilingBytes: 2 * SECTOR_SET_FLOOR_UNIT_BYTES,
+  sectorFloorBytes: 1 * SECTOR_SET_FLOOR_UNIT_BYTES,
   residentCap: 4,
   inflightCap: 1,
   fetchPool: 2,
@@ -368,7 +380,7 @@ export function deviceProfileFor(cls: DeviceClass, family: PlatformFamily): Devi
  *  tile, so a session with tiles switched off is not asked to reserve
  *  memory for them. */
 export function sectorBudgetBytes(
-  limits: Pick<SectorMemoryLimits, 'envelopeBytes' | 'ceilingBytes'>,
+  limits: Pick<SectorStreamerLimits, 'envelopeBytes' | 'ceilingBytes'>,
   ladderBytes: number,
   liveFloorBytes: number,
 ): number {
@@ -381,7 +393,7 @@ export function sectorBudgetBytes(
  *  admission test every ladder rung passes before it is fetched and again
  *  before it is applied. */
 export function ladderCeilingBytes(
-  limits: Pick<SectorMemoryLimits, 'envelopeBytes' | 'ceilingBytes'>,
+  limits: Pick<SectorStreamerLimits, 'envelopeBytes' | 'ceilingBytes'>,
   liveFloorBytes: number,
 ): number {
   return Math.max(0, limits.envelopeBytes - Math.min(Math.max(0, liveFloorBytes), limits.ceilingBytes));

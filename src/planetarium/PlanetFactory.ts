@@ -1,9 +1,26 @@
 /**
- * Async mesh construction for all Planetarium bodies: planet spheres with
- * per-body texture + atmosphere glow, Earth-specific night-lights/clouds,
- * Saturn rings, major moons, and the Planetarium's Sun (bigger, animated
- * corona, optional bloom). Falls back to procedurally generated canvas
- * textures on load failure so the app never blocks on a missing file.
+ * Two subsystems in one file, both named here: a header covering only the
+ * first sends a reader hunting for the second in a module that does not exist.
+ *
+ * 1. Async mesh construction for all Planetarium bodies: planet spheres with
+ *    per-body texture + atmosphere glow, Earth-specific night-lights/clouds,
+ *    Saturn rings, major moons, and the Planetarium's Sun (bigger, animated
+ *    corona, optional bloom). Falls back to procedurally generated canvas
+ *    textures on load failure so the app never blocks on a missing file.
+ *
+ * 2. The globe texture ladder those meshes climb, and everything that prices
+ *    it: a TextureUpgrade per material holding the 2K/4K/8K rungs and at most
+ *    one in-flight attempt; the GPU byte ledger that says what a rung costs
+ *    before anything is fetched; the admission gate a device's memory profile
+ *    installs over that ledger (bindTierAdmission — whose default admits
+ *    everything, so an unbound ladder has no ceiling); the release state
+ *    machine that hands a rung back under pressure (banner: "Giving a rung
+ *    back"); the restore queue that re-fetches a rung the pressure took; and
+ *    the arrival warm goals (banner: "Arrival warm goals").
+ *
+ * The sector streamer (world/sectorStreamer.ts) is the other allocator on the
+ * same device envelope. The two meet at exactly two numbers — the ladder's
+ * held bytes and ladderMapReferenceWidth — and nowhere else.
  */
 import * as THREE from 'three';
 import { type PlanetData, SUN_DATA } from './planets/planetData';

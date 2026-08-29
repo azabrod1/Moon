@@ -1146,7 +1146,10 @@ describe('planetPostcardPose — the legacy centered framing, pinned', () => {
     );
     expect(pose.position.x).toBeCloseTo(-20.099691230760769, 15);
     expect(pose.position.y).toBeCloseTo(3.1999508427081822, 15);
-    expect(pose.position.z).toBeCloseTo(25.399609813996193, 15);
+    // Two places short of the last bit on purpose: one ULP of 25.4 is 3.6e-15,
+    // so a tighter pin fails on reassociated arithmetic rather than on a pose
+    // that moved.
+    expect(pose.position.z).toBeCloseTo(25.399609813996193, 13);
   });
 
   it('a body at the exact origin takes the fixed fallback radial', () => {
@@ -1584,9 +1587,14 @@ describe('representative moon pose goldens — byte-stable', () => {
   // (1.46875e-6 AU) when the rig went to 1/64: the standoff is measured from
   // the camera, so a shorter trail drops the ship that much farther out. Aim
   // points and impact parameters are unchanged by the rig, and stayed pinned.
+  // Each number is pinned as finely as its own magnitude allows and no finer:
+  // one ULP of 5.2 AU is 8.9e-16 and of 39.5 AU is 7.1e-15, so those two sit
+  // two places short of the last bit while the small offsets beside them stay
+  // tight. A moved pose still fails here; a last-bit difference out of
+  // reassociated arithmetic is not what these guard.
   it('Io — composition-bound b', () => {
     const pose = arrivalPose(catalogInputs('Io'));
-    expect(pose.position.x).toBeCloseTo(5.2047391511412595, 15);
+    expect(pose.position.x).toBeCloseTo(5.2047391511412595, 13);
     expect(pose.position.z).toBeCloseTo(0.0018158336145122137, 15);
     expect(pose.aimPoint.x).toBeCloseTo(5.2051560177500615, 15);
     expect(pose.aimPoint.z).toBeCloseTo(0.0017831343892584413, 15);
@@ -1610,7 +1618,7 @@ describe('representative moon pose goldens — byte-stable', () => {
 
   it('Charon — separation-cap-bound standoff', () => {
     const pose = arrivalPose(catalogInputs('Charon'));
-    expect(pose.position.x).toBeCloseTo(39.480041231023293, 14);
+    expect(pose.position.x).toBeCloseTo(39.480041231023293, 12);
     expect(pose.aimPoint.z).toBeCloseTo(0.000077073748822255761, 18);
     expect(pose.impactParameterAU).toBeCloseTo(0.0000072915476329704215, 19);
   });

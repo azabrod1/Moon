@@ -35,6 +35,7 @@ import {
   surfacePerfSnapshot,
 } from './planetarium/surfacePerf';
 import { beginSlicedUpload, stepSlicedUpload } from './planetarium/world/slicedUpload';
+import { invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm } from './planetarium/world/textureWarmer';
 import {
   smoothTraceFrameStart,
   smoothTraceEvent,
@@ -812,6 +813,7 @@ function installDevHooks() {
   (window as any).__moonThree = THREE;
   (window as any).__moonRenderer = renderer;
   (window as any).__moonSlice = { begin: beginSlicedUpload, step: stepSlicedUpload };
+  (window as any).__moonWarm = { queueTextureWarm, pumpTextureWarmQueue, invalidateTextureWarmCache };
   debugLog('Dev hooks installed (window.__moon)');
 }
 

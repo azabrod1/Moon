@@ -35,6 +35,7 @@
  */
 import * as THREE from 'three';
 import { debugWarn } from '../../shared/debug';
+import { smoothTraceEvent } from '../smoothnessTrace';
 import {
   COMPRESSED_BLOCK_ROWS,
   mipLevelCount,
@@ -94,6 +95,10 @@ export interface SliceJob {
   /** The mip chain still has to be built (uncompressed only). */
   needsMipmap: boolean;
   bands: number;
+  /** Milliseconds of GPU transfer this map has cost so far, across every
+   *  band. Reported once at the end: a sliced map that vanished from the
+   *  upload telemetry would look like an upload that stopped happening. */
+  totalMs: number;
   /** The GL context this job's storage belongs to. A lost context invalidates
    *  it, and three's property store goes with it. */
   contextLost: boolean;
@@ -188,6 +193,7 @@ export function beginSlicedUpload(
     glType: enums.type,
     needsMipmap: !compressed,
     bands: 0,
+    totalMs: 0,
     contextLost: false,
   };
 }
@@ -219,7 +225,10 @@ export function stepSlicedUpload(job: SliceJob, budgetMs: number): 'more' | 'don
     job.contextLost = true;
     return 'failed';
   }
+  // The call's own clock bounds the budget; each GL operation is timed where
+  // it happens, so the reported cost is transfer alone and not this loop.
   const started = performance.now();
+  let finished = false;
   try {
     if (job.rowsDone < job.height) {
       // Band the base level. Every other level is small enough to go whole.
@@ -264,7 +273,9 @@ export function stepSlicedUpload(job: SliceJob, budgetMs: number): 'more' | 'don
         }
         job.rowsDone += rows;
         job.bands++;
-        job.msPerRow = updateRowRate(job.msPerRow, rows, performance.now() - bandStart);
+        const bandMs = performance.now() - bandStart;
+        job.totalMs += bandMs;
+        job.msPerRow = updateRowRate(job.msPerRow, rows, bandMs);
       }
       if (job.rowsDone < job.height) return 'more';
     }
@@ -272,20 +283,38 @@ export function stepSlicedUpload(job: SliceJob, budgetMs: number): 'more' | 'don
     // mip chain cannot stack onto the frame that finished the base.
     if (job.tailLevels.length > 0) {
       const level = job.tailLevels.shift()!;
+      const levelStart = performance.now();
       gl.compressedTexSubImage2D(
         gl.TEXTURE_2D, level.level, 0, 0, level.width, level.height, job.glFormat, level.data,
       );
-      return job.tailLevels.length > 0 || job.needsMipmap ? 'more' : 'done';
+      job.totalMs += performance.now() - levelStart;
+      if (job.tailLevels.length > 0 || job.needsMipmap) return 'more';
+      finished = true;
+      return 'done';
     }
     if (job.needsMipmap) {
+      const mipStart = performance.now();
       gl.generateMipmap(gl.TEXTURE_2D);
       job.needsMipmap = false;
+      job.totalMs += performance.now() - mipStart;
     }
+    finished = true;
     return 'done';
   } catch (err) {
     debugWarn('Sliced upload step failed', { err: String(err) });
     return 'failed';
   } finally {
+    if (finished && import.meta.env.DEV) {
+      const source = typeof job.texture.userData?.sourceUrl === 'string'
+        ? job.texture.userData.sourceUrl.split(/[/?#]/).filter(Boolean).pop()
+        : '';
+      smoothTraceEvent(
+        'upload',
+        `${job.texture.name || source || 'texture'} `
+        + `${job.width}x${job.height} sliced x${job.bands}`,
+        job.totalMs,
+      );
+    }
     if (gl.isContextLost()) job.contextLost = true;
   }
 }

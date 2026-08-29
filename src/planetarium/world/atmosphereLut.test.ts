@@ -3,14 +3,22 @@ import * as THREE from 'three';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
+  ATMOSPHERE_PASS_WEIGHTS,
+  ATMOSPHERE_UNIT_COST_MS,
   AtmosphereLut,
+  BAKE_BUDGET_FRACTION,
+  BAKE_DEFAULT_INTERVAL_MS,
   SCATTERING_PROBE_SCALE,
   SCATTERING_VALIDATION_BAND,
   SCATTERING_VALIDATION_SAMPLE,
   atmosphereLutProfile,
   atmosphereTierGpuBytes,
+  bakePassCostsMs,
+  bakeSliceBudgetMs,
+  bakeSliceDrawCount,
   createScatteringTarget,
   createTableTarget,
+  type AtmospherePass,
 } from './atmosphereLut';
 import {
   ATMOSPHERE_TABLE_SIZES_FULL,
@@ -145,6 +153,132 @@ describe('the bake step list', () => {
     const perOrder = layers + 1 + 1 + layers + layers;
     expect(plan().filter((step) => step.kind === 'draw').length)
       .toBe(2 + 2 * layers + layers + 3 * perOrder);
+  });
+});
+
+describe('what a slice of the bake may cost', () => {
+  const plan = (): Array<{ kind: string; pass: string; probeSafe: boolean }> => {
+    const baker = new AtmosphereLut(
+      {} as unknown as THREE.WebGLRenderer,
+      { register: false },
+    );
+    try {
+      return baker.bakeStepPlan('Earth');
+    } finally {
+      baker.dispose();
+    }
+  };
+
+  it('prices every pass the plan draws, and nothing it does not', () => {
+    // A pass with no weight would be priced `undefined` and admit an unbounded
+    // slice; a weight for a pass that never draws is a number nobody reads.
+    const drawn = new Set(plan().filter((s) => s.kind === 'draw').map((s) => s.pass));
+    expect([...drawn].sort()).toEqual(Object.keys(ATMOSPHERE_PASS_WEIGHTS).sort());
+  });
+
+  it('weights scattering density and multiple scattering above the quads', () => {
+    // The ordering is the whole point of the table: eight layers of the two
+    // heavy passes is more GPU than a 120 Hz frame has, eight transmittance
+    // quads is nothing. Only the ordering is asserted — the numbers are a
+    // starting point a timed device replaces.
+    const w = ATMOSPHERE_PASS_WEIGHTS;
+    expect(w.scatteringDensity).toBeGreaterThan(w.multipleScattering);
+    expect(w.multipleScattering).toBeGreaterThan(w.singleScattering);
+    expect(w.singleScattering).toBeGreaterThan(w.indirectIrradiance);
+    expect(w.indirectIrradiance).toBeGreaterThan(w.combine);
+    expect(w.transmittance).toBe(w.directIrradiance);
+    for (const weight of Object.values(w)) expect(weight).toBeGreaterThan(0);
+  });
+
+  it('never probes a draw that accumulates', () => {
+    // The cost probe re-runs one real draw per pass ahead of the bake. A draw
+    // that adds to its target rather than overwriting it would fold its order
+    // into the accumulator twice and change the tables.
+    const draws = plan().filter((s) => s.kind === 'draw');
+    expect(draws.filter((s) => !s.probeSafe).length).toBeGreaterThan(0);
+    // Every pass still has at least one probe-safe draw to be measured through.
+    const safe = new Set(draws.filter((s) => s.probeSafe).map((s) => s.pass));
+    expect([...safe].sort()).toEqual(Object.keys(ATMOSPHERE_PASS_WEIGHTS).sort());
+  });
+
+  it('spends a fixed share of the measured frame, not a fixed number of ms', () => {
+    expect(bakeSliceBudgetMs(16.7)).toBeCloseTo(16.7 * BAKE_BUDGET_FRACTION, 6);
+    expect(bakeSliceBudgetMs(8.33)).toBeCloseTo(8.33 * BAKE_BUDGET_FRACTION, 6);
+    // A frame reading outside any plausible refresh rate is a stalled tab or a
+    // broken sample, and clamps rather than sizing a slice.
+    expect(bakeSliceBudgetMs(400)).toBeCloseTo(40 * BAKE_BUDGET_FRACTION, 6);
+    expect(bakeSliceBudgetMs(0.2)).toBeCloseTo(4 * BAKE_BUDGET_FRACTION, 6);
+  });
+
+  it('assumes the faster display when it has no measurement', () => {
+    // Guessing 60 Hz would hand a 120 Hz frame twice its share and drop it;
+    // guessing 120 costs a 60 Hz machine only bake wall time.
+    const fallback = BAKE_DEFAULT_INTERVAL_MS * BAKE_BUDGET_FRACTION;
+    for (const bad of [Number.NaN, 0, -5, Number.POSITIVE_INFINITY]) {
+      expect(bakeSliceBudgetMs(bad)).toBeCloseTo(fallback, 6);
+    }
+  });
+
+  it('prices an unmeasured device off the weight table', () => {
+    const costs = bakePassCostsMs({});
+    for (const pass of Object.keys(ATMOSPHERE_PASS_WEIGHTS) as AtmospherePass[]) {
+      expect(costs[pass]).toBeCloseTo(ATMOSPHERE_PASS_WEIGHTS[pass] * ATMOSPHERE_UNIT_COST_MS, 9);
+    }
+  });
+
+  it('believes a timed pass over its weight, and prices the rest from it', () => {
+    // One measurement fixes what a weight unit costs on this GPU, so a pass the
+    // timer never reached is still planned against the device's own speed.
+    const costs = bakePassCostsMs({ singleScattering: 1.2 });
+    expect(costs.singleScattering).toBeCloseTo(1.2, 9);
+    expect(costs.multipleScattering).toBeCloseTo(
+      (1.2 / ATMOSPHERE_PASS_WEIGHTS.singleScattering) * ATMOSPHERE_PASS_WEIGHTS.multipleScattering,
+      9,
+    );
+    // Two measurements that disagree about the unit average, rather than the
+    // last one winning.
+    const both = bakePassCostsMs({ singleScattering: 1.2, transmittance: 0.1 });
+    const unit = ((1.2 / 4) + (0.1 / 1)) / 2;
+    expect(both.combine).toBeCloseTo(unit * ATMOSPHERE_PASS_WEIGHTS.combine, 9);
+  });
+
+  it('ignores a measurement that is not a positive number', () => {
+    // A disjoint or unavailable query has no reading; a zero or a NaN reaching
+    // the table would price every later slice at nothing and submit the lot.
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const costs = bakePassCostsMs({ scatteringDensity: bad });
+      expect(costs.scatteringDensity).toBeCloseTo(
+        ATMOSPHERE_PASS_WEIGHTS.scatteringDensity * ATMOSPHERE_UNIT_COST_MS, 9,
+      );
+    }
+  });
+
+  it('takes as many draws as fit the budget', () => {
+    const costs = bakePassCostsMs({});
+    const budget = bakeSliceBudgetMs(8.33);
+    const heavy: AtmospherePass[] = Array.from({ length: 16 }, () => 'multipleScattering');
+    const light: AtmospherePass[] = Array.from({ length: 16 }, () => 'combine');
+    const heavyCount = bakeSliceDrawCount(heavy, costs, budget, 8);
+    const lightCount = bakeSliceDrawCount(light, costs, budget, 8);
+    expect(heavyCount * costs.multipleScattering).toBeLessThanOrEqual(budget);
+    expect(lightCount).toBeGreaterThan(heavyCount);
+    // The draw-count ceiling still caps a slice of cheap draws.
+    expect(lightCount).toBe(8);
+  });
+
+  it('always takes one draw, however far over budget it is', () => {
+    // A pass whose single layer costs more than a whole frame's share would
+    // otherwise admit nothing, and the bake would spin on a step it never runs.
+    const costs = bakePassCostsMs({ scatteringDensity: 50 });
+    expect(bakeSliceDrawCount(['scatteringDensity'], costs, bakeSliceBudgetMs(8.33), 8)).toBe(1);
+    expect(bakeSliceDrawCount([], costs, bakeSliceBudgetMs(8.33), 8)).toBe(0);
+  });
+
+  it('lets a 60 Hz frame take more than a 120 Hz one', () => {
+    const costs = bakePassCostsMs({});
+    const upcoming: AtmospherePass[] = Array.from({ length: 16 }, () => 'singleScattering');
+    expect(bakeSliceDrawCount(upcoming, costs, bakeSliceBudgetMs(16.7), 16))
+      .toBeGreaterThan(bakeSliceDrawCount(upcoming, costs, bakeSliceBudgetMs(8.33), 16));
   });
 });
 

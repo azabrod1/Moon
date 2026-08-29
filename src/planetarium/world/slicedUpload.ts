@@ -138,6 +138,14 @@ export function canSlice(renderer: THREE.WebGLRenderer, texture: THREE.Texture):
     if (!BLOCK_BYTES[format]) return false;
     return Array.isArray(mipmaps) && mipmaps.length > 0;
   }
+  // An sRGB map is refused, and this is the whole reason the slicer is narrow.
+  // The driver's sRGB conversion is charged per UPLOAD CALL over the whole
+  // source, not per sub-rectangle, so splitting one call into N pays it N
+  // times. Measured on ANGLE Metal with a 4096x2048 map: one shot 5.6 ms,
+  // sliced 34.3 ms; at 2048x2048, 2.3 ms against 26.7 ms. The same map with a
+  // linear colour space slices for 1.0x. Slicing these would multiply the very
+  // cost it exists to spread.
+  if (texture.colorSpace === THREE.SRGBColorSpace) return false;
   // texSubImage2D takes a real image source. A DataTexture's image is a plain
   // {data,width,height} record, and handing that to the DOM-source overload
   // throws — so only genuine sources are sliced.

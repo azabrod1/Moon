@@ -102,12 +102,16 @@ const PARITY = async ({ width, height, budgetMs, mutable, srgb }) => {
   };
 
   const oneShot = makeTexture();
+  const oneShotStart = performance.now();
   renderer.initTexture(oneShot);
+  gl.finish();
+  const oneShotMs = performance.now() - oneShotStart;
   const afterOneShot = { ...calls };
 
   const sliced = makeTexture();
   const job = window.__moonSlice.begin(renderer, sliced);
   if (!job) return { error: 'the slicer refused a texture it should have taken' };
+  const slicedStart = performance.now();
   let bands = 0;
   for (;;) {
     const r = window.__moonSlice.step(job, budgetMs);
@@ -116,6 +120,8 @@ const PARITY = async ({ width, height, budgetMs, mutable, srgb }) => {
     if (r === 'failed') return { error: 'slice step failed' };
     if (bands > 5000) return { error: 'slice never finished' };
   }
+  gl.finish();
+  const slicedMs = performance.now() - slicedStart;
 
   // Sample both through one shader into an 8-bit target and read back.
   const target = new THREE.WebGLRenderTarget(64, 64, {
@@ -186,6 +192,8 @@ const PARITY = async ({ width, height, budgetMs, mutable, srgb }) => {
   return {
     bands, results, renderer: glInfo, width, height, mutable, srgb,
     oneShotCalls: afterOneShot, slicedCalls,
+    oneShotMs: Math.round(oneShotMs * 10) / 10,
+    slicedMs: Math.round(slicedMs * 10) / 10,
   };
 };
 
@@ -211,8 +219,10 @@ try {
   // path, and a sector tile; each also run on the immutable path.
   const cases = [
     { w: 4096, h: 2048, mutable: true, srgb: true },
-    { w: 2048, h: 2048, mutable: true, srgb: true },
+    { w: 4096, h: 2048, mutable: true, srgb: false },
+    { w: 4096, h: 2048, mutable: false, srgb: true },
     { w: 4096, h: 2048, mutable: false, srgb: false },
+    { w: 2048, h: 2048, mutable: true, srgb: true },
     { w: 2048, h: 2048, mutable: false, srgb: false },
   ];
   for (const c of cases) {
@@ -227,7 +237,9 @@ try {
     console.log(`${label}: ${out.bands} bands, ${out.results.length} samples, `
       + `${bad.length} mismatched, ${blank.length} blank; `
       + `one-shot whole-image uploads ${out.oneShotCalls.wholeImage}, `
-      + `sliced whole-image ${out.slicedCalls.wholeImage} bands ${out.slicedCalls.bands}`);
+      + `sliced whole-image ${out.slicedCalls.wholeImage} bands ${out.slicedCalls.bands}; `
+      + `one-shot ${out.oneShotMs} ms vs sliced ${out.slicedMs} ms `
+      + `(x${(out.slicedMs / Math.max(0.1, out.oneShotMs)).toFixed(1)})`);
     for (const r of bad.slice(0, 4)) {
       console.log(`   tile ${r.tile} lod ${r.lod}: ${r.diffBytes} bytes differ (first at ${r.firstAt})`);
     }

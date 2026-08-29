@@ -61,7 +61,7 @@ function compile(mat: THREE.Material): {
   const shader = {
     uniforms: {} as Record<string, THREE.IUniform>,
     vertexShader: '#include <common>\nvoid main() {\n#include <begin_vertex>\n}',
-    fragmentShader: '#include <common>\nvoid main() {\n#include <opaque_fragment>\n}',
+    fragmentShader: '#include <common>\nvoid main() {\n#include <normal_fragment_maps>\n#include <opaque_fragment>\n}',
   };
   (mat.onBeforeCompile as (s: typeof shader) => void)(shader);
   return shader;
@@ -118,7 +118,7 @@ describe('the injected surface shader', () => {
     expect(hash(shader.vertexShader))
       .toBe('862f7224fafb480070aebf0c7c125dddbd78c879780eb072e96988333154322a');
     expect(hash(shader.fragmentShader))
-      .toBe('a926d0aaf66cf25ee6dbc7cc4ccd355e044767df1ba60bd3b6c6c1b8141b6786');
+      .toBe('addb5fc7239023e618aeb7ec5dbbad4a697a37fdde6f468f7a859f1375c11b12');
   });
 
   it('reuses the tables\' own lookup GLSL rather than a second transcription', () => {

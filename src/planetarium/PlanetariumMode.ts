@@ -35,7 +35,7 @@ import {
   type PlanetData,
   LIGHT_SPEED_AU_PER_S,
 } from './planets/planetData';
-import { appliedTierHeldBytes, applySunGlowTier, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createAtmosphereMaterial, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, lodMeasurementRelevant, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, retainedSourceBytes, resolveTierFile, resolveUpgradeTier, setWarmEligibleMoonParents, sphereWidthSegments, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade, type TierAdmission } from './PlanetFactory';
+import { appliedNormalHeldBytes, appliedTierHeldBytes, applySunGlowTier, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createAtmosphereMaterial, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, lodMeasurementRelevant, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, retainedSourceBytes, resolveTierFile, resolveUpgradeTier, setWarmEligibleMoonParents, sphereWidthSegments, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type NormalUpgrade, type PlanetMesh, type TextureUpgrade, type TierAdmission } from './PlanetFactory';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { bindSurfaceAir, clearSurfaceAir, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
@@ -3125,6 +3125,12 @@ export class PlanetariumMode {
   private liveGlobalMapBytes(): number {
     let bytes = this.atmosphereLut?.gpuBytes() ?? 0;
     this.forEachTextureUpgrade((up) => { bytes += appliedTierHeldBytes(up); });
+    // The relief ladders spend the same envelope the colour ones do — a 4K
+    // normal map is 42.7 MiB of the device's memory whether it holds elevation
+    // or albedo — so the tiles have to give way for one exactly as they do for
+    // a colour rung. Only what an approach EARNED is in here; the boot relief
+    // every device carries regardless is not the ladder's weight.
+    this.forEachNormalUpgrade((up) => { bytes += appliedNormalHeldBytes(up); });
     return bytes;
   }
 
@@ -3136,6 +3142,17 @@ export class PlanetariumMode {
     }
     for (const moons of this.planetMoons.values()) {
       for (const m of moons) for (const up of m.textureUpgrades) fn(up);
+    }
+  }
+
+  /** Every relief handle in the scene: Earth's cloud deck and the Moon. */
+  private forEachNormalUpgrade(fn: (up: NormalUpgrade) => void): void {
+    if (!this.solarSystem) return;
+    for (const planet of this.solarSystem.planets) {
+      if (planet.normalUpgrade) fn(planet.normalUpgrade);
+    }
+    for (const moons of this.planetMoons.values()) {
+      for (const m of moons) if (m.normalUpgrade) fn(m.normalUpgrade);
     }
   }
 
@@ -4232,9 +4249,13 @@ export class PlanetariumMode {
     for (const planet of this.solarSystem.planets) {
       const ups = planet.textureUpgrades;
       const geo = planet.geometryUpgrade;
+      // A pending relief tier keeps the body measurable the same way an
+      // unfinished colour ladder does (it shares the colour ladder's first
+      // trigger fraction below).
+      const normalPending = normalUpgradePending(planet.normalUpgrade);
       // Nothing left to measure: every ladder has reached its goal and the
       // silhouette is already fine. (every() is true for a ladder-less body.)
-      if (geo.applied && ups.every(upgradeComplete)) continue;
+      if (!normalPending && geo.applied && ups.every(upgradeComplete)) continue;
       planet.group.getWorldPosition(this.bodyLODTmp);
       // A body with work left still skips the full 32-ray measurement while a
       // conservative overestimate of its diameter stays under every trigger
@@ -4243,7 +4264,9 @@ export class PlanetariumMode {
       const estPx = estimateSphereScreenDiameterPx(
         this.bodyLODTmp, planet.data.radiusAU, this.camera, canvasW, canvasH,
       );
-      if (!lodMeasurementRelevant(geo, ups, estPx, canvasH, null)) continue;
+      if (!lodMeasurementRelevant(geo, ups, estPx, canvasH, null)
+        && !(normalPending
+          && estPx / Math.max(canvasH, 1) > (UPGRADE_TRIGGER_FRACTION['4k'] ?? Infinity))) continue;
       const footprint = projectSphereToScreen(
         this.bodyLODTmp,
         planet.data.radiusAU,
@@ -4253,7 +4276,9 @@ export class PlanetariumMode {
         this.sphereScreenProjection,
       );
       upgradeGeometryOnApproach(geo, footprint.diameterPx);
-      this.triggerTextureUpgrades(ups, footprint.diameterPx / Math.max(canvasH, 1), nowMs);
+      const planetFraction = footprint.diameterPx / Math.max(canvasH, 1);
+      this.triggerTextureUpgrades(ups, planetFraction, nowMs);
+      upgradeNormalOnApproach(planet.normalUpgrade, planetFraction, nowMs);
     }
     // Cruise re-renders a procedural moon's texture sharper on close approach;
     // the landed/Observatory path already does this on observe, so gate it to
@@ -17774,6 +17799,9 @@ export class PlanetariumMode {
     // The relief tiers ride the same network and need the same abandonment.
     for (const moons of this.planetMoons.values()) {
       for (const m of moons) cancelNormalUpgrade(m.normalUpgrade);
+    }
+    for (const planet of this.solarSystem?.planets ?? []) {
+      cancelNormalUpgrade(planet.normalUpgrade);
     }
     // The analytic shells belong to the meshes the solar system owns; the LUT
     // ones were built here, and carry the 1x1 stand-in tables with them.

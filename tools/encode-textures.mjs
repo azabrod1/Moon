@@ -25,17 +25,28 @@ const clean = process.argv.includes('--clean');
 // ones the shaders read as numbers; everything else is a photo (q85).
 const FILES = [
   'mercury.jpg', 'venus.jpg', 'earth-day.jpg', 'earth-night.jpg', 'earth-clouds.jpg',
-  'earth-bump.png', 'earth-roughness.png', 'mars.jpg', 'mars-normal.png', 'jupiter.jpg',
+  'earth-bump.png', 'earth-roughness.png', 'earth-clouds-normal.png',
+  'mars.jpg', 'mars-normal.png', 'jupiter.jpg',
   'saturn.jpg', 'uranus.jpg', 'neptune.jpg', 'pluto.jpg', 'moon.jpg', 'moon-normal.png',
   'io.jpg', 'europa.jpg', 'ganymede.jpg', 'callisto.jpg', 'triton.jpg',
   '4k/mars.jpg', '4k/jupiter.jpg', '4k/pluto.jpg', '4k/moon.jpg', '4k/earth-clouds.jpg',
   '4k/moon-normal.png', '8k/moon.jpg', '8k/earth-clouds.jpg',
 ];
 const isData = (f) => /normal|bump|roughness/.test(f);
-// The cloud deck draws at 0.35 opacity over the globe, so its compression
-// noise is a third as visible as a globe map's: q60 holds up in close crops
-// and halves the bytes of the heaviest maps under the arrival veils.
-const isCloudDeck = (f) => /earth-clouds/.test(f);
+// The cloud relief is the one data map that does not get plain lossless. It is
+// a height field guessed from a q60 colour map's brightness, and a cloud field
+// is nearly incompressible: 998 KB lossless against 641 KB near-lossless, for
+// two counts of worst-case error — under a degree of tilt on a map the deck
+// reads at 0.6. Every other data map here holds a measurement and keeps its
+// bytes exactly.
+const isNearLossless = (f) => /earth-clouds-normal/.test(f);
+// The cloud deck's colour map is the alpha as well as the colour now, so its
+// compression noise reaches the coverage — but through a curve whose slope is
+// 1.9 per unit of stored luminance, which turns 2/255 of encoder error into
+// 0.015 of alpha. q60 still holds up in close crops and still halves the bytes
+// of the heaviest maps under the arrival veils. The RELIEF cut from the same
+// map is a data map and stays lossless, above.
+const isCloudDeck = (f) => /earth-clouds\.(jpg|webp)$/.test(f);
 
 let from = 0;
 let to = 0;
@@ -52,12 +63,14 @@ for (const file of FILES) {
   const img = sharp(src, { limitInputPixels: false });
   // keepMetadata carries any ICC profile across so a color-managed decode
   // shows the same colors the original showed.
-  if (isData(file)) await img.webp({ lossless: true, effort: 5 }).keepMetadata().toFile(out);
+  if (isNearLossless(file)) await img.webp({ lossless: true, nearLossless: true, quality: 60, effort: 5 }).keepMetadata().toFile(out);
+  else if (isData(file)) await img.webp({ lossless: true, effort: 5 }).keepMetadata().toFile(out);
   else await img.webp({ quality: isCloudDeck(file) ? 60 : 85, effort: 5 }).keepMetadata().toFile(out);
   const outSize = (await stat(out)).size;
   from += size;
   to += outSize;
-  console.log(`${file.padEnd(24)} ${(size / 1024).toFixed(0).padStart(6)}KB -> ${(outSize / 1024).toFixed(0).padStart(6)}KB ${isData(file) ? '[lossless]' : isCloudDeck(file) ? '[q60]' : '[q85]'}`);
+  const how = isNearLossless(file) ? '[near-lossless]' : isData(file) ? '[lossless]' : isCloudDeck(file) ? '[q60]' : '[q85]';
+  console.log(`${file.padEnd(24)} ${(size / 1024).toFixed(0).padStart(6)}KB -> ${(outSize / 1024).toFixed(0).padStart(6)}KB ${how}`);
   if (clean) await unlink(src);
 }
 console.log(`total: ${(from / 1e6).toFixed(1)}MB -> ${(to / 1e6).toFixed(1)}MB (-${Math.round((1 - to / from) * 100)}%)${clean ? ', sources removed' : ''}`);

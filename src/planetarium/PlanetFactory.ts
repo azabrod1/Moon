@@ -41,6 +41,7 @@ import {
   SUN_GLARE_EXTENT_SOLAR_RADII,
 } from '../shared/shaders/sun';
 import { debugWarn } from '../shared/debug';
+import { CLOUD_NORMAL_SCALE } from './world/cloudDeck';
 import { applyTextureDefaults, clampTier, deviceTextureProfile, resolveTextureUrl, TIER_MAP_WIDTH, type TextureTier, type MapKind } from './world/texturePolicy';
 import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
 import { createAtmosphereShellMaterial } from './world/atmosphereShell';
@@ -162,6 +163,7 @@ export const PLANET_TEXTURE_FILES: Record<string, string> = {
   earthDay: 'earth-day.v2.webp',
   earthNight: 'earth-night.v2.webp',
   earthClouds: 'earth-clouds.webp',
+  earthCloudsNormal: 'earth-clouds-normal.webp',
   earthBump: 'earth-bump.webp',
   earthRoughness: 'earth-roughness.v2.webp',
   mars: 'mars.v2.webp',
@@ -739,6 +741,18 @@ export function appliedTierHeldBytes(up: TextureUpgrade): number {
   const pending = up.pendingReleaseBytes ?? 0;
   if (!up.appliedTier) return pending; // the boot map is not the ladder's weight
   return appliedTierGpuBytes(up) + retainedSourceBytes(materialColorMap(up.material)) + pending;
+}
+
+/**
+ * GPU bytes a RELIEF rung holds — appliedTierHeldBytes' data-map sibling. Zero
+ * until the rung is on the material, because the boot relief every device
+ * fetches regardless is not the ladder's optional weight; the tier the approach
+ * earned is, and it is spent out of the same envelope the tiles come from.
+ */
+export function appliedNormalHeldBytes(up: NormalUpgrade | undefined): number {
+  if (!up || up.state !== 'done') return 0;
+  const map = up.material.normalMap;
+  return textureGpuBytes(map, TIER_MAP_WIDTH[up.tier]) + retainedSourceBytes(map);
 }
 
 /** Bytes of decoded image a texture is still holding in RAM. Only the bitmap
@@ -1856,8 +1870,16 @@ export function pumpArrivalWarmGoal(up: TextureUpgrade, nowMs: number): boolean 
 // a third of all boot traffic for detail no spawn-distance Moon can show —
 // so boot now fetches the 1440x720 map and this tier streams in on approach,
 // exactly like the colour ladders above.
-const NORMAL_UPGRADE_TIERS: Record<string, TextureTier> = {
+export const NORMAL_UPGRADE_TIERS: Record<string, TextureTier> = {
   moonNormal: '4k',
+  // Earth's cloud relief has no rung, and the reason is bytes rather than
+  // taste: a cloud field's normal map is nearly incompressible, so the 4K one
+  // is 15.6 MB lossless and 10.3 MB near-lossless — more than twice the 4.7 MB
+  // 8K COLOUR rung that doubles the resolution of the picture rather than of a
+  // guess at its height. It ships at its boot resolution only, and the band a
+  // rung would have added is the band the procedural detail noise covers for
+  // no bytes at all (world/cloudDetailNoise). Adding one later is this line
+  // plus the file — the handle below arms itself the moment it exists.
 };
 
 /** One body's streamed relief upgrade: the data-map sibling of TextureUpgrade,
@@ -1929,7 +1951,9 @@ export function applyNormalTierTexture(
   }
   const prev = mat.normalMap;
   mat.normalMap = tex;
-  mat.normalScale.set(1, 1);
+  // The scale stays whatever the surface authored (the cloud deck's relief is
+  // a brightness proxy and reads at 0.6): a rung is a sharper map of the same
+  // relief, and resetting the depth on arrival would make the swap a pop.
   mat.userData.normalTierRank = rank;
   mat.needsUpdate = true;
   if (prev) prev.dispose();
@@ -2169,6 +2193,10 @@ export interface PlanetMesh {
    *  material, so Earth's globe and its cloud shell each carry their own.
    *  Empty for a body with no higher tier on disk. */
   textureUpgrades: TextureUpgrade[];
+  /** Close-approach relief tier, for the surfaces whose derived normal map
+   *  ships one (Earth's cloud deck). Undefined where no tier exists on disk or
+   *  the device cannot hold it. */
+  normalUpgrade?: NormalUpgrade;
   /** Silhouette detail, rebuilt on close approach — the globe and every shell
    *  that draws an edge at the body's own radius. */
   geometryUpgrade: GeometryUpgrade;
@@ -2409,6 +2437,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   let nightMaterial: THREE.ShaderMaterial | undefined;
   let nightMesh: THREE.Mesh | undefined;
   let cloudsMesh: THREE.Mesh | undefined;
+  let cloudsNormalUpgrade: NormalUpgrade | undefined;
 
   if (earthLate && earthDetailTexturePromise) {
     const [nightTex, cloudTex, bumpTex, roughTex] = await earthDetailTexturePromise;
@@ -2436,6 +2465,11 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
       opacity: 1,
       depthWrite: false,
       roughness: 1.0,
+      // The relief's depth, authored here rather than where the map lands, so
+      // the boot relief and the rung that sharpens it arrive at one depth. A
+      // whole-globe deck's height field is a brightness proxy, not measured
+      // elevation: at 1 the cloud banks emboss into ridges under a low sun.
+      normalScale: new THREE.Vector2(CLOUD_NORMAL_SCALE, CLOUD_NORMAL_SCALE),
     });
     // Ranked like the globe's map: the deck takes tier arrivals from two
     // directions — its upgrade handle and its late slot — and both have to be
@@ -2460,6 +2494,26 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     // own handle: the globe and the clouds sharpen independently.
     const cloudsUpgrade = makeTextureUpgrade('earthClouds', cloudMat);
     if (cloudsUpgrade) textureUpgrades.push(cloudsUpgrade);
+    // Cloud relief: a height field derived from the deck's own map, so what
+    // lights as a bank of cloud is exactly what draws as one. Durable rather
+    // than through a late slot, and with no procedural stand-in — the 'data'
+    // fallback is flat mid-grey, which as a tangent normal is the zero vector
+    // and normalizes to nothing. The deck stays flat until the real map lands.
+    cloudsNormalUpgrade = makeNormalUpgrade('earthCloudsNormal', cloudMat);
+    fetchTextureDurably({
+      url: resolveTextureUrl(PLANET_TEXTURE_FILES.earthCloudsNormal, '2k'),
+      context: { map: 'cloud relief', name: planet.name },
+      onLoad: (nrm) => {
+        applyTextureDefaults(nrm, 'data');
+        afterDecode(nrm, () => {
+          // Through the rank guard, not straight onto the material: a boot map
+          // that recovered late would otherwise overwrite (and free) the rung
+          // an approach had already installed, and the handle — still
+          // reporting it applied — would never fetch it again.
+          if (applyNormalTierTexture(cloudMat, nrm, TIER_RANK['2k'])) queueTextureWarm(nrm);
+        });
+      },
+    });
 
     const earthMat = mesh.material as THREE.MeshStandardMaterial;
     earthMat.bumpMap = bumpTex;
@@ -2505,7 +2559,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   return {
     group, mesh, data: planet, rings, ringFx, atmosphere, nightMesh, nightMaterial,
     nightRadiusAU: nightMesh ? planet.radiusAU * EARTH_NIGHT_SHELL_SCALE : undefined,
-    cloudsMesh, fx, textureUpgrades, geometryUpgrade,
+    cloudsMesh, fx, textureUpgrades, normalUpgrade: cloudsNormalUpgrade, geometryUpgrade,
   };
 }
 

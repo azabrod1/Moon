@@ -68,6 +68,23 @@ float cloudCoverage(float linearLuminance) {
 }
 `;
 
+/**
+ * How deep the deck's relief reads, as the material's `normalScale`.
+ *
+ * The height field behind it is the cloud map's own brightness (gen-maps'
+ * earth-clouds-normal job), which is a proxy: a bright pixel is thick cloud,
+ * and thick cloud is usually tall cloud, but a bright low stratus deck is not a
+ * mountain. So the relief is authored SHALLOW. At 1 the banks emboss into
+ * ridges the moment the Sun is low, which is the same overstatement the Mars
+ * relief was halved for; 0.6 keeps the towers legible at the terminator without
+ * turning a marine layer into terrain.
+ *
+ * It lives on the material rather than in the map so that both rungs of the
+ * relief ladder — the boot map and the sharper one an approach earns — arrive
+ * at one depth and the swap reads as a sharpen rather than a pop.
+ */
+export const CLOUD_NORMAL_SCALE = 0.6;
+
 /** Rec.709 luminance weights — the one place the deck's grey is measured. */
 export const LUMINANCE_WEIGHTS: readonly [number, number, number] = [0.2126, 0.7152, 0.0722];
 
@@ -75,3 +92,4 @@ export const LUMINANCE_WEIGHTS: readonly [number, number, number] = [0.2126, 0.7
 export function luminance(r: number, g: number, b: number): number {
   return LUMINANCE_WEIGHTS[0] * r + LUMINANCE_WEIGHTS[1] * g + LUMINANCE_WEIGHTS[2] * b;
 }
+

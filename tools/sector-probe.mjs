@@ -253,7 +253,7 @@ async function budgetGate(r, page, { poses, longSamples = 40, shortSamples = 8, 
     const b = last.bodies[body] ?? { resident: [], byLevel: [] };
     r.say(`${body} ${how} ${mult} (${samples} samples): resident ${last.resident} held ${mib(peak)} MiB`
       + ` of budget ${mib(last.budget)} (${(worst * 100).toFixed(0)}%),`
-      + ` globe maps ${mib(last.globalBytes)} of envelope ${mib(last.envelope)}`);
+      + ` globe maps ${mib(last.ladderBytes)} of envelope ${mib(last.envelope)}`);
     r.say(`   ${body}: [${b.resident.slice().sort().join(',')}] byLevel ${JSON.stringify(b.byLevel.map((l) => l.resident))}`
       + ` — one more sector would be ${mib(peak + EARTH_SET_BYTES)} MiB`);
   }
@@ -479,7 +479,7 @@ const SCENARIOS = {
     });
     await ipad.ctx.close();
 
-    // 3. An Android phone, which nobody has measured: the legacy row, unchanged.
+    // 3. An Android phone, which nobody has measured: the unmeasured row.
     const pixel = await readRow('Pixel 412x915 DPR 2.625', CONTEXTS.android, {
       deviceClass: 'phone', family: 'android', profile: 'unmeasured-touch',
       envelopeBytes: 320 * MiB, ceilingBytes: 144 * MiB, cacheOnlyWarm: true,

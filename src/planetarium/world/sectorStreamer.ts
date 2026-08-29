@@ -644,14 +644,17 @@ export interface SectorStats {
   budgetedBytes: number;
   reserved: number;
   /** This device's sector budget right now — its ceiling, or what the total
-   *  envelope leaves over the globe maps (globalBytes), whichever is less,
+   *  envelope leaves over the globe maps (ladderBytes), whichever is less,
    *  and never below the floor. */
   budget: number;
   /** The bytes the globe maps may not take from the tiles (0 while no body
    *  is registered). */
   floor: number;
   envelope: number;
-  globalBytes: number;
+  /** What the globe texture ladder holds out of that envelope — the same
+   *  figure the envelope itself calls ladderBytes, and the other half of
+   *  `budget`'s arithmetic. */
+  ladderBytes: number;
   /** By BODY, not by family: a body's day and night sectors are merged into
    *  one entry under its catalog name, so a reader that predates the second
    *  family still sees one Earth line with everything Earth holds in it. */
@@ -1483,7 +1486,7 @@ export class SectorStreamer {
       budget: this.budget(),
       floor: this.floorBytes(),
       envelope: this.envelope.envelopeBytes,
-      globalBytes: this.envelope.ladderBytes,
+      ladderBytes: this.envelope.ladderBytes,
       bodies: {},
     };
     for (const body of this.bodies.values()) {

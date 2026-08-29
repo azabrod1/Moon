@@ -2479,7 +2479,7 @@ describe('the transient of a globe-map swap', () => {
     // transient is charged and answered before it is spent, not a frame after
     // the peak has passed.
     expect(drawnAtChange).toBe(4096);
-    expect(seen.globalBytes).toBe(HIGH + LOW);
+    expect(seen.ladderBytes).toBe(HIGH + LOW);
     expect(seen.budget).toBe(3 * SET - LOW);
     expect(seen.resident).toBe(2);
     expect(seen.budgetedBytes + seen.reserved).toBeLessThanOrEqual(seen.budget);
@@ -2488,7 +2488,7 @@ describe('the transient of a globe-map swap', () => {
     const after = streamer.stats();
     // Back on the boot map every device carries anyway, which is not the
     // ladder's optional weight: the tiles have the whole envelope again.
-    expect(after.globalBytes).toBe(0);
+    expect(after.ladderBytes).toBe(0);
     expect(up.appliedTier).toBeNull();
     expect(after.budgetedBytes + after.reserved).toBeLessThanOrEqual(after.budget);
     material.dispose();

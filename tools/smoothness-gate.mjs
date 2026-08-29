@@ -692,12 +692,19 @@ if (RESCORE) {
     const stored = JSON.parse(readFileSync(join(RESCORE, file), 'utf8'));
     if (!stored.trace) continue;
     const previous = stored.analysis ?? {};
-    const analysis = analyze(
-      stored.trace,
-      { id: previous.scenario ?? file.replace(/\.json$/, ''), title: previous.title ?? '' },
-      previous.notes ?? [],
-    );
+    const id = previous.scenario ?? file.replace(/\.json$/, '');
+    const scenario = SCENARIOS.find((candidate) => candidate.id === id)
+      ?? { id, title: previous.title ?? '' };
+    const analysis = analyze(stored.trace, scenario, previous.notes ?? []);
     analysis.wallSeconds = previous.wallSeconds;
+    // A scenario that judges itself keeps judging itself on a re-score: the
+    // self-test is MEANT to blow the frame budget, and the generic rule would
+    // read its injected stalls as a failure of the app.
+    if (scenario.verify) {
+      const problems = scenario.verify(analysis, stored.trace);
+      analysis.failures = problems;
+      analysis.verdict = problems.length ? 'FAIL' : 'PASS';
+    }
     rescored.push(analysis);
     writeFileSync(join(RESCORE, file), JSON.stringify({ analysis, trace: stored.trace }, null, 1));
   }

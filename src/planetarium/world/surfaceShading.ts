@@ -26,11 +26,12 @@
  * is what it always was on an airless body and on a device with no tier.
  *
  * The Moon is the sixth, and it is weighted by its OWN elevation rather than by
- * the Sun's: `moonUpWeight` times the complement of this surface's day factor,
- * which is the term the Sun's own light on the fragment arrives on. Gate it by
- * the Sun's night weight instead and the ground runs through a minimum at the
- * terminator — the Sun's light gone, the Moon's not yet arrived — with a
- * gibbous Moon standing right over it.
+ * the Sun's: `moonUpWeight` times `sunDownWeight`, a one-sided ramp at full
+ * strength from the terminator down and fading only as the Sun climbs above it.
+ * Gate it by the Sun's night weight instead — or by any ramp centred on the
+ * terminator, the day factor's complement included — and the ground runs
+ * through a minimum there, the Sun's light gone and the Moon's half arrived,
+ * with a gibbous Moon standing right over it.
  *
  * What a night fragment costs, in dependent table fetches: 6 by day (two for
  * the transmittance in front of it, four for that air's in-scatter), 7 past the
@@ -70,7 +71,7 @@ import {
   type AtmosphereTables,
 } from './atmosphereLut';
 import { AIRLIGHT_SCALE } from './atmosphereModel';
-import { MOON_UP_GLSL, NIGHT_WEIGHT_GLSL } from './nightSources';
+import { MOON_UP_GLSL, NIGHT_WEIGHT_GLSL, SUN_DOWN_GLSL } from './nightSources';
 import { PLANETS } from '../planets/planetData';
 
 /** The cloud deck is a surface class of its own: it hazes and eclipses like the
@@ -354,13 +355,17 @@ varying vec3 vObjPos;
 varying vec3 vPlanetshineViewDir;
 varying vec3 vAirCam;
 varying vec3 vAirFrag;
-${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}`;
+${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}`;
 
 // Injected after lighting but before <opaque_fragment> writes outgoingLight into
 // gl_FragColor — so terms land in linear radiance (tone-mapped downstream) and
 // read the perturbed view-space `normal`.
 const SURFACE_FRAGMENT_BODY = /* glsl */ `{
-  float dayFactor = smoothstep(-uTermWidth, uTermWidth, dot(normalize(normal), normalize(vSunViewDir)));
+  // The sine of the Sun's elevation at this fragment, off the perturbed normal:
+  // the Sun's own Lambert term, which is what the day factor and the Moon's
+  // weight below both read so the two describe one crossing.
+  float sunElevSin = dot(normalize(normal), normalize(vSunViewDir));
+  float dayFactor = smoothstep(-uTermWidth, uTermWidth, sunElevSin);
   // The night lifts fade while this body silhouettes the Sun: a disc backlit
   // by the photosphere is void black in any real exposure, and the starlight
   // fill or earthshine would read as fog painted on the silhouette.
@@ -376,13 +381,14 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
       ? nightWeight(clampCosine(dot(up, normalize(uSunDirWorld)))) * nightKeep
       : 0.0;
   // The Moon's weight is the Moon's own, not the Sun's. It lights this fragment
-  // whenever it stands above the fragment's horizon, and it arrives on the
-  // complement of the day factor — the exact term the Sun's own light on this
-  // fragment leaves on — so the two hand over across the terminator instead of
-  // both being weak in the middle of it.
+  // whenever it stands above the fragment's horizon, and it arrives on a
+  // one-sided ramp: full strength at the terminator, where the Sun's own light
+  // on this fragment is exactly zero and there is nothing left to double-light,
+  // and fading only as the Sun climbs above it. Weight it by anything centred
+  // on the terminator and the crossing dips there instead of handing over.
   float moonNight = uAirDensity > 0.0
       ? moonUpWeight(clampCosine(dot(up, normalize(uMoonDirWorld))))
-          * (1.0 - dayFactor) * nightKeep
+          * sunDownWeight(sunElevSin, uTermWidth) * nightKeep
       : 0.0;
   // The authored starlight floor, and the sky's own ambient that stands in for
   // it where the tables are bound. They are combined with max() rather than

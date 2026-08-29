@@ -17,6 +17,7 @@ import {
   NIGHT_WEIGHT_ZERO_SIN,
   LUNAR_IRRADIANCE_RATIO,
   PEAK_TABLE_SKY_RADIANCE,
+  SUN_DOWN_GLSL,
   airglowLimbFactor,
   airglowRadiance,
   airglowUniforms,
@@ -24,6 +25,7 @@ import {
   moonIrradiance,
   moonUpWeight,
   nightWeight,
+  sunDownWeight,
 } from './nightSources';
 import {
   AIRLIGHT_SCALE,
@@ -162,7 +164,8 @@ describe('the Moon\u2019s own weight', () => {
     // irradiance on the ground, and the moonlight scattered into the column in
     // front of it. None of them may be multiplied by airNight.
     expect(surface).toContain(
-      'moonUpWeight(clampCosine(dot(up, normalize(uMoonDirWorld))))\n          * (1.0 - dayFactor) * nightKeep',
+      'moonUpWeight(clampCosine(dot(up, normalize(uMoonDirWorld))))\n'
+        + '          * sunDownWeight(sunElevSin, uTermWidth) * nightKeep',
     );
     expect(surface).toContain(
       'outgoingLight += diffuseColor.rgb * RECIPROCAL_PI * (moonAmbient + moonDirect) * moonNight;',
@@ -172,13 +175,15 @@ describe('the Moon\u2019s own weight', () => {
     expect(surface).not.toContain('uMoonIrradiance;\n    vec3 direct');
   });
 
-  it('lifts the terminator out of the trough the Sun\u2019s weight puts it in', () => {
+  it('carries the crossing without a trough, where every centred ramp digs one', () => {
     // A gibbous Moon 30 degrees up over the terminator, which is the
-    // configuration the two weights disagree about: the Sun's own light on the
-    // ground has gone at the terminator and the Moon's is only half arrived, so
-    // gating the Moon by the SUN's elevation leaves a band of ground darker
-    // than the ground either side of it. Units: the scene's own irradiance,
-    // with the Lambertian albedo/pi common to both terms divided out.
+    // configuration the weights disagree about: the Sun's own light on the
+    // ground has gone at the terminator and a ramp centred there has the Moon's
+    // only half arrived, so a band of ground comes out darker than the ground
+    // either side of it. Units: the scene's own irradiance, with the
+    // Lambertian albedo/pi common to both terms divided out. The channel is
+    // green and the profile is a band average, which is what
+    // tools/atmo-ground-scan.mjs reads the same crossing off a frame with.
     const term = NIGHT_FILL.earth.termWidth;
     const moonElevSin = Math.sin((30 * Math.PI) / 180);
     const moon = moonIrradiance(1, 30)[1] * moonElevSin;
@@ -201,21 +206,86 @@ describe('the Moon\u2019s own weight', () => {
     const trough = (profile: number[]): number =>
       profile[profile.length - 1] / Math.min(...profile);
     const withSun = sweep((s) => nightWeight(s) * moonUpWeight(moonElevSin));
-    const withMoon = sweep((s) => (1 - dayFactor(s)) * moonUpWeight(moonElevSin));
-    // Deep night is the same under both — the disagreement is all in the band.
-    expect(withMoon[withMoon.length - 1]).toBeCloseTo(withSun[withSun.length - 1], 12);
+    const withDayComplement = sweep((s) => (1 - dayFactor(s)) * moonUpWeight(moonElevSin));
+    const withRamp = sweep((s) => sunDownWeight(s, term) * moonUpWeight(moonElevSin));
+    // Deep night is the same under all three — the disagreement is all in the
+    // band, and none of these weights is a scale on the moonlight itself.
+    for (const profile of [withDayComplement, withRamp]) {
+      expect(profile[profile.length - 1]).toBeCloseTo(withSun[withSun.length - 1], 12);
+    }
     // The Sun's weight digs a hole in the middle of the crossing: at the
     // terminator the ground is thirteen times darker than the same ground
     // fifteen degrees further into the night, with the Moon standing over both.
     expect(trough(withSun)).toBeGreaterThan(12);
-    // The Moon's own weight fills most of it in. What is left is not nothing,
-    // and it cannot be: the Sun's light on the ground reaches zero exactly at
-    // the terminator while the Moon's is still halfway up its ramp, so the sum
-    // dips there by a factor of two whatever the ramp's shape. Making the
-    // crossing monotone needs a weight that is already at full strength at the
-    // terminator — a one-sided ramp — not a narrower one.
-    expect(trough(withMoon)).toBeLessThan(2.2);
-    expect(trough(withSun) / trough(withMoon)).toBeGreaterThan(6);
+    // Centring the ramp on the terminator instead fills most of it in and
+    // cannot fill all of it, at any width: the Sun's light on the ground
+    // reaches zero exactly at the terminator while a centred ramp has the Moon
+    // at half strength there, so the sum dips by a factor of two.
+    expect(trough(withDayComplement)).toBeGreaterThan(1.9);
+    expect(trough(withDayComplement)).toBeLessThan(2.2);
+    // The one-sided ramp has no dip at all. Every step of the crossing is down
+    // — daylight, twilight, moonlit ground — and the band the trough used to
+    // sit in is the moonlit ground's own value.
+    for (let i = 1; i < withRamp.length; i++) {
+      expect(withRamp[i], `step ${i}`).toBeLessThanOrEqual(withRamp[i - 1] + 1e-12);
+    }
+    expect(trough(withRamp)).toBeCloseTo(1, 12);
+  });
+});
+
+describe('the Sun\u2019s one-sided ramp', () => {
+  const TERM = NIGHT_FILL.earth.termWidth;
+
+  it('is all of the Moon at the terminator and none of it a day ramp above', () => {
+    expect(sunDownWeight(-1, TERM)).toBe(1);
+    expect(sunDownWeight(-0.1, TERM)).toBe(1);
+    // At the geometric terminator, where the Sun's own light on the ground is
+    // exactly zero: the Moon is at full strength, not halfway up a ramp. This
+    // is the whole of the difference from a weight centred on that line.
+    expect(sunDownWeight(0, TERM)).toBe(1);
+    expect(sunDownWeight(TERM / 2, TERM)).toBeCloseTo(0.5, 12);
+    expect(sunDownWeight(TERM, TERM)).toBe(0);
+    expect(sunDownWeight(1, TERM)).toBe(0);
+  });
+
+  it('is monotone and continuous across the whole range', () => {
+    let previous = sunDownWeight(-1, TERM);
+    for (let i = 1; i <= 2000; i++) {
+      const value = sunDownWeight(-1 + (2 * i) / 2000, TERM);
+      expect(value).toBeLessThanOrEqual(previous + 1e-12);
+      // C0: no step bigger than the sampling can explain across a ramp this
+      // narrow (1.5 x 0.001 / 0.16 at its steepest). A step here would draw a
+      // line across the ground at one solar altitude.
+      expect(Math.abs(value - previous)).toBeLessThan(0.02);
+      previous = value;
+    }
+    expect(previous).toBe(0);
+  });
+
+  it('is one function in two languages, and only on the surfaces', () => {
+    expect(SUN_DOWN_GLSL).toContain('1.0 - smoothstep(0.0, termWidth, sunElevSin)');
+    const surface = surfaceFragment();
+    expect(surface).toContain(SUN_DOWN_GLSL);
+    expect(surface.match(/float sunDownWeight\(float sunElevSin, float termWidth\)/g))
+      .toHaveLength(1);
+    // The width is the surface's own, so the ramp the Moon arrives on is the
+    // one the Sun's light on that body leaves on.
+    expect(surface).toContain('float dayFactor = smoothstep(-uTermWidth, uTermWidth, sunElevSin);');
+    // The sky keeps the shared weight and has no use for this one: past the
+    // terminator the Sun's in-scatter becomes twilight rather than collapsing,
+    // so there is no trough in the sky for the Moon to fill.
+    expect(shellFragment()).not.toContain('float sunDownWeight(');
+  });
+
+  it('closes the Moon\u2019s branch on the day side, where the fetches live', () => {
+    // The ramp reaches exactly zero at the top of the day rolloff, so a lit
+    // fragment's weight is 0 and neither of the two branches that cost
+    // dependent table fetches is taken. The count in the module header is only
+    // true while both of those things hold.
+    expect(sunDownWeight(TERM, TERM)).toBe(0);
+    expect(sunDownWeight(TERM + 1e-6, TERM)).toBe(0);
+    expect(surfaceFragment().match(/if \(moonNight > 0\.0 && uMoonIrradiance\.g > 0\.0\) \{/g))
+      .toHaveLength(2);
   });
 });
 

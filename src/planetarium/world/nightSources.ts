@@ -26,13 +26,17 @@
  * minimum at the terminator, four times darker than the ground five degrees
  * into the day side and thirteen times darker than the same ground fifteen
  * degrees into the night, with a gibbous Moon standing right over it. So the
- * Moon's terms ride its own elevation instead, times the complement of the
- * ground's own day factor — the exact term the Sun's light on that fragment
- * arrives on, so the two cross over without a trough between them. The sky is
- * the other way round: past the terminator the Sun's in-scatter does not
- * collapse, it becomes twilight, and twilight really does drown moonlight for
- * the ten degrees or so it takes to fade. So the shell keeps the shared weight
- * and multiplies the Moon's own elevation into it.
+ * Moon's terms on the ground ride its own elevation instead, times
+ * `sunDownWeight`: a ONE-SIDED ramp, already at full strength at the
+ * terminator and fading only as the Sun climbs above it. The Sun's light on a
+ * fragment is exactly zero at that line, so nothing the Moon adds there can
+ * double-light it — and any ramp centred on the terminator holds the Moon at
+ * half strength exactly where the Sun has none, which is a band of ground
+ * twice darker than the moonlit ground beyond it. The sky is the other way
+ * round: past the terminator the Sun's in-scatter does not collapse, it becomes
+ * twilight, and twilight really does drown moonlight for the ten degrees or so
+ * it takes to fade. So the shell keeps the shared weight and multiplies the
+ * Moon's own elevation into it.
  */
 import { PLANETS } from '../planets/planetData';
 import { AIRLIGHT_SCALE, type RGB } from './atmosphereModel';
@@ -89,10 +93,9 @@ export const MOON_UP_FULL_SIN = 0.05;
  * has this sine: 0 with the Moon down, 1 with it up. Mirrored exactly by
  * `moonUpWeight` in MOON_UP_GLSL, from the one constant above.
  *
- * This is only half of what the Moon's terms are multiplied by. The other half
- * is the complement of the surface's own day factor, which is the term the
- * Sun's light on that fragment arrives on: the two sources hand over to each
- * other across the terminator instead of both being weak in the middle of it.
+ * This is only half of what the Moon's terms on the ground are multiplied by.
+ * The other half is `sunDownWeight`, which is what keeps the two sources from
+ * both being weak in the middle of the crossing.
  */
 export function moonUpWeight(moonElevSin: number): number {
   return smoothstep(0, MOON_UP_FULL_SIN, moonElevSin);
@@ -100,11 +103,47 @@ export function moonUpWeight(moonElevSin: number): number {
 
 /** The GLSL half of `moonUpWeight`, from the same constant. */
 export const MOON_UP_GLSL = /* glsl */`
-// 1 with the Moon up, 0 with it down. The Moon's terms ride this and the
-// complement of the surface's own day factor, never the Sun's night weight:
-// the Moon lights the ground whenever it is above that ground's horizon.
+// 1 with the Moon up, 0 with it down. Every moon-sourced term is multiplied by
+// it: the Moon lights a place whenever it stands above that place's horizon,
+// and how the Sun's own light there weighs against it is the caller's second
+// factor — never this one.
 float moonUpWeight(float moonElevSin) {
   return smoothstep(0.0, ${MOON_UP_FULL_SIN.toFixed(6)}, moonElevSin);
+}
+`;
+
+/**
+ * How much of the Moon's light survives the Sun's own on the same ground, at a
+ * fragment where the sine of the Sun's elevation — which is the Sun's Lambert
+ * term on that fragment — is `sunElevSin`: 1 at the geometric terminator and
+ * everywhere below it, 0 once the Sun has climbed `termWidth` above it.
+ *
+ * One-sided, and that is the whole of it. The Sun's light on a fragment is
+ * exactly zero at the terminator, so nothing the Moon adds there can
+ * double-light it and there is no reason to hold the Moon back. A ramp centred
+ * on the terminator does hold it back — half strength exactly where the Sun has
+ * none — and what that draws is a band of ground twice darker than the fully
+ * moonlit ground a few degrees further into the night, which no narrowing of a
+ * two-sided ramp can remove. Above the terminator the Sun is back and worth
+ * 4.4e5 times the Moon, so the fade there only has to be C-continuous, and the
+ * width to fade over is the day ramp's own half-width: the Sun's light leaving
+ * and the Moon's arriving are one handover written from one side each.
+ */
+export function sunDownWeight(sunElevSin: number, termWidth: number): number {
+  return 1 - smoothstep(0, termWidth, sunElevSin);
+}
+
+/** The GLSL half of `sunDownWeight`. The width is a parameter rather than a
+ *  constant here because it is the surface's own terminator half-width, which
+ *  is per-body: the ramp the Moon arrives on is the one the Sun's light on that
+ *  body leaves on. */
+export const SUN_DOWN_GLSL = /* glsl */`
+// 1 at the geometric terminator and everywhere below it, 0 once the Sun is a
+// day-ramp half-width above it. The Sun's light on a fragment is exactly zero
+// at that line, so a weight still climbing there leaves a band of ground darker
+// than the ground on either side of it.
+float sunDownWeight(float sunElevSin, float termWidth) {
+  return 1.0 - smoothstep(0.0, termWidth, sunElevSin);
 }
 `;
 

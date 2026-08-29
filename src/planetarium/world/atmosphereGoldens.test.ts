@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { ATMOSPHERE_GOLDEN_PINS, goldenChannelTolerance } from './atmosphereGoldens.pinned';
+import { ATMOSPHERE_TABLE_SIZES_FULL } from './atmosphereModel';
+import { createAtmosphereShellMaterial } from './atmosphereShell';
 import { PLANETS } from '../planets/planetData';
 
 /**
@@ -161,6 +164,25 @@ describe('the atmosphere goldens', () => {
     for (const name of CAPTURES) {
       expect(read(name).near, name).toBe(ATMOSPHERE_GOLDEN_PINS[name].near);
     }
+  });
+
+  it('was captured through the shader text pinned here', () => {
+    // The half of the contract CI can check without a GPU. The pinned radiances
+    // above only move when someone re-runs the capture tool, so on their own
+    // they let a shader edit through until the next capture; this hash fails on
+    // the edit itself. The two are one pair: change the shell's GLSL and this
+    // breaks, re-capture and the radiances break, and the only diff that lands
+    // green is one that moves the shader, the captures and the pins together.
+    const hash = (glsl: string): string => createHash('sha256').update(glsl).digest('hex');
+    const shell = createAtmosphereShellMaterial({
+      planetRadius: 4.2635e-5, body: 'Earth', sizes: ATMOSPHERE_TABLE_SIZES_FULL,
+    });
+    // Table sizes are defines, not text, so one hash covers every profile and
+    // every body — the same property that lets one warm-up probe cover them.
+    expect(hash(shell.vertexShader))
+      .toBe('fbb3c5035fc9293a98d462716af27fde518a10e787a28c1f87c750c9b7ba79df');
+    expect(hash(shell.fragmentShader))
+      .toBe('0a9232e68e83afec82c2b15695afaa4dbe6815dadde722a3eb88a6b40eeb0895');
   });
 
   it('shows the LUT tier drawing a different limb from the analytic one', () => {

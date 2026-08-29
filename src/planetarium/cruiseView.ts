@@ -24,7 +24,7 @@
  * deeper again waits on a level below 32K, or on detail synthesis.
  *
  * The chase distance is also the unit the moon-arrival split is measured in
- * (MOON_FLYTHROUGH_MIN_IMPACT_CAM_DISTS), so halving it moved that line: 26
+ * (FLYBY_MIN_IMPACT_CAM_DISTS), so halving it moved that line: 26
  * more of the moonlet swarm now get the flyby rather than a planet-style
  * park.
  */

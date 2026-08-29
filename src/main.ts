@@ -873,6 +873,21 @@ function installDevHooks() {
   (window as any).__moonThree = THREE;
   (window as any).__moonRenderer = renderer;
   (window as any).__moonSlice = { begin: beginSlicedUpload, step: stepSlicedUpload };
+  // The compressed half of that harness needs a container transcoded and
+  // handed over exactly as a tier fetch does: the internal format three picks
+  // for a KTX2 rung comes off the file's own colour space and the device's
+  // transcode target, so a texture the harness builds itself cannot reproduce
+  // it. One loader per page, imported on first use so the transcoder chunk
+  // stays off every other DEV boot.
+  let parityKtx2: Promise<import('three/examples/jsm/loaders/KTX2Loader.js').KTX2Loader> | null = null;
+  (window as any).__moonKtx2 = (url: string) => {
+    parityKtx2 ??= import('three/examples/jsm/loaders/KTX2Loader.js').then(({ KTX2Loader }) =>
+      new KTX2Loader().setTranscoderPath(import.meta.env.BASE_URL + 'basis/').detectSupport(renderer),
+    );
+    return parityKtx2.then((loader) => new Promise((resolve, reject) => {
+      loader.load(url, resolve, undefined, reject);
+    }));
+  };
   (window as any).__moonWarm = { queueTextureWarm, pumpTextureWarmQueue, invalidateTextureWarmCache };
   debugLog('Dev hooks installed (window.__moon)');
 }

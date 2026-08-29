@@ -23,6 +23,16 @@
  * wholesale, so a job in flight is abandoned and its texture re-queued rather
  * than left half-filled.
  *
+ * Because the allocation is three's, the bands have to speak its format. Three
+ * allocates from utils.convert(texture.format, texture.colorSpace), which for
+ * a compressed texture in an sRGB colour space is the sRGB variant of the
+ * format's enum — a different number from the one on texture.format, and on
+ * S3TC from a different extension. Uploading a band with the wrong one is a
+ * rejected call, an empty texture and a body drawing a blank map, so the
+ * band's format is derived from the same two inputs three reads and the first
+ * band is checked against the GL error queue; a rejected band abandons slicing
+ * and hands the map back to three whole.
+ *
  * The no-half-loaded rule holds by construction. Nothing here assigns a map to
  * a material; the pump settles its 'warmed' callback only when the last band
  * and the mip chain are in, and that callback is the seam callers already use
@@ -43,19 +53,126 @@ import {
   updateRowRate,
 } from './slicedUploadPlan';
 
-/** Bytes per 4×4 block, for the formats a KTX2 rung can transcode to. A
- *  format missing here is refused rather than guessed: a wrong block size
- *  reads the wrong bytes and writes garbage into the texture. */
-const BLOCK_BYTES: Record<number, number> = {
-  0x93b0: 16, // COMPRESSED_RGBA_ASTC_4x4_KHR
-  0x8e8c: 16, // COMPRESSED_RGBA_BPTC_UNORM (BC7)
-  0x83f0: 8, // COMPRESSED_RGB_S3TC_DXT1_EXT
-  0x83f1: 8, // COMPRESSED_RGBA_S3TC_DXT1_EXT
-  0x83f2: 16, // COMPRESSED_RGBA_S3TC_DXT3_EXT
-  0x83f3: 16, // COMPRESSED_RGBA_S3TC_DXT5_EXT
-  0x9274: 8, // COMPRESSED_RGB8_ETC2
-  0x9278: 16, // COMPRESSED_RGBA8_ETC2_EAC
+/**
+ * The compressed formats a KTX2 rung can transcode to, keyed by the constant
+ * three puts on `texture.format` — which is the LINEAR GL enum, never the one
+ * a band may be uploaded with.
+ *
+ * `blockBytes` is bytes per 4×4 block. A format missing from this table is
+ * refused rather than guessed: a wrong block size reads the wrong bytes and
+ * writes garbage into the texture.
+ *
+ * The enum names are the two variants of the same format. An sRGB variant is a
+ * DIFFERENT enum, and on S3TC it lives on a different extension a device may
+ * not have at all; three's WebGLUtils.convert picks it whenever the texture's
+ * colour space carries the sRGB transfer, and allocates the storage with it.
+ * A band uploaded with the other enum is a format mismatch — the driver
+ * rejects the call, the texture stays empty, and the body draws an unfilled
+ * map — so the band's format is derived through this table from the same two
+ * inputs three reads, and never taken from `texture.format` directly.
+ */
+interface CompressedFormat {
+  blockBytes: number;
+  ext: string;
+  linear: string;
+  srgbExt: string;
+  srgb: string;
+}
+const COMPRESSED_FORMATS: Record<number, CompressedFormat> = {
+  // THREE.RGBA_ASTC_4x4_Format
+  37808: {
+    blockBytes: 16,
+    ext: 'WEBGL_compressed_texture_astc',
+    linear: 'COMPRESSED_RGBA_ASTC_4x4_KHR',
+    srgbExt: 'WEBGL_compressed_texture_astc',
+    srgb: 'COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR',
+  },
+  // THREE.RGBA_BPTC_Format (BC7)
+  36492: {
+    blockBytes: 16,
+    ext: 'EXT_texture_compression_bptc',
+    linear: 'COMPRESSED_RGBA_BPTC_UNORM_EXT',
+    srgbExt: 'EXT_texture_compression_bptc',
+    srgb: 'COMPRESSED_SRGB_ALPHA_BPTC_UNORM_EXT',
+  },
+  // THREE.RGB_S3TC_DXT1_Format
+  33776: {
+    blockBytes: 8,
+    ext: 'WEBGL_compressed_texture_s3tc',
+    linear: 'COMPRESSED_RGB_S3TC_DXT1_EXT',
+    srgbExt: 'WEBGL_compressed_texture_s3tc_srgb',
+    srgb: 'COMPRESSED_SRGB_S3TC_DXT1_EXT',
+  },
+  // THREE.RGBA_S3TC_DXT1_Format
+  33777: {
+    blockBytes: 8,
+    ext: 'WEBGL_compressed_texture_s3tc',
+    linear: 'COMPRESSED_RGBA_S3TC_DXT1_EXT',
+    srgbExt: 'WEBGL_compressed_texture_s3tc_srgb',
+    srgb: 'COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT',
+  },
+  // THREE.RGBA_S3TC_DXT3_Format
+  33778: {
+    blockBytes: 16,
+    ext: 'WEBGL_compressed_texture_s3tc',
+    linear: 'COMPRESSED_RGBA_S3TC_DXT3_EXT',
+    srgbExt: 'WEBGL_compressed_texture_s3tc_srgb',
+    srgb: 'COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT',
+  },
+  // THREE.RGBA_S3TC_DXT5_Format
+  33779: {
+    blockBytes: 16,
+    ext: 'WEBGL_compressed_texture_s3tc',
+    linear: 'COMPRESSED_RGBA_S3TC_DXT5_EXT',
+    srgbExt: 'WEBGL_compressed_texture_s3tc_srgb',
+    srgb: 'COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT',
+  },
+  // THREE.RGB_ETC2_Format
+  37492: {
+    blockBytes: 8,
+    ext: 'WEBGL_compressed_texture_etc',
+    linear: 'COMPRESSED_RGB8_ETC2',
+    srgbExt: 'WEBGL_compressed_texture_etc',
+    srgb: 'COMPRESSED_SRGB8_ETC2',
+  },
+  // THREE.RGBA_ETC2_EAC_Format
+  37496: {
+    blockBytes: 16,
+    ext: 'WEBGL_compressed_texture_etc',
+    linear: 'COMPRESSED_RGBA8_ETC2_EAC',
+    srgbExt: 'WEBGL_compressed_texture_etc',
+    srgb: 'COMPRESSED_SRGB8_ALPHA8_ETC2_EAC',
+  },
 };
+
+/** Whether a colour space decodes through the sRGB transfer function. This is
+ *  the test three's format conversion makes, not an equality against
+ *  SRGBColorSpace: every space that carries that transfer takes the same
+ *  branch there and must take it here. */
+export function hasSrgbTransfer(colorSpace: string): boolean {
+  return THREE.ColorManagement.getTransfer(colorSpace) === THREE.SRGBTransfer;
+}
+
+/**
+ * The GL enum a band of this compressed texture must be uploaded with — the
+ * same value three's WebGLUtils.convert(texture.format, texture.colorSpace)
+ * resolves, and therefore the internal format three allocated the storage
+ * with. Null when the format is one this module does not slice, or when the
+ * extension carrying the needed variant is missing; both are refusals, never
+ * a guess, because a mismatched format is a rejected upload and an empty map.
+ */
+export function compressedUploadFormat(
+  gl: { getExtension(name: string): unknown },
+  format: number,
+  colorSpace: string,
+): number | null {
+  const entry = COMPRESSED_FORMATS[format];
+  if (!entry) return null;
+  const srgb = hasSrgbTransfer(colorSpace);
+  const ext = gl.getExtension(srgb ? entry.srgbExt : entry.ext) as Record<string, unknown> | null;
+  const value = ext?.[srgb ? entry.srgb : entry.linear];
+  return typeof value === 'number' ? value : null;
+}
 
 /** The only uncompressed shape the app streams. Anything else is refused
  *  rather than have this file duplicate three's format conversion table. */
@@ -87,7 +204,7 @@ function internalFormatFor(
   gl: WebGL2RenderingContext,
   texture: THREE.Texture,
 ): number {
-  return texture.colorSpace === THREE.SRGBColorSpace ? gl.SRGB8_ALPHA8 : gl.RGBA8;
+  return hasSrgbTransfer(texture.colorSpace) ? gl.SRGB8_ALPHA8 : gl.RGBA8;
 }
 
 export interface SliceJob {
@@ -105,8 +222,14 @@ export interface SliceJob {
   /** Compressed levels above the base, uploaded whole after the base. */
   tailLevels: CompressedLevel[];
   baseLevel: CompressedLevel | null;
+  /** The enum every band is uploaded with — for a compressed texture the one
+   *  three allocated the storage with, not the constant on texture.format. */
   glFormat: number;
   glType: number;
+  /** The first compressed band has been read back off the GL error queue. */
+  formatChecked: boolean;
+  /** The bands were abandoned and three uploaded the map whole instead. */
+  fellBack: boolean;
   /** The mip chain still has to be built (uncompressed only). */
   needsMipmap: boolean;
   bands: number;
@@ -134,8 +257,14 @@ export function canSlice(renderer: THREE.WebGLRenderer, texture: THREE.Texture):
   // band would land mirrored into the wrong rows.
   if (texture.flipY) return false;
   if (compressed) {
-    const format = texture.format as unknown as number;
-    if (!BLOCK_BYTES[format]) return false;
+    // Both halves of the compressed contract, checked before three allocates
+    // anything: a block size this module knows exactly, and the one enum the
+    // bands may be uploaded with. Refusing here leaves the map to the one-shot
+    // path with nothing to undo.
+    if (!COMPRESSED_FORMATS[texture.format as unknown as number]) return false;
+    if (compressedUploadFormat(gl, texture.format as unknown as number, texture.colorSpace) === null) {
+      return false;
+    }
     return Array.isArray(mipmaps) && mipmaps.length > 0;
   }
   // An sRGB map is refused, and this is the whole reason the slicer is narrow.
@@ -145,7 +274,7 @@ export function canSlice(renderer: THREE.WebGLRenderer, texture: THREE.Texture):
   // sliced 34.3 ms; at 2048x2048, 2.3 ms against 26.7 ms. The same map with a
   // linear colour space slices for 1.0x. Slicing these would multiply the very
   // cost it exists to spread.
-  if (texture.colorSpace === THREE.SRGBColorSpace) return false;
+  if (hasSrgbTransfer(texture.colorSpace)) return false;
   // texSubImage2D takes a real image source. A DataTexture's image is a plain
   // {data,width,height} record, and handing that to the DOM-source overload
   // throws — so only genuine sources are sliced.
@@ -184,7 +313,12 @@ export function beginSlicedUpload(
   // an 8K on Chromium. Its branch is also NOT gated by dataReady, so the
   // allocation trick below cannot be the same one.
   const mutable = texture.userData?.mutableStorage === true;
-  if (mutable) return beginMutableSlice(renderer, texture, gl, width, height);
+  // The mutable branch reallocates level 0 as an RGBA byte image, which a
+  // compressed container is not. Nothing sets the flag on one today; the
+  // refusal is here so nothing can start to.
+  if (mutable) {
+    return compressed ? null : beginMutableSlice(renderer, texture, gl, width, height);
+  }
   try {
     // generateMipmaps is left exactly as the caller set it. Three reads the
     // level count from it, so leaving it true gets the full chain allocated;
@@ -203,9 +337,17 @@ export function beginSlicedUpload(
   }
   source.dataReady = previousDataReady;
 
+  // canSlice already proved both of these resolve; they are re-read rather
+  // than carried so this function has one source for what a band uploads with.
   const enums = compressed
-    ? { format: texture.format as unknown as number, type: 0 }
+    ? {
+      format: compressedUploadFormat(gl, texture.format as unknown as number, texture.colorSpace)!,
+      type: 0,
+    }
     : uncompressedEnums(gl, texture)!;
+  const blockBytes = compressed
+    ? COMPRESSED_FORMATS[texture.format as unknown as number].blockBytes
+    : 0;
 
   const levelsIn = compressed ? mipmaps! : [];
   return {
@@ -217,14 +359,14 @@ export function beginSlicedUpload(
     height,
     rowsDone: 0,
     msPerRow: null,
-    baseLevel: compressed
-      ? { ...levelsIn[0], level: 0, blockBytes: BLOCK_BYTES[enums.format] }
-      : null,
+    baseLevel: compressed ? { ...levelsIn[0], level: 0, blockBytes } : null,
     tailLevels: compressed
-      ? levelsIn.slice(1).map((m, i) => ({ ...m, level: i + 1, blockBytes: BLOCK_BYTES[enums.format] }))
+      ? levelsIn.slice(1).map((m, i) => ({ ...m, level: i + 1, blockBytes }))
       : [],
     glFormat: enums.format,
     glType: enums.type,
+    formatChecked: !compressed,
+    fellBack: false,
     needsMipmap: !compressed,
     bands: 0,
     totalMs: 0,
@@ -278,6 +420,8 @@ function beginMutableSlice(
     tailLevels: [],
     glFormat: gl.RGBA,
     glType: gl.UNSIGNED_BYTE,
+    formatChecked: true,
+    fellBack: false,
     needsMipmap: true,
     bands: 0,
     totalMs: 0,
@@ -312,6 +456,36 @@ function bindForUpload(job: SliceJob): WebGL2RenderingContext {
   return gl;
 }
 
+/** Empty the GL error queue, so the check after the first band can only be
+ *  reading an error this job raised. Bounded because a lost context reports
+ *  the same error on every call. */
+function drainGlErrors(gl: WebGL2RenderingContext): void {
+  for (let i = 0; i < 8; i++) if (gl.getError() === gl.NO_ERROR) return;
+}
+
+/**
+ * Abandon the bands and let three upload the whole map, after a band was
+ * rejected. Nothing three owns is disposed: the storage it allocated is
+ * correct and stays, and this only fills it. Bumping the source version is
+ * what makes three fill it at all — the allocation pass stamped the texture
+ * current, so without the bump three would consider the empty storage
+ * finished and the body would draw an unfilled map.
+ *
+ * The cost is the single-frame upload slicing exists to avoid, which is the
+ * right trade for a map that would otherwise never be right.
+ */
+function fallBackToOneShot(job: SliceJob): 'done' | 'failed' {
+  job.fellBack = true;
+  try {
+    job.texture.needsUpdate = true;
+    job.renderer.initTexture(job.texture);
+    return 'done';
+  } catch (err) {
+    debugWarn('Sliced upload could not fall back to one shot', { err: String(err) });
+    return 'failed';
+  }
+}
+
 /**
  * Spend up to `budgetMs` on this job. Returns 'more' while work remains,
  * 'done' when the texture is fully resident with its mip chain, and 'failed'
@@ -335,6 +509,7 @@ export function stepSlicedUpload(job: SliceJob, budgetMs: number): 'more' | 'don
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0);
       gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, texture.premultiplyAlpha ? 1 : 0);
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, texture.unpackAlignment);
+      if (!job.formatChecked) drainGlErrors(gl);
       while (job.rowsDone < job.height) {
         const spent = performance.now() - started;
         if (job.bands > 0 && spent >= budgetMs) break;
@@ -375,6 +550,21 @@ export function stepSlicedUpload(job: SliceJob, budgetMs: number): 'more' | 'don
         const bandMs = performance.now() - bandStart;
         job.totalMs += bandMs;
         job.msPerRow = updateRowRate(job.msPerRow, rows, bandMs);
+        // The derivation above says which enum three allocated with; this is
+        // the proof. A rejected first band means the two disagree, and every
+        // later band would be rejected the same way and leave the map empty.
+        if (!job.formatChecked) {
+          job.formatChecked = true;
+          if (gl.getError() !== gl.NO_ERROR) {
+            debugWarn('Sliced upload band rejected; uploading the map whole instead', {
+              format: job.glFormat,
+              size: `${job.width}x${job.height}`,
+            });
+            const outcome = fallBackToOneShot(job);
+            finished = outcome === 'done';
+            return outcome;
+          }
+        }
       }
       if (job.rowsDone < job.height) return 'more';
     }
@@ -410,7 +600,8 @@ export function stepSlicedUpload(job: SliceJob, budgetMs: number): 'more' | 'don
       smoothTraceEvent(
         'upload',
         `${job.texture.name || source || 'texture'} `
-        + `${job.width}x${job.height} sliced x${job.bands}`,
+        + `${job.width}x${job.height} sliced x${job.bands}`
+        + (job.fellBack ? ' → one shot' : ''),
         job.totalMs,
       );
     }

@@ -33,7 +33,9 @@
 // A set lives in a folder named for its own contents —
 // tiles/<key>/<tier>.<setHash8>/ — so a tile pathname is a promise about the
 // bytes behind it: either those exact bytes or a 404, never a re-cut set
-// under a name something already cached. Every run rewrites
+// under a name something already cached. The hash itself lives in
+// tools/tileSetHash.mjs, shared with tools/publish-tiles.mjs so a set is
+// published under the same name it was cut under. Every run rewrites
 // <root>/sets.v1.json and src/planetarium/world/sectorSets.generated.ts from
 // the folders on disk, which is where the app reads the hashes it puts in URLs.
 //
@@ -54,9 +56,8 @@
 //                  root, so the app names every set wherever it is served.
 import sharp from 'sharp';
 import { mkdir, writeFile, access, stat, readFile, readdir, rename, rm, open } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
 import path from 'node:path';
+import { fileDigest, setHash8, tileNames } from './tileSetHash.mjs';
 
 sharp.cache(false);
 sharp.concurrency(0);
@@ -135,17 +136,6 @@ async function checkSourceDigest(srcPath) {
   if (digest !== entry.sha256) {
     throw new Error(`${path.basename(srcPath)}: sha256 ${digest} is not the manifest's ${entry.sha256} — a different source; update gen-tiles.sources.json together with the assets cut from it`);
   }
-}
-
-/** SHA-256 of a file, streamed. */
-function fileDigest(file) {
-  return new Promise((resolve, reject) => {
-    const h = createHash('sha256');
-    createReadStream(file)
-      .on('data', (chunk) => h.update(chunk))
-      .on('error', reject)
-      .on('end', () => resolve(h.digest('hex')));
-  });
 }
 
 async function fullRaw(srcPath, width, height, matchRef) {
@@ -633,22 +623,6 @@ async function writeDownsamples(raw, width, height, outs) {
   for (const { w, h, out } of outs) {
     await writeWebp(rawOf(raw, width, height).resize(w, h, { fit: 'fill', kernel: 'lanczos3' }), out);
   }
-}
-
-const tileNames = (files) => files.filter((f) => /^\d+_\d+\.webp$/.test(f)).sort();
-
-/**
- * A set's identity: the first 8 hex of a SHA-256 over the sorted
- * `<name>\0<file sha256>\n` list of every tile in it. Over the WHOLE set, so
- * one changed tile moves the folder — a partial re-cut cannot hide under a
- * name a client already has cached.
- */
-async function setHash8(dir, files) {
-  const h = createHash('sha256');
-  for (const name of files) {
-    h.update(`${name}\0${await fileDigest(path.join(dir, name))}\n`);
-  }
-  return h.digest('hex').slice(0, 8);
 }
 
 /** The one folder holding a (key, tier) set. */

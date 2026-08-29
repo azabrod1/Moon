@@ -184,6 +184,24 @@ const pose = (page, body, how, mult) => page.evaluate(
 );
 const mib = (bytes) => (bytes / MiB).toFixed(1);
 
+/** The tiles and the globe maps must be spending ONE envelope: the floor the
+ *  ladder reads is the floor the streamer wrote, and the ladder's ceiling is
+ *  the whole envelope less that floor. Split the two ledgers and every other
+ *  figure on this page still looks sane, while the ladder is handed the whole
+ *  floor the tiles were promised and admits a rung it should have been
+ *  refused. Both readouts are taken in one evaluate, so they are one moment. */
+function checkSharedEnvelope(r, where, s, l) {
+  if (l.floorBytes !== s.floor) {
+    r.fail(`${where}: the ladder reads a floor of ${mib(l.floorBytes)} MiB`
+      + ` where the tiles are owed ${mib(s.floor)} — two envelopes, not one`);
+  }
+  const want = l.envelopeBytes - s.floor;
+  if (l.ceilingBytes !== want) {
+    r.fail(`${where}: ladder ceiling ${mib(l.ceilingBytes)} MiB, envelope ${mib(l.envelopeBytes)}`
+      + ` less the floor ${mib(s.floor)} = ${mib(want)}`);
+  }
+}
+
 /** What one scenario reports: its own lines, and the assertions it broke. */
 function report() {
   const lines = [];
@@ -305,6 +323,7 @@ const SCENARIOS = {
         }
         for (const key of rungs.keys()) rungs.set(key, now.get(key) ?? 0);
         for (const [key, rank] of now) rungs.set(key, rank);
+        checkSharedEnvelope(r, where, s, l);
         if (l.heldBytes > l.ceilingBytes) {
           r.fail(`${where}: globe maps ${mib(l.heldBytes)} over the ladder ceiling ${mib(l.ceilingBytes)} MiB`);
         }
@@ -400,6 +419,7 @@ const SCENARIOS = {
         + ` (floor ${mib(s.floor)}), globe maps ${mib(l.heldBytes)} of ${mib(l.ceilingBytes)}`);
       r.say(`     Earth [${e.resident.slice().sort().join(',')}] byLevel ${JSON.stringify(e.byLevel.map((x) => x.resident))}`);
       r.say(`     rungs ${l.rungs.map((x) => `${x.key}:${x.tier ?? 'boot'}${x.top && x.top !== x.tier ? `(top ${x.top})` : ''}`).join(' ')}`);
+      checkSharedEnvelope(r, 'apple phone Earth 0.13', s, l);
       if (s.budgetedBytes + s.reserved > s.budget) r.fail('apple phone: held over budget');
       if (s.resident === 0) r.fail('apple phone Earth 0.13: no tiles at all');
       const clouds = l.rungs.find((x) => x.key === 'earthClouds');
@@ -435,6 +455,7 @@ const SCENARIOS = {
           + ` globe maps ${mib(l.heldBytes)} of ${mib(l.ceilingBytes)}`);
         r.say(`     tiles ${s.resident} = ${mib(s.budgetedBytes)} MiB of ${mib(s.budget)},`
           + ` Moon [${(s.bodies.Moon?.resident ?? []).slice().sort().join(',')}]`);
+        checkSharedEnvelope(r, `${label} at the Moon`, s, l);
         if (s.budgetedBytes + s.reserved > s.budget) r.fail(`${label}: held over budget`);
         return rung ? rung.tier : 'boot';
       } finally { await run.ctx.close(); }

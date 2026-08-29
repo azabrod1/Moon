@@ -145,7 +145,7 @@ import { applyTextureDefaults, resolveTileUrl, sectorSetHash, sectorSetLayout } 
 import { TIER_RANK } from './textureLadder';
 import { debugWarn } from '../../shared/debug';
 import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
-import { MemoryEnvelope, type SectorStreamerLimits } from './gpuEnvelope';
+import type { MemoryEnvelope, SectorStreamerLimits } from './gpuEnvelope';
 import { layoutGpuBytes, textureGpuBytes } from './textureBytes';
 import { smoothTraceEvent } from '../smoothnessTrace';
 
@@ -612,11 +612,13 @@ interface SectorBody {
 export interface SectorStreamerOptions {
   /** This device's memory numbers (world/gpuEnvelope). */
   limits: SectorStreamerLimits;
-  /** The envelope this streamer shares with the globe texture ladder. The app
-   *  passes the one the mode owns, so both allocators read one object; a test
-   *  that leaves it out gets a private one built from `limits`, which is the
-   *  same arithmetic with nobody else spending it. */
-  envelope?: MemoryEnvelope;
+  /** The envelope this streamer shares with the globe texture ladder — the
+   *  same object the ladder's side spends, so neither allocator can read a
+   *  budget the other has already committed. Required, with no default: a
+   *  private envelope is arithmetically identical seen from inside the
+   *  streamer, so a caller that forgot one would split the two ledgers with
+   *  every figure here still looking sane. */
+  envelope: MemoryEnvelope;
   load?: TextureLoad;
   warm?: (tex: THREE.Texture, onOutcome: (o: WarmOutcome) => void) => void;
 }
@@ -865,7 +867,19 @@ export class SectorStreamer {
     this.sectorFloorBytes = opts.limits.sectorFloorBytes;
     this.wantTexelPx = opts.limits.wantTexelPx;
     this.releaseTexelPx = opts.limits.releaseTexelPx;
-    this.envelope = opts.envelope ?? new MemoryEnvelope(opts.limits);
+    // The envelope and the limits are one device row. The streamer takes its
+    // floor and its caps from `limits` while every budget it computes reads
+    // the envelope's own two figures, so a mismatched pair would spend two
+    // rows at once and no byte figure anywhere would show it.
+    if (opts.envelope.envelopeBytes !== opts.limits.envelopeBytes
+      || opts.envelope.ceilingBytes !== opts.limits.ceilingBytes) {
+      throw new Error(
+        'sector streamer: envelope and limits are different device rows'
+        + ` (envelope ${opts.envelope.envelopeBytes}/${opts.envelope.ceilingBytes},`
+        + ` limits ${opts.limits.envelopeBytes}/${opts.limits.ceilingBytes})`,
+      );
+    }
+    this.envelope = opts.envelope;
   }
 
   /** Register one family of one body. A body's families are keyed (name,

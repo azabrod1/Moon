@@ -20,11 +20,18 @@ import {
   sectorSetGpuBytes,
   tileSet,
   type SectorBodyHandle,
+  type SectorStreamerOptions,
   type SectorLevel,
   type SectorMeasure,
   type SectorSetSpec,
 } from './sectorStreamer';
-import { APPLE_PHONE_PROFILE, UNMEASURED_DESKTOP_PROFILE, UNMEASURED_TOUCH_PROFILE } from './gpuEnvelope';
+import {
+  APPLE_PHONE_PROFILE,
+  MemoryEnvelope,
+  UNMEASURED_DESKTOP_PROFILE,
+  UNMEASURED_TOUCH_PROFILE,
+  type SectorStreamerLimits,
+} from './gpuEnvelope';
 import {
   appliedTierHeldBytes,
   bindTierAdmission,
@@ -98,6 +105,16 @@ const NO_FLOOR = { ...DESKTOP, sectorFloorBytes: 0 };
 const EARTH_SET_BYTES = sectorSetGpuBytes(SECTOR_SETS.Earth);
 const EARTH_FITS_DESKTOP = Math.floor(DESKTOP.ceilingBytes / EARTH_SET_BYTES);
 const EARTH_FITS_TOUCH = Math.floor(TOUCH.ceilingBytes / EARTH_SET_BYTES);
+/** A streamer with the envelope it spends, built from one device row — the
+ *  pairing the constructor requires. The app hands the streamer the same
+ *  object the globe texture ladder spends; a test that wants to watch that
+ *  sharing builds the envelope itself and passes it in. */
+function makeStreamer(
+  limits: SectorStreamerLimits,
+  rest: Omit<SectorStreamerOptions, 'limits' | 'envelope'> = {},
+): SectorStreamer {
+  return new SectorStreamer({ limits, envelope: new MemoryEnvelope(limits), ...rest });
+}
 // Sizes in these tests are TEXEL magnifications (device px per base-map texel)
 // for the 4K map the fake material is taken to draw (no readable image, so
 // the streamer assumes 4096 wide); measureOf turns them into pxPerLocalUnit.
@@ -273,14 +290,14 @@ describe('SectorStreamer', () => {
   beforeEach(() => {
     loader = new FakeLoader();
     warm = new FakeWarm();
-    streamer = new SectorStreamer({ limits: NO_FLOOR, load: loader.load, warm: warm.warm });
+    streamer = makeStreamer(NO_FLOOR, { load: loader.load, warm: warm.warm });
     earth = earthHandle();
     streamer.register(earth);
   });
 
   it('asks later on touch, and releases later', () => {
     expect(TOUCH.wantTexelPx).toBeGreaterThan(DESKTOP.wantTexelPx);
-    const s = new SectorStreamer({ limits: TOUCH, load: loader.load, warm: warm.warm });
+    const s = makeStreamer(TOUCH, { load: loader.load, warm: warm.warm });
     s.register(earth);
     loader.auto = true;
     s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': TOUCH.wantTexelPx - 0.01 }), 0);
@@ -404,7 +421,7 @@ describe('SectorStreamer', () => {
   });
 
   it('holds a smaller working set on touch devices', () => {
-    const s = new SectorStreamer({ limits: TOUCH, load: loader.load, warm: warm.warm });
+    const s = makeStreamer(TOUCH, { load: loader.load, warm: warm.warm });
     s.register(earth);
     loader.auto = true;
     expect(EARTH_FITS_TOUCH).toBeLessThan(EARTH_FITS_DESKTOP);
@@ -618,7 +635,7 @@ describe('SectorStreamer', () => {
   it('reports the GPU bytes its textures hold, from their sizes', () => {
     const sized = (w: number, h: number) => { const t = new THREE.Texture(); t.image = { width: w, height: h }; return t; };
     loader.load = (url, onLoad) => onLoad(/earth-day/.test(url) ? sized(2048, 2048) : sized(272, 272));
-    const s = new SectorStreamer({ limits: DESKTOP, load: loader.load, warm: warm.warm });
+    const s = makeStreamer(DESKTOP, { load: loader.load, warm: warm.warm });
     s.register(earth);
     s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
     // One colour tile plus two crops (bump, roughness), RGBA8 with mips.
@@ -1039,7 +1056,7 @@ describe('SectorStreamer', () => {
       let pending: typeof done | null = done;
       tex.addEventListener('dispose', () => { const d = pending; pending = null; d?.('disposed'); });
     };
-    const s = new SectorStreamer({ limits: DESKTOP, load: loader.load, warm: hookWarm });
+    const s = makeStreamer(DESKTOP, { load: loader.load, warm: hookWarm });
     s.register(earth);
     s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
     const [first, ...rest] = loader.requests.splice(0);
@@ -1830,7 +1847,7 @@ describe('SectorStreamer', () => {
 
   it('takes the same level-0 decisions in the same order: a golden trace', () => {
     const { events, stats } = goldenTrace(
-      (load) => new SectorStreamer({ limits: DESKTOP, load, warm: warm.warm }),
+      (load) => makeStreamer(DESKTOP, { load, warm: warm.warm }),
       DESKTOP.envelopeBytes,
     );
     expect(events).toEqual([
@@ -1883,7 +1900,7 @@ describe('SectorStreamer', () => {
 
   it('takes the same level-0 decisions on an Android phone: a golden trace', () => {
     const { events } = goldenTrace(
-      (load) => new SectorStreamer({ limits: TOUCH, load, warm: warm.warm }),
+      (load) => makeStreamer(TOUCH, { load, warm: warm.warm }),
       TOUCH.envelopeBytes,
     );
     // An Android or other-platform touch device, on the numbers the app
@@ -1918,7 +1935,7 @@ describe('SectorStreamer', () => {
 
   it('takes the desktop decisions on an Apple phone: a golden trace', () => {
     const { events } = goldenTrace(
-      (load) => new SectorStreamer({ limits: APPLE_PHONE, load, warm: warm.warm }),
+      (load) => makeStreamer(APPLE_PHONE, { load, warm: warm.warm }),
       APPLE_PHONE.envelopeBytes,
     );
     // A phone-shaped device on the measured numbers. Read against the
@@ -1955,7 +1972,7 @@ describe('SectorStreamer', () => {
     // takes the same decisions, which is what "the desktop row on a phone"
     // means when it is spent rather than written down.
     const desktop = goldenTrace(
-      (load) => new SectorStreamer({ limits: DESKTOP, load, warm: warm.warm }),
+      (load) => makeStreamer(DESKTOP, { load, warm: warm.warm }),
       DESKTOP.envelopeBytes,
     );
     expect(events).toEqual(desktop.events);
@@ -2005,7 +2022,7 @@ describe('a body\'s night family: a second set of sectors on the night shell', (
   beforeEach(() => {
     loader = new FakeLoader();
     warm = new FakeWarm();
-    streamer = new SectorStreamer({ limits: DESKTOP, load: loader.load, warm: warm.warm });
+    streamer = makeStreamer(DESKTOP, { load: loader.load, warm: warm.warm });
     day = earthHandle();
     night = earthNightHandle();
     streamer.register(day);
@@ -2147,11 +2164,8 @@ describe('a body\'s night family: a second set of sectors on the night shell', (
     // Room for one set of either family. The squeeze is on the CEILING, not
     // on the globe maps: a desktop's floor keeps three sets whatever those
     // maps have taken, and the budget is clamped by the ceiling either way.
-    streamer = new SectorStreamer({
-      limits: { ...DESKTOP, ceilingBytes: EARTH_SET_BYTES },
-      load: loader.load,
-      warm: warm.warm,
-    });
+    streamer = makeStreamer({ ...DESKTOP, ceilingBytes: EARTH_SET_BYTES },
+      { load: loader.load, warm: warm.warm });
     streamer.register(day);
     streamer.register(night);
     const strong = 2 * SECTOR_ADMIT_MARGIN + 0.5;
@@ -2241,8 +2255,8 @@ describe('the sector floor', () => {
     warm = new FakeWarm();
   });
 
-  const withFloor = (limits = DESKTOP) =>
-    new SectorStreamer({ limits, load: loader.load, warm: warm.warm });
+  const withFloor = (limits: SectorStreamerLimits = DESKTOP) =>
+    makeStreamer(limits, { load: loader.load, warm: warm.warm });
   const INSIDE = new THREE.Vector3(0, 0, 0); // every sector faces a camera at the centre
 
   it('is whole Earth sector sets: two on a phone, three on a desktop', () => {
@@ -2293,11 +2307,8 @@ describe('the sector floor', () => {
   });
 
   it('never gives the tiles more than their ceiling to honour a floor', () => {
-    const s = new SectorStreamer({
-      limits: { ...TOUCH, sectorFloorBytes: 4 * TOUCH.ceilingBytes },
-      load: loader.load,
-      warm: warm.warm,
-    });
+    const s = makeStreamer({ ...TOUCH, sectorFloorBytes: 4 * TOUCH.ceilingBytes },
+      { load: loader.load, warm: warm.warm });
     s.register(earthHandle());
     s.setGlobalMapBytes(TOUCH.envelopeBytes);
     expect(s.stats().budget).toBe(TOUCH.ceilingBytes);
@@ -2314,6 +2325,69 @@ describe('the sector floor', () => {
     expect(s.stats().budget).toBe(DESKTOP.ceilingBytes);
     s.setGlobalMapBytes(DESKTOP.envelopeBytes - 4 * EARTH_SET_BYTES);
     expect(s.stats().budget).toBe(4 * EARTH_SET_BYTES);
+  });
+});
+
+describe('the envelope the tiles and the globe maps share', () => {
+  let loader: FakeLoader;
+  let warm: FakeWarm;
+
+  beforeEach(() => {
+    loader = new FakeLoader();
+    warm = new FakeWarm();
+  });
+
+  it('writes the floor it owes into the envelope the globe ladder reads', () => {
+    // The mode owns one MemoryEnvelope and hands the same object to the
+    // streamer; the ladder asks that object what it may spend. Nothing
+    // inside the streamer can tell a shared envelope from a private one —
+    // its own budget arithmetic is identical either way — so this is the one
+    // place the sharing itself is checked.
+    const envelope = new MemoryEnvelope(DESKTOP);
+    const s = new SectorStreamer({ limits: DESKTOP, envelope, load: loader.load, warm: warm.warm });
+    expect(envelope.floorBytes).toBe(0);
+    expect(envelope.ladderCeiling()).toBe(DESKTOP.envelopeBytes);
+
+    s.register(earthHandle());
+    expect(envelope.floorBytes).toBe(DESKTOP.sectorFloorBytes);
+    expect(envelope.ladderCeiling()).toBe(DESKTOP.envelopeBytes - DESKTOP.sectorFloorBytes);
+  });
+
+  it('takes the globe maps out of the tiles\' budget through that same object', () => {
+    const envelope = new MemoryEnvelope(DESKTOP);
+    const s = new SectorStreamer({ limits: DESKTOP, envelope, load: loader.load, warm: warm.warm });
+    s.register(earthHandle());
+    expect(s.stats().budget).toBe(DESKTOP.ceilingBytes);
+
+    // Enough for the globe maps to eat past the tiles' own ceiling: what is
+    // left of the envelope is the budget from here down.
+    const taken = DESKTOP.envelopeBytes - DESKTOP.ceilingBytes + 4 * EARTH_SET_BYTES;
+    s.setGlobalMapBytes(taken);
+    expect(envelope.ladderBytes).toBe(taken);
+    expect(s.stats().budget).toBe(DESKTOP.envelopeBytes - taken);
+    expect(envelope.sectorBudget()).toBe(s.stats().budget);
+
+    // And no further than the floor, however much the maps ask for.
+    s.setGlobalMapBytes(DESKTOP.envelopeBytes);
+    expect(envelope.ladderBytes).toBe(DESKTOP.envelopeBytes);
+    expect(s.stats().budget).toBe(DESKTOP.sectorFloorBytes);
+  });
+
+  it('refuses an envelope from a different device row', () => {
+    // The floor and the caps are read from `limits` while every budget is
+    // computed from the envelope's own two figures. A pair that disagrees
+    // spends two device rows at once, and none of the byte figures it
+    // reports would look wrong.
+    const opts = { load: loader.load, warm: warm.warm };
+    expect(() => new SectorStreamer({ limits: DESKTOP, envelope: new MemoryEnvelope(TOUCH), ...opts }))
+      .toThrow(/different device rows/);
+    expect(() => new SectorStreamer({
+      limits: DESKTOP,
+      envelope: new MemoryEnvelope({ ...DESKTOP, ceilingBytes: DESKTOP.ceilingBytes - 1 }),
+      ...opts,
+    })).toThrow(/different device rows/);
+    expect(() => new SectorStreamer({ limits: DESKTOP, envelope: new MemoryEnvelope(DESKTOP), ...opts }))
+      .not.toThrow();
   });
 });
 
@@ -2349,7 +2423,7 @@ describe('the transient of a globe-map swap', () => {
       envelopeBytes: HIGH + 3 * SET,
       ceilingBytes: 4 * SET,
     };
-    const streamer = new SectorStreamer({ limits, load: loader.load, warm: warm.warm });
+    const streamer = makeStreamer(limits, { load: loader.load, warm: warm.warm });
     streamer.register(earthHandle());
     loader.auto = true;
     const sizes: Record<string, number> = {};

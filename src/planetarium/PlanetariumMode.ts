@@ -3590,13 +3590,12 @@ export class PlanetariumMode {
     if (!moved && nowMs - this.memoryDebugAtMs < PlanetariumMode.MEMORY_DEBUG_PERIOD_MS) return;
     this.memoryDebugAtMs = nowMs;
     this.memoryDebugLast = figures;
-    // What the device was read as, which row that picked, and whether that
-    // row's numbers were measured on hardware or are still the ones the app
-    // shipped with. On a phone this overlay is the only console there is, so
-    // a device reporting a surprise reports it here.
-    // The envelope's own figures, plus what the tiles are actually holding of
-    // them — one object, from the one object that owns the numbers, so the
-    // line cannot disagree with what the two allocators are spending.
+    // What the device was read as, which row that picked, whether that row's
+    // numbers were measured on hardware or are still the ones the app shipped
+    // with, and the envelope those numbers buy — taken from the one object
+    // that owns them, so the line cannot disagree with what the two
+    // allocators are spending. On a phone this overlay is the only console
+    // there is, so a device reporting a surprise reports it here.
     debugLog('Memory', {
       class: this.deviceClass,
       family: this.deviceFamily,

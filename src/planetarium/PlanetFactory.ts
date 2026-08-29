@@ -24,7 +24,7 @@ import {
   SUN_GLARE_EXTENT_SOLAR_RADII,
 } from '../shared/shaders/sun';
 import { debugWarn } from '../shared/debug';
-import { applyTextureDefaults, clampTier, resolveTextureUrl, TIER_MAP_WIDTH, type TextureTier, type MapKind, touchTextureBudget } from './world/texturePolicy';
+import { applyTextureDefaults, clampTier, deviceTextureProfile, resolveTextureUrl, TIER_MAP_WIDTH, type TextureTier, type MapKind } from './world/texturePolicy';
 import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
 import { queueTextureWarm } from './world/textureWarmer';
 import { createEarthNightShellMaterial } from './world/earthNightMaterial';
@@ -435,6 +435,47 @@ export interface TextureUpgrade {
   /** A committed arrival's warm-up target — see armArrivalWarmGoal. Set only
    *  through arm/disarm so the one-shot-per-tier semantics hold. */
   warmGoal?: TextureTier;
+  /** The swap down in flight, if any: the tier being fetched to replace the
+   *  rung with, and the identity a late arrival is checked against. Distinct
+   *  from `attempt` — a body may be handing a map back while nothing is
+   *  climbing, and never the other way round. `abort` ends the transfer when
+   *  the swap is abandoned: a swap given up on has no reader left, and a
+   *  stalled link is exactly where one abandoned transfer per timeout would
+   *  otherwise accumulate for the session. */
+  release?: {
+    toTier: TextureTier;
+    generation: number;
+    startedAtMs: number;
+    restore?: boolean;
+    abort?: AbortController;
+  };
+  /** GPU bytes the map a swap has DECODED but not yet assigned will hold.
+   *  Between the decode and the assignment both maps are on the device, so
+   *  both are in the ledger — otherwise the transient is spent behind the
+   *  back of the admission test and the tiles are never trimmed for it. */
+  pendingReleaseBytes?: number;
+  /** Wall-clock instant the last rung was given back. For a few seconds after
+   *  one, this handle earns nothing: every borderline case then resolves
+   *  toward keeping what is there rather than paying the download twice. */
+  releasedAtMs?: number;
+  /** Wall-clock instant before which no further swap down is attempted for
+   *  this handle, and how many have failed in a row. A body whose lower map
+   *  cannot be fetched — offline, evicted from the cache — is the farthest
+   *  candidate every frame, so without this the planner would ask it again
+   *  every frame for the rest of the session. */
+  releaseRetryAtMs?: number;
+  releaseFailures?: number;
+  /** How many swaps down in a row were abandoned for taking too long. Counted
+   *  apart from the failures because a hung fetch and a refused one need
+   *  different cooldowns — the hang has already cost the full timeout — while
+   *  both mean the same thing to the player: the maps are not coming back. */
+  releaseTimeouts?: number;
+  /** Wall-clock instant the body's screen fraction last fell under the
+   *  release band, or undefined while it is at or above it. Tracked on every
+   *  frame and reset on every crossing back up, so the dwell measures how
+   *  long the body has really been small — not how long the memory has been
+   *  tight. */
+  belowBandSinceMs?: number;
 }
 
 /** True once this handle has fetched everything the device can hold — the
@@ -491,17 +532,10 @@ export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
   earthNight: ['4k'],
 };
 
-// Per-key ceiling on touch devices, applied over the GL clamp. An 8K RGBA map
-// is 171 MiB resident with its mips, and a phone's shared memory is the
-// app's known weak spot (an unexplained crash teleporting to the Moon on an
-// iPhone). Neither 8K earns its place there. The Moon's: at the telescope's
-// default framing on a phone the disc is ~630 device pixels, where a 4K
-// texel already spans half a pixel — the 8K first shows once the disc
-// passes ~1600 device pixels, and from there the 16K sector tiles (measured
-// against this ceiling) take over at a fraction of the memory. The cloud
-// deck's: it would sit beside Earth's 4K day map and the sector tiles in the
-// close approach the sectors serve.
-const TOUCH_TIER_CAP: Partial<Record<string, TextureTier>> = { earthClouds: '4k', moon: '4k' };
+// A device profile may cap a key below its ladder's top, over the GL clamp:
+// an 8K RGBA map is 171 MiB resident with its mips, which is a question of
+// total residency rather than of whether one map fits. The caps and their
+// reasoning are the profile's (world/gpuEnvelope).
 
 // The Moon's 8K tier ships GPU-compressed (KTX2/UASTC, mip chain baked by
 // tools/gen-moon-ktx2.mjs): the raw upload of a 33MP RGBA map is the largest
@@ -523,12 +557,21 @@ type Ktx2TierLoad = (
   onError: (err: unknown) => void,
 ) => void;
 let ktx2TierLoader: Ktx2TierLoad | null = null;
+let ktx2CompressedTarget = false;
 
 /** Bind (or clear, with null) the KTX2 tier fetch. The mode binds a lazy
  *  KTX2Loader wrapper at init and clears it at dispose; while unbound every
- *  entry in TIER_FILE_OVERRIDES is inert. */
-export function bindKtx2TierLoader(fn: Ktx2TierLoad | null): void {
+ *  entry in TIER_FILE_OVERRIDES is inert.
+ *
+ *  `compressedTarget` is whether this GPU has a compressed format the
+ *  transcoder can target (ASTC, BC7, ETC2 and the rest). It decides what a
+ *  .ktx2 rung is CHARGED before it is fetched, and the filename cannot: with
+ *  no compressed target the transcoder falls back to RGBA32 and hands back a
+ *  texture four times the size the container's blocks suggest — the exact
+ *  allocation the charge exists to refuse. */
+export function bindKtx2TierLoader(fn: Ktx2TierLoad | null, compressedTarget = false): void {
   ktx2TierLoader = fn;
+  ktx2CompressedTarget = fn ? compressedTarget : false;
 }
 
 /** The file a tier fetch actually asks for — the compressed override when its
@@ -554,37 +597,191 @@ export function equirectMapGpuBytes(width: number, compressed = false): number {
 }
 
 /**
+ * GPU bytes one colour map holds, read from the texture that is really there
+ * rather than from the tier's nominal size: a GPU-compressed rung holds
+ * exactly the blocks its container carries (a quarter to an eighth of the raw
+ * map, and the ratio is the format's, not ours to assume), and a map is not
+ * always the width its tier is named for — Earth's day map boots wider than
+ * its tier name. `nominalWidth` is the fallback for a texture with no
+ * readable image; 0 asks for no fallback.
+ *
+ * A rung whose decoded source has been closed after its upload keeps the
+ * figure stashed on the texture (userData.gpuBytes): what is on the GPU has
+ * not changed, only what is left in RAM to read it from. Same convention as
+ * the sector tiles, whose bitmaps are closed for the same reason.
+ *
+ * Takes a plain texture, not a handle, so the same measurement runs on a
+ * decoded CANDIDATE before it is applied — the moment the admission test has
+ * to weigh it, and the moment a handle-shaped reader can say nothing at all.
+ */
+export function textureGpuBytes(tex: THREE.Texture | null | undefined, nominalWidth = 0): number {
+  const map = tex as
+    | (THREE.Texture & { isCompressedTexture?: boolean; mipmaps?: Array<{ data?: { byteLength?: number } } | null> })
+    | null
+    | undefined;
+  if (!map) return 0;
+  const stashed = map.userData?.gpuBytes;
+  if (typeof stashed === 'number') return stashed;
+  if (map.isCompressedTexture) {
+    let bytes = 0;
+    for (const level of map.mipmaps ?? []) bytes += level?.data?.byteLength ?? 0;
+    if (bytes > 0) return bytes;
+  }
+  const img = map.image as { width?: unknown; height?: unknown } | undefined;
+  const w = img && typeof img.width === 'number' ? img.width : 0;
+  const h = img && typeof img.height === 'number' ? img.height : 0;
+  if (w > 0 && h > 0) return Math.round(w * h * (map.isCompressedTexture ? 1 : 4) * (4 / 3));
+  return equirectMapGpuBytes(nominalWidth, map.isCompressedTexture === true);
+}
+
+/**
  * GPU bytes the tier this handle has APPLIED holds — 0 while the body is
  * still on the boot map every device carries anyway. Summed over the bodies,
  * this is the ladder's live weight, which the sector streamer's memory
  * envelope has to share with: a Moon on its 8K rung leaves its tiles what it
  * actually leaves.
- *
- * Read from the texture that is really there, not from the tier's nominal
- * size: a GPU-compressed rung holds exactly the blocks its container carries
- * (a quarter to an eighth of the raw map, and the ratio is the format's, not
- * ours to assume), and a map is not always the width its tier is named for
- * — the cloud deck's 4K is 4096 across where the Moon's is 4096 too but
- * Earth's day map boots wider. The nominal figure is the fallback for a
- * texture with no readable image.
  */
 export function appliedTierGpuBytes(up: TextureUpgrade): number {
   if (!up.appliedTier) return 0;
-  const map = materialColorMap(up.material) as
-    | (THREE.Texture & { isCompressedTexture?: boolean; mipmaps?: Array<{ data?: { byteLength?: number } } | null> })
-    | null;
-  if (map?.isCompressedTexture) {
-    let bytes = 0;
-    for (const level of map.mipmaps ?? []) bytes += level?.data?.byteLength ?? 0;
-    if (bytes > 0) return bytes;
+  const nominal = TIER_MAP_WIDTH[up.appliedTier];
+  // Wherever this material keeps its colour map: a shader shell (Earth's
+  // night lights) keeps it in a uniform, and its rung weighs the same.
+  const map = materialColorMap(up.material);
+  // A handle whose material has no map at all is charged its tier's nominal
+  // size: the rung is what it says it is until a texture says otherwise.
+  return map ? textureGpuBytes(map, nominal) : equirectMapGpuBytes(nominal);
+}
+
+/**
+ * Bytes an applied rung holds on the device: its GPU allocation plus the
+ * decoded image still in RAM behind it, if any. A webp rung keeps its
+ * ImageBitmap so three can re-upload it after a context loss — 33 MiB for a
+ * 4K map, 134 for an 8K one, none of it visible in a texture-memory figure —
+ * so the ladder closes that source once the upload is paid (see
+ * releaseUpgradeSource) and this reads 0 for it from then on. What is still
+ * held is counted, because the envelope is one device's memory rather than
+ * one subsystem's.
+ */
+export function appliedTierHeldBytes(up: TextureUpgrade): number {
+  // A swap whose map has decoded but not yet been assigned holds both at
+  // once, and the transient is real device memory whoever is asking.
+  const pending = up.pendingReleaseBytes ?? 0;
+  if (!up.appliedTier) return pending; // the boot map is not the ladder's weight
+  return appliedTierGpuBytes(up) + retainedSourceBytes(materialColorMap(up.material)) + pending;
+}
+
+/** Bytes of decoded image a texture is still holding in RAM. Only the bitmap
+ *  path retains one; a compressed texture's mip data is what
+ *  `textureGpuBytes` already measures, and counting it twice would make one
+ *  honest measurement look like two. */
+export function retainedSourceBytes(tex: THREE.Texture | null | undefined): number {
+  const map = tex as (THREE.Texture & { isCompressedTexture?: boolean }) | null | undefined;
+  if (!map || map.isCompressedTexture) return 0;
+  // A rung whose source has been closed keeps a small stand-in to re-upload
+  // from after a context loss — 2 MiB against the 33 MiB it replaced, and a
+  // couple of rungs' worth across the whole scene.
+  if (map.userData?.sourceReleased === true) return 0;
+  const img = map.image as { width?: unknown; height?: unknown; close?: unknown } | undefined;
+  if (!img || typeof img.close !== 'function') return 0; // an <img> element, not a bitmap
+  const w = typeof img.width === 'number' ? img.width : 0;
+  const h = typeof img.height === 'number' ? img.height : 0;
+  return w > 0 && h > 0 ? w * h * 4 : 0;
+}
+
+/**
+ * What the memory ledger says about a rung that wants to load.
+ *
+ * - `admit` — it fits beside everything else the ladder holds.
+ * - `blocked` — it does not fit now, but rungs the ladder could give back
+ *   would make room. The caller waits rather than gives up.
+ * - `refuse` — it does not fit even with the ladder empty. Nothing can make
+ *   room, so a goal aimed at it disarms rather than pumping forever.
+ */
+export type TierAdmission = 'admit' | 'blocked' | 'refuse';
+
+/** Asked before a rung is fetched, and again for the decoded candidate with
+ *  the bytes it really holds. Unbound (tests, and any consumer with no memory
+ *  ledger) every rung is admitted, which is what the ladder did before there
+ *  was one. */
+export type TierAdmitter = (up: TextureUpgrade, tier: TextureTier, bytes: number) => TierAdmission;
+
+let admitTier: TierAdmitter = () => 'admit';
+
+/** Bind (or clear, with null) the ladder's admission test. The mode binds the
+ *  envelope ledger at init and clears it at dispose. */
+export function bindTierAdmission(fn: TierAdmitter | null): void {
+  admitTier = fn ?? (() => 'admit');
+}
+
+/** The admission verdict on a tier, at its pre-fetch estimate. */
+export function tierAdmission(up: TextureUpgrade, tier: TextureTier): TierAdmission {
+  return admitTier(up, tier, tierUploadBytes(up.key, tier));
+}
+
+/**
+ * The finest tier this handle can currently reach: what it already holds, or
+ * the next rungs up while they are both loadable and admitted. Live rather
+ * than remembered — a rung refused for want of memory, released under
+ * pressure or failed to load lowers it the moment it happens, and the sector
+ * streamer measures its tiles' magnification against this. Sectors sized
+ * against a map the globe will not hold arrive at twice the magnification
+ * they were meant for, or not at all.
+ *
+ * null while the body is on its boot map with nothing reachable above it —
+ * the drawn map is then the finest thing there is.
+ */
+export function reachableTopTier(up: TextureUpgrade): TextureTier | null {
+  let best: TextureTier | null = null;
+  for (const tier of up.tiers) { // ascending
+    if (TIER_RANK[tier] > TIER_RANK[up.effectiveMaxTier]) break;
+    if (up.appliedTier && TIER_RANK[tier] <= TIER_RANK[up.appliedTier]) {
+      best = tier; // it is holding this one
+      continue;
+    }
+    // A tier whose last fetch failed leaves the ladder one rung short until a
+    // later attempt succeeds; until then it is not a top the tiles may be
+    // measured against.
+    if (up.lastFailure && TIER_RANK[tier] >= TIER_RANK[up.lastFailure.tier]) break;
+    if (admitTier(up, tier, tierUploadBytes(up.key, tier)) !== 'admit') break;
+    best = tier;
   }
-  const img = map?.image as { width?: unknown; height?: unknown } | undefined;
-  const w = img && typeof img.width === 'number' ? img.width : 0;
-  const h = img && typeof img.height === 'number' ? img.height : 0;
-  if (w > 0 && h > 0) {
-    return Math.round(w * h * (map?.isCompressedTexture ? 1 : 4) * (4 / 3));
-  }
-  return equirectMapGpuBytes(TIER_MAP_WIDTH[up.appliedTier], map?.isCompressedTexture === true);
+  return best;
+}
+
+/**
+ * Width of the colour map the surface tiles measure their magnification
+ * against: the finest tier the ladder can reach, never below the nominal
+ * width of the rung the body is DRAWING.
+ *
+ * Nominal, never the drawn texture's own image width, because that image is
+ * not the map: an applied rung replaces its decoded source with a small
+ * stand-in once the upload is paid, so the image behind a 4K map reports a
+ * few hundred pixels while the GPU holds 4096. And the floor matters because
+ * a ladder with nothing reachable above it reports no top at all — a body
+ * released to its boot map while memory is tight is drawing 2048 and would
+ * otherwise be measured against whatever was left in the image slot. Tiles
+ * sized against a map the globe does not hold arrive at many times the
+ * magnification they were meant for, and are never released again.
+ */
+export function ladderMapReferenceWidth(up: TextureUpgrade): number {
+  const top = reachableTopTier(up);
+  const drawn = TIER_MAP_WIDTH[up.appliedTier ?? BOOT_TIER];
+  return Math.max(drawn, top ? TIER_MAP_WIDTH[top] : 0);
+}
+
+/**
+ * GPU bytes a tier WILL hold once it is fetched — the estimate the admission
+ * test spends before a byte is downloaded. Charged at one byte a texel only
+ * when the file is a compressed container AND this GPU has a format the
+ * transcoder can target: with no such format three transcodes to RGBA32 and
+ * the same container costs four times as much, which is the allocation the
+ * test exists to refuse. The real texture is measured again before it is
+ * applied, so an estimate that was generous is corrected before it costs
+ * anything.
+ */
+export function tierUploadBytes(key: string, tier: TextureTier): number {
+  const compressed = resolveTierFile(key, tier).endsWith('.ktx2') && ktx2CompressedTarget;
+  return equirectMapGpuBytes(TIER_MAP_WIDTH[tier], compressed);
 }
 
 // A hung fetch must not own a handle for the session: past this age a fresh
@@ -613,8 +810,8 @@ export function makeTextureUpgrade(
   const tiers = TEXTURE_UPGRADE_TIERS[key];
   if (!tiers) return undefined;
   let top = tiers[tiers.length - 1];
-  const cap = TOUCH_TIER_CAP[key];
-  if (cap && touchTextureBudget() && TIER_RANK[cap] < TIER_RANK[top]) top = cap;
+  const cap = deviceTextureProfile().tierCaps[key];
+  if (cap && TIER_RANK[cap] < TIER_RANK[top]) top = cap;
   return {
     key,
     material,
@@ -705,6 +902,10 @@ export function earnedUpgradeTier(up: TextureUpgrade, fraction: number): Texture
 export function canAttempt(up: TextureUpgrade, nowMs: number): boolean {
   if (!resolveUpgradeTier(up, up.effectiveMaxTier)) return false;
   if (up.attempt && nowMs - up.attempt.startedAtMs < UPGRADE_ATTEMPT_TIMEOUT_MS) return false;
+  // A swap down is in flight, or has just landed. Climbing again now would
+  // undo the memory the release was for and pay both uploads.
+  if (up.release) return false;
+  if (up.releasedAtMs !== undefined && nowMs - up.releasedAtMs < RELEASE_REEARN_GRACE_MS) return false;
   return up.retryAtMs === undefined || nowMs >= up.retryAtMs;
 }
 
@@ -897,20 +1098,24 @@ export function applyColorTierTexture(mat: THREE.Material, tex: THREE.Texture, r
   setMaterialColorMap(mat, tex);
   mat.userData.colorTierRank = rank;
   mat.needsUpdate = true;
-  // Assign-new-before-dispose-old (above) so no frame samples a freed texture.
-  // A GPU procedural floor's texture is backed by a render target; dispose the
-  // whole RT (framebuffer + texture), not just the texture, to avoid leaking it.
-  if (prev) {
-    const owner = prev.userData?.ownerRenderTarget as THREE.WebGLRenderTarget | undefined;
-    if (owner) {
-      owner.dispose(); // disposes the RT (fires its tracked-removal listener)
-      // Drop the now-dangling procedural ref so nothing points at the freed RT.
-      if (mat.userData.proceduralColorRT === owner) mat.userData.proceduralColorRT = undefined;
-    } else {
-      prev.dispose();
-    }
-  }
+  disposeReplacedColorMap(mat, prev);
   return true;
+}
+
+/** Free the map a swap replaced. Called only after the new one is assigned,
+ *  so no frame samples a freed texture. A GPU procedural floor's texture is
+ *  backed by a render target; dispose the whole RT (framebuffer + texture),
+ *  not just the texture, or it leaks. */
+function disposeReplacedColorMap(mat: THREE.Material, prev: THREE.Texture | null): void {
+  if (!prev || prev === materialColorMap(mat)) return;
+  const owner = prev.userData?.ownerRenderTarget as THREE.WebGLRenderTarget | undefined;
+  if (owner) {
+    owner.dispose(); // disposes the RT (fires its tracked-removal listener)
+    // Drop the now-dangling procedural ref so nothing points at the freed RT.
+    if (mat.userData.proceduralColorRT === owner) mat.userData.proceduralColorRT = undefined;
+  } else {
+    prev.dispose();
+  }
 }
 
 /**
@@ -930,6 +1135,15 @@ export function upgradeTextureOnApproach(
   if (!canAttempt(up, nowMs)) return;
   const tier = resolveUpgradeTier(up, requested);
   if (!tier) return;
+  // What the ladder already holds decides whether this rung may be fetched at
+  // all. A refusal is arithmetic, not a failure: no cooldown, no attempt, no
+  // record — the body keeps the map it has and the same question is asked
+  // again next frame, by which time a release may have made room.
+  const admission = admitTier(up, tier, tierUploadBytes(up.key, tier));
+  if (admission !== 'admit') {
+    if (admission === 'refuse') up.warmGoal = undefined;
+    return;
+  }
   const generation = ++upgradeGeneration;
   up.attempt = { tier, generation, startedAtMs: nowMs };
   up.retryAtMs = undefined;
@@ -975,12 +1189,26 @@ export function upgradeTextureOnApproach(
           tex.dispose();
           return;
         }
+        // The estimate that admitted this fetch was nominal; the texture in
+        // hand is the real figure. A map that turns out not to fit is dropped
+        // here, before it is ever assigned — the body keeps the rung it has,
+        // which is a real map either way.
+        const room = admitTier(up, tier, textureGpuBytes(tex, TIER_MAP_WIDTH[tier]));
+        if (room !== 'admit') {
+          up.attempt = undefined;
+          if (room === 'refuse') up.warmGoal = undefined;
+          tex.dispose();
+          return;
+        }
         up.attempt = undefined;
         up.appliedTier = tier;
         if (up.lastFailure && TIER_RANK[tier] >= TIER_RANK[up.lastFailure.tier]) {
           up.lastFailure = undefined;
         }
-        if (applyColorTierTexture(up.material, tex, TIER_RANK[tier])) queueTextureWarm(tex);
+        up.belowBandSinceMs = undefined;
+        if (applyColorTierTexture(up.material, tex, TIER_RANK[tier])) {
+          queueTextureWarm(tex, (outcome) => { if (outcome === 'warmed') releaseUpgradeSource(tex); });
+        }
         up.material.userData.photoLoaded = true; // keep the lazy painter off it
       };
       if (img && typeof img.decode === 'function') img.decode().then(applyUpgrade, applyUpgrade);
@@ -1033,6 +1261,379 @@ export function cancelTextureUpgrade(
   up.retryAtMs = nowMs + UPGRADE_RETRY_MS;
 }
 
+// --- Giving a rung back ------------------------------------------------------
+//
+// The ladder is one-way by nature: every rung is fetched because a body grew
+// large, and nothing shrinks it again. On a device where the globe maps and
+// the surface tiles share one memory envelope that makes the ladder a
+// ratchet — six approaches and the tiles have nothing left to spend for the
+// rest of the session, at the very magnifications a tile is what the surface
+// needs. So a rung a body has stopped earning can be handed back.
+//
+// Three rules keep that from becoming churn. It happens only under memory
+// pressure (a rung somewhere is being refused, or the maps have grown past
+// what the tiles' floor leaves them). It happens only well below where the
+// rung was earned — a third of the trigger fraction, which is a band that
+// cannot invert however large the body was when it first earned the tier.
+// And it happens only after the body has stayed there for a dwell.
+
+/** How far below its earn trigger a body must fall before the rung it earned
+ *  is releasable: a third of the fraction that bought it. Anchored to the
+ *  TRIGGER and never to the fraction observed when the rung was earned —
+ *  every committed arrival earns its rungs at fraction 1, so a band derived
+ *  from the observation would sit ABOVE the trigger and flap forever at the
+ *  framing the tier exists for. */
+export const RELEASE_BAND_DIVISOR = 3;
+
+/** The screen fraction under which `tier` stops earning its place for `key`. */
+export function releaseBandFraction(key: string, tier: TextureTier): number {
+  const trigger = upgradeTriggerFraction(key, tier);
+  return trigger === undefined ? 0 : trigger / RELEASE_BAND_DIVISOR;
+}
+
+// How long a body must stay under the band before its rung goes back. A 4K
+// swap is a second of fetch and one upload; an 8K one is the largest
+// unsliceable main-thread bill in the app, so it is the last to leave and the
+// most expensive to re-earn — unless it arrived GPU-compressed, which
+// re-uploads in milliseconds and is as cheap to take back as a 4K.
+const RELEASE_DWELL_MS: Record<TextureTier, number> = { '2k': 8_000, '4k': 8_000, '8k': 30_000 };
+const RELEASE_DWELL_COMPRESSED_MS = 8_000;
+
+/** The dwell a rung of this tier owes before it may be given back. */
+export function releaseDwellMs(tier: TextureTier, compressed: boolean): number {
+  return compressed ? RELEASE_DWELL_COMPRESSED_MS : RELEASE_DWELL_MS[tier];
+}
+
+/** Nothing is re-earned for this long after a release, so a body sitting on
+ *  the boundary cannot fetch, release and re-fetch the same map. */
+export const RELEASE_REEARN_GRACE_MS = 5_000;
+
+/** A swap down that has not landed in this long is abandoned: the map that is
+ *  already there stays, and the planner is free to try another body. */
+export const RELEASE_ATTEMPT_TIMEOUT_MS = 20_000;
+
+/** Cooldown after a swap down that could not be fetched, doubling per
+ *  consecutive failure to the same cap as the climb's. */
+const RELEASE_RETRY_MS = 8_000;
+const RELEASE_RETRY_MAX_DOUBLINGS = 4;
+
+/** Cooldown after a swap down abandoned for taking too long, doubling per
+ *  consecutive timeout up to five minutes. It starts at the timeout itself
+ *  because the fetch has already had that long and not landed: without a
+ *  cooldown the dwell is still served the moment the swap is abandoned, so
+ *  the same body starts a fresh fetch on the very next frame and a stalled
+ *  link costs one abandoned transfer every twenty seconds for the session. */
+const RELEASE_TIMEOUT_RETRY_MS = RELEASE_ATTEMPT_TIMEOUT_MS;
+const RELEASE_TIMEOUT_RETRY_MAX_MS = 300_000;
+
+/** True once a swap down has been in the air too long to wait for. The map
+ *  the body is drawing stays either way; abandoning only frees the planner to
+ *  ask another body. */
+export function releaseExpired(up: TextureUpgrade, nowMs: number): boolean {
+  return up.release !== undefined && nowMs - up.release.startedAtMs > RELEASE_ATTEMPT_TIMEOUT_MS;
+}
+
+/** Give up on a swap down that never landed: end its transfer, count the
+ *  timeout, and hold this handle off until the cooldown. A hang is as good a
+ *  reason to stop asking as a refusal — the difference is only that it costs
+ *  the full timeout to learn. */
+export function expireTierRelease(up: TextureUpgrade, nowMs = performance.now()): void {
+  if (!up.release) return;
+  cancelTierRelease(up);
+  const streak = (up.releaseTimeouts ?? 0) + 1;
+  up.releaseTimeouts = streak;
+  up.releaseRetryAtMs = nowMs
+    + Math.min(RELEASE_TIMEOUT_RETRY_MS * 2 ** (streak - 1), RELEASE_TIMEOUT_RETRY_MAX_MS);
+}
+
+/** Keep this handle's "how long has it been small" clock. Called every frame
+ *  for every laddered body — including the ones nothing is drawing, whose
+ *  fraction is 0 — so the dwell measures the body's distance rather than the
+ *  moment memory got tight. */
+export function trackReleaseBand(up: TextureUpgrade, fraction: number, nowMs: number): void {
+  if (!up.appliedTier) {
+    up.belowBandSinceMs = undefined;
+    return;
+  }
+  if (fraction < releaseBandFraction(up.key, up.appliedTier)) up.belowBandSinceMs ??= nowMs;
+  else up.belowBandSinceMs = undefined;
+}
+
+/** True when this handle has a rung to give back and has been under its band
+ *  for the dwell. Says nothing about whether it SHOULD — pressure, distance
+ *  order and every protection are the planner's business. */
+export function releaseDue(up: TextureUpgrade, nowMs: number): boolean {
+  if (!up.appliedTier || up.release || up.attempt) return false;
+  if (up.releaseRetryAtMs !== undefined && nowMs < up.releaseRetryAtMs) return false;
+  if (up.belowBandSinceMs === undefined) return false;
+  const compressed = (materialColorMap(up.material) as THREE.Texture & { isCompressedTexture?: boolean } | null)
+    ?.isCompressedTexture === true;
+  return nowMs - up.belowBandSinceMs >= releaseDwellMs(up.appliedTier, compressed);
+}
+
+/** The tier a release drops to: one rung down the ladder, or the boot map
+ *  every device carries anyway — which is not a member of `tiers`, so the
+ *  handle's appliedTier goes back to null and the climb starts from the
+ *  bottom rung again. */
+export function releaseTargetTier(up: TextureUpgrade): TextureTier | null {
+  if (!up.appliedTier) return null;
+  let below: TextureTier | null = null;
+  for (const tier of up.tiers) {
+    if (TIER_RANK[tier] < TIER_RANK[up.appliedTier]) below = tier; // ascending
+  }
+  return below ?? BOOT_TIER;
+}
+
+/** The tier a body's first-paint map is fetched at. */
+const BOOT_TIER: TextureTier = '2k';
+
+/**
+ * Put a LOWER map on a material on purpose — the swap down `applyColorTierTexture`
+ * refuses by construction, since its rank guard exists to stop a late arrival
+ * undoing a finer map that already won.
+ *
+ * Same order as the way up: assign, re-point the colour-as-bump alias, then
+ * dispose what was there. So there is no frame with no map, and none sampling
+ * a freed one. `photoLoaded` stays true — the body still has a real
+ * photograph on it, and the lazy painter must not start painting over it.
+ */
+export function releaseColorTier(mat: THREE.Material, tex: THREE.Texture, rank: number): void {
+  const prev = materialColorMap(mat);
+  setMaterialColorMap(mat, tex);
+  mat.userData.colorTierRank = rank;
+  mat.needsUpdate = true;
+  disposeReplacedColorMap(mat, prev);
+}
+
+/**
+ * Fetch the map below this handle's rung and swap it in when it decodes.
+ *
+ * The lower map is re-fetched rather than kept: holding every body's previous
+ * tier for the life of the session costs more memory than the release ever
+ * gives back, and the fetch comes from the service-worker cache for any body
+ * the session has already been near. The body draws its high map throughout —
+ * the swap happens on a decoded texture or not at all — so a release is
+ * invisible except as a softening, and never re-opens the arrival cover: the
+ * material keeps a real map and `photoLoaded` through every step.
+ *
+ * `restore` re-fetches the SAME tier instead of the one below: the rung's
+ * decoded source is closed once its upload is paid, so a lost GL context has
+ * nothing to re-upload from and the map is fetched again.
+ */
+export function startTierRelease(
+  up: TextureUpgrade,
+  nowMs = performance.now(),
+  opts: {
+    restore?: boolean;
+    onSettled?: (released: boolean) => void;
+    /** Called the moment the low map's bytes enter (and leave) the ledger, so
+     *  a caller that shares the envelope with another manager can hand it the
+     *  new figure before anything is drawn or admitted against it. */
+    onLedgerChange?: () => void;
+  } = {},
+): boolean {
+  if (!up.appliedTier || up.release || up.attempt) return false;
+  const toTier = opts.restore ? up.appliedTier : releaseTargetTier(up);
+  if (!toTier) return false;
+  const generation = ++upgradeGeneration;
+  const abort = typeof AbortController === 'function' ? new AbortController() : undefined;
+  up.release = { toTier, generation, startedAtMs: nowMs, restore: opts.restore, abort };
+  const abandoned = () => up.release?.generation !== generation;
+  const ktx2 = ktx2TierLoader;
+  const file = resolveTierFile(up.key, toTier);
+  const url = resolveTextureUrl(file, toTier);
+  const load: TextureLoad = file.endsWith('.ktx2') && ktx2
+    ? (u, onLoad, onError) => ktx2(u, onLoad, onError)
+    : loadUpgradeTexture;
+  const settle = (released: boolean) => {
+    up.release = undefined;
+    opts.onSettled?.(released);
+  };
+  load(
+    url,
+    (tex) => {
+      if (abandoned()) {
+        tex.dispose();
+        return;
+      }
+      applyTextureDefaults(tex, 'color');
+      const swap = () => {
+        if (abandoned()) {
+          tex.dispose();
+          return;
+        }
+        // Decoded and about to be assigned: for these few statements the
+        // device holds the map being given back AND the one replacing it, so
+        // the transient goes into the ledger first and comes out with the
+        // high map. Whoever shares the envelope trims for it synchronously,
+        // rather than discovering the peak a frame after it has passed.
+        up.pendingReleaseBytes = textureGpuBytes(tex, TIER_MAP_WIDTH[toTier]);
+        opts.onLedgerChange?.();
+        releaseColorTier(up.material, tex, TIER_RANK[toTier]);
+        up.pendingReleaseBytes = undefined;
+        queueTextureWarm(tex, (outcome) => { if (outcome === 'warmed') releaseUpgradeSource(tex); });
+        up.releaseFailures = undefined;
+        up.releaseTimeouts = undefined;
+        up.releaseRetryAtMs = undefined;
+        if (!opts.restore) {
+          up.appliedTier = up.tiers.includes(toTier) ? toTier : null;
+          // A goal aimed above the rung just given back would climb straight
+          // back up; the arrival it was armed for is over.
+          up.warmGoal = undefined;
+          up.releasedAtMs = performance.now();
+          up.belowBandSinceMs = undefined;
+        }
+        settle(true);
+      };
+      const img = tex.image as { decode?: () => Promise<void> } | undefined;
+      if (img && typeof img.decode === 'function') img.decode().then(swap, swap);
+      else swap();
+    },
+    (err) => {
+      if (abandoned()) return;
+      // The map that is there stays. Nothing is half-released, the planner
+      // may try another body, and this one waits out a cooldown rather than
+      // being asked again on the very next frame — it is still the farthest
+      // candidate, and a network that is gone stays gone for a while.
+      const streak = (up.releaseFailures ?? 0) + 1;
+      up.releaseFailures = streak;
+      up.releaseRetryAtMs = performance.now()
+        + RELEASE_RETRY_MS * 2 ** Math.min(streak - 1, RELEASE_RETRY_MAX_DOUBLINGS);
+      settle(false);
+      debugWarn('Texture release failed', {
+        key: up.key,
+        tier: toTier,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    },
+    () => !abandoned(),
+    abort?.signal,
+  );
+  return true;
+}
+
+/** A rung waiting to fetch back the map a lost GL context took, and the
+ *  stand-in texture it is waiting to replace. The texture is carried so an
+ *  entry whose material has moved on — an upgrade landed, a release swapped a
+ *  map in — is recognised as answered rather than re-fetched. */
+export interface RestoreRefetchEntry {
+  up: TextureUpgrade;
+  tex: THREE.Texture;
+}
+
+/**
+ * Take the next stand-in that may fetch its real map back, dropping the
+ * entries that no longer need one.
+ *
+ * One at a time and only what the ledger admits: a context is lost because
+ * the system reclaimed memory, so the answer to it must not be every globe
+ * map decoding at once. A handle that is busy, and a rung the ledger cannot
+ * fit today, both stay queued — an upgrade that fails mid-restore, or a
+ * squeeze that passes, must not leave a body on a stand-in for the session.
+ * A rung that can never fit again is taken from the queue with `restore`
+ * false: it is handed back instead, which fetches a smaller real map in place
+ * of the stand-in.
+ */
+export function takeRestoreRefetch(
+  queue: RestoreRefetchEntry[],
+): { up: TextureUpgrade; restore: boolean } | null {
+  for (let i = 0; i < queue.length; i++) {
+    const { up, tex } = queue[i];
+    if (!up.appliedTier || materialColorMap(up.material) !== tex) {
+      queue.splice(i, 1);
+      i--;
+      continue;
+    }
+    if (up.attempt || up.release) continue;
+    const room = tierAdmission(up, up.appliedTier);
+    if (room === 'blocked') continue;
+    queue.splice(i, 1);
+    return { up, restore: room === 'admit' };
+  }
+  return null;
+}
+
+/** Abandon a swap in flight (a timeout, a teleport away, mode disposal). The
+ *  transfer is aborted rather than left to complete for nobody — the only
+ *  reader it had is this handle, and it has stopped waiting. A KTX2 rung
+ *  cannot be aborted (its loader takes no signal); it disposes itself on
+ *  arrival instead. */
+export function cancelTierRelease(up: TextureUpgrade): void {
+  const release = up.release;
+  up.release = undefined;
+  up.pendingReleaseBytes = undefined;
+  release?.abort?.abort();
+}
+
+/** Longest side a released rung's stand-in image keeps. The width of the map
+ *  every device boots on, less one 2:1 rung: a restored context re-uploads
+ *  this, so what the player sees for the second the real map takes to come
+ *  back is a boot-map-class globe rather than a smear. 2 MiB per rung
+ *  (1024x512 RGBA) against the 33 MiB of a 4K decode and the 134 of an 8K —
+ *  the accepted price of that second, and small enough that the ladder's
+ *  whole set of stand-ins is a rounding error against the envelope. */
+export const RESTORE_STANDIN_WIDTH = 1024;
+
+/**
+ * Close a rung's decoded source once its upload is paid.
+ *
+ * A texture keeps the image it was decoded from for the life of the texture,
+ * because three re-uploads from it if the GL context is lost — 33 MiB of RAM
+ * behind a 4K map, 134 behind an 8K one, on top of the GPU copy and invisible
+ * to any measure of texture memory. On the devices this matters on that RAM
+ * is the same pool as the GPU's.
+ *
+ * So the full image is replaced by a stand-in of itself and closed. What is
+ * left can still be uploaded, so a context restore paints a soft globe rather
+ * than throwing on a detached bitmap, and the mode re-fetches the real map
+ * (from the service-worker cache) behind it. Fails open in every direction: a
+ * browser with no `createImageBitmap`, one that rejects the resize, and one
+ * that accepts the options and hands back a full-size copy anyway all keep
+ * the original image — and the ledger goes on counting it, because the claim
+ * this function exists to make is an accounting one and a resize nobody
+ * checked is not evidence.
+ */
+export function releaseUpgradeSource(tex: THREE.Texture): void {
+  const img = tex.image as (ImageBitmap & { close?: () => void }) | undefined;
+  if (!img || typeof img.close !== 'function' || !(img.width > RESTORE_STANDIN_WIDTH)) return;
+  if (typeof createImageBitmap !== 'function') return;
+  const width = RESTORE_STANDIN_WIDTH;
+  const height = Math.max(1, Math.round(img.height * (width / img.width)));
+  let disposed = false;
+  const onDispose = () => { disposed = true; };
+  tex.addEventListener('dispose', onDispose);
+  createImageBitmap(img, {
+    resizeWidth: width,
+    resizeHeight: height,
+    resizeQuality: 'low',
+    imageOrientation: 'none', // the flip is already baked into the source
+    premultiplyAlpha: 'none',
+  }).then(
+    (small) => {
+      tex.removeEventListener('dispose', onDispose);
+      if (disposed) {
+        small.close();
+        return;
+      }
+      if (small.width !== width) {
+        // A copy at the original size is not a stand-in: it costs what the
+        // source cost, and swapping it in would report the source released
+        // while the same bytes are still held.
+        small.close();
+        return;
+      }
+      // What it holds on the GPU stops being readable from the image the
+      // moment the stand-in takes its place; stash the figure first.
+      tex.userData.gpuBytes = textureGpuBytes(tex);
+      tex.image = small; // does not touch the source version: no re-upload
+      tex.userData.sourceReleased = true;
+      tex.addEventListener('dispose', () => small.close());
+      img.close();
+    },
+    () => { tex.removeEventListener('dispose', onDispose); },
+  );
+}
+
 // --- Arrival warm goals ------------------------------------------------------
 //
 // The on-screen triggers are reactive: each rung's fetch starts only when the
@@ -1065,7 +1666,8 @@ export function cancelTextureUpgrade(
  */
 export function armArrivalWarmGoal(up: TextureUpgrade): boolean {
   const goal = earnedUpgradeTier(up, 1);
-  if (!goal || !resolveUpgradeTier(up, goal)) {
+  const next = goal ? resolveUpgradeTier(up, goal) : null;
+  if (!goal || !next || tierAdmission(up, next) === 'refuse') {
     up.warmGoal = undefined;
     return false;
   }
@@ -1075,6 +1677,32 @@ export function armArrivalWarmGoal(up: TextureUpgrade): boolean {
 
 export function disarmArrivalWarmGoal(up: TextureUpgrade): void {
   up.warmGoal = undefined;
+}
+
+/**
+ * Whether a committed arrival's warm goals have outlived the arrival.
+ *
+ * The time-box exists for ONE case: a goal the ladder could not fit, which
+ * stays armed while a release might still make room for it. That is a wait on
+ * memory, and it has to end with the arrival it belongs to, or a fly-past
+ * leaves a goal pumping for a body over the horizon.
+ *
+ * With nothing squeezing the ladder there is no such wait, and a goal is the
+ * ordinary staged climb: over a slow link a cold arrival's 2K -> 4K -> 8K
+ * routinely runs past any arrival grace, and cutting it short hands the
+ * remaining rungs back to the on-screen triggers — which is the mid-approach
+ * upload spike in front of a moving camera that the goals exist to remove.
+ * So the box is not applied where it answers nothing.
+ */
+export function arrivalWarmGoalsExpired(
+  pressure: boolean,
+  travel: { doneAtMs: number | null } | null,
+  nowMs: number,
+  graceMs: number,
+): boolean {
+  if (!pressure) return false;
+  if (!travel) return true; // nothing is arriving; the goals belong to no trip
+  return travel.doneAtMs !== null && nowMs - travel.doneAtMs >= graceMs;
 }
 
 /**
@@ -1092,6 +1720,15 @@ export function pumpArrivalWarmGoal(up: TextureUpgrade, nowMs: number): boolean 
     return false;
   }
   if (up.lastFailure && TIER_RANK[up.lastFailure.tier] >= TIER_RANK[next]) {
+    up.warmGoal = undefined;
+    return false;
+  }
+  // A rung that cannot fit even with the ladder empty is refused for good, so
+  // the goal disarms rather than pumping a fetch that can never start. A rung
+  // merely blocked by what the ladder holds right now keeps its goal: a
+  // release may free the room while the arrival is still under way, and the
+  // caller drops the goal when the arrival is over either way.
+  if (tierAdmission(up, next) === 'refuse') {
     up.warmGoal = undefined;
     return false;
   }

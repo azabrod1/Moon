@@ -145,6 +145,7 @@ import { applyTextureDefaults, resolveTileUrl, sectorSetHash, sectorSetLayout } 
 import { TIER_RANK } from '../PlanetFactory';
 import { debugWarn } from '../../shared/debug';
 import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
+import { sectorBudgetBytes, type SectorMemoryLimits } from './gpuEnvelope';
 
 /** The material slots a sector may carry a crop of, in a fixed order. */
 export const CROP_SLOTS = ['bumpMap', 'normalMap', 'roughnessMap'] as const;
@@ -313,32 +314,27 @@ export const SECTOR_NIGHT_SETS: Record<string, SectorSetSpec> = {
   },
 };
 
-/** A sector is wanted once one texel of the map BELOW it spans this many
+/* The want and release thresholds (wantTexelPx / releaseTexelPx, handed in
+ * with the rest of a device's numbers from world/gpuEnvelope) mean this:
+ *
+ *  A sector is wanted once one texel of the map BELOW it spans that many
  *  DEVICE pixels at the sector's nearest point — that map is then visibly
  *  magnified and a tile has detail to add — and released only once that
  *  falls under the second value, so a disc breathing around the threshold
  *  never flaps a 21 MiB upload. One rule per level: the map below a level-0
  *  sector is the globe's own, the map below a level-k sector is level k−1's
  *  source, so a finer level is asked for exactly where the level above it
- *  has run out of texels. Measured against the finest colour map the
- *  globe will hold on this device (SectorBodyHandle.topMapWidth), or the
- *  one it draws if that is wider: the Moon's 8K rung needs twice the
+ *  has run out of texels. Measured against the finest colour map the surface
+ *  below can currently reach on its tier ladder (SectorBodyHandle.topMapWidth
+ *  — a rung refused for want of memory, or given back under pressure, lowers
+ *  it, never below the rung being drawn), or, for a family with no ladder
+ *  behind it, against the width of the map that family is actually drawing
+ *  (SectorFamily.drawnColorMapWidth): the Moon's 8K rung needs twice the
  *  magnification a 4K map does before a tile shows anything (a tile under
  *  that is 21 MiB of GPU memory for nothing visible), and measuring against
  *  the 2K boot map while the 8K is still in flight would admit sectors the
  *  8K's arrival then releases — a sharpen that un-sharpens. In device
- *  pixels, so a 3× phone wants tiles where a 1× monitor does not.
- *
- *  Desktop asks at 1.0: a base texel spanning one device pixel is the point
- *  where a finer map first shows, and the fetch after that is the only
- *  delay. Touch asks later, at 1.25: its 2–3× displays already reach that
- *  magnification at nearly twice the distance, and every earlier tile is a
- *  200 KB fetch and 21 MiB of shared memory on the device with the least
- *  of both. */
-export const SECTOR_WANT_TEXEL_PX = 1.0;
-export const SECTOR_RELEASE_TEXEL_PX = 0.65;
-export const SECTOR_WANT_TEXEL_PX_TOUCH = 1.25;
-export const SECTOR_RELEASE_TEXEL_PX_TOUCH = 0.8;
+ *  pixels, so a 3× phone wants tiles where a 1× monitor does not. */
 /** Map width assumed while a globe's map has no readable image (never in
  *  practice: a real map is an ImageBitmap or a painted canvas). */
 const SECTOR_FALLBACK_MAP_WIDTH = 4096;
@@ -365,36 +361,13 @@ export const SECTOR_NIGHT_DOT = -0.1;
  *  both families: they measure opposite ends of the same rule. */
 export const SECTOR_KEEP_LIGHT_MARGIN = 0.05;
 
-/** What the sectors of every body together may hold on the GPU. This is the
- *  real bound: bytes, reserved from the known tile layouts at admission
- *  rather than counted after the decode, so two loads in flight cannot
- *  overshoot it by 45 MiB between them. An Earth sector set — its 2048²
- *  tile plus its copies of the bump and roughness crops — is ~23.1 MiB, so
- *  desktop holds eleven and touch six. Six is what a phone held before the
- *  budget was in bytes at all, and a phone's shared memory is the app's
- *  known weak spot: 128 MiB would hold five. */
-export const SECTOR_BUDGET_BYTES_DESKTOP = 256 * 1024 * 1024;
-export const SECTOR_BUDGET_BYTES_TOUCH = 144 * 1024 * 1024;
-/** Ceiling on the sector budget PLUS the globe maps live at the same time
- *  (the tier ladder's applied colour maps, which the mode reports). The
- *  sector budget is whatever this leaves under the figure above, so a Moon
- *  8K and Earth's cloud deck take their share out of the tiles rather than
- *  stacking on top of them. */
-export const SECTOR_ENVELOPE_BYTES_DESKTOP = 768 * 1024 * 1024;
-export const SECTOR_ENVELOPE_BYTES_TOUCH = 320 * 1024 * 1024;
-
-/** Resident sectors (meshes with a tile on the GPU) across all bodies —
- *  an emergency ceiling on draw calls only. The byte budget above is what
- *  decides the working set; this is generous enough that it never does. */
-export const SECTOR_RESIDENT_CAP_DESKTOP = 16;
-export const SECTOR_RESIDENT_CAP_TOUCH = 8;
-/** Sector loads (colour + crops of one sector count as one) in flight. */
-export const SECTOR_INFLIGHT_CAP_DESKTOP = 2;
-export const SECTOR_INFLIGHT_CAP_TOUCH = 1;
-/** Individual map fetches in flight: one sector is up to three of them, so
- *  the slot cap alone would put six requests on the wire at once. */
-export const SECTOR_FETCH_POOL_DESKTOP = 6;
-export const SECTOR_FETCH_POOL_TOUCH = 3;
+/** Every PER-DEVICE number comes in through SectorStreamerOptions.limits —
+ *  the byte ceiling the sectors may hold, the floor the globe maps may not
+ *  take from them, the envelope they share with those maps, the resident /
+ *  in-flight / fetch caps, and the two texel thresholds documented above.
+ *  world/gpuEnvelope is the one place a device becomes those numbers; the
+ *  streamer only spends them, and it spends one set of them across every
+ *  family of every body it holds. */
 /** How long a sector is safe from eviction once it is DRAWN. Without it a
  *  working set at the budget could hand the same slot back and forth between
  *  two candidates a hair apart, paying an upload each time. A load still in
@@ -476,9 +449,11 @@ export interface SectorFamily {
   /** Mirror whatever per-frame state the surface below carries onto one live
    *  sector material. Called once per frame per resident. */
   syncMaterial(mat: THREE.Material): void;
-  /** Texels across the colour map the surface below is DRAWING right now
-   *  (0 while it has no readable image) — half of what a sector's demand is
-   *  measured against, the other half being the ladder's top. */
+  /** Texels across the colour map the surface below is DRAWING right now, read
+   *  from wherever that family keeps it (0 while it has no readable image).
+   *  The reference a sector's demand is measured against ONLY where there is
+   *  no ladder behind the family — with one, the ladder answers
+   *  (SectorBodyHandle.topMapWidth) and the image is a stand-in. */
   drawnColorMapWidth(): number;
 }
 
@@ -525,10 +500,19 @@ export interface SectorBodyHandle {
    *  MeshStandardMaterial. */
   family?: SectorFamily;
   radiusAU: number;
-  /** Width of the finest colour map this device will hold for the globe
-   *  (its tier ladder's top), the map magnification is measured against.
-   *  Omitted for a body with no ladder: its boot map is its finest. */
-  topMapWidth?: number;
+  /** Width of the finest colour map the surface THIS FAMILY draws on can
+   *  currently reach on its own tier ladder (the globe's for a day family,
+   *  the night shell's for Earth's night one), and never less than the
+   *  nominal width of the rung it is drawing — what the map magnification is
+   *  measured against. Read per frame, not stored: a rung refused for want of
+   *  memory, released under pressure or failed to load moves the top down,
+   *  and sectors measured against a map the surface will not hold arrive at
+   *  twice the magnification they were meant to. Where this is given it is
+   *  the ONLY reference: the drawn texture's image is a stand-in once the
+   *  upload is paid and says nothing about the map. Omitted where there is no
+   *  ladder: the boot map is then the finest, is never swapped, and the
+   *  family's own drawnColorMapWidth is the truth. */
+  topMapWidth?: () => number | undefined;
   /** Rebuild the globe on its fine grid now (idempotent); sectors must not
    *  show over a coarse globe, whose chords they would float above. */
   ensureFineGeometry: () => void;
@@ -624,7 +608,8 @@ interface SectorBody {
 }
 
 export interface SectorStreamerOptions {
-  touch: boolean;
+  /** This device's memory numbers (world/gpuEnvelope). */
+  limits: SectorMemoryLimits;
   load?: TextureLoad;
   warm?: (tex: THREE.Texture, onOutcome: (o: WarmOutcome) => void) => void;
 }
@@ -649,8 +634,12 @@ export interface SectorStats {
   residentBytes: number;
   reserved: number;
   /** This device's sector budget right now — its ceiling, or what the total
-   *  envelope leaves over the globe maps (globalBytes), whichever is less. */
+   *  envelope leaves over the globe maps (globalBytes), whichever is less,
+   *  and never below the floor. */
   budget: number;
+  /** The bytes the globe maps may not take from the tiles (0 while no body
+   *  is registered). */
+  floor: number;
   envelope: number;
   globalBytes: number;
   /** By BODY, not by family: a body's day and night sectors are merged into
@@ -796,15 +785,23 @@ function cropsReady(mat: THREE.Material, spec: SectorSetSpec): boolean {
 }
 
 /** Surface length of one texel of the colour map below this family, in the
- *  body's local units (equatorial). The width comes from the family — the
- *  globe's `map` for the day one, the night shell's uniform for Earth's night
- *  one — read from the texture itself, because the boot tier is not literally
- *  2048 wide for every body and a tier swap changes the map under a registered
- *  material. */
+ *  body's local units (equatorial).
+ *
+ *  A family with a tier ladder behind it answers for its own reference width,
+ *  and that answer is the whole of it: the drawn texture's image is NOT the
+ *  map it draws — an applied rung replaces its decoded source with a small
+ *  stand-in once the upload is paid, so a surface holding 4096 texels reports
+ *  a four-figure-smaller image and every tile over it would be admitted at
+ *  that ratio of the magnification it was sized for. The image is read only
+ *  where there is no ladder at all (SectorFamily.drawnColorMapWidth, which
+ *  knows where its own map lives — the globe's `map` for the day family, the
+ *  night shell's uniform for Earth's night one), whose boot map is its finest
+ *  and is never swapped under it. */
 function baseTexelLength(body: SectorBody): number {
-  const drawn = Math.max(0, body.family.drawnColorMapWidth());
-  const width = Math.max(drawn, body.handle.topMapWidth ?? 0) || SECTOR_FALLBACK_MAP_WIDTH;
-  return (2 * Math.PI * body.handle.radiusAU) / width;
+  const reference = body.handle.topMapWidth?.();
+  let width = reference && reference > 0 ? reference : 0;
+  if (!width && !body.handle.topMapWidth) width = Math.max(0, body.family.drawnColorMapWidth());
+  return (2 * Math.PI * body.handle.radiusAU) / (width || SECTOR_FALLBACK_MAP_WIDTH);
 }
 
 /** A finer sector of this one is live (resident, or a load away from it).
@@ -842,6 +839,7 @@ export class SectorStreamer {
   private readonly fetchPool: number;
   private readonly ceilingBytes: number;
   private readonly envelopeBytes: number;
+  private readonly sectorFloorBytes: number;
   private readonly wantTexelPx: number;
   private readonly releaseTexelPx: number;
   private globalBytes = 0;
@@ -859,13 +857,14 @@ export class SectorStreamer {
   constructor(opts: SectorStreamerOptions) {
     this.load = opts.load ?? loadStreamedTexture;
     this.warm = opts.warm ?? queueTextureWarm;
-    this.residentCap = opts.touch ? SECTOR_RESIDENT_CAP_TOUCH : SECTOR_RESIDENT_CAP_DESKTOP;
-    this.inflightCap = opts.touch ? SECTOR_INFLIGHT_CAP_TOUCH : SECTOR_INFLIGHT_CAP_DESKTOP;
-    this.fetchPool = opts.touch ? SECTOR_FETCH_POOL_TOUCH : SECTOR_FETCH_POOL_DESKTOP;
-    this.ceilingBytes = opts.touch ? SECTOR_BUDGET_BYTES_TOUCH : SECTOR_BUDGET_BYTES_DESKTOP;
-    this.envelopeBytes = opts.touch ? SECTOR_ENVELOPE_BYTES_TOUCH : SECTOR_ENVELOPE_BYTES_DESKTOP;
-    this.wantTexelPx = opts.touch ? SECTOR_WANT_TEXEL_PX_TOUCH : SECTOR_WANT_TEXEL_PX;
-    this.releaseTexelPx = opts.touch ? SECTOR_RELEASE_TEXEL_PX_TOUCH : SECTOR_RELEASE_TEXEL_PX;
+    this.residentCap = opts.limits.residentCap;
+    this.inflightCap = opts.limits.inflightCap;
+    this.fetchPool = opts.limits.fetchPool;
+    this.ceilingBytes = opts.limits.ceilingBytes;
+    this.envelopeBytes = opts.limits.envelopeBytes;
+    this.sectorFloorBytes = opts.limits.sectorFloorBytes;
+    this.wantTexelPx = opts.limits.wantTexelPx;
+    this.releaseTexelPx = opts.limits.releaseTexelPx;
   }
 
   /** Register one family of one body. A body's families are keyed (name,
@@ -954,7 +953,7 @@ export class SectorStreamer {
 
   /** The GPU bytes the globe maps hold right now (the tier ladder's applied
    *  colour maps, which only the mode can see). The sector budget is what
-   *  the envelope leaves over them. */
+   *  the envelope leaves over them, down to the floor. */
   setGlobalMapBytes(bytes: number): void {
     const before = this.globalBytes;
     this.globalBytes = Math.max(0, bytes);
@@ -964,21 +963,50 @@ export class SectorStreamer {
     // allowed. Growing it takes nothing from anyone.
     if (this.globalBytes > before) this.trimToBudget();
     // Streaming that has quietly switched itself off looks like a soft
-    // surface, not like a fault. Say it once, with the two figures that
-    // explain it.
-    if (this.budget() === 0 && !this.warnedNoBudget) {
+    // surface, not like a fault. Say it once, with the figures that explain
+    // it. A budget under one whole set is the same silence as a budget of
+    // zero: nothing can be admitted with it, and a fraction of a set is not
+    // a smaller tile.
+    const smallest = this.smallestSetBytes();
+    if (smallest > 0 && this.budget() < smallest && !this.warnedNoBudget) {
       this.warnedNoBudget = true;
-      debugWarn('Surface tiles off: the globe maps alone fill the memory envelope', {
+      debugWarn('Surface tiles off: the budget is below one sector set', {
         globeMapsMiB: Math.round(this.globalBytes / (1024 * 1024)),
+        budgetMiB: Math.round(this.budget() / (1024 * 1024)),
+        setMiB: Math.round(smallest / (1024 * 1024)),
         envelopeMiB: Math.round(this.envelopeBytes / (1024 * 1024)),
       });
     }
   }
 
+  /** The floor this session actually owes the tiles: nothing at all while no
+   *  body that could want one is registered (`?sectors=0` builds no streamer
+   *  at all, but a mode may also run before or after registration), so the
+   *  ladder is never asked to reserve memory for tiles nobody can load. */
+  floorBytes(): number {
+    return this.bodies.size > 0 ? this.sectorFloorBytes : 0;
+  }
+
   /** What the sectors may hold together: their own ceiling, or whatever the
-   *  total envelope leaves over the globe maps, whichever is less. */
+   *  total envelope leaves over the globe maps, whichever is less — and never
+   *  below the floor. */
   budget(): number {
-    return Math.max(0, Math.min(this.ceilingBytes, this.envelopeBytes - this.globalBytes));
+    return sectorBudgetBytes(
+      { envelopeBytes: this.envelopeBytes, ceilingBytes: this.ceilingBytes },
+      this.globalBytes,
+      this.floorBytes(),
+    );
+  }
+
+  /** The cheapest whole set any registered body could admit — the figure a
+   *  budget has to reach to be worth anything. */
+  private smallestSetBytes(): number {
+    let smallest = 0;
+    for (const body of this.bodies.values()) {
+      const bytes = sectorSetGpuBytes(body.handle.spec, 0, (slot) => realMapIn(body.handle.material, slot));
+      if (bytes > 0 && (smallest === 0 || bytes < smallest)) smallest = bytes;
+    }
+    return smallest;
   }
 
   /**
@@ -1431,6 +1459,7 @@ export class SectorStreamer {
       residentBytes: 0,
       reserved: 0,
       budget: this.budget(),
+      floor: this.floorBytes(),
       envelope: this.envelopeBytes,
       globalBytes: this.globalBytes,
       bodies: {},

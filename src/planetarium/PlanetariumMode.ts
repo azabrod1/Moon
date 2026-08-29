@@ -34,7 +34,7 @@ import {
   SUN_POLE_RA_DEG,
   type PlanetData,
 } from './planets/planetData';
-import { appliedTierGpuBytes, applySunGlowTier, armArrivalWarmGoal, bindKtx2TierLoader, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade } from './PlanetFactory';
+import { appliedTierHeldBytes, applySunGlowTier, armArrivalWarmGoal, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, firstUpgradeTier, ladderMapReferenceWidth, lodMeasurementRelevant, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, retainedSourceBytes, resolveUpgradeTier, setWarmEligibleMoonParents, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade, type TierAdmission } from './PlanetFactory';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
@@ -131,7 +131,17 @@ import {
 } from './world/sunGlareMask';
 import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
-import { captureDeviceTextureCaps, resolveTextureUrl, TIER_MAP_WIDTH } from './world/texturePolicy';
+import { captureDeviceCaps, resolveTextureUrl, type TextureTier } from './world/texturePolicy';
+import {
+  classifyDevice,
+  ladderCeilingBytes,
+  legacyProfile,
+  planRelease,
+  readDeviceSignals,
+  type DeviceClass,
+  type DeviceProfile,
+  type ReleaseCandidate,
+} from './world/gpuEnvelope';
 import { warmBitmapUploadProbe } from './world/textureBitmapLoader';
 import { planetshineIntensity } from './world/planetshine';
 import {
@@ -142,7 +152,7 @@ import {
   type SilhouetteTarget,
   type SilhouetteAdvanceOptions,
 } from './world/shadeSmoothing';
-import { debugError, debugWarn } from '../shared/debug';
+import { debugError, debugLog, debugWarn } from '../shared/debug';
 import { cssHexColor } from '../shared/color';
 import { markerQuadPx } from './planetMarkers';
 import { CRUISE_TAP_FLOORS, SYSTEM_TAP_FLOORS, stepThrottleTap, systemSpeedFactor, type SystemSpeedResult } from './throttlePolicy';
@@ -494,12 +504,66 @@ export interface PlanetariumActivationProgress {
   totalUnits: number;
 }
 
-/** Width of the finest colour map a body's ladder will reach on this device
- *  — the one its sectors' magnification is measured against — or undefined
- *  for a body whose boot map is its finest. */
-function topMapWidthOf(ups: readonly TextureUpgrade[], material: THREE.Material): number | undefined {
+/** One rung, as the dev bridge reports it. */
+interface LadderRungReadout {
+  key: string;
+  tier: string | null;
+  top: string | null;
+  bytes: number;
+  retained: number;
+  sourceWidth: number;
+  releasing: string | null;
+  belowBandMs: number | null;
+}
+
+/** `?envelope=<MiB>` in dev shrinks the memory envelope, which is the one
+ *  knob that puts a desktop under a phone's pressure without a phone. The
+ *  ceiling and the floor are the profile's; only the shared envelope moves.
+ *  Dropped from a production build with the rest of the DEV branches. */
+function devEnvelopeOverride(profile: DeviceProfile): DeviceProfile {
+  if (!import.meta.env.DEV || typeof location === 'undefined') return profile;
+  const asked = Number(new URLSearchParams(location.search).get('envelope'));
+  if (!Number.isFinite(asked) || asked <= 0) return profile;
+  return { ...profile, envelopeBytes: Math.round(asked * 1024 * 1024) };
+}
+
+/** Whether this GPU has a compressed format the KTX2 transcoder can target.
+ *  With none it transcodes to RGBA32 and a compressed container costs four
+ *  times what its blocks suggest — the allocation the ladder's admission test
+ *  exists to refuse, and one no filename can predict. Read from the same
+ *  extensions KTX2Loader's own detectSupport reads, so the charge and the
+ *  upload cannot disagree. */
+function ktx2TranscodesCompressed(renderer: THREE.WebGLRenderer): boolean {
+  const ext = renderer.extensions;
+  return [
+    'WEBGL_compressed_texture_astc',
+    'WEBGL_compressed_texture_etc',
+    'WEBGL_compressed_texture_etc1',
+    'WEBGL_compressed_texture_s3tc',
+    'EXT_texture_compression_bptc',
+    'WEBGL_compressed_texture_pvrtc',
+    'WEBKIT_WEBGL_compressed_texture_pvrtc',
+  ].some((name) => ext.has(name));
+}
+
+/** Width of the colour map one sector family is measured against — the finest
+ *  tier the ladder BEHIND ITS OWN MATERIAL can currently reach, floored at the
+ *  rung that material is drawing. So a night family asks the night shell's
+ *  ladder (capped at 4K) and a day family the globe's, each against the map it
+ *  actually overlays. Read per frame, not captured: a rung refused for want of
+ *  memory, released under pressure or failed to load lowers it, and tiles
+ *  measured against a map the surface will not hold arrive at twice the
+ *  magnification they were meant for. undefined for a material with no ladder
+ *  behind it (Earth's globe map — its ladder handles belong to the cloud deck
+ *  and the night shell) — the drawn map is the truth there, and is never
+ *  swapped under it. */
+function topMapWidthOf(
+  ups: readonly TextureUpgrade[],
+  material: THREE.Material,
+): (() => number | undefined) | undefined {
   const up = ups.find((u) => u.material === material);
-  return up ? TIER_MAP_WIDTH[up.effectiveMaxTier] : undefined;
+  if (!up) return undefined;
+  return () => ladderMapReferenceWidth(up);
 }
 
 export class PlanetariumMode {
@@ -964,12 +1028,60 @@ export class PlanetariumMode {
   /** Sector streaming (world/sectorStreamer): the hero bodies' 16K tiles.
    *  Null when disabled (`?sectors=0`) or before the system exists. */
   private sectors: SectorStreamer | null = null;
+  /** What this device is and what it may spend, read once in the constructor
+   *  (world/gpuEnvelope). The class is collected and logged; the numbers come
+   *  from the profile. */
+  private readonly deviceSignals: ReturnType<typeof readDeviceSignals>;
+  private readonly deviceClass: DeviceClass;
+  private readonly deviceProfile: DeviceProfile;
   private readonly sectorsEnabled = new URLSearchParams(location.search).get('sectors') !== '0';
+  /** The memory readout under `?debug=1` (reportMemoryDebug). The overlay is
+   *  the only console a phone has without a cable, so the line has to be rare
+   *  enough to read: one every 5 s, or as soon as a figure moves by more than
+   *  a twentieth. */
+  private static readonly MEMORY_DEBUG_PERIOD_MS = 5_000;
+  private static readonly MEMORY_DEBUG_MOVE = 0.05;
+  private memoryDebugAtMs = Number.NEGATIVE_INFINITY;
+  private memoryDebugLast: number[] | null = null;
+  private memoryDebugBootReported = false;
   /** Latched from webglcontextlost to webglcontextrestored: a GL call on a
    *  lost context silently succeeds, so an upload "warmed" in that window is
    *  a texture that never reached the GPU — nothing may be admitted until
    *  the context is back, and whatever was admitted is dropped again then. */
   private glContextLost = false;
+  /** How long a committed destination keeps its maps after the arrival is
+   *  over: long enough for the first look around, and for the approach the
+   *  player flies straight into afterwards. */
+  private static readonly TRAVEL_PROTECT_GRACE_MS = 10_000;
+  /** How long the ladder must be over its share, or a rung go unmet, before
+   *  a map is given back. Pressure is a state, not a frame: a rung applying
+   *  holds its decoded source for the frame or two before the upload is paid
+   *  and the source closed, and a body would otherwise lose a map it will
+   *  keep needing to a spike that clears itself. */
+  private static readonly RELEASE_PRESSURE_DWELL_MS = 1_000;
+  /** When the ladder first went over its share, or null while it is not. */
+  private pressureSinceMs: number | null = null;
+  /** The destination the player committed to, and when its arrival finished
+   *  (null while it is still under way). Its maps are the last the ladder
+   *  would take back, and the protection is the STATE "this is where the ship
+   *  is going" rather than any pump's progress through it. */
+  private travelProtect: { ups: TextureUpgrade[]; doneAtMs: number | null } | null = null;
+  /** The one swap in flight, a release or a restore re-fetch alike. Either
+   *  transiently holds two maps, so several at once would raise the peak they
+   *  exist to lower — and a restore answers a memory signal, which is the
+   *  worst moment to decode every globe map at once. */
+  private releasing: TextureUpgrade | null = null;
+  private releaseFailures = 0;
+  /** Swaps abandoned for taking too long. A hung fetch means the same thing
+   *  to the player as a refused one — the maps are not coming back — so both
+   *  reach the same warning. */
+  private releaseTimeouts = 0;
+  private warnedNoRelease = false;
+  /** Rungs waiting to re-fetch the map a lost GL context took, nearest body
+   *  first, each with the stand-in texture it is waiting to replace. Drained
+   *  one at a time; an entry stays until its handle is free and the ledger
+   *  admits it, so nothing is left on a stand-in for the session. */
+  private readonly restoreRefetch: Array<{ up: TextureUpgrade; tex: THREE.Texture }> = [];
   private readonly sectorCamLocal = new THREE.Vector3();
   private readonly sectorWorldCentre = new THREE.Vector3();
   private readonly sectorWorldScale = new THREE.Vector3();
@@ -1866,11 +1978,17 @@ export class PlanetariumMode {
     this.renderer = renderer;
     this.useBloom = useBloom;
     this.rendersThroughComposer = rendersThroughComposer;
-    // Capture device texture caps from the live renderer before any body loads,
-    // so anisotropy and tier limits apply to the very first textures created.
-    // The touch budget is the same device class the sector caps and the
-    // boot warm use, not a bare touchscreen test: a touch laptop is a desktop.
-    captureDeviceTextureCaps(renderer, this.touchFirstDevice());
+    // Read the device once, before any body loads, so anisotropy and tier
+    // limits apply to the very first textures created and every later
+    // decision spends the same numbers. The signals and the profile are this
+    // mode's for its lifetime — a chassis change takes effect on the next
+    // load, not under a live working set.
+    this.deviceSignals = readDeviceSignals(renderer.getContext());
+    this.deviceClass = classifyDevice(this.deviceSignals);
+    // The numbers still come from the device test the app shipped with, so
+    // the class above changes nothing yet: it is collected and logged while
+    // the measurements that will size it are gathered.
+    this.deviceProfile = captureDeviceCaps(renderer, devEnvelopeOverride(legacyProfile(this.deviceSignals)));
     // Resolve the bitmap-upload probe during construction: every streamed
     // boot texture awaits its verdict before fetching, so starting it here
     // takes it off the first fetch's critical path.
@@ -1893,7 +2011,10 @@ export class PlanetariumMode {
         (loader) => loader.load(url, onLoad, undefined, onError),
         (err) => onError(err),
       );
-    });
+    }, ktx2TranscodesCompressed(renderer));
+    // What the ladder may spend. Every rung passes it before it is fetched
+    // and again as a decoded texture before it is applied.
+    bindTierAdmission(this.admitLadderTier);
     // GPU moon-texture painter (synchronous CPU fallback inside). Inject its
     // paint into the lazy painter; MoonPainter's queue + the visibility gate +
     // the arrival veil are unchanged — only the per-moon paint moves to the GPU.
@@ -1921,6 +2042,11 @@ export class PlanetariumMode {
       // Anything a stray frame admitted while the context was lost was
       // "uploaded" into nothing: drop it before the latch clears.
       this.sectors?.dropAll();
+      // A ladder rung closes its decoded source once the upload is paid, so
+      // the restored context re-uploads the stand-in left in its place — a
+      // soft globe, not a black one. Queue the real maps back over it,
+      // nearest body first and one at a time.
+      this.queueReleasedTierRefetch();
       this.glContextLost = false;
     });
     this.player = new PlayerShip();
@@ -2499,7 +2625,7 @@ export class PlanetariumMode {
       // network but pays no residency up front. (Quality tiers stay
       // capability-based — this split concerns speculation only, and
       // saveData is absent on iOS Safari so it cannot be the gate.)
-      const cacheOnly = this.touchFirstDevice();
+      const cacheOnly = this.deviceProfile.cacheOnlyWarm;
       for (const up of this.landingPairUpgrades({ type: 'planet', name: 'Earth' })) {
         // The live loader's attempt/cooldown gate, so a re-armed timer never
         // duplicates a pending desktop attempt. The cache-only fetch marks no
@@ -2527,17 +2653,6 @@ export class PlanetariumMode {
     }, PlanetariumMode.BOOT_PAIR_WARM_DELAY_MS);
   }
 
-  /** A phone or tablet: the device class that gets cache-only speculation and
-   *  the smaller sector-tile working set. Capability-based quality tiers are
-   *  unaffected; this only sizes what is held in memory on speculation. */
-  private touchFirstDevice(): boolean {
-    return (
-      /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) || // iPadOS desktop UA
-      (navigator.maxTouchPoints > 0 && window.innerWidth <= 1024)
-    );
-  }
-
   /** Wire the hero bodies' sector sets onto the meshes they draw over.
    *  Sector meshes become children of that mesh, so they ride its spin, pole
    *  and (for the Moon) the render-curve scale; the streamer forces the fine
@@ -2546,7 +2661,7 @@ export class PlanetariumMode {
    *  same streamer, the same budget, its own lighting gate. */
   private registerSectorBodies(): void {
     if (!this.sectorsEnabled || !this.solarSystem) return;
-    const sectors = new SectorStreamer({ touch: this.touchFirstDevice() });
+    const sectors = new SectorStreamer({ limits: this.deviceProfile });
     for (const planet of this.solarSystem.planets) {
       const fine = () => { upgradeGeometryOnApproach(planet.geometryUpgrade, Number.POSITIVE_INFINITY); };
       const spec = SECTOR_SETS[planet.data.name];
@@ -2821,22 +2936,490 @@ export class PlanetariumMode {
    * the device's memory as if the other were not there. The boot maps every
    * device carries regardless are not in it: this figure is the ladder's
    * OPTIONAL weight, which is what the envelope was measured against.
+   *
+   * A rung is charged its GPU allocation plus whatever decoded image is still
+   * held in RAM behind it — the same device memory on the hardware where the
+   * envelope binds.
    */
   private liveGlobalMapBytes(): number {
-    if (!this.solarSystem) return 0;
     let bytes = 0;
+    this.forEachTextureUpgrade((up) => { bytes += appliedTierHeldBytes(up); });
+    return bytes;
+  }
+
+  /** Every colour-tier handle in the scene, planets and moons alike. */
+  private forEachTextureUpgrade(fn: (up: TextureUpgrade) => void): void {
+    if (!this.solarSystem) return;
     for (const planet of this.solarSystem.planets) {
-      for (const up of planet.textureUpgrades) bytes += appliedTierGpuBytes(up);
+      for (const up of planet.textureUpgrades) fn(up);
     }
     for (const moons of this.planetMoons.values()) {
-      for (const m of moons) for (const up of m.textureUpgrades) bytes += appliedTierGpuBytes(up);
+      for (const m of moons) for (const up of m.textureUpgrades) fn(up);
+    }
+  }
+
+  /** The bytes the tiles are owed and the globe maps may not take. Zero when
+   *  no tile can be loaded at all (`?sectors=0`, or before the bodies are
+   *  registered): a session with tiles off must not refuse a map to reserve
+   *  memory nothing will spend. */
+  private liveSectorFloorBytes(): number {
+    return this.sectors?.floorBytes() ?? 0;
+  }
+
+  /** The admission test the colour ladder asks before it fetches a rung, and
+   *  again for the decoded texture before it applies it. A rung bigger than
+   *  the whole ladder's share is refused for good; one that merely does not
+   *  fit beside what the ladder holds today is blocked, and a release can
+   *  make room for it. */
+  private admitLadderTier = (up: TextureUpgrade, _tier: TextureTier, bytes: number): TierAdmission => {
+    const ceiling = ladderCeilingBytes(this.deviceProfile, this.liveSectorFloorBytes());
+    if (bytes > ceiling) return 'refuse';
+    const others = this.liveGlobalMapBytes() - appliedTierHeldBytes(up);
+    return others + bytes <= ceiling ? 'admit' : 'blocked';
+  };
+
+  /**
+   * Give a rung back when the ladder is holding more than its share.
+   *
+   * Runs every frame, on world frames and chart frames alike: the ladder goes
+   * on holding its maps behind the chart, and a planner that only ran where
+   * the spheres are drawn would let the chart squeeze the tiles with nothing
+   * able to give a map back.
+   *
+   * Three passes in one loop. Every laddered body's screen fraction is kept
+   * (undrawn is 0 — a hidden moon is not an unknown, it is a moon nobody can
+   * see, and the Moon is hidden at cruise distances exactly when its 8K rung
+   * is the one worth taking back). Demand that cannot be met is what counts
+   * as pressure, along with maps already past the ladder's share. And the
+   * bodies that are eligible — a rung to give, the dwell served, nothing
+   * protecting them — become the candidates the farthest of which is asked to
+   * hand its map back, one at a time.
+   */
+  private updateLadderPressure(nowMs: number): void {
+    if (!this.solarSystem) return;
+    const canvasW = this.renderer.domElement.clientWidth;
+    const canvasH = Math.max(1, this.renderer.domElement.clientHeight);
+    // The chart owns the frame: no sphere is drawn, so no body is earning.
+    const drawing = !this.isMapOpen();
+    this.camera.updateMatrixWorld();
+    if (this.travelProtect && this.travelProtect.doneAtMs === null && !this.arrivalVeilUp()) {
+      this.travelProtect.doneAtMs = nowMs;
+    }
+    const guarded = this.protectedUpgrades(nowMs);
+    const ladderBytes = this.liveGlobalMapBytes();
+    const ceiling = ladderCeilingBytes(this.deviceProfile, this.liveSectorFloorBytes());
+    let pressure = ladderBytes > ceiling;
+    const candidates: ReleaseCandidate[] = [];
+    const victims = new Map<string, TextureUpgrade>();
+
+    const visit = (
+      name: string,
+      ups: readonly TextureUpgrade[],
+      mesh: THREE.Object3D,
+      radiusAU: number,
+      visible: boolean,
+    ): void => {
+      if (ups.length === 0) return;
+      mesh.getWorldPosition(this.bodyLODTmp);
+      const distance = this.bodyLODTmp.length();
+      // The cheap conservative overestimate, never the 32-ray footprint: an
+      // overestimate below the release band proves the true fraction is below
+      // it too, which is the only direction this decision needs.
+      const fraction = visible
+        ? estimateSphereScreenDiameterPx(this.bodyLODTmp, radiusAU, this.camera, canvasW, canvasH) / canvasH
+        : 0;
+      for (const up of ups) {
+        if (releaseExpired(up, nowMs)) {
+          // The dwell is still served, so without a cooldown the same body
+          // starts a fresh fetch on the very next frame — one abandoned
+          // transfer every twenty seconds for as long as the link is stalled.
+          expireTierRelease(up, nowMs);
+          if (this.releasing === up) this.releasing = null;
+          this.releaseTimeouts++;
+          this.warnNoRelease(ceiling);
+        }
+        trackReleaseBand(up, fraction, nowMs);
+        if (!pressure) {
+          // A rung this body is earning — or the one its committed arrival
+          // is warming — that the ladder cannot fit is the pressure this
+          // whole pass exists to answer.
+          const wanted = up.warmGoal ?? earnedUpgradeTier(up, fraction);
+          const next = wanted ? resolveUpgradeTier(up, wanted) : null;
+          if (next && !up.attempt && this.admitLadderTier(up, next, tierUploadBytes(up.key, next)) === 'blocked') {
+            pressure = true;
+          }
+        }
+        if (guarded.has(up) || !releaseDue(up, nowMs)) continue;
+        const low = releaseTargetTier(up);
+        if (!low) continue;
+        const id = `${name}:${up.key}`;
+        candidates.push({
+          id,
+          heldBytes: appliedTierHeldBytes(up),
+          lowBytes: tierUploadBytes(up.key, low),
+          distance,
+        });
+        victims.set(id, up);
+      }
+    };
+
+    for (const planet of this.solarSystem.planets) {
+      visit(planet.data.name, planet.textureUpgrades, planet.group, planet.data.radiusAU, drawing && planet.mesh.visible);
+    }
+    for (const moons of this.planetMoons.values()) {
+      for (const m of moons) {
+        // A hidden moon sits at its parent's centre (updateMoonPositions
+        // skips it), so its position stands for the system it is in — which
+        // is the right distance for a body nobody is looking at.
+        visit(
+          m.data.name, m.textureUpgrades, m.mesh, m.data.radiusAU * m.mesh.scale.x,
+          drawing && m.mesh.visible,
+        );
+      }
+    }
+
+    if (!pressure) this.pressureSinceMs = null;
+    else this.pressureSinceMs ??= nowMs;
+    // Ahead of any discretionary release: a globe on a stand-in is one the
+    // player can see is soft, and both take the same one-in-flight slot.
+    this.pumpRestoreRefetch(nowMs);
+    if (this.releasing) return;
+    if (this.pressureSinceMs === null
+      || nowMs - this.pressureSinceMs < PlanetariumMode.RELEASE_PRESSURE_DWELL_MS) return;
+    const victim = planRelease(candidates, {
+      ladderBytes,
+      envelopeBytes: this.deviceProfile.envelopeBytes,
+    });
+    const up = victim ? victims.get(victim.id) : undefined;
+    if (!victim || !up) return;
+    this.releasing = up;
+    const started = startTierRelease(up, nowMs, {
+      onLedgerChange: this.onLadderLedgerChange,
+      onSettled: (released) => {
+        if (this.releasing === up) this.releasing = null;
+        if (released) {
+          this.releaseFailures = 0;
+          this.releaseTimeouts = 0;
+          return;
+        }
+        // A swap that cannot be fetched leaves the map where it is.
+        this.releaseFailures++;
+        this.warnNoRelease(ceiling);
+      },
+    });
+    if (!started) this.releasing = null;
+  }
+
+  /** Say once that the maps are staying where they are — after enough tries
+   *  that it is the link and not one bad request. A hang counts the same as a
+   *  refusal: from either the tiles keep their floor and nothing more. */
+  private warnNoRelease(ceilingBytes: number): void {
+    if (this.warnedNoRelease) return;
+    if (this.releaseFailures < 3 && this.releaseTimeouts < 3) return;
+    this.warnedNoRelease = true;
+    debugWarn('The globe maps cannot be given back: surface tiles stay at their floor', {
+      globeMapsMiB: Math.round(this.liveGlobalMapBytes() / (1024 * 1024)),
+      ladderShareMiB: Math.round(ceilingBytes / (1024 * 1024)),
+      failures: this.releaseFailures,
+      timeouts: this.releaseTimeouts,
+    });
+  }
+
+  /**
+   * Queue every rung whose decoded source was closed after its upload for a
+   * re-fetch. Called on context restore: the GPU copy is gone and the small
+   * stand-in left in its place is all three has to re-upload from, so each
+   * map is fetched again — from the service-worker cache, for anything this
+   * session has already seen — and swapped in at the tier it already had.
+   *
+   * Queued, nearest body first, rather than started here. A context is lost
+   * on a phone BECAUSE the system reclaimed memory, so answering it by
+   * decoding every globe map at once asks for the loss again; and the body
+   * the player is looking at is the one whose softness they can see. The
+   * queue also carries the texture each entry is for, so an entry whose map
+   * has been replaced by any other route is dropped rather than re-fetched.
+   */
+  private queueReleasedTierRefetch(): void {
+    this.restoreRefetch.length = 0;
+    const entries: Array<{ up: TextureUpgrade; tex: THREE.Texture; distance: number }> = [];
+    const visit = (ups: readonly TextureUpgrade[], mesh: THREE.Object3D): void => {
+      if (ups.length === 0) return;
+      mesh.getWorldPosition(this.bodyLODTmp);
+      const distance = this.bodyLODTmp.length();
+      for (const up of ups) {
+        const tex = materialColorMap(up.material);
+        if (!up.appliedTier || !tex || tex.userData?.sourceReleased !== true) continue;
+        entries.push({ up, tex, distance });
+      }
+    };
+    if (this.solarSystem) {
+      for (const planet of this.solarSystem.planets) visit(planet.textureUpgrades, planet.group);
+      for (const moons of this.planetMoons.values()) {
+        for (const m of moons) visit(m.textureUpgrades, m.mesh);
+      }
+    }
+    entries.sort((a, b) => a.distance - b.distance);
+    for (const e of entries) this.restoreRefetch.push({ up: e.up, tex: e.tex });
+  }
+
+  /**
+   * Start at most one queued restore re-fetch, through the same admission
+   * test a climbing rung passes.
+   *
+   * One at a time and admitted, because a context loss is the memory signal
+   * itself: the fetch that answers it must not be the one that costs the tab
+   * its next context. A rung the ledger cannot fit right now stays queued —
+   * a release may make room — and a rung it can never fit is handed back
+   * instead, which fetches a smaller real map in place of the stand-in. An
+   * entry whose handle is busy also stays queued, so an upgrade that fails
+   * mid-restore leaves nothing stranded on a stand-in for the session.
+   */
+  private pumpRestoreRefetch(nowMs: number): void {
+    if (this.releasing || this.restoreRefetch.length === 0) return;
+    const next = takeRestoreRefetch(this.restoreRefetch);
+    if (!next) return;
+    const up = next.up;
+    this.releasing = up;
+    const started = startTierRelease(up, nowMs, {
+      restore: next.restore,
+      onLedgerChange: this.onLadderLedgerChange,
+      onSettled: () => { if (this.releasing === up) this.releasing = null; },
+    });
+    if (!started) this.releasing = null;
+  }
+
+  /** Hand the sector streamer the ladder's figure now rather than next frame.
+   *  A swap holds both maps between the low one's decode and the assignment,
+   *  and the tiles are trimmed for that transient before it is spent — the
+   *  streamer's own admissions read the same number in the same frame. */
+  private onLadderLedgerChange = (): void => {
+    this.sectors?.setGlobalMapBytes(this.liveGlobalMapBytes());
+  };
+
+  /**
+   * The handles no pressure may take a map from. Every one of them is a
+   * STATE the player is in, not a step some pump happens to be on: a warm
+   * goal disarms itself the moment the ladder reaches it, which is exactly
+   * when the destination still has an arrival to play.
+   */
+  private protectedUpgrades(nowMs: number): Set<TextureUpgrade> {
+    const guarded = new Set<TextureUpgrade>();
+    const add = (ups: readonly TextureUpgrade[]): void => { for (const up of ups) guarded.add(up); };
+    // Standing on a body: its globe and the companion its Observatory can
+    // magnify, whether or not the panel is open — a quiet arrival warms that
+    // companion for a telescope the player has not opened yet.
+    if (this.landedOn) add(this.landingPairUpgrades(this.landedOn));
+    // Where the ship is going, until it has been there for a beat: the maps
+    // an arrival just fetched are the last ones worth taking back.
+    const travel = this.travelProtect;
+    if (travel) {
+      if (travel.doneAtMs === null || nowMs - travel.doneAtMs < PlanetariumMode.TRAVEL_PROTECT_GRACE_MS) {
+        add(travel.ups);
+      } else {
+        this.travelProtect = null;
+      }
+    }
+    // Under way to a body picked on the deck or the chart.
+    if (this.autopilotTarget) add(this.landingPairUpgrades(this.autopilotTarget));
+    // What the telescope is actually pointed at from the surface.
+    const aimed = this.surfaceViewTarget();
+    if (aimed) add(this.textureUpgradesForTarget(aimed));
+    return guarded;
+  }
+
+  /** The body the surface view is aimed at, while it is aimed at one. */
+  private surfaceViewTarget(): NonNullable<LandedTarget> | null {
+    if (this.landedView !== 'surface' || !this.landedOn) return null;
+    const target = this.surfaceTarget;
+    const system = this.landedOn.type === 'moon' ? this.landedOn.parentPlanet : this.landedOn.name;
+    if (target.kind === 'moon') return { type: 'moon', name: target.moonName, parentPlanet: system };
+    if (target.kind === 'sun-from-spot') {
+      return { type: 'moon', name: target.occluderMoonName, parentPlanet: system };
+    }
+    if (target.kind === 'parent' && this.landedOn.type === 'moon') {
+      return { type: 'planet', name: this.landedOn.parentPlanet };
+    }
+    return null;
+  }
+
+  /** GPU bytes one texture holds, from the image that is really there: its
+   *  texel count times four bytes — or one, for a GPU-compressed upload —
+   *  plus a third for the mip chain when it has one. */
+  private static textureGpuBytes(tex: THREE.Texture): number {
+    const compressed = tex as THREE.CompressedTexture;
+    if (compressed.isCompressedTexture) {
+      let bytes = 0;
+      for (const level of compressed.mipmaps ?? []) bytes += (level as { data?: { byteLength?: number } })?.data?.byteLength ?? 0;
+      if (bytes > 0) return bytes;
+    }
+    const img = tex.image as { width?: unknown; height?: unknown } | undefined;
+    const w = img && typeof img.width === 'number' ? img.width : 0;
+    const h = img && typeof img.height === 'number' ? img.height : 0;
+    if (!(w > 0 && h > 0)) return 0;
+    const mipped = tex.generateMipmaps !== false || (tex.mipmaps?.length ?? 0) > 1;
+    return Math.round(w * h * 4 * (mipped ? 4 / 3 : 1));
+  }
+
+  /** GPU bytes the maps every device carries hold: the first-paint texture of
+   *  every body, its bump / roughness / night / cloud maps, the rings. The
+   *  ladder's own figure (liveGlobalMapBytes) deliberately leaves these out —
+   *  they are not optional — which is exactly why the envelope has to be set
+   *  above them, and why the number is worth printing once. Deduplicated by
+   *  texture: a bump map aliased onto a colour map is one allocation. */
+  private bootTextureGpuBytes(): number {
+    if (!this.solarSystem) return 0;
+    const seen = new Set<string>();
+    let bytes = 0;
+    const add = (value: unknown): void => {
+      const tex = value as THREE.Texture | null;
+      if (!tex || !tex.isTexture || seen.has(tex.uuid)) return;
+      seen.add(tex.uuid);
+      bytes += PlanetariumMode.textureGpuBytes(tex);
+    };
+    const walk = (root: THREE.Object3D): void => {
+      root.traverse((o) => {
+        const material = (o as THREE.Mesh).material;
+        for (const mat of Array.isArray(material) ? material : material ? [material] : []) {
+          for (const value of Object.values(mat as unknown as Record<string, unknown>)) add(value);
+          const uniforms = (mat as THREE.ShaderMaterial).uniforms;
+          if (uniforms) for (const u of Object.values(uniforms)) add(u?.value);
+        }
+      });
+    };
+    walk(this.solarSystem.sun);
+    for (const planet of this.solarSystem.planets) walk(planet.group);
+    for (const moons of this.planetMoons.values()) for (const m of moons) walk(m.mesh);
+    return bytes;
+  }
+
+  /** GPU bytes the frame itself holds at this device's pixel ratio: the
+   *  drawing buffer, and — when the world renders through the composer — its
+   *  two half-float targets plus the bloom chain (a half-resolution bright
+   *  pass and five horizontal/vertical pairs halving from there). An estimate
+   *  of a chain main.ts owns, printed for the same reason as the boot maps:
+   *  a 1170x2532 phone at DPR 3 pays it before a single map loads.
+   */
+  private renderTargetGpuBytes(): number {
+    const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    const w = Math.max(1, Math.round(size.x));
+    const h = Math.max(1, Math.round(size.y));
+    // The default framebuffer: colour, and depth+stencil beside it.
+    let bytes = w * h * 4 + w * h * 4;
+    if (!this.rendersThroughComposer()) return bytes;
+    bytes += 2 * w * h * 8;
+    if (!this.useBloom) return bytes;
+    let bw = Math.round(w / 2);
+    let bh = Math.round(h / 2);
+    bytes += bw * bh * 8;
+    for (let i = 0; i < 5; i++) {
+      bytes += 2 * bw * bh * 8;
+      bw = Math.round(bw / 2);
+      bh = Math.round(bh / 2);
     }
     return bytes;
+  }
+
+  /** The `?debug=1` memory line: what the ladder and the tiles hold against
+   *  the envelope they share, on the device's own screen. Once at boot it
+   *  also prints the two figures the envelope does NOT count — the boot maps
+   *  and the render targets — because an envelope is only honest next to the
+   *  fixed load underneath it.
+   */
+  private reportMemoryDebug(nowMs: number): void {
+    if (!window.__dbgEnabled) return;
+    const mib = (bytes: number): number => Math.round((bytes / (1024 * 1024)) * 10) / 10;
+    if (!this.memoryDebugBootReported && this.solarSystem) {
+      this.memoryDebugBootReported = true;
+      const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+      debugLog('Memory at boot', {
+        bootMapsMiB: mib(this.bootTextureGpuBytes()),
+        renderTargetsMiB: mib(this.renderTargetGpuBytes()),
+        drawingBuffer: `${Math.round(size.x)}x${Math.round(size.y)}`,
+        dpr: Math.round(this.renderer.getPixelRatio() * 100) / 100,
+      });
+    }
+    const stats = this.sectors?.stats() ?? null;
+    const globalBytes = this.liveGlobalMapBytes();
+    const figures = stats
+      ? [globalBytes, stats.residentBytes, stats.reserved, stats.budget, stats.floor, stats.envelope]
+      : [globalBytes];
+    const previous = this.memoryDebugLast;
+    const moved = !previous || previous.length !== figures.length ||
+      figures.some((f, i) => Math.abs(f - previous[i]) > PlanetariumMode.MEMORY_DEBUG_MOVE * Math.max(1, previous[i]));
+    if (!moved && nowMs - this.memoryDebugAtMs < PlanetariumMode.MEMORY_DEBUG_PERIOD_MS) return;
+    this.memoryDebugAtMs = nowMs;
+    this.memoryDebugLast = figures;
+    // What the device was read as, beside the profile the numbers actually
+    // came from. They disagree on a handful of devices, and the line is
+    // where that shows before the class is allowed to size anything.
+    debugLog('Memory', stats
+      ? {
+        class: this.deviceClass,
+        profile: this.deviceProfile.id,
+        globeMapsMiB: mib(globalBytes),
+        tilesMiB: mib(stats.residentBytes),
+        reservedMiB: mib(stats.reserved),
+        budgetMiB: mib(stats.budget),
+        floorMiB: mib(stats.floor),
+        envelopeMiB: mib(stats.envelope),
+      }
+      : { class: this.deviceClass, profile: this.deviceProfile.id, globeMapsMiB: mib(globalBytes), tiles: 'off' });
   }
 
   /** Dev bridge: what the streamer holds right now. */
   devSectorStats(): SectorStats | null {
     return this.sectors?.stats() ?? null;
+  }
+
+  /** Dev bridge: what the colour ladder holds, rung by rung, against the
+   *  share of the envelope it is allowed. The counterpart of devSectorStats
+   *  for the other half of the same envelope. */
+  devLadderStats(): {
+    heldBytes: number;
+    ceilingBytes: number;
+    floorBytes: number;
+    envelopeBytes: number;
+    releasing: string | null;
+    restoreQueued: number;
+    rungs: LadderRungReadout[];
+  } {
+    const nowMs = performance.now();
+    const rungs: LadderRungReadout[] = [];
+    this.forEachTextureUpgrade((up) => {
+      // A body back on its boot map is listed too when what it is drawing is
+      // a stand-in: that is the state the tiles' reference width is easiest
+      // to get wrong in, so it has to be visible.
+      const drawn = materialColorMap(up.material);
+      const standin = drawn?.userData?.sourceReleased === true;
+      if (!up.appliedTier && !up.release && !standin) return;
+      const img = drawn?.image as { width?: unknown } | undefined;
+      rungs.push({
+        key: up.key,
+        tier: up.appliedTier,
+        top: reachableTopTier(up),
+        bytes: appliedTierHeldBytes(up),
+        // What the decoded image behind the map still holds. A rung closes
+        // its source once the upload is paid, leaving a thumbnail to
+        // re-upload from after a context loss — so this reads 0 and the
+        // width reads small on a rung that has been through the warm pump.
+        retained: retainedSourceBytes(drawn),
+        sourceWidth: img && typeof img.width === 'number' ? img.width : 0,
+        releasing: up.release?.toTier ?? null,
+        belowBandMs: up.belowBandSinceMs === undefined ? null : Math.round(nowMs - up.belowBandSinceMs),
+      });
+    });
+    return {
+      heldBytes: this.liveGlobalMapBytes(),
+      ceilingBytes: ladderCeilingBytes(this.deviceProfile, this.liveSectorFloorBytes()),
+      floorBytes: this.liveSectorFloorBytes(),
+      envelopeBytes: this.deviceProfile.envelopeBytes,
+      releasing: this.releasing?.key ?? null,
+      // Rungs still waiting to fetch back the map a lost context took. Above
+      // zero only between a restore and the last re-fetch landing; a figure
+      // that stays up is a body left on its stand-in.
+      restoreQueued: this.restoreRefetch.length,
+      rungs,
+    };
   }
 
   private ensureConstellationsReady() {
@@ -3244,6 +3827,10 @@ export class PlanetariumMode {
     // world composer is bypassed entirely while the chart owns the frame, so
     // per-frame work whose only output is the world render is pure waste.)
     const mapOpen = this.isMapOpen();
+    // Outside the gate on purpose: the ladder holds its maps behind the chart
+    // too, and a planner that ran only where the spheres are drawn would let
+    // the chart squeeze the tiles with nothing able to hand a map back.
+    this.updateLadderPressure(performance.now());
     if (!mapOpen) {
       this.updateBodyLOD();
       // Sector tiles are world render too: nothing to measure or fetch for a
@@ -3255,6 +3842,7 @@ export class PlanetariumMode {
       // budget and the load deadlines stay current while the measuring stops.
       this.maintainSectorStreaming();
     }
+    this.reportMemoryDebug(performance.now());
 
     // The HTML label/marker projections below read camera.matrixWorldInverse,
     // which the renderer refreshes only at render time — after this update().
@@ -14551,6 +15139,11 @@ export class PlanetariumMode {
   ): void {
     if (this.arrivalInFlight) return;
     const landingUpgrades = this.landingPairUpgrades(target);
+    // Where the ship is going, from the moment the player commits until the
+    // arrival has been over for a beat. Nothing takes this body's maps back
+    // in between — the ladder is climbing them for a view that is about to
+    // fill the screen.
+    this.travelProtect = { ups: landingUpgrades, doneAtMs: null };
     let upgradeCover = false;
     // Every arrival — landing OR cruise jump — covers the pair's first
     // steps. Cruise jumps used to skip this, and the warm-up's pre-fetched
@@ -14643,6 +15236,24 @@ export class PlanetariumMode {
   private pumpArrivalWarmGoals(): void {
     if (this.arrivalWarmUps.length === 0) return;
     const nowMs = performance.now();
+    // A goal blocked for want of memory is the arrival's, not the session's:
+    // it stays armed while a release might still make room for it, but only
+    // while the arrival it was armed for is what the session is doing, so a
+    // fly-past cannot leave a goal pumping for a body over the horizon. With
+    // nothing squeezing the ladder there is no such wait — the goal is the
+    // ordinary staged climb, which over a slow link outlasts any arrival
+    // grace — so the box does not apply.
+    const over = arrivalWarmGoalsExpired(
+      this.pressureSinceMs !== null,
+      this.travelProtect,
+      nowMs,
+      PlanetariumMode.TRAVEL_PROTECT_GRACE_MS,
+    );
+    if (over) {
+      for (const up of this.arrivalWarmUps) disarmArrivalWarmGoal(up);
+      this.arrivalWarmUps.length = 0;
+      return;
+    }
     let keep = 0;
     for (const up of this.arrivalWarmUps) {
       if (pumpArrivalWarmGoal(up, nowMs)) this.arrivalWarmUps[keep++] = up;
@@ -14681,6 +15292,11 @@ export class PlanetariumMode {
         // may only outlive the approach it was armed for on the body the
         // player is still headed to.
         disarmArrivalWarmGoal(up);
+      } else if (up.release) {
+        // A swap down started before the commit must not land on the body
+        // the player is arriving at.
+        cancelTierRelease(up);
+        if (this.releasing === up) this.releasing = null;
       }
     }
     // Every sector tile goes now, destination included: a tile upload for
@@ -15563,6 +16179,8 @@ export class PlanetariumMode {
     // World-presentation passes are gated while the map owns the frame.
     const mapOpen = this.isMapOpen();
 
+    // Same as the cruise path: giving a map back is not world presentation.
+    this.updateLadderPressure(performance.now());
     if (!mapOpen) {
       this.updateBodyLOD();
       this.updateSectorStreaming();
@@ -16224,6 +16842,11 @@ export class PlanetariumMode {
     // Unbind before the loader teardown so no late tier fetch can race a
     // disposing transcoder; a loader never instantiated disposes nothing.
     bindKtx2TierLoader(null);
+    bindTierAdmission(null);
+    for (const up of this.allTextureUpgrades()) cancelTierRelease(up);
+    this.releasing = null;
+    this.restoreRefetch.length = 0;
+    this.travelProtect = null;
     this.ktx2Loader?.then((loader) => loader.dispose()).catch(() => {});
     this.ktx2Loader = null;
     // The relief tiers ride the same network and need the same abandonment.

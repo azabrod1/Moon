@@ -1,26 +1,15 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import * as THREE from 'three';
 import {
   SECTOR_ADMIT_MARGIN,
   SECTOR_ATTEMPT_TIMEOUT_MS,
-  SECTOR_BUDGET_BYTES_DESKTOP,
-  SECTOR_BUDGET_BYTES_TOUCH,
-  SECTOR_ENVELOPE_BYTES_DESKTOP,
   SECTOR_EVICT_DWELL_MS,
-  SECTOR_FETCH_POOL_DESKTOP,
-  SECTOR_INFLIGHT_CAP_DESKTOP,
   SECTOR_KEEP_LIGHT_MARGIN,
   SECTOR_MAX_LEVEL,
   SECTOR_NIGHT_DOT,
-  SECTOR_RELEASE_TEXEL_PX,
-  SECTOR_RESIDENT_CAP_DESKTOP,
-  SECTOR_RESIDENT_CAP_TOUCH,
-  SECTOR_RELEASE_TEXEL_PX_TOUCH,
   SECTOR_RETRY_MS,
   SECTOR_SEGMENTS,
   SECTOR_SETS,
-  SECTOR_WANT_TEXEL_PX,
-  SECTOR_WANT_TEXEL_PX_TOUCH,
   SectorStreamer,
   daySectorFamily,
   sectorFamilyKey,
@@ -35,6 +24,18 @@ import {
   type SectorMeasure,
   type SectorSetSpec,
 } from './sectorStreamer';
+import { LEGACY_DESKTOP_PROFILE, LEGACY_TOUCH_PROFILE } from './gpuEnvelope';
+import {
+  appliedTierHeldBytes,
+  bindTierAdmission,
+  equirectMapGpuBytes,
+  ladderMapReferenceWidth,
+  makeTextureUpgrade,
+  RESTORE_STANDIN_WIDTH,
+  setUpgradeTextureLoader,
+  startTierRelease,
+  TIER_RANK,
+} from '../PlanetFactory';
 import { SECTOR_RENDER_ORDER } from './sectorMaterial';
 import { createEarthNightShellMaterial, earthNightSectorFamily } from './earthNightMaterial';
 import { EARTH_NIGHT_MIX_LIT, earthNightMix } from '../../shared/shaders/atmosphere';
@@ -78,9 +79,19 @@ const G = SECTOR_GRID_16K;
 const R = 1;
 // What one Earth sector costs the budget (its 2048² tile plus its own copies
 // of the bump and roughness crops) and how many of them each device holds.
+/** The two sets of device numbers the streamer is built with today. The
+ *  streamer takes numbers, not a device guess, so a test says which. */
+const DESKTOP = LEGACY_DESKTOP_PROFILE;
+const TOUCH = LEGACY_TOUCH_PROFILE;
+/** The same desktop numbers with no sector floor. Most of the tests below
+ *  squeeze the budget to one set or to nothing to watch what the streamer
+ *  gives up first — a squeeze the shipped floor is there to prevent, and
+ *  which would otherwise stop the eviction machinery from being exercised at
+ *  all. The floor's own behaviour is pinned in its own describe block. */
+const NO_FLOOR = { ...DESKTOP, sectorFloorBytes: 0 };
 const EARTH_SET_BYTES = sectorSetGpuBytes(SECTOR_SETS.Earth);
-const EARTH_FITS_DESKTOP = Math.floor(SECTOR_BUDGET_BYTES_DESKTOP / EARTH_SET_BYTES);
-const EARTH_FITS_TOUCH = Math.floor(SECTOR_BUDGET_BYTES_TOUCH / EARTH_SET_BYTES);
+const EARTH_FITS_DESKTOP = Math.floor(DESKTOP.ceilingBytes / EARTH_SET_BYTES);
+const EARTH_FITS_TOUCH = Math.floor(TOUCH.ceilingBytes / EARTH_SET_BYTES);
 // Sizes in these tests are TEXEL magnifications (device px per base-map texel)
 // for the 4K map the fake material is taken to draw (no readable image, so
 // the streamer assumes 4096 wide); measureOf turns them into pxPerLocalUnit.
@@ -132,7 +143,7 @@ const TWO_LEVELS = [LEVEL_0, LEVEL_1];
  *  parent. It is also the globe magnification at which a child first has
  *  anything to add — the campaign's "~4 px per 16K texel" wall. */
 const LEVEL_STEP = levelSourceWidth(LEVEL_0) / 4096;
-const CHILD_WANT_PX = SECTOR_WANT_TEXEL_PX * LEVEL_STEP;
+const CHILD_WANT_PX = DESKTOP.wantTexelPx * LEVEL_STEP;
 
 /** A measure over a pyramid. Sizes are keyed by LEVEL-0 sector and given in
  *  device px per texel of the GLOBE's map there — one physical magnification
@@ -256,28 +267,28 @@ describe('SectorStreamer', () => {
   beforeEach(() => {
     loader = new FakeLoader();
     warm = new FakeWarm();
-    streamer = new SectorStreamer({ touch: false, load: loader.load, warm: warm.warm });
+    streamer = new SectorStreamer({ limits: NO_FLOOR, load: loader.load, warm: warm.warm });
     earth = earthHandle();
     streamer.register(earth);
   });
 
   it('asks later on touch, and releases later', () => {
-    expect(SECTOR_WANT_TEXEL_PX_TOUCH).toBeGreaterThan(SECTOR_WANT_TEXEL_PX);
-    const s = new SectorStreamer({ touch: true, load: loader.load, warm: warm.warm });
+    expect(TOUCH.wantTexelPx).toBeGreaterThan(DESKTOP.wantTexelPx);
+    const s = new SectorStreamer({ limits: TOUCH, load: loader.load, warm: warm.warm });
     s.register(earth);
     loader.auto = true;
-    s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': SECTOR_WANT_TEXEL_PX_TOUCH - 0.01 }), 0);
+    s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': TOUCH.wantTexelPx - 0.01 }), 0);
     expect(s.stats().resident).toBe(0);
-    s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': SECTOR_WANT_TEXEL_PX_TOUCH + 0.01 }), 16);
+    s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': TOUCH.wantTexelPx + 0.01 }), 16);
     expect(s.stats().resident).toBe(1);
-    s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': SECTOR_RELEASE_TEXEL_PX_TOUCH + 0.01 }), 32);
+    s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': TOUCH.releaseTexelPx + 0.01 }), 32);
     expect(s.stats().resident).toBe(1);
-    s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': SECTOR_RELEASE_TEXEL_PX_TOUCH - 0.01 }), 48);
+    s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': TOUCH.releaseTexelPx - 0.01 }), 48);
     expect(s.stats().resident).toBe(0);
   });
 
   it('requests nothing while every facing sector is under the want size', () => {
-    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': SECTOR_WANT_TEXEL_PX - 0.01 }), 0);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': DESKTOP.wantTexelPx - 0.01 }), 0);
     expect(loader.requests).toEqual([]);
     expect(streamer.stats().resident).toBe(0);
   });
@@ -329,9 +340,9 @@ describe('SectorStreamer', () => {
     for (const t of [sectorMesh.material as THREE.MeshStandardMaterial].flatMap((m) => [m.map!, m.bumpMap!, m.roughnessMap!])) {
       t.addEventListener('dispose', () => disposed++);
     }
-    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': (SECTOR_WANT_TEXEL_PX + SECTOR_RELEASE_TEXEL_PX) / 2 }), 16);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': (DESKTOP.wantTexelPx + DESKTOP.releaseTexelPx) / 2 }), 16);
     expect(streamer.stats().resident).toBe(1); // hysteresis band: stays
-    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': SECTOR_RELEASE_TEXEL_PX - 0.01 }), 32);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': DESKTOP.releaseTexelPx - 0.01 }), 32);
     expect(streamer.stats().resident).toBe(0);
     expect(earth.mesh.children.length).toBe(0);
     expect(disposed).toBe(3); // every owned texture freed
@@ -349,7 +360,7 @@ describe('SectorStreamer', () => {
     const sizes: Record<string, number> = {};
     for (let c = 0; c < 4; c++) sizes[`${c}_1`] = 2 + 0.01 * c;
     streamer.update('Earth', new THREE.Vector3(0, 0, 0), measureOf(sizes), 0); // inside: every sector faces
-    expect(streamer.stats().loading).toBe(SECTOR_INFLIGHT_CAP_DESKTOP);
+    expect(streamer.stats().loading).toBe(DESKTOP.inflightCap);
     // Largest first (stats list in grid order).
     expect(streamer.stats().bodies.Earth.loading.slice().sort()).toEqual(['2_1', '3_1']);
   });
@@ -358,7 +369,7 @@ describe('SectorStreamer', () => {
     loader.auto = true;
     // The budget is what bounds the working set; the count cap is the
     // emergency ceiling above it and never binds for a set this size.
-    expect(EARTH_FITS_DESKTOP).toBeLessThan(SECTOR_RESIDENT_CAP_DESKTOP);
+    expect(EARTH_FITS_DESKTOP).toBeLessThan(DESKTOP.residentCap);
     const sizes: Record<string, number> = {};
     for (let c = 0; c < 8; c++) { sizes[`${c}_1`] = 2 + 0.01 * c; sizes[`${c}_2`] = 2.1 + 0.01 * c; }
     // Fill the budget over a few frames (in-flight limit paces admissions).
@@ -387,16 +398,16 @@ describe('SectorStreamer', () => {
   });
 
   it('holds a smaller working set on touch devices', () => {
-    const s = new SectorStreamer({ touch: true, load: loader.load, warm: warm.warm });
+    const s = new SectorStreamer({ limits: TOUCH, load: loader.load, warm: warm.warm });
     s.register(earth);
     loader.auto = true;
     expect(EARTH_FITS_TOUCH).toBeLessThan(EARTH_FITS_DESKTOP);
-    expect(EARTH_FITS_TOUCH).toBeLessThan(SECTOR_RESIDENT_CAP_TOUCH);
+    expect(EARTH_FITS_TOUCH).toBeLessThan(TOUCH.residentCap);
     const sizes: Record<string, number> = {};
     for (let c = 0; c < 8; c++) sizes[`${c}_1`] = 2 + 0.01 * c;
     for (let f = 0; f < 12; f++) s.update('Earth', new THREE.Vector3(0, 0, 0), measureOf(sizes), f * 16);
     expect(s.stats().resident).toBe(EARTH_FITS_TOUCH);
-    expect(s.stats().residentBytes).toBeLessThanOrEqual(SECTOR_BUDGET_BYTES_TOUCH);
+    expect(s.stats().residentBytes).toBeLessThanOrEqual(TOUCH.ceilingBytes);
   });
 
   it('a load superseded by release never materializes and drops its bytes', () => {
@@ -601,7 +612,7 @@ describe('SectorStreamer', () => {
   it('reports the GPU bytes its textures hold, from their sizes', () => {
     const sized = (w: number, h: number) => { const t = new THREE.Texture(); t.image = { width: w, height: h }; return t; };
     loader.load = (url, onLoad) => onLoad(/earth-day/.test(url) ? sized(2048, 2048) : sized(272, 272));
-    const s = new SectorStreamer({ touch: false, load: loader.load, warm: warm.warm });
+    const s = new SectorStreamer({ limits: DESKTOP, load: loader.load, warm: warm.warm });
     s.register(earth);
     s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
     // One colour tile plus two crops (bump, roughness), RGBA8 with mips.
@@ -672,7 +683,7 @@ describe('SectorStreamer', () => {
     // A globe map lands while the chart is up: the sectors' share of the
     // envelope shrinks, and they give it back on that frame rather than
     // sitting over the envelope until the chart closes.
-    streamer.maintain(SECTOR_ENVELOPE_BYTES_DESKTOP - 2 * EARTH_SET_BYTES, 16);
+    streamer.maintain(DESKTOP.envelopeBytes - 2 * EARTH_SET_BYTES, 16);
     const s = streamer.stats();
     expect(s.budget).toBe(2 * EARTH_SET_BYTES);
     expect(s.resident).toBe(2);
@@ -689,7 +700,7 @@ describe('SectorStreamer', () => {
     mars.material.normalMap = new THREE.Texture();
     streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2, '3_1': 1.9, '1_1': 1.8, '2_0': 1.7 }), 16);
     // Two reloads fill the desktop cap; the third resident and the new 2_0 wait.
-    expect(loader.requests).toHaveLength(SECTOR_INFLIGHT_CAP_DESKTOP);
+    expect(loader.requests).toHaveLength(DESKTOP.inflightCap);
     expect(loader.requests.every((r) => /mars-normal/.test(r.url))).toBe(true);
     expect(streamer.stats().bodies.Mars.resident.sort()).toEqual(['1_1', '2_1', '3_1']);
     loader.resolveAll();
@@ -832,17 +843,17 @@ describe('SectorStreamer', () => {
     // measureOf's numbers are texel px for a 4K map; the same on-screen scale
     // over an 8K map is half as many pixels per (twice as fine) texel.
     earth.material.map!.image = { width: 8192, height: 4096 }; // the Moon's 8K rung
-    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 * SECTOR_WANT_TEXEL_PX - 0.02 }), 0);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 * DESKTOP.wantTexelPx - 0.02 }), 0);
     expect(loader.requests.length).toBe(0); // 1.24 texel px on the 8K map: it still out-resolves a tile
-    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 * SECTOR_WANT_TEXEL_PX + 0.02 }), 16);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 * DESKTOP.wantTexelPx + 0.02 }), 16);
     expect(streamer.stats().resident).toBe(1);
-    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 * SECTOR_RELEASE_TEXEL_PX + 0.02 }), 32);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 * DESKTOP.releaseTexelPx + 0.02 }), 32);
     expect(streamer.stats().resident).toBe(1); // hysteresis band on the 8K scale
-    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 * SECTOR_RELEASE_TEXEL_PX - 0.02 }), 48);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 * DESKTOP.releaseTexelPx - 0.02 }), 48);
     expect(streamer.stats().resident).toBe(0);
     // A 2K boot map is magnified twice as much at the same on-screen scale.
     earth.material.map!.image = { width: 2048, height: 1024 };
-    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': SECTOR_WANT_TEXEL_PX / 2 + 0.02 }), 64);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': DESKTOP.wantTexelPx / 2 + 0.02 }), 64);
     expect(streamer.stats().resident).toBe(1);
   });
 
@@ -851,17 +862,63 @@ describe('SectorStreamer', () => {
     // A Moon booting on 2K with an 8K rung: measured against 2K, a sector
     // would be admitted now and released the moment the 8K lands.
     earth.material.map!.image = { width: 2048, height: 1024 };
-    earth.topMapWidth = 8192;
-    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 * SECTOR_WANT_TEXEL_PX - 0.02 }), 0);
+    earth.topMapWidth = () => 8192;
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 * DESKTOP.wantTexelPx - 0.02 }), 0);
     expect(loader.requests.length).toBe(0);
-    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 * SECTOR_WANT_TEXEL_PX + 0.02 }), 16);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 * DESKTOP.wantTexelPx + 0.02 }), 16);
     expect(streamer.stats().resident).toBe(1);
-    // The drawn map wins when it is the wider (Earth boots at 4096 with no ladder).
+    // A body with no ladder reads the map it draws instead: Earth's globe map
+    // boots at 4096 and nothing ever swaps it.
     streamer.dropAll();
     earth.material.map!.image = { width: 4096, height: 2048 };
-    earth.topMapWidth = 2048;
-    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': SECTOR_WANT_TEXEL_PX + 0.02 }), 32);
+    earth.topMapWidth = undefined;
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': DESKTOP.wantTexelPx - 0.02 }), 32);
+    expect(streamer.stats().resident).toBe(0);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': DESKTOP.wantTexelPx + 0.02 }), 48);
     expect(streamer.stats().resident).toBe(1);
+  });
+
+  it('takes the ladder\'s answer as the whole reference, however wide the image is', () => {
+    loader.auto = true;
+    // The texture's image is not the map: an applied rung swaps a small
+    // stand-in into it once the upload is paid, so nothing about the image
+    // may raise or lower what a laddered body is measured against.
+    earth.topMapWidth = () => 2048;
+    earth.material.map!.image = { width: 4096, height: 2048 };
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 1 }), 0);
+    expect(streamer.stats().bodies.Earth.maxTexelPx).toBeCloseTo(2, 10);
+    streamer.dropAll();
+    earth.material.map!.image = { width: 128, height: 64 };
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 1 }), 16);
+    expect(streamer.stats().bodies.Earth.maxTexelPx).toBeCloseTo(2, 10);
+  });
+
+  it('measures a released rung against the map it draws, not the stand-in in its image', () => {
+    loader.auto = true;
+    // The whole seam, as the app wires it: a laddered body answers from its
+    // ladder, and the ladder is under enough pressure to have given its rung
+    // back. The globe draws its 2048-wide boot map; the image behind it is
+    // the stand-in a context restore would re-upload from. Measured against
+    // THAT, every tile would be admitted at the ratio of the two widths, and
+    // none of them could ever fall under the release size again.
+    const up = makeTextureUpgrade('mars', earth.material)!;
+    earth.topMapWidth = () => ladderMapReferenceWidth(up);
+    bindTierAdmission(() => 'blocked');
+    try {
+      up.appliedTier = null;
+      earth.material.map!.image = { width: RESTORE_STANDIN_WIDTH, height: RESTORE_STANDIN_WIDTH / 2 };
+      streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 1 }), 0);
+      const onStandin = streamer.stats().bodies.Earth.maxTexelPx;
+      streamer.dropAll();
+      // The same pose with the real boot map still in the image slot.
+      earth.material.map!.image = { width: 2048, height: 1024 };
+      streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 1 }), 16);
+      const onRealMap = streamer.stats().bodies.Earth.maxTexelPx;
+      expect(onStandin / onRealMap).toBeCloseTo(1, 10);
+      expect(onStandin).toBeCloseTo(2, 10); // 4096/2048 x the 4K-scale size asked for
+    } finally {
+      bindTierAdmission(null);
+    }
   });
 
   it('releases everything without measuring when even the nearest texel is under the release size', () => {
@@ -870,7 +927,7 @@ describe('SectorStreamer', () => {
     expect(streamer.stats().resident).toBe(1);
     let measured = 0;
     const counting = (centre: THREE.Vector3, radius: number) => { measured++; return measureOf({ '2_1': 2 })(centre, radius); };
-    streamer.update('Earth', cameraOver(2, 1), counting, 16, 'none', null, (SECTOR_RELEASE_TEXEL_PX - 0.01) / TEXEL_LEN_4K);
+    streamer.update('Earth', cameraOver(2, 1), counting, 16, 'none', null, (DESKTOP.releaseTexelPx - 0.01) / TEXEL_LEN_4K);
     expect(measured).toBe(0);
     expect(streamer.stats().resident).toBe(0);
   });
@@ -887,7 +944,7 @@ describe('SectorStreamer', () => {
     expect(streamer.stats().resident).toBe(1);
     streamer.update('Earth', cameraOver(2, 1), off(2), 32); // panned off the frame
     expect(streamer.stats().resident).toBe(1); // one pan away: kept
-    streamer.update('Earth', cameraOver(2, 1), off(SECTOR_RELEASE_TEXEL_PX - 0.01), 48);
+    streamer.update('Earth', cameraOver(2, 1), off(DESKTOP.releaseTexelPx - 0.01), 48);
     expect(streamer.stats().resident).toBe(0); // …until it is small as well
   });
 
@@ -976,7 +1033,7 @@ describe('SectorStreamer', () => {
       let pending: typeof done | null = done;
       tex.addEventListener('dispose', () => { const d = pending; pending = null; d?.('disposed'); });
     };
-    const s = new SectorStreamer({ touch: false, load: loader.load, warm: hookWarm });
+    const s = new SectorStreamer({ limits: DESKTOP, load: loader.load, warm: hookWarm });
     s.register(earth);
     s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
     const [first, ...rest] = loader.requests.splice(0);
@@ -1263,7 +1320,7 @@ describe('SectorStreamer', () => {
     }
     // Room for exactly what the two of them hold, and a far stronger
     // candidate that needs all of it.
-    streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - 2 * EARTH_SET_BYTES);
+    streamer.setGlobalMapBytes(DESKTOP.envelopeBytes - 2 * EARTH_SET_BYTES);
     expect(streamer.stats().resident).toBe(2);
     streamer.beginFrame();
     streamer.update('Earth', INSIDE, earthMeasure, 2_000);
@@ -1344,8 +1401,8 @@ describe('SectorStreamer', () => {
     // Two loads in flight hold nothing on the GPU yet and have committed
     // their full sets: the figure that keeps two 22 MiB tiles from landing
     // on a budget with room for one.
-    expect(s.loading).toBe(SECTOR_INFLIGHT_CAP_DESKTOP);
-    expect(s.reserved).toBe(SECTOR_INFLIGHT_CAP_DESKTOP * EARTH_SET_BYTES);
+    expect(s.loading).toBe(DESKTOP.inflightCap);
+    expect(s.reserved).toBe(DESKTOP.inflightCap * EARTH_SET_BYTES);
     expect(s.residentBytes).toBe(0);
     expect(s.gpuBytes).toBe(0);
     expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
@@ -1365,14 +1422,14 @@ describe('SectorStreamer', () => {
 
   it('takes the sector budget out of one envelope with the globe maps, and gives sectors back when it shrinks', () => {
     loader.auto = true;
-    expect(streamer.stats().budget).toBe(SECTOR_BUDGET_BYTES_DESKTOP);
+    expect(streamer.stats().budget).toBe(DESKTOP.ceilingBytes);
     const sizes: Record<string, number> = {};
     for (let c = 0; c < 8; c++) { sizes[`${c}_1`] = 2 + 0.01 * c; sizes[`${c}_2`] = 2.1 + 0.01 * c; }
     streamer.update('Earth', INSIDE, measureOf(sizes), 0);
     expect(streamer.stats().resident).toBe(EARTH_FITS_DESKTOP);
     // The globe maps grow (an 8K rung lands) and the envelope leaves the
     // sectors room for three.
-    streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - 3 * EARTH_SET_BYTES);
+    streamer.setGlobalMapBytes(DESKTOP.envelopeBytes - 3 * EARTH_SET_BYTES);
     expect(streamer.stats().budget).toBe(3 * EARTH_SET_BYTES);
     streamer.update('Earth', INSIDE, measureOf(sizes), 16);
     const s = streamer.stats();
@@ -1411,7 +1468,7 @@ describe('SectorStreamer', () => {
     const held = streamer.stats().residentBytes;
     expect(streamer.stats().resident).toBe(4);
     // Leave room for one small set and nothing like an Earth one.
-    streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - held - 2 * small);
+    streamer.setGlobalMapBytes(DESKTOP.envelopeBytes - held - 2 * small);
     // The strongest candidate is an Earth sector that would need a victim it
     // does not out-rank by the margin; behind it a small tile that fits in
     // the room already free.
@@ -1435,24 +1492,29 @@ describe('SectorStreamer', () => {
     const before = streamer.stats();
     expect(before.bodies.Earth.byLevel.map((l) => l.resident)).toEqual([1, 4]);
     // The envelope closes on it entirely.
-    streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP);
+    streamer.setGlobalMapBytes(DESKTOP.envelopeBytes);
     const s = streamer.stats();
     expect(s.budget).toBe(0);
     expect(s.residentBytes + s.reserved).toBe(0);
     expect(s.resident).toBe(0);
   });
 
-  it('says once when the globe maps have taken the whole envelope', () => {
+  it('says once when the budget falls under one whole set', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - 1);
+      // A budget that cannot hold one set is the same silence as a budget of
+      // nothing: no tile is admitted with it, and a fraction of a set is not
+      // a smaller tile. The warning is what tells a soft surface from a
+      // fault, so it fires there rather than at zero.
+      streamer.setGlobalMapBytes(DESKTOP.envelopeBytes - EARTH_SET_BYTES);
       expect(warn).not.toHaveBeenCalled();
-      streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP);
-      expect(streamer.stats().budget).toBe(0);
+      streamer.setGlobalMapBytes(DESKTOP.envelopeBytes - EARTH_SET_BYTES + 1);
+      expect(streamer.stats().budget).toBeLessThan(EARTH_SET_BYTES);
       expect(warn).toHaveBeenCalledTimes(1);
-      expect(String(warn.mock.calls[0][0])).toContain('Surface tiles off');
+      expect(String(warn.mock.calls[0][0])).toContain('below one sector set');
       // Once: a per-frame figure that stays there must not become a log.
-      streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP + 1);
+      streamer.setGlobalMapBytes(DESKTOP.envelopeBytes);
+      expect(streamer.stats().budget).toBe(0);
       expect(warn).toHaveBeenCalledTimes(1);
     } finally {
       warn.mockRestore();
@@ -1467,7 +1529,7 @@ describe('SectorStreamer', () => {
     expect(streamer.stats().resident).toBe(EARTH_FITS_DESKTOP);
     // A globe map lands between frames. Nothing calls update() before the
     // next stats() read, and the invariant still has to hold in it.
-    streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - 2 * EARTH_SET_BYTES);
+    streamer.setGlobalMapBytes(DESKTOP.envelopeBytes - 2 * EARTH_SET_BYTES);
     const s = streamer.stats();
     expect(s.resident).toBe(2);
     expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
@@ -1487,7 +1549,7 @@ describe('SectorStreamer', () => {
     loader.auto = false;
     loader.requests.length = 0;
     earth.material.roughnessMap = new THREE.Texture();
-    streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - Math.round(0.6 * EARTH_SET_BYTES));
+    streamer.setGlobalMapBytes(DESKTOP.envelopeBytes - Math.round(0.6 * EARTH_SET_BYTES));
     streamer.update('Earth', INSIDE, measureOf(sizes), 10_000);
     const s = streamer.stats();
     expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
@@ -1574,14 +1636,14 @@ describe('SectorStreamer', () => {
     streamer.register(big);
     streamer.update('Big', INSIDE, measureOf({ '2_1': 3, '3_1': 2 }), 0);
     expect(loader.requests).toHaveLength(4);
-    expect(loader.requests.length).toBeLessThanOrEqual(SECTOR_FETCH_POOL_DESKTOP);
+    expect(loader.requests.length).toBeLessThanOrEqual(DESKTOP.fetchPool);
     expect(streamer.stats().inflight).toBe(1);
     expect(streamer.stats().reserved).toBe(sectorSetGpuBytes(spec));
   });
 
   it('starts the eviction dwell on the frame a tile is first drawn, not when its fetch lands', () => {
     // Room for exactly one Earth set, so every admission is a replacement.
-    streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - EARTH_SET_BYTES);
+    streamer.setGlobalMapBytes(DESKTOP.envelopeBytes - EARTH_SET_BYTES);
     streamer.update('Earth', INSIDE, measureOf({ '2_1': 2 }), 0);
     expect(streamer.stats().bodies.Earth.loading).toEqual(['2_1']);
     // A far stronger candidate takes the reservation while the fetch is
@@ -1652,11 +1714,17 @@ describe('SectorStreamer', () => {
     expect(s.residentBytes).toBe(5 * EARTH_SET_BYTES);
   });
 
-  it('takes the same level-0 decisions in the same order: a golden trace', () => {
-    // A scripted session — a pose, a pan, a globe map landing on the budget,
-    // a context loss — with every fetch the streamer starts and every tile it
-    // drops recorded in order. Any change to what level 0 admits, when it
-    // admits it, or what it gives up first shows here as a diff.
+  /** The scripted level-0 session both golden traces run — a pose, a pan, a
+   *  globe map landing on the budget, one candidate sharp enough to evict a
+   *  resident, a context loss — with every fetch the streamer starts and
+   *  every tile it drops recorded in order. Any change to what level 0
+   *  admits, when it admits it, or what it gives up first shows as a diff.
+   *  The script is the same for every set of device numbers; only the
+   *  envelope it is handed and the trace it produces differ. */
+  function goldenTrace(
+    make: (load: FakeLoader['load']) => SectorStreamer,
+    envelopeBytes: number,
+  ): { events: string[]; stats: ReturnType<SectorStreamer['stats']> } {
     const events: string[] = [];
     let frame = 0;
     // The set key is part of the id, not only the tier: a body with a second
@@ -1671,11 +1739,11 @@ describe('SectorStreamer', () => {
       if (id) tex.addEventListener('dispose', () => events.push(`f${frame} -${id}`));
       pending.push(() => onLoad(tex));
     };
-    const s = new SectorStreamer({ touch: false, load: recording, warm: warm.warm });
+    const s = make(recording);
     s.register(earthHandle());
     // Room for four sets, so the working set is decided by the budget from
     // the first frame rather than by the count cap.
-    s.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - 4 * EARTH_SET_BYTES);
+    s.setGlobalMapBytes(envelopeBytes - 4 * EARTH_SET_BYTES);
     const poseA = { '2_1': 3.0, '3_1': 2.6, '1_1': 2.2, '4_1': 1.8, '2_2': 1.4, '3_2': 1.2 };
     // A pan east: three of the six leave the measure, one drops under the
     // release size, and three sectors ahead of the camera come up.
@@ -1710,7 +1778,7 @@ describe('SectorStreamer', () => {
     hold(2_000);
     run(poseB, 2);
     events.push(`f${frame} * the globe's own map grows: room for two sets`);
-    s.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - 2 * EARTH_SET_BYTES);
+    s.setGlobalMapBytes(envelopeBytes - 2 * EARTH_SET_BYTES);
     run(poseB, 2);
     hold(2_000);
     // A sector ahead of the camera comes up sharp enough to be worth a
@@ -1720,6 +1788,16 @@ describe('SectorStreamer', () => {
     events.push(`f${frame} * context loss`);
     s.dropAll();
     run(poseC, 3);
+    const stats = s.stats();
+    expect(stats.residentBytes + stats.reserved).toBeLessThanOrEqual(stats.budget);
+    return { events, stats };
+  }
+
+  it('takes the same level-0 decisions in the same order: a golden trace', () => {
+    const { events, stats } = goldenTrace(
+      (load) => new SectorStreamer({ limits: DESKTOP, load, warm: warm.warm }),
+      DESKTOP.envelopeBytes,
+    );
     expect(events).toEqual([
       // Two admissions a frame (the in-flight cap), strongest first, until the
       // budget is full at four; the two under it never out-rank the weakest
@@ -1736,31 +1814,70 @@ describe('SectorStreamer', () => {
       'f6 +5_1',
       'f6 +6_1',
       'f9 * 2s of looking',
-      // The give-back is immediate and takes the weakest first.
+      // The give-back is immediate and takes the weakest first — but only as
+      // far as the floor: the script asks for room for two sets and a desktop
+      // keeps three whatever the globe maps have taken, so the third set
+      // stays where it used to go.
+      "f11 * the globe's own map grows: room for two sets",
+      'f11 -6_1',
+      'f13 * 2s of looking',
+      // The one eviction for a candidate: it out-ranks the weakest resident
+      // by more than the margin, and takes exactly that one sector.
+      'f13 -3_1',
+      'f13 +7_1',
+      // Everything is dropped and streams back, strongest first, into the
+      // budget as it now stands — three sets, so one of them lands a frame
+      // later than the two the in-flight cap admits at once.
+      'f16 * context loss',
+      'f16 -4_1',
+      'f16 -5_1',
+      'f16 -7_1',
+      'f16 +7_1',
+      'f16 +4_1',
+      'f17 +5_1',
+    ]);
+    // And the day family's light weight really is in the ranking these
+    // decisions came out of: the northern row the script admits from is lit
+    // at all six sample points and scores its magnification whole, while the
+    // southern row is lit at three of them and scores half of its own.
+    // (Desktop wants a tile at 1.0 device px per texel, so a score IS the
+    // weighted magnification here.)
+    expect(stats.bodies.Earth.scores['4_1']).toBeCloseTo(3.0, 9);
+    expect(stats.bodies.Earth.scores['4_2']).toBeCloseTo(1.4 / 2, 9);
+  });
+
+  it('takes the same level-0 decisions on the phone numbers: a golden trace', () => {
+    const { events } = goldenTrace(
+      (load) => new SectorStreamer({ limits: TOUCH, load, warm: warm.warm }),
+      TOUCH.envelopeBytes,
+    );
+    // The same script, the same four sets, the same order — one admission a
+    // frame instead of two, because the phone's in-flight cap is 1. The
+    // budget is the phone's smaller envelope less the same four sets, so
+    // what the working set holds is unchanged; only the pace differs.
+    expect(events).toEqual([
+      'f0 +2_1',
+      'f1 +3_1',
+      'f2 +1_1',
+      'f3 +4_1',
+      'f4 * 2s of looking',
+      'f6 -1_1',
+      'f6 -2_1',
+      'f6 +5_1',
+      'f7 +6_1',
+      'f9 * 2s of looking',
       "f11 * the globe's own map grows: room for two sets",
       'f11 -6_1',
       'f11 -3_1',
       'f13 * 2s of looking',
-      // The one eviction for a candidate: it out-ranks the weakest resident
-      // by more than the margin, and takes exactly that one sector.
       'f13 -5_1',
       'f13 +7_1',
-      // Everything is dropped and streams back on the next frame, strongest
-      // first, into the budget as it now stands.
       'f16 * context loss',
       'f16 -4_1',
       'f16 -7_1',
       'f16 +7_1',
-      'f16 +4_1',
+      'f17 +4_1',
     ]);
-    const stats = s.stats();
-    expect(stats.residentBytes + stats.reserved).toBeLessThanOrEqual(stats.budget);
-    // And the weight really is in the ranking these decisions came out of:
-    // the northern row the script admits from is lit at all six sample
-    // points and scores its magnification whole, while the southern row is
-    // lit at three of them and scores half of its own.
-    expect(stats.bodies.Earth.scores['4_1']).toBeCloseTo(3.0, 9);
-    expect(stats.bodies.Earth.scores['4_2']).toBeCloseTo(1.4 / 2, 9);
   });
 
   it('scales a day sector by how much of it the sun is on', () => {
@@ -1807,7 +1924,7 @@ describe('a body\'s night family: a second set of sectors on the night shell', (
   beforeEach(() => {
     loader = new FakeLoader();
     warm = new FakeWarm();
-    streamer = new SectorStreamer({ touch: false, load: loader.load, warm: warm.warm });
+    streamer = new SectorStreamer({ limits: DESKTOP, load: loader.load, warm: warm.warm });
     day = earthHandle();
     night = earthNightHandle();
     streamer.register(day);
@@ -1871,7 +1988,7 @@ describe('a body\'s night family: a second set of sectors on the night shell', (
     expect(held().day).toEqual(['2_1']);
     expect(held().night).toEqual(['night/2_1']);
     // The unscaled score this magnification and centrality would give.
-    const full = 2 / SECTOR_WANT_TEXEL_PX;
+    const full = 2 / DESKTOP.wantTexelPx;
     expect(scores['2_1']).toBeLessThan(full);
     expect(scores['night/2_1']).toBeLessThan(full);
     // The night score IS the shell's own mask, averaged over the sector's four
@@ -1946,8 +2063,16 @@ describe('a body\'s night family: a second set of sectors on the night shell', (
 
   it('evicts across families by score alone, in both directions', () => {
     loader.auto = true;
-    // Room for one set of either family.
-    streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - EARTH_SET_BYTES);
+    // Room for one set of either family. The squeeze is on the CEILING, not
+    // on the globe maps: a desktop's floor keeps three sets whatever those
+    // maps have taken, and the budget is clamped by the ceiling either way.
+    streamer = new SectorStreamer({
+      limits: { ...DESKTOP, ceilingBytes: EARTH_SET_BYTES },
+      load: loader.load,
+      warm: warm.warm,
+    });
+    streamer.register(day);
+    streamer.register(night);
     const strong = 2 * SECTOR_ADMIT_MARGIN + 0.5;
     const stronger = strong * SECTOR_ADMIT_MARGIN + 0.5;
     let clock = 0;
@@ -1999,5 +2124,175 @@ describe('a body\'s night family: a second set of sectors on the night shell', (
     expect(streamer.stats().bodies.Earth.resident).toEqual(['night/2_1']);
     expect(day.mesh.children).toHaveLength(0);
     expect(night.mesh.children).toHaveLength(1);
+  });
+});
+
+describe('the sector floor', () => {
+  let loader: FakeLoader;
+  let warm: FakeWarm;
+
+  beforeEach(() => {
+    loader = new FakeLoader();
+    warm = new FakeWarm();
+  });
+
+  const withFloor = (limits = DESKTOP) =>
+    new SectorStreamer({ limits, load: loader.load, warm: warm.warm });
+  const INSIDE = new THREE.Vector3(0, 0, 0); // every sector faces a camera at the centre
+
+  it('is whole Earth sector sets: two on a phone, three on a desktop', () => {
+    // A fraction of a set would be budget nothing can spend.
+    expect(TOUCH.sectorFloorBytes).toBe(2 * sectorSetGpuBytes(SECTOR_SETS.Earth));
+    expect(DESKTOP.sectorFloorBytes).toBe(3 * sectorSetGpuBytes(SECTOR_SETS.Earth));
+  });
+
+  it('keeps a budget for the tiles however much the globe maps have taken', () => {
+    const s = withFloor();
+    s.register(earthHandle());
+    s.setGlobalMapBytes(DESKTOP.envelopeBytes);
+    expect(s.stats().budget).toBe(DESKTOP.sectorFloorBytes);
+    // Even asked for more than the whole envelope: the ladder cannot borrow
+    // against the floor by overshooting it.
+    s.setGlobalMapBytes(4 * DESKTOP.envelopeBytes);
+    expect(s.stats().budget).toBe(DESKTOP.sectorFloorBytes);
+    expect(s.stats().floor).toBe(DESKTOP.sectorFloorBytes);
+  });
+
+  it('holds a working set at the floor rather than going quiet', () => {
+    const s = withFloor();
+    s.register(earthHandle());
+    loader.auto = true;
+    const sizes: Record<string, number> = {};
+    for (let c = 0; c < 8; c++) { sizes[`${c}_1`] = 2 + 0.01 * c; sizes[`${c}_2`] = 2.1 + 0.01 * c; }
+    for (let f = 0; f < 24; f++) s.update('Earth', INSIDE, measureOf(sizes), f * 16);
+    expect(s.stats().resident).toBe(EARTH_FITS_DESKTOP);
+    // The globe maps take the whole envelope. Three sets are still drawn:
+    // the surface at 20x magnification keeps the tiles it needs most.
+    s.setGlobalMapBytes(DESKTOP.envelopeBytes);
+    const held = s.stats();
+    expect(held.resident).toBe(3);
+    expect(held.residentBytes + held.reserved).toBeLessThanOrEqual(held.budget);
+  });
+
+  it('owes nothing while no body can want a tile', () => {
+    // `?sectors=0` builds no streamer at all; a mode between activations has
+    // one with nothing registered. Neither may make the ladder reserve
+    // memory for tiles that cannot load.
+    const s = withFloor();
+    expect(s.floorBytes()).toBe(0);
+    s.setGlobalMapBytes(DESKTOP.envelopeBytes);
+    expect(s.stats().budget).toBe(0);
+    s.register(earthHandle());
+    expect(s.floorBytes()).toBe(DESKTOP.sectorFloorBytes);
+    expect(s.stats().budget).toBe(DESKTOP.sectorFloorBytes);
+  });
+
+  it('never gives the tiles more than their ceiling to honour a floor', () => {
+    const s = new SectorStreamer({
+      limits: { ...TOUCH, sectorFloorBytes: 4 * TOUCH.ceilingBytes },
+      load: loader.load,
+      warm: warm.warm,
+    });
+    s.register(earthHandle());
+    s.setGlobalMapBytes(TOUCH.envelopeBytes);
+    expect(s.stats().budget).toBe(TOUCH.ceilingBytes);
+  });
+
+  it('leaves the budget alone while the envelope has room', () => {
+    // The floor is a floor, not a reservation: it takes nothing from the
+    // tiles when the globe maps are small, which is every desktop session.
+    const s = withFloor();
+    s.register(earthHandle());
+    s.setGlobalMapBytes(0);
+    expect(s.stats().budget).toBe(DESKTOP.ceilingBytes);
+    s.setGlobalMapBytes(DESKTOP.envelopeBytes - DESKTOP.ceilingBytes);
+    expect(s.stats().budget).toBe(DESKTOP.ceilingBytes);
+    s.setGlobalMapBytes(DESKTOP.envelopeBytes - 4 * EARTH_SET_BYTES);
+    expect(s.stats().budget).toBe(4 * EARTH_SET_BYTES);
+  });
+});
+
+describe('the transient of a globe-map swap', () => {
+  let loader: FakeLoader;
+  let warm: FakeWarm;
+  let restoreTierLoader: (() => void) | null = null;
+  let tierFetch: Array<{ onLoad: (t: THREE.Texture) => void }> = [];
+  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  beforeEach(() => {
+    loader = new FakeLoader();
+    warm = new FakeWarm();
+    tierFetch = [];
+    const previous = setUpgradeTextureLoader((_url, onLoad) => { tierFetch.push({ onLoad }); });
+    restoreTierLoader = () => setUpgradeTextureLoader(previous);
+  });
+
+  afterEach(() => {
+    restoreTierLoader?.();
+    restoreTierLoader = null;
+  });
+
+  it('trims the tiles for both maps before the low one is assigned', async () => {
+    const SET = EARTH_SET_BYTES;
+    const HIGH = equirectMapGpuBytes(4096); // the rung being given back
+    const LOW = equirectMapGpuBytes(2048); // the boot map replacing it
+    // An envelope the globe map plus three sector sets fill exactly, with no
+    // floor, so the squeeze the transient causes is visible in the tiles.
+    const limits = {
+      ...DESKTOP,
+      sectorFloorBytes: 0,
+      envelopeBytes: HIGH + 3 * SET,
+      ceilingBytes: 4 * SET,
+    };
+    const streamer = new SectorStreamer({ limits, load: loader.load, warm: warm.warm });
+    streamer.register(earthHandle());
+    loader.auto = true;
+    const sizes: Record<string, number> = {};
+    for (let c = 0; c < 6; c++) sizes[`${c}_1`] = 2 + 0.01 * c;
+    const inside = new THREE.Vector3(0, 0, 0); // every sector faces a camera at the centre
+
+    const material = new THREE.MeshStandardMaterial();
+    const up = makeTextureUpgrade('mars', material)!;
+    up.appliedTier = '4k';
+    material.map = new THREE.Texture({ width: 4096, height: 2048 } as unknown as HTMLImageElement);
+    material.userData.colorTierRank = TIER_RANK['4k'];
+    const tellStreamer = () => streamer.setGlobalMapBytes(appliedTierHeldBytes(up));
+
+    tellStreamer();
+    for (let f = 0; f < 8; f++) streamer.update('Earth', inside, measureOf(sizes), f * 16);
+    const before = streamer.stats();
+    expect(before.budget).toBe(3 * SET);
+    expect(before.resident).toBe(3);
+
+    let during: ReturnType<typeof streamer.stats> | null = null;
+    let drawnAtChange: number | undefined;
+    startTierRelease(up, 0, {
+      onLedgerChange: () => {
+        tellStreamer();
+        during = streamer.stats();
+        drawnAtChange = (material.map!.image as { width: number }).width;
+      },
+    });
+    tierFetch[0].onLoad(new THREE.Texture({ width: 2048, height: 1024 } as unknown as HTMLImageElement));
+    await flush();
+
+    const seen = during!;
+    // The body was still drawing its 4K map when the tiles were trimmed: the
+    // transient is charged and answered before it is spent, not a frame after
+    // the peak has passed.
+    expect(drawnAtChange).toBe(4096);
+    expect(seen.globalBytes).toBe(HIGH + LOW);
+    expect(seen.budget).toBe(3 * SET - LOW);
+    expect(seen.resident).toBe(2);
+    expect(seen.residentBytes + seen.reserved).toBeLessThanOrEqual(seen.budget);
+
+    tellStreamer();
+    const after = streamer.stats();
+    // Back on the boot map every device carries anyway, which is not the
+    // ladder's optional weight: the tiles have the whole envelope again.
+    expect(after.globalBytes).toBe(0);
+    expect(up.appliedTier).toBeNull();
+    expect(after.residentBytes + after.reserved).toBeLessThanOrEqual(after.budget);
+    material.dispose();
   });
 });

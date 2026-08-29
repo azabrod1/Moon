@@ -6,6 +6,7 @@
  * textures on load failure so the app never blocks on a missing file.
  */
 import * as THREE from 'three';
+import { smoothTraceEvent } from './smoothnessTrace';
 import { type PlanetData, SUN_DATA } from './planets/planetData';
 import { createPlanetRings, RING_CONFIGS, type RingShadingFx } from './planets/rings';
 import {
@@ -1073,6 +1074,9 @@ export function materialColorMap(mat: THREE.Material): THREE.Texture | null {
 }
 
 function setMaterialColorMap(mat: THREE.Material, tex: THREE.Texture): void {
+  // Every colour-map swap the ladder makes passes here, so this is where the
+  // frame trace learns a rung landed on this frame.
+  if (import.meta.env.DEV) smoothTraceEvent('rung', `colour ${tex.name || 'tier'}`);
   const uniform = mat.userData.colorMapUniform as string | undefined;
   if (uniform) {
     (mat as THREE.ShaderMaterial).uniforms[uniform].value = tex;
@@ -1817,6 +1821,7 @@ export function applyNormalTierTexture(
   mat.normalScale.set(1, 1);
   mat.userData.normalTierRank = rank;
   mat.needsUpdate = true;
+  if (import.meta.env.DEV) smoothTraceEvent('rung', `relief ${tex.name || 'tier'} rank ${rank}`);
   if (prev) prev.dispose();
   return true;
 }

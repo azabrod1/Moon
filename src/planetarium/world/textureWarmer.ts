@@ -20,6 +20,7 @@
 import * as THREE from 'three';
 import { debugWarn } from '../../shared/debug';
 import { surfacePerfBeginTextureUpload, surfacePerfEndTextureUpload } from '../surfacePerf';
+import { smoothTraceArmed, smoothTraceEvent } from '../smoothnessTrace';
 
 type WarmUpload = (tex: THREE.Texture) => void;
 
@@ -96,6 +97,10 @@ export function pumpTextureWarmQueue(budgetMs: number): void {
       tex.removeEventListener('dispose', onDispose);
     }
     const perfUpload = import.meta.env.DEV ? surfacePerfBeginTextureUpload(tex) : null;
+    // The frame trace wants this upload's own cost, not the pump call's: one
+    // pump can drain several small maps, and blaming the frame for the sum
+    // hides which map was the unsliceable one.
+    const uploadStart = import.meta.env.DEV && smoothTraceArmed() ? performance.now() : 0;
     let uploaded = false;
     try {
       uploadFn(tex);
@@ -105,6 +110,14 @@ export function pumpTextureWarmQueue(budgetMs: number): void {
       debugWarn('Texture warm upload failed', { err: String(err) });
     } finally {
       if (import.meta.env.DEV) surfacePerfEndTextureUpload(perfUpload);
+      if (import.meta.env.DEV && uploadStart) {
+        const image = tex.image as { width?: number; height?: number } | undefined;
+        smoothTraceEvent(
+          'upload',
+          `${tex.name || 'texture'} ${image?.width ?? '?'}x${image?.height ?? '?'}`,
+          performance.now() - uploadStart,
+        );
+      }
     }
     const onOutcome = residentCallbacks.get(tex);
     residentCallbacks.delete(tex);

@@ -39,6 +39,7 @@ import { appliedTierHeldBytes, applySunGlowTier, armArrivalWarmGoal, arrivalWarm
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
+import { smoothTraceVeil } from './smoothnessTrace';
 import {
   SECTOR_NIGHT_SETS, SECTOR_SETS, SectorStreamer, sectorFamilyKey,
   type SectorMeasure, type SectorStats, type SectorSuspend,
@@ -3719,6 +3720,9 @@ export class PlanetariumMode {
 
   update(dt: number): void {
     if (!this.active || !this.solarSystem) return;
+    // Written inside the frame it describes: a frame trace that scored the
+    // veil a frame late would blame the world for the cut's first hitch.
+    if (import.meta.env.DEV) smoothTraceVeil(this.arrivalVeilUp());
     this.lastFrameDtMs = dt * 1000;
     this.frameStamp++;
     if (this.shaderWarmupProgramCount !== null && ++this.framesSinceShaderWarmup >= 3) {

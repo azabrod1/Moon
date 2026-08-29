@@ -146,6 +146,7 @@ import { TIER_RANK } from '../PlanetFactory';
 import { debugWarn } from '../../shared/debug';
 import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
 import { sectorBudgetBytes, type SectorMemoryLimits } from './gpuEnvelope';
+import { smoothTraceEvent } from '../smoothnessTrace';
 
 /** The material slots a sector may carry a crop of, in a fixed order. */
 export const CROP_SLOTS = ['bumpMap', 'normalMap', 'roughnessMap'] as const;
@@ -1695,6 +1696,7 @@ export class SectorStreamer {
     }, slot.level);
     const mesh = new THREE.Mesh(geometry, material);
     mesh.name = `${handle.name} sector ${slotId(slot, body.family.side)}`;
+    if (import.meta.env.DEV) smoothTraceEvent('tile', mesh.name);
     mesh.renderOrder = sectorRenderOrder(slot.level);
     handle.mesh.add(mesh);
     const previousMaps = slot.maps;
@@ -1750,6 +1752,7 @@ export class SectorStreamer {
    *  its late callbacks dispose what they carry. */
   private release(slot: SectorSlot): void {
     if (slot.state === 'idle') return;
+    if (import.meta.env.DEV) smoothTraceEvent('release', `sector ${slotId(slot)}`);
     slot.gen = ++this.generation;
     this.disposeLoaded(slot);
     slot.loading = undefined;

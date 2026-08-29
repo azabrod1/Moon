@@ -22,12 +22,21 @@ function compressedTexture(width: number, height: number): THREE.CompressedTextu
   return new THREE.CompressedTexture(mipmaps as unknown as ImageData[], width, height);
 }
 
+/** The blocks a container actually carries, level by level — the claim the
+ *  module makes about a transcoded rung, read off the fixture rather than
+ *  written down, so a fixture whose mip ladder changes cannot take the
+ *  expectation with it. */
+function containerBytes(tex: THREE.CompressedTexture): number {
+  const levels = (tex.mipmaps ?? []) as unknown as Array<{ data: { byteLength: number } }>;
+  return levels.reduce((n, m) => n + m.data.byteLength, 0);
+}
+
 const MiB = 1024 * 1024;
 
 describe('what a texture costs the device', () => {
-  // One table, one answer per kind of texture the two allocators hold. The
-  // rows are the four cases that used to be answered by three functions with
-  // three different results.
+  // One table, one answer per kind of texture the two allocators hold: a
+  // byte figure only means anything if the tiles and the globe maps price
+  // the same texture the same way, so every case they can meet is a row.
   const cases: Array<{
     what: string;
     tex: () => THREE.Texture | null;
@@ -51,7 +60,19 @@ describe('what a texture costs the device', () => {
       // rather than at 1.
       what: 'a compressed 8K rung: the blocks its container carries, a byte a texel',
       tex: () => compressedTexture(8192, 4096),
-      bytes: 44_739_240,
+      bytes: containerBytes(compressedTexture(8192, 4096)),
+    },
+    {
+      // Automatic generation switched off does not mean unmipped: a texture
+      // that arrived with its own levels uploads them, so it pays for them.
+      what: 'a texture carrying its own mip levels with generation off: it pays for the chain it holds',
+      tex: () => {
+        const tex = imageTexture(1024, 512);
+        tex.generateMipmaps = false;
+        tex.mipmaps = [{ width: 512, height: 256 }, { width: 256, height: 128 }] as unknown as THREE.Texture['mipmaps'];
+        return tex;
+      },
+      bytes: Math.round(1024 * 512 * 4 * (4 / 3)),
     },
     {
       what: 'an unmipped data texture: no mip chain to pay for',
@@ -72,6 +93,15 @@ describe('what a texture costs the device', () => {
       tex: () => new THREE.Texture(),
       nominalWidth: 4096,
       bytes: equirectMapGpuBytes(4096),
+    },
+    {
+      // A compressed container with no blocks counted and no image to
+      // measure: the width it was asked for, priced a byte a texel like
+      // every other transcoded map rather than four.
+      what: 'a compressed texture with no readable image, priced at a byte a texel',
+      tex: () => new THREE.CompressedTexture([] as unknown as ImageData[], 0, 0),
+      nominalWidth: 8192,
+      bytes: equirectMapGpuBytes(8192, true),
     },
     {
       what: 'a texture with no readable image and no nominal width at all',

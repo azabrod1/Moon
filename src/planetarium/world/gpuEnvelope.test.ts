@@ -821,12 +821,15 @@ describe('the shared memory envelope', () => {
     expect(envelope.floorBytes).toBe(0);
   });
 
-  it('answers the two allocators exactly as the free functions do', () => {
+  it('lets the tiles keep no more than their own ceiling, however large the floor', () => {
+    // A floor is a promise about the tiles' share, not a way to grow it: a
+    // profile whose floor was raised past its ceiling would otherwise hand the
+    // tiles room the row says they may not have, at the ladder's expense.
     const envelope = new MemoryEnvelope(limits);
-    envelope.setLadderBytes(400 * MiB);
-    envelope.setFloorBytes(46 * MiB);
-    expect(envelope.sectorBudget()).toBe(sectorBudgetBytes(limits, 400 * MiB, 46 * MiB));
-    expect(envelope.ladderCeiling()).toBe(ladderCeilingBytes(limits, 46 * MiB));
+    envelope.setFloorBytes(400 * MiB);
+    envelope.setLadderBytes(768 * MiB);
+    expect(envelope.sectorBudget()).toBe(256 * MiB);
+    expect(envelope.ladderCeiling()).toBe(512 * MiB);
   });
 
   it('states the whole envelope in one object, for the one line a phone can read', () => {

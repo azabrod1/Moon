@@ -45,14 +45,13 @@ describe('what a texture costs the device', () => {
       bytes: Math.round(2048 * 2048 * 4 * (4 / 3)),
     },
     {
-      what: 'a compressed 8K rung: the sum of the mip levels its container carries',
+      // The claim the module makes about a transcoded rung: a byte a texel
+      // plus its mip chain, which is what an uncompressed map a quarter of
+      // its width costs. Within a texel of it — the chain stops at 4 px wide
+      // rather than at 1.
+      what: 'a compressed 8K rung: the blocks its container carries, a byte a texel',
       tex: () => compressedTexture(8192, 4096),
-      // 8192x4096 at a byte a texel, plus every halving of it.
-      bytes: (() => {
-        let sum = 0;
-        for (let w = 8192, h = 4096; w >= 4 && h >= 1; w >>= 1, h >>= 1) sum += w * h;
-        return sum;
-      })(),
+      bytes: 44_739_240,
     },
     {
       what: 'an unmipped data texture: no mip chain to pay for',
@@ -104,6 +103,11 @@ describe('what a texture costs the device', () => {
     expect(equirectMapGpuBytes(8192, true)).toBe(equirectMapGpuBytes(4096));
     expect(equirectMapGpuBytes(0)).toBe(0);
     expect(equirectMapGpuBytes(-1)).toBe(0);
+  });
+
+  it('prices a transcoded rung at what an uncompressed map a quarter as wide costs', () => {
+    const transcoded = textureGpuBytes(compressedTexture(8192, 4096));
+    expect(transcoded / equirectMapGpuBytes(2048)).toBeCloseTo(4, 2);
   });
 
   it('prices a tile layout the same way, before a byte of it has decoded', () => {

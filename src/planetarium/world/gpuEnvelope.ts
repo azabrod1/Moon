@@ -425,7 +425,7 @@ export function ladderCeilingBytes(
  *                reserve memory nothing will spend.
  *
  * Neither side can spend the other's floor, and neither allocator's admission
- * rules live here: this says how much room there is, not who gets it.
+ * rules live here.
  */
 export class MemoryEnvelope {
   /** Sector tiles and the ladder's globe maps together may not exceed this. */

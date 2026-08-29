@@ -35,7 +35,9 @@ export const SECTOR_SPIN_HOLD_MS = 400;
 
 /** One family's latch: the orientation and time of its last visit, and how far
  *  ahead the hold currently reaches. The caller owns the map these live in and
- *  the quaternion read that fills them. */
+ *  the quaternion read that fills them, and must seed a new one with THIS
+ *  frame's orientation and time — a latch stamped tMs 0 would read its first
+ *  visit as a whole session's turn in one frame. */
 export interface SectorSpinLatch {
   quat: THREE.Quaternion;
   tMs: number;
@@ -47,9 +49,9 @@ export interface SectorSpinLatch {
  * its admissions are held. Mutates the latch — it is the caller's per-family
  * state, kept across frames.
  *
- * A first visit has no previous orientation to difference against, so it
- * records one and reports no spin: a body cannot be judged turning by a single
- * sample.
+ * Two visits in the same millisecond have no interval to measure a rate over,
+ * so they report no spin: that is what makes a freshly seeded latch's first
+ * advance a no-op rather than a judgement made on one sample.
  */
 export function advanceSpinLatch(
   latch: SectorSpinLatch,

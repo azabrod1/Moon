@@ -3498,7 +3498,12 @@ export class PlanetariumMode {
    *  ladder's own figure (liveGlobalMapBytes) deliberately leaves these out —
    *  they are not optional — which is exactly why the envelope has to be set
    *  above them, and why the number is worth printing once. Deduplicated by
-   *  texture: a bump map aliased onto a colour map is one allocation. */
+   *  texture: a bump map aliased onto a colour map is one allocation.
+   *
+   *  A walk of the scene, so whatever map is on a material now is what gets
+   *  counted: run at boot, before any rung has climbed, that is the boot maps
+   *  — but asked later it also sees the rungs and the tiles, and adding it to
+   *  the other two figures then counts those twice. */
   private bootTextureGpuBytes(): number {
     if (!this.solarSystem) return 0;
     const seen = new Set<string>();
@@ -3572,9 +3577,13 @@ export class PlanetariumMode {
     }
     const stats = this.sectors?.stats() ?? null;
     const globalBytes = this.liveGlobalMapBytes();
+    const envelope = this.memory.figures();
+    // Whatever the line below prints, so a figure cannot move without the
+    // line being reprinted.
     const figures = stats
-      ? [globalBytes, stats.residentBytes, stats.reserved, stats.budget, stats.floor, stats.envelope]
-      : [globalBytes];
+      ? [globalBytes, stats.residentBytes, stats.reserved,
+        envelope.sectorBudget, envelope.floorBytes, envelope.envelopeBytes]
+      : [globalBytes, envelope.floorBytes, envelope.envelopeBytes];
     const previous = this.memoryDebugLast;
     const moved = !previous || previous.length !== figures.length ||
       figures.some((f, i) => Math.abs(f - previous[i]) > PlanetariumMode.MEMORY_DEBUG_MOVE * Math.max(1, previous[i]));
@@ -3588,7 +3597,6 @@ export class PlanetariumMode {
     // The envelope's own figures, plus what the tiles are actually holding of
     // them — one object, from the one object that owns the numbers, so the
     // line cannot disagree with what the two allocators are spending.
-    const envelope = this.memory.figures();
     debugLog('Memory', {
       class: this.deviceClass,
       family: this.deviceFamily,

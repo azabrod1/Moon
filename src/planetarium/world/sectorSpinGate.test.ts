@@ -24,9 +24,14 @@ function step(latch: SectorSpinLatch, degPerS: number, ms: number, fromDeg: numb
 }
 
 describe('the spin latch', () => {
-  it('reports no spin on the first visit, which has nothing to difference against', () => {
-    const latch = latchAt();
-    expect(advanceSpinLatch(latch, spun(0), 0)).toBe(false);
+  it('reports no spin on a latch seeded the way the caller seeds one', () => {
+    // The mode stamps a new latch with THIS frame's orientation and time, so
+    // its first advance has no interval to measure and cannot mistake a
+    // session's worth of rotation for one frame's.
+    const nowMs = 9_000_000;
+    const latch: SectorSpinLatch = { quat: spun(137), tMs: nowMs, heldUntilMs: 0 };
+    expect(advanceSpinLatch(latch, spun(137), nowMs)).toBe(false);
+    expect(latch.heldUntilMs).toBe(0);
   });
 
   it('holds admissions once the body turns faster than the suspend rate', () => {
@@ -82,6 +87,9 @@ describe('the spin latch', () => {
   });
 
   it('reads no rate at all when two visits land in the same millisecond', () => {
+    // Which is also what makes a caller's freshly seeded latch — stamped with
+    // this frame's own orientation and time — report no spin on its first
+    // advance, however far the body has really turned since the app started.
     const latch = latchAt();
     expect(advanceSpinLatch(latch, spun(180), 0)).toBe(false);
   });

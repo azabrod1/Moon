@@ -5,8 +5,7 @@
  *
  * 1. The ladder. A TextureUpgrade per material holds the 2K/4K/8K rungs, the
  *    goals that earn them, and at most one in-flight attempt — never a
- *    lifecycle state, so nothing can strand a body on its boot map. The
- *    relief ladder (NormalUpgrade) is the same shape with one step.
+ *    lifecycle state, so nothing can strand a body on its boot map.
  * 2. The GPU byte ledger and the admission gate over it. What a rung costs is
  *    known before anything is fetched, and again from the decoded candidate
  *    before it is applied; `bindTierAdmission` installs the test the device's
@@ -20,8 +19,10 @@
  *    sources were closed after their uploads; each is queued against the
  *    texture it was for, nearest body first, and fetched back one at a time.
  *
- * Plus the arrival warm goals (banner: "Arrival warm goals"): the rung a
- * committed arrival is holding its veil for.
+ * Then the arrival warm goals (banner: "Arrival warm goals") — the rung a
+ * committed arrival is holding its veil for — and last the relief ladder
+ * (banner: "The relief ladder"), which is a NormalUpgrade of the same shape
+ * with one step, no cover and no arrival semantics.
  *
  * PlanetFactory builds the meshes these handles are bound to and fetches
  * their boot maps — the ladder's bottom rung — from the same file catalog
@@ -1424,6 +1425,8 @@ export function pumpArrivalWarmGoal(up: TextureUpgrade, nowMs: number): boolean 
   if (canAttempt(up, nowMs)) upgradeTextureOnApproach(up, next, nowMs);
   return true;
 }
+
+// --- The relief ladder -------------------------------------------------------
 
 // Higher-resolution RELIEF tiers on disk, per normal-map key. The Moon's
 // close-approach relief (2880x1440, ~8.8 MB) used to ship as the boot map —

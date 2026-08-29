@@ -1,3 +1,7 @@
+// Covers PlanetFactory AND world/textureLadder: the ladder was carved out of
+// the factory, and its tests stayed here because the file-scoped THREE mock
+// below and the fixtures around it are shared by both halves. Splitting them
+// is a move of its own, not a side effect of this one.
 import * as THREE from 'three';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -1353,12 +1357,22 @@ describe('lodMeasurementRelevant', () => {
 describe('the ladder\'s live weight', () => {
   const mib = (bytes: number) => bytes / (1024 * 1024);
 
-  it('counts an equirect map as RGBA8 with its mips', () => {
-    expect(mib(equirectMapGpuBytes(4096))).toBeCloseTo(42.7, 1);
-    expect(mib(equirectMapGpuBytes(8192))).toBeCloseTo(170.7, 1);
-    // A transcoded upload is one byte a texel, not four.
-    expect(mib(equirectMapGpuBytes(8192, true))).toBeCloseTo(42.7, 1);
-    expect(equirectMapGpuBytes(0)).toBe(0);
+  it('prices a rung before it is fetched, from the tier name and the file it resolves to', () => {
+    // What the admission gate is handed, and the only figure it can have
+    // before a byte arrives: the tier's nominal width, at a byte a texel where
+    // the rung ships as a container this session can transcode.
+    bindKtx2TierLoader(null);
+    expect(mib(tierUploadBytes('moon', '4k'))).toBeCloseTo(42.7, 1);
+    expect(mib(tierUploadBytes('moon', '8k'))).toBeCloseTo(170.7, 1);
+    bindKtx2TierLoader(() => {}, true);
+    try {
+      expect(mib(tierUploadBytes('moon', '8k'))).toBeCloseTo(42.7, 1);
+      // A rung with no container of its own stays four bytes a texel whatever
+      // the session can read.
+      expect(mib(tierUploadBytes('venus', '4k'))).toBeCloseTo(42.7, 1);
+    } finally {
+      bindKtx2TierLoader(null);
+    }
   });
 
   it('weighs a handle by the tier it has applied, and nothing while it is on its boot map', () => {

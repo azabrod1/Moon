@@ -3,14 +3,14 @@
  * textures a rung really produces, and the two states most release and
  * restore tests start from.
  *
- * They were written nine times across four test files, and the copies had
- * drifted — two `onFourK`s differing by one field, three texture builders
- * differing in whether the image was decodable. A fixture that is not the
- * same everywhere quietly makes two suites test two different things.
+ * A fixture that is not the same everywhere quietly makes two suites test two
+ * different things, so there is one of each here and a suite adds whatever its
+ * own subject needs on top.
  *
- * Test-only: nothing in src/ imports this. It lives beside the code rather
- * than under a test root because the app has no test root, and because a
- * fixture that models a TextureUpgrade has to move when TextureUpgrade does.
+ * Test-only: no production module imports this, and nothing here may reach for
+ * a DOM or a GL context. It lives beside the code rather than under a test
+ * root because the app has no test root, and because a fixture that models a
+ * TextureUpgrade has to move when TextureUpgrade does.
  */
 import * as THREE from 'three';
 import {

@@ -18,6 +18,7 @@ import { LANDED_NEAR_AU } from './planetarium/landedView';
 import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import type { VolumeCompareMode } from './volumeCompare/VolumeCompareMode';
 import { canGPUDoBloom } from './app/gpuCapability';
+import { installShaderSalt } from './app/shaderSalt';
 import { BLOOM_RADIUS, BLOOM_THRESHOLD } from './app/bloomConfig';
 import { createLensPass, updateLensPass, type LensParams } from './app/LensPass';
 import { applyDesignFov, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
@@ -104,6 +105,23 @@ renderer.domElement.addEventListener('webglcontextlost', (event) => {
 renderer.domElement.addEventListener('webglcontextrestored', () => {
   debugLog('WebGL context restored');
 });
+
+// A first visit links every program cold, and this machine's Metal library
+// cache — which no browser flag clears — makes that unrepeatable. `?shaderSalt=`
+// changes every shader's source so the driver has to link cold again, which is
+// what makes a first-visit stall measurable. Installed before anything
+// compiles. DEV only; see app/shaderSalt.ts.
+if (import.meta.env.DEV) {
+  const salt = new URLSearchParams(location.search).get('shaderSalt');
+  if (salt) {
+    try {
+      installShaderSalt(renderer.getContext(), salt);
+      debugLog('Shader salt active — every program links cold', salt);
+    } catch (err) {
+      debugWarn('Shader salt could not be installed', err);
+    }
+  }
+}
 
 // Enable bloom on any device whose GPU supports float framebuffers. `?nofloat=1`
 // forces the no-float path on capable hardware so the lens correction's

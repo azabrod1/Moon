@@ -5,6 +5,7 @@
 //   node tools/smoothness-gate.mjs --label=baseline
 //   node tools/smoothness-gate.mjs --scenario=boot,earth-near --json
 //   node tools/smoothness-gate.mjs --rescore=/tmp/moon-shots/smooth/baseline
+//   node tools/smoothness-gate.mjs --scenario=boot --cold-cache --label=cold
 //
 // Needs a dev server (this checkout, `npx vite --port 5656 --strictPort`) and,
 // for the sector tiles, a tile host (`node planning/_tiles-serve.mjs` on 5622).
@@ -51,6 +52,21 @@ const RESCORE = arg('rescore', '');
 // binary with no real display; a real Chrome is the ground truth a person sees.
 const ENGINE = arg('engine', 'shell');
 
+// --cold-cache: measure a FIRST visit, where every shader program still has to
+// be compiled and linked by the driver. Three caches sit between a run and that
+// state and all three have to go, or the run measures a boot no user gets:
+//   - the browser profile (a fresh --user-data-dir per scenario, so scenario
+//     two is as cold as scenario one),
+//   - Chrome's own on-disk program cache (--disable-gpu-shader-disk-cache and
+//     friends below),
+//   - and macOS's Metal library cache, which lives outside the profile, is
+//     keyed on the shader SOURCE, and no browser flag clears. That last one is
+//     why a "cold" run used to look warm. `?shaderSalt=` (DEV only) appends a
+//     no-op #define carrying a per-scenario nonce to every shader, so the
+//     source differs from anything the OS has cached and the driver links cold.
+const COLD_CACHE = has('cold-cache');
+let coldSalt = '';
+
 // Fixed thresholds, kept so two machines' runs can be read side by side. The
 // verdict does not use them: it uses two of the run's own vsyncs (see analyze).
 const HITCH_MS = 33;
@@ -88,6 +104,7 @@ function appUrl(extra = '', expectSeconds = 120) {
   params.set('smooth', '1');
   params.set('smoothFrames', String(Math.ceil(expectSeconds * 130 * 1.5)));
   if (TILES) params.set('tiles', TILES);
+  if (COLD_CACHE) params.set('shaderSalt', coldSalt);
   return `${URL_BASE}/?${params.toString()}${extra}`;
 }
 
@@ -845,6 +862,13 @@ const GPU_ARGS = [
   '--enable-unsafe-swiftshader',
 ];
 
+// Only under --cold-cache: the browser's own program caches. Playwright already
+// hands every launch a fresh --user-data-dir; these stop a compiled program
+// being written into it at all.
+const COLD_ARGS = COLD_CACHE
+  ? ['--disable-gpu-shader-disk-cache', '--disable-gpu-program-cache', '--disable-gpu-disk-cache']
+  : [];
+
 // shell   — chrome-headless-shell, Playwright's default for headless: true.
 //           Old headless, no display, its own frame scheduler.
 // new     — full Chromium under --headless=new: the same renderer a person
@@ -853,9 +877,9 @@ const GPU_ARGS = [
 //           that must stay visible: an occluded window throttles rAF to 1 Hz
 //           and every gap it reports is a lie.
 const ENGINES = {
-  shell: { headless: true, args: GPU_ARGS },
-  new: { headless: true, channel: 'chromium', args: GPU_ARGS },
-  chrome: { headless: false, channel: 'chrome', args: GPU_ARGS },
+  shell: { headless: true, args: [...GPU_ARGS, ...COLD_ARGS] },
+  new: { headless: true, channel: 'chromium', args: [...GPU_ARGS, ...COLD_ARGS] },
+  chrome: { headless: false, channel: 'chrome', args: [...GPU_ARGS, ...COLD_ARGS] },
 };
 
 const launchBrowser = () => {
@@ -873,16 +897,30 @@ const releaseLock = await takeBrowserLock();
 let browser = await launchBrowser();
 
 const results = [];
+// True only while the close below is this script's own doing, so a browser that
+// really crashed still says so.
+let closedForCold = false;
 try {
-  for (const scenario of chosen) {
+  for (const [index, scenario] of chosen.entries()) {
     const startedAt = Date.now();
     process.stdout.write(`[gate] ${scenario.id}: ${scenario.title}\n`);
+    if (COLD_CACHE) {
+      // A scenario's own profile, and a salt no earlier run of this build has
+      // handed the driver: without both, only the first scenario is cold.
+      coldSalt = `${scenario.id.replace(/[^a-z0-9]/gi, '')}${Date.now().toString(36)}`;
+      if (index > 0 && browser.isConnected()) {
+        await browser.close();
+        closedForCold = true;
+      }
+    }
     if (!browser.isConnected()) {
-      process.stdout.write('       browser had died; relaunching\n');
+      if (!closedForCold) process.stdout.write('       browser had died; relaunching\n');
       browser = await launchBrowser();
+      closedForCold = false;
     }
     const { context, page, notes } = await openPage(browser, scenario.device);
     const note = (message) => notes.push(message);
+    if (COLD_CACHE) note(`cold cache: fresh profile, disk shader cache off, shaderSalt=${coldSalt}`);
     let trace = null;
     try {
       await scenario.run(page, note);

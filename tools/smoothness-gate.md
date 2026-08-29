@@ -81,6 +81,38 @@ says so. Within its own run the battery uses one browser and one tab, closing
 each context before opening the next, and it refuses to run at all if the
 renderer string says SwiftShader.
 
+### `--cold-cache` — the run a first visitor gets
+
+Every measurement above is of a machine that has already run this build. A user
+opening the app for the first time — or the first time after a deploy that
+changed any shader — has no compiled program anywhere, and the driver has to
+build every one of them. That work is real, it lands after the reveal, and a
+warm battery cannot see it at all.
+
+```bash
+node tools/smoothness-gate.mjs --scenario=boot --cold-cache --label=cold
+```
+
+Three caches sit between a normal run and a first visit, and all three have to
+go or the run is still warm:
+
+| cache | where it lives | how `--cold-cache` clears it |
+| --- | --- | --- |
+| browser profile | `--user-data-dir` | a fresh browser per scenario, so scenario two is as cold as scenario one (Playwright gives every launch its own temp profile) |
+| Chrome's program cache | that profile, on disk | `--disable-gpu-shader-disk-cache`, `--disable-gpu-program-cache`, `--disable-gpu-disk-cache` |
+| **macOS's Metal library cache** | outside the profile, keyed on the shader **source** | `?shaderSalt=<nonce>` — a DEV-only param that appends a no-op `#define` carrying the nonce to every shader, so the source differs from anything the OS has cached |
+
+The third is the one that matters and the one that is easy to miss: with only
+the first two, a second run links from the OS cache and reports a clean boot
+that no user experiences. The nonce is per scenario and per run, so a cold run
+is cold every time, for as long as `?shaderSalt=` exists.
+
+A cold run is slower everywhere, and its reveal is later — the boot warm-up is
+doing real driver work behind the load screen. That is not scored. What is
+scored is the same rule as always: after the reveal, nothing over two vsyncs.
+
+`?shaderSalt=` is `src/app/shaderSalt.ts` and works in the dev server only.
+
 ## A known artefact: never wait with `waitForFunction`
 
 The first baseline reported a once-per-second stutter of 14-26 ms in four
@@ -137,7 +169,7 @@ this after any change to the recorder.
 
 | id | what it exercises |
 | --- | --- |
-| `boot` | Cold boot → first frame → the idle warm settling. Nothing may cost a frame after the reveal. |
+| `boot` | Cold boot → first frame → the idle warm settling. Nothing may cost a frame after the reveal. Run it `--cold-cache` too: the shader work a first visitor pays is invisible warm. |
 | `earth-near` | `travelTo('Earth')` → arrival → `jumpTo` 0.13 → a governed descent on the throttle → 20 s hover while L0 and L1 tiles arrive. |
 | `terminator` | The same near band, then a slow yaw pan across the terminator so the day and night sector families swap. |
 | `hops` | Earth → Moon → Mars → Earth: four arrivals and three departures. |

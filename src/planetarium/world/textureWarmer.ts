@@ -24,6 +24,31 @@ import { smoothTraceArmed, smoothTraceEvent } from '../smoothnessTrace';
 
 type WarmUpload = (tex: THREE.Texture) => void;
 
+/** The sliced path, injected so this module stays free of the renderer and
+ *  testable without a GL context — the same seam as the upload function. */
+export interface SlicedUploader<Job> {
+  /** A job for a map too big to upload in one frame, else null. */
+  begin(tex: THREE.Texture): Job | null;
+  /** Spend a budget on it. 'failed' means the caller must not draw the map. */
+  step(job: Job, budgetMs: number): 'more' | 'done' | 'failed';
+}
+
+interface ActiveSlice {
+  tex: THREE.Texture;
+  job: unknown;
+  onDispose: () => void;
+  disposed: boolean;
+}
+
+let slicer: SlicedUploader<unknown> | null = null;
+let activeSlice: ActiveSlice | null = null;
+
+/** Install the sliced uploader. Without one every texture takes one shot,
+ *  exactly as before. */
+export function bindSlicedUploader<Job>(next: SlicedUploader<Job> | null): void {
+  slicer = next as SlicedUploader<unknown> | null;
+}
+
 /**
  * What share of a frame the pump may spend uploading.
  *
@@ -136,16 +161,44 @@ export function queueTextureWarm(tex: THREE.Texture, onOutcome?: (outcome: WarmO
  * largest unsliceable upload the app has) takes its frame alone.
  */
 export function pumpTextureWarmQueue(budgetMs: number): void {
-  if (!uploadFn || queue.length === 0) return;
+  if (!uploadFn || (queue.length === 0 && !activeSlice)) return;
   const start = performance.now();
   // Sit out an overrun already owed, unless the queue would starve for it.
   if (!warmPumpAllowed(start, warmRepayUntilMs, warmLastUploadAtMs)) return;
+  // A slice already in flight owns the frame: its texture has left the queue
+  // but is not yet drawable, and finishing it is what lets anything else move.
+  if (activeSlice) {
+    const active = activeSlice;
+    const outcome = active.disposed ? 'failed' : slicer!.step(active.job, budgetMs);
+    if (outcome === 'more') {
+      warmLastUploadAtMs = performance.now();
+      return;
+    }
+    finishSlice(active, outcome === 'done' ? 'warmed' : 'failed');
+    warmLastUploadAtMs = performance.now();
+    if (warmLastUploadAtMs - start >= budgetMs) return;
+  }
   while (queue.length > 0) {
     const tex = queue.shift()!;
     const onDispose = disposeListeners.get(tex);
     if (onDispose) {
       disposeListeners.delete(tex);
       tex.removeEventListener('dispose', onDispose);
+    }
+    // A map too big for one frame becomes a job instead. It stays out of the
+    // queue while it fills, and its callers hear nothing until every band and
+    // the mip chain are in — the seam that keeps a half-filled map off screen.
+    if (slicer) {
+      const job = slicer.begin(tex);
+      if (job) {
+        beginSlice(tex, job);
+        const outcome = slicer.step(job, budgetMs);
+        warmLastUploadAtMs = performance.now();
+        if (outcome !== 'more') {
+          finishSlice(activeSlice!, outcome === 'done' ? 'warmed' : 'failed');
+        }
+        return;
+      }
     }
     const perfUpload = import.meta.env.DEV ? surfacePerfBeginTextureUpload(tex) : null;
     // The frame trace wants this upload's own cost, not the pump call's: one
@@ -191,8 +244,58 @@ export function pumpTextureWarmQueue(budgetMs: number): void {
   warmRepayUntilMs = 0;
 }
 
+/** Take a texture out of the queue and into a slice job. Its dispose listener
+ *  is re-armed: a texture freed mid-slice must never be finished or drawn. */
+function beginSlice(tex: THREE.Texture, job: unknown): void {
+  const active: ActiveSlice = { tex, job, onDispose: () => {}, disposed: false };
+  active.onDispose = () => { active.disposed = true; };
+  tex.addEventListener('dispose', active.onDispose);
+  activeSlice = active;
+}
+
+function finishSlice(active: ActiveSlice, outcome: WarmOutcome): void {
+  active.tex.removeEventListener('dispose', active.onDispose);
+  activeSlice = null;
+  const cb = residentCallbacks.get(active.tex);
+  residentCallbacks.delete(active.tex);
+  if (outcome === 'warmed' && !active.disposed) {
+    warmedVersions.set(active.tex, active.tex.version);
+  }
+  cb?.(active.disposed ? 'disposed' : outcome);
+}
+
+/** A lost context abandons a slice in flight: three throws its whole property
+ *  store away on restore, so the storage the job was filling is gone. The
+ *  texture goes back on the queue rather than being reported resident. */
+export function abandonSlicedUpload(): void {
+  const active = activeSlice;
+  if (!active) return;
+  active.tex.removeEventListener('dispose', active.onDispose);
+  activeSlice = null;
+  if (active.disposed) {
+    const cb = residentCallbacks.get(active.tex);
+    residentCallbacks.delete(active.tex);
+    cb?.('disposed');
+    return;
+  }
+  // Re-queue rather than settle: nothing may draw a half-filled map.
+  warmedVersions.delete(active.tex);
+  queue.unshift(active.tex);
+  const onDispose = () => {
+    disposeListeners.delete(active.tex);
+    const cb = residentCallbacks.get(active.tex);
+    residentCallbacks.delete(active.tex);
+    const i = queue.indexOf(active.tex);
+    if (i !== -1) queue.splice(i, 1);
+    cb?.('disposed');
+  };
+  disposeListeners.set(active.tex, onDispose);
+  active.tex.addEventListener('dispose', onDispose);
+}
+
 /** A restored WebGL context has no copy of any previously warmed texture. */
 export function invalidateTextureWarmCache(): void {
+  abandonSlicedUpload();
   warmedVersions = new WeakMap();
 }
 
@@ -204,8 +307,15 @@ export function resetTextureWarmer(): void {
   disposeListeners.clear();
   const pending = [...residentCallbacks.values()];
   residentCallbacks.clear();
+  // A slice in flight still had its callback in residentCallbacks, so it is
+  // already in `pending` above; only its dispose listener needs releasing.
+  if (activeSlice) {
+    activeSlice.tex.removeEventListener('dispose', activeSlice.onDispose);
+    activeSlice = null;
+  }
   queue.length = 0;
   uploadFn = null;
+  slicer = null;
   warmRepayUntilMs = 0;
   warmLastUploadAtMs = null;
   invalidateTextureWarmCache();

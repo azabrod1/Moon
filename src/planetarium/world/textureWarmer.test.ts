@@ -6,6 +6,8 @@ import {
   pumpTextureWarmQueue,
   queueTextureWarm,
   resetTextureWarmer,
+  abandonSlicedUpload,
+  bindSlicedUploader,
   warmBudgetMs,
   warmPumpAllowed,
   WARM_BUDGET_CAP_MS,
@@ -281,5 +283,112 @@ describe('textureWarmer onOutcome', () => {
     pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
     expect(calls.length).toBe(2);
     expect(uploaded).toEqual([]);
+  });
+});
+
+describe('sliced uploads through the pump', () => {
+  let uploaded: THREE.Texture[];
+  let steps: number;
+  let plan: Array<'more' | 'done' | 'failed'>;
+
+  const stubSlicer = (sliceable: (t: THREE.Texture) => boolean) => ({
+    begin: (t: THREE.Texture) => (sliceable(t) ? { t } : null),
+    step: () => {
+      steps++;
+      return plan.shift() ?? 'done';
+    },
+  });
+
+  beforeEach(() => {
+    resetTextureWarmer();
+    uploaded = [];
+    steps = 0;
+    plan = [];
+    bindTextureWarmer((t) => { uploaded.push(t); });
+  });
+
+  afterEach(() => {
+    resetTextureWarmer();
+  });
+
+  it('settles warmed only after the last band, never mid-slice', () => {
+    bindSlicedUploader(stubSlicer(() => true));
+    const outcomes: string[] = [];
+    const big = new THREE.Texture();
+    queueTextureWarm(big, (o) => outcomes.push(o));
+    plan = ['more', 'more', 'done'];
+
+    pumpTextureWarmQueue(6);
+    expect(outcomes).toEqual([]); // band 1: nothing may draw it yet
+    pumpTextureWarmQueue(6);
+    expect(outcomes).toEqual([]); // band 2
+    pumpTextureWarmQueue(6);
+    expect(outcomes).toEqual(['warmed']); // mip chain in, and only now
+    expect(steps).toBe(3);
+    expect(uploaded).toEqual([]); // never went through the one-shot path
+  });
+
+  it('leaves a small texture to the single-shot path', () => {
+    bindSlicedUploader(stubSlicer(() => false));
+    const small = new THREE.Texture();
+    queueTextureWarm(small);
+    pumpTextureWarmQueue(6);
+    expect(uploaded).toEqual([small]);
+    expect(steps).toBe(0);
+  });
+
+  it('holds the queue behind the slice in flight', () => {
+    bindSlicedUploader(stubSlicer((t) => t.name === 'big'));
+    const big = new THREE.Texture();
+    big.name = 'big';
+    const small = new THREE.Texture();
+    queueTextureWarm(big);
+    queueTextureWarm(small);
+    plan = ['more', 'done'];
+
+    pumpTextureWarmQueue(6);
+    expect(uploaded).toEqual([]); // the small one waits its turn
+    pumpTextureWarmQueue(6);
+    pumpTextureWarmQueue(6);
+    expect(uploaded).toEqual([small]);
+  });
+
+  it('reports failed rather than resident when a step gives up', () => {
+    bindSlicedUploader(stubSlicer(() => true));
+    const outcomes: string[] = [];
+    const big = new THREE.Texture();
+    queueTextureWarm(big, (o) => outcomes.push(o));
+    plan = ['failed'];
+    pumpTextureWarmQueue(6);
+    expect(outcomes).toEqual(['failed']);
+  });
+
+  it('re-queues a slice a lost context abandoned, and never settles it warmed', () => {
+    bindSlicedUploader(stubSlicer(() => true));
+    const outcomes: string[] = [];
+    const big = new THREE.Texture();
+    queueTextureWarm(big, (o) => outcomes.push(o));
+    plan = ['more'];
+    pumpTextureWarmQueue(6);
+    expect(outcomes).toEqual([]);
+
+    abandonSlicedUpload();
+    expect(outcomes).toEqual([]); // abandoning is not an outcome
+
+    plan = ['done'];
+    pumpTextureWarmQueue(6); // the texture is back on the queue, so it restarts
+    expect(outcomes).toEqual(['warmed']);
+  });
+
+  it('settles disposed, not warmed, for a texture freed mid-slice', () => {
+    bindSlicedUploader(stubSlicer(() => true));
+    const outcomes: string[] = [];
+    const big = new THREE.Texture();
+    queueTextureWarm(big, (o) => outcomes.push(o));
+    plan = ['more', 'done'];
+    pumpTextureWarmQueue(6);
+    big.dispose();
+    pumpTextureWarmQueue(6);
+    expect(outcomes).toEqual(['disposed']);
   });
 });

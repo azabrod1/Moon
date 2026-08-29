@@ -38,7 +38,8 @@ import {
 import { appliedTierHeldBytes, applySunGlowTier, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, lodMeasurementRelevant, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, retainedSourceBytes, resolveTierFile, resolveUpgradeTier, setWarmEligibleMoonParents, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade, type TierAdmission } from './PlanetFactory';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import type { SurfaceShadingFx } from './world/surfaceShading';
-import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer, warmBudgetMs } from './world/textureWarmer';
+import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer, warmBudgetMs } from './world/textureWarmer';
+import { beginSlicedUpload, stepSlicedUpload } from './world/slicedUpload';
 import { smoothTraceVeil } from './smoothnessTrace';
 import {
   SECTOR_NIGHT_SETS, SECTOR_SETS, SectorStreamer, sectorFamilyKey,
@@ -2054,6 +2055,13 @@ export class PlanetariumMode {
     // Warm uploads go through the renderer so freshly loaded maps reach the
     // GPU on quiet frames instead of inside a gesture's first draw.
     bindTextureWarmer((tex) => renderer.initTexture(tex));
+    // A map too big to upload inside one frame is filled band by band instead.
+    // Nothing draws it until the last band and the mip chain are in — the warm
+    // pump settles its 'warmed' callback there and not before.
+    bindSlicedUploader({
+      begin: (tex) => beginSlicedUpload(renderer, tex),
+      step: (job, budgetMs) => stepSlicedUpload(job, budgetMs),
+    });
     // The 8K compressed tier's loader (see PlanetFactory's TIER_FILE_OVERRIDES),
     // bound lazily: the KTX2 machinery — loader chunk, transcoder worker, wasm —
     // loads only if a session actually earns that tier. Fail-open at every step:

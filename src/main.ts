@@ -34,6 +34,7 @@ import {
   surfacePerfFrameStart,
   surfacePerfSnapshot,
 } from './planetarium/surfacePerf';
+import { beginSlicedUpload, stepSlicedUpload } from './planetarium/world/slicedUpload';
 import {
   smoothTraceFrameStart,
   smoothTraceEvent,
@@ -805,6 +806,12 @@ function installDevHooks() {
   if (new URLSearchParams(window.location.search).get('surfacePerf') === '1') {
     (window as any).__moon.surfacePerf('start');
   }
+  // Upload-parity harness hooks: the sliced uploader has to be driven directly
+  // against a one-shot upload of the same source, which needs the renderer and
+  // three itself. DEV-only, like the rest of the bridge.
+  (window as any).__moonThree = THREE;
+  (window as any).__moonRenderer = renderer;
+  (window as any).__moonSlice = { begin: beginSlicedUpload, step: stepSlicedUpload };
   debugLog('Dev hooks installed (window.__moon)');
 }
 

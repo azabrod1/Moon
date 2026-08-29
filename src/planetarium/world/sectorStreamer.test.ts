@@ -43,6 +43,7 @@ import { EARTH_NIGHT_MIX_LIT, earthNightMix } from '../../shared/shaders/atmosph
 import { SECTOR_GRID_16K, ancestorSector, finerGrid, sectorCentreDirection, sectorNearestDirection, sectorTileTransform, dataCropLayout, SECTOR_TILE, sphereDirection } from './sectorGrid';
 import { augmentSurfaceMaterial } from './surfaceShading';
 import type { WarmOutcome } from './textureWarmer';
+import { mapTexture } from '../testing/upgradeHarness';
 
 /** A scripted loader: records every URL, and lets a test resolve or fail
  *  each one later (or synchronously with `auto`). */
@@ -2334,7 +2335,7 @@ describe('the transient of a globe-map swap', () => {
     const material = new THREE.MeshStandardMaterial();
     const up = makeTextureUpgrade('mars', material)!;
     up.appliedTier = '4k';
-    material.map = new THREE.Texture({ width: 4096, height: 2048 } as unknown as HTMLImageElement);
+    material.map = mapTexture(4096);
     material.userData.colorTierRank = TIER_RANK['4k'];
     const tellStreamer = () => streamer.setGlobalMapBytes(appliedTierHeldBytes(up));
 
@@ -2353,7 +2354,7 @@ describe('the transient of a globe-map swap', () => {
         drawnAtChange = (material.map!.image as { width: number }).width;
       },
     });
-    tierFetch[0].onLoad(new THREE.Texture({ width: 2048, height: 1024 } as unknown as HTMLImageElement));
+    tierFetch[0].onLoad(mapTexture(2048));
     await flush();
 
     const seen = during!;

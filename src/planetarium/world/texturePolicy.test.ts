@@ -15,18 +15,10 @@ import {
 } from './texturePolicy';
 import { SECTOR_SET_TABLE } from './sectorSets.generated';
 import { LEGACY_DESKTOP_PROFILE, LEGACY_TOUCH_PROFILE } from './gpuEnvelope';
+import { withMaxTextureSize } from '../testing/upgradeHarness';
 
-// The caps are module state captured from the live renderer; a fake renderer is
-// the seam. Production captures once, so a test that wants a second answer
-// clears the first. 4096 is the pre-capture default — restore it so test order
-// can't leak a cap into another file's expectations.
-function withMaxTextureSize(size: number): void {
-  resetDeviceCapsForTests();
-  captureDeviceCaps({
-    capabilities: { getMaxAnisotropy: () => 8, maxTextureSize: size },
-  } as unknown as THREE.WebGLRenderer, LEGACY_DESKTOP_PROFILE);
-}
-
+// 4096 is the pre-capture default — restore it so test order can't leak a
+// cap into another file's expectations.
 afterEach(() => withMaxTextureSize(4096));
 
 function fakeRenderer(maxTextureSize: number): THREE.WebGLRenderer {

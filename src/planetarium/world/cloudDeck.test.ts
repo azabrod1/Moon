@@ -34,6 +34,7 @@ import { equirectMapGpuBytes } from './textureBytes';
 import { EARTH_NIGHT_COLD_CUT, EARTH_NIGHT_MIX_SCALE, earthNightFragmentShader } from '../../shared/shaders/atmosphere';
 import { createEarthNightShellMaterial } from './earthNightMaterial';
 import { augmentSurfaceMaterial, createSurfaceAirFx, type SurfaceArchetype } from './surfaceShading';
+import { mapTexture } from '../testing/upgradeHarness';
 
 /** The subset of three's onBeforeCompile shader object the augmentation writes. */
 function mockShader() {
@@ -221,7 +222,7 @@ describe('the deck\'s relief', () => {
     const up = makeNormalUpgrade('moonNormal', mat);
     expect(up).toBeDefined();
     expect(appliedNormalHeldBytes(up)).toBe(0);
-    mat.normalMap = new THREE.Texture({ width: 4096, height: 2048 } as unknown as HTMLImageElement);
+    mat.normalMap = mapTexture(4096);
     expect(appliedNormalHeldBytes(up)).toBe(0); // still not applied
     up!.state = 'done';
     expect(appliedNormalHeldBytes(up)).toBe(equirectMapGpuBytes(4096));

@@ -39,10 +39,15 @@ import { pathToFileURL } from 'node:url';
 import { setHash8, tileNames } from './tileSetHash.mjs';
 
 const SETS_JSON = 'sets.v1.json';
-/** Where the sets sit inside the host repo. The app appends the same
- *  textures/tiles/… path to its origin, so an origin ending in this repo's
- *  root plus `textures` resolves here. */
-const REPO_TILES = 'tiles';
+/** Where the sets sit inside the host repo, and not a free choice: the app
+ *  builds a tile URL as VITE_TILE_ORIGIN + `textures/tiles/<key>/…`
+ *  (world/texturePolicy.ts), and the service worker's allowlist is built the
+ *  same way, so the repo root has to be what that origin points at with this
+ *  path beneath it. Anywhere else and every tile 404s — which the app
+ *  survives by drawing its whole-body map, so it would look like nothing more
+ *  than a soft planet. publishTiles.test.ts pins this against texturePolicy's
+ *  own formula. */
+const REPO_TILES = 'textures/tiles';
 const CDN = 'https://cdn.jsdelivr.net/gh';
 
 const exists = async (p) => { try { await stat(p); return true; } catch { return false; } };
@@ -280,6 +285,7 @@ export async function publishTiles({
     log(`  + ${set.id} (${set.files.length} tiles, ${mb(set.bytes)})`);
   }
 
+  await mkdir(path.join(repoAbs, REPO_TILES), { recursive: true });
   await writeFile(path.join(repoAbs, REPO_TILES, SETS_JSON), `${JSON.stringify(table, null, 2)}\n`);
   await writeFile(path.join(repoAbs, 'README.md'), readmeText(ownerRepo));
 

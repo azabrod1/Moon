@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { publishTiles } from '../../tools/publish-tiles.mjs';
 import { setHash8, tileNames } from '../../tools/tileSetHash.mjs';
+import { tileSetPath } from './world/texturePolicy';
 
 // tools/publish-tiles.mjs copies cut tile sets into the repository they are
 // served from. It is the only place the promise a tile pathname makes — those
@@ -99,11 +100,16 @@ describe('publish-tiles', () => {
 
     expect(result.added).toHaveLength(2);
     for (const set of result.sets) {
-      expect(existsSync(join(repo, 'tiles', set.key, set.folder, '0_0.webp'))).toBe(true);
+      // Where the app will ask for it, by the app's own formula: a tile URL is
+      // VITE_TILE_ORIGIN + this path, and the printed origin is the repo root.
+      // A set published anywhere else 404s, which the app survives by drawing
+      // its whole-body map — a soft planet and no error anywhere.
+      const inRepo = join(repo, tileSetPath(set.key, set.tier, set.folder.split('.')[1]));
+      expect(existsSync(join(inRepo, '0_0.webp'))).toBe(true);
       // Followed, not linked: what lands in the repo has to be bytes.
-      expect(readFileSync(join(repo, 'tiles', set.key, set.folder, '1_0.webp'), 'utf8')).toMatch(/-1-0$/);
+      expect(readFileSync(join(inRepo, '1_0.webp'), 'utf8')).toMatch(/-1-0$/);
     }
-    expect(JSON.parse(readFileSync(join(repo, 'tiles', 'sets.v1.json'), 'utf8')))
+    expect(JSON.parse(readFileSync(join(repo, 'textures', 'tiles', 'sets.v1.json'), 'utf8')))
       .toEqual(JSON.parse(readFileSync(join(root, 'sets.v1.json'), 'utf8')));
     // The README has to carry the rule the whole cache model rests on.
     const readme = readFileSync(join(repo, 'README.md'), 'utf8');
@@ -114,7 +120,7 @@ describe('publish-tiles', () => {
     expect(git(repo, 'log', '-1', '--pretty=%B')).toContain('earth-day.v2/16k');
     expect(git(repo, 'status', '--porcelain')).toBe('');
     // Nothing left over from the copy-then-rename, and nothing pushed.
-    expect(existsSync(join(repo, 'tiles', 'earth-day.v2', `.${result.sets[0].folder}.incoming`))).toBe(false);
+    expect(existsSync(join(repo, 'textures', 'tiles', 'earth-day.v2', `.${result.sets[0].folder}.incoming`))).toBe(false);
     expect(lines.join('\n')).toContain('nothing was pushed');
   });
 
@@ -131,7 +137,7 @@ describe('publish-tiles', () => {
     const root = await fakeRoot();
     const repo = fakeRepo();
     const first = await publishTiles({ root, repo, log: quiet });
-    const tile = join(repo, 'tiles', first.sets[0].key, first.sets[0].folder, '0_0.webp');
+    const tile = join(repo, 'textures', 'tiles', first.sets[0].key, first.sets[0].folder, '0_0.webp');
     const second = await publishTiles({ root, repo, log: quiet });
 
     expect(second.added).toHaveLength(0);
@@ -149,7 +155,7 @@ describe('publish-tiles', () => {
     writeFileSync(join(root, 'moon', folder, '1_0.webp'), 'different-pixels');
 
     await expect(publishTiles({ root, repo, log: quiet })).rejects.toThrow(/moon\/16k: the tiles in .* hash to/);
-    expect(existsSync(join(repo, 'tiles'))).toBe(false);
+    expect(existsSync(join(repo, 'textures'))).toBe(false);
   });
 
   it('refuses a table that names a set which is not on disk', async () => {
@@ -159,7 +165,7 @@ describe('publish-tiles', () => {
     rmSync(join(root, 'moon', `16k.${table['moon/16k'].setHash8}`), { recursive: true });
 
     await expect(publishTiles({ root, repo, log: quiet })).rejects.toThrow(/moon\/16k: the table names/);
-    expect(existsSync(join(repo, 'tiles'))).toBe(false);
+    expect(existsSync(join(repo, 'textures'))).toBe(false);
   });
 
   it('refuses a checkout with uncommitted changes, and one that is not a checkout at all', async () => {
@@ -188,7 +194,7 @@ describe('publish-tiles', () => {
     symlinkSync(join(published, folder), join(root, 'moon', folder));
     const ok = await publishTiles({ root, repo, log: quiet });
     expect(ok.added).toHaveLength(2);
-    expect(readFileSync(join(repo, 'tiles', 'moon', folder, '0_0.webp'), 'utf8')).toBe('moon-0-0');
+    expect(readFileSync(join(repo, 'textures', 'tiles', 'moon', folder, '0_0.webp'), 'utf8')).toBe('moon-0-0');
 
     // The same set anywhere else is bytes nobody looked at, published under a
     // hash taken over bytes somewhere else.
@@ -208,7 +214,7 @@ describe('publish-tiles', () => {
 
     expect(plan.added).toHaveLength(2);
     expect(plan.commit).toBeNull();
-    expect(existsSync(join(repo, 'tiles'))).toBe(false);
+    expect(existsSync(join(repo, 'textures'))).toBe(false);
     expect(existsSync(join(repo, 'README.md'))).toBe(false);
     expect(git(repo, 'status', '--porcelain')).toBe('');
     expect(lines.join('\n')).toContain('--dry-run: nothing written');

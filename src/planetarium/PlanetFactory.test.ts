@@ -46,6 +46,7 @@ import {
   releaseTargetTier,
   releaseUpgradeSource,
   startTierRelease,
+  buildRestoreQueue,
   takeRestoreRefetch,
   tierUploadBytes,
   trackReleaseBand,
@@ -2395,6 +2396,32 @@ describe('fetching the maps back after a lost context', () => {
     up.material.map = tex;
     return { up, tex };
   }
+
+  it('queues only the rungs a lost context really took, nearest body first', () => {
+    const near = onStandin('moon');
+    const far = onStandin('mars');
+    const bootMap = handle('venus'); // never climbed: nothing to fetch back
+    const held = onStandin('mercury');
+    held.tex.userData.sourceReleased = false; // its decoded source is still in RAM
+    const queue = buildRestoreQueue([
+      { up: far.up, tex: far.tex, distance: 9 },
+      { up: bootMap, tex: null, distance: 1 },
+      { up: held.up, tex: held.tex, distance: 2 },
+      { up: near.up, tex: near.tex, distance: 3 },
+    ]);
+    expect(queue).toEqual([{ up: near.up, tex: near.tex }, { up: far.up, tex: far.tex }]);
+  });
+
+  it('carries the texture each entry was queued for, not just the handle', () => {
+    // The map may be replaced by any other route between the queue and the
+    // fetch; the texture is how takeRestoreRefetch tells that it was.
+    const one = onStandin('moon');
+    expect(buildRestoreQueue([{ up: one.up, tex: one.tex, distance: 0 }])[0].tex).toBe(one.tex);
+  });
+
+  it('queues nothing when nothing is on a stand-in', () => {
+    expect(buildRestoreQueue([{ up: handle('moon'), tex: null, distance: 0 }])).toEqual([]);
+  });
 
   it('hands back one rung at a time, nearest first as queued', () => {
     const near = onStandin('moon');

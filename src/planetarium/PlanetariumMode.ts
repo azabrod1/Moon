@@ -36,7 +36,7 @@ import {
   LIGHT_SPEED_AU_PER_S,
 } from './planets/planetData';
 import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, createShaderWarmupProbes, lodMeasurementRelevant, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
-import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
+import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { disposeCloudDetailTexture } from './world/cloudDetailNoise';
 import { bindSurfaceAir, clearSurfaceAir, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
@@ -46,7 +46,7 @@ import { beginSlicedUpload, stepSlicedUpload } from './world/slicedUpload';
 import { smoothTraceVeil } from './smoothnessTrace';
 import {
   SECTOR_NIGHT_SETS, SECTOR_SETS, SectorStreamer, sectorFamilyKey,
-  type SectorMeasure, type SectorStats, type SectorSuspend,
+  type SectorMeasure, type SectorStats,
 } from './world/sectorStreamer';
 import { earthNightSectorFamily } from './world/earthNightMaterial';
 import { loadBrightStarCatalog } from './world/starCatalogLoader';
@@ -139,6 +139,8 @@ import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
 import { captureDeviceCaps, resolveTextureUrl, type TextureTier } from './world/texturePolicy';
 import { retainedSourceBytes, textureGpuBytes } from './world/textureBytes';
+import { advanceSpinLatch, sectorSuspendFor, type SectorSpinLatch } from './world/sectorSpinGate';
+import { planLadderPressure } from './world/ladderPressure';
 import {
   classifyDevice,
   deviceProfileFor,
@@ -844,18 +846,6 @@ export class PlanetariumMode {
   private static readonly FRAME_INTERVAL_EMA_ALPHA = 0.05;
   private static readonly FRAME_INTERVAL_MIN_MS = 4;
   private static readonly FRAME_INTERVAL_MAX_MS = 40;
-  /** Above this rotation rate on screen (degrees of body spin per real
-   *  second — Earth at 900 s/s) a globe turns visibly under the camera, so
-   *  admitting sector tiles would only churn 21 MiB uploads — residents hold,
-   *  nothing new starts. Measured per body from its world orientation, so a
-   *  slow turner (the Moon: 27× Earth) keeps streaming at rates that would
-   *  spin Earth into a blur. */
-  private static readonly SECTOR_SPIN_SUSPEND_DEG_PER_S = 3.75;
-  /** Admissions resume only once the rate has stayed under this lower figure
-   *  for the hold: a body turning at the suspend rate would otherwise pulse
-   *  admissions on and off with frame jitter. */
-  private static readonly SECTOR_SPIN_RESUME_DEG_PER_S = 3;
-  private static readonly SECTOR_SPIN_HOLD_MS = 400;
   /** Tangent step, in body radii, used to measure how large a sector's
    *  surface draws (see updateSectorStreaming). Small enough that the
    *  projection is straight across it — a quarter of a 16K texel — and far
@@ -1106,12 +1096,6 @@ export class PlanetariumMode {
    *  over: long enough for the first look around, and for the approach the
    *  player flies straight into afterwards. */
   private static readonly TRAVEL_PROTECT_GRACE_MS = 10_000;
-  /** How long the ladder must be over its share, or a rung go unmet, before
-   *  a map is given back. Pressure is a state, not a frame: a rung applying
-   *  holds its decoded source for the frame or two before the upload is paid
-   *  and the source closed, and a body would otherwise lose a map it will
-   *  keep needing to a spike that clears itself. */
-  private static readonly RELEASE_PRESSURE_DWELL_MS = 1_000;
   /** When the ladder first went over its share, or null while it is not. */
   private pressureSinceMs: number | null = null;
   /** The destination the player committed to, and when its arrival finished
@@ -1149,7 +1133,7 @@ export class PlanetariumMode {
   private readonly sectorWorldQuat = new THREE.Quaternion();
   private readonly sectorWorldQuatInv = new THREE.Quaternion();
   /** Last frame's world orientation per streamed body, for the spin gate. */
-  private readonly sectorSpin = new Map<string, { quat: THREE.Quaternion; tMs: number; heldUntilMs: number }>();
+  private readonly sectorSpin = new Map<string, SectorSpinLatch>();
   /** Monotonic per-update() stamp guarding the shared projection caches (the
    *  Sun's below, and each moon's on MoonMesh). One increment site covers
    *  cruise and landed: updateLanded runs inside update(). */
@@ -2991,36 +2975,19 @@ export class PlanetariumMode {
       mesh.getWorldPosition(this.sectorWorldCentre); // refreshes matrixWorld too
       mesh.getWorldQuaternion(this.sectorWorldQuat);
       this.sectorWorldQuatInv.copy(this.sectorWorldQuat).invert();
-      // Spin gate: how fast this body's orientation turned since its last
-      // visit, in degrees per real second. Latched per FAMILY key, not per
-      // body: two families of one body measure the same quaternion and keep
-      // one entry each, which is a duplicate rate and nothing worse — while a
-      // latch keyed on the body's name would let one family's suspend decide
-      // the other's, the collision every other lookup here is keyed to avoid.
-      let spinning = false;
-      const prev = this.sectorSpin.get(key);
-      if (prev) {
-        const dtS = (nowMs - prev.tMs) / 1000;
-        const angle = 2 * Math.acos(Math.min(1, Math.abs(prev.quat.dot(this.sectorWorldQuat))));
-        const rate = dtS > 0 ? (angle * RAD2DEG) / dtS : 0;
-        // Latched: past the suspend rate the hold starts, and any rate above
-        // the resume rate while held extends it.
-        const held = nowMs < prev.heldUntilMs;
-        if (rate > PlanetariumMode.SECTOR_SPIN_SUSPEND_DEG_PER_S || (held && rate > PlanetariumMode.SECTOR_SPIN_RESUME_DEG_PER_S)) {
-          prev.heldUntilMs = nowMs + PlanetariumMode.SECTOR_SPIN_HOLD_MS;
-        }
-        spinning = nowMs < prev.heldUntilMs;
-        prev.quat.copy(this.sectorWorldQuat);
-        prev.tMs = nowMs;
-      } else {
-        this.sectorSpin.set(key, { quat: this.sectorWorldQuat.clone(), tMs: nowMs, heldUntilMs: 0 });
+      // Spin gate, latched per FAMILY key rather than per body: two families
+      // of one body measure the same quaternion and keep one entry each,
+      // which is a duplicate rate and nothing worse — while a latch keyed on
+      // the body's name would let one family's suspend decide the other's,
+      // the collision every other lookup here is keyed to avoid. A first
+      // visit records an orientation and reports no spin.
+      let latch = this.sectorSpin.get(key);
+      if (!latch) {
+        latch = { quat: this.sectorWorldQuat.clone(), tMs: nowMs, heldUntilMs: 0 };
+        this.sectorSpin.set(key, latch);
       }
-      // The ground under a surface observer isn't drawn (the near plane culls
-      // it) and every sector "faces" a camera on the surface: hold nothing.
-      // A hidden globe (an unpainted or out-of-range moon) holds nothing either.
-      let suspend: SectorSuspend = 'none';
-      if (hidden || grounded === name) suspend = 'all';
-      else if (spinning || chart) suspend = 'admissions';
+      const spinning = advanceSpinLatch(latch, this.sectorWorldQuat, nowMs);
+      const suspend = sectorSuspendFor({ hidden, grounded: grounded === name, spinning, chart });
       const worldScale = mesh.getWorldScale(this.sectorWorldScale).x;
       const worldR = radiusAU * worldScale;
       this.sectorCamLocal.copy(this.camera.position);
@@ -3265,9 +3232,13 @@ export class PlanetariumMode {
    * see, and the Moon is hidden at cruise distances exactly when its 8K rung
    * is the one worth taking back). Demand that cannot be met is what counts
    * as pressure, along with maps already past the ladder's share. And the
-   * bodies that are eligible — a rung to give, the dwell served, nothing
-   * protecting them — become the candidates the farthest of which is asked to
-   * hand its map back, one at a time.
+   * bodies that are eligible — a rung to give, its release band served,
+   * nothing protecting them — become the candidates the farthest of which is
+   * asked to hand its map back, one at a time.
+   *
+   * What the loop decides is scene-shaped; when any of it may act is not, and
+   * lives in world/ladderPressure: what counts as pressure, how long it has to
+   * hold, and that a globe left on a stand-in is fetched back first.
    */
   private updateLadderPressure(nowMs: number): void {
     if (!this.solarSystem) return;
@@ -3282,7 +3253,12 @@ export class PlanetariumMode {
     const guarded = this.protectedUpgrades(nowMs);
     const ladderBytes = this.liveGlobalMapBytes();
     const ceiling = ladderCeilingBytes(this.deviceProfile, this.liveSectorFloorBytes());
-    let pressure = ladderBytes > ceiling;
+    // The two halves of "is the ladder under pressure": maps already over its
+    // share, and demand it cannot meet. Kept apart only so the traversal can
+    // stop asking the ledger once either is settled — planLadderPressure adds
+    // them up.
+    const overShare = ladderBytes > ceiling;
+    let blockedDemand = false;
     const candidates: ReleaseCandidate[] = [];
     const victims = new Map<string, TextureUpgrade>();
 
@@ -3313,14 +3289,14 @@ export class PlanetariumMode {
           this.warnNoRelease(ceiling);
         }
         trackReleaseBand(up, fraction, nowMs);
-        if (!pressure) {
+        if (!overShare && !blockedDemand) {
           // A rung this body is earning — or the one its committed arrival
           // is warming — that the ladder cannot fit is the pressure this
           // whole pass exists to answer.
           const wanted = up.warmGoal ?? earnedUpgradeTier(up, fraction);
           const next = wanted ? resolveUpgradeTier(up, wanted) : null;
           if (next && !up.attempt && this.admitLadderTier(up, next, tierUploadBytes(up.key, next)) === 'blocked') {
-            pressure = true;
+            blockedDemand = true;
           }
         }
         if (guarded.has(up) || !releaseDue(up, nowMs)) continue;
@@ -3352,14 +3328,21 @@ export class PlanetariumMode {
       }
     }
 
-    if (!pressure) this.pressureSinceMs = null;
-    else this.pressureSinceMs ??= nowMs;
+    const plan = planLadderPressure({
+      ladderBytes,
+      ceilingBytes: ceiling,
+      blockedDemand,
+      pressureSinceMs: this.pressureSinceMs,
+      nowMs,
+      swapInFlight: this.releasing !== null,
+      restoreQueued: this.restoreRefetch.length > 0,
+    });
+    this.pressureSinceMs = plan.pressureSinceMs;
     // Ahead of any discretionary release: a globe on a stand-in is one the
     // player can see is soft, and both take the same one-in-flight slot.
-    this.pumpRestoreRefetch(nowMs);
-    if (this.releasing) return;
-    if (this.pressureSinceMs === null
-      || nowMs - this.pressureSinceMs < PlanetariumMode.RELEASE_PRESSURE_DWELL_MS) return;
+    if (plan.restoreFirst) this.pumpRestoreRefetch(nowMs);
+    // Which the restore may just have taken.
+    if (!plan.releaseDue || this.releasing) return;
     const victim = planRelease(candidates, {
       ladderBytes,
       envelopeBytes: this.deviceProfile.envelopeBytes,
@@ -3414,17 +3397,12 @@ export class PlanetariumMode {
    * has been replaced by any other route is dropped rather than re-fetched.
    */
   private queueReleasedTierRefetch(): void {
-    this.restoreRefetch.length = 0;
-    const entries: Array<{ up: TextureUpgrade; tex: THREE.Texture; distance: number }> = [];
+    const entries: Array<{ up: TextureUpgrade; tex: THREE.Texture | null; distance: number }> = [];
     const visit = (ups: readonly TextureUpgrade[], mesh: THREE.Object3D): void => {
       if (ups.length === 0) return;
       mesh.getWorldPosition(this.bodyLODTmp);
       const distance = this.bodyLODTmp.length();
-      for (const up of ups) {
-        const tex = materialColorMap(up.material);
-        if (!up.appliedTier || !tex || tex.userData?.sourceReleased !== true) continue;
-        entries.push({ up, tex, distance });
-      }
+      for (const up of ups) entries.push({ up, tex: materialColorMap(up.material), distance });
     };
     if (this.solarSystem) {
       for (const planet of this.solarSystem.planets) visit(planet.textureUpgrades, planet.group);
@@ -3432,8 +3410,8 @@ export class PlanetariumMode {
         for (const m of moons) visit(m.textureUpgrades, m.mesh);
       }
     }
-    entries.sort((a, b) => a.distance - b.distance);
-    for (const e of entries) this.restoreRefetch.push({ up: e.up, tex: e.tex });
+    this.restoreRefetch.length = 0;
+    this.restoreRefetch.push(...buildRestoreQueue(entries));
   }
 
   /**

@@ -1181,6 +1181,36 @@ export interface RestoreRefetchEntry {
 }
 
 /**
+ * The restore queue a context loss leaves behind: every rung whose decoded
+ * source was closed after its upload, in the order they will be fetched back.
+ *
+ * The GPU copy is gone and the small stand-in left in its place is all three
+ * has to re-upload from, so each of these maps has to be fetched again — from
+ * the service-worker cache, for anything this session has already seen — and
+ * swapped in at the tier it already had.
+ *
+ * Queued rather than started, and nearest body first. A context is lost on a
+ * phone BECAUSE the system reclaimed memory, so answering it by decoding every
+ * globe map at once asks for the loss again; and the body the player is
+ * looking at is the one whose softness they can see. Each entry carries the
+ * texture it is for, so one whose map has been replaced by any other route is
+ * dropped rather than re-fetched (takeRestoreRefetch).
+ *
+ * A handle still on its boot map has nothing to fetch back, and a map whose
+ * source is still in RAM can be re-uploaded from what is already there.
+ */
+export function buildRestoreQueue(
+  entries: readonly { up: TextureUpgrade; tex: THREE.Texture | null; distance: number }[],
+): RestoreRefetchEntry[] {
+  return entries
+    .filter((e): e is { up: TextureUpgrade; tex: THREE.Texture; distance: number } => (
+      !!e.up.appliedTier && !!e.tex && e.tex.userData?.sourceReleased === true
+    ))
+    .sort((a, b) => a.distance - b.distance)
+    .map((e) => ({ up: e.up, tex: e.tex }));
+}
+
+/**
  * Take the next stand-in that may fetch its real map back, dropping the
  * entries that no longer need one.
  *

@@ -569,15 +569,13 @@ function ktx2TranscodesCompressed(renderer: THREE.WebGLRenderer): boolean {
 
 /** Width of the colour map one sector family is measured against — the finest
  *  tier the ladder BEHIND ITS OWN MATERIAL can currently reach, floored at the
- *  rung that material is drawing. So a night family asks the night shell's
- *  ladder (capped at 4K) and a day family the globe's, each against the map it
- *  actually overlays. Read per frame, not captured: a rung refused for want of
- *  memory, released under pressure or failed to load lowers it, and tiles
- *  measured against a map the surface will not hold arrive at twice the
- *  magnification they were meant for. undefined for a material with no ladder
- *  behind it (Earth's globe map — its ladder handles belong to the cloud deck
- *  and the night shell) — the drawn map is the truth there, and is never
- *  swapped under it. */
+ *  rung that material is drawing. So a night family asks the night shell's own
+ *  ladder and a day family the globe's, each against the map it actually
+ *  overlays. Read per frame, not captured: a rung refused for want of memory,
+ *  released under pressure or failed to load lowers it, and tiles measured
+ *  against a map the surface will not hold arrive at twice the magnification
+ *  they were meant for. undefined for a material with no ladder behind it at
+ *  all — the drawn map is the truth there, and is never swapped under it. */
 function topMapWidthOf(
   ups: readonly TextureUpgrade[],
   material: THREE.Material,

@@ -28,7 +28,7 @@ import {
 import { debugWarn } from '../shared/debug';
 import { applyTextureDefaults, clampTier, resolveTextureUrl, type TextureTier, type MapKind, touchTextureBudget } from './world/texturePolicy';
 import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
-import { createAtmosphereShellMaterial, disposeAtmosphereShellMaterial } from './world/atmosphereShell';
+import { createAtmosphereShellMaterial } from './world/atmosphereShell';
 import { ATMOSPHERE_TABLE_SIZES_FULL, type AtmosphereTableSizes } from './world/atmosphereModel';
 import { queueTextureWarm } from './world/textureWarmer';
 import { createLensShaderUniforms } from '../shared/three/lensShader';
@@ -2161,13 +2161,7 @@ const MOON_NORMAL_KEYS: Record<string, string> = {
  * makes it visible only for a one-pixel, load-veiled real draw on drivers where
  * compileAsync cannot guarantee a completed link.
  */
-export function createShaderWarmupProbes(
-  /** Table profile of the session's LUT tier, when the device has one. The
-   *  atmosphere shell swaps to the LUT material the moment the bake validates,
-   *  mid-flight and mid-frame; its program links here instead. Omitted where no
-   *  tier is possible, so nothing is compiled that can never draw. */
-  lutSizes?: AtmosphereTableSizes,
-): { group: THREE.Group; dispose: () => void } {
+export function createShaderWarmupProbes(): { group: THREE.Group; dispose: () => void } {
   const makeTex = (kind: MapKind): THREE.Texture => {
     const canvas = document.createElement('canvas');
     canvas.width = 1;
@@ -2194,16 +2188,6 @@ export function createShaderWarmupProbes(
     mats.push(mat);
     group.add(new THREE.Mesh(geo, mat));
   }
-  // The LUT shell: one program for every body (the table sizes are the only
-  // thing in its key, and one profile is chosen per session), bound to 1×1
-  // stand-in tables it never draws with.
-  let shell: THREE.ShaderMaterial | null = null;
-  if (lutSizes) {
-    shell = createAtmosphereMaterial(ATMOSPHERES.Earth, 1e-9, 'lut', {
-      lut: { body: 'Earth', sizes: lutSizes },
-    });
-    group.add(new THREE.Mesh(geo, shell));
-  }
   return {
     group,
     dispose: () => {
@@ -2213,7 +2197,6 @@ export function createShaderWarmupProbes(
         mat.normalMap?.dispose();
         mat.dispose();
       }
-      if (shell) disposeAtmosphereShellMaterial(shell);
       geo.dispose();
     },
   };

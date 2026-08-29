@@ -130,6 +130,7 @@ import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
 import { AtmosphereLut, type AtmosphereBakeStats, type AtmosphereTables } from './world/atmosphereLut';
 import { bindAtmosphereShellTables, disposeAtmosphereShellMaterial } from './world/atmosphereShell';
 import {
+  ATMOSPHERE_SPECS,
   ATMOSPHERE_TABLE_SIZES_FULL,
   ATMOSPHERE_TABLE_SIZES_HALF,
   atmosphereParams,
@@ -2465,22 +2466,29 @@ export class PlanetariumMode {
       // The atmosphere shell's LUT program is warmed with the rest: the tier
       // swaps in mid-flight when the bake validates, and a link at that moment
       // is a dropped frame in the near band. Skipped where no tier is possible.
-      const probes = createShaderWarmupProbes(
-        this.atmosphereLut?.probeCapability() ? this.atmosphereLut.sizes : undefined,
-      );
+      const probes = createShaderWarmupProbes();
       // The landed system's shadow visuals attach at landing, after this
       // compile pass — probe their material families here too, or the first
       // surface-view entry links those programs mid-gesture (a frozen frame
       // that reads as a dead click on slow GPUs).
       const shadowProbes = createShadowVisualsWarmupProbes();
+      // The atmosphere shell swaps to its LUT material mid-flight, the moment
+      // the bake validates — a link there is a dropped frame in the near band,
+      // where the shell fills the screen. Warmed with the live material, not a
+      // copy of it: a program is freed with the material that holds it, so a
+      // throwaway probe material would take its own program with it.
+      const atmoProbes = this.createAtmosphereWarmupProbes();
       this.scene.add(probes.group, shadowProbes.group);
+      if (atmoProbes) this.scene.add(atmoProbes.group);
       // Compile with the live path's kind of target bound (three keys every
       // program on it) and force the links with one 1-pixel draw — see
       // world/shaderWarmup.ts for the why and the pinned contract. Fail-open:
       // on any failure lazy first-draw compilation remains the fallback.
       const { compiled } = await warmUpSceneShaders(this.renderer, this.scene, this.camera, {
         drawsThroughComposer: this.rendersThroughComposer(),
-        probeGroups: [probes.group, shadowProbes.group],
+        probeGroups: atmoProbes
+          ? [probes.group, shadowProbes.group, atmoProbes.group]
+          : [probes.group, shadowProbes.group],
         onError: (stage, err) => debugError(`Shader warm-up ${stage} failed`, err),
       });
       this.shaderWarmupProgramCount = this.renderer.info.programs?.length ?? null;
@@ -2492,6 +2500,10 @@ export class PlanetariumMode {
         this.scene.remove(probes.group, shadowProbes.group);
         probes.dispose();
         shadowProbes.dispose();
+        if (atmoProbes) {
+          this.scene.remove(atmoProbes.group);
+          atmoProbes.dispose();
+        }
       });
       performance.measure('plm:precompile', 'plm:precompile:start');
     }
@@ -4003,6 +4015,61 @@ export class PlanetariumMode {
     );
   }
 
+  /** The LUT shell material for a body, built once and kept for the session —
+   *  the tables it points at are bound later, and can be re-bound after a
+   *  context loss. Holding it is what holds its linked program. */
+  private ensureLutShellMaterial(planet: PlanetMesh): THREE.ShaderMaterial | null {
+    const config = ATMOSPHERES[planet.data.name];
+    const lut = this.atmosphereLut;
+    // Fewer bodies have TABLES than have shells: Venus reads as a cloud deck and
+    // the giants have no surface for a thin layer to sit above, so they keep the
+    // analytic fringe and there is no atmosphere model to ask for.
+    if (!config || !ATMOSPHERE_SPECS[planet.data.name] || !planet.atmosphere || !lut) return null;
+    let shells = this.atmosphereShells.get(planet.data.name);
+    if (!shells) {
+      shells = {
+        analytic: planet.atmosphere.material as THREE.ShaderMaterial,
+        lut: null,
+        bound: null,
+      };
+      this.atmosphereShells.set(planet.data.name, shells);
+    }
+    if (!shells.lut) {
+      shells.lut = createAtmosphereMaterial(config, planet.data.radiusAU, 'lut', {
+        lut: {
+          body: planet.data.name,
+          sizes: lut.sizes,
+          fx: planet.fx,
+          // The penumbra width the ground's caster trace uses, so the eclipse
+          // spot on the air has the same soft edge as the one below it.
+          sunTan: surfaceShadingArgsOf(planet.mesh.material as THREE.Material)?.sunTan ?? 0,
+        },
+      });
+    }
+    return shells.lut;
+  }
+
+  /** One invisible speck wearing the LUT shell material, for the boot warm-up
+   *  to compile. One program covers every body — the table sizes are the only
+   *  thing in its key, and one profile is chosen per session — so Earth's
+   *  material stands for all of them. Null where the device has no tier: a
+   *  program that can never draw is a cold link spent on nothing. */
+  private createAtmosphereWarmupProbes(): { group: THREE.Group; dispose: () => void } | null {
+    if (!this.atmosphereLut?.probeCapability() || !this.solarSystem) return null;
+    const planet = this.solarSystem.planets.find(
+      (p) => p.atmosphere && ATMOSPHERES[p.data.name] && ATMOSPHERE_SPECS[p.data.name],
+    );
+    const material = planet ? this.ensureLutShellMaterial(planet) : null;
+    if (!material) return null;
+    const geometry = new THREE.SphereGeometry(1e-9, 4, 2);
+    const group = new THREE.Group();
+    group.visible = false;
+    group.add(new THREE.Mesh(geometry, material));
+    // The material outlives the probe: it belongs to atmosphereShells, and
+    // disposing it here would delete the program this exists to link.
+    return { group, dispose: () => geometry.dispose() };
+  }
+
   /**
    * Keep a body's shell on the best tier it can draw THIS frame: the LUT
    * material once its tables are baked and validated, the analytic one before
@@ -4018,39 +4085,26 @@ export class PlanetariumMode {
     const mesh = planet.atmosphere;
     if (!mesh) return;
     const name = planet.data.name;
-    let shells = this.atmosphereShells.get(name);
-    if (!shells) {
-      shells = { analytic: mesh.material as THREE.ShaderMaterial, lut: null, bound: null };
-      this.atmosphereShells.set(name, shells);
-    }
     const tables = this.devAtmosphereTier === 'analytic'
       ? null
       : this.atmosphereLut?.tables(name) ?? null;
-    const config = ATMOSPHERES[name];
-    if (tables && config) {
-      if (!shells.lut) {
-        shells.lut = createAtmosphereMaterial(config, planet.data.radiusAU, 'lut', {
-          lut: {
-            body: name,
-            sizes: tables.sizes,
-            fx: planet.fx,
-            // The penumbra width the ground's caster trace uses, so the eclipse
-            // spot on the air has the same soft edge as the one below it.
-            sunTan: surfaceShadingArgsOf(planet.mesh.material as THREE.Material)?.sunTan ?? 0,
-          },
-        });
-      }
+    if (tables) {
+      const material = this.ensureLutShellMaterial(planet);
+      const shells = this.atmosphereShells.get(name);
+      if (!material || !shells) return;
+      shells.lut = material;
       if (shells.bound !== tables) {
         bindAtmosphereShellTables(shells.lut, tables);
         shells.bound = tables;
       }
-      if (mesh.material !== shells.lut) {
-        this.carryShellUniforms(shells.analytic, shells.lut);
-        mesh.material = shells.lut;
+      if (mesh.material !== material) {
+        this.carryShellUniforms(shells.analytic, material);
+        mesh.material = material;
       }
       return;
     }
-    if (shells.lut && mesh.material === shells.lut) {
+    const shells = this.atmosphereShells.get(name);
+    if (shells?.lut && mesh.material === shells.lut) {
       this.carryShellUniforms(shells.lut, shells.analytic);
       mesh.material = shells.analytic;
       shells.bound = null;

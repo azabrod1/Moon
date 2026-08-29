@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { atmosphereFragmentShader, atmosphereVertexShader } from '../../shared/shaders/atmosphere';
 import { ATMOSPHERES, createAtmosphereMaterial } from '../PlanetFactory';
 import {
+  ATMOSPHERE_SPECS,
   ATMOSPHERE_TABLE_SIZES_FULL,
   ATMOSPHERE_TABLE_SIZES_HALF,
   atmosphereParams,
@@ -105,12 +106,34 @@ describe('the LUT shell material', () => {
     expect(half.defines).not.toEqual(earth.defines);
   });
 
-  it('is in the boot warm-up set, on the session\'s own table profile', () => {
-    const factory = src('../PlanetFactory.ts');
-    expect(factory).toMatch(/createShaderWarmupProbes\(\s*[\s\S]*?lutSizes\?: AtmosphereTableSizes,/);
-    expect(factory).toMatch(/if \(lutSizes\) \{\s*\n\s*shell = createAtmosphereMaterial\([^)]*'lut'/);
+  it('is in the boot warm-up set, wearing the material that will draw it', () => {
     const mode = src('../PlanetariumMode.ts');
-    expect(mode).toContain('this.atmosphereLut?.probeCapability() ? this.atmosphereLut.sizes : undefined');
+    // Warmed only where a tier is possible: a program that can never draw is a
+    // cold link spent on nothing.
+    expect(mode).toContain('if (!this.atmosphereLut?.probeCapability() || !this.solarSystem) return null;');
+    // And warmed with the LIVE material. three frees a program with the
+    // material that holds it, so a throwaway probe material would take the
+    // program with it when the warm-up disposes the probes — which is the one
+    // way this can silently buy nothing.
+    expect(mode).toMatch(/createAtmosphereWarmupProbes\(\)[\s\S]*?const material = planet \? this\.ensureLutShellMaterial\(planet\) : null;/);
+    expect(mode).toMatch(/return \{ group, dispose: \(\) => geometry\.dispose\(\) \};/);
+    expect(mode).toMatch(/probeGroups: atmoProbes/);
+  });
+
+  it('is built only for bodies that have a table to read', () => {
+    // Every body with a table has a shell mesh to draw it in...
+    for (const body of Object.keys(ATMOSPHERE_SPECS)) {
+      expect(ATMOSPHERES[body], body).toBeTruthy();
+    }
+    // ...but not the other way round: Venus reads as a cloud deck and the
+    // giants have no surface for a thin layer to sit above, so they keep the
+    // analytic fringe and there is no model to ask for. Asking anyway throws.
+    expect(ATMOSPHERE_SPECS.Venus).toBeUndefined();
+    expect(ATMOSPHERES.Venus).toBeTruthy();
+    expect(() => createAtmosphereShellMaterial({
+      planetRadius: RADIUS_AU, body: 'Venus', sizes: ATMOSPHERE_TABLE_SIZES_FULL,
+    })).toThrow();
+    expect(src('../PlanetariumMode.ts')).toContain('!ATMOSPHERE_SPECS[planet.data.name]');
   });
 
   it('traces the eclipse casters with the ground\'s own GLSL', () => {

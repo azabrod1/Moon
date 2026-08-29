@@ -186,9 +186,9 @@ describe('the atmosphere goldens', () => {
     // Table sizes are defines, not text, so one hash covers every profile and
     // every body — the same property that lets one warm-up probe cover them.
     expect(hash(shell.vertexShader))
-      .toBe('fbb3c5035fc9293a98d462716af27fde518a10e787a28c1f87c750c9b7ba79df');
+      .toBe('604724ecd98c07ab9465d5cce0bbc7285e1ed2627fe5f2d7b69ec6ddbba3b1fc');
     expect(hash(shell.fragmentShader))
-      .toBe('0a9232e68e83afec82c2b15695afaa4dbe6815dadde722a3eb88a6b40eeb0895');
+      .toBe('9c86562d05a246eff7b9c2c08713e4db31a508f85d9a3d6eb572f8082da85756');
   });
 
   it('shows the LUT tier drawing a different limb from the analytic one', () => {

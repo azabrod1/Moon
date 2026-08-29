@@ -612,6 +612,9 @@ function installDevHooks() {
     // Precomputed atmosphere tables: tier state, a measurement bake, and table
     // readback through the 8-bit blit.
     atmoState: () => planetariumMode?.devAtmosphereState() ?? null,
+    // What lights a body's night side this frame: the Moon's direction, its
+    // irradiance and its phase.
+    atmoNight: (body?: string) => planetariumMode?.devAtmosphereNight(body) ?? null,
     // Hold the shells on the analytic tier (null: whatever the tables allow),
     // and report the material each one is wearing.
     atmoTier: (tier: 'analytic' | null) => planetariumMode?.devSetAtmosphereTier(tier) ?? null,

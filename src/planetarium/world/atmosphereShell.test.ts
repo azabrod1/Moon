@@ -150,7 +150,11 @@ describe('the LUT shell material', () => {
     expect(lut.fragmentShader).toContain(MOON_SHADOW_TRACE_GLSL);
     expect(lut.fragmentShader).toContain('sunVisible *= 1.0 - moonShadowOcclusion(');
     // The visible-Sun factor has to reach the radiance, not just be computed.
-    expect(lut.fragmentShader).toMatch(/radiance \* uAirlightScale \* \(uSolarIrradiance \* sunVisible \* alphaScale\)/);
+    // The visible-Sun factor has to reach the SOLAR radiance and only it: the
+    // airglow is emitted in the air and the Moon is a light of its own, and
+    // neither goes out because a moon crossed the Sun.
+    expect(lut.fragmentShader)
+      .toMatch(/\* uAirlightScale \* \(uSolarIrradiance \* sunVisible\);/);
   });
 
   it('takes the casters from the body\'s shared shading uniforms', () => {
@@ -270,7 +274,7 @@ describe('the view ray', () => {
     // The airlight in front of a surface belongs to that surface's shading: it
     // needs the segment camera -> fragment, not camera -> far boundary.
     expect(shell('lut').fragmentShader)
-      .toContain('if (rayIntersectsGround(r, mu)) return;');
+      .toContain('if (rayIntersectsGround(rCam, clampCosine(rmuCam / rCam))) return;');
   });
 
   it('draws nothing outside the physical top, which is where it tapers away', () => {

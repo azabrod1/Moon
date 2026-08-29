@@ -103,9 +103,9 @@ describe('the injected surface shader', () => {
     // diff that lands green moves the shader, the captures and the pins.
     const shader = compile(augmented('earth'));
     expect(hash(shader.vertexShader))
-      .toBe('d8e0588d27a55998fe129e3d7fda9d9e568465f9b51f04ba76d68dd2964bf05b');
+      .toBe('862f7224fafb480070aebf0c7c125dddbd78c879780eb072e96988333154322a');
     expect(hash(shader.fragmentShader))
-      .toBe('6db5b3802f0510c66963e547d73b22375edc8ea2783d2db4b948f18cce143aa2');
+      .toBe('ae5ce622125b555bf3e9a225003e6b089fd4028ef20d1c1d79089506e8cc683e');
   });
 
   it('reuses the tables\' own lookup GLSL rather than a second transcription', () => {
@@ -185,9 +185,13 @@ describe('the layer rule', () => {
   it('applies color * T + S exactly once, scaled into the scene\'s own light', () => {
     const glsl = compile(augmented('earth')).fragmentShader;
     expect(glsl).toMatch(
-      /outgoingLight = outgoingLight \* airT\s*\n\s*\+ airS \* uAirlightScale \* \(uSolarIrradiance \* sunVisible\);/,
+      /vec3 airS = aerialInscatter\(uScattering, seg, airT\)\s*\n\s*\* uAirlightScale \* \(uSolarIrradiance \* sunVisible\);/,
     );
-    expect(glsl.match(/aerialInscatter\(uScattering/g)).toHaveLength(1);
+    expect(glsl).toContain('outgoingLight = outgoingLight * airT + airS;');
+    // Two in-scatter lookups, and they are the two SOURCES — one traversal,
+    // the Sun's angles and the Moon's. A third would be a second traversal.
+    expect(glsl.match(/aerialInscatter\(uScattering/g)).toHaveLength(2);
+    expect(glsl).toContain('aerialForLight(seg, normalize(uMoonDirWorld))');
   });
 
   it('leaves the shell out of it: its radiance IS the whole sky segment', () => {

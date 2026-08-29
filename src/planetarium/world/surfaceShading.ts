@@ -14,6 +14,15 @@
  *   - Moon-shadow transits: a moon between the Sun and a fragment casts an
  *     umbra/penumbra spot onto the globe (Io's shadow crawling across Jupiter).
  *
+ * The night side's own light is the fifth term, and where a body has tables it
+ * REPLACES the starlight fill rather than joining it: the multiple-scattering
+ * ambient out of the irradiance table, plus the Moon as a second directional
+ * source, both faded out through the one `nightWeight` every non-solar source
+ * in the app shares. Two night-fill models on one fragment lift the dark
+ * hemisphere twice, so the authored one is switched off by the same uniform
+ * that switches the air on — which leaves it as the answer for airless bodies
+ * and for the tier with no tables, where it always was.
+ *
  * Aerial perspective is the fourth term and the only one that reads a texture:
  * where a body has precomputed scattering tables, every surface fragment is
  * multiplied by the transmittance of the air between it and the camera and has
@@ -39,6 +48,7 @@ import {
   type AtmosphereTables,
 } from './atmosphereLut';
 import { AIRLIGHT_SCALE } from './atmosphereModel';
+import { NIGHT_WEIGHT_GLSL } from './nightSources';
 
 /** The cloud deck is a surface class of its own: it hazes and eclipses like the
  *  ground under it, and carries none of the ground's own night terms — the
@@ -169,9 +179,11 @@ float moonShadowOcclusion(vec3 toMoon, float moonRadius, vec3 sunDir, float sunT
 // materials keep sharing one compiled program, no custom cache key needed.
 const SURFACE_VERTEX_DECLS = /* glsl */ `
 uniform vec3 uSunDirWorld;
+uniform vec3 uMoonDirWorld;
 uniform vec3 uPlanetshineDir;
 uniform float uFrameSpin;
 varying vec3 vSunViewDir;
+varying vec3 vMoonViewDir;
 varying vec3 vObjPos;
 varying vec3 vPlanetshineViewDir;
 varying vec3 vAirCam;
@@ -179,6 +191,7 @@ varying vec3 vAirFrag;`;
 
 const SURFACE_VERTEX_BODY = /* glsl */ `
 vSunViewDir = normalize((viewMatrix * vec4(uSunDirWorld, 0.0)).xyz);
+vMoonViewDir = normalize((viewMatrix * vec4(uMoonDirWorld, 0.0)).xyz);
 vPlanetshineViewDir = normalize((viewMatrix * vec4(uPlanetshineDir, 0.0)).xyz);
 // vObjPos is the BODY frame — the frame the eclipse casters, the ring plane and
 // the local sun direction are all stated in. A mesh that carries a spin of its
@@ -219,18 +232,22 @@ uniform float uSilhouette;
 uniform float uIcyRim;
 uniform float uLimbDarkening;
 uniform vec3 uSunDirWorld;
+uniform vec3 uMoonDirWorld;
+uniform vec3 uMoonIrradiance;
 uniform float uAirDensity;
 uniform float uPlanetRadius;
 uniform float uSolarIrradiance;
 uniform vec3 uAirlightScale;
 uniform sampler2D uTransmittance;
+uniform sampler2D uIrradiance;
 uniform sampler3D uScattering;
 varying vec3 vSunViewDir;
+varying vec3 vMoonViewDir;
 varying vec3 vObjPos;
 varying vec3 vPlanetshineViewDir;
 varying vec3 vAirCam;
 varying vec3 vAirFrag;
-${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}`;
+${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}`;
 
 // Injected after lighting but before <opaque_fragment> writes outgoingLight into
 // gl_FragColor — so terms land in linear radiance (tone-mapped downstream) and
@@ -241,12 +258,45 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // by the photosphere is void black in any real exposure, and the starlight
   // fill or earthshine would read as fog painted on the silhouette.
   float nightKeep = 1.0 - uSilhouette;
-  outgoingLight += diffuseColor.rgb * uNightColor * (uNightStrength * (1.0 - dayFactor) * nightKeep);
+  // The Sun's elevation at THIS fragment: the geometric quantity every
+  // non-solar source is weighted by, so the airglow on the limb, the moonlight
+  // on the ground and the haze in front of it all fade along one line instead
+  // of three. Zero where there is no air, which is where the authored fill
+  // below is the whole night side instead.
+  float airNight = uAirDensity > 0.0
+      ? nightWeight(clampCosine(dot(normalize(vAirFrag), normalize(uSunDirWorld)))) * nightKeep
+      : 0.0;
+  // The authored starlight floor, and the seam it sits on: where the tables are
+  // bound they carry the night side's own light, and this fill would be a
+  // second model of the same thing lifting the same fragment twice. So the fill
+  // is the airless and the fallback-tier answer, and the table's is the other.
+  outgoingLight += diffuseColor.rgb * uNightColor
+      * (uNightStrength * (1.0 - uAirDensity) * (1.0 - dayFactor) * nightKeep);
   // Planetshine: parent-lit glow on the night side. Albedo-multiplicative,
   // so the eclipse color-dim carries through it automatically.
   if (uPlanetshineIntensity > 0.0) {
     float pl = max(dot(normalize(normal), normalize(vPlanetshineViewDir)), 0.0);
     outgoingLight += diffuseColor.rgb * uPlanetshineColor * (uPlanetshineIntensity * pl * (1.0 - dayFactor) * nightKeep);
+  }
+  // The night side's own light, where a body has tables: the sky's
+  // multiple-scattering ambient — the term that replaces the authored fill —
+  // plus the Moon's direct beam through the air above this fragment. The
+  // ambient is read for both sources from one table: the irradiance table is
+  // the light a horizontal surface receives from the whole sky, and which sky
+  // it is depends only on where its source is.
+  if (airNight > 0.0) {
+    vec3 up = normalize(vAirFrag);
+    float rFrag = clampRadius(length(vAirFrag) / uPlanetRadius);
+    float muSSun = clampCosine(dot(up, normalize(uSunDirWorld)));
+    vec3 moonDir = normalize(uMoonDirWorld);
+    float muSMoon = clampCosine(dot(up, moonDir));
+    vec3 ambient = getIrradiance(uIrradiance, rFrag, muSSun)
+            * uAirlightScale * uSolarIrradiance
+        + getIrradiance(uIrradiance, rFrag, muSMoon) * uMoonIrradiance;
+    vec3 direct = uMoonIrradiance
+        * getTransmittanceToSun(uTransmittance, rFrag, muSMoon)
+        * max(dot(normalize(normal), normalize(vMoonViewDir)), 0.0);
+    outgoingLight += diffuseColor.rgb * (ambient + direct) * airNight;
   }
   // Icy moons: a cool Fresnel rim on the back-lit limb (ice scatters light).
   // Scaled by the (eclipse-dimmed) albedo brightness so it fades when the
@@ -298,9 +348,17 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
         vAirCam / uPlanetRadius, vAirFrag / uPlanetRadius, normalize(uSunDirWorld));
     if (seg.valid) {
       vec3 airT = aerialTransmittance(uTransmittance, seg);
-      vec3 airS = aerialInscatter(uScattering, seg, airT);
-      outgoingLight = outgoingLight * airT
-          + airS * uAirlightScale * (uSolarIrradiance * sunVisible);
+      vec3 airS = aerialInscatter(uScattering, seg, airT)
+          * uAirlightScale * (uSolarIrradiance * sunVisible);
+      // The Moon lights the same column. One traversal, one transmittance: only
+      // the two angles that involve the source change, so the second source is
+      // a second pair of lookups and nothing else. Behind the night weight, so
+      // by day it is a branch and no fetches.
+      if (airNight > 0.0) {
+        airS += aerialInscatter(uScattering, aerialForLight(seg, normalize(uMoonDirWorld)), airT)
+            * uMoonIrradiance * airNight;
+      }
+      outgoingLight = outgoingLight * airT + airS;
     }
   }
 }`;
@@ -353,6 +411,11 @@ export function createSurfaceAirFx(): SurfaceAirFx {
     uPlanetRadius: { value: 1 },
     uSolarIrradiance: { value: 1 },
     uAirlightScale: { value: new THREE.Vector3(...AIRLIGHT_SCALE) },
+    // The night's second source. It lives here, with the air, because every
+    // surface that draws this body has to be lit by the same Moon as the shell
+    // around it — and because the mode writes it once per body per frame.
+    uMoonDirWorld: { value: new THREE.Vector3(0, 0, 1) },
+    uMoonIrradiance: { value: new THREE.Vector3() },
   };
   air.uTransmittance.value = dummies.map2D;
   air.uIrradiance.value = dummies.map2D;

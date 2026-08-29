@@ -479,13 +479,18 @@ struct AerialSegment {
   float muS;
   float nu;
   float d;        // entry point -> the point being shaded
+  // The start point and direction the angles were derived from, kept so a
+  // SECOND light can be pointed at the same segment without tracing it again.
+  vec3 origin;
+  vec3 view;
 };
 
 // The segment from the camera to the point, both in the radius units the
 // tables are baked in (surface r = 1) about the body's centre, in any frame the
 // two and the Sun share.
 AerialSegment aerialSegment(vec3 camera, vec3 point, vec3 sunDir) {
-  AerialSegment seg = AerialSegment(false, false, 0.0, 0.0, 0.0, 0.0, 0.0);
+  AerialSegment seg = AerialSegment(
+      false, false, 0.0, 0.0, 0.0, 0.0, 0.0, vec3(0.0), vec3(0.0));
   vec3 toPoint = point - camera;
   float span = length(toPoint);
   // A degenerate segment has no direction to normalize; normalize(0) is
@@ -515,12 +520,25 @@ AerialSegment aerialSegment(vec3 camera, vec3 point, vec3 sunDir) {
   }
 
   seg.valid = true;
+  seg.origin = camera;
+  seg.view = view;
   seg.r = r;
   seg.mu = clampCosine(rmu / r);
   seg.muS = clampCosine(dot(camera, sunDir) / r);
   seg.nu = clampCosine(dot(view, sunDir));
   seg.d = span;
   seg.hitsGround = rayIntersectsGround(r, seg.mu);
+  return seg;
+}
+
+/** The same segment under a different light. The geometry — where it starts,
+ *  how far it runs, which way it faces — belongs to the camera and does not
+ *  move; only the two angles that involve the source do. So a second source
+ *  costs a second pair of lookups and no second traversal, and the two sources
+ *  can never disagree about the path they are lighting. */
+AerialSegment aerialForLight(AerialSegment seg, vec3 lightDir) {
+  seg.muS = clampCosine(dot(seg.origin, lightDir) / seg.r);
+  seg.nu = clampCosine(dot(seg.view, lightDir));
   return seg;
 }
 

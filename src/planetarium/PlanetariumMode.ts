@@ -37,6 +37,7 @@ import {
 import { applySunGlowTier, armArrivalWarmGoal, bindKtx2TierLoader, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createAtmosphereMaterial, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade } from './PlanetFactory';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { bindSurfaceAir, clearSurfaceAir, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import { SECTOR_SETS, SectorStreamer, type SectorMeasure, type SectorStats, type SectorSuspend } from './world/sectorStreamer';
 import { loadBrightStarCatalog } from './world/starCatalogLoader';
@@ -1022,6 +1023,16 @@ export class PlanetariumMode {
   private tmpSunOccluderScale = new THREE.Vector3();
   private tmpSunAtmosphereOffset = new THREE.Vector3();
   private moonShading: MoonShadingState = { sunVisibleFraction: 1, inUmbra: false };
+  // The moonlight pass runs in a different sweep from the moon-render one, so it
+  // keeps its own scratch: sharing would couple two passes through a value one of
+  // them believes it owns for the length of an iteration.
+  private moonlightShading: MoonShadingState = { sunVisibleFraction: 1, inUmbra: false };
+  private tmpMoonlightOffset = new THREE.Vector3();
+  private tmpMoonlightParent = new THREE.Vector3();
+  private moonlightSource = new Map<string, MoonData | null>();
+  /** Last phase angle written, so the capture tool can assert the Moon a night
+   *  golden was taken under rather than trust the date it asked for. */
+  private moonlightPhase = new Map<string, number>();
   // Landed-system shadow visuals: transit spots always on, guides behind the
   // Observatory panel toggle (session-only, deliberately not persisted).
   private shadowVisuals = new ShadowVisuals();
@@ -4169,6 +4180,7 @@ export class PlanetariumMode {
       : this.atmosphereLut?.tables(planet.data.name) ?? null;
     if (!tables) {
       clearSurfaceAir(air);
+      (air.uMoonIrradiance.value as THREE.Vector3).set(0, 0, 0);
       return;
     }
     const wp = planet.worldPosAU;
@@ -4178,6 +4190,79 @@ export class PlanetariumMode {
       planet.data.radiusAU,
       wp ? solarIrradianceScale(Math.sqrt(wp.x * wp.x + wp.y * wp.y + wp.z * wp.z)) : 1,
     );
+    this.syncMoonlight(planet);
+  }
+
+  /**
+   * The Moon as a second light on a planet's night side, written into the ONE
+   * air block every surface of that body reads — so the shell, the globe, its
+   * streamed sectors and the cloud deck are lit by the same Moon in the same
+   * place, which a second uniform set is how they stop being.
+   *
+   * Everything that decides how much light there is goes into the irradiance
+   * uniform rather than into the shader: the planet's own distance from the
+   * Sun, the Moon's phase, and the Moon's own eclipse — a Moon inside the
+   * planet's shadow lights nothing, which is the one night this term has to get
+   * right. The direction is treated as parallel across the disc: the Moon's
+   * bearing varies by 0.95 degrees from one side of Earth to the other, which
+   * moves the moonlit terminator by about 100 km on a body 12,742 km across.
+   */
+  private syncMoonlight(planet: PlanetMesh): void {
+    const air = planet.fx?.air;
+    if (!air) return;
+    const irradiance = air.uMoonIrradiance.value as THREE.Vector3;
+    const wp = planet.worldPosAU;
+    const source = this.moonlightSourceFor(planet.data.name);
+    if (!source || !wp) {
+      irradiance.set(0, 0, 0);
+      return;
+    }
+    const offset = this.getMoonWorldOffsetAU(source, planet.data, this.tmpMoonlightOffset);
+    const distance = offset.length();
+    const bodyDistance = Math.sqrt(wp.x * wp.x + wp.y * wp.y + wp.z * wp.z);
+    if (!(distance > 0) || !(bodyDistance > 0)) {
+      irradiance.set(0, 0, 0);
+      return;
+    }
+    (air.uMoonDirWorld.value as THREE.Vector3).copy(offset).multiplyScalar(1 / distance);
+    // Phase angle at the Moon, between the Sun and the planet it is lighting.
+    // The Sun is the scene's origin, so moon->Sun is just -moonPos, and the
+    // cosine of the angle between that and moon->planet (-offset) is the cosine
+    // between the two positives.
+    const mx = wp.x + offset.x;
+    const my = wp.y + offset.y;
+    const mz = wp.z + offset.z;
+    const moonDistance = Math.hypot(mx, my, mz) || 1;
+    const cosPhase = (mx * offset.x + my * offset.y + mz * offset.z)
+      / (moonDistance * distance);
+    const phaseDeg = Math.acos(Math.min(1, Math.max(-1, cosPhase))) * RAD2DEG;
+    computeMoonShading(
+      this.tmpMoonlightParent.set(wp.x, wp.y, wp.z),
+      planet.data.name,
+      planet.data.radiusKm,
+      offset,
+      source.radiusKm,
+      this.moonlightShading,
+    );
+    const value = moonIrradiance(
+      solarIrradianceScale(bodyDistance),
+      phaseDeg,
+      this.moonlightShading.sunVisibleFraction,
+    );
+    irradiance.set(value[0], value[1], value[2]);
+    this.moonlightPhase.set(planet.data.name, phaseDeg);
+  }
+
+  /** The catalog entry for a body's moonlight source, resolved once. */
+  private moonlightSourceFor(planetName: string): MoonData | null {
+    const cached = this.moonlightSource.get(planetName);
+    if (cached !== undefined) return cached;
+    const name = MOONLIGHT_SOURCES[planetName];
+    const found = name
+      ? MOONS.find((m) => m.name === name && m.parentPlanet === planetName) ?? null
+      : null;
+    this.moonlightSource.set(planetName, found);
+    return found;
   }
 
   private updatePlanetScaling() {
@@ -12343,6 +12428,25 @@ export class PlanetariumMode {
 
   /** Headless-QA readback for the atmosphere tables: the tier's state, the
    *  probe result, and every bake's numbers. */
+  /** What is lighting a body's night side this frame: the Moon's direction, the
+   *  irradiance uniform every surface and the shell read, and the phase angle
+   *  behind it. A night golden is a pose AND a Moon, and this is how the
+   *  capture tool checks it got the Moon it asked for. */
+  devAtmosphereNight(body = 'Earth'): unknown {
+    const planet = this.solarSystem?.planets.find((p) => p.data.name === body);
+    const air = planet?.fx?.air;
+    if (!planet || !air) return null;
+    const dir = air.uMoonDirWorld.value as THREE.Vector3;
+    const irradiance = air.uMoonIrradiance.value as THREE.Vector3;
+    return {
+      body,
+      airOn: (air.uAirDensity.value as number) > 0,
+      moonDirWorld: [dir.x, dir.y, dir.z],
+      moonIrradiance: [irradiance.x, irradiance.y, irradiance.z],
+      phaseDeg: this.moonlightPhase.get(body) ?? null,
+    };
+  }
+
   devAtmosphereState(): unknown {
     const lut = this.devAtmosphereLut ?? this.atmosphereLut;
     if (!lut) return null;

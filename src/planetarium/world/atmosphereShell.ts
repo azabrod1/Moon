@@ -34,14 +34,22 @@
  *    values apply without a second set. The trace is evaluated at the lowest
  *    point the view ray reaches, where the air it carries is densest.
  *
- * What this tier does not carry yet is the night side. Past the terminator its
- * twilight is the multiple-scattering orders and nothing else, which reads
- * several times quieter than the analytic tier's sunset band — that band is an
- * authored orange wash, not a computed one. The glow that belongs there comes
- * with the non-solar sources (airglow, moonlight, city glow). The daylight
- * comparison between the two tiers is likewise only fair once the surface
- * materials carry aerial perspective: the air in FRONT of the disc is theirs to
- * draw, and until they do, neither tier hazes the ground.
+ * Past the terminator the sky is no longer the Sun's. Two more sources draw
+ * there, both weighted by the one `nightWeight` every non-solar term in the app
+ * shares, read here at the ray's lowest point:
+ *
+ *  - **Airglow** is emitted in a thin layer of the upper air, not scattered
+ *    from anything, so it is computed on the whole ray — including the rays
+ *    that pass ABOVE the modelled air, which no table describes and which is
+ *    where the 630 nm fringe sits. It is the one term here that is not a table
+ *    lookup, and the one whose radiance is authored.
+ *  - **The Moon** is a second light on the same air: the same tables, the same
+ *    fetch count, with the two angles that involve the source swapped. Its
+ *    irradiance uniform carries its distance, its phase, its own eclipse and
+ *    its redder spectrum, so the shader cannot tell the two sources apart.
+ *
+ * What this tier still does not carry is the city glow — the upward-scattered
+ * light that makes a city visible through cloud.
  */
 import * as THREE from 'three';
 import {
@@ -60,12 +68,15 @@ import {
   type AtmosphereTableSizes,
 } from './atmosphereModel';
 import { MAX_MOON_SHADOWS, MOON_SHADOW_TRACE_GLSL, type SurfaceShadingFx } from './surfaceShading';
+import { AIRGLOW_GLSL, AIRGLOW_LIMB_CAP, NIGHT_WEIGHT_GLSL, airglowUniforms } from './nightSources';
 
 const SHELL_VERTEX = /* glsl */`
 uniform vec3 uSunDirWorld;
+uniform vec3 uMoonDirWorld;
 out vec3 vObjPos;
 out vec3 vCamObj;
 out vec3 vSunObj;
+out vec3 vMoonObj;
 
 void main() {
   vObjPos = position;
@@ -80,6 +91,7 @@ void main() {
   vec3 rel = cameraPosition - modelMatrix[3].xyz;
   vCamObj = vec3(dot(rel, bx), dot(rel, by), dot(rel, bz));
   vSunObj = vec3(dot(uSunDirWorld, bx), dot(uSunDirWorld, by), dot(uSunDirWorld, bz));
+  vMoonObj = vec3(dot(uMoonDirWorld, bx), dot(uMoonDirWorld, by), dot(uMoonDirWorld, bz));
   gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0);
 }
 `;
@@ -98,6 +110,10 @@ uniform float uSolarIrradiance;
 // Sun is a warm point light. A scalar here lights the air with a whiter Sun
 // than the ground below it.
 uniform vec3 uAirlightScale;
+// The same bridge for the Moon, with its distance, its phase, its own eclipse
+// and its redder spectrum already in it — so a moonlit lookup costs exactly
+// what a sunlit one does. Zero on a body with no moon worth the second fetch.
+uniform vec3 uMoonIrradiance;
 uniform vec4 uMoonShadow[${MAX_MOON_SHADOWS}];
 uniform int uMoonShadowCount;
 uniform float uSunTan;
@@ -105,10 +121,13 @@ uniform float uSunTan;
 in vec3 vObjPos;
 in vec3 vCamObj;
 in vec3 vSunObj;
+in vec3 vMoonObj;
 
 out vec4 fragColor;
 
 ${MOON_SHADOW_TRACE_GLSL}
+${NIGHT_WEIGHT_GLSL}
+${AIRGLOW_GLSL}
 
 void main() {
   fragColor = vec4(0.0, 0.0, 0.0, 1.0);
@@ -122,55 +141,91 @@ void main() {
   vec3 sun = normalize(vSunObj);
 
   // The tables are baked in radius units, where the surface is r = 1.
-  vec3 origin = vCamObj / uPlanetRadius;
-  float r = length(origin);
-  if (!(r > 0.0)) return;
-  float rmu = dot(origin, view);
+  vec3 camera = vCamObj / uPlanetRadius;
+  float rCam = length(camera);
+  if (!(rCam > 0.0)) return;
+  float rmuCam = dot(camera, view);
 
+  // Ground rays carry their air in the surface material, where the segment ends
+  // at the fragment rather than at the far boundary — and the airglow layer in
+  // front of a lit surface is a thousandth of what is behind it.
+  if (rayIntersectsGround(rCam, clampCosine(rmuCam / rCam))) return;
+
+  // The lowest point the ray reaches: the deepest air it crosses, and so where
+  // the eclipse is traced and where the Sun's elevation decides every non-solar
+  // source. One point, from the camera's own origin, so the airglow, the
+  // moonlight and the eclipse cannot disagree about which part of the ray they
+  // are talking about.
+  vec3 lowest = camera + view * max(-rmuCam, 0.0);
+  float night = nightWeight(clampCosine(dot(normalize(lowest), sun)));
+
+  // Airglow: emitted in the layer, not scattered from anything, so it is
+  // computed on the whole ray — including the rays that pass above the modelled
+  // air entirely, which is where the 630 nm fringe lives.
+  vec3 radiance = airglowRadiance(camera, view, night);
+
+  // The air itself. The ray is advanced to the entry point first: from out here
+  // a lookup at the camera's own radius clamps every ray to the table's top row
+  // and the sky comes back flat.
+  vec3 origin = camera;
+  float r = rCam;
+  float rmu = rmuCam;
+  bool inAir = true;
   if (r > uTopRadius) {
-    // Viewer in space: enter the air before looking anything up.
     float disc = rmu * rmu - r * r + uTopRadius * uTopRadius;
-    if (disc < 0.0) return;                 // the ray misses the air entirely
-    float dEntry = -rmu - sqrt(disc);
-    if (dEntry <= 0.0) return;              // the air is behind the camera
-    origin += view * dEntry;
-    // r*mu at the entry point is rmu + dEntry, which is exactly -sqrt(disc):
-    // written that way it stays a number of size ~0.2 instead of a difference
-    // of two numbers of size r, which at 8 R spends four of highp's digits.
-    rmu = -sqrt(disc);
-    r = uTopRadius;
+    float dEntry = -rmu - safeSqrt(disc);
+    if (disc < 0.0 || dEntry <= 0.0) {
+      inAir = false;                        // misses the air, or it is behind
+    } else {
+      origin += view * dEntry;
+      // r*mu at the entry point is rmu + dEntry, which is exactly -sqrt(disc):
+      // written that way it stays a number of size ~0.2 instead of a difference
+      // of two numbers of size r, which at 8 R spends four of highp's digits.
+      rmu = -sqrt(disc);
+      r = uTopRadius;
+    }
   } else {
     // Inside the air — dev poses only; the table already starts at the camera.
     r = clampRadius(r);
   }
 
-  float mu = clampCosine(rmu / r);
-  float muS = clampCosine(dot(origin, sun) / r);
-  float nu = clampCosine(dot(view, sun));
+  if (inAir) {
+    float mu = clampCosine(rmu / r);
+    float nu = clampCosine(dot(view, sun));
+    vec4 scattering = getScattering3DRGBA(
+        uScattering, r, mu, clampCosine(dot(origin, sun) / r), nu, false);
+    vec3 rayleigh = max(scattering.rgb, vec3(0.0));
+    vec3 mie = max(getExtrapolatedSingleMieScattering(scattering), vec3(0.0));
 
-  // Ground rays carry their air in the surface material, where the segment ends
-  // at the fragment rather than at the far boundary.
-  if (rayIntersectsGround(r, mu)) return;
+    // Eclipse: the same casters the ground traces, in the same frame, sampled
+    // at the ray's lowest point.
+    float sunVisible = 1.0;
+    for (int i = 0; i < ${MAX_MOON_SHADOWS}; i++) {
+      if (i >= uMoonShadowCount) break;
+      sunVisible *= 1.0 - moonShadowOcclusion(
+          uMoonShadow[i].xyz - lowest * uPlanetRadius, uMoonShadow[i].w, sun, uSunTan);
+    }
+    radiance += (rayleigh * rayleighPhaseFunction(nu) + mie * miePhaseFunction(uMiePhaseG, nu))
+        * uAirlightScale * (uSolarIrradiance * sunVisible);
 
-  vec4 scattering = getScattering3DRGBA(uScattering, r, mu, muS, nu, false);
-  vec3 rayleigh = max(scattering.rgb, vec3(0.0));
-  vec3 mie = max(getExtrapolatedSingleMieScattering(scattering), vec3(0.0));
-  vec3 radiance = rayleigh * rayleighPhaseFunction(nu)
-      + mie * miePhaseFunction(uMiePhaseG, nu);
-
-  // Eclipse: the same casters the ground traces, sampled where the ray dips
-  // lowest — the point that carries most of the column's scattering. A ray
-  // climbing away from the body is lowest where it entered.
-  vec3 lowest = (origin + view * max(-r * mu, 0.0)) * uPlanetRadius;
-  float sunVisible = 1.0;
-  for (int i = 0; i < ${MAX_MOON_SHADOWS}; i++) {
-    if (i >= uMoonShadowCount) break;
-    sunVisible *= 1.0 - moonShadowOcclusion(
-        uMoonShadow[i].xyz - lowest, uMoonShadow[i].w, sun, uSunTan);
+    // The Moon, through the same tables: a second light on the same air, so the
+    // lookup is the sunlit one with the two angles that involve the source
+    // swapped. Behind the night weight, so by day it costs a branch and no
+    // fetches at all.
+    if (night > 0.0 && uMoonIrradiance != vec3(0.0)) {
+      vec3 moon = normalize(vMoonObj);
+      float nuMoon = clampCosine(dot(view, moon));
+      vec4 lunar = getScattering3DRGBA(
+          uScattering, r, mu, clampCosine(dot(origin, moon) / r), nuMoon, false);
+      vec3 lunarRayleigh = max(lunar.rgb, vec3(0.0));
+      vec3 lunarMie = max(getExtrapolatedSingleMieScattering(lunar), vec3(0.0));
+      radiance += (lunarRayleigh * rayleighPhaseFunction(nuMoon)
+              + lunarMie * miePhaseFunction(uMiePhaseG, nuMoon))
+          * uMoonIrradiance * night;
+    }
   }
 
-  fragColor = vec4(
-      radiance * uAirlightScale * (uSolarIrradiance * sunVisible * alphaScale), 1.0);
+  fragColor = vec4(radiance * alphaScale, 1.0);
 }
 `;
 
@@ -215,6 +270,7 @@ export function createAtmosphereShellMaterial(
 ): THREE.ShaderMaterial {
   const params = atmosphereParams(options.body);
   const dummies = dummyTables();
+  const airglow = airglowUniforms(options.body);
   const uniforms: Record<string, THREE.IUniform> = {
     ...atmosphereLookupUniforms(),
     uSunDirWorld: { value: options.initialSunDir?.clone() ?? new THREE.Vector3(0, 0, 1) },
@@ -222,6 +278,15 @@ export function createAtmosphereShellMaterial(
     uPlanetRadius: { value: options.planetRadius },
     uSolarIrradiance: { value: 1 },
     uAirlightScale: { value: new THREE.Vector3(...AIRLIGHT_SCALE) },
+    // The Moon's two uniforms come off the body's shared air block wherever
+    // there is one: the shell and the ground it wraps have to be lit by the
+    // same Moon, and a second pair of objects is how they stop being.
+    uMoonDirWorld: options.fx?.air?.uMoonDirWorld ?? { value: new THREE.Vector3(0, 0, 1) },
+    uMoonIrradiance: options.fx?.air?.uMoonIrradiance ?? { value: new THREE.Vector3() },
+    uAirglowBands: { value: new THREE.Vector4(...airglow.bands) },
+    uAirglowGreen: { value: new THREE.Vector3(...airglow.green) },
+    uAirglowOrange: { value: new THREE.Vector3(...airglow.orange) },
+    uAirglowLimbCap: { value: AIRGLOW_LIMB_CAP },
     uMoonShadow: options.fx?.uMoonShadow
       ?? { value: Array.from({ length: MAX_MOON_SHADOWS }, () => new THREE.Vector4()) },
     uMoonShadowCount: options.fx?.uMoonShadowCount ?? { value: 0 },

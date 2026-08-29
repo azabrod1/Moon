@@ -135,6 +135,15 @@ ${rows(g.limbScan)}
 //
 // Values are 8-bit sRGB channels straight off the canvas: 20 samples on a fixed
 // grid across the frame, then 41 along the centre row crossing the limb.
+//
+// Recorded on Chromium (ANGLE/Metal), and that matters for one capture. The
+// shell itself is engine-independent to within 2/255 -- WebKit reproduces
+// twelve of the fifteen pose captures bit for bit, and the other three only at
+// 8 R, where the whole air is about a pixel wide. The volume-compare ghost is
+// not: its glass and its bloom put it up to 6/255 apart between the two
+// engines, which is wider than the tolerance here. So re-record on Chromium.
+// WebKit is the correctness oracle for this shader, never the source of these
+// numbers.
 
 /** One capture's numbers: \`<pose>.<tier>\` keys the whole set. */
 export interface AtmosphereGoldenPin {

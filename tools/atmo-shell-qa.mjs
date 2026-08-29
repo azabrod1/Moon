@@ -16,7 +16,7 @@
 //
 // Writes <pose>.<tier>.png plus <pose>.<tier>.json — 20 sampled radiances on a
 // fixed grid, which is the part a test can hold without a GPU.
-import { chromium } from 'playwright';
+import { chromium, webkit } from 'playwright';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -33,15 +33,27 @@ const H = Number(arg('h', '512'));
 const hero = flag('hero'); // wide framing set for the side-by-side, not the goldens
 const only = arg('tiers', 'analytic,lut').split(',');
 const NEAR_AU = Number(arg('near', '1e-6'));
+// The clock is part of the pose: Earth's spin, its clouds and its terminator
+// are all in the frame, so a golden taken at wall-clock time compares against
+// nothing. 2026-03-20 12:00 UTC — an equinox noon, the terminator through the
+// poles.
+const TIME_MS = Date.parse(arg('time', '2026-03-20T12:00:00Z'));
 const EXPOSURE = Number(arg('exposure', '1'));
 const BAKE_TIMEOUT_MS = 45000;
 
-// Fixed sample grid, in fractions of the frame: 5 across x 4 down. Enough to
-// carry the limb, the disc and the empty sky in one row of numbers.
+// Fixed sample grid, in fractions of the frame: 5 across x 4 down — the frame
+// as a whole, so a change anywhere in it shows.
 const GRID = [];
 for (let y = 0; y < 4; y++) {
   for (let x = 0; x < 5; x++) GRID.push([0.1 + x * 0.2, 0.15 + y * 0.2333]);
 }
+// And the thing this commit actually changes: a scan across the limb on the
+// centre row. Every pose here frames the limb near the middle of the frame, and
+// at 8 R the whole air is about one pixel wide — a scattered grid misses it
+// entirely, which is how two tiers can post identical numbers and different
+// pictures.
+const LIMB_SCAN = [];
+for (let i = 0; i <= 40; i++) LIMB_SCAN.push([0.35 + (i * 0.3) / 40, 0.5]);
 
 const POSES = [
   { name: 'limb-8r', kRadii: 8, fov: 50, phase: 0 },
@@ -53,10 +65,15 @@ const POSES = [
   { name: 'inside-air', kRadii: 1.008, fov: 70, phase: 0 },
 ];
 
-const browser = await chromium.launch({
-  headless: true,
-  args: ['--use-gl=angle', '--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader'],
-});
+// WebKit is the Safari/iOS oracle: the once-in-a-while breakers in a shader
+// like this are Metal NaNs and a driver that compiles the same GLSL differently,
+// not frame time.
+const browser = flag('webkit')
+  ? await webkit.launch({ headless: true })
+  : await chromium.launch({
+    headless: true,
+    args: ['--use-gl=angle', '--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader'],
+  });
 
 async function newSession() {
   const context = await browser.newContext({ viewport: { width: W, height: H }, deviceScaleFactor: 1 });
@@ -78,7 +95,7 @@ async function newSession() {
 
 /** Decode a PNG buffer in the page and read the fixed grid — no native image
  *  library is installed, which is the same reason texdiff.mjs decodes here. */
-async function sample(page, buffer) {
+async function sample(page, buffer, grid = GRID) {
   return page.evaluate(async ({ uri, grid }) => {
     const img = await new Promise((res, rej) => {
       const i = new Image();
@@ -97,19 +114,23 @@ async function sample(page, buffer) {
       const d = ctx.getImageData(x, y, 1, 1).data;
       return [d[0], d[1], d[2]];
     });
-  }, { uri: `data:image/png;base64,${buffer.toString('base64')}`, grid: GRID });
+  }, { uri: `data:image/png;base64,${buffer.toString('base64')}`, grid });
 }
 
 async function capture(page, file, poseMeta) {
   const buffer = await page.screenshot();
   await writeFile(`${file}.png`, buffer);
   const samples = await sample(page, buffer);
+  const limbScan = await sample(page, buffer, LIMB_SCAN);
   await writeFile(`${file}.json`, `${JSON.stringify({
     ...poseMeta,
     width: W,
     height: H,
     grid: GRID.map(([x, y]) => [Number(x.toFixed(4)), Number(y.toFixed(4))]),
     samples,
+    limbScanRow: 0.5,
+    limbScanX: LIMB_SCAN.map(([x]) => Number(x.toFixed(4))),
+    limbScan,
   }, null, 2)}\n`);
   return samples;
 }
@@ -127,6 +148,8 @@ try {
       return !ls || ls.classList.contains('hidden');
     }, { timeout: 60000 }).catch(() => {});
     await page.evaluate(() => window.__moon.setChrome(false));
+    await page.evaluate((t) => window.__moon.setTimeMs(t), TIME_MS);
+    await page.evaluate(() => window.__moon.setTimeRate(0));
 
     // The bake runs in the boot idle; both tiers wait for it, so the only
     // difference between the two runs is which material the shell wears.
@@ -154,11 +177,13 @@ try {
         ([near, exposure]) => window.__moon.pinCapture({ near, exposure, pixelRatio: 1 }),
         [NEAR_AU, EXPOSURE],
       );
+      await page.evaluate((t) => window.__moon.setTimeMs(t), TIME_MS);
       await page.waitForTimeout(1200);
       await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
       const samples = await capture(page, path.join(outDir, `${pose.name}.${tier}`), {
         pose: pose.name, tier, body: 'Earth', kRadii: pose.kRadii, fovDeg: pose.fov,
         phaseDeg: pose.phase, near: pinned.near, exposure: pinned.exposure, pixelRatio: 1,
+        timeUtcMs: TIME_MS,
       });
       const mean = samples.flat().reduce((a, b) => a + b, 0) / (samples.length * 3);
       const peak = Math.max(...samples.flat());
@@ -181,7 +206,7 @@ try {
     await page.waitForTimeout(6000);
     await capture(page, path.join(outDir, 'volume-compare.analytic'), {
       pose: 'volume-compare', tier: 'analytic', body: 'ghost',
-      near: null, exposure: 1, pixelRatio: 1,
+      near: null, exposure: 1, pixelRatio: 1, timeUtcMs: null,
     });
     console.log('[atmo-qa] volume-compare ghost captured');
     if (errors.length) for (const e of errors.slice(0, 5)) console.log('     ', e);

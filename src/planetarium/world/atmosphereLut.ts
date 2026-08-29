@@ -49,11 +49,13 @@
  *
  * The bake's own programs are deliberately outside the boot warm-up set —
  * nothing here draws until the tables exist — so a bake opens with a LINK
- * PHASE that compiles, links and primes ONE of them per frame before the first
- * layer draw. A link on a cold driver shader cache is tens of milliseconds of
- * main thread, and the seven of them landing on the frame that also submits
- * the first slice of draws is a 33 ms frame at the moment the bake arms. The
- * per-slice submission budget below covers draws alone.
+ * PHASE that compiles, resolves and primes ONE of them per frame before the
+ * first layer draw. A link on a cold driver shader cache is tens of
+ * milliseconds of main thread, and the seven of them landing on the frame that
+ * also submits the first slice of draws is a 33 ms frame at the moment the
+ * bake arms. Resolving is its own step because a compile reporting ready has
+ * only had its link JOB finished (world/shaderWarmup.ts). The per-slice
+ * submission budget below covers draws alone.
  *
  * Scratch targets are disposed between bodies, and
  * the multiple-scattering delta deliberately aliases the single-Rayleigh delta:
@@ -70,6 +72,7 @@
 import * as THREE from 'three';
 import { debugLog, debugWarn } from '../../shared/debug';
 import { canGPUDoAtmosphereLut } from '../../app/gpuCapability';
+import { resolveProgramLinks } from './shaderWarmup';
 import {
   ATMOSPHERE_SPECS,
   ATMOSPHERE_TABLE_SIZES_FULL,
@@ -105,13 +108,16 @@ export interface AtmosphereTables {
 }
 
 /** What one bake program's link cost, split so a frame's share of it is
- *  visible. `submitMs` and `primeMs` are main-thread time inside the link
- *  step's own frame; `readyMs` is wall time from the submission to the driver
- *  reporting the program ready, most of which a driver with
+ *  visible. `submitMs`, `resolveMs` and `primeMs` are main-thread time inside
+ *  the link step's own frame; `readyMs` is wall time from the submission to
+ *  the driver reporting the program ready, most of which a driver with
  *  KHR_parallel_shader_compile spends off the main thread. */
 export interface AtmosphereLinkTiming {
   program: string;
   submitMs: number;
+  /** Forcing the driver to finish the build its link job only prepared. Ready
+   *  does not mean drawable, and this is where that difference is paid. */
+  resolveMs: number;
   primeMs: number;
   readyMs: number;
 }
@@ -1505,7 +1511,7 @@ export class AtmosphereLut {
         }
         const timing = await step.run();
         links.push(timing);
-        submitMs += timing.submitMs + timing.primeMs;
+        submitMs += timing.submitMs + timing.resolveMs + timing.primeMs;
         i++;
         slices++;
         // A frame of its own for every step, including the last: a warm shader
@@ -2038,10 +2044,13 @@ export class AtmosphereLut {
    * bound-versus-canvas enters the key — not the target's size or format — so
    * one 1x1 8-bit target keys like every table.
    *
-   * Then a 1-pixel draw. The compile only submits the link; three fetches the
-   * program's uniform locations on the program's first draw, and on a driver
-   * without KHR_parallel_shader_compile that first draw is also where the link
-   * itself is waited out. Paying both here keeps them off the layer draws.
+   * Then the driver's own build, forced through the shared resolve phase: a
+   * compile reporting ready has only had its link job finished, and on
+   * ANGLE/Metal the pipeline behind it is built by the first call that needs
+   * the program. Then a 1-pixel draw, which on a driver without
+   * KHR_parallel_shader_compile is where a link would otherwise be waited out,
+   * and which also proves the program draws into a bound target. Paying all
+   * three here keeps them off the layer draws.
    */
   private linkStep(program: string, material: THREE.ShaderMaterial): LinkStep {
     return {
@@ -2065,6 +2074,14 @@ export class AtmosphereLut {
         // below is what actually waits the link out.
         await ready;
         const readyMs = performance.now() - started;
+        const resolveStart = performance.now();
+        // The step owns its frame already, so every program the compile just
+        // created is forced here rather than one to a frame.
+        await resolveProgramLinks(this.renderer, {
+          perFrame: Number.POSITIVE_INFINITY,
+          onError: (err) => debugWarn('Atmosphere link resolve failed', err),
+        });
+        const resolveMs = performance.now() - resolveStart;
         const primeStart = performance.now();
         // Frames ran during the await, so the bound target is read again here
         // rather than carried across it.
@@ -2077,7 +2094,7 @@ export class AtmosphereLut {
           this.renderer.setRenderTarget(prevPrime);
         }
         this.linked.add(material);
-        return { program, submitMs, primeMs: performance.now() - primeStart, readyMs };
+        return { program, submitMs, resolveMs, primeMs: performance.now() - primeStart, readyMs };
       },
     };
   }

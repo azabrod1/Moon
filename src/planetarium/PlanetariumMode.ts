@@ -34,9 +34,9 @@ import {
   SUN_POLE_RA_DEG,
   type PlanetData,
 } from './planets/planetData';
-import { applySunGlowTier, armArrivalWarmGoal, bindKtx2TierLoader, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade } from './PlanetFactory';
+import { applySunGlowTier, armArrivalWarmGoal, bindKtx2TierLoader, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createAtmosphereMaterial, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade } from './PlanetFactory';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
-import type { SurfaceShadingFx } from './world/surfaceShading';
+import { surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import { SECTOR_SETS, SectorStreamer, type SectorMeasure, type SectorStats, type SectorSuspend } from './world/sectorStreamer';
 import { loadBrightStarCatalog } from './world/starCatalogLoader';
@@ -127,13 +127,15 @@ import {
 } from './world/sunGlareMask';
 import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
-import { AtmosphereLut, type AtmosphereBakeStats } from './world/atmosphereLut';
+import { AtmosphereLut, type AtmosphereBakeStats, type AtmosphereTables } from './world/atmosphereLut';
+import { bindAtmosphereShellTables, disposeAtmosphereShellMaterial } from './world/atmosphereShell';
 import {
   ATMOSPHERE_TABLE_SIZES_FULL,
   ATMOSPHERE_TABLE_SIZES_HALF,
   atmosphereParams,
   scatteringTexture3DCoords,
   scatteringUvwzFromRMuMuSNu,
+  solarIrradianceScale,
   transmittanceUvFromRMu,
 } from './world/atmosphereModel';
 import { captureDeviceTextureCaps, resolveTextureUrl, TIER_MAP_WIDTH } from './world/texturePolicy';
@@ -1861,6 +1863,20 @@ export class PlanetariumMode {
   // couple of frames later — the first live frames must not compile anything
   // it missed (that stall is the very thing it exists to prevent).
   private shaderWarmupProgramCount: number | null = null;
+  /** QA override for which tier the shells wear: 'analytic' holds them on the
+   *  fallback so the two looks can be captured from one session, null lets the
+   *  tables decide. Never set outside the dev bridge. */
+  private devAtmosphereTier: 'analytic' | null = null;
+
+  /** Both materials a body's atmosphere shell can wear, and the tables the LUT
+   *  one is currently pointed at (a re-bake after a context loss makes new
+   *  ones). The mesh holds whichever is drawing. */
+  private readonly atmosphereShells = new Map<string, {
+    analytic: THREE.ShaderMaterial;
+    lut: THREE.ShaderMaterial | null;
+    bound: AtmosphereTables | null;
+  }>();
+
   /** Precomputed atmosphere tables. Built in the boot idle, never behind the
    *  load screen; nothing draws with them yet. */
   private atmosphereLut: AtmosphereLut | null = null;
@@ -2446,7 +2462,12 @@ export class PlanetariumMode {
       // mid-gesture. Runs after restoreState/starfield/constellations so the
       // compiled set matches what a restored session actually renders.
       performance.mark('plm:precompile:start');
-      const probes = createShaderWarmupProbes();
+      // The atmosphere shell's LUT program is warmed with the rest: the tier
+      // swaps in mid-flight when the bake validates, and a link at that moment
+      // is a dropped frame in the near band. Skipped where no tier is possible.
+      const probes = createShaderWarmupProbes(
+        this.atmosphereLut?.probeCapability() ? this.atmosphereLut.sizes : undefined,
+      );
       // The landed system's shadow visuals attach at landing, after this
       // compile pass — probe their material families here too, or the first
       // surface-view entry links those programs mid-gesture (a frozen frame
@@ -3982,6 +4003,68 @@ export class PlanetariumMode {
     );
   }
 
+  /**
+   * Keep a body's shell on the best tier it can draw THIS frame: the LUT
+   * material once its tables are baked and validated, the analytic one before
+   * that and after a context loss takes the tables with it. The mesh, its
+   * scale and its two per-frame uniforms are shared by both, so the swap is a
+   * material assignment — and never a frame with no shell at all.
+   *
+   * The LUT material is built on first use, but its program is not linked here:
+   * the boot warm-up compiled the same shader with the same table sizes, which
+   * is the whole reason the warm set carries it.
+   */
+  private syncAtmosphereShell(planet: PlanetMesh): void {
+    const mesh = planet.atmosphere;
+    if (!mesh) return;
+    const name = planet.data.name;
+    let shells = this.atmosphereShells.get(name);
+    if (!shells) {
+      shells = { analytic: mesh.material as THREE.ShaderMaterial, lut: null, bound: null };
+      this.atmosphereShells.set(name, shells);
+    }
+    const tables = this.devAtmosphereTier === 'analytic'
+      ? null
+      : this.atmosphereLut?.tables(name) ?? null;
+    const config = ATMOSPHERES[name];
+    if (tables && config) {
+      if (!shells.lut) {
+        shells.lut = createAtmosphereMaterial(config, planet.data.radiusAU, 'lut', {
+          lut: {
+            body: name,
+            sizes: tables.sizes,
+            fx: planet.fx,
+            // The penumbra width the ground's caster trace uses, so the eclipse
+            // spot on the air has the same soft edge as the one below it.
+            sunTan: surfaceShadingArgsOf(planet.mesh.material as THREE.Material)?.sunTan ?? 0,
+          },
+        });
+      }
+      if (shells.bound !== tables) {
+        bindAtmosphereShellTables(shells.lut, tables);
+        shells.bound = tables;
+      }
+      if (mesh.material !== shells.lut) {
+        this.carryShellUniforms(shells.analytic, shells.lut);
+        mesh.material = shells.lut;
+      }
+      return;
+    }
+    if (shells.lut && mesh.material === shells.lut) {
+      this.carryShellUniforms(shells.lut, shells.analytic);
+      mesh.material = shells.analytic;
+      shells.bound = null;
+    }
+  }
+
+  /** Hand the live per-frame values to the material taking over, so the swap
+   *  frame does not draw a stale fade or a stale sun. */
+  private carryShellUniforms(from: THREE.ShaderMaterial, to: THREE.ShaderMaterial): void {
+    to.uniforms.alphaScale.value = from.uniforms.alphaScale.value;
+    (to.uniforms.uSunDirWorld.value as THREE.Vector3)
+      .copy(from.uniforms.uSunDirWorld.value as THREE.Vector3);
+  }
+
   private updatePlanetScaling() {
     if (!this.solarSystem) return;
     for (const planet of this.solarSystem.planets) {
@@ -3989,6 +4072,9 @@ export class PlanetariumMode {
 
       // Atmosphere alpha: fade in as player approaches the planet's system radius
       if (planet.atmosphere) {
+        // Before the fade is written: the tier may have changed the material it
+        // is written to.
+        this.syncAtmosphereShell(planet);
         const wp = planet.worldPosAU!;
         const dx = this.player.posX - wp.x;
         const dy = this.player.posY - wp.y;
@@ -12122,6 +12208,23 @@ export class PlanetariumMode {
     };
   }
 
+  /** Pin the shells to the analytic tier (or null to let the tables decide) and
+   *  report which material each one is wearing now — the A/B a golden pair
+   *  needs, without a second session or a different composer path. */
+  devSetAtmosphereTier(tier: 'analytic' | null): Record<string, string> {
+    this.devAtmosphereTier = tier;
+    const wearing: Record<string, string> = {};
+    for (const planet of this.solarSystem?.planets ?? []) {
+      if (!planet.atmosphere) continue;
+      this.syncAtmosphereShell(planet);
+      const material = planet.atmosphere.material as THREE.ShaderMaterial;
+      wearing[planet.data.name] = material === this.atmosphereShells.get(planet.data.name)?.lut
+        ? 'lut'
+        : 'analytic';
+    }
+    return wearing;
+  }
+
   /** Headless-QA readback for the atmosphere tables: the tier's state, the
    *  probe result, and every bake's numbers. */
   devAtmosphereState(): unknown {
@@ -12379,7 +12482,7 @@ export class PlanetariumMode {
    * center — the close-approach view where silhouette tessellation shows.
    * Stands on the sunlit side so the limb is lit. Dev bridge only.
    */
-  devLimbView(name: string, kRadii = 1.5, fovDeg = 50): boolean {
+  devLimbView(name: string, kRadii = 1.5, fovDeg = 50, phaseDeg = 0): boolean {
     if (!this.solarSystem) return false;
     const body = this.planetWorldPositions.get(name);
     const r = this.solarSystem.planets.find((p) => p.data.name === name)?.data.radiusAU;
@@ -12387,6 +12490,17 @@ export class PlanetariumMode {
     const d = r * kRadii;
     // Sunward side: the Sun sits at the heliocentric origin of these coords.
     const sunward = new THREE.Vector3(-body.x, -body.y, -body.z).normalize();
+    // phaseDeg swings the stand point away from the Sun in the plane the aim
+    // below builds its tangent in: 0 is the fully lit limb, 90 the terminator
+    // seen edge-on, 180 the night side. Same rig at every angle, so a set of
+    // poses differs only by this number.
+    if (phaseDeg !== 0) {
+      const spinUp = Math.abs(sunward.y) < 0.95
+        ? new THREE.Vector3(0, 1, 0)
+        : new THREE.Vector3(1, 0, 0);
+      const axis = new THREE.Vector3().crossVectors(sunward, spinUp).normalize();
+      sunward.applyAxisAngle(axis, (phaseDeg * Math.PI) / 180).normalize();
+    }
     this.devFreeCamera = true;
     this.player.posX = body.x + sunward.x * d;
     this.player.posY = body.y + sunward.y * d;
@@ -16119,6 +16233,17 @@ export class PlanetariumMode {
         if (atmoMat.uniforms.uSunDirWorld) {
           atmoMat.uniforms.uSunDirWorld.value.copy(state.sunDirection);
         }
+        // The tables are baked at one unit of solar irradiance, so the render
+        // multiplies the body's own back in — by the SCENE's falloff law, the
+        // one its point light lights the ground with, or the air would sit at a
+        // different exposure from the surface under it.
+        if (atmoMat.uniforms.uSolarIrradiance) {
+          atmoMat.uniforms.uSolarIrradiance.value = solarIrradianceScale(Math.sqrt(
+            state.positionAU.x * state.positionAU.x
+            + state.positionAU.y * state.positionAU.y
+            + state.positionAU.z * state.positionAU.z,
+          ));
+        }
       }
 
       planet.worldPosAU = {
@@ -16230,6 +16355,12 @@ export class PlanetariumMode {
     for (const moons of this.planetMoons.values()) {
       for (const m of moons) cancelNormalUpgrade(m.normalUpgrade);
     }
+    // The analytic shells belong to the meshes the solar system owns; the LUT
+    // ones were built here, and carry the 1x1 stand-in tables with them.
+    for (const shells of this.atmosphereShells.values()) {
+      if (shells.lut) disposeAtmosphereShellMaterial(shells.lut);
+    }
+    this.atmosphereShells.clear();
     this.sectors?.dispose();
     this.sectors = null;
     resetTextureWarmer(); // drop queued warm-ups and the renderer binding with the mode

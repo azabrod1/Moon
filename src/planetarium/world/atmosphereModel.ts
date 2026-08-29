@@ -244,13 +244,17 @@ export function bodySolarIrradianceScale(name: string): number {
 }
 
 /**
- * The single global multiplier between baked radiance (solar irradiance 1.0,
- * physical units) and the renderer's display-referred frame, which is an
- * authored point light through ACES tone mapping. One number, calibrated once
- * against the sunlit disc when the first consumer of the tables lands; 1.0
- * until then, since nothing draws with the tables yet.
+ * The single global multiplier between baked radiance (solar irradiance 1.0)
+ * and the renderer's display-referred frame. It is the SCENE's solar
+ * irradiance at Earth: the globe is lit by a point light of intensity 3, and
+ * three's Lambert term makes that intensity the perpendicular irradiance the
+ * ground reflects (radiance = intensity * cos * albedo / pi), so air baked at
+ * an irradiance of 1 next to it would sit three stops of exposure below the
+ * disc it hazes. The distance law is the other half of the same bridge
+ * (SOLAR_DISTANCE_DECAY); a test holds this to the light's intensity for the
+ * same reason it holds that to the light's decay.
  */
-export const AIRLIGHT_SCALE = 1.0;
+export const AIRLIGHT_SCALE = 3.0;
 
 /** Angular radius of the Sun as seen from Earth, radians — softens the
  *  transmittance-to-Sun terminator so the ground does not switch on in one

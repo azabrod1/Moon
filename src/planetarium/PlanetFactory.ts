@@ -28,6 +28,8 @@ import {
 import { debugWarn } from '../shared/debug';
 import { applyTextureDefaults, clampTier, resolveTextureUrl, type TextureTier, type MapKind, touchTextureBudget } from './world/texturePolicy';
 import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
+import { createAtmosphereShellMaterial, disposeAtmosphereShellMaterial } from './world/atmosphereShell';
+import { ATMOSPHERE_TABLE_SIZES_FULL, type AtmosphereTableSizes } from './world/atmosphereModel';
 import { queueTextureWarm } from './world/textureWarmer';
 import { createLensShaderUniforms } from '../shared/three/lensShader';
 import { fetchTextureDurably, type DurableTextureFetch } from './world/textureRetry';
@@ -1226,17 +1228,48 @@ function createFallbackTexture(key: string, kind: MapKind = 'color'): THREE.Text
   return tex;
 }
 
+/** Which model paints the shell. 'analytic' is the authored single-scatter
+ *  fringe — the floor, on every device and every frame until a body's tables
+ *  are baked and validated; 'lut' reads the precomputed scattering tables.
+ *  Never inferred from state: a caller that has no tables (the volume-compare
+ *  ghost, whose shell is a studio prop at container scale) says so. */
+export type AtmosphereTier = 'analytic' | 'lut';
+
 /**
- * The atmosphere glow ShaderMaterial — the ONE place the shader's uniform
- * block is assembled from an AtmosphereConfig, shared with the volume-compare
- * ghost so a uniform added to shared/shaders/atmosphere.ts is wired here and
- * nowhere else. Callers own geometry, scale and render order.
+ * The atmosphere shell material — the ONE place a shell's uniform block is
+ * assembled, shared with the volume-compare ghost so a uniform added to
+ * shared/shaders/atmosphere.ts is wired here and nowhere else. Callers own
+ * geometry, scale and render order.
  */
 export function createAtmosphereMaterial(
   config: AtmosphereConfig,
   planetRadius: number,
-  opts?: { initialAlpha?: number; initialSunDir?: THREE.Vector3 },
+  tier: AtmosphereTier,
+  opts?: {
+    initialAlpha?: number;
+    initialSunDir?: THREE.Vector3;
+    /** LUT tier only: the body whose parameters and tables the shell carries,
+     *  the table profile its addressing compiles against, and the shading
+     *  uniforms whose eclipse casters it traces. */
+    lut?: {
+      body: string;
+      sizes?: AtmosphereTableSizes;
+      fx?: SurfaceShadingFx;
+      sunTan?: number;
+    };
+  },
 ): THREE.ShaderMaterial {
+  if (tier === 'lut') {
+    return createAtmosphereShellMaterial({
+      planetRadius,
+      body: opts?.lut?.body ?? 'Earth',
+      sizes: opts?.lut?.sizes ?? ATMOSPHERE_TABLE_SIZES_FULL,
+      fx: opts?.lut?.fx,
+      sunTan: opts?.lut?.sunTan,
+      initialAlpha: opts?.initialAlpha,
+      initialSunDir: opts?.initialSunDir,
+    });
+  }
   return new THREE.ShaderMaterial({
     vertexShader: atmosphereVertexShader,
     fragmentShader: atmosphereFragmentShader,
@@ -1261,11 +1294,21 @@ export function createAtmosphereMaterial(
   });
 }
 
+/** Draw order for the atmosphere shell, above the companion shells that share
+ *  its centre. All three sit at the same distance, so the transparent sort ties
+ *  on depth and falls back to construction order, which put the air UNDER the
+ *  cloud deck: wherever the deck's sphere overhangs the globe's silhouette it
+ *  multiplied the airlight behind it by its own 0.35 alpha, notching the
+ *  innermost band of the limb — the brightest part of it. */
+export const ATMOSPHERE_SHELL_RENDER_ORDER = 1;
+
 function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig): THREE.Mesh {
   const geo = new THREE.SphereGeometry(radiusAU * config.scale, 64, 32);
   // alphaScale starts at 0: faded out until the per-frame distance feed runs
   // (no first-frame flash); uSunDirWorld is fed per frame the same way.
-  return new THREE.Mesh(geo, createAtmosphereMaterial(config, radiusAU));
+  const mesh = new THREE.Mesh(geo, createAtmosphereMaterial(config, radiusAU, 'analytic'));
+  mesh.renderOrder = ATMOSPHERE_SHELL_RENDER_ORDER;
+  return mesh;
 }
 
 // Earth's companion shells sit just above the globe: the night lights hug the
@@ -2118,7 +2161,13 @@ const MOON_NORMAL_KEYS: Record<string, string> = {
  * makes it visible only for a one-pixel, load-veiled real draw on drivers where
  * compileAsync cannot guarantee a completed link.
  */
-export function createShaderWarmupProbes(): { group: THREE.Group; dispose: () => void } {
+export function createShaderWarmupProbes(
+  /** Table profile of the session's LUT tier, when the device has one. The
+   *  atmosphere shell swaps to the LUT material the moment the bake validates,
+   *  mid-flight and mid-frame; its program links here instead. Omitted where no
+   *  tier is possible, so nothing is compiled that can never draw. */
+  lutSizes?: AtmosphereTableSizes,
+): { group: THREE.Group; dispose: () => void } {
   const makeTex = (kind: MapKind): THREE.Texture => {
     const canvas = document.createElement('canvas');
     canvas.width = 1;
@@ -2145,6 +2194,16 @@ export function createShaderWarmupProbes(): { group: THREE.Group; dispose: () =>
     mats.push(mat);
     group.add(new THREE.Mesh(geo, mat));
   }
+  // The LUT shell: one program for every body (the table sizes are the only
+  // thing in its key, and one profile is chosen per session), bound to 1×1
+  // stand-in tables it never draws with.
+  let shell: THREE.ShaderMaterial | null = null;
+  if (lutSizes) {
+    shell = createAtmosphereMaterial(ATMOSPHERES.Earth, 1e-9, 'lut', {
+      lut: { body: 'Earth', sizes: lutSizes },
+    });
+    group.add(new THREE.Mesh(geo, shell));
+  }
   return {
     group,
     dispose: () => {
@@ -2154,6 +2213,7 @@ export function createShaderWarmupProbes(): { group: THREE.Group; dispose: () =>
         mat.normalMap?.dispose();
         mat.dispose();
       }
+      if (shell) disposeAtmosphereShellMaterial(shell);
       geo.dispose();
     },
   };

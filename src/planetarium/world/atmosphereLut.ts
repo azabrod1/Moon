@@ -142,11 +142,25 @@ void main() {
 }
 `;
 
-/** Everything the passes share: the parameters, the geometry, the table
- *  addressing and the integrals. Transcribed from Bruneton's reference model
- *  and kept in step with atmosphereModel.ts, which is what the CPU comparison
- *  checks. */
-const BAKE_COMMON = /* glsl */`
+/**
+ * The lookup half of the model in GLSL: the parameters, the geometry, the table
+ * addressing, the samplers and the phase functions. Transcribed from Bruneton's
+ * reference model and kept in step with atmosphereModel.ts, which is what the
+ * CPU comparison checks.
+ *
+ * Exported because every consumer of the tables — the bake's own passes, the
+ * atmosphere shell, and anything later that reads air along a ray — must use
+ * ONE text. The conventions here are not recoverable from the textures: the
+ * transmittance table holds OPTICAL DEPTH (`T = exp(-texel)`, a segment is a
+ * DIFFERENCE of two samples), the scattering table holds Rayleigh in rgb with
+ * only the red Mie channel in alpha, both without their phase functions, and
+ * the packed nu axis has to be interpolated by hand. A second transcription is
+ * the one place those can be got wrong with no test noticing.
+ *
+ * Requires the table sizes as #defines (atmosphereTableDefines) and the uniform
+ * block (atmosphereLookupUniforms + applyAtmosphereParams).
+ */
+export const ATMOSPHERE_LOOKUP_GLSL = /* glsl */`
 precision highp float;
 precision highp sampler2D;
 precision highp sampler3D;
@@ -218,34 +232,7 @@ float getUnitRangeFromTextureCoord(float u, int size) {
   return (u - 0.5 / float(size)) / (1.0 - 1.0 / float(size));
 }
 
-// --- transmittance ---------------------------------------------------------
-
-float computeOpticalLengthToTopAtmosphereBoundary(int profile, float r, float mu) {
-  const int SAMPLE_COUNT = 500;
-  float dx = distanceToTopAtmosphereBoundary(r, mu) / float(SAMPLE_COUNT);
-  float result = 0.0;
-  for (int i = 0; i <= SAMPLE_COUNT; ++i) {
-    float d_i = float(i) * dx;
-    float r_i = safeSqrt(d_i * d_i + 2.0 * r * mu * d_i + r * r);
-    float y_i = profileDensity(profile, r_i - uBottomRadius);
-    float w_i = (i == 0 || i == SAMPLE_COUNT) ? 0.5 : 1.0;
-    result += y_i * w_i * dx;
-  }
-  return result;
-}
-
-// The table stores OPTICAL DEPTH, not transmittance. On a horizon path the
-// transmittance is ~1e-6 — a half-float subnormal that GPUs flush to zero — and
-// the segment transmittance below is a quotient of two of them, so the zero
-// arrives as an infinity or a NaN and speckles the horizon and the terminator,
-// the two features these tables exist to draw. Optical depth spans 0..~22
-// (measured max in Earth's table: 21.7, blue, a horizon path at the ground),
-// where half precision has room, and the segment becomes a difference.
-vec3 computeOpticalDepthToTopAtmosphereBoundary(float r, float mu) {
-  return uRayleighScattering * computeOpticalLengthToTopAtmosphereBoundary(0, r, mu) +
-      uMieExtinction * computeOpticalLengthToTopAtmosphereBoundary(1, r, mu) +
-      uAbsorptionExtinction * computeOpticalLengthToTopAtmosphereBoundary(2, r, mu);
-}
+// --- transmittance table ---------------------------------------------------
 
 vec2 getTransmittanceTextureUvFromRMu(float r, float mu) {
   float H = safeSqrt(uTopRadius * uTopRadius - uBottomRadius * uBottomRadius);
@@ -414,16 +401,22 @@ void getRMuMuSNuFromScatteringTextureFragCoord(vec3 fragCoord,
   nu = clamp(nu, mu * mu_s - s, mu * mu_s + s);
 }
 
-vec3 texel3D(sampler3D tex, vec3 uvw) { return texture(tex, uvw).rgb; }
-
-vec3 getScattering3D(sampler3D tex, float r, float mu, float mu_s, float nu, bool hitsGround) {
+// The nu axis is packed onto x next to mu_s, so a hardware fetch would filter
+// across the seam between two nu slabs and two mu_s cells at once. Two fetches
+// one slab apart and a hand lerp instead — the cost the whole layout is chosen
+// against, and the reason a lookup is 2 fetches rather than 1.
+vec4 getScattering3DRGBA(sampler3D tex, float r, float mu, float mu_s, float nu, bool hitsGround) {
   vec4 uvwz = getScatteringTextureUvwzFromRMuMuSNu(r, mu, mu_s, nu, hitsGround);
   float tex_coord_x = uvwz.x * float(SCATTERING_TEXTURE_NU_SIZE - 1);
   float tex_x = floor(tex_coord_x);
   float lerp = tex_coord_x - tex_x;
   vec3 uvw0 = vec3((tex_x + uvwz.y) / float(SCATTERING_TEXTURE_NU_SIZE), uvwz.z, uvwz.w);
   vec3 uvw1 = vec3((tex_x + 1.0 + uvwz.y) / float(SCATTERING_TEXTURE_NU_SIZE), uvwz.z, uvwz.w);
-  return texel3D(tex, uvw0) * (1.0 - lerp) + texel3D(tex, uvw1) * lerp;
+  return texture(tex, uvw0) * (1.0 - lerp) + texture(tex, uvw1) * lerp;
+}
+
+vec3 getScattering3D(sampler3D tex, float r, float mu, float mu_s, float nu, bool hitsGround) {
+  return getScattering3DRGBA(tex, r, mu, mu_s, nu, hitsGround).rgb;
 }
 
 // --- irradiance table addressing -------------------------------------------
@@ -446,6 +439,40 @@ vec3 getIrradiance(sampler2D tex, float r, float mu_s) {
   return texture(tex, getIrradianceTextureUvFromRMuS(r, mu_s)).rgb;
 }
 `;
+
+/** The bake's own numerical integrals. Only the passes that WRITE a table need
+ *  them; a consumer that reads the tables must never carry a 500-iteration loop
+ *  into a per-pixel shader. */
+const BAKE_INTEGRALS_GLSL = /* glsl */`
+float computeOpticalLengthToTopAtmosphereBoundary(int profile, float r, float mu) {
+  const int SAMPLE_COUNT = 500;
+  float dx = distanceToTopAtmosphereBoundary(r, mu) / float(SAMPLE_COUNT);
+  float result = 0.0;
+  for (int i = 0; i <= SAMPLE_COUNT; ++i) {
+    float d_i = float(i) * dx;
+    float r_i = safeSqrt(d_i * d_i + 2.0 * r * mu * d_i + r * r);
+    float y_i = profileDensity(profile, r_i - uBottomRadius);
+    float w_i = (i == 0 || i == SAMPLE_COUNT) ? 0.5 : 1.0;
+    result += y_i * w_i * dx;
+  }
+  return result;
+}
+
+// The table stores OPTICAL DEPTH, not transmittance. On a horizon path the
+// transmittance is ~1e-6 — a half-float subnormal that GPUs flush to zero — and
+// the segment transmittance below is a quotient of two of them, so the zero
+// arrives as an infinity or a NaN and speckles the horizon and the terminator,
+// the two features these tables exist to draw. Optical depth spans 0..~22
+// (measured max in Earth's table: 21.7, blue, a horizon path at the ground),
+// where half precision has room, and the segment becomes a difference.
+vec3 computeOpticalDepthToTopAtmosphereBoundary(float r, float mu) {
+  return uRayleighScattering * computeOpticalLengthToTopAtmosphereBoundary(0, r, mu) +
+      uMieExtinction * computeOpticalLengthToTopAtmosphereBoundary(1, r, mu) +
+      uAbsorptionExtinction * computeOpticalLengthToTopAtmosphereBoundary(2, r, mu);
+}
+`;
+
+const BAKE_COMMON = ATMOSPHERE_LOOKUP_GLSL + BAKE_INTEGRALS_GLSL;
 
 const TRANSMITTANCE_FRAGMENT = /* glsl */`
 out vec4 fragColor;
@@ -841,6 +868,15 @@ export class AtmosphereLut {
     return this.capable;
   }
 
+  /** Run the probe now, cached for the session. The boot warm-up asks before
+   *  any bake: a consumer of the tables has to link its program under the load
+   *  screen or pay the link mid-flight, and on a device with no tier that link
+   *  would be for a material that can never draw. */
+  probeCapability(): boolean {
+    if (this.capable === null) this.capable = canGPUDoAtmosphereLut(this.renderer);
+    return this.capable;
+  }
+
   stats(): readonly AtmosphereBakeStats[] {
     return this.bakeStats;
   }
@@ -867,8 +903,7 @@ export class AtmosphereLut {
     if (this.disposed || this.contextLost) return false;
     if (this.ready.has(body)) return true;
     if (!ATMOSPHERE_SPECS[body] || this.givenUp) return false;
-    if (this.capable === null) this.capable = canGPUDoAtmosphereLut(this.renderer);
-    if (!this.capable) return false;
+    if (!this.probeCapability()) return false;
 
     const generation = this.generation;
     const params = atmosphereParams(body);
@@ -1036,17 +1071,7 @@ export class AtmosphereLut {
   // -- internals ------------------------------------------------------------
 
   private defines(): Record<string, string> {
-    const s = this.sizes;
-    return {
-      TRANSMITTANCE_TEXTURE_WIDTH: String(s.transmittanceW),
-      TRANSMITTANCE_TEXTURE_HEIGHT: String(s.transmittanceH),
-      SCATTERING_TEXTURE_R_SIZE: String(s.scatteringR),
-      SCATTERING_TEXTURE_MU_SIZE: String(s.scatteringMu),
-      SCATTERING_TEXTURE_MU_S_SIZE: String(s.scatteringMuS),
-      SCATTERING_TEXTURE_NU_SIZE: String(s.scatteringNu),
-      IRRADIANCE_TEXTURE_WIDTH: String(s.irradianceW),
-      IRRADIANCE_TEXTURE_HEIGHT: String(s.irradianceH),
-    };
+    return atmosphereTableDefines(this.sizes);
   }
 
   private ensureMaterials(): void {
@@ -1574,6 +1599,35 @@ function targetBytes(target: THREE.WebGLRenderTarget, depth: number): number {
   return target.width * target.height * depth * bytesPerTexel;
 }
 
+/** The table sizes as #defines. ATMOSPHERE_LOOKUP_GLSL addresses the tables
+ *  through them, so every material that samples one profile's tables compiles
+ *  with the same set — and one profile is chosen per session, so the program
+ *  cache never forks over it. */
+export function atmosphereTableDefines(sizes: AtmosphereTableSizes): Record<string, string> {
+  return {
+    TRANSMITTANCE_TEXTURE_WIDTH: String(sizes.transmittanceW),
+    TRANSMITTANCE_TEXTURE_HEIGHT: String(sizes.transmittanceH),
+    SCATTERING_TEXTURE_R_SIZE: String(sizes.scatteringR),
+    SCATTERING_TEXTURE_MU_SIZE: String(sizes.scatteringMu),
+    SCATTERING_TEXTURE_MU_S_SIZE: String(sizes.scatteringMuS),
+    SCATTERING_TEXTURE_NU_SIZE: String(sizes.scatteringNu),
+    IRRADIANCE_TEXTURE_WIDTH: String(sizes.irradianceW),
+    IRRADIANCE_TEXTURE_HEIGHT: String(sizes.irradianceH),
+  };
+}
+
+/** The uniform block ATMOSPHERE_LOOKUP_GLSL declares, samplers included. A
+ *  consumer merges this into its own uniforms and fills it with
+ *  applyAtmosphereParams + the three table textures. */
+export function atmosphereLookupUniforms(): Record<string, THREE.IUniform> {
+  return {
+    ...commonUniforms(),
+    uTransmittance: { value: null },
+    uScattering: { value: null },
+    uIrradiance: { value: null },
+  };
+}
+
 function commonUniforms(): Record<string, THREE.IUniform> {
   return {
     uBottomRadius: { value: 1 },
@@ -1593,7 +1647,16 @@ function commonUniforms(): Record<string, THREE.IUniform> {
 }
 
 function setAtmosphereUniforms(material: THREE.ShaderMaterial, p: AtmosphereParams): void {
-  const u = material.uniforms;
+  applyAtmosphereParams(material.uniforms, p);
+}
+
+/** Write one body's parameters into a uniform block from
+ *  atmosphereLookupUniforms(). Radius units (bottom radius 1) — the form the
+ *  tables were baked in, and the only form the GLSL is safe in. */
+export function applyAtmosphereParams(
+  u: Record<string, THREE.IUniform>,
+  p: AtmosphereParams,
+): void {
   u.uBottomRadius.value = p.bottomRadius;
   u.uTopRadius.value = p.topRadius;
   const setRGB = (v: THREE.Vector3, rgb: readonly [number, number, number]): void => {

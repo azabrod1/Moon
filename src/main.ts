@@ -178,7 +178,15 @@ function ensureDirectLensTexture(): THREE.FramebufferTexture {
   return directLensTexture;
 }
 
+/** Capture pins (pinCapture): a golden has to be reproducible, and three of
+ *  the things that decide its pixels move on their own — the near plane is
+ *  driven by the cruise governor, the exposure by the Sun's on-screen state,
+ *  the pixel ratio by the display. DEV-only, null when nothing is pinned. */
+let exposurePin: number | null = null;
+let pixelRatioPin: number | null = null;
+
 function getTargetPixelRatio(): number {
+  if (pixelRatioPin !== null) return pixelRatioPin;
   if (isMobile) return Math.min(window.devicePixelRatio, 2);
   return Math.min(Math.max(window.devicePixelRatio, 1.5), 2.5);
 }
@@ -574,8 +582,8 @@ function installDevHooks() {
       planetariumMode?.devFrameBody(name, fillFraction, phaseAngleDeg, distMul, offNdcX, offNdcY) ?? false,
     viewFrom: (fromName: string, toName: string, fovDeg?: number) =>
       planetariumMode?.devViewFrom(fromName, toName, fovDeg) ?? false,
-    limbView: (name: string, kRadii?: number, fovDeg?: number) =>
-      planetariumMode?.devLimbView(name, kRadii, fovDeg) ?? false,
+    limbView: (name: string, kRadii?: number, fovDeg?: number, phaseDeg?: number) =>
+      planetariumMode?.devLimbView(name, kRadii, fovDeg, phaseDeg) ?? false,
     frameSun: (distanceAU?: number, fovDeg?: number, offNdcX?: number, offNdcY?: number) =>
       planetariumMode?.devFrameSun(distanceAU, fovDeg, offNdcX, offNdcY) ?? false,
     frameSunBehindShip: (
@@ -601,6 +609,9 @@ function installDevHooks() {
     // Precomputed atmosphere tables: tier state, a measurement bake, and table
     // readback through the 8-bit blit.
     atmoState: () => planetariumMode?.devAtmosphereState() ?? null,
+    // Hold the shells on the analytic tier (null: whatever the tables allow),
+    // and report the material each one is wearing.
+    atmoTier: (tier: 'analytic' | null) => planetariumMode?.devSetAtmosphereTier(tier) ?? null,
     atmoBake: (options?: { body?: string; orders?: number; half?: boolean; drawsPerSlice?: number }) =>
       planetariumMode?.devAtmosphereBake(options) ?? Promise.resolve(null),
     atmoSample: (
@@ -625,6 +636,33 @@ function installDevHooks() {
       };
     },
     setAutoExposure: (on: boolean) => { autoExposure = on; },
+    // Freeze what a screenshot depends on and nothing else. `near` is the one
+    // the dev framing hooks never set (they leave whatever the last mode wrote,
+    // which at 1.05 R clips the bottom of the air away); exposure and the pixel
+    // ratio move a whole frame at once, which no per-pixel threshold can
+    // absorb. Pass null to hand all three back.
+    pinCapture: (opts: { near?: number; exposure?: number; pixelRatio?: number } | null) => {
+      if (opts === null) {
+        exposurePin = null;
+        pixelRatioPin = null;
+        applyRenderResolution();
+        return { near: planetariumCamera.near, exposure: exposureCurrent, pixelRatio: renderer.getPixelRatio() };
+      }
+      if (typeof opts.near === 'number' && opts.near > 0) {
+        planetariumCamera.near = opts.near;
+        planetariumCamera.updateProjectionMatrix();
+      }
+      if (typeof opts.exposure === 'number') exposurePin = opts.exposure;
+      if (typeof opts.pixelRatio === 'number' && opts.pixelRatio > 0) {
+        pixelRatioPin = opts.pixelRatio;
+        applyRenderResolution();
+      }
+      return {
+        near: planetariumCamera.near,
+        exposure: exposurePin ?? exposureCurrent,
+        pixelRatio: renderer.getPixelRatio(),
+      };
+    },
     setBloom: (on: boolean) => setPlanetariumBloom(on),
     bloomActive: () => planetariumBloomEnabled(),
     // Lens-correction A/B: pass a strength (0 = rectilinear), no args restores
@@ -864,6 +902,9 @@ async function init() {
       exposureCurrent = 1;
     }
 
+    // The capture pin wins over every mode's own exposure, including the
+    // planetarium's per-frame solar adaptation.
+    if (exposurePin !== null) exposureCurrent = exposurePin;
     renderer.toneMappingExposure = exposureCurrent;
     // The system map draws its own scene straight to the backbuffer (it owns a
     // renderer-state transaction), bypassing the world composer while open. It

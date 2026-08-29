@@ -4,6 +4,7 @@ import {
   ATMOSPHERE_TABLE_SIZES_FULL,
   ATMOSPHERE_TABLE_SIZES_HALF,
   ATMOSPHERE_TOP_SCALES,
+  AIRLIGHT_SCALE,
   SOLAR_DISTANCE_DECAY,
   atmosphereParams,
   atmosphereParamsAU,
@@ -28,7 +29,7 @@ import {
   transmittanceUvFromRMu,
   toRadiusUnits,
 } from './atmosphereModel';
-import { ATMOSPHERES, SUN_LIGHT_DECAY } from '../PlanetFactory';
+import { ATMOSPHERES, SUN_LIGHT_DECAY, SUN_LIGHT_INTENSITY } from '../PlanetFactory';
 import { PLANETS } from '../planets/planetData';
 
 const KM_PER_AU = 149_597_870.7;
@@ -131,6 +132,13 @@ describe('solar irradiance scale', () => {
     expect(SOLAR_DISTANCE_DECAY).toBe(SUN_LIGHT_DECAY);
     expect(solarIrradianceScale(2)).toBeCloseTo(Math.pow(2, -SUN_LIGHT_DECAY), 12);
     expect(solarIrradianceScale(2)).not.toBeCloseTo(1 / 4, 3);
+  });
+
+  it('carries the light\'s own intensity into the airlight scale', () => {
+    // The tables are baked at one unit of irradiance; the ground is lit at the
+    // light's intensity. Air and ground have to be at the same exposure, so the
+    // bridge is the intensity itself — read from the light, not authored.
+    expect(AIRLIGHT_SCALE).toBe(SUN_LIGHT_INTENSITY);
   });
 
   it('is 1 at Earth and 1.524^-0.3 at Mars', () => {

@@ -98,6 +98,21 @@ float ringShadowOpacity(float t) {
 }
 `;
 
+/** The umbra/penumbra of one caster, traced from a point in the BODY frame
+ *  toward the Sun: a moon sunward of the point casts a cone that narrows with
+ *  distance behind it. Returns 0 for a caster that is not sunward at all.
+ *  Exported as GLSL because the atmosphere shell traces the same casters, in
+ *  the same frame, and a second transcription would drift the eclipse spot on
+ *  the air away from the one on the ground. */
+export const MOON_SHADOW_TRACE_GLSL = /* glsl */ `
+float moonShadowOcclusion(vec3 toMoon, float moonRadius, vec3 sunDir, float sunTan) {
+  float along = dot(toMoon, sunDir);
+  if (along <= 0.0) return 0.0;
+  float perp = length(toMoon - sunDir * along);
+  return 1.0 - smoothstep(max(moonRadius - along * sunTan, 0.0), moonRadius + along * sunTan, perp);
+}
+`;
+
 // The augmentation GLSL, lifted out of onBeforeCompile so the shader reads as
 // shader code rather than string concatenation. Computed once at module load,
 // so every body injects the identical text (only the uniform *values* differ) —
@@ -132,7 +147,7 @@ uniform float uLimbDarkening;
 varying vec3 vSunViewDir;
 varying vec3 vObjPos;
 varying vec3 vPlanetshineViewDir;
-${RING_SHADOW_OPACITY_GLSL}`;
+${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}`;
 
 // Injected after lighting but before <opaque_fragment> writes outgoingLight into
 // gl_FragColor — so terms land in linear radiance (tone-mapped downstream) and
@@ -174,14 +189,8 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // umbra/penumbra spot (cone narrows with distance behind the moon).
   for (int i = 0; i < ${MAX_MOON_SHADOWS}; i++) {
     if (i >= uMoonShadowCount) break;
-    vec3 toMoon = uMoonShadow[i].xyz - vObjPos;
-    float along = dot(toMoon, sd);
-    if (along > 0.0) {
-      float perp = length(toMoon - sd * along);
-      float mr = uMoonShadow[i].w;
-      float occ = 1.0 - smoothstep(max(mr - along * uSunTan, 0.0), mr + along * uSunTan, perp);
-      outgoingLight *= 1.0 - occ * dayFactor;
-    }
+    float occ = moonShadowOcclusion(uMoonShadow[i].xyz - vObjPos, uMoonShadow[i].w, sd, uSunTan);
+    outgoingLight *= 1.0 - occ * dayFactor;
   }
   // Limb darkening: the disc dims toward its edge as the view ray grazes the
   // surface. mu = cos of the view angle — 1 at disc centre, 0 at the limb.

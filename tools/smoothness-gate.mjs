@@ -862,6 +862,14 @@ const GPU_ARGS = [
   '--enable-unsafe-swiftshader',
 ];
 
+// Without this, Chromium reports `performance.memory` bucketed to 5 MiB and
+// refreshed at most once every 20 minutes, so the recorder's heap column reads
+// the same figure for a whole run and no collection can ever be seen. The
+// figures it unlocks are the live ones, which is what makes a drop between two
+// samples a collection rather than a rounding step — the GC line in every
+// report below is only evidence while this is passed.
+const MEMORY_ARGS = ['--enable-precise-memory-info'];
+
 // Only under --cold-cache: the browser's own program caches. Playwright already
 // hands every launch a fresh --user-data-dir; these stop a compiled program
 // being written into it at all.
@@ -877,9 +885,9 @@ const COLD_ARGS = COLD_CACHE
 //           that must stay visible: an occluded window throttles rAF to 1 Hz
 //           and every gap it reports is a lie.
 const ENGINES = {
-  shell: { headless: true, args: [...GPU_ARGS, ...COLD_ARGS] },
-  new: { headless: true, channel: 'chromium', args: [...GPU_ARGS, ...COLD_ARGS] },
-  chrome: { headless: false, channel: 'chrome', args: [...GPU_ARGS, ...COLD_ARGS] },
+  shell: { headless: true, args: [...GPU_ARGS, ...MEMORY_ARGS, ...COLD_ARGS] },
+  new: { headless: true, channel: 'chromium', args: [...GPU_ARGS, ...MEMORY_ARGS, ...COLD_ARGS] },
+  chrome: { headless: false, channel: 'chrome', args: [...GPU_ARGS, ...MEMORY_ARGS, ...COLD_ARGS] },
 };
 
 const launchBrowser = () => {

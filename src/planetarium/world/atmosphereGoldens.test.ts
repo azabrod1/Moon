@@ -329,7 +329,7 @@ describe('the atmosphere goldens', () => {
     expect(hash(shell.vertexShader))
       .toBe('604724ecd98c07ab9465d5cce0bbc7285e1ed2627fe5f2d7b69ec6ddbba3b1fc');
     expect(hash(shell.fragmentShader))
-      .toBe('17d40cb7c0c22620e38caf2ff5bf8a95acaa9d5fc37c04cb34231fdedc4d9d56');
+      .toBe('311936f310508663086bc2f550089f03fbb0d959601f0c8c90148632aacce469');
   });
 
   it('shows the LUT tier drawing a different limb from the analytic one', () => {

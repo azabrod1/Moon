@@ -26,7 +26,12 @@
  *    a surface belongs to that surface's own shading (it needs the segment from
  *    the camera to the fragment, not to the far boundary). The depth test
  *    against the opaque globe already rejects most of those fragments, but not
- *    where no globe is drawn, so the shader states the split itself.
+ *    where no globe is drawn, so the shader states the split itself — and it
+ *    states it against the radius the globe is DRAWN at, not the sphere the
+ *    tables describe. The globe is a polygon: its faces cut inside the true
+ *    radius, so a band of rays along the limb has no ground fragment on it at
+ *    all, and classing those as ground left a dark scallop following the mesh
+ *    edges. Only the classification moves; the tables keep the true radius.
  *
  *  - **The eclipse trace runs in the body frame.** The shell is a child of the
  *    body's group with an identity local rotation, so its object space IS the
@@ -68,7 +73,6 @@ import {
   AIRLIGHT_SCALE,
   atmosphereParams,
   clampCosine,
-  rayIntersectsGround,
   type AtmosphereParams,
   type AtmosphereTableSizes,
 } from './atmosphereModel';
@@ -115,6 +119,12 @@ const SHELL_FRAGMENT = /* glsl */`
 uniform sampler3D uScattering;
 
 uniform float uPlanetRadius;
+// The radius the globe is actually drawn at, as a fraction of the true one: a
+// sphere of N segments is a polyhedron whose faces lie inside the sphere its
+// vertices sit on. Fed from the globe's live segment count, so it follows the
+// silhouette upgrade on approach. Physics reads uBottomRadius; this is only
+// ever asked whether a ground FRAGMENT exists.
+uniform float uDrawnGroundRadius;
 uniform float alphaScale;
 uniform float uSolarIrradiance;
 // Per channel: the tables are baked at WHITE unit irradiance, and the scene's
@@ -135,6 +145,15 @@ in vec3 vSunObj;
 in vec3 vMoonObj;
 
 out vec4 fragColor;
+
+// Does this ray end on the globe as it is tessellated? Same test the tables'
+// rayIntersectsGround makes, against the drawn radius instead of the true one,
+// so no ray is called ground where nothing draws ground. Rays that do reach the
+// polygon between the two radii are handled by the depth test, which rejects a
+// shell fragment behind the globe.
+bool rayHitsDrawnGround(float r, float mu) {
+  return mu < 0.0 && r * r * (mu * mu - 1.0) + uDrawnGroundRadius * uDrawnGroundRadius >= 0.0;
+}
 
 ${MOON_SHADOW_TRACE_GLSL}
 ${NIGHT_WEIGHT_GLSL}
@@ -161,7 +180,7 @@ void main() {
   // Ground rays carry their air in the surface material, where the segment ends
   // at the fragment rather than at the far boundary — and the airglow layer in
   // front of a lit surface is a thousandth of what is behind it.
-  if (rayIntersectsGround(rCam, clampCosine(rmuCam / rCam))) return;
+  if (rayHitsDrawnGround(rCam, clampCosine(rmuCam / rCam))) return;
 
   // The lowest point the ray reaches: the deepest air it crosses, and so where
   // the eclipse is traced and where the Sun's elevation decides every non-solar
@@ -299,6 +318,10 @@ export function createAtmosphereShellMaterial(
     uSunDirWorld: { value: options.initialSunDir?.clone() ?? new THREE.Vector3(0, 0, 1) },
     alphaScale: { value: options.initialAlpha ?? 0.0 },
     uPlanetRadius: { value: options.planetRadius },
+    // The true sphere until the globe under it says how it is tessellated —
+    // which setAtmosphereShellGroundSegments does from the per-frame shell
+    // sync, and which is also the right reading for a shell with no globe.
+    uDrawnGroundRadius: { value: 1 },
     uSolarIrradiance: { value: 1 },
     uAirlightScale: { value: new THREE.Vector3(...AIRLIGHT_SCALE) },
     // The Moon's two uniforms come off the body's shared air block wherever
@@ -336,6 +359,39 @@ export function createAtmosphereShellMaterial(
   return material;
 }
 
+/**
+ * How far in the drawn globe's surface sits, as a fraction of the true radius.
+ *
+ * SphereGeometry(R, N, N/2) puts its vertices on the sphere and its faces
+ * inside it. The deepest cut is at the equator, where the quad is squarest: the
+ * triangle drawn across it spans the quad's diagonal, sqrt(2) * 2*PI/N of arc,
+ * and a triangle whose circumcircle has that diagonal for a diameter lies at
+ * R * cos(sqrt(2) * PI / N) from the centre. Measured against the geometry
+ * three actually builds, that closed form lands within 1% of the deepest face
+ * at every count the app uses, and on the deep side of it at all but the
+ * finest, where it is 0.007% shallow — four centimetres on Earth. A ray closer
+ * in than that has certainly hit the polygon; one further out may pass through
+ * the gap between two chords.
+ *
+ * Anything under three segments is not a polygon to inscribe — and neither is
+ * a mesh that is not a sphere — so those get the true radius back.
+ */
+export function drawnGroundRadiusFraction(segments: number): number {
+  if (!Number.isFinite(segments) || segments < 3) return 1;
+  return Math.cos((Math.SQRT2 * Math.PI) / segments);
+}
+
+/** Tell a shell how the globe under it is tessellated right now. Cheap enough
+ *  to repeat every frame, which is how the silhouette upgrade reaches it
+ *  without a notification of its own. */
+export function setAtmosphereShellGroundSegments(
+  material: THREE.ShaderMaterial,
+  segments: number,
+): void {
+  const uniform = material.uniforms.uDrawnGroundRadius;
+  if (uniform) uniform.value = drawnGroundRadiusFraction(segments);
+}
+
 /** Point a shell at a body's finished tables. */
 export function bindAtmosphereShellTables(
   material: THREE.ShaderMaterial,
@@ -370,8 +426,8 @@ export interface ShellRay {
    *  air is behind the camera. Nothing is drawn for those — which is what
    *  tapers the shell to zero across the mesh outside the physical top. */
   readonly reachesAir: boolean;
-  /** True when the ray ends on the surface. The shell draws nothing there; the
-   *  air in front of a surface is that surface's own to carry. */
+  /** True when the ray ends on the DRAWN surface. The shell draws nothing
+   *  there; the air in front of a surface is that surface's own to carry. */
   readonly hitsGround: boolean;
   /** Distance from the camera to the entry point, in radius units; 0 for a
    *  camera already inside the air. */
@@ -400,6 +456,10 @@ export function atmosphereShellRay(
   cameraRadii: Vec3,
   view: Vec3,
   sun: Vec3,
+  /** Radius of the ground as it is DRAWN, in the same units — the polygon's
+   *  inscribed radius, which is what decides whether a ground fragment exists.
+   *  Defaults to the true surface, the shape the tables describe. */
+  groundRadius: number = params.bottomRadius,
 ): ShellRay {
   const miss: ShellRay = {
     reachesAir: false, hitsGround: false, entryDistance: 0, r: 0, mu: 0, muS: 0, nu: 0,
@@ -432,7 +492,7 @@ export function atmosphereShellRay(
   const mu = clampCosine(rmu / r);
   return {
     reachesAir: true,
-    hitsGround: rayIntersectsGround(params, r, mu),
+    hitsGround: mu < 0 && r * r * (mu * mu - 1) + groundRadius * groundRadius >= 0,
     entryDistance,
     r,
     mu,

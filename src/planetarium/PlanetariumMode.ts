@@ -35,7 +35,7 @@ import {
   type PlanetData,
   LIGHT_SPEED_AU_PER_S,
 } from './planets/planetData';
-import { appliedTierHeldBytes, applySunGlowTier, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createAtmosphereMaterial, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, lodMeasurementRelevant, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, retainedSourceBytes, resolveTierFile, resolveUpgradeTier, setWarmEligibleMoonParents, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade, type TierAdmission } from './PlanetFactory';
+import { appliedTierHeldBytes, applySunGlowTier, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createAtmosphereMaterial, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, lodMeasurementRelevant, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, retainedSourceBytes, resolveTierFile, resolveUpgradeTier, setWarmEligibleMoonParents, sphereWidthSegments, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade, type TierAdmission } from './PlanetFactory';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { bindSurfaceAir, clearSurfaceAir, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
@@ -147,7 +147,7 @@ import {
   type ReleaseCandidate,
 } from './world/gpuEnvelope';
 import { AtmosphereLut, type AtmosphereBakeStats, type AtmosphereTables } from './world/atmosphereLut';
-import { bindAtmosphereShellTables, disposeAtmosphereShellMaterial } from './world/atmosphereShell';
+import { bindAtmosphereShellTables, disposeAtmosphereShellMaterial, setAtmosphereShellGroundSegments } from './world/atmosphereShell';
 import {
   ATMOSPHERE_SPECS,
   ATMOSPHERE_TABLE_SIZES_FULL,
@@ -5009,6 +5009,11 @@ export class PlanetariumMode {
       material.uniforms.uSolarIrradiance.value = wp
         ? solarIrradianceScale(Math.sqrt(wp.x * wp.x + wp.y * wp.y + wp.z * wp.z))
         : 1;
+      // Which rays end on ground is decided against the globe as it is drawn —
+      // a polygon inside the sphere the tables describe. Read from the live
+      // geometry every frame, so the silhouette upgrade on approach carries the
+      // shell with it and no ray is called ground where none is drawn.
+      setAtmosphereShellGroundSegments(material, sphereWidthSegments(planet.mesh));
       if (mesh.material !== material) {
         this.carryShellUniforms(shells.analytic, material);
         mesh.material = material;

@@ -2292,7 +2292,7 @@ export const ATMOSPHERE_GOLDEN_PINS: Readonly<Record<string, AtmosphereGoldenPin
       [0, 0, 0],
       [36, 60, 100],
       [44, 69, 108],
-      [119, 112, 130],
+      [126, 120, 137],
       [0, 0, 0],
       [0, 0, 0],
       [36, 60, 100],

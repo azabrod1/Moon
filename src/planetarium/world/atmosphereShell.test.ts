@@ -13,7 +13,14 @@ import {
   singleScatteringRadiance,
 } from './atmosphereModel';
 import { atmosphereTableDefines } from './atmosphereLut';
-import { atmosphereShellRay, createAtmosphereShellMaterial, type Vec3 } from './atmosphereShell';
+import {
+  atmosphereShellRay,
+  createAtmosphereShellMaterial,
+  drawnGroundRadiusFraction,
+  setAtmosphereShellGroundSegments,
+  type Vec3,
+} from './atmosphereShell';
+import { sphereWidthSegments, upgradeGeometryOnApproach, makeGeometryUpgrade } from '../PlanetFactory';
 import { MOON_SHADOW_TRACE_GLSL, createSurfaceAirFx } from './surfaceShading';
 
 const src = (relative: string): string =>
@@ -274,7 +281,84 @@ describe('the view ray', () => {
     // The airlight in front of a surface belongs to that surface's shading: it
     // needs the segment camera -> fragment, not camera -> far boundary.
     expect(shell('lut').fragmentShader)
-      .toContain('if (rayIntersectsGround(rCam, clampCosine(rmuCam / rCam))) return;');
+      .toContain('if (rayHitsDrawnGround(rCam, clampCosine(rmuCam / rCam))) return;');
+  });
+
+  it('calls ground only what the polygon actually draws', () => {
+    // The globe is a sphere of chords, so between the drawn silhouette and the
+    // true radius there are rays with no ground fragment on them. Classing
+    // those as ground returned zero where nothing else drew, which is the
+    // dashed dark line that followed the mesh edges along the limb.
+    const inscribed = drawnGroundRadiusFraction(96);
+    const gap = grazing(1.05, (inscribed + 1) / 2);
+    const trueSphere = atmosphereShellRay(EARTH, gap.origin, gap.view, SUN);
+    expect(trueSphere.hitsGround).toBe(true);          // what it used to say
+    const drawn = atmosphereShellRay(EARTH, gap.origin, gap.view, SUN, inscribed);
+    expect(drawn.hitsGround).toBe(false);              // no fragment, so: sky
+    expect(drawn.reachesAir).toBe(true);
+    // Inside the polygon it is still ground, and the depth test against the
+    // globe is what keeps the shell off the fragments that do get drawn.
+    const inside = grazing(1.05, inscribed * 0.999);
+    expect(atmosphereShellRay(EARTH, inside.origin, inside.view, SUN, inscribed).hitsGround)
+      .toBe(true);
+  });
+
+  it('measures the drawn radius from the segment count, and follows it up', () => {
+    // SphereGeometry(R, N, N/2) hangs its vertices on the sphere and lets its
+    // faces cut inside: the deepest cut is the equatorial triangle, which spans
+    // the quad's diagonal — sqrt(2) * 2*PI/N of arc — and whose plane therefore
+    // sits at cos(sqrt(2) * PI / N). Checked against the geometry three
+    // actually builds, not just against itself.
+    for (const segments of [48, 64, 96, 128, 256]) {
+      const geometry = new THREE.SphereGeometry(1, segments, segments / 2);
+      const position = geometry.getAttribute('position');
+      const index = geometry.getIndex()!;
+      const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+      const normal = new THREE.Vector3();
+      let deepest = Infinity;
+      for (let i = 0; i < index.count; i += 3) {
+        a.fromBufferAttribute(position, index.getX(i));
+        b.fromBufferAttribute(position, index.getX(i + 1));
+        c.fromBufferAttribute(position, index.getX(i + 2));
+        normal.crossVectors(b.sub(a), c.sub(a));
+        const area = normal.length();
+        if (area < 1e-12) continue;                    // the pole fans' seams
+        deepest = Math.min(deepest, Math.abs(normal.dot(a)) / area);
+      }
+      // The closed form is the right-isoceles idealisation of that triangle,
+      // so it lands within 1% of the mesh's own deepest face at every count the
+      // app builds — and on the deep side of it at all but the finest, where it
+      // is 0.007% shallow: four centimetres on Earth.
+      const inset = 1 - drawnGroundRadiusFraction(segments);
+      expect(inset).toBeGreaterThan((1 - deepest) * 0.99);
+      expect(inset).toBeLessThan((1 - deepest) * 1.01);
+      geometry.dispose();
+    }
+    // Nothing with a chord to measure gets the true sphere back.
+    expect(drawnGroundRadiusFraction(0)).toBe(1);
+    expect(drawnGroundRadiusFraction(2)).toBe(1);
+    expect(drawnGroundRadiusFraction(Number.NaN)).toBe(1);
+  });
+
+  it('carries the live segment count into the shell\'s uniform', () => {
+    // The value has to follow the silhouette upgrade: a shell still classifying
+    // against the boot mesh would draw sky over ground the finer globe covers,
+    // and one still classifying against the fine mesh after a rebuild would
+    // leave the dark band back. Read off the geometry, so it cannot drift.
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 96, 48));
+    const material = shell('lut');
+    expect(material.uniforms.uDrawnGroundRadius.value).toBe(1);
+    setAtmosphereShellGroundSegments(material, sphereWidthSegments(mesh));
+    expect(material.uniforms.uDrawnGroundRadius.value).toBe(drawnGroundRadiusFraction(96));
+    upgradeGeometryOnApproach(makeGeometryUpgrade([{ mesh, radiusAU: 1 }]), Infinity);
+    expect(sphereWidthSegments(mesh)).toBe(256);
+    setAtmosphereShellGroundSegments(material, sphereWidthSegments(mesh));
+    expect(material.uniforms.uDrawnGroundRadius.value).toBe(drawnGroundRadiusFraction(256));
+    // A mesh that is not a sphere has no chord, and reads as the true one.
+    expect(sphereWidthSegments(new THREE.Mesh(new THREE.BufferGeometry()))).toBe(0);
+    // And the mode feeds exactly this, from the geometry, every frame.
+    expect(src('../PlanetariumMode.ts'))
+      .toContain('setAtmosphereShellGroundSegments(material, sphereWidthSegments(planet.mesh));');
   });
 
   it('draws nothing outside the physical top, which is where it tapers away', () => {

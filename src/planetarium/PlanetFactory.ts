@@ -1102,6 +1102,19 @@ export function upgradeGeometryOnApproach(up: GeometryUpgrade, diameterPx: numbe
 }
 
 /**
+ * The longitude segment count a body's sphere is built at RIGHT NOW, whether or
+ * not `upgradeGeometryOnApproach` has rebuilt it. Read off the geometry rather
+ * than tracked beside it, so nothing can hold a count the mesh has moved past.
+ * Zero for a mesh that is not a sphere, which has no chord to measure — the
+ * atmosphere shell reads this to classify ground against the polygon it can
+ * actually see rather than the sphere the tables describe.
+ */
+export function sphereWidthSegments(mesh: THREE.Mesh): number {
+  const parameters = (mesh.geometry as Partial<THREE.SphereGeometry>).parameters;
+  return typeof parameters?.widthSegments === 'number' ? parameters.widthSegments : 0;
+}
+
+/**
  * Whether a body's per-frame LOD measurement could possibly act, given a
  * conservative OVERestimate of its screen diameter. This is the skip gate in
  * front of the full 32-ray footprint: it asks the very predicates the loop

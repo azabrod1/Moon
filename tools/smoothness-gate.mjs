@@ -335,8 +335,10 @@ const SCENARIOS = [
     device: DESKTOP,
     async run(page, note) {
       note(`renderer: ${await bootTo(page, '', 30)}`);
-      // The boot-idle warm runs after the reveal; nothing may cost a frame.
-      await mark(page, 'idle-warm');
+      // No mark here. The reveal already marks this boundary, and a second
+      // one lands a protocol round trip on the frames right after the reveal —
+      // which is the very window this scenario exists to score. Measured: it
+      // cost a 16.7 ms frame and failed the run on its own.
       await sleep(15_000);
     },
   },

@@ -38,7 +38,6 @@ import { debugWarn } from '../../shared/debug';
 import { smoothTraceEvent } from '../smoothnessTrace';
 import {
   COMPRESSED_BLOCK_ROWS,
-  mipLevelCount,
   nextBandRows,
   shouldSlice,
   updateRowRate,
@@ -123,6 +122,15 @@ export function canSlice(renderer: THREE.WebGLRenderer, texture: THREE.Texture):
     if (!BLOCK_BYTES[format]) return false;
     return Array.isArray(mipmaps) && mipmaps.length > 0;
   }
+  // texSubImage2D takes a real image source. A DataTexture's image is a plain
+  // {data,width,height} record, and handing that to the DOM-source overload
+  // throws — so only genuine sources are sliced.
+  const source = texture.image as object;
+  const uploadable = typeof ImageBitmap !== 'undefined' && source instanceof ImageBitmap
+    || typeof HTMLCanvasElement !== 'undefined' && source instanceof HTMLCanvasElement
+    || typeof HTMLImageElement !== 'undefined' && source instanceof HTMLImageElement
+    || typeof OffscreenCanvas !== 'undefined' && source instanceof OffscreenCanvas;
+  if (!uploadable) return false;
   return uncompressedEnums(gl, texture) !== null;
 }
 
@@ -145,30 +153,24 @@ export function beginSlicedUpload(
   const height = compressed ? mipmaps![0].height : image.height;
 
   const source = texture.source;
-  const previousMipmaps = texture.mipmaps;
   const previousDataReady = source.dataReady;
   try {
-    if (!compressed) {
-      // Three reads the level count from generateMipmaps, or failing that from
-      // the length of the mipmaps array. Stubs give it the full chain without
-      // asking it to build one over storage that has no pixels in it yet, and
-      // generateMipmaps stays false for good: it is part of the cache key
-      // three's texture refcounting is built on, so changing it later would
-      // orphan this allocation.
-      texture.generateMipmaps = false;
-      const levels = mipLevelCount(width, height);
-      texture.mipmaps = Array.from({ length: levels }, () => ({ width, height })) as never;
-    }
+    // generateMipmaps is left exactly as the caller set it. Three reads the
+    // level count from it, so leaving it true gets the full chain allocated;
+    // and it is one of the fourteen fields three's texture cache key is built
+    // from, so changing it here would orphan this allocation the next time
+    // anything touched the texture. The cost is that three runs one
+    // generateMipmap over storage that has no pixels in it yet, which is
+    // cheaper than the alternatives: stub mipmap records reach an overload
+    // that cannot take them, and a false generateMipmaps allocates one level.
     source.dataReady = false;
     renderer.initTexture(texture);
   } catch (err) {
     debugWarn('Sliced upload could not allocate; falling back to one shot', { err: String(err) });
     source.dataReady = previousDataReady;
-    texture.mipmaps = previousMipmaps;
     return null;
   }
   source.dataReady = previousDataReady;
-  if (!compressed) texture.mipmaps = previousMipmaps;
 
   const enums = compressed
     ? { format: texture.format as unknown as number, type: 0 }

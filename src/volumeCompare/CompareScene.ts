@@ -3819,7 +3819,11 @@ function makeAtmosphereGhost(config: AtmosphereConfig): THREE.Mesh {
   const geo = new THREE.SphereGeometry(CONTAINER_R * config.scale, 128, 64);
   // The shared assembly, keyed to the studio light at the ghost's fixed
   // presence — this material is never fed per frame.
-  const mat = createAtmosphereMaterial(config, CONTAINER_R, {
+  // Analytic, always: the ghost is a studio prop at container scale with a
+  // fixed key light and no per-frame feed, so a shell keyed to a real
+  // atmosphere top, a real sun and a body's baked tables would mean nothing
+  // here — and ?auto=volumeCompare never bakes any.
+  const mat = createAtmosphereMaterial(config, CONTAINER_R, 'analytic', {
     initialAlpha: ATMOSPHERE_GHOST_ALPHA,
     initialSunDir: KEY_LIGHT_DIR,
   });

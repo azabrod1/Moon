@@ -24,9 +24,24 @@ describe('createSectorMaterial', () => {
     const baseU = compiledUniforms(base);
     const sectorU = compiledUniforms(sector);
     for (const key of Object.keys(fx) as (keyof typeof fx)[]) {
+      if (key === 'air') continue; // a block of its own, checked uniform by uniform below
       expect(sectorU[key]).toBe(fx[key]); // the very same object the mode writes into
       expect(baseU[key]).toBe(fx[key]);
     }
+    // The air: the tables, the parameters that address them and the two numbers
+    // that scale them. A sector draws ABOVE the globe, so a second set here is
+    // a tile hazed differently from the pixel beside it — and the tables arrive
+    // mid-session, long after the tile material was built, so it has to be the
+    // same objects and not copies of their values.
+    expect(Object.keys(fx.air).length).toBeGreaterThan(10);
+    for (const key of Object.keys(fx.air)) {
+      expect(sectorU[key], key).toBe(fx.air[key]);
+      expect(baseU[key], key).toBe(fx.air[key]);
+    }
+    // And the table dimensions, which are #defines: a sector compiled against a
+    // different set would read the same texture at a different stride.
+    expect(sector.defines).toEqual(base.defines);
+    expect(sector.defines?.SCATTERING_TEXTURE_NU_SIZE).toBeDefined();
     // Private (per-augment) uniforms match by value: same archetype, ring, sun.
     expect(sectorU.uRingInner.value).toBe(baseU.uRingInner.value);
     expect(sectorU.uRingOuter.value).toBe(baseU.uRingOuter.value);

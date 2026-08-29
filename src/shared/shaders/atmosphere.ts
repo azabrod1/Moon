@@ -103,13 +103,31 @@ void main() {
 }
 `;
 
-// Night lights: how much of the map a point draws, from the cosine between its
-// surface normal and the direction to the sun. Full strength once the sun is
-// this far below the local horizon, gone by the lit edge — the few degrees of
-// twilight in between are where the lights fade up. Exported because anything
-// that decides which ground the lights cover (which sectors are worth a tile,
-// how strongly they rank) has to read the same two numbers the shader does,
-// and the GLSL below is written from them so the two cannot drift apart.
+// City lights on the night side. An ADDITIVE layer over the globe, which is
+// what decides how the air in front of it applies: the lights are attenuated by
+// the transmittance of that air (they are seen THROUGH ten airmasses at the
+// limb) and nothing is added, because the globe underneath has already added
+// the air's own in-scattered light. Adding it again here would count the whole
+// night side's airlight twice.
+//
+// The column is the whole one. A city is at sea level; this mesh floats a few
+// kilometres up so it never z-fights the globe, and at an 8 km Rayleigh scale
+// height those few kilometres are more than half the air by mass and nearly all
+// of the Mie. So the segment's far end is substituted back down to the surface
+// through `uAirLookupRadius`, the same uniform the cloud deck uses to move its
+// end the other way.
+//
+// The transmittance lookup and its uniform block come from the table GLSL the
+// factory prepends to the fragment source; with no tables the switch is 0 and
+// the shader is what it always was.
+//
+// How much of the map a point draws comes from the cosine between its surface
+// normal and the direction to the sun: full strength once the sun is this far
+// below the local horizon, gone by the lit edge — the few degrees of twilight
+// in between are where the lights fade up. Exported because anything that
+// decides which ground the lights cover (which sectors are worth a tile, how
+// strongly they rank) has to read the same two numbers the shader does, and the
+// GLSL below is written from them so the two cannot drift apart.
 export const EARTH_NIGHT_MIX_DARK = -0.3;
 export const EARTH_NIGHT_MIX_LIT = -0.1;
 
@@ -128,6 +146,8 @@ export const earthNightVertexShader = /* glsl */ `
 varying vec2 vUv;
 varying vec3 vNormal;
 varying vec3 vSunDir;
+varying vec3 vAirCam;
+varying vec3 vAirFrag;
 uniform vec3 sunDirection;
 
 void main() {
@@ -135,6 +155,10 @@ void main() {
   vNormal = normalize(normalMatrix * normal);
   // Transform sun direction to view space
   vSunDir = normalize((viewMatrix * vec4(sunDirection, 0.0)).xyz);
+  // Camera and fragment as offsets from the body's centre, world axes — the
+  // frame-free form the air's geometry is worked out in.
+  vAirCam = cameraPosition - modelMatrix[3].xyz;
+  vAirFrag = mat3(modelMatrix) * position;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }
 `;
@@ -149,9 +173,16 @@ export const earthNightFragmentShader = /* glsl */ `
 uniform sampler2D nightTexture;
 uniform vec2 uUvOffset;
 uniform vec2 uUvRepeat;
+uniform vec3 sunDirection;
+uniform float uAirDensity;
+uniform float uPlanetRadius;
+uniform float uAirLookupRadius;
+uniform sampler2D uTransmittance;
 varying vec2 vUv;
 varying vec3 vNormal;
 varying vec3 vSunDir;
+varying vec3 vAirCam;
+varying vec3 vAirFrag;
 
 void main() {
   vec4 nightColor = texture2D(nightTexture, vUv * uUvRepeat + uUvOffset);
@@ -169,6 +200,12 @@ void main() {
   // Show night lights only on dark side
   float sunDot = dot(vNormal, vSunDir);
   float nightMix = 1.0 - smoothstep(${EARTH_NIGHT_MIX_DARK.toFixed(1)}, ${EARTH_NIGHT_MIX_LIT.toFixed(1)}, sunDot); // ordered edges (reversed smoothstep is undefined)
-  gl_FragColor = vec4(nightColor.rgb * nightMix * 1.5, nightMix * nightColor.a);
+  vec3 lit = nightColor.rgb * nightMix * 1.5;
+  if (uAirDensity > 0.0) {
+    AerialSegment seg = aerialSegment(
+        vAirCam / uPlanetRadius, normalize(vAirFrag) * uAirLookupRadius, normalize(sunDirection));
+    if (seg.valid) lit *= aerialTransmittance(uTransmittance, seg);
+  }
+  gl_FragColor = vec4(lit, nightMix * nightColor.a);
 }
 `;

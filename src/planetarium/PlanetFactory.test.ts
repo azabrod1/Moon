@@ -73,6 +73,17 @@ import { retryDelayMs, urlSpread } from './world/textureRetryPolicy';
 import { captureDeviceCaps, resetDeviceCapsForTests, TIER_MAP_WIDTH, type TextureTier } from './world/texturePolicy';
 import { ladderCeilingBytes, LEGACY_DESKTOP_PROFILE, LEGACY_TOUCH_PROFILE } from './world/gpuEnvelope';
 import { SECTOR_SETS, sectorSetGpuBytes } from './world/sectorStreamer';
+import {
+  AIR_LOOKUP_RADIUS,
+  augmentSurfaceMaterial,
+  bindSurfaceAir,
+  createSurfaceAirFx,
+} from './world/surfaceShading';
+import {
+  createEarthNightSectorMaterial,
+  createEarthNightShellMaterial,
+} from './world/earthNightMaterial';
+import { ATMOSPHERE_TABLE_SIZES_FULL, atmosphereParams } from './world/atmosphereModel';
 import { bindTextureWarmer, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 
 // Device caps are captured from the live renderer; a fake renderer is the
@@ -2691,5 +2702,109 @@ describe('closing a rung\'s decoded source once its upload is paid', () => {
     ));
     releaseUpgradeSource(new THREE.Texture({ width: 4096, height: 2048 } as unknown as HTMLImageElement));
     expect(asked).toHaveLength(0);
+  });
+});
+
+describe('a colour-rung swap and the body\'s air', () => {
+  // The 8K rungs ship as KTX2 containers now, and a swap goes through
+  // materialColorMap: `map` is replaced on a standard material and
+  // needsUpdate is set, which drops three's compiled program and re-runs
+  // onBeforeCompile. Every air uniform has to come back as the SAME object —
+  // the tables are bound once per body per frame, into the objects the mode
+  // holds, and a deck or a globe left on a copy would go unhazed the moment
+  // its map sharpened. The night shell is the same question in the other
+  // shape: its map lives in a uniform, so nothing recompiles, and its air
+  // must survive that path too.
+
+  /** Run a material's onBeforeCompile against a shader stub and return the
+   *  uniforms it bound — what the material would really draw with. */
+  function compiledUniforms(mat: THREE.Material): Record<string, { value: unknown }> {
+    const shader = {
+      uniforms: {} as Record<string, { value: unknown }>,
+      vertexShader: '#include <common>\n#include <begin_vertex>\n',
+      fragmentShader: '#include <common>\n#include <opaque_fragment>\n',
+    };
+    (mat.onBeforeCompile as (s: typeof shader) => void)(shader);
+    return shader.uniforms;
+  }
+
+  /** A rung as the KTX2 loader hands it over. */
+  function compressedTexture(label: string): THREE.Texture {
+    const tex = fakeTexture(label);
+    (tex as unknown as { isCompressedTexture: boolean }).isCompressedTexture = true;
+    tex.mipmaps = [{ data: { byteLength: 8192 * 4096 } }] as unknown as THREE.Texture['mipmaps'];
+    return tex;
+  }
+
+  function boundTables(): Parameters<typeof bindSurfaceAir>[1] {
+    return {
+      body: 'Earth',
+      params: atmosphereParams('Earth'),
+      sizes: ATMOSPHERE_TABLE_SIZES_FULL,
+      solarIrradianceScale: 1,
+      transmittance: fakeTexture('T'),
+      scattering: fakeTexture('S'),
+      irradiance: fakeTexture('E'),
+    };
+  }
+
+  it('keeps every air uniform object across earthDay\'s 8K KTX2 rung', () => {
+    const mat = new THREE.MeshStandardMaterial({ map: fakeTexture('boot 4k') });
+    mat.userData.colorTierRank = TIER_RANK['4k'];
+    const fx = augmentSurfaceMaterial(mat, 'earth');
+    const tables = boundTables();
+    bindSurfaceAir(fx.air, tables, 4.26e-5, 1);
+    const before = compiledUniforms(mat);
+    const ktx2 = compressedTexture('earth-day 8k ktx2');
+    expect(applyColorTierTexture(mat, ktx2, TIER_RANK['8k'])).toBe(true);
+    expect(materialColorMap(mat)).toBe(ktx2);
+    const after = compiledUniforms(mat);
+    for (const key of Object.keys(fx.air)) {
+      expect(after[key], key).toBe(fx.air[key]);
+      expect(after[key], key).toBe(before[key]);
+    }
+    // Still switched on and still pointed at the tables that were bound before
+    // the swap: nothing here re-binds them, so a copy would read as no air.
+    expect(after.uAirDensity.value).toBe(1);
+    expect(after.uTransmittance.value).toBe(tables.transmittance);
+    // And the surface's own per-archetype uniforms are re-derived, not lost.
+    expect(after.uAirLookupRadius.value).toBe(AIR_LOOKUP_RADIUS.earth);
+  });
+
+  it('keeps the cloud deck\'s air across earthClouds\' KTX2 rung', () => {
+    // The deck is the one archetype whose air segment ends somewhere other
+    // than the mesh, so losing its uniforms would show as the deck alone
+    // hazing wrongly while the ground beside it was right.
+    const mat = new THREE.MeshStandardMaterial({ map: fakeTexture('clouds 2k') });
+    mat.userData.colorTierRank = TIER_RANK['2k'];
+    const fx = augmentSurfaceMaterial(mat, 'cloud');
+    bindSurfaceAir(fx.air, boundTables(), 4.26e-5, 1);
+    applyColorTierTexture(mat, compressedTexture('clouds 8k ktx2'), TIER_RANK['8k']);
+    const after = compiledUniforms(mat);
+    for (const key of Object.keys(fx.air)) expect(after[key], key).toBe(fx.air[key]);
+    expect(after.uAirLookupRadius.value).toBe(AIR_LOOKUP_RADIUS.cloud);
+    expect(after.uAirDensity.value).toBe(1);
+  });
+
+  it('keeps the night shell\'s air — and its sectors\' — across a rung', () => {
+    const air = createSurfaceAirFx();
+    const shell = createEarthNightShellMaterial(fakeTexture('night 2k'), air);
+    shell.userData.colorMapUniform = 'nightTexture';
+    shell.userData.colorTierRank = TIER_RANK['2k'];
+    const tile = new THREE.Texture();
+    tile.image = { width: 2048, height: 2048 };
+    const sector = createEarthNightSectorMaterial(shell, { map: tile }, 0);
+    const sharper = fakeTexture('night 4k');
+    expect(applyColorTierTexture(shell, sharper, TIER_RANK['4k'])).toBe(true);
+    expect(shell.uniforms.nightTexture.value).toBe(sharper);
+    // The sector keeps its own tile and the shell's air, both.
+    expect(sector.uniforms.nightTexture.value).toBe(tile);
+    for (const key of Object.keys(air)) {
+      expect(shell.uniforms[key], key).toBe(air[key]);
+      expect(sector.uniforms[key], key).toBe(air[key]);
+    }
+    bindSurfaceAir(air, boundTables(), 4.26e-5, 1);
+    expect(shell.uniforms.uAirDensity.value).toBe(1);
+    expect(sector.uniforms.uAirDensity.value).toBe(1);
   });
 });

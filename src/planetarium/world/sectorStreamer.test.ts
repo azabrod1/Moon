@@ -38,6 +38,7 @@ import {
 } from '../PlanetFactory';
 import { SECTOR_RENDER_ORDER } from './sectorMaterial';
 import { createEarthNightShellMaterial, earthNightSectorFamily } from './earthNightMaterial';
+import { createSurfaceAirFx } from './surfaceShading';
 import { EARTH_NIGHT_MIX_LIT, earthNightMix } from '../../shared/shaders/atmosphere';
 import { SECTOR_GRID_16K, ancestorSector, finerGrid, sectorCentreDirection, sectorNearestDirection, sectorTileTransform, dataCropLayout, SECTOR_TILE, sphereDirection } from './sectorGrid';
 import { augmentSurfaceMaterial } from './surfaceShading';
@@ -209,7 +210,7 @@ const NIGHT_SPEC: SectorSetSpec = {
 const NIGHT_SET_BYTES = sectorSetGpuBytes(NIGHT_SPEC);
 
 function earthNightHandle(): TestHandle & { material: THREE.ShaderMaterial } {
-  const material = createEarthNightShellMaterial(new THREE.Texture());
+  const material = createEarthNightShellMaterial(new THREE.Texture(), createSurfaceAirFx());
   material.userData.colorTierRank = 2; // a real boot map is on the shell
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(NIGHT_R, 16, 8), material);
   const handle = {

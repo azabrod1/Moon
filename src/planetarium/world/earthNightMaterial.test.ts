@@ -20,7 +20,14 @@ import {
   sectorTileTransform,
 } from './sectorGrid';
 import { sectorRenderOrder } from './sectorMaterial';
-import { earthNightMix, EARTH_NIGHT_MIX_DARK, EARTH_NIGHT_MIX_LIT } from '../../shared/shaders/atmosphere';
+import { createSurfaceAirFx, NIGHT_LIGHTS_AIR_LOOKUP_RADIUS } from './surfaceShading';
+import { earthNightFragmentShader, earthNightMix, EARTH_NIGHT_MIX_DARK, EARTH_NIGHT_MIX_LIT } from '../../shared/shaders/atmosphere';
+
+/** The shell as the factory builds it, on a body's own air — the same objects
+ *  the globe and the cloud deck are augmented with. */
+function shellOn(map: THREE.Texture | null, air = createSurfaceAirFx()): THREE.ShaderMaterial {
+  return createEarthNightShellMaterial(map, air);
+}
 
 /** A tile texture as the streamer hands it over: its own image, carrying the
  *  UV transform of the (grid, sector, layout) it was cut on. */
@@ -36,7 +43,7 @@ describe('the night sector material', () => {
     // is what every night sector reads, so a term added to the glow is added
     // once. The colour map is the one thing that must NOT be shared — the
     // shell's is the whole equirect and the sector's is its tile.
-    const shell = createEarthNightShellMaterial(new THREE.Texture());
+    const shell = shellOn(new THREE.Texture());
     const family = earthNightSectorFamily(shell);
     const map = tile(SECTOR_GRID_16K, 3, 1);
     const sector = family.createMaterial({ map }, 0) as THREE.ShaderMaterial;
@@ -51,6 +58,56 @@ describe('the night sector material', () => {
     expect((sector.uniforms.sunDirection.value as THREE.Vector3).z).toBe(1);
   });
 
+  it('dims a tile through the same air as the shell around it', () => {
+    // The aerial term is `x T` on the night lights — the globe underneath has
+    // already added the air's in-scattered light — and it has to reach the
+    // SECTORS, not the shell alone: a tile is drawn over the shell, in exactly
+    // the near-band pose the haze exists for, and an unhazed one is a bright
+    // rectangle inside ten airmasses of atmosphere. The objects are the body's
+    // own fx.air, and the tables arrive mid-session, long after a tile material
+    // was built, so nothing here may be a copy of a value.
+    const air = createSurfaceAirFx();
+    const shell = shellOn(new THREE.Texture(), air);
+    const sector = createEarthNightSectorMaterial(shell, { map: tile(SECTOR_GRID_16K, 2, 1) }, 0);
+    for (const key of Object.keys(air)) {
+      expect(shell.uniforms[key], key).toBe(air[key]);
+      expect(sector.uniforms[key], key).toBe(air[key]);
+    }
+    // The lights are on the ground and neither mesh is, so the segment's far
+    // end is substituted back down to the surface — the shell's own radius,
+    // not the surface archetype's, and the sector holds that same object.
+    expect(air.uAirLookupRadius).toBeUndefined(); // per-material, not part of the body's air
+    expect(shell.uniforms.uAirLookupRadius.value).toBe(NIGHT_LIGHTS_AIR_LOOKUP_RADIUS);
+    expect(sector.uniforms.uAirLookupRadius).toBe(shell.uniforms.uAirLookupRadius);
+    // Binding the tables is one write for every mesh that draws lights.
+    air.uAirDensity.value = 1;
+    expect(sector.uniforms.uAirDensity.value).toBe(1);
+    // Transmittance only: adding the in-scatter here would count the night
+    // side's airlight twice, once on the globe and once on the lights over it.
+    expect(shell.fragmentShader).toContain('lit *= aerialTransmittance(uTransmittance, seg);');
+    // The shader's own text, not the function library prepended in front of it.
+    expect(earthNightFragmentShader).not.toContain('aerialInscatter');
+    // One program: same text, same table dimensions. A sector compiled against
+    // a different set would read the same tables at a different stride.
+    expect(sector.fragmentShader).toBe(shell.fragmentShader);
+    expect(sector.defines).toEqual(shell.defines);
+    expect(sector.defines?.SCATTERING_TEXTURE_NU_SIZE).toBeDefined();
+  });
+
+  it('shares every shell uniform except the tile and its rectangle', () => {
+    // Stated as a subtraction on purpose: a uniform added to the shell has to
+    // reach the sectors by default, or the tiles are the one layer a new term
+    // misses.
+    const shell = shellOn(new THREE.Texture());
+    const sector = createEarthNightSectorMaterial(shell, { map: tile(SECTOR_GRID_16K, 4, 2) }, 0);
+    expect(Object.keys(sector.uniforms).sort()).toEqual(Object.keys(shell.uniforms).sort());
+    const own = ['nightTexture', 'uUvOffset', 'uUvRepeat'];
+    for (const key of Object.keys(shell.uniforms)) {
+      if (own.includes(key)) expect(sector.uniforms[key], key).not.toBe(shell.uniforms[key]);
+      else expect(sector.uniforms[key], key).toBe(shell.uniforms[key]);
+    }
+  });
+
   it('writes depth in the transparent pass, which is what suppresses the shell', () => {
     // The shell writes no depth, so a sector that wrote none either would add
     // on top of it and every resident sector would be exactly twice as bright.
@@ -59,7 +116,7 @@ describe('the night sector material', () => {
     // further and fail the test. `transparent` keeps it out of the opaque
     // list, where a negative renderOrder would draw it before the globe and
     // punch the globe out under it.
-    const shell = createEarthNightShellMaterial(null);
+    const shell = shellOn(null);
     expect(shell.depthWrite).toBe(false);
     expect(shell.transparent).toBe(true);
     expect(shell.blending).toBe(THREE.AdditiveBlending);
@@ -82,7 +139,7 @@ describe('the night sector material', () => {
     // stretch its tile's western eighth across the whole patch. The rectangle
     // is read off the texture the streamer already transformed, so the two
     // families cannot disagree about where a tile's content is.
-    const shell = createEarthNightShellMaterial(null);
+    const shell = shellOn(null);
     const grid1 = finerGrid(SECTOR_GRID_16K);
     const map = tile(grid1, 11, 5);
     const sector = createEarthNightSectorMaterial(shell, { map }, 1);
@@ -104,7 +161,7 @@ describe('the night sector material', () => {
   it('gates on the same night mask the shader draws with', () => {
     // The gate's edge and the shader's are one number: a sector is worth a
     // tile exactly when some pixel of it has a non-zero night mix.
-    const family = earthNightSectorFamily(createEarthNightShellMaterial(null));
+    const family = earthNightSectorFamily(shellOn(null));
     expect(family.side).toBe('night');
     expect(family.lightEdge).toBe(EARTH_NIGHT_MIX_LIT);
     expect(family.weight).toBe(earthNightMix);
@@ -114,7 +171,7 @@ describe('the night sector material', () => {
     expect(earthNightMix(-1)).toBe(1);
     expect(earthNightMix((EARTH_NIGHT_MIX_DARK + EARTH_NIGHT_MIX_LIT) / 2)).toBeCloseTo(0.5, 12);
     // The shader is written from the same two numbers.
-    expect(createEarthNightShellMaterial(null).fragmentShader)
+    expect(shellOn(null).fragmentShader)
       .toContain(`smoothstep(${EARTH_NIGHT_MIX_DARK.toFixed(1)}, ${EARTH_NIGHT_MIX_LIT.toFixed(1)}, sunDot)`);
   });
 
@@ -150,12 +207,12 @@ describe('the night sector material', () => {
       ['neutral', 40, 40],
     ];
     for (const [where, r, b] of lights) expect(keep(r, b), where).toBe(1);
-    expect(createEarthNightShellMaterial(null).fragmentShader)
+    expect(shellOn(null).fragmentShader)
       .toContain('nightColor.rgb *= smoothstep(-12.0 / 255.0, 0.0, nightColor.r - nightColor.b);');
   });
 
   it('reads the width of the map the shell is drawing', () => {
-    const shell = createEarthNightShellMaterial(null);
+    const shell = shellOn(null);
     const family = earthNightSectorFamily(shell);
     expect(family.drawnColorMapWidth()).toBe(0); // nothing readable yet
     shell.uniforms.nightTexture.value = new THREE.Texture(

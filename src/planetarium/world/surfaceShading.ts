@@ -14,12 +14,74 @@
  *   - Moon-shadow transits: a moon between the Sun and a fragment casts an
  *     umbra/penumbra spot onto the globe (Io's shadow crawling across Jupiter).
  *
+ * The night side's own light is the fifth term, and where a body has tables the
+ * irradiance table's multiple-scattering ambient stands in for the starlight
+ * fill. It does not JOIN it and it does not simply replace it: the two are
+ * combined with max(), so the fill is the floor the night side may never go
+ * under and the table is what lifts it above that floor. Adding them would lift
+ * one fragment through two models of the same thing; switching the fill off
+ * outright would let the tier with the tables come out darker than the tier
+ * without them, which inverts every other tier difference in the app. With the
+ * air off the table's term is zero and the floor is the whole night side, which
+ * is what it always was on an airless body and on a device with no tier.
+ *
+ * The Moon is the sixth, and it is weighted by its OWN elevation rather than by
+ * the Sun's: `moonUpWeight` times `sunDownWeight`, a one-sided ramp at full
+ * strength from the terminator down and fading only as the Sun climbs above it.
+ * Gate it by the Sun's night weight instead — or by any ramp centred on the
+ * terminator, the day factor's complement included — and the ground runs
+ * through a minimum there, the Sun's light gone and the Moon's half arrived,
+ * with a gibbous Moon standing right over it.
+ *
+ * What a night fragment costs, in dependent table fetches: 6 by day (two for
+ * the transmittance in front of it, four for that air's in-scatter), 7 past the
+ * terminator with no Moon up (the sky's own irradiance), and 13 with one (its
+ * irradiance, its beam's transmittance, and four for its in-scatter on the same
+ * segment). The last four are behind a uniform branch as well as the weight, so
+ * a body with no moon and a new-Moon Earth pay none of them.
+ *
+ * Aerial perspective is the fourth term and the only one that reads a texture:
+ * where a body has precomputed scattering tables, every surface fragment is
+ * multiplied by the transmittance of the air between it and the camera and has
+ * that air's own in-scattered light added on top (`color * T + S`). It lives
+ * here, rather than in the globe's material alone, because a streamed sector
+ * draws ABOVE the globe and would otherwise be the one unhazed layer, in
+ * exactly the near-band view the haze exists for.
+ *
+ * That segment ends at the fragment for every surface drawn at the altitude it
+ * stands for, and at an authored radius for the one that is not: the cloud
+ * deck's mesh sits at 1.01 R so that up close the deck owns the silhouette,
+ * which puts it above the whole air. `AIR_LOOKUP_RADIUS` is where each
+ * archetype's segment really ends.
+ *
  * The injected GLSL is byte-identical for every body (only uniforms differ), so
- * materials still share compiled programs — no custom cache key needed.
+ * materials still share compiled programs — no custom cache key needed. That
+ * holds for the air too: a body without tables takes the same text with
+ * `uAirDensity` at zero, rather than a shorter variant that would fork the
+ * program cache per body and per tier.
  */
 import * as THREE from 'three';
+import {
+  AERIAL_PERSPECTIVE_GLSL,
+  ATMOSPHERE_LOOKUP_BODY_GLSL,
+  atmosphereLookupUniforms,
+  atmosphereSessionSizes,
+  atmosphereTableDefines,
+  applyAtmosphereParams,
+  type AtmosphereTables,
+} from './atmosphereLut';
+import { AIRLIGHT_SCALE } from './atmosphereModel';
+import { MOON_UP_GLSL, NIGHT_WEIGHT_GLSL, SUN_DOWN_GLSL } from './nightSources';
+import { PLANETS } from '../planets/planetData';
 
-export type SurfaceArchetype = 'airless' | 'rocky' | 'gas' | 'icy' | 'earth';
+/** The cloud deck is a surface class of its own: it hazes and eclipses like the
+ *  ground under it, and it draws the same night terms every other surface does
+ *  — the sky's ambient and the Moon — which is what makes moonlit cloud tops
+ *  read silver. What it does NOT carry is an authored starlight fill of its own
+ *  (`NIGHT_FILL.cloud` is zero): the globe beneath it already has one, and the
+ *  deck's blend is not premultiplied, so the table terms compose exactly once
+ *  where a second authored floor would be a second lift. */
+export type SurfaceArchetype = 'airless' | 'rocky' | 'gas' | 'icy' | 'earth' | 'cloud';
 
 /** Ring annulus that shadows this body's surface (object-space radii, AU). */
 export interface RingShadowConfig {
@@ -29,6 +91,21 @@ export interface RingShadowConfig {
 
 /** Up to this many moons cast a shadow onto any one parent at once. */
 export const MAX_MOON_SHADOWS = 4;
+
+/**
+ * One body's atmosphere, as the uniform block every surface that draws that
+ * body reads: the tables, the parameters that address them, and the two
+ * numbers that bridge a bake normalised to unit WHITE irradiance back to the
+ * scene's own Sun. It lives inside `SurfaceShadingFx` so a streamed sector
+ * inherits it through the same re-augment that gives it the eclipse casters —
+ * a second uniform set is how a tile ends up hazed differently from the globe
+ * one pixel away.
+ *
+ * `uAirDensity` is the switch, not a scale: 0 on an airless body, on a device
+ * with no tier, and between a lost context and the re-bake. The air's actual
+ * depth is in the tables.
+ */
+export type SurfaceAirFx = Record<string, THREE.IUniform>;
 
 /** Per-frame-updated uniforms the mode feeds from each body's real position. */
 export interface SurfaceShadingFx {
@@ -44,9 +121,11 @@ export interface SurfaceShadingFx {
    *  black in any real exposure — the camera belongs to the ring or corona
    *  behind it, and the visibility lifts would read as fog on the silhouette. */
   uSilhouette: { value: number };
+  /** This body's air. Shared by every material that draws its surface. */
+  air: SurfaceAirFx;
 }
 
-interface NightFill {
+export interface NightFill {
   color: number;      // cool starlight tint (linear-ish hex)
   strength: number;   // peak night-side fraction of albedo (kept small)
   termWidth: number;  // half-width of the day/night rolloff, in dot(n, sun)
@@ -55,13 +134,59 @@ interface NightFill {
 // Wider terminators on bodies with air (light wraps); tight on airless worlds.
 // Keyed to surface class, not atmosphere depth, so Venus and Titan (thick haze)
 // sit tighter here than reality; the atmosphere phase models their wrap properly.
-const NIGHT_FILL: Record<SurfaceArchetype, NightFill> = {
+//
+// Where a body has tables the sky's own ambient stands in for this fill and
+// this fill is the floor under it, and the swap is level-neutral — measured,
+// not intended. At the new-Moon night pose, with the night-lights shell's own
+// transmittance taken out of both frames, the mean over every lit pixel is
+// 2.61/12.28/23.99 of 255 without the tables against 2.70/12.58/23.93 with
+// them: a third of one 8-bit step apart, and on the right side of zero in two
+// channels of three. The floor itself is worth 0.01/0.05/0.06 of a step there
+// — take it out and the frame moves that far — because the two models of the
+// same light happen to agree to within it, which is what makes max() the right
+// way to combine them rather than a choice between them.
+//
+// What DOES take light off the night hemisphere on the tier with tables is
+// that shell. City lights are painted on the ground and seen through the whole
+// column — ten airmasses of it at the limb — and over this frame, which is a
+// night side looked at from 1.05 R with most of its ground near the limb, that
+// is 5.3 green and 14.7 blue off the mean. All of it: with the lights left
+// unattenuated the two tiers land within a third of a step of each other.
+export const NIGHT_FILL: Record<SurfaceArchetype, NightFill> = {
   airless: { color: 0x223044, strength: 0.05, termWidth: 0.10 },
   rocky:   { color: 0x243246, strength: 0.06, termWidth: 0.16 },
   gas:     { color: 0x2a3550, strength: 0.08, termWidth: 0.24 },
   icy:     { color: 0x28384f, strength: 0.07, termWidth: 0.12 },
   earth:   { color: 0x1c2c44, strength: 0.05, termWidth: 0.16 },
+  // No fill of its own: the deck is translucent and the globe's fill shows
+  // through it, so a second one would double the night side's floor. Its share
+  // of the table's own night terms it does draw, and that is what silvers a
+  // moonlit cloud top. The terminator width is the globe's, because the same
+  // rolloff gates the eclipse spot on both and the two have to move together.
+  cloud:   { color: 0x000000, strength: 0.0, termWidth: 0.16 },
 };
+
+/**
+ * How much of the authored fill survives as the floor under the table's own
+ * night ambient, on a body that has tables. 1.0 is the fill itself: the look
+ * with no tables is the reference, and the tier with them is never allowed to
+ * come out darker than it. Turn it down and the tables are allowed to take the
+ * night side below the authored floor by that fraction; at 0 the floor is gone
+ * and the table is the whole answer.
+ */
+export const NIGHT_FLOOR_FRACTION = 1.0;
+
+/**
+ * Where the night-lights shell looks its air up, in the radius units the tables
+ * are baked in. The lights are painted on the GROUND; their mesh stands a few
+ * kilometres above it so it never z-fights the globe, and at Earth's 8 km
+ * Rayleigh scale height those few kilometres are more than half the column and
+ * essentially all of the Mie. So the segment's far end is substituted back down
+ * to the surface — the same substitution the cloud deck makes, in the other
+ * direction — and a city is seen through the whole air rather than through the
+ * thin top of it.
+ */
+export const NIGHT_LIGHTS_AIR_LOOKUP_RADIUS = 1.0;
 
 // View-angle limb darkening: a body's disc dims toward its edge as the line of
 // sight grazes the surface — the single biggest "reads as a real photo" cue for
@@ -74,6 +199,48 @@ const LIMB_DARKENING: Record<SurfaceArchetype, number> = {
   gas:     0.55,
   icy:     0.0,
   earth:   0.3,
+  // The globe under the deck carries the disc's edge; darkening the deck as
+  // well would dim that edge twice.
+  cloud:   0.0,
+};
+
+/** A physical cloud top, km above the surface. A whole-globe deck stands for
+ *  everything from a 2 km marine layer to a 16 km anvil; 10 is the middle of
+ *  that range and the altitude the deck's air is looked up at. */
+const CLOUD_TOP_KM = 10;
+
+const EARTH_RADIUS_KM = PLANETS.find((p) => p.name === 'Earth')!.radiusKm;
+
+// Where a surface's air segment ENDS, in the radius units the tables are baked
+// in (1 = the surface). 0 leaves the segment at the fragment's own radius,
+// which is right for every mesh drawn at the altitude it stands for.
+//
+// The cloud deck is not one of those. Its mesh is at 1.01 R because up close
+// the deck, not the globe, is the body's silhouette — and 1.01 R is 64 km,
+// above 99.97 % of the Rayleigh column and all of the Mie and the ozone. Look
+// the air up there and `x T + S` is a no-op in every pose the app can reach,
+// while the deck's own 0.35 alpha still takes 35 % of the ground's airlight
+// off every pixel of the day disc, and 35 % of every pixel at the horizon is
+// an unhazed cloud image in the one band a photograph washes out. So the deck
+// looks its air up at the physical cloud top instead: the same ray in the same
+// direction, with the radius substituted for the segment's far end.
+//
+// The substituted point is always still on the visible side of the globe: a
+// deck fragment is only drawn where its normal faces the camera, which is
+// within arccos(R_deck/d) of the camera axis, and that cone is strictly
+// narrower than the globe's own arccos(R_globe/d) because the deck is the
+// larger sphere.
+//
+// These are radius units and the only body with a deck is Earth, so the deck's
+// entry is 10 km expressed against Earth's radius. A second body that grew one
+// would want its own altitude divided by its own radius, not this number.
+export const AIR_LOOKUP_RADIUS: Record<SurfaceArchetype, number> = {
+  airless: 0,
+  rocky:   0,
+  gas:     0,
+  icy:     0,
+  earth:   0,
+  cloud:   1 + CLOUD_TOP_KM / EARTH_RADIUS_KM,
 };
 
 // Analytic stand-in for Saturn's ring opacity across the annulus (t: 0 inner …
@@ -98,21 +265,63 @@ float ringShadowOpacity(float t) {
 }
 `;
 
+/** The umbra/penumbra of one caster, traced from a point in the BODY frame
+ *  toward the Sun: a moon sunward of the point casts a cone that narrows with
+ *  distance behind it. Returns 0 for a caster that is not sunward at all.
+ *  Exported as GLSL because the atmosphere shell traces the same casters, in
+ *  the same frame, and a second transcription would drift the eclipse spot on
+ *  the air away from the one on the ground. */
+export const MOON_SHADOW_TRACE_GLSL = /* glsl */ `
+float moonShadowOcclusion(vec3 toMoon, float moonRadius, vec3 sunDir, float sunTan) {
+  float along = dot(toMoon, sunDir);
+  if (along <= 0.0) return 0.0;
+  float perp = length(toMoon - sunDir * along);
+  return 1.0 - smoothstep(max(moonRadius - along * sunTan, 0.0), moonRadius + along * sunTan, perp);
+}
+`;
+
 // The augmentation GLSL, lifted out of onBeforeCompile so the shader reads as
 // shader code rather than string concatenation. Computed once at module load,
 // so every body injects the identical text (only the uniform *values* differ) —
 // materials keep sharing one compiled program, no custom cache key needed.
 const SURFACE_VERTEX_DECLS = /* glsl */ `
 uniform vec3 uSunDirWorld;
+uniform vec3 uMoonDirWorld;
 uniform vec3 uPlanetshineDir;
+uniform float uFrameSpin;
 varying vec3 vSunViewDir;
+varying vec3 vMoonViewDir;
 varying vec3 vObjPos;
-varying vec3 vPlanetshineViewDir;`;
+varying vec3 vPlanetshineViewDir;
+varying vec3 vAirCam;
+varying vec3 vAirFrag;`;
 
 const SURFACE_VERTEX_BODY = /* glsl */ `
 vSunViewDir = normalize((viewMatrix * vec4(uSunDirWorld, 0.0)).xyz);
+vMoonViewDir = normalize((viewMatrix * vec4(uMoonDirWorld, 0.0)).xyz);
 vPlanetshineViewDir = normalize((viewMatrix * vec4(uPlanetshineDir, 0.0)).xyz);
-vObjPos = position;`;
+// vObjPos is the BODY frame — the frame the eclipse casters, the ring plane and
+// the local sun direction are all stated in. A mesh that carries a spin of its
+// own on top of the body's (the cloud deck drifts) would trace them at the
+// wrong longitude, putting a second eclipse spot on the clouds beside the one
+// on the ground. Zero for every mesh that shares the body's own frame, and the
+// branch is what keeps those byte-identical rather than off by a rounded cosine.
+if (uFrameSpin == 0.0) {
+  vObjPos = position;
+} else {
+  float spinC = cos(uFrameSpin);
+  float spinS = sin(uFrameSpin);
+  vObjPos = vec3(position.x * spinC + position.z * spinS,
+                 position.y,
+                 position.z * spinC - position.x * spinS);
+}
+// The air's geometry is frame-free: the camera and the fragment as offsets from
+// the body's centre, in world axes, against a world sun direction. The
+// fragment's offset comes off the rotation alone — going through world position
+// and back would subtract two numbers of the body's heliocentric size to get
+// one the size of its radius.
+vAirCam = cameraPosition - modelMatrix[3].xyz;
+vAirFrag = mat3(modelMatrix) * position;`;
 
 const SURFACE_FRAGMENT_DECLS = /* glsl */ `
 uniform vec3 uNightColor;
@@ -129,26 +338,100 @@ uniform float uPlanetshineIntensity;
 uniform float uSilhouette;
 uniform float uIcyRim;
 uniform float uLimbDarkening;
+uniform vec3 uSunDirWorld;
+uniform vec3 uMoonDirWorld;
+uniform vec3 uMoonIrradiance;
+uniform float uAirDensity;
+uniform float uAirLookupRadius;
+uniform float uPlanetRadius;
+uniform float uSolarIrradiance;
+uniform vec3 uAirlightScale;
+uniform sampler2D uTransmittance;
+uniform sampler2D uIrradiance;
+uniform sampler3D uScattering;
 varying vec3 vSunViewDir;
+varying vec3 vMoonViewDir;
 varying vec3 vObjPos;
 varying vec3 vPlanetshineViewDir;
-${RING_SHADOW_OPACITY_GLSL}`;
+varying vec3 vAirCam;
+varying vec3 vAirFrag;
+${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}`;
 
 // Injected after lighting but before <opaque_fragment> writes outgoingLight into
 // gl_FragColor — so terms land in linear radiance (tone-mapped downstream) and
 // read the perturbed view-space `normal`.
 const SURFACE_FRAGMENT_BODY = /* glsl */ `{
-  float dayFactor = smoothstep(-uTermWidth, uTermWidth, dot(normalize(normal), normalize(vSunViewDir)));
+  // The sine of the Sun's elevation at this fragment, off the perturbed normal:
+  // the Sun's own Lambert term, which is what the day factor and the Moon's
+  // weight below both read so the two describe one crossing.
+  float sunElevSin = dot(normalize(normal), normalize(vSunViewDir));
+  float dayFactor = smoothstep(-uTermWidth, uTermWidth, sunElevSin);
   // The night lifts fade while this body silhouettes the Sun: a disc backlit
   // by the photosphere is void black in any real exposure, and the starlight
   // fill or earthshine would read as fog painted on the silhouette.
   float nightKeep = 1.0 - uSilhouette;
-  outgoingLight += diffuseColor.rgb * uNightColor * (uNightStrength * (1.0 - dayFactor) * nightKeep);
+  // Which way is up at this fragment: the geometry both night weights and every
+  // table lookup below are read from.
+  vec3 up = normalize(vAirFrag);
+  // The Sun's elevation at THIS fragment: the quantity the sources the daylight
+  // sky drowns are weighted by, so the airglow on the limb and the sky's own
+  // ambient on the ground fade along one line rather than two. Zero where there
+  // is no air, which is where the authored floor below is the whole night side.
+  float airNight = uAirDensity > 0.0
+      ? nightWeight(clampCosine(dot(up, normalize(uSunDirWorld)))) * nightKeep
+      : 0.0;
+  // The Moon's weight is the Moon's own, not the Sun's. It lights this fragment
+  // whenever it stands above the fragment's horizon, and it arrives on a
+  // one-sided ramp: full strength at the terminator, where the Sun's own light
+  // on this fragment is exactly zero and there is nothing left to double-light,
+  // and fading only as the Sun climbs above it. Weight it by anything centred
+  // on the terminator and the crossing dips there instead of handing over.
+  float moonNight = uAirDensity > 0.0
+      ? moonUpWeight(clampCosine(dot(up, normalize(uMoonDirWorld))))
+          * sunDownWeight(sunElevSin, uTermWidth) * nightKeep
+      : 0.0;
+  // The authored starlight floor, and the sky's own ambient that stands in for
+  // it where the tables are bound. They are combined with max() rather than
+  // added: two models of one thing added together lift the fragment twice, and
+  // switching the authored one off outright lets the tier with the tables come
+  // out darker than the tier without them. With the air off the ambient is
+  // exactly zero and the floor is the whole night side, unchanged.
+  vec3 nightFloor = diffuseColor.rgb * uNightColor
+      * (uNightStrength * (1.0 - dayFactor) * nightKeep * ${NIGHT_FLOOR_FRACTION.toFixed(6)});
+  vec3 nightAmbient = vec3(0.0);
+  if (airNight > 0.0) {
+    // The irradiance table is the light a horizontal surface receives from the
+    // whole sky. Both irradiances below turn into radiance by albedo/pi — the
+    // same law three's own diffuse BRDF applies to the Sun, which is what the
+    // bridge these numbers come through was calibrated against. Drop the 1/pi
+    // and the night side is lit three times harder than the day side for the
+    // same irradiance.
+    float rFrag = clampRadius(length(vAirFrag) / uPlanetRadius);
+    float muSSun = clampCosine(dot(up, normalize(uSunDirWorld)));
+    nightAmbient = diffuseColor.rgb * RECIPROCAL_PI
+        * (getIrradiance(uIrradiance, rFrag, muSSun) * uAirlightScale * uSolarIrradiance)
+        * airNight;
+  }
+  outgoingLight += max(nightAmbient, nightFloor);
   // Planetshine: parent-lit glow on the night side. Albedo-multiplicative,
   // so the eclipse color-dim carries through it automatically.
   if (uPlanetshineIntensity > 0.0) {
     float pl = max(dot(normalize(normal), normalize(vPlanetshineViewDir)), 0.0);
     outgoingLight += diffuseColor.rgb * uPlanetshineColor * (uPlanetshineIntensity * pl * (1.0 - dayFactor) * nightKeep);
+  }
+  // The Moon: its beam through the air above this fragment, and the same
+  // irradiance table read with the Moon as the source — which sky it is depends
+  // only on where the source is. Behind a uniform branch as well as the weight,
+  // so a body with no moon, a new Moon and every day fragment pay none of the
+  // six fetches in here.
+  if (moonNight > 0.0 && uMoonIrradiance.g > 0.0) {
+    float rFrag = clampRadius(length(vAirFrag) / uPlanetRadius);
+    float muSMoon = clampCosine(dot(up, normalize(uMoonDirWorld)));
+    vec3 moonAmbient = getIrradiance(uIrradiance, rFrag, muSMoon) * uMoonIrradiance;
+    vec3 moonDirect = uMoonIrradiance
+        * getTransmittanceToSun(uTransmittance, rFrag, muSMoon)
+        * max(dot(normalize(normal), normalize(vMoonViewDir)), 0.0);
+    outgoingLight += diffuseColor.rgb * RECIPROCAL_PI * (moonAmbient + moonDirect) * moonNight;
   }
   // Icy moons: a cool Fresnel rim on the back-lit limb (ice scatters light).
   // Scaled by the (eclipse-dimmed) albedo brightness so it fades when the
@@ -172,23 +455,56 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   }
   // Moon-shadow transits: a moon sunward of this fragment casts an
   // umbra/penumbra spot (cone narrows with distance behind the moon).
+  // Accumulated into ONE visible-Sun factor rather than applied per caster,
+  // because the air in front of this fragment has to be dimmed by the same
+  // number: two expressions of the same eclipse drift apart, and the way that
+  // shows is a spot on the haze offset from the spot on the ground.
+  float sunVisible = 1.0;
   for (int i = 0; i < ${MAX_MOON_SHADOWS}; i++) {
     if (i >= uMoonShadowCount) break;
-    vec3 toMoon = uMoonShadow[i].xyz - vObjPos;
-    float along = dot(toMoon, sd);
-    if (along > 0.0) {
-      float perp = length(toMoon - sd * along);
-      float mr = uMoonShadow[i].w;
-      float occ = 1.0 - smoothstep(max(mr - along * uSunTan, 0.0), mr + along * uSunTan, perp);
-      outgoingLight *= 1.0 - occ * dayFactor;
-    }
+    float occ = moonShadowOcclusion(uMoonShadow[i].xyz - vObjPos, uMoonShadow[i].w, sd, uSunTan);
+    sunVisible *= 1.0 - occ * dayFactor;
   }
+  outgoingLight *= sunVisible;
   // Limb darkening: the disc dims toward its edge as the view ray grazes the
   // surface. mu = cos of the view angle — 1 at disc centre, 0 at the limb.
   // Applied last so it shades every lit term equally; 0 disables it.
   if (uLimbDarkening > 0.0) {
     float mu = max(dot(normalize(normal), normalize(vViewPosition)), 0.0);
     outgoingLight *= 1.0 - uLimbDarkening * (1.0 - mu);
+  }
+  // Aerial perspective, last: everything above is light leaving this fragment,
+  // and all of it crosses the same air on the way to the camera. What survives
+  // is x T; what the air itself sends is + S. Zero on a body with no
+  // tables, on a device with no tier, and between a lost context and the
+  // re-bake — the same text either way, so one program serves every body.
+  if (uAirDensity > 0.0) {
+    // Where the segment ends. A mesh drawn at the altitude it stands for ends
+    // at its own fragment; the cloud deck is drawn at 1.01 R to own the
+    // silhouette, which is 64 km up and above the whole column, so its air is
+    // looked up at a physical cloud top instead. Same ray, same direction, the
+    // radius substituted — and the whole substitution is one uniform, so the
+    // injected text stays identical for every surface.
+    vec3 airEnd = uAirLookupRadius > 0.0
+        ? normalize(vAirFrag) * uAirLookupRadius
+        : vAirFrag / uPlanetRadius;
+    AerialSegment seg = aerialSegment(
+        vAirCam / uPlanetRadius, airEnd, normalize(uSunDirWorld));
+    if (seg.valid) {
+      vec3 airT = aerialTransmittance(uTransmittance, seg);
+      vec3 airS = aerialInscatter(uScattering, seg, airT)
+          * uAirlightScale * (uSolarIrradiance * sunVisible);
+      // The Moon lights the same column. One traversal, one transmittance: only
+      // the two angles that involve the source change, so the second source is
+      // a second pair of lookups and nothing else. Behind the Moon's own weight
+      // and behind a uniform branch, so a day fragment, a new Moon and a body
+      // with no moon at all cost a branch and no fetches.
+      if (moonNight > 0.0 && uMoonIrradiance.g > 0.0) {
+        airS += aerialInscatter(uScattering, aerialForLight(seg, normalize(uMoonDirWorld)), airT)
+            * uMoonIrradiance * moonNight;
+      }
+      outgoingLight = outgoingLight * airT + airS;
+    }
   }
 }`;
 
@@ -201,12 +517,87 @@ export interface SurfaceShadingArgs {
   ringShadow?: RingShadowConfig;
   sunTan: number;
   fx: SurfaceShadingFx;
+  /** This mesh's own rotation about the pole, on top of the body's — the cloud
+   *  deck drifts, and its object space is that much out of the body frame the
+   *  eclipse casters are given in. Zero for a mesh that shares the frame. */
+  uFrameSpin: { value: number };
 }
 const augmentArgs = new WeakMap<THREE.Material, SurfaceShadingArgs>();
 
 /** The augmentation a material received, or undefined for a plain one. */
 export function surfaceShadingArgsOf(mat: THREE.Material): SurfaceShadingArgs | undefined {
   return augmentArgs.get(mat);
+}
+
+/** 1×1 stand-ins, shared by every augmented material: no sampler is ever left
+ *  for the renderer to fill with an empty of its own, which for a `sampler3D`
+ *  is the first place a driver would have to invent one. Sampling them is never
+ *  legal — wherever they are what is bound, `uAirDensity` is 0. */
+let airDummies: { map2D: THREE.DataTexture; map3D: THREE.Data3DTexture } | null = null;
+function surfaceAirDummies(): { map2D: THREE.DataTexture; map3D: THREE.Data3DTexture } {
+  if (!airDummies) {
+    const map2D = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+    map2D.needsUpdate = true;
+    const map3D = new THREE.Data3DTexture(new Uint8Array(4), 1, 1, 1);
+    map3D.minFilter = THREE.LinearFilter;
+    map3D.magFilter = THREE.LinearFilter;
+    map3D.needsUpdate = true;
+    airDummies = { map2D, map3D };
+  }
+  return airDummies;
+}
+
+/** A body's air, switched off and pointed at the stand-ins. */
+export function createSurfaceAirFx(): SurfaceAirFx {
+  const dummies = surfaceAirDummies();
+  const air: SurfaceAirFx = {
+    ...atmosphereLookupUniforms(),
+    uAirDensity: { value: 0 },
+    uPlanetRadius: { value: 1 },
+    uSolarIrradiance: { value: 1 },
+    uAirlightScale: { value: new THREE.Vector3(...AIRLIGHT_SCALE) },
+    // The night's second source. It lives here, with the air, because every
+    // surface that draws this body has to be lit by the same Moon as the shell
+    // around it — and because the mode writes it once per body per frame.
+    uMoonDirWorld: { value: new THREE.Vector3(0, 0, 1) },
+    uMoonIrradiance: { value: new THREE.Vector3() },
+  };
+  air.uTransmittance.value = dummies.map2D;
+  air.uIrradiance.value = dummies.map2D;
+  air.uScattering.value = dummies.map3D;
+  return air;
+}
+
+/**
+ * Point a body's surfaces at its finished tables and switch the air on.
+ * `planetRadius` is the surface radius in the same units the vertex stage hands
+ * over (world AU), because that is what the lookup divides by to reach the
+ * radius units the tables are baked in.
+ */
+export function bindSurfaceAir(
+  air: SurfaceAirFx,
+  tables: AtmosphereTables,
+  planetRadius: number,
+  solarIrradiance: number,
+): void {
+  applyAtmosphereParams(air, tables.params);
+  air.uTransmittance.value = tables.transmittance;
+  air.uScattering.value = tables.scattering;
+  air.uIrradiance.value = tables.irradiance;
+  air.uPlanetRadius.value = planetRadius;
+  air.uSolarIrradiance.value = solarIrradiance;
+  air.uAirDensity.value = 1;
+}
+
+/** Switch the air off and let go of the tables: a lost context frees their
+ *  textures, and a sampler still pointed at one is a bind of a dead name. */
+export function clearSurfaceAir(air: SurfaceAirFx): void {
+  if (air.uAirDensity.value === 0 && air.uScattering.value === surfaceAirDummies().map3D) return;
+  const dummies = surfaceAirDummies();
+  air.uAirDensity.value = 0;
+  air.uTransmittance.value = dummies.map2D;
+  air.uIrradiance.value = dummies.map2D;
+  air.uScattering.value = dummies.map3D;
 }
 
 export function augmentSurfaceMaterial(
@@ -220,6 +611,9 @@ export function augmentSurfaceMaterial(
    *  same values (a streamed sector tinted differently from the globe under
    *  it is a rectangle in the middle of an eclipse). */
   shared?: SurfaceShadingFx,
+  /** Share the spin of the mesh this material's own mesh hangs under (a
+   *  streamed sector is a child of the globe mesh, so it inherits its frame). */
+  sharedSpin?: { value: number },
 ): SurfaceShadingFx {
   const night = NIGHT_FILL[archetype];
 
@@ -236,8 +630,10 @@ export function augmentSurfaceMaterial(
     uPlanetshineDir: { value: new THREE.Vector3(1, 0, 0) },
     uPlanetshineIntensity: { value: 0 },
     uSilhouette: { value: 0 },
+    air: createSurfaceAirFx(),
   };
-  augmentArgs.set(mat, { archetype, ringShadow, sunTan, fx });
+  const uFrameSpin = sharedSpin ?? { value: 0 };
+  augmentArgs.set(mat, { archetype, ringShadow, sunTan, fx, uFrameSpin });
   const uNightColor = { value: new THREE.Color(night.color) };
   const uNightStrength = { value: night.strength };
   const uTermWidth = { value: night.termWidth };
@@ -246,6 +642,7 @@ export function augmentSurfaceMaterial(
   const uSunTan = { value: sunTan };
   const uIcyRim = { value: archetype === 'icy' ? 1 : 0 };
   const uLimbDarkening = { value: LIMB_DARKENING[archetype] };
+  const uAirLookupRadius = { value: AIR_LOOKUP_RADIUS[archetype] };
 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uSunDirWorld = fx.uSunDirWorld;
@@ -264,6 +661,9 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uSilhouette = fx.uSilhouette;
     shader.uniforms.uIcyRim = uIcyRim;
     shader.uniforms.uLimbDarkening = uLimbDarkening;
+    shader.uniforms.uAirLookupRadius = uAirLookupRadius;
+    shader.uniforms.uFrameSpin = uFrameSpin;
+    for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];
 
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>${SURFACE_VERTEX_DECLS}`)
@@ -273,6 +673,11 @@ export function augmentSurfaceMaterial(
       .replace('#include <common>', `#include <common>${SURFACE_FRAGMENT_DECLS}`)
       .replace('#include <opaque_fragment>', `${SURFACE_FRAGMENT_BODY}\n#include <opaque_fragment>`);
   };
+  // The table dimensions are #defines, and a define is part of three's program
+  // cache key — so every augmented material carries the same set, whether or
+  // not its body has any air. Split them per body and the cache forks per body;
+  // omit them and the injected lookup does not compile at all.
+  mat.defines = { ...mat.defines, ...atmosphereTableDefines(atmosphereSessionSizes()) };
   mat.needsUpdate = true;
   return fx;
 }

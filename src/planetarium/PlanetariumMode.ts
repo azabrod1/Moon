@@ -35,9 +35,10 @@ import {
   type PlanetData,
   LIGHT_SPEED_AU_PER_S,
 } from './planets/planetData';
-import { appliedTierHeldBytes, applySunGlowTier, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, lodMeasurementRelevant, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, retainedSourceBytes, resolveTierFile, resolveUpgradeTier, setWarmEligibleMoonParents, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade, type TierAdmission } from './PlanetFactory';
+import { appliedTierHeldBytes, applySunGlowTier, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createAtmosphereMaterial, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, lodMeasurementRelevant, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, retainedSourceBytes, resolveTierFile, resolveUpgradeTier, setWarmEligibleMoonParents, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade, type TierAdmission } from './PlanetFactory';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
-import type { SurfaceShadingFx } from './world/surfaceShading';
+import { bindSurfaceAir, clearSurfaceAir, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import {
   SECTOR_NIGHT_SETS, SECTOR_SETS, SectorStreamer, sectorFamilyKey,
@@ -145,6 +146,18 @@ import {
   type PlatformFamily,
   type ReleaseCandidate,
 } from './world/gpuEnvelope';
+import { AtmosphereLut, type AtmosphereBakeStats, type AtmosphereTables } from './world/atmosphereLut';
+import { bindAtmosphereShellTables, disposeAtmosphereShellMaterial } from './world/atmosphereShell';
+import {
+  ATMOSPHERE_SPECS,
+  ATMOSPHERE_TABLE_SIZES_FULL,
+  ATMOSPHERE_TABLE_SIZES_HALF,
+  atmosphereParams,
+  scatteringTexture3DCoords,
+  scatteringUvwzFromRMuMuSNu,
+  solarIrradianceScale,
+  transmittanceUvFromRMu,
+} from './world/atmosphereModel';
 import { warmBitmapUploadProbe } from './world/textureBitmapLoader';
 import { planetshineIntensity } from './world/planetshine';
 import {
@@ -574,6 +587,14 @@ function topMapWidthOf(
   return () => ladderMapReferenceWidth(up);
 }
 
+/** True once boot has handed the frame to the user. Speculative GPU work waits
+ *  for it: anything done while the load screen is up is boot time, whatever
+ *  timer it was armed on. */
+function loadScreenHidden(): boolean {
+  const el = document.getElementById('loading-screen');
+  return !el || el.classList.contains('hidden');
+}
+
 export class PlanetariumMode {
   // The cruise rig (clearance pads, chase distance, occluder disc, zoom
   // floor) lives in cruiseView.ts as one derived chain.
@@ -832,6 +853,10 @@ export class PlanetariumMode {
   // one frame somewhere in the seconds after the fetch lands).
   private bootPairWarmTimer: number | undefined;
   private static readonly BOOT_PAIR_WARM_DELAY_MS = 5000;
+  /** The atmosphere bake goes after the pair warm, not with it: both want the
+   *  same idle, and the warm's decode and upload are the ones a first arrival
+   *  waits on. */
+  private static readonly ATMOSPHERE_BAKE_DELAY_MS = 6000;
   // Arrival veil re-entrancy guard (rapid picks, or a pick while one is running).
   private arrivalInFlight = false;
   /** Monotonic veil-cover token: each veiled arrival claims the veil, so a
@@ -1131,6 +1156,16 @@ export class PlanetariumMode {
   private tmpSunOccluderScale = new THREE.Vector3();
   private tmpSunAtmosphereOffset = new THREE.Vector3();
   private moonShading: MoonShadingState = { sunVisibleFraction: 1, inUmbra: false };
+  // The moonlight pass runs in a different sweep from the moon-render one, so it
+  // keeps its own scratch: sharing would couple two passes through a value one of
+  // them believes it owns for the length of an iteration.
+  private moonlightShading: MoonShadingState = { sunVisibleFraction: 1, inUmbra: false };
+  private tmpMoonlightOffset = new THREE.Vector3();
+  private tmpMoonlightParent = new THREE.Vector3();
+  private moonlightSource = new Map<string, MoonData | null>();
+  /** Last phase angle written, so the capture tool can assert the Moon a night
+   *  golden was taken under rather than trust the date it asked for. */
+  private moonlightPhase = new Map<string, number>();
   // Landed-system shadow visuals: transit spots always on, guides behind the
   // Observatory panel toggle (session-only, deliberately not persisted).
   private shadowVisuals = new ShadowVisuals();
@@ -2009,6 +2044,25 @@ export class PlanetariumMode {
   // couple of frames later — the first live frames must not compile anything
   // it missed (that stall is the very thing it exists to prevent).
   private shaderWarmupProgramCount: number | null = null;
+  /** QA override for which tier the shells wear: 'analytic' holds them on the
+   *  fallback so the two looks can be captured from one session, null lets the
+   *  tables decide. Never set outside the dev bridge. */
+  private devAtmosphereTier: 'analytic' | null = null;
+
+  /** Both materials a body's atmosphere shell can wear, and the tables the LUT
+   *  one is currently pointed at (a re-bake after a context loss makes new
+   *  ones). The mesh holds whichever is drawing. */
+  private readonly atmosphereShells = new Map<string, {
+    analytic: THREE.ShaderMaterial;
+    lut: THREE.ShaderMaterial | null;
+    bound: AtmosphereTables | null;
+  }>();
+
+  /** Precomputed atmosphere tables. Built in the boot idle, never behind the
+   *  load screen; nothing draws with them yet. */
+  private atmosphereLut: AtmosphereLut | null = null;
+  private atmosphereBakeTimer = 0;
+  private devAtmosphereLut: AtmosphereLut | null = null;
   private framesSinceShaderWarmup = 0;
 
   constructor(
@@ -2066,6 +2120,12 @@ export class PlanetariumMode {
     // the arrival veil are unchanged — only the per-moon paint moves to the GPU.
     this.moonTexturer = new ProceduralMoonTexturer(renderer);
     this.moonPainter = new MoonPainter(this.moonTexturer.paint);
+    // Half tables and two scattering orders on anything that is not a desktop.
+    // That is a WORK argument, not a memory one — the bake is a few hundred
+    // layer draws and ~10^9 dependent fetches — so it is asked of the device
+    // CLASS rather than of the profile's byte numbers, which an Apple phone was
+    // measured to share with a desktop. Same reasoning as FILL_RATE_TIER_CAP.
+    this.atmosphereLut = new AtmosphereLut(renderer, { touch: this.deviceClass !== 'desktop' });
     // WebGL context loss invalidates render-target textures (no CPU backing), so
     // GPU-painted moons would render black after a restore. Reset them to repaint
     // and re-validate the GPU path on restore (else it stays on the CPU path).
@@ -2078,6 +2138,10 @@ export class PlanetariumMode {
       // from the service-worker cache after the restore.
       this.glContextLost = true;
       this.sectors?.dropAll();
+      // The tables are render-target textures with no CPU backing: they die
+      // with the context, and the atmosphere falls back to the analytic shell
+      // until a re-bake validates.
+      this.atmosphereLut?.onContextLost();
       this.invalidateRtPaintedMoons(this.moonTexturer.onContextLost());
       // Dots gate on painted moons — blank them with the same invalidation so a
       // stale dot can't outlive the mesh it belonged to.
@@ -2094,6 +2158,7 @@ export class PlanetariumMode {
       // nearest body first and one at a time.
       this.queueReleasedTierRefetch();
       this.glContextLost = false;
+      this.atmosphereLut?.onContextRestored();
     });
     this.player = new PlayerShip();
     this.store = new PlanetariumStore();
@@ -2642,6 +2707,7 @@ export class PlanetariumMode {
     snapConstellations();
 
     this.scheduleBootPairWarm();
+    this.scheduleAtmosphereBake();
 
     reportActivationProgress(FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS);
     performance.measure('plm:activate', 'plm:activate:start');
@@ -2699,6 +2765,65 @@ export class PlanetariumMode {
         }
       }
     }, PlanetariumMode.BOOT_PAIR_WARM_DELAY_MS);
+  }
+
+  /** Arm the atmosphere table bake. It runs in the boot idle, never behind the
+   *  load screen: a four-order bake is a few hundred layer draws and hundreds
+   *  of millions of dependent fetches, which on a phone is seconds of a boot
+   *  the load screen would otherwise be holding. The analytic shell carries the
+   *  look meanwhile — a complete look, so nothing is half-loaded — and the
+   *  tables only become the tier once every one of them validates.
+   *
+   *  Nothing this tier needs is in the boot warm-up set: not the bake's own
+   *  seven programs, not the capability probe (a 3D layer render and a
+   *  synchronous pixel readback — a full pipeline flush), and not the shell's
+   *  own program. The warm-up compiles what the live path draws, under the load
+   *  screen, and none of this draws until the tables exist. All of it links out
+   *  here in the idle instead, where a cold-cache link costs nobody a frame;
+   *  putting any of it in the warm set moves the cost onto the boot the warm-up
+   *  exists to shorten. */
+  private scheduleAtmosphereBake(): void {
+    window.clearTimeout(this.atmosphereBakeTimer);
+    this.atmosphereBakeTimer = window.setTimeout(() => {
+      if (!this.active || !this.atmosphereLut) return;
+      // Two things own the frame ahead of speculation: the load screen (the
+      // bake must never be inside the boot it would lengthen) and an arrival
+      // veil. Yield to both and try again.
+      if (!loadScreenHidden() || this.arrivalVeilUp()) {
+        this.scheduleAtmosphereBake();
+        return;
+      }
+      void this.warmAtmosphereShellProgram().then(() => {
+        if (!this.active) return;
+        return this.atmosphereLut?.bake('Earth');
+      });
+    }, PlanetariumMode.ATMOSPHERE_BAKE_DELAY_MS);
+  }
+
+  /** Link the LUT shell's program here in the idle, before the bake it will
+   *  draw with. The tier swaps in mid-flight the moment the tables validate,
+   *  and a cold link at that moment is a dropped frame in the near band, where
+   *  the shell fills the screen. Warmed with the LIVE material, not a copy: a
+   *  program is freed with the material that holds it, so a throwaway probe
+   *  material would take its own program down with it.
+   *
+   *  Fail-open throughout — this only buys a smooth swap, and lazy first-draw
+   *  compilation is the fallback. */
+  private async warmAtmosphereShellProgram(): Promise<void> {
+    const atmoProbes = this.createAtmosphereWarmupProbes();
+    if (!atmoProbes) return;
+    this.scene.add(atmoProbes.group);
+    const { compiled } = await warmUpSceneShaders(this.renderer, this.scene, this.camera, {
+      drawsThroughComposer: this.rendersThroughComposer(),
+      probeGroups: [atmoProbes.group],
+      onError: (stage, err) => debugError(`Atmosphere shell warm-up ${stage} failed`, err),
+    });
+    // Disposal waits on compileAsync's own poll: disposing mid-poll throws
+    // inside a timer callback no try/catch here could reach.
+    void compiled.then(() => {
+      this.scene.remove(atmoProbes.group);
+      atmoProbes.dispose();
+    });
   }
 
   /** Wire the hero bodies' sector sets onto the meshes they draw over.
@@ -2988,9 +3113,19 @@ export class PlanetariumMode {
    * A rung is charged its GPU allocation plus whatever decoded image is still
    * held in RAM behind it — the same device memory on the hardware where the
    * envelope binds.
+   *
+   * The atmosphere tables are in it for the same reason: they are an optional
+   * tier a device opts into, they are resident for the session once baked, and
+   * they are allocated out of the one pool the maps and the tiles share. The
+   * figure is asked of the LUT per frame rather than added as a constant
+   * because the tier may never arrive at all, and because the bake itself
+   * holds ~32 MiB of scratch for the minutes it runs — a rung admitted against
+   * the resident 8 MiB while 32 are really allocated is a rung admitted
+   * against memory that is not there. Unlike a map, the tables cannot be given
+   * back, so they act as a floor the ladder's own maps give way to.
    */
   private liveGlobalMapBytes(): number {
-    let bytes = 0;
+    let bytes = this.atmosphereLut?.gpuBytes() ?? 0;
     this.forEachTextureUpgrade((up) => { bytes += appliedTierHeldBytes(up); });
     return bytes;
   }
@@ -4780,13 +4915,240 @@ export class PlanetariumMode {
     );
   }
 
+  /** The LUT shell material for a body, built once and kept for the session —
+   *  the tables it points at are bound later, and can be re-bound after a
+   *  context loss. Holding it is what holds its linked program. */
+  private ensureLutShellMaterial(planet: PlanetMesh): THREE.ShaderMaterial | null {
+    const config = ATMOSPHERES[planet.data.name];
+    const lut = this.atmosphereLut;
+    // Fewer bodies have TABLES than have shells: Venus reads as a cloud deck and
+    // the giants have no surface for a thin layer to sit above, so they keep the
+    // analytic fringe and there is no atmosphere model to ask for.
+    if (!config || !ATMOSPHERE_SPECS[planet.data.name] || !planet.atmosphere || !lut) return null;
+    let shells = this.atmosphereShells.get(planet.data.name);
+    if (!shells) {
+      shells = {
+        analytic: planet.atmosphere.material as THREE.ShaderMaterial,
+        lut: null,
+        bound: null,
+      };
+      this.atmosphereShells.set(planet.data.name, shells);
+    }
+    if (!shells.lut) {
+      shells.lut = createAtmosphereMaterial(config, planet.data.radiusAU, 'lut', {
+        lut: {
+          body: planet.data.name,
+          sizes: lut.sizes,
+          fx: planet.fx,
+          // The penumbra width the ground's caster trace uses, so the eclipse
+          // spot on the air has the same soft edge as the one below it.
+          sunTan: surfaceShadingArgsOf(planet.mesh.material as THREE.Material)?.sunTan ?? 0,
+        },
+      });
+    }
+    return shells.lut;
+  }
+
+  /** One invisible speck wearing the LUT shell material, for the idle warm pass
+   *  to compile. One program covers every body — the table sizes are the only
+   *  thing in its key, and one profile is chosen per session — so Earth's
+   *  material stands for all of them. Null where the device has no tier: a
+   *  program that can never draw is a cold link spent on nothing, and asking
+   *  runs the capability probe, which is why this is not on the boot path. */
+  private createAtmosphereWarmupProbes(): { group: THREE.Group; dispose: () => void } | null {
+    if (!this.atmosphereLut?.probeCapability() || !this.solarSystem) return null;
+    const planet = this.solarSystem.planets.find(
+      (p) => p.atmosphere && ATMOSPHERES[p.data.name] && ATMOSPHERE_SPECS[p.data.name],
+    );
+    const material = planet ? this.ensureLutShellMaterial(planet) : null;
+    if (!material) return null;
+    const geometry = new THREE.SphereGeometry(1e-9, 4, 2);
+    const group = new THREE.Group();
+    group.visible = false;
+    group.add(new THREE.Mesh(geometry, material));
+    // The material outlives the probe: it belongs to atmosphereShells, and
+    // disposing it here would delete the program this exists to link.
+    return { group, dispose: () => geometry.dispose() };
+  }
+
+  /**
+   * Keep a body's shell on the best tier it can draw THIS frame: the LUT
+   * material once its tables are baked and validated, the analytic one before
+   * that and after a context loss takes the tables with it. The mesh, its
+   * scale and its two per-frame uniforms are shared by both, so the swap is a
+   * material assignment — and never a frame with no shell at all.
+   *
+   * The LUT material is built on first use, but its program is not linked here:
+   * the boot warm-up compiled the same shader with the same table sizes, which
+   * is the whole reason the warm set carries it.
+   */
+  private syncAtmosphereShell(planet: PlanetMesh): void {
+    const mesh = planet.atmosphere;
+    if (!mesh) return;
+    const name = planet.data.name;
+    const tables = this.devAtmosphereTier === 'analytic'
+      ? null
+      : this.atmosphereLut?.tables(name) ?? null;
+    if (tables) {
+      const material = this.ensureLutShellMaterial(planet);
+      const shells = this.atmosphereShells.get(name);
+      if (!material || !shells) return;
+      shells.lut = material;
+      if (shells.bound !== tables) {
+        bindAtmosphereShellTables(shells.lut, tables);
+        shells.bound = tables;
+      }
+      // The tables are baked at one unit of solar irradiance, so the render
+      // multiplies the body's own back in — by the SCENE's falloff law, the one
+      // its point light lights the ground with, or the air would sit at a
+      // different exposure from the surface under it. Written here, from the
+      // position this frame's rebuild pass has already stored, rather than in
+      // that pass: the analytic material has no such uniform, so a value
+      // written to whichever material is WORN would skip the incoming one and
+      // leave it drawing its constructed 1.0 for the swap frame. Earth's own
+      // value sits within 0.5% of 1 and would hide that; Mars' is 13.6% away.
+      const wp = planet.worldPosAU;
+      material.uniforms.uSolarIrradiance.value = wp
+        ? solarIrradianceScale(Math.sqrt(wp.x * wp.x + wp.y * wp.y + wp.z * wp.z))
+        : 1;
+      if (mesh.material !== material) {
+        this.carryShellUniforms(shells.analytic, material);
+        mesh.material = material;
+      }
+      return;
+    }
+    const shells = this.atmosphereShells.get(name);
+    if (shells?.lut && mesh.material === shells.lut) {
+      this.carryShellUniforms(shells.lut, shells.analytic);
+      mesh.material = shells.analytic;
+      shells.bound = null;
+    }
+  }
+
+  /** Hand the live per-frame values to the material taking over, so the swap
+   *  frame does not draw a stale fade or a stale sun. */
+  private carryShellUniforms(from: THREE.ShaderMaterial, to: THREE.ShaderMaterial): void {
+    to.uniforms.alphaScale.value = from.uniforms.alphaScale.value;
+    (to.uniforms.uSunDirWorld.value as THREE.Vector3)
+      .copy(from.uniforms.uSunDirWorld.value as THREE.Vector3);
+  }
+
+  /**
+   * Keep a body's SURFACES on the same tier its shell is on: the globe, its
+   * streamed sectors, the cloud deck and the night lights all read one air
+   * block, and this is where the tables reach it. Off — and let go of the
+   * textures — wherever the shell would be wearing the analytic material: a
+   * device with no tier, a body with no tables, the window between a lost
+   * context and the re-bake, and the dev pin that captures the A/B.
+   *
+   * The two numbers beside the tables are the bridge out of a bake normalised
+   * to unit irradiance, and they are the SCENE's, not physics': the distance
+   * law is the one the point light lighting the ground uses.
+   */
+  private syncSurfaceAir(planet: PlanetMesh): void {
+    const air = planet.fx?.air;
+    if (!air) return;
+    const tables = this.devAtmosphereTier === 'analytic'
+      ? null
+      : this.atmosphereLut?.tables(planet.data.name) ?? null;
+    if (!tables) {
+      clearSurfaceAir(air);
+      (air.uMoonIrradiance.value as THREE.Vector3).set(0, 0, 0);
+      return;
+    }
+    const wp = planet.worldPosAU;
+    bindSurfaceAir(
+      air,
+      tables,
+      planet.data.radiusAU,
+      wp ? solarIrradianceScale(Math.sqrt(wp.x * wp.x + wp.y * wp.y + wp.z * wp.z)) : 1,
+    );
+    this.syncMoonlight(planet);
+  }
+
+  /**
+   * The Moon as a second light on a planet's night side, written into the ONE
+   * air block every surface of that body reads — so the shell, the globe, its
+   * streamed sectors and the cloud deck are lit by the same Moon in the same
+   * place, which a second uniform set is how they stop being.
+   *
+   * Everything that decides how much light there is goes into the irradiance
+   * uniform rather than into the shader: the planet's own distance from the
+   * Sun, the Moon's phase, and the Moon's own eclipse — a Moon inside the
+   * planet's shadow lights nothing, which is the one night this term has to get
+   * right. The direction is treated as parallel across the disc: the Moon's
+   * bearing varies by 0.95 degrees from one side of Earth to the other, which
+   * moves the moonlit terminator by about 100 km on a body 12,742 km across.
+   */
+  private syncMoonlight(planet: PlanetMesh): void {
+    const air = planet.fx?.air;
+    if (!air) return;
+    const irradiance = air.uMoonIrradiance.value as THREE.Vector3;
+    const wp = planet.worldPosAU;
+    const source = this.moonlightSourceFor(planet.data.name);
+    if (!source || !wp) {
+      irradiance.set(0, 0, 0);
+      return;
+    }
+    const offset = this.getMoonWorldOffsetAU(source, planet.data, this.tmpMoonlightOffset);
+    const distance = offset.length();
+    const bodyDistance = Math.sqrt(wp.x * wp.x + wp.y * wp.y + wp.z * wp.z);
+    if (!(distance > 0) || !(bodyDistance > 0)) {
+      irradiance.set(0, 0, 0);
+      return;
+    }
+    (air.uMoonDirWorld.value as THREE.Vector3).copy(offset).multiplyScalar(1 / distance);
+    // Phase angle at the Moon, between the Sun and the planet it is lighting.
+    // The Sun is the scene's origin, so moon->Sun is just -moonPos, and the
+    // cosine of the angle between that and moon->planet (-offset) is the cosine
+    // between the two positives.
+    const mx = wp.x + offset.x;
+    const my = wp.y + offset.y;
+    const mz = wp.z + offset.z;
+    const moonDistance = Math.hypot(mx, my, mz) || 1;
+    const cosPhase = (mx * offset.x + my * offset.y + mz * offset.z)
+      / (moonDistance * distance);
+    const phaseDeg = Math.acos(Math.min(1, Math.max(-1, cosPhase))) * RAD2DEG;
+    computeMoonShading(
+      this.tmpMoonlightParent.set(wp.x, wp.y, wp.z),
+      planet.data.name,
+      planet.data.radiusKm,
+      offset,
+      source.radiusKm,
+      this.moonlightShading,
+    );
+    const value = moonIrradiance(
+      solarIrradianceScale(bodyDistance),
+      phaseDeg,
+      this.moonlightShading.sunVisibleFraction,
+    );
+    irradiance.set(value[0], value[1], value[2]);
+    this.moonlightPhase.set(planet.data.name, phaseDeg);
+  }
+
+  /** The catalog entry for a body's moonlight source, resolved once. */
+  private moonlightSourceFor(planetName: string): MoonData | null {
+    const cached = this.moonlightSource.get(planetName);
+    if (cached !== undefined) return cached;
+    const name = MOONLIGHT_SOURCES[planetName];
+    const found = name
+      ? MOONS.find((m) => m.name === name && m.parentPlanet === planetName) ?? null
+      : null;
+    this.moonlightSource.set(planetName, found);
+    return found;
+  }
+
   private updatePlanetScaling() {
     if (!this.solarSystem) return;
     for (const planet of this.solarSystem.planets) {
       planet.group.scale.setScalar(1);
+      this.syncSurfaceAir(planet);
 
       // Atmosphere alpha: fade in as player approaches the planet's system radius
       if (planet.atmosphere) {
+        // Before the fade is written: the tier may have changed the material it
+        // is written to.
+        this.syncAtmosphereShell(planet);
         const wp = planet.worldPosAU!;
         const dx = this.player.posX - wp.x;
         const dy = this.player.posY - wp.y;
@@ -4956,18 +5318,28 @@ export class PlanetariumMode {
         // mean-distance prefilter; the live per-frame umbra check below stays.
         let casterCache = this.moonShadowCasterCache.get(planet.data.name);
         if (!casterCache || Math.abs(casterCache.sunTan - sunTanAtParent) > casterCache.sunTan * 0.005) {
+          // Whether a moon's umbra reaches the surface at its MEAN distance.
+          // orbitalRadiusAU is that mean, and the loop below re-checks the live
+          // distance every frame, so this ORDERS the candidates rather than
+          // rejecting any: a big far moon whose umbra falls short (Iapetus,
+          // Nereid) can never take a slot from a real caster (Tethys, Galatea),
+          // and a moon whose umbra reaches only near perigee still gets a slot
+          // where one is spare. Rejecting on the mean instead costs Earth every
+          // total solar eclipse there is — the Moon's umbra reaches the ground
+          // at 357 000 km and falls 24 km short of it at 384 400.
+          const reachesAtMeanDistance = (mm: MoonMesh): boolean =>
+            mm.data.radiusAU > mm.data.orbitalRadiusAU * sunTanAtParent;
           casterCache = {
             sunTan: sunTanAtParent,
             names: new Set(
               [...moons]
-                // Filter to moons whose umbra actually reaches the surface FIRST,
-                // then take the largest few — else a big, far moon whose umbra falls
-                // short (Iapetus, Nereid) steals a slot from a real caster (Tethys,
-                // Galatea). orbitalRadiusAU is the mean distance; the loop re-checks
-                // the live distance per frame.
-                .filter((mm) => mm.data.radiusAU / parentR > 0.003
-                  && mm.data.radiusAU > mm.data.orbitalRadiusAU * sunTanAtParent)
+                // A spot too small to see is never worth a slot at all.
+                .filter((mm) => mm.data.radiusAU / parentR > 0.003)
+                // Largest first, then the ones that reach ahead of the ones that
+                // do not: sort is stable, so size still orders within each group.
                 .sort((a, b) => b.data.radiusAU - a.data.radiusAU)
+                .sort((a, b) =>
+                  Number(reachesAtMeanDistance(b)) - Number(reachesAtMeanDistance(a)))
                 .slice(0, surfFx.uMoonShadow.value.length)
                 .map((mm) => mm.data.name),
             ),
@@ -13146,6 +13518,164 @@ export class PlanetariumMode {
     };
   }
 
+  /** Pin the shells to the analytic tier (or null to let the tables decide) and
+   *  report which material each one is wearing now — the A/B a golden pair
+   *  needs, without a second session or a different composer path. */
+  devSetAtmosphereTier(tier: 'analytic' | null): Record<string, string> {
+    this.devAtmosphereTier = tier;
+    const wearing: Record<string, string> = {};
+    for (const planet of this.solarSystem?.planets ?? []) {
+      if (!planet.atmosphere) continue;
+      this.syncAtmosphereShell(planet);
+      const material = planet.atmosphere.material as THREE.ShaderMaterial;
+      wearing[planet.data.name] = material === this.atmosphereShells.get(planet.data.name)?.lut
+        ? 'lut'
+        : 'analytic';
+    }
+    return wearing;
+  }
+
+  /** Headless-QA readback for the atmosphere tables: the tier's state, the
+   *  probe result, and every bake's numbers. */
+  /** What is lighting a body's night side this frame: the Moon's direction, the
+   *  irradiance uniform every surface and the shell read, and the phase angle
+   *  behind it. A night golden is a pose AND a Moon, and this is how the
+   *  capture tool checks it got the Moon it asked for. */
+  devAtmosphereNight(body = 'Earth'): unknown {
+    const planet = this.solarSystem?.planets.find((p) => p.data.name === body);
+    const air = planet?.fx?.air;
+    if (!planet || !air) return null;
+    const dir = air.uMoonDirWorld.value as THREE.Vector3;
+    const irradiance = air.uMoonIrradiance.value as THREE.Vector3;
+    return {
+      body,
+      airOn: (air.uAirDensity.value as number) > 0,
+      moonDirWorld: [dir.x, dir.y, dir.z],
+      moonIrradiance: [irradiance.x, irradiance.y, irradiance.z],
+      // Only while the air is on: with the tier pinned off nothing updates the
+      // Moon, and a value left over from before the pin would read as this
+      // frame's. A capture that records a stale Moon is worse than one that
+      // records none.
+      phaseDeg: (air.uAirDensity.value as number) > 0
+        ? this.moonlightPhase.get(body) ?? null
+        : null,
+    };
+  }
+
+  /** The eclipse casters a body's surfaces and the air in front of them are
+   *  tracing this frame, and the spin its cloud deck is drawn under. A golden
+   *  pose that means to catch an umbra has to be able to say one was there, and
+   *  the deck's frame correction is a rotation nothing else in a capture
+   *  records. Centres are in the body frame, AU, with the caster's radius in w. */
+  devSurfaceCasters(body = 'Earth'): unknown {
+    const planet = this.solarSystem?.planets.find((p) => p.data.name === body);
+    const fx = planet?.fx;
+    if (!planet || !fx) return null;
+    const count = fx.uMoonShadowCount.value;
+    const cloudArgs = planet.cloudsMesh
+      ? surfaceShadingArgsOf(planet.cloudsMesh.material as THREE.Material)
+      : undefined;
+    return {
+      body,
+      count,
+      casters: fx.uMoonShadow.value.slice(0, count).map((c) => [c.x, c.y, c.z, c.w]),
+      cloudFrameSpin: cloudArgs?.uFrameSpin.value ?? null,
+    };
+  }
+
+  devAtmosphereState(): unknown {
+    const lut = this.devAtmosphereLut ?? this.atmosphereLut;
+    if (!lut) return null;
+    return {
+      state: lut.state,
+      capability: lut.capability,
+      orders: lut.orders,
+      sizes: lut.sizes,
+      programs: this.renderer.info.programs?.length ?? 0,
+      textureBytesResident: this.renderer.info.memory.textures,
+      stats: lut.stats(),
+    };
+  }
+
+  /** Bake one body's tables into a measurement instance — its own targets and
+   *  its own programs, so a harness can time a configuration without becoming
+   *  the tier the app reads. */
+  async devAtmosphereBake(options?: {
+    body?: string;
+    orders?: number;
+    half?: boolean;
+    drawsPerSlice?: number;
+  }): Promise<AtmosphereBakeStats | null> {
+    this.devAtmosphereLut?.dispose();
+    this.devAtmosphereLut = new AtmosphereLut(this.renderer, {
+      register: false,
+      orders: options?.orders,
+      sizes: options?.half ? ATMOSPHERE_TABLE_SIZES_HALF : ATMOSPHERE_TABLE_SIZES_FULL,
+      drawsPerSlice: options?.drawsPerSlice,
+    });
+    await this.devAtmosphereLut.bake(options?.body ?? 'Earth');
+    const stats = this.devAtmosphereLut.stats();
+    // A failed bake still records its numbers, with `validated: false`.
+    return stats[stats.length - 1] ?? null;
+  }
+
+  /** Read table values back through the 8-bit blit path, at the same table
+   *  coordinates the shaders would address. `combined` returns the radiance a
+   *  lookup gives — both phase functions and the single-Mie recovery, evaluated
+   *  in the shader — and `irradiance` reads the sky-irradiance table. */
+  devAtmosphereSample(
+    samples: ReadonlyArray<{
+      kind: 'transmittance' | 'scattering' | 'combined' | 'irradiance';
+      r: number;
+      mu: number;
+      muS?: number;
+      nu?: number;
+      hitsGround?: boolean;
+      scale?: number;
+    }>,
+    body = 'Earth',
+  ): number[][] | null {
+    const lut = this.devAtmosphereLut ?? this.atmosphereLut;
+    const tables = lut?.tables(body);
+    if (!lut || !tables) return null;
+    const params = atmosphereParams(body);
+    return samples.map((s) => {
+      if (s.kind === 'transmittance') {
+        return lut.readSample({
+          mode: 0,
+          uv: transmittanceUvFromRMu(params, s.r, s.mu, tables.sizes),
+          transmittance: tables.transmittance,
+          params,
+          scale: s.scale ?? 1,
+        });
+      }
+      if (s.kind === 'irradiance') {
+        return lut.readSample({
+          mode: 3,
+          irradiance: tables.irradiance,
+          params,
+          r: s.r,
+          muS: s.muS ?? 1,
+          scale: s.scale ?? 1,
+        });
+      }
+      const uvwz = scatteringUvwzFromRMuMuSNu(
+        params, s.r, s.mu, s.muS ?? 1, s.nu ?? 1, s.hitsGround ?? false, tables.sizes,
+      );
+      const coords = scatteringTexture3DCoords(uvwz, tables.sizes);
+      return lut.readSample({
+        mode: s.kind === 'combined' ? 2 : 1,
+        scattering: tables.scattering,
+        uvw0: coords.uvw0,
+        uvw1: coords.uvw1,
+        nuLerp: coords.lerp,
+        params,
+        nu: s.nu ?? 1,
+        scale: s.scale ?? 1,
+      });
+    });
+  }
+
   /** Headless-QA readback for transient Sun optics and atmospheric grazing. */
   devSunAppearance(): unknown {
     const sunMat = this.solarSystem?.sun.userData.sunMaterial as THREE.ShaderMaterial | undefined;
@@ -13308,7 +13838,7 @@ export class PlanetariumMode {
    * center — the close-approach view where silhouette tessellation shows.
    * Stands on the sunlit side so the limb is lit. Dev bridge only.
    */
-  devLimbView(name: string, kRadii = 1.5, fovDeg = 50): boolean {
+  devLimbView(name: string, kRadii = 1.5, fovDeg = 50, phaseDeg = 0, aimFrac = 1): boolean {
     if (!this.solarSystem) return false;
     const body = this.planetWorldPositions.get(name);
     const r = this.solarSystem.planets.find((p) => p.data.name === name)?.data.radiusAU;
@@ -13316,6 +13846,17 @@ export class PlanetariumMode {
     const d = r * kRadii;
     // Sunward side: the Sun sits at the heliocentric origin of these coords.
     const sunward = new THREE.Vector3(-body.x, -body.y, -body.z).normalize();
+    // phaseDeg swings the stand point away from the Sun in the plane the aim
+    // below builds its tangent in: 0 is the fully lit limb, 90 the terminator
+    // seen edge-on, 180 the night side. Same rig at every angle, so a set of
+    // poses differs only by this number.
+    if (phaseDeg !== 0) {
+      const spinUp = Math.abs(sunward.y) < 0.95
+        ? new THREE.Vector3(0, 1, 0)
+        : new THREE.Vector3(1, 0, 0);
+      const axis = new THREE.Vector3().crossVectors(sunward, spinUp).normalize();
+      sunward.applyAxisAngle(axis, (phaseDeg * Math.PI) / 180).normalize();
+    }
     this.devFreeCamera = true;
     this.player.posX = body.x + sunward.x * d;
     this.player.posY = body.y + sunward.y * d;
@@ -13329,11 +13870,28 @@ export class PlanetariumMode {
     const v = new THREE.Vector3().crossVectors(w, up).normalize();
     const rd = r / d;
     const n = w.clone().multiplyScalar(-rd).addScaledVector(v, Math.sqrt(1 - rd * rd));
-    const tangentOffset = new THREE.Vector3(
+    let tangentOffset = new THREE.Vector3(
       body.x + r * n.x - this.player.posX,
       body.y + r * n.y - this.player.posY,
       body.z + r * n.z - this.player.posZ,
     );
+    // aimFrac swings the aim between straight down (0) and the tangent point
+    // (1, the default and the expression above, kept verbatim so the poses that
+    // use it are unmoved). The angle it lerps is the one AT THE CAMERA, whose
+    // limit is asin(R/d) — 72 degrees from nadir at 1.05 R, so a nadir frame
+    // and a limb frame from the same stand point share no sky at all. What sits
+    // between them is the view along the ground toward the horizon, which is
+    // where aerial perspective actually reads.
+    if (aimFrac < 1) {
+      const limbAngle = Math.asin(Math.min(rd, 1));
+      const aim = w.clone().multiplyScalar(Math.cos(aimFrac * limbAngle))
+        .addScaledVector(v, Math.sin(aimFrac * limbAngle));
+      // Where that aim meets the surface, so the orbit target is a real point
+      // on the body rather than a direction of arbitrary length.
+      const along = d * aim.dot(w);
+      const hit = along - Math.sqrt(Math.max(along * along - (d * d - r * r), 0));
+      tangentOffset = aim.multiplyScalar(hit > 0 ? hit : d - r);
+    }
     const cam = this.camera as THREE.PerspectiveCamera;
     cam.position.set(0, 0, 0);
     // applyDesignFov (via setDisplayFov) is the only legal camera.fov writer
@@ -17066,6 +17624,12 @@ export class PlanetariumMode {
           ? ((this.timeState.currentUtcMs / 3_600_000) * 0.02) % (Math.PI * 2)
           : 0;
         planet.cloudsMesh.rotation.y = cloudDrift;
+        // The deck's shading traces the eclipse casters and the ring plane in
+        // the BODY frame, and this drift is exactly how far its own object
+        // space has turned out of it. Unfed, a moon's umbra would land on the
+        // clouds at a longitude of its own.
+        const cloudArgs = surfaceShadingArgsOf(planet.cloudsMesh.material as THREE.Material);
+        if (cloudArgs) cloudArgs.uFrameSpin.value = cloudDrift;
       }
       const localSunDir = this.tmpLocalSunDir
         .copy(state.sunDirection)
@@ -17208,6 +17772,12 @@ export class PlanetariumMode {
     for (const moons of this.planetMoons.values()) {
       for (const m of moons) cancelNormalUpgrade(m.normalUpgrade);
     }
+    // The analytic shells belong to the meshes the solar system owns; the LUT
+    // ones were built here, and carry the 1x1 stand-in tables with them.
+    for (const shells of this.atmosphereShells.values()) {
+      if (shells.lut) disposeAtmosphereShellMaterial(shells.lut);
+    }
+    this.atmosphereShells.clear();
     this.sectors?.dispose();
     this.sectors = null;
     resetTextureWarmer(); // drop queued warm-ups and the renderer binding with the mode

@@ -63,7 +63,13 @@ export function createSectorMaterial(
   mat.polygonOffsetFactor = 0;
   mat.polygonOffsetUnits = -(level + 1);
   const args = surfaceShadingArgsOf(base);
-  if (args) augmentSurfaceMaterial(mat, args.archetype, args.ringShadow, args.sunTan, args.fx);
+  // The same fx objects, so the sector's eclipse spot, its planetshine and the
+  // air in front of it are the globe's own values and not a second set; and the
+  // same frame spin, because a sector mesh hangs under the mesh this base
+  // material draws and inherits whatever rotation that carries.
+  if (args) {
+    augmentSurfaceMaterial(mat, args.archetype, args.ringShadow, args.sunTan, args.fx, args.uFrameSpin);
+  }
   return mat;
 }
 

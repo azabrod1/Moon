@@ -43,6 +43,8 @@ import {
 import { debugWarn } from '../shared/debug';
 import { applyTextureDefaults, clampTier, deviceTextureProfile, resolveTextureUrl, TIER_MAP_WIDTH, type TextureTier, type MapKind } from './world/texturePolicy';
 import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
+import { createAtmosphereShellMaterial } from './world/atmosphereShell';
+import { ATMOSPHERE_TABLE_SIZES_FULL, type AtmosphereTableSizes } from './world/atmosphereModel';
 import { queueTextureWarm } from './world/textureWarmer';
 import { createEarthNightShellMaterial } from './world/earthNightMaterial';
 import { createLensShaderUniforms } from '../shared/three/lensShader';
@@ -223,6 +225,21 @@ export interface AtmosphereConfig {
 
 // Sun's physical radius in AU — for solar angular radius (penumbra width) at a planet.
 const SUN_RADIUS_AU = 695_700 / 149_597_870.7;
+
+/** The Sun's point light, as the scene actually lights bodies. The decay is
+ *  0.3, not the physical 2: at inverse-square the outer planets would be
+ *  unreadable, so the falloff is authored. Exported because anything that has
+ *  to agree photometrically with the lit ground — a scattering table baked at
+ *  unit irradiance, say — must use THIS law rather than a physical one, and a
+ *  test holds the two together. */
+export const SUN_LIGHT_INTENSITY = 3;
+export const SUN_LIGHT_DECAY = 0.3;
+/** The light's colour, sRGB. Exported for the same reason: a scattering table
+ *  baked at WHITE unit irradiance has to be scaled back by this colour as well
+ *  as by the intensity, or the air is lit by a different Sun from the ground
+ *  under it — and on a limb whose whole point is its blue, the excess lands in
+ *  the one channel nobody would think to doubt. */
+export const SUN_LIGHT_COLOR = 0xfff5e0;
 
 // Exported so the volume-compare mode's ghost shell reads the same tuning —
 // a hand-kept copy would drift the moment these numbers get touched.
@@ -2023,17 +2040,48 @@ function createFallbackTexture(key: string, kind: MapKind = 'color'): THREE.Text
   return tex;
 }
 
+/** Which model paints the shell. 'analytic' is the authored single-scatter
+ *  fringe — the floor, on every device and every frame until a body's tables
+ *  are baked and validated; 'lut' reads the precomputed scattering tables.
+ *  Never inferred from state: a caller that has no tables (the volume-compare
+ *  ghost, whose shell is a studio prop at container scale) says so. */
+export type AtmosphereTier = 'analytic' | 'lut';
+
 /**
- * The atmosphere glow ShaderMaterial — the ONE place the shader's uniform
- * block is assembled from an AtmosphereConfig, shared with the volume-compare
- * ghost so a uniform added to shared/shaders/atmosphere.ts is wired here and
- * nowhere else. Callers own geometry, scale and render order.
+ * The atmosphere shell material — the ONE place a shell's uniform block is
+ * assembled, shared with the volume-compare ghost so a uniform added to
+ * shared/shaders/atmosphere.ts is wired here and nowhere else. Callers own
+ * geometry, scale and render order.
  */
 export function createAtmosphereMaterial(
   config: AtmosphereConfig,
   planetRadius: number,
-  opts?: { initialAlpha?: number; initialSunDir?: THREE.Vector3 },
+  tier: AtmosphereTier,
+  opts?: {
+    initialAlpha?: number;
+    initialSunDir?: THREE.Vector3;
+    /** LUT tier only: the body whose parameters and tables the shell carries,
+     *  the table profile its addressing compiles against, and the shading
+     *  uniforms whose eclipse casters it traces. */
+    lut?: {
+      body: string;
+      sizes?: AtmosphereTableSizes;
+      fx?: SurfaceShadingFx;
+      sunTan?: number;
+    };
+  },
 ): THREE.ShaderMaterial {
+  if (tier === 'lut') {
+    return createAtmosphereShellMaterial({
+      planetRadius,
+      body: opts?.lut?.body ?? 'Earth',
+      sizes: opts?.lut?.sizes ?? ATMOSPHERE_TABLE_SIZES_FULL,
+      fx: opts?.lut?.fx,
+      sunTan: opts?.lut?.sunTan,
+      initialAlpha: opts?.initialAlpha,
+      initialSunDir: opts?.initialSunDir,
+    });
+  }
   return new THREE.ShaderMaterial({
     vertexShader: atmosphereVertexShader,
     fragmentShader: atmosphereFragmentShader,
@@ -2058,11 +2106,28 @@ export function createAtmosphereMaterial(
   });
 }
 
+/** Draw order for the atmosphere shell, above the companion shells that share
+ *  its centre. All three sit at the same distance, so the transparent sort ties
+ *  on depth and falls back to construction order, which put the air UNDER the
+ *  cloud deck: wherever the deck's sphere overhangs the globe's silhouette it
+ *  multiplied the airlight behind it by its own 0.35 alpha, notching the
+ *  innermost band of the limb — the brightest part of it.
+ *
+ *  It sits on the shared MESH, so it applies to whichever material the shell is
+ *  wearing. That is deliberate: the notch was a bug on the analytic tier too,
+ *  and a per-tier order would leave the artefact on exactly the hardware that
+ *  cannot have the other one. So the no-float fallback is what it always was
+ *  except for the notch, which is gone on purpose — the one pixel-level
+ *  difference this change makes to a device with no float targets. */
+export const ATMOSPHERE_SHELL_RENDER_ORDER = 1;
+
 function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig): THREE.Mesh {
   const geo = new THREE.SphereGeometry(radiusAU * config.scale, 64, 32);
   // alphaScale starts at 0: faded out until the per-frame distance feed runs
   // (no first-frame flash); uSunDirWorld is fed per frame the same way.
-  return new THREE.Mesh(geo, createAtmosphereMaterial(config, radiusAU));
+  const mesh = new THREE.Mesh(geo, createAtmosphereMaterial(config, radiusAU, 'analytic'));
+  mesh.renderOrder = ATMOSPHERE_SHELL_RENDER_ORDER;
+  return mesh;
 }
 
 // Earth's companion shells sit just above the globe: the night lights hug the
@@ -2339,8 +2404,10 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     // Bound locally as well as returned: the late-detail wiring below needs the
     // material itself, and the returned handle is optional. Built through the
     // same factory the night SECTORS use, so a tile drawn over the shell is the
-    // shell's own program on a sharper map rather than a second version of it.
-    const nightMat = createEarthNightShellMaterial(nightTex);
+    // shell's own program on a sharper map rather than a second version of it —
+    // and so the body's air, handed in here, reaches every mesh that draws
+    // lights rather than the shell alone.
+    const nightMat = createEarthNightShellMaterial(nightTex, fx.air);
     nightMaterial = nightMat;
     nightMesh = new THREE.Mesh(nightGeo, nightMat);
     group.add(nightMesh);
@@ -2357,6 +2424,19 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     // directions — its upgrade handle and its late slot — and both have to be
     // able to tell the map construction got from the procedural fallback.
     cloudMat.userData.colorTierRank = initialColorTierRank(cloudTex);
+    // The deck shades like the surface under it: the globe's own eclipse
+    // casters (which it has never had — a moon's umbra crossed the ground and
+    // left the clouds above it in full sun) and the air in front of it.
+    //
+    // The alpha blend is what makes `x T + S` come out right on two layers, and
+    // it only works because this material is NOT premultiplied: the composite is
+    // a(T_c C + S_c) + (1-a)(T_g G + S_g), which counts the in-scatter exactly
+    // once — the short path on the fraction of the pixel that stops at the deck,
+    // the full path on the fraction that reaches the ground. Convert it to
+    // premultiplied alpha and the airlight is silently scaled by the cloud
+    // fraction. The frame spin is fed per frame beside the mesh's own drift, so
+    // the eclipse spot on the deck stays over the one on the ground.
+    augmentSurfaceMaterial(cloudMat, 'cloud', ringShadow, sunTan, fx);
     cloudsMesh = new THREE.Mesh(cloudGeo, cloudMat);
     group.add(cloudsMesh);
     // The cloud deck is its own colour map on its own shell, so it carries its
@@ -2623,7 +2703,7 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
   lensGhosts.frustumCulled = false;
   group.add(lensGhosts);
 
-  const light = new THREE.PointLight(0xfff5e0, 3, 0, 0.3);
+  const light = new THREE.PointLight(SUN_LIGHT_COLOR, SUN_LIGHT_INTENSITY, 0, SUN_LIGHT_DECAY);
   group.add(light);
 
   group.userData.sunMaterial = sunMat;

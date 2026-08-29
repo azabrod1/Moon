@@ -2373,6 +2373,25 @@ describe('the envelope the tiles and the globe maps share', () => {
     expect(s.stats().budget).toBe(DESKTOP.sectorFloorBytes);
   });
 
+  it('gives the floor back when the last body goes, and when it is disposed', () => {
+    // The ladder's ceiling is the envelope less this floor, so a floor left
+    // standing after the tiles are gone would be memory nothing can spend.
+    const envelope = new MemoryEnvelope(DESKTOP);
+    const s = new SectorStreamer({ limits: DESKTOP, envelope, load: loader.load, warm: warm.warm });
+    s.register(earthHandle());
+    expect(envelope.floorBytes).toBe(DESKTOP.sectorFloorBytes);
+
+    s.unregister(sectorFamilyKey('Earth', 'day'));
+    expect(envelope.floorBytes).toBe(0);
+    expect(envelope.ladderCeiling()).toBe(DESKTOP.envelopeBytes);
+
+    s.register(earthHandle());
+    expect(envelope.floorBytes).toBe(DESKTOP.sectorFloorBytes);
+    s.dispose();
+    expect(envelope.floorBytes).toBe(0);
+    expect(envelope.ladderCeiling()).toBe(DESKTOP.envelopeBytes);
+  });
+
   it('refuses an envelope from a different device row', () => {
     // The floor and the caps are read from `limits` while every budget is
     // computed from the envelope's own two figures. A pair that disagrees

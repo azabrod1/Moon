@@ -423,7 +423,12 @@ export function ladderCeilingBytes(
  *   floorBytes   what the tiles are owed, pushed by the streamer as bodies
  *                register and unregister. Zero while no body can want a tile,
  *                so a session with tiles switched off is never asked to
- *                reserve memory nothing will spend.
+ *                reserve memory nothing will spend. It has exactly one
+ *                writer, the streamer: `setFloorBytes` is an absolute set
+ *                rather than a claim added to what is there, so a second
+ *                streamer on this envelope would overwrite the first's floor
+ *                instead of adding to it, and either one's dispose() would
+ *                zero what the other is owed.
  *
  * Neither side can spend the other's floor, and neither allocator's admission
  * rules live here.

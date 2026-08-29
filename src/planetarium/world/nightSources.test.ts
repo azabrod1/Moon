@@ -42,7 +42,7 @@ import {
   NIGHT_FILL, NIGHT_FLOOR_FRACTION, augmentSurfaceMaterial, type SurfaceArchetype,
 } from './surfaceShading';
 import { BLOOM_THRESHOLD } from '../../app/bloomConfig';
-import { EARTH_NIGHT_MIX_SCALE } from '../../shared/shaders/atmosphere';
+import { EARTH_NIGHT_MIX_SCALE, EARTH_NIGHT_WARM } from '../../shared/shaders/atmosphere';
 import { CLOUD_CITY_GLOW } from './cloudDeck';
 import { PLANETS } from '../planets/planetData';
 
@@ -624,11 +624,16 @@ describe('the bloom threshold', () => {
     for (let c = 0; c < 3; c++) {
       expect((glow.green[c] + glow.orange[c]) * AIRGLOW_LIMB_CAP).toBeLessThan(BLOOM_THRESHOLD);
     }
-    // City lights are the one night source that is allowed to bloom, and this
-    // commit does not touch them.
+    // City lights are the one night source that is allowed to bloom, and the
+    // warm gain they are drawn in cannot widen that: red is held at 1 and the
+    // other two come down, so no channel leaves this line above the map's own
+    // value times the mix scale.
     expect(EARTH_NIGHT_MIX_SCALE).toBe(1.5);
-    expect(src('../../shared/shaders/atmosphere.ts'))
-      .toContain('vec3 lit = nightColor.rgb * nightMix * ${EARTH_NIGHT_MIX_SCALE.toFixed(1)};');
+    expect(Math.max(...EARTH_NIGHT_WARM)).toBe(1);
+    expect(src('../../shared/shaders/atmosphere.ts')).toContain(
+      'vec3 lit = nightColor.rgb * nightMix * ${EARTH_NIGHT_MIX_SCALE.toFixed(1)}'
+        + ' * ${EARTH_NIGHT_WARM_GLSL};',
+    );
     // The same lights glowing up through the cloud deck are a fraction of that,
     // so nothing the deck adds can bloom where the lights themselves would not.
     expect(CLOUD_CITY_GLOW).toBeLessThan(EARTH_NIGHT_MIX_SCALE);

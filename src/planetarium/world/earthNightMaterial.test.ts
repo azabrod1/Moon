@@ -19,9 +19,16 @@ import {
   sectorCentreDirection,
   sectorTileTransform,
 } from './sectorGrid';
-import { EARTH_NIGHT_COLD_CUT } from '../../shared/shaders/atmosphere';
+import {
+  EARTH_NIGHT_COLD_CUT,
+  EARTH_NIGHT_MIX_SCALE,
+  EARTH_NIGHT_WARM,
+  EARTH_NIGHT_WARM_GLSL,
+} from '../../shared/shaders/atmosphere';
 import { sectorRenderOrder } from './sectorMaterial';
-import { createSurfaceAirFx, NIGHT_LIGHTS_AIR_LOOKUP_RADIUS } from './surfaceShading';
+import {
+  augmentSurfaceMaterial, createSurfaceAirFx, NIGHT_LIGHTS_AIR_LOOKUP_RADIUS,
+} from './surfaceShading';
 import { earthNightFragmentShader, earthNightMix, EARTH_NIGHT_MIX_DARK, EARTH_NIGHT_MIX_LIT } from '../../shared/shaders/atmosphere';
 
 /** The shell as the factory builds it, on a body's own air — the same objects
@@ -215,6 +222,50 @@ describe('the night sector material', () => {
     expect(shellOn(null).fragmentShader).toContain(
       `nightColor.rgb *= smoothstep(${(-EARTH_NIGHT_COLD_CUT / 255).toFixed(6)}, 0.0, nightColor.r - nightColor.b);`,
     );
+  });
+
+  it('draws the lights warm, in one constant all three consumers read', () => {
+    // The look choice, and its counterpart is the cool tint moonlight is drawn
+    // in: warm ground lighting under cool moonlit cloud is what a night frame
+    // from orbit reads as. Red is held at 1 and the other two come down, so
+    // the gain warms the lights without making any channel brighter than the
+    // map already draws it.
+    expect(EARTH_NIGHT_WARM[0]).toBe(1);
+    expect(EARTH_NIGHT_WARM[1]).toBeLessThan(EARTH_NIGHT_WARM[0]);
+    expect(EARTH_NIGHT_WARM[2]).toBeLessThan(EARTH_NIGHT_WARM[1]);
+    // The literal every shader multiplies by is generated from that constant,
+    // so there is nothing to transcribe.
+    for (const v of EARTH_NIGHT_WARM) expect(EARTH_NIGHT_WARM_GLSL).toContain(v.toFixed(2));
+
+    // Consumer one: the night-lights shell, after the mix scale and after the
+    // chroma gate that tells a light from an ice sheet.
+    const shell = shellOn(null);
+    expect(shell.fragmentShader).toContain(
+      `vec3 lit = nightColor.rgb * nightMix * ${EARTH_NIGHT_MIX_SCALE.toFixed(1)} `
+        + `* ${EARTH_NIGHT_WARM_GLSL};`,
+    );
+    // Consumer two: the night sectors that replace patches of that shell. They
+    // are the shell's own program, which is what makes a tile the same colour
+    // as the shell it sits in.
+    const sector = earthNightSectorFamily(shell)
+      .createMaterial({ map: tile(SECTOR_GRID_16K, 3, 1) }, 0) as THREE.ShaderMaterial;
+    expect(sector.fragmentShader).toBe(shell.fragmentShader);
+    expect(sector.fragmentShader).toContain(EARTH_NIGHT_WARM_GLSL);
+    // Consumer three: the glow the cloud deck picks up from the cities under
+    // it. A second constant here is how a town ends up one colour through
+    // cloud and another beside it.
+    const deck = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(deck, 'cloud');
+    const injected = {
+      uniforms: {} as Record<string, THREE.IUniform>,
+      vertexShader: '#include <common>\nvoid main() {\n#include <begin_vertex>\n}',
+      fragmentShader: '#include <common>\nvoid main() {\n#include <opaque_fragment>\n}',
+    };
+    (deck.onBeforeCompile as (s: typeof injected) => void)(injected);
+    expect(injected.fragmentShader).toContain(`outgoingLight += city * ${EARTH_NIGHT_WARM_GLSL}`);
+    // ...and the gate still runs on the map's own chroma, before the tint.
+    expect(injected.fragmentShader.indexOf('city.r - city.b'))
+      .toBeLessThan(injected.fragmentShader.indexOf(`city * ${EARTH_NIGHT_WARM_GLSL}`));
   });
 
   it('reads the width of the map the shell is drawing', () => {

@@ -3,7 +3,9 @@ import * as THREE from 'three';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { earthNightFragmentShader, earthNightVertexShader } from '../../shared/shaders/atmosphere';
+import {
+  EARTH_NIGHT_WARM_GLSL, earthNightFragmentShader, earthNightVertexShader,
+} from '../../shared/shaders/atmosphere';
 import {
   ATMOSPHERE_TABLE_SIZES_FULL,
   atmosphereParams,
@@ -118,7 +120,7 @@ describe('the injected surface shader', () => {
     expect(hash(shader.vertexShader))
       .toBe('862f7224fafb480070aebf0c7c125dddbd78c879780eb072e96988333154322a');
     expect(hash(shader.fragmentShader))
-      .toBe('2839d44a8763670cb16f43eda54965ff938de45a9596bf1dd44e7d404ad22210');
+      .toBe('10de2b0a73727a4237a9f89dda3cda6ee15b891d5c9f3bddc5ae41339459b0a9');
   });
 
   it('reuses the tables\' own lookup GLSL rather than a second transcription', () => {
@@ -475,7 +477,9 @@ describe('the night-lights shell', () => {
     expect(earthNightFragmentShader).toContain('if (uAirDensity > 0.0) {');
     // The pre-air line, untouched: with the switch at 0 the fallback device
     // renders what it always did.
-    expect(earthNightFragmentShader).toContain('vec3 lit = nightColor.rgb * nightMix * 1.5;');
+    expect(earthNightFragmentShader).toContain(
+      `vec3 lit = nightColor.rgb * nightMix * 1.5 * ${EARTH_NIGHT_WARM_GLSL};`,
+    );
   });
 
   it('looks its air up at the ground the lights are painted on', () => {

@@ -1,27 +1,36 @@
-// Regenerate the GPU-compressed 8K colour rungs under public/textures/8k/.
+// Regenerate the GPU-compressed colour rungs under public/textures/<tier>/.
 //
-// Why these files exist: uploading an 8K albedo as raw RGBA is the largest
-// unsliceable main-thread bill in the app — ~134MB through texImage2D plus a
-// runtime mipmap build, measured as THE dropped frame right after a Moon
-// teleport — and 170.7 MiB of a device's texture envelope for as long as it
-// is held. A KTX2 container (UASTC, full mip chain baked at build time)
-// uploads in a few milliseconds and stays compressed in VRAM at 42.7 MiB,
-// which is what lets four 8K maps be resident where two used to be the
-// ceiling. The trade is network size: UASTC+zstd is a few times larger on the
-// wire than a webp — paid only when a session actually earns the 8K tier, and
-// cached by the service worker after the first visit.
+// Why these files exist: uploading a big albedo as raw RGBA is the largest
+// unsliceable main-thread bill in the app. The driver charges an sRGB
+// conversion per upload call over the whole source, so the cost cannot be
+// spread across frames by banding the rows: an 8K map is ~134MB through
+// texImage2D plus a runtime mipmap build, measured as THE dropped frame right
+// after a Moon teleport, and even a 4K one costs 2.9 to 4.0 ms in a single
+// shot (measured through renderer.initTexture on an Apple GPU under
+// Chromium) — a missed refresh at 120 Hz, and more on a device with less to
+// spend, paid per map by the boot warm and by every arrival. A KTX2 container (UASTC, full mip chain baked at build time)
+// uploads as a memcpy of already-encoded blocks — a millisecond or so for a
+// 4K, a few for an 8K, and it bands — and stays compressed in VRAM: 10.7 MiB
+// for a 4K rung instead of 42.7, 42.7 for an 8K instead of 170.7, which is
+// what lets four 8K maps be resident where two used to be the ceiling. The
+// trade is network size: UASTC is a fixed 8 bits a texel whatever the picture
+// holds, so a container is several times the webp on the wire and a
+// low-frequency map (Venus, Saturn) is many times it. Paid only when a
+// session actually earns the tier, and cached by the service worker after the
+// first visit.
 //
 // Where a job's pixels come from is the one thing that differs between them,
 // and it follows one rule: the container ships THE SAME PIXELS the rung would
-// otherwise have. Where an 8K webp is also on disk (the Moon, the cloud deck,
-// which predate this pipeline and stay as the fallback for a device with no
-// KTX2 loader), the container is a pure transcode of that file, so the two
-// paths draw the same map. Where none ships — Earth's day and night maps,
-// which exist at 8K only as a container — the source is the graded level-0
-// equirect tools/gen-tiles.mjs cuts its tiles and its 4K rung from, resampled
-// here exactly as that tool resamples its own downsamples. So an 8K rung is a
-// pure sharpen of the 4K below it, and neither the ocean grade nor the night
-// map's no-data mask can drift between the globe and the sectors over it.
+// otherwise have. Where a webp of that tier is also on disk (every 4K rung,
+// and the 8K Moon and cloud deck, which stay as the fallback for a device
+// with no KTX2 loader), the container is a pure transcode of that file, so
+// the two paths draw the same map. Where none ships — Earth's 8K day and
+// night maps, which exist at that tier only as a container — the source is
+// the graded level-0 equirect tools/gen-tiles.mjs cuts its tiles and its 4K
+// rung from, resampled here exactly as that tool resamples its own
+// downsamples. So an 8K rung is a pure sharpen of the 4K below it, and
+// neither the ocean grade nor the night map's no-data mask can drift between
+// the globe and the sectors over it.
 //
 // -y_flip bakes the vertical flip: three's CompressedTexture cannot flipY at
 // upload, so the file itself must store what a flipY'd image texture presents.
@@ -29,7 +38,7 @@
 // Name the jobs to run: basisu's output is not identical across its own
 // builds (a 1.16.3 and a 1.16.4 encoder differ by a few dozen bytes on the
 // same input), so a blanket run on a machine with a different binary rewrites
-// every container and pushes 25 MB of re-download per map for a picture
+// every container and pushes megabytes of re-download per map for a picture
 // nobody can tell apart.
 //
 // Usage: node tools/gen-ktx2.mjs <job...> | --all  [--keep-png]
@@ -64,27 +73,44 @@ const TEX = path.join(repo, 'public/textures');
  *  produce identical bytes. BASISU overrides it for a host neither covers. */
 const basisu = process.env.BASISU
   ?? path.join(repo, 'node_modules/@gpu-tex-enc/basis/bin', `${process.platform}-${process.arch}`, 'basisu');
-// Every rung this tool writes is the 8K tier; the width is the tier's, not a
-// per-job choice, because the ladder charges and draws it as that tier.
-const WIDTH = 8192;
-const HEIGHT = WIDTH / 2;
+// A rung's width is its TIER's, never a per-job choice, because the ladder
+// charges and draws it as that tier: a container a size off would be charged
+// one tier's bytes and sampled at another's.
+const TIER_WIDTH = { '4k': 4096, '8k': 8192 };
 
-/** A job whose pixels are an 8K webp already on disk: the container is a pure
- *  transcode of exactly those bytes, so the fallback and the compressed rung
- *  are the same map. */
-const fromWebp = (file) => ({ kind: 'webp', file: path.join(TEX, '8k', file) });
+/** A job whose pixels are a webp of the same tier already on disk: the
+ *  container is a pure transcode of exactly those bytes, so the fallback and
+ *  the compressed rung are the same map. */
+const fromWebp = (tier, file) => ({ kind: 'webp', file: path.join(TEX, tier, file) });
 
-/** A job with no 8K webp: the pixels come from the level-0 equirect
+/** A job with no webp at its tier: the pixels come from the level-0 equirect
  *  gen-tiles builds for that job — graded and masked as its tiles are — and
- *  are resampled to 8192 with the kernel gen-tiles uses for its own
- *  downsamples, so this rung and the 4K below it are one resample apart. */
+ *  are resampled to the tier's width with the kernel gen-tiles uses for its
+ *  own downsamples, so this rung and the one below it are one resample
+ *  apart. */
 const fromLevel = (job) => ({ kind: 'level', job });
 
+/** One job per compressed rung the ladder can ask for. The 8K jobs keep the
+ *  bare names they were first run under; a 4K job says its tier, because a
+ *  key can now have a rung at both. */
 const JOBS = {
-  moon: { source: fromWebp('moon.webp'), out: '8k/moon.ktx2' },
-  earthClouds: { source: fromWebp('earth-clouds.webp'), out: '8k/earth-clouds.ktx2' },
-  earthDay: { source: fromLevel('earth'), out: '8k/earth-day.v2.ktx2' },
-  earthNight: { source: fromLevel('earth-night'), out: '8k/earth-night.v2.ktx2' },
+  moon: { tier: '8k', source: fromWebp('8k', 'moon.webp'), out: '8k/moon.ktx2' },
+  earthClouds: { tier: '8k', source: fromWebp('8k', 'earth-clouds.webp'), out: '8k/earth-clouds.ktx2' },
+  earthDay: { tier: '8k', source: fromLevel('earth'), out: '8k/earth-day.v2.ktx2' },
+  earthNight: { tier: '8k', source: fromLevel('earth-night'), out: '8k/earth-night.v2.ktx2' },
+  // Every 4K COLOUR rung the ladder names, and only those: the boot maps in
+  // the flat textures/ folder are not rungs, and the normal and bump maps
+  // beside these carry linear data a colour-space-tagged container would
+  // misdeclare.
+  mercury4k: { tier: '4k', source: fromWebp('4k', 'mercury.webp'), out: '4k/mercury.ktx2' },
+  venus4k: { tier: '4k', source: fromWebp('4k', 'venus.webp'), out: '4k/venus.ktx2' },
+  mars4k: { tier: '4k', source: fromWebp('4k', 'mars.v2.webp'), out: '4k/mars.v2.ktx2' },
+  jupiter4k: { tier: '4k', source: fromWebp('4k', 'jupiter.webp'), out: '4k/jupiter.ktx2' },
+  saturn4k: { tier: '4k', source: fromWebp('4k', 'saturn.webp'), out: '4k/saturn.ktx2' },
+  pluto4k: { tier: '4k', source: fromWebp('4k', 'pluto.webp'), out: '4k/pluto.ktx2' },
+  moon4k: { tier: '4k', source: fromWebp('4k', 'moon.webp'), out: '4k/moon.ktx2' },
+  earthClouds4k: { tier: '4k', source: fromWebp('4k', 'earth-clouds.webp'), out: '4k/earth-clouds.ktx2' },
+  earthNight4k: { tier: '4k', source: fromWebp('4k', 'earth-night.v2.webp'), out: '4k/earth-night.v2.ktx2' },
 };
 
 const args = process.argv.slice(2);
@@ -140,10 +166,10 @@ async function decodeToPng(srcFile, mime, pngOut) {
   }
 }
 
-/** The level-0 equirect of a gen-tiles job, resampled to the 8K tier. Same
- *  kernel and same `fit` as that tool's own downsamples: the 4K rung under
+/** The level-0 equirect of a gen-tiles job, resampled to the rung's tier.
+ *  Same kernel and same `fit` as that tool's own downsamples: the rung under
  *  this one is the identical call at half the width. */
-async function levelToPng(jobName, pngOut) {
+async function levelToPng(jobName, pngOut, width) {
   const [{ default: sharp }, tiles] = await Promise.all([
     import('sharp'),
     import('./gen-tiles.mjs'),
@@ -152,10 +178,10 @@ async function levelToPng(jobName, pngOut) {
   if (!job) throw new Error(`gen-tiles has no ${jobName} job`);
   const { rows } = await tiles.levelRowSource(job, job.levels[0]);
   try {
-    console.log(`  level 0 is ${rows.width}x${rows.height}; resampling to ${WIDTH}x${HEIGHT}`);
+    console.log(`  level 0 is ${rows.width}x${rows.height}; resampling to ${width}x${width / 2}`);
     const whole = await rows.whole();
     await sharp(whole, { raw: { width: rows.width, height: rows.height, channels: 3 }, limitInputPixels: false })
-      .resize(WIDTH, HEIGHT, { fit: 'fill', kernel: 'lanczos3' })
+      .resize(width, width / 2, { fit: 'fill', kernel: 'lanczos3' })
       .png({ compressionLevel: 1 })
       .toFile(pngOut);
   } finally {
@@ -163,25 +189,26 @@ async function levelToPng(jobName, pngOut) {
   }
 }
 
-async function sourcePng(source, pngOut) {
+async function sourcePng(source, pngOut, width) {
   if (source.kind === 'webp') {
     if (!existsSync(source.file)) throw new Error(`${source.file} is not on disk`);
     console.log('  decoding', path.relative(repo, source.file));
     await decodeToPng(source.file, 'image/webp', pngOut);
     return;
   }
-  await levelToPng(source.job, pngOut);
+  await levelToPng(source.job, pngOut, width);
 }
 
 /**
  * Encode. UASTC (the high-quality mode — ETC1S bands on the maria), level 2
  * with mild RDO, zstd supercompressed. The mip chain deliberately uses a BOX
  * filter on raw sRGB bytes — radiometrically naive, but exactly what the GPU's
- * generateMipmap builds for the webp tiers (the 4K rung included), and the
- * tier ladder's no-brightness-pop rule binds to the shipped look, not to
- * linear-light purity (a -mip_srgb kaiser chain measured ~5/255 brighter on
- * lit pixels than the webp 8K at the same pose; box-on-sRGB brings the swap
- * back to compression noise).
+ * generateMipmap builds for a webp map: the boot map every body starts on, and
+ * the webp rung a device with no transcoder still climbs to. The tier ladder's
+ * no-brightness-pop rule binds to the shipped look, not to linear-light purity
+ * (a -mip_srgb kaiser chain measured ~5/255 brighter on lit pixels than the
+ * webp 8K at the same pose; box-on-sRGB brings the swap back to compression
+ * noise).
  */
 function encode(png, out) {
   if (!existsSync(basisu)) {
@@ -209,15 +236,15 @@ function encode(png, out) {
 
 /** KTX2 magic, the tier's own dimensions, and a full mip chain: the three
  *  things the app assumes of a container before it has read a byte of it. */
-function checkContainer(out) {
+function checkContainer(out, want) {
   const buf = readFileSync(out);
   const magic = [0xab, 0x4b, 0x54, 0x58, 0x20, 0x32, 0x30, 0xbb];
   if (!magic.every((b, i) => buf[i] === b)) throw new Error(`${out} is not a KTX2 file`);
   const width = buf.readUInt32LE(20);
   const height = buf.readUInt32LE(24);
   const levels = buf.readUInt32LE(40);
-  if (width !== WIDTH || height !== HEIGHT) throw new Error(`${out} is ${width}x${height}, not ${WIDTH}x${HEIGHT}`);
-  if (levels !== Math.log2(WIDTH) + 1) throw new Error(`${out} carries ${levels} mip levels, not a full chain`);
+  if (width !== want || height !== want / 2) throw new Error(`${out} is ${width}x${height}, not ${want}x${want / 2}`);
+  if (levels !== Math.log2(want) + 1) throw new Error(`${out} carries ${levels} mip levels, not a full chain`);
   return buf;
 }
 
@@ -228,13 +255,14 @@ for (const name of wanted) {
   const work = mkdtempSync(path.join(tmpdir(), `ktx2-${name}-`));
   const png = path.join(work, `${name}.png`);
   const t0 = Date.now();
-  console.log(`== ${name} -> ${job.out}`);
+  const width = TIER_WIDTH[job.tier];
+  console.log(`== ${name} -> ${job.out} (${width}x${width / 2})`);
   try {
-    await sourcePng(job.source, png);
+    await sourcePng(job.source, png, width);
     console.log('  source PNG:', (statSync(png).size / 1e6).toFixed(1), 'MB');
     const tEncode = Date.now();
     encode(png, out);
-    const buf = checkContainer(out);
+    const buf = checkContainer(out, width);
     const after = createHash('sha256').update(buf).digest('hex');
     console.log(
       `  wrote ${job.out} ${(buf.length / 1e6).toFixed(1)} MB` +

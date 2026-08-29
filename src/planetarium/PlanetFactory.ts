@@ -573,25 +573,37 @@ export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
 // total residency rather than of whether one map fits. The caps and their
 // reasoning are the profile's (world/gpuEnvelope).
 
-// Every 8K colour tier ships GPU-compressed (KTX2/UASTC, mip chain baked by
-// tools/gen-ktx2.mjs): the raw upload of a 33MP RGBA map is the largest
-// unsliceable main-thread bill in the app — measured as THE dropped frame
-// right after a Moon teleport — while a compressed upload takes a few
-// milliseconds and stays compressed in VRAM (~43 MiB instead of ~171). The
-// wire cost is real (UASTC+zstd is a few times the webp), paid only when a
-// session earns the tier and cached by the service worker thereafter. The
-// override is consulted only while a KTX2 loader is bound, so tests and a
-// session whose transcoder failed to load never ask for a container they
-// cannot read.
+// Every colour rung above the boot map ships GPU-compressed (KTX2/UASTC, mip
+// chain baked by tools/gen-ktx2.mjs). An sRGB webp upload is charged a
+// full-image colour conversion inside one texImage2D call — 2.9 to 4.0 ms for
+// a 4K map on an Apple GPU under Chromium, a missed refresh at 120 Hz and
+// more on a device with less to spend, and the largest unsliceable
+// main-thread bill in the app at 8K, measured as THE dropped frame right
+// after a Moon teleport. It cannot be spread over frames either: the driver charges the
+// conversion per call over the whole source, so uploading in row bands costs
+// six times the one-shot. A container's blocks are already encoded, so the
+// upload is a memcpy that takes about a millisecond for a 4K map, bands
+// cleanly, and stays compressed in VRAM: 10.7 MiB for a 4K rung instead of
+// 42.7, 42.7 for an 8K instead of 170.7.
+//
+// The wire cost is real and it is the trade: UASTC is a fixed 8 bits a texel
+// whatever the picture holds, so a container is several times its webp — and
+// many times it for a low-frequency map like Venus or Saturn, whose webp is a
+// hundred-odd KB. Paid only when a session earns the tier, and cached by the
+// service worker thereafter. The override is consulted only while a KTX2
+// loader is bound, so tests and a session whose transcoder failed to load
+// never ask for a container they cannot read.
 //
 // `webp` says whether a classic map of the same resolution also ships, which
 // is what an unbound loader falls back to. Where it does not, the rung is
 // ABSENT rather than merely expensive: the ladder's top drops to the rung
 // below (or the boot map) instead of fetching a URL that 404s, and the
-// memory arithmetic never charges an uncompressed 8K for a map that does not
-// exist in that form. Only the two maps that predate the compressed pipeline
-// carry a webp twin — new 8K rungs ship as one file, because a second copy of
-// a 33MP map on disk is 4 MB nothing with a working transcoder fetches.
+// memory arithmetic never charges an uncompressed map for one that does not
+// exist in that form. Every 4K rung keeps its twin — those webps already ship
+// and a device with no transcoder must still be able to climb the first step
+// of every ladder — as do the two 8K maps that predate this pipeline. The two
+// 8K rungs added since ship as one file, because a second copy of a 33MP map
+// on disk is 4 MB nothing with a working transcoder fetches.
 export interface CompressedRung {
   /** Filename under the tier's folder — resolveTextureUrl adds the rest. */
   file: string;
@@ -599,10 +611,22 @@ export interface CompressedRung {
   webp: boolean;
 }
 export const TIER_FILE_OVERRIDES: Record<string, Partial<Record<TextureTier, CompressedRung>>> = {
-  moon: { '8k': { file: 'moon.ktx2', webp: true } },
-  earthClouds: { '8k': { file: 'earth-clouds.ktx2', webp: true } },
+  mercury: { '4k': { file: 'mercury.ktx2', webp: true } },
+  venus: { '4k': { file: 'venus.ktx2', webp: true } },
+  mars: { '4k': { file: 'mars.v2.ktx2', webp: true } },
+  jupiter: { '4k': { file: 'jupiter.ktx2', webp: true } },
+  saturn: { '4k': { file: 'saturn.ktx2', webp: true } },
+  pluto: { '4k': { file: 'pluto.ktx2', webp: true } },
+  moon: { '4k': { file: 'moon.ktx2', webp: true }, '8k': { file: 'moon.ktx2', webp: true } },
+  earthClouds: {
+    '4k': { file: 'earth-clouds.ktx2', webp: true },
+    '8k': { file: 'earth-clouds.ktx2', webp: true },
+  },
   earthDay: { '8k': { file: 'earth-day.v2.ktx2', webp: false } },
-  earthNight: { '8k': { file: 'earth-night.v2.ktx2', webp: false } },
+  earthNight: {
+    '4k': { file: 'earth-night.v2.ktx2', webp: true },
+    '8k': { file: 'earth-night.v2.ktx2', webp: false },
+  },
 };
 
 type Ktx2TierLoad = (

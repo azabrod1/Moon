@@ -45,18 +45,48 @@ function head(path: string, bytes: number): Buffer {
 /** KTX2 identifier, from the spec's section 3.1. */
 const KTX2_MAGIC = Buffer.from([0xab, 0x4b, 0x54, 0x58, 0x20, 0x32, 0x30, 0xbb, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-/** The fixed header the container opens with: dimensions at 20/24 and the
- *  number of mip levels at 40, all little-endian u32. */
-function ktx2Header(path: string): { width: number; height: number; levels: number; supercompression: number } {
-  const buf = head(path, 48);
+/** The fixed header the container opens with: dimensions at 20/24, the
+ *  number of mip levels at 40, the supercompression scheme at 44 and where
+ *  the data format descriptor sits at 48, all little-endian u32 — plus the
+ *  two bytes of that descriptor's basic block that say WHICH compressed
+ *  format the blocks are in and how they are to be read back. The descriptor
+ *  follows the level index, so a kilobyte covers it for any level count these
+ *  maps reach.
+ *
+ *  The format is not cosmetic. `colorModel` is the difference between UASTC
+ *  and ETC1S: ETC1S is a quarter of the wire size and bands visibly on the
+ *  Moon's maria, so a container that quietly encoded as ETC1S would ship a
+ *  worse picture than the webp rung it replaced. `transferFunction` is what
+ *  the loader sets the texture's colour space from — a container marked
+ *  linear draws the globe washed out, and nothing in the app would correct it
+ *  because applyTextureDefaults deliberately leaves a compressed texture's
+ *  colour space alone. */
+function ktx2Header(path: string): {
+  width: number;
+  height: number;
+  levels: number;
+  supercompression: number;
+  colorModel: number;
+  transferFunction: number;
+} {
+  const buf = head(path, 1024);
   expect(buf.subarray(0, 12).equals(KTX2_MAGIC)).toBe(true);
+  // dfdByteOffset points at the descriptor's own total-size word; the basic
+  // block starts four bytes later, and its colour model is eight into that.
+  const basicBlock = buf.readUInt32LE(48) + 4;
   return {
     width: buf.readUInt32LE(20),
     height: buf.readUInt32LE(24),
     levels: buf.readUInt32LE(40),
     supercompression: buf.readUInt32LE(44),
+    colorModel: buf[basicBlock + 8],
+    transferFunction: buf[basicBlock + 10],
   };
 }
+
+/** KHR_DF_MODEL_UASTC, and the sRGB transfer function. */
+const DF_MODEL_UASTC = 166;
+const DF_TRANSFER_SRGB = 2;
 
 describe('the files behind the colour ladder', () => {
   it('ships every rung every body can climb to', () => {
@@ -110,6 +140,8 @@ describe('the files behind the colour ladder', () => {
           // the wire size, and an unsupercompressed container is several
           // times the download for the same picture.
           supercompression: 2,
+          colorModel: DF_MODEL_UASTC,
+          transferFunction: DF_TRANSFER_SRGB,
         });
       }
     }

@@ -35,7 +35,7 @@ import {
   type PlanetData,
   LIGHT_SPEED_AU_PER_S,
 } from './planets/planetData';
-import { appliedTierHeldBytes, applySunGlowTier, armArrivalWarmGoal, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, firstUpgradeTier, ladderMapReferenceWidth, lodMeasurementRelevant, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, retainedSourceBytes, resolveUpgradeTier, setWarmEligibleMoonParents, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade, type TierAdmission } from './PlanetFactory';
+import { appliedTierHeldBytes, applySunGlowTier, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, lodMeasurementRelevant, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, retainedSourceBytes, resolveTierFile, resolveUpgradeTier, setWarmEligibleMoonParents, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade, type TierAdmission } from './PlanetFactory';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
@@ -514,6 +514,10 @@ interface LadderRungReadout {
   tier: string | null;
   top: string | null;
   bytes: number;
+  /** The map on the material is a GPU-compressed upload. What separates a
+   *  43 MiB 8K rung from a 171 MiB one, and the only place a session says
+   *  out loud that its transcoder is working. */
+  compressed: boolean;
   retained: number;
   sourceWidth: number;
   releasing: string | null;
@@ -2675,16 +2679,18 @@ export class PlanetariumMode {
         // can start the same transfer twice — bounded, and the second ride
         // comes off the cache it is filling.
         if (!canAttempt(up, performance.now())) continue;
-        const first = firstUpgradeTier(up);
+        const first = arrivalUpgradeTier(up);
         if (!first) continue;
         if (cacheOnly) {
           const tier = resolveUpgradeTier(up, first);
           // The body must be read to completion: an unread Response is
           // dropped, and the browser may cancel the transfer with it — the
           // bytes only reliably reach the HTTP/service-worker cache once the
-          // stream has been drained.
+          // stream has been drained. Through resolveTierFile, so the bytes
+          // pulled in are the ones the ladder will later ask for: a tier that
+          // ships as a compressed container has no classic file to warm.
           if (tier) {
-            fetch(resolveTextureUrl(PLANET_TEXTURE_FILES[up.key], tier))
+            fetch(resolveTextureUrl(resolveTierFile(up.key, tier), tier))
               .then((r) => r.arrayBuffer())
               .catch(() => {});
           }
@@ -3488,6 +3494,7 @@ export class PlanetariumMode {
         tier: up.appliedTier,
         top: reachableTopTier(up),
         bytes: appliedTierHeldBytes(up),
+        compressed: (drawn as THREE.CompressedTexture | null | undefined)?.isCompressedTexture === true,
         // What the decoded image behind the map still holds. A rung closes
         // its source once the upload is paid, leaving a thumbnail to
         // re-upload from after a context loss — so this reads 0 and the
@@ -15459,7 +15466,7 @@ export class PlanetariumMode {
     ups: readonly TextureUpgrade[] = this.landedPairUpgrades(),
   ): Array<{ up: TextureUpgrade; generation: number }> {
     return ups.flatMap((up) =>
-      up.attempt && up.attempt.tier === firstUpgradeTier(up)
+      up.attempt && up.attempt.tier === arrivalUpgradeTier(up)
         ? [{ up, generation: up.attempt.generation }]
         : [],
     );
@@ -15556,7 +15563,7 @@ export class PlanetariumMode {
     // goal — the companion's higher rungs stay demand-driven.
     for (const up of this.landingPairUpgrades(target)) {
       if (targetUps.includes(up)) continue;
-      const first = firstUpgradeTier(up);
+      const first = arrivalUpgradeTier(up);
       if (first) upgradeTextureOnApproach(up, first, nowMs);
     }
     // First rung starts now — under the veil, or with the teleport cut.
@@ -15843,7 +15850,7 @@ export class PlanetariumMode {
     // the first step — the tiers above it ride the on-screen trigger, so no
     // goal can hold a landing behind its cover.
     for (const up of this.landedPairUpgrades()) {
-      const first = firstUpgradeTier(up);
+      const first = arrivalUpgradeTier(up);
       if (first) upgradeTextureOnApproach(up, first);
     }
     // The reticle's screen position belongs to the previous target — drop it

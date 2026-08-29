@@ -4,6 +4,7 @@ import {
   applyColorTierTexture,
   applyNormalTierTexture,
   armArrivalWarmGoal,
+  arrivalUpgradeTier,
   arrivalWarmGoalsExpired,
   bindKtx2TierLoader,
   canAttempt,
@@ -1452,34 +1453,70 @@ describe('Earth\'s night lights on the colour ladder', () => {
 
 describe('the ladder against the sector memory envelope', () => {
   const mib = (bytes: number) => bytes / (1024 * 1024);
+  afterEach(() => bindKtx2TierLoader(null));
+
+  /** The texture a rung really produces: an image for a classic map, and for
+   *  a compressed container the blocks it carries with its baked mip chain.
+   *  UASTC transcodes to ASTC 4x4 or BC7, both a byte a texel. */
+  function rungTexture(key: string, tier: TextureTier): THREE.Texture {
+    const width = TIER_MAP_WIDTH[tier];
+    if (!resolveTierFile(key, tier).endsWith('.ktx2')) {
+      return new THREE.Texture({ width, height: width / 2 } as unknown as HTMLImageElement);
+    }
+    const mipmaps: Array<{ width: number; height: number; data: Uint8Array }> = [];
+    for (let w = width, h = width / 2; w >= 4; w >>= 1, h >>= 1) {
+      mipmaps.push({ width: w, height: h, data: new Uint8Array(w * h) });
+    }
+    return new THREE.CompressedTexture(mipmaps, width, width / 2);
+  }
+
   /** Every body with a ladder on the top tier this profile allows, all at
-   *  once, with nothing GPU-compressed — the heaviest the ladder can be on a
-   *  device whose transcoder is unavailable and every optional map has been
-   *  earned. `appliedTierGpuBytes` reads the texture, so the maps here are
-   *  the real widths of the tiers. */
-  function ladderWorstCaseBytes(touch: boolean): number {
+   *  once: the heaviest the ladder can be once every optional map has been
+   *  earned. `transcoder` is whether this session can read a compressed
+   *  container — with none, the rungs that ship only as one are not part of
+   *  the ladder at all and the two with a webp twin cost four times as much.
+   *  `appliedTierGpuBytes` reads the texture, so the maps here are what the
+   *  rungs really put on the GPU. */
+  function ladderWorstCaseBytes(touch: boolean, transcoder: boolean): number {
+    bindKtx2TierLoader(transcoder ? () => {} : null, transcoder);
     withMaxTextureSize(16384, touch);
     let bytes = 0;
     for (const key of Object.keys(TEXTURE_UPGRADE_TIERS)) {
       const material = new THREE.MeshStandardMaterial();
       materials.push(material);
-      const up = makeTextureUpgrade(key, material)!;
+      const up = makeTextureUpgrade(key, material);
+      if (!up) continue; // every rung of this key ships only as a container
       up.appliedTier = up.effectiveMaxTier;
-      const width = up.appliedTier === '8k' ? 8192 : 4096;
-      material.map = new THREE.Texture({ width, height: width / 2 } as unknown as HTMLImageElement);
+      material.map = rungTexture(key, up.appliedTier);
       bytes += appliedTierGpuBytes(up);
     }
     return bytes;
   }
 
-  it('leaves a desktop five sector sets at its heaviest, and its whole budget in the case it really hits', () => {
-    const worst = ladderWorstCaseBytes(false);
-    // Seven 4K maps — six planets and the night lights — plus TWO 8K ones,
-    // the Moon and the cloud deck: a desktop that has toured every body,
-    // earned every top rung and cannot transcode the Moon's compressed tier
-    // still has 128 MiB of the envelope left, five Earth sector sets. It is
-    // reachable, unlike the phone's below: it sits under the ladder's own
-    // ceiling (the envelope less the tiles' floor), so nothing refuses it.
+  it('leaves a desktop its whole budget once the compressed rungs are readable', () => {
+    // What a desktop session really holds: six 4K planet maps and FOUR 8K
+    // ones — the Moon, the cloud deck, Earth's globe and its night lights —
+    // every one of the 8K rungs a compressed container at 42.7 MiB rather
+    // than 170.7. Ten maps at one tier's worth of bytes each.
+    const real = ladderWorstCaseBytes(false, true);
+    expect(mib(real)).toBeCloseTo(426.7, 1);
+    expect(mib(real)).toBeCloseTo(10 * mib(equirectMapGpuBytes(4096)), 1);
+    const budget = LEGACY_DESKTOP_PROFILE.envelopeBytes - real;
+    // The streamer runs at its own cap, eleven Earth sets, with the envelope
+    // no longer the binding limit.
+    expect(mib(Math.min(budget, LEGACY_DESKTOP_PROFILE.ceilingBytes))).toBeCloseTo(256.0, 1);
+    expect(budget).toBeGreaterThan(LEGACY_DESKTOP_PROFILE.ceilingBytes);
+    expect(LEGACY_DESKTOP_PROFILE.ceilingBytes / sectorSetGpuBytes(SECTOR_SETS.Earth))
+      .toBeGreaterThanOrEqual(11);
+
+    // And with no transcoder at all: the two rungs that keep a webp twin
+    // cost 170.7 MiB each, and the two that ship only as a container are not
+    // fetched at all — Earth's globe stays on the 4096 map it boots with and
+    // its night shell stops at 4K, rather than the ladder charging 171 MiB
+    // apiece for maps that do not exist in that form. Seven 4K maps and two
+    // 8K ones, which still sits under the ladder's own ceiling (the envelope
+    // less the tiles' floor), so nothing refuses it.
+    const worst = ladderWorstCaseBytes(false, false);
     expect(mib(worst)).toBeCloseTo(640.0, 1);
     expect(worst).toBeLessThanOrEqual(
       ladderCeilingBytes(LEGACY_DESKTOP_PROFILE, LEGACY_DESKTOP_PROFILE.sectorFloorBytes),
@@ -1487,25 +1524,18 @@ describe('the ladder against the sector memory envelope', () => {
     const worstBudget = LEGACY_DESKTOP_PROFILE.envelopeBytes - worst;
     expect(mib(worstBudget)).toBeCloseTo(128.0, 1);
     expect(worstBudget / sectorSetGpuBytes(SECTOR_SETS.Earth)).toBeGreaterThanOrEqual(5);
-    // The case a desktop session actually reaches: the Moon's 8K ships
-    // GPU-compressed, which hands ~128 MiB more back and leaves the sector
-    // budget whole — the streamer runs at its own cap, eleven Earth sets,
-    // with the envelope no longer the binding limit.
-    const real = worst - equirectMapGpuBytes(8192) + equirectMapGpuBytes(8192, true);
-    const budget = LEGACY_DESKTOP_PROFILE.envelopeBytes - real;
-    expect(mib(budget)).toBeCloseTo(256.0, 1);
-    // Whole to within the rounding of nine map estimates, not 3 bytes short
-    // of anything the streamer can spend.
-    expect(LEGACY_DESKTOP_PROFILE.ceilingBytes - budget).toBeLessThan(1024);
-    expect(budget / sectorSetGpuBytes(SECTOR_SETS.Earth)).toBeGreaterThanOrEqual(11);
   });
 
   it('never lets a phone reach its heaviest: the rung that would is refused', () => {
     // Every ladder at its top at once, on a device whose transcoder is
     // unavailable — what the ladder USED to be able to hold, since nothing
     // ever asked whether the next map fit.
-    const worst = ladderWorstCaseBytes(true);
+    const worst = ladderWorstCaseBytes(true, false);
     expect(mib(worst)).toBeGreaterThan(mib(LEGACY_TOUCH_PROFILE.envelopeBytes));
+    // Nor with one: ten maps at 42.7 MiB is still past a 320 MiB envelope,
+    // so the arithmetic is what settles a phone's ladder either way.
+    expect(mib(ladderWorstCaseBytes(true, true)))
+      .toBeGreaterThan(mib(LEGACY_TOUCH_PROFILE.envelopeBytes));
     // It is now unreachable. The rung that would cross the envelope less the
     // tiles' floor is refused before it is fetched, so the ladder settles
     // under that line and the tiles keep their floor whatever the session
@@ -2206,6 +2236,92 @@ describe('the map width the tiles are measured against', () => {
       { width: RESTORE_STANDIN_WIDTH, height: RESTORE_STANDIN_WIDTH / 2 } as unknown as HTMLImageElement,
     );
     expect(ladderMapReferenceWidth(up)).toBe(TIER_MAP_WIDTH['2k']);
+  });
+
+  it('floors on the map Earth\'s globe really boots with, not on its tier name', () => {
+    bindKtx2TierLoader(() => {}, true);
+    withMaxTextureSize(16384);
+    const up = handle('earthDay');
+    // The 8K rung is reachable, so the day tiles are measured against it:
+    // twice the magnification a 4096 globe asks for, which is the whole
+    // point of the globe being sharper.
+    expect(ladderMapReferenceWidth(up)).toBe(TIER_MAP_WIDTH['8k']);
+    // Refused for want of memory, the globe falls back to the 4096 map it
+    // BOOTS with — never to the 2048 the boot tier is named for, which would
+    // pull every day tile at half the distance it is sized for.
+    bindTierAdmission(() => 'blocked');
+    expect(reachableTopTier(up)).toBeNull();
+    expect(ladderMapReferenceWidth(up)).toBe(TIER_MAP_WIDTH['4k']);
+    bindKtx2TierLoader(null);
+  });
+});
+
+describe('the rungs that ship only as a compressed container', () => {
+  const mib = (bytes: number) => bytes / (1024 * 1024);
+  afterEach(() => bindKtx2TierLoader(null));
+
+  it('names the container for every key that has one, and the classic map otherwise', () => {
+    expect(resolveTierFile('earthDay', '8k')).toBe('earth-day.v2.webp');
+    bindKtx2TierLoader(() => {}, true);
+    expect(resolveTierFile('moon', '8k')).toBe('moon.ktx2');
+    expect(resolveTierFile('earthClouds', '8k')).toBe('earth-clouds.ktx2');
+    expect(resolveTierFile('earthDay', '8k')).toBe('earth-day.v2.ktx2');
+    expect(resolveTierFile('earthNight', '8k')).toBe('earth-night.v2.ktx2');
+    // Only the 8K rung of each; everything below stays a webp.
+    expect(resolveTierFile('earthClouds', '4k')).toBe('earth-clouds.webp');
+    expect(resolveTierFile('earthNight', '4k')).toBe('earth-night.v2.webp');
+  });
+
+  it('drops the rung entirely where no classic map ships to fall back to', () => {
+    withMaxTextureSize(16384);
+    // No loader: the two rungs with a webp twin merely cost four times as
+    // much, and the two without are not part of this session's ladder.
+    expect(makeTextureUpgrade('moon', new THREE.MeshStandardMaterial())!.tiers).toEqual(['4k', '8k']);
+    expect(makeTextureUpgrade('earthClouds', new THREE.MeshStandardMaterial())!.tiers).toEqual(['4k', '8k']);
+    expect(makeTextureUpgrade('earthNight', new THREE.MeshStandardMaterial())!.tiers).toEqual(['4k']);
+    // Earth's globe has no other rung, so it gets no handle at all and keeps
+    // the 4096 map it boots with — not a 404 on an 8K webp that never
+    // shipped, and not 171 MiB of the envelope charged for it.
+    expect(makeTextureUpgrade('earthDay', new THREE.MeshStandardMaterial())).toBeUndefined();
+
+    bindKtx2TierLoader(() => {}, true);
+    withMaxTextureSize(16384);
+    expect(makeTextureUpgrade('earthNight', new THREE.MeshStandardMaterial())!.tiers).toEqual(['4k', '8k']);
+    const day = makeTextureUpgrade('earthDay', new THREE.MeshStandardMaterial())!;
+    expect(day.tiers).toEqual(['8k']);
+    expect(day.effectiveMaxTier).toBe('8k');
+  });
+
+  it('charges the blocks, never the phantom uncompressed map', () => {
+    bindKtx2TierLoader(() => {}, true);
+    for (const key of ['moon', 'earthClouds', 'earthDay', 'earthNight']) {
+      expect(mib(tierUploadBytes(key, '8k'))).toBeCloseTo(42.7, 1);
+    }
+    // With a transcoder but no compressed format to target, three hands back
+    // RGBA32 — which for the two container-only rungs is the case the
+    // admission test has to refuse rather than a case that never arises.
+    bindKtx2TierLoader(() => {}, false);
+    expect(mib(tierUploadBytes('earthDay', '8k'))).toBeCloseTo(170.7, 1);
+  });
+
+  it('leaves Earth\'s globe rung to the approach rather than to an arrival', () => {
+    bindKtx2TierLoader(() => {}, true);
+    withMaxTextureSize(16384);
+    // The gate says it: a rung held back past its tier's own trigger is
+    // approach work, so no reveal waits on 25 MB of container and no
+    // speculative boot warm spends it.
+    expect(upgradeTriggerFraction('earthDay', '8k')).toBe(0.5);
+    const day = handle('earthDay');
+    expect(firstUpgradeTier(day)).toBe('8k');
+    expect(arrivalUpgradeTier(day)).toBeNull();
+    expect(needsUpgradeCover(day)).toBe(false);
+    // Every other ladder still enters at its tier's own gate, so the cover
+    // and the landing prefetch behave exactly as they did.
+    for (const key of ['moon', 'earthClouds', 'earthNight', 'mars']) {
+      const up = handle(key);
+      expect(arrivalUpgradeTier(up)).toBe(firstUpgradeTier(up));
+      expect(needsUpgradeCover(up)).toBe(true);
+    }
   });
 });
 

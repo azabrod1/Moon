@@ -47,7 +47,7 @@ async function takeLock() {
 
 // Runs in the page. Builds both textures from one source, samples both, and
 // reports per-tile bytes plus a verdict.
-const PARITY = async ({ width, height, budgetMs }) => {
+const PARITY = async ({ width, height, budgetMs, mutable, srgb }) => {
   const THREE = window.__moonThree;
   if (!THREE) return { error: 'three not exposed on window.__moonThree' };
   const renderer = window.__moonRenderer;
@@ -71,10 +71,27 @@ const PARITY = async ({ width, height, budgetMs }) => {
   ctx.putImageData(img, 0, 0);
   const bitmap = await createImageBitmap(canvas, { imageOrientation: 'none', premultiplyAlpha: 'none' });
 
+  // Count what actually reaches GL. A whole-image upload of the real bitmap
+  // must happen exactly once on the one-shot texture and never on the sliced
+  // one — if three uploads the map behind the slicer's back, slicing has
+  // bought nothing and this is where it shows.
+  const calls = { wholeImage: 0, bands: 0 };
+  const realTexImage2D = gl.texImage2D.bind(gl);
+  const realTexSubImage2D = gl.texSubImage2D.bind(gl);
+  gl.texImage2D = function (...args) {
+    if (args[args.length - 1] === bitmap) calls.wholeImage++;
+    return realTexImage2D(...args);
+  };
+  gl.texSubImage2D = function (...args) {
+    if (args[args.length - 1] === bitmap) calls.bands++;
+    return realTexSubImage2D(...args);
+  };
+
   const makeTexture = () => {
     const t = new THREE.Texture(bitmap);
     t.flipY = false;
-    t.colorSpace = THREE.NoColorSpace;
+    t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+    if (mutable) t.userData.mutableStorage = true;
     t.minFilter = THREE.LinearMipmapLinearFilter;
     t.magFilter = THREE.NearestFilter;
     t.wrapS = THREE.ClampToEdgeWrapping;
@@ -86,6 +103,7 @@ const PARITY = async ({ width, height, budgetMs }) => {
 
   const oneShot = makeTexture();
   renderer.initTexture(oneShot);
+  const afterOneShot = { ...calls };
 
   const sliced = makeTexture();
   const job = window.__moonSlice.begin(renderer, sliced);
@@ -159,7 +177,16 @@ const PARITY = async ({ width, height, budgetMs }) => {
     return ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : 'unknown';
   })();
   target.dispose(); oneShot.dispose(); sliced.dispose();
-  return { bands, results, renderer: glInfo, width, height };
+  gl.texImage2D = realTexImage2D;
+  gl.texSubImage2D = realTexSubImage2D;
+  const slicedCalls = {
+    wholeImage: calls.wholeImage - afterOneShot.wholeImage,
+    bands: calls.bands - afterOneShot.bands,
+  };
+  return {
+    bands, results, renderer: glInfo, width, height, mutable, srgb,
+    oneShotCalls: afterOneShot, slicedCalls,
+  };
 };
 
 const release = await takeLock();
@@ -180,20 +207,38 @@ try {
   await page.waitForFunction(() => !!window.__moonSlice && !!window.__moonRenderer, null, { timeout: 120_000 });
 
   const all = [];
-  for (const [w, h] of [[2048, 2048], [4096, 2048]]) {
-    const out = await page.evaluate(PARITY, { width: w, height: h, budgetMs: Number(arg('budget', '0.02')) });
-    if (out.error) { console.log(`FAIL ${w}x${h}: ${out.error}`); all.push({ w, h, ...out }); continue; }
+  // The two shapes the app really streams: an sRGB colour map on the mutable
+  // path, and a sector tile; each also run on the immutable path.
+  const cases = [
+    { w: 4096, h: 2048, mutable: true, srgb: true },
+    { w: 2048, h: 2048, mutable: true, srgb: true },
+    { w: 4096, h: 2048, mutable: false, srgb: false },
+    { w: 2048, h: 2048, mutable: false, srgb: false },
+  ];
+  for (const c of cases) {
+    const out = await page.evaluate(PARITY, {
+      width: c.w, height: c.h, mutable: c.mutable, srgb: c.srgb,
+      budgetMs: Number(arg('budget', '0.02')),
+    });
+    const label = `${c.w}x${c.h} ${c.mutable ? 'mutable' : 'immutable'}/${c.srgb ? 'sRGB' : 'linear'}`;
+    if (out.error) { console.log(`FAIL ${label}: ${out.error}`); all.push({ ...c, ...out }); continue; }
     const bad = out.results.filter((r) => r.diffBytes > 0);
     const blank = out.results.filter((r) => r.ink === 0);
-    console.log(`${w}x${h} on ${out.renderer}: ${out.bands} bands, `
-      + `${out.results.length} samples, ${bad.length} mismatched, ${blank.length} blank`);
+    console.log(`${label}: ${out.bands} bands, ${out.results.length} samples, `
+      + `${bad.length} mismatched, ${blank.length} blank; `
+      + `one-shot whole-image uploads ${out.oneShotCalls.wholeImage}, `
+      + `sliced whole-image ${out.slicedCalls.wholeImage} bands ${out.slicedCalls.bands}`);
     for (const r of bad.slice(0, 4)) {
       console.log(`   tile ${r.tile} lod ${r.lod}: ${r.diffBytes} bytes differ (first at ${r.firstAt})`);
     }
-    all.push({ w, h, ...out });
+    all.push({ ...c, ...out });
   }
   writeFileSync(join(OUT, `${ENGINE}.json`), JSON.stringify(all, null, 1));
-  const failed = all.some((a) => a.error || a.results.some((r) => r.diffBytes > 0 || r.ink === 0));
+  const failed = all.some((a) => a.error
+    || a.results.some((r) => r.diffBytes > 0 || r.ink === 0)
+    // Three must never upload a sliced map itself, and the bands must be real.
+    || a.slicedCalls.wholeImage !== 0
+    || a.slicedCalls.bands === 0);
   console.log(failed ? `\nPARITY FAILED (${ENGINE})` : `\nPARITY OK (${ENGINE}) — byte-identical at every sample`);
   process.exitCode = failed ? 1 : 0;
 } finally {

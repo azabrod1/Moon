@@ -76,10 +76,26 @@ interface CompressedLevel {
   blockBytes: number;
 }
 
+/**
+ * The internal format three would have chosen. Only the one shape this module
+ * slices is covered, taken from three's getInternalFormat: an RGBA byte
+ * texture is SRGB8_ALPHA8 when its colour space carries the sRGB transfer and
+ * RGBA8 otherwise. Getting this wrong changes what the driver stores, so the
+ * parity readback is what proves it right.
+ */
+function internalFormatFor(
+  gl: WebGL2RenderingContext,
+  texture: THREE.Texture,
+): number {
+  return texture.colorSpace === THREE.SRGBColorSpace ? gl.SRGB8_ALPHA8 : gl.RGBA8;
+}
+
 export interface SliceJob {
   texture: THREE.Texture;
   renderer: THREE.WebGLRenderer;
   compressed: boolean;
+  /** Allocated with texImage2D rather than texStorage2D — see the patch. */
+  mutable: boolean;
   width: number;
   height: number;
   /** Rows of the base level already uploaded. */
@@ -154,6 +170,13 @@ export function beginSlicedUpload(
 
   const source = texture.source;
   const previousDataReady = source.dataReady;
+  // A map that opted out of immutable storage must stay out of it: that flag
+  // (patches/three) exists because texStorage2D makes the driver pay a
+  // full-image sRGB conversion, measured at ~200 ms of frozen main thread for
+  // an 8K on Chromium. Its branch is also NOT gated by dataReady, so the
+  // allocation trick below cannot be the same one.
+  const mutable = texture.userData?.mutableStorage === true;
+  if (mutable) return beginMutableSlice(renderer, texture, gl, width, height);
   try {
     // generateMipmaps is left exactly as the caller set it. Three reads the
     // level count from it, so leaving it true gets the full chain allocated;
@@ -181,6 +204,7 @@ export function beginSlicedUpload(
     texture,
     renderer,
     compressed,
+    mutable: false,
     width,
     height,
     rowsDone: 0,
@@ -198,6 +222,71 @@ export function beginSlicedUpload(
     totalMs: 0,
     contextLost: false,
   };
+}
+
+/**
+ * Allocate a mutable-storage map without uploading it.
+ *
+ * The patched mutable branch is `texImage2D(TEXTURE_2D, 0, ifmt, fmt, type,
+ * image)` with no dataReady gate, so there is no way to ask three to allocate
+ * and not upload. Instead it is handed a one-pixel image: three creates the GL
+ * texture, computes the cache key its refcounting is keyed on, sets the
+ * texture parameters and stamps both __version fields — everything except the
+ * pixels — for the cost of a 1×1 upload. The real image goes back afterwards
+ * WITHOUT bumping any version, so three considers the texture current and
+ * never uploads it again; level 0 is then reallocated at full size, which
+ * mutable storage allows and immutable storage would not.
+ */
+function beginMutableSlice(
+  renderer: THREE.WebGLRenderer,
+  texture: THREE.Texture,
+  gl: WebGL2RenderingContext,
+  width: number,
+  height: number,
+): SliceJob | null {
+  const realImage = texture.image;
+  try {
+    const tiny = document.createElement('canvas');
+    tiny.width = 1;
+    tiny.height = 1;
+    texture.image = tiny;
+    renderer.initTexture(texture);
+  } catch (err) {
+    debugWarn('Sliced upload could not allocate a mutable map', { err: String(err) });
+    texture.image = realImage;
+    return null;
+  }
+  texture.image = realImage;
+  const job: SliceJob = {
+    texture,
+    renderer,
+    compressed: false,
+    mutable: true,
+    width,
+    height,
+    rowsDone: 0,
+    msPerRow: null,
+    baseLevel: null,
+    tailLevels: [],
+    glFormat: gl.RGBA,
+    glType: gl.UNSIGNED_BYTE,
+    needsMipmap: true,
+    bands: 0,
+    totalMs: 0,
+    contextLost: false,
+  };
+  // Reallocate level 0 at the real size with no data. No texStorage2D, so the
+  // driver never does the whole-image conversion the patch exists to avoid;
+  // the per-band texSubImage2D calls pay it a band at a time instead.
+  const gl2 = bindForUpload(job);
+  gl2.pixelStorei(gl2.UNPACK_FLIP_Y_WEBGL, 0);
+  gl2.pixelStorei(gl2.UNPACK_PREMULTIPLY_ALPHA_WEBGL, texture.premultiplyAlpha ? 1 : 0);
+  gl2.pixelStorei(gl2.UNPACK_ALIGNMENT, texture.unpackAlignment);
+  gl2.texImage2D(
+    gl2.TEXTURE_2D, 0, internalFormatFor(gl2, texture),
+    width, height, 0, gl2.RGBA, gl2.UNSIGNED_BYTE, null,
+  );
+  return job;
 }
 
 /** Bind through three's state cache, never raw: a raw bind desyncs the cache

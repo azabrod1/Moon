@@ -93,3 +93,70 @@ export function luminance(r: number, g: number, b: number): number {
   return LUMINANCE_WEIGHTS[0] * r + LUMINANCE_WEIGHTS[1] * g + LUMINANCE_WEIGHTS[2] * b;
 }
 
+// --- The detail the deck's own map is too coarse to carry --------------------
+//
+// Everything below drives one texel fetch of the tileable noise map
+// (world/cloudDetailNoise) per deck fragment, and nothing at all on any other
+// surface. The map holds the field in R and its own gradient in G and B, so the
+// erosion and the normal perturbation share the fetch.
+
+/**
+ * How much of the deck's alpha the noise may eat where the coverage is at an
+ * EDGE. A cloud map's edges are the resolution its authoring stopped at, not
+ * the shape of a real cloud; eroding them by the noise puts the ragged margin
+ * back. Solid interiors and clear sky are both left alone — a cloud does not
+ * get holes in the middle, and clear sky does not acquire wisps that the map
+ * says are not there.
+ */
+export const CLOUD_DETAIL_ERODE = 0.45;
+
+/** Where the edge band starts and ends, in coverage alpha. Erosion peaks
+ *  between the inner pair and is gone outside the outer pair. */
+export const CLOUD_EDGE_BAND: readonly [number, number, number, number] = [0.10, 0.35, 0.65, 0.90];
+
+/**
+ * The height the detail field's full range stands for, in kilometres. A cloud
+ * top varies by a few kilometres over a few tens of kilometres, and that is the
+ * slope the perturbation is built to produce: the shader turns the packed
+ * gradient into a real gradient with this and the deck's own radius, so the
+ * relief is a physical slope rather than a number tuned against one frame.
+ */
+export const CLOUD_DETAIL_RELIEF_KM = 3;
+
+/**
+ * Screen texels per pixel at which the detail starts to go, and where it is
+ * gone. Above one texel per pixel the map is being minified: what is left is
+ * the tile's repeat rather than its texture, and the fine octave crawls. The
+ * mip chain already averages it away — this is what stops it reading as a
+ * pattern on the way there, and it is why a deck seen from arrival range (about
+ * nine texels per pixel) carries no detail term at all.
+ */
+export const CLOUD_DETAIL_FADE_START = 0.6;
+export const CLOUD_DETAIL_FADE_END = 2.0;
+
+/** How much of the detail survives at this many noise texels per screen pixel.
+ *  Mirrored exactly by `cloudDetailFade` in CLOUD_DETAIL_GLSL. */
+export function cloudDetailFade(texelsPerPixel: number): number {
+  return 1 - smoothstep(CLOUD_DETAIL_FADE_START, CLOUD_DETAIL_FADE_END, texelsPerPixel);
+}
+
+/** The weight the erosion carries at this coverage alpha: 0 in clear sky and in
+ *  solid cloud, 1 across the edge between them. Mirrored by `cloudEdgeBand`. */
+export function cloudEdgeBand(alpha: number): number {
+  return smoothstep(CLOUD_EDGE_BAND[0], CLOUD_EDGE_BAND[1], alpha)
+    * (1 - smoothstep(CLOUD_EDGE_BAND[2], CLOUD_EDGE_BAND[3], alpha));
+}
+
+/** The GLSL halves of the two curves above, from the same constants. */
+export const CLOUD_DETAIL_GLSL = /* glsl */`
+// What survives at this many noise texels per screen pixel.
+float cloudDetailFade(float texelsPerPixel) {
+  return 1.0 - smoothstep(${CLOUD_DETAIL_FADE_START.toFixed(6)}, ${CLOUD_DETAIL_FADE_END.toFixed(6)}, texelsPerPixel);
+}
+// 0 in clear sky and in solid cloud, 1 across the edge between them.
+float cloudEdgeBand(float alpha) {
+  return smoothstep(${CLOUD_EDGE_BAND[0].toFixed(6)}, ${CLOUD_EDGE_BAND[1].toFixed(6)}, alpha)
+    * (1.0 - smoothstep(${CLOUD_EDGE_BAND[2].toFixed(6)}, ${CLOUD_EDGE_BAND[3].toFixed(6)}, alpha));
+}
+`;
+

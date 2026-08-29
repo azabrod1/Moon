@@ -54,6 +54,13 @@
  * which puts it above the whole air. `AIR_LOOKUP_RADIUS` is where each
  * archetype's segment really ends.
  *
+ * The injection has three points, not two: the declarations at <common>, the
+ * cloud deck's detail at <normal_fragment_maps> — the one place where the
+ * perturbed normal exists and no light has read it yet — and everything else
+ * before <opaque_fragment>, after the lighting, where the terms above land in
+ * linear radiance. A normal moved at the third point would shade this file's
+ * own night terms and leave three's lights on a smooth sphere.
+ *
  * The injected GLSL is byte-identical for every body (only uniforms differ), so
  * materials still share compiled programs — no custom cache key needed. That
  * holds for the air too: a body without tables takes the same text with
@@ -71,7 +78,19 @@ import {
   type AtmosphereTables,
 } from './atmosphereLut';
 import { AIRLIGHT_SCALE } from './atmosphereModel';
-import { CLOUD_COVERAGE_GLSL, LUMINANCE_WEIGHTS } from './cloudDeck';
+import {
+  CLOUD_COVERAGE_GLSL,
+  CLOUD_DETAIL_ERODE,
+  CLOUD_DETAIL_GLSL,
+  CLOUD_DETAIL_RELIEF_KM,
+  LUMINANCE_WEIGHTS,
+} from './cloudDeck';
+import {
+  CLOUD_DETAIL_SIZE,
+  CLOUD_DETAIL_GRADIENT_SCALE,
+  CLOUD_DETAIL_UV_PER_RADIAN,
+  cloudDetailTexture,
+} from './cloudDetailNoise';
 import { MOON_UP_GLSL, NIGHT_WEIGHT_GLSL, SUN_DOWN_GLSL } from './nightSources';
 import { PLANETS } from '../planets/planetData';
 
@@ -347,6 +366,9 @@ uniform vec3 uMoonIrradiance;
 uniform float uAirDensity;
 uniform float uAirLookupRadius;
 uniform float uCloudDeck;
+uniform sampler2D uCloudDetail;
+uniform float uCloudDetailErode;
+uniform float uCloudDetailRelief;
 uniform float uPlanetRadius;
 uniform float uSolarIrradiance;
 uniform vec3 uAirlightScale;
@@ -359,11 +381,67 @@ varying vec3 vObjPos;
 varying vec3 vPlanetshineViewDir;
 varying vec3 vAirCam;
 varying vec3 vAirFrag;
-${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}`;
+${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}${CLOUD_DETAIL_GLSL}`;
 
 // Injected after lighting but before <opaque_fragment> writes outgoingLight into
 // gl_FragColor — so terms land in linear radiance (tone-mapped downstream) and
 // read the perturbed view-space `normal`.
+// Injected right after three's own normal-map chunk, which is where the
+// perturbed `normal` first exists and still upstream of every light. The deck's
+// detail has to land here rather than beside the terms below: those run after
+// the lighting, so a normal moved there would shade the deck's own night terms
+// and leave the Sun lighting a smooth sphere.
+//
+// One texel of the tileable noise map per deck fragment, and a uniform branch
+// and nothing else on every other surface. The two locals it leaves behind are
+// read by the alpha term further down — the map holds the field and its own
+// gradient in one texel, so the erosion and the relief share the fetch.
+const SURFACE_NORMAL_BODY = /* glsl */ `
+float cloudDetailN = 0.0;
+float cloudDetailW = 0.0;
+if (uCloudDeck > 0.0) {
+  // Where this fragment is on the deck, as longitude and latitude. Every
+  // derivative the block needs is taken HERE, inside the one branch that is
+  // uniform across the draw: a derivative under a per-fragment condition is
+  // undefined, and the fade below is exactly such a condition.
+  vec3 dir = normalize(vAirFrag);
+  vec3 ddx = dFdx(dir);
+  vec3 ddy = dFdy(dir);
+  vec3 sx = dFdx(-vViewPosition);
+  vec3 sy = dFdy(-vViewPosition);
+  float cosLat = max(sqrt(dir.x * dir.x + dir.z * dir.z), 1e-4);
+  // The angles' screen derivatives, taken analytically from the direction's.
+  // atan() has a branch cut at the antimeridian, and reading its derivative
+  // through dFdx would put one pixel of enormous gradient down that line — the
+  // wrong mip and no detail on it. cos(latitude) is the same sqrt for both.
+  vec2 dAngX = vec2((dir.x * ddx.z - dir.z * ddx.x) / (cosLat * cosLat), ddx.y / cosLat);
+  vec2 dAngY = vec2((dir.x * ddy.z - dir.z * ddy.x) / (cosLat * cosLat), ddy.y / cosLat);
+  vec2 detailUv = vec2(atan(dir.z, dir.x), asin(clamp(dir.y, -1.0, 1.0))) * ${CLOUD_DETAIL_UV_PER_RADIAN.toFixed(7)};
+  vec2 duvX = dAngX * ${CLOUD_DETAIL_UV_PER_RADIAN.toFixed(7)};
+  vec2 duvY = dAngY * ${CLOUD_DETAIL_UV_PER_RADIAN.toFixed(7)};
+  cloudDetailW = cloudDetailFade(max(length(duvX), length(duvY)) * ${CLOUD_DETAIL_SIZE.toFixed(1)});
+  // Explicit gradients, for the same reason the angles' were taken by hand: the
+  // mip has to be chosen off a quantity that is continuous across the cut.
+  vec4 detail = textureGrad(uCloudDetail, detailUv, duvX, duvY);
+  cloudDetailN = detail.r;
+  if (cloudDetailW > 0.0) {
+    // The packed gradient back into a real slope: field per tile of uv, times
+    // the height that field's range stands for. The height is stated against
+    // the body's own radius, so it is kilometres of cloud top and not a number
+    // tuned against one frame.
+    vec2 g = (detail.gb * 2.0 - 1.0) * ${CLOUD_DETAIL_GRADIENT_SCALE.toFixed(1)};
+    vec3 nrm = normalize(normal);
+    vec3 r1 = cross(sy, nrm);
+    vec3 r2 = cross(nrm, sx);
+    float det = dot(sx, r1);
+    if (abs(det) > 1e-30) {
+      vec3 surfGrad = (dot(g, duvX) * r1 + dot(g, duvY) * r2)
+          * (uCloudDetailRelief * uPlanetRadius / det);
+      normal = normalize(nrm - surfGrad * cloudDetailW);
+    }
+  }
+}`;
+
 const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // The cloud deck's alpha is the coverage its own map states, and every other
   // surface keeps the alpha it already had. A deck at a flat opacity dims clear
@@ -374,6 +452,12 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   float cloudAlpha = 1.0;
   if (uCloudDeck > 0.0) {
     cloudAlpha = cloudCoverage(dot(diffuseColor.rgb, vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')})));
+    // ...eroded by the detail noise where the coverage is at an EDGE. A cloud
+    // map's edges are the resolution its authoring stopped at; the noise puts
+    // the ragged margin back. Solid cloud keeps its interior and clear sky
+    // gains no wisps — the band is zero at both ends.
+    cloudAlpha *= mix(1.0, mix(1.0 - uCloudDetailErode, 1.0, cloudDetailN),
+        cloudEdgeBand(cloudAlpha) * cloudDetailW);
     diffuseColor.a *= cloudAlpha;
   }
   // The sine of the Sun's elevation at this fragment, off the perturbed normal:
@@ -659,6 +743,19 @@ export function augmentSurfaceMaterial(
   const uLimbDarkening = { value: LIMB_DARKENING[archetype] };
   const uAirLookupRadius = { value: AIR_LOOKUP_RADIUS[archetype] };
   const uCloudDeck = { value: archetype === 'cloud' ? 1 : 0 };
+  // The detail map is built once and shared; every other surface binds the same
+  // 1x1 stand-in the air's samplers do, and never reads it.
+  const uCloudDetail = {
+    value: archetype === 'cloud'
+      ? cloudDetailTexture() as THREE.Texture
+      : surfaceAirDummies().map2D as THREE.Texture,
+  };
+  const uCloudDetailErode = { value: archetype === 'cloud' ? CLOUD_DETAIL_ERODE : 0 };
+  // The detail's relief as a fraction of the body's own radius, which is what
+  // the shader multiplies by uPlanetRadius to reach a real slope.
+  const uCloudDetailRelief = {
+    value: archetype === 'cloud' ? CLOUD_DETAIL_RELIEF_KM / EARTH_RADIUS_KM : 0,
+  };
 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uSunDirWorld = fx.uSunDirWorld;
@@ -679,6 +776,9 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uLimbDarkening = uLimbDarkening;
     shader.uniforms.uAirLookupRadius = uAirLookupRadius;
     shader.uniforms.uCloudDeck = uCloudDeck;
+    shader.uniforms.uCloudDetail = uCloudDetail;
+    shader.uniforms.uCloudDetailErode = uCloudDetailErode;
+    shader.uniforms.uCloudDetailRelief = uCloudDetailRelief;
     shader.uniforms.uFrameSpin = uFrameSpin;
     for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];
 
@@ -688,6 +788,7 @@ export function augmentSurfaceMaterial(
 
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>${SURFACE_FRAGMENT_DECLS}`)
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>${SURFACE_NORMAL_BODY}`)
       .replace('#include <opaque_fragment>', `${SURFACE_FRAGMENT_BODY}\n#include <opaque_fragment>`);
   };
   // The table dimensions are #defines, and a define is part of three's program

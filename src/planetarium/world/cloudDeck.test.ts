@@ -6,10 +6,18 @@ import {
   CLOUD_COVERAGE_GLSL,
   CLOUD_COVERAGE_HIGH,
   CLOUD_COVERAGE_LOW,
+  CLOUD_DETAIL_ERODE,
+  CLOUD_DETAIL_FADE_END,
+  CLOUD_DETAIL_FADE_START,
+  CLOUD_DETAIL_GLSL,
+  CLOUD_EDGE_BAND,
   CLOUD_NORMAL_SCALE,
   cloudCoverageAlpha,
+  cloudDetailFade,
+  cloudEdgeBand,
   luminance,
 } from './cloudDeck';
+import { cloudDetailTexture } from './cloudDetailNoise';
 import {
   appliedNormalHeldBytes,
   applyNormalTierTexture,
@@ -26,7 +34,7 @@ function mockShader() {
   return {
     uniforms: {} as Record<string, unknown>,
     vertexShader: '#include <common>\nvoid main() {\n#include <begin_vertex>\n}',
-    fragmentShader: '#include <common>\nvoid main() {\n#include <opaque_fragment>\n}',
+    fragmentShader: '#include <common>\nvoid main() {\n#include <normal_fragment_maps>\n#include <opaque_fragment>\n}',
   };
 }
 
@@ -234,6 +242,85 @@ describe('the relief maps on disk', () => {
     for (const path of wanted) {
       expect(path).toBe(existsSync(path) ? path : `MISSING ${path}`);
     }
+  });
+});
+
+describe('the deck\'s detail term', () => {
+  it('is at full strength while the map is magnified and gone once it is not', () => {
+    expect(cloudDetailFade(0)).toBe(1);
+    expect(cloudDetailFade(CLOUD_DETAIL_FADE_START)).toBe(1);
+    expect(cloudDetailFade(CLOUD_DETAIL_FADE_END)).toBe(0);
+    // Arrival range: the whole globe in frame is about nine noise texels per
+    // pixel, where the term must contribute nothing at all rather than a
+    // shimmering pattern.
+    expect(cloudDetailFade(9)).toBe(0);
+    let previous = 2;
+    for (let i = 0; i <= 30; i++) {
+      const f = cloudDetailFade(i / 10);
+      expect(f).toBeLessThanOrEqual(previous);
+      previous = f;
+    }
+  });
+
+  it('erodes the coverage at its edges and nowhere else', () => {
+    // Clear sky gains no wisps the map does not have, and a solid cloud gets no
+    // holes punched in its middle.
+    expect(cloudEdgeBand(0)).toBe(0);
+    expect(cloudEdgeBand(CLOUD_EDGE_BAND[0])).toBe(0);
+    expect(cloudEdgeBand(1)).toBe(0);
+    expect(cloudEdgeBand(CLOUD_EDGE_BAND[3])).toBe(0);
+    expect(cloudEdgeBand(0.5)).toBeGreaterThan(0.9);
+  });
+
+  it('hands the GLSL the same numbers again', () => {
+    expect(CLOUD_DETAIL_GLSL).toContain(CLOUD_DETAIL_FADE_START.toFixed(6));
+    expect(CLOUD_DETAIL_GLSL).toContain(CLOUD_DETAIL_FADE_END.toFixed(6));
+    for (const edge of CLOUD_EDGE_BAND) expect(CLOUD_DETAIL_GLSL).toContain(edge.toFixed(6));
+  });
+
+  it('costs one texel fetch per deck fragment and nothing on any other surface', () => {
+    // The whole frame-time claim: one normal fetch (three's own, from the
+    // relief map) and one noise fetch. A second octave sampled in the shader
+    // would be a second dependent fetch on every fragment of the disc.
+    const glsl = compiled('cloud').shader.fragmentShader;
+    expect(glsl.match(/textureGrad\(uCloudDetail/g)).toHaveLength(1);
+    expect(glsl.match(/uCloudDetail\s*,/g)).toHaveLength(1);
+    // ...behind a uniform branch, so every other body pays a comparison.
+    expect(glsl).toContain('if (uCloudDeck > 0.0) {');
+    for (const a of ['airless', 'rocky', 'gas', 'icy', 'earth'] as SurfaceArchetype[]) {
+      expect((compiled(a).shader.uniforms.uCloudDetailErode as { value: number }).value, a).toBe(0);
+    }
+    expect((compiled('cloud').shader.uniforms.uCloudDetailErode as { value: number }).value)
+      .toBe(CLOUD_DETAIL_ERODE);
+  });
+
+  it('takes every derivative in uniform control flow', () => {
+    // A derivative under a per-fragment condition is undefined, and the fade is
+    // exactly such a condition: on a driver that takes the licence, the deck
+    // gets a wrong mip and a wrong slope wherever the quad straddles the fade.
+    const glsl = compiled('cloud').shader.fragmentShader;
+    const block = glsl.slice(glsl.indexOf('float cloudDetailN = 0.0;'), glsl.indexOf('vec4 detail = textureGrad'));
+    const inner = glsl.slice(glsl.indexOf('if (cloudDetailW > 0.0) {'), glsl.indexOf('#include <opaque_fragment>'));
+    expect(block.match(/dFd[xy]\(/g)).toHaveLength(4);
+    expect(inner).not.toMatch(/dFd[xy]\(/);
+  });
+
+  it('perturbs the normal upstream of the lights, not after them', () => {
+    const glsl = compiled('cloud').shader.fragmentShader;
+    expect(glsl.indexOf('normal = normalize(nrm - surfGrad'))
+      .toBeLessThan(glsl.indexOf('#include <opaque_fragment>'));
+    expect(glsl.indexOf('#include <normal_fragment_maps>'))
+      .toBeLessThan(glsl.indexOf('float cloudDetailN = 0.0;'));
+  });
+
+  it('shares one detail map across every deck material', () => {
+    // A map per material would be 5.3 MiB apiece and 30 ms of build each.
+    const a = compiled('cloud').shader.uniforms.uCloudDetail as { value: unknown };
+    const b = compiled('cloud').shader.uniforms.uCloudDetail as { value: unknown };
+    expect(a.value).toBe(b.value);
+    expect(a.value).toBe(cloudDetailTexture());
+    expect((compiled('earth').shader.uniforms.uCloudDetail as { value: unknown }).value)
+      .not.toBe(a.value);
   });
 });
 

@@ -37,6 +37,7 @@ import {
 } from './planets/planetData';
 import { appliedNormalHeldBytes, appliedTierHeldBytes, applySunGlowTier, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createAtmosphereMaterial, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, lodMeasurementRelevant, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, retainedSourceBytes, resolveTierFile, resolveUpgradeTier, setWarmEligibleMoonParents, sphereWidthSegments, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type NormalUpgrade, type PlanetMesh, type TextureUpgrade, type TierAdmission } from './PlanetFactory';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
+import { disposeCloudDetailTexture } from './world/cloudDetailNoise';
 import { bindSurfaceAir, clearSurfaceAir, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
@@ -17803,6 +17804,9 @@ export class PlanetariumMode {
     for (const planet of this.solarSystem?.planets ?? []) {
       cancelNormalUpgrade(planet.normalUpgrade);
     }
+    // The deck's detail map is a session singleton shared by every material
+    // that draws one, so it is freed here rather than with any one of them.
+    disposeCloudDetailTexture();
     // The analytic shells belong to the meshes the solar system owns; the LUT
     // ones were built here, and carry the 1x1 stand-in tables with them.
     for (const shells of this.atmosphereShells.values()) {

@@ -145,7 +145,7 @@ import { applyTextureDefaults, resolveTileUrl, sectorSetHash, sectorSetLayout } 
 import { TIER_RANK } from './textureLadder';
 import { debugWarn } from '../../shared/debug';
 import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
-import { sectorBudgetBytes, type SectorStreamerLimits } from './gpuEnvelope';
+import { MemoryEnvelope, type SectorStreamerLimits } from './gpuEnvelope';
 import { layoutGpuBytes, textureGpuBytes } from './textureBytes';
 import { smoothTraceEvent } from '../smoothnessTrace';
 
@@ -612,6 +612,11 @@ interface SectorBody {
 export interface SectorStreamerOptions {
   /** This device's memory numbers (world/gpuEnvelope). */
   limits: SectorStreamerLimits;
+  /** The envelope this streamer shares with the globe texture ladder. The app
+   *  passes the one the mode owns, so both allocators read one object; a test
+   *  that leaves it out gets a private one built from `limits`, which is the
+   *  same arithmetic with nobody else spending it. */
+  envelope?: MemoryEnvelope;
   load?: TextureLoad;
   warm?: (tex: THREE.Texture, onOutcome: (o: WarmOutcome) => void) => void;
 }
@@ -834,12 +839,11 @@ export class SectorStreamer {
   private readonly residentCap: number;
   private readonly inflightCap: number;
   private readonly fetchPool: number;
-  private readonly ceilingBytes: number;
-  private readonly envelopeBytes: number;
   private readonly sectorFloorBytes: number;
   private readonly wantTexelPx: number;
   private readonly releaseTexelPx: number;
-  private globalBytes = 0;
+  /** The one envelope the tiles and the globe maps spend between them. */
+  private readonly envelope: MemoryEnvelope;
   private warnedNoBudget = false;
   private generation = 0;
   private lastNowMs = 0;
@@ -857,11 +861,10 @@ export class SectorStreamer {
     this.residentCap = opts.limits.residentCap;
     this.inflightCap = opts.limits.inflightCap;
     this.fetchPool = opts.limits.fetchPool;
-    this.ceilingBytes = opts.limits.ceilingBytes;
-    this.envelopeBytes = opts.limits.envelopeBytes;
     this.sectorFloorBytes = opts.limits.sectorFloorBytes;
     this.wantTexelPx = opts.limits.wantTexelPx;
     this.releaseTexelPx = opts.limits.releaseTexelPx;
+    this.envelope = opts.envelope ?? new MemoryEnvelope(opts.limits);
   }
 
   /** Register one family of one body. A body's families are keyed (name,
@@ -929,6 +932,7 @@ export class SectorStreamer {
     this.bodies.set(key, {
       handle, key, family, slots, levels, texelLens, signature: '', admitting: false, maxTexelPx: 0,
     });
+    this.syncFloor();
   }
 
   /** Drop one family, by the key it was registered under (a body's own name
@@ -938,6 +942,7 @@ export class SectorStreamer {
     if (!body) return;
     for (const slot of body.slots) this.release(slot);
     this.bodies.delete(key);
+    this.syncFloor();
     // A body measured earlier in an open frame must leave the batch with it:
     // reconciling it would admit sectors whose bytes nothing counts any more.
     const queued = this.batch.indexOf(body);
@@ -952,13 +957,13 @@ export class SectorStreamer {
    *  colour maps, which only the mode can see). The sector budget is what
    *  the envelope leaves over them, down to the floor. */
   setGlobalMapBytes(bytes: number): void {
-    const before = this.globalBytes;
-    this.globalBytes = Math.max(0, bytes);
+    const before = this.envelope.ladderBytes;
+    this.envelope.setLadderBytes(bytes);
     // The budget is a public number and shrinking it is what makes the
     // working set too big: the sectors go back in the same call, so no
     // caller can ever read a stats() where what is held is over what is
     // allowed. Growing it takes nothing from anyone.
-    if (this.globalBytes > before) this.trimToBudget();
+    if (this.envelope.ladderBytes > before) this.trimToBudget();
     // Streaming that has quietly switched itself off looks like a soft
     // surface, not like a fault. Say it once, with the figures that explain
     // it. A budget under one whole set is the same silence as a budget of
@@ -968,10 +973,10 @@ export class SectorStreamer {
     if (smallest > 0 && this.budget() < smallest && !this.warnedNoBudget) {
       this.warnedNoBudget = true;
       debugWarn('Surface tiles off: the budget is below one sector set', {
-        globeMapsMiB: Math.round(this.globalBytes / (1024 * 1024)),
+        globeMapsMiB: Math.round(this.envelope.ladderBytes / (1024 * 1024)),
         budgetMiB: Math.round(this.budget() / (1024 * 1024)),
         setMiB: Math.round(smallest / (1024 * 1024)),
-        envelopeMiB: Math.round(this.envelopeBytes / (1024 * 1024)),
+        envelopeMiB: Math.round(this.envelope.envelopeBytes / (1024 * 1024)),
       });
     }
   }
@@ -981,18 +986,22 @@ export class SectorStreamer {
    *  at all, but a mode may also run before or after registration), so the
    *  ladder is never asked to reserve memory for tiles nobody can load. */
   floorBytes(): number {
-    return this.bodies.size > 0 ? this.sectorFloorBytes : 0;
+    return this.envelope.floorBytes;
+  }
+
+  /** Tell the envelope what the tiles are owed now. Called wherever the set of
+   *  registered bodies changes: the ladder's ceiling is the envelope less this
+   *  figure, so a stale one would let a map take room a tile has been promised
+   *  — or reserve room for tiles nobody can load. */
+  private syncFloor(): void {
+    this.envelope.setFloorBytes(this.bodies.size > 0 ? this.sectorFloorBytes : 0);
   }
 
   /** What the sectors may hold together: their own ceiling, or whatever the
    *  total envelope leaves over the globe maps, whichever is less — and never
    *  below the floor. */
   budget(): number {
-    return sectorBudgetBytes(
-      { envelopeBytes: this.envelopeBytes, ceilingBytes: this.ceilingBytes },
-      this.globalBytes,
-      this.floorBytes(),
-    );
+    return this.envelope.sectorBudget();
   }
 
   /** The cheapest whole set any registered body could admit — the figure a
@@ -1445,6 +1454,7 @@ export class SectorStreamer {
   dispose(): void {
     this.dropAll();
     this.bodies.clear();
+    this.syncFloor();
   }
 
   stats(): SectorStats {
@@ -1457,8 +1467,8 @@ export class SectorStreamer {
       reserved: 0,
       budget: this.budget(),
       floor: this.floorBytes(),
-      envelope: this.envelopeBytes,
-      globalBytes: this.globalBytes,
+      envelope: this.envelope.envelopeBytes,
+      globalBytes: this.envelope.ladderBytes,
       bodies: {},
     };
     for (const body of this.bodies.values()) {

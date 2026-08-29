@@ -372,6 +372,12 @@ export function deviceProfileFor(cls: DeviceClass, family: PlatformFamily): Devi
 // one. They share it through the numbers below rather than through a merged
 // allocator — each keeps its own admission rules, and neither can spend the
 // other's floor.
+//
+// The two functions here are the arithmetic; MemoryEnvelope below is what
+// callers hold. They stay exported and separately test-pinned because the
+// arithmetic is the part with the edge cases — a floor over the ceiling, a
+// ladder over the envelope — and it is easier to state as a table than
+// through an object's history.
 
 /** What the tiles may hold right now: their own ceiling, or whatever the
  *  envelope leaves over the globe maps, whichever is less — but never below
@@ -397,6 +403,90 @@ export function ladderCeilingBytes(
   liveFloorBytes: number,
 ): number {
   return Math.max(0, limits.envelopeBytes - Math.min(Math.max(0, liveFloorBytes), limits.ceilingBytes));
+}
+
+/**
+ * The one envelope both allocators spend, as an object with one owner.
+ *
+ * Two managers share this device's GPU memory — the sector streamer's per-slot
+ * ledger and the globe ladder's per-material one — and they meet at exactly
+ * two live numbers: what the ladder is holding, and what the tiles are owed.
+ * Holding those in one place is what lets either side ask "what may I spend"
+ * without knowing how the other is wired, and gives the debug line and the
+ * tests a single object instead of a figure assembled at each call site.
+ *
+ * Who writes what:
+ *   ladderBytes  the ladder's live weight, pushed whenever a rung is applied,
+ *                released or swapped — synchronously, so no reader can see a
+ *                budget that has not been paid for yet.
+ *   floorBytes   what the tiles are owed, pushed by the streamer as bodies
+ *                register and unregister. Zero while no body can want a tile,
+ *                so a session with tiles switched off is never asked to
+ *                reserve memory nothing will spend.
+ *
+ * Neither side can spend the other's floor, and neither allocator's admission
+ * rules live here: this says how much room there is, not who gets it.
+ */
+export class MemoryEnvelope {
+  /** Sector tiles and the ladder's globe maps together may not exceed this. */
+  readonly envelopeBytes: number;
+  /** What the tiles alone may hold, whatever the envelope leaves free. */
+  readonly ceilingBytes: number;
+  private ladder = 0;
+  private floor = 0;
+
+  constructor(limits: Pick<SectorStreamerLimits, 'envelopeBytes' | 'ceilingBytes'>) {
+    this.envelopeBytes = limits.envelopeBytes;
+    this.ceilingBytes = limits.ceilingBytes;
+  }
+
+  /** GPU bytes the globe ladder's optional maps hold right now. */
+  get ladderBytes(): number {
+    return this.ladder;
+  }
+
+  /** The bytes the globe maps may not take from the tiles. */
+  get floorBytes(): number {
+    return this.floor;
+  }
+
+  setLadderBytes(bytes: number): void {
+    this.ladder = Math.max(0, bytes);
+  }
+
+  setFloorBytes(bytes: number): void {
+    this.floor = Math.max(0, bytes);
+  }
+
+  /** What the tiles may hold right now. */
+  sectorBudget(): number {
+    return sectorBudgetBytes(this, this.ladder, this.floor);
+  }
+
+  /** The most the globe maps may hold right now. */
+  ladderCeiling(): number {
+    return ladderCeilingBytes(this, this.floor);
+  }
+
+  /** The whole envelope in one line, for the `?debug=1` readout: on a phone
+   *  that overlay is the only console there is. */
+  figures(): {
+    envelopeBytes: number;
+    ceilingBytes: number;
+    ladderBytes: number;
+    floorBytes: number;
+    sectorBudget: number;
+    ladderCeiling: number;
+  } {
+    return {
+      envelopeBytes: this.envelopeBytes,
+      ceilingBytes: this.ceilingBytes,
+      ladderBytes: this.ladder,
+      floorBytes: this.floor,
+      sectorBudget: this.sectorBudget(),
+      ladderCeiling: this.ladderCeiling(),
+    };
+  }
 }
 
 /** One rung the planner may take back, as the ledger sees it. */

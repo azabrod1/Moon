@@ -144,7 +144,7 @@ import { planLadderPressure } from './world/ladderPressure';
 import {
   classifyDevice,
   deviceProfileFor,
-  ladderCeilingBytes,
+  MemoryEnvelope,
   planRelease,
   platformFamily,
   readDeviceSignals,
@@ -1077,6 +1077,12 @@ export class PlanetariumMode {
   private readonly deviceClass: DeviceClass;
   private readonly deviceFamily: PlatformFamily;
   private readonly deviceProfile: DeviceProfile;
+  /** The one envelope the globe ladder and the sector tiles spend between
+   *  them. Built here because the mode is what both of them belong to, and
+   *  handed to the streamer at construction; the ladder's admission gate and
+   *  the `?debug=1` memory line read it rather than reassembling the figure
+   *  from a profile and a floor at each site. */
+  private readonly memory: MemoryEnvelope;
   private readonly sectorsEnabled = new URLSearchParams(location.search).get('sectors') !== '0';
   /** The memory readout under `?debug=1` (reportMemoryDebug). The overlay is
    *  the only console a phone has without a cable, so the line has to be rare
@@ -2092,6 +2098,7 @@ export class PlanetariumMode {
       renderer,
       devEnvelopeOverride(deviceProfileFor(this.deviceClass, this.deviceFamily)),
     );
+    this.memory = new MemoryEnvelope(this.deviceProfile);
     // Resolve the bitmap-upload probe during construction: every streamed
     // boot texture awaits its verdict before fetching, so starting it here
     // takes it off the first fetch's critical path.
@@ -2869,7 +2876,7 @@ export class PlanetariumMode {
    *  same streamer, the same budget, its own lighting gate. */
   private registerSectorBodies(): void {
     if (!this.sectorsEnabled || !this.solarSystem) return;
-    const sectors = new SectorStreamer({ limits: this.deviceProfile });
+    const sectors = new SectorStreamer({ limits: this.deviceProfile, envelope: this.memory });
     for (const planet of this.solarSystem.planets) {
       const fine = () => { upgradeGeometryOnApproach(planet.geometryUpgrade, Number.POSITIVE_INFINITY); };
       const spec = SECTOR_SETS[planet.data.name];
@@ -3202,21 +3209,13 @@ export class PlanetariumMode {
     }
   }
 
-  /** The bytes the tiles are owed and the globe maps may not take. Zero when
-   *  no tile can be loaded at all (`?sectors=0`, or before the bodies are
-   *  registered): a session with tiles off must not refuse a map to reserve
-   *  memory nothing will spend. */
-  private liveSectorFloorBytes(): number {
-    return this.sectors?.floorBytes() ?? 0;
-  }
-
   /** The admission test the colour ladder asks before it fetches a rung, and
    *  again for the decoded texture before it applies it. A rung bigger than
    *  the whole ladder's share is refused for good; one that merely does not
    *  fit beside what the ladder holds today is blocked, and a release can
    *  make room for it. */
   private admitLadderTier = (up: TextureUpgrade, _tier: TextureTier, bytes: number): TierAdmission => {
-    const ceiling = ladderCeilingBytes(this.deviceProfile, this.liveSectorFloorBytes());
+    const ceiling = this.memory.ladderCeiling();
     if (bytes > ceiling) return 'refuse';
     const others = this.liveGlobalMapBytes() - appliedTierHeldBytes(up);
     return others + bytes <= ceiling ? 'admit' : 'blocked';
@@ -3278,7 +3277,7 @@ export class PlanetariumMode {
     }
     const guarded = this.protectedUpgrades(nowMs);
     const ladderBytes = this.liveGlobalMapBytes();
-    const ceiling = ladderCeilingBytes(this.deviceProfile, this.liveSectorFloorBytes());
+    const ceiling = this.memory.ladderCeiling();
     // The two halves of "is the ladder under pressure": maps already over its
     // share, and demand it cannot meet. Kept apart only so the traversal can
     // stop asking the ledger once either is settled — planLadderPressure adds
@@ -3351,7 +3350,7 @@ export class PlanetariumMode {
     if (!plan.releaseDue || this.releasing) return;
     const victim = planRelease(candidates, {
       ladderBytes,
-      envelopeBytes: this.deviceProfile.envelopeBytes,
+      envelopeBytes: this.memory.envelopeBytes,
     });
     const up = victim ? victims.get(victim.id) : undefined;
     if (!victim || !up) return;
@@ -3586,27 +3585,26 @@ export class PlanetariumMode {
     // row's numbers were measured on hardware or are still the ones the app
     // shipped with. On a phone this overlay is the only console there is, so
     // a device reporting a surprise reports it here.
-    debugLog('Memory', stats
-      ? {
-        class: this.deviceClass,
-        family: this.deviceFamily,
-        profile: this.deviceProfile.id,
-        provenance: this.deviceProfile.provenance,
-        globeMapsMiB: mib(globalBytes),
-        tilesMiB: mib(stats.residentBytes),
-        reservedMiB: mib(stats.reserved),
-        budgetMiB: mib(stats.budget),
-        floorMiB: mib(stats.floor),
-        envelopeMiB: mib(stats.envelope),
-      }
-      : {
-        class: this.deviceClass,
-        family: this.deviceFamily,
-        profile: this.deviceProfile.id,
-        provenance: this.deviceProfile.provenance,
-        globeMapsMiB: mib(globalBytes),
-        tiles: 'off',
-      });
+    // The envelope's own figures, plus what the tiles are actually holding of
+    // them — one object, from the one object that owns the numbers, so the
+    // line cannot disagree with what the two allocators are spending.
+    const envelope = this.memory.figures();
+    debugLog('Memory', {
+      class: this.deviceClass,
+      family: this.deviceFamily,
+      profile: this.deviceProfile.id,
+      provenance: this.deviceProfile.provenance,
+      globeMapsMiB: mib(globalBytes),
+      ...(stats
+        ? {
+          tilesMiB: mib(stats.residentBytes),
+          reservedMiB: mib(stats.reserved),
+          budgetMiB: mib(envelope.sectorBudget),
+        }
+        : { tiles: 'off' }),
+      floorMiB: mib(envelope.floorBytes),
+      envelopeMiB: mib(envelope.envelopeBytes),
+    });
   }
 
   /** Dev bridge: what this device was read as and what that lets it spend.
@@ -3692,9 +3690,9 @@ export class PlanetariumMode {
     });
     return {
       heldBytes: this.liveGlobalMapBytes(),
-      ceilingBytes: ladderCeilingBytes(this.deviceProfile, this.liveSectorFloorBytes()),
-      floorBytes: this.liveSectorFloorBytes(),
-      envelopeBytes: this.deviceProfile.envelopeBytes,
+      ceilingBytes: this.memory.ladderCeiling(),
+      floorBytes: this.memory.floorBytes,
+      envelopeBytes: this.memory.envelopeBytes,
       releasing: this.releasing?.key ?? null,
       // Rungs still waiting to fetch back the map a lost context took. Above
       // zero only between a restore and the last re-fetch landing; a figure

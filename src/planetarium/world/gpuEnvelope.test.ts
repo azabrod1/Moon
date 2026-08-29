@@ -6,6 +6,7 @@ import {
   ladderCeilingBytes,
   legacyProfile,
   legacyTouchFirst,
+  MemoryEnvelope,
   planRelease,
   platformFamily,
   profileForDevice,
@@ -777,5 +778,68 @@ describe('planning a release', () => {
       candidate({ id: 'near-and-thin', distance: 2, heldBytes: 40, lowBytes: 5 }),
     ], tight);
     expect(plan?.id).toBe('near-and-thin');
+  });
+});
+
+describe('the shared memory envelope', () => {
+  const limits = { envelopeBytes: 768 * MiB, ceilingBytes: 256 * MiB };
+
+  it('starts with nothing spent and nothing reserved', () => {
+    const envelope = new MemoryEnvelope(limits);
+    expect(envelope.ladderBytes).toBe(0);
+    expect(envelope.floorBytes).toBe(0);
+    expect(envelope.sectorBudget()).toBe(256 * MiB);
+    expect(envelope.ladderCeiling()).toBe(768 * MiB);
+  });
+
+  it('gives the tiles what the envelope leaves over the globe maps', () => {
+    const envelope = new MemoryEnvelope(limits);
+    envelope.setLadderBytes(600 * MiB);
+    expect(envelope.sectorBudget()).toBe(168 * MiB);
+  });
+
+  it('never lets the globe maps take the floor', () => {
+    const envelope = new MemoryEnvelope(limits);
+    envelope.setFloorBytes(69 * MiB);
+    envelope.setLadderBytes(768 * MiB);
+    expect(envelope.sectorBudget()).toBe(69 * MiB);
+    expect(envelope.ladderCeiling()).toBe(699 * MiB);
+  });
+
+  it('owes the tiles nothing while no body can want one', () => {
+    // A session with tiles switched off must not refuse a map to reserve
+    // memory nothing will spend.
+    const envelope = new MemoryEnvelope(limits);
+    expect(envelope.ladderCeiling()).toBe(768 * MiB);
+  });
+
+  it('reads a negative figure as none, from either side', () => {
+    const envelope = new MemoryEnvelope(limits);
+    envelope.setLadderBytes(-1);
+    envelope.setFloorBytes(-1);
+    expect(envelope.ladderBytes).toBe(0);
+    expect(envelope.floorBytes).toBe(0);
+  });
+
+  it('answers the two allocators exactly as the free functions do', () => {
+    const envelope = new MemoryEnvelope(limits);
+    envelope.setLadderBytes(400 * MiB);
+    envelope.setFloorBytes(46 * MiB);
+    expect(envelope.sectorBudget()).toBe(sectorBudgetBytes(limits, 400 * MiB, 46 * MiB));
+    expect(envelope.ladderCeiling()).toBe(ladderCeilingBytes(limits, 46 * MiB));
+  });
+
+  it('states the whole envelope in one object, for the one line a phone can read', () => {
+    const envelope = new MemoryEnvelope(limits);
+    envelope.setLadderBytes(100 * MiB);
+    envelope.setFloorBytes(69 * MiB);
+    expect(envelope.figures()).toEqual({
+      envelopeBytes: 768 * MiB,
+      ceilingBytes: 256 * MiB,
+      ladderBytes: 100 * MiB,
+      floorBytes: 69 * MiB,
+      sectorBudget: 256 * MiB,
+      ladderCeiling: 699 * MiB,
+    });
   });
 });

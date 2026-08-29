@@ -131,6 +131,33 @@ void main() {
 export const EARTH_NIGHT_MIX_DARK = -0.3;
 export const EARTH_NIGHT_MIX_LIT = -0.1;
 
+/**
+ * How blue a pixel of the night map may be, in 8-bit counts of b minus r,
+ * before it is faded out as something that is not a light. Every light source
+ * measured on that composite is warm (b-r from -8 to -37 across New York,
+ * London, Tokyo, Delhi, Cairo and Sao Paulo) and everything that is not one is
+ * cold: snow and ice (Greenland +38, Svalbard +35, the Andes +23, the Himalaya
+ * +22, Norway's highlands +22), the map's own background (+12 to +25), and the
+ * polar no-data fill. 12 is the least blue of those casts, eight counts above
+ * the warmest light there is.
+ *
+ * Exported because the cloud deck reads the same map to glow cities through
+ * itself, and a second transcription of this number would light Greenland's ice
+ * on the clouds above it while the shell below kept it dark.
+ */
+export const EARTH_NIGHT_COLD_CUT = 12;
+
+/**
+ * What the night map's own values are drawn at. The night side has no exposure
+ * of its own — one toneMappingExposure covers the whole frame — so the lights
+ * are lifted by hand to the long exposure a photograph of them would be.
+ *
+ * Exported for the same reason the cut above is: the cloud deck's city glow is
+ * authored as a fraction of what a bare city reads at, and that fraction only
+ * means anything against this number.
+ */
+export const EARTH_NIGHT_MIX_SCALE = 1.5;
+
 /** The shader's `nightMix` for one sun cosine: 0 in daylight, 1 in full night.
  *  Note the shader's own response is this SQUARED — the mix multiplies the rgb
  *  and the alpha, and additive blending with a non-premultiplied source takes
@@ -187,20 +214,15 @@ varying vec3 vAirFrag;
 void main() {
   vec4 nightColor = texture2D(nightTexture, vUv * uUvRepeat + uUvOffset);
   // The composite's lights and its blue casts separate on the sign of the
-  // chroma, with a gap between them. Every light source measured on the map
-  // is warm — b-r from -8 to -37 counts across New York, London, Tokyo,
-  // Delhi, Cairo and Sao Paulo — while everything that is not a light is
-  // cold: snow and ice (Greenland +38, Svalbard +35, the Andes +23, the
-  // Himalaya +22, Norway's highlands +22), the map's own background (+12 to
-  // +25), and the polar no-data fill. Additive over a dark globe, an ice
-  // sheet at +38 is a lit continent that blooms. So fade a pixel out by how
-  // blue it is: gone by +12, the least blue of the casts, and untouched from
-  // neutral upward — eight counts of margin below the warmest light there is.
-  nightColor.rgb *= smoothstep(-12.0 / 255.0, 0.0, nightColor.r - nightColor.b);
+  // chroma, with a gap between them (EARTH_NIGHT_COLD_CUT states the gap and
+  // the measurements). Additive over a dark globe, an ice sheet at +38 counts
+  // of b-r is a lit continent that blooms, so fade a pixel out by how blue it
+  // is: gone by the cut, untouched from neutral upward.
+  nightColor.rgb *= smoothstep(${(-EARTH_NIGHT_COLD_CUT / 255).toFixed(6)}, 0.0, nightColor.r - nightColor.b);
   // Show night lights only on dark side
   float sunDot = dot(vNormal, vSunDir);
   float nightMix = 1.0 - smoothstep(${EARTH_NIGHT_MIX_DARK.toFixed(1)}, ${EARTH_NIGHT_MIX_LIT.toFixed(1)}, sunDot); // ordered edges (reversed smoothstep is undefined)
-  vec3 lit = nightColor.rgb * nightMix * 1.5;
+  vec3 lit = nightColor.rgb * nightMix * ${EARTH_NIGHT_MIX_SCALE.toFixed(1)};
   if (uAirDensity > 0.0) {
     AerialSegment seg = aerialSegment(
         vAirCam / uPlanetRadius, normalize(vAirFrag) * uAirLookupRadius, normalize(sunDirection));

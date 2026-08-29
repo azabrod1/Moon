@@ -160,3 +160,55 @@ float cloudEdgeBand(float alpha) {
 }
 `;
 
+// --- Lit from below ---------------------------------------------------------
+
+/**
+ * How brightly a city glows through the deck above it, as a multiple of the
+ * night map's own values.
+ *
+ * The night-lights shell draws that map at 1.5, so 0.45 is three tenths of a
+ * city's bare brightness: a town fully under cloud reads at 30 % of the town
+ * beside it in clear air, and the deck's own alpha takes the rest of the way
+ * down as the cover thins. It is authored to a long exposure like every other
+ * night term in the app — a photograph of a city through cloud is not a
+ * radiometric measurement of one.
+ *
+ * The term is weighted by the deck's alpha, so cloud that is not there does not
+ * glow, and by the shared night weight, so it fades along the same line every
+ * other non-solar source does rather than switching on at its own terminator.
+ */
+export const CLOUD_CITY_GLOW = 0.45;
+
+/**
+ * The equirectangular UV three's SphereGeometry gives a point on it, from that
+ * point's direction in the sphere's OWN frame. The night lights are painted on
+ * the globe and the deck stands above it with a drift of its own, so a deck
+ * fragment has to look the ground's map up at the ground's longitude — its own
+ * UV is that drift out.
+ *
+ * u is wrapped into [0, 1); at the poles it is degenerate and the caller gets
+ * whatever atan2 returns for a zero vector, which is a texel of a map that has
+ * no data there either.
+ */
+export function sphereEquirectUv(x: number, y: number, z: number): [number, number] {
+  const u = Math.atan2(z, -x) / (2 * Math.PI);
+  return [u - Math.floor(u), 0.5 + Math.asin(Math.min(1, Math.max(-1, y))) / Math.PI];
+}
+
+/** The GLSL half of `sphereEquirectUv`, and the derivative of it that lets the
+ *  lookup pick a mip without an implicit one — the deck samples this map inside
+ *  a per-fragment condition, where an implicit derivative is undefined. */
+export const SPHERE_EQUIRECT_UV_GLSL = /* glsl */`
+// The UV three's SphereGeometry gives a unit direction in the sphere's frame.
+vec2 sphereEquirectUv(vec3 d) {
+  return vec2(atan(d.z, -d.x) * ${(1 / (2 * Math.PI)).toFixed(7)},
+              0.5 + asin(clamp(d.y, -1.0, 1.0)) * ${(1 / Math.PI).toFixed(7)});
+}
+// ...and how that UV moves when the direction does. No wrap in it: a gradient
+// is a difference, and the seam's jump belongs to the value, not the slope.
+vec2 sphereEquirectUvGrad(vec3 d, vec3 dd) {
+  float cosLat = max(sqrt(d.x * d.x + d.z * d.z), 1e-4);
+  return vec2((d.z * dd.x - d.x * dd.z) / (cosLat * cosLat) * ${(1 / (2 * Math.PI)).toFixed(7)},
+              dd.y / cosLat * ${(1 / Math.PI).toFixed(7)});
+}
+`;

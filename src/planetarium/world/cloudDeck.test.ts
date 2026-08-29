@@ -6,6 +6,7 @@ import {
   CLOUD_COVERAGE_GLSL,
   CLOUD_COVERAGE_HIGH,
   CLOUD_COVERAGE_LOW,
+  CLOUD_CITY_GLOW,
   CLOUD_DETAIL_ERODE,
   CLOUD_DETAIL_FADE_END,
   CLOUD_DETAIL_FADE_START,
@@ -16,6 +17,7 @@ import {
   cloudDetailFade,
   cloudEdgeBand,
   luminance,
+  sphereEquirectUv,
 } from './cloudDeck';
 import { cloudDetailTexture } from './cloudDetailNoise';
 import {
@@ -27,7 +29,9 @@ import {
   PLANET_TEXTURE_FILES,
   TIER_RANK,
 } from '../PlanetFactory';
-import { augmentSurfaceMaterial, type SurfaceArchetype } from './surfaceShading';
+import { EARTH_NIGHT_COLD_CUT, EARTH_NIGHT_MIX_SCALE, earthNightFragmentShader } from '../../shared/shaders/atmosphere';
+import { createEarthNightShellMaterial } from './earthNightMaterial';
+import { augmentSurfaceMaterial, createSurfaceAirFx, type SurfaceArchetype } from './surfaceShading';
 
 /** The subset of three's onBeforeCompile shader object the augmentation writes. */
 function mockShader() {
@@ -301,7 +305,8 @@ describe('the deck\'s detail term', () => {
     const glsl = compiled('cloud').shader.fragmentShader;
     const block = glsl.slice(glsl.indexOf('float cloudDetailN = 0.0;'), glsl.indexOf('vec4 detail = textureGrad'));
     const inner = glsl.slice(glsl.indexOf('if (cloudDetailW > 0.0) {'), glsl.indexOf('#include <opaque_fragment>'));
-    expect(block.match(/dFd[xy]\(/g)).toHaveLength(4);
+    // Four for the deck's own geometry and two for the ground's frame under it.
+    expect(block.match(/dFd[xy]\(/g)).toHaveLength(6);
     expect(inner).not.toMatch(/dFd[xy]\(/);
   });
 
@@ -324,3 +329,94 @@ describe('the deck\'s detail term', () => {
   });
 });
 
+describe('the deck lit from below', () => {
+  it('glows a covered city at three tenths of its bare brightness', () => {
+    // The night-lights shell draws the map at 1.5, so this is 0.3 of that: a
+    // town fully under cloud reads at 30 % of the town beside it in clear air,
+    // and the deck's own alpha takes it the rest of the way down as the cover
+    // thins. Both numbers in one expression, so neither can move alone.
+    expect(CLOUD_CITY_GLOW / EARTH_NIGHT_MIX_SCALE).toBeCloseTo(0.3, 6);
+  });
+
+  it('weights the glow by the cover and by the shared night ramp', () => {
+    const glsl = compiled('cloud').shader.fragmentShader;
+    expect(glsl).toContain('outgoingLight += city * (uCloudCityGlow * cloudAlpha * cloudNight);');
+    // The deck's night weight is the SHARED ramp, so the glow fades along the
+    // same line the airglow and the sky's ambient do...
+    expect(glsl).toContain('cloudNight = uCloudDeck > 0.0\n      ? nightWeight(');
+    // ...but not through uAirDensity: a city glowing through cloud happens on a
+    // device that baked no tables at all.
+    expect(glsl).not.toContain('cloudNight = uAirDensity');
+  });
+
+  it('gates the map with the one cold cut the lights themselves use', () => {
+    const glsl = compiled('cloud').shader.fragmentShader;
+    expect(glsl).toContain(`smoothstep(${(-EARTH_NIGHT_COLD_CUT / 255).toFixed(6)}, 0.0, city.r - city.b)`);
+    expect(earthNightFragmentShader)
+      .toContain(`smoothstep(${(-EARTH_NIGHT_COLD_CUT / 255).toFixed(6)}, 0.0, nightColor.r - nightColor.b)`);
+  });
+
+  it('costs a fetch only past the terminator', () => {
+    // One lookup, under the night weight — the day half of the disc pays a
+    // comparison. The deck's per-fragment budget is the noise fetch and the
+    // relief map three reads for it; a third unconditional one would be a
+    // dependent read on every pixel of a full-frame globe.
+    const glsl = compiled('cloud').shader.fragmentShader;
+    expect(glsl.match(/textureGrad\(uNightLights/g)).toHaveLength(1);
+    expect(glsl).toContain('if (cloudNight > 0.0 && uCloudCityGlow > 0.0) {');
+    for (const a of ['airless', 'rocky', 'gas', 'icy', 'earth'] as SurfaceArchetype[]) {
+      expect((compiled(a).shader.uniforms.uCloudCityGlow as { value: number }).value, a).toBe(0);
+    }
+  });
+
+  it('reads the night map through the body\'s own uniform, not a copy of it', () => {
+    // The shell's ladder sharpens that map from 20 km per pixel to 500 m. A
+    // second uniform here would leave the deck glowing the boot map for the
+    // rest of the session, one layer under a lit coastline.
+    const air = createSurfaceAirFx();
+    const map = new THREE.Texture();
+    const shell = createEarthNightShellMaterial(map, air);
+    expect(shell.uniforms.nightTexture).toBe(air.uNightLights);
+    expect(air.uNightLights.value).toBe(map);
+    const sharper = new THREE.Texture();
+    shell.uniforms.nightTexture.value = sharper; // what the colour ladder does
+    expect(air.uNightLights.value).toBe(sharper);
+    // ...and that object is what the deck's own material binds.
+    const deck = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(deck, 'cloud', undefined, 0, {
+      uSunDirWorld: { value: new THREE.Vector3() },
+      uSunDirLocal: { value: new THREE.Vector3() },
+      uMoonShadow: { value: [] },
+      uMoonShadowCount: { value: 0 },
+      uPlanetshineColor: { value: new THREE.Color() },
+      uPlanetshineDir: { value: new THREE.Vector3() },
+      uPlanetshineIntensity: { value: 0 },
+      uSilhouette: { value: 0 },
+      air,
+    });
+    const shader = mockShader();
+    (deck.onBeforeCompile as (s: typeof shader, r: unknown) => void)(shader, null);
+    expect(shader.uniforms.uNightLights).toBe(air.uNightLights);
+  });
+
+  it('looks the ground up in the ground\'s frame, at the UV the geometry gives', () => {
+    // The deck drifts on top of the body's spin, so its own UV is that drift
+    // out of register with the cities under it — the lookup runs off vObjPos,
+    // which is the body frame. And the formula has to be three's own: a
+    // half-turn out and every city glows through the cloud on the far side.
+    const glsl = compiled('cloud').shader.fragmentShader;
+    expect(glsl).toContain('cloudNightUv = sphereEquirectUv(objDir);');
+    const geo = new THREE.SphereGeometry(1, 24, 12);
+    const pos = geo.attributes.position;
+    const uv = geo.attributes.uv;
+    let worst = 0;
+    for (let i = 0; i < pos.count; i++) {
+      const y = pos.getY(i);
+      if (Math.abs(y) > 0.999) continue; // the poles: longitude is degenerate there
+      const [u, v] = sphereEquirectUv(pos.getX(i), y, pos.getZ(i));
+      const du = Math.abs(u - uv.getX(i));
+      worst = Math.max(worst, Math.min(du, 1 - du), Math.abs(v - uv.getY(i)));
+    }
+    expect(worst).toBeLessThan(1e-5);
+  });
+});

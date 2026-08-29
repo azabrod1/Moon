@@ -19,6 +19,7 @@ import {
   sectorCentreDirection,
   sectorTileTransform,
 } from './sectorGrid';
+import { EARTH_NIGHT_COLD_CUT } from '../../shared/shaders/atmosphere';
 import { sectorRenderOrder } from './sectorMaterial';
 import { createSurfaceAirFx, NIGHT_LIGHTS_AIR_LOOKUP_RADIUS } from './surfaceShading';
 import { earthNightFragmentShader, earthNightMix, EARTH_NIGHT_MIX_DARK, EARTH_NIGHT_MIX_LIT } from '../../shared/shaders/atmosphere';
@@ -182,11 +183,12 @@ describe('the night sector material', () => {
     // and blooms, so the shader keys on the sign of the chroma. These are the
     // means the edges were set from, measured on the shipped 4K map, and the
     // arithmetic is the shader's own line.
-    // The shader's line, in counts: smoothstep(-12, 0, red - blue).
+    // The shader's line, in counts: smoothstep(-cut, 0, red - blue).
     const keep = (r: number, b: number): number => {
-      const t = Math.max(0, Math.min(1, (r - b + 12) / 12));
+      const t = Math.max(0, Math.min(1, (r - b + EARTH_NIGHT_COLD_CUT) / EARTH_NIGHT_COLD_CUT));
       return t * t * (3 - 2 * t);
     };
+    expect(EARTH_NIGHT_COLD_CUT).toBe(12);
     // Patch means as (red, blue); green is not in the key.
     const artefacts: Array<[string, number, number]> = [
       ['Greenland interior (42,48,80)', 41.8, 80.0],
@@ -207,8 +209,12 @@ describe('the night sector material', () => {
       ['neutral', 40, 40],
     ];
     for (const [where, r, b] of lights) expect(keep(r, b), where).toBe(1);
-    expect(shellOn(null).fragmentShader)
-      .toContain('nightColor.rgb *= smoothstep(-12.0 / 255.0, 0.0, nightColor.r - nightColor.b);');
+    // The one number, in the one place: the cloud deck glows cities through
+    // itself from the same map and gates them with the same cut, so a second
+    // transcription here would light Greenland's ice on the clouds above it.
+    expect(shellOn(null).fragmentShader).toContain(
+      `nightColor.rgb *= smoothstep(${(-EARTH_NIGHT_COLD_CUT / 255).toFixed(6)}, 0.0, nightColor.r - nightColor.b);`,
+    );
   });
 
   it('reads the width of the map the shell is drawing', () => {

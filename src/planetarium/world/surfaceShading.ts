@@ -78,12 +78,15 @@ import {
   type AtmosphereTables,
 } from './atmosphereLut';
 import { AIRLIGHT_SCALE } from './atmosphereModel';
+import { EARTH_NIGHT_COLD_CUT } from '../../shared/shaders/atmosphere';
 import {
+  CLOUD_CITY_GLOW,
   CLOUD_COVERAGE_GLSL,
   CLOUD_DETAIL_ERODE,
   CLOUD_DETAIL_GLSL,
   CLOUD_DETAIL_RELIEF_KM,
   LUMINANCE_WEIGHTS,
+  SPHERE_EQUIRECT_UV_GLSL,
 } from './cloudDeck';
 import {
   CLOUD_DETAIL_SIZE,
@@ -369,6 +372,8 @@ uniform float uCloudDeck;
 uniform sampler2D uCloudDetail;
 uniform float uCloudDetailErode;
 uniform float uCloudDetailRelief;
+uniform sampler2D uNightLights;
+uniform float uCloudCityGlow;
 uniform float uPlanetRadius;
 uniform float uSolarIrradiance;
 uniform vec3 uAirlightScale;
@@ -381,7 +386,7 @@ varying vec3 vObjPos;
 varying vec3 vPlanetshineViewDir;
 varying vec3 vAirCam;
 varying vec3 vAirFrag;
-${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}${CLOUD_DETAIL_GLSL}`;
+${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}${CLOUD_DETAIL_GLSL}${SPHERE_EQUIRECT_UV_GLSL}`;
 
 // Injected after lighting but before <opaque_fragment> writes outgoingLight into
 // gl_FragColor — so terms land in linear radiance (tone-mapped downstream) and
@@ -399,6 +404,9 @@ ${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLS
 const SURFACE_NORMAL_BODY = /* glsl */ `
 float cloudDetailN = 0.0;
 float cloudDetailW = 0.0;
+vec2 cloudNightUv = vec2(0.0);
+vec2 cloudNightDx = vec2(0.0);
+vec2 cloudNightDy = vec2(0.0);
 if (uCloudDeck > 0.0) {
   // Where this fragment is on the deck, as longitude and latitude. Every
   // derivative the block needs is taken HERE, inside the one branch that is
@@ -409,6 +417,15 @@ if (uCloudDeck > 0.0) {
   vec3 ddy = dFdy(dir);
   vec3 sx = dFdx(-vViewPosition);
   vec3 sy = dFdy(-vViewPosition);
+  // Where this fragment stands over the GROUND, in the body's own frame — the
+  // frame the night map is painted in. The deck drifts on top of the body's
+  // spin, so its own UV is that drift out of register with the cities under it.
+  // The derivatives come with it: the lookup happens under a per-fragment
+  // condition further down, where an implicit one is undefined.
+  vec3 objDir = normalize(vObjPos);
+  cloudNightUv = sphereEquirectUv(objDir);
+  cloudNightDx = sphereEquirectUvGrad(objDir, dFdx(objDir));
+  cloudNightDy = sphereEquirectUvGrad(objDir, dFdy(objDir));
   float cosLat = max(sqrt(dir.x * dir.x + dir.z * dir.z), 1e-4);
   // The angles' screen derivatives, taken analytically from the direction's.
   // atan() has a branch cut at the antimeridian, and reading its derivative
@@ -485,6 +502,12 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // on this fragment is exactly zero and there is nothing left to double-light,
   // and fading only as the Sun climbs above it. Weight it by anything centred
   // on the terminator and the crossing dips there instead of handing over.
+  // The deck's night weight is the shared one, but it is NOT the air's: a city
+  // glowing through cloud happens on a device that baked no tables at all, so
+  // it cannot ride uAirDensity the way the sky's own ambient does.
+  float cloudNight = uCloudDeck > 0.0
+      ? nightWeight(clampCosine(dot(up, normalize(uSunDirWorld)))) * nightKeep
+      : 0.0;
   float moonNight = uAirDensity > 0.0
       ? moonUpWeight(clampCosine(dot(up, normalize(uMoonDirWorld))))
           * sunDownWeight(sunElevSin, uTermWidth) * nightKeep
@@ -571,6 +594,19 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   if (uLimbDarkening > 0.0) {
     float mu = max(dot(normalize(normal), normalize(vViewPosition)), 0.0);
     outgoingLight *= 1.0 - uLimbDarkening * (1.0 - mu);
+  }
+  // Lit from below: the city lights on the ground under this deck fragment,
+  // shining up into it. Added after the eclipse factor and the limb term
+  // because neither applies — a moon's umbra does not put a city out, and the
+  // deck has no limb darkening of its own — and before the air, because the
+  // glow crosses the same column everything else leaving this fragment does.
+  if (cloudNight > 0.0 && uCloudCityGlow > 0.0) {
+    vec3 city = textureGrad(uNightLights, cloudNightUv, cloudNightDx, cloudNightDy).rgb;
+    // The same warm-chroma gate the lights themselves draw through: the map's
+    // ice and its background are cold and are not lights, and an ice sheet
+    // glowing up through the clouds over Greenland is a continent that blooms.
+    city *= smoothstep(${(-EARTH_NIGHT_COLD_CUT / 255).toFixed(6)}, 0.0, city.r - city.b);
+    outgoingLight += city * (uCloudCityGlow * cloudAlpha * cloudNight);
   }
   // Aerial perspective, last: everything above is light leaving this fragment,
   // and all of it crosses the same air on the way to the camera. What survives
@@ -660,6 +696,12 @@ export function createSurfaceAirFx(): SurfaceAirFx {
     // around it — and because the mode writes it once per body per frame.
     uMoonDirWorld: { value: new THREE.Vector3(0, 0, 1) },
     uMoonIrradiance: { value: new THREE.Vector3() },
+    // The body's night map, for the same reason: the night-lights shell draws
+    // it and the cloud deck glows cities through itself from it, and a second
+    // uniform would leave the deck lighting the boot map for the session after
+    // the shell's ladder sharpened its own. The 1x1 stand-in until a body has
+    // one — sampling it is never legal, because uCloudCityGlow is then 0.
+    uNightLights: { value: dummies.map2D },
   };
   air.uTransmittance.value = dummies.map2D;
   air.uIrradiance.value = dummies.map2D;
@@ -751,6 +793,7 @@ export function augmentSurfaceMaterial(
       : surfaceAirDummies().map2D as THREE.Texture,
   };
   const uCloudDetailErode = { value: archetype === 'cloud' ? CLOUD_DETAIL_ERODE : 0 };
+  const uCloudCityGlow = { value: archetype === 'cloud' ? CLOUD_CITY_GLOW : 0 };
   // The detail's relief as a fraction of the body's own radius, which is what
   // the shader multiplies by uPlanetRadius to reach a real slope.
   const uCloudDetailRelief = {
@@ -778,6 +821,7 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uCloudDeck = uCloudDeck;
     shader.uniforms.uCloudDetail = uCloudDetail;
     shader.uniforms.uCloudDetailErode = uCloudDetailErode;
+    shader.uniforms.uCloudCityGlow = uCloudCityGlow;
     shader.uniforms.uCloudDetailRelief = uCloudDetailRelief;
     shader.uniforms.uFrameSpin = uFrameSpin;
     for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];

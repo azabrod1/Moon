@@ -74,6 +74,7 @@ const PHONE = {
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const round1 = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v * 10) / 10 : v);
 
 // ---------------------------------------------------------------- page setup
 
@@ -166,7 +167,7 @@ async function travelAndSettle(page, name, settleMs = 4_000) {
   // default polling injects its predicate and runs it on every animation
   // frame, so a harness that waits that way is adding app work to the frames
   // it is about to score — a gate must not measure its own instrumentation.
-  const settled = await page.evaluate(async ({ n, timeoutMs, tailMs, arriveRadii, arriveClosing }) => {
+  const settled = await page.evaluate(async ({ n, timeoutMs, tailMs, parkRadii, parkClosing, departRatio }) => {
     const nap = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
     const radiiNow = () => {
       const p = window.__moon.probe(n);
@@ -176,11 +177,15 @@ async function travelAndSettle(page, name, settleMs = 4_000) {
     // yet" rather than "arrived".
     await nap(2_500);
     const deadline = performance.now() + timeoutMs;
-    // Arrival is a place AND a stillness. player.moving reads false through
-    // the veil and through scripted transfers, so waiting on it let a scenario
-    // call itself parked while the range was still collapsing — and then
-    // measure a cruise it had named a hover.
+    // Two ways to arrive, because the app has two. A body the ship parks at
+    // goes still nearby. Every moon is now flown PAST — one camera boom, no
+    // park — so its arrival is a closest approach that has been made and left
+    // behind, and a signal that waits for stillness there waits for something
+    // that is never coming: the range grows without limit and the run reports
+    // an absurd "closing" speed for a pass that went exactly to plan.
     let still = 0;
+    let departing = 0;
+    let minRadii = Infinity;
     let closingPerS = null;
     while (performance.now() < deadline) {
       const before = radiiNow();
@@ -188,27 +193,49 @@ async function travelAndSettle(page, name, settleMs = 4_000) {
       await nap(200);
       const after = radiiNow();
       if (before === null || after === null) continue;
-      closingPerS = Math.abs(after - before) / ((performance.now() - atMs) / 1000);
-      still = (after <= arriveRadii && closingPerS <= arriveClosing) ? still + 1 : 0;
+      minRadii = Math.min(minRadii, after);
+      closingPerS = (before - after) / ((performance.now() - atMs) / 1000);
+      still = (after <= parkRadii && Math.abs(closingPerS) <= parkClosing) ? still + 1 : 0;
       if (still >= 3) {
         await nap(tailMs);
-        return { radii: radiiNow(), closingPerS, timedOut: false };
+        return { outcome: 'parked', radii: radiiNow(), minRadii, closingPerS };
+      }
+      // Receding, from a closest approach that actually happened.
+      departing = (minRadii <= parkRadii && after > minRadii * departRatio) ? departing + 1 : 0;
+      if (departing >= 3) {
+        await nap(tailMs);
+        return { outcome: 'flyby', radii: radiiNow(), minRadii, closingPerS };
       }
     }
-    return { radii: radiiNow(), closingPerS, timedOut: true };
+    return { outcome: 'timeout', radii: radiiNow(), minRadii, closingPerS };
   }, {
     n: name,
     timeoutMs: 120_000,
     tailMs: settleMs,
-    // Generous in radii, because arrivals deliberately stand off and a
-    // moonlet's radius is tiny; strict about stillness, because that is the
-    // half the old signal got wrong.
-    arriveRadii: 400,
-    arriveClosing: 0.5,
+    // Generous in distance, because arrivals deliberately stand off and a
+    // moonlet's radius is tiny; strict about stillness, which is the half the
+    // old player.moving signal got wrong.
+    parkRadii: 400,
+    parkClosing: 0.5,
+    // Far enough past closest approach that drift cannot read as departure.
+    departRatio: 1.25,
   });
-  return settled.timedOut
-    ? `${name}: never settled — ${settled.radii} radii out, closing ${settled.closingPerS}/s`
-    : null;
+  // Always report which of the two arrivals happened. "It arrived" is not the
+  // useful fact when one body parks and the next is flown past — a leg that
+  // silently changed class is exactly what the old signal hid.
+  if (settled.outcome !== 'timeout') {
+    return `${name}: ${settled.outcome} — ${round1(settled.radii)} radii out,`
+      + ` closest ${round1(settled.minRadii)}`;
+  }
+  // A timeout is where the pose record earns its keep: it says what the
+  // arrival MEANT to do, which is the difference between a bad signal and a
+  // pass that never happened.
+  const pose = await page.evaluate(() => ({
+    pose: window.__moon.arrivalPose(),
+    governor: window.__moon.governorOwner(),
+  }));
+  return `${name}: never settled — ${settled.radii} radii out, closest ${settled.minRadii},`
+    + ` pose ${JSON.stringify(pose.pose)}, governor ${JSON.stringify(pose.governor)}`;
 }
 
 /** Hold a key for a while, letting the app's own governor decide the motion. */
@@ -363,8 +390,7 @@ const SCENARIOS = [
     async run(page, note) {
       await bootTo(page, '', 140);
       await sleep(2_000);
-      const failed = await travelAndSettle(page, 'Earth');
-      if (failed) note(failed);
+      note(await travelAndSettle(page, 'Earth'));
       await mark(page, 'near-band');
       await page.evaluate(() => window.__moon.jumpTo('Earth', 0.13));
       await sleep(2_500);
@@ -382,8 +408,7 @@ const SCENARIOS = [
     async run(page, note) {
       await bootTo(page, '', 180);
       await sleep(2_000);
-      const failed = await travelAndSettle(page, 'Earth');
-      if (failed) note(failed);
+      note(await travelAndSettle(page, 'Earth'));
       await page.evaluate(() => window.__moon.jumpTo('Earth', 0.13));
       await sleep(2_500);
       const at = await descendTo(page, 'Earth', 1.4);
@@ -408,8 +433,7 @@ const SCENARIOS = [
       await bootTo(page, '', 560);
       await sleep(2_000);
       for (const body of ['Earth', 'Moon', 'Mars', 'Earth']) {
-        const failed = await travelAndSettle(page, body, 6_000);
-        if (failed) note(failed);
+        note(await travelAndSettle(page, body, 6_000));
       }
     },
   },
@@ -422,8 +446,7 @@ const SCENARIOS = [
     async run(page, note) {
       await bootTo(page, '&envelope=200', 460);
       await sleep(2_000);
-      const failed = await travelAndSettle(page, 'Earth');
-      if (failed) note(failed);
+      note(await travelAndSettle(page, 'Earth'));
       await page.evaluate(() => window.__moon.jumpTo('Earth', 0.13));
       await sleep(2_500);
       await descendTo(page, 'Earth', 1.6);
@@ -432,10 +455,8 @@ const SCENARIOS = [
       note(`ladder: ${JSON.stringify(await page.evaluate(() => window.__moon.ladder()))}`);
       note(`sectors: ${JSON.stringify(await page.evaluate(() => window.__moon.sectors()))}`);
       // A hop away and back is what forces the release to be paid back.
-      const away = await travelAndSettle(page, 'Mars', 6_000);
-      if (away) note(away);
-      const back = await travelAndSettle(page, 'Earth', 10_000);
-      if (back) note(back);
+      note(await travelAndSettle(page, 'Mars', 6_000));
+      note(await travelAndSettle(page, 'Earth', 10_000));
     },
   },
   {
@@ -449,8 +470,7 @@ const SCENARIOS = [
       // is a multi-minute cruise that arrives inside no sane timeout, and the
       // run then measures that cruise instead of the flyby it is named for.
       for (const body of ['Mars', 'Phobos', 'Deimos']) {
-        const failed = await travelAndSettle(page, body, 8_000);
-        if (failed) note(failed);
+        note(await travelAndSettle(page, body, 8_000));
       }
     },
   },
@@ -463,8 +483,7 @@ const SCENARIOS = [
       await sleep(2_000);
       await page.evaluate(() => window.__moon.setTimeRate(60));
       for (const body of ['Mercury', 'Venus', 'Earth', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune']) {
-        const failed = await travelAndSettle(page, body, 4_000);
-        if (failed) note(failed);
+        note(await travelAndSettle(page, body, 4_000));
       }
       await page.evaluate(() => window.__moon.setTimeRate(1));
     },
@@ -477,8 +496,7 @@ const SCENARIOS = [
       await bootTo(page, '', 160);
       await sleep(2_000);
       note(`device: ${JSON.stringify(await page.evaluate(() => window.__moon.device()))}`);
-      const failed = await travelAndSettle(page, 'Earth');
-      if (failed) note(failed);
+      note(await travelAndSettle(page, 'Earth'));
       await page.evaluate(() => window.__moon.jumpTo('Earth', 0.13));
       await sleep(2_500);
       const at = await descendTo(page, 'Earth', 1.6);
@@ -494,8 +512,7 @@ const SCENARIOS = [
     async run(page, note) {
       await bootTo(page, '', 200);
       await sleep(2_000);
-      const failed = await travelAndSettle(page, 'Earth');
-      if (failed) note(failed);
+      note(await travelAndSettle(page, 'Earth'));
       await page.evaluate(() => window.__moon.jumpTo('Earth', 0.13));
       await sleep(2_500);
       await descendTo(page, 'Earth', 1.4);

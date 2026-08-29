@@ -112,9 +112,14 @@ export function pumpTextureWarmQueue(budgetMs: number): void {
       if (import.meta.env.DEV) surfacePerfEndTextureUpload(perfUpload);
       if (import.meta.env.DEV && uploadStart) {
         const image = tex.image as { width?: number; height?: number } | undefined;
+        // Compressed containers have no name and no image src; the loader
+        // stamps the file on userData so the upload is still attributable.
+        const source = typeof tex.userData?.sourceUrl === 'string'
+          ? tex.userData.sourceUrl.split(/[/?#]/).filter(Boolean).pop()
+          : '';
         smoothTraceEvent(
           'upload',
-          `${tex.name || 'texture'} ${image?.width ?? '?'}x${image?.height ?? '?'}`,
+          `${tex.name || source || 'texture'} ${image?.width ?? '?'}x${image?.height ?? '?'}`,
           performance.now() - uploadStart,
         );
       }

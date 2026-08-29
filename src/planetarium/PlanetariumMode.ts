@@ -2055,7 +2055,14 @@ export class PlanetariumMode {
           .detectSupport(renderer),
       );
       this.ktx2Loader.then(
-        (loader) => loader.load(url, onLoad, undefined, onError),
+        // Stamp the file the texture came from, exactly as the bitmap loader
+        // does: a KTX2 texture carries no name and no image src, so without
+        // this every compressed rung is an anonymous upload in the timing
+        // traces and no hitch can be pinned to the map that caused it.
+        (loader) => loader.load(url, (tex) => {
+          tex.userData.sourceUrl = url;
+          onLoad(tex);
+        }, undefined, onError),
         (err) => onError(err),
       );
     }, ktx2TranscodesCompressed(renderer));

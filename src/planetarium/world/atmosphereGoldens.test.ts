@@ -1,17 +1,28 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { ATMOSPHERE_GOLDEN_PINS, goldenChannelTolerance } from './atmosphereGoldens.pinned';
+import { PLANETS } from '../planets/planetData';
 
 /**
  * The atmosphere shell's golden captures (tools/atmo-shell-qa.mjs).
  *
  * The images are a LOCAL gate: CI has no GPU and cannot render them, and they
- * are deliberately out of public/ so they never ship to anyone. What CI can
- * hold is this — that every pose and both tiers are present, and that each
- * capture still records the three things that make it reproducible: the pinned
- * near plane, the pinned exposure and the pinned clock. A pose captured with
- * any of those floating compares against nothing, and the way that fails is
- * silently.
+ * are deliberately out of public/ so they never ship to anyone. What CI holds
+ * is the numbers beside them — every sampled radiance, against the values
+ * pinned in atmosphereGoldens.pinned.ts.
+ *
+ * The two files are the whole point. Reading a capture's JSON and checking it
+ * against itself passes for any shader at all: the JSON is whatever the GPU
+ * produced the last time somebody ran the tool. Held against a second file that
+ * only a deliberate `--pins` regeneration rewrites, a shader edit that changes
+ * the picture fails here as soon as the captures are re-recorded, and the fix
+ * is a diff full of moved radiances rather than a silent re-record.
+ *
+ * The rest is what makes a capture mean anything at all: the pinned near plane,
+ * the pinned exposure and pixel ratio, and the pinned clock. A pose captured
+ * with any of those floating compares against nothing, and the way that fails
+ * is silently.
  */
 const DIR = fileURLToPath(new URL('../../../tools/goldens/atmosphere/', import.meta.url));
 
@@ -23,10 +34,19 @@ const POSES = [
   'inside-air',
 ];
 
+// Three sessions, not two: the analytic tier, the LUT tier, and the no-float
+// fallback device (?nofloat=1 — no float targets, so no composer, no bloom and
+// no tables). The fallback is what the weakest hardware sees, and it is the one
+// path whose look nothing else in the repo records.
+const TIERS = ['analytic', 'lut', 'nofloat'];
+
+const EARTH_RADIUS_AU = PLANETS.find((p) => p.name === 'Earth')!.radiusAU;
+
 interface Golden {
   pose: string;
   tier: string;
   body: string;
+  kRadii: number | null;
   near: number | null;
   exposure: number;
   pixelRatio: number;
@@ -41,24 +61,25 @@ interface Golden {
 
 const read = (name: string): Golden => JSON.parse(readFileSync(`${DIR}${name}.json`, 'utf8'));
 
+const CAPTURES = [
+  ...POSES.flatMap((pose) => TIERS.map((tier) => `${pose}.${tier}`)),
+  // The ghost's shell is pinned to the analytic tier in code; captured so that
+  // pin cannot rot unnoticed.
+  'volume-compare.analytic',
+];
+
 describe('the atmosphere goldens', () => {
-  it('cover both tiers at every pose, plus the compare ghost', () => {
-    const captures = [
-      ...POSES.flatMap((pose) => [`${pose}.analytic`, `${pose}.lut`]),
-      // The ghost's shell is pinned to the analytic tier in code; captured so
-      // that pin cannot rot unnoticed.
-      'volume-compare.analytic',
-    ];
-    for (const name of captures) {
+  it('cover every tier at every pose, plus the compare ghost', () => {
+    for (const name of CAPTURES) {
       const golden = read(name);
-      expect(golden.tier, name).toMatch(/^(analytic|lut)$/);
+      expect(golden.tier, name).toMatch(/^(analytic|lut|nofloat)$/);
       expect(statSync(`${DIR}${name}.png`).size, name).toBeGreaterThan(1000);
     }
   });
 
   it('records the pins a capture is reproducible through', () => {
     for (const pose of POSES) {
-      for (const tier of ['analytic', 'lut']) {
+      for (const tier of TIERS) {
         const golden = read(`${pose}.${tier}`);
         expect(golden.pose).toBe(pose);
         expect(golden.body).toBe('Earth');
@@ -74,26 +95,71 @@ describe('the atmosphere goldens', () => {
     }
   });
 
-  it('carries 20 sampled radiances and a scan across the limb', () => {
+  it('captures each pose through a near plane the camera is above', () => {
+    // A near plane further out than the camera is high clips the ground away
+    // and takes the near half of the shell with it, and the frame that comes
+    // back still looks like an atmosphere — the way this goes wrong is that the
+    // capture stays plausible. One value cannot serve every pose: 1e-6 AU is
+    // 149.6 km, fine from 1.05 R and half the sky from 1.008 R.
     for (const pose of POSES) {
-      for (const tier of ['analytic', 'lut']) {
+      for (const tier of TIERS) {
         const golden = read(`${pose}.${tier}`);
-        expect(golden.samples).toHaveLength(20);
-        expect(golden.grid).toHaveLength(20);
-        // The scan is what tells the two tiers apart: at 8 R the whole
-        // atmosphere is about one pixel wide, and a scattered grid walks
-        // straight past it.
-        expect(golden.limbScan).toHaveLength(41);
-        expect(golden.limbScanX).toHaveLength(41);
-        for (const rgb of [...golden.samples, ...golden.limbScan]) {
-          expect(rgb).toHaveLength(3);
-          for (const channel of rgb) {
-            expect(Number.isInteger(channel)).toBe(true);
-            expect(channel).toBeGreaterThanOrEqual(0);
-            expect(channel).toBeLessThanOrEqual(255);
+        const altitudeAU = (golden.kRadii! - 1) * EARTH_RADIUS_AU;
+        expect(golden.kRadii, `${pose}.${tier}`).toBeGreaterThan(1);
+        expect(golden.near!, `${pose}.${tier}`).toBeLessThan(altitudeAU);
+      }
+    }
+  });
+
+  it('carries 20 sampled radiances and a scan across the limb', () => {
+    for (const name of CAPTURES) {
+      const golden = read(name);
+      expect(golden.samples, name).toHaveLength(20);
+      expect(golden.grid, name).toHaveLength(20);
+      // The scan is what tells the two tiers apart: at 8 R the whole
+      // atmosphere is about one pixel wide, and a scattered grid walks
+      // straight past it.
+      expect(golden.limbScan, name).toHaveLength(41);
+      expect(golden.limbScanX, name).toHaveLength(41);
+      for (const rgb of [...golden.samples, ...golden.limbScan]) {
+        expect(rgb).toHaveLength(3);
+        for (const channel of rgb) {
+          expect(Number.isInteger(channel)).toBe(true);
+          expect(channel).toBeGreaterThanOrEqual(0);
+          expect(channel).toBeLessThanOrEqual(255);
+        }
+      }
+    }
+  });
+
+  it('holds every captured radiance to the pinned value', () => {
+    // The assertion the rest of this file exists to support. A shader edit that
+    // drops the entry-point shift, loses the Mie term or stops multiplying by
+    // the solar irradiance changes these numbers; nothing else CI can run does.
+    expect(Object.keys(ATMOSPHERE_GOLDEN_PINS).sort()).toEqual([...CAPTURES].sort());
+    for (const name of CAPTURES) {
+      const golden = read(name);
+      const pin = ATMOSPHERE_GOLDEN_PINS[name];
+      for (const field of ['samples', 'limbScan'] as const) {
+        const actual = golden[field];
+        const expected = pin[field];
+        expect(actual.length, `${name} ${field}`).toBe(expected.length);
+        for (let i = 0; i < expected.length; i++) {
+          for (let c = 0; c < 3; c++) {
+            const want = expected[i][c];
+            expect(
+              Math.abs(actual[i][c] - want),
+              `${name} ${field}[${i}][${'rgb'[c]}]: ${actual[i][c]} vs pinned ${want}`,
+            ).toBeLessThanOrEqual(goldenChannelTolerance(want));
           }
         }
       }
+    }
+  });
+
+  it('pins the near plane each capture was taken with', () => {
+    for (const name of CAPTURES) {
+      expect(read(name).near, name).toBe(ATMOSPHERE_GOLDEN_PINS[name].near);
     }
   });
 

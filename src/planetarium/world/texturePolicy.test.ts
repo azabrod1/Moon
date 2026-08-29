@@ -90,10 +90,19 @@ describe('resolveTileUrl', () => {
     // read after that import so nothing could turn streaming off first. An
     // empty hash 404s instead, which the body survives by keeping its base
     // map. sectorTiles.assets.test.ts is what keeps the shipped sets named.
-    expect(sectorSetHash('earth-day.v2', '64k')).toBe('');
-    expect(sectorSetLayout('earth-day.v2', '64k')).toEqual({ baseWidth: 0, spanU: 1 });
-    expect(resolveTileUrl('earth-day.v2', '64k', sectorSetHash('earth-day.v2', '64k'), 0, 0))
-      .toContain('textures/tiles/earth-day.v2/64k./0_0.webp');
+    //
+    // `128k` is a tier no set can ever be cut at: the pyramid stops at
+    // SECTOR_MAX_LEVEL, whose tier is 64k. A real key with an unreal tier is
+    // the shape the fail-open path has to survive — a level added to the
+    // table would otherwise quietly turn this test into a check that a
+    // shipped set resolves.
+    expect(sectorSetHash('earth-day.v2', '128k')).toBe('');
+    expect(sectorSetLayout('earth-day.v2', '128k')).toEqual({ baseWidth: 0, spanU: 1 });
+    expect(resolveTileUrl('earth-day.v2', '128k', sectorSetHash('earth-day.v2', '128k'), 0, 0))
+      .toContain('textures/tiles/earth-day.v2/128k./0_0.webp');
+    // And the level that DOES exist resolves, so the two arms cannot be
+    // confused for each other.
+    expect(sectorSetHash('earth-day.v2', '64k')).toMatch(/^[0-9a-f]{8}$/);
   });
 });
 

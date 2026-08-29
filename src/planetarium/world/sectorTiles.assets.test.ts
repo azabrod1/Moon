@@ -284,6 +284,32 @@ describe('sector tile sets: what the app asks for', () => {
     }
   });
 
+  it('gives a body’s two families the same pyramid depth, level for level', () => {
+    // Both families are streamed onto the same ground at the same moment —
+    // the night shell sharpens exactly where the globe does — so a level one
+    // family has and the other does not draws a smear of lights beside a
+    // sharp coastline right across the terminator, in the one place both are
+    // on screen at once. Grid and source width per level, not just the count:
+    // two families at the same depth cut from different widths would put the
+    // two sides of the terminator at different magnifications.
+    for (const [body, spec] of Object.entries(SECTOR_SETS)) {
+      const night = SECTOR_NIGHT_SETS[body];
+      if (!night) continue;
+      expect(night.levels.length, `${body}: night pyramid depth`).toBe(spec.levels.length);
+      for (const [level, day] of spec.levels.entries()) {
+        const what = `${body} L${level}`;
+        expect(night.levels[level].grid, what).toEqual(day.grid);
+        expect(levelSourceWidth(night.levels[level]), what).toBe(levelSourceWidth(day));
+        expect(night.levels[level].set.tier, what).toBe(day.set.tier);
+      }
+    }
+    // And the pyramid the two Earth families actually ship, stated: three
+    // colour levels, the 8x4 grid doubled twice.
+    expect(SECTOR_SETS.Earth.levels.map((l) => l.set.tier)).toEqual(['16k', '32k', '64k']);
+    expect(SECTOR_NIGHT_SETS.Earth.levels.map((l) => l.set.tier)).toEqual(['16k', '32k', '64k']);
+    expect(SECTOR_SETS.Earth.levels.map((l) => levelSourceWidth(l))).toEqual([16256, 32512, 65024]);
+  });
+
   it('the night maps carry no alpha channel', () => {
     // The night shader multiplies the map's alpha into its additive output, so
     // a shell drawing a 3-channel map (alpha 1) and a sector drawing a

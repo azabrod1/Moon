@@ -587,6 +587,11 @@ function topMapWidthOf(
   return () => ladderMapReferenceWidth(up);
 }
 
+/** One animation frame, awaited — the unit the boot idle spends its costs in. */
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => { requestAnimationFrame(() => resolve()); });
+}
+
 /** True once boot has handed the frame to the user. Speculative GPU work waits
  *  for it: anything done while the load screen is up is boot time, whatever
  *  timer it was armed on. */
@@ -2818,11 +2823,27 @@ export class PlanetariumMode {
         this.scheduleAtmosphereBake();
         return;
       }
-      void this.warmAtmosphereShellProgram().then(() => {
-        if (!this.active) return;
-        return this.atmosphereLut?.bake('Earth');
-      });
+      void this.armAtmosphereTier();
     }, PlanetariumMode.ATMOSPHERE_BAKE_DELAY_MS);
+  }
+
+  /** Bring the table tier up across the idle, one cost to a frame. Three of
+   *  them are each a dropped frame on their own — the capability probe, the
+   *  shell program's link, and the bake, which then spreads its own programs
+   *  one to a frame before its first layer draw — and the arming frame used to
+   *  carry the first two together. */
+  private async armAtmosphereTier(): Promise<void> {
+    const lut = this.atmosphereLut;
+    if (!lut) return;
+    await nextFrame();
+    if (!this.active) return;
+    if (!lut.probeCapability()) return;
+    await nextFrame();
+    if (!this.active) return;
+    await this.warmAtmosphereShellProgram();
+    await nextFrame();
+    if (!this.active) return;
+    await lut.bake('Earth');
   }
 
   /** Link the LUT shell's program here in the idle, before the bake it will
@@ -3725,7 +3746,7 @@ export class PlanetariumMode {
     const stillInFlight = () => batch.filter((e) => e.up.attempt?.generation === e.generation);
     const deadline = performance.now() + PlanetariumMode.ARRIVAL_UPGRADE_HOLD_MAX_MS;
     while (this.active && performance.now() < deadline && stillInFlight().length > 0) {
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await nextFrame();
     }
     // Bounded, so a slow fetch can reach here still running. Release the wait
     // and let it finish — it applies on a quiet frame later instead of leaving
@@ -13626,6 +13647,7 @@ export class PlanetariumMode {
     return {
       state: lut.state,
       capability: lut.capability,
+      probeMs: lut.probeMs,
       orders: lut.orders,
       sizes: lut.sizes,
       programs: this.renderer.info.programs?.length ?? 0,

@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
+  AtmosphereLut,
   SCATTERING_PROBE_SCALE,
   SCATTERING_VALIDATION_BAND,
   SCATTERING_VALIDATION_SAMPLE,
@@ -91,6 +92,59 @@ describe('atmosphere table targets', () => {
       full.dispose();
       half.dispose();
     }
+  });
+});
+
+describe('the bake step list', () => {
+  // The plan is built entirely on the CPU — materials, targets and closures —
+  // so the ordering contract is readable without a GPU. The renderer is only
+  // touched once a step runs.
+  const plan = (options: { orders?: number } = {}): Array<{ kind: string; program: string }> => {
+    const baker = new AtmosphereLut(
+      {} as unknown as THREE.WebGLRenderer,
+      { register: false, ...options },
+    );
+    try {
+      return baker.bakeStepPlan('Earth');
+    } finally {
+      baker.dispose();
+    }
+  };
+
+  it('links every program it draws with before the first layer draw, one to a step', () => {
+    const steps = plan();
+    const firstDraw = steps.findIndex((step) => step.kind === 'draw');
+    expect(firstDraw).toBeGreaterThan(0);
+    // Nothing links after a draw has run: a link sharing a frame with layer
+    // draws is the dropped frame the phase exists to remove, and a link waited
+    // out by a draw is the same cost under another name.
+    expect(steps.slice(firstDraw).every((step) => step.kind === 'draw')).toBe(true);
+    // One program to a step, in first-use order, and no program twice.
+    const links = steps.slice(0, firstDraw).map((step) => step.program);
+    expect(links).toEqual([
+      'transmittance', 'irradiance', 'singleScattering', 'combine',
+      'scatteringDensity', 'multipleScattering', 'probe',
+    ]);
+    expect(new Set(links).size).toBe(links.length);
+  });
+
+  it('leaves out the programs an order count never reaches', () => {
+    // A single-order bake draws no scattering density and no multiple
+    // scattering, and a link for a program that never draws is a frame spent
+    // on nothing. The probe stays: every bake validates through it.
+    expect(plan({ orders: 1 }).filter((step) => step.kind === 'link').map((s) => s.program))
+      .toEqual(['transmittance', 'irradiance', 'singleScattering', 'combine', 'probe']);
+  });
+
+  it('adds no draws and drops none', () => {
+    // Bruneton's passes at four orders over the full tables: transmittance and
+    // the direct irradiance, the two single-scattering deltas and their
+    // combine over 32 layers, then per further order a density, two
+    // irradiance steps, a multiple-scattering pass and a combine.
+    const layers = ATMOSPHERE_TABLE_SIZES_FULL.scatteringR;
+    const perOrder = layers + 1 + 1 + layers + layers;
+    expect(plan().filter((step) => step.kind === 'draw').length)
+      .toBe(2 + 2 * layers + layers + 3 * perOrder);
   });
 });
 

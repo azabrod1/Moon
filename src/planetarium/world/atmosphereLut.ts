@@ -36,7 +36,17 @@
  * to put behind the load screen, so the bake runs in the boot idle, in slices of
  * a few layer draws per frame, with the analytic shell carrying the look
  * meanwhile — the tier switches on only once every table is written and
- * validated, never by waiting. Scratch targets are disposed between bodies, and
+ * validated, never by waiting.
+ *
+ * The bake's own programs are deliberately outside the boot warm-up set —
+ * nothing here draws until the tables exist — so a bake opens with a LINK
+ * PHASE that compiles, links and primes ONE of them per frame before the first
+ * layer draw. A link on a cold driver shader cache is tens of milliseconds of
+ * main thread, and the seven of them landing on the frame that also submits
+ * the first slice of draws is a 33 ms frame at the moment the bake arms. The
+ * per-slice submission budget below covers draws alone.
+ *
+ * Scratch targets are disposed between bodies, and
  * the multiple-scattering delta deliberately aliases the single-Rayleigh delta:
  * the order-2 density pass reads Rayleigh and Mie, every later one reads only
  * the multiple-scattering delta, so they never need to be live at once, and the
@@ -85,12 +95,25 @@ export interface AtmosphereTables {
   readonly irradiance: THREE.Texture;
 }
 
+/** What one bake program's link cost, split so a frame's share of it is
+ *  visible. `submitMs` and `primeMs` are main-thread time inside the link
+ *  step's own frame; `readyMs` is wall time from the submission to the driver
+ *  reporting the program ready, most of which a driver with
+ *  KHR_parallel_shader_compile spends off the main thread. */
+export interface AtmosphereLinkTiming {
+  program: string;
+  submitMs: number;
+  primeMs: number;
+  readyMs: number;
+}
+
 export interface AtmosphereBakeStats {
   body: string;
-  /** Wall time from the first draw to validation, including the frames the
-   *  slicing yielded to. */
+  /** Wall time from the first link to validation, including the frames the
+   *  link phase and the slicing yielded to. */
   wallMs: number;
-  /** Time actually spent submitting draws, summed over the slices. */
+  /** Time actually spent submitting work, summed over the link steps and the
+   *  draw slices. */
   submitMs: number;
   drawCalls: number;
   programsBefore: number;
@@ -106,7 +129,32 @@ export interface AtmosphereBakeStats {
    *  so a lost context during the first bake is not invisible. */
   aborted: boolean;
   slices: number;
+  /** One row per program linked before the first layer draw, in link order. A
+   *  bake whose programs are all already linked — a second body, a repeat
+   *  measurement — reads empty. */
+  links: AtmosphereLinkTiming[];
 }
+
+/**
+ * One unit of bake work, and all a frame may hold of it. A `link` step
+ * compiles, links and primes exactly ONE bake program and draws no layers; a
+ * `draw` step is one layer of one pass. Every link precedes every draw:
+ * a cold driver link is tens of milliseconds of main thread, so the seven of
+ * them landing on the frame that also submits the first eight layer draws is
+ * one long dropped frame at the moment the bake arms.
+ */
+interface LinkStep {
+  readonly kind: 'link';
+  readonly program: string;
+  run(): Promise<AtmosphereLinkTiming>;
+}
+
+interface DrawStep {
+  readonly kind: 'draw';
+  run(): void;
+}
+
+type BakeStep = LinkStep | DrawStep;
 
 export interface AtmosphereLutOptions {
   /** Touch-first devices bake half-size tables at two orders. */
@@ -131,8 +179,9 @@ const DEFAULT_DRAWS_PER_SLICE = 8;
  *  costs a few hundred draws and 32 MiB of scratch on a device that has already
  *  shown it cannot hold them, and the analytic shell is a complete look. */
 const MAX_CONSECUTIVE_BAKE_FAILURES = 3;
-/** Submission budget per slice. Submission is not execution, so the draw count
- *  is the real limiter; this only stops a slice running long on a slow driver. */
+/** Submission budget per draw slice — draws only; a link step is a slice of its
+ *  own. Submission is not execution, so the draw count is the real limiter;
+ *  this only stops a slice running long on a slow driver. */
 const SLICE_SUBMIT_BUDGET_MS = 6;
 
 // ---------------------------------------------------------------------------
@@ -1079,7 +1128,14 @@ export class AtmosphereLut {
   private quadScene = new THREE.Scene();
   private quadCamera = new THREE.Camera();
   private probeTarget: THREE.WebGLRenderTarget | null = null;
+  /** The 1x1 throwaway the link phase compiles and primes against. Never one
+   *  of the tables: the prime draw writes a pixel. */
+  private linkTarget: THREE.WebGLRenderTarget | null = null;
+  /** Bake materials whose program is linked and primed against the live
+   *  context. Cleared when that context goes, because the programs go with it. */
+  private readonly linked = new Set<THREE.ShaderMaterial>();
   private capable: boolean | null = null;
+  private capableMs: number | null = null;
   private baking = 0;
   private liveBytes = 0;
   private peakBytes = 0;
@@ -1122,12 +1178,38 @@ export class AtmosphereLut {
    *  screen or pay the link mid-flight, and on a device with no tier that link
    *  would be for a material that can never draw. */
   probeCapability(): boolean {
-    if (this.capable === null) this.capable = canGPUDoAtmosphereLut(this.renderer);
+    if (this.capable === null) {
+      const started = performance.now();
+      this.capable = canGPUDoAtmosphereLut(this.renderer);
+      this.capableMs = performance.now() - started;
+    }
     return this.capable;
+  }
+
+  /** Main-thread ms the probe cost, or null until it has run. It renders into a
+   *  3D layer and reads it straight back, which flushes the pipeline, so the
+   *  caller gives it a frame with nothing else in it. */
+  get probeMs(): number | null {
+    return this.capableMs;
   }
 
   stats(): readonly AtmosphereBakeStats[] {
     return this.bakeStats;
+  }
+
+  /** The step list a bake of `body` would run, as kinds and program names.
+   *  The ordering contract — every link before every draw, one program to a
+   *  step — is what a test can hold this to without a GPU. Builds and drops
+   *  the bake's targets, which allocate nothing until a draw binds them. */
+  bakeStepPlan(body: string): Array<{ kind: 'link' | 'draw'; program: string }> {
+    this.ensureMaterials();
+    const targets = this.createTargets();
+    try {
+      return this.buildSteps(atmosphereParams(body), targets)
+        .map((step) => ({ kind: step.kind, program: step.kind === 'link' ? step.program : '' }));
+    } finally {
+      this.disposeResident(targets);
+    }
   }
 
   /**
@@ -1179,6 +1261,7 @@ export class AtmosphereLut {
     const drawsBefore = this.drawCount;
     let submitMs = 0;
     let slices = 0;
+    const links: AtmosphereLinkTiming[] = [];
     this.baking++;
     let targets: BakeTargets | null = null;
     let succeeded = false;
@@ -1199,6 +1282,7 @@ export class AtmosphereLut {
         validated,
         aborted,
         slices,
+        links: [...links],
       });
     };
     try {
@@ -1206,6 +1290,29 @@ export class AtmosphereLut {
       targets = this.createTargets();
       const steps = this.buildSteps(params, targets);
       let i = 0;
+      // Link phase. One program per frame and nothing else on it: a link on a
+      // cold driver shader cache is tens of milliseconds of main thread, and
+      // the frame that pays seven of them is the hitch this phase exists to
+      // remove. Layer draws only start once every program is linked, so no
+      // draw can be the one that waits a link out.
+      while (i < steps.length) {
+        const step = steps[i];
+        if (step.kind !== 'link') break;
+        if (this.disposed || this.contextLost || generation !== this.generation) {
+          record(false, true);
+          return false;
+        }
+        const timing = await step.run();
+        links.push(timing);
+        submitMs += timing.submitMs + timing.primeMs;
+        i++;
+        slices++;
+        // A frame of its own for every step, including the last: a warm shader
+        // cache answers ready inside the same task, and without this the whole
+        // phase collapses back into the one frame it exists to spread.
+        await nextFrame();
+      }
+      // Draw phase. The submission budget now covers draws alone.
       while (i < steps.length) {
         if (this.disposed || this.contextLost || generation !== this.generation) {
           record(false, true);
@@ -1215,14 +1322,17 @@ export class AtmosphereLut {
         const prevTarget = this.renderer.getRenderTarget();
         const prevAutoClear = this.renderer.autoClear;
         this.renderer.autoClear = false;
+        let inSlice = 0;
         try {
-          let inSlice = 0;
           while (
             i < steps.length
             && inSlice < this.drawsPerSlice
             && performance.now() - sliceStart < SLICE_SUBMIT_BUDGET_MS
           ) {
-            steps[i++]();
+            const step = steps[i];
+            if (step.kind !== 'draw') break;
+            step.run();
+            i++;
             inSlice++;
           }
         } finally {
@@ -1231,6 +1341,10 @@ export class AtmosphereLut {
         }
         submitMs += performance.now() - sliceStart;
         slices++;
+        // Links all precede draws, so a slice always takes at least one step.
+        // The guard stays because the cost of being wrong is a boot idle that
+        // spins on a step it will not run.
+        if (inSlice === 0) break;
         if (i < steps.length) await nextFrame();
       }
 
@@ -1304,6 +1418,7 @@ export class AtmosphereLut {
     this.dropReady();
     this.liveBytes = 0;
     this.capable = null;
+    this.capableMs = null;
   }
 
   /** Re-bake every body this session has asked for — the ones that were ready
@@ -1315,10 +1430,12 @@ export class AtmosphereLut {
     // rather than re-linked against a dead one.
     if (this.materials) for (const m of Object.values(this.materials)) m.dispose();
     this.materials = null;
+    this.linked.clear();
     this.quad?.geometry.dispose();
     this.quad = null;
     this.quadScene = new THREE.Scene();
     this.probeTarget = null;
+    this.linkTarget = null;
     for (const body of [...this.requested]) void this.bake(body);
   }
 
@@ -1328,10 +1445,13 @@ export class AtmosphereLut {
     this.dropReady();
     if (this.materials) for (const m of Object.values(this.materials)) m.dispose();
     this.materials = null;
+    this.linked.clear();
     this.quad?.geometry.dispose();
     this.quad = null;
     this.probeTarget?.dispose();
     this.probeTarget = null;
+    this.linkTarget?.dispose();
+    this.linkTarget = null;
     if (activeLut === this) activeLut = null;
   }
 
@@ -1474,11 +1594,12 @@ export class AtmosphereLut {
     this.ready.clear();
   }
 
-  /** One thunk per draw, in Bruneton's order. Each is one layer of one pass, so
-   *  the frame slicing has somewhere to cut. */
-  private buildSteps(params: AtmosphereParams, t: BakeTargets): Array<() => void> {
+  /** The link steps, then one thunk per draw in Bruneton's order. Each draw is
+   *  one layer of one pass, so the frame slicing has somewhere to cut. */
+  private buildSteps(params: AtmosphereParams, t: BakeTargets): BakeStep[] {
     const m = this.materials!;
-    const steps: Array<() => void> = [];
+    const steps: BakeStep[] = [];
+    const draws: Array<() => void> = [];
     const layers = this.sizes.scatteringR;
 
     for (const mat of [m.transmittance, m.singleScattering, m.irradiance,
@@ -1486,14 +1607,33 @@ export class AtmosphereLut {
       setAtmosphereUniforms(mat, params);
     }
 
+    // Every program this bake will draw with, in first-use order, plus the
+    // probe its validation reads back through. A program already linked
+    // against the live context — a second body, a re-bake — has nothing left
+    // to pay and gets no step.
+    const programs: Array<[string, THREE.ShaderMaterial]> = [
+      ['transmittance', m.transmittance],
+      ['irradiance', m.irradiance],
+      ['singleScattering', m.singleScattering],
+      ['combine', m.combine],
+    ];
+    if (this.orders >= 2) {
+      programs.push(['scatteringDensity', m.scatteringDensity]);
+      programs.push(['multipleScattering', m.multipleScattering]);
+    }
+    programs.push(['probe', m.probe]);
+    for (const [program, material] of programs) {
+      if (!this.linked.has(material)) steps.push(this.linkStep(program, material));
+    }
+
     // Transmittance, and a cleared irradiance accumulator: the accumulator holds
     // the SKY's irradiance only, so the direct term never enters it.
-    steps.push(() => {
+    draws.push(() => {
       this.clear(t.irradiance);
       this.draw(m.transmittance, t.transmittance);
     });
 
-    steps.push(() => {
+    draws.push(() => {
       m.irradiance.uniforms.uMode.value = 0;
       m.irradiance.uniforms.uTransmittance.value = t.transmittance.texture;
       this.draw(m.irradiance, t.deltaIrradiance);
@@ -1504,7 +1644,7 @@ export class AtmosphereLut {
     m.singleScattering.uniforms.uTransmittance.value = t.transmittance.texture;
     for (const [mode, target] of [[0, t.deltaRayleigh], [1, t.deltaMie]] as const) {
       for (let layer = 0; layer < layers; layer++) {
-        steps.push(() => {
+        draws.push(() => {
           m.singleScattering.uniforms.uMode.value = mode;
           m.singleScattering.uniforms.uTransmittance.value = t.transmittance.texture;
           this.draw(m.singleScattering, target, layer);
@@ -1512,7 +1652,7 @@ export class AtmosphereLut {
       }
     }
     for (let layer = 0; layer < layers; layer++) {
-      steps.push(() => {
+      draws.push(() => {
         m.combine.uniforms.uMode.value = 0;
         m.combine.uniforms.uSourceA.value = t.deltaRayleigh.texture;
         m.combine.uniforms.uSourceB.value = t.deltaMie.texture;
@@ -1526,7 +1666,7 @@ export class AtmosphereLut {
       // single-scattering deltas; from order 3 on it is the multiple-scattering
       // delta, which by then has overwritten the Rayleigh one.
       for (let layer = 0; layer < layers; layer++) {
-        steps.push(() => {
+        draws.push(() => {
           const u = m.scatteringDensity.uniforms;
           u.uTransmittance.value = t.transmittance.texture;
           u.uSingleRayleigh.value = t.deltaRayleigh.texture;
@@ -1539,7 +1679,7 @@ export class AtmosphereLut {
       }
       // Indirect irradiance for the previous order, into the delta and then
       // added to the accumulator.
-      steps.push(() => {
+      draws.push(() => {
         const u = m.irradiance.uniforms;
         u.uMode.value = 1;
         u.uTransmittance.value = t.transmittance.texture;
@@ -1550,7 +1690,7 @@ export class AtmosphereLut {
         setAccumulating(m.irradiance, false);
         this.draw(m.irradiance, t.deltaIrradiance);
       });
-      steps.push(() => {
+      draws.push(() => {
         setAccumulating(m.irradiance, true);
         this.draw(m.irradiance, t.irradiance);
         setAccumulating(m.irradiance, false);
@@ -1559,14 +1699,14 @@ export class AtmosphereLut {
       // multiple-scattering delta writes over the Rayleigh one — nothing reads
       // it again.
       for (let layer = 0; layer < layers; layer++) {
-        steps.push(() => {
+        draws.push(() => {
           m.multipleScattering.uniforms.uTransmittance.value = t.transmittance.texture;
           m.multipleScattering.uniforms.uScatteringDensity.value = t.deltaScatteringDensity.texture;
           this.draw(m.multipleScattering, t.deltaRayleigh, layer);
         });
       }
       for (let layer = 0; layer < layers; layer++) {
-        steps.push(() => {
+        draws.push(() => {
           m.combine.uniforms.uMode.value = 1;
           m.combine.uniforms.uSourceA.value = t.deltaRayleigh.texture;
           setAccumulating(m.combine, true);
@@ -1576,7 +1716,72 @@ export class AtmosphereLut {
       }
     }
 
+    for (const run of draws) steps.push({ kind: 'draw', run });
     return steps;
+  }
+
+  /**
+   * Compile, link and prime ONE bake program, against a 1x1 throwaway target.
+   *
+   * A render target must be bound for it: bound-versus-canvas is part of
+   * three's program key and every bake pass draws into a target, so a compile
+   * with the canvas bound would link a program no bake draw can use. Only
+   * bound-versus-canvas enters the key — not the target's size or format — so
+   * one 1x1 8-bit target keys like every table.
+   *
+   * Then a 1-pixel draw. The compile only submits the link; three fetches the
+   * program's uniform locations on the program's first draw, and on a driver
+   * without KHR_parallel_shader_compile that first draw is also where the link
+   * itself is waited out. Paying both here keeps them off the layer draws.
+   */
+  private linkStep(program: string, material: THREE.ShaderMaterial): LinkStep {
+    return {
+      kind: 'link',
+      program,
+      run: async (): Promise<AtmosphereLinkTiming> => {
+        const started = performance.now();
+        const target = this.ensureLinkTarget();
+        this.quad!.material = material;
+        const prevSubmit = this.renderer.getRenderTarget();
+        let ready: Promise<unknown>;
+        try {
+          this.renderer.setRenderTarget(target);
+          ready = this.renderer.compileAsync(this.quadScene, this.quadCamera);
+        } finally {
+          this.renderer.setRenderTarget(prevSubmit);
+        }
+        const submitMs = performance.now() - started;
+        // Off the main thread where the parallel-compile extension exists;
+        // where it does not, three reports ready at once and the prime draw
+        // below is what actually waits the link out.
+        await ready;
+        const readyMs = performance.now() - started;
+        const primeStart = performance.now();
+        // Frames ran during the await, so the bound target is read again here
+        // rather than carried across it.
+        const prevPrime = this.renderer.getRenderTarget();
+        try {
+          this.quad!.material = material;
+          this.renderer.setRenderTarget(target);
+          this.renderer.render(this.quadScene, this.quadCamera);
+        } finally {
+          this.renderer.setRenderTarget(prevPrime);
+        }
+        this.linked.add(material);
+        return { program, submitMs, primeMs: performance.now() - primeStart, readyMs };
+      },
+    };
+  }
+
+  private ensureLinkTarget(): THREE.WebGLRenderTarget {
+    if (!this.linkTarget) {
+      this.linkTarget = new THREE.WebGLRenderTarget(1, 1, {
+        depthBuffer: false,
+        stencilBuffer: false,
+        samples: 0,
+      });
+    }
+    return this.linkTarget;
   }
 
   private draw(material: THREE.ShaderMaterial, target: THREE.WebGLRenderTarget, layer = 0): void {

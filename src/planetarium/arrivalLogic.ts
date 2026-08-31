@@ -18,7 +18,9 @@
  * the legacy "postcard" framing kept verbatim for authored scenes (tutorial,
  * historic journeys, the dev screenshot bridge).
  * Alongside them, the shell-contact graze and the moving-body speed credit
- * keep a bump a deflection rather than a reversal or a trap.
+ * keep a bump a deflection rather than a reversal or a trap, and the
+ * post-pass hold keeps a completed fly-by's destination framed on the way
+ * out instead of ending the trip on the sky past it.
  * PlanetariumMode feeds live positions and applies the results.
  */
 import * as THREE from 'three';

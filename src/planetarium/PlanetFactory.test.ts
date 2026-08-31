@@ -1592,12 +1592,14 @@ describe('the ladder against the sector memory envelope', () => {
       1,
     );
     const budget = UNMEASURED_DESKTOP_PROFILE.envelopeBytes - real;
-    // The streamer runs at its own cap, eleven Earth sets, with the envelope
-    // no longer the binding limit.
-    expect(mib(Math.min(budget, UNMEASURED_DESKTOP_PROFILE.ceilingBytes))).toBeCloseTo(256.0, 1);
+    // The heaviest ladder still leaves the tiles their whole ceiling, so what
+    // the streamer spends is that ceiling and not what the globe maps left
+    // over — and the ceiling in turn buys more sets than the draw-call cap
+    // will admit, which is what makes the cap the binding limit on a desktop.
+    expect(mib(Math.min(budget, UNMEASURED_DESKTOP_PROFILE.ceilingBytes))).toBeCloseTo(512.0, 1);
     expect(budget).toBeGreaterThan(UNMEASURED_DESKTOP_PROFILE.ceilingBytes);
     expect(UNMEASURED_DESKTOP_PROFILE.ceilingBytes / sectorSetGpuBytes(SECTOR_SETS.Earth))
-      .toBeGreaterThanOrEqual(11);
+      .toBeGreaterThanOrEqual(UNMEASURED_DESKTOP_PROFILE.residentCap);
 
     // And with no transcoder at all: the two rungs that keep a webp twin
     // cost 170.7 MiB each, and the two that ship only as a container are not
@@ -1612,8 +1614,12 @@ describe('the ladder against the sector memory envelope', () => {
       ladderCeilingBytes(UNMEASURED_DESKTOP_PROFILE, UNMEASURED_DESKTOP_PROFILE.sectorFloorBytes),
     );
     const worstBudget = UNMEASURED_DESKTOP_PROFILE.envelopeBytes - worst;
-    expect(mib(worstBudget)).toBeCloseTo(128.0, 1);
-    expect(worstBudget / sectorSetGpuBytes(SECTOR_SETS.Earth)).toBeGreaterThanOrEqual(5);
+    expect(mib(worstBudget)).toBeCloseTo(384.0, 1);
+    // Even on that ladder — every map at its heaviest, no transcoder — what
+    // is left over still holds a whole working set, so the tiles are never
+    // squeezed by the globe maps on this row.
+    expect(worstBudget / sectorSetGpuBytes(SECTOR_SETS.Earth))
+      .toBeGreaterThanOrEqual(UNMEASURED_DESKTOP_PROFILE.residentCap);
   });
 
   it('never lets a phone reach its heaviest: the rung that would is refused', () => {

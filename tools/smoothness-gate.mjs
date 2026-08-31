@@ -6,6 +6,7 @@
 //   node tools/smoothness-gate.mjs --scenario=boot,earth-near --json
 //   node tools/smoothness-gate.mjs --rescore=/tmp/moon-shots/smooth/baseline
 //   node tools/smoothness-gate.mjs --scenario=boot --cold-cache --label=cold
+//   node tools/smoothness-gate.mjs --scenario=earth-near --no-precise-memory
 //
 // Needs a dev server (this checkout, `npx vite --port 5656 --strictPort`) and,
 // for the sector tiles, a tile host (`node planning/_tiles-serve.mjs` on 5622).
@@ -66,6 +67,9 @@ const ENGINE = arg('engine', 'shell');
 //     source differs from anything the OS has cached and the driver links cold.
 const COLD_CACHE = has('cold-cache');
 let coldSalt = '';
+
+// Whether the heap column is measured at all (see MEMORY_ARGS below).
+const PRECISE_MEMORY = !has('no-precise-memory');
 
 // Fixed thresholds, kept so two machines' runs can be read side by side. The
 // verdict does not use them: it uses two of the run's own vsyncs (see analyze).
@@ -862,6 +866,24 @@ const GPU_ARGS = [
   '--enable-unsafe-swiftshader',
 ];
 
+// Without this, Chromium reports `performance.memory` bucketed to 5 MiB and
+// refreshed at most once every 20 minutes, so the recorder's heap column reads
+// the same figure for a whole run and no collection can ever be seen. The
+// figures it unlocks are the live ones, which is what makes a drop between two
+// samples a collection rather than a rounding step — the GC line in every
+// report below is only evidence while this is passed.
+//
+// --no-precise-memory takes it away again, and exists for one question: an
+// instrument that changes the run it measures cannot be used to judge that run.
+// Reading a precise usedJSHeapSize walks V8's spaces where the bucketed read
+// returns a cached figure, so the two are not the same amount of work on the
+// frame that reads. Comparing a batch of runs with the flag against a batch
+// without is what says whether the column costs anything; the answer belongs
+// in the report, not in an assumption. The heap column is dead weight in a run
+// launched this way — every drop test silently fails to fire — so a `gcDrops`
+// of 0 from one of these means nothing was measured, not that nothing happened.
+const MEMORY_ARGS = PRECISE_MEMORY ? ['--enable-precise-memory-info'] : [];
+
 // Only under --cold-cache: the browser's own program caches. Playwright already
 // hands every launch a fresh --user-data-dir; these stop a compiled program
 // being written into it at all.
@@ -877,9 +899,9 @@ const COLD_ARGS = COLD_CACHE
 //           that must stay visible: an occluded window throttles rAF to 1 Hz
 //           and every gap it reports is a lie.
 const ENGINES = {
-  shell: { headless: true, args: [...GPU_ARGS, ...COLD_ARGS] },
-  new: { headless: true, channel: 'chromium', args: [...GPU_ARGS, ...COLD_ARGS] },
-  chrome: { headless: false, channel: 'chrome', args: [...GPU_ARGS, ...COLD_ARGS] },
+  shell: { headless: true, args: [...GPU_ARGS, ...MEMORY_ARGS, ...COLD_ARGS] },
+  new: { headless: true, channel: 'chromium', args: [...GPU_ARGS, ...MEMORY_ARGS, ...COLD_ARGS] },
+  chrome: { headless: false, channel: 'chrome', args: [...GPU_ARGS, ...MEMORY_ARGS, ...COLD_ARGS] },
 };
 
 const launchBrowser = () => {
@@ -921,6 +943,7 @@ try {
     const { context, page, notes } = await openPage(browser, scenario.device);
     const note = (message) => notes.push(message);
     if (COLD_CACHE) note(`cold cache: fresh profile, disk shader cache off, shaderSalt=${coldSalt}`);
+    if (!PRECISE_MEMORY) note('heap column not measured: --enable-precise-memory-info withheld, so gcDrops is 0 by construction');
     let trace = null;
     try {
       await scenario.run(page, note);

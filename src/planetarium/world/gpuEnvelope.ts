@@ -132,6 +132,7 @@ export interface DeviceProfile extends SectorStreamerLimits {
   provenance:
     | 'measured 2026-08-29 iPhone, half of 1962.7 MiB'
     | 'measured 2026-08-29 iPad, under half of 4053.3 MiB'
+    | 'derived 2026-08-29 from the iPhone row, no desktop measured'
     | 'unmeasured';
   /** The speculative boot warm pulls its bytes into the HTTP cache only,
    *  rather than decoding and uploading maps a session may never visit. */
@@ -208,17 +209,39 @@ export const UNMEASURED_TOUCH_PROFILE: DeviceProfile = {
 };
 
 /**
- * A desktop's numbers: eleven Earth sector sets under the ceiling and three
- * under the floor, inside an envelope the globe maps share. It asks at 1.0
- * device pixels per texel — a base texel spanning one device pixel is the
+ * A desktop's numbers: twenty-two Earth sector sets under the ceiling and
+ * three under the floor, inside an envelope the globe maps share. It asks at
+ * 1.0 device pixels per texel — a base texel spanning one device pixel is the
  * point where a finer map first shows, and the fetch after that is the only
  * delay.
+ *
+ * These are the Apple phone's numbers, and they are here because the finest
+ * level made the old ones absurd. A 1.06 R hover asks for 8 level-2 sectors
+ * of ~23.1 MiB; against the 256 MiB ceiling this row used to carry, 3 of them
+ * were admitted by day and 4 by night, while the phone row — 512 MiB, derived
+ * from a device measured to hold 1962.7 MiB — took 6 and 8. A desktop-class
+ * GPU is not asked to hold less than a phone, so the desktop takes the
+ * measurement the phone was given rather than a smaller guess of its own.
+ * Nothing else moves: the resident cap, the floor, the flight and fetch
+ * counts and both texel thresholds were already the phone's, and at 16
+ * resident sectors of ~23.1 MiB the cap binds long before 512 MiB does — as
+ * it does on the phone, and for the same reason.
+ *
+ * What can REACH this row is wider than the machines it was sized for.
+ * `limited` is entered only by a software rasteriser's renderer string or a
+ * reported 2 GB of system RAM, and `navigator.deviceMemory` is Chromium-only,
+ * so an old integrated-GPU laptop on Safari or Firefox — which report no
+ * memory at all — classifies desktop and is handed these numbers. That is
+ * accepted rather than overlooked: the envelope is demand-driven, so a pose
+ * that never asks for tiles never holds them and the ladder's arithmetic
+ * still refuses a rung that will not fit. Being wrong about such a machine
+ * costs it memory pressure at a close pose, not a wrong picture.
  */
 export const UNMEASURED_DESKTOP_PROFILE: DeviceProfile = {
   id: 'unmeasured-desktop',
-  provenance: 'unmeasured',
-  envelopeBytes: 768 * MiB,
-  ceilingBytes: 256 * MiB,
+  provenance: 'derived 2026-08-29 from the iPhone row, no desktop measured',
+  envelopeBytes: 1024 * MiB,
+  ceilingBytes: 512 * MiB,
   sectorFloorBytes: 3 * SECTOR_SET_FLOOR_UNIT_BYTES,
   residentCap: 16,
   inflightCap: 2,
@@ -338,23 +361,28 @@ export const LIMITED_PROFILE: DeviceProfile = {
  * | android/ tablet | 320 | 144 | 2 sets |  8 | 1 | 3 | 1.25 / 0.8 | cached |
  * | other  / phone  | 320 | 144 | 2 sets |  8 | 1 | 3 | 1.25 / 0.8 | cached |
  * | other  / tablet | 320 | 144 | 2 sets |  8 | 1 | 3 | 1.25 / 0.8 | cached |
- * | any    / desktop| 768 | 256 | 3 sets | 16 | 2 | 6 | 1.0 / 0.65 | full   |
+ * | any    / desktop|1024 | 512 | 3 sets | 16 | 2 | 6 | 1.0 / 0.65 | full   |
  * | any    / limited| 192 |  46 | 1 set  |  4 | 1 | 2 | 1.25 / 0.8 | cached |
  *
  * MiB, except the floors, which are whole Earth sector sets because a
  * fraction of a set admits no tile.
  *
- * The two apple rows carry their measurements in their own comments; every
- * other row is what the app shipped with, kept because no device in that
- * family has been walked up to its ceiling. A row moves when a run says so.
+ * The two apple rows carry their measurements in their own comments, and the
+ * desktop row carries the phone's because a desktop is not asked to hold less
+ * than a phone — no desktop has been walked up to its own ceiling, which is
+ * what its `unmeasured-desktop` id still says. The touch and limited rows are
+ * what the app shipped with, kept because nothing in those families has been
+ * measured either. A row moves when a run says so.
  *
  * On the baseline the app itself holds before any of this is spent — 244 MiB
  * on a phone, read off the boot readout: the Apple rows are half of what
  * their devices held with that baseline already inside the measurement, so
- * it is paid for rather than added on top. It is still inside the android and
- * other rows implicitly: 320 MiB was chosen against an app that already held
- * roughly that much, and re-deriving those rows without re-measuring them
- * would be arithmetic on an unmeasured number.
+ * it is paid for rather than added on top. The desktop row inherits that
+ * along with the numbers, and inherits it with room to spare, since the
+ * machine it runs on is the larger of the two. It is still inside the android
+ * and other rows implicitly: 320 MiB was chosen against an app that already
+ * held roughly that much, and re-deriving those rows without re-measuring
+ * them would be arithmetic on an unmeasured number.
  */
 export const DEVICE_PROFILES: Readonly<Record<PlatformFamily, Readonly<Record<DeviceClass, DeviceProfile>>>> = {
   apple: {

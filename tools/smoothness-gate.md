@@ -197,6 +197,22 @@ than 5 MiB between heap samples. The recorder writes into preallocated typed
 arrays and allocates only for the rare heavy events, because a GC pause is one
 of the faults it exists to catch.
 
+That heap column is only live because the battery launches Chromium with
+`--enable-precise-memory-info`. Without the flag `performance.memory` is
+bucketed to 5 MiB and refreshed at most once every 20 minutes, so the column
+reads one frozen figure for a whole run — every drop test fails to fire, and a
+report saying `gcDrops: 0` says nothing at all. Any browser driven by hand for
+this evidence, oracle 2's Chrome included, needs the same flag; a run without it
+can neither convict a GC nor clear one.
+
+`--no-precise-memory` withholds the flag on purpose, and is for one question
+only: whether the column costs the run it is measuring. A precise read walks
+V8's spaces where the bucketed read returns a cached figure, so the frame that
+reads is not doing the same work in the two cases, and a verdict that only ever
+appears under the instrument has to be checked against a batch of runs without
+it before it is believed. Runs launched this way carry a note saying the heap
+column is dead, because their `gcDrops: 0` is a property of the launch.
+
 `traceStart`/`traceStop` are a different instrument and cannot serve here: they
 sample one **moon's** rendered screen position for motion forensics, and return
 false for anything that is not a moon.
@@ -209,7 +225,9 @@ through the page's own `__moon` bridge, with Chrome's tracer recording.
 
 Two things that have wasted time here before: a headed Chrome window that gets
 **occluded** throttles rAF to 1 Hz and every gap reads as 1000 ms — keep the
-window visible and frontmost for the whole run. And `performance_start_trace`
+window visible and frontmost for the whole run. A third if the question is
+allocation: Chrome has to be started with `--enable-precise-memory-info` for the
+heap column to move at all. And `performance_start_trace`
 only writes a file if you pass `filePath` to `performance_stop_trace`, and the
 path must be inside the repo.
 

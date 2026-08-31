@@ -476,9 +476,8 @@ describe('the class table', () => {
 
   it('gives the Apple rows half of what their devices were measured to hold', () => {
     // The measurement, in assertions: an iPhone survived 1962.7 MiB and an
-    // iPad held 4053.3 with no kill, so neither is asked to spend a desktop's
-    // 768 — but neither is given the whole of what it held either, because
-    // the tab is one of several the device is keeping alive.
+    // iPad held 4053.3 with no kill, and neither is given the whole of what
+    // it held, because the tab is one of several the device is keeping alive.
     expect(APPLE_PHONE_PROFILE.envelopeBytes).toBe(1024 * MiB);
     // Half of 1962.7 is 981, and the rows are written in 256 MiB steps, so
     // the phone's is the step at 52 % rather than at exactly half.
@@ -491,8 +490,16 @@ describe('the class table', () => {
     expect(APPLE_TABLET_PROFILE.envelopeBytes)
       .toBe(APPLE_PHONE_PROFILE.envelopeBytes + APPLE_PHONE_PROFILE.ceilingBytes);
 
+    // The phone's row IS the desktop's now: a desktop-class GPU is not asked
+    // to hold less than a phone, so the desktop takes the phone's measurement
+    // rather than a smaller guess of its own. The tablet stays a step above
+    // both, on a run that never reached a limit to halve.
+    expect(APPLE_PHONE_PROFILE.envelopeBytes).toBe(UNMEASURED_DESKTOP_PROFILE.envelopeBytes);
+    expect(APPLE_PHONE_PROFILE.ceilingBytes).toBe(UNMEASURED_DESKTOP_PROFILE.ceilingBytes);
+    expect(APPLE_TABLET_PROFILE.envelopeBytes)
+      .toBeGreaterThan(UNMEASURED_DESKTOP_PROFILE.envelopeBytes);
+
     for (const row of [APPLE_PHONE_PROFILE, APPLE_TABLET_PROFILE]) {
-      expect(row.envelopeBytes).toBeGreaterThan(UNMEASURED_DESKTOP_PROFILE.envelopeBytes);
       // The tiles' ceiling is more than 16 resident sectors can spend, so
       // what stops a measured Apple device is the draw-call cap rather than
       // an arithmetic refusal.
@@ -601,9 +608,9 @@ describe('the class table', () => {
     });
     expect(UNMEASURED_DESKTOP_PROFILE).toEqual({
       id: 'unmeasured-desktop',
-      provenance: 'unmeasured',
-      envelopeBytes: 768 * MiB,
-      ceilingBytes: 256 * MiB,
+      provenance: 'derived 2026-08-29 from the iPhone row, no desktop measured',
+      envelopeBytes: 1024 * MiB,
+      ceilingBytes: 512 * MiB,
       sectorFloorBytes: 3 * SECTOR_SET_FLOOR_UNIT_BYTES,
       residentCap: 16,
       inflightCap: 2,
@@ -685,16 +692,16 @@ describe('the class table', () => {
       '    was 320/144 MiB, floor 2 sets, 8/1/3, want 1.25/0.8, warm cached, caps {"earthClouds":"4k"}\n' +
       '    now 1536/512 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {"earthClouds":"4k"}',
       'unmeasured-desktop -> unmeasured-touch\n' +
-      '    was 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}\n' +
+      '    was 1024/512 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}\n' +
       '    now 320/144 MiB, floor 2 sets, 8/1/3, want 1.25/0.8, warm cached, caps {"earthClouds":"4k"}',
       'unmeasured-touch -> unmeasured-desktop\n' +
       '    was 320/144 MiB, floor 2 sets, 8/1/3, want 1.25/0.8, warm cached, caps {"earthClouds":"4k"}\n' +
-      '    now 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}',
+      '    now 1024/512 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}',
       'unmeasured-desktop -> apple-phone\n' +
-      '    was 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}\n' +
+      '    was 1024/512 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}\n' +
       '    now 1024/512 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {"earthClouds":"4k"}',
       'unmeasured-desktop -> limited\n' +
-      '    was 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}\n' +
+      '    was 1024/512 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}\n' +
       '    now 192/46 MiB, floor 1 set, 4/1/2, want 1.25/0.8, warm cached, caps {}',
       'unmeasured-touch -> limited\n' +
       '    was 320/144 MiB, floor 2 sets, 8/1/3, want 1.25/0.8, warm cached, caps {"earthClouds":"4k"}\n' +

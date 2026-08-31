@@ -105,6 +105,14 @@ const NO_FLOOR = { ...DESKTOP, sectorFloorBytes: 0 };
 const EARTH_SET_BYTES = sectorSetGpuBytes(SECTOR_SETS.Earth);
 const EARTH_FITS_DESKTOP = Math.floor(DESKTOP.ceilingBytes / EARTH_SET_BYTES);
 const EARTH_FITS_TOUCH = Math.floor(TOUCH.ceilingBytes / EARTH_SET_BYTES);
+/** What a row actually holds, which is the tighter of its ceiling and its
+ *  draw-call cap. The two rows are bounded by different things: a touch
+ *  device runs out of ceiling with cap to spare, and a desktop — carrying the
+ *  512 MiB the phone was measured for — reaches the cap with bytes left over.
+ *  Which one binds is a property of the row, so a test that wants the working
+ *  set has to ask for both. */
+const EARTH_HELD_DESKTOP = Math.min(EARTH_FITS_DESKTOP, DESKTOP.residentCap);
+const EARTH_HELD_TOUCH = Math.min(EARTH_FITS_TOUCH, TOUCH.residentCap);
 /** A streamer with the envelope it spends, built from one device row — the
  *  pairing the constructor requires. The app hands the streamer the same
  *  object the globe texture ladder spends; a test that wants to watch that
@@ -388,19 +396,24 @@ describe('SectorStreamer', () => {
     expect(streamer.stats().bodies.Earth.loading.slice().sort()).toEqual(['2_1', '3_1']);
   });
 
-  it('holds what the byte budget holds, and only evicts for a candidate that out-ranks by the margin', () => {
+  it('holds what the tighter of budget and cap holds, and only evicts for a candidate that out-ranks by the margin', () => {
     loader.auto = true;
-    // The budget is what bounds the working set; the count cap is the
-    // emergency ceiling above it and never binds for a set this size.
-    expect(EARTH_FITS_DESKTOP).toBeLessThan(DESKTOP.residentCap);
+    // On this row the count cap is what bounds the working set: the ceiling
+    // would buy 22 Earth sets and the cap stops at 16, so the last sectors
+    // are refused with bytes still unspent.
+    expect(EARTH_HELD_DESKTOP).toBe(DESKTOP.residentCap);
+    expect(EARTH_HELD_DESKTOP).toBeLessThan(EARTH_FITS_DESKTOP);
     const sizes: Record<string, number> = {};
     for (let c = 0; c < 8; c++) { sizes[`${c}_1`] = 2 + 0.01 * c; sizes[`${c}_2`] = 2.1 + 0.01 * c; }
     // Fill the budget over a few frames (in-flight limit paces admissions).
     for (let f = 0; f < 12; f++) streamer.update('Earth', new THREE.Vector3(0, 0, 0), measureOf(sizes), f * 16);
-    expect(streamer.stats().resident).toBe(EARTH_FITS_DESKTOP);
+    expect(streamer.stats().resident).toBe(EARTH_HELD_DESKTOP);
     const stats = streamer.stats();
-    expect(stats.budgetedBytes).toBe(EARTH_FITS_DESKTOP * EARTH_SET_BYTES);
+    expect(stats.budgetedBytes).toBe(EARTH_HELD_DESKTOP * EARTH_SET_BYTES);
     expect(stats.budgetedBytes + stats.reserved).toBeLessThanOrEqual(stats.budget);
+    // And the bytes the cap left behind are real: a row bounded by its count
+    // stops short of its own ceiling rather than at it.
+    expect(stats.budgetedBytes).toBeLessThan(stats.budget);
     const before = stats.bodies.Earth.resident.slice().sort();
     // A new sector slightly larger than the weakest resident does not evict it…
     const weakestPx = Math.min(...before.map((id) => sizes[id]));
@@ -411,13 +424,17 @@ describe('SectorStreamer', () => {
     sizes['0_0'] = weakestPx * SECTOR_ADMIT_MARGIN * 1.01;
     streamer.update('Earth', new THREE.Vector3(0, 0, 0), measureOf(sizes), 2_016);
     const after = streamer.stats().bodies.Earth.resident;
-    expect(after.length).toBe(EARTH_FITS_DESKTOP);
+    expect(after.length).toBe(EARTH_HELD_DESKTOP);
     expect(after).toContain('0_0');
   });
 
-  it('holds six Earth sectors on a phone and eleven on a desktop', () => {
+  it('holds six Earth sectors on a phone and sixteen on a desktop', () => {
+    // The touch row is stopped by its ceiling, four short of its cap of 8.
     expect(EARTH_FITS_TOUCH).toBe(6);
-    expect(EARTH_FITS_DESKTOP).toBe(11);
+    expect(EARTH_HELD_TOUCH).toBe(6);
+    // The desktop row is stopped by its cap, six short of what 512 MiB buys.
+    expect(EARTH_FITS_DESKTOP).toBe(22);
+    expect(EARTH_HELD_DESKTOP).toBe(16);
   });
 
   it('holds a smaller working set on touch devices', () => {
@@ -702,7 +719,7 @@ describe('SectorStreamer', () => {
     const sizes: Record<string, number> = {};
     for (let c = 0; c < 8; c++) { sizes[`${c}_1`] = 2 + 0.01 * c; sizes[`${c}_2`] = 2.1 + 0.01 * c; }
     streamer.update('Earth', INSIDE, measureOf(sizes), 0);
-    expect(streamer.stats().resident).toBe(EARTH_FITS_DESKTOP);
+    expect(streamer.stats().resident).toBe(EARTH_HELD_DESKTOP);
     // A globe map lands while the chart is up: the sectors' share of the
     // envelope shrinks, and they give it back on that frame rather than
     // sitting over the envelope until the chart closes.
@@ -1280,7 +1297,7 @@ describe('SectorStreamer', () => {
     const s = streamer.stats();
     expect(s.bodies.Earth.resident).toContain('2_1');
     expect(s.bodies.Earth.byLevel[1].resident).toBe(4);
-    expect(s.resident).toBe(EARTH_FITS_DESKTOP);
+    expect(s.resident).toBe(EARTH_HELD_DESKTOP);
     expect(s.budgetedBytes + s.reserved).toBeLessThanOrEqual(s.budget);
   });
 
@@ -1449,7 +1466,7 @@ describe('SectorStreamer', () => {
     const sizes: Record<string, number> = {};
     for (let c = 0; c < 8; c++) { sizes[`${c}_1`] = 2 + 0.01 * c; sizes[`${c}_2`] = 2.1 + 0.01 * c; }
     streamer.update('Earth', INSIDE, measureOf(sizes), 0);
-    expect(streamer.stats().resident).toBe(EARTH_FITS_DESKTOP);
+    expect(streamer.stats().resident).toBe(EARTH_HELD_DESKTOP);
     // The globe maps grow (an 8K rung lands) and the envelope leaves the
     // sectors room for three.
     streamer.setGlobalMapBytes(DESKTOP.envelopeBytes - 3 * EARTH_SET_BYTES);
@@ -1549,7 +1566,7 @@ describe('SectorStreamer', () => {
     const sizes: Record<string, number> = {};
     for (let c = 0; c < 8; c++) { sizes[`${c}_1`] = 2 + 0.01 * c; sizes[`${c}_2`] = 2.1 + 0.01 * c; }
     for (let f = 0; f < 24; f++) streamer.update('Earth', INSIDE, measureOf(sizes), f * 16);
-    expect(streamer.stats().resident).toBe(EARTH_FITS_DESKTOP);
+    expect(streamer.stats().resident).toBe(EARTH_HELD_DESKTOP);
     // A globe map lands between frames. Nothing calls update() before the
     // next stats() read, and the invariant still has to hold in it.
     streamer.setGlobalMapBytes(DESKTOP.envelopeBytes - 2 * EARTH_SET_BYTES);
@@ -1716,7 +1733,7 @@ describe('SectorStreamer', () => {
     }
     expect(s.bodies.Earth.byLevel[1].resident).toBe(4);
     expect(s.budgetedBytes + s.reserved).toBeLessThanOrEqual(s.budget);
-    expect(s.resident).toBe(EARTH_FITS_DESKTOP);
+    expect(s.resident).toBe(EARTH_HELD_DESKTOP);
   });
 
   it('drops every level on context loss and streams them all back', () => {
@@ -2284,7 +2301,7 @@ describe('the sector floor', () => {
     const sizes: Record<string, number> = {};
     for (let c = 0; c < 8; c++) { sizes[`${c}_1`] = 2 + 0.01 * c; sizes[`${c}_2`] = 2.1 + 0.01 * c; }
     for (let f = 0; f < 24; f++) s.update('Earth', INSIDE, measureOf(sizes), f * 16);
-    expect(s.stats().resident).toBe(EARTH_FITS_DESKTOP);
+    expect(s.stats().resident).toBe(EARTH_HELD_DESKTOP);
     // The globe maps take the whole envelope. Three sets are still drawn:
     // the surface at 20x magnification keeps the tiles it needs most.
     s.setGlobalMapBytes(DESKTOP.envelopeBytes);

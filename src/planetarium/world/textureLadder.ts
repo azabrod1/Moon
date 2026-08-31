@@ -6,14 +6,6 @@
  * 1. The ladder. A TextureUpgrade per material holds the 2K/4K/8K rungs, the
  *    goals that earn them, and at most one in-flight attempt — never a
  *    lifecycle state, so nothing can strand a body on its boot map.
- *
- * Every rung, climbing or being handed back, is queued for its GPU upload
- * BEFORE it reaches a material and assigned from the warm queue's callback: a
- * big map is uploaded in bands over several frames, and a material carrying
- * one before the last band lands draws unwritten storage. So the transient
- * that costs memory is the one where both maps are resident at once, and it
- * is in the ledger from the decode either way (pendingUpgradeBytes,
- * pendingReleaseBytes) — never the one where a body has no map.
  * 2. The GPU byte ledger and the admission gate over it. What a rung costs is
  *    known before anything is fetched, and again from the decoded candidate
  *    before it is applied; `bindTierAdmission` installs the test the device's
@@ -26,6 +18,14 @@
  * 4. The restore queue. A lost GL context takes the maps whose decoded
  *    sources were closed after their uploads; each is queued against the
  *    texture it was for, nearest body first, and fetched back one at a time.
+ *
+ * Every rung, climbing or being handed back, is queued for its GPU upload
+ * BEFORE it reaches a material and assigned from the warm queue's callback: a
+ * big map is uploaded in bands over several frames, and a material carrying
+ * one before the last band lands draws unwritten storage. So the transient
+ * that costs memory is the one where both maps are resident at once, and it
+ * is in the ledger from the decode either way (pendingUpgradeBytes,
+ * pendingReleaseBytes) — never the one where a body has no map.
  *
  * Then the arrival warm goals (banner: "Arrival warm goals") — the rung a
  * committed arrival is holding its veil for — and last the relief ladder
@@ -1650,7 +1650,7 @@ export function upgradeNormalOnApproach(
         // Warm first, assign second — the order the colour ladder holds, for
         // the same reason: a map big enough to be uploaded in bands draws as
         // unwritten storage until its last band lands. The relief map on disk
-        // is a few thousand texels under the size the slicer takes, so holding
+        // is a fraction under the size the slicer takes, so holding
         // the order here is what keeps that a question of file size rather
         // than one of what a body draws. Its bytes are resident from the
         // decode, so the envelope counts them until the swap.

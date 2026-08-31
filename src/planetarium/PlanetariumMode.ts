@@ -13187,6 +13187,10 @@ export class PlanetariumMode {
    */
   devJumpToBody(name: string, distanceMultiplier = 1): boolean {
     if (!this.solarSystem) return false;
+    // A real jump returns the camera to the cruise rig: a preceding dev pose
+    // (devFrameBody and friends) must not leave the rig detached, or every
+    // later arrival aims nothing.
+    this.devFreeCamera = false;
     if (name === 'Sun') {
       this.jumpToSun({ notify: false });
       this.player.moving = false; // hold position so the body stays centered for capture
@@ -14301,6 +14305,9 @@ export class PlanetariumMode {
    */
   devLand(name: string): boolean {
     if (!this.solarSystem) return false;
+    // The landing (and the cruise that follows takeoff) owns the camera — take
+    // it back from any dev pose.
+    this.devFreeCamera = false;
     if (this.solarSystem.planets.some((p) => p.data.name === name)) {
       this.enterLandedMode({ type: 'planet', name });
       return true;
@@ -14331,7 +14338,11 @@ export class PlanetariumMode {
         }
       }
     }
-    return target ? this.commitBodyPick('travel', target, {}) : false;
+    if (!target) return false;
+    // The pick pipeline owns the camera for a travel, exactly as it does for a
+    // user gesture — take it back from any dev pose so the arrival aim engages.
+    this.devFreeCamera = false;
+    return this.commitBodyPick('travel', target, {});
   }
 
   /** Headless support: an Observatory relocation through the REAL pick
@@ -14352,7 +14363,10 @@ export class PlanetariumMode {
         }
       }
     }
-    return target ? this.commitBodyPick('observe', target, {}) : false;
+    if (!target) return false;
+    // Same camera handback as devTravelTo: the relocation owns the camera.
+    this.devFreeCamera = false;
+    return this.commitBodyPick('observe', target, {});
   }
 
   /** Headless support: enter the volume-compare tool through the REAL gate, so a

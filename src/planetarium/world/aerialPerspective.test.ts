@@ -120,7 +120,7 @@ describe('the injected surface shader', () => {
     expect(hash(shader.vertexShader))
       .toBe('862f7224fafb480070aebf0c7c125dddbd78c879780eb072e96988333154322a');
     expect(hash(shader.fragmentShader))
-      .toBe('10de2b0a73727a4237a9f89dda3cda6ee15b891d5c9f3bddc5ae41339459b0a9');
+      .toBe('35d947a376195fd85771fc507b3d721da9c9c57b6a651e9168c3fae90139c64d');
   });
 
   it('reuses the tables\' own lookup GLSL rather than a second transcription', () => {

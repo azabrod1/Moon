@@ -34,6 +34,27 @@
  * is 0.015 of alpha — under a quantisation step of the frame it lands in.
  */
 
+/**
+ * How high the deck stands above the ground, in kilometres.
+ *
+ * A whole-globe deck stands for everything from a 2 km marine layer to a 16 km
+ * anvil, and 10 is the middle of that range. This is the MESH's altitude as
+ * well as the altitude its air is looked up at, and the two have to agree:
+ * drawn higher than a cloud top really is, the deck's own silhouette clears the
+ * globe's by more than any cloud does, and a near-band or limb frame shows a
+ * sheet standing off the planet with the ground visible under its edge. At the
+ * 1.01 R this shell was built at, that clearance was 64 km — six real cloud
+ * tops — which is what a limb frame read as a detached deck.
+ */
+export const CLOUD_TOP_KM = 10;
+
+/** The shell radius a deck of that height wants, as a multiple of the body's
+ *  own radius. Stated once, because the mesh and the air segment that ends at
+ *  the cloud top are the same altitude and must never be two numbers. */
+export function cloudShellScale(bodyRadiusKm: number): number {
+  return 1 + CLOUD_TOP_KM / bodyRadiusKm;
+}
+
 /** Stored luminance at and below which there is no cloud at all. */
 export const CLOUD_COVERAGE_LOW = 0.06;
 /** ...and at which the deck is fully opaque. */

@@ -12275,8 +12275,13 @@ export class PlanetariumMode {
       endMoving: options.movingAfter,
     };
     // The transfer owns the pose from here; an armed contact graze must not
-    // resume steering on the handback frame.
+    // resume steering on the handback frame, and neither may a flyby look
+    // left holding an earlier destination — an authored scene is framed on
+    // its own look target, not on whatever the last pass was watching. No
+    // cut pairs with this one (the transfer reacquires rather than snapping),
+    // so the aim limiter eases the orphaned deflection out under it.
     this.contactAimActive = false;
+    clearArrivalLook(this.cruiseAim);
     this.player.moving = true;
     // A scripted transfer never poses the camera, so a user-owned camera must
     // reacquire the chase rather than snap to it — snapping from a 90° offset
@@ -12344,6 +12349,13 @@ export class PlanetariumMode {
     // funnels through here, and the aim stage adopts fresh on the next
     // frame instead of sweeping from pre-repose state.
     cutAim(this.cruiseAim);
+    // And the look dies with the pose it was tracking. A flyby's look holds
+    // its body until the pilot takes an input, so it can still be live when
+    // a takeoff, a free-space teleport, or a restore reposes the camera —
+    // and a cut with a live look would adopt that body's bearing as the
+    // fresh pose's aim. The jump funnel clears it earlier for its own
+    // bookkeeping and re-starts it after this returns.
+    clearArrivalLook(this.cruiseAim);
     // Same cut for the contact graze: a deliberate repose supersedes any
     // armed deflection, which must not steer the fresh pose.
     this.contactAimActive = false;

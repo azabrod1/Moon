@@ -69,10 +69,13 @@ import {
 import { FLIGHT_UP_SCENE } from './flightFrame';
 
 /** Continuity backstop: aim-direction changes above this rate are clipped
- *  into fast sweeps. Designed transitions (the 0.35 s release fade, the
- *  recede ease) peak well under it (~75°/s measured), and base-aim motion
- *  (drags, reacquire) bypasses it entirely via transport, so in ordinary
- *  play it never binds — it exists for the seam nobody eased. */
+ *  into fast sweeps. Base-aim motion (drags, reacquire) bypasses it
+ *  entirely via transport, and the approach-side transitions peak well
+ *  under it (~75°/s measured). The one transition that does bind is the
+ *  handback from a post-pass hold: a held aim looks back down the flight
+ *  path, most of a half-turn off the base aim, so the release fade's last
+ *  milliseconds ask for a step this stage spreads into a ~0.5 s sweep
+ *  instead. Everything else it catches is the seam nobody eased. */
 export const AIM_RATE_CAP_RAD_PER_S = (360 * Math.PI) / 180;
 
 /** Absolute per-frame step clamp. The frame loop caps dt at ~100 ms, and

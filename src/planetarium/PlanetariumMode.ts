@@ -17622,6 +17622,10 @@ export class PlanetariumMode {
       flushOrbitDamping(this.controls);
       this.camOwner = 'reacquiring';
     }
+    // Same reason, same frame: naming a new destination is the pilot
+    // composing their next shot, so a fly-by look still holding the last
+    // body hands back here too — eased, like every other input handback.
+    releaseArrivalLook(this.cruiseAim);
     // Retain the nav moon so its dot floor + label survive a manual-steering
     // disengage on final approach; a planet engage clears it (nav moved off a
     // moon). Kept through disengageAutopilot — that's the point.

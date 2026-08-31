@@ -205,6 +205,14 @@ report saying `gcDrops: 0` says nothing at all. Any browser driven by hand for
 this evidence, oracle 2's Chrome included, needs the same flag; a run without it
 can neither convict a GC nor clear one.
 
+`--no-precise-memory` withholds the flag on purpose, and is for one question
+only: whether the column costs the run it is measuring. A precise read walks
+V8's spaces where the bucketed read returns a cached figure, so the frame that
+reads is not doing the same work in the two cases, and a verdict that only ever
+appears under the instrument has to be checked against a batch of runs without
+it before it is believed. Runs launched this way carry a note saying the heap
+column is dead, because their `gcDrops: 0` is a property of the launch.
+
 `traceStart`/`traceStop` are a different instrument and cannot serve here: they
 sample one **moon's** rendered screen position for motion forensics, and return
 false for anything that is not a moon.

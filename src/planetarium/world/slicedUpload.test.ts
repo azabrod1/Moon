@@ -16,7 +16,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { compressedUploadFormat, hasSrgbTransfer } from './slicedUpload';
+import { canSlice, compressedUploadFormat, hasSrgbTransfer } from './slicedUpload';
 
 /** Extension objects as a driver exposes them, with the spec's enum values. */
 const ASTC = {
@@ -101,6 +101,61 @@ describe('compressedUploadFormat', () => {
     expect(compressedUploadFormat(gl, THREE.RGBA_S3TC_DXT5_Format, THREE.SRGBColorSpace)).toBeNull();
     expect(compressedUploadFormat(gl, THREE.RGBA_S3TC_DXT5_Format, THREE.NoColorSpace))
       .toBe(THREE.RGBA_S3TC_DXT5_Format);
+  });
+});
+
+describe('canSlice', () => {
+  /** A renderer with three's property store: a texture record is whatever the
+   *  test put in it, and an untouched texture has an empty one, exactly as
+   *  three's own WebGLProperties hands back. */
+  function fakeRenderer(records = new Map<THREE.Texture, { __version?: number }>()) {
+    const renderer = {
+      getContext: () => fakeGl(),
+      properties: {
+        get: (obj: THREE.Texture) => {
+          let record = records.get(obj);
+          if (!record) { record = {}; records.set(obj, record); }
+          return record;
+        },
+      },
+    } as unknown as THREE.WebGLRenderer;
+    return { renderer, records };
+  }
+
+  /** A compressed container as a KTX2 rung arrives: mip chain, linear format,
+   *  and the version its loader stamps. */
+  function container(): THREE.CompressedTexture {
+    const mipmaps = [{ width: 4096, height: 2048, data: new Uint8Array(4096 * 2048) }];
+    const tex = new THREE.CompressedTexture(mipmaps as unknown as ImageData[], 4096, 2048);
+    tex.format = THREE.RGBA_ASTC_4x4_Format;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.flipY = false;
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  it('takes a compressed container three has not uploaded', () => {
+    const { renderer } = fakeRenderer();
+    expect(canSlice(renderer, container())).toBe(true);
+  });
+
+  it('refuses a texture three has already uploaded', () => {
+    // A queued map that gets drawn before the pump reaches it is uploaded by
+    // three at that draw. Beginning a job for it afterwards allocates nothing
+    // and re-transfers the whole map band by band for no picture.
+    const { renderer, records } = fakeRenderer();
+    const tex = container();
+    records.set(tex, { __version: tex.version });
+    expect(canSlice(renderer, tex)).toBe(false);
+  });
+
+  it('takes a texture whose record is from an older version of it', () => {
+    // A map three uploaded and something then mutated is due another upload,
+    // which is exactly the one worth slicing.
+    const { renderer, records } = fakeRenderer();
+    const tex = container();
+    records.set(tex, { __version: tex.version - 1 });
+    expect(canSlice(renderer, tex)).toBe(true);
   });
 });
 

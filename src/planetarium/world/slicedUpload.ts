@@ -246,6 +246,14 @@ export interface SliceJob {
  *  meet, is not a candidate. */
 export function canSlice(renderer: THREE.WebGLRenderer, texture: THREE.Texture): boolean {
   const gl = renderer.getContext() as WebGL2RenderingContext;
+  // Already on the GPU: three drew it before the pump got to it. Slicing it
+  // now would allocate nothing (three's allocation pass no-ops on a version
+  // it has already stamped) and then re-transfer the whole map band by band
+  // for no picture at all — 39 bands of dead traffic for an 8K container.
+  // The test is three's own, the version it stamped on its record for this
+  // texture against the texture's, so the two cannot come to differ.
+  const uploaded = (renderer.properties.get(texture) as { __version?: number } | undefined)?.__version;
+  if (uploaded !== undefined && uploaded === texture.version) return false;
   const compressed = (texture as THREE.CompressedTexture).isCompressedTexture === true;
   const image = texture.image as { width?: number; height?: number } | undefined;
   const mipmaps = (texture as THREE.CompressedTexture).mipmaps;

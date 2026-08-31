@@ -29,8 +29,13 @@
  * finds zero deflection and pays nothing — an always-on look puts ~20°
  * between the arrival and settled poses, and every first input pays it as
  * a visible adjust. The tracking shot fades in only as a hands-off flyby
- * closes inside the engage band, holds the target through closest
- * approach, and fades back out on the receding leg.
+ * closes inside the engage band and holds the target through closest
+ * approach — and then KEEPS holding it: a travel that hands the frame back
+ * on the receding leg ends on empty stars with the destination behind the
+ * camera, which is the worst frame of the trip standing in for the best. So
+ * a developed pass latches the gate at its peak and suspends the recede
+ * ease; the player's next look, steer, or throttle gesture is what ends the
+ * shot, over the same 0.35 s release fade every other handback uses.
  *
  * The look's target is fed ANALYTICALLY (a moon: parent world position +
  * ephemeris offset; a planet: its live ephemeris position), heliocentric,
@@ -54,17 +59,23 @@
  */
 import * as THREE from 'three';
 import {
+  advanceFlybyHold,
   arrivalCameraLookWeight,
   arrivalLookReleaseFade,
   arrivalTrackEngage,
+  initialFlybyHoldState,
+  type FlybyHoldState,
 } from './arrivalLogic';
 import { FLIGHT_UP_SCENE } from './flightFrame';
 
 /** Continuity backstop: aim-direction changes above this rate are clipped
- *  into fast sweeps. Designed transitions (the 0.35 s release fade, the
- *  recede ease) peak well under it (~75°/s measured), and base-aim motion
- *  (drags, reacquire) bypasses it entirely via transport, so in ordinary
- *  play it never binds — it exists for the seam nobody eased. */
+ *  into fast sweeps. Base-aim motion (drags, reacquire) bypasses it
+ *  entirely via transport, and the approach-side transitions peak well
+ *  under it (~75°/s measured). The one transition that does bind is the
+ *  handback from a post-pass hold: a held aim looks back down the flight
+ *  path, most of a half-turn off the base aim, so the release fade's last
+ *  milliseconds ask for a step this stage spreads into a ~0.5 s sweep
+ *  instead. Everything else it catches is the seam nobody eased. */
 export const AIM_RATE_CAP_RAD_PER_S = (360 * Math.PI) / 180;
 
 /** Absolute per-frame step clamp. The frame loop caps dt at ~100 ms, and
@@ -99,6 +110,9 @@ export interface ArrivalLookState {
   previousDistanceAU: number;
   approached: boolean;
   receding: boolean;
+  /** Post-pass hold: latches once the developed pass is past closest
+   *  approach, and from there the shot ends only on an input. */
+  hold: FlybyHoldState;
   /** Seconds since an input released the look; null while it still owns the
    *  aim. Advanced each step once set, driving the release fade. */
   releaseElapsedS: number | null;
@@ -153,6 +167,7 @@ export function startArrivalLook(
     previousDistanceAU: arrivalDistanceAU,
     approached: false,
     receding: false,
+    hold: initialFlybyHoldState(),
     releaseElapsedS: null,
     lastMoonWorldPosAU: new THREE.Vector3(),
     hasLastMoonWorldPos: false,
@@ -295,18 +310,29 @@ export function stepCruiseAim(
       // Disengage terms (recede ease, release fade) END the look at zero;
       // the engage term merely gates it — an un-engaged look is a live
       // zero-weight look waiting for the hands-off pass to develop, and
-      // must NOT be dropped as "handoff complete".
-      const disengage =
-        arrivalCameraLookWeight(
-          camToMoonLen,
-          look.arrivalDistanceAU,
-          look.receding,
-        ) * arrivalLookReleaseFade(look.releaseElapsedS ?? 0);
+      // must NOT be dropped as "handoff complete". Once the hold latches
+      // both distance-driven terms stand aside — the recede ease here, the
+      // engage gate inside advanceFlybyHold — leaving the release fade as
+      // the only way out, so the trip ends looking at the destination
+      // rather than at the stars past it.
+      const track = advanceFlybyHold(
+        look.hold,
+        arrivalTrackEngage(camToMoonLen, look.arrivalDistanceAU),
+        look.approached,
+        look.receding,
+      );
+      const recede = look.hold.holding
+        ? 1
+        : arrivalCameraLookWeight(
+            camToMoonLen,
+            look.arrivalDistanceAU,
+            look.receding,
+          );
+      const disengage = recede * arrivalLookReleaseFade(look.releaseElapsedS ?? 0);
       if (disengage <= 0) {
         state.look = null; // handoff complete; residual eases out below
       } else {
-        const weight =
-          disengage * arrivalTrackEngage(camToMoonLen, look.arrivalDistanceAU);
+        const weight = disengage * track;
         if (weight > 0) {
           // The shipped composition, expressed as a direction: the aim
           // point interpolates moon→origin, viewed from the camera.

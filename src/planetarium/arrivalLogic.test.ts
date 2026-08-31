@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import {
   advanceBodyCap,
+  advanceFlybyHold,
+  initialFlybyHoldState,
   autopilotAimBlend,
   autopilotArrived,
   autopilotGlideCap,
@@ -1119,6 +1121,70 @@ describe('arrivalTrackEngage', () => {
     expect(arrivalTrackEngage(1e-5, 0)).toBe(0);
     expect(arrivalTrackEngage(1e-5, -1)).toBe(0);
     expect(arrivalTrackEngage(1e-5, NaN)).toBe(0);
+  });
+});
+
+describe('advanceFlybyHold — the post-pass hold state machine', () => {
+  it('tracks the engage gate verbatim while the pass is still closing', () => {
+    const hold = initialFlybyHoldState();
+    expect(advanceFlybyHold(hold, 0, false, false)).toBe(0);
+    expect(advanceFlybyHold(hold, 0.4, false, false)).toBe(0.4);
+    expect(advanceFlybyHold(hold, 0.9, true, false)).toBe(0.9);
+    expect(hold.holding).toBe(false);
+  });
+
+  it('latches on the first receding frame of a developed pass', () => {
+    const hold = initialFlybyHoldState();
+    advanceFlybyHold(hold, 1, true, false);
+    expect(hold.holding).toBe(false);
+    expect(advanceFlybyHold(hold, 0.8, true, true)).toBe(1);
+    expect(hold.holding).toBe(true);
+  });
+
+  it('holds the gate at its peak while the engage term collapses to zero', () => {
+    const hold = initialFlybyHoldState();
+    advanceFlybyHold(hold, 0.6, false, false);
+    advanceFlybyHold(hold, 1, true, false);
+    advanceFlybyHold(hold, 0.7, true, true);
+    // The receding leg drives engage back through zero; the held shot must
+    // not follow it out — that is the empty-star-field ending.
+    for (const engage of [0.5, 0.2, 0, 0, 0]) {
+      expect(advanceFlybyHold(hold, engage, true, true)).toBe(1);
+    }
+  });
+
+  it('never latches without a real closest approach', () => {
+    // The distance backstop can set `receding` on a look the ship leapt past
+    // under a clock warp; that is not a pass and must not hold.
+    const hold = initialFlybyHoldState();
+    advanceFlybyHold(hold, 1, false, true);
+    expect(hold.holding).toBe(false);
+    expect(advanceFlybyHold(hold, 0, false, true)).toBe(0);
+  });
+
+  it('never latches on a shot that never opened', () => {
+    // engagePeak 0 would hold at zero weight: no deflection, and a look
+    // that can never reach the "handoff complete" drop.
+    const hold = initialFlybyHoldState();
+    expect(advanceFlybyHold(hold, 0, true, true)).toBe(0);
+    expect(hold.holding).toBe(false);
+    expect(hold.engagePeak).toBe(0);
+  });
+
+  it('holds a partially opened shot at exactly what it opened to', () => {
+    const hold = initialFlybyHoldState();
+    advanceFlybyHold(hold, 0.35, true, false);
+    advanceFlybyHold(hold, 0.2, true, true);
+    expect(hold.holding).toBe(true);
+    expect(advanceFlybyHold(hold, 0, true, true)).toBe(0.35);
+  });
+
+  it('is sticky: a latched hold ends only through the release fade', () => {
+    const hold = initialFlybyHoldState();
+    advanceFlybyHold(hold, 1, true, false);
+    advanceFlybyHold(hold, 1, true, true);
+    expect(advanceFlybyHold(hold, 0, false, false)).toBe(1);
+    expect(hold.holding).toBe(true);
   });
 });
 

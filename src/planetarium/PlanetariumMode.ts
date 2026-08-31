@@ -12280,8 +12280,13 @@ export class PlanetariumMode {
       endMoving: options.movingAfter,
     };
     // The transfer owns the pose from here; an armed contact graze must not
-    // resume steering on the handback frame.
+    // resume steering on the handback frame, and neither may a flyby look
+    // left holding an earlier destination — an authored scene is framed on
+    // its own look target, not on whatever the last pass was watching. No
+    // cut pairs with this one (the transfer reacquires rather than snapping),
+    // so the aim limiter eases the orphaned deflection out under it.
     this.contactAimActive = false;
+    clearArrivalLook(this.cruiseAim);
     this.player.moving = true;
     // A scripted transfer never poses the camera, so a user-owned camera must
     // reacquire the chase rather than snap to it — snapping from a 90° offset
@@ -12349,6 +12354,13 @@ export class PlanetariumMode {
     // funnels through here, and the aim stage adopts fresh on the next
     // frame instead of sweeping from pre-repose state.
     cutAim(this.cruiseAim);
+    // And the look dies with the pose it was tracking. A flyby's look holds
+    // its body until the pilot takes an input, so it can still be live when
+    // a takeoff, a free-space teleport, or a restore reposes the camera —
+    // and a cut with a live look would adopt that body's bearing as the
+    // fresh pose's aim. The jump funnel clears it earlier for its own
+    // bookkeeping and re-starts it after this returns.
+    clearArrivalLook(this.cruiseAim);
     // Same cut for the contact graze: a deliberate repose supersedes any
     // armed deflection, which must not steer the fresh pose.
     this.contactAimActive = false;
@@ -14073,13 +14085,55 @@ export class PlanetariumMode {
     // reads), and whether its label is shown. Null for a planet (no dot/label).
     let dotScreenAlpha: number | null = null;
     let dotLitScreenAlpha: number | null = null;
+    let renderedRadiusAU = mesh ? mesh.data.radiusAU * mesh.group.scale.x : null;
     for (const moons of this.planetMoons.values()) {
       const mm = moons.find((x) => x.data.name === name);
       if (mm) {
         dotScreenAlpha = mm.dotScreenAlpha ?? 0;
         dotLitScreenAlpha = mm.dotLitScreenAlpha ?? 0;
+        renderedRadiusAU = mm.data.radiusAU * mm.mesh.scale.x;
         break;
       }
+    }
+    // Where the body actually sits on screen this frame. Distance alone
+    // cannot say whether a body is being SHOWN, and "is the destination in
+    // frame" is the question every arrival and departure has to answer.
+    let screen: {
+      x: number; y: number; ndcX: number; ndcY: number;
+      diameterPx: number; fraction: number; inFrame: boolean;
+    } | null = null;
+    if (pos && renderedRadiusAU !== null) {
+      const el = this.renderer.domElement;
+      const w = el.clientWidth;
+      const h = el.clientHeight;
+      const p = projectSphereToScreen(
+        new THREE.Vector3(
+          pos.x - this.renderOriginAU.x,
+          pos.y - this.renderOriginAU.y,
+          pos.z - this.renderOriginAU.z,
+        ),
+        renderedRadiusAU,
+        cam,
+        w,
+        h,
+        this.sphereScreenProjection,
+      );
+      screen = {
+        x: p.x,
+        y: p.y,
+        ndcX: p.ndcX,
+        ndcY: p.ndcY,
+        diameterPx: p.diameterPx,
+        // Same fraction the texture ladder scores bodies by: disc diameter
+        // over viewport height.
+        fraction: p.diameterPx / Math.max(h, 1),
+        // Any part of the disc's footprint overlapping the viewport counts,
+        // and a body behind the camera projects to a point footprint out of
+        // bounds rather than a covering one.
+        inFrame:
+          p.footprintKind !== 'none' &&
+          p.maxX >= 0 && p.minX <= w && p.maxY >= 0 && p.minY <= h,
+      };
     }
     const lbl = this.moonLabels.get(name);
     const labelVisible = lbl ? lbl.style.display !== 'none' : null;
@@ -14109,6 +14163,17 @@ export class PlanetariumMode {
       dotScreenAlpha,
       dotLitScreenAlpha,
       labelVisible,
+      renderedRadiusAU,
+      screen,
+      // Whether the flyby's tracking look still owns the aim, and whether it
+      // has latched into the post-pass hold (see cruiseAim.ts).
+      look: this.cruiseAim.look
+        ? {
+            name: this.cruiseAim.look.name,
+            holding: this.cruiseAim.look.hold.holding,
+            releasing: this.cruiseAim.look.releaseElapsedS !== null,
+          }
+        : null,
     };
   }
 
@@ -17562,6 +17627,10 @@ export class PlanetariumMode {
       flushOrbitDamping(this.controls);
       this.camOwner = 'reacquiring';
     }
+    // Same reason, same frame: naming a new destination is the pilot
+    // composing their next shot, so a fly-by look still holding the last
+    // body hands back here too — eased, like every other input handback.
+    releaseArrivalLook(this.cruiseAim);
     // Retain the nav moon so its dot floor + label survive a manual-steering
     // disengage on final approach; a planet engage clears it (nav moved off a
     // moon). Kept through disengageAutopilot — that's the point.

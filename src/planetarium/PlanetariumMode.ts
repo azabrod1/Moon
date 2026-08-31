@@ -14068,13 +14068,55 @@ export class PlanetariumMode {
     // reads), and whether its label is shown. Null for a planet (no dot/label).
     let dotScreenAlpha: number | null = null;
     let dotLitScreenAlpha: number | null = null;
+    let renderedRadiusAU = mesh ? mesh.data.radiusAU * mesh.group.scale.x : null;
     for (const moons of this.planetMoons.values()) {
       const mm = moons.find((x) => x.data.name === name);
       if (mm) {
         dotScreenAlpha = mm.dotScreenAlpha ?? 0;
         dotLitScreenAlpha = mm.dotLitScreenAlpha ?? 0;
+        renderedRadiusAU = mm.data.radiusAU * mm.mesh.scale.x;
         break;
       }
+    }
+    // Where the body actually sits on screen this frame. Distance alone
+    // cannot say whether a body is being SHOWN, and "is the destination in
+    // frame" is the question every arrival and departure has to answer.
+    let screen: {
+      x: number; y: number; ndcX: number; ndcY: number;
+      diameterPx: number; fraction: number; inFrame: boolean;
+    } | null = null;
+    if (pos && renderedRadiusAU !== null) {
+      const el = this.renderer.domElement;
+      const w = el.clientWidth;
+      const h = el.clientHeight;
+      const p = projectSphereToScreen(
+        new THREE.Vector3(
+          pos.x - this.renderOriginAU.x,
+          pos.y - this.renderOriginAU.y,
+          pos.z - this.renderOriginAU.z,
+        ),
+        renderedRadiusAU,
+        cam,
+        w,
+        h,
+        this.sphereScreenProjection,
+      );
+      screen = {
+        x: p.x,
+        y: p.y,
+        ndcX: p.ndcX,
+        ndcY: p.ndcY,
+        diameterPx: p.diameterPx,
+        // Same fraction the texture ladder scores bodies by: disc diameter
+        // over viewport height.
+        fraction: p.diameterPx / Math.max(h, 1),
+        // Any part of the disc's footprint overlapping the viewport counts,
+        // and a body behind the camera projects to a point footprint out of
+        // bounds rather than a covering one.
+        inFrame:
+          p.footprintKind !== 'none' &&
+          p.maxX >= 0 && p.minX <= w && p.maxY >= 0 && p.minY <= h,
+      };
     }
     const lbl = this.moonLabels.get(name);
     const labelVisible = lbl ? lbl.style.display !== 'none' : null;
@@ -14104,6 +14146,17 @@ export class PlanetariumMode {
       dotScreenAlpha,
       dotLitScreenAlpha,
       labelVisible,
+      renderedRadiusAU,
+      screen,
+      // Whether the flyby's tracking look still owns the aim, and whether it
+      // has latched into the post-pass hold (see cruiseAim.ts).
+      look: this.cruiseAim.look
+        ? {
+            name: this.cruiseAim.look.name,
+            holding: this.cruiseAim.look.hold.holding,
+            releasing: this.cruiseAim.look.releaseElapsedS !== null,
+          }
+        : null,
     };
   }
 

@@ -317,6 +317,49 @@ export function arrivalTrackEngage(
   );
 }
 
+/** Post-pass hold bookkeeping: what the hands-off flyby earned on the way
+ *  in, and whether the shot has latched into the hold on the way out. Plain
+ *  data owned by the aim state; advanced only by advanceFlybyHold. */
+export interface FlybyHoldState {
+  /** Highest tracking gate the pass reached before it started receding.
+   *  Zero means the shot never opened — there is nothing to hold. */
+  engagePeak: number;
+  /** Latched on the first receding frame of a developed pass, and never
+   *  unlatched: only the release fade (an input) ends a held shot. */
+  holding: boolean;
+}
+
+export function initialFlybyHoldState(): FlybyHoldState {
+  return { engagePeak: 0, holding: false };
+}
+
+/**
+ * Advance the post-pass hold one frame and return the tracking gate to use.
+ *
+ * A travel's job is not over at closest approach: the receding leg is where
+ * the destination is biggest and best lit, and letting the engage gate close
+ * again there ends every trip on an empty star field with the body behind
+ * the camera. So once a hands-off pass is past closest approach the gate
+ * stops moving — it holds at whatever it opened to, and the caller suspends
+ * the recede ease alongside it — until an input starts the release fade.
+ *
+ * The hold needs BOTH a real closest approach (`approached`, not the
+ * distance backstop that a warp step can trip on its own) and a shot that
+ * actually opened (`engagePeak > 0`): a zero-weight hold would deflect
+ * nothing while keeping a look alive that can never end.
+ */
+export function advanceFlybyHold(
+  hold: FlybyHoldState,
+  engage: number,
+  approached: boolean,
+  receding: boolean,
+): number {
+  if (hold.holding) return hold.engagePeak;
+  if (engage > hold.engagePeak) hold.engagePeak = engage;
+  hold.holding = approached && receding && hold.engagePeak > 0;
+  return hold.holding ? hold.engagePeak : engage;
+}
+
 /** Standoff floor (~500 km) so the smallest arrivals never park
  *  uncomfortably tight. The old ~7,500 km value was tuned when the smallest
  *  rendered moon was a ~3,000 km marble; against curve-rendered specks it

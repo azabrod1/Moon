@@ -13,7 +13,11 @@ import {
   stepCruiseAim,
   type CruiseAimState,
 } from './cruiseAim';
-import { ARRIVAL_ENGAGE_FULL_RATIO, ARRIVAL_LOOK_RELEASE_S } from './arrivalLogic';
+import {
+  ARRIVAL_ENGAGE_FULL_RATIO,
+  ARRIVAL_ENGAGE_START_RATIO,
+  ARRIVAL_LOOK_RELEASE_S,
+} from './arrivalLogic';
 
 const ORIGIN = new THREE.Vector3(0, 0, 0);
 const out = new THREE.Vector3();
@@ -536,6 +540,108 @@ describe('engage gating (the settled-arrival contract)', () => {
     }
     const want = pointMixDir(camPos, moonWorld, 1);
     expect(angleBetween(out, want)).toBeLessThan(1e-6);
+  });
+});
+
+describe('the post-pass hold (a travel ends on its destination)', () => {
+  const DT = 1 / 60;
+  const ARRIVAL = 2.9e-3;
+  // Impact parameter inside ARRIVAL_ENGAGE_FULL_RATIO, so the hands-off pass
+  // opens the tracking gate all the way, as every authored flyby does.
+  const IMPACT = ARRIVAL * ARRIVAL_ENGAGE_FULL_RATIO * 0.75;
+  const CAM = new THREE.Vector3(0, 1e-6, 3e-6);
+
+  /** The body's scene position at along-track offset z: it starts one arrival
+   *  distance ahead, sweeps past at IMPACT, and recedes behind. */
+  const at = (z: number) => new THREE.Vector3(IMPACT, 0, z);
+
+  /** Fly the pass from the drop to `endZ`, one frame at a time, asserting the
+   *  aim never steps past the continuity cap. Returns the last body position. */
+  function flyPass(state: CruiseAimState, endZ: number, frames: number) {
+    const startZ = -Math.sqrt(Math.max(ARRIVAL * ARRIVAL - IMPACT * IMPACT, 0));
+    let body = at(startZ);
+    clearArrivalLook(state);
+    cutAim(state);
+    startArrivalLook(state, { kind: 'planet', name: 'Saturn' }, body.distanceTo(CAM));
+    stepCruiseAim(state, CAM, body, ORIGIN, DT, out);
+    let prev = out.clone();
+    for (let i = 1; i <= frames; i++) {
+      body = at(startZ + (endZ - startZ) * (i / frames));
+      stepCruiseAim(state, CAM, body, ORIGIN, DT, out);
+      expect(angleBetween(prev, out)).toBeLessThanOrEqual(
+        Math.min(AIM_RATE_CAP_RAD_PER_S * DT, AIM_STEP_MAX_RAD) + 1e-9,
+      );
+      prev = out.clone();
+    }
+    return body;
+  }
+
+  it('keeps the body framed where the engage gate used to close again', () => {
+    const state = createCruiseAimState();
+    // Out to 0.9 arrival distances on the receding leg — outside the engage
+    // band, where handing the frame back leaves the pilot on empty stars.
+    const body = flyPass(state, 0.9 * ARRIVAL, 400);
+    expect(body.distanceTo(CAM)).toBeGreaterThan(ARRIVAL_ENGAGE_START_RATIO * ARRIVAL);
+    expect(state.look!.hold.holding).toBe(true);
+    expect(state.look!.releaseElapsedS).toBeNull(); // hands off throughout
+    expect(angleBetween(out, pointMixDir(CAM, body, 1))).toBeLessThan(1e-6);
+  });
+
+  it('survives past the distance that used to retire the look outright', () => {
+    const state = createCruiseAimState();
+    const body = flyPass(state, LOOK_RECEDE_BACKSTOP_RATIO * ARRIVAL * 1.5, 900);
+    expect(state.look).not.toBeNull();
+    expect(angleBetween(out, pointMixDir(CAM, body, 1))).toBeLessThan(1e-6);
+  });
+
+  it('a player input mid-hold ends it, eased and inside the release fade', () => {
+    const state = createCruiseAimState();
+    flyPass(state, 0.9 * ARRIVAL, 400);
+    const body = at(0.9 * ARRIVAL);
+    releaseArrivalLook(state);
+    const baseDir = CAM.clone().negate().normalize();
+    let prev = out.clone();
+    let frames = 0;
+    // The look itself must be gone within the fade; the residual deflection
+    // (a held shot looks back down the flight path, so it can be most of a
+    // half-turn) then eases out under the same rate cap as everything else.
+    for (let i = 0; i < Math.ceil(ARRIVAL_LOOK_RELEASE_S / DT) + 1; i++) {
+      stepCruiseAim(state, CAM, body, ORIGIN, DT, out);
+      expect(angleBetween(prev, out)).toBeLessThanOrEqual(
+        Math.min(AIM_RATE_CAP_RAD_PER_S * DT, AIM_STEP_MAX_RAD) + 1e-9,
+      );
+      prev = out.clone();
+      frames++;
+    }
+    expect(state.look).toBeNull();
+    while (angleBetween(out, baseDir) > 1e-6 && frames < 120) {
+      stepCruiseAim(state, CAM, null, ORIGIN, DT, out);
+      expect(angleBetween(prev, out)).toBeLessThanOrEqual(
+        Math.min(AIM_RATE_CAP_RAD_PER_S * DT, AIM_STEP_MAX_RAD) + 1e-9,
+      );
+      prev = out.clone();
+      frames++;
+    }
+    expect(frames).toBeLessThan(120);
+    expect(angleBetween(out, baseDir)).toBeLessThan(1e-6);
+  });
+
+  it('an input before the pass develops leaves nothing to hold', () => {
+    const state = createCruiseAimState();
+    const body = at(-Math.sqrt(ARRIVAL * ARRIVAL - IMPACT * IMPACT));
+    clearArrivalLook(state);
+    cutAim(state);
+    startArrivalLook(state, { kind: 'planet', name: 'Saturn' }, body.distanceTo(CAM));
+    stepCruiseAim(state, CAM, body, ORIGIN, DT, out);
+    releaseArrivalLook(state);
+    // Fly the whole pass with the release already latched: the fade retires
+    // the look long before closest approach, so no hold can form.
+    for (let i = 0; i < 60; i++) {
+      stepCruiseAim(state, CAM, at(-ARRIVAL * (1 - i / 60)), ORIGIN, DT, out);
+    }
+    expect(state.look).toBeNull();
+    const baseDir = CAM.clone().negate().normalize();
+    expect(angleBetween(out, baseDir)).toBeLessThan(1e-7);
   });
 });
 

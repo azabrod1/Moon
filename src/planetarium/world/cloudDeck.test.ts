@@ -15,7 +15,9 @@ import {
   CLOUD_DETAIL_GLSL,
   CLOUD_EDGE_BAND,
   CLOUD_NORMAL_SCALE,
+  CLOUD_TOP_KM,
   cloudCoverageAlpha,
+  cloudShellScale,
   cloudDetailFade,
   cloudEdgeBand,
   luminance,
@@ -36,7 +38,12 @@ import {
   earthNightFragmentShader,
 } from '../../shared/shaders/atmosphere';
 import { createEarthNightShellMaterial } from './earthNightMaterial';
-import { augmentSurfaceMaterial, createSurfaceAirFx, type SurfaceArchetype } from './surfaceShading';
+import {
+  AIR_LOOKUP_RADIUS, augmentSurfaceMaterial, createSurfaceAirFx, type SurfaceArchetype,
+} from './surfaceShading';
+import { PLANETS } from '../planets/planetData';
+
+const EARTH_RADIUS_KM = PLANETS.find((p) => p.name === 'Earth')!.radiusKm;
 import { mapTexture } from '../testing/upgradeHarness';
 
 /** The subset of three's onBeforeCompile shader object the augmentation writes. */
@@ -448,5 +455,25 @@ describe('the deck lit from below', () => {
       worst = Math.max(worst, Math.min(du, 1 - du), Math.abs(v - uv.getY(i)));
     }
     expect(worst).toBeLessThan(1e-5);
+  });
+});
+
+describe('the deck\'s altitude', () => {
+  it('is a real cloud top, not a shell chosen to clear the globe', () => {
+    // Cloud tops run from a 2 km marine layer to a 16 km anvil; anything above
+    // that is a sheet the eye sees standing off the planet at the limb.
+    expect(CLOUD_TOP_KM).toBeGreaterThanOrEqual(2);
+    expect(CLOUD_TOP_KM).toBeLessThanOrEqual(16);
+    expect(cloudShellScale(EARTH_RADIUS_KM)).toBeCloseTo(1 + CLOUD_TOP_KM / EARTH_RADIUS_KM, 12);
+  });
+
+  it('is the same altitude the deck\'s own air segment ends at', () => {
+    // The mesh and the air lookup are one number: a deck hazed as if it were
+    // somewhere it is not draws unhazed cloud over hazed ground beside it.
+    expect(AIR_LOOKUP_RADIUS.cloud).toBe(cloudShellScale(EARTH_RADIUS_KM));
+  });
+
+  it('clears Earth\'s night-lights shell, which the deck is drawn over', () => {
+    expect(cloudShellScale(EARTH_RADIUS_KM)).toBeGreaterThan(1.001);
   });
 });

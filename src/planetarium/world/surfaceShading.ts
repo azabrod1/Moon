@@ -48,18 +48,19 @@
  * draws ABOVE the globe and would otherwise be the one unhazed layer, in
  * exactly the near-band view the haze exists for.
  *
- * That segment ends at the fragment for every surface drawn at the altitude it
- * stands for, and at an authored radius for the one that is not: the cloud
- * deck's mesh sits at 1.01 R so that up close the deck owns the silhouette,
- * which puts it above the whole air. `AIR_LOOKUP_RADIUS` is where each
- * archetype's segment really ends.
+ * That segment ends at the fragment for a surface whose mesh really is at the
+ * altitude it stands for, and at a stated radius for the cloud deck, whose
+ * coarse sphere sags kilometres between its vertices. `AIR_LOOKUP_RADIUS` is
+ * where each archetype's segment really ends.
  *
- * The injection has three points, not two: the declarations at <common>, the
- * cloud deck's detail at <normal_fragment_maps> — the one place where the
- * perturbed normal exists and no light has read it yet — and everything else
- * before <opaque_fragment>, after the lighting, where the terms above land in
- * linear radiance. A normal moved at the third point would shade this file's
- * own night terms and leave three's lights on a smooth sphere.
+ * The injection has five points: the declarations at <common>; the deck's
+ * smoothed colour fetch at <map_fragment>; the ocean's gloss remap at
+ * <roughnessmap_fragment>; the cloud deck's detail at <normal_fragment_maps> —
+ * the one place where the perturbed normal exists and no light has read it yet
+ * — and everything else before <opaque_fragment>, after the lighting, where the
+ * terms above land in linear radiance. A normal moved at the last point would
+ * shade this file's own night terms and leave three's lights on a smooth
+ * sphere.
  *
  * The injected GLSL is byte-identical for every body (only uniforms differ), so
  * materials still share compiled programs — no custom cache key needed. That
@@ -87,6 +88,7 @@ import {
   CLOUD_DETAIL_ERODE,
   CLOUD_DETAIL_GLSL,
   CLOUD_DETAIL_RELIEF_KM,
+  cloudShellScale,
   LUMINANCE_WEIGHTS,
   SPHERE_EQUIRECT_UV_GLSL,
 } from './cloudDeck';
@@ -231,26 +233,20 @@ const LIMB_DARKENING: Record<SurfaceArchetype, number> = {
   cloud:   0.0,
 };
 
-/** A physical cloud top, km above the surface. A whole-globe deck stands for
- *  everything from a 2 km marine layer to a 16 km anvil; 10 is the middle of
- *  that range and the altitude the deck's air is looked up at. */
-const CLOUD_TOP_KM = 10;
-
 const EARTH_RADIUS_KM = PLANETS.find((p) => p.name === 'Earth')!.radiusKm;
 
 // Where a surface's air segment ENDS, in the radius units the tables are baked
 // in (1 = the surface). 0 leaves the segment at the fragment's own radius,
 // which is right for every mesh drawn at the altitude it stands for.
 //
-// The cloud deck is not one of those. Its mesh is at 1.01 R because up close
-// the deck, not the globe, is the body's silhouette — and 1.01 R is 64 km,
-// above 99.97 % of the Rayleigh column and all of the Mie and the ozone. Look
-// the air up there and `x T + S` is a no-op in every pose the app can reach,
-// while the deck's own alpha still takes that fraction of the ground's airlight
-// off every pixel it covers, and a covered pixel at the horizon is then an
-// unhazed cloud image in the one band a photograph washes out. So the deck
-// looks its air up at the physical cloud top instead: the same ray in the same
-// direction, with the radius substituted for the segment's far end.
+// The cloud deck IS drawn at the altitude it stands for (cloudShellScale), and
+// it still names that altitude here rather than passing 0, because a sphere
+// built at the globe's segment count sags away from the sphere it approximates
+// by kilometres between its vertices: at 64 longitude segments the chord dips
+// 7.7 km below Earth's radius mid-quad, which is most of a cloud top. Read the
+// fragment's own radius and the air segment's far end would wander that far
+// across every quad of the deck; normalising to the stated altitude ends every
+// ray at the same height, which is what the deck is.
 //
 // The substituted point is always still on the visible side of the globe: a
 // deck fragment is only drawn where its normal faces the camera, which is
@@ -259,16 +255,79 @@ const EARTH_RADIUS_KM = PLANETS.find((p) => p.name === 'Earth')!.radiusKm;
 // larger sphere.
 //
 // These are radius units and the only body with a deck is Earth, so the deck's
-// entry is 10 km expressed against Earth's radius. A second body that grew one
-// would want its own altitude divided by its own radius, not this number.
+// entry is the cloud top expressed against Earth's radius. A second body that
+// grew one would want its own altitude divided by its own radius.
 export const AIR_LOOKUP_RADIUS: Record<SurfaceArchetype, number> = {
   airless: 0,
   rocky:   0,
   gas:     0,
   icy:     0,
   earth:   0,
-  cloud:   1 + CLOUD_TOP_KM / EARTH_RADIUS_KM,
+  cloud:   cloudShellScale(EARTH_RADIUS_KM),
 };
+
+// --- The ocean's gloss -------------------------------------------------------
+//
+// Earth's roughness map is a water mask graded into two roughnesses (the pair
+// tools/gen-tiles.mjs writes it with), area-averaged so a coast is a fractional
+// value between them rather than a stair. What it authors for open water is a
+// GGX lobe wide enough to be a physically fair wind-roughened sea — and a lobe
+// that wide integrates the Sun into a broad dim sheen with no core at all,
+// which is what an orbital frame of the glint read as: a flat grey-white wash
+// over most of the visible ocean, dimmer than the sunlit land beside it.
+//
+// A real sea is not one lobe. Its slope distribution has a near-specular core
+// from the calm between the waves and long wind-driven wings, and a photograph
+// shows the core clipped to white with a glitter tail running toward the Sun.
+// One GGX lobe can only be authored at one of those widths, so it is authored
+// at the CORE's: GGX's own tails are heavy enough (they fall as the inverse
+// fourth power of the slope angle) to carry the glitter that reaches out of it.
+//
+// The remap happens where the map is read rather than in the map, so the globe
+// and the streamed sectors cut from the same source move together — a sector
+// carrying the shipped pair over a globe carrying a different one is a
+// rectangle of different sea.
+
+/** What the shipped roughness map grades land and open water at. Mirrors the
+ *  ROUGH_LAND / ROUGH_WATER pair in tools/gen-tiles.mjs — the values are read
+ *  back out of the map here, so the two have to agree. */
+export const ROUGHNESS_MAP_LAND = 0.92;
+export const ROUGHNESS_MAP_WATER = 0.45;
+
+/**
+ * What open water is drawn at instead: a GGX alpha of 0.04, an order of
+ * magnitude less solid angle than the shipped value spreads the Sun over. At
+ * 400 km the reflection stops being a wash that never got past mid-grey and
+ * becomes a core that clips to white, in a patch about half as wide.
+ *
+ * Not lower. The lobe's tails — the glitter that reaches out of the core — fall
+ * with the square of alpha, so every step tighter buys a little less core and
+ * costs a lot of tail, and past this the sea is a mirror with a point on it.
+ */
+export const OCEAN_ROUGHNESS = 0.2;
+
+/** The factor the map's distance BELOW land is multiplied by to land open
+ *  water on OCEAN_ROUGHNESS. A coast's fractional water score keeps its
+ *  fraction — the coastal gradation is scaled, not thresholded away. */
+const WATER_GLOSS_GAIN = (ROUGHNESS_MAP_LAND - OCEAN_ROUGHNESS)
+  / (ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER);
+
+/** The remap, as the shader applies it: land unmoved, open water at
+ *  OCEAN_ROUGHNESS, a fractional coast in proportion. */
+export function waterGlossRoughness(mapRoughness: number): number {
+  return Math.max(
+    ROUGHNESS_MAP_LAND - (ROUGHNESS_MAP_LAND - mapRoughness) * WATER_GLOSS_GAIN,
+    0.02,
+  );
+}
+
+/** The GLSL half of `waterGlossRoughness`, behind the uniform that is zero on
+ *  every surface but a globe whose roughness map really is a water mask. */
+const WATER_GLOSS_GLSL = /* glsl */ `
+if (uWaterGloss > 0.0) {
+  roughnessFactor = max(${ROUGHNESS_MAP_LAND.toFixed(6)}
+      - (${ROUGHNESS_MAP_LAND.toFixed(6)} - roughnessFactor) * uWaterGloss, 0.02);
+}`;
 
 // Analytic stand-in for Saturn's ring opacity across the annulus (t: 0 inner …
 // 1 outer), used only for the shadow it casts — the major features that read on
@@ -350,6 +409,89 @@ if (uFrameSpin == 0.0) {
 vAirCam = cameraPosition - modelMatrix[3].xyz;
 vAirFrag = mat3(modelMatrix) * position;`;
 
+/**
+ * How wide the hand-over from the smooth magnification filter back to plain
+ * bilinear is, in map texels per screen pixel. Below the first number a texel
+ * is being stretched over more than a pixel and its interpolation is what the
+ * eye is looking at; past the second the map is minified, the mip chain is
+ * doing the filtering and there is nothing left to smooth.
+ */
+const SMOOTH_TEXEL_FADE: readonly [number, number] = [0.7, 1.3];
+
+/**
+ * A cubic B-spline magnification filter, for the two maps only the cloud deck
+ * wears. Bilinear magnification is C0 — the interpolant's SLOPE jumps at every
+ * texel boundary — and any nonlinear function of the result (the deck's
+ * coverage curve, a normal map through a light) turns that jump into a visible
+ * crease. Stretch a texel over twenty screen pixels, as an orbital-altitude
+ * frame of an 8K whole-globe map does, and the creases draw the texel grid:
+ * square-edged cloud blobs, square holes, straight seams across the interiors.
+ *
+ * The B-spline kernel is C2 and four texels wide, so the grid has nothing left
+ * to draw — and unlike a smoothstep warp of the sample point, which is also C1
+ * but leaves each texel's centre flat, it does not trade creases for plateaus.
+ * Four bilinear taps by the standard weight-folding, and only where the map is
+ * actually magnified: `smoothTexelWeight` is zero everywhere else, and the taps
+ * sit behind it.
+ *
+ * The taps are explicit-LOD. Their offsets are discontinuous at texel
+ * boundaries, so an implicit derivative would pick a mip off a garbage
+ * footprint; under magnification the level is zero by definition, which is what
+ * the fade above is really saying.
+ */
+const SMOOTH_TEXEL_GLSL = /* glsl */ `
+// How much of the smooth filter this fragment wants: 1 while the map is
+// magnified, 0 once the mip chain has taken over.
+float smoothTexelWeight(vec2 uv, vec2 texels) {
+  float perPixel = max(fwidth(uv.x) * texels.x, fwidth(uv.y) * texels.y);
+  return 1.0 - smoothstep(${SMOOTH_TEXEL_FADE[0].toFixed(6)}, ${SMOOTH_TEXEL_FADE[1].toFixed(6)}, perPixel);
+}
+vec4 textureBSpline(sampler2D tex, vec2 uv, vec2 texels) {
+  vec2 p = uv * texels - 0.5;
+  vec2 f = fract(p);
+  vec2 base = p - f;
+  vec2 f2 = f * f;
+  vec2 f3 = f2 * f;
+  vec2 w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0;
+  vec2 w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;
+  vec2 w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0;
+  vec2 w3 = f3 / 6.0;
+  // Each PAIR of taps is folded into one bilinear fetch placed between them:
+  // four texels of support for two fetches per axis.
+  vec2 s0 = w0 + w1;
+  vec2 s1 = w2 + w3;
+  vec2 t0 = (base + w1 / s0 - 0.5) / texels;
+  vec2 t1 = (base + w3 / s1 + 1.5) / texels;
+  return mix(
+      mix(textureLod(tex, vec2(t1.x, t0.y), 0.0), textureLod(tex, vec2(t0.x, t0.y), 0.0), s0.x),
+      mix(textureLod(tex, vec2(t1.x, t1.y), 0.0), textureLod(tex, vec2(t0.x, t1.y), 0.0), s0.x),
+      s1.y);
+}
+`;
+
+/**
+ * three's own <map_fragment>, with the deck's fetch put through the smooth
+ * magnification filter. The ordinary bilinear tap happens for every surface;
+ * the four extra ones sit behind a weight that is zero on all of them.
+ */
+const SURFACE_MAP_FRAGMENT = /* glsl */ `
+#ifdef USE_MAP
+	vec4 sampledDiffuseColor = texture2D( map, vMapUv );
+	if ( uCloudDeck > 0.0 ) {
+		vec2 mapTexels = vec2( textureSize( map, 0 ) );
+		float smoothW = smoothTexelWeight( vMapUv, mapTexels );
+		if ( smoothW > 0.0 ) {
+			sampledDiffuseColor = mix( sampledDiffuseColor,
+				textureBSpline( map, vMapUv, mapTexels ), smoothW );
+		}
+	}
+	#ifdef DECODE_VIDEO_TEXTURE
+		sampledDiffuseColor = sRGBTransferEOTF( sampledDiffuseColor );
+	#endif
+	diffuseColor *= sampledDiffuseColor;
+#endif
+`;
+
 const SURFACE_FRAGMENT_DECLS = /* glsl */ `
 uniform vec3 uNightColor;
 uniform float uNightStrength;
@@ -370,6 +512,7 @@ uniform vec3 uMoonDirWorld;
 uniform vec3 uMoonIrradiance;
 uniform float uAirDensity;
 uniform float uAirLookupRadius;
+uniform float uWaterGloss;
 uniform float uCloudDeck;
 uniform sampler2D uCloudDetail;
 uniform float uCloudAlbedo;
@@ -389,7 +532,7 @@ varying vec3 vObjPos;
 varying vec3 vPlanetshineViewDir;
 varying vec3 vAirCam;
 varying vec3 vAirFrag;
-${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}${CLOUD_DETAIL_GLSL}${SPHERE_EQUIRECT_UV_GLSL}`;
+${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}${CLOUD_DETAIL_GLSL}${SPHERE_EQUIRECT_UV_GLSL}${SMOOTH_TEXEL_GLSL}`;
 
 // Injected after lighting but before <opaque_fragment> writes outgoingLight into
 // gl_FragColor — so terms land in linear radiance (tone-mapped downstream) and
@@ -410,6 +553,23 @@ vec2 cloudNightUv = vec2(0.0);
 vec2 cloudNightDx = vec2(0.0);
 vec2 cloudNightDy = vec2(0.0);
 if (uCloudDeck > 0.0) {
+  #ifdef USE_NORMALMAP_TANGENTSPACE
+  // The relief again, off the same tangent frame three's chunk used but through
+  // the smooth magnification filter. The deck's height field is its coarsest
+  // map by far — tens of kilometres to the texel where its colour map is a few
+  // — so it is the layer whose bilinear facets read first, as flat-shaded
+  // quilting across the interior of every bank. Redone here rather than in
+  // place of the chunk, because that chunk also carries the object-space and
+  // bump paths every other body's surface takes.
+  vec2 reliefTexels = vec2(textureSize(normalMap, 0));
+  float reliefSmoothW = smoothTexelWeight(vNormalMapUv, reliefTexels);
+  if (reliefSmoothW > 0.0) {
+    vec3 smoothMapN = mix(texture2D(normalMap, vNormalMapUv),
+        textureBSpline(normalMap, vNormalMapUv, reliefTexels), reliefSmoothW).xyz * 2.0 - 1.0;
+    smoothMapN.xy *= normalScale;
+    normal = normalize(tbn * smoothMapN);
+  }
+  #endif
   // Where this fragment is on the deck, as longitude and latitude. Every
   // derivative the block needs is taken HERE, inside the one branch that is
   // uniform across the draw: a derivative under a per-fragment condition is
@@ -632,12 +792,12 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // tables, on a device with no tier, and between a lost context and the
   // re-bake — the same text either way, so one program serves every body.
   if (uAirDensity > 0.0) {
-    // Where the segment ends. A mesh drawn at the altitude it stands for ends
-    // at its own fragment; the cloud deck is drawn at 1.01 R to own the
-    // silhouette, which is 64 km up and above the whole column, so its air is
-    // looked up at a physical cloud top instead. Same ray, same direction, the
-    // radius substituted — and the whole substitution is one uniform, so the
-    // injected text stays identical for every surface.
+    // Where the segment ends. A mesh whose own radius is the altitude it stands
+    // for ends at its own fragment; the cloud deck names its altitude instead,
+    // because its sphere is built at the globe's coarse segment count and the
+    // chord sags kilometres below that radius between vertices. Same ray, same
+    // direction, the radius substituted — and the whole substitution is one
+    // uniform, so the injected text stays identical for every surface.
     vec3 airEnd = uAirLookupRadius > 0.0
         ? normalize(vAirFrag) * uAirLookupRadius
         : vAirFrag / uPlanetRadius;
@@ -674,12 +834,29 @@ export interface SurfaceShadingArgs {
    *  deck drifts, and its object space is that much out of the body frame the
    *  eclipse casters are given in. Zero for a mesh that shares the frame. */
   uFrameSpin: { value: number };
+  /** The ocean-gloss remap's gain, or 0 while this material's roughness map is
+   *  not a water mask. Held here rather than on the material because the
+   *  streamed sectors have to be told the same thing the globe was. */
+  uWaterGloss: { value: number };
 }
 const augmentArgs = new WeakMap<THREE.Material, SurfaceShadingArgs>();
 
 /** The augmentation a material received, or undefined for a plain one. */
 export function surfaceShadingArgsOf(mat: THREE.Material): SurfaceShadingArgs | undefined {
   return augmentArgs.get(mat);
+}
+
+/** Whether this material is reading its roughness map as a water mask. */
+export function surfaceWaterGloss(mat: THREE.Material): boolean {
+  return (augmentArgs.get(mat)?.uWaterGloss.value ?? 0) > 0;
+}
+
+/** Read this material's roughness map as a water mask, or stop: `on` is only
+ *  true for a map that really grades water against land (world/surfaceShading's
+ *  ROUGHNESS_MAP_* pair), never for the flat stand-in a failed fetch leaves. */
+export function setSurfaceWaterGloss(mat: THREE.Material, on: boolean): void {
+  const args = augmentArgs.get(mat);
+  if (args) args.uWaterGloss.value = on ? WATER_GLOSS_GAIN : 0;
 }
 
 /** 1×1 stand-ins, shared by every augmented material: no sampler is ever left
@@ -792,7 +969,11 @@ export function augmentSurfaceMaterial(
     air: createSurfaceAirFx(),
   };
   const uFrameSpin = sharedSpin ?? { value: 0 };
-  augmentArgs.set(mat, { archetype, ringShadow, sunTan, fx, uFrameSpin });
+  // Off until whoever owns the roughness map says it really is a water mask:
+  // the flat mid-grey stand-in a failed fetch leaves behind is not one, and
+  // remapping it would put an ocean's sheen on the whole planet.
+  const uWaterGloss = { value: 0 };
+  augmentArgs.set(mat, { archetype, ringShadow, sunTan, fx, uFrameSpin, uWaterGloss });
   const uNightColor = { value: new THREE.Color(night.color) };
   const uNightStrength = { value: night.strength };
   const uTermWidth = { value: night.termWidth };
@@ -837,6 +1018,7 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uIcyRim = uIcyRim;
     shader.uniforms.uLimbDarkening = uLimbDarkening;
     shader.uniforms.uAirLookupRadius = uAirLookupRadius;
+    shader.uniforms.uWaterGloss = uWaterGloss;
     shader.uniforms.uCloudDeck = uCloudDeck;
     shader.uniforms.uCloudDetail = uCloudDetail;
     shader.uniforms.uCloudAlbedo = uCloudAlbedo;
@@ -852,6 +1034,8 @@ export function augmentSurfaceMaterial(
 
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>${SURFACE_FRAGMENT_DECLS}`)
+      .replace('#include <map_fragment>', SURFACE_MAP_FRAGMENT)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>${WATER_GLOSS_GLSL}`)
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>${SURFACE_NORMAL_BODY}`)
       .replace('#include <opaque_fragment>', `${SURFACE_FRAGMENT_BODY}\n#include <opaque_fragment>`);
   };

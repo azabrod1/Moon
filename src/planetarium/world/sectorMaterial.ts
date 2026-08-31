@@ -18,7 +18,9 @@
  * can never leave it sampling a freed texture.
  */
 import * as THREE from 'three';
-import { augmentSurfaceMaterial, surfaceShadingArgsOf } from './surfaceShading';
+import {
+  augmentSurfaceMaterial, setSurfaceWaterGloss, surfaceShadingArgsOf, surfaceWaterGloss,
+} from './surfaceShading';
 
 /** The maps a sector owns: its colour tile, and crops of whichever relief /
  *  roughness maps its base material carries. */
@@ -53,7 +55,6 @@ export function createSectorMaterial(
     normalMap: maps.normalMap ?? null,
     roughnessMap: maps.roughnessMap ?? null,
   });
-  syncSectorMaterial(mat, base);
   // The sector's vertices coincide with the globe's and with every coarser
   // sector's (sectorGrid pins it), so depth ties exactly; a units-only offset
   // breaks the tie one step per level, finest nearest. The slope FACTOR stays
@@ -70,6 +71,10 @@ export function createSectorMaterial(
   if (args) {
     augmentSurfaceMaterial(mat, args.archetype, args.ringShadow, args.sunTan, args.fx, args.uFrameSpin);
   }
+  // After the augmentation, not before: part of what the sector mirrors lives in
+  // the augmentation's own uniforms, and a sync run first would write it into a
+  // material that has none yet.
+  syncSectorMaterial(mat, base);
   return mat;
 }
 
@@ -86,4 +91,8 @@ export function syncSectorMaterial(mat: THREE.MeshStandardMaterial, base: THREE.
   mat.metalness = base.metalness;
   mat.bumpScale = base.bumpScale;
   mat.normalScale.copy(base.normalScale);
+  // Whether the roughness map is being read as a water mask is the globe's
+  // call, not the tile's: a sector reading its crop one way over a globe
+  // reading its map the other is a rectangle of different sea.
+  setSurfaceWaterGloss(mat, surfaceWaterGloss(base));
 }

@@ -17,7 +17,7 @@
  * may hold, only what it is made of.
  */
 import * as THREE from 'three';
-import { type PlanetData, SUN_DATA } from './planets/planetData';
+import { PLANETS, type PlanetData, SUN_DATA } from './planets/planetData';
 import { createPlanetRings, RING_CONFIGS, type RingShadingFx } from './planets/rings';
 import {
   atmosphereVertexShader,
@@ -35,9 +35,12 @@ import {
   SUN_GLARE_EXTENT_SOLAR_RADII,
 } from '../shared/shaders/sun';
 import { debugWarn } from '../shared/debug';
-import { CLOUD_NORMAL_SCALE } from './world/cloudDeck';
+import { CLOUD_NORMAL_SCALE, cloudShellScale } from './world/cloudDeck';
 import { applyTextureDefaults, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
-import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
+import {
+  augmentSurfaceMaterial, setSurfaceWaterGloss,
+  type SurfaceArchetype, type SurfaceShadingFx,
+} from './world/surfaceShading';
 import { createAtmosphereShellMaterial } from './world/atmosphereShell';
 import { ATMOSPHERE_TABLE_SIZES_FULL, type AtmosphereTableSizes } from './world/atmosphereModel';
 import { queueTextureWarm } from './world/textureWarmer';
@@ -628,11 +631,13 @@ function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig): THREE
 }
 
 // Earth's companion shells sit just above the globe: the night lights hug the
-// surface, the cloud deck floats a little higher. Both are drawn at the same
+// surface, the cloud deck stands at a cloud top. Both are drawn at the same
 // segment count as the globe, so all three silhouettes coarsen and refine
 // together.
 const EARTH_NIGHT_SHELL_SCALE = 1.001;
-const EARTH_CLOUD_SHELL_SCALE = 1.01;
+const EARTH_CLOUD_SHELL_SCALE = cloudShellScale(
+  PLANETS.find((p) => p.name === 'Earth')!.radiusKm,
+);
 
 export interface PlanetMesh {
   group: THREE.Group;
@@ -777,8 +782,14 @@ export function wireEarthLateDetail(
   connectLateDetailMap(
     slots.roughness, earthMat,
     () => earthMat.roughnessMap,
-    (tex) => { earthMat.roughnessMap = tex; },
+    (tex) => { earthMat.roughnessMap = tex; setSurfaceWaterGloss(earthMat, isWaterMask(tex)); },
   );
+}
+
+/** Whether a roughness texture is the graded water mask the ocean's gloss remap
+ *  reads, rather than the flat stand-in a failed fetch leaves behind. */
+function isWaterMask(tex: THREE.Texture | null | undefined): boolean {
+  return !!tex && tex.userData?.proceduralFallback !== true;
 }
 
 export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> {
@@ -981,9 +992,13 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     // Ocean glint: the map drives roughness (ocean glossy, land/ice matte), so a
     // tight solar specular reads as the blue-marble sun glint on the seas. Water
     // is a dielectric — keep metalness 0; the gloss alone makes the highlight.
+    // The map's own water value is widened into a flat sheen with no core, so
+    // the shading seam narrows it (world/surfaceShading's OCEAN_ROUGHNESS) —
+    // but only once the map really is a water mask.
     earthMat.roughnessMap = roughTex;
     earthMat.roughness = 1.0;
     earthMat.metalness = 0.0;
+    setSurfaceWaterGloss(earthMat, isWaterMask(roughTex));
     earthMat.needsUpdate = true;
 
     // Detail maps that missed their timeout replace the fallback in place —

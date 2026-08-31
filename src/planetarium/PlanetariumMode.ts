@@ -140,6 +140,7 @@ import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
 import { captureDeviceCaps, resolveTextureUrl, type TextureTier } from './world/texturePolicy';
 import { retainedSourceBytes, textureGpuBytes } from './world/textureBytes';
 import { advanceSpinLatch, sectorSuspendFor, type SectorSpinLatch } from './world/sectorSpinGate';
+import { FrameIntervalTracker } from './world/frameInterval';
 import { planLadderPressure } from './world/ladderPressure';
 import {
   classifyDevice,
@@ -787,6 +788,14 @@ export class PlanetariumMode {
     this.mapPointerCancel(e);
   };
 
+  /** Coming back to a tab that was hidden: the frames delivered while it was
+   *  are a throttle's, not a display's, and the frame-sliced work budgets
+   *  itself against their average. Believe the first frame that is shown
+   *  again instead of easing back to it. Named so dispose() can remove it. */
+  private onVisibilityChange = (): void => {
+    if (document.visibilityState === 'visible') this.frameInterval.resume();
+  };
+
   /** Focus loss cancels every armed gesture and held key — the matching
    *  releases may never arrive. Named so dispose() can remove it. */
   private onWindowBlur = (): void => {
@@ -870,10 +879,8 @@ export class PlanetariumMode {
    * single hitch would otherwise raise the estimate and licence more work on
    * exactly the frames that are already late.
    */
-  private frameIntervalMs = 16.7;
-  private static readonly FRAME_INTERVAL_EMA_ALPHA = 0.05;
-  private static readonly FRAME_INTERVAL_MIN_MS = 4;
-  private static readonly FRAME_INTERVAL_MAX_MS = 40;
+  private readonly frameInterval = new FrameIntervalTracker(16.7);
+  private get frameIntervalMs(): number { return this.frameInterval.ms; }
   /** Tangent step, in body radii, used to measure how large a sector's
    *  surface draws (see updateSectorStreaming). Small enough that the
    *  projection is straight across it — a quarter of a 16K texel — and far
@@ -2359,6 +2366,7 @@ export class PlanetariumMode {
     window.addEventListener('pointercancel', this.onWindowMapDisarm);
 
     window.addEventListener('blur', this.onWindowBlur);
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
 
     // Window-level capture tracker for the hover/tap body reveal (see the
     // handler fields). Registered once; every handler gates on `this.active`.
@@ -3967,10 +3975,7 @@ export class PlanetariumMode {
     // veil a frame late would blame the world for the cut's first hitch.
     if (import.meta.env.DEV) smoothTraceVeil(this.arrivalVeilUp());
     this.lastFrameDtMs = dt * 1000;
-    this.frameIntervalMs += (Math.min(
-      PlanetariumMode.FRAME_INTERVAL_MAX_MS,
-      Math.max(PlanetariumMode.FRAME_INTERVAL_MIN_MS, this.lastFrameDtMs),
-    ) - this.frameIntervalMs) * PlanetariumMode.FRAME_INTERVAL_EMA_ALPHA;
+    this.frameInterval.observe(this.lastFrameDtMs);
     this.frameStamp++;
     if (this.shaderWarmupProgramCount !== null && ++this.framesSinceShaderWarmup >= 3) {
       const now = this.renderer.info.programs?.length ?? 0;
@@ -17837,6 +17842,7 @@ export class PlanetariumMode {
     window.removeEventListener('pointerup', this.onWindowMapDisarm);
     window.removeEventListener('pointercancel', this.onWindowMapDisarm);
     window.removeEventListener('blur', this.onWindowBlur);
+    document.removeEventListener('visibilitychange', this.onVisibilityChange);
     window.removeEventListener('pointerdown', this.onWindowPointerDown, true);
     window.removeEventListener('pointermove', this.onWindowPointerMove, true);
     window.removeEventListener('pointerup', this.onWindowPointerUp, true);

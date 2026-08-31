@@ -7,6 +7,10 @@
 // hard horizontal edge across the body's disc — the band boundary of a
 // half-filled upload.
 //
+// --travel=Earth runs the veiled arrival instead of the manual approach, with
+// the chrome left on so the ship is in frame, and scans the WHOLE frame for
+// unwritten-storage magenta rather than only the body at screen centre.
+//
 // node tools/f1-wipe-probe.mjs --url=http://localhost:5688 --label=f1-repro
 import { chromium } from 'playwright';
 import { mkdir, writeFile, readFile, rm } from 'node:fs/promises';
@@ -26,6 +30,7 @@ const body = arg('body', 'Moon');
 const fill = Number(arg('fill', '0.30'));
 const settleMs = Number(arg('settle', '6000'));
 const captureMs = Number(arg('capture', '9000'));
+const travel = arg('travel', '');
 const W = Number(arg('w', '1280'));
 const H = Number(arg('h', '720'));
 
@@ -67,7 +72,11 @@ try {
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+  const console_ = [];
+  page.on('console', (m) => {
+    console_.push(`${m.type()}: ${m.text()}`);
+    if (m.type() === 'error') errors.push(m.text());
+  });
 
   const target = `${url}/?auto=planetarium&tiles=${encodeURIComponent(tiles)}`;
   console.log(`[f1] ${target} -> ${outDir}`);
@@ -77,7 +86,9 @@ try {
     const ls = document.getElementById('loading-screen');
     return !ls || ls.classList.contains('hidden');
   }, { timeout: 60000 }).catch(() => {});
-  await page.evaluate(() => window.__moon.setChrome(false));
+  // The travel run keeps the chrome: the report named a pink shape that could
+  // be the ship, so the ship has to be in frame.
+  if (!travel) await page.evaluate(() => window.__moon.setChrome(false));
 
   // Let the boot-idle pair warm finish so the climb we capture is the one the
   // approach earns, not the speculative one.
@@ -108,14 +119,17 @@ try {
   // The manual approach: pose the camera at the body across the trigger
   // fraction. frame() only poses — no travelTo, so no arrival veil.
   const t0 = Date.now();
-  await page.evaluate(([n, f]) => window.__moon.frame(n, f), [body, fill]);
+  if (travel) await page.evaluate((n) => window.__moon.travelTo(n), travel);
+  else await page.evaluate(([n, f]) => window.__moon.frame(n, f), [body, fill]);
   await page.waitForTimeout(captureMs);
   await cdp.send('Page.stopScreencast');
 
   const log = await page.evaluate(() => { cancelAnimationFrame(window.__f1raf); return window.__f1log; });
   const after = await page.evaluate(() => window.__moon.ladder());
   console.log('[f1] ladder after approach:', JSON.stringify(after?.rungs ?? []));
-  await writeFile(path.join(outDir, 'ladder.json'), JSON.stringify({ before, after, log, t0 }, null, 2));
+  await writeFile(path.join(outDir, 'ladder.json'), JSON.stringify({ before, after, log, t0, console: console_ }, null, 2));
+  const gl = console_.filter((m) => /webgl|INVALID_|GL_|texture/i.test(m));
+  if (gl.length) console.log(`[f1] GL-flavoured console lines (${gl.length}):`, gl.slice(0, 20));
   if (errors.length) console.log('[f1] page errors:', errors.slice(0, 5));
 } catch (e) {
   if (!e || e.skip !== true) throw e;
@@ -153,7 +167,25 @@ for (let i = 0; i < frames.length; i++) {
     }
   }
   r /= n; g /= n; b /= n;
+  // Whole-frame scan: an unfilled compressed map is magenta wherever it is
+  // drawn, which for a veiled arrival is not necessarily screen centre.
+  let pink = 0;
+  let pxMinX = width, pxMaxX = -1, pxMinY = height, pxMaxY = -1;
+  for (let y = 0; y < height; y += 2) {
+    for (let x = 0; x < width; x += 2) {
+      const o = (y * width + x) * channels;
+      if (Math.min(pixels[o], pixels[o + 2]) - pixels[o + 1] > 60 && pixels[o] > 80) {
+        pink++;
+        if (x < pxMinX) pxMinX = x;
+        if (x > pxMaxX) pxMaxX = x;
+        if (y < pxMinY) pxMinY = y;
+        if (y > pxMaxY) pxMaxY = y;
+      }
+    }
+  }
   report.push({
+    pink,
+    pinkBox: pxMaxX < 0 ? null : { x0: pxMinX, y0: pxMinY, x1: pxMaxX, y1: pxMaxY },
     name, t: frames[i].t,
     r: +r.toFixed(1), g: +g.toFixed(1), b: +b.toFixed(1),
     lum: +(0.299 * r + 0.587 * g + 0.114 * b).toFixed(1),
@@ -171,7 +203,10 @@ const median = lums.length ? lums[Math.floor(lums.length / 2)] : 0;
 let sawGood = false;
 for (const x of report) {
   if (x.lum === undefined) continue;
-  x.unfilled = sawGood && (x.magenta > 25 || x.lum < median * 0.4);
+  // A veiled arrival dims the whole screen on purpose, so the luminance half
+  // of the centre test says nothing there; the magenta of unwritten storage
+  // says the same thing wherever it is drawn, so it is the whole test.
+  x.unfilled = x.pink > 50 || (!travel && sawGood && (x.magenta > 25 || x.lum < median * 0.4));
   if (x.t >= poseAtMs && x.lum > median * 0.7 && x.magenta < 25) sawGood = true;
 }
 await writeFile(path.join(outDir, 'report.json'), JSON.stringify({ median, report }, null, 2));
@@ -181,6 +216,6 @@ console.log(`[f1] centre-box median luminance ${median}`);
 for (const x of report) {
   if (x.lum === undefined) continue;
   if (!x.unfilled && !report.some((y) => y.unfilled && Math.abs(report.indexOf(y) - report.indexOf(x)) <= 2)) continue;
-  console.log(`  ${x.name} rgb=${x.r}/${x.g}/${x.b} lum=${x.lum} magenta=${x.magenta}${x.unfilled ? '  <== UNFILLED MAP DRAWN' : ''}`);
+  console.log(`  ${x.name} rgb=${x.r}/${x.g}/${x.b} lum=${x.lum} magenta=${x.magenta} pink=${x.pink}${x.pinkBox ? ` at ${JSON.stringify(x.pinkBox)}` : ''}${x.unfilled ? '  <== UNFILLED MAP DRAWN' : ''}`);
 }
 console.log(`[f1] frames drawing an unfilled map: ${bad.length ? bad.map((x) => x.name).join(', ') : 'NONE'}`);

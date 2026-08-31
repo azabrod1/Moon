@@ -428,9 +428,13 @@ export function appliedTierHeldBytes(up: TextureUpgrade): number {
  * earned is, and it is spent out of the same envelope the tiles come from.
  */
 export function appliedNormalHeldBytes(up: NormalUpgrade | undefined): number {
-  if (!up || up.state !== 'done') return 0;
+  if (!up) return 0;
+  // A rung decoded and waiting for its upload is on the device before the
+  // material takes it, exactly as on the colour ladder.
+  const pending = up.pendingBytes ?? 0;
+  if (up.state !== 'done') return pending;
   const map = up.material.normalMap;
-  return textureGpuBytes(map, TIER_MAP_WIDTH[up.tier]) + retainedSourceBytes(map);
+  return textureGpuBytes(map, TIER_MAP_WIDTH[up.tier]) + retainedSourceBytes(map) + pending;
 }
 
 /**
@@ -1534,6 +1538,11 @@ export interface NormalUpgrade {
    *  that never calls back is abandoned past UPGRADE_ATTEMPT_TIMEOUT_MS
    *  (TextureLoader cannot abort, so abandonment is by identity). */
   startedAtMs?: number;
+  /** GPU bytes a decoded relief map holds while it waits for its upload —
+   *  TextureUpgrade.pendingUpgradeBytes for the data ladder. It is on the
+   *  device from the decode, and the material only takes it once the upload
+   *  is paid, so the stretch between the two has to be in the ledger. */
+  pendingBytes?: number;
 }
 
 export function makeNormalUpgrade(
@@ -1638,8 +1647,25 @@ export function upgradeNormalOnApproach(
           tex.dispose();
           return;
         }
-        up.state = 'done';
-        if (applyNormalTierTexture(up.material, tex, TIER_RANK[up.tier])) queueTextureWarm(tex);
+        // Warm first, assign second — the order the colour ladder holds, for
+        // the same reason: a map big enough to be uploaded in bands draws as
+        // unwritten storage until its last band lands. The relief map on disk
+        // is a few thousand texels under the size the slicer takes, so holding
+        // the order here is what keeps that a question of file size rather
+        // than one of what a body draws. Its bytes are resident from the
+        // decode, so the envelope counts them until the swap.
+        const bytes = textureGpuBytes(tex, TIER_MAP_WIDTH[up.tier]);
+        up.pendingBytes = (up.pendingBytes ?? 0) + bytes;
+        queueTextureWarm(tex, (outcome) => {
+          const owed = (up.pendingBytes ?? 0) - bytes;
+          up.pendingBytes = owed > 0 ? owed : undefined;
+          if (outcome === 'disposed' || abandoned()) {
+            tex.dispose();
+            return;
+          }
+          up.state = 'done';
+          applyNormalTierTexture(up.material, tex, TIER_RANK[up.tier]);
+        });
       };
       const img = tex.image as { decode?: () => Promise<void> } | undefined;
       if (img && typeof img.decode === 'function') img.decode().then(finish, finish);

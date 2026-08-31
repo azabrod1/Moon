@@ -36,6 +36,7 @@ import {
   firstUpgradeTier,
   initialColorTierRank,
   appliedTierGpuBytes,
+  appliedNormalHeldBytes,
   appliedTierHeldBytes,
   bindTierAdmission,
   cancelTierRelease,
@@ -592,6 +593,36 @@ describe('what a fetch puts on the material', () => {
     expect(normalUpgradePending(nu)).toBe(false); // done — the LOD loop stops measuring for it
     upgradeNormalOnApproach(nu, 0.9, 2);
     expect(pending).toHaveLength(1);
+  });
+
+  it('keeps the boot relief until the rung is uploaded, and charges it meanwhile', async () => {
+    // The same order as the colour ladder: a map is on the material only once
+    // drawing it is free. The relief file on disk is just under the size the
+    // slicer takes, so the order is what keeps that a question of file size.
+    const mat = new THREE.MeshStandardMaterial();
+    trackMaterial(mat);
+    const boot = mapTexture(1440);
+    mat.normalMap = boot;
+    mat.userData.normalTierRank = 2;
+    const nu = makeNormalUpgrade('moonNormal', mat)!;
+    upgradeNormalOnApproach(nu, 0.3, 0);
+    const arrival = arriving();
+    arrival.tex.image = {
+      width: 2880, height: 1440,
+      decode: (arrival.tex.image as { decode: () => Promise<void> }).decode,
+    };
+    pending[0].onLoad(arrival.tex);
+    arrival.finishDecode();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(mat.normalMap).toBe(boot);
+    expect(nu.pendingBytes).toBe(textureGpuBytes(arrival.tex, TIER_MAP_WIDTH['4k']));
+    expect(appliedNormalHeldBytes(nu)).toBe(nu.pendingBytes);
+
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    expect(mat.normalMap).toBe(arrival.tex);
+    expect(nu.pendingBytes).toBeUndefined();
+    expect(appliedNormalHeldBytes(nu)).toBe(textureGpuBytes(arrival.tex, TIER_MAP_WIDTH['4k']));
   });
 
   it('never lets a late boot relief downgrade the streamed tier', () => {

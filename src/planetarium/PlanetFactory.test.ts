@@ -96,7 +96,9 @@ import {
   ladderHandle,
   mapTexture,
   onStandin,
+  recordWarmUploads,
   rungTexture,
+  settleRungUpload,
   startAttempt,
   trackMaterial,
   watchDispose,
@@ -104,7 +106,12 @@ import {
   type StandardUpgrade,
 } from './testing/upgradeHarness';
 
-beforeEach(() => withMaxTextureSize(8192));
+beforeEach(() => {
+  withMaxTextureSize(8192);
+  // The ladder assigns a rung from the warm queue's callback, so every suite
+  // that expects a map to land needs a pump that can drain.
+  recordWarmUploads();
+});
 
 afterEach(() => {
   disposeTrackedMaterials();
@@ -349,10 +356,18 @@ describe('what a fetch puts on the material', () => {
     restore = null;
   });
 
-  it('applies a completed fetch and queues its upload', async () => {
-    const uploaded: THREE.Texture[] = [];
-    bindTextureWarmer((tex) => uploaded.push(tex));
+  it('keeps the old map until the new one is uploaded, then applies it', async () => {
+    // A map big enough to be uploaded in bands has its GL storage allocated
+    // on the frame the pump starts it and its pixels written over the frames
+    // after, so a material carrying it any earlier draws unwritten storage —
+    // magenta or black over the whole body, mid-approach, on a globe the
+    // player is looking at. The upload is queued first and the map lands from
+    // the warm callback.
+    const uploaded = recordWarmUploads();
     const up = ladderHandle('moon');
+    const boot = mapTexture(2048);
+    up.material.map = boot;
+    up.material.userData.colorTierRank = TIER_RANK['4k'];
     up.appliedTier = '4k'; // past the first rung, the earned top is fetched directly
     upgradeTextureOnApproach(up, '8k', 1_000);
     expect(pending).toHaveLength(1);
@@ -363,11 +378,64 @@ describe('what a fetch puts on the material', () => {
     arrival.finishDecode();
     await flush();
 
+    // Decoded, admitted, queued — and not on the material.
+    expect(materialColorMap(up.material)).toBe(boot);
+    expect(up.appliedTier).toBe('4k');
+    expect(uploaded).toEqual([]);
+
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    expect(uploaded).toEqual([arrival.tex]);
     expect(materialColorMap(up.material)).toBe(arrival.tex);
     expect(up.appliedTier).toBe('8k');
     expect(up.attempt).toBeUndefined();
+  });
+
+  it('applies a map whose upload failed, so a body is never left on the old one', async () => {
+    // Fail open, exactly as the warm queue always has: an upload that threw
+    // leaves three to pay it on the render path, which is a stall and never a
+    // half-filled map — a slice that cannot proceed hands the map back whole.
+    bindTextureWarmer(() => { throw new Error('context lost'); });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const up = ladderHandle('moon');
+      up.appliedTier = '4k';
+      upgradeTextureOnApproach(up, '8k', 1_000);
+      const arrival = arriving();
+      pending[0].onLoad(arrival.tex);
+      arrival.finishDecode();
+      await settleRungUpload();
+      pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+      expect(materialColorMap(up.material)).toBe(arrival.tex);
+      expect(up.appliedTier).toBe('8k');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('charges the climbing map while it waits for its upload', async () => {
+    // The swap's transient inverted: the new map is resident while the body
+    // still draws the old one, so the envelope has to count it for as long as
+    // that lasts or a second rung is admitted against memory already spent.
+    const up = ladderHandle('moon');
+    up.appliedTier = '4k';
+    up.material.map = mapTexture(4096);
+    up.material.userData.colorTierRank = TIER_RANK['4k'];
+    const held = appliedTierHeldBytes(up);
+    upgradeTextureOnApproach(up, '8k', 1_000);
+    const arrival = arriving();
+    arrival.tex.image = { width: 8192, height: 4096, decode: (arrival.tex.image as { decode: () => Promise<void> }).decode };
+    pending[0].onLoad(arrival.tex);
+    arrival.finishDecode();
+    await flush();
+
+    const climbing = textureGpuBytes(arrival.tex, TIER_MAP_WIDTH['8k']);
+    expect(up.pendingUpgradeBytes).toBe(climbing);
+    expect(appliedTierHeldBytes(up)).toBe(held + climbing);
+
     pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
-    expect(uploaded).toEqual([arrival.tex]);
+    // Out again with the old map, which the swap disposed.
+    expect(up.pendingUpgradeBytes).toBeUndefined();
+    expect(appliedTierHeldBytes(up)).toBe(climbing);
   });
 
   it('drops a fetch abandoned before its image arrived', async () => {
@@ -378,7 +446,7 @@ describe('what a fetch puts on the material', () => {
     const arrival = arriving();
     const disposed = watchDispose(arrival.tex);
     pending[0].onLoad(arrival.tex);
-    await flush();
+    await settleRungUpload();
 
     expect(disposed()).toBe(true);
     expect(materialColorMap(up.material)).toBeNull();
@@ -394,7 +462,7 @@ describe('what a fetch puts on the material', () => {
     pending[0].onLoad(arrival.tex); // past the first check, now decoding
     cancelTextureUpgrade(up, 'discard', 0);
     arrival.finishDecode();
-    await flush();
+    await settleRungUpload();
 
     expect(disposed()).toBe(true);
     expect(materialColorMap(up.material)).toBeNull();
@@ -409,7 +477,7 @@ describe('what a fetch puts on the material', () => {
     const arrival = arriving();
     pending[0].onLoad(arrival.tex);
     arrival.finishDecode();
-    await flush();
+    await settleRungUpload();
 
     expect(materialColorMap(up.material)).toBe(arrival.tex);
     expect(up.appliedTier).toBe('4k');
@@ -424,14 +492,14 @@ describe('what a fetch puts on the material', () => {
     const stale = arriving();
     const staleDisposed = watchDispose(stale.tex);
     pending[0].onLoad(stale.tex);
-    await flush();
+    await settleRungUpload();
     expect(staleDisposed()).toBe(true);
     expect(materialColorMap(up.material)).toBeNull();
 
     const fresh = arriving();
     pending[1].onLoad(fresh.tex);
     fresh.finishDecode();
-    await flush();
+    await settleRungUpload();
     expect(materialColorMap(up.material)).toBe(fresh.tex);
     // The superseding attempt re-resolved from the boot floor: the first rung.
     expect(up.appliedTier).toBe('4k');
@@ -455,7 +523,7 @@ describe('what a fetch puts on the material', () => {
       const arrival = arriving();
       pending[1].onLoad(arrival.tex);
       arrival.finishDecode();
-      await flush();
+      await settleRungUpload();
       expect(up.appliedTier).toBe('4k');
       expect(up.lastFailure).toBeUndefined();
 
@@ -467,7 +535,7 @@ describe('what a fetch puts on the material', () => {
       const eight = arriving();
       pending[2].onLoad(eight.tex);
       eight.finishDecode();
-      await flush();
+      await settleRungUpload();
       expect(up.appliedTier).toBe('8k');
     } finally {
       warn.mockRestore();
@@ -519,7 +587,7 @@ describe('what a fetch puts on the material', () => {
     const arrival = arriving();
     pending[0].onLoad(arrival.tex);
     arrival.finishDecode();
-    await flush();
+    await settleRungUpload();
     expect(mat.normalMap).toBe(arrival.tex);
     expect(normalUpgradePending(nu)).toBe(false); // done — the LOD loop stops measuring for it
     upgradeNormalOnApproach(nu, 0.9, 2);
@@ -576,14 +644,14 @@ describe('what a fetch puts on the material', () => {
     const stale = arriving();
     const staleDisposed = watchDispose(stale.tex);
     pending[0].onLoad(stale.tex);
-    await flush();
+    await settleRungUpload();
     expect(mat.normalMap).toBeNull();
     expect(staleDisposed()).toBe(true);
     // The live attempt still lands normally.
     const live = arriving();
     pending[1].onLoad(live.tex);
     live.finishDecode();
-    await flush();
+    await settleRungUpload();
     expect(mat.normalMap).toBe(live.tex);
     expect(normalUpgradePending(nu)).toBe(false);
   });
@@ -600,7 +668,7 @@ describe('what a fetch puts on the material', () => {
     const arrival = arriving();
     const disposed = watchDispose(arrival.tex);
     pending[0].onLoad(arrival.tex);
-    await flush();
+    await settleRungUpload();
     expect(mat.normalMap).toBeNull();
     expect(disposed()).toBe(true);
   });
@@ -1569,14 +1637,13 @@ describe('the ladder against the sector memory envelope', () => {
 describe('arrival warm goals', () => {
   let pending: Array<{ url: string; onLoad: (tex: THREE.Texture) => void; onError: (err: unknown) => void }>;
   let restore: (() => void) | null = null;
-  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   /** Complete a pending fetch with an instantly-decoding texture. */
   async function land(entry: { onLoad: (tex: THREE.Texture) => void }): Promise<THREE.Texture> {
     const tex = new THREE.Texture();
     tex.image = { decode: () => Promise.resolve() };
     entry.onLoad(tex);
-    await flush();
+    await settleRungUpload();
     return tex;
   }
 
@@ -1651,7 +1718,7 @@ describe('arrival warm goals', () => {
       armArrivalWarmGoal(up);
       pumpArrivalWarmGoal(up, 0);
       pending[0].onError(new Error('offline'));
-      await flush();
+      await settleRungUpload();
       // Disarmed: no background retry loop, even long past the cooldown.
       expect(pumpArrivalWarmGoal(up, 10_000_000)).toBe(false);
       expect(pending).toHaveLength(1);
@@ -1690,7 +1757,6 @@ describe('arrival warm goals', () => {
 describe('the compressed tier override', () => {
   let pending: Array<{ url: string; onLoad: (tex: THREE.Texture) => void; onError: (err: unknown) => void }>;
   let restore: (() => void) | null = null;
-  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   beforeEach(() => {
     pending = [];
@@ -1744,7 +1810,7 @@ describe('the compressed tier override', () => {
     const tex = new THREE.CompressedTexture([], 8192, 4096);
     tex.colorSpace = THREE.SRGBColorSpace;
     ktx2Calls[0].onLoad(tex);
-    await flush();
+    await settleRungUpload();
     expect(up.appliedTier).toBe('8k');
     expect(materialColorMap(up.material)).toBe(tex);
     expect(tex.colorSpace).toBe(THREE.SRGBColorSpace);
@@ -1862,7 +1928,6 @@ describe('what a release puts on the material', () => {
   type Pending = { url: string; onLoad: (tex: THREE.Texture) => void; onError: (err: unknown) => void };
   let pending: Pending[] = [];
   let restore: (() => void) | null = null;
-  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   beforeEach(() => {
     pending = [];
@@ -1898,7 +1963,7 @@ describe('what a release puts on the material', () => {
 
     const low = mapTexture(4096);
     pending[0].onLoad(low);
-    await flush();
+    await settleRungUpload();
     expect(up.material.map).toBe(low);
     expect(up.appliedTier).toBe('4k');
     expect(up.material.userData.colorTierRank).toBe(TIER_RANK['4k']);
@@ -1910,7 +1975,7 @@ describe('what a release puts on the material', () => {
     expect(startTierRelease(up, 1_000)).toBe(true);
     expect(pending[0].url).toMatch(/textures\/mars\.v2\.webp$/);
     pending[0].onLoad(new THREE.Texture());
-    await flush();
+    await settleRungUpload();
     // The boot map is not a member of the ladder, so the handle is back where
     // it started and the climb begins from the bottom rung again.
     expect(up.appliedTier).toBeNull();
@@ -1928,12 +1993,39 @@ describe('what a release puts on the material', () => {
     expect(wasDisposed()).toBe(false); // still drawing the high one, mid-fetch
     const low = new THREE.Texture();
     pending[0].onLoad(low);
-    await flush();
+    await settleRungUpload();
     expect(up.material.map).toBe(low);
     // Assigned before disposed, exactly like the way up: no frame samples a
     // freed texture, and none draws a body with no map.
     expect(mapAtDispose).toBe(low);
     expect(wasDisposed()).toBe(true);
+  });
+
+  it('keeps the high map until the low one is uploaded, not merely decoded', async () => {
+    // A swap down is meant to be invisible except as a softening, so the map
+    // it swaps in has to be complete: a big map's GL storage is allocated on
+    // one frame and filled over the next several, and a body drawing it
+    // meanwhile shows unwritten storage instead of a globe.
+    const up = onFourK();
+    up.appliedTier = '8k';
+    up.material.userData.colorTierRank = TIER_RANK['8k'];
+    const high = up.material.map!;
+    const settled: boolean[] = [];
+    startTierRelease(up, 1_000, { onSettled: (ok) => settled.push(ok) });
+    const low = mapTexture(4096);
+    pending[0].onLoad(low);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    // Decoded and charged, and the body is still drawing its 8K map.
+    expect(up.material.map).toBe(high);
+    expect(up.appliedTier).toBe('8k');
+    expect(up.pendingReleaseBytes).toBe(textureGpuBytes(low, TIER_MAP_WIDTH['4k']));
+    expect(settled).toEqual([]);
+
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    expect(up.material.map).toBe(low);
+    expect(up.appliedTier).toBe('4k');
+    expect(up.pendingReleaseBytes).toBeUndefined();
+    expect(settled).toEqual([true]);
   });
 
   it('carries the colour-as-bump alias and keeps the body a photographed one', async () => {
@@ -1942,7 +2034,7 @@ describe('what a release puts on the material', () => {
     startTierRelease(up, 1_000);
     const low = new THREE.Texture();
     pending[0].onLoad(low);
-    await flush();
+    await settleRungUpload();
     expect(up.material.bumpMap).toBe(low); // never left pointing at freed memory
     // The body still has a real photograph on it: the lazy painter must not
     // start painting over the map a release just put there.
@@ -1955,7 +2047,7 @@ describe('what a release puts on the material', () => {
     up.warmGoal = '8k'; // the arrival that fetched it is over; the goal is not
     startTierRelease(up, 1_000);
     pending[0].onLoad(new THREE.Texture());
-    await flush();
+    await settleRungUpload();
     const releasedAt = up.releasedAtMs!;
     expect(canAttempt(up, releasedAt + RELEASE_REEARN_GRACE_MS - 1)).toBe(false);
     expect(canAttempt(up, releasedAt + RELEASE_REEARN_GRACE_MS + 1)).toBe(true);
@@ -1983,7 +2075,7 @@ describe('what a release puts on the material', () => {
       const settled: boolean[] = [];
       startTierRelease(up, 1_000, { onSettled: (ok) => settled.push(ok) });
       pending[0].onError(new Error('offline'));
-      await flush();
+      await settleRungUpload();
       expect(settled).toEqual([false]);
       expect(up.material.map).toBe(high);
       expect(up.appliedTier).toBe('4k');
@@ -2002,7 +2094,7 @@ describe('what a release puts on the material', () => {
       expect(releaseDue(up, 60_000)).toBe(true);
       startTierRelease(up, 60_000);
       pending[0].onError(new Error('offline'));
-      await flush();
+      await settleRungUpload();
       // The same body is the farthest candidate again on the very next
       // frame; without the cooldown the planner would ask it for the rest of
       // the session.
@@ -2031,7 +2123,7 @@ describe('what a release puts on the material', () => {
     const low = new THREE.Texture();
     const wasDisposed = watchDispose(low);
     pending[0].onLoad(low);
-    await flush();
+    await settleRungUpload();
     expect(up.material.map).toBe(high);
     expect(wasDisposed()).toBe(true);
     expect(up.appliedTier).toBe('4k');
@@ -2046,7 +2138,7 @@ describe('what a release puts on the material', () => {
     expect(pending[0].url).toMatch(/textures\/4k\/moon\.webp$/);
     const again = new THREE.Texture();
     pending[0].onLoad(again);
-    await flush();
+    await settleRungUpload();
     expect(up.material.map).toBe(again);
     expect(up.appliedTier).toBe('4k'); // unchanged: nothing was given back
     expect(up.releasedAtMs).toBeUndefined();
@@ -2072,7 +2164,6 @@ describe('what the ladder is allowed to hold', () => {
   type Pending = { url: string; onLoad: (tex: THREE.Texture) => void; onError: (err: unknown) => void };
   let pending: Pending[] = [];
   let restore: (() => void) | null = null;
-  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   beforeEach(() => {
     pending = [];
@@ -2136,7 +2227,7 @@ describe('what the ladder is allowed to hold', () => {
     const arrival = mapTexture(4096);
     const wasDisposed = watchDispose(arrival);
     pending[0].onLoad(arrival);
-    await flush();
+    await settleRungUpload();
     expect(wasDisposed()).toBe(true);
     expect(up.material.map).toBe(boot); // a real map either way
     expect(up.appliedTier).toBeNull();
@@ -2499,7 +2590,7 @@ describe('a swap down that never lands', () => {
     expireTierRelease(up, 0);
     startTierRelease(up, 1_000);
     pending[1].onLoad(new THREE.Texture());
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await settleRungUpload();
     expect(up.releaseTimeouts).toBeUndefined();
     expect(up.releaseRetryAtMs).toBeUndefined();
   });
@@ -2509,7 +2600,6 @@ describe('the transient a swap down holds', () => {
   type Pending = { url: string; onLoad: (tex: THREE.Texture) => void; onError: (err: unknown) => void };
   let pending: Pending[] = [];
   let restore: (() => void) | null = null;
-  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   beforeEach(() => {
     pending = [];
@@ -2543,7 +2633,7 @@ describe('the transient a swap down holds', () => {
       },
     });
     pending[0].onLoad(mapTexture(4096));
-    await flush();
+    await settleRungUpload();
 
     expect(seen).toHaveLength(1);
     expect(seen[0].drawnWidth).toBe(8192); // reported before the assignment
@@ -2588,7 +2678,6 @@ describe('how long a committed arrival keeps its warm goals', () => {
 describe('a slow cold arrival', () => {
   let pending: Array<{ url: string; onLoad: (tex: THREE.Texture) => void; onError: (err: unknown) => void }>;
   let restore: (() => void) | null = null;
-  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   beforeEach(() => {
     pending = [];
@@ -2609,14 +2698,14 @@ describe('a slow cold arrival', () => {
     expect(pumpArrivalWarmGoal(up, 0)).toBe(true);
     // A minute of link for the first rung — six times the arrival grace.
     pending[0].onLoad(mapTexture(4096));
-    await flush();
+    await settleRungUpload();
     expect(up.appliedTier).toBe('4k');
     // The goal is untouched: nothing is squeezing the ladder, so nothing
     // hands the last rung back to the on-screen trigger.
     expect(arrivalWarmGoalsExpired(false, { doneAtMs: 0 }, 60_000, 10_000)).toBe(false);
     expect(pumpArrivalWarmGoal(up, 60_000)).toBe(true);
     pending[1].onLoad(mapTexture(8192));
-    await flush();
+    await settleRungUpload();
     expect(up.appliedTier).toBe('8k');
     expect(pumpArrivalWarmGoal(up, 120_000)).toBe(false); // reached, not abandoned
   });
@@ -2631,7 +2720,6 @@ describe('closing a rung\'s decoded source once its upload is paid', () => {
   const host = globalThis as unknown as { createImageBitmap?: unknown };
   const previous = host.createImageBitmap;
   let asked: Array<{ resolve: (b: FakeBitmap) => void; reject: (e: unknown) => void; opts: ImageBitmapOptions }>;
-  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   beforeEach(() => {
     asked = [];
@@ -2665,7 +2753,7 @@ describe('closing a rung\'s decoded source once its upload is paid', () => {
     expect(asked[0].opts.resizeHeight).toBe(RESTORE_STANDIN_WIDTH / 2);
     const small = fakeBitmap(RESTORE_STANDIN_WIDTH, RESTORE_STANDIN_WIDTH / 2);
     asked[0].resolve(small);
-    await flush();
+    await settleRungUpload();
     expect(tex.image).toBe(small);
     expect(source.closed).toBe(true);
     expect(tex.userData.sourceReleased).toBe(true);
@@ -2684,7 +2772,7 @@ describe('closing a rung\'s decoded source once its upload is paid', () => {
     // The options were accepted and the resize ignored: a full-size copy.
     const copy = fakeBitmap(4096, 2048);
     asked[0].resolve(copy);
-    await flush();
+    await settleRungUpload();
     expect(tex.image).toBe(source);
     expect(source.closed).toBe(false);
     expect(copy.closed).toBe(true); // the copy is what goes, not the source
@@ -2699,7 +2787,7 @@ describe('closing a rung\'s decoded source once its upload is paid', () => {
     const { tex, source } = warmedRung();
     releaseUpgradeSource(tex);
     asked[0].reject(new Error('no'));
-    await flush();
+    await settleRungUpload();
     expect(tex.image).toBe(source);
     expect(source.closed).toBe(false);
     expect(retainedSourceBytes(tex)).toBe(4096 * 2048 * 4);
@@ -2711,7 +2799,7 @@ describe('closing a rung\'s decoded source once its upload is paid', () => {
     tex.dispose();
     const small = fakeBitmap(RESTORE_STANDIN_WIDTH, RESTORE_STANDIN_WIDTH / 2);
     asked[0].resolve(small);
-    await flush();
+    await settleRungUpload();
     expect(small.closed).toBe(true);
     expect(tex.image).toBe(source);
     expect(tex.userData.sourceReleased).toBeUndefined();

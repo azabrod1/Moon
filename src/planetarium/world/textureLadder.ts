@@ -6,6 +6,14 @@
  * 1. The ladder. A TextureUpgrade per material holds the 2K/4K/8K rungs, the
  *    goals that earn them, and at most one in-flight attempt — never a
  *    lifecycle state, so nothing can strand a body on its boot map.
+ *
+ * Every rung, climbing or being handed back, is queued for its GPU upload
+ * BEFORE it reaches a material and assigned from the warm queue's callback: a
+ * big map is uploaded in bands over several frames, and a material carrying
+ * one before the last band lands draws unwritten storage. So the transient
+ * that costs memory is the one where both maps are resident at once, and it
+ * is in the ledger from the decode either way (pendingUpgradeBytes,
+ * pendingReleaseBytes) — never the one where a body has no map.
  * 2. The GPU byte ledger and the admission gate over it. What a rung costs is
  *    known before anything is fetched, and again from the decoded candidate
  *    before it is applied; `bindTierAdmission` installs the test the device's
@@ -152,11 +160,18 @@ export interface TextureUpgrade {
     restore?: boolean;
     abort?: AbortController;
   };
-  /** GPU bytes the map a swap has DECODED but not yet assigned will hold.
-   *  Between the decode and the assignment both maps are on the device, so
-   *  both are in the ledger — otherwise the transient is spent behind the
+  /** GPU bytes the map a swap DOWN has decoded but not yet assigned will
+   *  hold. Between the decode and the assignment both maps are on the device,
+   *  so both are in the ledger — otherwise the transient is spent behind the
    *  back of the admission test and the tiles are never trimmed for it. */
   pendingReleaseBytes?: number;
+  /** GPU bytes the rungs a CLIMB has decoded but not yet assigned hold. The
+   *  climb's transient is the swap down's inverted: the finer map is resident
+   *  while the body still draws the coarser one, for as long as the upload
+   *  takes. A sum rather than one figure, because a hung attempt superseded
+   *  after its timeout leaves a second decoded map on the device beside it,
+   *  and both are real bytes to whoever is asking. */
+  pendingUpgradeBytes?: number;
   /** Wall-clock instant the last rung was given back. For a few seconds after
    *  one, this handle earns nothing: every borderline case then resolves
    *  toward keeping what is there rather than paying the download twice. */
@@ -398,8 +413,10 @@ export function appliedTierGpuBytes(up: TextureUpgrade): number {
  */
 export function appliedTierHeldBytes(up: TextureUpgrade): number {
   // A swap whose map has decoded but not yet been assigned holds both at
-  // once, and the transient is real device memory whoever is asking.
-  const pending = up.pendingReleaseBytes ?? 0;
+  // once, and the transient is real device memory whoever is asking — in
+  // either direction: a rung climbing is resident from its decode until its
+  // upload is paid, a rung being given back from its decode until it lands.
+  const pending = (up.pendingReleaseBytes ?? 0) + (up.pendingUpgradeBytes ?? 0);
   if (!up.appliedTier) return pending; // the boot map is not the ladder's weight
   return appliedTierGpuBytes(up) + retainedSourceBytes(materialColorMap(up.material)) + pending;
 }
@@ -853,23 +870,56 @@ export function upgradeTextureOnApproach(
         // hand is the real figure. A map that turns out not to fit is dropped
         // here, before it is ever assigned — the body keeps the rung it has,
         // which is a real map either way.
-        const room = admitTier(up, tier, textureGpuBytes(tex, TIER_MAP_WIDTH[tier]));
+        const bytes = textureGpuBytes(tex, TIER_MAP_WIDTH[tier]);
+        const room = admitTier(up, tier, bytes);
         if (room !== 'admit') {
           up.attempt = undefined;
           if (room === 'refuse') up.warmGoal = undefined;
           tex.dispose();
           return;
         }
-        up.attempt = undefined;
-        up.appliedTier = tier;
-        if (up.lastFailure && TIER_RANK[tier] >= TIER_RANK[up.lastFailure.tier]) {
-          up.lastFailure = undefined;
-        }
-        up.belowBandSinceMs = undefined;
-        if (applyColorTierTexture(up.material, tex, TIER_RANK[tier])) {
-          queueTextureWarm(tex, (outcome) => { if (outcome === 'warmed') releaseUpgradeSource(tex); });
-        }
-        up.material.userData.photoLoaded = true; // keep the lazy painter off it
+        // Warm first, assign second. A map big enough to be uploaded in bands
+        // has its GL storage allocated the moment the pump reaches it and its
+        // pixels written over the frames after — so a material carrying it
+        // before the last band lands draws whatever the driver decodes from
+        // unwritten storage, which is a body wearing solid magenta or black
+        // for a tenth of a second in the middle of an approach. The warm
+        // queue's callback is the instant drawing the map is free, and the
+        // rank guard makes a late assignment order-independent, so nothing is
+        // owed to the order the fetches happen to finish in.
+        //
+        // Which inverts the swap's memory transient: the new map is resident
+        // while the old one is still on the material, so its bytes go into
+        // the ledger here and come out when the swap lands. The release path
+        // charges the mirror image of this, and the envelope must not be able
+        // to overshoot by a rung through either.
+        up.pendingUpgradeBytes = (up.pendingUpgradeBytes ?? 0) + bytes;
+        queueTextureWarm(tex, (outcome) => {
+          const owed = (up.pendingUpgradeBytes ?? 0) - bytes;
+          up.pendingUpgradeBytes = owed > 0 ? owed : undefined;
+          // A texture disposed while it waited has no map to give, and an
+          // attempt superseded meanwhile drops its bytes here. Disposing an
+          // already-disposed texture is how the teardown case frees a map
+          // that never reached a material.
+          if (outcome === 'disposed' || abandoned()) {
+            tex.dispose();
+            return;
+          }
+          up.attempt = undefined;
+          up.appliedTier = tier;
+          if (up.lastFailure && TIER_RANK[tier] >= TIER_RANK[up.lastFailure.tier]) {
+            up.lastFailure = undefined;
+          }
+          up.belowBandSinceMs = undefined;
+          // 'failed' is assigned too: the upload threw, so three pays it on
+          // the render path exactly as it would with no warm queue at all —
+          // a stall, never a wrong picture, and never a half-filled map
+          // (a refused or failed slice hands the map back whole).
+          if (applyColorTierTexture(up.material, tex, TIER_RANK[tier]) && outcome === 'warmed') {
+            releaseUpgradeSource(tex);
+          }
+          up.material.userData.photoLoaded = true; // keep the lazy painter off it
+        });
       };
       if (img && typeof img.decode === 'function') img.decode().then(applyUpgrade, applyUpgrade);
       else applyUpgrade();
@@ -1072,9 +1122,9 @@ export function releaseColorTier(mat: THREE.Material, tex: THREE.Texture, rank: 
  * tier for the life of the session costs more memory than the release ever
  * gives back, and the fetch comes from the service-worker cache for any body
  * the session has already been near. The body draws its high map throughout —
- * the swap happens on a decoded texture or not at all — so a release is
- * invisible except as a softening, and never re-opens the arrival cover: the
- * material keeps a real map and `photoLoaded` through every step.
+ * the swap happens on a map that is decoded AND uploaded, or not at all — so a
+ * release is invisible except as a softening, and never re-opens the arrival
+ * cover: the material keeps a real map and `photoLoaded` through every step.
  *
  * `restore` re-fetches the SAME tier instead of the one below: the rung's
  * decoded source is closed once its upload is paid, so a lost GL context has
@@ -1122,28 +1172,47 @@ export function startTierRelease(
           tex.dispose();
           return;
         }
-        // Decoded and about to be assigned: for these few statements the
-        // device holds the map being given back AND the one replacing it, so
-        // the transient goes into the ledger first and comes out with the
+        // Decoded, and waiting for its upload: from here until the swap lands
+        // the device holds the map being given back AND the one replacing it,
+        // so the transient goes into the ledger first and comes out with the
         // high map. Whoever shares the envelope trims for it synchronously,
         // rather than discovering the peak a frame after it has passed.
         up.pendingReleaseBytes = textureGpuBytes(tex, TIER_MAP_WIDTH[toTier]);
         opts.onLedgerChange?.();
-        releaseColorTier(up.material, tex, TIER_RANK[toTier]);
-        up.pendingReleaseBytes = undefined;
-        queueTextureWarm(tex, (outcome) => { if (outcome === 'warmed') releaseUpgradeSource(tex); });
-        up.releaseFailures = undefined;
-        up.releaseTimeouts = undefined;
-        up.releaseRetryAtMs = undefined;
-        if (!opts.restore) {
-          up.appliedTier = up.tiers.includes(toTier) ? toTier : null;
-          // A goal aimed above the rung just given back would climb straight
-          // back up; the arrival it was armed for is over.
-          up.warmGoal = undefined;
-          up.releasedAtMs = performance.now();
-          up.belowBandSinceMs = undefined;
-        }
-        settle(true);
+        // The same order as the climb, and for the same reason: a map whose
+        // bands are still being uploaded draws as unwritten storage, so the
+        // body keeps its high map until the low one is complete. A swap down
+        // is meant to be invisible except as a softening.
+        queueTextureWarm(tex, (outcome) => {
+          if (outcome === 'disposed' || abandoned()) {
+            // Whatever abandoned this swap took its charge out of the ledger
+            // already (cancelTierRelease), so a later swap's charge is not
+            // cleared by this callback. A map disposed under a live swap has
+            // nothing to give: the high map stays and the swap ends.
+            if (!abandoned()) {
+              up.pendingReleaseBytes = undefined;
+              opts.onLedgerChange?.();
+              settle(false);
+            }
+            tex.dispose();
+            return;
+          }
+          releaseColorTier(up.material, tex, TIER_RANK[toTier]);
+          up.pendingReleaseBytes = undefined;
+          if (outcome === 'warmed') releaseUpgradeSource(tex);
+          up.releaseFailures = undefined;
+          up.releaseTimeouts = undefined;
+          up.releaseRetryAtMs = undefined;
+          if (!opts.restore) {
+            up.appliedTier = up.tiers.includes(toTier) ? toTier : null;
+            // A goal aimed above the rung just given back would climb straight
+            // back up; the arrival it was armed for is over.
+            up.warmGoal = undefined;
+            up.releasedAtMs = performance.now();
+            up.belowBandSinceMs = undefined;
+          }
+          settle(true);
+        });
       };
       const img = tex.image as { decode?: () => Promise<void> } | undefined;
       if (img && typeof img.decode === 'function') img.decode().then(swap, swap);

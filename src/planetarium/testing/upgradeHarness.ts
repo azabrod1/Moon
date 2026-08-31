@@ -28,6 +28,30 @@ import {
   type TextureUpgrade,
 } from '../world/textureLadder';
 import { equirectMapGpuBytes } from '../world/textureBytes';
+import { bindTextureWarmer, pumpTextureWarmQueue } from '../world/textureWarmer';
+
+/**
+ * The two steps a frame takes between a rung's fetch completing and the body
+ * drawing it: the decode's microtasks, then the warm pump.
+ *
+ * The ladder puts a rung on its material from the warm queue's callback,
+ * because a map whose GPU storage is allocated but not yet filled draws as
+ * unwritten storage — so a test that stops after the fetch is looking at the
+ * old map on purpose, and one that expects the swap has to run the pump.
+ */
+export async function settleRungUpload(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+}
+
+/** Bind an upload that records what it was handed. Without one bound the pump
+ *  uploads nothing at all, which is a queue that never drains rather than the
+ *  fail-open the warmer's contract describes. */
+export function recordWarmUploads(): THREE.Texture[] {
+  const uploaded: THREE.Texture[] = [];
+  bindTextureWarmer((tex) => uploaded.push(tex));
+  return uploaded;
+}
 
 /** A ladder handle over a standard material. TextureUpgrade.material is
  *  THREE.Material — a shader shell (Earth's night lights) climbs the same

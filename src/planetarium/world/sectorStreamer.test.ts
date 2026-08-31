@@ -50,7 +50,7 @@ import { EARTH_NIGHT_MIX_LIT, earthNightMix } from '../../shared/shaders/atmosph
 import { SECTOR_GRID_16K, ancestorSector, finerGrid, sectorCentreDirection, sectorNearestDirection, sectorTileTransform, dataCropLayout, SECTOR_TILE, sphereDirection } from './sectorGrid';
 import { augmentSurfaceMaterial } from './surfaceShading';
 import type { WarmOutcome } from './textureWarmer';
-import { mapTexture } from '../testing/upgradeHarness';
+import { mapTexture, recordWarmUploads, settleRungUpload } from '../testing/upgradeHarness';
 
 /** A scripted loader: records every URL, and lets a test resolve or fail
  *  each one later (or synchronously with `auto`). */
@@ -2415,7 +2415,6 @@ describe('the transient of a globe-map swap', () => {
   let warm: FakeWarm;
   let restoreTierLoader: (() => void) | null = null;
   let tierFetch: Array<{ onLoad: (t: THREE.Texture) => void }> = [];
-  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   beforeEach(() => {
     loader = new FakeLoader();
@@ -2471,8 +2470,9 @@ describe('the transient of a globe-map swap', () => {
         drawnAtChange = (material.map!.image as { width: number }).width;
       },
     });
+    recordWarmUploads(); // the ladder assigns from the warm callback
     tierFetch[0].onLoad(mapTexture(2048));
-    await flush();
+    await settleRungUpload();
 
     const seen = during!;
     // The body was still drawing its 4K map when the tiles were trimmed: the

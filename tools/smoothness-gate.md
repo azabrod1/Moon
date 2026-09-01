@@ -175,6 +175,7 @@ this after any change to the recorder.
 | `hops` | Earth → Moon → Mars → Earth: four arrivals and three departures. |
 | `squeeze` | Boots at `?envelope=200` so a desktop sits under a phone's memory pressure, hovers, then hops away and back to force a release and a re-fetch. |
 | `moonlets` | Tiny-moon flybys: Phobos, then Styx. |
+| `moon-close` | The Moon filling the frame at the zoom floor: a 25 s hold, then a slow pan. Nothing streams, so the frames are the cost of shading them — read p50 and p95, not the over-budget count. |
 | `tour-60x` | Mercury through Neptune at 60× time rate. |
 | `phone-earth-near`, `phone-terminator` | The same two near-band runs at 430×932, DPR 3, iPhone UA — which is a different device profile, so a different app. |
 

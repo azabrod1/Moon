@@ -498,6 +498,36 @@ const SCENARIOS = [
     },
   },
   {
+    // The pose a per-fragment surface term costs the most in: one body filling
+    // the frame at the closest the flight rig allows, where its colour map is
+    // magnified past a texel a pixel over nearly every pixel drawn. Nothing
+    // streams during the hold, so what the frames show is the cost of shading
+    // them — which is why the score to read here is p50 and p95 rather than
+    // the count of frames over budget.
+    id: 'moon-close',
+    title: 'Moon at the zoom floor: 25 s hold at high fill, then a slow pan',
+    device: DESKTOP,
+    async run(page, note) {
+      await bootTo(page, '', 240);
+      await sleep(2_000);
+      note(await travelAndSettle(page, 'Moon', 8_000));
+      await sleep(2_500);
+      const at = await descendTo(page, 'Moon', 1.15);
+      note(`descent ended at ${at} radii`);
+      note(`density: ${JSON.stringify(await page.evaluate(() => window.__moon.surfaceDensity()))}`);
+      await mark(page, 'hold');
+      await sleep(25_000);
+      await mark(page, 'pan');
+      // Short yaw taps rather than one hold: a slow pan is what walks new
+      // surface under the term without the frame ever leaving the body.
+      for (let i = 0; i < 10; i++) {
+        await holdKey(page, 'a', 250);
+        await sleep(1_000);
+      }
+      await sleep(3_000);
+    },
+  },
+  {
     id: 'tour-60x',
     title: 'Planet tour at 60× time rate',
     device: DESKTOP,

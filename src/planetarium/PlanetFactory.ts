@@ -850,7 +850,9 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     ? { inner: planet.radiusAU * ringCfg.innerFactor, outer: planet.radiusAU * ringCfg.outerFactor }
     : undefined;
   const sunTan = SUN_RADIUS_AU / planet.semiMajorAxisAU; // solar angular radius at the planet
-  const fx = augmentSurfaceMaterial(mat, planetArchetype(planet), ringShadow, sunTan);
+  const fx = augmentSurfaceMaterial(
+    mat, planetArchetype(planet), ringShadow, sunTan, undefined, undefined, planet.name,
+  );
   // Higher colour tiers on close approach, for the keys that have them (see
   // TEXTURE_UPGRADE_TIERS). The boot map above is the floor; updateBodyLOD
   // walks the ladder from there.
@@ -1644,7 +1646,9 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
       emissive: new THREE.Color(moonData.color),
       emissiveIntensity: 0.03,
     });
-    const fx = augmentSurfaceMaterial(mat, archetype);
+    const fx = augmentSurfaceMaterial(
+      mat, archetype, undefined, 0, undefined, undefined, moonData.name,
+    );
 
     // Real elevation-derived normal map (linear), where one exists. The flag
     // goes up with the request, not with the arrival, so the lazy painter never

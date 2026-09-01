@@ -115,12 +115,17 @@ describe('the injected surface shader', () => {
     // The pinned radiances beside the captures only move when someone re-runs
     // the capture tool, so on their own they let a shader edit through until
     // then. This fails on the edit itself, and the two together mean the only
-    // diff that lands green moves the shader, the captures and the pins.
+    // diff that lands green moves the shader, the captures and the pins — or
+    // carries the A/B that shows the captures did not move: re-run the tool on
+    // this tree and on the commit before it, on ONE machine, and diff the two
+    // runs against each other rather than against the committed set, which was
+    // recorded on a different driver and does not reproduce byte for byte
+    // anywhere else.
     const shader = compile(augmented('earth'));
     expect(hash(shader.vertexShader))
       .toBe('862f7224fafb480070aebf0c7c125dddbd78c879780eb072e96988333154322a');
     expect(hash(shader.fragmentShader))
-      .toBe('35d947a376195fd85771fc507b3d721da9c9c57b6a651e9168c3fae90139c64d');
+      .toBe('b8d6f9480722ae5bf0705a1470eda013e623739309956b975c192ebee878e6e7');
   });
 
   it('reuses the tables\' own lookup GLSL rather than a second transcription', () => {

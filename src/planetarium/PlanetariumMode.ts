@@ -39,7 +39,7 @@ import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, createSha
 import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { disposeCloudDetailTexture } from './world/cloudDetailNoise';
-import { bindSurfaceAir, clearSurfaceAir, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { bindSurfaceAir, clearSurfaceAir, setSurfaceSynthesis, surfaceHasBoundRelief, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
 import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer, warmBudgetMs } from './world/textureWarmer';
 import { beginSlicedUpload, stepSlicedUpload } from './world/slicedUpload';
@@ -560,6 +560,12 @@ interface SurfaceDensityReadout extends SurfaceDensity {
   /** Conservative overestimate of the drawn disc, as the LOD walk measured it
    *  — context for the density, never the label. */
   diameterPx: number;
+  /** How much of the close-range detail term this body's surfaces are drawing:
+   *  the band's verdict above, eased in wall time so no rung landing, release
+   *  or memory squeeze can step relief between two frames. */
+  envelope: number;
+  /** Wall clock of the last easing step, for the rate limiter's dt. */
+  stampMs: number;
 }
 
 /** `?envelope=<MiB>` in dev shrinks the memory envelope, which is the one
@@ -1144,6 +1150,11 @@ export class PlanetariumMode {
    *  from a profile and a floor at each site. */
   private readonly memory: MemoryEnvelope;
   private readonly sectorsEnabled = new URLSearchParams(location.search).get('sectors') !== '0';
+  /** `?synth=0` holds the close-range detail synthesis at zero on every
+   *  surface. The A/B arm for a look question about it, and the only way to see
+   *  what a magnified surface looks like without it at a pose where it is fully
+   *  faded in — the term's whole purpose is to be invisible until then. */
+  private readonly synthesisEnabled = new URLSearchParams(location.search).get('synth') !== '0';
   /** The memory readout under `?debug=1` (reportMemoryDebug). The overlay is
    *  the only console a phone has without a cable, so the line has to be rare
    *  enough to read: one every 5 s, or as soon as a figure moves by more than
@@ -4347,7 +4358,7 @@ export class PlanetariumMode {
   private readonly surfaceDensities = new Map<string, SurfaceDensityReadout>();
 
   /** Density record for `name`, created at rest on first sight. */
-  private surfaceDensityRecord(name: string): SurfaceDensityReadout {
+  private surfaceDensityRecord(name: string, nowMs: number): SurfaceDensityReadout {
     const held = this.surfaceDensities.get(name);
     if (held) return held;
     const record: SurfaceDensityReadout = {
@@ -4358,19 +4369,33 @@ export class PlanetariumMode {
       magnified: 0,
       pxPerUnit: 0,
       diameterPx: 0,
+      envelope: 0,
+      stampMs: nowMs,
     };
     this.surfaceDensities.set(name, record);
     return record;
   }
 
+  private readonly densityScratch: SurfaceDensity = {
+    mapWidth: 0, pixelsPerTexel: 0, texelsPerPixel: 0, magnified: 0, pxPerUnit: 0,
+  };
+
   /**
-   * Measure one body's drawn texel density, or drop its record when the body
-   * is too small on screen for the answer to be anything but "minified".
+   * Measure one body's drawn texel density and hold its surfaces' close-range
+   * detail term at what that density asks for.
+   *
    * `estPx` is the LOD walk's conservative diameter OVERestimate, already
-   * measured for the ladder triggers — the pre-filter reads it so no body is
-   * projected a second time and no third per-frame walk exists.
+   * measured there for the ladder triggers — the pre-filter reads it, so no
+   * body is projected a second time and no third per-frame walk exists.
+   *
+   * The term is eased in wall time rather than switched: a rung landing, a
+   * release under memory pressure or a squeeze can change what a body is
+   * drawing between two frames, and relief that appeared or vanished in one
+   * frame would read as the surface itself changing. A squeeze that really did
+   * make the body coarser fades the term IN, which is correct — it is the step
+   * that is not.
    */
-  private updateSurfaceDensity(
+  private updateSurfaceDetail(
     name: string,
     centre: THREE.Vector3,
     renderedRadiusAU: number,
@@ -4379,22 +4404,43 @@ export class PlanetariumMode {
     estPx: number,
     canvasW: number,
     canvasH: number,
+    nowMs: number,
   ): void {
     const mapWidth = drawnColorMapWidth(material, ups);
-    if (!(mapWidth > 0) || !(estPx > densityRelevantDiameterPx(mapWidth))) {
-      this.surfaceDensities.delete(name);
-      return;
+    const measured = mapWidth > 0 && estPx > densityRelevantDiameterPx(mapWidth)
+      ? measureSurfaceDensity(
+        centre, renderedRadiusAU, mapWidth, this.camera, canvasW, canvasH,
+        this.renderer.getPixelRatio(), this.densityScratch,
+      )
+      : null;
+    const target = this.synthesisEnabled ? measured?.magnified ?? 0 : 0;
+    let record = this.surfaceDensities.get(name);
+    // Nothing on and nothing to turn on: the common case for every body in the
+    // system, and it costs no record and no material write.
+    if (!record && target <= 0) return;
+    record = record ?? this.surfaceDensityRecord(name, nowMs);
+    if (measured) {
+      record.mapWidth = measured.mapWidth;
+      record.pixelsPerTexel = measured.pixelsPerTexel;
+      record.texelsPerPixel = measured.texelsPerPixel;
+      record.magnified = measured.magnified;
+      record.pxPerUnit = measured.pxPerUnit;
+      record.diameterPx = estPx;
+    } else {
+      record.magnified = 0;
     }
-    const record = this.surfaceDensityRecord(name);
-    const density = measureSurfaceDensity(
-      centre, renderedRadiusAU, mapWidth, this.camera, canvasW, canvasH,
-      this.renderer.getPixelRatio(), record,
-    );
-    if (!density) {
-      this.surfaceDensities.delete(name);
-      return;
-    }
-    record.diameterPx = estPx;
+    // A zero step on the frame the record is born, so the first real dt is a
+    // frame rather than nothing — the limiter treats no elapsed time as a snap.
+    const dtMs = nowMs - record.stampMs;
+    record.envelope = dtMs > 0
+      ? smoothShadeFraction(target, record.envelope, dtMs)
+      : record.envelope;
+    record.stampMs = nowMs;
+    // Relief is the material's own call: a body wearing a measured normal map
+    // or a painted crater bump already has relief, and a synthesized one on top
+    // is two sets of craters under one Sun. Grain survives either way.
+    setSurfaceSynthesis(material, record.envelope, !surfaceHasBoundRelief(material));
+    if (record.envelope <= 0 && target <= 0) this.surfaceDensities.delete(name);
   }
 
   /**
@@ -4447,9 +4493,9 @@ export class PlanetariumMode {
       // Density is measured whether or not the ladders have anything left to
       // gain: a body drawing the finest map that exists for it is exactly the
       // body a close-range question is about.
-      this.updateSurfaceDensity(
+      this.updateSurfaceDetail(
         planet.data.name, this.bodyLODTmp, planet.data.radiusAU,
-        planet.mesh.material as THREE.Material, ups, estPx, canvasW, canvasH,
+        planet.mesh.material as THREE.Material, ups, estPx, canvasW, canvasH, nowMs,
       );
       if (laddersDone) continue;
       if (!lodMeasurementRelevant(geo, ups, estPx, canvasH, null)
@@ -4510,9 +4556,9 @@ export class PlanetariumMode {
         // Measured at the RENDERED radius, for the same reason the triggers
         // are: a moon is drawn at its catalog radius times its mesh scale, and
         // a density read off the catalog radius describes a disc nobody sees.
-        this.updateSurfaceDensity(
+        this.updateSurfaceDetail(
           m.data.name, this.bodyLODTmp, renderedR,
-          m.mesh.material as THREE.Material, ups, estPx, canvasW, canvasH,
+          m.mesh.material as THREE.Material, ups, estPx, canvasW, canvasH, nowMs,
         );
         if (laddersDone) continue;
         if (!lodMeasurementRelevant(

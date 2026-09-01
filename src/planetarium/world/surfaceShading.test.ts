@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import {
   augmentSurfaceMaterial, OCEAN_ROUGHNESS, ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER,
-  setSurfaceWaterGloss, surfaceWaterGloss, waterGlossRoughness,
+  setSurfaceSynthesis, setSurfaceWaterGloss, surfaceHasBoundRelief, surfaceSynthesisOf,
+  surfaceWaterGloss, waterGlossRoughness,
 } from './surfaceShading';
+import { surfaceDetailHeightSpan } from './surfaceDetailNoise';
 
 // Mimics the subset of three's onBeforeCompile shader object we mutate, so the
 // wiring can be exercised without a GL context.
@@ -71,5 +73,123 @@ describe('the ocean gloss remap', () => {
     expect((shader.uniforms.uWaterGloss as { value: number }).value).toBeGreaterThan(0);
     setSurfaceWaterGloss(mat, false);
     expect((shader.uniforms.uWaterGloss as { value: number }).value).toBe(0);
+  });
+});
+
+describe('the close-range detail term', () => {
+  /** The injected fragment source, through the same stub the rest of this file
+   *  uses — the real chunk names, no GL context. */
+  function fragment(archetype: Parameters<typeof augmentSurfaceMaterial>[1], name = 'Rhea'): string {
+    const mat = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(mat, archetype, undefined, 0, undefined, undefined, name);
+    const shader = {
+      uniforms: {} as Record<string, unknown>,
+      vertexShader: '#include <common>\n#include <begin_vertex>\n',
+      fragmentShader: '#include <common>\n#include <normal_fragment_maps>\n#include <opaque_fragment>\n',
+    };
+    (mat.onBeforeCompile as (s: typeof shader, r: unknown) => void)(shader, null);
+    return shader.fragmentShader;
+  }
+
+  function uniforms(
+    archetype: Parameters<typeof augmentSurfaceMaterial>[1],
+    name = 'Rhea',
+    mat = new THREE.MeshStandardMaterial(),
+  ): Record<string, { value: unknown }> {
+    augmentSurfaceMaterial(mat, archetype, undefined, 0, undefined, undefined, name);
+    const shader = {
+      uniforms: {} as Record<string, { value: unknown }>,
+      vertexShader: '#include <common>\n#include <begin_vertex>\n',
+      fragmentShader: '#include <common>\n#include <normal_fragment_maps>\n#include <opaque_fragment>\n',
+    };
+    (mat.onBeforeCompile as (s: typeof shader) => void)(shader);
+    return shader.uniforms;
+  }
+
+  it('perturbs the normal upstream of every light', () => {
+    // The one place a perturbed normal exists and nothing has read it yet.
+    // Moved after the lighting, it would shade this file's own night terms and
+    // leave three's lights on a smooth sphere.
+    const glsl = fragment('airless');
+    expect(glsl.indexOf('normal = normalize(synthNrm - synthSurfGrad'))
+      .toBeGreaterThan(glsl.indexOf('#include <normal_fragment_maps>'));
+    expect(glsl.indexOf('normal = normalize(synthNrm - synthSurfGrad'))
+      .toBeLessThan(glsl.indexOf('#include <opaque_fragment>'));
+  });
+
+  it('takes every derivative in uniform control flow', () => {
+    // A derivative under a per-fragment condition is undefined, and the fade is
+    // exactly such a condition: a driver that takes the licence picks the wrong
+    // rung and the wrong mip wherever a quad straddles the fade.
+    const glsl = fragment('airless');
+    const block = glsl.slice(
+      glsl.indexOf('if (uSynthEnvelope > 0.0) {'),
+      glsl.indexOf('if (synthW > 0.0) {'),
+    );
+    const inner = glsl.slice(glsl.indexOf('if (synthW > 0.0) {'), glsl.indexOf('#include <opaque_fragment>'));
+    // Two for the surface direction and two for the screen frame the relief is
+    // built on.
+    expect(block.match(/dFd[xy]\(/g)).toHaveLength(4);
+    expect(inner).not.toMatch(/dFd[xy]\(/);
+  });
+
+  it('reads its own material\'s map, not a body-wide number', () => {
+    // A streamed sector reports its own tile's size against its own UV, which
+    // is what switches the term off over a resident tile while the coarse globe
+    // one pixel away keeps it. A body-wide scalar draws that boundary as a
+    // rectangle.
+    expect(fragment('airless')).toContain('smoothTexelWeight(vMapUv, vec2(textureSize(map, 0)))');
+  });
+
+  it('is one text for every body, only the uniforms differing', () => {
+    // Materials share compiled programs; a define or a per-body variant here
+    // would fork the cache per body and per tier.
+    expect(fragment('airless', 'Rhea')).toBe(fragment('icy', 'Mimas'));
+    expect(fragment('gas', 'Jupiter')).toBe(fragment('airless', 'Rhea'));
+    expect(fragment('airless')).not.toContain('#define');
+  });
+
+  it('gives every body its own ground, and the same ground every session', () => {
+    const rhea = uniforms('icy', 'Rhea').uSynthSeed.value as THREE.Vector2;
+    const mimas = uniforms('icy', 'Mimas').uSynthSeed.value as THREE.Vector2;
+    const rheaAgain = uniforms('icy', 'Rhea').uSynthSeed.value as THREE.Vector2;
+    expect(rhea.equals(rheaAgain)).toBe(true);
+    expect(rhea.equals(mimas)).toBe(false);
+  });
+
+  it('never fades in on a surface that has no ground to grain', () => {
+    // A gas giant has no surface, Earth's is mostly ocean, and the cloud deck
+    // is not ground at all.
+    for (const archetype of ['gas', 'earth', 'cloud'] as const) {
+      const u = uniforms(archetype, 'Jupiter');
+      expect((u.uSynthGrain.value as number)).toBe(0);
+      expect((u.uSynthRelief.value as number)).toBe(0);
+    }
+    // And it starts at rest everywhere, including where it will be used: the
+    // body's owner eases it in, nothing switches it on.
+    expect(uniforms('airless', 'Moon').uSynthEnvelope.value).toBe(0);
+  });
+
+  it('holds relief back wherever some other relief is already bound', () => {
+    // Two sets of craters under one Sun is what a doubled relief looks like.
+    const mat = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(mat, 'airless', undefined, 0, undefined, undefined, 'Moon');
+    expect(surfaceSynthesisOf(mat)?.relief).toBe(true);
+    mat.normalMap = new THREE.Texture();
+    expect(surfaceHasBoundRelief(mat)).toBe(true);
+    setSurfaceSynthesis(mat, 0.5, !surfaceHasBoundRelief(mat));
+    expect(surfaceSynthesisOf(mat)).toEqual({ envelope: 0.5, relief: false });
+    // The grain is not held back with it — a surface that has run out of map
+    // still has grain to put back, whatever else is bound.
+    expect(uniforms('airless', 'Moon', mat).uSynthGrain.value).toBeGreaterThan(0);
+  });
+
+  it('draws craters no deeper than the field was built with', () => {
+    // The relief uniform is a gain on the field's own geometry, so an
+    // exaggeration is a number someone chose rather than a number that drifted.
+    const mat = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(mat, 'airless', undefined, 0, undefined, undefined, 'Moon');
+    const relief = (uniforms('airless', 'Moon', mat).uSynthRelief.value as number);
+    expect(relief).toBeCloseTo(surfaceDetailHeightSpan(), 12);
   });
 });

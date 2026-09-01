@@ -19,7 +19,8 @@
  */
 import * as THREE from 'three';
 import {
-  augmentSurfaceMaterial, setSurfaceWaterGloss, surfaceShadingArgsOf, surfaceWaterGloss,
+  augmentSurfaceMaterial, setSurfaceSynthesis, setSurfaceWaterGloss, surfaceHasBoundRelief,
+  surfaceShadingArgsOf, surfaceSynthesisOf, surfaceWaterGloss,
 } from './surfaceShading';
 
 /** The maps a sector owns: its colour tile, and crops of whichever relief /
@@ -69,7 +70,9 @@ export function createSectorMaterial(
   // same frame spin, because a sector mesh hangs under the mesh this base
   // material draws and inherits whatever rotation that carries.
   if (args) {
-    augmentSurfaceMaterial(mat, args.archetype, args.ringShadow, args.sunTan, args.fx, args.uFrameSpin);
+    augmentSurfaceMaterial(
+      mat, args.archetype, args.ringShadow, args.sunTan, args.fx, args.uFrameSpin, args.seedName,
+    );
   }
   // After the augmentation, not before: part of what the sector mirrors lives in
   // the augmentation's own uniforms, and a sync run first would write it into a
@@ -95,4 +98,13 @@ export function syncSectorMaterial(mat: THREE.MeshStandardMaterial, base: THREE.
   // call, not the tile's: a sector reading its crop one way over a globe
   // reading its map the other is a rectangle of different sea.
   setSurfaceWaterGloss(mat, surfaceWaterGloss(base));
+  // How much close-range detail the body is drawing is also the globe's call,
+  // and it is eased in wall time — a sector left holding whatever it was born
+  // with would fade on its own schedule, which reads as a rectangle appearing.
+  // Whether its RELIEF may be drawn is the TILE's own business: the sector
+  // carries crops of whatever relief maps the base had, so it answers for what
+  // is bound on itself.
+  setSurfaceSynthesis(
+    mat, surfaceSynthesisOf(base)?.envelope ?? 0, !surfaceHasBoundRelief(mat),
+  );
 }

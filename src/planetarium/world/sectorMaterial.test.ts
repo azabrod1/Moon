@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
-import { augmentSurfaceMaterial, surfaceShadingArgsOf } from './surfaceShading';
+import {
+  augmentSurfaceMaterial, setSurfaceSynthesis, surfaceShadingArgsOf, surfaceSynthesisOf,
+} from './surfaceShading';
 import { createSectorMaterial, syncSectorMaterial } from './sectorMaterial';
 
 /** Run a material's onBeforeCompile hook against a minimal shader stub and
@@ -101,5 +103,41 @@ describe('createSectorMaterial', () => {
     const base = new THREE.MeshStandardMaterial();
     const sector = createSectorMaterial(base, { map: new THREE.Texture() });
     expect(surfaceShadingArgsOf(sector)).toBeUndefined();
+  });
+
+  it("lands on the globe's own ground, at the globe's own strength", () => {
+    // The close-range detail field is seeded by the BODY, so a sector has to
+    // read the same patch of it as the globe under it; and how much of the term
+    // is drawn is eased in wall time by the body's owner, so a sector left
+    // holding whatever it was born with would fade on a schedule of its own —
+    // which is a rectangle appearing on the surface.
+    const base = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(base, 'airless', undefined, 0, undefined, undefined, 'Moon');
+    setSurfaceSynthesis(base, 0.4, true);
+    const sector = createSectorMaterial(base, { map: new THREE.Texture() });
+    expect(surfaceShadingArgsOf(sector)?.seedName).toBe('Moon');
+    expect(compiledUniforms(sector).uSynthSeed.value)
+      .toEqual(compiledUniforms(base).uSynthSeed.value);
+    expect(surfaceSynthesisOf(sector)?.envelope).toBe(0.4);
+    setSurfaceSynthesis(base, 0.9, true);
+    syncSectorMaterial(sector, base);
+    expect(surfaceSynthesisOf(sector)?.envelope).toBe(0.9);
+  });
+
+  it('answers for the relief on its OWN crops', () => {
+    // A sector carries crops of whatever relief maps the base had, so whether a
+    // synthesized relief would be a second set of craters is the tile's own
+    // question and not the globe's.
+    const base = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(base, 'airless', undefined, 0, undefined, undefined, 'Moon');
+    setSurfaceSynthesis(base, 1, true);
+    const bare = createSectorMaterial(base, { map: new THREE.Texture() });
+    expect(surfaceSynthesisOf(bare)?.relief).toBe(true);
+    const relieved = createSectorMaterial(base, {
+      map: new THREE.Texture(), normalMap: new THREE.Texture(),
+    });
+    expect(surfaceSynthesisOf(relieved)?.relief).toBe(false);
+    syncSectorMaterial(relieved, base);
+    expect(surfaceSynthesisOf(relieved)?.relief).toBe(false);
   });
 });

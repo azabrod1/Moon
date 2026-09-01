@@ -338,7 +338,12 @@ describe('the deck\'s detail term', () => {
     // gets a wrong mip and a wrong slope wherever the quad straddles the fade.
     const glsl = compiled('cloud').shader.fragmentShader;
     const block = glsl.slice(glsl.indexOf('float cloudAlpha = 1.0;'), glsl.indexOf('vec4 detail = textureGrad'));
-    const inner = glsl.slice(glsl.indexOf('if (cloudDetailW > 0.0) {'), glsl.indexOf('#include <opaque_fragment>'));
+    // The deck's own block only — the injection point carries other terms
+    // after it, and each answers for its own derivatives.
+    const inner = glsl.slice(
+      glsl.indexOf('if (cloudDetailW > 0.0) {'),
+      glsl.indexOf('normal = normalize(nrm - surfGrad * cloudDetailW);'),
+    );
     // Four for the deck's own geometry and two for the ground's frame under it.
     expect(block.match(/dFd[xy]\(/g)).toHaveLength(6);
     expect(inner).not.toMatch(/dFd[xy]\(/);

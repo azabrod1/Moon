@@ -62,11 +62,32 @@
  * shade this file's own night terms and leave three's lights on a smooth
  * sphere.
  *
+ * Close-range detail synthesis is the seventh term, and it is the only one that
+ * exists because a MAP ran out rather than because the light did. Where the
+ * colour map on this material is magnified past a texel a pixel — the same band
+ * the smooth magnification filter hands over on, measured the same way — a
+ * seeded, tileable height field fades in and tilts the normal under it, so a
+ * surface that has run out of photograph reads as ground rather than as blur.
+ * It composes UNDER whatever is painted: it perturbs shading and never restates
+ * a body's colour.
+ *
+ * Its CPU twin does not exist and must not be written. The procedural moon
+ * painter holds every LOOK term in both a GPU and a CPU path so a device that
+ * falls back paints the same moon; this is a draw-time term over whatever map
+ * is bound, with no painted output to match, and a body wearing a photograph
+ * gets it too.
+ *
+ * The surfaces this file does NOT reach never fade it in: Earth's night-lights
+ * shell and its night sectors are their own ShaderMaterial, and the atmosphere
+ * shells, the rings, the Sun and the moon dots are not surfaces at all.
+ *
  * The injected GLSL is byte-identical for every body (only uniforms differ), so
  * materials still share compiled programs — no custom cache key needed. That
  * holds for the air too: a body without tables takes the same text with
  * `uAirDensity` at zero, rather than a shorter variant that would fork the
- * program cache per body and per tier.
+ * program cache per body and per tier. The detail term is the same: one text
+ * with `uSynthEnvelope` at zero, never a `#define` and never a per-body
+ * variant.
  */
 import * as THREE from 'three';
 import {
@@ -99,7 +120,13 @@ import {
   cloudDetailTexture,
 } from './cloudDetailNoise';
 import { MOON_UP_GLSL, NIGHT_WEIGHT_GLSL, SUN_DOWN_GLSL } from './nightSources';
+import { gpuSeed } from './proceduralMoon';
 import { SURFACE_TEXEL_FADE } from './surfaceDensity';
+import {
+  SURFACE_DETAIL_GRADIENT_SCALE,
+  surfaceDetailHeightSpan,
+  surfaceDetailTexture,
+} from './surfaceDetailNoise';
 import { PLANETS } from '../planets/planetData';
 
 /** The cloud deck is a surface class of its own: its alpha is the coverage its
@@ -265,6 +292,39 @@ export const AIR_LOOKUP_RADIUS: Record<SurfaceArchetype, number> = {
   icy:     0,
   earth:   0,
   cloud:   cloudShellScale(EARTH_RADIUS_KM),
+};
+
+/**
+ * How much albedo grain the close-range term puts back, as a fraction either
+ * side of what the map says. Keyed to surface class: a regolith reads as grain
+ * at any magnification, ice reads smoother, and the two classes that get none
+ * are the two where a grain would be a lie — a gas giant has no surface to
+ * grain, and Earth's is mostly ocean, which is the one surface in the system
+ * that really is smooth at this scale.
+ */
+const SYNTH_GRAIN: Record<SurfaceArchetype, number> = {
+  airless: 0.10,
+  rocky: 0.08,
+  icy: 0.06,
+  gas: 0,
+  earth: 0,
+  cloud: 0,
+};
+
+/**
+ * How steeply the synthesized relief is drawn, against the crater geometry the
+ * field was actually built with: 1 is that geometry, unexaggerated. Only where
+ * nothing else supplies relief — a body wearing a measured normal map or a
+ * painted crater bump already has its own, and a second one embossed on top is
+ * two sets of craters lit from one Sun.
+ */
+const SYNTH_RELIEF_GAIN: Record<SurfaceArchetype, number> = {
+  airless: 1.0,
+  rocky: 0.8,
+  icy: 0.7,
+  gas: 0,
+  earth: 0,
+  cloud: 0,
 };
 
 // --- The ocean's gloss -------------------------------------------------------
@@ -469,6 +529,118 @@ vec4 textureBSpline(sampler2D tex, vec2 uv, vec2 texels) {
 }
 `;
 
+// --- Close-range detail synthesis -------------------------------------------
+//
+// Past the band above, a colour map has nothing left to say: a texel is being
+// stretched over more than a pixel, the smooth filter has taken over, and what
+// the eye sees is interpolation. A photograph at that magnification reads as
+// blur, and a procedural moon's painted canvas reads as putty. This fades in a
+// seeded, tileable HEIGHT field under whatever is painted and tilts the normal
+// with it — so the surface answers the light instead of restating its own
+// colour, which is the difference between ground and a picture of ground.
+//
+// It is a height field on purpose. Synthetic relief painted into the albedo
+// draws its own shadows, and those shadows do not move with the Sun; at grazing
+// light they read as fake craters, which is the verdict that killed an earlier
+// attempt at synthetic relief and the bar this one is measured against.
+
+/** Screen size, in render-target pixels, the field's tile is drawn at. The map
+ *  is 512 texels across, so a tile this wide puts its finest texel on about one
+ *  pixel — where the mip chain hands over and nothing crawls — and its craters
+ *  between five and sixty pixels, which is the range an eye reads as ground. */
+const SURFACE_DETAIL_TILE_PX = 512;
+
+const SURFACE_DETAIL_GLSL = /* glsl */ `
+uniform sampler2D uSynthDetail;
+uniform float uSynthGrain;
+uniform float uSynthRelief;
+uniform float uSynthEnvelope;
+uniform vec2 uSynthSeed;
+`;
+
+const SURFACE_DETAIL_BODY = /* glsl */ `
+#ifdef USE_MAP
+if (uSynthEnvelope > 0.0) {
+  // How magnified the map on THIS material is, on the one band the smooth
+  // filter hands over on. Per material and per fragment, which is what makes it
+  // right on a streamed body: a resident 16K tile reports its own size against
+  // its own UV and switches the term off over its own patch, while the coarse
+  // globe one pixel away keeps it. A body-wide scalar would draw that boundary
+  // as a rectangle.
+  float synthW = smoothTexelWeight(vMapUv, vec2(textureSize(map, 0))) * uSynthEnvelope;
+  // The field's domain is the BODY's own frame, never the material's UV: a
+  // streamed sector's UV runs 0..1 across its own tile, so a field in UV space
+  // would put a different pattern on every tile and draw the tile grid.
+  vec3 synthDir = normalize(vObjPos);
+  // Every derivative is taken HERE, under a branch that is uniform across the
+  // draw: a derivative under a per-fragment condition is undefined, and the
+  // fade below is exactly such a condition.
+  vec3 synthDx = dFdx(synthDir);
+  vec3 synthDy = dFdy(synthDir);
+  vec3 synthVx = dFdx(-vViewPosition);
+  vec3 synthVy = dFdy(-vViewPosition);
+  float synthCosLat = max(sqrt(synthDir.x * synthDir.x + synthDir.z * synthDir.z), 1e-4);
+  vec2 synthAng = vec2(atan(synthDir.z, synthDir.x), asin(clamp(synthDir.y, -1.0, 1.0)));
+  // The angles' screen derivatives, taken analytically from the direction's.
+  // atan has a branch cut at the antimeridian, and reading its derivative
+  // through dFdx would put one pixel of enormous gradient down that line — the
+  // wrong rung and the wrong mip on it.
+  vec2 synthAngX = vec2((synthDir.x * synthDx.z - synthDir.z * synthDx.x) / (synthCosLat * synthCosLat),
+      synthDx.y / synthCosLat);
+  vec2 synthAngY = vec2((synthDir.x * synthDy.z - synthDir.z * synthDy.x) / (synthCosLat * synthCosLat),
+      synthDy.y / synthCosLat);
+  if (synthW > 0.0) {
+    // Which rung of the fixed tile ladder this fragment wants: the one whose
+    // tile spans about SURFACE_DETAIL_TILE_PX pixels. Powers of two only, so a
+    // whole number of tiles spans the turn and the antimeridian is not a seam;
+    // the fraction crossfades that rung with the next finer one, so zooming
+    // reveals finer rungs of ONE fixed field instead of changing the field. A
+    // body's face is its seed's, and the seed is its name — it does not change
+    // between sessions or between zooms.
+    float radPerPx = max(max(length(synthAngX), length(synthAngY)), 1e-12);
+    float synthWanted = log2(6.283185307 / (${SURFACE_DETAIL_TILE_PX.toFixed(1)} * radPerPx));
+    float synthRung = max(floor(synthWanted), 0.0);
+    float synthBlend = clamp(synthWanted - synthRung, 0.0, 1.0);
+    float synthPerRad = exp2(synthRung) / 6.283185307;
+    vec2 synthUv = synthAng * synthPerRad + uSynthSeed;
+    vec4 synthA = textureGrad(uSynthDetail, synthUv, synthAngX * synthPerRad, synthAngY * synthPerRad);
+    vec4 synthB = textureGrad(uSynthDetail, synthUv * 2.0 - uSynthSeed,
+        synthAngX * (synthPerRad * 2.0), synthAngY * (synthPerRad * 2.0));
+    // Grain: the field's own height as a small multiplicative variation of the
+    // albedo, luminance only and a few per cent of it. It puts a texture back
+    // on a surface that has run out of map; it must never restate the body's
+    // colour, which is what the photograph or the archetype palette is for.
+    diffuseColor.rgb *= 1.0 + uSynthGrain * (mix(synthA.r, synthB.r, synthBlend) - 0.5) * 2.0 * synthW;
+    if (uSynthRelief > 0.0) {
+      // The field's gradient in its own tile's uv IS a surface slope once the
+      // height is read against that tile's arc — and the arc cancels the rung
+      // out, so the field is the same steepness at every rung, which is what a
+      // fractal surface is. The two rungs are therefore mixed in their own uv
+      // units; converting them to a common one first would undo it.
+      vec2 synthGrad = (mix(synthA.gb, synthB.gb, synthBlend) * 2.0 - vec2(1.0))
+          * ${SURFACE_DETAIL_GRADIENT_SCALE.toFixed(1)};
+      // The body's own rendered radius, off the varying that already carries
+      // this fragment's offset from the body's centre — no uniform to keep in
+      // step with a mesh scale.
+      float synthR = length(vAirFrag);
+      vec3 synthNrm = normalize(normal);
+      vec3 synthR1 = cross(synthVy, synthNrm);
+      vec3 synthR2 = cross(synthNrm, synthVx);
+      float synthDet = dot(synthVx, synthR1);
+      if (abs(synthDet) > 1e-30) {
+        // Height per screen pixel in world units, turned into a surface
+        // gradient by the screen basis — the same construction the cloud
+        // deck's relief takes, and for the same reason: it needs no tangent
+        // frame, so it works on a sector mesh and a globe alike.
+        vec3 synthSurfGrad = (dot(synthGrad, synthAngX) * synthR1
+            + dot(synthGrad, synthAngY) * synthR2) * (uSynthRelief * synthR / synthDet);
+        normal = normalize(synthNrm - synthSurfGrad * synthW);
+      }
+    }
+  }
+}
+#endif`;
+
 /**
  * three's own <map_fragment>, with the deck's fetch put through the smooth
  * magnification filter. The ordinary bilinear tap happens for every surface;
@@ -532,7 +704,7 @@ varying vec3 vObjPos;
 varying vec3 vPlanetshineViewDir;
 varying vec3 vAirCam;
 varying vec3 vAirFrag;
-${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}${CLOUD_DETAIL_GLSL}${SPHERE_EQUIRECT_UV_GLSL}${SMOOTH_TEXEL_GLSL}`;
+${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}${CLOUD_DETAIL_GLSL}${SPHERE_EQUIRECT_UV_GLSL}${SMOOTH_TEXEL_GLSL}${SURFACE_DETAIL_GLSL}`;
 
 // Injected after lighting but before <opaque_fragment> writes outgoingLight into
 // gl_FragColor — so terms land in linear radiance (tone-mapped downstream) and
@@ -639,7 +811,8 @@ if (uCloudDeck > 0.0) {
       normal = normalize(nrm - surfGrad * cloudDetailW);
     }
   }
-}`;
+}
+${SURFACE_DETAIL_BODY}`;
 
 const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // The deck's alpha, worked out with its colour above where the lights could
@@ -838,6 +1011,20 @@ export interface SurfaceShadingArgs {
    *  not a water mask. Held here rather than on the material because the
    *  streamed sectors have to be told the same thing the globe was. */
   uWaterGloss: { value: number };
+  /** How much of the close-range detail term this material is drawing, eased in
+   *  wall time by whoever owns the body. Material-scoped, so a streamed sector
+   *  has to be told the globe's value every frame or it holds a stale one. */
+  uSynthEnvelope: { value: number };
+  /** The relief height that term draws, or 0 while some other relief is bound
+   *  on this material. Grain is unconditional; relief is not. */
+  uSynthRelief: { value: number };
+  /** What `uSynthRelief` goes back to when nothing else supplies relief — the
+   *  archetype's own gain against the field's built geometry. */
+  synthReliefGain: number;
+  /** The body this material draws, as the close-range field's seed reads it.
+   *  Held so a dependent material (a streamed sector) lands on the SAME ground
+   *  as the globe under it rather than on a second patch of field. */
+  seedName: string;
 }
 const augmentArgs = new WeakMap<THREE.Material, SurfaceShadingArgs>();
 
@@ -857,6 +1044,56 @@ export function surfaceWaterGloss(mat: THREE.Material): boolean {
 export function setSurfaceWaterGloss(mat: THREE.Material, on: boolean): void {
   const args = augmentArgs.get(mat);
   if (args) args.uWaterGloss.value = on ? WATER_GLOSS_GAIN : 0;
+}
+
+/**
+ * Where a body reads the tiling detail field. The field is periodic, so an
+ * offset is free and cannot break the wrap; two coprime moduli keep names that
+ * hash close together from landing on one line of the tile.
+ */
+function synthSeedOffset(name: string): THREE.Vector2 {
+  const seed = gpuSeed(name);
+  return new THREE.Vector2((seed % 977) / 977, (Math.floor(seed / 977) % 613) / 613);
+}
+
+/**
+ * Set how much of the close-range detail term a material draws this frame:
+ * `envelope` is the eased 0..1 the owner is holding, and `reliefAllowed` is
+ * false wherever some other relief is already bound — a measured normal map, a
+ * painted crater bump, or a sector's crop of either. Grain survives there;
+ * synthesized relief does not, because two sets of craters under one Sun is
+ * what a doubled relief looks like.
+ *
+ * A material with no augmentation (a plain mesh, a shell that is not a surface)
+ * simply has nothing to set.
+ */
+export function setSurfaceSynthesis(
+  mat: THREE.Material,
+  envelope: number,
+  reliefAllowed: boolean,
+): void {
+  const args = augmentArgs.get(mat);
+  if (!args) return;
+  args.uSynthEnvelope.value = envelope;
+  args.uSynthRelief.value = reliefAllowed ? args.synthReliefGain : 0;
+}
+
+/** How much of the term this material is drawing, and whether its relief is
+ *  allowed — what a dependent material (a streamed sector) mirrors. */
+export function surfaceSynthesisOf(
+  mat: THREE.Material,
+): { envelope: number; relief: boolean } | undefined {
+  const args = augmentArgs.get(mat);
+  if (!args) return undefined;
+  return { envelope: args.uSynthEnvelope.value, relief: args.uSynthRelief.value > 0 };
+}
+
+/** Whether any relief at all is bound on this material — a measured normal map
+ *  or a painted bump, either of which makes the synthesized one a second set of
+ *  craters under the same Sun. */
+export function surfaceHasBoundRelief(mat: THREE.Material): boolean {
+  const standard = mat as Partial<THREE.MeshStandardMaterial>;
+  return !!standard.normalMap || !!standard.bumpMap;
 }
 
 /** 1×1 stand-ins, shared by every augmented material: no sampler is ever left
@@ -950,6 +1187,10 @@ export function augmentSurfaceMaterial(
   /** Share the spin of the mesh this material's own mesh hangs under (a
    *  streamed sector is a child of the globe mesh, so it inherits its frame). */
   sharedSpin?: { value: number },
+  /** The body's name, which is the close-range detail field's seed. Two bodies
+   *  wear different ground and one body wears the same ground every session.
+   *  Empty for a surface nobody looks at (a warm-up probe, a compare filler). */
+  seedName = '',
 ): SurfaceShadingFx {
   const night = NIGHT_FILL[archetype];
 
@@ -973,7 +1214,18 @@ export function augmentSurfaceMaterial(
   // the flat mid-grey stand-in a failed fetch leaves behind is not one, and
   // remapping it would put an ocean's sheen on the whole planet.
   const uWaterGloss = { value: 0 };
-  augmentArgs.set(mat, { archetype, ringShadow, sunTan, fx, uFrameSpin, uWaterGloss });
+  // Off until the body's owner says this surface is magnified past the band and
+  // eases it in. Nothing is ever stepped on: at zero the term costs a uniform
+  // branch and no fetch.
+  const uSynthEnvelope = { value: 0 };
+  const synthReliefGain = SYNTH_RELIEF_GAIN[archetype] > 0
+    ? SYNTH_RELIEF_GAIN[archetype] * surfaceDetailHeightSpan()
+    : 0;
+  const uSynthRelief = { value: synthReliefGain };
+  augmentArgs.set(mat, {
+    archetype, ringShadow, sunTan, fx, uFrameSpin, uWaterGloss,
+    uSynthEnvelope, uSynthRelief, synthReliefGain, seedName,
+  });
   const uNightColor = { value: new THREE.Color(night.color) };
   const uNightStrength = { value: night.strength };
   const uTermWidth = { value: night.termWidth };
@@ -999,6 +1251,20 @@ export function augmentSurfaceMaterial(
   const uCloudDetailRelief = {
     value: archetype === 'cloud' ? CLOUD_DETAIL_RELIEF_KM / EARTH_RADIUS_KM : 0,
   };
+  const uSynthGrain = { value: SYNTH_GRAIN[archetype] };
+  // The one shared field, or the same 1x1 stand-in the air's samplers take on a
+  // surface class that never fades the term in — sampling it is never legal,
+  // because uSynthEnvelope is then held at zero.
+  const uSynthDetail = {
+    value: SYNTH_GRAIN[archetype] > 0 || SYNTH_RELIEF_GAIN[archetype] > 0
+      ? surfaceDetailTexture() as THREE.Texture
+      : surfaceAirDummies().map2D as THREE.Texture,
+  };
+  // Where this body reads the tiling field. One offset per body, so two moons
+  // wear different ground; the field is periodic, so an offset costs nothing
+  // and cannot break the wrap. The caller supplies it (the body's name, hashed)
+  // — a body must not change face between sessions.
+  const uSynthSeed = { value: synthSeedOffset(seedName) };
 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uSunDirWorld = fx.uSunDirWorld;
@@ -1026,6 +1292,11 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uCloudCityGlow = uCloudCityGlow;
     shader.uniforms.uCloudDetailRelief = uCloudDetailRelief;
     shader.uniforms.uFrameSpin = uFrameSpin;
+    shader.uniforms.uSynthDetail = uSynthDetail;
+    shader.uniforms.uSynthGrain = uSynthGrain;
+    shader.uniforms.uSynthRelief = uSynthRelief;
+    shader.uniforms.uSynthEnvelope = uSynthEnvelope;
+    shader.uniforms.uSynthSeed = uSynthSeed;
     for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];
 
     shader.vertexShader = shader.vertexShader

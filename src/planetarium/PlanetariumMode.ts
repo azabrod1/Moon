@@ -39,7 +39,7 @@ import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, createSha
 import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { disposeCloudDetailTexture } from './world/cloudDetailNoise';
-import { bindSurfaceAir, clearSurfaceAir, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
 import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer, warmBudgetMs } from './world/textureWarmer';
 import { beginSlicedUpload, stepSlicedUpload } from './world/slicedUpload';
@@ -303,8 +303,7 @@ import {
   autopilotAimBlend,
   autopilotArrived,
   autopilotGlideCap,
-  contactAimStep,
-  grazeDeflectAim,
+  resolveShellContactPark,
   initialBodyCapState,
   arrivalPose,
   planetPostcardPose,
@@ -316,8 +315,6 @@ import {
   BODY_APPROACH_K_PER_S,
   BODY_APPROACH_V_MIN_AU_S,
   BODY_CAP_CLEAR_HOLD_S,
-  CONTACT_AIM_TTL_S,
-  CONTACT_ALIGN_OUT_MAX,
   PLANET_ARRIVAL_STANDOFF_FLOOR_AU,
   SUN_APPROACH_SURFACE_RADII,
   SUN_ARRIVAL_RADII,
@@ -1414,14 +1411,8 @@ export class PlanetariumMode {
    *  whole segment, not the endpoint (one 100 ms frame at the in-system
    *  default steps ~2,500 km, clean through a small moon's bubble). */
   private prevPlayerPos = new THREE.Vector3();
-  /** The armed shell-contact graze (see applyShellContact / applyContactAim):
-   *  the unit aim the nose eases onto after a hands-off bump. Transient —
-   *  never saved; steering input, autopilot, jumps, landings, and the
-   *  post-contact TTL all retire it. */
-  private contactAimTarget = new THREE.Vector3();
-  private contactAimActive = false;
-  private contactAimAgeS = 0;
-  private tmpContactForward = new THREE.Vector3();
+  /** Scratch for the shell-contact park (see applyShellContact). */
+  private tmpShellPark = new THREE.Vector3();
 
   private layoutMode: PlanetariumLayout = 'realistic';
   // The current frame's wall delta in ms — the system map's scale animation
@@ -4038,10 +4029,6 @@ export class PlanetariumMode {
         if (this.autopilot && this.autopilotTarget && this.player.yawInput === 0 && this.player.pitchInput === 0) {
           this.applyAutopilot();
         }
-
-        // Shell-contact graze: ease the nose along the armed deflection
-        // (hands-off only; any steering input reclaims the stick).
-        this.applyContactAim(dt);
 
         // Compute system speed throttle before player update
         const throttleResult = this.computeSystemSpeedFactor();
@@ -12282,10 +12269,7 @@ export class PlanetariumMode {
     // The transfer owns the pose from here; an armed contact graze must not
     // resume steering on the handback frame, and neither may a flyby look
     // left holding an earlier destination — an authored scene is framed on
-    // its own look target, not on whatever the last pass was watching. No
-    // cut pairs with this one (the transfer reacquires rather than snapping),
-    // so the aim limiter eases the orphaned deflection out under it.
-    this.contactAimActive = false;
+    // its own look target, not on whatever the last pass was watching.
     clearArrivalLook(this.cruiseAim);
     this.player.moving = true;
     // A scripted transfer never poses the camera, so a user-owned camera must
@@ -12361,9 +12345,6 @@ export class PlanetariumMode {
     // fresh pose's aim. The jump funnel clears it earlier for its own
     // bookkeeping and re-starts it after this returns.
     clearArrivalLook(this.cruiseAim);
-    // Same cut for the contact graze: a deliberate repose supersedes any
-    // armed deflection, which must not steer the fresh pose.
-    this.contactAimActive = false;
     this.cancelOrbitGesture();
     // Cruise rides the flight horizon. Every cruise entry funnels through
     // here — first pointing, Travel jumps, takeoff, a non-landed restore — so
@@ -12702,64 +12683,29 @@ export class PlanetariumMode {
   }
 
   /**
-   * Land a swept shell contact: park the ship on the shell and, when the
-   * pilot's hands are off the stick, arm the graze — deflect the nose onto
-   * the forward direction's tangential part plus a small outward bias
-   * (grazeDeflectAim), swung there over a few tenths of a second by
-   * applyContactAim — so a bump skims the limb and peels away. The old
-   * response snapped the nose 180° to the radial in one frame: it discarded
-   * the approach direction, whipped the chase camera, and on a moving body's
-   * leading face aimed the ship straight along the bulldozer blade. An
-   * actively steering pilot keeps their heading — the shell holds them
-   * regardless, and re-aiming against a held stick was the reported
-   * grind-fight. Autopilot ends on contact: its glide contract already
-   * failed (a body swept in at time warp), and its re-aim would fight the
-   * deflection frame by frame — silently, since the pilot did nothing to
-   * take the stick. A parked ship is revived (the pilot's own throttle-up
-   * guards apply): a body plowing into it is a physical shove, and a dead
-   * hull would otherwise be bulldozed across the sky with no way out.
+   * Land a swept shell contact, by position alone — the pilot's heading and
+   * camera are never touched. resolveShellContactPark keeps the frame's
+   * tangential motion (a bump slides around the limb instead of grinding at
+   * the entry point) and walks a pressed dead-center pin sideways, so a
+   * moving body's leading face carries a ship around and off the shell
+   * rather than bulldozing it forever. Autopilot ends on contact: its glide
+   * contract already failed (a body swept in at time warp), and it would
+   * re-close on the shell frame by frame — silently, since the pilot did
+   * nothing to take the stick. A parked ship is revived (the pilot's own
+   * throttle-up guards apply): a body plowing into it is a physical shove,
+   * and a dead hull would otherwise ride the shell with no way out.
    */
   private applyShellContact(cx: number, cy: number, cz: number, shellR: number, hit: SweepContact) {
-    this.player.posX = cx + hit.ox * shellR;
-    this.player.posY = cy + hit.oy * shellR;
-    this.player.posZ = cz + hit.oz * shellR;
+    const park = resolveShellContactPark(
+      this.player.posX, this.player.posY, this.player.posZ,
+      this.prevPlayerPos.x, this.prevPlayerPos.y, this.prevPlayerPos.z,
+      cx, cy, cz, shellR, hit, this.tmpShellPark,
+    );
+    this.player.posX = park.x;
+    this.player.posY = park.y;
+    this.player.posZ = park.z;
     if (this.autopilot) this.disengageAutopilot();
     this.reviveParkedShip();
-    if (this.player.yawInput !== 0 || this.player.pitchInput !== 0) return;
-    const forward = this.player.writeForwardDirection(this.tmpForwardDir);
-    if (forward.x * hit.ox + forward.y * hit.oy + forward.z * hit.oz < CONTACT_ALIGN_OUT_MAX) {
-      grazeDeflectAim(
-        forward.x, forward.y, forward.z,
-        hit.ox, hit.oy, hit.oz,
-        this.contactAimTarget,
-      );
-      this.contactAimActive = true;
-      this.contactAimAgeS = 0;
-    }
-  }
-
-  /**
-   * One frame of the armed contact graze: swing the nose toward the deflected
-   * aim on the contact τ (contactAimStep). Steering input or autopilot
-   * reclaims the stick instantly; convergence or the post-contact TTL retires
-   * the swing. Runs in the cruise steering slot — after processInput, before
-   * the ship integrates — so the frame flies the eased heading.
-   */
-  private applyContactAim(dt: number) {
-    if (!this.contactAimActive) return;
-    if (this.player.yawInput !== 0 || this.player.pitchInput !== 0 || this.autopilot) {
-      this.contactAimActive = false;
-      return;
-    }
-    this.contactAimAgeS += dt;
-    const forward = this.player.writeForwardDirection(this.tmpContactForward);
-    const done = contactAimStep(forward, this.contactAimTarget, dt, forward);
-    this.player.headToward(
-      this.player.posX + forward.x,
-      this.player.posZ + forward.z,
-      this.player.posY + forward.y,
-    );
-    if (done || this.contactAimAgeS >= CONTACT_AIM_TTL_S) this.contactAimActive = false;
   }
 
   private resolveMoonCollisions() {
@@ -16554,7 +16500,6 @@ export class PlanetariumMode {
     // pre-landing deflection.
     clearArrivalLook(this.cruiseAim);
     cutAim(this.cruiseAim);
-    this.contactAimActive = false;
     this.governedMoonSeeds = [];
     this.arrivalLookMoon = null;
     this.arrivalLookParentBody = null;
@@ -17819,6 +17764,17 @@ export class PlanetariumMode {
         // clouds at a longitude of its own.
         const cloudArgs = surfaceShadingArgsOf(planet.cloudsMesh.material as THREE.Material);
         if (cloudArgs) cloudArgs.uFrameSpin.value = cloudDrift;
+        // The same drift, and whichever rung the deck is currently wearing, for
+        // the ocean's glint under it: the globe and its sectors read the deck's
+        // map to cut the Sun's beam where cloud stands over the sea, and the map
+        // they read has to be the one being drawn or the cut lands at the wrong
+        // sharpness. Written here rather than at build time because the deck
+        // climbs its texture ladder on approach and frees the rung it leaves.
+        if (body.name === 'Earth') {
+          cloudShadowUniforms.uCloudShadowSpin.value = cloudDrift;
+          const deckMap = (planet.cloudsMesh.material as THREE.MeshStandardMaterial).map;
+          if (deckMap) cloudShadowUniforms.uCloudShadowMap.value = deckMap;
+        }
       }
       const localSunDir = this.tmpLocalSunDir
         .copy(state.sunDirection)

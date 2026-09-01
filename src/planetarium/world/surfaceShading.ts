@@ -306,6 +306,23 @@ export const ROUGHNESS_MAP_WATER = 0.45;
  */
 export const OCEAN_ROUGHNESS = 0.2;
 
+/** How much of the ocean's mirror term survives the Fresnel it is drawn with:
+ *  1 keeps three's 4 % dielectric default, 0.5 is water's real 2 % normal
+ *  reflectance. */
+export const OCEAN_SPECULAR_KEEP = 0.5;
+
+/** The cloud deck's colour map, and the drift its own frame carries on top of
+ *  the body's. Shared by every augmented surface so the ocean's mirror term can
+ *  be cut where cloud stands between it and the Sun; the map is whatever rung
+ *  the deck is currently wearing, written each frame by the mode. */
+export const cloudShadowUniforms: {
+  uCloudShadowMap: { value: THREE.Texture | null };
+  uCloudShadowSpin: { value: number };
+} = {
+  uCloudShadowMap: { value: null },
+  uCloudShadowSpin: { value: 0 },
+};
+
 /** The factor the map's distance BELOW land is multiplied by to land open
  *  water on OCEAN_ROUGHNESS. A coast's fractional water score keeps its
  *  fraction — the coastal gradation is scaled, not thresholded away. */
@@ -513,6 +530,8 @@ uniform vec3 uMoonIrradiance;
 uniform float uAirDensity;
 uniform float uAirLookupRadius;
 uniform float uWaterGloss;
+uniform sampler2D uCloudShadowMap;
+uniform float uCloudShadowSpin;
 uniform float uCloudDeck;
 uniform sampler2D uCloudDetail;
 uniform float uCloudAlbedo;
@@ -649,6 +668,28 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // surface, so the terms below that scale by it are the deck's alone without a
   // second branch.
   diffuseColor.a *= cloudAlpha;
+  // What the Sun's beam went through to reach this sea. The deck blends what
+  // leaves this fragment by (1 - coverage) on the way UP; the beam is cut by the
+  // same coverage on the way DOWN, and only the mirror term notices — ground
+  // under cloud is still lit by what the cloud scattered, a specular highlight
+  // is not, and a full-strength glint reading through a cirrus sheet is what an
+  // orbital frame of it cannot do. Gated on the water gloss, which is nonzero
+  // only where a real water mask says there is sea: one uniform branch, and no
+  // fetch at all, on every other surface in the app.
+  if (uWaterGloss > 0.0) {
+    float deckC = cos(uCloudShadowSpin);
+    float deckS = sin(uCloudShadowSpin);
+    // The deck's own object frame, which is the body frame turned back by the
+    // drift its mesh carries — the frame its colour map is painted in.
+    vec3 deckDir = normalize(vec3(vObjPos.x * deckC - vObjPos.z * deckS,
+                                  vObjPos.y,
+                                  vObjPos.z * deckC + vObjPos.x * deckS));
+    float deckLum = dot(texture2D(uCloudShadowMap, sphereEquirectUv(deckDir)).rgb,
+        vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')}));
+    float glintKeep = (1.0 - cloudCoverage(deckLum))
+        * ${OCEAN_SPECULAR_KEEP.toFixed(4)};
+    outgoingLight -= reflectedLight.directSpecular * (1.0 - glintKeep);
+  }
   // The sine of the Sun's elevation at this fragment, off the perturbed normal:
   // the Sun's own Lambert term, which is what the day factor and the Moon's
   // weight below both read so the two describe one crossing.
@@ -1019,6 +1060,14 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uLimbDarkening = uLimbDarkening;
     shader.uniforms.uAirLookupRadius = uAirLookupRadius;
     shader.uniforms.uWaterGloss = uWaterGloss;
+    // A surface with no water mask never samples this, but every program
+    // still carries the binding: the injected text is byte-identical for
+    // every body, which is what keeps them sharing one compiled program.
+    if (!cloudShadowUniforms.uCloudShadowMap.value) {
+      cloudShadowUniforms.uCloudShadowMap.value = surfaceAirDummies().map2D;
+    }
+    shader.uniforms.uCloudShadowMap = cloudShadowUniforms.uCloudShadowMap;
+    shader.uniforms.uCloudShadowSpin = cloudShadowUniforms.uCloudShadowSpin;
     shader.uniforms.uCloudDeck = uCloudDeck;
     shader.uniforms.uCloudDetail = uCloudDetail;
     shader.uniforms.uCloudAlbedo = uCloudAlbedo;

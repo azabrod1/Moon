@@ -147,29 +147,65 @@ describe('the files behind the colour ladder', () => {
     ]);
   });
 
+  // Containers cut and header-checked ahead of the ladder rows that will name
+  // them: the maps and the rungs for the photo moons come out of one
+  // gen:moonmaps run, so the assets land before the wiring that reads them.
+  // Until a row names one it is inert — nothing resolves these pathnames — but
+  // it is still bytes in the deploy, so it is pinned here with its argument
+  // the same way a live rung is. Every entry moves into TIER_FILE_OVERRIDES
+  // (and out of this list) when its key is wired.
+  const STAGED_CONTAINERS: Array<[string, TextureTier]> = [
+    // Enceladus is the one 4K moon rung whose container clears the toured cap
+    // — 7.9 MB against a 2.0 MB webp twin is 3.9x — on the icy moon most worth
+    // arriving at close. The other six 4K moon rungs miss it (4.02x to 8.01x)
+    // and ship webp alone.
+    ['4k/enceladus.ktx2', '4k'],
+    // The 8K moon rungs, container-only. An 8K rung sits behind a 0.5 trigger
+    // fraction, so reaching it is a deliberate close approach rather than the
+    // traffic of a tour, and what rules out shipping a webp twin beside it is
+    // memory rather than the wire: 170.7 MiB resident against the container's
+    // 42.7, which no device profile can hold a tour of. A session with no
+    // transcoder stops at the rung below instead.
+    ['8k/io.v2.ktx2', '8k'],
+    ['8k/europa.v2.ktx2', '8k'],
+    ['8k/ganymede.v2.ktx2', '8k'],
+    ['8k/callisto.v2.ktx2', '8k'],
+    ['8k/pluto.v2.ktx2', '8k'],
+  ];
+
+  it('ships the staged containers, and no others', () => {
+    const staged = STAGED_CONTAINERS.map(([file]) => file);
+    expect(staged.filter((file) => existsSync(resolve(TEXTURES, file)))).toEqual(staged);
+  });
+
   it('carries a full baked mip chain at the tier width in every container', () => {
-    for (const [key, byTier] of Object.entries(TIER_FILE_OVERRIDES)) {
-      for (const [tier, rung] of Object.entries(byTier)) {
-        const width = TIER_MAP_WIDTH[tier as TextureTier];
-        const header = ktx2Header(tierPath(rung.file, tier as TextureTier));
-        // A 2:1 equirect at the tier's own width. A container a size off
-        // would be charged the tier's bytes and drawn at another.
-        expect({ key, ...header }).toEqual({
-          key,
-          width,
-          height: width / 2,
-          // Every level down to 1x1: three cannot build mips for a
-          // compressed texture, so a chain that stops early leaves the
-          // globe aliasing at every distance the missing levels covered.
-          levels: Math.log2(width) + 1,
-          // 2 = zstd. The blocks are what the GPU holds either way; this is
-          // the wire size, and an unsupercompressed container is several
-          // times the download for the same picture.
-          supercompression: 2,
-          colorModel: DF_MODEL_UASTC,
-          transferFunction: DF_TRANSFER_SRGB,
-        });
-      }
+    const rungs: Array<[string, string, TextureTier]> = [
+      ...Object.entries(TIER_FILE_OVERRIDES).flatMap(([key, byTier]) =>
+        Object.entries(byTier).map(([tier, rung]): [string, string, TextureTier] =>
+          [key, tierPath(rung.file, tier as TextureTier), tier as TextureTier])),
+      ...STAGED_CONTAINERS.map(([file, tier]): [string, string, TextureTier] =>
+        [file, resolve(TEXTURES, file), tier]),
+    ];
+    for (const [key, file, tier] of rungs) {
+      const width = TIER_MAP_WIDTH[tier];
+      const header = ktx2Header(file);
+      // A 2:1 equirect at the tier's own width. A container a size off
+      // would be charged the tier's bytes and drawn at another.
+      expect({ key, ...header }).toEqual({
+        key,
+        width,
+        height: width / 2,
+        // Every level down to 1x1: three cannot build mips for a
+        // compressed texture, so a chain that stops early leaves the
+        // globe aliasing at every distance the missing levels covered.
+        levels: Math.log2(width) + 1,
+        // 2 = zstd. The blocks are what the GPU holds either way; this is
+        // the wire size, and an unsupercompressed container is several
+        // times the download for the same picture.
+        supercompression: 2,
+        colorModel: DF_MODEL_UASTC,
+        transferFunction: DF_TRANSFER_SRGB,
+      });
     }
   });
 });

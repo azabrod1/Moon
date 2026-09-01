@@ -90,6 +90,17 @@ const fromWebp = (tier, file) => ({ kind: 'webp', file: path.join(TEX, tier, fil
  *  apart. */
 const fromLevel = (job) => ({ kind: 'level', job });
 
+/** A job whose pixels come from tools/gen-moonmaps.mjs' intermediate for that
+ *  rung, under .moon-data-cache/zoom/rungs/. The two kinds above cannot serve
+ *  a moon rung that ships as a container ALONE: fromWebp needs a shipped webp
+ *  of that tier, which is exactly what such a rung does not have (and what
+ *  textureTiers.assets.test.ts forbids it from having), and fromLevel needs a
+ *  gen-tiles job, which only the three streamed bodies have. The
+ *  intermediate is the same resample the body's shipped maps came out of, in
+ *  the same run, so the container is a pure sharpen of the boot map under it
+ *  by construction. */
+const fromMoonmap = (name) => ({ kind: 'moonmap', name });
+
 /** RDO lambda where a job does not name one. Higher trades a little picture
  *  for a smaller file: the UASTC blocks are a fixed 8 bits a texel either
  *  way, and what RDO buys is blocks that repeat, which is what zstd behind it
@@ -157,6 +168,31 @@ const JOBS = {
   moon4k: { tier: '4k', rdo: 4.0, rdoDict: 65536, source: fromWebp('4k', 'moon.webp'), out: '4k/moon.ktx2' },
   earthClouds4k: { tier: '4k', rdo: 4.0, rdoDict: 65536, source: fromWebp('4k', 'earth-clouds.webp'), out: '4k/earth-clouds.ktx2' },
   earthNight4k: { tier: '4k', rdo: 16.0, rdoDict: 65536, source: fromWebp('4k', 'earth-night.v2.webp'), out: '4k/earth-night.v2.ktx2' },
+  // Enceladus is the one moon photo map whose 4K container clears the toured
+  // cap: 8.12 MB against a 2.03 MB webp twin is 3.99x, and it is the body in
+  // that batch most worth arriving at close. Every other 4K moon rung misses
+  // — Dione 4.02x, Tethys 4.84, Iapetus 6.26, Rhea 6.56, Charon 7.21, Mimas
+  // 8.01 — for the reason the table above gives: UASTC is a fixed 8 bits a
+  // texel, so a container has a floor near 1.6 MB whatever the picture holds,
+  // and a grey icy moon's webp is small. They keep their webp rungs.
+  enceladus4k: { tier: '4k', source: fromWebp('4k', 'enceladus.webp'), out: '4k/enceladus.ktx2' },
+  // The five 8K moon rungs, all KTX2-ONLY. The toured cap does not apply,
+  // because an 8K rung sits behind a 0.5 trigger fraction: reaching it means
+  // a deliberate close approach to that one body, not the traffic of a tour.
+  // What rules out the webp twin is memory rather than the wire — an
+  // uncompressed 8K map is 170.7 MiB resident where the container is 42.7,
+  // and no device profile can hold a tour of those. So the rung is the
+  // container or it is nothing, and a session with no transcoder simply stops
+  // at 4K (io, europa and ganymede boot at 4096 already, so they stop at
+  // their boot map).
+  //
+  // Pixels come from the gen:moonmaps intermediates rather than from a
+  // shipped file, which is what the third source kind above exists for.
+  io8k: { tier: '8k', source: fromMoonmap('io-8k'), out: '8k/io.v2.ktx2' },
+  europa8k: { tier: '8k', source: fromMoonmap('europa-8k'), out: '8k/europa.v2.ktx2' },
+  ganymede8k: { tier: '8k', source: fromMoonmap('ganymede-8k'), out: '8k/ganymede.v2.ktx2' },
+  callisto8k: { tier: '8k', source: fromMoonmap('callisto-8k'), out: '8k/callisto.v2.ktx2' },
+  pluto8k: { tier: '8k', source: fromMoonmap('pluto-8k'), out: '8k/pluto.v2.ktx2' },
 };
 
 const args = process.argv.slice(2);
@@ -235,11 +271,31 @@ async function levelToPng(jobName, pngOut, width) {
   }
 }
 
+/** The gen:moonmaps intermediate for a rung, already a PNG at the tier's
+ *  width. Copied rather than re-encoded: it IS the picture the rung ships. */
+function moonmapPng(name, pngOut, width) {
+  const cacheArg = process.argv.slice(2).find((a) => a.startsWith('--cache='));
+  const cache = path.resolve(cacheArg ? cacheArg.slice('--cache='.length) : '.moon-data-cache');
+  const src = path.join(cache, 'zoom', 'rungs', `${name}.png`);
+  if (!existsSync(src)) {
+    throw new Error(`${src} is not on disk — run \`node tools/gen-moonmaps.mjs ${name.replace(/-\d+k$/, '')}\` first`);
+  }
+  console.log('  reading', src);
+  writeFileSync(pngOut, readFileSync(src));
+  const meta = readFileSync(pngOut);
+  const w = meta.readUInt32BE(16);
+  if (w !== width) throw new Error(`${src} is ${w} px wide, not the tier's ${width}`);
+}
+
 async function sourcePng(source, pngOut, width) {
   if (source.kind === 'webp') {
     if (!existsSync(source.file)) throw new Error(`${source.file} is not on disk`);
     console.log('  decoding', path.relative(repo, source.file));
     await decodeToPng(source.file, 'image/webp', pngOut);
+    return;
+  }
+  if (source.kind === 'moonmap') {
+    moonmapPng(source.name, pngOut, width);
     return;
   }
   await levelToPng(source.job, pngOut, width);

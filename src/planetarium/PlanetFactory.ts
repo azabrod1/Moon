@@ -1292,13 +1292,21 @@ export function applySunGlowTier(sunGroup: THREE.Group, useBloom: boolean): void
 
 import { type MoonData, getMoonsByPlanet } from './planets/moonData';
 import {
+  archetypeCode,
   classifyMoonArchetype,
+  craterHeight,
+  craterOuterTexels,
+  craterRay,
+  craterReach,
+  CRATER_WARP,
+  createTerrainRowSampler,
   generateCraters,
   hashString,
+  moonSurfaceLook,
   moonTextureSize,
+  poleFade,
   seededRng,
-  valueNoise,
-  fractalNoise,
+  terrainGrain,
 } from './world/proceduralMoon';
 
 export interface MoonMesh {
@@ -1374,25 +1382,31 @@ export interface MoonMesh {
 
 /**
  * Generate a moon's procedural colour + bump textures synchronously, without
- * building any mesh or material — the exact classifier/noise/crater pipeline
- * the lazy painter uses. Exported so the volume-compare mode can grab a
- * procedural moon's colour map directly; constructing a moon mesh for its
- * material instead would race ~60 async photo loads against disposed materials.
- * The caller owns both returned textures and disposes them itself.
+ * building any mesh or material — the exact palette/noise/crater pipeline the
+ * lazy painter uses. Exported so the volume-compare mode can grab a procedural
+ * moon's colour map directly; constructing a moon mesh for its material instead
+ * would race ~60 async photo loads against disposed materials. The caller owns
+ * both returned textures and disposes them itself.
  */
 export function createMoonTextures(
   color: number,
   name: string,
   radiusKm: number,
+  options: { photoBacked?: boolean } = {},
 ): { colorTex: THREE.Texture; bumpTex: THREE.Texture } {
   const { width: textureWidth, height: textureHeight } = moonTextureSize(radiusKm);
   const seed = hashString(name);
   const rng = seededRng(seed);
 
-  // Base colour + archetype (the exact brightness/hue classifier, shared with
-  // the GPU texturer via proceduralMoon so both paths agree).
-  const baseColor = new THREE.Color(color);
-  const { isIcy, isVolcanic } = classifyMoonArchetype(color);
+  // Palette + crater field (shared with the GPU texturer via proceduralMoon, so
+  // both paths paint the same moon).
+  const flags = classifyMoonArchetype(color);
+  const look = moonSurfaceLook(color, flags);
+  const craters = generateCraters(rng, textureWidth, textureHeight, archetypeCode(flags));
+  // A moon already wearing a photographed map takes only fine surface texture
+  // into its bump: invented landforms embossed under a real mosaic read as
+  // craters that are not there, worst of all at a low sun.
+  const photoBacked = options.photoBacked === true;
 
   const colorCanvas = document.createElement('canvas');
   colorCanvas.width = textureWidth;
@@ -1404,55 +1418,48 @@ export function createMoonTextures(
   bumpCanvas.height = textureHeight;
   const bCtx = bumpCanvas.getContext('2d')!;
 
-  // Generate per-pixel with fractal noise
   const colorData = ctx.createImageData(textureWidth, textureHeight);
   const bumpData = bCtx.createImageData(textureWidth, textureHeight);
   const colorPixels = colorData.data;
   const bumpPixels = bumpData.data;
 
-  const baseR = baseColor.r * 255;
-  const baseG = baseColor.g * 255;
-  const baseB = baseColor.b * 255;
+  // The palette as byte spans: the field mixes low -> high, so a crater's
+  // relief converts to a colour delta by the same span and can be added to the
+  // finished bytes in the second pass instead of re-running the mix.
+  const lowR = look.low[0] * 255;
+  const lowG = look.low[1] * 255;
+  const lowB = look.low[2] * 255;
+  const spanR = look.high[0] * 255 - lowR;
+  const spanG = look.high[1] * 255 - lowG;
+  const spanB = look.high[2] * 255 - lowB;
 
   // The image buffers are Uint8ClampedArray, so writes clamp to 0–255 and round
-  // on assignment — the per-channel Math.max/min below are redundant. ny and the
-  // row base depend only on y; hoist them out of the inner loop.
+  // on assignment. The sampler hoists the lattice hashes out of the pixel loop,
+  // leaving one hash per texel (the grain) and arithmetic.
+  const sampler = createTerrainRowSampler(textureWidth, seed);
+  // Kept for the crater pass: the same field warps every crater's outline, so
+  // rims come out irregular instead of stamped.
+  const fieldBuf = new Float32Array(textureWidth * textureHeight);
   for (let y = 0; y < textureHeight; y++) {
     const ny = y / textureHeight;
     const rowBase = y * textureWidth;
+    const fade = poleFade(ny);
+    sampler.beginRow(ny);
     for (let x = 0; x < textureWidth; x++) {
       const idx = (rowBase + x) * 4;
-      const nx = x / textureWidth;
+      const shade = sampler.sample(x);
+      const grain = (terrainGrain(x, y, seed) - 0.5) * look.grain;
+      const field = 0.5 + (shade - 0.5 + grain) * fade;
+      fieldBuf[rowBase + x] = field;
 
-      // Large-scale terrain variation (3 octaves)
-      const terrain = fractalNoise(nx * 6, ny * 6, seed, 3);
-      // Medium detail
-      const detail = fractalNoise(nx * 18, ny * 18, seed + 500, 2);
-      // Fine grain
-      const grain = valueNoise(nx * 50, ny * 50, seed + 1000);
-
-      // Combine: terrain drives large color shifts, detail adds texture
-      let variation: number;
-      if (isIcy) {
-        // Icy: smoother, subtle cracks
-        variation = terrain * 0.15 + detail * 0.08 + grain * 0.03;
-      } else if (isVolcanic) {
-        // Volcanic: splotchy, high contrast
-        variation = terrain * 0.3 + detail * 0.12 + grain * 0.04;
-      } else {
-        // Rocky: moderate cratering and noise
-        variation = terrain * 0.22 + detail * 0.1 + grain * 0.04;
-      }
-
-      // Apply variation as brightness shift centered around 0
-      const shift = (variation - 0.15) * 255;
-      colorPixels[idx] = baseR + shift;
-      colorPixels[idx + 1] = baseG + shift;
-      colorPixels[idx + 2] = baseB + shift;
+      colorPixels[idx] = lowR + spanR * field;
+      colorPixels[idx + 1] = lowG + spanG * field;
+      colorPixels[idx + 2] = lowB + spanB * field;
       colorPixels[idx + 3] = 255;
 
-      // Bump map: terrain + detail as height
-      const height = (terrain * 0.7 + detail * 0.3) * 255;
+      const height = (photoBacked
+        ? 0.5 + ((sampler.fine() - 0.5) * 0.6 + grain) * fade
+        : field) * 255;
       bumpPixels[idx] = height;
       bumpPixels[idx + 1] = height;
       bumpPixels[idx + 2] = height;
@@ -1460,34 +1467,40 @@ export function createMoonTextures(
     }
   }
 
-  // Add craters (seeded; placement shared with the GPU texturer).
-  const craters = generateCraters(rng, textureWidth, textureHeight, isIcy);
-  for (const { cx, cy, cr } of craters) {
-    for (let dy = -Math.ceil(cr); dy <= Math.ceil(cr); dy++) {
-      for (let dx = -Math.ceil(cr); dx <= Math.ceil(cr); dx++) {
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist > cr) continue;
-        const px = ((cx + dx) % textureWidth + textureWidth) % textureWidth;
-        const py = Math.max(0, Math.min(textureHeight - 1, cy + dy));
-        const idx = (py * textureWidth + px) * 4;
-        const t = dist / cr;
-        if (t < 0.75) {
-          // Dark crater floor
-          const darken = (1 - t / 0.75) * 30;
-          colorPixels[idx] = colorPixels[idx] - darken;
-          colorPixels[idx + 1] = colorPixels[idx + 1] - darken;
-          colorPixels[idx + 2] = colorPixels[idx + 2] - darken;
-          bumpPixels[idx] = bumpPixels[idx] - darken * 2;
-          bumpPixels[idx + 1] = bumpPixels[idx]; bumpPixels[idx + 2] = bumpPixels[idx];
-        } else {
-          // Bright rim
-          const brighten = (1 - (t - 0.75) / 0.25) * 20;
-          colorPixels[idx] = colorPixels[idx] + brighten;
-          colorPixels[idx + 1] = colorPixels[idx + 1] + brighten;
-          colorPixels[idx + 2] = colorPixels[idx + 2] + brighten;
-          bumpPixels[idx] = bumpPixels[idx] + brighten * 2;
-          bumpPixels[idx + 1] = bumpPixels[idx]; bumpPixels[idx + 2] = bumpPixels[idx];
-        }
+  // Craters, over the finished surface. Distance is measured along the SURFACE
+  // — a texel's x step shrinks with cos(latitude) — so a crater stays round
+  // instead of smearing into a band the nearer it is drawn to a pole, and the
+  // row's x span widens to match. Rows past a pole are dropped rather than
+  // clamped: a crater must not pile up along the last row.
+  for (const c of craters) {
+    const reach = craterReach(c.rays);
+    const outer = craterOuterTexels(c.cr, c.rays);
+    const dyMax = Math.ceil(outer);
+    const halfWidth = Math.floor(textureWidth / 2);
+    for (let dy = -dyMax; dy <= dyMax; dy++) {
+      const py = c.cy + dy;
+      if (py < 0 || py >= textureHeight) continue;
+      const cosLat = Math.max(Math.sin((py / textureHeight) * Math.PI), 1e-3);
+      const halfSpan = Math.min(Math.ceil(outer / cosLat), halfWidth);
+      const rowBase = py * textureWidth;
+      for (let dx = -halfSpan; dx <= halfSpan; dx++) {
+        const sx = dx * cosLat;
+        const px = ((c.cx + dx) % textureWidth + textureWidth) % textureWidth;
+        const warp = 1 + CRATER_WARP * (fieldBuf[rowBase + px] - 0.5);
+        const t = (Math.sqrt(sx * sx + dy * dy) / c.cr) * warp;
+        if (t >= reach) continue;
+        const relief = craterHeight(c, t);
+        const ray = c.rays > 0 && t >= 1 ? craterRay(c, t, Math.atan2(dy, sx)) : 0;
+        const dColor = look.craterColor * relief + look.ray * ray;
+        const idx = (rowBase + px) * 4;
+        colorPixels[idx] = colorPixels[idx] + spanR * dColor;
+        colorPixels[idx + 1] = colorPixels[idx + 1] + spanG * dColor;
+        colorPixels[idx + 2] = colorPixels[idx + 2] + spanB * dColor;
+        if (photoBacked) continue;
+        const dBump = look.craterRelief * relief * 255;
+        bumpPixels[idx] = bumpPixels[idx] + dBump;
+        bumpPixels[idx + 1] = bumpPixels[idx];
+        bumpPixels[idx + 2] = bumpPixels[idx];
       }
     }
   }
@@ -1512,7 +1525,10 @@ export function createMoonTextures(
 export function paintMoonTextures(moon: MoonMesh): void {
   if (moon.painted) return;
   const mat = moon.mesh.material as THREE.MeshStandardMaterial;
-  const { colorTex, bumpTex } = createMoonTextures(moon.data.color, moon.data.name, moon.data.radiusKm);
+  const { colorTex, bumpTex } = createMoonTextures(
+    moon.data.color, moon.data.name, moon.data.radiusKm,
+    { photoBacked: mat.userData.photoLoaded === true },
+  );
   // A real measured normal map (e.g. the Moon's LOLA relief) supersedes the
   // procedural bump — don't stack both.
   if (mat.userData.hasRealNormal) {

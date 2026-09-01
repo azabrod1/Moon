@@ -32,7 +32,12 @@ import { MOONS } from '../planets/moonData';
  *  themselves go nowhere. */
 function stubRenderer(): THREE.WebGLRenderer {
   return {
-    getContext: () => ({ isContextLost: () => false }),
+    getContext: () => ({
+      isContextLost: () => false,
+      MAX_FRAGMENT_UNIFORM_VECTORS: 0x8dfd,
+      // Comfortably over the crater layout's need, as any WebGL 2 context is.
+      getParameter: () => 1024,
+    }),
     capabilities: { getMaxAnisotropy: () => 8 },
     readRenderTargetPixels: (
       _rt: unknown, _x: number, _y: number, _w: number, _h: number, buf: Uint8Array,

@@ -120,7 +120,7 @@ import {
   cloudDetailTexture,
 } from './cloudDetailNoise';
 import { MOON_UP_GLSL, NIGHT_WEIGHT_GLSL, SUN_DOWN_GLSL } from './nightSources';
-import { gpuSeed } from './proceduralMoon';
+import { gpuSeed, POLE_FADE_COS } from './proceduralMoon';
 import { SURFACE_TEXEL_FADE } from './surfaceDensity';
 import {
   SURFACE_DETAIL_GRADIENT_SCALE,
@@ -589,6 +589,12 @@ if (uSynthEnvelope > 0.0) {
       synthDx.y / synthCosLat);
   vec2 synthAngY = vec2((synthDir.x * synthDy.z - synthDir.z * synthDy.x) / (synthCosLat * synthCosLat),
       synthDy.y / synthCosLat);
+  // The cylinder this field is drawn on pinches to a point at each pole, where
+  // a cell is a sliver and its longitudinal slope is however many times steeper
+  // that pinch makes it — a pinwheel of radial streaks over the cap. Fade the
+  // whole term out through the caps instead, which is what the painted moons do
+  // with their own noise, at the same latitude and for the same reason.
+  synthW *= smoothstep(0.0, ${POLE_FADE_COS.toFixed(4)}, synthCosLat);
   if (synthW > 0.0) {
     // Which rung of the fixed tile ladder this fragment wants: the one whose
     // tile spans about SURFACE_DETAIL_TILE_PX pixels. Powers of two only, so a

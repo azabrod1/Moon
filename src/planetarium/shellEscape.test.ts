@@ -1,30 +1,29 @@
 /**
  * Emergent escape dynamics at a planet's collision shell: a frame-loop
- * simulation mirroring PlanetariumMode's cruise order (contact-aim swing →
- * governor → integrate → planet motion → swept-shell contact) for one
- * Earth-class planet. The per-law behavior is pinned in arrivalLogic.test.ts;
- * what only this loop can pin is that the pieces COMPOSE into an escape —
- * three shell traps lived exactly in their composition:
+ * simulation mirroring PlanetariumMode's cruise order (governor → integrate →
+ * planet motion → swept-shell contact) for one Earth-class planet. The
+ * per-law behavior is pinned in arrivalLogic.test.ts; what only this loop can
+ * pin is that the pieces COMPOSE under the two contact rules — a contact
+ * NEVER rotates the ship (the heading is the pilot's alone; the park is
+ * position-only), and a PILOT-caused press parks while only the SHELL's own
+ * motion moves a parked ship. So the demands split:
  *
- * - Leading face: the sweep saw the moved shell over the segment START and
- *   re-parked a ship whose endpoint was already clear, cancelling every
- *   frame's escape progress — pinned forever at the leave-law creep (the
- *   reported "stuck up close at ~330 km/s" on Earth).
- * - Trailing face: the approach credit tapered to zero head-on, so the
- *   world-frame glide could never out-close a planet fleeing at orbital
- *   speed — a permanent ~30 km/s tailgate that never reached the shell.
- * - Tangent park against a closing face: both of the above at once.
+ * - Pressing a shell that is not advancing (stationary body, or chasing a
+ *   receding face) is STATION: the ship reaches the shell, sits there
+ *   without creep or growing penetration, and stays escapable in principle
+ *   because the heading is untouched (the pilot steers off whenever they
+ *   choose — the leave law and credits are pinned elsewhere).
+ * - A face ADVANCING into the ship must never pin it: the shove's own
+ *   advance walks the ship around the limb and off (the bulldozer rescue),
+ *   with or without the dial up.
  */
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import {
   advanceBodyCap,
-  contactAimStep,
-  CONTACT_AIM_TTL_S,
-  CONTACT_ALIGN_OUT_MAX,
-  grazeDeflectAim,
   initialBodyCapState,
   movingBodySpeedCap,
+  resolveShellContactPark,
   BODY_APPROACH_K_PER_S,
   BODY_APPROACH_V_MIN_AU_S,
   sweepSegmentSphere,
@@ -39,40 +38,46 @@ const COLLISION_R = EARTH_ENVELOPE + SHIP_CLEARANCE_AU;
 const EARTH_V_AU_S = 29.78 / KM_PER_AU;
 const COMMANDED = LIGHT_SPEED_AU_PER_S * 0.083; // the deep-in-system dialed speed
 
-/** A hands-off bump-and-escape must complete comfortably within this. The
- *  stationary-planet baseline (the QA-tuned graze feel) runs ~30 s; a moving
- *  planet must not change the class of the outcome. */
+/** A shoved ship must be walked off the shell comfortably within this; a
+ *  pressing pilot's park must be stable on the same clock. */
 const ESCAPE_DEADLINE_S = 60;
+
+interface ContactRun {
+  /** Sim time of one collision radius of clear sky, or null if never. */
+  escapeAtS: number | null;
+  /** Sim time of first shell contact, or null if the shell was never reached. */
+  contactAtS: number | null;
+  /** Sim time of the LAST shell contact — a bulldozer rescue is this going
+   *  quiet: the walked-off ship is one the shell has stopped holding. */
+  lastContactAtS: number | null;
+  /** Deepest the ATTEMPTED position ever sat inside the shell, in shell radii —
+   *  a growing value is a resolver failing to hold the surface. */
+  maxPenetrationFrac: number;
+}
 
 /**
  * Fly the cruise frame loop hands-off: ship at `startPos` heading `heading`,
- * planet from the origin with velocity `planetVel`. Returns the sim time at
- * which the ship got one collision radius of clear sky, or null if it never
- * did — a null is a ship the player would call stuck.
+ * planet from the origin with velocity `planetVel`.
  */
-function timeToEscape(
+function runContact(
   startPos: THREE.Vector3,
   heading: THREE.Vector3,
   planetVelAUPerS: THREE.Vector3,
   maxS = 120,
   dt = 1 / 60,
-): number | null {
+  commanded = COMMANDED,
+): ContactRun {
   const pos = startPos.clone();
   const fwd = heading.clone().normalize();
+  const fwd0 = fwd.clone();
   const planet = new THREE.Vector3(0, 0, 0);
   let bodyCap: BodyCapState = initialBodyCapState();
-  const aimTarget = new THREE.Vector3();
-  let aimActive = false;
-  let aimAge = 0;
+  const park = new THREE.Vector3();
+  const run: ContactRun = {
+    escapeAtS: null, contactAtS: null, lastContactAtS: null, maxPenetrationFrac: 0,
+  };
 
   for (let t = 0; t < maxS; t += dt) {
-    // Contact-aim swing (PlanetariumMode.applyContactAim, hands off).
-    if (aimActive) {
-      aimAge += dt;
-      const done = contactAimStep(fwd, aimTarget, dt, fwd);
-      if (done || aimAge >= CONTACT_AIM_TTL_S) aimActive = false;
-    }
-
     // Body governor (computeBodySpeedCap + advanceBodyCap, no bypass).
     const to = planet.clone().sub(pos);
     const dist = to.length();
@@ -83,11 +88,11 @@ function timeToEscape(
       planetVelAUPerS.dot(to) / dist,
       BODY_APPROACH_K_PER_S, BODY_APPROACH_V_MIN_AU_S,
     );
-    bodyCap = advanceBodyCap(bodyCap, geomCap, COMMANDED, false, dt);
+    bodyCap = advanceBodyCap(bodyCap, geomCap, commanded, false, dt);
 
     // Integrate the ship, then the world (rebuildPlanetPositions runs after
     // player.update), then resolve the swept contact against the moved shell.
-    const speed = Math.min(COMMANDED, bodyCap.applied);
+    const speed = Math.min(commanded, bodyCap.applied);
     const prev = pos.clone();
     pos.addScaledVector(fwd, speed * dt);
     planet.addScaledVector(planetVelAUPerS, dt);
@@ -97,77 +102,113 @@ function timeToEscape(
       planet.x, planet.y, planet.z, COLLISION_R,
     );
     if (hit) {
-      // applyShellContact: park on the shell, arm the graze when the nose
-      // still points at/along the body.
-      pos.set(
-        planet.x + hit.ox * COLLISION_R,
-        planet.y + hit.oy * COLLISION_R,
-        planet.z + hit.oz * COLLISION_R,
+      if (run.contactAtS === null) run.contactAtS = t;
+      run.lastContactAtS = t;
+      run.maxPenetrationFrac = Math.max(
+        run.maxPenetrationFrac,
+        (COLLISION_R - pos.distanceTo(planet)) / COLLISION_R,
       );
-      if (fwd.x * hit.ox + fwd.y * hit.oy + fwd.z * hit.oz < CONTACT_ALIGN_OUT_MAX) {
-        grazeDeflectAim(fwd.x, fwd.y, fwd.z, hit.ox, hit.oy, hit.oz, aimTarget);
-        aimActive = true;
-        aimAge = 0;
-      }
+      // applyShellContact: position-only — a pilot's press parks; only the
+      // shell's own advance walks the ship; the heading is never touched.
+      resolveShellContactPark(
+        pos.x, pos.y, pos.z, prev.x, prev.y, prev.z,
+        planet.x, planet.y, planet.z, COLLISION_R, hit, park,
+      );
+      pos.copy(park);
     }
 
-    if (pos.distanceTo(planet) - COLLISION_R > COLLISION_R) return t;
+    // The contract the whole file exists to pin: nothing in the contact
+    // response may rotate the ship.
+    if (fwd.distanceTo(fwd0) !== 0) throw new Error('contact rotated the heading');
+
+    if (run.escapeAtS === null && pos.distanceTo(planet) - COLLISION_R > COLLISION_R) {
+      run.escapeAtS = t;
+    }
   }
-  return null;
+  return run;
 }
 
-describe('hands-off shell bumps always escape', () => {
+describe('hands-off shell contacts: presses park, shoves walk off', () => {
   // Near-dead-center approach from one shell radius of clear sky; the 0.02
-  // lean keeps the graze off its dead-center special case.
+  // lean gives the walk a real tangential direction to continue.
   const start = () => new THREE.Vector3(COLLISION_R * 2, 0, 0);
   const inbound = () => new THREE.Vector3(-1, 0.02, 0);
 
-  it('on a stationary planet (the baseline graze feel)', () => {
-    const t = timeToEscape(start(), inbound(), new THREE.Vector3());
-    expect(t).not.toBeNull();
-    expect(t!).toBeLessThan(ESCAPE_DEADLINE_S);
+  it('pressing a stationary shell with the dial up: parked, stable, no creep-off', () => {
+    const run = runContact(start(), inbound(), new THREE.Vector3());
+    expect(run.contactAtS).not.toBeNull();
+    expect(run.contactAtS!).toBeLessThan(ESCAPE_DEADLINE_S);
+    expect(run.escapeAtS).toBeNull(); // the park IS the outcome
+    // The park holds the surface: penetration never grows past a frame's step.
+    expect(run.maxPenetrationFrac).toBeLessThan(0.01);
   });
 
-  it('chasing the TRAILING face — the receding shell must still be reachable, then left', () => {
-    // Pre-fix: the head-on credit was zero, so the ship tailgated the fleeing
-    // planet ~30 km/s short of the shell forever and this returned null.
+  it('dial at zero on a stationary planet: parked at the shell IS the outcome', () => {
+    const run = runContact(start(), inbound(), new THREE.Vector3(), 10, 1 / 60, 0);
+    expect(run.escapeAtS).toBeNull();
+  });
+
+  it('chasing the TRAILING face: the receding shell is reachable, then ridden as station', () => {
+    // Pre-credit-fix the ship tailgated ~30 km/s short forever and never
+    // touched the shell at all — reaching it is the half this pins.
     const vel = new THREE.Vector3(-EARTH_V_AU_S, 0, 0);
-    const t = timeToEscape(start(), inbound(), vel);
-    expect(t).not.toBeNull();
-    expect(t!).toBeLessThan(ESCAPE_DEADLINE_S);
+    const run = runContact(start(), inbound(), vel);
+    expect(run.contactAtS).not.toBeNull();
+    expect(run.contactAtS!).toBeLessThan(ESCAPE_DEADLINE_S);
+    expect(run.maxPenetrationFrac).toBeLessThan(0.01);
   });
 
-  it('bumped by the LEADING face at 1× time — the bulldozer must not pin', () => {
-    // Pre-fix: every frame the advanced shell covered the segment start, the
-    // sweep re-parked the ship, and the escape progress was discarded —
-    // pinned at the ~330 km/s creep forever.
+  it('bumped by the LEADING face at 1× time — the bulldozer walks the ship off', () => {
+    // Rescue = the shell stops holding the ship by the deadline and never
+    // re-pins; with the dial up the freed nose then pulls real clear sky
+    // within the window.
     const vel = new THREE.Vector3(EARTH_V_AU_S, 0, 0);
-    const t = timeToEscape(start(), inbound(), vel);
-    expect(t).not.toBeNull();
-    expect(t!).toBeLessThan(ESCAPE_DEADLINE_S);
+    const run = runContact(start(), inbound(), vel);
+    expect(run.contactAtS).not.toBeNull();
+    expect(run.lastContactAtS!).toBeLessThan(ESCAPE_DEADLINE_S);
+    expect(run.escapeAtS).not.toBeNull();
+  });
+
+  it('bumped by the LEADING face with the dial at ZERO — a drifting ship is still rescued', () => {
+    // Start just off the shell: a drifting ship does not close distance
+    // itself, so the interesting clock starts when the advancing face
+    // arrives, not after a 3,000-second coast.
+    const vel = new THREE.Vector3(EARTH_V_AU_S, 0, 0);
+    const run = runContact(
+      new THREE.Vector3(COLLISION_R * 1.01, 0, 0), inbound(), vel, 120, 1 / 60, 0,
+    );
+    // A drifting ship cannot fly itself a radius of clear sky — rescue is
+    // the advancing shell walking it off and letting go for good.
+    expect(run.contactAtS).not.toBeNull();
+    expect(run.lastContactAtS!).toBeLessThan(ESCAPE_DEADLINE_S);
   });
 
   it('bumped by the LEADING face at 10× time warp', () => {
     const vel = new THREE.Vector3(EARTH_V_AU_S * 10, 0, 0);
-    const t = timeToEscape(start(), inbound(), vel);
-    expect(t).not.toBeNull();
-    expect(t!).toBeLessThan(ESCAPE_DEADLINE_S);
+    const run = runContact(start(), inbound(), vel);
+    expect(run.contactAtS).not.toBeNull();
+    expect(run.lastContactAtS!).toBeLessThan(ESCAPE_DEADLINE_S);
+    expect(run.escapeAtS).not.toBeNull();
+    expect(run.escapeAtS!).toBeLessThan(ESCAPE_DEADLINE_S);
   });
 
-  it('bumped on the SIDE face (planet motion across the contact normal)', () => {
+  it('bumped on the SIDE face (planet motion across the contact normal): stable pursuit station', () => {
+    // The face the ship rides is neither advancing nor receding along its
+    // normal, so nothing walks the ship and nothing pins it — it chases the
+    // shearing shell as a station. The pin is stability, not escape.
     const vel = new THREE.Vector3(0, 0, EARTH_V_AU_S);
-    const t = timeToEscape(start(), inbound(), vel);
-    expect(t).not.toBeNull();
-    expect(t!).toBeLessThan(ESCAPE_DEADLINE_S);
+    const run = runContact(start(), inbound(), vel);
+    expect(run.contactAtS).not.toBeNull();
+    expect(run.maxPenetrationFrac).toBeLessThan(0.01);
   });
 
   it('parked ON the shell nose near-tangent, leading face closing at 1×', () => {
-    const t = timeToEscape(
+    const run = runContact(
       new THREE.Vector3(COLLISION_R, 0, 0),
       new THREE.Vector3(-0.05, 1, 0),
       new THREE.Vector3(EARTH_V_AU_S, 0, 0),
     );
-    expect(t).not.toBeNull();
-    expect(t!).toBeLessThan(ESCAPE_DEADLINE_S);
+    expect(run.lastContactAtS!).toBeLessThan(ESCAPE_DEADLINE_S);
+    expect(run.escapeAtS).not.toBeNull();
   });
 });

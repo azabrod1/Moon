@@ -313,10 +313,10 @@ const SYNTH_GRAIN: Record<SurfaceArchetype, number> = {
 
 /**
  * How steeply the synthesized relief is drawn, against the crater geometry the
- * field was actually built with: 1 is that geometry, unexaggerated. Only where
- * nothing else supplies relief — a body wearing a measured normal map or a
- * painted crater bump already has its own, and a second one embossed on top is
- * two sets of craters lit from one Sun.
+ * field was actually built with: 1 is that geometry, unexaggerated. Never on a
+ * body wearing a MEASURED surface, which already has its own and would wear a
+ * second set of craters lit from the same Sun; on a body wearing a painted one,
+ * only from where that painting has run out of texels.
  */
 const SYNTH_RELIEF_GAIN: Record<SurfaceArchetype, number> = {
   airless: 1.0,
@@ -585,6 +585,7 @@ const SURFACE_DETAIL_GLSL = /* glsl */ `
 uniform sampler2D uSynthDetail;
 uniform float uSynthGrain;
 uniform float uSynthRelief;
+uniform float uSynthBumpFade;
 uniform float uSynthEnvelope;
 uniform vec2 uSynthSeed;
 // One flat chart's reading of the field: its height here, around zero, in x,
@@ -628,6 +629,17 @@ if (uSynthEnvelope > 0.0) {
   // globe one pixel away keeps it. A body-wide scalar would draw that boundary
   // as a rectangle.
   float synthW = smoothTexelWeight(vMapUv, vec2(textureSize(map, 0))) * uSynthEnvelope;
+  // How much relief this fragment may draw. Zero wherever a MEASURED surface is
+  // bound, whatever the magnification. Where what is bound is itself invented —
+  // a painted crater bump — it fades in as that bump's OWN texels stretch past
+  // a pixel, on the same band and measured the same way: past there the painted
+  // craters are interpolation, and finer invented craters in their place assert
+  // nothing the coarse ones did not.
+  float synthRelief = uSynthRelief;
+  #ifdef USE_BUMPMAP
+  synthRelief *= mix(1.0,
+      smoothTexelWeight(vBumpMapUv, vec2(textureSize(bumpMap, 0))), uSynthBumpFade);
+  #endif
   // The field's domain is the BODY's own frame, never the material's UV: a
   // streamed sector's UV runs 0..1 across its own tile, so a field in UV space
   // would put a different pattern on every tile and draw the tile grid.
@@ -686,7 +698,7 @@ if (uSynthEnvelope > 0.0) {
     // on a surface that has run out of map; it must never restate the body's
     // colour, which is what the photograph or the archetype palette is for.
     diffuseColor.rgb *= 1.0 + uSynthGrain * synthField.x * 2.0 * synthW;
-    if (uSynthRelief > 0.0) {
+    if (synthRelief > 0.0) {
       // The body's own rendered radius, off the varying that already carries
       // this fragment's offset from the body's centre — no uniform to keep in
       // step with a mesh scale.
@@ -701,7 +713,7 @@ if (uSynthEnvelope > 0.0) {
         // deck's relief takes, and for the same reason: it needs no tangent
         // frame, so it works on a sector mesh and a globe alike.
         vec3 synthSurfGrad = (synthField.y * synthR1 + synthField.z * synthR2)
-            * (uSynthRelief * synthR / synthDet);
+            * (synthRelief * synthR / synthDet);
         normal = normalize(synthNrm - synthSurfGrad * synthW);
       }
     }
@@ -1083,9 +1095,13 @@ export interface SurfaceShadingArgs {
    *  wall time by whoever owns the body. Material-scoped, so a streamed sector
    *  has to be told the globe's value every frame or it holds a stale one. */
   uSynthEnvelope: { value: number };
-  /** The relief height that term draws, or 0 while some other relief is bound
-   *  on this material. Grain is unconditional; relief is not. */
+  /** The relief height that term draws, or 0 while MEASURED relief is bound on
+   *  this material. Grain is unconditional; relief is not. */
   uSynthRelief: { value: number };
+  /** 1 while the relief bound on this material is itself invented — a painted
+   *  crater bump — which makes the synthesized relief wait for that bump's own
+   *  texels to stretch past a pixel instead of drawing on top of them. */
+  uSynthBumpFade: { value: number };
   /** What `uSynthRelief` goes back to when nothing else supplies relief — the
    *  archetype's own gain against the field's built geometry. */
   synthReliefGain: number;
@@ -1125,12 +1141,40 @@ function synthSeedOffset(name: string): THREE.Vector2 {
 }
 
 /**
+ * What kind of relief a material already carries, which is what decides whether
+ * a synthesized one may be drawn under it at all:
+ *
+ *   - `measured` — a real surface: an elevation-derived normal map, an
+ *     elevation bump, a photograph's own luminance read as one, or a sector's
+ *     crop of any of those. Synthesized relief NEVER joins it. Two sets of
+ *     craters under one Sun is what a doubled relief looks like, and where the
+ *     first set is real the second one is an invention laid over a measurement.
+ *   - `painted` — a crater bump the app itself invented for a moon with no
+ *     measured surface to draw. Synthesized relief replaces it as it runs out
+ *     of resolution: the fiction stays one fiction, at the scale the eye is
+ *     actually looking at.
+ *   - `none` — nothing bound, so the synthesized relief is the only relief.
+ */
+export type SurfaceReliefKind = 'measured' | 'painted' | 'none';
+
+/** Which of the three this material carries. A texture says for itself whether
+ *  it was painted rather than measured (`proceduralRelief` in its userData);
+ *  anything else bound as relief is treated as a real surface, because the
+ *  expensive mistake is to emboss invented craters over a measured one. */
+export function surfaceReliefKind(mat: THREE.Material): SurfaceReliefKind {
+  const standard = mat as Partial<THREE.MeshStandardMaterial>;
+  const relief = standard.normalMap ?? standard.bumpMap ?? null;
+  if (!relief) return 'none';
+  return relief.userData?.proceduralRelief === true ? 'painted' : 'measured';
+}
+
+/**
  * Set how much of the close-range detail term a material draws this frame:
- * `envelope` is the eased 0..1 the owner is holding, and `reliefAllowed` is
- * false wherever some other relief is already bound — a measured normal map, a
- * painted crater bump, or a sector's crop of either. Grain survives there;
- * synthesized relief does not, because two sets of craters under one Sun is
- * what a doubled relief looks like.
+ * `envelope` is the eased 0..1 the owner is holding, and `relief` is what this
+ * material already carries. Grain is drawn whatever is bound; synthesized
+ * relief is held off entirely under a measured surface, and under a painted one
+ * it waits, per fragment, for that painting's own texels to stretch past a
+ * pixel.
  *
  * A material with no augmentation (a plain mesh, a shell that is not a surface)
  * simply has nothing to set.
@@ -1138,30 +1182,26 @@ function synthSeedOffset(name: string): THREE.Vector2 {
 export function setSurfaceSynthesis(
   mat: THREE.Material,
   envelope: number,
-  reliefAllowed: boolean,
+  relief: SurfaceReliefKind,
 ): void {
   const args = augmentArgs.get(mat);
   if (!args) return;
   args.uSynthEnvelope.value = envelope;
-  args.uSynthRelief.value = reliefAllowed ? args.synthReliefGain : 0;
+  args.uSynthRelief.value = relief === 'measured' ? 0 : args.synthReliefGain;
+  args.uSynthBumpFade.value = relief === 'painted' ? 1 : 0;
 }
 
-/** How much of the term this material is drawing, and whether its relief is
- *  allowed — what a dependent material (a streamed sector) mirrors. */
+/** How much of the term this material is drawing, and what its relief is doing
+ *  — what a dependent material (a streamed sector) mirrors. */
 export function surfaceSynthesisOf(
   mat: THREE.Material,
-): { envelope: number; relief: boolean } | undefined {
+): { envelope: number; relief: SurfaceReliefKind } | undefined {
   const args = augmentArgs.get(mat);
   if (!args) return undefined;
-  return { envelope: args.uSynthEnvelope.value, relief: args.uSynthRelief.value > 0 };
-}
-
-/** Whether any relief at all is bound on this material — a measured normal map
- *  or a painted bump, either of which makes the synthesized one a second set of
- *  craters under the same Sun. */
-export function surfaceHasBoundRelief(mat: THREE.Material): boolean {
-  const standard = mat as Partial<THREE.MeshStandardMaterial>;
-  return !!standard.normalMap || !!standard.bumpMap;
+  const relief: SurfaceReliefKind = args.uSynthRelief.value <= 0
+    ? 'measured'
+    : args.uSynthBumpFade.value > 0 ? 'painted' : 'none';
+  return { envelope: args.uSynthEnvelope.value, relief };
 }
 
 /** 1×1 stand-ins, shared by every augmented material: no sampler is ever left
@@ -1290,9 +1330,10 @@ export function augmentSurfaceMaterial(
     ? SYNTH_RELIEF_GAIN[archetype] * surfaceDetailHeightSpan()
     : 0;
   const uSynthRelief = { value: synthReliefGain };
+  const uSynthBumpFade = { value: 0 };
   augmentArgs.set(mat, {
     archetype, ringShadow, sunTan, fx, uFrameSpin, uWaterGloss,
-    uSynthEnvelope, uSynthRelief, synthReliefGain, seedName,
+    uSynthEnvelope, uSynthRelief, uSynthBumpFade, synthReliefGain, seedName,
   });
   const uNightColor = { value: new THREE.Color(night.color) };
   const uNightStrength = { value: night.strength };
@@ -1363,6 +1404,7 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uSynthDetail = uSynthDetail;
     shader.uniforms.uSynthGrain = uSynthGrain;
     shader.uniforms.uSynthRelief = uSynthRelief;
+    shader.uniforms.uSynthBumpFade = uSynthBumpFade;
     shader.uniforms.uSynthEnvelope = uSynthEnvelope;
     shader.uniforms.uSynthSeed = uSynthSeed;
     for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];

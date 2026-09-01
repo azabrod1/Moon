@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import {
   augmentSurfaceMaterial, OCEAN_ROUGHNESS, ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER,
-  setSurfaceSynthesis, setSurfaceWaterGloss, surfaceChartWeights, surfaceHasBoundRelief,
+  setSurfaceSynthesis, setSurfaceWaterGloss, surfaceChartWeights, surfaceReliefKind,
   surfaceSynthesisOf, surfaceWaterGloss, waterGlossRoughness,
 } from './surfaceShading';
 import { surfaceDetailHeightSpan } from './surfaceDetailNoise';
@@ -170,18 +170,43 @@ describe('the close-range detail term', () => {
     expect(uniforms('airless', 'Moon').uSynthEnvelope.value).toBe(0);
   });
 
-  it('holds relief back wherever some other relief is already bound', () => {
-    // Two sets of craters under one Sun is what a doubled relief looks like.
+  it('holds relief back wherever a measured surface is already bound', () => {
+    // Two sets of craters under one Sun is what a doubled relief looks like,
+    // and where the first set is real the second one is an invention over a
+    // measurement.
     const mat = new THREE.MeshStandardMaterial();
-    augmentSurfaceMaterial(mat, 'airless', undefined, 0, undefined, undefined, 'Moon');
-    expect(surfaceSynthesisOf(mat)?.relief).toBe(true);
+    const u = uniforms('airless', 'Moon', mat);
+    expect(surfaceSynthesisOf(mat)?.relief).toBe('none');
     mat.normalMap = new THREE.Texture();
-    expect(surfaceHasBoundRelief(mat)).toBe(true);
-    setSurfaceSynthesis(mat, 0.5, !surfaceHasBoundRelief(mat));
-    expect(surfaceSynthesisOf(mat)).toEqual({ envelope: 0.5, relief: false });
+    expect(surfaceReliefKind(mat)).toBe('measured');
+    setSurfaceSynthesis(mat, 0.5, surfaceReliefKind(mat));
+    expect(surfaceSynthesisOf(mat)).toEqual({ envelope: 0.5, relief: 'measured' });
+    expect(u.uSynthRelief.value).toBe(0);
     // The grain is not held back with it — a surface that has run out of map
     // still has grain to put back, whatever else is bound.
-    expect(uniforms('airless', 'Moon', mat).uSynthGrain.value).toBeGreaterThan(0);
+    expect(u.uSynthGrain.value).toBeGreaterThan(0);
+  });
+
+  it('lets relief in under a painted bump, gated on that painting\'s own texels', () => {
+    // A crater bump the app invented is not a measurement, and past the density
+    // where its own texels stretch over a pixel it is interpolation. Finer
+    // invented craters in its place say nothing the coarse ones did not.
+    const mat = new THREE.MeshStandardMaterial();
+    const u = uniforms('airless', 'Rhea', mat);
+    const painted = new THREE.Texture();
+    painted.userData.proceduralRelief = true;
+    mat.bumpMap = painted;
+    expect(surfaceReliefKind(mat)).toBe('painted');
+    setSurfaceSynthesis(mat, 1, surfaceReliefKind(mat));
+    expect(surfaceSynthesisOf(mat)).toEqual({ envelope: 1, relief: 'painted' });
+    expect(u.uSynthRelief.value).toBeGreaterThan(0);
+    expect(u.uSynthBumpFade.value).toBe(1);
+    // And the gate is the bump map's OWN density, on the same band as the
+    // colour fade — not the colour map's, which is a different map at a
+    // different width.
+    expect(fragment('airless')).toContain(
+      'smoothTexelWeight(vBumpMapUv, vec2(textureSize(bumpMap, 0))), uSynthBumpFade)',
+    );
   });
 
   it('draws its field on charts with no pole and a bounded stretch', () => {

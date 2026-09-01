@@ -1517,6 +1517,10 @@ export function createMoonTextures(
   applyTextureDefaults(colorTex, 'color');
   const bumpTex = new THREE.CanvasTexture(bumpCanvas);
   applyTextureDefaults(bumpTex, 'data');
+  // Invented relief, and it says so: the close-range detail term draws its own
+  // surface only where nothing measured is bound, and reads this mark to tell a
+  // painted crater field from a body's real one.
+  bumpTex.userData.proceduralRelief = true;
   return { colorTex, bumpTex };
 }
 

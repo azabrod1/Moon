@@ -441,6 +441,10 @@ export class ProceduralMoonTexturer {
     }
     if (bumpRT) {
       mat.bumpMap = bumpRT.texture;
+      // Invented relief, and it says so: the close-range detail term draws its
+      // own surface only where nothing measured is bound, and reads this mark
+      // to tell a painted crater field from a body's real one.
+      bumpRT.texture.userData.proceduralRelief = true;
       mat.bumpScale = Math.max(moon.data.radiusAU * 0.15, 0.0000005);
       mat.userData.proceduralBumpRT = bumpRT;
       this.tracked.add(bumpRT);

@@ -113,13 +113,13 @@ describe('createSectorMaterial', () => {
     // which is a rectangle appearing on the surface.
     const base = new THREE.MeshStandardMaterial();
     augmentSurfaceMaterial(base, 'airless', undefined, 0, undefined, undefined, 'Moon');
-    setSurfaceSynthesis(base, 0.4, true);
+    setSurfaceSynthesis(base, 0.4, 'none');
     const sector = createSectorMaterial(base, { map: new THREE.Texture() });
     expect(surfaceShadingArgsOf(sector)?.seedName).toBe('Moon');
     expect(compiledUniforms(sector).uSynthSeed.value)
       .toEqual(compiledUniforms(base).uSynthSeed.value);
     expect(surfaceSynthesisOf(sector)?.envelope).toBe(0.4);
-    setSurfaceSynthesis(base, 0.9, true);
+    setSurfaceSynthesis(base, 0.9, 'none');
     syncSectorMaterial(sector, base);
     expect(surfaceSynthesisOf(sector)?.envelope).toBe(0.9);
   });
@@ -130,14 +130,14 @@ describe('createSectorMaterial', () => {
     // question and not the globe's.
     const base = new THREE.MeshStandardMaterial();
     augmentSurfaceMaterial(base, 'airless', undefined, 0, undefined, undefined, 'Moon');
-    setSurfaceSynthesis(base, 1, true);
+    setSurfaceSynthesis(base, 1, 'none');
     const bare = createSectorMaterial(base, { map: new THREE.Texture() });
-    expect(surfaceSynthesisOf(bare)?.relief).toBe(true);
+    expect(surfaceSynthesisOf(bare)?.relief).toBe('none');
     const relieved = createSectorMaterial(base, {
       map: new THREE.Texture(), normalMap: new THREE.Texture(),
     });
-    expect(surfaceSynthesisOf(relieved)?.relief).toBe(false);
+    expect(surfaceSynthesisOf(relieved)?.relief).toBe('measured');
     syncSectorMaterial(relieved, base);
-    expect(surfaceSynthesisOf(relieved)?.relief).toBe(false);
+    expect(surfaceSynthesisOf(relieved)?.relief).toBe('measured');
   });
 });

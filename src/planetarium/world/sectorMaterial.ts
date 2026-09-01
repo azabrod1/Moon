@@ -19,7 +19,7 @@
  */
 import * as THREE from 'three';
 import {
-  augmentSurfaceMaterial, setSurfaceSynthesis, setSurfaceWaterGloss, surfaceHasBoundRelief,
+  augmentSurfaceMaterial, setSurfaceSynthesis, setSurfaceWaterGloss, surfaceReliefKind,
   surfaceShadingArgsOf, surfaceSynthesisOf, surfaceWaterGloss,
 } from './surfaceShading';
 
@@ -105,6 +105,6 @@ export function syncSectorMaterial(mat: THREE.MeshStandardMaterial, base: THREE.
   // carries crops of whatever relief maps the base had, so it answers for what
   // is bound on itself.
   setSurfaceSynthesis(
-    mat, surfaceSynthesisOf(base)?.envelope ?? 0, !surfaceHasBoundRelief(mat),
+    mat, surfaceSynthesisOf(base)?.envelope ?? 0, surfaceReliefKind(mat),
   );
 }

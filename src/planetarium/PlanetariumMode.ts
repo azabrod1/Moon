@@ -39,7 +39,7 @@ import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, createSha
 import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { disposeCloudDetailTexture } from './world/cloudDetailNoise';
-import { bindSurfaceAir, clearSurfaceAir, setSurfaceSynthesis, surfaceHasBoundRelief, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { bindSurfaceAir, clearSurfaceAir, setSurfaceSynthesis, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
 import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer, warmBudgetMs } from './world/textureWarmer';
 import { beginSlicedUpload, stepSlicedUpload } from './world/slicedUpload';
@@ -4439,10 +4439,10 @@ export class PlanetariumMode {
       ? smoothShadeFraction(target, record.envelope, dtMs)
       : record.envelope;
     record.stampMs = nowMs;
-    // Relief is the material's own call: a body wearing a measured normal map
-    // or a painted crater bump already has relief, and a synthesized one on top
-    // is two sets of craters under one Sun. Grain survives either way.
-    setSurfaceSynthesis(material, record.envelope, !surfaceHasBoundRelief(material));
+    // Relief is the material's own call: what a body already carries decides
+    // whether a synthesized surface may join it, and under a painted bump the
+    // shader waits for that bump's own texels. Grain survives either way.
+    setSurfaceSynthesis(material, record.envelope, surfaceReliefKind(material));
     if (!measured && record.envelope <= 0) this.surfaceDensities.delete(name);
   }
 

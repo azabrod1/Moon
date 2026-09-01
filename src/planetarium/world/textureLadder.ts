@@ -583,6 +583,21 @@ export function reachableTopTier(up: TextureUpgrade): TextureTier | null {
 }
 
 /**
+ * Nominal width of the colour map this handle is DRAWING right now: the rung it
+ * has applied, or its boot map while it has applied none.
+ *
+ * Distinct from `ladderMapReferenceWidth` below, which floors that at the finest
+ * tier the ladder can still REACH — a body on its boot map with an admitted 8K
+ * rung above it draws 2048 and references 8192. The two coexist on purpose: the
+ * reference width sizes tiles ahead of the surface, this one is what is on
+ * screen, and reading either where the other belongs is off by the whole height
+ * of the ladder.
+ */
+export function ladderDrawnMapWidth(up: TextureUpgrade): number {
+  return Math.max(TIER_MAP_WIDTH[up.appliedTier ?? BOOT_TIER], BOOT_MAP_WIDTH[up.key] ?? 0);
+}
+
+/**
  * Width of the colour map the surface tiles measure their magnification
  * against: the finest tier the ladder can reach, never below the nominal
  * width of the rung the body is DRAWING.
@@ -599,8 +614,7 @@ export function reachableTopTier(up: TextureUpgrade): TextureTier | null {
  */
 export function ladderMapReferenceWidth(up: TextureUpgrade): number {
   const top = reachableTopTier(up);
-  const drawn = Math.max(TIER_MAP_WIDTH[up.appliedTier ?? BOOT_TIER], BOOT_MAP_WIDTH[up.key] ?? 0);
-  return Math.max(drawn, top ? TIER_MAP_WIDTH[top] : 0);
+  return Math.max(ladderDrawnMapWidth(up), top ? TIER_MAP_WIDTH[top] : 0);
 }
 
 /**

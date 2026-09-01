@@ -99,6 +99,7 @@ import {
   cloudDetailTexture,
 } from './cloudDetailNoise';
 import { MOON_UP_GLSL, NIGHT_WEIGHT_GLSL, SUN_DOWN_GLSL } from './nightSources';
+import { SURFACE_TEXEL_FADE } from './surfaceDensity';
 import { PLANETS } from '../planets/planetData';
 
 /** The cloud deck is a surface class of its own: its alpha is the coverage its
@@ -410,13 +411,12 @@ vAirCam = cameraPosition - modelMatrix[3].xyz;
 vAirFrag = mat3(modelMatrix) * position;`;
 
 /**
- * How wide the hand-over from the smooth magnification filter back to plain
- * bilinear is, in map texels per screen pixel. Below the first number a texel
- * is being stretched over more than a pixel and its interpolation is what the
- * eye is looking at; past the second the map is minified, the mip chain is
- * doing the filtering and there is nothing left to smooth.
+ * The hand-over from the smooth magnification filter back to plain bilinear, in
+ * map texels per screen pixel. Defined once in world/surfaceDensity and read
+ * here and on the CPU alike: a surface must not start smoothing at one density
+ * and gain close-range detail at another.
  */
-const SMOOTH_TEXEL_FADE: readonly [number, number] = [0.7, 1.3];
+const SMOOTH_TEXEL_FADE = SURFACE_TEXEL_FADE;
 
 /**
  * A cubic B-spline magnification filter, for the two maps only the cloud deck

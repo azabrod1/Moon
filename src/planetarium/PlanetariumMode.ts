@@ -291,6 +291,12 @@ import {
   type ScreenProjection,
   type SphereScreenProjection,
 } from '../shared/three/projectToScreen';
+import {
+  densityRelevantDiameterPx,
+  drawnColorMapWidth,
+  measureSurfaceDensity,
+  type SurfaceDensity,
+} from './world/surfaceDensity';
 import { applyLensShaderUniforms, type LensShaderUniforms } from '../shared/three/lensShader';
 import { isPhoneViewport, setText } from '../shared/dom';
 import { Constellations } from './Constellations';
@@ -543,6 +549,17 @@ interface LadderRungReadout {
   sourceWidth: number;
   releasing: string | null;
   belowBandMs: number | null;
+}
+
+/** One body's drawn texel density, as the dev bridge reports it: what a sheet
+ *  of that body is labelled with, measured rather than asked for. A framing
+ *  fraction is not a substitute — a moon is posed from its catalog radius and
+ *  drawn at that radius times its mesh scale. */
+interface SurfaceDensityReadout extends SurfaceDensity {
+  name: string;
+  /** Conservative overestimate of the drawn disc, as the LOD walk measured it
+   *  — context for the density, never the label. */
+  diameterPx: number;
 }
 
 /** `?envelope=<MiB>` in dev shrinks the memory envelope, which is the one
@@ -3837,6 +3854,10 @@ export class PlanetariumMode {
     // service-worker cache on the next activation.
     this.sectors?.dropAll();
     this.sectorSpin.clear();
+    // Nothing is being drawn, so nothing has a drawn density; the next
+    // activation measures from scratch rather than reporting the last frame of
+    // the previous session.
+    this.surfaceDensities.clear();
     // A live tutorial hands the pre-tutorial state back first, synchronously — the
     // teardown below (excursion drop, landed exit, save) then applies to the
     // restored journey exactly as it would for a non-tutorialing player.
@@ -4313,6 +4334,81 @@ export class PlanetariumMode {
 
   private readonly bodyLODTmp = new THREE.Vector3();
   /**
+   * What each body's surface is drawing, at the point the camera magnifies it
+   * most — refreshed by the LOD walk below for every body close enough for the
+   * answer to be anything but "minified", and dropped for the rest.
+   *
+   * Independent of the sector streamer on purpose: the streamer owns the only
+   * other px/texel measurement in the app and it is switched off wholesale by
+   * `?sectors=0`, which is the A/B a close-range look question is answered
+   * with. A measurement that vanished with the streamer could not label the
+   * arm it exists to compare.
+   */
+  private readonly surfaceDensities = new Map<string, SurfaceDensityReadout>();
+
+  /** Density record for `name`, created at rest on first sight. */
+  private surfaceDensityRecord(name: string): SurfaceDensityReadout {
+    const held = this.surfaceDensities.get(name);
+    if (held) return held;
+    const record: SurfaceDensityReadout = {
+      name,
+      mapWidth: 0,
+      pixelsPerTexel: 0,
+      texelsPerPixel: 0,
+      magnified: 0,
+      pxPerUnit: 0,
+      diameterPx: 0,
+    };
+    this.surfaceDensities.set(name, record);
+    return record;
+  }
+
+  /**
+   * Measure one body's drawn texel density, or drop its record when the body
+   * is too small on screen for the answer to be anything but "minified".
+   * `estPx` is the LOD walk's conservative diameter OVERestimate, already
+   * measured for the ladder triggers — the pre-filter reads it so no body is
+   * projected a second time and no third per-frame walk exists.
+   */
+  private updateSurfaceDensity(
+    name: string,
+    centre: THREE.Vector3,
+    renderedRadiusAU: number,
+    material: THREE.Material,
+    ups: readonly TextureUpgrade[],
+    estPx: number,
+    canvasW: number,
+    canvasH: number,
+  ): void {
+    const mapWidth = drawnColorMapWidth(material, ups);
+    if (!(mapWidth > 0) || !(estPx > densityRelevantDiameterPx(mapWidth))) {
+      this.surfaceDensities.delete(name);
+      return;
+    }
+    const record = this.surfaceDensityRecord(name);
+    const density = measureSurfaceDensity(
+      centre, renderedRadiusAU, mapWidth, this.camera, canvasW, canvasH,
+      this.renderer.getPixelRatio(), record,
+    );
+    if (!density) {
+      this.surfaceDensities.delete(name);
+      return;
+    }
+    record.diameterPx = estPx;
+  }
+
+  /**
+   * Dev bridge: what every close body's surface is really drawing, in display
+   * pixels per texel of the map on it. Works with the sector streamer off,
+   * which is the whole reason it is not the streamer's own number.
+   */
+  devSurfaceDensity(): SurfaceDensityReadout[] {
+    return [...this.surfaceDensities.values()]
+      .map((r) => ({ ...r }))
+      .sort((a, b) => b.pixelsPerTexel - a.pixelsPerTexel);
+  }
+
+  /**
    * Raise a body's detail as it grows large on screen: higher-resolution
    * colour maps, and a finer sphere once its polygon chords would show. Both
    * read the one screen footprint measured here per body — apparent size, not
@@ -4337,9 +4433,9 @@ export class PlanetariumMode {
       // unfinished colour ladder does (it shares the colour ladder's first
       // trigger fraction below).
       const normalPending = normalUpgradePending(planet.normalUpgrade);
-      // Nothing left to measure: every ladder has reached its goal and the
+      // Nothing left to UPGRADE: every ladder has reached its goal and the
       // silhouette is already fine. (every() is true for a ladder-less body.)
-      if (!normalPending && geo.applied && ups.every(upgradeComplete)) continue;
+      const laddersDone = !normalPending && geo.applied && ups.every(upgradeComplete);
       planet.group.getWorldPosition(this.bodyLODTmp);
       // A body with work left still skips the full 32-ray measurement while a
       // conservative overestimate of its diameter stays under every trigger
@@ -4348,6 +4444,14 @@ export class PlanetariumMode {
       const estPx = estimateSphereScreenDiameterPx(
         this.bodyLODTmp, planet.data.radiusAU, this.camera, canvasW, canvasH,
       );
+      // Density is measured whether or not the ladders have anything left to
+      // gain: a body drawing the finest map that exists for it is exactly the
+      // body a close-range question is about.
+      this.updateSurfaceDensity(
+        planet.data.name, this.bodyLODTmp, planet.data.radiusAU,
+        planet.mesh.material as THREE.Material, ups, estPx, canvasW, canvasH,
+      );
+      if (laddersDone) continue;
       if (!lodMeasurementRelevant(geo, ups, estPx, canvasH, null)
         && !(normalPending
           && estPx / Math.max(canvasH, 1) > (UPGRADE_TRIGGER_FRACTION['4k'] ?? Infinity))) continue;
@@ -4375,7 +4479,10 @@ export class PlanetariumMode {
         // Hidden moons sit at their parent's center (updateMoonPositions skips
         // them) — a fake position the triggers must never measure. An invisible
         // moon can't legitimately span the viewport anyway.
-        if (!m.mesh.visible) continue;
+        if (!m.mesh.visible) {
+          this.surfaceDensities.delete(m.data.name);
+          continue;
+        }
         const ups = m.textureUpgrades;
         const geo = m.geometryUpgrade;
         // A pending relief tier keeps the moon measurable the same way an
@@ -4389,7 +4496,8 @@ export class PlanetariumMode {
         // single slot is already spent.
         const tryProcedural = allowMoonTexUpgrade && !moonTexUpgraded
           && this.moonTexturer.canUpgrade(m, PlanetariumMode.OBSERVE_MOON_TEXTURE_WIDTH);
-        if (!tryProcedural && !normalPending && geo.applied && ups.every(upgradeComplete)) continue;
+        const laddersDone = !tryProcedural && !normalPending && geo.applied
+          && ups.every(upgradeComplete);
         m.mesh.getWorldPosition(this.bodyLODTmp);
         // Rendered size (mesh scale carries the render-curve inflation): the
         // triggers must measure the disc actually on screen.
@@ -4399,6 +4507,14 @@ export class PlanetariumMode {
         const estPx = estimateSphereScreenDiameterPx(
           this.bodyLODTmp, renderedR, this.camera, canvasW, canvasH,
         );
+        // Measured at the RENDERED radius, for the same reason the triggers
+        // are: a moon is drawn at its catalog radius times its mesh scale, and
+        // a density read off the catalog radius describes a disc nobody sees.
+        this.updateSurfaceDensity(
+          m.data.name, this.bodyLODTmp, renderedR,
+          m.mesh.material as THREE.Material, ups, estPx, canvasW, canvasH,
+        );
+        if (laddersDone) continue;
         if (!lodMeasurementRelevant(
           geo, ups, estPx, canvasH,
           tryProcedural ? this.moonDotParams.texUpgradeDiscPx : null,

@@ -722,6 +722,10 @@ function installDevHooks() {
     device: () => planetariumMode?.devDeviceProfile() ?? null,
     sectors: () => planetariumMode?.devSectorStats() ?? null,
     ladder: () => planetariumMode?.devLadderStats() ?? null,
+    // Pixels per texel of the map each close body is really drawing. Reports
+    // with the sector streamer off (?sectors=0), which is what a close-range
+    // A/B is run under.
+    surfaceDensity: () => planetariumMode?.devSurfaceDensity() ?? [],
     lookUp: () => planetariumMode?.devLookUp() ?? false,
     lookAt: (name: string) => planetariumMode?.devLookAt(name) ?? false,
     exitSurface: () => planetariumMode?.devExitSurface(),

@@ -86,6 +86,24 @@ describe('the drawn texel density of a surface', () => {
     expect(density!.mapWidth).toBe(2048);
   });
 
+  it('says which latitude it measured, once told which way the pole points', () => {
+    // A density on its own cannot tell a pose over a pole from one over the
+    // equator, and the two are different questions of a surface term that
+    // draws its own ground.
+    const camera = cameraAt(1.5);
+    const at = (pole: THREE.Vector3) => measureSurfaceDensity(
+      new THREE.Vector3(), 1, 2048, camera, VIEW_W, VIEW_H, 1, pole,
+    )!.subCameraLatDeg!;
+    // The camera looks down −Z, so the point it magnifies most is the +Z one.
+    expect(at(new THREE.Vector3(0, 0, 1))).toBeCloseTo(90, 6);
+    expect(at(new THREE.Vector3(0, 0, -1))).toBeCloseTo(-90, 6);
+    expect(at(new THREE.Vector3(0, 1, 0))).toBeCloseTo(0, 6);
+    expect(at(new THREE.Vector3(0, 1, 1).normalize())).toBeCloseTo(45, 6);
+    // And says nothing rather than guessing where it was not told.
+    expect(measureSurfaceDensity(new THREE.Vector3(), 1, 2048, camera, VIEW_W, VIEW_H, 1)!
+      .subCameraLatDeg).toBeNull();
+  });
+
   it('reports a device-pixel density, not a CSS one', () => {
     const camera = cameraAt(1.5);
     const one = measureSurfaceDensity(new THREE.Vector3(), 1, 2048, camera, VIEW_W, VIEW_H, 1)!;

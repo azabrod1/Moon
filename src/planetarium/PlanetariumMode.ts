@@ -4368,6 +4368,7 @@ export class PlanetariumMode {
       texelsPerPixel: 0,
       magnified: 0,
       pxPerUnit: 0,
+      subCameraLatDeg: null,
       diameterPx: 0,
       envelope: 0,
       stampMs: nowMs,
@@ -4378,7 +4379,22 @@ export class PlanetariumMode {
 
   private readonly densityScratch: SurfaceDensity = {
     mapWidth: 0, pixelsPerTexel: 0, texelsPerPixel: 0, magnified: 0, pxPerUnit: 0,
+    subCameraLatDeg: null,
   };
+
+  private readonly bodyPoleTmp = new THREE.Vector3();
+
+  /** A body's north axis in world axes: the second column of its draw
+   *  transform, which is the +Y its geometry's pole sits on. Read off the
+   *  matrix the last frame left, so a body's own spin is a few arcseconds
+   *  stale — under the resolution of anything that asks. */
+  private bodyPole(mesh: THREE.Object3D): THREE.Vector3 {
+    const e = mesh.matrixWorld.elements;
+    this.bodyPoleTmp.set(e[4], e[5], e[6]);
+    return this.bodyPoleTmp.lengthSq() > 0
+      ? this.bodyPoleTmp.normalize()
+      : this.bodyPoleTmp.set(0, 1, 0);
+  }
 
   /**
    * Measure one body's drawn texel density and hold its surfaces' close-range
@@ -4399,6 +4415,7 @@ export class PlanetariumMode {
     name: string,
     centre: THREE.Vector3,
     renderedRadiusAU: number,
+    mesh: THREE.Object3D,
     material: THREE.Material,
     ups: readonly TextureUpgrade[],
     estPx: number,
@@ -4410,7 +4427,7 @@ export class PlanetariumMode {
     const measured = mapWidth > 0 && estPx > densityRelevantDiameterPx(mapWidth)
       ? measureSurfaceDensity(
         centre, renderedRadiusAU, mapWidth, this.camera, canvasW, canvasH,
-        this.renderer.getPixelRatio(), this.densityScratch,
+        this.renderer.getPixelRatio(), this.bodyPole(mesh), this.densityScratch,
       )
       : null;
     const target = this.synthesisEnabled ? measured?.magnified ?? 0 : 0;
@@ -4428,6 +4445,7 @@ export class PlanetariumMode {
       record.texelsPerPixel = measured.texelsPerPixel;
       record.magnified = measured.magnified;
       record.pxPerUnit = measured.pxPerUnit;
+      record.subCameraLatDeg = measured.subCameraLatDeg;
       record.diameterPx = estPx;
     } else {
       record.magnified = 0;
@@ -4497,7 +4515,7 @@ export class PlanetariumMode {
       // gain: a body drawing the finest map that exists for it is exactly the
       // body a close-range question is about.
       this.updateSurfaceDetail(
-        planet.data.name, this.bodyLODTmp, planet.data.radiusAU,
+        planet.data.name, this.bodyLODTmp, planet.data.radiusAU, planet.mesh,
         planet.mesh.material as THREE.Material, ups, estPx, canvasW, canvasH, nowMs,
       );
       if (laddersDone) continue;
@@ -4560,7 +4578,7 @@ export class PlanetariumMode {
         // are: a moon is drawn at its catalog radius times its mesh scale, and
         // a density read off the catalog radius describes a disc nobody sees.
         this.updateSurfaceDetail(
-          m.data.name, this.bodyLODTmp, renderedR,
+          m.data.name, this.bodyLODTmp, renderedR, m.mesh,
           m.mesh.material as THREE.Material, ups, estPx, canvasW, canvasH, nowMs,
         );
         if (laddersDone) continue;
@@ -13514,6 +13532,14 @@ export class PlanetariumMode {
    * the only view where the back-lit crescent (warm terminator + Mie forward
    * scatter) shows. `distMul` sets the standoff in body radii (default 5); the
    * Sun QA sweeps it (5/15/114 radii) to reproduce the baseline flyby distances.
+   *
+   * `rollDeg` turns the camera about the Sun line, which leaves the phase angle
+   * exactly where it was and picks WHICH view of the body that phase gives. The
+   * phase alone sweeps one great circle of vantage points and a body's own pole
+   * is generally nowhere on it, so a pose over a pole is unreachable without
+   * this — and a surface term that draws its own ground is at its most exposed
+   * over a pole.
+   *
    * Dev bridge only.
    */
   devFrameBody(
@@ -13523,6 +13549,7 @@ export class PlanetariumMode {
     distMul = 5,
     offNdcX = 0,
     offNdcY = 0,
+    rollDeg = 0,
   ): boolean {
     if (!this.solarSystem) return false;
     // Resolve the Sun, a top-level planet, or a moon (parent world position plus
@@ -13564,6 +13591,8 @@ export class PlanetariumMode {
     if (axis.lengthSq() < 1e-6) axis.set(1, 0, 0); // sun line parallel to world up
     axis.normalize();
     const dir = toSun.clone().applyAxisAngle(axis, THREE.MathUtils.degToRad(phaseAngleDeg));
+    // About the sun line, so the phase angle this camera stands at is untouched.
+    if (rollDeg !== 0) dir.applyAxisAngle(toSun, THREE.MathUtils.degToRad(rollDeg));
     this.player.posX = pos.x + dir.x * dist;
     this.player.posY = pos.y + dir.y * dist;
     this.player.posZ = pos.z + dir.z * dist;

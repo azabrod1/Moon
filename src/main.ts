@@ -604,9 +604,11 @@ function installDevHooks() {
       planetariumMode?.devJumpToBody(name, distanceMultiplier) ?? false,
     frame: (
       name: string, fillFraction?: number, phaseAngleDeg?: number, distMul?: number,
-      offNdcX?: number, offNdcY?: number,
+      offNdcX?: number, offNdcY?: number, rollDeg?: number,
     ) =>
-      planetariumMode?.devFrameBody(name, fillFraction, phaseAngleDeg, distMul, offNdcX, offNdcY) ?? false,
+      planetariumMode?.devFrameBody(
+        name, fillFraction, phaseAngleDeg, distMul, offNdcX, offNdcY, rollDeg,
+      ) ?? false,
     viewFrom: (fromName: string, toName: string, fovDeg?: number) =>
       planetariumMode?.devViewFrom(fromName, toName, fovDeg) ?? false,
     // aimFrac swings the aim from straight down (0) to the tangent point (1,

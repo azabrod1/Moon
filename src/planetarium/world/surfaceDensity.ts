@@ -40,6 +40,7 @@
  * on screen.
  */
 import * as THREE from 'three';
+import { RAD2DEG } from '../../shared/math/angles';
 import { projectedStepScale, type ProjectedStepScale } from '../../shared/three/projectToScreen';
 import { ladderDrawnMapWidth, materialColorMap, type TextureUpgrade } from './textureLadder';
 
@@ -164,6 +165,12 @@ export interface SurfaceDensity {
   magnified: number;
   /** Device pixels per unit of world length at the sub-camera point. */
   pxPerUnit: number;
+  /** Latitude of the sub-camera point on the body, in degrees, or null where
+   *  the caller did not say which way the body's pole points. WHERE a density
+   *  was measured, which is what tells a pose over a pole from a pose over the
+   *  equator — and a polar view is where a surface term with a chart of its own
+   *  either holds up or draws a pinwheel. */
+  subCameraLatDeg: number | null;
 }
 
 const densityPoint = new THREE.Vector3();
@@ -179,6 +186,8 @@ const densityStepScale: ProjectedStepScale = { maxPx: 0, minPx: 0, x: 0, y: 0 };
  * draws at its catalog radius times its mesh scale, and the density on screen
  * is the drawn disc's, not the catalog one's). `dpr` converts the projection's
  * CSS pixels to the device pixels the shader's own derivative is taken in.
+ * `pole` is the body's north axis in world axes, and only labels the reading
+ * with the latitude it was taken at.
  *
  * Returns null when there is no honest scale to report — the sub-camera point
  * at or behind the camera plane, or no map width to measure against.
@@ -191,6 +200,7 @@ export function measureSurfaceDensity(
   widthPx: number,
   heightPx: number,
   dpr: number,
+  pole?: THREE.Vector3 | null,
   out?: SurfaceDensity,
 ): SurfaceDensity | null {
   if (!(radius > 0) || !(mapWidth > 0)) return null;
@@ -218,11 +228,17 @@ export function measureSurfaceDensity(
   const texels = texelsPerPixel(pxPerUnit, radius, mapWidth);
   const result = out ?? {
     mapWidth: 0, pixelsPerTexel: 0, texelsPerPixel: 0, magnified: 0, pxPerUnit: 0,
+    subCameraLatDeg: null,
   };
   result.mapWidth = mapWidth;
   result.pxPerUnit = pxPerUnit;
   result.texelsPerPixel = texels;
   result.pixelsPerTexel = Number.isFinite(texels) && texels > 0 ? 1 / texels : 0;
   result.magnified = surfaceMagnifiedWeight(texels);
+  // densityNormal is the surface normal at the point measured, so its angle to
+  // the pole is that point's latitude.
+  result.subCameraLatDeg = pole
+    ? Math.asin(Math.min(1, Math.max(-1, densityNormal.dot(pole)))) * RAD2DEG
+    : null;
   return result;
 }

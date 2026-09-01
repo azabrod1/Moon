@@ -12,6 +12,7 @@
     "gen:maps": "node gen-maps.mjs",
     "gen:ktx2": "node tools/gen-ktx2.mjs --all",
     "gen:tiles": "node tools/gen-tiles.mjs",
+    "gen:moonmaps": "node tools/gen-moonmaps.mjs",
     "publish:tiles": "node tools/publish-tiles.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",

@@ -259,11 +259,12 @@ const JOBS = {
     // water ice reading blue-white, and the dark lineae and mottled terrain
     // are where the non-ice contaminant sits and read tan-brown. Rather than
     // the flatter, redder ball the old boot map drew.
-    // Levels are set against the real geometric albedos of the four
-    // Galileans (Io 0.63, Europa 0.68, Ganymede 0.43, Callisto 0.22), so the
-    // moons finally read at the right brightnesses relative to each other:
-    // this map's mean luminance lands at 1.6x Ganymede's colour mosaic, which
-    // is the ratio the albedos ask for.
+    // Levels are set against the geometric albedos JPL Horizons carries for
+    // the four Galileans (Io 0.63, Europa 0.67, Ganymede 0.43, Callisto
+    // 0.17), so the moons finally read at the right brightnesses relative to
+    // each other: this map's mean luminance lands at 1.6x Ganymede's colour
+    // mosaic, which is the ratio those albedos ask for, where the old pair had
+    // Callisto nearly as bright as Ganymede.
     colour: ramp([
       [0.00, [44, 36, 30]], [0.30, [100, 84, 68]], [0.48, [158, 142, 124]],
       [0.60, [198, 190, 178]], [0.72, [226, 224, 222]], [0.85, [242, 244, 246]],
@@ -282,13 +283,17 @@ const JOBS = {
     // to, and both files come out of this one run.
     outputs: [{ width: 4096, out: '4k/callisto.v2.webp' }, { width: 1800, out: 'callisto.v2.webp' }],
     rungs: [{ width: 8192, name: 'callisto-8k' }],
-    // Mono at 1 km, and no global colour Callisto raster exists either. The
-    // dark cratered plains are the dirty, ice-poor ones and the bright crater
-    // ejecta and palimpsests are excavated ice, so the same brightness-tracks-
-    // composition ramp applies, warmer and dimmer than Europa's.
+    // Mono at 1 km, and no global colour Callisto raster exists either — no
+    // agency has ever even published a name for its colour. What is published
+    // is the slope: most of the surface is red-sloped from 700 to 1000 nm,
+    // while the bright water-ice-rich regions are neutral or BLUE-sloped
+    // (Denman et al. 2025, HST/STIS). So this ramp runs warm grey-brown in the
+    // dark cratered plains and turns slightly COOL in the fresh ejecta and
+    // palimpsests, which is the one thing about this moon's colour that is
+    // actually measured.
     colour: ramp([
-      [0.00, [30, 24, 20]], [0.22, [78, 64, 52]], [0.45, [126, 110, 94]],
-      [0.68, [172, 160, 146]], [0.86, [208, 200, 190]], [1.00, [238, 234, 228]],
+      [0.00, [30, 24, 20]], [0.22, [78, 64, 52]], [0.45, [126, 112, 98]],
+      [0.68, [170, 162, 154]], [0.86, [206, 204, 204]], [1.00, [234, 236, 240]],
     ]),
   },
   pluto: {

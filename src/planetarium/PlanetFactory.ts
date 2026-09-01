@@ -1476,14 +1476,17 @@ export function createMoonTextures(
     const reach = craterReach(c.rays);
     const outer = craterOuterTexels(c.cr, c.rays);
     const dyMax = Math.ceil(outer);
-    const halfWidth = Math.floor(textureWidth / 2);
     for (let dy = -dyMax; dy <= dyMax; dy++) {
       const py = c.cy + dy;
       if (py < 0 || py >= textureHeight) continue;
       const cosLat = Math.max(Math.sin((py / textureHeight) * Math.PI), 1e-3);
-      const halfSpan = Math.min(Math.ceil(outer / cosLat), halfWidth);
+      // Column count, capped at the whole row: near a pole a crater's x extent
+      // exceeds the map's width, and each texel must be touched exactly once.
+      const span = Math.min(2 * Math.ceil(outer / cosLat) + 1, textureWidth);
+      const half = span >> 1;
       const rowBase = py * textureWidth;
-      for (let dx = -halfSpan; dx <= halfSpan; dx++) {
+      for (let k = 0; k < span; k++) {
+        const dx = k - half;
         const sx = dx * cosLat;
         const px = ((c.cx + dx) % textureWidth + textureWidth) % textureWidth;
         const warp = 1 + CRATER_WARP * (fieldBuf[rowBase + px] - 0.5);

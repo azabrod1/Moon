@@ -1,7 +1,7 @@
 {
   "_": "Sources under .moon-data-cache/zoom/ for the photo maps of the moons that ship as procedural balls today, plus the sharper re-bases for the Galileans and Pluto. Same contract as gen-tiles.sources.json: the SHA-256 is what the shipped assets were cut from, and a re-downloaded product whose digest moved must not silently re-cut a map. Every product here is NASA or USGS and public domain; the citation field carries the credit line the product page asks for. Read `longitude` before writing any job. Every one of these rasters stores its columns EAST-increasing - the reading comes from the GeoTIFF's own geotransform (ModelTiepoint + ModelPixelScale, turned into degrees through the projection's central-meridian GeoKey and the sphere radius), which is the authority on where the pixels are. A PDS3 label's POSITIVE_LONGITUDE_DIRECTION is NOT: it says which direction the label's own numbers count in, and taking it as the column order says seven of these fifteen are mirrored, which they are not. Io settles it by measurement - Loki Patera and Pele land on their gazetteer longitudes in the east-increasing reading and nowhere near them in the mirrored one - and Pluto settles it a second time, because the map the app already ships was baked from this product with a 180 degree roll and no flip. So the only transform any of these needs is a longitude ROLL, and `leftEdgeLonDegEast` is the whole of it: eight sit at 180E and need nothing, five sit at 0E and need half a turn. `wire` is the measured cost of one representative 4096x2048 candidate encoded both ways, so a rung can be priced before it is cut.",
-  "_gaps": "What this file does NOT know, stated once so it is not rediscovered as a bug. (1) Mimas, Miranda and Ariel ship no label and no geotransform. All three were settled by measurement in the A1 alignment pass and all three came out at left edge 180E like the labelled Cassini mosaics - Mimas on Herschel, Miranda on the Inverness Corona chevron, Ariel on the run of its named chasmata. (2) Miranda and Ariel are 1440x720 and cover the southern hemisphere only; a 4K rung for either would be pure upsampling, so 2K is their honest ceiling and the unimaged north is filled from the imaged half. (3) Titan is 4040 px because the only sharper USGS product is 1.5 GB and not global. (4) Ten of the fifteen are mono; keeping Io's and Ganymede's colour is free, everything else is coloured through a luminance ramp keyed to the body's published appearance. (5) Triton is not in this set. Its shipped 4096 boot map predates this pipeline and its provenance is undocumented; no public-domain global mosaic of Triton exists above the Voyager 2 one (about 5700 px), so there is no source for a rung and nothing to re-base from that would be sharper than what ships.",
-  "_wire": "Each `wire` block is one 4096x2048 candidate cut from the source with sharp 0.35.4 (fit: fill, kernel lanczos3, forced to 3-channel sRGB so both encoders see the same picture), then encoded as webp quality 85 effort 5 (the photo idiom in tools/encode-textures.mjs) and as UASTC KTX2 with the flags tools/gen-ktx2.mjs uses (-uastc -uastc_level 2 -uastc_rdo_l 1.0 -uastc_rdo_d 8192 -ktx2_zstandard_level 18 -mipmap -mip_filter box -y_flip). basisu from @gpu-tex-enc/basis, darwin-arm64. The candidates and containers are kept beside the sources in .moon-data-cache/zoom/wire/.",
+  "_gaps": "What this file does NOT know, stated once so it is not rediscovered as a bug. (1) Mimas, Miranda and Ariel ship no label and no geotransform. All three were settled by measurement in the A1 alignment pass and all three came out at left edge 180E like the labelled Cassini mosaics - Mimas on Herschel, Miranda on the Inverness Corona chevron, Ariel on the run of its named chasmata. (2) Miranda and Ariel are 1440x720 and cover the southern hemisphere only; a 4K rung for either would be pure upsampling, so 2K is their honest ceiling and the unimaged north is filled from the imaged half. (3) Titan is 4040 px because the only sharper USGS product is 1.5 GB and not global. (4) Ten of the fifteen are mono; keeping Io's and Ganymede's colour is free, everything else is coloured through a luminance ramp keyed to the body's published appearance. (5) Triton is not in this set, and NOT for want of a source. Triton_Voyager2_ClrMosaic_GlobalFill_600m.tif (USGS/Photojournal PIA18668, Schenk/LPI, public domain) is 14138x7069 in colour at 600 m/px, left edge 180E east-increasing like the Cassini mosaics, so an 8K rung would be a 1.73x downsample of real data. What stops it is the picture, not the pixels: 38.5 percent of it is no-data with everything north of about 14N empty (USGS's own completeness field says \"Large gap at the north pole\"; the \"GlobalFill\" in the name is seam patching, not the polar gap), it carries a strong green-magenta cast rather than Triton's real pinkish grey, and USGS's process note says the 30-degree graticule was painted out by hand and they would like to find a version without it. Cutting it is one job row once someone decides those three are acceptable. The file is cached beside the others.",
+  "_wire": "Each `wire` block is one 4096x2048 candidate cut from the source with sharp 0.35.4 (fit: fill, kernel lanczos3, forced to 3-channel sRGB so both encoders see the same picture), then encoded as webp quality 85 effort 5 (the photo idiom in tools/encode-textures.mjs) and as UASTC KTX2 with the flags tools/gen-ktx2.mjs uses (-uastc -uastc_level 2 -uastc_rdo_l 1.0 -uastc_rdo_d 8192 -ktx2_zstandard_level 18 -mipmap -mip_filter box -y_flip). basisu from @gpu-tex-enc/basis, darwin-arm64. The candidates and containers are kept beside the sources in .moon-data-cache/zoom/wire/. A third encode was added later: the same candidate as ETC1S KTX2 (-q 255 -comp_level 5, basisu's largest codebooks and slowest endpoint search, with the same -mipmap -mip_filter box -y_flip), plus `rmsVsSource`, the 0-255 RMS of each encode against the candidate read at 2048 wide - the scale and the units gen-tiles' own picture gate uses. ETC1S is the format the tree pins AGAINST for the Moon and Earth's night lights because its shared codebook bands slow ramps; these moons are texture rather than ramp, and it comes back at 0.80x to 2.99x the webp with an RMS indistinguishable from webp's (better than webp on five of the twelve). The container decision is not this file's to make - the numbers are here so it can be made.",
   "Titan_ISS_P19658_Mosaic_Global_4km.tif": {
     "body": "titan",
     "url": "https://planetarymaps.usgs.gov/mosaic/Titan_ISS_P19658_Mosaic_Global_4km.tif",
@@ -112,7 +112,13 @@
       "webpBytes": 2034828,
       "ktx2Bytes": 8115387,
       "ratio": 3.99,
-      "ratio_at_or_under_4x": true
+      "ratio_at_or_under_4x": true,
+      "etc1sBytes": 1637088,
+      "etc1sRatio": 0.8,
+      "rmsVsSource": {
+        "webp": 4.47,
+        "etc1s": 4.19
+      }
     },
     "notes": "Global, mono. 14401x7201 rather than 14400x7200: the map spans 360.025 deg, a hair over one wrap. The mosaic was shifted 3.5 deg west of earlier Enceladus maps to match the IAU longitude definition (product abstract). Tiger stripes present.",
     "used_by": [
@@ -154,7 +160,13 @@
       "webpBytes": 805130,
       "ktx2Bytes": 6452491,
       "ratio": 8.01,
-      "ratio_at_or_under_4x": false
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 1550704,
+      "etc1sRatio": 1.93,
+      "rmsVsSource": {
+        "webp": 1.67,
+        "etc1s": 1.81
+      }
     },
     "notes": "Global, mono, unannotated (checked by eye). USGS Astropedia has NO Mimas global mosaic - only airbrush shaded relief, pictorial maps and a control network - so this comes from the JPL Photojournal release of the same Cassini ISS map instead, and carries no machine-readable label.",
     "used_by": [
@@ -217,7 +229,13 @@
       "webpBytes": 2023624,
       "ktx2Bytes": 8132888,
       "ratio": 4.02,
-      "ratio_at_or_under_4x": false
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 1680295,
+      "etc1sRatio": 0.83,
+      "rmsVsSource": {
+        "webp": 3.78,
+        "etc1s": 4.21
+      }
     },
     "notes": "Global, mono. Wispy chasms present. CONFLICT: the Astropedia catalog page states \"Longitude Direction: Positive West\", but the product's own PDS3 and ISIS3 labels both say EAST. The labels are the authority here. 23040 px is far wider than a 4K rung needs; USGS publishes no reduced version, so the whole 265 MB was taken.",
     "used_by": [
@@ -280,7 +298,13 @@
       "webpBytes": 1589594,
       "ktx2Bytes": 7701219,
       "ratio": 4.84,
-      "ratio_at_or_under_4x": false
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 1646943,
+      "etc1sRatio": 1.04,
+      "rmsVsSource": {
+        "webp": 2.78,
+        "etc1s": 3.19
+      }
     },
     "notes": "Global, mono. Odysseus and Ithaca Chasma present. CONFLICT: the Astropedia catalog page states \"Longitude Direction: Positive West\", both labels say EAST - same catalog error as Dione.",
     "used_by": [
@@ -343,7 +367,13 @@
       "webpBytes": 1048278,
       "ktx2Bytes": 6881082,
       "ratio": 6.56,
-      "ratio_at_or_under_4x": false
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 1505138,
+      "etc1sRatio": 1.44,
+      "rmsVsSource": {
+        "webp": 1.93,
+        "etc1s": 2.03
+      }
     },
     "notes": "Global, mono, cratered ice. The Astropedia page's \"Online File Link\" wrongly points at the 833 m Voyager file; the 417 m mosaic is the sibling path named by the PDS3 label's ^IMAGE pointer, and that is what was downloaded (11520x5760, matching the page's own raster counts).",
     "used_by": [
@@ -406,7 +436,13 @@
       "webpBytes": 1162046,
       "ktx2Bytes": 7275571,
       "ratio": 6.26,
-      "ratio_at_or_under_4x": false
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 1559954,
+      "etc1sRatio": 1.34,
+      "rmsVsSource": {
+        "webp": 2.32,
+        "etc1s": 2.58
+      }
     },
     "notes": "Global, mono; the two-tone Cassini Regio is the point of this one. Naming quirk: the catalog calls the product 803m, the file and label say 783m, and MAP_SCALE is 802.85 m/px - one product, three numbers. 5760 px is the smallest global source here after Titan; a 4K rung is a 1.4x downsample rather than the 2x this set otherwise holds to.",
     "used_by": [
@@ -469,7 +505,13 @@
       "webpBytes": 619764,
       "ktx2Bytes": 4466122,
       "ratio": 7.21,
-      "ratio_at_or_under_4x": false
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 944024,
+      "etc1sRatio": 1.52,
+      "rmsVsSource": {
+        "webp": 1.82,
+        "etc1s": 1.68
+      }
     },
     "notes": "Global, mono; Mordor Macula at the north pole. The encounter hemisphere is genuine 300 m; the far side is coarse New Horizons approach imagery. Latitude type is PLANETOGRAPHIC here, unlike the Cassini mosaics.",
     "used_by": [
@@ -616,7 +658,13 @@
       "webpBytes": 1086206,
       "ktx2Bytes": 6863331,
       "ratio": 6.32,
-      "ratio_at_or_under_4x": false
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 1398366,
+      "etc1sRatio": 1.29,
+      "rmsVsSource": {
+        "webp": 2.15,
+        "etc1s": 1.92
+      }
     },
     "notes": "Global, mono. This is the fix for the app's 1800 px Callisto boot map. USGS publishes no global colour Callisto raster, so keeping Callisto coloured needs a colour pass keyed to a published true-colour reference.",
     "used_by": [
@@ -679,7 +727,13 @@
       "webpBytes": 500912,
       "ktx2Bytes": 7042073,
       "ratio": 14.06,
-      "ratio_at_or_under_4x": false
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 1495970,
+      "etc1sRatio": 2.99,
+      "rmsVsSource": {
+        "webp": 2.17,
+        "etc1s": 2.38
+      }
     },
     "notes": "Global, colour, 11445 px - enough for an 8K rung with a real downsample. A near-identical sibling product exists (Io_Galileo_SSI_Global_Mosaic_ClrMerge_1km.tif, same size and dimensions, Galileo-only merge); the Voyager-merged one was taken.",
     "used_by": [
@@ -742,7 +796,13 @@
       "webpBytes": 1344146,
       "ktx2Bytes": 7179954,
       "ratio": 5.34,
-      "ratio_at_or_under_4x": false
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 1423801,
+      "etc1sRatio": 1.06,
+      "rmsVsSource": {
+        "webp": 2.77,
+        "etc1s": 2.56
+      }
     },
     "notes": "Global, MONO at 500 m - 19631 px, the sharpest Galilean source here. USGS publishes no global colour Europa raster (the only colour products are Mercator map-sheet PDFs), so keeping Europa coloured needs a colour pass keyed to a published true-colour reference.",
     "used_by": [
@@ -805,7 +865,13 @@
       "webpBytes": 1178610,
       "ktx2Bytes": 8130075,
       "ratio": 6.9,
-      "ratio_at_or_under_4x": false
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 1580591,
+      "etc1sRatio": 1.34,
+      "rmsVsSource": {
+        "webp": 2.7,
+        "etc1s": 2.82
+      }
     },
     "notes": "Global, colour, 11520 px - enough for an 8K rung. A SHARPER mono product exists and was deliberately not taken: Ganymede_Voyager_GalileoSSI_global_mosaic_1km.tif, 16539x8270, 131 MB. Pairing that with this colour map (the re-base technique Earth uses) would be sharper at the cost of another 131 MB and a colorize step; the colour map alone was taken to stay near the download budget.",
     "used_by": [
@@ -868,7 +934,13 @@
       "webpBytes": 819330,
       "ktx2Bytes": 4704892,
       "ratio": 5.74,
-      "ratio_at_or_under_4x": false
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 974558,
+      "etc1sRatio": 1.19,
+      "rmsVsSource": {
+        "webp": 2.91,
+        "etc1s": 2.54
+      }
     },
     "notes": "Global, mono. The encounter hemisphere (Sputnik Planitia) is genuine 300 m; the far side is 20-30 km approach imagery and will stay soft at any tier. Latitude type is PLANETOGRAPHIC.",
     "used_by": [

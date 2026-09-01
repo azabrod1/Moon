@@ -41,28 +41,33 @@ describe('warmBudgetMs', () => {
 });
 
 describe('warmRepayMs', () => {
-  it('sits out a whole frame when the overrun alone would not fill one', () => {
+  it('sits out a whole frame when ONE map outran the budget', () => {
     // The measured shape: a 9.2 ms tile upload, a 2.9 ms budget, an 8.33 ms
     // frame. The 6.3 ms owed lets the next frame upload again; a frame does not.
-    expect(warmRepayMs(9.2, 2.9, 8.33)).toBeCloseTo(8.33, 5);
+    expect(warmRepayMs(9.2, 9.2, 2.9, 8.33)).toBeCloseTo(8.33, 5);
+  });
+
+  it('repays only the debt when a BURST of small maps filled the budget', () => {
+    // Three 1 ms moon maps against a 2.9 ms budget: none of them made a frame
+    // late, so the boot-idle warm keeps draining every frame as it always did.
+    expect(warmRepayMs(3, 1, 2.9, 8.33)).toBeCloseTo(0.1, 5);
   });
 
   it('repays the overrun when it is longer than a frame', () => {
-    expect(warmRepayMs(30, 6, 8.33)).toBeCloseTo(24, 5);
+    expect(warmRepayMs(30, 30, 6, 8.33)).toBeCloseTo(24, 5);
   });
 
-  it('owes nothing for an upload that stayed inside its budget', () => {
-    expect(warmRepayMs(4, 6, 16.7)).toBe(16.7);
-    expect(warmRepayMs(4, 6, 0)).toBe(0);
+  it('owes nothing for a call that stayed inside its budget', () => {
+    expect(warmRepayMs(4, 4, 6, 16.7)).toBe(0);
   });
 
   it('owes nothing at all for an unbudgeted drain', () => {
-    expect(warmRepayMs(120, Number.POSITIVE_INFINITY, 8.33)).toBe(0);
+    expect(warmRepayMs(120, 120, Number.POSITIVE_INFINITY, 8.33)).toBe(0);
   });
 
   it('falls back to the overrun when the frame length is not usable', () => {
-    expect(warmRepayMs(9.2, 2.9, Number.NaN)).toBeCloseTo(6.3, 5);
-    expect(warmRepayMs(9.2, 2.9, -1)).toBeCloseTo(6.3, 5);
+    expect(warmRepayMs(9.2, 9.2, 2.9, Number.NaN)).toBeCloseTo(6.3, 5);
+    expect(warmRepayMs(9.2, 9.2, 2.9, -1)).toBeCloseTo(6.3, 5);
   });
 });
 
@@ -197,6 +202,21 @@ describe('textureWarmer', () => {
     clock += 1;
     pumpTextureWarmQueue(6, 8.33);
     expect(uploaded).toEqual([a, b]); // a quarter second is the longest wait
+  });
+
+  it('keeps draining after a burst of small maps merely filled the budget', () => {
+    // The boot-idle and system-moon warms are bursts of maps that each upload
+    // well inside the budget. Making them sit out a frame would halve their
+    // throughput for a stutter none of them caused.
+    bindTextureWarmer(upload);
+    uploadCostMs = 1;
+    const texes = [new THREE.Texture(), new THREE.Texture(), new THREE.Texture(), new THREE.Texture()];
+    for (const t of texes) queueTextureWarm(t);
+    pumpTextureWarmQueue(2.9, 8.33);
+    expect(uploaded).toEqual(texes.slice(0, 3)); // 3 ms paid, 0.1 ms owed
+    clock += 0.2;
+    pumpTextureWarmQueue(2.9, 8.33);
+    expect(uploaded).toEqual(texes); // and not a frame later
   });
 
   it('always uploads at least one, and batches small uploads within budget', () => {

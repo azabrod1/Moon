@@ -82,23 +82,38 @@ export function warmBudgetMs(frameIntervalMs: number): number {
 }
 
 /**
- * How long the pump owes after an unsliceable upload ran past its budget.
+ * How long the pump owes after a call ran past its budget.
  *
- * The overrun on its own is less than a frame and so buys nothing: a 9.2 ms
- * tile upload against the 2.9 ms budget of an 8.3 ms frame leaves 6.3 ms
- * owed, and the next frame's pump starts about 8.3 ms later — past the debt,
- * so it uploads again. A queue of big maps then pays one late frame EVERY
- * frame (measured on a 4x-throttled phone shape: 19 sector tiles, 16 late
- * frames carrying one). Sitting out a whole frame interval is what puts a
- * clean frame between two overruns, so the repay is the LONGER of the two:
- * the debt when a huge map ran over by more than a frame, one frame interval
- * otherwise. WARM_STARVE_MS still caps how long the queue may wait.
+ * Two different things end a call over budget, and only one of them is a
+ * stutter. A map that ALONE outran the budget made a frame late by itself,
+ * and the overrun it leaves owed is less than a frame, so it buys nothing:
+ * a 9.2 ms tile upload against the 2.9 ms budget of an 8.3 ms frame leaves
+ * 6.3 ms owed and the next frame's pump starts about 8.3 ms later — past the
+ * debt, so it uploads again, and a queue of such maps pays one late frame
+ * EVERY frame (measured on a 4x-throttled phone shape: 19 sector tiles, 16
+ * late frames carrying one). That case sits out a whole frame interval, so a
+ * clean frame always separates two overruns.
  *
- * An unbudgeted pump (the arrival veil's drain) owes nothing — see the pump.
+ * A BURST of small maps is the other case: three 1 ms moon maps merely fill a
+ * 2.9 ms budget without any of them making a frame late. Those repay the tiny
+ * debt they left and drain again next frame, exactly as they always did — the
+ * boot-idle warm and the system-moon warms live on that path, and halving
+ * their throughput would buy no smoothness at all.
+ *
+ * So the frame is charged on `uploadMs`, the cost of the single upload that
+ * ended the call; `spentMs` only sets the debt. WARM_STARVE_MS still caps how
+ * long the queue may wait either way, and an unbudgeted pump (the arrival
+ * veil's drain) owes nothing — see the pump.
  */
-export function warmRepayMs(spentMs: number, budgetMs: number, frameIntervalMs: number): number {
+export function warmRepayMs(
+  spentMs: number,
+  uploadMs: number,
+  budgetMs: number,
+  frameIntervalMs: number,
+): number {
   if (!Number.isFinite(budgetMs)) return 0;
   const owed = Math.max(0, spentMs - budgetMs);
+  if (!(uploadMs >= budgetMs)) return owed;
   const frame = Number.isFinite(frameIntervalMs) && frameIntervalMs > 0 ? frameIntervalMs : 0;
   return Math.max(owed, frame);
 }
@@ -235,10 +250,12 @@ export function pumpTextureWarmQueue(budgetMs: number, frameIntervalMs: number):
       }
     }
     const perfUpload = import.meta.env.DEV ? surfacePerfBeginTextureUpload(tex) : null;
-    // The frame trace wants this upload's own cost, not the pump call's: one
-    // pump can drain several small maps, and blaming the frame for the sum
-    // hides which map was the unsliceable one.
-    const uploadStart = import.meta.env.DEV && smoothTraceArmed() ? performance.now() : 0;
+    // Every upload is timed on its own, in every build, not as a share of the
+    // pump call: whether the queue has to sit out a frame turns on whether
+    // THIS map alone outran the budget (warmRepayMs), and the frame trace
+    // wants the same figure — blaming a frame for the sum of several small
+    // maps hides which one was the unsliceable one.
+    const uploadStart = performance.now();
     let uploaded = false;
     try {
       uploadFn(tex);
@@ -248,7 +265,7 @@ export function pumpTextureWarmQueue(budgetMs: number, frameIntervalMs: number):
       debugWarn('Texture warm upload failed', { err: String(err) });
     } finally {
       if (import.meta.env.DEV) surfacePerfEndTextureUpload(perfUpload);
-      if (import.meta.env.DEV && uploadStart) {
+      if (import.meta.env.DEV && smoothTraceArmed()) {
         const image = tex.image as { width?: number; height?: number } | undefined;
         // Compressed containers have no name and no image src; the loader
         // stamps the file on userData so the upload is still attributable.
@@ -262,6 +279,9 @@ export function pumpTextureWarmQueue(budgetMs: number, frameIntervalMs: number):
         );
       }
     }
+    // Read before the callback: settling one can build a sector mesh, and
+    // that is the caller's cost, not this upload's.
+    const uploadMs = performance.now() - uploadStart;
     const onOutcome = residentCallbacks.get(tex);
     residentCallbacks.delete(tex);
     if (uploaded) warmedVersions.set(tex, tex.version);
@@ -271,7 +291,7 @@ export function pumpTextureWarmQueue(budgetMs: number, frameIntervalMs: number):
     if (spent >= budgetMs) {
       // Charge the overrun forward rather than paying another next frame:
       // consecutive big maps are what turn one slow upload into a stutter.
-      warmRepayUntilMs = warmLastUploadAtMs + warmRepayMs(spent, budgetMs, frameIntervalMs);
+      warmRepayUntilMs = warmLastUploadAtMs + warmRepayMs(spent, uploadMs, budgetMs, frameIntervalMs);
       return;
     }
   }

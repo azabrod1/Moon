@@ -116,7 +116,7 @@ const SUPERCOMPRESSION_BY_MODEL: Record<number, number> = {
  *
  * ETC1S for the photo moons, every one of which is cratered texture at every
  * scale, the codebook's best case: measured per body on a 4096x2048 candidate
- * these land at 0.80x to 2.99x their webp twin (ten of the twelve under 1.6x)
+ * these land at 0.67x to 2.99x their webp twin (ten of the twelve under 1.9x)
  * with RMS indistinguishable from webp's, so one file is small enough to be
  * the wire copy AND compressed in VRAM, and the rung ships as a container
  * alone.

@@ -183,10 +183,14 @@ const JOBS = {
   //
   // The wire cap that rules the planet rungs above never binds here, because
   // ETC1S is not priced like UASTC: measured on a 4096x2048 candidate per
-  // body, these containers come in at 0.80x to 2.99x their webp twin (ten of
-  // the twelve under 1.6x) — Enceladus 0.80, Dione 0.83, Tethys 1.04, Europa
-  // 1.06, Pluto 1.19, Callisto 1.29, Iapetus 1.34, Ganymede 1.34, Rhea 1.44,
-  // Charon 1.52, Mimas 1.93, Io 2.99. Against the same candidate read at
+  // body, these containers come in at 0.67x to 2.99x their webp twin (ten of
+  // the twelve under 1.9x) — Enceladus 0.67, Dione 0.82, Callisto 0.86,
+  // Tethys 0.98, Europa 1.06, Pluto 1.19, Ganymede 1.34, Rhea 1.35, Iapetus
+  // 1.45, Charon 1.76, Mimas 1.84, Io 2.99. Eight of those were re-measured
+  // against the albedo-levelled maps; Io, Ganymede and Pluto's pictures did
+  // not change, and Europa's ratio is its pre-levels one (its container moved
+  // 5% on the level change, far inside the spread this argument turns on).
+  // Against the same candidate read at
   // 2048 the two encodes are indistinguishable in RMS (webp 1.67-4.47, ETC1S
   // 1.68-4.21; ETC1S is the better of the pair on five of the twelve), and
   // the crops that decide it — Io's chroma, Enceladus' limb, Iapetus'

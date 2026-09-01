@@ -56,7 +56,44 @@
 // globes anyway, with the unimaged half filled from the imaged one —
 // reflected across the data edge, blurred and noised toward the pole behind a
 // wide soft blend, the same shape of answer Triton's shipped map already
-// carries. There is no hard data edge on the drawn body.
+// carries. There is no hard data edge on the drawn body, and the fill carries
+// the imaged hemisphere's own grain at the imaged hemisphere's own amplitude,
+// measured octave by octave, so a close look finds surface rather than smoke.
+//
+// Three of these products carry marks that are not surface, and each gets a
+// pass of its own rather than a hand-painted patch:
+//
+//   * A mosaic's coverage boundary is antialiased: the column where imaged
+//     terrain meets no-data holds a partial-coverage pixel a long way darker
+//     than either. Left alone it survives the resample as a dotted near-black
+//     curve tracing the edge of the data — the single most artificial thing on
+//     Miranda and on Ariel. It is not a measurement, so the no-data mask is
+//     GROWN by a pixel or two before the reduction (`noData.edgeGrow`) and the
+//     rim is filled with the surface instead. The same rule takes the dark
+//     wedges the Uranian mosaics carry along their terminator, where the
+//     Voyager frames run out of light: a pixel counts as unmeasured when it is
+//     dark AND its neighbourhood is dark (`noData.darkPatch`), which is a
+//     region test, so a genuinely black crater floor inside bright terrain
+//     keeps its measurement.
+//   * Where a mosaic changes resolution it can change it on a straight line of
+//     longitude, and a straight line is the one thing a real surface never
+//     draws. `seamFeather` blends a narrow band across that longitude: both
+//     sides keep their own pixels, the razor between them goes.
+//   * Where a mosaic is assembled from frames at different phase it carries a
+//     brightness offset per frame, with the frame's own polygon boundary as a
+//     hard step. `destripe` splits the picture into hemispheric albedo, the
+//     frame-sized band the offsets live in, and detail, then softens and halves
+//     only the middle one. The real large-scale albedo and every bit of detail
+//     come through untouched.
+//
+// LEVELS. A map is an sRGB-encoded albedo texture, so its mean in LINEAR light
+// is proportional to the body's albedo, and every graded map here is put on one
+// line: linear mean = ALBEDO_LEVEL_SCALE x the published geometric albedo. The
+// scale is fitted to the products nobody has graded — the USGS colour mosaics
+// for Io, Ganymede and Callisto — and it is what stops a batch of separately
+// normalised grey mosaics from rendering every icy moon at the same middling
+// grey. Enceladus reflects nearly everything that hits it and Callisto reflects
+// almost nothing, and after this pass their maps say so.
 //
 // Prereq (not a package.json dependency — this runs once per asset drop):
 //   npm i --no-save sharp@0.35.4
@@ -90,11 +127,6 @@ const RUNGS = path.join(CACHE, 'rungs');
 // The encoding idiom every shipped photo map uses (tools/encode-textures.mjs,
 // tools/gen-tiles.mjs): quality 85 at effort 5.
 const PHOTO_WEBP = { quality: 85, effort: 5 };
-
-// Padding, in OUTPUT pixels, carried around the map's longitude seam through
-// the resize. lanczos3 reads 3 output pixels either side of its centre, so 8
-// is comfortably more than the kernel can reach.
-const SEAM_HALO = 8;
 
 // ---------------------------------------------------------------------------
 // Colour
@@ -130,6 +162,58 @@ const gains = (dark, light) => (L) => [
   L * 255 * (dark[1] + (light[1] - dark[1]) * L),
   L * 255 * (dark[2] + (light[2] - dark[2]) * L),
 ];
+
+/** Rec. 709 luminance weights — the same mix the renderer's own tone stage
+ *  weights these channels by, so "how bright is this map" means one thing
+ *  through the whole pipeline. */
+const REC709 = [0.2126, 0.7152, 0.0722];
+
+/**
+ * A ramp with its levels taken back out: the hue at every stop is kept and the
+ * brightness is forced back to the source's, so the pass tilts colour and
+ * nothing else.
+ *
+ * A ramp that both colours and levels a map is two decisions in one table, and
+ * when the levels are owned by the albedo curve below it is the wrong two: a
+ * ramp's slope through the midtones is a contrast decision made by eye, and on
+ * a body with a real albedo dichotomy it is also the width of that dichotomy.
+ * Under this wrapper the source's own spread survives exactly and the level
+ * stage moves the whole thing at once.
+ */
+const chromaOf = (stops) => {
+  const base = ramp(stops);
+  return (L) => {
+    const c = base(L);
+    const lum = REC709[0] * c[0] + REC709[1] * c[1] + REC709[2] * c[2];
+    const k = lum > 1 ? (L * 255) / lum : 1;
+    return [c[0] * k, c[1] * k, c[2] * k];
+  };
+};
+
+const srgbEncode = (u) => (u <= 0.0031308 ? 12.92 * u : 1.055 * Math.pow(u, 1 / 2.4) - 0.055);
+const srgbDecode = (v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
+
+/**
+ * Linear map mean per unit of published geometric albedo — the one number the
+ * whole batch's levels come off.
+ *
+ * Fitted (geometric mean, since the relation is multiplicative) to the three
+ * products in this set that carry no grade of anyone's: the USGS mosaics for
+ * Io, Ganymede and Callisto, whose cos-latitude-weighted means come to 0.393,
+ * 0.382 and 0.353 of their published albedos in linear light. Three
+ * independently assembled mosaics of three different moons agreeing inside
+ * five per cent is what says the relation is real and that these products can
+ * be read as photometry rather than as pictures. Residuals against the fit:
+ * +4.7% Io, +1.7% Ganymede, -6.1% Callisto.
+ *
+ * The factor itself is not physics: it is the renderer's exposure headroom,
+ * the room a map has to leave so a lit disc at full sun does not sit on the
+ * clip.
+ */
+const ALBEDO_LEVEL_SCALE = 0.3753;
+
+/** The 0..255 mean an albedo asks a map for. */
+const albedoLevel = (albedo) => 255 * srgbEncode(ALBEDO_LEVEL_SCALE * albedo);
 
 // Pluto's ramp, verbatim from the bake the shipped map came out of
 // (tools/_plutobake.mjs): dark tholin red-brown -> mid tan -> pale N2-ice
@@ -176,10 +260,27 @@ const JOBS = {
     outputs: [{ width: 2048, out: 'titan.webp' }],
     // Cassini ISS 938 nm methane-window mosaic: what it records is surface
     // brightness through the haze, and the haze is what the renderer draws
-    // over it anyway (atmosphereModel treats Titan as a haze ball). The tint
-    // is the dune-field brown the ISS/VIMS colour composites show, held well
-    // back because almost none of it survives the haze.
-    colour: gains([0.86, 0.74, 0.55], [1.0, 0.94, 0.80]),
+    // over it anyway (atmosphereModel treats Titan as a haze ball).
+    //
+    // Titan is the one body here whose level and hue do NOT come off the
+    // albedo curve, and it is not close: the 0.2 in the tables is the disc of
+    // orange smog, not this ground, and a neutral map under that haze turns
+    // the one moon everybody can name from across the solar system into a pale
+    // tan ball. So the surface is graded to the tint the app already draws
+    // Titan in — moonData's catalog colour, 0xc89040, which is where the haze
+    // ball got its orange — with the dune fields holding the most of it and
+    // the bright uplands the least, because that is the direction Titan's own
+    // colour runs. What survives the haze is a faint darker equatorial
+    // structure on an orange globe, which is Titan from space.
+    colour: gains([1.0, 0.66, 0.24], [1.0, 0.78, 0.42]),
+    level: { mean: 105, why: 'holds the disc where the haze ball drew it' },
+    // The ISS mosaic is stitched from frames taken at different phase, and
+    // each frame carries its own brightness offset with its own polygon
+    // outline as a hard step — flat-toned tiles, visible straight across the
+    // sub-Saturn face. The band those offsets live in is a few degrees wide;
+    // Xanadu and Shangri-La are far wider and every dune is far finer, so both
+    // come through.
+    destripe: { fineDeg: 0.9, coarseDeg: 9, midGain: 0.35 },
   },
   enceladus: {
     src: 'Enceladus_Cassini_mosaic_global_110m.tif',
@@ -189,30 +290,40 @@ const JOBS = {
     // as anything gets: the gain is a whisper of blue in the shadows and
     // nothing at all in the highlights.
     colour: gains([0.98, 0.99, 1.0], [1.0, 1.0, 1.0]),
+    level: { albedo: 1.04 },
   },
   mimas: {
     src: 'PIA17214_Mimas_global_map_2017.tif',
     outputs: [{ width: 2048, out: 'mimas.webp' }],
     rungs: [{ width: 4096, name: 'mimas-4k' }],
     colour: gains([0.99, 0.975, 0.95], [1.0, 0.995, 0.985]),
+    level: { albedo: 0.6 },
   },
   dione: {
     src: 'Dione_Cassini_Voyager_mosaic_global_154m.tif',
     outputs: [{ width: 2048, out: 'dione.webp' }],
     rungs: [{ width: 4096, name: 'dione-4k' }],
     colour: gains([0.99, 0.975, 0.95], [1.0, 0.995, 0.985]),
+    level: { albedo: 0.6 },
   },
   tethys: {
     src: 'Tethys_Cassini_mosaic_global_293m.tif',
     outputs: [{ width: 2048, out: 'tethys.webp' }],
     rungs: [{ width: 4096, name: 'tethys-4k' }],
     colour: gains([0.99, 0.98, 0.96], [1.0, 0.997, 0.99]),
+    level: { albedo: 0.8 },
   },
   rhea: {
     src: 'Rhea_Cassini_Voyager_mosaic_global_417m.tif',
     outputs: [{ width: 2048, out: 'rhea.webp' }],
     rungs: [{ width: 4096, name: 'rhea-4k' }],
     colour: gains([0.99, 0.975, 0.95], [1.0, 0.995, 0.985]),
+    level: { albedo: 0.6 },
+    // Cassini's coverage of Rhea ends on a meridian, and west of 82.7E the
+    // mosaic falls back to Voyager at a quarter of the detail. Both sides are
+    // real and both stay; what goes is the straight line between them, which
+    // no surface has and every eye finds.
+    seamFeather: [{ lonDegEast: 82.7, sampleDeg: 0.8, smoothDeg: 2.5, rampDeg: 8 }],
   },
   iapetus: {
     src: 'Iapetus_Cassini_Voyager_mosaic_global_783m.tif',
@@ -221,11 +332,19 @@ const JOBS = {
     // The one Saturnian whose colour is the point: Cassini Regio is dark
     // red-brown and the trailing ice is very slightly yellow, so the two tones
     // want different chroma and a ramp is the honest way to give it to them.
-    // The ramp's luminance follows the source's within a couple of counts.
-    colour: ramp([
+    // Chroma only: the two-tone's own spread is the biggest albedo contrast on
+    // any solar-system surface and it belongs to the source, not to a stop
+    // table. The level stage then moves both tones together, which is a gain,
+    // which leaves their ratio exactly where the mosaic put it.
+    colour: chromaOf([
       [0.00, [26, 18, 13]], [0.16, [58, 41, 30]], [0.34, [104, 84, 68]],
       [0.55, [162, 152, 140]], [0.78, [214, 210, 200]], [1.00, [250, 249, 244]],
     ]),
+    // The tables quote 0.6 for Iapetus, and that is the bright trailing side
+    // alone; the leading side is 0.05, the darkest large surface anyone has
+    // measured. One number for the whole globe is the mean of the two, and it
+    // is what the map's mean is keyed to. The dichotomy itself is untouched.
+    level: { albedo: 0.325 },
   },
   charon: {
     src: 'Charon_NewHorizons_Global_Mosaic_300m_Jul2017_8bit.tif',
@@ -237,6 +356,7 @@ const JOBS = {
     // polar term reddens only what is BOTH high-latitude and dark, so nothing
     // at the equator picks up a tint from it.
     colour: gains([0.99, 0.985, 0.98], [1.0, 1.0, 1.0]),
+    level: { albedo: 0.42 },
     polarTint: { fromLat: 50, gain: [1.30, 1.02, 0.86], darkerThan: 0.62 },
     // A third of this mosaic is polar night, all of it south of about 37S.
     // Pluto's shipped map ends the same way and for the same reason, so its
@@ -244,18 +364,49 @@ const JOBS = {
     // is a lot to finish on a line.
     noData: { below: 12, mode: 'cap', tone: PLUTO_CAP, seam: 0.10 },
   },
+  // Voyager 2 flew the Uranian system pole-on in one pass, so both of these
+  // are one hemisphere of real terrain, a terminator the frames ran out of
+  // light along, and nothing at all north of it. `darkPatch` gives the dead
+  // terminator wedges to the fill instead of drawing them as black holes on a
+  // lit globe, `edgeGrow` takes the antialiased rim of every coverage boundary
+  // with them (that rim is the dotted curve these two used to wear), and the
+  // fill matches the imaged half's own texture energy rather than fading to a
+  // smudge.
   miranda: {
     src: 'Uranus_Miranda_nasa3d.tif',
     outputs: [{ width: 2048, out: 'miranda.webp' }],
+    // Both NASA 3D textures were saved with a one-pixel dark frame: the last
+    // column reads 109 against its neighbour's 138, the last row 100 against
+    // 118. That column is a meridian on the globe.
+    borderPx: 1,
     // The Uranian moons are as close to colourless as major moons come.
     colour: gains([0.995, 0.995, 1.0], [1.0, 1.0, 1.0]),
-    noData: { below: 12, mode: 'texture', seam: 0.16 },
+    level: { albedo: 0.27 },
+    // These two are textures assembled as rectangles, and their two ends do
+    // not agree: Miranda's is 22 counts adrift across its own wrap and
+    // Ariel's 28, against a neighbouring-column difference of 3 and 1. On a
+    // globe that wrap is a meridian, and a step there draws a hairline from
+    // pole to pole — the anti-Uranus one, which is exactly where the app's
+    // own arrival poses look.
+    seamFeather: [{ lonDegEast: 180, sampleDeg: 1.5, smoothDeg: 6, rampDeg: 14 }],
+    noData: {
+      below: 12, mode: 'texture', seam: 0.16, edgeGrow: 2,
+      darkPatch: { below: 46, radiusDeg: 1.1, regionBelow: 40 },
+      matchTexture: true,
+    },
   },
   ariel: {
     src: 'Uranus_Ariel_nasa3d.tif',
     outputs: [{ width: 2048, out: 'ariel.webp' }],
+    borderPx: 1,
     colour: gains([0.995, 0.995, 1.0], [1.0, 1.0, 1.0]),
-    noData: { below: 12, mode: 'texture', seam: 0.16 },
+    level: { albedo: 0.34 },
+    seamFeather: [{ lonDegEast: 180, sampleDeg: 1.5, smoothDeg: 6, rampDeg: 14 }],
+    noData: {
+      below: 12, mode: 'texture', seam: 0.16, edgeGrow: 2,
+      darkPatch: { below: 46, radiusDeg: 1.1, regionBelow: 40 },
+      matchTexture: true,
+    },
   },
   // --- the five re-bases ----------------------------------------------------
   // Each ships its boot map and its rung cut from ONE source in ONE run, so
@@ -276,17 +427,20 @@ const JOBS = {
     // water ice reading blue-white, and the dark lineae and mottled terrain
     // are where the non-ice contaminant sits and read tan-brown. Rather than
     // the flatter, redder ball the old boot map drew.
-    // Levels are set against the geometric albedos JPL Horizons carries for
-    // the four Galileans (Io 0.63, Europa 0.67, Ganymede 0.43, Callisto
-    // 0.17), so the moons finally read at the right brightnesses relative to
-    // each other: this map's mean luminance lands at 1.6x Ganymede's colour
-    // mosaic, which is the ratio those albedos ask for, where the old pair had
-    // Callisto nearly as bright as Ganymede.
-    colour: ramp([
+    //
+    // Chroma only, with the level left to the albedo curve. The first cut of
+    // this ramp set Europa's levels by hand, reading 0.67 against Ganymede's
+    // 0.43 as a ratio of MAP means and landing this map at 1.6x Ganymede's —
+    // but a map is sRGB encoded, and 1.6x there is 3.0x in the linear light
+    // those albedos are a ratio of. That is what made Europa the brightest
+    // thing in the batch by a distance, ahead of Enceladus, which reflects
+    // half again as much light as Europa does.
+    colour: chromaOf([
       [0.00, [44, 36, 30]], [0.30, [100, 84, 68]], [0.48, [158, 142, 124]],
       [0.60, [198, 190, 178]], [0.72, [226, 224, 222]], [0.85, [242, 244, 246]],
       [1.00, [252, 253, 255]],
     ]),
+    level: { albedo: 0.67 },
   },
   ganymede: {
     src: 'Ganymede_Voyager_GalileoSSI_Global_ClrMosaic_1435m.tif',
@@ -307,11 +461,25 @@ const JOBS = {
     // (Denman et al. 2025, HST/STIS). So this ramp runs warm grey-brown in the
     // dark cratered plains and turns slightly COOL in the fresh ejecta and
     // palimpsests, which is the one thing about this moon's colour that is
-    // actually measured.
-    colour: ramp([
+    // actually measured. Chroma only: the stop table's first cut ran at slope
+    // 0.79 through the midtones, which is exactly where Callisto's craters
+    // live, and a moon whose whole surface is craters cannot afford to hand a
+    // fifth of their contrast to a colour table.
+    colour: chromaOf([
       [0.00, [30, 24, 20]], [0.22, [78, 64, 52]], [0.45, [126, 112, 98]],
       [0.68, [170, 162, 154]], [0.86, [206, 204, 204]], [1.00, [234, 236, 240]],
     ]),
+    // The one body in this table whose level is not what its albedo asks for.
+    // On the curve Callisto's 0.17 lands at 0.63 of Ganymede's map mean, and
+    // down there the crater shadows that ARE this moon sit on the floor before
+    // the renderer has done anything with them. Held at 0.75 of Ganymede
+    // instead — still comfortably the darkest Galilean, so the ordering the
+    // curve exists to protect is intact, and an exception stated rather than
+    // an exception hidden in a stop table.
+    level: { mean: 84.5, why: 'crater shadows survive the floor' },
+    // And the punch back on top, at the scale a disc-filling Callisto draws
+    // its craters at.
+    localContrast: { radiusDeg: 1.2, gain: 0.45 },
   },
   pluto: {
     src: 'Pluto_NewHorizons_Global_Mosaic_300m_Jul2017_8bit.tif',
@@ -358,6 +526,188 @@ async function checkedSource(name) {
 }
 
 // ---------------------------------------------------------------------------
+// Pixel plumbing
+// ---------------------------------------------------------------------------
+
+/**
+ * Separable box blur, three passes, which is a gaussian to within a per cent.
+ * Wraps in x — every raster here is a globe, and a blur that runs off the
+ * prime meridian instead of round it leaves a line down the middle of a
+ * tidally locked moon's face — and clamps in y at the poles.
+ *
+ * `src` and the result are Float32Array of one channel.
+ */
+function blurMono(src, W, H, radius) {
+  if (radius < 0.5) return Float32Array.from(src);
+  const r = Math.max(1, Math.round(radius));
+  let cur = Float32Array.from(src);
+  const tmp = new Float32Array(W * H);
+  for (let pass = 0; pass < 3; pass++) {
+    // x, wrapping
+    for (let y = 0; y < H; y++) {
+      const row = y * W;
+      let sum = 0;
+      for (let d = -r; d <= r; d++) sum += cur[row + ((d % W) + W) % W];
+      const inv = 1 / (2 * r + 1);
+      for (let x = 0; x < W; x++) {
+        tmp[row + x] = sum * inv;
+        sum += cur[row + ((x + r + 1) % W)] - cur[row + ((x - r) % W + W) % W];
+      }
+    }
+    // y, clamped
+    for (let x = 0; x < W; x++) {
+      let sum = 0;
+      for (let d = -r; d <= r; d++) sum += tmp[Math.min(H - 1, Math.max(0, d)) * W + x];
+      const inv = 1 / (2 * r + 1);
+      for (let y = 0; y < H; y++) {
+        cur[y * W + x] = sum * inv;
+        sum += tmp[Math.min(H - 1, y + r + 1) * W + x] - tmp[Math.max(0, y - r) * W + x];
+      }
+    }
+  }
+  return cur;
+}
+
+/** Grow a 0/1 mask by `r` pixels, wrapping in x. */
+function dilateMask(mask, W, H, r) {
+  if (r <= 0) return mask;
+  const tmp = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      let v = 0;
+      for (let d = -r; d <= r && !v; d++) v = mask[y * W + (((x + d) % W) + W) % W];
+      tmp[y * W + x] = v;
+    }
+  }
+  const out = new Uint8Array(W * H);
+  for (let x = 0; x < W; x++) {
+    for (let y = 0; y < H; y++) {
+      let v = 0;
+      for (let d = -r; d <= r && !v; d++) v = tmp[Math.min(H - 1, Math.max(0, y + d)) * W + x];
+      out[y * W + x] = v;
+    }
+  }
+  return out;
+}
+
+/**
+ * Take the frame-to-frame brightness offsets out of a mosaic without taking
+ * the body's albedo out with them.
+ *
+ * Three scales: what is broader than `coarseDeg` is the real hemispheric
+ * albedo and passes through whole; what is finer than `fineDeg` is detail and
+ * passes through whole; the band between is where a stitched frame's offset
+ * lives, and it is both halved and blurred again, which turns each frame's
+ * hard polygon edge into a gradient a couple of degrees wide. Operates on one
+ * channel in place.
+ */
+function destripe(band, W, H, spec, pxPerDeg) {
+  const fine = blurMono(band, W, H, spec.fineDeg * pxPerDeg);
+  const coarse = blurMono(band, W, H, spec.coarseDeg * pxPerDeg);
+  const mid = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) mid[i] = fine[i] - coarse[i];
+  const midSoft = blurMono(mid, W, H, spec.fineDeg * pxPerDeg * 2);
+  for (let i = 0; i < W * H; i++) {
+    const v = coarse[i] + midSoft[i] * spec.midGain + (band[i] - fine[i]);
+    band[i] = v < 0 ? 0 : v > 255 ? 255 : v;
+  }
+}
+
+/**
+ * Take a mosaic's seam off its straight line.
+ *
+ * What makes a mosaic boundary visible is not the resolution behind it — the
+ * eye forgives a coarser patch — it is the brightness STEP where two products
+ * calibrated differently meet, and this one is nine counts across a meridian
+ * that runs pole to pole. Blurring a band across it is the wrong instrument
+ * twice over: it leaves the step and adds a strip softer than the terrain on
+ * either side of it, which reads as a drawn stripe.
+ *
+ * What works is additive and takes nothing away. Measure the step per row,
+ * smooth that profile so it follows the calibration rather than the terrain,
+ * then spread half of it into each side with a weight that decays to nothing a
+ * few degrees out. Every pixel keeps its own detail; the two sides simply
+ * arrive at the meridian agreeing about how bright this moon is.
+ */
+function featherSeam(band, W, H, spec, leftEdgeLonDegEast, mask) {
+  // The raster's own column for that longitude: east increases rightward from
+  // the manifest's left edge, so this is the same arithmetic the roll uses.
+  // At the map's own left edge that comes out as column zero, and the wrap
+  // makes the windows either side of it the map's two ends — which is where a
+  // texture assembled as a rectangle rather than as a globe can carry a step
+  // nobody saw, because nobody looks at the two ends of a picture together.
+  const u = (((spec.lonDegEast - leftEdgeLonDegEast) / 360) % 1 + 1) % 1;
+  const cx = Math.round(u * W);
+  const pxPerDeg = W / 360;
+  const sample = Math.max(2, Math.round(spec.sampleDeg * pxPerDeg));
+  const ramp = Math.max(2, Math.round(spec.rampDeg * pxPerDeg));
+  const wrap = (x) => ((x % W) + W) % W;
+  const at = (x, y) => band[y * W + wrap(x)];
+  const valid = (x, y) => !mask || !mask[y * W + wrap(x)];
+
+  const step = new Float32Array(H);
+  const has = new Uint8Array(H);
+  for (let y = 0; y < H; y++) {
+    let l = 0;
+    let r = 0;
+    let n = 0;
+    for (let d = 1; d <= sample; d++) {
+      if (!valid(cx - d, y) || !valid(cx + d - 1, y)) continue;
+      l += at(cx - d, y); r += at(cx + d - 1, y); n++;
+    }
+    // A row with nothing measured on one side has no step to measure, and it
+    // does not get to vote as a zero — on a half-imaged moon most rows are
+    // that row, and their zeros would wash the real measurement out.
+    if (n) { step[y] = (r - l) / n; has[y] = 1; }
+  }
+  // Smoothed down the meridian, over the rows that measured: one row's
+  // difference is mostly whatever crater happens to sit there, and a
+  // correction that follows craters puts them back as a ghost on the far side.
+  const smoothRows = Math.max(1, Math.round(spec.smoothDeg * pxPerDeg));
+  const soft = new Float32Array(H);
+  for (let y = 0; y < H; y++) {
+    let s = 0;
+    let n = 0;
+    for (let d = -smoothRows; d <= smoothRows; d++) {
+      const yy = y + d;
+      if (yy < 0 || yy >= H || !has[yy]) continue;
+      s += step[yy]; n++;
+    }
+    soft[y] = n ? s / n : 0;
+  }
+  // And bounded by what the seam typically is. A row where a big crater sits
+  // against the meridian measures a step several times the calibration's, and
+  // half of that pushed into the terrain either side would be a new artefact
+  // in place of the old one.
+  const sorted = [];
+  for (let y = 0; y < H; y++) if (has[y]) sorted.push(Math.abs(soft[y]));
+  sorted.sort((a, b) => a - b);
+  const typical = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
+  const cap = Math.max(1, 3 * typical);
+  let peak = 0;
+  for (let y = 0; y < H; y++) {
+    soft[y] = Math.max(-cap, Math.min(cap, soft[y]));
+    peak = Math.max(peak, Math.abs(soft[y]));
+  }
+
+  for (let d = 0; d <= ramp; d++) {
+    const t = 1 - d / ramp;
+    const w = 0.5 * t * t * (3 - 2 * t);
+    if (w <= 0) continue;
+    const xl = (((cx - 1 - d) % W) + W) % W;
+    const xr = (cx + d) % W;
+    for (let y = 0; y < H; y++) {
+      const half = soft[y] * w;
+      const il = y * W + xl;
+      const ir = y * W + xr;
+      band[il] = Math.min(255, Math.max(0, band[il] + half));
+      band[ir] = Math.min(255, Math.max(0, band[ir] - half));
+    }
+  }
+  return { column: cx, peak };
+}
+
+// ---------------------------------------------------------------------------
 // The resample
 // ---------------------------------------------------------------------------
 
@@ -371,7 +721,8 @@ async function checkedSource(name) {
  * cropping it first costs a fraction of a source pixel and keeps the
  * registration the gazetteer checks are made against.
  */
-async function sourceRaster(file, entry, noDataBelow) {
+async function sourceRaster(file, entry, nd, job, leftEdgeLonDegEast) {
+  const noDataBelow = nd.below;
   const { width, height } = await sharp(file, { limitInputPixels: false }).metadata();
   const raster = entry.raster ?? {};
   const spanLon = raster.spanDegLon ?? 360;
@@ -380,7 +731,12 @@ async function sourceRaster(file, entry, noDataBelow) {
   const pxPerDegX = width / spanLon;
   const pxPerDegY = height / spanLat;
   const top = Math.max(0, Math.round((topLat - 90) * pxPerDegY));
-  const w = Math.min(width, Math.round(360 * pxPerDegX));
+  // Even, always: the seam pass in resampleToTarget needs a source width that
+  // shares a factor with the output width, and an odd one (Europa's mosaic is
+  // 19631 columns) shares none with a power of two. One column of a mosaic
+  // this wide is under a fiftieth of a degree, which is a tenth of an output
+  // pixel and far inside the registration the gazetteer checks are made to.
+  const w = Math.min(width, Math.round(360 * pxPerDegX)) & ~1;
   const h = Math.min(height - top, Math.round(180 * pxPerDegY));
   // Keep a single-band source single-band: sharp's default output colourspace
   // is sRGB, and letting it expand a 23040x11520 mono mosaic to three
@@ -395,55 +751,180 @@ async function sourceRaster(file, entry, noDataBelow) {
   if (top || w !== width || h !== height) {
     console.log(`  cropped ${width}x${height} -> ${w}x${h} (span ${spanLon.toFixed(4)} deg, top lat ${topLat.toFixed(4)})`);
   }
-  // The no-data mask rides along as alpha from here on — see splitAlpha.
   const n = info.width * info.height;
-  const ch = info.channels + 1;
-  const withAlpha = Buffer.allocUnsafe(n * ch);
-  let bad = 0;
+  const W = info.width;
+  const H = info.height;
+  const sc = info.channels;
+  const pxPerDeg = W / 360;
+
+  if (job.borderPx) {
+    // Some products carry the frame they were saved in: the outermost ring of
+    // pixels is a dark line that belongs to the file rather than to the body.
+    // On a globe the right-hand one of those is a meridian, and it draws a
+    // hairline from pole to pole. The repair is the neighbours' own values —
+    // read across the wrap in longitude, where the map's two ends really are
+    // adjacent, and from the row below at the poles, where they are not.
+    const b = job.borderPx;
+    for (let c = 0; c < sc; c++) {
+      const at = (x, y) => data[(y * W + x) * sc + c];
+      for (let y = 0; y < H; y++) {
+        for (let k = 0; k < b; k++) {
+          const l = at(b, y);
+          const r = at(W - 1 - b, y);
+          const f = (k + 1) / (b + 1);
+          data[(y * W + (b - 1 - k)) * sc + c] = Math.round(l * (1 - f) + r * f);
+          data[(y * W + (W - b + k)) * sc + c] = Math.round(r * (1 - f) + l * f);
+        }
+      }
+      for (let x = 0; x < W; x++) {
+        for (let k = 0; k < b; k++) {
+          data[((b - 1 - k) * W + x) * sc + c] = at(x, b);
+          data[((H - b + k) * W + x) * sc + c] = at(x, H - 1 - b);
+        }
+      }
+    }
+    console.log(`  repaired the outermost ${b} px of the file's own frame`);
+  }
+
+  // Mean of the source's channels, which is what every judgement below is
+  // made on: the two colour mosaics that reach here have no repairs asked of
+  // them, and every mosaic that does is single-band.
+  const grey = new Float32Array(n);
   for (let i = 0; i < n; i++) {
     let v = 0;
-    for (let c = 0; c < info.channels; c++) {
-      const s = data[i * info.channels + c];
-      withAlpha[i * ch + c] = s;
-      v += s;
-    }
-    const empty = v / info.channels < noDataBelow;
-    withAlpha[i * ch + info.channels] = empty ? 0 : 255;
-    if (empty) bad++;
+    for (let c = 0; c < sc; c++) v += data[i * sc + c];
+    grey[i] = v / sc;
   }
-  console.log(`  source ${info.width}x${info.height}x${info.channels}, ${((100 * bad) / n).toFixed(2)}% no data`);
+
+  // --- what is not a measurement -------------------------------------------
+  const mask = new Uint8Array(n);
+  let bad = 0;
+  for (let i = 0; i < n; i++) if (grey[i] < noDataBelow) { mask[i] = 1; bad++; }
+  const hard = bad;
+  if (nd.darkPatch) {
+    // A dark REGION is dead data; a dark pixel inside bright terrain is a
+    // crater floor and belongs to the map. Blurring the picture and asking
+    // whether the neighbourhood is dark too is what separates them.
+    const dp = nd.darkPatch;
+    const around = blurMono(grey, W, H, dp.radiusDeg * pxPerDeg);
+    for (let i = 0; i < n; i++) {
+      if (!mask[i] && grey[i] < dp.below && around[i] < dp.regionBelow) { mask[i] = 1; bad++; }
+    }
+  }
+  let grown = mask;
+  if (nd.edgeGrow) {
+    // The boundary column between terrain and nothing is a partial-coverage
+    // pixel: darker than either side, and a whole map's worth of them draws a
+    // dotted curve round the edge of the data. It is not surface, so it goes
+    // to the fill with the hole it belongs to.
+    grown = dilateMask(mask, W, H, nd.edgeGrow);
+    for (let i = 0; i < n; i++) if (grown[i] && !mask[i]) bad++;
+  }
+  console.log(`  source ${W}x${H}x${sc}, ${((100 * hard) / n).toFixed(2)}% empty`
+    + `${bad !== hard ? ` -> ${((100 * bad) / n).toFixed(2)}% unmeasured after the dark-region and boundary rules` : ''}`);
+
+  // --- repairs that belong at source resolution ----------------------------
+  if (job.destripe || job.seamFeather) {
+    // These read and write one band. A single-band source is one by
+    // definition; the two NASA 3D textures are greyscale stored in three
+    // identical channels, which is the same picture wearing a wider file.
+    let grey3 = sc === 3;
+    for (let i = 0; grey3 && i < n; i += 997) {
+      if (data[i * 3] !== data[i * 3 + 1] || data[i * 3] !== data[i * 3 + 2]) grey3 = false;
+    }
+    if (sc !== 1 && !grey3) throw new Error('destripe and seamFeather read one band; this source is colour');
+    if (job.destripe) {
+      destripe(grey, W, H, job.destripe, pxPerDeg);
+      console.log(`  destriped: frame offsets between ${job.destripe.fineDeg} and ${job.destripe.coarseDeg} deg at ${job.destripe.midGain}x`);
+    }
+    for (const seam of job.seamFeather ?? []) {
+      const { column, peak } = featherSeam(grey, W, H, seam, leftEdgeLonDegEast, grown);
+      console.log(`  levelled the ${seam.lonDegEast} E seam (source column ${column}, step up to ${peak.toFixed(1)} counts, spread over ${seam.rampDeg} deg either side)`);
+    }
+    for (let i = 0; i < n; i++) {
+      const v = Math.round(grey[i]);
+      for (let c = 0; c < sc; c++) data[i * sc + c] = v;
+    }
+  }
+
+  // The no-data mask rides along as alpha from here on — see splitAlpha.
+  const ch = sc + 1;
+  const withAlpha = Buffer.allocUnsafe(n * ch);
+  for (let i = 0; i < n; i++) {
+    for (let c = 0; c < sc; c++) withAlpha[i * ch + c] = data[i * sc + c];
+    withAlpha[i * ch + sc] = grown[i] ? 0 : 255;
+  }
   return { data: withAlpha, width: info.width, height: info.height, channels: ch };
 }
 
+const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+
+/** One raster rolled `by` columns to the right, wrapping. Integer columns
+ *  only, so it is a copy and nothing is resampled. */
+function rollRaster(src, by) {
+  const ch = src.channels;
+  const row = src.width * ch;
+  const cut = ((by % src.width) + src.width) % src.width;
+  if (cut === 0) return src;
+  const out = Buffer.allocUnsafe(src.data.length);
+  for (let y = 0; y < src.height; y++) {
+    src.data.copy(out, y * row + cut * ch, y * row, y * row + (src.width - cut) * ch);
+    src.data.copy(out, y * row, y * row + (src.width - cut) * ch, (y + 1) * row);
+  }
+  return { data: out, width: src.width, height: src.height, channels: ch };
+}
+
 /**
- * Resample to `width` x width/2 with the map's own opposite edge carried
- * through the reduction as a halo, then roll so the source's left-edge
- * longitude lands where the renderer samples it.
+ * Resample to `width` x width/2, wrap-exact, then roll so the source's
+ * left-edge longitude lands where the renderer samples it.
  *
- * The roll is done at the OUTPUT size: at half a turn — which is every roll in
- * this set — it is exact, and the fractional part of any other roll is under
- * half an output pixel. Doing it before the reduction would need the whole
- * source rolled in memory for nothing.
+ * A globe's map has no edges, and a resize does. Padding the source with a
+ * halo of its own opposite edge is the obvious answer and it is half an answer:
+ * the halo has to be a whole number of SOURCE pixels, so the crop that takes it
+ * off again lands on a fraction of an OUTPUT pixel, and the map comes back with
+ * one column repeated across its seam. On a body whose map is upsampled that is
+ * a full texel of stall along a meridian, and it draws a hairline from pole to
+ * pole — on a tidally locked moon, straight down the middle of the hemisphere
+ * that faces away from its planet, which is exactly where an arrival looks.
+ *
+ * So the seam is resampled a second time from a rolled copy instead. The roll
+ * is chosen as a whole number of source columns that is ALSO a whole number of
+ * output columns (a multiple of srcWidth/gcd(srcWidth, width)), which makes the
+ * second pass the same picture to the pixel, only with its own edges somewhere
+ * else. The band around the seam is then taken from it. Nothing is
+ * interpolated twice and nothing lands on a fraction of a pixel.
  */
 async function resampleToTarget(src, width, leftEdgeLonDegEast) {
   const height = width / 2;
-  const haloSrc = Math.max(1, Math.round((SEAM_HALO * src.width) / width));
-  const ch = src.channels;
-  const padW = src.width + 2 * haloSrc;
-  const padded = Buffer.allocUnsafe(padW * src.height * ch);
-  for (let y = 0; y < src.height; y++) {
-    const from = y * src.width * ch;
-    const to = y * padW * ch;
-    // left halo = the map's right edge, right halo = its left edge
-    src.data.copy(padded, to, from + (src.width - haloSrc) * ch, from + src.width * ch);
-    src.data.copy(padded, to + haloSrc * ch, from, from + src.width * ch);
-    src.data.copy(padded, to + (haloSrc + src.width) * ch, from, from + haloSrc * ch);
+  const plain = async (raster) => {
+    const r = await sharp(raster.data, { raw: { width: raster.width, height: raster.height, channels: raster.channels }, limitInputPixels: false })
+      .resize(width, height, { fit: 'fill', kernel: 'lanczos3' })
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    return r;
+  };
+  const { data, info } = await plain(src);
+  const ch = info.channels;
+
+  const step = src.width / gcd(src.width, width);
+  const rollSrc = step * Math.max(1, Math.round(src.width / 4 / step));
+  const rollOut = (rollSrc * width) / src.width;
+  if (!Number.isInteger(rollOut) || rollOut <= 0 || rollOut >= width) {
+    throw new Error(`no exact seam roll for ${src.width} -> ${width}: a source width sharing a factor with the output is what makes the second pass land on whole pixels (sourceRaster crops to an even width for exactly this)`);
   }
-  const { data, info } = await sharp(padded, { raw: { width: padW, height: src.height, channels: ch }, limitInputPixels: false })
-    .resize(width + 2 * SEAM_HALO, height, { fit: 'fill', kernel: 'lanczos3' })
-    .extract({ left: SEAM_HALO, top: 0, width, height })
-    .raw()
-    .toBuffer({ resolveWithObject: true });
+  const { data: other } = await plain(rollRaster(src, rollSrc));
+  // `other` is this picture shifted right by rollOut output columns, so its
+  // column (x + rollOut) holds what this map's column x should hold — with the
+  // resize's own edge error a quarter of a turn away from here.
+  const band = Math.max(4, Math.round(width / 128));
+  const row = width * ch;
+  for (let y = 0; y < height; y++) {
+    for (let d = -band; d < band; d++) {
+      const x = ((d % width) + width) % width;
+      const sx = (x + rollOut) % width;
+      other.copy(data, y * row + x * ch, y * row + sx * ch, y * row + (sx + 1) * ch);
+    }
+  }
 
   // u_target = u_source + 0.5 + leftEdgeLon/360, so the shift is what it takes
   // to put the left edge's longitude back at 180E.
@@ -451,7 +932,6 @@ async function resampleToTarget(src, width, leftEdgeLonDegEast) {
   if (shift === 0) return { data, width, height, channels: info.channels };
   const rolled = Buffer.allocUnsafe(data.length);
   const cut = (width - shift) * info.channels;
-  const row = width * info.channels;
   for (let y = 0; y < height; y++) {
     data.copy(rolled, y * row, y * row + cut, (y + 1) * row);
     data.copy(rolled, y * row + shift * info.channels, y * row, y * row + cut);
@@ -489,6 +969,91 @@ function colourise(ras, job) {
     out[i * 3 + 2] = lut[v * 3 + 2];
   }
   return { data: out, width: ras.width, height: ras.height, channels: 3 };
+}
+
+/**
+ * Put the map's level where the body's albedo says it goes.
+ *
+ * One neutral gain on all three channels, so every ratio in the picture — the
+ * two halves of Iapetus, the fracture beside the plain, the crater against its
+ * floor — comes through exactly as the mosaic recorded it, and only the whole
+ * thing moves. Above a knee the gain bends into a shoulder that approaches
+ * white without ever reaching it, because the alternative on a body like
+ * Enceladus, whose map has to come up by two thirds, is a flat white south
+ * pole where the tiger stripes were.
+ *
+ * The gain is solved against the pixels the SOURCE actually measured, weighted
+ * by cos(latitude). Two reasons, and both matter: on a half-imaged moon the
+ * fill has not run yet and would otherwise vote with whatever the reflection
+ * produced, and an equirect map gives a row at the pole as many pixels as a
+ * row at the equator for a two-hundredth of the surface — an unweighted mean
+ * of one is a measurement of its polar cap.
+ */
+function applyLevel(ras, mask, spec, forceGain) {
+  const KNEE = 0.80;
+  const shoulder = (x) => (x <= KNEE ? x : KNEE + (1 - KNEE) * (1 - Math.exp(-(x - KNEE) / (1 - KNEE))));
+  const { width: W, height: H } = ras;
+  const n = W * H;
+  const hist = [new Float64Array(256), new Float64Array(256), new Float64Array(256)];
+  let valid = 0;
+  for (let y = 0; y < H; y++) {
+    const cw = Math.cos(((90 - (180 * (y + 0.5)) / H) * Math.PI) / 180);
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (mask && mask[i]) continue;
+      valid += cw;
+      for (let c = 0; c < 3; c++) hist[c][ras.data[i * 3 + c]] += cw;
+    }
+  }
+  if (!valid) return null;
+  const meanAt = (a) => {
+    let sum = 0;
+    for (let c = 0; c < 3; c++) {
+      let s = 0;
+      for (let v = 0; v < 256; v++) if (hist[c][v]) s += hist[c][v] * shoulder((v / 255) * a) * 255;
+      sum += REC709[c] * (s / valid);
+    }
+    return sum;
+  };
+  const before = meanAt(1);
+  const target = spec.mean ?? albedoLevel(spec.albedo);
+  let a = forceGain;
+  if (a === undefined) {
+    let lo = 0.05;
+    let hi = 12;
+    for (let i = 0; i < 60; i++) {
+      const mid = (lo + hi) / 2;
+      if (meanAt(mid) < target) lo = mid; else hi = mid;
+    }
+    a = (lo + hi) / 2;
+  }
+  const lut = new Uint8Array(256);
+  for (let v = 0; v < 256; v++) {
+    const x = Math.round(shoulder((v / 255) * a) * 255);
+    lut[v] = x < 0 ? 0 : x > 255 ? 255 : x;
+  }
+  for (let i = 0; i < n * 3; i++) ras.data[i] = lut[ras.data[i]];
+  return { before, after: meanAt(a), target, gain: a, shouldered: a > 1 ? Math.round((KNEE / a) * 255) : 255 };
+}
+
+/**
+ * Unsharp at one stated scale: the picture plus a fraction of what a blur of
+ * it throws away. Used where a body's whole surface is one size of feature and
+ * the mosaic's own contrast does not carry it.
+ */
+function localContrast(ras, spec) {
+  const { width: W, height: H } = ras;
+  const n = W * H;
+  const r = (spec.radiusDeg / 360) * W;
+  for (let c = 0; c < 3; c++) {
+    const band = new Float32Array(n);
+    for (let i = 0; i < n; i++) band[i] = ras.data[i * 3 + c];
+    const soft = blurMono(band, W, H, r);
+    for (let i = 0; i < n; i++) {
+      const v = band[i] + (band[i] - soft[i]) * spec.gain;
+      ras.data[i * 3 + c] = v < 0 ? 0 : v > 255 ? 255 : Math.round(v);
+    }
+  }
 }
 
 /** Charon's polar stain: a warm gain that fades in with latitude and only
@@ -583,7 +1148,65 @@ function valueNoise(W) {
     const top = a + (b - a) * sx;
     return top + (c + (d - c) * sx - top) * sy;
   };
-  return (x, y) => (at(x, y, Math.max(2, W / 256), 1) - 0.5) * 1.1 + (at(x, y, Math.max(2, W / 64), 2) - 0.5) * 0.7;
+  return {
+    /** The historical two-octave grain, in units of one standard deviation. */
+    plain: (x, y) => (at(x, y, Math.max(2, W / 256), 1) - 0.5) * 1.1 + (at(x, y, Math.max(2, W / 64), 2) - 0.5) * 0.7,
+    /** Octaves at stated cell sizes and stated amplitudes, in counts. */
+    matched: (octaves) => (x, y) => {
+      let v = 0;
+      for (let k = 0; k < octaves.length; k++) {
+        v += (at(x, y, Math.max(2, octaves[k].cell), 3 + k) - 0.5) * octaves[k].amp;
+      }
+      return v;
+    },
+  };
+}
+
+/**
+ * How much variation the imaged part of a map carries, octave by octave.
+ *
+ * A fill that has the right mean and no structure reads as fog, and a fill
+ * with structure at the wrong amplitude reads as a different moon. What makes
+ * it read as the same surface continuing is having the same amount of
+ * variation at each scale, so each octave's amplitude is measured here — as
+ * the spread of what one blur keeps and the next blur throws away — over the
+ * pixels the source actually imaged, and handed to noise cells of that size.
+ *
+ * The factor of 3.0 is the conversion from a value-noise octave's peak-to-peak
+ * range, which is what `matched` scales, to the standard deviation the band
+ * measurement is in.
+ */
+function textureOctaves(ras, mask, W, H, cells) {
+  const n = W * H;
+  const band = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    band[i] = (ras.data[i * 3] + ras.data[i * 3 + 1] + ras.data[i * 3 + 2]) / 3;
+  }
+  // A masked pixel holds whatever the reflection put there; blur it in and the
+  // measurement is of the fill, so the holes are flattened to the imaged mean
+  // first and the pixels themselves excluded from every sum.
+  let sum = 0;
+  let valid = 0;
+  for (let i = 0; i < n; i++) if (!mask[i]) { sum += band[i]; valid++; }
+  const mean = valid ? sum / valid : 128;
+  for (let i = 0; i < n; i++) if (mask[i]) band[i] = mean;
+
+  const blurs = cells.map((c) => blurMono(band, W, H, c / 2));
+  const out = [];
+  for (let k = 0; k < cells.length; k++) {
+    const finer = k === 0 ? band : blurs[k - 1];
+    // The spread as a MEDIAN absolute deviation, not an RMS. A flyby mosaic's
+    // terminator strip is a few per cent of the pixels carrying ten times the
+    // contrast of the rest, and an RMS of the whole imaged half is really a
+    // measurement of that strip — grain built from it buries the moon in
+    // noise. The median asks what a typical piece of this surface does.
+    const sample = [];
+    for (let i = 0; i < n; i += 7) if (!mask[i]) sample.push(Math.abs(finer[i] - blurs[k][i]));
+    sample.sort((a, b) => a - b);
+    const mad = sample.length ? sample[Math.floor(sample.length / 2)] : 0;
+    out.push({ cell: cells[k], amp: 3.0 * 1.4826 * mad });
+  }
+  return out;
 }
 
 /**
@@ -600,6 +1223,13 @@ function valueNoise(W) {
  *    of flat tone is not a moon and the alternative — a hard black edge
  *    across a lit disc — reads as a bug rather than as missing data. It
  *    asserts no feature: everything past the blend is soft.
+ *    With `matchTexture` the grain is not one guessed amplitude but three
+ *    octaves at the amplitudes the imaged half measures at those scales, and
+ *    the reflection reads from a SMOOTHED data edge rather than each column's
+ *    own. That second part matters more than it sounds: the coverage boundary
+ *    on a Voyager flyby mosaic jumps tens of rows between neighbouring
+ *    columns, and a per-column reflection of it combs the fill into vertical
+ *    streaks — which is what the first cut of these two moons wore.
  *  - `cap` fades to one neutral dark tone, which is what a region that was in
  *    polar night should look like and what the shipped Pluto map has always
  *    done (tools/_plutobake.mjs). Charon takes the same treatment as its
@@ -622,6 +1252,29 @@ async function fillNoData(ras, mask, spec) {
     for (let y = 0; y < H; y++) { if (!mask[y * W + x]) last = y; up[y * W + x] = last; }
     last = -1;
     for (let y = H - 1; y >= 0; y--) { if (!mask[y * W + x]) last = y; down[y * W + x] = last; }
+  }
+
+  // The row the reflection mirrors about, smoothed along longitude where a
+  // body asks for it. Each column still reflects across its OWN data edge —
+  // that is what keeps the picture continuous at the boundary — but the
+  // mirror line is the running mean of the edge over a few degrees, so
+  // neighbouring columns pull from neighbouring rows and the fill comes out
+  // as surface rather than as combing.
+  let mirror = null;
+  if (spec.matchTexture) {
+    const first = new Float32Array(W);
+    for (let x = 0; x < W; x++) {
+      let y = 0;
+      while (y < H && mask[y * W + x]) y++;
+      first[x] = y < H ? y : H / 2;
+    }
+    mirror = new Float32Array(W);
+    const span = Math.max(1, Math.round(W / 48));
+    for (let x = 0; x < W; x++) {
+      let s = 0;
+      for (let d = -span; d <= span; d++) s += first[(((x + d) % W) + W) % W];
+      mirror[x] = s / (2 * span + 1);
+    }
   }
 
   // Statistics of what WAS measured, for the tone a texture fill settles on.
@@ -648,7 +1301,9 @@ async function fillNoData(ras, mask, spec) {
       const edge = u < 0 ? d : d < 0 ? u : (y - u <= d - y ? u : d);
       if (edge < 0) { dist[i] = H; continue; } // a column with no data at all
       dist[i] = Math.abs(y - edge);
-      let src = 2 * edge - y;
+      const about = mirror && y < H / 2 ? mirror[x] : edge;
+      let src = Math.round(2 * about - y);
+      if (src < 0 || src >= H || mask[src * W + x]) src = 2 * edge - y;
       if (src < 0 || src >= H || mask[src * W + x]) src = edge;
       for (let c = 0; c < 3; c++) ras.data[i * 3 + c] = ras.data[(src * W + x) * 3 + c];
     }
@@ -660,28 +1315,55 @@ async function fillNoData(ras, mask, spec) {
     ? await sharp(ras.data, { raw: { width: W, height: H, channels: 3 } })
       .blur(blurRadius).raw().toBuffer({ resolveWithObject: true })
     : { data: ras.data };
+  // The imaged half's own variation, per scale, and the grain built to match
+  // it. Measured after the reflection so the octave blurs read a continuous
+  // picture, and over the imaged pixels only so what they measure is surface.
+  const octaves = spec.matchTexture
+    ? textureOctaves(ras, mask, W, H, [Math.max(4, W / 160), Math.max(10, W / 50), Math.max(24, W / 16)])
+    : null;
+  const grainAt = octaves ? noise.matched(octaves) : (x, y) => noise.plain(x, y) * std;
+  // What the far field takes its SHAPE from. The reflection at the blur the
+  // seam mixes with still carries the terminator strip's vertical spikes, and
+  // a moon's unimaged half combed into vertical bands is what a smudge looks
+  // like; at this radius only the broad tone survives, and the texture beside
+  // it comes from the matched grain instead.
+  let broad = null;
+  if (spec.matchTexture) {
+    broad = [];
+    for (let c = 0; c < 3; c++) {
+      const band = new Float32Array(W * H);
+      for (let i = 0; i < W * H; i++) band[i] = ras.data[i * 3 + c];
+      broad.push(blurMono(band, W, H, W / 24));
+    }
+  }
+  // How much of that shape survives into the far field. The matched fill keeps
+  // more, because the grain beside it is now at the right amplitude and a
+  // little more shape reads as terrain rather than as a stain.
+  const keepShape = spec.matchTexture ? 0.55 : 0.35;
+  const grainGain = spec.matchTexture ? 1.0 : 0.35;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const i = y * W + x;
       if (!mask[i]) continue;
       const t = seam > 0 ? Math.min(1, dist[i] / seam) : 1;
       const w = t * t * (3 - 2 * t);
-      const grain = noise(x, y) * std;
+      const grain = grainAt(x, y);
       for (let c = 0; c < 3; c++) {
         const sharpV = ras.data[i * 3 + c];
         const softV = soft[i * 3 + c];
+        const shapeV = broad ? broad[c][i] : softV;
         const far = spec.mode === 'cap'
           ? spec.tone[c]
-          // A third of the map's own spread, not all of it: the whole-map
-          // deviation is mostly large-scale albedo, and grain at that
-          // amplitude is a sandstorm rather than a surface.
-          : mean + (softV - mean) * 0.35 + grain * 0.35;
+          // Not all of the map's spread: the whole-map deviation is mostly
+          // large-scale albedo, and grain at that amplitude is a sandstorm
+          // rather than a surface.
+          : mean + (shapeV - mean) * keepShape + grain * grainGain;
         const v = sharpV * (1 - w) + (softV * (1 - w) + far * w) * w;
         ras.data[i * 3 + c] = v < 0 ? 0 : v > 255 ? 255 : Math.round(v);
       }
     }
   }
-  return { mean, std };
+  return { mean, std, octaves };
 }
 
 // ---------------------------------------------------------------------------
@@ -724,19 +1406,39 @@ async function runJob(name) {
   // reflects the neighbouring surface across the gap, which for a seam or a
   // polar sliver is invisible; the bodies with a hemisphere missing say so.
   const nd = job.noData ?? { below: 12, mode: 'texture', seam: 0.03 };
-  const src = await sourceRaster(file, entry, nd.below);
+  const src = await sourceRaster(file, entry, nd, job, left);
   console.log(`  left edge ${left} E`);
   const targets = [...(job.outputs ?? []).map((o) => ({ ...o, kind: 'map' })),
     ...(job.rungs ?? []).map((r) => ({ ...r, kind: 'rung' }))];
   if (!flag('no-rungs')) targets.sort((a, b) => b.width - a.width);
+  // Solved once and reused: a rung is a sharpen of the boot below it, and two
+  // gains solved separately on two resamples of one picture would leave them a
+  // fraction of a count apart for no reason.
+  let levelGain;
   for (const target of targets) {
     if (target.kind === 'rung' && flag('no-rungs')) continue;
     const resampled = await resampleToTarget(src, target.width, left);
     const { ras: bare, mask, fraction } = splitAlpha(resampled);
     let ras = colourise(bare, job);
+    // Before the level, not after: an unsharp overshoots on a bright rim, and
+    // the level's shoulder is the thing in this pipeline that catches an
+    // overshoot without cutting it off.
+    if (job.localContrast) localContrast(ras, job.localContrast);
+    if (job.level) {
+      const lv = applyLevel(ras, mask, job.level, levelGain);
+      levelGain = lv.gain;
+      const asked = job.level.mean !== undefined
+        ? `${job.level.mean} (${job.level.why})`
+        : `${lv.target.toFixed(1)} from albedo ${job.level.albedo}`;
+      console.log(`  level ${lv.before.toFixed(1)} -> ${lv.after.toFixed(1)}, asked ${asked}`
+        + `; gain ${lv.gain.toFixed(3)}, shoulder from ${lv.shouldered}`);
+    }
     if (fraction > 0) {
-      const { mean, std } = await fillNoData(ras, mask, nd);
+      const { mean, std, octaves } = await fillNoData(ras, mask, nd);
       console.log(`  ${(100 * fraction).toFixed(2)}% no data -> ${nd.mode} fill (measured mean ${mean.toFixed(1)} std ${std.toFixed(1)}, seam ${(100 * (nd.seam ?? 0)).toFixed(0)}% of height)`);
+      if (octaves) {
+        console.log(`  matched grain: ${octaves.map((o) => `${o.cell.toFixed(0)}px +-${(o.amp / 2).toFixed(1)}`).join(', ')}`);
+      }
     }
     if (job.polarTint) ras = polarTint(ras, job.polarTint);
     if (target.kind === 'map') await writeMap(ras, path.join(TEX, target.out));

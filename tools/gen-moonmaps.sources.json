@@ -1,6 +1,89 @@
 {
   "_": "Sources under .moon-data-cache/zoom/ for the photo maps of the moons that ship as procedural balls today, plus the sharper re-bases for the Galileans and Pluto. Same contract as gen-tiles.sources.json: the SHA-256 is what the shipped assets were cut from, and a re-downloaded product whose digest moved must not silently re-cut a map. Every product here is NASA or USGS and public domain; the citation field carries the credit line the product page asks for. Read `longitude` before writing any job. Every one of these rasters stores its columns EAST-increasing - the reading comes from the GeoTIFF's own geotransform (ModelTiepoint + ModelPixelScale, turned into degrees through the projection's central-meridian GeoKey and the sphere radius), which is the authority on where the pixels are. A PDS3 label's POSITIVE_LONGITUDE_DIRECTION is NOT: it says which direction the label's own numbers count in, and taking it as the column order says seven of these fifteen are mirrored, which they are not. Io settles it by measurement - Loki Patera and Pele land on their gazetteer longitudes in the east-increasing reading and nowhere near them in the mirrored one - and Pluto settles it a second time, because the map the app already ships was baked from this product with a 180 degree roll and no flip. So the only transform any of these needs is a longitude ROLL, and `leftEdgeLonDegEast` is the whole of it: eight sit at 180E and need nothing, five sit at 0E and need half a turn. `wire` is the measured cost of one representative 4096x2048 candidate encoded both ways, so a rung can be priced before it is cut.",
   "_gaps": "What this file does NOT know, stated once so it is not rediscovered as a bug. (1) Mimas, Miranda and Ariel ship no label and no geotransform. All three were settled by measurement in the A1 alignment pass and all three came out at left edge 180E like the labelled Cassini mosaics - Mimas on Herschel, Miranda on the Inverness Corona chevron, Ariel on the run of its named chasmata. (2) Miranda and Ariel are 1440x720 and cover the southern hemisphere only; a 4K rung for either would be pure upsampling, so 2K is their honest ceiling and the unimaged north is filled from the imaged half. (3) Titan is 4040 px because the only sharper USGS product is 1.5 GB and not global. (4) Ten of the fifteen are mono; keeping Io's and Ganymede's colour is free, everything else is coloured through a luminance ramp keyed to the body's published appearance. (5) Triton is not in this set, and NOT for want of a source. Triton_Voyager2_ClrMosaic_GlobalFill_600m.tif (USGS/Photojournal PIA18668, Schenk/LPI, public domain) is 14138x7069 in colour at 600 m/px, left edge 180E east-increasing like the Cassini mosaics, so an 8K rung would be a 1.73x downsample of real data. What stops it is the picture, not the pixels: 38.5 percent of it is no-data with everything north of about 14N empty (USGS's own completeness field says \"Large gap at the north pole\"; the \"GlobalFill\" in the name is seam patching, not the polar gap), it carries a strong green-magenta cast rather than Triton's real pinkish grey, and USGS's process note says the 30-degree graticule was painted out by hand and they would like to find a version without it. Cutting it is one job row once someone decides those three are acceptable. The file is cached beside the others.",
+  "_albedo": {
+    "_": "Published geometric albedos, one per body, and the single curve tools/gen-moonmaps.mjs puts every graded map's level on. A map is an sRGB-encoded albedo texture, so the quantity the albedo is a ratio of is the map's mean in LINEAR light, and the rule is linear mean = ALBEDO_LEVEL_SCALE x albedo, cos(latitude) weighted. Nothing in this block is a look decision: the look decision was to key levels to published photometry at all, and the two exceptions are named below.",
+    "source": "JPL Horizons object data (ssd.jpl.nasa.gov/api/horizons.api, format=text&OBJ_DATA=YES&MAKE_EPHEM=NO, queried 2026-09-01), which is where the four Galilean values the first cut of these maps used came from, so the whole batch is on one authority. Horizons carries no albedo for Charon; that one value comes from NASA's own Pluto Fact Sheet.",
+    "scaleFit": "0.3753, the geometric mean of the three products in the set that carry no grade of ours: Io 0.393, Ganymede 0.382, Callisto 0.353 (cos-lat-weighted linear map mean over published albedo, measured on the shipped maps). Three independent mosaics of three moons agreeing inside 5 per cent is what says these products can be read as photometry.",
+    "bodies": {
+      "io": {
+        "albedo": 0.63,
+        "horizons": "501",
+        "quoted": "0.63 +- 0.02",
+        "note": "anchor; USGS colour mosaic, ungraded"
+      },
+      "europa": {
+        "albedo": 0.67,
+        "horizons": "502",
+        "quoted": "0.67 +/- 0.03"
+      },
+      "ganymede": {
+        "albedo": 0.43,
+        "horizons": "503",
+        "quoted": "0.43 +- 0.02",
+        "note": "anchor; USGS colour mosaic, ungraded"
+      },
+      "callisto": {
+        "albedo": 0.17,
+        "horizons": "504",
+        "quoted": "0.17 +- 0.02",
+        "exception": "The curve puts Callisto at 0.63 of Ganymede's map mean and the map ships at 0.75 instead. At 0.63 the crater shadows that are the whole of this surface sit on the floor before the renderer touches them. Still the darkest Galilean by a distance, so the ordering the curve exists to protect is intact."
+      },
+      "mimas": {
+        "albedo": 0.6,
+        "horizons": "601",
+        "quoted": "0.6"
+      },
+      "enceladus": {
+        "albedo": 1.04,
+        "horizons": "602",
+        "quoted": "1.04",
+        "note": "above 1 and correctly so: a geometric albedo is measured at zero phase, where a bright icy regolith throws back more than a Lambert disc would. The most reflective surface in the solar system, and after this pass the brightest map in the batch."
+      },
+      "tethys": {
+        "albedo": 0.8,
+        "horizons": "603",
+        "quoted": "0.80"
+      },
+      "dione": {
+        "albedo": 0.6,
+        "horizons": "604",
+        "quoted": "0.6"
+      },
+      "rhea": {
+        "albedo": 0.6,
+        "horizons": "605",
+        "quoted": "0.6"
+      },
+      "titan": {
+        "albedo": 0.2,
+        "horizons": "606",
+        "quoted": "0.2",
+        "exception": "NOT used. Titan's 0.2 is the disc of haze the renderer draws over this map, not the ground the map records, and keying the ground to it makes the one moon anybody can name from across the solar system a pale tan ball. The surface is graded to moonData's catalog tint for Titan (0xc89040) instead - the colour the app's own haze ball was drawing before this map existed - and levelled to hold the disc where that ball held it."
+      },
+      "iapetus": {
+        "albedo": 0.325,
+        "horizons": "608",
+        "quoted": "0.6",
+        "note": "Horizons' single number is the bright trailing hemisphere; the leading hemisphere, Cassini Regio, is 0.05 (the same object data carries V(1,0) = +1.5 with a stated range of 0.7 to 2.5, which is that two-magnitude dichotomy). One number for a whole globe is the mean of the two. The map's own dichotomy is untouched: the level stage is a gain, which leaves every ratio in the picture where the mosaic put it."
+      },
+      "charon": {
+        "albedo": 0.42,
+        "source": "NASA NSSDC Pluto Fact Sheet, Charon block: geometric albedo 0.42, Bond albedo 0.25. The Bond value agrees with New Horizons LORRI photometry (Buratti et al. 2017, Icarus 287, 207: Charon Bond albedo 0.25 +- 0.03), which is the check that the fact sheet is quoting the encounter and not a pre-flyby estimate.",
+        "note": "Horizons leaves this field empty for 901."
+      },
+      "miranda": {
+        "albedo": 0.27,
+        "horizons": "705",
+        "quoted": "0.27"
+      },
+      "ariel": {
+        "albedo": 0.34,
+        "horizons": "701",
+        "quoted": "0.34"
+      }
+    }
+  },
   "_wire": "Each `wire` block is one 4096x2048 candidate cut from the source with sharp 0.35.4 (fit: fill, kernel lanczos3, forced to 3-channel sRGB so both encoders see the same picture), then encoded as webp quality 85 effort 5 (the photo idiom in tools/encode-textures.mjs) and as UASTC KTX2 with the flags tools/gen-ktx2.mjs uses (-uastc -uastc_level 2 -uastc_rdo_l 1.0 -uastc_rdo_d 8192 -ktx2_zstandard_level 18 -mipmap -mip_filter box -y_flip). basisu from @gpu-tex-enc/basis, darwin-arm64. The candidates and containers are kept beside the sources in .moon-data-cache/zoom/wire/. A third encode was added later: the same candidate as ETC1S KTX2 (-q 255 -comp_level 5, basisu's largest codebooks and slowest endpoint search, with the same -mipmap -mip_filter box -y_flip), plus `rmsVsSource`, the 0-255 RMS of each encode against the candidate read at 2048 wide - the scale and the units gen-tiles' own picture gate uses. ETC1S is the format the tree pins AGAINST for the Moon and Earth's night lights because its shared codebook bands slow ramps; these moons are texture rather than ramp, and it comes back at 0.80x to 2.99x the webp with an RMS indistinguishable from webp's (better than webp on five of the twelve). The container decision is not this file's to make - the numbers are here so it can be made.",
   "Titan_ISS_P19658_Mosaic_Global_4km.tif": {
     "body": "titan",
@@ -176,9 +259,9 @@
       "centralMeridianDeg": null,
       "sphereRadiusM": null,
       "metresPerDeg": null,
-      "spanDegLon": 360.0,
-      "spanDegLat": 180.0,
-      "topLatDeg": 90.0,
+      "spanDegLon": 360,
+      "spanDegLat": 180,
+      "topLatDeg": 90,
       "read_from": "no geotransform and no label - a plain TIFF from the JPL Photojournal. 5760x2880 is exactly 16 px/deg both ways, so the map is taken as one clean wrap pole to pole."
     }
   },
@@ -563,9 +646,9 @@
       "centralMeridianDeg": null,
       "sphereRadiusM": null,
       "metresPerDeg": null,
-      "spanDegLon": 360.0,
-      "spanDegLat": 180.0,
-      "topLatDeg": 90.0,
+      "spanDegLon": 360,
+      "spanDegLat": 180,
+      "topLatDeg": 90,
       "read_from": "no geotransform and no label - a NASA 3D Resources texture. 1440x720 is exactly 4 px/deg both ways."
     }
   },
@@ -605,9 +688,9 @@
       "centralMeridianDeg": null,
       "sphereRadiusM": null,
       "metresPerDeg": null,
-      "spanDegLon": 360.0,
-      "spanDegLat": 180.0,
-      "topLatDeg": 90.0,
+      "spanDegLon": 360,
+      "spanDegLat": 180,
+      "topLatDeg": 90,
       "read_from": "no geotransform and no label - a NASA 3D Resources texture. 1440x720 is exactly 4 px/deg both ways."
     }
   },

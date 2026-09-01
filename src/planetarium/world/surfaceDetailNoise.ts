@@ -105,6 +105,19 @@ function mixer(seed: number): () => number {
   };
 }
 
+/** How far out, in rim widths, the rim swell is still worth evaluating. Past
+ *  this the gaussian is under a fiftieth of a byte of the finished field, and
+ *  the exponential it costs is the map's whole build time — a hundred and fifty
+ *  craters at a quarter of a million texels. */
+const RIM_SUPPORT = 2.5;
+
+/** A crater's height and slope at one point, filled in place: the build asks
+ *  three million times and an object apiece is most of its cost. */
+export interface CraterHeight {
+  h: number;
+  dh: number;
+}
+
 /**
  * One crater's height at `t` radii from its centre, and the derivative of that
  * height with respect to `t`. Both are in units of the crater's own RADIUS, so
@@ -115,17 +128,21 @@ function mixer(seed: number): () => number {
  * ends at zero is what puts the raised lip a real crater has outside the hole,
  * rather than making the hole shallower.
  */
-export function craterProfile(t: number): { h: number; dh: number } {
-  const w = SURFACE_DETAIL_RIM_WIDTH;
-  const e = (t - 1) / w;
-  const rim = Math.exp(-e * e);
-  let h = SURFACE_DETAIL_CRATER_RIM * rim;
-  let dh = SURFACE_DETAIL_CRATER_RIM * rim * (-2 * e) / w;
-  if (t < 1) {
-    h -= SURFACE_DETAIL_CRATER_DEPTH * (1 - t * t);
-    dh += SURFACE_DETAIL_CRATER_DEPTH * 2 * t;
+export function craterProfile(t: number, out: CraterHeight = { h: 0, dh: 0 }): CraterHeight {
+  const e = (t - 1) / SURFACE_DETAIL_RIM_WIDTH;
+  if (e > -RIM_SUPPORT && e < RIM_SUPPORT) {
+    const rim = SURFACE_DETAIL_CRATER_RIM * Math.exp(-e * e);
+    out.h = rim;
+    out.dh = (rim * -2 * e) / SURFACE_DETAIL_RIM_WIDTH;
+  } else {
+    out.h = 0;
+    out.dh = 0;
   }
-  return { h, dh };
+  if (t < 1) {
+    out.h -= SURFACE_DETAIL_CRATER_DEPTH * (1 - t * t);
+    out.dh += SURFACE_DETAIL_CRATER_DEPTH * 2 * t;
+  }
+  return out;
 }
 
 /** One crater as it is laid into the tile. */
@@ -190,10 +207,15 @@ export function buildSurfaceDetailNoise(size = SURFACE_DETAIL_SIZE): {
   const gradV = new Float64Array(size * size);
   let min = Infinity;
   let max = -Infinity;
-  // How far outside its own radius a crater still says anything — past this
-  // the rim swell is under a thousandth of the field.
-  const reachOf = (radius: number) => radius * (1 + 2.5 * SURFACE_DETAIL_RIM_WIDTH);
-  const rowCraters: typeof craters = [];
+  // How far outside its own radius a crater still says anything.
+  const reachOf = (radius: number) => radius * (1 + RIM_SUPPORT * SURFACE_DETAIL_RIM_WIDTH);
+  // Per crater, once: the reach, its square, and the reciprocal radius the
+  // distance is measured in.
+  const prepared = craters.map((c) => ({
+    cx: c.cx, cy: c.cy, invRadius: 1 / c.radius, radius: c.radius, reach: reachOf(c.radius),
+  }));
+  const rowCraters: typeof prepared = [];
+  const profile: CraterHeight = { h: 0, dh: 0 };
   for (let py = 0; py < size; py++) {
     const v = py / size;
     // Which craters can reach this ROW at all, decided once for the row. The
@@ -201,8 +223,8 @@ export function buildSurfaceDetailNoise(size = SURFACE_DETAIL_SIZE): {
     // user is watching: testing all 150 craters at all 260,000 texels is forty
     // million comparisons and a tenth of a second of it.
     rowCraters.length = 0;
-    for (const c of craters) {
-      if (Math.abs(wrapDelta(v, c.cy)) <= reachOf(c.radius)) rowCraters.push(c);
+    for (const c of prepared) {
+      if (Math.abs(wrapDelta(v, c.cy)) <= c.reach) rowCraters.push(c);
     }
     for (let px = 0; px < size; px++) {
       const u = px / size;
@@ -211,19 +233,18 @@ export function buildSurfaceDetailNoise(size = SURFACE_DETAIL_SIZE): {
       let gv = 0;
       for (const c of rowCraters) {
         const du = wrapDelta(u, c.cx);
+        if (du > c.reach || du < -c.reach) continue;
         const dv = wrapDelta(v, c.cy);
-        const reach = reachOf(c.radius);
-        if (Math.abs(du) > reach) continue;
-        const r = Math.hypot(du, dv);
-        if (r > reach) continue;
-        const t = r / c.radius;
-        const p = craterProfile(t);
-        h += p.h * c.radius;
+        const rSq = du * du + dv * dv;
+        if (rSq > c.reach * c.reach) continue;
+        const r = Math.sqrt(rSq);
+        craterProfile(r * c.invRadius, profile);
+        h += profile.h * c.radius;
         // The centre is the one point where the direction is undefined, and it
         // is also where a round crater's slope is zero.
         if (r > 1e-9) {
-          gu += p.dh * (du / r);
-          gv += p.dh * (dv / r);
+          gu += profile.dh * (du / r);
+          gv += profile.dh * (dv / r);
         }
       }
       for (const o of grain) {

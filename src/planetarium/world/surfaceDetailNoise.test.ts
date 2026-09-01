@@ -15,12 +15,18 @@ import {
 describe('one crater of the close-range field', () => {
   it('digs a bowl that reaches the plain exactly at its rim', () => {
     // The bowl's own term is the full depth at the centre and exactly zero at
-    // the rim; what is left at each end is the rim swell.
-    expect(craterProfile(0).h).toBeCloseTo(
-      SURFACE_DETAIL_CRATER_RIM * Math.exp(-1 / SURFACE_DETAIL_RIM_WIDTH ** 2)
-        - SURFACE_DETAIL_CRATER_DEPTH, 12,
-    );
+    // the rim; what is left at the rim is the swell.
+    expect(craterProfile(0).h).toBeCloseTo(-SURFACE_DETAIL_CRATER_DEPTH, 12);
     expect(craterProfile(1).h).toBeCloseTo(SURFACE_DETAIL_CRATER_RIM, 12);
+    // The swell is cut where it stops being worth an exponential — the build
+    // evaluates this three million times and the exponential is most of its
+    // cost. What the cut throws away has to be under the byte the field is
+    // stored in: a quarter of a millionth of a crater radius, against a field
+    // whose whole range is stored in 255 steps.
+    const cutAt = 1 + 2.5 * SURFACE_DETAIL_RIM_WIDTH;
+    const dropped = SURFACE_DETAIL_CRATER_RIM * Math.exp(-2.5 * 2.5);
+    expect(dropped).toBeLessThan(1e-3);
+    expect(craterProfile(cutAt + 1e-6).h).toBe(0);
     // Deepest at the centre, rising monotonically to the rim.
     let previous = craterProfile(0).h;
     expect(previous).toBeLessThan(0);

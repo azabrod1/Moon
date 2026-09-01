@@ -256,6 +256,7 @@ export function pumpTextureWarmQueue(budgetMs: number, frameIntervalMs: number):
     // wants the same figure — blaming a frame for the sum of several small
     // maps hides which one was the unsliceable one.
     const uploadStart = performance.now();
+    let uploadMs = 0;
     let uploaded = false;
     try {
       uploadFn(tex);
@@ -264,6 +265,8 @@ export function pumpTextureWarmQueue(budgetMs: number, frameIntervalMs: number):
       // Fail open: drop the entry; the texture uploads lazily on first draw.
       debugWarn('Texture warm upload failed', { err: String(err) });
     } finally {
+      // Stopped first, so the DEV telemetry below is not charged to the map.
+      uploadMs = performance.now() - uploadStart;
       if (import.meta.env.DEV) surfacePerfEndTextureUpload(perfUpload);
       if (import.meta.env.DEV && smoothTraceArmed()) {
         const image = tex.image as { width?: number; height?: number } | undefined;
@@ -275,13 +278,12 @@ export function pumpTextureWarmQueue(budgetMs: number, frameIntervalMs: number):
         smoothTraceEvent(
           'upload',
           `${tex.name || source || 'texture'} ${image?.width ?? '?'}x${image?.height ?? '?'}`,
-          performance.now() - uploadStart,
+          uploadMs,
         );
       }
     }
-    // Read before the callback: settling one can build a sector mesh, and
-    // that is the caller's cost, not this upload's.
-    const uploadMs = performance.now() - uploadStart;
+    // uploadMs stopped before the callback below: settling one can build a
+    // sector mesh, and that is the caller's cost, not this upload's.
     const onOutcome = residentCallbacks.get(tex);
     residentCallbacks.delete(tex);
     if (uploaded) warmedVersions.set(tex, tex.version);

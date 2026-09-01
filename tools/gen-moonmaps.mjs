@@ -148,16 +148,26 @@ const PLUTO_CAP = [42, 38, 34];
 
 /**
  * One job per body. `src` is the manifest key (which is the cached file's
- * name); `outputs` are the shipped maps, widest first for no reason but
- * readability; `rungs` are the widths written to the cache for gen-ktx2.
+ * name); `outputs` are the shipped maps; `rungs` are the widths written to the
+ * cache as PNG for gen-ktx2 to encode.
+ *
+ * Every tier ABOVE a body's boot map is a rung, never an output, because every
+ * one of them ships GPU-compressed and alone: an ETC1S container of one of
+ * these maps is about the size of its webp twin on the wire and a quarter of it
+ * in VRAM, so a webp of the same tier beside it would be pure weight in the
+ * deploy — and the assets tests refuse one, since a rung that declares no
+ * classic map must not have one on disk. The container's pixels therefore come
+ * from the PNG written here rather than from a shipped file, which keeps the
+ * rung a pure sharpen of the boot map under it: both come out of one resample
+ * of one source in one run.
  *
  * Widths are not free choices. A body's BOOT width is whatever the app
  * already fetches for it — re-basing a map is a change of product, not of the
  * ladder's arithmetic, so callisto stays 1800 and io/europa/ganymede stay 4096
  * exactly as they ship today. The new bodies boot at 2048 like every other
- * moon. A 4K rung is written only where the source can actually fill it:
- * Titan's mosaic is 4040 px and Miranda's and Ariel's are 1440, so those three
- * are boot-only and the rest of their detail is the procedural blend's job.
+ * moon. A rung is written only where the source can actually fill it: Titan's
+ * mosaic is 4040 px and Miranda's and Ariel's are 1440, so those three are
+ * boot-only and the rest of their detail is the procedural blend's job.
  */
 const JOBS = {
   // --- the eight that ship as noise balls today -----------------------------
@@ -173,7 +183,8 @@ const JOBS = {
   },
   enceladus: {
     src: 'Enceladus_Cassini_mosaic_global_110m.tif',
-    outputs: [{ width: 4096, out: '4k/enceladus.webp' }, { width: 2048, out: 'enceladus.webp' }],
+    outputs: [{ width: 2048, out: 'enceladus.webp' }],
+    rungs: [{ width: 4096, name: 'enceladus-4k' }],
     // The most reflective surface in the solar system and as close to neutral
     // as anything gets: the gain is a whisper of blue in the shadows and
     // nothing at all in the highlights.
@@ -181,27 +192,32 @@ const JOBS = {
   },
   mimas: {
     src: 'PIA17214_Mimas_global_map_2017.tif',
-    outputs: [{ width: 4096, out: '4k/mimas.webp' }, { width: 2048, out: 'mimas.webp' }],
+    outputs: [{ width: 2048, out: 'mimas.webp' }],
+    rungs: [{ width: 4096, name: 'mimas-4k' }],
     colour: gains([0.99, 0.975, 0.95], [1.0, 0.995, 0.985]),
   },
   dione: {
     src: 'Dione_Cassini_Voyager_mosaic_global_154m.tif',
-    outputs: [{ width: 4096, out: '4k/dione.webp' }, { width: 2048, out: 'dione.webp' }],
+    outputs: [{ width: 2048, out: 'dione.webp' }],
+    rungs: [{ width: 4096, name: 'dione-4k' }],
     colour: gains([0.99, 0.975, 0.95], [1.0, 0.995, 0.985]),
   },
   tethys: {
     src: 'Tethys_Cassini_mosaic_global_293m.tif',
-    outputs: [{ width: 4096, out: '4k/tethys.webp' }, { width: 2048, out: 'tethys.webp' }],
+    outputs: [{ width: 2048, out: 'tethys.webp' }],
+    rungs: [{ width: 4096, name: 'tethys-4k' }],
     colour: gains([0.99, 0.98, 0.96], [1.0, 0.997, 0.99]),
   },
   rhea: {
     src: 'Rhea_Cassini_Voyager_mosaic_global_417m.tif',
-    outputs: [{ width: 4096, out: '4k/rhea.webp' }, { width: 2048, out: 'rhea.webp' }],
+    outputs: [{ width: 2048, out: 'rhea.webp' }],
+    rungs: [{ width: 4096, name: 'rhea-4k' }],
     colour: gains([0.99, 0.975, 0.95], [1.0, 0.995, 0.985]),
   },
   iapetus: {
     src: 'Iapetus_Cassini_Voyager_mosaic_global_783m.tif',
-    outputs: [{ width: 4096, out: '4k/iapetus.webp' }, { width: 2048, out: 'iapetus.webp' }],
+    outputs: [{ width: 2048, out: 'iapetus.webp' }],
+    rungs: [{ width: 4096, name: 'iapetus-4k' }],
     // The one Saturnian whose colour is the point: Cassini Regio is dark
     // red-brown and the trailing ice is very slightly yellow, so the two tones
     // want different chroma and a ramp is the honest way to give it to them.
@@ -213,7 +229,8 @@ const JOBS = {
   },
   charon: {
     src: 'Charon_NewHorizons_Global_Mosaic_300m_Jul2017_8bit.tif',
-    outputs: [{ width: 4096, out: '4k/charon.webp' }, { width: 2048, out: 'charon.webp' }],
+    outputs: [{ width: 2048, out: 'charon.webp' }],
+    rungs: [{ width: 4096, name: 'charon-4k' }],
     // Neutral grey almost everywhere; the exception is Mordor Macula, the
     // red-brown tholin stain over the north pole, which New Horizons' colour
     // imaging showed and this map's luminance already holds as a dark cap. The
@@ -281,8 +298,8 @@ const JOBS = {
     // 1800 is the width Callisto boots at today; the rung above it is
     // therefore a 2.28x sharpen rather than the 2x the rest of the set holds
     // to, and both files come out of this one run.
-    outputs: [{ width: 4096, out: '4k/callisto.v2.webp' }, { width: 1800, out: 'callisto.v2.webp' }],
-    rungs: [{ width: 8192, name: 'callisto-8k' }],
+    outputs: [{ width: 1800, out: 'callisto.v2.webp' }],
+    rungs: [{ width: 8192, name: 'callisto-8k' }, { width: 4096, name: 'callisto-4k' }],
     // Mono at 1 km, and no global colour Callisto raster exists either — no
     // agency has ever even published a name for its colour. What is published
     // is the slope: most of the surface is red-sloped from 700 to 1000 nm,
@@ -298,8 +315,8 @@ const JOBS = {
   },
   pluto: {
     src: 'Pluto_NewHorizons_Global_Mosaic_300m_Jul2017_8bit.tif',
-    outputs: [{ width: 4096, out: '4k/pluto.v2.webp' }, { width: 2048, out: 'pluto.v2.webp' }],
-    rungs: [{ width: 8192, name: 'pluto-8k' }],
+    outputs: [{ width: 2048, out: 'pluto.v2.webp' }],
+    rungs: [{ width: 8192, name: 'pluto-8k' }, { width: 4096, name: 'pluto-4k' }],
     colour: PLUTO_RAMP,
     // The south was in polar night for the whole encounter. Ramping its
     // near-black would paint a colour onto pixels that hold no measurement, so

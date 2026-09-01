@@ -10,7 +10,7 @@ npm run build      # TypeScript check + production build (dist/)
 npm test           # vitest — astronomy + planetarium unit/golden tests
 npm run gen:moons  # Regenerate satellite elements + goldens from JPL (--offline uses .moon-data-cache/)
 npm run gen:maps   # Regenerate derived texture maps (runs in headless Chromium)
-npm run gen:ktx2   # Regenerate the GPU-compressed colour rungs — nine jobs, four 8K + five 4K (bundled basisu; headless Chromium or sharp per job)
+npm run gen:ktx2   # Regenerate the GPU-compressed colour rungs — 23 jobs, 9 UASTC (planets + Earth) and 14 ETC1S (the photo moons); run BY NAME, not --all (bundled basisu; a shipped webp, sharp, or a gen:moonmaps intermediate per job)
 npm run gen:tiles -- <job|--all> [--verify]   # Re-cut sector tile sets + rewrite sectorSets.generated.ts (needs `npm i --no-save sharp@0.35.4`)
 npm run publish:tiles -- --root=<tiles root> --repo=<tiles repo checkout>  # Copy verified sets into the tiles repo (never pushes)
 ```

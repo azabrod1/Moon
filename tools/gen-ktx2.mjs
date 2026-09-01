@@ -8,20 +8,26 @@
 // after a Moon teleport, and even a 4K one costs 2.9 to 4.0 ms in a single
 // shot (measured through renderer.initTexture on an Apple GPU under
 // Chromium) — a missed refresh at 120 Hz, and more on a device with less to
-// spend, paid per map by the boot warm and by every arrival. A KTX2 container (UASTC, full mip chain baked at build time)
-// uploads as a memcpy of already-encoded blocks — a millisecond or so for a
-// 4K, a few for an 8K, and it bands — and stays compressed in VRAM: 10.7 MiB
-// for a 4K rung instead of 42.7, 42.7 for an 8K instead of 170.7, which is
-// what lets four 8K maps be resident where two used to be the ceiling. The
-// trade is network size: UASTC is a fixed 8 bits a texel whatever the picture
-// holds, so a container is several times the webp on the wire and a
-// low-frequency map (Venus, Saturn) is many times it. Paid only when a
-// session actually earns the tier, and cached by the service worker after the
-// first visit.
+// spend, paid per map by the boot warm and by every arrival. A KTX2 container
+// (full mip chain baked at build time) uploads as a memcpy of already-encoded
+// blocks — a millisecond or so for a 4K, a few for an 8K, and it bands — and
+// stays compressed in VRAM: 10.7 MiB for a 4K rung instead of 42.7, 42.7 for
+// an 8K instead of 170.7, which is what lets four 8K maps be resident where
+// two used to be the ceiling.
+//
+// Two encodings, and a job says which. UASTC is a fixed 8 bits a texel
+// whatever the picture holds, so it costs several times the webp on the wire
+// and many times it for a low-frequency map — worth it only where the picture
+// needs it. ETC1S is a shared codebook, roughly webp-sized on the wire and
+// half of UASTC in VRAM, and what it costs is smooth gradients: the codebook
+// spends a block index per distinct shade, so a slow ramp comes back as steps.
+// Which one a map wants is a question about the map. Either way the bytes are
+// paid only when a session actually earns the tier, and cached by the service
+// worker after the first visit.
 //
 // Where a job's pixels come from is the one thing that differs between them,
 // and it follows one rule: the container ships THE SAME PIXELS the rung would
-// otherwise have. Where a webp of that tier is also on disk (every 4K rung,
+// otherwise have. Where a webp of that tier is also on disk (the planet rungs,
 // and the 8K Moon and cloud deck, which stay as the fallback for a device
 // with no KTX2 loader), the container is a pure transcode of that file, so
 // the two paths draw the same map. Where none ships — Earth's 8K day and
@@ -30,7 +36,9 @@
 // rung from, resampled here exactly as that tool resamples its own
 // downsamples. So an 8K rung is a pure sharpen of the 4K below it, and
 // neither the ocean grade nor the night map's no-data mask can drift between
-// the globe and the sectors over it.
+// the globe and the sectors over it. The moon rungs are the third case: they
+// ship as a container alone, so their pixels come from the PNG
+// tools/gen-moonmaps.mjs writes beside the boot map it cuts in the same run.
 //
 // -y_flip bakes the vertical flip: three's CompressedTexture cannot flipY at
 // upload, so the file itself must store what a flipY'd image texture presents.
@@ -162,37 +170,60 @@ const JOBS = {
   // a slow ramp is exactly what these three are made of (the maria, the
   // deck's soft edges, the night map's falloff into unlit land). A container
   // that quietly shipped ETC1S would put a WORSE picture on the globe than
-  // the webp rung it replaced, which is why the format is pinned rather than
-  // merely preferred: textureTiers.assets.test.ts reads colorModel out of
-  // every container and fails on anything but UASTC.
+  // the webp rung it replaced, which is why each container's format is pinned
+  // per file rather than left to whoever runs the job:
+  // textureTiers.assets.test.ts reads colorModel out of every one and checks
+  // it against the mode this table chose for it.
   moon4k: { tier: '4k', rdo: 4.0, rdoDict: 65536, source: fromWebp('4k', 'moon.webp'), out: '4k/moon.ktx2' },
   earthClouds4k: { tier: '4k', rdo: 4.0, rdoDict: 65536, source: fromWebp('4k', 'earth-clouds.webp'), out: '4k/earth-clouds.ktx2' },
   earthNight4k: { tier: '4k', rdo: 16.0, rdoDict: 65536, source: fromWebp('4k', 'earth-night.v2.webp'), out: '4k/earth-night.v2.ktx2' },
-  // Enceladus is the one moon photo map whose 4K container clears the toured
-  // cap: 8.12 MB against a 2.03 MB webp twin is 3.99x, and it is the body in
-  // that batch most worth arriving at close. Every other 4K moon rung misses
-  // — Dione 4.02x, Tethys 4.84, Iapetus 6.26, Rhea 6.56, Charon 7.21, Mimas
-  // 8.01 — for the reason the table above gives: UASTC is a fixed 8 bits a
-  // texel, so a container has a floor near 1.6 MB whatever the picture holds,
-  // and a grey icy moon's webp is small. They keep their webp rungs.
-  enceladus4k: { tier: '4k', source: fromWebp('4k', 'enceladus.webp'), out: '4k/enceladus.ktx2' },
-  // The five 8K moon rungs, all KTX2-ONLY. The toured cap does not apply,
-  // because an 8K rung sits behind a 0.5 trigger fraction: reaching it means
-  // a deliberate close approach to that one body, not the traffic of a tour.
-  // What rules out the webp twin is memory rather than the wire — an
-  // uncompressed 8K map is 170.7 MiB resident where the container is 42.7,
-  // and no device profile can hold a tour of those. So the rung is the
-  // container or it is nothing, and a session with no transcoder simply stops
-  // at 4K (io, europa and ganymede boot at 4096 already, so they stop at
-  // their boot map).
+  // ---------------------------------------------------------------------
+  // The photo-moon rungs. Every one is ETC1S, and every one ships as a
+  // container ALONE — no webp twin at that tier at all.
+  //
+  // The wire cap that rules the planet rungs above never binds here, because
+  // ETC1S is not priced like UASTC: measured on a 4096x2048 candidate per
+  // body, these containers come in at 0.80x to 2.99x their webp twin (ten of
+  // the twelve under 1.6x) — Enceladus 0.80, Dione 0.83, Tethys 1.04, Europa
+  // 1.06, Pluto 1.19, Callisto 1.29, Iapetus 1.34, Ganymede 1.34, Rhea 1.44,
+  // Charon 1.52, Mimas 1.93, Io 2.99. Against the same candidate read at
+  // 2048 the two encodes are indistinguishable in RMS (webp 1.67-4.47, ETC1S
+  // 1.68-4.21; ETC1S is the better of the pair on five of the twelve), and
+  // the crops that decide it — Io's chroma, Enceladus' limb, Iapetus'
+  // albedo boundary, Pluto's ramps — carry no banding and no blocking.
+  //
+  // Why these maps and not the Moon or Earth's night lights, which the table
+  // above pins AGAINST ETC1S: what its codebook cannot hold is a slow ramp,
+  // and that is what the maria and the night map's falloff into unlit land
+  // are made of. A cratered icy moon is texture at every scale, which is the
+  // codebook's best case.
+  //
+  // So the fork the planet rungs live with — a container for the upload,
+  // a webp twin for the wire and for a device with no transcoder — collapses
+  // for this batch: one file is both, at a quarter of the VRAM. What a
+  // session with no transcoder loses is the rung, not the body; it stays on
+  // the boot map, which is the same deal Earth's 8K day map already makes.
   //
   // Pixels come from the gen:moonmaps intermediates rather than from a
   // shipped file, which is what the third source kind above exists for.
-  io8k: { tier: '8k', source: fromMoonmap('io-8k'), out: '8k/io.v2.ktx2' },
-  europa8k: { tier: '8k', source: fromMoonmap('europa-8k'), out: '8k/europa.v2.ktx2' },
-  ganymede8k: { tier: '8k', source: fromMoonmap('ganymede-8k'), out: '8k/ganymede.v2.ktx2' },
-  callisto8k: { tier: '8k', source: fromMoonmap('callisto-8k'), out: '8k/callisto.v2.ktx2' },
-  pluto8k: { tier: '8k', source: fromMoonmap('pluto-8k'), out: '8k/pluto.v2.ktx2' },
+  enceladus4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('enceladus-4k'), out: '4k/enceladus.ktx2' },
+  mimas4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('mimas-4k'), out: '4k/mimas.ktx2' },
+  dione4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('dione-4k'), out: '4k/dione.ktx2' },
+  tethys4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('tethys-4k'), out: '4k/tethys.ktx2' },
+  rhea4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('rhea-4k'), out: '4k/rhea.ktx2' },
+  iapetus4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('iapetus-4k'), out: '4k/iapetus.ktx2' },
+  charon4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('charon-4k'), out: '4k/charon.ktx2' },
+  callisto4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('callisto-4k'), out: '4k/callisto.v2.ktx2' },
+  pluto4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('pluto-4k'), out: '4k/pluto.v2.ktx2' },
+  // The 8K rungs. Each sits behind a trigger gate that only a deliberate
+  // close approach to that one body crosses, so it is never tour traffic
+  // whatever it costs; what it must not do is hold 170.7 MiB, which is what
+  // the uncompressed twin would be. At ETC1S it holds 21.3.
+  io8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('io-8k'), out: '8k/io.v2.ktx2' },
+  europa8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('europa-8k'), out: '8k/europa.v2.ktx2' },
+  ganymede8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('ganymede-8k'), out: '8k/ganymede.v2.ktx2' },
+  callisto8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('callisto-8k'), out: '8k/callisto.v2.ktx2' },
+  pluto8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('pluto-8k'), out: '8k/pluto.v2.ktx2' },
 };
 
 const args = process.argv.slice(2);
@@ -310,13 +341,18 @@ async function sourcePng(source, pngOut, width) {
  * reach a container worth downloading.
  *
  * ETC1S is the small one: a shared codebook of 4x4 blocks, BasisLZ
- * supercompressed, a few times smaller than the same map in UASTC. What it
- * costs is smooth gradients — the codebook has to spend a block index on
- * every distinct shade, so a slow ramp comes back as steps. No job ships it:
- * the mode is here because the question is worth re-asking whenever a map is
- * too big for its rung, and the job table records where it was asked and what
- * the answer was. Nothing can ship it by accident either — the container's
- * colour model is pinned in textureTiers.assets.test.ts.
+ * supercompressed, a few times smaller than the same map in UASTC and half
+ * its VRAM. What it costs is smooth gradients — the codebook has to spend a
+ * block index on every distinct shade, so a slow ramp comes back as steps.
+ * That rules it out for the maps made of ramps and rules it IN for the ones
+ * made of texture, which is the split the job table draws: the planet and
+ * Earth rungs are UASTC, the photo-moon rungs ETC1S. Neither can be shipped
+ * by accident — every container's colour model is pinned per file in
+ * textureTiers.assets.test.ts.
+ *
+ * -q 255 -comp_level 5 is basisu's largest codebooks and its slowest endpoint
+ * search: encode time is a build-machine cost paid once per map, and the
+ * codebook is exactly what an ETC1S picture lives or dies on.
  *
  * The mip chain deliberately uses a BOX filter on raw sRGB bytes in both —
  * radiometrically naive, but exactly what the GPU's generateMipmap builds for

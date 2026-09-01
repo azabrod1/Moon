@@ -82,6 +82,28 @@ export function warmBudgetMs(frameIntervalMs: number): number {
 }
 
 /**
+ * How long the pump owes after an unsliceable upload ran past its budget.
+ *
+ * The overrun on its own is less than a frame and so buys nothing: a 9.2 ms
+ * tile upload against the 2.9 ms budget of an 8.3 ms frame leaves 6.3 ms
+ * owed, and the next frame's pump starts about 8.3 ms later — past the debt,
+ * so it uploads again. A queue of big maps then pays one late frame EVERY
+ * frame (measured on a 4x-throttled phone shape: 19 sector tiles, 16 late
+ * frames carrying one). Sitting out a whole frame interval is what puts a
+ * clean frame between two overruns, so the repay is the LONGER of the two:
+ * the debt when a huge map ran over by more than a frame, one frame interval
+ * otherwise. WARM_STARVE_MS still caps how long the queue may wait.
+ *
+ * An unbudgeted pump (the arrival veil's drain) owes nothing — see the pump.
+ */
+export function warmRepayMs(spentMs: number, budgetMs: number, frameIntervalMs: number): number {
+  if (!Number.isFinite(budgetMs)) return 0;
+  const owed = Math.max(0, spentMs - budgetMs);
+  const frame = Number.isFinite(frameIntervalMs) && frameIntervalMs > 0 ? frameIntervalMs : 0;
+  return Math.max(owed, frame);
+}
+
+/**
  * Whether the pump may upload this frame. False only while it is repaying an
  * overrun — and never for longer than WARM_STARVE_MS, so a starving queue
  * always gets its forced upload through.
@@ -159,12 +181,24 @@ export function queueTextureWarm(tex: THREE.Texture, onOutcome?: (outcome: WarmO
  * unknowable until paid — then stops once past budget, so a burst of small
  * maps drains in one call while the biggest single map (an 8K albedo, the
  * largest unsliceable upload the app has) takes its frame alone.
+ *
+ * `frameIntervalMs` is the frame this budget was cut from; the repay after an
+ * overrun is measured in it (see warmRepayMs).
+ *
+ * A NON-FINITE budget means the caller is not pacing anything — it is the
+ * arrival veil draining the queue behind an opaque cover, and every map it
+ * asks for must be resident before the cover lifts. Such a pump bypasses the
+ * repay gate entirely: a drain refused because the last upload ran long would
+ * lift the veil over unwarmed maps, which is the one thing the veil exists to
+ * prevent. It owes nothing afterwards either — nothing it spent was late.
  */
-export function pumpTextureWarmQueue(budgetMs: number): void {
+export function pumpTextureWarmQueue(budgetMs: number, frameIntervalMs: number): void {
   if (!uploadFn || (queue.length === 0 && !activeSlice)) return;
   const start = performance.now();
   // Sit out an overrun already owed, unless the queue would starve for it.
-  if (!warmPumpAllowed(start, warmRepayUntilMs, warmLastUploadAtMs)) return;
+  if (Number.isFinite(budgetMs) && !warmPumpAllowed(start, warmRepayUntilMs, warmLastUploadAtMs)) {
+    return;
+  }
   // A slice already in flight owns the frame: its texture has left the queue
   // but is not yet drawable, and finishing it is what lets anything else move.
   if (activeSlice) {
@@ -237,7 +271,7 @@ export function pumpTextureWarmQueue(budgetMs: number): void {
     if (spent >= budgetMs) {
       // Charge the overrun forward rather than paying another next frame:
       // consecutive big maps are what turn one slow upload into a stutter.
-      warmRepayUntilMs = warmLastUploadAtMs + Math.max(0, spent - budgetMs);
+      warmRepayUntilMs = warmLastUploadAtMs + warmRepayMs(spent, budgetMs, frameIntervalMs);
       return;
     }
   }

@@ -3793,7 +3793,7 @@ export class PlanetariumMode {
     // and let it finish — it applies on a quiet frame later instead of leaving
     // the body on its boot map for the session.
     for (const e of stillInFlight()) cancelTextureUpgrade(e.up, 'keep');
-    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY, this.frameIntervalMs);
   }
 
   async showDeferredResumePromptIfNeeded(): Promise<void> {
@@ -3997,7 +3997,7 @@ export class PlanetariumMode {
     // being asked of the frame — otherwise the whole decode+upload bill lands
     // inside whatever gesture first draws the map. Runs in every mode so
     // landed sessions warm up too.
-    pumpTextureWarmQueue(warmBudgetMs(this.frameIntervalMs));
+    pumpTextureWarmQueue(warmBudgetMs(this.frameIntervalMs), this.frameIntervalMs);
     // Climb any committed destination's warm ladder (see
     // warmArrivalDestination) — a no-op the moment every goal has disarmed.
     this.pumpArrivalWarmGoals();
@@ -16468,7 +16468,7 @@ export class PlanetariumMode {
           // resident system instead of stalling once per big map.
           if (systemName) {
             this.queueSystemMoonMapsForWarm(systemName);
-            pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+            pumpTextureWarmQueue(Number.POSITIVE_INFINITY, this.frameIntervalMs);
             this.warmedSystems.add(systemName);
           }
           // Take the hold's wait-list once, now that the arrival has started
@@ -16505,7 +16505,7 @@ export class PlanetariumMode {
             // away here is what used to pin a body to its boot map for the rest
             // of the session.
             for (const e of pending) cancelTextureUpgrade(e.up, 'keep');
-            pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+            pumpTextureWarmQueue(Number.POSITIVE_INFINITY, this.frameIntervalMs);
             // Hold the cover until the painted, teleported scene has rendered
             // (the landed/jumped system first appears on the next
             // update→render) and at least the min dwell, so a fast machine

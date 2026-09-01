@@ -1123,6 +1123,11 @@ export interface SurfaceShadingArgs {
    *  crater bump — which makes the synthesized relief wait for that bump's own
    *  texels to stretch past a pixel instead of drawing on top of them. */
   uSynthBumpFade: { value: number };
+  /** What relief this material was last told it carries. Held rather than read
+   *  back off the two uniforms above: on a surface class that draws no relief
+   *  at all the gain is zero whatever is bound, so a uniform read cannot tell a
+   *  gas giant with nothing on it from a body wearing measured elevation. */
+  relief: SurfaceReliefKind;
   /** What `uSynthRelief` goes back to when nothing else supplies relief — the
    *  archetype's own gain against the field's built geometry. */
   synthReliefGain: number;
@@ -1210,6 +1215,7 @@ export function setSurfaceSynthesis(
   args.uSynthEnvelope.value = envelope;
   args.uSynthRelief.value = relief === 'measured' ? 0 : args.synthReliefGain;
   args.uSynthBumpFade.value = relief === 'painted' ? 1 : 0;
+  args.relief = relief;
 }
 
 /** How much of the term this material is drawing, and what its relief is doing
@@ -1219,10 +1225,7 @@ export function surfaceSynthesisOf(
 ): { envelope: number; relief: SurfaceReliefKind } | undefined {
   const args = augmentArgs.get(mat);
   if (!args) return undefined;
-  const relief: SurfaceReliefKind = args.uSynthRelief.value <= 0
-    ? 'measured'
-    : args.uSynthBumpFade.value > 0 ? 'painted' : 'none';
-  return { envelope: args.uSynthEnvelope.value, relief };
+  return { envelope: args.uSynthEnvelope.value, relief: args.relief };
 }
 
 /** 1×1 stand-ins, shared by every augmented material: no sampler is ever left
@@ -1354,7 +1357,7 @@ export function augmentSurfaceMaterial(
   const uSynthBumpFade = { value: 0 };
   augmentArgs.set(mat, {
     archetype, ringShadow, sunTan, fx, uFrameSpin, uWaterGloss,
-    uSynthEnvelope, uSynthRelief, uSynthBumpFade, synthReliefGain, seedName,
+    uSynthEnvelope, uSynthRelief, uSynthBumpFade, relief: 'none', synthReliefGain, seedName,
   });
   const uNightColor = { value: new THREE.Color(night.color) };
   const uNightStrength = { value: night.strength };

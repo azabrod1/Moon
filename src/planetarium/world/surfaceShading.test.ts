@@ -209,6 +209,23 @@ describe('the close-range detail term', () => {
     );
   });
 
+  it('says what a surface carries, not what its uniforms came out as', () => {
+    // A class that draws no relief at all holds its gain at zero whatever is
+    // bound, so reading the kind back off the uniforms would report every gas
+    // giant and every cloud deck as wearing a measured surface.
+    const gas = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(gas, 'gas', undefined, 0, undefined, undefined, 'Jupiter');
+    expect(surfaceReliefKind(gas)).toBe('none');
+    setSurfaceSynthesis(gas, 1, surfaceReliefKind(gas));
+    expect(surfaceSynthesisOf(gas)).toEqual({ envelope: 1, relief: 'none' });
+    // And a body that really does wear one still says so.
+    const moon = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(moon, 'airless', undefined, 0, undefined, undefined, 'Moon');
+    moon.normalMap = new THREE.Texture();
+    setSurfaceSynthesis(moon, 1, surfaceReliefKind(moon));
+    expect(surfaceSynthesisOf(moon)?.relief).toBe('measured');
+  });
+
   it('draws its field on charts with no pole and a bounded stretch', () => {
     // A longitude/latitude domain pinches to a point at each pole, where a cell
     // is a sliver and its longitudinal slope is however many times steeper the

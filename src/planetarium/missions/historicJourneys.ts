@@ -395,7 +395,7 @@ const newHorizonsMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JHUAPL/SwRI',
     imageSourceLabel: 'Color image of Pluto',
     imageSourceUrl: 'https://www.jpl.nasa.gov/images/pia20291-color-image-of-pluto/',
-    ...textureFallback('pluto.webp', 'Pluto'),
+    ...textureFallback('pluto.v2.webp', 'Pluto'),
   },
   {
     id: 'kuiper-belt',
@@ -410,7 +410,7 @@ const newHorizonsMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA/Johns Hopkins University Applied Physics Laboratory/Southwest Research Institute',
     imageSourceLabel: 'First images of Arrokoth',
     imageSourceUrl: 'https://science.nasa.gov/resource/first-images-of-arrokoth-2014-mu69/',
-    ...textureFallback('pluto.webp', 'Pluto'),
+    ...textureFallback('pluto.v2.webp', 'Pluto'),
     // Camera sits past Pluto's Jan 2019 position (11.9, -12.6, 28.9) along the
     // outbound radial, looking back at it — Pluto's world position comes from
     // computeBodyState (Standish elements); retune if the planet model changes.

@@ -1573,48 +1573,51 @@ describe('the ladder against the sector memory envelope', () => {
     return bytes;
   }
 
-  it('leaves a desktop its whole budget once the compressed rungs are readable', () => {
-    // What a desktop session really holds: six 4K planet maps and FOUR 8K
-    // ones — the Moon, the cloud deck, Earth's globe and its night lights.
-    // Every 8K rung is a compressed container at 42.7 MiB rather than 170.7,
-    // and of the 4K rungs the two whose container is small enough to ship
-    // (Mercury and Mars) hold 10.7 MiB where the other four hold 42.7. The
-    // three 4K containers the boot warm uses are not in this sum at all: the
-    // Moon, the deck and the night lights all reach 8K on a desktop, so the
-    // rung their container serves has been climbed past by the time the
+  it('leaves a desktop\'s tiles their working set with every rung earned at once', () => {
+    // What a desktop session could hold if it toured everything and gave
+    // nothing back: nine 4K containers at 10.7 MiB (Mercury and Mars, plus the
+    // seven photo moons whose ladder stops at 4K), three 4K webp rungs at 42.7
+    // (Venus, Jupiter, Saturn), and nine 8K containers at 42.7 — the Moon, the
+    // cloud deck, Earth's globe and its night lights, and the five bodies with
+    // an 8K photo rung. The 4K containers the boot warm uses are not in this
+    // sum: the Moon, the deck and the night lights all reach 8K on a desktop,
+    // so the rung their container serves has been climbed past by the time the
     // ladder is at its heaviest. They buy a frame, not memory, here.
     const real = ladderWorstCaseBytes(false, true);
-    expect(mib(real)).toBeCloseTo(362.7, 1);
+    expect(mib(real)).toBeCloseTo(608.0, 1);
     expect(mib(real)).toBeCloseTo(
-      2 * mib(equirectMapGpuBytes(4096, true))
-      + 4 * mib(equirectMapGpuBytes(4096))
-      + 4 * mib(equirectMapGpuBytes(8192, true)),
+      9 * mib(equirectMapGpuBytes(4096, true))
+      + 3 * mib(equirectMapGpuBytes(4096))
+      + 9 * mib(equirectMapGpuBytes(8192, true)),
       1,
     );
     const budget = UNMEASURED_DESKTOP_PROFILE.envelopeBytes - real;
-    // The heaviest ladder still leaves the tiles their whole ceiling, so what
-    // the streamer spends is that ceiling and not what the globe maps left
-    // over — and the ceiling in turn buys more sets than the draw-call cap
-    // will admit, which is what makes the cap the binding limit on a desktop.
-    expect(mib(Math.min(budget, UNMEASURED_DESKTOP_PROFILE.ceilingBytes))).toBeCloseTo(512.0, 1);
-    expect(budget).toBeGreaterThan(UNMEASURED_DESKTOP_PROFILE.ceilingBytes);
+    expect(mib(budget)).toBeCloseTo(416.0, 1);
+    // Twenty-one bodies with a ladder no longer leave the tiles the whole
+    // draw-call ceiling to spend, which is the price of the moons having real
+    // maps. What has to survive it is the working set: even at the heaviest
+    // the ladder can be, what is left over still holds every set the streamer
+    // is allowed to keep resident, so a tile is never evicted to pay for a
+    // globe.
+    expect(budget / sectorSetGpuBytes(SECTOR_SETS.Earth))
+      .toBeGreaterThanOrEqual(UNMEASURED_DESKTOP_PROFILE.residentCap);
     expect(UNMEASURED_DESKTOP_PROFILE.ceilingBytes / sectorSetGpuBytes(SECTOR_SETS.Earth))
       .toBeGreaterThanOrEqual(UNMEASURED_DESKTOP_PROFILE.residentCap);
 
-    // And with no transcoder at all: the two rungs that keep a webp twin
-    // cost 170.7 MiB each, and the two that ship only as a container are not
-    // fetched at all — Earth's globe stays on the 4096 map it boots with and
-    // its night shell stops at 4K, rather than the ladder charging 171 MiB
-    // apiece for maps that do not exist in that form. Seven 4K maps and two
-    // 8K ones, which still sits under the ladder's own ceiling (the envelope
-    // less the tiles' floor), so nothing refuses it.
+    // And with no transcoder at all: the rungs that keep a webp twin cost
+    // 170.7 MiB each at 8K, and every container-only rung is not fetched at
+    // all — Earth's globe stays on the 4096 map it boots with, and each photo
+    // moon stays on its boot map — rather than the ladder charging 171 MiB
+    // apiece for maps that do not exist in that form. Five 4K maps, Earth's
+    // 4K night shell and two 8K ones, which still sits under the ladder's own
+    // ceiling (the envelope less the tiles' floor), so nothing refuses it.
     const worst = ladderWorstCaseBytes(false, false);
-    expect(mib(worst)).toBeCloseTo(640.0, 1);
+    expect(mib(worst)).toBeCloseTo(597.3, 1);
     expect(worst).toBeLessThanOrEqual(
       ladderCeilingBytes(UNMEASURED_DESKTOP_PROFILE, UNMEASURED_DESKTOP_PROFILE.sectorFloorBytes),
     );
     const worstBudget = UNMEASURED_DESKTOP_PROFILE.envelopeBytes - worst;
-    expect(mib(worstBudget)).toBeCloseTo(384.0, 1);
+    expect(mib(worstBudget)).toBeCloseTo(426.7, 1);
     // Even on that ladder — every map at its heaviest, no transcoder — what
     // is left over still holds a whole working set, so the tiles are never
     // squeezed by the globe maps on this row.
@@ -1627,16 +1630,15 @@ describe('the ladder against the sector memory envelope', () => {
     // unavailable — what the ladder USED to be able to hold, since nothing
     // ever asked whether the next map fit.
     const worst = ladderWorstCaseBytes(true, false);
-    expect(mib(worst)).toBeCloseTo(512.0, 1);
+    expect(mib(worst)).toBeCloseTo(469.3, 1);
     expect(mib(worst)).toBeGreaterThan(mib(UNMEASURED_TOUCH_PROFILE.envelopeBytes));
-    // Nor with one. The containers take 181.3 MiB off that: three of this
-    // profile's 4K rungs ship as one — Mercury, Mars, and the cloud deck,
-    // which fill rate holds at 4K on a phone however much memory is free — at
-    // 32 MiB apiece, and the Moon's 8K saves 128, against which Earth's globe
-    // rejoins the ladder for 42.7 (with no transcoder it is not fetched at
-    // all). 330.7 MiB is still past a 320 MiB envelope, so the arithmetic is
-    // what settles a phone's ladder either way.
-    expect(mib(ladderWorstCaseBytes(true, true))).toBeCloseTo(330.7, 1);
+    // Nor with one, and it is HEAVIER with one — a transcoder is what makes
+    // the container-only rungs exist at all, so it hands this phone thirteen
+    // more bodies to climb (twelve photo moons and Earth's globe) while taking
+    // three quarters off each rung it already had. Neither figure is a thing
+    // that happens; both are past a 320 MiB envelope, which is the point: the
+    // arithmetic settles a phone's ladder either way.
+    expect(mib(ladderWorstCaseBytes(true, true))).toBeCloseTo(576.0, 1);
     expect(ladderWorstCaseBytes(true, true)).toBeGreaterThan(UNMEASURED_TOUCH_PROFILE.envelopeBytes);
     // It is now unreachable. The rung that would cross the envelope less the
     // tiles' floor is refused before it is fetched, so the ladder settles
@@ -2405,11 +2407,14 @@ describe('the rungs that ship only as a compressed container', () => {
     expect(resolveTierFile('moon', '4k')).toBe('moon.ktx2');
     expect(resolveTierFile('earthClouds', '4k')).toBe('earth-clouds.ktx2');
     expect(resolveTierFile('earthNight', '4k')).toBe('earth-night.v2.ktx2');
+    // The photo-moon rungs, which ship as containers alone.
+    expect(resolveTierFile('enceladus', '4k')).toBe('enceladus.ktx2');
+    expect(resolveTierFile('io', '8k')).toBe('io.v2.ktx2');
+    expect(resolveTierFile('pluto', '4k')).toBe('pluto.v2.ktx2');
     // And the 4K rungs that keep their webp: no container ships for them at
     // all, so the file is the same one an unbound loader would ask for.
     expect(resolveTierFile('saturn', '4k')).toBe('saturn.webp');
     expect(resolveTierFile('venus', '4k')).toBe('venus.webp');
-    expect(resolveTierFile('pluto', '4k')).toBe('pluto.webp');
     // Earth's globe has no 4K rung to override: it boots on that map.
     expect(resolveTierFile('earthDay', '4k')).toBe('earth-day.v2.webp');
   });
@@ -2439,12 +2444,13 @@ describe('the rungs that ship only as a compressed container', () => {
     for (const key of ['moon', 'earthClouds', 'earthDay', 'earthNight']) {
       expect(mib(tierUploadBytes(key, '8k'))).toBeCloseTo(42.7, 1);
     }
-    // And a quarter of a 4K rung's uncompressed 42.7, for the five 4K rungs
-    // that ship as a container — the rest are charged the webp they fetch.
-    for (const key of ['mercury', 'mars', 'moon', 'earthClouds', 'earthNight']) {
+    // And a quarter of a 4K rung's uncompressed 42.7, for every 4K rung that
+    // ships as a container — the rest are charged the webp they fetch.
+    for (const key of ['mercury', 'mars', 'moon', 'earthClouds', 'earthNight',
+      'enceladus', 'charon', 'callisto', 'pluto']) {
       expect(mib(tierUploadBytes(key, '4k'))).toBeCloseTo(10.7, 1);
     }
-    for (const key of ['venus', 'jupiter', 'saturn', 'pluto']) {
+    for (const key of ['venus', 'jupiter', 'saturn']) {
       expect(mib(tierUploadBytes(key, '4k'))).toBeCloseTo(42.7, 1);
     }
     // With a transcoder but no compressed format to target, three hands back

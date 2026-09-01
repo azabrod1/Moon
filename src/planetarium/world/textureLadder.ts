@@ -91,13 +91,19 @@ export const PLANET_TEXTURE_FILES: Record<string, string> = {
   saturn: 'saturn.webp',
   uranus: 'uranus.webp',
   neptune: 'neptune.webp',
-  pluto: 'pluto.webp',
+  pluto: 'pluto.v2.webp',
   moon: 'moon.webp',
   moonNormal: 'moon-normal.webp',
-  io: 'io.webp',
-  europa: 'europa.webp',
-  ganymede: 'ganymede.webp',
-  callisto: 'callisto.webp',
+  // The Galileans and Pluto re-base together, off the USGS mosaics their new
+  // rungs are cut from, so boot map and rung are one product. For the four
+  // Galileans that also fixes what they were drawing: their old maps put 0°E
+  // at the LEFT edge, half a turn from where the sphere samples the prime
+  // meridian, so each was showing its anti-Jupiter hemisphere at the
+  // sub-Jupiter point. The `.v2` maps turn them 180° back.
+  io: 'io.v2.webp',
+  europa: 'europa.v2.webp',
+  ganymede: 'ganymede.v2.webp',
+  callisto: 'callisto.v2.webp',
   triton: 'triton.webp',
   // Spacecraft mosaics for the moons that drew as procedural noise balls
   // until now (Cassini for the Saturnians, New Horizons for Charon, Voyager 2
@@ -238,8 +244,8 @@ export function upgradeComplete(up: TextureUpgrade): boolean {
 // source is grayscale); its never-imaged south is an honest dark cap, and its
 // under-imaged far hemisphere is left as the real low-res data — soft, but
 // honest (synthetic relief/detail was tried and dropped: it read as fake
-// craters at grazing light). Both its tiers bake from one source, so 4K is a
-// pure sharpen. The cloud deck climbs to 8K because the ground under it is
+// craters at grazing light). All three of its tiers bake from one source in
+// one run, so each step is a pure sharpen. The cloud deck climbs to 8K because the ground under it is
 // streamed at 16K and a 4K deck is then the soft layer on top; the 8K deck is
 // the SSS product itself (the 4K is its downsample: RMS 7 against it, equal
 // means). Earth's day map has ONE rung and it is 8K: the globe boots on the
@@ -254,7 +260,7 @@ export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
   mars: ['4k'],
   jupiter: ['4k'],
   saturn: ['4k'],
-  pluto: ['4k'],
+  pluto: ['4k', '8k'],
   moon: ['4k', '8k'],
   earthClouds: ['4k', '8k'],
   earthDay: ['8k'],
@@ -265,6 +271,26 @@ export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
   // 768 MiB sector envelope on every desktop that has flown past the night
   // side, where the compressed container holds 42.7.
   earthNight: ['4k', '8k'],
+  // The photo moons. Each rung is cut from the same mosaic as the boot map
+  // under it, in the same run, so every step is a pure sharpen. Which rungs a
+  // body has is a fact about its source: Titan's mosaic is 4040 px and
+  // Miranda's and Ariel's are 1440, so those three are boot-only and stay out
+  // of this table entirely.
+  enceladus: ['4k'],
+  mimas: ['4k'],
+  dione: ['4k'],
+  tethys: ['4k'],
+  rhea: ['4k'],
+  iapetus: ['4k'],
+  charon: ['4k'],
+  // Io, Europa and Ganymede boot at 4096 already, so 4K would be the map they
+  // are drawing — their one step is 8K. Callisto boots 1800 wide and Pluto
+  // 2048, so both have a 4K rung under theirs; Callisto's is a 2.28x sharpen
+  // rather than the usual 2x, which is what its boot width makes it.
+  io: ['8k'],
+  europa: ['8k'],
+  ganymede: ['8k'],
+  callisto: ['4k', '8k'],
 };
 
 // A device profile may cap a key below its ladder's top, over the GL clamp:
@@ -285,31 +311,37 @@ export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
 // map, bands cleanly, and stays compressed in VRAM: 10.7 MiB for a 4K rung
 // instead of 42.7, 42.7 for an 8K instead of 170.7.
 //
-// Which rungs get one is decided on the wire, because UASTC is a fixed 8 bits
-// a texel whatever the picture holds: a container is several times its webp,
-// and many times it for a low-frequency map. Every 8K rung is worth that —
-// nothing else answers a 170.7 MiB upload. At 4K a container may cost at most
-// four times its webp twin, which only Mercury and Mars clear on the general
-// rule; the rest keep their webp rung and pay the upload, because a tour of
-// six planets pulling tens of megabytes where it pulled a few is a bill on
-// mobile data that a smoother upload does not settle. The three maps the boot
-// warm uploads are the exception, and the rows below say why: their bytes are
-// not per-tour. gen-ktx2.mjs's job table carries the measurement behind each
-// decision. Either way the bytes are paid only when a session earns the tier,
-// and cached by the service worker thereafter. The override is consulted only
-// while a KTX2 loader is bound, so tests and a session whose transcoder failed
-// to load never ask for a container they cannot read.
+// Which rungs get one is decided on the wire, and the answer depends on the
+// encoding, because the two the pipeline offers price nothing alike. UASTC is
+// a fixed 8 bits a texel whatever the picture holds, so its container is
+// several times its webp and many times it for a low-frequency map; it is the
+// format for a map made of slow gradients, which is what its rival cannot
+// hold. Every 8K UASTC rung is worth that cost — nothing else answers a
+// 170.7 MiB upload. At 4K a UASTC container may cost at most four times its
+// webp twin, which only Mercury and Mars clear on the general rule; the rest
+// keep their webp rung and pay the upload, because a tour of six planets
+// pulling tens of megabytes where it pulled a few is a bill on mobile data
+// that a smoother upload does not settle. The three maps the boot warm uploads
+// are the exception, and the rows below say why: their bytes are not per-tour.
+// ETC1S changes the arithmetic wherever a map can take it: roughly webp-sized
+// on the wire and half of UASTC in VRAM, so for the photo moons there is no
+// trade left to make. gen-ktx2.mjs's job table carries the measurement behind
+// each decision. Either way the bytes are paid only when a session earns the
+// tier, and cached by the service worker thereafter. The override is consulted
+// only while a KTX2 loader is bound, so tests and a session whose transcoder
+// failed to load never ask for a container they cannot read.
 //
 // `webp` says whether a classic map of the same resolution also ships, which
 // is what an unbound loader falls back to. Where it does not, the rung is
 // ABSENT rather than merely expensive: the ladder's top drops to the rung
 // below (or the boot map) instead of fetching a URL that 404s, and the
 // memory arithmetic never charges an uncompressed map for one that does not
-// exist in that form. Every 4K rung keeps its twin — those webps already ship
-// and a device with no transcoder must still be able to climb — as do the two
-// 8K maps that predate this pipeline. The two 8K rungs added since ship as one
-// file, because a second copy of a 33MP map on disk is 4 MB nothing with a
-// working transcoder fetches.
+// exist in that form. The planet and Earth rungs keep their twins — those
+// webps already ship and a device with no transcoder must still be able to
+// climb them. Everything cut since ships as one file, because a second copy of
+// a map is disk and deploy weight that nothing with a working transcoder
+// fetches, and for the moons it would also be a copy nobody wants: the ETC1S
+// container is already the small one.
 export interface CompressedRung {
   /** Filename under the tier's folder — resolveTextureUrl adds the rest. */
   file: string;
@@ -343,6 +375,34 @@ export const TIER_FILE_OVERRIDES: Record<string, Partial<Record<TextureTier, Com
   earthNight: {
     '4k': { file: 'earth-night.v2.ktx2', webp: true },
     '8k': { file: 'earth-night.v2.ktx2', webp: false },
+  },
+  // Every photo-moon rung, at both tiers, ships as a container ALONE. These
+  // maps encode as ETC1S rather than UASTC — a cratered icy moon is texture at
+  // every scale, which is the shared codebook's best case, where a slow ramp
+  // is what it cannot hold — and at ETC1S the container lands around the size
+  // of the webp twin on the wire (0.80x to 2.99x, measured per body) while
+  // holding a quarter of the VRAM. A twin would then be weight in the deploy
+  // and nothing else, so there is none, and a session with no transcoder keeps
+  // the boot map rather than climbing. That is also what prices a nine-body
+  // moon tour inside a small profile's ladder ceiling: 10.7 MiB a 4K rung
+  // instead of 42.7.
+  enceladus: { '4k': { file: 'enceladus.ktx2', webp: false } },
+  mimas: { '4k': { file: 'mimas.ktx2', webp: false } },
+  dione: { '4k': { file: 'dione.ktx2', webp: false } },
+  tethys: { '4k': { file: 'tethys.ktx2', webp: false } },
+  rhea: { '4k': { file: 'rhea.ktx2', webp: false } },
+  iapetus: { '4k': { file: 'iapetus.ktx2', webp: false } },
+  charon: { '4k': { file: 'charon.ktx2', webp: false } },
+  io: { '8k': { file: 'io.v2.ktx2', webp: false } },
+  europa: { '8k': { file: 'europa.v2.ktx2', webp: false } },
+  ganymede: { '8k': { file: 'ganymede.v2.ktx2', webp: false } },
+  callisto: {
+    '4k': { file: 'callisto.v2.ktx2', webp: false },
+    '8k': { file: 'callisto.v2.ktx2', webp: false },
+  },
+  pluto: {
+    '4k': { file: 'pluto.v2.ktx2', webp: false },
+    '8k': { file: 'pluto.v2.ktx2', webp: false },
   },
 };
 
@@ -391,7 +451,17 @@ export function tierAvailable(key: string, tier: TextureTier): boolean {
  *  measure their magnification against this floor: read as 2048 the day tiles
  *  would be wanted at half the distance they are sized for, which is a 21 MiB
  *  upload apiece for texels the globe already has. */
-const BOOT_MAP_WIDTH: Record<string, number> = { earthDay: 4096 };
+const BOOT_MAP_WIDTH: Record<string, number> = {
+  earthDay: 4096,
+  // The three Galileans whose USGS mosaic ships at 4096 as the first-paint
+  // map. Their one rung is 8K, and without the real width here the ladder
+  // would read them as 2048-wide bodies: half the magnification they are
+  // actually drawing, which is what decides whether the 8K rung is wanted at
+  // all and, for a streamed body, how its sectors are sized.
+  io: 4096,
+  europa: 4096,
+  ganymede: 4096,
+};
 
 // Colour-map precedence: procedural floor 0, then one rank per tier. Ranks are
 // what make every apply order-independent — a late boot-map arrival can't
@@ -648,6 +718,16 @@ export const UPGRADE_TRIGGER_FRACTION: Partial<Record<TextureTier, number>> = { 
 const UPGRADE_TRIGGER_FRACTION_BY_KEY: Record<string, Partial<Record<TextureTier, number>>> = {
   earthClouds: { '8k': 0.5 },
   earthDay: { '8k': 0.5 },
+  // Io, Europa and Ganymede boot on a 4096 map, so their 8K rung is the same
+  // arithmetic Earth's globe is: one step, and its texels reach a device pixel
+  // only once the disc stands about half a viewport tall. Left at the tier's
+  // own 0.22 gate it would also be a body's FIRST rung, which is what an
+  // arrival veil waits on — 33 megapixels held between the player and a reveal
+  // that could not show them. Raised above the tier gate, arrivalUpgradeTier
+  // reads the rung as approach work and the veil stops waiting.
+  io: { '8k': 0.5 },
+  europa: { '8k': 0.5 },
+  ganymede: { '8k': 0.5 },
 };
 
 /** The screen fraction at which `tier` earns its download for `key`. */

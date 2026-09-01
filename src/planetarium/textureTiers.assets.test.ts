@@ -182,15 +182,22 @@ describe('the files behind the colour ladder', () => {
 
   it('ships the containers the wire rules admitted, and no others', () => {
     // Which rungs get a container is a decision about DOWNLOAD size — the
-    // reasoning is on the rows in PlanetFactory and in gen-ktx2.mjs's job
+    // reasoning is on the rows in textureLadder and in gen-ktx2.mjs's job
     // table — and it is the kind of decision that gets quietly widened by
-    // anyone adding a map. Every 8K rung earns one. A 4K rung earns one only
-    // by staying inside four times the webp twin that has to keep shipping
-    // beside it, which of the maps a session tours is Mercury and Mars alone;
-    // the Moon, the cloud deck and Earth's night lights are the three the
-    // boot warm uploads on every session, downloaded once per device rather
-    // than once per tour, and admitted on that basis. Written out in the
-    // table's own order so a tenth container has to be argued for here too.
+    // anyone adding a map. The UASTC ones are held to the tight bar: every 8K
+    // rung earns one because nothing else answers a 170.7 MiB upload, while a
+    // 4K rung earns one only by staying inside four times the webp twin that
+    // has to keep shipping beside it — of the maps a session tours, Mercury
+    // and Mars alone. The Moon, the cloud deck and Earth's night lights are
+    // the three the boot warm uploads on every session, downloaded once per
+    // device rather than once per tour, and admitted on that basis.
+    //
+    // The photo moons are ETC1S, and that bar does not apply to them at all:
+    // the container is roughly the webp's size on the wire, so there is no
+    // twin and nothing extra to download. What they must not do is hold an
+    // uncompressed map's VRAM through a nine-body tour, and at a quarter of it
+    // they do not. Written out in the table's own order so a new container has
+    // to be argued for here too.
     const shipped = Object.entries(TIER_FILE_OVERRIDES).flatMap(([key, byTier]) =>
       Object.entries(byTier).map(([tier, rung]) => `${key} ${tier}: ${tier}/${rung.file}`));
     expect(shipped).toEqual([
@@ -203,54 +210,28 @@ describe('the files behind the colour ladder', () => {
       'earthDay 8k: 8k/earth-day.v2.ktx2',
       'earthNight 4k: 4k/earth-night.v2.ktx2',
       'earthNight 8k: 8k/earth-night.v2.ktx2',
+      'enceladus 4k: 4k/enceladus.ktx2',
+      'mimas 4k: 4k/mimas.ktx2',
+      'dione 4k: 4k/dione.ktx2',
+      'tethys 4k: 4k/tethys.ktx2',
+      'rhea 4k: 4k/rhea.ktx2',
+      'iapetus 4k: 4k/iapetus.ktx2',
+      'charon 4k: 4k/charon.ktx2',
+      'io 8k: 8k/io.v2.ktx2',
+      'europa 8k: 8k/europa.v2.ktx2',
+      'ganymede 8k: 8k/ganymede.v2.ktx2',
+      'callisto 4k: 4k/callisto.v2.ktx2',
+      'callisto 8k: 8k/callisto.v2.ktx2',
+      'pluto 4k: 4k/pluto.v2.ktx2',
+      'pluto 8k: 8k/pluto.v2.ktx2',
     ]);
   });
 
-  // Containers cut and header-checked ahead of the ladder rows that will name
-  // them: the maps and the rungs for the photo moons come out of one
-  // gen:moonmaps run, so the assets land before the wiring that reads them.
-  // Until a row names one it is inert — nothing resolves these pathnames — but
-  // it is still bytes in the deploy, so it is pinned here with its argument
-  // the same way a live rung is. Every entry moves into TIER_FILE_OVERRIDES
-  // (and out of this list) when its key is wired.
-  const STAGED_CONTAINERS: Array<[string, TextureTier]> = [
-    // Every photo-moon rung, at both tiers, ships as a container ALONE. What
-    // admits them is the ETC1S measurement in CONTAINER_COLOR_MODEL above: at
-    // roughly the size of the webp twin on the wire, the twin buys nothing but
-    // weight in the deploy, while the container also holds a quarter of the
-    // VRAM — 10.7 MiB for a 4K rung against 42.7, 21.3 for an 8K against
-    // 170.7, which is what makes a nine-body moon tour fit a phone's ladder
-    // ceiling at all. A session with no transcoder stops at the boot map
-    // instead of climbing.
-    ['4k/enceladus.ktx2', '4k'],
-    ['4k/mimas.ktx2', '4k'],
-    ['4k/dione.ktx2', '4k'],
-    ['4k/tethys.ktx2', '4k'],
-    ['4k/rhea.ktx2', '4k'],
-    ['4k/iapetus.ktx2', '4k'],
-    ['4k/charon.ktx2', '4k'],
-    ['4k/callisto.v2.ktx2', '4k'],
-    ['4k/pluto.v2.ktx2', '4k'],
-    ['8k/io.v2.ktx2', '8k'],
-    ['8k/europa.v2.ktx2', '8k'],
-    ['8k/ganymede.v2.ktx2', '8k'],
-    ['8k/callisto.v2.ktx2', '8k'],
-    ['8k/pluto.v2.ktx2', '8k'],
-  ];
-
-  it('ships the staged containers, and no others', () => {
-    const staged = STAGED_CONTAINERS.map(([file]) => file);
-    expect(staged.filter((file) => existsSync(resolve(TEXTURES, file)))).toEqual(staged);
-  });
-
   it('carries a full baked mip chain at the tier width in every container', () => {
-    const rungs: Array<[string, string, TextureTier]> = [
-      ...Object.entries(TIER_FILE_OVERRIDES).flatMap(([, byTier]) =>
-        Object.entries(byTier).map(([tier, rung]): [string, string, TextureTier] =>
-          [`${tier}/${rung.file}`, tierPath(rung.file, tier as TextureTier), tier as TextureTier])),
-      ...STAGED_CONTAINERS.map(([file, tier]): [string, string, TextureTier] =>
-        [file, resolve(TEXTURES, file), tier]),
-    ];
+    const rungs: Array<[string, string, TextureTier]> = Object.entries(TIER_FILE_OVERRIDES)
+      .flatMap(([, byTier]) => Object.entries(byTier)
+        .map(([tier, rung]): [string, string, TextureTier] =>
+          [`${tier}/${rung.file}`, tierPath(rung.file, tier as TextureTier), tier as TextureTier]));
     for (const [key, file, tier] of rungs) {
       const width = TIER_MAP_WIDTH[tier];
       const colorModel = CONTAINER_COLOR_MODEL[key];

@@ -30,6 +30,10 @@
 //   tour      Six planets then Earth. The ladder used to keep every map it had
 //             ever fetched, which left the tiles under one set for the rest of
 //             the session; the maps must come back and the floor must hold.
+//   moon-tour Nine photo-mapped moons in one session through the REAL travel
+//             pipeline, twice: once at the machine's own envelope and once
+//             squeezed to 200 MiB, which is what makes the release machinery
+//             run on a desktop.
 //   envelope  The device -> class -> row switch, live, on four contexts
 //             (Apple phone, Apple tablet, Android phone, WebKit) plus the
 //             Moon's top rung on the phone against a desktop control.
@@ -259,6 +263,162 @@ async function budgetGate(r, page, { poses, longSamples = 40, shortSamples = 8, 
   }
 }
 
+/** The nine photo-mapped moons, in the order a visitor would sweep the outer
+ *  system. Every one of them earns a globe map of its own, which is what makes
+ *  this the tour that prices the batch. */
+const MOON_TOUR = [
+  'Io', 'Europa', 'Ganymede', 'Callisto',
+  'Titan', 'Enceladus', 'Dione', 'Rhea', 'Iapetus',
+];
+
+/**
+ * One moon tour: nine legs through the REAL travel pipeline (veil, arrival
+ * warm-up, flyby), sampled the whole way.
+ *
+ * The invariant is the same one every other scenario here asserts, taken at
+ * every sample of every leg: the tiles and the globe maps spend ONE envelope,
+ * neither manager holds past its own ceiling, and the sector budget never
+ * falls under the floor it was promised. What differs between the two passes
+ * is only what churn is expected — at a desktop envelope the whole tour fits
+ * and no row needs to release anything; squeezed, releases are the point.
+ *
+ * A release is never a failure by itself. What would be a failure is a release
+ * that leaves something behind: a rung stuck mid-release, a stand-in never
+ * fetched back, or a destination that the pass reaches with nothing on screen.
+ * There is no per-body paint flag in these readouts, so "painted" is asserted
+ * as the two things they can see — the body is on screen with a disc when its
+ * pass ends, and nothing errored — while the rung line prints what map each
+ * body was actually wearing at closest approach.
+ *
+ * Moons are flown PAST, not parked at, so a leg ends at a closest approach
+ * that has been made and left behind; waiting for stillness would wait for
+ * something that never comes.
+ */
+async function moonTourPass(browser, r, { label, query = '', squeezedToMiB = null }) {
+  const { ctx, page, errors } = await boot(browser, { query });
+  try {
+    r.say(`\n# ${label} @ ${URL_BASE}`);
+    const row = await page.evaluate(() => (window.__moon.device ? window.__moon.device() : null));
+    if (row) {
+      r.say(`  row: ${row.deviceClass}/${row.family} ${row.profile} (${row.provenance})`
+        + ` — envelope ${mib(row.envelopeBytes)} MiB, tiles ${mib(row.ceilingBytes)} MiB`);
+    }
+    const RANK = { '2k': 2, '4k': 4, '8k': 8 };
+    const tierOf = (rank) => Object.keys(RANK).find((k) => RANK[k] === rank) ?? 'boot';
+    const rungs = new Map(); // key -> tier rank, so every swap DOWN is caught
+    const releases = [];
+    let peakMaps = 0;
+
+    /** Both ledgers and the destination's own geometry in ONE round trip, so
+     *  the three readings are one moment. */
+    const sampleAt = (body) => page.evaluate((n) => ({
+      s: window.__moon.sectors(), l: window.__moon.ladder(), p: window.__moon.probe(n),
+    }), body);
+
+    const check = (where, s, l) => {
+      checkSharedEnvelope(r, where, s, l);
+      if (l.heldBytes > l.ceilingBytes) {
+        r.fail(`${where}: globe maps ${mib(l.heldBytes)} over the ladder ceiling ${mib(l.ceilingBytes)} MiB`);
+      }
+      if (s.budget < s.floor) r.fail(`${where}: budget ${mib(s.budget)} under the floor ${mib(s.floor)} MiB`);
+      if (s.budgetedBytes + s.reserved > s.budget) {
+        r.fail(`${where}: tiles ${mib(s.budgetedBytes + s.reserved)} over the budget ${mib(s.budget)} MiB`);
+      }
+      const now = new Map(l.rungs.map((x) => [x.key, x.tier ? RANK[x.tier] : 0]));
+      for (const [key, was] of rungs) {
+        const rank = now.get(key) ?? 0;
+        if (rank < was) releases.push(`${where}: ${key} ${tierOf(was)} -> ${tierOf(rank)}`);
+      }
+      for (const key of rungs.keys()) rungs.set(key, now.get(key) ?? 0);
+      for (const [key, rank] of now) rungs.set(key, rank);
+      peakMaps = Math.max(peakMaps, l.heldBytes);
+    };
+
+    if (squeezedToMiB !== null) {
+      const l0 = await page.evaluate(() => window.__moon.ladder());
+      const want = squeezedToMiB * MiB;
+      // Without this the pass would silently measure an unsqueezed session and
+      // report a clean tour as proof the release machine works.
+      if (l0.envelopeBytes !== want) {
+        r.fail(`?envelope=${squeezedToMiB} did not take: the envelope reads ${mib(l0.envelopeBytes)} MiB`);
+      }
+    }
+
+    for (const body of MOON_TOUR) {
+      if (!await page.evaluate((n) => window.__moon.travelTo(n), body)) {
+        r.fail(`${body}: travelTo returned false`);
+        continue;
+      }
+      // The flight needs a beat to start, or the first range read is "has not
+      // left yet" rather than "arriving".
+      await page.waitForTimeout(3000);
+      let minRadii = Infinity;
+      let closest = null;
+      let still = 0;
+      let departing = 0;
+      let outcome = 'timeout';
+      let last = null;
+      let prevRadii = null;
+      for (let t = 0; t < 75; t++) {
+        await page.waitForTimeout(1000);
+        const at = await sampleAt(body);
+        if (!at.s || !at.l || !at.p) { r.fail(`${body} +${t}s: no stats`); break; }
+        check(`${body} +${t}s`, at.s, at.l);
+        last = at;
+        const radii = at.p.found && at.p.radiusAU ? at.p.distToBodyAU / at.p.radiusAU : null;
+        if (radii === null) continue;
+        if (radii < minRadii) { minRadii = radii; closest = at; }
+        // Two ways to arrive, because the app has two. Generous in distance
+        // (arrivals stand off, and these are TRUE radii on bodies the size
+        // curve draws much larger), strict about stillness — the half the old
+        // player.moving signal got wrong. A moon is flown past, so its arrival
+        // is a closest approach already left behind; a wait for stillness
+        // there would wait for something that never comes.
+        const closing = prevRadii === null ? null : prevRadii - radii;
+        prevRadii = radii;
+        still = (radii <= 400 && closing !== null && Math.abs(closing) <= 0.5) ? still + 1 : 0;
+        departing = (minRadii <= 400 && radii > minRadii * 1.25) ? departing + 1 : 0;
+        if (departing >= 3) { outcome = 'flyby'; break; }
+        if (still >= 3) { outcome = 'parked'; break; }
+      }
+      const end = closest ?? last;
+      if (!end) { r.fail(`${body}: the leg produced no sample at all`); continue; }
+      const screen = end.p.screen;
+      if (!screen || !screen.inFrame || !(screen.diameterPx > 1)) {
+        r.fail(`${body}: closest approach put nothing on screen`
+          + ` (${screen ? `${screen.diameterPx.toFixed(1)} px, inFrame ${screen.inFrame}` : 'no projection'})`);
+      }
+      // A tail read after the pass: a release still in flight at closest
+      // approach is fine, one that never finishes is a body left on a stand-in.
+      await page.waitForTimeout(4000);
+      const tail = await sampleAt(body);
+      check(`${body} tail`, tail.s, tail.l);
+      if (tail.l.releasing !== null) r.fail(`${body}: still releasing ${tail.l.releasing} after the pass`);
+      if (tail.l.restoreQueued !== 0) {
+        r.fail(`${body}: ${tail.l.restoreQueued} rung(s) left waiting to fetch a map back`);
+      }
+      const rung = end.l.rungs.find((x) => x.key.toLowerCase() === body.toLowerCase());
+      r.say(`${body}: ${outcome} at ${minRadii === Infinity ? '?' : minRadii.toFixed(0)} radii,`
+        + ` ${screen ? screen.diameterPx.toFixed(0) : '?'} px across`
+        + ` — globe maps ${mib(end.l.heldBytes)} of ${mib(end.l.ceilingBytes)},`
+        + ` tiles ${end.s.resident} = ${mib(end.s.budgetedBytes + end.s.reserved)} MiB`
+        + ` of ${mib(end.s.budget)} (floor ${mib(end.s.floor)}),`
+        + ` its own rung ${rung ? `${rung.tier ?? 'stand-in'} ${mib(rung.bytes)} MiB${rung.compressed ? ' compressed' : ''}` : 'boot map'}`);
+      r.say(`   rungs ${end.l.rungs.map((x) => `${x.key}:${x.tier ?? 'boot'}`).join(' ')}`);
+      if (outcome === 'timeout') r.fail(`${body}: the pass never resolved in 75 s`);
+    }
+    r.say(`peak globe maps ${mib(peakMaps)} MiB`);
+    r.say(`releases (${releases.length}): ${releases.length ? releases.join(' | ') : 'none'}`);
+    if (squeezedToMiB !== null && releases.length === 0) {
+      // Not a failure: a tour that fits even at 200 MiB is a good outcome. It
+      // does mean this pass proved the invariant and not the release machine,
+      // and a silent pass would read as the stronger claim.
+      r.say('   NOTE: nothing was released even squeezed — this pass did not exercise a release');
+    }
+    r.errors(errors);
+  } finally { await ctx.close(); }
+}
+
 const SCENARIOS = {
   async budget(browser) {
     const r = report();
@@ -375,6 +535,21 @@ const SCENARIOS = {
       if (minSectorRoom < 1) r.fail('the budget fell under one whole set');
       r.errors(errors);
     } finally { await ctx.close(); }
+    return r;
+  },
+
+  async 'moon-tour'(browser) {
+    const r = report();
+    // Once at whatever envelope this machine's row buys, and once squeezed to
+    // a figure below the tour's own price, which is the only way a desktop
+    // ever runs the release machinery. Both passes assert the same invariant;
+    // only the expectation about churn differs.
+    await moonTourPass(browser, r, { label: 'moon tour, this machine\'s envelope', query: '' });
+    await moonTourPass(browser, r, {
+      label: 'moon tour, envelope squeezed to 200 MiB',
+      query: '&envelope=200',
+      squeezedToMiB: 200,
+    });
     return r;
   },
 

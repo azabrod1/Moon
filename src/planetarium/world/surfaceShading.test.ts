@@ -138,7 +138,7 @@ describe('the close-range detail term', () => {
     // is what switches the term off over a resident tile while the coarse globe
     // one pixel away keeps it. A body-wide scalar draws that boundary as a
     // rectangle.
-    expect(fragment('airless')).toContain('smoothTexelWeight(vMapUv, vec2(textureSize(map, 0)))');
+    expect(fragment('airless')).toContain('synthTexelWeight(vMapUv, vec2(textureSize(map, 0)))');
   });
 
   it('is one text for every body, only the uniforms differing', () => {
@@ -205,7 +205,7 @@ describe('the close-range detail term', () => {
     // colour fade — not the colour map's, which is a different map at a
     // different width.
     expect(fragment('airless')).toContain(
-      'smoothTexelWeight(vBumpMapUv, vec2(textureSize(bumpMap, 0))), uSynthBumpFade)',
+      'synthTexelWeight(vBumpMapUv, vec2(textureSize(bumpMap, 0))), uSynthBumpFade)',
     );
   });
 

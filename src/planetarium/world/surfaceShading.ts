@@ -590,6 +590,20 @@ uniform float uSynthBumpFade;
 uniform float uSynthEnvelope;
 uniform float uSynthMid;
 uniform vec2 uSynthSeed;
+// How much of this term a map's density asks for: the same band the smooth
+// magnification filter hands over on, read across the map's COARSEST axis
+// rather than its busiest.
+//
+// The difference is the poles. An equirect map's texel columns converge to a
+// point there, so its longitude axis reports texels crowded many to a pixel
+// over the exact cap the map has least to say about — and a fade that takes the
+// busiest axis therefore switches this term off over that cap and leaves a blob
+// of putty in the middle of ground. What limits a map is its coarsest axis; the
+// two readings agree everywhere a map is not distorted.
+float synthTexelWeight(vec2 uv, vec2 texels) {
+  float perPixel = min(fwidth(uv.x) * texels.x, fwidth(uv.y) * texels.y);
+  return 1.0 - smoothstep(${SMOOTH_TEXEL_FADE[0].toFixed(6)}, ${SMOOTH_TEXEL_FADE[1].toFixed(6)}, perPixel);
+}
 // One flat chart's reading of the field: its height here, around zero, in x,
 // and the slope of that height across the SCREEN in yz. \`c\` is the chart's own
 // two coordinates and \`cx\`/\`cy\` their screen derivatives.
@@ -635,7 +649,7 @@ if (uSynthEnvelope > 0.0) {
   // its own UV and switches the term off over its own patch, while the coarse
   // globe one pixel away keeps it. A body-wide scalar would draw that boundary
   // as a rectangle.
-  float synthW = smoothTexelWeight(vMapUv, vec2(textureSize(map, 0))) * uSynthEnvelope;
+  float synthW = synthTexelWeight(vMapUv, vec2(textureSize(map, 0))) * uSynthEnvelope;
   // How much relief this fragment may draw. Zero wherever a MEASURED surface is
   // bound, whatever the magnification. Where what is bound is itself invented —
   // a painted crater bump — it fades in as that bump's OWN texels stretch past
@@ -645,7 +659,7 @@ if (uSynthEnvelope > 0.0) {
   float synthRelief = uSynthRelief;
   #ifdef USE_BUMPMAP
   synthRelief *= mix(1.0,
-      smoothTexelWeight(vBumpMapUv, vec2(textureSize(bumpMap, 0))), uSynthBumpFade);
+      synthTexelWeight(vBumpMapUv, vec2(textureSize(bumpMap, 0))), uSynthBumpFade);
   #endif
   // The field's domain is the BODY's own frame, never the material's UV: a
   // streamed sector's UV runs 0..1 across its own tile, so a field in UV space

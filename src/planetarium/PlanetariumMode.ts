@@ -867,6 +867,14 @@ export class PlanetariumMode {
   // Observatory frames any body to a fixed screen fraction regardless of size,
   // so the flyby baseline (256/512) looks low-res up close. GPU paint makes
   // this nearly free; the result stays for the session.
+  //
+  // 2048 was measured against this and turned down. At the fraction the
+  // Observatory actually frames a body to, 1024 is already under two screen
+  // pixels per texel; doubling it buys finer grain rather than more structure
+  // (the crater field is resolution-independent, so it sharpens either way),
+  // and costs four times the residency — ~21 MiB of colour+bump+mips per
+  // observed moon, held for the session, on an allocation the shared memory
+  // envelope does not account for.
   private static readonly OBSERVE_MOON_TEXTURE_WIDTH = 1024;
 
   // Per-frame time budget for warm texture uploads: small maps batch within

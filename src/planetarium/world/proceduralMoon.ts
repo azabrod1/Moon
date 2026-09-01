@@ -96,8 +96,8 @@ export const TERRAIN_OCTAVES: readonly TerrainOctave[] = [
   { cells: 6, amp: 0.45, seedOff: 0 },
   { cells: 14, amp: 0.5, seedOff: 131 },
   { cells: 28, amp: 0.42, seedOff: 277 },
-  { cells: 56, amp: 0.3, seedOff: 431 },
-  { cells: 112, amp: 0.18, seedOff: 577 },
+  { cells: 56, amp: 0.34, seedOff: 431 },
+  { cells: 112, amp: 0.24, seedOff: 577 },
 ];
 
 /** First octave counted as surface texture rather than landform. A moon that
@@ -282,11 +282,18 @@ export function classifyMoonArchetype(colorHex: number): MoonArchetypeFlags {
   };
 }
 
-/** GLSL-friendly archetype code: 0 icy, 1 volcanic, 2 rocky (icy wins, as in the
- *  CPU branch order). */
+/**
+ * Archetype code: 0 icy, 1 volcanic, 2 rocky.
+ *
+ * Volcanic wins a tie. The ice test is brightness alone and the volcanic test
+ * is a hue, so on a bright saturated chip both fire — Io and Titan are the two
+ * that do, and letting brightness win would paint the solar system's most
+ * volcanic surface as ice and leave the volcanic branch with no residents at
+ * all. The more specific test takes precedence.
+ */
 export function archetypeCode(flags: MoonArchetypeFlags): number {
-  if (flags.isIcy) return 0;
   if (flags.isVolcanic) return 1;
+  if (flags.isIcy) return 0;
   return 2;
 }
 
@@ -334,7 +341,7 @@ const ARCHETYPE_LOOKS: Record<number, ArchetypeLook> = {
   0: {
     lumaLo: 0.52,
     lumaHi: 0.82,
-    saturation: 0.7,
+    saturation: 0.85,
     levelLo: 0.42,
     levelHi: 0.64,
     contrast: 0.55,
@@ -353,9 +360,9 @@ const ARCHETYPE_LOOKS: Record<number, ArchetypeLook> = {
     saturation: 0.85,
     levelLo: 0.4,
     levelHi: 0.64,
-    contrast: 0.7,
-    shadow: [1.04, 0.82, 0.52],
-    light: [1.03, 1, 0.8],
+    contrast: 0.85,
+    shadow: [0.95, 0.7, 0.4],
+    light: [1.02, 1.02, 0.9],
     grain: 0.05,
     craterColor: 0.45,
     craterRelief: 0.8,
@@ -367,9 +374,9 @@ const ARCHETYPE_LOOKS: Record<number, ArchetypeLook> = {
   2: {
     lumaLo: 0.18,
     lumaHi: 0.62,
-    saturation: 0.55,
+    saturation: 0.75,
     levelLo: 0.17,
-    levelHi: 0.52,
+    levelHi: 0.44,
     contrast: 0.58,
     shadow: [0.95, 0.94, 0.95],
     light: [1.05, 1.01, 0.96],
@@ -486,14 +493,15 @@ interface CraterMix {
 // puts the median a fifth of the way up the range and leaves two or three
 // craters per moon near the top of it. The cube and the ceiling are both
 // deliberate — several basin-sized craters at once read as ripples on a pond
-// rather than as a cratered world, and craters much under the floor are too
-// small to resolve at any distance the moon is drawn from. Counts differ by
-// archetype because the surfaces do: icy moons resurface, volcanic ones bury
-// everything, dark rock keeps every scar.
+// rather than as a cratered world, and a crater much under the floor lands on
+// two or three texels of a small moon's baseline map, which magnifies into a
+// square (the CPU fallback never re-renders sharper, so it wears that floor).
+// Counts differ by archetype because the surfaces do: icy moons resurface,
+// volcanic ones bury everything, dark rock keeps every scar.
 const CRATER_MIX: Record<number, CraterMix> = {
-  0: { countMin: 36, countSpan: 20, rMin: 3.6, rMax: 18, depth: 0.5, rim: 0.26, ray: 0.5 },
-  1: { countMin: 3, countSpan: 5, rMin: 4, rMax: 12, depth: 0.35, rim: 0.18, ray: 0.15 },
-  2: { countMin: 44, countSpan: 20, rMin: 4, rMax: 22, depth: 0.58, rim: 0.3, ray: 0.38 },
+  0: { countMin: 36, countSpan: 20, rMin: 5.5, rMax: 22, depth: 0.5, rim: 0.26, ray: 0.5 },
+  1: { countMin: 3, countSpan: 5, rMin: 5, rMax: 14, depth: 0.35, rim: 0.18, ray: 0.15 },
+  2: { countMin: 44, countSpan: 20, rMin: 6, rMax: 26, depth: 0.58, rim: 0.3, ray: 0.38 },
 };
 
 /**
@@ -507,7 +515,7 @@ export const CRATER_WARP = 0.3;
 /** Youngest sixth of the population throws rays, and only once a crater is big
  *  enough for them to resolve. */
 const CRATER_RAY_AGE = 0.16;
-const CRATER_RAY_MIN_RADIUS = 6;
+const CRATER_RAY_MIN_RADIUS = 10;
 /** Central peaks start here (reference-width texels) and are full-strength a
  *  little above it — the complex-crater transition, in miniature. */
 const CRATER_PEAK_MIN_RADIUS = 11;

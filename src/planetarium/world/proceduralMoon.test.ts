@@ -60,11 +60,19 @@ describe('classifyMoonArchetype', () => {
     expect(classifyMoonArchetype(0x585850).isIcy).toBe(false); // Sinope
     expect(classifyMoonArchetype(0xc8b040).isVolcanic).toBe(true); // Io
   });
-  it('archetypeCode: icy wins over volcanic, rocky is the fallback (matches branch order)', () => {
-    expect(archetypeCode({ isIcy: true, isVolcanic: true })).toBe(ICY);
+  it('archetypeCode: the hue test beats the brightness test, rocky is the fallback', () => {
+    expect(archetypeCode({ isIcy: true, isVolcanic: true })).toBe(VOLCANIC);
     expect(archetypeCode({ isIcy: true, isVolcanic: false })).toBe(ICY);
     expect(archetypeCode({ isIcy: false, isVolcanic: true })).toBe(VOLCANIC);
     expect(archetypeCode({ isIcy: false, isVolcanic: false })).toBe(ROCKY);
+  });
+  it('keeps the two volcanic chips volcanic — they are bright enough to trip the ice test too', () => {
+    for (const hex of [0xc8b040, 0xc89040]) { // Io, Titan
+      const flags = classifyMoonArchetype(hex);
+      expect(flags.isIcy).toBe(true);
+      expect(flags.isVolcanic).toBe(true);
+      expect(archetypeCode(flags)).toBe(VOLCANIC);
+    }
   });
 });
 
@@ -174,8 +182,9 @@ describe('generateCraters', () => {
     const craters = rocky();
     const rayed = craters.filter((c) => c.rays > 0);
     expect(rayed.length).toBeLessThan(craters.length / 3);
-    const smallest = Math.min(...craters.map((c) => c.cr));
-    for (const c of rayed) expect(c.cr).toBeGreaterThan(smallest);
+    const sorted = craters.map((c) => c.cr).sort((x, y) => x - y);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    for (const c of rayed) expect(c.cr).toBeGreaterThan(median);
   });
 
   it('re-rendering larger is a pure sharpen: the same craters, scaled', () => {

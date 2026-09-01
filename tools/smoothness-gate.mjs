@@ -498,33 +498,33 @@ const SCENARIOS = [
     },
   },
   {
-    // The pose a per-fragment surface term costs the most in: one body filling
-    // the frame at the closest the flight rig allows, where its colour map is
-    // magnified past a texel a pixel over nearly every pixel drawn. Nothing
-    // streams during the hold, so what the frames show is the cost of shading
-    // them — which is why the score to read here is p50 and p95 rather than
-    // the count of frames over budget.
+    // The pose a per-fragment surface term costs the most in: one body across
+    // the whole frame with its colour map magnified past a texel a pixel over
+    // every pixel of it, so nothing is being paid for at a fraction of the
+    // screen. The camera is POSED rather than flown, for two reasons that both
+    // matter: forward thrust after a moon arrival is not aimed at the moon
+    // (a scenario that throttles in flies away for half a minute and scores a
+    // cruise), and the pose stands for a device whose ladder cannot reach the
+    // top rung, where a body this size on screen really is this coarse.
+    //
+    // Held still, with nothing streaming once it settles, so there is no event
+    // to blame a heavy frame on: the score to read here is the p50 and p95
+    // shift, not a count of frames over budget.
     id: 'moon-close',
-    title: 'Moon at the zoom floor: 25 s hold at high fill, then a slow pan',
+    title: 'Moon across the whole frame, magnified past a texel a pixel: 30 s hold',
     device: DESKTOP,
     async run(page, note) {
       await bootTo(page, '', 240);
       await sleep(2_000);
       note(await travelAndSettle(page, 'Moon', 8_000));
-      await sleep(2_500);
-      const at = await descendTo(page, 'Moon', 1.15);
-      note(`descent ended at ${at} radii`);
+      await page.evaluate(() => window.__moon.frame('Moon', 2.2));
+      // Long enough for the tiles this pose wants to arrive and stop arriving.
+      await sleep(12_000);
+      // The magnification the run really achieved, so the score is read
+      // against a measured density rather than an assumed one.
       note(`density: ${JSON.stringify(await page.evaluate(() => window.__moon.surfaceDensity()))}`);
       await mark(page, 'hold');
-      await sleep(25_000);
-      await mark(page, 'pan');
-      // Short yaw taps rather than one hold: a slow pan is what walks new
-      // surface under the term without the frame ever leaving the body.
-      for (let i = 0; i < 10; i++) {
-        await holdKey(page, 'a', 250);
-        await sleep(1_000);
-      }
-      await sleep(3_000);
+      await sleep(30_000);
     },
   },
   {

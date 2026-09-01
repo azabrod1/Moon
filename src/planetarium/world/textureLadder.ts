@@ -99,6 +99,21 @@ export const PLANET_TEXTURE_FILES: Record<string, string> = {
   ganymede: 'ganymede.webp',
   callisto: 'callisto.webp',
   triton: 'triton.webp',
+  // Spacecraft mosaics for the moons that drew as procedural noise balls
+  // until now (Cassini for the Saturnians, New Horizons for Charon, Voyager 2
+  // for the two Uranians). Miranda's and Ariel's sources are southern
+  // hemispheres only, and the unimaged half is filled from the imaged one in
+  // the map itself — nothing here draws a data edge.
+  titan: 'titan.webp',
+  enceladus: 'enceladus.webp',
+  mimas: 'mimas.webp',
+  dione: 'dione.webp',
+  tethys: 'tethys.webp',
+  rhea: 'rhea.webp',
+  iapetus: 'iapetus.webp',
+  miranda: 'miranda.webp',
+  ariel: 'ariel.webp',
+  charon: 'charon.webp',
 };
 
 /**

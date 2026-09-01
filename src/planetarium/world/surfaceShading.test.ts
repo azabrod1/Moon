@@ -5,7 +5,7 @@ import {
   setSurfaceSynthesis, setSurfaceWaterGloss, surfaceChartWeights, surfaceReliefKind,
   surfaceSynthesisOf, surfaceWaterGloss, waterGlossRoughness,
 } from './surfaceShading';
-import { surfaceDetailHeightSpan } from './surfaceDetailNoise';
+import { surfaceDetailFieldMean, surfaceDetailHeightSpan } from './surfaceDetailNoise';
 
 // Mimics the subset of three's onBeforeCompile shader object we mutate, so the
 // wiring can be exercised without a GL context.
@@ -244,6 +244,17 @@ describe('the close-range detail term', () => {
     expect(leastCharts).toBe(1);
     expect(mostCharts).toBe(3);
     expect(worstStretch).toBeLessThan(1.74);
+  });
+
+  it('reads the field against its own mean, so the grain adds no light', () => {
+    // The field's plain sits two thirds of the way up a range its craters set,
+    // so a grain centred on the middle of that range would brighten every
+    // magnified surface by a few per cent before it varied anything.
+    const u = uniforms('airless', 'Moon');
+    expect(u.uSynthMid.value).toBeCloseTo(surfaceDetailFieldMean(), 12);
+    expect(fragment('airless')).toContain('mix(a.r, b.r, blend) - uSynthMid');
+    // And nothing is bound to read on a surface class that never draws it.
+    expect(uniforms('gas', 'Jupiter').uSynthMid.value).toBe(0);
   });
 
   it('draws craters no deeper than the field was built with', () => {

@@ -187,13 +187,17 @@ function wrapDelta(p: number, c: number): number {
  * bytes on upload anyway.
  *
  * Returns the bytes, how many texels clipped the gradient encoding (the one
- * number that says whether that scale is still right) and the raw height range,
- * which is what the normalisation is derived from rather than guessed at.
+ * number that says whether that scale is still right), the raw height range,
+ * which is what the normalisation is derived from rather than guessed at, and
+ * the MEAN of the stored field, which is not 0.5 and cannot be: craters are
+ * deep and rare, so the plain between them sits well above the middle of a
+ * range the deepest hole in the tile set.
  */
 export function buildSurfaceDetailNoise(size = SURFACE_DETAIL_SIZE): {
   data: Uint8Array;
   clipped: number;
   range: { min: number; max: number };
+  mean: number;
 } {
   const craters = craterField();
   const grain = SURFACE_DETAIL_GRAIN.map((o, i) => ({
@@ -269,6 +273,7 @@ export function buildSurfaceDetailNoise(size = SURFACE_DETAIL_SIZE): {
   const norm = 1 / span;
   const data = new Uint8Array(size * size * 4);
   let clipped = 0;
+  let stored = 0;
   for (let i = 0; i < height.length; i++) {
     const value = (height[i] - min) * norm;
     const eu = (gradU[i] * norm) / SURFACE_DETAIL_GRADIENT_SCALE;
@@ -276,15 +281,17 @@ export function buildSurfaceDetailNoise(size = SURFACE_DETAIL_SIZE): {
     if (Math.abs(eu) > 1 || Math.abs(ev) > 1) clipped++;
     const o = i * 4;
     data[o] = Math.round(Math.min(1, Math.max(0, value)) * 255);
+    stored += data[o] / 255;
     data[o + 1] = Math.round((Math.min(1, Math.max(-1, eu)) * 0.5 + 0.5) * 255);
     data[o + 2] = Math.round((Math.min(1, Math.max(-1, ev)) * 0.5 + 0.5) * 255);
     data[o + 3] = 255;
   }
-  return { data, clipped, range: { min, max } };
+  return { data, clipped, range: { min, max }, mean: stored / height.length };
 }
 
 let detailTexture: THREE.DataTexture | null = null;
 let detailSpan = 0;
+let detailMean = 0;
 
 /**
  * The height the field's full stored range stands for, as a fraction of one
@@ -302,6 +309,26 @@ export function surfaceDetailHeightSpan(): number {
 }
 
 /**
+ * The mean of the stored field, which is what a shader reading it as a
+ * variation has to subtract to be a variation at all.
+ *
+ * It is not 0.5. The field is normalised by the range it reached, and its
+ * deepest crater is more than twice as far below the plain as its highest rim
+ * is above it, so the plain — most of the tile — sits around two thirds of the
+ * way up the stored range. Centring on the middle of the range instead would
+ * make the grain a three per cent brightening of every magnified surface with a
+ * variation riding on top, rather than a variation; and at coarse mips, where
+ * every texel tends to the mean, it would leave the brightening alone.
+ *
+ * Builds the map if it is not built yet, because the two answers have to come
+ * from the same bytes.
+ */
+export function surfaceDetailFieldMean(): number {
+  surfaceDetailTexture();
+  return detailMean;
+}
+
+/**
  * The field as a texture, built once per session and shared by every surface
  * that draws it. Repeat-wrapped (the map's whole point is that it tiles),
  * mip-chained and anisotropic: it is sampled at whatever scale the screen wants
@@ -310,8 +337,9 @@ export function surfaceDetailHeightSpan(): number {
  */
 export function surfaceDetailTexture(): THREE.DataTexture {
   if (!detailTexture) {
-    const { data, range } = buildSurfaceDetailNoise(SURFACE_DETAIL_SIZE);
+    const { data, range, mean } = buildSurfaceDetailNoise(SURFACE_DETAIL_SIZE);
     detailSpan = range.max - range.min;
+    detailMean = mean;
     const tex = new THREE.DataTexture(data, SURFACE_DETAIL_SIZE, SURFACE_DETAIL_SIZE);
     // Data, not colour: R is a height and G/B are a gradient. An sRGB decode
     // here would bend both.
@@ -333,4 +361,5 @@ export function disposeSurfaceDetailTexture(): void {
   detailTexture?.dispose();
   detailTexture = null;
   detailSpan = 0;
+  detailMean = 0;
 }

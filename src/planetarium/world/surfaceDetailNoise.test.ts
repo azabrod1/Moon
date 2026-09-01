@@ -98,6 +98,20 @@ describe('the built field', () => {
     expect(max).toBe(255);
   });
 
+  it('reports the mean it really has, which is not the middle of its range', () => {
+    // Craters are deep and rare, so the plain between them sits well above the
+    // middle of a range the deepest hole in the tile sets. A shader reading
+    // this field as a variation has to subtract THIS number: subtracting 0.5
+    // instead would make the grain a flat brightening with a variation riding
+    // on it, and at coarse mips — where every texel tends to the mean — it
+    // would leave the brightening behind on its own.
+    let sum = 0;
+    let n = 0;
+    for (let i = 0; i < built.data.length; i += 4) { sum += built.data[i] / 255; n++; }
+    expect(built.mean).toBeCloseTo(sum / n, 6);
+    expect(Math.abs(built.mean - 0.5)).toBeGreaterThan(0.1);
+  });
+
   it('holds every gradient it stored without clamping one', () => {
     // The scale is the one number that says whether the encoding still fits
     // the field. A re-seed that pushed past it would flatten the steepest

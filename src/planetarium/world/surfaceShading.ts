@@ -124,6 +124,7 @@ import { gpuSeed } from './proceduralMoon';
 import { SURFACE_TEXEL_FADE } from './surfaceDensity';
 import {
   SURFACE_DETAIL_GRADIENT_SCALE,
+  surfaceDetailFieldMean,
   surfaceDetailHeightSpan,
   surfaceDetailTexture,
 } from './surfaceDetailNoise';
@@ -587,6 +588,7 @@ uniform float uSynthGrain;
 uniform float uSynthRelief;
 uniform float uSynthBumpFade;
 uniform float uSynthEnvelope;
+uniform float uSynthMid;
 uniform vec2 uSynthSeed;
 // One flat chart's reading of the field: its height here, around zero, in x,
 // and the slope of that height across the SCREEN in yz. \`c\` is the chart's own
@@ -615,7 +617,12 @@ vec3 synthChart(vec2 c, vec2 cx, vec2 cy, vec2 seed) {
   vec4 a = textureGrad(uSynthDetail, uv, dx, dy);
   vec4 b = textureGrad(uSynthDetail, uv * 2.0 - seed, dx * 2.0, dy * 2.0);
   vec2 g = (mix(a.gb, b.gb, blend) * 2.0 - vec2(1.0)) * ${SURFACE_DETAIL_GRADIENT_SCALE.toFixed(1)};
-  return vec3(mix(a.r, b.r, blend) - 0.5, dot(g, cx), dot(g, cy));
+  // Against the field's OWN mean, not the middle of its range: a variation has
+  // to be a variation. The two are not the same number — the field's plain sits
+  // two thirds of the way up a range its deepest craters set — and the
+  // difference would be a flat brightening of every magnified surface, brightest
+  // of all where the mip chain has flattened the field to its mean.
+  return vec3(mix(a.r, b.r, blend) - uSynthMid, dot(g, cx), dot(g, cy));
 }
 `;
 
@@ -1374,6 +1381,14 @@ export function augmentSurfaceMaterial(
   // and cannot break the wrap. The caller supplies it (the body's name, hashed)
   // — a body must not change face between sessions.
   const uSynthSeed = { value: synthSeedOffset(seedName) };
+  // The zero the grain is read against — the built field's own mean, so the
+  // term adds no light of its own. Zero on a surface class that never draws it,
+  // where the field is not even bound.
+  const uSynthMid = {
+    value: SYNTH_GRAIN[archetype] > 0 || SYNTH_RELIEF_GAIN[archetype] > 0
+      ? surfaceDetailFieldMean()
+      : 0,
+  };
 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uSunDirWorld = fx.uSunDirWorld;
@@ -1407,6 +1422,7 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uSynthBumpFade = uSynthBumpFade;
     shader.uniforms.uSynthEnvelope = uSynthEnvelope;
     shader.uniforms.uSynthSeed = uSynthSeed;
+    shader.uniforms.uSynthMid = uSynthMid;
     for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];
 
     shader.vertexShader = shader.vertexShader

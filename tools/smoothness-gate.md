@@ -151,6 +151,12 @@ also showed nothing, because there the ship *did* arrive, so the wait resolved
 early and the polling stopped. The artefact needs a predicate that is both
 expensive and never satisfied.
 
+`--query=<extra>` appends to the URL of every page the battery opens. It exists
+for the one shape of question a single run cannot answer: what an app switch
+costs. Run the battery, run it again with `--query='&synth=0'`, and read the
+p50/p95 shift between the two — a per-fragment cost is a uniformly slower frame,
+which no per-frame event cause can attribute.
+
 `--engine=shell|new|chrome` selects the browser: `chrome-headless-shell`
 (default), full Chromium under `--headless=new`, or headed Google Chrome.
 The engine turned out not to be the cause here — a 120 s mid-cruise at 60x with
@@ -176,6 +182,8 @@ this after any change to the recorder.
 | `squeeze` | Boots at `?envelope=200` so a desktop sits under a phone's memory pressure, hovers, then hops away and back to force a release and a re-fetch. |
 | `moonlets` | Tiny-moon flybys: Phobos, then Styx. |
 | `moon-close` | The Moon posed across the whole frame and magnified past a texel a pixel, held 30 s. Nothing streams once it settles, so the frames are the cost of shading them — read p50 and p95, not the over-budget count. |
+| `titania-close` | The same hold on the one body class that draws SYNTHESIZED RELIEF: a painted crater bump out of texels, so the close-range term perturbs the normal as well as the albedo. The Moon cannot price that — it wears measured elevation. |
+| `phone-titania-corner` | The close-range term's worst fill-rate case on the device with the least to spare: its field is drawn on three flat charts and a fragment on a body-frame DIAGONAL is drawn by all three, six texture fetches against two. The roll is swept until the pose sits on that diagonal, and the note records how close it got. |
 | `tour-60x` | Mercury through Neptune at 60× time rate. |
 | `phone-earth-near`, `phone-terminator` | The same two near-band runs at 430×932, DPR 3, iPhone UA — which is a different device profile, so a different app. |
 

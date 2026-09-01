@@ -295,6 +295,7 @@ import {
   densityRelevantDiameterPx,
   drawnColorMapWidth,
   measureSurfaceDensity,
+  type SurfaceBodyBasis,
   type SurfaceDensity,
 } from './world/surfaceDensity';
 import { applyLensShaderUniforms, type LensShaderUniforms } from '../shared/three/lensShader';
@@ -4369,6 +4370,7 @@ export class PlanetariumMode {
       magnified: 0,
       pxPerUnit: 0,
       subCameraLatDeg: null,
+      subCameraBodyDir: null,
       diameterPx: 0,
       envelope: 0,
       stampMs: nowMs,
@@ -4379,21 +4381,28 @@ export class PlanetariumMode {
 
   private readonly densityScratch: SurfaceDensity = {
     mapWidth: 0, pixelsPerTexel: 0, texelsPerPixel: 0, magnified: 0, pxPerUnit: 0,
-    subCameraLatDeg: null,
+    subCameraLatDeg: null, subCameraBodyDir: null,
   };
 
-  private readonly bodyPoleTmp = new THREE.Vector3();
+  private readonly bodyBasisTmp: SurfaceBodyBasis = {
+    x: new THREE.Vector3(1, 0, 0),
+    y: new THREE.Vector3(0, 1, 0),
+    z: new THREE.Vector3(0, 0, 1),
+  };
 
-  /** A body's north axis in world axes: the second column of its draw
-   *  transform, which is the +Y its geometry's pole sits on. Read off the
-   *  matrix the last frame left, so a body's own spin is a few arcseconds
-   *  stale — under the resolution of anything that asks. */
-  private bodyPole(mesh: THREE.Object3D): THREE.Vector3 {
+  /** A body's own axes in world axes: the three columns of its draw transform,
+   *  normalised. Read off the matrix the last frame left, so a body's own spin
+   *  is a few arcseconds stale — under the resolution of anything that asks. */
+  private bodyBasis(mesh: THREE.Object3D): SurfaceBodyBasis {
     const e = mesh.matrixWorld.elements;
-    this.bodyPoleTmp.set(e[4], e[5], e[6]);
-    return this.bodyPoleTmp.lengthSq() > 0
-      ? this.bodyPoleTmp.normalize()
-      : this.bodyPoleTmp.set(0, 1, 0);
+    const basis = this.bodyBasisTmp;
+    basis.x.set(e[0], e[1], e[2]);
+    basis.y.set(e[4], e[5], e[6]);
+    basis.z.set(e[8], e[9], e[10]);
+    if (basis.x.lengthSq() > 0) basis.x.normalize(); else basis.x.set(1, 0, 0);
+    if (basis.y.lengthSq() > 0) basis.y.normalize(); else basis.y.set(0, 1, 0);
+    if (basis.z.lengthSq() > 0) basis.z.normalize(); else basis.z.set(0, 0, 1);
+    return basis;
   }
 
   /**
@@ -4427,7 +4436,7 @@ export class PlanetariumMode {
     const measured = mapWidth > 0 && estPx > densityRelevantDiameterPx(mapWidth)
       ? measureSurfaceDensity(
         centre, renderedRadiusAU, mapWidth, this.camera, canvasW, canvasH,
-        this.renderer.getPixelRatio(), this.bodyPole(mesh), this.densityScratch,
+        this.renderer.getPixelRatio(), this.bodyBasis(mesh), this.densityScratch,
       )
       : null;
     const target = this.synthesisEnabled ? measured?.magnified ?? 0 : 0;
@@ -4446,6 +4455,7 @@ export class PlanetariumMode {
       record.magnified = measured.magnified;
       record.pxPerUnit = measured.pxPerUnit;
       record.subCameraLatDeg = measured.subCameraLatDeg;
+      record.subCameraBodyDir = measured.subCameraBodyDir;
       record.diameterPx = estPx;
     } else {
       record.magnified = 0;

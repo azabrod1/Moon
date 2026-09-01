@@ -86,22 +86,35 @@ describe('the drawn texel density of a surface', () => {
     expect(density!.mapWidth).toBe(2048);
   });
 
-  it('says which latitude it measured, once told which way the pole points', () => {
+  it('says where on the body it measured, once told which way the body faces', () => {
     // A density on its own cannot tell a pose over a pole from one over the
-    // equator, and the two are different questions of a surface term that
-    // draws its own ground.
+    // equator, nor either from a pose on a body-frame diagonal — and all three
+    // are different questions of a surface term that draws its own ground.
     const camera = cameraAt(1.5);
-    const at = (pole: THREE.Vector3) => measureSurfaceDensity(
-      new THREE.Vector3(), 1, 2048, camera, VIEW_W, VIEW_H, 1, pole,
-    )!.subCameraLatDeg!;
+    const basis = (y: THREE.Vector3, x = new THREE.Vector3(1, 0, 0)) => {
+      const yy = y.clone().normalize();
+      const xx = x.clone().sub(yy.clone().multiplyScalar(yy.dot(x))).normalize();
+      return { x: xx, y: yy, z: new THREE.Vector3().crossVectors(xx, yy) };
+    };
+    const at = (y: THREE.Vector3) => measureSurfaceDensity(
+      new THREE.Vector3(), 1, 2048, camera, VIEW_W, VIEW_H, 1, basis(y),
+    )!;
     // The camera looks down −Z, so the point it magnifies most is the +Z one.
-    expect(at(new THREE.Vector3(0, 0, 1))).toBeCloseTo(90, 6);
-    expect(at(new THREE.Vector3(0, 0, -1))).toBeCloseTo(-90, 6);
-    expect(at(new THREE.Vector3(0, 1, 0))).toBeCloseTo(0, 6);
-    expect(at(new THREE.Vector3(0, 1, 1).normalize())).toBeCloseTo(45, 6);
+    expect(at(new THREE.Vector3(0, 0, 1)).subCameraLatDeg).toBeCloseTo(90, 6);
+    expect(at(new THREE.Vector3(0, 0, -1)).subCameraLatDeg).toBeCloseTo(-90, 6);
+    expect(at(new THREE.Vector3(0, 1, 0)).subCameraLatDeg).toBeCloseTo(0, 6);
+    expect(at(new THREE.Vector3(0, 1, 1)).subCameraLatDeg).toBeCloseTo(45, 6);
+    // The same point in the body's own frame, which is where the term's charts
+    // live: a pose with all three components equal sits on a diagonal, where
+    // three charts are drawn instead of one.
+    const dir = at(new THREE.Vector3(0, 1, 0)).subCameraBodyDir!;
+    expect(Math.hypot(...dir)).toBeCloseTo(1, 9);
+    const diagonal = at(new THREE.Vector3(1, 1, 1)).subCameraBodyDir!;
+    expect(Math.abs(diagonal[1])).toBeCloseTo(1 / Math.sqrt(3), 6);
     // And says nothing rather than guessing where it was not told.
-    expect(measureSurfaceDensity(new THREE.Vector3(), 1, 2048, camera, VIEW_W, VIEW_H, 1)!
-      .subCameraLatDeg).toBeNull();
+    const untold = measureSurfaceDensity(new THREE.Vector3(), 1, 2048, camera, VIEW_W, VIEW_H, 1)!;
+    expect(untold.subCameraLatDeg).toBeNull();
+    expect(untold.subCameraBodyDir).toBeNull();
   });
 
   it('reports a device-pixel density, not a CSS one', () => {

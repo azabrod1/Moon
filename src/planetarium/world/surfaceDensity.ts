@@ -171,6 +171,20 @@ export interface SurfaceDensity {
    *  equator — and a polar view is where a surface term with a chart of its own
    *  either holds up or draws a pinwheel. */
   subCameraLatDeg: number | null;
+  /** The same point as a unit direction in the BODY's own frame, which is the
+   *  frame the close-range term's charts are laid out in. A pose with all three
+   *  components equal is on a body-frame diagonal, where three charts are drawn
+   *  instead of one and the term's fetch count is at its worst — the fill-rate
+   *  case a smoothness run has to be aimed at rather than hope for. */
+  subCameraBodyDir: [number, number, number] | null;
+}
+
+/** A body's own axes as unit vectors in world axes — the frame its maps and
+ *  the close-range field's charts are laid out in. */
+export interface SurfaceBodyBasis {
+  x: THREE.Vector3;
+  y: THREE.Vector3;
+  z: THREE.Vector3;
 }
 
 const densityPoint = new THREE.Vector3();
@@ -186,8 +200,8 @@ const densityStepScale: ProjectedStepScale = { maxPx: 0, minPx: 0, x: 0, y: 0 };
  * draws at its catalog radius times its mesh scale, and the density on screen
  * is the drawn disc's, not the catalog one's). `dpr` converts the projection's
  * CSS pixels to the device pixels the shader's own derivative is taken in.
- * `pole` is the body's north axis in world axes, and only labels the reading
- * with the latitude it was taken at.
+ * `basis` is the body's own axes in world axes, and only labels the reading
+ * with where on the body it was taken.
  *
  * Returns null when there is no honest scale to report — the sub-camera point
  * at or behind the camera plane, or no map width to measure against.
@@ -200,7 +214,7 @@ export function measureSurfaceDensity(
   widthPx: number,
   heightPx: number,
   dpr: number,
-  pole?: THREE.Vector3 | null,
+  basis?: SurfaceBodyBasis | null,
   out?: SurfaceDensity,
 ): SurfaceDensity | null {
   if (!(radius > 0) || !(mapWidth > 0)) return null;
@@ -228,17 +242,23 @@ export function measureSurfaceDensity(
   const texels = texelsPerPixel(pxPerUnit, radius, mapWidth);
   const result = out ?? {
     mapWidth: 0, pixelsPerTexel: 0, texelsPerPixel: 0, magnified: 0, pxPerUnit: 0,
-    subCameraLatDeg: null,
+    subCameraLatDeg: null, subCameraBodyDir: null,
   };
   result.mapWidth = mapWidth;
   result.pxPerUnit = pxPerUnit;
   result.texelsPerPixel = texels;
   result.pixelsPerTexel = Number.isFinite(texels) && texels > 0 ? 1 / texels : 0;
   result.magnified = surfaceMagnifiedWeight(texels);
-  // densityNormal is the surface normal at the point measured, so its angle to
-  // the pole is that point's latitude.
-  result.subCameraLatDeg = pole
-    ? Math.asin(Math.min(1, Math.max(-1, densityNormal.dot(pole)))) * RAD2DEG
-    : null;
+  // densityNormal is the surface normal at the point measured, so its
+  // components along the body's own axes are that point in the body's frame,
+  // and its angle to the pole is that point's latitude.
+  if (basis) {
+    const y = Math.min(1, Math.max(-1, densityNormal.dot(basis.y)));
+    result.subCameraBodyDir = [densityNormal.dot(basis.x), y, densityNormal.dot(basis.z)];
+    result.subCameraLatDeg = Math.asin(y) * RAD2DEG;
+  } else {
+    result.subCameraBodyDir = null;
+    result.subCameraLatDeg = null;
+  }
   return result;
 }

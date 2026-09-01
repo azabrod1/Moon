@@ -4415,9 +4415,12 @@ export class PlanetariumMode {
       : null;
     const target = this.synthesisEnabled ? measured?.magnified ?? 0 : 0;
     let record = this.surfaceDensities.get(name);
-    // Nothing on and nothing to turn on: the common case for every body in the
-    // system, and it costs no record and no material write.
-    if (!record && target <= 0) return;
+    // Nothing measurable and nothing left fading: the common case for every
+    // body in the system, and it costs no record and no material write. A body
+    // that IS measurable keeps its record whether or not the term is switched
+    // on — the density is what labels a sheet, and a sheet of the term switched
+    // off has to carry the same measurement as the one beside it.
+    if (!record && !measured) return;
     record = record ?? this.surfaceDensityRecord(name, nowMs);
     if (measured) {
       record.mapWidth = measured.mapWidth;
@@ -4440,7 +4443,7 @@ export class PlanetariumMode {
     // or a painted crater bump already has relief, and a synthesized one on top
     // is two sets of craters under one Sun. Grain survives either way.
     setSurfaceSynthesis(material, record.envelope, !surfaceHasBoundRelief(material));
-    if (record.envelope <= 0 && target <= 0) this.surfaceDensities.delete(name);
+    if (!measured && record.envelope <= 0) this.surfaceDensities.delete(name);
   }
 
   /**

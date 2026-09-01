@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import {
   augmentSurfaceMaterial, OCEAN_ROUGHNESS, ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER,
-  setSurfaceSynthesis, setSurfaceWaterGloss, surfaceHasBoundRelief, surfaceSynthesisOf,
-  surfaceWaterGloss, waterGlossRoughness,
+  setSurfaceSynthesis, setSurfaceWaterGloss, surfaceChartWeights, surfaceHasBoundRelief,
+  surfaceSynthesisOf, surfaceWaterGloss, waterGlossRoughness,
 } from './surfaceShading';
 import { surfaceDetailHeightSpan } from './surfaceDetailNoise';
 
@@ -182,6 +182,43 @@ describe('the close-range detail term', () => {
     // The grain is not held back with it — a surface that has run out of map
     // still has grain to put back, whatever else is bound.
     expect(uniforms('airless', 'Moon', mat).uSynthGrain.value).toBeGreaterThan(0);
+  });
+
+  it('draws its field on charts with no pole and a bounded stretch', () => {
+    // A longitude/latitude domain pinches to a point at each pole, where a cell
+    // is a sliver and its longitudinal slope is however many times steeper the
+    // pinch makes it — a pinwheel of radial streaks across a polar view. The
+    // flat charts that replace it have to cover the whole sphere with none of
+    // that, which is these two numbers at every point of it.
+    let worstStretch = 1;
+    let mostCharts = 0;
+    let leastCharts = 3;
+    for (let i = 0; i < 20000; i++) {
+      // A deterministic spiral over the sphere, so every corner and every
+      // diagonal between two charts is visited.
+      const z = 1 - (2 * i + 1) / 20000;
+      const r = Math.sqrt(Math.max(1 - z * z, 0));
+      const phi = i * 2.399963229728653;
+      const dir: [number, number, number] = [r * Math.cos(phi), r * Math.sin(phi), z];
+      const w = surfaceChartWeights(dir);
+      // Every point is covered, and the charts' variances add to exactly one:
+      // an uncovered point would be a hole in the ground and a short sum would
+      // be a patch of it drawn fainter than the ground around it.
+      expect(Math.hypot(...w)).toBeCloseTo(1, 12);
+      const drawn = w.filter((x) => x > 0).length;
+      mostCharts = Math.max(mostCharts, drawn);
+      leastCharts = Math.min(leastCharts, drawn);
+      // How stretched the ground this point is drawn on really is: each chart's
+      // own stretch, weighted by the share of the field it carries.
+      let stretch = 0;
+      for (let a = 0; a < 3; a++) if (w[a] > 0) stretch += w[a] * w[a] * (1 / Math.abs(dir[a]));
+      worstStretch = Math.max(worstStretch, stretch);
+    }
+    // Three charts meet on a diagonal, one covers a face on its own, and the
+    // stretch is worst on that diagonal — the 54.7° a cube's corner sits at.
+    expect(leastCharts).toBe(1);
+    expect(mostCharts).toBe(3);
+    expect(worstStretch).toBeLessThan(1.74);
   });
 
   it('draws craters no deeper than the field was built with', () => {

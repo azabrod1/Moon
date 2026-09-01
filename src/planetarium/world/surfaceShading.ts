@@ -120,7 +120,7 @@ import {
   cloudDetailTexture,
 } from './cloudDetailNoise';
 import { MOON_UP_GLSL, NIGHT_WEIGHT_GLSL, SUN_DOWN_GLSL } from './nightSources';
-import { gpuSeed, POLE_FADE_COS } from './proceduralMoon';
+import { gpuSeed } from './proceduralMoon';
 import { SURFACE_TEXEL_FADE } from './surfaceDensity';
 import {
   SURFACE_DETAIL_GRADIENT_SCALE,
@@ -550,12 +550,72 @@ vec4 textureBSpline(sampler2D tex, vec2 uv, vec2 texels) {
  *  between five and sixty pixels, which is the range an eye reads as ground. */
 const SURFACE_DETAIL_TILE_PX = 512;
 
+/**
+ * How far off its own axis a flat chart still says anything, as the cosine
+ * between the surface point and that axis.
+ *
+ * Below the cosine three charts is one too few — the three axes are 0.577 apart
+ * at their worst, so a cut above that would leave a point on the diagonal with
+ * no chart at all. Below it the charts overlap more widely and every extra
+ * overlap is another texture fetch on the fragments that fall in it: at a half,
+ * a point of the sphere is drawn by 1.5 charts on average, and the widest blend
+ * runs over thirty degrees of arc, which is far slower than anything the field
+ * itself draws.
+ */
+const SYNTH_CHART_CUT = 0.5;
+
+/**
+ * The three charts' weights at a point of the unit sphere, as the shader
+ * computes them — the CPU twin of the three lines in the GLSL below, kept so
+ * the two properties the whole domain rests on can be checked at every point of
+ * a sphere rather than argued about: every point has at least one chart, and no
+ * chart is ever stretched more than about 1.7 to 1 where it is used.
+ *
+ * `dir` is a unit direction in the body's own frame; the weights come back in
+ * axis order and are normalised in length, so the independent noise the charts
+ * carry adds to one variance rather than to one mean.
+ */
+export function surfaceChartWeights(dir: readonly [number, number, number]): [number, number, number] {
+  const raw = dir.map((c) => Math.max(Math.abs(c) - SYNTH_CHART_CUT, 0) ** 2);
+  const norm = Math.hypot(raw[0], raw[1], raw[2]);
+  return (norm > 0 ? raw.map((w) => w / norm) : [0, 0, 0]) as [number, number, number];
+}
+
 const SURFACE_DETAIL_GLSL = /* glsl */ `
 uniform sampler2D uSynthDetail;
 uniform float uSynthGrain;
 uniform float uSynthRelief;
 uniform float uSynthEnvelope;
 uniform vec2 uSynthSeed;
+// One flat chart's reading of the field: its height here, around zero, in x,
+// and the slope of that height across the SCREEN in yz. \`c\` is the chart's own
+// two coordinates and \`cx\`/\`cy\` their screen derivatives.
+//
+// Which rung of the fixed ladder this fragment gets is decided per chart, off
+// the chart's own derivative: the power of two whose tile spans about
+// ${SURFACE_DETAIL_TILE_PX.toFixed(0)} pixels, crossfaded with the next finer one. Zooming therefore
+// reveals finer rungs of ONE fixed field rather than changing the field, and a
+// body's face stays its seed's between sessions and between zooms.
+//
+// The rung cancels out of the slope: the stored gradient is per tile WIDTH, and
+// a tile's width on the ground shrinks with the rung by exactly the factor the
+// gradient grows, which is what lets one small map stand for every zoom at one
+// steepness. So the two rungs are mixed in their own units and the chart's
+// unscaled derivative is what turns them into a slope.
+vec3 synthChart(vec2 c, vec2 cx, vec2 cy, vec2 seed) {
+  float perPx = max(max(length(cx), length(cy)), 1e-12);
+  float wanted = log2(1.0 / (${SURFACE_DETAIL_TILE_PX.toFixed(1)} * perPx));
+  float rung = max(floor(wanted), 0.0);
+  float blend = clamp(wanted - rung, 0.0, 1.0);
+  float perUnit = exp2(rung);
+  vec2 uv = c * perUnit + seed;
+  vec2 dx = cx * perUnit;
+  vec2 dy = cy * perUnit;
+  vec4 a = textureGrad(uSynthDetail, uv, dx, dy);
+  vec4 b = textureGrad(uSynthDetail, uv * 2.0 - seed, dx * 2.0, dy * 2.0);
+  vec2 g = (mix(a.gb, b.gb, blend) * 2.0 - vec2(1.0)) * ${SURFACE_DETAIL_GRADIENT_SCALE.toFixed(1)};
+  return vec3(mix(a.r, b.r, blend) - 0.5, dot(g, cx), dot(g, cy));
+}
 `;
 
 const SURFACE_DETAIL_BODY = /* glsl */ `
@@ -574,57 +634,59 @@ if (uSynthEnvelope > 0.0) {
   vec3 synthDir = normalize(vObjPos);
   // Every derivative is taken HERE, under a branch that is uniform across the
   // draw: a derivative under a per-fragment condition is undefined, and the
-  // fade below is exactly such a condition.
+  // fades below are exactly such conditions.
   vec3 synthDx = dFdx(synthDir);
   vec3 synthDy = dFdy(synthDir);
   vec3 synthVx = dFdx(-vViewPosition);
   vec3 synthVy = dFdy(-vViewPosition);
-  float synthCosLat = max(sqrt(synthDir.x * synthDir.x + synthDir.z * synthDir.z), 1e-4);
-  vec2 synthAng = vec2(atan(synthDir.z, synthDir.x), asin(clamp(synthDir.y, -1.0, 1.0)));
-  // The angles' screen derivatives, taken analytically from the direction's.
-  // atan has a branch cut at the antimeridian, and reading its derivative
-  // through dFdx would put one pixel of enormous gradient down that line — the
-  // wrong rung and the wrong mip on it.
-  vec2 synthAngX = vec2((synthDir.x * synthDx.z - synthDir.z * synthDx.x) / (synthCosLat * synthCosLat),
-      synthDx.y / synthCosLat);
-  vec2 synthAngY = vec2((synthDir.x * synthDy.z - synthDir.z * synthDy.x) / (synthCosLat * synthCosLat),
-      synthDy.y / synthCosLat);
-  // The cylinder this field is drawn on pinches to a point at each pole, where
-  // a cell is a sliver and its longitudinal slope is however many times steeper
-  // that pinch makes it — a pinwheel of radial streaks over the cap. Fade the
-  // whole term out through the caps instead, which is what the painted moons do
-  // with their own noise, at the same latitude and for the same reason.
-  synthW *= smoothstep(0.0, ${POLE_FADE_COS.toFixed(4)}, synthCosLat);
   if (synthW > 0.0) {
-    // Which rung of the fixed tile ladder this fragment wants: the one whose
-    // tile spans about SURFACE_DETAIL_TILE_PX pixels. Powers of two only, so a
-    // whole number of tiles spans the turn and the antimeridian is not a seam;
-    // the fraction crossfades that rung with the next finer one, so zooming
-    // reveals finer rungs of ONE fixed field instead of changing the field. A
-    // body's face is its seed's, and the seed is its name — it does not change
-    // between sessions or between zooms.
-    float radPerPx = max(max(length(synthAngX), length(synthAngY)), 1e-12);
-    float synthWanted = log2(6.283185307 / (${SURFACE_DETAIL_TILE_PX.toFixed(1)} * radPerPx));
-    float synthRung = max(floor(synthWanted), 0.0);
-    float synthBlend = clamp(synthWanted - synthRung, 0.0, 1.0);
-    float synthPerRad = exp2(synthRung) / 6.283185307;
-    vec2 synthUv = synthAng * synthPerRad + uSynthSeed;
-    vec4 synthA = textureGrad(uSynthDetail, synthUv, synthAngX * synthPerRad, synthAngY * synthPerRad);
-    vec4 synthB = textureGrad(uSynthDetail, synthUv * 2.0 - uSynthSeed,
-        synthAngX * (synthPerRad * 2.0), synthAngY * (synthPerRad * 2.0));
+    // Three flat charts, one per axis of the body's own frame, each reading the
+    // tiling field straight off the two coordinates across its own face of the
+    // sphere, blended where they meet.
+    //
+    // Flat charts and not a longitude/latitude one, which would be two fetches
+    // cheaper: a cylinder pinches to a point at each pole, where a cell is a
+    // sliver and its longitudinal slope is however many times steeper that
+    // pinch makes it, and a body posed with its cap toward the camera draws a
+    // pinwheel of radial streaks across the whole frame. A flat chart has no
+    // such point anywhere on the sphere. Its own distortion is a stretch away
+    // from its axis, worst at the corner where three charts meet and bounded
+    // there at 1.7 to 1 — where it reads as ground drawn slightly coarser, and
+    // as nothing else, because the field keeps its own depth-to-width under a
+    // stretch that carries craters and their slopes together.
+    //
+    // The weights are squared so a chart arrives with zero slope rather than
+    // with an edge, and normalised in LENGTH rather than in sum: the charts
+    // carry independent noise, so it is their VARIANCE that has to add to one.
+    // A weighted mean would flatten the field to 58% of itself along every
+    // diagonal, which is a fade in the ground with no cause on the ground.
+    vec3 synthChartW = max(abs(synthDir) - ${SYNTH_CHART_CUT.toFixed(4)}, 0.0);
+    synthChartW *= synthChartW;
+    synthChartW /= max(length(synthChartW), 1e-20);
+    // Each chart reads its own patch of the one field: the offsets are
+    // arbitrary and only have to differ, or the seam between two charts would
+    // be two copies of the same ground sliding across each other.
+    vec3 synthField = vec3(0.0);
+    if (synthChartW.x > 0.0) {
+      synthField += synthChartW.x * synthChart(vec2(synthDir.y, synthDir.z),
+          vec2(synthDx.y, synthDx.z), vec2(synthDy.y, synthDy.z), uSynthSeed);
+    }
+    if (synthChartW.y > 0.0) {
+      synthField += synthChartW.y * synthChart(vec2(synthDir.z, synthDir.x),
+          vec2(synthDx.z, synthDx.x), vec2(synthDy.z, synthDy.x),
+          uSynthSeed + vec2(0.37, 0.11));
+    }
+    if (synthChartW.z > 0.0) {
+      synthField += synthChartW.z * synthChart(vec2(synthDir.x, synthDir.y),
+          vec2(synthDx.x, synthDx.y), vec2(synthDy.x, synthDy.y),
+          uSynthSeed + vec2(0.71, 0.53));
+    }
     // Grain: the field's own height as a small multiplicative variation of the
     // albedo, luminance only and a few per cent of it. It puts a texture back
     // on a surface that has run out of map; it must never restate the body's
     // colour, which is what the photograph or the archetype palette is for.
-    diffuseColor.rgb *= 1.0 + uSynthGrain * (mix(synthA.r, synthB.r, synthBlend) - 0.5) * 2.0 * synthW;
+    diffuseColor.rgb *= 1.0 + uSynthGrain * synthField.x * 2.0 * synthW;
     if (uSynthRelief > 0.0) {
-      // The field's gradient in its own tile's uv IS a surface slope once the
-      // height is read against that tile's arc — and the arc cancels the rung
-      // out, so the field is the same steepness at every rung, which is what a
-      // fractal surface is. The two rungs are therefore mixed in their own uv
-      // units; converting them to a common one first would undo it.
-      vec2 synthGrad = (mix(synthA.gb, synthB.gb, synthBlend) * 2.0 - vec2(1.0))
-          * ${SURFACE_DETAIL_GRADIENT_SCALE.toFixed(1)};
       // The body's own rendered radius, off the varying that already carries
       // this fragment's offset from the body's centre — no uniform to keep in
       // step with a mesh scale.
@@ -638,8 +700,8 @@ if (uSynthEnvelope > 0.0) {
         // gradient by the screen basis — the same construction the cloud
         // deck's relief takes, and for the same reason: it needs no tangent
         // frame, so it works on a sector mesh and a globe alike.
-        vec3 synthSurfGrad = (dot(synthGrad, synthAngX) * synthR1
-            + dot(synthGrad, synthAngY) * synthR2) * (uSynthRelief * synthR / synthDet);
+        vec3 synthSurfGrad = (synthField.y * synthR1 + synthField.z * synthR2)
+            * (uSynthRelief * synthR / synthDet);
         normal = normalize(synthNrm - synthSurfGrad * synthW);
       }
     }

@@ -306,9 +306,13 @@ export const ROUGHNESS_MAP_WATER = 0.45;
  */
 export const OCEAN_ROUGHNESS = 0.2;
 
-/** How much of the ocean's mirror term survives the Fresnel it is drawn with:
- *  1 keeps three's 4 % dielectric default, 0.5 is water's real 2 % normal
- *  reflectance. */
+/** A flat scale on the ocean's WHOLE mirror lobe. three draws a dielectric at
+ *  4 % reflectance head-on, climbing to a perfect mirror at grazing angles;
+ *  sea water starts at 2 % and climbs to the same place. So a half is exact
+ *  where the glint is — its core is near head-on — and too dark along the
+ *  limb and the terminator, where the real sea is nearest a mirror and this
+ *  halves that sheen with everything else. Getting both ends right means the
+ *  two Fresnel curves per fragment, or handing the sea an ior of 1.33. */
 export const OCEAN_SPECULAR_KEEP = 0.5;
 
 /** The cloud deck's colour map, and the drift its own frame carries on top of

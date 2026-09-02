@@ -566,9 +566,9 @@ export function stablePerpendicular(nx: number, ny: number, nz: number, out: THR
  * that is NOT pushing in is walked: the shell's own advance into it
  * (whatever penetration the hull's step did not cause) buys
  * SHELL_SLIDE_GAIN × that much sideways travel, capped at
- * SHELL_SLIDE_MAX_RATE_PER_S of the shell per second of `dtS`, so a moving body's face
- * carries a drifting ship around and off the limb instead of bulldozing it
- * forever. The walk direction is the attempted motion's own tangential part
+ * SHELL_SLIDE_MAX_RATE_PER_S of the shell per second of `dtS`, so a moving
+ * body's face carries a drifting ship around and off the limb instead of
+ * bulldozing it forever. The walk direction is the attempted motion's own tangential part
  * when it has one (the slide continues the way the ship was already going),
  * else the normal's stable perpendicular (a dead-center shove picks the same
  * side every frame). Writes and returns `out`; never reads or implies a

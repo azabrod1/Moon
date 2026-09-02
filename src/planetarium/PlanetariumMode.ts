@@ -12266,10 +12266,10 @@ export class PlanetariumMode {
       endPitch: aim.pitchRad,
       endMoving: options.movingAfter,
     };
-    // The transfer owns the pose from here; an armed contact graze must not
-    // resume steering on the handback frame, and neither may a flyby look
-    // left holding an earlier destination — an authored scene is framed on
-    // its own look target, not on whatever the last pass was watching.
+    // The transfer owns the pose from here, so a flyby look left holding an
+    // earlier destination must not steer the handback frame — an authored
+    // scene is framed on its own look target, not on whatever the last pass
+    // was watching.
     clearArrivalLook(this.cruiseAim);
     this.player.moving = true;
     // A scripted transfer never poses the camera, so a user-owned camera must

@@ -586,6 +586,20 @@ export const SYNTH_CHART_CUT = 0.5;
 const SYNTH_SMOOTH_RUNGS = 3;
 
 /**
+ * How much of its RELIEF a body with no cratering keeps.
+ *
+ * Drawing the field finer makes its craters small; it does not make them
+ * shallow, because the field is scale-free and keeps its slope at every rung.
+ * A body with nothing to crater it therefore came out pitted — dense little
+ * holes at full shading contrast, which is a golf ball rather than smooth ice.
+ * What a resurfaced surface should read as is frost-scale texture: fine AND
+ * faint. So the relief is scaled down with the share, while the albedo grain
+ * stays at its archetype's value — the ground still has a texture, it just
+ * stops answering the light like a crater field.
+ */
+const SYNTH_RELIEF_FLOOR = 0.15;
+
+/**
  * The three charts' weights at a point of the unit sphere, as the shader
  * computes them — the CPU twin of the three lines in the GLSL below, kept so
  * the two properties the whole domain rests on can be checked at every point of
@@ -676,6 +690,11 @@ if (uSynthEnvelope > 0.0) {
   // craters are interpolation, and finer invented craters in their place assert
   // nothing the coarse ones did not.
   float synthRelief = uSynthRelief;
+  // A body that wears no craters keeps only a fraction of the relief, so what
+  // the finer field leaves is texture rather than pits. The albedo grain is
+  // untouched by this: it is the light the surface answers with that changes,
+  // not whether it has a surface.
+  synthRelief *= mix(${SYNTH_RELIEF_FLOOR.toFixed(2)}, 1.0, uSynthCraterShare);
   #ifdef USE_BUMPMAP
   synthRelief *= mix(1.0,
       synthTexelWeight(vBumpMapUv, vec2(textureSize(bumpMap, 0))), uSynthBumpFade);

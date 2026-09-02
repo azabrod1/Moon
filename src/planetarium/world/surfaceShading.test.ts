@@ -293,9 +293,10 @@ describe('the close-range detail term', () => {
       const phi = i * 2.399963229728653;
       const dir: [number, number, number] = [r * Math.cos(phi), r * Math.sin(phi), z];
       const w = surfaceChartWeights(dir);
-      // Every point is covered, and the shares add to exactly one: an
-      // uncovered point would be a hole in the ground, and a short sum would be
-      // a patch of it drawn fainter than the ground around it.
+      // Every point is covered, and the shares' SQUARES add to exactly one:
+      // the charts carry independent noise, so it is their variance that has to
+      // add up. An uncovered point would be a hole in the ground, and a short
+      // sum would be a patch of it drawn fainter than the ground around it.
       expect(Math.hypot(...w)).toBeCloseTo(1, 12);
       const drawn = w.filter((x) => x > 0).length;
       mostCharts = Math.max(mostCharts, drawn);

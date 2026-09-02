@@ -3868,7 +3868,27 @@ export class PlanetariumMode {
     this.sectorSpin.clear();
     // Nothing is being drawn, so nothing has a drawn density; the next
     // activation measures from scratch rather than reporting the last frame of
-    // the previous session.
+    // the previous session. The materials are put back at rest with it — a
+    // record is what drives one, so clearing the map alone would leave every
+    // close body's term switched on for the first frame of the next session.
+    if (this.surfaceDensities.size > 0) {
+      for (const planet of this.solarSystem?.planets ?? []) {
+        setSurfaceSynthesis(
+          planet.mesh.material as THREE.Material,
+          0,
+          surfaceReliefKind(planet.mesh.material as THREE.Material),
+        );
+      }
+      for (const moons of this.planetMoons.values()) {
+        for (const m of moons) {
+          setSurfaceSynthesis(
+            m.mesh.material as THREE.Material,
+            0,
+            surfaceReliefKind(m.mesh.material as THREE.Material),
+          );
+        }
+      }
+    }
     this.surfaceDensities.clear();
     // A live tutorial hands the pre-tutorial state back first, synchronously — the
     // teardown below (excursion drop, landed exit, save) then applies to the
@@ -4471,7 +4491,21 @@ export class PlanetariumMode {
     // whether a synthesized surface may join it, and under a painted bump the
     // shader waits for that bump's own texels. Grain survives either way.
     setSurfaceSynthesis(material, record.envelope, surfaceReliefKind(material));
-    if (!measured && record.envelope <= 0) this.surfaceDensities.delete(name);
+    if (!measured && record.envelope <= 0) this.dropSurfaceDetail(name, material);
+  }
+
+  /**
+   * Forget a body's density and put its surfaces back at rest.
+   *
+   * The record is what drives the material, so dropping one without writing the
+   * material would leave the term wherever it was: a moon hidden while it
+   * filled the frame would come back with its ground already on instead of
+   * easing in, and one that never becomes measurable again would keep taking
+   * the term's derivatives forever for a weight of zero.
+   */
+  private dropSurfaceDetail(name: string, material: THREE.Material): void {
+    this.surfaceDensities.delete(name);
+    setSurfaceSynthesis(material, 0, surfaceReliefKind(material));
   }
 
   /**
@@ -4557,7 +4591,7 @@ export class PlanetariumMode {
         // them) — a fake position the triggers must never measure. An invisible
         // moon can't legitimately span the viewport anyway.
         if (!m.mesh.visible) {
-          this.surfaceDensities.delete(m.data.name);
+          this.dropSurfaceDetail(m.data.name, m.mesh.material as THREE.Material);
           continue;
         }
         const ups = m.textureUpgrades;

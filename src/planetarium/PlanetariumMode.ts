@@ -4476,7 +4476,18 @@ export class PlanetariumMode {
       record.magnified = measured.magnified;
       record.pxPerUnit = measured.pxPerUnit;
       record.subCameraLatDeg = measured.subCameraLatDeg;
-      record.subCameraBodyDir = measured.subCameraBodyDir;
+      // Copied out, not pointed at: the measurement writes into one scratch
+      // record that every body in the walk shares, so holding its array would
+      // give every body the last one's direction.
+      if (measured.subCameraBodyDir) {
+        const dir = record.subCameraBodyDir ?? [0, 0, 0];
+        dir[0] = measured.subCameraBodyDir[0];
+        dir[1] = measured.subCameraBodyDir[1];
+        dir[2] = measured.subCameraBodyDir[2];
+        record.subCameraBodyDir = dir;
+      } else {
+        record.subCameraBodyDir = null;
+      }
       record.diameterPx = estPx;
     } else {
       record.magnified = 0;
@@ -4516,7 +4527,12 @@ export class PlanetariumMode {
    */
   devSurfaceDensity(): SurfaceDensityReadout[] {
     return [...this.surfaceDensities.values()]
-      .map((r) => ({ ...r }))
+      .map((r): SurfaceDensityReadout => ({
+        ...r,
+        subCameraBodyDir: r.subCameraBodyDir
+          ? [r.subCameraBodyDir[0], r.subCameraBodyDir[1], r.subCameraBodyDir[2]]
+          : null,
+      }))
       .sort((a, b) => b.pixelsPerTexel - a.pixelsPerTexel);
   }
 

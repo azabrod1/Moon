@@ -117,6 +117,32 @@ describe('the drawn texel density of a surface', () => {
     expect(untold.subCameraBodyDir).toBeNull();
   });
 
+  it('writes its direction into the record it was handed, not a fresh one', () => {
+    // The measurement runs for every measurable body against ONE scratch
+    // record, so a caller that kept the array it hands back would give every
+    // body the last one's direction. It has to be safe to copy out of.
+    const camera = cameraAt(1.5);
+    const basis = {
+      x: new THREE.Vector3(1, 0, 0),
+      y: new THREE.Vector3(0, 1, 0),
+      z: new THREE.Vector3(0, 0, 1),
+    };
+    const scratch = {
+      mapWidth: 0, pixelsPerTexel: 0, texelsPerPixel: 0, magnified: 0, pxPerUnit: 0,
+      subCameraLatDeg: null as number | null, subCameraBodyDir: null as [number, number, number] | null,
+    };
+    const first = measureSurfaceDensity(
+      new THREE.Vector3(), 1, 2048, camera, VIEW_W, VIEW_H, 1, basis, scratch,
+    )!;
+    const held = first.subCameraBodyDir!;
+    const second = measureSurfaceDensity(
+      new THREE.Vector3(0, 0.4, 0), 1, 2048, camera, VIEW_W, VIEW_H, 1, basis, scratch,
+    )!;
+    // Same array, new numbers — which is the whole point, and the trap.
+    expect(second.subCameraBodyDir).toBe(held);
+    expect(second.subCameraBodyDir![1]).not.toBeCloseTo(0, 3);
+  });
+
   it('reports a device-pixel density, not a CSS one', () => {
     const camera = cameraAt(1.5);
     const one = measureSurfaceDensity(new THREE.Vector3(), 1, 2048, camera, VIEW_W, VIEW_H, 1)!;

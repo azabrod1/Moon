@@ -4115,8 +4115,8 @@ export class PlanetariumMode {
     // handback resolves cleanly. Plain teleports are safe the same way —
     // their handlers run between frames, ahead of that re-seed.
     if (!this.devFreeCamera && !isScriptedTransfer) {
-      this.resolvePlanetCollisions();
-      this.resolveMoonCollisions();
+      this.resolvePlanetCollisions(dt);
+      this.resolveMoonCollisions(dt);
     }
 
     // Apply floating origin: offset everything by player position
@@ -12697,11 +12697,13 @@ export class PlanetariumMode {
    * throttle-up guards apply): a body plowing into it is a physical shove,
    * and a dead hull would otherwise ride the shell with no way out.
    */
-  private applyShellContact(cx: number, cy: number, cz: number, shellR: number, hit: SweepContact) {
+  private applyShellContact(
+    cx: number, cy: number, cz: number, shellR: number, hit: SweepContact, dt: number,
+  ) {
     const park = resolveShellContactPark(
       this.player.posX, this.player.posY, this.player.posZ,
       this.prevPlayerPos.x, this.prevPlayerPos.y, this.prevPlayerPos.z,
-      cx, cy, cz, shellR, hit, this.tmpShellPark,
+      cx, cy, cz, shellR, hit, dt, this.tmpShellPark,
     );
     this.player.posX = park.x;
     this.player.posY = park.y;
@@ -12710,7 +12712,7 @@ export class PlanetariumMode {
     this.reviveParkedShip();
   }
 
-  private resolveMoonCollisions() {
+  private resolveMoonCollisions(dt: number) {
     const p0 = this.prevPlayerPos;
     this.forEachGovernedMoon((x, y, z, renderedR) => {
       // Same clearance bubble as the arrival standoff and camera safety.
@@ -12720,11 +12722,11 @@ export class PlanetariumMode {
         this.player.posX, this.player.posY, this.player.posZ,
         x, y, z, collisionR,
       );
-      if (hit) this.applyShellContact(x, y, z, collisionR, hit);
+      if (hit) this.applyShellContact(x, y, z, collisionR, hit, dt);
     });
   }
 
-  private resolvePlanetCollisions() {
+  private resolvePlanetCollisions(dt: number) {
     if (!this.solarSystem) return;
     const p0 = this.prevPlayerPos;
     for (const planet of this.solarSystem.planets) {
@@ -12736,7 +12738,7 @@ export class PlanetariumMode {
         this.player.posX, this.player.posY, this.player.posZ,
         worldPos.x, worldPos.y, worldPos.z, collisionRadius,
       );
-      if (hit) this.applyShellContact(worldPos.x, worldPos.y, worldPos.z, collisionRadius, hit);
+      if (hit) this.applyShellContact(worldPos.x, worldPos.y, worldPos.z, collisionRadius, hit, dt);
     }
   }
 

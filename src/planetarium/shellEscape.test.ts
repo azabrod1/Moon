@@ -133,7 +133,7 @@ function runContact(
       // shell's own advance walks the ship; the heading is never touched.
       resolveShellContactPark(
         pos.x, pos.y, pos.z, prev.x, prev.y, prev.z,
-        planet.x, planet.y, planet.z, COLLISION_R, hit, park,
+        planet.x, planet.y, planet.z, COLLISION_R, hit, dt, park,
       );
       pos.copy(park);
     }

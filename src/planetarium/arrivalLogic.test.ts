@@ -20,7 +20,7 @@ import {
   moonCollisionRadius,
   resolveShellContactPark,
   SHELL_SLIDE_GAIN,
-  SHELL_SLIDE_MAX_FRAC,
+  SHELL_SLIDE_MAX_RATE_PER_S,
   movingBodySpeedCap,
   rampedSpeedCap,
   sunArrivalPose,
@@ -1735,12 +1735,13 @@ describe('fail-closed edges', () => {
 
 describe('resolveShellContactPark', () => {
   const R = 1e-4;
+  const DT_60 = 1 / 60;
   const out = new THREE.Vector3();
   const n = { ox: 1, oy: 0, oz: 0 }; // +X outward contact normal
 
   it('a merely-touching contact parks on the shell and does not creep', () => {
     // Attempted endpoint exactly at shell height: zero penetration.
-    resolveShellContactPark(R, 0, 0, R * 1.5, 0, 0, 0, 0, 0, R, n, out);
+    resolveShellContactPark(R, 0, 0, R * 1.5, 0, 0, 0, 0, 0, R, n, DT_60, out);
     expect(out.x).toBeCloseTo(R, 15);
     expect(out.y).toBe(0);
     expect(out.z).toBe(0);
@@ -1749,7 +1750,7 @@ describe('resolveShellContactPark', () => {
   it('a pilot\'s own press parks with no walk — flying into the shell just stops', () => {
     // All of the penetration is the ship's blocked approach: park, no slide.
     const pen = R * 0.004;
-    resolveShellContactPark(R - pen, 0, 0, R + pen * 2, 0, 0, 0, 0, 0, R, n, out);
+    resolveShellContactPark(R - pen, 0, 0, R + pen * 2, 0, 0, 0, 0, 0, R, n, DT_60, out);
     expect(out.x).toBeCloseTo(R, 15);
     expect(out.y).toBe(0);
     expect(out.z).toBe(0);
@@ -1764,7 +1765,7 @@ describe('resolveShellContactPark', () => {
     const step = R * 0.0002;   // the ship's own inward step
     const advance = R * 0.003; // and the shell's, sixteen times larger
     resolveShellContactPark(
-      R - step - advance, 0, 0, R - advance + step, 0, 0, 0, 0, 0, R, n, out,
+      R - step - advance, 0, 0, R - advance + step, 0, 0, 0, 0, 0, R, n, DT_60, out,
     );
     expect(out.x).toBeCloseTo(R, 15);
     expect(Math.hypot(out.y, out.z)).toBe(0);
@@ -1772,22 +1773,36 @@ describe('resolveShellContactPark', () => {
 
   it('the shell\'s own advance earns the gain, capped at the per-frame ceiling', () => {
     // Bulldozer: ship drifting (attempted == prev), shell advanced pen onto it.
-    const pen = R * 0.0005; // gain x pen = 0.008R, under the 0.02R cap
-    resolveShellContactPark(R - pen, 0, 0, R - pen, 0, 0, 0, 0, 0, R, n, out);
+    const pen = R * 0.0005; // gain x pen = 0.008R, under a 60 Hz frame's 0.02R cap
+    resolveShellContactPark(R - pen, 0, 0, R - pen, 0, 0, 0, 0, 0, R, n, DT_60, out);
     const walked = Math.abs(Math.atan2(Math.hypot(out.y, out.z), out.x)) * R;
     expect(walked).toBeCloseTo(pen * SHELL_SLIDE_GAIN, 8);
     expect(out.length()).toBeCloseTo(R, 15);
     // A warp-deep sweep of the shell over a drifting ship: capped.
-    resolveShellContactPark(R * 0.2, 0, 0, R * 0.2, 0, 0, 0, 0, 0, R, n, out);
+    resolveShellContactPark(R * 0.2, 0, 0, R * 0.2, 0, 0, 0, 0, 0, R, n, DT_60, out);
     const capped = Math.abs(Math.atan2(Math.hypot(out.y, out.z), out.x)) * R;
-    expect(capped).toBeCloseTo(R * SHELL_SLIDE_MAX_FRAC, 8);
+    expect(capped).toBeCloseTo(R * SHELL_SLIDE_MAX_RATE_PER_S * DT_60, 8);
+  });
+
+  it('caps the walk by the clock, not by the frame', () => {
+    // Same warp-deep sweep at two refresh rates. The walk under the cap is
+    // already proportional to the frame's own advance; the cap has to be too,
+    // or a 120 Hz display walks a shoved hull off in half the time a 60 Hz one
+    // takes. Measured as the tangent of the walked angle, which is exactly the
+    // slide the tangent plane was given.
+    const tanWalk = (dt: number) => {
+      resolveShellContactPark(R * 0.2, 0, 0, R * 0.2, 0, 0, 0, 0, 0, R, n, dt, out);
+      return Math.hypot(out.y, out.z) / out.x;
+    };
+    expect(tanWalk(1 / 30)).toBeCloseTo(tanWalk(1 / 60) * 2, 12);
+    expect(tanWalk(1 / 60)).toBeCloseTo(SHELL_SLIDE_MAX_RATE_PER_S / 60, 12);
   });
 
   it('the walk continues the ship\'s own tangential slide when it has one', () => {
     // Shell advance under a ship gliding +Y: blocked radial is zero, the
     // walk direction is the glide's.
     const pen = R * 0.001;
-    resolveShellContactPark(R - pen, R * 0.001, 0, R - pen, R * 0.0005, 0, 0, 0, 0, R, n, out);
+    resolveShellContactPark(R - pen, R * 0.001, 0, R - pen, R * 0.0005, 0, 0, 0, 0, R, n, DT_60, out);
     expect(out.length()).toBeCloseTo(R, 15);
     expect(out.y).toBeGreaterThan(R * 0.001); // walked onward, not just parked
     expect(Math.abs(out.z)).toBeLessThan(1e-18);
@@ -1795,8 +1810,8 @@ describe('resolveShellContactPark', () => {
 
   it('a dead-center shove veers on the stable perpendicular, the same way every frame', () => {
     const pen = R * 0.001;
-    const a = resolveShellContactPark(R - pen, 0, 0, R - pen, 0, 0, 0, 0, 0, R, n, new THREE.Vector3());
-    const b = resolveShellContactPark(R - pen, 0, 0, R - pen, 0, 0, 0, 0, 0, R, n, new THREE.Vector3());
+    const a = resolveShellContactPark(R - pen, 0, 0, R - pen, 0, 0, 0, 0, 0, R, n, DT_60, new THREE.Vector3());
+    const b = resolveShellContactPark(R - pen, 0, 0, R - pen, 0, 0, 0, 0, 0, R, n, DT_60, new THREE.Vector3());
     expect(a.distanceTo(b)).toBe(0); // deterministic
     expect(a.length()).toBeCloseTo(R, 15);
     expect(Math.hypot(a.y, a.z)).toBeGreaterThan(0); // off the stagnation point

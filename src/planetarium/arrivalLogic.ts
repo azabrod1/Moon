@@ -537,9 +537,12 @@ export interface SweepContact {
  *  a minute at 1x, seconds at warp. */
 export const SHELL_SLIDE_GAIN = 16;
 
-/** Ceiling on the slide as a fraction of the shell radius per resolved
- *  frame — keeps a warp-deep plunge from teleporting around the limb. */
-export const SHELL_SLIDE_MAX_FRAC = 0.02;
+/** Ceiling on the walk, as a fraction of the shell radius per SECOND — keeps
+ *  a warp-deep plunge from teleporting a hull around the limb. Per second and
+ *  not per frame: below the cap the walk is already proportional to the
+ *  frame's own advance, so a per-frame ceiling would run the same warp rescue
+ *  at twice the speed on a 120 Hz display. */
+export const SHELL_SLIDE_MAX_RATE_PER_S = 1.2;
 
 /** Stable unit perpendicular to `n`: cross with the axis `n` leans on least.
  *  Depends on `n` alone, so repeated contacts on a slowly rotating normal
@@ -563,7 +566,7 @@ export function stablePerpendicular(nx: number, ny: number, nz: number, out: THR
  * that is NOT pushing in is walked: the shell's own advance into it
  * (whatever penetration the hull's step did not cause) buys
  * SHELL_SLIDE_GAIN × that much sideways travel, capped at
- * SHELL_SLIDE_MAX_FRAC of the shell per frame, so a moving body's face
+ * SHELL_SLIDE_MAX_RATE_PER_S of the shell per second of `dtS`, so a moving body's face
  * carries a drifting ship around and off the limb instead of bulldozing it
  * forever. The walk direction is the attempted motion's own tangential part
  * when it has one (the slide continues the way the ship was already going),
@@ -577,6 +580,7 @@ export function resolveShellContactPark(
   cx: number, cy: number, cz: number,
   shellR: number,
   hit: SweepContact,
+  dtS: number,
   out: THREE.Vector3,
 ): THREE.Vector3 {
   const dEnd = Math.hypot(attemptedX - cx, attemptedY - cy, attemptedZ - cz);
@@ -602,7 +606,8 @@ export function resolveShellContactPark(
   if (blockedRadial > penetration * 1e-3) return out;
   // What is left is the shell's own advance into an unresisting hull.
   const shellPress = Math.max(0, penetration - blockedRadial);
-  const slide = Math.min(shellPress * SHELL_SLIDE_GAIN, shellR * SHELL_SLIDE_MAX_FRAC);
+  const slide = Math.min(shellPress * SHELL_SLIDE_GAIN,
+    shellR * SHELL_SLIDE_MAX_RATE_PER_S * Math.max(0, dtS));
   if (slide <= 0) return out;
   // The tangential of a near-radial press is numerical noise, not a
   // direction — below a hair of real sideways motion, veer on the stable

@@ -84,7 +84,18 @@
 //     hard step. `destripe` splits the picture into hemispheric albedo, the
 //     frame-sized band the offsets live in, and detail, then softens and halves
 //     only the middle one. The real large-scale albedo and every bit of detail
-//     come through untouched.
+//     come through untouched. That instrument needs a body whose real features
+//     are either much wider than a frame or much finer, which Titan is and the
+//     Galileans are not: on Callisto, whose features run from half a degree to
+//     thirty, it takes two thirds of the surface out with the steps. Those
+//     three take `levelEdges` instead, which finds the straight steps and
+//     closes each one rather than filtering for the band they live in.
+//   * Where a mosaic changes RESOLUTION it leaves rectangles of smeared ground
+//     against crisp cratered ground, and from close up those read as pieces of
+//     different pictures stitched together. `coverageFill` measures how much
+//     detail each part of the map is short of and gives the short parts grain
+//     at the amplitude the sharp parts measure. Both of these live in
+//     tools/surfaceGrain.mjs with the blur and the noise they are built on.
 //
 // LEVELS. A map is an sRGB-encoded albedo texture, so its mean in LINEAR light
 // is proportional to the body's albedo, and every graded map here is put on one
@@ -104,11 +115,14 @@
 //   --cache=<dir>  .moon-data-cache root (sources live in <dir>/zoom)
 //   --no-rungs     skip the KTX2 intermediates (the slow part)
 import sharp from 'sharp';
+import {
+  NOISE_AMP_PER_SIGMA, bandAmplitudes, blurMono, coverageFill, findEdges, levelEdges, valueNoise,
+} from './surfaceGrain.mjs';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 sharp.cache(false);
 sharp.concurrency(0);
@@ -480,6 +494,14 @@ const JOBS = {
     // And the punch back on top, at the scale a disc-filling Callisto draws
     // its craters at.
     localContrast: { radiusDeg: 1.2, gain: 0.45 },
+    // The mosaic is Galileo strips at a few hundred metres a pixel laid over
+    // Voyager fill at ten times that, and where they meet they meet on a
+    // straight line with a calibration step across it. Both passes work on the
+    // source's own pixels before the reduction, so the 8K rung gets them too.
+    // The step numbers this pair is answering, worst three of a hundred-odd:
+    // 41, 33 and 20 counts on a map whose mean is 58.
+    levelEdges: { minStep: 8, rampDeg: 6, alongDeg: 2, rounds: 1 },
+    coverageFill: { blurDeg: 0.25, windowDeg: 1.5, wideDeg: 2 },
   },
   pluto: {
     src: 'Pluto_NewHorizons_Global_Mosaic_300m_Jul2017_8bit.tif',
@@ -529,45 +551,6 @@ async function checkedSource(name) {
 // Pixel plumbing
 // ---------------------------------------------------------------------------
 
-/**
- * Separable box blur, three passes, which is a gaussian to within a per cent.
- * Wraps in x — every raster here is a globe, and a blur that runs off the
- * prime meridian instead of round it leaves a line down the middle of a
- * tidally locked moon's face — and clamps in y at the poles.
- *
- * `src` and the result are Float32Array of one channel.
- */
-function blurMono(src, W, H, radius) {
-  if (radius < 0.5) return Float32Array.from(src);
-  const r = Math.max(1, Math.round(radius));
-  let cur = Float32Array.from(src);
-  const tmp = new Float32Array(W * H);
-  for (let pass = 0; pass < 3; pass++) {
-    // x, wrapping
-    for (let y = 0; y < H; y++) {
-      const row = y * W;
-      let sum = 0;
-      for (let d = -r; d <= r; d++) sum += cur[row + ((d % W) + W) % W];
-      const inv = 1 / (2 * r + 1);
-      for (let x = 0; x < W; x++) {
-        tmp[row + x] = sum * inv;
-        sum += cur[row + ((x + r + 1) % W)] - cur[row + ((x - r) % W + W) % W];
-      }
-    }
-    // y, clamped
-    for (let x = 0; x < W; x++) {
-      let sum = 0;
-      for (let d = -r; d <= r; d++) sum += tmp[Math.min(H - 1, Math.max(0, d)) * W + x];
-      const inv = 1 / (2 * r + 1);
-      for (let y = 0; y < H; y++) {
-        cur[y * W + x] = sum * inv;
-        sum += tmp[Math.min(H - 1, y + r + 1) * W + x] - tmp[Math.max(0, y - r) * W + x];
-      }
-    }
-  }
-  return cur;
-}
-
 /** Grow a 0/1 mask by `r` pixels, wrapping in x. */
 function dilateMask(mask, W, H, r) {
   if (r <= 0) return mask;
@@ -601,7 +584,7 @@ function dilateMask(mask, W, H, r) {
  * hard polygon edge into a gradient a couple of degrees wide. Operates on one
  * channel in place.
  */
-function destripe(band, W, H, spec, pxPerDeg) {
+export function destripe(band, W, H, spec, pxPerDeg) {
   const fine = blurMono(band, W, H, spec.fineDeg * pxPerDeg);
   const coarse = blurMono(band, W, H, spec.coarseDeg * pxPerDeg);
   const mid = new Float32Array(W * H);
@@ -824,15 +807,24 @@ async function sourceRaster(file, entry, nd, job, leftEdgeLonDegEast) {
     + `${bad !== hard ? ` -> ${((100 * bad) / n).toFixed(2)}% unmeasured after the dark-region and boundary rules` : ''}`);
 
   // --- repairs that belong at source resolution ----------------------------
-  if (job.destripe || job.seamFeather) {
-    // These read and write one band. A single-band source is one by
-    // definition; the two NASA 3D textures are greyscale stored in three
-    // identical channels, which is the same picture wearing a wider file.
+  if (job.destripe || job.seamFeather || job.levelEdges || job.coverageFill) {
+    // Every repair here works on the picture's BRIGHTNESS and writes its
+    // answer back as a change of brightness on each channel, which leaves a
+    // colour mosaic's chroma exactly where the mission left it. That is the
+    // right shape for all of them: a frame's calibration offset, a seam's
+    // step and a coarse patch's missing grain are all differences in how much
+    // light a pixel says it reflects.
     let grey3 = sc === 3;
     for (let i = 0; grey3 && i < n; i += 997) {
       if (data[i * 3] !== data[i * 3 + 1] || data[i * 3] !== data[i * 3 + 2]) grey3 = false;
     }
-    if (sc !== 1 && !grey3) throw new Error('destripe and seamFeather read one band; this source is colour');
+    // These two are told which longitude to work on and are only ever set on
+    // a mono product; the pair below find their own work and run on anything.
+    if ((job.destripe || job.seamFeather) && sc !== 1 && !grey3) {
+      throw new Error('destripe and seamFeather read one band; this source is colour');
+    }
+    const valid = new Uint8Array(n);
+    for (let i = 0; i < n; i++) valid[i] = grown[i] ? 0 : 1;
     if (job.destripe) {
       destripe(grey, W, H, job.destripe, pxPerDeg);
       console.log(`  destriped: frame offsets between ${job.destripe.fineDeg} and ${job.destripe.coarseDeg} deg at ${job.destripe.midGain}x`);
@@ -841,9 +833,34 @@ async function sourceRaster(file, entry, nd, job, leftEdgeLonDegEast) {
       const { column, peak } = featherSeam(grey, W, H, seam, leftEdgeLonDegEast, grown);
       console.log(`  levelled the ${seam.lonDegEast} E seam (source column ${column}, step up to ${peak.toFixed(1)} counts, spread over ${seam.rampDeg} deg either side)`);
     }
+    if (job.levelEdges) {
+      const { edges: before } = findEdges(grey, W, H, job.levelEdges, pxPerDeg, valid);
+      const { edges: fixed } = levelEdges(grey, W, H, job.levelEdges, pxPerDeg, valid);
+      const { edges: after } = findEdges(grey, W, H, job.levelEdges, pxPerDeg, valid, before.slice(0, 3));
+      const say = (e) => (e.axis === 'meridian'
+        ? `${((e.at / pxPerDeg) % 360).toFixed(0)}E`
+        : `lat ${(90 - (e.at * 180) / H).toFixed(0)}`);
+      console.log(`  levelled ${fixed.length} straight brightness steps; the worst three `
+        + before.slice(0, 3).map((e, k) => `${say(e)} ${e.step.toFixed(1)} -> ${after[k].step.toFixed(1)}`).join(', ')
+        + ' counts');
+    }
+    if (job.coverageFill) {
+      const fill = coverageFill(grey, W, H, job.coverageFill, pxPerDeg, valid);
+      for (let i = 0; i < n; i++) grey[i] += fill.delta[i];
+      console.log(`  coverage fill over ${(100 * fill.touchedFraction).toFixed(0)}% of the source`
+        + ` (reference ground ${(100 * fill.refFraction).toFixed(0)}%, energy ${fill.ref.toFixed(1)}):`
+        + ` ${fill.octaves.map((o) => `${o.cell.toFixed(0)}px +-${(o.amp / 2).toFixed(1)}`).join(', ')}`
+        + `, peak ${fill.peakDelta.toFixed(1)} counts, mean ${fill.meanDelta.toFixed(3)}`);
+    }
     for (let i = 0; i < n; i++) {
-      const v = Math.round(grey[i]);
-      for (let c = 0; c < sc; c++) data[i * sc + c] = v;
+      let was = 0;
+      for (let c = 0; c < sc; c++) was += data[i * sc + c];
+      const d = grey[i] - was / sc;
+      if (!d) continue;
+      for (let c = 0; c < sc; c++) {
+        const v = data[i * sc + c] + d;
+        data[i * sc + c] = v < 0 ? 0 : v > 255 ? 255 : Math.round(v);
+      }
     }
   }
 
@@ -1117,64 +1134,14 @@ function splitAlpha(ras) {
   return { ras: { data: out, width: W, height: H, channels: colour }, mask, fraction: bad / n };
 }
 
-/** Two octaves of seeded value noise, so a filled region carries grain
- *  instead of a flat wash — and the same grain every bake, because a moon
- *  must not change face between sessions. */
-function valueNoise(W) {
-  // A murmur3 finalizer, not a one-step multiply: a hash whose consecutive
-  // cells step by a constant leaves its high bits in step too, and the noise
-  // built on it comes out as a visible checkerboard at the cell size rather
-  // than as grain (it did, once).
-  const hash = (x, y, s) => {
-    let h = Math.imul(x, 0x27d4eb2d) ^ Math.imul(y, 0x165667b1) ^ Math.imul(s, 0x9e3779b1);
-    h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
-    h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
-    h ^= h >>> 16;
-    return (h >>> 0) / 4294967295;
-  };
-  const at = (x, y, cell, s) => {
-    const gx = Math.floor(x / cell);
-    const gy = Math.floor(y / cell);
-    const fx = x / cell - gx;
-    const fy = y / cell - gy;
-    const sx = fx * fx * (3 - 2 * fx);
-    const sy = fy * fy * (3 - 2 * fy);
-    const gw = Math.max(1, Math.ceil(W / cell));
-    const wrap = (g) => ((g % gw) + gw) % gw;
-    const a = hash(wrap(gx), gy, s);
-    const b = hash(wrap(gx + 1), gy, s);
-    const c = hash(wrap(gx), gy + 1, s);
-    const d = hash(wrap(gx + 1), gy + 1, s);
-    const top = a + (b - a) * sx;
-    return top + (c + (d - c) * sx - top) * sy;
-  };
-  return {
-    /** The historical two-octave grain, in units of one standard deviation. */
-    plain: (x, y) => (at(x, y, Math.max(2, W / 256), 1) - 0.5) * 1.1 + (at(x, y, Math.max(2, W / 64), 2) - 0.5) * 0.7,
-    /** Octaves at stated cell sizes and stated amplitudes, in counts. */
-    matched: (octaves) => (x, y) => {
-      let v = 0;
-      for (let k = 0; k < octaves.length; k++) {
-        v += (at(x, y, Math.max(2, octaves[k].cell), 3 + k) - 0.5) * octaves[k].amp;
-      }
-      return v;
-    },
-  };
-}
-
 /**
- * How much variation the imaged part of a map carries, octave by octave.
+ * How much variation the imaged part of a map carries, octave by octave, as
+ * the amplitudes `matched` wants — see bandAmplitudes for what is measured and
+ * why it is a median.
  *
- * A fill that has the right mean and no structure reads as fog, and a fill
- * with structure at the wrong amplitude reads as a different moon. What makes
- * it read as the same surface continuing is having the same amount of
- * variation at each scale, so each octave's amplitude is measured here — as
- * the spread of what one blur keeps and the next blur throws away — over the
- * pixels the source actually imaged, and handed to noise cells of that size.
- *
- * The factor of 3.0 is the conversion from a value-noise octave's peak-to-peak
- * range, which is what `matched` scales, to the standard deviation the band
- * measurement is in.
+ * The holes hold whatever the reflection put there, and blurring that in would
+ * make the measurement one of the fill, so they are flattened to the imaged
+ * mean before the blurs and excluded from every sum.
  */
 function textureOctaves(ras, mask, W, H, cells) {
   const n = W * H;
@@ -1182,31 +1149,12 @@ function textureOctaves(ras, mask, W, H, cells) {
   for (let i = 0; i < n; i++) {
     band[i] = (ras.data[i * 3] + ras.data[i * 3 + 1] + ras.data[i * 3 + 2]) / 3;
   }
-  // A masked pixel holds whatever the reflection put there; blur it in and the
-  // measurement is of the fill, so the holes are flattened to the imaged mean
-  // first and the pixels themselves excluded from every sum.
   let sum = 0;
   let valid = 0;
   for (let i = 0; i < n; i++) if (!mask[i]) { sum += band[i]; valid++; }
   const mean = valid ? sum / valid : 128;
   for (let i = 0; i < n; i++) if (mask[i]) band[i] = mean;
-
-  const blurs = cells.map((c) => blurMono(band, W, H, c / 2));
-  const out = [];
-  for (let k = 0; k < cells.length; k++) {
-    const finer = k === 0 ? band : blurs[k - 1];
-    // The spread as a MEDIAN absolute deviation, not an RMS. A flyby mosaic's
-    // terminator strip is a few per cent of the pixels carrying ten times the
-    // contrast of the rest, and an RMS of the whole imaged half is really a
-    // measurement of that strip — grain built from it buries the moon in
-    // noise. The median asks what a typical piece of this surface does.
-    const sample = [];
-    for (let i = 0; i < n; i += 7) if (!mask[i]) sample.push(Math.abs(finer[i] - blurs[k][i]));
-    sample.sort((a, b) => a - b);
-    const mad = sample.length ? sample[Math.floor(sample.length / 2)] : 0;
-    out.push({ cell: cells[k], amp: 3.0 * 1.4826 * mad });
-  }
-  return out;
+  return bandAmplitudes(band, W, H, cells, [(i) => !mask[i]])[0];
 }
 
 /**
@@ -1340,7 +1288,10 @@ async function fillNoData(ras, mask, spec) {
   // more, because the grain beside it is now at the right amplitude and a
   // little more shape reads as terrain rather than as a stain.
   const keepShape = spec.matchTexture ? 0.55 : 0.35;
-  const grainGain = spec.matchTexture ? 1.0 : 0.35;
+  // Two thirds of the variation the imaged half measures, which is where the
+  // half-imaged moons were cut and where they stay: at the full amplitude the
+  // fill reads as a rougher surface than the one it continues from.
+  const grainGain = spec.matchTexture ? 3.0 / NOISE_AMP_PER_SIGMA : 0.35;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const i = y * W + x;
@@ -1447,8 +1398,13 @@ async function runJob(name) {
   console.log(`  ${((Date.now() - t0) / 1000).toFixed(0)} s`);
 }
 
-const wanted = flag('all') ? Object.keys(JOBS) : args.filter((a) => !a.startsWith('--'));
-if (flag('verify')) {
+// Run only when this file is the program. Imported — by a measurement harness
+// or by a test — it is a library of passes and must not start a bake.
+const main = process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
+const wanted = !main ? [] : flag('all') ? Object.keys(JOBS) : args.filter((a) => !a.startsWith('--'));
+if (!main) {
+  // nothing to do
+} else if (flag('verify')) {
   const names = wanted.length ? wanted.map((n) => JOBS[n]?.src ?? n) : Object.keys(manifest).filter((k) => !k.startsWith('_'));
   for (const name of names) {
     await checkedSource(name);

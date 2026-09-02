@@ -12684,11 +12684,13 @@ export class PlanetariumMode {
 
   /**
    * Land a swept shell contact, by position alone — the pilot's heading and
-   * camera are never touched. resolveShellContactPark keeps the frame's
-   * tangential motion (a bump slides around the limb instead of grinding at
-   * the entry point) and walks a pressed dead-center pin sideways, so a
-   * moving body's leading face carries a ship around and off the shell
-   * rather than bulldozing it forever. Autopilot ends on contact: its glide
+   * camera are never touched. resolveShellContactPark stops a ship that is
+   * flying into the shell right there, keeping the frame's tangential motion
+   * so a bump slides around the limb instead of grinding at the entry point;
+   * a hull with no thrust into the shell is instead walked sideways by the
+   * shell's own advance, so a moving body's leading face carries a drifting
+   * ship around and off rather than bulldozing it forever. Autopilot ends on
+   * contact: its glide
    * contract already failed (a body swept in at time warp), and it would
    * re-close on the shell frame by frame — silently, since the pilot did
    * nothing to take the stick. A parked ship is revived (the pilot's own

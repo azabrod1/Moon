@@ -1755,6 +1755,21 @@ describe('resolveShellContactPark', () => {
     expect(out.z).toBe(0);
   });
 
+  it('a press into an ADVANCING shell still parks — the body may not drag the pilot', () => {
+    // The pilot is flying in (the step is inward) AND the shell has come to
+    // meet them, so the penetration is far more than the ship's own step.
+    // Every body in the scene moves; if the part the body contributed bought
+    // a walk, holding the stick at any leading face would slide the ship
+    // around the limb until the body left the view.
+    const step = R * 0.0002;   // the ship's own inward step
+    const advance = R * 0.003; // and the shell's, sixteen times larger
+    resolveShellContactPark(
+      R - step - advance, 0, 0, R - advance + step, 0, 0, 0, 0, 0, R, n, out,
+    );
+    expect(out.x).toBeCloseTo(R, 15);
+    expect(Math.hypot(out.y, out.z)).toBe(0);
+  });
+
   it('the shell\'s own advance earns the gain, capped at the per-frame ceiling', () => {
     // Bulldozer: ship drifting (attempted == prev), shell advanced pen onto it.
     const pen = R * 0.0005; // gain x pen = 0.008R, under the 0.02R cap

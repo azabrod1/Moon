@@ -17,10 +17,13 @@
  * different pose, so the law is what is shared and the search is not. Plus
  * the legacy "postcard" framing kept verbatim for authored scenes (tutorial,
  * historic journeys, the dev screenshot bridge).
- * Alongside them, the shell-contact graze and the moving-body speed credit
- * keep a bump a deflection rather than a reversal or a trap, and the
- * post-pass hold keeps a completed fly-by's destination framed on the way
- * out instead of ending the trip on the sky past it.
+ * Alongside them, the shell-contact park and the moving-body speed credit
+ * make flying into a body's keep-out shell a stop rather than a reversal or
+ * a trap: the heading is never touched, a ship thrusting into the shell
+ * holds station on it, and only an unresisting hull is walked off by the
+ * shell's own advance. And the post-pass hold keeps a completed fly-by's
+ * destination framed on the way out instead of ending the trip on the sky
+ * past it.
  * PlanetariumMode feeds live positions and applies the results.
  */
 import * as THREE from 'three';
@@ -506,25 +509,32 @@ export interface SweepContact {
 // --- Shell-contact response: the positional slide ---------------------------
 //
 // A shell contact never touches the pilot's heading. The ship is held at the
-// shell by position alone: a pilot flying into the shell just stops there
-// (parked facing the body, where the land affordance lives), and only the
-// shell's OWN motion moves a parked ship — a leading face plowing into it
-// walks it sideways by a deterministic step scaled to the advance, around
-// the limb and off.
+// shell by position alone, and the two cases split on whether the ship is
+// thrusting into the shell:
+//  - Thrusting in — a pilot who flew to the body and held the stick: the
+//    ship holds station on the shell, on EVERY face of the body, moving or
+//    not. It has flown to the body and stopped there, parked facing it,
+//    where the land affordance lives.
+//  - Not thrusting in — a hull drifting, or steering tangent or away:
+//    nothing holds it against a face advancing into it, so the advance walks
+//    it sideways around the limb and lets go.
 // Two responses came before this one: a 180° nose snap (whipped the chase
 // camera, and on a moving body's leading face aimed the ship along the
 // bulldozer blade), then an eased tangential re-aim — gentler, but any
 // self-turning nose moves the camera the pilot did not move, which read as
 // the app wrestling the stick.
 
-/** Tangential walk per unit of the SHELL'S OWN advance into the ship this
- *  frame. The ship's own blocked thrust earns NOTHING: a pilot pressing a
- *  stationary shell has flown to the body and stopped there — parked facing
- *  it, where the land affordance lives — and any sideways creep would read
- *  as the app dragging a ship the pilot parked. Only the world acting on the
- *  ship walks it: a leading face advancing at orbital speed (~30 km/s at 1x)
- *  rounds the ship off its limb in well under a minute at this gain, seconds
- *  at warp, so a hands-off ship is never bulldozed forever. */
+/** Tangential walk per unit of the SHELL'S OWN advance into a hull that is
+ *  NOT thrusting into it. A ship pressing the shell earns no motion at all,
+ *  on any face: every body in the scene moves, so crediting a body's own
+ *  advance as a shove while the pilot presses would drag the ship the pilot
+ *  parked — a leading face closes at orbital speed (~30 km/s at 1x) against
+ *  a press governed to 2 km/s, and at this gain that walks the parked ship
+ *  a quarter of the way round the limb in twenty seconds, until the body
+ *  itself leaves the view. Only the world acting on an unresisting hull
+ *  walks it, and there the gain is what keeps a drifting ship from being
+ *  bulldozed forever: the same advance rounds it off the limb in well under
+ *  a minute at 1x, seconds at warp. */
 export const SHELL_SLIDE_GAIN = 16;
 
 /** Ceiling on the slide as a fraction of the shell radius per resolved
@@ -547,16 +557,19 @@ export function stablePerpendicular(nx: number, ny: number, nz: number, out: THR
 /**
  * Park a resolved shell contact, by position alone. `attempted` is where the
  * frame wanted the ship (pre-resolve); the park lands on the shell along the
- * contact normal, then walks sideways by SHELL_SLIDE_GAIN × the SHELL'S OWN
- * advance into the ship (penetration beyond what the ship's blocked thrust
- * accounts for, capped at SHELL_SLIDE_MAX_FRAC of the shell per frame). A
- * pilot pressing a stationary shell therefore just stops — parked at the
- * body — while a moving body's face plowing into a ship carries it around
- * and off the limb instead of bulldozing it forever. The walk direction is
- * the attempted motion's own tangential part when it has one (the slide
- * continues the way the ship was already going), else the normal's stable
- * perpendicular (a dead-center shove picks the same side every frame).
- * Writes and returns `out`; never reads or implies a heading.
+ * contact normal. A ship whose own step pushes into the shell stops there
+ * and nothing more — it holds station on the body's shell, on every face,
+ * and the body keeps the place on screen the pilot flew it to. Only a hull
+ * that is NOT pushing in is walked: the shell's own advance into it
+ * (whatever penetration the hull's step did not cause) buys
+ * SHELL_SLIDE_GAIN × that much sideways travel, capped at
+ * SHELL_SLIDE_MAX_FRAC of the shell per frame, so a moving body's face
+ * carries a drifting ship around and off the limb instead of bulldozing it
+ * forever. The walk direction is the attempted motion's own tangential part
+ * when it has one (the slide continues the way the ship was already going),
+ * else the normal's stable perpendicular (a dead-center shove picks the same
+ * side every frame). Writes and returns `out`; never reads or implies a
+ * heading.
  */
 export function resolveShellContactPark(
   attemptedX: number, attemptedY: number, attemptedZ: number,
@@ -570,11 +583,9 @@ export function resolveShellContactPark(
   const penetration = Math.max(0, shellR - dEnd);
   out.set(cx + hit.ox * shellR, cy + hit.oy * shellR, cz + hit.oz * shellR);
   if (penetration <= 0) return out;
-  // Attempted motion split at the contact normal: the tangential part names
-  // the walk direction; the blocked radial part (motion the park cancelled)
-  // is returned as slide 1:1. The shell's own advance is the penetration
-  // that remains after the ship's motion is accounted — pressing it earns
-  // the gain.
+  // Attempted motion split at the contact normal: the inward radial part is
+  // the ship's own push into the shell, and the tangential part names the
+  // walk direction if there is a walk.
   let tx = attemptedX - prevX;
   let ty = attemptedY - prevY;
   let tz = attemptedZ - prevZ;
@@ -584,6 +595,12 @@ export function resolveShellContactPark(
   tz -= along * hit.oz;
   const tLen = Math.hypot(tx, ty, tz);
   const blockedRadial = Math.max(0, -along);
+  // A ship pushing into the shell rides it: the park alone holds it there,
+  // and the body stays where the pilot put it on screen. The threshold is
+  // relative to the penetration so that a purely tangential step's float
+  // noise is not read as a push.
+  if (blockedRadial > penetration * 1e-3) return out;
+  // What is left is the shell's own advance into an unresisting hull.
   const shellPress = Math.max(0, penetration - blockedRadial);
   const slide = Math.min(shellPress * SHELL_SLIDE_GAIN, shellR * SHELL_SLIDE_MAX_FRAC);
   if (slide <= 0) return out;

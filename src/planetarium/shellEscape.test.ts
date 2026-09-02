@@ -5,17 +5,24 @@
  * per-law behavior is pinned in arrivalLogic.test.ts; what only this loop can
  * pin is that the pieces COMPOSE under the two contact rules — a contact
  * NEVER rotates the ship (the heading is the pilot's alone; the park is
- * position-only), and a PILOT-caused press parks while only the SHELL's own
- * motion moves a parked ship. So the demands split:
+ * position-only), and a ship THRUSTING into the shell holds station there
+ * while only an unresisting hull is moved by the shell's own advance. So the
+ * demands split:
  *
- * - Pressing a shell that is not advancing (stationary body, or chasing a
- *   receding face) is STATION: the ship reaches the shell, sits there
- *   without creep or growing penetration, and stays escapable in principle
- *   because the heading is untouched (the pilot steers off whenever they
- *   choose — the leave law and credits are pinned elsewhere).
- * - A face ADVANCING into the ship must never pin it: the shove's own
- *   advance walks the ship around the limb and off (the bulldozer rescue),
- *   with or without the dial up.
+ * - Pressing the shell is STATION, on every face of a body moving or not:
+ *   the ship reaches the shell, sits there without creep or growing
+ *   penetration, and the body keeps the place on screen the pilot flew it
+ *   to. It stays escapable because the heading is untouched (the pilot
+ *   steers off whenever they choose — the leave law and credits are pinned
+ *   elsewhere).
+ * - A face ADVANCING into a hull that is NOT thrusting into it must never
+ *   pin it: the shove's own advance walks the hull around the limb and off
+ *   (the bulldozer rescue).
+ *
+ * Station is not a freeze: a parked ship beside a body crossing at orbital
+ * speed is re-projected onto a shell that keeps moving, so the body's
+ * bearing creeps — degrees per minute at 1x, which is the body's own passage
+ * and not the app steering. The pins below measure that bearing.
  */
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
@@ -53,6 +60,14 @@ interface ContactRun {
   /** Deepest the ATTEMPTED position ever sat inside the shell, in shell radii —
    *  a growing value is a resolver failing to hold the surface. */
   maxPenetrationFrac: number;
+  /** How far the body's direction has swung, in degrees, since the frame the
+   *  ship first touched its shell. The heading never moves, so this IS how
+   *  far the body has travelled across the screen — a station that lets the
+   *  destination slide out of the view is not a station. */
+  bodySwingDeg: number;
+  /** Sim time of the last frame of the run, so a pin can say the shell was
+   *  STILL holding the ship when the clock ran out. */
+  endS: number;
 }
 
 /**
@@ -75,7 +90,10 @@ function runContact(
   const park = new THREE.Vector3();
   const run: ContactRun = {
     escapeAtS: null, contactAtS: null, lastContactAtS: null, maxPenetrationFrac: 0,
+    bodySwingDeg: 0, endS: 0,
   };
+  const bearing0 = new THREE.Vector3();
+  const bearing = new THREE.Vector3();
 
   for (let t = 0; t < maxS; t += dt) {
     // Body governor (computeBodySpeedCap + advanceBodyCap, no bypass).
@@ -102,7 +120,10 @@ function runContact(
       planet.x, planet.y, planet.z, COLLISION_R,
     );
     if (hit) {
-      if (run.contactAtS === null) run.contactAtS = t;
+      if (run.contactAtS === null) {
+        run.contactAtS = t;
+        bearing0.copy(planet).sub(pos).normalize();
+      }
       run.lastContactAtS = t;
       run.maxPenetrationFrac = Math.max(
         run.maxPenetrationFrac,
@@ -117,18 +138,29 @@ function runContact(
       pos.copy(park);
     }
 
-    // The contract the whole file exists to pin: nothing in the contact
-    // response may rotate the ship.
-    if (fwd.distanceTo(fwd0) !== 0) throw new Error('contact rotated the heading');
+    // The contract the whole file exists to pin: the ship's heading is
+    // written once, above the loop, and nothing inside it may steer. Every
+    // station pin below would be meaningless if the loop turned the ship
+    // toward its escape; the resolver itself cannot, since it is handed no
+    // heading and hands back a position.
+    if (fwd.distanceTo(fwd0) !== 0) throw new Error('the loop steered the ship');
 
+    if (run.contactAtS !== null) {
+      bearing.copy(planet).sub(pos).normalize();
+      const swing = Math.acos(clamp1(bearing.dot(bearing0))) * (180 / Math.PI);
+      if (swing > run.bodySwingDeg) run.bodySwingDeg = swing;
+    }
     if (run.escapeAtS === null && pos.distanceTo(planet) - COLLISION_R > COLLISION_R) {
       run.escapeAtS = t;
     }
+    run.endS = t;
   }
   return run;
 }
 
-describe('hands-off shell contacts: presses park, shoves walk off', () => {
+const clamp1 = (x: number) => Math.min(1, Math.max(-1, x));
+
+describe('shell contacts: a pressing ship holds station, an unresisting one is walked off', () => {
   // Near-dead-center approach from one shell radius of clear sky; the 0.02
   // lean gives the walk a real tangential direction to continue.
   const start = () => new THREE.Vector3(COLLISION_R * 2, 0, 0);
@@ -158,18 +190,28 @@ describe('hands-off shell contacts: presses park, shoves walk off', () => {
     expect(run.maxPenetrationFrac).toBeLessThan(0.01);
   });
 
-  it('bumped by the LEADING face at 1× time — the bulldozer walks the ship off', () => {
-    // Rescue = the shell stops holding the ship by the deadline and never
-    // re-pins; with the dial up the freed nose then pulls real clear sky
-    // within the window.
+  it('PRESSING the LEADING face at 1× — station, and Earth stays where it was flown to', () => {
+    // The case a pilot actually flies: nose on the planet, dial up, into the
+    // face that is coming at them. Holding the stick is how a pilot parks at
+    // a body, so the shell just stops the ship. The body's own passage
+    // creeps its bearing by a degree or so a minute — the world moving, not
+    // the app steering — and it never leaves the view.
     const vel = new THREE.Vector3(EARTH_V_AU_S, 0, 0);
     const run = runContact(start(), inbound(), vel);
     expect(run.contactAtS).not.toBeNull();
-    expect(run.lastContactAtS!).toBeLessThan(ESCAPE_DEADLINE_S);
-    expect(run.escapeAtS).not.toBeNull();
+    expect(run.contactAtS!).toBeLessThan(ESCAPE_DEADLINE_S);
+    expect(run.escapeAtS).toBeNull(); // the park IS the outcome
+    expect(run.maxPenetrationFrac).toBeLessThan(0.01);
+    // Still held when the clock ran out: nothing walked the ship off.
+    expect(run.lastContactAtS!).toBeGreaterThan(run.endS - 1);
+    // ...and the planet is still framed where the pilot put it.
+    expect(run.bodySwingDeg).toBeLessThan(3);
   });
 
-  it('bumped by the LEADING face with the dial at ZERO — a drifting ship is still rescued', () => {
+  it('the same face with the dial at ZERO — an unresisting hull is walked off', () => {
+    // The twin of the pin above, and the one difference is the dial: with no
+    // thrust into the shell nothing holds this hull against the advancing
+    // face, so the advance walks it around the limb and lets go.
     // Start just off the shell: a drifting ship does not close distance
     // itself, so the interesting clock starts when the advancing face
     // arrives, not after a 3,000-second coast.
@@ -181,15 +223,24 @@ describe('hands-off shell contacts: presses park, shoves walk off', () => {
     // the advancing shell walking it off and letting go for good.
     expect(run.contactAtS).not.toBeNull();
     expect(run.lastContactAtS!).toBeLessThan(ESCAPE_DEADLINE_S);
+    // Walked right around the limb, which is what "let go" looks like from
+    // the cockpit: the planet swings across the view and away.
+    expect(run.bodySwingDeg).toBeGreaterThan(45);
   });
 
-  it('bumped by the LEADING face at 10× time warp', () => {
+  it('pressing the LEADING face at 10× time warp — held to the surface, never trapped', () => {
+    // At warp the face crosses at hundreds of km/s against a press governed
+    // to 2 km/s, so the park cannot hold one point of a shell going by that
+    // fast: re-projecting onto the moving shell rounds the ship along it and
+    // eventually releases it. Nothing walks it — this is the body's own
+    // passage — and the pins are that the surface holds and the shell is
+    // never a trap.
     const vel = new THREE.Vector3(EARTH_V_AU_S * 10, 0, 0);
-    const run = runContact(start(), inbound(), vel);
+    const run = runContact(start(), inbound(), vel, 180);
     expect(run.contactAtS).not.toBeNull();
-    expect(run.lastContactAtS!).toBeLessThan(ESCAPE_DEADLINE_S);
+    expect(run.maxPenetrationFrac).toBeLessThan(0.01);
+    expect(run.lastContactAtS!).toBeLessThan(150);
     expect(run.escapeAtS).not.toBeNull();
-    expect(run.escapeAtS!).toBeLessThan(ESCAPE_DEADLINE_S);
   });
 
   it('bumped on the SIDE face (planet motion across the contact normal): stable pursuit station', () => {
@@ -203,6 +254,11 @@ describe('hands-off shell contacts: presses park, shoves walk off', () => {
   });
 
   it('parked ON the shell nose near-tangent, leading face closing at 1×', () => {
+    // A nose 3° inside tangent still counts as pressing, so nothing walks
+    // this ship — it leaves on its own thrust, sliding along the shell until
+    // the sightline opens and the governor lets the dial through. The pilot
+    // steering off is always available; that is the whole reason a press is
+    // allowed to park.
     const run = runContact(
       new THREE.Vector3(COLLISION_R, 0, 0),
       new THREE.Vector3(-0.05, 1, 0),

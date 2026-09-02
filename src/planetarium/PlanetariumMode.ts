@@ -4613,10 +4613,16 @@ export class PlanetariumMode {
       if (bothOff && !isDisc) continue;
       projectToScreen(pos, this.camera, canvasW, canvasH, proj);
       if (!this.pickProjOnScreen(canvasW, canvasH)) continue;
-      const drawnPx = isDisc
-        ? projectSphereToScreen(pos, planet.data.radiusAU, this.camera, canvasW, canvasH, this.sphereScreenProjection).radiusPx
-        : markerRadiusPx;
-      this.pushPickCandidate(planet.data.name, proj.x, proj.y, drawnPx, dist);
+      if (isDisc) {
+        // A resolved disc is caught where it is DRAWN: the lens shifts a big
+        // off-axis disc's footprint away from its projected centre (~15 px for
+        // a 20° disc 30° off-axis at 60°), so a catch around the centre would
+        // leave the outer crescent dead on one side. Markers stay on the centre.
+        const fp = projectSphereToScreen(pos, planet.data.radiusAU, this.camera, canvasW, canvasH, this.sphereScreenProjection);
+        this.pushPickCandidate(planet.data.name, fp.footprintX, fp.footprintY, fp.radiusPx, dist);
+      } else {
+        this.pushPickCandidate(planet.data.name, proj.x, proj.y, markerRadiusPx, dist);
+      }
     }
 
     // The Sun — always drawn; the reveal still gates it on the 1.67 AU rule.
@@ -4625,7 +4631,8 @@ export class PlanetariumMode {
       const dist = cam.distanceTo(sunPos);
       projectToScreen(sunPos, this.camera, canvasW, canvasH, proj);
       if (this.pickProjOnScreen(canvasW, canvasH)) {
-        this.pushPickCandidate('Sun', proj.x, proj.y, this.getSunScreenProjection().radiusPx, dist);
+        const sun = this.getSunScreenProjection();
+        this.pushPickCandidate('Sun', sun.footprintX, sun.footprintY, sun.radiusPx, dist);
       }
     }
 
@@ -4656,7 +4663,8 @@ export class PlanetariumMode {
         const effR = this.renderedMoonSizeAU(m.data.radiusAU, parentR, anchor);
         // The label pass's own pad, from the per-frame cache the passes share
         // (a hit: the dot pass measured every visible moon earlier this frame).
-        const discPadPx = this.moonEffScreenProjection(m, tempV, effR).radiusPx * 1.1;
+        const eff = this.moonEffScreenProjection(m, tempV, effR);
+        const discPadPx = eff.radiusPx * 1.1;
         const dotAlpha = m.dotScreenAlpha ?? 0;
         const aimable = discPadPx >= LABEL_READABLE_RADIUS_PX
           || dotAlpha >= LABEL_DOT_MIN_ALPHA
@@ -4664,7 +4672,16 @@ export class PlanetariumMode {
           || (labelsShowing && (m.labelDisplayed ?? false));
         if (!aimable) continue;
         const dotPx = (m.dotScreenSizePx ?? 0) / 2;
-        this.pushPickCandidate(m.data.name, proj.x, proj.y, Math.max(discPadPx, dotPx), dist);
+        // Caught on the drawn footprint when the disc is what's drawn, on the
+        // projected centre when the dot is (a dot sits on the centre).
+        const onDisc = discPadPx >= dotPx;
+        this.pushPickCandidate(
+          m.data.name,
+          onDisc ? eff.footprintX : proj.x,
+          onDisc ? eff.footprintY : proj.y,
+          Math.max(discPadPx, dotPx),
+          dist,
+        );
       }
     }
   }

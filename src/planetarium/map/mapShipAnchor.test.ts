@@ -164,7 +164,8 @@ describe('shipChartedR — the moons own blend rule', () => {
 
   it('matches the chart moon arithmetic at every blend, above the knee', () => {
     for (const blend of [0, 0.25, 0.5, 0.75, 1]) {
-      expect(shipChartedR(policy, x, blend)).toBeCloseTo(moonChartedR(policy, x, blend), 12);
+      // Bit-exact: both ride blendChartedR over the same policy value up here.
+      expect(shipChartedR(policy, x, blend)).toBe(moonChartedR(policy, x, blend));
     }
   });
 });

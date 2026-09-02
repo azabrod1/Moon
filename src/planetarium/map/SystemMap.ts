@@ -139,6 +139,7 @@ import {
   type MapSunUniforms,
 } from './mapGlobeShading';
 import {
+  blendChartedR,
   mapMoonOffsetR,
   moonChartedR,
   moonOffsetEntries,
@@ -3320,7 +3321,6 @@ export class SystemMap {
     this.moonKeyCamQuat.copy(this.camera.quaternion);
     this.moonPasses++;
 
-    const trueScale = this.blend >= MAP_BLEND_TRUE;
     const focusSystem = this.systemOwnerOf(this.cameraSubject());
 
     for (const system of this.moonSystems) {
@@ -3389,10 +3389,9 @@ export class SystemMap {
         // (The globe/dot look deliberately does the opposite — it settles on
         // the gesture that asked for it.) At blend 1 this is x exactly, and the
         // group's scale is the parent's TRUE radius exactly, so the product is
-        // the raw AU offset by construction rather than by arithmetic.
-        const rGroup = trueScale
-          ? moon.x
-          : moon.offsetR + (moon.x - moon.offsetR) * this.blend;
+        // the raw AU offset by construction rather than by arithmetic — the
+        // same blend rule the ring, the pivot and the ship marker take.
+        const rGroup = blendChartedR(moon.offsetR, moon.x, this.blend);
         moon.pos.copy(parentPos).addScaledVector(moon.dir, rGroup * system.scaleBlended);
         moon.dot.position.copy(moon.pos);
         moon.globe.position.copy(moon.pos);
@@ -5323,7 +5322,7 @@ export class SystemMap {
    *  vertices themselves are. */
   private systemRingReachAU(system: MoonSystem): number {
     const capR = system.policy.params.capR;
-    const outer = capR + (system.maxApoX - capR) * this.blend;
+    const outer = blendChartedR(capR, system.maxApoX, this.blend);
     return Math.max(outer, 0) * system.scaleBlended;
   }
 

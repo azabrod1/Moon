@@ -622,7 +622,14 @@ float synthTexelWeight(vec2 uv, vec2 texels) {
 vec3 synthChart(vec2 c, vec2 cx, vec2 cy, vec2 seed) {
   float perPx = max(max(length(cx), length(cy)), 1e-12);
   float wanted = log2(1.0 / (${SURFACE_DETAIL_TILE_PX.toFixed(1)} * perPx));
-  float rung = max(floor(wanted), 0.0);
+  // Ceilinged, because the rung multiplies the coordinates and a float runs out
+  // of mantissa: at rung 12 one unit in the last place of the uv is a quarter
+  // of a texel of the map, at 14 it is a whole texel, and past that the field
+  // is drawn in steps. Nothing in cruise gets near — the flight floor is around
+  // rung 5 — but a camera standing ON a surface can, and past the ceiling the
+  // finest rung simply magnifies, which is ground drawn coarser rather than
+  // ground drawn wrong.
+  float rung = clamp(floor(wanted), 0.0, 12.0);
   float blend = clamp(wanted - rung, 0.0, 1.0);
   float perUnit = exp2(rung);
   vec2 uv = c * perUnit + seed;

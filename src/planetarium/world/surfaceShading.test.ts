@@ -209,6 +209,14 @@ describe('the close-range detail term', () => {
     );
   });
 
+  it('stops climbing rungs where a float stops being able to name one', () => {
+    // The rung multiplies the chart's coordinates, so its ulp grows with it: at
+    // twelve it is a quarter of a texel of the field, at fourteen a whole one,
+    // and past that the ground is drawn in steps. A camera standing on a
+    // surface can reach it; cruise cannot.
+    expect(fragment('airless')).toContain('clamp(floor(wanted), 0.0, 12.0)');
+  });
+
   it('never runs on a surface class it is authored to nothing for', () => {
     // A gas giant has no ground to grain and Earth's is mostly ocean, so both
     // are authored to zero — and both are bodies a player hangs close to. Left

@@ -1255,6 +1255,12 @@ export function setSurfaceSynthesis(
   args.relief = relief;
 }
 
+/** How much of the term this material is drawing, on its own — read once per
+ *  live sector per frame, so it allocates nothing. */
+export function surfaceSynthesisEnvelope(mat: THREE.Material): number {
+  return augmentArgs.get(mat)?.uSynthEnvelope.value ?? 0;
+}
+
 /** How much of the term this material is drawing, and what its relief is doing
  *  — what a dependent material (a streamed sector) mirrors. */
 export function surfaceSynthesisOf(

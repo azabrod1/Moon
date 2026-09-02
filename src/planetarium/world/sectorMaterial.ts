@@ -20,7 +20,7 @@
 import * as THREE from 'three';
 import {
   augmentSurfaceMaterial, setSurfaceSynthesis, setSurfaceWaterGloss, surfaceReliefKind,
-  surfaceShadingArgsOf, surfaceSynthesisOf, surfaceWaterGloss,
+  surfaceShadingArgsOf, surfaceSynthesisEnvelope, surfaceWaterGloss,
 } from './surfaceShading';
 
 /** The maps a sector owns: its colour tile, and crops of whichever relief /
@@ -112,7 +112,5 @@ export function syncSectorMaterial(mat: THREE.MeshStandardMaterial, base: THREE.
   // Whether its RELIEF may be drawn is the TILE's own business: the sector
   // carries crops of whatever relief maps the base had, so it answers for what
   // is bound on itself.
-  setSurfaceSynthesis(
-    mat, surfaceSynthesisOf(base)?.envelope ?? 0, surfaceReliefKind(mat),
-  );
+  setSurfaceSynthesis(mat, surfaceSynthesisEnvelope(base), surfaceReliefKind(mat));
 }

@@ -39,6 +39,7 @@ import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, createSha
 import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { disposeCloudDetailTexture } from './world/cloudDetailNoise';
+import { disposeSurfaceDetailTexture } from './world/surfaceDetailNoise';
 import { bindSurfaceAir, clearSurfaceAir, setSurfaceSynthesis, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
 import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer, warmBudgetMs } from './world/textureWarmer';
@@ -18212,8 +18213,10 @@ export class PlanetariumMode {
       cancelNormalUpgrade(planet.normalUpgrade);
     }
     // The deck's detail map is a session singleton shared by every material
-    // that draws one, so it is freed here rather than with any one of them.
+    // that draws one, so it is freed here rather than with any one of them. The
+    // surface's close-range field is the same kind of thing and goes with it.
     disposeCloudDetailTexture();
+    disposeSurfaceDetailTexture();
     // The analytic shells belong to the meshes the solar system owns; the LUT
     // ones were built here, and carry the 1x1 stand-in tables with them.
     for (const shells of this.atmosphereShells.values()) {

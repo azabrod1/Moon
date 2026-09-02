@@ -254,7 +254,13 @@ export function measureSurfaceDensity(
   // and its angle to the pole is that point's latitude.
   if (basis) {
     const y = Math.min(1, Math.max(-1, densityNormal.dot(basis.y)));
-    result.subCameraBodyDir = [densityNormal.dot(basis.x), y, densityNormal.dot(basis.z)];
+    // Written into the record's own array rather than a fresh one: this runs
+    // for every measurable body every frame.
+    const dir = result.subCameraBodyDir ?? [0, 0, 0];
+    dir[0] = densityNormal.dot(basis.x);
+    dir[1] = y;
+    dir[2] = densityNormal.dot(basis.z);
+    result.subCameraBodyDir = dir;
     result.subCameraLatDeg = Math.asin(y) * RAD2DEG;
   } else {
     result.subCameraBodyDir = null;

@@ -39,7 +39,7 @@ import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, createSha
 import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { disposeCloudDetailTexture } from './world/cloudDetailNoise';
-import { bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, resetCloudShadowUniforms, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
 import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer, warmBudgetMs } from './world/textureWarmer';
 import { beginSlicedUpload, stepSlicedUpload } from './world/slicedUpload';
@@ -17928,6 +17928,10 @@ export class PlanetariumMode {
     // The deck's detail map is a session singleton shared by every material
     // that draws one, so it is freed here rather than with any one of them.
     disposeCloudDetailTexture();
+    // The deck's COLOUR map is not this mode's to free — the ladder owns it —
+    // but the frame loop parks it in a module-level uniform for the sea's
+    // glint to read, and that reference has to go with the mode.
+    resetCloudShadowUniforms();
     // The analytic shells belong to the meshes the solar system owns; the LUT
     // ones were built here, and carry the 1x1 stand-in tables with them.
     for (const shells of this.atmosphereShells.values()) {

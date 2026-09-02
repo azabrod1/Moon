@@ -323,6 +323,16 @@ export const cloudShadowUniforms: {
   uCloudShadowSpin: { value: 0 },
 };
 
+/** Let go of the deck map the frame loop parked above. It is the only
+ *  reference to that texture outside the deck's own material, so a session
+ *  that ends still holding it keeps a whole colour rung alive and leaves the
+ *  next one binding a texture from a disposed scene; cleared, the next
+ *  augmented material re-installs the 1x1 stand-in. */
+export function resetCloudShadowUniforms(): void {
+  cloudShadowUniforms.uCloudShadowMap.value = null;
+  cloudShadowUniforms.uCloudShadowSpin.value = 0;
+}
+
 /** The factor the map's distance BELOW land is multiplied by to land open
  *  water on OCEAN_ROUGHNESS. A coast's fractional water score keeps its
  *  fraction — the coastal gradation is scaled, not thresholded away. */

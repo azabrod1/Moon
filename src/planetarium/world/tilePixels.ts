@@ -16,6 +16,15 @@
  * 1.4 ms from bytes. Same call, same pixels, same residency, a fifth of the
  * cost — the tile stops being the most expensive thing on its frame.
  *
+ * WebKit is where it matters most, and it is the engine the stutter was
+ * reported from. The same thirty-three tiles, unthrottled, cost a median
+ * 10 ms each as ImageBitmaps there against 1 ms as bytes, with no overlap at
+ * all between the two sets — the slowest byte upload was under a quarter of
+ * the fastest bitmap one. A bitmap upload costs about seven times more on
+ * WebKit than on Chromium; a byte upload costs about the same on both. So the
+ * engine that hurt worst is the one this helps most, which is why the path is
+ * not gated on any engine check.
+ *
  * Spreading the upload over frames instead was measured and lost on the
  * number that matters. Banded into eight texSubImage2D calls the same bytes
  * cost 5.5 ms in total with a 4.5 ms worst band when each band was synced,

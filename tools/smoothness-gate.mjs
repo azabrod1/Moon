@@ -46,6 +46,14 @@
 // DIFFERENTIALLY against a reference run instead (see `requires` and the
 // verify hook: mars-flown is judged against mars-flown-floor, the same flight
 // with ?sectors=0).
+//
+// And a limit worth knowing before trusting a phone row: this runs Chromium
+// wearing a phone's user agent, and some costs are the ENGINE's, not the
+// silicon's. A 2048 sector tile uploaded from an ImageBitmap measured 6-7 ms
+// here at 4x throttle and a median 10 ms in Playwright WebKit with no throttle
+// at all — so for anything that leans on how a browser hands an image to the
+// GPU, a green phone row here is not evidence about Safari. Measure that in
+// WebKit (the repo's Safari oracle) before calling such a thing done.
 import { chromium } from 'playwright';
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';

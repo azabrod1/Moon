@@ -162,10 +162,13 @@ describe('what a decoded source still holds in RAM', () => {
     expect(retainedSourceBytes(tex)).toBe(0);
   });
 
-  it('counts the raw buffer behind a tile decoded for a banded upload, until it is freed', () => {
-    // The other decode path hands the streamer an ImageBitmap and this one
-    // hands it a byte buffer of exactly the same size, so the envelope has to
-    // see 16 MiB either way while a 2048 tile is in flight.
+  it('counts the raw buffer behind a decoded tile the same as a bitmap, until it is freed', () => {
+    // Two decode paths retain a source of the same size, so a caller that
+    // prices one has to price the other identically or the same texture would
+    // cost different amounts depending on how it was decoded. (The sector
+    // streamer prices its tiles from their layouts and never asks this; the
+    // rung-shaped readers that do ask must not be told a byte-backed source
+    // is free.)
     const tex = new THREE.DataTexture(new Uint8Array(4), 2048, 2048);
     tex.userData.ownedPixels = true;
     expect(retainedSourceBytes(tex)).toBe(2048 * 2048 * 4);

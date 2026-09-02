@@ -16,11 +16,12 @@
  * 1.4 ms from bytes. Same call, same pixels, same residency, a fifth of the
  * cost — the tile stops being the most expensive thing on its frame.
  *
- * Spreading the upload over frames instead was measured and is worse, not
- * better: banded into eight texSubImage2D calls the same bytes cost 25.4 ms,
- * because a partial update to storage the driver allocated empty is a slower
- * path than filling a whole level in one call. So the win here is the source,
- * not the schedule, and the upload stays one call.
+ * Spreading the upload over frames instead was measured and lost on the
+ * number that matters. Banded into eight texSubImage2D calls the same bytes
+ * cost 5.5 ms in total with a 4.5 ms worst band when each band was synced,
+ * and 25.4 ms issued back to back without one; either way the worst frame is
+ * worse than the 1.4 ms of a single call, and no reason to prefer bands
+ * survives that. So the upload stays one call and the slicer is untouched.
  *
  * What that costs is work moved off the main thread, not work removed. The
  * bitmap path decodes the WebP too; this one adds a full-size draw and a
@@ -75,15 +76,51 @@ export const TILE_PIXEL_BUDGET_BYTES = 4 * TILE_PIXEL_RESERVE_BYTES;
 let heldBytes = 0;
 
 /**
- * `?tilebytes=0` (DEV only) sends every tile down the one-shot bitmap path —
- * the A/B for tile-upload questions, the way `?sectors=0` is the A/B for tile
- * questions at all. Read once, lazily: module load stays DOM-free.
+ * What this path has actually done, for a device that can only be questioned
+ * through the debug overlay. A worker that failed to load, a probe that came
+ * back wrong, or a colour set recut lossless would all leave the app running
+ * the old path with no symptom but the old stutter, and no way to tell which.
+ */
+const counts = { decoded: 0, fellBack: 0 };
+const fallbackReasons: Record<string, number> = {};
+let probeVerdict: boolean | null = null;
+
+function fellBackBecause(reason: string): void {
+  counts.fellBack += 1;
+  fallbackReasons[reason] = (fallbackReasons[reason] ?? 0) + 1;
+}
+
+/** How the colour tiles are really being uploaded on this device. */
+export function tilePixelStats(): {
+  enabled: boolean;
+  probe: boolean | null;
+  decoded: number;
+  fellBack: number;
+  reasons: Record<string, number>;
+  heldBytes: number;
+} {
+  return {
+    enabled: bytePathAllowed(),
+    probe: probeVerdict,
+    decoded: counts.decoded,
+    fellBack: counts.fellBack,
+    reasons: { ...fallbackReasons },
+    heldBytes,
+  };
+}
+
+/**
+ * `?tilebytes=0` sends every tile down the one-shot bitmap path — the A/B for
+ * tile-upload questions, the way `?sectors=0` is the A/B for tile questions at
+ * all. It works in a production build on purpose: the stutter this path exists
+ * to remove was reported from a phone, and a switch that only exists on a
+ * development origin cannot be tried on the device that has the problem.
+ * Read once, lazily: module load stays DOM-free.
  */
 let bytePathEnabled: boolean | null = null;
 function bytePathAllowed(): boolean {
   if (bytePathEnabled === null) {
-    bytePathEnabled = !(import.meta.env.DEV
-      && typeof location !== 'undefined'
+    bytePathEnabled = !(typeof location !== 'undefined'
       && new URLSearchParams(location.search).get('tilebytes') === '0');
   }
   return bytePathEnabled;
@@ -129,10 +166,16 @@ function ensureWorker(): Worker | null {
   // callers fall back instead of waiting for a reply that never comes — a
   // request left hanging would hold its share of the byte budget for good, and
   // four of them would turn this path off for the session.
+  //
+  // The instance is captured rather than read from the module: an error event
+  // is dispatched as its own task, and by the time it runs a later `ask` may
+  // already have built a replacement — which this would otherwise terminate.
+  const dying = worker;
   const abandon = () => {
+    if (worker !== dying) return;
     const dead = [...pending.values()];
     pending.clear();
-    worker?.terminate();
+    dying.terminate();
     worker = null;
     for (const settle of dead) settle({ id: 0, ok: false, error: 'worker died' });
   };
@@ -152,6 +195,28 @@ function ask(message: { blob?: Blob; probe?: boolean }): Promise<WorkerReply> {
 }
 
 /**
+ * The worker round trip, as one replaceable function.
+ *
+ * Injectable because the byte budget's release paths are the one place a bug
+ * turns this path off for a whole session with no symptom but the old stutter
+ * — four leaked reservations and every later tile takes the bitmap decoder —
+ * and none of them can be driven through a real worker in a unit test.
+ * Replacing it also drops the memoised probe verdict, so an injected decoder
+ * is asked the capability question itself. Nothing in the app calls this.
+ */
+let roundTrip = ask;
+export function setTilePixelRoundTrip(next: typeof ask | null): void {
+  roundTrip = next ?? ask;
+  probe = null;
+}
+
+/** Decoded tile bytes reserved right now. The counter the fail-open paths all
+ *  have to return to zero. */
+export function tilePixelHeldBytes(): number {
+  return heldBytes;
+}
+
+/**
  * Whether this platform's worker really produces flipped opaque bytes.
  *
  * Observed, not sniffed, on the same 1×2 white-over-black round trip the
@@ -162,8 +227,9 @@ function ask(message: { blob?: Blob; probe?: boolean }): Promise<WorkerReply> {
 let probe: Promise<boolean> | null = null;
 export function tilePixelPathUsable(): Promise<boolean> {
   probe ??= (async () => {
-    const reply = await ask({ probe: true });
-    return reply.ok === true && 'probe' in reply && reply.flipped;
+    const reply = await roundTrip({ probe: true });
+    probeVerdict = reply.ok === true && 'probe' in reply && reply.flipped;
+    return probeVerdict;
   })();
   return probe;
 }
@@ -256,28 +322,32 @@ function pixelTexture(buffer: ArrayBuffer, width: number, height: number, url: s
  *
  * The budget is tested and charged in the same turn, with no await between,
  * so two tiles cannot both discover there was room for one; it is given back
- * when the buffer is.
+ * when the buffer is. Exported for the tests that drive its release paths —
+ * the loader around it is the shared one, already covered where it lives.
  */
-async function decodeTileTexture(blob: Blob, url: string): Promise<THREE.Texture> {
-  if (!bytePathAllowed()) return decodeBitmapTexture(blob, url);
-  if (!await isOpaqueWebp(blob)) return decodeBitmapTexture(blob, url);
-  if (!await tilePixelPathUsable()) return decodeBitmapTexture(blob, url);
-  if (!tilePixelBudgetAllows(heldBytes)) return decodeBitmapTexture(blob, url);
+export async function decodeTileTexture(blob: Blob, url: string): Promise<THREE.Texture> {
+  if (!bytePathAllowed()) { fellBackBecause('off'); return decodeBitmapTexture(blob, url); }
+  if (!await isOpaqueWebp(blob)) { fellBackBecause('notOpaqueWebp'); return decodeBitmapTexture(blob, url); }
+  if (!await tilePixelPathUsable()) { fellBackBecause('noWorker'); return decodeBitmapTexture(blob, url); }
+  if (!tilePixelBudgetAllows(heldBytes)) { fellBackBecause('budget'); return decodeBitmapTexture(blob, url); }
   heldBytes += TILE_PIXEL_RESERVE_BYTES;
   let reply: WorkerReply;
   try {
-    reply = await ask({ blob });
+    reply = await roundTrip({ blob });
   } catch (err) {
     heldBytes = Math.max(0, heldBytes - TILE_PIXEL_RESERVE_BYTES);
+    fellBackBecause('threw');
     throw err;
   }
   if (!reply.ok || !('buffer' in reply)) {
     heldBytes = Math.max(0, heldBytes - TILE_PIXEL_RESERVE_BYTES);
+    fellBackBecause('decodeFailed');
     debugWarn('Tile pixel decode failed; using the bitmap path', {
       url, err: reply.ok ? 'no buffer' : reply.error,
     });
     return decodeBitmapTexture(blob, url);
   }
+  counts.decoded += 1;
   return pixelTexture(reply.buffer, reply.width, reply.height, url);
 }
 

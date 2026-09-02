@@ -1,11 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import {
   TILE_PIXEL_BUDGET_BYTES,
   TILE_PIXEL_RESERVE_BYTES,
   isOpaqueWebp,
+  decodeTileTexture,
   releaseTilePixels,
+  setTilePixelRoundTrip,
   tilePixelBudgetAllows,
+  tilePixelHeldBytes,
 } from './tilePixels';
 
 /** A blob whose first bytes are a WebP header of the given kind. */
@@ -81,5 +84,80 @@ describe('releaseTilePixels', () => {
     const other = new THREE.Texture();
     expect(() => releaseTilePixels(other)).not.toThrow();
     expect(other.userData.sourceReleased).toBeUndefined();
+  });
+});
+
+describe('the byte budget across every path that ends a decode', () => {
+  /** A reply carrying a real buffer of the size the tile claims. */
+  const decoded = (id: number, width = 2048, height = 2048) => ({
+    id, ok: true as const, width, height, buffer: new ArrayBuffer(width * height * 4),
+  });
+
+  beforeEach(() => {
+    // The fallback decode is the bitmap path; it only has to produce something.
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({
+      width: 2048, height: 2048, close: () => {},
+    })));
+  });
+
+  afterEach(() => {
+    setTilePixelRoundTrip(null);
+    vi.unstubAllGlobals();
+  });
+
+  /** Decode one tile with a scripted worker in place of the real one. */
+  function loadOne(reply: (msg: { probe?: boolean }) => Promise<unknown>): Promise<THREE.Texture> {
+    setTilePixelRoundTrip(reply as never);
+    return decodeTileTexture(webp('VP8 '), 'http://x/1_1.webp');
+  }
+
+  const probeOk = { id: 0, ok: true as const, probe: true as const, flipped: true };
+
+  it('gives the reservation back when the worker reports a failure', async () => {
+    // Nothing is thrown here — the worker simply could not decode — and the
+    // caller gets the bitmap texture. The reservation must not survive it.
+    const tex = await loadOne(async (m) => (m.probe ? probeOk : { id: 1, ok: false, error: 'no' }));
+    expect(tilePixelHeldBytes()).toBe(0);
+    expect(tex.userData.ownedPixels).toBeUndefined();
+  });
+
+  it('gives the reservation back when the round trip throws', async () => {
+    await expect(loadOne(async (m) => {
+      if (m.probe) return probeOk;
+      throw new Error('worker exploded');
+    })).rejects.toThrow();
+    expect(tilePixelHeldBytes()).toBe(0);
+  });
+
+  it('gives the reservation back when the texture is disposed before its upload', async () => {
+    // A sector abandoned mid-flight disposes the texture it never drew; the
+    // dispose listener is what returns the bytes.
+    const tex = await loadOne(async (m) => (m.probe ? probeOk : decoded(1)));
+    expect(tilePixelHeldBytes()).toBe(TILE_PIXEL_RESERVE_BYTES);
+    tex.dispose();
+    expect(tilePixelHeldBytes()).toBe(0);
+  });
+
+  it('gives the reservation back when the upload is paid', async () => {
+    const tex = await loadOne(async (m) => (m.probe ? probeOk : decoded(1)));
+    expect(tilePixelHeldBytes()).toBe(TILE_PIXEL_RESERVE_BYTES);
+    releaseTilePixels(tex); // what the streamer calls on the 'warmed' outcome
+    expect(tilePixelHeldBytes()).toBe(0);
+  });
+
+  it('hands the fifth tile in flight to the bitmap decoder, and takes it back after', async () => {
+    // The cap is the backstop on decoded RAM. Past it the path fails open
+    // rather than queueing, and one release re-opens it.
+    const held: THREE.Texture[] = [];
+    for (let i = 0; i < 4; i++) held.push(await loadOne(async (m) => (m.probe ? probeOk : decoded(i))));
+    expect(tilePixelHeldBytes()).toBe(TILE_PIXEL_BUDGET_BYTES);
+    const fifth = await loadOne(async (m) => (m.probe ? probeOk : decoded(9)));
+    expect(fifth.userData.ownedPixels).toBeUndefined(); // the bitmap path
+    expect(tilePixelHeldBytes()).toBe(TILE_PIXEL_BUDGET_BYTES);
+    releaseTilePixels(held[0]);
+    const sixth = await loadOne(async (m) => (m.probe ? probeOk : decoded(10)));
+    expect(sixth.userData.ownedPixels).toBe(true);
+    for (const t of [...held.slice(1), sixth]) releaseTilePixels(t);
+    expect(tilePixelHeldBytes()).toBe(0);
   });
 });

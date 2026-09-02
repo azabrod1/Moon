@@ -3666,6 +3666,13 @@ export class PlanetariumMode {
           tilesMiB: mib(stats.budgetedBytes),
           reservedMiB: mib(stats.reserved),
           budgetMiB: mib(envelope.sectorBudget),
+          // How the colour tiles are reaching the GPU. On a phone this is the
+          // only way to tell a working byte decode from one that fell back to
+          // the slower upload for the whole session.
+          tileUpload: `${stats.tilePixels.enabled ? 'bytes' : 'bitmap (?tilebytes=0)'}`
+            + ` probe=${stats.tilePixels.probe ?? '?'}`
+            + ` decoded=${stats.tilePixels.decoded} fellBack=${stats.tilePixels.fellBack}`
+            + `${stats.tilePixels.fellBack > 0 ? ` ${JSON.stringify(stats.tilePixels.reasons)}` : ''}`,
         }
         : { tiles: 'off' }),
       floorMiB: mib(envelope.floorBytes),

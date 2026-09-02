@@ -829,7 +829,10 @@ const SCENARIOS = [
 
 // ------------------------------------------------------------------ analysis
 
-const CAUSES = ['veil', 'tile', 'release', 'rung', 'upload', 'mark'];
+// The same list as smoothnessTrace's SMOOTH_CAUSES, in the same order: the
+// trace stores a bitmask, so a name inserted anywhere but the end would
+// re-read every stored trace's causes as something else.
+const CAUSES = ['veil', 'tile', 'release', 'rung', 'upload', 'mark', 'warm'];
 const causeNames = (mask) => CAUSES.filter((_, i) => mask & (1 << i));
 
 function veilWindows(causeMask) {

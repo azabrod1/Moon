@@ -54,6 +54,7 @@
  */
 import * as THREE from 'three';
 import { debugWarn } from '../../shared/debug';
+import { smoothTraceEvent } from '../smoothnessTrace';
 import {
   decodeBitmapTexture,
   makeStreamedLoader,
@@ -159,7 +160,13 @@ function ensureWorker(): Worker | null {
   if (worker) return worker;
   if (typeof Worker !== 'function' || typeof OffscreenCanvas === 'undefined') return null;
   try {
+    // Stamped on the frame that pays it. A worker start is a module fetch and
+    // a thread, and it runs in the boot idle beside two other warm-ups — so
+    // when a frame there runs long, the trace has to say whether this was on
+    // it rather than leave the question to argument.
+    const startedAt = performance.now();
     worker = new Worker(new URL('./tilePixelWorker.ts', import.meta.url), { type: 'module' });
+    smoothTraceEvent('warm', 'tile worker', performance.now() - startedAt);
   } catch (err) {
     debugWarn('Tile pixel worker unavailable', { err: String(err) });
     return null;
@@ -236,8 +243,12 @@ export function tilePixelHeldBytes(): number {
 let probe: Promise<boolean> | null = null;
 export function tilePixelPathUsable(): Promise<boolean> {
   probe ??= (async () => {
+    const askedAt = performance.now();
     const reply = await roundTrip({ probe: true });
     probeVerdict = reply.ok === true && 'probe' in reply && reply.flipped;
+    // The other half of the cost: the round trip the worker takes to answer,
+    // landing on whichever frame is running when it does.
+    smoothTraceEvent('warm', `tile worker probe ${probeVerdict}`, performance.now() - askedAt);
     return probeVerdict;
   })();
   return probe;

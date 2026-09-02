@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import {
+  smoothTraceFrameStart, smoothTraceStart, smoothTraceStop,
+} from '../smoothnessTrace';
 import * as THREE from 'three';
 import {
   TILE_PIXEL_BUDGET_BYTES,
@@ -201,11 +204,21 @@ describe('when the decode worker is spun up', () => {
     expect(worker.count()).toBe(0);
   });
 
-  it('builds exactly one when the warm asks, and not a second time', () => {
+  it('builds exactly one when the warm asks, stamps it, and builds no second', () => {
+    // One worker for the session, and the frame that pays for it is stamped:
+    // the warm runs in the boot idle beside two other warm-ups, so when a
+    // frame there runs long, this event is what says whether the worker was on
+    // it rather than leaving the question to argument. Both are asserted here
+    // because only the FIRST call constructs anything.
     const worker = stubWorkerCounter();
     setTilePixelRoundTrip(null);
+    smoothTraceStart({}, 64);
+    smoothTraceFrameStart(0);
     warmTilePixelWorker();
     expect(worker.count()).toBe(1);
+    const warm = (smoothTraceStop()?.events ?? []).filter((e) => e.kind === 'warm');
+    expect(warm.map((e) => e.name)).toContain('tile worker');
+    expect(warm[0].durationMs).not.toBeNull();
     warmTilePixelWorker();
     expect(worker.count()).toBe(1);
   });

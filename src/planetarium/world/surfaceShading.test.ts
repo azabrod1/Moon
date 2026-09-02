@@ -235,7 +235,7 @@ describe('the close-range detail term', () => {
     // twelve it is a quarter of a texel of the field, at fourteen a whole one,
     // and past that the ground is drawn in steps. A camera standing on a
     // surface can reach it; cruise cannot.
-    expect(fragment('airless')).toContain('clamp(floor(wanted), 0.0, 12.0)');
+    expect(fragment('airless')).toContain('clamp(floor(synthWanted), 0.0, 12.0)');
   });
 
   it('never runs on a surface class it is authored to nothing for', () => {
@@ -293,9 +293,9 @@ describe('the close-range detail term', () => {
       const phi = i * 2.399963229728653;
       const dir: [number, number, number] = [r * Math.cos(phi), r * Math.sin(phi), z];
       const w = surfaceChartWeights(dir);
-      // Every point is covered, and the charts' variances add to exactly one:
-      // an uncovered point would be a hole in the ground and a short sum would
-      // be a patch of it drawn fainter than the ground around it.
+      // Every point is covered, and the shares add to exactly one: an
+      // uncovered point would be a hole in the ground, and a short sum would be
+      // a patch of it drawn fainter than the ground around it.
       expect(Math.hypot(...w)).toBeCloseTo(1, 12);
       const drawn = w.filter((x) => x > 0).length;
       mostCharts = Math.max(mostCharts, drawn);
@@ -317,7 +317,7 @@ describe('the close-range detail term', () => {
     const glsl = fragment('airless');
     expect(glsl).toContain(`max(abs(synthDir) - ${SYNTH_CHART_CUT.toFixed(4)}, 0.0)`);
     expect(glsl).toContain('synthChartW *= synthChartW;');
-    expect(glsl).toContain('synthChartW /= max(length(synthChartW)');
+    expect(glsl).toContain('synthChartW / max(length(synthChartW)');
   });
 
   it('reads the field against its own mean, so the grain adds no light', () => {

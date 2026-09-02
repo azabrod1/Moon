@@ -607,31 +607,22 @@ float synthTexelWeight(vec2 uv, vec2 texels) {
 }
 // One flat chart's reading of the field: its height here, around zero, in x,
 // and the slope of that height across the SCREEN in yz. \`c\` is the chart's own
-// two coordinates and \`cx\`/\`cy\` their screen derivatives.
+// two coordinates and \`cx\`/\`cy\` their screen derivatives; \`rung\` and \`blend\`
+// are the fragment's, not the chart's.
 //
-// Which rung of the fixed ladder this fragment gets is decided per chart, off
-// the chart's own derivative: the power of two whose tile spans about
-// ${SURFACE_DETAIL_TILE_PX.toFixed(0)} pixels, crossfaded with the next finer one. Zooming therefore
-// reveals finer rungs of ONE fixed field rather than changing the field, and a
-// body's face stays its seed's between sessions and between zooms.
+// One rung for every chart on a fragment, chosen from the surface's own arc per
+// pixel. Per chart it would be chosen from each chart's own compressed
+// coordinates, and two charts drawing the same fragment would then disagree
+// about how big a crater is by up to two thirds of a rung — a patch of ground
+// carrying two crater fields at different sizes, which is what a seam between
+// them looked like.
 //
 // The rung cancels out of the slope: the stored gradient is per tile WIDTH, and
 // a tile's width on the ground shrinks with the rung by exactly the factor the
 // gradient grows, which is what lets one small map stand for every zoom at one
 // steepness. So the two rungs are mixed in their own units and the chart's
 // unscaled derivative is what turns them into a slope.
-vec3 synthChart(vec2 c, vec2 cx, vec2 cy, vec2 seed) {
-  float perPx = max(max(length(cx), length(cy)), 1e-12);
-  float wanted = log2(1.0 / (${SURFACE_DETAIL_TILE_PX.toFixed(1)} * perPx));
-  // Ceilinged, because the rung multiplies the coordinates and a float runs out
-  // of mantissa: at rung 12 one unit in the last place of the uv is a quarter
-  // of a texel of the map, at 14 it is a whole texel, and past that the field
-  // is drawn in steps. Nothing in cruise gets near — the flight floor is around
-  // rung 5 — but a camera standing ON a surface can, and past the ceiling the
-  // finest rung simply magnifies, which is ground drawn coarser rather than
-  // ground drawn wrong.
-  float rung = clamp(floor(wanted), 0.0, 12.0);
-  float blend = clamp(wanted - rung, 0.0, 1.0);
+vec3 synthChart(vec2 c, vec2 cx, vec2 cy, vec2 seed, float rung, float blend) {
   float perUnit = exp2(rung);
   vec2 uv = c * perUnit + seed;
   vec2 dx = cx * perUnit;
@@ -703,7 +694,21 @@ if (uSynthEnvelope > 0.0) {
     // diagonal, which is a fade in the ground with no cause on the ground.
     vec3 synthChartW = max(abs(synthDir) - ${SYNTH_CHART_CUT.toFixed(4)}, 0.0);
     synthChartW *= synthChartW;
-    synthChartW /= max(length(synthChartW), 1e-20);
+    // How much arc this fragment's pixel covers, off the surface direction
+    // itself rather than off any one chart's compressed copy of it: one rung
+    // for every chart drawing this fragment, so they cannot disagree about how
+    // big a crater is.
+    float synthPerPx = max(max(length(synthDx), length(synthDy)), 1e-12);
+    float synthWanted = log2(1.0 / (${SURFACE_DETAIL_TILE_PX.toFixed(1)} * synthPerPx));
+    // Ceilinged, because the rung multiplies the coordinates and a float runs
+    // out of mantissa: at rung 12 one unit in the last place of the uv is a
+    // quarter of a texel of the map, at 14 it is a whole texel, and past that
+    // the field is drawn in steps. Nothing in cruise gets near — the flight
+    // floor is around rung 5 — but a camera standing ON a surface can, and past
+    // the ceiling the finest rung simply magnifies, which is ground drawn
+    // coarser rather than ground drawn wrong.
+    float synthRung = clamp(floor(synthWanted), 0.0, 12.0);
+    float synthBlend = clamp(synthWanted - synthRung, 0.0, 1.0);
     // Each chart reads its own patch of the one field: the offsets are
     // arbitrary and only have to differ, or the seam between two charts would
     // be two copies of the same ground sliding across each other.
@@ -717,22 +722,35 @@ if (uSynthEnvelope > 0.0) {
     // is where that chart's weight has been zero for the whole half of the
     // sphere around it.
     vec3 synthChartFlip = step(0.0, synthDir);
-    vec3 synthField = vec3(0.0);
+    vec3 synthChartX = vec3(0.0);
+    vec3 synthChartY = vec3(0.0);
+    vec3 synthChartZ = vec3(0.0);
     if (synthChartW.x > 0.0) {
-      synthField += synthChartW.x * synthChart(vec2(synthDir.y, synthDir.z),
+      synthChartX = synthChart(vec2(synthDir.y, synthDir.z),
           vec2(synthDx.y, synthDx.z), vec2(synthDy.y, synthDy.z),
-          uSynthSeed + synthChartFlip.x * vec2(0.5, 0.25));
+          uSynthSeed + synthChartFlip.x * vec2(0.5, 0.25), synthRung, synthBlend);
     }
     if (synthChartW.y > 0.0) {
-      synthField += synthChartW.y * synthChart(vec2(synthDir.z, synthDir.x),
+      synthChartY = synthChart(vec2(synthDir.z, synthDir.x),
           vec2(synthDx.z, synthDx.x), vec2(synthDy.z, synthDy.x),
-          uSynthSeed + vec2(0.37, 0.11) + synthChartFlip.y * vec2(0.5, 0.25));
+          uSynthSeed + vec2(0.37, 0.11) + synthChartFlip.y * vec2(0.5, 0.25),
+          synthRung, synthBlend);
     }
     if (synthChartW.z > 0.0) {
-      synthField += synthChartW.z * synthChart(vec2(synthDir.x, synthDir.y),
+      synthChartZ = synthChart(vec2(synthDir.x, synthDir.y),
           vec2(synthDx.x, synthDx.y), vec2(synthDy.x, synthDy.y),
-          uSynthSeed + vec2(0.71, 0.53) + synthChartFlip.z * vec2(0.5, 0.25));
+          uSynthSeed + vec2(0.71, 0.53) + synthChartFlip.z * vec2(0.5, 0.25),
+          synthRung, synthBlend);
     }
+    // The shares are normalised in LENGTH rather than in sum: the charts carry
+    // independent noise, so it is their VARIANCE that has to add to one. A
+    // weighted mean would flatten the field along every diagonal, which is a
+    // fade in the ground with no cause on the ground.
+    vec3 synthShare = synthChartW / max(length(synthChartW), 1e-20);
+    // Height and slope take the same shares: a crater has to keep its walls
+    // with its depth, or the shading would light a hole the surface has lost.
+    vec3 synthField = synthShare.x * synthChartX + synthShare.y * synthChartY
+        + synthShare.z * synthChartZ;
     // Grain: the field's own height as a small multiplicative variation of the
     // albedo, luminance only and a few per cent of it. It puts a texture back
     // on a surface that has run out of map; it must never restate the body's

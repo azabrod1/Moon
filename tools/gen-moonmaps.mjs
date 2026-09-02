@@ -87,15 +87,19 @@
 //     come through untouched. That instrument needs a body whose real features
 //     are either much wider than a frame or much finer, which Titan is and the
 //     Galileans are not: on Callisto, whose features run from half a degree to
-//     thirty, it takes two thirds of the surface out with the steps. Those
-//     three take `levelEdges` instead, which finds the straight steps and
-//     closes each one rather than filtering for the band they live in.
+//     thirty, it leaves 36 per cent of the variation between 1.2 and 8 degrees
+//     standing and still leaves most of the step. So the three Galilean
+//     mosaics do not use it, and the steps they carry — 45, 34 and 20 counts
+//     on Callisto's worst three, on a map whose mean is 58 — are still there.
+//     tools/surfaceGrain.mjs can measure them (`findEdges`); closing them
+//     without leaving a mark of its own is unfinished work.
 //   * Where a mosaic changes RESOLUTION it leaves rectangles of smeared ground
 //     against crisp cratered ground, and from close up those read as pieces of
 //     different pictures stitched together. `coverageFill` measures how much
 //     detail each part of the map is short of and gives the short parts grain
-//     at the amplitude the sharp parts measure. Both of these live in
-//     tools/surfaceGrain.mjs with the blur and the noise they are built on.
+//     at the amplitude the sharp parts measure, which is what the Galileans
+//     take. It lives in tools/surfaceGrain.mjs with the blur, the noise and
+//     the per-octave amplitude it is built on.
 //
 // LEVELS. A map is an sRGB-encoded albedo texture, so its mean in LINEAR light
 // is proportional to the body's albedo, and every graded map here is put on one
@@ -455,11 +459,21 @@ const JOBS = {
       [1.00, [252, 253, 255]],
     ]),
     level: { albedo: 0.67 },
+    // The coarse ground here is flat panels rather than smeared craters, and
+    // it is a sixth of the sharp ground's detail before the fill. What the
+    // fill puts back is grain, not lineae: this moon's real fine structure is
+    // the ridges, and drawing those would be drawing terrain nobody imaged.
+    coverageFill: { blurDeg: 0.25, windowDeg: 1.5, wideDeg: 2 },
   },
   ganymede: {
     src: 'Ganymede_Voyager_GalileoSSI_Global_ClrMosaic_1435m.tif',
     outputs: [{ width: 4096, out: 'ganymede.v2.webp' }],
     rungs: [{ width: 8192, name: 'ganymede-8k' }],
+    // Same patchwork as Callisto's, and the same answer. This is the one
+    // colour source the fill runs on: it measures brightness and adds
+    // brightness, equally on all three channels, so the mosaic's chroma comes
+    // through exactly as the mission left it.
+    coverageFill: { blurDeg: 0.25, windowDeg: 1.5, wideDeg: 2 },
   },
   callisto: {
     src: 'Callisto_Voyager_GalileoSSI_global_mosaic_1km.tif',
@@ -495,12 +509,11 @@ const JOBS = {
     // its craters at.
     localContrast: { radiusDeg: 1.2, gain: 0.45 },
     // The mosaic is Galileo strips at a few hundred metres a pixel laid over
-    // Voyager fill at ten times that, and where they meet they meet on a
-    // straight line with a calibration step across it. Both passes work on the
-    // source's own pixels before the reduction, so the 8K rung gets them too.
-    // The step numbers this pair is answering, worst three of a hundred-odd:
-    // 41, 33 and 20 counts on a map whose mean is 58.
-    levelEdges: { minStep: 8, rampDeg: 6, alongDeg: 2, rounds: 1 },
+    // Voyager fill at ten times that, and the Voyager ground reaches this map
+    // with a tenth of the detail beside it. Measured on the source's own
+    // pixels, before the reduction, so the rungs above the boot map get it
+    // too: this fills 70 per cent of the source and takes the coarse ground's
+    // detail from a fifth of the sharp ground's to a half.
     coverageFill: { blurDeg: 0.25, windowDeg: 1.5, wideDeg: 2 },
   },
   pluto: {

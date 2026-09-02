@@ -22,6 +22,7 @@ import {
   cloudEdgeBand,
   luminance,
   sphereEquirectUv,
+  SPHERE_EQUIRECT_UV_GLSL,
 } from './cloudDeck';
 import { cloudDetailTexture } from './cloudDetailNoise';
 import {
@@ -338,10 +339,18 @@ describe('the deck\'s detail term', () => {
     // gets a wrong mip and a wrong slope wherever the quad straddles the fade.
     const glsl = compiled('cloud').shader.fragmentShader;
     const block = glsl.slice(glsl.indexOf('float cloudAlpha = 1.0;'), glsl.indexOf('vec4 detail = textureGrad'));
-    const inner = glsl.slice(glsl.indexOf('if (cloudDetailW > 0.0) {'), glsl.indexOf('#include <opaque_fragment>'));
+    const inner = glsl.slice(glsl.indexOf('if (cloudDetailW > 0.0) {'), glsl.indexOf('diffuseColor.a *= cloudAlpha;'));
     // Four for the deck's own geometry and two for the ground's frame under it.
     expect(block.match(/dFd[xy]\(/g)).toHaveLength(6);
     expect(inner).not.toMatch(/dFd[xy]\(/);
+    // Past the detail block the shared surface body has one derivative site of
+    // its own, the sea's lookup into the deck map, and it sits under a compare
+    // against a UNIFORM — the whole draw takes the same side of it, which is
+    // what makes the derivative defined.
+    const after = glsl.slice(glsl.indexOf('diffuseColor.a *= cloudAlpha;'), glsl.indexOf('#include <opaque_fragment>'));
+    const gloss = after.slice(after.indexOf('if (uWaterGloss > 0.0) {'), after.indexOf('float sunElevSin'));
+    expect(after.match(/dFd[xy]\(/g)).toHaveLength(2);
+    expect(gloss.match(/dFd[xy]\(/g)).toHaveLength(2);
   });
 
   it('perturbs the normal upstream of the lights, not after them', () => {
@@ -455,6 +464,25 @@ describe('the deck lit from below', () => {
       worst = Math.max(worst, Math.min(du, 1 - du), Math.abs(v - uv.getY(i)));
     }
     expect(worst).toBeLessThan(1e-5);
+  });
+
+  it('wraps longitude in the shader, the same as the TS twin', () => {
+    // atan hands back negative longitude over half the sphere and these maps
+    // are clamped, so an unwrapped u makes every fragment on that half read
+    // the map's left-edge column instead of what is actually above it — the
+    // eastern hemisphere lit by the date line's clouds and cities.
+    const value = SPHERE_EQUIRECT_UV_GLSL.slice(
+      SPHERE_EQUIRECT_UV_GLSL.indexOf('vec2 sphereEquirectUv(vec3 d)'),
+      SPHERE_EQUIRECT_UV_GLSL.indexOf('vec2 sphereEquirectUvGrad'),
+    );
+    expect(value).toContain('fract(atan(d.z, -d.x)');
+    // The gradient must not wrap with it: a slope is a difference, and the
+    // seam's jump belongs to the value alone.
+    const grad = SPHERE_EQUIRECT_UV_GLSL.slice(SPHERE_EQUIRECT_UV_GLSL.indexOf('vec2 sphereEquirectUvGrad'));
+    expect(grad).not.toContain('fract(');
+    // The TS twin wraps the same way, so the two halves agree: a direction
+    // whose raw atan lands at -0.375 of a turn reads column 0.625.
+    expect(sphereEquirectUv(1, 0, -1)[0]).toBeCloseTo(0.625, 12);
   });
 });
 

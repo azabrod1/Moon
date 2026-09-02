@@ -260,8 +260,11 @@ export function sphereEquirectUv(x: number, y: number, z: number): [number, numb
  *  a per-fragment condition, where an implicit derivative is undefined. */
 export const SPHERE_EQUIRECT_UV_GLSL = /* glsl */`
 // The UV three's SphereGeometry gives a unit direction in the sphere's frame.
+// atan returns a half-turn of NEGATIVE longitude, so the wrap is not cosmetic:
+// these maps are clamped, and without it every fragment on that half of the
+// globe would read the map's left edge instead of what is over it.
 vec2 sphereEquirectUv(vec3 d) {
-  return vec2(atan(d.z, -d.x) * ${(1 / (2 * Math.PI)).toFixed(7)},
+  return vec2(fract(atan(d.z, -d.x) * ${(1 / (2 * Math.PI)).toFixed(7)}),
               0.5 + asin(clamp(d.y, -1.0, 1.0)) * ${(1 / Math.PI).toFixed(7)});
 }
 // ...and how that UV moves when the direction does. No wrap in it: a gradient

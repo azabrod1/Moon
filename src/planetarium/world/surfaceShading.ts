@@ -684,7 +684,13 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
     vec3 deckDir = normalize(vec3(vObjPos.x * deckC - vObjPos.z * deckS,
                                   vObjPos.y,
                                   vObjPos.z * deckC + vObjPos.x * deckS));
-    float deckLum = dot(texture2D(uCloudShadowMap, sphereEquirectUv(deckDir)).rgb,
+    // Explicit gradients, taken analytically from the direction's: the UV
+    // jumps a whole turn at the date line, and an implicit derivative read
+    // across that jump would pick the coarsest mip down that one column of
+    // pixels — a hairline of average cloud drawn over the sea.
+    float deckLum = dot(textureGrad(uCloudShadowMap, sphereEquirectUv(deckDir),
+            sphereEquirectUvGrad(deckDir, dFdx(deckDir)),
+            sphereEquirectUvGrad(deckDir, dFdy(deckDir))).rgb,
         vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')}));
     float glintKeep = (1.0 - cloudCoverage(deckLum))
         * ${OCEAN_SPECULAR_KEEP.toFixed(4)};

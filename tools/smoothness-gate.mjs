@@ -7,6 +7,7 @@
 //   node tools/smoothness-gate.mjs --rescore=/tmp/moon-shots/smooth/baseline
 //   node tools/smoothness-gate.mjs --scenario=boot --cold-cache --label=cold
 //   node tools/smoothness-gate.mjs --scenario=earth-near --no-precise-memory
+//   node tools/smoothness-gate.mjs --list
 //
 // Needs a dev server (this checkout, `npx vite --port 5656 --strictPort`) and,
 // for the sector tiles, a tile host (`node planning/_tiles-serve.mjs` on 5622).
@@ -32,6 +33,32 @@
 //
 // Frames under the veil are counted and reported separately rather than
 // dropped, so a hitch that merely hid behind a cut is still visible.
+//
+// PHONE = PROFILE + SLOW SILICON. A phone row is a phone viewport, a phone UA
+// (the device profile reads it, and a phone profile is a different app) AND a
+// 4x CPU throttle, because this machine's cores are not a phone's: unthrottled,
+// a phone-shaped run here passes everything while the real device stutters.
+// The throttle is what made the tile-upload stall reproducible at all — the
+// same flight showed 16 tile-attributed late frames throttled and none without.
+//
+// One consequence: at 4x the absolute PASS bar is unreachable even with the
+// feature under test turned off — the Mars floor leg drops seven frames over
+// two vsyncs with sector streaming OFF. So EVERY throttled phone row is a
+// PAIR: an `<id>-floor` leg flying the same route with `?sectors=0`, and the
+// row itself scored DIFFERENTIALLY against it through `requires` and the
+// verify hook. No throttled row carries an absolute verdict, because such a
+// row would be red whatever the app did, and a gate that is red by
+// construction stops being run — which is worse than no gate at all. What the
+// pair asserts instead: no late frame carried a sector-tile upload, and the
+// scored leg is no worse than its own floor bar two frames of scatter.
+//
+// And a limit worth knowing before trusting a phone row: this runs Chromium
+// wearing a phone's user agent, and some costs are the ENGINE's, not the
+// silicon's. A 2048 sector tile uploaded from an ImageBitmap measured 6-7 ms
+// here at 4x throttle and a median 10 ms in Playwright WebKit with no throttle
+// at all — so for anything that leans on how a browser hands an image to the
+// GPU, a green phone row here is not evidence about Safari. Measure that in
+// WebKit (the repo's Safari oracle) before calling such a thing done.
 import { chromium } from 'playwright';
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -52,6 +79,11 @@ const RESCORE = arg('rescore', '');
 // Which browser to measure in. The default headless shell is an OLD-headless
 // binary with no real display; a real Chrome is the ground truth a person sees.
 const ENGINE = arg('engine', 'shell');
+// Appended to every scenario's boot URL, after the scenario's own query. The
+// A/B seam: a feature switch given here turns the whole battery into the same
+// battery with that feature off, which is how a row is shown to be about the
+// feature and not about the machine (`--extra='&tilebytes=0'`).
+const EXTRA = arg('extra', '');
 
 // --cold-cache: measure a FIRST visit, where every shader program still has to
 // be compiled and linked by the driver. Three caches sit between a run and that
@@ -109,10 +141,10 @@ function appUrl(extra = '', expectSeconds = 120) {
   params.set('smoothFrames', String(Math.ceil(expectSeconds * 130 * 1.5)));
   if (TILES) params.set('tiles', TILES);
   if (COLD_CACHE) params.set('shaderSalt', coldSalt);
-  return `${URL_BASE}/?${params.toString()}${extra}`;
+  return `${URL_BASE}/?${params.toString()}${extra}${EXTRA}`;
 }
 
-async function openPage(browser, device) {
+async function openPage(browser, device, cpuThrottle = 0) {
   const context = await browser.newContext(device);
   await context.addInitScript(() => {
     try {
@@ -140,6 +172,13 @@ async function openPage(browser, device) {
   });
   const page = await context.newPage();
   const notes = [];
+  if (cpuThrottle > 1) {
+    // The renderer's own main thread, slowed by the protocol — the only way
+    // this machine can stand in for phone silicon.
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: cpuThrottle });
+    notes.push(`CPU throttled ${cpuThrottle}x`);
+  }
   page.on('pageerror', (e) => notes.push(`pageerror: ${String(e).slice(0, 200)}`));
   page.on('crash', () => notes.push('the renderer process CRASHED'));
   page.on('console', (m) => {
@@ -259,6 +298,33 @@ async function travelAndSettle(page, name, settleMs = 4_000) {
     + ` pose ${JSON.stringify(pose.pose)}, governor ${JSON.stringify(pose.governor)}`;
 }
 
+/**
+ * Pose the ship a given number of body radii out.
+ *
+ * `jumpTo`'s multiplier scales the standard standoff, and what that comes to
+ * in radii is the body's business — the figure that used to be written here by
+ * hand (0.13) put the camera at 1.04 radii, INSIDE the descent target, so
+ * every "governed descent" below exited on its first check and the legs named
+ * for a descent never flew one. One calibration jump reads the standoff, and
+ * the multiplier follows from it: view distance scales linearly in it.
+ */
+async function jumpToRadii(page, name, targetRadii) {
+  return page.evaluate(async ({ n, target }) => {
+    const nap = (ms) => new Promise((r) => { setTimeout(r, ms); });
+    const radii = () => {
+      const p = window.__moon.probe(n);
+      return p && p.found && p.radiusAU ? p.distToBodyAU / p.radiusAU : null;
+    };
+    window.__moon.jumpTo(n, 1);
+    await nap(150);
+    const base = radii();
+    if (base === null) return null;
+    window.__moon.jumpTo(n, target / base);
+    await nap(150);
+    return radii();
+  }, { n: name, target: targetRadii });
+}
+
 /** Hold a key for a while, letting the app's own governor decide the motion. */
 async function holdKey(page, key, ms) {
   await page.keyboard.down(key);
@@ -290,6 +356,167 @@ async function descendTo(page, name, targetRadii, budgetMs = 25_000) {
   } finally {
     await page.keyboard.up('w');
   }
+}
+
+/**
+ * Hold the throttle toward a body until it fills the target radii.
+ *
+ * The same key a pilot holds, and the same governor: an approach flown this
+ * way streams its sector tiles WHILE the camera watches, which a veiled
+ * travelTo never does — the veil covers exactly the frames the tiles land on.
+ */
+async function flyIn(page, name, targetRadii, budgetMs = 120_000) {
+  await page.keyboard.down('w');
+  try {
+    return await page.evaluate(async ({ n, target, timeoutMs }) => {
+      const nap = (ms) => new Promise((r) => { setTimeout(r, ms); });
+      const radii = () => {
+        const p = window.__moon.probe(n);
+        return p && p.found && p.radiusAU ? p.distToBodyAU / p.radiusAU : null;
+      };
+      const deadline = performance.now() + timeoutMs;
+      while (performance.now() < deadline) {
+        const at = radii();
+        if (at !== null && at <= target) break;
+        await nap(250);
+      }
+      return radii();
+    }, { n: name, target: targetRadii, timeoutMs: budgetMs });
+  } finally {
+    await page.keyboard.up('w');
+  }
+}
+
+/** The flown Mars approach, with and without the tiles. Both legs are the same
+ *  flight so the pair can be read as one differential. */
+function marsFlown(id, title, extra) {
+  return {
+    id,
+    title,
+    device: PHONE,
+    cpuThrottle: 4,
+    // The tiles stream between these two marks. Everything before 'cruise' is
+    // the boot, the reveal and the pose — frames both legs pay identically and
+    // neither owns — so a differential judgement is taken over the approach.
+    window: ['cruise', 'coast'],
+    async run(page, note) {
+      note(`renderer: ${await bootTo(page, extra, 300)}`);
+      note(`device: ${JSON.stringify(await page.evaluate(() => window.__moon.device()))}`);
+      await sleep(3_000);
+      await mark(page, 'pose');
+      note(`posed at ${await jumpToRadii(page, 'Mars', 300)} radii`);
+      await sleep(2_000);
+      await mark(page, 'cruise');
+      note(`cruise ended at ${await flyIn(page, 'Mars', 1.8)} radii`);
+      await mark(page, 'coast');
+      await sleep(15_000);
+      note(`sectors: ${JSON.stringify(await page.evaluate(() => window.__moon.sectors()))}`);
+    },
+  };
+}
+
+/**
+ * A throttled phone row, and the reference leg it is scored against.
+ *
+ * A phone row is a phone viewport, a phone UA and a 4x CPU throttle, and at 4x
+ * the absolute bar is out of reach even with sector streaming off — the Mars
+ * floor run drops seven frames over two vsyncs with `?sectors=0`. An absolute
+ * verdict on such a row is red whatever the app does, and a gate that is red
+ * by construction stops being run, which is worse than no gate. So each of
+ * these ships as a PAIR: the same flight with `?sectors=0` is the floor this
+ * silicon can reach at all, and the row itself is judged against that floor
+ * rather than against a number no phone row can meet.
+ *
+ * `fly` takes the boot query, so the two legs differ in exactly one thing.
+ */
+function phonePair(id, what, fly) {
+  const shared = (extra) => ({
+    device: PHONE,
+    cpuThrottle: 4,
+    // The tiles stream from the descent onward. Everything before it — the
+    // boot, the cruise, the pose — is work both legs pay identically, and
+    // letting it into a comparison of two separate runs swamps the difference
+    // the pair exists to show.
+    window: ['descent'],
+    async run(page, note) {
+      await fly(page, note, extra);
+    },
+  });
+  return [
+    {
+      ...shared('&sectors=0'),
+      id: `${id}-floor`,
+      title: `Phone (4x CPU): ${what} with ?sectors=0 — the reference floor`,
+      verify(analysis) {
+        const problems = [];
+        if (analysis.tileMaterializations > 0) {
+          problems.push(`?sectors=0 still materialised ${analysis.tileMaterializations} tile(s)`);
+        }
+        if (!analysis.window || analysis.window.frames < 500) {
+          problems.push(`the scored leg holds ${analysis.window?.frames ?? 0} frames`
+            + ' — nothing for the row below to compare against');
+        }
+        return problems;
+      },
+    },
+    {
+      ...shared(''),
+      id,
+      title: `Phone (430x932 @3, 4x CPU): ${what}`,
+      requires: `${id}-floor`,
+      verify(analysis, trace, done) {
+        const floor = done.find((r) => r.scenario === `${id}-floor`);
+        if (!floor) return [`no ${id}-floor result to compare against — run it in the same battery`];
+        const problems = [];
+        if (analysis.tileMaterializations < 4) {
+          problems.push(`only ${analysis.tileMaterializations} tile(s) streamed — the leg did not`
+            + ' exercise what it exists to measure');
+        }
+        if (analysis.lateWithTileUpload > 0) {
+          problems.push(`${analysis.lateWithTileUpload} late frame(s) carried a sector-tile upload`);
+        }
+        // A margin of two frames: the floor is a separate run of a moving
+        // scene, not a replay, and an exact count would fail on its scatter.
+        if (analysis.windowOver2x > floor.windowOver2x + 2) {
+          problems.push(`${analysis.windowOver2x} frame(s) over two vsyncs on the scored leg,`
+            + ` against the sectors-off floor's ${floor.windowOver2x}`);
+        }
+        return problems;
+      },
+    },
+  ];
+}
+
+/** Travel to Earth, fly down from 8 radii, hover. */
+async function flyEarthNear(page, note, extra) {
+  await bootTo(page, extra, 230);
+  await sleep(2_000);
+  note(`device: ${JSON.stringify(await page.evaluate(() => window.__moon.device()))}`);
+  note(await travelAndSettle(page, 'Earth'));
+  note(`posed at ${await jumpToRadii(page, 'Earth', 8)} radii`);
+  await sleep(2_500);
+  await mark(page, 'descent');
+  note(`descent ended at ${await descendTo(page, 'Earth', 1.6, 60_000)} radii`);
+  await mark(page, 'hover');
+  await sleep(20_000);
+}
+
+/** The same descent, then a slow yaw across the day/night terminator. */
+async function flyTerminator(page, note, extra) {
+  await bootTo(page, extra, 280);
+  await sleep(2_000);
+  note(await travelAndSettle(page, 'Earth'));
+  note(`posed at ${await jumpToRadii(page, 'Earth', 8)} radii`);
+  await sleep(2_500);
+  await mark(page, 'descent');
+  note(`pan altitude ${await descendTo(page, 'Earth', 1.4, 60_000)} radii`);
+  await sleep(3_000);
+  await mark(page, 'pan');
+  for (let i = 0; i < 14; i++) {
+    await holdKey(page, 'a', 250);
+    await sleep(1_000);
+  }
+  await sleep(3_000);
 }
 
 // ----------------------------------------------------------------- scenarios
@@ -411,14 +638,14 @@ const SCENARIOS = [
     title: 'travelTo Earth → arrival → governed descent to the near band → 20 s hover',
     device: DESKTOP,
     async run(page, note) {
-      await bootTo(page, '', 140);
+      await bootTo(page, '', 190);
       await sleep(2_000);
       note(await travelAndSettle(page, 'Earth'));
       await mark(page, 'near-band');
-      await page.evaluate(() => window.__moon.jumpTo('Earth', 0.13));
+      note(`posed at ${await jumpToRadii(page, 'Earth', 8)} radii`);
       await sleep(2_500);
       await mark(page, 'descent');
-      const at = await descendTo(page, 'Earth', 1.6);
+      const at = await descendTo(page, 'Earth', 1.6, 40_000);
       note(`descent ended at ${at} radii`);
       await mark(page, 'hover');
       await sleep(20_000);
@@ -429,12 +656,13 @@ const SCENARIOS = [
     title: 'Slow pan across the terminator in the near band (day/night families swap)',
     device: DESKTOP,
     async run(page, note) {
-      await bootTo(page, '', 180);
+      await bootTo(page, '', 230);
       await sleep(2_000);
       note(await travelAndSettle(page, 'Earth'));
-      await page.evaluate(() => window.__moon.jumpTo('Earth', 0.13));
+      note(`posed at ${await jumpToRadii(page, 'Earth', 8)} radii`);
       await sleep(2_500);
-      const at = await descendTo(page, 'Earth', 1.4);
+      await mark(page, 'descent');
+      const at = await descendTo(page, 'Earth', 1.4, 40_000);
       note(`pan altitude ${at} radii`);
       await sleep(3_000);
       await mark(page, 'pan');
@@ -467,12 +695,13 @@ const SCENARIOS = [
     // The envelope is read when the device profile is resolved, so it has to
     // be on the boot URL — it cannot be turned on mid-run.
     async run(page, note) {
-      await bootTo(page, '&envelope=200', 460);
+      await bootTo(page, '&envelope=200', 510);
       await sleep(2_000);
       note(await travelAndSettle(page, 'Earth'));
-      await page.evaluate(() => window.__moon.jumpTo('Earth', 0.13));
+      note(`posed at ${await jumpToRadii(page, 'Earth', 8)} radii`);
       await sleep(2_500);
-      await descendTo(page, 'Earth', 1.6);
+      await mark(page, 'descent');
+      note(`descent ended at ${await descendTo(page, 'Earth', 1.6, 40_000)} radii`);
       await mark(page, 'squeeze-hover');
       await sleep(20_000);
       note(`ladder: ${JSON.stringify(await page.evaluate(() => window.__moon.ladder()))}`);
@@ -511,48 +740,99 @@ const SCENARIOS = [
       await page.evaluate(() => window.__moon.setTimeRate(1));
     },
   },
+  ...phonePair(
+    'phone-earth-near',
+    'travel to Earth, governed descent from 8 radii, 20 s hover',
+    flyEarthNear,
+  ),
+  ...phonePair(
+    'phone-terminator',
+    'slow pan across the terminator in the near band',
+    flyTerminator,
+  ),
   {
-    id: 'phone-earth-near',
-    title: 'Phone (430×932 @3): travel to Earth, governed descent, 20 s hover',
-    device: PHONE,
-    async run(page, note) {
-      await bootTo(page, '', 160);
-      await sleep(2_000);
-      note(`device: ${JSON.stringify(await page.evaluate(() => window.__moon.device()))}`);
-      note(await travelAndSettle(page, 'Earth'));
-      await page.evaluate(() => window.__moon.jumpTo('Earth', 0.13));
-      await sleep(2_500);
-      const at = await descendTo(page, 'Earth', 1.6);
-      note(`descent ended at ${at} radii`);
-      await mark(page, 'hover');
-      await sleep(20_000);
+    // The reference leg. Same flight, sector streaming off: this is the floor
+    // the throttled phone can reach at all, and it is not a PASS — at 4x even
+    // a bare cruise drops frames. Scored only for the figures the leg below
+    // is judged against.
+    ...marsFlown(
+      'mars-flown-floor',
+      'Phone (4× CPU): flown approach to Mars with ?sectors=0 — the reference floor',
+      '&sectors=0',
+    ),
+    verify(analysis) {
+      const problems = [];
+      if (analysis.tileMaterializations > 0) {
+        problems.push(`?sectors=0 still materialised ${analysis.tileMaterializations} tile(s)`);
+      }
+      if (analysis.scoredFrames < 5_000) {
+        problems.push(`only ${analysis.scoredFrames} frames scored — the flight did not happen`);
+      }
+      // The leg the run below is compared against has to exist, or the
+      // comparison is against nothing.
+      if (!analysis.window || analysis.window.frames < 1_000) {
+        problems.push(`the approach window holds ${analysis.window?.frames ?? 0} frames`
+          + ' — nothing to compare against');
+      }
+      return problems;
     },
   },
   {
-    id: 'phone-terminator',
-    title: 'Phone (430×932 @3): slow pan across the terminator',
-    device: PHONE,
-    async run(page, note) {
-      await bootTo(page, '', 200);
-      await sleep(2_000);
-      note(await travelAndSettle(page, 'Earth'));
-      await page.evaluate(() => window.__moon.jumpTo('Earth', 0.13));
-      await sleep(2_500);
-      await descendTo(page, 'Earth', 1.4);
-      await sleep(3_000);
-      await mark(page, 'pan');
-      for (let i = 0; i < 14; i++) {
-        await holdKey(page, 'a', 250);
-        await sleep(1_000);
+    ...marsFlown(
+      'mars-flown',
+      'Phone (4× CPU): flown approach to Mars, tiles streaming under the eye',
+      '',
+    ),
+    requires: 'mars-flown-floor',
+    // DIFFERENTIAL, not the absolute rule. At 4x the reference above fails the
+    // absolute bar on its own, so the only honest question is what the TILES
+    // cost on top of it: no late frame may carry a tile upload, and the run's
+    // late-frame count must not sit above the floor's.
+    verify(analysis, trace, done) {
+      const floor = done.find((r) => r.scenario === 'mars-flown-floor');
+      const problems = [];
+      if (!floor) {
+        return ['no mars-flown-floor result to compare against — run it in the same battery'];
       }
-      await sleep(3_000);
+      if (analysis.tileMaterializations < 10) {
+        problems.push(`only ${analysis.tileMaterializations} tiles streamed — the leg did not`
+          + ' exercise what it exists to measure');
+      }
+      if (analysis.lateWithTileUpload > 0) {
+        problems.push(`${analysis.lateWithTileUpload} late frame(s) carried a sector-tile upload`);
+      }
+      // Counted over the approach, where the tiles are: the boot and reveal
+      // frames before it are the same work in both legs and swamp the
+      // difference this is asking about. A margin of two frames on top,
+      // because the floor is a separate run of a moving scene, not a replay,
+      // and an exact count would fail on the reference's own scatter.
+      if (analysis.windowOver2x > floor.windowOver2x + 2) {
+        problems.push(`${analysis.windowOver2x} frame(s) over two vsyncs during the approach,`
+          + ` against the sectors-off floor's ${floor.windowOver2x}`);
+      }
+      return problems;
     },
+  },
+  {
+    // The same flight with every tile uploaded as one indivisible bitmap —
+    // the shape that shipped before the banded byte path. Ask for it by name
+    // to see the stall the pair above exists to prove gone; it is not part of
+    // the battery because it is MEANT to fail.
+    ...marsFlown(
+      'mars-flown-bitmap',
+      'Phone (4× CPU): the flown Mars approach with ?tilebytes=0 — the one-shot arm',
+      '&tilebytes=0',
+    ),
+    selfTestOnly: true,
   },
 ];
 
 // ------------------------------------------------------------------ analysis
 
-const CAUSES = ['veil', 'tile', 'release', 'rung', 'upload', 'mark'];
+// The same list as smoothnessTrace's SMOOTH_CAUSES, in the same order: the
+// trace stores a bitmask, so a name inserted anywhere but the end would
+// re-read every stored trace's causes as something else.
+const CAUSES = ['veil', 'tile', 'release', 'rung', 'upload', 'mark', 'warm'];
 const causeNames = (mask) => CAUSES.filter((_, i) => mask & (1 << i));
 
 function veilWindows(causeMask) {
@@ -633,6 +913,27 @@ function analyze(trace, scenario, notes) {
   const inVeilTime = (t) => veilSpans.some(([a, b]) => t >= a && t <= b);
   const tasksOutside = tasksAfterReveal.filter((t) => !inVeilTime(t.atMs));
 
+  // A sector tile's texture is named for its file, and a tile file is
+  // <column>_<row>.webp — nothing else the app streams is. The trace stamps
+  // that name plus the size, banded or whole, so this matches a tile upload
+  // however it was paid.
+  //
+  // The name alone is not enough: a sector's relief and roughness CROPS are
+  // cut on the same grid and carry the same <c>_<r>.webp name at a few hundred
+  // pixels square, and they upload in well under a millisecond. Blaming a late
+  // frame on one of those would count a cost nothing could have felt. So a
+  // tile is a big image, or an upload that actually took a millisecond —
+  // either is a cost worth attributing, and a crop is neither.
+  const TILE_MIN_TEXELS = 1024 * 1024;
+  const TILE_MIN_MS = 1;
+  const uploadTexels = (name) => {
+    const size = /\s(\d+)x(\d+)$/.exec(name ?? '');
+    return size ? Number(size[1]) * Number(size[2]) : 0;
+  };
+  const isTileUpload = (e) => e.kind === 'upload'
+    && /^\d+_\d+\.webp /.test(e.name ?? '')
+    && (uploadTexels(e.name) >= TILE_MIN_TEXELS || (e.durationMs ?? 0) >= TILE_MIN_MS);
+
   const uploads = events
     .filter((e) => e.kind === 'upload' && (e.durationMs ?? 0) > UPLOAD_BUDGET_MS)
     .map((e) => ({ atMs: e.atMs, frame: e.frame, name: e.name, durationMs: e.durationMs }))
@@ -649,6 +950,20 @@ function analyze(trace, scenario, notes) {
     previous = { mb: sample, frame: i };
   }
 
+  // A scenario may name the leg it is really about — `window: ['cruise',
+  // 'coast']` — and the counts inside it are reported beside the whole-run
+  // ones. The verdict still comes from the whole run: a hitch at the reveal
+  // is a real hitch. But a DIFFERENTIAL judgement compares two separate runs
+  // of a moving scene, and letting reveal and pose frames into that comparison
+  // swamps the difference the legs exist to show with noise neither leg owns.
+  const markAt = (name) => events.find((e) => e.kind === 'mark' && e.name === name)?.frame ?? null;
+  // A window given one mark runs from it to the end of the run; two marks
+  // bound it at both ends.
+  const windowFrom = scenario.window ? markAt(scenario.window[0]) : null;
+  const windowTo = scenario.window?.[1] ? markAt(scenario.window[1]) : null;
+  const inScoreWindow = ({ i }) => (windowFrom === null || i >= windowFrom)
+    && (windowTo === null || i <= windowTo);
+
   const maxMs = round2(sorted.at(-1) ?? 0);
   const p99 = round2(percentile(sorted, 0.99));
   // The machine's own refresh, read from the run: on an unloaded run the
@@ -660,7 +975,14 @@ function analyze(trace, scenario, notes) {
   const twoVsyncMs = round2(vsyncMs * 2);
   const fourVsyncMs = round2(vsyncMs * 4);
   const over2x = scored.filter((s) => s.gap > twoVsyncMs).length;
+  const lateWithTileUpload = scored.filter(({ i, gap }) => gap > twoVsyncMs
+    && [...eventsOf(Math.max(0, i - 1)), ...eventsOf(i)].some(isTileUpload)).length;
   const over4x = scored.filter((s) => s.gap > fourVsyncMs).length;
+  const windowed = scenario.window ? scored.filter(inScoreWindow) : [];
+  const windowOver2x = windowed.filter((s) => s.gap > twoVsyncMs).length;
+  const windowOver4x = windowed.filter((s) => s.gap > fourVsyncMs).length;
+  const windowLateWithTileUpload = windowed.filter(({ i, gap }) => gap > twoVsyncMs
+    && [...eventsOf(Math.max(0, i - 1)), ...eventsOf(i)].some(isTileUpload)).length;
   const maxTaskMs = tasksOutside.reduce((m, t) => Math.max(m, t.durationMs), 0);
   const failures = [];
   if (maxMs > twoVsyncMs) {
@@ -703,6 +1025,14 @@ function analyze(trace, scenario, notes) {
     fourVsyncMs,
     over2x,
     over4x,
+    /** The leg the scenario named, when it named one: the frames a
+     *  differential verdict is taken over, and how many of them were late. */
+    window: scenario.window
+      ? { marks: scenario.window, fromFrame: windowFrom, toFrame: windowTo, frames: windowed.length }
+      : null,
+    windowOver2x,
+    windowOver4x,
+    windowLateWithTileUpload,
     p95Ms: round2(percentile(sorted, 0.95)),
     p99Ms: p99,
     maxMs,
@@ -716,6 +1046,9 @@ function analyze(trace, scenario, notes) {
     uploadsOverBudget: uploads.length,
     uploadsWorst: uploads.slice(0, 8),
     tileMaterializations: events.filter((e) => e.kind === 'tile').length,
+    /** Late frames (over two vsyncs, outside the veil) that carried a sector
+     *  tile's upload — the column the tile work is judged by. */
+    lateWithTileUpload,
     tileReleases: events.filter((e) => e.kind === 'release').length,
     rungApplies: events.filter((e) => e.kind === 'rung').length,
     gcDrops: gcDrops.length,
@@ -798,7 +1131,7 @@ function printTable(results, label) {
   console.log([
     pad('scenario', 18), num('frames', 7), num('p50', 6), num('mean', 6), num('p95', 6),
     num('p99', 6), num('max', 8), num('>2x', 5), num('>4x', 5), num('>33', 5), num('>50', 5),
-    num('tasks', 6), num('up>8', 6), '  verdict',
+    num('tasks', 6), num('up>8', 6), num('tile!', 6), num('leg>2x', 7), '  verdict',
   ].join(''));
   for (const r of results) {
     console.log([
@@ -807,6 +1140,10 @@ function printTable(results, label) {
       num(r.maxMs ?? '-', 8), num(r.over2x ?? '-', 5), num(r.over4x ?? '-', 5),
       num(r.over33 ?? '-', 5), num(r.over50 ?? '-', 5),
       num(r.longTasksOutsideVeils ?? '-', 6), num(r.uploadsOverBudget ?? '-', 6),
+      num(r.lateWithTileUpload ?? '-', 6),
+      // The named leg's own late count, for the rows judged differentially:
+      // a dash where the scenario named no leg and the whole run IS the leg.
+      num(r.window ? r.windowOver2x : '-', 7),
       '  ', r.verdict,
     ].join(''));
     for (const f of r.failures ?? []) console.log(`${' '.repeat(18)}- ${f}`);
@@ -819,8 +1156,24 @@ function printTable(results, label) {
 // runs behind them are expensive, so a rule change must not cost a re-run.
 if (RESCORE) {
   const rescored = [];
-  for (const file of readdirSync(RESCORE).sort()) {
-    if (!file.endsWith('.json') || file === 'summary.json') continue;
+  // A scenario scored against a reference has to be re-scored AFTER it, and
+  // filename order is not that order — `mars-flown-floor.json` sorting before
+  // `mars-flown.json` is a coincidence of `-` sorting under `.`, and a
+  // reference renamed anything later would silently score against nothing.
+  // The live path pulls references in first; this does the same.
+  const rank = (id) => {
+    const scenario = SCENARIOS.find((candidate) => candidate.id === id);
+    return scenario?.requires ? 1 : 0;
+  };
+  const files = readdirSync(RESCORE)
+    .filter((f) => f.endsWith('.json') && f !== 'summary.json')
+    .sort();
+  const idOf = (file) => {
+    const stored = JSON.parse(readFileSync(join(RESCORE, file), 'utf8'));
+    return stored.analysis?.scenario ?? file.replace(/\.json$/, '');
+  };
+  files.sort((a, b) => rank(idOf(a)) - rank(idOf(b)));
+  for (const file of files) {
     const stored = JSON.parse(readFileSync(join(RESCORE, file), 'utf8'));
     if (!stored.trace) continue;
     const previous = stored.analysis ?? {};
@@ -833,7 +1186,7 @@ if (RESCORE) {
     // self-test is MEANT to blow the frame budget, and the generic rule would
     // read its injected stalls as a failure of the app.
     if (scenario.verify) {
-      const problems = scenario.verify(analysis, stored.trace);
+      const problems = scenario.verify(analysis, stored.trace, rescored);
       analysis.failures = problems;
       analysis.verdict = problems.length ? 'FAIL' : 'PASS';
     }
@@ -848,9 +1201,22 @@ if (RESCORE) {
 
 mkdirSync(OUT_DIR, { recursive: true });
 
-const chosen = ONLY.length
+// A scenario scored against a reference cannot run without it, so asking for
+// one by name brings its reference along — in the array's own order, which is
+// what puts the reference first.
+const asked = ONLY.length
   ? SCENARIOS.filter((s) => ONLY.includes(s.id))
   : SCENARIOS.filter((s) => !s.selfTestOnly);
+const needed = new Set(asked.map((s) => s.id));
+for (const s of asked) if (s.requires) needed.add(s.requires);
+const chosen = SCENARIOS.filter((s) => needed.has(s.id));
+// What would run, and in what order, without taking the lock or a browser.
+if (has('list')) {
+  for (const s of chosen) {
+    console.log(`${s.id}${s.requires ? ` (after ${s.requires})` : ''}: ${s.title}`);
+  }
+  process.exit(0);
+}
 if (!chosen.length) {
   console.error(`No scenario matched ${ONLY.join(',')}. Known: ${SCENARIOS.map((s) => s.id).join(', ')}`);
   process.exit(2);
@@ -940,7 +1306,7 @@ try {
       browser = await launchBrowser();
       closedForCold = false;
     }
-    const { context, page, notes } = await openPage(browser, scenario.device);
+    const { context, page, notes } = await openPage(browser, scenario.device, scenario.cpuThrottle);
     const note = (message) => notes.push(message);
     if (COLD_CACHE) note(`cold cache: fresh profile, disk shader cache off, shaderSalt=${coldSalt}`);
     if (!PRECISE_MEMORY) note('heap column not measured: --enable-precise-memory-info withheld, so gcDrops is 0 by construction');
@@ -967,7 +1333,7 @@ try {
     const analysis = analyze(trace, scenario, notes);
     analysis.wallSeconds = Math.round((Date.now() - startedAt) / 100) / 10;
     if (scenario.verify) {
-      const problems = scenario.verify(analysis, trace);
+      const problems = scenario.verify(analysis, trace, results);
       analysis.failures = problems;
       analysis.verdict = problems.length ? 'FAIL' : 'PASS';
     }

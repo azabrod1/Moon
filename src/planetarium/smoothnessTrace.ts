@@ -29,6 +29,7 @@ export const SMOOTH_CAUSES = [
   'rung', // a colour/normal tier swapped onto a material
   'upload', // the warm pump paid a GPU texture upload
   'mark', // a scripted phase marker from the harness
+  'warm', // a boot-idle warm-up did something a frame could feel
 ] as const;
 export type SmoothCause = (typeof SMOOTH_CAUSES)[number];
 

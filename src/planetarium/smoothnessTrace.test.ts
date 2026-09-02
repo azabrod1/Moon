@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   causeNames,
   inWindows,
@@ -129,5 +131,20 @@ describe('recorder', () => {
   it('reads nothing before it is armed', () => {
     expect(smoothTraceSnapshot()).toBeNull();
     expect(smoothTraceStop()).toBeNull();
+  });
+});
+
+describe('the cause vocabulary the gate reads back', () => {
+  it('is the same list, in the same order, as the harness that scores it', () => {
+    // A frame's causes travel as a BITMASK, so the index of each name is the
+    // wire format. A name inserted anywhere but the end — or a list that drifts
+    // between these two files — silently re-reads every stored trace's causes
+    // as something else, and the gate would attribute frames to the wrong work
+    // while staying green.
+    const gate = readFileSync(resolve(__dirname, '../../tools/smoothness-gate.mjs'), 'utf8');
+    const line = /const CAUSES = \[([^\]]*)\]/.exec(gate);
+    expect(line, 'the gate no longer declares a CAUSES array').not.toBeNull();
+    const names = line![1].split(',').map((s) => s.trim().replace(/^'|'$/g, '')).filter(Boolean);
+    expect(names).toEqual([...SMOOTH_CAUSES]);
   });
 });

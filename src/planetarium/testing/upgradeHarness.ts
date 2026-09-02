@@ -41,7 +41,7 @@ import { bindTextureWarmer, pumpTextureWarmQueue } from '../world/textureWarmer'
  */
 export async function settleRungUpload(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+  pumpTextureWarmQueue(Number.POSITIVE_INFINITY, 8.33);
 }
 
 /** Bind an upload that records what it was handed. Without one bound the pump

@@ -402,6 +402,10 @@ function beginMutableSlice(
   width: number,
   height: number,
 ): SliceJob | null {
+  // Three's upload branches on isDataTexture, not on what the image is, so a
+  // data texture cannot be allocated by handing it a stand-in image: that
+  // branch would read `image.data` off the canvas below and find nothing.
+  if ((texture as THREE.DataTexture).isDataTexture) return null;
   const realImage = texture.image;
   try {
     const tiny = document.createElement('canvas');

@@ -93,19 +93,26 @@ export function textureGpuBytes(tex: THREE.Texture | null | undefined, nominalWi
   return equirectMapGpuBytes(nominalWidth, compressed);
 }
 
-/** Bytes of decoded image a texture is still holding in RAM. Only the bitmap
- *  path retains one; a compressed texture's mip data is what
- *  `textureGpuBytes` already measures, and counting it twice would make one
- *  honest measurement look like two. */
+/** Bytes of decoded image a texture is still holding in RAM. Two decodes
+ *  retain one — a bitmap, and the raw RGBA buffer a sector tile is decoded
+ *  into so the driver has no source to convert — and they cost the same four
+ *  bytes a texel until the upload is paid and the source is freed, so both are
+ *  counted. A compressed texture's mip data is what `textureGpuBytes` already
+ *  measures, and counting it twice would make one honest measurement look
+ *  like two. */
 export function retainedSourceBytes(tex: THREE.Texture | null | undefined): number {
   const map = tex as (THREE.Texture & { isCompressedTexture?: boolean }) | null | undefined;
   if (!map || map.isCompressedTexture) return 0;
   // A rung whose source has been closed keeps a small stand-in to re-upload
   // from after a context loss — 2 MiB against the 33 MiB it replaced, and a
-  // couple of rungs' worth across the whole scene.
+  // couple of rungs' worth across the whole scene. Freeing a tile's byte
+  // buffer marks the texture the same way, so one check covers both.
   if (map.userData?.sourceReleased === true) return 0;
   const img = map.image as { width?: unknown; height?: unknown; close?: unknown } | undefined;
-  if (!img || typeof img.close !== 'function') return 0; // an <img> element, not a bitmap
+  // A bitmap is recognised by being closable; a byte buffer this app decoded
+  // and owns says so on the texture. An <img> element is neither, and holds
+  // nothing this module can free.
+  if (!img || (typeof img.close !== 'function' && map.userData?.ownedPixels !== true)) return 0;
   const w = typeof img.width === 'number' ? img.width : 0;
   const h = typeof img.height === 'number' ? img.height : 0;
   return w > 0 && h > 0 ? w * h * 4 : 0;

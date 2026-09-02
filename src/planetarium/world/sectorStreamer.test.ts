@@ -335,6 +335,33 @@ describe('SectorStreamer', () => {
     expect(streamer.stats().bodies.Earth.loading).toEqual(['2_1']);
   });
 
+  it('sends the colour tile to the tile loader and the crops to the shared one', () => {
+    // The tile is the 2048² map worth decoding to bytes so its upload can be
+    // banded; a 272-544 px crop is one sub-millisecond upload and would spend
+    // a worker round trip to spread nothing.
+    const tiles = new FakeLoader();
+    const crops = new FakeLoader();
+    const s = makeStreamer(NO_FLOOR, { load: crops.load, loadTile: tiles.load, warm: warm.warm });
+    const body = earthHandle();
+    s.register(body);
+    s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    expect(tiles.requests.map((r) => r.url)).toEqual([
+      expect.stringMatching(/earth-day\.v2\/16k\.[0-9a-f]{8}\/2_1\.webp$/),
+    ]);
+    expect(crops.requests.map((r) => r.url).sort()).toEqual([
+      expect.stringMatching(/earth-bump\/2k\.[0-9a-f]{8}\/2_1\.webp$/),
+      expect.stringMatching(/earth-roughness\.v2\/4k\.[0-9a-f]{8}\/2_1\.webp$/),
+    ]);
+  });
+
+  it('lets one injected loader serve both, so a test drives one', () => {
+    const both = new FakeLoader();
+    const s = makeStreamer(NO_FLOOR, { load: both.load, warm: warm.warm });
+    s.register(earthHandle());
+    s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    expect(both.requests.length).toBe(3);
+  });
+
   it('shows the sector only once every map is resident, as a child of the globe drawn first', () => {
     warm.auto = null; // hold uploads
     streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);

@@ -25,6 +25,15 @@ describe('nextBandRows', () => {
       .toBe(MIN_BAND_ROWS);
   });
 
+  it('takes the whole rest when the budget is unbounded', () => {
+    // The arrival veil drains with no budget at all: behind an opaque cover
+    // there is no frame to protect, and a band-at-a-time drain would leave
+    // the map unfinished when the cover lifted.
+    expect(nextBandRows({
+      remainingRows: 4088, msPerRow: 0.01, budgetMs: Number.POSITIVE_INFINITY, blockRows: 1,
+    })).toBe(4088);
+  });
+
   it('reports nothing left when nothing is left', () => {
     expect(nextBandRows({ remainingRows: 0, msPerRow: 0.01, budgetMs: 3, blockRows: 1 })).toBe(0);
   });

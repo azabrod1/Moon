@@ -167,6 +167,7 @@ import {
   transmittanceUvFromRMu,
 } from './world/atmosphereModel';
 import { warmBitmapUploadProbe } from './world/textureBitmapLoader';
+import { warmTilePixelWorker } from './world/tilePixels';
 import { planetshineIntensity } from './world/planetshine';
 import {
   advanceSilhouetteOwners,
@@ -2790,6 +2791,15 @@ export class PlanetariumMode {
         this.scheduleBootPairWarm();
         return;
       }
+      // Spin the tile decode worker up here rather than at construction: a
+      // module fetch and a worker start would otherwise land inside the boot
+      // they cost, and nothing in that window needs them. The first flown
+      // approach is seconds away at the earliest, and a tile wanted before the
+      // probe resolves simply awaits it inside the decode — a few milliseconds,
+      // off the main thread — so the worker is never on a frame's critical
+      // path either way. Ahead of the saveData return below: this is a worker,
+      // not speculative bytes.
+      warmTilePixelWorker();
       // A metered connection gets no speculative bytes — the pair still
       // sharpens through the normal triggers when actually visited.
       const connection = (navigator as { connection?: { saveData?: boolean } }).connection;
@@ -3653,6 +3663,13 @@ export class PlanetariumMode {
           tilesMiB: mib(stats.budgetedBytes),
           reservedMiB: mib(stats.reserved),
           budgetMiB: mib(envelope.sectorBudget),
+          // How the colour tiles are reaching the GPU. On a phone this is the
+          // only way to tell a working byte decode from one that fell back to
+          // the slower upload for the whole session.
+          tileUpload: `${stats.tilePixels.enabled ? 'bytes' : 'bitmap (?tilebytes=0)'}`
+            + ` probe=${stats.tilePixels.probe ?? '?'}`
+            + ` decoded=${stats.tilePixels.decoded} fellBack=${stats.tilePixels.fellBack}`
+            + `${stats.tilePixels.fellBack > 0 ? ` ${JSON.stringify(stats.tilePixels.reasons)}` : ''}`,
         }
         : { tiles: 'off' }),
       floorMiB: mib(envelope.floorBytes),
@@ -3784,7 +3801,7 @@ export class PlanetariumMode {
     // and let it finish — it applies on a quiet frame later instead of leaving
     // the body on its boot map for the session.
     for (const e of stillInFlight()) cancelTextureUpgrade(e.up, 'keep');
-    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY, this.frameIntervalMs);
   }
 
   async showDeferredResumePromptIfNeeded(): Promise<void> {
@@ -3988,7 +4005,7 @@ export class PlanetariumMode {
     // being asked of the frame — otherwise the whole decode+upload bill lands
     // inside whatever gesture first draws the map. Runs in every mode so
     // landed sessions warm up too.
-    pumpTextureWarmQueue(warmBudgetMs(this.frameIntervalMs));
+    pumpTextureWarmQueue(warmBudgetMs(this.frameIntervalMs), this.frameIntervalMs);
     // Climb any committed destination's warm ladder (see
     // warmArrivalDestination) — a no-op the moment every goal has disarmed.
     this.pumpArrivalWarmGoals();
@@ -16418,7 +16435,7 @@ export class PlanetariumMode {
           // resident system instead of stalling once per big map.
           if (systemName) {
             this.queueSystemMoonMapsForWarm(systemName);
-            pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+            pumpTextureWarmQueue(Number.POSITIVE_INFINITY, this.frameIntervalMs);
             this.warmedSystems.add(systemName);
           }
           // Take the hold's wait-list once, now that the arrival has started
@@ -16455,7 +16472,7 @@ export class PlanetariumMode {
             // away here is what used to pin a body to its boot map for the rest
             // of the session.
             for (const e of pending) cancelTextureUpgrade(e.up, 'keep');
-            pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+            pumpTextureWarmQueue(Number.POSITIVE_INFINITY, this.frameIntervalMs);
             // Hold the cover until the painted, teleported scene has rendered
             // (the landed/jumped system first appears on the next
             // update→render) and at least the min dwell, so a fast machine

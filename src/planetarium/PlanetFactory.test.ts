@@ -384,7 +384,7 @@ describe('what a fetch puts on the material', () => {
     expect(up.appliedTier).toBe('4k');
     expect(uploaded).toEqual([]);
 
-    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY, 8.33);
     expect(uploaded).toEqual([arrival.tex]);
     expect(materialColorMap(up.material)).toBe(arrival.tex);
     expect(up.appliedTier).toBe('8k');
@@ -405,7 +405,7 @@ describe('what a fetch puts on the material', () => {
       pending[0].onLoad(arrival.tex);
       arrival.finishDecode();
       await settleRungUpload();
-      pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+      pumpTextureWarmQueue(Number.POSITIVE_INFINITY, 8.33);
       expect(materialColorMap(up.material)).toBe(arrival.tex);
       expect(up.appliedTier).toBe('8k');
     } finally {
@@ -433,7 +433,7 @@ describe('what a fetch puts on the material', () => {
     expect(up.pendingUpgradeBytes).toBe(climbing);
     expect(appliedTierHeldBytes(up)).toBe(held + climbing);
 
-    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY, 8.33);
     // Out again with the old map, which the swap disposed.
     expect(up.pendingUpgradeBytes).toBeUndefined();
     expect(appliedTierHeldBytes(up)).toBe(climbing);
@@ -619,7 +619,7 @@ describe('what a fetch puts on the material', () => {
     expect(nu.pendingBytes).toBe(textureGpuBytes(arrival.tex, TIER_MAP_WIDTH['4k']));
     expect(appliedNormalHeldBytes(nu)).toBe(nu.pendingBytes);
 
-    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY, 8.33);
     expect(mat.normalMap).toBe(arrival.tex);
     expect(nu.pendingBytes).toBeUndefined();
     expect(appliedNormalHeldBytes(nu)).toBe(textureGpuBytes(arrival.tex, TIER_MAP_WIDTH['4k']));
@@ -1402,7 +1402,7 @@ describe('colour tier precedence', () => {
     applyColorTierTexture(mat, big, TIER_RANK['8k']); // disposes mid
     queueTextureWarm(big);
 
-    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY, 8.33);
     // Uploading the disposed map would allocate GPU storage nothing frees.
     expect(uploaded).toEqual([big]);
   });
@@ -1852,7 +1852,7 @@ describe('the compressed tier override', () => {
     expect(materialColorMap(up.material)).toBe(tex);
     expect(tex.colorSpace).toBe(THREE.SRGBColorSpace);
     expect(tex.userData.mutableStorage).toBeUndefined(); // compressed keeps texStorage2D
-    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY, 8.33);
     expect(uploaded).toEqual([tex]);
   });
 });
@@ -2058,7 +2058,7 @@ describe('what a release puts on the material', () => {
     expect(up.pendingReleaseBytes).toBe(textureGpuBytes(low, TIER_MAP_WIDTH['4k']));
     expect(settled).toEqual([]);
 
-    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY, 8.33);
     expect(up.material.map).toBe(low);
     expect(up.appliedTier).toBe('4k');
     expect(up.pendingReleaseBytes).toBeUndefined();

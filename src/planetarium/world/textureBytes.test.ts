@@ -6,6 +6,7 @@ import {
   retainedSourceBytes,
   textureGpuBytes,
 } from './textureBytes';
+import { releaseTilePixels } from './tilePixels';
 
 /** A classic map: an image of this size, mipped as three defaults it. */
 function imageTexture(width: number, height: number): THREE.Texture {
@@ -158,6 +159,20 @@ describe('what a decoded source still holds in RAM', () => {
   it('counts nothing once the source has been released', () => {
     const tex = new THREE.Texture(bitmap(1024, 512));
     tex.userData.sourceReleased = true;
+    expect(retainedSourceBytes(tex)).toBe(0);
+  });
+
+  it('counts the raw buffer behind a decoded tile the same as a bitmap, until it is freed', () => {
+    // Two decode paths retain a source of the same size, so a caller that
+    // prices one has to price the other identically or the same texture would
+    // cost different amounts depending on how it was decoded. (The sector
+    // streamer prices its tiles from their layouts and never asks this; the
+    // rung-shaped readers that do ask must not be told a byte-backed source
+    // is free.)
+    const tex = new THREE.DataTexture(new Uint8Array(4), 2048, 2048);
+    tex.userData.ownedPixels = true;
+    expect(retainedSourceBytes(tex)).toBe(2048 * 2048 * 4);
+    releaseTilePixels(tex);
     expect(retainedSourceBytes(tex)).toBe(0);
   });
 

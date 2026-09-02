@@ -450,6 +450,37 @@ describe('sector tile sets: the files on disk', () => {
     }
   });
 
+  it('every colour tile set is simple lossy WebP, which is what the byte decode requires', () => {
+    // A colour tile is decoded to raw bytes before its upload (world/tilePixels)
+    // and that decode round-trips through a 2D canvas, which un-premultiplies —
+    // exact only for an image with no alpha at all. The runtime checks each
+    // file's header and quietly takes the slower ImageBitmap upload for
+    // anything else, so a colour set recut as VP8L or VP8X would not fail, or
+    // warn: it would just cost every tile its frame again. This is the pin
+    // that makes that a build failure instead.
+    const colour = appSets().filter((s) => s.level !== null);
+    expect(colour.length, 'no colour sets to check').toBeGreaterThan(0);
+    const { present, skipped } = setsOnDiskForApp();
+    let read = 0;
+    for (const { body, slot, set } of colour) {
+      const where = `${body} ${slot} ${set.key}/${set.tier}`;
+      if (!present.some((p) => p.set === set)) {
+        expect(skipped.join('\n'), `${where}: absent and unexplained`).toContain(`${set.key}/${set.tier}:`);
+        continue;
+      }
+      // One tile per set is the whole set: a set is cut in a single pass by a
+      // single encoder.
+      const [tile] = readdirSync(setDir(set)).filter((n) => n.endsWith('.webp')).sort();
+      expect(tile, `${where}: no tiles in the folder`).toBeDefined();
+      expect(
+        webpChunk(resolve(setDir(set), tile)),
+        `${where} ${tile}: the byte decode takes VP8 only, and falls back for VP8L/VP8X`,
+      ).toBe('VP8 ');
+      read += 1;
+    }
+    expect(read, 'no colour set was actually read').toBeGreaterThan(0);
+  });
+
   it('every set folder is named for the bytes inside it', async () => {
     // Hashed by gen-tiles' own function, over the file list gen-tiles' own
     // function picks: one changed tile moves the folder, which is what lets a

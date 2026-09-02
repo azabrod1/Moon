@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import * as THREE from 'three';
 import {
   TILE_PIXEL_BUDGET_BYTES,
@@ -9,6 +11,8 @@ import {
   setTilePixelRoundTrip,
   tilePixelBudgetAllows,
   tilePixelHeldBytes,
+  tilePixelStats,
+  warmTilePixelWorker,
 } from './tilePixels';
 
 /** A blob whose first bytes are a WebP header of the given kind. */
@@ -159,5 +163,79 @@ describe('the byte budget across every path that ends a decode', () => {
     expect(sixth.userData.ownedPixels).toBe(true);
     for (const t of [...held.slice(1), sixth]) releaseTilePixels(t);
     expect(tilePixelHeldBytes()).toBe(0);
+  });
+});
+
+describe('when the decode worker is spun up', () => {
+  /** Count Worker constructions without starting one. */
+  function stubWorkerCounter(): { count: () => number } {
+    let built = 0;
+    class FakeWorker {
+      onmessage: unknown = null;
+      onerror: unknown = null;
+      onmessageerror: unknown = null;
+      constructor() { built += 1; }
+      postMessage(): void { /* the reply never comes; the warm does not await it */ }
+      terminate(): void { /* nothing to stop */ }
+    }
+    vi.stubGlobal('Worker', FakeWorker);
+    vi.stubGlobal('OffscreenCanvas', class {});
+    return { count: () => built };
+  }
+
+  afterEach(() => {
+    setTilePixelRoundTrip(null);
+    vi.unstubAllGlobals();
+  });
+
+  it('builds no worker until something asks for one', () => {
+    // Boot is the frame budget nobody can spare, and a module fetch plus a
+    // worker start would land inside it. Importing this module, and reading
+    // what it reports, must cost nothing.
+    const worker = stubWorkerCounter();
+    setTilePixelRoundTrip(null);
+    // Reading what the path reports, and asking the budget a question, are
+    // the two things a boot-time caller could do; neither may start a worker.
+    expect(tilePixelStats().enabled).toBe(true);
+    expect(tilePixelBudgetAllows(0)).toBe(true);
+    expect(worker.count()).toBe(0);
+  });
+
+  it('builds exactly one when the warm asks, and not a second time', () => {
+    const worker = stubWorkerCounter();
+    setTilePixelRoundTrip(null);
+    warmTilePixelWorker();
+    expect(worker.count()).toBe(1);
+    warmTilePixelWorker();
+    expect(worker.count()).toBe(1);
+  });
+});
+
+describe('where the worker warm is called from', () => {
+  // A structural pin, because the cost this guards against is a boot frame
+  // and no unit test can construct the mode that would pay it: the warm must
+  // be reached from the boot idle that runs after the reveal, never from
+  // construction. Read from the source rather than asserted about behaviour,
+  // which is the only place the distinction is visible.
+  const mode = readFileSync(resolve(__dirname, '../PlanetariumMode.ts'), 'utf8');
+
+  it('is called exactly once, and not from the constructor', () => {
+    const calls = mode.match(/^\s*warmTilePixelWorker\(\);$/gm) ?? [];
+    expect(calls.length).toBe(1);
+    const constructorAt = mode.indexOf('  constructor(');
+    const activateAt = mode.indexOf('  private scheduleBootPairWarm(');
+    const callAt = mode.indexOf('\n      warmTilePixelWorker();');
+    expect(constructorAt).toBeGreaterThan(-1);
+    expect(activateAt).toBeGreaterThan(-1);
+    // Inside the boot-idle scheduler, which is defined well after the
+    // constructor's body has closed.
+    expect(callAt).toBeGreaterThan(activateAt);
+  });
+
+  it('sits in the timer the boot idle arms, beside the speculative pair warm', () => {
+    const from = mode.indexOf('  private scheduleBootPairWarm(');
+    const to = mode.indexOf('BOOT_PAIR_WARM_DELAY_MS);', from);
+    expect(to).toBeGreaterThan(from);
+    expect(mode.slice(from, to)).toContain('warmTilePixelWorker();');
   });
 });

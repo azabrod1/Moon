@@ -2139,9 +2139,6 @@ export class PlanetariumMode {
     // boot texture awaits its verdict before fetching, so starting it here
     // takes it off the first fetch's critical path.
     warmBitmapUploadProbe();
-    // And the tile decode worker's, for the same reason: the first sector
-    // tile of a flown approach must not pay for spinning a worker up.
-    warmTilePixelWorker();
     // Warm uploads go through the renderer so freshly loaded maps reach the
     // GPU on quiet frames instead of inside a gesture's first draw.
     bindTextureWarmer((tex) => renderer.initTexture(tex));
@@ -2803,6 +2800,15 @@ export class PlanetariumMode {
         this.scheduleBootPairWarm();
         return;
       }
+      // Spin the tile decode worker up here rather than at construction: a
+      // module fetch and a worker start would otherwise land inside the boot
+      // they cost, and nothing in that window needs them. The first flown
+      // approach is seconds away at the earliest, and a tile wanted before the
+      // probe resolves simply awaits it inside the decode — a few milliseconds,
+      // off the main thread — so the worker is never on a frame's critical
+      // path either way. Ahead of the saveData return below: this is a worker,
+      // not speculative bytes.
+      warmTilePixelWorker();
       // A metered connection gets no speculative bytes — the pair still
       // sharpens through the normal triggers when actually visited.
       const connection = (navigator as { connection?: { saveData?: boolean } }).connection;

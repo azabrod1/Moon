@@ -377,6 +377,10 @@ function marsFlown(id, title, extra) {
     title,
     device: PHONE,
     cpuThrottle: 4,
+    // The tiles stream between these two marks. Everything before 'cruise' is
+    // the boot, the reveal and the pose — frames both legs pay identically and
+    // neither owns — so a differential judgement is taken over the approach.
+    window: ['cruise', 'coast'],
     async run(page, note) {
       note(`renderer: ${await bootTo(page, extra, 300)}`);
       note(`device: ${JSON.stringify(await page.evaluate(() => window.__moon.device()))}`);
@@ -673,6 +677,12 @@ const SCENARIOS = [
       if (analysis.scoredFrames < 5_000) {
         problems.push(`only ${analysis.scoredFrames} frames scored — the flight did not happen`);
       }
+      // The leg the run below is compared against has to exist, or the
+      // comparison is against nothing.
+      if (!analysis.window || analysis.window.frames < 1_000) {
+        problems.push(`the approach window holds ${analysis.window?.frames ?? 0} frames`
+          + ' — nothing to compare against');
+      }
       return problems;
     },
   },
@@ -700,12 +710,14 @@ const SCENARIOS = [
       if (analysis.lateWithTileUpload > 0) {
         problems.push(`${analysis.lateWithTileUpload} late frame(s) carried a sector-tile upload`);
       }
-      // A margin of two frames: the floor is a separate run of a moving scene,
-      // not a replay, and holding the tiles to an exact count would fail on
-      // the reference's own scatter.
-      if (analysis.over2x > floor.over2x + 2) {
-        problems.push(`${analysis.over2x} frame(s) over two vsyncs against the`
-          + ` sectors-off floor's ${floor.over2x}`);
+      // Counted over the approach, where the tiles are: the boot and reveal
+      // frames before it are the same work in both legs and swamp the
+      // difference this is asking about. A margin of two frames on top,
+      // because the floor is a separate run of a moving scene, not a replay,
+      // and an exact count would fail on the reference's own scatter.
+      if (analysis.windowOver2x > floor.windowOver2x + 2) {
+        problems.push(`${analysis.windowOver2x} frame(s) over two vsyncs during the approach,`
+          + ` against the sectors-off floor's ${floor.windowOver2x}`);
       }
       return problems;
     },
@@ -811,7 +823,22 @@ function analyze(trace, scenario, notes) {
   // <column>_<row>.webp — nothing else the app streams is. The trace stamps
   // that name plus the size, banded or whole, so this matches a tile upload
   // however it was paid.
-  const isTileUpload = (e) => e.kind === 'upload' && /^\d+_\d+\.webp /.test(e.name ?? '');
+  //
+  // The name alone is not enough: a sector's relief and roughness CROPS are
+  // cut on the same grid and carry the same <c>_<r>.webp name at a few hundred
+  // pixels square, and they upload in well under a millisecond. Blaming a late
+  // frame on one of those would count a cost nothing could have felt. So a
+  // tile is a big image, or an upload that actually took a millisecond —
+  // either is a cost worth attributing, and a crop is neither.
+  const TILE_MIN_TEXELS = 1024 * 1024;
+  const TILE_MIN_MS = 1;
+  const uploadTexels = (name) => {
+    const size = /\s(\d+)x(\d+)$/.exec(name ?? '');
+    return size ? Number(size[1]) * Number(size[2]) : 0;
+  };
+  const isTileUpload = (e) => e.kind === 'upload'
+    && /^\d+_\d+\.webp /.test(e.name ?? '')
+    && (uploadTexels(e.name) >= TILE_MIN_TEXELS || (e.durationMs ?? 0) >= TILE_MIN_MS);
 
   const uploads = events
     .filter((e) => e.kind === 'upload' && (e.durationMs ?? 0) > UPLOAD_BUDGET_MS)
@@ -829,6 +856,18 @@ function analyze(trace, scenario, notes) {
     previous = { mb: sample, frame: i };
   }
 
+  // A scenario may name the leg it is really about — `window: ['cruise',
+  // 'coast']` — and the counts inside it are reported beside the whole-run
+  // ones. The verdict still comes from the whole run: a hitch at the reveal
+  // is a real hitch. But a DIFFERENTIAL judgement compares two separate runs
+  // of a moving scene, and letting reveal and pose frames into that comparison
+  // swamps the difference the legs exist to show with noise neither leg owns.
+  const markAt = (name) => events.find((e) => e.kind === 'mark' && e.name === name)?.frame ?? null;
+  const windowFrom = scenario.window ? markAt(scenario.window[0]) : null;
+  const windowTo = scenario.window ? markAt(scenario.window[1]) : null;
+  const inScoreWindow = ({ i }) => (windowFrom === null || i >= windowFrom)
+    && (windowTo === null || i <= windowTo);
+
   const maxMs = round2(sorted.at(-1) ?? 0);
   const p99 = round2(percentile(sorted, 0.99));
   // The machine's own refresh, read from the run: on an unloaded run the
@@ -843,6 +882,11 @@ function analyze(trace, scenario, notes) {
   const lateWithTileUpload = scored.filter(({ i, gap }) => gap > twoVsyncMs
     && [...eventsOf(Math.max(0, i - 1)), ...eventsOf(i)].some(isTileUpload)).length;
   const over4x = scored.filter((s) => s.gap > fourVsyncMs).length;
+  const windowed = scenario.window ? scored.filter(inScoreWindow) : [];
+  const windowOver2x = windowed.filter((s) => s.gap > twoVsyncMs).length;
+  const windowOver4x = windowed.filter((s) => s.gap > fourVsyncMs).length;
+  const windowLateWithTileUpload = windowed.filter(({ i, gap }) => gap > twoVsyncMs
+    && [...eventsOf(Math.max(0, i - 1)), ...eventsOf(i)].some(isTileUpload)).length;
   const maxTaskMs = tasksOutside.reduce((m, t) => Math.max(m, t.durationMs), 0);
   const failures = [];
   if (maxMs > twoVsyncMs) {
@@ -885,6 +929,14 @@ function analyze(trace, scenario, notes) {
     fourVsyncMs,
     over2x,
     over4x,
+    /** The leg the scenario named, when it named one: the frames a
+     *  differential verdict is taken over, and how many of them were late. */
+    window: scenario.window
+      ? { marks: scenario.window, fromFrame: windowFrom, toFrame: windowTo, frames: windowed.length }
+      : null,
+    windowOver2x,
+    windowOver4x,
+    windowLateWithTileUpload,
     p95Ms: round2(percentile(sorted, 0.95)),
     p99Ms: p99,
     maxMs,
@@ -983,7 +1035,7 @@ function printTable(results, label) {
   console.log([
     pad('scenario', 18), num('frames', 7), num('p50', 6), num('mean', 6), num('p95', 6),
     num('p99', 6), num('max', 8), num('>2x', 5), num('>4x', 5), num('>33', 5), num('>50', 5),
-    num('tasks', 6), num('up>8', 6), num('tile!', 6), '  verdict',
+    num('tasks', 6), num('up>8', 6), num('tile!', 6), num('leg>2x', 7), '  verdict',
   ].join(''));
   for (const r of results) {
     console.log([
@@ -993,6 +1045,9 @@ function printTable(results, label) {
       num(r.over33 ?? '-', 5), num(r.over50 ?? '-', 5),
       num(r.longTasksOutsideVeils ?? '-', 6), num(r.uploadsOverBudget ?? '-', 6),
       num(r.lateWithTileUpload ?? '-', 6),
+      // The named leg's own late count, for the rows judged differentially:
+      // a dash where the scenario named no leg and the whole run IS the leg.
+      num(r.window ? r.windowOver2x : '-', 7),
       '  ', r.verdict,
     ].join(''));
     for (const f of r.failures ?? []) console.log(`${' '.repeat(18)}- ${f}`);
@@ -1005,8 +1060,24 @@ function printTable(results, label) {
 // runs behind them are expensive, so a rule change must not cost a re-run.
 if (RESCORE) {
   const rescored = [];
-  for (const file of readdirSync(RESCORE).sort()) {
-    if (!file.endsWith('.json') || file === 'summary.json') continue;
+  // A scenario scored against a reference has to be re-scored AFTER it, and
+  // filename order is not that order — `mars-flown-floor.json` sorting before
+  // `mars-flown.json` is a coincidence of `-` sorting under `.`, and a
+  // reference renamed anything later would silently score against nothing.
+  // The live path pulls references in first; this does the same.
+  const rank = (id) => {
+    const scenario = SCENARIOS.find((candidate) => candidate.id === id);
+    return scenario?.requires ? 1 : 0;
+  };
+  const files = readdirSync(RESCORE)
+    .filter((f) => f.endsWith('.json') && f !== 'summary.json')
+    .sort();
+  const idOf = (file) => {
+    const stored = JSON.parse(readFileSync(join(RESCORE, file), 'utf8'));
+    return stored.analysis?.scenario ?? file.replace(/\.json$/, '');
+  };
+  files.sort((a, b) => rank(idOf(a)) - rank(idOf(b)));
+  for (const file of files) {
     const stored = JSON.parse(readFileSync(join(RESCORE, file), 'utf8'));
     if (!stored.trace) continue;
     const previous = stored.analysis ?? {};

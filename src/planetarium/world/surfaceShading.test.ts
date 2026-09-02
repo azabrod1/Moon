@@ -209,6 +209,25 @@ describe('the close-range detail term', () => {
     );
   });
 
+  it('never runs on a surface class it is authored to nothing for', () => {
+    // A gas giant has no ground to grain and Earth's is mostly ocean, so both
+    // are authored to zero — and both are bodies a player hangs close to. Left
+    // to ease, every fragment of them would take four derivatives, the chart
+    // weights and up to six fetches of a 1×1 stand-in to multiply the surface
+    // by exactly one.
+    for (const archetype of ['gas', 'earth', 'cloud'] as const) {
+      const mat = new THREE.MeshStandardMaterial();
+      const u = uniforms(archetype, 'Jupiter', mat);
+      setSurfaceSynthesis(mat, 1, 'none');
+      expect(u.uSynthEnvelope.value).toBe(0);
+    }
+    // And it does run where there is ground.
+    const moon = new THREE.MeshStandardMaterial();
+    const u = uniforms('airless', 'Rhea', moon);
+    setSurfaceSynthesis(moon, 1, 'none');
+    expect(u.uSynthEnvelope.value).toBe(1);
+  });
+
   it('says what a surface carries, not what its uniforms came out as', () => {
     // A class that draws no relief at all holds its gain at zero whatever is
     // bound, so reading the kind back off the uniforms would report every gas
@@ -217,7 +236,9 @@ describe('the close-range detail term', () => {
     augmentSurfaceMaterial(gas, 'gas', undefined, 0, undefined, undefined, 'Jupiter');
     expect(surfaceReliefKind(gas)).toBe('none');
     setSurfaceSynthesis(gas, 1, surfaceReliefKind(gas));
-    expect(surfaceSynthesisOf(gas)).toEqual({ envelope: 1, relief: 'none' });
+    // Its envelope is held at zero by the class (the term is authored to
+    // nothing there); what it must not do is claim a surface it does not wear.
+    expect(surfaceSynthesisOf(gas)).toEqual({ envelope: 0, relief: 'none' });
     // And a body that really does wear one still says so.
     const moon = new THREE.MeshStandardMaterial();
     augmentSurfaceMaterial(moon, 'airless', undefined, 0, undefined, undefined, 'Moon');

@@ -1215,6 +1215,14 @@ export function surfaceReliefKind(mat: THREE.Material): SurfaceReliefKind {
  *
  * A material with no augmentation (a plain mesh, a shell that is not a surface)
  * simply has nothing to set.
+ *
+ * A surface class the term is authored to nothing for — a gas giant with no
+ * ground to grain, Earth's mostly-ocean globe, the cloud deck — is held at zero
+ * however magnified it gets. Its envelope would otherwise ease to one on every
+ * close approach and every fragment would take four derivatives, the chart
+ * weights and up to six fetches of the 1×1 stand-in to multiply the surface by
+ * exactly one. The density record is untouched: the probe still labels a sheet
+ * of a body whose term is off, which is the arm every sheet is judged against.
  */
 export function setSurfaceSynthesis(
   mat: THREE.Material,
@@ -1223,7 +1231,8 @@ export function setSurfaceSynthesis(
 ): void {
   const args = augmentArgs.get(mat);
   if (!args) return;
-  args.uSynthEnvelope.value = envelope;
+  const drawsNothing = SYNTH_GRAIN[args.archetype] === 0 && args.synthReliefGain === 0;
+  args.uSynthEnvelope.value = drawsNothing ? 0 : envelope;
   args.uSynthRelief.value = relief === 'measured' ? 0 : args.synthReliefGain;
   args.uSynthBumpFade.value = relief === 'painted' ? 1 : 0;
   args.relief = relief;

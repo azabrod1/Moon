@@ -306,6 +306,37 @@ export const ROUGHNESS_MAP_WATER = 0.45;
  */
 export const OCEAN_ROUGHNESS = 0.2;
 
+/** A flat scale on the ocean's WHOLE mirror lobe. three draws a dielectric at
+ *  4 % reflectance head-on, climbing to a perfect mirror at grazing angles;
+ *  sea water starts at 2 % and climbs to the same place. So a half is exact
+ *  where the glint is — its core is near head-on — and too dark along the
+ *  limb and the terminator, where the real sea is nearest a mirror and this
+ *  halves that sheen with everything else. Getting both ends right means the
+ *  two Fresnel curves per fragment, or handing the sea an ior of 1.33. */
+export const OCEAN_SPECULAR_KEEP = 0.5;
+
+/** The cloud deck's colour map, and the drift its own frame carries on top of
+ *  the body's. Shared by every augmented surface so the ocean's mirror term can
+ *  be cut where cloud stands between it and the Sun; the map is whatever rung
+ *  the deck is currently wearing, written each frame by the mode. */
+export const cloudShadowUniforms: {
+  uCloudShadowMap: { value: THREE.Texture | null };
+  uCloudShadowSpin: { value: number };
+} = {
+  uCloudShadowMap: { value: null },
+  uCloudShadowSpin: { value: 0 },
+};
+
+/** Let go of the deck map the frame loop parked above. It is the only
+ *  reference to that texture outside the deck's own material, so a session
+ *  that ends still holding it keeps a whole colour rung alive and leaves the
+ *  next one binding a texture from a disposed scene; cleared, the next
+ *  augmented material re-installs the 1x1 stand-in. */
+export function resetCloudShadowUniforms(): void {
+  cloudShadowUniforms.uCloudShadowMap.value = null;
+  cloudShadowUniforms.uCloudShadowSpin.value = 0;
+}
+
 /** The factor the map's distance BELOW land is multiplied by to land open
  *  water on OCEAN_ROUGHNESS. A coast's fractional water score keeps its
  *  fraction — the coastal gradation is scaled, not thresholded away. */
@@ -513,6 +544,8 @@ uniform vec3 uMoonIrradiance;
 uniform float uAirDensity;
 uniform float uAirLookupRadius;
 uniform float uWaterGloss;
+uniform sampler2D uCloudShadowMap;
+uniform float uCloudShadowSpin;
 uniform float uCloudDeck;
 uniform sampler2D uCloudDetail;
 uniform float uCloudAlbedo;
@@ -649,6 +682,34 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // surface, so the terms below that scale by it are the deck's alone without a
   // second branch.
   diffuseColor.a *= cloudAlpha;
+  // What the Sun's beam went through to reach this sea. The deck blends what
+  // leaves this fragment by (1 - coverage) on the way UP; the beam is cut by the
+  // same coverage on the way DOWN, and only the mirror term notices — ground
+  // under cloud is still lit by what the cloud scattered, a specular highlight
+  // is not, and a full-strength glint reading through a cirrus sheet is what an
+  // orbital frame of it cannot do. Gated on the water gloss, which is nonzero
+  // only where a real water mask says there is sea: one uniform branch, and no
+  // fetch at all, on every other surface in the app.
+  if (uWaterGloss > 0.0) {
+    float deckC = cos(uCloudShadowSpin);
+    float deckS = sin(uCloudShadowSpin);
+    // The deck's own object frame, which is the body frame turned back by the
+    // drift its mesh carries — the frame its colour map is painted in.
+    vec3 deckDir = normalize(vec3(vObjPos.x * deckC - vObjPos.z * deckS,
+                                  vObjPos.y,
+                                  vObjPos.z * deckC + vObjPos.x * deckS));
+    // Explicit gradients, taken analytically from the direction's: the UV
+    // jumps a whole turn at the date line, and an implicit derivative read
+    // across that jump would pick the coarsest mip down that one column of
+    // pixels — a hairline of average cloud drawn over the sea.
+    float deckLum = dot(textureGrad(uCloudShadowMap, sphereEquirectUv(deckDir),
+            sphereEquirectUvGrad(deckDir, dFdx(deckDir)),
+            sphereEquirectUvGrad(deckDir, dFdy(deckDir))).rgb,
+        vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')}));
+    float glintKeep = (1.0 - cloudCoverage(deckLum))
+        * ${OCEAN_SPECULAR_KEEP.toFixed(4)};
+    outgoingLight -= reflectedLight.directSpecular * (1.0 - glintKeep);
+  }
   // The sine of the Sun's elevation at this fragment, off the perturbed normal:
   // the Sun's own Lambert term, which is what the day factor and the Moon's
   // weight below both read so the two describe one crossing.
@@ -1019,6 +1080,14 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uLimbDarkening = uLimbDarkening;
     shader.uniforms.uAirLookupRadius = uAirLookupRadius;
     shader.uniforms.uWaterGloss = uWaterGloss;
+    // A surface with no water mask never samples this, but every program
+    // still carries the binding: the injected text is byte-identical for
+    // every body, which is what keeps them sharing one compiled program.
+    if (!cloudShadowUniforms.uCloudShadowMap.value) {
+      cloudShadowUniforms.uCloudShadowMap.value = surfaceAirDummies().map2D;
+    }
+    shader.uniforms.uCloudShadowMap = cloudShadowUniforms.uCloudShadowMap;
+    shader.uniforms.uCloudShadowSpin = cloudShadowUniforms.uCloudShadowSpin;
     shader.uniforms.uCloudDeck = uCloudDeck;
     shader.uniforms.uCloudDetail = uCloudDetail;
     shader.uniforms.uCloudAlbedo = uCloudAlbedo;

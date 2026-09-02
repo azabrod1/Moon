@@ -18,8 +18,9 @@ import {
   arrivalPose,
   arrivalStandoffAU,
   moonCollisionRadius,
-  contactAimStep,
-  grazeDeflectAim,
+  resolveShellContactPark,
+  SHELL_SLIDE_GAIN,
+  SHELL_SLIDE_MAX_RATE_PER_S,
   movingBodySpeedCap,
   rampedSpeedCap,
   sunArrivalPose,
@@ -27,8 +28,6 @@ import {
   BODY_APPROACH_V_MIN_AU_S,
   BODY_CAP_CLEAR_HOLD_S,
   CAP_TRANSITION_TAU_S,
-  CONTACT_AIM_TAU_S,
-  GRAZE_OUTWARD_BIAS,
   DEPARTURE_HEADSTART_RADII,
   DEPARTURE_KNEE_RADII,
   BODY_APPROACH_K_PER_S,
@@ -1734,85 +1733,88 @@ describe('fail-closed edges', () => {
   });
 });
 
-describe('grazeDeflectAim', () => {
+describe('resolveShellContactPark', () => {
+  const R = 1e-4;
+  const DT_60 = 1 / 60;
   const out = new THREE.Vector3();
+  const n = { ox: 1, oy: 0, oz: 0 }; // +X outward contact normal
 
-  it('keeps the tangential direction and peels out by exactly the bias', () => {
-    // Approach 30° below the tangent against a +Y outward normal, sliding +X.
-    const f = new THREE.Vector3(Math.cos(-30 * DEG2RAD), Math.sin(-30 * DEG2RAD), 0);
-    grazeDeflectAim(f.x, f.y, f.z, 0, 1, 0, out);
-    expect(out.length()).toBeCloseTo(1, 12);
-    // The slide continues where it was going (+X), nothing lateral appears.
-    expect(out.x).toBeGreaterThan(0.9);
-    expect(Math.abs(out.z)).toBeLessThan(1e-12);
-    // Outward component = the bias on a unit tangent, renormalized.
-    expect(out.y).toBeCloseTo(GRAZE_OUTWARD_BIAS / Math.hypot(1, GRAZE_OUTWARD_BIAS), 12);
+  it('a merely-touching contact parks on the shell and does not creep', () => {
+    // Attempted endpoint exactly at shell height: zero penetration.
+    resolveShellContactPark(R, 0, 0, R * 1.5, 0, 0, 0, 0, 0, R, n, DT_60, out);
+    expect(out.x).toBeCloseTo(R, 15);
+    expect(out.y).toBe(0);
+    expect(out.z).toBe(0);
   });
 
-  it('a pure tangent skim keeps its heading, tilted out by the bias angle', () => {
-    grazeDeflectAim(1, 0, 0, 0, 1, 0, out);
-    expect(Math.asin(out.y)).toBeCloseTo(Math.atan(GRAZE_OUTWARD_BIAS), 9);
-    expect(out.x).toBeGreaterThan(0.9);
+  it('a pilot\'s own press parks with no walk — flying into the shell just stops', () => {
+    // All of the penetration is the ship's blocked approach: park, no slide.
+    const pen = R * 0.004;
+    resolveShellContactPark(R - pen, 0, 0, R + pen * 2, 0, 0, 0, 0, 0, R, n, DT_60, out);
+    expect(out.x).toBeCloseTo(R, 15);
+    expect(out.y).toBe(0);
+    expect(out.z).toBe(0);
   });
 
-  it('a dead-center hit veers sideways — never the 180° boomerang', () => {
-    const f = new THREE.Vector3(0, -1, 0); // straight into a +Y-normal shell
-    grazeDeflectAim(f.x, f.y, f.z, 0, 1, 0, out);
-    expect(out.length()).toBeCloseTo(1, 12);
-    // A perpendicular slide with the gentle outward peel: ~104° off the nose
-    // (the bias is the only backward component), nowhere near the −1 of a
-    // reversal — so the ease that follows always has a defined swing plane.
-    expect(out.dot(f)).toBeCloseTo(-GRAZE_OUTWARD_BIAS / Math.hypot(1, GRAZE_OUTWARD_BIAS), 12);
-    expect(out.y).toBeGreaterThan(0);
-    expect(Math.hypot(out.x, out.z)).toBeGreaterThan(0.9);
+  it('a press into an ADVANCING shell still parks — the body may not drag the pilot', () => {
+    // The pilot is flying in (the step is inward) AND the shell has come to
+    // meet them, so the penetration is far more than the ship's own step.
+    // Every body in the scene moves; if the part the body contributed bought
+    // a walk, holding the stick at any leading face would slide the ship
+    // around the limb until the body left the view.
+    const step = R * 0.0002;   // the ship's own inward step
+    const advance = R * 0.003; // and the shell's, sixteen times larger
+    resolveShellContactPark(
+      R - step - advance, 0, 0, R - advance + step, 0, 0, 0, 0, 0, R, n, DT_60, out,
+    );
+    expect(out.x).toBeCloseTo(R, 15);
+    expect(Math.hypot(out.y, out.z)).toBe(0);
   });
 
-  it('is deterministic for a given normal (the veer cannot flicker between contacts)', () => {
-    const n = new THREE.Vector3(0.1, 0.9, 0.2).normalize();
-    const a = grazeDeflectAim(-n.x, -n.y, -n.z, n.x, n.y, n.z, new THREE.Vector3());
-    const b = grazeDeflectAim(-n.x, -n.y, -n.z, n.x, n.y, n.z, new THREE.Vector3());
-    expect(a.distanceTo(b)).toBe(0);
+  it('the shell\'s own advance earns the gain, capped at the per-frame ceiling', () => {
+    // Bulldozer: ship drifting (attempted == prev), shell advanced pen onto it.
+    const pen = R * 0.0005; // gain x pen = 0.008R, under a 60 Hz frame's 0.02R cap
+    resolveShellContactPark(R - pen, 0, 0, R - pen, 0, 0, 0, 0, 0, R, n, DT_60, out);
+    const walked = Math.abs(Math.atan2(Math.hypot(out.y, out.z), out.x)) * R;
+    expect(walked).toBeCloseTo(pen * SHELL_SLIDE_GAIN, 8);
+    expect(out.length()).toBeCloseTo(R, 15);
+    // A warp-deep sweep of the shell over a drifting ship: capped.
+    resolveShellContactPark(R * 0.2, 0, 0, R * 0.2, 0, 0, 0, 0, 0, R, n, DT_60, out);
+    const capped = Math.abs(Math.atan2(Math.hypot(out.y, out.z), out.x)) * R;
+    expect(capped).toBeCloseTo(R * SHELL_SLIDE_MAX_RATE_PER_S * DT_60, 8);
   });
 
-  it('never aims inward, from any direction on the approach cone', () => {
-    const n = new THREE.Vector3(0.3, -0.5, 0.81).normalize();
-    for (let i = 0; i < 40; i++) {
-      const theta = (i / 40) * Math.PI * 2;
-      const f = new THREE.Vector3(Math.cos(theta), Math.sin(theta), Math.sin(theta * 2) * 0.5).normalize();
-      grazeDeflectAim(f.x, f.y, f.z, n.x, n.y, n.z, out);
-      expect(out.length()).toBeCloseTo(1, 12);
-      expect(out.dot(n)).toBeGreaterThan(0);
-    }
-  });
-});
-
-describe('contactAimStep', () => {
-  it('converges monotonically onto the target and reports done within ~6τ', () => {
-    const dir = new THREE.Vector3(1, 0, 0);
-    const target = new THREE.Vector3(0, 1, 0); // a 90° swing
-    let done = false;
-    let prevDot = dir.dot(target);
-    let steps = 0;
-    while (!done && steps < 600) {
-      done = contactAimStep(dir, target, 1 / 60, dir); // out aliases dir
-      expect(dir.length()).toBeCloseTo(1, 12);
-      const d = dir.dot(target);
-      expect(d).toBeGreaterThanOrEqual(prevDot - 1e-12);
-      prevDot = d;
-      steps++;
-    }
-    expect(done).toBe(true);
-    // The half-degree done latch on a 90° swing lands at ln(90/0.5) ≈ 5.2τ.
-    expect(steps / 60).toBeLessThan(6 * CONTACT_AIM_TAU_S);
+  it('caps the walk by the clock, not by the frame', () => {
+    // Same warp-deep sweep at two refresh rates. The walk under the cap is
+    // already proportional to the frame's own advance; the cap has to be too,
+    // or a 120 Hz display walks a shoved hull off in half the time a 60 Hz one
+    // takes. Measured as the tangent of the walked angle, which is exactly the
+    // slide the tangent plane was given.
+    const tanWalk = (dt: number) => {
+      resolveShellContactPark(R * 0.2, 0, 0, R * 0.2, 0, 0, 0, 0, 0, R, n, dt, out);
+      return Math.hypot(out.y, out.z) / out.x;
+    };
+    expect(tanWalk(1 / 30)).toBeCloseTo(tanWalk(1 / 60) * 2, 12);
+    expect(tanWalk(1 / 60)).toBeCloseTo(SHELL_SLIDE_MAX_RATE_PER_S / 60, 12);
   });
 
-  it('a capped 100 ms hitch frame still yields a unit direction mid-swing', () => {
-    const dir = new THREE.Vector3(1, 0, 0);
-    // The widest swing the graze can arm: a dead-center veer, ~104° off the nose.
-    const target = new THREE.Vector3(-GRAZE_OUTWARD_BIAS, Math.hypot(1, GRAZE_OUTWARD_BIAS), 0).normalize();
-    contactAimStep(dir, target, 0.1, dir);
-    expect(dir.length()).toBeCloseTo(1, 12);
-    expect(Number.isFinite(dir.x)).toBe(true);
+  it('the walk continues the ship\'s own tangential slide when it has one', () => {
+    // Shell advance under a ship gliding +Y: blocked radial is zero, the
+    // walk direction is the glide's.
+    const pen = R * 0.001;
+    resolveShellContactPark(R - pen, R * 0.001, 0, R - pen, R * 0.0005, 0, 0, 0, 0, R, n, DT_60, out);
+    expect(out.length()).toBeCloseTo(R, 15);
+    expect(out.y).toBeGreaterThan(R * 0.001); // walked onward, not just parked
+    expect(Math.abs(out.z)).toBeLessThan(1e-18);
+  });
+
+  it('a dead-center shove veers on the stable perpendicular, the same way every frame', () => {
+    const pen = R * 0.001;
+    const a = resolveShellContactPark(R - pen, 0, 0, R - pen, 0, 0, 0, 0, 0, R, n, DT_60, new THREE.Vector3());
+    const b = resolveShellContactPark(R - pen, 0, 0, R - pen, 0, 0, 0, 0, 0, R, n, DT_60, new THREE.Vector3());
+    expect(a.distanceTo(b)).toBe(0); // deterministic
+    expect(a.length()).toBeCloseTo(R, 15);
+    expect(Math.hypot(a.y, a.z)).toBeGreaterThan(0); // off the stagnation point
   });
 });
 

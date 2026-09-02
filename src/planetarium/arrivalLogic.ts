@@ -17,10 +17,13 @@
  * different pose, so the law is what is shared and the search is not. Plus
  * the legacy "postcard" framing kept verbatim for authored scenes (tutorial,
  * historic journeys, the dev screenshot bridge).
- * Alongside them, the shell-contact graze and the moving-body speed credit
- * keep a bump a deflection rather than a reversal or a trap, and the
- * post-pass hold keeps a completed fly-by's destination framed on the way
- * out instead of ending the trip on the sky past it.
+ * Alongside them, the shell-contact park and the moving-body speed credit
+ * make flying into a body's keep-out shell a stop rather than a reversal or
+ * a trap: the heading is never touched, a ship thrusting into the shell
+ * holds station on it, and only an unresisting hull is walked off by the
+ * shell's own advance. And the post-pass hold keeps a completed fly-by's
+ * destination framed on the way out instead of ending the trip on the sky
+ * past it.
  * PlanetariumMode feeds live positions and applies the results.
  */
 import * as THREE from 'three';
@@ -503,49 +506,48 @@ export interface SweepContact {
   oz: number;
 }
 
-// --- Shell-contact response: the graze -------------------------------------
+// --- Shell-contact response: the positional slide ---------------------------
 //
-// A hands-off bump deflects instead of reversing: keep the forward
-// direction's tangential part (slide around the limb), add a small outward
-// bias (peel away), and swing the nose there over a few tenths of a second.
-// The old response snapped the nose 180° to the radial in one frame — it
-// discarded the approach direction, whipped the chase camera, and on a
-// MOVING body's leading face aimed the ship straight along the bulldozer
-// blade, the direction that never slides off.
+// A shell contact never touches the pilot's heading. The ship is held at the
+// shell by position alone, and the two cases split on whether the ship is
+// thrusting into the shell:
+//  - Thrusting in — a pilot who flew to the body and held the stick: the
+//    ship holds station on the shell, on EVERY face of the body, moving or
+//    not. It has flown to the body and stopped there, parked facing it,
+//    where the land affordance lives.
+//  - Not thrusting in — a hull drifting, or steering tangent or away:
+//    nothing holds it against a face advancing into it, so the advance walks
+//    it sideways around the limb and lets go.
+// Two responses came before this one: a 180° nose snap (whipped the chase
+// camera, and on a moving body's leading face aimed the ship along the
+// bulldozer blade), then an eased tangential re-aim — gentler, but any
+// self-turning nose moves the camera the pilot did not move, which read as
+// the app wrestling the stick.
 
-/** Outward bias added to the graze tangent (≈8.5°): enough that a hands-off
- *  contact drifts clear instead of orbiting the shell, shallow enough that
- *  the deflection reads as a nudge, not a swerve (flying QA: the first cut's
- *  14° was "should be even less dramatic"). */
-export const GRAZE_OUTWARD_BIAS = 0.15;
+/** Tangential walk per unit of the SHELL'S OWN advance into a hull that is
+ *  NOT thrusting into it. A ship pressing the shell earns no motion at all,
+ *  on any face: every body in the scene moves, so crediting a body's own
+ *  advance as a shove while the pilot presses would drag the ship the pilot
+ *  parked — a leading face closes at orbital speed (~30 km/s at 1x) against
+ *  a press governed to 2 km/s, and at this gain that walks the parked ship
+ *  a quarter of the way round the limb in twenty seconds, until the body
+ *  itself leaves the view. Only the world acting on an unresisting hull
+ *  walks it, and there the gain is what keeps a drifting ship from being
+ *  bulldozed forever: the same advance rounds it off the limb in well under
+ *  a minute at 1x, seconds at warp. */
+export const SHELL_SLIDE_GAIN = 16;
 
-/** Below this tangential magnitude a hit counts as dead-center — no usable
- *  slide direction — and the aim veers onto a stable perpendicular instead:
- *  water splitting on a stone, never a 180° boomerang. The perpendicular
- *  also keeps the ease well-conditioned (the target is never antipodal to
- *  the nose, so the swing has a defined plane). */
-export const GRAZE_TANGENT_MIN = 0.05;
-
-/** A contact only re-aims a nose still pointed at/along the body (outward
- *  component under this); a ship already leaving keeps its heading. */
-export const CONTACT_ALIGN_OUT_MAX = 0.15;
-
-/** e-fold time of the contact re-aim swing — ~95% of the turn in ~0.6 s:
- *  a guided deflection, not a one-frame snap (softened with the bias in the
- *  same QA pass). Wide swings may ride into the TTL before the half-degree
- *  done latch; the ~1° they land with is visually settled. */
-export const CONTACT_AIM_TAU_S = 0.2;
-
-/** The armed re-aim survives this long past the last contact frame, then
- *  expires — a stale target can't steer a later, unrelated flight. */
-export const CONTACT_AIM_TTL_S = 1.0;
-
-const CONTACT_AIM_DONE_COS = Math.cos(0.5 * DEG2RAD);
+/** Ceiling on the walk, as a fraction of the shell radius per SECOND — keeps
+ *  a warp-deep plunge from teleporting a hull around the limb. Per second and
+ *  not per frame: below the cap the walk is already proportional to the
+ *  frame's own advance, so a per-frame ceiling would run the same warp rescue
+ *  at twice the speed on a 120 Hz display. */
+export const SHELL_SLIDE_MAX_RATE_PER_S = 1.2;
 
 /** Stable unit perpendicular to `n`: cross with the axis `n` leans on least.
  *  Depends on `n` alone, so repeated contacts on a slowly rotating normal
  *  keep choosing a continuous veer direction. */
-function stablePerpendicular(nx: number, ny: number, nz: number, out: THREE.Vector3): THREE.Vector3 {
+export function stablePerpendicular(nx: number, ny: number, nz: number, out: THREE.Vector3): THREE.Vector3 {
   const ax = Math.abs(nx);
   const ay = Math.abs(ny);
   const az = Math.abs(nz);
@@ -556,50 +558,80 @@ function stablePerpendicular(nx: number, ny: number, nz: number, out: THREE.Vect
 }
 
 /**
- * Deflected aim for a hands-off shell contact: the forward direction's
- * tangential part plus GRAZE_OUTWARD_BIAS along the outward normal, unit
- * length. Dead-center hits (tangential part under GRAZE_TANGENT_MIN) use the
- * stable perpendicular as the slide direction. `f` and `n` are unit vectors;
- * writes and returns `out`.
+ * Park a resolved shell contact, by position alone. `attempted` is where the
+ * frame wanted the ship (pre-resolve); the park lands on the shell along the
+ * contact normal. A ship whose own step pushes into the shell stops there
+ * and nothing more — it holds station on the body's shell, on every face,
+ * and the body keeps the place on screen the pilot flew it to. Only a hull
+ * that is NOT pushing in is walked: the shell's own advance into it
+ * (whatever penetration the hull's step did not cause) buys
+ * SHELL_SLIDE_GAIN × that much sideways travel, capped at
+ * SHELL_SLIDE_MAX_RATE_PER_S of the shell per second of `dtS`, so a moving
+ * body's face carries a drifting ship around and off the limb instead of
+ * bulldozing it forever. The walk direction is the attempted motion's own tangential part
+ * when it has one (the slide continues the way the ship was already going),
+ * else the normal's stable perpendicular (a dead-center shove picks the same
+ * side every frame). Writes and returns `out`; never reads or implies a
+ * heading.
  */
-export function grazeDeflectAim(
-  fx: number, fy: number, fz: number,
-  nx: number, ny: number, nz: number,
-  out: THREE.Vector3,
-): THREE.Vector3 {
-  const along = fx * nx + fy * ny + fz * nz;
-  out.set(fx - along * nx, fy - along * ny, fz - along * nz);
-  const tangentLen = out.length();
-  if (tangentLen < GRAZE_TANGENT_MIN) stablePerpendicular(nx, ny, nz, out);
-  else out.divideScalar(tangentLen);
-  out.x += GRAZE_OUTWARD_BIAS * nx;
-  out.y += GRAZE_OUTWARD_BIAS * ny;
-  out.z += GRAZE_OUTWARD_BIAS * nz;
-  return out.normalize();
-}
-
-/**
- * One frame of the contact re-aim swing: rotate the unit `dir` toward the
- * unit `target` with the frame-rate-invariant gain 1 − e^(−dt/τ) (nlerp —
- * grazeDeflectAim never returns a target antipodal to the nose, so the blend
- * stays well-conditioned). Reads before writing, so `out` may alias `dir`.
- * Returns true once the produced direction sits within half a degree of the
- * target.
- */
-export function contactAimStep(
-  dir: THREE.Vector3,
-  target: THREE.Vector3,
+export function resolveShellContactPark(
+  attemptedX: number, attemptedY: number, attemptedZ: number,
+  prevX: number, prevY: number, prevZ: number,
+  cx: number, cy: number, cz: number,
+  shellR: number,
+  hit: SweepContact,
   dtS: number,
   out: THREE.Vector3,
-): boolean {
-  const g = 1 - Math.exp(-dtS / CONTACT_AIM_TAU_S);
-  const x = dir.x + (target.x - dir.x) * g;
-  const y = dir.y + (target.y - dir.y) * g;
-  const z = dir.z + (target.z - dir.z) * g;
-  if (x * x + y * y + z * z < 1e-12) out.copy(target);
-  else out.set(x, y, z).normalize();
-  return out.dot(target) >= CONTACT_AIM_DONE_COS;
+): THREE.Vector3 {
+  const dEnd = Math.hypot(attemptedX - cx, attemptedY - cy, attemptedZ - cz);
+  const penetration = Math.max(0, shellR - dEnd);
+  out.set(cx + hit.ox * shellR, cy + hit.oy * shellR, cz + hit.oz * shellR);
+  if (penetration <= 0) return out;
+  // Attempted motion split at the contact normal: the inward radial part is
+  // the ship's own push into the shell, and the tangential part names the
+  // walk direction if there is a walk.
+  let tx = attemptedX - prevX;
+  let ty = attemptedY - prevY;
+  let tz = attemptedZ - prevZ;
+  const along = tx * hit.ox + ty * hit.oy + tz * hit.oz;
+  tx -= along * hit.ox;
+  ty -= along * hit.oy;
+  tz -= along * hit.oz;
+  const tLen = Math.hypot(tx, ty, tz);
+  const blockedRadial = Math.max(0, -along);
+  // A ship pushing into the shell rides it: the park alone holds it there,
+  // and the body stays where the pilot put it on screen. The threshold is
+  // relative to the penetration so that a purely tangential step's float
+  // noise is not read as a push.
+  if (blockedRadial > penetration * 1e-3) return out;
+  // What is left is the shell's own advance into an unresisting hull.
+  const shellPress = Math.max(0, penetration - blockedRadial);
+  const slide = Math.min(shellPress * SHELL_SLIDE_GAIN,
+    shellR * SHELL_SLIDE_MAX_RATE_PER_S * Math.max(0, dtS));
+  if (slide <= 0) return out;
+  // The tangential of a near-radial press is numerical noise, not a
+  // direction — below a hair of real sideways motion, veer on the stable
+  // perpendicular instead so consecutive frames walk one way.
+  if (tLen > slide * 0.01 && tLen > 1e-15) {
+    out.x += (tx / tLen) * slide;
+    out.y += (ty / tLen) * slide;
+    out.z += (tz / tLen) * slide;
+  } else {
+    const perp = stablePerpendicular(hit.ox, hit.oy, hit.oz, shellSlideScratch);
+    out.x += perp.x * slide;
+    out.y += perp.y * slide;
+    out.z += perp.z * slide;
+  }
+  // Back onto the shell: the slide was applied in the tangent plane, so the
+  // walked point sits a hair high; re-projecting keeps the park exact.
+  const d = Math.hypot(out.x - cx, out.y - cy, out.z - cz);
+  out.x = cx + ((out.x - cx) / d) * shellR;
+  out.y = cy + ((out.y - cy) / d) * shellR;
+  out.z = cz + ((out.z - cz) / d) * shellR;
+  return out;
 }
+
+const shellSlideScratch = new THREE.Vector3();
 
 /**
  * Engine-speed allowance near a MOVING body: the governed law plus a credit
@@ -616,8 +648,9 @@ export function contactAimStep(
  *
  * - Leave side (weight → 0): the body's velocity along the NOSE (v·f̂) —
  *   holding station against a shoving shell means flying the shove's own
- *   speed along your heading; the graze aims tangent-plus-bias, so an
- *   escaping ship lives entirely on this side.
+ *   speed along your heading. (Escape from a pressed shell is positional —
+ *   the resolver's slide — so this credit only has to let a pilot hold
+ *   station or fly off, never to out-run the shove.)
  * - Approach side (weight → 1): the body's RECESSION along the sightline
  *   (v·r̂, r̂ toward the body) — every km/s it flees along your line of
  *   sight is a km/s that never closes the gap. Deliberately NOT v·f̂: a

@@ -13,6 +13,7 @@ import {
   lodMeasurementRelevant,
   makeGeometryUpgrade,
   needsGeometryUpgrade,
+  synthCraterShare,
   upgradeGeometryOnApproach,
   wireEarthLateDetail,
 } from './PlanetFactory';
@@ -2959,5 +2960,27 @@ describe('a colour-rung swap and the body\'s air', () => {
     bindSurfaceAir(air, boundTables(), 4.26e-5, 1);
     expect(shell.uniforms.uAirDensity.value).toBe(1);
     expect(sector.uniforms.uAirDensity.value).toBe(1);
+  });
+});
+
+describe('how much cratering a body wears', () => {
+  it('names the resurfaced bodies and lets every other one wear the lot', () => {
+    // The archetypes cannot answer this: Europa and Callisto are both ice, and
+    // they are the least and the most cratered solid surfaces known.
+    expect(synthCraterShare('Europa', 'icy')).toBe(0);
+    expect(synthCraterShare('Io', 'airless')).toBe(0);
+    expect(synthCraterShare('Enceladus', 'icy')).toBe(0.3);
+    expect(synthCraterShare('Callisto', 'icy')).toBe(1);
+    expect(synthCraterShare('Moon', 'airless')).toBe(1);
+    expect(synthCraterShare('Hyperion', 'airless')).toBe(1);
+  });
+
+  it('is zero where the term draws nothing at all', () => {
+    // Not because those surfaces are smooth — because there is no field on
+    // them to share out.
+    for (const archetype of ['gas', 'earth', 'cloud'] as const) {
+      expect(synthCraterShare('Jupiter', archetype)).toBe(0);
+    }
+    expect(synthCraterShare('Mars', 'rocky')).toBe(1);
   });
 });

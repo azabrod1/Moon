@@ -567,6 +567,25 @@ const SURFACE_DETAIL_TILE_PX = 512;
 export const SYNTH_CHART_CUT = 0.5;
 
 /**
+ * How many rungs finer a body with NO cratering draws the field.
+ *
+ * The field is one packed map with craters and grain already summed into it, so
+ * nothing can turn the craters down at sample time. What can be done is draw
+ * the whole field smaller: it is scale-free, so three rungs finer turns a
+ * crater that spanned five to sixty pixels into one spanning a pixel or seven —
+ * ground texture rather than impacts — and flattens its relief with it, because
+ * the field keeps its own depth-to-width. A share between the two rides the
+ * ordinary crossfade.
+ *
+ * The cost is at the top of the ladder: the rung ceiling arrives three rungs
+ * earlier on a share-0 body, so a camera standing on Europa reaches the
+ * magnifying regime sooner and its pitting grows as it comes closer instead of
+ * staying put. If that is ever seen, the fix is a second grain-only field
+ * sampled in place of this one, not a bigger ceiling.
+ */
+const SYNTH_SMOOTH_RUNGS = 3;
+
+/**
  * The three charts' weights at a point of the unit sphere, as the shader
  * computes them — the CPU twin of the three lines in the GLSL below, kept so
  * the two properties the whole domain rests on can be checked at every point of
@@ -590,6 +609,7 @@ uniform float uSynthRelief;
 uniform float uSynthBumpFade;
 uniform float uSynthEnvelope;
 uniform float uSynthMid;
+uniform float uSynthCraterShare;
 uniform vec2 uSynthSeed;
 // How much of this term a map's density asks for: the same band the smooth
 // magnification filter hands over on, read across the map's COARSEST axis
@@ -700,6 +720,11 @@ if (uSynthEnvelope > 0.0) {
     // big a crater is.
     float synthPerPx = max(max(length(synthDx), length(synthDy)), 1e-12);
     float synthWanted = log2(1.0 / (${SURFACE_DETAIL_TILE_PX.toFixed(1)} * synthPerPx));
+    // A body that wears no craters draws the whole field finer, so what it
+    // wears is ground texture rather than impacts. Added to the rung the
+    // fragment WANTS, before it is rounded to one, so a share between the two
+    // rides the ordinary crossfade instead of stepping.
+    synthWanted += (1.0 - uSynthCraterShare) * ${SYNTH_SMOOTH_RUNGS.toFixed(1)};
     // Ceilinged, because the rung multiplies the coordinates and a float runs
     // out of mantissa: at rung 12 one unit in the last place of the uv is a
     // quarter of a texel of the map, at 14 it is a whole texel, and past that
@@ -1168,6 +1193,10 @@ export interface SurfaceShadingArgs {
   /** What `uSynthRelief` goes back to when nothing else supplies relief — the
    *  archetype's own gain against the field's built geometry. */
   synthReliefGain: number;
+  /** How much of the field's cratering this body wears (world/PlanetFactory's
+   *  table). Held so a dependent material (a streamed sector) draws the same
+   *  ground rather than defaulting to a cratered one. */
+  uSynthCraterShare: { value: number };
   /** The body this material draws, as the close-range field's seed reads it.
    *  Held so a dependent material (a streamed sector) lands on the SAME ground
    *  as the globe under it rather than on a second patch of field. */
@@ -1239,6 +1268,18 @@ export function surfaceReliefKind(mat: THREE.Material): SurfaceReliefKind {
   const relief = standard.normalMap ?? standard.bumpMap ?? null;
   if (!relief) return 'none';
   return relief.userData?.proceduralRelief === true ? 'painted' : 'measured';
+}
+
+/** How much of the field's cratering this material draws. */
+export function surfaceCraterShare(mat: THREE.Material): number {
+  return augmentArgs.get(mat)?.uSynthCraterShare.value ?? 1;
+}
+
+/** Tell a material how much of the field's cratering its body wears. Set once,
+ *  from the body's own entry: a surface does not become resurfaced mid-flight. */
+export function setSurfaceCraterShare(mat: THREE.Material, share: number): void {
+  const args = augmentArgs.get(mat);
+  if (args) args.uSynthCraterShare.value = Math.min(1, Math.max(0, share));
 }
 
 /**
@@ -1417,9 +1458,13 @@ export function augmentSurfaceMaterial(
     : 0;
   const uSynthRelief = { value: synthReliefGain };
   const uSynthBumpFade = { value: 0 };
+  // Every body wears the whole field until its owner says otherwise: a moon
+  // whose surface is resurfaced is the exception, not the rule.
+  const uSynthCraterShare = { value: 1 };
   augmentArgs.set(mat, {
     archetype, ringShadow, sunTan, fx, uFrameSpin, uWaterGloss,
-    uSynthEnvelope, uSynthRelief, uSynthBumpFade, relief: 'none', synthReliefGain, seedName,
+    uSynthEnvelope, uSynthRelief, uSynthBumpFade, uSynthCraterShare,
+    relief: 'none', synthReliefGain, seedName,
   });
   const uNightColor = { value: new THREE.Color(night.color) };
   const uNightStrength = { value: night.strength };
@@ -1502,6 +1547,7 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uSynthEnvelope = uSynthEnvelope;
     shader.uniforms.uSynthSeed = uSynthSeed;
     shader.uniforms.uSynthMid = uSynthMid;
+    shader.uniforms.uSynthCraterShare = uSynthCraterShare;
     for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];
 
     shader.vertexShader = shader.vertexShader

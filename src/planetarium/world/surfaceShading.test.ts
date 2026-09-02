@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import {
   augmentSurfaceMaterial, OCEAN_ROUGHNESS, ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER,
-  setSurfaceSynthesis, setSurfaceWaterGloss, surfaceChartWeights, SYNTH_CHART_CUT,
-  surfaceReliefKind, surfaceSynthesisOf, surfaceWaterGloss, waterGlossRoughness,
+  setSurfaceCraterShare, setSurfaceSynthesis, setSurfaceWaterGloss, surfaceChartWeights,
+  SYNTH_CHART_CUT, surfaceCraterShare, surfaceReliefKind, surfaceSynthesisOf, surfaceWaterGloss,
+  waterGlossRoughness,
 } from './surfaceShading';
 import { surfaceDetailFieldMean, surfaceDetailHeightSpan } from './surfaceDetailNoise';
 
@@ -228,6 +229,25 @@ describe('the close-range detail term', () => {
     painted.userData.proceduralRelief = true;
     mat.bumpMap = painted;
     expect(surfaceReliefKind(mat)).toBe('measured');
+  });
+
+  it('draws a resurfaced body its ground rather than impacts', () => {
+    // Europa is the youngest solid surface known and Io has no impact crater on
+    // it at all; drawn with the field at face value both come out cratered. The
+    // whole field goes finer instead, so what is left reads as ground — and the
+    // offset is added to the rung the fragment WANTS, before it is rounded, so
+    // a share between the two rides the ordinary crossfade instead of stepping.
+    const glsl = fragment('icy');
+    const offset = glsl.indexOf('synthWanted += (1.0 - uSynthCraterShare) * 3.0;');
+    expect(offset).toBeGreaterThan(0);
+    expect(offset).toBeLessThan(glsl.indexOf('clamp(floor(synthWanted), 0.0, 12.0)'));
+    // And it reaches the shader per body.
+    const mat = new THREE.MeshStandardMaterial();
+    const u = uniforms('icy', 'Europa', mat);
+    expect(u.uSynthCraterShare.value).toBe(1);
+    setSurfaceCraterShare(mat, 0);
+    expect(u.uSynthCraterShare.value).toBe(0);
+    expect(surfaceCraterShare(mat)).toBe(0);
   });
 
   it('stops climbing rungs where a float stops being able to name one', () => {

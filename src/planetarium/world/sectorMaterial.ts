@@ -19,8 +19,9 @@
  */
 import * as THREE from 'three';
 import {
-  augmentSurfaceMaterial, setSurfaceSynthesis, setSurfaceWaterGloss, surfaceReliefKind,
-  surfaceShadingArgsOf, surfaceSynthesisEnvelope, surfaceWaterGloss,
+  augmentSurfaceMaterial, setSurfaceCraterShare, setSurfaceSynthesis, setSurfaceWaterGloss,
+  surfaceCraterShare, surfaceReliefKind, surfaceShadingArgsOf, surfaceSynthesisEnvelope,
+  surfaceWaterGloss,
 } from './surfaceShading';
 
 /** The maps a sector owns: its colour tile, and crops of whichever relief /
@@ -84,7 +85,10 @@ export function createSectorMaterial(
   }
   // After the augmentation, not before: part of what the sector mirrors lives in
   // the augmentation's own uniforms, and a sync run first would write it into a
-  // material that has none yet.
+  // material that has none yet. How much cratering the body wears is one of
+  // them, and it is set once here rather than mirrored per frame — a surface
+  // does not become resurfaced mid-flight.
+  setSurfaceCraterShare(mat, surfaceCraterShare(base));
   syncSectorMaterial(mat, base);
   return mat;
 }

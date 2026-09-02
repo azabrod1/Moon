@@ -38,7 +38,7 @@ import { debugWarn } from '../shared/debug';
 import { CLOUD_NORMAL_SCALE, cloudShellScale } from './world/cloudDeck';
 import { applyTextureDefaults, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
 import {
-  augmentSurfaceMaterial, setSurfaceWaterGloss,
+  augmentSurfaceMaterial, setSurfaceCraterShare, setSurfaceWaterGloss,
   type SurfaceArchetype, type SurfaceShadingFx,
 } from './world/surfaceShading';
 import { createAtmosphereShellMaterial } from './world/atmosphereShell';
@@ -685,6 +685,42 @@ const ICY_MOONS = new Set([
   'Oberon', 'Triton', 'Charon',
 ]);
 
+/**
+ * How much of the close-range field's CRATERING a body wears, 0 to 1. Bodies
+ * not named here wear all of it.
+ *
+ * The archetypes cannot answer this: they split ice from rock, and the least
+ * and the most cratered solid surfaces we know — Europa and Callisto — are both
+ * ice. Nor can the catalog, which carries radius, orbit and colour. What
+ * decides it is resurfacing, which is a fact about a body and is written here
+ * as one.
+ *
+ * Zero is not "no field": the grain stays, and the craters are drawn small
+ * enough to read as ground rather than as impacts (world/surfaceShading states
+ * how). One number cannot say that Enceladus is cratered in the north and
+ * smooth in the south, or that Ganymede is half dark cratered terrain and half
+ * bright grooved; each is set where a visitor arrives.
+ */
+const SYNTH_CRATER_SHARE: Record<string, number> = {
+  Europa: 0,      // youngest solid surface known — some dozens of craters total
+  Io: 0,          // resurfaced by its own volcanoes; no impact crater has ever been seen
+  Titan: 0.1,     // dunes, lakes and haze; a handful of craters survive the weather
+  Triton: 0.15,   // cantaloupe terrain and nitrogen plumes
+  Enceladus: 0.3, // cratered north, smooth south — set for the south, which is what a visitor flies to
+  Ariel: 0.5,     // resurfaced valleys between the cratered ground
+  Ganymede: 0.6,  // dark cratered terrain against bright grooved
+  Miranda: 0.6,   // coronae cut across an older cratered surface
+};
+
+/** The share for a body, defaulting to all of it — except on the surface
+ *  classes the close-range term is authored off for, where nothing is drawn
+ *  whatever this says. */
+export function synthCraterShare(name: string, archetype: SurfaceArchetype): number {
+  const named = SYNTH_CRATER_SHARE[name];
+  if (named !== undefined) return named;
+  return archetype === 'gas' || archetype === 'earth' || archetype === 'cloud' ? 0 : 1;
+}
+
 // planetArchetype/moonArchetype are exported for the volume-compare fillers,
 // so a body's night-fill + limb character match everywhere it renders.
 export function planetArchetype(planet: PlanetData): SurfaceArchetype {
@@ -861,6 +897,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   const fx = augmentSurfaceMaterial(
     mat, planetArchetype(planet), ringShadow, sunTan, undefined, undefined, planet.name,
   );
+  setSurfaceCraterShare(mat, synthCraterShare(planet.name, planetArchetype(planet)));
   // Higher colour tiers on close approach, for the keys that have them (see
   // TEXTURE_UPGRADE_TIERS). The boot map above is the floor; updateBodyLOD
   // walks the ladder from there.
@@ -1674,6 +1711,7 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     const fx = augmentSurfaceMaterial(
       mat, archetype, undefined, 0, undefined, undefined, moonData.name,
     );
+    setSurfaceCraterShare(mat, synthCraterShare(moonData.name, archetype));
 
     // Real elevation-derived normal map (linear), where one exists. The flag
     // goes up with the request, not with the arrival, so the lazy painter never

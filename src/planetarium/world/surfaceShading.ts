@@ -699,20 +699,31 @@ if (uSynthEnvelope > 0.0) {
     // Each chart reads its own patch of the one field: the offsets are
     // arbitrary and only have to differ, or the seam between two charts would
     // be two copies of the same ground sliding across each other.
+    //
+    // Which side of its own plane a chart is on is part of that. A chart's two
+    // coordinates are the same pair on both sides — the X chart reads (y, z)
+    // whether x is +0.8 or −0.8 — so without this a body wears the same ground
+    // on both faces of every axis, mirrored through the plane between them.
+    // Never visible in one frame, and wrong all the same. The offset can jump
+    // at the sign flip because the flip happens where the axis is zero, which
+    // is where that chart's weight has been zero for the whole half of the
+    // sphere around it.
+    vec3 synthChartFlip = step(0.0, synthDir);
     vec3 synthField = vec3(0.0);
     if (synthChartW.x > 0.0) {
       synthField += synthChartW.x * synthChart(vec2(synthDir.y, synthDir.z),
-          vec2(synthDx.y, synthDx.z), vec2(synthDy.y, synthDy.z), uSynthSeed);
+          vec2(synthDx.y, synthDx.z), vec2(synthDy.y, synthDy.z),
+          uSynthSeed + synthChartFlip.x * vec2(0.5, 0.25));
     }
     if (synthChartW.y > 0.0) {
       synthField += synthChartW.y * synthChart(vec2(synthDir.z, synthDir.x),
           vec2(synthDx.z, synthDx.x), vec2(synthDy.z, synthDy.x),
-          uSynthSeed + vec2(0.37, 0.11));
+          uSynthSeed + vec2(0.37, 0.11) + synthChartFlip.y * vec2(0.5, 0.25));
     }
     if (synthChartW.z > 0.0) {
       synthField += synthChartW.z * synthChart(vec2(synthDir.x, synthDir.y),
           vec2(synthDx.x, synthDx.y), vec2(synthDy.x, synthDy.y),
-          uSynthSeed + vec2(0.71, 0.53));
+          uSynthSeed + vec2(0.71, 0.53) + synthChartFlip.z * vec2(0.5, 0.25));
     }
     // Grain: the field's own height as a small multiplicative variation of the
     // albedo, luminance only and a few per cent of it. It puts a texture back

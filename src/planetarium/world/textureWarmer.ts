@@ -82,53 +82,59 @@ export function warmBudgetMs(frameIntervalMs: number): number {
 }
 
 /**
- * How long the pump owes after a call ran past its budget.
+ * How many budgeted pump calls the pump owes after a call ran past its budget.
+ *
+ * Counted in CALLS, not milliseconds, and that is the whole point. A deadline
+ * measured in wall clock starts when the upload ENDS, and the next call comes
+ * a frame later plus whatever else that frame does — on slow silicon the
+ * deadline has already passed by the time the pump it was meant to stop runs,
+ * so it stops nothing. Measured that way on a 4x-throttled phone shape, a
+ * 9.0 ms upload owed 6.3 ms, the next frame's pump arrived 21 ms later and
+ * uploaded again, and the two frames came out 26.3 and 23.8 ms long. A count
+ * cannot expire, so the call that would have paid the second upload sits out
+ * whatever the frame did.
  *
  * Two different things end a call over budget, and only one of them is a
- * stutter. A map that ALONE outran the budget made a frame late by itself,
- * and the overrun it leaves owed is less than a frame, so it buys nothing:
- * a 9.2 ms tile upload against the 2.9 ms budget of an 8.3 ms frame leaves
- * 6.3 ms owed and the next frame's pump starts about 8.3 ms later — past the
- * debt, so it uploads again, and a queue of such maps pays one late frame
- * EVERY frame (measured on a 4x-throttled phone shape: 19 sector tiles, 16
- * late frames carrying one). That case sits out a whole frame interval, so a
- * clean frame always separates two overruns.
+ * stutter. A map that ALONE outran the budget made a frame late by itself, so
+ * the next call sits out and a clean frame really does separate two overruns;
+ * an overrun several frames long sits out that many.
  *
  * A BURST of small maps is the other case: three 1 ms moon maps merely fill a
- * 2.9 ms budget without any of them making a frame late. Those repay the tiny
- * debt they left and drain again next frame, exactly as they always did — the
- * boot-idle warm and the system-moon warms live on that path, and halving
- * their throughput would buy no smoothness at all.
+ * 2.9 ms budget without any of them making a frame late. Those owe no call at
+ * all and drain again next frame, exactly as they always did — the boot-idle
+ * warm and the system-moon warms live on that path, and halving their
+ * throughput would buy no smoothness at all.
  *
- * So the frame is charged on `uploadMs`, the cost of the single upload that
- * ended the call; `spentMs` only sets the debt. WARM_STARVE_MS still caps how
+ * So the skip is charged on `uploadMs`, the cost of the single upload that
+ * ended the call; `spentMs` only sets how many. WARM_STARVE_MS still caps how
  * long the queue may wait either way, and an unbudgeted pump (the arrival
  * veil's drain) owes nothing — see the pump.
  */
-export function warmRepayMs(
+export function warmRepayPumps(
   spentMs: number,
   uploadMs: number,
   budgetMs: number,
   frameIntervalMs: number,
 ): number {
   if (!Number.isFinite(budgetMs)) return 0;
+  if (!(uploadMs >= budgetMs)) return 0;
   const owed = Math.max(0, spentMs - budgetMs);
-  if (!(uploadMs >= budgetMs)) return owed;
   const frame = Number.isFinite(frameIntervalMs) && frameIntervalMs > 0 ? frameIntervalMs : 0;
-  return Math.max(owed, frame);
+  return frame > 0 ? Math.max(1, Math.ceil(owed / frame)) : 1;
 }
 
 /**
- * Whether the pump may upload this frame. False only while it is repaying an
- * overrun — and never for longer than WARM_STARVE_MS, so a starving queue
- * always gets its forced upload through.
+ * Whether the pump may upload on this call. False only while it still owes
+ * calls for an overrun — and never for longer than WARM_STARVE_MS of wall
+ * clock, so a starving queue always gets its forced upload through however
+ * many calls are owed.
  */
 export function warmPumpAllowed(
   nowMs: number,
-  repayUntilMs: number,
+  owedPumps: number,
   lastUploadAtMs: number | null,
 ): boolean {
-  if (nowMs >= repayUntilMs) return true;
+  if (owedPumps <= 0) return true;
   return lastUploadAtMs === null || nowMs - lastUploadAtMs >= WARM_STARVE_MS;
 }
 
@@ -139,8 +145,9 @@ const queue: THREE.Texture[] = [];
 // version so repeated landed-vantage swaps do not call renderer.initTexture
 // again for the same Moon albedo/normal pair every frame.
 let warmedVersions = new WeakMap<THREE.Texture, number>();
-// When the pump may upload again, and when it last did — the overrun ledger.
-let warmRepayUntilMs = 0;
+// How many budgeted pump calls still owe an overrun, and when the pump last
+// uploaded — the overrun ledger. The wall clock is only the starve override.
+let warmOwedPumps = 0;
 let warmLastUploadAtMs: number | null = null;
 // One listener per queued texture, removed on drain or dispose, so long-lived
 // textures don't retain warm-up closures for their whole life.
@@ -198,7 +205,7 @@ export function queueTextureWarm(tex: THREE.Texture, onOutcome?: (outcome: WarmO
  * largest unsliceable upload the app has) takes its frame alone.
  *
  * `frameIntervalMs` is the frame this budget was cut from; the repay after an
- * overrun is measured in it (see warmRepayMs).
+ * overrun is measured in it (see warmRepayPumps).
  *
  * A NON-FINITE budget means the caller is not pacing anything — it is the
  * arrival veil draining the queue behind an opaque cover, and every map it
@@ -211,8 +218,14 @@ export function pumpTextureWarmQueue(budgetMs: number, frameIntervalMs: number):
   if (!uploadFn || (queue.length === 0 && !activeSlice)) return;
   const start = performance.now();
   // Sit out an overrun already owed, unless the queue would starve for it.
-  if (Number.isFinite(budgetMs) && !warmPumpAllowed(start, warmRepayUntilMs, warmLastUploadAtMs)) {
-    return;
+  // This call IS the one being sat out, so the debt comes down here whether it
+  // was paid by sitting out or written off by the starve cap.
+  if (Number.isFinite(budgetMs)) {
+    if (!warmPumpAllowed(start, warmOwedPumps, warmLastUploadAtMs)) {
+      warmOwedPumps -= 1;
+      return;
+    }
+    warmOwedPumps = 0;
   }
   // A slice already in flight owns the frame: its texture has left the queue
   // but is not yet drawable, and finishing it is what lets anything else move.
@@ -252,7 +265,7 @@ export function pumpTextureWarmQueue(budgetMs: number, frameIntervalMs: number):
     const perfUpload = import.meta.env.DEV ? surfacePerfBeginTextureUpload(tex) : null;
     // Every upload is timed on its own, in every build, not as a share of the
     // pump call: whether the queue has to sit out a frame turns on whether
-    // THIS map alone outran the budget (warmRepayMs), and the frame trace
+    // THIS map alone outran the budget (warmRepayPumps), and the frame trace
     // wants the same figure — blaming a frame for the sum of several small
     // maps hides which one was the unsliceable one.
     const uploadStart = performance.now();
@@ -293,11 +306,11 @@ export function pumpTextureWarmQueue(budgetMs: number, frameIntervalMs: number):
     if (spent >= budgetMs) {
       // Charge the overrun forward rather than paying another next frame:
       // consecutive big maps are what turn one slow upload into a stutter.
-      warmRepayUntilMs = warmLastUploadAtMs + warmRepayMs(spent, uploadMs, budgetMs, frameIntervalMs);
+      warmOwedPumps = warmRepayPumps(spent, uploadMs, budgetMs, frameIntervalMs);
       return;
     }
   }
-  warmRepayUntilMs = 0;
+  warmOwedPumps = 0;
 }
 
 /** Take a texture out of the queue and into a slice job. Its dispose listener
@@ -372,7 +385,7 @@ export function resetTextureWarmer(): void {
   queue.length = 0;
   uploadFn = null;
   slicer = null;
-  warmRepayUntilMs = 0;
+  warmOwedPumps = 0;
   warmLastUploadAtMs = null;
   invalidateTextureWarmCache();
   for (const cb of pending) cb('disposed');

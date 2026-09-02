@@ -10,7 +10,7 @@ import {
   bindSlicedUploader,
   warmBudgetMs,
   warmPumpAllowed,
-  warmRepayMs,
+  warmRepayPumps,
   WARM_BUDGET_CAP_MS,
   WARM_BUDGET_FLOOR_MS,
   WARM_STARVE_MS,
@@ -40,34 +40,36 @@ describe('warmBudgetMs', () => {
   });
 });
 
-describe('warmRepayMs', () => {
-  it('sits out a whole frame when ONE map outran the budget', () => {
+describe('warmRepayPumps', () => {
+  it('sits out the next call when ONE map outran the budget', () => {
     // The measured shape: a 9.2 ms tile upload, a 2.9 ms budget, an 8.33 ms
-    // frame. The 6.3 ms owed lets the next frame upload again; a frame does not.
-    expect(warmRepayMs(9.2, 9.2, 2.9, 8.33)).toBeCloseTo(8.33, 5);
+    // frame. The 6.3 ms owed is less than a frame, so a wall-clock deadline
+    // would already have expired when the next call came; one call does not.
+    expect(warmRepayPumps(9.2, 9.2, 2.9, 8.33)).toBe(1);
   });
 
-  it('repays only the debt when a BURST of small maps filled the budget', () => {
+  it('owes no call when a BURST of small maps filled the budget', () => {
     // Three 1 ms moon maps against a 2.9 ms budget: none of them made a frame
-    // late, so the boot-idle warm keeps draining every frame as it always did.
-    expect(warmRepayMs(3, 1, 2.9, 8.33)).toBeCloseTo(0.1, 5);
+    // late, so the boot-idle warm keeps draining every call as it always did.
+    expect(warmRepayPumps(3, 1, 2.9, 8.33)).toBe(0);
   });
 
-  it('repays the overrun when it is longer than a frame', () => {
-    expect(warmRepayMs(30, 30, 6, 8.33)).toBeCloseTo(24, 5);
+  it('sits out a call per frame the overrun ran over', () => {
+    // 24 ms owed against an 8.33 ms frame: three frames of it.
+    expect(warmRepayPumps(30, 30, 6, 8.33)).toBe(3);
   });
 
   it('owes nothing for a call that stayed inside its budget', () => {
-    expect(warmRepayMs(4, 4, 6, 16.7)).toBe(0);
+    expect(warmRepayPumps(4, 4, 6, 16.7)).toBe(0);
   });
 
   it('owes nothing at all for an unbudgeted drain', () => {
-    expect(warmRepayMs(120, 120, Number.POSITIVE_INFINITY, 8.33)).toBe(0);
+    expect(warmRepayPumps(120, 120, Number.POSITIVE_INFINITY, 8.33)).toBe(0);
   });
 
-  it('falls back to the overrun when the frame length is not usable', () => {
-    expect(warmRepayMs(9.2, 9.2, 2.9, Number.NaN)).toBeCloseTo(6.3, 5);
-    expect(warmRepayMs(9.2, 9.2, 2.9, -1)).toBeCloseTo(6.3, 5);
+  it('still sits out one call when the frame length is not usable', () => {
+    expect(warmRepayPumps(9.2, 9.2, 2.9, Number.NaN)).toBe(1);
+    expect(warmRepayPumps(9.2, 9.2, 2.9, -1)).toBe(1);
   });
 });
 
@@ -76,16 +78,22 @@ describe('warmPumpAllowed', () => {
     expect(warmPumpAllowed(1_000, 0, 900)).toBe(true);
   });
 
-  it('holds the pump back while an overrun is still being repaid', () => {
-    expect(warmPumpAllowed(1_000, 1_010, 995)).toBe(false);
+  it('holds the pump back while it still owes a call', () => {
+    expect(warmPumpAllowed(1_000, 1, 995)).toBe(false);
+  });
+
+  it('holds it back however long the wall clock says, short of starving', () => {
+    // The whole reason the ledger counts calls: a deadline measured from the
+    // end of the upload expires on its own, and this must not.
+    expect(warmPumpAllowed(1_000, 1, 1_000 - (WARM_STARVE_MS - 1))).toBe(false);
   });
 
   it('forces an upload through rather than starve the queue', () => {
-    expect(warmPumpAllowed(1_000, 5_000, 1_000 - WARM_STARVE_MS)).toBe(true);
+    expect(warmPumpAllowed(1_000, 4, 1_000 - WARM_STARVE_MS)).toBe(true);
   });
 
   it('treats a queue that has never uploaded as starving', () => {
-    expect(warmPumpAllowed(1_000, 5_000, null)).toBe(true);
+    expect(warmPumpAllowed(1_000, 4, null)).toBe(true);
   });
 });
 
@@ -133,13 +141,31 @@ describe('textureWarmer', () => {
     pumpTextureWarmQueue(6, 8.33);
     expect(uploaded).toEqual([a]); // 10 ms paid against a 6 ms budget, in an 8.33 ms frame
     pumpTextureWarmQueue(6, 8.33);
-    expect(uploaded).toEqual([a]); // the very next frame sits the overrun out
-    clock += 4; // the 4 ms owed is served, but not yet a whole frame
+    expect(uploaded).toEqual([a]); // the very next call sits the overrun out
     pumpTextureWarmQueue(6, 8.33);
+    expect(uploaded).toEqual([a, b]); // and the call after it pays, FIFO order kept
+  });
+
+  it('sits the overrun out however long the frame that owed it took', () => {
+    // The case a wall-clock deadline could not hold: on slow silicon the next
+    // pump call arrives well after the debt would have expired — 26 ms here
+    // against a 6.3 ms debt — and it must still sit out, or the two uploads
+    // land on consecutive frames and both are late. Measured on a 4x-throttled
+    // phone: a 9 ms tile upload, the next call 21 ms later, two 26 and 24 ms
+    // frames back to back.
+    bindTextureWarmer(upload);
+    uploadCostMs = 9;
+    const a = new THREE.Texture();
+    const b = new THREE.Texture();
+    queueTextureWarm(a);
+    queueTextureWarm(b);
+    pumpTextureWarmQueue(2.9, 8.33);
     expect(uploaded).toEqual([a]);
-    clock += 4.33;
-    pumpTextureWarmQueue(6, 8.33);
-    expect(uploaded).toEqual([a, b]); // a frame has passed, FIFO order kept
+    clock += 26; // three frames' worth of wall clock, one pump call
+    pumpTextureWarmQueue(2.9, 8.33);
+    expect(uploaded).toEqual([a]);
+    pumpTextureWarmQueue(2.9, 8.33);
+    expect(uploaded).toEqual([a, b]);
   });
 
   it('repays the overrun itself when it is longer than a frame', () => {
@@ -151,10 +177,13 @@ describe('textureWarmer', () => {
     queueTextureWarm(b);
     pumpTextureWarmQueue(6, 8.33);
     expect(uploaded).toEqual([a]);
-    clock += 8.33; // one frame is not enough to clear a 24 ms debt
-    pumpTextureWarmQueue(6, 8.33);
-    expect(uploaded).toEqual([a]);
-    clock += 16;
+    // 24 ms over an 8.33 ms frame is three calls owed, and the wall clock
+    // moving on does not shorten them.
+    for (let i = 0; i < 3; i++) {
+      clock += 8.33;
+      pumpTextureWarmQueue(6, 8.33);
+      expect(uploaded).toEqual([a]);
+    }
     pumpTextureWarmQueue(6, 8.33);
     expect(uploaded).toEqual([a, b]);
   });
@@ -198,7 +227,7 @@ describe('textureWarmer', () => {
     expect(uploaded).toEqual([a]);
     clock += WARM_STARVE_MS - 1;
     pumpTextureWarmQueue(6, 8.33);
-    expect(uploaded).toEqual([a]); // still repaying
+    expect(uploaded).toEqual([a]); // still repaying, hundreds of calls owed
     clock += 1;
     pumpTextureWarmQueue(6, 8.33);
     expect(uploaded).toEqual([a, b]); // a quarter second is the longest wait

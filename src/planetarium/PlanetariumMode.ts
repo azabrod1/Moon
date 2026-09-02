@@ -167,6 +167,7 @@ import {
   transmittanceUvFromRMu,
 } from './world/atmosphereModel';
 import { warmBitmapUploadProbe } from './world/textureBitmapLoader';
+import { warmTilePixelWorker } from './world/tilePixels';
 import { planetshineIntensity } from './world/planetshine';
 import {
   advanceSilhouetteOwners,
@@ -2138,6 +2139,9 @@ export class PlanetariumMode {
     // boot texture awaits its verdict before fetching, so starting it here
     // takes it off the first fetch's critical path.
     warmBitmapUploadProbe();
+    // And the tile decode worker's, for the same reason: the first sector
+    // tile of a flown approach must not pay for spinning a worker up.
+    warmTilePixelWorker();
     // Warm uploads go through the renderer so freshly loaded maps reach the
     // GPU on quiet frames instead of inside a gesture's first draw.
     bindTextureWarmer((tex) => renderer.initTexture(tex));

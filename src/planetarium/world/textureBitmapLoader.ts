@@ -32,8 +32,8 @@
  *
  * Everything above is the same whatever produces the texture, so it lives in
  * `makeStreamedLoader` and the decode is a parameter: the sector tiles have
- * their own (world/tilePixels, which decodes to bytes so the upload can be
- * banded) and falls back to the bitmap decode here.
+ * their own (world/tilePixels, which decodes to raw bytes so the driver has no
+ * source to convert on upload) and falls back to the bitmap decode here.
  */
 import * as THREE from 'three';
 

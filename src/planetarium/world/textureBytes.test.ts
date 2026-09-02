@@ -6,6 +6,7 @@ import {
   retainedSourceBytes,
   textureGpuBytes,
 } from './textureBytes';
+import { releaseTilePixels } from './tilePixels';
 
 /** A classic map: an image of this size, mipped as three defaults it. */
 function imageTexture(width: number, height: number): THREE.Texture {
@@ -158,6 +159,17 @@ describe('what a decoded source still holds in RAM', () => {
   it('counts nothing once the source has been released', () => {
     const tex = new THREE.Texture(bitmap(1024, 512));
     tex.userData.sourceReleased = true;
+    expect(retainedSourceBytes(tex)).toBe(0);
+  });
+
+  it('counts the raw buffer behind a tile decoded for a banded upload, until it is freed', () => {
+    // The other decode path hands the streamer an ImageBitmap and this one
+    // hands it a byte buffer of exactly the same size, so the envelope has to
+    // see 16 MiB either way while a 2048 tile is in flight.
+    const tex = new THREE.DataTexture(new Uint8Array(4), 2048, 2048);
+    tex.userData.ownedPixels = true;
+    expect(retainedSourceBytes(tex)).toBe(2048 * 2048 * 4);
+    releaseTilePixels(tex);
     expect(retainedSourceBytes(tex)).toBe(0);
   });
 

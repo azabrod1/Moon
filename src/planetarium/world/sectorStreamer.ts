@@ -141,6 +141,7 @@ import {
 } from './sectorGrid';
 import { createSectorMaterial, sectorRenderOrder, syncSectorMaterial, type SectorMaps } from './sectorMaterial';
 import { loadStreamedTexture, type TextureLoad } from './textureBitmapLoader';
+import { loadSectorTileTexture, releaseTilePixels } from './tilePixels';
 import { applyTextureDefaults, resolveTileUrl, sectorSetHash, sectorSetLayout } from './texturePolicy';
 import { TIER_RANK } from './textureLadder';
 import { debugWarn } from '../../shared/debug';
@@ -641,6 +642,12 @@ export interface SectorStreamerOptions {
    *  every figure here still looking sane. */
   envelope: MemoryEnvelope;
   load?: TextureLoad;
+  /** The colour TILE's loader, which decodes to raw bytes so the driver has
+   *  no source to convert on upload (world/tilePixels). The crops keep `load`:
+   *  a few hundred pixels square is one sub-millisecond upload either way, and
+   *  decoding those would spend a worker round trip to save nothing. An
+   *  injected `load` covers both, so a test drives one loader. */
+  loadTile?: TextureLoad;
   warm?: (tex: THREE.Texture, onOutcome: (o: WarmOutcome) => void) => void;
 }
 
@@ -851,17 +858,21 @@ function covered(slot: SectorSlot): boolean {
   return true;
 }
 
-/** Close a tile's decoded bitmap once it is resident: the upload is paid, a
+/** Free a tile's decoded source once it is resident: the upload is paid, a
  *  context loss drops the sector rather than re-uploading, and 16 MiB of RAM
- *  per tile goes back. Idempotent — the loader's dispose hook closes too. */
+ *  per tile goes back. Either shape of source — a bitmap the loader closes, or
+ *  a byte buffer the pixel path owns — and idempotent, because each loader's
+ *  dispose hook frees the same source too. */
 function releaseBitmap(tex: THREE.Texture): void {
   const img = tex.image as { close?: () => void } | undefined;
   if (img && typeof img.close === 'function') img.close();
+  releaseTilePixels(tex);
 }
 
 export class SectorStreamer {
   private readonly bodies = new Map<string, SectorBody>();
   private readonly load: TextureLoad;
+  private readonly loadTile: TextureLoad;
   private readonly warm: (tex: THREE.Texture, onOutcome: (o: WarmOutcome) => void) => void;
   private readonly residentCap: number;
   private readonly inflightCap: number;
@@ -884,6 +895,7 @@ export class SectorStreamer {
 
   constructor(opts: SectorStreamerOptions) {
     this.load = opts.load ?? loadStreamedTexture;
+    this.loadTile = opts.loadTile ?? opts.load ?? loadSectorTileTexture;
     this.warm = opts.warm ?? queueTextureWarm;
     this.residentCap = opts.limits.residentCap;
     this.inflightCap = opts.limits.inflightCap;
@@ -1672,7 +1684,8 @@ export class SectorStreamer {
     };
 
     for (const m of toFetch) {
-      this.load(
+      const load = m.kind === 'color' ? this.loadTile : this.load;
+      load(
         m.url,
         (tex) => {
           if (!stillWanted()) {

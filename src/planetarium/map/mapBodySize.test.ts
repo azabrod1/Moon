@@ -33,6 +33,7 @@ import {
   MINI_SUN_SIZE_PARAMS,
 } from './miniChart';
 import { PLANETARIUM_BODIES } from '../planets/planetData';
+import { MOONS } from '../planets/moonData';
 import { KM_PER_AU } from '../../astronomy/constants';
 
 const P = MAP_BODY_SIZE_DEFAULTS;
@@ -405,7 +406,9 @@ describe('the Sun branch', () => {
 });
 
 describe('the moon branch', () => {
-  const GANYMEDE = 1.761e-5;
+  // Ganymede as the catalog carries it — the module reads the scale's top from
+  // there, and the top is exact only against the same figure.
+  const GANYMEDE = MOONS.find((m) => m.name === 'Ganymede')!.radiusAU;
   const MIMAS = 1.325e-6;
   const METIS = 1.437e-7;
   // A parent drawn at its chart marker: Jupiter at the overview.

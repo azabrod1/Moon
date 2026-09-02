@@ -92,8 +92,11 @@ export function mapBody(name: string): MapBody | null {
  * simulated time at any warp. Until a body is drawn with a shell that clears
  * whatever it orbits, the camera does not go there.
  *
- * `isDrawn` answers for the live scene, so a body earns this the moment the
- * chart draws it — the Sun, which orbits nothing, always has it.
+ * `isDrawn` is the caller's reach predicate, and SystemMap answers it with
+ * whether the chart CAN build the body's system rather than whether it has:
+ * the Focus picker is built once per open, from the overview, where no moon
+ * is drawn yet. So a moon earns this as soon as its system is buildable, and
+ * the Sun, which orbits nothing, always has it.
  */
 export function mapBodyAcceptsCamera(
   name: string,

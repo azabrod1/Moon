@@ -54,13 +54,13 @@
  */
 
 import {
+  blendChartedR,
   mapMoonOffsetR,
   moonOffsetEntries,
   type MoonOffsetPolicy,
 } from './mapMoonOffset';
 import {
   projectMapPoint,
-  MAP_BLEND_COMPRESSED,
   MAP_BLEND_TRUE,
   type MapCurve,
   type MapVec3,
@@ -190,9 +190,7 @@ export function shipOffsetR(policy: MoonOffsetPolicy, x: number): number {
 export function shipChartedR(policy: MoonOffsetPolicy, x: number, blend: number): number {
   const safeX = Math.max(x, 0);
   if (blend >= MAP_BLEND_TRUE) return safeX;
-  const charted = shipOffsetR(policy, safeX);
-  if (blend <= MAP_BLEND_COMPRESSED) return charted;
-  return charted * (1 - blend) + safeX * blend;
+  return blendChartedR(shipOffsetR(policy, safeX), safeX, blend);
 }
 
 /**

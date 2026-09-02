@@ -20,6 +20,7 @@ import {
   type MapMarkerZoomParams,
   type MapSunSizeParams,
 } from './mapBodySize';
+import { MOBILE_BREAKPOINT_PX } from '../../shared/dom';
 
 /** A rectangle in CSS px, measured from the canvas's top-left. */
 export interface MiniChartRect {
@@ -47,7 +48,7 @@ const MINI_WIDE_INSET_X = 14;
 const MINI_NARROW_INSET_X = 10;
 const MINI_TINY_INSET_X = 8;
 /** The mobile breakpoint the rest of the UI uses, and the small-phone band. */
-const MINI_NARROW_MAX_W = 640;
+const MINI_NARROW_MAX_W = MOBILE_BREAKPOINT_PX;
 const MINI_TINY_MAX_W = 380;
 /** However the bands work out, the chart never eats more of the view than
  *  this — a short landscape phone would otherwise wear it like a blindfold. */

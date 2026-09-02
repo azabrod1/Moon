@@ -5,7 +5,7 @@
  * deck's catalogs: the picker's whole promise is that every row it shows is a
  * body the camera will actually go to, and the two rosters answer that question
  * differently — the deck lists everywhere a SHIP can travel, which includes
- * bodies the chart has not drawn and so cannot fly to.
+ * bodies the chart cannot build a system for and so cannot fly to.
  *
  * Pure: catalogs and one predicate in, plain rows out. The rows carry the deck
  * row's shape, so the deck's search filter reads them unchanged.

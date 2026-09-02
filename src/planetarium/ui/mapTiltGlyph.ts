@@ -1,4 +1,4 @@
-import { sig3, tiltAxisEndpoints, TILT_GLYPH } from '../map/mapFacts';
+import { tiltAxisEndpoints, TILT_GLYPH } from '../map/mapFacts';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -37,7 +37,8 @@ export function makeTiltGlyph(deg: number, tintCss: string): SVGSVGElement {
     role: 'img',
   });
   const title = document.createElementNS(SVG_NS, 'title');
-  title.textContent = `${sig3(deg)}° axial tilt`;
+  // One decimal: Mercury reads 0.0°, not 0.0340°.
+  title.textContent = `${deg.toFixed(1)}° axial tilt`;
   svg.appendChild(title);
   svg.appendChild(el('line', {
     class: 'map-tilt-base',

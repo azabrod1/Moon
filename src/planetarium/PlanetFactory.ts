@@ -834,6 +834,14 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     map: texture,
     // Gas giants drop the colour-as-bump hack — embossing cloud bands as relief
     // just reads as fake crinkle; their banding lives entirely in the albedo.
+    //
+    // On every other rocky planet this line is also what decides the CLOSE-RANGE
+    // look: a photograph read as a height field is relief taken off a
+    // measurement, so the close-range detail term treats it as measured and
+    // never draws its own craters over it. Mercury and Pluto are therefore
+    // grained and never embossed, which is the ruling that stands — an invented
+    // crater field over a photograph carries shadows that do not move with the
+    // Sun, and that is what reads as fake.
     bumpMap: planet.isGasGiant ? null : texture,
     bumpScale: planet.radiusAU * 0.01, // subtle bump
     roughness: planet.name === 'Mercury' || planet.name === 'Mars' ? 0.95 : 0.8,
@@ -866,6 +874,11 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   const planetNormalKey = PLANET_NORMAL_KEYS[planet.name];
   if (planetNormalKey) {
     mat.bumpMap = null;
+    // Marked at REQUEST time, not on arrival: between the two this surface has
+    // no relief bound at all, and anything that decides what to draw from what
+    // is bound would fill the gap with an invented surface and then step off it
+    // the frame the measured one lands.
+    mat.userData.hasRealNormal = true;
     const normalUrl = resolveTextureUrl(PLANET_TEXTURE_FILES[planetNormalKey], '2k');
     fetchTextureDurably({
       url: normalUrl,

@@ -64,6 +64,14 @@ export function createSectorMaterial(
   mat.polygonOffset = true;
   mat.polygonOffsetFactor = 0;
   mat.polygonOffsetUnits = -(level + 1);
+  // A tile of a body whose measured surface is still in flight is a tile with
+  // no crop of it: the streamer only cuts one where the map was there to cut.
+  // The flag travels so the sector answers the way its globe does, instead of
+  // filling the gap with invented craters and stepping off them a rectangle at
+  // a time as the real map lands.
+  if ((base.userData as { hasRealNormal?: boolean } | undefined)?.hasRealNormal === true) {
+    mat.userData.hasRealNormal = true;
+  }
   const args = surfaceShadingArgsOf(base);
   // The same fx objects, so the sector's eclipse spot, its planetshine and the
   // air in front of it are the globe's own values and not a second set; and the

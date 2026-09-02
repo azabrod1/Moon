@@ -1206,6 +1206,16 @@ export type SurfaceReliefKind = 'measured' | 'painted' | 'none';
  *  anything else bound as relief is treated as a real surface, because the
  *  expensive mistake is to emboss invented craters over a measured one. */
 export function surfaceReliefKind(mat: THREE.Material): SurfaceReliefKind {
+  // A body whose measured surface is on its way counts as wearing it already.
+  // The map is requested at load and bound whenever the fetch lands, and in
+  // between there is nothing bound at all: read literally, this surface would
+  // be given a full invented relief for those seconds and then have it taken
+  // away the frame the real one arrives — a step, on the one body class that
+  // is never allowed one, and on a streamed sector cut before the map landed it
+  // would be a rectangle of invented craters beside measured ones.
+  if ((mat.userData as { hasRealNormal?: boolean } | undefined)?.hasRealNormal === true) {
+    return 'measured';
+  }
   const standard = mat as Partial<THREE.MeshStandardMaterial>;
   const relief = standard.normalMap ?? standard.bumpMap ?? null;
   if (!relief) return 'none';

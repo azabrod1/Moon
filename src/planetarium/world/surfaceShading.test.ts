@@ -209,6 +209,24 @@ describe('the close-range detail term', () => {
     );
   });
 
+  it('counts a measured surface that is still in flight as bound', () => {
+    // The Moon's and Mars's elevation maps are requested at load and bound
+    // whenever the fetch lands. Read literally, the seconds in between are a
+    // surface with nothing bound — full invented relief, taken away again the
+    // frame the real map arrives.
+    const mat = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(mat, 'airless', undefined, 0, undefined, undefined, 'Moon');
+    expect(surfaceReliefKind(mat)).toBe('none');
+    mat.userData.hasRealNormal = true;
+    expect(surfaceReliefKind(mat)).toBe('measured');
+    // And it outranks a painted bump: a body that will wear a measurement is
+    // never given craters of its own, however long the fetch takes.
+    const painted = new THREE.Texture();
+    painted.userData.proceduralRelief = true;
+    mat.bumpMap = painted;
+    expect(surfaceReliefKind(mat)).toBe('measured');
+  });
+
   it('stops climbing rungs where a float stops being able to name one', () => {
     // The rung multiplies the chart's coordinates, so its ulp grows with it: at
     // twelve it is a quarter of a texel of the field, at fourteen a whole one,

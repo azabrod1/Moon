@@ -121,9 +121,9 @@ describe('the built field', () => {
 
   it('tiles: the field wraps in both directions', () => {
     // Column 0 continues column size-1 and row 0 continues row size-1. The
-    // shader multiplies longitude by a whole number of tiles per turn, so a
-    // step across the wrap that is bigger than an ordinary step is a seam down
-    // the antimeridian of every body in the system.
+    // shader lays this one tile over a body again and again, at every rung and
+    // on each of three charts, so a step across the wrap that is bigger than an
+    // ordinary step is a grid of seams across every surface in the system.
     const at = (x: number, y: number) => built.data[(y * size + x) * 4];
     let wrapX = 0;
     let innerX = 0;
@@ -154,13 +154,15 @@ describe('the built field', () => {
         worst = Math.max(worst, Math.abs(numeric - gu(x, y)));
       }
     }
-    // A byte of height across a 128 map is a coarse yardstick — the check is
+    // A byte of height across the map is a coarse yardstick — the check is
     // that the two describe the same surface, not that they agree to the ulp.
     expect(worst).toBeLessThan(12);
   });
 
   it('costs one small upload for every surface in the system', () => {
-    const bytes = SURFACE_DETAIL_SIZE * SURFACE_DETAIL_SIZE * 4;
-    expect(bytes).toBe(1024 * 1024);
+    // One shared megabyte, whatever the system is drawing: the size is the
+    // knob, and a change to it should have to be typed here too.
+    expect(SURFACE_DETAIL_SIZE).toBe(512);
+    expect(SURFACE_DETAIL_SIZE * SURFACE_DETAIL_SIZE * 4).toBe(1024 * 1024);
   });
 });

@@ -27,9 +27,10 @@
  * TILEABLE. Craters wrap: a crater's offset is taken modulo the tile, and every
  * radius is under half a tile so no crater can reach its own far side. The
  * grain octaves are periodic lattices whose periods divide the map. What tiles
- * matters more here than for a decorative map — the shader multiplies longitude
- * by a whole number of tiles per turn, and the seam would run down the
- * antimeridian of every body in the system.
+ * matters more here than for a decorative map: the shader lays this one tile
+ * over a body again and again, at every rung and on each of three charts, so a
+ * step across the wrap is not one seam somewhere — it is a grid of them across
+ * every surface in the system.
  */
 import * as THREE from 'three';
 import { periodicLattice, periodicValueNoise } from './periodicNoise';

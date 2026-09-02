@@ -555,15 +555,16 @@ const SURFACE_DETAIL_TILE_PX = 512;
  * How far off its own axis a flat chart still says anything, as the cosine
  * between the surface point and that axis.
  *
- * Below the cosine three charts is one too few — the three axes are 0.577 apart
- * at their worst, so a cut above that would leave a point on the diagonal with
- * no chart at all. Below it the charts overlap more widely and every extra
- * overlap is another texture fetch on the fragments that fall in it: at a half,
- * a point of the sphere is drawn by 1.5 charts on average, and the widest blend
- * runs over thirty degrees of arc, which is far slower than anything the field
- * itself draws.
+ * It has a ceiling and a cost. The ceiling is 0.577: the largest component of a
+ * unit vector is never smaller than that, so a cut above it would leave the
+ * points on the body's diagonals with no chart at all. Below it every chart
+ * covers more, and the overlaps are where two or three are drawn instead of one
+ * — another pair of texture fetches on every fragment that falls in one. At a
+ * half, a point of the sphere is drawn by 1.5 charts on average and the widest
+ * overlap runs over thirty degrees of arc, which is far slower than anything
+ * the field itself draws.
  */
-const SYNTH_CHART_CUT = 0.5;
+export const SYNTH_CHART_CUT = 0.5;
 
 /**
  * The three charts' weights at a point of the unit sphere, as the shader

@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import {
   augmentSurfaceMaterial, OCEAN_ROUGHNESS, ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER,
-  setSurfaceSynthesis, setSurfaceWaterGloss, surfaceChartWeights, surfaceReliefKind,
-  surfaceSynthesisOf, surfaceWaterGloss, waterGlossRoughness,
+  setSurfaceSynthesis, setSurfaceWaterGloss, surfaceChartWeights, SYNTH_CHART_CUT,
+  surfaceReliefKind, surfaceSynthesisOf, surfaceWaterGloss, waterGlossRoughness,
 } from './surfaceShading';
 import { surfaceDetailFieldMean, surfaceDetailHeightSpan } from './surfaceDetailNoise';
 
@@ -127,10 +127,13 @@ describe('the close-range detail term', () => {
       glsl.indexOf('if (synthW > 0.0) {'),
     );
     const inner = glsl.slice(glsl.indexOf('if (synthW > 0.0) {'), glsl.indexOf('#include <opaque_fragment>'));
-    // Two for the surface direction and two for the screen frame the relief is
-    // built on.
-    expect(block.match(/dFd[xy]\(/g)).toHaveLength(4);
-    expect(inner).not.toMatch(/dFd[xy]\(/);
+    // Everything that takes one, not just the explicit four: two derivatives
+    // for the surface direction, two for the screen frame the relief is built
+    // on, and the two texel-density reads, each of which is an fwidth inside a
+    // function. All six above the per-fragment branch, none below it.
+    const takesOne = /(dFd[xy]|fwidth|synthTexelWeight)\(/g;
+    expect(block.match(takesOne)).toHaveLength(6);
+    expect(inner).not.toMatch(takesOne);
   });
 
   it('reads its own material\'s map, not a body-wide number', () => {
@@ -308,6 +311,13 @@ describe('the close-range detail term', () => {
     expect(leastCharts).toBe(1);
     expect(mostCharts).toBe(3);
     expect(worstStretch).toBeLessThan(1.74);
+    // And the shader is drawing what was just walked: the same cut, hinged the
+    // same way, normalised in LENGTH. Everything above is a property of this
+    // function, and worth nothing if the GLSL sums its weights instead.
+    const glsl = fragment('airless');
+    expect(glsl).toContain(`max(abs(synthDir) - ${SYNTH_CHART_CUT.toFixed(4)}, 0.0)`);
+    expect(glsl).toContain('synthChartW *= synthChartW;');
+    expect(glsl).toContain('synthChartW /= max(length(synthChartW)');
   });
 
   it('reads the field against its own mean, so the grain adds no light', () => {

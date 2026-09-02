@@ -136,9 +136,11 @@ const DENSITY_STEP_RADII = 1e-4;
  * `pixelsPerTexel = diameterPx · (pi / mapWidth) · sqrt((d + R) / (d - R))`,
  * and that last factor is 1 at infinity but grows without bound as the camera
  * approaches the surface — so no threshold on screen diameter alone can prove a
- * body is NOT magnified. 8 covers every pose down to about 1.03 radii, where a
- * body is filling several screens and its diameter has crossed the line many
- * times over, plus the lens's own frame scale on top.
+ * body is NOT magnified. Three things have to fit under the 8: that factor, the
+ * lens's own frame scale (up to 1.25), and the device pixel ratio, because the
+ * estimate this is read against is in CSS pixels while the band is in device
+ * ones. Worst case at the threshold is 3 × 1.25 × ~1.3 ≈ 4.9, so 8 holds with
+ * room; the sweep below runs at a ratio of 2.
  */
 const DENSITY_PREFILTER_SAFETY = 8;
 

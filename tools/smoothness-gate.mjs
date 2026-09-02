@@ -79,6 +79,11 @@ const RESCORE = arg('rescore', '');
 // Which browser to measure in. The default headless shell is an OLD-headless
 // binary with no real display; a real Chrome is the ground truth a person sees.
 const ENGINE = arg('engine', 'shell');
+// Appended to every scenario's boot URL, after the scenario's own query. The
+// A/B seam: a feature switch given here turns the whole battery into the same
+// battery with that feature off, which is how a row is shown to be about the
+// feature and not about the machine (`--extra='&tilebytes=0'`).
+const EXTRA = arg('extra', '');
 
 // --cold-cache: measure a FIRST visit, where every shader program still has to
 // be compiled and linked by the driver. Three caches sit between a run and that
@@ -136,7 +141,7 @@ function appUrl(extra = '', expectSeconds = 120) {
   params.set('smoothFrames', String(Math.ceil(expectSeconds * 130 * 1.5)));
   if (TILES) params.set('tiles', TILES);
   if (COLD_CACHE) params.set('shaderSalt', coldSalt);
-  return `${URL_BASE}/?${params.toString()}${extra}`;
+  return `${URL_BASE}/?${params.toString()}${extra}${EXTRA}`;
 }
 
 async function openPage(browser, device, cpuThrottle = 0) {

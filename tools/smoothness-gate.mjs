@@ -42,10 +42,15 @@
 // same flight showed 16 tile-attributed late frames throttled and none without.
 //
 // One consequence: at 4x the absolute PASS bar is unreachable even with the
-// feature under test turned off, so a throttled scenario may score itself
-// DIFFERENTIALLY against a reference run instead (see `requires` and the
-// verify hook: mars-flown is judged against mars-flown-floor, the same flight
-// with ?sectors=0).
+// feature under test turned off — the Mars floor leg drops seven frames over
+// two vsyncs with sector streaming OFF. So EVERY throttled phone row is a
+// PAIR: an `<id>-floor` leg flying the same route with `?sectors=0`, and the
+// row itself scored DIFFERENTIALLY against it through `requires` and the
+// verify hook. No throttled row carries an absolute verdict, because such a
+// row would be red whatever the app did, and a gate that is red by
+// construction stops being run — which is worse than no gate at all. What the
+// pair asserts instead: no late frame carried a sector-tile upload, and the
+// scored leg is no worse than its own floor bar two frames of scatter.
 //
 // And a limit worth knowing before trusting a phone row: this runs Chromium
 // wearing a phone's user agent, and some costs are the ENGINE's, not the
@@ -405,6 +410,110 @@ function marsFlown(id, title, extra) {
   };
 }
 
+/**
+ * A throttled phone row, and the reference leg it is scored against.
+ *
+ * A phone row is a phone viewport, a phone UA and a 4x CPU throttle, and at 4x
+ * the absolute bar is out of reach even with sector streaming off — the Mars
+ * floor run drops seven frames over two vsyncs with `?sectors=0`. An absolute
+ * verdict on such a row is red whatever the app does, and a gate that is red
+ * by construction stops being run, which is worse than no gate. So each of
+ * these ships as a PAIR: the same flight with `?sectors=0` is the floor this
+ * silicon can reach at all, and the row itself is judged against that floor
+ * rather than against a number no phone row can meet.
+ *
+ * `fly` takes the boot query, so the two legs differ in exactly one thing.
+ */
+function phonePair(id, what, fly) {
+  const shared = (extra) => ({
+    device: PHONE,
+    cpuThrottle: 4,
+    // The tiles stream from the descent onward. Everything before it — the
+    // boot, the cruise, the pose — is work both legs pay identically, and
+    // letting it into a comparison of two separate runs swamps the difference
+    // the pair exists to show.
+    window: ['descent'],
+    async run(page, note) {
+      await fly(page, note, extra);
+    },
+  });
+  return [
+    {
+      ...shared('&sectors=0'),
+      id: `${id}-floor`,
+      title: `Phone (4x CPU): ${what} with ?sectors=0 — the reference floor`,
+      verify(analysis) {
+        const problems = [];
+        if (analysis.tileMaterializations > 0) {
+          problems.push(`?sectors=0 still materialised ${analysis.tileMaterializations} tile(s)`);
+        }
+        if (!analysis.window || analysis.window.frames < 500) {
+          problems.push(`the scored leg holds ${analysis.window?.frames ?? 0} frames`
+            + ' — nothing for the row below to compare against');
+        }
+        return problems;
+      },
+    },
+    {
+      ...shared(''),
+      id,
+      title: `Phone (430x932 @3, 4x CPU): ${what}`,
+      requires: `${id}-floor`,
+      verify(analysis, trace, done) {
+        const floor = done.find((r) => r.scenario === `${id}-floor`);
+        if (!floor) return [`no ${id}-floor result to compare against — run it in the same battery`];
+        const problems = [];
+        if (analysis.tileMaterializations < 4) {
+          problems.push(`only ${analysis.tileMaterializations} tile(s) streamed — the leg did not`
+            + ' exercise what it exists to measure');
+        }
+        if (analysis.lateWithTileUpload > 0) {
+          problems.push(`${analysis.lateWithTileUpload} late frame(s) carried a sector-tile upload`);
+        }
+        // A margin of two frames: the floor is a separate run of a moving
+        // scene, not a replay, and an exact count would fail on its scatter.
+        if (analysis.windowOver2x > floor.windowOver2x + 2) {
+          problems.push(`${analysis.windowOver2x} frame(s) over two vsyncs on the scored leg,`
+            + ` against the sectors-off floor's ${floor.windowOver2x}`);
+        }
+        return problems;
+      },
+    },
+  ];
+}
+
+/** Travel to Earth, fly down from 8 radii, hover. */
+async function flyEarthNear(page, note, extra) {
+  await bootTo(page, extra, 230);
+  await sleep(2_000);
+  note(`device: ${JSON.stringify(await page.evaluate(() => window.__moon.device()))}`);
+  note(await travelAndSettle(page, 'Earth'));
+  note(`posed at ${await jumpToRadii(page, 'Earth', 8)} radii`);
+  await sleep(2_500);
+  await mark(page, 'descent');
+  note(`descent ended at ${await descendTo(page, 'Earth', 1.6, 60_000)} radii`);
+  await mark(page, 'hover');
+  await sleep(20_000);
+}
+
+/** The same descent, then a slow yaw across the day/night terminator. */
+async function flyTerminator(page, note, extra) {
+  await bootTo(page, extra, 280);
+  await sleep(2_000);
+  note(await travelAndSettle(page, 'Earth'));
+  note(`posed at ${await jumpToRadii(page, 'Earth', 8)} radii`);
+  await sleep(2_500);
+  await mark(page, 'descent');
+  note(`pan altitude ${await descendTo(page, 'Earth', 1.4, 60_000)} radii`);
+  await sleep(3_000);
+  await mark(page, 'pan');
+  for (let i = 0; i < 14; i++) {
+    await holdKey(page, 'a', 250);
+    await sleep(1_000);
+  }
+  await sleep(3_000);
+}
+
 // ----------------------------------------------------------------- scenarios
 
 const SCENARIOS = [
@@ -626,47 +735,16 @@ const SCENARIOS = [
       await page.evaluate(() => window.__moon.setTimeRate(1));
     },
   },
-  {
-    id: 'phone-earth-near',
-    title: 'Phone (430×932 @3, 4× CPU): travel to Earth, governed descent, 20 s hover',
-    device: PHONE,
-    cpuThrottle: 4,
-    async run(page, note) {
-      await bootTo(page, '', 230);
-      await sleep(2_000);
-      note(`device: ${JSON.stringify(await page.evaluate(() => window.__moon.device()))}`);
-      note(await travelAndSettle(page, 'Earth'));
-      note(`posed at ${await jumpToRadii(page, 'Earth', 8)} radii`);
-      await sleep(2_500);
-      await mark(page, 'descent');
-      const at = await descendTo(page, 'Earth', 1.6, 60_000);
-      note(`descent ended at ${at} radii`);
-      await mark(page, 'hover');
-      await sleep(20_000);
-    },
-  },
-  {
-    id: 'phone-terminator',
-    title: 'Phone (430×932 @3, 4× CPU): slow pan across the terminator',
-    device: PHONE,
-    cpuThrottle: 4,
-    async run(page, note) {
-      await bootTo(page, '', 280);
-      await sleep(2_000);
-      note(await travelAndSettle(page, 'Earth'));
-      note(`posed at ${await jumpToRadii(page, 'Earth', 8)} radii`);
-      await sleep(2_500);
-      await mark(page, 'descent');
-      note(`pan altitude ${await descendTo(page, 'Earth', 1.4, 60_000)} radii`);
-      await sleep(3_000);
-      await mark(page, 'pan');
-      for (let i = 0; i < 14; i++) {
-        await holdKey(page, 'a', 250);
-        await sleep(1_000);
-      }
-      await sleep(3_000);
-    },
-  },
+  ...phonePair(
+    'phone-earth-near',
+    'travel to Earth, governed descent from 8 radii, 20 s hover',
+    flyEarthNear,
+  ),
+  ...phonePair(
+    'phone-terminator',
+    'slow pan across the terminator in the near band',
+    flyTerminator,
+  ),
   {
     // The reference leg. Same flight, sector streaming off: this is the floor
     // the throttled phone can reach at all, and it is not a PASS — at 4x even
@@ -871,8 +949,10 @@ function analyze(trace, scenario, notes) {
   // of a moving scene, and letting reveal and pose frames into that comparison
   // swamps the difference the legs exist to show with noise neither leg owns.
   const markAt = (name) => events.find((e) => e.kind === 'mark' && e.name === name)?.frame ?? null;
+  // A window given one mark runs from it to the end of the run; two marks
+  // bound it at both ends.
   const windowFrom = scenario.window ? markAt(scenario.window[0]) : null;
-  const windowTo = scenario.window ? markAt(scenario.window[1]) : null;
+  const windowTo = scenario.window?.[1] ? markAt(scenario.window[1]) : null;
   const inScoreWindow = ({ i }) => (windowFrom === null || i >= windowFrom)
     && (windowTo === null || i <= windowTo);
 

@@ -18,7 +18,7 @@ import { LANDED_NEAR_AU } from './planetarium/landedView';
 import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import type { VolumeCompareMode } from './volumeCompare/VolumeCompareMode';
 import { canGPUDoBloom } from './app/gpuCapability';
-import { BLOOM_RADIUS, BLOOM_THRESHOLD } from './app/bloomConfig';
+import { BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
 import { createLensPass, updateLensPass, type LensParams } from './app/LensPass';
 import { applyDesignFov, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
 import { stepExposure } from './planetarium/solarExposure';
@@ -85,8 +85,6 @@ try {
 }
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFShadowMap;
 document.body.appendChild(renderer.domElement);
 renderer.domElement.addEventListener('webglcontextlost', (event) => {
   event.preventDefault();
@@ -195,7 +193,8 @@ function applyRenderResolution() {
 
 // Bloom radius (shared across modes) and the planetarium threshold live in
 // app/bloomConfig so the star-luminance invariant test shares the cutoff.
-// Strength + threshold are authored per mode at each call site: the planetarium
+// Strength + threshold are authored per mode — the planetarium's pair as
+// PLANETARIUM_BLOOM there, the other modes at their call sites: the planetarium
 // diverges to BLOOM_THRESHOLD (1.0) so sub-1.0-luminance stars stay out of bloom
 // near the Sun, while Moon Flight (0.85) and Volume Compare (0.92 — for its glass
 // HDR glint) keep their own lower cutoffs.
@@ -228,6 +227,10 @@ function buildComposer(
     for (const pass of composer.passes) pass.dispose();
     composer.dispose();
     composer = null;
+  } else {
+    // The direct (no-float) path owns its lens pass outright: nothing else
+    // releases the ShaderMaterial behind it when the composer is rebuilt.
+    lensPass?.dispose();
   }
   lensPass = null;
   directLensTexture?.dispose();
@@ -309,13 +312,13 @@ function setPlanetariumBloom(on: boolean) {
   // planetarium is showing. The flag is session-sticky, so the planetarium's
   // own rebuild picks it up on the next switch back; other modes ignore it.
   if (appMode === 'planetarium') {
-    buildComposer(planetariumCamera, { strength: 0.8, threshold: BLOOM_THRESHOLD }, effective);
+    buildComposer(planetariumCamera, PLANETARIUM_BLOOM, effective);
   }
   planetariumMode?.devApplySunGlowTier(effective);
 }
 
 applyRenderResolution();
-buildComposer(planetariumCamera, { strength: 0.8, threshold: BLOOM_THRESHOLD }, planetariumBloomEnabled());
+buildComposer(planetariumCamera, PLANETARIUM_BLOOM, planetariumBloomEnabled());
 
 // Armed after first Planetarium activation: that render compiles the scene's
 // shaders and uploads textures, so its duration is a startup phase of its own.
@@ -439,7 +442,7 @@ async function switchAppMode(newMode: AppMode) {
 
       camera = planetariumCamera;
       applyRenderResolution();
-      buildComposer(planetariumCamera, { strength: 0.8, threshold: BLOOM_THRESHOLD }, planetariumBloomEnabled());
+      buildComposer(planetariumCamera, PLANETARIUM_BLOOM, planetariumBloomEnabled());
 
       if (!planetariumMode) {
         debugLog('Creating Planetarium mode');
@@ -622,7 +625,7 @@ function installDevHooks() {
         ? Math.min(Math.max(strength, 0), 1)
         : LENS_DEFAULT_STRENGTH;
       if (appMode === 'planetarium') {
-        buildComposer(planetariumCamera, { strength: 0.8, threshold: BLOOM_THRESHOLD }, planetariumBloomEnabled());
+        buildComposer(planetariumCamera, PLANETARIUM_BLOOM, planetariumBloomEnabled());
       }
       return planetariumLens.strength;
     },

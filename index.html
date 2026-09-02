@@ -4004,12 +4004,17 @@
         if (debugEnabled) log('[DBG] visibility=' + document.visibilityState);
       });
 
-      // Safety: if init hasn't started after 12s, force-hide loading
+      // Safety: if init hasn't started after 12s (the module chunk never
+      // arrived, or an old engine could not parse it), say so ON the loading
+      // screen and keep it up: the message and the debug log both live inside
+      // it, so hiding it would leave a black canvas with nothing to read.
+      // No bootError flag here — a chunk that lands late still boots, and
+      // main.ts's own progress text then takes this line back.
       setTimeout(function() {
         if (!window.__initStarted) {
           log('App failed to start. Try refreshing.');
-          var ls = document.getElementById('loading-screen');
-          if (ls && !ls.classList.contains('hidden')) ls.classList.add('hidden');
+          var msg = document.getElementById('loading-msg');
+          if (msg) msg.textContent = 'Something went wrong. Please refresh.';
         }
       }, 12000);
     })();

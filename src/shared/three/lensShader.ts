@@ -159,6 +159,14 @@ export const lensPointSpriteFragmentGLSL = /* glsl */ `
           float falloff = 1.0 - smoothstep(0.2, 0.5, d);
 `;
 
+/** The two lines of three's stock shaders the splices below replace. Pinned by
+ * lensShader.test.ts against the installed three: `String.replace` with a
+ * missing needle is a silent no-op, and the symptom (every marker sprite and
+ * décor line drifting off its body toward the frame edge under the lens) is
+ * only ever caught by eye. */
+export const SPRITE_CLIP_ANCHOR = 'gl_Position = projectionMatrix * mvPosition;';
+export const LINE_CLIP_ANCHOR = 'gl_Position = clip;';
+
 /** Pre-distort a fixed-size SpriteMaterial quad into the overscan source so the
  * final lens pass restores its authored output-space centre, size, and shape. */
 export function augmentFixedScreenSpriteForLens(
@@ -172,7 +180,7 @@ export function augmentFixedScreenSpriteForLens(
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>\n${lensShaderGLSL}`)
       .replace(
-        'gl_Position = projectionMatrix * mvPosition;',
+        SPRITE_CLIP_ANCHOR,
         /* glsl */ `
   vec4 lensCentreView = mvPosition;
   lensCentreView.xy -= rotatedPosition;
@@ -209,7 +217,7 @@ export function augmentFixedScreenLineForLens(
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>\n${lensShaderGLSL}`)
       .replace(
-        'gl_Position = clip;',
+        LINE_CLIP_ANCHOR,
         /* glsl */ `
   #ifndef WORLD_UNITS
     // A segment that wraps or grazes the camera plane has near-singular NDC

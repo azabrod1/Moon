@@ -1656,9 +1656,17 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     const archetype = moonArchetype(moonData);
     const mat = new THREE.MeshStandardMaterial({
       color: moonData.color,
-      // Ice is a low-roughness dielectric (broad moving glint); rock is matte.
-      // Neither is metallic.
-      roughness: archetype === 'icy' ? 0.4 : 0.9,
+      // Both are matte, and ice only a little less so than rock. An icy moon is
+      // not a mirror: what covers Callisto, Ganymede, Rhea and the rest is a
+      // cratered, dust-gardened regolith, and no airless body in the system
+      // shows a specular glint — the one real specular reflection ever observed
+      // out there is off Titan's lakes. Drawn as a low-roughness dielectric the
+      // mirror point runs 71 times the diffuse at 70 degrees of incidence and
+      // 578 times at 80, which clips to white and blooms: a searchlight on the
+      // ground wherever the Sun happens to reflect. At 0.85 that peak is nine
+      // times the diffuse at 80 degrees — a sheen on the terminator, which is
+      // as far as ice should go. Neither is metallic.
+      roughness: archetype === 'icy' ? 0.85 : 0.9,
       metalness: 0,
       emissive: new THREE.Color(moonData.color),
       emissiveIntensity: 0.03,

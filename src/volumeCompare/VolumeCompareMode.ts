@@ -334,6 +334,10 @@ export class VolumeCompareMode {
     this.session = commitSession(this.session.generation);
     this.panel.setLoading(false);
     this.compareScene.setDimmed(false);
+    // Hand the pair's textures and the atmosphere shell back: the next
+    // activate() reloads its pair regardless, and the planetarium's memory
+    // envelope cannot see what this mode leaves resident.
+    this.compareScene.releasePairResources();
   }
 
   dispose(): void {
@@ -899,7 +903,10 @@ export class VolumeCompareMode {
   /** Zero the pour-session UI state (not the scene — applyPair/resetSession do that). */
   private resetPourState(): void {
     this.slider = 0;
+    // The chip is the one reader of this flag that render() never repaints:
+    // tell it, or a reset from a paused pour leaves ▶ standing over a running one.
     this.paused = false;
+    this.panel.setPaused(false);
     this.brimTime = 0;
     this.autoMeltTimer = 0;
     this.endCardTimer = 0;
@@ -1014,7 +1021,6 @@ export class VolumeCompareMode {
     // half-loaded scene live (or strand the loading chip). The Reset control is
     // visually disabled during the swap; the in-flight commit lands moments later.
     if (!this.texturesReady) return;
-    if (this.paused) this.paused = false;
     this.session = commitSession(this.session.generation);
     this.resetPourState();
     this.panel.showEndCard(null);

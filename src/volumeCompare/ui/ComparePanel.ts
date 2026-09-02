@@ -94,9 +94,6 @@ export class ComparePanel {
     });
     this.get('compare-endcard-again')?.addEventListener('click', () => this.h.onPourAgain());
     this.get('compare-endcard-close')?.addEventListener('click', () => this.h.onEndClose());
-    this.get('compare-endcard')?.addEventListener('click', (e) => {
-      if (e.target === this.get('compare-endcard')) this.h.onEndClose();
-    });
     this.get('compare-endcard-rows')?.addEventListener('click', (e) => {
       const row = (e.target as HTMLElement).closest('[data-try]') as HTMLElement | null;
       if (row?.dataset.container && row.dataset.filler) {

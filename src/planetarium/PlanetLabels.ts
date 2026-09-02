@@ -58,6 +58,11 @@ export interface PlanetLabel {
   lastAnchorY: number;
   lastMag: number;
   heldSlotLastFrame: boolean;
+  /** The contest, not a physical gate, hid it last frame. It comes back with
+   *  the same box, so the reveal must not re-read it — that read forced a
+   *  layout per denied label per frame for as long as two names crowded one
+   *  spot (Venus and Earth seen from Jupiter, for weeks of sim time). */
+  deniedLastFrame: boolean;
   contestSlot: PlanetLabelContestant;
 }
 
@@ -324,6 +329,7 @@ export class PlanetLabels {
         lastAnchorY: 0,
         lastMag: 99,
         heldSlotLastFrame: false,
+        deniedLastFrame: false,
         contestSlot: {
           name: body.name,
           x: 0,
@@ -709,14 +715,19 @@ export class PlanetLabels {
         }
 
         // Cache the real box the frame it is first laid out, for next frame's
-        // rectangle test (one layout read on reveal, not every frame).
-        if (justRevealed && entry.label.offsetWidth > 0) {
+        // rectangle test (one layout read on reveal, not every frame) — and
+        // not on a reveal the contest will deny again, whose box is unchanged.
+        if (justRevealed && !entry.deniedLastFrame && entry.label.offsetWidth > 0) {
           entry.labelW = entry.label.offsetWidth;
           entry.labelH = entry.label.offsetHeight;
         }
-      } else if (entry.labelVisible) {
-        entry.label.style.display = 'none';
-        entry.labelVisible = false;
+      } else {
+        if (entry.labelVisible) {
+          entry.label.style.display = 'none';
+          entry.labelVisible = false;
+        }
+        // A physical hide: the next reveal measures afresh.
+        entry.deniedLastFrame = false;
       }
     }
 
@@ -753,6 +764,7 @@ export class PlanetLabels {
           entry.labelVisible = false;
         }
         entry.heldSlotLastFrame = entry.contestSlot.place;
+        entry.deniedLastFrame = !entry.contestSlot.place;
       }
     }
   }

@@ -294,7 +294,8 @@ function windowEnergy(band, W, H, deg, pxPerDeg, winRows, winPx, valid) {
 }
 
 /**
- * How much the finest band varies in the direction it varies LEAST.
+ * How much the finest band varies in the direction it varies LEAST, discounted
+ * by how one-directional that variation is.
  *
  * The gradient structure tensor of the fine band, averaged over the window and
  * reduced to its smaller eigenvalue. Ground that has been stretched along one
@@ -307,8 +308,23 @@ function windowEnergy(band, W, H, deg, pxPerDeg, winRows, winPx, valid) {
  * way — a degree of longitude is cos(lat) as much ground as a degree of
  * latitude — so an equirect map's own stretch toward the pole is not read as
  * a smear.
+ *
+ * That eigenvalue is a MAGNITUDE, though, and a magnitude can be bought with
+ * contrast. A frame reprojected from a coarser grid keeps plenty of variation
+ * at the fine scale simply by being two or three times as contrasty as the
+ * ground beside it, and its least-varying direction then measures as loud as
+ * real terrain's: on Europa's mosaic a stretched south-polar frame carries 14
+ * counts there against a Galileo swath's 16. What real ground has and a
+ * stretched frame does not is ISOTROPY — cratered and ridged ground crosses
+ * the same amount whichever way it is crossed, measuring 0.82 to 0.96 of the
+ * larger eigenvalue on these mosaics' sharp swaths at the equator and at 70
+ * degrees alike, while the stretched frames measure 0.38 to 0.48. So the count
+ * is discounted by that ratio against what sharp ground itself measures.
+ * A ratio of two eigenvalues is a SHAPE, and contrast cancels out of it.
+ *
+ * `isotropyRef` is that reference; zero leaves the count undiscounted.
  */
-function fineDirectional(band, W, H, fineDeg, stepDeg, pxPerDeg, winRows, winPx, valid) {
+function fineDirectional(band, W, H, fineDeg, stepDeg, pxPerDeg, winRows, winPx, valid, isotropyRef = 0) {
   const n = W * H;
   const r = fineDeg * pxPerDeg;
   let hp = coverageBlur(band, W, H, latScaledRadii(H, r), r, valid);
@@ -357,7 +373,12 @@ function fineDirectional(band, W, H, fineDeg, stepDeg, pxPerDeg, winRows, winPx,
     const yy = syy[i] * k;
     const xy = sxy[i] * k;
     const d = Math.sqrt(Math.max(0, (xx - yy) ** 2 + 4 * xy * xy));
-    out[i] = Math.sqrt(Math.max(0, (xx + yy - d) / 2));
+    const lo = Math.sqrt(Math.max(0, (xx + yy - d) / 2));
+    if (isotropyRef <= 0) { out[i] = lo; continue; }
+    const hi = Math.sqrt(Math.max(0, (xx + yy + d) / 2));
+    // Ground with no variation at either eigenvalue has no shape to measure,
+    // and lo/hi on two numbers that are both rounding error is noise.
+    out[i] = hi > 1e-6 ? lo * Math.min(1, lo / hi / isotropyRef) : 0;
   }
   return out;
 }
@@ -388,7 +409,9 @@ function fineDirectional(band, W, H, fineDeg, stepDeg, pxPerDeg, winRows, winPx,
  * half across holds every direction at once and the tensor reads them as
  * nearly isotropic (anisotropy 0.26 there against 0.11 on cratered ground) —
  * but a mosaic that stretches a frame along a map axis is the other half of
- * the same fault, and an isotropic measure calls it detail.
+ * the same fault, and an isotropic measure calls it detail. It is also
+ * DISCOUNTED by how one-directional it is, which is what stops a stretched
+ * frame buying its way past this with contrast (see fineDirectional).
  *
  * Deficit is 1 - r/r_ref clamped to [0, 1], blurred wide so it changes over
  * degrees rather than over pixels: what it scales is a fill, and a fill that
@@ -411,6 +434,7 @@ export function detailDeficit(band, W, H, spec, pxPerDeg, valid = null) {
 
   let ratio = fineDirectional(
     band, W, H, spec.fineDeg, spec.stepDeg ?? spec.fineDeg, pxPerDeg, winRows, winPx, valid,
+    spec.isotropyRef ?? 0.85,
   );
   const energy = windowEnergy(band, W, H, spec.fineDeg, pxPerDeg, winRows, winPx, valid);
   let coarse = windowEnergy(band, W, H, spec.coarseDeg, pxPerDeg, winRows, winPx, valid);

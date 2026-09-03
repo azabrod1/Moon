@@ -52,6 +52,10 @@ export interface DeficitSpec {
   wideDeg: number;
   /** Which percentile of the body's own ratio counts as fully detailed. */
   refPercentile?: number;
+  /** How isotropic the finest band has to be to count in full: the smaller
+   *  eigenvalue over the larger, at the value sharp ground on these mosaics
+   *  measures. Zero leaves the count undiscounted. */
+  isotropyRef?: number;
   /** Deficits below this are zero, so detailed ground is left untouched. */
   floor?: number;
   /** Sampling stride for the percentiles and the amplitudes. */

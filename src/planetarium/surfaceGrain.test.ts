@@ -238,6 +238,74 @@ describe('detailDeficit on a stretched patch', () => {
   });
 });
 
+/** One region's variation about its own slow average, multiplied — a frame
+ *  whose calibration left it more contrasty than the ground beside it, which
+ *  is what a mosaic's coarse frames actually look like. */
+function louder(band: Float32Array, r: { x0: number; x1: number; y0: number; y1: number }, gain: number) {
+  const low = blurMono(band, W, H, latScaledRadii(H, 60), 60);
+  const out = Float32Array.from(band);
+  for (let y = r.y0; y < r.y1; y++) {
+    for (let x = r.x0; x < r.x1; x++) {
+      const i = y * W + x;
+      out[i] = low[i] + (band[i] - low[i]) * gain;
+    }
+  }
+  return out;
+}
+
+describe('detailDeficit on a frame that is only half smeared', () => {
+  // The case the fill half-acted on. Stretched four times rather than twelve,
+  // so it keeps enough of its finest band for the count to come out only a
+  // little short — and carrying twice the contrast, because that is what these
+  // frames look like. The plain count leaves it below the middle of the ramp
+  // the fill removes invented shape over, so most of its streaks survive it.
+  // What separates it from real ground is not how much its finest band varies
+  // but how lopsidedly: 0.38 of the larger eigenvalue against sharp ground's
+  // 0.91, which is the same split a stretched frame on Europa's own mosaic
+  // measures.
+  const REGION = { x0: 700, x1: 1100, y0: 300, y1: 700 };
+  const band = louder(stretched(4, REGION), REGION, 2.2);
+  const PLAIN = { ...SPEC, isotropyRef: 0 };
+  const plain = detailDeficit(band, W, H, PLAIN, PX_PER_DEG, null).deficit;
+  const gated = detailDeficit(band, W, H, SPEC, PX_PER_DEG, null).deficit;
+  const mid = (d: Float32Array, x: number, y = 500) => d[y * W + x];
+  const shape = anisotropy(band);
+  const loHi = (x: number, y = 500) => (1 - shape[y * W + x]) / (1 + shape[y * W + x]);
+
+  it('is one-directional inside and even-handed outside', () => {
+    expect(loHi(900)).toBeLessThan(0.5);
+    expect(loHi(Math.round(0.8 * W))).toBeGreaterThan(0.85);
+  });
+
+  it('slips half past a count of how much the finest band varies', () => {
+    expect(mid(plain, 900)).toBeLessThan(0.55);
+  });
+
+  it('is a gap once that count is discounted by how one-directional it is', () => {
+    expect(mid(gated, 900)).toBeGreaterThan(0.6);
+    expect(mid(gated, 900)).toBeGreaterThan(1.2 * mid(plain, 900));
+  });
+
+  it('cannot be bought off with contrast either way', () => {
+    // Both counts are ratios taken off the same picture, so multiplying a
+    // frame's variation multiplies numerator and denominator alike and moves
+    // neither. What contrast buys is how loud the frame LOOKS, which is why a
+    // half-smeared frame reads as a piece of a different picture long before
+    // an absolute measure of its detail would call it one.
+    const quiet = stretched(4, REGION);
+    expect(detailDeficit(quiet, W, H, PLAIN, PX_PER_DEG, null).deficit[500 * W + 900])
+      .toBeCloseTo(mid(plain, 900), 2);
+    expect(detailDeficit(quiet, W, H, SPEC, PX_PER_DEG, null).deficit[500 * W + 900])
+      .toBeCloseTo(mid(gated, 900), 2);
+  });
+
+  it('leaves ground that varies the same way in every direction where it was', () => {
+    expect(mid(gated, Math.round(0.8 * W))).toBe(0);
+    expect(mid(gated, Math.round(0.8 * W))).toBe(mid(plain, Math.round(0.8 * W)));
+    expect(mid(gated, 400)).toBeCloseTo(mid(plain, 400), 2);
+  });
+});
+
 describe('coverageFill on a stretched patch', () => {
   // The point of replacing rather than adding: grain laid over streaks leaves
   // the streaks, and a straight-sided panel of streaks is what a player sees

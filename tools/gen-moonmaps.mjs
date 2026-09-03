@@ -463,7 +463,7 @@ const JOBS = {
     // it is a sixth of the sharp ground's detail before the fill. What the
     // fill puts back is grain, not lineae: this moon's real fine structure is
     // the ridges, and drawing those would be drawing terrain nobody imaged.
-    coverageFill: { blurDeg: 0.25, windowDeg: 1.5, wideDeg: 2 },
+    coverageFill: { fineDeg: 0.12, coarseDeg: 1, windowDeg: 1.5, wideDeg: 2 },
   },
   ganymede: {
     src: 'Ganymede_Voyager_GalileoSSI_Global_ClrMosaic_1435m.tif',
@@ -473,7 +473,7 @@ const JOBS = {
     // colour source the fill runs on: it measures brightness and adds
     // brightness, equally on all three channels, so the mosaic's chroma comes
     // through exactly as the mission left it.
-    coverageFill: { blurDeg: 0.25, windowDeg: 1.5, wideDeg: 2 },
+    coverageFill: { fineDeg: 0.12, coarseDeg: 1, windowDeg: 1.5, wideDeg: 2 },
   },
   callisto: {
     src: 'Callisto_Voyager_GalileoSSI_global_mosaic_1km.tif',
@@ -514,7 +514,7 @@ const JOBS = {
     // pixels, before the reduction, so the rungs above the boot map get it
     // too: this fills 70 per cent of the source and takes the coarse ground's
     // detail from a fifth of the sharp ground's to a half.
-    coverageFill: { blurDeg: 0.25, windowDeg: 1.5, wideDeg: 2 },
+    coverageFill: { fineDeg: 0.12, coarseDeg: 1, windowDeg: 1.5, wideDeg: 2 },
   },
   pluto: {
     src: 'Pluto_NewHorizons_Global_Mosaic_300m_Jul2017_8bit.tif',
@@ -861,7 +861,8 @@ async function sourceRaster(file, entry, nd, job, leftEdgeLonDegEast) {
       const fill = coverageFill(grey, W, H, job.coverageFill, pxPerDeg, valid);
       for (let i = 0; i < n; i++) grey[i] += fill.delta[i];
       console.log(`  coverage fill over ${(100 * fill.touchedFraction).toFixed(0)}% of the source`
-        + ` (reference ground ${(100 * fill.refFraction).toFixed(0)}%, energy ${fill.ref.toFixed(1)}):`
+        + ` (reference ground ${(100 * fill.refFraction).toFixed(0)}%, fine-band ratio ${fill.ref.toFixed(2)},`
+        + ` energy ${fill.energyRef.toFixed(1)}):`
         + ` ${fill.octaves.map((o) => `${o.cell.toFixed(0)}px +-${(o.amp / 2).toFixed(1)}`).join(', ')}`
         + `, peak ${fill.peakDelta.toFixed(1)} counts, mean ${fill.meanDelta.toFixed(3)}`);
     }

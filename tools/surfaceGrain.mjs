@@ -244,57 +244,175 @@ export function bandAmplitudes(band, W, H, cells, groups, stride = 7) {
 }
 
 /**
- * Where the picture stopped carrying detail.
+ * Mean of |band - blur(band, deg)| over a window a degree or so across: how
+ * much variation the picture carries at scales FINER than `deg`.
  *
- * Local high-frequency energy is the mean of |band - blur(band)| over a window
- * a degree or so across, which on smeared ground is near zero and on cratered
- * ground is not. The reference is a high percentile of that energy over the
- * whole body rather than a fixed number, so a map that is soft everywhere is
- * judged against itself and no absolute idea of "sharp" is imported from
- * another moon.
- *
- * Deficit is 1 - E/E_ref clamped to [0, 1], blurred wide so it changes over
- * degrees rather than over pixels: what it scales is a fill, and a fill that
- * switched on inside a pixel would draw exactly the kind of edge this pass
- * exists to remove.
- *
- * `valid` is the no-data mask's complement, or null. Unmeasured pixels are
- * flat, so left in they would read as the deepest deficit on the body; they
- * are excluded from the window mean, from the percentile, and from the result.
+ * `valid` is the no-data mask's complement, or null. The mean is weighted by
+ * coverage rather than taken flat, since a hole inside the window would
+ * otherwise drag the energy down and report the ground beside it as smeared.
  */
-export function detailDeficit(band, W, H, spec, pxPerDeg, valid = null) {
+function windowEnergy(band, W, H, deg, pxPerDeg, winRows, winPx, valid) {
   const n = W * H;
-  const blurPx = spec.blurDeg * pxPerDeg;
-  const winPx = spec.windowDeg * pxPerDeg;
-  const widePx = spec.wideDeg * pxPerDeg;
-
-  let work = blurMono(band, W, H, latScaledRadii(H, blurPx), blurPx);
+  const r = deg * pxPerDeg;
+  const work = blurMono(band, W, H, latScaledRadii(H, r), r);
   for (let i = 0; i < n; i++) work[i] = valid && !valid[i] ? 0 : Math.abs(band[i] - work[i]);
-  const winRows = latScaledRadii(H, winPx);
   const energy = blurMono(work, W, H, winRows, winPx);
   if (valid) {
-    // A weighted mean, not a plain one: a hole inside the window would
-    // otherwise drag the energy down and report the ground beside it as
-    // smeared.
     for (let i = 0; i < n; i++) work[i] = valid[i] ? 1 : 0;
     const cover = blurMono(work, W, H, winRows, winPx);
     for (let i = 0; i < n; i++) energy[i] = cover[i] > 1e-6 ? energy[i] / cover[i] : 0;
   }
+  return energy;
+}
+
+/**
+ * How much the finest band varies in the direction it varies LEAST.
+ *
+ * The gradient structure tensor of the fine band, averaged over the window and
+ * reduced to its smaller eigenvalue. Ground that has been stretched along one
+ * axis still steps sharply across its streaks and does nothing along them, so
+ * an average of |gradient| over all directions reads it as detail; the smaller
+ * eigenvalue is the variation the least-varying direction carries, and a
+ * stretched panel has none.
+ *
+ * The two differences are taken over steps covering the same GROUND either
+ * way — a degree of longitude is cos(lat) as much ground as a degree of
+ * latitude — so an equirect map's own stretch toward the pole is not read as
+ * a smear.
+ */
+function fineDirectional(band, W, H, fineDeg, stepDeg, pxPerDeg, winRows, winPx, valid) {
+  const n = W * H;
+  const r = fineDeg * pxPerDeg;
+  let hp = blurMono(band, W, H, latScaledRadii(H, r), r);
+  for (let i = 0; i < n; i++) hp[i] = band[i] - hp[i];
+  const stepY = Math.max(1, Math.round(stepDeg * pxPerDeg));
+  let jxx = new Float32Array(n);
+  let jyy = new Float32Array(n);
+  let jxy = new Float32Array(n);
+  let cover = new Float32Array(n);
+  for (let y = 0; y < H; y++) {
+    const lat = ((90 - ((y + 0.5) * 180) / H) * Math.PI) / 180;
+    const sx = Math.max(1, Math.round(stepY / Math.max(0.08, Math.cos(lat))));
+    const y0 = Math.max(0, y - stepY);
+    const y1 = Math.min(H - 1, y + stepY);
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      const xa = y * W + ((x + sx) % W);
+      const xb = y * W + ((x - sx + W) % W);
+      const ya = y1 * W + x;
+      const yb = y0 * W + x;
+      // A difference that reaches into a hole is not a measurement of the
+      // ground, so it is left out of the window mean rather than counted as
+      // no variation.
+      if (valid && !(valid[i] && valid[xa] && valid[xb] && valid[ya] && valid[yb])) continue;
+      const gx = hp[xa] - hp[xb];
+      const gy = hp[ya] - hp[yb];
+      jxx[i] = gx * gx;
+      jyy[i] = gy * gy;
+      jxy[i] = gx * gy;
+      cover[i] = 1;
+    }
+  }
+  hp = null;
+  const sxx = blurMono(jxx, W, H, winRows, winPx);
+  jxx = null;
+  const syy = blurMono(jyy, W, H, winRows, winPx);
+  jyy = null;
+  const sxy = blurMono(jxy, W, H, winRows, winPx);
+  jxy = null;
+  const cov = valid ? blurMono(cover, W, H, winRows, winPx) : null;
+  cover = null;
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const k = cov ? (cov[i] > 1e-6 ? 1 / cov[i] : 0) : 1;
+    const xx = sxx[i] * k;
+    const yy = syy[i] * k;
+    const xy = sxy[i] * k;
+    const d = Math.sqrt(Math.max(0, (xx - yy) ** 2 + 4 * xy * xy));
+    out[i] = Math.sqrt(Math.max(0, (xx + yy - d) / 2));
+  }
+  return out;
+}
+
+/**
+ * Where the picture stopped carrying detail.
+ *
+ * The measure is a RATIO: how much of what a piece of ground varies by sits in
+ * its finest band (below about a tenth of a degree) against how much sits in
+ * everything below a degree. Cratered ground carries both and the ratio is
+ * high; ground that has been through a resample from ten times the pixel size
+ * keeps its coarse shape and has nothing left at the fine end, and the ratio
+ * collapses. The reference is a high percentile of the ratio over the whole
+ * body rather than a fixed number, so a map that is soft everywhere is judged
+ * against itself and no absolute idea of "sharp" is imported from another moon.
+ *
+ * A ratio and not the fine energy on its own, which is what this measured
+ * before. Energy scales with how much light the ground reflects, so an
+ * absolute threshold reads a dark cratered plain as half-smeared and a bright
+ * one as sharp: on Callisto's own source, the plain fine energy puts a Galileo
+ * swath at a deficit of 0.21 and the smeared south-polar swath at 0.86, while
+ * the ratio separates the same two at 0.04 and 0.77. What is wanted is ground
+ * that has lost its detail, not ground that is dark.
+ *
+ * The numerator is directional (see fineDirectional) so that a panel stretched
+ * along one axis fails it too. On Callisto's own polar smear that costs
+ * nothing and buys nothing — those streaks radiate, so a window a degree and a
+ * half across holds every direction at once and the tensor reads them as
+ * nearly isotropic (anisotropy 0.26 there against 0.11 on cratered ground) —
+ * but a mosaic that stretches a frame along a map axis is the other half of
+ * the same fault, and an isotropic measure calls it detail.
+ *
+ * Deficit is 1 - r/r_ref clamped to [0, 1], blurred wide so it changes over
+ * degrees rather than over pixels: what it scales is a fill, and a fill that
+ * switched on inside a pixel would draw exactly the kind of edge this pass
+ * exists to remove.
+ *
+ * Unmeasured pixels are flat, so left in they would read as the deepest
+ * deficit on the body; they are excluded from the window means, from the
+ * percentile, and from the result. What to put in a hole is a different
+ * question with a different answer (see fillNoData in gen-moonmaps.mjs).
+ *
+ * `energy` comes back with the deficit: it is the fine-band energy the fill
+ * has to match, and measuring it twice would be measuring it differently.
+ */
+export function detailDeficit(band, W, H, spec, pxPerDeg, valid = null) {
+  const n = W * H;
+  const winPx = spec.windowDeg * pxPerDeg;
+  const widePx = spec.wideDeg * pxPerDeg;
+  const winRows = latScaledRadii(H, winPx);
+
+  let ratio = fineDirectional(
+    band, W, H, spec.fineDeg, spec.stepDeg ?? spec.fineDeg, pxPerDeg, winRows, winPx, valid,
+  );
+  const energy = windowEnergy(band, W, H, spec.fineDeg, pxPerDeg, winRows, winPx, valid);
+  let coarse = windowEnergy(band, W, H, spec.coarseDeg, pxPerDeg, winRows, winPx, valid);
+  // Ground with no variation at all in either band has no ratio to speak of
+  // and gets no opinion: a hundredth of a count is below what an 8-bit map
+  // can hold, so nothing there is being measured.
+  for (let i = 0; i < n; i++) ratio[i] = coarse[i] > 0.01 ? ratio[i] / coarse[i] : 0;
   // A hundred-megapixel mosaic makes each of these arrays half a gigabyte, and
   // the wide blur below wants two more.
-  work = null;
+  coarse = null;
 
   const sample = [];
-  for (let i = 0; i < n; i += spec.stride ?? 7) if (!valid || valid[i]) sample.push(energy[i]);
+  for (let i = 0; i < n; i += spec.stride ?? 7) if (!valid || valid[i]) sample.push(ratio[i]);
   sample.sort((a, b) => a - b);
   const pick = (p) => (sample.length ? sample[Math.min(sample.length - 1, Math.floor(p * sample.length))] : 0);
   const ref = pick(spec.refPercentile ?? 0.6);
 
+  // Clamped symmetrically, blurred, and only then cut at zero. A ratio
+  // measured off a picture wanders either side of the reference even on ground
+  // that is uniformly sharp, and cutting first would keep every wander that
+  // went one way and throw away every wander that went the other — which puts
+  // a small positive deficit on ground that has lost nothing. The wide blur is
+  // what turns the wander into the average it should be.
   for (let i = 0; i < n; i++) {
-    const d = ref > 0 ? 1 - energy[i] / ref : 0;
-    energy[i] = d < 0 ? 0 : d > 1 ? 1 : d;
+    const d = ref > 0 ? 1 - ratio[i] / ref : 0;
+    ratio[i] = d < -1 ? -1 : d > 1 ? 1 : d;
   }
-  const deficit = blurMono(energy, W, H, latScaledRadii(H, widePx), widePx);
+  const deficit = blurMono(ratio, W, H, latScaledRadii(H, widePx), widePx);
+  ratio = null;
+  for (let i = 0; i < n; i++) if (deficit[i] < 0) deficit[i] = 0;
   // Ground that measured at or above the reference comes out of the blur a
   // few parts in a hundred million short of zero rather than at it, and a
   // fill that touches every pixel on the body by a millionth of a count is a
@@ -304,7 +422,7 @@ export function detailDeficit(band, W, H, spec, pxPerDeg, valid = null) {
   const floor = spec.floor ?? 0.001;
   for (let i = 0; i < n; i++) if (deficit[i] < floor) deficit[i] = 0;
   if (valid) for (let i = 0; i < n; i++) if (!valid[i]) deficit[i] = 0;
-  return { deficit, ref, median: pick(0.5) };
+  return { deficit, energy, ref, median: pick(0.5) };
 }
 
 /**
@@ -322,7 +440,7 @@ export function detailDeficit(band, W, H, spec, pxPerDeg, valid = null) {
  */
 export function coverageFill(band, W, H, spec, pxPerDeg, valid = null) {
   const n = W * H;
-  const { deficit, ref, median } = detailDeficit(band, W, H, spec, pxPerDeg, valid);
+  const { deficit, energy, ref, median } = detailDeficit(band, W, H, spec, pxPerDeg, valid);
 
   // Two populations of the same map, measured together. The reference is the
   // ground that still has its detail — a generous cut, so the sample is most
@@ -333,13 +451,13 @@ export function coverageFill(band, W, H, spec, pxPerDeg, valid = null) {
   const isRef = (i) => deficit[i] <= refCut && (!valid || valid[i]);
   const isGap = (i) => deficit[i] >= gapCut && (!valid || valid[i]);
 
-  const blurPx = spec.blurDeg * pxPerDeg;
-  // As fractions of the detector's own blur radius, so the coarsest octave
-  // reaches the top of the band the deficit was measured in and no further:
+  const blurPx = spec.fineDeg * pxPerDeg;
+  // As multiples of the finest band the detector measures, up to the coarse
+  // one: the fill fits inside the band the deficit is a statement about, and
   // grain coarser than that would be shape nothing asked about.
   const cells = [];
-  for (const f of spec.grainCells ?? [0.3, 0.6, 1.2, 2.0]) {
-    const cell = wrappingCell(W, Math.max(2, blurPx * f));
+  for (const f of spec.grainCells ?? [1, 2, 4, 8]) {
+    const cell = wrappingCell(W, Math.max(2, Math.min(spec.coarseDeg * pxPerDeg, blurPx * f)));
     // Two octaves whose blurs round to the same radius are one octave and an
     // empty one, and an empty octave is amplitude the fill silently does not
     // carry.
@@ -367,9 +485,15 @@ export function coverageFill(band, W, H, spec, pxPerDeg, valid = null) {
   // ten times the contrast of everything else, and a median under-reads the
   // energy of ground whose contrast is in its craters. So the LEVEL is solved
   // instead of assumed. A tile of the grain is measured exactly the way the
-  // deficit was — the same blur, the same absolute mean — and the whole ladder
-  // is scaled so that ground at full deficit comes out carrying the reference
-  // energy. That is what "energy-matched" has to mean to be worth stating.
+  // fine band was — the same blur, the same absolute mean — and the whole
+  // ladder is scaled so that ground at full deficit comes out carrying the
+  // reference ground's fine-band energy. That is what "energy-matched" has to
+  // mean to be worth stating. The deficit's own reference is a RATIO and says
+  // only where the fill goes; how much of it there is comes from the energy.
+  const refEnergy = [];
+  for (let i = 0; i < n; i += spec.stride ?? 7) if (isRef(i)) refEnergy.push(energy[i]);
+  refEnergy.sort((a, b) => a - b);
+  const energyRef = refEnergy.length ? refEnergy[refEnergy.length >> 1] : 0;
   const noise = valueNoise(W);
   const probe = (octs) => {
     const tw = Math.min(W, 512);
@@ -389,7 +513,7 @@ export function coverageFill(band, W, H, spec, pxPerDeg, valid = null) {
     return count ? sum / count : 0;
   };
   const carried = probe(octaves);
-  const level = carried > 1e-6 ? Math.min(spec.maxLevel ?? 3, ref / carried) : 1;
+  const level = carried > 1e-6 ? Math.min(spec.maxLevel ?? 3, energyRef / carried) : 1;
   for (const o of octaves) o.amp *= level;
   const grainAt = noise.matched(octaves, spec.seed ?? 11);
 
@@ -433,6 +557,7 @@ export function coverageFill(band, W, H, spec, pxPerDeg, valid = null) {
     gapOctaves: gapOct,
     quadrature: enough,
     ref,
+    energyRef,
     median,
     level,
     refTone,

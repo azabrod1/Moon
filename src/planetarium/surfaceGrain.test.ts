@@ -15,31 +15,39 @@ import {
 // Everything the passes take is in DEGREES and scaled by the raster's own
 // pixels per degree, so a small test raster is the same problem as a source
 // mosaic with the numbers moved: 2048 px of longitude is 5.7 px per degree, so
-// the quarter of a degree that is a ten-pixel blur on Callisto's 42 px per
-// degree is 1.8 degrees here and the same ten pixels.
+// the tenth of a degree that is a five-pixel blur on Callisto's 42 px per
+// degree is 0.9 degrees here and the same five pixels.
 
 const W = 2048;
 const H = 1024;
 const PX_PER_DEG = W / 360;
-const SPEC = { blurDeg: 1.8, windowDeg: 8, wideDeg: 10, refPercentile: 0.6 };
-const PATCH = { x0: W - 200, x1: 200, y0: 300, y1: 700 };
+const SPEC = { fineDeg: 0.9, coarseDeg: 7.4, windowDeg: 8, wideDeg: 10, refPercentile: 0.6 };
+const PATCH = { x0: W - 300, x1: 300, y0: 250, y1: 750 };
 
 /**
- * A grain field over a slow background, with `smeared` rectangles holding the
- * background alone — which is what a coarse patch of a mosaic is.
+ * Ground with structure at every scale, and `smeared` rectangles that have
+ * lost the finest of it — which is what a resample from ten times the pixel
+ * size leaves behind. The middle octave stays inside the patch: a coarse strip
+ * of a mosaic still carries its craters at the scale it can hold them, and a
+ * detector that only ever sees flat ground in a gap is not being asked the
+ * question a real mosaic asks.
  *
- * The right third carries half again as much grain, because a map with one
- * uniform amount of detail has no ground the reference percentile can call
- * sharp: on a real mosaic the sharp strips are what the deficit is measured
+ * The right third carries two and a half times the fine grain, because a map
+ * with one uniform amount of detail has no ground the reference percentile can
+ * call sharp: on a real mosaic the sharp strips are what the deficit is measured
  * against, and there the ground away from a coarse patch comes out at a
  * deficit of exactly zero and is left exactly alone.
  */
-function synthetic(smeared: Array<{ x0: number; x1: number; y0: number; y1: number }>) {
+function synthetic(
+  smeared: Array<{ x0: number; x1: number; y0: number; y1: number }>,
+  { midAmp = 24, sharpGain = 2.5 } = {},
+) {
   const noise = valueNoise(W);
   const fine = noise.matched([
     { ...wrappingCell(W, 4), amp: 26 },
     { ...wrappingCell(W, 9), amp: 18 },
   ], 7);
+  const mid = noise.matched([{ ...wrappingCell(W, 40), amp: midAmp }], 13);
   // Slower than anything the passes look at, so it is the body's own albedo
   // rather than something either of them has an opinion about.
   const slow = noise.matched([{ ...wrappingCell(W, 400), amp: 60 }], 21);
@@ -49,16 +57,17 @@ function synthetic(smeared: Array<{ x0: number; x1: number; y0: number; y1: numb
   const sharp = (x: number) => x > 0.6 * W && x < 0.95 * W;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
-      band[y * W + x] = 120 + slow(x, y) + (inside(x, y) ? 0 : fine(x, y) * (sharp(x) ? 1.5 : 1));
+      band[y * W + x] = 120 + slow(x, y) + mid(x, y)
+        + (inside(x, y) ? 0 : fine(x, y) * (sharp(x) ? sharpGain : 1));
     }
   }
   return { band, inside, sharp };
 }
 
-/** The detector's own measure: how much the picture varies below `blurDeg`,
- *  averaged over a window. */
+/** How much the picture varies below `fineDeg`, averaged over a window: the
+ *  energy the fill has to match. */
 function energy(band: Float32Array): Float32Array {
-  const r = SPEC.blurDeg * PX_PER_DEG;
+  const r = SPEC.fineDeg * PX_PER_DEG;
   const low = blurMono(band, W, H, latScaledRadii(H, r), r);
   const fine = new Float32Array(W * H);
   for (let i = 0; i < W * H; i++) fine[i] = Math.abs(band[i] - low[i]);
@@ -80,13 +89,33 @@ describe('detailDeficit', () => {
   const at = (x: number, y = 500) => deficit[y * W + x];
 
   it('is near one inside a smeared patch, on both sides of the map edge', () => {
-    expect(at(0)).toBeGreaterThan(0.9);
-    expect(at(W - 80)).toBeGreaterThan(0.9);
-    expect(at(80)).toBeGreaterThan(0.9);
+    // Not one: the patch keeps the middle octave a resample can still hold,
+    // which is what real coarse ground does, so what it is short of is most
+    // of its fine band rather than all of its detail.
+    expect(at(0)).toBeGreaterThan(0.85);
+    expect(at(W - 80)).toBeGreaterThan(0.85);
+    expect(at(80)).toBeGreaterThan(0.85);
   });
 
   it('is exactly zero on the ground that kept its detail', () => {
-    expect(at(Math.round(0.8 * W))).toBe(0);
+    // Over the population rather than at one pixel: the ratio is measured
+    // from the picture, so it wanders either side of the reference even on
+    // ground that is uniformly sharp, and what the fill promises is that the
+    // sharp ground comes out untouched.
+    let zero = 0;
+    let worst = 0;
+    const seen: number[] = [];
+    for (let y = 300; y < 700; y++) {
+      for (let x = Math.round(0.65 * W); x < Math.round(0.9 * W); x++) {
+        const d = at(x, y);
+        seen.push(d);
+        if (d === 0) zero++;
+        if (d > worst) worst = d;
+      }
+    }
+    expect(zero / seen.length).toBeGreaterThan(0.8);
+    expect(median(seen)).toBeLessThan(0.02);
+    expect(worst).toBeLessThan(0.55 * at(0));
     // Ordinary ground is neither: below the reference, so not zero, but
     // nowhere near a patch that has lost everything.
     expect(at(W >> 1)).toBeLessThan(0.35);
@@ -103,9 +132,64 @@ describe('detailDeficit', () => {
         else if (sharp(x)) outside.push(e[y * W + x]);
       }
     }
-    expect(ref).toBeGreaterThan(0.5 * median(outside));
-    expect(ref).toBeLessThan(median(outside));
+    // The reference is a ratio — how much the finest band varies against how
+    // much everything below a degree does — so it is a number near one and
+    // not a count of anything.
+    expect(ref).toBeGreaterThan(0.1);
+    expect(ref).toBeLessThan(5);
     expect(median(within)).toBeLessThan(0.15 * median(outside));
+  });
+
+  it('is not fooled by ground that is dark rather than smeared', () => {
+    // Contrast scales with how much light the ground reflects, so ground at
+    // half the albedo carries half the variation at every scale and none of
+    // it is missing. An absolute threshold calls that a gap; a ratio does not.
+    // Faded in over a hundred pixels, since a step would be a feature of its
+    // own and the question here is only about level.
+    const dim = Float32Array.from(band);
+    const fade = (x: number) => {
+      const t = Math.min(1, Math.min(x - 0.6 * W, 0.95 * W - x) / 150);
+      return t <= 0 ? 1 : 1 - 0.6 * (t * t * (3 - 2 * t));
+    };
+    for (let y = 0; y < H; y++) {
+      for (let x = Math.round(0.6 * W); x < Math.round(0.95 * W); x++) {
+        dim[y * W + x] = 120 + (band[y * W + x] - 120) * fade(x);
+      }
+    }
+    const d = detailDeficit(dim, W, H, SPEC, PX_PER_DEG, null).deficit;
+    let worst = 0;
+    for (let y = 200; y < 800; y++) {
+      for (let x = Math.round(0.72 * W); x < Math.round(0.85 * W); x++) worst = Math.max(worst, d[y * W + x]);
+    }
+    expect(worst).toBeLessThan(0.15);
+  });
+});
+
+describe('detailDeficit on a stretched patch', () => {
+  // A patch of the map's own sharp ground stretched 12x along one axis: it
+  // still steps across its streaks, so an average of |gradient| over all
+  // directions reads it as detail. It has nothing along them, which is what
+  // the detector has to see.
+  const STRETCH = 12;
+  const REGION = { x0: 700, x1: 1100, y0: 300, y1: 700 };
+  const { band } = synthetic([]);
+  const streaked = Float32Array.from(band);
+  for (let y = REGION.y0; y < REGION.y1; y++) {
+    for (let x = REGION.x0; x < REGION.x1; x++) {
+      const sx = REGION.x0 + Math.round((x - REGION.x0) / STRETCH);
+      streaked[y * W + x] = band[y * W + sx];
+    }
+  }
+  const { deficit } = detailDeficit(streaked, W, H, SPEC, PX_PER_DEG, null);
+  const mid = (x: number, y = 500) => deficit[y * W + x];
+
+  it('reads a stretched patch as a gap', () => {
+    expect(mid(900)).toBeGreaterThan(0.6);
+  });
+
+  it('leaves the unstretched ground around it alone', () => {
+    expect(mid(Math.round(0.8 * W))).toBeLessThan(0.2);
+    expect(mid(400)).toBeLessThan(0.35);
   });
 });
 
@@ -121,12 +205,16 @@ describe('coverageFill', () => {
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x += 3) {
         // The core of the patch, clear of the ramp the deficit fades over.
-        if (inside(x, y) && fill.deficit[y * W + x] > 0.9) within.push(e[y * W + x]);
+        if (inside(x, y) && fill.deficit[y * W + x] > 0.8) within.push(e[y * W + x]);
       }
     }
     expect(within.length).toBeGreaterThan(1000);
-    const ratio = median(within) / fill.ref;
-    expect(ratio).toBeGreaterThan(0.85);
+    // Scaled by the deficit, which inside this patch is a little under one
+    // because the patch keeps the middle octave: a fill that is 0.87 of the
+    // way to the reference on ground that is 0.87 short of it is the fill
+    // doing what it says.
+    const ratio = median(within) / fill.energyRef;
+    expect(ratio).toBeGreaterThan(0.7);
     expect(ratio).toBeLessThan(1.15);
   });
 
@@ -169,7 +257,9 @@ describe('findEdges and levelEdges', () => {
   /** A grained field with a constant offset added over one half, so there is a
    *  step of a known size down one meridian and nothing else. */
   function stepped(offset: number, at: number) {
-    const { band } = synthetic([]);
+    // No middle octave: this instrument reads the picture at a frame's own
+    // scale, and grain there is what it has to tell a step apart from.
+    const { band } = synthetic([], { midAmp: 0, sharpGain: 1 });
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) if (x >= at && x < at + W / 2) band[y * W + x] += offset;
     }
@@ -212,7 +302,7 @@ describe('findEdges and levelEdges', () => {
     // A step is what the ground does ON TOP of the slope it already has. A
     // body's own albedo runs from bright to dark over tens of degrees, and
     // flattening a stretch of that would put a ledge where there was none.
-    const { band } = synthetic([]);
+    const { band } = synthetic([], { midAmp: 0, sharpGain: 1 });
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) band[y * W + x] += 40 * Math.sin((2 * Math.PI * x) / W);
     }

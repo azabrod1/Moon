@@ -40,13 +40,17 @@ export interface Edge {
 }
 
 export interface DeficitSpec {
-  /** The scale detail is counted below. */
-  blurDeg: number;
+  /** The finest band: the scale a resample takes detail from below. */
+  fineDeg: number;
+  /** The band the fine one is judged against — everything below this. */
+  coarseDeg: number;
+  /** The step the directional measure differences over. Defaults to fineDeg. */
+  stepDeg?: number;
   /** The window the count is averaged over. */
   windowDeg: number;
   /** How far the answer is smoothed, so it changes over degrees. */
   wideDeg: number;
-  /** Which percentile of the body's own energy counts as fully detailed. */
+  /** Which percentile of the body's own ratio counts as fully detailed. */
   refPercentile?: number;
   /** Deficits below this are zero, so detailed ground is left untouched. */
   floor?: number;
@@ -55,7 +59,7 @@ export interface DeficitSpec {
 }
 
 export interface FillSpec extends DeficitSpec {
-  /** Octave cells, as fractions of the detector's own blur radius. */
+  /** Octave cells, as multiples of the finest band, capped at the coarse one. */
   grainCells?: number[];
   /** Deficit at or below which ground is a reference for the amplitude. */
   referenceBelow?: number;
@@ -100,9 +104,11 @@ export interface FillResult {
   gapOctaves: Octave[];
   /** Whether the gap population was big enough to subtract in quadrature. */
   quadrature: boolean;
-  /** The energy a fully detailed piece of this map carries. */
+  /** The fine-band ratio a fully detailed piece of this map carries. */
   ref: number;
-  /** The median energy over the map. */
+  /** The fine-band energy the reference ground carries, in counts. */
+  energyRef: number;
+  /** The median ratio over the map. */
   median: number;
   /** What the measured amplitudes had to be scaled by to carry `ref`. */
   level: number;
@@ -147,7 +153,7 @@ export function bandAmplitudes(
 export function detailDeficit(
   band: Float32Array, W: number, H: number, spec: DeficitSpec, pxPerDeg: number,
   valid?: Uint8Array | null,
-): { deficit: Float32Array; ref: number; median: number };
+): { deficit: Float32Array; energy: Float32Array; ref: number; median: number };
 
 /** Give the coarse parts of a mosaic the grain the sharp parts have. */
 export function coverageFill(

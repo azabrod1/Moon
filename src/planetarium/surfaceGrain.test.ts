@@ -366,7 +366,7 @@ describe('findEdges and levelEdges', () => {
   // toward its poles it is finer on the ground than a real map's would be, and
   // a scan there would be reading the test's own geometry.
   const spec = {
-    lookDeg: 3, alongDeg: 6, minStep: 8, minSpanDeg: 20, rampDeg: 20, smoothDeg: 2, rounds: 2, skipLatDeg: 45,
+    lookDeg: 3, alongDeg: 6, minStep: 8, minSpanDeg: 20, smoothDeg: 2, skipLatDeg: 45,
   };
 
   it('finds a straight step where it is and sizes it', () => {
@@ -386,12 +386,32 @@ describe('findEdges and levelEdges', () => {
     levelEdges(band, W, H, spec, PX_PER_DEG, null);
     const after = findEdges(band, W, H, spec, PX_PER_DEG, null, before).edges;
     for (let k = 0; k < before.length; k++) {
-      expect(Math.abs(after[k].step)).toBeLessThan(0.25 * Math.abs(before[k].step));
+      expect(Math.abs(after[k].step)).toBeLessThan(0.3 * Math.abs(before[k].step));
+      // And under the threshold that counts as a step at all, which is the
+      // claim that matters: what is left is not a boundary any more.
+      expect(Math.abs(after[k].step)).toBeLessThan(spec.minStep);
     }
     const now = energy(band);
     const kept: number[] = [];
     for (let i = 0; i < W * H; i += 7) if (detail[i] > 0) kept.push(now[i] / detail[i]);
     expect(median(kept)).toBeGreaterThan(0.97);
+  });
+
+  it('leaves nothing straight behind, and the mean where it was', () => {
+    // The correction this replaced spread half a step into each side over a
+    // fixed ramp: it closed the boundary and left a band a few degrees wide
+    // with ENDS, and where it stopped it drew a soft rectangle of its own. A
+    // harmonic field cannot do that — it has no interior maximum to end on —
+    // so a fresh scan of the corrected map finds no straight line anywhere.
+    const band = stepped(18, 300);
+    let was = 0;
+    for (let i = 0; i < W * H; i++) was += band[i];
+    expect(findEdges(band, W, H, spec, PX_PER_DEG, null).edges.length).toBeGreaterThan(0);
+    levelEdges(band, W, H, spec, PX_PER_DEG, null);
+    expect(findEdges(band, W, H, spec, PX_PER_DEG, null).edges).toEqual([]);
+    let now = 0;
+    for (let i = 0; i < W * H; i++) now += band[i];
+    expect(Math.abs(now - was) / (W * H)).toBeLessThan(0.01);
   });
 
   it('leaves a slow gradient alone', () => {

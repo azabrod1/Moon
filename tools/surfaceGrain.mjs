@@ -723,7 +723,21 @@ export function findEdges(band, W, H, spec, pxPerDeg, valid = null, only = null)
   // shape of the terrain rather than a step in it, and the ground it reads is
   // a few pixels of the drawn globe.
   const skip = Math.round((H * (90 - (spec.skipLatDeg ?? 80))) / 180);
-  const L = blurMono(band, W, H, latScaledRadii(H, smoothDeg * pxPerDeg), smoothDeg * pxPerDeg);
+  // The low pass reads only measured pixels, and a sample is only used where
+  // its whole neighbourhood was measured. A hole is black: a plain blur beside
+  // one falls away toward black over the blur's own reach, which this
+  // instrument reads as a brightness step tens of counts deep running straight
+  // along the edge of the data — the largest "step" on Callisto was one of
+  // those, and correcting it dragged a whole polar region with it.
+  const smoothRadii = latScaledRadii(H, smoothDeg * pxPerDeg);
+  const L = coverageBlur(band, W, H, smoothRadii, smoothDeg * pxPerDeg, valid);
+  let covered = null;
+  if (valid) {
+    const ones = new Float32Array(W * H);
+    for (let i = 0; i < W * H; i++) ones[i] = valid[i] ? 1 : 0;
+    covered = blurMono(ones, W, H, smoothRadii, smoothDeg * pxPerDeg);
+  }
+  const clean = (i) => !covered || covered[i] > 0.98;
 
   // The jump across a line, less the slope the two sides carry into it: 1.5 of
   // the near difference against 0.5 of the far one is that second difference
@@ -734,6 +748,7 @@ export function findEdges(band, W, H, spec, pxPerDeg, valid = null, only = null)
     const far0 = y * W + wrapX(at - 3 * d);
     const far1 = y * W + wrapX(at + 3 * d - 1);
     if (!ok(near0) || !ok(near1) || !ok(far0) || !ok(far1)) return 0;
+    if (!clean(near0) || !clean(near1) || !clean(far0) || !clean(far1)) return 0;
     return 1.5 * (L[near1] - L[near0]) - 0.5 * (L[far1] - L[far0]);
   };
   const stepParallel = (at, x, d) => {
@@ -743,6 +758,7 @@ export function findEdges(band, W, H, spec, pxPerDeg, valid = null, only = null)
     const far0 = (at - 3 * d) * W + x;
     const far1 = (at + 3 * d - 1) * W + x;
     if (!ok(near0) || !ok(near1) || !ok(far0) || !ok(far1)) return 0;
+    if (!clean(near0) || !clean(near1) || !clean(far0) || !clean(far1)) return 0;
     return 1.5 * (L[near1] - L[near0]) - 0.5 * (L[far1] - L[far0]);
   };
   const lookMeridian = (y) => Math.max(1, Math.round((lookDeg * pxPerDeg) / cosAt(y)));
@@ -827,65 +843,226 @@ export function findEdges(band, W, H, spec, pxPerDeg, valid = null, only = null)
   return { edges: taken, lowPass: L, profileOf };
 }
 
+/**
+ * The jump the correction has to carry along one edge, sample by sample.
+ *
+ * Where the correction acts is decided by the measurement, not by the ends of
+ * the run that found the edge: a boundary fades out where its step does, and a
+ * correction cut off at a row number would draw a step at right angles to the
+ * one it just closed. Below a third of the threshold nothing is corrected at
+ * all, which is what keeps this off the ground either side of the boundary's
+ * real extent. The size is capped at three times what this edge typically is,
+ * so one crater sitting against the boundary cannot become a ridge on the far
+ * side.
+ */
+function edgeJump(edge, profileOf, W, H, spec) {
+  const len = edge.axis === 'meridian' ? H : W;
+  const soft = profileOf(edge.axis, edge.at);
+  const cap = 3 * Math.abs(edge.step);
+  const lo = 0.3 * (spec.minStep ?? 3);
+  const hi = spec.minStep ?? 3;
+  const jump = new Float32Array(len);
+  for (let k = 0; k < len; k++) {
+    const v = soft[k];
+    const t = Math.min(1, Math.max(0, (Math.abs(v) - lo) / (hi - lo)));
+    jump[k] = Math.max(-cap, Math.min(cap, v)) * (t * t * (3 - 2 * t));
+  }
+  return jump;
+}
+
+/**
+ * The smoothest field whose jump across each edge cancels that edge's step.
+ *
+ * Spreading half a step into each side over a fixed ramp — which is what this
+ * used to do — closes the step and leaves something else: the correction is a
+ * band a few degrees wide with ENDS, and where it stops it draws a soft
+ * rectangle of its own on ground that had nothing wrong with it. A player at
+ * close range reads that as another panel.
+ *
+ * A field with no ends is a harmonic one. Solve for a correction that steps
+ * across each boundary by exactly what was measured there and satisfies
+ * Laplace everywhere else, and there is nowhere for it to stop: away from the
+ * boundaries it can have no interior maximum or minimum, so it can only fall
+ * away smoothly across the whole body. The solve is at a fraction of the
+ * source's resolution because the answer is smooth by construction — nothing
+ * about a field with no curvature needs a hundred megapixels to hold it — and
+ * it is done coarsest-first, each level started from the one below it, since
+ * a plain relaxation on the fine grid would take as many sweeps as the grid is
+ * wide to carry news from one side of the map to the other.
+ *
+ * The gauge is fixed by taking the mean out: a harmonic field is only defined
+ * up to a constant, and the constant that keeps the body's albedo where the
+ * batch graded it is the one that moves the mean by nothing.
+ */
+function harmonicCorrection(edges, profileOf, W, H, spec, pxPerDeg) {
+  // A fifth of the distance the step is measured over. The field is smooth
+  // everywhere except at the boundaries, where it is a step, and a grid whose
+  // cells are as wide as the measurement's own reach cannot hold a step: it
+  // holds a ramp that reaches into the measurement and reads as a step that
+  // was only half closed.
+  const finest = Math.max(1, spec.solveScale
+    ?? Math.round(0.2 * (spec.lookDeg ?? 0.5) * pxPerDeg));
+  const lines = edges.map((e) => ({ axis: e.axis, at: e.at, jump: edgeJump(e, profileOf, W, H, spec) }));
+
+  // Coarsest grid first, doubling up to the finest asked for.
+  const grids = [];
+  for (let cw = Math.max(8, Math.round(W / finest)), ch = Math.max(4, Math.round(H / finest)); ;) {
+    grids.unshift({ cw, ch });
+    if (cw <= 32 || ch <= 16) break;
+    cw = Math.max(8, cw >> 1);
+    ch = Math.max(4, ch >> 1);
+  }
+
+  let c = null;
+  let iterations = 0;
+  let residual = 0;
+  for (let g = 0; g < grids.length; g++) {
+    const { cw, ch } = grids[g];
+    const sx = W / cw;
+    const sy = H / ch;
+    // The desired difference across each cell boundary: zero everywhere except
+    // where an edge crosses it, and there the negative of the step, so the two
+    // sides come out agreeing.
+    const vx = new Float32Array(cw * ch);
+    const vy = new Float32Array(cw * ch);
+    for (const line of lines) {
+      if (line.axis === 'meridian') {
+        const cx = ((Math.round(line.at / sx) % cw) + cw) % cw;
+        for (let cy = 0; cy < ch; cy++) {
+          let sum = 0;
+          let count = 0;
+          for (let k = Math.floor(cy * sy); k < Math.min(H, Math.floor((cy + 1) * sy)); k++) { sum += line.jump[k]; count++; }
+          if (count) vx[cy * cw + cx] -= sum / count;
+        }
+      } else {
+        const cy = Math.round(line.at / sy);
+        if (cy < 1 || cy >= ch) continue;
+        for (let cx = 0; cx < cw; cx++) {
+          let sum = 0;
+          let count = 0;
+          for (let k = Math.floor(cx * sx); k < Math.min(W, Math.floor((cx + 1) * sx)); k++) { sum += line.jump[k]; count++; }
+          if (count) vy[cy * cw + cx] -= sum / count;
+        }
+      }
+    }
+
+    // Start from the level below, bilinearly, or from nothing at the coarsest.
+    const next = new Float32Array(cw * ch);
+    if (c) {
+      const { cw: pw, ch: ph } = grids[g - 1];
+      for (let cy = 0; cy < ch; cy++) {
+        const fy = Math.min(ph - 1, Math.max(0, ((cy + 0.5) * ph) / ch - 0.5));
+        const y0 = Math.floor(fy);
+        const y1 = Math.min(ph - 1, y0 + 1);
+        const ty = fy - y0;
+        for (let cx = 0; cx < cw; cx++) {
+          const fx = ((cx + 0.5) * pw) / cw - 0.5;
+          const x0 = Math.floor(fx);
+          const tx = fx - x0;
+          const xa = ((x0 % pw) + pw) % pw;
+          const xb = (xa + 1) % pw;
+          const top = c[y0 * pw + xa] * (1 - tx) + c[y0 * pw + xb] * tx;
+          const bot = c[y1 * pw + xa] * (1 - tx) + c[y1 * pw + xb] * tx;
+          next[cy * cw + cx] = top * (1 - ty) + bot * ty;
+        }
+      }
+    }
+    c = next;
+
+    // Gauss-Seidel with over-relaxation. The coarsest grid is solved out; every
+    // level above it only has to smooth what the interpolation got wrong, which
+    // a handful of sweeps does.
+    // Relaxed to a tolerance rather than a sweep count: what a level needs is
+    // set by how far the interpolation from below missed, and stopping short of
+    // that is a correction that is not the field it says it is — an
+    // unconverged solve builds a much bigger one than the answer, and a bigger
+    // one moves ground that had nothing wrong with it.
+    const omega = spec.omega ?? 1.5;
+    const sweeps = g === 0 ? (spec.solveSweeps ?? 4000) : (spec.refineSweeps ?? 600);
+    for (let s = 0; s < sweeps; s++) {
+      let worst = 0;
+      for (let cy = 0; cy < ch; cy++) {
+        const row = cy * cw;
+        for (let cx = 0; cx < cw; cx++) {
+          const i = row + cx;
+          const left = row + ((cx - 1 + cw) % cw);
+          const right = row + ((cx + 1) % cw);
+          let sum = c[left] + vx[i] + c[right] - vx[row + ((cx + 1) % cw)];
+          let deg = 2;
+          if (cy > 0) { sum += c[i - cw] + vy[i]; deg++; }
+          if (cy < ch - 1) { sum += c[i + cw] - vy[i + cw]; deg++; }
+          const want = sum / deg;
+          const d = want - c[i];
+          if (Math.abs(d) > worst) worst = Math.abs(d);
+          c[i] += omega * d;
+        }
+      }
+      iterations++;
+      residual = worst;
+      if (worst < (spec.solveTolerance ?? 0.01)) break;
+    }
+    // The gauge, at every level, so the interpolation into the next one does
+    // not carry a drift with it.
+    let mean = 0;
+    for (let i = 0; i < c.length; i++) mean += c[i];
+    mean /= c.length;
+    for (let i = 0; i < c.length; i++) c[i] -= mean;
+  }
+
+  return { field: c, grid: grids[grids.length - 1], iterations, residual };
+}
+
+/**
+ * Close a map's straight brightness steps, in place.
+ *
+ * Reports the correction it applied: the grid it was solved on, how many
+ * relaxation sweeps that took, what the solve had left over, and how far from
+ * the mean the correction reaches.
+ */
 export function levelEdges(band, W, H, spec, pxPerDeg, valid = null) {
-  const rampDeg = spec.rampDeg ?? 4;
-  const rounds = spec.rounds ?? 2;
-  const wrapX = (x) => ((x % W) + W) % W;
-  const cosAt = (y) => Math.max(0.08, Math.cos(((90 - ((y + 0.5) * 180) / H) * Math.PI) / 180));
   const found = [];
+  // More than one pass, because the instrument that measures a step under-reads
+  // it: the low pass it measures on is a good fraction of the distance it looks
+  // either side, so a boundary is not fully resolved at the near samples and a
+  // step comes back a fifth short. Correcting what was measured and measuring
+  // again converges on the real thing, and the loop stops on its own once what
+  // is left is below the threshold that counts as a step at all.
+  const rounds = spec.rounds ?? 3;
+  let iterations = 0;
+  let residual = 0;
+  let peak = 0;
+  let grid = null;
   for (let round = 0; round < rounds; round++) {
     const { edges, profileOf } = findEdges(band, W, H, spec, pxPerDeg, valid);
     if (!edges.length) break;
-    for (const e of edges) {
-      const len = e.axis === 'meridian' ? H : W;
-      const soft = profileOf(e.axis, e.at);
-      // Bounded by what this edge typically is, so one crater against the
-      // boundary cannot become a ridge on the far side.
-      const cap = 3 * Math.abs(e.step);
-      // Where the correction acts is decided by the measurement, not by the
-      // ends of the run that found the edge: a boundary fades out where its
-      // step does, and a correction cut off at a row number would draw a step
-      // at right angles to the one it just closed. Below a third of the
-      // threshold nothing is corrected at all, which is what keeps this off
-      // the ground either side of the boundary's real extent.
-      const lo = 0.3 * (spec.minStep ?? 3);
-      const hi = spec.minStep ?? 3;
-      const weightAt = (k) => {
-        const v = Math.abs(soft[e.axis === 'parallel' ? wrapX(k) : k]);
-        const t = Math.min(1, Math.max(0, (v - lo) / (hi - lo)));
-        return t * t * (3 - 2 * t);
-      };
-      for (let k = 0; k < len; k++) {
-        const w0 = weightAt(k);
-        if (w0 <= 0) continue;
-        const half = Math.max(-cap, Math.min(cap, soft[e.axis === 'parallel' ? wrapX(k) : k])) * w0;
-        if (!half) continue;
-        const ramp = Math.max(2, Math.round(
-          e.axis === 'meridian' ? (rampDeg * pxPerDeg) / cosAt(k) : rampDeg * pxPerDeg));
-        for (let d = 0; d <= ramp; d++) {
-          const t = 1 - d / ramp;
-          const w = 0.5 * t * t * (3 - 2 * t);
-          if (w <= 0) continue;
-          let il;
-          let ir;
-          if (e.axis === 'meridian') {
-            il = k * W + wrapX(e.at - 1 - d);
-            ir = k * W + wrapX(e.at + d);
-          } else {
-            const yl = e.at - 1 - d;
-            const yr = e.at + d;
-            if (yl < 0 || yr >= H) continue;
-            il = yl * W + wrapX(k);
-            ir = yr * W + wrapX(k);
-          }
-          band[il] = Math.min(255, Math.max(0, band[il] + half * w));
-          band[ir] = Math.min(255, Math.max(0, band[ir] - half * w));
-        }
+    const solved = harmonicCorrection(edges, profileOf, W, H, spec, pxPerDeg);
+    iterations += solved.iterations;
+    residual = solved.residual;
+    grid = solved.grid;
+    const { cw, ch } = solved.grid;
+    const field = solved.field;
+    for (let y = 0; y < H; y++) {
+      const fy = Math.min(ch - 1, Math.max(0, ((y + 0.5) * ch) / H - 0.5));
+      const y0 = Math.floor(fy);
+      const y1 = Math.min(ch - 1, y0 + 1);
+      const ty = fy - y0;
+      for (let x = 0; x < W; x++) {
+        const fx = ((x + 0.5) * cw) / W - 0.5;
+        const x0 = Math.floor(fx);
+        const tx = fx - x0;
+        const xa = ((x0 % cw) + cw) % cw;
+        const xb = (xa + 1) % cw;
+        const top = field[y0 * cw + xa] * (1 - tx) + field[y0 * cw + xb] * tx;
+        const bot = field[y1 * cw + xa] * (1 - tx) + field[y1 * cw + xb] * tx;
+        const v = top * (1 - ty) + bot * ty;
+        if (Math.abs(v) > peak) peak = Math.abs(v);
+        const i = y * W + x;
+        band[i] = Math.min(255, Math.max(0, band[i] + v));
       }
-      found.push({ ...e, round });
     }
+    found.push(...edges.map((e) => ({ ...e, round })));
   }
-  return { edges: found };
+  return { edges: found, iterations, residual, peak, grid };
 }
 
 /** Running-mean smoothing of one profile, `circular` for a profile that runs

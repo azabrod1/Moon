@@ -87,8 +87,12 @@ export interface EdgeSpec {
   minStep?: number;
   /** Degrees of ground a step must run along to count. */
   minSpanDeg?: number;
-  /** How far a correction is spread either side. */
-  rampDeg?: number;
+  /** Source pixels per cell of the grid the correction is solved on. */
+  solveScale?: number;
+  /** Sweeps on the coarsest grid, and on each finer one. */
+  solveSweeps?: number;
+  refineSweeps?: number;
+  solveTolerance?: number;
   /** How close two lines may be and still both be corrected. */
   apartDeg?: number;
   /** Latitude beyond which nothing is scanned. */
@@ -174,8 +178,16 @@ export function findEdges(
   valid?: Uint8Array | null, only?: Edge[] | null,
 ): { edges: Edge[]; lowPass: Float32Array; profileOf: (axis: Edge['axis'], at: number) => Float32Array };
 
-/** Close those steps, in place. */
+/** Close those steps, in place, with a harmonic correction field. */
 export function levelEdges(
   band: Float32Array, W: number, H: number, spec: EdgeSpec, pxPerDeg: number,
   valid?: Uint8Array | null,
-): { edges: Edge[] };
+): {
+  edges: Edge[];
+  /** Relaxation sweeps across every grid, and what the last one had left. */
+  iterations: number;
+  residual: number;
+  /** How far from the mean the applied correction reaches, in counts. */
+  peak: number;
+  grid: { cw: number; ch: number } | null;
+};

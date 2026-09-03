@@ -616,6 +616,87 @@ export function surfaceChartWeights(dir: readonly [number, number, number]): [nu
   return (norm > 0 ? raw.map((w) => w / norm) : [0, 0, 0]) as [number, number, number];
 }
 
+/**
+ * The field's tiling lattice, as the shader lays it: the plane of one rung's
+ * uv is skewed into a triangular lattice with one tile between vertices, and
+ * every vertex hashes to its own copy of the field. Column-major, as GLSL reads
+ * a mat2: (1, 0) then (−1/√3, 2/√3).
+ */
+export const SYNTH_TRI = [1, 0, -0.57735027, 1.15470054] as const;
+
+/**
+ * How much of a barycentric weight is cut before it is sharpened. A vertex's
+ * copy of the field leaves the blend at exactly zero, on a line, rather than by
+ * falling under a threshold — so the shader may skip that copy's read where its
+ * weight is zero, and the skip draws nothing the blend was not already drawing
+ * nothing of. At a tenth about half of a cell reads all three copies, a corner
+ * around each vertex reads one, and the rest reads two.
+ */
+export const SYNTH_HEX_CUT = 0.1;
+
+/**
+ * The three lattice vertices a point of one rung's uv plane reads the field
+ * through, and the weight of each: the CPU twin of `synthTile` in the GLSL
+ * below, so the two properties the blend rests on can be walked rather than
+ * argued — every point has a weight, and nothing jumps at a triangle's edge.
+ *
+ * The weights are cut, cubed and normalised in LENGTH: the three copies are
+ * independent readings of one random field, so it is their variance that has
+ * to add to one.
+ */
+export function surfaceHexWeights(u: number, v: number): {
+  vertices: [[number, number], [number, number], [number, number]];
+  weights: [number, number, number];
+} {
+  const px = SYNTH_TRI[0] * u + SYNTH_TRI[2] * v;
+  const py = SYNTH_TRI[1] * u + SYNTH_TRI[3] * v;
+  const bx = Math.floor(px);
+  const by = Math.floor(py);
+  const fx = px - bx;
+  const fy = py - by;
+  const upper = fx + fy >= 1;
+  const vertices: [[number, number], [number, number], [number, number]] = upper
+    ? [[bx + 1, by + 1], [bx + 1, by], [bx, by + 1]]
+    : [[bx, by], [bx + 1, by], [bx, by + 1]];
+  const raw = upper ? [fx + fy - 1, 1 - fy, 1 - fx] : [1 - fx - fy, fx, fy];
+  const cut = raw.map((w) => Math.max(w - SYNTH_HEX_CUT, 0) ** 3);
+  const n = Math.hypot(cut[0], cut[1], cut[2]);
+  return { vertices, weights: cut.map((w) => (n > 0 ? w / n : 0)) as [number, number, number] };
+}
+
+/**
+ * What one lattice vertex does to the field it reads: the CPU twin of
+ * `synthVertexShift` in the GLSL below, bit for bit — the same two rounds of
+ * pcg2d over the vertex as a 32-bit unsigned pair — so the hash can be tested
+ * for being a hash (uniform, and uncorrelated between neighbouring vertices)
+ * instead of only for being present in the text.
+ */
+export function surfaceHexVertex(vx: number, vy: number, salt: number): {
+  shift: [number, number];
+  flipX: boolean;
+  flipY: boolean;
+  swap: boolean;
+} {
+  let x = (vx + Math.imul(salt, 0x9e3779b9)) >>> 0;
+  let y = (vy + Math.imul(salt, 0x85ebca6b)) >>> 0;
+  x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+  y = (Math.imul(y, 1664525) + 1013904223) >>> 0;
+  x = (x + Math.imul(y, 1664525)) >>> 0;
+  y = (y + Math.imul(x, 1664525)) >>> 0;
+  x = (x ^ (x >>> 16)) >>> 0;
+  y = (y ^ (y >>> 16)) >>> 0;
+  x = (x + Math.imul(y, 1664525)) >>> 0;
+  y = (y + Math.imul(x, 1664525)) >>> 0;
+  x = (x ^ (x >>> 16)) >>> 0;
+  y = (y ^ (y >>> 16)) >>> 0;
+  return {
+    shift: [(x >>> 3) / 536870912, (y >>> 3) / 536870912],
+    swap: (x & 1) === 1,
+    flipY: (x & 2) === 2,
+    flipX: (x & 4) === 4,
+  };
+}
+
 const SURFACE_DETAIL_GLSL = /* glsl */ `
 uniform sampler2D uSynthDetail;
 uniform float uSynthGrain;
@@ -639,6 +720,108 @@ float synthTexelWeight(vec2 uv, vec2 texels) {
   float perPixel = min(fwidth(uv.x) * texels.x, fwidth(uv.y) * texels.y);
   return 1.0 - smoothstep(${SMOOTH_TEXEL_FADE[0].toFixed(6)}, ${SMOOTH_TEXEL_FADE[1].toFixed(6)}, perPixel);
 }
+// The field is one tile, and a plain wrap lays that tile every few hundred
+// pixels at every zoom: the same handful of big craters again and again, which
+// under grazing light reads as a lattice rather than as ground. So the tile is
+// never laid the same way twice. Each rung's uv plane is cut into a triangular
+// lattice with one tile between vertices; every vertex hashes to its own copy
+// of the field — shifted, and flipped or transposed, so that no two cells
+// carry the same motif — and a fragment reads the field through the three
+// vertices of the triangle it sits in, blended by where in that triangle it
+// sits. A copy is a shifted, flipped or transposed tile, so it tiles as the
+// field does, and its stored gradient comes back through the same flip.
+//
+// Hashed on the vertex as an INTEGER: the lattice reaches past six thousand at
+// the top rung, where hashing the float coordinate would be hashing rounding
+// noise. The mixing wraps at 32 bits, which is what highp says here.
+const mat2 SYNTH_TRI = mat2(${SYNTH_TRI[0].toFixed(1)}, ${SYNTH_TRI[1].toFixed(1)}, ${SYNTH_TRI[2].toFixed(8)}, ${SYNTH_TRI[3].toFixed(8)});
+// A vertex's copy of the field: a shift in xy, and in z three bits — flip x,
+// flip y, transpose — as a float the caller decodes.
+vec3 synthVertexShift(vec2 vertex, uint salt) {
+  highp uvec2 v = uvec2(ivec2(vertex));
+  v += uvec2(salt * 0x9E3779B9u, salt * 0x85EBCA6Bu);
+  v = v * 1664525u + 1013904223u;
+  v.x += v.y * 1664525u;
+  v.y += v.x * 1664525u;
+  v ^= v >> 16u;
+  v.x += v.y * 1664525u;
+  v.y += v.x * 1664525u;
+  v ^= v >> 16u;
+  return vec3(vec2(v >> 3u) * (1.0 / 536870912.0), float(v.x & 7u));
+}
+// One copy's reading of the field at \`uv\`, through vertex \`vertex\`: the
+// height around the field's own mean in x, the gradient of that height with
+// respect to uv, per tile width, in yz — decoded from the bytes here, so that
+// everything the tile adds up is in one unit. The copy is read at A·uv + shift,
+// with A a flip or transpose, and its stored gradient — which is with respect
+// to the copy's own coordinates — comes back through A transposed.
+vec3 synthCopy(vec2 uv, vec2 dx, vec2 dy, vec2 vertex, uint salt) {
+  vec3 hv = synthVertexShift(vertex, salt);
+  vec2 sgn = vec2(hv.z >= 4.0 ? -1.0 : 1.0, mod(hv.z, 4.0) >= 2.0 ? -1.0 : 1.0);
+  bool swap = mod(hv.z, 2.0) >= 1.0;
+  vec2 q = swap ? uv.yx : uv;
+  vec2 qx = swap ? dx.yx : dx;
+  vec2 qy = swap ? dy.yx : dy;
+  vec4 s = textureGrad(uSynthDetail, q * sgn + hv.xy, qx * sgn, qy * sgn);
+  vec2 g = (s.gb * 2.0 - 1.0) * ${SURFACE_DETAIL_GRADIENT_SCALE.toFixed(1)} * sgn;
+  // Against the field's OWN mean, per copy, before any weight: the weights add
+  // to one in length rather than in sum, so a mean left in would come out
+  // scaled by their sum, which is not one.
+  return vec3(s.r - uSynthMid, swap ? g.yx : g);
+}
+// One rung's reading of the field at \`uv\`: height around the mean in x, the
+// gradient of that height with respect to uv, per tile width, in yz.
+//
+// Three copies, one through each vertex of the triangle \`uv\` sits in, blended
+// with that triangle's barycentric weights — cut, so a copy leaves the blend
+// at exactly zero and its read can be skipped there; cubed, so most of a cell
+// reads one copy at full contrast and the blend is confined to a band along
+// each edge; and normalised in LENGTH, the rule the charts blend by: the copies
+// are independent readings of one random field, so it is their variance that
+// has to add to one. A weighted mean would draw every band fainter than the
+// ground on either side of it.
+//
+// The gradient is the gradient of the blended HEIGHT, weights included. Weights
+// that add to one in length do not add to one in sum — the sum runs from one at
+// a vertex to 1.7 at a triangle's centre — so where a copy is locally high or
+// low, a crater floor say, the changing weights alone tilt the blend, by about
+// as much as the ground's own grain does. Left out, that tilt is a soft facet
+// locked to every cell of the lattice, which is the artefact this whole
+// construction exists to remove. The weights are a fixed function of uv, so
+// their derivative is the same few lines of arithmetic as the weights.
+vec3 synthTile(vec2 uv, vec2 dx, vec2 dy, uint salt) {
+  vec2 p = SYNTH_TRI * uv;
+  vec2 base = floor(p);
+  vec2 f = p - base;
+  float upper = step(1.0, f.x + f.y);
+  vec2 v1 = base + vec2(upper);
+  vec2 v2 = base + vec2(1.0, 0.0);
+  vec2 v3 = base + vec2(0.0, 1.0);
+  vec3 w = mix(vec3(1.0 - f.x - f.y, f.x, f.y), vec3(f.x + f.y - 1.0, 1.0 - f.y, 1.0 - f.x), upper);
+  // The raw weights are linear in p, so their derivative is a constant per
+  // triangle.
+  vec3 dwx = mix(vec3(-1.0, 1.0, 0.0), vec3(1.0, 0.0, -1.0), upper);
+  vec3 dwy = mix(vec3(-1.0, 0.0, 1.0), vec3(1.0, -1.0, 0.0), upper);
+  vec3 wc = max(w - ${SYNTH_HEX_CUT.toFixed(2)}, 0.0);
+  vec3 ws = wc * wc * wc;
+  vec3 dsx = 3.0 * wc * wc * dwx;
+  vec3 dsy = 3.0 * wc * wc * dwy;
+  float len = max(length(ws), 1e-20);
+  vec3 n = ws / len;
+  vec3 dnx = (dsx - n * dot(n, dsx)) / len;
+  vec3 dny = (dsy - n * dot(n, dsy)) / len;
+  vec3 c1 = vec3(0.0);
+  vec3 c2 = vec3(0.0);
+  vec3 c3 = vec3(0.0);
+  if (wc.x > 0.0) c1 = synthCopy(uv, dx, dy, v1, salt);
+  if (wc.y > 0.0) c2 = synthCopy(uv, dx, dy, v2, salt);
+  if (wc.z > 0.0) c3 = synthCopy(uv, dx, dy, v3, salt);
+  vec3 h = vec3(c1.x, c2.x, c3.x);
+  // The weights' own slope, in p, then back into uv through the lattice skew.
+  vec2 dwp = vec2(dot(h, dnx), dot(h, dny));
+  vec2 dwuv = vec2(dwp.x, ${SYNTH_TRI[2].toFixed(8)} * dwp.x + ${SYNTH_TRI[3].toFixed(8)} * dwp.y);
+  return n.x * c1 + n.y * c2 + n.z * c3 + vec3(0.0, dwuv);
+}
 // One flat chart's reading of the field: its height here, around zero, in x,
 // and the slope of that height across the SCREEN in yz. \`c\` is the chart's own
 // two coordinates and \`cx\`/\`cy\` their screen derivatives; \`rung\` and \`blend\`
@@ -661,15 +844,10 @@ vec3 synthChart(vec2 c, vec2 cx, vec2 cy, vec2 seed, float rung, float blend) {
   vec2 uv = c * perUnit + seed;
   vec2 dx = cx * perUnit;
   vec2 dy = cy * perUnit;
-  vec4 a = textureGrad(uSynthDetail, uv, dx, dy);
-  vec4 b = textureGrad(uSynthDetail, uv * 2.0 - seed, dx * 2.0, dy * 2.0);
-  vec2 g = (mix(a.gb, b.gb, blend) * 2.0 - vec2(1.0)) * ${SURFACE_DETAIL_GRADIENT_SCALE.toFixed(1)};
-  // Against the field's OWN mean, not the middle of its range: a variation has
-  // to be a variation. The two are not the same number — the field's plain sits
-  // two thirds of the way up a range its deepest craters set — and the
-  // difference would be a flat brightening of every magnified surface, brightest
-  // of all where the mip chain has flattened the field to its mean.
-  return vec3(mix(a.r, b.r, blend) - uSynthMid, dot(g, cx), dot(g, cy));
+  vec3 a = synthTile(uv, dx, dy, 0u);
+  vec3 b = synthTile(uv * 2.0 - seed, dx * 2.0, dy * 2.0, 1u);
+  vec3 f = mix(a, b, blend);
+  return vec3(f.x, dot(f.yz, cx), dot(f.yz, cy));
 }
 `;
 

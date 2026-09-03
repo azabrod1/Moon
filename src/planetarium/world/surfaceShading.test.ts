@@ -5,6 +5,10 @@ import {
   setSurfaceCraterShare, setSurfaceSynthesis, setSurfaceWaterGloss, surfaceChartWeights,
   SYNTH_CHART_CUT, surfaceCraterShare, surfaceReliefKind, surfaceSynthesisOf, surfaceWaterGloss,
   waterGlossRoughness,
+  SYNTH_HEX_CUT,
+  SYNTH_TRI,
+  surfaceHexWeights,
+  surfaceHexVertex,
 } from './surfaceShading';
 import { surfaceDetailFieldMean, surfaceDetailHeightSpan } from './surfaceDetailNoise';
 
@@ -347,7 +351,7 @@ describe('the close-range detail term', () => {
     // magnified surface by a few per cent before it varied anything.
     const u = uniforms('airless', 'Moon');
     expect(u.uSynthMid.value).toBeCloseTo(surfaceDetailFieldMean(), 12);
-    expect(fragment('airless')).toContain('mix(a.r, b.r, blend) - uSynthMid');
+    expect(fragment('airless')).toContain('return vec3(s.r - uSynthMid, swap ? g.yx : g);');
     // And nothing is bound to read on a surface class that never draws it.
     expect(uniforms('gas', 'Jupiter').uSynthMid.value).toBe(0);
   });
@@ -359,5 +363,130 @@ describe('the close-range detail term', () => {
     augmentSurfaceMaterial(mat, 'airless', undefined, 0, undefined, undefined, 'Moon');
     const relief = (uniforms('airless', 'Moon', mat).uSynthRelief.value as number);
     expect(relief).toBeCloseTo(surfaceDetailHeightSpan(), 12);
+  });
+});
+
+describe('the field\'s tiling lattice', () => {
+  function fragment(): string {
+    const mat = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(mat, 'airless', undefined, 0, undefined, undefined, 'Rhea');
+    const shader = {
+      uniforms: {} as Record<string, unknown>,
+      vertexShader: '#include <common>\n#include <begin_vertex>\n',
+      fragmentShader: '#include <common>\n#include <normal_fragment_maps>\n#include <opaque_fragment>\n',
+    };
+    (mat.onBeforeCompile as (s: typeof shader, r: unknown) => void)(shader, null);
+    return shader.fragmentShader;
+  }
+
+  it('gives every point a full-length weight and jumps nowhere', () => {
+    // A tile laid the same way everywhere is a lattice of the same craters; a
+    // tile laid differently per cell with a step at the cell's edge is a grid
+    // of seams. So the blend has to be continuous everywhere, edges included,
+    // and its weights' squares have to add to one everywhere, or a band of
+    // ground would be drawn fainter than the ground beside it. Walked, not
+    // argued: a per-vertex value blended along lines that cross many cells and
+    // every kind of edge, and the largest step it ever takes.
+    const phi = (vx: number, vy: number) => surfaceHexVertex(vx, vy, 0).shift[0] - 0.5;
+    let worstJump = 0;
+    let steps = 0;
+    for (const [du, dv, u0, v0] of [[1, 0.37, 0.11, 0.42], [0.2, 1, 0.9, 0.3], [1, -1, 0.5, 0.5], [0.57735027, 1, 0, 0]]) {
+      let prev: number | null = null;
+      for (let i = 0; i <= 20000; i++) {
+        const t = i * 0.002;
+        const { vertices, weights } = surfaceHexWeights(u0 + du * t, v0 + dv * t);
+        expect(Math.hypot(...weights)).toBeCloseTo(1, 9);
+        let blended = 0;
+        for (let k = 0; k < 3; k++) blended += weights[k] * phi(vertices[k][0], vertices[k][1]);
+        if (prev !== null) {
+          worstJump = Math.max(worstJump, Math.abs(blended - prev));
+          steps++;
+        }
+        prev = blended;
+      }
+    }
+    // A step of 0.002 tiles moves a continuous blend by a few hundredths at
+    // most; a seam would move it by the weight of a whole copy.
+    expect(steps).toBeGreaterThan(70000);
+    expect(worstJump).toBeLessThan(0.03);
+    // The cut is what lets a copy leave the blend on a line, and what the
+    // shader's skipped reads rest on: about half of a cell reads all three
+    // copies (the inner triangle where every raw weight clears the cut, 0.7² of
+    // the area), a corner around each vertex reads one, and the rest read two.
+    let fewest = 3;
+    let most = 0;
+    let three = 0;
+    const samples = 20000;
+    for (let i = 0; i < samples; i++) {
+      const { weights } = surfaceHexWeights((i % 141) * 0.0709 + i * 1e-5, Math.floor(i / 141) * 0.0473);
+      const live = weights.filter((w) => w > 0).length;
+      fewest = Math.min(fewest, live);
+      most = Math.max(most, live);
+      if (live === 3) three++;
+    }
+    expect(fewest).toBe(1);
+    expect(most).toBe(3);
+    expect(three / samples).toBeGreaterThan(0.44);
+    expect(three / samples).toBeLessThan(0.54);
+  });
+
+  it('lays no two cells the same way', () => {
+    // The point of the lattice is that neighbouring cells carry different
+    // copies. A weak hash would leave the old lattice in place with a wobble.
+    const N = 200;
+    const bins = new Array(8).fill(0);
+    const variants = new Set<string>();
+    let sumXY = 0;
+    let sumX = 0;
+    let sumY = 0;
+    let sumXX = 0;
+    let sumYY = 0;
+    for (let vx = -N / 2; vx < N / 2; vx++) {
+      for (let vy = -N / 2; vy < N / 2; vy++) {
+        const here = surfaceHexVertex(vx, vy, 0);
+        const next = surfaceHexVertex(vx + 1, vy, 0);
+        bins[Math.min(7, Math.floor(here.shift[0] * 8))]++;
+        variants.add(`${here.flipX}${here.flipY}${here.swap}`);
+        const x = here.shift[0];
+        const y = next.shift[0];
+        sumX += x; sumY += y; sumXY += x * y; sumXX += x * x; sumYY += y * y;
+      }
+    }
+    const count = N * N;
+    for (const b of bins) expect(b / count).toBeGreaterThan(0.125 * 0.94);
+    for (const b of bins) expect(b / count).toBeLessThan(0.125 * 1.06);
+    const cov = sumXY / count - (sumX / count) * (sumY / count);
+    const varX = sumXX / count - (sumX / count) ** 2;
+    const varY = sumYY / count - (sumY / count) ** 2;
+    expect(Math.abs(cov / Math.sqrt(varX * varY))).toBeLessThan(0.02);
+    expect(variants.size).toBe(8);
+    // Deterministic — the same ground every session — and the other rung's
+    // salt gives a different lattice.
+    expect(surfaceHexVertex(17, -4, 0)).toEqual(surfaceHexVertex(17, -4, 0));
+    expect(surfaceHexVertex(17, -4, 1).shift).not.toEqual(surfaceHexVertex(17, -4, 0).shift);
+  });
+
+  it('is drawn as it was walked', () => {
+    // Everything above is a property of the twin, and worth nothing if the
+    // GLSL skews, cuts, sharpens or normalises differently.
+    const glsl = fragment();
+    expect(glsl).toContain(`const mat2 SYNTH_TRI = mat2(${SYNTH_TRI[0].toFixed(1)}, ${SYNTH_TRI[1].toFixed(1)}, ${SYNTH_TRI[2].toFixed(8)}, ${SYNTH_TRI[3].toFixed(8)});`);
+    expect(glsl).toContain(`vec3 wc = max(w - ${SYNTH_HEX_CUT.toFixed(2)}, 0.0);`);
+    expect(glsl).toContain('vec3 ws = wc * wc * wc;');
+    expect(glsl).toContain('vec3 n = ws / len;');
+    // Hashed on the vertex as an integer, never on the float coordinate.
+    expect(glsl).toContain('highp uvec2 v = uvec2(ivec2(vertex));');
+    // Three copies per rung, each read only where its weight is not zero.
+    expect(glsl).toContain('if (wc.x > 0.0) c1 = synthCopy(uv, dx, dy, v1, salt);');
+    expect(glsl).toContain('if (wc.y > 0.0) c2 = synthCopy(uv, dx, dy, v2, salt);');
+    expect(glsl).toContain('if (wc.z > 0.0) c3 = synthCopy(uv, dx, dy, v3, salt);');
+    // The gradient carries the weights' own slope, or every cell wears a facet.
+    expect(glsl).toContain('vec2 dwp = vec2(dot(h, dnx), dot(h, dny));');
+    // Explicit gradients on every read, and no derivative taken in here: the
+    // reads sit under per-fragment conditions.
+    const region = glsl.slice(glsl.indexOf('vec3 synthVertexShift('), glsl.indexOf('vec3 synthChart('));
+    expect(region).not.toMatch(/dFd[xy]|fwidth/);
+    expect(region).not.toMatch(/[^a-zA-Z]texture\(/);
+    expect(region.split('textureGrad(uSynthDetail').length - 1).toBe(1);
   });
 });

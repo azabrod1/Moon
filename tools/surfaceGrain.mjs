@@ -737,7 +737,14 @@ export function findEdges(band, W, H, spec, pxPerDeg, valid = null, only = null)
   const alongDeg = spec.alongDeg ?? 1;
   const minStep = spec.minStep ?? 3;
   const minSpanDeg = spec.minSpanDeg ?? 5;
-  const maxEdges = spec.maxEdges ?? 64;
+  // A ceiling on how many boundaries one pass corrects, not a judgement about
+  // which are worth correcting: everything that reaches the list has already
+  // passed the step threshold and the span threshold. Sixty-four was well
+  // under what these mosaics actually carry — the largest of them offers 830
+  // distinct boundaries and was truncated in every round, leaving steps of 15
+  // to 22 counts standing inside a frame whose edge had just been closed — so
+  // it sits above the worst source's own count and stops binding.
+  const maxEdges = spec.maxEdges ?? 1024;
   const smoothDeg = spec.smoothDeg ?? 0.4;
   const ok = (i) => !valid || valid[i];
   const wrapX = (x) => ((x % W) + W) % W;
@@ -864,7 +871,7 @@ export function findEdges(band, W, H, spec, pxPerDeg, valid = null, only = null)
     taken.push(e);
     if (taken.length >= maxEdges) break;
   }
-  return { edges: taken, lowPass: L, profileOf };
+  return { edges: taken, lowPass: L, profileOf, capped: taken.length >= maxEdges };
 }
 
 /**
@@ -1074,9 +1081,13 @@ export function levelEdges(band, W, H, spec, pxPerDeg, valid = null) {
   let residual = 0;
   let peak = 0;
   let grid = null;
+  const perRound = [];
+  let capped = false;
   for (let round = 0; round < rounds; round++) {
-    const { edges, profileOf } = findEdges(band, W, H, spec, pxPerDeg, valid);
+    const { edges, profileOf, capped: hitCap } = findEdges(band, W, H, spec, pxPerDeg, valid);
     if (!edges.length) break;
+    perRound.push(edges.length);
+    if (hitCap) capped = true;
     const solved = harmonicCorrection(edges, profileOf, W, H, spec, pxPerDeg);
     iterations += solved.iterations;
     residual = solved.residual;
@@ -1104,7 +1115,7 @@ export function levelEdges(band, W, H, spec, pxPerDeg, valid = null) {
     }
     found.push(...edges.map((e) => ({ ...e, round })));
   }
-  return { edges: found, iterations, residual, peak, grid };
+  return { edges: found, iterations, residual, peak, grid, perRound, capped };
 }
 
 /** Running-mean smoothing of one profile, `circular` for a profile that runs

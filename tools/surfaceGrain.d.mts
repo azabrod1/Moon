@@ -101,6 +101,8 @@ export interface EdgeSpec {
   apartDeg?: number;
   /** Latitude beyond which nothing is scanned. */
   skipLatDeg?: number;
+  /** Ceiling on how many boundaries one round corrects. Above the worst of
+   *  these sources' own count, so it does not truncate the list. */
   maxEdges?: number;
   rounds?: number;
 }
@@ -180,7 +182,13 @@ export function coverageFill(
 export function findEdges(
   band: Float32Array, W: number, H: number, spec: EdgeSpec, pxPerDeg: number,
   valid?: Uint8Array | null, only?: Edge[] | null,
-): { edges: Edge[]; lowPass: Float32Array; profileOf: (axis: Edge['axis'], at: number) => Float32Array };
+): {
+  edges: Edge[];
+  lowPass: Float32Array;
+  profileOf: (axis: Edge['axis'], at: number) => Float32Array;
+  /** Whether the list was truncated at maxEdges, so a truncated run says so. */
+  capped?: boolean;
+};
 
 /** Close those steps, in place, with a harmonic correction field. */
 export function levelEdges(
@@ -194,4 +202,7 @@ export function levelEdges(
   /** How far from the mean the applied correction reaches, in counts. */
   peak: number;
   grid: { cw: number; ch: number } | null;
+  /** Boundaries corrected in each round, and whether any round was truncated. */
+  perRound: number[];
+  capped: boolean;
 };

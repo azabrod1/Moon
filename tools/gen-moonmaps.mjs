@@ -878,12 +878,16 @@ async function sourceRaster(file, entry, nd, job, leftEdgeLonDegEast) {
     }
     if (job.levelEdges) {
       const { edges: before } = findEdges(grey, W, H, job.levelEdges, pxPerDeg, valid);
-      const { edges: fixed } = levelEdges(grey, W, H, job.levelEdges, pxPerDeg, valid);
+      const { edges: fixed, perRound, capped } = levelEdges(grey, W, H, job.levelEdges, pxPerDeg, valid);
       const { edges: after } = findEdges(grey, W, H, job.levelEdges, pxPerDeg, valid, before.slice(0, 3));
       const say = (e) => (e.axis === 'meridian'
         ? `${((e.at / pxPerDeg) % 360).toFixed(0)}E`
         : `lat ${(90 - (e.at * 180) / H).toFixed(0)}`);
-      console.log(`  levelled ${fixed.length} straight brightness steps; the worst three `
+      // Per round, and whether the ceiling truncated any of them: a run that
+      // corrects exactly the ceiling in every round has left boundaries
+      // standing and cannot tell you so from the total alone.
+      console.log(`  levelled ${fixed.length} straight brightness steps (${perRound.join(' + ')}`
+        + `${capped ? ', TRUNCATED at the ceiling' : ''}); the worst three `
         + before.slice(0, 3).map((e, k) => `${say(e)} ${e.step.toFixed(1)} -> ${after[k].step.toFixed(1)}`).join(', ')
         + ' counts');
     }

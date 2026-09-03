@@ -65,6 +65,9 @@ export interface FillSpec extends DeficitSpec {
   referenceBelow?: number;
   /** Deficit at or above which ground counts as a coverage gap. */
   gapAbove?: number;
+  /** Deficit at which the invented shape starts and finishes being removed. */
+  replaceFrom?: number;
+  replaceFull?: number;
   /** Bounds on the grain's scaling by local brightness. */
   toneFloor?: number;
   toneCeiling?: number;
@@ -97,13 +100,16 @@ export interface EdgeSpec {
 export interface FillResult {
   /** What to add to the band, in counts. Zero wherever the deficit is. */
   delta: Float32Array;
+  /** Share of the map the removal touches, and how much of the band it takes
+   *  where it does. */
+  replacedFraction: number;
+  replacedMean: number;
+
   deficit: Float32Array;
   /** The octaves as added, after the level solve. */
   octaves: Octave[];
   refOctaves: Octave[];
   gapOctaves: Octave[];
-  /** Whether the gap population was big enough to subtract in quadrature. */
-  quadrature: boolean;
   /** The fine-band ratio a fully detailed piece of this map carries. */
   ref: number;
   /** The fine-band energy the reference ground carries, in counts. */

@@ -16,10 +16,13 @@
 // terrain; with the moon filling the screen it reads as pieces of different
 // pictures stitched together, which is what it is.
 //
-// So the coarse patches are given back the one thing the resample took off
-// them: grain, at the amplitude the sharp parts of this same map measure, in
-// a continuous ramp that follows how much detail is actually missing. Three
-// rules hold it honest, and each one is a rule about what a map may assert:
+// So the coarse patches have the shape the resample invented taken off them —
+// they keep the albedo they were really measured at, and lose the streaks that
+// are a picture of a resample rather than of ground — and are given back the
+// one thing the resample took: grain, at the amplitude the sharp parts of this
+// same map measure, in a continuous ramp that follows how much detail is
+// actually missing. Three rules hold it honest, and each one is a rule about
+// what a map may assert:
 //
 //   * Isotropic grain and nothing else. No craters, no directional shading,
 //     no patches borrowed from elsewhere on the body. A crater drawn into an
@@ -38,7 +41,7 @@
 //     graded against.
 //
 // Where the map already carries detail the deficit is zero by construction and
-// the pass adds literally nothing: those pixels come out bit-identical.
+// the pass does literally nothing: those pixels come out bit-identical.
 
 /**
  * Separable box blur, three passes, which is a gaussian to within a per cent.
@@ -244,6 +247,31 @@ export function bandAmplitudes(band, W, H, cells, groups, stride = 7) {
 }
 
 /**
+ * A blur that reads only the pixels that hold a measurement.
+ *
+ * A hole is black, and a plain blur beside one comes back darker than the
+ * ground it is a blur of. Everything here that compares a pixel with its
+ * neighbourhood — the energies, the tone, the low pass the removal blends
+ * toward — has to weight by coverage instead, or a ring of ground round every
+ * hole is measured against a number no part of the surface has.
+ */
+function coverageBlur(band, W, H, rows, r, valid) {
+  const n = W * H;
+  if (!valid) return blurMono(band, W, H, rows, r);
+  const masked = new Float32Array(n);
+  const cover = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    if (!valid[i]) continue;
+    masked[i] = band[i];
+    cover[i] = 1;
+  }
+  const sum = blurMono(masked, W, H, rows, r);
+  const cov = blurMono(cover, W, H, rows, r);
+  for (let i = 0; i < n; i++) sum[i] = cov[i] > 1e-6 ? sum[i] / cov[i] : band[i];
+  return sum;
+}
+
+/**
  * Mean of |band - blur(band, deg)| over a window a degree or so across: how
  * much variation the picture carries at scales FINER than `deg`.
  *
@@ -254,7 +282,7 @@ export function bandAmplitudes(band, W, H, cells, groups, stride = 7) {
 function windowEnergy(band, W, H, deg, pxPerDeg, winRows, winPx, valid) {
   const n = W * H;
   const r = deg * pxPerDeg;
-  const work = blurMono(band, W, H, latScaledRadii(H, r), r);
+  const work = coverageBlur(band, W, H, latScaledRadii(H, r), r, valid);
   for (let i = 0; i < n; i++) work[i] = valid && !valid[i] ? 0 : Math.abs(band[i] - work[i]);
   const energy = blurMono(work, W, H, winRows, winPx);
   if (valid) {
@@ -283,7 +311,7 @@ function windowEnergy(band, W, H, deg, pxPerDeg, winRows, winPx, valid) {
 function fineDirectional(band, W, H, fineDeg, stepDeg, pxPerDeg, winRows, winPx, valid) {
   const n = W * H;
   const r = fineDeg * pxPerDeg;
-  let hp = blurMono(band, W, H, latScaledRadii(H, r), r);
+  let hp = coverageBlur(band, W, H, latScaledRadii(H, r), r, valid);
   for (let i = 0; i < n; i++) hp[i] = band[i] - hp[i];
   const stepY = Math.max(1, Math.round(stepDeg * pxPerDeg));
   let jxx = new Float32Array(n);
@@ -426,7 +454,8 @@ export function detailDeficit(band, W, H, spec, pxPerDeg, valid = null) {
 }
 
 /**
- * Give the coarse parts of a mosaic the grain the sharp parts have.
+ * Give the coarse parts of a mosaic the grain the sharp parts have, and take
+ * away what the resample left there instead of it.
  *
  * Returns the change as its own band — nothing is written to `band` — because
  * a colour mosaic wants it added to all three channels equally: grain is a
@@ -437,6 +466,19 @@ export function detailDeficit(band, W, H, spec, pxPerDeg, valid = null) {
  * where the deficit is low, and they sit inside the band the deficit was
  * measured in — a fill coarser than that would be adding shape the detector
  * never asked about.
+ *
+ * ADDING grain is not enough on its own. What a resample from ten times the
+ * pixel size leaves is not empty ground: it is the same ground pulled into
+ * streaks, and streaks are a shape. Grain laid on top of them leaves the
+ * streaks legible with grain over them, which is what a first cut of this pass
+ * shipped and what a player standing off a moon by two of its own diameters
+ * reads as pieces of different pictures stitched together. So where the
+ * deficit is deep the band between the coarse low pass and the pixel is
+ * REMOVED — the ground keeps the albedo it really has at the scale it was
+ * really measured at, and loses the shape the resample invented — and the
+ * grain goes in its place. The removal ramps in over the deficit rather than
+ * switching on, so ground that has lost some of its detail keeps what it has
+ * and only ground that has lost nearly all of it is flattened.
  */
 export function coverageFill(band, W, H, spec, pxPerDeg, valid = null) {
   const n = W * H;
@@ -450,6 +492,16 @@ export function coverageFill(band, W, H, spec, pxPerDeg, valid = null) {
   const gapCut = spec.gapAbove ?? 0.6;
   const isRef = (i) => deficit[i] <= refCut && (!valid || valid[i]);
   const isGap = (i) => deficit[i] >= gapCut && (!valid || valid[i]);
+
+  // How much of the invented shape goes, pixel by pixel: nothing below
+  // `replaceFrom`, all of it above `replaceFull`, smooth between. The deficit
+  // itself already changes over degrees, so this does too.
+  const repFrom = spec.replaceFrom ?? 0.4;
+  const repFull = spec.replaceFull ?? 0.8;
+  const replaceAt = (d) => {
+    const t = Math.min(1, Math.max(0, (d - repFrom) / Math.max(1e-6, repFull - repFrom)));
+    return t * t * (3 - 2 * t);
+  };
 
   const blurPx = spec.fineDeg * pxPerDeg;
   // As multiples of the finest band the detector measures, up to the coarse
@@ -466,18 +518,20 @@ export function coverageFill(band, W, H, spec, pxPerDeg, valid = null) {
     cells.push(cell);
   }
   const [refOct, gapOct] = bandAmplitudes(band, W, H, cells, [isRef, isGap], spec.stride ?? 7);
-  // What to ADD is what is missing, not what a sharp region holds: the coarse
-  // end of a smeared patch still carries most of its own variation, and grain
-  // laid on top of that at the full reference amplitude would leave the patch
-  // busier than the ground around it. Subtracting in quadrature is what makes
-  // the two agree once the grain is in, octave by octave — and it is only
-  // trustworthy where the gap population is big enough to have a median worth
-  // the name.
-  const enough = (gapOct[0]?.samples ?? 0) * (spec.stride ?? 7) > 0.002 * n;
-  const octaves = refOct.map((o, k) => ({
-    ...o,
-    amp: enough ? Math.sqrt(Math.max(0, o.amp * o.amp - gapOct[k].amp * gapOct[k].amp)) : o.amp,
-  }));
+  // The grain is built at the REFERENCE ground's amplitudes and then scaled
+  // per pixel by how much of the band is missing there. What used to sit here
+  // instead was a subtraction in quadrature of the gap's own measured
+  // amplitudes, so grain would not be laid on top of variation a coarse patch
+  // still had. The removal above is a better answer to the same question: what
+  // it takes away is exactly the variation that would have been doubled, and
+  // it takes it away where it is rather than by a whole-population average.
+  const octaves = refOct.map((o) => ({ ...o }));
+  // How much of the reference amplitude a pixel gets. Ground whose invented
+  // shape has been taken away has nothing left and gets all of it; ground
+  // nothing was taken from gets what the deficit says it is short of. Both
+  // terms are continuous in the deficit, so the fill still fades in over
+  // degrees and draws no edge of its own.
+  const gainAt = (d) => Math.max(d, replaceAt(d));
   // The octaves above say what SHAPE the grain has — how its variation is
   // spread across scales, measured octave by octave off this map's own sharp
   // ground. They do not say how much of it there is: those amplitudes are
@@ -523,7 +577,7 @@ export function coverageFill(band, W, H, spec, pxPerDeg, valid = null) {
   // that reads as roughness on the cratered plains reads as sensor noise on a
   // dark polar floor half as bright.
   const toneRadii = latScaledRadii(H, spec.wideDeg * pxPerDeg);
-  const tone = blurMono(band, W, H, toneRadii, spec.wideDeg * pxPerDeg);
+  const tone = coverageBlur(band, W, H, toneRadii, spec.wideDeg * pxPerDeg, valid);
   let refSum = 0;
   let refPixels = 0;
   for (let i = 0; i < n; i++) if (isRef(i)) { refSum += band[i]; refPixels++; }
@@ -531,31 +585,43 @@ export function coverageFill(band, W, H, spec, pxPerDeg, valid = null) {
   const toneLo = spec.toneFloor ?? 0.35;
   const toneHi = spec.toneCeiling ?? 1.6;
 
+  // The coarse low pass the removal blends toward. Everything above it is
+  // shape the picture claims at a scale the ground under a deep deficit was
+  // never measured at; everything at or below it is albedo that was.
+  const coarseRadii = latScaledRadii(H, spec.coarseDeg * pxPerDeg);
+  const coarse = coverageBlur(band, W, H, coarseRadii, spec.coarseDeg * pxPerDeg, valid);
+
   const delta = new Float32Array(n);
   let sum = 0;
   let touched = 0;
   let peak = 0;
+  let removed = 0;
+  let removedPixels = 0;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const i = y * W + x;
       const d = deficit[i];
       if (d <= 0) continue;
       const t = Math.min(toneHi, Math.max(toneLo, tone[i] / refTone));
-      const v = grainAt(x, y) * d * t;
+      const r = replaceAt(d);
+      const take = r > 0 ? (coarse[i] - band[i]) * r : 0;
+      const v = take + grainAt(x, y) * gainAt(d) * t;
       delta[i] = v;
       sum += v;
       touched++;
+      if (r > 0) { removed += r; removedPixels++; }
       const a = Math.abs(v);
       if (a > peak) peak = a;
     }
   }
   return {
+    replacedFraction: removedPixels / n,
+    replacedMean: removedPixels ? removed / removedPixels : 0,
     delta,
     deficit,
     octaves,
     refOctaves: refOct,
     gapOctaves: gapOct,
-    quadrature: enough,
     ref,
     energyRef,
     median,

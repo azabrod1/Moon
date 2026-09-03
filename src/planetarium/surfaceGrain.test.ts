@@ -165,22 +165,67 @@ describe('detailDeficit', () => {
   });
 });
 
+/** A patch of the map's own ground stretched `by` along x — a frame resampled
+ *  from a picture that was never that wide. Interpolated, not repeated: a
+ *  resample that repeated its source pixel would leave a hard step every
+ *  twelfth column, which is detail the detector would be right to find. */
+function stretched(by: number, region: { x0: number; x1: number; y0: number; y1: number }) {
+  const { band } = synthetic([]);
+  const out = Float32Array.from(band);
+  for (let y = region.y0; y < region.y1; y++) {
+    for (let x = region.x0; x < region.x1; x++) {
+      const u = region.x0 + (x - region.x0) / by;
+      const i0 = Math.floor(u);
+      const f = u - i0;
+      out[y * W + x] = band[y * W + i0] * (1 - f) + band[y * W + i0 + 1] * f;
+    }
+  }
+  return out;
+}
+
+/** How lopsided the fine band's gradients are over a window: 0 when a piece of
+ *  ground varies the same amount whichever way you cross it, 1 when it varies
+ *  one way and not the other. */
+function anisotropy(band: Float32Array): Float32Array {
+  const n = W * H;
+  const r = SPEC.fineDeg * PX_PER_DEG;
+  const low = blurMono(band, W, H, latScaledRadii(H, r), r);
+  const hp = new Float32Array(n);
+  for (let i = 0; i < n; i++) hp[i] = band[i] - low[i];
+  const s = Math.max(1, Math.round(r));
+  const jxx = new Float32Array(n);
+  const jyy = new Float32Array(n);
+  const jxy = new Float32Array(n);
+  for (let y = s; y < H - s; y++) {
+    for (let x = 0; x < W; x++) {
+      const gx = hp[y * W + ((x + s) % W)] - hp[y * W + ((x - s + W) % W)];
+      const gy = hp[(y + s) * W + x] - hp[(y - s) * W + x];
+      jxx[y * W + x] = gx * gx;
+      jyy[y * W + x] = gy * gy;
+      jxy[y * W + x] = gx * gy;
+    }
+  }
+  const win = SPEC.windowDeg * PX_PER_DEG;
+  const rows = latScaledRadii(H, win);
+  const sxx = blurMono(jxx, W, H, rows, win);
+  const syy = blurMono(jyy, W, H, rows, win);
+  const sxy = blurMono(jxy, W, H, rows, win);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const tr = sxx[i] + syy[i];
+    const d = Math.sqrt(Math.max(0, (sxx[i] - syy[i]) ** 2 + 4 * sxy[i] * sxy[i]));
+    out[i] = tr > 1e-9 ? d / tr : 0;
+  }
+  return out;
+}
+
 describe('detailDeficit on a stretched patch', () => {
   // A patch of the map's own sharp ground stretched 12x along one axis: it
   // still steps across its streaks, so an average of |gradient| over all
   // directions reads it as detail. It has nothing along them, which is what
   // the detector has to see.
-  const STRETCH = 12;
   const REGION = { x0: 700, x1: 1100, y0: 300, y1: 700 };
-  const { band } = synthetic([]);
-  const streaked = Float32Array.from(band);
-  for (let y = REGION.y0; y < REGION.y1; y++) {
-    for (let x = REGION.x0; x < REGION.x1; x++) {
-      const sx = REGION.x0 + Math.round((x - REGION.x0) / STRETCH);
-      streaked[y * W + x] = band[y * W + sx];
-    }
-  }
-  const { deficit } = detailDeficit(streaked, W, H, SPEC, PX_PER_DEG, null);
+  const { deficit } = detailDeficit(stretched(12, REGION), W, H, SPEC, PX_PER_DEG, null);
   const mid = (x: number, y = 500) => deficit[y * W + x];
 
   it('reads a stretched patch as a gap', () => {
@@ -190,6 +235,57 @@ describe('detailDeficit on a stretched patch', () => {
   it('leaves the unstretched ground around it alone', () => {
     expect(mid(Math.round(0.8 * W))).toBeLessThan(0.2);
     expect(mid(400)).toBeLessThan(0.35);
+  });
+});
+
+describe('coverageFill on a stretched patch', () => {
+  // The point of replacing rather than adding: grain laid over streaks leaves
+  // the streaks, and a straight-sided panel of streaks is what a player sees
+  // as a piece of a different picture.
+  const REGION = { x0: 700, x1: 1100, y0: 300, y1: 700 };
+  const band = stretched(12, REGION);
+  const fill = coverageFill(band, W, H, SPEC, PX_PER_DEG, null);
+  const filled = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) filled[i] = band[i] + fill.delta[i];
+  // The core of the patch, clear of the ramp the deficit fades over: what the
+  // pass promises at the edges is a ramp, and what it promises in the middle
+  // is ground that reads like the ground around it.
+  const core = (v: Float32Array) => {
+    const s: number[] = [];
+    for (let y = REGION.y0; y < REGION.y1; y++) {
+      for (let x = REGION.x0; x < REGION.x1; x += 2) {
+        if (fill.deficit[y * W + x] > 0.8) s.push(v[y * W + x]);
+      }
+    }
+    return median(s);
+  };
+  const around = (v: Float32Array) => {
+    const s: number[] = [];
+    for (let y = 300; y < 700; y++) {
+      for (let x = Math.round(0.65 * W); x < Math.round(0.9 * W); x += 2) s.push(v[y * W + x]);
+    }
+    return median(s);
+  };
+
+  it('takes the streaks out rather than drawing over them', () => {
+    const before = anisotropy(band);
+    const after = anisotropy(filled);
+    const ground = around(before);
+    expect(core(before)).toBeGreaterThan(2 * ground);
+    expect(core(after)).toBeLessThan(0.06 * core(before));
+    // Not all the way down to the ground's own. A stretch of twelve moves
+    // structure that was four to nine pixels wide out past the coarse low
+    // pass, and above that scale the map is entitled to its own shape: the
+    // removal takes the band between the low pass and the pixel, and what
+    // sits above it stays. What the player sees at close range is the band
+    // that goes.
+    expect(core(after)).toBeLessThan(2 * ground);
+  });
+
+  it('leaves the patch with the detail the reference ground has', () => {
+    const e = energy(filled);
+    expect(core(e)).toBeGreaterThan(0.7 * fill.energyRef);
+    expect(core(e)).toBeLessThan(1.3 * fill.energyRef);
   });
 });
 

@@ -376,6 +376,12 @@ export function surfaceDetailTexture(): THREE.DataTexture {
     // Data, not colour: R is a height and G/B are a gradient. An sRGB decode
     // here would bend both.
     applyTextureDefaults(tex, 'data');
+    // No anisotropic filtering: the shader chooses the rung so that a texel of
+    // this map is about a pixel, so face-on the footprint is already a texel
+    // and anisotropy buys nothing; at a limb it multiplies every one of the
+    // reads the stochastic tiling makes, and what it would sharpen there is a
+    // detail field seen edge-on.
+    tex.anisotropy = 1;
     tex.wrapS = THREE.RepeatWrapping;
     tex.wrapT = THREE.RepeatWrapping;
     tex.magFilter = THREE.LinearFilter;

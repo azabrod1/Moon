@@ -736,7 +736,10 @@ float synthTexelWeight(vec2 uv, vec2 texels) {
 // noise. The mixing wraps at 32 bits, which is what highp says here.
 const mat2 SYNTH_TRI = mat2(${SYNTH_TRI[0].toFixed(1)}, ${SYNTH_TRI[1].toFixed(1)}, ${SYNTH_TRI[2].toFixed(8)}, ${SYNTH_TRI[3].toFixed(8)});
 // A vertex's copy of the field: a shift in xy, and in z three bits — flip x,
-// flip y, transpose — as a float the caller decodes.
+// flip y, transpose — as a float the caller decodes. Two rounds of the mix:
+// one leaves neighbouring vertices almost the same shift, which is the lattice
+// back again with a wobble, and the twin's test holds the neighbour
+// correlation under two per cent.
 vec3 synthVertexShift(vec2 vertex, uint salt) {
   highp uvec2 v = uvec2(ivec2(vertex));
   v += uvec2(salt * 0x9E3779B9u, salt * 0x85EBCA6Bu);
@@ -757,8 +760,9 @@ vec3 synthVertexShift(vec2 vertex, uint salt) {
 // to the copy's own coordinates — comes back through A transposed.
 vec3 synthCopy(vec2 uv, vec2 dx, vec2 dy, vec2 vertex, uint salt) {
   vec3 hv = synthVertexShift(vertex, salt);
-  vec2 sgn = vec2(hv.z >= 4.0 ? -1.0 : 1.0, mod(hv.z, 4.0) >= 2.0 ? -1.0 : 1.0);
-  bool swap = mod(hv.z, 2.0) >= 1.0;
+  int bits = int(hv.z);
+  vec2 sgn = vec2((bits & 4) != 0 ? -1.0 : 1.0, (bits & 2) != 0 ? -1.0 : 1.0);
+  bool swap = (bits & 1) != 0;
   vec2 q = swap ? uv.yx : uv;
   vec2 qx = swap ? dx.yx : dx;
   vec2 qy = swap ? dy.yx : dy;

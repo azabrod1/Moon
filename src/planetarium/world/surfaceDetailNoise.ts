@@ -41,34 +41,61 @@ import { applyTextureDefaults } from './texturePolicy';
  *  residency is paid at every body drawing a surface. */
 export const SURFACE_DETAIL_SIZE = 512;
 
-/** Craters laid down per tile. With the size distribution below this is a few
- *  large basins, a few dozen mid-size craters and a scatter of small ones —
- *  a surface, not a golf ball. */
-export const SURFACE_DETAIL_CRATERS = 150;
+/** Craters laid down per tile: a scatter of small ones over a couple of
+ *  dozen mid-size, with plain between — a cratered plain, not a golf ball.
+ *  The shader lays two rungs of this tile over each other and blends up to
+ *  three copies of each, so what the screen shows is about twice as dense as
+ *  the tile; the count is chosen for the screen, not for the tile. */
+export const SURFACE_DETAIL_CRATERS = 110;
 
-/** Crater radii, as a fraction of the tile. The largest is under half a tile,
- *  which is what makes the wrap a single modulo rather than a search. */
-export const SURFACE_DETAIL_CRATER_MIN = 0.010;
-export const SURFACE_DETAIL_CRATER_MAX = 0.130;
+/**
+ * Crater radii, as a fraction of the tile.
+ *
+ * The largest is small on purpose. This field draws what a body's colour map
+ * has stopped resolving, and the map already carries every crater big enough
+ * to show in it — so a large basin invented here is drawn over ground whose
+ * real basins are already in the picture, and a tile whose few big bowls
+ * overlap under grazing light reads as bubble wrap rather than as ground. At
+ * a twelfth of the tile the biggest crater is forty to eighty pixels across
+ * where the tile is drawn at its ordinary size, which is the top of the range
+ * the map hands over at. The smallest is what keeps its rim a texel wide.
+ */
+export const SURFACE_DETAIL_CRATER_MIN = 0.014;
+export const SURFACE_DETAIL_CRATER_MAX = 0.080;
 
 /**
  * The size-frequency exponent. Real crater counts go as roughly D^-2 in
  * cumulative number, so a radius drawn as `min * (max/min)^(u^EXPONENT)` with
- * an exponent above 1 puts most of the population at the small end. 2.6 is what
- * lands a handful of large craters in a tile of 150.
+ * an exponent above 1 puts most of the population at the small end. 3.4 puts
+ * about one crater in thirteen above two thirds of the largest radius — enough
+ * large ones that the field has sizes in it, few enough that they rarely touch.
  */
-export const SURFACE_DETAIL_SIZE_EXPONENT = 2.6;
+export const SURFACE_DETAIL_SIZE_EXPONENT = 3.4;
 
-/** Depth of a crater floor below the plain, as a fraction of its radius — the
- *  ~1:5 depth-to-diameter of a fresh simple crater. */
-export const SURFACE_DETAIL_CRATER_DEPTH = 0.20;
+/** Depth of a crater floor below the plain, as a fraction of its radius — a
+ *  little under the ~1:5 depth-to-diameter of a fresh simple crater, because
+ *  the floor below is flatter than a paraboloid and puts its depth into a
+ *  steeper wall. */
+export const SURFACE_DETAIL_CRATER_DEPTH = 0.16;
+
+/**
+ * How the bowl falls away from the rim, as the power of the radius its depth
+ * follows: `depth * (1 - t^POWER)`. Two is a paraboloid, whose floor is as
+ * curved as its walls and which under grazing light shades as a soft dome;
+ * higher powers flatten the floor and steepen the wall near the rim, which is
+ * the shape a simple crater really has and the difference between a hole and
+ * a dimple.
+ */
+export const SURFACE_DETAIL_BOWL_POWER = 3.6;
 
 /** Height of the raised rim, as a fraction of the radius. */
-export const SURFACE_DETAIL_CRATER_RIM = 0.055;
+export const SURFACE_DETAIL_CRATER_RIM = 0.05;
 
-/** Width of the rim ring, in radii. Wide enough that the rim is a swell rather
- *  than a wire, which is the difference between a crater and a ring. */
-export const SURFACE_DETAIL_RIM_WIDTH = 0.28;
+/** Width of the rim ring, in radii. Narrow enough that the rim is a crest
+ *  rather than a swell — a swell half a radius wide shades like the shoulder
+ *  of a dome — and wide enough not to be a wire at the tile's resolution:
+ *  the smallest crater's rim is still a texel wide. */
+export const SURFACE_DETAIL_RIM_WIDTH = 0.14;
 
 /**
  * The two grain octaves, authored as SLOPES rather than as heights: a cell is
@@ -88,12 +115,14 @@ export const SURFACE_DETAIL_GRAIN: readonly { cells: number; slope: number }[] =
  * units of NORMALISED field per tile width. The steepest places are where a
  * small crater's wall lands on a grain crest — the walls themselves are a
  * slope of about a half in raw tile units, and the normalisation that spends
- * the whole byte on a range of 0.056 multiplies every gradient by eighteen.
- * 28 holds every texel of the map as seeded, with room to spare; the build
- * reports how many it had to clamp and the test holds that at zero, so a
- * re-seed that pushed past it is caught rather than silently flattened.
+ * the whole byte on a range of 0.03 multiplies every gradient by about
+ * thirty-five. 70 holds every texel of the map as seeded with a tenth to spare;
+ * the build reports how many it had to clamp and the test holds that at zero,
+ * so a re-seed or a reshaped crater that pushed past it is caught rather than
+ * silently flattened. The shader multiplies the same number back, so the
+ * slope it draws is the slope that was built, whatever the scale.
  */
-export const SURFACE_DETAIL_GRADIENT_SCALE = 28;
+export const SURFACE_DETAIL_GRADIENT_SCALE = 70;
 
 /** Deterministic stream of values in [0, 1) — the same map on every device. */
 function mixer(seed: number): () => number {
@@ -124,10 +153,11 @@ export interface CraterHeight {
  * height with respect to `t`. Both are in units of the crater's own RADIUS, so
  * a crater of any size has the same walls.
  *
- * The bowl is a paraboloid that reaches the plain exactly at the rim, and the
- * rim is a gaussian swell centred on it. Adding a rim to a bowl that already
- * ends at zero is what puts the raised lip a real crater has outside the hole,
- * rather than making the hole shallower.
+ * The bowl is a flattened well — depth times one minus a power of the radius —
+ * that reaches the plain exactly at the rim, and the rim is a gaussian crest
+ * centred on it. Adding a rim to a bowl that already ends at zero is what puts
+ * the raised lip a real crater has outside the hole, rather than making the
+ * hole shallower.
  */
 export function craterProfile(t: number, out: CraterHeight = { h: 0, dh: 0 }): CraterHeight {
   const e = (t - 1) / SURFACE_DETAIL_RIM_WIDTH;
@@ -140,8 +170,9 @@ export function craterProfile(t: number, out: CraterHeight = { h: 0, dh: 0 }): C
     out.dh = 0;
   }
   if (t < 1) {
-    out.h -= SURFACE_DETAIL_CRATER_DEPTH * (1 - t * t);
-    out.dh += SURFACE_DETAIL_CRATER_DEPTH * 2 * t;
+    const wall = Math.pow(t, SURFACE_DETAIL_BOWL_POWER - 1);
+    out.h -= SURFACE_DETAIL_CRATER_DEPTH * (1 - wall * t);
+    out.dh += SURFACE_DETAIL_CRATER_DEPTH * SURFACE_DETAIL_BOWL_POWER * wall;
   }
   return out;
 }

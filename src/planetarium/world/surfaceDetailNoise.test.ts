@@ -76,7 +76,7 @@ describe('the crater population', () => {
     expect(small / craters.length).toBeGreaterThan(0.7);
     // And the few large ones are really there — a field of nothing but grit
     // has no craters to read.
-    expect(craters.filter((c) => c.radius > 0.06).length).toBeGreaterThan(2);
+    expect(craters.filter((c) => c.radius > 0.04).length).toBeGreaterThan(5);
   });
 });
 
@@ -156,7 +156,10 @@ describe('the built field', () => {
     }
     // A byte of height across the map is a coarse yardstick — the check is
     // that the two describe the same surface, not that they agree to the ulp.
-    expect(worst).toBeLessThan(12);
+    // The bound scales with the encoding: a central difference over two texels
+    // rounds off a rim that is one texel wide, by a fraction of the steepest
+    // slope the scale was sized for.
+    expect(worst).toBeLessThan(SURFACE_DETAIL_GRADIENT_SCALE * 0.4);
   });
 
   it('costs one small upload for every surface in the system', () => {

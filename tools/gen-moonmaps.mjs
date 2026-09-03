@@ -120,7 +120,8 @@
 //   --no-rungs     skip the KTX2 intermediates (the slow part)
 import sharp from 'sharp';
 import {
-  NOISE_AMP_PER_SIGMA, bandAmplitudes, blurMono, coverageFill, findEdges, levelEdges, valueNoise,
+  NOISE_AMP_PER_SIGMA, bandAmplitudes, blurMono, coverageFill, detailDeficit, findEdges, levelEdges,
+  valueNoise,
 } from './surfaceGrain.mjs';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
@@ -469,6 +470,12 @@ const JOBS = {
     // levelEdges, and the Callisto job for the measured sizes).
     levelEdges: {
       lookDeg: 0.5, alongDeg: 1, minStep: 3, minSpanDeg: 5, smoothDeg: 0.4, skipLatDeg: 80, rounds: 3,
+      // These frames are outlines, not rows and columns: on Europa the worst of
+      // them wanders seven degrees of latitude across fifty of longitude and
+      // changes the sign of its own step four times along the way. Followed
+      // from where the finest band's energy steps, at the same band the fill
+      // measures its deficit in.
+      curves: { fineDeg: 0.12 },
     },
     // The polar hole gets the matched fill (see the Callisto job and fillNoData).
     noData: { below: 12, mode: 'texture', seam: 0.03, matchTexture: true },
@@ -487,6 +494,12 @@ const JOBS = {
     // levelEdges, and the Callisto job for the measured sizes).
     levelEdges: {
       lookDeg: 0.5, alongDeg: 1, minStep: 3, minSpanDeg: 5, smoothDeg: 0.4, skipLatDeg: 80, rounds: 3,
+      // These frames are outlines, not rows and columns: on Europa the worst of
+      // them wanders seven degrees of latitude across fifty of longitude and
+      // changes the sign of its own step four times along the way. Followed
+      // from where the finest band's energy steps, at the same band the fill
+      // measures its deficit in.
+      curves: { fineDeg: 0.12 },
     },
     // The polar hole gets the matched fill (see the Callisto job and fillNoData).
     noData: { below: 12, mode: 'texture', seam: 0.03, matchTexture: true },
@@ -538,6 +551,12 @@ const JOBS = {
     // without leaving a mark where it stops (see levelEdges).
     levelEdges: {
       lookDeg: 0.5, alongDeg: 1, minStep: 3, minSpanDeg: 5, smoothDeg: 0.4, skipLatDeg: 80, rounds: 3,
+      // These frames are outlines, not rows and columns: on Europa the worst of
+      // them wanders seven degrees of latitude across fifty of longitude and
+      // changes the sign of its own step four times along the way. Followed
+      // from where the finest band's energy steps, at the same band the fill
+      // measures its deficit in.
+      curves: { fineDeg: 0.12 },
     },
     // The polar hole is a straight-sided polygon and the fill that goes in it
     // is what a player at close range reads as a rectangle, so it gets the
@@ -877,8 +896,16 @@ async function sourceRaster(file, entry, nd, job, leftEdgeLonDegEast) {
       console.log(`  levelled the ${seam.lonDegEast} E seam (source column ${column}, step up to ${peak.toFixed(1)} counts, spread over ${seam.rampDeg} deg either side)`);
     }
     if (job.levelEdges) {
+      // A boundary that is not a row or a column is followed rather than
+      // scanned for, and what it is followed on is where the finest band's
+      // energy steps. The deficit that goes with it is measured here rather
+      // than borrowed from the fill: the fill measures its own after this pass
+      // has changed the band, and one field cannot honestly be both.
+      const seed = job.levelEdges.curves && job.coverageFill
+        ? detailDeficit(grey, W, H, job.coverageFill, pxPerDeg, valid).deficit
+        : null;
       const { edges: before } = findEdges(grey, W, H, job.levelEdges, pxPerDeg, valid);
-      const { edges: fixed, perRound, capped } = levelEdges(grey, W, H, job.levelEdges, pxPerDeg, valid);
+      const { edges: fixed, perRound, capped, curves } = levelEdges(grey, W, H, job.levelEdges, pxPerDeg, valid, seed);
       const { edges: after } = findEdges(grey, W, H, job.levelEdges, pxPerDeg, valid, before.slice(0, 3));
       const say = (e) => (e.axis === 'meridian'
         ? `${((e.at / pxPerDeg) % 360).toFixed(0)}E`
@@ -890,6 +917,13 @@ async function sourceRaster(file, entry, nd, job, leftEdgeLonDegEast) {
         + `${capped ? ', TRUNCATED at the ceiling' : ''}); the worst three `
         + before.slice(0, 3).map((e, k) => `${say(e)} ${e.step.toFixed(1)} -> ${after[k].step.toFixed(1)}`).join(', ')
         + ' counts');
+      if (curves.length) {
+        const worst = curves.slice().sort((a, b) => b.firstMedianStep * b.spanDeg - a.firstMedianStep * a.spanDeg);
+        console.log(`  traced ${curves.length} curved boundaries over `
+          + `${curves.reduce((t, c) => t + c.spanDeg, 0).toFixed(0)} degrees of ground; the worst three `
+          + worst.slice(0, 3).map((c) => `${c.spanDeg.toFixed(0)}deg ${c.firstMedianStep.toFixed(1)} -> ${c.medianStep.toFixed(1)}`).join(', ')
+          + ' counts');
+      }
     }
     if (job.coverageFill) {
       const fill = coverageFill(grey, W, H, job.coverageFill, pxPerDeg, valid);

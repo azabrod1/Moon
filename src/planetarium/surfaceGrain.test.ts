@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  blurMono, coverageFill, detailDeficit, findEdges, latScaledRadii, levelEdges, valueNoise, wrappingCell,
+  blurMono, coverageFill, detailDeficit, findEdges, latScaledRadii, levelEdges, traceCurves,
+  valueNoise, wrappingCell,
 } from '../../tools/surfaceGrain.mjs';
 
 // tools/surfaceGrain.mjs is what gives the moon maps their texture: it decides
@@ -38,8 +39,10 @@ const PATCH = { x0: W - 300, x1: 300, y0: 250, y1: 750 };
  * against, and there the ground away from a coarse patch comes out at a
  * deficit of exactly zero and is left exactly alone.
  */
+type Region = { x0: number; x1: number; y0: number; y1: number } | ((x: number, y: number) => boolean);
+
 function synthetic(
-  smeared: Array<{ x0: number; x1: number; y0: number; y1: number }>,
+  smeared: Region[],
   { midAmp = 24, sharpGain = 2.5 } = {},
 ) {
   const noise = valueNoise(W);
@@ -52,8 +55,9 @@ function synthetic(
   // rather than something either of them has an opinion about.
   const slow = noise.matched([{ ...wrappingCell(W, 400), amp: 60 }], 21);
   const band = new Float32Array(W * H);
-  const inside = (x: number, y: number) => smeared.some((r) => y >= r.y0 && y < r.y1
-    && (r.x0 <= r.x1 ? x >= r.x0 && x < r.x1 : x >= r.x0 || x < r.x1));
+  const inside = (x: number, y: number) => smeared.some((r) => (typeof r === 'function'
+    ? r(x, y)
+    : y >= r.y0 && y < r.y1 && (r.x0 <= r.x1 ? x >= r.x0 && x < r.x1 : x >= r.x0 || x < r.x1)));
   const sharp = (x: number) => x > 0.6 * W && x < 0.95 * W;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
@@ -577,5 +581,157 @@ describe('valueNoise', () => {
     const std = Math.sqrt(sq / n - (sum / n) ** 2);
     expect(std).toBeGreaterThan(0.95);
     expect(std).toBeLessThan(1.05);
+  });
+});
+
+describe('traceCurves and the curved boundaries it levels', () => {
+  // A frame boundary that is neither a meridian nor a parallel: a sinusoid all
+  // the way round the map, smeared ground on one side of it, and a step whose
+  // SIGN changes four times along its length. The scan cannot see this — it
+  // keeps runs of one sign along a row or a column — and it is what a mosaic's
+  // frame outlines actually look like.
+  const CURVE = (x: number) => 600 + 80 * Math.sin((2 * Math.PI * 3 * x) / W);
+  const SLOPE = (x: number) => 80 * ((2 * Math.PI * 3) / W) * Math.cos((2 * Math.PI * 3 * x) / W);
+  const STEP = (x: number) => 16 * Math.sin((2 * Math.PI * 2 * x) / W);
+  // A real albedo boundary: a brightness step with the same texture either
+  // side, which is ground truth and has to come through untouched. It turns
+  // fast enough that no row carries a run of one sign for the span the
+  // straight scan asks for, so what reaches it is the tracer or nothing.
+  const ALBEDO = (x: number) => 320 + 45 * Math.sin((2 * Math.PI * 4 * x) / W + 1.7);
+  const ALBEDO_SLOPE = (x: number) => 45 * ((2 * Math.PI * 4) / W) * Math.cos((2 * Math.PI * 4 * x) / W + 1.7);
+
+  const EDGE = {
+    lookDeg: 3, alongDeg: 6, minStep: 4, minSpanDeg: 20, smoothDeg: 2, skipLatDeg: 45,
+    curves: { searchDeg: 10, traceDeg: 2, fineDeg: SPEC.fineDeg, minEnergyJump: 0.35 },
+  };
+  const TRACE_CELL = (EDGE.curves.traceDeg * W) / 360;
+
+  // A quiet middle octave, for the reason the straight-step tests have one:
+  // this instrument reads the picture at a frame's own scale, and grain there
+  // is what a step has to be told apart from. At the raster's own 24 it reads
+  // 3 counts of step on a boundary that has none.
+  function withFrame({ cap = 0, albedo = false, curve = CURVE, step = true } = {}) {
+    const { band } = synthetic([(x, y) => y > curve(x)], { midAmp: 12, sharpGain: 1 });
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        if (step && y > curve(x)) band[y * W + x] += STEP(x);
+        if (albedo && y > ALBEDO(x)) band[y * W + x] += 12 * Math.max(0, 1 - (y - ALBEDO(x)) / 100);
+        if (cap && y >= cap) band[y * W + x] = 0;
+      }
+    }
+    const valid = new Uint8Array(W * H);
+    for (let i = 0; i < W * H; i++) valid[i] = band[i] >= 12 ? 1 : 0;
+    return { band, valid: cap ? valid : null };
+  }
+
+  const scene = withFrame({ albedo: true });
+  const deficit = detailDeficit(scene.band, W, H, SPEC, PX_PER_DEG, null).deficit;
+  const { lowPass } = findEdges(scene.band, W, H, EDGE, PX_PER_DEG, null);
+  const traced = traceCurves(scene.band, W, H, EDGE, PX_PER_DEG, null, deficit, lowPass);
+
+  /** The steps a traced boundary carries, measured on whatever band is given —
+   *  the same instrument, at the same places, before and after. */
+  function stepsOn(band: Float32Array) {
+    const { lowPass: low } = findEdges(band, W, H, EDGE, PX_PER_DEG, null);
+    const curves = traceCurves(band, W, H, EDGE, PX_PER_DEG, null, deficit, low);
+    return curves.flatMap((c) => c.points.map((q) => Math.abs(q.smoothed)));
+  }
+
+  it('finds the frame boundary and puts it where the boundary is', () => {
+    expect(traced.length).toBe(1);
+    expect(traced[0].closed).toBe(true);
+    const points = traced[0].points;
+    // Inside one trace cell everywhere and half of one on average. What is
+    // left is where the energy's own half-way level sits: the fine band is
+    // taken against a low pass that reaches across the boundary, so it lands
+    // about one blur radius into the smoother side. That radius is 0.9 degrees
+    // here because this raster's octaves are scaled up to fit it; on a source
+    // mosaic it is 0.12, a twentieth of a degree of ground.
+    let worst = 0;
+    let sum = 0;
+    for (const q of points) {
+      const off = Math.abs(q.y - CURVE(q.x)) / Math.hypot(1, SLOPE(q.x));
+      worst = Math.max(worst, off);
+      sum += off;
+    }
+    expect(worst).toBeLessThan(TRACE_CELL);
+    expect(sum / points.length).toBeLessThan(TRACE_CELL / 2);
+    // The whole turn of it, as one curve with no ends.
+    expect(traced[0].spanDeg).toBeGreaterThan(300);
+  });
+
+  it('keeps the sign changes along the boundary', () => {
+    const steps = traced[0].points.map((q) => q.smoothed);
+    expect(Math.max(...steps)).toBeGreaterThan(8);
+    expect(Math.min(...steps)).toBeLessThan(-8);
+  });
+
+  it('does not chase a boundary that is only a change of albedo', () => {
+    for (const q of traced[0].points) {
+      expect(Math.abs(q.y - ALBEDO(q.x))).toBeGreaterThan(40);
+    }
+  });
+
+  it('closes the curved step, which the straight scan cannot, and leaves the albedo boundary where it was', () => {
+    const before = stepsOn(scene.band);
+    expect(Math.max(...before)).toBeGreaterThan(10);
+
+    const lines = Float32Array.from(scene.band);
+    levelEdges(lines, W, H, EDGE, PX_PER_DEG, null, null);
+    expect(Math.max(...stepsOn(lines))).toBeGreaterThan(8);
+
+    const both = Float32Array.from(scene.band);
+    levelEdges(both, W, H, EDGE, PX_PER_DEG, null, deficit);
+    const after = stepsOn(both);
+    expect(Math.max(...after)).toBeLessThan(3);
+    expect(median(after)).toBeLessThan(1);
+
+    // The albedo boundary, against the run that had no curves at all: whatever
+    // the straight scan does to it, the curves do nothing.
+    const r = EDGE.smoothDeg * PX_PER_DEG;
+    const albedoStep = (band: Float32Array, x: number) => {
+      const low = blurMono(band, W, H, latScaledRadii(H, r), r);
+      const m = ALBEDO_SLOPE(x);
+      const nx = -m / Math.hypot(1, m);
+      const ny = 1 / Math.hypot(1, m);
+      const d = EDGE.lookDeg * PX_PER_DEG;
+      const at = (t: number) => low[Math.min(H - 1, Math.max(0, Math.round(ALBEDO(x) + ny * t))) * W
+        + (((Math.round(x + nx * t) % W) + W) % W)];
+      return 1.5 * (at(d) - at(-d)) - 0.5 * (at(3 * d) - at(-3 * d));
+    };
+    for (let x = 0; x < W; x += 256) {
+      expect(Math.abs(albedoStep(both, x) - albedoStep(lines, x))).toBeLessThan(1);
+    }
+  });
+
+  it('rejects a seed with no energy step under it', () => {
+    // Uniform texture, one albedo boundary, and a deficit handed in whose level
+    // set lies along it. Every point of that contour has to be dropped: a
+    // change of albedo is the body's own, and levelling it would take out
+    // ground the mosaic really measured.
+    const { band } = synthetic([], { midAmp: 12, sharpGain: 1 });
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (y > ALBEDO(x)) band[y * W + x] += 12;
+    const pretend = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) pretend[y * W + x] = y > ALBEDO(x) ? 0.9 : 0.1;
+    const smooth = blurMono(pretend, W, H, latScaledRadii(H, 40), 40);
+    const { lowPass: lp } = findEdges(band, W, H, EDGE, PX_PER_DEG, null);
+    const spec = { ...EDGE, curves: { ...EDGE.curves, seedFrom: ['deficit'] } };
+    expect(traceCurves(band, W, H, spec, PX_PER_DEG, null, smooth, lp)).toEqual([]);
+  });
+
+  it('cuts a curve where it runs into ground that was never measured', () => {
+    const CAP = 680;
+    const deep = (x: number) => 600 + 140 * Math.sin((2 * Math.PI * 2 * x) / W);
+    const s2 = withFrame({ cap: CAP, curve: deep });
+    const d2 = detailDeficit(s2.band, W, H, SPEC, PX_PER_DEG, s2.valid).deficit;
+    const { lowPass: lp2 } = findEdges(s2.band, W, H, EDGE, PX_PER_DEG, s2.valid);
+    const cut = traceCurves(s2.band, W, H, EDGE, PX_PER_DEG, s2.valid, d2, lp2);
+    expect(cut.length).toBeGreaterThan(0);
+    for (const c of cut) {
+      expect(c.closed).toBe(false);
+      for (const q of c.points) expect(q.y).toBeLessThan(CAP);
+    }
+    // And the part of the boundary that is over real ground is still traced.
+    expect(cut.reduce((t, c) => t + c.spanDeg, 0)).toBeGreaterThan(60);
   });
 });

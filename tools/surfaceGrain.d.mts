@@ -101,6 +101,27 @@ export interface EdgeSpec {
   apartDeg?: number;
   /** Latitude beyond which nothing is scanned. */
   skipLatDeg?: number;
+  /** Follow the boundaries that are neither a meridian nor a parallel, seeded
+   *  from the detail deficit's own level set. Absent, only straight lines are
+   *  found. `levelEdges` must be given a deficit for this to act. */
+  curves?: {
+    /** Deficit level the outline is taken at. */
+    seedAt?: number;
+    /** How far along the normal the snap to the energy step looks, in degrees:
+     *  the width the deficit was blurred by, since that is how far off the
+     *  frame edge its level set can sit. */
+    searchDeg?: number;
+    /** Cell size of the grid the level set is traced on. */
+    traceDeg?: number;
+    /** The band whose energy the snap reads — the deficit's own finest. */
+    fineDeg?: number;
+    /** How much of the reference ground's fine energy a real boundary has to
+     *  step by. Under it the point is dropped, so an albedo boundary with the
+     *  same texture either side leaves no curve. */
+    minEnergyJump?: number;
+    /** Deficit at or below which ground is a reference for that energy. */
+    referenceBelow?: number;
+  };
   /** Ceiling on how many boundaries one round corrects. Above the worst of
    *  these sources' own count, so it does not truncate the list. */
   maxEdges?: number;
@@ -193,7 +214,7 @@ export function findEdges(
 /** Close those steps, in place, with a harmonic correction field. */
 export function levelEdges(
   band: Float32Array, W: number, H: number, spec: EdgeSpec, pxPerDeg: number,
-  valid?: Uint8Array | null,
+  valid?: Uint8Array | null, deficit?: Float32Array | null,
 ): {
   edges: Edge[];
   /** Relaxation sweeps across every grid, and what the last one had left. */
@@ -205,4 +226,42 @@ export function levelEdges(
   /** Boundaries corrected in each round, and whether any round was truncated. */
   perRound: number[];
   capped: boolean;
+  /** The curves traced, if any were asked for. */
+  curves: TracedCurve[];
 };
+
+/** One point of a traced boundary: where it is, which way it faces (as source
+ *  pixels per degree of ground along the normal), and what it steps by. */
+export interface CurvePoint {
+  x: number;
+  y: number;
+  ox: number;
+  oy: number;
+  step: number;
+  smoothed: number;
+  jump: number;
+}
+
+export interface TracedCurve {
+  points: CurvePoint[];
+  /** How much ground the curve runs along, in degrees. */
+  spanDeg: number;
+  /** Whether it meets itself, in which case it has no end to taper at. */
+  closed: boolean;
+  /** What it steps by now, and what it stepped by when it was found. */
+  medianStep: number;
+  firstMedianStep: number;
+}
+
+/** The frame boundaries that are not straight, seeded from the deficit's own
+ *  level set and snapped to where the finest band's energy steps. */
+export function traceCurves(
+  band: Float32Array, W: number, H: number, spec: EdgeSpec, pxPerDeg: number,
+  valid: Uint8Array | null, deficit: Float32Array, lowPass: Float32Array,
+): TracedCurve[];
+
+/** Measure traced curves again on the band as it now stands. */
+export function remeasureCurves(
+  curves: TracedCurve[], lowPass: Float32Array, spec: EdgeSpec, pxPerDeg: number,
+  sampleAt: (field: Float32Array, x: number, y: number) => number | null,
+): void;

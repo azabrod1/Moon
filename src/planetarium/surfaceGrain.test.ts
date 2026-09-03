@@ -414,6 +414,66 @@ describe('findEdges and levelEdges', () => {
     expect(Math.abs(now - was) / (W * H)).toBeLessThan(0.01);
   });
 
+  it('closes a boundary only along the run it measured', () => {
+    // A frame boundary is a segment, not a line round the body. Ground on the
+    // same column beyond the segment carries steps of its own — a crater wall
+    // here — and a jump laid along the whole column turns each of them into a
+    // step in the correction: a grid of plateaus with straight edges, which is
+    // the very thing this pass exists to remove.
+    //
+    // Its own raster, at the proportions where that shows: grain light enough
+    // that a local feature registers at the finder's smoothing, on a map
+    // coarse enough that the feature is longer than the finder's own reach
+    // along the line.
+    const LW = 1024;
+    const LH = 512;
+    const LPPD = LW / 360;
+    const noise = valueNoise(LW);
+    const fine = noise.matched([{ ...wrappingCell(LW, 4), amp: 10 }, { ...wrappingCell(LW, 9), amp: 8 }], 7);
+    const slow = noise.matched([{ ...wrappingCell(LW, 400), amp: 60 }], 21);
+    const band = new Float32Array(LW * LH);
+    for (let y = 0; y < LH; y++) {
+      for (let x = 0; x < LW; x++) band[y * LW + x] = 120 + slow(x, y) + fine(x, y);
+    }
+    const at = 300;
+    // Inside the latitudes the finder scans, and shorter than them, so there
+    // is scanned ground on the same column beyond both ends of the run.
+    const top = Math.round((3 * LH) / 8);
+    const bottom = Math.round((5 * LH) / 8);
+    for (let y = top; y < bottom; y++) {
+      for (let x = at; x < at + LW / 2; x++) band[y * LW + x] += 18;
+    }
+    // The local feature: 14 counts brighter on one side of the line, outside
+    // the run but inside the scanned latitudes.
+    const fy = Math.round(0.3 * LH);
+    for (let y = fy - 20; y <= fy + 20; y++) {
+      for (let x = at; x < at + 12; x++) band[y * LW + x] += 14;
+    }
+    const contrastAt = (y: number) => band[y * LW + at + 4] - band[y * LW + at - 4];
+    const featureBefore = contrastAt(fy);
+    const before = findEdges(band, LW, LH, spec, LPPD, null).edges
+      .filter((e) => e.axis === 'meridian' && Math.abs(e.at - at) <= 6);
+    expect(before.length).toBeGreaterThan(0);
+    const snapshot = Float32Array.from(band);
+    levelEdges(band, LW, LH, spec, LPPD, null);
+    // Inside the run the step is closed.
+    const after = findEdges(band, LW, LH, spec, LPPD, null, before).edges;
+    expect(Math.abs(after[0].step)).toBeLessThan(spec.minStep);
+    // Beyond the run the correction steps across the column by nothing: the
+    // feature keeps its own contrast, and the scanned rows above the run gain
+    // no ledge along the line. With the jump laid along the whole column the
+    // feature lost two thirds of its contrast and the ledge ran to five counts.
+    expect(Math.abs(contrastAt(fy) - featureBefore)).toBeLessThan(1);
+    let ledge = 0;
+    let rows = 0;
+    for (let y = Math.round(LH / 4) + 4; y < top - 4; y++) {
+      const d = (band[y * LW + at + 4] - snapshot[y * LW + at + 4]) - (band[y * LW + at - 4] - snapshot[y * LW + at - 4]);
+      ledge += Math.abs(d);
+      rows++;
+    }
+    expect(ledge / rows).toBeLessThan(1);
+  });
+
   it('leaves a slow gradient alone', () => {
     // A step is what the ground does ON TOP of the slope it already has. A
     // body's own albedo runs from bright to dark over tens of degrees, and

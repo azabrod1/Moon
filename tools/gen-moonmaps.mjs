@@ -464,6 +464,14 @@ const JOBS = {
     // fill puts back is grain, not lineae: this moon's real fine structure is
     // the ridges, and drawing those would be drawing terrain nobody imaged.
     coverageFill: { fineDeg: 0.12, coarseDeg: 1, windowDeg: 1.5, wideDeg: 2 },
+    // Each frame carries its own calibration offset, with the frame's polygon
+    // as a hard step; closed with the harmonic correction field (see
+    // levelEdges, and the Callisto job for the measured sizes).
+    levelEdges: {
+      lookDeg: 0.5, alongDeg: 1, minStep: 3, minSpanDeg: 5, smoothDeg: 0.4, skipLatDeg: 80, rounds: 3,
+    },
+    // The polar hole gets the matched fill (see the Callisto job and fillNoData).
+    noData: { below: 12, mode: 'texture', seam: 0.03, matchTexture: true },
   },
   ganymede: {
     src: 'Ganymede_Voyager_GalileoSSI_Global_ClrMosaic_1435m.tif',
@@ -474,6 +482,14 @@ const JOBS = {
     // brightness, equally on all three channels, so the mosaic's chroma comes
     // through exactly as the mission left it.
     coverageFill: { fineDeg: 0.12, coarseDeg: 1, windowDeg: 1.5, wideDeg: 2 },
+    // Each frame carries its own calibration offset, with the frame's polygon
+    // as a hard step; closed with the harmonic correction field (see
+    // levelEdges, and the Callisto job for the measured sizes).
+    levelEdges: {
+      lookDeg: 0.5, alongDeg: 1, minStep: 3, minSpanDeg: 5, smoothDeg: 0.4, skipLatDeg: 80, rounds: 3,
+    },
+    // The polar hole gets the matched fill (see the Callisto job and fillNoData).
+    noData: { below: 12, mode: 'texture', seam: 0.03, matchTexture: true },
   },
   callisto: {
     src: 'Callisto_Voyager_GalileoSSI_global_mosaic_1km.tif',
@@ -515,6 +531,20 @@ const JOBS = {
     // too: this fills 70 per cent of the source and takes the coarse ground's
     // detail from a fifth of the sharp ground's to a half.
     coverageFill: { fineDeg: 0.12, coarseDeg: 1, windowDeg: 1.5, wideDeg: 2 },
+    // The frames these mosaics are built from carry a calibration offset each,
+    // with the frame's own polygon boundary as a hard step: 41, 33 and 20
+    // counts on Callisto's worst three, on a map whose mean is 58. Closed with
+    // a harmonic correction field, which is the only kind that can close them
+    // without leaving a mark where it stops (see levelEdges).
+    levelEdges: {
+      lookDeg: 0.5, alongDeg: 1, minStep: 3, minSpanDeg: 5, smoothDeg: 0.4, skipLatDeg: 80, rounds: 3,
+    },
+    // The polar hole is a straight-sided polygon and the fill that goes in it
+    // is what a player at close range reads as a rectangle, so it gets the
+    // matched treatment: the mirror line smoothed along longitude instead of
+    // per column, and grain at the octaves the imaged ground measures rather
+    // than one guessed amplitude.
+    noData: { below: 12, mode: 'texture', seam: 0.03, matchTexture: true },
   },
   pluto: {
     src: 'Pluto_NewHorizons_Global_Mosaic_300m_Jul2017_8bit.tif',
@@ -1222,21 +1252,37 @@ async function fillNoData(ras, mask, spec) {
   // mirror line is the running mean of the edge over a few degrees, so
   // neighbouring columns pull from neighbouring rows and the fill comes out
   // as surface rather than as combing.
-  let mirror = null;
+  //
+  // One line per pole, because a hole is wherever the spacecraft did not fly.
+  // Miranda and Ariel are missing their northern halves and Callisto's hole is
+  // over its south pole; a smoothed line built only for the top leaves a
+  // southern hole reflecting each column across its own edge, which is the
+  // combing this exists to stop.
+  const smoothAlong = (v) => {
+    const out = new Float32Array(W);
+    const span = Math.max(1, Math.round(W / 48));
+    for (let x = 0; x < W; x++) {
+      let s = 0;
+      for (let d = -span; d <= span; d++) s += v[(((x + d) % W) + W) % W];
+      out[x] = s / (2 * span + 1);
+    }
+    return out;
+  };
+  let mirrorTop = null;
+  let mirrorBottom = null;
   if (spec.matchTexture) {
     const first = new Float32Array(W);
+    const last = new Float32Array(W);
     for (let x = 0; x < W; x++) {
       let y = 0;
       while (y < H && mask[y * W + x]) y++;
       first[x] = y < H ? y : H / 2;
+      let z = H - 1;
+      while (z >= 0 && mask[z * W + x]) z--;
+      last[x] = z >= 0 ? z : H / 2;
     }
-    mirror = new Float32Array(W);
-    const span = Math.max(1, Math.round(W / 48));
-    for (let x = 0; x < W; x++) {
-      let s = 0;
-      for (let d = -span; d <= span; d++) s += first[(((x + d) % W) + W) % W];
-      mirror[x] = s / (2 * span + 1);
-    }
+    mirrorTop = smoothAlong(first);
+    mirrorBottom = smoothAlong(last);
   }
 
   // Statistics of what WAS measured, for the tone a texture fill settles on.
@@ -1263,7 +1309,7 @@ async function fillNoData(ras, mask, spec) {
       const edge = u < 0 ? d : d < 0 ? u : (y - u <= d - y ? u : d);
       if (edge < 0) { dist[i] = H; continue; } // a column with no data at all
       dist[i] = Math.abs(y - edge);
-      const about = mirror && y < H / 2 ? mirror[x] : edge;
+      const about = mirrorTop ? (y < H / 2 ? mirrorTop[x] : mirrorBottom[x]) : edge;
       let src = Math.round(2 * about - y);
       if (src < 0 || src >= H || mask[src * W + x]) src = 2 * edge - y;
       if (src < 0 || src >= H || mask[src * W + x]) src = edge;
@@ -1280,8 +1326,15 @@ async function fillNoData(ras, mask, spec) {
   // The imaged half's own variation, per scale, and the grain built to match
   // it. Measured after the reflection so the octave blurs read a continuous
   // picture, and over the imaged pixels only so what they measure is surface.
+  // The ladder reaches down to a few pixels. The first cut of this started at
+  // a fiftieth of the map's width, which on an 8K rung is a cell two degrees
+  // across: fine for half a moon seen from orbit, and nothing at all for a
+  // hole in the ground a player is standing off by two diameters, where every
+  // scale below a degree is what the eye is reading.
   const octaves = spec.matchTexture
-    ? textureOctaves(ras, mask, W, H, [Math.max(4, W / 160), Math.max(10, W / 50), Math.max(24, W / 16)])
+    ? textureOctaves(ras, mask, W, H, [
+      Math.max(3, W / 2048), Math.max(6, W / 512), Math.max(16, W / 128), Math.max(48, W / 32),
+    ])
     : null;
   const grainAt = octaves ? noise.matched(octaves) : (x, y) => noise.plain(x, y) * std;
   // What the far field takes its SHAPE from. The reflection at the blur the

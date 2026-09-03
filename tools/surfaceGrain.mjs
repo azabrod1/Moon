@@ -855,17 +855,35 @@ export function findEdges(band, W, H, spec, pxPerDeg, valid = null, only = null)
  * so one crater sitting against the boundary cannot become a ridge on the far
  * side.
  */
-function edgeJump(edge, profileOf, W, H, spec) {
+function edgeJump(edge, profileOf, W, H, spec, pxPerDeg) {
+  // Only along the run the finder measured. The step profile runs the whole
+  // way round the body, and ground on the same row or column as a frame
+  // boundary carries small steps of its own everywhere — a crater wall, an
+  // albedo mark — so a jump condition laid along the entire line turns each
+  // of them into a step in the correction as well, and the field comes out as
+  // a grid of plateaus with straight edges: the very thing this pass removes.
+  // Inside the run the jump is what was measured; over the last stretch at
+  // either end it fades to nothing, so the field closes the boundary where
+  // there is one and has no reason to step anywhere else.
   const len = edge.axis === 'meridian' ? H : W;
+  const circular = edge.axis === 'parallel';
   const soft = profileOf(edge.axis, edge.at);
   const cap = 3 * Math.abs(edge.step);
   const lo = 0.3 * (spec.minStep ?? 3);
   const hi = spec.minStep ?? 3;
+  const span = Math.max(1, Math.min(len, edge.to - edge.from));
+  const taper = Math.max(1, Math.min(Math.floor(span / 2), Math.round((spec.alongDeg ?? 1) * pxPerDeg)));
   const jump = new Float32Array(len);
-  for (let k = 0; k < len; k++) {
+  for (let j = 0; j < span; j++) {
+    const k = circular ? (((edge.from + j) % len) + len) % len : edge.from + j;
+    if (k < 0 || k >= len) continue;
+    let w = 1;
+    if (j < taper) w = (j + 1) / taper;
+    else if (j >= span - taper) w = (span - j) / taper;
+    w = w * w * (3 - 2 * w);
     const v = soft[k];
     const t = Math.min(1, Math.max(0, (Math.abs(v) - lo) / (hi - lo)));
-    jump[k] = Math.max(-cap, Math.min(cap, v)) * (t * t * (3 - 2 * t));
+    jump[k] = Math.max(-cap, Math.min(cap, v)) * (t * t * (3 - 2 * t)) * w;
   }
   return jump;
 }
@@ -902,7 +920,7 @@ function harmonicCorrection(edges, profileOf, W, H, spec, pxPerDeg) {
   // was only half closed.
   const finest = Math.max(1, spec.solveScale
     ?? Math.round(0.2 * (spec.lookDeg ?? 0.5) * pxPerDeg));
-  const lines = edges.map((e) => ({ axis: e.axis, at: e.at, jump: edgeJump(e, profileOf, W, H, spec) }));
+  const lines = edges.map((e) => ({ axis: e.axis, at: e.at, jump: edgeJump(e, profileOf, W, H, spec, pxPerDeg) }));
 
   // Coarsest grid first, doubling up to the finest asked for.
   const grids = [];

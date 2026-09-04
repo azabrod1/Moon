@@ -1509,9 +1509,15 @@ function finishCurves(paths, band, W, H, spec, pxPerDeg, valid, deficit, fineEne
     // look, since the deficit is the SHARE of a piece of ground's variation
     // that sits in its finest band and that share does not move with contrast.
     // So ground a third short of the map's own reference is already a frame
-    // carrying less than the ground beside it, and asking for half throws away
-    // the largest frame boundaries these mosaics have: the worst of them steps
-    // 60 counts over six degrees with 0.37 beside it.
+    // carrying less than the ground beside it.
+    //
+    // A point clearing the bar is not enough on its own: the run it belongs to
+    // still has to reach the minimum span below, and a short boundary whose
+    // reading dips in the middle is cut into pieces that do not. The worst
+    // frame boundary on these mosaics steps sixty counts over six degrees and
+    // reads 0.30 to 0.48 along its length, which clears a third in two pieces
+    // of under three degrees each and is dropped. What reaches a frame that
+    // short is the span rule, not this one.
     for (const v of vertices) {
       if (!v || v.drop) continue;
       const sideDeficit = (sign) => {

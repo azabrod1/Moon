@@ -267,11 +267,25 @@ function planetariumBloomEnabled(): boolean {
 let exposureCurrent = 1;
 let autoExposure = true;
 
+// What the live composer was built for: an identical request is a no-op.
+// The boot builds one at module load and the first mode switch asked for the
+// same one again, which threw away every pass program only to relink it on
+// the next frame.
+let composerBuiltFor: { cam: THREE.Camera; bloom: object; enabled: boolean; lens: number } | null = null;
+
 function buildComposer(
   cam: THREE.Camera,
   bloom: { strength: number; threshold: number },
   enabled = useBloom,
 ) {
+  const built = composerBuiltFor;
+  if (
+    composer && built && built.cam === cam && built.bloom === bloom &&
+    built.enabled === enabled && built.lens === lensRequestedStrength
+  ) {
+    return;
+  }
+  composerBuiltFor = null;
   if (composer) {
     // EffectComposer.dispose() frees only its own ping-pong targets and copy
     // pass — never the added passes. Dispose them here so the bloom pass's mip
@@ -372,6 +386,7 @@ function buildComposer(
   }
 
   composer.addPass(new OutputPass());
+  composerBuiltFor = { cam, bloom, enabled, lens: lensRequestedStrength };
   // The passes link their programs on their first render: have it happen
   // under the loading screen, not on the first visible frame.
   bootRender.requestCoveredRender();
@@ -435,6 +450,11 @@ function drawWorldFrame() {
 // cover, then let every frame draw.
 function revealLoadingScreen() {
   drawWorldFrame();
+  // The draw only queues the GPU's work; on ANGLE-Metal the pipeline states
+  // are built when the draws execute, so wait for that frame to finish before
+  // the fade starts — a stall here is under the cover, one on the first
+  // visible frame is the hitch this gate exists to prevent.
+  renderer.getContext().finish();
   bootRender.markLive();
   document.getElementById('loading-screen')?.classList.add('hidden');
 }

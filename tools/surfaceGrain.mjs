@@ -42,6 +42,23 @@
 //
 // Where the map already carries detail the deficit is zero by construction and
 // the pass does literally nothing: those pixels come out bit-identical.
+//
+// BRIGHTNESS STEPS, which is what the passes below the fill exist for, are the
+// other half of the same fault: each frame in a mosaic carries its own
+// calibration, so its outline is a step in how bright the map says the ground
+// is. Two instruments find them. findEdges scans meridians and parallels and
+// keeps runs of one sign, which is exact for a boundary laid along a map axis.
+// traceCurves follows the outline of the ground the detail deficit reads
+// differently, which is how the boundaries that are neither a row nor a column
+// — and whose step changes sign along their own length — are reached at all.
+// Both hand the same thing to the same solver: a jump to be closed, sample by
+// sample, by the smoothest field that has it.
+//
+// WHAT NEITHER REACHES: a boundary between two frames of equal quality. A step
+// in brightness with no difference in detail either side leaves no run for the
+// scan unless it happens to lie along an axis, and no level set for the trace
+// to seed from. Seeding a curve from the brightness edge itself is the
+// increment that would cover those, and it is not built.
 
 /**
  * Separable box blur, three passes, which is a gaussian to within a per cent.
@@ -294,7 +311,8 @@ function windowEnergy(band, W, H, deg, pxPerDeg, winRows, winPx, valid) {
 }
 
 /**
- * How much the finest band varies in the direction it varies LEAST.
+ * How much the finest band varies in the direction it varies LEAST, discounted
+ * by how one-directional that variation is.
  *
  * The gradient structure tensor of the fine band, averaged over the window and
  * reduced to its smaller eigenvalue. Ground that has been stretched along one
@@ -307,8 +325,23 @@ function windowEnergy(band, W, H, deg, pxPerDeg, winRows, winPx, valid) {
  * way — a degree of longitude is cos(lat) as much ground as a degree of
  * latitude — so an equirect map's own stretch toward the pole is not read as
  * a smear.
+ *
+ * That eigenvalue is a MAGNITUDE, though, and a magnitude can be bought with
+ * contrast. A frame reprojected from a coarser grid keeps plenty of variation
+ * at the fine scale simply by being two or three times as contrasty as the
+ * ground beside it, and its least-varying direction then measures as loud as
+ * real terrain's: on Europa's mosaic a stretched south-polar frame carries 14
+ * counts there against a Galileo swath's 16. What real ground has and a
+ * stretched frame does not is ISOTROPY — cratered and ridged ground crosses
+ * the same amount whichever way it is crossed, measuring 0.82 to 0.96 of the
+ * larger eigenvalue on these mosaics' sharp swaths at the equator and at 70
+ * degrees alike, while the stretched frames measure 0.38 to 0.48. So the count
+ * is discounted by that ratio against what sharp ground itself measures.
+ * A ratio of two eigenvalues is a SHAPE, and contrast cancels out of it.
+ *
+ * `isotropyRef` is that reference; zero leaves the count undiscounted.
  */
-function fineDirectional(band, W, H, fineDeg, stepDeg, pxPerDeg, winRows, winPx, valid) {
+function fineDirectional(band, W, H, fineDeg, stepDeg, pxPerDeg, winRows, winPx, valid, isotropyRef = 0) {
   const n = W * H;
   const r = fineDeg * pxPerDeg;
   let hp = coverageBlur(band, W, H, latScaledRadii(H, r), r, valid);
@@ -357,7 +390,12 @@ function fineDirectional(band, W, H, fineDeg, stepDeg, pxPerDeg, winRows, winPx,
     const yy = syy[i] * k;
     const xy = sxy[i] * k;
     const d = Math.sqrt(Math.max(0, (xx - yy) ** 2 + 4 * xy * xy));
-    out[i] = Math.sqrt(Math.max(0, (xx + yy - d) / 2));
+    const lo = Math.sqrt(Math.max(0, (xx + yy - d) / 2));
+    if (isotropyRef <= 0) { out[i] = lo; continue; }
+    const hi = Math.sqrt(Math.max(0, (xx + yy + d) / 2));
+    // Ground with no variation at either eigenvalue has no shape to measure,
+    // and lo/hi on two numbers that are both rounding error is noise.
+    out[i] = hi > 1e-6 ? lo * Math.min(1, lo / hi / isotropyRef) : 0;
   }
   return out;
 }
@@ -388,7 +426,9 @@ function fineDirectional(band, W, H, fineDeg, stepDeg, pxPerDeg, winRows, winPx,
  * half across holds every direction at once and the tensor reads them as
  * nearly isotropic (anisotropy 0.26 there against 0.11 on cratered ground) —
  * but a mosaic that stretches a frame along a map axis is the other half of
- * the same fault, and an isotropic measure calls it detail.
+ * the same fault, and an isotropic measure calls it detail. It is also
+ * DISCOUNTED by how one-directional it is, which is what stops a stretched
+ * frame buying its way past this with contrast (see fineDirectional).
  *
  * Deficit is 1 - r/r_ref clamped to [0, 1], blurred wide so it changes over
  * degrees rather than over pixels: what it scales is a fill, and a fill that
@@ -411,6 +451,7 @@ export function detailDeficit(band, W, H, spec, pxPerDeg, valid = null) {
 
   let ratio = fineDirectional(
     band, W, H, spec.fineDeg, spec.stepDeg ?? spec.fineDeg, pxPerDeg, winRows, winPx, valid,
+    spec.isotropyRef ?? 0.85,
   );
   const energy = windowEnergy(band, W, H, spec.fineDeg, pxPerDeg, winRows, winPx, valid);
   let coarse = windowEnergy(band, W, H, spec.coarseDeg, pxPerDeg, winRows, winPx, valid);
@@ -713,7 +754,14 @@ export function findEdges(band, W, H, spec, pxPerDeg, valid = null, only = null)
   const alongDeg = spec.alongDeg ?? 1;
   const minStep = spec.minStep ?? 3;
   const minSpanDeg = spec.minSpanDeg ?? 5;
-  const maxEdges = spec.maxEdges ?? 64;
+  // A ceiling on how many boundaries one pass corrects, not a judgement about
+  // which are worth correcting: everything that reaches the list has already
+  // passed the step threshold and the span threshold. Sixty-four was well
+  // under what these mosaics actually carry — the largest of them offers 830
+  // distinct boundaries and was truncated in every round, leaving steps of 15
+  // to 22 counts standing inside a frame whose edge had just been closed — so
+  // it sits above the worst source's own count and stops binding.
+  const maxEdges = spec.maxEdges ?? 1024;
   const smoothDeg = spec.smoothDeg ?? 0.4;
   const ok = (i) => !valid || valid[i];
   const wrapX = (x) => ((x % W) + W) % W;
@@ -840,7 +888,7 @@ export function findEdges(band, W, H, spec, pxPerDeg, valid = null, only = null)
     taken.push(e);
     if (taken.length >= maxEdges) break;
   }
-  return { edges: taken, lowPass: L, profileOf };
+  return { edges: taken, lowPass: L, profileOf, capped: taken.length >= maxEdges };
 }
 
 /**
@@ -912,7 +960,7 @@ function edgeJump(edge, profileOf, W, H, spec, pxPerDeg) {
  * up to a constant, and the constant that keeps the body's albedo where the
  * batch graded it is the one that moves the mean by nothing.
  */
-function harmonicCorrection(edges, profileOf, W, H, spec, pxPerDeg) {
+function harmonicCorrection(edges, profileOf, W, H, spec, pxPerDeg, curves = []) {
   // A fifth of the distance the step is measured over. The field is smooth
   // everywhere except at the boundaries, where it is a step, and a grid whose
   // cells are as wide as the measurement's own reach cannot hold a step: it
@@ -963,6 +1011,7 @@ function harmonicCorrection(edges, profileOf, W, H, spec, pxPerDeg) {
         }
       }
     }
+    if (curves.length) curveConditions(curves, cw, ch, W, H, vx, vy);
 
     // Start from the level below, bilinearly, or from nothing at the coarsest.
     const next = new Float32Array(cw * ch);
@@ -1030,6 +1079,565 @@ function harmonicCorrection(edges, profileOf, W, H, spec, pxPerDeg) {
   return { field: c, grid: grids[grids.length - 1], iterations, residual };
 }
 
+/** Bilinear read of one field at a fractional pixel, wrapping in longitude and
+ *  refusing to answer where any of the four texels is not measured ground: a
+ *  measurement that reaches into a hole is not a measurement of the surface. */
+function makeSampler(W, H, valid) {
+  return (field, x, y) => {
+    if (y < 0 || y > H - 1) return null;
+    const x0 = Math.floor(x);
+    const tx = x - x0;
+    const xa = ((x0 % W) + W) % W;
+    const xb = (xa + 1) % W;
+    const y0 = Math.min(H - 2, Math.max(0, Math.floor(y)));
+    const ty = Math.min(1, Math.max(0, y - y0));
+    if (valid && !(valid[y0 * W + xa] && valid[y0 * W + xb] && valid[(y0 + 1) * W + xa] && valid[(y0 + 1) * W + xb])) return null;
+    const top = field[y0 * W + xa] * (1 - tx) + field[y0 * W + xb] * tx;
+    const bot = field[(y0 + 1) * W + xa] * (1 - tx) + field[(y0 + 1) * W + xb] * tx;
+    return top * (1 - ty) + bot * ty;
+  };
+}
+
+/**
+ * The frame boundaries that are not straight, traced as curves.
+ *
+ * findEdges scans meridians and parallels and keeps the longest run of ONE
+ * sign, which is the right instrument for a frame boundary laid along a map
+ * axis and blind to every other kind. A mosaic's boundaries are frame
+ * outlines: Europa's south-polar one wanders from latitude -67 to -74 across
+ * 48 to 97 east, and the step across it changes sign several times along its
+ * length — 14 counts typically, 40 at its worst, but a signed median of -5 —
+ * so no row or column carries a qualifying run and no ceiling on the scan's
+ * list can reach it.
+ *
+ * So the boundary is followed instead of searched for. Where a frame boundary
+ * shows is where the ground changes CHARACTER, which is what the detail
+ * deficit already measures: the outline of the ground the fill treats
+ * differently is the outline whose edge a player sees. That outline is the
+ * seed. It is the right shape in roughly the right place — the deficit is
+ * blurred over degrees, so its level set can sit a degree off the frame — and
+ * each point is then snapped to where the finest band's energy really steps,
+ * searching the blur's own width either way. A point with no energy step under
+ * it is dropped rather than moved: an albedo boundary is a real feature of the
+ * body and levelling it would take out ground truth.
+ *
+ * Each surviving point carries its own signed step, measured across the curve
+ * with the same instrument the straight lines use. Sign changes are KEPT. One
+ * offset per boundary would leave most of this one standing.
+ *
+ * WHAT THIS DOES NOT REACH: a boundary between two frames of equal quality —
+ * a brightness step with no difference in detail either side — has no deficit
+ * level set to seed from and is not traced. The meridian and parallel scan
+ * still covers those where they are axis-aligned; a seed taken from the
+ * brightness edge itself is the increment that would cover the rest.
+ */
+export function traceCurves(band, W, H, spec, pxPerDeg, valid, deficit, lowPass) {
+  const cfg = spec.curves ?? {};
+  const seedAt = cfg.seedAt ?? 0.6;
+  const searchDeg = cfg.searchDeg ?? 2;
+  const traceDeg = cfg.traceDeg ?? 0.25;
+  const fineDeg = cfg.fineDeg ?? 0.12;
+  const minEnergyJump = cfg.minEnergyJump ?? 0.35;
+  const referenceBelow = cfg.referenceBelow ?? 0.15;
+  const lookDeg = spec.lookDeg ?? 0.5;
+  const alongDeg = spec.alongDeg ?? 1;
+  const minStep = spec.minStep ?? 3;
+  const minSpanDeg = spec.minSpanDeg ?? 5;
+  const skipLat = spec.skipLatDeg ?? 80;
+  const n = W * H;
+  const latOf = (y) => 90 - ((y + 0.5) * 180) / H;
+  const cosAt = (y) => Math.max(0.08, Math.cos((latOf(y) * Math.PI) / 180));
+
+  // --- what the refinement snaps to: the finest band's own energy ----------
+  const fineR = fineDeg * pxPerDeg;
+  const low = coverageBlur(band, W, H, latScaledRadii(H, fineR), fineR, valid);
+  const hp = new Float32Array(n);
+  for (let i = 0; i < n; i++) hp[i] = valid && !valid[i] ? 0 : Math.abs(band[i] - low[i]);
+  // Averaged over well under the distance the snap searches: an energy field
+  // smoothed as widely as the search would put its own slope where the frame
+  // edge is, and the snap would find the blur rather than the boundary.
+  const energyDeg = cfg.energyDeg ?? Math.max(fineDeg, lookDeg / 3);
+  const energyPx = energyDeg * pxPerDeg;
+  const fineEnergy = blurMono(hp, W, H, latScaledRadii(H, energyPx), energyPx);
+  const refSample = [];
+  for (let i = 0; i < n; i += 7) {
+    if ((!valid || valid[i]) && deficit[i] <= referenceBelow) refSample.push(fineEnergy[i]);
+  }
+  refSample.sort((a, b) => a - b);
+  const refEnergy = refSample.length ? refSample[refSample.length >> 1] : 0;
+  const jumpFloor = minEnergyJump * refEnergy;
+
+  const sampleAt = makeSampler(W, H, valid);
+
+  // --- the seed: the deficit's own level set, by marching squares ----------
+  const tw = Math.max(16, Math.round(360 / traceDeg));
+  const th = Math.max(8, Math.round(180 / traceDeg));
+  const sx = W / tw;
+  const sy = H / th;
+  // Which field's level set the outline is taken from. The deficit's is the
+  // outline of ground the fill treats differently. It cannot separate two
+  // deficient frames from each other, though — a coarse frame beside a smeared
+  // one is one region to it — and that is a boundary a player sees, so the
+  // finest band's own energy is available as a second seed: it separates any
+  // two frames that carry different amounts of detail, whatever the deficit
+  // makes of either. Contours from both are traced and the same rejection
+  // applies to each, so a seed that is not a frame boundary costs nothing.
+  const fields = (cfg.seedFrom ?? ['energy']).map((which) => (which === 'energy'
+    ? { field: fineEnergy, level: (cfg.energyAt ?? 0.5) * refEnergy }
+    : { field: deficit, level: seedAt }));
+  const grids = fields.map(({ field, level }) => {
+    const grid = new Float32Array(tw * th);
+    for (let j = 0; j < th; j++) {
+      const y = Math.min(H - 1, Math.max(0, Math.round((j + 0.5) * sy - 0.5)));
+      for (let i = 0; i < tw; i++) {
+        const x = ((Math.round((i + 0.5) * sx - 0.5) % W) + W) % W;
+        grid[j * tw + i] = field[y * W + x];
+      }
+    }
+    return { grid, level };
+  });
+  // Sample points are the marching cells' corners; a cell spans (i,j)..(i+1,j+1),
+  // wrapping in x because the raster is a globe and not closing in y because
+  // the poles are not an edge the contour may run along.
+  // Marching squares on one field's level set. Sample points are the cells'
+  // corners, wrapping in x because the raster is a globe and not closing in y
+  // because a pole is not an edge a contour may run along.
+  const contoursOf = (grid, level) => {
+    const segs = [];
+    const key = (kind, i, j) => `${kind}:${((i % tw) + tw) % tw},${j}`;
+    const lerp = (a, b) => (Math.abs(b - a) < 1e-12 ? 0.5 : (level - a) / (b - a));
+    for (let j = 0; j < th - 1; j++) {
+      for (let i = 0; i < tw; i++) {
+        const i1 = (i + 1) % tw;
+        const d0 = grid[j * tw + i], d1 = grid[j * tw + i1];
+        const d2 = grid[(j + 1) * tw + i1], d3 = grid[(j + 1) * tw + i];
+        const code = (d0 >= level ? 1 : 0) | (d1 >= level ? 2 : 0) | (d2 >= level ? 4 : 0) | (d3 >= level ? 8 : 0);
+        if (code === 0 || code === 15) continue;
+        const T = { k: key('H', i, j), x: i + lerp(d0, d1), y: j };
+        const B = { k: key('H', i, j + 1), x: i + lerp(d3, d2), y: j + 1 };
+        const L = { k: key('V', i, j), x: i, y: j + lerp(d0, d3) };
+        const R = { k: key('V', i + 1, j), x: i + 1, y: j + lerp(d1, d2) };
+        const pairs = [];
+        switch (code) {
+          case 1: case 14: pairs.push([L, T]); break;
+          case 2: case 13: pairs.push([T, R]); break;
+          case 3: case 12: pairs.push([L, R]); break;
+          case 4: case 11: pairs.push([R, B]); break;
+          case 6: case 9: pairs.push([T, B]); break;
+          case 7: case 8: pairs.push([L, B]); break;
+          // The two saddles, settled by whether the middle of the cell is
+          // inside: either resolution draws a legal contour, and the cell's
+          // own average is the one that agrees with the field it came from.
+          case 5: if ((d0 + d1 + d2 + d3) / 4 >= level) { pairs.push([L, T], [R, B]); } else { pairs.push([L, B], [T, R]); } break;
+          case 10: if ((d0 + d1 + d2 + d3) / 4 >= level) { pairs.push([T, R], [L, B]); } else { pairs.push([L, T], [R, B]); } break;
+          default: break;
+        }
+        for (const [a, b] of pairs) segs.push({ ka: a.k, pa: a, kb: b.k, pb: b });
+      }
+    }
+
+    // Link the segments end to end. Every contour point sits on one grid edge,
+    // and a grid edge is shared by the two cells either side of it, so the edge
+    // is the identity that joins one cell's segment to the next one's.
+    const atKey = new Map();
+    segs.forEach((seg, idx) => {
+      for (const k of [seg.ka, seg.kb]) {
+        if (!atKey.has(k)) atKey.set(k, []);
+        atKey.get(k).push(idx);
+      }
+    });
+    const used = new Uint8Array(segs.length);
+    const walk = (startIdx, startKey) => {
+      const pts = [];
+      let idx = startIdx;
+      let from2 = startKey;
+      for (;;) {
+        const seg = segs[idx];
+        used[idx] = 1;
+        const here = seg.ka === from2 ? seg.pa : seg.pb;
+        const next = seg.ka === from2 ? seg.kb : seg.ka;
+        const there = seg.ka === from2 ? seg.pb : seg.pa;
+        if (!pts.length) pts.push(here);
+        pts.push(there);
+        const options = (atKey.get(next) ?? []).filter((o) => o !== idx && !used[o]);
+        if (!options.length) return { pts, endKey: next };
+        idx = options[0];
+        from2 = next;
+      }
+    };
+    const out = [];
+    segs.forEach((seg, idx) => {
+      if (used[idx]) return;
+      // Start from a loose end where there is one, so an open contour comes out
+      // whole rather than as two halves meeting in the middle.
+      const openEnd = [seg.ka, seg.kb].find((k) => (atKey.get(k) ?? []).length < 2);
+      const forward = walk(idx, openEnd === seg.kb ? seg.kb : seg.ka);
+      let pts = forward.pts;
+      if (openEnd === seg.kb) pts.reverse();
+      if (!openEnd) {
+        const back = (atKey.get(forward.endKey) ?? []).filter((o) => !used[o]);
+        if (back.length) pts = pts.concat(walk(back[0], forward.endKey).pts.slice(1));
+      }
+      if (pts.length < 2) return;
+      const a = pts[0], b = pts[pts.length - 1];
+      pts.closed = Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.y - b.y) < 1e-6;
+      out.push(pts);
+    });
+    return out;
+  };
+  const rawCurves = grids.flatMap(({ grid, level }) => contoursOf(grid, level));
+
+  // --- grid points to source pixels, unwrapped in x -----------------------
+  const toSource = (p) => ({ x: (p.x + 0.5) * sx, y: (p.y + 0.5) * sy });
+  const curves = [];
+  for (const pts of rawCurves) {
+    const path = pts.map(toSource);
+    path.closed = pts.closed;
+    for (let k = 1; k < path.length; k++) {
+      // A contour that runs off one side of the map comes back on the other;
+      // unwrapped here so arc length and the walk through the solve grid are
+      // both continuous, and folded back at the end.
+      while (path[k].x - path[k - 1].x > W / 2) path[k].x -= W;
+      while (path[k].x - path[k - 1].x < -W / 2) path[k].x += W;
+    }
+    curves.push(path);
+  }
+  return finishCurves(curves, band, W, H, spec, pxPerDeg, valid, deficit, fineEnergy, lowPass, {
+    jumpFloor, searchDeg, lookDeg, energyDeg, cfg2: cfg.snapBaseline, alongDeg, minStep, minSpanDeg, skipLat, sampleAt, cosAt, latOf,
+  });
+}
+
+/** Ground degrees between two source pixels on an equirect raster: a degree of
+ *  longitude is cos(lat) as much ground as a degree of latitude. */
+function groundSpan(ax, ay, bx, by, H, pxPerDeg) {
+  const lat = ((90 - (((ay + by) / 2 + 0.5) * 180) / H) * Math.PI) / 180;
+  const c = Math.max(0.08, Math.cos(lat));
+  return Math.hypot((bx - ax) * c, by - ay) / pxPerDeg;
+}
+
+/**
+ * A traced outline turned into the thing the solve can use: points at a fixed
+ * spacing along the ground, each snapped to where the finest band's energy
+ * really steps, each carrying its own signed step across the curve.
+ *
+ * A point is DROPPED rather than moved where nothing steps under it, where the
+ * measurement would reach into unmeasured ground, or where the latitude is
+ * past what the instrument can read — so a curve is cut at the edge of the
+ * data instead of following its polygon, and an albedo boundary with the same
+ * texture either side leaves no curve at all. What survives is split into runs
+ * and the short ones go, the same span rule the straight lines answer to.
+ */
+function finishCurves(paths, band, W, H, spec, pxPerDeg, valid, deficit, fineEnergy, lowPass, ctx) {
+  const { jumpFloor, searchDeg, lookDeg, energyDeg, cfg2, alongDeg, minStep, minSpanDeg, skipLat, sampleAt, cosAt, latOf } = ctx;
+  const out = [];
+  const spacingPx = lookDeg * pxPerDeg;
+  for (const path of paths) {
+    // Resample at a fixed spacing of GROUND, so a curve near the pole is not
+    // sampled ten times as often as one at the equator.
+    const walk = [];
+    let carry = 0;
+    walk.closed = path.closed;
+    walk.push({ x: path[0].x, y: path[0].y });
+    for (let k = 1; k < path.length; k++) {
+      const a = path[k - 1], b = path[k];
+      const len = groundSpan(a.x, a.y, b.x, b.y, H, pxPerDeg);
+      if (!(len > 0)) continue;
+      let t = (lookDeg - carry) / len;
+      while (t <= 1) {
+        walk.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+        t += lookDeg / len;
+      }
+      carry = (carry + len) % lookDeg;
+    }
+    if (walk.length < 3) continue;
+
+    // The normal, from the deficit's own gradient: it points from the ground
+    // that lost its detail toward the ground that kept it, which fixes the
+    // sign of every step measured across the curve without the direction the
+    // outline happened to be walked in mattering at all.
+    const h = Math.max(1, Math.round(0.5 * spacingPx));
+    const vertices = [];
+    vertices.closed = walk.closed;
+    for (const p of walk) {
+      const lat = latOf(p.y);
+      if (Math.abs(lat) > skipLat) { vertices.push(null); continue; }
+      const c = cosAt(p.y);
+      const gx = sampleAt(deficit, p.x + h, p.y);
+      const gxm = sampleAt(deficit, p.x - h, p.y);
+      const gy = sampleAt(deficit, p.x, p.y + h);
+      const gym = sampleAt(deficit, p.x, p.y - h);
+      if (gx === null || gxm === null || gy === null || gym === null) { vertices.push(null); continue; }
+      let ne = (gx - gxm) / c;
+      let nn = -(gy - gym);
+      const mag = Math.hypot(ne, nn);
+      if (!(mag > 1e-9)) { vertices.push(null); continue; }
+      // Away from the deficit, toward the ground that still has its detail.
+      ne = -ne / mag; nn = -nn / mag;
+      const ox = (ne * pxPerDeg) / c;
+      const oy = -nn * pxPerDeg;
+      vertices.push({ x: p.x, y: p.y, ox, oy });
+    }
+
+    // Snap to the energy step, over the width the deficit was blurred by: its
+    // level set is the right shape and can sit a degree off the frame edge.
+    for (const v of vertices) {
+      if (!v) continue;
+      // Where the energy steps, read as a level crossing rather than as the
+      // biggest difference. Both sides of a frame boundary are plateaus with a
+      // transition between them, and the transition is not symmetric — the
+      // low pass the fine band is taken against reaches across the boundary,
+      // so the picture's own edge sits inside it — which puts the largest
+      // difference a few pixels off the edge and puts the half-way level on
+      // it. The two plateaus are measured at the ends of the search, and the
+      // crossing nearest the seed is the boundary.
+      const ts = [];
+      const es = [];
+      for (let t = -searchDeg; t <= searchDeg + 1e-9; t += lookDeg / 8) {
+        const e = sampleAt(fineEnergy, v.x + v.ox * t, v.y + v.oy * t);
+        if (e === null) { if (ts.length && ts[ts.length - 1] < 0) { ts.length = 0; es.length = 0; continue; } break; }
+        ts.push(t); es.push(e);
+      }
+      if (ts.length < 8 || ts[0] > 0 || ts[ts.length - 1] < 0) { v.drop = true; continue; }
+      const plateau = (from2, to2) => {
+        const v2 = es.slice(from2, to2).sort((a, b) => a - b);
+        return v2[v2.length >> 1];
+      };
+      const k = Math.max(2, Math.round(ts.length / 6));
+      const near0 = plateau(0, k);
+      const near1 = plateau(ts.length - k, ts.length);
+      if (Math.abs(near1 - near0) < jumpFloor) { v.drop = true; continue; }
+      const mid = (near0 + near1) / 2;
+      let bestT = null;
+      for (let i = 1; i < ts.length; i++) {
+        const a = es[i - 1] - mid;
+        const b = es[i] - mid;
+        if (a === 0) { if (bestT === null || Math.abs(ts[i - 1]) < Math.abs(bestT)) bestT = ts[i - 1]; continue; }
+        if (a * b > 0) continue;
+        const t = ts[i - 1] + ((ts[i] - ts[i - 1]) * a) / (a - b);
+        if (bestT === null || Math.abs(t) < Math.abs(bestT)) bestT = t;
+      }
+      if (bestT === null) { v.drop = true; continue; }
+      v.snap = bestT;
+    }
+    // A frame edge is a smooth curve, so how far each point had to move to
+    // reach it varies smoothly along it. A per-point maximum does not: the
+    // energy is measured off a picture and its peak jitters by a few pixels
+    // either way. Taking the median of the neighbours' offsets throws that
+    // away and keeps the shape.
+    const snapR = Math.max(1, Math.round(alongDeg / lookDeg));
+    const snaps = vertices.map((v) => (v && !v.drop ? v.snap : null));
+    vertices.forEach((v, k) => {
+      if (!v || v.drop) return;
+      const near = [];
+      for (let j = -snapR; j <= snapR; j++) {
+        const m = snaps[k + j];
+        if (m !== null && m !== undefined) near.push(m);
+      }
+      near.sort((a, b) => a - b);
+      const t = near[near.length >> 1];
+      v.x += v.ox * t;
+      v.y += v.oy * t;
+    });
+
+    // The step across the curve, by the instrument the straight lines use.
+    for (const v of vertices) {
+      if (!v || v.drop) continue;
+      const s = curveStepAt(v, lowPass, lookDeg, sampleAt);
+      if (s === null) { v.drop = true; continue; }
+      v.step = s;
+    }
+
+    // Runs of surviving points, long enough to be a boundary.
+    let run = [];
+    let dropped = false;
+    const flush = () => {
+      if (run.length >= 3) {
+        let span = 0;
+        for (let k = 1; k < run.length; k++) span += groundSpan(run[k - 1].x, run[k - 1].y, run[k].x, run[k].y, H, pxPerDeg);
+        // Closed only where nothing was dropped: a run that starts and ends at
+        // a rejection has two ends however the contour it came from began.
+        const closed = vertices.closed && !dropped && run.length === vertices.length;
+        if (span >= minSpanDeg) {
+          out.push({ points: simplifyCurve(run, Math.max(1, 0.1 * spacingPx)), spanDeg: span, closed });
+        }
+      }
+      run = [];
+    };
+    for (const v of vertices) {
+      if (!v || v.drop) { dropped = true; flush(); } else run.push(v);
+    }
+    flush();
+  }
+  for (const c of out) {
+    shapeCurveJump(c, spec, lookDeg, alongDeg, minStep);
+    // Kept so a later round's re-measurement can be read against what the
+    // boundary carried when it was found.
+    c.firstMedianStep = c.medianStep;
+  }
+  return out;
+}
+
+/** The jump across one point of a curve: the difference over the near pair,
+ *  less the slope the two sides carry into it, exactly as a straight line's
+ *  step is measured. Null where any of the four samples is not measured
+ *  ground, which is what cuts a curve at the edge of the data. */
+function curveStepAt(v, lowPass, lookDeg, sampleAt) {
+  const d = lookDeg;
+  const a1 = sampleAt(lowPass, v.x + v.ox * d, v.y + v.oy * d);
+  const a0 = sampleAt(lowPass, v.x - v.ox * d, v.y - v.oy * d);
+  const b1 = sampleAt(lowPass, v.x + v.ox * 3 * d, v.y + v.oy * 3 * d);
+  const b0 = sampleAt(lowPass, v.x - v.ox * 3 * d, v.y - v.oy * 3 * d);
+  if (a1 === null || a0 === null || b1 === null || b0 === null) return null;
+  return 1.5 * (a1 - a0) - 0.5 * (b1 - b0);
+}
+
+/** Douglas-Peucker on the geometry, with the jump held to the same test: a
+ *  point is only dropped where the straight line between its neighbours is
+ *  within half a solve cell of it AND carries the step it carries, so a
+ *  boundary whose step changes sign along it cannot be simplified into one
+ *  that does not. */
+function simplifyCurve(points, tol) {
+  const keep = new Uint8Array(points.length);
+  keep[0] = 1; keep[points.length - 1] = 1;
+  const stack = [[0, points.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop();
+    if (b - a < 2) continue;
+    const pa = points[a], pb = points[b];
+    const dx = pb.x - pa.x, dy = pb.y - pa.y;
+    const len = Math.hypot(dx, dy) || 1;
+    let worst = 0, at = -1;
+    for (let k = a + 1; k < b; k++) {
+      const p = points[k];
+      const dist = Math.abs(dy * (p.x - pa.x) - dx * (p.y - pa.y)) / len;
+      const t = (b - a) ? (k - a) / (b - a) : 0;
+      const stepMiss = Math.abs(p.step - (pa.step * (1 - t) + pb.step * t));
+      const score = Math.max(dist / tol, stepMiss / 0.5);
+      if (score > worst) { worst = score; at = k; }
+    }
+    if (worst > 1 && at > 0) { keep[at] = 1; stack.push([a, at], [at, b]); }
+  }
+  return points.filter((p, k) => keep[k]);
+}
+
+/** The jump a curve's correction carries, point by point: smoothed along the
+ *  curve, capped at three times what this boundary typically steps so one
+ *  crater against it cannot become a ridge, faded out below a third of the
+ *  threshold, and tapered to nothing at each end so the field has nowhere to
+ *  stop abruptly. A point where the step has crossed zero simply carries
+ *  zero — the condition is per point and needs no case of its own. */
+function shapeCurveJump(curve, spec, lookDeg, alongDeg, minStep) {
+  const pts = curve.points;
+  const r = Math.max(1, Math.round(alongDeg / lookDeg));
+  const soft = pts.map((_, k) => {
+    let sum = 0, count = 0;
+    for (let j = -r; j <= r; j++) {
+      let m = k + j;
+      if (curve.closed) m = ((m % pts.length) + pts.length) % pts.length;
+      else if (m < 0 || m >= pts.length) continue;
+      sum += pts[m].step; count++;
+    }
+    return sum / count;
+  });
+  const mags = soft.map(Math.abs).sort((a, b) => a - b);
+  const cap = 3 * (mags[mags.length >> 1] || 0);
+  const lo = 0.3 * minStep;
+  const hi = minStep;
+  const taper = Math.max(1, Math.min(Math.floor(pts.length / 2), r));
+  pts.forEach((p, k) => {
+    // A closed curve has no end to fade at: fading one would put a gap in the
+    // correction at an arbitrary point of a boundary that has no such point.
+    let w = 1;
+    if (!curve.closed) {
+      if (k < taper) w = (k + 1) / taper;
+      else if (k >= pts.length - taper) w = (pts.length - k) / taper;
+    }
+    w = w * w * (3 - 2 * w);
+    const v = soft[k];
+    const t = Math.min(1, Math.max(0, (Math.abs(v) - lo) / Math.max(1e-6, hi - lo)));
+    p.smoothed = v;
+    p.jump = Math.max(-cap, Math.min(cap, v)) * (t * t * (3 - 2 * t)) * w;
+  });
+  curve.medianStep = mags[mags.length >> 1] || 0;
+}
+
+/** Measure a traced curve's steps again on the band as it stands now. The
+ *  geometry does not move between rounds — the correction is smooth over
+ *  degrees and cannot shift a frame boundary — so only the size of the jump
+ *  is asked for a second time. */
+export function remeasureCurves(curves, lowPass, spec, pxPerDeg, sampleAt) {
+  const lookDeg = spec.lookDeg ?? 0.5;
+  const alongDeg = spec.alongDeg ?? 1;
+  const minStep = spec.minStep ?? 3;
+  for (const c of curves) {
+    for (const v of c.points) {
+      const s = curveStepAt(v, lowPass, lookDeg, sampleAt);
+      v.step = s === null ? 0 : s;
+    }
+    shapeCurveJump(c, spec, lookDeg, alongDeg, minStep);
+  }
+}
+
+/**
+ * A traced curve's conditions, written into the solve grid.
+ *
+ * The relaxation asks for one number per pair of neighbouring cells: the
+ * difference the correction must have across that pair. So the curve is walked
+ * through the grid of cell CENTRES, and every pair whose centre-to-centre link
+ * it crosses is charged the whole jump at the crossing, with the sign taken
+ * from which way the curve's normal points along that link's axis. A shallow
+ * diagonal crosses many more vertical links than horizontal ones and is
+ * charged on each — that staircase is what the grid can represent, and
+ * charging a fraction of each would leave every crossing short. A pair the
+ * curve crosses twice gets the sum, which is nothing where it doubles back.
+ */
+function curveConditions(curves, cw, ch, W, H, vx, vy) {
+  for (const curve of curves) {
+    const pts = curve.points;
+    const last = curve.closed ? pts.length + 1 : pts.length;
+    for (let k = 1; k < last; k++) {
+      const a = pts[k - 1], b = pts[k % pts.length];
+      const gx0 = (a.x * cw) / W - 0.5, gy0 = (a.y * ch) / H - 0.5;
+      const gx1 = (b.x * cw) / W - 0.5, gy1 = (b.y * ch) / H - 0.5;
+      const at = (t) => ({
+        jump: a.jump * (1 - t) + b.jump * t,
+        ox: a.ox * (1 - t) + b.ox * t,
+        oy: a.oy * (1 - t) + b.oy * t,
+      });
+      // Horizontal pairs: where the curve crosses the line of cell centres at
+      // a whole row, it separates that row's cell from the one to its right.
+      if (gy1 !== gy0) {
+        const lo = Math.min(gy0, gy1), hi = Math.max(gy0, gy1);
+        for (let m = Math.ceil(lo); m <= Math.floor(hi); m++) {
+          if (m < 0 || m >= ch) continue;
+          const t = (m - gy0) / (gy1 - gy0);
+          if (t < 0 || t > 1) continue;
+          const gxc = gx0 + (gx1 - gx0) * t;
+          const cell = Math.floor(gxc);
+          const { jump, ox } = at(t);
+          const right = ((((cell + 1) % cw) + cw) % cw);
+          vx[m * cw + right] += -jump * Math.sign(ox);
+        }
+      }
+      // Vertical pairs: a crossing of a whole column of cell centres separates
+      // that column's cell from the one below it.
+      if (gx1 !== gx0) {
+        const lo = Math.min(gx0, gx1), hi = Math.max(gx0, gx1);
+        for (let k2 = Math.ceil(lo); k2 <= Math.floor(hi); k2++) {
+          const t = (k2 - gx0) / (gx1 - gx0);
+          if (t < 0 || t > 1) continue;
+          const gyc = gy0 + (gy1 - gy0) * t;
+          const cell = Math.floor(gyc);
+          if (cell < 0 || cell + 1 >= ch) continue;
+          const { jump, oy } = at(t);
+          const col = (((k2 % cw) + cw) % cw);
+          vy[(cell + 1) * cw + col] += -jump * Math.sign(oy);
+        }
+      }
+    }
+  }
+}
+
 /**
  * Close a map's straight brightness steps, in place.
  *
@@ -1037,8 +1645,13 @@ function harmonicCorrection(edges, profileOf, W, H, spec, pxPerDeg) {
  * relaxation sweeps that took, what the solve had left over, and how far from
  * the mean the correction reaches.
  */
-export function levelEdges(band, W, H, spec, pxPerDeg, valid = null) {
+export function levelEdges(band, W, H, spec, pxPerDeg, valid = null, deficit = null) {
   const found = [];
+  // Traced once, on the band as it arrives. A harmonic correction is smooth
+  // over degrees and cannot move a frame boundary, so what a later round needs
+  // is the same curve measured again, not a new one.
+  let curves = null;
+  const sampleAt = spec.curves && deficit ? makeSampler(W, H, valid) : null;
   // More than one pass, because the instrument that measures a step under-reads
   // it: the low pass it measures on is a good fraction of the distance it looks
   // either side, so a boundary is not fully resolved at the near samples and a
@@ -1050,10 +1663,18 @@ export function levelEdges(band, W, H, spec, pxPerDeg, valid = null) {
   let residual = 0;
   let peak = 0;
   let grid = null;
+  const perRound = [];
+  let capped = false;
   for (let round = 0; round < rounds; round++) {
-    const { edges, profileOf } = findEdges(band, W, H, spec, pxPerDeg, valid);
-    if (!edges.length) break;
-    const solved = harmonicCorrection(edges, profileOf, W, H, spec, pxPerDeg);
+    const { edges, profileOf, capped: hitCap, lowPass } = findEdges(band, W, H, spec, pxPerDeg, valid);
+    if (spec.curves && deficit) {
+      if (!curves) curves = traceCurves(band, W, H, spec, pxPerDeg, valid, deficit, lowPass);
+      else remeasureCurves(curves, lowPass, spec, pxPerDeg, sampleAt);
+    }
+    if (!edges.length && !(curves && curves.length)) break;
+    perRound.push(edges.length);
+    if (hitCap) capped = true;
+    const solved = harmonicCorrection(edges, profileOf, W, H, spec, pxPerDeg, curves ?? []);
     iterations += solved.iterations;
     residual = solved.residual;
     grid = solved.grid;
@@ -1080,7 +1701,7 @@ export function levelEdges(band, W, H, spec, pxPerDeg, valid = null) {
     }
     found.push(...edges.map((e) => ({ ...e, round })));
   }
-  return { edges: found, iterations, residual, peak, grid };
+  return { edges: found, iterations, residual, peak, grid, perRound, capped, curves: curves ?? [] };
 }
 
 /** Running-mean smoothing of one profile, `circular` for a profile that runs

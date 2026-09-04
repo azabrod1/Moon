@@ -48,17 +48,19 @@
 // calibration, so its outline is a step in how bright the map says the ground
 // is. Two instruments find them. findEdges scans meridians and parallels and
 // keeps runs of one sign, which is exact for a boundary laid along a map axis.
-// traceCurves follows the outline of the ground the detail deficit reads
-// differently, which is how the boundaries that are neither a row nor a column
-// — and whose step changes sign along their own length — are reached at all.
-// Both hand the same thing to the same solver: a jump to be closed, sample by
-// sample, by the smoothest field that has it.
+// traceCurves follows the contour where the finest band's energy changes and
+// keeps the stretches of it that have smeared ground on one side, which is how
+// the boundaries that are neither a row nor a column — and whose step changes
+// sign along their own length — are reached at all. Both hand the same thing to
+// the same solver: a jump to be closed, sample by sample, by the smoothest
+// field that has it.
 //
 // WHAT NEITHER REACHES: a boundary between two frames of equal quality. A step
 // in brightness with no difference in detail either side leaves no run for the
-// scan unless it happens to lie along an axis, and no level set for the trace
-// to seed from. Seeding a curve from the brightness edge itself is the
-// increment that would cover those, and it is not built.
+// scan unless it happens to lie along an axis, and nothing for the trace to
+// keep, since neither side of it is a smear. Seeding a curve from the
+// brightness edge itself, with a guard that is not a measurement of detail, is
+// the increment that would cover those, and it is not built.
 
 /**
  * Separable box blur, three passes, which is a gaussian to within a per cent.
@@ -982,6 +984,12 @@ function harmonicCorrection(edges, profileOf, W, H, spec, pxPerDeg, curves = [])
   let c = null;
   let iterations = 0;
   let residual = 0;
+  // Whether the level just solved reached its tolerance, and how many levels
+  // did not. An unconverged relaxation is not the harmonic field it claims to
+  // be and is BIGGER than that field, so a run that does this silently moves
+  // more ground than it was asked to and nothing in the log bounds it.
+  let converged = true;
+  let unconverged = 0;
   for (let g = 0; g < grids.length; g++) {
     const { cw, ch } = grids[g];
     const sx = W / cw;
@@ -1046,6 +1054,7 @@ function harmonicCorrection(edges, profileOf, W, H, spec, pxPerDeg, curves = [])
     // one moves ground that had nothing wrong with it.
     const omega = spec.omega ?? 1.5;
     const sweeps = g === 0 ? (spec.solveSweeps ?? 4000) : (spec.refineSweeps ?? 600);
+    converged = false;
     for (let s = 0; s < sweeps; s++) {
       let worst = 0;
       for (let cy = 0; cy < ch; cy++) {
@@ -1066,8 +1075,9 @@ function harmonicCorrection(edges, profileOf, W, H, spec, pxPerDeg, curves = [])
       }
       iterations++;
       residual = worst;
-      if (worst < (spec.solveTolerance ?? 0.01)) break;
+      if (worst < (spec.solveTolerance ?? 0.01)) { converged = true; break; }
     }
+    if (!converged) unconverged++;
     // The gauge, at every level, so the interpolation into the next one does
     // not carry a drift with it.
     let mean = 0;
@@ -1076,7 +1086,7 @@ function harmonicCorrection(edges, profileOf, W, H, spec, pxPerDeg, curves = [])
     for (let i = 0; i < c.length; i++) c[i] -= mean;
   }
 
-  return { field: c, grid: grids[grids.length - 1], iterations, residual };
+  return { field: c, grid: grids[grids.length - 1], iterations, residual, converged, unconverged };
 }
 
 /** Bilinear read of one field at a fractional pixel, wrapping in longitude and
@@ -1098,6 +1108,12 @@ function makeSampler(W, H, valid) {
   };
 }
 
+/** Every key `spec.curves` may carry. */
+const CURVE_KEYS = [
+  'seedAt', 'seedFrom', 'searchDeg', 'traceDeg', 'fineDeg', 'energyAt', 'energyDeg',
+  'minEnergyJump', 'referenceBelow', 'sideDeficitMin', 'sideBandDeg', 'sideOffsetDeg',
+];
+
 /**
  * The frame boundaries that are not straight, traced as curves.
  *
@@ -1111,25 +1127,38 @@ function makeSampler(W, H, valid) {
  * list can reach it.
  *
  * So the boundary is followed instead of searched for. Where a frame boundary
- * shows is where the ground changes CHARACTER, which is what the detail
- * deficit already measures: the outline of the ground the fill treats
- * differently is the outline whose edge a player sees. That outline is the
- * seed. It is the right shape in roughly the right place — the deficit is
- * blurred over degrees, so its level set can sit a degree off the frame — and
- * each point is then snapped to where the finest band's energy really steps,
- * searching the blur's own width either way. A point with no energy step under
- * it is dropped rather than moved: an albedo boundary is a real feature of the
- * body and levelling it would take out ground truth.
+ * shows is where the ground changes CHARACTER, and the finest band's own
+ * energy is what measures that: its contour separates any two frames carrying
+ * different amounts of detail, whatever the detail deficit makes of either.
+ * That contour is the seed — the deficit's level set is available as a second
+ * one, which finds the outline of the ground the fill treats differently — and
+ * each point is then snapped to where the energy really steps, searching a
+ * couple of degrees either way, since a contour taken off a field blurred over
+ * degrees can sit a degree off the frame. A point with no energy step under it
+ * is dropped rather than moved.
+ *
+ * An energy step is not on its own a reason to level anything, though, because
+ * the seed IS an energy contour: seed and guard would be the same signal, and
+ * two real terrains of different roughness meeting along a contact — which
+ * every one of these bodies has — would answer both. What a frame boundary has
+ * and a contact does not is a SMEAR on one side of it. So the detail deficit
+ * is read in a band either side of the curve, offset far enough out to be
+ * clear of the boundary's own transition, and a point is kept only where one
+ * of those two bands is ground the fill is already treating as deficient.
+ * Ground the mosaic really imaged on both sides leaves no curve however its
+ * energies differ: an albedo or terrain boundary is a real feature of the body
+ * and levelling it would take out ground truth.
  *
  * Each surviving point carries its own signed step, measured across the curve
  * with the same instrument the straight lines use. Sign changes are KEPT. One
  * offset per boundary would leave most of this one standing.
  *
  * WHAT THIS DOES NOT REACH: a boundary between two frames of equal quality —
- * a brightness step with no difference in detail either side — has no deficit
- * level set to seed from and is not traced. The meridian and parallel scan
- * still covers those where they are axis-aligned; a seed taken from the
- * brightness edge itself is the increment that would cover the rest.
+ * a brightness step with no difference in detail either side — has no smeared
+ * side, so it is not kept even where the energy happens to seed one. The
+ * meridian and parallel scan still covers those where they are axis-aligned; a
+ * seed taken from the brightness edge itself, guarded by something other than
+ * an energy step, is the increment that would cover the rest.
  */
 export function traceCurves(band, W, H, spec, pxPerDeg, valid, deficit, lowPass) {
   const cfg = spec.curves ?? {};
@@ -1139,6 +1168,14 @@ export function traceCurves(band, W, H, spec, pxPerDeg, valid, deficit, lowPass)
   const fineDeg = cfg.fineDeg ?? 0.12;
   const minEnergyJump = cfg.minEnergyJump ?? 0.35;
   const referenceBelow = cfg.referenceBelow ?? 0.15;
+  const sideDeficitMin = cfg.sideDeficitMin ?? 0.45;
+  const sideBandDeg = cfg.sideBandDeg ?? 0.5;
+  const sideOffsetDeg = cfg.sideOffsetDeg ?? 0.3;
+  // A job spec is plain JavaScript with nothing checking it, so a key spelled
+  // wrong here would quietly change what the pass levels and report nothing.
+  for (const key of Object.keys(cfg)) {
+    if (!CURVE_KEYS.includes(key)) throw new Error(`traceCurves: unknown key "${key}" in spec.curves`);
+  }
   const lookDeg = spec.lookDeg ?? 0.5;
   const alongDeg = spec.alongDeg ?? 1;
   const minStep = spec.minStep ?? 3;
@@ -1303,7 +1340,8 @@ export function traceCurves(band, W, H, spec, pxPerDeg, valid, deficit, lowPass)
     curves.push(path);
   }
   return finishCurves(curves, band, W, H, spec, pxPerDeg, valid, deficit, fineEnergy, lowPass, {
-    jumpFloor, searchDeg, lookDeg, energyDeg, cfg2: cfg.snapBaseline, alongDeg, minStep, minSpanDeg, skipLat, sampleAt, cosAt, latOf,
+    jumpFloor, searchDeg, lookDeg, sideDeficitMin, sideBandDeg, sideOffsetDeg,
+    alongDeg, minStep, minSpanDeg, skipLat, sampleAt, cosAt, latOf,
   });
 }
 
@@ -1320,16 +1358,27 @@ function groundSpan(ax, ay, bx, by, H, pxPerDeg) {
  * spacing along the ground, each snapped to where the finest band's energy
  * really steps, each carrying its own signed step across the curve.
  *
- * A point is DROPPED rather than moved where nothing steps under it, where the
- * measurement would reach into unmeasured ground, or where the latitude is
- * past what the instrument can read — so a curve is cut at the edge of the
- * data instead of following its polygon, and an albedo boundary with the same
- * texture either side leaves no curve at all. What survives is split into runs
- * and the short ones go, the same span rule the straight lines answer to.
+ * A point is DROPPED rather than moved where nothing steps under it, where
+ * neither side of it is smeared ground, where the measurement would reach into
+ * unmeasured ground, or where the latitude is past what the instrument can
+ * read — so a curve is cut at the edge of the data instead of following its
+ * polygon, and a boundary between two terrains the mosaic really imaged leaves
+ * no curve at all. What survives is split into runs and the short ones go, the
+ * same span rule the straight lines answer to.
+ *
+ * The runs the smear rule threw away are worked out as well, and what they
+ * would have corrected is reported beside what was kept: a rule that decides
+ * which real ground is left alone has to be able to say how much it left.
  */
 function finishCurves(paths, band, W, H, spec, pxPerDeg, valid, deficit, fineEnergy, lowPass, ctx) {
-  const { jumpFloor, searchDeg, lookDeg, energyDeg, cfg2, alongDeg, minStep, minSpanDeg, skipLat, sampleAt, cosAt, latOf } = ctx;
+  const {
+    jumpFloor, searchDeg, lookDeg, sideDeficitMin, sideBandDeg, sideOffsetDeg,
+    alongDeg, minStep, minSpanDeg, skipLat, sampleAt, cosAt, latOf,
+  } = ctx;
   const out = [];
+  // The same runs with the smear rule taken out, on copies of the points, so
+  // shaping one set's correction cannot write over the other's.
+  const traced = [];
   const spacingPx = lookDeg * pxPerDeg;
   for (const path of paths) {
     // Resample at a fixed spacing of GROUND, so a curve near the pole is not
@@ -1447,33 +1496,81 @@ function finishCurves(paths, band, W, H, spec, pxPerDeg, valid, deficit, fineEne
       v.step = s;
     }
 
-    // Runs of surviving points, long enough to be a boundary.
-    let run = [];
-    let dropped = false;
-    const flush = () => {
-      if (run.length >= 3) {
-        let span = 0;
-        for (let k = 1; k < run.length; k++) span += groundSpan(run[k - 1].x, run[k - 1].y, run[k].x, run[k].y, H, pxPerDeg);
-        // Closed only where nothing was dropped: a run that starts and ends at
-        // a rejection has two ends however the contour it came from began.
-        const closed = vertices.closed && !dropped && run.length === vertices.length;
-        if (span >= minSpanDeg) {
-          out.push({ points: simplifyCurve(run, Math.max(1, 0.1 * spacingPx)), spanDeg: span, closed });
-        }
-      }
-      run = [];
-    };
+    // Is either side of this point a smear? The deficit is read in a band
+    // offset from the curve rather than at it: the deficit is blurred over
+    // degrees, so a reading taken on the boundary itself is a mixture of the
+    // two sides and says nothing about either. A frame boundary has deficient
+    // ground on one side; a contact between two terrains the mosaic really
+    // imaged has it on neither, however differently the two of them read.
     for (const v of vertices) {
-      if (!v || v.drop) { dropped = true; flush(); } else run.push(v);
+      if (!v || v.drop) continue;
+      const sideDeficit = (sign) => {
+        const got = [];
+        const step = sideBandDeg / 4;
+        for (let t = sideOffsetDeg; t <= sideOffsetDeg + sideBandDeg + 1e-9; t += step) {
+          const d = sampleAt(deficit, v.x + v.ox * sign * t, v.y + v.oy * sign * t);
+          if (d !== null) got.push(d);
+        }
+        if (!got.length) return 0;
+        got.sort((a, b) => a - b);
+        return got[got.length >> 1];
+      };
+      // Ground that was never measured reads as no deficit rather than as a
+      // deep one: a hole is not a smear, and what to put in one is a different
+      // question with a different answer.
+      v.sideDeficit = Math.max(sideDeficit(1), sideDeficit(-1));
+      if (v.sideDeficit < sideDeficitMin) v.sideDrop = true;
     }
-    flush();
+
+    // Runs of surviving points, long enough to be a boundary.
+    const runsInto = (list, reject, copy) => {
+      let run = [];
+      let dropped = false;
+      const flush = () => {
+        if (run.length >= 3) {
+          let span = 0;
+          for (let k = 1; k < run.length; k++) span += groundSpan(run[k - 1].x, run[k - 1].y, run[k].x, run[k].y, H, pxPerDeg);
+          // Closed only where nothing was dropped: a run that starts and ends at
+          // a rejection has two ends however the contour it came from began.
+          const closed = vertices.closed && !dropped && run.length === vertices.length;
+          if (span >= minSpanDeg) {
+            const pts = copy ? run.map((p) => ({ ...p })) : run;
+            list.push({ points: simplifyCurve(pts, Math.max(1, 0.1 * spacingPx)), spanDeg: span, closed });
+          }
+        }
+        run = [];
+      };
+      for (const v of vertices) {
+        if (!v || v.drop || reject(v)) { dropped = true; flush(); } else run.push(v);
+      }
+      flush();
+    };
+    runsInto(traced, () => false, true);
+    runsInto(out, (v) => v.sideDrop, false);
   }
+  // Shaped first, and on its own copies of the points, so the correction the
+  // dropped boundaries would have carried is measured before the kept ones
+  // write theirs.
+  for (const c of traced) shapeCurveJump(c, spec, lookDeg, alongDeg, minStep);
   for (const c of out) {
     shapeCurveJump(c, spec, lookDeg, alongDeg, minStep);
     // Kept so a later round's re-measurement can be read against what the
     // boundary carried when it was found.
     c.firstMedianStep = c.medianStep;
   }
+  // Correction weighted by the ground it runs along: a long boundary carrying
+  // a count and a short one carrying ten are not the same amount of map moved.
+  const carried = (cs) => cs.reduce((t, c) => t
+    + (c.spanDeg * c.points.reduce((sum, p) => sum + Math.abs(p.jump), 0)) / c.points.length, 0);
+  const all = carried(traced);
+  const span = (cs) => cs.reduce((t, c) => t + c.spanDeg, 0);
+  out.stats = {
+    traced: traced.length,
+    kept: out.length,
+    tracedSpanDeg: span(traced),
+    keptSpanDeg: span(out),
+    droppedShare: all > 0 ? Math.max(0, 1 - carried(out) / all) : 0,
+  };
   return out;
 }
 
@@ -1642,8 +1739,9 @@ function curveConditions(curves, cw, ch, W, H, vx, vy) {
  * Close a map's straight brightness steps, in place.
  *
  * Reports the correction it applied: the grid it was solved on, how many
- * relaxation sweeps that took, what the solve had left over, and how far from
- * the mean the correction reaches.
+ * relaxation sweeps that took, what the solve had left over, how far from the
+ * mean the correction reaches, and whether the finest grid of every round
+ * reached its tolerance before it ran out of sweeps.
  */
 export function levelEdges(band, W, H, spec, pxPerDeg, valid = null, deficit = null) {
   const found = [];
@@ -1665,6 +1763,8 @@ export function levelEdges(band, W, H, spec, pxPerDeg, valid = null, deficit = n
   let grid = null;
   const perRound = [];
   let capped = false;
+  let converged = true;
+  let unconverged = 0;
   for (let round = 0; round < rounds; round++) {
     const { edges, profileOf, capped: hitCap, lowPass } = findEdges(band, W, H, spec, pxPerDeg, valid);
     if (spec.curves && deficit) {
@@ -1678,6 +1778,8 @@ export function levelEdges(band, W, H, spec, pxPerDeg, valid = null, deficit = n
     iterations += solved.iterations;
     residual = solved.residual;
     grid = solved.grid;
+    if (!solved.converged) converged = false;
+    unconverged += solved.unconverged;
     const { cw, ch } = solved.grid;
     const field = solved.field;
     for (let y = 0; y < H; y++) {
@@ -1701,7 +1803,10 @@ export function levelEdges(band, W, H, spec, pxPerDeg, valid = null, deficit = n
     }
     found.push(...edges.map((e) => ({ ...e, round })));
   }
-  return { edges: found, iterations, residual, peak, grid, perRound, capped, curves: curves ?? [] };
+  return {
+    edges: found, iterations, residual, peak, grid, perRound, capped,
+    converged, unconverged, curves: curves ?? [],
+  };
 }
 
 /** Running-mean smoothing of one profile, `circular` for a profile that runs

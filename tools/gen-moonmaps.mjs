@@ -483,8 +483,9 @@ const JOBS = {
       // them wanders seven degrees of latitude across fifty of longitude and
       // changes the sign of its own step four times along the way. Followed
       // from where the finest band's energy steps, at the same band the fill
-      // measures its deficit in.
-      curves: { fineDeg: 0.12 },
+      // measures its deficit in, and kept only where one side of the boundary
+      // is ground that lost its detail.
+      curves: { seedFrom: ['energy'], fineDeg: 0.12 },
     },
     // The polar hole gets the matched fill (see the Callisto job and fillNoData).
     noData: { below: 12, mode: 'texture', seam: 0.03, matchTexture: true },
@@ -507,8 +508,9 @@ const JOBS = {
       // them wanders seven degrees of latitude across fifty of longitude and
       // changes the sign of its own step four times along the way. Followed
       // from where the finest band's energy steps, at the same band the fill
-      // measures its deficit in.
-      curves: { fineDeg: 0.12 },
+      // measures its deficit in, and kept only where one side of the boundary
+      // is ground that lost its detail.
+      curves: { seedFrom: ['energy'], fineDeg: 0.12 },
     },
     // The polar hole gets the matched fill (see the Callisto job and fillNoData).
     noData: { below: 12, mode: 'texture', seam: 0.03, matchTexture: true },
@@ -564,8 +566,9 @@ const JOBS = {
       // them wanders seven degrees of latitude across fifty of longitude and
       // changes the sign of its own step four times along the way. Followed
       // from where the finest band's energy steps, at the same band the fill
-      // measures its deficit in.
-      curves: { fineDeg: 0.12 },
+      // measures its deficit in, and kept only where one side of the boundary
+      // is ground that lost its detail.
+      curves: { seedFrom: ['energy'], fineDeg: 0.12 },
     },
     // The polar hole is a straight-sided polygon and the fill that goes in it
     // is what a player at close range reads as a rectangle, so it gets the
@@ -914,7 +917,9 @@ async function sourceRaster(file, entry, nd, job, leftEdgeLonDegEast) {
         ? detailDeficit(grey, W, H, job.coverageFill, pxPerDeg, valid).deficit
         : null;
       const { edges: before } = findEdges(grey, W, H, job.levelEdges, pxPerDeg, valid);
-      const { edges: fixed, perRound, capped, curves } = levelEdges(grey, W, H, job.levelEdges, pxPerDeg, valid, seed);
+      const {
+        edges: fixed, perRound, capped, curves, grid, iterations, residual, peak, converged, unconverged,
+      } = levelEdges(grey, W, H, job.levelEdges, pxPerDeg, valid, seed);
       const { edges: after } = findEdges(grey, W, H, job.levelEdges, pxPerDeg, valid, before.slice(0, 3));
       const say = (e) => (e.axis === 'meridian'
         ? `${((e.at / pxPerDeg) % 360).toFixed(0)}E`
@@ -926,10 +931,25 @@ async function sourceRaster(file, entry, nd, job, leftEdgeLonDegEast) {
         + `${capped ? ', TRUNCATED at the ceiling' : ''}); the worst three `
         + before.slice(0, 3).map((e, k) => `${say(e)} ${e.step.toFixed(1)} -> ${after[k].step.toFixed(1)}`).join(', ')
         + ' counts');
+      // The solve's own numbers. A relaxation that stopped on its sweep count
+      // rather than on its tolerance applies a field BIGGER than the harmonic
+      // one it stands for, and nothing else in this log bounds how much of the
+      // map that moves.
+      if (grid) {
+        console.log(`  solved on ${grid.cw}x${grid.ch} cells in ${iterations} sweeps,`
+          + ` residual ${residual.toFixed(3)}, reaching ${peak.toFixed(1)} counts from the mean`
+          + (converged ? '' : `\n  WARNING: ${unconverged} grid${unconverged === 1 ? '' : 's'} ran out of`
+            + ' sweeps before converging; the correction applied is larger than the one asked for'));
+      }
+      const traced = curves.stats;
+      if (traced && traced.traced) {
+        console.log(`  traced ${traced.traced} curved boundaries over ${traced.tracedSpanDeg.toFixed(0)} degrees`
+          + ` and kept ${traced.kept} over ${traced.keptSpanDeg.toFixed(0)}, the ones with smeared ground on a side;`
+          + ` the rest would have carried ${(100 * traced.droppedShare).toFixed(0)}% of the curve correction`);
+      }
       if (curves.length) {
         const worst = curves.slice().sort((a, b) => b.firstMedianStep * b.spanDeg - a.firstMedianStep * a.spanDeg);
-        console.log(`  traced ${curves.length} curved boundaries over `
-          + `${curves.reduce((t, c) => t + c.spanDeg, 0).toFixed(0)} degrees of ground; the worst three `
+        console.log('  the worst three of them '
           + worst.slice(0, 3).map((c) => `${c.spanDeg.toFixed(0)}deg ${c.firstMedianStep.toFixed(1)} -> ${c.medianStep.toFixed(1)}`).join(', ')
           + ' counts');
       }

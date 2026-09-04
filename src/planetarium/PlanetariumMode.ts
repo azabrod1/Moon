@@ -2088,6 +2088,12 @@ export class PlanetariumMode {
   // couple of frames later — the first live frames must not compile anything
   // it missed (that stall is the very thing it exists to prevent).
   private shaderWarmupProgramCount: number | null = null;
+  /** Programs linked as of the last frame, once the boot check has run: a
+   *  frame that finds more has just paid a link the warm-up did not cover. */
+  private linkedProgramCount: number | null = null;
+  /** The warm-up's probe groups, kept in the scene for the session so the
+   *  programs only they hold are not destroyed with them. */
+  private shaderWarmupProbes: Array<{ group: THREE.Group; dispose: () => void }> = [];
   /** QA override for which tier the shells wear: 'analytic' holds them on the
    *  fallback so the two looks can be captured from one session, null lets the
    *  tables decide. Never set outside the dev bridge. */
@@ -2754,13 +2760,16 @@ export class PlanetariumMode {
       logShaderResolve('Boot', resolved, warmDrawMs);
       this.shaderWarmupProgramCount = this.renderer.info.programs?.length ?? null;
       this.framesSinceShaderWarmup = 0;
-      // Probe materials are disposed only once compileAsync's poll has fully
-      // settled — disposing a material mid-poll throws inside a timer callback
-      // that no try/catch around the await could reach.
+      // The probes stay in the scene, invisible, for the session: three
+      // destroys a program the moment its last material is disposed, and the
+      // combinations only a probe holds at boot (a measured normal before the
+      // Moon's arrives, the cloud deck's relief, the shadow visuals before a
+      // landing) were compiled here and thrown away with the probes, to link
+      // again on their first real draw mid-flight. They are handed to dispose()
+      // only once compileAsync's poll has settled — disposing a material
+      // mid-poll throws inside a timer callback no try/catch here could reach.
       void compiled.then(() => {
-        this.scene.remove(probes.group, shadowProbes.group);
-        probes.dispose();
-        shadowProbes.dispose();
+        this.shaderWarmupProbes.push(probes, shadowProbes);
       });
       performance.measure('plm:precompile', 'plm:precompile:start');
     }
@@ -3986,6 +3995,25 @@ export class PlanetariumMode {
         });
       }
       this.shaderWarmupProgramCount = null;
+      this.linkedProgramCount = now;
+    } else if (this.linkedProgramCount !== null) {
+      // A link after the warm-up is a frame paid mid-gesture; name the program
+      // so the probe set can grow to cover it. One integer compare a frame;
+      // the key is read only when the count grows. three appends a new program
+      // last, so the last entry is the one that just linked (a release in the
+      // same frame reorders the list, and the name is then a near miss).
+      const programs = this.renderer.info.programs;
+      const now = programs?.length ?? 0;
+      if (now > this.linkedProgramCount) {
+        const newest = programs?.[now - 1] as { type?: string; name?: string; cacheKey?: string } | undefined;
+        debugWarn('Shader program linked after the boot warm-up', {
+          type: newest?.type,
+          name: newest?.name,
+          key: String(newest?.cacheKey ?? '').slice(0, 160),
+          total: now,
+        });
+      }
+      this.linkedProgramCount = now;
     }
     // One damping step runs per frame (the controls wrapper enforces it), so
     // size that step by the frame's real duration: the coast then decays at
@@ -17918,6 +17946,11 @@ export class PlanetariumMode {
 
   dispose() {
     this.deactivate();
+    for (const probe of this.shaderWarmupProbes) {
+      this.scene.remove(probe.group);
+      probe.dispose();
+    }
+    this.shaderWarmupProbes = [];
     // The constructor's window-level listeners (activate/deactivate own only
     // the key handlers): without these removals a disposed mode — and its
     // whole scene graph, through the closures — stays reachable, and its

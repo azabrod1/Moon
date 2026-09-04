@@ -14,8 +14,7 @@ import {
   makeGeometryUpgrade,
   needsGeometryUpgrade,
   upgradeGeometryOnApproach,
-  wireEarthLateDetail,
-} from './PlanetFactory';
+  wireEarthLateDetail, SHADER_WARMUP_PROBE_COMBOS } from './PlanetFactory';
 import {
   applyColorTierTexture,
   applyNormalTierTexture,
@@ -2953,5 +2952,16 @@ describe('a colour-rung swap and the body\'s air', () => {
     bindSurfaceAir(air, boundTables(), 4.26e-5, 1);
     expect(shell.uniforms.uAirDensity.value).toBe(1);
     expect(sector.uniforms.uAirDensity.value).toBe(1);
+  });
+});
+
+describe('shader warm-up probes', () => {
+  it('carry every map combination a surface material only reaches after boot, once each', () => {
+    const keys = SHADER_WARMUP_PROBE_COMBOS.map((c) => [
+      'map', c.bumpMap ? 'bump' : '', c.normalMap ? 'normal' : '', c.transparent ? 'transparent' : '',
+    ].filter(Boolean).join('+'));
+    expect(keys).toEqual(['map+bump', 'map+normal', 'map', 'map+normal+transparent']);
+    expect(new Set(keys).size).toBe(keys.length);
+    for (const combo of SHADER_WARMUP_PROBE_COMBOS) expect(combo.why.length).toBeGreaterThan(0);
   });
 });

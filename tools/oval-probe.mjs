@@ -5,6 +5,7 @@
 // Prereq: npm run dev -- --port 5174
 //   node tools/oval-probe.mjs
 //   node tools/oval-probe.mjs --url=http://localhost:5174 --out=planning/lens-probe
+//   node tools/oval-probe.mjs --dsf=2        # a Retina-density display
 import { chromium } from 'playwright';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -19,6 +20,12 @@ const outDir = arg('out', 'planning/lens-probe');
 const maxRmsPx = Number(arg('max-rms', '2'));
 const maxAxisErrorPct = Number(arg('max-axis-error-pct', '0.5'));
 const maxCentreErrorPx = Number(arg('max-centre-error', '2'));
+// Device pixels per CSS pixel of the emulated display (1 = an ordinary
+// monitor, 2 = Retina); the render resolution and the scene target's
+// multisampling follow it (src/app/renderResolution.ts). Screenshots are in
+// device px, so expected positions and the px tolerances (authored in CSS
+// px) scale by it.
+const dsf = Number(arg('dsf', '1'));
 await mkdir(outDir, { recursive: true });
 
 const viewports = [
@@ -76,7 +83,7 @@ try {
     for (const mode of modes) {
       const context = await browser.newContext({
         viewport: { width: viewport.width, height: viewport.height },
-        deviceScaleFactor: 1,
+        deviceScaleFactor: dsf,
       });
       await context.addInitScript(() => {
         try {
@@ -126,8 +133,8 @@ try {
         const filename = `${viewport.name}-${mode.name}-${slug(pose.name)}.png`;
         await page.screenshot({ path: path.join(outDir, filename) });
         const expected = {
-          x: (pose.x * 0.5 + 0.5) * viewport.width,
-          y: (-pose.y * 0.5 + 0.5) * viewport.height,
+          x: (pose.x * 0.5 + 0.5) * viewport.width * dsf,
+          y: (-pose.y * 0.5 + 0.5) * viewport.height * dsf,
         };
         const measurement = await page.evaluate(async ({ png, expectedPoint }) => {
           const image = await new Promise((resolve, reject) => {
@@ -302,8 +309,8 @@ try {
           `rms=${measurement.rmsPx.toFixed(3)}px centre=${centreErrorPx.toFixed(3)}px`,
         );
         if (axisErrorPct > maxAxisErrorPct) failures.push(`${viewport.name}/${mode.name}/${pose.name}: axis ${axisErrorPct.toFixed(3)}%`);
-        if (measurement.rmsPx > maxRmsPx) failures.push(`${viewport.name}/${mode.name}/${pose.name}: RMS ${measurement.rmsPx.toFixed(3)}px`);
-        if (centreErrorPx > maxCentreErrorPx) failures.push(`${viewport.name}/${mode.name}/${pose.name}: centre ${centreErrorPx.toFixed(3)}px`);
+        if (measurement.rmsPx > maxRmsPx * dsf) failures.push(`${viewport.name}/${mode.name}/${pose.name}: RMS ${measurement.rmsPx.toFixed(3)}px`);
+        if (centreErrorPx > maxCentreErrorPx * dsf) failures.push(`${viewport.name}/${mode.name}/${pose.name}: centre ${centreErrorPx.toFixed(3)}px`);
       }
       for (const error of errors) failures.push(`${viewport.name}/${mode.name}: browser error: ${error}`);
       await context.close();
@@ -320,7 +327,7 @@ try {
   {
     const context = await browser.newContext({
       viewport: { width: 1280, height: 720 },
-      deviceScaleFactor: 1,
+      deviceScaleFactor: dsf,
     });
     await context.addInitScript(() => {
       try {
@@ -387,10 +394,10 @@ try {
       const depthAU = disc.distFromCamera * 2;
       const inRes = await page.evaluate((a) => window.__moon.probeLimbMarker(a.x, a.y, a.d), { x: inside.x, y: inside.y, d: depthAU });
       await page.waitForTimeout(300);
-      const inRed = await countRedNear((await page.screenshot()).toString('base64'), inside.x, inside.y, 24);
+      const inRed = await countRedNear((await page.screenshot()).toString('base64'), inside.x * dsf, inside.y * dsf, 24 * dsf);
       const outRes = await page.evaluate((a) => window.__moon.probeLimbMarker(a.x, a.y, a.d), { x: outside.x, y: outside.y, d: depthAU });
       await page.waitForTimeout(300);
-      const outRed = await countRedNear((await page.screenshot()).toString('base64'), outside.x, outside.y, 24);
+      const outRed = await countRedNear((await page.screenshot()).toString('base64'), outside.x * dsf, outside.y * dsf, 24 * dsf);
       await page.screenshot({ path: path.join(outDir, 'marker-limb.png') });
       rows.push({ viewport: 'desktop', mode: 'no-bloom', pose: tag });
       console.log(

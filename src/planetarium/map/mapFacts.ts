@@ -100,7 +100,9 @@ export function mapFactRows(name: string): MapFacts {
     if (!moon) return { rows: [], oneLiner: '' };
     const rows: FactRow[] = [
       { label: 'Distance to planet', value: `${sig3(moon.orbitalRadiusKm)} km` },
-      { label: 'Radius', value: fmtEarthRadii(moon.radiusAU) },
+      // Kilometres, not Earth radii: Phobos at 0.00174 R⊕ is a figure nobody
+      // can place, and only the Ganymede/Titan class ever reads in R⊕.
+      { label: 'Radius', value: `${sig3(moon.radiusKm)} km` },
       // The display-period seam, never 360/|Ṁ| — that reads 30× wrong on the
       // degenerate Tethys-family fits. A major moon is tidally locked, so its
       // orbit is also its day.

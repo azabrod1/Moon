@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { setBitmapProbeForTests } from './textureBitmapLoader';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
@@ -102,13 +103,17 @@ describe('the byte budget across every path that ends a decode', () => {
 
   beforeEach(() => {
     // The fallback decode is the bitmap path; it only has to produce something.
+    // That path decodes in a verified realm alone, so this thread is marked as
+    // having passed the flip probe.
     vi.stubGlobal('createImageBitmap', vi.fn(async () => ({
       width: 2048, height: 2048, close: () => {},
     })));
+    setBitmapProbeForTests(true);
   });
 
   afterEach(() => {
     setTilePixelRoundTrip(null);
+    setBitmapProbeForTests(null);
     vi.unstubAllGlobals();
   });
 

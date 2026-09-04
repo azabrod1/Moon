@@ -1875,11 +1875,7 @@ export class CompareScene {
   private async loadGhost(name: string): Promise<GhostLoad | null> {
     const tex = await this.loadBodyColor(name);
     if (!tex) return null;
-    const stats = sampleMapStats(
-      tex.image as CanvasImageSource | null,
-      bodyColor(name),
-      tex.userData.bitmapPreFlipped === true,
-    );
+    const stats = sampleMapStats(tex.image as CanvasImageSource | null, bodyColor(name));
     const meanLum = stats.meanLum;
     const gain = THREE.MathUtils.clamp(
       GHOST_TARGET_LUM / Math.max(meanLum, 0.05),
@@ -2081,11 +2077,7 @@ export class CompareScene {
       palette = [new THREE.Color(0x2a0a02), new THREE.Color(0xb03408), new THREE.Color(0xff8a2a), new THREE.Color(0xfff0c0)];
       this.grainFlecks = [new THREE.Color(0x8a2a08), new THREE.Color(0xd05010), new THREE.Color(0xff8a2a), new THREE.Color(0xffd070)];
     } else {
-      const stats = sampleMapStats(
-        fillerTex?.image as CanvasImageSource | null,
-        bodyColor(filler),
-        fillerTex?.userData.bitmapPreFlipped === true,
-      );
+      const stats = sampleMapStats(fillerTex?.image as CanvasImageSource | null, bodyColor(filler));
       palette = stats.palette;
       this.grainFlecks = stats.flecks;
     }
@@ -2104,6 +2096,36 @@ export class CompareScene {
     this.liquidUniforms.uMeltPalette3.value.copy(palette[3]);
     prevMat.dispose();
     if (prevMap) prevMap.dispose();
+  }
+
+  private disposeAtmosphere(): void {
+    if (!this.atmosphere) return;
+    this.group.remove(this.atmosphere);
+    this.atmosphere.geometry.dispose();
+    (this.atmosphere.material as THREE.Material).dispose();
+    this.atmosphere = null;
+  }
+
+  /**
+   * Leaving the tool: the pair's two maps (a 2K ghost and a 2K filler, ~10 MB
+   * each with mips) and the atmosphere shell go back to the GPU. Nothing here
+   * is ever reused — the next activate() commits its pair afresh and applyGhost
+   * / applyFiller / applyAtmosphere each handle an empty previous — and what
+   * stays resident is invisible to the planetarium's memory envelope. The
+   * samplers fall back to the 1×1 default, so the frames before the next pair
+   * lands render the way a first-ever entry does. Pools stay: allocated once.
+   */
+  releasePairResources(): void {
+    this.glassUniforms.uGhostMap.value = this.emptyTex;
+    this.glassUniforms.uHasGhost.value = 0;
+    this.ghostTex?.dispose();
+    this.ghostTex = null;
+    const fillerMat = this.fillerMesh.material as THREE.MeshStandardMaterial;
+    if (this.fillerMap && fillerMat.map === this.fillerMap) fillerMat.map = this.emptyTex;
+    for (const u of this.boulderUniforms) u.uMap.value = this.emptyTex;
+    this.fillerMap?.dispose();
+    this.fillerMap = null;
+    this.disposeAtmosphere();
   }
 
   private applyMouth(comparison: Comparison): void {
@@ -2131,12 +2153,7 @@ export class CompareScene {
   }
 
   private applyAtmosphere(container: string): void {
-    if (this.atmosphere) {
-      this.group.remove(this.atmosphere);
-      this.atmosphere.geometry.dispose();
-      (this.atmosphere.material as THREE.Material).dispose();
-      this.atmosphere = null;
-    }
+    this.disposeAtmosphere();
     const params = ATMOSPHERES[container];
     if (!params) return; // airless bodies (and Sun) get no ghost shell
     this.atmosphere = makeAtmosphereGhost(params);
@@ -3548,11 +3565,7 @@ export class CompareScene {
     this.boulderGeo.dispose();
     for (const b of this.boulderPool) (b.material as THREE.Material).dispose();
 
-    if (this.atmosphere) {
-      this.atmosphere.geometry.dispose();
-      (this.atmosphere.material as THREE.Material).dispose();
-      this.atmosphere = null;
-    }
+    this.disposeAtmosphere();
 
     this.starfield.geometry.dispose();
     (this.starfield.material as THREE.Material).dispose();
@@ -3633,11 +3646,7 @@ function tintedFallbackStats(tint: number): MapStats {
  * grains — a single pass so the ghost, the molten-liquid palette, and the grain
  * flecks never read the same canvas twice. Unreadable image → mean 0 + defaults.
  */
-function sampleMapStats(
-  image: CanvasImageSource | null,
-  fallbackTint?: number,
-  preFlipped = false,
-): MapStats {
+function sampleMapStats(image: CanvasImageSource | null, fallbackTint?: number): MapStats {
   const fallback = (): MapStats => fallbackTint === undefined
     ? { meanLum: 0, palette: defaultPalette(), flecks: defaultPalette() }
     : tintedFallbackStats(fallbackTint);
@@ -3649,15 +3658,10 @@ function sampleMapStats(
   const ctx = c.getContext('2d', { willReadFrequently: true });
   if (!ctx) return fallback();
   try {
-    if (preFlipped) {
-      // The bitmap loader bakes the GPU's vertical flip into the image; undo
-      // it here so this CPU readback samples the same rows in the same order
-      // as an HTMLImageElement delivery would.
-      ctx.translate(0, size);
-      ctx.scale(1, -1);
-    }
+    // Row order does not matter here: the mean, the sorted-percentile palette
+    // and the luminance-spread flecks are all invariant under it, so a bitmap
+    // the loader delivered pre-flipped samples the same as an upright image.
     ctx.drawImage(image, 0, 0, size, size);
-    if (preFlipped) ctx.setTransform(1, 0, 0, 1, 0, 0);
     const data = ctx.getImageData(0, 0, size, size).data;
     const n = size * size;
     const samples: { luma: number; r: number; g: number; b: number }[] = new Array(n);

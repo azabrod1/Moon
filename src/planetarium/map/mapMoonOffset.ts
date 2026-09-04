@@ -70,6 +70,7 @@ import { KM_PER_AU } from '../../astronomy/constants';
 import { PLANETARIUM_BODIES } from '../planets/planetData';
 import { getMoonsByPlanet } from '../planets/moonData';
 import { EARTH_MOON_ORBIT_META, getSatelliteOrbitMeta } from '../../astronomy/satellites';
+import { MAP_BLEND_COMPRESSED, MAP_BLEND_TRUE } from './mapProjection';
 
 export interface MapMoonOffsetParams {
   /** Zone-1 exponent. Lower compresses adjacent steps harder. */
@@ -282,6 +283,29 @@ export function mapMoonOffsetR(policy: MoonOffsetPolicy, x: number): number {
   const v = mapMoonCurveR(x, policy.params);
   if (!policy.squeezed || v >= policy.fixedPoint) return v;
   return policy.slope * v + policy.intercept;
+}
+
+/**
+ * A charted radius at the live blend: the policy's placement at the compressed
+ * end, the true x at the true end, a straight lerp between. The endpoints are
+ * taken by branch rather than by arithmetic, so a ship standing on a moon
+ * lands on it to the last bit at either end — mapShipAnchor's ship rides this
+ * same rule over its own extended curve.
+ */
+export function blendChartedR(charted: number, x: number, blend: number): number {
+  if (blend >= MAP_BLEND_TRUE) return x;
+  if (blend <= MAP_BLEND_COMPRESSED) return charted;
+  return charted * (1 - blend) + x * blend;
+}
+
+/**
+ * Where the chart draws a moon x parent true radii out at the live blend, in
+ * parent drawn radii — the one rule the moon, its orbit ring, the focus pivot
+ * and the ship marker are all placed by.
+ */
+export function moonChartedR(policy: MoonOffsetPolicy, x: number, blend: number): number {
+  if (blend >= MAP_BLEND_TRUE) return x;
+  return blendChartedR(mapMoonOffsetR(policy, x), x, blend);
 }
 
 // ---- the catalog side --------------------------------------------------

@@ -124,9 +124,13 @@ export const lensPointSpriteVertexGLSL = /* glsl */ `
           vec2 sourceCentre = gl_Position.xy / gl_Position.w;
           vLensOutputCentre = lensWarpSourceNdc(sourceCentre);
           vLensTargetDiameterPx = size * pixelRatio;
+          // The fragment kernel's footprint in output px: the disc itself, or
+          // for targets under 2 px the splat's tent (width D + 1) plus a pixel
+          // so every fragment whose centre it reaches is rasterised.
+          float footprintPx = vLensTargetDiameterPx < 2.0 ? vLensTargetDiameterPx + 2.0 : vLensTargetDiameterPx;
           vec2 halfOutputNdc = vec2(
-            vLensTargetDiameterPx / max(uLensFramebufferPx.x, 1.0),
-            vLensTargetDiameterPx / max(uLensFramebufferPx.y, 1.0)
+            footprintPx / max(uLensFramebufferPx.x, 1.0),
+            footprintPx / max(uLensFramebufferPx.y, 1.0)
           );
           vec2 sourceA = lensUnwarpOutputNdc(vLensOutputCentre + halfOutputNdc);
           vec2 sourceB = lensUnwarpOutputNdc(vLensOutputCentre - halfOutputNdc);
@@ -149,15 +153,49 @@ export const lensPointSpriteVertexGLSL = /* glsl */ `
  * warped centre in OUTPUT pixels (so the drawn disc is round after the lens
  * pass), discards outside the disc, and leaves `falloff` (and `d`) for the
  * shader's own colour/alpha line.
+ *
+ * Targets under 2 output px take a different path. The disc profile is
+ * sampled at fragment centres, so a 1-px target (every floor-sized star on
+ * a 1× monitor) reads 1.0 from its one fragment while the same star at 2
+ * device px on a 2× display spreads ≈0.5 over four — twice as bright per
+ * CSS pixel, and it flickers to nothing as it crosses a pixel edge. Those
+ * targets instead splat a tent of half-width D/2 + 0.5 (the disc plus half a
+ * pixel of box filter) carrying the disc kernel's mean energy, 0.4·D²
+ * (2π∫₀^0.5 falloff(u)·u du = 0.399, so the two paths meet at D = 2 on
+ * average). The tent's discrete sum over the fragment grid is normalised
+ * per axis for the centre's sub-pixel phase, so every position carries the
+ * same energy (no shimmer) and no fragment exceeds ~0.6. That is what a
+ * 1.5× supersample used to do for them. Targets of 2 px and up are byte-
+ * identical to before, so a 2× display's stars never change.
  */
 export const lensPointSpriteFragmentGLSL = /* glsl */ `
           vec2 sourceNdc = gl_FragCoord.xy / uLensFramebufferPx * 2.0 - 1.0;
           vec2 outputNdc = lensWarpSourceNdc(sourceNdc);
           vec2 outputOffsetPx = (outputNdc - vLensOutputCentre) * uLensFramebufferPx * 0.5;
           float d = length(outputOffsetPx) / max(vLensTargetDiameterPx, 1e-6);
-          if (d > 0.5) discard;
-          float falloff = 1.0 - smoothstep(0.2, 0.5, d);
+          float falloff;
+          if (vLensTargetDiameterPx < 2.0) {
+            float h = 0.5 * vLensTargetDiameterPx + 0.5;
+            // Fragment centres sit at integer offsets minus the centre's phase.
+            vec2 phase = fract((vLensOutputCentre * 0.5 + 0.5) * uLensFramebufferPx - 0.5);
+            vec2 sum = vec2(0.0);
+            for (int k = -2; k <= 3; k++) sum += max(vec2(0.0), 1.0 - abs(float(k) - phase) / h);
+            vec2 tent = max(vec2(0.0), 1.0 - abs(outputOffsetPx) / h);
+            falloff = min(1.0, 0.4 * vLensTargetDiameterPx * vLensTargetDiameterPx * tent.x * tent.y / max(sum.x * sum.y, 1e-4));
+            if (falloff <= 0.0) discard;
+          } else {
+            if (d > 0.5) discard;
+            falloff = 1.0 - smoothstep(0.2, 0.5, d);
+          }
 `;
+
+/** The two lines of three's stock shaders the splices below replace. Pinned by
+ * lensShader.test.ts against the installed three: `String.replace` with a
+ * missing needle is a silent no-op, and the symptom (every marker sprite and
+ * décor line drifting off its body toward the frame edge under the lens) is
+ * only ever caught by eye. */
+export const SPRITE_CLIP_ANCHOR = 'gl_Position = projectionMatrix * mvPosition;';
+export const LINE_CLIP_ANCHOR = 'gl_Position = clip;';
 
 /** Pre-distort a fixed-size SpriteMaterial quad into the overscan source so the
  * final lens pass restores its authored output-space centre, size, and shape. */
@@ -172,7 +210,7 @@ export function augmentFixedScreenSpriteForLens(
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>\n${lensShaderGLSL}`)
       .replace(
-        'gl_Position = projectionMatrix * mvPosition;',
+        SPRITE_CLIP_ANCHOR,
         /* glsl */ `
   vec4 lensCentreView = mvPosition;
   lensCentreView.xy -= rotatedPosition;
@@ -209,7 +247,7 @@ export function augmentFixedScreenLineForLens(
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>\n${lensShaderGLSL}`)
       .replace(
-        'gl_Position = clip;',
+        LINE_CLIP_ANCHOR,
         /* glsl */ `
   #ifndef WORLD_UNITS
     // A segment that wraps or grazes the camera plane has near-singular NDC

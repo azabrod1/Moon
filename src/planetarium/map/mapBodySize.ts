@@ -54,6 +54,7 @@
  */
 
 import { KM_PER_AU } from '../../astronomy/constants';
+import { MOONS } from '../planets/moonData';
 
 /** True radius that draws exactly at the floor: the smallest catalog planet
  *  (Mercury), so every planet sits at or above the floor. */
@@ -375,8 +376,9 @@ export function labelClearanceRadiusPx(drawnRadiusPx: number, drawnAsDot: boolea
   return drawnAsDot ? drawnRadiusPx * DOT_PAINTED_EDGE_MUL : drawnRadiusPx;
 }
 
-/** Ganymede, the largest moon, sets the top of the moon scale. */
-const LARGEST_MOON_RADIUS_AU = 1.761e-5;
+/** The largest moon in the catalog (Ganymede) sets the top of the moon scale —
+ *  read from the catalog so an edit there moves the scale with it. */
+const LARGEST_MOON_RADIUS_AU = MOONS.reduce((top, moon) => Math.max(top, moon.radiusAU), 0);
 /** Where Ganymede draws, as a fraction of its parent's drawn radius, and the
  *  band every other moon is held inside. A moon is drawn against its PARENT
  *  rather than against the chart, so a system reads as a system at any zoom:

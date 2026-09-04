@@ -94,9 +94,6 @@ export class ComparePanel {
     });
     this.get('compare-endcard-again')?.addEventListener('click', () => this.h.onPourAgain());
     this.get('compare-endcard-close')?.addEventListener('click', () => this.h.onEndClose());
-    this.get('compare-endcard')?.addEventListener('click', (e) => {
-      if (e.target === this.get('compare-endcard')) this.h.onEndClose();
-    });
     this.get('compare-endcard-rows')?.addEventListener('click', (e) => {
       const row = (e.target as HTMLElement).closest('[data-try]') as HTMLElement | null;
       if (row?.dataset.container && row.dataset.filler) {
@@ -185,16 +182,26 @@ export class ComparePanel {
     this.setText('compare-status', status);
   }
 
-  /** Place the mobile-only HTML label over the real 3D scale preview. */
+  /**
+   * Place the mobile-only HTML label over the real 3D scale preview. Moved
+   * with a transform, not left/top: a left/top write every frame keeps
+   * layout dirty every frame, and then every rect read anywhere in the mode
+   * (the band measure) forces a synchronous layout. The brace width (a
+   * custom property the layout reads) is written only when it changes.
+   */
   placePreviewLabel(placement: PreviewLabelPlacement | null): void {
     const label = this.get('compare-preview-label');
     if (!label) return;
     label.classList.toggle('on', placement !== null);
     if (!placement) return;
-    label.style.left = `${placement.x}px`;
-    label.style.top = `${placement.top}px`;
-    label.style.setProperty('--preview-diameter', `${placement.diameter}px`);
+    label.style.transform = `translate(${placement.x}px, ${placement.top}px) translate(-50%, -100%)`;
+    const diameter = `${placement.diameter}px`;
+    if (this.previewDiameter !== diameter) {
+      this.previewDiameter = diameter;
+      label.style.setProperty('--preview-diameter', diameter);
+    }
   }
+  private previewDiameter = '';
 
   /** Two-tone slider track: poured in the filler tint, poured→target dimmed, rest neutral. */
   setSliderTrack(pouredFrac: number, targetFrac: number, colorHex: number): void {

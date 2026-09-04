@@ -24,6 +24,10 @@ export const MOBILE_BREAKPOINT_PX = 640;
  *  idiom deliberately (innerWidth includes a desktop scrollbar, so the two
  *  can differ by its width) — use the constant there, this helper where the
  *  decision must agree with the stylesheet exactly. */
+let phoneQuery: MediaQueryList | null = null;
 export function isPhoneViewport(): boolean {
-  return window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`).matches;
+  // One MediaQueryList for the session: `matches` is live, and building a
+  // fresh one was an allocation on every layout measure that asked.
+  if (!phoneQuery) phoneQuery = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`);
+  return phoneQuery.matches;
 }

@@ -314,6 +314,80 @@ describe('loadStreamedTexture', () => {
   });
 });
 
+describe('loadStreamedTexture after the worker retires', () => {
+  class FakeWorker {
+    static instances: FakeWorker[] = [];
+    onmessage: ((e: { data: unknown }) => void) | null = null;
+    onerror: ((e: { message: string }) => void) | null = null;
+    onmessageerror: (() => void) | null = null;
+    posted: unknown[] = [];
+    constructor() {
+      FakeWorker.instances.push(this);
+    }
+    postMessage(msg: unknown) {
+      this.posted.push(msg);
+    }
+    terminate() {}
+  }
+  function armWorker() {
+    FakeWorker.instances = [];
+    vi.stubGlobal('Worker', FakeWorker);
+    vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:decoder'), revokeObjectURL: vi.fn() });
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob() })));
+  }
+
+  it('goes to the shared loader when this thread never passed the probe', async () => {
+    armWorker();
+    const mainDecode = vi.fn(async () => fakeBitmap());
+    vi.stubGlobal('createImageBitmap', mainDecode);
+    const { loadStreamedTexture, setBitmapProbeForTests, bitmapDecodePath } = await import('./textureBitmapLoader');
+    setBitmapProbeForTests(true, { worker: true, main: false });
+    expect(bitmapDecodePath()).toBe('worker');
+    const { calls } = deferredLoad();
+    const onLoad = vi.fn();
+    loadStreamedTexture('textures/w.jpg', onLoad, vi.fn());
+    await flush();
+    expect(FakeWorker.instances[0].posted).toHaveLength(1);
+    FakeWorker.instances[0].onerror!({ message: 'worker died' });
+    await flush();
+    // The request in flight fell back to the loader (one decode failure = one
+    // fallback), on the bytes already fetched rather than a second transfer...
+    expect(calls.map((c) => c.url)).toEqual(['blob:decoder']);
+    expect(mainDecode).not.toHaveBeenCalled();
+    // ...and so does every later map: this thread is unverified, so the shared
+    // transfer's bytes go straight to the image path.
+    expect(bitmapDecodePath()).toBe('loader');
+    loadStreamedTexture('textures/x.jpg', vi.fn(), vi.fn());
+    await flush();
+    await flush();
+    expect(calls.map((c) => c.url)).toEqual(['blob:decoder', 'blob:decoder']);
+    expect(mainDecode).not.toHaveBeenCalled();
+  });
+
+  it('decodes on this thread after a worker failure when this thread passed the probe', async () => {
+    armWorker();
+    const mainDecode = vi.fn(async () => fakeBitmap());
+    vi.stubGlobal('createImageBitmap', mainDecode);
+    const { loadStreamedTexture, setBitmapProbeForTests, bitmapDecodePath } = await import('./textureBitmapLoader');
+    setBitmapProbeForTests(true, { worker: true, main: true });
+    const { calls } = deferredLoad();
+    loadStreamedTexture('textures/w.jpg', vi.fn(), vi.fn());
+    await flush();
+    FakeWorker.instances[0].onerror!({ message: 'worker died' });
+    await flush();
+    expect(bitmapDecodePath()).toBe('main-thread');
+    // The request the worker dropped spent its one loader fallback, on the
+    // bytes it already had.
+    expect(calls.map((c) => c.url)).toEqual(['blob:decoder']);
+    const onLoad = vi.fn();
+    loadStreamedTexture('textures/y.jpg', onLoad, vi.fn());
+    await flush();
+    await flush();
+    expect(mainDecode).toHaveBeenCalledWith(expect.any(Blob), { imageOrientation: 'flipY', premultiplyAlpha: 'none' });
+    expect(onLoad).toHaveBeenCalled();
+  });
+});
+
 describe('takeBootWarmResponse', () => {
   it('hands a warmed promise over exactly once', () => {
     const warmed = Promise.resolve(new Response());
@@ -327,5 +401,200 @@ describe('takeBootWarmResponse', () => {
 
   it('is absent-safe before the warm script has run', () => {
     expect(takeBootWarmResponse('textures/a.webp')).toBeUndefined();
+  });
+});
+
+describe('WorkerBitmapDecoder', () => {
+  /** A Worker double: records posted requests, lets the test answer them. */
+  class FakeWorker {
+    static instances: FakeWorker[] = [];
+    onmessage: ((e: { data: unknown }) => void) | null = null;
+    onerror: ((e: { message: string }) => void) | null = null;
+    onmessageerror: (() => void) | null = null;
+    posted: Array<{ id: number; source: unknown; opts: unknown }> = [];
+    terminated = false;
+    constructor(public url: string) {
+      FakeWorker.instances.push(this);
+    }
+    postMessage(msg: { id: number; source: unknown; opts: unknown }) {
+      this.posted.push(msg);
+    }
+    terminate() {
+      this.terminated = true;
+    }
+  }
+
+  function withFakeWorker() {
+    FakeWorker.instances = [];
+    vi.stubGlobal('Worker', FakeWorker);
+    vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:decoder'), revokeObjectURL: vi.fn() });
+    vi.stubGlobal('Blob', class { constructor(public parts: unknown[], public opts: unknown) {} });
+  }
+
+  it('matches each reply to its request by id and resolves with the transferred bitmap', async () => {
+    withFakeWorker();
+    const { WorkerBitmapDecoder } = await import('./textureBitmapLoader');
+    const decoder = new WorkerBitmapDecoder();
+    const a = decoder.decode(new Blob() as Blob, { imageOrientation: 'flipY' });
+    const b = decoder.decode(new Blob() as Blob, { imageOrientation: 'flipY' });
+    const worker = FakeWorker.instances[0];
+    expect(worker.posted.map((m) => m.id)).toEqual([1, 2]);
+    expect(worker.posted[0].opts).toEqual({ imageOrientation: 'flipY' });
+    const bitmapB = fakeBitmap(2, 2);
+    const bitmapA = fakeBitmap(4, 4);
+    worker.onmessage!({ data: { id: 2, bitmap: bitmapB } });
+    worker.onmessage!({ data: { id: 1, bitmap: bitmapA } });
+    expect(await a).toBe(bitmapA);
+    expect(await b).toBe(bitmapB);
+    expect(decoder.usable).toBe(true);
+    // The first reply proved the script loaded: its blob URL is released once.
+    expect((URL.revokeObjectURL as unknown as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
+    expect((URL.revokeObjectURL as unknown as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith('blob:decoder');
+  });
+
+  it('pings an overdue worker and retires it only when the ping goes unanswered', async () => {
+    withFakeWorker();
+    vi.useFakeTimers();
+    try {
+      const { WorkerBitmapDecoder, DECODE_TIMEOUT_MS, PING_TIMEOUT_MS } = await import('./textureBitmapLoader');
+      const decoder = new WorkerBitmapDecoder();
+      const hung = decoder.decode(new Blob() as Blob, {});
+      const rejected = vi.fn();
+      hung.catch(rejected);
+      const worker = FakeWorker.instances[0];
+      await vi.advanceTimersByTimeAsync(DECODE_TIMEOUT_MS - 1);
+      expect(worker.posted).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(2);
+      // Expiry is a question, not a verdict: a ping the worker cannot decode.
+      expect(worker.posted).toHaveLength(2);
+      expect(worker.posted[1].source).toBeNull();
+      expect(rejected).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS + 1);
+      expect(rejected).toHaveBeenCalledTimes(1);
+      expect(String(rejected.mock.calls[0][0])).toMatch(/unresponsive/);
+      expect(decoder.usable).toBe(false);
+      expect(worker.terminated).toBe(true);
+      expect((URL.revokeObjectURL as unknown as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a live worker whose one decode is slow: re-arms after the ping, gives up on that request alone', async () => {
+    withFakeWorker();
+    vi.useFakeTimers();
+    try {
+      const { WorkerBitmapDecoder, DECODE_TIMEOUT_MS } = await import('./textureBitmapLoader');
+      const decoder = new WorkerBitmapDecoder();
+      const slow = decoder.decode(new Blob() as Blob, {});
+      const rejected = vi.fn();
+      slow.catch(rejected);
+      const worker = FakeWorker.instances[0];
+      await vi.advanceTimersByTimeAsync(DECODE_TIMEOUT_MS + 1);
+      const ping = worker.posted[1];
+      worker.onmessage!({ data: { id: ping.id, error: 'not decodable' } });
+      await vi.advanceTimersByTimeAsync(DECODE_TIMEOUT_MS - 10);
+      expect(rejected).not.toHaveBeenCalled();
+      expect(decoder.usable).toBe(true);
+      // Second expiry with a worker that answered: only this decode is given up.
+      await vi.advanceTimersByTimeAsync(20);
+      expect(rejected).toHaveBeenCalledTimes(1);
+      expect(String(rejected.mock.calls[0][0])).toMatch(/gave up/);
+      expect(decoder.usable).toBe(true);
+      expect(worker.terminated).toBe(false);
+      // A late reply to the abandoned request is closed, not leaked.
+      const late = fakeBitmap();
+      worker.onmessage!({ data: { id: worker.posted[0].id, bitmap: late } });
+      expect(late.close).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('re-arms instead of pinging while the page is hidden (the worker is frozen with it)', async () => {
+    withFakeWorker();
+    vi.stubGlobal('document', { visibilityState: 'hidden' });
+    vi.useFakeTimers();
+    try {
+      const { WorkerBitmapDecoder, DECODE_TIMEOUT_MS } = await import('./textureBitmapLoader');
+      const decoder = new WorkerBitmapDecoder();
+      const frozen = decoder.decode(new Blob() as Blob, {});
+      const rejected = vi.fn();
+      frozen.catch(rejected);
+      const worker = FakeWorker.instances[0];
+      await vi.advanceTimersByTimeAsync(3 * DECODE_TIMEOUT_MS + 3);
+      expect(worker.posted).toHaveLength(1);
+      expect(rejected).not.toHaveBeenCalled();
+      expect(decoder.usable).toBe(true);
+      // Back in the foreground, the decode completes as if nothing happened.
+      const bitmap = fakeBitmap();
+      worker.onmessage!({ data: { id: worker.posted[0].id, bitmap } });
+      expect(await frozen).toBe(bitmap);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a reply clears its timer: a worker is never suspected for a decode it finished', async () => {
+    withFakeWorker();
+    vi.useFakeTimers();
+    try {
+      const { WorkerBitmapDecoder, DECODE_TIMEOUT_MS } = await import('./textureBitmapLoader');
+      const decoder = new WorkerBitmapDecoder();
+      const done = decoder.decode(new Blob() as Blob, {});
+      const worker = FakeWorker.instances[0];
+      worker.onmessage!({ data: { id: worker.posted[0].id, bitmap: fakeBitmap() } });
+      await done;
+      await vi.advanceTimersByTimeAsync(2 * DECODE_TIMEOUT_MS + 2);
+      expect(worker.posted).toHaveLength(1);
+      expect(decoder.usable).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retires when the request cannot even be posted', async () => {
+    withFakeWorker();
+    const { WorkerBitmapDecoder } = await import('./textureBitmapLoader');
+    const post = FakeWorker.prototype.postMessage;
+    FakeWorker.prototype.postMessage = () => { throw new Error('DataCloneError'); };
+    try {
+      const decoder = new WorkerBitmapDecoder();
+      await expect(decoder.decode(new Blob() as Blob, {})).rejects.toThrow('DataCloneError');
+      expect(decoder.usable).toBe(false);
+    } finally {
+      FakeWorker.prototype.postMessage = post;
+    }
+  });
+
+  it('rejects a request the worker reports as failed, and stays usable for the next', async () => {
+    withFakeWorker();
+    const { WorkerBitmapDecoder } = await import('./textureBitmapLoader');
+    const decoder = new WorkerBitmapDecoder();
+    const failed = decoder.decode(new Blob() as Blob, {});
+    FakeWorker.instances[0].onmessage!({ data: { id: 1, error: 'decode failed' } });
+    await expect(failed).rejects.toThrow('decode failed');
+    expect(decoder.usable).toBe(true);
+    expect(FakeWorker.instances[0].terminated).toBe(false);
+  });
+
+  it('retires on a worker error: every request in flight rejects, later ones are refused, a stray reply is closed', async () => {
+    withFakeWorker();
+    const { WorkerBitmapDecoder } = await import('./textureBitmapLoader');
+    const decoder = new WorkerBitmapDecoder();
+    const one = decoder.decode(new Blob() as Blob, {});
+    const two = decoder.decode(new Blob() as Blob, {});
+    const worker = FakeWorker.instances[0];
+    worker.onerror!({ message: 'script blew up' });
+    await expect(one).rejects.toThrow('script blew up');
+    await expect(two).rejects.toThrow('script blew up');
+    expect(worker.terminated).toBe(true);
+    expect(decoder.usable).toBe(false);
+    await expect(decoder.decode(new Blob() as Blob, {})).rejects.toThrow('retired');
+    expect(FakeWorker.instances).toHaveLength(1);
+    // A reply that arrives after the retire has nobody waiting: its bitmap is freed.
+    const stray = fakeBitmap();
+    worker.onmessage!({ data: { id: 1, bitmap: stray } });
+    expect(stray.close).toHaveBeenCalled();
   });
 });

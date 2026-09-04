@@ -7,6 +7,8 @@ import { filterDeckRows } from '../deckLogic';
 import type { MapFocusRow } from '../map/mapFocusRows';
 import type { MapLayerState } from '../map/SystemMap';
 import { makeTiltGlyph } from './mapTiltGlyph';
+import { cardClickArmed, cardOverflowPlan } from './mapHudLogic';
+import { bodyDisplayName } from '../surfaceView';
 
 /**
  * MapHUD — the on-screen controls for the System map: the bottom-right dock
@@ -363,10 +365,10 @@ export class MapHUD {
    *  it always passes — the card stays fully operable without a pointer. */
   private cardClickAllowed(e: MouseEvent, control: HTMLElement | null): boolean {
     if (e.detail === 0) return true;
-    const armed = this.cardArmedEl === control;
+    const allowed = cardClickArmed(e.detail, this.cardArmedEl, control);
     // One press, one activation: whether it fired or not, the arming is spent.
     this.cardArmedEl = null;
-    return armed;
+    return allowed;
   }
 
   // ── The panel ──────────────────────────────────────────────────────────
@@ -648,7 +650,12 @@ export class MapHUD {
         moonsBtn.innerHTML = `${moons.length}<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 8 L10 12.5 L14.5 8"></path></svg>`;
         const gloss = `${moons.length} moon${moons.length > 1 ? 's' : ''}`;
         moonsBtn.title = `${row.name} — ${gloss}`;
-        moonsBtn.setAttribute('aria-label', `Show the ${gloss} of ${row.name}`);
+        // "Show Earth's moon", "Show Jupiter's 4 moons": a count only where
+        // there is one worth giving.
+        moonsBtn.setAttribute(
+          'aria-label',
+          moons.length > 1 ? `Show ${row.name}'s ${gloss}` : `Show ${row.name}'s moon`,
+        );
         moonsBtn.setAttribute('aria-expanded', 'false');
         moonsBtn.setAttribute('aria-controls', 'map-moon-tray');
         moonsBtn.addEventListener('click', () => {
@@ -721,11 +728,14 @@ export class MapHUD {
       if (name !== null) {
         const row = this.rows.find((r) => r.name === name);
         if (this.followDotEl && row) this.followDotEl.style.background = MapHUD.rowColorCss(row);
-        if (this.followNameEl) this.followNameEl.textContent = `Following ${name}`;
+        // Prose, so the article convention applies ("Following the Moon");
+        // the picker's rows keep raw catalog names on purpose.
+        const shown = bodyDisplayName(name);
+        if (this.followNameEl) this.followNameEl.textContent = `Following ${shown}`;
         // Named for what it does to the body it sits beside — "following"
         // alone is a state, and a control has to say its action.
-        this.followReleaseBtn?.setAttribute('aria-label', `Stop following ${name}`);
-        if (this.followReleaseBtn) this.followReleaseBtn.title = `Stop following ${name}`;
+        this.followReleaseBtn?.setAttribute('aria-label', `Stop following ${shown}`);
+        if (this.followReleaseBtn) this.followReleaseBtn.title = `Stop following ${shown}`;
       }
     }
     for (const [cellName, { cell }] of this.cells) {
@@ -1105,18 +1115,18 @@ export class MapHUD {
       const factsH = facts ? facts.getBoundingClientRect().height : 0;
       return available - (naturalH - factsH);
     };
-    let factsRoom = roomForFacts();
-    // The event row is the one thing that comes off before the facts do: the
-    // facts are what the card is for, and the row is news that will keep. It
-    // only goes if losing it actually buys the facts a viewport worth having —
-    // on a card too short for them either way, the news stays.
+    const factsRoom = roomForFacts();
+    // The event row is the one thing that comes off before the facts do (the
+    // rule itself is cardOverflowPlan's); it is measured off only when the
+    // facts are short, and the plan says whether it stays off.
+    let roomWithoutRow: number | null = null;
     if (eventRow && this.eventRow && factsRoom < MIN_FACTS_PX) {
       eventRow.style.display = 'none';
-      const roomWithoutRow = roomForFacts();
-      if (roomWithoutRow >= MIN_FACTS_PX) factsRoom = roomWithoutRow;
-      else eventRow.style.display = 'flex';
+      roomWithoutRow = roomForFacts();
     }
-    if (facts && factsRoom < MIN_FACTS_PX) facts.style.display = 'none';
+    const plan = cardOverflowPlan(factsRoom, roomWithoutRow, MIN_FACTS_PX);
+    if (eventRow && this.eventRow) eventRow.style.display = plan.dropEventRow ? 'none' : 'flex';
+    if (facts && plan.dropFacts) facts.style.display = 'none';
     this.card.style.maxHeight = `${Math.round(available)}px`;
 
     // The cap has just been applied, so the facts' two heights finally disagree

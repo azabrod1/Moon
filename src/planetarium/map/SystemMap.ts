@@ -139,7 +139,9 @@ import {
   type MapSunUniforms,
 } from './mapGlobeShading';
 import {
+  blendChartedR,
   mapMoonOffsetR,
+  moonChartedR,
   moonOffsetEntries,
   moonOffsetPolicyFor,
   setMapMoonOffsetParams,
@@ -3108,9 +3110,7 @@ export class SystemMap {
     const x = distAU / trueR;
     const scaleAU = Math.max(trueR, this.planetDrawnGlobeRadiusAU(system.parent));
     const scaleBlended = scaleAU + (trueR - scaleAU) * this.blend;
-    const charted = this.blend >= MAP_BLEND_TRUE
-      ? x
-      : mapMoonOffsetR(system.policy, x) * (1 - this.blend) + x * this.blend;
+    const charted = moonChartedR(system.policy, x, this.blend);
     this.tmpMoonOffset.divideScalar(distAU);
     return out.copy(system.parent.dot.position)
       .addScaledVector(this.tmpMoonOffset, charted * scaleBlended);
@@ -3321,7 +3321,6 @@ export class SystemMap {
     this.moonKeyCamQuat.copy(this.camera.quaternion);
     this.moonPasses++;
 
-    const trueScale = this.blend >= MAP_BLEND_TRUE;
     const focusSystem = this.systemOwnerOf(this.cameraSubject());
 
     for (const system of this.moonSystems) {
@@ -3390,10 +3389,9 @@ export class SystemMap {
         // (The globe/dot look deliberately does the opposite — it settles on
         // the gesture that asked for it.) At blend 1 this is x exactly, and the
         // group's scale is the parent's TRUE radius exactly, so the product is
-        // the raw AU offset by construction rather than by arithmetic.
-        const rGroup = trueScale
-          ? moon.x
-          : moon.offsetR + (moon.x - moon.offsetR) * this.blend;
+        // the raw AU offset by construction rather than by arithmetic — the
+        // same blend rule the ring, the pivot and the ship marker take.
+        const rGroup = blendChartedR(moon.offsetR, moon.x, this.blend);
         moon.pos.copy(parentPos).addScaledVector(moon.dir, rGroup * system.scaleBlended);
         moon.dot.position.copy(moon.pos);
         moon.globe.position.copy(moon.pos);
@@ -3514,7 +3512,6 @@ export class SystemMap {
    *  The group's position and scale do the rest, so this is the only place the
    *  policy touches geometry. */
   private writeMoonRing(system: MoonSystem, moon: MoonEntry): void {
-    const trueScale = this.blend >= MAP_BLEND_TRUE;
     const attr = moon.ringGeometry.attributes.instanceStart as THREE.InterleavedBufferAttribute;
     const arr = attr.data.array as Float32Array;
     let prevX = 0;
@@ -3522,9 +3519,7 @@ export class SystemMap {
     let prevZ = 0;
     for (let i = 0; i <= MOON_RING_SEGMENTS; i++) {
       const x = moon.ringX[i];
-      const charted = trueScale
-        ? x
-        : mapMoonOffsetR(system.policy, x) * (1 - this.blend) + x * this.blend;
+      const charted = moonChartedR(system.policy, x, this.blend);
       const px = moon.ringDirs[i * 3] * charted;
       const py = moon.ringDirs[i * 3 + 1] * charted;
       const pz = moon.ringDirs[i * 3 + 2] * charted;
@@ -5327,7 +5322,7 @@ export class SystemMap {
    *  vertices themselves are. */
   private systemRingReachAU(system: MoonSystem): number {
     const capR = system.policy.params.capR;
-    const outer = capR + (system.maxApoX - capR) * this.blend;
+    const outer = blendChartedR(capR, system.maxApoX, this.blend);
     return Math.max(outer, 0) * system.scaleBlended;
   }
 

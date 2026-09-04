@@ -23,7 +23,7 @@ import {
 } from './SolarSystem';
 import type { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { PlayerShip, type ShipProfile } from './PlayerShip';
-import { PlanetLabels, discRadiusPx, pickBodyAtPointer, type PickCandidate } from './PlanetLabels';
+import { PlanetLabels, pickBodyAtPointer, type PickCandidate } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget, type LabelDistancesMode } from './PlanetariumStore';
 import { solarExposureTarget } from './solarExposure';
 import { computeStats } from './stats';
@@ -302,6 +302,7 @@ import {
   type SurfaceDensity,
 } from './world/surfaceDensity';
 import { applyLensShaderUniforms, type LensShaderUniforms } from '../shared/three/lensShader';
+import { setPointEnergyPixelRatio } from '../shared/three/pointEnergy';
 import { isPhoneViewport, setText } from '../shared/dom';
 import { Constellations } from './Constellations';
 import { snapConstellations } from './data/constellationGeometry';
@@ -2181,8 +2182,9 @@ export class PlanetariumMode {
     this.memory = new MemoryEnvelope(this.deviceProfile);
     // Resolve the bitmap-upload probe during construction: every streamed
     // boot texture awaits its verdict before fetching, so starting it here
-    // takes it off the first fetch's critical path.
-    warmBitmapUploadProbe();
+    // takes it off the first fetch's critical path. The renderer lets the
+    // probe read its sample back through a real texture upload.
+    warmBitmapUploadProbe(renderer);
     // Warm uploads go through the renderer so freshly loaded maps reach the
     // GPU on quiet frames instead of inside a gesture's first draw.
     bindTextureWarmer((tex) => renderer.initTexture(tex));
@@ -2623,6 +2625,7 @@ export class PlanetariumMode {
       // Add everything to scene
       this.scene.add(this.solarSystem.sun);
       this.scene.add(this.solarSystem.asteroidBelt);
+      setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, this.renderer.getPixelRatio());
 
       performance.mark('plm:moon-meshes:start');
       for (const planet of this.solarSystem.planets) {
@@ -4100,6 +4103,7 @@ export class PlanetariumMode {
   onResize(): void {
     if (this.starfield) setStarfieldPixelRatio(this.starfield, this.renderer.getPixelRatio());
     if (this.moonDots) this.moonDots.setPixelRatio(this.renderer.getPixelRatio());
+    if (this.solarSystem) setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, this.renderer.getPixelRatio());
     // A resize can carry the layout across the breakpoint, and the phone
     // invariant — the expanded sheet and the body card are never up together —
     // is otherwise enforced only on the edges that OPEN one of them. A window
@@ -4120,6 +4124,39 @@ export class PlanetariumMode {
     this.systemMap?.onResize();
   }
 
+  /**
+   * The world was drawn (main.ts, after each frame it actually renders —
+   * under the loading screen only the requested ones, see
+   * app/bootRenderGate.ts). A covered draw may itself link programs (the
+   * composer's passes, the direct lens pass) — under the cover, which is the
+   * point — so each one re-baselines the count. Three live frames after the
+   * last covered draw, the program count is compared with that baseline:
+   * anything above it linked on a visible frame, which is what the warm-up
+   * exists to prevent. Counting draws rather than updates keeps the check
+   * honest now that a covered boot draws only on request.
+   */
+  noteWorldRendered(live: boolean): void {
+    if (this.shaderWarmupProgramCount === null) return;
+    if (!live) {
+      this.shaderWarmupProgramCount = this.renderer.info.programs?.length ?? this.shaderWarmupProgramCount;
+      this.framesSinceShaderWarmup = 0;
+      // What a covered draw linked is part of the baseline the live frames
+      // are judged against, not a link paid mid-gesture.
+      this.rebaselineLinkedPrograms();
+      return;
+    }
+    if (++this.framesSinceShaderWarmup < 3) return;
+    const now = this.renderer.info.programs?.length ?? 0;
+    if (now > this.shaderWarmupProgramCount) {
+      debugWarn('Boot shader warm-up missed programs: the first live frames compiled more', {
+        afterWarmup: this.shaderWarmupProgramCount,
+        now,
+      });
+    }
+    this.shaderWarmupProgramCount = null;
+    this.rebaselineLinkedPrograms();
+  }
+
   update(dt: number): void {
     if (!this.active || !this.solarSystem) return;
     // Written inside the frame it describes: a frame trace that scored the
@@ -4128,17 +4165,7 @@ export class PlanetariumMode {
     this.lastFrameDtMs = dt * 1000;
     this.frameInterval.observe(this.lastFrameDtMs);
     this.frameStamp++;
-    if (this.shaderWarmupProgramCount !== null && ++this.framesSinceShaderWarmup >= 3) {
-      const now = this.renderer.info.programs?.length ?? 0;
-      if (now > this.shaderWarmupProgramCount) {
-        debugWarn('Boot shader warm-up missed programs: the first live frames compiled more', {
-          afterWarmup: this.shaderWarmupProgramCount,
-          now,
-        });
-      }
-      this.shaderWarmupProgramCount = null;
-      this.rebaselineLinkedPrograms();
-    } else if (this.knownProgramIds !== null) {
+    if (this.knownProgramIds !== null) {
       // A link after the warm-up is a frame paid mid-gesture; name the program
       // so the probe set can grow to cover it. One length compare a frame; the
       // list is walked only when it moved.
@@ -5002,6 +5029,7 @@ export class PlanetariumMode {
         if (!m.mesh.visible || m.data.name === landedMoonName) {
           this.moonDots.hide(i);
           m.dotScreenAlpha = 0;
+          m.dotScreenSizePx = 0;
           m.dotLitScreenAlpha = 0;
           m.dotLitScreenSizePx = 0;
           continue;
@@ -5023,14 +5051,10 @@ export class PlanetariumMode {
           distAU > 0 ? -(sdx * dx + sdy * dy + sdz * dz) / (sunDistAU * distAU) : 1;
 
         const renderedR = m.data.radiusAU * m.mesh.scale.x;
-        const discPx = projectSphereToScreen(
-          this.tmpDotMoonPos,
-          renderedR,
-          this.camera,
-          canvasW,
-          canvasH,
-          this.sphereScreenProjection,
-        ).diameterPx;
+        // Through the shared per-frame cache: the dots run first in the frame,
+        // so this is the measurement the occluder, label and pick passes reuse
+        // instead of re-projecting the same 32 rays per moon.
+        const discPx = this.moonEffScreenProjection(m, this.tmpDotMoonPos, renderedR).radiusPx * 2;
         const albedo = albedoProxyFromColor(m.data.color, params);
         const shade = m.dotSunVisibleFraction ?? 1;
 
@@ -5222,10 +5246,8 @@ export class PlanetariumMode {
     const parentPos = this.planetWorldPositions.get(parentPlanet);
     if (!parentPos) return null;
     const parentBody = PLANETARIUM_BODIES.find(b => b.name === parentPlanet);
-    const moons = this.planetMoons.get(parentPlanet);
-    if (!parentBody || !moons) return null;
-    const moonMesh = moons.find(m => m.data.name === this.landedOn!.name);
-    if (!moonMesh) return null;
+    const moonMesh = this.moonMeshByName.get(this.landedOn.name);
+    if (!parentBody || !moonMesh) return null;
     const offset = this.getMoonWorldOffsetAU(moonMesh.data, parentBody, this.tmpMoonOffset);
     return {
       x: parentPos.x + offset.x,
@@ -5240,9 +5262,7 @@ export class PlanetariumMode {
       const body = PLANETARIUM_BODIES.find(b => b.name === this.landedOn!.name);
       return body ? body.radiusAU : 0;
     }
-    const moons = this.planetMoons.get(this.landedOn.parentPlanet);
-    if (!moons) return 0;
-    const moonMesh = moons.find(m => m.data.name === this.landedOn!.name);
+    const moonMesh = this.moonMeshByName.get(this.landedOn.name);
     return moonMesh ? moonMesh.data.radiusAU : 0;
   }
 
@@ -6292,7 +6312,11 @@ export class PlanetariumMode {
     if (!this.planetLabels || !this.solarSystem) return;
     const canvasW = this.renderer.domElement.clientWidth;
     const canvasH = this.renderer.domElement.clientHeight;
-    const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
+    // Disc catch radii are drawn footprints through the lens — the same
+    // measurements the occluder, label and dot passes size by. Never a
+    // centre-scale from camera.fov: that holds the overscan, and under the
+    // lens it under-read every disc by up to 30 % (the outer ring of a big
+    // Jupiter tapped dead; a moon readable by the label pass not aimable).
     // markerQuadPx is the on-screen quad SIZE (diameter) — the same policy
     // function PlanetLabels draws the sprite with, so the pick's catch radius
     // cannot drift from the drawn quad. The 18 px floor in pushPickCandidate
@@ -6316,8 +6340,16 @@ export class PlanetariumMode {
       if (bothOff && !isDisc) continue;
       projectToScreen(pos, this.camera, canvasW, canvasH, proj);
       if (!this.pickProjOnScreen(canvasW, canvasH)) continue;
-      const drawnPx = isDisc ? discRadiusPx(planet.data.radiusAU, dist, halfFovTan, canvasH) : markerRadiusPx;
-      this.pushPickCandidate(planet.data.name, proj.x, proj.y, drawnPx, dist);
+      if (isDisc) {
+        // A resolved disc is caught where it is DRAWN: the lens shifts a big
+        // off-axis disc's footprint away from its projected centre (~15 px for
+        // a 20° disc 30° off-axis at 60°), so a catch around the centre would
+        // leave the outer crescent dead on one side. Markers stay on the centre.
+        const fp = projectSphereToScreen(pos, planet.data.radiusAU, this.camera, canvasW, canvasH, this.sphereScreenProjection);
+        this.pushPickCandidate(planet.data.name, fp.footprintX, fp.footprintY, fp.radiusPx, dist);
+      } else {
+        this.pushPickCandidate(planet.data.name, proj.x, proj.y, markerRadiusPx, dist);
+      }
     }
 
     // The Sun — always drawn; the reveal still gates it on the 1.67 AU rule.
@@ -6326,7 +6358,8 @@ export class PlanetariumMode {
       const dist = cam.distanceTo(sunPos);
       projectToScreen(sunPos, this.camera, canvasW, canvasH, proj);
       if (this.pickProjOnScreen(canvasW, canvasH)) {
-        this.pushPickCandidate('Sun', proj.x, proj.y, discRadiusPx(SUN_DATA.radiusAU, dist, halfFovTan, canvasH), dist);
+        const sun = this.getSunScreenProjection();
+        this.pushPickCandidate('Sun', sun.footprintX, sun.footprintY, sun.radiusPx, dist);
       }
     }
 
@@ -6355,7 +6388,10 @@ export class PlanetariumMode {
         projectToScreen(tempV, this.camera, canvasW, canvasH, proj);
         if (!this.pickProjOnScreen(canvasW, canvasH)) continue;
         const effR = this.renderedMoonSizeAU(m.data.radiusAU, parentR, anchor);
-        const discPadPx = discRadiusPx(effR, dist, halfFovTan, canvasH) * 1.1;
+        // The label pass's own pad, from the per-frame cache the passes share
+        // (a hit: the dot pass measured every visible moon earlier this frame).
+        const eff = this.moonEffScreenProjection(m, tempV, effR);
+        const discPadPx = eff.radiusPx * 1.1;
         const dotAlpha = m.dotScreenAlpha ?? 0;
         const aimable = discPadPx >= LABEL_READABLE_RADIUS_PX
           || dotAlpha >= LABEL_DOT_MIN_ALPHA
@@ -6363,7 +6399,16 @@ export class PlanetariumMode {
           || (labelsShowing && (m.labelDisplayed ?? false));
         if (!aimable) continue;
         const dotPx = (m.dotScreenSizePx ?? 0) / 2;
-        this.pushPickCandidate(m.data.name, proj.x, proj.y, Math.max(discPadPx, dotPx), dist);
+        // Caught on the drawn footprint when the disc is what's drawn, on the
+        // projected centre when the dot is (a dot sits on the centre).
+        const onDisc = discPadPx >= dotPx;
+        this.pushPickCandidate(
+          m.data.name,
+          onDisc ? eff.footprintX : proj.x,
+          onDisc ? eff.footprintY : proj.y,
+          Math.max(discPadPx, dotPx),
+          dist,
+        );
       }
     }
   }
@@ -6473,14 +6518,17 @@ export class PlanetariumMode {
   }
 
   /** A moon's effective-radius screen projection, measured at most once per
-   *  frame (MoonMesh.effProj): the occlusion-disc and label passes ask with
-   *  identical inputs — the mesh's world position, the rendered-size radius,
-   *  the settled camera — so whichever runs first serves the other. Gates
-   *  differ per pass (occluders skip small discs, labels skip hidden names),
-   *  which the lazy fill absorbs: a moon only ever measures for its first
-   *  asker. A cache hit ignores the arguments, so only those two passes may
-   *  call this. updateBodyLOD in particular must NOT join: it runs before the
-   *  camera-safety pass and deliberately measures a different camera pose. */
+   *  frame (MoonMesh.effProj): the dot, occlusion-disc, label and pick passes
+   *  ask with identical inputs — the mesh's world position, the rendered-size
+   *  radius (the mesh scale IS renderedMoonSizeAU), the settled camera — so
+   *  whichever runs first serves the rest. Gates differ per pass (occluders
+   *  skip small discs, labels skip hidden names), which the lazy fill absorbs:
+   *  a moon only ever measures for its first asker. A cache hit ignores the
+   *  arguments, so only those four passes may call this — they all run after
+   *  the frame's final camera.updateMatrixWorld (the surface-view dots after
+   *  the surface re-pin, with no other asker that frame). updateBodyLOD in
+   *  particular must NOT join: it runs before the camera-safety pass and
+   *  deliberately measures a different camera pose. */
   private moonEffScreenProjection(
     m: MoonMesh,
     worldPos: THREE.Vector3,
@@ -9268,6 +9316,13 @@ export class PlanetariumMode {
    *  closes every entry surface first (the ☰ menu auto-pauses ship + clock and
    *  restores on close, so leave with that resolved, as startTutorial does). */
   private requestVolumeCompare() {
+    // Close the entry surfaces before the guard (a refused click must not leave
+    // a dead modal up) and before the snapshot: the ☰ menu and the help modal
+    // auto-pause ship and clock, and the snapshot must capture the resumed
+    // truth, not the modal freeze — the order startTutorial keeps.
+    this.closeToolsMenu();
+    this.closeMenuPanel();
+    this.hideHelp();
     if (this.tutorial !== null || this.isMissionActive()) return;
     // Snapshot the pre-tool journey before main.ts deactivates this mode — that
     // deactivate exits landed mode and saves the taken-off state, so without this
@@ -9276,9 +9331,6 @@ export class PlanetariumMode {
     // return, so leaving the tool — or a tab-close inside it — resumes exactly
     // here. Mirrors preMissionState + the tutorial's getState()-serves-snapshot.
     this.preToolState = this.getState();
-    this.closeMenuPanel();
-    this.hideHelp();
-    this.closeToolsMenu();
     this.volumeCompareRequestCb?.();
   }
 
@@ -12343,8 +12395,10 @@ export class PlanetariumMode {
    *  `hide-distances`, where the per-label reveal class does the revealing. */
   private applyBodyLabelVisibility() {
     // Labels going away take their incumbency with them: coming back, every
-    // name should have to win its slot again rather than inherit one.
-    this.clearMoonLabelIncumbents();
+    // name should have to win its slot again rather than inherit one. The
+    // marker and distance-line switches route through here too and leave the
+    // names standing — a near-tied pair must not swap for a frame on those.
+    if (!this.showBodyLabels) this.clearMoonLabelIncumbents();
     this.syncWorldLabelContainers();
     this.planetLabels?.setDistancesVisible(this.labelDistancesMode === 'always');
     if (!this.showBodyLabels && !this.showBodyMarkers) {

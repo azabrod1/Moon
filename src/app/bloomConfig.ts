@@ -14,3 +14,11 @@ export const BLOOM_RADIUS = 0.4;
  * Volume Compare keep their own lower cutoffs authored at their own call sites.
  */
 export const BLOOM_THRESHOLD = 1.0;
+
+/** The planetarium composer's bloom, as one object: the boot build and every
+ *  runtime rebuild (mode switch, bloom toggle, the dev lens knob) read this
+ *  rather than restating the pair, so a tuning A/B cannot fork them. */
+export const PLANETARIUM_BLOOM: { strength: number; threshold: number } = {
+  strength: 0.8,
+  threshold: BLOOM_THRESHOLD,
+};

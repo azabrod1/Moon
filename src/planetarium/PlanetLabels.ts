@@ -58,6 +58,15 @@ export interface PlanetLabel {
   lastAnchorY: number;
   lastMag: number;
   heldSlotLastFrame: boolean;
+  /** The cached box is stale: measure on the next frame the contest actually
+   *  places the label. Dirtied on reveal and when the `.revealed` class flips
+   *  (that shows the distance line — a second row). A zero-width read (parent
+   *  hidden) leaves it set, so the read retries. Measuring only PLACED labels
+   *  is what keeps a contest loser from forcing a layout every frame for as
+   *  long as two names crowd one spot (Venus and Earth seen from Jupiter). */
+  needsMeasure: boolean;
+  /** The `.revealed` class as last written, so a flip can dirty the box. */
+  revealedClass: boolean;
   contestSlot: PlanetLabelContestant;
 }
 
@@ -324,6 +333,8 @@ export class PlanetLabels {
         lastAnchorY: 0,
         lastMag: 99,
         heldSlotLastFrame: false,
+        needsMeasure: true,
+        revealedClass: false,
         contestSlot: {
           name: body.name,
           x: 0,
@@ -679,13 +690,17 @@ export class PlanetLabels {
       // Only show if in front of camera, not occluded, and not buried in glare
       if (!occluded && !glareHidden && proj.ndcZ < 1 && screenX > -50 && screenX < canvasWidth + 50 &&
           screenY > -50 && screenY < canvasHeight + 50) {
-        const justRevealed = !entry.labelVisible;
         if (!entry.labelVisible) {
           entry.label.style.display = 'block';
           entry.labelVisible = true;
+          entry.needsMeasure = true;
         }
         // Full-opacity + distance-line override rides on the `.revealed` class.
-        entry.label.classList.toggle('revealed', isRevealed);
+        if (isRevealed !== entry.revealedClass) {
+          entry.label.classList.toggle('revealed', isRevealed);
+          entry.revealedClass = isRevealed;
+          entry.needsMeasure = true;
+        }
         const transform = `translate(${screenX}px, ${screenY + labelOffsetY}px)`;
         if (transform !== entry.lastTransform) {
           entry.label.style.transform = transform;
@@ -708,12 +723,8 @@ export class PlanetLabels {
           entry.lastOpacity = opacityStr;
         }
 
-        // Cache the real box the frame it is first laid out, for next frame's
-        // rectangle test (one layout read on reveal, not every frame).
-        if (justRevealed && entry.label.offsetWidth > 0) {
-          entry.labelW = entry.label.offsetWidth;
-          entry.labelH = entry.label.offsetHeight;
-        }
+        // The box itself is read after the contest below, and only for a
+        // label the contest placed.
       } else if (entry.labelVisible) {
         entry.label.style.display = 'none';
         entry.labelVisible = false;
@@ -755,6 +766,22 @@ export class PlanetLabels {
         entry.heldSlotLastFrame = entry.contestSlot.place;
       }
     }
+    // Measure the boxes that need it, after every style write of this pass so
+    // the reads share one layout: placed labels only, so a denied label never
+    // costs a layout. While the whole layer is hidden (a modal) the boxes
+    // would read zero, so the pass waits — needsMeasure stays set and the
+    // read happens on the first frame the layer shows again.
+    let layerShown: boolean | null = null;
+    for (const entry of this.labels) {
+      if (!entry.labelVisible || !entry.needsMeasure) continue;
+      if (layerShown === null) layerShown = this.labelContainer.getClientRects().length > 0;
+      if (!layerShown) break;
+      const w = entry.label.offsetWidth;
+      if (w <= 0) continue;
+      entry.labelW = w;
+      entry.labelH = entry.label.offsetHeight;
+      entry.needsMeasure = false;
+    }
   }
 
   /**
@@ -772,7 +799,11 @@ export class PlanetLabels {
   /** Toggle the distance line for every planet label and the Sun label, which
    * shares this container. The master labels setting still hides both lines. */
   setDistancesVisible(visible: boolean): void {
-    this.labelContainer.classList.toggle('hide-distances', !visible);
+    const hide = !visible;
+    if (this.labelContainer.classList.contains('hide-distances') === hide) return;
+    this.labelContainer.classList.toggle('hide-distances', hide);
+    // Every label just gained or lost its distance row: re-measure once placed.
+    for (const entry of this.labels) entry.needsMeasure = true;
   }
 
   /**

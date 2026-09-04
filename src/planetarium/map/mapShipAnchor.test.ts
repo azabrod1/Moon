@@ -23,9 +23,9 @@ import {
 } from './mapShipAnchor';
 import {
   mapMoonOffsetR,
+  moonChartedR,
   moonOffsetEntries,
   moonOffsetPolicyFor,
-  type MoonOffsetPolicy,
 } from './mapMoonOffset';
 import { defaultMapCurve, projectMapPoint, type MapVec3 } from './mapProjection';
 import { PLANETARIUM_BODIES } from '../planets/planetData';
@@ -42,12 +42,6 @@ function innermostPeriX(parentPlanet: string): number {
   let x0 = Infinity;
   for (const e of moonOffsetEntries(parentPlanet)) x0 = Math.min(x0, e.periX);
   return x0;
-}
-
-/** The chart's own moon arithmetic, written out: what SystemMap places a moon
- *  at, in parent drawn radii, at a given blend. */
-function moonChartedR(policy: MoonOffsetPolicy, x: number, blend: number): number {
-  return blend >= 1 ? x : mapMoonOffsetR(policy, x) * (1 - blend) + x * blend;
 }
 
 /** A system frame for Jupiter, with the knobs the tests vary handed in. */
@@ -170,7 +164,8 @@ describe('shipChartedR — the moons own blend rule', () => {
 
   it('matches the chart moon arithmetic at every blend, above the knee', () => {
     for (const blend of [0, 0.25, 0.5, 0.75, 1]) {
-      expect(shipChartedR(policy, x, blend)).toBeCloseTo(moonChartedR(policy, x, blend), 12);
+      // Bit-exact: both ride blendChartedR over the same policy value up here.
+      expect(shipChartedR(policy, x, blend)).toBe(moonChartedR(policy, x, blend));
     }
   });
 });

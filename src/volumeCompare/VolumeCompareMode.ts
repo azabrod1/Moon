@@ -152,6 +152,12 @@ export class VolumeCompareMode {
   private pourPanY = 0; // eased vertical pan centring the vessel in the measured band
   private appliedPanY = 0; // vertical pan already applied (a delta each frame)
   private measuredBandTopPx = 0; // top edge of the bottom occluder (bar/sheet); 0 = desktop
+  // The occluder moves only on layout events: measure when one is flagged,
+  // not every frame (a layout read right after the readout's text writes
+  // is a forced synchronous layout, up to 60 a second on a phone).
+  private bandDirty = true;
+  private bandObserver: ResizeObserver | null = null;
+  private bandEndCardShown = false;
   private vesselCenterScratch = new THREE.Vector3();
   private previewLabelScratch = new THREE.Vector3();
   private panelClock = 0;
@@ -258,6 +264,7 @@ export class VolumeCompareMode {
   // ---- lifecycle -----------------------------------------------------------
 
   async activate(): Promise<void> {
+    this.bandDirty = true;
     this.active = true;
 
     // Tighten the near plane (the vessel never comes closer than minDistance − R
@@ -309,6 +316,9 @@ export class VolumeCompareMode {
 
   deactivate(): void {
     this.active = false;
+    this.bandObserver?.disconnect();
+    this.bandObserver = null;
+    this.bandDirty = true;
     this.compareScene.setVisible(false);
     const ui = document.getElementById('volume-compare-ui');
     if (ui) ui.style.display = 'none';
@@ -334,6 +344,10 @@ export class VolumeCompareMode {
     this.session = commitSession(this.session.generation);
     this.panel.setLoading(false);
     this.compareScene.setDimmed(false);
+    // Hand the pair's textures and the atmosphere shell back: the next
+    // activate() reloads its pair regardless, and the planetarium's memory
+    // envelope cannot see what this mode leaves resident.
+    this.compareScene.releasePairResources();
   }
 
   dispose(): void {
@@ -434,16 +448,26 @@ export class VolumeCompareMode {
   /**
    * Measure the top edge (px from the viewport top) of the bottom occluder — the
    * end-card sheet if it is up (the bar hides under it), else the pour bar. 0 on
-   * desktop (no bottom occluder, no vertical pan). One layout read per frame; the
-   * DOM is otherwise stable so it stays cheap (ObservatoryHUD measure precedent).
+   * desktop (no bottom occluder, no vertical pan). Measured only when flagged
+   * dirty: activation, a resize, the end card appearing or going, or the bar
+   * changing size (a ResizeObserver, created the first time the bar is
+   * measured, catches the row growing; without the API those changes are
+   * picked up by the next resize or end-card edge).
    */
   private remeasureBand(): void {
+    const endCardShown = this.panel.isEndCardShown();
+    if (endCardShown !== this.bandEndCardShown) {
+      this.bandEndCardShown = endCardShown;
+      this.bandDirty = true;
+    }
+    if (!this.bandDirty) return;
+    this.bandDirty = false;
     if (window.innerWidth > MOBILE_BREAKPOINT_PX) {
       this.measuredBandTopPx = 0;
       return;
     }
     const vh = window.innerHeight || 1;
-    if (this.panel.isEndCardShown()) {
+    if (endCardShown) {
       const card = document.querySelector('.compare-endcard-card') as HTMLElement | null;
       if (card) {
         this.measuredBandTopPx = card.getBoundingClientRect().top;
@@ -451,6 +475,10 @@ export class VolumeCompareMode {
       }
     }
     const bar = document.getElementById('compare-panel');
+    if (bar && !this.bandObserver && typeof ResizeObserver !== 'undefined') {
+      this.bandObserver = new ResizeObserver(() => { this.bandDirty = true; });
+      this.bandObserver.observe(bar);
+    }
     this.measuredBandTopPx = bar ? bar.getBoundingClientRect().top : vh;
   }
 
@@ -899,7 +927,10 @@ export class VolumeCompareMode {
   /** Zero the pour-session UI state (not the scene — applyPair/resetSession do that). */
   private resetPourState(): void {
     this.slider = 0;
+    // The chip is the one reader of this flag that render() never repaints:
+    // tell it, or a reset from a paused pour leaves ▶ standing over a running one.
     this.paused = false;
+    this.panel.setPaused(false);
     this.brimTime = 0;
     this.autoMeltTimer = 0;
     this.endCardTimer = 0;
@@ -1014,7 +1045,6 @@ export class VolumeCompareMode {
     // half-loaded scene live (or strand the loading chip). The Reset control is
     // visually disabled during the swap; the in-flight commit lands moments later.
     if (!this.texturesReady) return;
-    if (this.paused) this.paused = false;
     this.session = commitSession(this.session.generation);
     this.resetPourState();
     this.panel.showEndCard(null);
@@ -1171,6 +1201,7 @@ export class VolumeCompareMode {
   }
 
   onResize(aspect: number): void {
+    this.bandDirty = true;
     this.camera.aspect = aspect;
     this.camera.updateProjectionMatrix();
     this.compareScene.onResize();

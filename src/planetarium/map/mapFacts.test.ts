@@ -158,6 +158,7 @@ describe('mapFactRows', () => {
   it("names a moon by its parent, and Earth's Moon like any other", () => {
     expect(mapFactRows('Moon').oneLiner).toBe("Earth's moon");
     expect(mapFactRows('Moon').rows[0].value).toBe('384,000 km');
+    expect(mapFactRows('Moon').rows[1].value).toBe('1,740 km');
     expect(numberOf(mapFactRows('Moon').rows[2].value)).toBeCloseTo(27.3, 1);
   });
 

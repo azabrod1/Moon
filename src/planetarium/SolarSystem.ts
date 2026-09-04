@@ -12,6 +12,7 @@ import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { PLANETARIUM_BODIES, ASTEROID_BELT, type PlanetData } from './planets/planetData';
+import { augmentPointsMaterialWithSubpixelEnergy } from '../shared/three/pointEnergy';
 import { createPlanetMesh, createPlanetariumSun, type PlanetMesh } from './PlanetFactory';
 import {
   computeBodyPositionAU,
@@ -455,6 +456,11 @@ export function createAsteroidBelt(): THREE.Points {
   // Fade belt dots that sit behind the Sun's glare. The uniform refs are driven
   // per frame by the controller; inactive until then, so the belt is unchanged.
   belt.userData.sunGlareMaskUniforms = augmentPointsMaterialWithSunGlareMask(material);
+  // Belt dots shrink below a device pixel from most vantages; GL's 1-px clamp
+  // then draws each at full opacity, and how much that adds depends on the
+  // display (a 1× monitor showed the belt three times as bright as a 2× one).
+  // The controller feeds the renderer's pixel ratio at boot and every resize.
+  belt.userData.pointEnergyUniforms = augmentPointsMaterialWithSubpixelEnergy(material);
   // Belt dots are usually NEARER than the outer rings, so without this gate
   // they pass the depth test and stud every ring behind them (Alex's tan
   // bumps: 1.6 studs per 1000 line px, +52 luma each).

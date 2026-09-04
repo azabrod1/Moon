@@ -87,18 +87,23 @@ interface CameraLensConfig {
   aspect: number;
 }
 
+// One module-level config, refilled per call, like the vector scratch above:
+// every caller consumes it before the next projection, and a fresh object here
+// was one allocation per label, pick candidate and marker per frame.
+const lensConfigScratch: CameraLensConfig = { strength: 0, designFovDeg: 0, renderFovDeg: 0, aspect: 1 };
+
 function cameraLensConfig(camera: THREE.Camera): CameraLensConfig | null {
   if (!(camera instanceof THREE.PerspectiveCamera)) return null;
   const lens = (camera.userData as {
     lens?: { strength: number; designFovDeg: number; effectiveStrength?: number };
   }).lens;
   if (!lens) return null;
-  return {
-    strength: lens.effectiveStrength ?? lens.strength,
-    designFovDeg: lens.designFovDeg,
-    renderFovDeg: camera.fov,
-    aspect: camera.aspect,
-  };
+  const out = lensConfigScratch;
+  out.strength = lens.effectiveStrength ?? lens.strength;
+  out.designFovDeg = lens.designFovDeg;
+  out.renderFovDeg = camera.fov;
+  out.aspect = camera.aspect;
+  return out;
 }
 
 function warpProjectedNdc(camera: THREE.Camera, ndc: { x: number; y: number; z: number }): void {

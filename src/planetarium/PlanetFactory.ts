@@ -1404,10 +1404,10 @@ export interface MoonMesh {
   dotLitScreenAlpha?: number;
   dotLitScreenSizePx?: number;
   dotScreenSizePx?: number;
-  /** Per-frame effective-radius screen projection, shared between the
-   *  occlusion-disc pass and the label pass (same centre, same rendered-size
-   *  radius, same camera — whichever runs first this frame measures, the other
-   *  reuses). `frame` is PlanetariumMode's frameStamp; the centre fields
+  /** Per-frame effective-radius screen projection, shared by the dot,
+   *  occlusion-disc, label and pick passes (same centre, same rendered-size
+   *  radius, same camera — whichever runs first this frame measures, the rest
+   *  reuse). `frame` is PlanetariumMode's frameStamp; the centre fields
    *  (x/y/ndcZ) are radius-independent by the projection's pinned invariant.
    *  Allocated once per moon, transient like the dot cache above. */
   effProj?: {

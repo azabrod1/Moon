@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  blurMono, coverageFill, detailDeficit, findEdges, latScaledRadii, levelEdges, traceCurves,
-  valueNoise, wrappingCell,
+  blurMono, coverageFill, detailDeficit, findEdges, latScaledRadii, levelEdges, smearRunsOf,
+  traceCurves, valueNoise, wrappingCell,
 } from '../../tools/surfaceGrain.mjs';
 
 // tools/surfaceGrain.mjs is what gives the moon maps their texture: it decides
@@ -617,7 +617,7 @@ describe('traceCurves and the curved boundaries it levels', () => {
     lookDeg: 3, alongDeg: 6, minStep: 4, minSpanDeg: 20, smoothDeg: 2, skipLatDeg: 45,
     curves: {
       searchDeg: 10, traceDeg: 2, fineDeg: SPEC.fineDeg, minEnergyJump: 0.35,
-      sideOffsetDeg: 1.8, sideBandDeg: 3, sideDeficitMin: 0,
+      sideOffsetDeg: 1.8, sideBandDeg: 3, sideDeficitMin: 0, sideContinueMin: 0,
     },
   };
   const TRACE_CELL = (EDGE.curves.traceDeg * W) / 360;
@@ -738,7 +738,7 @@ describe('traceCurves and the curved boundaries it levels', () => {
     // the albedo boundary and the energy guard is the only thing that can
     // reject it — the smear rule taken out of the way, since this deficit is
     // deep enough on one side to satisfy it.
-    const spec = { ...EDGE, curves: { ...EDGE.curves, seedFrom: ['deficit' as const], sideDeficitMin: 0 } };
+    const spec = { ...EDGE, curves: { ...EDGE.curves, seedFrom: ['deficit' as const], sideDeficitMin: 0, sideContinueMin: 0 } };
     expect([...traceCurves(band, W, H, spec, PX_PER_DEG, null, smooth, lp)]).toEqual([]);
   });
 
@@ -756,6 +756,40 @@ describe('traceCurves and the curved boundaries it levels', () => {
     }
     // And the part of the boundary that is over real ground is still traced.
     expect(cut.reduce((t, c) => t + c.spanDeg, 0)).toBeGreaterThan(60);
+  });
+});
+
+describe('smearRunsOf, the two bars on their own', () => {
+  // The rule reads a boundary at a fixed spacing along it, so a raster scene
+  // can only put a feature in front of it that is wider than that spacing.
+  // These are the same three cases with the sampling taken out: readings in,
+  // stretches out.
+  it('carries a boundary through a dip that stays above the low bar', () => {
+    const sides = [0.45, 0.44, 0.31, 0.28, 0.30, 0.44, 0.46, 0.45];
+    expect(smearRunsOf(sides)).toEqual([[0, 7]]);
+  });
+
+  it('drops a boundary whose middle reading misses the high bar, stretch and all', () => {
+    // Five readings deep enough to be a boundary on their own, inside eleven
+    // that are not: the stretch does not get a vote of its own.
+    const sides = [0.27, 0.26, 0.27, 0.45, 0.46, 0.45, 0.44, 0.45, 0.27, 0.26, 0.27, 0.28, 0.26, 0.27, 0.26, 0.27];
+    expect(median(sides)).toBeLessThan(0.35);
+    expect(smearRunsOf(sides)).toEqual([]);
+  });
+
+  it('ends a boundary at a dip below the low bar and leaves the pieces to the span rule', () => {
+    const sides = [0.45, 0.44, 0.46, 0.12, 0.10, 0.44, 0.45, 0.46];
+    expect(smearRunsOf(sides)).toEqual([[0, 2], [5, 7]]);
+  });
+
+  it('answers nothing for nothing', () => {
+    expect(smearRunsOf([])).toEqual([]);
+  });
+
+  it('takes the bars it is given', () => {
+    const sides = [0.45, 0.30, 0.45];
+    expect(smearRunsOf(sides, { sideContinueMin: 0.35 })).toEqual([[0, 0], [2, 2]]);
+    expect(smearRunsOf(sides, { sideDeficitMin: 0.5 })).toEqual([]);
   });
 });
 
@@ -780,7 +814,7 @@ describe('the smear rule that decides which traced boundaries are levelled', () 
       sideOffsetDeg: 1.8, sideBandDeg: 3,
     },
   };
-  const OFF = { ...EDGE, curves: { ...EDGE.curves, sideDeficitMin: 0 } };
+  const OFF = { ...EDGE, curves: { ...EDGE.curves, sideDeficitMin: 0, sideContinueMin: 0 } };
 
   const noise = valueNoise(W);
   const fine = noise.matched([{ ...wrappingCell(W, 4), amp: 26 }, { ...wrappingCell(W, 9), amp: 18 }], 7);
@@ -866,33 +900,127 @@ describe('the smear rule that decides which traced boundaries are levelled', () 
       expect(Math.abs(albedoGap(levelled) - was)).toBeLessThan(0.05 * was);
     }, SLOW);
 
-    it('takes a third of the detail gone as a frame and a fifth as ground', () => {
-      // The threshold on its own, with the blur taken out of the question: the
-      // deficit handed in is flat either side of the contact and ramps across
-      // it over less than the band's own offset, so each side's band reads
-      // exactly the number it was given.
-      const handed = (deep: number) => {
-        const ramp = 1.5 * PX_PER_DEG;
-        const d = new Float32Array(W * H);
-        for (let y = 0; y < H; y++) {
-          for (let x = 0; x < W; x++) {
-            const t = Math.min(1, Math.max(0, (CONTACT(x) - y) / (2 * ramp) + 0.5));
-            d[y * W + x] = deep * t * t * (3 - 2 * t);
-          }
+    // A deficit handed in rather than measured, so the bars are what the next
+    // three tests are about and not the blur: it ramps across the contact over
+    // less than the band's own offset, so each side's band reads the profile
+    // it is given, and the profile itself turns over three degrees of
+    // longitude so that its own slope never out-runs the one across the
+    // contact and turns the normal along the curve instead of across it.
+    const handed = (profile: (x: number) => number) => {
+      const ramp = 1.5 * PX_PER_DEG;
+      const d = new Float32Array(W * H);
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          const t = Math.min(1, Math.max(0, (CONTACT(x) - y) / (2 * ramp) + 0.5));
+          d[y * W + x] = profile(x) * t * t * (3 - 2 * t);
         }
-        return d;
-      };
-      const trace = (deep: number) => traceCurves(band, W, H, EDGE, PX_PER_DEG, null, handed(deep),
-        findEdges(band, W, H, EDGE, PX_PER_DEG, null).lowPass);
+      }
+      return d;
+    };
+    /** `inside` over a window `widthDeg` wide every `periodDeg` of longitude,
+     *  `outside` between them, turning over `edgeDeg`. Repeating, so wherever
+     *  along the contact a boundary happens to be traced it meets the same
+     *  pattern, and the period is under the length of what gets traced here so
+     *  every boundary meets a whole one.
+     *
+     *  Every window is several times `lookDeg` across, because that is how far
+     *  apart the rule's own readings are: a feature narrower than the spacing
+     *  is a feature the rule samples once or not at all, and a test built on
+     *  one measures where the readings happened to land rather than what the
+     *  bars do. */
+    const pulse = (
+      periodDeg: number, widthDeg: number, inside: number, outside: number, edgeDeg = 3,
+    ) => (x: number) => {
+      const at = (((x / PX_PER_DEG) % periodDeg) + periodDeg) % periodDeg;
+      const fromCentre = Math.min(at, periodDeg - at);
+      const t = Math.min(1, Math.max(0, (fromCentre - widthDeg / 2) / edgeDeg));
+      return inside + (outside - inside) * (t * t * (3 - 2 * t));
+    };
+    const trace = (profile: (x: number) => number, spec: typeof EDGE = EDGE) =>
+      traceCurves(band, W, H, spec, PX_PER_DEG, null, handed(profile),
+        findEdges(band, W, H, spec, PX_PER_DEG, null).lowPass);
+    const totalSpan = (cs: { spanDeg: number }[]) => cs.reduce((t, c) => t + c.spanDeg, 0);
+    /** Ground degrees covered by the longest run of points at or above `bar`. */
+    const longestAbove = (c: { points: { x: number; y: number; sideDeficit?: number }[] }, bar: number) => {
+      let best = 0;
+      let run = 0;
+      for (let k = 0; k < c.points.length; k++) {
+        const q = c.points[k];
+        if ((q.sideDeficit ?? 0) < bar) { run = 0; continue; }
+        if (k > 0 && (c.points[k - 1].sideDeficit ?? 0) >= bar) {
+          const a = c.points[k - 1];
+          const lat = ((90 - (((a.y + q.y) / 2 + 0.5) * 180) / H) * Math.PI) / 180;
+          run += Math.hypot((q.x - a.x) * Math.max(0.08, Math.cos(lat)), q.y - a.y) / PX_PER_DEG;
+        }
+        best = Math.max(best, run);
+      }
+      return best;
+    };
 
-      // Traced either way, so it is the rule and not the seed that decides.
-      const thin = trace(0.3);
-      expect(thin.stats?.traced).toBeGreaterThan(0);
-      expect(thin.length).toBe(0);
+    it('carries a kept boundary through a dip that stays above the low bar', () => {
+      // Deep enough almost everywhere, dipping under the high bar but never
+      // under the low one. The dip is not where the boundary ends.
+      const profile = pulse(20, 6, 0.3, 0.45, 2);
+      const all = trace(profile, OFF);
+      const kept = trace(profile);
+      expect(all.length).toBeGreaterThan(0);
+      expect(kept.length).toBe(all.length);
+      expect(totalSpan(kept)).toBeCloseTo(totalSpan(all), 3);
+      // And the dip really is under the high bar, inside a boundary that was
+      // kept whole regardless.
+      const sides = kept.flatMap((c) => c.points.map((q) => q.sideDeficit ?? 0));
+      expect(Math.min(...sides)).toBeLessThan(0.35);
+      expect(Math.min(...sides)).toBeGreaterThanOrEqual(0.25);
+    }, SLOW);
 
-      const deep = trace(0.4);
-      expect(deep.length).toBeGreaterThan(0);
-      for (const c of deep) for (const q of c.points) expect(q.sideDeficit).toBeCloseTo(0.4, 5);
+    it('drops a long boundary entire for the sake of one good stretch in it', () => {
+      // The cost of asking the high bar of the boundary as a whole. Deep
+      // stretches eight degrees wide -- wider than a boundary has to be --
+      // inside ground that mostly reads under the bar.
+      const profile = pulse(26, 8, 0.45, 0.27, 2);
+      const all = trace(profile, OFF);
+      const kept = trace(profile);
+      const sidesOf = (c: { points: { sideDeficit?: number }[] }) => c.points.map((q) => q.sideDeficit ?? 0);
+
+      // The candidates the high bar turns down, and the smear sitting inside
+      // them: read at its full depth, so what is dropped is not a boundary the
+      // rule failed to see.
+      const turnedDown = all.filter((c) => median(sidesOf(c)) < 0.35);
+      expect(turnedDown.length).toBeGreaterThan(0);
+      expect(Math.max(...turnedDown.flatMap(sidesOf))).toBeGreaterThan(0.43);
+      expect(Math.max(...turnedDown.map((c) => longestAbove(c, 0.35)))).toBeGreaterThan(3);
+
+      // None of them is levelled anywhere along its length: nothing below the
+      // bar survives, whole or in part.
+      expect(kept.length).toBeLessThan(all.length);
+      for (const c of kept) expect(median(sidesOf(c))).toBeGreaterThanOrEqual(0.35);
+    }, SLOW);
+
+    it('ends a kept boundary at a dip below the low bar, and the span rule takes the pieces', () => {
+      // Deep enough to pass the high bar, cut through by ground the fill is
+      // not treating as a smear at all. The dips repeat inside twenty degrees,
+      // which is what makes both halves of this test hold whatever stretch of
+      // the contact happens to be traced.
+      const profile = pulse(20, 6, 0.1, 0.45, 2);
+
+      // Asked for five degrees of ground, the pieces either side of a dip are
+      // boundaries in their own right.
+      const loose = { ...EDGE, minSpanDeg: 5 };
+      const pieces = trace(profile, loose);
+      const whole = trace(profile, { ...loose, curves: OFF.curves });
+      expect(whole.length).toBeGreaterThan(0);
+      expect(pieces.length).toBeGreaterThan(1);
+      expect(totalSpan(pieces)).toBeLessThan(totalSpan(whole));
+      for (const c of pieces) {
+        expect(c.spanDeg).toBeGreaterThanOrEqual(5);
+        for (const q of c.points) expect(q.sideDeficit).toBeGreaterThanOrEqual(0.25);
+      }
+
+      // Asked for twenty, no piece is one: a boundary that clears the high bar
+      // over its whole length is still levelled nowhere, because what the low
+      // bar leaves is shorter than a boundary has to be.
+      expect(trace(profile, OFF).length).toBeGreaterThan(0);
+      expect(trace(profile).length).toBe(0);
     }, SLOW);
   });
 
@@ -922,7 +1050,7 @@ describe('the smear rule that decides which traced boundaries are levelled', () 
         detailDeficit(band, W, H, SPEC, PX_PER_DEG, null).deficit,
         findEdges(band, W, H, EDGE, PX_PER_DEG, null).lowPass);
       expect(kept.stats?.keptSpanDeg).toBeGreaterThan(100);
-      for (const c of kept) for (const q of c.points) expect(q.sideDeficit).toBeGreaterThanOrEqual(0.35);
+      for (const c of kept) for (const q of c.points) expect(q.sideDeficit).toBeGreaterThanOrEqual(0.25);
 
       const levelled = Float32Array.from(band);
       levelEdges(levelled, W, H, EDGE, PX_PER_DEG, null,

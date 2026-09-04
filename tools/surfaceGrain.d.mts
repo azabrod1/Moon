@@ -134,14 +134,22 @@ export interface EdgeSpec {
     minEnergyJump?: number;
     /** Deficit at or below which ground is a reference for that energy. */
     referenceBelow?: number;
-    /** Deficit one side of a curve must reach for the point to be kept. The
-     *  energy step cannot be the whole test, since the seed is an energy
-     *  contour: two real terrains of different roughness answer it as readily
-     *  as a frame boundary does, and only the frame boundary has a smear
-     *  beside it. A third of the detail gone is enough to be that frame — a
-     *  contact between two real terrains reads near zero either side, whatever
-     *  the two of them look like. */
+    /** The high bar: the deficit a boundary's MIDDLE reading must reach for it
+     *  to be a smear contact at all. The energy step cannot be the whole test,
+     *  since the seed is an energy contour: two real terrains of different
+     *  roughness answer it as readily as a frame boundary does, and only the
+     *  frame boundary has a smear beside it. A third of the detail gone is
+     *  enough to be that frame — a contact between two real terrains reads
+     *  near zero either side, whatever the two of them look like. Asked of the
+     *  boundary as a whole, so a long one with a single good stretch inside it
+     *  is dropped entire. */
     sideDeficitMin?: number;
+    /** The low bar: the deficit each point of a boundary that cleared the high
+     *  one must reach to carry it further. This decides where a kept boundary
+     *  ENDS — a frame edge running off its frame onto imaged ground stops
+     *  there — and the pieces it leaves answer to `minSpanDeg` like any
+     *  other. */
+    sideContinueMin?: number;
     /** Width of the band the deficit is read over, either side, in degrees. */
     sideBandDeg?: number;
     /** How far off the curve that band starts, so the reading is of one side
@@ -307,6 +315,19 @@ export function traceCurves(
   band: Float32Array, W: number, H: number, spec: EdgeSpec, pxPerDeg: number,
   valid: Uint8Array | null, deficit: Float32Array, lowPass: Float32Array,
 ): TracedCurves;
+
+/** The two bars the smear rule reads the detail deficit against. */
+export const SIDE_DEFICIT_MIN: number;
+export const SIDE_CONTINUE_MIN: number;
+
+/** Which stretches of one traced boundary are levelled, as `[from, to]` index
+ *  pairs into the per-point side deficits given: none at all unless the middle
+ *  reading clears the high bar, then the runs that stay above the low one. The
+ *  span rule is applied by the caller. */
+export function smearRunsOf(
+  sides: ArrayLike<number>,
+  spec?: { sideDeficitMin?: number; sideContinueMin?: number },
+): Array<[number, number]>;
 
 /** Measure traced curves again on the band as it now stands. */
 export function remeasureCurves(

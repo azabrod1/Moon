@@ -138,7 +138,9 @@ export interface EdgeSpec {
      *  energy step cannot be the whole test, since the seed is an energy
      *  contour: two real terrains of different roughness answer it as readily
      *  as a frame boundary does, and only the frame boundary has a smear
-     *  beside it. */
+     *  beside it. A third of the detail gone is enough to be that frame — a
+     *  contact between two real terrains reads near zero either side, whatever
+     *  the two of them look like. */
     sideDeficitMin?: number;
     /** Width of the band the deficit is read over, either side, in degrees. */
     sideBandDeg?: number;

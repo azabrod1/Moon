@@ -1168,7 +1168,7 @@ export function traceCurves(band, W, H, spec, pxPerDeg, valid, deficit, lowPass)
   const fineDeg = cfg.fineDeg ?? 0.12;
   const minEnergyJump = cfg.minEnergyJump ?? 0.35;
   const referenceBelow = cfg.referenceBelow ?? 0.15;
-  const sideDeficitMin = cfg.sideDeficitMin ?? 0.45;
+  const sideDeficitMin = cfg.sideDeficitMin ?? 0.35;
   const sideBandDeg = cfg.sideBandDeg ?? 0.5;
   const sideOffsetDeg = cfg.sideOffsetDeg ?? 0.3;
   // A job spec is plain JavaScript with nothing checking it, so a key spelled
@@ -1502,6 +1502,16 @@ function finishCurves(paths, band, W, H, spec, pxPerDeg, valid, deficit, fineEne
     // two sides and says nothing about either. A frame boundary has deficient
     // ground on one side; a contact between two terrains the mosaic really
     // imaged has it on neither, however differently the two of them read.
+    //
+    // The bar is a THIRD of the detail gone, not half. What the rule has to
+    // tell apart is a frame from a contact, and a contact between two real
+    // terrains measures near nothing either side however different the two
+    // look, since the deficit is the SHARE of a piece of ground's variation
+    // that sits in its finest band and that share does not move with contrast.
+    // So ground a third short of the map's own reference is already a frame
+    // carrying less than the ground beside it, and asking for half throws away
+    // the largest frame boundaries these mosaics have: the worst of them steps
+    // 60 counts over six degrees with 0.37 beside it.
     for (const v of vertices) {
       if (!v || v.drop) continue;
       const sideDeficit = (sign) => {

@@ -860,6 +860,35 @@ describe('the smear rule that decides which traced boundaries are levelled', () 
       const was = albedoGap(band);
       expect(Math.abs(albedoGap(levelled) - was)).toBeLessThan(0.05 * was);
     });
+
+    it('takes a third of the detail gone as a frame and a fifth as ground', () => {
+      // The threshold on its own, with the blur taken out of the question: the
+      // deficit handed in is flat either side of the contact and ramps across
+      // it over less than the band's own offset, so each side's band reads
+      // exactly the number it was given.
+      const handed = (deep: number) => {
+        const ramp = 1.5 * PX_PER_DEG;
+        const d = new Float32Array(W * H);
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            const t = Math.min(1, Math.max(0, (CONTACT(x) - y) / (2 * ramp) + 0.5));
+            d[y * W + x] = deep * t * t * (3 - 2 * t);
+          }
+        }
+        return d;
+      };
+      const trace = (deep: number) => traceCurves(band, W, H, EDGE, PX_PER_DEG, null, handed(deep),
+        findEdges(band, W, H, EDGE, PX_PER_DEG, null).lowPass);
+
+      // Traced either way, so it is the rule and not the seed that decides.
+      const thin = trace(0.3);
+      expect(thin.stats?.traced).toBeGreaterThan(0);
+      expect(thin.length).toBe(0);
+
+      const deep = trace(0.4);
+      expect(deep.length).toBeGreaterThan(0);
+      for (const c of deep) for (const q of c.points) expect(q.sideDeficit).toBeCloseTo(0.4, 5);
+    });
   });
 
   describe('two coarse products meeting', () => {
@@ -888,7 +917,7 @@ describe('the smear rule that decides which traced boundaries are levelled', () 
         detailDeficit(band, W, H, SPEC, PX_PER_DEG, null).deficit,
         findEdges(band, W, H, EDGE, PX_PER_DEG, null).lowPass);
       expect(kept.stats?.keptSpanDeg).toBeGreaterThan(100);
-      for (const c of kept) for (const q of c.points) expect(q.sideDeficit).toBeGreaterThanOrEqual(0.45);
+      for (const c of kept) for (const q of c.points) expect(q.sideDeficit).toBeGreaterThanOrEqual(0.35);
 
       const levelled = Float32Array.from(band);
       levelEdges(levelled, W, H, EDGE, PX_PER_DEG, null,

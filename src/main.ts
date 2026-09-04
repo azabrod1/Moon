@@ -20,6 +20,7 @@ import type { VolumeCompareMode } from './volumeCompare/VolumeCompareMode';
 import { canGPUDoBloom, halfFloatTargetSampleCounts } from './app/gpuCapability';
 import { bloomPixelRatio, composerSamples, parseMsaaOverride, targetPixelRatio } from './app/renderResolution';
 import { BootRenderGate } from './app/bootRenderGate';
+import { bitmapDecodePath } from './planetarium/world/textureBitmapLoader';
 import { BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
 import { createLensPass, updateLensPass, type LensParams } from './app/LensPass';
 import { applyDesignFov, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
@@ -896,6 +897,8 @@ function installDevHooks() {
     composerPasses: () => composer?.passes ?? null,
     // Boot render gate state + frames drawn under the loading screen.
     bootRender: () => ({ state: bootRender.current, coveredRenders: bootRender.coveredRenders }),
+    // Which decoder the streamed-texture flip probe settled on.
+    textureDecodePath: () => bitmapDecodePath(),
     // Mode-agnostic leak probe for the enter/exit heap check.
     rendererInfo: () => ({
       geometries: renderer.info.memory.geometries,

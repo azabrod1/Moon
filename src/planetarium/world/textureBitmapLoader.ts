@@ -9,10 +9,21 @@
  * allocation — is paid by BOTH decode paths, and is what texturePolicy's
  * `mutableStorage` opt-out plus patches/three removes.)
  *
+ * The bitmap is created in a dedicated worker, not here. Blink applies the
+ * baked flip on the thread that called `createImageBitmap`, as the promise
+ * resolves: measured at 7 ms per 2K map and 30 ms per 4K map of main-thread
+ * time under a 4× CPU throttle (planning/_bitmap-cost.log), the tail of
+ * every phone boot and a hitch on every tier upgrade in flight — against
+ * 0.3 ms when the same call runs in a worker and the bitmap is transferred
+ * back (zero-copy). A worker that cannot be made, or that fails mid-session,
+ * hands the decode back to this thread with the same options.
+ *
  * Guarded by observation, not feature sniffing: a 1x2 readback probe must
- * come back actually inverted before any real image takes this path. Anything
- * else — API missing, option ignored, draw failed — falls closed to the
- * shared `textureLoader`, whose worst case is the old slower upload, never a
+ * come back actually inverted before any real image takes this path — and it
+ * runs through the same decoder the real images will use, so the verdict
+ * covers the worker, the option and the transfer together. Anything else —
+ * API missing, option ignored, draw failed — falls closed to the shared
+ * `textureLoader`, whose worst case is the old slower upload, never a
  * flipped map.
  *
  * Failure taxonomy: transport errors (HTTP status, network, stream) surface
@@ -68,13 +79,141 @@ export function takeBootWarmResponse(url: string): Promise<Response> | undefined
   return hit;
 }
 
+/** What `createImageBitmap` accepts from this module: the fetched bytes, or
+ *  the probe's sample. Both are structured-cloneable, so a worker can take
+ *  either. */
+type BitmapSource = Blob | ImageData;
+type BitmapDecoder = (source: BitmapSource, opts: ImageBitmapOptions) => Promise<ImageBitmap>;
+
+/** The bitmap options every streamed map is decoded with. */
+const BITMAP_OPTIONS: ImageBitmapOptions = { imageOrientation: 'flipY', premultiplyAlpha: 'none' };
+
+/** The decode worker's whole program: one request in, one bitmap (transferred)
+ *  or one error string out, matched by id. Plain script, built as a blob URL,
+ *  so it needs no bundler plumbing and stays inert in the DOM-free tests. */
+const DECODE_WORKER_SOURCE = `self.onmessage = async (e) => {
+  const { id, source, opts } = e.data;
+  try {
+    const bitmap = await createImageBitmap(source, opts);
+    self.postMessage({ id, bitmap }, [bitmap]);
+  } catch (err) {
+    self.postMessage({ id, error: String((err && err.message) || err) });
+  }
+};`;
+
+type DecodeReply = { id: number; bitmap?: ImageBitmap; error?: string };
+
+/**
+ * createImageBitmap hosted in a worker. Requests are matched to replies by
+ * id; any worker-level failure (construction, script error, an undecodable
+ * message) rejects every request in flight and retires the worker for good,
+ * so the caller's fallback runs once per request, never a retry storm.
+ */
+export class WorkerBitmapDecoder {
+  private worker: Worker | null = null;
+  private readonly pending = new Map<number, { resolve: (b: ImageBitmap) => void; reject: (e: unknown) => void }>();
+  private nextId = 1;
+  private retired = false;
+
+  /** False once the worker has failed (or could never be made). */
+  get usable(): boolean {
+    return !this.retired;
+  }
+
+  decode(source: BitmapSource, opts: ImageBitmapOptions): Promise<ImageBitmap> {
+    if (this.retired) return Promise.reject(new Error('bitmap decode worker retired'));
+    return new Promise<ImageBitmap>((resolve, reject) => {
+      const id = this.nextId++;
+      this.pending.set(id, { resolve, reject });
+      try {
+        this.start().postMessage({ id, source, opts });
+      } catch (err) {
+        this.retire(err);
+      }
+    });
+  }
+
+  private start(): Worker {
+    if (this.worker) return this.worker;
+    const url = URL.createObjectURL(new Blob([DECODE_WORKER_SOURCE], { type: 'text/javascript' }));
+    const worker = new Worker(url);
+    worker.onmessage = (e: MessageEvent<DecodeReply>) => {
+      const { id, bitmap, error } = e.data;
+      const req = this.pending.get(id);
+      if (!req) {
+        // A reply nobody waits for (its request was rejected by a retire that
+        // raced the worker): free the pixels rather than leak them.
+        bitmap?.close();
+        return;
+      }
+      this.pending.delete(id);
+      if (bitmap) req.resolve(bitmap);
+      else req.reject(new Error(error ?? 'bitmap decode failed in worker'));
+    };
+    worker.onerror = (e) => this.retire(e.message || e);
+    worker.onmessageerror = () => this.retire(new Error('bitmap decode worker message could not be read'));
+    this.worker = worker;
+    return worker;
+  }
+
+  private retire(reason: unknown): void {
+    this.retired = true;
+    this.worker?.terminate();
+    this.worker = null;
+    const err = reason instanceof Error ? reason : new Error(String(reason));
+    for (const req of this.pending.values()) req.reject(err);
+    this.pending.clear();
+  }
+}
+
+let workerDecoder: WorkerBitmapDecoder | null = null;
+function workerDecode(source: BitmapSource, opts: ImageBitmapOptions): Promise<ImageBitmap> {
+  workerDecoder ??= new WorkerBitmapDecoder();
+  return workerDecoder.decode(source, opts);
+}
+const mainThreadDecode: BitmapDecoder = (source, opts) => createImageBitmap(source, opts);
+
+/** The decoder in use: the worker while it is healthy, this thread after a
+ *  worker failure (same options — the flip is honoured wherever
+ *  createImageBitmap runs, the probe checked the option, not the thread). */
+function currentDecoder(): BitmapDecoder {
+  return workerAllowed && (workerDecoder?.usable ?? true) ? workerDecode : mainThreadDecode;
+}
+let workerAllowed = false;
+
+export type BitmapDecodePath = 'unprobed' | 'worker' | 'main-thread' | 'loader';
+/** DEV telemetry: which path the flip probe settled on. */
+export function bitmapDecodePath(): BitmapDecodePath {
+  if (bitmapFlipProbe === null || probeVerdict === null) return 'unprobed';
+  if (!probeVerdict) return 'loader';
+  return currentDecoder() === workerDecode ? 'worker' : 'main-thread';
+}
+let probeVerdict: boolean | null = null;
+
+/** Draw a 1x2 bitmap and read it back: true only for the full inverted
+ *  image (opaque black over opaque white) — a silently failed draw reads back
+ *  blank [0,0,0,0], and "red < 128" alone would call that a pass. */
+function readsBackInverted(bitmap: ImageBitmap): boolean {
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 2;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return false;
+    ctx.drawImage(bitmap, 0, 0);
+    const px = ctx.getImageData(0, 0, 1, 2).data;
+    return px[0] < 128 && px[3] > 128 && px[4] > 128 && px[7] > 128;
+  } finally {
+    bitmap.close();
+  }
+}
+
 /**
  * Whether this platform can bake the vertical flip into `createImageBitmap`.
- * A 1x2 white-over-black bitmap is created with `imageOrientation: 'flipY'`
- * and read back — only the full inverted image (opaque black over opaque
- * white) counts as support: a silently failed draw reads back blank
- * [0,0,0,0], and "red < 128" alone would call that a pass. Probed lazily on
- * the first load: module load must stay DOM-free for the tests.
+ * A 1x2 white-over-black sample is created with `imageOrientation: 'flipY'`
+ * and read back — first through the worker (which then serves every real
+ * image), else on this thread. Probed lazily on the first load: module load
+ * must stay DOM-free for the tests.
  */
 let bitmapFlipProbe: Promise<boolean> | null = null;
 function bitmapUploadUsable(): Promise<boolean> {
@@ -83,23 +222,26 @@ function bitmapUploadUsable(): Promise<boolean> {
       if (typeof createImageBitmap !== 'function') return false;
       const sample = new ImageData(1, 2);
       sample.data.set([255, 255, 255, 255, 0, 0, 0, 255]);
-      const bitmap = await createImageBitmap(sample, { imageOrientation: 'flipY' });
-      try {
-        const canvas = document.createElement('canvas');
-        canvas.width = 1;
-        canvas.height = 2;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return false;
-        ctx.drawImage(bitmap, 0, 0);
-        const px = ctx.getImageData(0, 0, 1, 2).data;
-        return px[0] < 128 && px[3] > 128 && px[4] > 128 && px[7] > 128;
-      } finally {
-        bitmap.close();
+      const flipOnly: ImageBitmapOptions = { imageOrientation: 'flipY' };
+      if (typeof Worker === 'function') {
+        try {
+          if (readsBackInverted(await workerDecode(sample, flipOnly))) {
+            workerAllowed = true;
+            return true;
+          }
+        } catch {
+          // The worker could not be made or failed its first job: the
+          // main-thread probe below decides, and the worker stays retired.
+        }
       }
+      return readsBackInverted(await createImageBitmap(sample, flipOnly));
     } catch {
       return false;
     }
-  })();
+  })().then((ok) => {
+    probeVerdict = ok;
+    return ok;
+  });
   return bitmapFlipProbe;
 }
 
@@ -121,10 +263,7 @@ async function loadBitmapTexture(url: string, stillWanted?: () => boolean, signa
   if (stillWanted && !stillWanted()) {
     throw new TextureTransportError(`superseded: ${url}`);
   }
-  const bitmap = await createImageBitmap(blob, {
-    imageOrientation: 'flipY',
-    premultiplyAlpha: 'none',
-  });
+  const bitmap = await currentDecoder()(blob, BITMAP_OPTIONS);
   const tex = new THREE.Texture(bitmap);
   tex.flipY = false; // baked into the bitmap above
   tex.needsUpdate = true;
@@ -185,7 +324,11 @@ export function warmBitmapUploadProbe(): void {
   if (typeof createImageBitmap === 'function') void bitmapUploadUsable();
 }
 
-/** Test seam: force the probe verdict (pass null to restore the real probe). */
+/** Test seam: force the probe verdict (pass null to restore the real probe),
+ *  which also resets the decoder choice to the main thread. */
 export function setBitmapProbeForTests(result: boolean | null): void {
   bitmapFlipProbe = result === null ? null : Promise.resolve(result);
+  probeVerdict = result;
+  workerAllowed = false;
+  workerDecoder = null;
 }

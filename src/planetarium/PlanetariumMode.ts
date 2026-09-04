@@ -2900,20 +2900,31 @@ export class PlanetariumMode {
     this.systemMap?.onResize();
   }
 
+  /**
+   * The world was drawn (main.ts, after each frame it actually renders —
+   * under the loading screen only the requested ones, see
+   * app/bootRenderGate.ts). Three frames after the boot shader warm-up, the
+   * program count is compared with the warm-up's: anything above it linked
+   * on a live frame, which is what the warm-up exists to prevent. Counting
+   * draws rather than updates keeps the check honest now that a covered
+   * boot draws only on request.
+   */
+  noteWorldRendered(): void {
+    if (this.shaderWarmupProgramCount === null || ++this.framesSinceShaderWarmup < 3) return;
+    const now = this.renderer.info.programs?.length ?? 0;
+    if (now > this.shaderWarmupProgramCount) {
+      debugWarn('Boot shader warm-up missed programs: the first live frames compiled more', {
+        afterWarmup: this.shaderWarmupProgramCount,
+        now,
+      });
+    }
+    this.shaderWarmupProgramCount = null;
+  }
+
   update(dt: number): void {
     if (!this.active || !this.solarSystem) return;
     this.lastFrameDtMs = dt * 1000;
     this.frameStamp++;
-    if (this.shaderWarmupProgramCount !== null && ++this.framesSinceShaderWarmup >= 3) {
-      const now = this.renderer.info.programs?.length ?? 0;
-      if (now > this.shaderWarmupProgramCount) {
-        debugWarn('Boot shader warm-up missed programs: the first live frames compiled more', {
-          afterWarmup: this.shaderWarmupProgramCount,
-          now,
-        });
-      }
-      this.shaderWarmupProgramCount = null;
-    }
     // One damping step runs per frame (the controls wrapper enforces it), so
     // size that step by the frame's real duration: the coast then decays at
     // e^(−t/τ) in wall time on any refresh rate, and a hitch frame advances

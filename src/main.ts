@@ -19,6 +19,7 @@ import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import type { VolumeCompareMode } from './volumeCompare/VolumeCompareMode';
 import { canGPUDoBloom, halfFloatTargetSampleCounts } from './app/gpuCapability';
 import { bloomPixelRatio, composerSamples, parseMsaaOverride, targetPixelRatio } from './app/renderResolution';
+import { BootRenderGate } from './app/bootRenderGate';
 import { BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
 import { createLensPass, updateLensPass, type LensParams } from './app/LensPass';
 import { applyDesignFov, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
@@ -173,6 +174,10 @@ debugLog('Post-processing config', { useBloom });
 let composer: EffectComposer | null = null;
 /** The composer target RenderPass draws the scene into (buildComposer). */
 let sceneTarget: THREE.WebGLRenderTarget | null = null;
+// Whether a frame draws the world at all: under the loading screen only on
+// request, every frame once revealed, never after a boot failure
+// (app/bootRenderGate.ts). The simulation runs every frame regardless.
+const bootRender = new BootRenderGate();
 let bloomPass: UnrealBloomPass | null = null;
 let lensPass: ReturnType<typeof createLensPass> | null = null;
 let directLensTexture: THREE.FramebufferTexture | null = null;
@@ -367,6 +372,9 @@ function buildComposer(
   }
 
   composer.addPass(new OutputPass());
+  // The passes link their programs on their first render: have it happen
+  // under the loading screen, not on the first visible frame.
+  bootRender.requestCoveredRender();
 }
 
 // Dev bloom toggle: flip the runtime flag, rebuild the planetarium composer
@@ -390,6 +398,46 @@ buildComposer(planetariumCamera, PLANETARIUM_BLOOM, planetariumBloomEnabled());
 // Armed after first Planetarium activation: that render compiles the scene's
 // shaders and uploads textures, so its duration is a startup phase of its own.
 let measureNextSceneFrame = false;
+
+// One frame of the world: the map's own scene while the map is open, else the
+// composer frame plus the corner chart. The animation loop calls it through
+// the boot render gate; the reveal calls it once directly.
+function drawWorldFrame() {
+  // The system map draws its own scene straight to the backbuffer (it owns a
+  // renderer-state transaction), bypassing the world composer while open. It
+  // rides the same render-timing bracket so the telemetry path stays intact.
+  if (appMode === 'planetarium' && planetariumMode?.isMapOpen()) {
+    const perfRender = import.meta.env.DEV
+      ? surfacePerfBeginRender(renderer.info.programs?.length ?? 0, renderer.info.memory.textures)
+      : null;
+    // Close the telemetry span in finally so a throw inside the map render
+    // can't strand it open and skew every later frame's timing.
+    try {
+      planetariumMode.renderMapFrame();
+    } finally {
+      if (import.meta.env.DEV) {
+        surfacePerfEndRender(perfRender, renderer.info.programs?.length ?? 0, renderer.info.memory.textures);
+      }
+    }
+  } else {
+    renderScene(camera);
+    // The corner chart draws over the finished world frame, inside its own
+    // scissor rectangle and its own renderer-state transaction — so the
+    // composer's targets and every pixel outside that rectangle are exactly
+    // what renderScene left.
+    if (appMode === 'planetarium') planetariumMode?.renderMiniChartFrame();
+  }
+  if (appMode === 'planetarium') planetariumMode?.noteWorldRendered();
+}
+
+// The loading screen goes: draw one frame first, so the frame under the fade
+// is fresh and any program a pass still had to link is linked under the
+// cover, then let every frame draw.
+function revealLoadingScreen() {
+  drawWorldFrame();
+  bootRender.markLive();
+  document.getElementById('loading-screen')?.classList.add('hidden');
+}
 
 function renderScene(cam: THREE.Camera) {
   const measuring = measureNextSceneFrame;
@@ -823,6 +871,8 @@ function installDevHooks() {
     // the composer.
     composerPasses: () => composer?.passes ?? null,
     // Mode-agnostic leak probe for the enter/exit heap check.
+    // Boot render gate state + frames drawn under the loading screen.
+    bootRender: () => ({ state: bootRender.current, coveredRenders: bootRender.coveredRenders }),
     rendererInfo: () => ({
       geometries: renderer.info.memory.geometries,
       textures: renderer.info.memory.textures,
@@ -932,30 +982,7 @@ async function init() {
     }
 
     renderer.toneMappingExposure = exposureCurrent;
-    // The system map draws its own scene straight to the backbuffer (it owns a
-    // renderer-state transaction), bypassing the world composer while open. It
-    // rides the same render-timing bracket so the telemetry path stays intact.
-    if (appMode === 'planetarium' && planetariumMode?.isMapOpen()) {
-      const perfRender = import.meta.env.DEV
-        ? surfacePerfBeginRender(renderer.info.programs?.length ?? 0, renderer.info.memory.textures)
-        : null;
-      // Close the telemetry span in finally so a throw inside the map render
-      // can't strand it open and skew every later frame's timing.
-      try {
-        planetariumMode.renderMapFrame();
-      } finally {
-        if (import.meta.env.DEV) {
-          surfacePerfEndRender(perfRender, renderer.info.programs?.length ?? 0, renderer.info.memory.textures);
-        }
-      }
-    } else {
-      renderScene(camera);
-      // The corner chart draws over the finished world frame, inside its own
-      // scissor rectangle and its own renderer-state transaction — so the
-      // composer's targets and every pixel outside that rectangle are exactly
-      // what renderScene left.
-      if (appMode === 'planetarium') planetariumMode?.renderMiniChartFrame();
-    }
+    if (bootRender.shouldRender()) drawWorldFrame();
   }
 
   animate();
@@ -973,7 +1000,7 @@ async function init() {
   await switchAppMode('planetarium');
   logStartupTimings();
 
-  document.getElementById('loading-screen')?.classList.add('hidden');
+  revealLoadingScreen();
   // Boot is settled — now the data service worker may install (its precache
   // revalidates against the HTTP cache the boot just filled, so this order
   // makes install nearly free instead of competing with boot fetches).
@@ -1155,7 +1182,7 @@ setTimeout(function forceHideCheck() {
   }
   debugWarn('Loading timeout reached after init finished');
   console.warn('Loading timeout — forcing hide');
-  ls.classList.add('hidden');
+  revealLoadingScreen();
 }, 15000);
 
 init().then(() => {
@@ -1164,6 +1191,8 @@ init().then(() => {
   initSettled = true;
   debugError('Init failed', err);
   console.error('Init failed:', err);
+  // The error screen is opaque and stays: nothing behind it needs drawing.
+  bootRender.markFailed();
   // The message lives INSIDE the loading screen, so the screen must stay up
   // (or come back — a failure after the 15s force-hide re-covers the broken
   // scene) for the user to ever read it.

@@ -12,6 +12,7 @@ import {
   surfaceRungLayers,
   surfaceRungWeights,
   advanceSurfaceAir,
+  settleSurfaceAir,
   bindSurfaceAir,
   clearSurfaceAir,
   createSurfaceAirFx,
@@ -575,6 +576,12 @@ describe('the haze fade and the glint cap', () => {
     expect(air.uAirBlend.value).toBe(1);
     clearSurfaceAir(air);
     expect(air.uAirBlend.value).toBe(0);
+    // The A/B pin finishes the fade at once — but only for air that is on.
+    settleSurfaceAir(air);
+    expect(air.uAirBlend.value).toBe(0);
+    bindSurfaceAir(air, tables, 1, 1);
+    settleSurfaceAir(air);
+    expect(air.uAirBlend.value).toBe(1);
   });
 
   it('is drawn as the twin fades it, and the sea hands bloom no more than the cap', () => {

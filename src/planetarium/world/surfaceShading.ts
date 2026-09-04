@@ -1675,6 +1675,14 @@ export function advanceSurfaceAir(air: SurfaceAirFx, dtS: number): void {
   air.uAirBlend.value = Math.min(1, air.uAirBlend.value + Math.max(0, dtS) / SURFACE_AIR_FADE_S);
 }
 
+/** Finish a body's haze fade at once. For the dev pin that flips the tier for
+ *  an A/B: a golden pair wants the steady state of each tier, not a frame from
+ *  the transition between them. */
+export function settleSurfaceAir(air: SurfaceAirFx): void {
+  if (air.uAirDensity.value === 0) return;
+  air.uAirBlend.value = 1;
+}
+
 /** Switch the air off and let go of the tables: a lost context frees their
  *  textures, and a sampler still pointed at one is a bind of a dead name. */
 export function clearSurfaceAir(air: SurfaceAirFx): void {

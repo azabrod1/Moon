@@ -1111,8 +1111,43 @@ function makeSampler(W, H, valid) {
 /** Every key `spec.curves` may carry. */
 const CURVE_KEYS = [
   'seedAt', 'seedFrom', 'searchDeg', 'traceDeg', 'fineDeg', 'energyAt', 'energyDeg',
-  'minEnergyJump', 'referenceBelow', 'sideDeficitMin', 'sideBandDeg', 'sideOffsetDeg',
+  'minEnergyJump', 'referenceBelow', 'sideDeficitMin', 'sideContinueMin',
+  'sideBandDeg', 'sideOffsetDeg',
 ];
+
+/** The two bars the smear rule reads the detail deficit against. */
+export const SIDE_DEFICIT_MIN = 0.35;
+export const SIDE_CONTINUE_MIN = 0.25;
+
+/**
+ * Which stretches of one traced boundary are levelled, as index pairs into the
+ * side deficits it was measured with.
+ *
+ * The high bar is asked once of the whole boundary, at its middle reading, and
+ * decides whether there is anything here to level; the low bar is asked of
+ * every point and decides where what is left ends. Both are read against the
+ * detail deficit sampled either side of the curve, and what each of them is
+ * for is written where that sampling happens.
+ *
+ * The span rule is not applied here: how much ground a stretch covers is a
+ * question about geometry, and this function is given readings rather than
+ * places.
+ */
+export function smearRunsOf(sides, spec = {}) {
+  const high = spec.sideDeficitMin ?? SIDE_DEFICIT_MIN;
+  const low = spec.sideContinueMin ?? SIDE_CONTINUE_MIN;
+  if (!sides.length) return [];
+  const sorted = Array.from(sides).sort((a, b) => a - b);
+  if (sorted[sorted.length >> 1] < high) return [];
+  const runs = [];
+  let from = -1;
+  for (let k = 0; k < sides.length; k++) {
+    if (sides[k] >= low) { if (from < 0) from = k; }
+    else if (from >= 0) { runs.push([from, k - 1]); from = -1; }
+  }
+  if (from >= 0) runs.push([from, sides.length - 1]);
+  return runs;
+}
 
 /**
  * The frame boundaries that are not straight, traced as curves.
@@ -1143,11 +1178,12 @@ const CURVE_KEYS = [
  * every one of these bodies has — would answer both. What a frame boundary has
  * and a contact does not is a SMEAR on one side of it. So the detail deficit
  * is read in a band either side of the curve, offset far enough out to be
- * clear of the boundary's own transition, and a point is kept only where one
- * of those two bands is ground the fill is already treating as deficient.
- * Ground the mosaic really imaged on both sides leaves no curve however its
- * energies differ: an albedo or terrain boundary is a real feature of the body
- * and levelling it would take out ground truth.
+ * clear of the boundary's own transition, and read against two bars (see
+ * smearRunsOf): the high one decides whether the boundary is a smear contact
+ * at all, the low one decides where a boundary that passed ends. Ground the
+ * mosaic really imaged on both sides leaves no curve however its energies
+ * differ: an albedo or terrain boundary is a real feature of the body and
+ * levelling it would take out ground truth.
  *
  * Each surviving point carries its own signed step, measured across the curve
  * with the same instrument the straight lines use. Sign changes are KEPT. One
@@ -1168,7 +1204,8 @@ export function traceCurves(band, W, H, spec, pxPerDeg, valid, deficit, lowPass)
   const fineDeg = cfg.fineDeg ?? 0.12;
   const minEnergyJump = cfg.minEnergyJump ?? 0.35;
   const referenceBelow = cfg.referenceBelow ?? 0.15;
-  const sideDeficitMin = cfg.sideDeficitMin ?? 0.35;
+  const sideDeficitMin = cfg.sideDeficitMin ?? SIDE_DEFICIT_MIN;
+  const sideContinueMin = cfg.sideContinueMin ?? SIDE_CONTINUE_MIN;
   const sideBandDeg = cfg.sideBandDeg ?? 0.5;
   const sideOffsetDeg = cfg.sideOffsetDeg ?? 0.3;
   // A job spec is plain JavaScript with nothing checking it, so a key spelled
@@ -1340,7 +1377,7 @@ export function traceCurves(band, W, H, spec, pxPerDeg, valid, deficit, lowPass)
     curves.push(path);
   }
   return finishCurves(curves, band, W, H, spec, pxPerDeg, valid, deficit, fineEnergy, lowPass, {
-    jumpFloor, searchDeg, lookDeg, sideDeficitMin, sideBandDeg, sideOffsetDeg,
+    jumpFloor, searchDeg, lookDeg, sideDeficitMin, sideContinueMin, sideBandDeg, sideOffsetDeg,
     alongDeg, minStep, minSpanDeg, skipLat, sampleAt, cosAt, latOf,
   });
 }
@@ -1358,13 +1395,14 @@ function groundSpan(ax, ay, bx, by, H, pxPerDeg) {
  * spacing along the ground, each snapped to where the finest band's energy
  * really steps, each carrying its own signed step across the curve.
  *
- * A point is DROPPED rather than moved where nothing steps under it, where
- * neither side of it is smeared ground, where the measurement would reach into
- * unmeasured ground, or where the latitude is past what the instrument can
- * read — so a curve is cut at the edge of the data instead of following its
- * polygon, and a boundary between two terrains the mosaic really imaged leaves
- * no curve at all. What survives is split into runs and the short ones go, the
- * same span rule the straight lines answer to.
+ * A point is DROPPED rather than moved where nothing steps under it, where the
+ * measurement would reach into unmeasured ground, or where the latitude is
+ * past what the instrument can read — so a curve is cut at the edge of the
+ * data instead of following its polygon. What those rejections leave is what
+ * the smear rule then judges, stretch by stretch (see smearRunsOf), and a
+ * boundary between two terrains the mosaic really imaged leaves no curve at
+ * all. What survives is split into runs and the short ones go, the same span
+ * rule the straight lines answer to.
  *
  * The runs the smear rule threw away are worked out as well, and what they
  * would have corrected is reported beside what was kept: a rule that decides
@@ -1372,9 +1410,10 @@ function groundSpan(ax, ay, bx, by, H, pxPerDeg) {
  */
 function finishCurves(paths, band, W, H, spec, pxPerDeg, valid, deficit, fineEnergy, lowPass, ctx) {
   const {
-    jumpFloor, searchDeg, lookDeg, sideDeficitMin, sideBandDeg, sideOffsetDeg,
+    jumpFloor, searchDeg, lookDeg, sideDeficitMin, sideContinueMin, sideBandDeg, sideOffsetDeg,
     alongDeg, minStep, minSpanDeg, skipLat, sampleAt, cosAt, latOf,
   } = ctx;
+  const bars = { sideDeficitMin, sideContinueMin };
   const out = [];
   // The same runs with the smear rule taken out, on copies of the points, so
   // shaping one set's correction cannot write over the other's.
@@ -1503,21 +1542,28 @@ function finishCurves(paths, band, W, H, spec, pxPerDeg, valid, deficit, fineEne
     // ground on one side; a contact between two terrains the mosaic really
     // imaged has it on neither, however differently the two of them read.
     //
-    // The bar is a THIRD of the detail gone, not half. What the rule has to
-    // tell apart is a frame from a contact, and a contact between two real
-    // terrains measures near nothing either side however different the two
-    // look, since the deficit is the SHARE of a piece of ground's variation
-    // that sits in its finest band and that share does not move with contrast.
-    // So ground a third short of the map's own reference is already a frame
-    // carrying less than the ground beside it.
+    // Two bars, deciding two different things.
     //
-    // A point clearing the bar is not enough on its own: the run it belongs to
-    // still has to reach the minimum span below, and a short boundary whose
-    // reading dips in the middle is cut into pieces that do not. The worst
-    // frame boundary on these mosaics steps sixty counts over six degrees and
-    // reads 0.30 to 0.48 along its length, which clears a third in two pieces
-    // of under three degrees each and is dropped. What reaches a frame that
-    // short is the span rule, not this one.
+    // The HIGH one, a THIRD of the detail gone, decides whether the boundary
+    // is a smear contact AT ALL. A third and not a half because a contact
+    // between two real terrains measures near nothing either side however
+    // different the two look — the deficit is the SHARE of a piece of ground's
+    // variation that sits in its finest band, and a share does not move with
+    // contrast — so ground a third short of the map's own reference is already
+    // a frame carrying less than the ground beside it. It is asked of the
+    // boundary as a whole, at its middle point, so a few readings either way
+    // cannot make or break one the rest of which disagrees with them.
+    //
+    // The LOW one, a quarter, decides where a boundary that passed ENDS. A
+    // frame edge that runs off its frame onto imaged ground stops there,
+    // rather than being carried along by the company it keeps.
+    //
+    // Judging the first question by the middle point costs something, and it
+    // is worth stating: a long candidate with one good stretch inside it is
+    // dropped ENTIRE, because that stretch gets no vote of its own. That is
+    // the trade taken deliberately — a boundary is a thing with a length, and
+    // a fifth of one reading as a smear is not evidence about the other four
+    // fifths.
     for (const v of vertices) {
       if (!v || v.drop) continue;
       const sideDeficit = (sign) => {
@@ -1535,34 +1581,36 @@ function finishCurves(paths, band, W, H, spec, pxPerDeg, valid, deficit, fineEne
       // deep one: a hole is not a smear, and what to put in one is a different
       // question with a different answer.
       v.sideDeficit = Math.max(sideDeficit(1), sideDeficit(-1));
-      if (v.sideDeficit < sideDeficitMin) v.sideDrop = true;
     }
 
-    // Runs of surviving points, long enough to be a boundary.
-    const runsInto = (list, reject, copy) => {
-      let run = [];
-      let dropped = false;
-      const flush = () => {
-        if (run.length >= 3) {
-          let span = 0;
-          for (let k = 1; k < run.length; k++) span += groundSpan(run[k - 1].x, run[k - 1].y, run[k].x, run[k].y, H, pxPerDeg);
-          // Closed only where nothing was dropped: a run that starts and ends at
-          // a rejection has two ends however the contour it came from began.
-          const closed = vertices.closed && !dropped && run.length === vertices.length;
-          if (span >= minSpanDeg) {
-            const pts = copy ? run.map((p) => ({ ...p })) : run;
-            list.push({ points: simplifyCurve(pts, Math.max(1, 0.1 * spacingPx)), spanDeg: span, closed });
-          }
-        }
-        run = [];
-      };
-      for (const v of vertices) {
-        if (!v || v.drop || reject(v)) { dropped = true; flush(); } else run.push(v);
-      }
-      flush();
+    // The stretches the other rejections leave. The smear rule judges each of
+    // these as a whole, so they are formed before it is asked anything.
+    const candidates = [];
+    let run = [];
+    const closeRun = () => { if (run.length) candidates.push(run); run = []; };
+    for (const v of vertices) {
+      if (!v || v.drop) closeRun(); else run.push(v);
+    }
+    closeRun();
+
+    // One boundary, if it is long enough to be one.
+    const emit = (list, pts, copy) => {
+      if (pts.length < 3) return;
+      let span = 0;
+      for (let k = 1; k < pts.length; k++) span += groundSpan(pts[k - 1].x, pts[k - 1].y, pts[k].x, pts[k].y, H, pxPerDeg);
+      if (span < minSpanDeg) return;
+      // Closed only where nothing was dropped: a stretch that starts or ends at
+      // a rejection has two ends however the contour it came from began.
+      const closed = vertices.closed && pts.length === vertices.length;
+      const use = copy ? pts.map((p) => ({ ...p })) : pts;
+      list.push({ points: simplifyCurve(use, Math.max(1, 0.1 * spacingPx)), spanDeg: span, closed });
     };
-    runsInto(traced, () => false, true);
-    runsInto(out, (v) => v.sideDrop, false);
+    for (const cand of candidates) {
+      emit(traced, cand, true);
+      for (const [from, to] of smearRunsOf(cand.map((v) => v.sideDeficit), bars)) {
+        emit(out, cand.slice(from, to + 1), false);
+      }
+    }
   }
   // Shaped first, and on its own copies of the points, so the correction the
   // dropped boundaries would have carried is measured before the kept ones

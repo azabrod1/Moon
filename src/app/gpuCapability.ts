@@ -39,11 +39,15 @@ export function canGPUDoBloom(renderer: THREE.WebGLRenderer): boolean {
  * one it cannot do leaves the framebuffer incomplete (a black frame). Every
  * count the driver lists is built in the exact layout the composer uses
  * (RGBA16F colour + DEPTH24_STENCIL8, both multisampled renderbuffers) and
- * kept only if it completes. Empty means no multisampling. A GPU exposing
+ * kept only if it completes AND resolves: a clear and a blit into a
+ * single-sample RGBA16F buffer, the operation three performs after every
+ * render, with no GL error. Empty means no multisampling. A GPU exposing
  * WEBGL_multisampled_render_to_texture would take three's other allocation
  * path (a multisampled texture, which this probe does not build), so it
- * reports empty. A 4×4 probe cannot foresee a full-size allocation failing
- * for memory: that is what keeps the sample count off dense displays.
+ * reports empty and renders without samples, as it always did; desktop
+ * browsers do not expose that extension, so nothing is lost today. A 4×4
+ * probe cannot foresee a full-size allocation failing for memory: that is
+ * what keeps the sample count off dense displays and, above 4K, at two.
  */
 export function halfFloatTargetSampleCounts(renderer: THREE.WebGLRenderer): number[] {
   try {
@@ -78,12 +82,16 @@ function completesMultisampled(
   const fbo = gl.createFramebuffer();
   const colour = gl.createRenderbuffer();
   const depth = gl.createRenderbuffer();
+  const resolveFbo = gl.createFramebuffer();
+  const resolved = gl.createRenderbuffer();
   try {
     gl.bindRenderbuffer(gl.RENDERBUFFER, colour);
     gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.RGBA16F, 4, 4);
     gl.bindRenderbuffer(gl.RENDERBUFFER, depth);
     gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.DEPTH24_STENCIL8, 4, 4);
-    // Through three's state cache, so its record of the bound framebuffer
+    gl.bindRenderbuffer(gl.RENDERBUFFER, resolved);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA16F, 4, 4);
+    // Through three's state cache, so its record of the bound framebuffers
     // stays true whatever ran before this probe.
     renderer.state.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, colour);
@@ -91,13 +99,31 @@ function completesMultisampled(
     const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
     // A refused storage call raises a GL error but no exception: a miss.
     const clean = gl.getError() === gl.NO_ERROR;
+    if (!complete || !clean) return false;
+    // The resolve three performs after every render: write the samples,
+    // then blit them into a single-sample buffer of the same format. The
+    // clear colour goes through three's cache so its record stays true.
+    renderer.state.buffers.color.setClear(0.25, 0.5, 0.75, 1, false);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    renderer.state.bindFramebuffer(gl.DRAW_FRAMEBUFFER, resolveFbo);
+    gl.framebufferRenderbuffer(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, resolved);
+    renderer.state.bindFramebuffer(gl.READ_FRAMEBUFFER, fbo);
+    const resolvable = gl.checkFramebufferStatus(gl.DRAW_FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.blitFramebuffer(0, 0, 4, 4, 0, 0, 4, 4, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    const resolvedClean = gl.getError() === gl.NO_ERROR;
     drainErrors(gl);
-    return complete && clean;
+    return resolvable && resolvedClean;
   } finally {
+    // All three binding points back to null through the cache, so three's
+    // record matches GL once the probe's framebuffers are deleted.
+    renderer.state.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+    renderer.state.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
     renderer.state.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.bindRenderbuffer(gl.RENDERBUFFER, null);
     gl.deleteRenderbuffer(colour);
     gl.deleteRenderbuffer(depth);
+    gl.deleteRenderbuffer(resolved);
     gl.deleteFramebuffer(fbo);
+    gl.deleteFramebuffer(resolveFbo);
   }
 }

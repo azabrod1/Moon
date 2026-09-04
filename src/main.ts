@@ -18,8 +18,8 @@ import { LANDED_NEAR_AU } from './planetarium/landedView';
 import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import type { VolumeCompareMode } from './volumeCompare/VolumeCompareMode';
 import { canGPUDoBloom, halfFloatTargetSampleCounts } from './app/gpuCapability';
-import { composerSamples, parseMsaaOverride, targetPixelRatio } from './app/renderResolution';
-import { BLOOM_PIXEL_RATIO, BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
+import { bloomPixelRatio, composerSamples, parseMsaaOverride, targetPixelRatio } from './app/renderResolution';
+import { BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
 import { createLensPass, updateLensPass, type LensParams } from './app/LensPass';
 import { applyDesignFov, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
 import { stepExposure } from './planetarium/solarExposure';
@@ -106,9 +106,10 @@ renderer.domElement.addEventListener('webglcontextrestored', () => {
 const useBloom = canGPUDoBloom(renderer) && !new URLSearchParams(location.search).has('nofloat');
 
 // Multisampling for the composer's scene target (app/renderResolution.ts):
-// `?msaa=` forces a count for A/B questions on a device, and only counts the
-// GPU completed for a half-float target are ever used (none = no samples).
-const msaaOverride = parseMsaaOverride(location.search);
+// `?msaa=0` is the kill switch on any build, the other counts are the dev
+// server's A/B knob, and only counts the GPU completed and resolved for a
+// half-float target are ever used (none = no samples).
+const msaaOverride = parseMsaaOverride(location.search, import.meta.env.DEV);
 const sceneSampleCounts = useBloom ? halfFloatTargetSampleCounts(renderer) : [];
 
 try {
@@ -197,7 +198,9 @@ function getTargetPixelRatio(): number {
 }
 
 function getSceneTargetSamples(pixelRatio: number): number {
-  return composerSamples(pixelRatio, isMobile, msaaOverride, sceneSampleCounts);
+  // The scene target's size in device pixels: the policy's 4K budget reads it.
+  const devicePixels = Math.round(window.innerWidth * pixelRatio) * Math.round(window.innerHeight * pixelRatio);
+  return composerSamples(pixelRatio, isMobile, devicePixels, msaaOverride, sceneSampleCounts);
 }
 
 function applyRenderResolution() {
@@ -205,10 +208,10 @@ function applyRenderResolution() {
   renderer.setPixelRatio(pixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
   if (composer && sceneTarget) {
-    // A page zoom or a move to another monitor can cross the multisampling
-    // threshold: retarget the sample count and drop the GL objects so the
-    // next bind allocates the new layout (setSize alone only disposes on a
-    // dimension change).
+    // A page zoom, a move to another monitor or a resize across the 4K
+    // budget can change the sample count: retarget it and drop the GL
+    // objects so the next bind allocates the new layout (setSize alone only
+    // disposes on a dimension change).
     const samples = getSceneTargetSamples(pixelRatio);
     if (sceneTarget.samples !== samples) {
       sceneTarget.samples = samples;
@@ -220,11 +223,13 @@ function applyRenderResolution() {
   }
 }
 
-// The composer sizes every pass in device pixels; the bloom chain is re-sized
-// to its own fixed ratio afterwards so the glow's width in CSS pixels does
-// not depend on the display (app/bloomConfig.ts BLOOM_PIXEL_RATIO).
+// The composer sizes every pass at the scene's ratio; the bloom chain is
+// re-sized afterwards at its own (app/renderResolution.ts bloomPixelRatio:
+// the renderer's old floor, kept for the chain alone), so the glow keeps the
+// width and the cost it had on every display.
 function sizeBloomPass() {
-  bloomPass?.setSize(window.innerWidth * BLOOM_PIXEL_RATIO, window.innerHeight * BLOOM_PIXEL_RATIO);
+  const ratio = bloomPixelRatio(window.devicePixelRatio, isMobile);
+  bloomPass?.setSize(window.innerWidth * ratio, window.innerHeight * ratio);
 }
 
 // Bloom radius (shared across modes) and the planetarium threshold live in
@@ -318,7 +323,10 @@ function buildComposer(
   // full-screen quads ever land there (the lens output, bloom's composite),
   // so it carries neither the samples nor the depth/stencil planes: a
   // single-sample colour buffer. renderScene keeps the scene target in the
-  // read slot, the one RenderPass draws into.
+  // read slot, the one RenderPass draws into. (Without the lens pass —
+  // flight, compare — bloom's composite blends into the scene target
+  // itself, so those modes resolve it twice a frame; accepted, both are
+  // small scenes.)
   const partner = composer.renderTarget2;
   partner.samples = 0;
   partner.depthBuffer = false;

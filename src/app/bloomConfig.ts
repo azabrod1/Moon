@@ -7,16 +7,6 @@
 export const BLOOM_RADIUS = 0.4;
 
 /**
- * Pixel ratio the bloom mip chain is sized at, whatever the display's. The
- * blur kernels are fixed texel counts, so a chain sized in device pixels
- * draws a glow whose width in CSS pixels shrinks as the display gets denser
- * (a 1× monitor would show the Sun's glow twice as wide as a 2× one). The
- * look was authored on 2× displays (Retina Macs, phones); every display gets
- * that glow. main.ts re-sizes the pass to this after every composer resize.
- */
-export const BLOOM_PIXEL_RATIO = 2;
-
-/**
  * Planetarium bloom high-pass cutoff (Rec.709 luminance). Set at exactly 1.0 so
  * the brightest catalog star (luminance below 1.0) contributes nothing to the
  * bloom pass: near the Sun, stars must not survive as star-shaped glints. The

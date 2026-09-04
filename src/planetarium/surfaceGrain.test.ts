@@ -455,7 +455,11 @@ describe('findEdges and levelEdges', () => {
     const band = stepped(18, 300);
     const before = findEdges(band, W, H, spec, PX_PER_DEG, null).edges.slice(0, 2);
     const detail = energy(band);
-    levelEdges(band, W, H, spec, PX_PER_DEG, null);
+    const solved = levelEdges(band, W, H, spec, PX_PER_DEG, null);
+    // A relaxation that stopped on its sweep count rather than on its
+    // tolerance applies a field bigger than the harmonic one it stands for.
+    expect(solved.converged).toBe(true);
+    expect(solved.residual).toBeLessThan(0.01);
     const after = findEdges(band, W, H, spec, PX_PER_DEG, null, before).edges;
     for (let k = 0; k < before.length; k++) {
       expect(Math.abs(after[k].step)).toBeLessThan(0.3 * Math.abs(before[k].step));
@@ -600,9 +604,21 @@ describe('traceCurves and the curved boundaries it levels', () => {
   const ALBEDO = (x: number) => 320 + 45 * Math.sin((2 * Math.PI * 4 * x) / W + 1.7);
   const ALBEDO_SLOPE = (x: number) => 45 * ((2 * Math.PI * 4) / W) * Math.cos((2 * Math.PI * 4 * x) / W + 1.7);
 
+  // The band the smear rule reads the deficit in, scaled to this raster like
+  // every other degree here, and the rule itself switched off for the scene
+  // below. This scene has one coarse region against sharp ground, so its
+  // boundary sits on the OUTER edge of the deficit, where a field blurred over
+  // degrees reads about a third of what it reads inside — 0.2 to 0.4 in the
+  // band, against 0.6 to 0.9 across a source mosaic's own frame boundaries,
+  // which lie inside broad coarse ground with another coarse product on the
+  // far side. The two scenes after this one carry the rule at its real
+  // threshold, in both directions.
   const EDGE = {
     lookDeg: 3, alongDeg: 6, minStep: 4, minSpanDeg: 20, smoothDeg: 2, skipLatDeg: 45,
-    curves: { searchDeg: 10, traceDeg: 2, fineDeg: SPEC.fineDeg, minEnergyJump: 0.35 },
+    curves: {
+      searchDeg: 10, traceDeg: 2, fineDeg: SPEC.fineDeg, minEnergyJump: 0.35,
+      sideOffsetDeg: 1.8, sideBandDeg: 3, sideDeficitMin: 0,
+    },
   };
   const TRACE_CELL = (EDGE.curves.traceDeg * W) / 360;
 
@@ -715,8 +731,15 @@ describe('traceCurves and the curved boundaries it levels', () => {
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) pretend[y * W + x] = y > ALBEDO(x) ? 0.9 : 0.1;
     const smooth = blurMono(pretend, W, H, latScaledRadii(H, 40), 40);
     const { lowPass: lp } = findEdges(band, W, H, EDGE, PX_PER_DEG, null);
-    const spec = { ...EDGE, curves: { ...EDGE.curves, seedFrom: ['deficit'] } };
-    expect(traceCurves(band, W, H, spec, PX_PER_DEG, null, smooth, lp)).toEqual([]);
+    // As it is cut: the seed is the energy contour, which uniform texture does
+    // not offer, so nothing is even proposed here.
+    expect([...traceCurves(band, W, H, EDGE, PX_PER_DEG, null, smooth, lp)]).toEqual([]);
+    // And with the deficit seeding instead, so that a contour IS proposed along
+    // the albedo boundary and the energy guard is the only thing that can
+    // reject it — the smear rule taken out of the way, since this deficit is
+    // deep enough on one side to satisfy it.
+    const spec = { ...EDGE, curves: { ...EDGE.curves, seedFrom: ['deficit' as const], sideDeficitMin: 0 } };
+    expect([...traceCurves(band, W, H, spec, PX_PER_DEG, null, smooth, lp)]).toEqual([]);
   });
 
   it('cuts a curve where it runs into ground that was never measured', () => {
@@ -733,5 +756,178 @@ describe('traceCurves and the curved boundaries it levels', () => {
     }
     // And the part of the boundary that is over real ground is still traced.
     expect(cut.reduce((t, c) => t + c.spanDeg, 0)).toBeGreaterThan(60);
+  });
+});
+
+// Each scene here builds the full raster and runs the leveller over it, which
+// is more than a test's default budget allows for when the suite runs them
+// alongside everything else.
+const SLOW = 30000;
+
+describe('the smear rule that decides which traced boundaries are levelled', () => {
+  // The seed is an energy contour and the guard that went with it was an
+  // energy step, so seed and guard were the same signal and a contact between
+  // two real terrains of different roughness answered both. These two scenes
+  // are that pair: ground the mosaic really imaged on both sides, which has to
+  // come through untouched, and two coarse products meeting, which has to be
+  // levelled. Both run at the threshold the maps are cut with.
+  const EDGE = {
+    lookDeg: 3, alongDeg: 6, minStep: 4, minSpanDeg: 20, smoothDeg: 2, skipLatDeg: 45,
+    // Degrees, scaled to this raster the way every other degree here is; the
+    // deficit the rule asks for is the shipped one.
+    curves: {
+      searchDeg: 10, traceDeg: 2, fineDeg: SPEC.fineDeg, minEnergyJump: 0.35,
+      sideOffsetDeg: 1.8, sideBandDeg: 3,
+    },
+  };
+  const OFF = { ...EDGE, curves: { ...EDGE.curves, sideDeficitMin: 0 } };
+
+  const noise = valueNoise(W);
+  const fine = noise.matched([{ ...wrappingCell(W, 4), amp: 26 }, { ...wrappingCell(W, 9), amp: 18 }], 7);
+  const mid = noise.matched([{ ...wrappingCell(W, 40), amp: 12 }], 13);
+  const slow = noise.matched([{ ...wrappingCell(W, 400), amp: 60 }], 21);
+
+  /** Every |step| the tracer reads along the curves it keeps on `band`. */
+  function stepsAlong(band: Float32Array, spec: typeof EDGE) {
+    const deficit = detailDeficit(band, W, H, SPEC, PX_PER_DEG, null).deficit;
+    const { lowPass } = findEdges(band, W, H, spec, PX_PER_DEG, null);
+    return traceCurves(band, W, H, spec, PX_PER_DEG, null, deficit, lowPass)
+      .flatMap((c) => c.points.map((q) => Math.abs(q.smoothed)));
+  }
+
+  describe('two real terrains meeting', () => {
+    // Isotropic grain either side of a wandering contact, one side carrying
+    // 0.4 of the other's contrast at EVERY scale — so the finest band's energy
+    // steps by more than half across it and seeds a curve, while the ratio the
+    // deficit is measured as is identical either side and neither side is a
+    // smear. And a real albedo difference across it, which is the ground truth
+    // that has to survive. Nothing here is a mosaic artefact.
+    const CONTACT = (x: number) => 320 + 45 * Math.sin((2 * Math.PI * 6 * x) / W + 1.7);
+    const band = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const smooth = y < CONTACT(x);
+        const g = smooth ? 0.4 : 1;
+        band[y * W + x] = 120 + slow(x, y) + g * (mid(x, y) + fine(x, y)) + (smooth ? 18 : 0);
+      }
+    }
+    const deficit = detailDeficit(band, W, H, SPEC, PX_PER_DEG, null).deficit;
+
+    /** Each terrain's mean brightness over its bulk, well clear of the contact,
+     *  which is what the albedo difference between them IS. */
+    function albedoGap(b: Float32Array) {
+      let hi = 0;
+      let nHi = 0;
+      let lo = 0;
+      let nLo = 0;
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x += 8) {
+          const d = y - CONTACT(x);
+          if (d < -100 && y > 120) { hi += b[y * W + x]; nHi++; } else if (d > 220 && y < 900) { lo += b[y * W + x]; nLo++; }
+        }
+      }
+      return hi / nHi - lo / nLo;
+    }
+
+    it('has a deficit of nothing on either side of the contact', () => {
+      // The two terrains differ in contrast, not in the share of their
+      // variation that sits in the finest band, and it is the share the
+      // detector measures.
+      const at = (x: number, y: number) => deficit[Math.min(H - 1, Math.max(0, Math.round(y))) * W
+        + (((Math.round(x) % W) + W) % W)];
+      for (let x = 0; x < W; x += 128) {
+        expect(at(x, CONTACT(x) - 3 * PX_PER_DEG)).toBeLessThan(0.3);
+        expect(at(x, CONTACT(x) + 3 * PX_PER_DEG)).toBeLessThan(0.3);
+      }
+    });
+
+    it('is followed as a boundary and erased as an albedo step with the rule off', () => {
+      // What the rule is for: without it the contact is traced and most of a
+      // real albedo difference goes.
+      const traced = traceCurves(band, W, H, OFF, PX_PER_DEG, null, deficit,
+        findEdges(band, W, H, OFF, PX_PER_DEG, null).lowPass);
+      expect(traced.length).toBeGreaterThan(0);
+      expect(traced.reduce((t, c) => t + c.spanDeg, 0)).toBeGreaterThan(150);
+      const levelled = Float32Array.from(band);
+      levelEdges(levelled, W, H, OFF, PX_PER_DEG, null, deficit);
+      expect(albedoGap(levelled)).toBeLessThan(0.5 * albedoGap(band));
+    }, SLOW);
+
+    it('leaves no curve, and the albedo step, under the rule', () => {
+      const kept = traceCurves(band, W, H, EDGE, PX_PER_DEG, null, deficit,
+        findEdges(band, W, H, EDGE, PX_PER_DEG, null).lowPass);
+      expect(kept.length).toBe(0);
+      expect(kept.stats?.traced).toBeGreaterThan(0);
+      expect(kept.stats?.droppedShare).toBeCloseTo(1, 5);
+
+      const levelled = Float32Array.from(band);
+      levelEdges(levelled, W, H, EDGE, PX_PER_DEG, null, deficit);
+      const was = albedoGap(band);
+      expect(Math.abs(albedoGap(levelled) - was)).toBeLessThan(0.05 * was);
+    }, SLOW);
+
+    it('takes a third of the detail gone as a frame and a fifth as ground', () => {
+      // The threshold on its own, with the blur taken out of the question: the
+      // deficit handed in is flat either side of the contact and ramps across
+      // it over less than the band's own offset, so each side's band reads
+      // exactly the number it was given.
+      const handed = (deep: number) => {
+        const ramp = 1.5 * PX_PER_DEG;
+        const d = new Float32Array(W * H);
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            const t = Math.min(1, Math.max(0, (CONTACT(x) - y) / (2 * ramp) + 0.5));
+            d[y * W + x] = deep * t * t * (3 - 2 * t);
+          }
+        }
+        return d;
+      };
+      const trace = (deep: number) => traceCurves(band, W, H, EDGE, PX_PER_DEG, null, handed(deep),
+        findEdges(band, W, H, EDGE, PX_PER_DEG, null).lowPass);
+
+      // Traced either way, so it is the rule and not the seed that decides.
+      const thin = trace(0.3);
+      expect(thin.stats?.traced).toBeGreaterThan(0);
+      expect(thin.length).toBe(0);
+
+      const deep = trace(0.4);
+      expect(deep.length).toBeGreaterThan(0);
+      for (const c of deep) for (const q of c.points) expect(q.sideDeficit).toBeCloseTo(0.4, 5);
+    }, SLOW);
+  });
+
+  describe('two coarse products meeting', () => {
+    // What a mosaic really has where its frames meet: sharp reference ground
+    // fading into a half-detailed product, and inside that a fully smeared
+    // frame with its own calibration offset along a wandering outline. The
+    // energy steps across the outline and the ground beside it is a smear, so
+    // this is the boundary the pass exists for.
+    const CURVE = (x: number) => 600 + 80 * Math.sin((2 * Math.PI * 3 * x) / W);
+    const STEP = (x: number) => 16 * Math.sin((2 * Math.PI * 2 * x) / W);
+    const band = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const t = Math.min(1, Math.max(0, (y - 420) / 120));
+        const g = y > CURVE(x) ? 0 : 1 - 0.5 * (t * t * (3 - 2 * t));
+        band[y * W + x] = 120 + slow(x, y) + mid(x, y) + g * fine(x, y) + (y > CURVE(x) ? STEP(x) : 0);
+      }
+    }
+
+    it('keeps the boundary and closes its step', () => {
+      const before = stepsAlong(band, EDGE);
+      expect(before.length).toBeGreaterThan(0);
+      expect(median(before)).toBeGreaterThan(5);
+
+      const kept = traceCurves(band, W, H, EDGE, PX_PER_DEG, null,
+        detailDeficit(band, W, H, SPEC, PX_PER_DEG, null).deficit,
+        findEdges(band, W, H, EDGE, PX_PER_DEG, null).lowPass);
+      expect(kept.stats?.keptSpanDeg).toBeGreaterThan(100);
+      for (const c of kept) for (const q of c.points) expect(q.sideDeficit).toBeGreaterThanOrEqual(0.35);
+
+      const levelled = Float32Array.from(band);
+      levelEdges(levelled, W, H, EDGE, PX_PER_DEG, null,
+        detailDeficit(band, W, H, SPEC, PX_PER_DEG, null).deficit);
+      expect(median(stepsAlong(levelled, EDGE))).toBeLessThan(2);
+    }, SLOW);
   });
 });

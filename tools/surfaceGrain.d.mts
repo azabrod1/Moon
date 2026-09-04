@@ -102,25 +102,51 @@ export interface EdgeSpec {
   /** Latitude beyond which nothing is scanned. */
   skipLatDeg?: number;
   /** Follow the boundaries that are neither a meridian nor a parallel, seeded
-   *  from the detail deficit's own level set. Absent, only straight lines are
-   *  found. `levelEdges` must be given a deficit for this to act. */
+   *  from the finest band's own energy contour and kept only where one side of
+   *  them is smeared ground. Absent, only straight lines are found.
+   *  `levelEdges` must be given a deficit for this to act. An unknown key here
+   *  throws rather than being ignored: a job spec is untyped JavaScript, and a
+   *  key spelled wrong changes what the pass levels. */
   curves?: {
-    /** Deficit level the outline is taken at. */
+    /** Which fields' level sets the outlines are taken from, in order.
+     *  `energy` separates any two frames carrying different amounts of detail;
+     *  `deficit` outlines the ground the fill treats differently. */
+    seedFrom?: Array<'energy' | 'deficit'>;
+    /** Share of the reference ground's fine energy the `energy` contour is
+     *  taken at. */
+    energyAt?: number;
+    /** Deficit level the `deficit` contour is taken at. */
     seedAt?: number;
     /** How far along the normal the snap to the energy step looks, in degrees:
-     *  the width the deficit was blurred by, since that is how far off the
-     *  frame edge its level set can sit. */
+     *  a contour taken off a field blurred over degrees can sit that far off
+     *  the frame edge. */
     searchDeg?: number;
     /** Cell size of the grid the level set is traced on. */
     traceDeg?: number;
     /** The band whose energy the snap reads — the deficit's own finest. */
     fineDeg?: number;
+    /** How widely that energy is averaged before the snap reads it. Well under
+     *  the distance the snap searches, or the snap finds the blur's own slope
+     *  instead of the boundary. */
+    energyDeg?: number;
     /** How much of the reference ground's fine energy a real boundary has to
-     *  step by. Under it the point is dropped, so an albedo boundary with the
-     *  same texture either side leaves no curve. */
+     *  step by. Under it the point is dropped. */
     minEnergyJump?: number;
     /** Deficit at or below which ground is a reference for that energy. */
     referenceBelow?: number;
+    /** Deficit one side of a curve must reach for the point to be kept. The
+     *  energy step cannot be the whole test, since the seed is an energy
+     *  contour: two real terrains of different roughness answer it as readily
+     *  as a frame boundary does, and only the frame boundary has a smear
+     *  beside it. A third of the detail gone is enough to be that frame — a
+     *  contact between two real terrains reads near zero either side, whatever
+     *  the two of them look like. */
+    sideDeficitMin?: number;
+    /** Width of the band the deficit is read over, either side, in degrees. */
+    sideBandDeg?: number;
+    /** How far off the curve that band starts, so the reading is of one side
+     *  rather than of the blurred mixture of both. */
+    sideOffsetDeg?: number;
   };
   /** Ceiling on how many boundaries one round corrects. Above the worst of
    *  these sources' own count, so it does not truncate the list. */
@@ -226,8 +252,13 @@ export function levelEdges(
   /** Boundaries corrected in each round, and whether any round was truncated. */
   perRound: number[];
   capped: boolean;
+  /** Whether every round's finest grid reached its tolerance, and how many
+   *  grids across the whole run ran out of sweeps instead. An unconverged
+   *  solve applies a field bigger than the harmonic one it stands for. */
+  converged: boolean;
+  unconverged: number;
   /** The curves traced, if any were asked for. */
-  curves: TracedCurve[];
+  curves: TracedCurves;
 };
 
 /** One point of a traced boundary: where it is, which way it faces (as source
@@ -240,6 +271,8 @@ export interface CurvePoint {
   step: number;
   smoothed: number;
   jump: number;
+  /** The deeper of the two sides' detail deficits, which is what kept it. */
+  sideDeficit?: number;
 }
 
 export interface TracedCurve {
@@ -253,12 +286,27 @@ export interface TracedCurve {
   firstMedianStep: number;
 }
 
-/** The frame boundaries that are not straight, seeded from the deficit's own
- *  level set and snapped to where the finest band's energy steps. */
+/** What the trace found against what it kept: a rule that decides which real
+ *  ground is left alone has to be able to say how much it left. `droppedShare`
+ *  is the fraction of the correction, weighted by the ground each boundary
+ *  runs along, that the rejected boundaries would have carried. */
+export interface CurveStats {
+  traced: number;
+  kept: number;
+  tracedSpanDeg: number;
+  keptSpanDeg: number;
+  droppedShare: number;
+}
+
+export type TracedCurves = TracedCurve[] & { stats?: CurveStats };
+
+/** The frame boundaries that are not straight, seeded from the finest band's
+ *  energy contour, snapped to where that energy steps, and kept only along the
+ *  stretches with smeared ground on one side. */
 export function traceCurves(
   band: Float32Array, W: number, H: number, spec: EdgeSpec, pxPerDeg: number,
   valid: Uint8Array | null, deficit: Float32Array, lowPass: Float32Array,
-): TracedCurve[];
+): TracedCurves;
 
 /** Measure traced curves again on the band as it now stands. */
 export function remeasureCurves(

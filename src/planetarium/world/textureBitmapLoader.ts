@@ -16,7 +16,8 @@
  * every phone boot and a hitch on every tier upgrade in flight — against
  * 0.3 ms when the same call runs in a worker and the bitmap is transferred
  * back (zero-copy). A worker that cannot be made, or that fails mid-session,
- * hands the decode back to this thread with the same options.
+ * hands the decode back to this thread only if this thread passed its own
+ * probe — else to the shared loader.
  *
  * Guarded by observation, not feature sniffing: a 1x2 readback probe must
  * come back actually inverted before any real image takes this path — and it
@@ -34,6 +35,7 @@
  * HTMLImageElement path is spent before surfacing the error.
  */
 import * as THREE from 'three';
+import { debugLog } from '../../shared/debug';
 
 /** The app's texture loader. Shared so every fetch carries the same settings
  *  (and so the fallback here, the retry seam, and the tier queue stand behind
@@ -79,21 +81,31 @@ export function takeBootWarmResponse(url: string): Promise<Response> | undefined
   return hit;
 }
 
-/** What `createImageBitmap` accepts from this module: the fetched bytes, or
- *  the probe's sample. Both are structured-cloneable, so a worker can take
- *  either. */
-type BitmapSource = Blob | ImageData;
+/** What `createImageBitmap` gets from this module: encoded bytes — a fetched
+ *  map or the probe's PNG — which a worker takes by structured clone. */
+type BitmapSource = Blob;
 type BitmapDecoder = (source: BitmapSource, opts: ImageBitmapOptions) => Promise<ImageBitmap>;
 
 /** The bitmap options every streamed map is decoded with. */
 const BITMAP_OPTIONS: ImageBitmapOptions = { imageOrientation: 'flipY', premultiplyAlpha: 'none' };
 
-/** A worker reply that never comes — a decoder hung on one image — must not
- *  hold every later map hostage: past this the worker is retired, its
- *  requests rejected (each falls back to the shared loader), and the next
- *  decodes go to a verified realm. Generous, because an 8K map on a slow
- *  phone legitimately takes seconds. */
+/** A worker reply that never comes must not hold every later map hostage —
+ *  but a slow reply is not a dead worker: a phone put in the background
+ *  freezes the worker along with the page, and an 8K map on a slow phone
+ *  legitimately takes seconds. So the timer raises a suspicion, not a
+ *  verdict. On expiry: a hidden page re-arms (frozen alongside us); a visible
+ *  page pings the worker — no answer within PING_TIMEOUT_MS retires it and
+ *  rejects every request (each falls back to the shared loader); an answer
+ *  re-arms once, and a second expiry with a live worker rejects that one
+ *  request only, keeping the worker for the rest. */
 export const DECODE_TIMEOUT_MS = 30_000;
+export const PING_TIMEOUT_MS = 5_000;
+
+/** How long the probe waits for the worker's verdict: a worker that stalls
+ *  at boot without an error event would otherwise hold every boot map to
+ *  the full decode timeout, past PlanetFactory's own 8 s procedural
+ *  fallback. Past this the main thread is probed instead. */
+export const PROBE_TIMEOUT_MS = 5_000;
 
 /** The decode worker's whole program: one request in, one bitmap (transferred)
  *  or one error string out, matched by id. A bitmap whose transfer fails is
@@ -114,19 +126,28 @@ const DECODE_WORKER_SOURCE = `self.onmessage = async (e) => {
 };`;
 
 type DecodeReply = { id: number; bitmap?: ImageBitmap; error?: string };
-type PendingDecode = { resolve: (b: ImageBitmap) => void; reject: (e: unknown) => void; timer: ReturnType<typeof setTimeout> };
+type PendingDecode = {
+  resolve: (b: ImageBitmap) => void;
+  reject: (e: unknown) => void;
+  timer: ReturnType<typeof setTimeout>;
+  /** The worker answered a ping after this request's first expiry. */
+  pinged: boolean;
+};
 
 /**
  * createImageBitmap hosted in a worker. Requests are matched to replies by
- * id and bounded by DECODE_TIMEOUT_MS; any worker-level failure
- * (construction, script error, an undecodable message, a timeout) rejects
- * every request in flight and retires the worker for good, so the caller's
- * fallback runs once per request, never a retry storm.
+ * id and watched by DECODE_TIMEOUT_MS (see there for what an expiry means);
+ * any worker-level failure (construction, script error, an undecodable
+ * message, an unanswered ping) rejects every request in flight and retires
+ * the worker for good, so the caller's fallback runs once per request,
+ * never a retry storm.
  */
 export class WorkerBitmapDecoder {
   private worker: Worker | null = null;
   private scriptUrl: string | null = null;
   private readonly pending = new Map<number, PendingDecode>();
+  /** Liveness pings in flight: id → answered. */
+  private readonly pings = new Map<number, () => void>();
   private nextId = 1;
   private retired = false;
 
@@ -139,8 +160,8 @@ export class WorkerBitmapDecoder {
     if (this.retired) return Promise.reject(new Error('bitmap decode worker retired'));
     return new Promise<ImageBitmap>((resolve, reject) => {
       const id = this.nextId++;
-      const timer = setTimeout(() => this.retire(new Error(`bitmap decode timed out after ${DECODE_TIMEOUT_MS} ms`)), DECODE_TIMEOUT_MS);
-      this.pending.set(id, { resolve, reject, timer });
+      const req: PendingDecode = { resolve, reject, timer: this.arm(id), pinged: false };
+      this.pending.set(id, req);
       try {
         this.start().postMessage({ id, source, opts });
       } catch (err) {
@@ -161,6 +182,62 @@ export class WorkerBitmapDecoder {
       req.reject(err);
     }
     this.pending.clear();
+    for (const answered of this.pings.values()) answered();
+    this.pings.clear();
+  }
+
+  private arm(id: number): ReturnType<typeof setTimeout> {
+    return setTimeout(() => this.expired(id), DECODE_TIMEOUT_MS);
+  }
+
+  private expired(id: number): void {
+    const req = this.pending.get(id);
+    if (!req) return;
+    // Hidden page: the worker is frozen with us; the clock says nothing.
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      req.timer = this.arm(id);
+      return;
+    }
+    if (req.pinged) {
+      // The worker answered once already and this decode still has not:
+      // that one image is stuck. Its caller falls back; the worker stays.
+      this.pending.delete(id);
+      req.reject(new Error(`bitmap decode gave up after ${2 * DECODE_TIMEOUT_MS} ms`));
+      return;
+    }
+    req.pinged = true;
+    void this.ping().then((alive) => {
+      if (!this.pending.has(id)) return;
+      if (alive) req.timer = this.arm(id);
+      else this.retire(new Error('bitmap decode worker unresponsive'));
+    });
+  }
+
+  /** Any reply to a request the worker cannot decode is proof of life. */
+  private ping(): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      if (!this.worker) {
+        resolve(false);
+        return;
+      }
+      const id = this.nextId++;
+      const timer = setTimeout(() => {
+        this.pings.delete(id);
+        resolve(false);
+      }, PING_TIMEOUT_MS);
+      this.pings.set(id, () => {
+        clearTimeout(timer);
+        this.pings.delete(id);
+        resolve(true);
+      });
+      try {
+        this.worker.postMessage({ id, source: null, opts: {} });
+      } catch {
+        clearTimeout(timer);
+        this.pings.delete(id);
+        resolve(false);
+      }
+    });
   }
 
   private start(): Worker {
@@ -171,6 +248,12 @@ export class WorkerBitmapDecoder {
       // The first reply proves the script loaded: its URL can go.
       this.revokeScript();
       const { id, bitmap, error } = e.data;
+      const answered = this.pings.get(id);
+      if (answered) {
+        bitmap?.close();
+        answered();
+        return;
+      }
       const req = this.pending.get(id);
       if (!req) {
         // A reply nobody waits for (its request was rejected by a retire that
@@ -183,7 +266,7 @@ export class WorkerBitmapDecoder {
       if (bitmap) req.resolve(bitmap);
       else req.reject(new Error(error ?? 'bitmap decode failed in worker'));
     };
-    worker.onerror = (e) => this.retire(e.message || e);
+    worker.onerror = (e) => this.retire(new Error(e.message || 'bitmap decode worker error'));
     worker.onmessageerror = () => this.retire(new Error('bitmap decode worker message could not be read'));
     this.worker = worker;
     return worker;
@@ -306,18 +389,24 @@ function readsBackInverted2d(bitmap: ImageBitmap): boolean {
 }
 
 /** Decode the probe image with the production options through one decoder
- *  and check the result the way a map is consumed. False on any failure. */
-async function decoderHonoursFlip(decoder: BitmapDecoder): Promise<boolean> {
+ *  and check the result the way a map is consumed. False on any failure or
+ *  past PROBE_TIMEOUT_MS. */
+async function decoderHonoursFlip(decoder: BitmapDecoder): Promise<{ ok: boolean; viaGl: boolean }> {
+  let viaGl = false;
   try {
-    const bitmap = await decoder(probeBlob(), BITMAP_OPTIONS);
+    const bitmap = await Promise.race([
+      decoder(probeBlob(), BITMAP_OPTIONS),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('probe timed out')), PROBE_TIMEOUT_MS)),
+    ]);
     try {
       const gl = probeRenderer ? readsBackInvertedGl(probeRenderer, bitmap) : null;
-      return gl ?? readsBackInverted2d(bitmap);
+      viaGl = gl !== null;
+      return { ok: gl ?? readsBackInverted2d(bitmap), viaGl };
     } finally {
       bitmap.close();
     }
   } catch {
-    return false;
+    return { ok: false, viaGl };
   }
 }
 
@@ -332,12 +421,20 @@ let bitmapFlipProbe: Promise<boolean> | null = null;
 function bitmapUploadUsable(): Promise<boolean> {
   bitmapFlipProbe ??= (async () => {
     if (typeof createImageBitmap !== 'function') return false;
+    let viaGl = false;
     if (typeof Worker === 'function') {
-      verified.worker = await decoderHonoursFlip(workerDecode);
+      const r = await decoderHonoursFlip(workerDecode);
+      verified.worker = r.ok;
+      viaGl = r.viaGl;
       // A worker that exists but failed its one job has no use: free it.
       if (!verified.worker) workerDecoder?.retire(new Error('bitmap decode worker failed the flip probe'));
     }
-    verified.main = await decoderHonoursFlip(mainThreadDecode);
+    const r = await decoderHonoursFlip(mainThreadDecode);
+    verified.main = r.ok;
+    viaGl ||= r.viaGl;
+    // One line a device report can be read from: which realms passed, and
+    // whether the readback went through a real texture upload.
+    debugLog('Texture bitmap probe', { worker: verified.worker, main: verified.main, viaGl });
     return verified.worker || verified.main;
   })().then((ok) => {
     probeVerdict = ok;
@@ -348,7 +445,7 @@ function bitmapUploadUsable(): Promise<boolean> {
 
 /** Fetch a map as an ImageBitmap with the flip baked in, wrapped in a texture
  *  that knows not to flip again. */
-async function loadBitmapTexture(url: string, decoder: BitmapDecoder, stillWanted?: () => boolean, signal?: AbortSignal): Promise<THREE.Texture> {
+async function loadBitmapTexture(url: string, stillWanted?: () => boolean, signal?: AbortSignal): Promise<THREE.Texture> {
   let blob: Blob;
   try {
     const response = await (takeBootWarmResponse(url) ?? fetch(url, { signal }));
@@ -364,6 +461,11 @@ async function loadBitmapTexture(url: string, decoder: BitmapDecoder, stillWante
   if (stillWanted && !stillWanted()) {
     throw new TextureTransportError(`superseded: ${url}`);
   }
+  // Chosen now, not before the fetch: a worker that retired while the bytes
+  // were in the air hands these bytes to the main thread if it is verified;
+  // with no verified realm left the caller's one loader fallback takes over.
+  const decoder = currentDecoder();
+  if (!decoder) throw new Error(`no verified bitmap decoder for ${url}`);
   const bitmap = await decoder(blob, BITMAP_OPTIONS);
   const tex = new THREE.Texture(bitmap);
   tex.flipY = false; // baked into the bitmap above
@@ -404,12 +506,11 @@ export const loadStreamedTexture: TextureLoad = (url, onLoad, onError, stillWant
     }
     // No verified decoder left (the worker retired and this thread never
     // passed its probe): the shared loader, before any fetch is spent.
-    const decoder = usable ? currentDecoder() : null;
-    if (!decoder) {
+    if (!usable || !currentDecoder()) {
       textureLoader.load(url, onLoad, undefined, onError);
       return;
     }
-    loadBitmapTexture(url, decoder, stillWanted, signal).then(onLoad, (err) => {
+    loadBitmapTexture(url, stillWanted, signal).then(onLoad, (err) => {
       if (err instanceof TextureTransportError) onError(err);
       // A decode failure spends one fallback load — but not for a caller
       // whose interest lapsed mid-decode: that would re-fetch for nobody.

@@ -315,22 +315,102 @@ describe('WorkerBitmapDecoder', () => {
     expect((URL.revokeObjectURL as unknown as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith('blob:decoder');
   });
 
-  it('retires the worker when a reply never comes', async () => {
+  it('pings an overdue worker and retires it only when the ping goes unanswered', async () => {
+    withFakeWorker();
+    vi.useFakeTimers();
+    try {
+      const { WorkerBitmapDecoder, DECODE_TIMEOUT_MS, PING_TIMEOUT_MS } = await import('./textureBitmapLoader');
+      const decoder = new WorkerBitmapDecoder();
+      const hung = decoder.decode(new Blob() as Blob, {});
+      const rejected = vi.fn();
+      hung.catch(rejected);
+      const worker = FakeWorker.instances[0];
+      await vi.advanceTimersByTimeAsync(DECODE_TIMEOUT_MS - 1);
+      expect(worker.posted).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(2);
+      // Expiry is a question, not a verdict: a ping the worker cannot decode.
+      expect(worker.posted).toHaveLength(2);
+      expect(worker.posted[1].source).toBeNull();
+      expect(rejected).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS + 1);
+      expect(rejected).toHaveBeenCalledTimes(1);
+      expect(String(rejected.mock.calls[0][0])).toMatch(/unresponsive/);
+      expect(decoder.usable).toBe(false);
+      expect(worker.terminated).toBe(true);
+      expect((URL.revokeObjectURL as unknown as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a live worker whose one decode is slow: re-arms after the ping, gives up on that request alone', async () => {
     withFakeWorker();
     vi.useFakeTimers();
     try {
       const { WorkerBitmapDecoder, DECODE_TIMEOUT_MS } = await import('./textureBitmapLoader');
       const decoder = new WorkerBitmapDecoder();
-      const hung = decoder.decode(new Blob() as Blob, {});
+      const slow = decoder.decode(new Blob() as Blob, {});
       const rejected = vi.fn();
-      hung.catch(rejected);
-      await vi.advanceTimersByTimeAsync(DECODE_TIMEOUT_MS - 1);
+      slow.catch(rejected);
+      const worker = FakeWorker.instances[0];
+      await vi.advanceTimersByTimeAsync(DECODE_TIMEOUT_MS + 1);
+      const ping = worker.posted[1];
+      worker.onmessage!({ data: { id: ping.id, error: 'not decodable' } });
+      await vi.advanceTimersByTimeAsync(DECODE_TIMEOUT_MS - 10);
       expect(rejected).not.toHaveBeenCalled();
-      await vi.advanceTimersByTimeAsync(2);
+      expect(decoder.usable).toBe(true);
+      // Second expiry with a worker that answered: only this decode is given up.
+      await vi.advanceTimersByTimeAsync(20);
       expect(rejected).toHaveBeenCalledTimes(1);
-      expect(String(rejected.mock.calls[0][0])).toMatch(/timed out/);
-      expect(decoder.usable).toBe(false);
-      expect(FakeWorker.instances[0].terminated).toBe(true);
+      expect(String(rejected.mock.calls[0][0])).toMatch(/gave up/);
+      expect(decoder.usable).toBe(true);
+      expect(worker.terminated).toBe(false);
+      // A late reply to the abandoned request is closed, not leaked.
+      const late = fakeBitmap();
+      worker.onmessage!({ data: { id: worker.posted[0].id, bitmap: late } });
+      expect(late.close).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('re-arms instead of pinging while the page is hidden (the worker is frozen with it)', async () => {
+    withFakeWorker();
+    vi.stubGlobal('document', { visibilityState: 'hidden' });
+    vi.useFakeTimers();
+    try {
+      const { WorkerBitmapDecoder, DECODE_TIMEOUT_MS } = await import('./textureBitmapLoader');
+      const decoder = new WorkerBitmapDecoder();
+      const frozen = decoder.decode(new Blob() as Blob, {});
+      const rejected = vi.fn();
+      frozen.catch(rejected);
+      const worker = FakeWorker.instances[0];
+      await vi.advanceTimersByTimeAsync(3 * DECODE_TIMEOUT_MS + 3);
+      expect(worker.posted).toHaveLength(1);
+      expect(rejected).not.toHaveBeenCalled();
+      expect(decoder.usable).toBe(true);
+      // Back in the foreground, the decode completes as if nothing happened.
+      const bitmap = fakeBitmap();
+      worker.onmessage!({ data: { id: worker.posted[0].id, bitmap } });
+      expect(await frozen).toBe(bitmap);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a reply clears its timer: a worker is never suspected for a decode it finished', async () => {
+    withFakeWorker();
+    vi.useFakeTimers();
+    try {
+      const { WorkerBitmapDecoder, DECODE_TIMEOUT_MS } = await import('./textureBitmapLoader');
+      const decoder = new WorkerBitmapDecoder();
+      const done = decoder.decode(new Blob() as Blob, {});
+      const worker = FakeWorker.instances[0];
+      worker.onmessage!({ data: { id: worker.posted[0].id, bitmap: fakeBitmap() } });
+      await done;
+      await vi.advanceTimersByTimeAsync(2 * DECODE_TIMEOUT_MS + 2);
+      expect(worker.posted).toHaveLength(1);
+      expect(decoder.usable).toBe(true);
     } finally {
       vi.useRealTimers();
     }

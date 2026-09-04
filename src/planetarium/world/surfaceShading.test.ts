@@ -9,6 +9,8 @@ import {
   SYNTH_TRI,
   surfaceHexWeights,
   surfaceHexVertex,
+  surfaceRungLayers,
+  surfaceRungWeights,
 } from './surfaceShading';
 import { surfaceDetailFieldMean, surfaceDetailHeightSpan } from './surfaceDetailNoise';
 
@@ -258,7 +260,10 @@ describe('the close-range detail term', () => {
     // The rung multiplies the chart's coordinates, so its ulp grows with it: at
     // twelve it is a quarter of a texel of the field, at fourteen a whole one,
     // and past that the ground is drawn in steps. A camera standing on a
-    // surface can reach it; cruise cannot.
+    // surface can reach it; cruise cannot. The cap lands before the floor is
+    // taken, so the top is rung twelve alone and the crossfade never selects
+    // a thirteenth.
+    expect(fragment('airless')).toContain('synthWanted = min(synthWanted, 12.0);');
     expect(fragment('airless')).toContain('clamp(floor(synthWanted), 0.0, 12.0)');
   });
 
@@ -460,10 +465,46 @@ describe('the field\'s tiling lattice', () => {
     const varY = sumYY / count - (sumY / count) ** 2;
     expect(Math.abs(cov / Math.sqrt(varX * varY))).toBeLessThan(0.02);
     expect(variants.size).toBe(8);
-    // Deterministic — the same ground every session — and the other rung's
-    // salt gives a different lattice.
+    // Deterministic — the same ground every session — and a different salt
+    // gives a different lattice (each rung has its own).
     expect(surfaceHexVertex(17, -4, 0)).toEqual(surfaceHexVertex(17, -4, 0));
     expect(surfaceHexVertex(17, -4, 1).shift).not.toEqual(surfaceHexVertex(17, -4, 0).shift);
+  });
+
+  describe('the rung crossfade', () => {
+    it('reads the same ground on both sides of a whole rung', () => {
+      // The fine reading of rung r and the coarse reading of rung r+1 are one
+      // reading — same scale, same salt — or every doubling of magnification
+      // would re-arrange the whole field, and a still pose would carry a seam
+      // along the contour where the wanted rung is whole.
+      for (let rung = 0; rung < 12; rung++) {
+        expect(surfaceRungLayers(rung).b).toEqual(surfaceRungLayers(rung + 1).a);
+      }
+      expect(surfaceRungLayers(3).a.salt).not.toBe(surfaceRungLayers(3).b.salt);
+    });
+
+    it('keeps the relief at full contrast between rungs', () => {
+      // A mean of two independent readings has 0.707 of their contrast at the
+      // midpoint; the weights are normalised in length like every other blend
+      // in the term.
+      for (const blend of [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1]) {
+        const [wa, wb] = surfaceRungWeights(blend);
+        expect(Math.hypot(wa, wb)).toBeCloseTo(1, 12);
+      }
+      expect(surfaceRungWeights(0)).toEqual([1, 0]);
+      expect(surfaceRungWeights(1)).toEqual([0, 1]);
+    });
+
+    it('is drawn as it was walked', () => {
+      const text = fragment();
+      expect(text).toContain('uint salt = uint(rung);');
+      expect(text).toContain('vec3 a = synthTile(c * perUnit + seed, cx * perUnit, cy * perUnit, salt);');
+      expect(text).toContain('if (blend > 0.0) b = synthTile(c * perUnit2 + seed, cx * perUnit2, cy * perUnit2, salt + 1u);');
+      expect(text).toContain('vec2 rw = vec2(1.0 - blend, blend);');
+      expect(text).toContain('rw /= length(rw);');
+      expect(text).toContain('vec3 f = rw.x * a + rw.y * b;');
+      expect(text).not.toContain('mix(a, b, blend)');
+    });
   });
 
   it('is drawn as it was walked', () => {

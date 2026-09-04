@@ -697,6 +697,25 @@ export function surfaceHexVertex(vx: number, vy: number, salt: number): {
   };
 }
 
+/** The two readings a rung blends, as the shader builds them. The fine
+ *  reading of rung r and the coarse reading of rung r+1 must be the same
+ *  reading — same scale, same salt — so a zoom crosses a rung without the
+ *  ground re-arranging. */
+export function surfaceRungLayers(rung: number): {
+  a: { perUnit: number; salt: number };
+  b: { perUnit: number; salt: number };
+} {
+  const perUnit = 2 ** rung;
+  return { a: { perUnit, salt: rung }, b: { perUnit: perUnit * 2, salt: rung + 1 } };
+}
+
+/** The crossfade weights between a rung's two readings, normalised in length:
+ *  two independent readings averaged would lose contrast between rungs. */
+export function surfaceRungWeights(blend: number): [number, number] {
+  const len = Math.hypot(1 - blend, blend);
+  return [(1 - blend) / len, blend / len];
+}
+
 const SURFACE_DETAIL_GLSL = /* glsl */ `
 uniform sampler2D uSynthDetail;
 uniform float uSynthGrain;
@@ -792,7 +811,9 @@ vec3 synthCopy(vec2 uv, vec2 dx, vec2 dy, vec2 vertex, uint salt) {
 // as much as the ground's own grain does. Left out, that tilt is a soft facet
 // locked to every cell of the lattice, which is the artefact this whole
 // construction exists to remove. The weights are a fixed function of uv, so
-// their derivative is the same few lines of arithmetic as the weights.
+// their derivative is the same few lines of arithmetic as the weights. Exact
+// everywhere but on a cell's diagonal, where the raw weights bend: the tilt
+// steps there by a tenth of a byte of the stored gradient at most.
 vec3 synthTile(vec2 uv, vec2 dx, vec2 dy, uint salt) {
   vec2 p = SYNTH_TRI * uv;
   vec2 base = floor(p);
@@ -844,13 +865,31 @@ vec3 synthTile(vec2 uv, vec2 dx, vec2 dy, uint salt) {
 // steepness. So the two rungs are mixed in their own units and the chart's
 // unscaled derivative is what turns them into a slope.
 vec3 synthChart(vec2 c, vec2 cx, vec2 cy, vec2 seed, float rung, float blend) {
+  // Both readings are built with the arithmetic the next rung's coarse
+  // reading will use, and salted by the ABSOLUTE rung: the fine reading of
+  // rung r and the coarse reading of rung r+1 are then the same reading bit
+  // for bit, so a zoom crosses a rung without the ground re-arranging, and a
+  // still pose has no seam along the contour where the wanted rung is whole.
+  // (Forming the fine uv as uv * 2 - seed instead differs from c * 2^(r+1) +
+  // seed by up to a quarter texel at rung 12 — a sub-texel seam of its own.)
   float perUnit = exp2(rung);
-  vec2 uv = c * perUnit + seed;
-  vec2 dx = cx * perUnit;
-  vec2 dy = cy * perUnit;
-  vec3 a = synthTile(uv, dx, dy, 0u);
-  vec3 b = synthTile(uv * 2.0 - seed, dx * 2.0, dy * 2.0, 1u);
-  vec3 f = mix(a, b, blend);
+  float perUnit2 = perUnit * 2.0;
+  uint salt = uint(rung);
+  vec3 a = synthTile(c * perUnit + seed, cx * perUnit, cy * perUnit, salt);
+  // The fine reading is skipped where its weight is nothing — the ceiling,
+  // and every fragment of a body whose fade band sits below rung 0 — which
+  // is half the term's reads there. Legal in a branch: the reads carry
+  // explicit gradients.
+  vec3 b = vec3(0.0);
+  if (blend > 0.0) b = synthTile(c * perUnit2 + seed, cx * perUnit2, cy * perUnit2, salt + 1u);
+  // Two independent readings averaged lose contrast between rungs (0.707 of
+  // it at the midpoint): the weights are normalised in length, the rule every
+  // other blend in this term follows. Continuous at a whole rung all the
+  // same, since the readings are identical there and the weights go from
+  // (0, 1) to (1, 0) on the same ground.
+  vec2 rw = vec2(1.0 - blend, blend);
+  rw /= length(rw);
+  vec3 f = rw.x * a + rw.y * b;
   return vec3(f.x, dot(f.yz, cx), dot(f.yz, cy));
 }
 `;
@@ -929,10 +968,17 @@ if (uSynthEnvelope > 0.0) {
     // Ceilinged, because the rung multiplies the coordinates and a float runs
     // out of mantissa: at rung 12 one unit in the last place of the uv is a
     // quarter of a texel of the map, at 14 it is a whole texel, and past that
-    // the field is drawn in steps. Nothing in cruise gets near — the flight
-    // floor is around rung 5 — but a camera standing ON a surface can, and past
-    // the ceiling the finest rung simply magnifies, which is ground drawn
-    // coarser rather than ground drawn wrong.
+    // the field is drawn in steps. The screen derivatives the rung is chosen
+    // from run out sooner still — they are differences of a unit vector, a
+    // few ulps apart per pixel by rung 12 — so the ladder must stop about
+    // here whatever the uv could still name. Nothing in cruise gets near —
+    // the flight floor is around rung 5 — but a camera standing ON a surface
+    // can, and past the ceiling the finest rung simply magnifies, which is
+    // ground drawn coarser rather than ground drawn wrong. The wanted rung is
+    // capped BEFORE the floor is taken, so the top is rung 12 alone and the
+    // crossfade never reaches for a thirteenth. Floored at rung 0, where the
+    // term is already fading in at the map's own texel scale.
+    synthWanted = min(synthWanted, 12.0);
     float synthRung = clamp(floor(synthWanted), 0.0, 12.0);
     float synthBlend = clamp(synthWanted - synthRung, 0.0, 1.0);
     // Each chart reads its own patch of the one field: the offsets are

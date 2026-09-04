@@ -147,13 +147,22 @@ describe('the built field', () => {
     const gu = (x: number, y: number) =>
       ((built.data[(y * size + x) * 4 + 1] / 255) * 2 - 1) * SURFACE_DETAIL_GRADIENT_SCALE;
     let worst = 0;
+    let flatSum = 0;
+    let flatCount = 0;
     for (let y = 4; y < size - 4; y += 7) {
       for (let x = 4; x < size - 4; x += 7) {
         // Central difference in tile-uv units: one texel is 1/size of a tile.
         const numeric = (h(x + 1, y) - h(x - 1, y)) * (size / 2);
-        worst = Math.max(worst, Math.abs(numeric - gu(x, y)));
+        const gap = Math.abs(numeric - gu(x, y));
+        worst = Math.max(worst, gap);
+        // Away from the rims the grain is all there is, and its slope is a
+        // few units at most: the mean gap there is a byte's rounding, and a
+        // build that dropped the grain's slope factor would move it by many.
+        if (Math.abs(gu(x, y)) < 15) { flatSum += gap; flatCount++; }
       }
     }
+    expect(flatCount).toBeGreaterThan(1000);
+    expect(flatSum / flatCount).toBeLessThan(2);
     // A byte of height across the map is a coarse yardstick — the check is
     // that the two describe the same surface, not that they agree to the ulp.
     // The bound scales with the encoding: a central difference over two texels

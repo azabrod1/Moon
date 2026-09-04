@@ -604,9 +604,11 @@ function installDevHooks() {
       planetariumMode?.devJumpToBody(name, distanceMultiplier) ?? false,
     frame: (
       name: string, fillFraction?: number, phaseAngleDeg?: number, distMul?: number,
-      offNdcX?: number, offNdcY?: number,
+      offNdcX?: number, offNdcY?: number, rollDeg?: number,
     ) =>
-      planetariumMode?.devFrameBody(name, fillFraction, phaseAngleDeg, distMul, offNdcX, offNdcY) ?? false,
+      planetariumMode?.devFrameBody(
+        name, fillFraction, phaseAngleDeg, distMul, offNdcX, offNdcY, rollDeg,
+      ) ?? false,
     viewFrom: (fromName: string, toName: string, fovDeg?: number) =>
       planetariumMode?.devViewFrom(fromName, toName, fovDeg) ?? false,
     // aimFrac swings the aim from straight down (0) to the tangent point (1,
@@ -722,6 +724,10 @@ function installDevHooks() {
     device: () => planetariumMode?.devDeviceProfile() ?? null,
     sectors: () => planetariumMode?.devSectorStats() ?? null,
     ladder: () => planetariumMode?.devLadderStats() ?? null,
+    // Pixels per texel of the map each close body is really drawing. Reports
+    // with the sector streamer off (?sectors=0), which is what a close-range
+    // A/B is run under.
+    surfaceDensity: () => planetariumMode?.devSurfaceDensity() ?? [],
     lookUp: () => planetariumMode?.devLookUp() ?? false,
     lookAt: (name: string) => planetariumMode?.devLookAt(name) ?? false,
     exitSurface: () => planetariumMode?.devExitSurface(),

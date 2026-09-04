@@ -20,13 +20,37 @@ import { debugWarn } from '../../shared/debug';
 import {
   archetypeCode,
   classifyMoonArchetype,
+  CRATER_FLOOR_T,
+  CRATER_UNIFORM_VECTORS,
+  CRATER_WARP,
   generateCraters,
   gpuSeed,
   hashString,
   MAX_CRATERS,
+  moonSurfaceLook,
   moonTextureSize,
+  POLE_FADE_COS,
   seededRng,
+  TERRAIN_FINE_FROM,
+  TERRAIN_OCTAVES,
 } from './proceduralMoon';
+
+/**
+ * Uniform vectors the shader needs beyond the crater arrays: three's
+ * ShaderMaterial prefix (viewMatrix, cameraPosition, isOrthographic) plus this
+ * shader's own scalars and colours, rounded up. Checked against the context's
+ * reported limit at prewarm, so a driver too small for the crater layout drops
+ * to the CPU painter rather than failing to link mid-flight.
+ */
+const UNIFORM_VECTOR_HEADROOM = 24;
+
+const OCTAVE_SUM = TERRAIN_OCTAVES.reduce((a, o) => a + o.amp, 0);
+const FINE_SUM = TERRAIN_OCTAVES.slice(TERRAIN_FINE_FROM).reduce((a, o) => a + o.amp, 0);
+// The octave table, unrolled into the shader so both paths walk the same one.
+const OCTAVE_GLSL = TERRAIN_OCTAVES.map((o, i) => (
+  `  { float v = ${o.amp.toFixed(4)} * terrainOctave(nx, ny, ${o.cells}.0, uSeed + ${o.seedOff}.0);`
+  + ` shade += v;${i >= TERRAIN_FINE_FROM ? ' fine += v;' : ''} }`
+)).join('\n');
 
 const VERT = /* glsl */ `
 void main() {
@@ -34,32 +58,50 @@ void main() {
 }
 `;
 
-// Faithful (visually, not bit-exact — §7) port of createMoonTextures' per-pixel
-// loop. highp is required (default for ShaderMaterial) or the sin-hash bands.
+// Faithful (visually, not bit-exact) port of createMoonTextures' per-pixel loop:
+// the same octave table, the same palette endpoints, the same crater profile.
+// highp is required (default for ShaderMaterial) or the sin-hash bands.
 const FRAG = /* glsl */ `
 uniform int   uPass;        // 0 = colour, 1 = bump
 uniform int   uValidate;    // 1 = flat uBaseColor (prewarm colourspace probe)
 uniform vec2  uTexSize;
-uniform vec3  uBaseColor;   // THREE.Color components (same values the CPU used)
+uniform vec3  uBaseColor;   // probe colour only
+uniform vec3  uLow;         // palette endpoints, in texture-byte fractions
+uniform vec3  uHigh;
+uniform float uGrain;       // per-texel micro-variation
+uniform float uCraterColor; // how far crater relief moves colour
+uniform float uCraterRelief;// ... and height
+uniform float uRay;         // ejecta-ray brightness
+uniform int   uFineBump;    // 1 = fine texture only, no invented landforms
 uniform float uSeed;        // reduced seed (gpuSeed) — f32-safe
-uniform int   uArchetype;   // 0 icy, 1 volcanic, 2 rocky
 uniform int   uCraterCount;
-uniform vec3  uCraters[${MAX_CRATERS}]; // (cx, cy, radius) in texels, top-origin
+// (cx, cy, radius, depth) and (rim, rays, phase, peak). Two vec4s per crater is
+// what carries morphology; the budget argument is on MAX_CRATERS.
+uniform vec4  uCraterA[${MAX_CRATERS}];
+uniform vec4  uCraterB[${MAX_CRATERS}];
 
 float valueNoise(float x, float y, float seed) {
   float a = sin(x * 12.9898 + y * 78.233 + seed) * 43758.5453;
   return a - floor(a);
 }
-float fractalNoise(float x, float y, float seed, int octaves) {
-  float value = 0.0, amplitude = 1.0, frequency = 1.0, maxAmp = 0.0;
-  for (int i = 0; i < 8; i++) {
-    if (i >= octaves) break;
-    value += valueNoise(x * frequency, y * frequency, seed + float(i) * 100.0) * amplitude;
-    maxAmp += amplitude;
-    amplitude *= 0.5;
-    frequency *= 2.2;
-  }
-  return value / maxAmp;
+float fadeCurve(float t) { return t * t * t * (t * (t * 6.0 - 15.0) + 10.0); }
+float smooth01(float t) { float c = clamp(t, 0.0, 1.0); return c * c * (3.0 - 2.0 * c); }
+
+// One octave of interpolated lattice noise, wrapped in x so the equirect map
+// has no seam at 0° longitude.
+float terrainOctave(float u, float v, float cells, float seed) {
+  float rows = cells * 0.5;
+  float x = u * cells;
+  float y = v * rows;
+  float ix = floor(x);
+  float iy = floor(y);
+  float fx = fadeCurve(x - ix);
+  float fy = fadeCurve(y - iy);
+  float x0 = mod(ix, cells);
+  float x1 = mod(x0 + 1.0, cells);
+  float a = mix(valueNoise(x0, iy, seed), valueNoise(x1, iy, seed), fx);
+  float b = mix(valueNoise(x0, iy + 1.0, seed), valueNoise(x1, iy + 1.0, seed), fx);
+  return mix(a, b, fy);
 }
 
 // three r0.183 sRGB-encodes on write to an sRGB-colourSpace render target. The
@@ -85,30 +127,58 @@ void main() {
   float nx = texel.x / uTexSize.x;
   float ny = texel.y / uTexSize.y;
 
-  float terrain = fractalNoise(nx * 6.0,  ny * 6.0,  uSeed,          3);
-  float detail  = fractalNoise(nx * 18.0, ny * 18.0, uSeed + 500.0,  2);
-  float grain   = valueNoise (nx * 50.0,  ny * 50.0, uSeed + 1000.0);
+  float shade = 0.0;
+  float fine = 0.0;
+${OCTAVE_GLSL}
+  shade /= ${OCTAVE_SUM.toFixed(4)};
+  fine  /= ${FINE_SUM.toFixed(4)};
 
-  float variation;
-  if (uArchetype == 0)      variation = terrain * 0.15 + detail * 0.08 + grain * 0.03; // icy
-  else if (uArchetype == 1) variation = terrain * 0.30 + detail * 0.12 + grain * 0.04; // volcanic
-  else                      variation = terrain * 0.22 + detail * 0.10 + grain * 0.04; // rocky
+  // The cylinder's lattice pinches to a point at each pole; fade the landforms
+  // out there so the caps read smooth instead of spoked.
+  float cosLat = sin(ny * 3.14159265);
+  float fade = smooth01(cosLat / ${POLE_FADE_COS.toFixed(3)});
+  float grain = (valueNoise(texel.x, texel.y, uSeed + 1013.0) - 0.5) * uGrain;
+  float field = 0.5 + (shade - 0.5 + grain) * fade;
 
-  vec3  color  = uBaseColor + (variation - 0.15); // == (baseR + shift) / 255 on the CPU
-  float height = terrain * 0.7 + detail * 0.3;     // bump, 0..1
-
+  // Craters. Distance is along the SURFACE — an x step shrinks with
+  // cos(latitude) — so a crater stays round however near a pole it lands.
+  float lat = max(cosLat, 0.001);
+  // The surface's own field warps each rim, so craters are irregular outlines
+  // rather than stamped circles.
+  float warp = 1.0 + ${CRATER_WARP.toFixed(3)} * (field - 0.5);
+  float relief = 0.0;
+  float rays = 0.0;
   for (int i = 0; i < ${MAX_CRATERS}; i++) {
     if (i >= uCraterCount) break;
-    vec3 c = uCraters[i];
-    float dx = texel.x - c.x;
-    dx -= uTexSize.x * floor(dx / uTexSize.x + 0.5); // wrap in x to nearest (as CPU)
-    float dy = texel.y - c.y;
-    float dist = sqrt(dx * dx + dy * dy);
-    if (dist > c.z) continue;
-    float t = dist / c.z;
-    if (t < 0.75) { float d = (1.0 - t / 0.75) * (30.0 / 255.0);        color -= d; height -= d * 2.0; }
-    else          { float b = (1.0 - (t - 0.75) / 0.25) * (20.0 / 255.0); color += b; height += b * 2.0; }
+    vec4 a = uCraterA[i];
+    vec4 b = uCraterB[i];
+    float dx = texel.x - a.x;
+    dx -= uTexSize.x * floor(dx / uTexSize.x + 0.5); // wrap in x to nearest
+    float sx = dx * lat;
+    float dy = texel.y - a.y;
+    float t = sqrt(sx * sx + dy * dy) / a.z * warp;
+    float reach = 1.25 + b.y * 1.5;
+    if (t >= reach) continue;
+    if (t < ${CRATER_FLOOR_T.toFixed(3)}) {
+      float s = t / ${CRATER_FLOOR_T.toFixed(3)};
+      relief += -a.w * (1.0 - 0.3 * s * s) + b.w * a.w * 1.6 * (1.0 - smooth01(s / 0.38));
+    } else if (t < 1.0) {
+      relief += -a.w + (b.x + a.w)
+        * smooth01((t - ${CRATER_FLOOR_T.toFixed(3)}) / ${(1 - CRATER_FLOOR_T).toFixed(3)});
+    } else {
+      float w = 1.0 - (t - 1.0) / (reach - 1.0);
+      relief += b.x * w * w;
+      if (b.y > 0.0) {
+        float spokes = sin(atan(dy, sx) * 5.0 + b.z);
+        if (spokes > 0.0) rays += pow(spokes, 8.0) * b.y * w;
+      }
+    }
   }
+
+  vec3 color = mix(uLow, uHigh, field + uCraterColor * relief + uRay * rays);
+  float height = uFineBump == 1
+    ? 0.5 + ((fine - 0.5) * 0.6 + grain) * fade
+    : field + uCraterRelief * relief;
 
   // Colour: pre-decode so three's sRGB encode-on-write restores the canvas bytes
   // (see sRGBToLinear above). Bump is a linear (NoColorSpace) RT — raw write, no
@@ -125,7 +195,6 @@ export class ProceduralMoonTexturer {
   private readonly material: THREE.ShaderMaterial;
   private readonly gl: WebGLRenderingContext | WebGL2RenderingContext;
   private readonly anisotropy: number;
-  private readonly tmpColor = new THREE.Color();
   private readonly tmpViewport = new THREE.Vector4();
 
   // RTs whose textures are live on moon materials — tracked for teardown only;
@@ -150,8 +219,12 @@ export class ProceduralMoonTexturer {
     this.gl = renderer.getContext();
     this.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
 
-    const uCraters: THREE.Vector3[] = [];
-    for (let i = 0; i < MAX_CRATERS; i++) uCraters.push(new THREE.Vector3());
+    const uCraterA: THREE.Vector4[] = [];
+    const uCraterB: THREE.Vector4[] = [];
+    for (let i = 0; i < MAX_CRATERS; i++) {
+      uCraterA.push(new THREE.Vector4());
+      uCraterB.push(new THREE.Vector4());
+    }
     this.material = new THREE.ShaderMaterial({
       vertexShader: VERT,
       fragmentShader: FRAG,
@@ -164,10 +237,17 @@ export class ProceduralMoonTexturer {
         uValidate: { value: 0 },
         uTexSize: { value: new THREE.Vector2(512, 256) },
         uBaseColor: { value: new THREE.Vector3(0.5, 0.5, 0.5) },
+        uLow: { value: new THREE.Vector3(0.3, 0.3, 0.3) },
+        uHigh: { value: new THREE.Vector3(0.6, 0.6, 0.6) },
+        uGrain: { value: 0 },
+        uCraterColor: { value: 0 },
+        uCraterRelief: { value: 0 },
+        uRay: { value: 0 },
+        uFineBump: { value: 0 },
         uSeed: { value: 0 },
-        uArchetype: { value: 2 },
         uCraterCount: { value: 0 },
-        uCraters: { value: uCraters },
+        uCraterA: { value: uCraterA },
+        uCraterB: { value: uCraterB },
       },
     });
     const quad = new THREE.Mesh(this.quadGeo, this.material);
@@ -190,6 +270,17 @@ export class ProceduralMoonTexturer {
     let rt: THREE.WebGLRenderTarget | null = null;
     try {
       if (this.gl.isContextLost()) { this.gpuUsable = false; return; }
+      // The crater arrays are the shader's whole uniform budget. WebGL 2
+      // guarantees 224 fragment uniform vectors and the layout needs well under
+      // that, but ask rather than assume: a context that cannot hold the arrays
+      // would fail to link, and the CPU painter draws the same moon.
+      const need = MAX_CRATERS * CRATER_UNIFORM_VECTORS + UNIFORM_VECTOR_HEADROOM;
+      const available = this.gl.getParameter(this.gl.MAX_FRAGMENT_UNIFORM_VECTORS) as number;
+      if (typeof available === 'number' && available < need) {
+        this.gpuUsable = false;
+        debugWarn('GPU moon texturer disabled (uniform budget); using CPU', { available, need });
+        return;
+      }
       rt = this.makeRT(4, 4, 'color');
       this.material.uniforms.uValidate.value = 1;
       this.material.uniforms.uBaseColor.value.set(0.5, 0.5, 0.5);
@@ -350,6 +441,10 @@ export class ProceduralMoonTexturer {
     }
     if (bumpRT) {
       mat.bumpMap = bumpRT.texture;
+      // Invented relief, and it says so: the close-range detail term draws its
+      // own surface only where nothing measured is bound, and reads this mark
+      // to tell a painted crater field from a body's real one.
+      bumpRT.texture.userData.proceduralRelief = true;
       mat.bumpScale = Math.max(moon.data.radiusAU * 0.15, 0.0000005);
       mat.userData.proceduralBumpRT = bumpRT;
       this.tracked.add(bumpRT);
@@ -408,21 +503,39 @@ export class ProceduralMoonTexturer {
 
   private setUniformsFor(moon: MoonMesh, width: number, height: number): void {
     const u = this.material.uniforms;
-    this.tmpColor.set(moon.data.color);
-    u.uBaseColor.value.set(this.tmpColor.r, this.tmpColor.g, this.tmpColor.b);
     const flags = classifyMoonArchetype(moon.data.color);
-    u.uArchetype.value = archetypeCode(flags);
+    const look = moonSurfaceLook(moon.data.color, flags);
+    u.uLow.value.set(look.low[0], look.low[1], look.low[2]);
+    u.uHigh.value.set(look.high[0], look.high[1], look.high[2]);
+    u.uGrain.value = look.grain;
+    u.uCraterColor.value = look.craterColor;
+    u.uCraterRelief.value = look.craterRelief;
+    u.uRay.value = look.ray;
+    // A moon with a photographed map coming keeps only fine texture in its
+    // bump. Keyed to the catalog entry, not to whether the photo has landed
+    // yet, so the bump does not depend on which arrived first.
+    u.uFineBump.value = moon.data.textureKey !== undefined ? 1 : 0;
     u.uSeed.value = gpuSeed(moon.data.name);
     u.uTexSize.value.set(width, height);
-    // Crater placement uses the FULL hashString seed (same as the CPU path) so
-    // craters are identical between paths; only the noise field (uSeed) differs.
-    const craters = generateCraters(seededRng(hashString(moon.data.name)), width, height, flags.isIcy);
+    // Crater placement and morphology use the FULL hashString seed (same as the
+    // CPU path) so craters are identical between paths; only the noise field
+    // (uSeed) differs.
+    const craters = generateCraters(
+      seededRng(hashString(moon.data.name)), width, height, archetypeCode(flags),
+    );
     const count = Math.min(craters.length, MAX_CRATERS);
     u.uCraterCount.value = count;
     for (let i = 0; i < MAX_CRATERS; i++) {
-      const v = u.uCraters.value[i] as THREE.Vector3;
-      if (i < count) v.set(craters[i].cx, craters[i].cy, craters[i].cr);
-      else v.set(0, 0, 0);
+      const a = u.uCraterA.value[i] as THREE.Vector4;
+      const b = u.uCraterB.value[i] as THREE.Vector4;
+      if (i < count) {
+        const c = craters[i];
+        a.set(c.cx, c.cy, c.cr, c.depth);
+        b.set(c.rim, c.rays, c.phase, c.peak);
+      } else {
+        a.set(0, 0, 1, 0);
+        b.set(0, 0, 0, 0);
+      }
     }
     u.uValidate.value = 0;
   }

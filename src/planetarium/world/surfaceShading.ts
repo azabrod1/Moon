@@ -62,11 +62,32 @@
  * shade this file's own night terms and leave three's lights on a smooth
  * sphere.
  *
+ * Close-range detail synthesis is the seventh term, and it is the only one that
+ * exists because a MAP ran out rather than because the light did. Where the
+ * colour map on this material is magnified past a texel a pixel — the same band
+ * the smooth magnification filter hands over on, measured the same way — a
+ * seeded, tileable height field fades in and tilts the normal under it, so a
+ * surface that has run out of photograph reads as ground rather than as blur.
+ * It composes UNDER whatever is painted: it perturbs shading and never restates
+ * a body's colour.
+ *
+ * Its CPU twin does not exist and must not be written. The procedural moon
+ * painter holds every LOOK term in both a GPU and a CPU path so a device that
+ * falls back paints the same moon; this is a draw-time term over whatever map
+ * is bound, with no painted output to match, and a body wearing a photograph
+ * gets it too.
+ *
+ * The surfaces this file does NOT reach never fade it in: Earth's night-lights
+ * shell and its night sectors are their own ShaderMaterial, and the atmosphere
+ * shells, the rings, the Sun and the moon dots are not surfaces at all.
+ *
  * The injected GLSL is byte-identical for every body (only uniforms differ), so
  * materials still share compiled programs — no custom cache key needed. That
  * holds for the air too: a body without tables takes the same text with
  * `uAirDensity` at zero, rather than a shorter variant that would fork the
- * program cache per body and per tier.
+ * program cache per body and per tier. The detail term is the same: one text
+ * with `uSynthEnvelope` at zero, never a `#define` and never a per-body
+ * variant.
  */
 import * as THREE from 'three';
 import {
@@ -99,6 +120,14 @@ import {
   cloudDetailTexture,
 } from './cloudDetailNoise';
 import { MOON_UP_GLSL, NIGHT_WEIGHT_GLSL, SUN_DOWN_GLSL } from './nightSources';
+import { gpuSeed } from './proceduralMoon';
+import { SURFACE_TEXEL_FADE } from './surfaceDensity';
+import {
+  SURFACE_DETAIL_GRADIENT_SCALE,
+  surfaceDetailFieldMean,
+  surfaceDetailHeightSpan,
+  surfaceDetailTexture,
+} from './surfaceDetailNoise';
 import { PLANETS } from '../planets/planetData';
 
 /** The cloud deck is a surface class of its own: its alpha is the coverage its
@@ -266,6 +295,39 @@ export const AIR_LOOKUP_RADIUS: Record<SurfaceArchetype, number> = {
   cloud:   cloudShellScale(EARTH_RADIUS_KM),
 };
 
+/**
+ * How much albedo grain the close-range term puts back, as a fraction either
+ * side of what the map says. Keyed to surface class: a regolith reads as grain
+ * at any magnification, ice reads smoother, and the two classes that get none
+ * are the two where a grain would be a lie — a gas giant has no surface to
+ * grain, and Earth's is mostly ocean, which is the one surface in the system
+ * that really is smooth at this scale.
+ */
+const SYNTH_GRAIN: Record<SurfaceArchetype, number> = {
+  airless: 0.10,
+  rocky: 0.08,
+  icy: 0.06,
+  gas: 0,
+  earth: 0,
+  cloud: 0,
+};
+
+/**
+ * How steeply the synthesized relief is drawn, against the crater geometry the
+ * field was actually built with: 1 is that geometry, unexaggerated. Never on a
+ * body wearing a MEASURED surface, which already has its own and would wear a
+ * second set of craters lit from the same Sun; on a body wearing a painted one,
+ * only from where that painting has run out of texels.
+ */
+const SYNTH_RELIEF_GAIN: Record<SurfaceArchetype, number> = {
+  airless: 1.0,
+  rocky: 0.8,
+  icy: 0.7,
+  gas: 0,
+  earth: 0,
+  cloud: 0,
+};
+
 // --- The ocean's gloss -------------------------------------------------------
 //
 // Earth's roughness map is a water mask graded into two roughnesses (the pair
@@ -305,6 +367,15 @@ export const ROUGHNESS_MAP_WATER = 0.45;
  * costs a lot of tail, and past this the sea is a mirror with a point on it.
  */
 export const OCEAN_ROUGHNESS = 0.2;
+/**
+ * Where the Sun's image lands on the sea the mirror lobe runs far past white.
+ * The tone-mapper clips that to a white patch, which a camera does too, but
+ * the bloom pass would then smear the excess over the coast and the clouds
+ * beside it, and land is no mirror: the excess above this cap, in units of
+ * white, is taken out of the reflected light before anything downstream sees
+ * it. The patch keeps its size and its clipped core; only the halo goes.
+ */
+export const OCEAN_GLINT_CAP = 2.50;
 
 /** A flat scale on the ocean's WHOLE mirror lobe. three draws a dielectric at
  *  4 % reflectance head-on, climbing to a perfect mirror at grazing angles;
@@ -441,13 +512,12 @@ vAirCam = cameraPosition - modelMatrix[3].xyz;
 vAirFrag = mat3(modelMatrix) * position;`;
 
 /**
- * How wide the hand-over from the smooth magnification filter back to plain
- * bilinear is, in map texels per screen pixel. Below the first number a texel
- * is being stretched over more than a pixel and its interpolation is what the
- * eye is looking at; past the second the map is minified, the mip chain is
- * doing the filtering and there is nothing left to smooth.
+ * The hand-over from the smooth magnification filter back to plain bilinear, in
+ * map texels per screen pixel. Defined once in world/surfaceDensity and read
+ * here and on the CPU alike: a surface must not start smoothing at one density
+ * and gain close-range detail at another.
  */
-const SMOOTH_TEXEL_FADE: readonly [number, number] = [0.7, 1.3];
+const SMOOTH_TEXEL_FADE = SURFACE_TEXEL_FADE;
 
 /**
  * A cubic B-spline magnification filter, for the two maps only the cloud deck
@@ -500,6 +570,527 @@ vec4 textureBSpline(sampler2D tex, vec2 uv, vec2 texels) {
 }
 `;
 
+// --- Close-range detail synthesis -------------------------------------------
+//
+// Past the band above, a colour map has nothing left to say: a texel is being
+// stretched over more than a pixel, the smooth filter has taken over, and what
+// the eye sees is interpolation. A photograph at that magnification reads as
+// blur, and a procedural moon's painted canvas reads as putty. This fades in a
+// seeded, tileable HEIGHT field under whatever is painted and tilts the normal
+// with it — so the surface answers the light instead of restating its own
+// colour, which is the difference between ground and a picture of ground.
+//
+// It is a height field on purpose. Synthetic relief painted into the albedo
+// draws its own shadows, and those shadows do not move with the Sun; at grazing
+// light they read as fake craters, which is the verdict that killed an earlier
+// attempt at synthetic relief and the bar this one is measured against.
+
+/** Screen size, in render-target pixels, the field's tile is drawn at. The map
+ *  is 512 texels across, so a tile this wide puts its finest texel on about one
+ *  pixel — where the mip chain hands over and nothing crawls — and its craters
+ *  between five and sixty pixels, which is the range an eye reads as ground. */
+const SURFACE_DETAIL_TILE_PX = 512;
+
+/**
+ * How far off its own axis a flat chart still says anything, as the cosine
+ * between the surface point and that axis.
+ *
+ * It has a ceiling and a cost. The ceiling is 0.577: the largest component of a
+ * unit vector is never smaller than that, so a cut above it would leave the
+ * points on the body's diagonals with no chart at all. Below it every chart
+ * covers more, and the overlaps are where two or three are drawn instead of one
+ * — another pair of texture fetches on every fragment that falls in one. At a
+ * half, a point of the sphere is drawn by 1.5 charts on average and the widest
+ * overlap runs over thirty degrees of arc, which is far slower than anything
+ * the field itself draws.
+ */
+export const SYNTH_CHART_CUT = 0.5;
+
+/**
+ * How many rungs finer a body with NO cratering draws the field.
+ *
+ * The field is one packed map with craters and grain already summed into it, so
+ * nothing can turn the craters down at sample time. What can be done is draw
+ * the whole field smaller: it is scale-free, so three rungs finer turns a
+ * crater that spanned five to sixty pixels into one spanning a pixel or seven —
+ * ground texture rather than impacts — and flattens its relief with it, because
+ * the field keeps its own depth-to-width. A share between the two rides the
+ * ordinary crossfade.
+ *
+ * The cost is at the top of the ladder: the rung ceiling arrives three rungs
+ * earlier on a share-0 body, so a camera standing on Europa reaches the
+ * magnifying regime sooner and its pitting grows as it comes closer instead of
+ * staying put. If that is ever seen, the fix is a second grain-only field
+ * sampled in place of this one, not a bigger ceiling.
+ */
+const SYNTH_SMOOTH_RUNGS = 3;
+
+/**
+ * How much of its RELIEF a body with no cratering keeps.
+ *
+ * Drawing the field finer makes its craters small; it does not make them
+ * shallow, because the field is scale-free and keeps its slope at every rung.
+ * A body with nothing to crater it therefore came out pitted — dense little
+ * holes at full shading contrast, which is a golf ball rather than smooth ice.
+ * What a resurfaced surface should read as is frost-scale texture: fine AND
+ * faint. So the relief is scaled down with the share, while the albedo grain
+ * stays at its archetype's value — the ground still has a texture, it just
+ * stops answering the light like a crater field.
+ */
+const SYNTH_RELIEF_FLOOR = 0.15;
+
+/**
+ * The three charts' weights at a point of the unit sphere, as the shader
+ * computes them — the CPU twin of the three lines in the GLSL below, kept so
+ * the two properties the whole domain rests on can be checked at every point of
+ * a sphere rather than argued about: every point has at least one chart, and no
+ * chart is ever stretched more than about 1.7 to 1 where it is used.
+ *
+ * `dir` is a unit direction in the body's own frame; the weights come back in
+ * axis order and are normalised in length, so the independent noise the charts
+ * carry adds to one variance rather than to one mean.
+ */
+export function surfaceChartWeights(dir: readonly [number, number, number]): [number, number, number] {
+  const raw = dir.map((c) => Math.max(Math.abs(c) - SYNTH_CHART_CUT, 0) ** 2);
+  const norm = Math.hypot(raw[0], raw[1], raw[2]);
+  return (norm > 0 ? raw.map((w) => w / norm) : [0, 0, 0]) as [number, number, number];
+}
+
+/**
+ * The field's tiling lattice, as the shader lays it: the plane of one rung's
+ * uv is skewed into a triangular lattice with one tile between vertices, and
+ * every vertex hashes to its own copy of the field. Column-major, as GLSL reads
+ * a mat2: (1, 0) then (−1/√3, 2/√3).
+ */
+export const SYNTH_TRI = [1, 0, -0.57735027, 1.15470054] as const;
+
+/**
+ * How much of a barycentric weight is cut before it is sharpened. A vertex's
+ * copy of the field leaves the blend at exactly zero, on a line, rather than by
+ * falling under a threshold — so the shader may skip that copy's read where its
+ * weight is zero, and the skip draws nothing the blend was not already drawing
+ * nothing of. At a tenth about half of a cell reads all three copies, a corner
+ * around each vertex reads one, and the rest reads two.
+ */
+export const SYNTH_HEX_CUT = 0.1;
+
+/**
+ * The three lattice vertices a point of one rung's uv plane reads the field
+ * through, and the weight of each: the CPU twin of `synthTile` in the GLSL
+ * below, so the two properties the blend rests on can be walked rather than
+ * argued — every point has a weight, and nothing jumps at a triangle's edge.
+ *
+ * The weights are cut, cubed and normalised in LENGTH: the three copies are
+ * independent readings of one random field, so it is their variance that has
+ * to add to one.
+ */
+export function surfaceHexWeights(u: number, v: number): {
+  vertices: [[number, number], [number, number], [number, number]];
+  weights: [number, number, number];
+} {
+  const px = SYNTH_TRI[0] * u + SYNTH_TRI[2] * v;
+  const py = SYNTH_TRI[1] * u + SYNTH_TRI[3] * v;
+  const bx = Math.floor(px);
+  const by = Math.floor(py);
+  const fx = px - bx;
+  const fy = py - by;
+  const upper = fx + fy >= 1;
+  const vertices: [[number, number], [number, number], [number, number]] = upper
+    ? [[bx + 1, by + 1], [bx + 1, by], [bx, by + 1]]
+    : [[bx, by], [bx + 1, by], [bx, by + 1]];
+  const raw = upper ? [fx + fy - 1, 1 - fy, 1 - fx] : [1 - fx - fy, fx, fy];
+  const cut = raw.map((w) => Math.max(w - SYNTH_HEX_CUT, 0) ** 3);
+  const n = Math.hypot(cut[0], cut[1], cut[2]);
+  return { vertices, weights: cut.map((w) => (n > 0 ? w / n : 0)) as [number, number, number] };
+}
+
+/**
+ * What one lattice vertex does to the field it reads: the CPU twin of
+ * `synthVertexShift` in the GLSL below, bit for bit — the same two rounds of
+ * pcg2d over the vertex as a 32-bit unsigned pair — so the hash can be tested
+ * for being a hash (uniform, and uncorrelated between neighbouring vertices)
+ * instead of only for being present in the text.
+ */
+export function surfaceHexVertex(vx: number, vy: number, salt: number): {
+  shift: [number, number];
+  flipX: boolean;
+  flipY: boolean;
+  swap: boolean;
+} {
+  let x = (vx + Math.imul(salt, 0x9e3779b9)) >>> 0;
+  let y = (vy + Math.imul(salt, 0x85ebca6b)) >>> 0;
+  x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+  y = (Math.imul(y, 1664525) + 1013904223) >>> 0;
+  x = (x + Math.imul(y, 1664525)) >>> 0;
+  y = (y + Math.imul(x, 1664525)) >>> 0;
+  x = (x ^ (x >>> 16)) >>> 0;
+  y = (y ^ (y >>> 16)) >>> 0;
+  x = (x + Math.imul(y, 1664525)) >>> 0;
+  y = (y + Math.imul(x, 1664525)) >>> 0;
+  x = (x ^ (x >>> 16)) >>> 0;
+  y = (y ^ (y >>> 16)) >>> 0;
+  return {
+    shift: [(x >>> 3) / 536870912, (y >>> 3) / 536870912],
+    swap: (x & 1) === 1,
+    flipY: (x & 2) === 2,
+    flipX: (x & 4) === 4,
+  };
+}
+
+/** The two readings a rung blends, as the shader builds them. The fine
+ *  reading of rung r and the coarse reading of rung r+1 must be the same
+ *  reading — same scale, same salt — so a zoom crosses a rung without the
+ *  ground re-arranging. */
+export function surfaceRungLayers(rung: number): {
+  a: { perUnit: number; salt: number };
+  b: { perUnit: number; salt: number };
+} {
+  const perUnit = 2 ** rung;
+  return { a: { perUnit, salt: rung }, b: { perUnit: perUnit * 2, salt: rung + 1 } };
+}
+
+/** The crossfade weights between a rung's two readings, normalised in length:
+ *  two independent readings averaged would lose contrast between rungs. */
+export function surfaceRungWeights(blend: number): [number, number] {
+  const len = Math.hypot(1 - blend, blend);
+  return [(1 - blend) / len, blend / len];
+}
+
+const SURFACE_DETAIL_GLSL = /* glsl */ `
+uniform sampler2D uSynthDetail;
+uniform float uSynthGrain;
+uniform float uSynthRelief;
+uniform float uSynthBumpFade;
+uniform float uSynthEnvelope;
+uniform float uSynthMid;
+uniform float uSynthCraterShare;
+uniform vec2 uSynthSeed;
+// How much of this term a map's density asks for: the same band the smooth
+// magnification filter hands over on, read across the map's COARSEST axis
+// rather than its busiest.
+//
+// The difference is the poles. An equirect map's texel columns converge to a
+// point there, so its longitude axis reports texels crowded many to a pixel
+// over the exact cap the map has least to say about — and a fade that takes the
+// busiest axis therefore switches this term off over that cap and leaves a blob
+// of putty in the middle of ground. What limits a map is its coarsest axis; the
+// two readings agree everywhere a map is not distorted.
+float synthTexelWeight(vec2 uv, vec2 texels) {
+  float perPixel = min(fwidth(uv.x) * texels.x, fwidth(uv.y) * texels.y);
+  return 1.0 - smoothstep(${SMOOTH_TEXEL_FADE[0].toFixed(6)}, ${SMOOTH_TEXEL_FADE[1].toFixed(6)}, perPixel);
+}
+// The field is one tile, and a plain wrap lays that tile every few hundred
+// pixels at every zoom: the same handful of big craters again and again, which
+// under grazing light reads as a lattice rather than as ground. So the tile is
+// never laid the same way twice. Each rung's uv plane is cut into a triangular
+// lattice with one tile between vertices; every vertex hashes to its own copy
+// of the field — shifted, and flipped or transposed, so that no two cells
+// carry the same motif — and a fragment reads the field through the three
+// vertices of the triangle it sits in, blended by where in that triangle it
+// sits. A copy is a shifted, flipped or transposed tile, so it tiles as the
+// field does, and its stored gradient comes back through the same flip.
+//
+// Hashed on the vertex as an INTEGER: the lattice reaches past six thousand at
+// the top rung, where hashing the float coordinate would be hashing rounding
+// noise. The mixing wraps at 32 bits, which is what highp says here.
+const mat2 SYNTH_TRI = mat2(${SYNTH_TRI[0].toFixed(1)}, ${SYNTH_TRI[1].toFixed(1)}, ${SYNTH_TRI[2].toFixed(8)}, ${SYNTH_TRI[3].toFixed(8)});
+// A vertex's copy of the field: a shift in xy, and in z three bits — flip x,
+// flip y, transpose — as a float the caller decodes. Two rounds of the mix:
+// one leaves neighbouring vertices almost the same shift, which is the lattice
+// back again with a wobble, and the twin's test holds the neighbour
+// correlation under two per cent.
+vec3 synthVertexShift(vec2 vertex, uint salt) {
+  highp uvec2 v = uvec2(ivec2(vertex));
+  v += uvec2(salt * 0x9E3779B9u, salt * 0x85EBCA6Bu);
+  v = v * 1664525u + 1013904223u;
+  v.x += v.y * 1664525u;
+  v.y += v.x * 1664525u;
+  v ^= v >> 16u;
+  v.x += v.y * 1664525u;
+  v.y += v.x * 1664525u;
+  v ^= v >> 16u;
+  return vec3(vec2(v >> 3u) * (1.0 / 536870912.0), float(v.x & 7u));
+}
+// One copy's reading of the field at \`uv\`, through vertex \`vertex\`: the
+// height around the field's own mean in x, the gradient of that height with
+// respect to uv, per tile width, in yz — decoded from the bytes here, so that
+// everything the tile adds up is in one unit. The copy is read at A·uv + shift,
+// with A a flip or transpose, and its stored gradient — which is with respect
+// to the copy's own coordinates — comes back through A transposed.
+vec3 synthCopy(vec2 uv, vec2 dx, vec2 dy, vec2 vertex, uint salt) {
+  vec3 hv = synthVertexShift(vertex, salt);
+  int bits = int(hv.z);
+  vec2 sgn = vec2((bits & 4) != 0 ? -1.0 : 1.0, (bits & 2) != 0 ? -1.0 : 1.0);
+  bool swap = (bits & 1) != 0;
+  vec2 q = swap ? uv.yx : uv;
+  vec2 qx = swap ? dx.yx : dx;
+  vec2 qy = swap ? dy.yx : dy;
+  vec4 s = textureGrad(uSynthDetail, q * sgn + hv.xy, qx * sgn, qy * sgn);
+  vec2 g = (s.gb * 2.0 - 1.0) * ${SURFACE_DETAIL_GRADIENT_SCALE.toFixed(1)} * sgn;
+  // Against the field's OWN mean, per copy, before any weight: the weights add
+  // to one in length rather than in sum, so a mean left in would come out
+  // scaled by their sum, which is not one.
+  return vec3(s.r - uSynthMid, swap ? g.yx : g);
+}
+// One rung's reading of the field at \`uv\`: height around the mean in x, the
+// gradient of that height with respect to uv, per tile width, in yz.
+//
+// Three copies, one through each vertex of the triangle \`uv\` sits in, blended
+// with that triangle's barycentric weights — cut, so a copy leaves the blend
+// at exactly zero and its read can be skipped there; cubed, so most of a cell
+// reads one copy at full contrast and the blend is confined to a band along
+// each edge; and normalised in LENGTH, the rule the charts blend by: the copies
+// are independent readings of one random field, so it is their variance that
+// has to add to one. A weighted mean would draw every band fainter than the
+// ground on either side of it.
+//
+// The gradient is the gradient of the blended HEIGHT, weights included. Weights
+// that add to one in length do not add to one in sum — the sum runs from one at
+// a vertex to 1.7 at a triangle's centre — so where a copy is locally high or
+// low, a crater floor say, the changing weights alone tilt the blend, by about
+// as much as the ground's own grain does. Left out, that tilt is a soft facet
+// locked to every cell of the lattice, which is the artefact this whole
+// construction exists to remove. The weights are a fixed function of uv, so
+// their derivative is the same few lines of arithmetic as the weights. Exact
+// everywhere but on a cell's diagonal, where the raw weights bend: the tilt
+// steps there by a tenth of a byte of the stored gradient at most.
+vec3 synthTile(vec2 uv, vec2 dx, vec2 dy, uint salt) {
+  vec2 p = SYNTH_TRI * uv;
+  vec2 base = floor(p);
+  vec2 f = p - base;
+  float upper = step(1.0, f.x + f.y);
+  vec2 v1 = base + vec2(upper);
+  vec2 v2 = base + vec2(1.0, 0.0);
+  vec2 v3 = base + vec2(0.0, 1.0);
+  vec3 w = mix(vec3(1.0 - f.x - f.y, f.x, f.y), vec3(f.x + f.y - 1.0, 1.0 - f.y, 1.0 - f.x), upper);
+  // The raw weights are linear in p, so their derivative is a constant per
+  // triangle.
+  vec3 dwx = mix(vec3(-1.0, 1.0, 0.0), vec3(1.0, 0.0, -1.0), upper);
+  vec3 dwy = mix(vec3(-1.0, 0.0, 1.0), vec3(1.0, -1.0, 0.0), upper);
+  vec3 wc = max(w - ${SYNTH_HEX_CUT.toFixed(2)}, 0.0);
+  vec3 ws = wc * wc * wc;
+  vec3 dsx = 3.0 * wc * wc * dwx;
+  vec3 dsy = 3.0 * wc * wc * dwy;
+  float len = max(length(ws), 1e-20);
+  vec3 n = ws / len;
+  vec3 dnx = (dsx - n * dot(n, dsx)) / len;
+  vec3 dny = (dsy - n * dot(n, dsy)) / len;
+  vec3 c1 = vec3(0.0);
+  vec3 c2 = vec3(0.0);
+  vec3 c3 = vec3(0.0);
+  if (wc.x > 0.0) c1 = synthCopy(uv, dx, dy, v1, salt);
+  if (wc.y > 0.0) c2 = synthCopy(uv, dx, dy, v2, salt);
+  if (wc.z > 0.0) c3 = synthCopy(uv, dx, dy, v3, salt);
+  vec3 h = vec3(c1.x, c2.x, c3.x);
+  // The weights' own slope, in p, then back into uv through the lattice skew.
+  vec2 dwp = vec2(dot(h, dnx), dot(h, dny));
+  vec2 dwuv = vec2(dwp.x, ${SYNTH_TRI[2].toFixed(8)} * dwp.x + ${SYNTH_TRI[3].toFixed(8)} * dwp.y);
+  return n.x * c1 + n.y * c2 + n.z * c3 + vec3(0.0, dwuv);
+}
+// One flat chart's reading of the field: its height here, around zero, in x,
+// and the slope of that height across the SCREEN in yz. \`c\` is the chart's own
+// two coordinates and \`cx\`/\`cy\` their screen derivatives; \`rung\` and \`blend\`
+// are the fragment's, not the chart's.
+//
+// One rung for every chart on a fragment, chosen from the surface's own arc per
+// pixel. Per chart it would be chosen from each chart's own compressed
+// coordinates, and two charts drawing the same fragment would then disagree
+// about how big a crater is by up to two thirds of a rung — a patch of ground
+// carrying two crater fields at different sizes, which is what a seam between
+// them looked like.
+//
+// The rung cancels out of the slope: the stored gradient is per tile WIDTH, and
+// a tile's width on the ground shrinks with the rung by exactly the factor the
+// gradient grows, which is what lets one small map stand for every zoom at one
+// steepness. So the two rungs are mixed in their own units and the chart's
+// unscaled derivative is what turns them into a slope.
+vec3 synthChart(vec2 c, vec2 cx, vec2 cy, vec2 seed, float rung, float blend) {
+  // Both readings are built with the arithmetic the next rung's coarse
+  // reading will use, and salted by the ABSOLUTE rung: the fine reading of
+  // rung r and the coarse reading of rung r+1 are then the same reading bit
+  // for bit, so a zoom crosses a rung without the ground re-arranging, and a
+  // still pose has no seam along the contour where the wanted rung is whole.
+  // (Forming the fine uv as uv * 2 - seed instead differs from c * 2^(r+1) +
+  // seed by up to a quarter texel at rung 12 — a sub-texel seam of its own.)
+  float perUnit = exp2(rung);
+  float perUnit2 = perUnit * 2.0;
+  uint salt = uint(rung);
+  vec3 a = synthTile(c * perUnit + seed, cx * perUnit, cy * perUnit, salt);
+  // The fine reading is skipped where its weight is nothing — the ceiling,
+  // and every fragment of a body whose fade band sits below rung 0 — which
+  // is half the term's reads there. Legal in a branch: the reads carry
+  // explicit gradients.
+  vec3 b = vec3(0.0);
+  if (blend > 0.0) b = synthTile(c * perUnit2 + seed, cx * perUnit2, cy * perUnit2, salt + 1u);
+  // Two independent readings averaged lose contrast between rungs (0.707 of
+  // it at the midpoint): the weights are normalised in length, the rule every
+  // other blend in this term follows. Continuous at a whole rung all the
+  // same, since the readings are identical there and the weights go from
+  // (0, 1) to (1, 0) on the same ground.
+  vec2 rw = vec2(1.0 - blend, blend);
+  rw /= length(rw);
+  vec3 f = rw.x * a + rw.y * b;
+  return vec3(f.x, dot(f.yz, cx), dot(f.yz, cy));
+}
+`;
+
+const SURFACE_DETAIL_BODY = /* glsl */ `
+#ifdef USE_MAP
+if (uSynthEnvelope > 0.0) {
+  // How magnified the map on THIS material is, on the one band the smooth
+  // filter hands over on. Per material and per fragment, which is what makes it
+  // right on a streamed body: a resident 16K tile reports its own size against
+  // its own UV and switches the term off over its own patch, while the coarse
+  // globe one pixel away keeps it. A body-wide scalar would draw that boundary
+  // as a rectangle.
+  float synthW = synthTexelWeight(vMapUv, vec2(textureSize(map, 0))) * uSynthEnvelope;
+  // How much relief this fragment may draw. Zero wherever a MEASURED surface is
+  // bound, whatever the magnification. Where what is bound is itself invented —
+  // a painted crater bump — it fades in as that bump's OWN texels stretch past
+  // a pixel, on the same band and measured the same way: past there the painted
+  // craters are interpolation, and finer invented craters in their place assert
+  // nothing the coarse ones did not.
+  float synthRelief = uSynthRelief;
+  // A body that wears no craters keeps only a fraction of the relief, so what
+  // the finer field leaves is texture rather than pits. The albedo grain is
+  // untouched by this: it is the light the surface answers with that changes,
+  // not whether it has a surface.
+  synthRelief *= mix(${SYNTH_RELIEF_FLOOR.toFixed(2)}, 1.0, uSynthCraterShare);
+  #ifdef USE_BUMPMAP
+  synthRelief *= mix(1.0,
+      synthTexelWeight(vBumpMapUv, vec2(textureSize(bumpMap, 0))), uSynthBumpFade);
+  #endif
+  // The field's domain is the BODY's own frame, never the material's UV: a
+  // streamed sector's UV runs 0..1 across its own tile, so a field in UV space
+  // would put a different pattern on every tile and draw the tile grid.
+  vec3 synthDir = normalize(vObjPos);
+  // Every derivative is taken HERE, under a branch that is uniform across the
+  // draw: a derivative under a per-fragment condition is undefined, and the
+  // fades below are exactly such conditions.
+  vec3 synthDx = dFdx(synthDir);
+  vec3 synthDy = dFdy(synthDir);
+  vec3 synthVx = dFdx(-vViewPosition);
+  vec3 synthVy = dFdy(-vViewPosition);
+  if (synthW > 0.0) {
+    // Three flat charts, one per axis of the body's own frame, each reading the
+    // tiling field straight off the two coordinates across its own face of the
+    // sphere, blended where they meet.
+    //
+    // Flat charts and not a longitude/latitude one, which would be two fetches
+    // cheaper: a cylinder pinches to a point at each pole, where a cell is a
+    // sliver and its longitudinal slope is however many times steeper that
+    // pinch makes it, and a body posed with its cap toward the camera draws a
+    // pinwheel of radial streaks across the whole frame. A flat chart has no
+    // such point anywhere on the sphere. Its own distortion is a stretch away
+    // from its axis, worst at the corner where three charts meet and bounded
+    // there at 1.7 to 1 — where it reads as ground drawn slightly coarser, and
+    // as nothing else, because the field keeps its own depth-to-width under a
+    // stretch that carries craters and their slopes together.
+    //
+    // The weights are squared so a chart arrives with zero slope rather than
+    // with an edge, and normalised in LENGTH rather than in sum: the charts
+    // carry independent noise, so it is their VARIANCE that has to add to one.
+    // A weighted mean would flatten the field to 58% of itself along every
+    // diagonal, which is a fade in the ground with no cause on the ground.
+    vec3 synthChartW = max(abs(synthDir) - ${SYNTH_CHART_CUT.toFixed(4)}, 0.0);
+    synthChartW *= synthChartW;
+    // How much arc this fragment's pixel covers, off the surface direction
+    // itself rather than off any one chart's compressed copy of it: one rung
+    // for every chart drawing this fragment, so they cannot disagree about how
+    // big a crater is.
+    float synthPerPx = max(max(length(synthDx), length(synthDy)), 1e-12);
+    float synthWanted = log2(1.0 / (${SURFACE_DETAIL_TILE_PX.toFixed(1)} * synthPerPx));
+    // A body that wears no craters draws the whole field finer, so what it
+    // wears is ground texture rather than impacts. Added to the rung the
+    // fragment WANTS, before it is rounded to one, so a share between the two
+    // rides the ordinary crossfade instead of stepping.
+    synthWanted += (1.0 - uSynthCraterShare) * ${SYNTH_SMOOTH_RUNGS.toFixed(1)};
+    // Ceilinged, because the rung multiplies the coordinates and a float runs
+    // out of mantissa: at rung 12 one unit in the last place of the uv is a
+    // quarter of a texel of the map, at 14 it is a whole texel, and past that
+    // the field is drawn in steps. The screen derivatives the rung is chosen
+    // from run out sooner still — they are differences of a unit vector, a
+    // few ulps apart per pixel by rung 12 — so the ladder must stop about
+    // here whatever the uv could still name. Nothing in cruise gets near —
+    // the flight floor is around rung 5 — but a camera standing ON a surface
+    // can, and past the ceiling the finest rung simply magnifies, which is
+    // ground drawn coarser rather than ground drawn wrong. The wanted rung is
+    // capped BEFORE the floor is taken, so the top is rung 12 alone and the
+    // crossfade never reaches for a thirteenth. Floored at rung 0, where the
+    // term is already fading in at the map's own texel scale.
+    synthWanted = min(synthWanted, 12.0);
+    float synthRung = clamp(floor(synthWanted), 0.0, 12.0);
+    float synthBlend = clamp(synthWanted - synthRung, 0.0, 1.0);
+    // Each chart reads its own patch of the one field: the offsets are
+    // arbitrary and only have to differ, or the seam between two charts would
+    // be two copies of the same ground sliding across each other.
+    //
+    // Which side of its own plane a chart is on is part of that. A chart's two
+    // coordinates are the same pair on both sides — the X chart reads (y, z)
+    // whether x is +0.8 or −0.8 — so without this a body wears the same ground
+    // on both faces of every axis, mirrored through the plane between them.
+    // Never visible in one frame, and wrong all the same. The offset can jump
+    // at the sign flip because the flip happens where the axis is zero, which
+    // is where that chart's weight has been zero for the whole half of the
+    // sphere around it.
+    vec3 synthChartFlip = step(0.0, synthDir);
+    vec3 synthChartX = vec3(0.0);
+    vec3 synthChartY = vec3(0.0);
+    vec3 synthChartZ = vec3(0.0);
+    if (synthChartW.x > 0.0) {
+      synthChartX = synthChart(vec2(synthDir.y, synthDir.z),
+          vec2(synthDx.y, synthDx.z), vec2(synthDy.y, synthDy.z),
+          uSynthSeed + synthChartFlip.x * vec2(0.5, 0.25), synthRung, synthBlend);
+    }
+    if (synthChartW.y > 0.0) {
+      synthChartY = synthChart(vec2(synthDir.z, synthDir.x),
+          vec2(synthDx.z, synthDx.x), vec2(synthDy.z, synthDy.x),
+          uSynthSeed + vec2(0.37, 0.11) + synthChartFlip.y * vec2(0.5, 0.25),
+          synthRung, synthBlend);
+    }
+    if (synthChartW.z > 0.0) {
+      synthChartZ = synthChart(vec2(synthDir.x, synthDir.y),
+          vec2(synthDx.x, synthDx.y), vec2(synthDy.x, synthDy.y),
+          uSynthSeed + vec2(0.71, 0.53) + synthChartFlip.z * vec2(0.5, 0.25),
+          synthRung, synthBlend);
+    }
+    // The shares are normalised in LENGTH rather than in sum: the charts carry
+    // independent noise, so it is their VARIANCE that has to add to one. A
+    // weighted mean would flatten the field along every diagonal, which is a
+    // fade in the ground with no cause on the ground.
+    vec3 synthShare = synthChartW / max(length(synthChartW), 1e-20);
+    // Height and slope take the same shares: a crater has to keep its walls
+    // with its depth, or the shading would light a hole the surface has lost.
+    vec3 synthField = synthShare.x * synthChartX + synthShare.y * synthChartY
+        + synthShare.z * synthChartZ;
+    // Grain: the field's own height as a small multiplicative variation of the
+    // albedo, luminance only and a few per cent of it. It puts a texture back
+    // on a surface that has run out of map; it must never restate the body's
+    // colour, which is what the photograph or the archetype palette is for.
+    diffuseColor.rgb *= 1.0 + uSynthGrain * synthField.x * 2.0 * synthW;
+    if (synthRelief > 0.0) {
+      // The body's own rendered radius, off the varying that already carries
+      // this fragment's offset from the body's centre — no uniform to keep in
+      // step with a mesh scale.
+      float synthR = length(vAirFrag);
+      vec3 synthNrm = normalize(normal);
+      vec3 synthR1 = cross(synthVy, synthNrm);
+      vec3 synthR2 = cross(synthNrm, synthVx);
+      float synthDet = dot(synthVx, synthR1);
+      if (abs(synthDet) > 1e-30) {
+        // Height per screen pixel in world units, turned into a surface
+        // gradient by the screen basis — the same construction the cloud
+        // deck's relief takes, and for the same reason: it needs no tangent
+        // frame, so it works on a sector mesh and a globe alike.
+        vec3 synthSurfGrad = (synthField.y * synthR1 + synthField.z * synthR2)
+            * (synthRelief * synthR / synthDet);
+        normal = normalize(synthNrm - synthSurfGrad * synthW);
+      }
+    }
+  }
+}
+#endif`;
+
 /**
  * three's own <map_fragment>, with the deck's fetch put through the smooth
  * magnification filter. The ordinary bilinear tap happens for every surface;
@@ -542,6 +1133,7 @@ uniform vec3 uSunDirWorld;
 uniform vec3 uMoonDirWorld;
 uniform vec3 uMoonIrradiance;
 uniform float uAirDensity;
+uniform float uAirBlend;
 uniform float uAirLookupRadius;
 uniform float uWaterGloss;
 uniform sampler2D uCloudShadowMap;
@@ -565,7 +1157,7 @@ varying vec3 vObjPos;
 varying vec3 vPlanetshineViewDir;
 varying vec3 vAirCam;
 varying vec3 vAirFrag;
-${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}${CLOUD_DETAIL_GLSL}${SPHERE_EQUIRECT_UV_GLSL}${SMOOTH_TEXEL_GLSL}`;
+${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}${CLOUD_DETAIL_GLSL}${SPHERE_EQUIRECT_UV_GLSL}${SMOOTH_TEXEL_GLSL}${SURFACE_DETAIL_GLSL}`;
 
 // Injected after lighting but before <opaque_fragment> writes outgoingLight into
 // gl_FragColor — so terms land in linear radiance (tone-mapped downstream) and
@@ -672,9 +1264,14 @@ if (uCloudDeck > 0.0) {
       normal = normalize(nrm - surfGrad * cloudDetailW);
     }
   }
-}`;
+}
+${SURFACE_DETAIL_BODY}`;
 
 const SURFACE_FRAGMENT_BODY = /* glsl */ `{
+  if (uWaterGloss > 0.0) {
+    vec3 glint = reflectedLight.directSpecular;
+    outgoingLight -= glint - min(glint, vec3(${OCEAN_GLINT_CAP.toFixed(2)}));
+  }
   // The deck's alpha, worked out with its colour above where the lights could
   // still see both. A deck at a flat opacity dims clear sky by that fraction
   // everywhere and caps the thickest cloud at it; reading the map means a pixel
@@ -877,7 +1474,10 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
         airS += aerialInscatter(uScattering, aerialForLight(seg, normalize(uMoonDirWorld)), airT)
             * uMoonIrradiance * moonNight;
       }
-      outgoingLight = outgoingLight * airT + airS;
+      // The tables arrive a few seconds into a session, and the haze they
+      // bring would otherwise switch on across the whole ground in one frame:
+      // it fades in over a moment instead.
+      outgoingLight = mix(outgoingLight, outgoingLight * airT + airS, uAirBlend);
     }
   }
 }`;
@@ -899,6 +1499,33 @@ export interface SurfaceShadingArgs {
    *  not a water mask. Held here rather than on the material because the
    *  streamed sectors have to be told the same thing the globe was. */
   uWaterGloss: { value: number };
+  /** How much of the close-range detail term this material is drawing, eased in
+   *  wall time by whoever owns the body. Material-scoped, so a streamed sector
+   *  has to be told the globe's value every frame or it holds a stale one. */
+  uSynthEnvelope: { value: number };
+  /** The relief height that term draws, or 0 while MEASURED relief is bound on
+   *  this material. Grain is unconditional; relief is not. */
+  uSynthRelief: { value: number };
+  /** 1 while the relief bound on this material is itself invented — a painted
+   *  crater bump — which makes the synthesized relief wait for that bump's own
+   *  texels to stretch past a pixel instead of drawing on top of them. */
+  uSynthBumpFade: { value: number };
+  /** What relief this material was last told it carries. Held rather than read
+   *  back off the two uniforms above: on a surface class that draws no relief
+   *  at all the gain is zero whatever is bound, so a uniform read cannot tell a
+   *  gas giant with nothing on it from a body wearing measured elevation. */
+  relief: SurfaceReliefKind;
+  /** What `uSynthRelief` goes back to when nothing else supplies relief — the
+   *  archetype's own gain against the field's built geometry. */
+  synthReliefGain: number;
+  /** How much of the field's cratering this body wears (world/PlanetFactory's
+   *  table). Held so a dependent material (a streamed sector) draws the same
+   *  ground rather than defaulting to a cratered one. */
+  uSynthCraterShare: { value: number };
+  /** The body this material draws, as the close-range field's seed reads it.
+   *  Held so a dependent material (a streamed sector) lands on the SAME ground
+   *  as the globe under it rather than on a second patch of field. */
+  seedName: string;
 }
 const augmentArgs = new WeakMap<THREE.Material, SurfaceShadingArgs>();
 
@@ -918,6 +1545,115 @@ export function surfaceWaterGloss(mat: THREE.Material): boolean {
 export function setSurfaceWaterGloss(mat: THREE.Material, on: boolean): void {
   const args = augmentArgs.get(mat);
   if (args) args.uWaterGloss.value = on ? WATER_GLOSS_GAIN : 0;
+}
+
+/**
+ * Where a body reads the tiling detail field. The field is periodic, so an
+ * offset is free and cannot break the wrap; two coprime moduli keep names that
+ * hash close together from landing on one line of the tile.
+ */
+function synthSeedOffset(name: string): THREE.Vector2 {
+  const seed = gpuSeed(name);
+  return new THREE.Vector2((seed % 977) / 977, (Math.floor(seed / 977) % 613) / 613);
+}
+
+/**
+ * What kind of relief a material already carries, which is what decides whether
+ * a synthesized one may be drawn under it at all:
+ *
+ *   - `measured` — a real surface: an elevation-derived normal map, an
+ *     elevation bump, a photograph's own luminance read as one, or a sector's
+ *     crop of any of those. Synthesized relief NEVER joins it. Two sets of
+ *     craters under one Sun is what a doubled relief looks like, and where the
+ *     first set is real the second one is an invention laid over a measurement.
+ *   - `painted` — a crater bump the app itself invented for a moon with no
+ *     measured surface to draw. Synthesized relief replaces it as it runs out
+ *     of resolution: the fiction stays one fiction, at the scale the eye is
+ *     actually looking at.
+ *   - `none` — nothing bound, so the synthesized relief is the only relief.
+ */
+export type SurfaceReliefKind = 'measured' | 'painted' | 'none';
+
+/** Which of the three this material carries. A texture says for itself whether
+ *  it was painted rather than measured (`proceduralRelief` in its userData);
+ *  anything else bound as relief is treated as a real surface, because the
+ *  expensive mistake is to emboss invented craters over a measured one. */
+export function surfaceReliefKind(mat: THREE.Material): SurfaceReliefKind {
+  // A body whose measured surface is on its way counts as wearing it already.
+  // The map is requested at load and bound whenever the fetch lands, and in
+  // between there is nothing bound at all: read literally, this surface would
+  // be given a full invented relief for those seconds and then have it taken
+  // away the frame the real one arrives — a step, on the one body class that
+  // is never allowed one, and on a streamed sector cut before the map landed it
+  // would be a rectangle of invented craters beside measured ones.
+  if ((mat.userData as { hasRealNormal?: boolean } | undefined)?.hasRealNormal === true) {
+    return 'measured';
+  }
+  const standard = mat as Partial<THREE.MeshStandardMaterial>;
+  const relief = standard.normalMap ?? standard.bumpMap ?? null;
+  if (!relief) return 'none';
+  return relief.userData?.proceduralRelief === true ? 'painted' : 'measured';
+}
+
+/** How much of the field's cratering this material draws. */
+export function surfaceCraterShare(mat: THREE.Material): number {
+  return augmentArgs.get(mat)?.uSynthCraterShare.value ?? 1;
+}
+
+/** Tell a material how much of the field's cratering its body wears. Set once,
+ *  from the body's own entry: a surface does not become resurfaced mid-flight. */
+export function setSurfaceCraterShare(mat: THREE.Material, share: number): void {
+  const args = augmentArgs.get(mat);
+  if (args) args.uSynthCraterShare.value = Math.min(1, Math.max(0, share));
+}
+
+/**
+ * Set how much of the close-range detail term a material draws this frame:
+ * `envelope` is the eased 0..1 the owner is holding, and `relief` is what this
+ * material already carries. Grain is drawn whatever is bound; synthesized
+ * relief is held off entirely under a measured surface, and under a painted one
+ * it waits, per fragment, for that painting's own texels to stretch past a
+ * pixel.
+ *
+ * A material with no augmentation (a plain mesh, a shell that is not a surface)
+ * simply has nothing to set.
+ *
+ * A surface class the term is authored to nothing for — a gas giant with no
+ * ground to grain, Earth's mostly-ocean globe, the cloud deck — is held at zero
+ * however magnified it gets. Its envelope would otherwise ease to one on every
+ * close approach and every fragment would take four derivatives, the chart
+ * weights and up to six fetches of the 1×1 stand-in to multiply the surface by
+ * exactly one. The density record is untouched: the probe still labels a sheet
+ * of a body whose term is off, which is the arm every sheet is judged against.
+ */
+export function setSurfaceSynthesis(
+  mat: THREE.Material,
+  envelope: number,
+  relief: SurfaceReliefKind,
+): void {
+  const args = augmentArgs.get(mat);
+  if (!args) return;
+  const drawsNothing = SYNTH_GRAIN[args.archetype] === 0 && args.synthReliefGain === 0;
+  args.uSynthEnvelope.value = drawsNothing ? 0 : envelope;
+  args.uSynthRelief.value = relief === 'measured' ? 0 : args.synthReliefGain;
+  args.uSynthBumpFade.value = relief === 'painted' ? 1 : 0;
+  args.relief = relief;
+}
+
+/** How much of the term this material is drawing, on its own — read once per
+ *  live sector per frame, so it allocates nothing. */
+export function surfaceSynthesisEnvelope(mat: THREE.Material): number {
+  return augmentArgs.get(mat)?.uSynthEnvelope.value ?? 0;
+}
+
+/** How much of the term this material is drawing, and what its relief is doing
+ *  — what a dependent material (a streamed sector) mirrors. */
+export function surfaceSynthesisOf(
+  mat: THREE.Material,
+): { envelope: number; relief: SurfaceReliefKind } | undefined {
+  const args = augmentArgs.get(mat);
+  if (!args) return undefined;
+  return { envelope: args.uSynthEnvelope.value, relief: args.relief };
 }
 
 /** 1×1 stand-ins, shared by every augmented material: no sampler is ever left
@@ -944,6 +1680,8 @@ export function createSurfaceAirFx(): SurfaceAirFx {
   const air: SurfaceAirFx = {
     ...atmosphereLookupUniforms(),
     uAirDensity: { value: 0 },
+    // 0 → 1 over SURFACE_AIR_FADE_S after the tables bind; the haze is scaled by it.
+    uAirBlend: { value: 0 },
     uPlanetRadius: { value: 1 },
     uSolarIrradiance: { value: 1 },
     uAirlightScale: { value: new THREE.Vector3(...AIRLIGHT_SCALE) },
@@ -983,7 +1721,19 @@ export function bindSurfaceAir(
   air.uIrradiance.value = tables.irradiance;
   air.uPlanetRadius.value = planetRadius;
   air.uSolarIrradiance.value = solarIrradiance;
+  // Switching on starts the fade; a rebind of live air leaves it where it is.
+  if (air.uAirDensity.value === 0) air.uAirBlend.value = 0;
   air.uAirDensity.value = 1;
+}
+
+/** How long a body's haze takes to fade in once its tables bind. */
+export const SURFACE_AIR_FADE_S = 1.2;
+
+/** Advance a body's haze fade by one frame; a no-op once the air is fully on
+ *  or while it is off. */
+export function advanceSurfaceAir(air: SurfaceAirFx, dtS: number): void {
+  if (air.uAirDensity.value === 0 || air.uAirBlend.value >= 1) return;
+  air.uAirBlend.value = Math.min(1, air.uAirBlend.value + Math.max(0, dtS) / SURFACE_AIR_FADE_S);
 }
 
 /** Switch the air off and let go of the tables: a lost context frees their
@@ -992,6 +1742,7 @@ export function clearSurfaceAir(air: SurfaceAirFx): void {
   if (air.uAirDensity.value === 0 && air.uScattering.value === surfaceAirDummies().map3D) return;
   const dummies = surfaceAirDummies();
   air.uAirDensity.value = 0;
+  air.uAirBlend.value = 0;
   air.uTransmittance.value = dummies.map2D;
   air.uIrradiance.value = dummies.map2D;
   air.uScattering.value = dummies.map3D;
@@ -1011,6 +1762,10 @@ export function augmentSurfaceMaterial(
   /** Share the spin of the mesh this material's own mesh hangs under (a
    *  streamed sector is a child of the globe mesh, so it inherits its frame). */
   sharedSpin?: { value: number },
+  /** The body's name, which is the close-range detail field's seed. Two bodies
+   *  wear different ground and one body wears the same ground every session.
+   *  Empty for a surface nobody looks at (a warm-up probe, a compare filler). */
+  seedName = '',
 ): SurfaceShadingFx {
   const night = NIGHT_FILL[archetype];
 
@@ -1034,7 +1789,23 @@ export function augmentSurfaceMaterial(
   // the flat mid-grey stand-in a failed fetch leaves behind is not one, and
   // remapping it would put an ocean's sheen on the whole planet.
   const uWaterGloss = { value: 0 };
-  augmentArgs.set(mat, { archetype, ringShadow, sunTan, fx, uFrameSpin, uWaterGloss });
+  // Off until the body's owner says this surface is magnified past the band and
+  // eases it in. Nothing is ever stepped on: at zero the term costs a uniform
+  // branch and no fetch.
+  const uSynthEnvelope = { value: 0 };
+  const synthReliefGain = SYNTH_RELIEF_GAIN[archetype] > 0
+    ? SYNTH_RELIEF_GAIN[archetype] * surfaceDetailHeightSpan()
+    : 0;
+  const uSynthRelief = { value: synthReliefGain };
+  const uSynthBumpFade = { value: 0 };
+  // Every body wears the whole field until its owner says otherwise: a moon
+  // whose surface is resurfaced is the exception, not the rule.
+  const uSynthCraterShare = { value: 1 };
+  augmentArgs.set(mat, {
+    archetype, ringShadow, sunTan, fx, uFrameSpin, uWaterGloss,
+    uSynthEnvelope, uSynthRelief, uSynthBumpFade, uSynthCraterShare,
+    relief: 'none', synthReliefGain, seedName,
+  });
   const uNightColor = { value: new THREE.Color(night.color) };
   const uNightStrength = { value: night.strength };
   const uTermWidth = { value: night.termWidth };
@@ -1059,6 +1830,28 @@ export function augmentSurfaceMaterial(
   // the shader multiplies by uPlanetRadius to reach a real slope.
   const uCloudDetailRelief = {
     value: archetype === 'cloud' ? CLOUD_DETAIL_RELIEF_KM / EARTH_RADIUS_KM : 0,
+  };
+  const uSynthGrain = { value: SYNTH_GRAIN[archetype] };
+  // The one shared field, or the same 1x1 stand-in the air's samplers take on a
+  // surface class that never fades the term in — sampling it is never legal,
+  // because uSynthEnvelope is then held at zero.
+  const uSynthDetail = {
+    value: SYNTH_GRAIN[archetype] > 0 || SYNTH_RELIEF_GAIN[archetype] > 0
+      ? surfaceDetailTexture() as THREE.Texture
+      : surfaceAirDummies().map2D as THREE.Texture,
+  };
+  // Where this body reads the tiling field. One offset per body, so two moons
+  // wear different ground; the field is periodic, so an offset costs nothing
+  // and cannot break the wrap. The caller supplies it (the body's name, hashed)
+  // — a body must not change face between sessions.
+  const uSynthSeed = { value: synthSeedOffset(seedName) };
+  // The zero the grain is read against — the built field's own mean, so the
+  // term adds no light of its own. Zero on a surface class that never draws it,
+  // where the field is not even bound.
+  const uSynthMid = {
+    value: SYNTH_GRAIN[archetype] > 0 || SYNTH_RELIEF_GAIN[archetype] > 0
+      ? surfaceDetailFieldMean()
+      : 0,
   };
 
   mat.onBeforeCompile = (shader) => {
@@ -1095,6 +1888,14 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uCloudCityGlow = uCloudCityGlow;
     shader.uniforms.uCloudDetailRelief = uCloudDetailRelief;
     shader.uniforms.uFrameSpin = uFrameSpin;
+    shader.uniforms.uSynthDetail = uSynthDetail;
+    shader.uniforms.uSynthGrain = uSynthGrain;
+    shader.uniforms.uSynthRelief = uSynthRelief;
+    shader.uniforms.uSynthBumpFade = uSynthBumpFade;
+    shader.uniforms.uSynthEnvelope = uSynthEnvelope;
+    shader.uniforms.uSynthSeed = uSynthSeed;
+    shader.uniforms.uSynthMid = uSynthMid;
+    shader.uniforms.uSynthCraterShare = uSynthCraterShare;
     for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];
 
     shader.vertexShader = shader.vertexShader

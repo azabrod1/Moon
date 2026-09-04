@@ -74,6 +74,11 @@ const TILES = arg('tiles', 'http://localhost:5622/');
 const LABEL = arg('label', 'baseline');
 const OUT_DIR = join(arg('out', '/tmp/moon-shots/smooth'), LABEL);
 const ONLY = arg('scenario', '').split(',').map((s) => s.trim()).filter(Boolean);
+// Extra query on every page the battery opens. What it exists for: an app
+// switch whose cost is the question (?synth=0 takes the close-range surface
+// term out), measured by running the same scenarios twice and reading the
+// p50/p95 shift between the two runs.
+const EXTRA_QUERY = arg('query', '');
 const PRINT_JSON = has('json');
 const RESCORE = arg('rescore', '');
 // Which browser to measure in. The default headless shell is an OLD-headless
@@ -141,7 +146,7 @@ function appUrl(extra = '', expectSeconds = 120) {
   params.set('smoothFrames', String(Math.ceil(expectSeconds * 130 * 1.5)));
   if (TILES) params.set('tiles', TILES);
   if (COLD_CACHE) params.set('shaderSalt', coldSalt);
-  return `${URL_BASE}/?${params.toString()}${extra}${EXTRA}`;
+  return `${URL_BASE}/?${params.toString()}${extra}${EXTRA_QUERY}${EXTRA}`;
 }
 
 async function openPage(browser, device, cpuThrottle = 0) {
@@ -724,6 +729,101 @@ const SCENARIOS = [
       for (const body of ['Mars', 'Phobos', 'Deimos']) {
         note(await travelAndSettle(page, body, 8_000));
       }
+    },
+  },
+  {
+    // The pose a per-fragment surface term costs the most in: one body across
+    // the whole frame with its colour map magnified past a texel a pixel over
+    // every pixel of it, so nothing is being paid for at a fraction of the
+    // screen. The camera is POSED rather than flown, for two reasons that both
+    // matter: forward thrust after a moon arrival is not aimed at the moon
+    // (a scenario that throttles in flies away for half a minute and scores a
+    // cruise), and the pose stands for a device whose ladder cannot reach the
+    // top rung, where a body this size on screen really is this coarse.
+    //
+    // Held still, with nothing streaming once it settles, so there is no event
+    // to blame a heavy frame on: the score to read here is the p50 and p95
+    // shift, not a count of frames over budget.
+    id: 'moon-close',
+    title: 'Moon across the whole frame, magnified past a texel a pixel: 30 s hold',
+    device: DESKTOP,
+    async run(page, note) {
+      await bootTo(page, '', 240);
+      await sleep(2_000);
+      note(await travelAndSettle(page, 'Moon', 8_000));
+      await page.evaluate(() => window.__moon.frame('Moon', 2.2));
+      // Long enough for the tiles this pose wants to arrive and stop arriving.
+      await sleep(12_000);
+      // The magnification the run really achieved, so the score is read
+      // against a measured density rather than an assumed one.
+      note(`density: ${JSON.stringify(await page.evaluate(() => window.__moon.surfaceDensity()))}`);
+      await mark(page, 'hold');
+      await sleep(30_000);
+    },
+  },
+  {
+    // The same pose on a body that draws SYNTHESIZED RELIEF, which the Moon
+    // never does: the Moon wears measured elevation, so a close hold on it
+    // prices the grain and nothing else. Titania wears a painted crater bump
+    // that has run out of texels at this magnification, which is the one case
+    // where the term perturbs the normal too — the whole cost, on the frame
+    // that pays all of it.
+    id: 'titania-close',
+    title: 'Titania across the whole frame, synthesized relief on: 30 s hold',
+    device: DESKTOP,
+    async run(page, note) {
+      await bootTo(page, '', 240);
+      await sleep(2_000);
+      note(await travelAndSettle(page, 'Titania', 8_000));
+      await page.evaluate(() => window.__moon.frame('Titania', 0.81));
+      await sleep(12_000);
+      note(`density: ${JSON.stringify(await page.evaluate(() => window.__moon.surfaceDensity()))}`);
+      await mark(page, 'hold');
+      await sleep(30_000);
+    },
+  },
+  {
+    // The close-range term's worst fill-rate case, on the device shape with the
+    // least fill rate to spare. Its field is drawn on three flat charts, one
+    // per axis of the body's frame, and a fragment on a body-frame DIAGONAL is
+    // drawn by all three — six texture fetches where a fragment over a chart's
+    // own axis takes two. That case is a place on the body, not a distance, so
+    // it has to be aimed at: the roll about the Sun line is swept and the pose
+    // with the three components most nearly equal is the one held.
+    id: 'phone-titania-corner',
+    title: 'Phone: Titania across the frame on a chart corner, relief on: 30 s hold',
+    device: PHONE,
+    async run(page, note) {
+      await bootTo(page, '', 240);
+      await sleep(2_000);
+      note(`device: ${JSON.stringify(await page.evaluate(() => window.__moon.device()))}`);
+      note(await travelAndSettle(page, 'Titania', 8_000));
+      const aimed = await page.evaluate(async ({ name, fill, phase }) => {
+        const nap = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+        const dirOf = () => {
+          const d = (window.__moon.surfaceDensity() ?? []).find((x) => x.name === name);
+          return d && d.subCameraBodyDir ? d.subCameraBodyDir : null;
+        };
+        let best = { roll: 0, score: -1, dir: null };
+        for (let roll = 0; roll < 360; roll += 15) {
+          window.__moon.frame(name, fill, phase, undefined, 0, 0, roll);
+          await nap(150);
+          const dir = dirOf();
+          if (!dir) continue;
+          // Equal in all three is the corner; the smallest component says how
+          // close a pose got, and 0.577 is the corner itself.
+          const score = Math.min(Math.abs(dir[0]), Math.abs(dir[1]), Math.abs(dir[2]));
+          if (score > best.score) best = { roll, score, dir };
+        }
+        window.__moon.frame(name, fill, phase, undefined, 0, 0, best.roll);
+        return best;
+      }, { name: 'Titania', fill: 0.81, phase: 40 });
+      note(`corner pose: roll ${aimed.roll}°, body direction ${JSON.stringify(aimed.dir)},`
+        + ` smallest component ${round1(aimed.score * 100) / 100} of 0.58`);
+      await sleep(12_000);
+      note(`density: ${JSON.stringify(await page.evaluate(() => window.__moon.surfaceDensity()))}`);
+      await mark(page, 'hold');
+      await sleep(30_000);
     },
   },
   {

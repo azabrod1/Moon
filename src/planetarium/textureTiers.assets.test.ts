@@ -53,14 +53,18 @@ const KTX2_MAGIC = Buffer.from([0xab, 0x4b, 0x54, 0x58, 0x20, 0x32, 0x30, 0xbb, 
  *  follows the level index, so a kilobyte covers it for any level count these
  *  maps reach.
  *
- *  The format is not cosmetic. `colorModel` is the difference between UASTC
- *  and ETC1S: ETC1S is a quarter of the wire size and bands visibly on the
- *  Moon's maria, so a container that quietly encoded as ETC1S would ship a
- *  worse picture than the webp rung it replaced. `transferFunction` is what
- *  the loader sets the texture's colour space from — a container marked
- *  linear draws the globe washed out, and nothing in the app would correct it
- *  because applyTextureDefaults deliberately leaves a compressed texture's
- *  colour space alone. */
+ *  The format is not cosmetic, and it is not one choice for the whole tree.
+ *  `colorModel` is the difference between UASTC and ETC1S: ETC1S is a few
+ *  times smaller on the wire and half the VRAM, and what it spends for that
+ *  is smooth gradients — its shared codebook needs a block index per distinct
+ *  shade, so a slow ramp comes back as steps. That is why the Moon's maria and
+ *  Earth's night falloff are UASTC and the cratered photo moons are ETC1S, and
+ *  why each container's model is pinned per file below rather than left to
+ *  whoever last ran the encoder. `transferFunction` is what the loader sets
+ *  the texture's colour space from — a container marked linear draws the globe
+ *  washed out, and nothing in the app would correct it because
+ *  applyTextureDefaults deliberately leaves a compressed texture's colour
+ *  space alone. */
 function ktx2Header(path: string): {
   width: number;
   height: number;
@@ -84,9 +88,64 @@ function ktx2Header(path: string): {
   };
 }
 
-/** KHR_DF_MODEL_UASTC, and the sRGB transfer function. */
+/** KHR_DF_MODEL_UASTC and KHR_DF_MODEL_ETC1S, and the sRGB transfer
+ *  function. */
 const DF_MODEL_UASTC = 166;
+const DF_MODEL_ETC1S = 163;
 const DF_TRANSFER_SRGB = 2;
+
+/** Supercompression scheme, which follows from the encoding: UASTC is zstd'd
+ *  after the fact, ETC1S carries basisu's own BasisLZ. An unsupercompressed
+ *  container is several times the download for the same picture, so the
+ *  scheme is checked rather than ignored. */
+const SUPERCOMPRESSION_BY_MODEL: Record<number, number> = {
+  [DF_MODEL_UASTC]: 2,
+  [DF_MODEL_ETC1S]: 1,
+};
+
+/**
+ * The encoding every shipped container is cut in, by `<tier>/<file>`. A
+ * container missing from here fails the header check rather than passing on a
+ * default: the choice belongs to the map, and a new one has to be made
+ * deliberately (tools/gen-ktx2.mjs's job table carries the measurement behind
+ * each).
+ *
+ * UASTC for the maps built out of slow gradients — the Moon's maria, the cloud
+ * deck's soft edges, Earth's night falloff, and the two planet rungs that
+ * cleared the wire cap at that format.
+ *
+ * ETC1S for the photo moons, every one of which is cratered texture at every
+ * scale, the codebook's best case: measured per body on a 4096x2048 candidate
+ * these land at 0.67x to 2.99x their webp twin (ten of the twelve under 1.9x)
+ * with RMS indistinguishable from webp's, so one file is small enough to be
+ * the wire copy AND compressed in VRAM, and the rung ships as a container
+ * alone.
+ */
+const CONTAINER_COLOR_MODEL: Record<string, number> = {
+  '4k/mercury.ktx2': DF_MODEL_UASTC,
+  '4k/mars.v2.ktx2': DF_MODEL_UASTC,
+  '4k/moon.ktx2': DF_MODEL_UASTC,
+  '8k/moon.ktx2': DF_MODEL_UASTC,
+  '4k/earth-clouds.ktx2': DF_MODEL_UASTC,
+  '8k/earth-clouds.ktx2': DF_MODEL_UASTC,
+  '8k/earth-day.v2.ktx2': DF_MODEL_UASTC,
+  '4k/earth-night.v2.ktx2': DF_MODEL_UASTC,
+  '8k/earth-night.v2.ktx2': DF_MODEL_UASTC,
+  '4k/enceladus.ktx2': DF_MODEL_ETC1S,
+  '4k/mimas.ktx2': DF_MODEL_ETC1S,
+  '4k/dione.ktx2': DF_MODEL_ETC1S,
+  '4k/tethys.ktx2': DF_MODEL_ETC1S,
+  '4k/rhea.ktx2': DF_MODEL_ETC1S,
+  '4k/iapetus.ktx2': DF_MODEL_ETC1S,
+  '4k/charon.ktx2': DF_MODEL_ETC1S,
+  '4k/callisto.v2.ktx2': DF_MODEL_ETC1S,
+  '4k/pluto.v2.ktx2': DF_MODEL_ETC1S,
+  '8k/io.v2.ktx2': DF_MODEL_ETC1S,
+  '8k/europa.v2.ktx2': DF_MODEL_ETC1S,
+  '8k/ganymede.v2.ktx2': DF_MODEL_ETC1S,
+  '8k/callisto.v2.ktx2': DF_MODEL_ETC1S,
+  '8k/pluto.v2.ktx2': DF_MODEL_ETC1S,
+};
 
 describe('the files behind the colour ladder', () => {
   it('ships every rung every body can climb to', () => {
@@ -123,15 +182,22 @@ describe('the files behind the colour ladder', () => {
 
   it('ships the containers the wire rules admitted, and no others', () => {
     // Which rungs get a container is a decision about DOWNLOAD size — the
-    // reasoning is on the rows in PlanetFactory and in gen-ktx2.mjs's job
+    // reasoning is on the rows in textureLadder and in gen-ktx2.mjs's job
     // table — and it is the kind of decision that gets quietly widened by
-    // anyone adding a map. Every 8K rung earns one. A 4K rung earns one only
-    // by staying inside four times the webp twin that has to keep shipping
-    // beside it, which of the maps a session tours is Mercury and Mars alone;
-    // the Moon, the cloud deck and Earth's night lights are the three the
-    // boot warm uploads on every session, downloaded once per device rather
-    // than once per tour, and admitted on that basis. Written out in the
-    // table's own order so a tenth container has to be argued for here too.
+    // anyone adding a map. The UASTC ones are held to the tight bar: every 8K
+    // rung earns one because nothing else answers a 170.7 MiB upload, while a
+    // 4K rung earns one only by staying inside four times the webp twin that
+    // has to keep shipping beside it — of the maps a session tours, Mercury
+    // and Mars alone. The Moon, the cloud deck and Earth's night lights are
+    // the three the boot warm uploads on every session, downloaded once per
+    // device rather than once per tour, and admitted on that basis.
+    //
+    // The photo moons are ETC1S, and that bar does not apply to them at all:
+    // the container is roughly the webp's size on the wire, so there is no
+    // twin and nothing extra to download. What they must not do is hold an
+    // uncompressed map's VRAM through a nine-body tour, and at a quarter of it
+    // they do not. Written out in the table's own order so a new container has
+    // to be argued for here too.
     const shipped = Object.entries(TIER_FILE_OVERRIDES).flatMap(([key, byTier]) =>
       Object.entries(byTier).map(([tier, rung]) => `${key} ${tier}: ${tier}/${rung.file}`));
     expect(shipped).toEqual([
@@ -144,32 +210,50 @@ describe('the files behind the colour ladder', () => {
       'earthDay 8k: 8k/earth-day.v2.ktx2',
       'earthNight 4k: 4k/earth-night.v2.ktx2',
       'earthNight 8k: 8k/earth-night.v2.ktx2',
+      'enceladus 4k: 4k/enceladus.ktx2',
+      'mimas 4k: 4k/mimas.ktx2',
+      'dione 4k: 4k/dione.ktx2',
+      'tethys 4k: 4k/tethys.ktx2',
+      'rhea 4k: 4k/rhea.ktx2',
+      'iapetus 4k: 4k/iapetus.ktx2',
+      'charon 4k: 4k/charon.ktx2',
+      'io 8k: 8k/io.v2.ktx2',
+      'europa 8k: 8k/europa.v2.ktx2',
+      'ganymede 8k: 8k/ganymede.v2.ktx2',
+      'callisto 4k: 4k/callisto.v2.ktx2',
+      'callisto 8k: 8k/callisto.v2.ktx2',
+      'pluto 4k: 4k/pluto.v2.ktx2',
+      'pluto 8k: 8k/pluto.v2.ktx2',
     ]);
   });
 
   it('carries a full baked mip chain at the tier width in every container', () => {
-    for (const [key, byTier] of Object.entries(TIER_FILE_OVERRIDES)) {
-      for (const [tier, rung] of Object.entries(byTier)) {
-        const width = TIER_MAP_WIDTH[tier as TextureTier];
-        const header = ktx2Header(tierPath(rung.file, tier as TextureTier));
-        // A 2:1 equirect at the tier's own width. A container a size off
-        // would be charged the tier's bytes and drawn at another.
-        expect({ key, ...header }).toEqual({
-          key,
-          width,
-          height: width / 2,
-          // Every level down to 1x1: three cannot build mips for a
-          // compressed texture, so a chain that stops early leaves the
-          // globe aliasing at every distance the missing levels covered.
-          levels: Math.log2(width) + 1,
-          // 2 = zstd. The blocks are what the GPU holds either way; this is
-          // the wire size, and an unsupercompressed container is several
-          // times the download for the same picture.
-          supercompression: 2,
-          colorModel: DF_MODEL_UASTC,
-          transferFunction: DF_TRANSFER_SRGB,
-        });
-      }
+    const rungs: Array<[string, string, TextureTier]> = Object.entries(TIER_FILE_OVERRIDES)
+      .flatMap(([, byTier]) => Object.entries(byTier)
+        .map(([tier, rung]): [string, string, TextureTier] =>
+          [`${tier}/${rung.file}`, tierPath(rung.file, tier as TextureTier), tier as TextureTier]));
+    for (const [key, file, tier] of rungs) {
+      const width = TIER_MAP_WIDTH[tier];
+      const colorModel = CONTAINER_COLOR_MODEL[key];
+      // A container nobody declared an encoding for is a container nobody
+      // chose an encoding for.
+      expect(`${key}: ${colorModel === undefined ? 'no declared encoding' : 'declared'}`)
+        .toBe(`${key}: declared`);
+      const header = ktx2Header(file);
+      // A 2:1 equirect at the tier's own width. A container a size off
+      // would be charged the tier's bytes and drawn at another.
+      expect({ key, ...header }).toEqual({
+        key,
+        width,
+        height: width / 2,
+        // Every level down to 1x1: three cannot build mips for a
+        // compressed texture, so a chain that stops early leaves the
+        // globe aliasing at every distance the missing levels covered.
+        levels: Math.log2(width) + 1,
+        supercompression: SUPERCOMPRESSION_BY_MODEL[colorModel],
+        colorModel,
+        transferFunction: DF_TRANSFER_SRGB,
+      });
     }
   });
 });

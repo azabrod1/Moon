@@ -1,0 +1,336 @@
+/**
+ * Types for the map generator's texture arithmetic, hand-written because
+ * tools/ sits outside the TypeScript project (tsconfig includes only src/).
+ * They exist so src/planetarium/surfaceGrain.test.ts can drive the real passes
+ * on a synthetic raster instead of restating what they do.
+ *
+ * Every raster here is one channel of a wrapping equirect map, held as a
+ * Float32Array of W x H, and every distance in a spec is in DEGREES, scaled by
+ * the raster's own pixels per degree.
+ */
+
+/** One value-noise octave's peak-to-peak amplitude per unit of standard
+ *  deviation. */
+export const NOISE_AMP_PER_SIGMA: number;
+
+/** A noise octave: its cell size in pixels, how many cells fit across the map
+ *  (so the grain meets itself at the edge), and its amplitude in counts. */
+export interface Octave {
+  cell: number;
+  cols?: number;
+  amp: number;
+  /** How many pixels the amplitude was measured over. */
+  samples?: number;
+}
+
+/** A straight brightness step found in a map. `from`/`to` are rows for a
+ *  meridian and columns for a parallel, the columns wrapping. */
+export interface Edge {
+  axis: 'meridian' | 'parallel';
+  /** The column (meridian) or row (parallel) the step is on. */
+  at: number;
+  from: number;
+  to: number;
+  /** How much ground the step runs along, in degrees. */
+  spanDeg: number;
+  /** The step in counts, positive when the far side is brighter. */
+  step: number;
+  score: number;
+  round?: number;
+}
+
+export interface DeficitSpec {
+  /** The finest band: the scale a resample takes detail from below. */
+  fineDeg: number;
+  /** The band the fine one is judged against — everything below this. */
+  coarseDeg: number;
+  /** The step the directional measure differences over. Defaults to fineDeg. */
+  stepDeg?: number;
+  /** The window the count is averaged over. */
+  windowDeg: number;
+  /** How far the answer is smoothed, so it changes over degrees. */
+  wideDeg: number;
+  /** Which percentile of the body's own ratio counts as fully detailed. */
+  refPercentile?: number;
+  /** How isotropic the finest band has to be to count in full: the smaller
+   *  eigenvalue over the larger, at the value sharp ground on these mosaics
+   *  measures. Zero leaves the count undiscounted. */
+  isotropyRef?: number;
+  /** Deficits below this are zero, so detailed ground is left untouched. */
+  floor?: number;
+  /** Sampling stride for the percentiles and the amplitudes. */
+  stride?: number;
+}
+
+export interface FillSpec extends DeficitSpec {
+  /** Octave cells, as multiples of the finest band, capped at the coarse one. */
+  grainCells?: number[];
+  /** Deficit at or below which ground is a reference for the amplitude. */
+  referenceBelow?: number;
+  /** Deficit at or above which ground counts as a coverage gap. */
+  gapAbove?: number;
+  /** Deficit at which the invented shape starts and finishes being removed. */
+  replaceFrom?: number;
+  replaceFull?: number;
+  /** Bounds on the grain's scaling by local brightness. */
+  toneFloor?: number;
+  toneCeiling?: number;
+  /** Ceiling on the solved level, in case a map measures a runaway one. */
+  maxLevel?: number;
+  seed?: number;
+}
+
+export interface EdgeSpec {
+  /** How far either side of a line the step is measured. */
+  lookDeg?: number;
+  /** How far along a line the measurement is smoothed. */
+  alongDeg?: number;
+  /** The low pass the step is measured on. */
+  smoothDeg?: number;
+  /** Counts: below this a line is not a step. */
+  minStep?: number;
+  /** Degrees of ground a step must run along to count. */
+  minSpanDeg?: number;
+  /** Source pixels per cell of the grid the correction is solved on. */
+  solveScale?: number;
+  /** Sweeps on the coarsest grid, and on each finer one. */
+  solveSweeps?: number;
+  refineSweeps?: number;
+  solveTolerance?: number;
+  /** How close two lines may be and still both be corrected. */
+  apartDeg?: number;
+  /** Latitude beyond which nothing is scanned. */
+  skipLatDeg?: number;
+  /** Follow the boundaries that are neither a meridian nor a parallel, seeded
+   *  from the finest band's own energy contour and kept only where one side of
+   *  them is smeared ground. Absent, only straight lines are found.
+   *  `levelEdges` must be given a deficit for this to act. An unknown key here
+   *  throws rather than being ignored: a job spec is untyped JavaScript, and a
+   *  key spelled wrong changes what the pass levels. */
+  curves?: {
+    /** Which fields' level sets the outlines are taken from, in order.
+     *  `energy` separates any two frames carrying different amounts of detail;
+     *  `deficit` outlines the ground the fill treats differently. */
+    seedFrom?: Array<'energy' | 'deficit'>;
+    /** Share of the reference ground's fine energy the `energy` contour is
+     *  taken at. */
+    energyAt?: number;
+    /** Deficit level the `deficit` contour is taken at. */
+    seedAt?: number;
+    /** How far along the normal the snap to the energy step looks, in degrees:
+     *  a contour taken off a field blurred over degrees can sit that far off
+     *  the frame edge. */
+    searchDeg?: number;
+    /** Cell size of the grid the level set is traced on. */
+    traceDeg?: number;
+    /** The band whose energy the snap reads — the deficit's own finest. */
+    fineDeg?: number;
+    /** How widely that energy is averaged before the snap reads it. Well under
+     *  the distance the snap searches, or the snap finds the blur's own slope
+     *  instead of the boundary. */
+    energyDeg?: number;
+    /** How much of the reference ground's fine energy a real boundary has to
+     *  step by. Under it the point is dropped. */
+    minEnergyJump?: number;
+    /** Deficit at or below which ground is a reference for that energy. */
+    referenceBelow?: number;
+    /** The high bar: the deficit a boundary's MIDDLE reading must reach for it
+     *  to be a smear contact at all. The energy step cannot be the whole test,
+     *  since the seed is an energy contour: two real terrains of different
+     *  roughness answer it as readily as a frame boundary does, and only the
+     *  frame boundary has a smear beside it. A third of the detail gone is
+     *  enough to be that frame — a contact between two real terrains reads
+     *  near zero either side, whatever the two of them look like. Asked of the
+     *  boundary as a whole, so a long one with a single good stretch inside it
+     *  is dropped entire. */
+    sideDeficitMin?: number;
+    /** The low bar: the deficit each point of a boundary that cleared the high
+     *  one must reach to carry it further. This decides where a kept boundary
+     *  ENDS — a frame edge running off its frame onto imaged ground stops
+     *  there — and the pieces it leaves answer to `minSpanDeg` like any
+     *  other. */
+    sideContinueMin?: number;
+    /** Width of the band the deficit is read over, either side, in degrees. */
+    sideBandDeg?: number;
+    /** How far off the curve that band starts, so the reading is of one side
+     *  rather than of the blurred mixture of both. */
+    sideOffsetDeg?: number;
+  };
+  /** Ceiling on how many boundaries one round corrects. Above the worst of
+   *  these sources' own count, so it does not truncate the list. */
+  maxEdges?: number;
+  rounds?: number;
+}
+
+export interface FillResult {
+  /** What to add to the band, in counts. Zero wherever the deficit is. */
+  delta: Float32Array;
+  /** Share of the map the removal touches, and how much of the band it takes
+   *  where it does. */
+  replacedFraction: number;
+  replacedMean: number;
+
+  deficit: Float32Array;
+  /** The octaves as added, after the level solve. */
+  octaves: Octave[];
+  refOctaves: Octave[];
+  gapOctaves: Octave[];
+  /** The fine-band ratio a fully detailed piece of this map carries. */
+  ref: number;
+  /** The fine-band energy the reference ground carries, in counts. */
+  energyRef: number;
+  /** The median ratio over the map. */
+  median: number;
+  /** What the measured amplitudes had to be scaled by to carry `ref`. */
+  level: number;
+  /** Mean brightness of the reference ground. */
+  refTone: number;
+  refFraction: number;
+  touchedFraction: number;
+  meanDelta: number;
+  peakDelta: number;
+}
+
+/**
+ * Separable box blur, three passes, wrapping in x and clamping in y.
+ * `radiusX` may be one radius per row, which is what a window measured in
+ * degrees needs on an equirect map.
+ */
+export function blurMono(
+  src: Float32Array, W: number, H: number, radiusX: number | Float32Array, radiusY?: number,
+): Float32Array;
+
+/** One radius per row: `basePx` at the equator, widened by 1/cos(lat). */
+export function latScaledRadii(H: number, basePx: number, maxScale?: number): Float32Array;
+
+/** Seeded value noise: the same grain every bake. */
+export function valueNoise(W: number): {
+  plain: (x: number, y: number) => number;
+  matched: (octaves: Octave[], seed?: number) => (x: number, y: number) => number;
+};
+
+/** A cell size adjusted to tile the map's width exactly. */
+export function wrappingCell(W: number, want: number): { cell: number; cols: number };
+
+/** Per-octave amplitude of a band, one list per population. */
+export function bandAmplitudes(
+  band: Float32Array, W: number, H: number,
+  cells: Array<number | { cell: number; cols?: number }>,
+  groups: Array<(i: number) => boolean>,
+  stride?: number,
+): Octave[][];
+
+/** Where the picture stopped carrying detail. */
+export function detailDeficit(
+  band: Float32Array, W: number, H: number, spec: DeficitSpec, pxPerDeg: number,
+  valid?: Uint8Array | null,
+): { deficit: Float32Array; energy: Float32Array; ref: number; median: number };
+
+/** Give the coarse parts of a mosaic the grain the sharp parts have. */
+export function coverageFill(
+  band: Float32Array, W: number, H: number, spec: FillSpec, pxPerDeg: number,
+  valid?: Uint8Array | null,
+): FillResult;
+
+/** The straight brightness steps in a map, worst first. `only` re-measures
+ *  lines found before instead of scanning. */
+export function findEdges(
+  band: Float32Array, W: number, H: number, spec: EdgeSpec, pxPerDeg: number,
+  valid?: Uint8Array | null, only?: Edge[] | null,
+): {
+  edges: Edge[];
+  lowPass: Float32Array;
+  profileOf: (axis: Edge['axis'], at: number) => Float32Array;
+  /** Whether the list was truncated at maxEdges, so a truncated run says so. */
+  capped?: boolean;
+};
+
+/** Close those steps, in place, with a harmonic correction field. */
+export function levelEdges(
+  band: Float32Array, W: number, H: number, spec: EdgeSpec, pxPerDeg: number,
+  valid?: Uint8Array | null, deficit?: Float32Array | null,
+): {
+  edges: Edge[];
+  /** Relaxation sweeps across every grid, and what the last one had left. */
+  iterations: number;
+  residual: number;
+  /** How far from the mean the applied correction reaches, in counts. */
+  peak: number;
+  grid: { cw: number; ch: number } | null;
+  /** Boundaries corrected in each round, and whether any round was truncated. */
+  perRound: number[];
+  capped: boolean;
+  /** Whether every round's finest grid reached its tolerance, and how many
+   *  grids across the whole run ran out of sweeps instead. An unconverged
+   *  solve applies a field bigger than the harmonic one it stands for. */
+  converged: boolean;
+  unconverged: number;
+  /** The curves traced, if any were asked for. */
+  curves: TracedCurves;
+};
+
+/** One point of a traced boundary: where it is, which way it faces (as source
+ *  pixels per degree of ground along the normal), and what it steps by. */
+export interface CurvePoint {
+  x: number;
+  y: number;
+  ox: number;
+  oy: number;
+  step: number;
+  smoothed: number;
+  jump: number;
+  /** The deeper of the two sides' detail deficits, which is what kept it. */
+  sideDeficit?: number;
+}
+
+export interface TracedCurve {
+  points: CurvePoint[];
+  /** How much ground the curve runs along, in degrees. */
+  spanDeg: number;
+  /** Whether it meets itself, in which case it has no end to taper at. */
+  closed: boolean;
+  /** What it steps by now, and what it stepped by when it was found. */
+  medianStep: number;
+  firstMedianStep: number;
+}
+
+/** What the trace found against what it kept: a rule that decides which real
+ *  ground is left alone has to be able to say how much it left. `droppedShare`
+ *  is the fraction of the correction, weighted by the ground each boundary
+ *  runs along, that the rejected boundaries would have carried. */
+export interface CurveStats {
+  traced: number;
+  kept: number;
+  tracedSpanDeg: number;
+  keptSpanDeg: number;
+  droppedShare: number;
+}
+
+export type TracedCurves = TracedCurve[] & { stats?: CurveStats };
+
+/** The frame boundaries that are not straight, seeded from the finest band's
+ *  energy contour, snapped to where that energy steps, and kept only along the
+ *  stretches with smeared ground on one side. */
+export function traceCurves(
+  band: Float32Array, W: number, H: number, spec: EdgeSpec, pxPerDeg: number,
+  valid: Uint8Array | null, deficit: Float32Array, lowPass: Float32Array,
+): TracedCurves;
+
+/** The two bars the smear rule reads the detail deficit against. */
+export const SIDE_DEFICIT_MIN: number;
+export const SIDE_CONTINUE_MIN: number;
+
+/** Which stretches of one traced boundary are levelled, as `[from, to]` index
+ *  pairs into the per-point side deficits given: none at all unless the middle
+ *  reading clears the high bar, then the runs that stay above the low one. The
+ *  span rule is applied by the caller. */
+export function smearRunsOf(
+  sides: ArrayLike<number>,
+  spec?: { sideDeficitMin?: number; sideContinueMin?: number },
+): Array<[number, number]>;
+
+/** Measure traced curves again on the band as it now stands. */
+export function remeasureCurves(
+  curves: TracedCurve[], lowPass: Float32Array, spec: EdgeSpec, pxPerDeg: number,
+  sampleAt: (field: Float32Array, x: number, y: number) => number | null,
+): void;

@@ -30,6 +30,7 @@
  * integer number of tile widths across it is what makes that cut invisible.
  */
 import * as THREE from 'three';
+import { periodicLattice, periodicValueNoise } from './periodicNoise';
 import { applyTextureDefaults } from './texturePolicy';
 
 /** Texels on a side. */
@@ -75,56 +76,6 @@ export const CLOUD_DETAIL_TILES_PER_TURN = 40;
  *  the tile square at the equator. */
 export const CLOUD_DETAIL_UV_PER_RADIAN = CLOUD_DETAIL_TILES_PER_TURN / (2 * Math.PI);
 
-/** A lattice of independent values in [0, 1), from one integer seed. The
- *  generator is a plain 32-bit mixer rather than Math.random so the map is the
- *  same map on every device and in every test run. */
-function lattice(period: number, seed: number): Float64Array {
-  const out = new Float64Array(period * period);
-  for (let i = 0; i < out.length; i++) {
-    let h = (i + seed * 0x9e3779b1) >>> 0;
-    h = Math.imul(h ^ (h >>> 16), 0x85ebca6b) >>> 0;
-    h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35) >>> 0;
-    out[i] = ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-  }
-  return out;
-}
-
-/** Value noise on a periodic lattice, with its own analytic gradient. `x` and
- *  `y` are in lattice cells; the gradient comes back in field-per-cell. */
-function valueNoise(
-  table: Float64Array,
-  period: number,
-  x: number,
-  y: number,
-): { value: number; dx: number; dy: number } {
-  const xi = Math.floor(x);
-  const yi = Math.floor(y);
-  const fx = x - xi;
-  const fy = y - yi;
-  const x0 = ((xi % period) + period) % period;
-  const y0 = ((yi % period) + period) % period;
-  const x1 = (x0 + 1) % period;
-  const y1 = (y0 + 1) % period;
-  const a = table[y0 * period + x0];
-  const b = table[y0 * period + x1];
-  const c = table[y1 * period + x0];
-  const d = table[y1 * period + x1];
-  // Smoothstep interpolation, so the field is C1 across cell boundaries and its
-  // gradient is continuous — a linear interpolation would put a crease on every
-  // lattice line, which is exactly the grid the rotation exists to hide.
-  const wx = fx * fx * (3 - 2 * fx);
-  const wy = fy * fy * (3 - 2 * fy);
-  const dwx = 6 * fx * (1 - fx);
-  const dwy = 6 * fy * (1 - fy);
-  const top = a + (b - a) * wx;
-  const bottom = c + (d - c) * wx;
-  return {
-    value: top + (bottom - top) * wy,
-    dx: ((b - a) * (1 - wy) + (d - c) * wy) * dwx,
-    dy: (bottom - top) * dwy,
-  };
-}
-
 /**
  * Build the detail map's bytes: RGBA, `size` on a side, R the two-octave field
  * in [0, 1] and G/B its gradient with respect to the TILE's own uv, encoded
@@ -139,8 +90,8 @@ export function buildCloudDetailNoise(size = CLOUD_DETAIL_SIZE): {
   data: Uint8Array;
   clipped: number;
 } {
-  const coarse = lattice(CLOUD_DETAIL_COARSE_CELLS, 1);
-  const fine = lattice(CLOUD_DETAIL_FINE_LATTICE, 2);
+  const coarse = periodicLattice(CLOUD_DETAIL_COARSE_CELLS, 1);
+  const fine = periodicLattice(CLOUD_DETAIL_FINE_LATTICE, 2);
   const [ra, rb] = CLOUD_DETAIL_ROTATION;
   const norm = 1 / (1 + CLOUD_DETAIL_FINE_WEIGHT);
   const data = new Uint8Array(size * size * 4);
@@ -149,13 +100,13 @@ export function buildCloudDetailNoise(size = CLOUD_DETAIL_SIZE): {
     const v = py / size;
     for (let px = 0; px < size; px++) {
       const u = px / size;
-      const c = valueNoise(coarse, CLOUD_DETAIL_COARSE_CELLS, u * CLOUD_DETAIL_COARSE_CELLS, v * CLOUD_DETAIL_COARSE_CELLS);
+      const c = periodicValueNoise(coarse, CLOUD_DETAIL_COARSE_CELLS, u * CLOUD_DETAIL_COARSE_CELLS, v * CLOUD_DETAIL_COARSE_CELLS);
       // The fine octave in the rotated frame. The integer matrix is what makes
       // this wrap: a step of one tile in u moves the sample by (4, -3) lattice
       // periods, which is no move at all as far as the lattice is concerned.
       const fx = CLOUD_DETAIL_FINE_LATTICE * (ra * u + rb * v);
       const fy = CLOUD_DETAIL_FINE_LATTICE * (-rb * u + ra * v);
-      const f = valueNoise(fine, CLOUD_DETAIL_FINE_LATTICE, fx, fy);
+      const f = periodicValueNoise(fine, CLOUD_DETAIL_FINE_LATTICE, fx, fy);
       const value = (c.value + CLOUD_DETAIL_FINE_WEIGHT * f.value) * norm;
       // Chain rule back to the tile's own uv: the coarse octave through its
       // cell count, the fine one through the rotation as well.

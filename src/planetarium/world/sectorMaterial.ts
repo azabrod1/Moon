@@ -19,7 +19,9 @@
  */
 import * as THREE from 'three';
 import {
-  augmentSurfaceMaterial, setSurfaceWaterGloss, surfaceShadingArgsOf, surfaceWaterGloss,
+  augmentSurfaceMaterial, setSurfaceCraterShare, setSurfaceSynthesis, setSurfaceWaterGloss,
+  surfaceCraterShare, surfaceReliefKind, surfaceShadingArgsOf, surfaceSynthesisEnvelope,
+  surfaceWaterGloss,
 } from './surfaceShading';
 
 /** The maps a sector owns: its colour tile, and crops of whichever relief /
@@ -63,17 +65,30 @@ export function createSectorMaterial(
   mat.polygonOffset = true;
   mat.polygonOffsetFactor = 0;
   mat.polygonOffsetUnits = -(level + 1);
+  // A tile of a body whose measured surface is still in flight is a tile with
+  // no crop of it: the streamer only cuts one where the map was there to cut.
+  // The flag travels so the sector answers the way its globe does, instead of
+  // filling the gap with invented craters and stepping off them a rectangle at
+  // a time as the real map lands.
+  if ((base.userData as { hasRealNormal?: boolean } | undefined)?.hasRealNormal === true) {
+    mat.userData.hasRealNormal = true;
+  }
   const args = surfaceShadingArgsOf(base);
   // The same fx objects, so the sector's eclipse spot, its planetshine and the
   // air in front of it are the globe's own values and not a second set; and the
   // same frame spin, because a sector mesh hangs under the mesh this base
   // material draws and inherits whatever rotation that carries.
   if (args) {
-    augmentSurfaceMaterial(mat, args.archetype, args.ringShadow, args.sunTan, args.fx, args.uFrameSpin);
+    augmentSurfaceMaterial(
+      mat, args.archetype, args.ringShadow, args.sunTan, args.fx, args.uFrameSpin, args.seedName,
+    );
   }
   // After the augmentation, not before: part of what the sector mirrors lives in
   // the augmentation's own uniforms, and a sync run first would write it into a
-  // material that has none yet.
+  // material that has none yet. How much cratering the body wears is one of
+  // them, and it is set once here rather than mirrored per frame — a surface
+  // does not become resurfaced mid-flight.
+  setSurfaceCraterShare(mat, surfaceCraterShare(base));
   syncSectorMaterial(mat, base);
   return mat;
 }
@@ -95,4 +110,11 @@ export function syncSectorMaterial(mat: THREE.MeshStandardMaterial, base: THREE.
   // call, not the tile's: a sector reading its crop one way over a globe
   // reading its map the other is a rectangle of different sea.
   setSurfaceWaterGloss(mat, surfaceWaterGloss(base));
+  // How much close-range detail the body is drawing is also the globe's call,
+  // and it is eased in wall time — a sector left holding whatever it was born
+  // with would fade on its own schedule, which reads as a rectangle appearing.
+  // Whether its RELIEF may be drawn is the TILE's own business: the sector
+  // carries crops of whatever relief maps the base had, so it answers for what
+  // is bound on itself.
+  setSurfaceSynthesis(mat, surfaceSynthesisEnvelope(base), surfaceReliefKind(mat));
 }

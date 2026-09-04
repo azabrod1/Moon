@@ -115,12 +115,17 @@ describe('the injected surface shader', () => {
     // The pinned radiances beside the captures only move when someone re-runs
     // the capture tool, so on their own they let a shader edit through until
     // then. This fails on the edit itself, and the two together mean the only
-    // diff that lands green moves the shader, the captures and the pins.
+    // diff that lands green moves the shader, the captures and the pins — or
+    // carries the A/B that shows the captures did not move: re-run the tool on
+    // this tree and on the commit before it, on ONE machine, and diff the two
+    // runs against each other rather than against the committed set, which was
+    // recorded on a different driver and does not reproduce byte for byte
+    // anywhere else.
     const shader = compile(augmented('earth'));
     expect(hash(shader.vertexShader))
       .toBe('862f7224fafb480070aebf0c7c125dddbd78c879780eb072e96988333154322a');
     expect(hash(shader.fragmentShader))
-      .toBe('35677dc4dbd7791fa077e1401ea776d4c208333b1d70a7cdb704b99eb7fc85e5');
+      .toBe('cbd87a5850484847767fef1ec7ae6df7fb410811663a4d8be91bccfd5599a533');
   });
 
   it('reuses the tables\' own lookup GLSL rather than a second transcription', () => {
@@ -202,7 +207,8 @@ describe('the layer rule', () => {
     expect(glsl).toMatch(
       /vec3 airS = aerialInscatter\(uScattering, seg, airT\)\s*\n\s*\* uAirlightScale \* \(uSolarIrradiance \* sunVisible\);/,
     );
-    expect(glsl).toContain('outgoingLight = outgoingLight * airT + airS;');
+    // Applied once, behind the fade that brings the haze in when the tables bind.
+    expect(glsl).toContain('outgoingLight = mix(outgoingLight, outgoingLight * airT + airS, uAirBlend);');
     // Two in-scatter lookups, and they are the two SOURCES — one traversal,
     // the Sun's angles and the Moon's. A third would be a second traversal.
     expect(glsl.match(/aerialInscatter\(uScattering/g)).toHaveLength(2);

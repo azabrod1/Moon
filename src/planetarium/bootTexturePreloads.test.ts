@@ -80,6 +80,16 @@ describe('index.html boot texture fetch-warm', () => {
       PLANET_TEXTURE_FILES.ganymede,
       PLANET_TEXTURE_FILES.callisto,
       PLANET_TEXTURE_FILES.triton,
+      PLANET_TEXTURE_FILES.titan,
+      PLANET_TEXTURE_FILES.enceladus,
+      PLANET_TEXTURE_FILES.mimas,
+      PLANET_TEXTURE_FILES.dione,
+      PLANET_TEXTURE_FILES.tethys,
+      PLANET_TEXTURE_FILES.rhea,
+      PLANET_TEXTURE_FILES.iapetus,
+      PLANET_TEXTURE_FILES.charon,
+      PLANET_TEXTURE_FILES.miranda,
+      PLANET_TEXTURE_FILES.ariel,
     ]);
     const firstBackground = warmed.findIndex((f) => durableWave.has(f));
     const lastBlocking = warmed.reduce(

@@ -1,0 +1,1042 @@
+{
+  "_": "Sources under .moon-data-cache/zoom/ for the photo maps of the moons that ship as procedural balls today, plus the sharper re-bases for the Galileans and Pluto. Same contract as gen-tiles.sources.json: the SHA-256 is what the shipped assets were cut from, and a re-downloaded product whose digest moved must not silently re-cut a map. Every product here is NASA or USGS and public domain; the citation field carries the credit line the product page asks for. Read `longitude` before writing any job. Every one of these rasters stores its columns EAST-increasing - the reading comes from the GeoTIFF's own geotransform (ModelTiepoint + ModelPixelScale, turned into degrees through the projection's central-meridian GeoKey and the sphere radius), which is the authority on where the pixels are. A PDS3 label's POSITIVE_LONGITUDE_DIRECTION is NOT: it says which direction the label's own numbers count in, and taking it as the column order says seven of these fifteen are mirrored, which they are not. Io settles it by measurement - Loki Patera and Pele land on their gazetteer longitudes in the east-increasing reading and nowhere near them in the mirrored one - and Pluto settles it a second time, because the map the app already ships was baked from this product with a 180 degree roll and no flip. So the only transform any of these needs is a longitude ROLL, and `leftEdgeLonDegEast` is the whole of it: eight sit at 180E and need nothing, five sit at 0E and need half a turn. `wire` is the measured cost of one representative 4096x2048 candidate encoded both ways, so a rung can be priced before it is cut.",
+  "_gaps": "What this file does NOT know, stated once so it is not rediscovered as a bug. (1) Mimas, Miranda and Ariel ship no label and no geotransform. All three were settled by measurement in the A1 alignment pass and all three came out at left edge 180E like the labelled Cassini mosaics - Mimas on Herschel, Miranda on the Inverness Corona chevron, Ariel on the run of its named chasmata. (2) Miranda and Ariel are 1440x720 and cover the southern hemisphere only; a 4K rung for either would be pure upsampling, so 2K is their honest ceiling and the unimaged north is filled from the imaged half. (3) Titan is 4040 px because the only sharper USGS product is 1.5 GB and not global. (4) Ten of the fifteen are mono; keeping Io's and Ganymede's colour is free, everything else is coloured through a luminance ramp keyed to the body's published appearance. (5) Triton is not in this set, and NOT for want of a source. Triton_Voyager2_ClrMosaic_GlobalFill_600m.tif (USGS/Photojournal PIA18668, Schenk/LPI, public domain) is 14138x7069 in colour at 600 m/px, left edge 180E east-increasing like the Cassini mosaics, so an 8K rung would be a 1.73x downsample of real data. What stops it is the picture, not the pixels: 38.5 percent of it is no-data with everything north of about 14N empty (USGS's own completeness field says \"Large gap at the north pole\"; the \"GlobalFill\" in the name is seam patching, not the polar gap), it carries a strong green-magenta cast rather than Triton's real pinkish grey, and USGS's process note says the 30-degree graticule was painted out by hand and they would like to find a version without it. Cutting it is one job row once someone decides those three are acceptable. The file is cached beside the others.",
+  "_albedo": {
+    "_": "Published geometric albedos, one per body, and the single curve tools/gen-moonmaps.mjs puts every graded map's level on. A map is an sRGB-encoded albedo texture, so the quantity the albedo is a ratio of is the map's mean in LINEAR light, and the rule is linear mean = ALBEDO_LEVEL_SCALE x albedo, cos(latitude) weighted. Nothing in this block is a look decision: the look decision was to key levels to published photometry at all, and the two exceptions are named below.",
+    "source": "JPL Horizons object data (ssd.jpl.nasa.gov/api/horizons.api, format=text&OBJ_DATA=YES&MAKE_EPHEM=NO, queried 2026-09-01), which is where the four Galilean values the first cut of these maps used came from, so the whole batch is on one authority. Horizons carries no albedo for Charon; that one value comes from NASA's own Pluto Fact Sheet.",
+    "scaleFit": "0.3753, the geometric mean of the three products in the set that carry no grade of ours: Io 0.393, Ganymede 0.382, Callisto 0.353 (cos-lat-weighted linear map mean over published albedo, measured on the shipped maps). Three independent mosaics of three moons agreeing inside 5 per cent is what says these products can be read as photometry.",
+    "bodies": {
+      "io": {
+        "albedo": 0.63,
+        "horizons": "501",
+        "quoted": "0.63 +- 0.02",
+        "note": "anchor; USGS colour mosaic, ungraded"
+      },
+      "europa": {
+        "albedo": 0.67,
+        "horizons": "502",
+        "quoted": "0.67 +/- 0.03"
+      },
+      "ganymede": {
+        "albedo": 0.43,
+        "horizons": "503",
+        "quoted": "0.43 +- 0.02",
+        "note": "anchor; USGS colour mosaic, ungraded"
+      },
+      "callisto": {
+        "albedo": 0.17,
+        "horizons": "504",
+        "quoted": "0.17 +- 0.02",
+        "exception": "The curve puts Callisto at 0.63 of Ganymede's map mean and the map ships at 0.75 instead. At 0.63 the crater shadows that are the whole of this surface sit on the floor before the renderer touches them. Still the darkest Galilean by a distance, so the ordering the curve exists to protect is intact."
+      },
+      "mimas": {
+        "albedo": 0.6,
+        "horizons": "601",
+        "quoted": "0.6"
+      },
+      "enceladus": {
+        "albedo": 1.04,
+        "horizons": "602",
+        "quoted": "1.04",
+        "note": "above 1 and correctly so: a geometric albedo is measured at zero phase, where a bright icy regolith throws back more than a Lambert disc would. The most reflective surface in the solar system, and after this pass the brightest map in the batch."
+      },
+      "tethys": {
+        "albedo": 0.8,
+        "horizons": "603",
+        "quoted": "0.80"
+      },
+      "dione": {
+        "albedo": 0.6,
+        "horizons": "604",
+        "quoted": "0.6"
+      },
+      "rhea": {
+        "albedo": 0.6,
+        "horizons": "605",
+        "quoted": "0.6"
+      },
+      "titan": {
+        "albedo": 0.2,
+        "horizons": "606",
+        "quoted": "0.2",
+        "exception": "NOT used. Titan's 0.2 is the disc of haze the renderer draws over this map, not the ground the map records, and keying the ground to it makes the one moon anybody can name from across the solar system a pale tan ball. The surface is graded to moonData's catalog tint for Titan (0xc89040) instead - the colour the app's own haze ball was drawing before this map existed - and levelled to hold the disc where that ball held it."
+      },
+      "iapetus": {
+        "albedo": 0.325,
+        "horizons": "608",
+        "quoted": "0.6",
+        "note": "Horizons' single number is the bright trailing hemisphere; the leading hemisphere, Cassini Regio, is 0.05 (the same object data carries V(1,0) = +1.5 with a stated range of 0.7 to 2.5, which is that two-magnitude dichotomy). One number for a whole globe is the mean of the two. The map's own dichotomy is untouched: the level stage is a gain, which leaves every ratio in the picture where the mosaic put it."
+      },
+      "charon": {
+        "albedo": 0.42,
+        "source": "NASA NSSDC Pluto Fact Sheet, Charon block: geometric albedo 0.42, Bond albedo 0.25. The Bond value agrees with New Horizons LORRI photometry (Buratti et al. 2017, Icarus 287, 207: Charon Bond albedo 0.25 +- 0.03), which is the check that the fact sheet is quoting the encounter and not a pre-flyby estimate.",
+        "note": "Horizons leaves this field empty for 901."
+      },
+      "miranda": {
+        "albedo": 0.27,
+        "horizons": "705",
+        "quoted": "0.27"
+      },
+      "ariel": {
+        "albedo": 0.34,
+        "horizons": "701",
+        "quoted": "0.34"
+      }
+    }
+  },
+  "_wire": "Each `wire` block is one 4096x2048 candidate cut from the source with sharp 0.35.4 (fit: fill, kernel lanczos3, forced to 3-channel sRGB so both encoders see the same picture), then encoded as webp quality 85 effort 5 (the photo idiom in tools/encode-textures.mjs) and as UASTC KTX2 with the flags tools/gen-ktx2.mjs uses (-uastc -uastc_level 2 -uastc_rdo_l 1.0 -uastc_rdo_d 8192 -ktx2_zstandard_level 18 -mipmap -mip_filter box -y_flip). basisu from @gpu-tex-enc/basis, darwin-arm64. The candidates and containers are kept beside the sources in .moon-data-cache/zoom/wire/. A third encode was added later: the same candidate as ETC1S KTX2 (-q 255 -comp_level 5, basisu's largest codebooks and slowest endpoint search, with the same -mipmap -mip_filter box -y_flip), plus `rmsVsSource`, the 0-255 RMS of each encode against the candidate read at 2048 wide - the scale and the units gen-tiles' own picture gate uses. ETC1S is the format the tree pins AGAINST for the Moon and Earth's night lights because its shared codebook bands slow ramps; these moons are texture rather than ramp, and it comes back at 0.80x to 2.99x the webp with an RMS indistinguishable from webp's (better than webp on five of the twelve). The container decision is not this file's to make - the numbers are here so it can be made.",
+  "Titan_ISS_P19658_Mosaic_Global_4km.tif": {
+    "body": "titan",
+    "url": "https://planetarymaps.usgs.gov/mosaic/Titan_ISS_P19658_Mosaic_Global_4km.tif",
+    "sha256": "ca0fe5f6f9bdba1b6d03245969a42336a010ddc17d636e5e06fffa939d10ca83",
+    "bytes": 8169529,
+    "width": 4040,
+    "height": 2020,
+    "format": "tiff, 8-bit, 1 band",
+    "color": "mono",
+    "product": "Titan Cassini ISS Global Mosaic 4005m (PIA19658), 4040x2020 mono GeoTIFF, 4.0 km/px",
+    "product_page": "https://astrogeology.usgs.gov/search/map/titan_cassini_iss_global_mosaic_4005m",
+    "citation": "NASA/JPL-Caltech/SSI; published by the USGS Astrogeology Science Center, 2015-10-10. Access constraints: None. Use constraints: Please cite authors.",
+    "label": {
+      "pds3_url": "https://astrogeology.usgs.gov/ckan/dataset/8ee17e4e-26c6-4e22-9c23-bc9a4c7ed35e/resource/f34d11a6-cfbb-4f00-aec4-58fd09b7865f/download/titan_iss_p19658_mosaic_global_4km_pds3.lbl",
+      "isis3_url": "https://astrogeology.usgs.gov/ckan/dataset/8ee17e4e-26c6-4e22-9c23-bc9a4c7ed35e/resource/1c67c148-e7d4-4e4e-8a3e-f74ad9f1d32c/download/titan_iss_p19658_mosaic_global_4km.lbl",
+      "pds3": {
+        "MAP_PROJECTION_TYPE": "EQUIRECTANGULAR",
+        "POSITIVE_LONGITUDE_DIRECTION": "WEST",
+        "CENTER_LONGITUDE": "180.0 <DEGREES>",
+        "MAP_RESOLUTION": "11.2222 <PIXEL/DEGREE>",
+        "SAMPLE_PROJECTION_OFFSET": "-2020.5000001932706 <PIXELS>",
+        "LINE_PROJECTION_OFFSET": "1009.5000000966353 <PIXELS>",
+        "EASTERNMOST_LONGITUDE": "0.0 <DEGREES>",
+        "WESTERNMOST_LONGITUDE": "0.0 <DEGREES>",
+        "MINIMUM_LATITUDE": "-90.0 <DEGREES>",
+        "MAXIMUM_LATITUDE": "90.0 <DEGREES>",
+        "PROJECTION_LATITUDE_TYPE": "PLANETOCENTRIC",
+        "A_AXIS_RADIUS": "2575.0 <KILOMETERS>",
+        "LINE_SAMPLES": "4040",
+        "LINES": "2020",
+        "BANDS": "1",
+        "^IMAGE": "(\"Titan_ISS_P19658_Mosaic_Global_4km.tif\", 8730 <BYTES>)"
+      }
+    },
+    "longitude": {
+      "domain": "0-360 east",
+      "direction": "east-positive (the raster's column order; the PDS3 label quotes WEST)",
+      "leftEdgeLonDegEast": 360,
+      "eastLonIncreasesRightward": true,
+      "derivation": "raster: tiepoint x = -0.0000 deg from the 180 deg central meridian at 44942.23 m/deg -> left edge 360 E, east increasing rightward, spanning 360 deg.",
+      "supersedes": "an earlier reading off the PDS3 label alone said left edge 0 E with east DECREASING rightward"
+    },
+    "wire": {
+      "candidate": "4096x2048",
+      "webpBytes": 655506,
+      "ktx2Bytes": 6562092,
+      "ratio": 10.01,
+      "ratio_at_or_under_4x": false
+    },
+    "notes": "Global, mono, but only 4040 px wide (4 km/px) - the coarsest source in this set. Visible mosaic seams and flat grey no-data fill at high latitudes. The sharper USGS Titan product (Titan_ISS_Globe_65Sto45N_450M_AvgMos.tif, 35953x10987 at 450 m/px) is 1.5 GB and spans only 65S-45N, so it is neither global nor within budget and was not taken. Titan renders under opaque haze, which hides most of the softness.",
+    "used_by": [
+      "gen-moonmaps titan"
+    ],
+    "raster": {
+      "centralMeridianDeg": 180,
+      "sphereRadiusM": 2575000,
+      "metresPerDeg": 44942.2282,
+      "spanDegLon": 360,
+      "spanDegLat": 180,
+      "topLatDeg": 90,
+      "read_from": "GeoTIFF ModelTiepoint (33922) + ModelPixelScale (33550) + the projection GeoKey for the central meridian (3088/3080) and the sphere radius (2057)"
+    }
+  },
+  "Enceladus_Cassini_mosaic_global_110m.tif": {
+    "body": "enceladus",
+    "url": "https://planetarymaps.usgs.gov/mosaic/Enceladus_Cassini_mosaic_global_110m.tif",
+    "sha256": "c9d29292141dd986e52b2a24b692df34701d1dabaee69bcb9fb64ebc6baba335",
+    "bytes": 103759864,
+    "width": 14401,
+    "height": 7201,
+    "format": "tiff, 8-bit, 1 band",
+    "color": "mono",
+    "product": "Enceladus Cassini Global Mosaic 110m, 14401x7201 mono GeoTIFF, 110 m/px",
+    "product_page": "https://astrogeology.usgs.gov/search/map/enceladus_cassini_global_mosaic_110m",
+    "citation": "Cassini Team, Jet Propulsion Laboratory, Space Science Institute; published by the USGS Astrogeology Science Center, 2018-10-22. Access constraints: Public domain. Use constraints: Please cite authors.",
+    "label": {
+      "pds3_url": "https://astrogeology.usgs.gov/ckan/dataset/30bff65e-56bb-4fd1-bd04-edd9bc2e77d0/resource/a1cd5aec-9dc9-4d3a-a59c-4fef8d86476e/download/enceladus_cassini_mosaic_global_110m_pds3.lbl",
+      "isis3_url": "https://astrogeology.usgs.gov/ckan/dataset/30bff65e-56bb-4fd1-bd04-edd9bc2e77d0/resource/9f60754a-c7ef-4a96-81e6-50dcc1c4ad6d/download/enceladus_cassini_mosaic_global_110m.lbl",
+      "pds3": {
+        "MAP_PROJECTION_TYPE": "SIMPLE_CYLINDRICAL",
+        "POSITIVE_LONGITUDE_DIRECTION": "WEST",
+        "CENTER_LONGITUDE": "180.0 <DEGREES>",
+        "MAP_RESOLUTION": "40.0 <PIXELS/DEGREE>",
+        "SAMPLE_PROJECTION_OFFSET": "-0.5 <PIXELS>",
+        "LINE_PROJECTION_OFFSET": "3599.4999959256334 <PIXELS>",
+        "EASTERNMOST_LONGITUDE": "-180.0 <DEGREES>",
+        "WESTERNMOST_LONGITUDE": "180.0 <DEGREES>",
+        "MINIMUM_LATITUDE": "-90.0 <DEGREES>",
+        "MAXIMUM_LATITUDE": "90.0 <DEGREES>",
+        "PROJECTION_LATITUDE_TYPE": "PLANETOCENTRIC",
+        "A_AXIS_RADIUS": "252.0 <KILOMETERS>",
+        "LINE_SAMPLES": "14401",
+        "LINES": "7201",
+        "BANDS": "1",
+        "^IMAGE": "(\"Enceladus_Cassini_mosaic_global_110m.tif\", 58264 <BYTES>)"
+      }
+    },
+    "longitude": {
+      "domain": "0-360 east",
+      "direction": "east-positive (the raster's column order; the PDS3 label quotes WEST)",
+      "leftEdgeLonDegEast": 180,
+      "eastLonIncreasesRightward": true,
+      "derivation": "raster: tiepoint x = 180.0000 deg from the 180 deg central meridian at 4398.23 m/deg -> left edge 180 E, east increasing rightward, spanning 360.025 deg.",
+      "supersedes": "an earlier reading off the PDS3 label alone said left edge 180 E with east DECREASING rightward"
+    },
+    "wire": {
+      "candidate": "4096x2048",
+      "webpBytes": 2034828,
+      "ktx2Bytes": 8115387,
+      "ratio": 3.99,
+      "ratio_at_or_under_4x": true,
+      "etc1sBytes": 1637088,
+      "etc1sRatio": 0.8,
+      "rmsVsSource": {
+        "webp": 4.47,
+        "etc1s": 4.19
+      }
+    },
+    "notes": "Global, mono. 14401x7201 rather than 14400x7200: the map spans 360.025 deg, a hair over one wrap. The mosaic was shifted 3.5 deg west of earlier Enceladus maps to match the IAU longitude definition (product abstract). Tiger stripes present.",
+    "used_by": [
+      "gen-moonmaps enceladus"
+    ],
+    "raster": {
+      "centralMeridianDeg": 180,
+      "sphereRadiusM": 252000,
+      "metresPerDeg": 4398.2297,
+      "spanDegLon": 360.025,
+      "spanDegLat": 180.025,
+      "topLatDeg": 90,
+      "read_from": "GeoTIFF ModelTiepoint (33922) + ModelPixelScale (33550) + the projection GeoKey for the central meridian (3088/3080) and the sphere radius (2057)"
+    }
+  },
+  "PIA17214_Mimas_global_map_2017.tif": {
+    "body": "mimas",
+    "url": "https://assets.science.nasa.gov/content/dam/science/psd/photojournal/pia/pia17/pia17214/PIA17214.tif",
+    "sha256": "60c83198b40892c70a1d72250f31a621b8aca62cfbdd5ef3e2b9d188c067a110",
+    "bytes": 14222264,
+    "width": 5760,
+    "height": 2880,
+    "format": "tiff, 8-bit, 1 band",
+    "color": "mono",
+    "product": "Mimas Global Map - June 2017 (PIA17214), Cassini ISS, 5760x2880 mono TIFF, 216 m/px, equidistant cylindrical",
+    "product_page": "https://www.jpl.nasa.gov/images/pia17214-mimas-global-map-june-2017/",
+    "citation": "NASA/JPL-Caltech/Space Science Institute. NASA imagery, public domain.",
+    "label": null,
+    "longitude": {
+      "domain": "0-360 east",
+      "direction": "east-positive",
+      "leftEdgeLonDegEast": 180,
+      "eastLonIncreasesRightward": true,
+      "derivation": "MEASURED, NOT FROM A LABEL - this product ships no PDS3/ISIS3 label and no geotransform. Herschel (IAU gazetteer 1.38S, 111.76W = 248.24E) sits at 0.189 of the map width; a left-edge-180E east-increasing reading predicts 0.190. The three other candidate layouts predict 0.31, 0.69 and 0.81. Same layout as every labelled Cassini mosaic in this set, which is the reading that made the whole family consistent.",
+      "confirmed_by": "A1 alignment pass: Herschel's predicted pixel against the cut map, evidence crop in planning/zoom-a1-verify/."
+    },
+    "wire": {
+      "candidate": "4096x2048",
+      "webpBytes": 805130,
+      "ktx2Bytes": 6452491,
+      "ratio": 8.01,
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 1550704,
+      "etc1sRatio": 1.93,
+      "rmsVsSource": {
+        "webp": 1.67,
+        "etc1s": 1.81
+      }
+    },
+    "notes": "Global, mono, unannotated (checked by eye). USGS Astropedia has NO Mimas global mosaic - only airbrush shaded relief, pictorial maps and a control network - so this comes from the JPL Photojournal release of the same Cassini ISS map instead, and carries no machine-readable label.",
+    "used_by": [
+      "gen-moonmaps mimas"
+    ],
+    "raster": {
+      "centralMeridianDeg": null,
+      "sphereRadiusM": null,
+      "metresPerDeg": null,
+      "spanDegLon": 360,
+      "spanDegLat": 180,
+      "topLatDeg": 90,
+      "read_from": "no geotransform and no label - a plain TIFF from the JPL Photojournal. 5760x2880 is exactly 16 px/deg both ways, so the map is taken as one clean wrap pole to pole."
+    }
+  },
+  "Dione_Cassini_Voyager_mosaic_global_154m.tif": {
+    "body": "dione",
+    "url": "https://planetarymaps.usgs.gov/mosaic/Dione_Cassini_Voyager_mosaic_global_154m.tif",
+    "sha256": "5c5d796c02e3c99fde5dd034e01dd1f25905699a4885843aed445ded955e08b5",
+    "bytes": 265490551,
+    "width": 23040,
+    "height": 11520,
+    "format": "tiff, 8-bit, 1 band",
+    "color": "mono",
+    "product": "Dione Cassini - Voyager Global Mosaic 154m, 23040x11520 mono GeoTIFF, 154 m/px",
+    "product_page": "https://astrogeology.usgs.gov/search/map/dione_cassini_voyager_global_mosaic_154m",
+    "citation": "NASA, JPL, Space Science Institute; published by the USGS Astrogeology Science Center. Access constraints: Public domain. Use constraints: Please cite authors.",
+    "label": {
+      "pds3_url": "https://astrogeology.usgs.gov/ckan/dataset/acb98ae6-ec50-42df-9a74-142d177bbe6d/resource/2db01a74-6e48-4654-a568-15a03c08458d/download/dione_cassini_voyager_mosaic_global_154m_pds3.lbl",
+      "isis3_url": "https://astrogeology.usgs.gov/ckan/dataset/acb98ae6-ec50-42df-9a74-142d177bbe6d/resource/f79f032d-34d0-4527-8992-7e4d8a560535/download/dione_cassini_voyager_mosaic_global_154m.lbl",
+      "pds3": {
+        "MAP_PROJECTION_TYPE": "EQUIRECTANGULAR",
+        "POSITIVE_LONGITUDE_DIRECTION": "EAST",
+        "CENTER_LONGITUDE": "0.0 <DEGREES>",
+        "MAP_RESOLUTION": "64.0 <PIXELS/DEGREE>",
+        "SAMPLE_PROJECTION_OFFSET": "11519.499999999365 <PIXELS>",
+        "LINE_PROJECTION_OFFSET": "5759.499999999683 <PIXELS>",
+        "EASTERNMOST_LONGITUDE": "180.0 <DEGREES>",
+        "WESTERNMOST_LONGITUDE": "-180.0 <DEGREES>",
+        "MINIMUM_LATITUDE": "-90.0 <DEGREES>",
+        "MAXIMUM_LATITUDE": "90.0 <DEGREES>",
+        "PROJECTION_LATITUDE_TYPE": "PLANETOCENTRIC",
+        "A_AXIS_RADIUS": "563.0 <KILOMETERS>",
+        "LINE_SAMPLES": "23040",
+        "LINES": "11520",
+        "BANDS": "1",
+        "^IMAGE": "(\"Dione_Cassini_Voyager_mosaic_global_154m.tif\", 69752 <BYTES>)"
+      }
+    },
+    "longitude": {
+      "domain": "0-360 east",
+      "direction": "east-positive (the raster's column order; the PDS3 label quotes EAST)",
+      "leftEdgeLonDegEast": 180,
+      "eastLonIncreasesRightward": true,
+      "derivation": "raster: tiepoint x = -180.0000 deg from the 0 deg central meridian at 9826.20 m/deg -> left edge 180 E, east increasing rightward, spanning 360 deg.",
+      "supersedes": "an earlier reading off the PDS3 label alone said left edge 180 E with east increasing rightward"
+    },
+    "wire": {
+      "candidate": "4096x2048",
+      "webpBytes": 2023624,
+      "ktx2Bytes": 8132888,
+      "ratio": 4.02,
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 1680295,
+      "etc1sRatio": 0.83,
+      "rmsVsSource": {
+        "webp": 3.78,
+        "etc1s": 4.21
+      }
+    },
+    "notes": "Global, mono. Wispy chasms present. CONFLICT: the Astropedia catalog page states \"Longitude Direction: Positive West\", but the product's own PDS3 and ISIS3 labels both say EAST. The labels are the authority here. 23040 px is far wider than a 4K rung needs; USGS publishes no reduced version, so the whole 265 MB was taken.",
+    "used_by": [
+      "gen-moonmaps dione"
+    ],
+    "raster": {
+      "centralMeridianDeg": 0,
+      "sphereRadiusM": 563000,
+      "metresPerDeg": 9826.2037,
+      "spanDegLon": 360,
+      "spanDegLat": 180,
+      "topLatDeg": 90,
+      "read_from": "GeoTIFF ModelTiepoint (33922) + ModelPixelScale (33550) + the projection GeoKey for the central meridian (3088/3080) and the sphere radius (2057)"
+    }
+  },
+  "Tethys_Cassini_mosaic_global_293m.tif": {
+    "body": "tethys",
+    "url": "https://planetarymaps.usgs.gov/mosaic/Tethys_Cassini_mosaic_global_293m.tif",
+    "sha256": "40723c3ebfaaa52a657827b37309bc84234811db1cf26a21d086e26aba2b3640",
+    "bytes": 66401923,
+    "width": 11520,
+    "height": 5760,
+    "format": "tiff, 8-bit, 1 band",
+    "color": "mono",
+    "product": "Tethys Cassini Global Mosaic 293m, 11520x5760 mono GeoTIFF, 293 m/px",
+    "product_page": "https://astrogeology.usgs.gov/search/map/tethys_cassini_global_mosaic_293m",
+    "citation": "NASA, JPL, Space Science Institute; published by the USGS Astrogeology Science Center. Access constraints: Public domain. Use constraints: Please cite authors.",
+    "label": {
+      "pds3_url": "https://astrogeology.usgs.gov/ckan/dataset/e40296c1-b4bf-46d8-86af-4b6cf0301b0c/resource/daf2b5a1-cbde-4309-9281-6e0f2d765c4b/download/tethys_cassini_mosaic_global_293m_pds3.lbl",
+      "isis3_url": "https://astrogeology.usgs.gov/ckan/dataset/e40296c1-b4bf-46d8-86af-4b6cf0301b0c/resource/42693df3-3928-477d-8626-653d41699864/download/tethys_cassini_mosaic_global_293m.lbl",
+      "pds3": {
+        "MAP_PROJECTION_TYPE": "EQUIRECTANGULAR",
+        "POSITIVE_LONGITUDE_DIRECTION": "EAST",
+        "CENTER_LONGITUDE": "0.0 <DEGREES>",
+        "MAP_RESOLUTION": "31.999999999999414 <PIXELS/DEGREE>",
+        "SAMPLE_PROJECTION_OFFSET": "5759.499999999191 <PIXELS>",
+        "LINE_PROJECTION_OFFSET": "2879.4999999999372 <PIXELS>",
+        "EASTERNMOST_LONGITUDE": "180.0 <DEGREES>",
+        "WESTERNMOST_LONGITUDE": "-180.0 <DEGREES>",
+        "MINIMUM_LATITUDE": "-90.0 <DEGREES>",
+        "MAXIMUM_LATITUDE": "90.0 <DEGREES>",
+        "PROJECTION_LATITUDE_TYPE": "PLANETOCENTRIC",
+        "A_AXIS_RADIUS": "536.3 <KILOMETERS>",
+        "LINE_SAMPLES": "11520",
+        "LINES": "5760",
+        "BANDS": "1",
+        "^IMAGE": "(\"Tethys_Cassini_mosaic_global_293m.tif\", 46724 <BYTES>)"
+      }
+    },
+    "longitude": {
+      "domain": "0-360 east",
+      "direction": "east-positive (the raster's column order; the PDS3 label quotes EAST)",
+      "leftEdgeLonDegEast": 180,
+      "eastLonIncreasesRightward": true,
+      "derivation": "raster: tiepoint x = -180.0000 deg from the 0 deg central meridian at 9360.20 m/deg -> left edge 180 E, east increasing rightward, spanning 360 deg.",
+      "supersedes": "an earlier reading off the PDS3 label alone said left edge 180 E with east increasing rightward"
+    },
+    "wire": {
+      "candidate": "4096x2048",
+      "webpBytes": 1589594,
+      "ktx2Bytes": 7701219,
+      "ratio": 4.84,
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 1646943,
+      "etc1sRatio": 1.04,
+      "rmsVsSource": {
+        "webp": 2.78,
+        "etc1s": 3.19
+      }
+    },
+    "notes": "Global, mono. Odysseus and Ithaca Chasma present. CONFLICT: the Astropedia catalog page states \"Longitude Direction: Positive West\", both labels say EAST - same catalog error as Dione.",
+    "used_by": [
+      "gen-moonmaps tethys"
+    ],
+    "raster": {
+      "centralMeridianDeg": 0,
+      "sphereRadiusM": 536300,
+      "metresPerDeg": 9360.2008,
+      "spanDegLon": 360,
+      "spanDegLat": 180,
+      "topLatDeg": 90,
+      "read_from": "GeoTIFF ModelTiepoint (33922) + ModelPixelScale (33550) + the projection GeoKey for the central meridian (3088/3080) and the sphere radius (2057)"
+    }
+  },
+  "Rhea_Cassini_Voyager_mosaic_global_417m.tif": {
+    "body": "rhea",
+    "url": "https://planetarymaps.usgs.gov/mosaic/Rhea_Cassini_Voyager_mosaic_global_417m.tif",
+    "sha256": "ce537c3c93670a0d4ea5a64b99bffb76ff308727eb3eabeee0a38cf9f6f1abc7",
+    "bytes": 66401915,
+    "width": 11520,
+    "height": 5760,
+    "format": "tiff, 8-bit, 1 band",
+    "color": "mono",
+    "product": "Rhea Cassini - Voyager Global Mosaic 417m, 11520x5760 mono GeoTIFF, 417 m/px",
+    "product_page": "https://astrogeology.usgs.gov/search/map/rhea_cassini_voyager_global_mosaic_417m",
+    "citation": "NASA, JPL, Space Science Institute; published by the USGS Astrogeology Science Center. Access constraints: Public domain. Use constraints: Please cite authors.",
+    "label": {
+      "pds3_url": "https://astrogeology.usgs.gov/ckan/dataset/22bc1015-d9c9-4212-86c3-e42061b204d4/resource/9c805d25-033f-4c29-889b-4c2423a632b5/download/rhea_cassini_voyager_mosaic_global_417m_pds3.lbl",
+      "isis3_url": "https://astrogeology.usgs.gov/ckan/dataset/22bc1015-d9c9-4212-86c3-e42061b204d4/resource/8ad50a33-b29b-4a85-9edc-759f00ee0641/download/rhea_cassini_voyager_mosaic_global_417m.lbl",
+      "pds3": {
+        "MAP_PROJECTION_TYPE": "SIMPLE_CYLINDRICAL",
+        "POSITIVE_LONGITUDE_DIRECTION": "WEST",
+        "CENTER_LONGITUDE": "180.0 <DEGREES>",
+        "MAP_RESOLUTION": "32.0 <PIXELS/DEGREE>",
+        "SAMPLE_PROJECTION_OFFSET": "-0.5 <PIXELS>",
+        "LINE_PROJECTION_OFFSET": "2879.50000312896 <PIXELS>",
+        "EASTERNMOST_LONGITUDE": "-180.0 <DEGREES>",
+        "WESTERNMOST_LONGITUDE": "180.0 <DEGREES>",
+        "MINIMUM_LATITUDE": "-90.0 <DEGREES>",
+        "MAXIMUM_LATITUDE": "90.0 <DEGREES>",
+        "PROJECTION_LATITUDE_TYPE": "PLANETOCENTRIC",
+        "A_AXIS_RADIUS": "764.1 <KILOMETERS>",
+        "LINE_SAMPLES": "11520",
+        "LINES": "5760",
+        "BANDS": "1",
+        "^IMAGE": "(\"Rhea_Cassini_Voyager_mosaic_global_417m.tif\", 46716 <BYTES>)"
+      }
+    },
+    "longitude": {
+      "domain": "0-360 east",
+      "direction": "east-positive (the raster's column order; the PDS3 label quotes WEST)",
+      "leftEdgeLonDegEast": 180,
+      "eastLonIncreasesRightward": true,
+      "derivation": "raster: tiepoint x = 180.0000 deg from the 180 deg central meridian at 13336.06 m/deg -> left edge 180 E, east increasing rightward, spanning 360 deg.",
+      "supersedes": "an earlier reading off the PDS3 label alone said left edge 180 E with east DECREASING rightward"
+    },
+    "wire": {
+      "candidate": "4096x2048",
+      "webpBytes": 1048278,
+      "ktx2Bytes": 6881082,
+      "ratio": 6.56,
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 1505138,
+      "etc1sRatio": 1.44,
+      "rmsVsSource": {
+        "webp": 1.93,
+        "etc1s": 2.03
+      }
+    },
+    "notes": "Global, mono, cratered ice. The Astropedia page's \"Online File Link\" wrongly points at the 833 m Voyager file; the 417 m mosaic is the sibling path named by the PDS3 label's ^IMAGE pointer, and that is what was downloaded (11520x5760, matching the page's own raster counts).",
+    "used_by": [
+      "gen-moonmaps rhea"
+    ],
+    "raster": {
+      "centralMeridianDeg": 180,
+      "sphereRadiusM": 764100,
+      "metresPerDeg": 13336.0608,
+      "spanDegLon": 360,
+      "spanDegLat": 180,
+      "topLatDeg": 90,
+      "read_from": "GeoTIFF ModelTiepoint (33922) + ModelPixelScale (33550) + the projection GeoKey for the central meridian (3088/3080) and the sphere radius (2057)"
+    }
+  },
+  "Iapetus_Cassini_Voyager_mosaic_global_783m.tif": {
+    "body": "iapetus",
+    "url": "https://planetarymaps.usgs.gov/mosaic/Iapetus_Cassini_Voyager_mosaic_global_783m.tif",
+    "sha256": "eb8acdbed3af495102b6ec6d3efce1f03dc6bc39bb43323c23231ce590494d6e",
+    "bytes": 16612487,
+    "width": 5760,
+    "height": 2880,
+    "format": "tiff, 8-bit, 1 band",
+    "color": "mono",
+    "product": "Iapetus Cassini - Voyager Global Mosaic, 5760x2880 mono GeoTIFF, 802.85 m/px",
+    "product_page": "https://astrogeology.usgs.gov/search/map/iapetus_cassini_voyager_global_mosaic_803m",
+    "citation": "Space Science Institute, Cassini Team, Jet Propulsion Laboratory; published by the USGS Astrogeology Science Center. Access constraints: Public domain. Use constraints: Please cite authors.",
+    "label": {
+      "pds3_url": "https://astrogeology.usgs.gov/ckan/dataset/6ac8ecfb-36e7-4113-8d16-c92ba857c3d7/resource/6c19bfbf-6c69-4e7b-ae62-c92b4a3f3dcd/download/iapetus_cassini_voyager_mosaic_global_783m_pds3.lbl",
+      "isis3_url": "https://astrogeology.usgs.gov/ckan/dataset/6ac8ecfb-36e7-4113-8d16-c92ba857c3d7/resource/6d691cac-f7dd-4fe9-a70e-4b67cbddfdcf/download/iapetus_cassini_voyager_mosaic_global_783m.lbl",
+      "pds3": {
+        "MAP_PROJECTION_TYPE": "SIMPLE_CYLINDRICAL",
+        "POSITIVE_LONGITUDE_DIRECTION": "WEST",
+        "CENTER_LONGITUDE": "0.0 <DEGREES>",
+        "MAP_RESOLUTION": "16.0 <PIXELS/DEGREE>",
+        "SAMPLE_PROJECTION_OFFSET": "-2880.4999997035566 <PIXELS>",
+        "LINE_PROJECTION_OFFSET": "1439.4999998517783 <PIXELS>",
+        "EASTERNMOST_LONGITUDE": "-180.0 <DEGREES>",
+        "WESTERNMOST_LONGITUDE": "180.0 <DEGREES>",
+        "MINIMUM_LATITUDE": "-90.0 <DEGREES>",
+        "MAXIMUM_LATITUDE": "90.0 <DEGREES>",
+        "PROJECTION_LATITUDE_TYPE": "PLANETOCENTRIC",
+        "A_AXIS_RADIUS": "736.0 <KILOMETERS>",
+        "LINE_SAMPLES": "5760",
+        "LINES": "2880",
+        "BANDS": "1",
+        "^IMAGE": "(\"Iapetus_Cassini_Voyager_mosaic_global_783m.tif\", 23688 <BYTES>)"
+      }
+    },
+    "longitude": {
+      "domain": "0-360 east",
+      "direction": "east-positive (the raster's column order; the PDS3 label quotes WEST)",
+      "leftEdgeLonDegEast": 180,
+      "eastLonIncreasesRightward": true,
+      "derivation": "raster: tiepoint x = 180.0000 deg from the 0 deg central meridian at 12845.62 m/deg -> left edge 180 E, east increasing rightward, spanning 360 deg.",
+      "supersedes": "an earlier reading off the PDS3 label alone said left edge 180 E with east DECREASING rightward"
+    },
+    "wire": {
+      "candidate": "4096x2048",
+      "webpBytes": 1162046,
+      "ktx2Bytes": 7275571,
+      "ratio": 6.26,
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 1559954,
+      "etc1sRatio": 1.34,
+      "rmsVsSource": {
+        "webp": 2.32,
+        "etc1s": 2.58
+      }
+    },
+    "notes": "Global, mono; the two-tone Cassini Regio is the point of this one. Naming quirk: the catalog calls the product 803m, the file and label say 783m, and MAP_SCALE is 802.85 m/px - one product, three numbers. 5760 px is the smallest global source here after Titan; a 4K rung is a 1.4x downsample rather than the 2x this set otherwise holds to.",
+    "used_by": [
+      "gen-moonmaps iapetus"
+    ],
+    "raster": {
+      "centralMeridianDeg": 0,
+      "sphereRadiusM": 736000,
+      "metresPerDeg": 12845.6233,
+      "spanDegLon": 360,
+      "spanDegLat": 180,
+      "topLatDeg": 90,
+      "read_from": "GeoTIFF ModelTiepoint (33922) + ModelPixelScale (33550) + the projection GeoKey for the central meridian (3088/3080) and the sphere radius (2057)"
+    }
+  },
+  "Charon_NewHorizons_Global_Mosaic_300m_Jul2017_8bit.tif": {
+    "body": "charon",
+    "url": "https://planetarymaps.usgs.gov/mosaic/Charon_NewHorizons_Global_Mosaic_300m_Jul2017_8bit.tif",
+    "sha256": "4a874809e0a33a851cd026b8e4647f5875ed15807e677d413812367509564b00",
+    "bytes": 80613890,
+    "width": 12693,
+    "height": 6347,
+    "format": "tiff, 8-bit, 1 band",
+    "color": "mono",
+    "product": "Charon New Horizons LORRI/MVIC Global Mosaic 300m (July 2017), 12693x6347 mono GeoTIFF",
+    "product_page": "https://astrogeology.usgs.gov/search/map/charon_new_horizons_lorri_mvic_global_mosaic_300m",
+    "citation": "NASA, Johns Hopkins University Applied Physics Laboratory, Southwest Research Institute, Lunar and Planetary Institute; published by the USGS Astrogeology Science Center, 2017-07-14. Access constraints: None. Use constraints: Please cite authors.",
+    "label": {
+      "pds3_url": "https://astrogeology.usgs.gov/ckan/dataset/93827f6c-8feb-42b6-98e6-b0ce57c7d2c8/resource/086c7b1f-4c51-486d-ab6a-edbc4a1902e6/download/charon_newhorizons_global_mosaic_300m_jul2017_8bit_pds3.lbl",
+      "isis3_url": "https://astrogeology.usgs.gov/ckan/dataset/93827f6c-8feb-42b6-98e6-b0ce57c7d2c8/resource/dd59f4b5-7998-4905-98ce-a74d3b177b2f/download/charon_newhorizons_global_mosaic_300m_jul2017_8bit.lbl",
+      "pds3": {
+        "MAP_PROJECTION_TYPE": "SIMPLE_CYLINDRICAL",
+        "POSITIVE_LONGITUDE_DIRECTION": "EAST",
+        "CENTER_LONGITUDE": "0.0 <DEGREES>",
+        "MAP_RESOLUTION": "35.255651 <PIXELS/DEGREE>",
+        "SAMPLE_PROJECTION_OFFSET": "6346.0 <PIXELS>",
+        "LINE_PROJECTION_OFFSET": "3173.5 <PIXELS>",
+        "EASTERNMOST_LONGITUDE": "180.0 <DEGREES>",
+        "WESTERNMOST_LONGITUDE": "-180.0 <DEGREES>",
+        "MINIMUM_LATITUDE": "-90.0 <DEGREES>",
+        "MAXIMUM_LATITUDE": "90.0 <DEGREES>",
+        "PROJECTION_LATITUDE_TYPE": "PLANETOGRAPHIC",
+        "A_AXIS_RADIUS": "606.0 <KILOMETERS>",
+        "LINE_SAMPLES": "12693",
+        "LINES": "6347",
+        "BANDS": "1",
+        "^IMAGE": "(\"Charon_NewHorizons_Global_Mosaic_300m_Jul2017_8bit.tif\", 51420 <BYTES>)"
+      }
+    },
+    "longitude": {
+      "domain": "0-360 east",
+      "direction": "east-positive (the raster's column order; the PDS3 label quotes EAST)",
+      "leftEdgeLonDegEast": 179.9863,
+      "eastLonIncreasesRightward": true,
+      "derivation": "raster: tiepoint x = 179.9863 deg from the 0 deg central meridian at 10576.70 m/deg -> left edge 179.9863 E, east increasing rightward, spanning 360.0274 deg.",
+      "supersedes": "an earlier reading off the PDS3 label alone said left edge 180 E with east increasing rightward"
+    },
+    "wire": {
+      "candidate": "4096x2048",
+      "webpBytes": 619764,
+      "ktx2Bytes": 4466122,
+      "ratio": 7.21,
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 944024,
+      "etc1sRatio": 1.52,
+      "rmsVsSource": {
+        "webp": 1.82,
+        "etc1s": 1.68
+      }
+    },
+    "notes": "Global, mono; Mordor Macula at the north pole. The encounter hemisphere is genuine 300 m; the far side is coarse New Horizons approach imagery. Latitude type is PLANETOGRAPHIC here, unlike the Cassini mosaics.",
+    "used_by": [
+      "gen-moonmaps charon"
+    ],
+    "raster": {
+      "centralMeridianDeg": 0,
+      "sphereRadiusM": 606000,
+      "metresPerDeg": 10576.6953,
+      "spanDegLon": 360.0274,
+      "spanDegLat": 180.0279,
+      "topLatDeg": 90.0281,
+      "read_from": "GeoTIFF ModelTiepoint (33922) + ModelPixelScale (33550) + the projection GeoKey for the central meridian (3088/3080) and the sphere radius (2057)"
+    }
+  },
+  "Uranus_Miranda_nasa3d.tif": {
+    "body": "miranda",
+    "url": "https://assets.science.nasa.gov/content/dam/science/cds/3d/resources/image/uranus---miranda/Uranus%20-%20Miranda.tif",
+    "sha256": "86f6b6f9e1641095b926a46050648739bb3fd41a21394a54159cf1e9dcd0cf00",
+    "bytes": 3136484,
+    "width": 1440,
+    "height": 720,
+    "format": "tiff, 8-bit, 3 bands",
+    "color": "mono (stored as 3 identical bands)",
+    "product": "NASA 3D Resources \"Uranus - Miranda\" image texture, 1440x720 TIFF (3 bands, greyscale content), Voyager 2 mosaic",
+    "product_page": "https://science.nasa.gov/3d-resources/uranus-miranda/",
+    "citation": "USGS/Tammy Becker & JPL/Caltech - \"From the USGS; a mosaic using Voyager imagery. From the JPL database of generated planetary maps.\" NASA imagery, public domain.",
+    "label": null,
+    "longitude": {
+      "domain": "0-360 east",
+      "direction": "east-positive",
+      "leftEdgeLonDegEast": 180,
+      "eastLonIncreasesRightward": true,
+      "derivation": "SETTLED IN THE A1 ALIGNMENT PASS, replacing an UNKNOWN. Inverness Corona is the discriminator the Arden/Elsinore pair could not be: it is the bright chevron, unmistakable by eye. At its gazetteer centre (66.9S, 325.7E) a left-edge-180E east-increasing reading predicts x/W 0.405, and the chevron is there - bright wedge, ridged bands, the scarp along its edge that is Verona Rupes (18.3S, 347.8E, predicted 0.466, one twentieth of the map away, which is where the gazetteer puts it relative to Inverness). The left-edge-0E reading predicts 0.905, which is bland cratered terrain with no chevron in it. Under the settled reading Arden (73.7E) lands at 0.705 and Elsinore (257.3E) at 0.215, both on coronae.",
+      "confirmed_by": "A1 alignment pass: evidence crops miranda-inverness-*.png in planning/zoom-a1-verify/."
+    },
+    "wire": {
+      "candidate": "4096x2048",
+      "webpBytes": 203198,
+      "ktx2Bytes": 2398339,
+      "ratio": 11.8,
+      "ratio_at_or_under_4x": false
+    },
+    "notes": "PARTIAL COVERAGE, as expected: only the southern hemisphere is imaged and the unphotographed north is black no-data, with the data edge running between the equator and about 25S depending on longitude. Verona Rupes and the coronae are present. At 1440x720 this is the lowest-resolution source in the set - a 4K rung would be a pure 2.8x upsample, so a 2K map is the honest ceiling for this body and the rest has to come from the procedural blend.",
+    "used_by": [
+      "gen-moonmaps miranda"
+    ],
+    "raster": {
+      "centralMeridianDeg": null,
+      "sphereRadiusM": null,
+      "metresPerDeg": null,
+      "spanDegLon": 360,
+      "spanDegLat": 180,
+      "topLatDeg": 90,
+      "read_from": "no geotransform and no label - a NASA 3D Resources texture. 1440x720 is exactly 4 px/deg both ways."
+    }
+  },
+  "Uranus_Ariel_nasa3d.tif": {
+    "body": "ariel",
+    "url": "https://assets.science.nasa.gov/content/dam/science/cds/3d/resources/image/uranus---ariel/Uranus%20-%20Ariel.tif",
+    "sha256": "7f71a26ae0738deef5ac5cea7912f6aa3d7bf1cf3b39e06793dfd87f6529ad8d",
+    "bytes": 3136152,
+    "width": 1440,
+    "height": 720,
+    "format": "tiff, 8-bit, 3 bands",
+    "color": "mono (stored as 3 identical bands)",
+    "product": "NASA 3D Resources \"Uranus - Ariel\" image texture, 1440x720 TIFF (3 bands, greyscale content), Voyager 2 mosaic",
+    "product_page": "https://science.nasa.gov/3d-resources/uranus-ariel/",
+    "citation": "USGS/Tammy Becker & JPL/Caltech - \"From the USGS; a mosaic using Voyager imagery. From the JPL database of generated planetary maps.\" NASA imagery, public domain.",
+    "label": null,
+    "longitude": {
+      "domain": "0-360 east",
+      "direction": "east-positive",
+      "leftEdgeLonDegEast": 180,
+      "eastLonIncreasesRightward": true,
+      "derivation": "SETTLED IN THE A1 ALIGNMENT PASS, replacing an UNKNOWN. Ariel's named chasmata all lie between 246E and 5E (Kachina 33.7S/246.0E, then Kewpie, Korrigan, Brownie, Pixie clustered near 326-350E) and the canyon network on this map runs from x/W 0.10 to 0.56. A left-edge-180E east-increasing reading puts that network at 216E through 21E, which is exactly where the gazetteer's chasmata are, with Kachina landing on the network's western end at 0.183. The left-edge-0E reading puts the network at 37E-200E, where Ariel has no named chasma at all, and puts Kachina on cratered plains. Same layout as its sibling product for Miranda, settled independently on Inverness Corona.",
+      "confirmed_by": "A1 alignment pass: evidence crops ariel-*.png in planning/zoom-a1-verify/."
+    },
+    "wire": {
+      "candidate": "4096x2048",
+      "webpBytes": 120322,
+      "ktx2Bytes": 1792241,
+      "ratio": 14.9,
+      "ratio_at_or_under_4x": false
+    },
+    "notes": "PARTIAL COVERAGE, as expected: southern hemisphere only, unimaged north is black no-data. Chasma network and the bright cratered terrain are present. 1440x720, same ceiling as Miranda - a 2K map, not a 4K rung.",
+    "used_by": [
+      "gen-moonmaps ariel"
+    ],
+    "raster": {
+      "centralMeridianDeg": null,
+      "sphereRadiusM": null,
+      "metresPerDeg": null,
+      "spanDegLon": 360,
+      "spanDegLat": 180,
+      "topLatDeg": 90,
+      "read_from": "no geotransform and no label - a NASA 3D Resources texture. 1440x720 is exactly 4 px/deg both ways."
+    }
+  },
+  "Callisto_Voyager_GalileoSSI_global_mosaic_1km.tif": {
+    "body": "callisto",
+    "url": "https://planetarymaps.usgs.gov/mosaic/Callisto_Voyager_GalileoSSI_global_mosaic_1km.tif",
+    "sha256": "e1f0bd2e0e05de605d067d6b5f5ededddaf31ca6c064562a1ca770f15a7dbaa3",
+    "bytes": 114640717,
+    "width": 15138,
+    "height": 7569,
+    "format": "tiff, 8-bit, 1 band",
+    "color": "mono",
+    "product": "Callisto Galileo/Voyager Global Mosaic 1km, 15138x7569 mono GeoTIFF",
+    "product_page": "https://astrogeology.usgs.gov/search/map/callisto_galileo_voyager_global_mosaic_1km",
+    "citation": "USGS Astrogeology Science Center. Access constraints: public domain. Use constraints: None.",
+    "label": {
+      "pds3_url": "https://astrogeology.usgs.gov/ckan/dataset/a80abd68-7ed9-440e-829a-76376779164f/resource/0b2f0b5f-36d9-4b02-8901-026cffa44393/download/callisto_voyager_galileossi_global_mosaic_1km_pds3.lbl",
+      "isis3_url": "https://astrogeology.usgs.gov/ckan/dataset/a80abd68-7ed9-440e-829a-76376779164f/resource/66433621-ca46-4563-994f-c615931adb42/download/callisto_voyager_galileossi_global_mosaic_1km.lbl",
+      "pds3": {
+        "MAP_PROJECTION_TYPE": "SIMPLE_CYLINDRICAL",
+        "POSITIVE_LONGITUDE_DIRECTION": "WEST",
+        "CENTER_LONGITUDE": "180.0 <DEGREES>",
+        "MAP_RESOLUTION": "42.05 <PIXELS/DEGREE>",
+        "SAMPLE_PROJECTION_OFFSET": "-7569.500000000045 <PIXELS>",
+        "LINE_PROJECTION_OFFSET": "3784.0000000000223 <PIXELS>",
+        "EASTERNMOST_LONGITUDE": "0.0 <DEGREES>",
+        "WESTERNMOST_LONGITUDE": "360.0 <DEGREES>",
+        "MINIMUM_LATITUDE": "-90.0 <DEGREES>",
+        "MAXIMUM_LATITUDE": "90.0 <DEGREES>",
+        "PROJECTION_LATITUDE_TYPE": "PLANETOCENTRIC",
+        "A_AXIS_RADIUS": "2409.3000488 <KILOMETERS>",
+        "LINE_SAMPLES": "15138",
+        "LINES": "7569",
+        "BANDS": "1",
+        "^IMAGE": "(\"Callisto_Voyager_GalileoSSI_global_mosaic_1km.tif\", 61196 <BYTES>)"
+      }
+    },
+    "longitude": {
+      "domain": "0-360 east",
+      "direction": "east-positive (the raster's column order; the PDS3 label quotes WEST)",
+      "leftEdgeLonDegEast": 0,
+      "eastLonIncreasesRightward": true,
+      "derivation": "raster: tiepoint x = 0.0000 deg from the 180 deg central meridian at 42050.22 m/deg -> left edge 0 E, east increasing rightward, spanning 360 deg.",
+      "supersedes": "an earlier reading off the PDS3 label alone said left edge 0 E with east DECREASING rightward"
+    },
+    "wire": {
+      "candidate": "4096x2048",
+      "webpBytes": 1086206,
+      "ktx2Bytes": 6863331,
+      "ratio": 6.32,
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 1398366,
+      "etc1sRatio": 1.29,
+      "rmsVsSource": {
+        "webp": 2.15,
+        "etc1s": 1.92
+      }
+    },
+    "notes": "Global, mono. This is the fix for the app's 1800 px Callisto boot map. USGS publishes no global colour Callisto raster, so keeping Callisto coloured needs a colour pass keyed to a published true-colour reference.",
+    "used_by": [
+      "gen-moonmaps callisto"
+    ],
+    "raster": {
+      "centralMeridianDeg": 180,
+      "sphereRadiusM": 2409300.0488,
+      "metresPerDeg": 42050.2185,
+      "spanDegLon": 360,
+      "spanDegLat": 180,
+      "topLatDeg": 90,
+      "read_from": "GeoTIFF ModelTiepoint (33922) + ModelPixelScale (33550) + the projection GeoKey for the central meridian (3088/3080) and the sphere radius (2057)"
+    }
+  },
+  "Io_GalileoSSI-Voyager_Global_Mosaic_ClrMerge_1km.tif": {
+    "body": "io",
+    "url": "https://planetarymaps.usgs.gov/mosaic/Io_GalileoSSI-Voyager_Global_Mosaic_ClrMerge_1km.tif",
+    "sha256": "135f88cb645bfdb4e045b380971ab2ba14e230590c96c9c86cfe7310fda881ac",
+    "bytes": 196637696,
+    "width": 11445,
+    "height": 5723,
+    "format": "tiff, 8-bit, 3 bands",
+    "color": "color (3 bands)",
+    "product": "Io Galileo SSI / Voyager Color Merged Global Mosaic 1km, 11445x5723 RGB GeoTIFF",
+    "product_page": "https://astrogeology.usgs.gov/search/map/io_galileo_ssi_voyager_color_merged_global_mosaic_1km",
+    "citation": "Planetary Data System; published by the USGS Astrogeology Science Center. Access constraints: public domain. Use constraints: None.",
+    "label": {
+      "pds3_url": "https://astrogeology.usgs.gov/ckan/dataset/f6924861-ce9c-490d-8a4b-7812a20f2de5/resource/fc8301d7-e6fa-4420-9e7e-e47afb84012f/download/io_galileossi-voyager_global_mosaic_clrmerge_1km_pds3.lbl",
+      "isis3_url": "https://astrogeology.usgs.gov/ckan/dataset/f6924861-ce9c-490d-8a4b-7812a20f2de5/resource/c0e99fdd-c493-41d2-94be-4eee2b20fc35/download/io_galileossi-voyager_global_mosaic_clrmerge_1km.lbl",
+      "pds3": {
+        "MAP_PROJECTION_TYPE": "SIMPLE_CYLINDRICAL",
+        "POSITIVE_LONGITUDE_DIRECTION": "WEST",
+        "CENTER_LONGITUDE": "0.0 <DEGREES>",
+        "MAP_RESOLUTION": "31.790474 <PIXELS/DEGREE>",
+        "SAMPLE_PROJECTION_OFFSET": "-5723.5 <PIXELS>",
+        "LINE_PROJECTION_OFFSET": "2861.5 <PIXELS>",
+        "EASTERNMOST_LONGITUDE": "-180.0 <DEGREES>",
+        "WESTERNMOST_LONGITUDE": "180.0 <DEGREES>",
+        "MINIMUM_LATITUDE": "-90.0 <DEGREES>",
+        "MAXIMUM_LATITUDE": "90.0 <DEGREES>",
+        "PROJECTION_LATITUDE_TYPE": "PLANETOCENTRIC",
+        "A_AXIS_RADIUS": "1821.46 <KILOMETERS>",
+        "LINE_SAMPLES": "11445",
+        "LINES": "5723",
+        "BANDS": "3",
+        "^IMAGE": "(\"Io_GalileoSSI-Voyager_Global_Mosaic_ClrMerge_1km.tif\", 138492 <BYTES>)"
+      }
+    },
+    "longitude": {
+      "domain": "0-360 east",
+      "direction": "east-positive (the raster's column order; the PDS3 label quotes WEST)",
+      "leftEdgeLonDegEast": 179.9775,
+      "eastLonIncreasesRightward": true,
+      "derivation": "raster: tiepoint x = 179.9775 deg from the 0 deg central meridian at 31790.47 m/deg -> left edge 179.9775 E, east increasing rightward, spanning 360.0135 deg.",
+      "supersedes": "an earlier reading off the PDS3 label alone said left edge 180 E with east DECREASING rightward"
+    },
+    "wire": {
+      "candidate": "4096x2048",
+      "webpBytes": 500912,
+      "ktx2Bytes": 7042073,
+      "ratio": 14.06,
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 1495970,
+      "etc1sRatio": 2.99,
+      "rmsVsSource": {
+        "webp": 2.17,
+        "etc1s": 2.38
+      }
+    },
+    "notes": "Global, colour, 11445 px - enough for an 8K rung with a real downsample. A near-identical sibling product exists (Io_Galileo_SSI_Global_Mosaic_ClrMerge_1km.tif, same size and dimensions, Galileo-only merge); the Voyager-merged one was taken.",
+    "used_by": [
+      "gen-moonmaps io"
+    ],
+    "raster": {
+      "centralMeridianDeg": 0,
+      "sphereRadiusM": 1821460,
+      "metresPerDeg": 31790.4742,
+      "spanDegLon": 360.0135,
+      "spanDegLat": 180.0225,
+      "topLatDeg": 90.027,
+      "read_from": "GeoTIFF ModelTiepoint (33922) + ModelPixelScale (33550) + the projection GeoKey for the central meridian (3088/3080) and the sphere radius (2057)"
+    }
+  },
+  "Europa_Voyager_GalileoSSI_global_mosaic_500m.tif": {
+    "body": "europa",
+    "url": "https://planetarymaps.usgs.gov/mosaic/Europa_Voyager_GalileoSSI_global_mosaic_500m.tif",
+    "sha256": "a323f0c9ccb47d5af9902ea8297fe81f9a9708795645b80801f103c3f7c9a624",
+    "bytes": 192777263,
+    "width": 19631,
+    "height": 9816,
+    "format": "tiff, 8-bit, 1 band",
+    "color": "mono",
+    "product": "Europa Voyager - Galileo SSI Global Mosaic 500m, 19631x9816 mono GeoTIFF",
+    "product_page": "https://astrogeology.usgs.gov/search/map/europa_voyager_galileo_ssi_global_mosaic_500m",
+    "citation": "Archinal, B., Colvin, T., Davies, M., Gitlin, A., Kirk, R., Weller, L.; published by the USGS Astrogeology Science Center, 2010-01-01. Access constraints: None. Use constraints: None.",
+    "label": {
+      "pds3_url": "https://astrogeology.usgs.gov/ckan/dataset/4080036f-afc5-422e-abe9-1c0c8e4f98ea/resource/8638d940-e761-4c28-ad71-a73819fa811f/download/europa_voyager_galileossi_global_mosaic_500m_pds3.lbl",
+      "isis3_url": "https://astrogeology.usgs.gov/ckan/dataset/4080036f-afc5-422e-abe9-1c0c8e4f98ea/resource/db62f55a-9d03-474e-a349-1fd7d8f0d5fc/download/europa_voyager_galileossi_global_mosaic_500m.lbl",
+      "pds3": {
+        "MAP_PROJECTION_TYPE": "SIMPLE_CYLINDRICAL",
+        "POSITIVE_LONGITUDE_DIRECTION": "WEST",
+        "CENTER_LONGITUDE": "180 <DEGREES>",
+        "MAP_RESOLUTION": "54.53 <PIXELS/DEGREE>",
+        "SAMPLE_PROJECTION_OFFSET": "-9816.500000000025 <PIXELS>",
+        "LINE_PROJECTION_OFFSET": "4907.500000000013 <PIXELS>",
+        "EASTERNMOST_LONGITUDE": "0 <DEGREES>",
+        "WESTERNMOST_LONGITUDE": "360 <DEGREES>",
+        "MINIMUM_LATITUDE": "-90 <DEGREES>",
+        "MAXIMUM_LATITUDE": "90 <DEGREES>",
+        "PROJECTION_LATITUDE_TYPE": "PLANETOCENTRIC",
+        "A_AXIS_RADIUS": "1562.0899657999998 <KILOMETERS>",
+        "LINE_SAMPLES": "19631",
+        "LINES": "9816",
+        "BANDS": "1",
+        "^IMAGE": "(\"Europa_Voyager_GalileoSSI_global_mosaic_500m.tif\", 79368 <BYTES>)"
+      }
+    },
+    "longitude": {
+      "domain": "0-360 east",
+      "direction": "east-positive (the raster's column order; the PDS3 label quotes WEST)",
+      "leftEdgeLonDegEast": 359.989,
+      "eastLonIncreasesRightward": true,
+      "derivation": "raster: tiepoint x = -0.0110 deg from the 180 deg central meridian at 27263.61 m/deg -> left edge 359.989 E, east increasing rightward, spanning 360.0037 deg.",
+      "supersedes": "an earlier reading off the PDS3 label alone said left edge 0 E with east DECREASING rightward"
+    },
+    "wire": {
+      "candidate": "4096x2048",
+      "webpBytes": 1344146,
+      "ktx2Bytes": 7179954,
+      "ratio": 5.34,
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 1423801,
+      "etc1sRatio": 1.06,
+      "rmsVsSource": {
+        "webp": 2.77,
+        "etc1s": 2.56
+      }
+    },
+    "notes": "Global, MONO at 500 m - 19631 px, the sharpest Galilean source here. USGS publishes no global colour Europa raster (the only colour products are Mercator map-sheet PDFs), so keeping Europa coloured needs a colour pass keyed to a published true-colour reference.",
+    "used_by": [
+      "gen-moonmaps europa"
+    ],
+    "raster": {
+      "centralMeridianDeg": 180,
+      "sphereRadiusM": 1562089.9658,
+      "metresPerDeg": 27263.6131,
+      "spanDegLon": 360.0037,
+      "spanDegLat": 180.011,
+      "topLatDeg": 90.0055,
+      "read_from": "GeoTIFF ModelTiepoint (33922) + ModelPixelScale (33550) + the projection GeoKey for the central meridian (3088/3080) and the sphere radius (2057)"
+    }
+  },
+  "Ganymede_Voyager_GalileoSSI_Global_ClrMosaic_1435m.tif": {
+    "body": "ganymede",
+    "url": "https://planetarymaps.usgs.gov/mosaic/Ganymede_Voyager_GalileoSSI_Global_ClrMosaic_1435m.tif",
+    "sha256": "da47087e75bc530456d8206d5100ad3c687706353700b0cb44a8400957005a33",
+    "bytes": 199204541,
+    "width": 11520,
+    "height": 5760,
+    "format": "tiff, 8-bit, 3 bands",
+    "color": "color (3 bands)",
+    "product": "Ganymede Voyager - Galileo SSI Color Global Mosaic 1.4km, 11520x5760 RGB GeoTIFF",
+    "product_page": "https://astrogeology.usgs.gov/search/map/ganymede_voyager_galileo_ssi_color_global_mosaic_1_4km",
+    "citation": "USGS Astrogeology Science Center. Access constraints: Public domain. Use constraints: None.",
+    "label": {
+      "pds3_url": "https://astrogeology.usgs.gov/ckan/dataset/e1422336-3291-4b65-b903-c942d53de073/resource/509fa2d8-249d-4e1c-b75c-7e2e7f18e759/download/ganymede_voyager_galileossi_global_clrmosaic_1435m_pds3.lbl",
+      "isis3_url": "https://astrogeology.usgs.gov/ckan/dataset/e1422336-3291-4b65-b903-c942d53de073/resource/f1f69d62-98d9-4eb9-9f69-0dba163cb125/download/ganymede_voyager_galileossi_global_clrmosaic_1435m.lbl",
+      "pds3": {
+        "MAP_PROJECTION_TYPE": "EQUIRECTANGULAR",
+        "POSITIVE_LONGITUDE_DIRECTION": "EAST",
+        "CENTER_LONGITUDE": "180.0 <DEGREES>",
+        "MAP_RESOLUTION": "32.0 <PIXEL/DEGREE>",
+        "SAMPLE_PROJECTION_OFFSET": "5759.5000003796 <PIXELS>",
+        "LINE_PROJECTION_OFFSET": "2879.5000001901485 <PIXELS>",
+        "EASTERNMOST_LONGITUDE": "360.0 <DEGREES>",
+        "WESTERNMOST_LONGITUDE": "0.0 <DEGREES>",
+        "MINIMUM_LATITUDE": "-90.0 <DEGREES>",
+        "MAXIMUM_LATITUDE": "90.0 <DEGREES>",
+        "PROJECTION_LATITUDE_TYPE": "PLANETOCENTRIC",
+        "A_AXIS_RADIUS": "2632.345 <KILOMETERS>",
+        "LINE_SAMPLES": "11520",
+        "LINES": "5760",
+        "BANDS": "3",
+        "^IMAGE": "(\"Ganymede_Voyager_GalileoSSI_Global_ClrMosaic_1435m.tif\", 138942 <BYTES>)"
+      }
+    },
+    "longitude": {
+      "domain": "0-360 east",
+      "direction": "east-positive (the raster's column order; the PDS3 label quotes EAST)",
+      "leftEdgeLonDegEast": 0,
+      "eastLonIncreasesRightward": true,
+      "derivation": "raster: tiepoint x = 0.0000 deg from the 180 deg central meridian at 45943.09 m/deg -> left edge 0 E, east increasing rightward, spanning 360 deg.",
+      "supersedes": "an earlier reading off the PDS3 label alone said left edge 0 E with east increasing rightward"
+    },
+    "wire": {
+      "candidate": "4096x2048",
+      "webpBytes": 1178610,
+      "ktx2Bytes": 8130075,
+      "ratio": 6.9,
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 1580591,
+      "etc1sRatio": 1.34,
+      "rmsVsSource": {
+        "webp": 2.7,
+        "etc1s": 2.82
+      }
+    },
+    "notes": "Global, colour, 11520 px - enough for an 8K rung. A SHARPER mono product exists and was deliberately not taken: Ganymede_Voyager_GalileoSSI_global_mosaic_1km.tif, 16539x8270, 131 MB. Pairing that with this colour map (the re-base technique Earth uses) would be sharper at the cost of another 131 MB and a colorize step; the colour map alone was taken to stay near the download budget.",
+    "used_by": [
+      "gen-moonmaps ganymede"
+    ],
+    "raster": {
+      "centralMeridianDeg": 180,
+      "sphereRadiusM": 2632345,
+      "metresPerDeg": 45943.0873,
+      "spanDegLon": 360,
+      "spanDegLat": 180,
+      "topLatDeg": 90,
+      "read_from": "GeoTIFF ModelTiepoint (33922) + ModelPixelScale (33550) + the projection GeoKey for the central meridian (3088/3080) and the sphere radius (2057)"
+    }
+  },
+  "Pluto_NewHorizons_Global_Mosaic_300m_Jul2017_8bit.tif": {
+    "body": "pluto",
+    "url": "https://planetarymaps.usgs.gov/mosaic/Pluto_NewHorizons_Global_Mosaic_300m_Jul2017_8bit.tif",
+    "sha256": "592b7fb0f88cafa0bedf9f33bb71e983952a250ee8577edf2abfe814b473356b",
+    "bytes": 309806463,
+    "width": 24888,
+    "height": 12444,
+    "format": "tiff, 8-bit, 1 band",
+    "color": "mono",
+    "product": "Pluto New Horizons LORRI/MVIC Global Mosaic 300m (July 2017), 24888x12444 mono GeoTIFF",
+    "product_page": "https://astrogeology.usgs.gov/search/map/pluto_new_horizons_lorri_mvic_global_mosaic_300m",
+    "citation": "NASA, Johns Hopkins University Applied Physics Laboratory, Southwest Research Institute, Lunar and Planetary Institute; published by the USGS Astrogeology Science Center, 2017-07-14. Access constraints: None. Use constraints: Please cite authors.",
+    "label": {
+      "pds3_url": "https://astrogeology.usgs.gov/ckan/dataset/a5f1b7f4-9822-4697-a201-e23ef4bd3e16/resource/c031825d-e2ec-4761-a2a1-c42fde794f64/download/pluto_newhorizons_global_mosaic_300m_jul2017_8bit_pds3.lbl",
+      "isis3_url": "https://astrogeology.usgs.gov/ckan/dataset/a5f1b7f4-9822-4697-a201-e23ef4bd3e16/resource/d654329d-bc64-43c3-a844-fcede2d1ce77/download/pluto_newhorizons_global_mosaic_300m_jul2017_8bit.lbl",
+      "pds3": {
+        "MAP_PROJECTION_TYPE": "EQUIRECTANGULAR",
+        "POSITIVE_LONGITUDE_DIRECTION": "EAST",
+        "CENTER_LONGITUDE": "180.0 <DEGREES>",
+        "MAP_RESOLUTION": "69.132491671495 <PIXELS/DEGREE>",
+        "SAMPLE_PROJECTION_OFFSET": "12443.5 <PIXELS>",
+        "LINE_PROJECTION_OFFSET": "6221.5 <PIXELS>",
+        "EASTERNMOST_LONGITUDE": "360.0 <DEGREES>",
+        "WESTERNMOST_LONGITUDE": "-0.0 <DEGREES>",
+        "MINIMUM_LATITUDE": "-90.0 <DEGREES>",
+        "MAXIMUM_LATITUDE": "90.0 <DEGREES>",
+        "PROJECTION_LATITUDE_TYPE": "PLANETOGRAPHIC",
+        "A_AXIS_RADIUS": "1188.3 <KILOMETERS>",
+        "LINE_SAMPLES": "24888",
+        "LINES": "12444",
+        "BANDS": "1",
+        "^IMAGE": "(\"Pluto_NewHorizons_Global_Mosaic_300m_Jul2017_8bit.tif\", 100192 <BYTES>)"
+      }
+    },
+    "longitude": {
+      "domain": "0-360 east",
+      "direction": "east-positive (the raster's column order; the PDS3 label quotes EAST)",
+      "leftEdgeLonDegEast": 359.9978,
+      "eastLonIncreasesRightward": true,
+      "derivation": "raster: tiepoint x = -0.0022 deg from the 180 deg central meridian at 20739.75 m/deg -> left edge 359.9978 E, east increasing rightward, spanning 360.0044 deg.",
+      "supersedes": "an earlier reading off the PDS3 label alone said left edge 0 E with east increasing rightward"
+    },
+    "wire": {
+      "candidate": "4096x2048",
+      "webpBytes": 819330,
+      "ktx2Bytes": 4704892,
+      "ratio": 5.74,
+      "ratio_at_or_under_4x": false,
+      "etc1sBytes": 974558,
+      "etc1sRatio": 1.19,
+      "rmsVsSource": {
+        "webp": 2.91,
+        "etc1s": 2.54
+      }
+    },
+    "notes": "Global, mono. The encounter hemisphere (Sputnik Planitia) is genuine 300 m; the far side is 20-30 km approach imagery and will stay soft at any tier. Latitude type is PLANETOGRAPHIC.",
+    "used_by": [
+      "gen-moonmaps pluto"
+    ],
+    "raster": {
+      "centralMeridianDeg": 180,
+      "sphereRadiusM": 1188300,
+      "metresPerDeg": 20739.7475,
+      "spanDegLon": 360.0044,
+      "spanDegLat": 180.0022,
+      "topLatDeg": 90.0011,
+      "read_from": "GeoTIFF ModelTiepoint (33922) + ModelPixelScale (33550) + the projection GeoKey for the central meridian (3088/3080) and the sphere radius (2057)"
+    }
+  }
+}

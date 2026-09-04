@@ -1,0 +1,1061 @@
+import { describe, expect, it } from 'vitest';
+import {
+  blurMono, coverageFill, detailDeficit, findEdges, latScaledRadii, levelEdges, smearRunsOf,
+  traceCurves, valueNoise, wrappingCell,
+} from '../../tools/surfaceGrain.mjs';
+
+// tools/surfaceGrain.mjs is what gives the moon maps their texture: it decides
+// where a mosaic stopped carrying detail, how much grain that ground is short
+// of, and where the mosaic's frames step in brightness. None of that is
+// checkable by eye on a hundred-megapixel raster — a fill that is half as
+// strong as it should be looks like a fill — so it is checked here on a
+// raster built to a known answer: a grain field of a stated amplitude with a
+// rectangle of it smeared away, and a step of a stated size down a straight
+// line.
+//
+// Everything the passes take is in DEGREES and scaled by the raster's own
+// pixels per degree, so a small test raster is the same problem as a source
+// mosaic with the numbers moved: 2048 px of longitude is 5.7 px per degree, so
+// the tenth of a degree that is a five-pixel blur on Callisto's 42 px per
+// degree is 0.9 degrees here and the same five pixels.
+
+const W = 2048;
+const H = 1024;
+const PX_PER_DEG = W / 360;
+const SPEC = { fineDeg: 0.9, coarseDeg: 7.4, windowDeg: 8, wideDeg: 10, refPercentile: 0.6 };
+const PATCH = { x0: W - 300, x1: 300, y0: 250, y1: 750 };
+
+/**
+ * Ground with structure at every scale, and `smeared` rectangles that have
+ * lost the finest of it — which is what a resample from ten times the pixel
+ * size leaves behind. The middle octave stays inside the patch: a coarse strip
+ * of a mosaic still carries its craters at the scale it can hold them, and a
+ * detector that only ever sees flat ground in a gap is not being asked the
+ * question a real mosaic asks.
+ *
+ * The right third carries two and a half times the fine grain, because a map
+ * with one uniform amount of detail has no ground the reference percentile can
+ * call sharp: on a real mosaic the sharp strips are what the deficit is measured
+ * against, and there the ground away from a coarse patch comes out at a
+ * deficit of exactly zero and is left exactly alone.
+ */
+type Region = { x0: number; x1: number; y0: number; y1: number } | ((x: number, y: number) => boolean);
+
+function synthetic(
+  smeared: Region[],
+  { midAmp = 24, sharpGain = 2.5 } = {},
+) {
+  const noise = valueNoise(W);
+  const fine = noise.matched([
+    { ...wrappingCell(W, 4), amp: 26 },
+    { ...wrappingCell(W, 9), amp: 18 },
+  ], 7);
+  const mid = noise.matched([{ ...wrappingCell(W, 40), amp: midAmp }], 13);
+  // Slower than anything the passes look at, so it is the body's own albedo
+  // rather than something either of them has an opinion about.
+  const slow = noise.matched([{ ...wrappingCell(W, 400), amp: 60 }], 21);
+  const band = new Float32Array(W * H);
+  const inside = (x: number, y: number) => smeared.some((r) => (typeof r === 'function'
+    ? r(x, y)
+    : y >= r.y0 && y < r.y1 && (r.x0 <= r.x1 ? x >= r.x0 && x < r.x1 : x >= r.x0 || x < r.x1)));
+  const sharp = (x: number) => x > 0.6 * W && x < 0.95 * W;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      band[y * W + x] = 120 + slow(x, y) + mid(x, y)
+        + (inside(x, y) ? 0 : fine(x, y) * (sharp(x) ? sharpGain : 1));
+    }
+  }
+  return { band, inside, sharp };
+}
+
+/** How much the picture varies below `fineDeg`, averaged over a window: the
+ *  energy the fill has to match. */
+function energy(band: Float32Array): Float32Array {
+  const r = SPEC.fineDeg * PX_PER_DEG;
+  const low = blurMono(band, W, H, latScaledRadii(H, r), r);
+  const fine = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) fine[i] = Math.abs(band[i] - low[i]);
+  const win = SPEC.windowDeg * PX_PER_DEG;
+  return blurMono(fine, W, H, latScaledRadii(H, win), win);
+}
+
+const median = (v: number[]) => {
+  const s = [...v].sort((a, b) => a - b);
+  return s[s.length >> 1];
+};
+
+describe('detailDeficit', () => {
+  // Deliberately across x = 0. The raster is a globe, so its left and right
+  // edges are the same meridian, and a window that stops at the edge instead
+  // of running round reports the ground either side of it as smeared.
+  const { band, inside, sharp } = synthetic([PATCH]);
+  const { deficit, ref } = detailDeficit(band, W, H, SPEC, PX_PER_DEG, null);
+  const at = (x: number, y = 500) => deficit[y * W + x];
+
+  it('is near one inside a smeared patch, on both sides of the map edge', () => {
+    // Not one: the patch keeps the middle octave a resample can still hold,
+    // which is what real coarse ground does, so what it is short of is most
+    // of its fine band rather than all of its detail.
+    expect(at(0)).toBeGreaterThan(0.85);
+    expect(at(W - 80)).toBeGreaterThan(0.85);
+    expect(at(80)).toBeGreaterThan(0.85);
+  });
+
+  it('is exactly zero on the ground that kept its detail', () => {
+    // Over the population rather than at one pixel: the ratio is measured
+    // from the picture, so it wanders either side of the reference even on
+    // ground that is uniformly sharp, and what the fill promises is that the
+    // sharp ground comes out untouched.
+    let zero = 0;
+    let worst = 0;
+    const seen: number[] = [];
+    for (let y = 300; y < 700; y++) {
+      for (let x = Math.round(0.65 * W); x < Math.round(0.9 * W); x++) {
+        const d = at(x, y);
+        seen.push(d);
+        if (d === 0) zero++;
+        if (d > worst) worst = d;
+      }
+    }
+    expect(zero / seen.length).toBeGreaterThan(0.8);
+    expect(median(seen)).toBeLessThan(0.02);
+    expect(worst).toBeLessThan(0.55 * at(0));
+    // Ordinary ground is neither: below the reference, so not zero, but
+    // nowhere near a patch that has lost everything.
+    expect(at(W >> 1)).toBeLessThan(0.35);
+    expect(at(W >> 1)).toBeLessThan(0.4 * at(0));
+  });
+
+  it('measures the reference from the map itself', () => {
+    const e = energy(band);
+    const outside: number[] = [];
+    const within: number[] = [];
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x += 3) {
+        if (inside(x, y)) within.push(e[y * W + x]);
+        else if (sharp(x)) outside.push(e[y * W + x]);
+      }
+    }
+    // The reference is a ratio — how much the finest band varies against how
+    // much everything below a degree does — so it is a number near one and
+    // not a count of anything.
+    expect(ref).toBeGreaterThan(0.1);
+    expect(ref).toBeLessThan(5);
+    expect(median(within)).toBeLessThan(0.15 * median(outside));
+  });
+
+  it('is not fooled by ground that is dark rather than smeared', () => {
+    // Contrast scales with how much light the ground reflects, so ground at
+    // half the albedo carries half the variation at every scale and none of
+    // it is missing. An absolute threshold calls that a gap; a ratio does not.
+    // Faded in over a hundred pixels, since a step would be a feature of its
+    // own and the question here is only about level.
+    const dim = Float32Array.from(band);
+    const fade = (x: number) => {
+      const t = Math.min(1, Math.min(x - 0.6 * W, 0.95 * W - x) / 150);
+      return t <= 0 ? 1 : 1 - 0.6 * (t * t * (3 - 2 * t));
+    };
+    for (let y = 0; y < H; y++) {
+      for (let x = Math.round(0.6 * W); x < Math.round(0.95 * W); x++) {
+        dim[y * W + x] = 120 + (band[y * W + x] - 120) * fade(x);
+      }
+    }
+    const d = detailDeficit(dim, W, H, SPEC, PX_PER_DEG, null).deficit;
+    let worst = 0;
+    for (let y = 200; y < 800; y++) {
+      for (let x = Math.round(0.72 * W); x < Math.round(0.85 * W); x++) worst = Math.max(worst, d[y * W + x]);
+    }
+    expect(worst).toBeLessThan(0.15);
+  });
+});
+
+/** A patch of the map's own ground stretched `by` along x — a frame resampled
+ *  from a picture that was never that wide. Interpolated, not repeated: a
+ *  resample that repeated its source pixel would leave a hard step every
+ *  twelfth column, which is detail the detector would be right to find. */
+function stretched(by: number, region: { x0: number; x1: number; y0: number; y1: number }) {
+  const { band } = synthetic([]);
+  const out = Float32Array.from(band);
+  for (let y = region.y0; y < region.y1; y++) {
+    for (let x = region.x0; x < region.x1; x++) {
+      const u = region.x0 + (x - region.x0) / by;
+      const i0 = Math.floor(u);
+      const f = u - i0;
+      out[y * W + x] = band[y * W + i0] * (1 - f) + band[y * W + i0 + 1] * f;
+    }
+  }
+  return out;
+}
+
+/** How lopsided the fine band's gradients are over a window: 0 when a piece of
+ *  ground varies the same amount whichever way you cross it, 1 when it varies
+ *  one way and not the other. */
+function anisotropy(band: Float32Array): Float32Array {
+  const n = W * H;
+  const r = SPEC.fineDeg * PX_PER_DEG;
+  const low = blurMono(band, W, H, latScaledRadii(H, r), r);
+  const hp = new Float32Array(n);
+  for (let i = 0; i < n; i++) hp[i] = band[i] - low[i];
+  const s = Math.max(1, Math.round(r));
+  const jxx = new Float32Array(n);
+  const jyy = new Float32Array(n);
+  const jxy = new Float32Array(n);
+  for (let y = s; y < H - s; y++) {
+    for (let x = 0; x < W; x++) {
+      const gx = hp[y * W + ((x + s) % W)] - hp[y * W + ((x - s + W) % W)];
+      const gy = hp[(y + s) * W + x] - hp[(y - s) * W + x];
+      jxx[y * W + x] = gx * gx;
+      jyy[y * W + x] = gy * gy;
+      jxy[y * W + x] = gx * gy;
+    }
+  }
+  const win = SPEC.windowDeg * PX_PER_DEG;
+  const rows = latScaledRadii(H, win);
+  const sxx = blurMono(jxx, W, H, rows, win);
+  const syy = blurMono(jyy, W, H, rows, win);
+  const sxy = blurMono(jxy, W, H, rows, win);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const tr = sxx[i] + syy[i];
+    const d = Math.sqrt(Math.max(0, (sxx[i] - syy[i]) ** 2 + 4 * sxy[i] * sxy[i]));
+    out[i] = tr > 1e-9 ? d / tr : 0;
+  }
+  return out;
+}
+
+describe('detailDeficit on a stretched patch', () => {
+  // A patch of the map's own sharp ground stretched 12x along one axis: it
+  // still steps across its streaks, so an average of |gradient| over all
+  // directions reads it as detail. It has nothing along them, which is what
+  // the detector has to see.
+  const REGION = { x0: 700, x1: 1100, y0: 300, y1: 700 };
+  const { deficit } = detailDeficit(stretched(12, REGION), W, H, SPEC, PX_PER_DEG, null);
+  const mid = (x: number, y = 500) => deficit[y * W + x];
+
+  it('reads a stretched patch as a gap', () => {
+    expect(mid(900)).toBeGreaterThan(0.6);
+  });
+
+  it('leaves the unstretched ground around it alone', () => {
+    expect(mid(Math.round(0.8 * W))).toBeLessThan(0.2);
+    expect(mid(400)).toBeLessThan(0.35);
+  });
+});
+
+/** One region's variation about its own slow average, multiplied — a frame
+ *  whose calibration left it more contrasty than the ground beside it, which
+ *  is what a mosaic's coarse frames actually look like. */
+function louder(band: Float32Array, r: { x0: number; x1: number; y0: number; y1: number }, gain: number) {
+  const low = blurMono(band, W, H, latScaledRadii(H, 60), 60);
+  const out = Float32Array.from(band);
+  for (let y = r.y0; y < r.y1; y++) {
+    for (let x = r.x0; x < r.x1; x++) {
+      const i = y * W + x;
+      out[i] = low[i] + (band[i] - low[i]) * gain;
+    }
+  }
+  return out;
+}
+
+describe('detailDeficit on a frame that is only half smeared', () => {
+  // The case the fill half-acted on. Stretched four times rather than twelve,
+  // so it keeps enough of its finest band for the count to come out only a
+  // little short — and carrying twice the contrast, because that is what these
+  // frames look like. The plain count leaves it below the middle of the ramp
+  // the fill removes invented shape over, so most of its streaks survive it.
+  // What separates it from real ground is not how much its finest band varies
+  // but how lopsidedly: 0.38 of the larger eigenvalue against sharp ground's
+  // 0.91, which is the same split a stretched frame on Europa's own mosaic
+  // measures.
+  const REGION = { x0: 700, x1: 1100, y0: 300, y1: 700 };
+  const band = louder(stretched(4, REGION), REGION, 2.2);
+  const PLAIN = { ...SPEC, isotropyRef: 0 };
+  const plain = detailDeficit(band, W, H, PLAIN, PX_PER_DEG, null).deficit;
+  const gated = detailDeficit(band, W, H, SPEC, PX_PER_DEG, null).deficit;
+  const mid = (d: Float32Array, x: number, y = 500) => d[y * W + x];
+  const shape = anisotropy(band);
+  const loHi = (x: number, y = 500) => (1 - shape[y * W + x]) / (1 + shape[y * W + x]);
+
+  it('is one-directional inside and even-handed outside', () => {
+    expect(loHi(900)).toBeLessThan(0.5);
+    expect(loHi(Math.round(0.8 * W))).toBeGreaterThan(0.85);
+  });
+
+  it('slips half past a count of how much the finest band varies', () => {
+    expect(mid(plain, 900)).toBeLessThan(0.55);
+  });
+
+  it('is a gap once that count is discounted by how one-directional it is', () => {
+    expect(mid(gated, 900)).toBeGreaterThan(0.6);
+    expect(mid(gated, 900)).toBeGreaterThan(1.2 * mid(plain, 900));
+  });
+
+  it('cannot be bought off with contrast either way', () => {
+    // Both counts are ratios taken off the same picture, so multiplying a
+    // frame's variation multiplies numerator and denominator alike and moves
+    // neither. What contrast buys is how loud the frame LOOKS, which is why a
+    // half-smeared frame reads as a piece of a different picture long before
+    // an absolute measure of its detail would call it one.
+    const quiet = stretched(4, REGION);
+    expect(detailDeficit(quiet, W, H, PLAIN, PX_PER_DEG, null).deficit[500 * W + 900])
+      .toBeCloseTo(mid(plain, 900), 2);
+    expect(detailDeficit(quiet, W, H, SPEC, PX_PER_DEG, null).deficit[500 * W + 900])
+      .toBeCloseTo(mid(gated, 900), 2);
+  });
+
+  it('leaves ground that varies the same way in every direction where it was', () => {
+    expect(mid(gated, Math.round(0.8 * W))).toBe(0);
+    expect(mid(gated, Math.round(0.8 * W))).toBe(mid(plain, Math.round(0.8 * W)));
+    expect(mid(gated, 400)).toBeCloseTo(mid(plain, 400), 2);
+  });
+});
+
+describe('coverageFill on a stretched patch', () => {
+  // The point of replacing rather than adding: grain laid over streaks leaves
+  // the streaks, and a straight-sided panel of streaks is what a player sees
+  // as a piece of a different picture.
+  const REGION = { x0: 700, x1: 1100, y0: 300, y1: 700 };
+  const band = stretched(12, REGION);
+  const fill = coverageFill(band, W, H, SPEC, PX_PER_DEG, null);
+  const filled = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) filled[i] = band[i] + fill.delta[i];
+  // The core of the patch, clear of the ramp the deficit fades over: what the
+  // pass promises at the edges is a ramp, and what it promises in the middle
+  // is ground that reads like the ground around it.
+  const core = (v: Float32Array) => {
+    const s: number[] = [];
+    for (let y = REGION.y0; y < REGION.y1; y++) {
+      for (let x = REGION.x0; x < REGION.x1; x += 2) {
+        if (fill.deficit[y * W + x] > 0.8) s.push(v[y * W + x]);
+      }
+    }
+    return median(s);
+  };
+  const around = (v: Float32Array) => {
+    const s: number[] = [];
+    for (let y = 300; y < 700; y++) {
+      for (let x = Math.round(0.65 * W); x < Math.round(0.9 * W); x += 2) s.push(v[y * W + x]);
+    }
+    return median(s);
+  };
+
+  it('takes the streaks out rather than drawing over them', () => {
+    const before = anisotropy(band);
+    const after = anisotropy(filled);
+    const ground = around(before);
+    expect(core(before)).toBeGreaterThan(2 * ground);
+    expect(core(after)).toBeLessThan(0.06 * core(before));
+    // Not all the way down to the ground's own. A stretch of twelve moves
+    // structure that was four to nine pixels wide out past the coarse low
+    // pass, and above that scale the map is entitled to its own shape: the
+    // removal takes the band between the low pass and the pixel, and what
+    // sits above it stays. What the player sees at close range is the band
+    // that goes.
+    expect(core(after)).toBeLessThan(2 * ground);
+  });
+
+  it('leaves the patch with the detail the reference ground has', () => {
+    const e = energy(filled);
+    expect(core(e)).toBeGreaterThan(0.7 * fill.energyRef);
+    expect(core(e)).toBeLessThan(1.3 * fill.energyRef);
+  });
+});
+
+describe('coverageFill', () => {
+  const { band, inside } = synthetic([PATCH]);
+  const fill = coverageFill(band, W, H, SPEC, PX_PER_DEG, null);
+  const filled = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) filled[i] = band[i] + fill.delta[i];
+
+  it('brings the smeared patch back to the energy the map is measured against', () => {
+    const e = energy(filled);
+    const within: number[] = [];
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x += 3) {
+        // The core of the patch, clear of the ramp the deficit fades over.
+        if (inside(x, y) && fill.deficit[y * W + x] > 0.8) within.push(e[y * W + x]);
+      }
+    }
+    expect(within.length).toBeGreaterThan(1000);
+    // Scaled by the deficit, which inside this patch is a little under one
+    // because the patch keeps the middle octave: a fill that is 0.87 of the
+    // way to the reference on ground that is 0.87 short of it is the fill
+    // doing what it says.
+    const ratio = median(within) / fill.energyRef;
+    expect(ratio).toBeGreaterThan(0.7);
+    expect(ratio).toBeLessThan(1.15);
+  });
+
+  it('leaves the ground that has its detail bit-identical', () => {
+    let zero = 0;
+    let touched = 0;
+    for (let i = 0; i < W * H; i++) {
+      if (fill.deficit[i] !== 0) continue;
+      zero++;
+      if (fill.delta[i] !== 0) touched++;
+    }
+    expect(zero).toBeGreaterThan(0.05 * W * H);
+    expect(touched).toBe(0);
+  });
+
+  it('adds no brightness', () => {
+    // The map's mean in linear light is the body's albedo, so a fill that
+    // brightened what it touched would move the body off the albedo curve the
+    // whole batch is graded against.
+    expect(Math.abs(fill.meanDelta)).toBeLessThan(0.02);
+    let before = 0;
+    let after = 0;
+    for (let i = 0; i < W * H; i++) { before += band[i]; after += filled[i]; }
+    expect(Math.abs(after - before) / before).toBeLessThan(0.001);
+  });
+
+  it('fades in over degrees rather than drawing its own edge', () => {
+    // Across the patch's own boundary the deficit must climb, not jump.
+    let worst = 0;
+    for (let y = 320; y < 680; y++) {
+      for (let x = 0; x < W; x++) {
+        worst = Math.max(worst, Math.abs(fill.deficit[y * W + x] - fill.deficit[y * W + ((x + 1) % W)]));
+      }
+    }
+    expect(worst).toBeLessThan(0.03);
+  });
+});
+
+describe('findEdges and levelEdges', () => {
+  /** A grained field with a constant offset added over one half, so there is a
+   *  step of a known size down one meridian and nothing else. */
+  function stepped(offset: number, at: number) {
+    // No middle octave: this instrument reads the picture at a frame's own
+    // scale, and grain there is what it has to tell a step apart from.
+    const { band } = synthetic([], { midAmp: 0, sharpGain: 1 });
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) if (x >= at && x < at + W / 2) band[y * W + x] += offset;
+    }
+    return band;
+  }
+
+  // Only the middle latitudes: this raster's grain is laid out in PIXELS, so
+  // toward its poles it is finer on the ground than a real map's would be, and
+  // a scan there would be reading the test's own geometry.
+  const spec = {
+    lookDeg: 3, alongDeg: 6, minStep: 8, minSpanDeg: 20, smoothDeg: 2, skipLatDeg: 45,
+  };
+
+  it('finds a straight step where it is and sizes it', () => {
+    const band = stepped(18, 300);
+    const { edges } = findEdges(band, W, H, spec, PX_PER_DEG, null);
+    const meridians = edges.filter((e) => e.axis === 'meridian');
+    expect(meridians.length).toBeGreaterThan(0);
+    const near = meridians.filter((e) => Math.abs(e.at - 300) <= 6 || Math.abs(e.at - (300 + W / 2)) <= 6);
+    expect(near.length).toBe(meridians.length);
+    expect(Math.abs(near[0].step)).toBeGreaterThan(14);
+  });
+
+  it('closes the step and leaves the ground its detail', () => {
+    const band = stepped(18, 300);
+    const before = findEdges(band, W, H, spec, PX_PER_DEG, null).edges.slice(0, 2);
+    const detail = energy(band);
+    const solved = levelEdges(band, W, H, spec, PX_PER_DEG, null);
+    // A relaxation that stopped on its sweep count rather than on its
+    // tolerance applies a field bigger than the harmonic one it stands for.
+    expect(solved.converged).toBe(true);
+    expect(solved.residual).toBeLessThan(0.01);
+    const after = findEdges(band, W, H, spec, PX_PER_DEG, null, before).edges;
+    for (let k = 0; k < before.length; k++) {
+      expect(Math.abs(after[k].step)).toBeLessThan(0.3 * Math.abs(before[k].step));
+      // And under the threshold that counts as a step at all, which is the
+      // claim that matters: what is left is not a boundary any more.
+      expect(Math.abs(after[k].step)).toBeLessThan(spec.minStep);
+    }
+    const now = energy(band);
+    const kept: number[] = [];
+    for (let i = 0; i < W * H; i += 7) if (detail[i] > 0) kept.push(now[i] / detail[i]);
+    expect(median(kept)).toBeGreaterThan(0.97);
+  });
+
+  it('leaves nothing straight behind, and the mean where it was', () => {
+    // The correction this replaced spread half a step into each side over a
+    // fixed ramp: it closed the boundary and left a band a few degrees wide
+    // with ENDS, and where it stopped it drew a soft rectangle of its own. A
+    // harmonic field cannot do that — it has no interior maximum to end on —
+    // so a fresh scan of the corrected map finds no straight line anywhere.
+    const band = stepped(18, 300);
+    let was = 0;
+    for (let i = 0; i < W * H; i++) was += band[i];
+    expect(findEdges(band, W, H, spec, PX_PER_DEG, null).edges.length).toBeGreaterThan(0);
+    levelEdges(band, W, H, spec, PX_PER_DEG, null);
+    expect(findEdges(band, W, H, spec, PX_PER_DEG, null).edges).toEqual([]);
+    let now = 0;
+    for (let i = 0; i < W * H; i++) now += band[i];
+    expect(Math.abs(now - was) / (W * H)).toBeLessThan(0.01);
+  });
+
+  it('closes a boundary only along the run it measured', () => {
+    // A frame boundary is a segment, not a line round the body. Ground on the
+    // same column beyond the segment carries steps of its own — a crater wall
+    // here — and a jump laid along the whole column turns each of them into a
+    // step in the correction: a grid of plateaus with straight edges, which is
+    // the very thing this pass exists to remove.
+    //
+    // Its own raster, at the proportions where that shows: grain light enough
+    // that a local feature registers at the finder's smoothing, on a map
+    // coarse enough that the feature is longer than the finder's own reach
+    // along the line.
+    const LW = 1024;
+    const LH = 512;
+    const LPPD = LW / 360;
+    const noise = valueNoise(LW);
+    const fine = noise.matched([{ ...wrappingCell(LW, 4), amp: 10 }, { ...wrappingCell(LW, 9), amp: 8 }], 7);
+    const slow = noise.matched([{ ...wrappingCell(LW, 400), amp: 60 }], 21);
+    const band = new Float32Array(LW * LH);
+    for (let y = 0; y < LH; y++) {
+      for (let x = 0; x < LW; x++) band[y * LW + x] = 120 + slow(x, y) + fine(x, y);
+    }
+    const at = 300;
+    // Inside the latitudes the finder scans, and shorter than them, so there
+    // is scanned ground on the same column beyond both ends of the run.
+    const top = Math.round((3 * LH) / 8);
+    const bottom = Math.round((5 * LH) / 8);
+    for (let y = top; y < bottom; y++) {
+      for (let x = at; x < at + LW / 2; x++) band[y * LW + x] += 18;
+    }
+    // The local feature: 14 counts brighter on one side of the line, outside
+    // the run but inside the scanned latitudes.
+    const fy = Math.round(0.3 * LH);
+    for (let y = fy - 20; y <= fy + 20; y++) {
+      for (let x = at; x < at + 12; x++) band[y * LW + x] += 14;
+    }
+    const contrastAt = (y: number) => band[y * LW + at + 4] - band[y * LW + at - 4];
+    const featureBefore = contrastAt(fy);
+    const before = findEdges(band, LW, LH, spec, LPPD, null).edges
+      .filter((e) => e.axis === 'meridian' && Math.abs(e.at - at) <= 6);
+    expect(before.length).toBeGreaterThan(0);
+    const snapshot = Float32Array.from(band);
+    levelEdges(band, LW, LH, spec, LPPD, null);
+    // Inside the run the step is closed.
+    const after = findEdges(band, LW, LH, spec, LPPD, null, before).edges;
+    expect(Math.abs(after[0].step)).toBeLessThan(spec.minStep);
+    // Beyond the run the correction steps across the column by nothing: the
+    // feature keeps its own contrast, and the scanned rows above the run gain
+    // no ledge along the line. With the jump laid along the whole column the
+    // feature lost two thirds of its contrast and the ledge ran to five counts.
+    expect(Math.abs(contrastAt(fy) - featureBefore)).toBeLessThan(1);
+    let ledge = 0;
+    let rows = 0;
+    for (let y = Math.round(LH / 4) + 4; y < top - 4; y++) {
+      const d = (band[y * LW + at + 4] - snapshot[y * LW + at + 4]) - (band[y * LW + at - 4] - snapshot[y * LW + at - 4]);
+      ledge += Math.abs(d);
+      rows++;
+    }
+    expect(ledge / rows).toBeLessThan(1);
+  });
+
+  it('leaves a slow gradient alone', () => {
+    // A step is what the ground does ON TOP of the slope it already has. A
+    // body's own albedo runs from bright to dark over tens of degrees, and
+    // flattening a stretch of that would put a ledge where there was none.
+    const { band } = synthetic([], { midAmp: 0, sharpGain: 1 });
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) band[y * W + x] += 40 * Math.sin((2 * Math.PI * x) / W);
+    }
+    const { edges } = findEdges(band, W, H, spec, PX_PER_DEG, null);
+    expect(edges.filter((e) => e.axis === 'meridian').length).toBe(0);
+  });
+});
+
+describe('valueNoise', () => {
+  it('meets itself at the map edge when the cell is told how many fit', () => {
+    const noise = valueNoise(W);
+    const octave = { ...wrappingCell(W, 13), amp: 100 };
+    const grain = noise.matched([octave], 3);
+    for (const y of [0, 137, 511]) expect(grain(W, y)).toBeCloseTo(grain(0, y), 9);
+  });
+
+  it('has the spread its amplitude says it has', () => {
+    // The fill's whole claim is that it carries the amount of variation it
+    // measured, and that claim is this constant.
+    const noise = valueNoise(W);
+    const grain = noise.matched([{ ...wrappingCell(W, 8), amp: 4.63 }], 5);
+    let sum = 0;
+    let sq = 0;
+    let n = 0;
+    for (let y = 0; y < 200; y++) {
+      for (let x = 0; x < W; x++) { const v = grain(x, y); sum += v; sq += v * v; n++; }
+    }
+    const std = Math.sqrt(sq / n - (sum / n) ** 2);
+    expect(std).toBeGreaterThan(0.95);
+    expect(std).toBeLessThan(1.05);
+  });
+});
+
+describe('traceCurves and the curved boundaries it levels', () => {
+  // A frame boundary that is neither a meridian nor a parallel: a sinusoid all
+  // the way round the map, smeared ground on one side of it, and a step whose
+  // SIGN changes four times along its length. The scan cannot see this — it
+  // keeps runs of one sign along a row or a column — and it is what a mosaic's
+  // frame outlines actually look like.
+  const CURVE = (x: number) => 600 + 80 * Math.sin((2 * Math.PI * 3 * x) / W);
+  const SLOPE = (x: number) => 80 * ((2 * Math.PI * 3) / W) * Math.cos((2 * Math.PI * 3 * x) / W);
+  const STEP = (x: number) => 16 * Math.sin((2 * Math.PI * 2 * x) / W);
+  // A real albedo boundary: a brightness step with the same texture either
+  // side, which is ground truth and has to come through untouched. It turns
+  // fast enough that no row carries a run of one sign for the span the
+  // straight scan asks for, so what reaches it is the tracer or nothing.
+  const ALBEDO = (x: number) => 320 + 45 * Math.sin((2 * Math.PI * 4 * x) / W + 1.7);
+  const ALBEDO_SLOPE = (x: number) => 45 * ((2 * Math.PI * 4) / W) * Math.cos((2 * Math.PI * 4 * x) / W + 1.7);
+
+  // The band the smear rule reads the deficit in, scaled to this raster like
+  // every other degree here, and the rule itself switched off for the scene
+  // below. This scene has one coarse region against sharp ground, so its
+  // boundary sits on the OUTER edge of the deficit, where a field blurred over
+  // degrees reads about a third of what it reads inside — 0.2 to 0.4 in the
+  // band, against 0.6 to 0.9 across a source mosaic's own frame boundaries,
+  // which lie inside broad coarse ground with another coarse product on the
+  // far side. The two scenes after this one carry the rule at its real
+  // threshold, in both directions.
+  const EDGE = {
+    lookDeg: 3, alongDeg: 6, minStep: 4, minSpanDeg: 20, smoothDeg: 2, skipLatDeg: 45,
+    curves: {
+      searchDeg: 10, traceDeg: 2, fineDeg: SPEC.fineDeg, minEnergyJump: 0.35,
+      sideOffsetDeg: 1.8, sideBandDeg: 3, sideDeficitMin: 0, sideContinueMin: 0,
+    },
+  };
+  const TRACE_CELL = (EDGE.curves.traceDeg * W) / 360;
+
+  // A quiet middle octave, for the reason the straight-step tests have one:
+  // this instrument reads the picture at a frame's own scale, and grain there
+  // is what a step has to be told apart from. At the raster's own 24 it reads
+  // 3 counts of step on a boundary that has none.
+  function withFrame({ cap = 0, albedo = false, curve = CURVE, step = true } = {}) {
+    const { band } = synthetic([(x, y) => y > curve(x)], { midAmp: 12, sharpGain: 1 });
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        if (step && y > curve(x)) band[y * W + x] += STEP(x);
+        if (albedo && y > ALBEDO(x)) band[y * W + x] += 12 * Math.max(0, 1 - (y - ALBEDO(x)) / 100);
+        if (cap && y >= cap) band[y * W + x] = 0;
+      }
+    }
+    const valid = new Uint8Array(W * H);
+    for (let i = 0; i < W * H; i++) valid[i] = band[i] >= 12 ? 1 : 0;
+    return { band, valid: cap ? valid : null };
+  }
+
+  const scene = withFrame({ albedo: true });
+  const deficit = detailDeficit(scene.band, W, H, SPEC, PX_PER_DEG, null).deficit;
+  const { lowPass } = findEdges(scene.band, W, H, EDGE, PX_PER_DEG, null);
+  const traced = traceCurves(scene.band, W, H, EDGE, PX_PER_DEG, null, deficit, lowPass);
+
+  /** The steps a traced boundary carries, measured on whatever band is given —
+   *  the same instrument, at the same places, before and after. */
+  function stepsOn(band: Float32Array) {
+    const { lowPass: low } = findEdges(band, W, H, EDGE, PX_PER_DEG, null);
+    const curves = traceCurves(band, W, H, EDGE, PX_PER_DEG, null, deficit, low);
+    return curves.flatMap((c) => c.points.map((q) => Math.abs(q.smoothed)));
+  }
+
+  it('finds the frame boundary and puts it where the boundary is', () => {
+    expect(traced.length).toBe(1);
+    expect(traced[0].closed).toBe(true);
+    const points = traced[0].points;
+    // Inside one trace cell everywhere and half of one on average. What is
+    // left is where the energy's own half-way level sits: the fine band is
+    // taken against a low pass that reaches across the boundary, so it lands
+    // about one blur radius into the smoother side. That radius is 0.9 degrees
+    // here because this raster's octaves are scaled up to fit it; on a source
+    // mosaic it is 0.12, a twentieth of a degree of ground.
+    let worst = 0;
+    let sum = 0;
+    for (const q of points) {
+      const off = Math.abs(q.y - CURVE(q.x)) / Math.hypot(1, SLOPE(q.x));
+      worst = Math.max(worst, off);
+      sum += off;
+    }
+    expect(worst).toBeLessThan(TRACE_CELL);
+    expect(sum / points.length).toBeLessThan(TRACE_CELL / 2);
+    // The whole turn of it, as one curve with no ends.
+    expect(traced[0].spanDeg).toBeGreaterThan(300);
+  });
+
+  it('keeps the sign changes along the boundary', () => {
+    const steps = traced[0].points.map((q) => q.smoothed);
+    expect(Math.max(...steps)).toBeGreaterThan(8);
+    expect(Math.min(...steps)).toBeLessThan(-8);
+  });
+
+  it('does not chase a boundary that is only a change of albedo', () => {
+    for (const q of traced[0].points) {
+      expect(Math.abs(q.y - ALBEDO(q.x))).toBeGreaterThan(40);
+    }
+  });
+
+  it('closes the curved step, which the straight scan cannot, and leaves the albedo boundary where it was', () => {
+    const before = stepsOn(scene.band);
+    expect(Math.max(...before)).toBeGreaterThan(10);
+
+    const lines = Float32Array.from(scene.band);
+    levelEdges(lines, W, H, EDGE, PX_PER_DEG, null, null);
+    expect(Math.max(...stepsOn(lines))).toBeGreaterThan(8);
+
+    const both = Float32Array.from(scene.band);
+    levelEdges(both, W, H, EDGE, PX_PER_DEG, null, deficit);
+    const after = stepsOn(both);
+    expect(Math.max(...after)).toBeLessThan(3);
+    expect(median(after)).toBeLessThan(1);
+
+    // The albedo boundary, against the run that had no curves at all: whatever
+    // the straight scan does to it, the curves do nothing.
+    const r = EDGE.smoothDeg * PX_PER_DEG;
+    const albedoStep = (band: Float32Array, x: number) => {
+      const low = blurMono(band, W, H, latScaledRadii(H, r), r);
+      const m = ALBEDO_SLOPE(x);
+      const nx = -m / Math.hypot(1, m);
+      const ny = 1 / Math.hypot(1, m);
+      const d = EDGE.lookDeg * PX_PER_DEG;
+      const at = (t: number) => low[Math.min(H - 1, Math.max(0, Math.round(ALBEDO(x) + ny * t))) * W
+        + (((Math.round(x + nx * t) % W) + W) % W)];
+      return 1.5 * (at(d) - at(-d)) - 0.5 * (at(3 * d) - at(-3 * d));
+    };
+    for (let x = 0; x < W; x += 256) {
+      expect(Math.abs(albedoStep(both, x) - albedoStep(lines, x))).toBeLessThan(1);
+    }
+  });
+
+  it('rejects a seed with no energy step under it', () => {
+    // Uniform texture, one albedo boundary, and a deficit handed in whose level
+    // set lies along it. Every point of that contour has to be dropped: a
+    // change of albedo is the body's own, and levelling it would take out
+    // ground the mosaic really measured.
+    const { band } = synthetic([], { midAmp: 12, sharpGain: 1 });
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (y > ALBEDO(x)) band[y * W + x] += 12;
+    const pretend = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) pretend[y * W + x] = y > ALBEDO(x) ? 0.9 : 0.1;
+    const smooth = blurMono(pretend, W, H, latScaledRadii(H, 40), 40);
+    const { lowPass: lp } = findEdges(band, W, H, EDGE, PX_PER_DEG, null);
+    // As it is cut: the seed is the energy contour, which uniform texture does
+    // not offer, so nothing is even proposed here.
+    expect([...traceCurves(band, W, H, EDGE, PX_PER_DEG, null, smooth, lp)]).toEqual([]);
+    // And with the deficit seeding instead, so that a contour IS proposed along
+    // the albedo boundary and the energy guard is the only thing that can
+    // reject it — the smear rule taken out of the way, since this deficit is
+    // deep enough on one side to satisfy it.
+    const spec = { ...EDGE, curves: { ...EDGE.curves, seedFrom: ['deficit' as const], sideDeficitMin: 0, sideContinueMin: 0 } };
+    expect([...traceCurves(band, W, H, spec, PX_PER_DEG, null, smooth, lp)]).toEqual([]);
+  });
+
+  it('cuts a curve where it runs into ground that was never measured', () => {
+    const CAP = 680;
+    const deep = (x: number) => 600 + 140 * Math.sin((2 * Math.PI * 2 * x) / W);
+    const s2 = withFrame({ cap: CAP, curve: deep });
+    const d2 = detailDeficit(s2.band, W, H, SPEC, PX_PER_DEG, s2.valid).deficit;
+    const { lowPass: lp2 } = findEdges(s2.band, W, H, EDGE, PX_PER_DEG, s2.valid);
+    const cut = traceCurves(s2.band, W, H, EDGE, PX_PER_DEG, s2.valid, d2, lp2);
+    expect(cut.length).toBeGreaterThan(0);
+    for (const c of cut) {
+      expect(c.closed).toBe(false);
+      for (const q of c.points) expect(q.y).toBeLessThan(CAP);
+    }
+    // And the part of the boundary that is over real ground is still traced.
+    expect(cut.reduce((t, c) => t + c.spanDeg, 0)).toBeGreaterThan(60);
+  });
+});
+
+describe('smearRunsOf, the two bars on their own', () => {
+  // The rule reads a boundary at a fixed spacing along it, so a raster scene
+  // can only put a feature in front of it that is wider than that spacing.
+  // These are the same three cases with the sampling taken out: readings in,
+  // stretches out.
+  it('carries a boundary through a dip that stays above the low bar', () => {
+    const sides = [0.45, 0.44, 0.31, 0.28, 0.30, 0.44, 0.46, 0.45];
+    expect(smearRunsOf(sides)).toEqual([[0, 7]]);
+  });
+
+  it('drops a boundary whose middle reading misses the high bar, stretch and all', () => {
+    // Five readings deep enough to be a boundary on their own, inside eleven
+    // that are not: the stretch does not get a vote of its own.
+    const sides = [0.27, 0.26, 0.27, 0.45, 0.46, 0.45, 0.44, 0.45, 0.27, 0.26, 0.27, 0.28, 0.26, 0.27, 0.26, 0.27];
+    expect(median(sides)).toBeLessThan(0.35);
+    expect(smearRunsOf(sides)).toEqual([]);
+  });
+
+  it('ends a boundary at a dip below the low bar and leaves the pieces to the span rule', () => {
+    const sides = [0.45, 0.44, 0.46, 0.12, 0.10, 0.44, 0.45, 0.46];
+    expect(smearRunsOf(sides)).toEqual([[0, 2], [5, 7]]);
+  });
+
+  it('answers nothing for nothing', () => {
+    expect(smearRunsOf([])).toEqual([]);
+  });
+
+  it('takes the bars it is given', () => {
+    const sides = [0.45, 0.30, 0.45];
+    expect(smearRunsOf(sides, { sideContinueMin: 0.35 })).toEqual([[0, 0], [2, 2]]);
+    expect(smearRunsOf(sides, { sideDeficitMin: 0.5 })).toEqual([]);
+  });
+});
+
+// Each scene here builds the full raster and runs the leveller over it, which
+// is more than a test's default budget allows for when the suite runs them
+// alongside everything else.
+const SLOW = 30000;
+
+describe('the smear rule that decides which traced boundaries are levelled', () => {
+  // The seed is an energy contour and the guard that went with it was an
+  // energy step, so seed and guard were the same signal and a contact between
+  // two real terrains of different roughness answered both. These two scenes
+  // are that pair: ground the mosaic really imaged on both sides, which has to
+  // come through untouched, and two coarse products meeting, which has to be
+  // levelled. Both run at the threshold the maps are cut with.
+  const EDGE = {
+    lookDeg: 3, alongDeg: 6, minStep: 4, minSpanDeg: 20, smoothDeg: 2, skipLatDeg: 45,
+    // Degrees, scaled to this raster the way every other degree here is; the
+    // deficit the rule asks for is the shipped one.
+    curves: {
+      searchDeg: 10, traceDeg: 2, fineDeg: SPEC.fineDeg, minEnergyJump: 0.35,
+      sideOffsetDeg: 1.8, sideBandDeg: 3,
+    },
+  };
+  const OFF = { ...EDGE, curves: { ...EDGE.curves, sideDeficitMin: 0, sideContinueMin: 0 } };
+
+  const noise = valueNoise(W);
+  const fine = noise.matched([{ ...wrappingCell(W, 4), amp: 26 }, { ...wrappingCell(W, 9), amp: 18 }], 7);
+  const mid = noise.matched([{ ...wrappingCell(W, 40), amp: 12 }], 13);
+  const slow = noise.matched([{ ...wrappingCell(W, 400), amp: 60 }], 21);
+
+  /** Every |step| the tracer reads along the curves it keeps on `band`. */
+  function stepsAlong(band: Float32Array, spec: typeof EDGE) {
+    const deficit = detailDeficit(band, W, H, SPEC, PX_PER_DEG, null).deficit;
+    const { lowPass } = findEdges(band, W, H, spec, PX_PER_DEG, null);
+    return traceCurves(band, W, H, spec, PX_PER_DEG, null, deficit, lowPass)
+      .flatMap((c) => c.points.map((q) => Math.abs(q.smoothed)));
+  }
+
+  describe('two real terrains meeting', () => {
+    // Isotropic grain either side of a wandering contact, one side carrying
+    // 0.4 of the other's contrast at EVERY scale — so the finest band's energy
+    // steps by more than half across it and seeds a curve, while the ratio the
+    // deficit is measured as is identical either side and neither side is a
+    // smear. And a real albedo difference across it, which is the ground truth
+    // that has to survive. Nothing here is a mosaic artefact.
+    const CONTACT = (x: number) => 320 + 45 * Math.sin((2 * Math.PI * 6 * x) / W + 1.7);
+    const band = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const smooth = y < CONTACT(x);
+        const g = smooth ? 0.4 : 1;
+        band[y * W + x] = 120 + slow(x, y) + g * (mid(x, y) + fine(x, y)) + (smooth ? 18 : 0);
+      }
+    }
+    const deficit = detailDeficit(band, W, H, SPEC, PX_PER_DEG, null).deficit;
+
+    /** Each terrain's mean brightness over its bulk, well clear of the contact,
+     *  which is what the albedo difference between them IS. */
+    function albedoGap(b: Float32Array) {
+      let hi = 0;
+      let nHi = 0;
+      let lo = 0;
+      let nLo = 0;
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x += 8) {
+          const d = y - CONTACT(x);
+          if (d < -100 && y > 120) { hi += b[y * W + x]; nHi++; } else if (d > 220 && y < 900) { lo += b[y * W + x]; nLo++; }
+        }
+      }
+      return hi / nHi - lo / nLo;
+    }
+
+    it('has a deficit of nothing on either side of the contact', () => {
+      // The two terrains differ in contrast, not in the share of their
+      // variation that sits in the finest band, and it is the share the
+      // detector measures.
+      const at = (x: number, y: number) => deficit[Math.min(H - 1, Math.max(0, Math.round(y))) * W
+        + (((Math.round(x) % W) + W) % W)];
+      for (let x = 0; x < W; x += 128) {
+        expect(at(x, CONTACT(x) - 3 * PX_PER_DEG)).toBeLessThan(0.3);
+        expect(at(x, CONTACT(x) + 3 * PX_PER_DEG)).toBeLessThan(0.3);
+      }
+    });
+
+    it('is followed as a boundary and erased as an albedo step with the rule off', () => {
+      // What the rule is for: without it the contact is traced and most of a
+      // real albedo difference goes.
+      const traced = traceCurves(band, W, H, OFF, PX_PER_DEG, null, deficit,
+        findEdges(band, W, H, OFF, PX_PER_DEG, null).lowPass);
+      expect(traced.length).toBeGreaterThan(0);
+      expect(traced.reduce((t, c) => t + c.spanDeg, 0)).toBeGreaterThan(150);
+      const levelled = Float32Array.from(band);
+      levelEdges(levelled, W, H, OFF, PX_PER_DEG, null, deficit);
+      expect(albedoGap(levelled)).toBeLessThan(0.5 * albedoGap(band));
+    }, SLOW);
+
+    it('leaves no curve, and the albedo step, under the rule', () => {
+      const kept = traceCurves(band, W, H, EDGE, PX_PER_DEG, null, deficit,
+        findEdges(band, W, H, EDGE, PX_PER_DEG, null).lowPass);
+      expect(kept.length).toBe(0);
+      expect(kept.stats?.traced).toBeGreaterThan(0);
+      expect(kept.stats?.droppedShare).toBeCloseTo(1, 5);
+
+      const levelled = Float32Array.from(band);
+      levelEdges(levelled, W, H, EDGE, PX_PER_DEG, null, deficit);
+      const was = albedoGap(band);
+      expect(Math.abs(albedoGap(levelled) - was)).toBeLessThan(0.05 * was);
+    }, SLOW);
+
+    // A deficit handed in rather than measured, so the bars are what the next
+    // three tests are about and not the blur: it ramps across the contact over
+    // less than the band's own offset, so each side's band reads the profile
+    // it is given, and the profile itself turns over three degrees of
+    // longitude so that its own slope never out-runs the one across the
+    // contact and turns the normal along the curve instead of across it.
+    const handed = (profile: (x: number) => number) => {
+      const ramp = 1.5 * PX_PER_DEG;
+      const d = new Float32Array(W * H);
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          const t = Math.min(1, Math.max(0, (CONTACT(x) - y) / (2 * ramp) + 0.5));
+          d[y * W + x] = profile(x) * t * t * (3 - 2 * t);
+        }
+      }
+      return d;
+    };
+    /** `inside` over a window `widthDeg` wide every `periodDeg` of longitude,
+     *  `outside` between them, turning over `edgeDeg`. Repeating, so wherever
+     *  along the contact a boundary happens to be traced it meets the same
+     *  pattern, and the period is under the length of what gets traced here so
+     *  every boundary meets a whole one.
+     *
+     *  Every window is several times `lookDeg` across, because that is how far
+     *  apart the rule's own readings are: a feature narrower than the spacing
+     *  is a feature the rule samples once or not at all, and a test built on
+     *  one measures where the readings happened to land rather than what the
+     *  bars do. */
+    const pulse = (
+      periodDeg: number, widthDeg: number, inside: number, outside: number, edgeDeg = 3,
+    ) => (x: number) => {
+      const at = (((x / PX_PER_DEG) % periodDeg) + periodDeg) % periodDeg;
+      const fromCentre = Math.min(at, periodDeg - at);
+      const t = Math.min(1, Math.max(0, (fromCentre - widthDeg / 2) / edgeDeg));
+      return inside + (outside - inside) * (t * t * (3 - 2 * t));
+    };
+    const trace = (profile: (x: number) => number, spec: typeof EDGE = EDGE) =>
+      traceCurves(band, W, H, spec, PX_PER_DEG, null, handed(profile),
+        findEdges(band, W, H, spec, PX_PER_DEG, null).lowPass);
+    const totalSpan = (cs: { spanDeg: number }[]) => cs.reduce((t, c) => t + c.spanDeg, 0);
+    /** Ground degrees covered by the longest run of points at or above `bar`. */
+    const longestAbove = (c: { points: { x: number; y: number; sideDeficit?: number }[] }, bar: number) => {
+      let best = 0;
+      let run = 0;
+      for (let k = 0; k < c.points.length; k++) {
+        const q = c.points[k];
+        if ((q.sideDeficit ?? 0) < bar) { run = 0; continue; }
+        if (k > 0 && (c.points[k - 1].sideDeficit ?? 0) >= bar) {
+          const a = c.points[k - 1];
+          const lat = ((90 - (((a.y + q.y) / 2 + 0.5) * 180) / H) * Math.PI) / 180;
+          run += Math.hypot((q.x - a.x) * Math.max(0.08, Math.cos(lat)), q.y - a.y) / PX_PER_DEG;
+        }
+        best = Math.max(best, run);
+      }
+      return best;
+    };
+
+    it('carries a kept boundary through a dip that stays above the low bar', () => {
+      // Deep enough almost everywhere, dipping under the high bar but never
+      // under the low one. The dip is not where the boundary ends.
+      const profile = pulse(20, 6, 0.3, 0.45, 2);
+      const all = trace(profile, OFF);
+      const kept = trace(profile);
+      expect(all.length).toBeGreaterThan(0);
+      expect(kept.length).toBe(all.length);
+      expect(totalSpan(kept)).toBeCloseTo(totalSpan(all), 3);
+      // And the dip really is under the high bar, inside a boundary that was
+      // kept whole regardless.
+      const sides = kept.flatMap((c) => c.points.map((q) => q.sideDeficit ?? 0));
+      expect(Math.min(...sides)).toBeLessThan(0.35);
+      expect(Math.min(...sides)).toBeGreaterThanOrEqual(0.25);
+    }, SLOW);
+
+    it('drops a long boundary entire for the sake of one good stretch in it', () => {
+      // The cost of asking the high bar of the boundary as a whole. Deep
+      // stretches eight degrees wide -- wider than a boundary has to be --
+      // inside ground that mostly reads under the bar.
+      const profile = pulse(26, 8, 0.45, 0.27, 2);
+      const all = trace(profile, OFF);
+      const kept = trace(profile);
+      const sidesOf = (c: { points: { sideDeficit?: number }[] }) => c.points.map((q) => q.sideDeficit ?? 0);
+
+      // The candidates the high bar turns down, and the smear sitting inside
+      // them: read at its full depth, so what is dropped is not a boundary the
+      // rule failed to see.
+      const turnedDown = all.filter((c) => median(sidesOf(c)) < 0.35);
+      expect(turnedDown.length).toBeGreaterThan(0);
+      expect(Math.max(...turnedDown.flatMap(sidesOf))).toBeGreaterThan(0.43);
+      expect(Math.max(...turnedDown.map((c) => longestAbove(c, 0.35)))).toBeGreaterThan(3);
+
+      // None of them is levelled anywhere along its length: nothing below the
+      // bar survives, whole or in part.
+      expect(kept.length).toBeLessThan(all.length);
+      for (const c of kept) expect(median(sidesOf(c))).toBeGreaterThanOrEqual(0.35);
+    }, SLOW);
+
+    it('ends a kept boundary at a dip below the low bar, and the span rule takes the pieces', () => {
+      // Deep enough to pass the high bar, cut through by ground the fill is
+      // not treating as a smear at all. The dips repeat inside twenty degrees,
+      // which is what makes both halves of this test hold whatever stretch of
+      // the contact happens to be traced.
+      const profile = pulse(20, 6, 0.1, 0.45, 2);
+
+      // Asked for five degrees of ground, the pieces either side of a dip are
+      // boundaries in their own right.
+      const loose = { ...EDGE, minSpanDeg: 5 };
+      const pieces = trace(profile, loose);
+      const whole = trace(profile, { ...loose, curves: OFF.curves });
+      expect(whole.length).toBeGreaterThan(0);
+      expect(pieces.length).toBeGreaterThan(1);
+      expect(totalSpan(pieces)).toBeLessThan(totalSpan(whole));
+      for (const c of pieces) {
+        expect(c.spanDeg).toBeGreaterThanOrEqual(5);
+        for (const q of c.points) expect(q.sideDeficit).toBeGreaterThanOrEqual(0.25);
+      }
+
+      // Asked for twenty, no piece is one: a boundary that clears the high bar
+      // over its whole length is still levelled nowhere, because what the low
+      // bar leaves is shorter than a boundary has to be.
+      expect(trace(profile, OFF).length).toBeGreaterThan(0);
+      expect(trace(profile).length).toBe(0);
+    }, SLOW);
+  });
+
+  describe('two coarse products meeting', () => {
+    // What a mosaic really has where its frames meet: sharp reference ground
+    // fading into a half-detailed product, and inside that a fully smeared
+    // frame with its own calibration offset along a wandering outline. The
+    // energy steps across the outline and the ground beside it is a smear, so
+    // this is the boundary the pass exists for.
+    const CURVE = (x: number) => 600 + 80 * Math.sin((2 * Math.PI * 3 * x) / W);
+    const STEP = (x: number) => 16 * Math.sin((2 * Math.PI * 2 * x) / W);
+    const band = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const t = Math.min(1, Math.max(0, (y - 420) / 120));
+        const g = y > CURVE(x) ? 0 : 1 - 0.5 * (t * t * (3 - 2 * t));
+        band[y * W + x] = 120 + slow(x, y) + mid(x, y) + g * fine(x, y) + (y > CURVE(x) ? STEP(x) : 0);
+      }
+    }
+
+    it('keeps the boundary and closes its step', () => {
+      const before = stepsAlong(band, EDGE);
+      expect(before.length).toBeGreaterThan(0);
+      expect(median(before)).toBeGreaterThan(5);
+
+      const kept = traceCurves(band, W, H, EDGE, PX_PER_DEG, null,
+        detailDeficit(band, W, H, SPEC, PX_PER_DEG, null).deficit,
+        findEdges(band, W, H, EDGE, PX_PER_DEG, null).lowPass);
+      expect(kept.stats?.keptSpanDeg).toBeGreaterThan(100);
+      for (const c of kept) for (const q of c.points) expect(q.sideDeficit).toBeGreaterThanOrEqual(0.25);
+
+      const levelled = Float32Array.from(band);
+      levelEdges(levelled, W, H, EDGE, PX_PER_DEG, null,
+        detailDeficit(band, W, H, SPEC, PX_PER_DEG, null).deficit);
+      expect(median(stepsAlong(levelled, EDGE))).toBeLessThan(2);
+    }, SLOW);
+  });
+});

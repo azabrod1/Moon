@@ -246,6 +246,7 @@ import {
   type SphereScreenProjection,
 } from '../shared/three/projectToScreen';
 import { applyLensShaderUniforms, type LensShaderUniforms } from '../shared/three/lensShader';
+import { setPointEnergyPixelRatio } from '../shared/three/pointEnergy';
 import { isPhoneViewport, setText } from '../shared/dom';
 import { Constellations } from './Constellations';
 import { snapConstellations } from './data/constellationGeometry';
@@ -2262,6 +2263,7 @@ export class PlanetariumMode {
       // Add everything to scene
       this.scene.add(this.solarSystem.sun);
       this.scene.add(this.solarSystem.asteroidBelt);
+      setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, this.renderer.getPixelRatio());
 
       performance.mark('plm:moon-meshes:start');
       for (const planet of this.solarSystem.planets) {
@@ -2877,6 +2879,7 @@ export class PlanetariumMode {
   onResize(): void {
     if (this.starfield) setStarfieldPixelRatio(this.starfield, this.renderer.getPixelRatio());
     if (this.moonDots) this.moonDots.setPixelRatio(this.renderer.getPixelRatio());
+    if (this.solarSystem) setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, this.renderer.getPixelRatio());
     // A resize can carry the layout across the breakpoint, and the phone
     // invariant — the expanded sheet and the body card are never up together —
     // is otherwise enforced only on the edges that OPEN one of them. A window

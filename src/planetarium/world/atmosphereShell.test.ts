@@ -18,6 +18,11 @@ import {
   createAtmosphereShellMaterial,
   drawnGroundRadiusFraction,
   setAtmosphereShellGroundSegments,
+  restShellCrossfade,
+  shellFadeSettled,
+  shellTierAlphas,
+  stepShellCrossfade,
+  type ShellCrossfade,
   type Vec3,
 } from './atmosphereShell';
 import { sphereWidthSegments, upgradeGeometryOnApproach, makeGeometryUpgrade } from '../PlanetFactory';
@@ -379,5 +384,107 @@ describe('the view ray', () => {
     expect(ray.entryDistance).toBe(0);
     expect(ray.r).toBeCloseTo(inside, 12);
     expect(ray.mu).toBeCloseTo(0, 12);
+  });
+});
+
+describe('the tier crossfade', () => {
+  it('splits the distance fade so the two additive materials sum to it', () => {
+    for (const blend of [0, 0.25, 0.5, 0.9, 1]) {
+      const split = shellTierAlphas(0.8, blend);
+      expect(split.analytic + split.lut).toBeCloseTo(0.8, 12);
+      expect(split.lut).toBeCloseTo(0.8 * blend, 12);
+    }
+  });
+
+  it('starts on the analytic material alone and ends on the LUT one alone', () => {
+    expect(shellTierAlphas(1, 0)).toEqual({ analytic: 1, lut: 0 });
+    expect(shellTierAlphas(1, 1)).toEqual({ analytic: 0, lut: 1 });
+    expect(shellTierAlphas(1, 7)).toEqual({ analytic: 0, lut: 1 });
+    expect(shellTierAlphas(1, -1)).toEqual({ analytic: 1, lut: 0 });
+    expect(shellFadeSettled(0.999)).toBe(false);
+    expect(shellFadeSettled(1)).toBe(true);
+  });
+
+  it('draws the incoming material on a sibling until the clock settles, then swaps and carries the fade', () => {
+    const analytic = shell('analytic');
+    const lut = shell('lut');
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 8, 4), analytic);
+    mesh.name = 'EarthAtmosphere';
+    mesh.renderOrder = 1;
+    const state: ShellCrossfade = { fade: null, blend: 0 };
+    analytic.uniforms.alphaScale.value = 0.6;
+
+    stepShellCrossfade(mesh, state, lut, 0.25);
+    expect(mesh.material).toBe(analytic);
+    expect(state.blend).toBe(0.25);
+    const sibling = state.fade!;
+    // The same geometry and transform, the shell's own draw slot, no pick.
+    expect(sibling.parent).toBe(mesh);
+    expect(sibling.geometry).toBe(mesh.geometry);
+    expect(sibling.material).toBe(lut);
+    expect(sibling.renderOrder).toBe(1);
+    expect(sibling.name).toBe('EarthAtmosphereFade');
+    const hits: THREE.Intersection[] = [];
+    sibling.raycast(new THREE.Raycaster(new THREE.Vector3(0, 0, 5), new THREE.Vector3(0, 0, -1)), hits);
+    expect(hits).toHaveLength(0);
+
+    // One sibling for the whole fade, and the mode's split written to both.
+    stepShellCrossfade(mesh, state, lut, 0.5);
+    expect(state.fade).toBe(sibling);
+    const split = shellTierAlphas(0.6, state.blend);
+    analytic.uniforms.alphaScale.value = split.analytic;
+    lut.uniforms.alphaScale.value = split.lut;
+
+    // Settled: the mesh wears the LUT material alone, at the whole fade.
+    stepShellCrossfade(mesh, state, lut, 1);
+    expect(mesh.material).toBe(lut);
+    expect(state.fade).toBeNull();
+    expect(state.blend).toBe(0);
+    expect(sibling.parent).toBeNull();
+    expect(mesh.children).toHaveLength(0);
+    expect(lut.uniforms.alphaScale.value).toBeCloseTo(0.6, 12);
+    // Steady state is left alone.
+    stepShellCrossfade(mesh, state, lut, 1);
+    expect(mesh.children).toHaveLength(0);
+    expect(mesh.material).toBe(lut);
+  });
+
+  it('rests the shell on the analytic material at once, mid-fade or not, carrying the fade', () => {
+    const analytic = shell('analytic');
+    const lut = shell('lut');
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 8, 4), analytic);
+    const state: ShellCrossfade = { fade: null, blend: 0 };
+    // Mid-fade, with the split written as the mode writes it.
+    stepShellCrossfade(mesh, state, lut, 0.5);
+    analytic.uniforms.alphaScale.value = 0.3;
+    lut.uniforms.alphaScale.value = 0.3;
+    const sibling = state.fade!;
+    restShellCrossfade(mesh, state, analytic);
+    expect(mesh.material).toBe(analytic);
+    expect(mesh.children).toHaveLength(0);
+    expect(sibling.parent).toBeNull();
+    expect(state.fade).toBeNull();
+    expect(analytic.uniforms.alphaScale.value).toBeCloseTo(0.6, 12);
+    // Worn outright: the fade comes across from the material being taken off.
+    stepShellCrossfade(mesh, state, lut, 1);
+    lut.uniforms.alphaScale.value = 0.4;
+    restShellCrossfade(mesh, state, analytic);
+    expect(mesh.material).toBe(analytic);
+    expect(analytic.uniforms.alphaScale.value).toBeCloseTo(0.4, 12);
+    // Already resting: nothing to do.
+    restShellCrossfade(mesh, state, analytic);
+    expect(mesh.material).toBe(analytic);
+  });
+
+  it('runs on the ground haze clock, and the dev pin settles both at once', () => {
+    const mode = src('../PlanetariumMode.ts');
+    // One clock for the limb and the ground: the shell reads the air block's
+    // fade, never a timer of its own.
+    expect(mode).toContain('stepShellCrossfade(mesh, shells, material, planet.fx?.air ? planet.fx.air.uAirBlend.value : 1);');
+    // One sun uniform for both materials: the per-frame feed writes the worn
+    // material only, and during the fade both draw.
+    expect(mode).toContain('shells.lut.uniforms.uSunDirWorld = shells.analytic.uniforms.uSunDirWorld;');
+    // The A/B pin captures steady states, not a frame of the transition.
+    expect(mode).toContain('if (settle && planet.fx?.air) settleSurfaceAir(planet.fx.air);');
   });
 });

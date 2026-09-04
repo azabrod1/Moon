@@ -40,7 +40,7 @@ import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arriv
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { disposeCloudDetailTexture } from './world/cloudDetailNoise';
 import { disposeSurfaceDetailTexture } from './world/surfaceDetailNoise';
-import { advanceSurfaceAir, bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, resetCloudShadowUniforms, setSurfaceSynthesis, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { advanceSurfaceAir, bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, resetCloudShadowUniforms, setSurfaceSynthesis, settleSurfaceAir, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
 import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer, warmBudgetMs } from './world/textureWarmer';
 import { beginSlicedUpload, stepSlicedUpload } from './world/slicedUpload';
@@ -157,7 +157,7 @@ import {
   type ReleaseCandidate,
 } from './world/gpuEnvelope';
 import { AtmosphereLut, type AtmosphereBakeStats, type AtmosphereTables } from './world/atmosphereLut';
-import { bindAtmosphereShellTables, disposeAtmosphereShellMaterial, setAtmosphereShellGroundSegments } from './world/atmosphereShell';
+import { bindAtmosphereShellTables, disposeAtmosphereShellMaterial, dropShellFade, restShellCrossfade, setAtmosphereShellGroundSegments, shellTierAlphas, stepShellCrossfade, type ShellCrossfade } from './world/atmosphereShell';
 import {
   ATMOSPHERE_SPECS,
   ATMOSPHERE_TABLE_SIZES_FULL,
@@ -2139,8 +2139,9 @@ export class PlanetariumMode {
 
   /** Both materials a body's atmosphere shell can wear, and the tables the LUT
    *  one is currently pointed at (a re-bake after a context loss makes new
-   *  ones). The mesh holds whichever is drawing. */
-  private readonly atmosphereShells = new Map<string, {
+   *  ones). The mesh holds whichever is drawing; while the LUT tier fades in,
+   *  a sibling mesh under it draws the incoming material at the fade's weight. */
+  private readonly atmosphereShells = new Map<string, ShellCrossfade & {
     analytic: THREE.ShaderMaterial;
     lut: THREE.ShaderMaterial | null;
     bound: AtmosphereTables | null;
@@ -5373,6 +5374,8 @@ export class PlanetariumMode {
         analytic: planet.atmosphere.material as THREE.ShaderMaterial,
         lut: null,
         bound: null,
+        fade: null,
+        blend: 0,
       };
       this.atmosphereShells.set(planet.data.name, shells);
     }
@@ -5387,6 +5390,9 @@ export class PlanetariumMode {
           sunTan: surfaceShadingArgsOf(planet.mesh.material as THREE.Material)?.sunTan ?? 0,
         },
       });
+      // One sun for both materials: the per-frame sun feed writes whichever
+      // material the mesh is wearing, and during the crossfade both draw.
+      shells.lut.uniforms.uSunDirWorld = shells.analytic.uniforms.uSunDirWorld;
     }
     return shells.lut;
   }
@@ -5417,8 +5423,19 @@ export class PlanetariumMode {
    * Keep a body's shell on the best tier it can draw THIS frame: the LUT
    * material once its tables are baked and validated, the analytic one before
    * that and after a context loss takes the tables with it. The mesh, its
-   * scale and its two per-frame uniforms are shared by both, so the swap is a
-   * material assignment — and never a frame with no shell at all.
+   * scale and its sun uniform are shared by both, so the swap is a material
+   * assignment — and never a frame with no shell at all.
+   *
+   * The tables can land while the player is looking at the body, and the two
+   * looks differ, so the LUT tier does not replace the analytic one in a
+   * single frame: it fades in on the same clock as the ground's haze (the air
+   * block's `uAirBlend`, advanced by syncSurfaceAir just before this), drawn
+   * on a sibling mesh under the shell while the analytic material fades out
+   * on the shell itself (world/atmosphereShell owns the sibling and the swap).
+   * The weights are written with the distance fade, in applyShellAlpha. Once
+   * the clock reaches one the mesh wears the LUT material alone and the
+   * sibling goes. The way back — tables gone — is immediate: a lost context
+   * has no frame to spare for a fade.
    *
    * The LUT material is built on first use, but its program is not linked here:
    * the boot warm-up compiled the same shader with the same table sizes, which
@@ -5458,26 +5475,33 @@ export class PlanetariumMode {
       // geometry every frame, so the silhouette upgrade on approach carries the
       // shell with it and no ray is called ground where none is drawn.
       setAtmosphereShellGroundSegments(material, sphereWidthSegments(planet.mesh));
-      if (mesh.material !== material) {
-        this.carryShellUniforms(shells.analytic, material);
-        mesh.material = material;
-      }
+      // A body with no air block of its own has no clock to fade on.
+      stepShellCrossfade(mesh, shells, material, planet.fx?.air ? planet.fx.air.uAirBlend.value : 1);
       return;
     }
     const shells = this.atmosphereShells.get(name);
-    if (shells?.lut && mesh.material === shells.lut) {
-      this.carryShellUniforms(shells.lut, shells.analytic);
-      mesh.material = shells.analytic;
-      shells.bound = null;
-    }
+    if (!shells) return;
+    restShellCrossfade(mesh, shells, shells.analytic);
+    shells.bound = null;
   }
 
-  /** Hand the live per-frame values to the material taking over, so the swap
-   *  frame does not draw a stale fade or a stale sun. */
-  private carryShellUniforms(from: THREE.ShaderMaterial, to: THREE.ShaderMaterial): void {
-    to.uniforms.alphaScale.value = from.uniforms.alphaScale.value;
-    (to.uniforms.uSunDirWorld.value as THREE.Vector3)
-      .copy(from.uniforms.uSunDirWorld.value as THREE.Vector3);
+  /**
+   * Write the distance fade to the shell. During the tier crossfade it is
+   * split between the two materials so that, under additive blending, the
+   * limb's total light is the fade alone at every step of it.
+   */
+  private applyShellAlpha(planet: PlanetMesh, alpha: number): void {
+    const mesh = planet.atmosphere;
+    if (!mesh) return;
+    const shells = this.atmosphereShells.get(planet.data.name);
+    if (shells?.fade && shells.lut) {
+      const split = shellTierAlphas(alpha, shells.blend);
+      shells.analytic.uniforms.alphaScale.value = split.analytic;
+      shells.lut.uniforms.alphaScale.value = split.lut;
+      return;
+    }
+    const worn = mesh.material as THREE.ShaderMaterial;
+    if (worn.uniforms?.alphaScale) worn.uniforms.alphaScale.value = alpha;
   }
 
   /**
@@ -5607,11 +5631,8 @@ export class PlanetariumMode {
         const innerR = systemR * 0.1;
         const linear = 1 - Math.min(1, Math.max(0, (dist - innerR) / (systemR - innerR)));
         const t = smoothstepUnclamped(linear);
-        const glowMat = planet.atmosphere.material as THREE.ShaderMaterial;
-        if (glowMat.uniforms?.alphaScale) {
-          // Fade fully out at system-edge distance; full strength on close approach.
-          glowMat.uniforms.alphaScale.value = t;
-        }
+        // Fade fully out at system-edge distance; full strength on close approach.
+        this.applyShellAlpha(planet, t);
       }
 
       if (planet.data.name === 'Earth') {
@@ -13960,11 +13981,16 @@ export class PlanetariumMode {
   /** Pin the shells to the analytic tier (or null to let the tables decide) and
    *  report which material each one is wearing now — the A/B a golden pair
    *  needs, without a second session or a different composer path. */
-  devSetAtmosphereTier(tier: 'analytic' | null): Record<string, string> {
+  devSetAtmosphereTier(tier: 'analytic' | null, settle = true): Record<string, string> {
     this.devAtmosphereTier = tier;
     const wearing: Record<string, string> = {};
     for (const planet of this.solarSystem?.planets ?? []) {
       if (!planet.atmosphere) continue;
+      // The pin is an A/B, not a transition: both fades settle at once, so the
+      // pair captures each tier's steady state. `settle: false` is for a
+      // harness that wants to watch the transition itself.
+      this.syncSurfaceAir(planet);
+      if (settle && planet.fx?.air) settleSurfaceAir(planet.fx.air);
       this.syncAtmosphereShell(planet);
       const material = planet.atmosphere.material as THREE.ShaderMaterial;
       wearing[planet.data.name] = material === this.atmosphereShells.get(planet.data.name)?.lut
@@ -18314,6 +18340,7 @@ export class PlanetariumMode {
     // The analytic shells belong to the meshes the solar system owns; the LUT
     // ones were built here, and carry the 1x1 stand-in tables with them.
     for (const shells of this.atmosphereShells.values()) {
+      dropShellFade(shells);
       if (shells.lut) disposeAtmosphereShellMaterial(shells.lut);
     }
     this.atmosphereShells.clear();

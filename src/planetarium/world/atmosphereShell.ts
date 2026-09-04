@@ -414,6 +414,104 @@ export function disposeAtmosphereShellMaterial(material: THREE.ShaderMaterial): 
 }
 
 // ---------------------------------------------------------------------------
+// The tier crossfade
+// ---------------------------------------------------------------------------
+
+/**
+ * The alpha each shell material draws with while the LUT tier takes over from
+ * the analytic one. Both draw with additive blending, so during the fade both
+ * are drawn — the analytic material on the shell, the incoming one on a
+ * sibling mesh — and their weights sum to the distance fade alone: the limb's
+ * total light neither dips nor doubles between the two looks. `blend` is the
+ * ground's own haze-fade clock, so the sky past the limb and the air in front
+ * of the surface arrive together.
+ */
+export function shellTierAlphas(alpha: number, blend: number): { analytic: number; lut: number } {
+  const b = Math.min(1, Math.max(0, blend));
+  return { analytic: alpha * (1 - b), lut: alpha * b };
+}
+
+/** Once the clock reaches one the mesh wears the LUT material alone. */
+export function shellFadeSettled(blend: number): boolean {
+  return blend >= 1;
+}
+
+/** The crossfade's own state, kept beside a body's two materials. */
+export interface ShellCrossfade {
+  /** The sibling drawing the incoming material while the fade runs. */
+  fade: THREE.Mesh | null;
+  /** Where the fade stands this frame, 0 = the worn material alone .. 1 = the
+   *  incoming one alone; 0 again once no fade runs. */
+  blend: number;
+}
+
+/**
+ * Drive one frame of the crossfade toward `incoming` on `mesh`. While `blend`
+ * is short of one, a sibling under the shell draws `incoming` — the same
+ * geometry and transform, the shell's own draw slot, never a pick target —
+ * and the caller splits the distance fade between the two with
+ * shellTierAlphas. At one the mesh takes `incoming` and the sibling goes. A
+ * mesh already wearing `incoming` is left alone.
+ */
+export function stepShellCrossfade(
+  mesh: THREE.Mesh,
+  state: ShellCrossfade,
+  incoming: THREE.ShaderMaterial,
+  blend: number,
+): void {
+  if (mesh.material === incoming) {
+    if (state.fade) wearShellMaterial(mesh, state, incoming);
+    return;
+  }
+  state.blend = Math.min(1, Math.max(0, blend));
+  if (shellFadeSettled(state.blend)) {
+    wearShellMaterial(mesh, state, incoming);
+    return;
+  }
+  if (!state.fade) {
+    const fade = new THREE.Mesh(mesh.geometry, incoming);
+    fade.name = `${mesh.name}Fade`;
+    fade.renderOrder = mesh.renderOrder;
+    fade.raycast = () => {};
+    mesh.add(fade);
+    state.fade = fade;
+  }
+}
+
+/** Put the shell straight back on `resting`, fade or no fade: the way back
+ *  has no frame to spare. */
+export function restShellCrossfade(
+  mesh: THREE.Mesh,
+  state: ShellCrossfade,
+  resting: THREE.ShaderMaterial,
+): void {
+  wearShellMaterial(mesh, state, resting);
+}
+
+/** Take the sibling down. It shares the shell's geometry, so there is nothing
+ *  of its own to free. */
+export function dropShellFade(state: ShellCrossfade): void {
+  if (state.fade) {
+    state.fade.removeFromParent();
+    state.fade = null;
+  }
+  state.blend = 0;
+}
+
+/** Swap what the mesh wears, carrying the live distance fade across — the sum
+ *  of both halves while a fade runs — so a frame drawn before the per-frame
+ *  feed writes it again does not draw a stale one. A mesh already wearing
+ *  `to` keeps it and absorbs the sibling's half. */
+function wearShellMaterial(mesh: THREE.Mesh, state: ShellCrossfade, to: THREE.ShaderMaterial): void {
+  const worn = mesh.material as THREE.ShaderMaterial;
+  const fading = state.fade?.material as THREE.ShaderMaterial | undefined;
+  const live = (worn.uniforms?.alphaScale?.value ?? 0) + (fading?.uniforms?.alphaScale?.value ?? 0);
+  dropShellFade(state);
+  if (to.uniforms?.alphaScale) to.uniforms.alphaScale.value = live;
+  mesh.material = to;
+}
+
+// ---------------------------------------------------------------------------
 // The ray setup, in TypeScript
 // ---------------------------------------------------------------------------
 

@@ -650,7 +650,7 @@ function installDevHooks() {
     surfaceCasters: (body?: string) => planetariumMode?.devSurfaceCasters(body) ?? null,
     // Hold the shells on the analytic tier (null: whatever the tables allow),
     // and report the material each one is wearing.
-    atmoTier: (tier: 'analytic' | null) => planetariumMode?.devSetAtmosphereTier(tier) ?? null,
+    atmoTier: (tier: 'analytic' | null, settle = true) => planetariumMode?.devSetAtmosphereTier(tier, settle) ?? null,
     atmoBake: (options?: { body?: string; orders?: number; half?: boolean; drawsPerSlice?: number }) =>
       planetariumMode?.devAtmosphereBake(options) ?? Promise.resolve(null),
     atmoSample: (

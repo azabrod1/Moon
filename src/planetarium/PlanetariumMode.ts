@@ -40,7 +40,7 @@ import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arriv
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { disposeCloudDetailTexture } from './world/cloudDetailNoise';
 import { disposeSurfaceDetailTexture } from './world/surfaceDetailNoise';
-import { bindSurfaceAir, clearSurfaceAir, setSurfaceSynthesis, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { advanceSurfaceAir, bindSurfaceAir, clearSurfaceAir, setSurfaceSynthesis, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
 import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer, warmBudgetMs } from './world/textureWarmer';
 import { beginSlicedUpload, stepSlicedUpload } from './world/slicedUpload';
@@ -5419,6 +5419,8 @@ export class PlanetariumMode {
       planet.data.radiusAU,
       wp ? solarIrradianceScale(Math.sqrt(wp.x * wp.x + wp.y * wp.y + wp.z * wp.z)) : 1,
     );
+    // One frame of the haze fade; a hitch frame is capped so it cannot jump it.
+    advanceSurfaceAir(air, Math.min(this.lastFrameDtMs, 100) / 1000);
     this.syncMoonlight(planet);
   }
 

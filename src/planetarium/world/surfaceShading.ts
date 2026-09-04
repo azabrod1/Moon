@@ -367,6 +367,15 @@ export const ROUGHNESS_MAP_WATER = 0.45;
  * costs a lot of tail, and past this the sea is a mirror with a point on it.
  */
 export const OCEAN_ROUGHNESS = 0.2;
+/**
+ * Where the Sun's image lands on the sea the mirror lobe runs far past white.
+ * The tone-mapper clips that to a white patch, which a camera does too, but
+ * the bloom pass would then smear the excess over the coast and the clouds
+ * beside it, and land is no mirror: the excess above this cap, in units of
+ * white, is taken out of the reflected light before anything downstream sees
+ * it. The patch keeps its size and its clipped core; only the halo goes.
+ */
+export const OCEAN_GLINT_CAP = 2.50;
 
 /** The factor the map's distance BELOW land is multiplied by to land open
  *  water on OCEAN_ROUGHNESS. A coast's fractional water score keeps its
@@ -1093,6 +1102,7 @@ uniform vec3 uSunDirWorld;
 uniform vec3 uMoonDirWorld;
 uniform vec3 uMoonIrradiance;
 uniform float uAirDensity;
+uniform float uAirBlend;
 uniform float uAirLookupRadius;
 uniform float uWaterGloss;
 uniform float uCloudDeck;
@@ -1225,6 +1235,10 @@ if (uCloudDeck > 0.0) {
 ${SURFACE_DETAIL_BODY}`;
 
 const SURFACE_FRAGMENT_BODY = /* glsl */ `{
+  if (uWaterGloss > 0.0) {
+    vec3 glint = reflectedLight.directSpecular;
+    outgoingLight -= glint - min(glint, vec3(${OCEAN_GLINT_CAP.toFixed(2)}));
+  }
   // The deck's alpha, worked out with its colour above where the lights could
   // still see both. A deck at a flat opacity dims clear sky by that fraction
   // everywhere and caps the thickest cloud at it; reading the map means a pixel
@@ -1399,7 +1413,10 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
         airS += aerialInscatter(uScattering, aerialForLight(seg, normalize(uMoonDirWorld)), airT)
             * uMoonIrradiance * moonNight;
       }
-      outgoingLight = outgoingLight * airT + airS;
+      // The tables arrive a few seconds into a session, and the haze they
+      // bring would otherwise switch on across the whole ground in one frame:
+      // it fades in over a moment instead.
+      outgoingLight = mix(outgoingLight, outgoingLight * airT + airS, uAirBlend);
     }
   }
 }`;
@@ -1602,6 +1619,8 @@ export function createSurfaceAirFx(): SurfaceAirFx {
   const air: SurfaceAirFx = {
     ...atmosphereLookupUniforms(),
     uAirDensity: { value: 0 },
+    // 0 → 1 over SURFACE_AIR_FADE_S after the tables bind; the haze is scaled by it.
+    uAirBlend: { value: 0 },
     uPlanetRadius: { value: 1 },
     uSolarIrradiance: { value: 1 },
     uAirlightScale: { value: new THREE.Vector3(...AIRLIGHT_SCALE) },
@@ -1641,7 +1660,19 @@ export function bindSurfaceAir(
   air.uIrradiance.value = tables.irradiance;
   air.uPlanetRadius.value = planetRadius;
   air.uSolarIrradiance.value = solarIrradiance;
+  // Switching on starts the fade; a rebind of live air leaves it where it is.
+  if (air.uAirDensity.value === 0) air.uAirBlend.value = 0;
   air.uAirDensity.value = 1;
+}
+
+/** How long a body's haze takes to fade in once its tables bind. */
+export const SURFACE_AIR_FADE_S = 1.2;
+
+/** Advance a body's haze fade by one frame; a no-op once the air is fully on
+ *  or while it is off. */
+export function advanceSurfaceAir(air: SurfaceAirFx, dtS: number): void {
+  if (air.uAirDensity.value === 0 || air.uAirBlend.value >= 1) return;
+  air.uAirBlend.value = Math.min(1, air.uAirBlend.value + Math.max(0, dtS) / SURFACE_AIR_FADE_S);
 }
 
 /** Switch the air off and let go of the tables: a lost context frees their
@@ -1650,6 +1681,7 @@ export function clearSurfaceAir(air: SurfaceAirFx): void {
   if (air.uAirDensity.value === 0 && air.uScattering.value === surfaceAirDummies().map3D) return;
   const dummies = surfaceAirDummies();
   air.uAirDensity.value = 0;
+  air.uAirBlend.value = 0;
   air.uTransmittance.value = dummies.map2D;
   air.uIrradiance.value = dummies.map2D;
   air.uScattering.value = dummies.map3D;

@@ -125,7 +125,7 @@ describe('the injected surface shader', () => {
     expect(hash(shader.vertexShader))
       .toBe('862f7224fafb480070aebf0c7c125dddbd78c879780eb072e96988333154322a');
     expect(hash(shader.fragmentShader))
-      .toBe('5546687b31b0d1c6b6ff412cdd7a681dd15aaeb2ace2fbd1c74487483fbbade9');
+      .toBe('a2225198b49fe5fd2974a4e3742d3525709d652f296819f32712f87cb13531aa');
   });
 
   it('reuses the tables\' own lookup GLSL rather than a second transcription', () => {
@@ -207,7 +207,8 @@ describe('the layer rule', () => {
     expect(glsl).toMatch(
       /vec3 airS = aerialInscatter\(uScattering, seg, airT\)\s*\n\s*\* uAirlightScale \* \(uSolarIrradiance \* sunVisible\);/,
     );
-    expect(glsl).toContain('outgoingLight = outgoingLight * airT + airS;');
+    // Applied once, behind the fade that brings the haze in when the tables bind.
+    expect(glsl).toContain('outgoingLight = mix(outgoingLight, outgoingLight * airT + airS, uAirBlend);');
     // Two in-scatter lookups, and they are the two SOURCES — one traversal,
     // the Sun's angles and the Moon's. A third would be a second traversal.
     expect(glsl.match(/aerialInscatter\(uScattering/g)).toHaveLength(2);

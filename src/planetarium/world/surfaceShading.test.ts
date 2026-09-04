@@ -11,8 +11,15 @@ import {
   surfaceHexVertex,
   surfaceRungLayers,
   surfaceRungWeights,
+  advanceSurfaceAir,
+  bindSurfaceAir,
+  clearSurfaceAir,
+  createSurfaceAirFx,
+  SURFACE_AIR_FADE_S,
+  OCEAN_GLINT_CAP,
 } from './surfaceShading';
 import { surfaceDetailFieldMean, surfaceDetailHeightSpan } from './surfaceDetailNoise';
+import { atmosphereParams } from './atmosphereModel';
 
 // Mimics the subset of three's onBeforeCompile shader object we mutate, so the
 // wiring can be exercised without a GL context.
@@ -529,5 +536,52 @@ describe('the field\'s tiling lattice', () => {
     expect(region).not.toMatch(/dFd[xy]|fwidth/);
     expect(region).not.toMatch(/[^a-zA-Z]texture\(/);
     expect(region.split('textureGrad(uSynthDetail').length - 1).toBe(1);
+  });
+});
+
+describe('the haze fade and the glint cap', () => {
+  /** The injected fragment source through the same stub the file uses. */
+  function fragmentOf(archetype: Parameters<typeof augmentSurfaceMaterial>[1]): string {
+    const mat = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(mat, archetype, undefined, 0, undefined, undefined, 'Rhea');
+    const shader = {
+      uniforms: {} as Record<string, unknown>,
+      vertexShader: '#include <common>\n#include <begin_vertex>\n',
+      fragmentShader: '#include <common>\n#include <normal_fragment_maps>\n#include <opaque_fragment>\n',
+    };
+    (mat.onBeforeCompile as (s: typeof shader, r: unknown) => void)(shader, null);
+    return shader.fragmentShader;
+  }
+
+  it('fades a body\'s haze in over a moment when its tables first bind, and only then', () => {
+    const air = createSurfaceAirFx();
+    const tables = {
+      transmittance: air.uTransmittance.value,
+      scattering: air.uScattering.value,
+      irradiance: air.uIrradiance.value,
+      params: atmosphereParams('Earth'),
+    } as Parameters<typeof bindSurfaceAir>[1];
+    advanceSurfaceAir(air, 1);
+    expect(air.uAirBlend.value).toBe(0);
+    bindSurfaceAir(air, tables, 1, 1);
+    expect(air.uAirDensity.value).toBe(1);
+    expect(air.uAirBlend.value).toBe(0);
+    advanceSurfaceAir(air, SURFACE_AIR_FADE_S / 2);
+    expect(air.uAirBlend.value).toBeCloseTo(0.5, 6);
+    // A rebind every frame, as the mode does, must not restart the fade.
+    bindSurfaceAir(air, tables, 1, 1);
+    expect(air.uAirBlend.value).toBeCloseTo(0.5, 6);
+    advanceSurfaceAir(air, 10);
+    expect(air.uAirBlend.value).toBe(1);
+    clearSurfaceAir(air);
+    expect(air.uAirBlend.value).toBe(0);
+  });
+
+  it('is drawn as the twin fades it, and the sea hands bloom no more than the cap', () => {
+    const text = fragmentOf('airless');
+    expect(text).toContain('uniform float uAirBlend;');
+    expect(text).toContain('outgoingLight = mix(outgoingLight, outgoingLight * airT + airS, uAirBlend);');
+    expect(OCEAN_GLINT_CAP).toBeGreaterThan(1);
+    expect(text).toContain(`outgoingLight -= glint - min(glint, vec3(${OCEAN_GLINT_CAP.toFixed(2)}));`);
   });
 });

@@ -118,6 +118,15 @@
 //   node tools/gen-moonmaps.mjs --verify     # re-check source digests only
 //   --cache=<dir>  .moon-data-cache root (sources live in <dir>/zoom)
 //   --no-rungs     skip the KTX2 intermediates (the slow part)
+// HEAP. The source-resolution passes hold several hundred megabytes per field
+// at once — a 66 megapixel mosaic is 265 MB for one Float32Array and the detail
+// deficit has nine of them live — and V8 grows its old space by running full
+// collections rather than by asking for the memory up front. Measured on
+// Ganymede's source: the first detail deficit takes 924 seconds on a heap that
+// has to grow into it and 24 on one that is already big enough, for the same
+// answer to three decimals. So this is run with the size asked for at startup
+// (see the gen:moonmaps script), and a run started by hand without those flags
+// will look hung when it is only collecting.
 import sharp from 'sharp';
 import {
   NOISE_AMP_PER_SIGMA, bandAmplitudes, blurMono, coverageFill, detailDeficit, findEdges, levelEdges,

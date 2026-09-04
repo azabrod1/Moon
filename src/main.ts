@@ -843,6 +843,18 @@ function installDevHooks() {
       programs: renderer.info.programs?.length ?? 0,
       exposure: renderer.toneMappingExposure,
     }),
+    // Every linked program with its cache key, for catching a link that
+    // happens after the boot warm-up: diff two snapshots and the new entry's
+    // key says which material variant compiled mid-flight. The key's tail is
+    // the augmentation source three appends, so it is cut at a readable length.
+    programs: () => (renderer.info.programs ?? []).map((p: any) => ({
+      id: p.id as number,
+      type: String(p.type ?? ''),
+      name: String(p.name ?? ''),
+      usedTimes: p.usedTimes as number,
+      keyLength: String(p.cacheKey ?? '').length,
+      key: String(p.cacheKey ?? '').slice(0, 700),
+    })),
     // Whole-run frame trace behind the smoothness gate: every frame's raf
     // gap, the veil windows, and a one-word cause per frame. smoothStart
     // arms it here; ?smooth=1 arms it before the first frame instead, which

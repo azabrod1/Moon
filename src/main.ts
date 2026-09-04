@@ -111,6 +111,12 @@ const useBloom = canGPUDoBloom(renderer) && !new URLSearchParams(location.search
 // half-float target are ever used (none = no samples).
 const msaaOverride = parseMsaaOverride(location.search, import.meta.env.DEV);
 const sceneSampleCounts = useBloom ? halfFloatTargetSampleCounts(renderer) : [];
+// Where the scene target cannot multisample — a GPU that completed no
+// half-float sample count (three's render-to-texture GPUs among them) or the
+// `?msaa=0` kill switch — the old 1.5 supersample floor stays, so such a
+// display renders as production did rather than native with no antialiasing
+// at all. The no-float direct path has the backbuffer's own multisampling.
+const supersampleFallback = useBloom && (sceneSampleCounts.length === 0 || msaaOverride === 0);
 
 try {
   const gl = renderer.getContext();
@@ -194,7 +200,7 @@ function ensureDirectLensTexture(): THREE.FramebufferTexture {
 }
 
 function getTargetPixelRatio(): number {
-  return targetPixelRatio(window.devicePixelRatio, isMobile);
+  return targetPixelRatio(window.devicePixelRatio, isMobile, supersampleFallback);
 }
 
 function getSceneTargetSamples(pixelRatio: number): number {

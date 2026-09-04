@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  BLOOM_MIN_PIXEL_RATIO_DESKTOP,
+  DESKTOP_FLOOR_PIXEL_RATIO,
   bloomPixelRatio,
   composerSamples,
   ECONOMY_ABOVE_DEVICE_PIXELS,
@@ -34,12 +34,20 @@ describe('targetPixelRatio', () => {
     expect(targetPixelRatio(0.8, false)).toBe(0.8);
     expect(targetPixelRatio(0.8, true)).toBe(0.8);
   });
+
+  it('keeps the old desktop floor where the scene cannot multisample', () => {
+    expect(targetPixelRatio(1, false, true)).toBe(DESKTOP_FLOOR_PIXEL_RATIO);
+    expect(targetPixelRatio(1.25, false, true)).toBe(DESKTOP_FLOOR_PIXEL_RATIO);
+    expect(targetPixelRatio(2, false, true)).toBe(2);
+    expect(targetPixelRatio(3, false, true)).toBe(MAX_TARGET_PIXEL_RATIO_DESKTOP);
+    expect(targetPixelRatio(1, true, true)).toBe(1);
+  });
 });
 
 describe('bloomPixelRatio', () => {
   it('keeps the old desktop floor for the bloom chain', () => {
-    expect(bloomPixelRatio(1, false)).toBe(BLOOM_MIN_PIXEL_RATIO_DESKTOP);
-    expect(bloomPixelRatio(1.25, false)).toBe(BLOOM_MIN_PIXEL_RATIO_DESKTOP);
+    expect(bloomPixelRatio(1, false)).toBe(DESKTOP_FLOOR_PIXEL_RATIO);
+    expect(bloomPixelRatio(1.25, false)).toBe(DESKTOP_FLOOR_PIXEL_RATIO);
     expect(bloomPixelRatio(1.5, false)).toBe(1.5);
     expect(bloomPixelRatio(2, false)).toBe(2);
     expect(bloomPixelRatio(3, false)).toBe(MAX_TARGET_PIXEL_RATIO_DESKTOP);

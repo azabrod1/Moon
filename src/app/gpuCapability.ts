@@ -37,15 +37,18 @@ export function canGPUDoBloom(renderer: THREE.WebGLRenderer): boolean {
  * from. WebGL2 promises multisampling only for the fixed-point colour
  * formats; a float target's counts are the driver's business, and asking for
  * one it cannot do leaves the framebuffer incomplete (a black frame). Every
- * count the driver lists is built in the exact layout the composer uses
- * (RGBA16F colour + DEPTH24_STENCIL8, both multisampled renderbuffers) and
- * kept only if it completes AND resolves: a clear and a blit into a
- * single-sample RGBA16F buffer, the operation three performs after every
- * render, with no GL error. Empty means no multisampling. A GPU exposing
- * WEBGL_multisampled_render_to_texture would take three's other allocation
- * path (a multisampled texture, which this probe does not build), so it
- * reports empty and renders without samples, as it always did; desktop
- * browsers do not expose that extension, so nothing is lost today. A 4×4
+ * count the driver lists is built in the layout the composer's multisampled
+ * side uses (RGBA16F colour + DEPTH24_STENCIL8, both multisampled
+ * renderbuffers) and kept only if it completes AND resolves: a clear and a
+ * blit into a single-sample RGBA16F buffer, the operation three performs
+ * after every render, with no GL error. (Three resolves into a texture, on
+ * a framebuffer that also carries a single-sample depth renderbuffer; the
+ * probe's bare renderbuffer proves the same blit.) Empty means no
+ * multisampling, and main.ts then keeps the old supersample floor for the
+ * scene, so the display renders as it always did. A GPU exposing
+ * WEBGL_multisampled_render_to_texture (Chrome does on some Adreno/Mali
+ * tablets) would take three's other allocation path, a multisampled texture
+ * this probe does not build, so it reports empty and gets that floor. A 4×4
  * probe cannot foresee a full-size allocation failing for memory: that is
  * what keeps the sample count off dense displays and, above 4K, at two.
  */

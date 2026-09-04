@@ -14,10 +14,13 @@
  * was doing the antialiasing by supersampling: on a 1× monitor that was
  * 2.25× the pixels through every full-screen pass, while a 2× display
  * rendered native with no antialiasing at all and its density hid the stairs.
- * The floor is gone from the scene; on desktop the sample count takes over
- * below MSAA_BELOW_PIXEL_RATIO. Every other display — desktops from 1.5× up
- * (Windows at 150 % and above, 2× Macs) and every phone — renders at the
- * resolution it did. (Point sprites under 2 device px take their own
+ * The floor is gone from the scene wherever the scene target can multisample;
+ * on desktop the sample count takes over below MSAA_BELOW_PIXEL_RATIO. Where
+ * it cannot — a GPU that completed no half-float sample count, one on
+ * three's render-to-texture path, or `?msaa=0` — the floor stays and such a
+ * display renders exactly as it did. Every other display — desktops from
+ * 1.5× up (Windows at 150 % and above, 2× Macs) and every phone — renders at
+ * the resolution it did. (Point sprites under 2 device px take their own
  * sub-pixel path, lensShader.ts, which a 1.5× display's smallest stars
  * also enter.)
  *
@@ -48,10 +51,10 @@ export const MSAA_BELOW_PIXEL_RATIO = 1.5;
  * visibly step a planet's limb where the old supersample blended it (the
  * like-for-like Jupiter capture of 2026-09-04), four are as smooth as it at
  * 1:1, and the textures behind them stay native-sharp instead of shrunk. On
- * a 2560×1440 1× monitor four samples cost 2.44 ms of GPU against the
- * supersample's 2.1–2.7 (two: 1.91). The supersample and the samples both
- * scale with pixels, so 4K at 100 % keeps about the same saving and about
- * the same memory as before.
+ * a 2560×1440 1× monitor four samples cost 1.87 ms of GPU against the
+ * supersample's 2.1–2.7 (two: 1.91); at 3840×2160 4.8 against 7.4. The
+ * supersample and the samples both scale with pixels, and the memory of a
+ * 4K target with four samples is about the supersample's.
  */
 export const SCENE_TARGET_SAMPLES = 4;
 /**
@@ -60,24 +63,33 @@ export const SCENE_TARGET_SAMPLES = 4;
  * and measured a third over the supersample's cost with four (2.88 ms
  * against 2.13 at 1.25×), where two land within a tenth; no integrated
  * laptop GPU has been measured, and two is the cautious side. And 1×
- * displays beyond 4K (5K/6K panels at 100 %) would hold about 1.6 GB of
- * multisampled target with four, the size that has killed a tab; two keep
- * the memory near the old supersample's.
+ * displays beyond 4K (5K/6K panels at 100 %) would hold about a gigabyte
+ * of multisampled target with four (more at 6K), the size that has killed
+ * a tab; two keep the memory near the old supersample's.
  */
 export const SCENE_TARGET_SAMPLES_ECONOMY = 2;
 /** Above this target pixel ratio the economy count applies. */
 export const ECONOMY_ABOVE_PIXEL_RATIO = 1;
 /** Above this many device pixels in the scene target (4K UHD) the economy count applies. */
 export const ECONOMY_ABOVE_DEVICE_PIXELS = 3840 * 2160;
-/** The renderer's old desktop floor, kept for the bloom chain alone. */
-export const BLOOM_MIN_PIXEL_RATIO_DESKTOP = 1.5;
+/**
+ * The renderer's old desktop floor: still the bloom chain's everywhere, and
+ * the scene's wherever the scene target cannot multisample.
+ */
+export const DESKTOP_FLOOR_PIXEL_RATIO = 1.5;
 /** Counts the `?msaa=` knob accepts (0 = off). */
 export const MSAA_OVERRIDE_COUNTS: readonly number[] = [0, 2, 4, 8];
 
-/** Device pixels per CSS pixel the renderer and composer are sized at. */
-export function targetPixelRatio(devicePixelRatio: number, mobile: boolean): number {
+/**
+ * Device pixels per CSS pixel the renderer and composer are sized at.
+ * `supersample` keeps the old desktop floor: main.ts passes it where the
+ * scene target cannot multisample, so that display supersamples as it did
+ * rather than rendering native with no antialiasing at all.
+ */
+export function targetPixelRatio(devicePixelRatio: number, mobile: boolean, supersample = false): number {
   const cap = mobile ? MAX_TARGET_PIXEL_RATIO_MOBILE : MAX_TARGET_PIXEL_RATIO_DESKTOP;
-  return Math.min(devicePixelRatio, cap);
+  const floor = !mobile && supersample ? DESKTOP_FLOOR_PIXEL_RATIO : 0;
+  return Math.min(Math.max(devicePixelRatio, floor), cap);
 }
 
 /**
@@ -88,8 +100,7 @@ export function targetPixelRatio(devicePixelRatio: number, mobile: boolean): num
  * cost every display below 2× more bloom pixels than it ever paid.
  */
 export function bloomPixelRatio(devicePixelRatio: number, mobile: boolean): number {
-  const ratio = targetPixelRatio(devicePixelRatio, mobile);
-  return mobile ? ratio : Math.max(ratio, BLOOM_MIN_PIXEL_RATIO_DESKTOP);
+  return targetPixelRatio(devicePixelRatio, mobile, true);
 }
 
 /**

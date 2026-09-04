@@ -140,11 +140,22 @@ describe('the close-range detail term', () => {
       glsl.indexOf('if (uSynthEnvelope > 0.0) {'),
       glsl.indexOf('if (synthW > 0.0) {'),
     );
-    const inner = glsl.slice(glsl.indexOf('if (synthW > 0.0) {'), glsl.indexOf('#include <opaque_fragment>'));
+    // The branch's own block only — the terms after it (the sea's cloud
+    // shadow) sit in uniform branches of their own and answer for their own
+    // derivatives.
+    const open = glsl.indexOf('if (synthW > 0.0) {');
+    let depth = 0;
+    let close = open;
+    for (let i = open; i < glsl.length; i++) {
+      if (glsl[i] === '{') depth++;
+      else if (glsl[i] === '}' && --depth === 0) { close = i + 1; break; }
+    }
+    expect(close).toBeGreaterThan(open);
+    const inner = glsl.slice(open, close);
     // Everything that takes one, not just the explicit four: two derivatives
     // for the surface direction, two for the screen frame the relief is built
     // on, and the two texel-density reads, each of which is an fwidth inside a
-    // function. All six above the per-fragment branch, none below it.
+    // function. All six above the per-fragment branch, none inside it.
     const takesOne = /(dFd[xy]|fwidth|synthTexelWeight)\(/g;
     expect(block.match(takesOne)).toHaveLength(6);
     expect(inner).not.toMatch(takesOne);

@@ -30,10 +30,12 @@ describe('targetPixelRatio', () => {
 describe('composerSamples', () => {
   const GPU = [8, 4, 2];
 
-  it('multisamples desktop below the dense-display threshold and not above', () => {
+  it('multisamples desktop only where the old 1.5 floor used to supersample', () => {
     expect(composerSamples(1, false, null, GPU)).toBe(SCENE_TARGET_SAMPLES);
-    expect(composerSamples(1.5, false, null, GPU)).toBe(SCENE_TARGET_SAMPLES);
-    expect(composerSamples(1.99, false, null, GPU)).toBe(SCENE_TARGET_SAMPLES);
+    expect(composerSamples(1.25, false, null, GPU)).toBe(SCENE_TARGET_SAMPLES);
+    expect(composerSamples(1.49, false, null, GPU)).toBe(SCENE_TARGET_SAMPLES);
+    expect(composerSamples(1.5, false, null, GPU)).toBe(0);
+    expect(composerSamples(1.75, false, null, GPU)).toBe(0);
     expect(composerSamples(2, false, null, GPU)).toBe(0);
     expect(composerSamples(2.5, false, null, GPU)).toBe(0);
   });

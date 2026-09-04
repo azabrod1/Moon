@@ -14,10 +14,11 @@
  * 2.25× the pixels through every full-screen pass, while a 2× display
  * rendered native with no antialiasing at all and its density hid the stairs.
  * The floor is gone; on desktop the sample count takes over below
- * MSAA_BELOW_PIXEL_RATIO. Displays at 2× and above and every phone render
- * the scene exactly as they did. Desktops between 1.5× and 2× (Windows at
- * 150–175 %) never had the floor: they keep their ratio and gain the samples,
- * which is new cost for them, taken for the antialiasing.
+ * MSAA_BELOW_PIXEL_RATIO. Every other display — desktops from 1.5× up
+ * (Windows at 150 % and above, 2× Macs) and every phone — renders at the
+ * resolution it did. (Point sprites under 2 device px take their own
+ * sub-pixel path, lensShader.ts, which a 1.5× display's smallest stars
+ * also enter.)
  *
  * Two companions of the floor's removal live elsewhere: the bloom chain is
  * pinned to its own ratio (app/bloomConfig.ts BLOOM_PIXEL_RATIO) so the glow
@@ -31,13 +32,25 @@ export const MAX_TARGET_PIXEL_RATIO_DESKTOP = 2.5;
 /** Mobile cap: phones at 2.6–3× render at 2 device px per CSS px. */
 export const MAX_TARGET_PIXEL_RATIO_MOBILE = 2;
 /**
- * Target ratios below this get a multisampled scene target; from here up the
- * display is dense enough that multisampling would add cost and change
- * nothing worth seeing. Phones (capped at 2) and 2× desktops are untouched.
+ * Target ratios below this get a multisampled scene target: exactly the
+ * displays the old 1.5 floor used to supersample, which now render fewer
+ * pixels and pay for the samples out of the saving. From here up a display
+ * keeps every pixel it had, so the samples would be pure extra cost (four
+ * of them measured +75 % GPU time at 1.5× on a 2560×1440 monitor) for a
+ * stairs problem density already softens; 2× desktops and phones are
+ * untouched.
  */
-export const MSAA_BELOW_PIXEL_RATIO = 2;
-/** Samples requested for the multisampled scene target. */
-export const SCENE_TARGET_SAMPLES = 4;
+export const MSAA_BELOW_PIXEL_RATIO = 1.5;
+/**
+ * Samples requested for the multisampled scene target. Two, not four: on a
+ * 2560×1440 1× monitor two samples cost the same GPU time as none (1.9 ms
+ * against the old supersample's 2.7) and four cost 0.5 ms more; at 1.25×
+ * two land within a tenth of the old cost where four were a third over.
+ * Two samples on a rotated grid cover an edge about as well as the 1.5×
+ * supersample did, and the target takes less memory than it did before.
+ * `?msaa=4` is there for the comparison.
+ */
+export const SCENE_TARGET_SAMPLES = 2;
 /** Counts the `?msaa=` knob accepts (0 = off). */
 export const MSAA_OVERRIDE_COUNTS: readonly number[] = [0, 2, 4, 8];
 

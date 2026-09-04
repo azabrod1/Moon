@@ -61,10 +61,9 @@ export function starRenderColor(colorIndex: number, magnitude: number): THREE.Co
 /**
  * gl_PointSize is in framebuffer pixels, so a star that should read as N CSS px
  * must be sized N × the renderer's pixel ratio — the ratio the canvas is
- * actually drawn at, NOT window.devicePixelRatio (which the desktop renderer
- * clamps up to 1.5 and down to 2.5, so a DPR-1 desktop draws at 1.5× while
- * naive DPR sizing left the whole tuned hierarchy ~33% small). The ≤2 cap keeps
- * the point-size tuning: the sizes above were dialled against a ratio of 2.
+ * actually drawn at (app/renderResolution.ts), NOT window.devicePixelRatio.
+ * The ≤2 cap keeps the point-size tuning: the sizes above were dialled
+ * against a ratio of 2 and stay at that device-pixel size on denser displays.
  */
 function starPixelRatio(rendererPixelRatio: number): number {
   return Math.min(rendererPixelRatio, 2);

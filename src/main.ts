@@ -17,8 +17,9 @@ import type { ShipProfile } from './planetarium/PlayerShip';
 import { LANDED_NEAR_AU } from './planetarium/landedView';
 import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import type { VolumeCompareMode } from './volumeCompare/VolumeCompareMode';
-import { canGPUDoBloom } from './app/gpuCapability';
-import { BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
+import { canGPUDoBloom, halfFloatTargetSampleCounts } from './app/gpuCapability';
+import { composerSamples, parseMsaaOverride, targetPixelRatio } from './app/renderResolution';
+import { BLOOM_PIXEL_RATIO, BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
 import { createLensPass, updateLensPass, type LensParams } from './app/LensPass';
 import { applyDesignFov, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
 import { stepExposure } from './planetarium/solarExposure';
@@ -72,6 +73,10 @@ debugLog('Device detection', {
 let renderer: THREE.WebGLRenderer;
 try {
   renderer = new THREE.WebGLRenderer({
+    // Multisamples the canvas backbuffer only, which the no-float direct path
+    // and the System Map draw into. The composer path renders the scene into
+    // its own target, and that target carries its own sample count
+    // (buildComposer, app/renderResolution.ts).
     antialias: true,
     powerPreference: 'high-performance',
     // The orbit-line/décor stencil contract (world/orbitLineStencil.ts) needs
@@ -100,11 +105,19 @@ renderer.domElement.addEventListener('webglcontextrestored', () => {
 // reproduced and QA'd on a dev machine.
 const useBloom = canGPUDoBloom(renderer) && !new URLSearchParams(location.search).has('nofloat');
 
+// Multisampling for the composer's scene target (app/renderResolution.ts):
+// `?msaa=` forces a count for A/B questions on a device, and only counts the
+// GPU completed for a half-float target are ever used (none = no samples).
+const msaaOverride = parseMsaaOverride(location.search);
+const sceneSampleCounts = useBloom ? halfFloatTargetSampleCounts(renderer) : [];
+
 try {
   const gl = renderer.getContext();
   debugLog('Renderer ready', {
     shadowMap: renderer.shadowMap.enabled,
     useBloom,
+    sceneSamples: getSceneTargetSamples(getTargetPixelRatio()),
+    sceneSampleCounts,
     isMobile,
     glVersion: gl.getParameter(gl.VERSION),
     shadingLanguage: gl.getParameter(gl.SHADING_LANGUAGE_VERSION),
@@ -151,6 +164,9 @@ let camera: THREE.PerspectiveCamera = planetariumCamera;
 debugLog('Post-processing config', { useBloom });
 
 let composer: EffectComposer | null = null;
+/** The composer target RenderPass draws the scene into (buildComposer). */
+let sceneTarget: THREE.WebGLRenderTarget | null = null;
+let bloomPass: UnrealBloomPass | null = null;
 let lensPass: ReturnType<typeof createLensPass> | null = null;
 let directLensTexture: THREE.FramebufferTexture | null = null;
 const directLensSize = new THREE.Vector2();
@@ -177,18 +193,38 @@ function ensureDirectLensTexture(): THREE.FramebufferTexture {
 }
 
 function getTargetPixelRatio(): number {
-  if (isMobile) return Math.min(window.devicePixelRatio, 2);
-  return Math.min(Math.max(window.devicePixelRatio, 1.5), 2.5);
+  return targetPixelRatio(window.devicePixelRatio, isMobile);
+}
+
+function getSceneTargetSamples(pixelRatio: number): number {
+  return composerSamples(pixelRatio, isMobile, msaaOverride, sceneSampleCounts);
 }
 
 function applyRenderResolution() {
   const pixelRatio = getTargetPixelRatio();
   renderer.setPixelRatio(pixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
-  if (composer) {
+  if (composer && sceneTarget) {
+    // A page zoom or a move to another monitor can cross the multisampling
+    // threshold: retarget the sample count and drop the GL objects so the
+    // next bind allocates the new layout (setSize alone only disposes on a
+    // dimension change).
+    const samples = getSceneTargetSamples(pixelRatio);
+    if (sceneTarget.samples !== samples) {
+      sceneTarget.samples = samples;
+      sceneTarget.dispose();
+    }
     composer.setPixelRatio(pixelRatio);
     composer.setSize(window.innerWidth, window.innerHeight);
+    sizeBloomPass();
   }
+}
+
+// The composer sizes every pass in device pixels; the bloom chain is re-sized
+// to its own fixed ratio afterwards so the glow's width in CSS pixels does
+// not depend on the display (app/bloomConfig.ts BLOOM_PIXEL_RATIO).
+function sizeBloomPass() {
+  bloomPass?.setSize(window.innerWidth * BLOOM_PIXEL_RATIO, window.innerHeight * BLOOM_PIXEL_RATIO);
 }
 
 // Bloom radius (shared across modes) and the planetarium threshold live in
@@ -225,14 +261,16 @@ function buildComposer(
     // targets and the output pass's material don't leak on every rebuild (each
     // camera switch). Pass.dispose() is a safe no-op for passes without state.
     for (const pass of composer.passes) pass.dispose();
-    composer.dispose();
+    composer.dispose(); // frees both ping-pong targets, the scene target included
     composer = null;
+    sceneTarget = null;
   } else {
     // The direct (no-float) path owns its lens pass outright: nothing else
     // releases the ShaderMaterial behind it when the composer is rebuilt.
     lensPass?.dispose();
   }
   lensPass = null;
+  bloomPass = null; // disposed above with the composer's passes
   directLensTexture?.dispose();
   directLensTexture = null;
 
@@ -262,18 +300,30 @@ function buildComposer(
   }
 
   // Every remaining composer path is float-capable, so linear HDR survives to
-  // OutputPass (with or without the runtime bloom pass enabled). The target
-  // mirrors EffectComposer's default (half-float) plus a stencil buffer for
-  // the orbit-line/décor contract (world/orbitLineStencil.ts); setSize below
-  // takes care of the initial dimensions.
-  composer = new EffectComposer(
-    renderer,
-    new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
-      type: THREE.HalfFloatType,
-      stencilBuffer: true,
-    }),
-  );
-  composer.setPixelRatio(getTargetPixelRatio());
+  // OutputPass (with or without the runtime bloom pass enabled). The scene
+  // target mirrors EffectComposer's default (half-float) plus a stencil
+  // buffer for the orbit-line/décor contract (world/orbitLineStencil.ts) and,
+  // on low-density displays, multisampling (app/renderResolution.ts). The
+  // passes after it read only its resolved colour, so the depth and stencil
+  // samples are never blitted across. setSize below sets the dimensions.
+  const pixelRatio = getTargetPixelRatio();
+  sceneTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
+    type: THREE.HalfFloatType,
+    stencilBuffer: true,
+    samples: getSceneTargetSamples(pixelRatio),
+    resolveDepthBuffer: false,
+  });
+  composer = new EffectComposer(renderer, sceneTarget);
+  // The composer clones the scene target for its ping-pong partner. Only
+  // full-screen quads ever land there (the lens output, bloom's composite),
+  // so it carries neither the samples nor the depth/stencil planes: a
+  // single-sample colour buffer. renderScene keeps the scene target in the
+  // read slot, the one RenderPass draws into.
+  const partner = composer.renderTarget2;
+  partner.samples = 0;
+  partner.depthBuffer = false;
+  partner.stencilBuffer = false;
+  composer.setPixelRatio(pixelRatio);
   composer.setSize(window.innerWidth, window.innerHeight);
   composer.addPass(new RenderPass(scene, cam));
 
@@ -291,12 +341,14 @@ function buildComposer(
   // primitives pre-distort themselves into the source (lensShader.ts), so their
   // sizes also remain invariant through this ordering.
   if (enabled) {
-    composer.addPass(new UnrealBloomPass(
+    bloomPass = new UnrealBloomPass(
       new THREE.Vector2(window.innerWidth, window.innerHeight),
       bloom.strength,
       BLOOM_RADIUS,
       bloom.threshold,
-    ));
+    );
+    composer.addPass(bloomPass);
+    sizeBloomPass();
   }
 
   composer.addPass(new OutputPass());
@@ -340,6 +392,13 @@ function renderScene(cam: THREE.Camera) {
       if (lensPass && cam === planetariumCamera) {
         updateLensPass(lensPass, planetariumLens, planetariumCamera.fov, planetariumCamera.aspect);
       }
+      // RenderPass draws the scene into the composer's read buffer. The
+      // composer swaps after every swapping pass, OutputPass included, so a
+      // chain with an odd number of them (flight and compare: no lens) ends
+      // each frame with the pair swapped, and every fresh build starts with
+      // the partner in front. Put the scene target back so the geometry gets
+      // the samples, not a full-screen quad (see buildComposer).
+      if (sceneTarget && composer.readBuffer !== sceneTarget) composer.swapBuffers();
       composer.render();
     } else if (lensPass && directLensTexture && cam === planetariumCamera) {
       // Tone map to the hardware backbuffer first, then copy and warp that LDR
@@ -754,6 +813,8 @@ function installDevHooks() {
       textures: renderer.info.memory.textures,
       programs: renderer.info.programs?.length ?? 0,
       exposure: renderer.toneMappingExposure,
+      pixelRatio: renderer.getPixelRatio(),
+      sceneSamples: sceneTarget?.samples ?? 0,
     }),
     // Low-overhead Surface timing ring buffer. Usage:
     //   surfacePerf('start') → reproduce → surfacePerf() / surfacePerf('stop')
@@ -946,7 +1007,7 @@ function syncViewport() {
   // starfields read renderer.getPixelRatio() in onResize, so they must run after.
   volumeCompareMode?.onResize(w / h);
   planetariumMode?.onResize();
-  debugLog('Resize', { width: w, height: h });
+  debugLog('Resize', { width: w, height: h, pixelRatio: renderer.getPixelRatio(), sceneSamples: sceneTarget?.samples ?? 0 });
 }
 
 window.addEventListener('resize', syncViewport);
@@ -978,14 +1039,17 @@ document.addEventListener('click', (e) => {
 // iOS Safari changes the viewport without a resize event this app can count
 // on (URL-bar collapse on a non-scrolling page, keyboard dismissal, the
 // post-rotation settle), and a camera left on a stale aspect draws every
-// disc as an ellipse. Called from the animation loop: plain property reads,
-// no layout, and the aspect term re-arms the sync even if some other path
-// ever clobbers a camera.
+// disc as an ellipse. A page zoom or a move to another monitor changes the
+// device pixel ratio the same way, and the render resolution and the scene
+// target's sample count follow it. Called from the animation loop: plain
+// property reads, no layout, and the aspect term re-arms the sync even if
+// some other path ever clobbers a camera.
 function syncViewportIfDrifted() {
   if (
     window.innerWidth !== appliedViewportW ||
     window.innerHeight !== appliedViewportH ||
-    camera.aspect !== appliedViewportW / appliedViewportH
+    camera.aspect !== appliedViewportW / appliedViewportH ||
+    renderer.getPixelRatio() !== getTargetPixelRatio()
   ) {
     syncViewport();
   }

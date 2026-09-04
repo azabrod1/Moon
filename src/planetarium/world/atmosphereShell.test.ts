@@ -132,7 +132,7 @@ describe('the LUT shell material', () => {
     expect(mode).toMatch(/warmAtmosphereShellProgram\(\)[\s\S]{0,200}?bake\('Earth'\)/);
     expect(mode).toMatch(/probeGroups: \[atmoProbes\.group\]/);
     // The boot warm-up's own set is the two probe groups and nothing else.
-    expect(mode).toContain('probeGroups: [probes.group, shadowProbes.group],');
+    expect(mode).toContain('probeGroups: [probes.group, shadowProbes.group, orbitProbes.group],');
     expect(mode).not.toMatch(/probeGroups: atmoProbes/);
   });
 

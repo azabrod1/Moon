@@ -513,7 +513,7 @@ describe('how the app spends the resolve phase', () => {
     // builds are paid under it either way, so the boot warm-up takes them all
     // in one task.
     expect(mode()).toMatch(
-      /probeGroups: \[probes\.group, shadowProbes\.group\],[\s\S]{0,400}?resolvePerFrame: Number\.POSITIVE_INFINITY,/,
+      /probeGroups: \[probes\.group, shadowProbes\.group, orbitProbes\.group\],[\s\S]{0,400}?resolvePerFrame: Number\.POSITIVE_INFINITY,/,
     );
     // The idle warm-up must NOT: nothing covers those frames, so a build that
     // shares one with another is the dropped frame this exists to remove.

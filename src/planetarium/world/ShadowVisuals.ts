@@ -259,6 +259,12 @@ export function createShadowVisualsWarmupProbes(): { group: THREE.Group; dispose
     color: 0xffffff, linewidth: 1, opacity: 0.5, transparent: true, depthWrite: false,
     dashed: true, dashSize: 1, gapSize: 1,
   });
+  // The live guides draw through the lens augmentation, and its cache-key tag
+  // is part of the program: an un-augmented probe compiles a program nothing
+  // ever draws. The lens uniforms it returns stay at rest — the probe is only
+  // ever drawn one pixel wide under the load screen.
+  augmentFixedScreenLineForLens(solid);
+  augmentFixedScreenLineForLens(dashed);
   const solidLine = new Line2(segment, solid);
   const dashedLine = new Line2(segment, dashed);
   solidLine.computeLineDistances();

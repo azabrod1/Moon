@@ -212,6 +212,31 @@ export class OrbitDetailsVisuals {
     return { hasOrbit: this.hasOrbit, showF2: this.hasOrbit && !this.emptyFocusSuppressed };
   }
 
+  /**
+   * Boot warm-up probes: one degenerate line or mesh per material family this
+   * view draws, on the live material instances, so their programs link under
+   * the load screen and stay held for the session instead of linking on the
+   * first landing that opens the view. Invisible and never raycast.
+   */
+  warmupProbes(): { group: THREE.Group; dispose: () => void } {
+    const group = new THREE.Group();
+    group.visible = false;
+    const lineGeo = new THREE.BufferGeometry();
+    lineGeo.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, 1e-9, 0], 3));
+    const meshGeo = new THREE.BufferGeometry();
+    meshGeo.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 1e-9, 0, 0, 0, 1e-9, 0], 3));
+    const noPick = <T extends THREE.Object3D>(o: T): T => { o.raycast = () => {}; return o; };
+    for (const material of [this.orbitMaterial, this.axisMaterial, this.detailMaterial, this.trailingOutlineMaterial, this.offsetOutlineMaterial]) {
+      const line = new THREE.Line(lineGeo, material);
+      line.computeLineDistances();
+      group.add(noPick(line));
+    }
+    for (const material of [this.trailingFillMaterial, this.offsetFillMaterial]) {
+      group.add(noPick(new THREE.Mesh(meshGeo, material)));
+    }
+    return { group, dispose: () => { lineGeo.dispose(); meshGeo.dispose(); } };
+  }
+
   dispose(): void {
     this.detach();
     for (const line of [

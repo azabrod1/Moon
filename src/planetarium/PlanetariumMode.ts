@@ -2741,7 +2741,10 @@ export class PlanetariumMode {
       // surface-view entry links those programs mid-gesture (a frozen frame
       // that reads as a dead click on slow GPUs).
       const shadowProbes = createShadowVisualsWarmupProbes();
-      this.scene.add(probes.group, shadowProbes.group);
+      // The orbit-details view's lines and fills draw first at a landing;
+      // their programs link here instead, on the view's own materials.
+      const orbitProbes = this.orbitDetailsVisuals.warmupProbes();
+      this.scene.add(probes.group, shadowProbes.group, orbitProbes.group);
       // Compile with the live path's kind of target bound (three keys every
       // program on it) and force the links with one 1-pixel draw — see
       // world/shaderWarmup.ts for the why and the pinned contract. Fail-open:
@@ -2749,7 +2752,7 @@ export class PlanetariumMode {
       const { compiled, resolved, warmDrawMs } = await warmUpSceneShaders(
         this.renderer, this.scene, this.camera, {
           drawsThroughComposer: this.rendersThroughComposer(),
-          probeGroups: [probes.group, shadowProbes.group],
+          probeGroups: [probes.group, shadowProbes.group, orbitProbes.group],
           // Every pending program in this task, no frame yielded: the load
           // screen is up, so a yielded frame is boot time, and the driver's
           // deferred pipeline builds are paid under it either way.
@@ -2769,7 +2772,7 @@ export class PlanetariumMode {
       // only once compileAsync's poll has settled — disposing a material
       // mid-poll throws inside a timer callback no try/catch here could reach.
       void compiled.then(() => {
-        this.shaderWarmupProbes.push(probes, shadowProbes);
+        this.shaderWarmupProbes.push(probes, shadowProbes, orbitProbes);
       });
       performance.measure('plm:precompile', 'plm:precompile:start');
     }

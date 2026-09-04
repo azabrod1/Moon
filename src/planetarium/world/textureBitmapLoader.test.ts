@@ -181,6 +181,76 @@ describe('loadStreamedTexture', () => {
   });
 });
 
+describe('loadStreamedTexture after the worker retires', () => {
+  class FakeWorker {
+    static instances: FakeWorker[] = [];
+    onmessage: ((e: { data: unknown }) => void) | null = null;
+    onerror: ((e: { message: string }) => void) | null = null;
+    onmessageerror: (() => void) | null = null;
+    posted: unknown[] = [];
+    constructor() {
+      FakeWorker.instances.push(this);
+    }
+    postMessage(msg: unknown) {
+      this.posted.push(msg);
+    }
+    terminate() {}
+  }
+  function armWorker() {
+    FakeWorker.instances = [];
+    vi.stubGlobal('Worker', FakeWorker);
+    vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:decoder'), revokeObjectURL: vi.fn() });
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob() })));
+  }
+
+  it('goes to the shared loader when this thread never passed the probe', async () => {
+    armWorker();
+    const mainDecode = vi.fn(async () => fakeBitmap());
+    vi.stubGlobal('createImageBitmap', mainDecode);
+    const { loadStreamedTexture, setBitmapProbeForTests, bitmapDecodePath } = await import('./textureBitmapLoader');
+    setBitmapProbeForTests(true, { worker: true, main: false });
+    expect(bitmapDecodePath()).toBe('worker');
+    const { calls } = deferredLoad();
+    const onLoad = vi.fn();
+    loadStreamedTexture('textures/w.jpg', onLoad, vi.fn());
+    await flush();
+    expect(FakeWorker.instances[0].posted).toHaveLength(1);
+    FakeWorker.instances[0].onerror!({ message: 'worker died' });
+    await flush();
+    // The request in flight fell back to the loader (one decode failure = one fallback)...
+    expect(calls.map((c) => c.url)).toEqual(['textures/w.jpg']);
+    expect(mainDecode).not.toHaveBeenCalled();
+    // ...and so does every later map: this thread is unverified.
+    expect(bitmapDecodePath()).toBe('loader');
+    loadStreamedTexture('textures/x.jpg', vi.fn(), vi.fn());
+    await flush();
+    expect(calls.map((c) => c.url)).toEqual(['textures/w.jpg', 'textures/x.jpg']);
+    expect(mainDecode).not.toHaveBeenCalled();
+  });
+
+  it('decodes on this thread after a worker failure when this thread passed the probe', async () => {
+    armWorker();
+    const mainDecode = vi.fn(async () => fakeBitmap());
+    vi.stubGlobal('createImageBitmap', mainDecode);
+    const { loadStreamedTexture, setBitmapProbeForTests, bitmapDecodePath } = await import('./textureBitmapLoader');
+    setBitmapProbeForTests(true, { worker: true, main: true });
+    const { calls } = deferredLoad();
+    loadStreamedTexture('textures/w.jpg', vi.fn(), vi.fn());
+    await flush();
+    FakeWorker.instances[0].onerror!({ message: 'worker died' });
+    await flush();
+    expect(bitmapDecodePath()).toBe('main-thread');
+    // The request the worker dropped spent its one loader fallback.
+    expect(calls.map((c) => c.url)).toEqual(['textures/w.jpg']);
+    const onLoad = vi.fn();
+    loadStreamedTexture('textures/y.jpg', onLoad, vi.fn());
+    await flush();
+    await flush();
+    expect(mainDecode).toHaveBeenCalledWith(expect.any(Blob), { imageOrientation: 'flipY', premultiplyAlpha: 'none' });
+    expect(onLoad).toHaveBeenCalled();
+  });
+});
+
 describe('takeBootWarmResponse', () => {
   it('hands a warmed promise over exactly once', () => {
     const warmed = Promise.resolve(new Response());
@@ -220,7 +290,7 @@ describe('WorkerBitmapDecoder', () => {
   function withFakeWorker() {
     FakeWorker.instances = [];
     vi.stubGlobal('Worker', FakeWorker);
-    vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:decoder') });
+    vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:decoder'), revokeObjectURL: vi.fn() });
     vi.stubGlobal('Blob', class { constructor(public parts: unknown[], public opts: unknown) {} });
   }
 
@@ -240,6 +310,44 @@ describe('WorkerBitmapDecoder', () => {
     expect(await a).toBe(bitmapA);
     expect(await b).toBe(bitmapB);
     expect(decoder.usable).toBe(true);
+    // The first reply proved the script loaded: its blob URL is released once.
+    expect((URL.revokeObjectURL as unknown as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
+    expect((URL.revokeObjectURL as unknown as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith('blob:decoder');
+  });
+
+  it('retires the worker when a reply never comes', async () => {
+    withFakeWorker();
+    vi.useFakeTimers();
+    try {
+      const { WorkerBitmapDecoder, DECODE_TIMEOUT_MS } = await import('./textureBitmapLoader');
+      const decoder = new WorkerBitmapDecoder();
+      const hung = decoder.decode(new Blob() as Blob, {});
+      const rejected = vi.fn();
+      hung.catch(rejected);
+      await vi.advanceTimersByTimeAsync(DECODE_TIMEOUT_MS - 1);
+      expect(rejected).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(2);
+      expect(rejected).toHaveBeenCalledTimes(1);
+      expect(String(rejected.mock.calls[0][0])).toMatch(/timed out/);
+      expect(decoder.usable).toBe(false);
+      expect(FakeWorker.instances[0].terminated).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retires when the request cannot even be posted', async () => {
+    withFakeWorker();
+    const { WorkerBitmapDecoder } = await import('./textureBitmapLoader');
+    const post = FakeWorker.prototype.postMessage;
+    FakeWorker.prototype.postMessage = () => { throw new Error('DataCloneError'); };
+    try {
+      const decoder = new WorkerBitmapDecoder();
+      await expect(decoder.decode(new Blob() as Blob, {})).rejects.toThrow('DataCloneError');
+      expect(decoder.usable).toBe(false);
+    } finally {
+      FakeWorker.prototype.postMessage = post;
+    }
   });
 
   it('rejects a request the worker reports as failed, and stays usable for the next', async () => {

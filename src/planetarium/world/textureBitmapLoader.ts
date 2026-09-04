@@ -88,30 +88,45 @@ type BitmapDecoder = (source: BitmapSource, opts: ImageBitmapOptions) => Promise
 /** The bitmap options every streamed map is decoded with. */
 const BITMAP_OPTIONS: ImageBitmapOptions = { imageOrientation: 'flipY', premultiplyAlpha: 'none' };
 
+/** A worker reply that never comes — a decoder hung on one image — must not
+ *  hold every later map hostage: past this the worker is retired, its
+ *  requests rejected (each falls back to the shared loader), and the next
+ *  decodes go to a verified realm. Generous, because an 8K map on a slow
+ *  phone legitimately takes seconds. */
+export const DECODE_TIMEOUT_MS = 30_000;
+
 /** The decode worker's whole program: one request in, one bitmap (transferred)
- *  or one error string out, matched by id. Plain script, built as a blob URL,
- *  so it needs no bundler plumbing and stays inert in the DOM-free tests. */
+ *  or one error string out, matched by id. A bitmap whose transfer fails is
+ *  closed here — an 8K allocation must not linger in a realm nobody can reach
+ *  while the caller's fallback decodes the same map again. Plain script,
+ *  built as a blob URL, so it needs no bundler plumbing and stays inert in
+ *  the DOM-free tests. */
 const DECODE_WORKER_SOURCE = `self.onmessage = async (e) => {
   const { id, source, opts } = e.data;
+  let bitmap = null;
   try {
-    const bitmap = await createImageBitmap(source, opts);
+    bitmap = await createImageBitmap(source, opts);
     self.postMessage({ id, bitmap }, [bitmap]);
   } catch (err) {
+    if (bitmap) { try { bitmap.close(); } catch {} }
     self.postMessage({ id, error: String((err && err.message) || err) });
   }
 };`;
 
 type DecodeReply = { id: number; bitmap?: ImageBitmap; error?: string };
+type PendingDecode = { resolve: (b: ImageBitmap) => void; reject: (e: unknown) => void; timer: ReturnType<typeof setTimeout> };
 
 /**
  * createImageBitmap hosted in a worker. Requests are matched to replies by
- * id; any worker-level failure (construction, script error, an undecodable
- * message) rejects every request in flight and retires the worker for good,
- * so the caller's fallback runs once per request, never a retry storm.
+ * id and bounded by DECODE_TIMEOUT_MS; any worker-level failure
+ * (construction, script error, an undecodable message, a timeout) rejects
+ * every request in flight and retires the worker for good, so the caller's
+ * fallback runs once per request, never a retry storm.
  */
 export class WorkerBitmapDecoder {
   private worker: Worker | null = null;
-  private readonly pending = new Map<number, { resolve: (b: ImageBitmap) => void; reject: (e: unknown) => void }>();
+  private scriptUrl: string | null = null;
+  private readonly pending = new Map<number, PendingDecode>();
   private nextId = 1;
   private retired = false;
 
@@ -124,7 +139,8 @@ export class WorkerBitmapDecoder {
     if (this.retired) return Promise.reject(new Error('bitmap decode worker retired'));
     return new Promise<ImageBitmap>((resolve, reject) => {
       const id = this.nextId++;
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => this.retire(new Error(`bitmap decode timed out after ${DECODE_TIMEOUT_MS} ms`)), DECODE_TIMEOUT_MS);
+      this.pending.set(id, { resolve, reject, timer });
       try {
         this.start().postMessage({ id, source, opts });
       } catch (err) {
@@ -133,11 +149,27 @@ export class WorkerBitmapDecoder {
     });
   }
 
+  /** Terminate the worker and reject everything in flight; final. */
+  retire(reason: unknown): void {
+    this.retired = true;
+    this.worker?.terminate();
+    this.worker = null;
+    this.revokeScript();
+    const err = reason instanceof Error ? reason : new Error(String(reason));
+    for (const req of this.pending.values()) {
+      clearTimeout(req.timer);
+      req.reject(err);
+    }
+    this.pending.clear();
+  }
+
   private start(): Worker {
     if (this.worker) return this.worker;
-    const url = URL.createObjectURL(new Blob([DECODE_WORKER_SOURCE], { type: 'text/javascript' }));
-    const worker = new Worker(url);
+    this.scriptUrl = URL.createObjectURL(new Blob([DECODE_WORKER_SOURCE], { type: 'text/javascript' }));
+    const worker = new Worker(this.scriptUrl);
     worker.onmessage = (e: MessageEvent<DecodeReply>) => {
+      // The first reply proves the script loaded: its URL can go.
+      this.revokeScript();
       const { id, bitmap, error } = e.data;
       const req = this.pending.get(id);
       if (!req) {
@@ -147,6 +179,7 @@ export class WorkerBitmapDecoder {
         return;
       }
       this.pending.delete(id);
+      clearTimeout(req.timer);
       if (bitmap) req.resolve(bitmap);
       else req.reject(new Error(error ?? 'bitmap decode failed in worker'));
     };
@@ -156,88 +189,156 @@ export class WorkerBitmapDecoder {
     return worker;
   }
 
-  private retire(reason: unknown): void {
-    this.retired = true;
-    this.worker?.terminate();
-    this.worker = null;
-    const err = reason instanceof Error ? reason : new Error(String(reason));
-    for (const req of this.pending.values()) req.reject(err);
-    this.pending.clear();
+  private revokeScript(): void {
+    if (!this.scriptUrl) return;
+    URL.revokeObjectURL(this.scriptUrl);
+    this.scriptUrl = null;
   }
 }
 
 let workerDecoder: WorkerBitmapDecoder | null = null;
-function workerDecode(source: BitmapSource, opts: ImageBitmapOptions): Promise<ImageBitmap> {
+const workerDecode: BitmapDecoder = (source, opts) => {
   workerDecoder ??= new WorkerBitmapDecoder();
   return workerDecoder.decode(source, opts);
-}
+};
 const mainThreadDecode: BitmapDecoder = (source, opts) => createImageBitmap(source, opts);
 
-/** The decoder in use: the worker while it is healthy, this thread after a
- *  worker failure (same options — the flip is honoured wherever
- *  createImageBitmap runs, the probe checked the option, not the thread). */
-function currentDecoder(): BitmapDecoder {
-  return workerAllowed && (workerDecoder?.usable ?? true) ? workerDecode : mainThreadDecode;
+/** Which realms the probe has seen honour the flip through a real upload. A
+ *  realm that was never verified is never used: a worker that fails
+ *  mid-session hands over to the main thread only if the main thread passed
+ *  its own probe, else to the shared loader. */
+const verified = { worker: false, main: false };
+
+/** The decoder to use now, or null for the shared loader. */
+function currentDecoder(): BitmapDecoder | null {
+  if (verified.worker && (workerDecoder?.usable ?? true)) return workerDecode;
+  if (verified.main) return mainThreadDecode;
+  return null;
 }
-let workerAllowed = false;
 
 export type BitmapDecodePath = 'unprobed' | 'worker' | 'main-thread' | 'loader';
-/** DEV telemetry: which path the flip probe settled on. */
+/** DEV telemetry: which path streamed maps take right now. */
 export function bitmapDecodePath(): BitmapDecodePath {
-  if (bitmapFlipProbe === null || probeVerdict === null) return 'unprobed';
-  if (!probeVerdict) return 'loader';
-  return currentDecoder() === workerDecode ? 'worker' : 'main-thread';
+  if (probeVerdict === null) return 'unprobed';
+  const decoder = currentDecoder();
+  return decoder === workerDecode ? 'worker' : decoder === mainThreadDecode ? 'main-thread' : 'loader';
 }
 let probeVerdict: boolean | null = null;
 
-/** Draw a 1x2 bitmap and read it back: true only for the full inverted
- *  image (opaque black over opaque white) — a silently failed draw reads back
- *  blank [0,0,0,0], and "red < 128" alone would call that a pass. */
-function readsBackInverted(bitmap: ImageBitmap): boolean {
+/** The probe image: a 1×2 PNG, opaque white over opaque black — an encoded
+ *  Blob like every real map, so the probe exercises the decoder the maps
+ *  will use, not an ImageData shortcut. */
+const PROBE_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAACCAYAAACZgbYnAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAD0lEQVQI12P4DwQMQPAfAB7rBPzHONLmAAAAAElFTkSuQmCC';
+function probeBlob(): Blob {
+  const bin = atob(PROBE_PNG_BASE64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: 'image/png' });
+}
+
+/** Only the full inverted image counts — opaque black over opaque white: a
+ *  silently failed draw reads back blank [0,0,0,0], and "red < 128" alone
+ *  would call that a pass. */
+function inverted(px: Uint8Array | Uint8ClampedArray): boolean {
+  return px[0] < 128 && px[3] > 128 && px[4] > 128 && px[7] > 128;
+}
+
+/** The renderer the probe uploads through, when the app has one: the real
+ *  question is whether a bitmap from this decoder reaches a WebGL texture
+ *  intact, which a canvas draw cannot answer (a transferred worker bitmap
+ *  has failed exactly there on some WebKit ports). Without it — tests, or a
+ *  probe started before the renderer exists — a 2D canvas draw stands in. */
+let probeRenderer: THREE.WebGLRenderer | null = null;
+
+/** Upload the probe bitmap as a 1×2 texture, attach it to a framebuffer and
+ *  read it back. Every binding and unpack flag it touches is restored, so
+ *  three's state cache stays true. Null when the readback could not be
+ *  performed at all (no complete framebuffer), so the caller can fall back to
+ *  the canvas check rather than call a working decoder broken. */
+function readsBackInvertedGl(renderer: THREE.WebGLRenderer, bitmap: ImageBitmap): boolean | null {
+  const gl = renderer.getContext();
+  const prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
+  const prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+  const prevFlip = gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL) as boolean;
+  const prevPremul = gl.getParameter(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL) as boolean;
+  const prevColorspace = gl.getParameter(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL) as number;
+  const tex = gl.createTexture();
+  const fbo = gl.createFramebuffer();
   try {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1;
-    canvas.height = 2;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return false;
-    ctx.drawImage(bitmap, 0, 0);
-    const px = ctx.getImageData(0, 0, 1, 2).data;
-    return px[0] < 128 && px[3] > 128 && px[4] > 128 && px[7] > 128;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    renderer.state.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) return null;
+    // readPixels row 0 is texture row 0, which is the image's top row: the
+    // same order as a canvas getImageData, so the same check applies.
+    const px = new Uint8Array(8);
+    gl.readPixels(0, 0, 1, 2, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return inverted(px);
+  } catch {
+    return null;
   } finally {
-    bitmap.close();
+    renderer.state.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);
+    gl.bindTexture(gl.TEXTURE_2D, prevTex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, prevFlip);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, prevPremul);
+    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, prevColorspace);
+    gl.deleteFramebuffer(fbo);
+    gl.deleteTexture(tex);
+    while (gl.getError() !== gl.NO_ERROR) { /* a failed probe must not leave an error for the next caller */ }
+  }
+}
+
+function readsBackInverted2d(bitmap: ImageBitmap): boolean {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1;
+  canvas.height = 2;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return false;
+  ctx.drawImage(bitmap, 0, 0);
+  return inverted(ctx.getImageData(0, 0, 1, 2).data);
+}
+
+/** Decode the probe image with the production options through one decoder
+ *  and check the result the way a map is consumed. False on any failure. */
+async function decoderHonoursFlip(decoder: BitmapDecoder): Promise<boolean> {
+  try {
+    const bitmap = await decoder(probeBlob(), BITMAP_OPTIONS);
+    try {
+      const gl = probeRenderer ? readsBackInvertedGl(probeRenderer, bitmap) : null;
+      return gl ?? readsBackInverted2d(bitmap);
+    } finally {
+      bitmap.close();
+    }
+  } catch {
+    return false;
   }
 }
 
 /**
- * Whether this platform can bake the vertical flip into `createImageBitmap`.
- * A 1x2 white-over-black sample is created with `imageOrientation: 'flipY'`
- * and read back — first through the worker (which then serves every real
- * image), else on this thread. Probed lazily on the first load: module load
- * must stay DOM-free for the tests.
+ * Whether this platform can bake the vertical flip into `createImageBitmap`:
+ * the probe image is decoded with the production options and read back —
+ * through the worker (which then serves every real image) and on this thread
+ * (the fallback realm), each verified on its own. Probed lazily on the first
+ * load: module load must stay DOM-free for the tests.
  */
 let bitmapFlipProbe: Promise<boolean> | null = null;
 function bitmapUploadUsable(): Promise<boolean> {
   bitmapFlipProbe ??= (async () => {
-    try {
-      if (typeof createImageBitmap !== 'function') return false;
-      const sample = new ImageData(1, 2);
-      sample.data.set([255, 255, 255, 255, 0, 0, 0, 255]);
-      const flipOnly: ImageBitmapOptions = { imageOrientation: 'flipY' };
-      if (typeof Worker === 'function') {
-        try {
-          if (readsBackInverted(await workerDecode(sample, flipOnly))) {
-            workerAllowed = true;
-            return true;
-          }
-        } catch {
-          // The worker could not be made or failed its first job: the
-          // main-thread probe below decides, and the worker stays retired.
-        }
-      }
-      return readsBackInverted(await createImageBitmap(sample, flipOnly));
-    } catch {
-      return false;
+    if (typeof createImageBitmap !== 'function') return false;
+    if (typeof Worker === 'function') {
+      verified.worker = await decoderHonoursFlip(workerDecode);
+      // A worker that exists but failed its one job has no use: free it.
+      if (!verified.worker) workerDecoder?.retire(new Error('bitmap decode worker failed the flip probe'));
     }
+    verified.main = await decoderHonoursFlip(mainThreadDecode);
+    return verified.worker || verified.main;
   })().then((ok) => {
     probeVerdict = ok;
     return ok;
@@ -247,7 +348,7 @@ function bitmapUploadUsable(): Promise<boolean> {
 
 /** Fetch a map as an ImageBitmap with the flip baked in, wrapped in a texture
  *  that knows not to flip again. */
-async function loadBitmapTexture(url: string, stillWanted?: () => boolean, signal?: AbortSignal): Promise<THREE.Texture> {
+async function loadBitmapTexture(url: string, decoder: BitmapDecoder, stillWanted?: () => boolean, signal?: AbortSignal): Promise<THREE.Texture> {
   let blob: Blob;
   try {
     const response = await (takeBootWarmResponse(url) ?? fetch(url, { signal }));
@@ -263,7 +364,7 @@ async function loadBitmapTexture(url: string, stillWanted?: () => boolean, signa
   if (stillWanted && !stillWanted()) {
     throw new TextureTransportError(`superseded: ${url}`);
   }
-  const bitmap = await currentDecoder()(blob, BITMAP_OPTIONS);
+  const bitmap = await decoder(blob, BITMAP_OPTIONS);
   const tex = new THREE.Texture(bitmap);
   tex.flipY = false; // baked into the bitmap above
   tex.needsUpdate = true;
@@ -301,11 +402,14 @@ export const loadStreamedTexture: TextureLoad = (url, onLoad, onError, stillWant
       onError(new TextureTransportError(`superseded: ${url}`));
       return;
     }
-    if (!usable) {
+    // No verified decoder left (the worker retired and this thread never
+    // passed its probe): the shared loader, before any fetch is spent.
+    const decoder = usable ? currentDecoder() : null;
+    if (!decoder) {
       textureLoader.load(url, onLoad, undefined, onError);
       return;
     }
-    loadBitmapTexture(url, stillWanted, signal).then(onLoad, (err) => {
+    loadBitmapTexture(url, decoder, stillWanted, signal).then(onLoad, (err) => {
       if (err instanceof TextureTransportError) onError(err);
       // A decode failure spends one fallback load — but not for a caller
       // whose interest lapsed mid-decode: that would re-fetch for nobody.
@@ -320,15 +424,18 @@ export const loadStreamedTexture: TextureLoad = (url, onLoad, onError, stillWant
  *  of gating the first streamed fetch — every boot texture waits on the
  *  verdict before its network request is even issued. Call once from app
  *  init; module load itself must stay DOM-free for the tests. */
-export function warmBitmapUploadProbe(): void {
+export function warmBitmapUploadProbe(renderer?: THREE.WebGLRenderer): void {
+  if (renderer) probeRenderer = renderer;
   if (typeof createImageBitmap === 'function') void bitmapUploadUsable();
 }
 
-/** Test seam: force the probe verdict (pass null to restore the real probe),
- *  which also resets the decoder choice to the main thread. */
-export function setBitmapProbeForTests(result: boolean | null): void {
+/** Test seam: force the probe verdict (pass null to restore the real probe).
+ *  A forced pass verifies the main thread unless told which realms passed. */
+export function setBitmapProbeForTests(result: boolean | null, realms?: { worker?: boolean; main?: boolean }): void {
   bitmapFlipProbe = result === null ? null : Promise.resolve(result);
   probeVerdict = result;
-  workerAllowed = false;
+  verified.worker = realms?.worker ?? false;
+  verified.main = realms?.main ?? (result === true && !realms?.worker);
   workerDecoder = null;
+  probeRenderer = null;
 }

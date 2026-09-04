@@ -1862,8 +1862,9 @@ export class PlanetariumMode {
     captureDeviceTextureCaps(renderer, this.touchFirstDevice());
     // Resolve the bitmap-upload probe during construction: every streamed
     // boot texture awaits its verdict before fetching, so starting it here
-    // takes it off the first fetch's critical path.
-    warmBitmapUploadProbe();
+    // takes it off the first fetch's critical path. The renderer lets the
+    // probe read its sample back through a real texture upload.
+    warmBitmapUploadProbe(renderer);
     // Warm uploads go through the renderer so freshly loaded maps reach the
     // GPU on quiet frames instead of inside a gesture's first draw.
     bindTextureWarmer((tex) => renderer.initTexture(tex));

@@ -2903,14 +2903,22 @@ export class PlanetariumMode {
   /**
    * The world was drawn (main.ts, after each frame it actually renders —
    * under the loading screen only the requested ones, see
-   * app/bootRenderGate.ts). Three frames after the boot shader warm-up, the
-   * program count is compared with the warm-up's: anything above it linked
-   * on a live frame, which is what the warm-up exists to prevent. Counting
-   * draws rather than updates keeps the check honest now that a covered
-   * boot draws only on request.
+   * app/bootRenderGate.ts). A covered draw may itself link programs (the
+   * composer's passes, the direct lens pass) — under the cover, which is the
+   * point — so each one re-baselines the count. Three live frames after the
+   * last covered draw, the program count is compared with that baseline:
+   * anything above it linked on a visible frame, which is what the warm-up
+   * exists to prevent. Counting draws rather than updates keeps the check
+   * honest now that a covered boot draws only on request.
    */
-  noteWorldRendered(): void {
-    if (this.shaderWarmupProgramCount === null || ++this.framesSinceShaderWarmup < 3) return;
+  noteWorldRendered(live: boolean): void {
+    if (this.shaderWarmupProgramCount === null) return;
+    if (!live) {
+      this.shaderWarmupProgramCount = this.renderer.info.programs?.length ?? this.shaderWarmupProgramCount;
+      this.framesSinceShaderWarmup = 0;
+      return;
+    }
+    if (++this.framesSinceShaderWarmup < 3) return;
     const now = this.renderer.info.programs?.length ?? 0;
     if (now > this.shaderWarmupProgramCount) {
       debugWarn('Boot shader warm-up missed programs: the first live frames compiled more', {

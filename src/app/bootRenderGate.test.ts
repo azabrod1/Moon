@@ -39,6 +39,29 @@ describe('BootRenderGate', () => {
     expect(gate.coveredRenders).toBe(0);
   });
 
+  it('counts the reveal draw with the covered ones and satisfies a pending request', () => {
+    const gate = new BootRenderGate();
+    gate.requestCoveredRender();
+    expect(gate.shouldRender()).toBe(true);
+    gate.requestCoveredRender();
+    expect(gate.revealRender()).toBe(true);
+    expect(gate.coveredRenders).toBe(2);
+    gate.markLive();
+    // Live: the reveal draw is just a frame, not a covered one.
+    expect(gate.revealRender()).toBe(true);
+    expect(gate.coveredRenders).toBe(2);
+  });
+
+  it('keeps a failed boot failed: no reveal draw, and markLive does not revive it', () => {
+    const gate = new BootRenderGate();
+    gate.markFailed();
+    expect(gate.revealRender()).toBe(false);
+    gate.markLive();
+    expect(gate.current).toBe('failed');
+    expect(gate.shouldRender()).toBe(false);
+    expect(gate.coveredRenders).toBe(0);
+  });
+
   it('draws nothing at all once the boot has failed, even after a request or from live', () => {
     const gate = new BootRenderGate();
     gate.requestCoveredRender();

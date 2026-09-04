@@ -10,12 +10,14 @@
  *  - once after every composer build (`requestCoveredRender`), so the
  *    composer's own passes link their programs under the cover (the shader
  *    warm-up, world/shaderWarmup.ts, compiles scene materials, not passes);
- *  - once synchronously right before the screen is hidden (the reveal site
- *    renders, then marks the gate live), so the frame under the fade is
- *    fresh and no link is paid on a visible frame.
+ *  - once synchronously right before the screen is hidden (`revealRender`:
+ *    the reveal site renders, then marks the gate live), so the frame under
+ *    the fade is fresh and no link is paid on a visible frame.
  * Live, every frame draws as before. Failed — the boot error screen, which
- * is opaque and stays — nothing draws at all. The simulation (`update`) runs
- * every frame in every state; only the draw is gated.
+ * is opaque and stays — nothing draws at all, and the state is final: a
+ * reveal after a failure must not bring the broken scene back. The
+ * simulation (`update`) runs every frame in every state; only the draw is
+ * gated.
  */
 
 export type BootRenderState = 'covered' | 'live' | 'failed';
@@ -35,8 +37,21 @@ export class BootRenderGate {
     if (this.state === 'covered') this.requested = true;
   }
 
+  /**
+   * The reveal's own synchronous draw, right before the screen goes: counted
+   * with the covered ones (it satisfies any pending request), and refused
+   * once the boot has failed.
+   */
+  revealRender(): boolean {
+    if (this.state === 'failed') return false;
+    if (this.state === 'covered') this.coveredRenders++;
+    this.requested = false;
+    return true;
+  }
+
   /** The loading screen is about to go: from here every frame draws. */
   markLive(): void {
+    if (this.state === 'failed') return;
     this.state = 'live';
     this.requested = false;
   }

@@ -442,18 +442,22 @@ function drawWorldFrame() {
     // what renderScene left.
     if (appMode === 'planetarium') planetariumMode?.renderMiniChartFrame();
   }
-  if (appMode === 'planetarium') planetariumMode?.noteWorldRendered();
+  if (appMode === 'planetarium') planetariumMode?.noteWorldRendered(bootRender.current === 'live');
 }
 
 // The loading screen goes: draw one frame first, so the frame under the fade
 // is fresh and any program a pass still had to link is linked under the
 // cover, then let every frame draw.
 function revealLoadingScreen() {
-  drawWorldFrame();
+  // A failed boot keeps its error screen; there is nothing to reveal.
+  if (bootRender.current === 'failed') return;
+  if (bootRender.revealRender()) drawWorldFrame();
   // The draw only queues the GPU's work; on ANGLE-Metal the pipeline states
-  // are built when the draws execute, so wait for that frame to finish before
-  // the fade starts — a stall here is under the cover, one on the first
-  // visible frame is the hitch this gate exists to prevent.
+  // are built when the draws execute. Where finish blocks (WebKit, Firefox)
+  // that wait lands under the cover instead of on the first visible frame.
+  // Chromium implements WebGL's finish as a flush (a boot trace shows no
+  // wait), so there this only guarantees the frame is submitted before the
+  // fade begins.
   renderer.getContext().finish();
   bootRender.markLive();
   document.getElementById('loading-screen')?.classList.add('hidden');

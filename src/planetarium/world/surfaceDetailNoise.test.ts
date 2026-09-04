@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import {
   buildSurfaceDetailNoise,
@@ -168,7 +170,23 @@ describe('the built field', () => {
     // The bound scales with the encoding: a central difference over two texels
     // rounds off a rim that is one texel wide, by a fraction of the steepest
     // slope the scale was sized for.
+    // Absolute, not a fraction of the scale: a re-seed that raises the scale
+    // must not loosen the check with it. The worst gap on this build is 12.5,
+    // at the rim crests.
+    expect(worst).toBeLessThan(16);
     expect(worst).toBeLessThan(SURFACE_DETAIL_GRADIENT_SCALE * 0.4);
+  });
+
+  it('reads without anisotropic filtering', () => {
+    // The shader picks the rung so a texel is about a pixel, so anisotropy
+    // buys nothing face-on and multiplies every read of the stochastic tiling
+    // at a limb — up to eight times the cost for a detail field seen edge-on.
+    // Set after the defaults, which would otherwise turn it on.
+    const src = readFileSync(resolve(__dirname, 'surfaceDetailNoise.ts'), 'utf8');
+    const defaults = src.indexOf("applyTextureDefaults(tex, 'data');");
+    const aniso = src.indexOf('tex.anisotropy = 1;');
+    expect(defaults).toBeGreaterThan(-1);
+    expect(aniso).toBeGreaterThan(defaults);
   });
 
   it('costs one small upload for every surface in the system', () => {

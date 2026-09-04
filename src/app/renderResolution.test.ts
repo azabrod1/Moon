@@ -100,9 +100,17 @@ describe('composerSamples', () => {
     expect(composerSamples(1.25, false, QHD, null, [8, 4, 2])).toBe(2);
   });
 
-  it('falls up to the smallest completed count rather than to none', () => {
+  it('falls up to the smallest completed count rather than to none, where affordable', () => {
     expect(composerSamples(1.25, false, QHD, null, [8, 4])).toBe(4);
-    expect(composerSamples(1, false, QHD, 2, [8])).toBe(8);
+    expect(composerSamples(1.25, false, QHD, null, [4])).toBe(4);
+  });
+
+  it('never falls up beyond 4K or above the full count', () => {
+    expect(composerSamples(1, false, FIVE_K, null, [8, 4])).toBe(0);
+    expect(composerSamples(1, false, ECONOMY_ABOVE_DEVICE_PIXELS + 1, null, [4])).toBe(0);
+    expect(composerSamples(1, false, QHD, null, [8])).toBe(0);
+    expect(composerSamples(1, false, QHD, 2, [8])).toBe(0);
+    expect(composerSamples(1, false, FIVE_K, null, [8, 4, 2])).toBe(SCENE_TARGET_SAMPLES_ECONOMY);
   });
 
   it('never multisamples on a GPU that completed nothing', () => {

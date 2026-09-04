@@ -110,9 +110,12 @@ export function policySamples(pixelRatio: number, mobile: boolean, devicePixels:
  * URL knob (parseMsaaOverride): a number forces that count on every display;
  * null follows policySamples. `supported` lists the counts the GPU completed
  * and resolved for a half-float target (gpuCapability.ts): the largest one
- * not above the request wins, failing that the smallest one above it — a
- * driver listing 4 and 8 but not 2 must not fall to no antialiasing at all.
- * An empty list, or a request of 0, means no multisampling.
+ * not above the request wins. Failing that, the smallest one above it — a
+ * driver listing 4 and 8 but not 2 must not fall to no antialiasing at all —
+ * but only where the bigger count is affordable: never above the full
+ * count, and never beyond the 4K budget, where the economy count was chosen
+ * for memory and a bigger target is the very allocation it avoids. An empty
+ * list, or a request of 0, means no multisampling.
  */
 export function composerSamples(
   pixelRatio: number,
@@ -130,7 +133,9 @@ export function composerSamples(
     else above = Math.min(above, samples);
   }
   if (below > 0) return below;
-  return Number.isFinite(above) ? above : 0;
+  if (!Number.isFinite(above)) return 0;
+  const affordable = above <= SCENE_TARGET_SAMPLES && devicePixels <= ECONOMY_ABOVE_DEVICE_PIXELS;
+  return affordable ? above : 0;
 }
 
 /**

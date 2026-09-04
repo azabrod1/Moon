@@ -84,6 +84,11 @@ function completesMultisampled(
   const depth = gl.createRenderbuffer();
   const resolveFbo = gl.createFramebuffer();
   const resolved = gl.createRenderbuffer();
+  // What the probe borrows, to hand back as found: the bound framebuffers
+  // (three's own, if a target is bound) and the clear colour.
+  const prevDraw = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+  const prevRead = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+  const prevClear = gl.getParameter(gl.COLOR_CLEAR_VALUE) as Float32Array;
   try {
     gl.bindRenderbuffer(gl.RENDERBUFFER, colour);
     gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.RGBA16F, 4, 4);
@@ -98,6 +103,7 @@ function completesMultisampled(
     gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, depth);
     const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
     // A refused storage call raises a GL error but no exception: a miss.
+    // (The finally block drains whatever else it raised.)
     const clean = gl.getError() === gl.NO_ERROR;
     if (!complete || !clean) return false;
     // The resolve three performs after every render: write the samples,
@@ -111,19 +117,21 @@ function completesMultisampled(
     const resolvable = gl.checkFramebufferStatus(gl.DRAW_FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
     gl.blitFramebuffer(0, 0, 4, 4, 0, 0, 4, 4, gl.COLOR_BUFFER_BIT, gl.NEAREST);
     const resolvedClean = gl.getError() === gl.NO_ERROR;
-    drainErrors(gl);
     return resolvable && resolvedClean;
   } finally {
-    // All three binding points back to null through the cache, so three's
-    // record matches GL once the probe's framebuffers are deleted.
-    renderer.state.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
-    renderer.state.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
-    renderer.state.bindFramebuffer(gl.FRAMEBUFFER, null);
+    // Everything back as found, through three's cache so its record matches
+    // GL: the binding points (three's own target, if one was bound, else
+    // null), the clear colour, and an empty error queue for whoever is next.
+    renderer.state.bindFramebuffer(gl.READ_FRAMEBUFFER, prevRead);
+    renderer.state.bindFramebuffer(gl.DRAW_FRAMEBUFFER, prevDraw);
+    renderer.state.bindFramebuffer(gl.FRAMEBUFFER, prevDraw);
+    renderer.state.buffers.color.setClear(prevClear[0], prevClear[1], prevClear[2], prevClear[3], false);
     gl.bindRenderbuffer(gl.RENDERBUFFER, null);
     gl.deleteRenderbuffer(colour);
     gl.deleteRenderbuffer(depth);
     gl.deleteRenderbuffer(resolved);
     gl.deleteFramebuffer(fbo);
     gl.deleteFramebuffer(resolveFbo);
+    drainErrors(gl);
   }
 }

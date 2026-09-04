@@ -198,8 +198,9 @@ function getTargetPixelRatio(): number {
 }
 
 function getSceneTargetSamples(pixelRatio: number): number {
-  // The scene target's size in device pixels: the policy's 4K budget reads it.
-  const devicePixels = Math.round(window.innerWidth * pixelRatio) * Math.round(window.innerHeight * pixelRatio);
+  // The scene target's size in device pixels, floored as GL sizes the
+  // storage (a GLsizei truncates): the policy's 4K budget reads it.
+  const devicePixels = Math.floor(window.innerWidth * pixelRatio) * Math.floor(window.innerHeight * pixelRatio);
   return composerSamples(pixelRatio, isMobile, devicePixels, msaaOverride, sceneSampleCounts);
 }
 

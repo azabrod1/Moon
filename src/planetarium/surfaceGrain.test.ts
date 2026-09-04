@@ -759,6 +759,11 @@ describe('traceCurves and the curved boundaries it levels', () => {
   });
 });
 
+// Each scene here builds the full raster and runs the leveller over it, which
+// is more than a test's default budget allows for when the suite runs them
+// alongside everything else.
+const SLOW = 30000;
+
 describe('the smear rule that decides which traced boundaries are levelled', () => {
   // The seed is an energy contour and the guard that went with it was an
   // energy step, so seed and guard were the same signal and a contact between
@@ -846,7 +851,7 @@ describe('the smear rule that decides which traced boundaries are levelled', () 
       const levelled = Float32Array.from(band);
       levelEdges(levelled, W, H, OFF, PX_PER_DEG, null, deficit);
       expect(albedoGap(levelled)).toBeLessThan(0.5 * albedoGap(band));
-    });
+    }, SLOW);
 
     it('leaves no curve, and the albedo step, under the rule', () => {
       const kept = traceCurves(band, W, H, EDGE, PX_PER_DEG, null, deficit,
@@ -859,7 +864,7 @@ describe('the smear rule that decides which traced boundaries are levelled', () 
       levelEdges(levelled, W, H, EDGE, PX_PER_DEG, null, deficit);
       const was = albedoGap(band);
       expect(Math.abs(albedoGap(levelled) - was)).toBeLessThan(0.05 * was);
-    });
+    }, SLOW);
 
     it('takes a third of the detail gone as a frame and a fifth as ground', () => {
       // The threshold on its own, with the blur taken out of the question: the
@@ -888,7 +893,7 @@ describe('the smear rule that decides which traced boundaries are levelled', () 
       const deep = trace(0.4);
       expect(deep.length).toBeGreaterThan(0);
       for (const c of deep) for (const q of c.points) expect(q.sideDeficit).toBeCloseTo(0.4, 5);
-    });
+    }, SLOW);
   });
 
   describe('two coarse products meeting', () => {
@@ -923,6 +928,6 @@ describe('the smear rule that decides which traced boundaries are levelled', () 
       levelEdges(levelled, W, H, EDGE, PX_PER_DEG, null,
         detailDeficit(band, W, H, SPEC, PX_PER_DEG, null).deficit);
       expect(median(stepsAlong(levelled, EDGE))).toBeLessThan(2);
-    });
+    }, SLOW);
   });
 });

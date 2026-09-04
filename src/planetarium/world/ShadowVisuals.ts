@@ -238,16 +238,20 @@ function coneMaterial(color: number, opacity: number): THREE.MeshBasicMaterial {
  * fat guide lines) on degenerate geometry. These programs otherwise link on
  * the first frame that draws them — the first surface-view entry — freezing
  * that frame long enough on slow GPUs that the entering click reads as dead.
+ * Nothing else holds these materials before a landing, and three destroys a
+ * program with its last material, so the probes stay in the scene, invisible
+ * and never raycast, for the session.
  */
 export function createShadowVisualsWarmupProbes(): { group: THREE.Group; dispose: () => void } {
   const group = new THREE.Group();
   group.visible = false;
+  const noPick = <T extends THREE.Object3D>(o: T): T => { o.raycast = () => {}; return o; };
   const fill = coneMaterial(0xffffff, 0.1);
   const cone = new THREE.CylinderGeometry(1e-9, 0, 1e-9, 3, 1, true);
-  group.add(new THREE.Mesh(cone, fill));
+  group.add(noPick(new THREE.Mesh(cone, fill)));
   const spotFill = makeSpotMaterial();
   const disc = new THREE.CircleGeometry(1e-9, 3);
-  group.add(new THREE.Mesh(disc, spotFill));
+  group.add(noPick(new THREE.Mesh(disc, spotFill)));
   const segment = new LineGeometry();
   segment.setPositions([0, 0, 0, 0, 1e-9, 0]);
   const solid = new LineMaterial({ color: 0xffffff, linewidth: 1, opacity: 0.5, transparent: true, depthWrite: false });
@@ -255,10 +259,16 @@ export function createShadowVisualsWarmupProbes(): { group: THREE.Group; dispose
     color: 0xffffff, linewidth: 1, opacity: 0.5, transparent: true, depthWrite: false,
     dashed: true, dashSize: 1, gapSize: 1,
   });
+  // The live guides draw through the lens augmentation, and its cache-key tag
+  // is part of the program: an un-augmented probe compiles a program nothing
+  // ever draws. The lens uniforms it returns stay at rest — the probe is only
+  // ever drawn one pixel wide under the load screen.
+  augmentFixedScreenLineForLens(solid);
+  augmentFixedScreenLineForLens(dashed);
   const solidLine = new Line2(segment, solid);
   const dashedLine = new Line2(segment, dashed);
   solidLine.computeLineDistances();
-  group.add(solidLine, dashedLine);
+  group.add(noPick(solidLine), noPick(dashedLine));
   return {
     group,
     dispose: () => {

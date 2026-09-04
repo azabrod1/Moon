@@ -15,8 +15,7 @@ import {
   needsGeometryUpgrade,
   synthCraterShare,
   upgradeGeometryOnApproach,
-  wireEarthLateDetail,
-} from './PlanetFactory';
+  wireEarthLateDetail } from './PlanetFactory';
 import {
   applyColorTierTexture,
   applyNormalTierTexture,

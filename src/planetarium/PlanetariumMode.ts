@@ -35,7 +35,7 @@ import {
   type PlanetData,
   LIGHT_SPEED_AU_PER_S,
 } from './planets/planetData';
-import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, createShaderWarmupProbes, lodMeasurementRelevant, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
+import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasurementRelevant, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
 import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { disposeCloudDetailTexture } from './world/cloudDetailNoise';
@@ -93,6 +93,7 @@ import {
   type ShadowEventSpec,
 } from '../astronomy/shadows';
 import { ShadowVisuals, createShadowVisualsWarmupProbes, type GuideSlotInput } from './world/ShadowVisuals';
+import { createShaderWarmupProbes, type WarmupProbes } from './world/shaderWarmupProbes';
 import { warmUpSceneShaders, type ProgramResolveTiming } from './world/shaderWarmup';
 import { OBSERVATORY_JUMP_LEAD_MS, resolveLiveEvent, stepperSearchFromUtcMs } from './observatoryTime';
 import { resolveShowVantage } from './observatoryJump';
@@ -2126,6 +2127,19 @@ export class PlanetariumMode {
   // couple of frames later — the first live frames must not compile anything
   // it missed (that stall is the very thing it exists to prevent).
   private shaderWarmupProgramCount: number | null = null;
+  /** Every program linked as of the last frame, by id, once the boot check
+   *  has run: a frame whose list holds an id not in here has just paid a link
+   *  no warm-up covered. Null until the boot warm-up has been judged. */
+  private knownProgramIds: Set<number> | null = null;
+  /** Above zero while a deliberate warm-up links programs (the atmosphere
+   *  tier's idle pass, a context restore): those links are not misses. */
+  private linkWarningsMuted = 0;
+  /** The warm-up's probe groups, kept in the scene for the session so the
+   *  programs only they hold are not destroyed with them. Owned from the
+   *  moment they enter the scene; their materials are disposed only after
+   *  the compile's poll has settled. */
+  private shaderWarmupProbes: WarmupProbes[] = [];
+  private shaderWarmupSettled: Promise<void> = Promise.resolve();
   /** QA override for which tier the shells wear: 'analytic' holds them on the
    *  fallback so the two looks can be captured from one session, null lets the
    *  tables decide. Never set outside the dev bridge. */
@@ -2262,6 +2276,7 @@ export class PlanetariumMode {
       this.queueReleasedTierRefetch();
       this.glContextLost = false;
       this.atmosphereLut?.onContextRestored();
+      void this.rewarmShaderProbes();
     });
     this.player = new PlayerShip();
     this.store = new PlanetariumStore();
@@ -2773,7 +2788,14 @@ export class PlanetariumMode {
       // surface-view entry links those programs mid-gesture (a frozen frame
       // that reads as a dead click on slow GPUs).
       const shadowProbes = createShadowVisualsWarmupProbes();
-      this.scene.add(probes.group, shadowProbes.group);
+      // The orbit-details view's lines and fills draw first at a landing;
+      // their programs link here instead, on the view's own materials.
+      const orbitProbes = this.orbitDetailsVisuals.warmupProbes();
+      this.scene.add(probes.group, shadowProbes.group, orbitProbes.group);
+      // Owned now, not once the compile settles: activate() may return on the
+      // warm-up's bounded wait with the compile still pending, and a dispose()
+      // in that window must still find the groups to take out of the scene.
+      this.shaderWarmupProbes.push(probes, shadowProbes, orbitProbes);
       // Compile with the live path's kind of target bound (three keys every
       // program on it) and force the links with one 1-pixel draw — see
       // world/shaderWarmup.ts for the why and the pinned contract. Fail-open:
@@ -2781,7 +2803,7 @@ export class PlanetariumMode {
       const { compiled, resolved, warmDrawMs } = await warmUpSceneShaders(
         this.renderer, this.scene, this.camera, {
           drawsThroughComposer: this.rendersThroughComposer(),
-          probeGroups: [probes.group, shadowProbes.group],
+          probeGroups: [probes.group, shadowProbes.group, orbitProbes.group],
           // Every pending program in this task, no frame yielded: the load
           // screen is up, so a yielded frame is boot time, and the driver's
           // deferred pipeline builds are paid under it either way.
@@ -2792,14 +2814,16 @@ export class PlanetariumMode {
       logShaderResolve('Boot', resolved, warmDrawMs);
       this.shaderWarmupProgramCount = this.renderer.info.programs?.length ?? null;
       this.framesSinceShaderWarmup = 0;
-      // Probe materials are disposed only once compileAsync's poll has fully
-      // settled — disposing a material mid-poll throws inside a timer callback
-      // that no try/catch around the await could reach.
-      void compiled.then(() => {
-        this.scene.remove(probes.group, shadowProbes.group);
-        probes.dispose();
-        shadowProbes.dispose();
-      });
+      // The probes stay in the scene, invisible, for the session: three
+      // destroys a program the moment its last material is disposed, and the
+      // combinations only a probe holds at boot (a measured normal before the
+      // Moon's arrives, the cloud deck's relief, the shadow visuals before a
+      // landing) were compiled here and thrown away with the probes, to link
+      // again on their first real draw mid-flight. Their materials go only in
+      // dispose(), and only once compileAsync's poll has settled — disposing
+      // a material mid-poll throws inside a timer callback no try/catch here
+      // could reach.
+      this.shaderWarmupSettled = compiled.then(() => undefined, () => undefined);
       performance.measure('plm:precompile', 'plm:precompile:start');
     }
 
@@ -2917,6 +2941,16 @@ export class PlanetariumMode {
   private async armAtmosphereTier(): Promise<void> {
     const lut = this.atmosphereLut;
     if (!lut) return;
+    // Every link below is deliberate idle work, not a warm-up miss.
+    this.linkWarningsMuted++;
+    try {
+      await this.armAtmosphereTierSteps(lut);
+    } finally {
+      this.linkWarningsMuted--;
+      this.rebaselineLinkedPrograms();
+    }
+  }
+  private async armAtmosphereTierSteps(lut: NonNullable<typeof this.atmosphereLut>): Promise<void> {
     await nextFrame();
     if (!this.active) return;
     if (!lut.probeCapability()) return;
@@ -2926,6 +2960,52 @@ export class PlanetariumMode {
     await nextFrame();
     if (!this.active) return;
     await lut.bake('Earth');
+  }
+  /** Take the live program list as the known set, so the next frame's check
+   *  starts from whatever a deliberate warm-up or a restore just linked. */
+  private rebaselineLinkedPrograms(): void {
+    this.knownProgramIds = new Set((this.renderer.info.programs ?? []).map((p) => p.id));
+  }
+  /** Name every program in the list that no warm-up covered, then take the
+   *  list as known — which also forgets the ones three released. Programs
+   *  are matched by id, so a release that reorders the list cannot pin the
+   *  blame on the wrong entry. */
+  private noteProgramLinks(programs: ReadonlyArray<{ id: number; name?: string; cacheKey?: string }>): void {
+    const known = this.knownProgramIds;
+    if (known && this.linkWarningsMuted === 0) {
+      for (const program of programs) {
+        if (known.has(program.id)) continue;
+        debugWarn('Shader program linked after the boot warm-up', {
+          type: (program as { type?: string }).type,
+          name: program.name,
+          key: String(program.cacheKey ?? '').slice(0, 160),
+          total: programs.length,
+        });
+      }
+    }
+    this.rebaselineLinkedPrograms();
+  }
+  /** A restored context has no programs: live materials re-link on their
+   *  first draw, but the kept probes are never drawn, so their compile and
+   *  warm draw run again here or the variants only they hold link mid-flight
+   *  once more. Fail-open like the boot pass. */
+  private async rewarmShaderProbes(): Promise<void> {
+    if (this.shaderWarmupProbes.length === 0) return;
+    this.linkWarningsMuted++;
+    try {
+      const { compiled, resolved, warmDrawMs } = await warmUpSceneShaders(
+        this.renderer, this.scene, this.camera, {
+          drawsThroughComposer: this.rendersThroughComposer(),
+          probeGroups: this.shaderWarmupProbes.map((probe) => probe.group),
+          onError: (stage, err) => debugError(`Shader re-warm ${stage} failed`, err),
+        },
+      );
+      logShaderResolve('Context restore', resolved, warmDrawMs);
+      this.shaderWarmupSettled = compiled.then(() => undefined, () => undefined);
+    } finally {
+      this.linkWarningsMuted--;
+      this.rebaselineLinkedPrograms();
+    }
   }
 
   /** Link the LUT shell's program here in the idle, before the bake it will
@@ -4048,6 +4128,13 @@ export class PlanetariumMode {
         });
       }
       this.shaderWarmupProgramCount = null;
+      this.rebaselineLinkedPrograms();
+    } else if (this.knownProgramIds !== null) {
+      // A link after the warm-up is a frame paid mid-gesture; name the program
+      // so the probe set can grow to cover it. One length compare a frame; the
+      // list is walked only when it moved.
+      const programs = this.renderer.info.programs;
+      if (programs && programs.length !== this.knownProgramIds.size) this.noteProgramLinks(programs);
     }
     // One damping step runs per frame (the controls wrapper enforces it), so
     // size that step by the frame's real duration: the coast then decays at
@@ -18183,6 +18270,14 @@ export class PlanetariumMode {
 
   dispose() {
     this.deactivate();
+    const probes = this.shaderWarmupProbes;
+    this.shaderWarmupProbes = [];
+    for (const probe of probes) this.scene.remove(probe.group);
+    // Materials go only once the compile's poll has settled: disposing one
+    // mid-poll throws inside a timer callback nothing here could catch.
+    void this.shaderWarmupSettled.then(() => {
+      for (const probe of probes) probe.dispose();
+    });
     // The constructor's window-level listeners (activate/deactivate own only
     // the key handlers): without these removals a disposed mode — and its
     // whole scene graph, through the closures — stays reachable, and its

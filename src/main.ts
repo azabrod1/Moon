@@ -894,9 +894,9 @@ function installDevHooks() {
     // uniforms in-page and re-render, no rebuild). Null while a mode bypasses
     // the composer.
     composerPasses: () => composer?.passes ?? null,
-    // Mode-agnostic leak probe for the enter/exit heap check.
     // Boot render gate state + frames drawn under the loading screen.
     bootRender: () => ({ state: bootRender.current, coveredRenders: bootRender.coveredRenders }),
+    // Mode-agnostic leak probe for the enter/exit heap check.
     rendererInfo: () => ({
       geometries: renderer.info.memory.geometries,
       textures: renderer.info.memory.textures,

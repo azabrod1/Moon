@@ -450,7 +450,9 @@ export class VolumeCompareMode {
    * end-card sheet if it is up (the bar hides under it), else the pour bar. 0 on
    * desktop (no bottom occluder, no vertical pan). Measured only when flagged
    * dirty: activation, a resize, the end card appearing or going, or the bar
-   * changing size (a ResizeObserver on it catches the row growing).
+   * changing size (a ResizeObserver, created the first time the bar is
+   * measured, catches the row growing; without the API those changes are
+   * picked up by the next resize or end-card edge).
    */
   private remeasureBand(): void {
     const endCardShown = this.panel.isEndCardShown();

@@ -22,7 +22,7 @@ describe('BootRenderGate', () => {
     expect(gate.coveredRenders).toBe(2);
   });
 
-  it('draws every frame once live, and a stale request does not count', () => {
+  it('draws every frame once live, and a request made under the cover is not a covered render', () => {
     const gate = new BootRenderGate();
     gate.requestCoveredRender();
     gate.markLive();

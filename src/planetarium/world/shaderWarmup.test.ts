@@ -515,6 +515,17 @@ describe('how the app spends the resolve phase', () => {
     expect(mode()).toMatch(
       /probeGroups: \[probes\.group, shadowProbes\.group, orbitProbes\.group\],[\s\S]{0,400}?resolvePerFrame: Number\.POSITIVE_INFINITY,/,
     );
+    // The probes are owned the moment they enter the scene, before the
+    // compile is awaited: a dispose() during the warm-up's bounded wait must
+    // still find them, and their programs must outlive the boot (three frees
+    // a program with the last material that holds it).
+    expect(mode()).toMatch(
+      /this\.scene\.add\(probes\.group, shadowProbes\.group, orbitProbes\.group\);[\s\S]{0,400}?this\.shaderWarmupProbes\.push\(probes, shadowProbes, orbitProbes\);[\s\S]{0,900}?await warmUpSceneShaders\(/,
+    );
+    expect(mode()).not.toMatch(/probes\.dispose\(\);\s*shadowProbes\.dispose\(\);/);
+    // A restored context has no programs, and the kept probes are never
+    // drawn: the restore path compiles them again.
+    expect(mode()).toMatch(/webglcontextrestored[\s\S]{0,1200}?this\.rewarmShaderProbes\(\)/);
     // The idle warm-up must NOT: nothing covers those frames, so a build that
     // shares one with another is the dropped frame this exists to remove.
     const shell = /private async warmAtmosphereShellProgram[\s\S]*?\n  \}/.exec(mode())?.[0] ?? '';

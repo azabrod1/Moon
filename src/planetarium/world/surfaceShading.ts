@@ -82,7 +82,7 @@ const LIMB_DARKENING: Record<SurfaceArchetype, number> = {
 // thinner A ring. This mirrors the band layout painted by paintRing('saturn') in
 // planets/rings.ts; keep the two in step so the cast shadow lines up with the
 // ring that casts it (this is a coarse re-derivation, not a shared source).
-const RING_SHADOW_OPACITY_GLSL = /* glsl */ `
+export const RING_SHADOW_OPACITY_GLSL = /* glsl */ `
 float ringShadowOpacity(float t) {
   if (t < 0.0 || t > 1.0) return 0.0;
   float a = 0.9;
@@ -225,12 +225,12 @@ export function augmentSurfaceMaterial(
 
   // Created up front so the mode can update these refs even before the material
   // lazily compiles; onBeforeCompile assigns the same objects into the shader.
-  const moonShadow: THREE.Vector4[] = [];
-  for (let i = 0; i < MAX_MOON_SHADOWS; i++) moonShadow.push(new THREE.Vector4());
+  // A shared set is reused whole — a streamed sector must not build (and throw
+  // away) the caster slots its globe already owns.
   const fx: SurfaceShadingFx = shared ?? {
     uSunDirWorld: { value: new THREE.Vector3(1, 0, 0) },
     uSunDirLocal: { value: new THREE.Vector3(1, 0, 0) },
-    uMoonShadow: { value: moonShadow },
+    uMoonShadow: { value: Array.from({ length: MAX_MOON_SHADOWS }, () => new THREE.Vector4()) },
     uMoonShadowCount: { value: 0 },
     uPlanetshineColor: { value: new THREE.Color(0x6688aa) },
     uPlanetshineDir: { value: new THREE.Vector3(1, 0, 0) },

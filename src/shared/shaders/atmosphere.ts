@@ -1,8 +1,10 @@
-// Atmosphere shell: a single-scatter approximation on a back-side sphere. The
-// world-space normal plus a fed sun direction give a day-side Rayleigh limb that
-// warms toward the terminator, and a Henyey-Greenstein Mie peak that lights a
-// back-lit crescent. Output is additive linear HDR radiance so the composer's
-// tonemap + bloom carry the bright forward-scatter rim.
+// Atmosphere shell: a single-scatter approximation on a back-side sphere. Each
+// fragment is shaded from the view ray's impact parameter — the lowest radius
+// the ray reaches — never from a surface normal, so the fringe is a real column
+// through the shell. With a fed sun direction that gives a day-side Rayleigh
+// limb that warms toward the terminator, and a Henyey-Greenstein Mie peak that
+// lights a back-lit crescent. Output is additive linear HDR radiance so the
+// composer's tonemap + bloom carry the bright forward-scatter rim.
 export const atmosphereVertexShader = /* glsl */ `
 varying vec3 vWorldPos;
 varying vec3 vCenter;
@@ -129,6 +131,9 @@ void main() {
   // Show night lights only on dark side
   float sunDot = dot(vNormal, vSunDir);
   float nightMix = 1.0 - smoothstep(-0.3, -0.1, sunDot); // ordered edges (reversed smoothstep is undefined)
+  // nightMix scales the colour AND the alpha, and the material blends
+  // additively (SRC_ALPHA, ONE), so the lights actually fade as nightMix
+  // squared — a steeper terminator than the smoothstep alone describes.
   gl_FragColor = vec4(nightColor.rgb * nightMix * 1.5, nightMix * nightColor.a);
 }
 `;

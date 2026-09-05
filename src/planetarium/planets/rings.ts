@@ -26,7 +26,8 @@ export const RING_CONFIGS: Record<string, RingConfig> = {
   Neptune: { innerFactor: 1.7, outerFactor: 2.54, style: 'neptune' },
 };
 
-const STRIP_WIDTH = 1024;
+/** Texels across the radial strip: x = 0 is the inner edge, STRIP_WIDTH the outer. */
+export const STRIP_WIDTH = 1024;
 
 // Deterministic hash so the ring texture is identical every run.
 function seededRand(seed: number): number {
@@ -45,8 +46,9 @@ function bandPeak(t: number, bands: Array<[number, number, number]>): number {
 }
 
 // Paint one texel of the radial strip (x: 0…STRIP_WIDTH). Returns [r,g,b,a],
-// each 0–255. t runs 0 at the inner edge to 1 at the outer edge.
-function paintRing(x: number, style: RingStyle): [number, number, number, number] {
+// each 0–255. t runs 0 at the inner edge to 1 at the outer edge. Exported so
+// the band layout can be measured without a canvas.
+export function paintRing(x: number, style: RingStyle): [number, number, number, number] {
   const t = x / STRIP_WIDTH;
 
   if (style === 'saturn') {

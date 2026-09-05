@@ -7,6 +7,7 @@
  */
 import * as THREE from 'three';
 import { type PlanetData, SUN_DATA } from './planets/planetData';
+import { SUN_RADIUS_AU } from '../astronomy/constants';
 import { createPlanetRings, RING_CONFIGS, type RingShadingFx } from './planets/rings';
 import {
   atmosphereVertexShader,
@@ -23,6 +24,7 @@ import {
   sunPhotosphereVertexShader,
   sunProminenceFragmentShader,
   sunProminenceVertexShader,
+  SUN_ATMOSPHERE_TINT_RGB,
   SUN_GLARE_EXTENT_SOLAR_RADII,
 } from '../shared/shaders/sun';
 import { debugWarn } from '../shared/debug';
@@ -205,16 +207,13 @@ export interface AtmosphereConfig {
   scale: number;
 }
 
-// Sun's physical radius in AU — for solar angular radius (penumbra width) at a planet.
-const SUN_RADIUS_AU = 695_700 / 149_597_870.7;
-
 // Exported so the volume-compare mode's ghost shell reads the same tuning —
 // a hand-kept copy would drift the moment these numbers get touched.
 export const ATMOSPHERES: Record<string, AtmosphereConfig> = {
   // Venus reads as a cloud deck, not a surface under thin air: front-lit it
   // shows limb darkening and a crisp edge (no ring in flyby photos); its one
   // dramatic geometry is the back-lit ring of light, carried here by the Mie
-  // term. Shell kept near the real haze height (~1.5% of the radius).
+  // term. Shell drawn at 2.5% of the radius, a little above the real haze top.
   Venus: {
     dayColor: [0.95, 0.85, 0.55], sunsetColor: [1.0, 0.7, 0.4], mieColor: [1.0, 0.93, 0.78],
     rayleighStrength: 0.3, mieStrength: 2.2, mieG: 0.78, power: 1.2, intensity: 0.5, haloStrength: 0.3, scale: 1.025,
@@ -1613,7 +1612,7 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
     uniforms: {
       time: { value: 0 },
       uAtmosphereMix: { value: 0 },
-      uAtmosphereColor: { value: new THREE.Color(1, 0.55, 0.24) },
+      uAtmosphereColor: { value: new THREE.Color(...SUN_ATMOSPHERE_TINT_RGB) },
       // Submersion fade for the interior fog (1 outside; the controller drives
       // it from depth below the photosphere).
       uInteriorFade: { value: 1 },
@@ -1706,7 +1705,7 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       uExposureScale: { value: 1 },
       uEmergenceFlash: { value: 0 },
       uAtmosphereMix: { value: 0 },
-      uAtmosphereColor: { value: new THREE.Color(1, 0.55, 0.24) },
+      uAtmosphereColor: { value: new THREE.Color(...SUN_ATMOSPHERE_TINT_RGB) },
       uMinHalfSizePx: { value: useBloom ? 18 : 22 },
       uViewportHeight: { value: Math.max(window.innerHeight, 1) },
       ...createLensShaderUniforms(),
@@ -1789,7 +1788,7 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       uExposureScale: { value: 1 },
       uEmergenceFlash: { value: 0 },
       uAtmosphereMix: { value: 0 },
-      uAtmosphereColor: { value: new THREE.Color(1, 0.55, 0.24) },
+      uAtmosphereColor: { value: new THREE.Color(...SUN_ATMOSPHERE_TINT_RGB) },
       ...createLensShaderUniforms(),
     },
     vertexShader: sunLensGhostVertexShader,

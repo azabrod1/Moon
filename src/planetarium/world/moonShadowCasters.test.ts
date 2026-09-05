@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { KM_PER_AU } from '../../astronomy/constants';
+import { KM_PER_AU, SUN_RADIUS_AU } from '../../astronomy/constants';
 import { getMoonsByPlanet } from '../planets/moonData';
 import { PLANETARIUM_BODIES } from '../planets/planetData';
 import { CASTER_PERIGEE_MARGIN, selectMoonShadowCasters, umbraReachesSurface } from './moonShadowCasters';
 
-const SUN_RADIUS_AU = 695_700 / KM_PER_AU;
 const parent = (name: string) => PLANETARIUM_BODIES.find((b) => b.name === name)!;
 const sunTanAt = (distanceAU: number) => SUN_RADIUS_AU / distanceAU;
 const moon = (planet: string, name: string) => getMoonsByPlanet(planet).find((m) => m.name === name)!;

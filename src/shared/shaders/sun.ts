@@ -14,6 +14,12 @@ import { lensShaderGLSL } from '../three/lensShader';
  *  full together. One definition site — the GLSL interpolates it. */
 export const SUN_WHITEOUT_SLAM_EDGE = 0.85;
 
+/** Tint the Sun's atmosphere-grazing uniforms hold before the first frame
+ *  feeds them. Every frame overwrites it from the grazed planet's own sunset
+ *  colour, so this is the pre-first-frame value only — but the photosphere,
+ *  the glare and the lens ghost must start from the same one. */
+export const SUN_ATMOSPHERE_TINT_RGB: readonly [number, number, number] = [1, 0.55, 0.24];
+
 /** Object-space vertex transform shared by the photosphere and the
  *  prominence shell — same varyings, same math. One definition; both public
  *  names below keep their API. */

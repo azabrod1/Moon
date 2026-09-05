@@ -91,7 +91,7 @@ import { OBSERVATORY_JUMP_LEAD_MS, resolveLiveEvent, stepperSearchFromUtcMs } fr
 import { resolveShowVantage } from './observatoryJump';
 import { surfacePerfBeginSpan, surfacePerfEndSpan } from './surfacePerf';
 import { findEvent, type EventType } from '../astronomy/ephemeris';
-import { KM_PER_AU } from '../astronomy/constants';
+import { KM_PER_AU, SUN_RADIUS_AU } from '../astronomy/constants';
 import {
   createPlanetariumStarfield,
   setStarfieldGain,
@@ -181,7 +181,7 @@ import {
 } from './surfaceView';
 import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
 import { applyDesignFov, displayFovDeg } from '../shared/math/lensProjection';
-import { SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../shared/shaders/sun';
+import { SUN_ATMOSPHERE_TINT_RGB, SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../shared/shaders/sun';
 import { landedFrameCamDistAU, landedMinDistanceAU, landedNearAU, LANDED_NEAR_AU } from './landedView';
 import {
   MOON_RENDER_ANCHOR_RATIO,
@@ -862,7 +862,7 @@ export class PlanetariumMode {
   // cleanly. See noteSunViewDiscontinuity().
   private sunFlashResetPending = true;
   private sunAtmosphereMix = 0;
-  private readonly sunAtmosphereColor = new THREE.Color(1, 0.55, 0.24);
+  private readonly sunAtmosphereColor = new THREE.Color(...SUN_ATMOSPHERE_TINT_RGB);
   /** Set by computeVisibleSunFraction: angular radius of the strongest solar
    *  occluder this frame (scratch for the corona's eclipse-likeness gate). */
   private sunDominantOccluderAngularRadius = 0;
@@ -1211,7 +1211,7 @@ export class PlanetariumMode {
   // skipped so the camera can sit a few radii from a body without being pushed
   // back out past its moon system.
   private devFreeCamera = false;
-  // The profile-aware ship/Sun QA pose must survive updatePlanetScaling's
+  // The profile-aware ship/Sun QA pose must survive reassertShipProfile's
   // deliberate per-frame mission-profile reassertion. Null in normal runtime;
   // only the DEV bridge can set it.
   private devShipProfileOverride: ShipProfile | null = null;
@@ -1940,6 +1940,10 @@ export class PlanetariumMode {
       void this.rewarmShaderProbes();
     });
     this.player = new PlayerShip();
+    // Every hull draws at half its authored size. Nothing else writes this
+    // group's scale — swapping profiles only swaps children — so it is set
+    // once here rather than re-asserted every frame.
+    this.player.group.scale.setScalar(0.5);
     this.store = new PlanetariumStore();
 
     this.controls = new OrbitControls(camera, renderer.domElement);
@@ -2307,6 +2311,10 @@ export class PlanetariumMode {
           for (const m of moons) {
             systemGroup.add(m.mesh);
             this.moonMeshByName.set(m.data.name, m);
+            // Planetshine is tinted by the parent, which never changes for a
+            // moon — so the catalog colour (and its sRGB conversion) is read
+            // here, not in the per-frame feed.
+            m.fx?.uPlanetshineColor.value.set(planet.data.color);
           }
           this.moonSystemGroups.set(planet.data.name, systemGroup);
           this.scene.add(systemGroup);
@@ -3150,8 +3158,8 @@ export class PlanetariumMode {
     this.timeState = advancePlanetariumTime(this.timeState, dt);
     this.rebuildPlanetPositions(dt);
 
-    this.updatePlanetScaling();
-    this.player.group.scale.setScalar(0.5);
+    this.updatePlanetDetailFades();
+    this.reassertShipProfile();
     // Resolve collisions BEFORE the floating origin so the frame renders the
     // RESOLVED state. Rendering first and resolving after leaves a one-frame
     // lag, and under sustained shell contact with a moving body (a parked
@@ -4031,35 +4039,41 @@ export class PlanetariumMode {
     );
   }
 
-  private updatePlanetScaling() {
+  /**
+   * Per-planet detail that depends on how far the player is: the atmosphere
+   * shell fades in over the last stretch of the system radius, and Earth's
+   * night-lights and cloud shells drop out once the globe is a speck. Also
+   * re-asserts the render scale, which is where `planet.group.scale` gets the
+   * value the collision and envelope helpers read back.
+   */
+  private updatePlanetDetailFades() {
     if (!this.solarSystem) return;
     for (const planet of this.solarSystem.planets) {
-      planet.group.scale.setScalar(1);
+      // Planets render at true scale; the group scale is the applied form of
+      // planetScale, so the two never disagree.
+      planet.group.scale.setScalar(this.planetScale);
+
+      const isEarth = planet.data.name === 'Earth';
+      if (!planet.atmosphere && !isEarth) continue;
+
+      const wp = planet.worldPosAU!;
+      const dx = this.player.posX - wp.x;
+      const dy = this.player.posY - wp.y;
+      const dz = this.player.posZ - wp.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
       // Atmosphere alpha: fade in as player approaches the planet's system radius
       if (planet.atmosphere) {
-        const wp = planet.worldPosAU!;
-        const dx = this.player.posX - wp.x;
-        const dy = this.player.posY - wp.y;
-        const dz = this.player.posZ - wp.z;
-        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
         const systemR = planet.data.systemRadiusAU;
         const innerR = systemR * 0.1;
         const linear = 1 - Math.min(1, Math.max(0, (dist - innerR) / (systemR - innerR)));
         const t = smoothstepUnclamped(linear);
         const glowMat = planet.atmosphere.material as THREE.ShaderMaterial;
-        if (glowMat.uniforms?.alphaScale) {
-          // Fade fully out at system-edge distance; full strength on close approach.
-          glowMat.uniforms.alphaScale.value = t;
-        }
+        // Fade fully out at system-edge distance; full strength on close approach.
+        glowMat.uniforms.alphaScale.value = t;
       }
 
-      if (planet.data.name === 'Earth') {
-        const wp = planet.worldPosAU!;
-        const dx = this.player.posX - wp.x;
-        const dy = this.player.posY - wp.y;
-        const dz = this.player.posZ - wp.z;
-        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (isEarth) {
         const renderedAngularDiameter = dist > 1e-8
           ? (planet.data.radiusAU * 2) / dist
           : Infinity;
@@ -4070,12 +4084,16 @@ export class PlanetariumMode {
         if (planet.cloudsMesh) planet.cloudsMesh.visible = keepEarthDetail;
       }
     }
+  }
 
-    // Idempotent re-assert of the ship model that matches the active mission
-    // (or the default ship when none). Mission start/end already call
-    // setProfile explicitly; this per-frame reapply is a deliberate, cheap
-    // safety net guaranteeing the displayed model tracks mission state through
-    // every code path (incl. state restore) — do not "optimize" it away.
+  /**
+   * Idempotent re-assert of the ship model that matches the active mission
+   * (or the default ship when none). Mission start/end already call
+   * setProfile explicitly; this per-frame reapply is a deliberate, cheap
+   * safety net guaranteeing the displayed model tracks mission state through
+   * every code path (incl. state restore) — do not "optimize" it away.
+   */
+  private reassertShipProfile() {
     this.player.setProfile(
       this.devShipProfileOverride
         ?? this.activeHistoricJourney?.shipProfile
@@ -4130,8 +4148,6 @@ export class PlanetariumMode {
    */
   private updateMoonPositions(dtS = 0) {
     if (!this.solarSystem) return;
-    const PLANETSHINE_GAIN = 500; // lift faint physical planetshine to a visible night-side glow
-    const PLANETSHINE_MAX = 0.12; // cap well below daylight; large/near parents (Jupiter) sit at the cap
     const shadeNowMs = performance.now(); // wall clock for the applied-shading limiter
 
     // Moon-velocity pass bookkeeping. Velocities may only be differenced
@@ -4199,7 +4215,6 @@ export class PlanetariumMode {
       // the loop), and the selection sort/Set need not be built for them.
       if (surfFx && visible) {
         this.tmpMoonShadowQuat.copy(planet.group.quaternion).invert();
-        const SUN_RADIUS_AU = 695_700 / 149_597_870.7;
         sunTanAtParent = SUN_RADIUS_AU / Math.max(Math.hypot(wp.x, wp.y, wp.z), 1e-9);
         // The candidate set depends only on catalog constants and the sun's
         // angular size at the parent, which drifts on the parent's orbital
@@ -4278,22 +4293,20 @@ export class PlanetariumMode {
         m.dotSunVisibleFraction = smoothedShade;
 
         if (m.fx) {
-          m.fx.uSunDirWorld.value
+          const sunDir = m.fx.uSunDirWorld.value
             .set(-(wp.x + offset.x), -(wp.y + offset.y), -(wp.z + offset.z))
             .normalize();
           // Planetshine: night-side glow reflected off the parent. Direction is
           // moon -> parent; intensity peaks when the parent is full from the moon.
           const distAU = Math.max(offset.length(), 1e-9);
           this.tmpPlanetshine.copy(offset).multiplyScalar(-1 / distAU); // unit moon -> parent (world)
-          const sx = -(wp.x + offset.x), sy = -(wp.y + offset.y), sz = -(wp.z + offset.z);
-          const sl = Math.hypot(sx, sy, sz) || 1;
-          const cosPhase = (sx / sl) * this.tmpPlanetshine.x
-            + (sy / sl) * this.tmpPlanetshine.y + (sz / sl) * this.tmpPlanetshine.z;
-          // 0.4 ~ a representative parent bond albedo (Earth ~0.3, gas giants ~0.5)
-          const shine = planetshineIntensity(0.4, parentR, distAU, cosPhase) * PLANETSHINE_GAIN;
+          // The unit moon -> Sun direction is the one just written above.
+          const cosPhase = sunDir.dot(this.tmpPlanetshine);
+          const shine = planetshineIntensity(
+            PlanetariumMode.PLANETSHINE_PARENT_ALBEDO, parentR, distAU, cosPhase,
+          ) * PlanetariumMode.PLANETSHINE_GAIN;
           m.fx.uPlanetshineDir.value.copy(this.tmpPlanetshine);
-          m.fx.uPlanetshineColor.value.set(planet.data.color);
-          m.fx.uPlanetshineIntensity.value = Math.min(shine, PLANETSHINE_MAX);
+          m.fx.uPlanetshineIntensity.value = Math.min(shine, PlanetariumMode.PLANETSHINE_MAX);
         }
 
         // World velocity (AU per frame-second) for the governor's moving-body
@@ -4396,6 +4409,13 @@ export class PlanetariumMode {
    *  agree, so it is also the release level for the smoothed-shading umbra
    *  hold. */
   private static readonly BLOOD_MOON_FLOOR_R = 0.3;
+
+  /** Lift faint physical planetshine to a visible night-side glow. */
+  private static readonly PLANETSHINE_GAIN = 500;
+  /** Cap well below daylight; large/near parents (Jupiter) sit at the cap. */
+  private static readonly PLANETSHINE_MAX = 0.12;
+  /** A representative parent bond albedo (Earth ~0.3, gas giants ~0.5). */
+  private static readonly PLANETSHINE_PARENT_ALBEDO = 0.4;
 
   private applyMoonShading(m: MoonMesh, shading: MoonShadingState) {
     const material = m.mesh.material as THREE.MeshStandardMaterial;
@@ -15537,7 +15557,8 @@ export class PlanetariumMode {
 
     const shouldRefreshUi = this.tickFrameCadence(dt);
 
-    this.updatePlanetScaling();
+    this.updatePlanetDetailFades();
+    this.reassertShipProfile();
     this.updateMoonPositions(dt);
     // Same same-frame-geometry rule as the cruise path — and the landed
     // Observatory telescope (narrow FOV) is exactly where a soft map and a
@@ -16078,10 +16099,12 @@ export class PlanetariumMode {
         .copy(state.sunDirection)
         .applyQuaternion(this.tmpInvGroupQuat.copy(planet.group.quaternion).invert());
       if (planet.nightMaterial) {
-        // The night-lights shader turns sunDirection into view space with the
-        // viewMatrix alone, then compares it against a world-space surface
-        // normal (normalMatrix * normal) — so it needs the WORLD sun direction,
-        // not the object-space localSunDir the ring/surface uniforms take.
+        // The night-lights shader compares the surface normal and the sun in
+        // VIEW space: normalMatrix carries the normal there, and the fed
+        // direction gets there through the viewMatrix alone. Both sides
+        // therefore start in world space — so it needs the WORLD sun
+        // direction, not the object-space localSunDir the ring/surface
+        // uniforms take.
         // Feeding it localSunDir double-rotates the mask, drifting city lights
         // onto the daylit hemisphere as Earth spins.
         planet.nightMaterial.uniforms.sunDirection.value.copy(state.sunDirection);

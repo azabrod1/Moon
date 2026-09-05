@@ -137,7 +137,7 @@ describe('loadBrightStarCatalog', () => {
     expect(brightStarCatalog()).toHaveLength(1);
   });
 
-  it('keeps the whole ladder inside the 15s loading-screen backstop', async () => {
+  it('gives up in bounded time, so a dead network reaches the boot error', async () => {
     // Worst case: warm hangs to its 5s deadline, both retries hang to abort.
     vi.stubGlobal('__bootTexWarm', new Map([
       ['/stardata/bright-stars.v1.bin', new Promise<Response>(() => {})],

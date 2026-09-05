@@ -132,6 +132,33 @@ describe('MoonPainter', () => {
     expect(painter.hasPending('Jupiter')).toBe(false);
   });
 
+  it('spends one retry per pump, never all three inside one call', () => {
+    // A throw costs microseconds, so a generous budget used to let a single
+    // call burn every attempt and drop the moon for the session — the "later
+    // frame" the retry is for never arrived.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const moons = makeMoons(1);
+    let attempts = 0;
+    const painter = new MoonPainter(() => {
+      attempts++;
+      throw new Error('transient canvas failure');
+    });
+    painter.enqueue('Jupiter', moons);
+    // A budget no throw can exhaust, and no moon cap.
+    painter.pump(10_000, null);
+    expect(attempts).toBe(1);
+    expect(painter.hasPending('Jupiter')).toBe(true);
+    painter.pump(10_000, null);
+    expect(attempts).toBe(2);
+    expect(painter.hasPending('Jupiter')).toBe(true);
+    // Third failure is the cap: dropped, and the queue is clear.
+    painter.pump(10_000, null);
+    expect(attempts).toBe(3);
+    expect(painter.isEmpty()).toBe(true);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it('a paint that always throws is dropped after the cap; its siblings still paint', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const log: MoonMesh[] = [];

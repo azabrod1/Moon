@@ -41,7 +41,10 @@ export function hashString(str: string): number {
 }
 
 export function seededRng(seed: number): () => number {
-  let state = seed;
+  // A Lehmer generator is fixed at zero for a seed that is a multiple of the
+  // modulus, and would then return the same negative number forever. Only
+  // hashString's 0 and 2147483647 can reach that, but the guard is free.
+  let state = seed % 2147483647 || 1;
   return () => {
     state = (state * 16807 + 0) % 2147483647;
     return (state - 1) / 2147483646;

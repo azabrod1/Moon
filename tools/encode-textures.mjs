@@ -12,8 +12,12 @@
 // removes the heavier source it replaced:
 //   node tools/encode-textures.mjs --clean
 //
-// Only converts the files it knows (the boot manifest + tier ladders);
-// anything else in public/textures is left untouched.
+// SCOPE: this is the one-shot conversion for the LEGACY jpg/png names below,
+// kept for a texture drop that still arrives in those formats. It is not the
+// pipeline any current map goes through — gen-tiles.mjs writes the shipped
+// .v2 maps as webp directly — so the list here names sources that no longer
+// exist and skips them. Adding a map to the boot manifest does NOT mean
+// adding it here.
 import sharp from 'sharp';
 import { stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
@@ -21,8 +25,10 @@ import path from 'node:path';
 const TEX = path.resolve('public/textures');
 const clean = process.argv.includes('--clean');
 
-// Boot manifest + tier ladders, source names. Data maps (lossless) are the
-// ones the shaders read as numbers; everything else is a photo (q85).
+// The legacy source names, most of them long since replaced (see SCOPE
+// above). A missing file is skipped, so the list is safe to leave as it is.
+// Data maps (lossless) are the ones the shaders read as numbers; everything
+// else is a photo (q85).
 const FILES = [
   'mercury.jpg', 'venus.jpg', 'earth-day.jpg', 'earth-night.jpg', 'earth-clouds.jpg',
   'earth-bump.png', 'earth-roughness.png', 'mars.jpg', 'mars-normal.png', 'jupiter.jpg',

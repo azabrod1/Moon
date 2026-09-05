@@ -137,12 +137,14 @@ describe('upgrade ladders', () => {
     expect(canAttempt(up, 0)).toBe(false);
   });
 
-  it('honours no step at all below 4096', () => {
+  it('makes no handle at all below 4096', () => {
     withMaxTextureSize(2048);
-    const up = handle('moon');
-    expect(firstUpgradeTier(up)).toBeNull();
-    expect(canAttempt(up, 0)).toBe(false);
-    expect(needsUpgradeCover(up)).toBe(false);
+    const material = new THREE.MeshStandardMaterial();
+    materials.push(material);
+    // Nothing on the ladder fits, so there is no handle to measure, arm or
+    // report incomplete for the rest of the session — the same answer a relief
+    // ladder gives a device that cannot hold its one step.
+    expect(makeTextureUpgrade('moon', material)).toBeUndefined();
   });
 
   it('resolves the device ceiling once, at creation', () => {
@@ -526,6 +528,36 @@ describe('what a fetch puts on the material', () => {
       expect(pending).toHaveLength(1);
       upgradeNormalOnApproach(nu, 0.3, nu.retryAtMs!);
       expect(pending).toHaveLength(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('doubles the relief cooldown per consecutive failure, then clears it on success', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const mat = new THREE.MeshStandardMaterial();
+      materials.push(mat);
+      const nu = makeNormalUpgrade('moonNormal', mat)!;
+      // A moon that fills the view re-asks as soon as each cooldown expires;
+      // without the backoff that is one 8.8 MB re-download every 8 s.
+      const waits: number[] = [];
+      for (let i = 0; i < 4; i++) {
+        const at = nu.retryAtMs ?? 0;
+        upgradeNormalOnApproach(nu, 0.3, at);
+        expect(pending).toHaveLength(i + 1);
+        const before = performance.now();
+        pending[i].onError(new Error('decode failed'));
+        waits.push(nu.retryAtMs! - before);
+      }
+      expect(waits.map((w) => Math.round(w / 1000))).toEqual([8, 16, 32, 64]);
+      // A landed relief clears the streak, so a later failure starts over.
+      upgradeNormalOnApproach(nu, 0.3, nu.retryAtMs!);
+      const arrival = arriving();
+      pending[4].onLoad(arrival.tex);
+      arrival.finishDecode();
+      await flush();
+      expect(nu.failureStreak).toBeUndefined();
     } finally {
       warn.mockRestore();
     }
@@ -1358,9 +1390,9 @@ describe('arrival warm goals', () => {
     expect(up.warmGoal).toBe('8k');
   });
 
-  it('refuses to arm when the device holds no step', () => {
-    withMaxTextureSize(2048);
+  it('refuses to arm a handle with nothing left to fetch', () => {
     const up = handle('moon');
+    up.appliedTier = '8k'; // the ceiling already on the material
     expect(armArrivalWarmGoal(up)).toBe(false);
     expect(up.warmGoal).toBeUndefined();
     expect(pumpArrivalWarmGoal(up, 0)).toBe(false);

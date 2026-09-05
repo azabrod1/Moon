@@ -143,8 +143,10 @@ export const SECTOR_WANT_TEXEL_PX = 1.0;
 export const SECTOR_RELEASE_TEXEL_PX = 0.65;
 export const SECTOR_WANT_TEXEL_PX_TOUCH = 1.25;
 export const SECTOR_RELEASE_TEXEL_PX_TOUCH = 0.8;
-/** Map width assumed while a globe's map has no readable image (never in
- *  practice: a real map is an ImageBitmap or a painted canvas). */
+/** Map width assumed while a globe's map has no readable image. Never in the
+ *  app — a real map is an ImageBitmap or a painted canvas — but every streamer
+ *  test measures against this number, since their fake materials carry no
+ *  image at all. */
 const SECTOR_FALLBACK_MAP_WIDTH = 4096;
 /** A sector whose most-lit point — the point of it nearest the sub-solar
  *  point — is still this far past the terminator (its dot with the sun
@@ -368,6 +370,11 @@ function releaseBitmap(tex: THREE.Texture): void {
   if (img && typeof img.close === 'function') img.close();
 }
 
+/** Strongest first: what both work lists are ordered by. */
+function byScoreDescending(a: SectorSlot, b: SectorSlot): number {
+  return b.score - a.score;
+}
+
 export class SectorStreamer {
   private readonly bodies = new Map<string, SectorBody>();
   private readonly grid: SectorGrid;
@@ -383,6 +390,11 @@ export class SectorStreamer {
   private readonly camDirScratch = new THREE.Vector3();
   private readonly pointScratch = new THREE.Vector3();
   private readonly sunPointScratch = new THREE.Vector3();
+  // The two per-frame work lists. update() runs for every registered body on
+  // every frame, and neither list outlives the call that fills it, so they are
+  // refilled in place rather than allocated and thrown away 60 times a second.
+  private readonly staleScratch: SectorSlot[] = [];
+  private readonly candidateScratch: SectorSlot[] = [];
 
   constructor(opts: SectorStreamerOptions) {
     this.grid = opts.grid ?? SECTOR_GRID_16K;
@@ -525,17 +537,25 @@ export class SectorStreamer {
     // Only where a fetch is allowed at all (on the frame, on the day side —
     // score > 0): a resident past the limb keeps its old set until a pan
     // brings it back, as an admission there would wait too.
-    const stale = slots
-      .filter((s) => s.state === 'resident' && !s.loading && s.score > 0 && s.signature !== signature && nowMs >= s.retryAtMs)
-      .sort((a, b) => b.score - a.score);
+    const stale = this.staleScratch;
+    stale.length = 0;
+    for (const s of slots) {
+      if (s.state === 'resident' && !s.loading && s.score > 0 && s.signature !== signature && nowMs >= s.retryAtMs) {
+        stale.push(s);
+      }
+    }
+    stale.sort(byScoreDescending);
     for (const slot of stale) {
       if (this.inflightCount() >= this.inflightCap) break;
       this.startLoad(body, slot, signature);
     }
 
-    const candidates = slots
-      .filter((s) => s.wanted && s.state === 'idle' && nowMs >= s.retryAtMs)
-      .sort((a, b) => b.score - a.score);
+    const candidates = this.candidateScratch;
+    candidates.length = 0;
+    for (const s of slots) {
+      if (s.wanted && s.state === 'idle' && nowMs >= s.retryAtMs) candidates.push(s);
+    }
+    candidates.sort(byScoreDescending);
     for (const candidate of candidates) {
       if (this.inflightCount() >= this.inflightCap) break;
       if (this.liveCount() >= this.residentCap) {

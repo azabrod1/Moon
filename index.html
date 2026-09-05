@@ -4011,11 +4011,24 @@
       // No bootError flag here — a chunk that lands late still boots, and
       // main.ts's own progress text then takes this line back.
       setTimeout(function() {
-        if (!window.__initStarted) {
-          log('App failed to start. Try refreshing.');
-          var msg = document.getElementById('loading-msg');
-          if (msg) msg.textContent = 'Something went wrong. Please refresh.';
-        }
+        if (window.__initStarted) return;
+        log('App failed to start. Try refreshing.');
+        var msg = document.getElementById('loading-msg');
+        if (msg) msg.textContent = 'Something went wrong. Please refresh.';
+        // If the chunk does land and the app starts after all, take the red
+        // panel back down: main.ts reclaims the message line, and a boot that
+        // recovered should not spend the rest of the loading screen wearing an
+        // error box. With ?debug=1 the panel IS the point, so it stays.
+        var checks = 0;
+        var recheck = setInterval(function() {
+          if (!window.__initStarted) {
+            if (++checks < 30) return;
+          } else if (!debugEnabled) {
+            dbg.textContent = '';
+            dbg.style.display = 'none';
+          }
+          clearInterval(recheck);
+        }, 1000);
       }, 12000);
     })();
   </script>

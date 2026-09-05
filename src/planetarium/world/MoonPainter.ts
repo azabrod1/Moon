@@ -51,8 +51,10 @@ export class MoonPainter {
 
   /**
    * Background drain: paint up to `budgetMs` of moons this frame, `preferred`
-   * system first (the one the player is in or heading toward). Always finishes
-   * at least one moon, so progress is guaranteed even at a tiny budget.
+   * system first (the one the player is in or heading toward). Finishes at
+   * least one moon whenever a paint succeeds, so progress is guaranteed even
+   * at a tiny budget; a paint that throws ends the call instead, with that
+   * moon at the back of its queue for a later frame.
    *
    * `maxMoons` caps how many moons one call paints regardless of the time
    * budget. The GPU painter returns after submitting GL commands (sub-ms on the
@@ -63,10 +65,12 @@ export class MoonPainter {
    *
    * A moon is only removed from the queue once its paint RETURNS. A thrown
    * paint (transient canvas/GPU failure, or a CPU-fallback throw) rotates the
-   * moon to the back of its queue for a later retry instead of unqueueing it —
-   * otherwise the never-show-unpainted gate would hide that moon for the whole
-   * session. After MAX_ATTEMPTS failures the moon is dropped (and named) so a
-   * broken painter can't spin, and its siblings are never blocked either way.
+   * moon to the back of its queue and ENDS the call, so every retry falls on
+   * a later frame — a throw costs almost no wall clock, so carrying on would
+   * spend all three attempts in one call and the never-show-unpainted gate
+   * would then hide that moon for the whole session. After MAX_ATTEMPTS
+   * failures the moon is dropped (and named) so a broken painter can't spin,
+   * and its siblings are never blocked either way.
    */
   pump(budgetMs: number, preferred: string | null, maxMoons = Infinity): void {
     if (this.pending.size === 0) return;
@@ -103,12 +107,15 @@ export class MoonPainter {
             moons.push(moon);
           }
           if (moons.length === 0) this.pending.delete(parentName);
-          if (performance.now() - start >= budgetMs) return;
-          continue;
+          // The retry belongs on a LATER frame. A throw costs almost no wall
+          // clock, so carrying on here would spend all three attempts inside
+          // this one call and a transient failure would never get the later
+          // frame the retry exists for.
+          return;
         }
         moons.shift();
         painted++;
-        if (this.failures.size > 0) this.failures.delete(moon.data.name);
+        this.failures.delete(moon.data.name);
         if (moons.length === 0) this.pending.delete(parentName);
         if (painted >= maxMoons || performance.now() - start >= budgetMs) return;
       }

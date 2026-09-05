@@ -1,9 +1,26 @@
 /**
- * Async mesh construction for all Planetarium bodies: planet spheres with
- * per-body texture + atmosphere glow, Earth-specific night-lights/clouds,
- * Saturn rings, major moons, and the Planetarium's Sun (bigger, animated
- * corona, optional bloom). Falls back to procedurally generated canvas
- * textures on load failure so the app never blocks on a missing file.
+ * Building a Planetarium body, and everything that sharpens it afterwards.
+ *
+ * Construction (async): planet spheres with per-body texture and atmosphere
+ * glow, Earth's night lights and cloud shell, Saturn's rings, the major moons,
+ * and the Planetarium's Sun (bigger, animated corona, optional bloom). A map
+ * that fails to load is replaced by a procedurally generated canvas texture,
+ * so the app never blocks on a missing file.
+ *
+ * Sharpening — three demand-driven ladders, each asked by any frame and
+ * answered by its handle: the colour tier ladder (TEXTURE_UPGRADE_TIERS —
+ * a goal plus at most one attempt, never a lifecycle state; rank-guarded
+ * swaps, a per-device ceiling resolved at creation, one rung at a time out of
+ * the boot map, exponential backoff on failure), the single-step relief ladder
+ * (NORMAL_UPGRADE_TIERS) and the silhouette upgrade that trades a coarse
+ * sphere for the fine grid. A committed arrival may arm a warm goal so a
+ * destination climbs its ladder under the veil instead of waiting for the
+ * on-screen trigger.
+ *
+ * Injectable seams, so completion / staleness / failure can be exercised with
+ * no GL context and no network: the tier fetch (setUpgradeTextureLoader) and
+ * the KTX2 loader that serves the compressed tiers in TIER_FILE_OVERRIDES
+ * (bindKtx2TierLoader).
  */
 import * as THREE from 'three';
 import { type PlanetData, SUN_DATA } from './planets/planetData';
@@ -28,7 +45,7 @@ import {
   SUN_GLARE_EXTENT_SOLAR_RADII,
 } from '../shared/shaders/sun';
 import { debugWarn } from '../shared/debug';
-import { applyTextureDefaults, clampTier, resolveTextureUrl, type TextureTier, type MapKind, touchTextureBudget } from './world/texturePolicy';
+import { applyTextureDefaults, clampTier, resolveTextureUrl, TIER_MAP_WIDTH, type TextureTier, type MapKind, touchTextureBudget } from './world/texturePolicy';
 import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
 import { queueTextureWarm } from './world/textureWarmer';
 import { createLensShaderUniforms } from '../shared/three/lensShader';
@@ -337,13 +354,13 @@ export function loadTexture(
 
   return new Promise((resolve) => {
     let settled = false;
-    let fetch: DurableTextureFetch | null = null;
+    let durable: DurableTextureFetch | null = null;
     let cancelWanted = false;
     // Once the fallback has resolved and there is no late seam to deliver
     // through, another attempt could only fetch a map nobody can use.
     const stopFetching = () => {
       cancelWanted = true;
-      fetch?.cancel();
+      durable?.cancel();
     };
 
     const timer = setTimeout(() => {
@@ -354,7 +371,7 @@ export function loadTexture(
       if (!late) stopFetching();
     }, timeoutMs);
 
-    fetch = fetchTextureDurably({
+    durable = fetchTextureDurably({
       url,
       context: { map: 'planet texture', key },
       onLoad: (tex) => {
@@ -386,7 +403,7 @@ export function loadTexture(
         if (!late) stopFetching();
       },
     });
-    if (cancelWanted) fetch.cancel(); // a failure that arrived synchronously
+    if (cancelWanted) durable.cancel(); // a failure that arrived synchronously
   });
 }
 
@@ -434,6 +451,44 @@ export interface TextureUpgrade {
   warmGoal?: TextureTier;
 }
 
+/** DEV telemetry: what one applied tier is holding. Estimated from the tier's
+ *  nominal map size, not measured — the app has no way to read either figure
+ *  back out of the browser or the driver. */
+export interface AppliedTierResidency {
+  key: string;
+  tier: TextureTier;
+  /** The decoded pixels the loader keeps for the texture's life, so three can
+   *  re-upload after a context loss: width x height x RGBA. */
+  sourceBytes: number;
+  /** GPU storage for the map plus its mip chain (4/3 of the base level). */
+  gpuBytes: number;
+  /** A GPU-compressed tier. Both figures above are the uncompressed
+   *  equivalents and read far too high for it: its blocks are a quarter the
+   *  size and it holds no RGBA copy at all. */
+  compressed: boolean;
+}
+
+/** Every applied colour tier in `ups`, with its estimated residency. Appends
+ *  to `out` so a caller can sweep the whole system into one list. */
+export function appliedTierResidency(
+  ups: readonly TextureUpgrade[],
+  out: AppliedTierResidency[] = [],
+): AppliedTierResidency[] {
+  for (const up of ups) {
+    if (!up.appliedTier) continue;
+    const width = TIER_MAP_WIDTH[up.appliedTier];
+    const base = width * (width / 2) * 4;
+    out.push({
+      key: up.key,
+      tier: up.appliedTier,
+      sourceBytes: base,
+      gpuBytes: Math.round(base * 4 / 3),
+      compressed: !!(up.material.map as THREE.CompressedTexture | null)?.isCompressedTexture,
+    });
+  }
+  return out;
+}
+
 /** True once this handle has fetched everything the device can hold — the
  *  per-frame trigger loop skips a body once every handle reports this and its
  *  silhouette is fine, so a fully-upgraded body costs no projection. */
@@ -468,7 +523,7 @@ export function upgradeComplete(up: TextureUpgrade): boolean {
 // which is why the cloud deck climbs to 8K: with the ground streamed at 16K,
 // a 4K deck is the soft layer on top of it. The 8K deck is the SSS product
 // itself (the 4K is its downsample: RMS 7 against it, equal means).
-const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
+export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
   mercury: ['4k'],
   venus: ['4k'],
   mars: ['4k'],
@@ -559,11 +614,17 @@ export function makeTextureUpgrade(
   let top = tiers[tiers.length - 1];
   const cap = TOUCH_TIER_CAP[key];
   if (cap && touchTextureBudget() && TIER_RANK[cap] < TIER_RANK[top]) top = cap;
+  const effectiveMaxTier = clampTier(top);
+  // A GPU too small for even the lowest step gets no handle, the way a relief
+  // ladder gets none: a handle whose appliedTier can never reach its ceiling
+  // would report incomplete for the session, so the per-frame trigger loop
+  // would keep projecting a body that has nothing left to fetch.
+  if (TIER_RANK[tiers[0]] > TIER_RANK[effectiveMaxTier]) return undefined;
   return {
     key,
     material,
     tiers,
-    effectiveMaxTier: clampTier(top),
+    effectiveMaxTier,
     appliedTier: null,
   };
 }
@@ -906,6 +967,11 @@ export function upgradeTextureOnApproach(
       up.attempt = undefined;
       const streak = up.lastFailure?.tier === tier ? up.lastFailure.streak + 1 : 1;
       up.lastFailure = { tier, streak };
+      // Stamped from the wall clock at the moment of failure, not from the
+      // attempt's own nowMs: a slow failure (an 8 s timeout, a stalled decode)
+      // would otherwise start its cooldown in the past and retry at once. Both
+      // readings come from performance.now(), which is what canAttempt
+      // compares against.
       up.retryAtMs =
         performance.now() +
         UPGRADE_RETRY_MS * 2 ** Math.min(streak - 1, UPGRADE_RETRY_MAX_DOUBLINGS);
@@ -1019,7 +1085,7 @@ export function pumpArrivalWarmGoal(up: TextureUpgrade, nowMs: number): boolean 
 // a third of all boot traffic for detail no spawn-distance Moon can show —
 // so boot now fetches the 1440x720 map and this tier streams in on approach,
 // exactly like the colour ladders above.
-const NORMAL_UPGRADE_TIERS: Record<string, TextureTier> = {
+export const NORMAL_UPGRADE_TIERS: Record<string, TextureTier> = {
   moonNormal: '4k',
 };
 
@@ -1034,6 +1100,11 @@ export interface NormalUpgrade {
   state: 'idle' | 'inflight' | 'done';
   /** Wall-clock cooldown after a failure, same shape as TextureUpgrade's. */
   retryAtMs?: number;
+  /** How many fetches of this step have failed in a row. The cooldown doubles
+   *  per consecutive failure (capped) so a phone whose decode of the 4K relief
+   *  dies under memory pressure stops re-downloading it every 8 s for as long
+   *  as the moon fills the view. Cleared by a success. */
+  failureStreak?: number;
   /** Identity of the current attempt — the relief ladder's version of the
    *  colour attempt's generation. Bumped when an attempt starts and when one
    *  is abandoned (hung-request timeout, mode disposal), so a zombie
@@ -1102,9 +1173,9 @@ export function applyNormalTierTexture(
 /**
  * Fetch a moon's close-approach relief once its disc has earned it — the same
  * screen fraction that earns the first colour rung, since relief legibility
- * and texel legibility track the same disc size. Failure cools down and the
- * trigger asks again while the body still fills the view, exactly like the
- * colour ladder. A fetch that outlives an arrival simply applies late: the
+ * and texel legibility track the same disc size. Failure cools down — doubling
+ * per consecutive failure, exactly like the colour ladder — and the trigger
+ * asks again while the body still fills the view. A fetch that outlives an arrival simply applies late: the
  * warm queue uploads it off-gesture, and the moon draws it on return.
  */
 export function upgradeNormalOnApproach(
@@ -1145,6 +1216,7 @@ export function upgradeNormalOnApproach(
           return;
         }
         up.state = 'done';
+        up.failureStreak = undefined;
         if (applyNormalTierTexture(up.material, tex, TIER_RANK[up.tier])) queueTextureWarm(tex);
       };
       const img = tex.image as { decode?: () => Promise<void> } | undefined;
@@ -1154,10 +1226,18 @@ export function upgradeNormalOnApproach(
     (err) => {
       if (abandoned()) return;
       up.state = 'idle';
-      up.retryAtMs = performance.now() + UPGRADE_RETRY_MS;
+      const streak = (up.failureStreak ?? 0) + 1;
+      up.failureStreak = streak;
+      // Wall clock at the failure, like the colour ladder's: a cooldown
+      // measured from the attempt's start would already be spent by the time
+      // a slow fetch gives up.
+      up.retryAtMs =
+        performance.now() +
+        UPGRADE_RETRY_MS * 2 ** Math.min(streak - 1, UPGRADE_RETRY_MAX_DOUBLINGS);
       debugWarn('Normal-map upgrade failed', {
         key: up.key,
         tier: up.tier,
+        attempt: streak,
         reason: err instanceof Error ? err.message : String(err),
       });
     },

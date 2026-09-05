@@ -32,7 +32,6 @@ import {
 } from '../planetarium/PlanetFactory';
 import { augmentSurfaceMaterial, type SurfaceArchetype } from '../planetarium/world/surfaceShading';
 import { createPlanetariumStarfield, setStarfieldPixelRatio } from '../planetarium/world/starfield';
-import { captureDeviceTextureCaps } from '../planetarium/world/texturePolicy';
 import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from '../planetarium/planets/planetData';
 import { MOONS, type MoonData } from '../planetarium/planets/moonData';
 import { mouthGeometry, SpherePhysics, defaultPhysicsParams, PACK_CEILING } from './spherePhysics';
@@ -1355,7 +1354,6 @@ export class CompareScene {
   readonly group: THREE.Group;
   private scene: THREE.Scene;
   private renderer: THREE.WebGLRenderer;
-  private capsCaptured = false;
 
   private keyLight: THREE.PointLight;
   private fillLight: THREE.HemisphereLight;
@@ -1906,12 +1904,12 @@ export class CompareScene {
    * disposes what it loaded and leaves the live scene untouched. On a fresh
    * resolve, new textures are assigned before the outgoing pair's are disposed,
    * so no frame ever samples freed memory.
+   *
+   * Anisotropy and tier caps come from the capture the Planetarium made on this
+   * same renderer at boot (it always comes up first). Re-capturing here would
+   * only risk answering the device-class question a second, different way.
    */
   async applyPair(comparison: Comparison, container: string, filler: string, isStale: () => boolean): Promise<void> {
-    if (!this.capsCaptured) {
-      captureDeviceTextureCaps(this.renderer);
-      this.capsCaptured = true;
-    }
     const [ghost, fillerTex] = await Promise.all([
       container === 'Sun' ? Promise.resolve(null) : this.loadGhost(container),
       filler === 'Sun' ? Promise.resolve(null) : this.loadBodyColor(filler),

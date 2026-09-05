@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import * as THREE from 'three';
 import { fetchTextureDurably, type TextureRetryDeps } from './textureRetry';
 import { setBitmapProbeForTests } from './textureBitmapLoader';
 import {
@@ -24,6 +25,8 @@ interface Attempt {
   at: number;
   onLoad: (tex: unknown) => void;
   onError: (err: unknown) => void;
+  stillWanted?: () => boolean;
+  signal?: AbortSignal;
 }
 
 /** A hand-cranked world: a clock the test moves, a timer queue that fires on
@@ -39,8 +42,10 @@ function harness(respond?: (attempt: Attempt) => void) {
   const wakeListeners = new Set<() => void>();
 
   const deps = {
-    load: (url, onLoad, _progress, onError) => {
-      const attempt: Attempt = { url, at: now, onLoad: onLoad as (t: unknown) => void, onError };
+    load: (url, onLoad, _progress, onError, stillWanted, signal) => {
+      const attempt: Attempt = {
+        url, at: now, onLoad: onLoad as (t: unknown) => void, onError, stillWanted, signal,
+      };
       attempts.push(attempt);
       respond?.(attempt);
     },
@@ -380,6 +385,31 @@ describe('cancellation', () => {
     expect(tex.disposed).toBe(true);
   });
 
+  it('reaches the loader: the transfer is aborted and the decode declined', () => {
+    // Without this the fetch runs to completion and a full-size bitmap is
+    // decoded for an attempt nobody is waiting on any more — the exact waste
+    // the streamed loader grew its two cancellation arguments for.
+    const h = harness();
+    const fetch = fetchTextureDurably({ url: URL, onLoad: () => {} }, h.deps);
+    const attempt = h.attempts[0];
+    expect(attempt.stillWanted?.()).toBe(true);
+    expect(attempt.signal?.aborted).toBe(false);
+    fetch.cancel();
+    expect(attempt.stillWanted?.()).toBe(false);
+    expect(attempt.signal?.aborted).toBe(true);
+  });
+
+  it('gives each attempt its own signal, so a retry is not born aborted', () => {
+    const h = harness();
+    fetchTextureDurably({ url: URL, onLoad: () => {} }, h.deps);
+    h.failLast();
+    h.advance(600_000);
+    expect(h.attempts.length).toBeGreaterThan(1);
+    const [first, second] = h.attempts;
+    expect(second.signal).not.toBe(first.signal);
+    expect(second.signal?.aborted).toBe(false);
+  });
+
   it('lets a caller cancel from inside the failure callback', () => {
     const h = harness();
     let fetch: { cancel(): void } | null = null;
@@ -398,16 +428,19 @@ describe('default loader path', () => {
   it('delivers a pre-flipped bitmap texture through the streamed-texture seam', async () => {
     // Pins the deliberate production choice: with mutable storage removing
     // the sRGB allocation stall (texturePolicy + patches/three), the durable
-    // seam takes the probe-guarded bitmap path — a delivered texture carries
-    // the loader's pre-flipped mark, which no plain TextureLoader result has.
+    // seam takes the probe-guarded bitmap path — a delivered texture wraps the
+    // decoded bitmap and does not flip again, which no plain TextureLoader
+    // result does.
     setBitmapProbeForTests(true);
+    const bitmap = { width: 4, height: 2, close: () => {} };
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob() })));
-    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: 4, height: 2, close: () => {} })));
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => bitmap));
     try {
-      const delivered = await new Promise<{ userData: Record<string, unknown> }>((resolve) => {
+      const delivered = await new Promise<THREE.Texture>((resolve) => {
         fetchTextureDurably({ url: 'textures/pin.jpg', onLoad: (tex) => resolve(tex) });
       });
-      expect(delivered.userData.bitmapPreFlipped).toBe(true);
+      expect(delivered.image).toBe(bitmap);
+      expect(delivered.flipY).toBe(false);
       expect(delivered.userData.sourceUrl).toBe('textures/pin.jpg');
     } finally {
       setBitmapProbeForTests(null);

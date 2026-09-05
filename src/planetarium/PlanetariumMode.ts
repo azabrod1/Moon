@@ -34,7 +34,7 @@ import {
   SUN_POLE_RA_DEG,
   type PlanetData,
 } from './planets/planetData';
-import { applySunGlowTier, armArrivalWarmGoal, bindKtx2TierLoader, canAttempt, cancelTextureUpgrade, createMoonMeshes, disarmArrivalWarmGoal, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade } from './PlanetFactory';
+import { appliedTierResidency, applySunGlowTier, armArrivalWarmGoal, bindKtx2TierLoader, canAttempt, cancelTextureUpgrade, createMoonMeshes, disarmArrivalWarmGoal, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, resolveTierFile, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type AppliedTierResidency, type MoonMesh, type PlanetMesh, type TextureUpgrade } from './PlanetFactory';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm } from './world/textureWarmer';
@@ -132,7 +132,7 @@ import {
 import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
 import { captureDeviceTextureCaps, resolveTextureUrl, TIER_MAP_WIDTH } from './world/texturePolicy';
-import { warmBitmapUploadProbe } from './world/textureBitmapLoader';
+import { releaseBootWarmResponses, warmBitmapUploadProbe } from './world/textureBitmapLoader';
 import { planetshineIntensity } from './world/planetshine';
 import {
   advanceSilhouetteOwners,
@@ -252,6 +252,7 @@ import {
 import { applyLensShaderUniforms, type LensShaderUniforms } from '../shared/three/lensShader';
 import { setPointEnergyPixelRatio } from '../shared/three/pointEnergy';
 import { isPhoneViewport, setText } from '../shared/dom';
+import { touchFirstDevice } from '../shared/device';
 import { Constellations } from './Constellations';
 import { snapConstellations } from './data/constellationGeometry';
 import { getMoonsByPlanet, MOONS, type MoonData } from './planets/moonData';
@@ -970,6 +971,22 @@ export class PlanetariumMode {
   private readonly sectorWorldQuatInv = new THREE.Quaternion();
   /** Last frame's world orientation per streamed body, for the spin gate. */
   private readonly sectorSpin = new Map<string, { quat: THREE.Quaternion; tMs: number; heldUntilMs: number }>();
+  // What the whole sector pass shares for one frame, and what the body being
+  // visited is. Fields rather than closure captures: the pass runs for every
+  // registered body on every frame, so a closure per body per frame — and an
+  // object per sector — would be pure garbage at 60 Hz.
+  private sectorFrameCanvasW = 0;
+  private sectorFrameCanvasH = 0;
+  private sectorFrameFocalPx = 0;
+  private sectorFrameNowMs = 0;
+  private sectorFrameChart = false;
+  private sectorFrameGrounded: string | null = null;
+  private sectorBodyMesh: THREE.Mesh | null = null;
+  private sectorBodyRadiusAU = 0;
+  private sectorBodyWorldScale = 1;
+  /** Refilled for each sector measured. The streamer reads it inside the same
+   *  loop iteration and keeps nothing from it, so one object serves them all. */
+  private readonly sectorMeasureOut: SectorMeasure = { pxPerLocalUnit: 0, centrality: 0, offscreen: false };
   // Its own projection scratch: the LOD loop's is read after its call by
   // consumers that expect it untouched.
   private sectorProjection: SphereScreenProjection = {
@@ -1921,7 +1938,7 @@ export class PlanetariumMode {
     // so anisotropy and tier limits apply to the very first textures created.
     // The touch budget is the same device class the sector caps and the
     // boot warm use, not a bare touchscreen test: a touch laptop is a desktop.
-    captureDeviceTextureCaps(renderer, this.touchFirstDevice());
+    captureDeviceTextureCaps(renderer, touchFirstDevice());
     // Resolve the bitmap-upload probe during construction: every streamed
     // boot texture awaits its verdict before fetching, so starting it here
     // takes it off the first fetch's critical path. The renderer lets the
@@ -1941,10 +1958,15 @@ export class PlanetariumMode {
           .setTranscoderPath(import.meta.env.BASE_URL + 'basis/')
           .detectSupport(renderer),
       );
-      this.ktx2Loader.then(
-        (loader) => loader.load(url, onLoad, undefined, onError),
-        (err) => onError(err),
-      );
+      // One rejection handler for both halves: a loader that could not be
+      // made, or a synchronous throw from load() itself (the loader's own
+      // guard), has to reach the ladder's onError like any other failure,
+      // not become an unhandled rejection that leaves the handle waiting on
+      // an attempt forever. (A failure inside onLoad is the loader's to
+      // route: KTX2Loader.parse already chains onLoad to onError.)
+      this.ktx2Loader
+        .then((loader) => loader.load(url, onLoad, undefined, onError))
+        .catch((err) => onError(err));
     });
     // GPU moon-texture painter (synchronous CPU fallback inside). Inject its
     // paint into the lazy painter; MoonPainter's queue + the visibility gate +
@@ -1977,6 +1999,12 @@ export class PlanetariumMode {
     });
     glCanvas.addEventListener('webglcontextrestored', () => {
       this.moonTexturer.onContextRestored();
+      // three re-creates its texture properties on restore, so nothing the
+      // warm cache recorded is resident any more. Uploads issued while the
+      // context was lost silently did nothing yet still landed in the cache
+      // (a lost context makes GL calls no-ops instead of throwing), so clear
+      // it again here or those maps pay their upload in the first real draw.
+      invalidateTextureWarmCache();
       // Anything a stray frame admitted while the context was lost was
       // "uploaded" into nothing: drop it before the latch clears.
       this.sectors?.dropAll();
@@ -2587,6 +2615,14 @@ export class PlanetariumMode {
 
     this.scheduleBootPairWarm();
 
+    if (buildingSolarSystem) {
+      // Every map index.html warmed has been asked for by now — the planet
+      // maps were awaited above and every moon's photo fetch started with its
+      // mesh — so anything still sitting in the warm map is a response body
+      // nobody will read, buffered for the session.
+      releaseBootWarmResponses();
+    }
+
     reportActivationProgress(FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS);
     performance.measure('plm:activate', 'plm:activate:start');
   }
@@ -2615,7 +2651,7 @@ export class PlanetariumMode {
       // network but pays no residency up front. (Quality tiers stay
       // capability-based — this split concerns speculation only, and
       // saveData is absent on iOS Safari so it cannot be the gate.)
-      const cacheOnly = this.touchFirstDevice();
+      const cacheOnly = touchFirstDevice();
       for (const up of this.landingPairUpgrades({ type: 'planet', name: 'Earth' })) {
         // The live loader's attempt/cooldown gate, so a re-armed timer never
         // duplicates a pending desktop attempt. The cache-only fetch marks no
@@ -2631,8 +2667,11 @@ export class PlanetariumMode {
           // dropped, and the browser may cancel the transfer with it — the
           // bytes only reliably reach the HTTP/service-worker cache once the
           // stream has been drained.
+          // Through the ladder's own file choice, so the bytes pulled into
+          // the cache are the bytes the ladder will later ask for — a tier
+          // with a compressed override must not be warmed as its webp.
           if (tier) {
-            fetch(resolveTextureUrl(PLANET_TEXTURE_FILES[up.key], tier))
+            fetch(resolveTextureUrl(resolveTierFile(up.key, tier), tier))
               .then((r) => r.arrayBuffer())
               .catch(() => {});
           }
@@ -2643,24 +2682,13 @@ export class PlanetariumMode {
     }, PlanetariumMode.BOOT_PAIR_WARM_DELAY_MS);
   }
 
-  /** A phone or tablet: the device class that gets cache-only speculation and
-   *  the smaller sector-tile working set. Capability-based quality tiers are
-   *  unaffected; this only sizes what is held in memory on speculation. */
-  private touchFirstDevice(): boolean {
-    return (
-      /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) || // iPadOS desktop UA
-      (navigator.maxTouchPoints > 0 && window.innerWidth <= 1024)
-    );
-  }
-
   /** Wire the hero bodies' sector sets (SECTOR_SETS) onto their globe meshes.
    *  Sector meshes become children of the globe, so they ride its spin, pole
    *  and (for the Moon) the render-curve scale; the streamer forces the fine
    *  silhouette grid before the first sector shows. */
   private registerSectorBodies(): void {
     if (!this.sectorsEnabled || !this.solarSystem) return;
-    const sectors = new SectorStreamer({ touch: this.touchFirstDevice() });
+    const sectors = new SectorStreamer({ touch: touchFirstDevice() });
     for (const planet of this.solarSystem.planets) {
       const spec = SECTOR_SETS[planet.data.name];
       if (!spec) continue;
@@ -2702,9 +2730,12 @@ export class PlanetariumMode {
    * Sun in the globe's local frame (radius = catalog radius there, whatever
    * the render scale), the magnification bound at its nearest surface point,
    * then per facing sector its frame membership (the lens-aware footprint of
-   * its bounding sphere) and the magnification at its nearest point — DEVICE
+   * its bounding sphere) and the magnification at its nearest point — RENDER
    * pixels per local unit, which the streamer turns into pixels per texel of
-   * the finest map the globe will hold.
+   * the finest map the globe will hold. Render, not display: the ratio comes
+   * from the renderer, so a supersampled frame asks for the sharper tile it
+   * really samples, while MSAA (which renders at the capped display ratio)
+   * asks for one tile texel per device pixel.
    */
   private updateSectorStreaming(): void {
     const sectors = this.sectors;
@@ -2713,112 +2744,159 @@ export class PlanetariumMode {
       sectors.dropAll();
       return;
     }
-    const canvasW = this.renderer.domElement.clientWidth;
-    const canvasH = this.renderer.domElement.clientHeight;
-    const dpr = this.renderer.getPixelRatio();
-    const nowMs = performance.now();
-    const chart = this.isMapOpen();
-    const grounded = this.landedView === 'surface' ? this.landedOn?.name ?? null : null;
+    this.sectorFrameCanvasW = this.renderer.domElement.clientWidth;
+    this.sectorFrameCanvasH = this.renderer.domElement.clientHeight;
+    this.sectorFrameNowMs = performance.now();
+    this.sectorFrameChart = this.isMapOpen();
+    this.sectorFrameGrounded = this.landedView === 'surface' ? this.landedOn?.name ?? null : null;
     // The projections below read the camera's inverse world matrix; this
     // pass must not depend on the LOD pass (skipped under the chart) having
     // refreshed it this frame.
     this.camera.updateMatrixWorld();
     this.solarSystem.sun.getWorldPosition(this.sectorSunWorld);
-    // Device pixels a world unit covers at unit distance, on the display FOV
+    // Render pixels a world unit covers at unit distance, on the display FOV
     // (the lens pass keeps the centre of the frame at this scale; the
     // streamer's hysteresis absorbs the edge distortion).
-    const focalDevicePx = ((canvasH / 2) / Math.tan(0.5 * displayFovDeg(this.camera) * DEG2RAD)) * dpr;
-
-    const visit = (name: string, mesh: THREE.Mesh, radiusAU: number, hidden: boolean) => {
-      if (!sectors.has(name)) return;
-      mesh.getWorldPosition(this.sectorWorldCentre); // refreshes matrixWorld too
-      mesh.getWorldQuaternion(this.sectorWorldQuat);
-      this.sectorWorldQuatInv.copy(this.sectorWorldQuat).invert();
-      // Spin gate: how fast this body's orientation turned since its last
-      // visit, in degrees per real second.
-      let spinning = false;
-      const prev = this.sectorSpin.get(name);
-      if (prev) {
-        const dtS = (nowMs - prev.tMs) / 1000;
-        const angle = 2 * Math.acos(Math.min(1, Math.abs(prev.quat.dot(this.sectorWorldQuat))));
-        const rate = dtS > 0 ? (angle * RAD2DEG) / dtS : 0;
-        // Latched: past the suspend rate the hold starts, and any rate above
-        // the resume rate while held extends it.
-        const held = nowMs < prev.heldUntilMs;
-        if (rate > PlanetariumMode.SECTOR_SPIN_SUSPEND_DEG_PER_S || (held && rate > PlanetariumMode.SECTOR_SPIN_RESUME_DEG_PER_S)) {
-          prev.heldUntilMs = nowMs + PlanetariumMode.SECTOR_SPIN_HOLD_MS;
-        }
-        spinning = nowMs < prev.heldUntilMs;
-        prev.quat.copy(this.sectorWorldQuat);
-        prev.tMs = nowMs;
-      } else {
-        this.sectorSpin.set(name, { quat: this.sectorWorldQuat.clone(), tMs: nowMs, heldUntilMs: 0 });
-      }
-      // The ground under a surface observer isn't drawn (the near plane culls
-      // it) and every sector "faces" a camera on the surface: hold nothing.
-      // A hidden globe (an unpainted or out-of-range moon) holds nothing either.
-      let suspend: SectorSuspend = 'none';
-      if (hidden || grounded === name) suspend = 'all';
-      else if (spinning || chart) suspend = 'admissions';
-      const worldScale = mesh.getWorldScale(this.sectorWorldScale).x;
-      const worldR = radiusAU * worldScale;
-      this.sectorCamLocal.copy(this.camera.position);
-      mesh.worldToLocal(this.sectorCamLocal);
-      // Sun direction in the globe's frame, for the night-side gate.
-      this.sectorSunLocal.copy(this.sectorSunWorld).sub(this.sectorWorldCentre).normalize()
-        .applyQuaternion(this.sectorWorldQuatInv);
-      // The most magnified surface point is the nearest one: device pixels
-      // per local unit there bound every sector, and let the streamer skip
-      // the per-sector work for a globe that is not close.
-      const distCentre = this.sectorWorldCentre.distanceTo(this.camera.position);
-      const pxPerLocalUnitNearest = (focalDevicePx * worldScale) / Math.max(distCentre - worldR, 1e-12);
-      const measure = (
-        bsCentreLocal: THREE.Vector3, bsRadiusLocal: number, surfaceDirLocal: THREE.Vector3,
-      ): SectorMeasure | null => {
-        // Frame membership and centrality from the bounding sphere's footprint.
-        this.sectorWorldCentre.copy(bsCentreLocal);
-        mesh.localToWorld(this.sectorWorldCentre);
-        const fp = projectSphereToScreen(
-          this.sectorWorldCentre, bsRadiusLocal * worldScale, this.camera, canvasW, canvasH, this.sectorProjection,
-        );
-        if (!(fp.diameterPx > 0)) return null;
-        // Entirely outside the frame: nothing to sharpen, but a resident one
-        // is a pan away — the streamer keeps it while it stays magnified.
-        const offscreen = fp.maxX < 0 || fp.minX > canvasW || fp.maxY < 0 || fp.minY > canvasH;
-        const dx = (fp.footprintX - canvasW / 2) / Math.max(canvasW / 2, 1);
-        const dy = (fp.footprintY - canvasH / 2) / Math.max(canvasH / 2, 1);
-        // Magnification at the surface point the streamer asks about (the
-        // sector's point nearest the camera's): device pixels per local unit
-        // at its distance, foreshortened by the angle between the surface
-        // normal there and the line of sight.
-        this.sectorNormal.copy(surfaceDirLocal);
-        this.sectorPoint.copy(this.sectorNormal).multiplyScalar(radiusAU);
-        mesh.localToWorld(this.sectorPoint);
-        this.sectorNormal.applyQuaternion(this.sectorWorldQuat);
-        this.sectorToCam.copy(this.camera.position).sub(this.sectorPoint);
-        const dist = this.sectorToCam.length();
-        if (!(dist > 0)) return null;
-        const facing = Math.max(0, this.sectorToCam.dot(this.sectorNormal) / dist);
-        return {
-          pxPerLocalUnit: (focalDevicePx * worldScale * facing) / dist,
-          centrality: Math.max(0, 1 - Math.hypot(dx, dy)),
-          offscreen,
-        };
-      };
-      sectors.update(name, this.sectorCamLocal, measure, nowMs, suspend, this.sectorSunLocal, pxPerLocalUnitNearest);
-    };
+    this.sectorFrameFocalPx =
+      ((this.sectorFrameCanvasH / 2) / Math.tan(0.5 * displayFovDeg(this.camera) * DEG2RAD))
+      * this.renderer.getPixelRatio();
 
     for (const planet of this.solarSystem.planets) {
-      visit(planet.data.name, planet.mesh, planet.data.radiusAU, !planet.mesh.visible);
+      this.visitSectorBody(sectors, planet.data.name, planet.mesh, planet.data.radiusAU, !planet.mesh.visible);
     }
     for (const moons of this.planetMoons.values()) {
-      for (const m of moons) visit(m.data.name, m.mesh, m.data.radiusAU, !m.mesh.visible);
+      for (const m of moons) {
+        this.visitSectorBody(sectors, m.data.name, m.mesh, m.data.radiusAU, !m.mesh.visible);
+      }
     }
   }
+
+  /** One registered body's frame: its spin gate, the suspend verdict, the
+   *  camera and Sun in its local frame, and the magnification bound at its
+   *  nearest surface point — then hand the streamer this body's measure. */
+  private visitSectorBody(
+    sectors: SectorStreamer, name: string, mesh: THREE.Mesh, radiusAU: number, hidden: boolean,
+  ): void {
+    if (!sectors.has(name)) return;
+    const nowMs = this.sectorFrameNowMs;
+    mesh.getWorldPosition(this.sectorWorldCentre); // refreshes matrixWorld too
+    mesh.getWorldQuaternion(this.sectorWorldQuat);
+    this.sectorWorldQuatInv.copy(this.sectorWorldQuat).invert();
+    // Spin gate: how fast this body's orientation turned since its last
+    // visit, in degrees per real second.
+    let spinning = false;
+    const prev = this.sectorSpin.get(name);
+    if (prev) {
+      const dtS = (nowMs - prev.tMs) / 1000;
+      const angle = 2 * Math.acos(Math.min(1, Math.abs(prev.quat.dot(this.sectorWorldQuat))));
+      const rate = dtS > 0 ? (angle * RAD2DEG) / dtS : 0;
+      // Latched: past the suspend rate the hold starts, and any rate above
+      // the resume rate while held extends it.
+      const held = nowMs < prev.heldUntilMs;
+      if (rate > PlanetariumMode.SECTOR_SPIN_SUSPEND_DEG_PER_S || (held && rate > PlanetariumMode.SECTOR_SPIN_RESUME_DEG_PER_S)) {
+        prev.heldUntilMs = nowMs + PlanetariumMode.SECTOR_SPIN_HOLD_MS;
+      }
+      spinning = nowMs < prev.heldUntilMs;
+      prev.quat.copy(this.sectorWorldQuat);
+      prev.tMs = nowMs;
+    } else {
+      this.sectorSpin.set(name, { quat: this.sectorWorldQuat.clone(), tMs: nowMs, heldUntilMs: 0 });
+    }
+    // The ground under a surface observer isn't drawn (the near plane culls
+    // it) and every sector "faces" a camera on the surface: hold nothing.
+    // A hidden globe (an unpainted or out-of-range moon) holds nothing either.
+    let suspend: SectorSuspend = 'none';
+    if (hidden || this.sectorFrameGrounded === name) suspend = 'all';
+    else if (spinning || this.sectorFrameChart) suspend = 'admissions';
+    const worldScale = mesh.getWorldScale(this.sectorWorldScale).x;
+    const worldR = radiusAU * worldScale;
+    this.sectorCamLocal.copy(this.camera.position);
+    mesh.worldToLocal(this.sectorCamLocal);
+    // Sun direction in the globe's frame, for the night-side gate.
+    this.sectorSunLocal.copy(this.sectorSunWorld).sub(this.sectorWorldCentre).normalize()
+      .applyQuaternion(this.sectorWorldQuatInv);
+    // The most magnified surface point is the nearest one: render pixels
+    // per local unit there bound every sector, and let the streamer skip
+    // the per-sector work for a globe that is not close.
+    const distCentre = this.sectorWorldCentre.distanceTo(this.camera.position);
+    const pxPerLocalUnitNearest = (this.sectorFrameFocalPx * worldScale) / Math.max(distCentre - worldR, 1e-12);
+    // What sectorMeasure answers about, for the duration of this call.
+    this.sectorBodyMesh = mesh;
+    this.sectorBodyRadiusAU = radiusAU;
+    this.sectorBodyWorldScale = worldScale;
+    sectors.update(
+      name, this.sectorCamLocal, this.sectorMeasure, nowMs, suspend, this.sectorSunLocal, pxPerLocalUnitNearest,
+    );
+    this.sectorBodyMesh = null;
+  }
+
+  /** One sector of the body currently being visited: its frame membership and
+   *  centrality from its bounding sphere's footprint, and the magnification at
+   *  the surface point the streamer asks about. An arrow field, so the pass
+   *  hands the streamer the same function every frame instead of building a
+   *  fresh closure per body. */
+  private readonly sectorMeasure = (
+    bsCentreLocal: THREE.Vector3, bsRadiusLocal: number, surfaceDirLocal: THREE.Vector3,
+  ): SectorMeasure | null => {
+    const mesh = this.sectorBodyMesh;
+    if (!mesh) return null;
+    const canvasW = this.sectorFrameCanvasW;
+    const canvasH = this.sectorFrameCanvasH;
+    const worldScale = this.sectorBodyWorldScale;
+    // Frame membership and centrality from the bounding sphere's footprint.
+    this.sectorWorldCentre.copy(bsCentreLocal);
+    mesh.localToWorld(this.sectorWorldCentre);
+    const fp = projectSphereToScreen(
+      this.sectorWorldCentre, bsRadiusLocal * worldScale, this.camera, canvasW, canvasH, this.sectorProjection,
+    );
+    if (!(fp.diameterPx > 0)) return null;
+    // Entirely outside the frame: nothing to sharpen, but a resident one
+    // is a pan away — the streamer keeps it while it stays magnified.
+    const offscreen = fp.maxX < 0 || fp.minX > canvasW || fp.maxY < 0 || fp.minY > canvasH;
+    const dx = (fp.footprintX - canvasW / 2) / Math.max(canvasW / 2, 1);
+    const dy = (fp.footprintY - canvasH / 2) / Math.max(canvasH / 2, 1);
+    // Magnification at the surface point the streamer asks about (the
+    // sector's point nearest the camera's): render pixels per local unit
+    // at its distance, foreshortened by the angle between the surface
+    // normal there and the line of sight.
+    this.sectorNormal.copy(surfaceDirLocal);
+    this.sectorPoint.copy(this.sectorNormal).multiplyScalar(this.sectorBodyRadiusAU);
+    mesh.localToWorld(this.sectorPoint);
+    this.sectorNormal.applyQuaternion(this.sectorWorldQuat);
+    this.sectorToCam.copy(this.camera.position).sub(this.sectorPoint);
+    const dist = this.sectorToCam.length();
+    if (!(dist > 0)) return null;
+    const out = this.sectorMeasureOut;
+    out.pxPerLocalUnit = (this.sectorFrameFocalPx * worldScale * Math.max(0, this.sectorToCam.dot(this.sectorNormal) / dist)) / dist;
+    out.centrality = Math.max(0, 1 - Math.hypot(dx, dy));
+    out.offscreen = offscreen;
+    return out;
+  };
 
   /** Dev bridge: what the streamer holds right now. */
   devSectorStats(): SectorStats | null {
     return this.sectors?.stats() ?? null;
+  }
+
+  /** Dev bridge: what the colour ladders hold right now. The streamer's
+   *  stats() covers tiles only, so without this a device report can say what
+   *  the Moon's sectors cost but not what its 8K globe map costs. Estimated
+   *  from each applied tier's nominal size — nothing can measure the real
+   *  figures from inside the page. */
+  devLadderStats(): { sourceBytes: number; gpuBytes: number; tiers: AppliedTierResidency[] } | null {
+    if (!this.solarSystem) return null;
+    const tiers: AppliedTierResidency[] = [];
+    for (const planet of this.solarSystem.planets) appliedTierResidency(planet.textureUpgrades, tiers);
+    for (const moons of this.planetMoons.values()) {
+      for (const m of moons) appliedTierResidency(m.textureUpgrades, tiers);
+    }
+    let sourceBytes = 0;
+    let gpuBytes = 0;
+    for (const t of tiers) {
+      sourceBytes += t.sourceBytes;
+      gpuBytes += t.gpuBytes;
+    }
+    return { sourceBytes, gpuBytes, tiers };
   }
 
   private ensureConstellationsReady() {

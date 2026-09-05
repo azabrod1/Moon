@@ -4,6 +4,7 @@
  */
 import * as THREE from 'three';
 import { debugLog, debugWarn } from '../shared/debug';
+import { drainErrors } from '../shared/three/glErrors';
 
 export function canGPUDoBloom(renderer: THREE.WebGLRenderer): boolean {
   try {
@@ -72,11 +73,6 @@ export function halfFloatTargetSampleCounts(renderer: THREE.WebGLRenderer): numb
   }
 }
 
-/** Empties the GL error queue so nothing raised earlier is blamed on a probe. */
-function drainErrors(gl: WebGL2RenderingContext): void {
-  for (let i = 0; i < 8 && gl.getError() !== gl.NO_ERROR; i++) { /* drained */ }
-}
-
 function completesMultisampled(
   renderer: THREE.WebGLRenderer,
   gl: WebGL2RenderingContext,
@@ -125,9 +121,10 @@ function completesMultisampled(
     // Everything back as found, through three's cache so its record matches
     // GL: the binding points (three's own target, if one was bound, else
     // null), the clear colour, and an empty error queue for whoever is next.
+    // READ and DRAW separately, never a third FRAMEBUFFER bind over them: that
+    // would point READ at the draw target and lose a READ != DRAW state.
     renderer.state.bindFramebuffer(gl.READ_FRAMEBUFFER, prevRead);
     renderer.state.bindFramebuffer(gl.DRAW_FRAMEBUFFER, prevDraw);
-    renderer.state.bindFramebuffer(gl.FRAMEBUFFER, prevDraw);
     renderer.state.buffers.color.setClear(prevClear[0], prevClear[1], prevClear[2], prevClear[3], false);
     gl.bindRenderbuffer(gl.RENDERBUFFER, null);
     gl.deleteRenderbuffer(colour);

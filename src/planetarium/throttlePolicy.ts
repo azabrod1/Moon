@@ -18,7 +18,7 @@
  *   time so the feel is the same on a 60 Hz monitor and a 120 Hz phone; the
  *   rates are the old per-frame factors taken at 60 Hz.
  */
-import { smoothstepUnclamped } from '../shared/math/smoothstep';
+import { smoothstepEdges } from '../shared/math/smoothstep';
 
 export interface SystemThrottleBody {
   name: string;
@@ -35,9 +35,7 @@ export const SUN_SYSTEM_RADIUS_AU = 0.01;
 
 /** Speed factor at `dist` inside a system: 1 at the rim, 0 at 5% depth. */
 function throttleFalloff(dist: number, systemRadius: number): number {
-  const inner = systemRadius * 0.05;
-  const t = Math.min(1, Math.max(0, (dist - inner) / (systemRadius - inner)));
-  return smoothstepUnclamped(t);
+  return smoothstepEdges(systemRadius * 0.05, systemRadius, dist);
 }
 
 /**

@@ -10,11 +10,11 @@
  * be aborted from here — the inline script owns it — so it is ABANDONED at
  * its deadline instead (the promise is left to settle into the inline
  * script's own rejection guard) and bounded retries take over. Every attempt
- * carries a deadline: the whole ladder must resolve or reject inside the
- * loading screen's 15s force-hide, because the failure UX is activate
- * throwing into the VISIBLE boot error — a sky with no stars is exactly the
- * half-loaded scene the app promises never to reveal, and an unbounded hang
- * here would let the force-hide reveal it.
+ * carries a deadline, so a dead network reaches the boot error screen in
+ * bounded time rather than sitting on "Loading…" forever: the failure UX is
+ * activate throwing into the VISIBLE boot error, and a sky with no stars is
+ * exactly the half-loaded scene the app promises never to reveal, so the
+ * ladder must resolve or reject rather than hang.
  * Worst case ≈ 5 + 0.3 + 3.5 + 1 + 3.5 = 13.3s.
  */
 import { BRIGHT_STAR_BIN_FILE, parseBrightStarBin, setBrightStarCatalog } from '../data/brightStars';
@@ -39,6 +39,10 @@ function withDeadline<T>(promise: Promise<T>, ms: number, what: string): Promise
 
 async function fetchCatalogOnce(url: string, attempt: number): Promise<ArrayBuffer> {
   if (attempt === 0) {
+    // Neither request is abortable from here: the warmed one belongs to the
+    // inline script, and the plain fetch taken when no warm entry exists is
+    // started without a signal. Both are ABANDONED at the deadline — left to
+    // settle wherever they settle — and the ladder moves on.
     return withDeadline((async () => {
       const response = await (takeBootWarmResponse(url) ?? fetch(url));
       if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);

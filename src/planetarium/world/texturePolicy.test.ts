@@ -5,10 +5,10 @@ import { captureDeviceTextureCaps, clampTier, resolveTextureUrl, TEXTURE_TIERS, 
 // The caps are module state captured from the live renderer; a fake renderer is
 // the seam. 4096 is the pre-capture default — restore it so test order can't
 // leak a cap into another file's expectations.
-function withMaxTextureSize(size: number): void {
+function withMaxTextureSize(size: number, touch = false): void {
   captureDeviceTextureCaps({
     capabilities: { getMaxAnisotropy: () => 8, maxTextureSize: size },
-  } as unknown as THREE.WebGLRenderer);
+  } as unknown as THREE.WebGLRenderer, touch);
 }
 
 afterEach(() => withMaxTextureSize(4096));

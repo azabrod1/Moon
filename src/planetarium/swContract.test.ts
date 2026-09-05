@@ -44,10 +44,14 @@ function fakeCaches() {
   return { cache, store };
 }
 
+type NetworkResponder = (init?: { cache?: string }) => Response;
+
 interface Harness {
   handlers: Record<string, (event: never) => void>;
   store: Map<string, { body: Uint8Array; type: string }>;
   cache: ReturnType<typeof fakeCaches>['cache'];
+  /** The CacheStorage the worker sees; tests replace `open` to make it fail. */
+  cachesApi: { open: (name: string) => Promise<unknown> };
   self: { skipWaiting: ReturnType<typeof vi.fn>; clients: { claim: ReturnType<typeof vi.fn> } };
   netFetch: ReturnType<typeof vi.fn>;
 }
@@ -57,7 +61,7 @@ interface Harness {
 function bootWorker(
   manifest: Record<string, string>,
   precache: string[],
-  network: Map<string, () => Response>,
+  network: Map<string, NetworkResponder>,
 ): Harness {
   const handlers: Record<string, (event: never) => void> = {};
   const { cache, store } = fakeCaches();
@@ -69,18 +73,19 @@ function bootWorker(
       handlers[type] = fn;
     },
   };
-  const netFetch = vi.fn(async (input: string | Request) => {
+  const netFetch = vi.fn(async (input: string | Request, init?: { cache?: string }) => {
     const pathname = new URL(typeof input === 'string' ? input : input.url, ORIGIN).pathname;
     const respond = network.get(pathname);
     if (!respond) return new Response('not found', { status: 404 });
-    return respond();
+    return respond(init);
   });
   const source = template.replace(
     '/* __INJECT_MANIFEST__ */',
     `const MANIFEST = ${JSON.stringify(manifest)};\nconst PRECACHE = ${JSON.stringify(precache)};`,
   );
-  new Function('self', 'caches', 'fetch', source)(self, { open: async () => cache }, netFetch);
-  return { handlers, store, cache, self, netFetch };
+  const cachesApi = { open: async () => cache };
+  new Function('self', 'caches', 'fetch', source)(self, cachesApi, netFetch);
+  return { handlers, store, cache, cachesApi, self, netFetch };
 }
 
 function dispatchFetch(harness: Harness, request: Request) {
@@ -111,7 +116,7 @@ beforeEach(async () => {
 });
 
 const healthyNetwork = () =>
-  new Map<string, () => Response>([
+  new Map<string, NetworkResponder>([
     [MOON_PATH, () => new Response(MOON_BYTES.slice(), { status: 200, headers: { 'content-type': 'image/webp' } })],
     [STAR_PATH, () => new Response(STAR_BYTES.slice(), { status: 200 })],
   ]);
@@ -165,6 +170,30 @@ describe('service worker template: fetch handler', () => {
     await Promise.all(waits); // the contained failure must not reject anything
   });
 
+  it('lets a network failure through once, without fetching a second time', async () => {
+    // Offline, the app's own retry ladder must see one error per request. A
+    // catch around the whole handler would also catch this rejection and fetch
+    // again, doubling every failed request before the ladder hears about it.
+    const offline = new Map<string, NetworkResponder>([
+      [MOON_PATH, () => { throw new TypeError('Failed to fetch'); }],
+    ]);
+    const harness = bootWorker(MANIFEST, [], offline);
+    const { responded } = dispatchFetch(harness, new Request(ORIGIN + MOON_PATH));
+    await expect(responded!).rejects.toThrow('Failed to fetch');
+    expect(harness.netFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('serves from the network when CacheStorage itself refuses to open', async () => {
+    // Private browsing, a revoked quota: the page must still get its bytes.
+    const harness = bootWorker(MANIFEST, [], healthyNetwork());
+    harness.cachesApi.open = async () => { throw new Error('no storage'); };
+    const { responded, waits } = dispatchFetch(harness, new Request(ORIGIN + MOON_PATH));
+    expect(new Uint8Array(await (await responded!).arrayBuffer())).toEqual(MOON_BYTES);
+    expect(harness.netFetch).toHaveBeenCalledTimes(1);
+    await Promise.all(waits);
+    expect(harness.store.size).toBe(0);
+  });
+
   it('never answers for anything outside its manifest', () => {
     const harness = bootWorker(MANIFEST, [], healthyNetwork());
     const untouched = [
@@ -193,6 +222,45 @@ describe('service worker template: lifecycle', () => {
     expect(harness.self.skipWaiting).toHaveBeenCalled();
     expect(harness.store.has(ORIGIN + STAR_PATH + '?swv=' + MANIFEST[STAR_PATH])).toBe(true);
     expect(harness.store.has(ORIGIN + MOON_PATH + '?swv=' + MANIFEST[MOON_PATH])).toBe(false);
+  });
+
+  it('retries an unverifiable install fetch once with the HTTP cache bypassed', async () => {
+    // The first install fetch can be served a ≤10-minute-stale body out of the
+    // HTTP cache while the manifest already names the new deploy's bytes; the
+    // bypass retry is what gets the precache right on a deploy boundary.
+    const network = new Map<string, NetworkResponder>([
+      [MOON_PATH, (init) => (init?.cache === 'reload'
+        ? new Response(MOON_BYTES.slice(), { status: 200 })
+        : new Response('stale bytes', { status: 200 }))],
+    ]);
+    const harness = bootWorker(MANIFEST, [MOON_PATH], network);
+    await dispatchLifecycle(harness, 'install');
+    expect(harness.netFetch).toHaveBeenCalledTimes(2);
+    expect((harness.netFetch.mock.calls[0] as unknown[])[1]).toMatchObject({ cache: 'no-cache' });
+    expect((harness.netFetch.mock.calls[1] as unknown[])[1]).toMatchObject({ cache: 'reload' });
+    expect(harness.store.has(ORIGIN + MOON_PATH + '?swv=' + MANIFEST[MOON_PATH])).toBe(true);
+  });
+
+  it('retries with the cache bypassed when the first install fetch rejects outright', async () => {
+    let calls = 0;
+    const network = new Map<string, NetworkResponder>([
+      [MOON_PATH, () => {
+        calls++;
+        if (calls === 1) throw new TypeError('Failed to fetch');
+        return new Response(MOON_BYTES.slice(), { status: 200 });
+      }],
+    ]);
+    const harness = bootWorker(MANIFEST, [MOON_PATH], network);
+    await dispatchLifecycle(harness, 'install');
+    expect(harness.netFetch).toHaveBeenCalledTimes(2);
+    expect((harness.netFetch.mock.calls[1] as unknown[])[1]).toMatchObject({ cache: 'reload' });
+    expect(harness.store.has(ORIGIN + MOON_PATH + '?swv=' + MANIFEST[MOON_PATH])).toBe(true);
+  });
+
+  it('spends no bypass retry when the first install fetch verifies', async () => {
+    const harness = bootWorker(MANIFEST, [MOON_PATH], healthyNetwork());
+    await dispatchLifecycle(harness, 'install');
+    expect(harness.netFetch).toHaveBeenCalledTimes(1);
   });
 
   it('activate claims clients and prunes keys the manifest no longer names', async () => {

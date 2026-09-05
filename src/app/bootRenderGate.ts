@@ -7,8 +7,9 @@
  * device resolution — is GPU time taken from the texture decodes and uploads
  * the boot is waiting on (2–3 s on a fast network, much longer on a phone).
  * So while covered the loop draws only on request:
- *  - once after every composer build (`requestCoveredRender`), so the
- *    composer's own passes link their programs under the cover (the shader
+ *  - once after every composer build (`requestCoveredRender`), whichever path
+ *    that build takes — full composer, direct lens pass, or straight to
+ *    canvas — so the passes link their programs under the cover (the shader
  *    warm-up, world/shaderWarmup.ts, compiles scene materials, not passes);
  *  - once synchronously right before the screen is hidden (`revealRender`:
  *    the reveal site renders, then marks the gate live), so the frame under

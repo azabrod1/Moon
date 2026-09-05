@@ -14,6 +14,10 @@
  * The seam only fetches. What a late texture DOES on arrival stays with the
  * caller (the colour-tier rank swap, the late-slot hand-off), so an arrival
  * five minutes in adopts through exactly the machinery a 4K upgrade uses.
+ *
+ * Cancelling reaches the attempt in flight, not just the ladder: the transfer
+ * is aborted and the decode declined, so a caller that stops caring mid-fetch
+ * costs nothing more than the bytes already on the wire.
  */
 import type * as THREE from 'three';
 import { debugWarn } from '../../shared/debug';
@@ -40,6 +44,11 @@ export interface TextureRetryDeps {
     onLoad: (tex: THREE.Texture) => void,
     onProgress: undefined,
     onError: (err: unknown) => void,
+    /** Consulted by the streamed loader between the bytes landing and the
+     *  decode; false once this fetch has been cancelled. */
+    stillWanted?: () => boolean,
+    /** Aborts the transfer of the attempt in flight. */
+    signal?: AbortSignal,
   ): void;
   now(): number;
   setTimer(fn: () => void, delayMs: number): TimerHandle;
@@ -119,7 +128,8 @@ function defaultDeps(): TextureRetryDeps {
     // patches/three), the bitmap path measures fastest on both engines.
     // Transport failures land in onError and climb this seam's own backoff
     // ladder, unchanged.
-    load: (url, onLoad, _onProgress, onError) => loadStreamedTexture(url, onLoad, onError),
+    load: (url, onLoad, _onProgress, onError, stillWanted, signal) =>
+      loadStreamedTexture(url, onLoad, onError, stillWanted, signal),
     now: () => Date.now(),
     setTimer: (fn, delayMs) => setTimeout(fn, delayMs),
     clearTimer: (handle) => clearTimeout(handle),
@@ -145,6 +155,11 @@ export function fetchTextureDurably(
   let timer: TimerHandle | null = null;
   let unsubscribe: (() => void) | null = null;
   let stopped = false;
+  // One controller per attempt, so cancelling ends the transfer in flight
+  // instead of letting a 4K map finish downloading and decode into a bitmap
+  // nobody will draw. Absent where AbortController is (the DOM-free tests):
+  // stillWanted alone still declines the decode there.
+  let inFlight: AbortController | null = null;
 
   const clearPending = () => {
     if (timer !== null) {
@@ -156,6 +171,8 @@ export function fetchTextureDurably(
   const stop = () => {
     stopped = true;
     clearPending();
+    inFlight?.abort();
+    inFlight = null;
     unsubscribe?.();
     unsubscribe = null;
   };
@@ -172,10 +189,15 @@ export function fetchTextureDurably(
     timer = null;
     if (stopped) return;
     state = startAttempt(state, deps.now());
+    const mine = typeof AbortController === 'function' ? new AbortController() : null;
+    inFlight = mine;
+    // A loader settles each attempt once; a late second callback from an
+    // attempt this one has already replaced must not touch the live state.
+    const superseded = () => inFlight !== mine;
     deps.load(
       request.url,
       (tex) => {
-        if (stopped) {
+        if (stopped || superseded()) {
           // Cancelled while this attempt was in the air. Nothing owns the
           // texture now, and three's loader cannot be aborted, so free it here
           // rather than leaking a decoded image nobody will draw.
@@ -187,7 +209,7 @@ export function fetchTextureDurably(
       },
       undefined,
       (err) => {
-        if (stopped) return;
+        if (stopped || superseded()) return;
         state = scheduleAfterFailure(state, deps.now(), spread, deps.policy);
         if (shouldLogFailure(state.attemptsFailed)) {
           debugWarn('Texture load failed, retrying', {
@@ -200,6 +222,8 @@ export function fetchTextureDurably(
         request.onFailure?.(err, state.attemptsFailed);
         arm();
       },
+      () => !stopped && !superseded(),
+      mine?.signal,
     );
   };
 

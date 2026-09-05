@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import * as THREE from 'three';
 import {
   classifyMoonArchetype,
   archetypeCode,
@@ -11,26 +10,21 @@ import {
   SMALL_MOON_RADIUS_KM,
 } from './proceduralMoon';
 
-// Reference: the exact brightness/hue formula createMoonTextures used, via
-// THREE.Color so it tracks the app's colour-management setting. The GPU path
-// and the CPU path both classify through classifyMoonArchetype, so this pins
-// that they cannot diverge from the original look.
-function refArchetype(hex: number) {
-  const c = new THREE.Color(hex);
-  const brightness = c.r * 0.299 + c.g * 0.587 + c.b * 0.114;
-  return {
-    isIcy: brightness > 0.55,
-    isVolcanic: c.r > 0.6 && c.g > 0.4 && c.b < 0.35,
-  };
-}
+const ROCKY = { isIcy: false, isVolcanic: false };
 
 describe('classifyMoonArchetype', () => {
-  // Real catalog colours (Phobos, Io, Europa, Callisto) + the robust extremes.
-  const colors = [0x8a7e6e, 0xc8b040, 0xb0a890, 0x605848, 0xffffff, 0x000000, 0xeeeeee];
-  it('matches the original brightness/hue formula for representative colours', () => {
-    for (const hex of colors) {
-      expect(classifyMoonArchetype(hex)).toEqual(refArchetype(hex));
-    }
+  it('sorts real catalog colours the way the original createMoonTextures did', () => {
+    // Literal verdicts, not the formula written out again: the point is that
+    // these colours keep landing in the same bucket, whatever the code does.
+    // The thresholds read LINEAR values (THREE.Color decodes sRGB), which is
+    // why Io's warm ochre sits just under the volcanic gate and a stronger
+    // orange is needed to cross it.
+    expect(classifyMoonArchetype(0x8a7e6e)).toEqual(ROCKY); // Phobos
+    expect(classifyMoonArchetype(0x605848)).toEqual(ROCKY); // Callisto
+    expect(classifyMoonArchetype(0xb0a890)).toEqual(ROCKY); // Europa
+    expect(classifyMoonArchetype(0xc8b040)).toEqual(ROCKY); // Io
+    expect(classifyMoonArchetype(0xeeeeee)).toEqual({ isIcy: true, isVolcanic: false });
+    expect(classifyMoonArchetype(0xe0c060)).toEqual({ isIcy: false, isVolcanic: true });
   });
   it('pure white is icy, pure black is neither (colourspace-robust extremes)', () => {
     expect(classifyMoonArchetype(0xffffff)).toEqual({ isIcy: true, isVolcanic: false });

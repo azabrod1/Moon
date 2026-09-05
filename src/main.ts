@@ -307,6 +307,14 @@ function buildComposer(
   directLensTexture?.dispose();
   directLensTexture = null;
 
+  // Whichever path is taken below, its passes (or, straight to canvas, the
+  // scene's own materials) link their programs on the first render that uses
+  // them: have that happen under the loading screen, not on the first visible
+  // frame. Requested here rather than at the end because the early returns
+  // are builds too — the gate only raises a flag, and the draw comes on a
+  // later animation frame, once this build has finished.
+  bootRender.requestCoveredRender();
+
   // The lens correction is planetarium-only and must not be gated on bloom:
   // that would leave off-axis planets egg-shaped on GPUs without float FBOs.
   const wantsLens = cam === planetariumCamera && lensRequestedStrength > 0;
@@ -389,9 +397,6 @@ function buildComposer(
 
   composer.addPass(new OutputPass());
   composerBuiltFor = { cam, bloom, enabled, lens: lensRequestedStrength };
-  // The passes link their programs on their first render: have it happen
-  // under the loading screen, not on the first visible frame.
-  bootRender.requestCoveredRender();
 }
 
 // Dev bloom toggle: flip the runtime flag, rebuild the planetarium composer
@@ -828,6 +833,7 @@ function installDevHooks() {
     land: (name: string) => planetariumMode?.devLand(name) ?? false,
     observe: (name: string) => planetariumMode?.devObserve(name) ?? false,
     sectors: () => planetariumMode?.devSectorStats() ?? null,
+    ladder: () => planetariumMode?.devLadderStats() ?? null,
     lookUp: () => planetariumMode?.devLookUp() ?? false,
     lookAt: (name: string) => planetariumMode?.devLookAt(name) ?? false,
     exitSurface: () => planetariumMode?.devExitSurface(),
@@ -997,7 +1003,23 @@ async function init() {
   // The service-worker kill switch runs before ANYTHING else: it exists for
   // the boots where something SW-served is broken, so it cannot wait for a
   // boot to succeed. True = a shedding reload is on its way; stop here.
-  if (await shedServiceWorkerIfRequested()) return;
+  if (await shedServiceWorkerIfRequested()) {
+    // A shedding reload is on its way and nothing has been built. Leave the
+    // boot UNSETTLED: the force-hide below reveals only a settled boot, and
+    // there is nothing behind the screen here but an empty scene. The reload
+    // is bounded too — a navigation that never commits would otherwise keep
+    // the loading screen up with nothing to say.
+    killSwitchReloading = true;
+    // Only a real navigation away counts; a page parked in the back-forward
+    // cache comes back to this same unsettled boot and must still time out.
+    window.addEventListener('pagehide', (e) => { if (!e.persisted) killSwitchReloading = false; }, { once: true });
+    setTimeout(() => {
+      if (!killSwitchReloading) return;
+      killSwitchReloading = false;
+      coverWithBootError(new Error('the ?nosw=1 reload did not happen'), 'The reload did not happen. Please refresh.');
+    }, KILL_SWITCH_RELOAD_TIMEOUT_MS);
+    return;
+  }
   // Start the star-catalog sidecar load now so its fetch+parse overlap the
   // solar-system build; PlanetariumMode.activate awaits the same shared
   // promise (and surfaces the real error — this kick must not double-report,
@@ -1241,6 +1263,12 @@ function registerServiceWorker(): void {
 // half-built black scene), and after a FAILURE the screen is the error
 // display. In both of those cases keep it up and check back.
 let initSettled = false;
+/** How long a `?nosw=1` reload may take to leave this document before the
+ *  boot gives up on it and says so. */
+const KILL_SWITCH_RELOAD_TIMEOUT_MS = 10_000;
+/** The ?nosw=1 reload is on its way: this document is being replaced, so it
+ *  never becomes a settled boot. */
+let killSwitchReloading = false;
 setTimeout(function forceHideCheck() {
   const ls = document.getElementById('loading-screen');
   if (!ls || ls.classList.contains('hidden') || ls.dataset.bootError) return;
@@ -1255,8 +1283,12 @@ setTimeout(function forceHideCheck() {
 }, 15000);
 
 init().then(() => {
-  initSettled = true;
-}).catch((err) => {
+  initSettled = !killSwitchReloading;
+}).catch((err) => coverWithBootError(err, 'Something went wrong. Please refresh.'));
+
+/** The boot has failed for good: settle it, stop drawing, and keep (or bring
+ *  back) the loading screen with the message inside it. */
+function coverWithBootError(err: unknown, message: string): void {
   initSettled = true;
   debugError('Init failed', err);
   console.error('Init failed:', err);
@@ -1266,10 +1298,10 @@ init().then(() => {
   // (or come back — a failure after the 15s force-hide re-covers the broken
   // scene) for the user to ever read it.
   const loadingMsg = document.getElementById('loading-msg');
-  if (loadingMsg) loadingMsg.textContent = 'Something went wrong. Please refresh.';
+  if (loadingMsg) loadingMsg.textContent = message;
   const loadingScreen = document.getElementById('loading-screen');
   if (loadingScreen) {
     loadingScreen.dataset.bootError = '1';
     loadingScreen.classList.remove('hidden');
   }
-});
+}

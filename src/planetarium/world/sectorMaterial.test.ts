@@ -82,6 +82,31 @@ describe('createSectorMaterial', () => {
     expect(sector.polygonOffsetUnits).toBe(-1);
   });
 
+  it('lands in the globe\'s shader program, so the first sector draw links nothing', () => {
+    // three keys the program cache on customProgramCacheKey(), whose default
+    // is the onBeforeCompile SOURCE. Both materials get that hook from
+    // surfaceShading, so a sector reuses the globe's already-linked program —
+    // which is why a sector can appear mid-glide without a compile hitch. An
+    // override, or a per-instance value folded into the key, would silently
+    // double the program count and put a link back on that frame.
+    const base = new THREE.MeshStandardMaterial({ map: new THREE.Texture() });
+    augmentSurfaceMaterial(base, 'rocky', { inner: 1, outer: 2 }, 0.004);
+    const sector = createSectorMaterial(base, { map: new THREE.Texture() });
+    expect(sector.customProgramCacheKey()).toBe(base.customProgramCacheKey());
+    expect(sector.onBeforeCompile.toString()).toBe(base.onBeforeCompile.toString());
+    // Not vacuously equal because neither is augmented.
+    expect(base.customProgramCacheKey()).not.toBe(
+      new THREE.MeshStandardMaterial().customProgramCacheKey(),
+    );
+    // Same map slots too: three's own program parameters count which maps are
+    // bound, so a sector that dropped one would fall into a second program
+    // even with an identical hook.
+    expect(!!sector.map).toBe(!!base.map);
+    expect(!!sector.normalMap).toBe(!!base.normalMap);
+    expect(!!sector.bumpMap).toBe(!!base.bumpMap);
+    expect(!!sector.roughnessMap).toBe(!!base.roughnessMap);
+  });
+
   it('is a plain standard material for an un-augmented base (no hook, no throw)', () => {
     const base = new THREE.MeshStandardMaterial();
     const sector = createSectorMaterial(base, { map: new THREE.Texture() });

@@ -271,10 +271,12 @@ async function writeDownsamples(raw, outs) {
   }
 }
 
-/** Reassemble the written tiles at 512px each into a 4096x2048 mosaic and
- *  compare it with the boot/4K map: per-channel mean delta and RMS in 0-255
- *  units, the tools/texdiff.mjs thresholds (mean <= 2, RMS <= 6). A tile
- *  written in the wrong slot or orientation fails this by tens of units. */
+/** Reassemble the written tiles at 508px each into a 4064x2032 mosaic and
+ *  compare it with the boot/4K map, itself resampled to that size — so the
+ *  comparison is of two resamples, not of a map against itself: per-channel
+ *  mean delta and RMS in 0-255 units, at the tools/texdiff.mjs thresholds
+ *  (mean <= 2, RMS <= 6). A tile written in the wrong slot or orientation
+ *  fails this by tens of units. */
 async function verify(key, refPath) {
   const q = CONTENT / 4; // 508: each sector's content at quarter scale
   const W = GRID.cols * q;

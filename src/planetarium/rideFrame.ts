@@ -69,6 +69,9 @@ export const RIDE_MOON_MIN_OFF_FACTOR = 1.2;
 /** Time constant of the weight ease. A moonlet crossing its own band at
  *  30 km/s takes ~0.2 s; at this τ the weight reaches ~0.25 for a moment. */
 export const RIDE_WEIGHT_TAU_S = 0.7;
+/** Below this an eased weight whose target is zero snaps to zero (the ease
+ *  alone never gets there): about five time constants after leaving. */
+export const RIDE_WEIGHT_FLOOR = 1e-3;
 
 /** 1 at or inside `fullAU`, 0 at or past `offAU`, smoothstep between. */
 export function bandWeight(distAU: number, fullAU: number, offAU: number): number {
@@ -203,6 +206,9 @@ export class RideFrame {
       c.wEff = this.rebase || c.fresh
         ? (this.rebase ? c.wTarget : 0)
         : easeWeight(c.wEff, c.wTarget, this.dtS);
+      // The ease only approaches its target; a body the ship has left must
+      // read exactly zero, or "riding anything?" stays true forever.
+      if (c.wTarget === 0 && c.wEff < RIDE_WEIGHT_FLOOR) c.wEff = 0;
       c.fresh = false;
       // Insertion sort — a handful of bodies, no allocation.
       let i = order.length;

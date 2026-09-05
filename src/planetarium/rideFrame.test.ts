@@ -262,6 +262,21 @@ describe('RideFrame', () => {
     expect(out.y).toBeCloseTo(A, 15); // Janus's step alone, not 2.5·A and not a diluted half
   });
 
+  it('a body the ship has left reads exactly zero after a few time constants, not a forever-residual', () => {
+    const ride = new RideFrame();
+    const ship = { x: 1, y: 0, z: 0 };
+    const earth = { x: 1, y: 0, z: km(-10_000) };
+    const reach = km(468_000);
+    const band = [reach, reach * RIDE_PLANET_OFF_FACTOR] as [number, number];
+    const bodies = () => [{ key: 'Earth', kind: 'planet' as const, pos: earth, band, radius: km(6371) }];
+    frame(ride, ship, { ...ship }, DT, bodies());
+    expect(ride.weight).toBe(1);
+    ship.x += reach * 3; // the ship left the system in one jump-free step (a long burn)
+    for (let i = 0; i < 60 * 6; i++) frame(ride, ship, { ...ship }, DT, bodies());
+    expect(ride.weight).toBe(0);
+    expect(ride.weightOf('Earth')).toBe(0);
+  });
+
   it('deep space rides nothing, and a body no longer offered is forgotten', () => {
     const ride = new RideFrame();
     const ship = { x: 3, y: 0, z: 0 };

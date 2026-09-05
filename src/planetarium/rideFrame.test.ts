@@ -271,10 +271,35 @@ describe('RideFrame', () => {
     const bodies = () => [{ key: 'Earth', kind: 'planet' as const, pos: earth, band, radius: km(6371) }];
     frame(ride, ship, { ...ship }, DT, bodies());
     expect(ride.weight).toBe(1);
-    ship.x += reach * 3; // the ship left the system in one jump-free step (a long burn)
+    // A burn is the ship's OWN step: the frame's pre-thrust position is where
+    // the last frame left it, so nothing rebases and the weight must decay.
+    const prev = { ...ship };
+    ship.x += reach * 3;
+    frame(ride, ship, prev, DT, bodies());
+    expect(ride.rebasing).toBe(false);
+    for (let i = 0; i < 30; i++) frame(ride, ship, { ...ship }, DT, bodies());
+    expect(ride.weight).toBeGreaterThan(0); // still easing out half a second later
     for (let i = 0; i < 60 * 6; i++) frame(ride, ship, { ...ship }, DT, bodies());
     expect(ride.weight).toBe(0);
     expect(ride.weightOf('Earth')).toBe(0);
+  });
+
+  it('a clock seam rides the whole displacement but reports no velocity for that frame', () => {
+    const ride = new RideFrame();
+    const ship = { x: 1, y: 0, z: 0 };
+    const earth = { x: 1, y: 0, z: km(-10_000) };
+    const body = () => [{ key: 'Earth', kind: 'planet' as const, pos: earth, band: always, radius: km(6371) }];
+    frame(ride, ship, { ...ship }, DT, body());
+    earth.x += 0.05; // an event jump between frames
+    ride.beginFrame(ship.x, ship.y, ship.z, ship.x, ship.y, ship.z, DT, false);
+    for (const b of body()) ride.consider(b.key, b.kind, b.pos.x, b.pos.y, b.pos.z, b.band[0], b.band[1], b.radius);
+    const out = ride.finish(v3());
+    expect(out.x).toBeCloseTo(0.05, 15);
+    expect(ride.velocity(v3())).toEqual({ x: 0, y: 0, z: 0 });
+    ship.x += out.x; ride.endFrame(ship.x, ship.y, ship.z);
+    earth.x += EARTH_STEP;
+    frame(ride, ship, { ...ship }, DT, body());
+    expect(ride.velocity(v3()).x).toBeCloseTo(km(29.8), 9);
   });
 
   it('deep space rides nothing, and a body no longer offered is forgotten', () => {

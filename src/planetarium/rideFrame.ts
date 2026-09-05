@@ -61,10 +61,12 @@ export const RIDE_PLANET_OFF_FACTOR = 1.5;
 export const RIDE_MOON_FULL_RADII = 6;
 export const RIDE_MOON_OFF_RADII = 15;
 /** A moon's outer edge is capped at this fraction of the gap between its
- *  orbit and its parent's shell, so no moon's band reaches the planet. */
+ *  orbit and its parent's shell, so no catalogue moon's band reaches its
+ *  planet. */
 export const RIDE_MOON_GAP_FRACTION = 0.5;
 /** The outer edge never sits closer than this to the full-ride edge, so the
- *  fade always has some width. */
+ *  fade always has some width — this floor outranks the gap cap for a moon
+ *  hugging its planet closer than any in the catalogue. */
 export const RIDE_MOON_MIN_OFF_FACTOR = 1.2;
 /** Time constant of the weight ease. A moonlet crossing its own band at
  *  30 km/s takes ~0.2 s; at this τ the weight reaches ~0.25 for a moment. */
@@ -138,6 +140,7 @@ export class RideFrame {
   private lastResolved: Vec3Like | null = null;
   private rebase = true;
   private dtS = 0;
+  private continuous = true;
   private shipX = 0; private shipY = 0; private shipZ = 0;
   private rideX = 0; private rideY = 0; private rideZ = 0;
   private velX = 0; private velY = 0; private velZ = 0;
@@ -153,10 +156,16 @@ export class RideFrame {
     shipX: number, shipY: number, shipZ: number,
     prevX: number, prevY: number, prevZ: number,
     dtS: number,
+    /** Whether the clock advanced by one plain frame since the last ride. A
+     *  clock seam (a typed date, an event jump, a rate change) still rides
+     *  the whole displacement, but reports NO velocity for the frame: the
+     *  governor's credits would otherwise see the jump as a body speed. */
+    continuous = true,
   ): void {
     const lr = this.lastResolved;
     this.rebase = lr === null || prevX !== lr.x || prevY !== lr.y || prevZ !== lr.z;
     this.dtS = dtS;
+    this.continuous = continuous;
     this.shipX = shipX; this.shipY = shipY; this.shipZ = shipZ;
     for (const c of this.carriers.values()) c.seen = false;
   }
@@ -169,7 +178,7 @@ export class RideFrame {
    * (full ride at or inside `fullAU`, none at or past `offAU`). The band is
    * read at the ship's distance to the body's ANCHOR (where the body was at
    * the last ride), the pre-step datum. `renderedRadiusAU` only breaks ties
-   * between moons. Plain numbers, so a steady-state frame allocates nothing.
+   * between moons. Plain numbers: the module allocates nothing per call.
    */
   consider(
     key: string, kind: RideKind,
@@ -227,7 +236,7 @@ export class RideFrame {
     if (this.rebase) { x = 0; y = 0; z = 0; }
     this.rideX = x; this.rideY = y; this.rideZ = z;
     this.maxWeight = maxW;
-    if (this.dtS > 0 && !this.rebase) {
+    if (this.dtS > 0 && !this.rebase && this.continuous) {
       this.velX = x / this.dtS; this.velY = y / this.dtS; this.velZ = z / this.dtS;
     } else {
       this.velX = 0; this.velY = 0; this.velZ = 0;

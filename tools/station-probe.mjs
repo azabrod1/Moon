@@ -15,6 +15,7 @@
 //
 //   node tools/station-probe.mjs --url=http://localhost:5670 --bodies=Earth,Moon,Io
 //   node tools/station-probe.mjs --url=... --expect=fail --extra='&ride=0'   # the control
+//   node tools/station-probe.mjs --url=... --bodies=Earth --scenario=park,warp,seams
 //
 // PASS: centre drift < DRIFT_MAX_DEG_S and altitude swing < ALT_MAX_KM over the
 // window. `--expect=fail` inverts the exit code so a control run proves the probe
@@ -31,6 +32,12 @@ const EXTRA = arg('extra', '');
 const LABEL = arg('label', 'station');
 const WINDOW_S = Number(arg('window', '10'));
 const VERBOSE = process.argv.includes('--verbose');
+// Legs per body — `park` (the settle window) always runs, the others add to it: `warp` (hover at 1 h/s, 1 day/s
+// and 1 yr/s — the ship must stay with the body, so the altitude holds; the
+// body's bearing legitimately turns as the ship rides its orbit with an
+// inertial heading), `seams` (rate changes, clock jumps, the Land prompt
+// persisting, and — at Mars — no orbit-crossing toasts while riding at warp).
+const SCENARIOS = new Set(arg('scenario', 'park').split(','));
 const DRIFT_MAX_DEG_S = 0.02;
 const ALT_MAX_KM = 1;
 const OUT = `/tmp/moon-shots/${LABEL}`;
@@ -203,6 +210,9 @@ try {
       // pilot arrives in. The travel pipeline instead flies PAST a moon with
       // the camera looking back at it, and the dev framing hook parks the
       // camera under a free camera that skips collisions.
+      // From the parent's postcard, so the autopilot flies a moon system,
+      // not a cross-system cruise that outlasts the leg.
+      await page.evaluate((b) => window.__moon.jumpTo(b, 1), MOON_PARENT[body]); await sleep(1500);
       const engaged = await page.evaluate((b) => window.__moon.pilotTo?.(b) ?? false, body);
       if (!engaged) { rows.push({ body, verdict: 'FAIL', why: 'no pilotTo on this build' }); console.log(`[station] FAIL ${body} no pilotTo on this build`); continue; }
       // The autopilot steers and caps but never raises the dial: a pilot
@@ -241,10 +251,61 @@ try {
     const ok = driftDegS < DRIFT_MAX_DEG_S && altSwing < ALT_MAX_KM;
     rows.push({ body, verdict: ok ? 'PASS' : 'FAIL', floorRadii: floor, altKm: a.altKm, driftDegS, walkKmS: driftDegS * Math.PI / 180 * a.centreKm, altSwingKm: altSwing, speed: a.speed });
     console.log(`[station] ${ok ? 'PASS' : 'FAIL'} ${body.padEnd(8)} floor ${a.altKm.toFixed(1)} km; centre drift ${driftDegS.toFixed(3)} deg/s (~${(driftDegS * Math.PI / 180 * a.centreKm).toFixed(1)} km/s along the shell); altitude swing ${altSwing.toFixed(2)} km; readout '${a.speed}'`);
+
+    // Altitude over a window, with the clock driven from inside the page.
+    const altitudeSwing = async (ms, drive) => page.evaluate(async ({ b, ms, drive }) => {
+      const nap = (m) => new Promise((r) => setTimeout(r, m));
+      const alt = () => { const p = window.__moon.probe(b); return (p.distToBodyAU - p.radiusAU) * 149597870.7; };
+      if (drive) new Function('moon', drive)(window.__moon);
+      let lo = Infinity, hi = -Infinity; const t0 = performance.now();
+      while (performance.now() - t0 < ms) { const v = alt(); lo = Math.min(lo, v); hi = Math.max(hi, v); await nap(100); }
+      return { lo, hi, swing: hi - lo };
+    }, { b: body, ms, drive });
+    const leg = (tag, ok, detail) => { rows.push({ body, leg: tag, verdict: ok ? 'PASS' : 'FAIL', detail }); console.log(`[station] ${ok ? 'PASS' : 'FAIL'} ${body.padEnd(8)} ${tag}: ${detail}`); };
+
+    if (SCENARIOS.has('warp')) {
+      for (const rate of [3600, 86400, 31557600]) {
+        const r = await altitudeSwing(8000, `moon.setTimeRate(${rate});`);
+        await page.evaluate(() => window.__moon.setTimeRate(1)); await sleep(1000);
+        leg(`warp ${rate}x`, r.swing < 5, `altitude ${r.lo.toFixed(1)}–${r.hi.toFixed(1)} km over 8 s`);
+      }
+    }
+    if (SCENARIOS.has('seams')) {
+      // Rate changes mid-hover.
+      const rc = await altitudeSwing(9000, `let i = 0; const rates = [60, 3600, 1]; const id = setInterval(() => { moon.setTimeRate(rates[i++ % 3]); if (i > 9) clearInterval(id); }, 1000);`);
+      await page.evaluate(() => window.__moon.setTimeRate(1)); await sleep(800);
+      leg('rate changes 1/60/3600', rc.swing < 1, `altitude swing ${rc.swing.toFixed(2)} km over 9 s`);
+      // Clock jumps: the ship must teleport with the body.
+      const j1 = await altitudeSwing(3000, `moon.setTimeMs(moon.getTimeMs() + 30 * 86400e3);`);
+      leg('clock jump +30 d', j1.swing < 1, `altitude swing ${j1.swing.toFixed(2)} km`);
+      const j2 = await altitudeSwing(3000, `moon.setTimeMs(moon.getTimeMs() - 100 * 86400e3);`);
+      leg('clock jump -100 d', j2.swing < 1, `altitude swing ${j2.swing.toFixed(2)} km`);
+      // The Land prompt must persist through a hover.
+      const seen = await page.evaluate(async ({ ms }) => {
+        const nap = (m) => new Promise((r) => setTimeout(r, m)); let shown = 0, total = 0; const t0 = performance.now();
+        while (performance.now() - t0 < ms) { const el = document.getElementById('planetarium-btn-land'); const on = !!el && !el.hidden && getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden'; shown += on ? 1 : 0; total++; await nap(500); }
+        return { shown, total, label: document.getElementById('land-body-name')?.textContent ?? null };
+      }, { ms: 8000 });
+      leg('land prompt persists', seen.shown === seen.total && (seen.label ?? '').includes(body), `${seen.shown}/${seen.total} samples, label '${seen.label}'`);
+      // Orbit-crossing toasts while riding at warp: none.
+      const toasts = await page.evaluate(async ({ ms }) => {
+        const nap = (m) => new Promise((r) => setTimeout(r, m)); const el = document.getElementById('planetarium-notification');
+        let last = el?.textContent ?? ''; let count = 0; window.__moon.setTimeRate(86400); const t0 = performance.now();
+        while (performance.now() - t0 < ms) { const t = el?.textContent ?? ''; if (t !== last && /orbit/i.test(t)) count++; last = t; await nap(100); }
+        window.__moon.setTimeRate(1); return count;
+      }, { ms: 20000 });
+      leg('no orbit toasts at 1 day/s', toasts === 0, `${toasts} toasts in 20 s`);
+    }
   }
 } finally { await browser.close(); release(); }
 writeFileSync(`${OUT}/report.json`, JSON.stringify({ url: URL, extra: EXTRA, expect: EXPECT, rows }, null, 2));
 const fails = rows.filter((r) => r.verdict !== 'PASS').length;
+// A FAIL row proves the defect only when it MEASURED it (a drift or an
+// altitude); a leg that never reached the body is an infrastructure failure
+// and must fail the run whatever was expected.
+const measuredFails = rows.filter((r) => r.verdict !== 'PASS' && typeof r.driftDegS === 'number').length;
+const infraFails = rows.filter((r) => r.verdict !== 'PASS' && r.why).length;
 const outcome = fails === 0 ? 'pass' : 'fail';
-console.log(`[station] ${rows.length} rows, ${fails} FAIL -> ${OUT}/report.json; expected ${EXPECT}, got ${outcome}`);
-process.exit(outcome === EXPECT ? 0 : 1);
+const success = EXPECT === 'fail' ? measuredFails > 0 && infraFails === 0 : fails === 0;
+console.log(`[station] ${rows.length} rows, ${fails} FAIL (${measuredFails} measured, ${infraFails} infrastructure) -> ${OUT}/report.json; expected ${EXPECT}, got ${outcome}${success ? '' : ' — RUN FAILED'}`);
+process.exit(success ? 0 : 1);

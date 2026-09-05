@@ -47,6 +47,7 @@ import {
   type BodyCapState,
 } from './arrivalLogic';
 import { SHIP_CLEARANCE_AU } from './cruiseView';
+import { RideFrame } from './rideFrame';
 import { KM_PER_AU } from '../astronomy/constants';
 import { LIGHT_SPEED_AU_PER_S } from './planets/planetData';
 
@@ -78,6 +79,10 @@ interface ContactRun {
   /** Sim time of the last frame of the run, so a pin can say the shell was
    *  STILL holding the ship when the clock ran out. */
   endS: number;
+  /** Lowest and highest altitude above the shell over the run, in shell
+   *  radii — a ridden hover must hold its height to numerical noise. */
+  minAltFrac: number;
+  maxAltFrac: number;
 }
 
 /**
@@ -92,9 +97,12 @@ function runContact(
   dt = 1 / 60,
   commanded = COMMANDED,
   opts: {
-    /** The ride weight on this one body (rideFrame.ts composes it the same
-     *  way for a single carrier): the ship takes this share of the planet's
-     *  step each frame, and the credits see the remainder of its velocity. */
+    /** The ride on this one body. A weight of 1 drives the real RideFrame
+     *  (anchors, repose detection, the band it is always inside); a fraction
+     *  applies the composition rule for a single carrier by hand — the
+     *  ship takes that share of the planet's step each frame — since a band
+     *  cannot hold a fixed fraction while the ship moves. Either way the
+     *  credits see the remainder of the planet's velocity. */
     rideWeight?: number;
     /** A time-rate change mid-run: from this sim second the planet moves
      *  `rateFactor` times faster, as a pilot cranking the clock would see. */
@@ -103,6 +111,7 @@ function runContact(
   } = {},
 ): ContactRun {
   const rideWeight = opts.rideWeight ?? 0;
+  const rideFrame = rideWeight === 1 ? new RideFrame() : null;
   const pos = startPos.clone();
   const fwd = heading.clone().normalize();
   const fwd0 = fwd.clone();
@@ -111,7 +120,7 @@ function runContact(
   const park = new THREE.Vector3();
   const run: ContactRun = {
     escapeAtS: null, contactAtS: null, lastContactAtS: null, maxPenetrationFrac: 0,
-    bodySwingDeg: 0, endS: 0,
+    bodySwingDeg: 0, endS: 0, minAltFrac: Infinity, maxAltFrac: -Infinity,
   };
   const bearing0 = new THREE.Vector3();
   const bearing = new THREE.Vector3();
@@ -144,8 +153,14 @@ function runContact(
     pos.addScaledVector(fwd, speed * dt);
     planet.addScaledVector(vel, dt);
     // The ride: the ship and the frame's pre-thrust position take the
-    // weighted planet step, so the sweep sees only the ship's own step.
-    if (rideWeight > 0) {
+    // (weighted) planet step, so the sweep sees only the ship's own step.
+    if (rideFrame) {
+      rideFrame.beginFrame(pos.x, pos.y, pos.z, prev.x, prev.y, prev.z, dt);
+      rideFrame.consider('Earth', 'planet', planet.x, planet.y, planet.z, Infinity, Infinity, EARTH_ENVELOPE);
+      rideFrame.finish(rideStep);
+      pos.add(rideStep);
+      prev.add(rideStep);
+    } else if (rideWeight > 0) {
       rideStep.copy(vel).multiplyScalar(dt * rideWeight);
       pos.add(rideStep);
       prev.add(rideStep);
@@ -189,6 +204,10 @@ function runContact(
     if (run.escapeAtS === null && pos.distanceTo(planet) - COLLISION_R > COLLISION_R) {
       run.escapeAtS = t;
     }
+    if (rideFrame) rideFrame.endFrame(pos.x, pos.y, pos.z);
+    const altFrac = (pos.distanceTo(planet) - COLLISION_R) / COLLISION_R;
+    if (altFrac < run.minAltFrac) run.minAltFrac = altFrac;
+    if (altFrac > run.maxAltFrac) run.maxAltFrac = altFrac;
     run.endS = t;
   }
   return run;
@@ -320,6 +339,10 @@ describe('with the ride frame on: a body never advances into a hull that is not 
     );
     expect(run.contactAtS).toBeNull();
     expect(run.escapeAtS).toBeNull();
+    // A hover, to numerical noise: the height above the shell never moves
+    // and the planet's bearing never turns, though it flew 3,500 km a second.
+    expect(run.maxAltFrac - run.minAltFrac).toBeLessThan(1e-9);
+    expect(Math.abs(run.minAltFrac - 0.01)).toBeLessThan(1e-9);
   });
 
   it('PRESSING the LEADING face at 1× — station, exactly as without the ride', () => {

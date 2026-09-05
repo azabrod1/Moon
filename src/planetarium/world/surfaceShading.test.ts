@@ -9,8 +9,10 @@ import {
   SYNTH_TRI,
   surfaceHexWeights,
   surfaceHexVertex,
-  surfaceRungLayers,
-  surfaceRungWeights,
+  surfaceStackWeights,
+  SYNTH_STACK_DEPTH,
+  SYNTH_STACK_TAPER,
+  SYNTH_STACK_GAIN,
   advanceSurfaceAir,
   settleSurfaceAir,
   bindSurfaceAir,
@@ -260,12 +262,12 @@ describe('the close-range detail term', () => {
     // Europa is the youngest solid surface known and Io has no impact crater on
     // it at all; drawn with the field at face value both come out cratered. The
     // whole field goes finer instead, so what is left reads as ground — and the
-    // offset is added to the rung the fragment WANTS, before it is rounded, so
-    // a share between the two rides the ordinary crossfade instead of stepping.
+    // offset is added to the rung the fragment WANTS, before it is clamped, so
+    // a share between the two slides the whole stack instead of stepping it.
     const glsl = fragment('icy');
     const offset = glsl.indexOf('synthWanted += (1.0 - uSynthCraterShare) * 3.0;');
     expect(offset).toBeGreaterThan(0);
-    expect(offset).toBeLessThan(glsl.indexOf('clamp(floor(synthWanted), 0.0, 12.0)'));
+    expect(offset).toBeLessThan(glsl.indexOf('synthWanted = clamp(synthWanted, 0.0, 12.0);'));
     // And it reaches the shader per body.
     const mat = new THREE.MeshStandardMaterial();
     const u = uniforms('icy', 'Europa', mat);
@@ -282,8 +284,7 @@ describe('the close-range detail term', () => {
     // surface can reach it; cruise cannot. The cap lands before the floor is
     // taken, so the top is rung twelve alone and the crossfade never selects
     // a thirteenth.
-    expect(fragment('airless')).toContain('synthWanted = min(synthWanted, 12.0);');
-    expect(fragment('airless')).toContain('clamp(floor(synthWanted), 0.0, 12.0)');
+    expect(fragment('airless')).toContain('synthWanted = clamp(synthWanted, 0.0, 12.0);');
   });
 
   it('never runs on a surface class it is authored to nothing for', () => {
@@ -490,39 +491,79 @@ describe('the field\'s tiling lattice', () => {
     expect(surfaceHexVertex(17, -4, 1).shift).not.toEqual(surfaceHexVertex(17, -4, 0).shift);
   });
 
-  describe('the rung crossfade', () => {
-    it('reads the same ground on both sides of a whole rung', () => {
-      // The fine reading of rung r and the coarse reading of rung r+1 are one
-      // reading — same scale, same salt — or every doubling of magnification
-      // would re-arrange the whole field, and a still pose would carry a seam
-      // along the contour where the wanted rung is whole.
-      for (let rung = 0; rung < 12; rung++) {
-        expect(surfaceRungLayers(rung).b).toEqual(surfaceRungLayers(rung + 1).a);
+  describe('the rung stack', () => {
+    it('draws every rung below the wanted one in cruise, so craters belong to the ground', () => {
+      // A single rung chosen per pixel is chosen by the pixel's footprint on
+      // the ground, which grows as the ground tilts away — the same ground
+      // wore one set of craters at the disc centre and another near the limb.
+      // With the stack below the wanted rung always drawn, a viewing angle
+      // only decides how fine the field gets.
+      for (const wanted of [0, 0.5, 2, 3.7, 5, SYNTH_STACK_DEPTH - 1]) {
+        const rungs = surfaceStackWeights(wanted).map((r) => r.rung);
+        expect(rungs[0]).toBe(0);
+        expect(rungs).toEqual(rungs.map((_, i) => i));
+        expect(rungs[rungs.length - 1]).toBe(Number.isInteger(wanted) ? wanted : Math.floor(wanted) + 1);
       }
-      expect(surfaceRungLayers(3).a.salt).not.toBe(surfaceRungLayers(3).b.salt);
     });
 
-    it('keeps the relief at full contrast between rungs', () => {
-      // A mean of two independent readings has 0.707 of their contrast at the
-      // midpoint; the weights are normalised in length like every other blend
-      // in the term.
-      for (const blend of [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1]) {
-        const [wa, wb] = surfaceRungWeights(blend);
-        expect(Math.hypot(wa, wb)).toBeCloseTo(1, 12);
+    it('fades a rung in at the top and out at the bottom, and never steps', () => {
+      let prev = surfaceStackWeights(0);
+      for (let wanted = 0.02; wanted <= 12; wanted = +(wanted + 0.02).toFixed(2)) {
+        const next = surfaceStackWeights(wanted);
+        const rungs = new Set([...prev, ...next].map((r) => r.rung));
+        for (const rung of rungs) {
+          const a = prev.find((r) => r.rung === rung)?.weight ?? 0;
+          const b = next.find((r) => r.rung === rung)?.weight ?? 0;
+          expect(Math.abs(a - b)).toBeLessThan(0.06);
+        }
+        prev = next;
       }
-      expect(surfaceRungWeights(0)).toEqual([1, 0]);
-      expect(surfaceRungWeights(1)).toEqual([0, 1]);
+    });
+
+    it('holds the field at one variance, lifted by the gain, and bounds the reads', () => {
+      for (const wanted of [0, 0.3, 1, 4.5, 6.9, 9, 12]) {
+        const w = surfaceStackWeights(wanted);
+        expect(Math.hypot(...w.map((r) => r.weight))).toBeCloseTo(SYNTH_STACK_GAIN, 12);
+        expect(w.length).toBeLessThanOrEqual(SYNTH_STACK_DEPTH + 1);
+      }
+    });
+
+    it('keeps the finest rung at its own contrast and tapers the ones below it', () => {
+      // Equal weights would leave the small craters at half of what one rung
+      // drew them at; the taper keeps them, and the deep stack's finest whole
+      // rung comes out at one.
+      const deep = surfaceStackWeights(9);
+      const top = deep.find((r) => r.rung === 9)!.weight;
+      expect(top).toBeCloseTo(1, 1);
+      for (let k = 1; k < deep.length; k++) {
+        if (deep[k].rung > 9) continue;
+        expect(deep[k].weight / deep[k - 1].weight).toBeCloseTo(1 / SYNTH_STACK_TAPER, 6);
+      }
+      // Never fainter than the single rung was, at any magnification.
+      for (const wanted of [0, 0.5, 1.2, 2, 3.5, 6]) {
+        const w = surfaceStackWeights(wanted);
+        expect(w.find((r) => r.rung === Math.floor(wanted))!.weight).toBeGreaterThan(0.85);
+      }
+    });
+
+    it('slides its coarse end only past the depth, and stops at rung twelve', () => {
+      expect(surfaceStackWeights(SYNTH_STACK_DEPTH - 1)[0].rung).toBe(0);
+      expect(surfaceStackWeights(SYNTH_STACK_DEPTH + 2)[0].rung).toBeGreaterThan(0);
+      const top = surfaceStackWeights(12);
+      expect(top[top.length - 1].rung).toBe(12);
     });
 
     it('is drawn as it was walked', () => {
       const text = fragment();
-      expect(text).toContain('uint salt = uint(rung);');
-      expect(text).toContain('vec3 a = synthTile(c * perUnit + seed, cx * perUnit, cy * perUnit, salt);');
-      expect(text).toContain('if (blend > 0.0) b = synthTile(c * perUnit2 + seed, cx * perUnit2, cy * perUnit2, salt + 1u);');
-      expect(text).toContain('vec2 rw = vec2(1.0 - blend, blend);');
-      expect(text).toContain('rw /= length(rw);');
-      expect(text).toContain('vec3 f = rw.x * a + rw.y * b;');
-      expect(text).not.toContain('mix(a, b, blend)');
+      expect(text).toContain(`float coarse = wanted - ${(SYNTH_STACK_DEPTH - 1).toFixed(1)};`);
+      expect(text).toContain('float lo = max(floor(coarse), 0.0);');
+      expect(text).toContain(`for (int k = 0; k <= ${SYNTH_STACK_DEPTH}; k++) {`);
+      expect(text).toContain('float w = clamp(min(wanted - rung + 1.0, rung - coarse + 1.0), 0.0, 1.0);');
+      expect(text).toContain('f += w * synthTile(c * perUnit + seed, cx * perUnit, cy * perUnit, uint(rung));');
+      expect(text).toContain(`w *= pow(${SYNTH_STACK_TAPER.toFixed(2)}, max(wanted - rung, 0.0));`);
+      expect(text).toContain(`f *= ${SYNTH_STACK_GAIN.toFixed(6)} / sqrt(max(norm, 1e-12));`);
+      expect(text).toContain('synthWanted);');
+      expect(text).not.toContain('synthBlend');
     });
   });
 

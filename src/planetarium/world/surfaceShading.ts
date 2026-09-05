@@ -737,23 +737,67 @@ export function surfaceHexVertex(vx: number, vy: number, salt: number): {
   };
 }
 
-/** The two readings a rung blends, as the shader builds them. The fine
- *  reading of rung r and the coarse reading of rung r+1 must be the same
- *  reading — same scale, same salt — so a zoom crosses a rung without the
- *  ground re-arranging. */
-export function surfaceRungLayers(rung: number): {
-  a: { perUnit: number; salt: number };
-  b: { perUnit: number; salt: number };
-} {
-  const perUnit = 2 ** rung;
-  return { a: { perUnit, salt: rung }, b: { perUnit: perUnit * 2, salt: rung + 1 } };
-}
+/**
+ * How many rungs of the field a fragment reads at once.
+ *
+ * The field is drawn as a stack: every rung from the coarsest the body draws
+ * up to the one the pixel wants. A single rung chosen per pixel is chosen by
+ * the pixel's footprint on the ground, and that footprint grows as the ground
+ * tilts away from the camera — so the same ground asked for a coarser rung
+ * near the limb than at the disc centre, and wore a different set of craters
+ * there. Its craters were attached to the view. With the rungs below the
+ * wanted one always drawn, the view decides how fine the field gets and never
+ * which craters are there.
+ *
+ * The coarse end is the body's own rung 0 — the scale at which the map's
+ * texels ran out, so everything coarser is the map's — for as long as the
+ * wanted rung stays under this depth, which cruise does: the flight floor
+ * wants about rung 5. A camera standing on the ground wants up to rung 12,
+ * and there the stack slides, letting go of a rung this many below the
+ * wanted one; a crater that far below the pixel's own is hundreds of times
+ * wider than the finest drawn, so its going is a slow change in the shading
+ * of a whole slope rather than a crater that leaves. Each rung in the stack
+ * is a full set of reads, which is why there is a depth at all.
+ */
+export const SYNTH_STACK_DEPTH = 7;
 
-/** The crossfade weights between a rung's two readings, normalised in length:
- *  two independent readings averaged would lose contrast between rungs. */
-export function surfaceRungWeights(blend: number): [number, number] {
-  const len = Math.hypot(1 - blend, blend);
-  return [(1 - blend) / len, blend / len];
+/**
+ * How much of its contrast each rung below the finest keeps, per rung.
+ *
+ * The finest rung a pixel resolves carries the field at its own contrast;
+ * every rung below it is tapered by this per rung of distance. Equal weights
+ * would spread the field's contrast over the whole stack and leave the small
+ * craters — the ones a pilot reads as the ground's definition — at half of
+ * what one rung drew them at. And a crater's depth-to-width falls with its
+ * size, so the big basins under the small craters are the gentler ones.
+ * Continuous in the wanted rung: the taper is taken from the fraction too,
+ * so a rung eases down as the next one eases in.
+ */
+export const SYNTH_STACK_TAPER = 0.6;
+
+/** The gain that returns the finest rung to unit contrast once the stack is
+ *  deep: the weights are normalised in length so the field's variance is
+ *  fixed, and the tapered stack's length converges to this. */
+export const SYNTH_STACK_GAIN = 1 / Math.sqrt(1 - SYNTH_STACK_TAPER * SYNTH_STACK_TAPER);
+
+/** The rungs a fragment's stack reads and their weights, as the shader
+ *  builds them: the fraction of the wanted rung at the rung above it, what
+ *  is left of a rung sliding out at the bottom, the taper below the finest;
+ *  normalised in length and lifted by the gain. */
+export function surfaceStackWeights(wanted: number): { rung: number; weight: number }[] {
+  const coarse = wanted - (SYNTH_STACK_DEPTH - 1);
+  const lo = Math.max(Math.floor(coarse), 0);
+  const raw: { rung: number; weight: number }[] = [];
+  for (let k = 0; k <= SYNTH_STACK_DEPTH; k++) {
+    const rung = lo + k;
+    if (rung > wanted + 1) break;
+    let weight = Math.min(1, Math.max(0, Math.min(wanted - rung + 1, rung - coarse + 1)));
+    if (weight <= 0) continue;
+    weight *= SYNTH_STACK_TAPER ** Math.max(wanted - rung, 0);
+    raw.push({ rung, weight });
+  }
+  const norm = Math.hypot(...raw.map((r) => r.weight));
+  return raw.map((r) => ({ rung: r.rung, weight: (r.weight / norm) * SYNTH_STACK_GAIN }));
 }
 
 const SURFACE_DETAIL_GLSL = /* glsl */ `
@@ -889,8 +933,8 @@ vec3 synthTile(vec2 uv, vec2 dx, vec2 dy, uint salt) {
 }
 // One flat chart's reading of the field: its height here, around zero, in x,
 // and the slope of that height across the SCREEN in yz. \`c\` is the chart's own
-// two coordinates and \`cx\`/\`cy\` their screen derivatives; \`rung\` and \`blend\`
-// are the fragment's, not the chart's.
+// two coordinates and \`cx\`/\`cy\` their screen derivatives; \`wanted\` is the
+// fragment's rung, fraction included, not the chart's.
 //
 // One rung for every chart on a fragment, chosen from the surface's own arc per
 // pixel. Per chart it would be chosen from each chart's own compressed
@@ -899,37 +943,57 @@ vec3 synthTile(vec2 uv, vec2 dx, vec2 dy, uint salt) {
 // carrying two crater fields at different sizes, which is what a seam between
 // them looked like.
 //
+// The reading is a STACK of rungs: every rung from the coarsest the body
+// draws up to the wanted one, the finest fading in with the fraction. The
+// pixel's footprint on the ground chooses the wanted rung, and that footprint
+// grows as the ground tilts away from the camera, so one rung chosen per
+// pixel put a different set of craters on the same ground near the limb than
+// at the disc centre — craters attached to the view. With the stack below
+// always drawn, the view decides how fine the field gets and never which
+// craters are there; a rung fades in as its craters become resolvable, the
+// way a photograph gains detail as it is approached.
+//
+// The coarse end is the body's own rung 0 until the wanted rung is
+// SYNTH_STACK_DEPTH above it (cruise never is), then slides; a rung leaving
+// at the bottom fades out over one rung of magnification, as one arriving at
+// the top fades in, so nothing steps. The finest rung carries the field at
+// its own contrast and each rung below it is tapered — the small craters
+// are what reads as the ground's definition, and a crater's depth-to-width
+// falls with its size. Weights are normalised in length, the rule every
+// blend in this term follows (the rungs are independent readings of one
+// random field, so it is their variance that has to add up), and lifted by
+// the gain the tapered stack's length converges to, so the finest rung
+// comes out at one.
+//
 // The rung cancels out of the slope: the stored gradient is per tile WIDTH, and
 // a tile's width on the ground shrinks with the rung by exactly the factor the
 // gradient grows, which is what lets one small map stand for every zoom at one
-// steepness. So the two rungs are mixed in their own units and the chart's
+// steepness. So the rungs are mixed in their own units and the chart's
 // unscaled derivative is what turns them into a slope.
-vec3 synthChart(vec2 c, vec2 cx, vec2 cy, vec2 seed, float rung, float blend) {
-  // Both readings are built with the arithmetic the next rung's coarse
-  // reading will use, and salted by the ABSOLUTE rung: the fine reading of
-  // rung r and the coarse reading of rung r+1 are then the same reading bit
-  // for bit, so a zoom crosses a rung without the ground re-arranging, and a
-  // still pose has no seam along the contour where the wanted rung is whole.
-  // (Forming the fine uv as uv * 2 - seed instead differs from c * 2^(r+1) +
-  // seed by up to a quarter texel at rung 12 — a sub-texel seam of its own.)
-  float perUnit = exp2(rung);
-  float perUnit2 = perUnit * 2.0;
-  uint salt = uint(rung);
-  vec3 a = synthTile(c * perUnit + seed, cx * perUnit, cy * perUnit, salt);
-  // The fine reading is skipped where its weight is nothing — the ceiling,
-  // and every fragment of a body whose fade band sits below rung 0 — which
-  // is half the term's reads there. Legal in a branch: the reads carry
-  // explicit gradients.
-  vec3 b = vec3(0.0);
-  if (blend > 0.0) b = synthTile(c * perUnit2 + seed, cx * perUnit2, cy * perUnit2, salt + 1u);
-  // Two independent readings averaged lose contrast between rungs (0.707 of
-  // it at the midpoint): the weights are normalised in length, the rule every
-  // other blend in this term follows. Continuous at a whole rung all the
-  // same, since the readings are identical there and the weights go from
-  // (0, 1) to (1, 0) on the same ground.
-  vec2 rw = vec2(1.0 - blend, blend);
-  rw /= length(rw);
-  vec3 f = rw.x * a + rw.y * b;
+vec3 synthChart(vec2 c, vec2 cx, vec2 cy, vec2 seed, float wanted) {
+  // The rung below which the stack lets go, continuous in the wanted rung.
+  float coarse = wanted - ${(SYNTH_STACK_DEPTH - 1).toFixed(1)};
+  float lo = max(floor(coarse), 0.0);
+  vec3 f = vec3(0.0);
+  float norm = 0.0;
+  for (int k = 0; k <= ${SYNTH_STACK_DEPTH}; k++) {
+    float rung = lo + float(k);
+    if (rung > wanted + 1.0) break;
+    // One inside the stack; the fraction of the wanted rung at the rung above
+    // it; what is left of a rung sliding out at the bottom.
+    float w = clamp(min(wanted - rung + 1.0, rung - coarse + 1.0), 0.0, 1.0);
+    if (w <= 0.0) continue;
+    w *= pow(${SYNTH_STACK_TAPER.toFixed(2)}, max(wanted - rung, 0.0));
+    // Built with the arithmetic every rung uses and salted by the ABSOLUTE
+    // rung, so a rung reads the same ground bit for bit whatever stack it is
+    // in. (Forming a finer uv as uv * 2 - seed instead differs from
+    // c * 2^(r+1) + seed by up to a quarter texel at rung 12 — a sub-texel
+    // seam of its own.)
+    float perUnit = exp2(rung);
+    f += w * synthTile(c * perUnit + seed, cx * perUnit, cy * perUnit, uint(rung));
+    norm += w * w;
+  }
+  f *= ${SYNTH_STACK_GAIN.toFixed(6)} / sqrt(max(norm, 1e-12));
   return vec3(f.x, dot(f.yz, cx), dot(f.yz, cy));
 }
 `;
@@ -997,8 +1061,13 @@ if (uSynthEnvelope > 0.0) {
     // How much arc this fragment's pixel covers, off the surface direction
     // itself rather than off any one chart's compressed copy of it: one rung
     // for every chart drawing this fragment, so they cannot disagree about how
-    // big a crater is.
-    float synthPerPx = max(max(length(synthDx), length(synthDy)), 1e-12);
+    // big a crater is. Along the pixel's SHORTER side: on ground turned away
+    // from the camera a pixel covers a long strip, and a rung chosen by the
+    // long side let the fine craters go wherever the ground tilted, which
+    // read as craters that come and go with the viewing angle. The reads
+    // carry the true derivatives, so the field is filtered along the long
+    // side the way any texture is, and the fine craters compress instead.
+    float synthPerPx = max(min(length(synthDx), length(synthDy)), 1e-12);
     float synthWanted = log2(1.0 / (${SURFACE_DETAIL_TILE_PX.toFixed(1)} * synthPerPx));
     // A body that wears no craters draws the whole field finer, so what it
     // wears is ground texture rather than impacts. Added to the rung the
@@ -1014,13 +1083,11 @@ if (uSynthEnvelope > 0.0) {
     // here whatever the uv could still name. Nothing in cruise gets near —
     // the flight floor is around rung 5 — but a camera standing ON a surface
     // can, and past the ceiling the finest rung simply magnifies, which is
-    // ground drawn coarser rather than ground drawn wrong. The wanted rung is
-    // capped BEFORE the floor is taken, so the top is rung 12 alone and the
-    // crossfade never reaches for a thirteenth. Floored at rung 0, where the
-    // term is already fading in at the map's own texel scale.
-    synthWanted = min(synthWanted, 12.0);
-    float synthRung = clamp(floor(synthWanted), 0.0, 12.0);
-    float synthBlend = clamp(synthWanted - synthRung, 0.0, 1.0);
+    // ground drawn coarser rather than ground drawn wrong. Ceilinged at
+    // twelve, so the top of the stack is rung 12 alone and nothing reaches
+    // for a thirteenth; floored at rung 0, where the term is already fading
+    // in at the map's own texel scale.
+    synthWanted = clamp(synthWanted, 0.0, 12.0);
     // Each chart reads its own patch of the one field: the offsets are
     // arbitrary and only have to differ, or the seam between two charts would
     // be two copies of the same ground sliding across each other.
@@ -1040,19 +1107,19 @@ if (uSynthEnvelope > 0.0) {
     if (synthChartW.x > 0.0) {
       synthChartX = synthChart(vec2(synthDir.y, synthDir.z),
           vec2(synthDx.y, synthDx.z), vec2(synthDy.y, synthDy.z),
-          uSynthSeed + synthChartFlip.x * vec2(0.5, 0.25), synthRung, synthBlend);
+          uSynthSeed + synthChartFlip.x * vec2(0.5, 0.25), synthWanted);
     }
     if (synthChartW.y > 0.0) {
       synthChartY = synthChart(vec2(synthDir.z, synthDir.x),
           vec2(synthDx.z, synthDx.x), vec2(synthDy.z, synthDy.x),
           uSynthSeed + vec2(0.37, 0.11) + synthChartFlip.y * vec2(0.5, 0.25),
-          synthRung, synthBlend);
+          synthWanted);
     }
     if (synthChartW.z > 0.0) {
       synthChartZ = synthChart(vec2(synthDir.x, synthDir.y),
           vec2(synthDx.x, synthDx.y), vec2(synthDy.x, synthDy.y),
           uSynthSeed + vec2(0.71, 0.53) + synthChartFlip.z * vec2(0.5, 0.25),
-          synthRung, synthBlend);
+          synthWanted);
     }
     // The shares are normalised in LENGTH rather than in sum: the charts carry
     // independent noise, so it is their VARIANCE that has to add to one. A

@@ -51,8 +51,10 @@ export class MoonPainter {
 
   /**
    * Background drain: paint up to `budgetMs` of moons this frame, `preferred`
-   * system first (the one the player is in or heading toward). Always finishes
-   * at least one moon, so progress is guaranteed even at a tiny budget.
+   * system first (the one the player is in or heading toward). Finishes at
+   * least one moon whenever a paint succeeds, so progress is guaranteed even
+   * at a tiny budget; a paint that throws ends the call instead, with that
+   * moon at the back of its queue for a later frame.
    *
    * `maxMoons` caps how many moons one call paints regardless of the time
    * budget. The GPU painter returns after submitting GL commands (sub-ms on the

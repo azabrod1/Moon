@@ -963,7 +963,9 @@ async function init() {
     // is bounded too — a navigation that never commits would otherwise keep
     // the loading screen up with nothing to say.
     killSwitchReloading = true;
-    window.addEventListener('pagehide', () => { killSwitchReloading = false; }, { once: true });
+    // Only a real navigation away counts; a page parked in the back-forward
+    // cache comes back to this same unsettled boot and must still time out.
+    window.addEventListener('pagehide', (e) => { if (!e.persisted) killSwitchReloading = false; }, { once: true });
     setTimeout(() => {
       if (!killSwitchReloading) return;
       killSwitchReloading = false;

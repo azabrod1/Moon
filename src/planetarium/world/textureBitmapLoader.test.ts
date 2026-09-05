@@ -371,6 +371,44 @@ describe('the flip probe itself', () => {
   });
 });
 
+describe('a worker that stays alive but refuses one image', () => {
+  class FakeWorker {
+    static instances: FakeWorker[] = [];
+    onmessage: ((e: { data: unknown }) => void) | null = null;
+    onerror: ((e: { message: string }) => void) | null = null;
+    onmessageerror: (() => void) | null = null;
+    posted: Array<{ id: number }> = [];
+    constructor() {
+      FakeWorker.instances.push(this);
+    }
+    postMessage(msg: { id: number }) {
+      this.posted.push(msg);
+    }
+    terminate() {}
+  }
+
+  it('spends the one loader fallback, not a second full-size decode on this thread', async () => {
+    FakeWorker.instances = [];
+    vi.stubGlobal('Worker', FakeWorker);
+    vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:decoder'), revokeObjectURL: vi.fn() });
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob() })));
+    const mainDecode = vi.fn(async () => fakeBitmap());
+    vi.stubGlobal('createImageBitmap', mainDecode);
+    const { loadStreamedTexture, setBitmapProbeForTests } = await import('./textureBitmapLoader');
+    setBitmapProbeForTests(true, { worker: true, main: true });
+    const { calls } = deferredLoad();
+    loadStreamedTexture('textures/z.jpg', vi.fn(), vi.fn());
+    await flush();
+    const worker = FakeWorker.instances[0];
+    expect(worker.posted).toHaveLength(1);
+    worker.onmessage!({ data: { id: worker.posted[0].id, error: 'out of memory' } });
+    await flush();
+    await flush();
+    expect(mainDecode).not.toHaveBeenCalled();
+    expect(calls.map((c) => c.url)).toEqual(['textures/z.jpg']);
+  });
+});
+
 describe('takeBootWarmResponse', () => {
   it('hands a warmed promise over exactly once', () => {
     const warmed = Promise.resolve(new Response());

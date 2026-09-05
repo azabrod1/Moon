@@ -7,9 +7,9 @@
  * that fails to load is replaced by a procedurally generated canvas texture,
  * so the app never blocks on a missing file.
  *
- * Sharpening — three demand-driven ladders, each a goal plus at most one
- * attempt and never a lifecycle state, so any frame may ask and the handle
- * decides: the colour tier ladder (TEXTURE_UPGRADE_TIERS — rank-guarded
+ * Sharpening — three demand-driven ladders, each asked by any frame and
+ * answered by its handle: the colour tier ladder (TEXTURE_UPGRADE_TIERS —
+ * a goal plus at most one attempt, never a lifecycle state; rank-guarded
  * swaps, a per-device ceiling resolved at creation, one rung at a time out of
  * the boot map, exponential backoff on failure), the single-step relief ladder
  * (NORMAL_UPGRADE_TIERS) and the silhouette upgrade that trades a coarse
@@ -18,8 +18,9 @@
  * on-screen trigger.
  *
  * Injectable seams, so completion / staleness / failure can be exercised with
- * no GL context and no network: the tier fetch, the durable base-map fetch,
- * and the KTX2 loader that serves the compressed tiers in TIER_FILE_OVERRIDES.
+ * no GL context and no network: the tier fetch (setUpgradeTextureLoader) and
+ * the KTX2 loader that serves the compressed tiers in TIER_FILE_OVERRIDES
+ * (bindKtx2TierLoader).
  */
 import * as THREE from 'three';
 import { type PlanetData, SUN_DATA } from './planets/planetData';

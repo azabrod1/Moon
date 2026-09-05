@@ -421,6 +421,7 @@ function readsBackInverted2d(bitmap: ImageBitmap): boolean {
 async function decoderHonoursFlip(decoder: BitmapDecoder): Promise<{ ok: boolean; viaGl: boolean }> {
   let viaGl = false;
   let timedOut = false;
+  let deadline: ReturnType<typeof setTimeout> | null = null;
   const decode = decoder(probeBlob(), BITMAP_OPTIONS);
   // A decode that lands after the timeout has given up produces a bitmap
   // nobody will look at; free it rather than wait for GC.
@@ -428,11 +429,14 @@ async function decoderHonoursFlip(decoder: BitmapDecoder): Promise<{ ok: boolean
   try {
     const bitmap = await Promise.race([
       decode,
-      new Promise<never>((_, reject) => setTimeout(() => {
-        timedOut = true;
-        reject(new Error('probe timed out'));
-      }, PROBE_TIMEOUT_MS)),
+      new Promise<never>((_, reject) => {
+        deadline = setTimeout(() => {
+          timedOut = true;
+          reject(new Error('probe timed out'));
+        }, PROBE_TIMEOUT_MS);
+      }),
     ]);
+    if (deadline !== null) clearTimeout(deadline);
     try {
       const gl = probeRenderer ? readsBackInvertedGl(probeRenderer, bitmap) : null;
       viaGl = gl !== null;
@@ -509,10 +513,14 @@ async function loadBitmapTexture(url: string, stillWanted?: () => boolean, signa
   try {
     bitmap = await decoder(blob, BITMAP_OPTIONS);
   } catch (err) {
-    // The bytes are already here. A worker that retired (or timed out) while
-    // they were in the air must not cost a second download when this thread
-    // passed its own probe — the next map would take this thread anyway.
-    if (decoder === mainThreadDecode || !verified.main) throw err;
+    // The bytes are already here. A worker that RETIRED while they were in
+    // the air must not cost a second download when this thread passed its
+    // own probe — the next map would take this thread anyway. A worker that
+    // is still alive and refused this one image (an allocation failure, a
+    // decode that never finished) keeps to the single loader fallback: a
+    // second full-size decode of the same bytes is the cost this seam exists
+    // to avoid, and it would fail the same way.
+    if (decoder === mainThreadDecode || !verified.main || workerDecoder?.usable !== false) throw err;
     // The worker's failure took time; interest may have lapsed meanwhile, and
     // a full-size decode for nobody is what this seam exists to avoid.
     if ((stillWanted && !stillWanted()) || signal?.aborted) {

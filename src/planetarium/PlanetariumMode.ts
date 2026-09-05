@@ -1896,10 +1896,12 @@ export class PlanetariumMode {
           .setTranscoderPath(import.meta.env.BASE_URL + 'basis/')
           .detectSupport(renderer),
       );
-      // One rejection handler for both halves: an exception thrown inside
-      // onLoad (a swap that fails on a dead context, say) has to reach the
-      // ladder's onError like any other failure, not become an unhandled
-      // rejection that leaves the handle waiting on an attempt forever.
+      // One rejection handler for both halves: a loader that could not be
+      // made, or a synchronous throw from load() itself (the loader's own
+      // guard), has to reach the ladder's onError like any other failure,
+      // not become an unhandled rejection that leaves the handle waiting on
+      // an attempt forever. (A failure inside onLoad is the loader's to
+      // route: KTX2Loader.parse already chains onLoad to onError.)
       this.ktx2Loader
         .then((loader) => loader.load(url, onLoad, undefined, onError))
         .catch((err) => onError(err));

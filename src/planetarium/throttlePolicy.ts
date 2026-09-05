@@ -14,7 +14,7 @@
  *   asymptotically). The keyboard's continuous ramp is deliberately NOT this
  *   law — taps are discrete.
  */
-import { smoothstepUnclamped } from '../shared/math/smoothstep';
+import { smoothstepEdges } from '../shared/math/smoothstep';
 
 export interface SystemThrottleBody {
   name: string;
@@ -31,9 +31,7 @@ export const SUN_SYSTEM_RADIUS_AU = 0.01;
 
 /** Speed factor at `dist` inside a system: 1 at the rim, 0 at 5% depth. */
 function throttleFalloff(dist: number, systemRadius: number): number {
-  const inner = systemRadius * 0.05;
-  const t = Math.min(1, Math.max(0, (dist - inner) / (systemRadius - inner)));
-  return smoothstepUnclamped(t);
+  return smoothstepEdges(systemRadius * 0.05, systemRadius, dist);
 }
 
 /**

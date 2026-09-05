@@ -66,7 +66,10 @@ export function queueTextureWarm(tex: THREE.Texture, onOutcome?: (outcome: WarmO
   const onDispose = () => {
     // A disposed texture must never be warm-uploaded: initTexture would
     // allocate GPU storage that nothing references and nothing ever frees.
+    // Detach as well as forget: a second dispose() would otherwise run this
+    // again, and the closure would outlive the queue entry it belongs to.
     disposeListeners.delete(tex);
+    tex.removeEventListener('dispose', onDispose);
     const cb = residentCallbacks.get(tex);
     residentCallbacks.delete(tex);
     const i = queue.indexOf(tex);

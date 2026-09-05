@@ -143,8 +143,10 @@ export const SECTOR_WANT_TEXEL_PX = 1.0;
 export const SECTOR_RELEASE_TEXEL_PX = 0.65;
 export const SECTOR_WANT_TEXEL_PX_TOUCH = 1.25;
 export const SECTOR_RELEASE_TEXEL_PX_TOUCH = 0.8;
-/** Map width assumed while a globe's map has no readable image (never in
- *  practice: a real map is an ImageBitmap or a painted canvas). */
+/** Map width assumed while a globe's map has no readable image. Never in the
+ *  app — a real map is an ImageBitmap or a painted canvas — but every streamer
+ *  test measures against this number, since their fake materials carry no
+ *  image at all. */
 const SECTOR_FALLBACK_MAP_WIDTH = 4096;
 /** A sector whose most-lit point — the point of it nearest the sub-solar
  *  point — is still this far past the terminator (its dot with the sun

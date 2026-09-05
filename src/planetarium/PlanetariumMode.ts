@@ -84,6 +84,7 @@ import {
 import { ShadowVisuals, createShadowVisualsWarmupProbes, type GuideSlotInput } from './world/ShadowVisuals';
 import { warmUpSceneShaders } from './world/shaderWarmup';
 import { createShaderWarmupProbes, type WarmupProbes } from './world/shaderWarmupProbes';
+import { selectMoonShadowCasters, umbraReachesSurface } from './world/moonShadowCasters';
 import { OBSERVATORY_JUMP_LEAD_MS, resolveLiveEvent, stepperSearchFromUtcMs } from './observatoryTime';
 import { resolveShowVantage } from './observatoryJump';
 import { surfacePerfBeginSpan, surfacePerfEndSpan } from './surfacePerf';
@@ -4173,10 +4174,11 @@ export class PlanetariumMode {
       );
 
       // Moon-shadow casters fed to the parent surface shader (Io on Jupiter,
-      // etc.): reset per frame, accumulate in the loop below. Pick the largest
-      // moons by radius (catalog order isn't size order — Titan must outrank
-      // Mimas) and skip any whose umbra never reaches the surface (annular, e.g.
-      // Phobos), so a tiny moon can't paint a full black spot.
+      // etc.): reset per frame, accumulate in the loop below. The candidates
+      // are the largest umbra-capable moons (world/moonShadowCasters.ts: the
+      // umbra test at a perigee margin, since the catalog holds mean distances
+      // and Earth's Moon reaches the ground only inside its mean); the live
+      // distance decides per frame below.
       const surfFx = planet.fx;
       let moonShadowCount = 0;
       let casterNames: Set<string> | null = null;
@@ -4191,25 +4193,15 @@ export class PlanetariumMode {
         // The candidate set depends only on catalog constants and the sun's
         // angular size at the parent, which drifts on the parent's orbital
         // timescale — cache it and rebuild on a >0.5% sun-size change instead
-        // of re-filtering/sorting/allocating per frame. Selection is a coarse
-        // mean-distance prefilter; the live per-frame umbra check below stays.
+        // of re-filtering/sorting/allocating per frame. The live per-frame
+        // umbra check below still decides whether a candidate draws.
         let casterCache = this.moonShadowCasterCache.get(planet.data.name);
         if (!casterCache || Math.abs(casterCache.sunTan - sunTanAtParent) > casterCache.sunTan * 0.005) {
           casterCache = {
             sunTan: sunTanAtParent,
-            names: new Set(
-              [...moons]
-                // Filter to moons whose umbra actually reaches the surface FIRST,
-                // then take the largest few — else a big, far moon whose umbra falls
-                // short (Iapetus, Nereid) steals a slot from a real caster (Tethys,
-                // Galatea). orbitalRadiusAU is the mean distance; the loop re-checks
-                // the live distance per frame.
-                .filter((mm) => mm.data.radiusAU / parentR > 0.003
-                  && mm.data.radiusAU > mm.data.orbitalRadiusAU * sunTanAtParent)
-                .sort((a, b) => b.data.radiusAU - a.data.radiusAU)
-                .slice(0, surfFx.uMoonShadow.value.length)
-                .map((mm) => mm.data.name),
-            ),
+            names: new Set(selectMoonShadowCasters(
+              moons.map((mm) => mm.data), parentR, sunTanAtParent, surfFx.uMoonShadow.value.length,
+            )),
           };
           this.moonShadowCasterCache.set(planet.data.name, casterCache);
         }
@@ -4342,7 +4334,7 @@ export class PlanetariumMode {
         // Feed this moon as a shadow caster on the parent: one of the largest
         // few, and only if its umbra actually reaches the surface (mr > along*tan).
         if (surfFx && casterNames && casterNames.has(m.data.name)
-            && m.data.radiusAU > offset.length() * sunTanAtParent
+            && umbraReachesSurface(m.data.radiusAU, offset.length(), sunTanAtParent)
             && moonShadowCount < surfFx.uMoonShadow.value.length) {
           this.tmpMoonShadowLocal.copy(offset).applyQuaternion(this.tmpMoonShadowQuat);
           surfFx.uMoonShadow.value[moonShadowCount].set(

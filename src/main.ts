@@ -922,6 +922,10 @@ function installDevHooks() {
       return planetariumLens.effectiveStrength ?? planetariumLens.strength;
     },
     probe: (name: string) => planetariumMode?.devProbe(name) ?? null,
+    /** Fly to a body with the app's own autopilot (the deck's Pilot verb); arrival parks with the nose on the body. */
+    pilotTo: (name: string) => planetariumMode?.devPilotTo(name) ?? false,
+    /** What the ship rides right now (rideFrame.ts): weight, km/s, carriers. */
+    rideState: () => planetariumMode?.devRideState() ?? null,
     travelTo: (name: string) => planetariumMode?.devTravelTo(name) ?? false,
     arrivalPose: () => planetariumMode?.devArrivalPose() ?? null,
     governorOwner: () => planetariumMode?.devGovernorOwner() ?? null,

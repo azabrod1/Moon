@@ -308,6 +308,7 @@ import { isPhoneViewport, setText } from '../shared/dom';
 import { Constellations } from './Constellations';
 import { snapConstellations } from './data/constellationGeometry';
 import { getMoonsByPlanet, MOONS, type MoonData } from './planets/moonData';
+import { RideFrame, RIDE_MOON_FULL_RADII, moonRideOffAU, RIDE_PLANET_OFF_FACTOR } from './rideFrame';
 import { RING_CONFIGS, type RingStyle } from './planets/rings';
 import { filterDeckRows, groupDeckBodies, observeArrivalAction, type DeckRow } from './deckLogic';
 import {
@@ -1474,6 +1475,15 @@ export class PlanetariumMode {
    *  Reset to initialBodyCapState() on every flight discontinuity — jump,
    *  takeoff, restore — so no ramp or partial clear-hold survives one. */
   private bodyCap: BodyCapState = initialBodyCapState();
+  /** Near a body the ship rides along with it (rideFrame.ts); `?ride=0`
+   *  holds every weight at zero — today's flight, exactly. */
+  private readonly ride = PlanetariumMode.makeRide();
+  private readonly tmpRideStep = new THREE.Vector3();
+  private readonly tmpRideVel = new THREE.Vector3();
+  /** Catalogue lookups the ride pass needs every frame, cached by name. */
+  private readonly rideMoonOrbitAU = new Map<string, number>();
+  private readonly rideMoonData = new Map<string, MoonData>();
+  private readonly rideParentData = new Map<string, PlanetData>();
   /** Pooled shell list for the per-frame camera-safety pass (grown once,
    *  fields overwritten each frame — no steady-state allocation). */
   private cameraShellPool: CameraBodyShell[] = [];
@@ -4232,6 +4242,7 @@ export class PlanetariumMode {
     // resolves, so the reactivation window must not run on this journey's
     // leftover cap or clear-hold.
     this.bodyCap = initialBodyCapState();
+    this.ride.reset();
     this.player.speedCapAUPerS = Infinity;
 
     this.store.saveState(this.getState());
@@ -4514,6 +4525,10 @@ export class PlanetariumMode {
 
     this.updatePlanetScaling();
     this.reassertShipProfile();
+    // The ride runs after the bodies have moved and before the shell sweep,
+    // so a ridden shell never advances into a parked hull; a held ship rides
+    // nothing (the bodies are still too).
+    if (!this.player.held) this.applyRideFrame(dt);
     // Resolve collisions BEFORE the floating origin so the frame renders the
     // RESOLVED state. Rendering first and resolving after leaves a one-frame
     // lag, and under sustained shell contact with a moving body (a parked
@@ -4534,6 +4549,7 @@ export class PlanetariumMode {
     }
 
     // Apply floating origin: offset everything by player position
+    this.ride.endFrame(this.player.posX, this.player.posY, this.player.posZ);
     this.applyFloatingOrigin();
 
     this.updateCruiseCamera(dt);
@@ -8739,6 +8755,10 @@ export class PlanetariumMode {
   }
 
   private checkOrbitCrossings() {
+    // A ship riding a planet tracks that planet's heliocentric radius, which
+    // sweeps through its own crossing band every orbit (many times a second
+    // at warp) — no crossing is being flown, so none is announced.
+    if (this.ride.weight > 0) return;
     const playerDist = this.player.getDistanceFromSun();
 
     for (const body of PLANETARIUM_BODIES) {
@@ -13198,14 +13218,108 @@ export class PlanetariumMode {
    *  glide so a chasing ship stalled ~30 km/s short of it forever — with
    *  the credits the ship can always walk off a moving shell and glide onto
    *  a receding one. */
+  private static makeRide(): RideFrame {
+    const ride = new RideFrame();
+    ride.enabled = new URLSearchParams(location.search).get('ride') !== '0';
+    return ride;
+  }
+
+  /**
+   * One frame of the ride (rideFrame.ts): offer every planet with its system
+   * reach as the band and every painted moon with its rendered radius, then
+   * move the ship AND the frame's pre-thrust position by the composed step,
+   * so the shell sweep still sees only the ship's own step relative to the
+   * body. Planets are read at this frame's positions; a moon that could
+   * carry any weight is placed exactly at the clock (the landed derivation),
+   * the rest at last frame's stored position, whose weight is zero anyway.
+   */
+  private applyRideFrame(dt: number) {
+    const ride = this.ride;
+    const ship = this.player;
+    ride.beginFrame(ship.posX, ship.posY, ship.posZ, this.prevPlayerPos.x, this.prevPlayerPos.y, this.prevPlayerPos.z, dt);
+    if (this.solarSystem) {
+      for (const planet of this.solarSystem.planets) {
+        const wp = planet.worldPosAU;
+        if (!wp) continue;
+        const reach = this.teleportSystemReachAU(planet.data.name, planet.data.systemRadiusAU);
+        ride.consider(
+          planet.data.name, 'planet', wp.x, wp.y, wp.z,
+          reach, reach * RIDE_PLANET_OFF_FACTOR, planet.data.radiusAU * planet.group.scale.x,
+        );
+      }
+    }
+    for (const [parentName, moons] of this.planetMoons) {
+      const parentPos = this.planetWorldPositions.get(parentName);
+      if (!parentPos) continue;
+      let parentData = this.rideParentData.get(parentName);
+      if (!parentData) {
+        parentData = PLANETARIUM_BODIES.find((b) => b.name === parentName);
+        if (!parentData) continue;
+        this.rideParentData.set(parentName, parentData);
+      }
+      const parentShell = this.getPlanetCollisionRadius(parentName, parentData.radiusAU, this.planetScale);
+      for (const m of moons) {
+        if (!m.painted || !m.mesh.visible) continue;
+        const name = m.data.name;
+        const stale = this.moonWorldPositions.get(name);
+        if (!stale) continue;
+        const renderedR = m.data.radiusAU * m.mesh.scale.x;
+        let orbit = this.rideMoonOrbitAU.get(name);
+        if (orbit === undefined) {
+          orbit = getMoonApoapsisAU(name, parentName);
+          this.rideMoonOrbitAU.set(name, orbit);
+        }
+        const offAU = moonRideOffAU(renderedR, orbit, parentShell);
+        const dx = stale.x - ship.posX;
+        const dy = stale.y - ship.posY;
+        const dz = stale.z - ship.posZ;
+        let px = stale.x, py = stale.y, pz = stale.z;
+        if (dx * dx + dy * dy + dz * dz < offAU * offAU * 4) {
+          let moonData = this.rideMoonData.get(name);
+          if (!moonData) {
+            moonData = MOONS.find((mn) => mn.name === name);
+            if (moonData) this.rideMoonData.set(name, moonData);
+          }
+          if (moonData) {
+            const off = this.getMoonWorldOffsetAU(moonData, parentData, this.tmpMoonOffset);
+            px = parentPos.x + off.x; py = parentPos.y + off.y; pz = parentPos.z + off.z;
+          }
+        }
+        ride.consider(name, 'moon', px, py, pz, renderedR * RIDE_MOON_FULL_RADII, offAU, renderedR);
+      }
+    }
+    const step = ride.finish(this.tmpRideStep);
+    if (step.x !== 0 || step.y !== 0 || step.z !== 0) {
+      ship.posX += step.x; ship.posY += step.y; ship.posZ += step.z;
+      this.prevPlayerPos.x += step.x; this.prevPlayerPos.y += step.y; this.prevPlayerPos.z += step.z;
+    }
+  }
+
+  /** Dev bridge: what the ship rides right now. */
+  devRideState() {
+    const v = this.ride.velocity(this.tmpRideVel);
+    return {
+      enabled: this.ride.enabled,
+      weight: this.ride.weight,
+      kmS: Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z) * KM_PER_AU,
+      carriers: this.ride.carriersSnapshot(),
+    };
+  }
+
   private computeBodySpeedCap(): number {
     const f = this.player.writeForwardDirection(this.tmpForwardDir);
+    // Body velocities as the ride frame sees them: a body the ship rides
+    // credits nothing (the ride, not a speed allowance, is what holds
+    // station against it), an unridden one credits in full. Last frame's
+    // ride — this runs before the frame's bodies move.
+    const rv = this.ride.velocity(this.tmpRideVel);
     let cap = Infinity;
     let owner: string | null = null;
     const consider = (
       x: number, y: number, z: number, surfaceR: number, kPerS: number, name: string,
       vxAUPerS: number, vyAUPerS: number, vzAUPerS: number,
     ) => {
+      vxAUPerS -= rv.x; vyAUPerS -= rv.y; vzAUPerS -= rv.z;
       const dx = x - this.player.posX;
       const dy = y - this.player.posY;
       const dz = z - this.player.posZ;
@@ -13522,6 +13636,11 @@ export class PlanetariumMode {
       futurePlanet.y - pos.y,
       futurePlanet.z - pos.z,
     ).multiplyScalar(1000 / VEL_DT_MS);
+    // The aim lead is the planet's motion over the pass. The drop lands
+    // inside the planet's system band, where the ship rides the planet, so
+    // with the ride on the pass is flown in the planet's frame and the lead
+    // is zero; only `?ride=0` flies the world-frame pass and needs it.
+    if (this.ride.enabled) targetVelAUPerS.set(0, 0, 0);
 
     const laneBodies: LaneBody[] = [];
     const off0 = new THREE.Vector3();
@@ -13773,6 +13892,11 @@ export class PlanetariumMode {
       futureParent.y - parentPos.y,
       futureParent.z - parentPos.z,
     ).multiplyScalar(1000 / VEL_DT_MS).add(targetOrbitalVel);
+    // With the ride on, the drop lands inside the PARENT's system band (a
+    // moon's own band is a few rendered radii, well inside the framing
+    // standoff), so the pass is flown in the parent's frame and only the
+    // moon's orbital motion leads the aim; `?ride=0` needs the total.
+    if (this.ride.enabled) targetVelAUPerS.copy(targetOrbitalVel);
 
     // Sibling moons contest the lane (co-orbitals, conjunctions): relative
     // velocity = sibling orbital − target orbital (the shared parent motion
@@ -14864,6 +14988,9 @@ export class PlanetariumMode {
       labelVisible,
       renderedRadiusAU,
       screen,
+      // What the ship rides (rideFrame.ts): this body's own weight, the
+      // largest weight of any carrier, and the ride's speed.
+      ride: { weight: this.ride.weightOf(name), riding: this.ride.weight, kmS: this.devRideState().kmS },
       // Whether the flyby's tracking look still owns the aim, and whether it
       // has latched into the post-pass hold (see cruiseAim.ts).
       look: this.cruiseAim.look
@@ -15038,6 +15165,29 @@ export class PlanetariumMode {
     // user gesture — take it back from any dev pose so the arrival aim engages.
     this.devFreeCamera = false;
     return this.commitBodyPick('travel', target, {});
+  }
+
+  /** Headless support: the autopilot through the REAL pick pipeline — the
+   *  deck's Pilot verb — so a harness can be flown to a body by the app's own
+   *  pilot (it steers with headTowardPoint, glides on the approach law, and
+   *  parks at the standoff with the nose on the body) instead of by key
+   *  pulses read off a lagging chase camera. */
+  devPilotTo(name: string): boolean {
+    if (!this.active || !this.solarSystem) return false;
+    const target = this.devResolveTarget(name);
+    if (!target) return false;
+    this.devFreeCamera = false;
+    return this.commitBodyPick('pilot', target, {});
+  }
+
+  /** A planet or a catalogue moon by name, as a pick target. */
+  private devResolveTarget(name: string): NonNullable<LandedTarget> | null {
+    if (!this.solarSystem) return null;
+    if (this.solarSystem.planets.some((p) => p.data.name === name)) return { type: 'planet', name };
+    for (const [parentName, moons] of this.planetMoons) {
+      if (moons.some((m) => m.data.name === name)) return { type: 'moon', name, parentPlanet: parentName };
+    }
+    return null;
   }
 
   /** Headless support: an Observatory relocation through the REAL pick

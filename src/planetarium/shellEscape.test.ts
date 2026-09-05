@@ -23,6 +23,16 @@
  * speed is re-projected onto a shell that keeps moving, so the body's
  * bearing creeps — degrees per minute at 1x, which is the body's own passage
  * and not the app steering. The pins below measure that bearing.
+ *
+ * With the ride frame on (rideFrame.ts — the product's flight; `?ride=0` is
+ * the world-frame flight the first describe pins) the ship near a body moves
+ * WITH it, so a face never advances into a hull that is not thrusting into
+ * it: a hull with the dial at zero rides instead of being walked, a press at
+ * warp is a station instead of a release, and leaving is the pilot's own
+ * departure. The harness mirrors the mode's order for it too: the ride is
+ * applied after the planet moves and before the sweep, to the ship AND to
+ * the frame's pre-thrust position, and the credits see the body's velocity
+ * minus the ride's.
  */
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
@@ -81,7 +91,18 @@ function runContact(
   maxS = 120,
   dt = 1 / 60,
   commanded = COMMANDED,
+  opts: {
+    /** The ride weight on this one body (rideFrame.ts composes it the same
+     *  way for a single carrier): the ship takes this share of the planet's
+     *  step each frame, and the credits see the remainder of its velocity. */
+    rideWeight?: number;
+    /** A time-rate change mid-run: from this sim second the planet moves
+     *  `rateFactor` times faster, as a pilot cranking the clock would see. */
+    rateChangeAtS?: number;
+    rateFactor?: number;
+  } = {},
 ): ContactRun {
+  const rideWeight = opts.rideWeight ?? 0;
   const pos = startPos.clone();
   const fwd = heading.clone().normalize();
   const fwd0 = fwd.clone();
@@ -95,15 +116,23 @@ function runContact(
   const bearing0 = new THREE.Vector3();
   const bearing = new THREE.Vector3();
 
+  const vel = planetVelAUPerS.clone();
+  const relVel = new THREE.Vector3();
+  const rideStep = new THREE.Vector3();
   for (let t = 0; t < maxS; t += dt) {
-    // Body governor (computeBodySpeedCap + advanceBodyCap, no bypass).
+    if (opts.rateChangeAtS !== undefined && t >= opts.rateChangeAtS) {
+      vel.copy(planetVelAUPerS).multiplyScalar(opts.rateFactor ?? 1);
+    }
+    // Body governor (computeBodySpeedCap + advanceBodyCap, no bypass). The
+    // credits see the body's velocity minus the ride's.
+    relVel.copy(vel).multiplyScalar(1 - rideWeight);
     const to = planet.clone().sub(pos);
     const dist = to.length();
     const cos = to.dot(fwd) / dist;
     const geomCap = movingBodySpeedCap(
       dist - EARTH_ENVELOPE, EARTH_ENVELOPE, cos,
-      planetVelAUPerS.dot(fwd),
-      planetVelAUPerS.dot(to) / dist,
+      relVel.dot(fwd),
+      relVel.dot(to) / dist,
       BODY_APPROACH_K_PER_S, BODY_APPROACH_V_MIN_AU_S,
     );
     bodyCap = advanceBodyCap(bodyCap, geomCap, commanded, false, dt);
@@ -113,7 +142,14 @@ function runContact(
     const speed = Math.min(commanded, bodyCap.applied);
     const prev = pos.clone();
     pos.addScaledVector(fwd, speed * dt);
-    planet.addScaledVector(planetVelAUPerS, dt);
+    planet.addScaledVector(vel, dt);
+    // The ride: the ship and the frame's pre-thrust position take the
+    // weighted planet step, so the sweep sees only the ship's own step.
+    if (rideWeight > 0) {
+      rideStep.copy(vel).multiplyScalar(dt * rideWeight);
+      pos.add(rideStep);
+      prev.add(rideStep);
+    }
 
     const hit = sweepSegmentSphere(
       prev.x, prev.y, prev.z, pos.x, pos.y, pos.z,
@@ -266,5 +302,88 @@ describe('shell contacts: a pressing ship holds station, an unresisting one is w
     );
     expect(run.lastContactAtS!).toBeLessThan(ESCAPE_DEADLINE_S);
     expect(run.escapeAtS).not.toBeNull();
+  });
+});
+
+describe('with the ride frame on: a body never advances into a hull that is not pressing it', () => {
+  const start = () => new THREE.Vector3(COLLISION_R * 2, 0, 0);
+  const inbound = () => new THREE.Vector3(-1, 0.02, 0);
+  const ride = { rideWeight: 1 };
+
+  it('the LEADING face with the dial at ZERO — the hull rides along: no walk, the planet stays put', () => {
+    // The twin of the world-frame walk-off above. Riding the planet, the
+    // face never reaches this hull: it sits a hair off the shell with the
+    // planet framed exactly where it was, for as long as the clock runs.
+    const vel = new THREE.Vector3(EARTH_V_AU_S, 0, 0);
+    const run = runContact(
+      new THREE.Vector3(COLLISION_R * 1.01, 0, 0), inbound(), vel, 120, 1 / 60, 0, ride,
+    );
+    expect(run.contactAtS).toBeNull();
+    expect(run.escapeAtS).toBeNull();
+  });
+
+  it('PRESSING the LEADING face at 1× — station, exactly as without the ride', () => {
+    const vel = new THREE.Vector3(EARTH_V_AU_S, 0, 0);
+    const run = runContact(start(), inbound(), vel, 120, 1 / 60, COMMANDED, ride);
+    expect(run.contactAtS).not.toBeNull();
+    expect(run.escapeAtS).toBeNull();
+    expect(run.maxPenetrationFrac).toBeLessThan(0.01);
+    expect(run.lastContactAtS!).toBeGreaterThan(run.endS - 1);
+    expect(run.bodySwingDeg).toBeLessThan(0.5);
+  });
+
+  it('pressing the LEADING face at 10× time warp — station now, not a release; leaving is the pilot\'s own', () => {
+    // Without the ride the passage at warp rounds the ship off the shell.
+    // Riding the planet there is no passage: the press parks and holds.
+    const vel = new THREE.Vector3(EARTH_V_AU_S * 10, 0, 0);
+    const run = runContact(start(), inbound(), vel, 180, 1 / 60, COMMANDED, ride);
+    expect(run.contactAtS).not.toBeNull();
+    expect(run.maxPenetrationFrac).toBeLessThan(0.01);
+    expect(run.escapeAtS).toBeNull();
+    expect(run.lastContactAtS!).toBeGreaterThan(run.endS - 1);
+    // The 0.02 lean of the press slides the parked ship along the shell on
+    // its OWN thrust — under a degree over three minutes, and none of it the
+    // planet's passage, which the ride has taken out entirely.
+    expect(run.bodySwingDeg).toBeLessThan(1);
+    // Pulling back is the way out — the departure law, from the parked spot.
+    const away = runContact(
+      new THREE.Vector3(COLLISION_R, 0, 0), new THREE.Vector3(1, 0, 0), vel, 120, 1 / 60, COMMANDED, ride,
+    );
+    expect(away.escapeAtS).not.toBeNull();
+    expect(away.escapeAtS!).toBeLessThan(ESCAPE_DEADLINE_S);
+  });
+
+  it('a rate change mid-station (1× → 60×) neither walks the ship nor breaks the surface', () => {
+    const vel = new THREE.Vector3(EARTH_V_AU_S, 0, 0);
+    const run = runContact(
+      start(), inbound(), vel, 120, 1 / 60, COMMANDED, { rideWeight: 1, rateChangeAtS: 40, rateFactor: 60 },
+    );
+    expect(run.contactAtS).not.toBeNull();
+    expect(run.contactAtS!).toBeLessThan(40);
+    expect(run.maxPenetrationFrac).toBeLessThan(0.01);
+    expect(run.escapeAtS).toBeNull();
+    expect(run.lastContactAtS!).toBeGreaterThan(run.endS - 1);
+    expect(run.bodySwingDeg).toBeLessThan(0.5);
+  });
+
+  it('in the fade band (half weight) the residual credit and the half ride together still hold station', () => {
+    // Half the planet's motion is ridden and the credit sees the other half:
+    // together they are the world-frame allowance, so a press still parks.
+    const vel = new THREE.Vector3(EARTH_V_AU_S, 0, 0);
+    const run = runContact(start(), inbound(), vel, 120, 1 / 60, COMMANDED, { rideWeight: 0.5 });
+    expect(run.contactAtS).not.toBeNull();
+    expect(run.escapeAtS).toBeNull();
+    expect(run.maxPenetrationFrac).toBeLessThan(0.01);
+    expect(run.lastContactAtS!).toBeGreaterThan(run.endS - 1);
+    expect(run.bodySwingDeg).toBeLessThan(3);
+  });
+
+  it('the TRAILING face is still reachable, and then a station', () => {
+    const vel = new THREE.Vector3(-EARTH_V_AU_S, 0, 0);
+    const run = runContact(start(), inbound(), vel, 120, 1 / 60, COMMANDED, ride);
+    expect(run.contactAtS).not.toBeNull();
+    expect(run.contactAtS!).toBeLessThan(ESCAPE_DEADLINE_S);
+    expect(run.maxPenetrationFrac).toBeLessThan(0.01);
+    expect(run.lastContactAtS!).toBeGreaterThan(run.endS - 1);
   });
 });

@@ -286,3 +286,16 @@ describe('sanitizer bounds', () => {
     expect(createDefaultPlanetariumState()).not.toHaveProperty('planetScale');
   });
 });
+
+describe('clock sanitizing survives the first running frame', () => {
+  it('keeps a save at the Date bound valid after one unpaused frame, and clamps a wild rate to the ladder', async () => {
+    const { advancePlanetariumTime, MAX_UTC_MS } = await import('../astronomy/planetary');
+    const { TIME_RATE_PRESETS } = await import('./timeRates');
+    const state = sanitizePlanetariumState({ ...createDefaultPlanetariumState(), astroTimeUtcMs: 1e300, astroTimeRate: 1e300 })!;
+    expect(state.astroTimeUtcMs).toBe(MAX_UTC_MS);
+    expect(Math.abs(state.astroTimeRate!)).toBeLessThanOrEqual(Math.max(...TIME_RATE_PRESETS.map(Math.abs)));
+    const clock = advancePlanetariumTime({ currentUtcMs: state.astroTimeUtcMs, rate: state.astroTimeRate!, paused: false }, 1 / 60);
+    expect(Number.isFinite(new Date(clock.currentUtcMs).getTime())).toBe(true);
+    expect(clock.currentUtcMs).toBe(MAX_UTC_MS);
+  });
+});

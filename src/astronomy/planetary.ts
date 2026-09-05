@@ -471,9 +471,15 @@ export function computeBodyStateInto(planet: PlanetData, utcMs: number, out: Bod
  *  wholesale, so nothing relies on a fresh object here. */
 export function advancePlanetariumTime(state: SimulationTime, dtSeconds: number): SimulationTime {
   if (state.paused) return state;
-  state.currentUtcMs += dtSeconds * 1000 * state.rate;
+  // Saturate at the range a Date can hold: past it every ephemeris call is
+  // NaN and the sky empties, and a save restored at the edge would get there
+  // on its first running frame.
+  state.currentUtcMs = Math.max(-MAX_UTC_MS, Math.min(MAX_UTC_MS, state.currentUtcMs + dtSeconds * 1000 * state.rate));
   return state;
 }
+
+/** The range a JS Date can hold, in ms from the epoch. */
+export const MAX_UTC_MS = 8.64e15;
 
 /**
  * Step the simulation rate along a signed ladder with a pause detent at zero:

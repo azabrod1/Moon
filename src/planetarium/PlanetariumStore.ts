@@ -8,6 +8,8 @@
  * after an upgrade we migrate it to the new `orbital-sim-planetarium-state` key
  * and delete the old one.
  */
+import { TIME_RATE_PRESETS } from './timeRates';
+import { MAX_UTC_MS } from '../astronomy/planetary';
 import { debugWarn } from '../shared/debug';
 import { SPEED_MAX, SYSTEM_SPEED_MAX } from './shipLimits';
 
@@ -24,10 +26,11 @@ const AUTO_SAVE_INTERVAL = 30_000; // 30 seconds
  *  hand-edited save, not a place a ship has ever been (Pluto's aphelion is
  *  under 50 AU, and the farthest milestone parks about 120 AU out). */
 const MAX_POSITION_AU = 1e6;
-/** The range a JS Date can hold. An `astroTimeUtcMs` outside it makes every
- *  ephemeris call NaN and empties the sky, which is exactly what sanitizing
- *  on load exists to prevent. */
-const MAX_UTC_MS = 8.64e15;
+
+/** A restored rate stays inside the rail's ladder, either sign: a
+ *  hand-edited 1e300 would step the clock out of the Date range at once. */
+const MAX_TIME_RATE = Math.max(...TIME_RATE_PRESETS.map(Math.abs));
+const clampRate = (rate: number) => Math.max(-MAX_TIME_RATE, Math.min(MAX_TIME_RATE, rate));
 const FALLBACK_DB_NAME = 'orbital-sim-storage';
 const FALLBACK_STORE_NAME = 'state';
 
@@ -156,7 +159,7 @@ export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null 
       isFiniteNumber(record.astroTimeUtcMs) ? record.astroTimeUtcMs : record.simDate,
       defaults.astroTimeUtcMs,
     ),
-    astroTimeRate: isFiniteNumber(record.astroTimeRate) ? record.astroTimeRate : defaults.astroTimeRate,
+    astroTimeRate: isFiniteNumber(record.astroTimeRate) ? clampRate(record.astroTimeRate) : defaults.astroTimeRate,
     astroTimePaused: typeof record.astroTimePaused === 'boolean'
       ? record.astroTimePaused
       : defaults.astroTimePaused,

@@ -172,7 +172,14 @@ export function rampThrottle(
   max: number,
 ): number {
   if (direction === 1) {
-    if (current < law.engageBelow) return Math.min(current + law.engagePerS * dtS, max);
+    if (current < law.engageBelow) {
+      // Crawl to the floor first; whatever time is left rides the exponential
+      // from there, so a step that crosses the floor lands where a run of
+      // smaller steps would.
+      const toFloorS = (law.engageBelow - current) / law.engagePerS;
+      if (dtS <= toFloorS) return Math.min(current + law.engagePerS * dtS, max);
+      return Math.min(law.engageBelow * Math.exp(law.upRatePerS * (dtS - toFloorS)), max);
+    }
     return Math.min(current * Math.exp(law.upRatePerS * dtS), max);
   }
   // The exact solution of dm/dt = −rate·m − pull over dtS, so that any split

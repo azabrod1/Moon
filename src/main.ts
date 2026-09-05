@@ -1090,7 +1090,7 @@ async function init() {
   debugLog('Boot mode', { autoMode });
   // The Planetarium always boots first — it owns the saves, the catalog, and
   // the veil semantics — then ?auto=volumeCompare routes on into the compare mode.
-  await switchAppMode('planetarium');
+  if (!(await switchAppMode('planetarium'))) throw new Error('The planetarium did not start');
   logStartupTimings();
 
   revealLoadingScreen();

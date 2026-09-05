@@ -114,6 +114,15 @@ describe('rampThrottle', () => {
     }
   });
 
+  it('composes exactly across the engage floor too', () => {
+    const start = 0.049;
+    const one = rampThrottle(start, 1, 0.1, CRUISE_RAMP, 20);
+    let ten = start;
+    for (let i = 0; i < 10; i++) ten = rampThrottle(ten, 1, 0.01, CRUISE_RAMP, 20);
+    expect(ten).toBeCloseTo(one, 9);
+    expect(one).toBeGreaterThan(CRUISE_RAMP.engageBelow);
+  });
+
   it('doubles a held cruise throttle in the same wall time at 60 and 120 Hz', () => {
     const secondsToDouble = (hz: number) => {
       let mult = 1;

@@ -86,6 +86,9 @@ import {
 import { ShadowVisuals, createShadowVisualsWarmupProbes, type GuideSlotInput } from './world/ShadowVisuals';
 import { warmUpSceneShaders } from './world/shaderWarmup';
 import { createShaderWarmupProbes, type WarmupProbes } from './world/shaderWarmupProbes';
+
+/** How long a context-restore re-warm may keep the late-link check muted. */
+const REWARM_MUTE_MAX_MS = 15_000;
 import { selectMoonShadowCasters, umbraReachesSurface } from './world/moonShadowCasters';
 import { OBSERVATORY_JUMP_LEAD_MS, resolveLiveEvent, stepperSearchFromUtcMs } from './observatoryTime';
 import { resolveShowVantage } from './observatoryJump';
@@ -3151,7 +3154,13 @@ export class PlanetariumMode {
   private noteLiveProgramLinks(): void {
     if (this.knownProgramIds === null) return;
     const programs = this.renderer.info.programs;
-    if (programs && programs.length !== this.knownProgramIds.size) this.noteProgramLinks(programs);
+    if (!programs) return;
+    // Three appends a new program last, so a release-and-link in one frame
+    // keeps the length while the last entry is new: check both.
+    const last = programs[programs.length - 1];
+    if (programs.length !== this.knownProgramIds.size || (last && !this.knownProgramIds.has(last.id))) {
+      this.noteProgramLinks(programs);
+    }
   }
 
   /** Take the live program list as the known set, so the next frame's check
@@ -3194,7 +3203,9 @@ export class PlanetariumMode {
         onError: (stage, err) => debugError(`Shader re-warm ${stage} failed`, err),
       });
       this.shaderWarmupSettled = compiled.then(() => undefined, () => undefined);
-      await this.shaderWarmupSettled;
+      // Bounded: the late-link check stays muted only as long as the compile
+      // poll can plausibly take, not for a session if it never settles.
+      await Promise.race([this.shaderWarmupSettled, new Promise<void>((r) => setTimeout(r, REWARM_MUTE_MAX_MS))]);
     } finally {
       this.linkWarningsMuted--;
       this.rebaselineLinkedPrograms();
@@ -7904,6 +7915,9 @@ export class PlanetariumMode {
     this.closeMenuPanel();
     this.hideHelp({ markSeen: false });
     if (this.tutorial !== null || this.isMissionActive()) return false;
+    // One request at a time: a second tap while the first switch is on its
+    // way must not overwrite, then discard, the snapshot the first one owns.
+    if (this.toolEntryPending) return false;
     // Snapshot the pre-tool journey before main.ts deactivates this mode — that
     // deactivate exits landed mode and saves the taken-off state, so without this
     // the landing (and any Observatory excursion) is lost. getState() then serves
@@ -7918,15 +7932,19 @@ export class PlanetariumMode {
     // here on. A failure AFTER the teardown keeps it: the fallback
     // re-activation restores from it.
     const settle = (taken: boolean) => {
+      this.toolEntryPending = false;
       if (!taken && this.active) this.preToolState = null;
     };
     if (typeof answer === 'boolean') {
       settle(answer);
       return answer;
     }
+    this.toolEntryPending = true;
     void answer.then(settle, () => settle(false));
     return true;
   }
+  /** A tool entry has been accepted and its switch has not settled yet. */
+  private toolEntryPending = false;
 
   private isToolsMenuOpen(): boolean {
     return document.getElementById('tools-menu')?.classList.contains('visible') ?? false;
@@ -11211,10 +11229,11 @@ export class PlanetariumMode {
   }
 
   private applyHistoricMilestone(milestone: HistoricMilestone) {
-    this.timeState.currentUtcMs = milestone.dateUtcMs;
+    // Pause first, then set the instant through the clock seam: the Sun's
+    // optics are reseeded there (a milestone can move the Sun from behind a
+    // body to bare in one step) and the event searches leave the old instant.
     this.timeState.paused = true;
-    this.rebuildPlanetPositions();
-    this.updateTimeUI();
+    this.setClock(milestone.dateUtcMs, { restartSearches: true });
 
     const destination = this.getHistoricDestination(milestone);
     if (!destination) return;
@@ -12009,10 +12028,21 @@ export class PlanetariumMode {
       showBodyLabels: this.showBodyLabels,
       showBodyMarkers: this.showBodyMarkers,
     };
-    this.showShip = visible;
-    this.showOrbitLines = visible;
-    this.showBodyLabels = visible;
-    this.showBodyMarkers = visible;
+    if (visible) {
+      // Restoring means the user's own choices come back, and the stash is
+      // released so later ☰ toggles persist again.
+      const own = this.devChromeUserState;
+      this.devChromeUserState = null;
+      this.showShip = own.showShip;
+      this.showOrbitLines = own.showOrbitLines;
+      this.showBodyLabels = own.showBodyLabels;
+      this.showBodyMarkers = own.showBodyMarkers;
+    } else {
+      this.showShip = false;
+      this.showOrbitLines = false;
+      this.showBodyLabels = false;
+      this.showBodyMarkers = false;
+    }
     // The corner chart draws in WebGL, so hiding the HTML overlay below would
     // leave it painting into a "clean" capture. It goes with the chrome, and
     // setMiniChart(true) brings it back for the captures that want it.

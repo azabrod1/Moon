@@ -14,8 +14,9 @@
  * The precache list is read out of the BUILT index.html's boot-texture-warm
  * script — the same single source of truth the boot itself runs — and the
  * build FAILS if the script is missing, a warm file doesn't exist in dist,
- * or the texture count collapses (the gen-maps "loud missing source"
- * convention).
+ * or the list collapses past a floor well below the real count (the gen-maps
+ * "loud missing source" convention). The floor catches a broken regex, not a
+ * body deliberately leaving the boot set.
  */
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync, writeFileSync, existsSync } from 'node:fs';
@@ -23,7 +24,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const DATA_DIRS = ['textures', 'stardata', 'fonts', 'models', 'historic'];
-const MIN_WARM_TEXTURES = 21;
+// A floor, not the live count: the guard exists to catch a regex refactor
+// that emits an empty or collapsed list, and pinning it to today's total
+// would fail the build the day a body legitimately leaves the boot set.
+const MIN_WARM_TEXTURES = 12;
 const TEMPLATE_PATH = fileURLToPath(new URL('./sw.template.js', import.meta.url));
 
 function walkFiles(dir) {
@@ -75,7 +79,10 @@ export default function swPlugin() {
       }
       const textures = [...script.matchAll(/'([^']+\.webp)'/g)].map((m) => texPrefix + m[1]);
       if (textures.length < MIN_WARM_TEXTURES) {
-        throw new Error(`sw: only ${textures.length} warm textures found (expected >= ${MIN_WARM_TEXTURES})`);
+        throw new Error(
+          `sw: the warm script yielded only ${textures.length} textures — too few to be the boot set `
+          + `(floor ${MIN_WARM_TEXTURES}); the list or the regex reading it is broken`,
+        );
       }
       // Fonts join the precache so the SECOND visit is already fully
       // data-silent — they load too early in the boot for the runtime fetch
@@ -95,7 +102,10 @@ export default function swPlugin() {
       if (!precache.includes(starPath)) throw new Error('sw: star bin missing from precache');
       if (fonts.length < 2) throw new Error(`sw: expected the two boot fonts, found ${fonts.length}`);
       if (precache.length < MIN_WARM_TEXTURES + 3) {
-        throw new Error(`sw: precache collapsed to ${precache.length} entries`);
+        throw new Error(
+          `sw: precache collapsed to ${precache.length} entries (floor ${MIN_WARM_TEXTURES + 3}: `
+          + 'the texture floor plus the star bin and the two boot fonts)',
+        );
       }
 
       const template = readFileSync(TEMPLATE_PATH, 'utf8');

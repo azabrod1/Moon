@@ -29,6 +29,14 @@
  * conditionally stored under waitUntil. On any failure the page simply has
  * the network bytes — byte-for-byte what a worker-less page would have.
  *
+ * Growth: only the boot set is precached, but the runtime handler stores
+ * every manifest file it serves — the tier maps, the KTX2 and the whole tile
+ * set included — so a session that flies everywhere can leave the CacheStorage
+ * holding the entire data set (~100 MB). Nothing prunes inside a deploy; the
+ * activate sweep only drops keys the new manifest no longer names. The
+ * practical ceilings are the browser's: a quota prompt on a small phone, and
+ * Safari's 7-day eviction of unvisited-site storage.
+ *
  * skipWaiting+claim are safe for the same reason the worker is safe at all:
  * with no code cached, the wrong worker generation can at worst serve a
  * one-deploy-old data file until the next sw.js update check. Escape hatch:
@@ -87,6 +95,22 @@ async function eachWithPool(items, limit, task) {
   await Promise.all(lanes);
 }
 
+/**
+ * One install attempt: fetch, verify, store. Its own timeout budget — the
+ * bypass retry sharing the first attempt's timer left it almost no time after
+ * a slow miss — and the timer covers reading the body, not just the headers.
+ */
+async function fetchAndStore(cache, pathname, cacheMode) {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), INSTALL_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(pathname, { cache: cacheMode, signal: abort.signal });
+    return await verifyAndPut(cache, pathname, response);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 self.addEventListener('install', (event) => {
   self.skipWaiting();
   event.waitUntil((async () => {
@@ -98,18 +122,10 @@ self.addEventListener('install', (event) => {
     // the install phase open.
     await eachWithPool(PRECACHE, INSTALL_CONCURRENCY, async (pathname) => {
       if (await cache.match(cacheKey(pathname))) return;
-      const abort = new AbortController();
-      const timer = setTimeout(() => abort.abort(), INSTALL_FETCH_TIMEOUT_MS);
-      try {
-        const response = await fetch(pathname, { cache: 'no-cache', signal: abort.signal });
-        if (!(await verifyAndPut(cache, pathname, response))) {
-          // One bypass retry: a no-cache body can be a ≤10-min-stale 304
-          // reuse while the manifest already names the new deploy's bytes.
-          await verifyAndPut(cache, pathname, await fetch(pathname, { cache: 'reload', signal: abort.signal }));
-        }
-      } finally {
-        clearTimeout(timer);
-      }
+      if (await fetchAndStore(cache, pathname, 'no-cache')) return;
+      // One bypass retry: a no-cache body can be a ≤10-min-stale 304 reuse
+      // while the manifest already names the new deploy's bytes.
+      await fetchAndStore(cache, pathname, 'reload');
     });
   })());
 });
@@ -139,14 +155,25 @@ self.addEventListener('fetch', (event) => {
   // browser's business; this worker never answers for it.
   if (!Object.prototype.hasOwnProperty.call(MANIFEST, url.pathname)) return;
   event.respondWith((async () => {
-    const cache = await caches.open(CACHE_NAME);
-    const hit = await cache.match(cacheKey(url.pathname));
+    // Only the cache lookup is guarded. A CacheStorage that throws (private
+    // browsing, a revoked quota) must still leave the page with the network,
+    // but the network's own failure belongs to the page: catching it here and
+    // fetching again cost every request two failed attempts, offline, before
+    // the app's retry ladder saw one error.
+    let cache = null;
+    let hit;
+    try {
+      cache = await caches.open(CACHE_NAME);
+      hit = await cache.match(cacheKey(url.pathname));
+    } catch {
+      cache = null;
+    }
     if (hit) return hit;
     const response = await fetch(request);
     // The page gets the stream NOW; a clone is verified and stored on the
     // side. Once a network response exists it is always what we return —
     // a verify/store failure must not trigger a second fetch.
-    event.waitUntil(verifyAndPut(cache, url.pathname, response.clone()).catch(() => {}));
+    if (cache) event.waitUntil(verifyAndPut(cache, url.pathname, response.clone()).catch(() => {}));
     return response;
-  })().catch(() => fetch(request)));
+  })());
 });

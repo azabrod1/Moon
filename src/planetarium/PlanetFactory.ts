@@ -42,7 +42,7 @@ import {
   SUN_GLARE_EXTENT_SOLAR_RADII,
 } from '../shared/shaders/sun';
 import { debugWarn } from '../shared/debug';
-import { applyTextureDefaults, clampTier, resolveTextureUrl, type TextureTier, type MapKind, touchTextureBudget } from './world/texturePolicy';
+import { applyTextureDefaults, clampTier, resolveTextureUrl, TIER_MAP_WIDTH, type TextureTier, type MapKind, touchTextureBudget } from './world/texturePolicy';
 import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
 import { queueTextureWarm } from './world/textureWarmer';
 import { createLensShaderUniforms } from '../shared/three/lensShader';
@@ -449,6 +449,44 @@ export interface TextureUpgrade {
   /** A committed arrival's warm-up target — see armArrivalWarmGoal. Set only
    *  through arm/disarm so the one-shot-per-tier semantics hold. */
   warmGoal?: TextureTier;
+}
+
+/** DEV telemetry: what one applied tier is holding. Estimated from the tier's
+ *  nominal map size, not measured — the app has no way to read either figure
+ *  back out of the browser or the driver. */
+export interface AppliedTierResidency {
+  key: string;
+  tier: TextureTier;
+  /** The decoded pixels the loader keeps for the texture's life, so three can
+   *  re-upload after a context loss: width x height x RGBA. */
+  sourceBytes: number;
+  /** GPU storage for the map plus its mip chain (4/3 of the base level). */
+  gpuBytes: number;
+  /** A GPU-compressed tier. Both figures above are the uncompressed
+   *  equivalents and read far too high for it: its blocks are a quarter the
+   *  size and it holds no RGBA copy at all. */
+  compressed: boolean;
+}
+
+/** Every applied colour tier in `ups`, with its estimated residency. Appends
+ *  to `out` so a caller can sweep the whole system into one list. */
+export function appliedTierResidency(
+  ups: readonly TextureUpgrade[],
+  out: AppliedTierResidency[] = [],
+): AppliedTierResidency[] {
+  for (const up of ups) {
+    if (!up.appliedTier) continue;
+    const width = TIER_MAP_WIDTH[up.appliedTier];
+    const base = width * (width / 2) * 4;
+    out.push({
+      key: up.key,
+      tier: up.appliedTier,
+      sourceBytes: base,
+      gpuBytes: Math.round(base * 4 / 3),
+      compressed: !!(up.material.map as THREE.CompressedTexture | null)?.isCompressedTexture,
+    });
+  }
+  return out;
 }
 
 /** True once this handle has fetched everything the device can hold — the

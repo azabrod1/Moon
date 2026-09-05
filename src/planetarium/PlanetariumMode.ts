@@ -34,7 +34,7 @@ import {
   SUN_POLE_RA_DEG,
   type PlanetData,
 } from './planets/planetData';
-import { applySunGlowTier, armArrivalWarmGoal, bindKtx2TierLoader, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, resolveTierFile, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade } from './PlanetFactory';
+import { appliedTierResidency, applySunGlowTier, armArrivalWarmGoal, bindKtx2TierLoader, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, resolveTierFile, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type AppliedTierResidency, type MoonMesh, type PlanetMesh, type TextureUpgrade } from './PlanetFactory';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
@@ -2741,6 +2741,27 @@ export class PlanetariumMode {
   /** Dev bridge: what the streamer holds right now. */
   devSectorStats(): SectorStats | null {
     return this.sectors?.stats() ?? null;
+  }
+
+  /** Dev bridge: what the colour ladders hold right now. The streamer's
+   *  stats() covers tiles only, so without this a device report can say what
+   *  the Moon's sectors cost but not what its 8K globe map costs. Estimated
+   *  from each applied tier's nominal size — nothing can measure the real
+   *  figures from inside the page. */
+  devLadderStats(): { sourceBytes: number; gpuBytes: number; tiers: AppliedTierResidency[] } | null {
+    if (!this.solarSystem) return null;
+    const tiers: AppliedTierResidency[] = [];
+    for (const planet of this.solarSystem.planets) appliedTierResidency(planet.textureUpgrades, tiers);
+    for (const moons of this.planetMoons.values()) {
+      for (const m of moons) appliedTierResidency(m.textureUpgrades, tiers);
+    }
+    let sourceBytes = 0;
+    let gpuBytes = 0;
+    for (const t of tiers) {
+      sourceBytes += t.sourceBytes;
+      gpuBytes += t.gpuBytes;
+    }
+    return { sourceBytes, gpuBytes, tiers };
   }
 
   private ensureConstellationsReady() {

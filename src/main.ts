@@ -306,6 +306,14 @@ function buildComposer(
   directLensTexture?.dispose();
   directLensTexture = null;
 
+  // Whichever path is taken below, its passes (or, straight to canvas, the
+  // scene's own materials) link their programs on the first render that uses
+  // them: have that happen under the loading screen, not on the first visible
+  // frame. Requested here rather than at the end because the early returns
+  // are builds too — the gate only raises a flag, and the draw comes on a
+  // later animation frame, once this build has finished.
+  bootRender.requestCoveredRender();
+
   // The lens correction is planetarium-only and must not be gated on bloom:
   // that would leave off-axis planets egg-shaped on GPUs without float FBOs.
   const wantsLens = cam === planetariumCamera && lensRequestedStrength > 0;
@@ -388,9 +396,6 @@ function buildComposer(
 
   composer.addPass(new OutputPass());
   composerBuiltFor = { cam, bloom, enabled, lens: lensRequestedStrength };
-  // The passes link their programs on their first render: have it happen
-  // under the loading screen, not on the first visible frame.
-  bootRender.requestCoveredRender();
 }
 
 // Dev bloom toggle: flip the runtime flag, rebuild the planetarium composer
@@ -951,7 +956,13 @@ async function init() {
   // The service-worker kill switch runs before ANYTHING else: it exists for
   // the boots where something SW-served is broken, so it cannot wait for a
   // boot to succeed. True = a shedding reload is on its way; stop here.
-  if (await shedServiceWorkerIfRequested()) return;
+  if (await shedServiceWorkerIfRequested()) {
+    // A shedding reload is on its way and nothing has been built. Leave the
+    // boot UNSETTLED: the force-hide below reveals only a settled boot, and
+    // there is nothing behind the screen here but an empty scene.
+    killSwitchReloading = true;
+    return;
+  }
   // Start the star-catalog sidecar load now so its fetch+parse overlap the
   // solar-system build; PlanetariumMode.activate awaits the same shared
   // promise (and surfaces the real error — this kick must not double-report,
@@ -1200,6 +1211,9 @@ function registerServiceWorker(): void {
 // half-built black scene), and after a FAILURE the screen is the error
 // display. In both of those cases keep it up and check back.
 let initSettled = false;
+/** The ?nosw=1 reload is on its way: this document is being replaced, so it
+ *  never becomes a settled boot. */
+let killSwitchReloading = false;
 setTimeout(function forceHideCheck() {
   const ls = document.getElementById('loading-screen');
   if (!ls || ls.classList.contains('hidden') || ls.dataset.bootError) return;
@@ -1214,7 +1228,7 @@ setTimeout(function forceHideCheck() {
 }, 15000);
 
 init().then(() => {
-  initSettled = true;
+  initSettled = !killSwitchReloading;
 }).catch((err) => {
   initSettled = true;
   debugError('Init failed', err);

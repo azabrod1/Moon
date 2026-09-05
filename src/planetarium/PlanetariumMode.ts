@@ -1836,8 +1836,10 @@ export class PlanetariumMode {
   // Mode switching lives in main.ts, not here; the "How many fit?" Tools entry
   // calls this stored callback so main.ts can drive switchAppMode
   // (MoonFlight's onExit idiom).
-  private volumeCompareRequestCb: (() => void) | null = null;
-  onVolumeCompareRequest(cb: () => void): void {
+  /** Owns the switch into the "How many fit?" tool; answers whether the
+   *  switch was taken (a switch already in flight refuses it). */
+  private volumeCompareRequestCb: (() => boolean) | null = null;
+  onVolumeCompareRequest(cb: () => boolean): void {
     this.volumeCompareRequestCb = cb;
   }
 
@@ -7690,10 +7692,12 @@ export class PlanetariumMode {
   // updateObservatoryButtonVisibility); transient popover in the Esc cascade and
   // the one-modal-at-a-time set, but NOT a new keyboard key.
 
-  /** Enter the "How many fit?" tool. A no-op while the tutorial owns the scene;
-   *  closes every entry surface first (the ☰ menu auto-pauses ship + clock and
-   *  restores on close, so leave with that resolved, as startTutorial does). */
-  private requestVolumeCompare() {
+  /** Enter the "How many fit?" tool — the one door into it, for the ☰ item and
+   *  for a `?auto=volumeCompare` boot alike. A no-op while the tutorial or a
+   *  mission owns the scene; closes every entry surface first (the ☰ menu
+   *  auto-pauses ship + clock and restores on close, so leave with that
+   *  resolved, as startTutorial does). True when the switch was taken. */
+  enterVolumeCompare(): boolean {
     // Close the entry surfaces before the guard (a refused click must not leave
     // a dead modal up) and before the snapshot: the ☰ menu and the help modal
     // auto-pause ship and clock, and the snapshot must capture the resumed
@@ -7701,7 +7705,7 @@ export class PlanetariumMode {
     this.closeToolsMenu();
     this.closeMenuPanel();
     this.hideHelp();
-    if (this.tutorial !== null || this.isMissionActive()) return;
+    if (this.tutorial !== null || this.isMissionActive()) return false;
     // Snapshot the pre-tool journey before main.ts deactivates this mode — that
     // deactivate exits landed mode and saves the taken-off state, so without this
     // the landing (and any Observatory excursion) is lost. getState() then serves
@@ -7709,7 +7713,11 @@ export class PlanetariumMode {
     // return, so leaving the tool — or a tab-close inside it — resumes exactly
     // here. Mirrors preMissionState + the tutorial's getState()-serves-snapshot.
     this.preToolState = this.getState();
-    this.volumeCompareRequestCb?.();
+    const taken = this.volumeCompareRequestCb?.() ?? false;
+    // A refused switch (one already in flight) leaves this mode live: the
+    // snapshot must not stand in for the journey in every save from here on.
+    if (!taken) this.preToolState = null;
+    return taken;
   }
 
   private isToolsMenuOpen(): boolean {
@@ -7770,7 +7778,7 @@ export class PlanetariumMode {
     sub.textContent = 'Pour one world into another.';
     info.append(name, sub);
     row.append(info);
-    row.addEventListener('click', () => this.requestVolumeCompare());
+    row.addEventListener('click', () => this.enterVolumeCompare());
     list.appendChild(row);
 
     // Historic journeys: one expandable group (parent row + a submenu of the five
@@ -12660,7 +12668,7 @@ export class PlanetariumMode {
    *  test exercises the same snapshot capture + tutorial/mission refusal a user
    *  gets (the raw switchAppMode path would bypass the pre-tool snapshot). */
   devEnterVolumeCompare(): void {
-    this.requestVolumeCompare();
+    this.enterVolumeCompare();
   }
 
   /** Headless support: enter the Observatory surface view ("Look up"). */

@@ -135,7 +135,9 @@ try {
 }
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x000000);
+// Every mode starts from black; one colour object serves all of them.
+const MODE_BACKGROUND = new THREE.Color(0x000000);
+scene.background = MODE_BACKGROUND;
 
 // --- Planetarium camera ---
 // Near starts at the landed value; cruise swaps in its dynamic near per frame.
@@ -561,11 +563,15 @@ function setFlightLoadingPercent(completedUnits: number, totalUnits: number) {
   setLoadingPercentText(`Entering Flight... ${pct}%`);
 }
 
-async function switchAppMode(newMode: AppMode) {
-  if (newMode === appMode && appModeInitialized) return;
-  if (modeSwitchInFlight) return;
+/** True when the switch happened; false when refused (same mode, or one
+ *  already in flight) or when it failed and the app fell back. */
+async function switchAppMode(newMode: AppMode): Promise<boolean> {
+  if (newMode === appMode && appModeInitialized) return false;
+  if (modeSwitchInFlight) return false;
   modeSwitchInFlight = true;
   debugLog('Switching app mode', { from: appMode, to: newMode });
+  const from = appMode;
+  let switched = false;
 
   try {
     modeTransition.classList.add('active');
@@ -584,7 +590,7 @@ async function switchAppMode(newMode: AppMode) {
       appMode = 'planetarium';
       if (moonFlightMode) moonFlightMode.deactivate();
       if (volumeCompareMode) volumeCompareMode.deactivate();
-      scene.background = new THREE.Color(0x000000);
+      scene.background = MODE_BACKGROUND;
 
       camera = planetariumCamera;
       applyRenderResolution();
@@ -599,7 +605,9 @@ async function switchAppMode(newMode: AppMode) {
         // The ☰ "How many fit?" item arrives here: the
         // mode closes its own entry surfaces, then this callback owns the switch.
         planetariumMode.onVolumeCompareRequest(() => {
+          if (modeSwitchInFlight || appMode === 'volumeCompare') return false;
           void switchAppMode('volumeCompare');
+          return true;
         });
       }
       debugLog('Activating Planetarium mode');
@@ -617,23 +625,28 @@ async function switchAppMode(newMode: AppMode) {
 
     } else if (newMode === 'moonFlight') {
       // --- Switch to Moon Flight ---
+      // Dynamic import: flight code + future assets stay out of the initial
+      // bundle until the user actually enters this mode. Fetched BEFORE the
+      // current mode is taken down: the data service worker never caches
+      // app code, so a lost signal fails this fetch, and a failure here must
+      // leave the user in the mode they can still see.
+      const flightModule = moonFlightMode ? null : await (async () => {
+        debugLog('Loading moon flight module');
+        return import('./moonFlight/MoonFlightMode');
+      })();
       appMode = 'moonFlight';
       if (planetariumMode) planetariumMode.deactivate();
       if (volumeCompareMode) volumeCompareMode.deactivate();
       planetariumUI.style.display = 'none';
-      scene.background = new THREE.Color(0x000000);
+      scene.background = MODE_BACKGROUND;
 
       camera = flightCamera;
       applyRenderResolution();
       buildComposer(flightCamera, { strength: 1.2, threshold: 0.85 });
 
-      // Dynamic import: flight code + future assets stay out of the initial bundle
-      // until the user actually enters this mode.
       if (!moonFlightMode) {
         setFlightLoadingPercent(0, 1);
-        debugLog('Loading moon flight module');
-        const mod = await import('./moonFlight/MoonFlightMode');
-        moonFlightMode = new mod.MoonFlightMode(scene, flightCamera, renderer);
+        moonFlightMode = new flightModule!.MoonFlightMode(scene, flightCamera, renderer);
         moonFlightMode.onExit(() => {
           void switchAppMode('planetarium');
         });
@@ -652,24 +665,26 @@ async function switchAppMode(newMode: AppMode) {
 
     } else {
       // --- Switch to Volume Compare ("How many fit?") ---
+      // Dynamic import first, for the same reason as the flight branch: a
+      // failed chunk fetch must not strand the user in a mode with no UI.
+      const compareModule = volumeCompareMode ? null : await (async () => {
+        debugLog('Loading volume compare module');
+        return import('./volumeCompare/VolumeCompareMode');
+      })();
       appMode = 'volumeCompare';
       if (planetariumMode) planetariumMode.deactivate();
       if (moonFlightMode) moonFlightMode.deactivate();
       // PlanetariumMode.deactivate already hides this; the explicit line keeps
       // parity with the flight branch and covers a switch from moon flight.
       planetariumUI.style.display = 'none';
-      scene.background = new THREE.Color(0x000000);
+      scene.background = MODE_BACKGROUND;
 
       camera = vcCamera;
       applyRenderResolution();
       buildComposer(vcCamera, { strength: 0.8, threshold: 0.92 });
 
-      // Dynamic import: the compare mode + its scene stay out of the initial
-      // bundle until the user actually enters it (MoonFlight code-split parity).
       if (!volumeCompareMode) {
-        debugLog('Loading volume compare module');
-        const mod = await import('./volumeCompare/VolumeCompareMode');
-        volumeCompareMode = new mod.VolumeCompareMode(scene, vcCamera, renderer, useBloom);
+        volumeCompareMode = new compareModule!.VolumeCompareMode(scene, vcCamera, renderer, useBloom);
         volumeCompareMode.onExit(() => {
           void switchAppMode('planetarium');
         });
@@ -683,14 +698,24 @@ async function switchAppMode(newMode: AppMode) {
     }
 
     appModeInitialized = true;
+    switched = true;
 
     await sleep(100);
+  } catch (err) {
+    debugError('Mode switch failed', { from, to: newMode, err });
+    console.error('Mode switch failed:', err);
   } finally {
     // The veil must never strand: if a mode activation throws, the app is
-    // degraded but the user can still see the scene and click their way out.
+    // degraded but the user can still see a scene and click their way out.
     modeTransition.classList.remove('active');
     modeSwitchInFlight = false;
   }
+  // A failure after the current mode was taken down would leave a mode with
+  // no UI and no exit; the planetarium is the one mode that always comes back.
+  if (!switched && appMode !== 'planetarium' && appModeInitialized) {
+    void switchAppMode('planetarium');
+  }
+  return switched;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -1031,13 +1056,11 @@ async function init() {
   await planetariumMode?.showDeferredResumePromptIfNeeded();
 
   if (autoMode === 'volumeCompare') {
-    // The fast path stays, but a boot that resumed into a tutorial must not switch
-    // away — the tutorial owns the scene and holds a live pre-tutorial snapshot
-    // that deactivating for the tool would strand. Ignore the param in that case.
-    if (planetariumMode?.isTutorialActive()) {
-      debugLog('?auto=volumeCompare ignored — a tutorial owns the scene');
-    } else {
-      await switchAppMode('volumeCompare');
+    // Through the tool's own door, like the ☰ item: it refuses while a
+    // tutorial or mission owns the scene, and it snapshots the journey first,
+    // so a landed save resumed on this boot is still landed on return.
+    if (!planetariumMode?.enterVolumeCompare()) {
+      debugLog('?auto=volumeCompare ignored — the scene is owned by a tutorial or mission');
     }
   }
 }

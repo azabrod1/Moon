@@ -34,7 +34,7 @@ import {
   SUN_POLE_RA_DEG,
   type PlanetData,
 } from './planets/planetData';
-import { applySunGlowTier, armArrivalWarmGoal, bindKtx2TierLoader, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade } from './PlanetFactory';
+import { applySunGlowTier, armArrivalWarmGoal, bindKtx2TierLoader, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, resolveTierFile, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade } from './PlanetFactory';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
@@ -1880,10 +1880,13 @@ export class PlanetariumMode {
           .setTranscoderPath(import.meta.env.BASE_URL + 'basis/')
           .detectSupport(renderer),
       );
-      this.ktx2Loader.then(
-        (loader) => loader.load(url, onLoad, undefined, onError),
-        (err) => onError(err),
-      );
+      // One rejection handler for both halves: an exception thrown inside
+      // onLoad (a swap that fails on a dead context, say) has to reach the
+      // ladder's onError like any other failure, not become an unhandled
+      // rejection that leaves the handle waiting on an attempt forever.
+      this.ktx2Loader
+        .then((loader) => loader.load(url, onLoad, undefined, onError))
+        .catch((err) => onError(err));
     });
     // GPU moon-texture painter (synchronous CPU fallback inside). Inject its
     // paint into the lazy painter; MoonPainter's queue + the visibility gate +
@@ -1909,6 +1912,12 @@ export class PlanetariumMode {
     });
     glCanvas.addEventListener('webglcontextrestored', () => {
       this.moonTexturer.onContextRestored();
+      // three re-creates its texture properties on restore, so nothing the
+      // warm cache recorded is resident any more. Uploads issued while the
+      // context was lost silently did nothing yet still landed in the cache
+      // (a lost context makes GL calls no-ops instead of throwing), so clear
+      // it again here or those maps pay their upload in the first real draw.
+      invalidateTextureWarmCache();
       // Anything a stray frame admitted while the context was lost was
       // "uploaded" into nothing: drop it before the latch clears.
       this.sectors?.dropAll();
@@ -2507,8 +2516,11 @@ export class PlanetariumMode {
           // dropped, and the browser may cancel the transfer with it — the
           // bytes only reliably reach the HTTP/service-worker cache once the
           // stream has been drained.
+          // Through the ladder's own file choice, so the bytes pulled into
+          // the cache are the bytes the ladder will later ask for — a tier
+          // with a compressed override must not be warmed as its webp.
           if (tier) {
-            fetch(resolveTextureUrl(PLANET_TEXTURE_FILES[up.key], tier))
+            fetch(resolveTextureUrl(resolveTierFile(up.key, tier), tier))
               .then((r) => r.arrayBuffer())
               .catch(() => {});
           }
@@ -2567,9 +2579,12 @@ export class PlanetariumMode {
    * Sun in the globe's local frame (radius = catalog radius there, whatever
    * the render scale), the magnification bound at its nearest surface point,
    * then per facing sector its frame membership (the lens-aware footprint of
-   * its bounding sphere) and the magnification at its nearest point — DEVICE
+   * its bounding sphere) and the magnification at its nearest point — RENDER
    * pixels per local unit, which the streamer turns into pixels per texel of
-   * the finest map the globe will hold.
+   * the finest map the globe will hold. Render, not display: the ratio comes
+   * from the renderer, so a supersampled frame asks for the sharper tile it
+   * really samples, while MSAA (which renders at the capped display ratio)
+   * asks for one tile texel per device pixel.
    */
   private updateSectorStreaming(): void {
     const sectors = this.sectors;
@@ -2589,7 +2604,7 @@ export class PlanetariumMode {
     // refreshed it this frame.
     this.camera.updateMatrixWorld();
     this.solarSystem.sun.getWorldPosition(this.sectorSunWorld);
-    // Device pixels a world unit covers at unit distance, on the display FOV
+    // Render pixels a world unit covers at unit distance, on the display FOV
     // (the lens pass keeps the centre of the frame at this scale; the
     // streamer's hysteresis absorbs the edge distortion).
     const focalDevicePx = ((canvasH / 2) / Math.tan(0.5 * displayFovDeg(this.camera) * DEG2RAD)) * dpr;
@@ -2632,7 +2647,7 @@ export class PlanetariumMode {
       // Sun direction in the globe's frame, for the night-side gate.
       this.sectorSunLocal.copy(this.sectorSunWorld).sub(this.sectorWorldCentre).normalize()
         .applyQuaternion(this.sectorWorldQuatInv);
-      // The most magnified surface point is the nearest one: device pixels
+      // The most magnified surface point is the nearest one: render pixels
       // per local unit there bound every sector, and let the streamer skip
       // the per-sector work for a globe that is not close.
       const distCentre = this.sectorWorldCentre.distanceTo(this.camera.position);
@@ -2653,7 +2668,7 @@ export class PlanetariumMode {
         const dx = (fp.footprintX - canvasW / 2) / Math.max(canvasW / 2, 1);
         const dy = (fp.footprintY - canvasH / 2) / Math.max(canvasH / 2, 1);
         // Magnification at the surface point the streamer asks about (the
-        // sector's point nearest the camera's): device pixels per local unit
+        // sector's point nearest the camera's): render pixels per local unit
         // at its distance, foreshortened by the angle between the surface
         // normal there and the line of sight.
         this.sectorNormal.copy(surfaceDirLocal);

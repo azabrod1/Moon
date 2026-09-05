@@ -2096,61 +2096,6 @@ const MOON_NORMAL_KEYS: Record<string, string> = {
 };
 
 /**
- * Shader-variant warm-up probes. Moon materials start as bare placeholders;
- * their maps arrive later (procedural paint, streamed photo, measured normal),
- * and each arrival flips USE_MAP/USE_BUMPMAP/USE_NORMALMAP — a different
- * shader program than the placeholder's. Compiling the scene at boot therefore
- * builds the wrong variants, and the real ones still link mid-gesture (the
- * measured surface-view stall). These three tiny meshes carry exactly the
- * post-arrival combinations; the augmentation is byte-identical GLSL across
- * bodies (uniforms only), so one compile per combination covers every moon.
- * Add to the scene before renderer.compileAsync, remove + dispose after it
- * settles. The group starts invisible for ordinary frames; activation briefly
- * makes it visible only for a one-pixel, load-veiled real draw on drivers where
- * compileAsync cannot guarantee a completed link.
- */
-export function createShaderWarmupProbes(): { group: THREE.Group; dispose: () => void } {
-  const makeTex = (kind: MapKind): THREE.Texture => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1;
-    canvas.height = 1;
-    const ctx = canvas.getContext('2d')!;
-    ctx.fillStyle = '#808080';
-    ctx.fillRect(0, 0, 1, 1);
-    const tex = new THREE.CanvasTexture(canvas);
-    applyTextureDefaults(tex, kind); // colour space is part of the program key
-    return tex;
-  };
-  const geo = new THREE.SphereGeometry(1e-9, 4, 2);
-  const group = new THREE.Group();
-  group.visible = false;
-  const mats: THREE.MeshStandardMaterial[] = [];
-  const combos: Array<Partial<Record<'map' | 'bumpMap' | 'normalMap', THREE.Texture>>> = [
-    { map: makeTex('color'), bumpMap: makeTex('data') }, // painted moon / photo + procedural bump
-    { map: makeTex('color'), normalMap: makeTex('data') }, // photo + measured normal (the Moon)
-    { map: makeTex('color') }, // photo arrived before the paint
-  ];
-  for (const combo of combos) {
-    const mat = new THREE.MeshStandardMaterial(combo);
-    augmentSurfaceMaterial(mat, 'rocky'); // archetype is uniform-only — any value keys the same program
-    mats.push(mat);
-    group.add(new THREE.Mesh(geo, mat));
-  }
-  return {
-    group,
-    dispose: () => {
-      for (const mat of mats) {
-        mat.map?.dispose();
-        mat.bumpMap?.dispose();
-        mat.normalMap?.dispose();
-        mat.dispose();
-      }
-      geo.dispose();
-    },
-  };
-}
-
-/**
  * Create moon meshes for a planet. Moons orbit at their real orbital radius
  * (in AU). The surface texture is NOT generated here — it's painted lazily
  * (paintMoonTextures / MoonPainter) so first load isn't blocked on ~65 canvas

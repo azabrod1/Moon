@@ -9,6 +9,7 @@
  * and delete the old one.
  */
 import { debugWarn } from '../shared/debug';
+import { SPEED_MAX, SYSTEM_SPEED_MAX } from './shipLimits';
 
 const STORAGE_KEY = 'orbital-sim-planetarium-state';
 const LEGACY_STORAGE_KEY = 'orbital-sim-explore-state';
@@ -19,6 +20,14 @@ const LOOKUP_COACH_SEEN_KEY = 'planetarium-lookup-coach-seen';
 // "explore" build shouldn't be shown it again after upgrading.
 const LEGACY_HELP_SEEN_KEY = 'explore-help-seen';
 const AUTO_SAVE_INTERVAL = 30_000; // 30 seconds
+/** The widest journey the app can pose. Anything past this is a corrupt or
+ *  hand-edited save, not a place a ship has ever been (Pluto's aphelion is
+ *  under 50 AU, and the interstellar milestone parks a few thousand out). */
+const MAX_POSITION_AU = 1e6;
+/** The range a JS Date can hold. An `astroTimeUtcMs` outside it makes every
+ *  ephemeris call NaN and empties the sky, which is exactly what sanitizing
+ *  on load exists to prevent. */
+const MAX_UTC_MS = 8.64e15;
 const FALLBACK_DB_NAME = 'orbital-sim-storage';
 const FALLBACK_STORE_NAME = 'state';
 
@@ -42,11 +51,15 @@ export interface PlanetariumState {
   timeElapsed: number;       // seconds
   timestamp: number;
   autopilot: boolean;        // true = auto-steer toward next planet
-  layoutMode: string;        // 'aligned' or 'realistic'
+  /** Retired: the app has one layout ('realistic') and one planet scale
+   *  (true size). Both keys are still declared so an old save parses, but
+   *  nothing writes them any more and restoreState ignores what it reads. */
+  layoutMode?: string;
   astroTimeUtcMs: number;    // UTC timestamp driving realistic orbital positions
   astroTimeRate?: number;
   astroTimePaused?: boolean;
-  planetScale: number;       // visual scale multiplier for planets
+  /** Retired alongside layoutMode — see the note there. */
+  planetScale?: number;
   showShip: boolean;         // show player ship mesh
   showConstellations?: boolean; // show constellation lines overlay
   showBodyLabels?: boolean;  // show planet/moon/Sun name labels
@@ -94,6 +107,11 @@ function sanitizeLandedOn(raw: unknown): LandedTarget {
   return null;
 }
 
+function sanitizeUtcMs(raw: unknown, fallback: number): number {
+  if (!isFiniteNumber(raw)) return fallback;
+  return Math.max(-MAX_UTC_MS, Math.min(MAX_UTC_MS, raw));
+}
+
 /** Exported for tests — load-path sanitation incl. legacy-save migrations. */
 export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -104,17 +122,21 @@ export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null 
   if (!positionRaw || typeof positionRaw !== 'object') return null;
 
   const positionRecord = positionRaw as Record<string, unknown>;
+  const axis = (raw: unknown, fallback: number): number =>
+    isFiniteNumber(raw) ? Math.max(-MAX_POSITION_AU, Math.min(MAX_POSITION_AU, raw)) : fallback;
   const positionAU = {
-    x: isFiniteNumber(positionRecord.x) ? positionRecord.x : defaults.positionAU.x,
-    y: isFiniteNumber(positionRecord.y) ? positionRecord.y : defaults.positionAU.y,
-    z: isFiniteNumber(positionRecord.z) ? positionRecord.z : defaults.positionAU.z,
+    x: axis(positionRecord.x, defaults.positionAU.x),
+    y: axis(positionRecord.y, defaults.positionAU.y),
+    z: axis(positionRecord.z, defaults.positionAU.z),
   };
 
   return {
     positionAU,
     headingRad: isFiniteNumber(record.headingRad) ? record.headingRad : defaults.headingRad,
     pitchRad: isFiniteNumber(record.pitchRad) ? record.pitchRad : 0,
-    speed: isFiniteNumber(record.speed) ? Math.max(0, record.speed) : defaults.speed,
+    speed: isFiniteNumber(record.speed)
+      ? Math.min(SPEED_MAX, Math.max(0, record.speed))
+      : defaults.speed,
     moving: typeof record.moving === 'boolean' ? record.moving : defaults.moving,
     visitedPlanets: Array.isArray(record.visitedPlanets)
       ? record.visitedPlanets.filter((planet): planet is string => typeof planet === 'string')
@@ -127,18 +149,17 @@ export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null 
       : defaults.timeElapsed,
     timestamp: isFiniteNumber(record.timestamp) ? record.timestamp : defaults.timestamp,
     autopilot: typeof record.autopilot === 'boolean' ? record.autopilot : defaults.autopilot,
-    layoutMode: typeof record.layoutMode === 'string' ? record.layoutMode : defaults.layoutMode,
-    // Legacy-save compat: pre-rename the field was `simDate`.
-    astroTimeUtcMs: isFiniteNumber(record.astroTimeUtcMs)
-      ? record.astroTimeUtcMs
-      : (isFiniteNumber(record.simDate) ? record.simDate : defaults.astroTimeUtcMs),
+    // Legacy-save compat: pre-rename the field was `simDate`. Clamped to the
+    // Date range: past it every ephemeris call goes NaN and the whole sky
+    // vanishes on boot.
+    astroTimeUtcMs: sanitizeUtcMs(
+      isFiniteNumber(record.astroTimeUtcMs) ? record.astroTimeUtcMs : record.simDate,
+      defaults.astroTimeUtcMs,
+    ),
     astroTimeRate: isFiniteNumber(record.astroTimeRate) ? record.astroTimeRate : defaults.astroTimeRate,
     astroTimePaused: typeof record.astroTimePaused === 'boolean'
       ? record.astroTimePaused
       : defaults.astroTimePaused,
-    planetScale: isFiniteNumber(record.planetScale)
-      ? Math.min(128, Math.max(1, Math.round(record.planetScale)))
-      : defaults.planetScale,
     showShip: typeof record.showShip === 'boolean' ? record.showShip : defaults.showShip,
     showConstellations: typeof record.showConstellations === 'boolean' ? record.showConstellations : defaults.showConstellations,
     showBodyLabels: typeof record.showBodyLabels === 'boolean' ? record.showBodyLabels : defaults.showBodyLabels,
@@ -155,7 +176,7 @@ export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null 
     miniChartPref: typeof record.miniChartPref === 'boolean' ? record.miniChartPref : undefined,
     landedOn: sanitizeLandedOn(record.landedOn),
     systemSpeed: isFiniteNumber(record.systemSpeed)
-      ? Math.max(0, Math.min(0.4, record.systemSpeed))
+      ? Math.max(0, Math.min(SYSTEM_SPEED_MAX, record.systemSpeed))
       : defaults.systemSpeed,
     systemSlowdown: typeof record.systemSlowdown === 'boolean' ? record.systemSlowdown : defaults.systemSlowdown,
     autopilotTarget: sanitizeLandedOn(record.autopilotTarget),
@@ -206,11 +227,9 @@ export function createDefaultPlanetariumState(): PlanetariumState {
     timeElapsed: 0,
     timestamp: Date.now(),
     autopilot: false,
-    layoutMode: 'realistic',
     astroTimeUtcMs: Date.now(),
     astroTimeRate: 1,
     astroTimePaused: false,
-    planetScale: 1,
     showShip: true,
     showConstellations: false,
     showBodyLabels: true,
@@ -229,15 +248,6 @@ export class PlanetariumStore {
   private intervalId: number | null = null;
   private getState: (() => PlanetariumState) | null = null;
   private dbPromise: Promise<IDBDatabase | null> | null = null;
-
-  hasSavedState(): boolean {
-    return (
-      this.readWebStorage('local', STORAGE_KEY) !== null ||
-      this.readWebStorage('session', STORAGE_KEY) !== null ||
-      this.readWebStorage('local', LEGACY_STORAGE_KEY) !== null ||
-      this.readWebStorage('session', LEGACY_STORAGE_KEY) !== null
-    );
-  }
 
   async loadState(): Promise<PlanetariumState | null> {
     let raw = this.readWebStorage('local', STORAGE_KEY);
@@ -285,8 +295,10 @@ export class PlanetariumStore {
    * rejects — fire-and-forget callers (autosave, unload) can ignore it.
    */
   saveState(state: PlanetariumState): Promise<boolean> {
-    state.timestamp = Date.now();
-    const raw = JSON.stringify(state);
+    // Stamped on a copy: callers hand in records they keep using (activate
+    // reuses the starter journey it just saved), and a save should not reach
+    // back into one of them.
+    const raw = JSON.stringify({ ...state, timestamp: Date.now() });
     const local = this.writeWebStorage('local', raw);
     const session = this.writeWebStorage('session', raw);
     const idb = this.writeIndexedDb(raw);

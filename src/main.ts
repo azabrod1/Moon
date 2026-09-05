@@ -563,6 +563,12 @@ function setFlightLoadingPercent(completedUnits: number, totalUnits: number) {
   setLoadingPercentText(`Entering Flight... ${pct}%`);
 }
 
+/** True once a planetarium activation has finished: the journey is restored
+ *  and the scene is settled. `hasLoadedSolarSystem()` only says the scene
+ *  graph exists, which is true several awaits earlier — a harness that poses
+ *  the camera on that would be posing a pre-restore ship. */
+let plmActivated = false;
+
 /** True when the switch happened; false when refused (same mode, or one
  *  already in flight) or when it failed and the app fell back. */
 async function switchAppMode(newMode: AppMode): Promise<boolean> {
@@ -583,6 +589,12 @@ async function switchAppMode(newMode: AppMode): Promise<boolean> {
     // On first boot the loading screen still covers everything, so the wait
     // would be 400 ms of nothing, serial, before any texture is even asked
     // for — a fifth of the whole fast-network startup.
+    //
+    // #mode-transition takes no pointers (index.html) — it is a fade, not a
+    // cover. Through this beat the mode being left is still fully clickable,
+    // and so is the destination's UI while it activates. That is deliberate:
+    // the arrival veil is the thing that catches pointers, and anything
+    // committed here belongs to the mode that is still on screen.
     if (appModeInitialized) await sleep(400);
 
     if (newMode === 'planetarium') {
@@ -611,6 +623,7 @@ async function switchAppMode(newMode: AppMode): Promise<boolean> {
         });
       }
       debugLog('Activating Planetarium mode');
+      plmActivated = false;
       if (!planetariumMode.hasLoadedSolarSystem()) {
         const totalUnits = FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS;
         setPlanetsLoadingPercent(0, totalUnits);
@@ -621,6 +634,7 @@ async function switchAppMode(newMode: AppMode): Promise<boolean> {
       } else {
         await planetariumMode.activate();
       }
+      plmActivated = true;
       debugLog('Planetarium mode active');
 
     } else if (newMode === 'moonFlight') {
@@ -636,6 +650,7 @@ async function switchAppMode(newMode: AppMode): Promise<boolean> {
       })();
       appMode = 'moonFlight';
       if (planetariumMode) planetariumMode.deactivate();
+      plmActivated = false;
       if (volumeCompareMode) volumeCompareMode.deactivate();
       planetariumUI.style.display = 'none';
       scene.background = MODE_BACKGROUND;
@@ -673,6 +688,7 @@ async function switchAppMode(newMode: AppMode): Promise<boolean> {
       })();
       appMode = 'volumeCompare';
       if (planetariumMode) planetariumMode.deactivate();
+      plmActivated = false;
       if (moonFlightMode) moonFlightMode.deactivate();
       // PlanetariumMode.deactivate already hides this; the explicit line keeps
       // parity with the flight branch and covers a switch from moon flight.
@@ -737,7 +753,7 @@ function getAutoMode(): 'planetarium' | 'volumeCompare' {
 function installDevHooks() {
   installSurfacePerfInputTracing();
   (window as any).__moon = {
-    ready: () => !!planetariumMode?.hasLoadedSolarSystem(),
+    ready: () => plmActivated,
     bodies: () => planetariumMode?.devListBodies() ?? [],
     jumpTo: (name: string, distanceMultiplier?: number) =>
       planetariumMode?.devJumpToBody(name, distanceMultiplier) ?? false,
@@ -790,7 +806,9 @@ function installDevHooks() {
     setBloom: (on: boolean) => setPlanetariumBloom(on),
     bloomActive: () => planetariumBloomEnabled(),
     // Lens-correction A/B: pass a strength (0 = rectilinear), no args restores
-    // the default. Returns the effective strength after the bloom gate.
+    // the default. Returns the strength the pass is actually running at, which
+    // is what every other consumer reads too — a request the pipeline could
+    // not honour is not the answer to "what am I looking at?".
     setLens: (strength?: number | null) => {
       lensRequestedStrength = typeof strength === 'number'
         ? Math.min(Math.max(strength, 0), 1)
@@ -798,7 +816,7 @@ function installDevHooks() {
       if (appMode === 'planetarium') {
         buildComposer(planetariumCamera, PLANETARIUM_BLOOM, planetariumBloomEnabled());
       }
-      return planetariumLens.strength;
+      return planetariumLens.effectiveStrength ?? planetariumLens.strength;
     },
     probe: (name: string) => planetariumMode?.devProbe(name) ?? null,
     travelTo: (name: string) => planetariumMode?.devTravelTo(name) ?? false,
@@ -885,7 +903,7 @@ function installDevHooks() {
       planetariumMode?.devSetMapLayers(partial as never) ?? null,
     setChrome: (visible: boolean) => planetariumMode?.devSetChrome(visible),
     setFov: (deg: number) => planetariumMode?.devSetFov(deg),
-    setTimeMs: (utcMs: number) => planetariumMode?.setCurrentUtcMs(utcMs),
+    setTimeMs: (utcMs: number) => planetariumMode?.devSetTimeMs(utcMs),
     getTimeMs: () => planetariumMode?.getCurrentUtcMs() ?? 0,
     setTimeRate: (rate: number) => planetariumMode?.setTimeRate(rate),
     setTimePaused: (paused: boolean) => planetariumMode?.setTimePaused(paused),

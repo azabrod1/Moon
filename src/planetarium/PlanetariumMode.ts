@@ -34,10 +34,10 @@ import {
   SUN_POLE_RA_DEG,
   type PlanetData,
 } from './planets/planetData';
-import { applySunGlowTier, armArrivalWarmGoal, bindKtx2TierLoader, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, disarmArrivalWarmGoal, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade } from './PlanetFactory';
+import { applySunGlowTier, armArrivalWarmGoal, bindKtx2TierLoader, canAttempt, cancelTextureUpgrade, createMoonMeshes, disarmArrivalWarmGoal, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade } from './PlanetFactory';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import type { SurfaceShadingFx } from './world/surfaceShading';
-import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
+import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm } from './world/textureWarmer';
 import { SECTOR_SETS, SectorStreamer, type SectorMeasure, type SectorStats, type SectorSuspend } from './world/sectorStreamer';
 import { loadBrightStarCatalog } from './world/starCatalogLoader';
 import {
@@ -1195,8 +1195,10 @@ export class PlanetariumMode {
   private tmpContactForward = new THREE.Vector3();
 
   private layoutMode: PlanetariumLayout = 'realistic';
-  // The current frame's wall delta in ms — the system map's scale animation
-  // rides real time, not the sim-capped clock. Set at the top of update().
+  // The current frame's dt in ms, as the update loop received it: real wall
+  // time, capped at 100 ms like every other integration this frame. The system
+  // map's scale animation rides it, so a hitch advances that animation by at
+  // most a tenth of a second. Set at the top of update().
   private lastFrameDtMs = 16;
 
   private timeState: SimulationTime = {
@@ -1209,8 +1211,11 @@ export class PlanetariumMode {
   // sized by how knowingly it froze. See setTimePausedFromControl.
   private pauseGuardUntilMs = -Infinity;
 
-  // Planet visual scale multiplier (real scale = 1)
-  private planetScale = 1;
+  /** Planet render scale. Planets draw at true size; the value is kept as a
+   *  named field because the collision, envelope and landed-framing helpers
+   *  all take a render scale, and updatePlanetDetailFades writes it onto every
+   *  planet group so `group.scale.x` never means something else. */
+  private readonly planetScale = 1;
 
   // Dual-speed system: throttle near planets
   private systemSpeedFactor = 1.0; // 1 = open space, 0 = deep in system
@@ -1229,6 +1234,15 @@ export class PlanetariumMode {
   // deliberate per-frame mission-profile reassertion. Null in normal runtime;
   // only the DEV bridge can set it.
   private devShipProfileOverride: ShipProfile | null = null;
+  /** The four persisted chrome flags as the user left them, stashed while
+   *  devSetChrome holds them at a capture's values. Null in normal runtime;
+   *  only the DEV bridge can set it. getState serves these. */
+  private devChromeUserState: {
+    showShip: boolean;
+    showOrbitLines: boolean;
+    showBodyLabels: boolean;
+    showBodyMarkers: boolean;
+  } | null = null;
 
   // Near-Sun coverage meter — telemetry for the dev bridge only. The exposure
   // that actually reaches the render is sunExposure: updateSunShader adapts it
@@ -1244,12 +1258,6 @@ export class PlanetariumMode {
     sunDirection: new THREE.Vector3(),
   };
   private tmpSunView = new THREE.Vector3();
-
-  /** Removals for the constructor's canvas listeners (orbit drag, map pick,
-   *  contextmenu): the renderer's canvas is shared across app modes and
-   *  outlives this one, so its listeners must be dropped in dispose() or they
-   *  keep the whole mode reachable. */
-  private canvasTeardowns: Array<() => void> = [];
 
   // Touch and gyro flight state. Touch has no throttle axis: thrust rides the
   // on-screen speed buttons, the zone steers only.
@@ -1858,6 +1866,10 @@ export class PlanetariumMode {
   }
 
   active = false;
+  /** True from the start of activate() until the saved (or pre-tool) journey
+   *  has been restored onto the ship. update() returns immediately while it is
+   *  set: activate awaits, and the loop keeps calling. */
+  private restoring = false;
   private useBloom: boolean;
   /** Live answer to "does the scene render into a target (the composer) or
    *  straight to the canvas" — the owner of the composer supplies it, so the
@@ -1931,6 +1943,13 @@ export class PlanetariumMode {
     // WebGL context loss invalidates render-target textures (no CPU backing), so
     // GPU-painted moons would render black after a restore. Reset them to repaint
     // and re-validate the GPU path on restore (else it stays on the CPU path).
+    //
+    // These two, like every other listener registered in this constructor,
+    // stay for the life of the page: the app builds one PlanetariumMode and
+    // never destroys it — switching to another mode calls deactivate(), which
+    // is the only teardown there is. Anything registered here must therefore
+    // be cheap while inactive, and every handler gates on `active` (or, like
+    // these, is harmless whichever mode is on screen).
     const glCanvas = renderer.domElement;
     glCanvas.addEventListener('webglcontextlost', () => {
       invalidateTextureWarmCache();
@@ -1993,15 +2012,15 @@ export class PlanetariumMode {
     // camera every frame, so an angle-based OrbitControls test would
     // false-trigger.
     const orbitDom = renderer.domElement;
-    // Registered through this helper so dispose() can remove them: the canvas
-    // outlives the mode (main.ts shares one renderer across modes).
+    // One helper for the whole canvas set (orbit drag, map pick): they are
+    // registered once here and stay for the page — see the constructor's own
+    // note — and every one of them checks `active` before it does anything.
     const onCanvas = <K extends keyof HTMLElementEventMap>(
       type: K,
       listener: (e: HTMLElementEventMap[K]) => void,
       options?: AddEventListenerOptions,
     ) => {
       orbitDom.addEventListener(type, listener, options);
-      this.canvasTeardowns.push(() => orbitDom.removeEventListener(type, listener, options));
     };
     onCanvas('pointerdown', (e) => {
       // Surface view owns the pointer (SurfaceLook): don't let its drags
@@ -2108,7 +2127,13 @@ export class PlanetariumMode {
 
     this.handleKeyDown = this.handleKeyDown.bind(this);
     this.handleKeyUp = this.handleKeyUp.bind(this);
-    this.gyro = new GyroSteering((message) => this.notification.show(message), () => this.updateTimeUI());
+    this.gyro = new GyroSteering(
+      (message) => this.notification.show(message),
+      () => {
+        this.syncGyroWidget();
+        this.updateTimeUI();
+      },
+    );
     this.surfaceLook = new SurfaceLook(
       renderer.domElement,
       (dxPx, dyPx) => this.applySurfaceLook(dxPx, dyPx),
@@ -2125,16 +2150,41 @@ export class PlanetariumMode {
     return this.timeState.currentUtcMs;
   }
 
-  /** Set the simulation clock and refresh world positions + time UI immediately. */
-  setCurrentUtcMs(utcMs: number) {
-    this.timeState = { ...this.timeState, currentUtcMs: utcMs };
+  /**
+   * The one clock-set seam: every path that writes an absolute instant goes
+   * through here, so none of them can forget a step. It rebuilds the world at
+   * the new time, refreshes the readout, and reseeds the Sun optics — a clock
+   * set steps every body at once, so the Sun's exposed fraction can jump and
+   * must not read as a limb clearing (or leave a stale occluder standing).
+   * `restartSearches` also restarts the Observatory and map event searches,
+   * whose results describe the instant just left.
+   *
+   * The record is mutated, not replaced: only the seams that change rate or
+   * paused hand out a fresh one, and the per-frame advance mutates too.
+   */
+  private setClock(utcMs: number, opts: { restartSearches: boolean }) {
+    this.timeState.currentUtcMs = utcMs;
     this.rebuildPlanetPositions();
     this.updateTimeUI();
-    // Setting the clock rebuilds the whole sky at once — every body steps, so
-    // the Sun's exposed fraction can jump. Snap the Sun-optics state (flash
-    // baseline, silhouette dim, occluder incumbent) instead of reading the jump
-    // as a limb clearing or letting a stale scene's occluder linger.
     this.noteSunViewDiscontinuity();
+    if (opts.restartSearches) {
+      this.startObservatoryEventSearch();
+      this.startMapEventSearch();
+    }
+  }
+
+  /** Set the simulation clock and refresh world positions + time UI
+   *  immediately. The event-jump callers restart their own searches around
+   *  this call (they have the event in hand), so it does not. */
+  setCurrentUtcMs(utcMs: number) {
+    this.setClock(utcMs, { restartSearches: false });
+  }
+
+  /** Dev bridge: set the clock the way the date field does, event searches
+   *  and all — a console time set must not leave the Observatory listing the
+   *  events of the instant it left. */
+  devSetTimeMs(utcMs: number) {
+    this.setClock(utcMs, { restartSearches: true });
   }
 
   // Shared clock handlers — the time rail, its panel, the keyboard, and the
@@ -2160,16 +2210,9 @@ export class PlanetariumMode {
   }
 
   private timeJumpToNow() {
-    this.timeState.currentUtcMs = Date.now();
-    this.rebuildPlanetPositions();
-    this.updateTimeUI();
-    // A clock jump moves every body at once — the Sun's exposed fraction can
-    // step hard, so reseed the flash baseline instead of reading it as a rise.
-    this.noteSunViewDiscontinuity();
-    // Clock jump invalidates the Observatory panel's upcoming-events list, and
+    // The jump invalidates the Observatory panel's upcoming-events list, and
     // the chart card's next-event row with it.
-    this.startObservatoryEventSearch();
-    this.startMapEventSearch();
+    this.setClock(Date.now(), { restartSearches: true });
   }
 
   /** The ☰ menu auto-pauses the clock and restores it on close, and the help
@@ -2234,11 +2277,19 @@ export class PlanetariumMode {
     this.sunChromoToward = 0;
     this.sunAtmosphereMix = 0;
     this.starGain = 1;
-    this.renderer.toneMappingExposure = 1;
+    // The renderer's exposure is not part of this family: main.ts's loop is
+    // its sole writer and pins 1 in every other mode, so writing it here would
+    // only be overwritten on the next frame anyway.
   }
 
   async activate(onProgress?: (progress: PlanetariumActivationProgress) => void): Promise<void> {
     this.active = true;
+    // activate() awaits (the store, the solar system, the star catalog) while
+    // the animation loop keeps calling update(). Hold those frames until the
+    // journey has been restored: on a re-activation the scene graph is already
+    // built, so without this the cruise branch would integrate — and save —
+    // the ship as it was left in the PREVIOUS session for a few frames.
+    this.restoring = true;
     this.resetSunOpticsBaseline();
     // Compile + validate the GPU texturer once, before the visibility gate can
     // run (the gate paints during update(), which only runs while active). The
@@ -2285,12 +2336,9 @@ export class PlanetariumMode {
       performance.mark('plm:solar-system:start');
       try {
         // The star catalog rides the same gate as the solar system: awaiting
-        // it HERE (not later, next to the starfield build) keeps activate's
-        // yield points where they always were — update() frames run during
-        // activation, and a new suspension between the solarSystem assignment
-        // and restoreState would hand them constructor-default state on a
-        // slow network. main.ts kicked the load at init; this await usually
-        // finds it already settled.
+        // it HERE (not later, next to the starfield build) keeps the star data
+        // in place before anything draws with it. main.ts kicked the load at
+        // init; this await usually finds it already settled.
         const [solarSystem] = await Promise.all([
           createSolarSystem((progress) => {
             reportActivationProgress(progress.completedUnits);
@@ -2314,9 +2362,6 @@ export class PlanetariumMode {
       for (const planet of this.solarSystem.planets) {
         this.scene.add(planet.group);
         this.planetMeshByName.set(planet.data.name, planet);
-        const pos = planet.group.position;
-        planet.worldPosAU = { x: pos.x, y: pos.y, z: pos.z };
-        this.planetWorldPositions.set(planet.data.name, { x: pos.x, y: pos.y, z: pos.z });
 
         const moons = createMoonMeshes(planet.data.name);
         if (moons.length > 0) {
@@ -2354,6 +2399,11 @@ export class PlanetariumMode {
         }
       }
       performance.measure('plm:moon-meshes', 'plm:moon-meshes:start');
+      // Seed every planet's world position from the ephemeris — through the
+      // one pass that owns the shape of those records, so nothing else has to
+      // build one. Positions are re-derived at the restored clock a moment
+      // later; this is what keeps the interval between honest.
+      this.rebuildPlanetPositions();
       this.registerSectorBodies();
 
       for (const orbit of this.solarSystem.orbitLines) {
@@ -2419,6 +2469,8 @@ export class PlanetariumMode {
       this.pointTowardMercury();
       this.showIntroText();
     }
+    // The journey is on the ship: frames may run again.
+    this.restoring = false;
 
     if (this.showConstellations) {
       this.ensureConstellationsReady();
@@ -2437,6 +2489,7 @@ export class PlanetariumMode {
     window.addEventListener('keydown', this.handleKeyDown);
     window.addEventListener('keyup', this.handleKeyUp);
     this.gyro.attach();
+    this.syncGyroWidget();
 
     // Wire up UI controls (once only)
     if (!this.uiWired) {
@@ -2801,6 +2854,9 @@ export class PlanetariumMode {
   }
 
   deactivate(): void {
+    // An activation interrupted before its restore landed must not leave the
+    // gate closed for the next one.
+    this.restoring = false;
     // Clear + cut: deactivation is an authored discontinuity (the next
     // activation reposes absolutely), so the aim adopts fresh on return.
     clearArrivalLook(this.cruiseAim);
@@ -2860,6 +2916,11 @@ export class PlanetariumMode {
     window.removeEventListener('keydown', this.handleKeyDown);
     window.removeEventListener('keyup', this.handleKeyUp);
     this.gyro.detach();
+    // A key still down when the mode goes away sends its keyup to a listener
+    // that is no longer there, so it would still read as pressed on the way
+    // back and thrust with nothing held. Same for a flight touch mid-drag.
+    this.keys.clear();
+    this.activeFlightTouchId = null;
     this.touchYaw = 0;
     this.touchPitch = 0;
     this.uiRefreshAccumulator = PlanetariumMode.UI_REFRESH_INTERVAL_S;
@@ -3045,7 +3106,7 @@ export class PlanetariumMode {
   }
 
   update(dt: number): void {
-    if (!this.active || !this.solarSystem) return;
+    if (!this.active || this.restoring || !this.solarSystem) return;
     this.lastFrameDtMs = dt * 1000;
     this.frameStamp++;
     // One damping step runs per frame (the controls wrapper enforces it), so
@@ -8179,16 +8240,9 @@ export class PlanetariumMode {
       timeInputEl.addEventListener('change', () => {
         const utcMs = parseUtcInputValue(timeInputEl.value);
         if (utcMs !== null) {
-          this.timeState.currentUtcMs = utcMs;
-          this.rebuildPlanetPositions();
-          this.updateTimeUI();
-          // A typed date can leap the bodies far in one step — reseed the flash
-          // baseline so the new geometry doesn't read as a Sun emergence.
-          this.noteSunViewDiscontinuity();
-          this.startObservatoryEventSearch();
-          // Reachable over an open map: only the expanded panel closes with the
-          // map, the bottom bar's date field stays live.
-          this.startMapEventSearch();
+          // The map search restarts too: only the expanded panel closes with
+          // the map, the bottom bar's date field stays live over it.
+          this.setClock(utcMs, { restartSearches: true });
         }
       });
     }
@@ -11838,6 +11892,15 @@ export class PlanetariumMode {
    * true to restore. Dev bridge only.
    */
   devSetChrome(visible: boolean): void {
+    // Stash the user's own chrome once, on the first override: these four are
+    // persisted, and a capture session's 30 s autosave must not bake
+    // chrome-off (or orbit-lines-on) into the journey the user comes back to.
+    this.devChromeUserState ??= {
+      showShip: this.showShip,
+      showOrbitLines: this.showOrbitLines,
+      showBodyLabels: this.showBodyLabels,
+      showBodyMarkers: this.showBodyMarkers,
+    };
     this.showShip = visible;
     this.showOrbitLines = visible;
     this.showBodyLabels = visible;
@@ -12772,9 +12835,13 @@ export class PlanetariumMode {
     return true;
   }
 
-  /** Headless support: jump to the prev/next Observatory event of a kind. */
+  /** Headless support: jump to the prev/next Observatory event of a kind.
+   *  The bridge hands this whatever string the console typed, so the kind is
+   *  checked against the real event set — 'fullMoon' for 'full-moon' used to
+   *  return true and move nothing. */
   devJumpEvent(type: EventType, direction: 1 | -1 = 1): boolean {
     if (!this.landedOn) return false;
+    if (!Object.prototype.hasOwnProperty.call(OBSERVATORY_EVENT_LABELS, type)) return false;
     this.handleObservatoryJump(type, direction);
     return true;
   }
@@ -15553,11 +15620,10 @@ export class PlanetariumMode {
       if (el) el.style.display = display;
     }
     // Conditionally show touch/keyboard hints
-    const isTouchDevice = 'ontouchstart' in window;
     const keysHint = document.getElementById('planetarium-keys-hint');
-    if (keysHint) keysHint.style.display = isTouchDevice ? 'none' : '';
+    if (keysHint) keysHint.style.display = this.isTouchDevice ? 'none' : '';
     const touchZone = document.getElementById('touch-flight-zone');
-    if (touchZone) touchZone.style.display = isTouchDevice ? '' : 'none';
+    if (touchZone) touchZone.style.display = this.isTouchDevice ? '' : 'none';
 
     const leaveBtn = document.getElementById('planetarium-btn-leave');
     if (leaveBtn) leaveBtn.style.display = 'none';
@@ -15688,13 +15754,9 @@ export class PlanetariumMode {
     }
   }
 
-  manualSave() {
-    this.store.saveState(this.getState());
-  }
-
   private getState(): PlanetariumState {
     // While a tutorial runs, every persistence caller gets the pre-tutorial snapshot
-    // (timestamp refreshed): the 30s autosave, the ☰ Save button, manualSave,
+    // (timestamp refreshed): the 30s autosave, the ☰ Save button,
     // and deactivate's final save all keep writing the journey the user left,
     // never the staged showcase — so a reload mid-tutorial resumes the pre-tutorial
     // state. Any reader that wants the LIVE scene (the way
@@ -15711,6 +15773,14 @@ export class PlanetariumMode {
     if (this.preToolState) {
       return { ...this.preToolState, timestamp: Date.now() };
     }
+    // A capture session drives the chrome flags directly (devSetChrome); the
+    // save keeps the values the user chose.
+    const chrome = this.devChromeUserState ?? {
+      showShip: this.showShip,
+      showOrbitLines: this.showOrbitLines,
+      showBodyLabels: this.showBodyLabels,
+      showBodyMarkers: this.showBodyMarkers,
+    };
     return {
       positionAU: { x: this.player.posX, y: this.player.posY, z: this.player.posZ },
       headingRad: this.player.heading,
@@ -15724,17 +15794,15 @@ export class PlanetariumMode {
       timeElapsed: this.player.timeElapsed,
       timestamp: Date.now(),
       autopilot: this.landedOn ? this.preLandAutopilot : this.autopilot,
-      layoutMode: this.layoutMode,
       astroTimeUtcMs: this.timeState.currentUtcMs,
       astroTimeRate: this.timeState.rate,
       astroTimePaused: this.timeState.paused,
-      planetScale: this.planetScale,
-      showShip: this.showShip,
+      showShip: chrome.showShip,
       showConstellations: this.showConstellations,
-      showBodyLabels: this.showBodyLabels,
+      showBodyLabels: chrome.showBodyLabels,
       labelDistancesMode: this.labelDistancesMode,
-      showBodyMarkers: this.showBodyMarkers,
-      showOrbitLines: this.showOrbitLines,
+      showBodyMarkers: chrome.showBodyMarkers,
+      showOrbitLines: chrome.showOrbitLines,
       // Absent until the toggle is flipped, like skyPref below — the widget
       // state itself is NOT the preference (dev/capture paths move it).
       miniChartPref: this.miniChartPrefStored ?? undefined,
@@ -15796,13 +15864,11 @@ export class PlanetariumMode {
     this.player.visitedPlanets = new Set(saved.visitedPlanets);
 
     this.autopilot = saved.autopilot;
-    this.layoutMode = 'realistic';
     this.timeState = {
       currentUtcMs: saved.astroTimeUtcMs,
       rate: saved.astroTimeRate ?? 1,
       paused: saved.astroTimePaused ?? false,
     };
-    this.planetScale = 1; // Always use true scale regardless of saved value
     this.player.systemSpeedMultiplier = saved.systemSpeed ?? PlayerShip.SYSTEM_SPEED_DEFAULT;
     this.systemSlowdown = saved.systemSlowdown ?? true;
     const throttleLabel = document.getElementById('settings-throttle-label');
@@ -16242,13 +16308,20 @@ export class PlanetariumMode {
     // promise on every clock write (event jumps and menu/help restores can
     // otherwise leave it stale until the next 8 Hz HUD pass).
     this.observatoryHud.syncPaused(this.timeState.paused);
+  }
+
+  /** Redraw the ☰ panel's gyro toggle. Driven by GyroSteering's onChange (and
+   *  once per activation for the initial state) rather than by the 8 Hz clock
+   *  tick: this control only ever changes when the user presses it or the
+   *  permission prompt answers. */
+  private syncGyroWidget() {
+    const status = this.gyro.statusLabel();
     const gyroLabel = document.getElementById('settings-gyro-label');
-    if (gyroLabel) gyroLabel.textContent = this.gyro.statusLabel();
+    if (gyroLabel) gyroLabel.textContent = status;
     const gyroToggle = document.getElementById('settings-gyro-toggle');
     if (gyroToggle) {
       gyroToggle.classList.toggle('active', this.gyro.enabled);
       gyroToggle.setAttribute('aria-pressed', this.gyro.enabled ? 'true' : 'false');
-      const status = this.gyro.statusLabel();
       gyroToggle.setAttribute('title',
         status === 'Denied'
           ? 'Motion sensor permission was denied'
@@ -16279,95 +16352,5 @@ export class PlanetariumMode {
 
     this.touchYaw = applyDeadZone(rawX);
     this.touchPitch = applyDeadZone(rawY);
-  }
-
-  dispose() {
-    this.deactivate();
-    // The probes leave the scene now; their materials go once the warm-up's
-    // compile poll has settled (disposing a material mid-poll throws inside a
-    // timer callback nothing here could catch).
-    const probes = this.shaderWarmupProbes;
-    this.shaderWarmupProbes = [];
-    for (const probe of probes) this.scene.remove(probe.group);
-    void this.shaderWarmupSettled.then(() => {
-      for (const probe of probes) probe.dispose();
-    });
-    // The constructor's window-level listeners (activate/deactivate own only
-    // the key handlers): without these removals a disposed mode — and its
-    // whole scene graph, through the closures — stays reachable, and its
-    // blur handler keeps firing.
-    window.removeEventListener('pointerup', this.onWindowMapDisarm);
-    window.removeEventListener('pointercancel', this.onWindowMapDisarm);
-    window.removeEventListener('blur', this.onWindowBlur);
-    window.removeEventListener('pointerdown', this.onWindowPointerDown, true);
-    window.removeEventListener('pointermove', this.onWindowPointerMove, true);
-    window.removeEventListener('pointerup', this.onWindowPointerUp, true);
-    window.removeEventListener('pointercancel', this.onWindowPointerCancel, true);
-    // The canvas outlives the mode (one renderer, many modes) — its listeners
-    // root the mode the same way the window's do. So do the UI classes'
-    // window/document listeners, and OrbitControls' own canvas set.
-    for (const teardown of this.canvasTeardowns) teardown();
-    this.canvasTeardowns.length = 0;
-    this.controls.dispose();
-    this.timePanel.dispose();
-    this.observatoryPanel.dispose();
-    this.observatoryHud.dispose();
-    // Abandon every colour-tier fetch still in flight: a callback that landed
-    // after this point would apply to a material nothing draws and queue an
-    // upload into a warmer with no renderer behind it. Warm goals go with
-    // them — nothing may start a fetch after this point.
-    for (const up of this.allTextureUpgrades()) {
-      cancelTextureUpgrade(up, 'discard');
-      disarmArrivalWarmGoal(up);
-    }
-    this.arrivalWarmUps = [];
-    // Unbind before the loader teardown so no late tier fetch can race a
-    // disposing transcoder; a loader never instantiated disposes nothing.
-    bindKtx2TierLoader(null);
-    this.ktx2Loader?.then((loader) => loader.dispose()).catch(() => {});
-    this.ktx2Loader = null;
-    // The relief tiers ride the same network and need the same abandonment.
-    for (const moons of this.planetMoons.values()) {
-      for (const m of moons) cancelNormalUpgrade(m.normalUpgrade);
-    }
-    this.sectors?.dispose();
-    this.sectors = null;
-    resetTextureWarmer(); // drop queued warm-ups and the renderer binding with the mode
-    this.moonTexturer.dispose();
-    this.notification.dispose();
-    if (this.planetLabels) {
-      this.planetLabels.dispose();
-      this.planetLabels = null;
-    }
-    if (this.moonLabelContainer) {
-      this.moonLabelContainer.remove();
-      this.moonLabelContainer = null;
-      this.moonLabels.clear();
-    }
-    this.sunLabel.dispose();
-    this.shadowVisuals.dispose();
-    this.orbitDetailsVisuals.dispose();
-    this.hideOrbitFocusLabels();
-    if (this.solarSystem) {
-      this.solarSystem.sun.removeFromParent();
-      this.solarSystem.asteroidBelt.removeFromParent();
-      for (const p of this.solarSystem.planets) p.group.removeFromParent();
-      for (const o of this.solarSystem.orbitLines) {
-        o.removeFromParent();
-        o.geometry.dispose();
-        (o.material as THREE.Material).dispose();
-      }
-      for (const g of this.moonSystemGroups.values()) g.removeFromParent();
-    }
-    this.player.group.removeFromParent();
-    if (this.starfield) this.starfield.removeFromParent();
-    if (this.constellations) {
-      this.constellations.dispose();
-      this.constellations = null;
-    }
-    // The map (built lazily by the corner chart on most sessions) holds its
-    // own window/canvas listeners, OrbitControls, GPU resources and label DOM.
-    this.systemMap?.dispose();
-    this.systemMap = null;
   }
 }

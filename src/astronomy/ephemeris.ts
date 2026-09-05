@@ -427,5 +427,8 @@ export function findEvent(type: EventType, from: Date, direction: 1 | -1): Date 
     case 'new-moon': return findNewMoon(from, direction);
     case 'lunar-eclipse': return findLunarEclipse(from, direction);
     case 'solar-eclipse': return findSolarEclipse(from, direction);
+    // A kind outside the union can only come from an untyped caller (the dev
+    // bridge passes a console string); no event is the honest answer.
+    default: return null;
   }
 }

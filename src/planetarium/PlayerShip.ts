@@ -15,6 +15,7 @@ import {
 } from './flightFrame';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { LIGHT_SPEED_AU_PER_S } from './planets/planetData';
+import { SPEED_MAX, SYSTEM_SPEED_MAX } from './shipLimits';
 import { createDefaultShip } from './ship/models/defaultShip';
 import { createVoyagerModel } from './ship/models/voyager';
 import { createCassiniModel } from './ship/models/cassini';
@@ -324,9 +325,9 @@ export class PlayerShip {
   }
 
   static readonly SPEED_MIN = 0;
-  static readonly SPEED_MAX = 20;
+  static readonly SPEED_MAX = SPEED_MAX;
   static readonly SPEED_DEFAULT = 1.0;
-  static readonly SYSTEM_SPEED_MAX = 0.4;     // 0.4c ≈ 120k km/s
+  static readonly SYSTEM_SPEED_MAX = SYSTEM_SPEED_MAX;
   static readonly SYSTEM_SPEED_DEFAULT = 0.083; // ~25k km/s
   static readonly DEFAULT_SPEED_AU_S = DEFAULT_SPEED_AU_S;
 

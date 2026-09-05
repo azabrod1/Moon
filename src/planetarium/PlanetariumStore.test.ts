@@ -4,6 +4,8 @@ import {
   sanitizePlanetariumState,
   PlanetariumStore,
 } from './PlanetariumStore';
+import { SPEED_MAX, SYSTEM_SPEED_MAX } from './shipLimits';
+import { PlayerShip } from './PlayerShip';
 
 /** A minimal valid raw save; fields under test get spread over it. */
 function rawSave(overrides: Record<string, unknown>): Record<string, unknown> {
@@ -237,5 +239,50 @@ describe('saveState reports whether anything committed', () => {
       new PlanetariumStore().saveState(createDefaultPlanetariumState()),
     );
     expect(ok).toBe(false);
+  });
+});
+
+describe('sanitizer bounds', () => {
+  it('clamps a commanded speed to what the ship will accept', () => {
+    expect(sanitizePlanetariumState(rawSave({ speed: 1e9 }))?.speed).toBe(SPEED_MAX);
+    expect(sanitizePlanetariumState(rawSave({ speed: -5 }))?.speed).toBe(0);
+    expect(sanitizePlanetariumState(rawSave({ speed: 3 }))?.speed).toBe(3);
+  });
+
+  it('clamps the system throttle to the ship constant, not a local copy', () => {
+    expect(sanitizePlanetariumState(rawSave({ systemSpeed: 12 }))?.systemSpeed).toBe(SYSTEM_SPEED_MAX);
+    expect(SYSTEM_SPEED_MAX).toBe(PlayerShip.SYSTEM_SPEED_MAX);
+    expect(SPEED_MAX).toBe(PlayerShip.SPEED_MAX);
+  });
+
+  it('keeps the clock inside the Date range', () => {
+    // Past this every ephemeris call returns NaN and the sky empties — the
+    // exact "never crash the app" case the sanitizer exists for.
+    const far = sanitizePlanetariumState(rawSave({ astroTimeUtcMs: 1e300 }));
+    expect(Number.isNaN(new Date(far!.astroTimeUtcMs).getTime())).toBe(false);
+    const back = sanitizePlanetariumState(rawSave({ astroTimeUtcMs: -1e300 }));
+    expect(Number.isNaN(new Date(back!.astroTimeUtcMs).getTime())).toBe(false);
+    // A real instant is untouched.
+    expect(sanitizePlanetariumState(rawSave({}))?.astroTimeUtcMs).toBe(1_700_000_000_000);
+  });
+
+  it('bounds the ship position per axis', () => {
+    const wild = sanitizePlanetariumState(
+      rawSave({ positionAU: { x: 1e300, y: -1e300, z: 4 } }),
+    );
+    expect(Number.isFinite(wild!.positionAU.x)).toBe(true);
+    expect(wild!.positionAU.x).toBeLessThanOrEqual(1e6);
+    expect(wild!.positionAU.y).toBeGreaterThanOrEqual(-1e6);
+    expect(wild!.positionAU.z).toBe(4);
+  });
+
+  it('reads a retired layout/scale save without writing the keys back', () => {
+    // Both keys still parse (old saves carry them) and both are ignored: the
+    // app has one layout and one planet scale.
+    const state = sanitizePlanetariumState(rawSave({ layoutMode: 'aligned', planetScale: 64 }));
+    expect(state).not.toBeNull();
+    expect(state).not.toHaveProperty('layoutMode');
+    expect(state).not.toHaveProperty('planetScale');
+    expect(createDefaultPlanetariumState()).not.toHaveProperty('planetScale');
   });
 });

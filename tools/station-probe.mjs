@@ -257,6 +257,9 @@ try {
       const nap = (m) => new Promise((r) => setTimeout(r, m));
       const alt = () => { const p = window.__moon.probe(b); return (p.distToBodyAU - p.radiusAU) * 149597870.7; };
       if (drive) new Function('moon', drive)(window.__moon);
+      // A clock set moves the bodies at once and the ship on the next frame:
+      // sample from the frame after, never the tick of the set itself.
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
       let lo = Infinity, hi = -Infinity; const t0 = performance.now();
       while (performance.now() - t0 < ms) { const v = alt(); lo = Math.min(lo, v); hi = Math.max(hi, v); await nap(100); }
       return { lo, hi, swing: hi - lo };

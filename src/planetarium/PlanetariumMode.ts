@@ -1482,8 +1482,11 @@ export class PlanetariumMode {
   private readonly tmpRideStep = new THREE.Vector3();
   private readonly tmpRideVel = new THREE.Vector3();
   private readonly tmpRideRel = new THREE.Vector3();
-  /** Whether this frame's planet rebuild was one plain clock step (the same
-   *  test that zeroes the planets' velocities across a seam), for the ride. */
+  /** Whether every planet rebuild since the last ride was one plain clock
+   *  step (the same test that zeroes the planets' velocities across a seam).
+   *  Sticky: a clock set between frames rebuilds once discontinuously and
+   *  the frame's own rebuild then reads as continuous again, so the flag
+   *  only falls here and only the ride pass raises it, after consuming it. */
   private planetStepContinuous = true;
   /** Catalogue lookups the ride pass needs every frame, cached by name. */
   private readonly rideMoonOrbitAU = new Map<string, number>();
@@ -13251,6 +13254,7 @@ export class PlanetariumMode {
       ship.posX, ship.posY, ship.posZ, this.prevPlayerPos.x, this.prevPlayerPos.y, this.prevPlayerPos.z,
       dt, this.planetStepContinuous,
     );
+    this.planetStepContinuous = true;
     if (this.solarSystem) {
       for (const planet of this.solarSystem.planets) {
         const wp = planet.worldPosAU;
@@ -18698,7 +18702,7 @@ export class PlanetariumMode {
     // such seam calls this with dtS = 0 today; the test is what keeps that
     // from being a promise the next seam has to remember.
     const velDenomS = this.simStepWasContinuous(dtS, this.planetVelPrevSimMs) ? dtS : 0;
-    this.planetStepContinuous = velDenomS > 0;
+    if (velDenomS <= 0) this.planetStepContinuous = false;
     this.planetVelPrevSimMs = this.timeState.currentUtcMs;
     for (let i = 0; i < this.solarSystem.planets.length; i++) {
       const planet = this.solarSystem.planets[i];

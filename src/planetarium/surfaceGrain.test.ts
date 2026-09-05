@@ -588,6 +588,12 @@ describe('valueNoise', () => {
   });
 });
 
+// The traceCurves and smear-rule scenes below each build the full raster and
+// run the leveller over it, which is more than a test's default 5 s budget
+// allows for when the suite runs them alongside everything else: the
+// curved-step scene alone takes ~3 s on a laptop and ran 7 s on the CI runner.
+const SLOW = 30000;
+
 describe('traceCurves and the curved boundaries it levels', () => {
   // A frame boundary that is neither a meridian nor a parallel: a sinusoid all
   // the way round the map, smeared ground on one side of it, and a step whose
@@ -718,7 +724,7 @@ describe('traceCurves and the curved boundaries it levels', () => {
     for (let x = 0; x < W; x += 256) {
       expect(Math.abs(albedoStep(both, x) - albedoStep(lines, x))).toBeLessThan(1);
     }
-  });
+  }, SLOW);
 
   it('rejects a seed with no energy step under it', () => {
     // Uniform texture, one albedo boundary, and a deficit handed in whose level
@@ -756,7 +762,7 @@ describe('traceCurves and the curved boundaries it levels', () => {
     }
     // And the part of the boundary that is over real ground is still traced.
     expect(cut.reduce((t, c) => t + c.spanDeg, 0)).toBeGreaterThan(60);
-  });
+  }, SLOW);
 });
 
 describe('smearRunsOf, the two bars on their own', () => {
@@ -792,11 +798,6 @@ describe('smearRunsOf, the two bars on their own', () => {
     expect(smearRunsOf(sides, { sideDeficitMin: 0.5 })).toEqual([]);
   });
 });
-
-// Each scene here builds the full raster and runs the leveller over it, which
-// is more than a test's default budget allows for when the suite runs them
-// alongside everything else.
-const SLOW = 30000;
 
 describe('the smear rule that decides which traced boundaries are levelled', () => {
   // The seed is an energy contour and the guard that went with it was an

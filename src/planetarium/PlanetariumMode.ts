@@ -248,6 +248,7 @@ import {
 import { applyLensShaderUniforms, type LensShaderUniforms } from '../shared/three/lensShader';
 import { setPointEnergyPixelRatio } from '../shared/three/pointEnergy';
 import { isPhoneViewport, setText } from '../shared/dom';
+import { touchFirstDevice } from '../shared/device';
 import { Constellations } from './Constellations';
 import { snapConstellations } from './data/constellationGeometry';
 import { getMoonsByPlanet, MOONS, type MoonData } from './planets/moonData';
@@ -1859,7 +1860,7 @@ export class PlanetariumMode {
     // so anisotropy and tier limits apply to the very first textures created.
     // The touch budget is the same device class the sector caps and the
     // boot warm use, not a bare touchscreen test: a touch laptop is a desktop.
-    captureDeviceTextureCaps(renderer, this.touchFirstDevice());
+    captureDeviceTextureCaps(renderer, touchFirstDevice());
     // Resolve the bitmap-upload probe during construction: every streamed
     // boot texture awaits its verdict before fetching, so starting it here
     // takes it off the first fetch's critical path. The renderer lets the
@@ -2490,7 +2491,7 @@ export class PlanetariumMode {
       // network but pays no residency up front. (Quality tiers stay
       // capability-based — this split concerns speculation only, and
       // saveData is absent on iOS Safari so it cannot be the gate.)
-      const cacheOnly = this.touchFirstDevice();
+      const cacheOnly = touchFirstDevice();
       for (const up of this.landingPairUpgrades({ type: 'planet', name: 'Earth' })) {
         // The live loader's attempt/cooldown gate, so a re-armed timer never
         // duplicates a pending desktop attempt. The cache-only fetch marks no
@@ -2518,24 +2519,13 @@ export class PlanetariumMode {
     }, PlanetariumMode.BOOT_PAIR_WARM_DELAY_MS);
   }
 
-  /** A phone or tablet: the device class that gets cache-only speculation and
-   *  the smaller sector-tile working set. Capability-based quality tiers are
-   *  unaffected; this only sizes what is held in memory on speculation. */
-  private touchFirstDevice(): boolean {
-    return (
-      /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) || // iPadOS desktop UA
-      (navigator.maxTouchPoints > 0 && window.innerWidth <= 1024)
-    );
-  }
-
   /** Wire the hero bodies' sector sets (SECTOR_SETS) onto their globe meshes.
    *  Sector meshes become children of the globe, so they ride its spin, pole
    *  and (for the Moon) the render-curve scale; the streamer forces the fine
    *  silhouette grid before the first sector shows. */
   private registerSectorBodies(): void {
     if (!this.sectorsEnabled || !this.solarSystem) return;
-    const sectors = new SectorStreamer({ touch: this.touchFirstDevice() });
+    const sectors = new SectorStreamer({ touch: touchFirstDevice() });
     for (const planet of this.solarSystem.planets) {
       const spec = SECTOR_SETS[planet.data.name];
       if (!spec) continue;

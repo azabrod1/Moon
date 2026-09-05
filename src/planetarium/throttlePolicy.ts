@@ -13,6 +13,10 @@
  *   it (stepping down from the crawl parks at zero instead of creeping
  *   asymptotically). The keyboard's continuous ramp is deliberately NOT this
  *   law — taps are discrete.
+ * - rampThrottle: what a held throttle key does per second. An exponential
+ *   ramp above an engage floor, a linear crawl below it, integrated on wall
+ *   time so the feel is the same on a 60 Hz monitor and a 120 Hz phone; the
+ *   rates are the old per-frame factors taken at 60 Hz.
  */
 import { smoothstepUnclamped } from '../shared/math/smoothstep';
 
@@ -114,4 +118,67 @@ export function stepThrottleTap(
   }
   if (current < floors.cut) return 0;
   return Math.max(current * THROTTLE_TAP_DOWN, 0);
+}
+
+export interface ThrottleRampLaw {
+  /** Below this the throttle crawls up linearly (multiplying near-zero would
+   *  never get anywhere); above it the ramp is exponential. */
+  engageBelow: number;
+  /** The linear crawl, in multiplier per second. */
+  engagePerS: number;
+  /** Exponential rate up, per second: the multiplier grows by e^(rate·dt). */
+  upRatePerS: number;
+  /** Exponential rate down, per second, plus a constant pull (multiplier per
+   *  second) so the ramp reaches exactly zero instead of decaying
+   *  asymptotically: the law is dm/dt = −rate·m − pull. */
+  downRatePerS: number;
+  downPullPerS: number;
+}
+
+/** The rates reproduce the tuned per-frame factors at 60 Hz exactly:
+ *  ×1.01 up, ×0.99 − step down, and the engage crawl ×60. */
+const REFERENCE_HZ = 60;
+const UP_RATE = Math.log(1.01) * REFERENCE_HZ;
+const DOWN_RATE = -Math.log(0.99) * REFERENCE_HZ;
+/** The constant pull whose closed-form step at 60 Hz subtracts exactly
+ *  `stepPerFrame` after the ×0.99. */
+const downPullFor = (stepPerFrame: number) => (stepPerFrame * DOWN_RATE) / (1 - Math.exp(-DOWN_RATE / REFERENCE_HZ));
+/** The open-cruise ramp (multiplier of light speed). */
+export const CRUISE_RAMP: ThrottleRampLaw = {
+  engageBelow: 0.05,
+  engagePerS: 0.002 * REFERENCE_HZ,
+  upRatePerS: UP_RATE,
+  downRatePerS: DOWN_RATE,
+  downPullPerS: downPullFor(0.001),
+};
+/** The in-system ramp (multiplier is a fraction of system speed). */
+export const SYSTEM_RAMP: ThrottleRampLaw = {
+  engageBelow: 0.001,
+  engagePerS: 0.0001 * REFERENCE_HZ,
+  upRatePerS: UP_RATE,
+  downRatePerS: DOWN_RATE,
+  downPullPerS: downPullFor(0.0001),
+};
+
+/**
+ * A held throttle key for `dtS` seconds. Wall-time: one 0.1 s step lands
+ * where ten 0.01 s steps do (up to the engage crossing, which the linear
+ * crawl makes a single point), so the feel does not depend on the display's
+ * refresh rate or on a hitch frame.
+ */
+export function rampThrottle(
+  current: number,
+  direction: 1 | -1,
+  dtS: number,
+  law: ThrottleRampLaw,
+  max: number,
+): number {
+  if (direction === 1) {
+    if (current < law.engageBelow) return Math.min(current + law.engagePerS * dtS, max);
+    return Math.min(current * Math.exp(law.upRatePerS * dtS), max);
+  }
+  // The exact solution of dm/dt = −rate·m − pull over dtS, so that any split
+  // of an interval composes to the same value.
+  const rest = law.downPullPerS / law.downRatePerS;
+  return Math.max((current + rest) * Math.exp(-law.downRatePerS * dtS) - rest, 0);
 }

@@ -145,7 +145,7 @@ import {
 import { debugError, debugWarn } from '../shared/debug';
 import { cssHexColor } from '../shared/color';
 import { markerQuadPx } from './planetMarkers';
-import { CRUISE_TAP_FLOORS, SYSTEM_TAP_FLOORS, stepThrottleTap, systemSpeedFactor, type SystemSpeedResult } from './throttlePolicy';
+import { CRUISE_TAP_FLOORS, SYSTEM_TAP_FLOORS, stepThrottleTap, systemSpeedFactor, type SystemSpeedResult, rampThrottle, CRUISE_RAMP, SYSTEM_RAMP } from './throttlePolicy';
 import { GyroSteering } from './input/GyroSteering';
 import { SurfaceLook } from './input/SurfaceLook';
 import {
@@ -3070,7 +3070,7 @@ export class PlanetariumMode {
     this.player.held = !isScriptedTransfer && this.timeState.paused;
     if (!isScriptedTransfer) {
       // Process keyboard input (held: early-returns with zeroed steering)
-      this.processInput();
+      this.processInput(dt);
 
       if (!this.player.held) {
         // Autopilot: steer toward target if no manual steering input
@@ -6584,7 +6584,7 @@ export class PlanetariumMode {
     }
   }
 
-  private processInput() {
+  private processInput(dt: number) {
     if (this.landedOn) return;
     // The map is a clock instrument, not a cockpit: while it owns the frame,
     // no key/touch/gyro steers the coasting ship and the throttle is inert.
@@ -6646,30 +6646,25 @@ export class PlanetariumMode {
       this.disableAutopilot();
     }
 
+    // The ramp integrates on the frame's dt (throttlePolicy.rampThrottle):
+    // a held key changes the speed by wall time, the same on a 60 Hz monitor
+    // and a 120 Hz phone, like every other smoother in the rig.
     if (throttle > 0) {
       this.reviveParkedShip(); // accelerating a parked ship means "go"
       // Accelerate — route to whichever speed mode is active
       if (this.inSystemMode) {
-        if (this.player.systemSpeedMultiplier < 0.001) {
-          this.player.systemSpeedMultiplier = Math.min(this.player.systemSpeedMultiplier + 0.0001, PlayerShip.SYSTEM_SPEED_MAX);
-        } else {
-          this.player.systemSpeedMultiplier = Math.min(this.player.systemSpeedMultiplier * 1.01, PlayerShip.SYSTEM_SPEED_MAX);
-        }
+        this.player.systemSpeedMultiplier = rampThrottle(this.player.systemSpeedMultiplier, 1, dt, SYSTEM_RAMP, PlayerShip.SYSTEM_SPEED_MAX);
       } else {
-        if (this.player.speedMultiplier < 0.05) {
-          this.player.speedMultiplier = Math.min(this.player.speedMultiplier + 0.002, PlayerShip.SPEED_MAX);
-        } else {
-          this.player.speedMultiplier = Math.min(this.player.speedMultiplier * 1.01, PlayerShip.SPEED_MAX);
-        }
+        this.player.speedMultiplier = rampThrottle(this.player.speedMultiplier, 1, dt, CRUISE_RAMP, PlayerShip.SPEED_MAX);
       }
       this.updateSpeedSlider();
     }
     if (throttle < 0) {
       // Decelerate — route to whichever speed mode is active
       if (this.inSystemMode) {
-        this.player.systemSpeedMultiplier = Math.max(this.player.systemSpeedMultiplier * 0.99 - 0.0001, 0);
+        this.player.systemSpeedMultiplier = rampThrottle(this.player.systemSpeedMultiplier, -1, dt, SYSTEM_RAMP, PlayerShip.SYSTEM_SPEED_MAX);
       } else {
-        this.player.speedMultiplier = Math.max(this.player.speedMultiplier * 0.99 - 0.001, 0);
+        this.player.speedMultiplier = rampThrottle(this.player.speedMultiplier, -1, dt, CRUISE_RAMP, PlayerShip.SPEED_MAX);
       }
       this.updateSpeedSlider();
     }

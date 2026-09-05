@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { CRUISE_RAMP, SYSTEM_RAMP, rampThrottle } from './throttlePolicy';
 import {
   CRUISE_TAP_FLOORS,
   SUN_SYSTEM_RADIUS_AU,
@@ -90,5 +91,48 @@ describe('stepThrottleTap', () => {
       const engaged = stepThrottleTap(0, 1, floors, 10);
       expect(stepThrottleTap(engaged, -1, floors, 10)).toBe(0);
     }
+  });
+});
+
+describe('rampThrottle', () => {
+  const FRAME_60 = 1 / 60;
+
+  it('reproduces the tuned per-frame factors at 60 Hz', () => {
+    expect(rampThrottle(1, 1, FRAME_60, CRUISE_RAMP, 20)).toBeCloseTo(1.01, 12);
+    expect(rampThrottle(1, -1, FRAME_60, CRUISE_RAMP, 20)).toBeCloseTo(0.99 - 0.001, 12);
+    expect(rampThrottle(0.01, 1, FRAME_60, CRUISE_RAMP, 20)).toBeCloseTo(0.012, 12);
+    expect(rampThrottle(0.0005, 1, FRAME_60, SYSTEM_RAMP, 0.4)).toBeCloseTo(0.0006, 12);
+    expect(rampThrottle(0.1, -1, FRAME_60, SYSTEM_RAMP, 0.4)).toBeCloseTo(0.1 * 0.99 - 0.0001, 12);
+  });
+
+  it('is frame-rate invariant: one 0.1 s step equals ten 0.01 s steps', () => {
+    for (const [start, dir] of [[1, 1], [4, -1], [0.02, 1]] as Array<[number, 1 | -1]>) {
+      const one = rampThrottle(start, dir, 0.1, CRUISE_RAMP, 20);
+      let ten = start;
+      for (let i = 0; i < 10; i++) ten = rampThrottle(ten, dir, 0.01, CRUISE_RAMP, 20);
+      expect(ten).toBeCloseTo(one, 9);
+    }
+  });
+
+  it('doubles a held cruise throttle in the same wall time at 60 and 120 Hz', () => {
+    const secondsToDouble = (hz: number) => {
+      let mult = 1;
+      let frames = 0;
+      while (mult < 2) {
+        mult = rampThrottle(mult, 1, 1 / hz, CRUISE_RAMP, 20);
+        frames++;
+      }
+      return frames / hz;
+    };
+    expect(secondsToDouble(60)).toBeCloseTo(secondsToDouble(120), 1);
+    expect(secondsToDouble(60)).toBeGreaterThan(1.1);
+    expect(secondsToDouble(60)).toBeLessThan(1.2);
+  });
+
+  it('clamps at the cap going up and parks at exactly zero going down', () => {
+    expect(rampThrottle(19.999, 1, 1, CRUISE_RAMP, 20)).toBe(20);
+    let mult = 0.05;
+    for (let i = 0; i < 600; i++) mult = rampThrottle(mult, -1, FRAME_60, CRUISE_RAMP, 20);
+    expect(mult).toBe(0);
   });
 });

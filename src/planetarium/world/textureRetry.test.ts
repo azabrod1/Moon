@@ -25,6 +25,8 @@ interface Attempt {
   at: number;
   onLoad: (tex: unknown) => void;
   onError: (err: unknown) => void;
+  stillWanted?: () => boolean;
+  signal?: AbortSignal;
 }
 
 /** A hand-cranked world: a clock the test moves, a timer queue that fires on
@@ -40,8 +42,10 @@ function harness(respond?: (attempt: Attempt) => void) {
   const wakeListeners = new Set<() => void>();
 
   const deps = {
-    load: (url, onLoad, _progress, onError) => {
-      const attempt: Attempt = { url, at: now, onLoad: onLoad as (t: unknown) => void, onError };
+    load: (url, onLoad, _progress, onError, stillWanted, signal) => {
+      const attempt: Attempt = {
+        url, at: now, onLoad: onLoad as (t: unknown) => void, onError, stillWanted, signal,
+      };
       attempts.push(attempt);
       respond?.(attempt);
     },
@@ -379,6 +383,31 @@ describe('cancellation', () => {
     h.attempts[0].onLoad(tex); // three's loader cannot be aborted
     expect(got).toEqual([]);
     expect(tex.disposed).toBe(true);
+  });
+
+  it('reaches the loader: the transfer is aborted and the decode declined', () => {
+    // Without this the fetch runs to completion and a full-size bitmap is
+    // decoded for an attempt nobody is waiting on any more — the exact waste
+    // the streamed loader grew its two cancellation arguments for.
+    const h = harness();
+    const fetch = fetchTextureDurably({ url: URL, onLoad: () => {} }, h.deps);
+    const attempt = h.attempts[0];
+    expect(attempt.stillWanted?.()).toBe(true);
+    expect(attempt.signal?.aborted).toBe(false);
+    fetch.cancel();
+    expect(attempt.stillWanted?.()).toBe(false);
+    expect(attempt.signal?.aborted).toBe(true);
+  });
+
+  it('gives each attempt its own signal, so a retry is not born aborted', () => {
+    const h = harness();
+    fetchTextureDurably({ url: URL, onLoad: () => {} }, h.deps);
+    h.failLast();
+    h.advance(600_000);
+    expect(h.attempts.length).toBeGreaterThan(1);
+    const [first, second] = h.attempts;
+    expect(second.signal).not.toBe(first.signal);
+    expect(second.signal?.aborted).toBe(false);
   });
 
   it('lets a caller cancel from inside the failure callback', () => {

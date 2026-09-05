@@ -578,6 +578,7 @@ async function switchAppMode(newMode: AppMode): Promise<boolean> {
   debugLog('Switching app mode', { from: appMode, to: newMode });
   const from = appMode;
   let switched = false;
+  let failed = false;
 
   try {
     modeTransition.classList.add('active');
@@ -618,8 +619,7 @@ async function switchAppMode(newMode: AppMode): Promise<boolean> {
         // mode closes its own entry surfaces, then this callback owns the switch.
         planetariumMode.onVolumeCompareRequest(() => {
           if (modeSwitchInFlight || appMode === 'volumeCompare') return false;
-          void switchAppMode('volumeCompare');
-          return true;
+          return switchAppMode('volumeCompare');
         });
       }
       debugLog('Activating Planetarium mode');
@@ -720,6 +720,7 @@ async function switchAppMode(newMode: AppMode): Promise<boolean> {
   } catch (err) {
     debugError('Mode switch failed', { from, to: newMode, err });
     console.error('Mode switch failed:', err);
+    failed = true;
   } finally {
     // The veil must never strand: if a mode activation throws, the app is
     // degraded but the user can still see a scene and click their way out.
@@ -728,8 +729,12 @@ async function switchAppMode(newMode: AppMode): Promise<boolean> {
   }
   // A failure after the current mode was taken down would leave a mode with
   // no UI and no exit; the planetarium is the one mode that always comes back.
-  if (!switched && appMode !== 'planetarium' && appModeInitialized) {
-    void switchAppMode('planetarium');
+  // Either way the user hears about it: a chunk that would not load looks
+  // like a dead button otherwise.
+  if (failed) {
+    const notice = () => planetariumMode?.notify('That could not be opened. Check the connection and try again.');
+    if (appMode !== 'planetarium' && appModeInitialized) void switchAppMode('planetarium').then(notice);
+    else notice();
   }
   return switched;
 }

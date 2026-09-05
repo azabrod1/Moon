@@ -20,10 +20,10 @@ export const KM_PER_AU = 149_597_870.7;
 export const SUN_RADIUS_KM = 695_700;
 
 /**
- * Solar radius in AU. Every solar angular-radius term in the app divides this
- * by a distance — the umbra test that picks a planet's shadow-casting moons,
- * the surface shader's penumbra width, the eclipse geometry — so it has one
- * definition here. (The drawn Sun uses the catalog's photospheric radius,
- * which is a slightly different measurement of the same star.)
+ * Solar radius in AU. The solar angular-radius terms in the world pass divide
+ * this by a distance — the umbra test that picks a planet's shadow-casting
+ * moons and the surface shader's penumbra width — so it has one definition
+ * here. (The drawn Sun and the eclipse geometry use the catalog's
+ * photospheric radius, a slightly different measurement of the same star.)
  */
 export const SUN_RADIUS_AU = SUN_RADIUS_KM / KM_PER_AU;

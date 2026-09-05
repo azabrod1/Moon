@@ -1844,7 +1844,10 @@ export class PlanetariumMode {
     this.helpModal.show();
   }
 
-  private hideHelp() {
+  /** Close the help. It counts as seen only when the user closed it: a
+   *  programmatic close (a tool or tutorial taking the scene) must not burn
+   *  a first visitor's intro before they have read it. */
+  private hideHelp(opts: { markSeen: boolean } = { markSeen: true }) {
     if (!this.helpModal.isOpen()) return;
     this.helpModal.hide();
     if (this.resumeShipAfterHelp) this.player.moving = true;
@@ -1852,16 +1855,23 @@ export class PlanetariumMode {
     this.updateTimeUI();
     this.resumeShipAfterHelp = false;
     this.resumeTimeAfterHelp = false;
-    this.store.markHelpSeen();
+    if (opts.markSeen) this.store.markHelpSeen();
+  }
+
+  /** A short notice in the mode's own toast (mode switching lives in main.ts,
+   *  which has no toast of its own). */
+  notify(message: string): void {
+    this.notification.show(message);
   }
 
   // Mode switching lives in main.ts, not here; the "How many fit?" Tools entry
   // calls this stored callback so main.ts can drive switchAppMode
   // (MoonFlight's onExit idiom).
   /** Owns the switch into the "How many fit?" tool; answers whether the
-   *  switch was taken (a switch already in flight refuses it). */
-  private volumeCompareRequestCb: (() => boolean) | null = null;
-  onVolumeCompareRequest(cb: () => boolean): void {
+   *  switch was taken — at once for a refusal (one already in flight), or
+   *  once the switch has run for a failure on the way in. */
+  private volumeCompareRequestCb: (() => boolean | Promise<boolean>) | null = null;
+  onVolumeCompareRequest(cb: () => boolean | Promise<boolean>): void {
     this.volumeCompareRequestCb = cb;
   }
 
@@ -1887,11 +1897,12 @@ export class PlanetariumMode {
   /** Above zero while a deliberate warm-up links programs (a context
    *  restore): those links are not misses. */
   private linkWarningsMuted = 0;
-  /** The warm-up's probe groups, kept in the scene for the session so the
-   *  programs only they hold are not destroyed with them. Owned from the
-   *  moment they enter the scene; their materials are disposed only after
-   *  the compile's poll has settled. */
+  /** The warm-up's probe groups, kept in the scene for the page's life so
+   *  the programs only they hold are never destroyed with them (the mode
+   *  itself lives that long). */
   private shaderWarmupProbes: WarmupProbes[] = [];
+  /** Settles when the warm-up's compile poll has: a re-warm waits on it
+   *  before un-muting the late-link check. */
   private shaderWarmupSettled: Promise<void> = Promise.resolve();
 
   constructor(
@@ -2290,187 +2301,195 @@ export class PlanetariumMode {
     // built, so without this the cruise branch would integrate — and save —
     // the ship as it was left in the PREVIOUS session for a few frames.
     this.restoring = true;
-    this.resetSunOpticsBaseline();
-    // Compile + validate the GPU texturer once, before the visibility gate can
-    // run (the gate paints during update(), which only runs while active). The
-    // validation makes the GPU path fail closed to CPU; idempotent across calls.
-    this.moonTexturer.prewarm();
-    // Startup-phase marks — summarized in one console line after the first
-    // frame (logStartupTimings in main.ts).
-    performance.mark('plm:activate:start');
-    const reportActivationProgress = (completedUnits: number) => {
-      onProgress?.({
-        completedUnits,
-        totalUnits: FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS,
-      });
-    };
+    // Declared ahead of the restore window: the code after it reads both.
+    let reportActivationProgress: (completedUnits: number) => void = () => {};
+    let buildingSolarSystem = false;
+    try {
+      this.resetSunOpticsBaseline();
+      // Compile + validate the GPU texturer once, before the visibility gate can
+      // run (the gate paints during update(), which only runs while active). The
+      // validation makes the GPU path fail closed to CPU; idempotent across calls.
+      this.moonTexturer.prewarm();
+      // Startup-phase marks — summarized in one console line after the first
+      // frame (logStartupTimings in main.ts).
+      performance.mark('plm:activate:start');
+      reportActivationProgress = (completedUnits: number) => {
+        onProgress?.({
+          completedUnits,
+          totalUnits: FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS,
+        });
+      };
 
-    const planetariumUI = document.getElementById('planetarium-ui');
-    if (planetariumUI) planetariumUI.style.display = 'block';
+      const planetariumUI = document.getElementById('planetarium-ui');
+      if (planetariumUI) planetariumUI.style.display = 'block';
 
-    // Cache UI element references
-    this.statsPanel.bind();
-    this.timePanel.bind();
-    this.observatoryPanel.bind();
-    this.observatoryHud.bind();
-    this.surfaceTargetMenu.bind();
-    this.tutorialCard.bind();
-    this.speedValueEl = document.getElementById('planetarium-speed-value');
-    this.speedLabelEl = document.getElementById('planetarium-speed-label');
-    this.speedCenterEl = document.querySelector('.speed-center') as HTMLElement | null;
+      // Cache UI element references
+      this.statsPanel.bind();
+      this.timePanel.bind();
+      this.observatoryPanel.bind();
+      this.observatoryHud.bind();
+      this.surfaceTargetMenu.bind();
+      this.tutorialCard.bind();
+      this.speedValueEl = document.getElementById('planetarium-speed-value');
+      this.speedLabelEl = document.getElementById('planetarium-speed-label');
+      this.speedCenterEl = document.querySelector('.speed-center') as HTMLElement | null;
 
-    const savedState = await this.store.loadState();
-    // Precompile below runs only on the activation that builds the scene —
-    // on later re-activations every program is already cached on the renderer.
-    const buildingSolarSystem = !this.solarSystem;
-    const initialDefaultState = savedState ? null : createDefaultPlanetariumState();
-    if (initialDefaultState) {
-      // Persist a starter journey immediately so slow mobile loads can still resume.
-      this.store.saveState(initialDefaultState);
-    }
-    const shouldPromptForResume = !this.solarSystem && !!savedState;
-    reportActivationProgress(this.solarSystem ? CREATE_SOLAR_SYSTEM_TOTAL_UNITS : 0);
-
-    if (!this.solarSystem) {
-      const initialWorldUtcMs = savedState?.astroTimeUtcMs ?? this.timeState.currentUtcMs;
-      performance.mark('plm:solar-system:start');
-      try {
-        // The star catalog rides the same gate as the solar system: awaiting
-        // it HERE (not later, next to the starfield build) keeps the star data
-        // in place before anything draws with it. main.ts kicked the load at
-        // init; this await usually finds it already settled.
-        const [solarSystem] = await Promise.all([
-          createSolarSystem((progress) => {
-            reportActivationProgress(progress.completedUnits);
-          }, this.useBloom, this.layoutMode, new Date(initialWorldUtcMs)),
-          loadBrightStarCatalog(),
-        ]);
-        this.solarSystem = solarSystem;
-      } catch (error) {
-        this.resumePrompt.cancel();
-        throw error;
+      const savedState = await this.store.loadState();
+      // Precompile below runs only on the activation that builds the scene —
+      // on later re-activations every program is already cached on the renderer.
+      buildingSolarSystem = !this.solarSystem;
+      const initialDefaultState = savedState ? null : createDefaultPlanetariumState();
+      if (initialDefaultState) {
+        // Persist a starter journey immediately so slow mobile loads can still resume.
+        this.store.saveState(initialDefaultState);
       }
+      const shouldPromptForResume = !this.solarSystem && !!savedState;
+      reportActivationProgress(this.solarSystem ? CREATE_SOLAR_SYSTEM_TOTAL_UNITS : 0);
 
-      performance.measure('plm:solar-system', 'plm:solar-system:start');
+      if (!this.solarSystem) {
+        const initialWorldUtcMs = savedState?.astroTimeUtcMs ?? this.timeState.currentUtcMs;
+        performance.mark('plm:solar-system:start');
+        try {
+          // The star catalog rides the same gate as the solar system: awaiting
+          // it HERE (not later, next to the starfield build) keeps the star data
+          // in place before anything draws with it. main.ts kicked the load at
+          // init; this await usually finds it already settled.
+          const [solarSystem] = await Promise.all([
+            createSolarSystem((progress) => {
+              reportActivationProgress(progress.completedUnits);
+            }, this.useBloom, this.layoutMode, new Date(initialWorldUtcMs)),
+            loadBrightStarCatalog(),
+          ]);
+          this.solarSystem = solarSystem;
+        } catch (error) {
+          this.resumePrompt.cancel();
+          throw error;
+        }
 
-      // Add everything to scene
-      this.scene.add(this.solarSystem.sun);
-      this.scene.add(this.solarSystem.asteroidBelt);
-      setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, this.renderer.getPixelRatio());
+        performance.measure('plm:solar-system', 'plm:solar-system:start');
 
-      performance.mark('plm:moon-meshes:start');
-      for (const planet of this.solarSystem.planets) {
-        this.scene.add(planet.group);
-        this.planetMeshByName.set(planet.data.name, planet);
+        // Add everything to scene
+        this.scene.add(this.solarSystem.sun);
+        this.scene.add(this.solarSystem.asteroidBelt);
+        setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, this.renderer.getPixelRatio());
 
-        const moons = createMoonMeshes(planet.data.name);
-        if (moons.length > 0) {
-          this.planetMoons.set(planet.data.name, moons);
-          const systemGroup = new THREE.Group();
-          for (const m of moons) {
-            systemGroup.add(m.mesh);
-            this.moonMeshByName.set(m.data.name, m);
-            // Planetshine is tinted by the parent, which never changes for a
-            // moon — so the catalog colour (and its sRGB conversion) is read
-            // here, not in the per-frame feed.
-            m.fx?.uPlanetshineColor.value.set(planet.data.color);
+        performance.mark('plm:moon-meshes:start');
+        for (const planet of this.solarSystem.planets) {
+          this.scene.add(planet.group);
+          this.planetMeshByName.set(planet.data.name, planet);
+
+          const moons = createMoonMeshes(planet.data.name);
+          if (moons.length > 0) {
+            this.planetMoons.set(planet.data.name, moons);
+            const systemGroup = new THREE.Group();
+            for (const m of moons) {
+              systemGroup.add(m.mesh);
+              this.moonMeshByName.set(m.data.name, m);
+              // Planetshine is tinted by the parent, which never changes for a
+              // moon — so the catalog colour (and its sRGB conversion) is read
+              // here, not in the per-frame feed.
+              m.fx?.uPlanetshineColor.value.set(planet.data.color);
+            }
+            this.moonSystemGroups.set(planet.data.name, systemGroup);
+            this.scene.add(systemGroup);
+            // Queue this system's textures for the background drain. The gate
+            // paints any system synchronously before it's shown regardless.
+            this.moonPainter.enqueue(planet.data.name, moons);
           }
-          this.moonSystemGroups.set(planet.data.name, systemGroup);
-          this.scene.add(systemGroup);
-          // Queue this system's textures for the background drain. The gate
-          // paints any system synchronously before it's shown regardless.
-          this.moonPainter.enqueue(planet.data.name, moons);
+
+          if (!this.moonLabelContainer) {
+            this.moonLabelContainer = document.createElement('div');
+            this.moonLabelContainer.id = 'moon-labels';
+            this.moonLabelContainer.style.cssText =
+              'position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:9;overflow:visible;';
+            document.body.appendChild(this.moonLabelContainer);
+          }
+          for (const m of moons) {
+            const label = document.createElement('div');
+            label.className = 'moon-label';
+            label.textContent = m.data.name;
+            label.style.display = 'none';
+            this.moonLabelContainer.appendChild(label);
+            this.moonLabels.set(m.data.name, label);
+          }
+        }
+        performance.measure('plm:moon-meshes', 'plm:moon-meshes:start');
+        // Seed every planet's world position from the ephemeris — through the
+        // one pass that owns the shape of those records, so nothing else has to
+        // build one — at the instant the bodies and orbit lines were just built
+        // for, so neither resamples again when the restored clock lands.
+        this.timeState.currentUtcMs = initialWorldUtcMs;
+        this.rebuildPlanetPositions();
+        this.registerSectorBodies();
+
+        for (const orbit of this.solarSystem.orbitLines) {
+          this.scene.add(orbit);
         }
 
-        if (!this.moonLabelContainer) {
-          this.moonLabelContainer = document.createElement('div');
-          this.moonLabelContainer.id = 'moon-labels';
-          this.moonLabelContainer.style.cssText =
-            'position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:9;overflow:visible;';
-          document.body.appendChild(this.moonLabelContainer);
+        this.scene.add(this.player.group);
+        reportActivationProgress(CREATE_SOLAR_SYSTEM_TOTAL_UNITS);
+      }
+
+      // Create planet labels.
+      if (!this.planetLabels) {
+        this.planetLabels = new PlanetLabels(this.scene, this.camera);
+      }
+      // Cache the label container the PlanetLabels constructor just appended, so
+      // the per-frame container-visibility sync doesn't query the DOM each frame.
+      this.planetLabelsContainerEl = document.getElementById('planet-labels');
+      // The Sun label lives inside that container, which deactivate() destroys
+      // with PlanetLabels — so it must re-attach per activation, not in the
+      // once-per-session wireUpUI (a mode round-trip would orphan it: never
+      // rendering again while its blocker rect still suppressed planet labels).
+      this.sunLabel.attach();
+
+      // Create the Planetarium starfield.
+      if (!this.starfield) {
+        performance.mark('plm:starfield:start');
+        this.starfield = createPlanetariumStarfield(this.renderer.getPixelRatio());
+        this.scene.add(this.starfield);
+        performance.measure('plm:starfield', 'plm:starfield:start');
+      }
+
+      // Create the photometric moon-dot layer — one point per catalog moon, in
+      // the fixed planet→moon iteration order the per-frame fill reuses. Recreated
+      // on each activation (disposed on deactivate) like the planet labels.
+      if (!this.moonDots) {
+        this.starFaintLimitMag = starfieldFaintLimitMag();
+        let dotCount = 0;
+        for (const planet of this.solarSystem.planets) {
+          dotCount += this.planetMoons.get(planet.data.name)?.length ?? 0;
         }
-        for (const m of moons) {
-          const label = document.createElement('div');
-          label.className = 'moon-label';
-          label.textContent = m.data.name;
-          label.style.display = 'none';
-          this.moonLabelContainer.appendChild(label);
-          this.moonLabels.set(m.data.name, label);
-        }
-      }
-      performance.measure('plm:moon-meshes', 'plm:moon-meshes:start');
-      // Seed every planet's world position from the ephemeris — through the
-      // one pass that owns the shape of those records, so nothing else has to
-      // build one. Positions are re-derived at the restored clock a moment
-      // later; this is what keeps the interval between honest.
-      this.rebuildPlanetPositions();
-      this.registerSectorBodies();
-
-      for (const orbit of this.solarSystem.orbitLines) {
-        this.scene.add(orbit);
+        this.moonDots = new MoonDots(dotCount, this.renderer.getPixelRatio());
+        this.scene.add(this.moonDots.points);
       }
 
-      this.scene.add(this.player.group);
-      reportActivationProgress(CREATE_SOLAR_SYSTEM_TOTAL_UNITS);
-    }
-
-    // Create planet labels.
-    if (!this.planetLabels) {
-      this.planetLabels = new PlanetLabels(this.scene, this.camera);
-    }
-    // Cache the label container the PlanetLabels constructor just appended, so
-    // the per-frame container-visibility sync doesn't query the DOM each frame.
-    this.planetLabelsContainerEl = document.getElementById('planet-labels');
-    // The Sun label lives inside that container, which deactivate() destroys
-    // with PlanetLabels — so it must re-attach per activation, not in the
-    // once-per-session wireUpUI (a mode round-trip would orphan it: never
-    // rendering again while its blocker rect still suppressed planet labels).
-    this.sunLabel.attach();
-
-    // Create the Planetarium starfield.
-    if (!this.starfield) {
-      performance.mark('plm:starfield:start');
-      this.starfield = createPlanetariumStarfield(this.renderer.getPixelRatio());
-      this.scene.add(this.starfield);
-      performance.measure('plm:starfield', 'plm:starfield:start');
-    }
-
-    // Create the photometric moon-dot layer — one point per catalog moon, in
-    // the fixed planet→moon iteration order the per-frame fill reuses. Recreated
-    // on each activation (disposed on deactivate) like the planet labels.
-    if (!this.moonDots) {
-      this.starFaintLimitMag = starfieldFaintLimitMag();
-      let dotCount = 0;
-      for (const planet of this.solarSystem.planets) {
-        dotCount += this.planetMoons.get(planet.data.name)?.length ?? 0;
+      if (this.preToolState) {
+        // Returning from the volume-compare tool — restore the exact pre-tool
+        // journey (landed body, camera, clock) captured on entry, not the store's
+        // copy. Cleared so a later fresh activation reads the store normally.
+        // Session-only landed sub-states (surface view, orbit details) drop, same
+        // as a reload; the deck/panel are already closed by that entry.
+        const pre = this.preToolState;
+        this.preToolState = null;
+        this.restoreState(pre);
+      } else if (savedState && shouldPromptForResume) {
+        this.restoreState(savedState);
+        this.deferredResumePromptState = savedState;
+      } else if (savedState) {
+        this.restoreState(savedState);
+      } else {
+        this.restoreState(initialDefaultState ?? createDefaultPlanetariumState());
+        // New users start already gliding, nose on Mercury — motion without a
+        // silent autopilot claiming the Pilot control they never touched.
+        this.pointTowardMercury();
+        this.showIntroText();
       }
-      this.moonDots = new MoonDots(dotCount, this.renderer.getPixelRatio());
-      this.scene.add(this.moonDots.points);
+    } finally {
+      // The journey is on the ship (or the restore threw): frames may run
+      // again either way — a frozen sky is not a better failure.
+      this.restoring = false;
     }
-
-    if (this.preToolState) {
-      // Returning from the volume-compare tool — restore the exact pre-tool
-      // journey (landed body, camera, clock) captured on entry, not the store's
-      // copy. Cleared so a later fresh activation reads the store normally.
-      // Session-only landed sub-states (surface view, orbit details) drop, same
-      // as a reload; the deck/panel are already closed by that entry.
-      const pre = this.preToolState;
-      this.preToolState = null;
-      this.restoreState(pre);
-    } else if (savedState && shouldPromptForResume) {
-      this.restoreState(savedState);
-      this.deferredResumePromptState = savedState;
-    } else if (savedState) {
-      this.restoreState(savedState);
-    } else {
-      this.restoreState(initialDefaultState ?? createDefaultPlanetariumState());
-      // New users start already gliding, nose on Mercury — motion without a
-      // silent autopilot claiming the Pilot control they never touched.
-      this.pointTowardMercury();
-      this.showIntroText();
-    }
-    // The journey is on the ship: frames may run again.
-    this.restoring = false;
 
     if (this.showConstellations) {
       this.ensureConstellationsReady();
@@ -2525,9 +2544,8 @@ export class PlanetariumMode {
       // that reads as a dead click on slow GPUs).
       const shadowProbes = createShadowVisualsWarmupProbes();
       this.scene.add(probes.group, shadowProbes.group);
-      // Owned now, not once the compile settles: the warm-up's bounded wait
-      // can return with the compile still pending, and a teardown in that
-      // window must still find the groups to take out of the scene.
+      // Owned now, not once the compile settles: a context restore during
+      // the warm-up's bounded wait must already find the groups to re-warm.
       this.shaderWarmupProbes.push(probes, shadowProbes);
       // Compile with the live path's kind of target bound (three keys every
       // program on it) and force the links with one 1-pixel draw — see
@@ -4102,8 +4120,6 @@ export class PlanetariumMode {
     return sunDir.addScaledVector(up, 0.5).addScaledVector(side, 0.4).normalize();
   }
 
-  /** The per-frame system throttle — the law lives in throttlePolicy.ts with
-   *  its tests; this binds it to the live player pose and world positions. */
   /**
    * Whether the sim clock advanced by exactly this frame's dt × rate since the
    * pass that stamped `prevSimMs`. Two position passes may only be differenced
@@ -4118,6 +4134,10 @@ export class PlanetariumMode {
     return Number.isFinite(stepS)
       && Math.abs(stepS - expectedS) <= Math.max(Math.abs(expectedS) * 0.25, 0.05);
   }
+
+  /** The per-frame system throttle — the law lives in throttlePolicy.ts with
+
+   *  its tests; this binds it to the live player pose and world positions. */
 
   private computeSystemSpeedFactor(): SystemSpeedResult {
     return systemSpeedFactor(
@@ -6641,8 +6661,8 @@ export class PlanetariumMode {
    * apply this frame. The value is sunExposure, already smoothed inside
    * updateSunShader — the asymmetric clamp/recover glide, the interior-dive
    * tier, and the discontinuity handling all live there, coherent with the
-   * glare/veil uniforms derived from the same number — so `snap` is always
-   * true: the loop must land on it verbatim, never re-glide it.
+   * glare/veil uniforms derived from the same number — so the loop must land
+   * on it verbatim, never re-glide it.
    */
   takeExposureTarget(): number {
     return this.sunExposure;
@@ -7308,7 +7328,7 @@ export class PlanetariumMode {
     // Close the entry surfaces before the guard — a refused click must not
     // leave a dead modal up. Both auto-pause ship and clock, and the snapshot
     // below must capture the resumed truth, not the modal freeze.
-    this.hideHelp();
+    this.hideHelp({ markSeen: false });
     this.closeMenuPanel();
     if (
       !canStartTutorial({
@@ -7804,7 +7824,7 @@ export class PlanetariumMode {
     // truth, not the modal freeze — the order startTutorial keeps.
     this.closeToolsMenu();
     this.closeMenuPanel();
-    this.hideHelp();
+    this.hideHelp({ markSeen: false });
     if (this.tutorial !== null || this.isMissionActive()) return false;
     // Snapshot the pre-tool journey before main.ts deactivates this mode — that
     // deactivate exits landed mode and saves the taken-off state, so without this
@@ -7813,11 +7833,21 @@ export class PlanetariumMode {
     // return, so leaving the tool — or a tab-close inside it — resumes exactly
     // here. Mirrors preMissionState + the tutorial's getState()-serves-snapshot.
     this.preToolState = this.getState();
-    const taken = this.volumeCompareRequestCb?.() ?? false;
-    // A refused switch (one already in flight) leaves this mode live: the
-    // snapshot must not stand in for the journey in every save from here on.
-    if (!taken) this.preToolState = null;
-    return taken;
+    const answer = this.volumeCompareRequestCb?.() ?? false;
+    // A switch that did not happen while this mode stayed live — refused at
+    // once, or failed on the way in before this mode was taken down — must
+    // not leave the snapshot standing in for the journey in every save from
+    // here on. A failure AFTER the teardown keeps it: the fallback
+    // re-activation restores from it.
+    const settle = (taken: boolean) => {
+      if (!taken && this.active) this.preToolState = null;
+    };
+    if (typeof answer === 'boolean') {
+      settle(answer);
+      return answer;
+    }
+    void answer.then(settle, () => settle(false));
+    return true;
   }
 
   private isToolsMenuOpen(): boolean {

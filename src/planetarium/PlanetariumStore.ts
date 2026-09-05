@@ -22,7 +22,7 @@ const LEGACY_HELP_SEEN_KEY = 'explore-help-seen';
 const AUTO_SAVE_INTERVAL = 30_000; // 30 seconds
 /** The widest journey the app can pose. Anything past this is a corrupt or
  *  hand-edited save, not a place a ship has ever been (Pluto's aphelion is
- *  under 50 AU, and the interstellar milestone parks a few thousand out). */
+ *  under 50 AU, and the farthest milestone parks about 120 AU out). */
 const MAX_POSITION_AU = 1e6;
 /** The range a JS Date can hold. An `astroTimeUtcMs` outside it makes every
  *  ephemeris call NaN and empties the sky, which is exactly what sanitizing

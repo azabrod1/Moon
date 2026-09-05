@@ -113,6 +113,14 @@ function runContact(
   const rideWeight = opts.rideWeight ?? 0;
   const rideFrame = rideWeight === 1 ? new RideFrame() : null;
   const pos = startPos.clone();
+  if (rideFrame) {
+    // The ride has history in the app; a cold RideFrame's first frame only
+    // rebases (anchors set, nothing applied). Prime it at the start pose.
+    rideFrame.beginFrame(pos.x, pos.y, pos.z, pos.x, pos.y, pos.z, dt);
+    rideFrame.consider('Earth', 'planet', 0, 0, 0, Infinity, Infinity, EARTH_ENVELOPE);
+    rideFrame.finish(new THREE.Vector3());
+    rideFrame.endFrame(pos.x, pos.y, pos.z);
+  }
   const fwd = heading.clone().normalize();
   const fwd0 = fwd.clone();
   const planet = new THREE.Vector3(0, 0, 0);

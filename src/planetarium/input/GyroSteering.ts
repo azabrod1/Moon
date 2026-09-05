@@ -21,6 +21,7 @@ export class GyroSteering {
   private screenAngle = 0;
   private yawValue = 0;
   private pitchValue = 0;
+  private lastEventMs: number | null = null;
 
   /**
    * @param notify   show a transient status message to the user
@@ -50,6 +51,7 @@ export class GyroSteering {
     this.attached = false;
     window.removeEventListener('deviceorientation', this.handleDeviceOrientation);
     this.baseline = null;
+    this.lastEventMs = null;
     this.yawValue = 0;
     this.pitchValue = 0;
   }
@@ -58,6 +60,7 @@ export class GyroSteering {
     if (this.enabledFlag) {
       this.enabledFlag = false;
       this.baseline = null;
+      this.lastEventMs = null;
       this.yawValue = 0;
       this.pitchValue = 0;
       window.removeEventListener('deviceorientation', this.handleDeviceOrientation);
@@ -129,6 +132,10 @@ export class GyroSteering {
     const mapped = this.mapAxes(beta, gamma, angle);
     if (!mapped) return;
 
+    const nowMs = performance.now();
+    const dtS = this.lastEventMs === null ? 0 : (nowMs - this.lastEventMs) / 1000;
+    this.lastEventMs = nowMs;
+
     if (this.baseline === null || angle !== this.screenAngle) {
       this.screenAngle = angle;
       this.baseline = mapped;
@@ -140,23 +147,33 @@ export class GyroSteering {
     this.yawValue = GyroSteering.smooth(
       this.yawValue,
       this.normalizeDelta(this.baseline.yawDeg - mapped.yawDeg),
+      dtS,
     );
     this.pitchValue = GyroSteering.smooth(
       this.pitchValue,
       this.normalizeDelta(mapped.pitchDeg - this.baseline.pitchDeg),
+      dtS,
     );
   }
 
-  /** Ease toward the tilt target, and SNAP to a true zero once inside the
-   *  residue band. The ease alone only ever approaches zero (×0.82 an
-   *  event), so a centered phone would keep steering by ~1e-6 for a minute —
+  /** Rate of the tilt ease, per second. deviceorientation cadence is the
+   *  device's, not ours — 60 Hz on iOS, anywhere from 50 to 200 Hz elsewhere —
+   *  so a fixed per-event fraction would give every phone a different tail.
+   *  The rate is the one that reproduces the old 0.18-per-event ease at
+   *  60 Hz, which is the cadence it was tuned on. */
+  private static readonly SMOOTH_RATE_PER_S = -60 * Math.log(1 - 0.18);
+
+  /** Ease toward the tilt target over `dtS` of wall time, and SNAP to a true
+   *  zero once inside the residue band. The ease alone only ever approaches
+   *  zero, so a centered phone would keep steering by ~1e-6 for a minute —
    *  and every "is the pilot flying?" test downstream reads this sum. Hands
    *  off the phone must mean exactly zero, or the ship never counts as
    *  unattended: no autopilot steering, no arrival look, no bounce off a
    *  body you flew into. The band sits far under the smallest tilt the dead
    *  zone passes, so real steering is untouched. */
-  private static smooth(value: number, target: number): number {
-    const eased = THREE.MathUtils.lerp(value, target, 0.18);
+  private static smooth(value: number, target: number, dtS: number): number {
+    const alpha = 1 - Math.exp(-GyroSteering.SMOOTH_RATE_PER_S * Math.max(dtS, 0));
+    const eased = THREE.MathUtils.lerp(value, target, alpha);
     return Math.abs(eased) < 1e-4 ? 0 : eased;
   }
 

@@ -213,8 +213,11 @@ export class PlayerShip {
   }
 
   update(dt: number) {
+    // The governed speed is a computed getter; read it once and use that value
+    // for both the exhaust and the integration below.
+    const speed = this.speedAUPerS;
     // Animate exhaust
-    const effectiveMultiplier = this.speedAUPerS / DEFAULT_SPEED_AU_S;
+    const effectiveMultiplier = speed / DEFAULT_SPEED_AU_S;
     const speedFrac = effectiveMultiplier / PlayerShip.SPEED_MAX;
     const exhaustOn = this.moving && effectiveMultiplier > 0.01;
 
@@ -266,7 +269,6 @@ export class PlayerShip {
 
     if (!this.moving || this.held) return;
 
-    const speed = this.speedAUPerS;
     const updatedDirection = this.writeForwardDirection(this.forwardScratch);
 
     const dx = updatedDirection.x * speed * dt;
@@ -287,7 +289,9 @@ export class PlayerShip {
     this.posZ = z;
   }
 
-  headToward(targetX: number, targetZ: number, targetY = this.posY) {
+  /** Point the ship at a scene point. Arguments are scene x, y, z in that
+   *  order — the same order every other position in the app is written in. */
+  headTowardPoint(targetX: number, targetY: number, targetZ: number) {
     const aim = flightAnglesFromSceneDirection(
       targetX - this.posX,
       targetY - this.posY,

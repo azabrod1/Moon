@@ -715,9 +715,15 @@ export function moonArrivalPose(inp: MoonArrivalInputs): MoonArrivalPose {
 
   // Required perpendicular miss, converted to an aim offset: a ray aimed b
   // off-center passes the center at b·cos(offAxis), so hitting an exact miss
-  // of m needs b = m·d/√(d²−m²). Always real: the standoff keeps d well
-  // above m (d ≥ 1.5·collisionR ≥ 1.3·m).
+  // of m needs b = m·d/√(d²−m²). The standoff keeps d well above m in the
+  // whole catalog (d ≥ 1.5·collisionR ≥ 1.3·m), but that is a property of the
+  // catalog, not of the construction: if a separation cap ever pulled the
+  // park inside the miss, the root would be imaginary — aim straight at the
+  // body instead, which is what a park that close already looks like.
   const missM = collisionR * 1.15;
+  if (dist <= missM) {
+    return { position, aimPoint: moonPos.clone(), flythrough: false };
+  }
   const clearB = (missM * dist) / Math.sqrt(dist * dist - missM * missM);
   // Clearance outranks BOTH composition terms: at close parks (the standoff
   // floor on the smallest meshes) the swing ceiling can fall under the

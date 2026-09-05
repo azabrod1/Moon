@@ -9,7 +9,7 @@
  * and delete the old one.
  */
 import { TIME_RATE_PRESETS } from './timeRates';
-import { MAX_UTC_MS } from '../astronomy/planetary';
+import { MAX_UTC_MS } from '../astronomy/constants';
 import { debugWarn } from '../shared/debug';
 import { SPEED_MAX, SYSTEM_SPEED_MAX } from './shipLimits';
 

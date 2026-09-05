@@ -27,3 +27,8 @@ export const SUN_RADIUS_KM = 695_700;
  * photospheric radius, a slightly different measurement of the same star.)
  */
 export const SUN_RADIUS_AU = SUN_RADIUS_KM / KM_PER_AU;
+
+/** The range a JS Date can hold, in ms from the epoch: the sim clock is
+ *  clamped to it on restore and saturates at it when advancing, since past it
+ *  every ephemeris call is NaN and the sky empties. */
+export const MAX_UTC_MS = 8.64e15;

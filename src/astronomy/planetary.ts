@@ -16,7 +16,7 @@ import {
   getStandishElements,
   type KeplerElements,
 } from './standish';
-import { DEG, J2000, KM_PER_AU, OBLIQUITY_DEG } from './constants';
+import { DEG, J2000, KM_PER_AU, OBLIQUITY_DEG, MAX_UTC_MS } from './constants';
 
 const REFERENCE_NORTH = new THREE.Vector3(0, 1, 0);
 // The node line an inclination turns about: +X of the intermediate ecliptic
@@ -477,9 +477,6 @@ export function advancePlanetariumTime(state: SimulationTime, dtSeconds: number)
   state.currentUtcMs = Math.max(-MAX_UTC_MS, Math.min(MAX_UTC_MS, state.currentUtcMs + dtSeconds * 1000 * state.rate));
   return state;
 }
-
-/** The range a JS Date can hold, in ms from the epoch. */
-export const MAX_UTC_MS = 8.64e15;
 
 /**
  * Step the simulation rate along a signed ladder with a pause detent at zero:

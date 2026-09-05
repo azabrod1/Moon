@@ -436,7 +436,6 @@ async function decoderHonoursFlip(decoder: BitmapDecoder): Promise<{ ok: boolean
         }, PROBE_TIMEOUT_MS);
       }),
     ]);
-    if (deadline !== null) clearTimeout(deadline);
     try {
       const gl = probeRenderer ? readsBackInvertedGl(probeRenderer, bitmap) : null;
       viaGl = gl !== null;
@@ -446,6 +445,8 @@ async function decoderHonoursFlip(decoder: BitmapDecoder): Promise<{ ok: boolean
     }
   } catch {
     return { ok: false, viaGl };
+  } finally {
+    if (deadline !== null) clearTimeout(deadline);
   }
 }
 

@@ -61,8 +61,8 @@ export interface ShaderWarmupOptions {
 
 export interface ShaderWarmupResult {
   /** Settles once compileAsync's own poll has settled (resolves on rejection
-   *  too). Probe materials may only be disposed after this — disposing one
-   *  mid-poll throws inside a timer callback nothing else can catch. */
+   *  too). Nothing that would upset the poll — disposing a probe material,
+   *  judging the program count — may happen before this. */
   compiled: Promise<void>;
 }
 
@@ -73,8 +73,7 @@ export async function warmUpSceneShaders(
   options: ShaderWarmupOptions,
 ): Promise<ShaderWarmupResult> {
   // A reporter that itself throws must not turn a fail-open step into a
-  // failure (or reject `compiled`, which the caller waits on to dispose the
-  // probes).
+  // failure (or reject `compiled`, which the caller waits on).
   const report = (stage: 'compile' | 'restore' | 'warm-draw', err: unknown): void => {
     try {
       options.onError?.(stage, err);

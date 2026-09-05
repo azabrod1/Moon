@@ -160,9 +160,8 @@ export const SYSTEM_RAMP: ThrottleRampLaw = {
 
 /**
  * A held throttle key for `dtS` seconds. Wall-time: one 0.1 s step lands
- * where ten 0.01 s steps do (up to the engage crossing, which the linear
- * crawl makes a single point), so the feel does not depend on the display's
- * refresh rate or on a hitch frame.
+ * where ten 0.01 s steps do, across the engage floor too, so the feel does
+ * not depend on the display's refresh rate or on a hitch frame.
  */
 export function rampThrottle(
   current: number,

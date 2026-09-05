@@ -736,9 +736,11 @@ async function switchAppMode(newMode: AppMode): Promise<boolean> {
   // no UI and no exit; the planetarium is the one mode that always comes back.
   // Either way the user hears about it: a chunk that would not load looks
   // like a dead button otherwise.
-  if (failed) {
+  // (A failure of the very first activation is the boot's to report — init()
+  // takes it to the error screen — so no toast for that one.)
+  if (failed && appModeInitialized) {
     const notice = () => planetariumMode?.notify('That could not be opened. Check the connection and try again.');
-    if (appMode !== 'planetarium' && appModeInitialized) void switchAppMode('planetarium').then(notice);
+    if (appMode !== 'planetarium') void switchAppMode('planetarium').then(notice);
     else notice();
   }
   return switched;

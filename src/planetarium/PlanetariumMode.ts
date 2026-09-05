@@ -86,9 +86,6 @@ import {
 import { ShadowVisuals, createShadowVisualsWarmupProbes, type GuideSlotInput } from './world/ShadowVisuals';
 import { warmUpSceneShaders } from './world/shaderWarmup';
 import { createShaderWarmupProbes, type WarmupProbes } from './world/shaderWarmupProbes';
-
-/** How long a context-restore re-warm may keep the late-link check muted. */
-const REWARM_MUTE_MAX_MS = 15_000;
 import { selectMoonShadowCasters, umbraReachesSurface } from './world/moonShadowCasters';
 import { OBSERVATORY_JUMP_LEAD_MS, resolveLiveEvent, stepperSearchFromUtcMs } from './observatoryTime';
 import { resolveShowVantage } from './observatoryJump';
@@ -400,6 +397,9 @@ import {
 } from './map/miniChart';
 import { flushOrbitDamping } from './input/orbitDamping';
 import { formatBodyDistance, bodyDistanceQuantum } from './bodyDistance';
+
+/** How long a context-restore re-warm may keep the late-link check muted. */
+const REWARM_MUTE_MAX_MS = 15_000;
 
 type ScriptedTransfer = {
   elapsed: number;
@@ -1891,6 +1891,11 @@ export class PlanetariumMode {
    *  switch was taken — at once for a refusal (one already in flight), or
    *  once the switch has run for a failure on the way in. */
   private volumeCompareRequestCb: (() => boolean | Promise<boolean>) | null = null;
+  /** A tool entry has been accepted and its switch has not settled yet. */
+  private toolEntryPending = false;
+  /** Bumped by every activate(): a tool entry settles against the activation
+   *  it was made in, whatever the timing of a fallback re-activation. */
+  private activationGen = 0;
   onVolumeCompareRequest(cb: () => boolean | Promise<boolean>): void {
     this.volumeCompareRequestCb = cb;
   }
@@ -2332,6 +2337,7 @@ export class PlanetariumMode {
     // built, so without this the cruise branch would integrate — and save —
     // the ship as it was left in the PREVIOUS session for a few frames.
     this.restoring = true;
+    this.activationGen++;
     // Declared ahead of the restore window: the code after it reads both.
     let reportActivationProgress: (completedUnits: number) => void = () => {};
     let buildingSolarSystem = false;
@@ -2594,10 +2600,9 @@ export class PlanetariumMode {
       // combinations only a probe holds at boot (a measured normal before the
       // Moon's arrives, a photo before the paint, the shadow visuals before a
       // landing) would otherwise be compiled here, thrown away with the probes,
-      // and linked again on their first real draw mid-flight. Their materials
-      // go only at teardown, and only once compileAsync's poll has settled —
-      // disposing a material mid-poll throws inside a timer callback no
-      // try/catch here could reach.
+      // and linked again on their first real draw mid-flight. Nothing disposes
+      // them now (the mode lives as long as the page); a context restore
+      // waits on the compile's poll before it un-mutes the late-link check.
       this.shaderWarmupSettled = compiled.then(() => undefined, () => undefined);
       performance.measure('plm:precompile', 'plm:precompile:start');
     }
@@ -4225,9 +4230,7 @@ export class PlanetariumMode {
   }
 
   /** The per-frame system throttle — the law lives in throttlePolicy.ts with
-
    *  its tests; this binds it to the live player pose and world positions. */
-
   private computeSystemSpeedFactor(): SystemSpeedResult {
     return systemSpeedFactor(
       this.player.posX,
@@ -7417,7 +7420,7 @@ export class PlanetariumMode {
     // Close the entry surfaces before the guard — a refused click must not
     // leave a dead modal up. Both auto-pause ship and clock, and the snapshot
     // below must capture the resumed truth, not the modal freeze.
-    this.hideHelp({ markSeen: false });
+    this.hideHelp(); // the tour was chosen from inside the help: that is the user closing it
     this.closeMenuPanel();
     if (
       !canStartTutorial({
@@ -7931,9 +7934,12 @@ export class PlanetariumMode {
     // not leave the snapshot standing in for the journey in every save from
     // here on. A failure AFTER the teardown keeps it: the fallback
     // re-activation restores from it.
+    const gen = this.activationGen;
     const settle = (taken: boolean) => {
       this.toolEntryPending = false;
-      if (!taken && this.active) this.preToolState = null;
+      // Only while this same activation is still the live one: after a
+      // teardown the fallback re-activation restores from the snapshot.
+      if (!taken && this.activationGen === gen) this.preToolState = null;
     };
     if (typeof answer === 'boolean') {
       settle(answer);
@@ -7943,8 +7949,7 @@ export class PlanetariumMode {
     void answer.then(settle, () => settle(false));
     return true;
   }
-  /** A tool entry has been accepted and its switch has not settled yet. */
-  private toolEntryPending = false;
+
 
   private isToolsMenuOpen(): boolean {
     return document.getElementById('tools-menu')?.classList.contains('visible') ?? false;

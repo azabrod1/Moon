@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import swPlugin from './tools/swPlugin.mjs';
+import devTilesPlugin from './tools/devTilesPlugin.mjs';
 
 // Visible build identity (menu footer): CI stamps the deployed commit via
 // GITHUB_SHA; local dev reads "dev". Exists so "which build is this device
@@ -11,7 +12,7 @@ const buildDate = new Date().toISOString().slice(0, 10);
 export default defineConfig({
   root: '.',
   publicDir: 'public',
-  plugins: [swPlugin()],
+  plugins: [swPlugin(), devTilesPlugin()],
   build: {
     outDir: 'dist',
   },

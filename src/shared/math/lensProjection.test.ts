@@ -6,6 +6,7 @@ import {
   lensCornerTheta,
   lensDisplayHalfTan,
   lensEffectiveStrength,
+  lensMaxFrameScale,
   lensOverscanFovDeg,
   lensPassFragmentShader,
   lensRadial,
@@ -211,6 +212,48 @@ describe('applyDesignFov / displayFovDeg / lensDisplayHalfTan', () => {
   it('display half-tangent reduces to tan(fov/2) at strength 0', () => {
     expect(lensDisplayHalfTan(60, 0)).toBeCloseTo(Math.tan(30 * DEG), 12);
     expect(lensDisplayHalfTan(60, 1)).toBeCloseTo(2 * Math.tan(15 * DEG), 12);
+  });
+});
+
+describe('lensMaxFrameScale', () => {
+  it('is the corner stretch, and never reports less than the centre scale', () => {
+    for (const [designFovDeg, aspect] of [[60, 16 / 9], [60, 390 / 844], [75, 1], [24, 4 / 3]] as const) {
+      // Rectilinear: the radial stretch sec^2(theta) at the frame's corner
+      // (its tangential stretch, sec(theta), is smaller).
+      const flat = lensCornerTheta(designFovDeg, aspect, 0);
+      expect(lensMaxFrameScale(designFovDeg, aspect, 0)).toBeCloseTo(1 / Math.cos(flat) ** 2, 9);
+      // Stereographic: conformal, so both stretches are sec^2(theta / 2).
+      const round = lensCornerTheta(designFovDeg, aspect, 1);
+      expect(lensMaxFrameScale(designFovDeg, aspect, 1)).toBeCloseTo(1 / Math.cos(round / 2) ** 2, 9);
+      for (const strength of [0, 0.5, 1]) {
+        expect(lensMaxFrameScale(designFovDeg, aspect, strength)).toBeGreaterThanOrEqual(1);
+      }
+    }
+  });
+
+  it('bounds the displayed radius growth measured through the forward warp', () => {
+    // Sampled the way a consumer sees it: how much further out the warp puts a
+    // point for the same step in view angle, anywhere out to the corner.
+    const designFovDeg = 60;
+    const aspect = 16 / 9;
+    for (const strength of [0.5, 1]) {
+      const renderFovDeg = lensOverscanFovDeg(designFovDeg, aspect, strength);
+      const tanHalfRender = Math.tan((renderFovDeg / 2) * DEG);
+      const corner = lensCornerTheta(designFovDeg, aspect, strength);
+      const out = { x: 0, y: 0 };
+      const warpedRadius = (theta: number) => {
+        lensWarpNdc(0, Math.tan(theta) / tanHalfRender, designFovDeg, renderFovDeg, aspect, strength, out);
+        return out.y;
+      };
+      const centre = (warpedRadius(1e-5) - warpedRadius(0)) / 1e-5;
+      let worst = 0;
+      for (let i = 1; i <= 40; i++) {
+        const theta = (corner * i) / 40;
+        worst = Math.max(worst, (warpedRadius(theta) - warpedRadius(theta - 1e-5)) / 1e-5 / centre);
+      }
+      expect(worst).toBeLessThanOrEqual(lensMaxFrameScale(designFovDeg, aspect, strength) * 1.001);
+      expect(worst).toBeGreaterThan(lensMaxFrameScale(designFovDeg, aspect, strength) * 0.99);
+    }
   });
 });
 

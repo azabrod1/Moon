@@ -1,17 +1,53 @@
 import * as THREE from 'three';
 import { afterEach, describe, it, expect } from 'vitest';
-import { captureDeviceTextureCaps, clampTier, resolveTextureUrl, TEXTURE_TIERS, type TextureTier } from './texturePolicy';
+import {
+  captureDeviceCaps,
+  deviceTextureProfile,
+  resetDeviceCapsForTests,
+  clampTier,
+  resolveTextureUrl,
+  resolveTileUrl,
+  sectorSetHash,
+  sectorSetLayout,
+  tileSetPath,
+  TEXTURE_TIERS,
+  type TextureTier,
+} from './texturePolicy';
+import { SECTOR_SET_TABLE } from './sectorSets.generated';
+import { UNMEASURED_DESKTOP_PROFILE, UNMEASURED_TOUCH_PROFILE } from './gpuEnvelope';
+import { withMaxTextureSize } from '../testing/upgradeHarness';
 
-// The caps are module state captured from the live renderer; a fake renderer is
-// the seam. 4096 is the pre-capture default — restore it so test order can't
-// leak a cap into another file's expectations.
-function withMaxTextureSize(size: number, touch = false): void {
-  captureDeviceTextureCaps({
-    capabilities: { getMaxAnisotropy: () => 8, maxTextureSize: size },
-  } as unknown as THREE.WebGLRenderer, touch);
+// 4096 is the pre-capture default — restore it so test order can't leak a
+// cap into another file's expectations.
+afterEach(() => withMaxTextureSize(4096));
+
+function fakeRenderer(maxTextureSize: number): THREE.WebGLRenderer {
+  return {
+    capabilities: { getMaxAnisotropy: () => 8, maxTextureSize },
+  } as unknown as THREE.WebGLRenderer;
 }
 
-afterEach(() => withMaxTextureSize(4096));
+describe('captureDeviceCaps', () => {
+  it('keeps the first capture and hands it back to every later caller', () => {
+    // Volume compare and the planetarium both capture, in whichever order a
+    // session opens them, and they share one renderer. A second capture used
+    // to overwrite the first — so a visit to volume compare re-decided the
+    // planetarium's memory profile for the rest of the session, while every
+    // ladder handle already built kept the old one.
+    resetDeviceCapsForTests();
+    expect(captureDeviceCaps(fakeRenderer(16384), UNMEASURED_TOUCH_PROFILE)).toBe(UNMEASURED_TOUCH_PROFILE);
+    expect(deviceTextureProfile()).toBe(UNMEASURED_TOUCH_PROFILE);
+    expect(captureDeviceCaps(fakeRenderer(4096), UNMEASURED_DESKTOP_PROFILE)).toBe(UNMEASURED_TOUCH_PROFILE);
+    expect(deviceTextureProfile()).toBe(UNMEASURED_TOUCH_PROFILE);
+    // The GL caps of that first capture stand too: 8K stays loadable.
+    expect(clampTier('8k')).toBe('8k');
+  });
+
+  it('spends the desktop numbers until a real device is read', () => {
+    resetDeviceCapsForTests();
+    expect(deviceTextureProfile()).toBe(UNMEASURED_DESKTOP_PROFILE);
+  });
+});
 
 describe('resolveTextureUrl', () => {
   it('keeps boot-tier assets in the flat textures folder', () => {
@@ -23,6 +59,50 @@ describe('resolveTextureUrl', () => {
   it('routes higher tiers to their own subfolder, same filename', () => {
     expect(resolveTextureUrl('mars.webp', '4k')).toMatch(/textures\/4k\/mars\.webp$/);
     expect(resolveTextureUrl('moon.webp', '8k')).toMatch(/textures\/8k\/moon\.webp$/);
+  });
+});
+
+describe('resolveTileUrl', () => {
+  it('puts the set hash in the folder, next to the tier', () => {
+    expect(tileSetPath('earth-day.v2', '16k', 'abcd1234')).toBe('textures/tiles/earth-day.v2/16k.abcd1234/');
+    expect(resolveTileUrl('earth-day.v2', '16k', 'abcd1234', 2, 1))
+      .toMatch(/^\/textures\/tiles\/earth-day\.v2\/16k\.abcd1234\/2_1\.webp$/);
+  });
+
+  it('serves tiles from the app’s own origin unless a tile origin is built in', () => {
+    // The default build sets no VITE_TILE_ORIGIN, so a tile URL is rooted at
+    // the app's base path like every other texture.
+    expect(resolveTileUrl('moon', '16k', 'abcd1234', 0, 0).startsWith(import.meta.env.BASE_URL)).toBe(true);
+  });
+
+  it('reads a shipped set’s hash and layout from the generated table', () => {
+    const entry = SECTOR_SET_TABLE['earth-day.v2/16k'];
+    expect(sectorSetHash('earth-day.v2', '16k')).toBe(entry.setHash8);
+    expect(sectorSetLayout('earth-day.v2', '16k')).toEqual({
+      baseWidth: entry.baseWidth,
+      spanU: entry.spanU,
+    });
+  });
+
+  it('fails open on a set the table does not name, rather than throwing', () => {
+    // These resolve while sectorStreamer's SECTOR_SETS literal is being built,
+    // at module evaluation: a throw there is a blank app, and `?sectors=0` is
+    // read after that import so nothing could turn streaming off first. An
+    // empty hash 404s instead, which the body survives by keeping its base
+    // map. sectorTiles.assets.test.ts is what keeps the shipped sets named.
+    //
+    // `128k` is a tier no set can ever be cut at: the pyramid stops at
+    // SECTOR_MAX_LEVEL, whose tier is 64k. A real key with an unreal tier is
+    // the shape the fail-open path has to survive — a level added to the
+    // table would otherwise quietly turn this test into a check that a
+    // shipped set resolves.
+    expect(sectorSetHash('earth-day.v2', '128k')).toBe('');
+    expect(sectorSetLayout('earth-day.v2', '128k')).toEqual({ baseWidth: 0, spanU: 1 });
+    expect(resolveTileUrl('earth-day.v2', '128k', sectorSetHash('earth-day.v2', '128k'), 0, 0))
+      .toContain('textures/tiles/earth-day.v2/128k./0_0.webp');
+    // And the level that DOES exist resolves, so the two arms cannot be
+    // confused for each other.
+    expect(sectorSetHash('earth-day.v2', '64k')).toMatch(/^[0-9a-f]{8}$/);
   });
 });
 

@@ -18,6 +18,7 @@ import { LANDED_NEAR_AU } from './planetarium/landedView';
 import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import type { VolumeCompareMode } from './volumeCompare/VolumeCompareMode';
 import { canGPUDoBloom, halfFloatTargetSampleCounts } from './app/gpuCapability';
+import { installShaderSalt } from './app/shaderSalt';
 import { bloomPixelRatio, composerSamples, parseMsaaOverride, targetPixelRatio } from './app/renderResolution';
 import { BootRenderGate } from './app/bootRenderGate';
 import { bitmapDecodePath } from './planetarium/world/textureBitmapLoader';
@@ -36,6 +37,15 @@ import {
   surfacePerfFrameStart,
   surfacePerfSnapshot,
 } from './planetarium/surfacePerf';
+import { beginSlicedUpload, stepSlicedUpload } from './planetarium/world/slicedUpload';
+import { invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm } from './planetarium/world/textureWarmer';
+import {
+  smoothTraceFrameStart,
+  smoothTraceEvent,
+  smoothTraceSnapshot,
+  smoothTraceStart,
+  smoothTraceStop,
+} from './planetarium/smoothnessTrace';
 
 // ================================================================
 // Top-level mode
@@ -100,6 +110,23 @@ renderer.domElement.addEventListener('webglcontextrestored', () => {
   debugLog('WebGL context restored');
 });
 
+// A first visit links every program cold, and this machine's Metal library
+// cache — which no browser flag clears — makes that unrepeatable. `?shaderSalt=`
+// changes every shader's source so the driver has to link cold again, which is
+// what makes a first-visit stall measurable. Installed before anything
+// compiles. DEV only; see app/shaderSalt.ts.
+if (import.meta.env.DEV) {
+  const salt = new URLSearchParams(location.search).get('shaderSalt');
+  if (salt) {
+    try {
+      installShaderSalt(renderer.getContext(), salt);
+      debugLog('Shader salt active — every program links cold', salt);
+    } catch (err) {
+      debugWarn('Shader salt could not be installed', err);
+    }
+  }
+}
+
 // Enable bloom on any device whose GPU supports float framebuffers. `?nofloat=1`
 // forces the no-float path on capable hardware so the lens correction's
 // tone-map-first backbuffer resample (the path incapable GPUs take) can be
@@ -118,6 +145,9 @@ const sceneSampleCounts = useBloom ? halfFloatTargetSampleCounts(renderer) : [];
 // display renders as production did rather than native with no antialiasing
 // at all. The no-float direct path has the backbuffer's own multisampling.
 const supersampleFallback = useBloom && (sceneSampleCounts.length === 0 || msaaOverride === 0);
+// The capture pin on the pixel ratio (see pinCapture), declared before the
+// renderer-details log below reads the target ratio at module init.
+let pixelRatioPin: number | null = null;
 
 try {
   const gl = renderer.getContext();
@@ -206,7 +236,14 @@ function ensureDirectLensTexture(): THREE.FramebufferTexture {
   return directLensTexture;
 }
 
+/** Capture pins (pinCapture): a golden has to be reproducible, and three of
+ *  the things that decide its pixels move on their own — the near plane is
+ *  driven by the cruise governor, the exposure by the Sun's on-screen state,
+ *  the pixel ratio by the display. DEV-only, null when nothing is pinned. */
+let exposurePin: number | null = null;
+
 function getTargetPixelRatio(): number {
+  if (pixelRatioPin !== null) return pixelRatioPin;
   return targetPixelRatio(window.devicePixelRatio, isMobile, supersampleFallback);
 }
 
@@ -771,13 +808,18 @@ function installDevHooks() {
       planetariumMode?.devJumpToBody(name, distanceMultiplier) ?? false,
     frame: (
       name: string, fillFraction?: number, phaseAngleDeg?: number, distMul?: number,
-      offNdcX?: number, offNdcY?: number,
+      offNdcX?: number, offNdcY?: number, rollDeg?: number,
     ) =>
-      planetariumMode?.devFrameBody(name, fillFraction, phaseAngleDeg, distMul, offNdcX, offNdcY) ?? false,
+      planetariumMode?.devFrameBody(
+        name, fillFraction, phaseAngleDeg, distMul, offNdcX, offNdcY, rollDeg,
+      ) ?? false,
     viewFrom: (fromName: string, toName: string, fovDeg?: number) =>
       planetariumMode?.devViewFrom(fromName, toName, fovDeg) ?? false,
-    limbView: (name: string, kRadii?: number, fovDeg?: number) =>
-      planetariumMode?.devLimbView(name, kRadii, fovDeg) ?? false,
+    // aimFrac swings the aim from straight down (0) to the tangent point (1,
+    // the default): the poses between them are the ones that look along the
+    // ground toward the horizon.
+    limbView: (name: string, kRadii?: number, fovDeg?: number, phaseDeg?: number, aimFrac?: number) =>
+      planetariumMode?.devLimbView(name, kRadii, fovDeg, phaseDeg, aimFrac) ?? false,
     frameSun: (distanceAU?: number, fovDeg?: number, offNdcX?: number, offNdcY?: number) =>
       planetariumMode?.devFrameSun(distanceAU, fovDeg, offNdcX, offNdcY) ?? false,
     frameSunBehindShip: (
@@ -800,6 +842,28 @@ function installDevHooks() {
       planetariumMode?.devSetShipSunOcclusion(enabled) ?? false,
     sunGlareMask: () => planetariumMode?.devSunGlareMask() ?? null,
     eclipseDebug: () => planetariumMode?.devEclipseDebug() ?? null,
+    // Precomputed atmosphere tables: tier state, a measurement bake, and table
+    // readback through the 8-bit blit.
+    atmoState: () => planetariumMode?.devAtmosphereState() ?? null,
+    // What lights a body's night side this frame: the Moon's direction, its
+    // irradiance and its phase.
+    atmoNight: (body?: string) => planetariumMode?.devAtmosphereNight(body) ?? null,
+    // The eclipse casters a body's shading is tracing this frame, and the spin
+    // its cloud deck is drawn under: what a golden pose of an umbra records
+    // beside the radiances.
+    surfaceCasters: (body?: string) => planetariumMode?.devSurfaceCasters(body) ?? null,
+    // Hold the shells on the analytic tier (null: whatever the tables allow),
+    // and report the material each one is wearing.
+    atmoTier: (tier: 'analytic' | null, settle = true) => planetariumMode?.devSetAtmosphereTier(tier, settle) ?? null,
+    atmoBake: (options?: { body?: string; orders?: number; half?: boolean; drawsPerSlice?: number }) =>
+      planetariumMode?.devAtmosphereBake(options) ?? Promise.resolve(null),
+    atmoSample: (
+      samples: ReadonlyArray<{
+        kind: 'transmittance' | 'scattering' | 'combined' | 'irradiance';
+        r: number; mu: number; muS?: number; nu?: number; hitsGround?: boolean; scale?: number;
+      }>,
+      body?: string,
+    ) => planetariumMode?.devAtmosphereSample(samples, body) ?? null,
     setVeil: (opts: { warmth?: number; strength?: number }) =>
       planetariumMode?.devSetVeil(opts ?? {}) ?? false,
     setDiamondScale: (k: number) => planetariumMode?.devSetDiamondScale(k) ?? false,
@@ -815,6 +879,33 @@ function installDevHooks() {
       };
     },
     setAutoExposure: (on: boolean) => { autoExposure = on; },
+    // Freeze what a screenshot depends on and nothing else. `near` is the one
+    // the dev framing hooks never set (they leave whatever the last mode wrote,
+    // which at 1.05 R clips the bottom of the air away); exposure and the pixel
+    // ratio move a whole frame at once, which no per-pixel threshold can
+    // absorb. Pass null to hand all three back.
+    pinCapture: (opts: { near?: number; exposure?: number; pixelRatio?: number } | null) => {
+      if (opts === null) {
+        exposurePin = null;
+        pixelRatioPin = null;
+        applyRenderResolution();
+        return { near: planetariumCamera.near, exposure: exposureCurrent, pixelRatio: renderer.getPixelRatio() };
+      }
+      if (typeof opts.near === 'number' && opts.near > 0) {
+        planetariumCamera.near = opts.near;
+        planetariumCamera.updateProjectionMatrix();
+      }
+      if (typeof opts.exposure === 'number') exposurePin = opts.exposure;
+      if (typeof opts.pixelRatio === 'number' && opts.pixelRatio > 0) {
+        pixelRatioPin = opts.pixelRatio;
+        applyRenderResolution();
+      }
+      return {
+        near: planetariumCamera.near,
+        exposure: exposurePin ?? exposureCurrent,
+        pixelRatio: renderer.getPixelRatio(),
+      };
+    },
     setBloom: (on: boolean) => setPlanetariumBloom(on),
     bloomActive: () => planetariumBloomEnabled(),
     // Lens-correction A/B: pass a strength (0 = rectilinear), no args restores
@@ -832,10 +923,17 @@ function installDevHooks() {
     },
     probe: (name: string) => planetariumMode?.devProbe(name) ?? null,
     travelTo: (name: string) => planetariumMode?.devTravelTo(name) ?? false,
+    arrivalPose: () => planetariumMode?.devArrivalPose() ?? null,
+    governorOwner: () => planetariumMode?.devGovernorOwner() ?? null,
     land: (name: string) => planetariumMode?.devLand(name) ?? false,
     observe: (name: string) => planetariumMode?.devObserve(name) ?? false,
+    device: () => planetariumMode?.devDeviceProfile() ?? null,
     sectors: () => planetariumMode?.devSectorStats() ?? null,
     ladder: () => planetariumMode?.devLadderStats() ?? null,
+    // Pixels per texel of the map each close body is really drawing. Reports
+    // with the sector streamer off (?sectors=0), which is what a close-range
+    // A/B is run under.
+    surfaceDensity: () => planetariumMode?.devSurfaceDensity() ?? [],
     lookUp: () => planetariumMode?.devLookUp() ?? false,
     lookAt: (name: string) => planetariumMode?.devLookAt(name) ?? false,
     exitSurface: () => planetariumMode?.devExitSurface(),
@@ -963,6 +1061,30 @@ function installDevHooks() {
       pixelRatio: renderer.getPixelRatio(),
       sceneSamples: sceneTarget?.samples ?? 0,
     }),
+    // Every linked program with its cache key, for catching a link that
+    // happens after the boot warm-up: diff two snapshots and the new entry's
+    // key says which material variant compiled mid-flight. The key's tail is
+    // the augmentation source three appends, so it is cut at a readable length.
+    programs: () => (renderer.info.programs ?? []).map((p: any) => ({
+      id: p.id as number,
+      type: String(p.type ?? ''),
+      name: String(p.name ?? ''),
+      usedTimes: p.usedTimes as number,
+      keyLength: String(p.cacheKey ?? '').length,
+      key: String(p.cacheKey ?? '').slice(0, 700),
+    })),
+    // Whole-run frame trace behind the smoothness gate: every frame's raf
+    // gap, the veil windows, and a one-word cause per frame. smoothStart
+    // arms it here; ?smooth=1 arms it before the first frame instead, which
+    // is the only way to see a cold boot. smoothMark labels the scenario
+    // phase a frame belongs to.
+    smoothStart: (maxFrames?: number) => smoothTraceStart(
+      { armedBy: 'bridge', userAgent: navigator.userAgent, viewport: `${window.innerWidth}x${window.innerHeight}`, pixelRatio: renderer.getPixelRatio() },
+      maxFrames,
+    ),
+    smoothMark: (label: string) => smoothTraceEvent('mark', label),
+    smoothSnapshot: () => smoothTraceSnapshot(),
+    smoothStop: () => smoothTraceStop(),
     // Low-overhead Surface timing ring buffer. Usage:
     //   surfacePerf('start') → reproduce → surfacePerf() / surfacePerf('stop')
     surfacePerf: (command: 'start' | 'stop' | 'clear' | 'snapshot' = 'snapshot') => {
@@ -993,6 +1115,28 @@ function installDevHooks() {
   if (new URLSearchParams(window.location.search).get('surfacePerf') === '1') {
     (window as any).__moon.surfacePerf('start');
   }
+  // Upload-parity harness hooks: the sliced uploader has to be driven directly
+  // against a one-shot upload of the same source, which needs the renderer and
+  // three itself. DEV-only, like the rest of the bridge.
+  (window as any).__moonThree = THREE;
+  (window as any).__moonRenderer = renderer;
+  (window as any).__moonSlice = { begin: beginSlicedUpload, step: stepSlicedUpload };
+  // The compressed half of that harness needs a container transcoded and
+  // handed over exactly as a tier fetch does: the internal format three picks
+  // for a KTX2 rung comes off the file's own colour space and the device's
+  // transcode target, so a texture the harness builds itself cannot reproduce
+  // it. One loader per page, imported on first use so the transcoder chunk
+  // stays off every other DEV boot.
+  let parityKtx2: Promise<import('three/examples/jsm/loaders/KTX2Loader.js').KTX2Loader> | null = null;
+  (window as any).__moonKtx2 = (url: string) => {
+    parityKtx2 ??= import('three/examples/jsm/loaders/KTX2Loader.js').then(({ KTX2Loader }) =>
+      new KTX2Loader().setTranscoderPath(import.meta.env.BASE_URL + 'basis/').detectSupport(renderer),
+    );
+    return parityKtx2.then((loader) => new Promise((resolve, reject) => {
+      loader.load(url, resolve, undefined, reject);
+    }));
+  };
+  (window as any).__moonWarm = { queueTextureWarm, pumpTextureWarmQueue, invalidateTextureWarmCache };
   debugLog('Dev hooks installed (window.__moon)');
 }
 
@@ -1043,6 +1187,7 @@ async function init() {
   function animate(rafTimestamp = performance.now()) {
     requestAnimationFrame(animate);
     if (import.meta.env.DEV) surfacePerfFrameStart(rafTimestamp);
+    if (import.meta.env.DEV) smoothTraceFrameStart(rafTimestamp);
     // Drift poll on a countdown: innerWidth/innerHeight are cheap but not
     // free at once-per-frame, and the events below re-arm an immediate check
     // for every transition that announces itself (visualViewport covers the
@@ -1076,6 +1221,9 @@ async function init() {
       exposureCurrent = 1;
     }
 
+    // The capture pin wins over every mode's own exposure, including the
+    // planetarium's per-frame solar adaptation.
+    if (exposurePin !== null) exposureCurrent = exposurePin;
     renderer.toneMappingExposure = exposureCurrent;
     if (bootRender.shouldRender()) drawWorldFrame();
   }

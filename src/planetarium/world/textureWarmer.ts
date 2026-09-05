@@ -20,8 +20,123 @@
 import * as THREE from 'three';
 import { debugWarn } from '../../shared/debug';
 import { surfacePerfBeginTextureUpload, surfacePerfEndTextureUpload } from '../surfacePerf';
+import { smoothTraceArmed, smoothTraceEvent } from '../smoothnessTrace';
 
 type WarmUpload = (tex: THREE.Texture) => void;
+
+/** The sliced path, injected so this module stays free of the renderer and
+ *  testable without a GL context — the same seam as the upload function. */
+export interface SlicedUploader<Job> {
+  /** A job for a map too big to upload in one frame, else null. */
+  begin(tex: THREE.Texture): Job | null;
+  /** Spend a budget on it. 'failed' means the caller must not draw the map. */
+  step(job: Job, budgetMs: number): 'more' | 'done' | 'failed';
+}
+
+interface ActiveSlice {
+  tex: THREE.Texture;
+  job: unknown;
+  onDispose: () => void;
+  disposed: boolean;
+}
+
+let slicer: SlicedUploader<unknown> | null = null;
+let activeSlice: ActiveSlice | null = null;
+
+/** Install the sliced uploader. Without one every texture takes one shot,
+ *  exactly as before. */
+export function bindSlicedUploader<Job>(next: SlicedUploader<Job> | null): void {
+  slicer = next as SlicedUploader<unknown> | null;
+}
+
+/**
+ * What share of a frame the pump may spend uploading.
+ *
+ * The budget has to be a fraction of the frame, not a constant: 6 ms is a
+ * third of a 60 Hz frame and most of a 120 Hz one, so a figure tuned on one
+ * display eats the other. Measured at 120 Hz, a fixed 6 ms put the boot warm's
+ * 4K maps 16-18 ms apart on adjacent frames, over two vsyncs each.
+ */
+export const WARM_BUDGET_FRACTION = 0.35;
+/** Below this the pump cannot finish anything and the queue never drains. */
+export const WARM_BUDGET_FLOOR_MS = 2;
+/** The old fixed budget, which a 60 Hz frame still lands on. Never spend more. */
+export const WARM_BUDGET_CAP_MS = 6;
+/**
+ * How long the queue may sit while the pump repays an overrun.
+ *
+ * An upload is unsliceable and its cost unknowable until it is paid, so the
+ * pump can only choose whether to START one — the last upload of a call is
+ * what overruns, and that overrun is the price of not slicing. What this
+ * bounds is how often the price may be paid: the pump sits out the overrun it
+ * caused, and this caps that wait, so a queue always makes progress inside a
+ * quarter second however big the maps are.
+ */
+export const WARM_STARVE_MS = 250;
+
+/** The pump's budget for a frame of this measured length. */
+export function warmBudgetMs(frameIntervalMs: number): number {
+  if (!Number.isFinite(frameIntervalMs) || frameIntervalMs <= 0) return WARM_BUDGET_CAP_MS;
+  const share = frameIntervalMs * WARM_BUDGET_FRACTION;
+  return Math.min(WARM_BUDGET_CAP_MS, Math.max(WARM_BUDGET_FLOOR_MS, share));
+}
+
+/**
+ * How many budgeted pump calls the pump owes after a call ran past its budget.
+ *
+ * Counted in CALLS, not milliseconds, and that is the whole point. A deadline
+ * measured in wall clock starts when the upload ENDS, and the next call comes
+ * a frame later plus whatever else that frame does — on slow silicon the
+ * deadline has already passed by the time the pump it was meant to stop runs,
+ * so it stops nothing. Measured that way on a 4x-throttled phone shape, a
+ * 9.0 ms upload owed 6.3 ms, the next frame's pump arrived 21 ms later and
+ * uploaded again, and the two frames came out 26.3 and 23.8 ms long. A count
+ * cannot expire, so the call that would have paid the second upload sits out
+ * whatever the frame did.
+ *
+ * Two different things end a call over budget, and only one of them is a
+ * stutter. A map that ALONE outran the budget made a frame late by itself, so
+ * the next call sits out and a clean frame really does separate two overruns;
+ * an overrun several frames long sits out that many.
+ *
+ * A BURST of small maps is the other case: three 1 ms moon maps merely fill a
+ * 2.9 ms budget without any of them making a frame late. Those owe no call at
+ * all and drain again next frame, exactly as they always did — the boot-idle
+ * warm and the system-moon warms live on that path, and halving their
+ * throughput would buy no smoothness at all.
+ *
+ * So the skip is charged on `uploadMs`, the cost of the single upload that
+ * ended the call; `spentMs` only sets how many. WARM_STARVE_MS still caps how
+ * long the queue may wait either way, and an unbudgeted pump (the arrival
+ * veil's drain) owes nothing — see the pump.
+ */
+export function warmRepayPumps(
+  spentMs: number,
+  uploadMs: number,
+  budgetMs: number,
+  frameIntervalMs: number,
+): number {
+  if (!Number.isFinite(budgetMs)) return 0;
+  if (!(uploadMs >= budgetMs)) return 0;
+  const owed = Math.max(0, spentMs - budgetMs);
+  const frame = Number.isFinite(frameIntervalMs) && frameIntervalMs > 0 ? frameIntervalMs : 0;
+  return frame > 0 ? Math.max(1, Math.ceil(owed / frame)) : 1;
+}
+
+/**
+ * Whether the pump may upload on this call. False only while it still owes
+ * calls for an overrun — and never for longer than WARM_STARVE_MS of wall
+ * clock, so a starving queue always gets its forced upload through however
+ * many calls are owed.
+ */
+export function warmPumpAllowed(
+  nowMs: number,
+  owedPumps: number,
+  lastUploadAtMs: number | null,
+): boolean {
+  if (owedPumps <= 0) return true;
+  return lastUploadAtMs === null || nowMs - lastUploadAtMs >= WARM_STARVE_MS;
+}
 
 let uploadFn: WarmUpload | null = null;
 const queue: THREE.Texture[] = [];
@@ -30,6 +145,10 @@ const queue: THREE.Texture[] = [];
 // version so repeated landed-vantage swaps do not call renderer.initTexture
 // again for the same Moon albedo/normal pair every frame.
 let warmedVersions = new WeakMap<THREE.Texture, number>();
+// How many budgeted pump calls still owe an overrun, and when the pump last
+// uploaded — the overrun ledger. The wall clock is only the starve override.
+let warmOwedPumps = 0;
+let warmLastUploadAtMs: number | null = null;
 // One listener per queued texture, removed on drain or dispose, so long-lived
 // textures don't retain warm-up closures for their whole life.
 const disposeListeners = new Map<THREE.Texture, () => void>();
@@ -87,10 +206,43 @@ export function queueTextureWarm(tex: THREE.Texture, onOutcome?: (outcome: WarmO
  * unknowable until paid — then stops once past budget, so a burst of small
  * maps drains in one call while the biggest single map (an 8K albedo, the
  * largest unsliceable upload the app has) takes its frame alone.
+ *
+ * `frameIntervalMs` is the frame this budget was cut from; the repay after an
+ * overrun is measured in it (see warmRepayPumps).
+ *
+ * A NON-FINITE budget means the caller is not pacing anything — it is the
+ * arrival veil draining the queue behind an opaque cover, and every map it
+ * asks for must be resident before the cover lifts. Such a pump bypasses the
+ * repay gate entirely: a drain refused because the last upload ran long would
+ * lift the veil over unwarmed maps, which is the one thing the veil exists to
+ * prevent. It owes nothing afterwards either — nothing it spent was late.
  */
-export function pumpTextureWarmQueue(budgetMs: number): void {
-  if (!uploadFn) return;
+export function pumpTextureWarmQueue(budgetMs: number, frameIntervalMs: number): void {
+  if (!uploadFn || (queue.length === 0 && !activeSlice)) return;
   const start = performance.now();
+  // Sit out an overrun already owed, unless the queue would starve for it.
+  // This call IS the one being sat out, so the debt comes down here whether it
+  // was paid by sitting out or written off by the starve cap.
+  if (Number.isFinite(budgetMs)) {
+    if (!warmPumpAllowed(start, warmOwedPumps, warmLastUploadAtMs)) {
+      warmOwedPumps -= 1;
+      return;
+    }
+    warmOwedPumps = 0;
+  }
+  // A slice already in flight owns the frame: its texture has left the queue
+  // but is not yet drawable, and finishing it is what lets anything else move.
+  if (activeSlice) {
+    const active = activeSlice;
+    const outcome = active.disposed ? 'failed' : slicer!.step(active.job, budgetMs);
+    if (outcome === 'more') {
+      warmLastUploadAtMs = performance.now();
+      return;
+    }
+    finishSlice(active, outcome === 'done' ? 'warmed' : 'failed');
+    warmLastUploadAtMs = performance.now();
+    if (warmLastUploadAtMs - start >= budgetMs) return;
+  }
   while (queue.length > 0) {
     const tex = queue.shift()!;
     const onDispose = disposeListeners.get(tex);
@@ -98,7 +250,29 @@ export function pumpTextureWarmQueue(budgetMs: number): void {
       disposeListeners.delete(tex);
       tex.removeEventListener('dispose', onDispose);
     }
+    // A map too big for one frame becomes a job instead. It stays out of the
+    // queue while it fills, and its callers hear nothing until every band and
+    // the mip chain are in — the seam that keeps a half-filled map off screen.
+    if (slicer) {
+      const job = slicer.begin(tex);
+      if (job) {
+        beginSlice(tex, job);
+        const outcome = slicer.step(job, budgetMs);
+        warmLastUploadAtMs = performance.now();
+        if (outcome !== 'more') {
+          finishSlice(activeSlice!, outcome === 'done' ? 'warmed' : 'failed');
+        }
+        return;
+      }
+    }
     const perfUpload = import.meta.env.DEV ? surfacePerfBeginTextureUpload(tex) : null;
+    // Every upload is timed on its own, in every build, not as a share of the
+    // pump call: whether the queue has to sit out a frame turns on whether
+    // THIS map alone outran the budget (warmRepayPumps), and the frame trace
+    // wants the same figure — blaming a frame for the sum of several small
+    // maps hides which one was the unsliceable one.
+    const uploadStart = performance.now();
+    let uploadMs = 0;
     let uploaded = false;
     try {
       uploadFn(tex);
@@ -107,18 +281,93 @@ export function pumpTextureWarmQueue(budgetMs: number): void {
       // Fail open: drop the entry; the texture uploads lazily on first draw.
       debugWarn('Texture warm upload failed', { err: String(err) });
     } finally {
+      // Stopped first, so the DEV telemetry below is not charged to the map.
+      uploadMs = performance.now() - uploadStart;
       if (import.meta.env.DEV) surfacePerfEndTextureUpload(perfUpload);
+      if (import.meta.env.DEV && smoothTraceArmed()) {
+        const image = tex.image as { width?: number; height?: number } | undefined;
+        // Compressed containers have no name and no image src; the loader
+        // stamps the file on userData so the upload is still attributable.
+        const source = typeof tex.userData?.sourceUrl === 'string'
+          ? tex.userData.sourceUrl.split(/[/?#]/).filter(Boolean).pop()
+          : '';
+        smoothTraceEvent(
+          'upload',
+          `${tex.name || source || 'texture'} ${image?.width ?? '?'}x${image?.height ?? '?'}`,
+          uploadMs,
+        );
+      }
     }
+    // uploadMs stopped before the callback below: settling one can build a
+    // sector mesh, and that is the caller's cost, not this upload's.
     const onOutcome = residentCallbacks.get(tex);
     residentCallbacks.delete(tex);
     if (uploaded) warmedVersions.set(tex, tex.version);
     onOutcome?.(uploaded ? 'warmed' : 'failed');
-    if (performance.now() - start >= budgetMs) return;
+    warmLastUploadAtMs = performance.now();
+    const spent = warmLastUploadAtMs - start;
+    if (spent >= budgetMs) {
+      // Charge the overrun forward rather than paying another next frame:
+      // consecutive big maps are what turn one slow upload into a stutter.
+      warmOwedPumps = warmRepayPumps(spent, uploadMs, budgetMs, frameIntervalMs);
+      return;
+    }
   }
+  warmOwedPumps = 0;
+}
+
+/** Take a texture out of the queue and into a slice job. Its dispose listener
+ *  is re-armed: a texture freed mid-slice must never be finished or drawn. */
+function beginSlice(tex: THREE.Texture, job: unknown): void {
+  const active: ActiveSlice = { tex, job, onDispose: () => {}, disposed: false };
+  active.onDispose = () => { active.disposed = true; };
+  tex.addEventListener('dispose', active.onDispose);
+  activeSlice = active;
+}
+
+function finishSlice(active: ActiveSlice, outcome: WarmOutcome): void {
+  active.tex.removeEventListener('dispose', active.onDispose);
+  activeSlice = null;
+  const cb = residentCallbacks.get(active.tex);
+  residentCallbacks.delete(active.tex);
+  if (outcome === 'warmed' && !active.disposed) {
+    warmedVersions.set(active.tex, active.tex.version);
+  }
+  cb?.(active.disposed ? 'disposed' : outcome);
+}
+
+/** A lost context abandons a slice in flight: three throws its whole property
+ *  store away on restore, so the storage the job was filling is gone. The
+ *  texture goes back on the queue rather than being reported resident. */
+export function abandonSlicedUpload(): void {
+  const active = activeSlice;
+  if (!active) return;
+  active.tex.removeEventListener('dispose', active.onDispose);
+  activeSlice = null;
+  if (active.disposed) {
+    const cb = residentCallbacks.get(active.tex);
+    residentCallbacks.delete(active.tex);
+    cb?.('disposed');
+    return;
+  }
+  // Re-queue rather than settle: nothing may draw a half-filled map.
+  warmedVersions.delete(active.tex);
+  queue.unshift(active.tex);
+  const onDispose = () => {
+    disposeListeners.delete(active.tex);
+    const cb = residentCallbacks.get(active.tex);
+    residentCallbacks.delete(active.tex);
+    const i = queue.indexOf(active.tex);
+    if (i !== -1) queue.splice(i, 1);
+    cb?.('disposed');
+  };
+  disposeListeners.set(active.tex, onDispose);
+  active.tex.addEventListener('dispose', onDispose);
 }
 
 /** A restored WebGL context has no copy of any previously warmed texture. */
 export function invalidateTextureWarmCache(): void {
+  abandonSlicedUpload();
   warmedVersions = new WeakMap();
 }
 
@@ -130,8 +379,17 @@ export function resetTextureWarmer(): void {
   disposeListeners.clear();
   const pending = [...residentCallbacks.values()];
   residentCallbacks.clear();
+  // A slice in flight still had its callback in residentCallbacks, so it is
+  // already in `pending` above; only its dispose listener needs releasing.
+  if (activeSlice) {
+    activeSlice.tex.removeEventListener('dispose', activeSlice.onDispose);
+    activeSlice = null;
+  }
   queue.length = 0;
   uploadFn = null;
+  slicer = null;
+  warmOwedPumps = 0;
+  warmLastUploadAtMs = null;
   invalidateTextureWarmCache();
   for (const cb of pending) cb('disposed');
 }

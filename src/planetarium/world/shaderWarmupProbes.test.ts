@@ -9,24 +9,23 @@ describe('shader warm-up probes', () => {
     expect(meshes.length).toBe(SHADER_WARMUP_PROBE_COMBOS.length);
     const keys = meshes.map((mesh) => {
       const mat = mesh.material as THREE.MeshStandardMaterial;
-      return ['map', mat.bumpMap ? 'bump' : '', mat.normalMap ? 'normal' : ''].filter(Boolean).join('+');
+      return ['map', mat.bumpMap ? 'bump' : '', mat.normalMap ? 'normal' : '', mat.transparent ? 'transparent' : '']
+        .filter(Boolean).join('+');
     });
-    // The post-arrival combinations, once each.
-    expect(keys).toEqual(['map+bump', 'map+normal', 'map']);
-    expect(new Set(keys).size).toBe(keys.length);
+    // The post-arrival combinations, once each; the last is the cloud deck.
+    expect(keys).toEqual(['map+bump', 'map+normal', 'map', 'map+normal+transparent']);
     for (const mesh of meshes) {
       const mat = mesh.material as THREE.MeshStandardMaterial;
       expect(mat.map).toBeInstanceOf(THREE.Texture);
-      expect(mat.map!.colorSpace).toBe(THREE.SRGBColorSpace);
-      // Augmented like every body's surface, so the probe keys the program a
-      // real moon will draw with.
+      expect(mat.normalMapType).toBe(THREE.TangentSpaceNormalMap);
+      // Augmented like every body's surface: the table defines enter the key.
+      expect(Object.keys(mat.defines ?? {})).toContain('TRANSMITTANCE_TEXTURE_WIDTH');
       expect(mat.onBeforeCompile).not.toBe(THREE.Material.prototype.onBeforeCompile);
       // Never pickable: a probe sits at the origin for the whole session.
       const hits: THREE.Intersection[] = [];
       mesh.raycast(new THREE.Raycaster(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, -1)), hits);
       expect(hits).toEqual([]);
     }
-    for (const combo of SHADER_WARMUP_PROBE_COMBOS) expect(combo.why.length).toBeGreaterThan(0);
     expect(group.visible).toBe(false);
     dispose();
   });

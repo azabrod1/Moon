@@ -5,24 +5,36 @@
  * The ship is authored against a reference radius (historically the Moon's).
  * SHIP_RIG_SCALE shrinks that reference — and with it the hull, the chase
  * distance, the clearance pads, the camera margins, and the zoom floor — so
- * the camera can get 32× closer to a body before the pads stop it, while the
- * ship's ON-SCREEN size never changes (it rides CRUISE_CAM_DIST_AU, which
- * scales identically). World scale, body radii, speeds, and the moon render
- * floors are deliberately untouched.
+ * every pad that holds the camera off a body is 64× smaller than the
+ * authored one, while the ship's ON-SCREEN size never changes (it rides
+ * CRUISE_CAM_DIST_AU, which scales identically). World scale, body radii,
+ * speeds, and the moon render floors are deliberately untouched.
  *
- * Why 1/32: close approach is asset-bound, not engine-bound. A 4K equirect
- * map reads crisp to a ~49° disc and acceptable to ~98° on a desktop
- * viewport; 1/32 parks the un-floored hero bodies at/just past that edge
- * (Moon ~101°, Mars ~120°, Earth ~128°). The final push to the shell is
- * deliberate over-zoom past the asset floor — the proximity governor makes
- * it a slow glide, and pulling back restores full sharpness. Scaling deeper
- * buys nothing until a detail-synthesis shader exists (every extra degree of
- * disc lands past even 4K's texel budget).
+ * Why 1/64: close approach is asset-bound, not engine-bound, and the assets
+ * moved. The close band comes from streamed sector tiles now rather than the
+ * globe's own map — 16K at level 0 on Earth, the Moon and Mars, 32K under it
+ * on Earth: four and eight times the linear detail of the 4K map the earlier
+ * 1/32 was measured against, which read crisp to a ~49° disc and acceptable
+ * to ~98°. On a desktop this parks the camera 195 km over Earth (1.031
+ * radii, a ~141° disc in the head-on chase pose) and 68 km over the Moon
+ * (~121°), with Mars at ~133°. The tiles carry the mid-field there; the
+ * point directly under the ship is ~9 device pixels per 32K texel at DPR 1,
+ * deliberate over-zoom past even them — the proximity governor makes the
+ * last push a slow glide, and pulling back restores full sharpness. Scaling
+ * deeper again waits on a level below 32K, or on detail synthesis.
+ *
+ * The chase distance is also the arrival's camera correction: the standoff
+ * is measured from back here, so halving the trail drops the ship one boom
+ * length farther out. It is the arrival's floor as well as its correction —
+ * no authored pass may miss by less than one boom, or the body would fly
+ * between the camera and the ship rather than past the bow
+ * (arrivalLogic.arrivalPose). Every body flies that same pass; there is no
+ * park class.
  */
 import { KM_PER_AU } from '../astronomy/constants';
 import { DEG2RAD } from '../shared/math/angles';
 
-export const SHIP_RIG_SCALE = 1 / 32;
+export const SHIP_RIG_SCALE = 1 / 64;
 
 /** The scaled base every other rig quantity derives from. The ship model is
  *  authored against this radius (PlayerShip hands it to the model builders),
@@ -34,10 +46,11 @@ export const SHIP_CLEARANCE_AU = SHIP_REFERENCE_RADIUS_AU * 1.5;
 
 /** Chase-camera trail distance behind the ship (also the moon-arrival
  *  standoff's camera correction — the apparent size the user sees is
- *  measured from back here, not from the ship). Kept as the legacy literal
- *  × scale, NOT a "clean" multiple of the reference radius: it is 8.094
- *  reference radii, and rounding would visibly change the ship's on-screen
- *  size, which this refactor must not. */
+ *  measured from back here, not from the ship — and the floor under every
+ *  authored flyby miss, so no pass crosses inside the camera's trail).
+ *  Kept as the legacy literal × scale, NOT a "clean" multiple of the
+ *  reference radius: it is 8.094 reference radii, and rounding would
+ *  visibly change the ship's on-screen size. */
 export const CRUISE_CAM_DIST_AU = 0.000094 * SHIP_RIG_SCALE;
 
 /** Conservative disc radius for ship occlusion (label culling). Default hull

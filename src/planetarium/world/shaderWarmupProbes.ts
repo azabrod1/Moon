@@ -13,8 +13,8 @@
  * They are added to the scene before renderer.compileAsync and KEPT there for
  * the session: three destroys a program the moment its last material is
  * disposed, and a combination no live material holds yet at boot (a measured
- * normal before the Moon's arrives, a photo before the paint) has the probe
- * as its only holder — disposing the probes after the compile threw those
+ * normal before the Moon's arrives, the cloud deck's relief) has the probe as
+ * its only holder — disposing the probes after the compile threw those
  * programs away, and the first real draw linked them again mid-flight. The
  * group is invisible for ordinary frames and never raycast; activation
  * briefly makes it visible only for a one-pixel, load-veiled real draw on
@@ -29,17 +29,17 @@ export interface WarmupProbes {
   dispose: () => void;
 }
 
-/** The map combinations a surface material reaches only after boot. The
- *  cloud deck is not here: its material exists when the scene compiles. */
 export const SHADER_WARMUP_PROBE_COMBOS: ReadonlyArray<{
   readonly map: true;
   readonly bumpMap?: true;
   readonly normalMap?: true;
+  readonly transparent?: true;
   readonly why: string;
 }> = [
   { map: true, bumpMap: true, why: 'painted moon, or a photo over the procedural bump' },
   { map: true, normalMap: true, why: 'photo with a measured normal (the Moon)' },
   { map: true, why: 'photo arrived before the paint' },
+  { map: true, normalMap: true, transparent: true, why: 'the cloud deck once its relief lands' },
 ];
 
 export function createShaderWarmupProbes(): WarmupProbes {
@@ -61,6 +61,8 @@ export function createShaderWarmupProbes(): WarmupProbes {
       map: makeTex('color'),
       bumpMap: combo.bumpMap ? makeTex('data') : null,
       normalMap: combo.normalMap ? makeTex('data') : null,
+      // Opaque and transparent are two programs in three's cache key.
+      transparent: combo.transparent === true,
     });
     augmentSurfaceMaterial(mat, 'rocky'); // archetype is uniform-only — any value keys the same program
     mats.push(mat);

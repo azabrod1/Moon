@@ -156,9 +156,9 @@ describe('planetEnvelopeRadiusAU', () => {
 
 describe('cruiseCameraNearAU', () => {
   it('sits at 30% of the surface distance when the surface is tightest', () => {
-    // Tighter than the chase-distance ship gap (camDist − hull ≈ 320 km),
+    // Tighter than the chase-distance ship gap (camDist − hull ≈ 160 km),
     // so the surface term binds.
-    const surface = 200 * KM;
+    const surface = 100 * KM;
     const ship = CRUISE_CAM_DIST_AU;
     expect(cruiseCameraNearAU(surface, ship)).toBeCloseTo(0.3 * surface, 12);
   });

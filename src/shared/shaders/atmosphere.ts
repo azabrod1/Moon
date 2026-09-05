@@ -105,10 +105,105 @@ void main() {
 }
 `;
 
+// City lights on the night side. An ADDITIVE layer over the globe, which is
+// what decides how the air in front of it applies: the lights are attenuated by
+// the transmittance of that air (they are seen THROUGH ten airmasses at the
+// limb) and nothing is added, because the globe underneath has already added
+// the air's own in-scattered light. Adding it again here would count the whole
+// night side's airlight twice.
+//
+// The column is the whole one. A city is at sea level; this mesh floats a few
+// kilometres up so it never z-fights the globe, and at an 8 km Rayleigh scale
+// height those few kilometres are more than half the air by mass and nearly all
+// of the Mie. So the segment's far end is substituted back down to the surface
+// through `uAirLookupRadius`, the same uniform the cloud deck uses to move its
+// end the other way.
+//
+// The transmittance lookup and its uniform block come from the table GLSL the
+// factory prepends to the fragment source; with no tables the switch is 0 and
+// the shader is what it always was.
+//
+// How much of the map a point draws comes from the cosine between its surface
+// normal and the direction to the sun: full strength once the sun is this far
+// below the local horizon, gone by the lit edge — the few degrees of twilight
+// in between are where the lights fade up. Exported because anything that
+// decides which ground the lights cover (which sectors are worth a tile, how
+// strongly they rank) has to read the same two numbers the shader does, and the
+// GLSL below is written from them so the two cannot drift apart.
+export const EARTH_NIGHT_MIX_DARK = -0.3;
+export const EARTH_NIGHT_MIX_LIT = -0.1;
+
+/**
+ * How blue a pixel of the night map may be, in 8-bit counts of b minus r,
+ * before it is faded out as something that is not a light. Every light source
+ * measured on that composite is warm (b-r from -8 to -37 across New York,
+ * London, Tokyo, Delhi, Cairo and Sao Paulo) and everything that is not one is
+ * cold: snow and ice (Greenland +38, Svalbard +35, the Andes +23, the Himalaya
+ * +22, Norway's highlands +22), the map's own background (+12 to +25), and the
+ * polar no-data fill. 12 is the least blue of those casts, eight counts above
+ * the warmest light there is.
+ *
+ * Exported because the cloud deck reads the same map to glow cities through
+ * itself, and a second transcription of this number would light Greenland's ice
+ * on the clouds above it while the shell below kept it dark.
+ */
+export const EARTH_NIGHT_COLD_CUT = 12;
+
+/**
+ * What the night map's own values are drawn at. The night side has no exposure
+ * of its own — one toneMappingExposure covers the whole frame — so the lights
+ * are lifted by hand to the long exposure a photograph of them would be.
+ *
+ * Exported for the same reason the cut above is: the cloud deck's city glow is
+ * authored as a fraction of what a bare city reads at, and that fraction only
+ * means anything against this number.
+ */
+export const EARTH_NIGHT_MIX_SCALE = 1.5;
+
+/**
+ * The colour the lights are drawn in, as a gain on whatever tint the map's own
+ * pixel already has.
+ *
+ * A LOOK choice, and the counterpart to the cool tint moonlight is drawn in:
+ * ground lighting is warm — sodium and high-pressure lamps run 2000-3000 K —
+ * and a night frame from orbit reads as warm cities under cool moonlit cloud.
+ * The composite map is already warm and this pushes it further, which is what
+ * separates a city from the moonlight over it once both are on the same
+ * fragment.
+ *
+ * Not luminance-normalised, unlike the moonlight tint. Red is held at 1 and the
+ * other two come down, so nothing is brighter than the map already draws it and
+ * the lights' own bloom headroom is unchanged.
+ *
+ * Read by all three places the lights are drawn: the night-lights shell, the
+ * night sector tiles that replace patches of it (the same program, so the same
+ * text), and the glow the cloud deck picks up from the cities under it. A
+ * second transcription is how a city would end up one colour through cloud and
+ * another beside it.
+ */
+export const EARTH_NIGHT_WARM: readonly [number, number, number] = [1.0, 0.82, 0.55];
+
+/** EARTH_NIGHT_WARM as the GLSL literal every one of those three shaders
+ *  multiplies by — one text, generated from the one constant. */
+export const EARTH_NIGHT_WARM_GLSL = `vec3(${EARTH_NIGHT_WARM.map((v) => v.toFixed(2)).join(', ')})`;
+
+/** The shader's `nightMix` for one sun cosine: 0 in daylight, 1 in full night.
+ *  Note the shader's own response is this SQUARED — the mix multiplies the rgb
+ *  and the alpha, and additive blending with a non-premultiplied source takes
+ *  the alpha as its factor — so a comparison between two night surfaces is
+ *  only meaningful at the same sun elevation. */
+export function earthNightMix(sunDot: number): number {
+  const t = (sunDot - EARTH_NIGHT_MIX_DARK) / (EARTH_NIGHT_MIX_LIT - EARTH_NIGHT_MIX_DARK);
+  const c = t < 0 ? 0 : t > 1 ? 1 : t;
+  return 1 - c * c * (3 - 2 * c);
+}
+
 export const earthNightVertexShader = /* glsl */ `
 varying vec2 vUv;
 varying vec3 vNormal;
 varying vec3 vSunDir;
+varying vec3 vAirCam;
+varying vec3 vAirFrag;
 uniform vec3 sunDirection;
 
 void main() {
@@ -116,24 +211,55 @@ void main() {
   vNormal = normalize(normalMatrix * normal);
   // Transform sun direction to view space
   vSunDir = normalize((viewMatrix * vec4(sunDirection, 0.0)).xyz);
+  // Camera and fragment as offsets from the body's centre, world axes — the
+  // frame-free form the air's geometry is worked out in.
+  vAirCam = cameraPosition - modelMatrix[3].xyz;
+  vAirFrag = mat3(modelMatrix) * position;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }
 `;
 
+// uUvOffset / uUvRepeat select the part of `nightTexture` this mesh draws.
+// The whole-globe shell takes (0,0) and (1,1); a sector tile takes the
+// transform that lands its own global equirect rectangle on the tile's
+// interior, inside the gutter. A hand-written shader gets no `mapTransform`
+// from three, so the rectangle has to arrive as uniforms — a sector left on
+// the identity would stretch its tile's western eighth across the whole patch.
 export const earthNightFragmentShader = /* glsl */ `
 uniform sampler2D nightTexture;
+uniform vec2 uUvOffset;
+uniform vec2 uUvRepeat;
+uniform vec3 sunDirection;
+uniform float uAirDensity;
+uniform float uPlanetRadius;
+uniform float uAirLookupRadius;
+uniform sampler2D uTransmittance;
 varying vec2 vUv;
 varying vec3 vNormal;
 varying vec3 vSunDir;
+varying vec3 vAirCam;
+varying vec3 vAirFrag;
 
 void main() {
-  vec4 nightColor = texture2D(nightTexture, vUv);
+  vec4 nightColor = texture2D(nightTexture, vUv * uUvRepeat + uUvOffset);
+  // The composite's lights and its blue casts separate on the sign of the
+  // chroma, with a gap between them (EARTH_NIGHT_COLD_CUT states the gap and
+  // the measurements). Additive over a dark globe, an ice sheet at +38 counts
+  // of b-r is a lit continent that blooms, so fade a pixel out by how blue it
+  // is: gone by the cut, untouched from neutral upward.
+  nightColor.rgb *= smoothstep(${(-EARTH_NIGHT_COLD_CUT / 255).toFixed(6)}, 0.0, nightColor.r - nightColor.b);
   // Show night lights only on dark side
   float sunDot = dot(vNormal, vSunDir);
-  float nightMix = 1.0 - smoothstep(-0.3, -0.1, sunDot); // ordered edges (reversed smoothstep is undefined)
+  float nightMix = 1.0 - smoothstep(${EARTH_NIGHT_MIX_DARK.toFixed(1)}, ${EARTH_NIGHT_MIX_LIT.toFixed(1)}, sunDot); // ordered edges (reversed smoothstep is undefined)
+  vec3 lit = nightColor.rgb * nightMix * ${EARTH_NIGHT_MIX_SCALE.toFixed(1)} * ${EARTH_NIGHT_WARM_GLSL};
+  if (uAirDensity > 0.0) {
+    AerialSegment seg = aerialSegment(
+        vAirCam / uPlanetRadius, normalize(vAirFrag) * uAirLookupRadius, normalize(sunDirection));
+    if (seg.valid) lit *= aerialTransmittance(uTransmittance, seg);
+  }
   // nightMix scales the colour AND the alpha, and the material blends
   // additively (SRC_ALPHA, ONE), so the lights actually fade as nightMix
   // squared — a steeper terminator than the smoothstep alone describes.
-  gl_FragColor = vec4(nightColor.rgb * nightMix * 1.5, nightMix * nightColor.a);
+  gl_FragColor = vec4(lit, nightMix * nightColor.a);
 }
 `;

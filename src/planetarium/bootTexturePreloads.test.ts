@@ -6,7 +6,9 @@ import {
   PLANET_TEXTURE_FILES,
   resolveTierFile,
   TEXTURE_UPGRADE_TIERS,
-} from './PlanetFactory';
+  tierAvailable,
+  TIER_FILE_OVERRIDES,
+} from './world/textureLadder';
 import { BRIGHT_STAR_BIN_FILE } from './data/brightStars';
 import { takeBootWarmResponse } from './world/textureBitmapLoader';
 
@@ -77,12 +79,25 @@ describe('index.html boot texture fetch-warm', () => {
     const durableWave = new Set([
       PLANET_TEXTURE_FILES.moonNormal,
       PLANET_TEXTURE_FILES.marsNormal,
+      // The cloud deck's relief is fetched durably too: the deck draws flat
+      // until it lands rather than holding first paint for it.
+      PLANET_TEXTURE_FILES.earthCloudsNormal,
       PLANET_TEXTURE_FILES.moon,
       PLANET_TEXTURE_FILES.io,
       PLANET_TEXTURE_FILES.europa,
       PLANET_TEXTURE_FILES.ganymede,
       PLANET_TEXTURE_FILES.callisto,
       PLANET_TEXTURE_FILES.triton,
+      PLANET_TEXTURE_FILES.titan,
+      PLANET_TEXTURE_FILES.enceladus,
+      PLANET_TEXTURE_FILES.mimas,
+      PLANET_TEXTURE_FILES.dione,
+      PLANET_TEXTURE_FILES.tethys,
+      PLANET_TEXTURE_FILES.rhea,
+      PLANET_TEXTURE_FILES.iapetus,
+      PLANET_TEXTURE_FILES.charon,
+      PLANET_TEXTURE_FILES.miranda,
+      PLANET_TEXTURE_FILES.ariel,
     ]);
     const firstBackground = warmed.findIndex((f) => durableWave.has(f));
     const lastBlocking = warmed.reduce(
@@ -128,13 +143,19 @@ describe('texture tier assets on disk', () => {
     return new Set(Object.keys(globs).map((p) => p.split('/').pop()!));
   }
 
-  it('ships every colour rung of every ladder', () => {
+  it('ships every colour rung a session without a transcoder can climb', () => {
+    // A rung that ships as a compressed container alone is not on this
+    // session's ladder at all (tierAvailable); its file is pinned below.
+    let rungs = 0;
     for (const [key, tiers] of Object.entries(TEXTURE_UPGRADE_TIERS)) {
       for (const tier of tiers) {
+        if (!tierAvailable(key, tier)) continue;
+        rungs++;
         const file = resolveTierFile(key, tier);
         expect(tierFolder(tier), `public/textures/${tier}/${file} is missing`).toContain(file);
       }
     }
+    expect(rungs).toBeGreaterThan(0);
   });
 
   it('ships every relief rung', () => {
@@ -159,5 +180,12 @@ describe('texture tier assets on disk', () => {
     }
     // An override that stops resolving would otherwise make this test vacuous.
     expect(overrides).toBeGreaterThan(0);
+    // And every override names a rung the ladder actually has: a container
+    // for a tier no ladder lists would ship bytes nothing fetches.
+    for (const [key, rungs] of Object.entries(TIER_FILE_OVERRIDES)) {
+      for (const tier of Object.keys(rungs)) {
+        expect(TEXTURE_UPGRADE_TIERS[key], `${key} lists no ${tier} rung for its override`).toContain(tier);
+      }
+    }
   });
 });

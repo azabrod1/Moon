@@ -7,15 +7,24 @@
  * per-texture offset/repeat that maps the sector's global UV rectangle onto
  * that image's interior (inside its gutter).
  *
+ * The same arithmetic serves finer LEVELS of the same surface: level k is the
+ * grid doubled k times (8×4 → 16×8 → 32×16), so a level-k sector (c, r) sits
+ * exactly inside level k−1's (⌊c/2⌋, ⌊r/2⌋) — `parentSector` — and covers a
+ * quarter of it. Every function here takes the grid it works in, so nothing
+ * below knows which level it is serving.
+ *
  * Tile {c}_{r} on disk (tools/gen-tiles.mjs) is the sub-rectangle
  * u ∈ [c/cols, (c+1)/cols], v ∈ [1−(r+1)/rows, 1−r/rows] of the same equirect
  * the base map is — column 0 at the western edge, row 0 at the north — so the
  * tile and the base map agree on every surface point by construction. The
- * grid, the gutter and the crop widths below are what a tile PATHNAME means:
- * the service worker can serve a one-deploy-old tile under an unchanged path
- * for a boot, so a layout change ships under a new tier folder or key
- * (texturePolicy.resolveTileUrl), never as new code reading the old paths;
- * sectorTiles.assets.test.ts pins every shipped file to this layout.
+ * grid, the gutter and the crop widths below are what a tile PATHNAME means,
+ * and what makes that safe is that a set's folder carries a hash of its own
+ * bytes: a set re-cut at another layout lands on a path nothing has ever
+ * asked for, so no cache anywhere can hand new code an old tile. (The file
+ * stem in the path is the same rule for the map above it — a re-based base
+ * map ships under a new name.) Layout changes still ship as a re-cut, never
+ * as new code reading old paths; sectorTiles.assets.test.ts holds the
+ * shipped sets to the numbers here.
  *
  * Normal-map crops are cut TWO sectors wide (the sector centred, half a
  * neighbour each side): three derives the tangent frame from screen-space
@@ -31,7 +40,9 @@
  * its uv is (u, 1 − v). A sector built with `segments` per side has vertices
  * that coincide with the full sphere's at `segments × cols` longitude segments
  * — the same grid the silhouette upgrade rebuilds the base sphere on — so an
- * overlaid sector never fights its base for depth (pinned by test).
+ * overlaid sector never fights its base for depth (pinned by test). Halving
+ * the segments as the grid doubles keeps every level on that one lattice, so
+ * a child's vertices land on its parent's.
  *
  * Everything here is pure: no camera, no renderer, no DOM.
  */
@@ -42,12 +53,29 @@ export interface SectorGrid {
   rows: number;
 }
 
-/** The one grid every 16K sector set ships in: 8 × 4 sectors of 2048² tiles. */
+/** The one grid every 16K sector set ships in: 8 × 4 sectors of 2048² tiles.
+ *  Also the level-0 grid every finer level is a doubling of. */
 export const SECTOR_GRID_16K: SectorGrid = { cols: 8, rows: 4 };
 
 export interface Sector {
   c: number;
   r: number;
+}
+
+/** The grid one level finer: each sector splits into four. */
+export function finerGrid(grid: SectorGrid): SectorGrid {
+  return { cols: grid.cols * 2, rows: grid.rows * 2 };
+}
+
+/** The sector of the level above that contains this one — the halving that
+ *  makes a level's grid a doubling of the one above it. */
+export function parentSector(s: Sector): Sector {
+  return { c: s.c >> 1, r: s.r >> 1 };
+}
+
+/** The sector `levels` levels up that contains this one (0 = itself). */
+export function ancestorSector(s: Sector, levels: number): Sector {
+  return { c: s.c >> levels, r: s.r >> levels };
 }
 
 /** An image's pixel layout: `width × height` px with gutters of
@@ -266,6 +294,10 @@ export function sectorSphereGeometry(
   s: Sector,
   segments: number,
 ): THREE.SphereGeometry {
+  // Three clamps a sphere at three segments across and two down. The uv
+  // rewrite below walks the lattice the geometry actually got, so the clamp
+  // is applied here rather than left to disagree with it.
+  segments = Math.max(3, Math.floor(segments));
   const args = sectorSphereArgs(grid, s);
   const geo = new THREE.SphereGeometry(
     radius, segments, segments, args.phiStart, args.phiLength, args.thetaStart, args.thetaLength,

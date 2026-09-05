@@ -1,0 +1,958 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>GPU memory probe</title>
+<!--
+  A standalone page that measures how much GPU texture memory one browser tab
+  on this device will hold before the browser gives up or the system closes
+  the tab. iOS publishes no such figure and reports no error when it is
+  crossed — the tab is killed — so the only way to learn it is to walk up to
+  it and write down where the walk stopped.
+
+  It lives in public/ so Vite copies it verbatim: no import, no bundle chunk,
+  nothing in the app can reach it, and it is not linked from anywhere. It is
+  also outside the service worker, which caches only the data directories and
+  never HTML.
+
+  The protocol, in one place, because everything else here follows from it:
+  before each allocation the page writes what it is ABOUT to try into
+  localStorage (mirrored into a cookie and the URL), yields a task so the
+  write can flush, and only then allocates. If the tab dies, that record is
+  what is left. On the next load a record still saying "attempting" from a
+  run that was not stopped cleanly is a kill, and the size it names is the
+  step the device would not take. Every clean way to stop — the Stop button,
+  the tab going into the background, the page closing, a storage error —
+  writes "aborted" first, so an ordinary interruption is never read as a
+  kill.
+
+  Two things the protocol as written did not survive, both seen on a real
+  iPhone at about 2 GiB:
+
+  A kill can beat the write. iOS ends the whole content process, and a
+  localStorage write that has only been handed to the event loop is not yet
+  on disk when that happens — so the run's last record was the SURVIVAL of
+  the step before, and no "attempting" record existed to be read as a kill.
+  Two answers, both here: past 1.5 GiB the page waits a full second between
+  the write and the allocation, and on load a run whose last word is a
+  survival, with no result recorded for it, is read as a death at the step
+  after — stated as an inference, because that is what it is.
+
+  A mirror is only useful if it is read. The cookie and the URL were written
+  and never consulted, and the URL is lost the moment the address is retyped
+  rather than reloaded. All three stores are read on load now and the most
+  advanced record of the three wins.
+-->
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0e13;
+    --panel: #141922;
+    --line: #263041;
+    --text: #e7ecf3;
+    --dim: #93a1b5;
+    --accent: #7cc4ff;
+    --warn: #ffb454;
+    --bad: #ff7b72;
+    --ok: #7ee2a8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 20px 16px 64px;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  main { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  h2 { font-size: 15px; margin: 28px 0 8px; color: var(--dim); font-weight: 600; }
+  p { margin: 0 0 12px; }
+  .lede { color: var(--dim); }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px;
+    margin: 0 0 16px;
+  }
+  button {
+    font: inherit;
+    font-weight: 600;
+    color: #08121c;
+    background: var(--accent);
+    border: 0;
+    border-radius: 8px;
+    padding: 14px 22px;
+    min-height: 48px;
+    cursor: pointer;
+  }
+  button.secondary { background: #2a3446; color: var(--text); }
+  button[disabled] { opacity: 0.45; cursor: default; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  td { padding: 4px 8px 4px 0; vertical-align: top; border-bottom: 1px solid var(--line); }
+  td:first-child { color: var(--dim); white-space: nowrap; width: 40%; }
+  td:last-child { word-break: break-word; font-variant-numeric: tabular-nums; }
+  code, textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  textarea {
+    width: 100%;
+    min-height: 130px;
+    background: #0d1219;
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  #status { font-size: 17px; font-weight: 600; margin: 0 0 6px; }
+  #detail { color: var(--dim); font-size: 13px; margin: 0; }
+  .result { font-size: 17px; }
+  .good { color: var(--ok); }
+  .warn { color: var(--warn); }
+  .bad { color: var(--bad); }
+  canvas { width: 48px; height: 48px; border: 1px solid var(--line); border-radius: 4px; opacity: 0.5; }
+  .note { color: var(--dim); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>GPU memory probe</h1>
+  <p class="lede">
+    This page fills the graphics memory of this one browser tab with textures,
+    a step at a time, until something gives. It is a measurement tool for the
+    solar-system app; it sends nothing anywhere.
+  </p>
+
+  <div class="panel" id="previous" hidden></div>
+
+  <div class="panel">
+    <p id="status">Ready.</p>
+    <p id="detail">Nothing has been allocated yet.</p>
+    <p class="note" id="steplabel"></p>
+    <div class="row" style="margin-top:12px">
+      <button id="start">Start the probe</button>
+      <button id="stop" class="secondary" hidden>Stop</button>
+      <canvas id="gl" width="48" height="48" aria-hidden="true"></canvas>
+    </div>
+    <p class="note" style="margin:12px 0 0" id="warning">
+      The browser may close this tab on purpose while the probe runs — that is
+      the measurement. The result is written to this page's own storage on
+      this device as it goes, so reopening the page reports where it stopped.
+    </p>
+  </div>
+
+  <h2>What this device says about itself</h2>
+  <div class="panel"><table id="signals"></table></div>
+
+  <h2>The result to send back</h2>
+  <div class="panel">
+    <textarea id="json" readonly spellcheck="false"></textarea>
+    <div class="row" style="margin-top:10px">
+      <button id="copy" class="secondary">Copy</button>
+      <span class="note" id="copied"></span>
+    </div>
+  </div>
+
+  <h2>If the browser stops cooperating</h2>
+  <p class="note">
+    Safari sometimes shows “A problem repeatedly occurred” instead of
+    reloading the page by itself. Reload it by hand — the numbers are already
+    saved, and the page reports them the moment it opens. If Safari keeps
+    showing that screen, open the page in a new tab; the storage is the same.
+    Two or three runs are worth doing: take the lowest. If two runs disagree
+    by more than one step, something else on the device was busy — try again
+    when it is idle.
+  </p>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  var VERSION = 1;
+  var KEY_RUN = 'moonProbe.v1.run';
+  var KEY_RESULTS = 'moonProbe.v1.results';
+  var MiB = 1048576;
+  // One step is one 4096x2048 RGBA texture with a full mip chain — the exact
+  // shape of the app's 4K colour maps, so a step count converts to app maps
+  // with no fudge factor.
+  var COARSE = { w: 4096, h: 2048 };
+  // The refinement step is a quarter of that (2048x1024 RGBA + mips), so a
+  // ceiling found in coarse steps can be narrowed to about 10.7 MiB without
+  // changing the kind of allocation being made.
+  var FINE = { w: 2048, h: 1024 };
+  var STEP_MS = 250;
+  var CEILING_BYTES = 4 * 1024 * 1024 * 1024;
+  // Past this size a kill is close enough to be racing the record of it. A
+  // localStorage write handed to the event loop is not yet on disk, and iOS
+  // ends the content process without unwinding anything — so above here the
+  // page stops trusting one task's worth of yielding and waits a full second
+  // between saying what it is about to do and doing it. The cost is a second
+  // a step over the last few steps of a run.
+  var SLOW_WRITE_BYTES = 1536 * MiB;
+  var SLOW_WRITE_MS = 1000;
+
+  var el = function (id) { return document.getElementById(id); };
+  var statusEl = el('status');
+  var detailEl = el('detail');
+  var startBtn = el('start');
+  var stopBtn = el('stop');
+  var canvas = el('gl');
+
+  // ---- allocation shape ---------------------------------------------------
+
+  function chain(w, h) {
+    var bytes = 0, levels = 0, cw = w, ch = h;
+    for (;;) {
+      bytes += cw * ch * 4;
+      levels++;
+      if (cw === 1 && ch === 1) break;
+      cw = Math.max(1, cw >> 1);
+      ch = Math.max(1, ch >> 1);
+    }
+    return { width: w, height: h, mipLevels: levels, bytes: bytes };
+  }
+  var COARSE_SHAPE = chain(COARSE.w, COARSE.h);
+  var FINE_SHAPE = chain(FINE.w, FINE.h);
+
+  function mib(bytes) { return Math.round((bytes / MiB) * 10) / 10; }
+
+  el('steplabel').textContent =
+    'One step is a ' + COARSE.w + '×' + COARSE.h + ' RGBA texture with ' +
+    COARSE_SHAPE.mipLevels + ' mip levels — ' + mib(COARSE_SHAPE.bytes) +
+    ' MiB. It stops at 4 GiB if nothing gives before then.';
+
+  // ---- signals ------------------------------------------------------------
+
+  function mediaMatches(q) {
+    try { return window.matchMedia(q).matches; } catch (e) { return null; }
+  }
+
+  function glSignals(gl) {
+    var out = { renderer: null, vendor: null, maxTextureSize: null, compressed: [], webglVersion: null };
+    if (!gl) return out;
+    out.webglVersion = (typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext) ? 2 : 1;
+    try { out.maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE); } catch (e) {}
+    try {
+      var dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      if (dbg) {
+        out.renderer = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
+        out.vendor = gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL);
+      }
+    } catch (e) {}
+    var families = [
+      ['astc', 'WEBGL_compressed_texture_astc'],
+      ['etc', 'WEBGL_compressed_texture_etc'],
+      ['etc1', 'WEBGL_compressed_texture_etc1'],
+      ['s3tc', 'WEBGL_compressed_texture_s3tc'],
+      ['bptc', 'EXT_texture_compression_bptc'],
+      ['pvrtc', 'WEBGL_compressed_texture_pvrtc'],
+    ];
+    for (var i = 0; i < families.length; i++) {
+      try { if (gl.getExtension(families[i][1])) out.compressed.push(families[i][0]); } catch (e) {}
+    }
+    return out;
+  }
+
+  function readSignals(gl) {
+    var nav = navigator;
+    var uad = nav.userAgentData || null;
+    var g = glSignals(gl);
+    return {
+      screenCss: screen.width + '×' + screen.height,
+      windowCss: window.innerWidth + '×' + window.innerHeight,
+      devicePixelRatio: window.devicePixelRatio,
+      devicePixels: Math.round(screen.width * window.devicePixelRatio) + '×' +
+        Math.round(screen.height * window.devicePixelRatio),
+      webglVersion: g.webglVersion,
+      renderer: g.renderer,
+      vendor: g.vendor,
+      maxTextureSize: g.maxTextureSize,
+      compressed: g.compressed,
+      maxTouchPoints: nav.maxTouchPoints,
+      anyPointerCoarse: mediaMatches('(any-pointer: coarse)'),
+      pointerCoarse: mediaMatches('(pointer: coarse)'),
+      deviceMemory: typeof nav.deviceMemory === 'number' ? nav.deviceMemory : null,
+      hardwareConcurrency: typeof nav.hardwareConcurrency === 'number' ? nav.hardwareConcurrency : null,
+      uaPlatform: uad ? uad.platform : null,
+      uaMobile: uad ? uad.mobile : null,
+      platform: nav.platform,
+      userAgent: nav.userAgent,
+    };
+  }
+
+  function show(value) {
+    if (value === null || value === undefined) return '—';
+    if (Array.isArray(value)) return value.length ? value.join(', ') : 'none';
+    return String(value);
+  }
+
+  function renderSignals(signals) {
+    var rows = [
+      ['screen (CSS px)', signals.screenCss],
+      ['window (CSS px)', signals.windowCss],
+      ['device pixel ratio', signals.devicePixelRatio],
+      ['screen (device px)', signals.devicePixels],
+      ['renderer', signals.renderer],
+      ['vendor', signals.vendor],
+      ['WebGL', signals.webglVersion],
+      ['max texture size', signals.maxTextureSize],
+      ['compressed formats', signals.compressed],
+      ['max touch points', signals.maxTouchPoints],
+      ['(any-pointer: coarse)', signals.anyPointerCoarse],
+      ['(pointer: coarse)', signals.pointerCoarse],
+      ['device memory (GB)', signals.deviceMemory],
+      ['cores', signals.hardwareConcurrency],
+      ['UA platform', signals.uaPlatform],
+      ['UA mobile', signals.uaMobile],
+      ['platform', signals.platform],
+      ['user agent', signals.userAgent],
+    ];
+    var html = '';
+    for (var i = 0; i < rows.length; i++) {
+      html += '<tr><td>' + rows[i][0] + '</td><td>' + escapeHtml(show(rows[i][1])) + '</td></tr>';
+    }
+    el('signals').innerHTML = html;
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  // ---- storage ------------------------------------------------------------
+
+  var storageError = null;
+
+  function storageWorks() {
+    try {
+      var probe = 'moonProbe.v1.check';
+      localStorage.setItem(probe, '1');
+      var back = localStorage.getItem(probe);
+      localStorage.removeItem(probe);
+      return back === '1';
+    } catch (e) {
+      storageError = String(e && e.message ? e.message : e);
+      return false;
+    }
+  }
+
+  function mirror(record) {
+    // The survived figure rides along, so a record recovered from a mirror
+    // alone still says what the device held, not only what it was reaching
+    // for when it stopped.
+    var compact = 'v' + record.v + '.' + record.runId + '.s' + record.step + '.' +
+      Math.round(record.attemptMiB) + 'MiB.' + record.state + '.' + record.survivedMiB;
+    // Two more stores that survive different things: a cookie is written
+    // synchronously by a different subsystem, and the URL survives a reload
+    // and is readable on screen even if both stores lose the write.
+    try { document.cookie = 'moonprobe=' + compact + '; max-age=604800; path=/; SameSite=Lax'; } catch (e) {}
+    try { history.replaceState(null, '', '#probe=' + compact); } catch (e) {}
+  }
+
+  /** A mirrored record, back from its compact form. Partial: it carries the
+   *  run, the step, the size and the state, and nothing else the full record
+   *  holds. The trailing survived figure is optional, so a cookie written by
+   *  an earlier build still parses. */
+  function parseCompact(text) {
+    var m = /^v(\d+)\.([a-z0-9-]+)\.s(\d+)\.(\d+)MiB\.([a-z-]+)(?:\.([0-9.]+))?$/.exec(text || '');
+    if (!m || Number(m[1]) !== VERSION) return null;
+    return {
+      v: VERSION,
+      runId: m[2],
+      step: Number(m[3]),
+      attemptMiB: Number(m[4]),
+      state: m[5],
+      survivedMiB: m[6] === undefined ? null : Number(m[6]),
+      partial: true,
+    };
+  }
+
+  function readCookieRecord() {
+    try {
+      var m = /(?:^|;\s*)moonprobe=([^;]*)/.exec(document.cookie || '');
+      return m ? parseCompact(decodeURIComponent(m[1])) : null;
+    } catch (e) { return null; }
+  }
+
+  function readHashRecord() {
+    try {
+      var m = /[#&]probe=([^&]*)/.exec(location.hash || '');
+      return m ? parseCompact(decodeURIComponent(m[1])) : null;
+    } catch (e) { return null; }
+  }
+
+  /** Which of two records was written later. Steps run in order, and inside
+   *  one step the attempt is written before whatever became of it, so an
+   *  attempt is the earlier write at the same step. */
+  function later(a, b) {
+    if (!a) return b;
+    if (!b) return a;
+    if (a.step !== b.step) return a.step > b.step ? a : b;
+    var rank = function (r) { return r.state === 'attempting' ? 0 : 1; };
+    return rank(a) >= rank(b) ? a : b;
+  }
+
+  function writeRecord(record) {
+    var text = JSON.stringify(record);
+    localStorage.setItem(KEY_RUN, text);
+    // Read it back: a store that accepted the write and kept nothing would
+    // otherwise turn a survived step into a phantom kill on the next load.
+    if (localStorage.getItem(KEY_RUN) !== text) {
+      throw new Error('the browser did not keep the record it was given');
+    }
+    mirror(record);
+  }
+
+  function readStoredRecord() {
+    try {
+      var raw = localStorage.getItem(KEY_RUN);
+      if (!raw) return null;
+      var rec = JSON.parse(raw);
+      return rec && rec.v === VERSION ? rec : null;
+    } catch (e) { return null; }
+  }
+
+  /**
+   * The last thing any of the three stores heard, whichever heard it last.
+   * A kill can land between a localStorage write and the disk; the cookie is
+   * written by a different subsystem and the URL by a third, and any of them
+   * may be the only one that kept the last word. When the winner is a
+   * mirror, the full record from the same run fills in what the compact form
+   * does not carry.
+   */
+  function readRecord() {
+    var stored = readStoredRecord();
+    var best = later(later(stored, readCookieRecord()), readHashRecord());
+    if (!best || best === stored || !best.partial) return best;
+    if (!stored || stored.runId !== best.runId) return best;
+    var merged = {};
+    var k;
+    for (k in stored) if (Object.prototype.hasOwnProperty.call(stored, k)) merged[k] = stored[k];
+    for (k in best) if (Object.prototype.hasOwnProperty.call(best, k)) {
+      if (best[k] !== null && best[k] !== undefined) merged[k] = best[k];
+    }
+    // The full record's attemptBytes belongs to ITS step, not this one.
+    if (merged.step !== stored.step) merged.attemptBytes = null;
+    return merged;
+  }
+
+  /** Forget the run record in all three stores. A record left in any one of
+   *  them is reported again on the next load. */
+  function clearRecord() {
+    try { localStorage.removeItem(KEY_RUN); } catch (e) {}
+    try { document.cookie = 'moonprobe=; max-age=0; path=/; SameSite=Lax'; } catch (e) {}
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+  }
+
+  /** Whether a run already reached a verdict. A run that finished wrote one;
+   *  a run whose tab was closed under it did not. */
+  function resultFor(id) {
+    var list = readResults();
+    for (var i = 0; i < list.length; i++) if (list[i].runId === id) return list[i];
+    return null;
+  }
+
+  function readResults() {
+    try {
+      var raw = localStorage.getItem(KEY_RESULTS);
+      var list = raw ? JSON.parse(raw) : [];
+      return Array.isArray(list) ? list : [];
+    } catch (e) { return []; }
+  }
+
+  function addResult(result) {
+    try {
+      var list = readResults();
+      list.push(result);
+      while (list.length > 10) list.shift();
+      localStorage.setItem(KEY_RESULTS, JSON.stringify(list));
+    } catch (e) {}
+    refreshJson();
+  }
+
+  // ---- GL -----------------------------------------------------------------
+
+  var gl = null;
+  var program = null;
+  var contextLost = false;
+  // WebGL 2 allocates a sized internal format (RGBA8); WebGL 1 an unsized
+  // one. Reported, because a driver is free to pick a different backing for
+  // the unsized case and the number would not be reproducible without it.
+  var sizedFormat = false;
+
+  function initGl() {
+    var opts = { alpha: false, antialias: false, depth: false, stencil: false, powerPreference: 'high-performance' };
+    gl = canvas.getContext('webgl2', opts) || canvas.getContext('webgl', opts);
+    if (!gl) return false;
+    sizedFormat = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
+    canvas.addEventListener('webglcontextlost', function (e) {
+      // Not prevented: a restored context would silently drop everything the
+      // run is holding, and the run is over either way.
+      contextLost = true;
+    });
+    var vs = 'attribute vec2 p; varying vec2 uv; void main(){ uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }';
+    var fs = 'precision mediump float; varying vec2 uv; uniform sampler2D t; void main(){ gl_FragColor = texture2D(t, uv); }';
+    program = link(vs, fs);
+    if (!program) return false;
+    var buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    var loc = gl.getAttribLocation(program, 'p');
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    gl.useProgram(program);
+    gl.uniform1i(gl.getUniformLocation(program, 't'), 0);
+    return true;
+  }
+
+  function link(vsSource, fsSource) {
+    function compile(type, src) {
+      var s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      return gl.getShaderParameter(s, gl.COMPILE_STATUS) ? s : null;
+    }
+    var vs = compile(gl.VERTEX_SHADER, vsSource);
+    var fs = compile(gl.FRAGMENT_SHADER, fsSource);
+    if (!vs || !fs) return null;
+    var p = gl.createProgram();
+    gl.attachShader(p, vs);
+    gl.attachShader(p, fs);
+    gl.linkProgram(p);
+    return gl.getProgramParameter(p, gl.LINK_STATUS) ? p : null;
+  }
+
+  function errorName(code) {
+    if (code === gl.OUT_OF_MEMORY) return 'OUT_OF_MEMORY';
+    if (code === gl.INVALID_VALUE) return 'INVALID_VALUE';
+    if (code === gl.INVALID_OPERATION) return 'INVALID_OPERATION';
+    if (code === gl.INVALID_ENUM) return 'INVALID_ENUM';
+    if (code === gl.CONTEXT_LOST_WEBGL) return 'CONTEXT_LOST_WEBGL';
+    return 'GL error ' + code;
+  }
+
+  var held = [];
+
+  // `?fail=<MiB>` makes the page refuse the first step past that size, as a
+  // driver out of memory would. It is how the ceiling and the narrowing-down
+  // that follows it get exercised on a machine that has room to spare; it
+  // measures nothing, and the page says so on screen while it is set.
+  var forcedCeilingMiB = (function () {
+    var raw = new URLSearchParams(location.search).get('fail');
+    var value = raw === null ? NaN : Number(raw);
+    return value > 0 ? value : 0;
+  })();
+
+  function allocate(shape) {
+    if (forcedCeilingMiB && heldBytes + shape.bytes > forcedCeilingMiB * MiB) {
+      return 'OUT_OF_MEMORY (forced by ?fail=' + forcedCeilingMiB + ')';
+    }
+    while (gl.getError() !== gl.NO_ERROR) { /* drain anything left over */ }
+    var tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    if (sizedFormat) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, shape.width, shape.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    } else {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, shape.width, shape.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    }
+    var err = gl.getError();
+    if (err !== gl.NO_ERROR) {
+      gl.deleteTexture(tex);
+      return errorName(err) + ' allocating the image';
+    }
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    // The mip chain is a third of the allocation and can fail on its own.
+    gl.generateMipmap(gl.TEXTURE_2D);
+    err = gl.getError();
+    if (err !== gl.NO_ERROR) {
+      gl.deleteTexture(tex);
+      return errorName(err) + ' generating the mip chain';
+    }
+    held.push({ tex: tex, bytes: shape.bytes });
+    return null;
+  }
+
+  function frame() {
+    return new Promise(function (resolve) { requestAnimationFrame(function () { resolve(); }); });
+  }
+  function task() {
+    return new Promise(function (resolve) { setTimeout(resolve, 0); });
+  }
+  function wait(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
+  /** Draw every texture the run is holding, over two frames, with a finish
+   *  between them: a driver that would otherwise leave an untouched
+   *  allocation virtual has to make all of it real. */
+  function drawEverything() {
+    var pass = 0;
+    function once() {
+      return frame().then(function () {
+        if (contextLost) return;
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.useProgram(program);
+        for (var i = 0; i < held.length; i++) {
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, held[i].tex);
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        }
+        gl.finish();
+        pass++;
+        if (pass < 2) return once();
+      });
+    }
+    return once();
+  }
+
+  // ---- the run ------------------------------------------------------------
+
+  var running = false;
+  var stopped = false;
+  var record = null;
+  var heldBytes = 0;
+  var survivedBytes = 0;
+  var survivedSteps = 0;
+  var runId = '';
+
+  function setStatus(text, detail, cls) {
+    statusEl.textContent = text;
+    statusEl.className = cls || '';
+    if (detail !== undefined) detailEl.textContent = detail;
+  }
+
+  function markAborted(why) {
+    if (!running) return;
+    stopped = true;
+    running = false;
+    startBtn.hidden = false;
+    stopBtn.hidden = true;
+    // Any state a live run left behind is marked, not just an attempt in
+    // flight: a run stopped between steps ended at the person's hand, and
+    // the last figure it reached is a floor rather than a finding.
+    if (record) {
+      record.state = 'aborted';
+      record.reason = why;
+      try { writeRecord(record); } catch (e) { /* nothing left to do about it */ }
+    }
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') markAborted('the tab went into the background');
+  });
+  window.addEventListener('pagehide', function () {
+    markAborted('the page was closed or navigated away from');
+  });
+
+  function newRunId() {
+    return Date.now().toString(36) + '-' + Math.floor(Math.random() * 1e6).toString(36);
+  }
+
+  async function runProbe() {
+    running = true;
+    stopped = false;
+    contextLost = false;
+    held = [];
+    heldBytes = 0;
+    survivedBytes = 0;
+    survivedSteps = 0;
+    runId = newRunId();
+    startBtn.hidden = true;
+    stopBtn.hidden = false;
+
+    var phase = 'coarse';
+    var step = 0;
+
+    for (;;) {
+      if (stopped) return;
+      var shape = phase === 'coarse' ? COARSE_SHAPE : FINE_SHAPE;
+      var attempt = heldBytes + shape.bytes;
+      if (attempt > CEILING_BYTES) {
+        return finishRun('ceiling-not-reached', 'held ' + mib(heldBytes) + ' MiB with nothing giving way');
+      }
+      step++;
+      record = {
+        v: VERSION,
+        runId: runId,
+        phase: phase,
+        step: step,
+        textures: held.length + 1,
+        attemptMiB: mib(attempt),
+        attemptBytes: attempt,
+        survivedMiB: mib(survivedBytes),
+        survivedTextures: held.length,
+        ts: Date.now(),
+        state: 'attempting',
+      };
+      try {
+        writeRecord(record);
+      } catch (e) {
+        markAborted('the browser refused to store the record: ' + (e && e.message ? e.message : e));
+        setStatus('Stopped: storage failed', String(e && e.message ? e.message : e), 'bad');
+        return;
+      }
+      setStatus(
+        'Step ' + step + ' — trying ' + mib(attempt) + ' MiB',
+        'Holding ' + mib(heldBytes) + ' MiB in ' + held.length + ' textures.',
+      );
+      // Give the write a turn to reach the store before the dangerous part.
+      await task();
+      await frame();
+      if (attempt > SLOW_WRITE_BYTES) await wait(SLOW_WRITE_MS);
+      if (stopped) return;
+
+      var failure = allocate(shape);
+      if (!failure) {
+        await drawEverything();
+        if (contextLost) failure = 'the graphics context was lost';
+      }
+      if (stopped) return;
+
+      if (failure) {
+        heldBytes = survivedBytes;
+        record.state = 'ceiling';
+        record.reason = failure;
+        try { writeRecord(record); } catch (e) {}
+        if (phase === 'coarse' && !contextLost) {
+          // Narrow it from exactly where the coarse run stopped: the same
+          // tab, the same textures still held, quarter-size steps from here.
+          phase = 'fine';
+          setStatus(
+            'Ceiling at ' + mib(attempt) + ' MiB — narrowing it down',
+            failure + '. Continuing in ' + mib(FINE_SHAPE.bytes) + ' MiB steps from ' + mib(survivedBytes) + ' MiB.',
+            'warn',
+          );
+          await wait(STEP_MS);
+          continue;
+        }
+        return finishRun(contextLost ? 'context-lost' : 'gl-error', failure);
+      }
+
+      heldBytes = attempt;
+      survivedBytes = attempt;
+      survivedSteps = held.length;
+      record.state = 'survived';
+      record.survivedMiB = mib(survivedBytes);
+      record.survivedTextures = survivedSteps;
+      record.ts = Date.now();
+      try {
+        writeRecord(record);
+      } catch (e) {
+        markAborted('the browser refused to store the record');
+        return;
+      }
+      setStatus(
+        'Holding ' + mib(heldBytes) + ' MiB',
+        held.length + ' textures survived. Next step: ' + mib(heldBytes + shape.bytes) + ' MiB.',
+        'good',
+      );
+      await wait(STEP_MS);
+    }
+  }
+
+  function finishRun(kind, why) {
+    running = false;
+    startBtn.hidden = false;
+    stopBtn.hidden = true;
+    addResult({
+      runId: runId,
+      ts: Date.now(),
+      kind: kind,
+      reason: why,
+      survivableMiB: mib(survivedBytes),
+      survivableTextures: survivedSteps,
+      diedAttemptingMiB: record ? record.attemptMiB : null,
+      coarseStepMiB: mib(COARSE_SHAPE.bytes),
+      fineStepMiB: mib(FINE_SHAPE.bytes),
+    });
+    if (kind === 'ceiling-not-reached') {
+      setStatus('No ceiling found', why + ' — this device is not the constraint.', 'good');
+    } else {
+      setStatus(
+        'Last survivable ' + mib(survivedBytes) + ' MiB (' + survivedSteps + ' textures)',
+        'It gave way at ' + (record ? record.attemptMiB : '?') + ' MiB: ' + why,
+        'warn',
+      );
+    }
+    refreshJson();
+  }
+
+  // ---- reporting ----------------------------------------------------------
+
+  var signals = null;
+  /** Set when this load read a death out of a missing record rather than out
+   *  of a record of one. It changes how the number should be read, so it
+   *  travels with the number. */
+  var inferredDeath = false;
+
+  function refreshJson() {
+    el('json').value = JSON.stringify({
+      probe: VERSION,
+      inferredDeath: inferredDeath,
+      step: COARSE_SHAPE,
+      fineStep: FINE_SHAPE,
+      internalFormat: sizedFormat ? 'RGBA8' : 'RGBA (unsized)',
+      drawingBuffer: gl ? gl.drawingBufferWidth + '×' + gl.drawingBufferHeight : null,
+      lastRun: readRecord(),
+      results: readResults(),
+      signals: signals,
+    });
+  }
+
+  function reportPreviousRun() {
+    var prev = readRecord();
+    var box = el('previous');
+    if (!prev) return;
+    box.hidden = false;
+    if (prev.state === 'survived' && prev.runId !== runId && !resultFor(prev.runId)) {
+      // A run whose last word is a survival and which never reached a
+      // verdict did not stop of its own accord: every clean ending writes
+      // one, and every step writes its intent before acting on it. So the
+      // page was gone before the next intent could be written — which is
+      // what a content process ended at full speed looks like from here.
+      var stepBytes = prev.phase === 'fine' ? FINE_SHAPE.bytes : COARSE_SHAPE.bytes;
+      var heldThen = typeof prev.attemptBytes === 'number' && prev.attemptBytes > 0
+        ? prev.attemptBytes
+        : Math.round((prev.survivedMiB || prev.attemptMiB || 0) * MiB);
+      var nextMiB = mib(heldThen + stepBytes);
+      // A record recovered from a mirror written by an older build carries no
+      // survived figure; on a survival the attempt IS the survival.
+      var survivedMiB = prev.survivedMiB === null || prev.survivedMiB === undefined
+        ? prev.attemptMiB
+        : prev.survivedMiB;
+      inferredDeath = true;
+      box.innerHTML =
+        '<p class="result bad">The last run was killed — read, not recorded.</p>' +
+        '<p>It recorded step ' + prev.step + ' as survived at <strong>' + survivedMiB +
+        ' MiB</strong> and then recorded nothing at all. Every step writes what it is about to try ' +
+        'before it tries it, so a run that ends on a survival ended between those two writes: it died ' +
+        'at step ' + (prev.step + 1) + ', attempting <strong>' + nextMiB + ' MiB</strong>.</p>' +
+        '<p class="note">The ceiling is at or just under ' + survivedMiB +
+        ' MiB. This is an inference from a missing record rather than a record of a death — run it ' +
+        'again and see whether the two runs agree.</p>';
+      addResult({
+        runId: prev.runId,
+        ts: prev.ts || Date.now(),
+        kind: 'killed',
+        reason: 'the run ended on a survival with no verdict: the tab was closed under it',
+        inferredDeath: true,
+        survivableMiB: survivedMiB,
+        survivableTextures: prev.survivedTextures === undefined ? null : prev.survivedTextures,
+        diedAttemptingMiB: nextMiB,
+        coarseStepMiB: mib(COARSE_SHAPE.bytes),
+        fineStepMiB: mib(FINE_SHAPE.bytes),
+      });
+      clearRecord();
+    } else if (prev.state === 'attempting') {
+      // Nothing marked this run finished, so whatever stopped it was not the
+      // page: the tab was closed under it at that size.
+      box.innerHTML =
+        '<p class="result bad">The last run was killed.</p>' +
+        '<p>Last survivable <strong>' + prev.survivedMiB + ' MiB</strong> (' +
+        prev.survivedTextures + ' textures), died attempting <strong>' +
+        prev.attemptMiB + ' MiB</strong>.</p>' +
+        '<p class="note">Run it again to confirm — the number to report is the lowest of two or three runs.</p>';
+      addResult({
+        runId: prev.runId,
+        ts: prev.ts,
+        kind: 'killed',
+        reason: 'the tab was closed by the system',
+        survivableMiB: prev.survivedMiB,
+        survivableTextures: prev.survivedTextures,
+        diedAttemptingMiB: prev.attemptMiB,
+        coarseStepMiB: mib(COARSE_SHAPE.bytes),
+        fineStepMiB: mib(FINE_SHAPE.bytes),
+      });
+      // Consumed: the kill is now in the results list, and leaving the
+      // record behind — in ANY of the three stores — would report it again on
+      // every later load.
+      clearRecord();
+    } else if (prev.state === 'aborted') {
+      box.innerHTML =
+        '<p class="result warn">The last run stopped early.</p>' +
+        '<p class="note">' + escapeHtml(prev.reason || 'stopped') + ' at ' + prev.attemptMiB +
+        ' MiB. It held ' + prev.survivedMiB + ' MiB before that, which is a floor, not the ceiling.</p>';
+    } else if (prev.state === 'ceiling') {
+      box.innerHTML =
+        '<p class="result warn">The last run found a ceiling in the page.</p>' +
+        '<p>Last survivable <strong>' + prev.survivedMiB + ' MiB</strong>, refused at <strong>' +
+        prev.attemptMiB + ' MiB</strong>: ' + escapeHtml(prev.reason || '') + '</p>';
+    } else {
+      box.innerHTML =
+        '<p class="result good">The last run survived ' + prev.survivedMiB + ' MiB (' +
+        prev.survivedTextures + ' textures).</p>';
+    }
+  }
+
+  // ---- boot ---------------------------------------------------------------
+
+  var glOk = initGl();
+  signals = readSignals(gl);
+  renderSignals(signals);
+
+  if (forcedCeilingMiB) {
+    el('warning').innerHTML = '<strong class="warn">?fail=' + forcedCeilingMiB +
+      ' is set: this run will refuse the first step past ' + forcedCeilingMiB +
+      ' MiB whatever the device can do. It is a rehearsal, not a measurement.</strong>';
+  }
+
+  if (!storageWorks()) {
+    startBtn.disabled = true;
+    setStatus(
+      'Cannot run here',
+      'This page needs its own storage to survive being closed, and this browser is not giving it any' +
+      (storageError ? ' (' + storageError + ')' : '') +
+      '. Private browsing and blocked site data are the usual reasons.',
+      'bad',
+    );
+  } else if (!glOk) {
+    startBtn.disabled = true;
+    setStatus('Cannot run here', 'This browser gave the page no WebGL context.', 'bad');
+  } else {
+    reportPreviousRun();
+  }
+  refreshJson();
+
+  startBtn.addEventListener('click', function () {
+    if (!startBtn.disabled && !running) {
+      runProbe().catch(function (e) {
+        markAborted('the probe itself failed');
+        setStatus('Stopped', String(e && e.message ? e.message : e), 'bad');
+      });
+    }
+  });
+  stopBtn.addEventListener('click', function () {
+    markAborted('the Stop button');
+    setStatus(
+      'Stopped at ' + mib(survivedBytes) + ' MiB',
+      'Nothing failed — this is where you stopped, not where the device gives way.',
+    );
+  });
+  el('copy').addEventListener('click', function () {
+    var box = el('json');
+    box.select();
+    var done = function () { el('copied').textContent = 'Copied.'; };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(box.value).then(done, function () {
+        el('copied').textContent = 'Select the text and copy it by hand.';
+      });
+    } else {
+      try { document.execCommand('copy'); done(); } catch (e) {
+        el('copied').textContent = 'Select the text and copy it by hand.';
+      }
+    }
+  });
+})();
+</script>
+</body>
+</html>

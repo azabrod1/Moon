@@ -37,30 +37,104 @@ afterEach(() => {
 });
 
 describe('loadStreamedTexture', () => {
-  it('falls back to the shared TextureLoader when the probe refuses', async () => {
+  it('decodes through the image path when the probe refuses, from the bytes it already fetched', async () => {
     setBitmapProbeForTests(false);
     // API present (else the sync no-API path short-circuits before the probe).
     vi.stubGlobal('createImageBitmap', vi.fn());
+    const fetchSpy = vi.fn(async () => ({ ok: true, blob: async () => new Blob(['map']) }));
+    vi.stubGlobal('fetch', fetchSpy);
+    const revoke = vi.spyOn(URL, 'revokeObjectURL');
     const { calls } = deferredLoad();
     const onLoad = vi.fn();
     loadStreamedTexture('textures/a.jpg', onLoad, vi.fn());
     await flush();
-    expect(calls.map((c) => c.url)).toEqual(['textures/a.jpg']);
+    // One transfer, and the image reads it back through an object URL rather
+    // than asking the network for the same file again.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url.startsWith('blob:')).toBe(true);
+    expect(revoke).not.toHaveBeenCalled();
     const tex = new THREE.Texture();
     calls[0].onLoad(tex);
     expect(onLoad).toHaveBeenCalledWith(tex);
+    expect(revoke).toHaveBeenCalledWith(calls[0].url);
+    // The blob URL is nobody's business downstream: the texture is named
+    // after the map it actually is.
+    expect(tex.name).toBe('a.jpg');
+    expect(tex.userData.sourceUrl).toBe('textures/a.jpg');
   });
 
-  it('hands the caller\'s abort signal to the fetch, and never starts one already aborted', async () => {
+  it('shares one transfer between image-fallback callers, each decoding its own image', async () => {
+    setBitmapProbeForTests(false);
+    vi.stubGlobal('createImageBitmap', vi.fn());
+    let land!: () => void;
+    const gate = new Promise<void>((r) => { land = r; });
+    const fetchSpy = vi.fn(async () => { await gate; return { ok: true, blob: async () => new Blob(['map']) }; });
+    vi.stubGlobal('fetch', fetchSpy);
+    const { calls } = deferredLoad();
+    const url = 'textures/tiles/earth-day.v2/16k/2_1.webp';
+    const loads = [vi.fn(), vi.fn()];
+    for (const onLoad of loads) loadStreamedTexture(url, onLoad, vi.fn());
+    await flush();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    land();
+    await flush();
+    // Each caller owns the texture it is handed, so each decodes its own
+    // image from its own object URL.
+    expect(calls).toHaveLength(2);
+    expect(new Set(calls.map((c) => c.url)).size).toBe(2);
+    for (let i = 0; i < loads.length; i++) {
+      calls[i].onLoad(new THREE.Texture());
+      expect(loads[i]).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('ends an image-fallback transfer only once the last caller has dropped it', async () => {
+    setBitmapProbeForTests(false);
+    vi.stubGlobal('createImageBitmap', vi.fn());
+    const signals: AbortSignal[] = [];
+    let land!: () => void;
+    const gate = new Promise<void>((r) => { land = r; });
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: { signal: AbortSignal }) => {
+      signals.push(init.signal);
+      await gate;
+      return { ok: true, blob: async () => new Blob(['map']) };
+    }));
+    deferredLoad();
+    const url = 'textures/tiles/earth-day.v2/16k/4_1.webp';
+    const first = new AbortController();
+    const second = new AbortController();
+    loadStreamedTexture(url, vi.fn(), vi.fn(), undefined, first.signal);
+    loadStreamedTexture(url, vi.fn(), vi.fn(), undefined, second.signal);
+    await flush();
+    expect(signals).toHaveLength(1);
+    first.abort();
+    expect(signals[0].aborted).toBe(false); // the other caller still wants it
+    second.abort();
+    expect(signals[0].aborted).toBe(true);
+    land();
+  });
+
+  it('ends the fetch when the caller aborts, and never starts one already aborted', async () => {
     setBitmapProbeForTests(true);
-    const fetchSpy = vi.fn(async () => ({ ok: true, blob: async () => new Blob() }));
+    const signals: AbortSignal[] = [];
+    let land!: () => void;
+    const gate = new Promise<void>((r) => { land = r; });
+    const fetchSpy = vi.fn(async (_url: string, init: { signal: AbortSignal }) => {
+      signals.push(init.signal);
+      await gate;
+      return { ok: true, blob: async () => new Blob() };
+    });
     vi.stubGlobal('fetch', fetchSpy);
     vi.stubGlobal('createImageBitmap', vi.fn(async () => fakeBitmap()));
     const live = new AbortController();
     loadStreamedTexture('textures/maps/c.jpg', vi.fn(), vi.fn(), undefined, live.signal);
     await flush();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect((fetchSpy.mock.calls[0] as unknown[])[1]).toEqual({ signal: live.signal });
+    expect(signals[0].aborted).toBe(false);
+    live.abort();
+    expect(signals[0].aborted).toBe(true); // the only waiter is gone
+    land();
     const gone = new AbortController();
     gone.abort();
     const onError = vi.fn();
@@ -68,6 +142,61 @@ describe('loadStreamedTexture', () => {
     await flush();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares one transfer between callers asking for the same map at once', async () => {
+    setBitmapProbeForTests(true);
+    let land!: () => void;
+    const gate = new Promise<void>((r) => { land = r; });
+    const fetchSpy = vi.fn(async () => { await gate; return { ok: true, blob: async () => new Blob() }; });
+    const decode = vi.fn(async () => fakeBitmap());
+    vi.stubGlobal('fetch', fetchSpy);
+    vi.stubGlobal('createImageBitmap', decode);
+    const url = 'textures/tiles/earth-bump/2k/2_1.webp';
+    const loads = [vi.fn(), vi.fn(), vi.fn(), vi.fn()];
+    for (const onLoad of loads) loadStreamedTexture(url, onLoad, vi.fn());
+    await flush();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    land();
+    await flush();
+    await flush();
+    // Every caller is served, each with its own decode and its own texture:
+    // one of them disposing must not take the others' image away.
+    expect(decode).toHaveBeenCalledTimes(4);
+    const textures = loads.map((l) => {
+      expect(l).toHaveBeenCalledTimes(1);
+      return l.mock.calls[0][0] as THREE.Texture;
+    });
+    expect(new Set(textures.map((t) => t.image)).size).toBe(4);
+    // A transfer that has landed is not reused: the next caller fetches.
+    loadStreamedTexture(url, vi.fn(), vi.fn());
+    await flush();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('ends a shared transfer only once the last caller has dropped it', async () => {
+    setBitmapProbeForTests(true);
+    const signals: AbortSignal[] = [];
+    let land!: () => void;
+    const gate = new Promise<void>((r) => { land = r; });
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: { signal: AbortSignal }) => {
+      signals.push(init.signal);
+      await gate;
+      return { ok: true, blob: async () => new Blob() };
+    }));
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => fakeBitmap()));
+    const url = 'textures/tiles/earth-bump/2k/3_1.webp';
+    const first = new AbortController();
+    const second = new AbortController();
+    loadStreamedTexture(url, vi.fn(), vi.fn(), undefined, first.signal);
+    loadStreamedTexture(url, vi.fn(), vi.fn(), undefined, second.signal);
+    await flush();
+    expect(signals).toHaveLength(1);
+    first.abort();
+    expect(signals[0].aborted).toBe(false); // the other caller still wants it
+    second.abort();
+    expect(signals[0].aborted).toBe(true);
+    land();
   });
 
   it('delivers a pre-flipped bitmap texture when the probe passes', async () => {
@@ -152,9 +281,10 @@ describe('loadStreamedTexture', () => {
     expect(onError.mock.calls[0][0]).toBeInstanceOf(TextureTransportError);
   });
 
-  it('spends one TextureLoader fallback on a decode failure', async () => {
+  it('spends one image decode of the same bytes on a bitmap decode failure', async () => {
     setBitmapProbeForTests(true);
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob() })));
+    const fetchSpy = vi.fn(async () => ({ ok: true, blob: async () => new Blob(['map']) }));
+    vi.stubGlobal('fetch', fetchSpy);
     vi.stubGlobal('createImageBitmap', vi.fn(async () => { throw new Error('too large'); }));
     const { calls } = deferredLoad();
     const onLoad = vi.fn();
@@ -162,7 +292,10 @@ describe('loadStreamedTexture', () => {
     loadStreamedTexture('textures/d.jpg', onLoad, onError);
     await flush();
     expect(onError).not.toHaveBeenCalled();
-    expect(calls.map((c) => c.url)).toEqual(['textures/d.jpg']);
+    // The fallback decodes the bytes in hand: the file is fetched once.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url.startsWith('blob:')).toBe(true);
     const tex = new THREE.Texture();
     calls[0].onLoad(tex);
     expect(onLoad).toHaveBeenCalledWith(tex);
@@ -220,14 +353,17 @@ describe('loadStreamedTexture after the worker retires', () => {
     expect(FakeWorker.instances[0].posted).toHaveLength(1);
     FakeWorker.instances[0].onerror!({ message: 'worker died' });
     await flush();
-    // The request in flight fell back to the loader (one decode failure = one fallback)...
-    expect(calls.map((c) => c.url)).toEqual(['textures/w.jpg']);
+    // The request in flight fell back to the loader (one decode failure = one
+    // fallback), on the bytes already fetched rather than a second transfer...
+    expect(calls.map((c) => c.url)).toEqual(['blob:decoder']);
     expect(mainDecode).not.toHaveBeenCalled();
-    // ...and so does every later map: this thread is unverified.
+    // ...and so does every later map: this thread is unverified, so the shared
+    // transfer's bytes go straight to the image path.
     expect(bitmapDecodePath()).toBe('loader');
     loadStreamedTexture('textures/x.jpg', vi.fn(), vi.fn());
     await flush();
-    expect(calls.map((c) => c.url)).toEqual(['textures/w.jpg', 'textures/x.jpg']);
+    await flush();
+    expect(calls.map((c) => c.url)).toEqual(['blob:decoder', 'blob:decoder']);
     expect(mainDecode).not.toHaveBeenCalled();
   });
 
@@ -405,7 +541,8 @@ describe('a worker that stays alive but refuses one image', () => {
     await flush();
     await flush();
     expect(mainDecode).not.toHaveBeenCalled();
-    expect(calls.map((c) => c.url)).toEqual(['textures/z.jpg']);
+    // The fallback decodes the bytes already in hand, never a second transfer.
+    expect(calls.map((c) => c.url)).toEqual(['blob:decoder']);
   });
 });
 
@@ -424,12 +561,31 @@ describe('takeBootWarmResponse', () => {
     expect(takeBootWarmResponse('textures/a.webp')).toBeUndefined();
   });
 
-  it('cancels the warmed body when the load goes through the shared loader', async () => {
+  it('drinks the warmed body when the probe sends the bytes to the image path', async () => {
     // An untaken warm entry keeps its unread body buffered by the browser for
-    // the session — and the map is downloaded a second time by the loader. On
-    // a platform that fails the probe that is the whole boot set twice over.
+    // the session — and the map is downloaded a second time. On a platform
+    // that fails the probe the shared transfer takes the warmed response and
+    // the image path decodes those bytes: one transfer, no second fetch.
     setBitmapProbeForTests(false);
     vi.stubGlobal('createImageBitmap', vi.fn());
+    const response = new Response('bytes');
+    const cancel = vi.spyOn(response.body!, 'cancel').mockResolvedValue(undefined);
+    vi.stubGlobal('__bootTexWarm', new Map([['textures/a.webp', Promise.resolve(response)]]));
+    const { calls } = deferredLoad();
+    loadStreamedTexture('textures/a.webp', vi.fn(), vi.fn());
+    await flush();
+    await flush();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toMatch(/^blob:/);
+    expect(cancel).not.toHaveBeenCalled();
+    expect(takeBootWarmResponse('textures/a.webp')).toBeUndefined();
+  });
+
+  it('cancels the warmed body when there is no bitmap API at all', async () => {
+    // The synchronous loader path has no transfer of its own to feed the
+    // warmed bytes into, so the entry is taken and its body cancelled rather
+    // than left buffered for the session beside the loader's own download.
+    vi.stubGlobal('createImageBitmap', undefined);
     const response = new Response('bytes');
     const cancel = vi.spyOn(response.body!, 'cancel').mockResolvedValue(undefined);
     vi.stubGlobal('__bootTexWarm', new Map([['textures/a.webp', Promise.resolve(response)]]));

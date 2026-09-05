@@ -1,0 +1,100 @@
+{
+  "earth-bump/2k": {
+    "setHash8": "bcb10829",
+    "grid": {
+      "cols": 8,
+      "rows": 4
+    },
+    "content": 256,
+    "gutter": 8,
+    "tileWidth": 272,
+    "tileHeight": 272,
+    "baseWidth": 2048,
+    "spanU": 1,
+    "fileCount": 32
+  },
+  "earth-day.v2/16k": {
+    "setHash8": "62444e44",
+    "grid": {
+      "cols": 8,
+      "rows": 4
+    },
+    "content": 2032,
+    "gutter": 8,
+    "tileWidth": 2048,
+    "tileHeight": 2048,
+    "baseWidth": 16256,
+    "spanU": 1,
+    "fileCount": 32
+  },
+  "earth-roughness.v2/4k": {
+    "setHash8": "a10813ad",
+    "grid": {
+      "cols": 8,
+      "rows": 4
+    },
+    "content": 512,
+    "gutter": 8,
+    "tileWidth": 528,
+    "tileHeight": 528,
+    "baseWidth": 4096,
+    "spanU": 1,
+    "fileCount": 32
+  },
+  "mars-normal.v2/2k": {
+    "setHash8": "f7efa0d7",
+    "grid": {
+      "cols": 8,
+      "rows": 4
+    },
+    "content": 180,
+    "gutter": 8,
+    "tileWidth": 392,
+    "tileHeight": 196,
+    "baseWidth": 1440,
+    "spanU": 2,
+    "fileCount": 32
+  },
+  "mars.v2/16k": {
+    "setHash8": "917c9862",
+    "grid": {
+      "cols": 8,
+      "rows": 4
+    },
+    "content": 2032,
+    "gutter": 8,
+    "tileWidth": 2048,
+    "tileHeight": 2048,
+    "baseWidth": 16256,
+    "spanU": 1,
+    "fileCount": 32
+  },
+  "moon/16k": {
+    "setHash8": "51b7c463",
+    "grid": {
+      "cols": 8,
+      "rows": 4
+    },
+    "content": 2032,
+    "gutter": 8,
+    "tileWidth": 2048,
+    "tileHeight": 2048,
+    "baseWidth": 16256,
+    "spanU": 1,
+    "fileCount": 32
+  },
+  "moon-normal/4k": {
+    "setHash8": "09986655",
+    "grid": {
+      "cols": 8,
+      "rows": 4
+    },
+    "content": 360,
+    "gutter": 8,
+    "tileWidth": 752,
+    "tileHeight": 376,
+    "baseWidth": 2880,
+    "spanU": 2,
+    "fileCount": 32
+  }
+}

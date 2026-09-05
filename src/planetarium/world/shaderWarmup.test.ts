@@ -1,6 +1,55 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import * as THREE from 'three';
-import { warmUpSceneShaders, type ShaderWarmupRenderer } from './shaderWarmup';
+import {
+  resolveProgramLinks,
+  warmUpSceneShaders,
+  type ProgramLinkResolver,
+  type ShaderWarmupRenderer,
+  type WarmupProgram,
+} from './shaderWarmup';
+
+/** A stand-in for three's program wrapper plus the two calls the resolve phase
+ *  makes on it. `program` stands for the raw GL program. */
+function makeProgram(name: string, opts: { getUniformsThrows?: boolean; type?: string } = {}) {
+  const calls: string[] = [];
+  const wrapper: WarmupProgram & { calls: string[] } = {
+    name,
+    type: opts.type,
+    program: { name },
+    getUniforms: () => {
+      calls.push('getUniforms');
+      if (opts.getUniformsThrows) throw new Error(`getUniforms failed for ${name}`);
+      return {};
+    },
+    calls,
+  };
+  return wrapper;
+}
+
+/** The GL slice the resolve phase touches, recording what it was asked. */
+function makeResolver(programs: Array<WarmupProgram & { calls: string[] }>, opts: {
+  contextThrows?: boolean;
+  parameterThrows?: boolean;
+} = {}) {
+  const parameterCalls: unknown[] = [];
+  const resolver: ProgramLinkResolver = {
+    getContext: () => {
+      if (opts.contextThrows) throw new Error('no context');
+      return {
+        LINK_STATUS: 0x8b82,
+        getProgramParameter: (program: unknown, pname: number) => {
+          parameterCalls.push({ program, pname });
+          if (opts.parameterThrows) throw new Error('getProgramParameter failed');
+          return true;
+        },
+      } as unknown as WebGL2RenderingContext;
+    },
+    info: { programs },
+  };
+  return { resolver, parameterCalls };
+}
 
 interface RenderSnapshot {
   target: THREE.WebGLRenderTarget | null;
@@ -21,6 +70,8 @@ function makeRenderer(opts: {
   initialTarget?: THREE.WebGLRenderTarget | null;
   /** Make the RESTORE to this target throw (the first bind of it succeeds). */
   failRestoreTo?: THREE.WebGLRenderTarget | null;
+  /** Programs the resolve phase will find on the renderer. */
+  programs?: Array<WarmupProgram & { calls: string[] }>;
 } = {}) {
   let current: THREE.WebGLRenderTarget | null = opts.initialTarget ?? null;
   const viewport = new THREE.Vector4(0, 0, 640, 480);
@@ -30,7 +81,13 @@ function makeRenderer(opts: {
   const renders: RenderSnapshot[] = [];
   const setTargetCalls: Array<THREE.WebGLRenderTarget | null> = [];
   const events: string[] = []; // one ordered log across compile/render/setRenderTarget
+  const warmupPrograms = opts.programs ?? [];
   const renderer: ShaderWarmupRenderer = {
+    getContext: () => ({
+      LINK_STATUS: 0x8b82,
+      getProgramParameter: () => { events.push('resolve'); return true; },
+    } as unknown as WebGL2RenderingContext),
+    info: { programs: warmupPrograms },
     getRenderTarget: () => current,
     setRenderTarget: (t) => {
       if (opts.failRestoreTo !== undefined && t === opts.failRestoreTo && setTargetCalls.length > 0) throw new Error('restore failed');
@@ -274,5 +331,205 @@ describe('warmUpSceneShaders', () => {
     await expect(compiled).resolves.toBeUndefined();
     expect(rig.state().current).toBeNull();
     expect(probe.visible).toBe(false);
+  });
+});
+
+describe('resolveProgramLinks', () => {
+  it('forces one program per frame: a status read and three’s own first-use path, once each', async () => {
+    const programs = [makeProgram('a'), makeProgram('b'), makeProgram('c')];
+    const { resolver, parameterCalls } = makeResolver(programs);
+    const frames: number[] = [];
+    const timings = await resolveProgramLinks(resolver, {
+      nextFrame: async () => { frames.push(frames.length); },
+    });
+    // One frame per program, and the first program waits for one too: the task
+    // that awaited the compile must not be the one that pays a build.
+    expect(frames).toHaveLength(3);
+    expect(parameterCalls).toHaveLength(3);
+    expect(parameterCalls.map((c) => (c as { pname: number }).pname)).toEqual([0x8b82, 0x8b82, 0x8b82]);
+    expect(programs.map((p) => p.calls)).toEqual([['getUniforms'], ['getUniforms'], ['getUniforms']]);
+    expect(timings.map((t) => t.name)).toEqual(['a', 'b', 'c']);
+    expect(timings.every((t) => Number.isFinite(t.ms) && t.ms >= 0)).toBe(true);
+  });
+
+  it('resolves several per frame when asked, and all of them on no frame at all when unbounded', async () => {
+    const four = [makeProgram('a'), makeProgram('b'), makeProgram('c'), makeProgram('d')];
+    let frames = 0;
+    await resolveProgramLinks(makeResolver(four).resolver, {
+      perFrame: 2,
+      nextFrame: async () => { frames++; },
+    });
+    expect(frames).toBe(2);
+
+    const boot = [makeProgram('e'), makeProgram('f'), makeProgram('g')];
+    let bootFrames = 0;
+    const timings = await resolveProgramLinks(makeResolver(boot).resolver, {
+      perFrame: Number.POSITIVE_INFINITY,
+      nextFrame: async () => { bootFrames++; },
+    });
+    // Behind the load screen a yielded frame is boot time, so none is yielded.
+    expect(bootFrames).toBe(0);
+    expect(timings).toHaveLength(3);
+  });
+
+  it('skips programs already resolved this session, and costs no frame when there is nothing left', async () => {
+    const programs = [makeProgram('a'), makeProgram('b')];
+    const first = makeResolver(programs);
+    await resolveProgramLinks(first.resolver, { nextFrame: async () => {} });
+    expect(first.parameterCalls).toHaveLength(2);
+
+    const again = makeResolver(programs);
+    let frames = 0;
+    const timings = await resolveProgramLinks(again.resolver, { nextFrame: async () => { frames++; } });
+    expect(again.parameterCalls).toHaveLength(0);
+    expect(frames).toBe(0);
+    expect(timings).toEqual([]);
+    expect(programs.map((p) => p.calls.length)).toEqual([1, 1]);
+
+    // A program the list gained since is the only one the next pass touches.
+    const grown = makeResolver([...programs, makeProgram('c')]);
+    const grownTimings = await resolveProgramLinks(grown.resolver, { nextFrame: async () => {} });
+    expect(grownTimings.map((t) => t.name)).toEqual(['c']);
+  });
+
+  it('names a row by the material type when the material itself was never named', async () => {
+    const unnamed = makeProgram('', { type: 'MeshStandardMaterial' });
+    const timings = await resolveProgramLinks(makeResolver([unnamed]).resolver, {
+      nextFrame: async () => {},
+    });
+    expect(timings.map((t) => t.name)).toEqual(['MeshStandardMaterial']);
+  });
+
+  it('a program with no GL program behind it is not counted as resolved work', async () => {
+    const alive = makeProgram('alive');
+    const destroyed = { name: 'destroyed', program: undefined, getUniforms: () => ({}) };
+    const { resolver, parameterCalls } = makeResolver([destroyed as never, alive]);
+    const timings = await resolveProgramLinks(resolver, { nextFrame: async () => {} });
+    expect(timings.map((t) => t.name)).toEqual(['alive']);
+    expect(parameterCalls).toHaveLength(1);
+  });
+
+  it('is fail-open on a context it cannot read: reported, nothing forced, no frame spent', async () => {
+    const onError = vi.fn();
+    let frames = 0;
+    const { resolver } = makeResolver([makeProgram('a')], { contextThrows: true });
+    const timings = await resolveProgramLinks(resolver, {
+      onError,
+      nextFrame: async () => { frames++; },
+    });
+    expect(timings).toEqual([]);
+    expect(frames).toBe(0);
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  it('is fail-open per program: a thrower is reported, never retried, and the rest still resolve', async () => {
+    const onError = vi.fn();
+    const bad = makeProgram('bad', { getUniformsThrows: true });
+    const good = makeProgram('good');
+    const timings = await resolveProgramLinks(makeResolver([bad, good]).resolver, {
+      onError,
+      nextFrame: async () => {},
+    });
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(timings.map((t) => t.name)).toEqual(['bad', 'good']);
+
+    // One attempt per program per session: a program that throws every time
+    // would otherwise cost a frame on every warm-up for the rest of the run.
+    const retry = makeResolver([bad, good]);
+    expect(await resolveProgramLinks(retry.resolver, { nextFrame: async () => {} })).toEqual([]);
+    expect(retry.parameterCalls).toHaveLength(0);
+  });
+
+  it('a throwing reporter cannot stop the phase', async () => {
+    const { resolver, parameterCalls } = makeResolver(
+      [makeProgram('a'), makeProgram('b')],
+      { parameterThrows: true },
+    );
+    const timings = await resolveProgramLinks(resolver, {
+      onError: () => { throw new Error('reporter exploded'); },
+      nextFrame: async () => {},
+    });
+    expect(parameterCalls).toHaveLength(2);
+    expect(timings).toHaveLength(2);
+  });
+});
+
+describe('warmUpSceneShaders resolve phase', () => {
+  it('resolves between the compile and the warm draw, never inside it', async () => {
+    const { scene, probe, camera } = makeScene();
+    const programs = [makeProgram('warm-a'), makeProgram('warm-b')];
+    const rig = makeRenderer({ probes: [probe], programs });
+    let frames = 0;
+    const { resolved, warmDrawMs } = await warmUpSceneShaders(rig.renderer, scene, camera, {
+      drawsThroughComposer: false,
+      probeGroups: [probe],
+      nextFrame: async () => { frames++; },
+    });
+    // compile, then every resolve, then the one draw.
+    expect(rig.events.filter((e) => e === 'compile' || e === 'resolve' || e === 'render'))
+      .toEqual(['compile', 'resolve', 'resolve', 'render']);
+    expect(frames).toBe(2);
+    expect(resolved.map((r) => r.name)).toEqual(['warm-a', 'warm-b']);
+    expect(warmDrawMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('the boot path resolves every program without yielding a frame', async () => {
+    const { scene, probe, camera } = makeScene();
+    const programs = [makeProgram('boot-a'), makeProgram('boot-b'), makeProgram('boot-c')];
+    const rig = makeRenderer({ probes: [probe], programs });
+    let frames = 0;
+    const { resolved } = await warmUpSceneShaders(rig.renderer, scene, camera, {
+      drawsThroughComposer: false,
+      probeGroups: [probe],
+      resolvePerFrame: Number.POSITIVE_INFINITY,
+      nextFrame: async () => { frames++; },
+    });
+    expect(frames).toBe(0);
+    expect(resolved).toHaveLength(3);
+    expect(rig.renders).toHaveLength(1);
+  });
+
+  it('a resolve phase that cannot run reports its own stage and the draw still happens', async () => {
+    const { scene, probe, camera } = makeScene();
+    const onError = vi.fn();
+    const rig = makeRenderer({ probes: [probe] });
+    rig.renderer.getContext = () => { throw new Error('context is gone'); };
+    const { resolved } = await warmUpSceneShaders(rig.renderer, scene, camera, {
+      drawsThroughComposer: false,
+      probeGroups: [probe],
+      onError,
+    });
+    expect(onError).toHaveBeenCalledWith('resolve', expect.any(Error));
+    expect(resolved).toEqual([]);
+    expect(rig.renders).toHaveLength(1);
+  });
+});
+
+describe('how the app spends the resolve phase', () => {
+  const mode = (): string => readFileSync(resolve(__dirname, '../PlanetariumMode.ts'), 'utf8');
+
+  it('resolves everything behind the load screen and one to a frame in the idle', () => {
+    // Under the load screen a yielded frame IS boot time, and the driver's
+    // builds are paid under it either way, so the boot warm-up takes them all
+    // in one task.
+    expect(mode()).toMatch(
+      /probeGroups: \[probes\.group, shadowProbes\.group, orbitProbes\.group\],[\s\S]{0,400}?resolvePerFrame: Number\.POSITIVE_INFINITY,/,
+    );
+    // The probes are owned the moment they enter the scene, before the
+    // compile is awaited: a dispose() during the warm-up's bounded wait must
+    // still find them, and their programs must outlive the boot (three frees
+    // a program with the last material that holds it).
+    expect(mode()).toMatch(
+      /this\.scene\.add\(probes\.group, shadowProbes\.group, orbitProbes\.group\);[\s\S]{0,400}?this\.shaderWarmupProbes\.push\(probes, shadowProbes, orbitProbes\);[\s\S]{0,900}?await warmUpSceneShaders\(/,
+    );
+    expect(mode()).not.toMatch(/probes\.dispose\(\);\s*shadowProbes\.dispose\(\);/);
+    // A restored context has no programs, and the kept probes are never
+    // drawn: the restore path compiles them again.
+    expect(mode()).toMatch(/webglcontextrestored[\s\S]{0,1200}?this\.rewarmShaderProbes\(\)/);
+    // The idle warm-up must NOT: nothing covers those frames, so a build that
+    // shares one with another is the dropped frame this exists to remove.
+    const shell = /private async warmAtmosphereShellProgram[\s\S]*?\n  \}/.exec(mode())?.[0] ?? '';
+    expect(shell).toContain('warmUpSceneShaders(');
+    expect(shell).not.toContain('resolvePerFrame');
   });
 });

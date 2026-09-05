@@ -25,6 +25,14 @@ jobs:
       - run: npm ci
       - run: npx tsc
       - run: npm test
+      # Sector tile sets ship from their own repo through jsDelivr (see
+      # "Publishing tiles" in CLAUDE.md): only 7 of the 10 sets the app names
+      # are small enough to live in public/, and with no origin set the build
+      # throws for each of the other three rather than deploy a 404. The host
+      # is in .env.production, which this build reads like any other, so the
+      # artifact CI uploads is what a local `npm run build` produces — naming
+      # it here as well would be a second copy able to drift from the one the
+      # app and the service worker are actually built against.
       - run: npx vite build --base=/Moon/
       # upload-pages-artifact@v4+ drops dotfiles from the artifact — fine here,
       # dist/ has none (deploy-pages serves the artifact as-is, no Jekyll).

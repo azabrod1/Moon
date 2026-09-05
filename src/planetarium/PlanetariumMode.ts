@@ -33,12 +33,21 @@ import {
   SUN_POLE_DEC_DEG,
   SUN_POLE_RA_DEG,
   type PlanetData,
+  LIGHT_SPEED_AU_PER_S,
 } from './planets/planetData';
-import { appliedTierResidency, applySunGlowTier, armArrivalWarmGoal, bindKtx2TierLoader, canAttempt, cancelTextureUpgrade, createMoonMeshes, disarmArrivalWarmGoal, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, resolveTierFile, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type AppliedTierResidency, type MoonMesh, type PlanetMesh, type TextureUpgrade } from './PlanetFactory';
+import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasurementRelevant, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
+import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
-import type { SurfaceShadingFx } from './world/surfaceShading';
-import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm } from './world/textureWarmer';
-import { SECTOR_SETS, SectorStreamer, type SectorMeasure, type SectorStats, type SectorSuspend } from './world/sectorStreamer';
+import { advanceSurfaceAir, bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, setSurfaceSynthesis, settleSurfaceAir, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
+import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, warmBudgetMs } from './world/textureWarmer';
+import { beginSlicedUpload, stepSlicedUpload } from './world/slicedUpload';
+import { smoothTraceVeil } from './smoothnessTrace';
+import {
+  SECTOR_NIGHT_SETS, SECTOR_SETS, SectorStreamer, sectorFamilyKey,
+  type SectorMeasure, type SectorStats,
+} from './world/sectorStreamer';
+import { earthNightSectorFamily } from './world/earthNightMaterial';
 import { loadBrightStarCatalog } from './world/starCatalogLoader';
 import {
   advancePlanetariumTime,
@@ -84,8 +93,8 @@ import {
   type ShadowEventSpec,
 } from '../astronomy/shadows';
 import { ShadowVisuals, createShadowVisualsWarmupProbes, type GuideSlotInput } from './world/ShadowVisuals';
-import { warmUpSceneShaders } from './world/shaderWarmup';
 import { createShaderWarmupProbes, type WarmupProbes } from './world/shaderWarmupProbes';
+import { warmUpSceneShaders, type ProgramResolveTiming } from './world/shaderWarmup';
 import { selectMoonShadowCasters, umbraReachesSurface } from './world/moonShadowCasters';
 import { OBSERVATORY_JUMP_LEAD_MS, resolveLiveEvent, stepperSearchFromUtcMs } from './observatoryTime';
 import { resolveShowVantage } from './observatoryJump';
@@ -131,8 +140,37 @@ import {
 } from './world/sunGlareMask';
 import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
-import { captureDeviceTextureCaps, resolveTextureUrl, TIER_MAP_WIDTH } from './world/texturePolicy';
+import { captureDeviceCaps, resolveTextureUrl, type TextureTier } from './world/texturePolicy';
+import { retainedSourceBytes, textureGpuBytes } from './world/textureBytes';
+import { advanceSpinLatch, sectorSuspendFor, type SectorSpinLatch } from './world/sectorSpinGate';
+import { FrameIntervalTracker } from './world/frameInterval';
+import { planLadderPressure } from './world/ladderPressure';
+import {
+  classifyDevice,
+  deviceProfileFor,
+  MemoryEnvelope,
+  planRelease,
+  platformFamily,
+  readDeviceSignals,
+  type DeviceClass,
+  type DeviceProfile,
+  type PlatformFamily,
+  type ReleaseCandidate,
+} from './world/gpuEnvelope';
+import { AtmosphereLut, type AtmosphereBakeStats, type AtmosphereTables } from './world/atmosphereLut';
+import { bindAtmosphereShellTables, restShellCrossfade, setAtmosphereShellGroundSegments, shellTierAlphas, stepShellCrossfade, type ShellCrossfade } from './world/atmosphereShell';
+import {
+  ATMOSPHERE_SPECS,
+  ATMOSPHERE_TABLE_SIZES_FULL,
+  ATMOSPHERE_TABLE_SIZES_HALF,
+  atmosphereParams,
+  scatteringTexture3DCoords,
+  scatteringUvwzFromRMuMuSNu,
+  solarIrradianceScale,
+  transmittanceUvFromRMu,
+} from './world/atmosphereModel';
 import { releaseBootWarmResponses, warmBitmapUploadProbe } from './world/textureBitmapLoader';
+import { warmTilePixelWorker } from './world/tilePixels';
 import { planetshineIntensity } from './world/planetshine';
 import {
   advanceSilhouetteOwners,
@@ -142,7 +180,7 @@ import {
   type SilhouetteTarget,
   type SilhouetteAdvanceOptions,
 } from './world/shadeSmoothing';
-import { debugError, debugWarn } from '../shared/debug';
+import { debugError, debugLog, debugWarn } from '../shared/debug';
 import { cssHexColor } from '../shared/color';
 import { markerQuadPx } from './planetMarkers';
 import { CRUISE_TAP_FLOORS, SYSTEM_TAP_FLOORS, stepThrottleTap, systemSpeedFactor, type SystemSpeedResult, rampThrottle, CRUISE_RAMP, SYSTEM_RAMP } from './throttlePolicy';
@@ -180,7 +218,12 @@ import {
   type SurfaceTargetChoice,
 } from './surfaceView';
 import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
-import { applyDesignFov, displayFovDeg } from '../shared/math/lensProjection';
+import {
+  applyDesignFov,
+  displayFovDeg,
+  lensDisplayHalfTan,
+  lensMaxFrameScale,
+} from '../shared/math/lensProjection';
 import { SUN_ATMOSPHERE_TINT_RGB, SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../shared/shaders/sun';
 import { landedFrameCamDistAU, landedMinDistanceAU, landedNearAU, LANDED_NEAR_AU } from './landedView';
 import {
@@ -243,16 +286,25 @@ import { KM_CONSTANTS } from '../shared/constants/physicalData';
 import { smoothstepUnclamped } from '../shared/math/smoothstep';
 import {
   estimateSphereScreenDiameterPx,
+  placeSphereInFrustum,
+  projectedStepScale,
   projectSphereToScreen,
   projectToScreen,
   screenPointToWorldRay,
+  type ProjectedStepScale,
   type ScreenProjection,
   type SphereScreenProjection,
 } from '../shared/three/projectToScreen';
+import {
+  densityRelevantDiameterPx,
+  drawnColorMapWidth,
+  measureSurfaceDensity,
+  type SurfaceBodyBasis,
+  type SurfaceDensity,
+} from './world/surfaceDensity';
 import { applyLensShaderUniforms, type LensShaderUniforms } from '../shared/three/lensShader';
 import { setPointEnergyPixelRatio } from '../shared/three/pointEnergy';
 import { isPhoneViewport, setText } from '../shared/dom';
-import { touchFirstDevice } from '../shared/device';
 import { Constellations } from './Constellations';
 import { snapConstellations } from './data/constellationGeometry';
 import { getMoonsByPlanet, MOONS, type MoonData } from './planets/moonData';
@@ -263,27 +315,25 @@ import {
   autopilotAimBlend,
   autopilotArrived,
   autopilotGlideCap,
-  contactAimStep,
-  grazeDeflectAim,
+  resolveShellContactPark,
   initialBodyCapState,
-  moonArrivalPose,
-  moonArrivalStandoffAU,
+  arrivalPose,
+  planetPostcardPose,
+  type LaneBody,
+  arrivalStandoffAU,
   moonCollisionRadius,
   movingBodySpeedCap,
   sunArrivalPose,
+  BODY_APPROACH_K_PER_S,
   BODY_APPROACH_V_MIN_AU_S,
   BODY_CAP_CLEAR_HOLD_S,
-  CONTACT_AIM_TTL_S,
-  CONTACT_ALIGN_OUT_MAX,
-  MOON_APPROACH_K_PER_S,
-  PLANET_APPROACH_K_PER_S,
   PLANET_ARRIVAL_STANDOFF_FLOOR_AU,
   SUN_APPROACH_SURFACE_RADII,
   SUN_ARRIVAL_RADII,
   sweepSegmentSphere,
   type BodyCapState,
   type SweepContact,
-  type MoonArrivalInputs,
+  type ArrivalInputs,
 } from './arrivalLogic';
 import {
   clearArrivalLook,
@@ -491,12 +541,126 @@ export interface PlanetariumActivationProgress {
   totalUnits: number;
 }
 
-/** Width of the finest colour map a body's ladder will reach on this device
- *  — the one its sectors' magnification is measured against — or undefined
- *  for a body whose boot map is its finest. */
-function topMapWidthOf(ups: readonly TextureUpgrade[], material: THREE.Material): number | undefined {
+/** One rung, as the dev bridge reports it. */
+interface LadderRungReadout {
+  key: string;
+  tier: string | null;
+  top: string | null;
+  bytes: number;
+  /** The map on the material is a GPU-compressed upload. What separates a
+   *  43 MiB 8K rung from a 171 MiB one, and the only place a session says
+   *  out loud that its transcoder is working. */
+  compressed: boolean;
+  retained: number;
+  sourceWidth: number;
+  releasing: string | null;
+  belowBandMs: number | null;
+}
+
+/** One body's drawn texel density, as the dev bridge reports it: what a sheet
+ *  of that body is labelled with, measured rather than asked for. A framing
+ *  fraction is not a substitute — a moon is posed from its catalog radius and
+ *  drawn at that radius times its mesh scale. */
+interface SurfaceDensityReadout extends SurfaceDensity {
+  name: string;
+  /** Conservative overestimate of the drawn disc, as the LOD walk measured it
+   *  — context for the density, never the label. */
+  diameterPx: number;
+  /** How much of the close-range detail term this body's surfaces are drawing:
+   *  the band's verdict above, eased in wall time so no rung landing, release
+   *  or memory squeeze can step relief between two frames. */
+  envelope: number;
+  /** Wall clock of the last easing step, for the rate limiter's dt. */
+  stampMs: number;
+}
+
+/** `?envelope=<MiB>` in dev shrinks the memory envelope, which is the one
+ *  knob that puts a desktop under a phone's pressure without a phone. The
+ *  ceiling and the floor are the profile's; only the shared envelope moves.
+ *  Dropped from a production build with the rest of the DEV branches. */
+function devEnvelopeOverride(profile: DeviceProfile): DeviceProfile {
+  if (!import.meta.env.DEV || typeof location === 'undefined') return profile;
+  const asked = Number(new URLSearchParams(location.search).get('envelope'));
+  if (!Number.isFinite(asked) || asked <= 0) return profile;
+  return { ...profile, envelopeBytes: Math.round(asked * 1024 * 1024) };
+}
+
+/** Whether this GPU has a compressed format the KTX2 transcoder can target.
+ *  With none it transcodes to RGBA32 and a compressed container costs four
+ *  times what its blocks suggest — the allocation the ladder's admission test
+ *  exists to refuse, and one no filename can predict. Read from the same
+ *  extensions KTX2Loader's own detectSupport reads, so the charge and the
+ *  upload cannot disagree. */
+function ktx2TranscodesCompressed(renderer: THREE.WebGLRenderer): boolean {
+  const ext = renderer.extensions;
+  return [
+    'WEBGL_compressed_texture_astc',
+    'WEBGL_compressed_texture_etc',
+    'WEBGL_compressed_texture_etc1',
+    'WEBGL_compressed_texture_s3tc',
+    'EXT_texture_compression_bptc',
+    'WEBGL_compressed_texture_pvrtc',
+    'WEBKIT_WEBGL_compressed_texture_pvrtc',
+  ].some((name) => ext.has(name));
+}
+
+/** Width of the colour map one sector family is measured against — the finest
+ *  tier the ladder BEHIND ITS OWN MATERIAL can currently reach, floored at the
+ *  rung that material is drawing. So a night family asks the night shell's own
+ *  ladder and a day family the globe's, each against the map it actually
+ *  overlays. Read per frame, not captured: a rung refused for want of memory,
+ *  released under pressure or failed to load lowers it, and tiles measured
+ *  against a map the surface will not hold arrive at twice the magnification
+ *  they were meant for. undefined for a material with no ladder behind it at
+ *  all — the drawn map is the truth there, and is never swapped under it. */
+function topMapWidthOf(
+  ups: readonly TextureUpgrade[],
+  material: THREE.Material,
+): (() => number) | undefined {
   const up = ups.find((u) => u.material === material);
-  return up ? TIER_MAP_WIDTH[up.effectiveMaxTier] : undefined;
+  if (!up) return undefined;
+  return () => ladderMapReferenceWidth(up);
+}
+
+/** One animation frame, awaited — the unit the boot idle spends its costs in. */
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => { requestAnimationFrame(() => resolve()); });
+}
+
+/** What a warm-up's resolve phase cost, one line per warm-up. A first visit
+ *  links every program cold and a later one links none, so the two are
+ *  different runs of the app; without this the difference is invisible from
+ *  outside and every claim about it is a guess. */
+function logShaderResolve(
+  which: string,
+  resolved: readonly ProgramResolveTiming[],
+  warmDrawMs: number,
+): void {
+  const round = (v: number): number => Math.round(v * 100) / 100;
+  let total = 0;
+  let max = 0;
+  for (const row of resolved) {
+    total += row.ms;
+    max = Math.max(max, row.ms);
+  }
+  debugLog(`${which} shader links resolved`, {
+    programs: resolved.length,
+    totalMs: round(total),
+    maxMs: round(max),
+    warmDrawMs: round(warmDrawMs),
+    slowest: [...resolved]
+      .sort((a, b) => b.ms - a.ms)
+      .slice(0, 5)
+      .map((row) => `${row.name || '?'} ${round(row.ms)}`),
+  });
+}
+
+/** True once boot has handed the frame to the user. Speculative GPU work waits
+ *  for it: anything done while the load screen is up is boot time, whatever
+ *  timer it was armed on. */
+function loadScreenHidden(): boolean {
+  const el = document.getElementById('loading-screen');
+  return !el || el.classList.contains('hidden');
 }
 
 export class PlanetariumMode {
@@ -653,6 +817,14 @@ export class PlanetariumMode {
     this.mapPointerCancel(e);
   };
 
+  /** Coming back to a tab that was hidden: the frames delivered while it was
+   *  are a throttle's, not a display's, and the frame-sliced work budgets
+   *  itself against their average. Believe the first frame that is shown
+   *  again instead of easing back to it. Named so dispose() can remove it. */
+  private onVisibilityChange = (): void => {
+    if (document.visibilityState === 'visible') this.frameInterval.resume();
+  };
+
   /** Focus loss cancels every armed gesture and held key — the matching
    *  releases may never arrive. Named so dispose() can remove it. */
   private onWindowBlur = (): void => {
@@ -722,25 +894,35 @@ export class PlanetariumMode {
   private static readonly MOON_PAINT_MAX_PER_FRAME = 4;
   // Resolution a procedural moon is re-rendered to when observed (landed): the
   // Observatory frames any body to a fixed screen fraction regardless of size,
-  // so the flythrough baseline (256/512) looks low-res up close. GPU paint makes
+  // so the flyby baseline (256/512) looks low-res up close. GPU paint makes
   // this nearly free; the result stays for the session.
+  //
+  // 2048 was measured against this and turned down. At the fraction the
+  // Observatory actually frames a body to, 1024 is already under two screen
+  // pixels per texel; doubling it buys finer grain rather than more structure
+  // (the crater field is resolution-independent, so it sharpens either way),
+  // and costs four times the residency — ~21 MiB of colour+bump+mips per
+  // observed moon, held for the session, on an allocation the shared memory
+  // envelope does not account for.
   private static readonly OBSERVE_MOON_TEXTURE_WIDTH = 1024;
 
   // Per-frame time budget for warm texture uploads: small maps batch within
   // it, a big one takes its frame alone (the pump always uploads at least one).
-  private static readonly TEXTURE_WARM_BUDGET_MS = 6;
-  /** Above this rotation rate on screen (degrees of body spin per real
-   *  second — Earth at 900 s/s) a globe turns visibly under the camera, so
-   *  admitting sector tiles would only churn 21 MiB uploads — residents hold,
-   *  nothing new starts. Measured per body from its world orientation, so a
-   *  slow turner (the Moon: 27× Earth) keeps streaming at rates that would
-   *  spin Earth into a blur. */
-  private static readonly SECTOR_SPIN_SUSPEND_DEG_PER_S = 3.75;
-  /** Admissions resume only once the rate has stayed under this lower figure
-   *  for the hold: a body turning at the suspend rate would otherwise pulse
-   *  admissions on and off with frame jitter. */
-  private static readonly SECTOR_SPIN_RESUME_DEG_PER_S = 3;
-  private static readonly SECTOR_SPIN_HOLD_MS = 400;
+  /**
+   * A slow average of the frame interval, for anything that must size work
+   * against the refresh rather than a fixed millisecond figure.
+   *
+   * Averaged rather than read live, and clamped before folding in, because a
+   * single hitch would otherwise raise the estimate and licence more work on
+   * exactly the frames that are already late.
+   */
+  private readonly frameInterval = new FrameIntervalTracker(16.7);
+  private get frameIntervalMs(): number { return this.frameInterval.ms; }
+  /** Tangent step, in body radii, used to measure how large a sector's
+   *  surface draws (see updateSectorStreaming). Small enough that the
+   *  projection is straight across it — a quarter of a 16K texel — and far
+   *  larger than double precision needs to resolve the two projected points. */
+  private static readonly SECTOR_TANGENT_STEP_RADII = 1e-4;
   // Speculative warm of the Earth+Moon pair's first colour steps a beat after
   // activation: eclipse vantages land on Earth and the Moon is the most-taken
   // first close-up, so spending idle seconds on their fetch+decode means a
@@ -752,6 +934,10 @@ export class PlanetariumMode {
   // one frame somewhere in the seconds after the fetch lands).
   private bootPairWarmTimer: number | undefined;
   private static readonly BOOT_PAIR_WARM_DELAY_MS = 5000;
+  /** The atmosphere bake goes after the pair warm, not with it: both want the
+   *  same idle, and the warm's decode and upload are the ones a first arrival
+   *  waits on. */
+  private static readonly ATMOSPHERE_BAKE_DELAY_MS = 6000;
   // Arrival veil re-entrancy guard (rapid picks, or a pick while one is running).
   private arrivalInFlight = false;
   /** Monotonic veil-cover token: each veiled arrival claims the veil, so a
@@ -956,12 +1142,66 @@ export class PlanetariumMode {
   /** Sector streaming (world/sectorStreamer): the hero bodies' 16K tiles.
    *  Null when disabled (`?sectors=0`) or before the system exists. */
   private sectors: SectorStreamer | null = null;
+  /** What this device is and what it may spend, read once in the constructor
+   *  (world/gpuEnvelope). The class and the platform family together pick the
+   *  row; the row carries every number the ladder and the streamer spend. */
+  private readonly deviceSignals: ReturnType<typeof readDeviceSignals>;
+  private readonly deviceClass: DeviceClass;
+  private readonly deviceFamily: PlatformFamily;
+  private readonly deviceProfile: DeviceProfile;
+  /** The one envelope the globe ladder and the sector tiles spend between
+   *  them. Built here because the mode is what both of them belong to, and
+   *  handed to the streamer at construction; the ladder's admission gate and
+   *  the `?debug=1` memory line read it rather than reassembling the figure
+   *  from a profile and a floor at each site. */
+  private readonly memory: MemoryEnvelope;
   private readonly sectorsEnabled = new URLSearchParams(location.search).get('sectors') !== '0';
+  /** `?synth=0` holds the close-range detail synthesis at zero on every
+   *  surface. The A/B arm for a look question about it, and the only way to see
+   *  what a magnified surface looks like without it at a pose where it is fully
+   *  faded in — the term's whole purpose is to be invisible until then. */
+  private readonly synthesisEnabled = new URLSearchParams(location.search).get('synth') !== '0';
+  /** The memory readout under `?debug=1` (reportMemoryDebug). The overlay is
+   *  the only console a phone has without a cable, so the line has to be rare
+   *  enough to read: one every 5 s, or as soon as a figure moves by more than
+   *  a twentieth. */
+  private static readonly MEMORY_DEBUG_PERIOD_MS = 5_000;
+  private static readonly MEMORY_DEBUG_MOVE = 0.05;
+  private memoryDebugAtMs = Number.NEGATIVE_INFINITY;
+  private memoryDebugLast: number[] | null = null;
+  private memoryDebugBootReported = false;
   /** Latched from webglcontextlost to webglcontextrestored: a GL call on a
    *  lost context silently succeeds, so an upload "warmed" in that window is
    *  a texture that never reached the GPU — nothing may be admitted until
    *  the context is back, and whatever was admitted is dropped again then. */
   private glContextLost = false;
+  /** How long a committed destination keeps its maps after the arrival is
+   *  over: long enough for the first look around, and for the approach the
+   *  player flies straight into afterwards. */
+  private static readonly TRAVEL_PROTECT_GRACE_MS = 10_000;
+  /** When the ladder first went over its share, or null while it is not. */
+  private pressureSinceMs: number | null = null;
+  /** The destination the player committed to, and when its arrival finished
+   *  (null while it is still under way). Its maps are the last the ladder
+   *  would take back, and the protection is the STATE "this is where the ship
+   *  is going" rather than any pump's progress through it. */
+  private travelProtect: { ups: TextureUpgrade[]; doneAtMs: number | null } | null = null;
+  /** The one swap in flight, a release or a restore re-fetch alike. Either
+   *  transiently holds two maps, so several at once would raise the peak they
+   *  exist to lower — and a restore answers a memory signal, which is the
+   *  worst moment to decode every globe map at once. */
+  private releasing: TextureUpgrade | null = null;
+  private releaseFailures = 0;
+  /** Swaps abandoned for taking too long. A hung fetch means the same thing
+   *  to the player as a refused one — the maps are not coming back — so both
+   *  reach the same warning. */
+  private releaseTimeouts = 0;
+  private warnedNoRelease = false;
+  /** Rungs waiting to re-fetch the map a lost GL context took, nearest body
+   *  first, each with the stand-in texture it is waiting to replace. Drained
+   *  one at a time; an entry stays until its handle is free and the ledger
+   *  admits it, so nothing is left on a stand-in for the session. */
+  private readonly restoreRefetch: Array<{ up: TextureUpgrade; tex: THREE.Texture }> = [];
   private readonly sectorCamLocal = new THREE.Vector3();
   private readonly sectorWorldCentre = new THREE.Vector3();
   private readonly sectorWorldScale = new THREE.Vector3();
@@ -969,35 +1209,14 @@ export class PlanetariumMode {
   private readonly sectorSunWorld = new THREE.Vector3();
   private readonly sectorPoint = new THREE.Vector3();
   private readonly sectorNormal = new THREE.Vector3();
+  private readonly sectorEast = new THREE.Vector3();
+  private readonly sectorNorth = new THREE.Vector3();
   private readonly sectorToCam = new THREE.Vector3();
+  private readonly sectorStepScale: ProjectedStepScale = { maxPx: 0, minPx: 0, x: 0, y: 0 };
   private readonly sectorWorldQuat = new THREE.Quaternion();
   private readonly sectorWorldQuatInv = new THREE.Quaternion();
   /** Last frame's world orientation per streamed body, for the spin gate. */
-  private readonly sectorSpin = new Map<string, { quat: THREE.Quaternion; tMs: number; heldUntilMs: number }>();
-  // What the whole sector pass shares for one frame, and what the body being
-  // visited is. Fields rather than closure captures: the pass runs for every
-  // registered body on every frame, so a closure per body per frame — and an
-  // object per sector — would be pure garbage at 60 Hz.
-  private sectorFrameCanvasW = 0;
-  private sectorFrameCanvasH = 0;
-  private sectorFrameFocalPx = 0;
-  private sectorFrameNowMs = 0;
-  private sectorFrameChart = false;
-  private sectorFrameGrounded: string | null = null;
-  private sectorBodyMesh: THREE.Mesh | null = null;
-  private sectorBodyRadiusAU = 0;
-  private sectorBodyWorldScale = 1;
-  /** Refilled for each sector measured. The streamer reads it inside the same
-   *  loop iteration and keeps nothing from it, so one object serves them all. */
-  private readonly sectorMeasureOut: SectorMeasure = { pxPerLocalUnit: 0, centrality: 0, offscreen: false };
-  // Its own projection scratch: the LOD loop's is read after its call by
-  // consumers that expect it untouched.
-  private sectorProjection: SphereScreenProjection = {
-    x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0,
-    footprintX: 0, footprintY: 0, radiusPx: 0, diameterPx: 0,
-    minX: 0, maxX: 0, minY: 0, maxY: 0,
-    footprintKind: 'none',
-  };
+  private readonly sectorSpin = new Map<string, SectorSpinLatch>();
   /** Monotonic per-update() stamp guarding the shared projection caches (the
    *  Sun's below, and each moon's on MoonMesh). One increment site covers
    *  cruise and landed: updateLanded runs inside update(). */
@@ -1023,6 +1242,16 @@ export class PlanetariumMode {
   private tmpSunOccluderScale = new THREE.Vector3();
   private tmpSunAtmosphereOffset = new THREE.Vector3();
   private moonShading: MoonShadingState = { sunVisibleFraction: 1, inUmbra: false };
+  // The moonlight pass runs in a different sweep from the moon-render one, so it
+  // keeps its own scratch: sharing would couple two passes through a value one of
+  // them believes it owns for the length of an iteration.
+  private moonlightShading: MoonShadingState = { sunVisibleFraction: 1, inUmbra: false };
+  private tmpMoonlightOffset = new THREE.Vector3();
+  private tmpMoonlightParent = new THREE.Vector3();
+  private moonlightSource = new Map<string, MoonData | null>();
+  /** Last phase angle written, so the capture tool can assert the Moon a night
+   *  golden was taken under rather than trust the date it asked for. */
+  private moonlightPhase = new Map<string, number>();
   // Landed-system shadow visuals: transit spots always on, guides behind the
   // Observatory panel toggle (session-only, deliberately not persisted).
   private shadowVisuals = new ShadowVisuals();
@@ -1074,7 +1303,7 @@ export class PlanetariumMode {
   // Provenance: did the user pick the target, or is it a legacy-save leftover?
   // Only user-engaged targets render the "→ name" chip or survive a landing.
   private autopilotUserEngaged = false;
-  /** Cached flyby aim for the autopilot blend zone. `moonArrivalPose` builds a
+  /** Cached flyby aim for the autopilot blend zone. `arrivalPose` builds a
    *  dozen vectors per call, and the pose depends only on the moon/parent
    *  state — so recompute when the moon has moved a couple percent of the
    *  standoff (every frame under warp, almost never at 1×), not per frame. */
@@ -1148,7 +1377,43 @@ export class PlanetariumMode {
    *  while its mesh may still be unpainted behind the arrival veil (the
    *  visibility-keyed set can't see it there). Drops once the mesh shows;
    *  a stale seed is neutralized by distance on its own. */
-  private governedMoonSeed: { name: string; parentPlanet: string } | null = null;
+  /** Analytic governor seeds: moons whose meshes may still be unpainted
+   *  (invisible to the visibility-keyed governed set) but whose physics must
+   *  hold from the first post-jump frame. A moon jump seeds its target; a
+   *  planet flyby jump seeds the WHOLE satellite system — the lane-scored
+   *  approach is only as good as the governor that enforces it, and a cold
+   *  system's moons finish painting mid-pass. Each seed retires when its
+   *  mesh turns visible; every flight discontinuity clears the set. */
+  private governedMoonSeeds: { name: string; parentPlanet: string }[] = [];
+
+  /** DEV forensics: the last authored arrival pose, recorded at the jump so
+   *  the flyby probe asserts measured trajectories against the authored
+   *  geometry instead of re-deriving it. Never read by app code. */
+  private devLastArrivalPose: {
+    body: string;
+    kind: 'planet' | 'moon';
+    position: number[];
+    aimPoint: number[];
+    bodyPosition: number[];
+    /** The led center the aim was composed around (ArrivalPose.aimCenter):
+     *  the datum the authored miss is measured from. */
+    aimCenter: number[];
+    renderedRAU: number;
+    /** Collision shell one of the two floors under the miss is derived from
+     *  (rendered radius + hull pad). */
+    shellAU: number;
+    /** The chase camera's trail length — the other floor: no authored pass
+     *  may miss by less than one boom, or the body crosses between the
+     *  camera and the ship. At moonlet scale it is the widest of the three
+     *  terms, and the battery asserts the max of all three. */
+    camDistAU: number;
+    standoffAU: number;
+    bAU: number;
+  } | null = null;
+
+  /** DEV forensics: which governed body owns the instantaneous speed cap
+   *  this frame, and at what value. */
+  private devCapOwner: { name: string; capAUPerS: number } | null = null;
   /** The cruise aim pipeline's state (see cruiseAim.ts, the module header
    *  is the subsystem doc): arrival-look bookkeeping plus the continuity
    *  filter that makes one-frame aim snaps structurally impossible outside
@@ -1167,8 +1432,8 @@ export class PlanetariumMode {
   /** Reused arrival-pose inputs for the engaged moon autopilot: refilled from
    *  live positions/scale each frame (resolveAutopilotMoonInputs) so the glide
    *  cap, aim blend, and arrival test allocate nothing in steady flight. */
-  private tmpAutopilotInputs: MoonArrivalInputs = {
-    moonPos: new THREE.Vector3(),
+  private tmpAutopilotInputs: ArrivalInputs = {
+    targetPos: new THREE.Vector3(),
     parentPos: new THREE.Vector3(),
     orbitR: 0,
     renderedR: 0,
@@ -1205,14 +1470,8 @@ export class PlanetariumMode {
    *  whole segment, not the endpoint (one 100 ms frame at the in-system
    *  default steps ~2,500 km, clean through a small moon's bubble). */
   private prevPlayerPos = new THREE.Vector3();
-  /** The armed shell-contact graze (see applyShellContact / applyContactAim):
-   *  the unit aim the nose eases onto after a hands-off bump. Transient —
-   *  never saved; steering input, autopilot, jumps, landings, and the
-   *  post-contact TTL all retire it. */
-  private contactAimTarget = new THREE.Vector3();
-  private contactAimActive = false;
-  private contactAimAgeS = 0;
-  private tmpContactForward = new THREE.Vector3();
+  /** Scratch for the shell-contact park (see applyShellContact). */
+  private tmpShellPark = new THREE.Vector3();
 
   private layoutMode: PlanetariumLayout = 'realistic';
   // The current frame's dt in ms, as the update loop received it: real wall
@@ -1233,7 +1492,7 @@ export class PlanetariumMode {
 
   /** Planet render scale. Planets draw at true size; the value is kept as a
    *  named field because the collision, envelope and landed-framing helpers
-   *  all take a render scale, and updatePlanetDetailFades writes it onto every
+   *  all take a render scale, and updatePlanetScaling writes it onto every
    *  planet group so `group.scale.x` never means something else. */
   private readonly planetScale = 1;
 
@@ -1914,21 +2173,41 @@ export class PlanetariumMode {
   // couple of frames later — the first live frames must not compile anything
   // it missed (that stall is the very thing it exists to prevent).
   private shaderWarmupProgramCount: number | null = null;
-  private framesSinceShaderWarmup = 0;
   /** Every program linked as of the last frame, by id, once the boot check
    *  has run: a frame whose list holds an id not in here has just paid a link
    *  no warm-up covered. Null until the boot warm-up has been judged. */
   private knownProgramIds: Set<number> | null = null;
-  /** Above zero while a deliberate warm-up links programs (a context
-   *  restore): those links are not misses. */
+  /** Above zero while a deliberate warm-up links programs (the atmosphere
+   *  tier's idle pass, a context restore): those links are not misses. */
   private linkWarningsMuted = 0;
   /** The warm-up's probe groups, kept in the scene for the page's life so
    *  the programs only they hold are never destroyed with them (the mode
-   *  itself lives that long). */
+   *  itself lives that long). Owned from the moment they enter the scene. */
   private shaderWarmupProbes: WarmupProbes[] = [];
   /** Settles when the warm-up's compile poll has: a re-warm waits on it
    *  before un-muting the late-link check. */
   private shaderWarmupSettled: Promise<void> = Promise.resolve();
+  /** QA override for which tier the shells wear: 'analytic' holds them on the
+   *  fallback so the two looks can be captured from one session, null lets the
+   *  tables decide. Never set outside the dev bridge. */
+  private devAtmosphereTier: 'analytic' | null = null;
+
+  /** Both materials a body's atmosphere shell can wear, and the tables the LUT
+   *  one is currently pointed at (a re-bake after a context loss makes new
+   *  ones). The mesh holds whichever is drawing; while the LUT tier fades in,
+   *  a sibling mesh under it draws the incoming material at the fade's weight. */
+  private readonly atmosphereShells = new Map<string, ShellCrossfade & {
+    analytic: THREE.ShaderMaterial;
+    lut: THREE.ShaderMaterial | null;
+    bound: AtmosphereTables | null;
+  }>();
+
+  /** Precomputed atmosphere tables. Built in the boot idle, never behind the
+   *  load screen; nothing draws with them yet. */
+  private atmosphereLut: AtmosphereLut | null = null;
+  private atmosphereBakeTimer = 0;
+  private devAtmosphereLut: AtmosphereLut | null = null;
+  private framesSinceShaderWarmup = 0;
 
   constructor(
     scene: THREE.Scene,
@@ -1942,11 +2221,19 @@ export class PlanetariumMode {
     this.renderer = renderer;
     this.useBloom = useBloom;
     this.rendersThroughComposer = rendersThroughComposer;
-    // Capture device texture caps from the live renderer before any body loads,
-    // so anisotropy and tier limits apply to the very first textures created.
-    // The touch budget is the same device class the sector caps and the
-    // boot warm use, not a bare touchscreen test: a touch laptop is a desktop.
-    captureDeviceTextureCaps(renderer, touchFirstDevice());
+    // Read the device once, before any body loads, so anisotropy and tier
+    // limits apply to the very first textures created and every later
+    // decision spends the same numbers. The signals and the profile are this
+    // mode's for its lifetime — a chassis change takes effect on the next
+    // load, not under a live working set.
+    this.deviceSignals = readDeviceSignals(renderer.getContext());
+    this.deviceClass = classifyDevice(this.deviceSignals);
+    this.deviceFamily = platformFamily(this.deviceSignals);
+    this.deviceProfile = captureDeviceCaps(
+      renderer,
+      devEnvelopeOverride(deviceProfileFor(this.deviceClass, this.deviceFamily)),
+    );
+    this.memory = new MemoryEnvelope(this.deviceProfile);
     // Resolve the bitmap-upload probe during construction: every streamed
     // boot texture awaits its verdict before fetching, so starting it here
     // takes it off the first fetch's critical path. The renderer lets the
@@ -1955,11 +2242,19 @@ export class PlanetariumMode {
     // Warm uploads go through the renderer so freshly loaded maps reach the
     // GPU on quiet frames instead of inside a gesture's first draw.
     bindTextureWarmer((tex) => renderer.initTexture(tex));
-    // The 8K compressed tier's loader (see PlanetFactory's TIER_FILE_OVERRIDES),
+    // A map too big to upload inside one frame is filled band by band instead.
+    // Nothing draws it until the last band and the mip chain are in — the warm
+    // pump settles its 'warmed' callback there and not before.
+    bindSlicedUploader({
+      begin: (tex) => beginSlicedUpload(renderer, tex),
+      step: (job, budgetMs) => stepSlicedUpload(job, budgetMs),
+    });
+    // The compressed tiers' loader (see PlanetFactory's TIER_FILE_OVERRIDES),
     // bound lazily: the KTX2 machinery — loader chunk, transcoder worker, wasm —
-    // loads only if a session actually earns that tier. Fail-open at every step:
-    // a failed import or load lands in the ladder's own onError, whose cooldown
-    // and one-rung-short worst case are the same as any 8K network failure.
+    // loads only if a session actually earns a rung above its boot map. Fail-open
+    // at every step: a failed import or load lands in the ladder's own onError,
+    // whose cooldown and one-rung-short worst case are the same as any network
+    // failure on a rung.
     bindKtx2TierLoader((url, onLoad, onError) => {
       this.ktx2Loader ??= import('three/examples/jsm/loaders/KTX2Loader.js').then(({ KTX2Loader }) =>
         new KTX2Loader()
@@ -1973,14 +2268,35 @@ export class PlanetariumMode {
       // an attempt forever. (A failure inside onLoad is the loader's to
       // route: KTX2Loader.parse already chains onLoad to onError.)
       this.ktx2Loader
-        .then((loader) => loader.load(url, onLoad, undefined, onError))
+        // Stamp the file the texture came from, exactly as the bitmap loader
+        // does: a KTX2 texture carries no name and no image src, so without
+        // this every compressed rung is an anonymous upload in the timing
+        // traces and no hitch can be pinned to the map that caused it.
+        .then((loader) => loader.load(url, (tex) => {
+          tex.userData.sourceUrl = url;
+          onLoad(tex);
+        }, undefined, onError))
         .catch((err) => onError(err));
-    });
+    }, ktx2TranscodesCompressed(renderer));
+    // What the ladder may spend. Every rung passes it before it is fetched
+    // and again as a decoded texture before it is applied.
+    bindTierAdmission(this.admitLadderTier);
     // GPU moon-texture painter (synchronous CPU fallback inside). Inject its
     // paint into the lazy painter; MoonPainter's queue + the visibility gate +
     // the arrival veil are unchanged — only the per-moon paint moves to the GPU.
     this.moonTexturer = new ProceduralMoonTexturer(renderer);
     this.moonPainter = new MoonPainter(this.moonTexturer.paint);
+    // Half tables and two scattering orders on anything that is not a desktop.
+    // That is a WORK argument, not a memory one — the bake is a few hundred
+    // layer draws and ~10^9 dependent fetches — so it is asked of the device
+    // CLASS rather than of the profile's byte numbers, which an Apple phone was
+    // measured to share with a desktop. Same reasoning as FILL_RATE_TIER_CAP.
+    this.atmosphereLut = new AtmosphereLut(renderer, {
+      touch: this.deviceClass !== 'desktop',
+      // The bake's slices are a share of the frame, so they read the same
+      // smoothed interval the warm pump's budget does.
+      frameIntervalMs: () => this.frameIntervalMs,
+    });
     // WebGL context loss invalidates render-target textures (no CPU backing), so
     // GPU-painted moons would render black after a restore. Reset them to repaint
     // and re-validate the GPU path on restore (else it stays on the CPU path).
@@ -2000,6 +2316,10 @@ export class PlanetariumMode {
       // from the service-worker cache after the restore.
       this.glContextLost = true;
       this.sectors?.dropAll();
+      // The tables are render-target textures with no CPU backing: they die
+      // with the context, and the atmosphere falls back to the analytic shell
+      // until a re-bake validates.
+      this.atmosphereLut?.onContextLost();
       this.invalidateRtPaintedMoons(this.moonTexturer.onContextLost());
       // Dots gate on painted moons — blank them with the same invalidation so a
       // stale dot can't outlive the mesh it belonged to.
@@ -2016,7 +2336,13 @@ export class PlanetariumMode {
       // Anything a stray frame admitted while the context was lost was
       // "uploaded" into nothing: drop it before the latch clears.
       this.sectors?.dropAll();
+      // A ladder rung closes its decoded source once the upload is paid, so
+      // the restored context re-uploads the stand-in left in its place — a
+      // soft globe, not a black one. Queue the real maps back over it,
+      // nearest body first and one at a time.
+      this.queueReleasedTierRefetch();
       this.glContextLost = false;
+      this.atmosphereLut?.onContextRestored();
       void this.rewarmShaderProbes();
     });
     this.player = new PlayerShip();
@@ -2087,7 +2413,7 @@ export class PlanetariumMode {
       this.orbitPointerId = e.pointerId;
       this.orbitPointerStartX = e.clientX;
       this.orbitPointerStartY = e.clientY;
-      // A press is already interaction intent: hand the flythrough look back
+      // A press is already interaction intent: hand the flyby look back
       // NOW, not at the 4px drag threshold — otherwise a held-still press
       // sits under a camera that starts tracking the moon a few seconds in.
       // Matches the touch zone, where a stationary tap is full input. (The
@@ -2136,7 +2462,7 @@ export class PlanetariumMode {
     onCanvas('pointerup', endOrbitDrag);
     onCanvas('pointercancel', endOrbitDrag);
     // A wheel zoom is camera work like any drag or keypress: the player is
-    // already composing the shot, so the flythrough look hands back rather
+    // already composing the shot, so the flyby look hands back rather
     // than panning underneath them. (OrbitControls consumes the wheel for
     // the dolly itself; this only retires the look.)
     onCanvas('wheel', () => {
@@ -2164,6 +2490,7 @@ export class PlanetariumMode {
     window.addEventListener('pointercancel', this.onWindowMapDisarm);
 
     window.addEventListener('blur', this.onWindowBlur);
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
 
     // Window-level capture tracker for the hover/tap body reveal (see the
     // handler fields). Registered once; every handler gates on `this.active`.
@@ -2580,25 +2907,35 @@ export class PlanetariumMode {
       // surface-view entry links those programs mid-gesture (a frozen frame
       // that reads as a dead click on slow GPUs).
       const shadowProbes = createShadowVisualsWarmupProbes();
-      this.scene.add(probes.group, shadowProbes.group);
+      // The orbit-details view's lines and fills draw first at a landing;
+      // their programs link here instead, on the view's own materials.
+      const orbitProbes = this.orbitDetailsVisuals.warmupProbes();
+      this.scene.add(probes.group, shadowProbes.group, orbitProbes.group);
       // Owned now, not once the compile settles: a context restore during
       // the warm-up's bounded wait must already find the groups to re-warm.
-      this.shaderWarmupProbes.push(probes, shadowProbes);
+      this.shaderWarmupProbes.push(probes, shadowProbes, orbitProbes);
       // Compile with the live path's kind of target bound (three keys every
       // program on it) and force the links with one 1-pixel draw — see
       // world/shaderWarmup.ts for the why and the pinned contract. Fail-open:
       // on any failure lazy first-draw compilation remains the fallback.
-      const { compiled } = await warmUpSceneShaders(this.renderer, this.scene, this.camera, {
-        drawsThroughComposer: this.rendersThroughComposer(),
-        probeGroups: [probes.group, shadowProbes.group],
-        onError: (stage, err) => debugError(`Shader warm-up ${stage} failed`, err),
-      });
+      const { compiled, resolved, warmDrawMs } = await warmUpSceneShaders(
+        this.renderer, this.scene, this.camera, {
+          drawsThroughComposer: this.rendersThroughComposer(),
+          probeGroups: [probes.group, shadowProbes.group, orbitProbes.group],
+          // Every pending program in this task, no frame yielded: the load
+          // screen is up, so a yielded frame is boot time, and the driver's
+          // deferred pipeline builds are paid under it either way.
+          resolvePerFrame: Number.POSITIVE_INFINITY,
+          onError: (stage, err) => debugError(`Shader warm-up ${stage} failed`, err),
+        },
+      );
+      logShaderResolve('Boot', resolved, warmDrawMs);
       this.shaderWarmupProgramCount = this.renderer.info.programs?.length ?? null;
       this.framesSinceShaderWarmup = 0;
       // The probes stay in the scene, invisible, for the session: three
       // destroys a program the moment its last material is disposed, and the
       // combinations only a probe holds at boot (a measured normal before the
-      // Moon's arrives, a photo before the paint, the shadow visuals before a
+      // Moon's arrives, the cloud deck's relief, the shadow visuals before a
       // landing) would otherwise be compiled here, thrown away with the probes,
       // and linked again on their first real draw mid-flight. Nothing disposes
       // them now (the mode lives as long as the page); a context restore
@@ -2622,6 +2959,7 @@ export class PlanetariumMode {
     snapConstellations();
 
     this.scheduleBootPairWarm();
+    this.scheduleAtmosphereBake();
 
     if (buildingSolarSystem) {
       // Every map index.html warmed has been asked for by now — the planet
@@ -2648,6 +2986,15 @@ export class PlanetariumMode {
         this.scheduleBootPairWarm();
         return;
       }
+      // Spin the tile decode worker up here rather than at construction: a
+      // module fetch and a worker start would otherwise land inside the boot
+      // they cost, and nothing in that window needs them. The first flown
+      // approach is seconds away at the earliest, and a tile wanted before the
+      // probe resolves simply awaits it inside the decode — a few milliseconds,
+      // off the main thread — so the worker is never on a frame's critical
+      // path either way. Ahead of the saveData return below: this is a worker,
+      // not speculative bytes.
+      warmTilePixelWorker();
       // A metered connection gets no speculative bytes — the pair still
       // sharpens through the normal triggers when actually visited.
       const connection = (navigator as { connection?: { saveData?: boolean } }).connection;
@@ -2659,7 +3006,7 @@ export class PlanetariumMode {
       // network but pays no residency up front. (Quality tiers stay
       // capability-based — this split concerns speculation only, and
       // saveData is absent on iOS Safari so it cannot be the gate.)
-      const cacheOnly = touchFirstDevice();
+      const cacheOnly = this.deviceProfile.cacheOnlyWarm;
       for (const up of this.landingPairUpgrades({ type: 'planet', name: 'Earth' })) {
         // The live loader's attempt/cooldown gate, so a re-armed timer never
         // duplicates a pending desktop attempt. The cache-only fetch marks no
@@ -2667,17 +3014,17 @@ export class PlanetariumMode {
         // can start the same transfer twice — bounded, and the second ride
         // comes off the cache it is filling.
         if (!canAttempt(up, performance.now())) continue;
-        const first = firstUpgradeTier(up);
+        const first = arrivalUpgradeTier(up);
         if (!first) continue;
         if (cacheOnly) {
           const tier = resolveUpgradeTier(up, first);
           // The body must be read to completion: an unread Response is
           // dropped, and the browser may cancel the transfer with it — the
           // bytes only reliably reach the HTTP/service-worker cache once the
-          // stream has been drained.
-          // Through the ladder's own file choice, so the bytes pulled into
-          // the cache are the bytes the ladder will later ask for — a tier
-          // with a compressed override must not be warmed as its webp.
+          // stream has been drained. Through resolveTierFile, so the bytes
+          // pulled in are the ones the ladder will later ask for: where a rung
+          // ships as a compressed container this session fetches the container
+          // and never the webp beside it.
           if (tier) {
             fetch(resolveTextureUrl(resolveTierFile(up.key, tier), tier))
               .then((r) => r.arrayBuffer())
@@ -2690,26 +3037,201 @@ export class PlanetariumMode {
     }, PlanetariumMode.BOOT_PAIR_WARM_DELAY_MS);
   }
 
-  /** Wire the hero bodies' sector sets (SECTOR_SETS) onto their globe meshes.
-   *  Sector meshes become children of the globe, so they ride its spin, pole
+  /** Arm the atmosphere table bake. It runs in the boot idle, never behind the
+   *  load screen: a four-order bake is a few hundred layer draws and hundreds
+   *  of millions of dependent fetches, which on a phone is seconds of a boot
+   *  the load screen would otherwise be holding. The analytic shell carries the
+   *  look meanwhile — a complete look, so nothing is half-loaded — and the
+   *  tables only become the tier once every one of them validates.
+   *
+   *  Nothing this tier needs is in the boot warm-up set: not the bake's own
+   *  seven programs, not the capability probe (a 3D layer render and a
+   *  synchronous pixel readback — a full pipeline flush), and not the shell's
+   *  own program. The warm-up compiles what the live path draws, under the load
+   *  screen, and none of this draws until the tables exist. All of it links out
+   *  here in the idle instead, where a cold-cache link costs nobody a frame;
+   *  putting any of it in the warm set moves the cost onto the boot the warm-up
+   *  exists to shorten. */
+  private scheduleAtmosphereBake(): void {
+    window.clearTimeout(this.atmosphereBakeTimer);
+    this.atmosphereBakeTimer = window.setTimeout(() => {
+      if (!this.active || !this.atmosphereLut) return;
+      // Two things own the frame ahead of speculation: the load screen (the
+      // bake must never be inside the boot it would lengthen) and an arrival
+      // veil. Yield to both and try again.
+      if (!loadScreenHidden() || this.arrivalVeilUp()) {
+        this.scheduleAtmosphereBake();
+        return;
+      }
+      void this.armAtmosphereTier();
+    }, PlanetariumMode.ATMOSPHERE_BAKE_DELAY_MS);
+  }
+
+  /** Bring the table tier up across the idle, one cost to a frame: probe,
+   *  then the shell program's compile and its resolve phase (one program's
+   *  driver-side build per frame), then the bake, which spreads its own
+   *  programs one to a frame before its first layer draw. Each is a dropped
+   *  frame on its own, and the arming frame used to carry several together. */
+  private async armAtmosphereTier(): Promise<void> {
+    const lut = this.atmosphereLut;
+    if (!lut) return;
+    // Every link below is deliberate idle work, not a warm-up miss.
+    this.linkWarningsMuted++;
+    try {
+      await this.armAtmosphereTierSteps(lut);
+    } finally {
+      this.linkWarningsMuted--;
+      this.rebaselineLinkedPrograms();
+    }
+  }
+  private async armAtmosphereTierSteps(lut: NonNullable<typeof this.atmosphereLut>): Promise<void> {
+    await nextFrame();
+    if (!this.active) return;
+    if (!lut.probeCapability()) return;
+    await nextFrame();
+    if (!this.active) return;
+    await this.warmAtmosphereShellProgram();
+    await nextFrame();
+    if (!this.active) return;
+    await lut.bake('Earth');
+  }
+  /** Once the boot check has run: a link on a live frame is a frame paid
+   *  mid-gesture, so name the program and the probe set can grow to cover it.
+   *  One length compare a frame; the list is walked only when it moved. */
+  private noteLiveProgramLinks(): void {
+    if (this.knownProgramIds === null) return;
+    const programs = this.renderer.info.programs;
+    if (!programs) return;
+    // Three appends a new program last, so a release-and-link in one frame
+    // keeps the length while the last entry is new: check both.
+    const last = programs[programs.length - 1];
+    if (programs.length !== this.knownProgramIds.size || (last && !this.knownProgramIds.has(last.id))) {
+      this.noteProgramLinks(programs);
+    }
+  }
+  /** Take the live program list as the known set, so the next frame's check
+   *  starts from whatever a deliberate warm-up or a restore just linked. */
+  private rebaselineLinkedPrograms(): void {
+    this.knownProgramIds = new Set((this.renderer.info.programs ?? []).map((p) => p.id));
+  }
+  /** Name every program in the list that no warm-up covered, then take the
+   *  list as known — which also forgets the ones three released. Programs
+   *  are matched by id, so a release that reorders the list cannot pin the
+   *  blame on the wrong entry. */
+  private noteProgramLinks(programs: ReadonlyArray<{ id: number; name?: string; cacheKey?: string }>): void {
+    const known = this.knownProgramIds;
+    if (known && this.linkWarningsMuted === 0) {
+      for (const program of programs) {
+        if (known.has(program.id)) continue;
+        debugWarn('Shader program linked after the boot warm-up', {
+          type: (program as { type?: string }).type,
+          name: program.name,
+          key: String(program.cacheKey ?? '').slice(0, 160),
+          total: programs.length,
+        });
+      }
+    }
+    this.rebaselineLinkedPrograms();
+  }
+  /** A restored context has no programs: live materials re-link on their
+   *  first draw, but the kept probes are never drawn, so their compile and
+   *  warm draw run again here or the variants only they hold link mid-flight
+   *  once more. Fail-open like the boot pass. */
+  private async rewarmShaderProbes(): Promise<void> {
+    if (this.shaderWarmupProbes.length === 0) return;
+    this.linkWarningsMuted++;
+    try {
+      const { compiled, resolved, warmDrawMs } = await warmUpSceneShaders(
+        this.renderer, this.scene, this.camera, {
+          drawsThroughComposer: this.rendersThroughComposer(),
+          probeGroups: this.shaderWarmupProbes.map((probe) => probe.group),
+          onError: (stage, err) => debugError(`Shader re-warm ${stage} failed`, err),
+        },
+      );
+      logShaderResolve('Context restore', resolved, warmDrawMs);
+      this.shaderWarmupSettled = compiled.then(() => undefined, () => undefined);
+      // Bounded: the late-link check stays muted only as long as the compile
+      // poll can plausibly take, not for a session if it never settles.
+      await Promise.race([this.shaderWarmupSettled, new Promise<void>((r) => setTimeout(r, REWARM_MUTE_MAX_MS))]);
+    } finally {
+      this.linkWarningsMuted--;
+      this.rebaselineLinkedPrograms();
+    }
+  }
+
+  /** Link the LUT shell's program here in the idle, before the bake it will
+   *  draw with. The tier swaps in mid-flight the moment the tables validate,
+   *  and a cold link at that moment is a dropped frame in the near band, where
+   *  the shell fills the screen. Warmed with the LIVE material, not a copy: a
+   *  program is freed with the material that holds it, so a throwaway probe
+   *  material would take its own program down with it.
+   *
+   *  One program's driver-side build to a frame here, not all of them on the
+   *  warm draw: a compile reporting ready has only had its link job finished,
+   *  and the build behind it is paid by the first call that needs the program.
+   *
+   *  Fail-open throughout — this only buys a smooth swap, and lazy first-draw
+   *  compilation is the fallback. */
+  private async warmAtmosphereShellProgram(): Promise<void> {
+    const atmoProbes = this.createAtmosphereWarmupProbes();
+    if (!atmoProbes) return;
+    this.scene.add(atmoProbes.group);
+    const { compiled, resolved, warmDrawMs } = await warmUpSceneShaders(
+      this.renderer, this.scene, this.camera, {
+        drawsThroughComposer: this.rendersThroughComposer(),
+        probeGroups: [atmoProbes.group],
+        onError: (stage, err) => debugError(`Atmosphere shell warm-up ${stage} failed`, err),
+      },
+    );
+    logShaderResolve('Atmosphere shell', resolved, warmDrawMs);
+    // Disposal waits on compileAsync's own poll: disposing mid-poll throws
+    // inside a timer callback no try/catch here could reach.
+    void compiled.then(() => {
+      this.scene.remove(atmoProbes.group);
+      atmoProbes.dispose();
+    });
+  }
+
+  /** Wire the hero bodies' sector sets onto the meshes they draw over.
+   *  Sector meshes become children of that mesh, so they ride its spin, pole
    *  and (for the Moon) the render-curve scale; the streamer forces the fine
-   *  silhouette grid before the first sector shows. */
+   *  silhouette grid before the first sector shows. A body with night lights
+   *  registers a second family on its night shell (SECTOR_NIGHT_SETS): the
+   *  same streamer, the same budget, its own lighting gate. */
   private registerSectorBodies(): void {
     if (!this.sectorsEnabled || !this.solarSystem) return;
-    const sectors = new SectorStreamer({ touch: touchFirstDevice() });
+    const sectors = new SectorStreamer({ limits: this.deviceProfile, envelope: this.memory });
     for (const planet of this.solarSystem.planets) {
+      const fine = () => { upgradeGeometryOnApproach(planet.geometryUpgrade, Number.POSITIVE_INFINITY); };
       const spec = SECTOR_SETS[planet.data.name];
-      if (!spec) continue;
-      const material = planet.mesh.material as THREE.MeshStandardMaterial;
-      sectors.register({
-        name: planet.data.name,
-        spec,
-        mesh: planet.mesh,
-        material,
-        radiusAU: planet.data.radiusAU,
-        topMapWidth: topMapWidthOf(planet.textureUpgrades, material),
-        ensureFineGeometry: () => { upgradeGeometryOnApproach(planet.geometryUpgrade, Number.POSITIVE_INFINITY); },
-      });
+      if (spec) {
+        const material = planet.mesh.material as THREE.MeshStandardMaterial;
+        sectors.register({
+          name: planet.data.name,
+          spec,
+          mesh: planet.mesh,
+          material,
+          radiusAU: planet.data.radiusAU,
+          topMapWidth: topMapWidthOf(planet.textureUpgrades, material),
+          ensureFineGeometry: fine,
+        });
+      }
+      const nightSpec = SECTOR_NIGHT_SETS[planet.data.name];
+      const nightMat = planet.nightMaterial;
+      if (nightSpec && nightMat && planet.nightMesh && planet.nightRadiusAU) {
+        sectors.register({
+          name: planet.data.name,
+          spec: nightSpec,
+          mesh: planet.nightMesh,
+          material: nightMat,
+          family: earthNightSectorFamily(nightMat),
+          // The shell's own radius, not the globe's: a sector built 6 km low
+          // would sit under the shell it is there to replace.
+          radiusAU: planet.nightRadiusAU,
+          topMapWidth: topMapWidthOf(planet.textureUpgrades, nightMat),
+          ensureFineGeometry: fine,
+        });
+      }
     }
     for (const moons of this.planetMoons.values()) {
       for (const m of moons) {
@@ -2737,13 +3259,11 @@ export class PlanetariumMode {
    * keep being measured, admitted and released. Per body: the camera and the
    * Sun in the globe's local frame (radius = catalog radius there, whatever
    * the render scale), the magnification bound at its nearest surface point,
-   * then per facing sector its frame membership (the lens-aware footprint of
-   * its bounding sphere) and the magnification at its nearest point — RENDER
-   * pixels per local unit, which the streamer turns into pixels per texel of
-   * the finest map the globe will hold. Render, not display: the ratio comes
-   * from the renderer, so a supersampled frame asks for the sharper tile it
-   * really samples, while MSAA (which renders at the capped display ratio)
-   * asks for one tile texel per device pixel.
+   * then per facing sector its frame membership (its bounding sphere against
+   * the frustum) and the magnification at its nearest point — DEVICE pixels
+   * per local unit along the screen direction the projection magnifies most,
+   * which the streamer turns into pixels per texel of the finest map the globe
+   * will hold.
    */
   private updateSectorStreaming(): void {
     const sectors = this.sectors;
@@ -2752,159 +3272,772 @@ export class PlanetariumMode {
       sectors.dropAll();
       return;
     }
-    this.sectorFrameCanvasW = this.renderer.domElement.clientWidth;
-    this.sectorFrameCanvasH = this.renderer.domElement.clientHeight;
-    this.sectorFrameNowMs = performance.now();
-    this.sectorFrameChart = this.isMapOpen();
-    this.sectorFrameGrounded = this.landedView === 'surface' ? this.landedOn?.name ?? null : null;
+    const canvasW = this.renderer.domElement.clientWidth;
+    const canvasH = this.renderer.domElement.clientHeight;
+    const dpr = this.renderer.getPixelRatio();
+    const nowMs = performance.now();
+    const chart = this.isMapOpen();
+    const grounded = this.landedView === 'surface' ? this.landedOn?.name ?? null : null;
     // The projections below read the camera's inverse world matrix; this
     // pass must not depend on the LOD pass (skipped under the chart) having
     // refreshed it this frame.
     this.camera.updateMatrixWorld();
     this.solarSystem.sun.getWorldPosition(this.sectorSunWorld);
-    // Render pixels a world unit covers at unit distance, on the display FOV
-    // (the lens pass keeps the centre of the frame at this scale; the
-    // streamer's hysteresis absorbs the edge distortion).
-    this.sectorFrameFocalPx =
-      ((this.sectorFrameCanvasH / 2) / Math.tan(0.5 * displayFovDeg(this.camera) * DEG2RAD))
-      * this.renderer.getPixelRatio();
+    // Device pixels a world unit covers at unit distance at the CENTRE of the
+    // displayed frame. The lens normalises the design FOV onto the frame's
+    // edge, so the conversion is its displayed half-tangent; tan(fov/2) is the
+    // overscan render's scale and reads 8% small at this FOV.
+    const lens = this.camera.userData.lens as
+      | { strength: number; designFovDeg: number; effectiveStrength?: number }
+      | undefined;
+    const lensStrength = lens ? lens.effectiveStrength ?? lens.strength : 0;
+    const designFovDeg = displayFovDeg(this.camera);
+    const focalDevicePx = ((canvasH / 2) / lensDisplayHalfTan(designFovDeg, lensStrength)) * dpr;
+    // The lens stretches outward from the axis, so the same patch of surface
+    // draws larger in a corner than at the centre. The skip-the-whole-body
+    // bound below carries that factor to stay an upper bound on every sector.
+    const maxFrameScale = lensMaxFrameScale(designFovDeg, this.camera.aspect, lensStrength);
 
+    // `key` names one family (sectorFamilyKey), `name` the body it belongs to
+    // — the landed check and the suspend rules are the body's, whichever of
+    // its families is being measured.
+    const visit = (key: string, name: string, mesh: THREE.Mesh, radiusAU: number, hidden: boolean) => {
+      if (!sectors.has(key)) return;
+      mesh.getWorldPosition(this.sectorWorldCentre); // refreshes matrixWorld too
+      mesh.getWorldQuaternion(this.sectorWorldQuat);
+      this.sectorWorldQuatInv.copy(this.sectorWorldQuat).invert();
+      // Spin gate, latched per FAMILY key rather than per body: two families
+      // of one body measure the same quaternion and keep one entry each,
+      // which is a duplicate rate and nothing worse — while a latch keyed on
+      // the body's name would let one family's suspend decide the other's,
+      // the collision every other lookup here is keyed to avoid. A first
+      // visit records an orientation and reports no spin.
+      let latch = this.sectorSpin.get(key);
+      if (!latch) {
+        latch = { quat: this.sectorWorldQuat.clone(), tMs: nowMs, heldUntilMs: 0 };
+        this.sectorSpin.set(key, latch);
+      }
+      const spinning = advanceSpinLatch(latch, this.sectorWorldQuat, nowMs);
+      const suspend = sectorSuspendFor({ hidden, grounded: grounded === name, spinning, chart });
+      const worldScale = mesh.getWorldScale(this.sectorWorldScale).x;
+      const worldR = radiusAU * worldScale;
+      this.sectorCamLocal.copy(this.camera.position);
+      mesh.worldToLocal(this.sectorCamLocal);
+      // Sun direction in the globe's frame, for the night-side gate.
+      this.sectorSunLocal.copy(this.sectorSunWorld).sub(this.sectorWorldCentre).normalize()
+        .applyQuaternion(this.sectorWorldQuatInv);
+      // The most magnified surface point is the nearest one: device pixels
+      // per local unit there bound every sector, and let the streamer skip
+      // the per-sector work for a globe that is not close.
+      const distCentre = this.sectorWorldCentre.distanceTo(this.camera.position);
+      const pxPerLocalUnitNearest = (focalDevicePx * maxFrameScale * worldScale)
+        / Math.max(distCentre - worldR, 1e-12);
+      // One tangent step in this globe's local units. A texel of even the
+      // finest map is smaller, and the projection is straight across it.
+      const tangentStep = radiusAU * PlanetariumMode.SECTOR_TANGENT_STEP_RADII;
+      const measure = (
+        bsCentreLocal: THREE.Vector3, bsRadiusLocal: number, surfaceDirLocal: THREE.Vector3,
+      ): SectorMeasure | null => {
+        // Frame membership from the bounding sphere against the frustum. Not
+        // from a projected footprint: close in, the camera sits INSIDE a
+        // sector's bounding sphere, and the projected centre of a sphere the
+        // camera is inside lands anywhere at all — which is what marked a
+        // whole limb strip off-frame at a grazing pose and left it unfetched.
+        this.sectorWorldCentre.copy(bsCentreLocal);
+        mesh.localToWorld(this.sectorWorldCentre);
+        const placement = placeSphereInFrustum(
+          this.sectorWorldCentre, bsRadiusLocal * worldScale, this.camera,
+        );
+        // Nothing of it is in front of the camera: no measurement to make.
+        if (placement === 'behind') return null;
+        // Entirely outside the frame: nothing to sharpen, but a resident one
+        // is a pan away — the streamer keeps it while it stays magnified.
+        const offscreen = placement === 'aside';
+        // Magnification at the surface point the streamer asks about (the
+        // sector's point nearest the camera's): how many device pixels one
+        // step of surface covers there, along the direction the projection
+        // magnifies most. That is the larger singular value of the screen
+        // Jacobian — a cosine between the normal and the line of sight gives
+        // the SMALLER one, which foreshortens a limb sector to nothing while
+        // its texels are still drawn several pixels wide along the limb.
+        this.sectorNormal.copy(surfaceDirLocal);
+        this.sectorPoint.copy(this.sectorNormal).multiplyScalar(radiusAU);
+        mesh.localToWorld(this.sectorPoint);
+        // The map's own axes at that point: east around the local +Y pole,
+        // north across it. Any perpendicular pair of the same length would
+        // give the same largest singular value; these are the ones the tiles
+        // are cut on.
+        this.sectorEast.set(this.sectorNormal.z, 0, -this.sectorNormal.x);
+        if (this.sectorEast.lengthSq() < 1e-18) this.sectorEast.set(1, 0, 0);
+        else this.sectorEast.normalize();
+        this.sectorNorth.crossVectors(this.sectorNormal, this.sectorEast);
+        this.sectorEast.multiplyScalar(tangentStep * worldScale).applyQuaternion(this.sectorWorldQuat);
+        this.sectorNorth.multiplyScalar(tangentStep * worldScale).applyQuaternion(this.sectorWorldQuat);
+        const scale = projectedStepScale(
+          this.sectorPoint, this.sectorEast, this.sectorNorth,
+          this.camera, canvasW, canvasH, this.sectorStepScale,
+        );
+        if (!scale) {
+          // The point is at or behind the camera plane (a grazing pose): no
+          // screen scale exists there, and nothing says where on the frame it
+          // would land. Hold it at the scale it would have facing the camera
+          // at its distance, so a resident sector swinging behind the viewer
+          // is kept for the pan back rather than dropped.
+          this.sectorToCam.copy(this.camera.position).sub(this.sectorPoint);
+          const dist = this.sectorToCam.length();
+          if (!(dist > 0)) return null;
+          return { pxPerLocalUnit: (focalDevicePx * worldScale) / dist, centrality: 0, offscreen };
+        }
+        // Centrality of the measured point itself — the place that has to be
+        // sharp — rather than of a bounding sphere reaching a quarter of the
+        // way round the globe.
+        const dx = (scale.x - canvasW / 2) / Math.max(canvasW / 2, 1);
+        const dy = (scale.y - canvasH / 2) / Math.max(canvasH / 2, 1);
+        return {
+          pxPerLocalUnit: (scale.maxPx * dpr) / tangentStep,
+          centrality: Math.max(0, 1 - Math.hypot(dx, dy)),
+          offscreen,
+        };
+      };
+      sectors.update(key, this.sectorCamLocal, measure, nowMs, suspend, this.sectorSunLocal, pxPerLocalUnitNearest);
+    };
+
+    // Measure every body first, then let the streamer reconcile them together:
+    // the bodies are visited in catalog order, and a working set decided body
+    // by body would rank Earth's fresh scores against the Moon's last frame.
+    sectors.setGlobalMapBytes(this.liveGlobalMapBytes());
+    sectors.beginFrame();
+    // Paired: between these two the streamer only measures. A body that
+    // threw on the way past would otherwise leave the frame open for good —
+    // every later frame measuring and none of them ever reconciling, which
+    // reads as tiles quietly stopping rather than as an error.
+    try {
+      for (const planet of this.solarSystem.planets) {
+        const name = planet.data.name;
+        visit(name, name, planet.mesh, planet.data.radiusAU, !planet.mesh.visible);
+        // The night shell has a visibility of its own (the Earth-detail range
+        // gate), so its family reads that flag rather than the globe's.
+        if (planet.nightMesh && planet.nightRadiusAU) {
+          visit(
+            sectorFamilyKey(name, 'night'), name, planet.nightMesh, planet.nightRadiusAU,
+            !planet.nightMesh.visible,
+          );
+        }
+      }
+      for (const moons of this.planetMoons.values()) {
+        for (const m of moons) visit(m.data.name, m.data.name, m.mesh, m.data.radiusAU, !m.mesh.visible);
+      }
+    } finally {
+      sectors.endFrame();
+    }
+  }
+
+  /**
+   * What the sector streamer is owed on a frame that measures nothing (the
+   * system map owns it). The ladder behind the chart keeps applying globe
+   * maps and the tile fetches keep ageing, so the sectors' share of the
+   * memory envelope and the deadline on a hung load are kept current here.
+   * Trims and expires only — nothing is fetched for a surface the frame
+   * does not draw.
+   */
+  private maintainSectorStreaming(): void {
+    const sectors = this.sectors;
+    if (!sectors || !this.solarSystem) return;
+    if (this.glContextLost) {
+      sectors.dropAll();
+      return;
+    }
+    sectors.maintain(this.liveGlobalMapBytes(), performance.now());
+  }
+
+  /**
+   * GPU bytes the colour tiers the ladder has streamed in are holding right
+   * now — the Moon's 8K rung, Earth's cloud deck, every close-approach
+   * upgrade. The sector budget is what one memory envelope leaves over these,
+   * so a body on its finest map and a body streaming tiles cannot each spend
+   * the device's memory as if the other were not there. The boot maps every
+   * device carries regardless are not in it: this figure is the ladder's
+   * OPTIONAL weight, which is what the envelope was measured against.
+   *
+   * A rung is charged its GPU allocation plus whatever decoded image is still
+   * held in RAM behind it — the same device memory on the hardware where the
+   * envelope binds.
+   *
+   * The atmosphere tables are in it for the same reason: they are an optional
+   * tier a device opts into, they are resident for the session once baked, and
+   * they are allocated out of the one pool the maps and the tiles share. The
+   * figure is asked of the LUT per frame rather than added as a constant
+   * because the tier may never arrive at all, and because the bake itself
+   * holds ~32 MiB of scratch for the minutes it runs — a rung admitted against
+   * the resident 8 MiB while 32 are really allocated is a rung admitted
+   * against memory that is not there. Unlike a map, the tables cannot be given
+   * back, so they act as a floor the ladder's own maps give way to.
+   */
+  private liveGlobalMapBytes(): number {
+    let bytes = this.atmosphereLut?.gpuBytes() ?? 0;
+    this.forEachTextureUpgrade((up) => { bytes += appliedTierHeldBytes(up); });
+    // The relief ladders spend the same envelope the colour ones do — a 4K
+    // normal map is 42.7 MiB of the device's memory whether it holds elevation
+    // or albedo — so the tiles have to give way for one exactly as they do for
+    // a colour rung. Only what an approach EARNED is in here; the boot relief
+    // every device carries regardless is not the ladder's weight.
+    this.forEachNormalUpgrade((up) => { bytes += appliedNormalHeldBytes(up); });
+    return bytes;
+  }
+
+  /**
+   * Every body a ladder pass walks, planets then moons, with what those
+   * passes need of it: its catalog name, its colour handles — which may be
+   * none, since a body with no finer map on disk carries no rung — the object
+   * whose position stands for it, its radius at the scale it is drawn, and
+   * whether it is being drawn at all.
+   *
+   * A hidden moon sits at its parent's centre (updateMoonPositions skips it),
+   * so its position stands for the system it is in, which is the right
+   * distance for a body nobody is looking at. That is stated once here rather
+   * than re-derived by each pass.
+   */
+  private forEachLadderBody(
+    fn: (
+      name: string,
+      ups: readonly TextureUpgrade[],
+      mesh: THREE.Object3D,
+      radiusAU: number,
+      visible: boolean,
+    ) => void,
+  ): void {
+    if (!this.solarSystem) return;
     for (const planet of this.solarSystem.planets) {
-      this.visitSectorBody(sectors, planet.data.name, planet.mesh, planet.data.radiusAU, !planet.mesh.visible);
+      fn(planet.data.name, planet.textureUpgrades, planet.group, planet.data.radiusAU, planet.mesh.visible);
     }
     for (const moons of this.planetMoons.values()) {
       for (const m of moons) {
-        this.visitSectorBody(sectors, m.data.name, m.mesh, m.data.radiusAU, !m.mesh.visible);
+        fn(m.data.name, m.textureUpgrades, m.mesh, m.data.radiusAU * m.mesh.scale.x, m.mesh.visible);
       }
     }
   }
 
-  /** One registered body's frame: its spin gate, the suspend verdict, the
-   *  camera and Sun in its local frame, and the magnification bound at its
-   *  nearest surface point — then hand the streamer this body's measure. */
-  private visitSectorBody(
-    sectors: SectorStreamer, name: string, mesh: THREE.Mesh, radiusAU: number, hidden: boolean,
-  ): void {
-    if (!sectors.has(name)) return;
-    const nowMs = this.sectorFrameNowMs;
-    mesh.getWorldPosition(this.sectorWorldCentre); // refreshes matrixWorld too
-    mesh.getWorldQuaternion(this.sectorWorldQuat);
-    this.sectorWorldQuatInv.copy(this.sectorWorldQuat).invert();
-    // Spin gate: how fast this body's orientation turned since its last
-    // visit, in degrees per real second.
-    let spinning = false;
-    const prev = this.sectorSpin.get(name);
-    if (prev) {
-      const dtS = (nowMs - prev.tMs) / 1000;
-      const angle = 2 * Math.acos(Math.min(1, Math.abs(prev.quat.dot(this.sectorWorldQuat))));
-      const rate = dtS > 0 ? (angle * RAD2DEG) / dtS : 0;
-      // Latched: past the suspend rate the hold starts, and any rate above
-      // the resume rate while held extends it.
-      const held = nowMs < prev.heldUntilMs;
-      if (rate > PlanetariumMode.SECTOR_SPIN_SUSPEND_DEG_PER_S || (held && rate > PlanetariumMode.SECTOR_SPIN_RESUME_DEG_PER_S)) {
-        prev.heldUntilMs = nowMs + PlanetariumMode.SECTOR_SPIN_HOLD_MS;
-      }
-      spinning = nowMs < prev.heldUntilMs;
-      prev.quat.copy(this.sectorWorldQuat);
-      prev.tMs = nowMs;
-    } else {
-      this.sectorSpin.set(name, { quat: this.sectorWorldQuat.clone(), tMs: nowMs, heldUntilMs: 0 });
-    }
-    // The ground under a surface observer isn't drawn (the near plane culls
-    // it) and every sector "faces" a camera on the surface: hold nothing.
-    // A hidden globe (an unpainted or out-of-range moon) holds nothing either.
-    let suspend: SectorSuspend = 'none';
-    if (hidden || this.sectorFrameGrounded === name) suspend = 'all';
-    else if (spinning || this.sectorFrameChart) suspend = 'admissions';
-    const worldScale = mesh.getWorldScale(this.sectorWorldScale).x;
-    const worldR = radiusAU * worldScale;
-    this.sectorCamLocal.copy(this.camera.position);
-    mesh.worldToLocal(this.sectorCamLocal);
-    // Sun direction in the globe's frame, for the night-side gate.
-    this.sectorSunLocal.copy(this.sectorSunWorld).sub(this.sectorWorldCentre).normalize()
-      .applyQuaternion(this.sectorWorldQuatInv);
-    // The most magnified surface point is the nearest one: render pixels
-    // per local unit there bound every sector, and let the streamer skip
-    // the per-sector work for a globe that is not close.
-    const distCentre = this.sectorWorldCentre.distanceTo(this.camera.position);
-    const pxPerLocalUnitNearest = (this.sectorFrameFocalPx * worldScale) / Math.max(distCentre - worldR, 1e-12);
-    // What sectorMeasure answers about, for the duration of this call.
-    this.sectorBodyMesh = mesh;
-    this.sectorBodyRadiusAU = radiusAU;
-    this.sectorBodyWorldScale = worldScale;
-    sectors.update(
-      name, this.sectorCamLocal, this.sectorMeasure, nowMs, suspend, this.sectorSunLocal, pxPerLocalUnitNearest,
-    );
-    this.sectorBodyMesh = null;
+  /** Every colour-tier handle in the scene, planets and moons alike. */
+  private forEachTextureUpgrade(fn: (up: TextureUpgrade) => void): void {
+    this.forEachLadderBody((_name, ups) => { for (const up of ups) fn(up); });
   }
 
-  /** One sector of the body currently being visited: its frame membership and
-   *  centrality from its bounding sphere's footprint, and the magnification at
-   *  the surface point the streamer asks about. An arrow field, so the pass
-   *  hands the streamer the same function every frame instead of building a
-   *  fresh closure per body. */
-  private readonly sectorMeasure = (
-    bsCentreLocal: THREE.Vector3, bsRadiusLocal: number, surfaceDirLocal: THREE.Vector3,
-  ): SectorMeasure | null => {
-    const mesh = this.sectorBodyMesh;
-    if (!mesh) return null;
-    const canvasW = this.sectorFrameCanvasW;
-    const canvasH = this.sectorFrameCanvasH;
-    const worldScale = this.sectorBodyWorldScale;
-    // Frame membership and centrality from the bounding sphere's footprint.
-    this.sectorWorldCentre.copy(bsCentreLocal);
-    mesh.localToWorld(this.sectorWorldCentre);
-    const fp = projectSphereToScreen(
-      this.sectorWorldCentre, bsRadiusLocal * worldScale, this.camera, canvasW, canvasH, this.sectorProjection,
-    );
-    if (!(fp.diameterPx > 0)) return null;
-    // Entirely outside the frame: nothing to sharpen, but a resident one
-    // is a pan away — the streamer keeps it while it stays magnified.
-    const offscreen = fp.maxX < 0 || fp.minX > canvasW || fp.maxY < 0 || fp.minY > canvasH;
-    const dx = (fp.footprintX - canvasW / 2) / Math.max(canvasW / 2, 1);
-    const dy = (fp.footprintY - canvasH / 2) / Math.max(canvasH / 2, 1);
-    // Magnification at the surface point the streamer asks about (the
-    // sector's point nearest the camera's): render pixels per local unit
-    // at its distance, foreshortened by the angle between the surface
-    // normal there and the line of sight.
-    this.sectorNormal.copy(surfaceDirLocal);
-    this.sectorPoint.copy(this.sectorNormal).multiplyScalar(this.sectorBodyRadiusAU);
-    mesh.localToWorld(this.sectorPoint);
-    this.sectorNormal.applyQuaternion(this.sectorWorldQuat);
-    this.sectorToCam.copy(this.camera.position).sub(this.sectorPoint);
-    const dist = this.sectorToCam.length();
-    if (!(dist > 0)) return null;
-    const out = this.sectorMeasureOut;
-    out.pxPerLocalUnit = (this.sectorFrameFocalPx * worldScale * Math.max(0, this.sectorToCam.dot(this.sectorNormal) / dist)) / dist;
-    out.centrality = Math.max(0, 1 - Math.hypot(dx, dy));
-    out.offscreen = offscreen;
-    return out;
+  /** Every relief handle in the scene: Earth's cloud deck and the Moon. */
+  private forEachNormalUpgrade(fn: (up: NormalUpgrade) => void): void {
+    if (!this.solarSystem) return;
+    for (const planet of this.solarSystem.planets) {
+      if (planet.normalUpgrade) fn(planet.normalUpgrade);
+    }
+    for (const moons of this.planetMoons.values()) {
+      for (const m of moons) if (m.normalUpgrade) fn(m.normalUpgrade);
+    }
+  }
+
+  /** The admission test the colour ladder asks before it fetches a rung, and
+   *  again for the decoded texture before it applies it. A rung bigger than
+   *  the whole ladder's share is refused for good; one that merely does not
+   *  fit beside what the ladder holds today is blocked, and a release can
+   *  make room for it. */
+  private admitLadderTier = (up: TextureUpgrade, _tier: TextureTier, bytes: number): TierAdmission => {
+    const ceiling = this.memory.ladderCeiling();
+    if (bytes > ceiling) return 'refuse';
+    const others = this.liveGlobalMapBytes() - appliedTierHeldBytes(up);
+    return others + bytes <= ceiling ? 'admit' : 'blocked';
   };
+
+  /**
+   * The world-presentation memory passes, in the one order that is correct,
+   * for every frame path that has them (cruise and landed).
+   *
+   * Giving a map back is not world presentation, so the pressure planner runs
+   * whether or not the chart owns the frame: the ladder holds its maps behind
+   * the chart too, and a planner gated on the spheres being drawn would let
+   * the chart squeeze the tiles with nothing able to hand a map back.
+   * Measuring IS world presentation — nothing draws the spheres under the
+   * chart, so a schematic-view zoom must not fetch for a surface nobody sees
+   * — and what the streamer is owed regardless (its byte budget, its load
+   * deadlines) is what `maintain` covers on those frames.
+   */
+  private updateMemoryPasses(mapOpen: boolean): void {
+    this.updateLadderPressure(performance.now());
+    if (!mapOpen) {
+      this.updateBodyLOD();
+      this.updateSectorStreaming();
+    } else {
+      this.maintainSectorStreaming();
+    }
+  }
+
+  /**
+   * Give a rung back when the ladder is holding more than its share.
+   *
+   * Runs every frame, on world frames and chart frames alike: the ladder goes
+   * on holding its maps behind the chart, and a planner that only ran where
+   * the spheres are drawn would let the chart squeeze the tiles with nothing
+   * able to give a map back.
+   *
+   * Three passes in one loop. Every laddered body's screen fraction is kept
+   * (undrawn is 0 — a hidden moon is not an unknown, it is a moon nobody can
+   * see, and the Moon is hidden at cruise distances exactly when its 8K rung
+   * is the one worth taking back). Demand that cannot be met is what counts
+   * as pressure, along with maps already past the ladder's share. And the
+   * bodies that are eligible — a rung to give, its release band served,
+   * nothing protecting them — become the candidates the farthest of which is
+   * asked to hand its map back, one at a time.
+   *
+   * What the loop decides is scene-shaped; when any of it may act is not, and
+   * lives in world/ladderPressure: what counts as pressure, how long it has to
+   * hold, and that a globe left on a stand-in is fetched back first.
+   */
+  private updateLadderPressure(nowMs: number): void {
+    if (!this.solarSystem) return;
+    const canvasW = this.renderer.domElement.clientWidth;
+    const canvasH = Math.max(1, this.renderer.domElement.clientHeight);
+    // The chart owns the frame: no sphere is drawn, so no body is earning.
+    const drawing = !this.isMapOpen();
+    this.camera.updateMatrixWorld();
+    if (this.travelProtect && this.travelProtect.doneAtMs === null && !this.arrivalVeilUp()) {
+      this.travelProtect.doneAtMs = nowMs;
+    }
+    const guarded = this.protectedUpgrades(nowMs);
+    const ladderBytes = this.liveGlobalMapBytes();
+    const ceiling = this.memory.ladderCeiling();
+    // The two halves of "is the ladder under pressure": maps already over its
+    // share, and demand it cannot meet. Kept apart only so the traversal can
+    // stop asking the ledger once either is settled — planLadderPressure adds
+    // them up.
+    const overShare = ladderBytes > ceiling;
+    let blockedDemand = false;
+    const candidates: ReleaseCandidate[] = [];
+    const victims = new Map<string, TextureUpgrade>();
+
+    this.forEachLadderBody((name, ups, mesh, radiusAU, drawn) => {
+      if (ups.length === 0) return;
+      const visible = drawing && drawn;
+      mesh.getWorldPosition(this.bodyLODTmp);
+      const distance = this.bodyLODTmp.length();
+      // The cheap conservative overestimate, never the 32-ray footprint: an
+      // overestimate below the release band proves the true fraction is below
+      // it too, which is the only direction this decision needs.
+      const fraction = visible
+        ? estimateSphereScreenDiameterPx(this.bodyLODTmp, radiusAU, this.camera, canvasW, canvasH) / canvasH
+        : 0;
+      for (const up of ups) {
+        if (releaseExpired(up, nowMs)) {
+          // The dwell is still served, so without a cooldown the same body
+          // starts a fresh fetch on the very next frame — one abandoned
+          // transfer every twenty seconds for as long as the link is stalled.
+          expireTierRelease(up, nowMs);
+          if (this.releasing === up) this.releasing = null;
+          this.releaseTimeouts++;
+          this.warnNoRelease(ceiling);
+        }
+        trackReleaseBand(up, fraction, nowMs);
+        if (!overShare && !blockedDemand) {
+          // A rung this body is earning — or the one its committed arrival
+          // is warming — that the ladder cannot fit is the pressure this
+          // whole pass exists to answer.
+          const wanted = up.warmGoal ?? earnedUpgradeTier(up, fraction);
+          const next = wanted ? resolveUpgradeTier(up, wanted) : null;
+          if (next && !up.attempt && this.admitLadderTier(up, next, tierUploadBytes(up.key, next)) === 'blocked') {
+            blockedDemand = true;
+          }
+        }
+        if (guarded.has(up) || !releaseDue(up, nowMs)) continue;
+        const low = releaseTargetTier(up);
+        if (!low) continue;
+        const id = `${name}:${up.key}`;
+        candidates.push({
+          id,
+          heldBytes: appliedTierHeldBytes(up),
+          lowBytes: tierUploadBytes(up.key, low),
+          distance,
+        });
+        victims.set(id, up);
+      }
+    });
+
+    const plan = planLadderPressure({
+      ladderBytes,
+      ceilingBytes: ceiling,
+      blockedDemand,
+      pressureSinceMs: this.pressureSinceMs,
+      nowMs,
+      swapInFlight: this.releasing !== null,
+      restoreQueued: this.restoreRefetch.length > 0,
+    });
+    this.pressureSinceMs = plan.pressureSinceMs;
+    // Ahead of any discretionary release: a globe on a stand-in is one the
+    // player can see is soft, and both take the same one-in-flight slot.
+    if (plan.restoreFirst) this.pumpRestoreRefetch(nowMs);
+    // Which the restore may just have taken.
+    if (!plan.releaseDue || this.releasing) return;
+    const victim = planRelease(candidates, {
+      ladderBytes,
+      envelopeBytes: this.memory.envelopeBytes,
+    });
+    const up = victim ? victims.get(victim.id) : undefined;
+    if (!victim || !up) return;
+    this.releasing = up;
+    const started = startTierRelease(up, nowMs, {
+      onLedgerChange: this.onLadderLedgerChange,
+      onSettled: (released) => {
+        if (this.releasing === up) this.releasing = null;
+        if (released) {
+          this.releaseFailures = 0;
+          this.releaseTimeouts = 0;
+          return;
+        }
+        // A swap that cannot be fetched leaves the map where it is.
+        this.releaseFailures++;
+        this.warnNoRelease(ceiling);
+      },
+    });
+    if (!started) this.releasing = null;
+  }
+
+  /** Say once that the maps are staying where they are — after enough tries
+   *  that it is the link and not one bad request. A hang counts the same as a
+   *  refusal: from either the tiles keep their floor and nothing more. */
+  private warnNoRelease(ceilingBytes: number): void {
+    if (this.warnedNoRelease) return;
+    if (this.releaseFailures < 3 && this.releaseTimeouts < 3) return;
+    this.warnedNoRelease = true;
+    debugWarn('The globe maps cannot be given back: surface tiles stay at their floor', {
+      globeMapsMiB: Math.round(this.liveGlobalMapBytes() / (1024 * 1024)),
+      ladderShareMiB: Math.round(ceilingBytes / (1024 * 1024)),
+      failures: this.releaseFailures,
+      timeouts: this.releaseTimeouts,
+    });
+  }
+
+  /**
+   * Queue every rung whose decoded source was closed after its upload for a
+   * re-fetch. Called on context restore: the GPU copy is gone and the small
+   * stand-in left in its place is all three has to re-upload from, so each
+   * map is fetched again — from the service-worker cache, for anything this
+   * session has already seen — and swapped in at the tier it already had.
+   *
+   * Queued, nearest body first, rather than started here. A context is lost
+   * on a phone BECAUSE the system reclaimed memory, so answering it by
+   * decoding every globe map at once asks for the loss again; and the body
+   * the player is looking at is the one whose softness they can see. The
+   * queue also carries the texture each entry is for, so an entry whose map
+   * has been replaced by any other route is dropped rather than re-fetched.
+   */
+  private queueReleasedTierRefetch(): void {
+    const entries: Array<{ up: TextureUpgrade; tex: THREE.Texture | null; distance: number }> = [];
+    this.forEachLadderBody((_name, ups, mesh) => {
+      if (ups.length === 0) return;
+      mesh.getWorldPosition(this.bodyLODTmp);
+      const distance = this.bodyLODTmp.length();
+      for (const up of ups) entries.push({ up, tex: materialColorMap(up.material), distance });
+    });
+    this.restoreRefetch.length = 0;
+    this.restoreRefetch.push(...buildRestoreQueue(entries));
+  }
+
+  /**
+   * Start at most one queued restore re-fetch, through the same admission
+   * test a climbing rung passes.
+   *
+   * One at a time and admitted, because a context loss is the memory signal
+   * itself: the fetch that answers it must not be the one that costs the tab
+   * its next context. A rung the ledger cannot fit right now stays queued —
+   * a release may make room — and a rung it can never fit is handed back
+   * instead, which fetches a smaller real map in place of the stand-in. An
+   * entry whose handle is busy also stays queued, so an upgrade that fails
+   * mid-restore leaves nothing stranded on a stand-in for the session.
+   */
+  private pumpRestoreRefetch(nowMs: number): void {
+    if (this.releasing || this.restoreRefetch.length === 0) return;
+    const next = takeRestoreRefetch(this.restoreRefetch);
+    if (!next) return;
+    const up = next.up;
+    this.releasing = up;
+    const started = startTierRelease(up, nowMs, {
+      restore: next.restore,
+      onLedgerChange: this.onLadderLedgerChange,
+      onSettled: () => { if (this.releasing === up) this.releasing = null; },
+    });
+    if (!started) this.releasing = null;
+  }
+
+  /** Hand the sector streamer the ladder's figure now rather than next frame.
+   *  A swap holds both maps between the low one's decode and the assignment,
+   *  and the tiles are trimmed for that transient before it is spent — the
+   *  streamer's own admissions read the same number in the same frame. */
+  private onLadderLedgerChange = (): void => {
+    this.sectors?.setGlobalMapBytes(this.liveGlobalMapBytes());
+  };
+
+  /**
+   * The handles no pressure may take a map from. Every one of them is a
+   * STATE the player is in, not a step some pump happens to be on: a warm
+   * goal disarms itself the moment the ladder reaches it, which is exactly
+   * when the destination still has an arrival to play.
+   */
+  private protectedUpgrades(nowMs: number): Set<TextureUpgrade> {
+    const guarded = new Set<TextureUpgrade>();
+    const add = (ups: readonly TextureUpgrade[]): void => { for (const up of ups) guarded.add(up); };
+    // Standing on a body: its globe and the companion its Observatory can
+    // magnify, whether or not the panel is open — a quiet arrival warms that
+    // companion for a telescope the player has not opened yet.
+    if (this.landedOn) add(this.landingPairUpgrades(this.landedOn));
+    // Where the ship is going, until it has been there for a beat: the maps
+    // an arrival just fetched are the last ones worth taking back.
+    const travel = this.travelProtect;
+    if (travel) {
+      if (travel.doneAtMs === null || nowMs - travel.doneAtMs < PlanetariumMode.TRAVEL_PROTECT_GRACE_MS) {
+        add(travel.ups);
+      } else {
+        this.travelProtect = null;
+      }
+    }
+    // Under way to a body picked on the deck or the chart.
+    if (this.autopilotTarget) add(this.landingPairUpgrades(this.autopilotTarget));
+    // What the telescope is actually pointed at from the surface.
+    const aimed = this.surfaceViewTarget();
+    if (aimed) add(this.textureUpgradesForTarget(aimed));
+    return guarded;
+  }
+
+  /** The body the surface view is aimed at, while it is aimed at one. */
+  private surfaceViewTarget(): NonNullable<LandedTarget> | null {
+    if (this.landedView !== 'surface' || !this.landedOn) return null;
+    const target = this.surfaceTarget;
+    const system = this.landedOn.type === 'moon' ? this.landedOn.parentPlanet : this.landedOn.name;
+    if (target.kind === 'moon') return { type: 'moon', name: target.moonName, parentPlanet: system };
+    if (target.kind === 'sun-from-spot') {
+      return { type: 'moon', name: target.occluderMoonName, parentPlanet: system };
+    }
+    if (target.kind === 'parent' && this.landedOn.type === 'moon') {
+      return { type: 'planet', name: this.landedOn.parentPlanet };
+    }
+    return null;
+  }
+
+  /** GPU bytes the maps every device carries hold: the first-paint texture of
+   *  every body, its bump / roughness / night / cloud maps, the rings. The
+   *  ladder's own figure (liveGlobalMapBytes) deliberately leaves these out —
+   *  they are not optional — which is exactly why the envelope has to be set
+   *  above them, and why the number is worth printing once. Deduplicated by
+   *  texture: a bump map aliased onto a colour map is one allocation.
+   *
+   *  A walk of the scene, so whatever map is on a material now is what gets
+   *  counted: run at boot, before any rung has climbed, that is the boot maps
+   *  — but asked later it also sees the rungs and the tiles, and adding it to
+   *  the other two figures then counts those twice. */
+  private bootTextureGpuBytes(): number {
+    if (!this.solarSystem) return 0;
+    const seen = new Set<string>();
+    let bytes = 0;
+    const add = (value: unknown): void => {
+      const tex = value as THREE.Texture | null;
+      if (!tex || !tex.isTexture || seen.has(tex.uuid)) return;
+      seen.add(tex.uuid);
+      bytes += textureGpuBytes(tex);
+    };
+    const walk = (root: THREE.Object3D): void => {
+      root.traverse((o) => {
+        const material = (o as THREE.Mesh).material;
+        for (const mat of Array.isArray(material) ? material : material ? [material] : []) {
+          for (const value of Object.values(mat as unknown as Record<string, unknown>)) add(value);
+          const uniforms = (mat as THREE.ShaderMaterial).uniforms;
+          if (uniforms) for (const u of Object.values(uniforms)) add(u?.value);
+        }
+      });
+    };
+    walk(this.solarSystem.sun);
+    this.forEachLadderBody((_name, _ups, mesh) => walk(mesh));
+    return bytes;
+  }
+
+  /** GPU bytes the frame itself holds at this device's pixel ratio: the
+   *  drawing buffer, and — when the world renders through the composer — its
+   *  two half-float targets plus the bloom chain (a half-resolution bright
+   *  pass and five horizontal/vertical pairs halving from there). An estimate
+   *  of a chain main.ts owns, printed for the same reason as the boot maps:
+   *  a 1170x2532 phone at DPR 3 pays it before a single map loads.
+   */
+  private renderTargetGpuBytes(): number {
+    const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    const w = Math.max(1, Math.round(size.x));
+    const h = Math.max(1, Math.round(size.y));
+    // The default framebuffer: colour, and depth+stencil beside it.
+    let bytes = w * h * 4 + w * h * 4;
+    if (!this.rendersThroughComposer()) return bytes;
+    bytes += 2 * w * h * 8;
+    if (!this.useBloom) return bytes;
+    let bw = Math.round(w / 2);
+    let bh = Math.round(h / 2);
+    bytes += bw * bh * 8;
+    for (let i = 0; i < 5; i++) {
+      bytes += 2 * bw * bh * 8;
+      bw = Math.round(bw / 2);
+      bh = Math.round(bh / 2);
+    }
+    return bytes;
+  }
+
+  /** The `?debug=1` memory line: what the ladder and the tiles hold against
+   *  the envelope they share, on the device's own screen. Once at boot it
+   *  also prints the two figures the envelope does NOT count — the boot maps
+   *  and the render targets — because an envelope is only honest next to the
+   *  fixed load underneath it.
+   */
+  private reportMemoryDebug(nowMs: number): void {
+    if (!window.__dbgEnabled) return;
+    const mib = (bytes: number): number => Math.round((bytes / (1024 * 1024)) * 10) / 10;
+    if (!this.memoryDebugBootReported && this.solarSystem) {
+      this.memoryDebugBootReported = true;
+      const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+      debugLog('Memory at boot', {
+        bootMapsMiB: mib(this.bootTextureGpuBytes()),
+        renderTargetsMiB: mib(this.renderTargetGpuBytes()),
+        drawingBuffer: `${Math.round(size.x)}x${Math.round(size.y)}`,
+        dpr: Math.round(this.renderer.getPixelRatio() * 100) / 100,
+      });
+    }
+    const stats = this.sectors?.stats() ?? null;
+    const globalBytes = this.liveGlobalMapBytes();
+    const envelope = this.memory.figures();
+    // Whatever the line below prints, so a figure cannot move without the
+    // line being reprinted.
+    const figures = stats
+      ? [globalBytes, stats.budgetedBytes, stats.reserved,
+        envelope.sectorBudget, envelope.floorBytes, envelope.envelopeBytes]
+      : [globalBytes, envelope.floorBytes, envelope.envelopeBytes];
+    const previous = this.memoryDebugLast;
+    const moved = !previous || previous.length !== figures.length ||
+      figures.some((f, i) => Math.abs(f - previous[i]) > PlanetariumMode.MEMORY_DEBUG_MOVE * Math.max(1, previous[i]));
+    if (!moved && nowMs - this.memoryDebugAtMs < PlanetariumMode.MEMORY_DEBUG_PERIOD_MS) return;
+    this.memoryDebugAtMs = nowMs;
+    this.memoryDebugLast = figures;
+    // What the device was read as, which row that picked, whether that row's
+    // numbers were measured on hardware or are still the ones the app shipped
+    // with, and the envelope those numbers buy — taken from the one object
+    // that owns them, so the line cannot disagree with what the two
+    // allocators are spending. On a phone this overlay is the only console
+    // there is, so a device reporting a surprise reports it here.
+    debugLog('Memory', {
+      class: this.deviceClass,
+      family: this.deviceFamily,
+      profile: this.deviceProfile.id,
+      provenance: this.deviceProfile.provenance,
+      globeMapsMiB: mib(globalBytes),
+      ...(stats
+        ? {
+          tilesMiB: mib(stats.budgetedBytes),
+          reservedMiB: mib(stats.reserved),
+          budgetMiB: mib(envelope.sectorBudget),
+          // How the colour tiles are reaching the GPU. On a phone this is the
+          // only way to tell a working byte decode from one that fell back to
+          // the slower upload for the whole session.
+          tileUpload: `${stats.tilePixels.enabled ? 'bytes' : 'bitmap (?tilebytes=0)'}`
+            + ` probe=${stats.tilePixels.probe ?? '?'}`
+            + ` decoded=${stats.tilePixels.decoded} fellBack=${stats.tilePixels.fellBack}`
+            + `${stats.tilePixels.fellBack > 0 ? ` ${JSON.stringify(stats.tilePixels.reasons)}` : ''}`,
+        }
+        : { tiles: 'off' }),
+      floorMiB: mib(envelope.floorBytes),
+      envelopeMiB: mib(envelope.envelopeBytes),
+    });
+  }
+
+  /** Dev bridge: what this device was read as and what that lets it spend.
+   *  The browser gates assert the row rather than infer it from the bytes
+   *  that follow from it. */
+  devDeviceProfile(): {
+    deviceClass: DeviceClass;
+    family: PlatformFamily;
+    profile: DeviceProfile['id'];
+    provenance: DeviceProfile['provenance'];
+    envelopeBytes: number;
+    ceilingBytes: number;
+    sectorFloorBytes: number;
+    residentCap: number;
+    inflightCap: number;
+    fetchPool: number;
+    wantTexelPx: number;
+    releaseTexelPx: number;
+    cacheOnlyWarm: boolean;
+    tierCaps: Record<string, string>;
+  } {
+    const p = this.deviceProfile;
+    return {
+      deviceClass: this.deviceClass,
+      family: this.deviceFamily,
+      profile: p.id,
+      provenance: p.provenance,
+      envelopeBytes: p.envelopeBytes,
+      ceilingBytes: p.ceilingBytes,
+      sectorFloorBytes: p.sectorFloorBytes,
+      residentCap: p.residentCap,
+      inflightCap: p.inflightCap,
+      fetchPool: p.fetchPool,
+      wantTexelPx: p.wantTexelPx,
+      releaseTexelPx: p.releaseTexelPx,
+      cacheOnlyWarm: p.cacheOnlyWarm,
+      tierCaps: { ...p.tierCaps } as Record<string, string>,
+    };
+  }
 
   /** Dev bridge: what the streamer holds right now. */
   devSectorStats(): SectorStats | null {
     return this.sectors?.stats() ?? null;
   }
 
-  /** Dev bridge: what the colour ladders hold right now. The streamer's
-   *  stats() covers tiles only, so without this a device report can say what
-   *  the Moon's sectors cost but not what its 8K globe map costs. Estimated
-   *  from each applied tier's nominal size — nothing can measure the real
-   *  figures from inside the page. */
-  devLadderStats(): { sourceBytes: number; gpuBytes: number; tiers: AppliedTierResidency[] } | null {
-    if (!this.solarSystem) return null;
-    const tiers: AppliedTierResidency[] = [];
-    for (const planet of this.solarSystem.planets) appliedTierResidency(planet.textureUpgrades, tiers);
-    for (const moons of this.planetMoons.values()) {
-      for (const m of moons) appliedTierResidency(m.textureUpgrades, tiers);
-    }
-    let sourceBytes = 0;
-    let gpuBytes = 0;
-    for (const t of tiers) {
-      sourceBytes += t.sourceBytes;
-      gpuBytes += t.gpuBytes;
-    }
-    return { sourceBytes, gpuBytes, tiers };
+  /** Dev bridge: what the colour ladder holds, rung by rung, against the
+   *  share of the envelope it is allowed. The counterpart of devSectorStats
+   *  for the other half of the same envelope. */
+  devLadderStats(): {
+    heldBytes: number;
+    ceilingBytes: number;
+    floorBytes: number;
+    envelopeBytes: number;
+    releasing: string | null;
+    restoreQueued: number;
+    rungs: LadderRungReadout[];
+  } {
+    const nowMs = performance.now();
+    const rungs: LadderRungReadout[] = [];
+    this.forEachTextureUpgrade((up) => {
+      // A body back on its boot map is listed too when what it is drawing is
+      // a stand-in: that is the state the tiles' reference width is easiest
+      // to get wrong in, so it has to be visible.
+      const drawn = materialColorMap(up.material);
+      const standin = drawn?.userData?.sourceReleased === true;
+      if (!up.appliedTier && !up.release && !standin) return;
+      const img = drawn?.image as { width?: unknown } | undefined;
+      rungs.push({
+        key: up.key,
+        tier: up.appliedTier,
+        top: reachableTopTier(up),
+        bytes: appliedTierHeldBytes(up),
+        compressed: (drawn as THREE.CompressedTexture | null | undefined)?.isCompressedTexture === true,
+        // What the decoded image behind the map still holds. A rung closes
+        // its source once the upload is paid, leaving a thumbnail to
+        // re-upload from after a context loss — so this reads 0 and the
+        // width reads small on a rung that has been through the warm pump.
+        retained: retainedSourceBytes(drawn),
+        sourceWidth: img && typeof img.width === 'number' ? img.width : 0,
+        releasing: up.release?.toTier ?? null,
+        belowBandMs: up.belowBandSinceMs === undefined ? null : Math.round(nowMs - up.belowBandSinceMs),
+      });
+    });
+    return {
+      heldBytes: this.liveGlobalMapBytes(),
+      ceilingBytes: this.memory.ladderCeiling(),
+      floorBytes: this.memory.floorBytes,
+      envelopeBytes: this.memory.envelopeBytes,
+      releasing: this.releasing?.key ?? null,
+      // Rungs still waiting to fetch back the map a lost context took. Above
+      // zero only between a restore and the last re-fetch landing; a figure
+      // that stays up is a body left on its stand-in.
+      restoreQueued: this.restoreRefetch.length,
+      rungs,
+    };
   }
 
   private ensureConstellationsReady() {
@@ -2930,13 +4063,13 @@ export class PlanetariumMode {
     const stillInFlight = () => batch.filter((e) => e.up.attempt?.generation === e.generation);
     const deadline = performance.now() + PlanetariumMode.ARRIVAL_UPGRADE_HOLD_MAX_MS;
     while (this.active && performance.now() < deadline && stillInFlight().length > 0) {
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await nextFrame();
     }
     // Bounded, so a slow fetch can reach here still running. Release the wait
     // and let it finish — it applies on a quiet frame later instead of leaving
     // the body on its boot map for the session.
     for (const e of stillInFlight()) cancelTextureUpgrade(e.up, 'keep');
-    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY, this.frameIntervalMs);
   }
 
   async showDeferredResumePromptIfNeeded(): Promise<void> {
@@ -2965,6 +4098,7 @@ export class PlanetariumMode {
     // activation reposes absolutely), so the aim adopts fresh on return.
     clearArrivalLook(this.cruiseAim);
     cutAim(this.cruiseAim);
+    this.governedMoonSeeds = [];
     this.arrivalLookMoon = null;
     this.arrivalLookParentBody = null;
     this.dotNavMoon = null;
@@ -2974,6 +4108,30 @@ export class PlanetariumMode {
     // service-worker cache on the next activation.
     this.sectors?.dropAll();
     this.sectorSpin.clear();
+    // Nothing is being drawn, so nothing has a drawn density; the next
+    // activation measures from scratch rather than reporting the last frame of
+    // the previous session. The materials are put back at rest with it — a
+    // record is what drives one, so clearing the map alone would leave every
+    // close body's term switched on for the first frame of the next session.
+    if (this.surfaceDensities.size > 0) {
+      for (const planet of this.solarSystem?.planets ?? []) {
+        setSurfaceSynthesis(
+          planet.mesh.material as THREE.Material,
+          0,
+          surfaceReliefKind(planet.mesh.material as THREE.Material),
+        );
+      }
+      for (const moons of this.planetMoons.values()) {
+        for (const m of moons) {
+          setSurfaceSynthesis(
+            m.mesh.material as THREE.Material,
+            0,
+            surfaceReliefKind(m.mesh.material as THREE.Material),
+          );
+        }
+      }
+    }
+    this.surfaceDensities.clear();
     // A live tutorial hands the pre-tutorial state back first, synchronously — the
     // teardown below (excursion drop, landed exit, save) then applies to the
     // restored journey exactly as it would for a non-tutorialing player.
@@ -3139,6 +4297,9 @@ export class PlanetariumMode {
     if (!live) {
       this.shaderWarmupProgramCount = this.renderer.info.programs?.length ?? this.shaderWarmupProgramCount;
       this.framesSinceShaderWarmup = 0;
+      // What a covered draw linked is part of the baseline the live frames
+      // are judged against, not a link paid mid-gesture.
+      this.rebaselineLinkedPrograms();
       return;
     }
     if (++this.framesSinceShaderWarmup < 3) return;
@@ -3153,74 +4314,21 @@ export class PlanetariumMode {
     this.rebaselineLinkedPrograms();
   }
 
-  /** Once the boot check has run: a link on a live frame is a frame paid
-   *  mid-gesture, so name the program and the probe set can grow to cover it.
-   *  One length compare a frame; the list is walked only when it moved. */
-  private noteLiveProgramLinks(): void {
-    if (this.knownProgramIds === null) return;
-    const programs = this.renderer.info.programs;
-    if (!programs) return;
-    // Three appends a new program last, so a release-and-link in one frame
-    // keeps the length while the last entry is new: check both.
-    const last = programs[programs.length - 1];
-    if (programs.length !== this.knownProgramIds.size || (last && !this.knownProgramIds.has(last.id))) {
-      this.noteProgramLinks(programs);
-    }
-  }
-
-  /** Take the live program list as the known set, so the next frame's check
-   *  starts from whatever a deliberate warm-up or a restore just linked. */
-  private rebaselineLinkedPrograms(): void {
-    this.knownProgramIds = new Set((this.renderer.info.programs ?? []).map((p) => p.id));
-  }
-
-  /** Name every program in the list that no warm-up covered, then take the
-   *  list as known — which also forgets the ones three released. Programs
-   *  are matched by id, so a release that reorders the list cannot pin the
-   *  blame on the wrong entry. */
-  private noteProgramLinks(programs: ReadonlyArray<{ id: number; name?: string; cacheKey?: string }>): void {
-    const known = this.knownProgramIds;
-    if (known && this.linkWarningsMuted === 0) {
-      for (const program of programs) {
-        if (known.has(program.id)) continue;
-        debugWarn('Shader program linked after the boot warm-up', {
-          type: (program as { type?: string }).type,
-          name: program.name,
-          key: String(program.cacheKey ?? '').slice(0, 160),
-          total: programs.length,
-        });
-      }
-    }
-    this.rebaselineLinkedPrograms();
-  }
-
-  /** A restored context has no programs: live materials re-link on their
-   *  first draw, but the kept probes are never drawn, so their compile and
-   *  warm draw run again here or the variants only they hold link mid-flight
-   *  once more. Fail-open like the boot pass. */
-  private async rewarmShaderProbes(): Promise<void> {
-    if (this.shaderWarmupProbes.length === 0) return;
-    this.linkWarningsMuted++;
-    try {
-      const { compiled } = await warmUpSceneShaders(this.renderer, this.scene, this.camera, {
-        drawsThroughComposer: this.rendersThroughComposer(),
-        probeGroups: this.shaderWarmupProbes.map((probe) => probe.group),
-        onError: (stage, err) => debugError(`Shader re-warm ${stage} failed`, err),
-      });
-      this.shaderWarmupSettled = compiled.then(() => undefined, () => undefined);
-      // Bounded: the late-link check stays muted only as long as the compile
-      // poll can plausibly take, not for a session if it never settles.
-      await Promise.race([this.shaderWarmupSettled, new Promise<void>((r) => setTimeout(r, REWARM_MUTE_MAX_MS))]);
-    } finally {
-      this.linkWarningsMuted--;
-      this.rebaselineLinkedPrograms();
-    }
-  }
-
   update(dt: number): void {
     if (!this.active || this.restoring || !this.solarSystem) return;
+    // Written inside the frame it describes: a frame trace that scored the
+    // veil a frame late would blame the world for the cut's first hitch.
+    if (import.meta.env.DEV) smoothTraceVeil(this.arrivalVeilUp());
     this.lastFrameDtMs = dt * 1000;
+    this.frameInterval.observe(this.lastFrameDtMs);
     this.frameStamp++;
+    if (this.knownProgramIds !== null) {
+      // A link after the warm-up is a frame paid mid-gesture; name the program
+      // so the probe set can grow to cover it. One length compare a frame; the
+      // list is walked only when it moved.
+      const programs = this.renderer.info.programs;
+      if (programs && programs.length !== this.knownProgramIds.size) this.noteProgramLinks(programs);
+    }
     // One damping step runs per frame (the controls wrapper enforces it), so
     // size that step by the frame's real duration: the coast then decays at
     // e^(−t/τ) in wall time on any refresh rate, and a hitch frame advances
@@ -3231,7 +4339,7 @@ export class PlanetariumMode {
     // being asked of the frame — otherwise the whole decode+upload bill lands
     // inside whatever gesture first draws the map. Runs in every mode so
     // landed sessions warm up too.
-    pumpTextureWarmQueue(PlanetariumMode.TEXTURE_WARM_BUDGET_MS);
+    pumpTextureWarmQueue(warmBudgetMs(this.frameIntervalMs), this.frameIntervalMs);
     // Climb any committed destination's warm ladder (see
     // warmArrivalDestination) — a no-op the moment every goal has disarmed.
     this.pumpArrivalWarmGoals();
@@ -3273,10 +4381,6 @@ export class PlanetariumMode {
           this.applyAutopilot();
         }
 
-        // Shell-contact graze: ease the nose along the armed deflection
-        // (hands-off only; any steering input reclaims the stick).
-        this.applyContactAim(dt);
-
         // Compute system speed throttle before player update
         const throttleResult = this.computeSystemSpeedFactor();
         this.systemSpeedFactor = throttleResult.factor;
@@ -3289,13 +4393,14 @@ export class PlanetariumMode {
     // throttle knows nothing smaller than a system, so near a body it still
     // allows the in-system setting — several standoffs per second. Cap the
     // closing speed at K × surface distance and the receding speed at the
-    // distance-tied leave law instead (same escape hatch as the throttle),
-    // each measured in the body's own rest frame — its motion rides on top
-    // (movingBodySpeedCap: nose credit leaving, sightline-recession credit
-    // closing), so a body sweeping toward the ship can shove it but never
-    // trap it, and a fleeing body can still be caught by the glide.
+    // distance-tied departure law instead (same escape hatch as the
+    // throttle), each measured in the body's own rest frame — its motion
+    // rides on top (movingBodySpeedCap: nose credit leaving,
+    // sightline-recession credit closing), so a body sweeping toward the
+    // ship can shove it but never trap it, and a fleeing body can still be
+    // caught by the glide.
     // Tightening applies instantly; loosening runs through a short
-    // transition ease onto the leave law, so a flyby ends with a steady
+    // transition ease onto the departure law, so a flyby ends with a steady
     // pull-away, never a time-exponential detonation.
     // The throttle override (and systemSlowdown off) bypasses the applied
     // cap the same frame — no lingering crawl — while the candidate keeps
@@ -3329,11 +4434,11 @@ export class PlanetariumMode {
     if (!this.player.held && this.autopilot && this.autopilotTarget) {
       const inp = this.resolveAutopilotMoonInputs(this.autopilotTarget);
       if (inp) {
-        const dx = inp.moonPos.x - this.player.posX;
-        const dy = inp.moonPos.y - this.player.posY;
-        const dz = inp.moonPos.z - this.player.posZ;
+        const dx = inp.targetPos.x - this.player.posX;
+        const dy = inp.targetPos.y - this.player.posY;
+        const dz = inp.targetPos.z - this.player.posZ;
         const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        const glide = autopilotGlideCap(dist, moonArrivalStandoffAU(inp));
+        const glide = autopilotGlideCap(dist, arrivalStandoffAU(inp));
         if (glide < this.player.speedCapAUPerS) this.player.speedCapAUPerS = glide;
       }
     }
@@ -3345,7 +4450,7 @@ export class PlanetariumMode {
     this.timeState = advancePlanetariumTime(this.timeState, dt);
     this.rebuildPlanetPositions(dt);
 
-    this.updatePlanetDetailFades();
+    this.updatePlanetScaling();
     this.reassertShipProfile();
     // Resolve collisions BEFORE the floating origin so the frame renders the
     // RESOLVED state. Rendering first and resolving after leaves a one-frame
@@ -3362,8 +4467,8 @@ export class PlanetariumMode {
     // handback resolves cleanly. Plain teleports are safe the same way —
     // their handlers run between frames, ahead of that re-seed.
     if (!this.devFreeCamera && !isScriptedTransfer) {
-      this.resolvePlanetCollisions();
-      this.resolveMoonCollisions();
+      this.resolvePlanetCollisions(dt);
+      this.resolveMoonCollisions(dt);
     }
 
     // Apply floating origin: offset everything by player position
@@ -3409,12 +4514,8 @@ export class PlanetariumMode {
     // world composer is bypassed entirely while the chart owns the frame, so
     // per-frame work whose only output is the world render is pure waste.)
     const mapOpen = this.isMapOpen();
-    if (!mapOpen) {
-      this.updateBodyLOD();
-      // Sector tiles are world render too: nothing to measure or fetch for a
-      // chart that never draws the spheres.
-      this.updateSectorStreaming();
-    }
+    this.updateMemoryPasses(mapOpen);
+    this.reportMemoryDebug(performance.now());
 
     // The HTML label/marker projections below read camera.matrixWorldInverse,
     // which the renderer refreshes only at render time — after this update().
@@ -3544,6 +4645,176 @@ export class PlanetariumMode {
 
   private readonly bodyLODTmp = new THREE.Vector3();
   /**
+   * What each body's surface is drawing, at the point the camera magnifies it
+   * most — refreshed by the LOD walk below for every body close enough for the
+   * answer to be anything but "minified", and dropped for the rest.
+   *
+   * Independent of the sector streamer on purpose: the streamer owns the only
+   * other px/texel measurement in the app and it is switched off wholesale by
+   * `?sectors=0`, which is the A/B a close-range look question is answered
+   * with. A measurement that vanished with the streamer could not label the
+   * arm it exists to compare.
+   */
+  private readonly surfaceDensities = new Map<string, SurfaceDensityReadout>();
+
+  /** Density record for `name`, created at rest on first sight. */
+  private surfaceDensityRecord(name: string, nowMs: number): SurfaceDensityReadout {
+    const held = this.surfaceDensities.get(name);
+    if (held) return held;
+    const record: SurfaceDensityReadout = {
+      name,
+      mapWidth: 0,
+      pixelsPerTexel: 0,
+      texelsPerPixel: 0,
+      magnified: 0,
+      pxPerUnit: 0,
+      subCameraLatDeg: null,
+      subCameraBodyDir: null,
+      diameterPx: 0,
+      envelope: 0,
+      stampMs: nowMs,
+    };
+    this.surfaceDensities.set(name, record);
+    return record;
+  }
+
+  private readonly densityScratch: SurfaceDensity = {
+    mapWidth: 0, pixelsPerTexel: 0, texelsPerPixel: 0, magnified: 0, pxPerUnit: 0,
+    subCameraLatDeg: null, subCameraBodyDir: null,
+  };
+
+  private readonly bodyBasisTmp: SurfaceBodyBasis = {
+    x: new THREE.Vector3(1, 0, 0),
+    y: new THREE.Vector3(0, 1, 0),
+    z: new THREE.Vector3(0, 0, 1),
+  };
+
+  /** A body's own axes in world axes: the three columns of its draw transform,
+   *  normalised. Read off the matrix the last frame left, so a body's own spin
+   *  is a few arcseconds stale — under the resolution of anything that asks. */
+  private bodyBasis(mesh: THREE.Object3D): SurfaceBodyBasis {
+    const e = mesh.matrixWorld.elements;
+    const basis = this.bodyBasisTmp;
+    basis.x.set(e[0], e[1], e[2]);
+    basis.y.set(e[4], e[5], e[6]);
+    basis.z.set(e[8], e[9], e[10]);
+    if (basis.x.lengthSq() > 0) basis.x.normalize(); else basis.x.set(1, 0, 0);
+    if (basis.y.lengthSq() > 0) basis.y.normalize(); else basis.y.set(0, 1, 0);
+    if (basis.z.lengthSq() > 0) basis.z.normalize(); else basis.z.set(0, 0, 1);
+    return basis;
+  }
+
+  /**
+   * Measure one body's drawn texel density and hold its surfaces' close-range
+   * detail term at what that density asks for.
+   *
+   * `estPx` is the LOD walk's conservative diameter OVERestimate, already
+   * measured there for the ladder triggers — the pre-filter reads it, so no
+   * body is projected a second time and no third per-frame walk exists.
+   *
+   * The term is eased in wall time rather than switched: a rung landing, a
+   * release under memory pressure or a squeeze can change what a body is
+   * drawing between two frames, and relief that appeared or vanished in one
+   * frame would read as the surface itself changing. A squeeze that really did
+   * make the body coarser fades the term IN, which is correct — it is the step
+   * that is not.
+   */
+  private updateSurfaceDetail(
+    name: string,
+    centre: THREE.Vector3,
+    renderedRadiusAU: number,
+    mesh: THREE.Object3D,
+    material: THREE.Material,
+    ups: readonly TextureUpgrade[],
+    estPx: number,
+    canvasW: number,
+    canvasH: number,
+    nowMs: number,
+  ): void {
+    const mapWidth = drawnColorMapWidth(material, ups);
+    const measured = mapWidth > 0 && estPx > densityRelevantDiameterPx(mapWidth)
+      ? measureSurfaceDensity(
+        centre, renderedRadiusAU, mapWidth, this.camera, canvasW, canvasH,
+        this.renderer.getPixelRatio(), this.bodyBasis(mesh), this.densityScratch,
+      )
+      : null;
+    const target = this.synthesisEnabled ? measured?.magnified ?? 0 : 0;
+    let record = this.surfaceDensities.get(name);
+    // Nothing measurable and nothing left fading: the common case for every
+    // body in the system, and it costs no record and no material write. A body
+    // that IS measurable keeps its record whether or not the term is switched
+    // on — the density is what labels a sheet, and a sheet of the term switched
+    // off has to carry the same measurement as the one beside it.
+    if (!record && !measured) return;
+    record = record ?? this.surfaceDensityRecord(name, nowMs);
+    if (measured) {
+      record.mapWidth = measured.mapWidth;
+      record.pixelsPerTexel = measured.pixelsPerTexel;
+      record.texelsPerPixel = measured.texelsPerPixel;
+      record.magnified = measured.magnified;
+      record.pxPerUnit = measured.pxPerUnit;
+      record.subCameraLatDeg = measured.subCameraLatDeg;
+      // Copied out, not pointed at: the measurement writes into one scratch
+      // record that every body in the walk shares, so holding its array would
+      // give every body the last one's direction.
+      if (measured.subCameraBodyDir) {
+        const dir = record.subCameraBodyDir ?? [0, 0, 0];
+        dir[0] = measured.subCameraBodyDir[0];
+        dir[1] = measured.subCameraBodyDir[1];
+        dir[2] = measured.subCameraBodyDir[2];
+        record.subCameraBodyDir = dir;
+      } else {
+        record.subCameraBodyDir = null;
+      }
+      record.diameterPx = estPx;
+    } else {
+      record.magnified = 0;
+    }
+    // A zero step on the frame the record is born, so the first real dt is a
+    // frame rather than nothing — the limiter treats no elapsed time as a snap.
+    const dtMs = nowMs - record.stampMs;
+    record.envelope = dtMs > 0
+      ? smoothShadeFraction(target, record.envelope, dtMs)
+      : record.envelope;
+    record.stampMs = nowMs;
+    // Relief is the material's own call: what a body already carries decides
+    // whether a synthesized surface may join it, and under a painted bump the
+    // shader waits for that bump's own texels. Grain survives either way.
+    setSurfaceSynthesis(material, record.envelope, surfaceReliefKind(material));
+    if (!measured && record.envelope <= 0) this.dropSurfaceDetail(name, material);
+  }
+
+  /**
+   * Forget a body's density and put its surfaces back at rest.
+   *
+   * The record is what drives the material, so dropping one without writing the
+   * material would leave the term wherever it was: a moon hidden while it
+   * filled the frame would come back with its ground already on instead of
+   * easing in, and one that never becomes measurable again would keep taking
+   * the term's derivatives forever for a weight of zero.
+   */
+  private dropSurfaceDetail(name: string, material: THREE.Material): void {
+    this.surfaceDensities.delete(name);
+    setSurfaceSynthesis(material, 0, surfaceReliefKind(material));
+  }
+
+  /**
+   * Dev bridge: what every close body's surface is really drawing, in display
+   * pixels per texel of the map on it. Works with the sector streamer off,
+   * which is the whole reason it is not the streamer's own number.
+   */
+  devSurfaceDensity(): SurfaceDensityReadout[] {
+    return [...this.surfaceDensities.values()]
+      .map((r): SurfaceDensityReadout => ({
+        ...r,
+        subCameraBodyDir: r.subCameraBodyDir
+          ? [r.subCameraBodyDir[0], r.subCameraBodyDir[1], r.subCameraBodyDir[2]]
+          : null,
+      }))
+      .sort((a, b) => b.pixelsPerTexel - a.pixelsPerTexel);
+  }
+
+  /**
    * Raise a body's detail as it grows large on screen: higher-resolution
    * colour maps, and a finer sphere once its polygon chords would show. Both
    * read the one screen footprint measured here per body — apparent size, not
@@ -3564,9 +4835,13 @@ export class PlanetariumMode {
     for (const planet of this.solarSystem.planets) {
       const ups = planet.textureUpgrades;
       const geo = planet.geometryUpgrade;
-      // Nothing left to measure: every ladder has reached its goal and the
+      // A pending relief tier keeps the body measurable the same way an
+      // unfinished colour ladder does (it shares the colour ladder's first
+      // trigger fraction below).
+      const normalPending = normalUpgradePending(planet.normalUpgrade);
+      // Nothing left to UPGRADE: every ladder has reached its goal and the
       // silhouette is already fine. (every() is true for a ladder-less body.)
-      if (geo.applied && ups.every(upgradeComplete)) continue;
+      const laddersDone = !normalPending && geo.applied && ups.every(upgradeComplete);
       planet.group.getWorldPosition(this.bodyLODTmp);
       // A body with work left still skips the full 32-ray measurement while a
       // conservative overestimate of its diameter stays under every trigger
@@ -3575,7 +4850,17 @@ export class PlanetariumMode {
       const estPx = estimateSphereScreenDiameterPx(
         this.bodyLODTmp, planet.data.radiusAU, this.camera, canvasW, canvasH,
       );
-      if (!lodMeasurementRelevant(geo, ups, estPx, canvasH, null)) continue;
+      // Density is measured whether or not the ladders have anything left to
+      // gain: a body drawing the finest map that exists for it is exactly the
+      // body a close-range question is about.
+      this.updateSurfaceDetail(
+        planet.data.name, this.bodyLODTmp, planet.data.radiusAU, planet.mesh,
+        planet.mesh.material as THREE.Material, ups, estPx, canvasW, canvasH, nowMs,
+      );
+      if (laddersDone) continue;
+      if (!lodMeasurementRelevant(geo, ups, estPx, canvasH, null)
+        && !(normalPending
+          && estPx / Math.max(canvasH, 1) > (UPGRADE_TRIGGER_FRACTION['4k'] ?? Infinity))) continue;
       const footprint = projectSphereToScreen(
         this.bodyLODTmp,
         planet.data.radiusAU,
@@ -3585,7 +4870,9 @@ export class PlanetariumMode {
         this.sphereScreenProjection,
       );
       upgradeGeometryOnApproach(geo, footprint.diameterPx);
-      this.triggerTextureUpgrades(ups, footprint.diameterPx / Math.max(canvasH, 1), nowMs);
+      const planetFraction = footprint.diameterPx / Math.max(canvasH, 1);
+      this.triggerTextureUpgrades(ups, planetFraction, nowMs);
+      upgradeNormalOnApproach(planet.normalUpgrade, planetFraction, nowMs);
     }
     // Cruise re-renders a procedural moon's texture sharper on close approach;
     // the landed/Observatory path already does this on observe, so gate it to
@@ -3598,7 +4885,10 @@ export class PlanetariumMode {
         // Hidden moons sit at their parent's center (updateMoonPositions skips
         // them) — a fake position the triggers must never measure. An invisible
         // moon can't legitimately span the viewport anyway.
-        if (!m.mesh.visible) continue;
+        if (!m.mesh.visible) {
+          this.dropSurfaceDetail(m.data.name, m.mesh.material as THREE.Material);
+          continue;
+        }
         const ups = m.textureUpgrades;
         const geo = m.geometryUpgrade;
         // A pending relief tier keeps the moon measurable the same way an
@@ -3612,7 +4902,8 @@ export class PlanetariumMode {
         // single slot is already spent.
         const tryProcedural = allowMoonTexUpgrade && !moonTexUpgraded
           && this.moonTexturer.canUpgrade(m, PlanetariumMode.OBSERVE_MOON_TEXTURE_WIDTH);
-        if (!tryProcedural && !normalPending && geo.applied && ups.every(upgradeComplete)) continue;
+        const laddersDone = !tryProcedural && !normalPending && geo.applied
+          && ups.every(upgradeComplete);
         m.mesh.getWorldPosition(this.bodyLODTmp);
         // Rendered size (mesh scale carries the render-curve inflation): the
         // triggers must measure the disc actually on screen.
@@ -3622,6 +4913,14 @@ export class PlanetariumMode {
         const estPx = estimateSphereScreenDiameterPx(
           this.bodyLODTmp, renderedR, this.camera, canvasW, canvasH,
         );
+        // Measured at the RENDERED radius, for the same reason the triggers
+        // are: a moon is drawn at its catalog radius times its mesh scale, and
+        // a density read off the catalog radius describes a disc nobody sees.
+        this.updateSurfaceDetail(
+          m.data.name, this.bodyLODTmp, renderedR, m.mesh,
+          m.mesh.material as THREE.Material, ups, estPx, canvasW, canvasH, nowMs,
+        );
+        if (laddersDone) continue;
         if (!lodMeasurementRelevant(
           geo, ups, estPx, canvasH,
           tryProcedural ? this.moonDotParams.texUpgradeDiscPx : null,
@@ -3760,7 +5059,7 @@ export class PlanetariumMode {
   }
 
   /** The single LAST aim writer of the cruise frame (see cruiseAim.ts):
-   *  composes the engage-gated flythrough look over the origin aim and
+   *  composes the engage-gated flyby look over the origin aim and
    *  rate-limits the deflection so no upstream seam can emit a one-frame
    *  aim snap. Runs after OrbitControls + camera safety — aim derives from
    *  the FINAL camera position, which is what lets the safety escape skip
@@ -3771,16 +5070,27 @@ export class PlanetariumMode {
     if (this.landedOn || this.devFreeCamera) return;
 
     let moonWorld: THREE.Vector3 | null = null;
-    const moon = this.arrivalLookMoon;
-    const parentBody = this.arrivalLookParentBody;
-    if (this.cruiseAim.look && moon && parentBody) {
-      const parentPos = this.planetWorldPositions.get(moon.parentPlanet);
-      if (parentPos) {
-        this.getMoonWorldOffsetAU(moon, parentBody, this.tmpAimMoonWorld);
-        this.tmpAimMoonWorld.x += parentPos.x;
-        this.tmpAimMoonWorld.y += parentPos.y;
-        this.tmpAimMoonWorld.z += parentPos.z;
+    const look = this.cruiseAim.look;
+    if (look?.kind === 'planet') {
+      // Planet targets resolve straight from the planet positions, which
+      // rebuild analytically every frame — including behind the veil.
+      const pos = this.planetWorldPositions.get(look.name);
+      if (pos) {
+        this.tmpAimMoonWorld.set(pos.x, pos.y, pos.z);
         moonWorld = this.tmpAimMoonWorld;
+      }
+    } else {
+      const moon = this.arrivalLookMoon;
+      const parentBody = this.arrivalLookParentBody;
+      if (look && moon && parentBody) {
+        const parentPos = this.planetWorldPositions.get(moon.parentPlanet);
+        if (parentPos) {
+          this.getMoonWorldOffsetAU(moon, parentBody, this.tmpAimMoonWorld);
+          this.tmpAimMoonWorld.x += parentPos.x;
+          this.tmpAimMoonWorld.y += parentPos.y;
+          this.tmpAimMoonWorld.z += parentPos.z;
+          moonWorld = this.tmpAimMoonWorld;
+        }
       }
     }
 
@@ -3809,7 +5119,7 @@ export class PlanetariumMode {
    *  survive a hand-flown final approach. `dotNavMoon` is cleared when you jump/
    *  engage elsewhere, land, deactivate, or leave the parent's system. */
   private currentDotTargetMoon(): string | null {
-    if (this.cruiseAim.look) return this.cruiseAim.look.name;
+    if (this.cruiseAim.look?.kind === 'moon') return this.cruiseAim.look.name;
     if (
       this.autopilot &&
       this.autopilotUserEngaged &&
@@ -4121,7 +5431,7 @@ export class PlanetariumMode {
    * updateMoonPositions applies, so they stay visible). The landed camera
    * frames off this, so a small moon's inflated mesh fills the view like any
    * other body and the camera never seats itself inside the mesh. Uses the
-   * flythrough anchor deliberately, not the state selector: the framing target
+   * flyby anchor deliberately, not the state selector: the framing target
    * must stay stable while surface view (anchor 0) is active.
    */
   private getLandedBodyRenderedRadiusAU(): number {
@@ -4139,11 +5449,11 @@ export class PlanetariumMode {
    * the anchor inflate toward it on the moonRenderSize curve — most are a
    * sliver of their giant parent and would be sub-pixel at true scale — and
    * the anchor depends on what you're looking at:
-   *  - Flying, or any system you're not landed in: the full flythrough anchor,
+   *  - Flying, or any system you're not landed in: the full flyby anchor,
    *    so every moon stays a findable speck as you pass.
    *  - Observing the parent PLANET: a smaller anchor — you're focused on the
    *    system, and it should read closer to honest relative sizes.
-   *  - Observing a MOON: the flythrough anchor (unchanged), so the siblings
+   *  - Observing a MOON: the flyby anchor (unchanged), so the siblings
    *    stay findable around the one being inspected.
    *  - Surface view: no inflation — true angular sizes, a moon crossing the
    *    Sun must be its real size.
@@ -4154,7 +5464,7 @@ export class PlanetariumMode {
    */
   private moonRenderAnchorRatio(parentName: string): number {
     if (parentName !== this.observatoryParentPlanetName()) {
-      return MOON_RENDER_ANCHOR_RATIO; // flythrough / other systems
+      return MOON_RENDER_ANCHOR_RATIO; // flyby / other systems
     }
     if (this.landedView === 'surface') return 0; // true angular sizes
     if (this.landedOn?.type === 'planet') return MOON_RENDER_ANCHOR_RATIO_OBSERVING;
@@ -4242,41 +5552,289 @@ export class PlanetariumMode {
     );
   }
 
+  /** The LUT shell material for a body, built once and kept for the session —
+   *  the tables it points at are bound later, and can be re-bound after a
+   *  context loss. Holding it is what holds its linked program. */
+  private ensureLutShellMaterial(planet: PlanetMesh): THREE.ShaderMaterial | null {
+    const config = ATMOSPHERES[planet.data.name];
+    const lut = this.atmosphereLut;
+    // Fewer bodies have TABLES than have shells: Venus reads as a cloud deck and
+    // the giants have no surface for a thin layer to sit above, so they keep the
+    // analytic fringe and there is no atmosphere model to ask for.
+    if (!config || !ATMOSPHERE_SPECS[planet.data.name] || !planet.atmosphere || !lut) return null;
+    let shells = this.atmosphereShells.get(planet.data.name);
+    if (!shells) {
+      shells = {
+        analytic: planet.atmosphere.material as THREE.ShaderMaterial,
+        lut: null,
+        bound: null,
+        fade: null,
+        blend: 0,
+      };
+      this.atmosphereShells.set(planet.data.name, shells);
+    }
+    if (!shells.lut) {
+      shells.lut = createAtmosphereMaterial(config, planet.data.radiusAU, 'lut', {
+        lut: {
+          body: planet.data.name,
+          sizes: lut.sizes,
+          fx: planet.fx,
+          // The penumbra width the ground's caster trace uses, so the eclipse
+          // spot on the air has the same soft edge as the one below it.
+          sunTan: surfaceShadingArgsOf(planet.mesh.material as THREE.Material)?.sunTan ?? 0,
+        },
+      });
+      // One sun for both materials: the per-frame sun feed writes whichever
+      // material the mesh is wearing, and during the crossfade both draw.
+      shells.lut.uniforms.uSunDirWorld = shells.analytic.uniforms.uSunDirWorld;
+    }
+    return shells.lut;
+  }
+
+  /** One invisible speck wearing the LUT shell material, for the idle warm pass
+   *  to compile. One program covers every body — the table sizes are the only
+   *  thing in its key, and one profile is chosen per session — so Earth's
+   *  material stands for all of them. Null where the device has no tier: a
+   *  program that can never draw is a cold link spent on nothing, and asking
+   *  runs the capability probe, which is why this is not on the boot path. */
+  private createAtmosphereWarmupProbes(): { group: THREE.Group; dispose: () => void } | null {
+    if (!this.atmosphereLut?.probeCapability() || !this.solarSystem) return null;
+    const planet = this.solarSystem.planets.find(
+      (p) => p.atmosphere && ATMOSPHERES[p.data.name] && ATMOSPHERE_SPECS[p.data.name],
+    );
+    const material = planet ? this.ensureLutShellMaterial(planet) : null;
+    if (!material) return null;
+    const geometry = new THREE.SphereGeometry(1e-9, 4, 2);
+    const group = new THREE.Group();
+    group.visible = false;
+    group.add(new THREE.Mesh(geometry, material));
+    // The material outlives the probe: it belongs to atmosphereShells, and
+    // disposing it here would delete the program this exists to link.
+    return { group, dispose: () => geometry.dispose() };
+  }
+
   /**
-   * Per-planet detail that depends on how far the player is: the atmosphere
-   * shell fades in over the last stretch of the system radius, and Earth's
-   * night-lights and cloud shells drop out once the globe is a speck. Also
-   * re-asserts the render scale, which is where `planet.group.scale` gets the
-   * value the collision and envelope helpers read back.
+   * Keep a body's shell on the best tier it can draw THIS frame: the LUT
+   * material once its tables are baked and validated, the analytic one before
+   * that and after a context loss takes the tables with it. The mesh, its
+   * scale and its sun uniform are shared by both, so the swap is a material
+   * assignment — and never a frame with no shell at all.
+   *
+   * The tables can land while the player is looking at the body, and the two
+   * looks differ, so the LUT tier does not replace the analytic one in a
+   * single frame: it fades in on the same clock as the ground's haze (the air
+   * block's `uAirBlend`, advanced by syncSurfaceAir just before this), drawn
+   * on a sibling mesh under the shell while the analytic material fades out
+   * on the shell itself (world/atmosphereShell owns the sibling and the swap).
+   * The weights are written with the distance fade, in applyShellAlpha. Once
+   * the clock reaches one the mesh wears the LUT material alone and the
+   * sibling goes. The way back — tables gone — is immediate: a lost context
+   * has no frame to spare for a fade.
+   *
+   * The LUT material is built on first use, but its program is not linked here:
+   * the boot warm-up compiled the same shader with the same table sizes, which
+   * is the whole reason the warm set carries it.
    */
-  private updatePlanetDetailFades() {
+  private syncAtmosphereShell(planet: PlanetMesh): void {
+    const mesh = planet.atmosphere;
+    if (!mesh) return;
+    const name = planet.data.name;
+    const tables = this.devAtmosphereTier === 'analytic'
+      ? null
+      : this.atmosphereLut?.tables(name) ?? null;
+    if (tables) {
+      const material = this.ensureLutShellMaterial(planet);
+      const shells = this.atmosphereShells.get(name);
+      if (!material || !shells) return;
+      shells.lut = material;
+      if (shells.bound !== tables) {
+        bindAtmosphereShellTables(shells.lut, tables);
+        shells.bound = tables;
+      }
+      // The tables are baked at one unit of solar irradiance, so the render
+      // multiplies the body's own back in — by the SCENE's falloff law, the one
+      // its point light lights the ground with, or the air would sit at a
+      // different exposure from the surface under it. Written here, from the
+      // position this frame's rebuild pass has already stored, rather than in
+      // that pass: the analytic material has no such uniform, so a value
+      // written to whichever material is WORN would skip the incoming one and
+      // leave it drawing its constructed 1.0 for the swap frame. Earth's own
+      // value sits within 0.5% of 1 and would hide that; Mars' is 13.6% away.
+      const wp = planet.worldPosAU;
+      material.uniforms.uSolarIrradiance.value = wp
+        ? solarIrradianceScale(Math.sqrt(wp.x * wp.x + wp.y * wp.y + wp.z * wp.z))
+        : 1;
+      // Which rays end on ground is decided against the globe as it is drawn —
+      // a polygon inside the sphere the tables describe. Read from the live
+      // geometry every frame, so the silhouette upgrade on approach carries the
+      // shell with it and no ray is called ground where none is drawn.
+      setAtmosphereShellGroundSegments(material, sphereWidthSegments(planet.mesh));
+      // A body with no air block of its own has no clock to fade on.
+      stepShellCrossfade(mesh, shells, material, planet.fx?.air ? planet.fx.air.uAirBlend.value : 1);
+      return;
+    }
+    const shells = this.atmosphereShells.get(name);
+    if (!shells) return;
+    restShellCrossfade(mesh, shells, shells.analytic);
+    shells.bound = null;
+  }
+
+  /**
+   * Write the distance fade to the shell. During the tier crossfade it is
+   * split between the two materials so that, under additive blending, the
+   * limb's total light is the fade alone at every step of it.
+   */
+  private applyShellAlpha(planet: PlanetMesh, alpha: number): void {
+    const mesh = planet.atmosphere;
+    if (!mesh) return;
+    const shells = this.atmosphereShells.get(planet.data.name);
+    if (shells?.fade && shells.lut) {
+      const split = shellTierAlphas(alpha, shells.blend);
+      shells.analytic.uniforms.alphaScale.value = split.analytic;
+      shells.lut.uniforms.alphaScale.value = split.lut;
+      return;
+    }
+    const worn = mesh.material as THREE.ShaderMaterial;
+    if (worn.uniforms?.alphaScale) worn.uniforms.alphaScale.value = alpha;
+  }
+
+  /**
+   * Keep a body's SURFACES on the same tier its shell is on: the globe, its
+   * streamed sectors, the cloud deck and the night lights all read one air
+   * block, and this is where the tables reach it. Off — and let go of the
+   * textures — wherever the shell would be wearing the analytic material: a
+   * device with no tier, a body with no tables, the window between a lost
+   * context and the re-bake, and the dev pin that captures the A/B.
+   *
+   * The two numbers beside the tables are the bridge out of a bake normalised
+   * to unit irradiance, and they are the SCENE's, not physics': the distance
+   * law is the one the point light lighting the ground uses.
+   */
+  private syncSurfaceAir(planet: PlanetMesh): void {
+    const air = planet.fx?.air;
+    if (!air) return;
+    const tables = this.devAtmosphereTier === 'analytic'
+      ? null
+      : this.atmosphereLut?.tables(planet.data.name) ?? null;
+    if (!tables) {
+      clearSurfaceAir(air);
+      (air.uMoonIrradiance.value as THREE.Vector3).set(0, 0, 0);
+      return;
+    }
+    const wp = planet.worldPosAU;
+    bindSurfaceAir(
+      air,
+      tables,
+      planet.data.radiusAU,
+      wp ? solarIrradianceScale(Math.sqrt(wp.x * wp.x + wp.y * wp.y + wp.z * wp.z)) : 1,
+    );
+    // One frame of the haze fade; a hitch frame is capped so it cannot jump it.
+    advanceSurfaceAir(air, Math.min(this.lastFrameDtMs, 100) / 1000);
+    this.syncMoonlight(planet);
+  }
+
+  /**
+   * The Moon as a second light on a planet's night side, written into the ONE
+   * air block every surface of that body reads — so the shell, the globe, its
+   * streamed sectors and the cloud deck are lit by the same Moon in the same
+   * place, which a second uniform set is how they stop being.
+   *
+   * Everything that decides how much light there is goes into the irradiance
+   * uniform rather than into the shader: the planet's own distance from the
+   * Sun, the Moon's phase, and the Moon's own eclipse — a Moon inside the
+   * planet's shadow lights nothing, which is the one night this term has to get
+   * right. The direction is treated as parallel across the disc: the Moon's
+   * bearing varies by 0.95 degrees from one side of Earth to the other, which
+   * moves the moonlit terminator by about 100 km on a body 12,742 km across.
+   */
+  private syncMoonlight(planet: PlanetMesh): void {
+    const air = planet.fx?.air;
+    if (!air) return;
+    const irradiance = air.uMoonIrradiance.value as THREE.Vector3;
+    const wp = planet.worldPosAU;
+    const source = this.moonlightSourceFor(planet.data.name);
+    if (!source || !wp) {
+      irradiance.set(0, 0, 0);
+      return;
+    }
+    const offset = this.getMoonWorldOffsetAU(source, planet.data, this.tmpMoonlightOffset);
+    const distance = offset.length();
+    const bodyDistance = Math.sqrt(wp.x * wp.x + wp.y * wp.y + wp.z * wp.z);
+    if (!(distance > 0) || !(bodyDistance > 0)) {
+      irradiance.set(0, 0, 0);
+      return;
+    }
+    (air.uMoonDirWorld.value as THREE.Vector3).copy(offset).multiplyScalar(1 / distance);
+    // Phase angle at the Moon, between the Sun and the planet it is lighting.
+    // The Sun is the scene's origin, so moon->Sun is just -moonPos, and the
+    // cosine of the angle between that and moon->planet (-offset) is the cosine
+    // between the two positives.
+    const mx = wp.x + offset.x;
+    const my = wp.y + offset.y;
+    const mz = wp.z + offset.z;
+    const moonDistance = Math.hypot(mx, my, mz) || 1;
+    const cosPhase = (mx * offset.x + my * offset.y + mz * offset.z)
+      / (moonDistance * distance);
+    const phaseDeg = Math.acos(Math.min(1, Math.max(-1, cosPhase))) * RAD2DEG;
+    computeMoonShading(
+      this.tmpMoonlightParent.set(wp.x, wp.y, wp.z),
+      planet.data.name,
+      planet.data.radiusKm,
+      offset,
+      source.radiusKm,
+      this.moonlightShading,
+    );
+    const value = moonIrradiance(
+      solarIrradianceScale(bodyDistance),
+      phaseDeg,
+      this.moonlightShading.sunVisibleFraction,
+    );
+    irradiance.set(value[0], value[1], value[2]);
+    this.moonlightPhase.set(planet.data.name, phaseDeg);
+  }
+
+  /** The catalog entry for a body's moonlight source, resolved once. */
+  private moonlightSourceFor(planetName: string): MoonData | null {
+    const cached = this.moonlightSource.get(planetName);
+    if (cached !== undefined) return cached;
+    const name = MOONLIGHT_SOURCES[planetName];
+    const found = name
+      ? MOONS.find((m) => m.name === name && m.parentPlanet === planetName) ?? null
+      : null;
+    this.moonlightSource.set(planetName, found);
+    return found;
+  }
+
+  private updatePlanetScaling() {
     if (!this.solarSystem) return;
     for (const planet of this.solarSystem.planets) {
-      // Planets render at true scale; the group scale is the applied form of
-      // planetScale, so the two never disagree.
-      planet.group.scale.setScalar(this.planetScale);
-
-      const isEarth = planet.data.name === 'Earth';
-      if (!planet.atmosphere && !isEarth) continue;
-
-      const wp = planet.worldPosAU!;
-      const dx = this.player.posX - wp.x;
-      const dy = this.player.posY - wp.y;
-      const dz = this.player.posZ - wp.z;
-      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      planet.group.scale.setScalar(1);
+      this.syncSurfaceAir(planet);
 
       // Atmosphere alpha: fade in as player approaches the planet's system radius
       if (planet.atmosphere) {
+        // Before the fade is written: the tier may have changed the material it
+        // is written to.
+        this.syncAtmosphereShell(planet);
+        const wp = planet.worldPosAU!;
+        const dx = this.player.posX - wp.x;
+        const dy = this.player.posY - wp.y;
+        const dz = this.player.posZ - wp.z;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
         const systemR = planet.data.systemRadiusAU;
         const innerR = systemR * 0.1;
         const linear = 1 - Math.min(1, Math.max(0, (dist - innerR) / (systemR - innerR)));
         const t = smoothstepUnclamped(linear);
-        const glowMat = planet.atmosphere.material as THREE.ShaderMaterial;
         // Fade fully out at system-edge distance; full strength on close approach.
-        glowMat.uniforms.alphaScale.value = t;
+        this.applyShellAlpha(planet, t);
       }
 
-      if (isEarth) {
+      if (planet.data.name === 'Earth') {
+        const wp = planet.worldPosAU!;
+        const dx = this.player.posX - wp.x;
+        const dy = this.player.posY - wp.y;
+        const dz = this.player.posZ - wp.z;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
         const renderedAngularDiameter = dist > 1e-8
           ? (planet.data.radiusAU * 2) / dist
           : Infinity;
@@ -4287,6 +5845,17 @@ export class PlanetariumMode {
         if (planet.cloudsMesh) planet.cloudsMesh.visible = keepEarthDetail;
       }
     }
+
+    // Idempotent re-assert of the ship model that matches the active mission
+    // (or the default ship when none). Mission start/end already call
+    // setProfile explicitly; this per-frame reapply is a deliberate, cheap
+    // safety net guaranteeing the displayed model tracks mission state through
+    // every code path (incl. state restore) — do not "optimize" it away.
+    this.player.setProfile(
+      this.devShipProfileOverride
+        ?? this.activeHistoricJourney?.shipProfile
+        ?? 'default',
+    );
   }
 
   /**
@@ -6835,7 +8404,7 @@ export class PlanetariumMode {
 
     // The arrival look is cinematic assistance, never a control lock. Any
     // explicit flight input hands the camera back to the pilot — eased over
-    // MOON_ARRIVAL_RELEASE_S rather than in one frame: on the touch flight
+    // ARRIVAL_LOOK_RELEASE_S rather than in one frame: on the touch flight
     // zone a stationary tap is already full steering, and the instant cancel
     // read as the camera snapping on the first touch after a teleport.
     if (hasManualInput) releaseArrivalLook(this.cruiseAim);
@@ -7711,7 +9280,7 @@ export class PlanetariumMode {
       this.closeDeck();
       this.tutorialArriveWhenIdle(generation, { type: 'planet', name: 'Saturn' }, () => {
         if (this.landedOn) this.exitLandedMode();
-        this.jumpToPlanet(saturn, { notify: false });
+        this.jumpToPlanet(saturn, { notify: false, pose: 'postcard' });
         // Freeze-frame: the card narrates over a parked ship. Left under way
         // (the arrival default), it would glide from the standoff to Saturn's
         // collision shell in ~20 s, right under the copy.
@@ -10656,10 +12225,10 @@ export class PlanetariumMode {
       this.updateSpeedSlider(); // exitLandedMode refreshed it with its own values
       // Clear only: the resetCruiseCamera below this jump's repose cuts.
       clearArrivalLook(this.cruiseAim);
+      this.governedMoonSeeds = [];
       this.arrivalLookMoon = null;
       this.arrivalLookParentBody = null;
       this.dotNavMoon = null;
-      this.governedMoonSeed = null;
       // A pilot left engaged re-aims the ship at its own target on the very
       // next frame — you would leave the chosen point before ever seeing it.
       this.disengageAutopilot();
@@ -11317,9 +12886,11 @@ export class PlanetariumMode {
       endPitch: aim.pitchRad,
       endMoving: options.movingAfter,
     };
-    // The transfer owns the pose from here; an armed contact graze must not
-    // resume steering on the handback frame.
-    this.contactAimActive = false;
+    // The transfer owns the pose from here, so a flyby look left holding an
+    // earlier destination must not steer the handback frame — an authored
+    // scene is framed on its own look target, not on whatever the last pass
+    // was watching.
+    clearArrivalLook(this.cruiseAim);
     this.player.moving = true;
     // A scripted transfer never poses the camera, so a user-owned camera must
     // reacquire the chase rather than snap to it — snapping from a 90° offset
@@ -11387,9 +12958,13 @@ export class PlanetariumMode {
     // funnels through here, and the aim stage adopts fresh on the next
     // frame instead of sweeping from pre-repose state.
     cutAim(this.cruiseAim);
-    // Same cut for the contact graze: a deliberate repose supersedes any
-    // armed deflection, which must not steer the fresh pose.
-    this.contactAimActive = false;
+    // And the look dies with the pose it was tracking. A flyby's look holds
+    // its body until the pilot takes an input, so it can still be live when
+    // a takeoff, a free-space teleport, or a restore reposes the camera —
+    // and a cut with a live look would adopt that body's bearing as the
+    // fresh pose's aim. The jump funnel clears it earlier for its own
+    // bookkeeping and re-starts it after this returns.
+    clearArrivalLook(this.cruiseAim);
     this.cancelOrbitGesture();
     // Cruise rides the flight horizon. Every cruise entry funnels through
     // here — first pointing, Travel jumps, takeoff, a non-landed restore — so
@@ -11483,26 +13058,13 @@ export class PlanetariumMode {
   ) {
     const pos = this.planetWorldPositions.get(planet.name);
     if (!pos) return null;
-
-    const viewDist = Math.max(
-      planet.radiusAU * 8,
-      this.getPlanetCollisionRadius(planet.name, planet.radiusAU, this.planetScale) + planet.radiusAU * 2,
+    return planetPostcardPose(
+      new THREE.Vector3(pos.x, pos.y, pos.z),
+      planet.radiusAU,
+      this.getPlanetCollisionRadius(planet.name, planet.radiusAU, this.planetScale),
+      distanceMultiplier,
       floorAU,
-    ) * distanceMultiplier;
-    const offsetDir = new THREE.Vector3(-pos.x, -pos.y, -pos.z);
-    if (offsetDir.lengthSq() < 1e-8) {
-      offsetDir.set(-1, 0.25, 0);
-    }
-    offsetDir.normalize();
-
-    return {
-      position: new THREE.Vector3(
-        pos.x + offsetDir.x * viewDist,
-        pos.y + offsetDir.y * viewDist,
-        pos.z + offsetDir.z * viewDist,
-      ),
-      lookTarget: new THREE.Vector3(pos.x, pos.y, pos.z),
-    };
+    );
   }
 
   /** The governor/collision body set: every visible painted moon (world
@@ -11518,41 +13080,47 @@ export class PlanetariumMode {
    *  pass runs AFTER the refresh and is immune. */
   private forEachGovernedMoon(
     cb: (
-      x: number, y: number, z: number, renderedRAU: number,
+      x: number, y: number, z: number, renderedRAU: number, name: string,
       vxAUPerS: number, vyAUPerS: number, vzAUPerS: number,
     ) => void,
   ) {
     for (const moons of this.planetMoons.values()) {
       for (const m of moons) {
         if (!m.painted || !m.mesh.visible) continue;
-        if (this.governedMoonSeed && m.data.name === this.governedMoonSeed.name) {
-          this.governedMoonSeed = null; // the visible mesh covers it from here
+        if (this.governedMoonSeeds.length) {
+          // The visible mesh covers its seed from here.
+          const i = this.governedMoonSeeds.findIndex((s) => s.name === m.data.name);
+          if (i >= 0) this.governedMoonSeeds.splice(i, 1);
         }
         const wp = this.moonWorldPositions.get(m.data.name);
         if (!wp) continue;
         const vel = this.moonWorldVels.get(m.data.name);
-        cb(wp.x, wp.y, wp.z, m.data.radiusAU * m.mesh.scale.x, vel?.x ?? 0, vel?.y ?? 0, vel?.z ?? 0);
+        cb(
+          wp.x, wp.y, wp.z, m.data.radiusAU * m.mesh.scale.x, m.data.name,
+          vel?.x ?? 0, vel?.y ?? 0, vel?.z ?? 0,
+        );
       }
     }
-    const seed = this.governedMoonSeed;
-    if (!seed) return;
-    const moon = MOONS.find((mn) => mn.name === seed.name);
-    const parent = PLANETARIUM_BODIES.find((b) => b.name === seed.parentPlanet);
-    const parentPos = this.planetWorldPositions.get(seed.parentPlanet);
-    if (!moon || !parent || !parentPos) return;
-    const offset = this.getMoonWorldOffsetAU(moon, parent, this.tmpMoonOffset);
-    cb(
-      parentPos.x + offset.x,
-      parentPos.y + offset.y,
-      parentPos.z + offset.z,
-      // Flythrough anchor deliberately, not the state selector: jump seeds
-      // only exist in cruise, where the flythrough anchor is the live one.
-      this.renderedMoonSizeAU(moon.radiusAU, parent.radiusAU, MOON_RENDER_ANCHOR_RATIO),
-      // The seed lives only behind the arrival veil, where the ship is parked
-      // at the standoff — no moving-body credit needed before the painted
-      // mesh takes over.
-      0, 0, 0,
-    );
+    for (const seed of this.governedMoonSeeds) {
+      const moon = MOONS.find((mn) => mn.name === seed.name);
+      const parent = PLANETARIUM_BODIES.find((b) => b.name === seed.parentPlanet);
+      const parentPos = this.planetWorldPositions.get(seed.parentPlanet);
+      if (!moon || !parent || !parentPos) continue;
+      const offset = this.getMoonWorldOffsetAU(moon, parent, this.tmpMoonOffset);
+      cb(
+        parentPos.x + offset.x,
+        parentPos.y + offset.y,
+        parentPos.z + offset.z,
+        // Flyby anchor deliberately, not the state selector: jump seeds
+        // only exist in cruise, where the flyby anchor is the live one.
+        this.renderedMoonSizeAU(moon.radiusAU, parent.radiusAU, MOON_RENDER_ANCHOR_RATIO),
+        moon.name,
+        // The seed lives only behind the arrival veil, where the ship is parked
+        // at the standoff — no moving-body credit needed before the painted
+        // mesh takes over.
+        0, 0, 0,
+      );
+    }
   }
 
   /** Min proximity cap over every governed body: visible painted moons (plus
@@ -11571,8 +13139,9 @@ export class PlanetariumMode {
   private computeBodySpeedCap(): number {
     const f = this.player.writeForwardDirection(this.tmpForwardDir);
     let cap = Infinity;
+    let owner: string | null = null;
     const consider = (
-      x: number, y: number, z: number, surfaceR: number, kPerS: number,
+      x: number, y: number, z: number, surfaceR: number, kPerS: number, name: string,
       vxAUPerS: number, vyAUPerS: number, vzAUPerS: number,
     ) => {
       const dx = x - this.player.posX;
@@ -11583,17 +13152,20 @@ export class PlanetariumMode {
       const cos = (dx * f.x + dy * f.y + dz * f.z) / dist;
       // Raw surface distance, deliberately unclamped: at or inside the
       // collision shell both laws clamp themselves — the approach to its
-      // floor, the leave law to the shell's own creep.
+      // floor, the departure law to the shell's own creep.
       const c = movingBodySpeedCap(
         dist - surfaceR, surfaceR, cos,
         vxAUPerS * f.x + vyAUPerS * f.y + vzAUPerS * f.z,
         (vxAUPerS * dx + vyAUPerS * dy + vzAUPerS * dz) / dist,
         kPerS, BODY_APPROACH_V_MIN_AU_S,
       );
-      if (c < cap) cap = c;
+      if (c < cap) {
+        cap = c;
+        owner = name;
+      }
     };
-    this.forEachGovernedMoon((x, y, z, renderedR, vx, vy, vz) =>
-      consider(x, y, z, renderedR, MOON_APPROACH_K_PER_S, vx, vy, vz));
+    this.forEachGovernedMoon((x, y, z, renderedR, name, vx, vy, vz) =>
+      consider(x, y, z, renderedR, BODY_APPROACH_K_PER_S, name, vx, vy, vz));
     if (this.solarSystem) {
       for (const planet of this.solarSystem.planets) {
         const wp = planet.worldPosAU;
@@ -11602,7 +13174,8 @@ export class PlanetariumMode {
         consider(
           wp.x, wp.y, wp.z,
           planetEnvelopeRadiusAU(planet.data.radiusAU, planet.group.scale.x, ATMOSPHERE_SHELL_SCALES[planet.data.name]),
-          PLANET_APPROACH_K_PER_S,
+          BODY_APPROACH_K_PER_S,
+          planet.data.name,
           vel?.x ?? 0, vel?.y ?? 0, vel?.z ?? 0,
         );
       }
@@ -11610,10 +13183,12 @@ export class PlanetariumMode {
       consider(
         0, 0, 0,
         (KM_CONSTANTS.SUN_RADIUS / KM_PER_AU) * SUN_APPROACH_SURFACE_RADII,
-        PLANET_APPROACH_K_PER_S,
+        BODY_APPROACH_K_PER_S,
+        'Sun',
         0, 0, 0,
       );
     }
+    this.devCapOwner = owner ? { name: owner, capAUPerS: cap } : null;
     return cap;
   }
 
@@ -11736,67 +13311,36 @@ export class PlanetariumMode {
   }
 
   /**
-   * Land a swept shell contact: park the ship on the shell and, when the
-   * pilot's hands are off the stick, arm the graze — deflect the nose onto
-   * the forward direction's tangential part plus a small outward bias
-   * (grazeDeflectAim), swung there over a few tenths of a second by
-   * applyContactAim — so a bump skims the limb and peels away. The old
-   * response snapped the nose 180° to the radial in one frame: it discarded
-   * the approach direction, whipped the chase camera, and on a moving body's
-   * leading face aimed the ship straight along the bulldozer blade. An
-   * actively steering pilot keeps their heading — the shell holds them
-   * regardless, and re-aiming against a held stick was the reported
-   * grind-fight. Autopilot ends on contact: its glide contract already
-   * failed (a body swept in at time warp), and its re-aim would fight the
-   * deflection frame by frame — silently, since the pilot did nothing to
-   * take the stick. A parked ship is revived (the pilot's own throttle-up
-   * guards apply): a body plowing into it is a physical shove, and a dead
-   * hull would otherwise be bulldozed across the sky with no way out.
+   * Land a swept shell contact, by position alone — the pilot's heading and
+   * camera are never touched. resolveShellContactPark stops a ship that is
+   * flying into the shell right there, keeping the frame's tangential motion
+   * so a bump slides around the limb instead of grinding at the entry point;
+   * a hull with no thrust into the shell is instead walked sideways by the
+   * shell's own advance, so a moving body's leading face carries a drifting
+   * ship around and off rather than bulldozing it forever. Autopilot ends on
+   * contact: its glide
+   * contract already failed (a body swept in at time warp), and it would
+   * re-close on the shell frame by frame — silently, since the pilot did
+   * nothing to take the stick. A parked ship is revived (the pilot's own
+   * throttle-up guards apply): a body plowing into it is a physical shove,
+   * and a dead hull would otherwise ride the shell with no way out.
    */
-  private applyShellContact(cx: number, cy: number, cz: number, shellR: number, hit: SweepContact) {
-    this.player.posX = cx + hit.ox * shellR;
-    this.player.posY = cy + hit.oy * shellR;
-    this.player.posZ = cz + hit.oz * shellR;
+  private applyShellContact(
+    cx: number, cy: number, cz: number, shellR: number, hit: SweepContact, dt: number,
+  ) {
+    const park = resolveShellContactPark(
+      this.player.posX, this.player.posY, this.player.posZ,
+      this.prevPlayerPos.x, this.prevPlayerPos.y, this.prevPlayerPos.z,
+      cx, cy, cz, shellR, hit, dt, this.tmpShellPark,
+    );
+    this.player.posX = park.x;
+    this.player.posY = park.y;
+    this.player.posZ = park.z;
     if (this.autopilot) this.disengageAutopilot();
     this.reviveParkedShip();
-    if (this.player.yawInput !== 0 || this.player.pitchInput !== 0) return;
-    const forward = this.player.writeForwardDirection(this.tmpForwardDir);
-    if (forward.x * hit.ox + forward.y * hit.oy + forward.z * hit.oz < CONTACT_ALIGN_OUT_MAX) {
-      grazeDeflectAim(
-        forward.x, forward.y, forward.z,
-        hit.ox, hit.oy, hit.oz,
-        this.contactAimTarget,
-      );
-      this.contactAimActive = true;
-      this.contactAimAgeS = 0;
-    }
   }
 
-  /**
-   * One frame of the armed contact graze: swing the nose toward the deflected
-   * aim on the contact τ (contactAimStep). Steering input or autopilot
-   * reclaims the stick instantly; convergence or the post-contact TTL retires
-   * the swing. Runs in the cruise steering slot — after processInput, before
-   * the ship integrates — so the frame flies the eased heading.
-   */
-  private applyContactAim(dt: number) {
-    if (!this.contactAimActive) return;
-    if (this.player.yawInput !== 0 || this.player.pitchInput !== 0 || this.autopilot) {
-      this.contactAimActive = false;
-      return;
-    }
-    this.contactAimAgeS += dt;
-    const forward = this.player.writeForwardDirection(this.tmpContactForward);
-    const done = contactAimStep(forward, this.contactAimTarget, dt, forward);
-    this.player.headTowardPoint(
-      this.player.posX + forward.x,
-      this.player.posY + forward.y,
-      this.player.posZ + forward.z,
-    );
-    if (done || this.contactAimAgeS >= CONTACT_AIM_TTL_S) this.contactAimActive = false;
-  }
-
-  private resolveMoonCollisions() {
+  private resolveMoonCollisions(dt: number) {
     const p0 = this.prevPlayerPos;
     this.forEachGovernedMoon((x, y, z, renderedR) => {
       // Same clearance bubble as the arrival standoff and camera safety.
@@ -11806,11 +13350,11 @@ export class PlanetariumMode {
         this.player.posX, this.player.posY, this.player.posZ,
         x, y, z, collisionR,
       );
-      if (hit) this.applyShellContact(x, y, z, collisionR, hit);
+      if (hit) this.applyShellContact(x, y, z, collisionR, hit, dt);
     });
   }
 
-  private resolvePlanetCollisions() {
+  private resolvePlanetCollisions(dt: number) {
     if (!this.solarSystem) return;
     const p0 = this.prevPlayerPos;
     for (const planet of this.solarSystem.planets) {
@@ -11822,15 +13366,183 @@ export class PlanetariumMode {
         this.player.posX, this.player.posY, this.player.posZ,
         worldPos.x, worldPos.y, worldPos.z, collisionRadius,
       );
-      if (hit) this.applyShellContact(worldPos.x, worldPos.y, worldPos.z, collisionRadius, hit);
+      if (hit) this.applyShellContact(worldPos.x, worldPos.y, worldPos.z, collisionRadius, hit, dt);
     }
   }
 
-  jumpToPlanet(planet: PlanetData, options: { notify?: boolean; distanceMultiplier?: number } = {}) {
+  jumpToPlanet(
+    planet: PlanetData,
+    options: {
+      notify?: boolean;
+      distanceMultiplier?: number;
+      /** 'flyby' (default) is the user teleport: the authored drive-by.
+       *  'postcard' is the legacy centered framing kept byte-stable for the
+       *  callers whose compositions are authored around it — the tutorial's
+       *  freeze-frames, the dev screenshot bridge, and dev framing. It never
+       *  starts a camera look and never seeds the governor. */
+      pose?: 'flyby' | 'postcard';
+    } = {},
+  ) {
     if (this.isMissionActive()) return;
-    const destination = this.getJumpDestination(planet, options.distanceMultiplier ?? 1);
+    if (options.pose === 'postcard') {
+      const destination = this.getJumpDestination(planet, options.distanceMultiplier ?? 1);
+      if (!destination) return;
+      this.applyJumpDestination(destination, planet.name, options.notify !== false);
+      return;
+    }
+    const destination = this.getPlanetFlybyDestination(planet);
     if (!destination) return;
-    this.applyJumpDestination(destination, planet.name, options.notify !== false);
+    this.applyJumpDestination(
+      { position: destination.position, lookTarget: destination.aimPoint },
+      planet.name,
+      options.notify !== false,
+    );
+    // The engage-gated tracking look, planet kind: weight is EXACTLY zero
+    // at this arrival distance (see jumpToMoon for the full rationale) —
+    // the first input finds zero deflection; tracking fades in only if the
+    // hands-off pass develops. Derived AFTER the repose above, from the
+    // final camera position, exactly like the moon path.
+    this.tmpAimDir.copy(destination.bodyPosition).sub(destination.position);
+    const arrivalDistanceAU = this.tmpAimDir.distanceTo(this.camera.position);
+    startArrivalLook(
+      this.cruiseAim,
+      { kind: 'planet', name: planet.name },
+      arrivalDistanceAU,
+    );
+    // Seed the governor with the WHOLE satellite system: in a cold system
+    // the meshes are unpainted behind the veil and invisible to the
+    // visibility-keyed governed set — the lane-scored approach is only as
+    // good as the governor that enforces it, and paint can finish mid-pass.
+    this.governedMoonSeeds = MOONS
+      .filter((m) => m.parentPlanet === planet.name)
+      .map((m) => ({ name: m.name, parentPlanet: m.parentPlanet }));
+  }
+
+  /**
+   * The drive-by destination for a user planet teleport: live positions and
+   * ring orientation in, `arrivalPose` out. Satellites go in as lane bodies
+   * (analytic epoch positions, finite-difference velocities per SIMULATED
+   * second, governor-rendered radii) so the drop never reads another body's
+   * brakes; the planet's own velocity feeds the one-shot aim lead. The
+   * commanded speed is the post-jump in-system value (applyJumpDestination
+   * clamps the dials right after this), so the lane simulation paces the
+   * giants' coast regime the way the real governor will.
+   */
+  /** The speed the throttle will command right after this jump, at a given
+   *  distance from the destination's system anchor: the post-clamp dials run
+   *  through the SAME system-throttle blend computeSystemSpeedFactor applies
+   *  live — at a giant's 8.8-radii standoff the cruise share is still
+   *  nonzero, and a lane scored against the bare in-system dial paces its
+   *  coast ~20% slow. */
+  private postJumpCommandedAUPerS(distToAnchorAU: number, systemRadiusAU: number): number {
+    const speedMult = Math.max(this.player.speedMultiplier, PlayerShip.SPEED_DEFAULT);
+    const sysMult = Math.min(this.player.systemSpeedMultiplier, PlayerShip.SYSTEM_SPEED_DEFAULT);
+    const cruise = LIGHT_SPEED_AU_PER_S * speedMult;
+    const system = LIGHT_SPEED_AU_PER_S * Math.min(sysMult, speedMult);
+    let factor = 1;
+    if (systemRadiusAU > 0 && distToAnchorAU < systemRadiusAU) {
+      const inner = systemRadiusAU * 0.05;
+      const t = Math.min(1, Math.max(0, (distToAnchorAU - inner) / (systemRadiusAU - inner)));
+      factor = t * t * (3 - 2 * t);
+    }
+    return system + (cruise - system) * factor;
+  }
+
+  private getPlanetFlybyDestination(planet: PlanetData) {
+    const pos = this.planetWorldPositions.get(planet.name);
+    if (!pos) return null;
+    const targetPos = new THREE.Vector3(pos.x, pos.y, pos.z);
+    const nowMs = this.timeState.currentUtcMs;
+    const VEL_DT_MS = 60_000;
+    const futurePlanet = computeBodyState(planet, nowMs + VEL_DT_MS).positionAU;
+    const targetVelAUPerS = new THREE.Vector3(
+      futurePlanet.x - pos.x,
+      futurePlanet.y - pos.y,
+      futurePlanet.z - pos.z,
+    ).multiplyScalar(1000 / VEL_DT_MS);
+
+    const laneBodies: LaneBody[] = [];
+    const off0 = new THREE.Vector3();
+    const off1 = new THREE.Vector3();
+    for (const m of MOONS) {
+      if (m.parentPlanet !== planet.name) continue;
+      computeMoonOffsetEquatorialAU(m.name, planet.name, nowMs, off0);
+      computeMoonOffsetEquatorialAU(m.name, planet.name, nowMs + VEL_DT_MS, off1);
+      laneBodies.push({
+        pos: off0.clone().add(targetPos),
+        // TARGET-RELATIVE velocity (pure orbital motion): the lane scorer's
+        // frame holds the target frozen, so the shared heliocentric
+        // translation must not appear as satellite drift.
+        velAUPerS: off1.sub(off0).multiplyScalar(1000 / VEL_DT_MS),
+        governedRadiusAU: this.renderedMoonSizeAU(
+          m.radiusAU, planet.radiusAU, MOON_RENDER_ANCHOR_RATIO,
+        ),
+      });
+    }
+
+    const ring = RING_CONFIGS[planet.name];
+    const mesh = this.solarSystem?.planets.find((p) => p.data.name === planet.name);
+    // Rings lie in the planet group's local XZ: the world ring normal is the
+    // group's +Y (the IAU pole; the spin phase rotates about it, so this is
+    // stable within a frame).
+    const ringNormal = ring && mesh
+      ? new THREE.Vector3(0, 1, 0).applyQuaternion(mesh.group.quaternion).normalize()
+      : undefined;
+
+    const dropStandoffAU = arrivalStandoffAU({
+      kind: 'planet',
+      targetPos,
+      parentPos: new THREE.Vector3(0, 0, 0),
+      orbitR: targetPos.length(),
+      renderedR: planet.radiusAU * this.planetScale,
+      parentCollision: 0,
+      parentClearance: 0,
+      camDist: CRUISE_CAM_DIST_AU,
+      shipClearance: SHIP_CLEARANCE_AU,
+    });
+    const commandedAUPerS = this.postJumpCommandedAUPerS(dropStandoffAU, planet.systemRadiusAU);
+
+    const pose = arrivalPose({
+      kind: 'planet',
+      targetPos,
+      parentPos: new THREE.Vector3(0, 0, 0),
+      orbitR: targetPos.length(),
+      renderedR: planet.radiusAU * this.planetScale,
+      parentCollision: 0,
+      parentClearance: 0,
+      camDist: CRUISE_CAM_DIST_AU,
+      shipClearance: SHIP_CLEARANCE_AU,
+      targetVelAUPerS,
+      timeRate: this.timeState.rate,
+      commandedAUPerS,
+      ...(ring && ringNormal
+        ? {
+            ringNormal,
+            ringInnerAU: planet.radiusAU * ring.innerFactor,
+            ringOuterAU: planet.radiusAU * ring.outerFactor,
+          }
+        : {}),
+      laneBodies,
+    });
+    this.devLastArrivalPose = {
+      body: planet.name,
+      kind: 'planet',
+      position: pose.position.toArray(),
+      aimPoint: pose.aimPoint.toArray(),
+      bodyPosition: targetPos.toArray(),
+      aimCenter: pose.aimCenter.toArray(),
+      renderedRAU: planet.radiusAU * this.planetScale,
+      shellAU: moonCollisionRadius(planet.radiusAU * this.planetScale, SHIP_CLEARANCE_AU),
+      camDistAU: CRUISE_CAM_DIST_AU,
+      standoffAU: pose.position.distanceTo(targetPos),
+      bAU: pose.impactParameterAU,
+    };
+    return {
+      position: pose.position,
+      lookTarget: pose.aimPoint,
+      aimPoint: pose.aimPoint,
+      bodyPosition: targetPos,
+    };
   }
 
   jumpToSun(options: { notify?: boolean } = {}) {
@@ -11851,34 +13563,29 @@ export class PlanetariumMode {
     // at this arrival distance, so the teleport arrives in the settled chase
     // pose — aim at the ship, moon riding upper-frame off the flyby heading —
     // and the first click, drag, or keypress finds zero deflection and moves
-    // nothing. Tracking fades in only if the player lets the flythrough
+    // nothing. Tracking fades in only if the player lets the flyby
     // develop hands-off, holding the moon in frame through closest approach.
     // (An always-on look here put ~20° between the arrival and settled
     // poses, and every first input paid it as a visible adjust.)
-    // Moonlet arrivals (flythrough: false) aim dead at the body with no pass
-    // to film: no look, nothing for the camera to do but hold the chase.
-    if (destination.flythrough) {
-      this.tmpAimDir
-        .copy(destination.bodyPosition)
-        .sub(destination.position);
-      const arrivalDistanceAU = this.tmpAimDir.distanceTo(this.camera.position);
-      startArrivalLook(this.cruiseAim, moon.name, moon.parentPlanet, arrivalDistanceAU);
-      // Catalog refs for the analytic per-frame moon position (the mesh is
-      // not a legal source: it may be unpainted and untransformed for the
-      // whole veil window).
-      this.arrivalLookMoon = moon;
-      this.arrivalLookParentBody =
-        PLANETARIUM_BODIES.find((b) => b.name === moon.parentPlanet) ?? null;
-    } else {
-      // A moonlet "arrival under way" is a bounce, not an approach: full
-      // thrust crosses the whole standoff in seconds, slides off the
-      // pebble-sized collision shell, and the leave valve slings the moon
-      // out of frame. Park instead — the caller decision the jump funnel
-      // reserves (the same one dev framing and the tutorial use) — with the
-      // body dead-centre; the throttle revives the ship the moment the
-      // player wants to close in.
-      this.player.moving = false;
-    }
+    // Every moon flies: the smallest bodies in the catalogue get the same
+    // pass as the Moon, staged on a miss floor rather than the 1.8-radii
+    // composition (at moonlet scale the widest term is the camera's own
+    // trail length, so that is the miss the ship actually flies).
+    this.tmpAimDir
+      .copy(destination.bodyPosition)
+      .sub(destination.position);
+    const arrivalDistanceAU = this.tmpAimDir.distanceTo(this.camera.position);
+    startArrivalLook(
+      this.cruiseAim,
+      { kind: 'moon', name: moon.name, parentPlanet: moon.parentPlanet },
+      arrivalDistanceAU,
+    );
+    // Catalog refs for the analytic per-frame moon position (the mesh is
+    // not a legal source: it may be unpainted and untransformed for the
+    // whole veil window).
+    this.arrivalLookMoon = moon;
+    this.arrivalLookParentBody =
+      PLANETARIUM_BODIES.find((b) => b.name === moon.parentPlanet) ?? null;
     // Retain the nav moon (applyJumpDestination cleared it above): keeps the
     // dot floor + label if the player takes manual control before arrival.
     this.dotNavMoon = { name: moon.name, parentPlanet: moon.parentPlanet };
@@ -11886,7 +13593,24 @@ export class PlanetariumMode {
     // still unpainted behind the arrival veil, invisible to the
     // visibility-keyed governed set, and one ungoverned 100 ms frame at the
     // in-system default would cross the whole standoff.
-    this.governedMoonSeed = { name: moon.name, parentPlanet: moon.parentPlanet };
+    this.governedMoonSeeds = [{ name: moon.name, parentPlanet: moon.parentPlanet }];
+    const parentForSize = PLANETARIUM_BODIES.find((b) => b.name === moon.parentPlanet);
+    const renderedRForPose = parentForSize
+      ? this.renderedMoonSizeAU(moon.radiusAU, parentForSize.radiusAU, MOON_RENDER_ANCHOR_RATIO)
+      : moon.radiusAU;
+    this.devLastArrivalPose = {
+      body: moon.name,
+      kind: 'moon',
+      position: destination.position.toArray(),
+      aimPoint: destination.lookTarget.toArray(),
+      bodyPosition: destination.bodyPosition.toArray(),
+      aimCenter: destination.aimCenter.toArray(),
+      renderedRAU: renderedRForPose,
+      shellAU: moonCollisionRadius(renderedRForPose, SHIP_CLEARANCE_AU),
+      camDistAU: CRUISE_CAM_DIST_AU,
+      standoffAU: destination.position.distanceTo(destination.bodyPosition),
+      bAU: destination.impactParameterAU,
+    };
   }
 
   private applyJumpDestination(
@@ -11898,6 +13622,8 @@ export class PlanetariumMode {
     clearArrivalLook(this.cruiseAim);
     this.arrivalLookMoon = null;
     this.arrivalLookParentBody = null;
+    // Seeds die with the old scene; the jump that needs them re-seeds after.
+    this.governedMoonSeeds = [];
     // A jump to a different body drops the retained nav moon; a moon jump
     // re-sets it right after (jumpToMoon), so a planet jump is the clearing case.
     this.dotNavMoon = null;
@@ -11905,7 +13631,7 @@ export class PlanetariumMode {
     // the standoff this jump is leaving, and a moon jump re-seeds it right
     // after (jumpToMoon). Left set, it would cost a catalog lookup and a
     // Kepler solve three times a frame for a moon nobody is near.
-    this.governedMoonSeed = null;
+    this.governedMoonSeeds = [];
     // A jump supersedes the pilot. Autopilot re-aims at its own target every
     // frame, so an engaged pilot surviving the teleport snaps the heading back
     // to the OLD destination one frame after the pose below — you arrive at a
@@ -11957,7 +13683,7 @@ export class PlanetariumMode {
    * rendered size comes from the catalog through the render curve, not the
    * live mesh (scale is still 1 in never-visited systems). The pose
    * math itself — apparent-size standoff, sun-side/outward placement, flyby
-   * aim — lives in arrivalLogic.moonArrivalPose (pure, catalog-swept in its
+   * aim — lives in arrivalLogic.arrivalPose (pure, catalog-swept in its
    * tests); the lookTarget is the flyby aim point, not the moon's center.
    */
   private getMoonJumpDestination(moon: MoonData) {
@@ -11965,16 +13691,52 @@ export class PlanetariumMode {
     const parentPosRaw = this.planetWorldPositions.get(moon.parentPlanet);
     if (!parentBody || !parentPosRaw) return null;
     const parentPos = new THREE.Vector3(parentPosRaw.x, parentPosRaw.y, parentPosRaw.z);
+    const nowMs = this.timeState.currentUtcMs;
+    const VEL_DT_MS = 60_000;
     const offset = this.getMoonWorldOffsetAU(moon, parentBody, new THREE.Vector3());
     const parentCollision = this.getPlanetCollisionRadius(parentBody.name, parentBody.radiusAU, this.planetScale);
     const ring = RING_CONFIGS[parentBody.name];
     const bodyPosition = offset.clone().add(parentPos);
-    const pose = moonArrivalPose({
-      moonPos: bodyPosition,
+
+    // The one-shot aim lead wants the moon's TOTAL heliocentric velocity
+    // (parent's orbit + the moon's own): the aim must land where the moon
+    // really is at closest approach. The lane bodies below are
+    // TARGET-RELATIVE instead — the scorer's frame holds the target frozen.
+    const futureParent = computeBodyState(parentBody, nowMs + VEL_DT_MS).positionAU;
+    const targetOff1 = new THREE.Vector3();
+    computeMoonOffsetEquatorialAU(moon.name, parentBody.name, nowMs + VEL_DT_MS, targetOff1);
+    const targetOrbitalVel = targetOff1.clone().sub(offset).multiplyScalar(1000 / VEL_DT_MS);
+    const targetVelAUPerS = new THREE.Vector3(
+      futureParent.x - parentPos.x,
+      futureParent.y - parentPos.y,
+      futureParent.z - parentPos.z,
+    ).multiplyScalar(1000 / VEL_DT_MS).add(targetOrbitalVel);
+
+    // Sibling moons contest the lane (co-orbitals, conjunctions): relative
+    // velocity = sibling orbital − target orbital (the shared parent motion
+    // cancels in the frozen-target frame).
+    const laneBodies: LaneBody[] = [];
+    const off0 = new THREE.Vector3();
+    const off1 = new THREE.Vector3();
+    for (const m of MOONS) {
+      if (m.parentPlanet !== moon.parentPlanet || m.name === moon.name) continue;
+      computeMoonOffsetEquatorialAU(m.name, parentBody.name, nowMs, off0);
+      computeMoonOffsetEquatorialAU(m.name, parentBody.name, nowMs + VEL_DT_MS, off1);
+      laneBodies.push({
+        pos: off0.clone().add(parentPos),
+        velAUPerS: off1.sub(off0).multiplyScalar(1000 / VEL_DT_MS).sub(targetOrbitalVel),
+        governedRadiusAU: this.renderedMoonSizeAU(
+          m.radiusAU, parentBody.radiusAU, MOON_RENDER_ANCHOR_RATIO,
+        ),
+      });
+    }
+
+    const pose = arrivalPose({
+      targetPos: bodyPosition,
       parentPos,
       orbitR: offset.length(),
-      // Flythrough anchor deliberately: jumps commit from cruise, where the
-      // flythrough anchor is the size the arriving player will see.
+      // Flyby anchor deliberately: jumps commit from cruise, where the
+      // flyby anchor is the size the arriving player will see.
       renderedR: this.renderedMoonSizeAU(moon.radiusAU, parentBody.radiusAU, MOON_RENDER_ANCHOR_RATIO),
       parentCollision,
       // Rings render as a flat disc, but a spherical clearance is simpler and
@@ -11985,12 +13747,19 @@ export class PlanetariumMode {
       ),
       camDist: CRUISE_CAM_DIST_AU,
       shipClearance: SHIP_CLEARANCE_AU,
+      targetVelAUPerS,
+      timeRate: this.timeState.rate,
+      commandedAUPerS: this.postJumpCommandedAUPerS(
+        bodyPosition.distanceTo(parentPos), parentBody.systemRadiusAU,
+      ),
+      laneBodies,
     });
     return {
       position: pose.position,
       lookTarget: pose.aimPoint,
       bodyPosition,
-      flythrough: pose.flythrough,
+      impactParameterAU: pose.impactParameterAU,
+      aimCenter: pose.aimCenter,
     };
   }
 
@@ -12001,6 +13770,10 @@ export class PlanetariumMode {
    */
   devJumpToBody(name: string, distanceMultiplier = 1): boolean {
     if (!this.solarSystem) return false;
+    // A real jump returns the camera to the cruise rig: a preceding dev pose
+    // (devFrameBody and friends) must not leave the rig detached, or every
+    // later arrival aims nothing.
+    this.devFreeCamera = false;
     if (name === 'Sun') {
       this.jumpToSun({ notify: false });
       this.player.moving = false; // hold position so the body stays centered for capture
@@ -12008,7 +13781,7 @@ export class PlanetariumMode {
     }
     const mesh = this.solarSystem.planets.find((p) => p.data.name === name);
     if (!mesh) return false;
-    this.jumpToPlanet(mesh.data, { notify: false, distanceMultiplier });
+    this.jumpToPlanet(mesh.data, { notify: false, distanceMultiplier, pose: 'postcard' });
     this.player.moving = false; // hold position so the body stays centered for capture
     return true;
   }
@@ -12171,6 +13944,14 @@ export class PlanetariumMode {
    * the only view where the back-lit crescent (warm terminator + Mie forward
    * scatter) shows. `distMul` sets the standoff in body radii (default 5); the
    * Sun QA sweeps it (5/15/114 radii) to reproduce the baseline flyby distances.
+   *
+   * `rollDeg` turns the camera about the Sun line, which leaves the phase angle
+   * exactly where it was and picks WHICH view of the body that phase gives. The
+   * phase alone sweeps one great circle of vantage points and a body's own pole
+   * is generally nowhere on it, so a pose over a pole is unreachable without
+   * this — and a surface term that draws its own ground is at its most exposed
+   * over a pole.
+   *
    * Dev bridge only.
    */
   devFrameBody(
@@ -12180,6 +13961,7 @@ export class PlanetariumMode {
     distMul = 5,
     offNdcX = 0,
     offNdcY = 0,
+    rollDeg = 0,
   ): boolean {
     if (!this.solarSystem) return false;
     // Resolve the Sun, a top-level planet, or a moon (parent world position plus
@@ -12204,7 +13986,15 @@ export class PlanetariumMode {
         if (parentPos) {
           const off = computeMoonOffsetEquatorialAU(name, parentName, this.timeState.currentUtcMs, this.tmpMoonOffset);
           pos = { x: parentPos.x + off.x, y: parentPos.y + off.y, z: parentPos.z + off.z };
-          r = moon.data.radiusAU;
+          // The moon as drawn, not as catalogued: small moons render larger
+          // than life on the size curve, and a pose from the catalog radius
+          // puts the camera inside the rendered body. Off the curve itself
+          // rather than the mesh's current scale, which is stale for a
+          // system the camera has not visited yet.
+          const parent = this.solarSystem.planets.find((p) => p.data.name === parentName);
+          r = parent
+            ? this.renderedMoonSizeAU(moon.data.radiusAU, parent.data.radiusAU, this.moonRenderAnchorRatio(parentName))
+            : moon.data.radiusAU;
         }
         break;
       }
@@ -12221,6 +14011,8 @@ export class PlanetariumMode {
     if (axis.lengthSq() < 1e-6) axis.set(1, 0, 0); // sun line parallel to world up
     axis.normalize();
     const dir = toSun.clone().applyAxisAngle(axis, THREE.MathUtils.degToRad(phaseAngleDeg));
+    // About the sun line, so the phase angle this camera stands at is untouched.
+    if (rollDeg !== 0) dir.applyAxisAngle(toSun, THREE.MathUtils.degToRad(rollDeg));
     this.player.posX = pos.x + dir.x * dist;
     this.player.posY = pos.y + dir.y * dist;
     this.player.posZ = pos.z + dir.z * dist;
@@ -12468,6 +14260,171 @@ export class PlanetariumMode {
     };
   }
 
+  /** Pin the shells to the analytic tier (or null to let the tables decide) and
+   *  report which material each one is wearing now — the A/B a golden pair
+   *  needs, without a second session or a different composer path. */
+  devSetAtmosphereTier(tier: 'analytic' | null, settle = true): Record<string, string> {
+    this.devAtmosphereTier = tier;
+    const wearing: Record<string, string> = {};
+    for (const planet of this.solarSystem?.planets ?? []) {
+      if (!planet.atmosphere) continue;
+      // The pin is an A/B, not a transition: both fades settle at once, so the
+      // pair captures each tier's steady state. `settle: false` is for a
+      // harness that wants to watch the transition itself.
+      this.syncSurfaceAir(planet);
+      if (settle && planet.fx?.air) settleSurfaceAir(planet.fx.air);
+      this.syncAtmosphereShell(planet);
+      const material = planet.atmosphere.material as THREE.ShaderMaterial;
+      wearing[planet.data.name] = material === this.atmosphereShells.get(planet.data.name)?.lut
+        ? 'lut'
+        : 'analytic';
+    }
+    return wearing;
+  }
+
+  /** Headless-QA readback for the atmosphere tables: the tier's state, the
+   *  probe result, and every bake's numbers. */
+  /** What is lighting a body's night side this frame: the Moon's direction, the
+   *  irradiance uniform every surface and the shell read, and the phase angle
+   *  behind it. A night golden is a pose AND a Moon, and this is how the
+   *  capture tool checks it got the Moon it asked for. */
+  devAtmosphereNight(body = 'Earth'): unknown {
+    const planet = this.solarSystem?.planets.find((p) => p.data.name === body);
+    const air = planet?.fx?.air;
+    if (!planet || !air) return null;
+    const dir = air.uMoonDirWorld.value as THREE.Vector3;
+    const irradiance = air.uMoonIrradiance.value as THREE.Vector3;
+    return {
+      body,
+      airOn: (air.uAirDensity.value as number) > 0,
+      moonDirWorld: [dir.x, dir.y, dir.z],
+      moonIrradiance: [irradiance.x, irradiance.y, irradiance.z],
+      // Only while the air is on: with the tier pinned off nothing updates the
+      // Moon, and a value left over from before the pin would read as this
+      // frame's. A capture that records a stale Moon is worse than one that
+      // records none.
+      phaseDeg: (air.uAirDensity.value as number) > 0
+        ? this.moonlightPhase.get(body) ?? null
+        : null,
+    };
+  }
+
+  /** The eclipse casters a body's surfaces and the air in front of them are
+   *  tracing this frame, and the spin its cloud deck is drawn under. A golden
+   *  pose that means to catch an umbra has to be able to say one was there, and
+   *  the deck's frame correction is a rotation nothing else in a capture
+   *  records. Centres are in the body frame, AU, with the caster's radius in w. */
+  devSurfaceCasters(body = 'Earth'): unknown {
+    const planet = this.solarSystem?.planets.find((p) => p.data.name === body);
+    const fx = planet?.fx;
+    if (!planet || !fx) return null;
+    const count = fx.uMoonShadowCount.value;
+    const cloudArgs = planet.cloudsMesh
+      ? surfaceShadingArgsOf(planet.cloudsMesh.material as THREE.Material)
+      : undefined;
+    return {
+      body,
+      count,
+      casters: fx.uMoonShadow.value.slice(0, count).map((c) => [c.x, c.y, c.z, c.w]),
+      cloudFrameSpin: cloudArgs?.uFrameSpin.value ?? null,
+    };
+  }
+
+  devAtmosphereState(): unknown {
+    const lut = this.devAtmosphereLut ?? this.atmosphereLut;
+    if (!lut) return null;
+    return {
+      state: lut.state,
+      capability: lut.capability,
+      probeMs: lut.probeMs,
+      orders: lut.orders,
+      sizes: lut.sizes,
+      programs: this.renderer.info.programs?.length ?? 0,
+      textureBytesResident: this.renderer.info.memory.textures,
+      stats: lut.stats(),
+    };
+  }
+
+  /** Bake one body's tables into a measurement instance — its own targets and
+   *  its own programs, so a harness can time a configuration without becoming
+   *  the tier the app reads. */
+  async devAtmosphereBake(options?: {
+    body?: string;
+    orders?: number;
+    half?: boolean;
+    drawsPerSlice?: number;
+  }): Promise<AtmosphereBakeStats | null> {
+    this.devAtmosphereLut?.dispose();
+    this.devAtmosphereLut = new AtmosphereLut(this.renderer, {
+      register: false,
+      orders: options?.orders,
+      sizes: options?.half ? ATMOSPHERE_TABLE_SIZES_HALF : ATMOSPHERE_TABLE_SIZES_FULL,
+      drawsPerSlice: options?.drawsPerSlice,
+      frameIntervalMs: () => this.frameIntervalMs,
+    });
+    await this.devAtmosphereLut.bake(options?.body ?? 'Earth');
+    const stats = this.devAtmosphereLut.stats();
+    // A failed bake still records its numbers, with `validated: false`.
+    return stats[stats.length - 1] ?? null;
+  }
+
+  /** Read table values back through the 8-bit blit path, at the same table
+   *  coordinates the shaders would address. `combined` returns the radiance a
+   *  lookup gives — both phase functions and the single-Mie recovery, evaluated
+   *  in the shader — and `irradiance` reads the sky-irradiance table. */
+  devAtmosphereSample(
+    samples: ReadonlyArray<{
+      kind: 'transmittance' | 'scattering' | 'combined' | 'irradiance';
+      r: number;
+      mu: number;
+      muS?: number;
+      nu?: number;
+      hitsGround?: boolean;
+      scale?: number;
+    }>,
+    body = 'Earth',
+  ): number[][] | null {
+    const lut = this.devAtmosphereLut ?? this.atmosphereLut;
+    const tables = lut?.tables(body);
+    if (!lut || !tables) return null;
+    const params = atmosphereParams(body);
+    return samples.map((s) => {
+      if (s.kind === 'transmittance') {
+        return lut.readSample({
+          mode: 0,
+          uv: transmittanceUvFromRMu(params, s.r, s.mu, tables.sizes),
+          transmittance: tables.transmittance,
+          params,
+          scale: s.scale ?? 1,
+        });
+      }
+      if (s.kind === 'irradiance') {
+        return lut.readSample({
+          mode: 3,
+          irradiance: tables.irradiance,
+          params,
+          r: s.r,
+          muS: s.muS ?? 1,
+          scale: s.scale ?? 1,
+        });
+      }
+      const uvwz = scatteringUvwzFromRMuMuSNu(
+        params, s.r, s.mu, s.muS ?? 1, s.nu ?? 1, s.hitsGround ?? false, tables.sizes,
+      );
+      const coords = scatteringTexture3DCoords(uvwz, tables.sizes);
+      return lut.readSample({
+        mode: s.kind === 'combined' ? 2 : 1,
+        scattering: tables.scattering,
+        uvw0: coords.uvw0,
+        uvw1: coords.uvw1,
+        nuLerp: coords.lerp,
+        params,
+        nu: s.nu ?? 1,
+        scale: s.scale ?? 1,
+      });
+    });
+  }
+
   /** Headless-QA readback for transient Sun optics and atmospheric grazing. */
   devSunAppearance(): unknown {
     const sunMat = this.solarSystem?.sun.userData.sunMaterial as THREE.ShaderMaterial | undefined;
@@ -12630,7 +14587,7 @@ export class PlanetariumMode {
    * center — the close-approach view where silhouette tessellation shows.
    * Stands on the sunlit side so the limb is lit. Dev bridge only.
    */
-  devLimbView(name: string, kRadii = 1.5, fovDeg = 50): boolean {
+  devLimbView(name: string, kRadii = 1.5, fovDeg = 50, phaseDeg = 0, aimFrac = 1): boolean {
     if (!this.solarSystem) return false;
     const body = this.planetWorldPositions.get(name);
     const r = this.solarSystem.planets.find((p) => p.data.name === name)?.data.radiusAU;
@@ -12638,6 +14595,17 @@ export class PlanetariumMode {
     const d = r * kRadii;
     // Sunward side: the Sun sits at the heliocentric origin of these coords.
     const sunward = new THREE.Vector3(-body.x, -body.y, -body.z).normalize();
+    // phaseDeg swings the stand point away from the Sun in the plane the aim
+    // below builds its tangent in: 0 is the fully lit limb, 90 the terminator
+    // seen edge-on, 180 the night side. Same rig at every angle, so a set of
+    // poses differs only by this number.
+    if (phaseDeg !== 0) {
+      const spinUp = Math.abs(sunward.y) < 0.95
+        ? new THREE.Vector3(0, 1, 0)
+        : new THREE.Vector3(1, 0, 0);
+      const axis = new THREE.Vector3().crossVectors(sunward, spinUp).normalize();
+      sunward.applyAxisAngle(axis, (phaseDeg * Math.PI) / 180).normalize();
+    }
     this.devFreeCamera = true;
     this.player.posX = body.x + sunward.x * d;
     this.player.posY = body.y + sunward.y * d;
@@ -12651,11 +14619,28 @@ export class PlanetariumMode {
     const v = new THREE.Vector3().crossVectors(w, up).normalize();
     const rd = r / d;
     const n = w.clone().multiplyScalar(-rd).addScaledVector(v, Math.sqrt(1 - rd * rd));
-    const tangentOffset = new THREE.Vector3(
+    let tangentOffset = new THREE.Vector3(
       body.x + r * n.x - this.player.posX,
       body.y + r * n.y - this.player.posY,
       body.z + r * n.z - this.player.posZ,
     );
+    // aimFrac swings the aim between straight down (0) and the tangent point
+    // (1, the default and the expression above, kept verbatim so the poses that
+    // use it are unmoved). The angle it lerps is the one AT THE CAMERA, whose
+    // limit is asin(R/d) — 72 degrees from nadir at 1.05 R, so a nadir frame
+    // and a limb frame from the same stand point share no sky at all. What sits
+    // between them is the view along the ground toward the horizon, which is
+    // where aerial perspective actually reads.
+    if (aimFrac < 1) {
+      const limbAngle = Math.asin(Math.min(rd, 1));
+      const aim = w.clone().multiplyScalar(Math.cos(aimFrac * limbAngle))
+        .addScaledVector(v, Math.sin(aimFrac * limbAngle));
+      // Where that aim meets the surface, so the orbit target is a real point
+      // on the body rather than a direction of arbitrary length.
+      const along = d * aim.dot(w);
+      const hit = along - Math.sqrt(Math.max(along * along - (d * d - r * r), 0));
+      tangentOffset = aim.multiplyScalar(hit > 0 ? hit : d - r);
+    }
     const cam = this.camera as THREE.PerspectiveCamera;
     cam.position.set(0, 0, 0);
     // applyDesignFov (via setDisplayFov) is the only legal camera.fov writer
@@ -12688,6 +14673,24 @@ export class PlanetariumMode {
   }
 
   /** Headless-screenshot diagnostics: read back camera/body geometry. */
+  /** DEV: the authored pose of the last teleport arrival (see field). */
+  devArrivalPose(): unknown {
+    return this.devLastArrivalPose;
+  }
+
+  /** DEV: which governed body owned the speed cap on the last cruise frame.
+   *  `binding` is the honest read — the minimum cap constrains nothing while
+   *  it still sits above the commanded speed (a coasting giant approach
+   *  reports its moonlets as owners all the way in without ever slowing). */
+  devGovernorOwner(): unknown {
+    if (!this.devCapOwner) return null;
+    return {
+      name: this.devCapOwner.name,
+      capKmS: this.devCapOwner.capAUPerS * KM_PER_AU,
+      binding: this.devCapOwner.capAUPerS < this.player.commandedSpeedAUPerS * 0.999,
+    };
+  }
+
   devProbe(name: string): unknown {
     let pos = this.planetWorldPositions.get(name) ?? null;
     const mesh = this.solarSystem?.planets.find((p) => p.data.name === name);
@@ -12713,13 +14716,60 @@ export class PlanetariumMode {
     // reads), and whether its label is shown. Null for a planet (no dot/label).
     let dotScreenAlpha: number | null = null;
     let dotLitScreenAlpha: number | null = null;
+    let renderedRadiusAU = mesh ? mesh.data.radiusAU * mesh.group.scale.x : null;
+    // Whether the body is on screen as a body at all: a moon draws only once
+    // its painter has finished it, and a harness that poses on a moon it has
+    // just jumped to would otherwise capture whatever stands behind it.
+    let shown: boolean | null = mesh ? mesh.group.visible : null;
     for (const moons of this.planetMoons.values()) {
       const mm = moons.find((x) => x.data.name === name);
       if (mm) {
         dotScreenAlpha = mm.dotScreenAlpha ?? 0;
         dotLitScreenAlpha = mm.dotLitScreenAlpha ?? 0;
+        renderedRadiusAU = mm.data.radiusAU * mm.mesh.scale.x;
+        shown = mm.painted && mm.mesh.visible;
         break;
       }
+    }
+    // Where the body actually sits on screen this frame. Distance alone
+    // cannot say whether a body is being SHOWN, and "is the destination in
+    // frame" is the question every arrival and departure has to answer.
+    let screen: {
+      x: number; y: number; ndcX: number; ndcY: number;
+      diameterPx: number; fraction: number; inFrame: boolean;
+    } | null = null;
+    if (pos && renderedRadiusAU !== null) {
+      const el = this.renderer.domElement;
+      const w = el.clientWidth;
+      const h = el.clientHeight;
+      const p = projectSphereToScreen(
+        new THREE.Vector3(
+          pos.x - this.renderOriginAU.x,
+          pos.y - this.renderOriginAU.y,
+          pos.z - this.renderOriginAU.z,
+        ),
+        renderedRadiusAU,
+        cam,
+        w,
+        h,
+        this.sphereScreenProjection,
+      );
+      screen = {
+        x: p.x,
+        y: p.y,
+        ndcX: p.ndcX,
+        ndcY: p.ndcY,
+        diameterPx: p.diameterPx,
+        // Same fraction the texture ladder scores bodies by: disc diameter
+        // over viewport height.
+        fraction: p.diameterPx / Math.max(h, 1),
+        // Any part of the disc's footprint overlapping the viewport counts,
+        // and a body behind the camera projects to a point footprint out of
+        // bounds rather than a covering one.
+        inFrame:
+          p.footprintKind !== 'none' &&
+          p.maxX >= 0 && p.minX <= w && p.maxY >= 0 && p.minY <= h,
+      };
     }
     const lbl = this.moonLabels.get(name);
     const labelVisible = lbl ? lbl.style.display !== 'none' : null;
@@ -12748,7 +14798,19 @@ export class PlanetariumMode {
       userOrbiting: this.camOwner === 'orbit', // forensics back-compat
       dotScreenAlpha,
       dotLitScreenAlpha,
+      shown,
       labelVisible,
+      renderedRadiusAU,
+      screen,
+      // Whether the flyby's tracking look still owns the aim, and whether it
+      // has latched into the post-pass hold (see cruiseAim.ts).
+      look: this.cruiseAim.look
+        ? {
+            name: this.cruiseAim.look.name,
+            holding: this.cruiseAim.look.hold.holding,
+            releasing: this.cruiseAim.look.releaseElapsedS !== null,
+          }
+        : null,
     };
   }
 
@@ -12876,6 +14938,9 @@ export class PlanetariumMode {
    */
   devLand(name: string): boolean {
     if (!this.solarSystem) return false;
+    // The landing (and the cruise that follows takeoff) owns the camera — take
+    // it back from any dev pose.
+    this.devFreeCamera = false;
     if (this.solarSystem.planets.some((p) => p.data.name === name)) {
       this.enterLandedMode({ type: 'planet', name });
       return true;
@@ -12906,7 +14971,11 @@ export class PlanetariumMode {
         }
       }
     }
-    return target ? this.commitBodyPick('travel', target, {}) : false;
+    if (!target) return false;
+    // The pick pipeline owns the camera for a travel, exactly as it does for a
+    // user gesture — take it back from any dev pose so the arrival aim engages.
+    this.devFreeCamera = false;
+    return this.commitBodyPick('travel', target, {});
   }
 
   /** Headless support: an Observatory relocation through the REAL pick
@@ -12927,7 +14996,10 @@ export class PlanetariumMode {
         }
       }
     }
-    return target ? this.commitBodyPick('observe', target, {}) : false;
+    if (!target) return false;
+    // Same camera handback as devTravelTo: the relocation owns the camera.
+    this.devFreeCamera = false;
+    return this.commitBodyPick('observe', target, {});
   }
 
   /** Headless support: enter the volume-compare tool through the REAL gate, so a
@@ -14783,7 +16855,7 @@ export class PlanetariumMode {
     ups: readonly TextureUpgrade[] = this.landedPairUpgrades(),
   ): Array<{ up: TextureUpgrade; generation: number }> {
     return ups.flatMap((up) =>
-      up.attempt && up.attempt.tier === firstUpgradeTier(up)
+      up.attempt && up.attempt.tier === arrivalUpgradeTier(up)
         ? [{ up, generation: up.attempt.generation }]
         : [],
     );
@@ -14810,6 +16882,11 @@ export class PlanetariumMode {
   ): void {
     if (this.arrivalInFlight) return;
     const landingUpgrades = this.landingPairUpgrades(target);
+    // Where the ship is going, from the moment the player commits until the
+    // arrival has been over for a beat. Nothing takes this body's maps back
+    // in between — the ladder is climbing them for a view that is about to
+    // fill the screen.
+    this.travelProtect = { ups: landingUpgrades, doneAtMs: null };
     let upgradeCover = false;
     // Every arrival — landing OR cruise jump — covers the pair's first
     // steps. Cruise jumps used to skip this, and the warm-up's pre-fetched
@@ -14875,7 +16952,7 @@ export class PlanetariumMode {
     // goal — the companion's higher rungs stay demand-driven.
     for (const up of this.landingPairUpgrades(target)) {
       if (targetUps.includes(up)) continue;
-      const first = firstUpgradeTier(up);
+      const first = arrivalUpgradeTier(up);
       if (first) upgradeTextureOnApproach(up, first, nowMs);
     }
     // First rung starts now — under the veil, or with the teleport cut.
@@ -14902,6 +16979,24 @@ export class PlanetariumMode {
   private pumpArrivalWarmGoals(): void {
     if (this.arrivalWarmUps.length === 0) return;
     const nowMs = performance.now();
+    // A goal blocked for want of memory is the arrival's, not the session's:
+    // it stays armed while a release might still make room for it, but only
+    // while the arrival it was armed for is what the session is doing, so a
+    // fly-past cannot leave a goal pumping for a body over the horizon. With
+    // nothing squeezing the ladder there is no such wait — the goal is the
+    // ordinary staged climb, which over a slow link outlasts any arrival
+    // grace — so the box does not apply.
+    const over = arrivalWarmGoalsExpired(
+      this.pressureSinceMs !== null,
+      this.travelProtect,
+      nowMs,
+      PlanetariumMode.TRAVEL_PROTECT_GRACE_MS,
+    );
+    if (over) {
+      for (const up of this.arrivalWarmUps) disarmArrivalWarmGoal(up);
+      this.arrivalWarmUps.length = 0;
+      return;
+    }
     let keep = 0;
     for (const up of this.arrivalWarmUps) {
       if (pumpArrivalWarmGoal(up, nowMs)) this.arrivalWarmUps[keep++] = up;
@@ -14940,6 +17035,11 @@ export class PlanetariumMode {
         // may only outlive the approach it was armed for on the body the
         // player is still headed to.
         disarmArrivalWarmGoal(up);
+      } else if (up.release) {
+        // A swap down started before the commit must not land on the body
+        // the player is arriving at.
+        cancelTierRelease(up);
+        if (this.releasing === up) this.releasing = null;
       }
     }
     // Every sector tile goes now, destination included: a tile upload for
@@ -15005,7 +17105,7 @@ export class PlanetariumMode {
           // resident system instead of stalling once per big map.
           if (systemName) {
             this.queueSystemMoonMapsForWarm(systemName);
-            pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+            pumpTextureWarmQueue(Number.POSITIVE_INFINITY, this.frameIntervalMs);
             this.warmedSystems.add(systemName);
           }
           // Take the hold's wait-list once, now that the arrival has started
@@ -15042,7 +17142,7 @@ export class PlanetariumMode {
             // away here is what used to pin a body to its boot map for the rest
             // of the session.
             for (const e of pending) cancelTextureUpgrade(e.up, 'keep');
-            pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+            pumpTextureWarmQueue(Number.POSITIVE_INFINITY, this.frameIntervalMs);
             // Hold the cover until the painted, teleported scene has rendered
             // (the landed/jumped system first appears on the next
             // update→render) and at least the min dwell, so a fast machine
@@ -15091,7 +17191,7 @@ export class PlanetariumMode {
     // pre-landing deflection.
     clearArrivalLook(this.cruiseAim);
     cutAim(this.cruiseAim);
-    this.contactAimActive = false;
+    this.governedMoonSeeds = [];
     this.arrivalLookMoon = null;
     this.arrivalLookParentBody = null;
     // Landing (and the landed→landed vantage swap) can flip the Sun's exposed
@@ -15102,7 +17202,7 @@ export class PlanetariumMode {
     // keep flooring a moon you have just parked at) and the governed moon
     // seed, which only ever stands in for a moon the ship is parked beside.
     this.dotNavMoon = null;
-    this.governedMoonSeed = null;
+    this.governedMoonSeeds = [];
     // Every landing path funnels through here (enterLandedMode, restoreState,
     // the Observatory menu's landed→landed re-land) — clearing the vantage
     // pair here, not per call site, is what keeps a stale pair from
@@ -15140,7 +17240,7 @@ export class PlanetariumMode {
     // the first step — the tiers above it ride the on-screen trigger, so no
     // goal can hold a landing behind its cover.
     for (const up of this.landedPairUpgrades()) {
-      const first = firstUpgradeTier(up);
+      const first = arrivalUpgradeTier(up);
       if (first) upgradeTextureOnApproach(up, first);
     }
     // The reticle's screen position belongs to the previous target — drop it
@@ -15160,7 +17260,7 @@ export class PlanetariumMode {
       if (body) this.surfacePoleAxis.copy(raDecToVector(body.poleRaDeg, body.poleDecDeg)).normalize();
     } else if (target.type === 'moon') {
       // Observatory magnifies the moon to a fixed screen fraction, so re-render
-      // its procedural texture sharper than the flythrough baseline. No-op for
+      // its procedural texture sharper than the flyby baseline. No-op for
       // photo moons / already-sharp ones; fail-closed; the upgrade stays for the
       // session.
       const moons = this.planetMoons.get(target.parentPlanet);
@@ -15819,7 +17919,7 @@ export class PlanetariumMode {
 
     const shouldRefreshUi = this.tickFrameCadence(dt);
 
-    this.updatePlanetDetailFades();
+    this.updatePlanetScaling();
     this.reassertShipProfile();
     this.updateMoonPositions(dt);
     // Same same-frame-geometry rule as the cruise path — and the landed
@@ -15829,11 +17929,7 @@ export class PlanetariumMode {
     // should fetch for it.
     // World-presentation passes are gated while the map owns the frame.
     const mapOpen = this.isMapOpen();
-
-    if (!mapOpen) {
-      this.updateBodyLOD();
-      this.updateSectorStreaming();
-    }
+    this.updateMemoryPasses(mapOpen);
     // Shadow spots/guides live in the world scene, which the map never draws —
     // same gate as the cruise branch, and they rebuild on the first frame back.
     if (!mapOpen) this.updateShadowVisuals();
@@ -15970,11 +18066,12 @@ export class PlanetariumMode {
     // Clear + cut: a restore reposes the whole journey absolutely.
     clearArrivalLook(this.cruiseAim);
     cutAim(this.cruiseAim);
+    this.governedMoonSeeds = [];
     this.arrivalLookMoon = null;
     this.arrivalLookParentBody = null;
     // The seed describes a moon the ship was parked beside; a restore puts it
     // somewhere else entirely.
-    this.governedMoonSeed = null;
+    this.governedMoonSeeds = [];
     this.player.posX = saved.positionAU.x;
     this.player.posY = saved.positionAU.y;
     this.player.posZ = saved.positionAU.z;
@@ -16110,7 +18207,7 @@ export class PlanetariumMode {
    */
   private resolveAutopilotMoonInputs(
     target: NonNullable<LandedTarget>,
-  ): MoonArrivalInputs | null {
+  ): ArrivalInputs | null {
     if (target.type !== 'moon') return null;
     // Served from the fill already made for this moon pass. The pilot and the
     // glide cap ask before the frame's moon refill and the arrival check after
@@ -16137,9 +18234,9 @@ export class PlanetariumMode {
     if (!mesh.painted || !mesh.mesh.visible) return null;
 
     const inp = this.tmpAutopilotInputs;
-    inp.moonPos.set(wp.x, wp.y, wp.z);
+    inp.targetPos.set(wp.x, wp.y, wp.z);
     inp.parentPos.set(parentPos.x, parentPos.y, parentPos.z);
-    inp.orbitR = inp.moonPos.distanceTo(inp.parentPos);
+    inp.orbitR = inp.targetPos.distanceTo(inp.parentPos);
     // Live rendered radius (true size, or the render curve's size below the
     // anchor) — the sphere the arriving player actually sees, same as the
     // governor uses in forEachGovernedMoon.
@@ -16170,27 +18267,27 @@ export class PlanetariumMode {
     // target.
     const inp = this.resolveAutopilotMoonInputs(this.autopilotTarget);
     if (inp) {
-      const standoff = moonArrivalStandoffAU(inp);
-      const dx = inp.moonPos.x - this.player.posX;
-      const dy = inp.moonPos.y - this.player.posY;
-      const dz = inp.moonPos.z - this.player.posZ;
+      const standoff = arrivalStandoffAU(inp);
+      const dx = inp.targetPos.x - this.player.posX;
+      const dy = inp.targetPos.y - this.player.posY;
+      const dz = inp.targetPos.z - this.player.posZ;
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
       if (dist < 3 * standoff) {
         const blend = autopilotAimBlend(dist, standoff);
         const staleSq = (0.02 * standoff) ** 2;
         if (
           this.autopilotAimFor !== this.autopilotTarget.name ||
-          this.autopilotAimMoonPos.distanceToSquared(inp.moonPos) > staleSq
+          this.autopilotAimMoonPos.distanceToSquared(inp.targetPos) > staleSq
         ) {
-          this.autopilotAim.copy(moonArrivalPose(inp).aimPoint);
-          this.autopilotAimMoonPos.copy(inp.moonPos);
+          this.autopilotAim.copy(arrivalPose(inp).aimPoint);
+          this.autopilotAimMoonPos.copy(inp.targetPos);
           this.autopilotAimFor = this.autopilotTarget.name;
         }
         const aim = this.autopilotAim;
         this.player.headTowardPoint(
-          inp.moonPos.x + (aim.x - inp.moonPos.x) * blend,
-          inp.moonPos.y + (aim.y - inp.moonPos.y) * blend,
-          inp.moonPos.z + (aim.z - inp.moonPos.z) * blend,
+          inp.targetPos.x + (aim.x - inp.targetPos.x) * blend,
+          inp.targetPos.y + (aim.y - inp.targetPos.y) * blend,
+          inp.targetPos.z + (aim.z - inp.targetPos.z) * blend,
         );
         return;
       }
@@ -16207,6 +18304,10 @@ export class PlanetariumMode {
       flushOrbitDamping(this.controls);
       this.camOwner = 'reacquiring';
     }
+    // Same reason, same frame: naming a new destination is the pilot
+    // composing their next shot, so a fly-by look still holding the last
+    // body hands back here too — eased, like every other input handback.
+    releaseArrivalLook(this.cruiseAim);
     // Retain the nav moon so its dot floor + label survive a manual-steering
     // disengage on final approach; a planet engage clears it (nav moved off a
     // moon). Kept through disengageAutopilot — that's the point.
@@ -16297,7 +18398,7 @@ export class PlanetariumMode {
       // threshold — the parent-fallback position has no meaningful standoff.
       const inp = this.resolveAutopilotMoonInputs(this.autopilotTarget);
       if (inp) {
-        arrived = autopilotArrived(dist, moonArrivalStandoffAU(inp));
+        arrived = autopilotArrived(dist, arrivalStandoffAU(inp));
       } else {
         // The unresolvable branch is the only arrival distance in the file
         // measured on the CATALOG radius rather than the rendered or shell
@@ -16386,6 +18487,23 @@ export class PlanetariumMode {
           ? ((this.timeState.currentUtcMs / 3_600_000) * 0.02) % (Math.PI * 2)
           : 0;
         planet.cloudsMesh.rotation.y = cloudDrift;
+        // The deck's shading traces the eclipse casters and the ring plane in
+        // the BODY frame, and this drift is exactly how far its own object
+        // space has turned out of it. Unfed, a moon's umbra would land on the
+        // clouds at a longitude of its own.
+        const cloudArgs = surfaceShadingArgsOf(planet.cloudsMesh.material as THREE.Material);
+        if (cloudArgs) cloudArgs.uFrameSpin.value = cloudDrift;
+        // The same drift, and whichever rung the deck is currently wearing, for
+        // the ocean's glint under it: the globe and its sectors read the deck's
+        // map to cut the Sun's beam where cloud stands over the sea, and the map
+        // they read has to be the one being drawn or the cut lands at the wrong
+        // sharpness. Written here rather than at build time because the deck
+        // climbs its texture ladder on approach and frees the rung it leaves.
+        if (body.name === 'Earth') {
+          cloudShadowUniforms.uCloudShadowSpin.value = cloudDrift;
+          const deckMap = (planet.cloudsMesh.material as THREE.MeshStandardMaterial).map;
+          if (deckMap) cloudShadowUniforms.uCloudShadowMap.value = deckMap;
+        }
       }
       const localSunDir = this.tmpLocalSunDir
         .copy(state.sunDirection)

@@ -32,6 +32,8 @@ import {
 } from '../planetarium/PlanetFactory';
 import { augmentSurfaceMaterial, type SurfaceArchetype } from '../planetarium/world/surfaceShading';
 import { createPlanetariumStarfield, setStarfieldPixelRatio } from '../planetarium/world/starfield';
+import { captureDeviceCaps } from '../planetarium/world/texturePolicy';
+import { profileForDevice, readDeviceSignals } from '../planetarium/world/gpuEnvelope';
 import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from '../planetarium/planets/planetData';
 import { MOONS, type MoonData } from '../planetarium/planets/moonData';
 import { mouthGeometry, SpherePhysics, defaultPhysicsParams, PACK_CEILING } from './spherePhysics';
@@ -1354,6 +1356,7 @@ export class CompareScene {
   readonly group: THREE.Group;
   private scene: THREE.Scene;
   private renderer: THREE.WebGLRenderer;
+  private capsCaptured = false;
 
   private keyLight: THREE.PointLight;
   private fillLight: THREE.HemisphereLight;
@@ -1905,11 +1908,19 @@ export class CompareScene {
    * resolve, new textures are assigned before the outgoing pair's are disposed,
    * so no frame ever samples freed memory.
    *
-   * Anisotropy and tier caps come from the capture the Planetarium made on this
-   * same renderer at boot (it always comes up first). Re-capturing here would
-   * only risk answering the device-class question a second, different way.
+   * Anisotropy, tier caps and the memory profile are captured once per
+   * session, by whichever mode opens first; a later capture gets that same
+   * snapshot back, so the device-class question is only ever answered one way.
    */
   async applyPair(comparison: Comparison, container: string, filler: string, isStale: () => boolean): Promise<void> {
+    if (!this.capsCaptured) {
+      // Whichever mode the session opens first captures; the other gets that
+      // same snapshot back. This used to read a bare touchscreen test of its
+      // own and overwrite the planetarium's profile for the rest of the
+      // session.
+      captureDeviceCaps(this.renderer, profileForDevice(readDeviceSignals(this.renderer.getContext())));
+      this.capsCaptured = true;
+    }
     const [ghost, fillerTex] = await Promise.all([
       container === 'Sun' ? Promise.resolve(null) : this.loadGhost(container),
       filler === 'Sun' ? Promise.resolve(null) : this.loadBodyColor(filler),
@@ -3816,7 +3827,11 @@ function makeAtmosphereGhost(config: AtmosphereConfig): THREE.Mesh {
   const geo = new THREE.SphereGeometry(CONTAINER_R * config.scale, 128, 64);
   // The shared assembly, keyed to the studio light at the ghost's fixed
   // presence — this material is never fed per frame.
-  const mat = createAtmosphereMaterial(config, CONTAINER_R, {
+  // Analytic, always: the ghost is a studio prop at container scale with a
+  // fixed key light and no per-frame feed, so a shell keyed to a real
+  // atmosphere top, a real sun and a body's baked tables would mean nothing
+  // here — and ?auto=volumeCompare never bakes any.
+  const mat = createAtmosphereMaterial(config, CONTAINER_R, 'analytic', {
     initialAlpha: ATMOSPHERE_GHOST_ALPHA,
     initialSunDir: KEY_LIGHT_DIR,
   });

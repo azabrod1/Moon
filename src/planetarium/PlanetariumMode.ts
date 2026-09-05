@@ -13766,7 +13766,15 @@ export class PlanetariumMode {
         if (parentPos) {
           const off = computeMoonOffsetEquatorialAU(name, parentName, this.timeState.currentUtcMs, this.tmpMoonOffset);
           pos = { x: parentPos.x + off.x, y: parentPos.y + off.y, z: parentPos.z + off.z };
-          r = moon.data.radiusAU;
+          // The moon as drawn, not as catalogued: small moons render larger
+          // than life on the size curve, and a pose from the catalog radius
+          // puts the camera inside the rendered body. Off the curve itself
+          // rather than the mesh's current scale, which is stale for a
+          // system the camera has not visited yet.
+          const parent = this.solarSystem.planets.find((p) => p.data.name === parentName);
+          r = parent
+            ? this.renderedMoonSizeAU(moon.data.radiusAU, parent.data.radiusAU, this.moonRenderAnchorRatio(parentName))
+            : moon.data.radiusAU;
         }
         break;
       }
@@ -14489,12 +14497,17 @@ export class PlanetariumMode {
     let dotScreenAlpha: number | null = null;
     let dotLitScreenAlpha: number | null = null;
     let renderedRadiusAU = mesh ? mesh.data.radiusAU * mesh.group.scale.x : null;
+    // Whether the body is on screen as a body at all: a moon draws only once
+    // its painter has finished it, and a harness that poses on a moon it has
+    // just jumped to would otherwise capture whatever stands behind it.
+    let shown: boolean | null = mesh ? mesh.group.visible : null;
     for (const moons of this.planetMoons.values()) {
       const mm = moons.find((x) => x.data.name === name);
       if (mm) {
         dotScreenAlpha = mm.dotScreenAlpha ?? 0;
         dotLitScreenAlpha = mm.dotLitScreenAlpha ?? 0;
         renderedRadiusAU = mm.data.radiusAU * mm.mesh.scale.x;
+        shown = mm.painted && mm.mesh.visible;
         break;
       }
     }
@@ -14565,6 +14578,7 @@ export class PlanetariumMode {
       userOrbiting: this.camOwner === 'orbit', // forensics back-compat
       dotScreenAlpha,
       dotLitScreenAlpha,
+      shown,
       labelVisible,
       renderedRadiusAU,
       screen,

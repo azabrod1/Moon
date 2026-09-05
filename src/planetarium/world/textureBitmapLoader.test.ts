@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import {
+  bitmapDecodePath,
   loadStreamedTexture,
+  PROBE_TIMEOUT_MS,
+  releaseBootWarmResponses,
   setBitmapProbeForTests,
   takeBootWarmResponse,
   textureLoader,
   TextureTransportError,
+  warmBitmapUploadProbe,
 } from './textureBitmapLoader';
 
 /** A minimal ImageBitmap stand-in the loader can wrap and close. */
@@ -82,7 +86,6 @@ describe('loadStreamedTexture', () => {
     expect(tex.flipY).toBe(false);
     expect(tex.name).toBe('b.jpg');
     expect(tex.userData.sourceUrl).toBe('textures/maps/b.jpg?v=2');
-    expect(tex.userData.bitmapPreFlipped).toBe(true);
     // Disposal is the end of the texture's life — the decoded bitmap goes too.
     tex.dispose();
     expect(bitmap.close).toHaveBeenCalledTimes(1);
@@ -240,14 +243,131 @@ describe('loadStreamedTexture after the worker retires', () => {
     FakeWorker.instances[0].onerror!({ message: 'worker died' });
     await flush();
     expect(bitmapDecodePath()).toBe('main-thread');
-    // The request the worker dropped spent its one loader fallback.
-    expect(calls.map((c) => c.url)).toEqual(['textures/w.jpg']);
+    // The bytes were already fetched, so the dropped request finishes on this
+    // thread rather than paying a second download through the loader.
+    expect(calls).toHaveLength(0);
+    expect(mainDecode).toHaveBeenCalledTimes(1);
     const onLoad = vi.fn();
     loadStreamedTexture('textures/y.jpg', onLoad, vi.fn());
     await flush();
     await flush();
     expect(mainDecode).toHaveBeenCalledWith(expect.any(Blob), { imageOrientation: 'flipY', premultiplyAlpha: 'none' });
     expect(onLoad).toHaveBeenCalled();
+  });
+});
+
+describe('the flip probe itself', () => {
+  /** A worker that takes every request and never answers. */
+  class StalledWorker {
+    static instances: StalledWorker[] = [];
+    onmessage: ((e: { data: unknown }) => void) | null = null;
+    onerror: ((e: { message: string }) => void) | null = null;
+    onmessageerror: (() => void) | null = null;
+    posted: unknown[] = [];
+    terminated = false;
+    constructor() {
+      StalledWorker.instances.push(this);
+    }
+    postMessage(msg: unknown) { this.posted.push(msg); }
+    terminate() { this.terminated = true; }
+  }
+
+  /** A GL double for the probe's upload-and-read-back check. `px` is what
+   *  readPixels hands back; null means the framebuffer never completes, which
+   *  is how a real device tells the probe to try the canvas instead. */
+  function fakeRenderer(px: number[] | null): THREE.WebGLRenderer {
+    const gl = {
+      TEXTURE_BINDING_2D: 1, FRAMEBUFFER_BINDING: 2, UNPACK_FLIP_Y_WEBGL: 3,
+      UNPACK_PREMULTIPLY_ALPHA_WEBGL: 4, UNPACK_COLORSPACE_CONVERSION_WEBGL: 5,
+      TEXTURE_2D: 6, RGBA: 7, UNSIGNED_BYTE: 8, TEXTURE_MIN_FILTER: 9,
+      TEXTURE_MAG_FILTER: 10, NEAREST: 11, FRAMEBUFFER: 12, COLOR_ATTACHMENT0: 13,
+      FRAMEBUFFER_COMPLETE: 14, NONE: 0, NO_ERROR: 0,
+      getParameter: () => null,
+      createTexture: () => ({}),
+      createFramebuffer: () => ({}),
+      bindTexture() {}, pixelStorei() {}, texImage2D() {}, texParameteri() {},
+      framebufferTexture2D() {},
+      checkFramebufferStatus: () => (px ? 14 : 0),
+      readPixels: (_x: number, _y: number, _w: number, _h: number, _f: number, _t: number, out: Uint8Array) => {
+        out.set(px!);
+      },
+      getError: () => 0,
+      deleteFramebuffer() {}, deleteTexture() {},
+    };
+    return {
+      getContext: () => gl,
+      state: { bindFramebuffer() {} },
+    } as unknown as THREE.WebGLRenderer;
+  }
+
+  /** A canvas whose 2D context reports `px`, for the no-framebuffer path. */
+  function stubCanvas(px: number[]): void {
+    vi.stubGlobal('document', {
+      createElement: () => ({
+        width: 0, height: 0,
+        getContext: () => ({
+          drawImage() {},
+          getImageData: () => ({ data: Uint8ClampedArray.from(px) }),
+        }),
+      }),
+    });
+  }
+
+  const INVERTED = [0, 0, 0, 255, 255, 255, 255, 255];
+  const BLANK = [0, 0, 0, 0, 0, 0, 0, 0];
+
+  afterEach(() => {
+    vi.useRealTimers();
+    setBitmapProbeForTests(null);
+  });
+
+  it('refuses a blank readback: a silently failed draw is not a pass', async () => {
+    // Zeroed pixels satisfy "red < 128" on their own — the probe demands the
+    // whole inverted pattern, alpha included, or a decoder that never drew
+    // anything would be called verified.
+    vi.stubGlobal('Worker', undefined);
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => fakeBitmap(1, 2)));
+    setBitmapProbeForTests(null);
+    warmBitmapUploadProbe(fakeRenderer(BLANK));
+    await flush();
+    expect(bitmapDecodePath()).toBe('loader');
+  });
+
+  it('accepts the inverted readback through a real upload', async () => {
+    vi.stubGlobal('Worker', undefined);
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => fakeBitmap(1, 2)));
+    setBitmapProbeForTests(null);
+    warmBitmapUploadProbe(fakeRenderer(INVERTED));
+    await flush();
+    expect(bitmapDecodePath()).toBe('main-thread');
+  });
+
+  it('falls to the canvas check when no framebuffer completes', async () => {
+    // A GPU that cannot give the probe a complete framebuffer must not be
+    // called broken: the canvas draw answers the same question, less directly.
+    vi.stubGlobal('Worker', undefined);
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => fakeBitmap(1, 2)));
+    stubCanvas(INVERTED);
+    setBitmapProbeForTests(null);
+    warmBitmapUploadProbe(fakeRenderer(null));
+    await flush();
+    expect(bitmapDecodePath()).toBe('main-thread');
+  });
+
+  it('gives up on a worker that never answers the probe and keeps this thread', async () => {
+    vi.useFakeTimers();
+    StalledWorker.instances = [];
+    vi.stubGlobal('Worker', StalledWorker);
+    vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:decoder'), revokeObjectURL: vi.fn() });
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => fakeBitmap(1, 2)));
+    setBitmapProbeForTests(null);
+    warmBitmapUploadProbe(fakeRenderer(INVERTED));
+    await vi.advanceTimersByTimeAsync(PROBE_TIMEOUT_MS + 1);
+    // The worker got its request and never replied, so it is retired and this
+    // thread — which passed its own probe — serves every map.
+    expect(StalledWorker.instances[0].posted).toHaveLength(1);
+    expect(StalledWorker.instances[0].terminated).toBe(true);
+    expect(bitmapDecodePath()).toBe('main-thread');
   });
 });
 
@@ -264,6 +384,35 @@ describe('takeBootWarmResponse', () => {
 
   it('is absent-safe before the warm script has run', () => {
     expect(takeBootWarmResponse('textures/a.webp')).toBeUndefined();
+  });
+
+  it('cancels the warmed body when the load goes through the shared loader', async () => {
+    // An untaken warm entry keeps its unread body buffered by the browser for
+    // the session — and the map is downloaded a second time by the loader. On
+    // a platform that fails the probe that is the whole boot set twice over.
+    setBitmapProbeForTests(false);
+    vi.stubGlobal('createImageBitmap', vi.fn());
+    const response = new Response('bytes');
+    const cancel = vi.spyOn(response.body!, 'cancel').mockResolvedValue(undefined);
+    vi.stubGlobal('__bootTexWarm', new Map([['textures/a.webp', Promise.resolve(response)]]));
+    const { calls } = deferredLoad();
+    loadStreamedTexture('textures/a.webp', vi.fn(), vi.fn());
+    await flush();
+    expect(calls.map((c) => c.url)).toEqual(['textures/a.webp']);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(takeBootWarmResponse('textures/a.webp')).toBeUndefined();
+  });
+
+  it('lets go of every entry nobody claimed once boot has asked for everything', async () => {
+    const response = new Response('bytes');
+    const cancel = vi.spyOn(response.body!, 'cancel').mockResolvedValue(undefined);
+    vi.stubGlobal('__bootTexWarm', new Map([['textures/left.webp', Promise.resolve(response)]]));
+    releaseBootWarmResponses();
+    await flush();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect((globalThis as { __bootTexWarm?: unknown }).__bootTexWarm).toBeUndefined();
+    // Idempotent: a second activation must not throw on the missing global.
+    expect(() => releaseBootWarmResponses()).not.toThrow();
   });
 });
 

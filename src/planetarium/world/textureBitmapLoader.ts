@@ -17,7 +17,9 @@
  * 0.3 ms when the same call runs in a worker and the bitmap is transferred
  * back (zero-copy). A worker that cannot be made, or that fails mid-session,
  * hands the decode back to this thread only if this thread passed its own
- * probe — else to the shared loader.
+ * probe — else to the shared loader. That handover covers the requests whose
+ * bytes are already in hand, not only the next one: a worker retiring
+ * mid-decode re-decodes here rather than paying a second download.
  *
  * Guarded by observation, not feature sniffing: a 1x2 readback probe must
  * come back actually inverted before any real image takes this path — and it
@@ -36,6 +38,7 @@
  */
 import * as THREE from 'three';
 import { debugLog } from '../../shared/debug';
+import { drainErrors } from '../../shared/three/glErrors';
 
 /** The app's texture loader. Shared so every fetch carries the same settings
  *  (and so the fallback here, the retry seam, and the tier queue stand behind
@@ -75,10 +78,33 @@ export class TextureTransportError extends Error {}
  * fresh fetch).
  */
 export function takeBootWarmResponse(url: string): Promise<Response> | undefined {
-  const warm = (globalThis as { __bootTexWarm?: Map<string, Promise<Response>> }).__bootTexWarm;
+  const warm = bootWarmMap();
   const hit = warm?.get(url);
   if (hit) warm!.delete(url);
   return hit;
+}
+
+function bootWarmMap(): Map<string, Promise<Response>> | undefined {
+  return (globalThis as { __bootTexWarm?: Map<string, Promise<Response>> }).__bootTexWarm;
+}
+
+/** Drop a warmed response nobody is going to read. An unread Response body
+ *  stays buffered by the browser for as long as the promise is reachable, so
+ *  a load that ends up going through the shared loader has to cancel its warm
+ *  entry rather than simply leave it in the map. */
+function discardBootWarmResponse(url: string): void {
+  void takeBootWarmResponse(url)?.then((r) => r.body?.cancel(), () => {}).catch(() => {});
+}
+
+/** Let go of every warm response still unclaimed. Call once boot has asked
+ *  for everything it is going to ask for — every map in the warm list is
+ *  requested while the solar system is built, so anything left after that is
+ *  bytes nobody will read. */
+export function releaseBootWarmResponses(): void {
+  const warm = bootWarmMap();
+  if (!warm) return;
+  for (const url of [...warm.keys()]) discardBootWarmResponse(url);
+  delete (globalThis as { __bootTexWarm?: unknown }).__bootTexWarm;
 }
 
 /** What `createImageBitmap` gets from this module: encoded bytes — a fetched
@@ -299,6 +325,8 @@ function currentDecoder(): BitmapDecoder | null {
   return null;
 }
 
+let probeVerdict: boolean | null = null;
+
 export type BitmapDecodePath = 'unprobed' | 'worker' | 'main-thread' | 'loader';
 /** DEV telemetry: which path streamed maps take right now. */
 export function bitmapDecodePath(): BitmapDecodePath {
@@ -306,7 +334,6 @@ export function bitmapDecodePath(): BitmapDecodePath {
   const decoder = currentDecoder();
   return decoder === workerDecode ? 'worker' : decoder === mainThreadDecode ? 'main-thread' : 'loader';
 }
-let probeVerdict: boolean | null = null;
 
 /** The probe image: a 1×2 PNG, opaque white over opaque black — an encoded
  *  Blob like every real map, so the probe exercises the decoder the maps
@@ -374,7 +401,7 @@ function readsBackInvertedGl(renderer: THREE.WebGLRenderer, bitmap: ImageBitmap)
     gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, prevColorspace);
     gl.deleteFramebuffer(fbo);
     gl.deleteTexture(tex);
-    while (gl.getError() !== gl.NO_ERROR) { /* a failed probe must not leave an error for the next caller */ }
+    drainErrors(gl); // a failed probe must not leave an error for the next caller
   }
 }
 
@@ -393,10 +420,18 @@ function readsBackInverted2d(bitmap: ImageBitmap): boolean {
  *  past PROBE_TIMEOUT_MS. */
 async function decoderHonoursFlip(decoder: BitmapDecoder): Promise<{ ok: boolean; viaGl: boolean }> {
   let viaGl = false;
+  let timedOut = false;
+  const decode = decoder(probeBlob(), BITMAP_OPTIONS);
+  // A decode that lands after the timeout has given up produces a bitmap
+  // nobody will look at; free it rather than wait for GC.
+  void decode.then((late) => { if (timedOut) late.close(); }, () => {});
   try {
     const bitmap = await Promise.race([
-      decoder(probeBlob(), BITMAP_OPTIONS),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('probe timed out')), PROBE_TIMEOUT_MS)),
+      decode,
+      new Promise<never>((_, reject) => setTimeout(() => {
+        timedOut = true;
+        reject(new Error('probe timed out'));
+      }, PROBE_TIMEOUT_MS)),
     ]);
     try {
       const gl = probeRenderer ? readsBackInvertedGl(probeRenderer, bitmap) : null;
@@ -421,17 +456,21 @@ let bitmapFlipProbe: Promise<boolean> | null = null;
 function bitmapUploadUsable(): Promise<boolean> {
   bitmapFlipProbe ??= (async () => {
     if (typeof createImageBitmap !== 'function') return false;
-    let viaGl = false;
-    if (typeof Worker === 'function') {
-      const r = await decoderHonoursFlip(workerDecode);
-      verified.worker = r.ok;
-      viaGl = r.viaGl;
-      // A worker that exists but failed its one job has no use: free it.
-      if (!verified.worker) workerDecoder?.retire(new Error('bitmap decode worker failed the flip probe'));
+    // Both realms at once. They share nothing but the renderer's state cache,
+    // which each probe touches and restores synchronously, and probing in
+    // series cost a stalled worker's whole PROBE_TIMEOUT_MS before this thread
+    // was even asked. The verdict still prefers the worker.
+    const [work, main] = await Promise.all([
+      typeof Worker === 'function' ? decoderHonoursFlip(workerDecode) : { ok: false, viaGl: false },
+      decoderHonoursFlip(mainThreadDecode),
+    ]);
+    verified.worker = work.ok;
+    verified.main = main.ok;
+    const viaGl = work.viaGl || main.viaGl;
+    // A worker that exists but failed its one job has no use: free it.
+    if (typeof Worker === 'function' && !verified.worker) {
+      workerDecoder?.retire(new Error('bitmap decode worker failed the flip probe'));
     }
-    const r = await decoderHonoursFlip(mainThreadDecode);
-    verified.main = r.ok;
-    viaGl ||= r.viaGl;
     // One line a device report can be read from: which realms passed, and
     // whether the readback went through a real texture upload.
     debugLog('Texture bitmap probe', { worker: verified.worker, main: verified.main, viaGl });
@@ -466,16 +505,23 @@ async function loadBitmapTexture(url: string, stillWanted?: () => boolean, signa
   // with no verified realm left the caller's one loader fallback takes over.
   const decoder = currentDecoder();
   if (!decoder) throw new Error(`no verified bitmap decoder for ${url}`);
-  const bitmap = await decoder(blob, BITMAP_OPTIONS);
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await decoder(blob, BITMAP_OPTIONS);
+  } catch (err) {
+    // The bytes are already here. A worker that retired (or timed out) while
+    // they were in the air must not cost a second download when this thread
+    // passed its own probe — the next map would take this thread anyway.
+    if (decoder === mainThreadDecode || !verified.main) throw err;
+    bitmap = await mainThreadDecode(blob, BITMAP_OPTIONS);
+  }
   const tex = new THREE.Texture(bitmap);
   tex.flipY = false; // baked into the bitmap above
   tex.needsUpdate = true;
   // ImageBitmaps carry no src, so stamp the texture for the perf/debug
-  // telemetry that identifies uploads by their image's URL — and mark the
-  // baked flip for any consumer that reads the pixels back on the CPU.
+  // telemetry that identifies uploads by their image's URL.
   tex.name = url.split(/[?#]/)[0].split('/').filter(Boolean).pop() ?? url;
   tex.userData.sourceUrl = url;
-  tex.userData.bitmapPreFlipped = true;
   // The GPU copy made at upload is independent of the bitmap, and an applied
   // texture must KEEP its image (three re-uploads from it after a context
   // loss) — but a disposed texture is done for good, and without this the
@@ -494,6 +540,7 @@ export const loadStreamedTexture: TextureLoad = (url, onLoad, onError, stillWant
   // the bare-loader timing (three's own loader also dispatches sync). This is
   // also the path the DOM-free tests drive their injected loaders through.
   if (typeof createImageBitmap !== 'function') {
+    discardBootWarmResponse(url);
     textureLoader.load(url, onLoad, undefined, onError);
     return;
   }
@@ -507,6 +554,7 @@ export const loadStreamedTexture: TextureLoad = (url, onLoad, onError, stillWant
     // No verified decoder left (the worker retired and this thread never
     // passed its probe): the shared loader, before any fetch is spent.
     if (!usable || !currentDecoder()) {
+      discardBootWarmResponse(url);
       textureLoader.load(url, onLoad, undefined, onError);
       return;
     }

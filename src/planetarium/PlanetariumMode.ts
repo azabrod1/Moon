@@ -128,7 +128,7 @@ import {
 import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
 import { captureDeviceTextureCaps, resolveTextureUrl, TIER_MAP_WIDTH } from './world/texturePolicy';
-import { warmBitmapUploadProbe } from './world/textureBitmapLoader';
+import { releaseBootWarmResponses, warmBitmapUploadProbe } from './world/textureBitmapLoader';
 import { planetshineIntensity } from './world/planetshine';
 import {
   advanceSilhouetteOwners,
@@ -2487,6 +2487,14 @@ export class PlanetariumMode {
     snapConstellations();
 
     this.scheduleBootPairWarm();
+
+    if (buildingSolarSystem) {
+      // Every map index.html warmed has been asked for by now — the planet
+      // maps were awaited above and every moon's photo fetch started with its
+      // mesh — so anything still sitting in the warm map is a response body
+      // nobody will read, buffered for the session.
+      releaseBootWarmResponses();
+    }
 
     reportActivationProgress(FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS);
     performance.measure('plm:activate', 'plm:activate:start');

@@ -44,6 +44,8 @@ import {
   advancePlanetariumTime,
   computeBodyPositionAU,
   computeBodyState,
+  computeBodyStateInto,
+  type BodyState,
   ECLIPTIC_NORTH_EQUATORIAL,
   formatDateCompact,
   formatTimeRateLabel,
@@ -1221,6 +1223,12 @@ export class PlanetariumMode {
   // renderer.toneMappingExposure writer, which pins 1 in every other mode.
   private exposureTarget = 1;
   private exposureCoverage = 0;
+  /** The planet pass's body state, reused every frame. */
+  private readonly tmpBodyState: BodyState = {
+    positionAU: new THREE.Vector3(),
+    orientationQuaternion: new THREE.Quaternion(),
+    sunDirection: new THREE.Vector3(),
+  };
   private tmpSunView = new THREE.Vector3();
 
   /** Removals for the constructor's canvas listeners (orbit drag, map pick,
@@ -3111,6 +3119,7 @@ export class PlanetariumMode {
         this.player.commandedSpeedAUPerS,
         this.throttleOverride || !this.systemSlowdown,
         dt,
+        this.bodyCap,
       );
       this.player.speedCapAUPerS = this.bodyCap.applied;
     }
@@ -6531,8 +6540,8 @@ export class PlanetariumMode {
    * glare/veil uniforms derived from the same number — so `snap` is always
    * true: the loop must land on it verbatim, never re-glide it.
    */
-  takeExposureTarget(): { value: number; snap: boolean } {
-    return { value: this.sunExposure, snap: true };
+  takeExposureTarget(): number {
+    return this.sunExposure;
   }
 
   private updateOrbitLineVisibility() {
@@ -16031,7 +16040,7 @@ export class PlanetariumMode {
     for (let i = 0; i < this.solarSystem.planets.length; i++) {
       const planet = this.solarSystem.planets[i];
       const body = PLANETARIUM_BODIES[i];
-      const state = computeBodyState(body, this.timeState.currentUtcMs);
+      const state = computeBodyStateInto(body, this.timeState.currentUtcMs, this.tmpBodyState);
 
       // Per-frame world velocity (AU per frame-second, the same capped dt
       // the ship integrates on) for the governor's moving-body credit,
@@ -16089,16 +16098,21 @@ export class PlanetariumMode {
         }
       }
 
-      planet.worldPosAU = {
-        x: state.positionAU.x,
-        y: state.positionAU.y,
-        z: state.positionAU.z,
-      };
-      this.planetWorldPositions.set(body.name, {
-        x: state.positionAU.x,
-        y: state.positionAU.y,
-        z: state.positionAU.z,
-      });
+      // Written in place: every reader takes x/y/z the moment it asks, so a
+      // steady-state frame allocates nothing here (the moon pass has the same
+      // rule). The velocity above was differenced before this overwrite.
+      const pos = planet.worldPosAU ?? (planet.worldPosAU = { x: 0, y: 0, z: 0 });
+      pos.x = state.positionAU.x;
+      pos.y = state.positionAU.y;
+      pos.z = state.positionAU.z;
+      let entry = this.planetWorldPositions.get(body.name);
+      if (!entry) {
+        entry = { x: 0, y: 0, z: 0 };
+        this.planetWorldPositions.set(body.name, entry);
+      }
+      entry.x = pos.x;
+      entry.y = pos.y;
+      entry.z = pos.z;
     }
   }
 

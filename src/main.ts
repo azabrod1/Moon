@@ -24,7 +24,6 @@ import { bitmapDecodePath } from './planetarium/world/textureBitmapLoader';
 import { BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
 import { createLensPass, updateLensPass, type LensParams } from './app/LensPass';
 import { applyDesignFov, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
-import { stepExposure } from './planetarium/solarExposure';
 import { loadBrightStarCatalog } from './planetarium/world/starCatalogLoader';
 import { debugError, debugLog, debugWarn } from './shared/debug';
 import {
@@ -987,16 +986,13 @@ async function init() {
     const now = performance.now();
     const rawDt = (now - lastTime) / 1000;
     const dt = Math.min(rawDt, 0.1); // cap at 100ms to avoid huge jumps
-    // Exposure adaptation glides on the raw wall delta, not the sim-capped dt:
-    // the eye should adapt by a frame's real duration even through a hitch.
-    const wallDt = rawDt;
     lastTime = now;
 
     if (appMode === 'planetarium' && planetariumMode) {
       planetariumMode.update(dt);
       if (autoExposure) {
-        const { value, snap } = planetariumMode.takeExposureTarget();
-        exposureCurrent = snap ? value : stepExposure(exposureCurrent, value, wallDt);
+        // Already smoothed by the mode's own meter; applied as is.
+        exposureCurrent = planetariumMode.takeExposureTarget();
       } else {
         exposureCurrent = 1;
       }

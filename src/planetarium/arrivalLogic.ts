@@ -201,18 +201,22 @@ export function advanceBodyCap(
   commandedAUPerS: number,
   bypass: boolean,
   dtS: number,
+  /** Written into instead of a fresh record when given; may be `prev`
+   *  itself — every field of `prev` is read before any is written. */
+  out?: BodyCapState,
 ): BodyCapState {
   const candidate = rampedSpeedCap(geomCap, prev.candidate, dtS, CAP_TRANSITION_TAU_S);
   const engaged = geomCap < commandedAUPerS * CAP_BIND_FRACTION;
-  return {
-    candidate,
-    applied: bypass ? Infinity : candidate,
-    engaged,
-    // The hold only means something while a hatch is open and the cap is
-    // unbound; any other frame resets it, so a partial hold can't survive
-    // re-engagement or complete long after the hatch opened.
-    unboundS: bypass && !engaged ? prev.unboundS + dtS : 0,
-  };
+  // The hold only means something while a hatch is open and the cap is
+  // unbound; any other frame resets it, so a partial hold can't survive
+  // re-engagement or complete long after the hatch opened.
+  const unboundS = bypass && !engaged ? prev.unboundS + dtS : 0;
+  const next = out ?? { candidate, applied: candidate, engaged, unboundS };
+  next.candidate = candidate;
+  next.applied = bypass ? Infinity : candidate;
+  next.engaged = engaged;
+  next.unboundS = unboundS;
+  return next;
 }
 
 /** Arrival standoff targets this apparent disc diameter from the CAMERA

@@ -145,12 +145,12 @@ function utcMsAtTtJD(jdTT: number): number {
  * north, +Z = RA 270°. det = +1, so the rendered sky has real-world chirality.
  * Every scene embedding of sky coordinates must route through here.
  */
-export function raDecToVector(raDeg: number, decDeg: number, radius = 1): THREE.Vector3 {
+export function raDecToVector(raDeg: number, decDeg: number, radius = 1, out?: THREE.Vector3): THREE.Vector3 {
   const ra = raDeg * DEG;
   const dec = decDeg * DEG;
   const cosDec = Math.cos(dec);
 
-  return new THREE.Vector3(
+  return (out ?? new THREE.Vector3()).set(
     radius * cosDec * Math.cos(ra),
     radius * Math.sin(dec),
     -radius * cosDec * Math.sin(ra),
@@ -377,29 +377,38 @@ export function trajectoryLineBodyFraction(
  * moon orbit frames. W is measured easterly from that node, which in this RH
  * frame is a +W rotation about the pole.
  */
-function getBasePrimeDirection(planet: PlanetData): THREE.Vector3 {
-  return raDecToVector(planet.poleRaDeg + 90, 0);
+function getBasePrimeDirection(planet: PlanetData, out?: THREE.Vector3): THREE.Vector3 {
+  return raDecToVector(planet.poleRaDeg + 90, 0, 1, out);
 }
 
-function buildPoleBasisQuaternion(planet: PlanetData, primeMeridianDeg: number): THREE.Quaternion {
-  const poleDirection = raDecToVector(planet.poleRaDeg, planet.poleDecDeg).normalize();
-  const primeDirection = getBasePrimeDirection(planet)
+// Scratch for the pole basis: the per-frame planet pass builds nine of these
+// a frame, and the intermediates are consumed before the function returns.
+const poleScratch = new THREE.Vector3();
+const primeScratch = new THREE.Vector3();
+const basisZScratch = new THREE.Vector3();
+const basisScratch = new THREE.Matrix4();
+
+function buildPoleBasisQuaternion(planet: PlanetData, primeMeridianDeg: number, out = new THREE.Quaternion()): THREE.Quaternion {
+  const poleDirection = raDecToVector(planet.poleRaDeg, planet.poleDecDeg, 1, poleScratch).normalize();
+  const primeDirection = getBasePrimeDirection(planet, primeScratch)
     .applyAxisAngle(poleDirection, primeMeridianDeg * DEG)
     .normalize();
   // Third basis column, prime×pole: holds *texture* longitude 90°W, not
   // geographic east (east = pole×prime = the −Z column's image). Only the
   // RH-ness of the basis matters here; the name is deliberately not "east".
-  const basisZ = new THREE.Vector3().crossVectors(primeDirection, poleDirection).normalize();
+  const basisZ = basisZScratch.crossVectors(primeDirection, poleDirection).normalize();
 
-  const basis = new THREE.Matrix4().makeBasis(primeDirection, poleDirection, basisZ);
-  return new THREE.Quaternion().setFromRotationMatrix(basis);
+  const basis = basisScratch.makeBasis(primeDirection, poleDirection, basisZ);
+  return out.setFromRotationMatrix(basis);
 }
 
-export function computeBodyOrientationQuaternion(planet: PlanetData, jd: number): THREE.Quaternion {
+/** Pass `out` and the orientation is written into it rather than into a
+ *  fresh quaternion; the math is the same either way. */
+export function computeBodyOrientationQuaternion(planet: PlanetData, jd: number, out?: THREE.Quaternion): THREE.Quaternion {
   const daysSinceJ2000 = getDaysSinceJ2000(jd);
   const primeMeridianDeg =
     planet.primeMeridianDegAtJ2000 + planet.primeMeridianRateDegPerDay * daysSinceJ2000;
-  return buildPoleBasisQuaternion(planet, primeMeridianDeg);
+  return buildPoleBasisQuaternion(planet, primeMeridianDeg, out);
 }
 
 /**
@@ -440,24 +449,30 @@ export function computeBodyPositionAU(
 }
 
 export function computeBodyState(planet: PlanetData, utcMs: number): BodyState {
-  const jd = ttJDFromUtcMs(utcMs);
-  const positionAU = computeBodyPositionAU(planet, utcMs);
-  const orientationQuaternion = computeBodyOrientationQuaternion(planet, jd);
-  const sunDirection = positionAU.clone().multiplyScalar(-1).normalize();
-
-  return {
-    positionAU,
-    orientationQuaternion,
-    sunDirection,
-  };
+  return computeBodyStateInto(planet, utcMs, {
+    positionAU: new THREE.Vector3(),
+    orientationQuaternion: new THREE.Quaternion(),
+    sunDirection: new THREE.Vector3(),
+  });
 }
 
+/** The same state written into a caller-owned record: the per-frame planet
+ *  pass asks for nine of these a frame and must not allocate for them. */
+export function computeBodyStateInto(planet: PlanetData, utcMs: number, out: BodyState): BodyState {
+  const jd = ttJDFromUtcMs(utcMs);
+  computeBodyPositionAU(planet, utcMs, out.positionAU);
+  computeBodyOrientationQuaternion(planet, jd, out.orientationQuaternion);
+  out.sunDirection.copy(out.positionAU).multiplyScalar(-1).normalize();
+  return out;
+}
+
+/** Advance the clock in place and hand the same record back: this runs every
+ *  unpaused frame, and the seams that change rate or pause replace the record
+ *  wholesale, so nothing relies on a fresh object here. */
 export function advancePlanetariumTime(state: SimulationTime, dtSeconds: number): SimulationTime {
   if (state.paused) return state;
-  return {
-    ...state,
-    currentUtcMs: state.currentUtcMs + dtSeconds * 1000 * state.rate,
-  };
+  state.currentUtcMs += dtSeconds * 1000 * state.rate;
+  return state;
 }
 
 /**

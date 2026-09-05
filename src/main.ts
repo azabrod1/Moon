@@ -146,6 +146,9 @@ const sceneSampleCounts = useBloom ? halfFloatTargetSampleCounts(renderer) : [];
 // display renders as production did rather than native with no antialiasing
 // at all. The no-float direct path has the backbuffer's own multisampling.
 const supersampleFallback = useBloom && (sceneSampleCounts.length === 0 || msaaOverride === 0);
+// The capture pin on the pixel ratio (see pinCapture), declared before the
+// renderer-details log below reads the target ratio at module init.
+let pixelRatioPin: number | null = null;
 
 try {
   const gl = renderer.getContext();
@@ -237,7 +240,6 @@ function ensureDirectLensTexture(): THREE.FramebufferTexture {
  *  driven by the cruise governor, the exposure by the Sun's on-screen state,
  *  the pixel ratio by the display. DEV-only, null when nothing is pinned. */
 let exposurePin: number | null = null;
-let pixelRatioPin: number | null = null;
 
 function getTargetPixelRatio(): number {
   if (pixelRatioPin !== null) return pixelRatioPin;

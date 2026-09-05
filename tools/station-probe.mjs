@@ -88,8 +88,11 @@ try {
   // steering nudge first: a posed camera may not sit behind the nose, and the
   // screen position the probe reports is the camera's; any flight input hands
   // the camera back to the chase pose, after which the loop reads the nose.
-  const aimAt = async (body, tol, budgetMs = 40_000) => {
+  const aimAt = async (body, tol, budgetMs = 70_000) => {
     let p = await probe(body);
+    // A parked ship (every jump pose parks it) ignores the stick until the
+    // throttle revives it: one short tap, then the brake takes the speed back.
+    if (p && p.moving === false) { await hold('w', 80); await hold('s', 1200); }
     await page.keyboard.down('s'); // the brake stays on while the nose turns
     try {
     await hold('ArrowLeft', 60); await sleep(1200);
@@ -98,7 +101,19 @@ try {
     while (Date.now() - t0 < budgetMs) {
       p = await probe(body);
       if (VERBOSE) console.log('[aim]', body, JSON.stringify({ inFrame: p.inFrame, ndcX: +p.ndcX.toFixed(3), ndcY: +p.ndcY.toFixed(3), radii: +p.radii.toFixed(3), diameterPx: Math.round(p.diameterPx), moving: p.moving, speed: p.speed }));
-      if (!p.inFrame) { await hold('ArrowRight', 400); await sleep(300); continue; }
+      if (!p.inFrame) {
+        // Not in frame. A body BEHIND the camera projects to coordinates that
+        // look in range (the projection flips through the camera), so in-range
+        // but not in frame means behind: yaw a long way. Out of range means in
+        // front but outside the frame: the projection still says which way.
+        const behind = Math.abs(p.ndcX) < 1.3 && Math.abs(p.ndcY) < 1.3;
+        if (behind) { await hold('ArrowRight', 1500); }
+        else {
+          await hold(keys.x[((p.ndcX - NOSE.x > 0 ? 1 : 0) ^ flip.x)], Math.min(500, 100 + Math.abs(p.ndcX) * 120));
+          await hold(keys.y[((p.ndcY - NOSE.y > 0 ? 1 : 0) ^ flip.y)], Math.min(400, 100 + Math.abs(p.ndcY) * 120));
+        }
+        await sleep(500); continue;
+      }
       if (Math.abs(p.ndcX - NOSE.x) < tol && Math.abs(p.ndcY - NOSE.y) < tol) {
         // The chase camera lags the nose after a turn; a mark that reads
         // settled right after a key pulse may still be the camera catching up.
@@ -141,7 +156,7 @@ try {
   // a pass, so the nose is corrected as the body grows.
   const closeIn = async (body) => {
     let p = await probe(body);
-    for (let stage = 0; stage < 8 && p.radii > 4; stage++) {
+    for (let stage = 0; stage < 12 && p.radii > 4; stage++) {
       p = await aimAt(body, 0.02);
       if (!p.inFrame) return p;
       const target = Math.max(4, p.radii / 3);
@@ -182,22 +197,26 @@ try {
       const p0 = await probe(body);
       await page.evaluate(({ b, m }) => window.__moon.jumpTo(b, m), { b: body, m: 2.2 / p0.radii }); await sleep(1500);
     } else {
-      // Moons: the real travel pipeline (the dev framing hook parks the camera
-      // on the body under a free camera that skips collisions, so a ship posed
-      // by it flies straight through the shell). The flyby passes the moon at
-      // cruise speed and keeps going, with the arrival look holding on the
-      // receding body until the pilot touches the stick: watch the distance,
-      // and once the pass is behind us take the stick.
-      await page.evaluate((b) => window.__moon.travelTo(b), body);
-      const tArr = Date.now(); let passed = false; let lastRadii = Infinity;
-      while (Date.now() - tArr < 150_000) {
+      // Moons: the app's own autopilot (the deck's Pilot verb through the dev
+      // bridge). It steers with the real heading law, glides on the approach
+      // law and parks at the standoff with the nose on the body — the pose a
+      // pilot arrives in. The travel pipeline instead flies PAST a moon with
+      // the camera looking back at it, and the dev framing hook parks the
+      // camera under a free camera that skips collisions.
+      const engaged = await page.evaluate((b) => window.__moon.pilotTo?.(b) ?? false, body);
+      if (!engaged) { rows.push({ body, verdict: 'FAIL', why: 'no pilotTo on this build' }); console.log(`[station] FAIL ${body} no pilotTo on this build`); continue; }
+      // The autopilot steers and caps but never raises the dial: a pilot
+      // engages it and throttles up, and the glide law does the braking.
+      await hold('w', 6000);
+      const tArr = Date.now(); let arrived = false;
+      while (Date.now() - tArr < 240_000) {
         const st = await probe(body);
-        if (VERBOSE && st) console.log('[travel]', body, ((Date.now() - tArr) / 1000).toFixed(0) + 's', JSON.stringify({ radii: +st.radii.toFixed(3), look: st.look, moving: st.moving }));
-        if (st && st.moving && st.radii > lastRadii && st.radii > 2.5) { passed = true; break; }
-        if (st) lastRadii = st.radii;
+        if (VERBOSE && st && (Date.now() - tArr) % 4000 < 300) console.log('[pilot]', body, ((Date.now() - tArr) / 1000).toFixed(0) + 's', JSON.stringify({ radii: +st.radii.toFixed(2), moving: st.moving, speed: st.speed }));
+        if (st && st.moving === false && st.radii < 60) { arrived = true; break; }
         await sleep(250);
       }
-      if (!passed) { rows.push({ body, verdict: 'FAIL', why: 'never passed the moon' }); console.log(`[station] FAIL ${body} never passed the moon`); continue; }
+      if (!arrived) { rows.push({ body, verdict: 'FAIL', why: 'autopilot never arrived' }); console.log(`[station] FAIL ${body} autopilot never arrived`); continue; }
+      await sleep(1500);
     }
     await killSpeed(body);
     let p = await closeIn(body);

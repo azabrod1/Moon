@@ -444,6 +444,18 @@ const JOBS = {
     src: 'Io_GalileoSSI-Voyager_Global_Mosaic_ClrMerge_1km.tif',
     outputs: [{ width: 4096, out: 'io.v2.webp' }],
     rungs: [{ width: 8192, name: 'io-8k' }],
+    // The same patchwork as the other three Galileans: Galileo frames at a
+    // few hundred metres a pixel merged over Voyager fill at ten times that,
+    // each frame's polygon a hard step in both detail and level. From orbit
+    // it reads as one surface; at a disc past the frame a pilot reads the
+    // frame edges as patches. A colour source, like Ganymede's: the fill
+    // measures and adds brightness on all three channels equally, so the
+    // mission's chroma comes through as it is.
+    coverageFill: { fineDeg: 0.12, coarseDeg: 1, windowDeg: 1.5, wideDeg: 2 },
+    levelEdges: {
+      lookDeg: 0.5, alongDeg: 1, minStep: 3, minSpanDeg: 5, smoothDeg: 0.4, skipLatDeg: 80, rounds: 3,
+      curves: { seedFrom: ['energy'], fineDeg: 0.12 },
+    },
   },
   europa: {
     src: 'Europa_Voyager_GalileoSSI_global_mosaic_500m.tif',

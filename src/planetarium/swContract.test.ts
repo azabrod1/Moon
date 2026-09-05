@@ -241,6 +241,22 @@ describe('service worker template: lifecycle', () => {
     expect(harness.store.has(ORIGIN + MOON_PATH + '?swv=' + MANIFEST[MOON_PATH])).toBe(true);
   });
 
+  it('retries with the cache bypassed when the first install fetch rejects outright', async () => {
+    let calls = 0;
+    const network = new Map<string, NetworkResponder>([
+      [MOON_PATH, () => {
+        calls++;
+        if (calls === 1) throw new TypeError('Failed to fetch');
+        return new Response(MOON_BYTES.slice(), { status: 200 });
+      }],
+    ]);
+    const harness = bootWorker(MANIFEST, [MOON_PATH], network);
+    await dispatchLifecycle(harness, 'install');
+    expect(harness.netFetch).toHaveBeenCalledTimes(2);
+    expect((harness.netFetch.mock.calls[1] as unknown[])[1]).toMatchObject({ cache: 'reload' });
+    expect(harness.store.has(ORIGIN + MOON_PATH + '?swv=' + MANIFEST[MOON_PATH])).toBe(true);
+  });
+
   it('spends no bypass retry when the first install fetch verifies', async () => {
     const harness = bootWorker(MANIFEST, [MOON_PATH], healthyNetwork());
     await dispatchLifecycle(harness, 'install');

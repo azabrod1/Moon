@@ -189,11 +189,15 @@ export function fetchTextureDurably(
     timer = null;
     if (stopped) return;
     state = startAttempt(state, deps.now());
-    inFlight = typeof AbortController === 'function' ? new AbortController() : null;
+    const mine = typeof AbortController === 'function' ? new AbortController() : null;
+    inFlight = mine;
+    // A loader settles each attempt once; a late second callback from an
+    // attempt this one has already replaced must not touch the live state.
+    const superseded = () => inFlight !== mine;
     deps.load(
       request.url,
       (tex) => {
-        if (stopped) {
+        if (stopped || superseded()) {
           // Cancelled while this attempt was in the air. Nothing owns the
           // texture now, and three's loader cannot be aborted, so free it here
           // rather than leaking a decoded image nobody will draw.
@@ -205,7 +209,7 @@ export function fetchTextureDurably(
       },
       undefined,
       (err) => {
-        if (stopped) return;
+        if (stopped || superseded()) return;
         state = scheduleAfterFailure(state, deps.now(), spread, deps.policy);
         if (shouldLogFailure(state.attemptsFailed)) {
           debugWarn('Texture load failed, retrying', {
@@ -218,8 +222,8 @@ export function fetchTextureDurably(
         request.onFailure?.(err, state.attemptsFailed);
         arm();
       },
-      () => !stopped,
-      inFlight?.signal,
+      () => !stopped && !superseded(),
+      mine?.signal,
     );
   };
 

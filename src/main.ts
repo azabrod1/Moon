@@ -959,8 +959,16 @@ async function init() {
   if (await shedServiceWorkerIfRequested()) {
     // A shedding reload is on its way and nothing has been built. Leave the
     // boot UNSETTLED: the force-hide below reveals only a settled boot, and
-    // there is nothing behind the screen here but an empty scene.
+    // there is nothing behind the screen here but an empty scene. The reload
+    // is bounded too — a navigation that never commits would otherwise keep
+    // the loading screen up with nothing to say.
     killSwitchReloading = true;
+    window.addEventListener('pagehide', () => { killSwitchReloading = false; }, { once: true });
+    setTimeout(() => {
+      if (!killSwitchReloading) return;
+      killSwitchReloading = false;
+      coverWithBootError(new Error('the ?nosw=1 reload did not happen'), 'The reload did not happen. Please refresh.');
+    }, KILL_SWITCH_RELOAD_TIMEOUT_MS);
     return;
   }
   // Start the star-catalog sidecar load now so its fetch+parse overlap the
@@ -1211,6 +1219,9 @@ function registerServiceWorker(): void {
 // half-built black scene), and after a FAILURE the screen is the error
 // display. In both of those cases keep it up and check back.
 let initSettled = false;
+/** How long a `?nosw=1` reload may take to leave this document before the
+ *  boot gives up on it and says so. */
+const KILL_SWITCH_RELOAD_TIMEOUT_MS = 10_000;
 /** The ?nosw=1 reload is on its way: this document is being replaced, so it
  *  never becomes a settled boot. */
 let killSwitchReloading = false;
@@ -1229,7 +1240,11 @@ setTimeout(function forceHideCheck() {
 
 init().then(() => {
   initSettled = !killSwitchReloading;
-}).catch((err) => {
+}).catch((err) => coverWithBootError(err, 'Something went wrong. Please refresh.'));
+
+/** The boot has failed for good: settle it, stop drawing, and keep (or bring
+ *  back) the loading screen with the message inside it. */
+function coverWithBootError(err: unknown, message: string): void {
   initSettled = true;
   debugError('Init failed', err);
   console.error('Init failed:', err);
@@ -1239,10 +1254,10 @@ init().then(() => {
   // (or come back — a failure after the 15s force-hide re-covers the broken
   // scene) for the user to ever read it.
   const loadingMsg = document.getElementById('loading-msg');
-  if (loadingMsg) loadingMsg.textContent = 'Something went wrong. Please refresh.';
+  if (loadingMsg) loadingMsg.textContent = message;
   const loadingScreen = document.getElementById('loading-screen');
   if (loadingScreen) {
     loadingScreen.dataset.bootError = '1';
     loadingScreen.classList.remove('hidden');
   }
-});
+}

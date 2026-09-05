@@ -122,7 +122,11 @@ self.addEventListener('install', (event) => {
     // the install phase open.
     await eachWithPool(PRECACHE, INSTALL_CONCURRENCY, async (pathname) => {
       if (await cache.match(cacheKey(pathname))) return;
-      if (await fetchAndStore(cache, pathname, 'no-cache')) return;
+      // A first attempt that rejects (a dropped connection, its own deadline)
+      // is as unverified as a stale body: the retry below runs either way,
+      // on its own deadline.
+      const stored = await fetchAndStore(cache, pathname, 'no-cache').catch(() => false);
+      if (stored) return;
       // One bypass retry: a no-cache body can be a ≤10-min-stale 304 reuse
       // while the manifest already names the new deploy's bytes.
       await fetchAndStore(cache, pathname, 'reload');

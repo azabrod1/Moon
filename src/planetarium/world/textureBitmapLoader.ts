@@ -513,6 +513,11 @@ async function loadBitmapTexture(url: string, stillWanted?: () => boolean, signa
     // they were in the air must not cost a second download when this thread
     // passed its own probe — the next map would take this thread anyway.
     if (decoder === mainThreadDecode || !verified.main) throw err;
+    // The worker's failure took time; interest may have lapsed meanwhile, and
+    // a full-size decode for nobody is what this seam exists to avoid.
+    if ((stillWanted && !stillWanted()) || signal?.aborted) {
+      throw new TextureTransportError(`superseded: ${url}`);
+    }
     bitmap = await mainThreadDecode(blob, BITMAP_OPTIONS);
   }
   const tex = new THREE.Texture(bitmap);

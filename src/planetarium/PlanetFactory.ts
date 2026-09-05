@@ -485,7 +485,7 @@ export function upgradeComplete(up: TextureUpgrade): boolean {
 // which is why the cloud deck climbs to 8K: with the ground streamed at 16K,
 // a 4K deck is the soft layer on top of it. The 8K deck is the SSS product
 // itself (the 4K is its downsample: RMS 7 against it, equal means).
-const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
+export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
   mercury: ['4k'],
   venus: ['4k'],
   mars: ['4k'],
@@ -1047,7 +1047,7 @@ export function pumpArrivalWarmGoal(up: TextureUpgrade, nowMs: number): boolean 
 // a third of all boot traffic for detail no spawn-distance Moon can show —
 // so boot now fetches the 1440x720 map and this tier streams in on approach,
 // exactly like the colour ladders above.
-const NORMAL_UPGRADE_TIERS: Record<string, TextureTier> = {
+export const NORMAL_UPGRADE_TIERS: Record<string, TextureTier> = {
   moonNormal: '4k',
 };
 

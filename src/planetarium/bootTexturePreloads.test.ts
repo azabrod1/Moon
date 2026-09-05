@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import html from '../../index.html?raw';
-import { PLANET_TEXTURE_FILES } from './PlanetFactory';
+import {
+  bindKtx2TierLoader,
+  NORMAL_UPGRADE_TIERS,
+  PLANET_TEXTURE_FILES,
+  resolveTierFile,
+  TEXTURE_UPGRADE_TIERS,
+} from './PlanetFactory';
 import { BRIGHT_STAR_BIN_FILE } from './data/brightStars';
 import { takeBootWarmResponse } from './world/textureBitmapLoader';
 
@@ -102,5 +108,56 @@ describe('index.html boot texture fetch-warm', () => {
     } finally {
       delete (globalThis as Record<string, unknown>).__bootTexWarm;
     }
+  });
+});
+
+// The tier ladders name their files the same way the boot manifest does — as
+// runtime strings neither tsc nor Vite can see. A renamed or dropped tier
+// asset 404s into the ladder's cooldown, which is silent: the body simply
+// never sharpens, and every suite stays green. So the shipped folders are
+// pinned here too.
+describe('texture tier assets on disk', () => {
+  afterEach(() => bindKtx2TierLoader(null));
+
+  function tierFolder(tier: string): Set<string> {
+    const globs = {
+      '4k': import.meta.glob('../../public/textures/4k/*'),
+      '8k': import.meta.glob('../../public/textures/8k/*'),
+    }[tier];
+    if (!globs) throw new Error(`no folder listing for tier ${tier}`);
+    return new Set(Object.keys(globs).map((p) => p.split('/').pop()!));
+  }
+
+  it('ships every colour rung of every ladder', () => {
+    for (const [key, tiers] of Object.entries(TEXTURE_UPGRADE_TIERS)) {
+      for (const tier of tiers) {
+        const file = resolveTierFile(key, tier);
+        expect(tierFolder(tier), `public/textures/${tier}/${file} is missing`).toContain(file);
+      }
+    }
+  });
+
+  it('ships every relief rung', () => {
+    for (const [key, tier] of Object.entries(NORMAL_UPGRADE_TIERS)) {
+      const file = resolveTierFile(key, tier);
+      expect(tierFolder(tier), `public/textures/${tier}/${file} is missing`).toContain(file);
+    }
+  });
+
+  it('ships the compressed file a bound KTX2 loader would ask for', () => {
+    // The overrides are consulted only while a loader is bound, so the classic
+    // pass above never names them. Bind a stub and walk the ladders again.
+    bindKtx2TierLoader(() => {});
+    let overrides = 0;
+    for (const [key, tiers] of Object.entries(TEXTURE_UPGRADE_TIERS)) {
+      for (const tier of tiers) {
+        const file = resolveTierFile(key, tier);
+        if (file === PLANET_TEXTURE_FILES[key]) continue;
+        overrides++;
+        expect(tierFolder(tier), `public/textures/${tier}/${file} is missing`).toContain(file);
+      }
+    }
+    // An override that stops resolving would otherwise make this test vacuous.
+    expect(overrides).toBeGreaterThan(0);
   });
 });

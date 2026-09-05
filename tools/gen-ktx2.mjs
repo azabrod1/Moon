@@ -149,7 +149,11 @@ const JOBS = {
   //
   // Mercury clears it at the default lambda. Mars needs lambda 4 (4.53x at 1,
   // 4.24x at 2, 3.81x at 4) and is unharmed by it.
-  mercury4k: { tier: '4k', source: fromWebp('4k', 'mercury.webp'), out: '4k/mercury.ktx2' },
+  // Mercury's rungs come from the MESSENGER mosaic through gen:moonmaps, like
+  // the photo moons, and ETC1S for the same reason: a grey map's chroma is
+  // nothing for UASTC's bits to keep.
+  mercury4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('mercury-4k'), out: '4k/mercury.ktx2' },
+  mercury8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('mercury-8k'), out: '8k/mercury.ktx2' },
   mars4k: { tier: '4k', rdo: 4.0, source: fromWebp('4k', 'mars.v2.webp'), out: '4k/mars.v2.ktx2' },
   // The three the boot warm uploads, which is why the toured cap does not
   // rule them: the idle after boot fetches these on EVERY session, so a

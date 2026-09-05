@@ -122,7 +122,8 @@ const SUPERCOMPRESSION_BY_MODEL: Record<number, number> = {
  * alone.
  */
 const CONTAINER_COLOR_MODEL: Record<string, number> = {
-  '4k/mercury.ktx2': DF_MODEL_UASTC,
+  '4k/mercury.ktx2': DF_MODEL_ETC1S,
+  '8k/mercury.ktx2': DF_MODEL_ETC1S,
   '4k/mars.v2.ktx2': DF_MODEL_UASTC,
   '4k/moon.ktx2': DF_MODEL_UASTC,
   '8k/moon.ktx2': DF_MODEL_UASTC,
@@ -187,8 +188,9 @@ describe('the files behind the colour ladder', () => {
     // anyone adding a map. The UASTC ones are held to the tight bar: every 8K
     // rung earns one because nothing else answers a 170.7 MiB upload, while a
     // 4K rung earns one only by staying inside four times the webp twin that
-    // has to keep shipping beside it — of the maps a session tours, Mercury
-    // and Mars alone. The Moon, the cloud deck and Earth's night lights are
+    // has to keep shipping beside it — of the maps a session tours, Mars
+    // alone. Mercury's rungs are cut from the MESSENGER mosaic like a photo
+    // moon's, and its map is grey, so they are ETC1S like theirs. The Moon, the cloud deck and Earth's night lights are
     // the three the boot warm uploads on every session, downloaded once per
     // device rather than once per tour, and admitted on that basis.
     //
@@ -202,6 +204,7 @@ describe('the files behind the colour ladder', () => {
       Object.entries(byTier).map(([tier, rung]) => `${key} ${tier}: ${tier}/${rung.file}`));
     expect(shipped).toEqual([
       'mercury 4k: 4k/mercury.ktx2',
+      'mercury 8k: 8k/mercury.ktx2',
       'mars 4k: 4k/mars.v2.ktx2',
       'moon 4k: 4k/moon.ktx2',
       'moon 8k: 8k/moon.ktx2',

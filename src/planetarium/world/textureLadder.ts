@@ -255,7 +255,7 @@ export function upgradeComplete(up: TextureUpgrade): boolean {
 // same-product rule holds — because it is cut from the source the 4K and the
 // tiles are cut from, through the same ocean grade.
 export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
-  mercury: ['4k'],
+  mercury: ['4k', '8k'],
   venus: ['4k'],
   mars: ['4k'],
   jupiter: ['4k'],
@@ -349,7 +349,14 @@ export interface CompressedRung {
   webp: boolean;
 }
 export const TIER_FILE_OVERRIDES: Record<string, Partial<Record<TextureTier, CompressedRung>>> = {
-  mercury: { '4k': { file: 'mercury.ktx2', webp: true } },
+  // Both rungs cut from the MESSENGER mosaic (tools/gen-moonmaps.mjs), ETC1S
+  // like the photo moons' and container-only like theirs: the SSS 4K webp the
+  // 4K rung used to be transcoded from was a different product, and a ladder
+  // that changes product at a rung change changes the planet's face.
+  mercury: {
+    '4k': { file: 'mercury.ktx2', webp: false },
+    '8k': { file: 'mercury.ktx2', webp: false },
+  },
   mars: { '4k': { file: 'mars.v2.ktx2', webp: true } },
   // The Moon, the cloud deck and Earth's night lights are the exception to the
   // 4K cap, and their 4K containers cost 4.8x, 4.9x and 5.3x their twins. The

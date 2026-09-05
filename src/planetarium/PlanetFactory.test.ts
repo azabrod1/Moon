@@ -154,11 +154,26 @@ describe('upgrade ladders', () => {
     expect(makeTextureUpgrade(undefined, mat)).toBeUndefined();
   });
 
-  it('ships one 4K step for Mercury, Venus and Saturn (their SSS sources passed the same-product gate)', () => {
-    for (const key of ['mercury', 'venus', 'saturn']) {
+  it('ships one 4K step for Venus and Saturn (their SSS sources passed the same-product gate)', () => {
+    for (const key of ['venus', 'saturn']) {
       const mat = new THREE.MeshStandardMaterial();
       trackMaterial(mat);
       expect(makeTextureUpgrade(key, mat)?.tiers, key).toEqual(['4k']);
+    }
+  });
+
+  it('ships a 4K and an 8K rung for Mercury, both cut from the MESSENGER mosaic', () => {
+    // Both are containers, so they exist only for a session with a
+    // transcoder; without one Mercury has no rung at all, since the SSS 4K
+    // webp the old rung was transcoded from was a different product.
+    const mat = new THREE.MeshStandardMaterial();
+    trackMaterial(mat);
+    expect(makeTextureUpgrade('mercury', mat)).toBeUndefined();
+    bindKtx2TierLoader(() => {}, true);
+    try {
+      expect(makeTextureUpgrade('mercury', mat)?.tiers).toEqual(['4k', '8k']);
+    } finally {
+      bindKtx2TierLoader(null);
     }
   });
 
@@ -1575,24 +1590,25 @@ describe('the ladder against the sector memory envelope', () => {
 
   it('leaves a desktop\'s tiles their working set with every rung earned at once', () => {
     // What a desktop session could hold if it toured everything and gave
-    // nothing back: nine 4K containers at 10.7 MiB (Mercury and Mars, plus the
-    // seven photo moons whose ladder stops at 4K), three 4K webp rungs at 42.7
-    // (Venus, Jupiter, Saturn), and nine 8K containers at 42.7 — the Moon, the
-    // cloud deck, Earth's globe and its night lights, and the five bodies with
-    // an 8K photo rung. The 4K containers the boot warm uses are not in this
-    // sum: the Moon, the deck and the night lights all reach 8K on a desktop,
-    // so the rung their container serves has been climbed past by the time the
-    // ladder is at its heaviest. They buy a frame, not memory, here.
+    // nothing back: eight 4K containers at 10.7 MiB (Mars, plus the seven
+    // photo moons whose ladder stops at 4K), three 4K webp rungs at 42.7
+    // (Venus, Jupiter, Saturn), and ten 8K containers at 42.7 — the Moon, the
+    // cloud deck, Earth's globe and its night lights, Mercury, and the five
+    // bodies with an 8K photo rung. The 4K containers the boot warm uses are
+    // not in this sum: the Moon, the deck and the night lights all reach 8K
+    // on a desktop, so the rung their container serves has been climbed past
+    // by the time the ladder is at its heaviest. They buy a frame, not
+    // memory, here; Mercury's 4K container is climbed past the same way.
     const real = ladderWorstCaseBytes(false, true);
-    expect(mib(real)).toBeCloseTo(608.0, 1);
+    expect(mib(real)).toBeCloseTo(640.0, 1);
     expect(mib(real)).toBeCloseTo(
-      9 * mib(equirectMapGpuBytes(4096, true))
+      8 * mib(equirectMapGpuBytes(4096, true))
       + 3 * mib(equirectMapGpuBytes(4096))
-      + 9 * mib(equirectMapGpuBytes(8192, true)),
+      + 10 * mib(equirectMapGpuBytes(8192, true)),
       1,
     );
     const budget = UNMEASURED_DESKTOP_PROFILE.envelopeBytes - real;
-    expect(mib(budget)).toBeCloseTo(416.0, 1);
+    expect(mib(budget)).toBeCloseTo(384.0, 1);
     // Twenty-one bodies with a ladder no longer leave the tiles the whole
     // draw-call ceiling to spend, which is the price of the moons having real
     // maps. What has to survive it is the working set: even at the heaviest
@@ -1612,12 +1628,15 @@ describe('the ladder against the sector memory envelope', () => {
     // 4K night shell and two 8K ones, which still sits under the ladder's own
     // ceiling (the envelope less the tiles' floor), so nothing refuses it.
     const worst = ladderWorstCaseBytes(false, false);
-    expect(mib(worst)).toBeCloseTo(597.3, 1);
+    // One 4K webp fewer than before: Mercury's rungs are containers now.
+    expect(mib(worst)).toBeCloseTo(554.7, 1);
     expect(worst).toBeLessThanOrEqual(
       ladderCeilingBytes(UNMEASURED_DESKTOP_PROFILE, UNMEASURED_DESKTOP_PROFILE.sectorFloorBytes),
     );
     const worstBudget = UNMEASURED_DESKTOP_PROFILE.envelopeBytes - worst;
-    expect(mib(worstBudget)).toBeCloseTo(426.7, 1);
+    // Without a transcoder Mercury has no rung at all (both of its rungs are
+    // containers), which is one 4K webp fewer than this ladder used to hold.
+    expect(mib(worstBudget)).toBeCloseTo(469.3, 1);
     // Even on that ladder — every map at its heaviest, no transcoder — what
     // is left over still holds a whole working set, so the tiles are never
     // squeezed by the globe maps on this row.
@@ -1630,15 +1649,16 @@ describe('the ladder against the sector memory envelope', () => {
     // unavailable — what the ladder USED to be able to hold, since nothing
     // ever asked whether the next map fit.
     const worst = ladderWorstCaseBytes(true, false);
-    expect(mib(worst)).toBeCloseTo(469.3, 1);
+    expect(mib(worst)).toBeCloseTo(426.7, 1);
     expect(mib(worst)).toBeGreaterThan(mib(UNMEASURED_TOUCH_PROFILE.envelopeBytes));
     // Nor with one, and it is HEAVIER with one — a transcoder is what makes
-    // the container-only rungs exist at all, so it hands this phone thirteen
-    // more bodies to climb (twelve photo moons and Earth's globe) while taking
+    // the container-only rungs exist at all, so it hands this phone fourteen
+    // more bodies to climb (twelve photo moons, Mercury and Earth's globe) while taking
     // three quarters off each rung it already had. Neither figure is a thing
     // that happens; both are past a 320 MiB envelope, which is the point: the
     // arithmetic settles a phone's ladder either way.
-    expect(mib(ladderWorstCaseBytes(true, true))).toBeCloseTo(576.0, 1);
+    // Mercury's 8K container is 32 MiB more than the 4K one it climbs past.
+    expect(mib(ladderWorstCaseBytes(true, true))).toBeCloseTo(608.0, 1);
     expect(ladderWorstCaseBytes(true, true)).toBeGreaterThan(UNMEASURED_TOUCH_PROFILE.envelopeBytes);
     // It is now unreachable. The rung that would cross the envelope less the
     // tiles' floor is refused before it is fetched, so the ladder settles
@@ -2488,7 +2508,9 @@ describe('fetching the maps back after a lost context', () => {
     const near = onStandin('moon');
     const far = onStandin('mars');
     const bootMap = ladderHandle('venus'); // never climbed: nothing to fetch back
-    const held = onStandin('mercury');
+    // A body with a webp rung, so its decoded source can still be in RAM:
+    // Mercury's rungs are containers now, and a container's source is bytes.
+    const held = onStandin('saturn');
     held.tex.userData.sourceReleased = false; // its decoded source is still in RAM
     const queue = buildRestoreQueue([
       { up: far.up, tex: far.tex, distance: 9 },

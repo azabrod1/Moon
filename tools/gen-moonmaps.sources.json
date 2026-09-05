@@ -1038,5 +1038,38 @@
       "topLatDeg": 90.0011,
       "read_from": "GeoTIFF ModelTiepoint (33922) + ModelPixelScale (33550) + the projection GeoKey for the central meridian (3088/3080) and the sphere radius (2057)"
     }
+  },
+  "Mercury_MESSENGER_MDIS_Basemap_BDR_Mosaic_Global_665m_from166m.tif": {
+    "body": "mercury",
+    "url": "https://planetarymaps.usgs.gov/mosaic/Mercury_MESSENGER_MDIS_Basemap_BDR_Mosaic_Global_166m.tif",
+    "sha256": "66104bf6a6ba49c2c8b38120f57ce69b05584590e14196c045f96dca55a4135f",
+    "bytes": 208366860,
+    "width": 23040,
+    "height": 11520,
+    "format": "tiff, 8-bit, 1 band (LZW)",
+    "color": "mono",
+    "product": "Mercury MESSENGER MDIS Basemap BDR Global Mosaic 166m (92160x46080 mono GeoTIFF, 4.25 GB, sha256 not held here), reduced 4x to 23040x11520 with a Lanczos-3 resample (planning/_mercury-prep.mjs, libvips streaming) — the 166 m raster is 4.2 GB of pixels the source-resolution passes cannot hold, and a 665 m raster is still 2.8x an 8K rung; the rows from each pole down to 80 N and 81.25 S are blanked to no-data before the cut, because the basemap ends there in bright low-sun shadow streaks rather than ground",
+    "product_page": "https://astrogeology.usgs.gov/search/map/mercury_messenger_mdis_basemap_bdr_mosaic_global_166m",
+    "citation": "NASA/JHUAPL/Carnegie Institution of Washington; published by the USGS Astrogeology Science Center. Public domain.",
+    "label": null,
+    "longitude": {
+      "domain": "0-360 east",
+      "direction": "east-positive (the raster's column order)",
+      "leftEdgeLonDegEast": 180,
+      "eastLonIncreasesRightward": true,
+      "derivation": "raster (the 166 m source's GeoTIFF tags, read before the reduction): ModelTiepoint x = -7663601.1 m = -180.00 deg at 42576.6 m/deg from a 0 deg central meridian (GeoKey 2061 prime meridian 0) -> left edge 180 E, east increasing rightward, spanning 360 deg; ModelPixelScale 166.3108 m; tiepoint y = 3831800.6 m = 90.00 deg N. The reduction keeps the frame: 23040 px = 360 deg."
+    },
+    "used_by": [
+      "gen-moonmaps mercury"
+    ],
+    "raster": {
+      "centralMeridianDeg": 0,
+      "sphereRadiusM": 2439400.0,
+      "metresPerDeg": 42576.5657,
+      "spanDegLon": 360,
+      "spanDegLat": 180,
+      "topLatDeg": 90,
+      "read_from": "GeoTIFF ModelTiepoint (33922) + ModelPixelScale (33550) + GeoKeys 2057 (semi-major 2439400 m, Mercury_2015 sphere) and 2061 (prime meridian 0) of the 166 m source; the 4x reduction changes the pixel count only"
+    }
   }
 }

@@ -440,6 +440,29 @@ const JOBS = {
   // Each ships its boot map and its rung cut from ONE source in ONE run, so
   // the step up the ladder is a pure sharpen — which is the whole reason these
   // four bodies re-base rather than gaining a rung over the map they have.
+  mercury: {
+    src: 'Mercury_MESSENGER_MDIS_Basemap_BDR_Mosaic_Global_665m_from166m.tif',
+    // The boot map and both rungs come out of the one MESSENGER raster: a
+    // ladder whose rungs are cut from different products swaps the planet's
+    // character at the tier change, which is the one thing a rung must not do.
+    outputs: [{ width: 2048, out: 'mercury.webp' }],
+    rungs: [{ width: 8192, name: 'mercury-8k' }, { width: 4096, name: 'mercury-4k' }],
+    // Mercury is grey: the map it replaces has no measurable chroma (mean
+    // 132.6, 131.7, 131.6), and MESSENGER's colour products are exaggerated
+    // principal-component false colour, not a look to copy.
+    colour: gains([1, 1, 1], [1, 1, 1]),
+    // Held at the level the shipped map sat at, because the planet's exposure
+    // was tuned around it: on the albedo curve Mercury's 0.142 would land at
+    // 65, half of what the app has always drawn it at. Same class of
+    // exception as Callisto's, and stated rather than hidden in a ramp.
+    level: { mean: 132.6, why: 'the shipped map the tiers must not step away from' },
+    // Both caps are no-data (the north above 75 N in the source, the south
+    // past 85 S blanked before the cut): the matched fill, the mirror line
+    // smoothed along longitude and grain at the octaves the imaged ground
+    // measures, rather than one guessed amplitude, which on a map whose
+    // albedo varies this much comes out as bright speckle at the poles.
+    noData: { below: 12, mode: 'texture', seam: 0.03, matchTexture: true },
+  },
   io: {
     src: 'Io_GalileoSSI-Voyager_Global_Mosaic_ClrMerge_1km.tif',
     outputs: [{ width: 4096, out: 'io.v2.webp' }],

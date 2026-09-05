@@ -1305,7 +1305,11 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
         vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')}));
     float glintKeep = (1.0 - cloudCoverage(deckLum))
         * ${OCEAN_SPECULAR_KEEP.toFixed(4)};
-    outgoingLight -= reflectedLight.directSpecular * (1.0 - glintKeep);
+    // Cut from the CAPPED glint: the cap above already took the rest off, and
+    // cutting the uncapped term here would drive the light below zero under
+    // cloud, which the bloom then paints as a yellow core in a blue ring.
+    outgoingLight -= min(reflectedLight.directSpecular, vec3(${OCEAN_GLINT_CAP.toFixed(2)}))
+        * (1.0 - glintKeep);
   }
   // The sine of the Sun's elevation at this fragment, off the perturbed normal:
   // the Sun's own Lambert term, which is what the day factor and the Moon's

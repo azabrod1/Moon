@@ -565,6 +565,16 @@ describe('the haze fade and the glint cap', () => {
     return shader.fragmentShader;
   }
 
+  it('cuts the cloud-shadowed glint from the capped term, never below zero', () => {
+    // The two terms meet in one body: the cap first, then the deck's shadow on
+    // the mirror term. The shadow must cut from what the cap left, or under
+    // cloud the light goes negative and bloom paints a coloured core.
+    const frag = fragmentOf('airless');
+    const cap = 'min(reflectedLight.directSpecular, vec3(2.50))';
+    expect(frag).toContain(`${cap}\n        * (1.0 - glintKeep);`);
+    expect(frag).not.toMatch(/reflectedLight\.directSpecular \* \(1\.0 - glintKeep\)/);
+  });
+
   it('fades a body\'s haze in over a moment when its tables first bind, and only then', () => {
     const air = createSurfaceAirFx();
     const tables = {

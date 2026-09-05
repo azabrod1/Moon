@@ -1217,6 +1217,25 @@ export class PlanetariumMode {
   private readonly sectorWorldQuatInv = new THREE.Quaternion();
   /** Last frame's world orientation per streamed body, for the spin gate. */
   private readonly sectorSpin = new Map<string, SectorSpinLatch>();
+  // What the whole sector pass shares for one frame, and what the family
+  // being visited is. Fields rather than closure captures: the pass runs for
+  // every registered family on every frame, so a closure per family per
+  // frame — and an object per sector — would be pure garbage at 60 Hz.
+  private sectorFrameCanvasW = 0;
+  private sectorFrameCanvasH = 0;
+  private sectorFrameDpr = 1;
+  private sectorFrameNowMs = 0;
+  private sectorFrameChart = false;
+  private sectorFrameGrounded: string | null = null;
+  private sectorFrameFocalPx = 0;
+  private sectorFrameMaxScale = 1;
+  private sectorBodyMesh: THREE.Mesh | null = null;
+  private sectorBodyRadiusAU = 0;
+  private sectorBodyWorldScale = 1;
+  private sectorBodyTangentStep = 0;
+  /** Refilled for each sector measured. The streamer reads it inside the same
+   *  loop iteration and keeps nothing from it, so one object serves them all. */
+  private readonly sectorMeasureOut: SectorMeasure = { pxPerLocalUnit: 0, centrality: 0, offscreen: false };
   /** Monotonic per-update() stamp guarding the shared projection caches (the
    *  Sun's below, and each moon's on MoonMesh). One increment site covers
    *  cruise and landed: updateLanded runs inside update(). */
@@ -3272,12 +3291,14 @@ export class PlanetariumMode {
       sectors.dropAll();
       return;
     }
-    const canvasW = this.renderer.domElement.clientWidth;
     const canvasH = this.renderer.domElement.clientHeight;
     const dpr = this.renderer.getPixelRatio();
-    const nowMs = performance.now();
-    const chart = this.isMapOpen();
-    const grounded = this.landedView === 'surface' ? this.landedOn?.name ?? null : null;
+    this.sectorFrameCanvasW = this.renderer.domElement.clientWidth;
+    this.sectorFrameCanvasH = canvasH;
+    this.sectorFrameDpr = dpr;
+    this.sectorFrameNowMs = performance.now();
+    this.sectorFrameChart = this.isMapOpen();
+    this.sectorFrameGrounded = this.landedView === 'surface' ? this.landedOn?.name ?? null : null;
     // The projections below read the camera's inverse world matrix; this
     // pass must not depend on the LOD pass (skipped under the chart) having
     // refreshed it this frame.
@@ -3292,115 +3313,12 @@ export class PlanetariumMode {
       | undefined;
     const lensStrength = lens ? lens.effectiveStrength ?? lens.strength : 0;
     const designFovDeg = displayFovDeg(this.camera);
-    const focalDevicePx = ((canvasH / 2) / lensDisplayHalfTan(designFovDeg, lensStrength)) * dpr;
+    this.sectorFrameFocalPx = ((canvasH / 2) / lensDisplayHalfTan(designFovDeg, lensStrength)) * dpr;
     // The lens stretches outward from the axis, so the same patch of surface
     // draws larger in a corner than at the centre. The skip-the-whole-body
-    // bound below carries that factor to stay an upper bound on every sector.
-    const maxFrameScale = lensMaxFrameScale(designFovDeg, this.camera.aspect, lensStrength);
-
-    // `key` names one family (sectorFamilyKey), `name` the body it belongs to
-    // — the landed check and the suspend rules are the body's, whichever of
-    // its families is being measured.
-    const visit = (key: string, name: string, mesh: THREE.Mesh, radiusAU: number, hidden: boolean) => {
-      if (!sectors.has(key)) return;
-      mesh.getWorldPosition(this.sectorWorldCentre); // refreshes matrixWorld too
-      mesh.getWorldQuaternion(this.sectorWorldQuat);
-      this.sectorWorldQuatInv.copy(this.sectorWorldQuat).invert();
-      // Spin gate, latched per FAMILY key rather than per body: two families
-      // of one body measure the same quaternion and keep one entry each,
-      // which is a duplicate rate and nothing worse — while a latch keyed on
-      // the body's name would let one family's suspend decide the other's,
-      // the collision every other lookup here is keyed to avoid. A first
-      // visit records an orientation and reports no spin.
-      let latch = this.sectorSpin.get(key);
-      if (!latch) {
-        latch = { quat: this.sectorWorldQuat.clone(), tMs: nowMs, heldUntilMs: 0 };
-        this.sectorSpin.set(key, latch);
-      }
-      const spinning = advanceSpinLatch(latch, this.sectorWorldQuat, nowMs);
-      const suspend = sectorSuspendFor({ hidden, grounded: grounded === name, spinning, chart });
-      const worldScale = mesh.getWorldScale(this.sectorWorldScale).x;
-      const worldR = radiusAU * worldScale;
-      this.sectorCamLocal.copy(this.camera.position);
-      mesh.worldToLocal(this.sectorCamLocal);
-      // Sun direction in the globe's frame, for the night-side gate.
-      this.sectorSunLocal.copy(this.sectorSunWorld).sub(this.sectorWorldCentre).normalize()
-        .applyQuaternion(this.sectorWorldQuatInv);
-      // The most magnified surface point is the nearest one: device pixels
-      // per local unit there bound every sector, and let the streamer skip
-      // the per-sector work for a globe that is not close.
-      const distCentre = this.sectorWorldCentre.distanceTo(this.camera.position);
-      const pxPerLocalUnitNearest = (focalDevicePx * maxFrameScale * worldScale)
-        / Math.max(distCentre - worldR, 1e-12);
-      // One tangent step in this globe's local units. A texel of even the
-      // finest map is smaller, and the projection is straight across it.
-      const tangentStep = radiusAU * PlanetariumMode.SECTOR_TANGENT_STEP_RADII;
-      const measure = (
-        bsCentreLocal: THREE.Vector3, bsRadiusLocal: number, surfaceDirLocal: THREE.Vector3,
-      ): SectorMeasure | null => {
-        // Frame membership from the bounding sphere against the frustum. Not
-        // from a projected footprint: close in, the camera sits INSIDE a
-        // sector's bounding sphere, and the projected centre of a sphere the
-        // camera is inside lands anywhere at all — which is what marked a
-        // whole limb strip off-frame at a grazing pose and left it unfetched.
-        this.sectorWorldCentre.copy(bsCentreLocal);
-        mesh.localToWorld(this.sectorWorldCentre);
-        const placement = placeSphereInFrustum(
-          this.sectorWorldCentre, bsRadiusLocal * worldScale, this.camera,
-        );
-        // Nothing of it is in front of the camera: no measurement to make.
-        if (placement === 'behind') return null;
-        // Entirely outside the frame: nothing to sharpen, but a resident one
-        // is a pan away — the streamer keeps it while it stays magnified.
-        const offscreen = placement === 'aside';
-        // Magnification at the surface point the streamer asks about (the
-        // sector's point nearest the camera's): how many device pixels one
-        // step of surface covers there, along the direction the projection
-        // magnifies most. That is the larger singular value of the screen
-        // Jacobian — a cosine between the normal and the line of sight gives
-        // the SMALLER one, which foreshortens a limb sector to nothing while
-        // its texels are still drawn several pixels wide along the limb.
-        this.sectorNormal.copy(surfaceDirLocal);
-        this.sectorPoint.copy(this.sectorNormal).multiplyScalar(radiusAU);
-        mesh.localToWorld(this.sectorPoint);
-        // The map's own axes at that point: east around the local +Y pole,
-        // north across it. Any perpendicular pair of the same length would
-        // give the same largest singular value; these are the ones the tiles
-        // are cut on.
-        this.sectorEast.set(this.sectorNormal.z, 0, -this.sectorNormal.x);
-        if (this.sectorEast.lengthSq() < 1e-18) this.sectorEast.set(1, 0, 0);
-        else this.sectorEast.normalize();
-        this.sectorNorth.crossVectors(this.sectorNormal, this.sectorEast);
-        this.sectorEast.multiplyScalar(tangentStep * worldScale).applyQuaternion(this.sectorWorldQuat);
-        this.sectorNorth.multiplyScalar(tangentStep * worldScale).applyQuaternion(this.sectorWorldQuat);
-        const scale = projectedStepScale(
-          this.sectorPoint, this.sectorEast, this.sectorNorth,
-          this.camera, canvasW, canvasH, this.sectorStepScale,
-        );
-        if (!scale) {
-          // The point is at or behind the camera plane (a grazing pose): no
-          // screen scale exists there, and nothing says where on the frame it
-          // would land. Hold it at the scale it would have facing the camera
-          // at its distance, so a resident sector swinging behind the viewer
-          // is kept for the pan back rather than dropped.
-          this.sectorToCam.copy(this.camera.position).sub(this.sectorPoint);
-          const dist = this.sectorToCam.length();
-          if (!(dist > 0)) return null;
-          return { pxPerLocalUnit: (focalDevicePx * worldScale) / dist, centrality: 0, offscreen };
-        }
-        // Centrality of the measured point itself — the place that has to be
-        // sharp — rather than of a bounding sphere reaching a quarter of the
-        // way round the globe.
-        const dx = (scale.x - canvasW / 2) / Math.max(canvasW / 2, 1);
-        const dy = (scale.y - canvasH / 2) / Math.max(canvasH / 2, 1);
-        return {
-          pxPerLocalUnit: (scale.maxPx * dpr) / tangentStep,
-          centrality: Math.max(0, 1 - Math.hypot(dx, dy)),
-          offscreen,
-        };
-      };
-      sectors.update(key, this.sectorCamLocal, measure, nowMs, suspend, this.sectorSunLocal, pxPerLocalUnitNearest);
-    };
+    // bound in visitSectorBody carries that factor to stay an upper bound on
+    // every sector.
+    this.sectorFrameMaxScale = lensMaxFrameScale(designFovDeg, this.camera.aspect, lensStrength);
 
     // Measure every body first, then let the streamer reconcile them together:
     // the bodies are visited in catalog order, and a working set decided body
@@ -3414,23 +3332,167 @@ export class PlanetariumMode {
     try {
       for (const planet of this.solarSystem.planets) {
         const name = planet.data.name;
-        visit(name, name, planet.mesh, planet.data.radiusAU, !planet.mesh.visible);
+        this.visitSectorBody(sectors, name, name, planet.mesh, planet.data.radiusAU, !planet.mesh.visible);
         // The night shell has a visibility of its own (the Earth-detail range
         // gate), so its family reads that flag rather than the globe's.
         if (planet.nightMesh && planet.nightRadiusAU) {
-          visit(
-            sectorFamilyKey(name, 'night'), name, planet.nightMesh, planet.nightRadiusAU,
+          this.visitSectorBody(
+            sectors, sectorFamilyKey(name, 'night'), name, planet.nightMesh, planet.nightRadiusAU,
             !planet.nightMesh.visible,
           );
         }
       }
       for (const moons of this.planetMoons.values()) {
-        for (const m of moons) visit(m.data.name, m.data.name, m.mesh, m.data.radiusAU, !m.mesh.visible);
+        for (const m of moons) {
+          this.visitSectorBody(sectors, m.data.name, m.data.name, m.mesh, m.data.radiusAU, !m.mesh.visible);
+        }
       }
     } finally {
       sectors.endFrame();
     }
   }
+
+  /**
+   * One registered family's frame: its spin gate, the suspend verdict, the
+   * camera and Sun in its local frame, and the magnification bound at its
+   * nearest surface point — then hand the streamer this family's measure.
+   * `key` names one family (sectorFamilyKey), `name` the body it belongs to
+   * — the landed check and the suspend rules are the body's, whichever of
+   * its families is being measured.
+   *
+   * A method reading the frame's shared values from fields, not a closure
+   * built inside the pass: the pass runs for every registered family on
+   * every frame, so a closure per family per frame — and an object per
+   * sector measured — would be pure garbage at 60 Hz.
+   */
+  private visitSectorBody(
+    sectors: SectorStreamer, key: string, name: string, mesh: THREE.Mesh, radiusAU: number, hidden: boolean,
+  ): void {
+    if (!sectors.has(key)) return;
+    const nowMs = this.sectorFrameNowMs;
+    mesh.getWorldPosition(this.sectorWorldCentre); // refreshes matrixWorld too
+    mesh.getWorldQuaternion(this.sectorWorldQuat);
+    this.sectorWorldQuatInv.copy(this.sectorWorldQuat).invert();
+    // Spin gate, latched per FAMILY key rather than per body: two families
+    // of one body measure the same quaternion and keep one entry each,
+    // which is a duplicate rate and nothing worse — while a latch keyed on
+    // the body's name would let one family's suspend decide the other's,
+    // the collision every other lookup here is keyed to avoid. A first
+    // visit records an orientation and reports no spin.
+    let latch = this.sectorSpin.get(key);
+    if (!latch) {
+      latch = { quat: this.sectorWorldQuat.clone(), tMs: nowMs, heldUntilMs: 0 };
+      this.sectorSpin.set(key, latch);
+    }
+    const spinning = advanceSpinLatch(latch, this.sectorWorldQuat, nowMs);
+    const suspend = sectorSuspendFor({
+      hidden, grounded: this.sectorFrameGrounded === name, spinning, chart: this.sectorFrameChart,
+    });
+    const worldScale = mesh.getWorldScale(this.sectorWorldScale).x;
+    const worldR = radiusAU * worldScale;
+    this.sectorCamLocal.copy(this.camera.position);
+    mesh.worldToLocal(this.sectorCamLocal);
+    // Sun direction in the globe's frame, for the night-side gate.
+    this.sectorSunLocal.copy(this.sectorSunWorld).sub(this.sectorWorldCentre).normalize()
+      .applyQuaternion(this.sectorWorldQuatInv);
+    // The most magnified surface point is the nearest one: device pixels
+    // per local unit there bound every sector, and let the streamer skip
+    // the per-sector work for a globe that is not close.
+    const distCentre = this.sectorWorldCentre.distanceTo(this.camera.position);
+    const pxPerLocalUnitNearest = (this.sectorFrameFocalPx * this.sectorFrameMaxScale * worldScale)
+      / Math.max(distCentre - worldR, 1e-12);
+    // What sectorMeasure answers about, for the duration of this call.
+    this.sectorBodyMesh = mesh;
+    this.sectorBodyRadiusAU = radiusAU;
+    this.sectorBodyWorldScale = worldScale;
+    // One tangent step in this globe's local units. A texel of even the
+    // finest map is smaller, and the projection is straight across it.
+    this.sectorBodyTangentStep = radiusAU * PlanetariumMode.SECTOR_TANGENT_STEP_RADII;
+    sectors.update(
+      key, this.sectorCamLocal, this.sectorMeasure, nowMs, suspend, this.sectorSunLocal, pxPerLocalUnitNearest,
+    );
+    this.sectorBodyMesh = null;
+  }
+
+  /** One sector of the family being visited: its frame membership and the
+   *  magnification at the surface point the streamer asks about. An arrow
+   *  field, so the pass hands the streamer the same function every frame
+   *  instead of building a fresh closure per family; the answer is one object
+   *  refilled per call, which the streamer reads inside the same loop
+   *  iteration and keeps nothing of. */
+  private readonly sectorMeasure = (
+    bsCentreLocal: THREE.Vector3, bsRadiusLocal: number, surfaceDirLocal: THREE.Vector3,
+  ): SectorMeasure | null => {
+    const mesh = this.sectorBodyMesh;
+    if (!mesh) return null;
+    const canvasW = this.sectorFrameCanvasW;
+    const canvasH = this.sectorFrameCanvasH;
+    const worldScale = this.sectorBodyWorldScale;
+    const tangentStep = this.sectorBodyTangentStep;
+    const out = this.sectorMeasureOut;
+    // Frame membership from the bounding sphere against the frustum. Not
+    // from a projected footprint: close in, the camera sits INSIDE a
+    // sector's bounding sphere, and the projected centre of a sphere the
+    // camera is inside lands anywhere at all — which is what marked a
+    // whole limb strip off-frame at a grazing pose and left it unfetched.
+    this.sectorWorldCentre.copy(bsCentreLocal);
+    mesh.localToWorld(this.sectorWorldCentre);
+    const placement = placeSphereInFrustum(
+      this.sectorWorldCentre, bsRadiusLocal * worldScale, this.camera,
+    );
+    // Nothing of it is in front of the camera: no measurement to make.
+    if (placement === 'behind') return null;
+    // Entirely outside the frame: nothing to sharpen, but a resident one
+    // is a pan away — the streamer keeps it while it stays magnified.
+    const offscreen = placement === 'aside';
+    // Magnification at the surface point the streamer asks about (the
+    // sector's point nearest the camera's): how many device pixels one
+    // step of surface covers there, along the direction the projection
+    // magnifies most. That is the larger singular value of the screen
+    // Jacobian — a cosine between the normal and the line of sight gives
+    // the SMALLER one, which foreshortens a limb sector to nothing while
+    // its texels are still drawn several pixels wide along the limb.
+    this.sectorNormal.copy(surfaceDirLocal);
+    this.sectorPoint.copy(this.sectorNormal).multiplyScalar(this.sectorBodyRadiusAU);
+    mesh.localToWorld(this.sectorPoint);
+    // The map's own axes at that point: east around the local +Y pole,
+    // north across it. Any perpendicular pair of the same length would
+    // give the same largest singular value; these are the ones the tiles
+    // are cut on.
+    this.sectorEast.set(this.sectorNormal.z, 0, -this.sectorNormal.x);
+    if (this.sectorEast.lengthSq() < 1e-18) this.sectorEast.set(1, 0, 0);
+    else this.sectorEast.normalize();
+    this.sectorNorth.crossVectors(this.sectorNormal, this.sectorEast);
+    this.sectorEast.multiplyScalar(tangentStep * worldScale).applyQuaternion(this.sectorWorldQuat);
+    this.sectorNorth.multiplyScalar(tangentStep * worldScale).applyQuaternion(this.sectorWorldQuat);
+    const scale = projectedStepScale(
+      this.sectorPoint, this.sectorEast, this.sectorNorth,
+      this.camera, canvasW, canvasH, this.sectorStepScale,
+    );
+    if (!scale) {
+      // The point is at or behind the camera plane (a grazing pose): no
+      // screen scale exists there, and nothing says where on the frame it
+      // would land. Hold it at the scale it would have facing the camera
+      // at its distance, so a resident sector swinging behind the viewer
+      // is kept for the pan back rather than dropped.
+      this.sectorToCam.copy(this.camera.position).sub(this.sectorPoint);
+      const dist = this.sectorToCam.length();
+      if (!(dist > 0)) return null;
+      out.pxPerLocalUnit = (this.sectorFrameFocalPx * worldScale) / dist;
+      out.centrality = 0;
+      out.offscreen = offscreen;
+      return out;
+    }
+    // Centrality of the measured point itself — the place that has to be
+    // sharp — rather than of a bounding sphere reaching a quarter of the
+    // way round the globe.
+    const dx = (scale.x - canvasW / 2) / Math.max(canvasW / 2, 1);
+    const dy = (scale.y - canvasH / 2) / Math.max(canvasH / 2, 1);
+    out.pxPerLocalUnit = (scale.maxPx * this.sectorFrameDpr) / tangentStep;
+    out.centrality = Math.max(0, 1 - Math.hypot(dx, dy));
+    out.offscreen = offscreen;
+    return out;
+  };
 
   /**
    * What the sector streamer is owed on a frame that measures nothing (the

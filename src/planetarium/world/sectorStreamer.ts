@@ -903,6 +903,11 @@ export class SectorStreamer {
   private readonly pointScratch = new THREE.Vector3();
   private readonly sunPointScratch = new THREE.Vector3();
   private readonly antiSunScratch = new THREE.Vector3();
+  /** Set only by devSetMeshesVisible: a diagnostic that takes the tiles off
+   *  screen while leaving every one of them resident, so the measurement it
+   *  serves is reversible and costs no re-stream. Re-applied per frame
+   *  because a tile that lands while it is on would otherwise draw. */
+  private devMeshesHidden = false;
 
   constructor(opts: SectorStreamerOptions) {
     this.load = opts.load ?? loadStreamedTexture;
@@ -1264,6 +1269,7 @@ export class SectorStreamer {
     for (const slot of slots) {
       if (slot.state === 'resident' && slot.mesh) {
         family.syncMaterial(slot.mesh.material as THREE.Material);
+        if (import.meta.env.DEV) slot.mesh.visible = !this.devMeshesHidden;
         if (!slot.presented) {
           slot.presented = true;
           slot.liveSinceMs = nowMs;
@@ -1517,6 +1523,19 @@ export class SectorStreamer {
     this.dropAll();
     this.bodies.clear();
     this.syncFloor();
+  }
+
+  /**
+   * Take every sector mesh off screen without evicting a tile — the A/B for
+   * "what do the tiles cost to draw", which has to leave the working set
+   * exactly as it found it. Nothing here touches residency, the budget or the
+   * ranking, so the tiles are back the frame this is turned off again.
+   */
+  devSetMeshesVisible(visible: boolean): void {
+    this.devMeshesHidden = !visible;
+    for (const body of this.bodies.values()) {
+      for (const slot of body.slots) if (slot.mesh) slot.mesh.visible = visible;
+    }
   }
 
   stats(): SectorStats {

@@ -371,6 +371,13 @@ export function invalidateTextureWarmCache(): void {
   warmedVersions = new WeakMap();
 }
 
+/** How much work the pump still owes: maps waiting plus the one being sliced.
+ *  A budgeted consumer's queue depth only means something beside the budget it
+ *  is being paid out of, so the two are read together. */
+export function textureWarmQueueDepth(): number {
+  return queue.length + (activeSlice ? 1 : 0);
+}
+
 /** Full teardown (mode dispose) and test isolation seam. Entries still
  *  queued settle 'disposed' — the pump will never upload them, and the
  *  exactly-once contract holds through a teardown too. */

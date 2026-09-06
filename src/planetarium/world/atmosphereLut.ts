@@ -304,6 +304,24 @@ export function bakeSliceBudgetMs(frameIntervalMs: number): number {
   return interval * BAKE_BUDGET_FRACTION;
 }
 
+/** One frame-sliced step of a bake: the budget the slice was cut to, what its
+ *  draws actually took on the main thread, and how many steps are still to
+ *  come. Recorded only under a DEV guard, for the frame-budget readout that
+ *  asks what each budgeted consumer is spending. */
+export interface BakeSliceSample {
+  atMs: number;
+  budgetMs: number;
+  spentMs: number;
+  stepsLeft: number;
+}
+
+let lastBakeSlice: BakeSliceSample | null = null;
+
+/** The most recent bake slice, or null when no bake has sliced this session. */
+export function lastBakeSliceSample(): BakeSliceSample | null {
+  return lastBakeSlice;
+}
+
 /**
  * What one layer draw of each pass costs in ms: the measured figure where a
  * timer query returned one, and the pass's weight priced in ms where it did
@@ -1534,6 +1552,7 @@ export class AtmosphereLut {
           return false;
         }
         const allowed = this.sliceDrawCount(steps, i);
+        const sliceBudgetMs = import.meta.env.DEV ? bakeSliceBudgetMs(this.frameIntervalMs()) : 0;
         const sliceStart = performance.now();
         const prevTarget = this.renderer.getRenderTarget();
         const prevAutoClear = this.renderer.autoClear;
@@ -1555,8 +1574,17 @@ export class AtmosphereLut {
           this.renderer.autoClear = prevAutoClear;
           this.renderer.setRenderTarget(prevTarget);
         }
-        submitMs += performance.now() - sliceStart;
+        const sliceEnd = performance.now();
+        submitMs += sliceEnd - sliceStart;
         slices++;
+        if (import.meta.env.DEV) {
+          lastBakeSlice = {
+            atMs: sliceEnd,
+            budgetMs: sliceBudgetMs,
+            spentMs: sliceEnd - sliceStart,
+            stepsLeft: steps.length - i,
+          };
+        }
         // Links all precede draws, so a slice always takes at least one step.
         // The guard stays because the cost of being wrong is a boot idle that
         // spins on a step it will not run.

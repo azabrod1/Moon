@@ -458,6 +458,22 @@ buildComposer(planetariumCamera, PLANETARIUM_BLOOM, planetariumBloomEnabled());
 // shaders and uploads textures, so its duration is a startup phase of its own.
 let measureNextSceneFrame = false;
 
+// Both ends of the app's own tick, for a diagnostic that has to tell a frame
+// the app spent 30 ms inside from a frame it was handed 30 ms apart. Null
+// unless the on-device perf overlay is running, and never installed in a
+// production build.
+let frameProbe: { start(): void; end(): void } | null = null;
+
+/**
+ * Pin the render resolution and re-run the app's own resize path, so the
+ * composer targets, the star point sizes and the mode's layout all follow it
+ * exactly as they do when a display changes. Null hands the ratio back.
+ */
+function devPinPixelRatio(ratio: number | null): void {
+  pixelRatioPin = ratio;
+  syncViewport();
+}
+
 // One frame of the world: the map's own scene while the map is open, else the
 // composer frame plus the corner chart. The animation loop calls it through
 // the boot render gate; the reveal calls it once directly.
@@ -537,16 +553,21 @@ function renderScene(cam: THREE.Camera) {
       // renderToScreen flag is set; the write target is intentionally unused.
       renderer.setRenderTarget(null);
       renderer.render(scene, cam);
-      const texture = ensureDirectLensTexture();
-      renderer.copyFramebufferToTexture(texture);
-      updateLensPass(lensPass, planetariumLens, planetariumCamera.fov, planetariumCamera.aspect);
-      lensPass.render(
-        renderer,
-        null as unknown as THREE.WebGLRenderTarget,
-        { texture } as unknown as THREE.WebGLRenderTarget,
-        0,
-        false,
-      );
+      // A disabled pass does not run, exactly as the composer skips one: this
+      // path calls the pass by hand, so the flag has to be read by hand too.
+      // Skipping it leaves the tone-mapped frame already on screen.
+      if (lensPass.enabled) {
+        const texture = ensureDirectLensTexture();
+        renderer.copyFramebufferToTexture(texture);
+        updateLensPass(lensPass, planetariumLens, planetariumCamera.fov, planetariumCamera.aspect);
+        lensPass.render(
+          renderer,
+          null as unknown as THREE.WebGLRenderTarget,
+          { texture } as unknown as THREE.WebGLRenderTarget,
+          0,
+          false,
+        );
+      }
     } else {
       renderer.render(scene, cam);
     }
@@ -1192,6 +1213,10 @@ async function init() {
     requestAnimationFrame(animate);
     if (import.meta.env.DEV) surfacePerfFrameStart(rafTimestamp);
     if (import.meta.env.DEV) smoothTraceFrameStart(rafTimestamp);
+    // Wall clock at the callback, not the rAF timestamp: after a busy main
+    // thread the timestamp is the frame the browser meant to start, which is
+    // already stale by the time this runs.
+    if (import.meta.env.DEV && frameProbe) frameProbe.start();
     // Drift poll on a countdown: innerWidth/innerHeight are cheap but not
     // free at once-per-frame, and the events below re-arm an immediate check
     // for every transition that announces itself (visualViewport covers the
@@ -1230,6 +1255,7 @@ async function init() {
     if (exposurePin !== null) exposureCurrent = exposurePin;
     renderer.toneMappingExposure = exposureCurrent;
     if (bootRender.shouldRender()) drawWorldFrame();
+    if (import.meta.env.DEV && frameProbe) frameProbe.end();
   }
 
   animate();
@@ -1239,6 +1265,30 @@ async function init() {
   // deliberately early: an entry stall can overlap the last texture-loading
   // unit, and the profiler must remain usable while `ready()` is still false.
   if (import.meta.env.DEV) installDevHooks();
+
+  // `?perf=1` — the on-device perf sweep. A phone has no console and an
+  // M-series Mac cannot rank a phone's costs, so the ranking is measured on
+  // the screen that is slow. Imported on demand behind the DEV check, so a
+  // production build carries none of it and no other DEV boot loads it.
+  if (import.meta.env.DEV && new URLSearchParams(location.search).get('perf') === '1') {
+    void import('./app/devPerfSweep')
+      .then(({ installPerfSweep }) => installPerfSweep({
+        ready: () => plmActivated,
+        setSynthesis: (on) => planetariumMode?.devSetSynthesis(on),
+        setRoleHidden: (role, hidden) => planetariumMode?.devSetRoleHidden(role, hidden),
+        setSectorMeshes: (visible) => planetariumMode?.devSetSectorMeshesVisible(visible),
+        setChrome: (visible) => planetariumMode?.devSetChrome(visible),
+        setShip: (visible) => planetariumMode?.devSetShipVisible(visible),
+        shipVisible: () => planetariumMode?.devShipVisible() ?? true,
+        budget: () => planetariumMode?.devFrameBudget() ?? null,
+        resetBudget: () => planetariumMode?.devResetFrameBudget(),
+        passes: () => ({ bloom: bloomPass, lens: lensPass }),
+        pinPixelRatio: devPinPixelRatio,
+        pixelRatio: () => renderer.getPixelRatio(),
+        setFrameProbe: (probe) => { frameProbe = probe; },
+      }))
+      .catch((err) => debugWarn('The perf overlay did not load', err));
+  }
 
   const autoMode = getAutoMode();
   debugLog('Boot mode', { autoMode });

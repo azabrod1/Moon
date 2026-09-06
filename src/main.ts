@@ -474,6 +474,38 @@ function devPinPixelRatio(ratio: number | null): void {
   syncViewport();
 }
 
+/**
+ * Every surface a frame is actually drawn into, in device pixels.
+ *
+ * A resolution switch that changes the renderer's ratio but leaves a target at
+ * its old size costs nothing and reads as if the pixels were free, so the
+ * sizes themselves are the evidence rather than the timing. The bloom chain is
+ * deliberately not on the scene's ratio (app/renderResolution.ts sizes it at
+ * the old floor so the glow keeps its width), which is why it is listed
+ * separately instead of being assumed to follow.
+ */
+function devRenderTargets() {
+  const buffer = renderer.getDrawingBufferSize(new THREE.Vector2());
+  const canvas = renderer.domElement;
+  const size = (t: { width: number; height: number } | null | undefined) =>
+    (t ? { w: t.width, h: t.height, mpx: Math.round((t.width * t.height) / 1e4) / 100 } : null);
+  const bloomMip = (bloomPass as unknown as { renderTargetsHorizontal?: THREE.WebGLRenderTarget[] } | null)
+    ?.renderTargetsHorizontal?.[0] ?? null;
+  return {
+    pixelRatio: renderer.getPixelRatio(),
+    targetPixelRatio: getTargetPixelRatio(),
+    bloomRatio: bloomPixelRatio(window.devicePixelRatio, isMobile),
+    drawingBuffer: { w: buffer.x, h: buffer.y, mpx: Math.round((buffer.x * buffer.y) / 1e4) / 100 },
+    canvas: { w: canvas.width, h: canvas.height, cssW: canvas.clientWidth, cssH: canvas.clientHeight },
+    sceneTarget: sceneTarget
+      ? { ...size(sceneTarget)!, samples: sceneTarget.samples }
+      : null,
+    composerPartner: size(composer?.renderTarget2),
+    // Half the bloom pass's requested resolution: the first mip it blurs.
+    bloomMip0: size(bloomMip),
+  };
+}
+
 // One frame of the world: the map's own scene while the map is open, else the
 // composer frame plus the corner chart. The animation loop calls it through
 // the boot render gate; the reveal calls it once directly.
@@ -1285,6 +1317,7 @@ async function init() {
         passes: () => ({ bloom: bloomPass, lens: lensPass }),
         pinPixelRatio: devPinPixelRatio,
         pixelRatio: () => renderer.getPixelRatio(),
+        renderTargets: devRenderTargets,
         setFrameProbe: (probe) => { frameProbe = probe; },
       }))
       .catch((err) => debugWarn('The perf overlay did not load', err));

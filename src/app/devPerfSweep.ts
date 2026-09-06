@@ -7,37 +7,50 @@
  * screen: park at the pose that is slow, tap Sweep, and each configuration is
  * applied on its own, held, measured, and put back exactly as it was found.
  *
- * Two numbers per configuration, and they answer different questions:
+ * Three numbers per configuration, and they answer different questions:
  *
  *  - **fps** is how far apart the frames arrive — rAF callbacks counted
  *    against the wall clock, never the app's own dt and never the rAF
  *    timestamp (after a busy main thread that timestamp is the frame the
  *    browser meant to start, not the one that ran).
  *  - **busy** is how much of each frame the app spends on the main thread:
- *    both ends of the animation loop's own tick. It excludes the GPU, which
- *    only has the work submitted to it inside that span.
+ *    both ends of the animation loop's own tick.
+ *  - **off** is the rest of the frame — the GPU, the compositor, or a cap.
+ *    Work submitted inside `busy` is paid here.
  *
- * The gap between them is the point. A frame that arrives 33 ms after the last
- * one with 8 ms of work in it was not made slow by the app's work — the page
- * is being paced from outside, which iOS does under thermal and background
- * pressure, and which minimising the browser and coming back clears. So the
- * sweep ends on a CONTROL that switches everything off at once: if that still
- * reads half rate on an idle main thread, the table says so in words rather
- * than letting the per-configuration numbers be read as costs they are not.
+ * **The device heats under the measurement.** A phone measured for a minute is
+ * not the same phone at the end of it: an early run read the baseline at 54 fps
+ * and, two dozen holds later, 44 — with rows in between that hiding the
+ * spacecraft appeared to cost 30 ms. A sweep that measures each configuration
+ * once, in a fixed order, ranks the order rather than the configurations. So
+ * this one:
  *
- * The third readout is the frame-sliced work. The texture warm pump and the
+ *  - **brackets every configuration with a baseline** — A B A C A D — and
+ *    reports each one against the MEAN of the two baselines either side of it,
+ *    so a device sliding under the run subtracts out;
+ *  - **shuffles the order every run**, and prints it, so a residual slide
+ *    cannot land on the same configuration twice;
+ *  - **holds three seconds** rather than five, first second discarded, because
+ *    the total wall time IS the heat;
+ *  - **prints every baseline in sequence** as a thermal-drift line, so how far
+ *    the device moved is on screen beside what it is being asked to explain.
+ *
+ * It still ends on a CONTROL that switches everything off at once. If that
+ * reads half rate on an idle main thread, the page is being paced from outside
+ * — which iOS does under thermal and background pressure — and the table says
+ * so in words rather than letting the rows be read as costs they are not.
+ *
+ * The fourth readout is the frame-sliced work. The texture warm pump and the
  * atmosphere bake each take a share of a smoothed frame interval, so a scene
  * that makes frames long licences longer slices, which keeps the frames long:
  * the interval, each consumer's budget, its spend and its queue depth are on
  * screen live, and "Reset budget" makes the tracker believe the next frame
- * outright — the same reset that returning to a hidden tab performs. If that
- * alone restores the frame rate at an unchanged pose, the loop is the cause.
+ * outright — the same reset that returning to a hidden tab performs.
  *
  * Every switch here is one the app already has, or the same field the app's
  * own URL kill switch writes; nothing is zeroed behind a subsystem's back, and
  * every one of them restores what it found rather than what it assumes.
  */
-
 import { debugLog } from '../shared/debug';
 
 /** One frame of the app's animation loop. */
@@ -48,7 +61,7 @@ export interface FrameSample {
   busyMs: number;
 }
 
-/** What a hold measured. */
+/** What one hold measured. */
 export interface SweepRow {
   key: string;
   label: string;
@@ -56,25 +69,24 @@ export interface SweepRow {
   fps: number;
   /** Milliseconds between delivered frames: 1000 / fps. */
   frameMs: number;
-  /** frameMs against the first baseline's; negative means cheaper. */
-  deltaMs: number;
   /** Median main-thread ms inside a frame. */
   busyMs: number;
-  /** The smoothed interval the frame-sliced budgets were cut from. */
-  intervalMs: number;
-  /** Mean ms the warm pump spent per frame during the hold. */
-  sliceMs: number;
+  /** frameMs minus busyMs: the part of a frame the main thread did not hold. */
+  offMainMs: number;
+  /** frameMs against the mean of the two baselines either side; negative means
+   *  cheaper. Zero on the baselines themselves. */
+  deltaMs: number;
 }
 
 /** Frames per second at or above which a configuration is running at rate. */
 export const FULL_RATE_FPS = 50;
 /** Busy share of a frame below which the main thread is idle most of it. */
 export const IDLE_BUSY_SHARE = 0.5;
-/** Baseline movement over which the ranking has drifted under the sweep. */
-export const BASELINE_DRIFT = 0.15;
+/** Baseline movement across a run over which the device changed under it. */
+export const THERMAL_DRIFT = 0.1;
 
 /** Middle value, or 0 for nothing. Median rather than mean: one collection
- *  pause inside a four-second window must not become the frame's cost. */
+ *  pause inside a measured window must not become the frame's cost. */
 export function median(values: readonly number[]): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
@@ -90,14 +102,59 @@ export function median(values: readonly number[]): number {
  * to start and end on a frame is not credited with an extra one.
  */
 export function summarizeFrames(samples: readonly FrameSample[], fromMs: number): {
-  frames: number; fps: number; frameMs: number; busyMs: number;
+  frames: number; fps: number; frameMs: number; busyMs: number; offMainMs: number;
 } {
   const window = samples.filter((s) => s.atMs >= fromMs);
   const busyMs = median(window.map((s) => s.busyMs));
-  if (window.length < 2) return { frames: window.length, fps: 0, frameMs: 0, busyMs };
+  if (window.length < 2) return { frames: window.length, fps: 0, frameMs: 0, busyMs, offMainMs: 0 };
   const spanMs = window[window.length - 1].atMs - window[0].atMs;
   const fps = spanMs > 0 ? ((window.length - 1) * 1000) / spanMs : 0;
-  return { frames: window.length, fps, frameMs: fps > 0 ? 1000 / fps : 0, busyMs };
+  const frameMs = fps > 0 ? 1000 / fps : 0;
+  return { frames: window.length, fps, frameMs, busyMs, offMainMs: Math.max(0, frameMs - busyMs) };
+}
+
+/**
+ * The frame time a configuration is charged against: the mean of the baseline
+ * before it and the baseline after it.
+ *
+ * Averaging the pair is what makes the number survive a device that is sliding
+ * under the run — the slide between two baselines three seconds apart is small,
+ * and the configuration between them sits at their midpoint whatever the level
+ * has drifted to. A missing or unmeasured neighbour falls back to the other.
+ */
+export function bracketFrameMs(
+  before: { frameMs: number } | undefined,
+  after: { frameMs: number } | undefined,
+): number {
+  const pair = [before?.frameMs, after?.frameMs].filter((v): v is number => typeof v === 'number' && v > 0);
+  if (pair.length === 0) return 0;
+  return pair.reduce((a, b) => a + b, 0) / pair.length;
+}
+
+/** A permutation of `items`, drawn with `rng` (Fisher–Yates). The order is
+ *  redrawn every run so a device that keeps sliding cannot charge the same
+ *  configuration for it twice. */
+export function shuffled<T>(items: readonly T[], rng: () => number = Math.random): T[] {
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+/** Every baseline of the run in the order it was taken, and how far the device
+ *  moved between the first and the worst. Empty when it held. */
+export function thermalDriftLine(baselines: readonly { fps: number }[]): string {
+  if (baselines.length < 2) return '';
+  const sequence = baselines.map((b) => b.fps.toFixed(0)).join(' → ');
+  const first = baselines[0].fps;
+  const lowest = Math.min(...baselines.map((b) => b.fps));
+  if (first <= 0) return `Baselines: ${sequence} fps.`;
+  const fall = (first - lowest) / first;
+  if (fall < THERMAL_DRIFT) return `Baselines: ${sequence} fps — steady.`;
+  return `Baselines: ${sequence} fps — the device lost ${(fall * 100).toFixed(0)}% under the run, `
+    + `so read each row against its own two baselines, not against the first.`;
 }
 
 /**
@@ -121,15 +178,6 @@ export function throttleVerdict(control: { fps: number; busyMs: number }): strin
   }
   return `With everything off the app still spends ${control.busyMs.toFixed(1)} ms of a `
     + `${frameMs.toFixed(1)} ms frame, so the cost is in work this sweep cannot switch off.`;
-}
-
-/** A note when the two baselines disagree, or empty when they hold. */
-export function baselineDriftNote(firstFps: number, lastFps: number): string {
-  if (firstFps <= 0 || lastFps <= 0) return '';
-  const drift = Math.abs(lastFps - firstFps) / firstFps;
-  if (drift < BASELINE_DRIFT) return '';
-  return `The baseline moved from ${firstFps.toFixed(0)} to ${lastFps.toFixed(0)} fps across the sweep — `
-    + `the device changed under it, so treat the ranking as approximate.`;
 }
 
 /** What the frame-sliced work is budgeting itself against and taking. */
@@ -156,13 +204,22 @@ export interface PerfSweepDeps {
   passes: () => { bloom: { enabled: boolean } | null; lens: { enabled: boolean } | null };
   pinPixelRatio: (ratio: number | null) => void;
   pixelRatio: () => number;
+  /** Every surface a frame is drawn into, in device pixels — the evidence that
+   *  a resolution switch really moved the pixels. */
+  renderTargets: () => unknown;
   setFrameProbe: (probe: { start(): void; end(): void } | null) => void;
 }
 
-/** How long one configuration is held, and how much of the hold is thrown
- *  away: a switch changes what is uploaded and what fades, and the first
- *  second of a hold is that settling rather than the configuration. */
-const HOLD_MS = 5000;
+/**
+ * How long a configuration is held and how much of the hold is thrown away.
+ *
+ * Three seconds, not five: the wall time of the whole run is what heats the
+ * device, and every second of it degrades the rows still to come. The first
+ * second is the switch settling — the synthesis term eases over a quarter of a
+ * second, a resize reallocates targets — so two seconds are measured, which at
+ * 30 fps is sixty frames.
+ */
+const HOLD_MS = 3000;
 const SETTLE_MS = 1000;
 /** How often the budget readout is sampled inside a hold, and how often the
  *  live line is rewritten — both slow enough to read and to cost nothing. */
@@ -179,19 +236,17 @@ interface Arm {
   set: (applied: boolean) => void;
 }
 
+/**
+ * The switches the sweep offers as rows.
+ *
+ * The spacecraft and the HUD are not among them. Both were measured and both
+ * are far too small to see through the noise of a device that is heating —
+ * hiding the ship read 30 ms once, which is the run's drift, not a spacecraft.
+ * They are still switched for the CONTROL, where the question is whether an
+ * empty frame runs at rate rather than what one model costs.
+ */
 function buildArms(deps: PerfSweepDeps): Arm[] {
-  // The ship's own state is read on the way out and written back on the way
-  // in: the chrome switch restores the user's own "show ship" choice, and a
-  // sweep that assumed "on" would turn it back on for someone who had it off.
-  let shipWas = true;
-  let chromeShipWas = true;
   return [
-    {
-      key: 'synthesis',
-      label: 'Synthesis off',
-      available: () => true,
-      set: (applied) => deps.setSynthesis(applied ? false : null),
-    },
     {
       key: 'tiles',
       label: 'Sector tiles hidden',
@@ -199,16 +254,16 @@ function buildArms(deps: PerfSweepDeps): Arm[] {
       set: (applied) => deps.setSectorMeshes(!applied),
     },
     {
-      key: 'atmosphere',
-      label: 'Atmosphere hidden',
-      available: () => true,
-      set: (applied) => deps.setRoleHidden('atmosphere', applied),
-    },
-    {
       key: 'clouds',
       label: 'Clouds hidden',
       available: () => true,
       set: (applied) => deps.setRoleHidden('clouds', applied),
+    },
+    {
+      key: 'atmosphere',
+      label: 'Atmosphere hidden',
+      available: () => true,
+      set: (applied) => deps.setRoleHidden('atmosphere', applied),
     },
     {
       key: 'night',
@@ -243,39 +298,46 @@ function buildArms(deps: PerfSweepDeps): Arm[] {
       key: 'halfres',
       label: 'Half resolution',
       available: () => true,
+      // Through the app's own resize path, so the composer's scene target and
+      // its partner are reallocated at the new ratio. A switch that moved the
+      // renderer's ratio alone would leave the frame drawn into the same
+      // pixels and report that they were free. (The bloom chain keeps its own
+      // ratio by design, so this arm halves everything but the glow.)
       set: (applied) => deps.pinPixelRatio(applied ? 1 : null),
     },
     {
-      key: 'ship',
-      label: 'Ship hidden',
+      key: 'synthesis',
+      label: 'Synthesis off',
       available: () => true,
-      set: (applied) => {
-        if (applied) {
-          shipWas = deps.shipVisible();
-          deps.setShip(false);
-        } else {
-          deps.setShip(shipWas);
-        }
-      },
-    },
-    {
-      // Applied last in the control and so restored first: bringing the chrome
-      // back shows the ship, and the ship switch above then puts back what it
-      // found.
-      key: 'chrome',
-      label: 'Labels and HUD hidden',
-      available: () => true,
-      set: (applied) => {
-        if (applied) {
-          chromeShipWas = deps.shipVisible();
-          deps.setChrome(false);
-        } else {
-          deps.setChrome(true);
-          deps.setShip(chromeShipWas);
-        }
-      },
+      set: (applied) => deps.setSynthesis(applied ? false : null),
     },
   ];
+}
+
+/** The control: every row's switch at once, plus the spacecraft and the HUD,
+ *  so what is left is as close to an empty frame as the app can show. Applied
+ *  in order and unwound in reverse, and the ship's own state is read on the
+ *  way out and written back on the way in — the chrome switch restores the
+ *  user's own "show ship" choice, and a sweep that assumed "on" would turn it
+ *  back on for someone who had it off. */
+function buildControl(deps: PerfSweepDeps, arms: readonly Arm[]): Arm {
+  let shipWas = true;
+  return {
+    key: 'control',
+    label: 'Everything off',
+    available: () => true,
+    set: (applied) => {
+      if (applied) {
+        for (const arm of arms) arm.set(true);
+        shipWas = deps.shipVisible();
+        deps.setChrome(false);
+      } else {
+        deps.setChrome(true);
+        deps.setShip(shipWas);
+        for (let i = arms.length - 1; i >= 0; i--) arms[i].set(false);
+      }
+    },
+  };
 }
 
 /** Wall-clock wait that runs on animation frames, so a throttled page waits
@@ -417,7 +479,9 @@ export function installPerfSweep(deps: PerfSweepDeps): void {
   function writeLive(): void {
     const summary = summarizeFrames(live, 0);
     liveEl.innerHTML = summary.fps > 0
-      ? `<b>${summary.fps.toFixed(0)} fps</b> · ${summary.frameMs.toFixed(1)} ms apart · busy <b>${summary.busyMs.toFixed(1)} ms</b>`
+      ? `<b>${summary.fps.toFixed(0)} fps</b> · ${summary.frameMs.toFixed(1)} ms apart`
+        + ` · busy <b>${summary.busyMs.toFixed(1)} ms</b>`
+        + ` · <b>${summary.offMainMs.toFixed(1)} ms</b> not on main thread`
       : 'waiting for frames';
     const budget = deps.budget();
     if (!budget) {
@@ -446,29 +510,27 @@ export function installPerfSweep(deps: PerfSweepDeps): void {
 
   goBtn.addEventListener('click', () => { void runSweep(); });
 
-  function renderTable(rows: SweepRow[]): void {
+  function renderTable(rows: readonly SweepRow[]): void {
     const body = rows.map((row) => `
       <tr class="${row.key === 'control' ? 'ps-control' : ''}">
         <td class="ps-name">${row.label}</td>
         <td>${fmt(row.fps, 0)}</td>
         <td>${fmt(row.frameMs)}</td>
-        <td>${row.key === 'baseline' ? '–' : fmt(row.deltaMs)}</td>
+        <td>${fmt(row.deltaMs)}</td>
         <td>${fmt(row.busyMs)}</td>
-        <td>${fmt(row.intervalMs)}</td>
-        <td>${fmt(row.sliceMs, 2)}</td>
+        <td>${fmt(row.offMainMs)}</td>
       </tr>`).join('');
     scrollEl.innerHTML = `
       <table>
         <thead><tr>
           <th class="ps-name">Config</th><th>fps</th><th>ms</th><th>Δms</th>
-          <th>busy</th><th>int</th><th>slice</th>
+          <th>busy</th><th>off</th>
         </tr></thead>
         <tbody>${body}</tbody>
       </table>
       <div class="ps-legend">
-        ms = gap between frames · busy = main thread inside a frame ·
-        int = the smoothed interval the frame-sliced work budgets against ·
-        slice = warm-pump spend per frame
+        ms = gap between frames · Δms = against the mean of the baselines either side ·
+        busy = main thread inside a frame · off = the rest of the frame, not on the main thread
       </div>`;
   }
 
@@ -476,40 +538,46 @@ export function installPerfSweep(deps: PerfSweepDeps): void {
   async function measure(key: string, label: string): Promise<SweepRow> {
     const startedAt = performance.now();
     recording = [];
-    const intervals: number[] = [];
-    const slices: number[] = [];
-    let sampledAt = 0;
-    const sampleBudget = (): void => {
-      const now = performance.now();
-      if (now - sampledAt < BUDGET_SAMPLE_MS) return;
-      sampledAt = now;
-      if (now - startedAt < SETTLE_MS) return;
-      const budget = deps.budget();
-      if (!budget) return;
-      intervals.push(budget.frameIntervalMs);
-      slices.push(budget.warm.spentMs);
-    };
-    const pump = (): void => {
-      sampleBudget();
-      if (recording) requestAnimationFrame(pump);
-    };
-    requestAnimationFrame(pump);
     await waitMs(HOLD_MS);
     const samples = recording;
     recording = null;
     const summary = summarizeFrames(samples, startedAt + SETTLE_MS);
-    const mean = (xs: number[]): number => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
     return {
       key,
       label,
       frames: summary.frames,
       fps: summary.fps,
       frameMs: summary.frameMs,
-      deltaMs: 0,
       busyMs: summary.busyMs,
-      intervalMs: mean(intervals),
-      sliceMs: mean(slices),
+      offMainMs: summary.offMainMs,
+      deltaMs: 0,
     };
+  }
+
+  /** The frame-sliced budget through one hold, sampled rather than read once:
+   *  the pump's spend is a per-frame figure and the last frame's is noise. */
+  function budgetWatcher(): { stop: () => { intervalMs: number; sliceMs: number } } {
+    const startedAt = performance.now();
+    const intervals: number[] = [];
+    const slices: number[] = [];
+    let running = true;
+    let sampledAt = 0;
+    const tick = (): void => {
+      if (!running) return;
+      const now = performance.now();
+      if (now - sampledAt >= BUDGET_SAMPLE_MS && now - startedAt >= SETTLE_MS) {
+        sampledAt = now;
+        const budget = deps.budget();
+        if (budget) {
+          intervals.push(budget.frameIntervalMs);
+          slices.push(budget.warm.spentMs);
+        }
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    const mean = (xs: number[]): number => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
+    return { stop: () => { running = false; return { intervalMs: mean(intervals), sliceMs: mean(slices) }; } };
   }
 
   async function runSweep(): Promise<void> {
@@ -525,64 +593,65 @@ export function installPerfSweep(deps: PerfSweepDeps): void {
     noteEl.textContent = '';
     scrollEl.innerHTML = '';
 
-    const arms = buildArms(deps).filter((arm) => arm.available());
-    const total = arms.length + 3; // both baselines and the control
+    const singles = buildArms(deps).filter((arm) => arm.available());
+    // The control switches every row's arm plus the ship and the HUD, and is
+    // shuffled in among the rest: it is a configuration like any other, and
+    // putting it last would charge it with the whole run's drift.
+    const order = shuffled([...singles, buildControl(deps, singles)]);
+    const total = order.length * 2 + 1; // a baseline before and after every one
     const rows: SweepRow[] = [];
+    const baselines: SweepRow[] = [];
+    let budgetMs = { intervalMs: 0, sliceMs: 0 };
     let step = 0;
     const announce = (label: string): void => {
       step += 1;
       statusEl.textContent = `Measuring ${label} — ${step} of ${total}`;
     };
+    const hold = async (key: string, label: string): Promise<SweepRow> => {
+      const watcher = budgetWatcher();
+      try {
+        return await measure(key, label);
+      } finally {
+        budgetMs = watcher.stop();
+      }
+    };
 
     try {
       announce('Baseline');
-      rows.push(await measure('baseline', 'Baseline'));
+      baselines.push(await hold('baseline', 'Baseline'));
 
-      for (const arm of arms) {
+      for (const arm of order) {
         announce(arm.label);
         arm.set(true);
         try {
-          rows.push(await measure(arm.key, arm.label));
+          rows.push(await hold(arm.key, arm.label));
         } finally {
           arm.set(false);
         }
+        announce('Baseline');
+        baselines.push(await hold('baseline', 'Baseline'));
       }
-
-      // Everything at once. Applied in order and unwound in reverse, so a
-      // switch that writes state another switch also writes puts it back in
-      // the order it was taken.
-      announce('Everything off');
-      const applied: Arm[] = [];
-      try {
-        for (const arm of arms) {
-          arm.set(true);
-          applied.push(arm);
-        }
-        rows.push(await measure('control', 'Everything off'));
-      } finally {
-        for (let i = applied.length - 1; i >= 0; i--) applied[i].set(false);
-      }
-
-      announce('Baseline again');
-      rows.push(await measure('baseline-last', 'Baseline again'));
     } finally {
       sweeping = false;
       goBtn.disabled = false;
       resetBtn.disabled = false;
     }
 
-    const baseMs = rows[0].frameMs;
-    for (const row of rows) row.deltaMs = baseMs > 0 && row.frameMs > 0 ? row.frameMs - baseMs : 0;
+    // Row i sat between baseline i and baseline i+1.
+    for (let i = 0; i < rows.length; i++) {
+      const bracket = bracketFrameMs(baselines[i], baselines[i + 1]);
+      rows[i].deltaMs = bracket > 0 && rows[i].frameMs > 0 ? rows[i].frameMs - bracket : 0;
+    }
     renderTable(rows);
 
     const control = rows.find((r) => r.key === 'control');
-    const last = rows.find((r) => r.key === 'baseline-last');
     const verdict = control ? throttleVerdict(control) : '';
-    const drift = last ? baselineDriftNote(rows[0].fps, last.fps) : '';
+    const drift = thermalDriftLine(baselines);
     const hiddenNote = wentHidden
-      ? 'The page stopped being shown during the sweep, so these numbers are not the pose\u2019s. Run it again.'
+      ? 'The page stopped being shown during the sweep, so these numbers are not the pose’s. Run it again.'
       : '';
-    noteEl.textContent = [hiddenNote, verdict, drift].filter(Boolean).join(' ');
+    const orderNote = `Order this run: ${order.map((a) => a.label).join(', ')}.`;
+    noteEl.textContent = [hiddenNote, verdict, drift, orderNote].filter(Boolean).join(' ');
     statusEl.textContent = 'Done.';
 
     const results = {
@@ -591,26 +660,53 @@ export function installPerfSweep(deps: PerfSweepDeps): void {
       viewport: `${window.innerWidth}x${window.innerHeight}`,
       devicePixelRatio: window.devicePixelRatio,
       renderPixelRatio: deps.pixelRatio(),
+      holdMs: HOLD_MS,
+      settleMs: SETTLE_MS,
+      order: order.map((a) => a.key),
       verdict,
       drift,
+      wentHidden,
       rows,
+      baselines,
+      // The last hold's frame-sliced spend. Kept because a dead budget loop is
+      // itself a finding, and a live one would show here first.
+      budget: budgetMs,
     };
     const bridge = ((window as unknown as Record<string, Record<string, unknown>>).__moon ??= {});
     bridge.perfSweep = results;
     // The overlay is the only console a phone has without a cable, and the
     // same table has to survive a look at `?debug=1` afterwards.
-    debugLog('Perf sweep', `${results.viewport} dpr ${results.devicePixelRatio}`);
+    debugLog('Perf sweep', `${results.viewport} dpr ${results.devicePixelRatio} · ${orderNote}`);
     for (const row of rows) {
       debugLog(
         `Perf sweep ${row.label}`,
         `${row.fps.toFixed(1)} fps, ${row.frameMs.toFixed(1)} ms, `
-        + `${row.deltaMs >= 0 ? '+' : ''}${row.deltaMs.toFixed(1)} ms vs baseline, `
-        + `busy ${row.busyMs.toFixed(1)} ms, interval ${row.intervalMs.toFixed(1)} ms, `
-        + `slice ${row.sliceMs.toFixed(2)} ms`,
+        + `${row.deltaMs >= 0 ? '+' : ''}${row.deltaMs.toFixed(1)} ms vs its baselines, `
+        + `busy ${row.busyMs.toFixed(1)} ms, off main ${row.offMainMs.toFixed(1)} ms`,
       );
     }
-    debugLog('Perf sweep verdict', noteEl.textContent);
+    debugLog('Perf sweep drift', drift);
+    debugLog('Perf sweep verdict', verdict);
   }
+
+  // Harness seams: apply or restore one switch by name, and read the surfaces a
+  // frame is drawn into. A resolution switch is only believable if the targets
+  // moved, and that is a size to be read, not a timing to be inferred.
+  const armIndex = new Map<string, Arm>();
+  {
+    const singles = buildArms(deps);
+    for (const arm of singles) armIndex.set(arm.key, arm);
+    const control = buildControl(deps, singles);
+    armIndex.set(control.key, control);
+  }
+  const bridge = ((window as unknown as Record<string, Record<string, unknown>>).__moon ??= {});
+  bridge.perfArm = (key: string, applied: boolean): boolean => {
+    const arm = armIndex.get(key);
+    if (!arm) return false;
+    arm.set(applied);
+    return true;
+  };
+  bridge.perfTargets = () => deps.renderTargets();
 
   writeLive();
 }

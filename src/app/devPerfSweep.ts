@@ -438,6 +438,34 @@ const QUICK_SETTLE_MS = 1000;
  *  device, which no sequence of cool three-second holds can show. */
 const SOAK_MS = 300_000;
 const SOAK_SAMPLE_MS = 10_000;
+/**
+ * The Phone preset: one block per candidate over the rows a phone is actually
+ * being asked about, and nothing else.
+ *
+ * A full paired run is sixteen candidates in two blocks each — five and a half
+ * minutes of held load, which on the device this exists for is five and a half
+ * minutes of heating, and the last rows are measured on a different phone from
+ * the first. This list is the efficiency switches themselves plus the three
+ * rows that give them their scale (the whole tile layer, half the pixels, and
+ * everything at once), at two pairings apiece: about two minutes, which a
+ * phone holds without sliding far.
+ *
+ * Keys absent from a build are simply not offered — the list is a filter over
+ * the candidates a run finds, never a demand for rows that do not exist.
+ */
+const PHONE_KEYS = [
+  'combined',
+  'tiles',
+  'night-early',
+  'cloud-clear',
+  'cloud-taps',
+  'glint-gate',
+  'bloom-nodepth',
+  'depth-discard',
+  'fused-final',
+  'halfres',
+];
+
 /** The ratio the load amplifier pins. Three is one device pixel per texel on
  *  the phone this sweep exists for, and enough load on anything else to put a
  *  frame under the cap. */
@@ -833,6 +861,7 @@ const PANEL_HTML = `
 <div class="ps-body">
   <div class="ps-actions">
     <button type="button" class="ps-go">Sweep</button>
+    <button type="button" class="ps-phone">Phone</button>
     <button type="button" class="ps-quick">Quick</button>
     <button type="button" class="ps-soak">Soak 5 min</button>
     <button type="button" class="ps-stop" hidden>Stop</button>
@@ -850,7 +879,8 @@ const PANEL_HTML = `
  *  smoke run proves the plumbing without spending the minutes a real run
  *  spends. */
 export interface PerfRunOptions {
-  mode?: 'paired' | 'quick' | 'soak';
+  /** 'phone' is 'paired' over the preset list, one block each. */
+  mode?: 'paired' | 'phone' | 'quick' | 'soak';
   /** Only these candidate keys, in the shuffled order they land in. */
   keys?: string[];
   blocks?: number;
@@ -883,12 +913,26 @@ export function installPerfSweep(deps: PerfSweepDeps): void {
   const scrollEl = panel.querySelector('.ps-scroll') as HTMLElement;
   const noteEl = panel.querySelector('.ps-note') as HTMLElement;
   const goBtn = panel.querySelector('.ps-go') as HTMLButtonElement;
+  const phoneBtn = panel.querySelector('.ps-phone') as HTMLButtonElement;
   const quickBtn = panel.querySelector('.ps-quick') as HTMLButtonElement;
   const soakBtn = panel.querySelector('.ps-soak') as HTMLButtonElement;
   const stopBtn = panel.querySelector('.ps-stop') as HTMLButtonElement;
   const resetBtn = panel.querySelector('.ps-reset') as HTMLButtonElement;
   const foldBtn = panel.querySelector('.ps-fold') as HTMLButtonElement;
   const ampBox = panel.querySelector('.ps-amp-box') as HTMLInputElement;
+
+  // On a touch device the Phone preset is the run to reach for — the full
+  // paired sweep is five minutes of held load, and a phone measured for five
+  // minutes is a different phone by the end. The accent says which one that
+  // is; both are always there.
+  const touchDevice = navigator.maxTouchPoints > 0 || 'ontouchstart' in window;
+  if (touchDevice) {
+    goBtn.classList.remove('ps-go');
+    phoneBtn.classList.add('ps-go');
+    // First in the row as well as accented: on a 390 px screen the buttons
+    // wrap, and the default should not be the one that wrapped.
+    phoneBtn.parentElement?.prepend(phoneBtn);
+  }
 
   // The frame probe is the one measuring instrument: it feeds the live line
   // always, and a hold's sample list while one is running.
@@ -962,6 +1006,7 @@ export function installPerfSweep(deps: PerfSweepDeps): void {
   });
 
   goBtn.addEventListener('click', () => { void run({ mode: 'paired' }); });
+  phoneBtn.addEventListener('click', () => { void run({ mode: 'phone' }); });
   quickBtn.addEventListener('click', () => { void run({ mode: 'quick' }); });
   soakBtn.addEventListener('click', () => { void run({ mode: 'soak' }); });
   stopBtn.addEventListener('click', () => {
@@ -972,6 +1017,7 @@ export function installPerfSweep(deps: PerfSweepDeps): void {
   function setRunning(on: boolean): void {
     running = on;
     goBtn.disabled = on;
+    phoneBtn.disabled = on;
     quickBtn.disabled = on;
     soakBtn.disabled = on;
     resetBtn.disabled = on;
@@ -1076,14 +1122,16 @@ export function installPerfSweep(deps: PerfSweepDeps): void {
       return null;
     }
     const mode = options.mode ?? 'paired';
-    const paired = mode === 'paired';
+    // The Phone preset is a paired run with a shorter list and one block: the
+    // protocol is the same, the wall time is the difference.
+    const paired = mode === 'paired' || mode === 'phone';
     const soakMs = options.soakMs ?? SOAK_MS;
     const sampleMs = options.sampleMs ?? SOAK_SAMPLE_MS;
     // A soak's hold IS its sample interval, and none of it is discarded: the
     // configuration never changes, so there is nothing settling to throw away.
     const holdMs = options.holdMs ?? (mode === 'soak' ? sampleMs : paired ? PAIRED_HOLD_MS : QUICK_HOLD_MS);
     const settleMs = options.settleMs ?? (mode === 'soak' ? 0 : paired ? PAIRED_SETTLE_MS : QUICK_SETTLE_MS);
-    const blocks = Math.max(1, options.blocks ?? PAIRED_BLOCKS);
+    const blocks = Math.max(1, options.blocks ?? (mode === 'phone' ? 1 : PAIRED_BLOCKS));
     const amplify = options.amplify ?? ampBox.checked;
 
     setRunning(true);
@@ -1129,11 +1177,26 @@ export function installPerfSweep(deps: PerfSweepDeps): void {
       ...registered.filter((arm) => arm.swept),
       ...(combined ? [combined] : []),
     ];
-    if (options.keys) candidates = candidates.filter((arm) => options.keys?.includes(arm.key));
+    const wanted = options.keys ?? (mode === 'phone' ? PHONE_KEYS : null);
+    if (wanted) candidates = candidates.filter((arm) => wanted.includes(arm.key));
     const order = mode === 'soak' ? [] : shuffled(paired ? candidates : [...candidates, control]);
     total = mode === 'soak'
       ? Math.ceil(soakMs / sampleMs)
       : paired ? order.length * blocks * 4 + 3 : order.length * 2 + 1;
+    // What this is about to cost in wall time, said before it starts rather
+    // than discovered from a hold count: a phone is being held while it runs,
+    // and a run nobody expected to take five minutes gets abandoned halfway,
+    // which is the one outcome that measures nothing.
+    const plannedMs = total * holdMs;
+    const plannedMin = plannedMs >= 90_000
+      ? `about ${Math.round(plannedMs / 60_000)} min`
+      : `about ${Math.round(plannedMs / 1000)} s`;
+    if (mode !== 'soak') {
+      statusEl.textContent = `${mode === 'phone' ? 'Phone preset' : paired ? 'Paired sweep' : 'Quick sweep'}: `
+        + `${order.length} configuration${order.length === 1 ? '' : 's'}, ${total} holds, ${plannedMin}.`;
+      // Long enough to be read before the first hold overwrites it.
+      await waitMs(1200);
+    }
 
     let tiles = { inflight: 0, waitedMs: 0 };
     // Which pose the run priced, read once the clock is stopped — the sky is
@@ -1149,7 +1212,7 @@ export function installPerfSweep(deps: PerfSweepDeps): void {
       if (amplify) {
         resting.ratio = AMPLIFIER_RATIO;
         deps.pinPixelRatio(AMPLIFIER_RATIO);
-        statusEl.textContent = `Pinning the render ratio to ${AMPLIFIER_RATIO}…`;
+        statusEl.textContent = `Pinning the render ratio to ${AMPLIFIER_RATIO}… · ${total} holds, ${plannedMin}`;
         await waitMs(AMPLIFIER_SETTLE_MS);
       }
 
@@ -1354,12 +1417,12 @@ export function installPerfSweep(deps: PerfSweepDeps): void {
 
   /** The table's own footer: what each column is, and at which ratio the
    *  milliseconds were taken. */
-  function legendFor(mode: 'paired' | 'quick' | 'soak', amplify: boolean): string {
+  function legendFor(mode: 'paired' | 'phone' | 'quick' | 'soak', amplify: boolean): string {
     const columns = mode === 'soak'
       ? 'ms = gap between frames · Δms = against the first sample · busy = main thread inside a frame'
         + ' · off = the rest of the frame, not on the main thread'
-      : mode === 'paired'
-        ? 'ms = gap between frames, median of the candidate’s holds · Δms = median of the four pairings'
+      : mode !== 'quick'
+        ? 'ms = gap between frames, median of the candidate’s holds · Δms = median of the pairings'
           + ' (candidate minus the baseline beside it) · ± = spread across those pairings, wider than Δ means'
           + ' the device moved more than the switch did · busy = main thread inside a frame'
           + ' · off = the rest of the frame, not on the main thread'

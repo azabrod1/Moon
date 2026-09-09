@@ -25,6 +25,8 @@ import {
 } from './surfaceShading';
 import { surfaceDetailFieldMean, surfaceDetailHeightSpan } from './surfaceDetailNoise';
 import { atmosphereParams } from './atmosphereModel';
+import { earthNightFragmentShader } from '../../shared/shaders/atmosphere';
+import { setPerfSwitch } from '../../app/perfSwitches';
 
 // Mimics the subset of three's onBeforeCompile shader object we mutate, so the
 // wiring can be exercised without a GL context.
@@ -765,5 +767,61 @@ describe('the haze fade and the glint cap', () => {
     expect(text).toContain('outgoingLight = mix(outgoingLight, outgoingLight * airT + airS, uAirBlend);');
     expect(OCEAN_GLINT_CAP).toBeGreaterThan(1);
     expect(text).toContain(`outgoingLight -= glint - min(glint, vec3(${OCEAN_GLINT_CAP.toFixed(2)}));`);
+  });
+});
+
+describe('the GPU-efficiency switches', () => {
+  /** The injected text through a stub that carries every chunk the switches
+   *  touch: the map, the roughness, the normal maps and the body. */
+  function fragmentOf(archetype: Parameters<typeof augmentSurfaceMaterial>[1]): string {
+    const mat = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(mat, archetype, undefined, 0, undefined, undefined, 'Earth');
+    const shader = {
+      uniforms: {} as Record<string, unknown>,
+      vertexShader: '#include <common>\n#include <begin_vertex>\n',
+      fragmentShader: '#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>\n'
+        + '#include <normal_fragment_maps>\n#include <opaque_fragment>\n',
+    };
+    (mat.onBeforeCompile as (s: typeof shader, r: unknown) => void)(shader, null);
+    return shader.fragmentShader;
+  }
+
+  it('guards each cheap path with a prefix the production fold deletes', () => {
+    // This is the DEVELOPMENT text, both readings of every change behind its
+    // uniform; a production build compiles the cheap reading alone
+    // (app/perfSwitches.ts). That fold is a deletion and not a rewrite only
+    // while each guard keeps this exact shape — the switch's own uniform and
+    // then, verbatim, the condition the shipped text is left with — which is
+    // what lets a hash of this text stand for the text that ships.
+    const frag = fragmentOf('cloud');
+    expect(frag).toContain('if ( uPerfCloudTaps < 0.5 || smoothW < 1.0 ) {');
+    expect(frag).toContain('if ( uPerfCloudTaps < 0.5 || reliefSmoothW < 1.0 ) {');
+    expect(frag).toContain('if (uPerfCloudTaps < 0.5 || cloudDetailW > 0.0) detail = textureGrad(uCloudDetail, detailUv, duvX, duvY);');
+    expect(frag).toContain('if (uPerfCloudClear > 0.5 && uCloudDeck > 0.0 && cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }');
+    expect(frag).toContain('if (uPerfGlintGate < 0.5 || any(greaterThan(glintCapped, vec3(0.0)))) {');
+    expect(earthNightFragmentShader)
+      .toContain('if (uPerfNightEarly > 0.5) { if (nightMix == 0.0) { gl_FragColor = vec4(0.0); return; } }');
+    // Each uniform declared once, where the shader reads it.
+    for (const u of ['uPerfCloudTaps', 'uPerfCloudClear', 'uPerfGlintGate']) {
+      expect(frag.match(new RegExp(`uniform float ${u};`, 'g'))).toHaveLength(1);
+    }
+  });
+
+  it('reads the roughness map as red, and as green only with the storage switched back', () => {
+    // three's own chunk reads green, for a packed occlusion/roughness/metalness
+    // image. The water mask is grey and stored one byte a texel
+    // (world/texturePolicy's 'mask' kind), so red is the same number and the
+    // only channel there is. With the storage switch off the map is RGBA
+    // again and three's chunk is compiled back in, so the switch's own A/B
+    // covers the channel change and not only the storage.
+    expect(fragmentOf('earth')).toContain('roughnessFactor *= texture2D( roughnessMap, vRoughnessMapUv ).r;');
+    expect(fragmentOf('earth')).not.toContain('#include <roughnessmap_fragment>');
+    setPerfSwitch('r8-maps', false);
+    try {
+      expect(fragmentOf('earth')).toContain('#include <roughnessmap_fragment>');
+      expect(fragmentOf('earth')).not.toContain('vRoughnessMapUv ).r;');
+    } finally {
+      setPerfSwitch('r8-maps', true);
+    }
   });
 });

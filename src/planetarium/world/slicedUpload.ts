@@ -174,7 +174,10 @@ export function compressedUploadFormat(
   return typeof value === 'number' ? value : null;
 }
 
-/** The only uncompressed shape the app streams. Anything else is refused
+/** The one uncompressed shape this slicer takes. The app also streams
+ *  one-channel R8 masks (world/texturePolicy's 'mask' kind), which are below
+ *  the slicing size and are refused here rather than sliced — a mask large
+ *  enough to slice would need a RED row added. Anything else is refused
  *  rather than have this file duplicate three's format conversion table. */
 function uncompressedEnums(
   gl: WebGL2RenderingContext,

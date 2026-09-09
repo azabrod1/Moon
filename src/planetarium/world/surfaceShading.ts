@@ -100,7 +100,7 @@ import {
   type AtmosphereTables,
 } from './atmosphereLut';
 import { AIRLIGHT_SCALE } from './atmosphereModel';
-import { perfSwitchUniform } from '../../app/perfSwitches';
+import { perfSwitchOn, perfSwitchUniform } from '../../app/perfSwitches';
 import { EARTH_NIGHT_COLD_CUT, EARTH_NIGHT_WARM_GLSL } from '../../shared/shaders/atmosphere';
 import {
   CLOUD_ALBEDO,
@@ -441,6 +441,17 @@ float roughnessFactor = roughness;
 	roughnessFactor *= texture2D( roughnessMap, vRoughnessMapUv ).r;
 #endif
 `;
+
+/** The roughness chunk this build compiles. In DEV with one-channel storage
+ *  switched off (`?perfoff=r8-maps`) the map is RGBA again and three's own
+ *  chunk reads green from it, as it did before the change — so that switch's
+ *  A/B compares the two whole pipelines, storage and channel together, rather
+ *  than two readings of red. A production build compiles the red read alone. */
+function roughnessChunk(): string {
+  return import.meta.env.DEV && !perfSwitchOn('r8-maps')
+    ? '#include <roughnessmap_fragment>'
+    : SURFACE_ROUGHNESSMAP_FRAGMENT;
+}
 
 /** The GLSL half of `waterGlossRoughness`, behind the uniform that is zero on
  *  every surface but a globe whose roughness map really is a water mask. */
@@ -1195,11 +1206,22 @@ const cloudTapKept = (stillNeeded: string): string =>
  * nothing and left.
  *
  * Placed at the END of the injected normal block, after the close-range
- * detail's own derivatives have been taken, so every screen derivative in this
- * shader is still read in flow that is uniform across the draw. What it skips
- * is everything downstream: three's whole physical lighting, the night floor
- * and the sky's ambient, the moonlight pair, the eclipse trace, the city glow
- * through the deck and the six aerial-perspective lookups.
+ * detail's own derivatives have been taken, so every derivative the deck's
+ * path takes is above it, in flow that is uniform across the draw. What it
+ * skips is everything downstream: three's whole physical lighting, the night
+ * floor and the sky's ambient, the moonlight pair, the eclipse trace, the city
+ * glow through the deck and the six aerial-perspective lookups.
+ *
+ * Past the return the lanes that carried on are in divergent flow, so nothing
+ * on the deck's path below it may take a derivative or an implicit-LOD fetch.
+ * That holds on three facts, each load-bearing: three's own chunks past this
+ * point fetch only maps the deck does not bind (emissive, ambient occlusion,
+ * light and environment maps) and shadow maps the renderer never enables; the
+ * surface body's own derivatives below it, the sea's lookup into the deck map,
+ * sit under `uWaterGloss > 0.0`, which is zero on the deck; and the atmosphere
+ * tables are unmipped LinearFilter textures, so their lookups have no level
+ * to mispick. Binding one of those maps on the deck, or enabling shadow maps,
+ * is a change to this reasoning. cloudDeck.test.ts pins the derivative order.
  *
  * `vec4(0.0)` and not a discard, and the two are not interchangeable here:
  * this is the ONE material in the app whose archetype is 'cloud', and it draws
@@ -1217,9 +1239,22 @@ const CLOUD_CLEAR_RETURN = import.meta.env.DEV
  * the four extra ones sit behind a weight that is zero on all of them.
  *
  * At full smooth weight the ordinary tap is not an endpoint of anything — the
- * mix returns the B-spline outright — and full weight is where the deck spends
- * a close frame: its map is magnified many times over at orbital altitude, so
- * that fetch was a whole map read per deck pixel whose result went nowhere.
+ * mix returns the B-spline outright, by the language's definition of `mix`
+ * (`x*(1-a) + y*a`; a driver that spells it `x + a*(y-x)` is not bit-exact in
+ * general, and the pixel gate is what says it does not show) — and full
+ * weight is where the deck spends a close frame: its map is magnified many
+ * times over at orbital altitude, so that fetch was a whole map read per deck
+ * pixel whose result went nowhere.
+ *
+ * That puts the plain tap, an implicit-LOD fetch, under a per-fragment
+ * condition, where the language leaves its mip selection undefined for a quad
+ * the condition splits. It is kept there on what happens at the split: the
+ * condition is the tap's own weight saturating, so on the side that still
+ * takes the tap the weight `1 - smoothW` is at zero, and a mip picked off a
+ * neighbour lane has nothing to weight. The other arm is the B-spline, which
+ * reads through `textureLod` and needs no derivative at all. The same holds
+ * for the relief tap in SURFACE_NORMAL_MAPS. Measured as well as argued: zero
+ * pixels moved across the gate's poses on both engines (tools/pixel-gate.mjs).
  */
 const SURFACE_MAP_FRAGMENT = /* glsl */ `
 #ifdef USE_MAP
@@ -1307,7 +1342,9 @@ ${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLS
  *
  * The other paths through the chunk — object-space normals, the bump map — are
  * the include itself, unchanged: they belong to every other body's surface and
- * there is nothing to save on them.
+ * there is nothing to save on them. The plain tap sits under the weight's own
+ * saturation for the reason SURFACE_MAP_FRAGMENT gives: where the quad can
+ * split, the tap's weight is zero.
  */
 const SURFACE_NORMAL_MAPS = /* glsl */ `
 #if defined( USE_NORMALMAP_TANGENTSPACE )
@@ -1379,13 +1416,6 @@ if (uCloudDeck > 0.0) {
   vec2 duvX = dAngX * ${CLOUD_DETAIL_UV_PER_RADIAN.toFixed(7)};
   vec2 duvY = dAngY * ${CLOUD_DETAIL_UV_PER_RADIAN.toFixed(7)};
   float cloudDetailW = cloudDetailFade(max(length(duvX), length(duvY)) * ${CLOUD_DETAIL_SIZE.toFixed(1)});
-  // Explicit gradients, for the same reason the angles' were taken by hand: the
-  // mip has to be chosen off a quantity that is continuous across the cut.
-  // Past the fade the weight is exactly zero: the erosion's mix returns 1 and
-  // the relief block below is not entered, so the fetch has no reader.
-  // The alpha the deck ends up with, and everything the deck spends on a pixel
-  // it has cloud on: the coverage itself was read upstream, where the colour it
-  // comes from first exists.
   // Explicit gradients, for the same reason the angles' were taken by hand: the
   // mip has to be chosen off a quantity that is continuous across the cut.
   // Past the fade the weight is exactly zero: the erosion's mix returns 1 and
@@ -2107,7 +2137,7 @@ export function augmentSurfaceMaterial(
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>${SURFACE_FRAGMENT_DECLS}`)
       .replace('#include <map_fragment>', SURFACE_MAP_FRAGMENT)
-      .replace('#include <roughnessmap_fragment>', `${SURFACE_ROUGHNESSMAP_FRAGMENT}${WATER_GLOSS_GLSL}`)
+      .replace('#include <roughnessmap_fragment>', `${roughnessChunk()}${WATER_GLOSS_GLSL}`)
       .replace('#include <normal_fragment_maps>', `${SURFACE_NORMAL_MAPS}${SURFACE_NORMAL_BODY}`)
       .replace('#include <opaque_fragment>', `${SURFACE_FRAGMENT_BODY}\n#include <opaque_fragment>`);
   };

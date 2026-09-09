@@ -23,7 +23,11 @@
  * added to it.
  *
  * Built to be measured and reported. Nothing here runs unless the switch is
- * armed, and a production build compiles none of it.
+ * armed, and a production build carries none of it: the classes are reached
+ * only from a DEV branch, and the fused text is put together on first use
+ * rather than at module load, so there is no top-level work for the bundler
+ * to keep. (Built eagerly, the two string replacements survived tree-shaking
+ * and the text shipped.)
  */
 import * as THREE from 'three';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
@@ -125,22 +129,26 @@ export class BloomChainPass extends UnrealBloomPass {
 
 /** OutputShader's own fragment text, with the glow added to the sample it
  *  starts from — the same add (ONE, ONE) the blend material performed, in the
- *  same place in the pipeline, one surface earlier. */
-const FUSED_FRAGMENT = OutputShader.fragmentShader
-  .replace(
-    'uniform sampler2D tDiffuse;',
-    'uniform sampler2D tDiffuse;\n\t\tuniform sampler2D tBloom;',
-  )
-  .replace(
-    'gl_FragColor = texture2D( tDiffuse, vUv );',
-    'gl_FragColor = texture2D( tDiffuse, vUv );\n\t\t\tgl_FragColor.rgb += texture2D( tBloom, vUv ).rgb;',
-  );
+ *  same place in the pipeline, one surface earlier. Assembled on first use
+ *  (see the header): a module-level string edit is work a bundler keeps. */
+let fusedFragment: string | null = null;
+function fusedFragmentText(): string {
+  return (fusedFragment ??= OutputShader.fragmentShader
+    .replace(
+      'uniform sampler2D tDiffuse;',
+      'uniform sampler2D tDiffuse;\n\t\tuniform sampler2D tBloom;',
+    )
+    .replace(
+      'gl_FragColor = texture2D( tDiffuse, vUv );',
+      'gl_FragColor = texture2D( tDiffuse, vUv );\n\t\t\tgl_FragColor.rgb += texture2D( tBloom, vUv ).rgb;',
+    ));
+}
 
 /** OutputPass with the bloom composite added before the tone curve. */
 export class FusedOutputPass extends OutputPass {
   constructor(bloom: BloomChainPass) {
     super();
-    this.material.fragmentShader = FUSED_FRAGMENT;
+    this.material.fragmentShader = fusedFragmentText();
     this.material.uniforms.tBloom = { value: bloom.compositeTexture };
     this.material.needsUpdate = true;
   }
@@ -149,6 +157,7 @@ export class FusedOutputPass extends OutputPass {
 /** Whether the fused text really carries both of its edits — a silent
  *  no-op replace would be a pass that drops the glow entirely. */
 export function fusedFragmentIsWired(): boolean {
-  return FUSED_FRAGMENT.includes('uniform sampler2D tBloom;')
-    && FUSED_FRAGMENT.includes('gl_FragColor.rgb += texture2D( tBloom, vUv ).rgb;');
+  const text = fusedFragmentText();
+  return text.includes('uniform sampler2D tBloom;')
+    && text.includes('gl_FragColor.rgb += texture2D( tBloom, vUv ).rgb;');
 }

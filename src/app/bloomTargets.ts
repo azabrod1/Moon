@@ -39,7 +39,10 @@ function bloomTargets(pass: UnrealBloomPass): THREE.WebGLRenderTarget[] {
   return [p.renderTargetBright, ...p.renderTargetsHorizontal, ...p.renderTargetsVertical];
 }
 
-/** Every full-screen material the pass draws with. */
+/** Every full-screen material the pass draws with on the composer path. The
+ *  pass also owns a plain MeshBasicMaterial it uses only when it renders to
+ *  the screen itself, which it never does here (an OutputPass always
+ *  follows), so that one is left as built. */
 function bloomMaterials(pass: UnrealBloomPass): THREE.Material[] {
   const p = pass as unknown as BloomInternals;
   return [p.materialHighPassFilter, ...p.separableBlurMaterials, p.compositeMaterial, p.blendMaterial];

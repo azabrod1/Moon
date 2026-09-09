@@ -356,6 +356,19 @@ describe('the deck\'s detail term', () => {
     const gloss = after.slice(after.indexOf('if (uWaterGloss > 0.0) {'), after.indexOf('float sunElevSin'));
     expect(after.match(/dFd[xy]\(/g)).toHaveLength(2);
     expect(gloss.match(/dFd[xy]\(/g)).toHaveLength(2);
+    // The clear-sky return (CLOUD_CLEAR_RETURN) sits after the last derivative
+    // the deck's path takes and before the alpha is applied, and between it
+    // and the sea's uniform compare there is no derivative and no fwidth: the
+    // lanes it leaves divergent never reach one.
+    const ret = glsl.indexOf('cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }');
+    expect(ret).toBeGreaterThan(glsl.indexOf('cloudNightDy = sphereEquirectUvGrad(objDir, dFdy(objDir));'));
+    expect(ret).toBeLessThan(glsl.indexOf('diffuseColor.a *= cloudAlpha;'));
+    expect(glsl.slice(ret, glsl.indexOf('if (uWaterGloss > 0.0) {'))).not.toMatch(/dFd[xy]\(|fwidth\(/);
+    // The relief tap the dead-tap item put under a per-fragment condition is
+    // under its own weight's saturation, with the B-spline (textureLod, no
+    // derivative) as the other arm — SURFACE_NORMAL_MAPS says why that holds.
+    expect(glsl).toMatch(/if \( uPerfCloudTaps < 0\.5 \|\| reliefSmoothW < 1\.0 \) \{\s+reliefTexel = texture2D\( normalMap, vNormalMapUv \);/);
+    expect(glsl).toContain('reliefTexel = textureBSpline( normalMap, vNormalMapUv, reliefTexels );');
   });
 
   it('perturbs the normal upstream of the lights, not after them', () => {

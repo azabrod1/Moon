@@ -586,9 +586,37 @@ async function cutDataCrops(srcPath, key, tier, spanU = 1) {
   await cutGrid(rows, GRID_16K, content, key, tier, DATA_WEBP, spanU);
 }
 
+/** Every texel of a mask set, and of the base map it is cut from, has red
+ *  equal to green and blue. The app stores these one byte a texel
+ *  (world/texturePolicy's 'mask' kind; sectorStreamer's CROP_KIND names the
+ *  crops) and its roughness chunk reads red where three's reads green, so a
+ *  file with any colour in it would change Earth's ocean gloss with every
+ *  other gate still green. Every file is decoded and checked, not trusted —
+ *  after the set is written and on every --verify. The sets are lossless, so
+ *  a grey source stays grey through the cut; this is a check on the source. */
+async function greyGate({ key, tier, base }) {
+  const dir = await setDir(key, tier);
+  const files = [path.join(TEX, base), ...tileNames(await readdir(dir)).map((f) => path.join(dir, f))];
+  let texels = 0;
+  for (const file of files) {
+    const { data, info } = await sharp(file).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    texels += info.width * info.height;
+    if (info.channels === 1) continue;
+    for (let i = 0; i < data.length; i += info.channels) {
+      if (data[i] !== data[i + 1] || data[i] !== data[i + 2]) {
+        throw new Error(`${path.relative(TEX, file)}: texel ${i / info.channels} is (${data[i]}, ${data[i + 1]}, ${data[i + 2]}), not grey — the app stores this map as one channel and reads red`);
+      }
+    }
+  }
+  console.log(`  grey ${key}/${tier}: ${files.length} files, ${(texels / 1e6).toFixed(1)} Mtexel, every texel r = g = b -> PASS`);
+}
+
 /** Earth's roughness map from the water score gradeOceanInPlace returns:
  *  water glossy (0.45 — a broad sun sheen, not a mirror dot), land matte
- *  (0.92), stored in every channel (MeshStandardMaterial reads .g). The
+ *  (0.92), stored in every channel: the app holds it one byte a texel and
+ *  reads red where three's chunk reads green (world/texturePolicy's 'mask'
+ *  kind), so red HAS to be green, and greyGate refuses a file where it is
+ *  not. The
  *  full-resolution score is area-averaged down, so a coast is a soft
  *  fractional edge rather than a stair of 16K texels: to 4096 for the
  *  sector crops (a quarter of the colour tiles' resolution is where the
@@ -1271,6 +1299,13 @@ export const JOBS = {
     dataCrops: [
       { src: path.join(TEX, 'earth-bump.webp'), key: 'earth-bump', tier: '2k' },
     ],
+    // The two sets the app holds one byte a texel, reading red for the
+    // channel the shader asked for: exact only while every texel is grey,
+    // which greyGate checks after a cut and on --verify.
+    grey: [
+      { key: 'earth-bump', tier: '2k', base: 'earth-bump.webp' },
+      { key: 'earth-roughness.v2', tier: '4k', base: 'earth-roughness.v2.webp' },
+    ],
   },
   // NASA Black Marble 2016, the VIIRS night-lights composite, as its own map
   // family beside the day one: the shipped 2K night map is 20 km per pixel,
@@ -1442,6 +1477,7 @@ async function main() {
           await childGroupGate(job.key, job.levels[i - 1].tier, job.levels[i - 1].grid, CONTENT, job.levels[i].tier, CONTENT);
         }
       }
+      for (const g of job.grey ?? []) await greyGate(g);
     } else if (flag('crops')) {
       // Data crops only: a relief / roughness map changed under an unchanged
       // colour set (the tiles and downsamples are left alone). A derived map
@@ -1452,6 +1488,7 @@ async function main() {
         await job.derive(water, rows.width, rows.height);
         await rows.close();
       }
+      for (const g of job.grey ?? []) await greyGate(g);
     } else if (job.flat) {
       await writeWebp(sharp(job.flat.src(), { limitInputPixels: false }).removeAlpha()
         .resize(4096, 2048, { fit: 'fill', kernel: 'lanczos3' }), job.flat.out);
@@ -1492,6 +1529,7 @@ async function main() {
       // them where they are.
       if (wantedLevel === null || Number(wantedLevel) === 0) {
         for (const d of job.dataCrops ?? []) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1);
+        for (const g of job.grey ?? []) await greyGate(g);
       }
     }
     console.log(`  ${((Date.now() - t0) / 1000).toFixed(0)} s`);

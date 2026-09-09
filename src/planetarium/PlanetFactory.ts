@@ -949,6 +949,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
 
   const mesh = new THREE.Mesh(geo, mat);
   group.add(mesh);
+  mesh.name = `${planet.name} surface`;
 
   // Atmosphere glow for planets with atmospheres
   let atmosphere: THREE.Mesh | undefined;
@@ -979,6 +980,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     nightMaterial = nightMat;
     nightMesh = new THREE.Mesh(nightGeo, nightMat);
     group.add(nightMesh);
+    nightMesh.name = `${planet.name} night`;
 
     const cloudGeo = new THREE.SphereGeometry(planet.radiusAU * EARTH_CLOUD_SHELL_SCALE, segments, segments / 2);
     const cloudMat = new THREE.MeshStandardMaterial({
@@ -1016,6 +1018,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     augmentSurfaceMaterial(cloudMat, 'cloud', ringShadow, sunTan, fx);
     cloudsMesh = new THREE.Mesh(cloudGeo, cloudMat);
     group.add(cloudsMesh);
+    cloudsMesh.name = `${planet.name} clouds`;
     // The cloud deck is its own colour map on its own shell, so it carries its
     // own handle: the globe and the clouds sharpen independently.
     const cloudsUpgrade = makeTextureUpgrade('earthClouds', cloudMat);

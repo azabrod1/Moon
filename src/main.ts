@@ -25,6 +25,7 @@ import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn } from './app/perfS
 import { setBloomInternalDepth } from './app/bloomTargets';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass } from './app/FusedOutputPass';
+import type { GpuProfiler, GpuProfileOptions } from './app/devGpuProfile';
 import { bitmapDecodePath } from './planetarium/world/textureBitmapLoader';
 import { BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
 import { createLensPass, devSetLensPassOff, updateLensPass, type LensParams } from './app/LensPass';
@@ -508,6 +509,9 @@ let measureNextSceneFrame = false;
 // unless the on-device perf overlay is running, and never installed in a
 // production build.
 let frameProbe: { start(): void; end(): void } | null = null;
+// The GPU profile (app/devGpuProfile.ts) brackets the world draw with its
+// spans while a run is on; loaded by the first `__moon.gpuProfile()` call.
+let gpuProfiler: GpuProfiler | null = null;
 
 /**
  * Pin the render resolution and re-run the app's own resize path, so the
@@ -571,6 +575,12 @@ function drawWorldFrame() {
         surfacePerfEndRender(perfRender, renderer.info.programs?.length ?? 0, renderer.info.memory.textures);
       }
     }
+  } else if (import.meta.env.DEV && gpuProfiler?.active) {
+    // The same two draws as below, measured.
+    gpuProfiler.frame(
+      () => renderScene(camera),
+      () => { if (appMode === 'planetarium') planetariumMode?.renderMiniChartFrame(); },
+    );
   } else {
     renderScene(camera);
     // The corner chart draws over the finished world frame, inside its own
@@ -1035,6 +1045,24 @@ function installDevHooks() {
     observe: (name: string) => planetariumMode?.devObserve(name) ?? false,
     device: () => planetariumMode?.devDeviceProfile() ?? null,
     sectors: () => planetariumMode?.devSectorStats() ?? null,
+    /** A GPU profile of the world frame measured on this device, per pass and per object (app/devGpuProfile.ts). */
+    gpuProfile: async (opts?: GpuProfileOptions) => {
+      if (!gpuProfiler) {
+        const { createGpuProfiler } = await import('./app/devGpuProfile');
+        gpuProfiler = createGpuProfiler({
+          gl: renderer.getContext(),
+          passes: () => (composer?.passes ?? []).map((pass) => ({
+            name: pass === lensPass ? 'Lens' : pass === bloomPass ? 'Bloom' : pass.constructor.name,
+            pass: pass as unknown as { render: (...args: unknown[]) => void },
+          })),
+          sceneRoot: () => scene,
+          bindScreen: () => renderer.setRenderTarget(null),
+        });
+      }
+      const result = await gpuProfiler.run(opts);
+      (window as any).__moon.gpuProfileResult = result;
+      return result;
+    },
     ladder: () => planetariumMode?.devLadderStats() ?? null,
     // Pixels per texel of the map each close body is really drawing. Reports
     // with the sector streamer off (?sectors=0), which is what a close-range

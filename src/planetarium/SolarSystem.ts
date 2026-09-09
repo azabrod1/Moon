@@ -453,6 +453,7 @@ export function createAsteroidBelt(): THREE.Points {
   });
 
   const belt = new THREE.Points(geometry, material);
+  belt.name = 'Asteroid belt';
   // Fade belt dots that sit behind the Sun's glare. The uniform refs are driven
   // per frame by the controller; inactive until then, so the belt is unchanged.
   belt.userData.sunGlareMaskUniforms = augmentPointsMaterialWithSunGlareMask(material);

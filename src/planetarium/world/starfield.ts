@@ -189,5 +189,7 @@ ${lensPointSpriteFragmentGLSL}
   // over a dim ribbon at (1-alpha) beads it into a dotted string.
   applyOrbitLineStencilGate(mat);
 
-  return new THREE.Points(geo, mat);
+  const stars = new THREE.Points(geo, mat);
+  stars.name = 'Stars';
+  return stars;
 }

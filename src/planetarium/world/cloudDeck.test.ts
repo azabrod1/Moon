@@ -338,7 +338,7 @@ describe('the deck\'s detail term', () => {
     // exactly such a condition: on a driver that takes the licence, the deck
     // gets a wrong mip and a wrong slope wherever the quad straddles the fade.
     const glsl = compiled('cloud').shader.fragmentShader;
-    const block = glsl.slice(glsl.indexOf('float cloudAlpha = 1.0;'), glsl.indexOf('vec4 detail = textureGrad'));
+    const block = glsl.slice(glsl.indexOf('float cloudAlpha = 1.0;'), glsl.indexOf('vec4 detail = vec4(0.0);'));
     // The deck's own block only — the injection point carries other terms
     // after it, and each answers for its own derivatives.
     const inner = glsl.slice(

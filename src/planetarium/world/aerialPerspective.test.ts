@@ -122,11 +122,19 @@ describe('the injected surface shader', () => {
     // runs against each other rather than against the committed set, which was
     // recorded on a different driver and does not reproduce byte for byte
     // anywhere else.
+    //
+    // The text this pins is the DEVELOPMENT one. The GPU-efficiency switches
+    // (app/perfSwitches.ts) put both readings of each change into the shader
+    // here, behind a uniform, so a capture can be taken either way out of one
+    // page load; a production build folds each of them to its cheap reading
+    // alone. What that costs is a hash that cannot see a change made only to
+    // the production text — which is why every one of those switches carries a
+    // capture of the two readings against each other instead.
     const shader = compile(augmented('earth'));
     expect(hash(shader.vertexShader))
       .toBe('862f7224fafb480070aebf0c7c125dddbd78c879780eb072e96988333154322a');
     expect(hash(shader.fragmentShader))
-      .toBe('058f4cc1324ba555126eb9b98edf706bc51a55d74f9799aab4a4fef749ed4130');
+      .toBe('1f1ebd3170dc5b0261a6ca37ae961c2b125034529090191be89eb6a8fa241d0b');
   });
 
   it('reuses the tables\' own lookup GLSL rather than a second transcription', () => {

@@ -100,6 +100,7 @@ import {
   type AtmosphereTables,
 } from './atmosphereLut';
 import { AIRLIGHT_SCALE } from './atmosphereModel';
+import { perfSwitchUniform } from '../../app/perfSwitches';
 import { EARTH_NIGHT_COLD_CUT, EARTH_NIGHT_WARM_GLSL } from '../../shared/shaders/atmosphere';
 import {
   CLOUD_ALBEDO,
@@ -1158,21 +1159,67 @@ if (uSynthEnvelope > 0.0) {
 }
 #endif`;
 
+/** The GPU-efficiency switches this shader carries, declared only where they
+ *  exist: a production build compiles one path per item and has no uniform to
+ *  read (app/perfSwitches.ts). */
+const PERF_SWITCH_DECLS = /* glsl */ `uniform float uPerfCloudTaps;
+uniform float uPerfCloudClear;
+uniform float uPerfGlintGate;`;
+
+/** The switch a dead cloud tap is removed behind, as the condition that still
+ *  takes the tap. Off, the fetch happens exactly where it happened before the
+ *  change; a production build has neither the switch nor the second reading. */
+const cloudTapKept = (stillNeeded: string): string =>
+  (import.meta.env.DEV ? `uPerfCloudTaps < 0.5 || ${stillNeeded}` : stillNeeded);
+
+/**
+ * The clear-sky early-out: a deck fragment with no cloud on it, written out as
+ * nothing and left.
+ *
+ * Placed at the END of the injected normal block, after the close-range
+ * detail's own derivatives have been taken, so every screen derivative in this
+ * shader is still read in flow that is uniform across the draw. What it skips
+ * is everything downstream: three's whole physical lighting, the night floor
+ * and the sky's ambient, the moonlight pair, the eclipse trace, the city glow
+ * through the deck and the six aerial-perspective lookups.
+ *
+ * `vec4(0.0)` and not a discard, and the two are not interchangeable here:
+ * this is the ONE material in the app whose archetype is 'cloud', and it draws
+ * with `depthWrite: false` into a plain source-alpha blend, so a zero alpha
+ * leaves the destination bit for bit. A cloud-archetype surface that wrote
+ * depth, or one on premultiplied alpha, would need this reasoning done again.
+ */
+const CLOUD_CLEAR_RETURN = import.meta.env.DEV
+  ? 'if (uPerfCloudClear > 0.5 && uCloudDeck > 0.0 && cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }'
+  : 'if (uCloudDeck > 0.0 && cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }';
+
 /**
  * three's own <map_fragment>, with the deck's fetch put through the smooth
  * magnification filter. The ordinary bilinear tap happens for every surface;
  * the four extra ones sit behind a weight that is zero on all of them.
+ *
+ * At full smooth weight the ordinary tap is not an endpoint of anything — the
+ * mix returns the B-spline outright — and full weight is where the deck spends
+ * a close frame: its map is magnified many times over at orbital altitude, so
+ * that fetch was a whole map read per deck pixel whose result went nowhere.
  */
 const SURFACE_MAP_FRAGMENT = /* glsl */ `
 #ifdef USE_MAP
-	vec4 sampledDiffuseColor = texture2D( map, vMapUv );
+	vec4 sampledDiffuseColor;
 	if ( uCloudDeck > 0.0 ) {
 		vec2 mapTexels = vec2( textureSize( map, 0 ) );
 		float smoothW = smoothTexelWeight( vMapUv, mapTexels );
-		if ( smoothW > 0.0 ) {
-			sampledDiffuseColor = mix( sampledDiffuseColor,
-				textureBSpline( map, vMapUv, mapTexels ), smoothW );
+		if ( ${cloudTapKept('smoothW < 1.0')} ) {
+			sampledDiffuseColor = texture2D( map, vMapUv );
+			if ( smoothW > 0.0 ) {
+				sampledDiffuseColor = mix( sampledDiffuseColor,
+					textureBSpline( map, vMapUv, mapTexels ), smoothW );
+			}
+		} else {
+			sampledDiffuseColor = textureBSpline( map, vMapUv, mapTexels );
 		}
+	} else {
+		sampledDiffuseColor = texture2D( map, vMapUv );
 	}
 	#ifdef DECODE_VIDEO_TEXTURE
 		sampledDiffuseColor = sRGBTransferEOTF( sampledDiffuseColor );
@@ -1218,6 +1265,7 @@ uniform vec3 uAirlightScale;
 uniform sampler2D uTransmittance;
 uniform sampler2D uIrradiance;
 uniform sampler3D uScattering;
+${import.meta.env.DEV ? PERF_SWITCH_DECLS : ''}
 varying vec3 vSunViewDir;
 varying vec3 vMoonViewDir;
 varying vec3 vObjPos;
@@ -1225,6 +1273,45 @@ varying vec3 vPlanetshineViewDir;
 varying vec3 vAirCam;
 varying vec3 vAirFrag;
 ${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}${CLOUD_DETAIL_GLSL}${SPHERE_EQUIRECT_UV_GLSL}${SMOOTH_TEXEL_GLSL}${SURFACE_DETAIL_GLSL}`;
+
+/**
+ * three's <normal_fragment_maps>, with the tangent-space branch taken over.
+ *
+ * The deck's height field is its coarsest map by far — tens of kilometres to
+ * the texel where its colour map is a few — so it is the layer whose bilinear
+ * facets read first, as flat-shaded quilting across the interior of every
+ * bank, and it is drawn through the smooth magnification filter instead. That
+ * used to be done AFTER the chunk, which meant the chunk's own fetch and its
+ * tangent-frame transform were computed and then overwritten on every deck
+ * fragment. Done here instead, so the relief is read once, and at full smooth
+ * weight it is read as the B-spline alone rather than as a mix with a plain
+ * tap that the mix does not use.
+ *
+ * The other paths through the chunk — object-space normals, the bump map — are
+ * the include itself, unchanged: they belong to every other body's surface and
+ * there is nothing to save on them.
+ */
+const SURFACE_NORMAL_MAPS = /* glsl */ `
+#if defined( USE_NORMALMAP_TANGENTSPACE )
+	vec2 reliefTexels = vec2( textureSize( normalMap, 0 ) );
+	float reliefSmoothW = uCloudDeck > 0.0 ? smoothTexelWeight( vNormalMapUv, reliefTexels ) : 0.0;
+	vec4 reliefTexel;
+	if ( ${cloudTapKept('reliefSmoothW < 1.0')} ) {
+		reliefTexel = texture2D( normalMap, vNormalMapUv );
+		if ( reliefSmoothW > 0.0 ) {
+			reliefTexel = mix( reliefTexel,
+				textureBSpline( normalMap, vNormalMapUv, reliefTexels ), reliefSmoothW );
+		}
+	} else {
+		reliefTexel = textureBSpline( normalMap, vNormalMapUv, reliefTexels );
+	}
+	vec3 mapN = reliefTexel.xyz * 2.0 - 1.0;
+	mapN.xy *= normalScale;
+	normal = normalize( tbn * mapN );
+#else
+#include <normal_fragment_maps>
+#endif
+`;
 
 // Injected after lighting but before <opaque_fragment> writes outgoingLight into
 // gl_FragColor — so terms land in linear radiance (tone-mapped downstream) and
@@ -1245,23 +1332,6 @@ vec2 cloudNightUv = vec2(0.0);
 vec2 cloudNightDx = vec2(0.0);
 vec2 cloudNightDy = vec2(0.0);
 if (uCloudDeck > 0.0) {
-  #ifdef USE_NORMALMAP_TANGENTSPACE
-  // The relief again, off the same tangent frame three's chunk used but through
-  // the smooth magnification filter. The deck's height field is its coarsest
-  // map by far — tens of kilometres to the texel where its colour map is a few
-  // — so it is the layer whose bilinear facets read first, as flat-shaded
-  // quilting across the interior of every bank. Redone here rather than in
-  // place of the chunk, because that chunk also carries the object-space and
-  // bump paths every other body's surface takes.
-  vec2 reliefTexels = vec2(textureSize(normalMap, 0));
-  float reliefSmoothW = smoothTexelWeight(vNormalMapUv, reliefTexels);
-  if (reliefSmoothW > 0.0) {
-    vec3 smoothMapN = mix(texture2D(normalMap, vNormalMapUv),
-        textureBSpline(normalMap, vNormalMapUv, reliefTexels), reliefSmoothW).xyz * 2.0 - 1.0;
-    smoothMapN.xy *= normalScale;
-    normal = normalize(tbn * smoothMapN);
-  }
-  #endif
   // Where this fragment is on the deck, as longitude and latitude. Every
   // derivative the block needs is taken HERE, inside the one branch that is
   // uniform across the draw: a derivative under a per-fragment condition is
@@ -1293,7 +1363,17 @@ if (uCloudDeck > 0.0) {
   float cloudDetailW = cloudDetailFade(max(length(duvX), length(duvY)) * ${CLOUD_DETAIL_SIZE.toFixed(1)});
   // Explicit gradients, for the same reason the angles' were taken by hand: the
   // mip has to be chosen off a quantity that is continuous across the cut.
-  vec4 detail = textureGrad(uCloudDetail, detailUv, duvX, duvY);
+  // Past the fade the weight is exactly zero: the erosion's mix returns 1 and
+  // the relief block below is not entered, so the fetch has no reader.
+  // The alpha the deck ends up with, and everything the deck spends on a pixel
+  // it has cloud on: the coverage itself was read upstream, where the colour it
+  // comes from first exists.
+  // Explicit gradients, for the same reason the angles' were taken by hand: the
+  // mip has to be chosen off a quantity that is continuous across the cut.
+  // Past the fade the weight is exactly zero: the erosion's mix returns 1 and
+  // the relief block below is not entered, so the fetch has no reader.
+  vec4 detail = vec4(0.0);
+  if (${cloudTapKept('cloudDetailW > 0.0')}) detail = textureGrad(uCloudDetail, detailUv, duvX, duvY);
   // The deck's alpha is the coverage its own map states. It is worked out HERE,
   // upstream of every light, because the colour has to change with it: the map
   // states coverage and not albedo, so once the alpha carries that coverage the
@@ -1305,7 +1385,8 @@ if (uCloudDeck > 0.0) {
   // ...eroded by the detail noise where the coverage is at an EDGE. A cloud
   // map's edges are the resolution its authoring stopped at; the noise puts the
   // ragged margin back. Solid cloud keeps its interior and clear sky gains no
-  // wisps — the band is zero at both ends.
+  // wisps — the band is zero at both ends, which is also what keeps an exactly
+  // clear fragment exactly clear through this.
   cloudAlpha *= mix(1.0, mix(1.0 - uCloudDetailErode, 1.0, detail.r),
       cloudEdgeBand(cloudAlpha) * cloudDetailW);
   // The hue survives; the brightness is pulled toward the cloud's own albedo by
@@ -1332,7 +1413,8 @@ if (uCloudDeck > 0.0) {
     }
   }
 }
-${SURFACE_DETAIL_BODY}`;
+${SURFACE_DETAIL_BODY}
+${CLOUD_CLEAR_RETURN}`;
 
 const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   if (uWaterGloss > 0.0) {
@@ -1966,6 +2048,14 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uCloudDetailErode = uCloudDetailErode;
     shader.uniforms.uCloudCityGlow = uCloudCityGlow;
     shader.uniforms.uCloudDetailRelief = uCloudDetailRelief;
+    // The efficiency A/B switches, shared objects so a flip reaches the globe,
+    // its streamed sectors and the deck in one frame. Absent from a production
+    // build along with the second path each of them selects.
+    if (import.meta.env.DEV) {
+      shader.uniforms.uPerfCloudTaps = perfSwitchUniform('cloud-taps');
+      shader.uniforms.uPerfCloudClear = perfSwitchUniform('cloud-clear');
+      shader.uniforms.uPerfGlintGate = perfSwitchUniform('glint-gate');
+    }
     shader.uniforms.uFrameSpin = uFrameSpin;
     shader.uniforms.uSynthDetail = uSynthDetail;
     shader.uniforms.uSynthGrain = uSynthGrain;
@@ -1985,7 +2075,7 @@ export function augmentSurfaceMaterial(
       .replace('#include <common>', `#include <common>${SURFACE_FRAGMENT_DECLS}`)
       .replace('#include <map_fragment>', SURFACE_MAP_FRAGMENT)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>${WATER_GLOSS_GLSL}`)
-      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>${SURFACE_NORMAL_BODY}`)
+      .replace('#include <normal_fragment_maps>', `${SURFACE_NORMAL_MAPS}${SURFACE_NORMAL_BODY}`)
       .replace('#include <opaque_fragment>', `${SURFACE_FRAGMENT_BODY}\n#include <opaque_fragment>`);
   };
   // The table dimensions are #defines, and a define is part of three's program

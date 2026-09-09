@@ -216,6 +216,8 @@ describe('poseLabel and poseNote', () => {
   it('admits when the pose could not be read', () => {
     expect(poseNote(null, null)).toMatch(/could not be read/);
     expect(poseNote('Earth', null)).toMatch(/could not be read/);
+    expect(poseNote(null, null, 'no body is measurable on screen and the ride frame holds none'))
+      .toMatch(/could not be read \(no body is measurable/);
   });
 });
 

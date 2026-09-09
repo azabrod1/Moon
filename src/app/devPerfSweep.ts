@@ -292,9 +292,9 @@ export function poseLabel(elevDeg: number): 'daylight pose' | 'terminator' | 'ni
  * therefore decides which rows the run can speak for, and that has to be on
  * the screen beside the numbers rather than remembered afterwards.
  */
-export function poseNote(body: string | null, elevDeg: number | null): string {
+export function poseNote(body: string | null, elevDeg: number | null, why: string | null = null): string {
   if (!body || elevDeg === null) {
-    return 'The pose could not be read, so which side of the terminator these rows priced is unknown.';
+    return `The pose could not be read${why ? ` (${why})` : ''}, so which side of the terminator these rows priced is unknown.`;
   }
   const label = poseLabel(elevDeg);
   const height = elevDeg >= 0
@@ -758,24 +758,57 @@ function vec(value: unknown): Vec3 | null {
  * player's come from `probe()`. Everything is optional: a pose that cannot be
  * read makes the verdict say so rather than making the run fail.
  */
-function readPose(): { body: string | null; sunElevDeg: number | null; radii: number | null } {
+/** Which body the run is parked at, the Sun's height there and how far out
+ *  — or, when that cannot be read, why not, in the words the verdict prints:
+ *  a run that only says "unknown" cannot be fixed from a screenshot. */
+interface PoseReading {
+  body: string | null;
+  sunElevDeg: number | null;
+  radii: number | null;
+  /** How the body was found, or null when nothing was. */
+  source: 'density' | 'ride' | null;
+  why: string | null;
+}
+
+function readPose(): PoseReading {
   const bridge = bridgeObject();
+  const unread = (body: string | null, why: string): PoseReading =>
+    ({ body, sunElevDeg: null, radii: null, source: null, why });
   const densities = typeof bridge.surfaceDensity === 'function'
     ? (bridge.surfaceDensity as () => unknown[])()
     : [];
   const first = Array.isArray(densities) ? densities[0] as Record<string, unknown> | undefined : undefined;
-  const body = typeof first?.name === 'string' ? first.name : null;
-  if (!body || typeof bridge.probe !== 'function') return { body, sunElevDeg: null, radii: null };
+  let body = typeof first?.name === 'string' ? first.name : null;
+  let source: PoseReading['source'] = body ? 'density' : null;
+  if (!body) {
+    // Nothing measurable for close-range detail on screen: the ride frame
+    // still knows what the ship is holding station over, and that is the
+    // body a parked run is about.
+    const ride = typeof bridge.rideState === 'function'
+      ? (bridge.rideState as () => unknown)() as Record<string, unknown> | null
+      : null;
+    const carriers = Array.isArray(ride?.carriers) ? ride.carriers as Array<Record<string, unknown>> : [];
+    let top: Record<string, unknown> | null = null;
+    for (const c of carriers) if ((num(c.weight) ?? 0) > (num(top?.weight) ?? 0)) top = c;
+    body = typeof top?.key === 'string' ? top.key : null;
+    source = body ? 'ride' : null;
+  }
+  if (!body) return unread(null, 'no body is measurable on screen and the ride frame holds none');
+  if (typeof bridge.probe !== 'function') return unread(body, 'the bridge has no probe');
   const probe = (bridge.probe as (name: string) => unknown)(body) as Record<string, unknown> | null;
   const bodyAbs = vec(probe?.bodyAbs);
   const playerAbs = vec(probe?.playerAbs);
-  if (!bodyAbs || !playerAbs) return { body, sunElevDeg: null, radii: null };
+  if (!bodyAbs || !playerAbs) return unread(body, `the probe returned no positions for ${body}`);
+  const sunElevDeg = sunElevationDeg(bodyAbs, playerAbs);
+  if (sunElevDeg === null) return unread(body, `the camera reads as ${body}'s own centre`);
   const radius = num(probe?.radiusAU);
   const distance = num(probe?.distToBodyAU);
   return {
     body,
-    sunElevDeg: sunElevationDeg(bodyAbs, playerAbs),
+    sunElevDeg,
     radii: radius && distance ? distance / radius : null,
+    source,
+    why: null,
   };
 }
 
@@ -946,6 +979,8 @@ export function installPerfSweep(deps: PerfSweepDeps): void {
   let running = false;
   let stopRequested = false;
   let wentHidden = false;
+  let runStartedAt = 0;
+  let hiddenAfterMs = 0;
   let frameStartedAt = 0;
   let liveWrittenAt = 0;
 
@@ -961,7 +996,15 @@ export function installPerfSweep(deps: PerfSweepDeps): void {
   // A page that was not being shown got frames from a throttle, not a display,
   // and nothing measured across that says anything about the pose.
   document.addEventListener('visibilitychange', () => {
-    if (running && document.visibilityState !== 'visible') wentHidden = true;
+    if (running && document.visibilityState !== 'visible' && !wentHidden) {
+      wentHidden = true;
+      hiddenAfterMs = performance.now() - runStartedAt;
+      // Stopped on the spot rather than flagged at the end: a hidden page gets
+      // its frames from a throttle, not the display, so nothing measured past
+      // this point is the pose's, and the minutes the run would go on for are
+      // the person's.
+      stopRequested = true;
+    }
   });
 
   deps.setFrameProbe({
@@ -1140,6 +1183,7 @@ export function installPerfSweep(deps: PerfSweepDeps): void {
     const amplify = options.amplify ?? ampBox.checked;
 
     setRunning(true);
+    runStartedAt = performance.now();
     stopRequested = false;
     wentHidden = false;
     noteEl.textContent = '';
@@ -1206,8 +1250,8 @@ export function installPerfSweep(deps: PerfSweepDeps): void {
     let tiles = { inflight: 0, waitedMs: 0 };
     // Which pose the run priced, read once the clock is stopped — the sky is
     // then the sky every hold is measured against.
-    let pose: { body: string | null; sunElevDeg: number | null; radii: number | null } =
-      { body: null, sunElevDeg: null, radii: null };
+    let pose: PoseReading =
+      { body: null, sunElevDeg: null, radii: null, source: null, why: 'the run ended before the pose was read' };
     try {
       // Frozen state: a clock that is running moves every body, every shadow
       // and the tile streamer's target under the measurement.
@@ -1342,12 +1386,14 @@ export function installPerfSweep(deps: PerfSweepDeps): void {
     const verdict = controlRow ? throttleVerdict(controlRow) : '';
     const drift = thermalDriftLine(baselines);
     const amplifierLine = amplifierNote(amplify, AMPLIFIER_RATIO, restingRatio);
-    const poseLine = poseNote(pose.body, pose.sunElevDeg);
+    const poseLine = poseNote(pose.body, pose.sunElevDeg, pose.why);
     const tilesLine = tilesReadyNote(tiles.inflight, tiles.waitedMs);
     const hiddenNote = wentHidden
-      ? 'The page stopped being shown during the run, so these numbers are not the pose’s. Run it again.'
+      ? `The page stopped being shown ${(hiddenAfterMs / 1000).toFixed(0)} s into the run, so the run was stopped there: `
+        + 'a hidden page gets its frames from a throttle, not the display. On an iPhone that is usually Auto-Lock '
+        + '(Settings → Display & Brightness → Auto-Lock → Never, for the run) or a switch to another app. Run it again.'
       : '';
-    const stoppedNote = stopRequested ? 'Stopped early, so the table is only as far as it got.' : '';
+    const stoppedNote = stopRequested && !wentHidden ? 'Stopped early, so the table is only as far as it got.' : '';
     const skippedNote = skipped.length
       ? `Not swept (a reload would end the run): ${skipped.map((a) => a.key).join(', ')}.`
       : '';
@@ -1359,7 +1405,7 @@ export function installPerfSweep(deps: PerfSweepDeps): void {
       hiddenNote, stoppedNote, verdict, amplifierLine, poseLine, tilesLine, drift,
       skippedNote, missingNote, orderNote,
     ].filter(Boolean).join(' ');
-    statusEl.textContent = stopRequested ? 'Stopped.' : 'Done.';
+    statusEl.textContent = wentHidden ? 'Stopped: the page was hidden.' : stopRequested ? 'Stopped.' : 'Done.';
 
     const results = {
       at: new Date().toISOString(),

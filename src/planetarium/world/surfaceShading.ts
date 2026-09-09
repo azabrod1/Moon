@@ -1447,18 +1447,33 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
     // Explicit gradients, taken analytically from the direction's: the UV
     // jumps a whole turn at the date line, and an implicit derivative read
     // across that jump would pick the coarsest mip down that one column of
-    // pixels — a hairline of average cloud drawn over the sea.
-    float deckLum = dot(textureGrad(uCloudShadowMap, sphereEquirectUv(deckDir),
-            sphereEquirectUvGrad(deckDir, dFdx(deckDir)),
-            sphereEquirectUvGrad(deckDir, dFdy(deckDir))).rgb,
-        vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')}));
-    float glintKeep = (1.0 - cloudCoverage(deckLum))
-        * ${OCEAN_SPECULAR_KEEP.toFixed(4)};
-    // Cut from the CAPPED glint: the cap above already took the rest off, and
-    // cutting the uncapped term here would drive the light below zero under
-    // cloud, which the bloom then paints as a yellow core in a blue ring.
-    outgoingLight -= min(reflectedLight.directSpecular, vec3(${OCEAN_GLINT_CAP.toFixed(2)}))
-        * (1.0 - glintKeep);
+    // pixels — a hairline of average cloud drawn over the sea. Taken HERE and
+    // not inside the gate below: this branch is a compare against a uniform,
+    // which the whole draw takes the same side of, and the gate is not.
+    vec2 deckUv = sphereEquirectUv(deckDir);
+    vec2 deckDx = sphereEquirectUvGrad(deckDir, dFdx(deckDir));
+    vec2 deckDy = sphereEquirectUvGrad(deckDir, dFdy(deckDir));
+    // The glint this mask exists to cut: the CAPPED term, because the cap
+    // above already took the rest off, and cutting the uncapped one here would
+    // drive the light below zero under cloud, which the bloom then paints as a
+    // yellow core in a blue ring.
+    vec3 glintCapped = min(reflectedLight.directSpecular, vec3(${OCEAN_GLINT_CAP.toFixed(2)}));
+    // Wherever the Sun is below this fragment's horizon three's own N·L
+    // saturates to zero and the capped glint is exactly zero in every channel:
+    // the subtraction below is then a subtraction of nothing whatever the
+    // mask says, and the whole cloud-map read is spent on it. Gated on the
+    // term itself rather than on "night side", because it is the perturbed
+    // normal that decides whether there is a highlight, and uWaterGloss is a
+    // material-wide enable rather than a per-fragment test for sea.
+    if (${import.meta.env.DEV
+      ? 'uPerfGlintGate < 0.5 || any(greaterThan(glintCapped, vec3(0.0)))'
+      : 'any(greaterThan(glintCapped, vec3(0.0)))'}) {
+      float deckLum = dot(textureGrad(uCloudShadowMap, deckUv, deckDx, deckDy).rgb,
+          vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')}));
+      float glintKeep = (1.0 - cloudCoverage(deckLum))
+          * ${OCEAN_SPECULAR_KEEP.toFixed(4)};
+      outgoingLight -= glintCapped * (1.0 - glintKeep);
+    }
   }
   // The sine of the Sun's elevation at this fragment, off the perturbed normal:
   // the Sun's own Lambert term, which is what the day factor and the Moon's

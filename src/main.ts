@@ -21,7 +21,8 @@ import { canGPUDoBloom, halfFloatTargetSampleCounts } from './app/gpuCapability'
 import { installShaderSalt } from './app/shaderSalt';
 import { bloomPixelRatio, composerSamples, parseMsaaOverride, targetPixelRatio } from './app/renderResolution';
 import { BootRenderGate } from './app/bootRenderGate';
-import { installPerfSwitchBridge } from './app/perfSwitches';
+import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn } from './app/perfSwitches';
+import { setBloomInternalDepth } from './app/bloomTargets';
 import { bitmapDecodePath } from './planetarium/world/textureBitmapLoader';
 import { BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
 import { createLensPass, updateLensPass, type LensParams } from './app/LensPass';
@@ -429,6 +430,10 @@ function buildComposer(
       BLOOM_RADIUS,
       bloom.threshold,
     );
+    // Its eleven internal targets come with a depth plane nothing in the pass
+    // tests or writes (app/bloomTargets.ts). Applied here rather than at the
+    // switch, because a rebuild makes a fresh pass with three's defaults back.
+    setBloomInternalDepth(bloomPass, import.meta.env.DEV ? !perfSwitchOn('bloom-nodepth') : false);
     composer.addPass(bloomPass);
     sizeBloomPass();
   }
@@ -454,6 +459,14 @@ function setPlanetariumBloom(on: boolean) {
 
 applyRenderResolution();
 buildComposer(planetariumCamera, PLANETARIUM_BLOOM, planetariumBloomEnabled());
+
+// The bloom pass's own targets, switched back and forth against the picture
+// they had. It reaches into the live pass rather than rebuilding the chain: a
+// rebuild relinks every pass's program, which is not what this measures.
+// DEV only — a production build folds the switch to the state it ships in.
+if (import.meta.env.DEV) {
+  onPerfSwitch('bloom-nodepth', (on) => setBloomInternalDepth(bloomPass, !on));
+}
 
 // Armed after first Planetarium activation: that render compiles the scene's
 // shaders and uploads textures, so its duration is a startup phase of its own.

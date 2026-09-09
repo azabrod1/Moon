@@ -27,7 +27,7 @@ import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass } from './app/FusedOutputPass';
 import { bitmapDecodePath } from './planetarium/world/textureBitmapLoader';
 import { BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
-import { createLensPass, updateLensPass, type LensParams } from './app/LensPass';
+import { createLensPass, devSetLensPassOff, updateLensPass, type LensParams } from './app/LensPass';
 import { applyDesignFov, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
 import { loadBrightStarCatalog } from './planetarium/world/starCatalogLoader';
 import { debugError, debugLog, debugWarn } from './shared/debug';
@@ -630,13 +630,17 @@ function renderScene(cam: THREE.Camera) {
       // renderToScreen flag is set; the write target is intentionally unused.
       renderer.setRenderTarget(null);
       renderer.render(scene, cam);
+      // Synced BEFORE the flag is read: updateLensPass is what sets the flag,
+      // from the strength, every frame. Under the flag it would run only while
+      // the pass was already on, and one frame at zero strength (an aspect the
+      // overscan cannot cover) would switch the lens off for the session.
+      updateLensPass(lensPass, planetariumLens, planetariumCamera.fov, planetariumCamera.aspect);
       // A disabled pass does not run, exactly as the composer skips one: this
       // path calls the pass by hand, so the flag has to be read by hand too.
       // Skipping it leaves the tone-mapped frame already on screen.
       if (lensPass.enabled) {
         const texture = ensureDirectLensTexture();
         renderer.copyFramebufferToTexture(texture);
-        updateLensPass(lensPass, planetariumLens, planetariumCamera.fov, planetariumCamera.aspect);
         lensPass.render(
           renderer,
           null as unknown as THREE.WebGLRenderTarget,
@@ -1365,6 +1369,7 @@ async function init() {
         budget: () => planetariumMode?.devFrameBudget() ?? null,
         resetBudget: () => planetariumMode?.devResetFrameBudget(),
         passes: () => ({ bloom: bloomPass, lens: lensPass }),
+        setLens: (on) => devSetLensPassOff(!on),
         pinPixelRatio: devPinPixelRatio,
         pixelRatio: () => renderer.getPixelRatio(),
         renderTargets: devRenderTargets,

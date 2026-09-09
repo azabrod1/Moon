@@ -43,7 +43,24 @@ void main() {
   });
 }
 
-/** Sync the pass to the camera's current lens params + render FOV/aspect. */
+/**
+ * DEV only: the lens pass held off, for the perf sweep's "Lens off" row.
+ *
+ * `updateLensPass` decides `pass.enabled` from the strength on EVERY frame, so
+ * a flag written on the pass from outside is overwritten a frame later and a
+ * row that set it once measured one frame of the switch and the rest of the
+ * hold with the lens back on. This is the one place that decision can be
+ * overridden and stay overridden. A production build folds it to nothing.
+ */
+let devLensOff = false;
+export function devSetLensPassOff(off: boolean): void {
+  devLensOff = off;
+}
+
+/** Sync the pass to the camera's current lens params + render FOV/aspect.
+ *  Called every frame on both render paths, whatever the pass's flag says:
+ *  this is the only writer of `pass.enabled`, so a frame that skipped it
+ *  because the pass was off could never turn the pass back on. */
 export function updateLensPass(
   pass: ShaderPass,
   lens: LensParams,
@@ -55,5 +72,5 @@ export function updateLensPass(
   pass.uniforms.uAspect.value = aspect;
   pass.uniforms.uTanHalfRender.value = Math.tan((renderFovDeg / 2) * DEG);
   pass.uniforms.uREdge.value = lensRadial((lens.designFovDeg / 2) * DEG, strength);
-  pass.enabled = strength > 0;
+  pass.enabled = strength > 0 && !(import.meta.env.DEV && devLensOff);
 }

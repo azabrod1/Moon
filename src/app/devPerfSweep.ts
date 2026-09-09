@@ -358,6 +358,9 @@ export interface PerfSweepDeps {
   resetBudget: () => void;
   /** The composer's passes, or null where this build has none of that pass. */
   passes: () => { bloom: { enabled: boolean } | null; lens: { enabled: boolean } | null };
+  /** The lens pass held off, or released. Not the flag on the pass: its owner
+   *  rewrites that flag from the lens strength every frame (app/LensPass.ts). */
+  setLens: (on: boolean) => void;
   pinPixelRatio: (ratio: number | null) => void;
   pixelRatio: () => number;
   /** Every surface a frame is drawn into, in device pixels — the evidence that
@@ -547,8 +550,10 @@ function buildArms(deps: PerfSweepDeps, resting: RestingRatio): Arm[] {
         // Skipping the lens pass leaves off-axis discs egg-shaped and the DOM
         // overlays pre-distorted for the hold, which is a look, not a break;
         // rebuilding the chain to avoid that would cost a relink instead.
-        const lens = deps.passes().lens;
-        if (lens) lens.enabled = !applied;
+        // Through the owner's own seam and not the pass's flag: that flag is
+        // rewritten from the lens strength every frame, and a row that set it
+        // once measured one frame of the switch and the rest of the hold off.
+        deps.setLens(!applied);
       },
       () => deps.passes().lens !== null,
     ),

@@ -153,8 +153,12 @@ const MiB = 1024 * 1024;
  *  night sectors would need. Whole sets because a fraction of one buys
  *  nothing — half a set admits no tile. Pinned against the streamer's own
  *  layout arithmetic in gpuEnvelope.test.ts, which is what keeps a
- *  transcribed number honest in a file that must not import a body's layout. */
-export const SECTOR_SET_FLOOR_UNIT_BYTES = 24_251_050;
+ *  transcribed number honest in a file that must not import a body's layout.
+ *
+ *  It came down by 1.35 MiB when the height and water crops went to one byte
+ *  a texel (world/texturePolicy's 'mask' kind): a set is the same tiles, held
+ *  smaller. */
+export const SECTOR_SET_FLOOR_UNIT_BYTES = 22_839_978;
 
 /**
  * The one ladder cap that is NOT about memory. Whether a device holds an 8K
@@ -182,7 +186,7 @@ export function fillRateTierCaps(cls: DeviceClass): Partial<Record<string, Textu
 /**
  * The numbers a touch device gets while nobody has measured its platform.
  * An Earth sector set — its 2048x2048 tile plus its copies of the bump and
- * roughness crops — is ~23.1 MiB, so this holds six of them, and never fewer
+ * roughness crops — is ~21.8 MiB, so this holds six of them, and never fewer
  * than two whatever the globe maps have taken. Six is what a phone held
  * before the budget was in bytes at all.
  *

@@ -424,6 +424,24 @@ export function waterGlossRoughness(mapRoughness: number): number {
   );
 }
 
+/**
+ * three's own <roughnessmap_fragment>, reading RED instead of green.
+ *
+ * three reads green so a roughness map can be one channel of a packed
+ * occlusion/roughness/metalness image. Nothing here packs anything: the only
+ * roughness map any surface in this app binds is Earth's water mask, a grey
+ * image where red IS green — which is what lets it be stored one byte a texel
+ * instead of four (world/texturePolicy's 'mask' kind), on the globe and on
+ * every resident sector's crop of it. A packed map bound here would need this
+ * line back on green and its storage back to four channels.
+ */
+const SURFACE_ROUGHNESSMAP_FRAGMENT = /* glsl */ `
+float roughnessFactor = roughness;
+#ifdef USE_ROUGHNESSMAP
+	roughnessFactor *= texture2D( roughnessMap, vRoughnessMapUv ).r;
+#endif
+`;
+
 /** The GLSL half of `waterGlossRoughness`, behind the uniform that is zero on
  *  every surface but a globe whose roughness map really is a water mask. */
 const WATER_GLOSS_GLSL = /* glsl */ `
@@ -2089,7 +2107,7 @@ export function augmentSurfaceMaterial(
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>${SURFACE_FRAGMENT_DECLS}`)
       .replace('#include <map_fragment>', SURFACE_MAP_FRAGMENT)
-      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>${WATER_GLOSS_GLSL}`)
+      .replace('#include <roughnessmap_fragment>', `${SURFACE_ROUGHNESSMAP_FRAGMENT}${WATER_GLOSS_GLSL}`)
       .replace('#include <normal_fragment_maps>', `${SURFACE_NORMAL_MAPS}${SURFACE_NORMAL_BODY}`)
       .replace('#include <opaque_fragment>', `${SURFACE_FRAGMENT_BODY}\n#include <opaque_fragment>`);
   };

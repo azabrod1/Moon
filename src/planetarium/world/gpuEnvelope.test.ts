@@ -702,10 +702,10 @@ describe('the class table', () => {
       '    now 1024/512 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {"earthClouds":"4k"}',
       'unmeasured-desktop -> limited\n' +
       '    was 1024/512 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}\n' +
-      '    now 192/46 MiB, floor 1 set, 4/1/2, want 1.25/0.8, warm cached, caps {}',
+      '    now 192/44 MiB, floor 1 set, 4/1/2, want 1.25/0.8, warm cached, caps {}',
       'unmeasured-touch -> limited\n' +
       '    was 320/144 MiB, floor 2 sets, 8/1/3, want 1.25/0.8, warm cached, caps {"earthClouds":"4k"}\n' +
-      '    now 192/46 MiB, floor 1 set, 4/1/2, want 1.25/0.8, warm cached, caps {}',
+      '    now 192/44 MiB, floor 1 set, 4/1/2, want 1.25/0.8, warm cached, caps {}',
     ]);
   });
 });

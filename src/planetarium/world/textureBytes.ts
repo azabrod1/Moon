@@ -13,7 +13,10 @@
  * - A texel is four bytes uncompressed and one compressed. A GPU-compressed
  *   container's real cost is the blocks it carries, which is a quarter to an
  *   eighth of the raw map depending on the format; where the blocks can be
- *   counted they are, and one byte a texel is the estimate for the rest.
+ *   counted they are, and one byte a texel is the estimate for the rest. A map
+ *   stored as one channel (world/texturePolicy's 'mask' kind: the height map
+ *   and the water mask) is also one byte a texel, and its texel really is one
+ *   byte rather than an estimate.
  * - A mip chain adds a third. A texture that will not be mipped does not pay
  *   it, which is why `textureGpuBytes` asks the texture rather than assuming.
  * - A figure stashed on the texture (`userData.gpuBytes`) wins over anything
@@ -21,6 +24,7 @@
  *   and what is on the GPU has not changed just because the image behind it
  *   is gone.
  */
+import { RedFormat } from 'three';
 import type * as THREE from 'three';
 
 /** A mip chain is every halving of the base image, which sums to a third of it
@@ -29,8 +33,10 @@ import type * as THREE from 'three';
 const MIP_CHAIN_FACTOR = 4 / 3;
 
 /** Bytes one image of this size holds on the GPU. */
-function imageGpuBytes(width: number, height: number, compressed: boolean, mipped: boolean): number {
-  return Math.round(width * height * (compressed ? 1 : 4) * (mipped ? MIP_CHAIN_FACTOR : 1));
+function imageGpuBytes(
+  width: number, height: number, compressed: boolean, mipped: boolean, bytesPerTexel = 4,
+): number {
+  return Math.round(width * height * (compressed ? 1 : bytesPerTexel) * (mipped ? MIP_CHAIN_FACTOR : 1));
 }
 
 /**
@@ -46,8 +52,11 @@ export function equirectMapGpuBytes(width: number, compressed = false): number {
 /** GPU bytes an image of this tile layout holds: RGBA8 at its pixel size plus
  *  a third for its mip chain. Known before the fetch — which is what lets an
  *  admission reserve what it is about to hold. */
-export function layoutGpuBytes(layout: { width: number; height: number }): number {
-  return imageGpuBytes(layout.width, layout.height, false, true);
+export function layoutGpuBytes(
+  layout: { width: number; height: number },
+  bytesPerTexel = 4,
+): number {
+  return imageGpuBytes(layout.width, layout.height, false, true, bytesPerTexel);
 }
 
 /** A texture as this module has to read it: three's public surface says
@@ -56,6 +65,12 @@ type MeasurableTexture = THREE.Texture & {
   isCompressedTexture?: boolean;
   mipmaps?: Array<{ data?: { byteLength?: number } } | null>;
 };
+
+/** Bytes one texel of this texture holds: one for a map stored as a single
+ *  channel, four for everything else. */
+export function textureBytesPerTexel(tex: { format?: number } | null | undefined): number {
+  return tex?.format === RedFormat ? 1 : 4;
+}
 
 /**
  * GPU bytes one texture holds, read from what is really there rather than
@@ -88,7 +103,7 @@ export function textureGpuBytes(tex: THREE.Texture | null | undefined, nominalWi
   const h = img && typeof img.height === 'number' ? img.height : 0;
   if (w > 0 && h > 0) {
     const mipped = map.generateMipmaps !== false || (map.mipmaps?.length ?? 0) > 1;
-    return imageGpuBytes(w, h, compressed, mipped);
+    return imageGpuBytes(w, h, compressed, mipped, textureBytesPerTexel(map));
   }
   return equirectMapGpuBytes(nominalWidth, compressed);
 }

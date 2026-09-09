@@ -147,7 +147,7 @@ import {
 import { createSectorMaterial, sectorRenderOrder, syncSectorMaterial, type SectorMaps } from './sectorMaterial';
 import { loadStreamedTexture, type TextureLoad } from './textureBitmapLoader';
 import { loadSectorTileTexture, releaseTilePixels, tilePixelStats } from './tilePixels';
-import { applyTextureDefaults, resolveTileUrl, sectorSetHash, sectorSetLayout } from './texturePolicy';
+import { applyTextureDefaults, resolveTileUrl, sectorSetHash, sectorSetLayout, type MapKind } from './texturePolicy';
 import { TIER_RANK } from './textureLadder';
 import { debugWarn } from '../../shared/debug';
 import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
@@ -158,6 +158,21 @@ import { smoothTraceEvent } from '../smoothnessTrace';
 /** The material slots a sector may carry a crop of, in a fixed order. */
 export const CROP_SLOTS = ['bumpMap', 'normalMap', 'roughnessMap'] as const;
 export type CropSlot = (typeof CROP_SLOTS)[number];
+
+/** What each crop is FOR, which is what decides how it is stored and therefore
+ *  what an admission has to reserve for it: the height map and the water mask
+ *  are grey images with one channel anything reads, and they are held one byte
+ *  a texel (world/texturePolicy's 'mask' kind). A tangent normal map is not. */
+export const CROP_KIND: Record<CropSlot, MapKind> = {
+  bumpMap: 'mask',
+  normalMap: 'data',
+  roughnessMap: 'mask',
+};
+
+/** Bytes a texel of a crop of this kind holds. */
+function cropBytesPerTexel(slot: CropSlot): number {
+  return CROP_KIND[slot] === 'mask' ? 1 : 4;
+}
 
 /** One published tile set: what a tile URL is made of, plus the layout the
  *  tiles were cut at. Every field comes from the generated table, so a set
@@ -780,7 +795,9 @@ export function sectorSetGpuBytes(
   for (const slot of CROP_SLOTS) {
     const crop = spec.crops[slot];
     if (!crop || !has(slot)) continue;
-    bytes += layoutGpuBytes(dataCropLayout(spec.levels[0].grid, crop.baseWidth, crop.spanU));
+    bytes += layoutGpuBytes(
+      dataCropLayout(spec.levels[0].grid, crop.baseWidth, crop.spanU), cropBytesPerTexel(slot),
+    );
   }
   return bytes;
 }
@@ -1484,7 +1501,11 @@ export class SectorStreamer {
   private mapBytes(body: SectorBody, slot: SectorSlot, name: MapName): number {
     if (name === 'map') return layoutGpuBytes(body.levels[slot.level].layout);
     const crop = body.handle.spec.crops[name];
-    return crop ? layoutGpuBytes(dataCropLayout(body.levels[0].grid, crop.baseWidth, crop.spanU)) : 0;
+    return crop
+      ? layoutGpuBytes(
+        dataCropLayout(body.levels[0].grid, crop.baseWidth, crop.spanU), cropBytesPerTexel(name),
+      )
+      : 0;
   }
 
   /** Map fetches a load for this slot would put on the wire: its colour tile
@@ -1662,7 +1683,7 @@ export class SectorStreamer {
     const level = body.levels[slot.level];
     const base = body.levels[0];
     const baseSector = ancestorSector(slot.sector, slot.level);
-    const maps: Array<{ name: MapName; set: string; url: string; kind: 'color' | 'data'; grid: SectorGrid; sector: Sector; layout: TileLayout }> = [
+    const maps: Array<{ name: MapName; set: string; url: string; kind: MapKind; grid: SectorGrid; sector: Sector; layout: TileLayout }> = [
       {
         name: 'map',
         set: setName(level.set),
@@ -1680,7 +1701,7 @@ export class SectorStreamer {
         name: cropSlot,
         set: setName(crop),
         url: tileUrlOf(crop, baseSector),
-        kind: 'data',
+        kind: CROP_KIND[cropSlot],
         grid: base.grid,
         sector: baseSector,
         layout: dataCropLayout(base.grid, crop.baseWidth, crop.spanU),

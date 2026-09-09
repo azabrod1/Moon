@@ -13,6 +13,7 @@
 import * as THREE from 'three';
 import { SECTOR_SET_TABLE } from './sectorSets.generated';
 import { UNMEASURED_DESKTOP_PROFILE, type DeviceProfile } from './gpuEnvelope';
+import { perfSwitchOn } from '../../app/perfSwitches';
 
 /** Every resolution tier that exists, ascending. This list names them and
  *  fixes that ascending convention: the device clamp walks it directly, and a
@@ -20,7 +21,21 @@ import { UNMEASURED_DESKTOP_PROFILE, type DeviceProfile } from './gpuEnvelope';
  *  order. A new resolution is an entry here plus a folder. */
 export const TEXTURE_TIERS = ['2k', '4k', '8k'] as const;
 export type TextureTier = (typeof TEXTURE_TIERS)[number];
-export type MapKind = 'color' | 'data';
+/**
+ * What a map is FOR, which is what decides its colour space and its storage.
+ *
+ * - `color`: an sRGB image whose three channels are all read.
+ * - `data`: a linear image whose channels are all read — a tangent normal map.
+ * - `mask`: a linear GREY image with ONE channel that anything reads. Earth's
+ *   height map is read as red three times by three's bump chunk, and its water
+ *   mask as green once by the roughness chunk; both files are grey to the
+ *   texel (checked, not assumed) and both are stored one byte a texel instead
+ *   of four, with the shader reading red. A quarter of the bytes per resident
+ *   map and per fetch, and the same numbers: a box-filtered mip of one channel
+ *   is that channel of the box-filtered mip. A map that is NOT grey must never
+ *   be given this kind — red would silently become the answer for green.
+ */
+export type MapKind = 'color' | 'data' | 'mask';
 
 // Folder convention: the flat files in public/textures/ are the BOOT tier —
 // whatever ships as a body's first-paint map, which is not literally 2048 wide
@@ -162,6 +177,13 @@ export function resetDeviceCapsForTests(): void {
  * decode from sRGB; data maps (bump / normal / roughness) carry linear values
  * and must not be gamma-decoded. Call at every texture creation site.
  */
+/** Whether one-channel maps are stored as one channel. Always, outside a
+ *  development build; the A/B needs a reload, because the format is decided
+ *  when the texture is uploaded. */
+function singleChannelMasks(): boolean {
+  return import.meta.env.DEV ? perfSwitchOn('r8-maps') : true;
+}
+
 export function applyTextureDefaults(tex: THREE.Texture, kind: MapKind): void {
   tex.anisotropy = chosenAnisotropy;
   // A GPU-compressed texture (a KTX2 tier) keeps everything else its loader
@@ -171,6 +193,10 @@ export function applyTextureDefaults(tex: THREE.Texture, kind: MapKind): void {
   // mutableStorage escape hatch below dodges never happens for it.
   if ((tex as THREE.CompressedTexture).isCompressedTexture) return;
   tex.colorSpace = kind === 'color' ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+  // One channel, one byte. The upload converts as it reads the decoded image,
+  // so nothing is read back to the CPU to make this happen, and the mip chain
+  // is still the GPU's own over the uploaded base.
+  if (kind === 'mask' && singleChannelMasks()) tex.format = THREE.RedFormat;
   // Opt out of three's immutable texStorage2D allocation (the flag is our
   // patches/three escape hatch): for sRGB maps the driver pays a full-image
   // conversion inside the immutable upload — ~200ms frozen main thread for an

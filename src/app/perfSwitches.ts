@@ -71,6 +71,19 @@ const live = new Map<PerfSwitchKey, boolean>(PERF_SWITCHES.map((s) => [s.key, s.
  *  different pictures. */
 const uniforms = new Map<PerfSwitchKey, { value: number }>();
 
+// `?perfoff=key,key` starts a session with those switches off. It is how an
+// item whose A/B cannot be flipped mid-session is captured — a texture's
+// format is decided when it is uploaded, so the two pictures have to come from
+// two page loads at the same frozen pose. Read at module load, before anything
+// has asked a switch a question. DEV only: a production build folds the guard
+// away and the whole registry with it.
+if (import.meta.env.DEV && typeof location !== 'undefined') {
+  for (const key of new URLSearchParams(location.search).get('perfoff')?.split(',') ?? []) {
+    const k = key.trim();
+    if (DEFAULTS.has(k as PerfSwitchKey)) live.set(k as PerfSwitchKey, false);
+  }
+}
+
 type Listener = (on: boolean) => void;
 const listeners = new Map<PerfSwitchKey, Listener[]>();
 

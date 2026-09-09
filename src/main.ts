@@ -23,6 +23,7 @@ import { bloomPixelRatio, composerSamples, parseMsaaOverride, targetPixelRatio }
 import { BootRenderGate } from './app/bootRenderGate';
 import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn } from './app/perfSwitches';
 import { setBloomInternalDepth } from './app/bloomTargets';
+import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { bitmapDecodePath } from './planetarium/world/textureBitmapLoader';
 import { BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
 import { createLensPass, updateLensPass, type LensParams } from './app/LensPass';
@@ -213,6 +214,7 @@ let sceneTarget: THREE.WebGLRenderTarget | null = null;
 // (app/bootRenderGate.ts). The simulation runs every frame regardless.
 const bootRender = new BootRenderGate();
 let bloomPass: UnrealBloomPass | null = null;
+let depthDiscardPass: DepthDiscardPass | null = null;
 let lensPass: ReturnType<typeof createLensPass> | null = null;
 let directLensTexture: THREE.FramebufferTexture | null = null;
 const directLensSize = new THREE.Vector2();
@@ -343,6 +345,7 @@ function buildComposer(
   }
   lensPass = null;
   bloomPass = null; // disposed above with the composer's passes
+  depthDiscardPass = null;
   directLensTexture?.dispose();
   directLensTexture = null;
 
@@ -409,6 +412,12 @@ function buildComposer(
   composer.setPixelRatio(pixelRatio);
   composer.setSize(window.innerWidth, window.innerHeight);
   composer.addPass(new RenderPass(scene, cam));
+  // The world's depth and stencil have no reader past this point
+  // (app/DepthDiscardPass.ts). Enabled/disabled rather than added/removed, so
+  // the A/B never rebuilds the chain it is being measured against.
+  depthDiscardPass = new DepthDiscardPass();
+  depthDiscardPass.enabled = import.meta.env.DEV ? perfSwitchOn('depth-discard') : true;
+  composer.addPass(depthDiscardPass);
 
   if (wantsLens) {
     planetariumLens.strength = lensRequestedStrength;
@@ -466,6 +475,7 @@ buildComposer(planetariumCamera, PLANETARIUM_BLOOM, planetariumBloomEnabled());
 // DEV only — a production build folds the switch to the state it ships in.
 if (import.meta.env.DEV) {
   onPerfSwitch('bloom-nodepth', (on) => setBloomInternalDepth(bloomPass, !on));
+  onPerfSwitch('depth-discard', (on) => { if (depthDiscardPass) depthDiscardPass.enabled = on; });
 }
 
 // Armed after first Planetarium activation: that render compiles the scene's

@@ -45,11 +45,18 @@ function bloomMaterials(pass: UnrealBloomPass): THREE.Material[] {
   return [p.materialHighPassFilter, ...p.separableBlurMaterials, p.compositeMaterial, p.blendMaterial];
 }
 
+/** What each material's depth state was when the pass built it. The blend
+ *  material already came with both off, so "put it back" is not the same
+ *  answer for every material and cannot be spelled `true`. */
+const asBuilt = new WeakMap<THREE.Material, { test: boolean; write: boolean }>();
+
 /**
  * Give the pass's internal targets a depth plane, or take it away.
  *
- * `depth: false` is what ships. Passing true restores three's own defaults, so
- * a capture can be taken either way inside one page load.
+ * `depth: false` is what ships. Passing true puts back exactly what the pass
+ * built — remembered per material the first time it is touched, so a capture
+ * can be taken either way inside one page load and the "before" arm really is
+ * the picture as it was.
  */
 export function setBloomInternalDepth(pass: UnrealBloomPass | null, depth: boolean): void {
   if (!pass) return;
@@ -61,7 +68,12 @@ export function setBloomInternalDepth(pass: UnrealBloomPass | null, depth: boole
     target.dispose();
   }
   for (const material of bloomMaterials(pass)) {
-    material.depthTest = depth;
-    material.depthWrite = depth;
+    let built = asBuilt.get(material);
+    if (!built) {
+      built = { test: material.depthTest, write: material.depthWrite };
+      asBuilt.set(material, built);
+    }
+    material.depthTest = depth ? built.test : false;
+    material.depthWrite = depth ? built.write : false;
   }
 }

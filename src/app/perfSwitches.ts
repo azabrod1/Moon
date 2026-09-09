@@ -62,14 +62,27 @@ export const PERF_SWITCHES: ReadonlyArray<{
   { key: 'fused-final', label: 'Fused bloom blend + output', on: false },
 ];
 
-const DEFAULTS = new Map<PerfSwitchKey, boolean>(PERF_SWITCHES.map((s) => [s.key, s.on]));
-const live = new Map<PerfSwitchKey, boolean>(PERF_SWITCHES.map((s) => [s.key, s.on]));
+/** Where each switch stands when nothing has touched it, as a plain literal:
+ *  a bundler can see that building it has no effect, which is what lets the
+ *  whole registry disappear from a production build. */
+const DEFAULT_ON: Record<PerfSwitchKey, boolean> = {
+  'night-early': true,
+  'cloud-clear': true,
+  'cloud-taps': true,
+  'glint-gate': true,
+  'r8-maps': true,
+  'bloom-nodepth': true,
+  'depth-discard': true,
+  'fused-final': false,
+};
+
+const live: Record<string, boolean> = { ...DEFAULT_ON };
 
 /** The uniform objects the shader items read, one per key, shared by every
  *  material that carries the switch — a flip has to reach the globe, its
  *  streamed sectors and the night shell in the same frame or the A/B is of two
  *  different pictures. */
-const uniforms = new Map<PerfSwitchKey, { value: number }>();
+const uniforms: Record<string, { value: number }> = {};
 
 // `?perfoff=key,key` starts a session with those switches off. It is how an
 // item whose A/B cannot be flipped mid-session is captured — a texture's
@@ -80,36 +93,29 @@ const uniforms = new Map<PerfSwitchKey, { value: number }>();
 if (import.meta.env.DEV && typeof location !== 'undefined') {
   for (const key of new URLSearchParams(location.search).get('perfoff')?.split(',') ?? []) {
     const k = key.trim();
-    if (DEFAULTS.has(k as PerfSwitchKey)) live.set(k as PerfSwitchKey, false);
+    if (k in DEFAULT_ON) live[k] = false;
   }
 }
 
 type Listener = (on: boolean) => void;
-const listeners = new Map<PerfSwitchKey, Listener[]>();
+const listeners: Record<string, Listener[]> = {};
 
 /** Whether a switch is applied right now. */
 export function perfSwitchOn(key: PerfSwitchKey): boolean {
-  return live.get(key) ?? DEFAULTS.get(key) ?? false;
+  return live[key] ?? false;
 }
 
 /** The shared uniform for a shader switch: 1 while it is applied, 0 while the
  *  material is to draw exactly what it drew before the change. */
 export function perfSwitchUniform(key: PerfSwitchKey): { value: number } {
-  let u = uniforms.get(key);
-  if (!u) {
-    u = { value: perfSwitchOn(key) ? 1 : 0 };
-    uniforms.set(key, u);
-  }
-  return u;
+  return (uniforms[key] ??= { value: perfSwitchOn(key) ? 1 : 0 });
 }
 
 /** Run `fn` whenever this switch moves — for the items that are not a uniform
  *  (a render target's attachments, a pass list). Called once immediately with
  *  the switch's current state, so a listener never has to duplicate it. */
 export function onPerfSwitch(key: PerfSwitchKey, fn: Listener): void {
-  const list = listeners.get(key) ?? [];
-  list.push(fn);
-  listeners.set(key, list);
+  (listeners[key] ??= []).push(fn);
   fn(perfSwitchOn(key));
 }
 
@@ -117,13 +123,13 @@ export function onPerfSwitch(key: PerfSwitchKey, fn: Listener): void {
  *  is what lets the bridge below hand an unknown key on to the perf sweep's
  *  own arms rather than swallowing it. */
 export function setPerfSwitch(key: string, on: boolean): boolean {
-  if (!DEFAULTS.has(key as PerfSwitchKey)) return false;
+  if (!(key in DEFAULT_ON)) return false;
   const k = key as PerfSwitchKey;
   if (perfSwitchOn(k) === on) return true;
-  live.set(k, on);
-  const u = uniforms.get(k);
+  live[k] = on;
+  const u = uniforms[k];
   if (u) u.value = on ? 1 : 0;
-  for (const fn of listeners.get(k) ?? []) fn(on);
+  for (const fn of listeners[k] ?? []) fn(on);
   return true;
 }
 

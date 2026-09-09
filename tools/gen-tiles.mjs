@@ -51,6 +51,7 @@
 //   node tools/gen-tiles.mjs earth --level=1    # one level of it
 //   node tools/gen-tiles.mjs --all              # every job
 //   node tools/gen-tiles.mjs earth --verify     # reassemble + gate only
+//   node tools/gen-tiles.mjs earth --grey       # the mask sets only: every texel r = g = b
 //   node tools/gen-tiles.mjs --index            # re-hash the sets on disk only
 //   --cache=<dir>  source cache (default .moon-data-cache)
 //   --root=<dir>   tiles root (default public/textures/tiles). A level too
@@ -1454,7 +1455,7 @@ const levelsOf = (job) => (job.levels ?? []).filter((_, i) => wantedLevel === nu
 async function main() {
   const names = flag('all') ? Object.keys(JOBS) : jobsWanted;
   if (names.length === 0 && !flag('index')) {
-    console.error('usage: node tools/gen-tiles.mjs <job...> | --all | --index  [--verify | --crops] [--level=n] [--cache=dir] [--root=dir]');
+    console.error('usage: node tools/gen-tiles.mjs <job...> | --all | --index  [--verify | --crops | --grey] [--level=n] [--cache=dir] [--root=dir]');
     process.exit(2);
   }
   for (const name of names) {
@@ -1462,7 +1463,12 @@ async function main() {
     if (!job) { console.error(`unknown job ${name}`); process.exit(2); }
     const t0 = Date.now();
     console.log(`== ${name}`);
-    if (flag('verify')) {
+    if (flag('grey')) {
+      // Check only, of the one property the app's one-channel storage rests
+      // on; a minute of decoding, against the hour a whole --verify is.
+      for (const g of job.grey ?? []) await greyGate(g);
+      if (!(job.grey ?? []).length) console.log('  no mask sets in this job');
+    } else if (flag('verify')) {
       // Check only: a flat job has no tile set to verify, and must not be
       // re-encoded by a verification run.
       if (!job.flat) {
@@ -1536,7 +1542,10 @@ async function main() {
   }
   // Always last, whatever ran: the app reads its set hashes out of the
   // generated table, so a cut that did not refresh it would leave every URL
-  // pointing at the set it replaced.
+  // pointing at the set it replaced. A --grey run cut nothing and writes
+  // nothing — a rewrite of the same table would still touch a file the dev
+  // server watches.
+  if (flag('grey')) return;
   console.log('== index');
   await indexSets();
 }

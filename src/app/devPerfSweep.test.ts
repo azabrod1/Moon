@@ -1,11 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
+  amplifierNote,
   bracketFrameMs,
   median,
+  pairedDelta,
+  poseLabel,
+  poseNote,
   shuffled,
+  soakLabel,
   summarizeFrames,
+  sunElevationDeg,
   thermalDriftLine,
   throttleVerdict,
+  tilesReadyNote,
   type FrameSample,
 } from './devPerfSweep';
 
@@ -147,5 +154,107 @@ describe('thermalDriftLine', () => {
   it('is silent with nothing to compare', () => {
     expect(thermalDriftLine([])).toBe('');
     expect(thermalDriftLine([{ fps: 60 }])).toBe('');
+  });
+});
+
+describe('pairedDelta', () => {
+  it('takes the median of the pairings and how far they disagreed', () => {
+    // Four pairings of one candidate: three near −3 ms and one that caught a
+    // thermal step. The median is the switch, the spread is the doubt.
+    const { deltaMs, spreadMs } = pairedDelta([-3.1, -2.9, -3.0, 6.0]);
+    expect(deltaMs).toBeCloseTo(-2.95, 6);
+    expect(spreadMs).toBeCloseTo(9.1, 6);
+  });
+
+  it('reports nothing from nothing, and no spread from one pairing', () => {
+    expect(pairedDelta([])).toEqual({ deltaMs: 0, spreadMs: 0 });
+    expect(pairedDelta([-2])).toEqual({ deltaMs: -2, spreadMs: 0 });
+  });
+
+  it('drops a pairing that measured no frames', () => {
+    expect(pairedDelta([-2, Number.NaN, -4]).deltaMs).toBe(-3);
+  });
+});
+
+describe('sunElevationDeg', () => {
+  // The Sun is at the scene origin, so a body at +1 AU on x is lit from −x.
+  const earth = { x: 1, y: 0, z: 0 };
+
+  it('is +90 above the sub-solar point and −90 above the anti-solar one', () => {
+    expect(sunElevationDeg(earth, { x: 0.99, y: 0, z: 0 })).toBeCloseTo(90, 6);
+    expect(sunElevationDeg(earth, { x: 1.01, y: 0, z: 0 })).toBeCloseTo(-90, 6);
+  });
+
+  it('is 0 over the terminator', () => {
+    expect(sunElevationDeg(earth, { x: 1, y: 0.01, z: 0 })).toBeCloseTo(0, 6);
+  });
+
+  it('has no answer from a camera at the body’s own centre', () => {
+    expect(sunElevationDeg(earth, earth)).toBeNull();
+  });
+});
+
+describe('poseLabel and poseNote', () => {
+  it('calls the band either side of the horizon the terminator', () => {
+    expect(poseLabel(40)).toBe('daylight pose');
+    expect(poseLabel(4)).toBe('terminator');
+    expect(poseLabel(-4)).toBe('terminator');
+    expect(poseLabel(-40)).toBe('night pose');
+  });
+
+  it('names the body, the sun height, and what the run cannot price', () => {
+    const note = poseNote('Earth', 42);
+    expect(note).toMatch(/daylight pose over Earth/);
+    expect(note).toMatch(/42° above the horizon/);
+    expect(note).toMatch(/night side/);
+  });
+
+  it('says the lit-ground rows are unpriced from the night side', () => {
+    expect(poseNote('Earth', -30)).toMatch(/glint gate/);
+  });
+
+  it('admits when the pose could not be read', () => {
+    expect(poseNote(null, null)).toMatch(/could not be read/);
+    expect(poseNote('Earth', null)).toMatch(/could not be read/);
+  });
+});
+
+describe('amplifierNote', () => {
+  it('says the milliseconds are the pin’s, and that bloom is not', () => {
+    const note = amplifierNote(true, 3, 2);
+    expect(note).toMatch(/pinned to 3/);
+    expect(note).toMatch(/rests at 2/);
+    expect(note).toMatch(/bloom chain sizes from the display/);
+  });
+
+  it('warns that an unamplified run can hide a row under the cap', () => {
+    const note = amplifierNote(false, 3, 2);
+    expect(note).toMatch(/amplifier off/i);
+    expect(note).toMatch(/render ratio 2/);
+    expect(note).toMatch(/cap/);
+  });
+});
+
+describe('tilesReadyNote', () => {
+  it('is silent once the streamer has gone quiet', () => {
+    expect(tilesReadyNote(0, 1234)).toBe('');
+  });
+
+  it('says how many were still arriving and how long it waited', () => {
+    const note = tilesReadyNote(3, 20_000);
+    expect(note).toMatch(/3 sector tiles/);
+    expect(note).toMatch(/20 s/);
+  });
+
+  it('counts one tile in the singular', () => {
+    expect(tilesReadyNote(1, 20_000)).toMatch(/1 sector tile still/);
+  });
+});
+
+describe('soakLabel', () => {
+  it('names a sample by the wall time it covers', () => {
+    expect(soakLabel(10_000)).toBe('t+0:10');
+    expect(soakLabel(90_000)).toBe('t+1:30');
+    expect(soakLabel(300_000)).toBe('t+5:00');
   });
 });

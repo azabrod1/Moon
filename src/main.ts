@@ -90,8 +90,12 @@ try {
     // Multisamples the canvas backbuffer only, which the no-float direct path
     // and the System Map draw into. The composer path renders the scene into
     // its own target, and that target carries its own sample count
-    // (buildComposer, app/renderResolution.ts).
-    antialias: true,
+    // (buildComposer, app/renderResolution.ts) — so on that path the canvas
+    // receives one full-screen quad and its samples buy nothing but the
+    // resolve. `?canvasaa=0` asks for a context without them; a context
+    // attribute, so it needs a reload, and honoured in production because
+    // what that resolve costs is a question only the slow device can answer.
+    antialias: new URLSearchParams(location.search).get('canvasaa') !== '0',
     powerPreference: 'high-performance',
     // The orbit-line/décor stencil contract (world/orbitLineStencil.ts) needs
     // a stencil buffer on the default framebuffer for the no-float direct

@@ -21,6 +21,7 @@ import { canGPUDoBloom, halfFloatTargetSampleCounts } from './app/gpuCapability'
 import { installShaderSalt } from './app/shaderSalt';
 import { bloomPixelRatio, composerSamples, parseMsaaOverride, targetPixelRatio } from './app/renderResolution';
 import { BootRenderGate } from './app/bootRenderGate';
+import { installPerfSwitchBridge } from './app/perfSwitches';
 import { bitmapDecodePath } from './planetarium/world/textureBitmapLoader';
 import { BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
 import { createLensPass, updateLensPass, type LensParams } from './app/LensPass';
@@ -1194,6 +1195,11 @@ function installDevHooks() {
     }));
   };
   (window as any).__moonWarm = { queueTextureWarm, pumpTextureWarmQueue, invalidateTextureWarmCache };
+  // The GPU-efficiency A/B switches (app/perfSwitches.ts). Installed after the
+  // bridge object is built, because that assignment replaces it wholesale, and
+  // as a property chain so the perf sweep's own `perfArm` can be added later
+  // without either set of keys erasing the other.
+  installPerfSwitchBridge();
   debugLog('Dev hooks installed (window.__moon)');
 }
 

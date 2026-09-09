@@ -147,7 +147,7 @@ import {
 import { createSectorMaterial, sectorRenderOrder, syncSectorMaterial, type SectorMaps } from './sectorMaterial';
 import { loadStreamedTexture, type TextureLoad } from './textureBitmapLoader';
 import { loadSectorTileTexture, releaseTilePixels, tilePixelStats } from './tilePixels';
-import { applyTextureDefaults, resolveTileUrl, sectorSetHash, sectorSetLayout, type MapKind } from './texturePolicy';
+import { applyTextureDefaults, maskBytesPerTexel, resolveTileUrl, sectorSetHash, sectorSetLayout, type MapKind } from './texturePolicy';
 import { TIER_RANK } from './textureLadder';
 import { debugWarn } from '../../shared/debug';
 import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
@@ -169,9 +169,12 @@ export const CROP_KIND: Record<CropSlot, MapKind> = {
   roughnessMap: 'mask',
 };
 
-/** Bytes a texel of a crop of this kind holds. */
+/** Bytes a texel of a crop of this kind holds — read at reservation time,
+ *  because a mask's storage follows the device (and, in DEV, the r8-maps
+ *  switch): a crop reserved at one byte and held at four would let the budget
+ *  overshoot by the difference. */
 function cropBytesPerTexel(slot: CropSlot): number {
-  return CROP_KIND[slot] === 'mask' ? 1 : 4;
+  return CROP_KIND[slot] === 'mask' ? maskBytesPerTexel() : 4;
 }
 
 /** One published tile set: what a tile URL is made of, plus the layout the

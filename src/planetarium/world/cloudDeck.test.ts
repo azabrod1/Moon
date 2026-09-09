@@ -364,11 +364,13 @@ describe('the deck\'s detail term', () => {
     expect(ret).toBeGreaterThan(glsl.indexOf('cloudNightDy = sphereEquirectUvGrad(objDir, dFdy(objDir));'));
     expect(ret).toBeLessThan(glsl.indexOf('diffuseColor.a *= cloudAlpha;'));
     expect(glsl.slice(ret, glsl.indexOf('if (uWaterGloss > 0.0) {'))).not.toMatch(/dFd[xy]\(|fwidth\(/);
-    // The relief tap the dead-tap item put under a per-fragment condition is
-    // under its own weight's saturation, with the B-spline (textureLod, no
-    // derivative) as the other arm — SURFACE_NORMAL_MAPS says why that holds.
-    expect(glsl).toMatch(/if \( uPerfCloudTaps < 0\.5 \|\| reliefSmoothW < 1\.0 \) \{\s+reliefTexel = texture2D\( normalMap, vNormalMapUv \);/);
-    expect(glsl).toContain('reliefTexel = textureBSpline( normalMap, vNormalMapUv, reliefTexels );');
+    // The relief's plain tap is taken once, in uniform flow, as three's chunk
+    // always took it, and the smooth filter mixes from that same texel. An
+    // implicit-LOD fetch under the weight was measured as the same picture,
+    // but only the specification can promise it, and it does not.
+    expect(glsl).toContain('vec4 reliefTexel = texture2D( normalMap, vNormalMapUv );');
+    expect(glsl.match(/texture2D\( normalMap, vNormalMapUv \)/g)).toHaveLength(1);
+    expect(glsl).not.toMatch(/SmoothW < 1\.0/);
   });
 
   it('perturbs the normal upstream of the lights, not after them', () => {

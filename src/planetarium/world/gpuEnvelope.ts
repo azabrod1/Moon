@@ -157,7 +157,9 @@ const MiB = 1024 * 1024;
  *
  *  It came down by 1.35 MiB when the height and water crops went to one byte
  *  a texel (world/texturePolicy's 'mask' kind): a set is the same tiles, held
- *  smaller. */
+ *  smaller. A device whose masks stay four channels wide (the upload probe
+ *  failed) reserves the difference per set and admits fewer against the same
+ *  floor. */
 export const SECTOR_SET_FLOOR_UNIT_BYTES = 22_839_978;
 
 /**

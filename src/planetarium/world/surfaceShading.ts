@@ -1239,40 +1239,25 @@ const CLOUD_CLEAR_RETURN = import.meta.env.DEV
  * the four extra ones sit behind a weight that is zero on all of them.
  *
  * At full smooth weight the ordinary tap is not an endpoint of anything — the
- * mix returns the B-spline outright, by the language's definition of `mix`
- * (`x*(1-a) + y*a`; a driver that spells it `x + a*(y-x)` is not bit-exact in
- * general, and the pixel gate is what says it does not show) — and full
- * weight is where the deck spends a close frame: its map is magnified many
- * times over at orbital altitude, so that fetch was a whole map read per deck
- * pixel whose result went nowhere.
- *
- * That puts the plain tap, an implicit-LOD fetch, under a per-fragment
- * condition, where the language leaves its mip selection undefined for a quad
- * the condition splits. It is kept there on what happens at the split: the
- * condition is the tap's own weight saturating, so on the side that still
- * takes the tap the weight `1 - smoothW` is at zero, and a mip picked off a
- * neighbour lane has nothing to weight. The other arm is the B-spline, which
- * reads through `textureLod` and needs no derivative at all. The same holds
- * for the relief tap in SURFACE_NORMAL_MAPS. Measured as well as argued: zero
- * pixels moved across the gate's poses on both engines (tools/pixel-gate.mjs).
+ * mix returns the B-spline — and it is taken anyway, in flow that is uniform
+ * across the draw, as three's chunk always took it. Taking it only under the
+ * weight was measured as the same picture on two engines, but it puts an
+ * implicit-LOD fetch under a per-fragment condition, where the language
+ * leaves the mip undefined for a quad the condition splits, and the tap's
+ * weight there is small rather than zero: a bound, not an identity. This
+ * chunk is therefore three's own text plus the filter, exactly as it was, so
+ * the deck's picture rests on nothing but the specification.
  */
 const SURFACE_MAP_FRAGMENT = /* glsl */ `
 #ifdef USE_MAP
-	vec4 sampledDiffuseColor;
+	vec4 sampledDiffuseColor = texture2D( map, vMapUv );
 	if ( uCloudDeck > 0.0 ) {
 		vec2 mapTexels = vec2( textureSize( map, 0 ) );
 		float smoothW = smoothTexelWeight( vMapUv, mapTexels );
-		if ( ${cloudTapKept('smoothW < 1.0')} ) {
-			sampledDiffuseColor = texture2D( map, vMapUv );
-			if ( smoothW > 0.0 ) {
-				sampledDiffuseColor = mix( sampledDiffuseColor,
-					textureBSpline( map, vMapUv, mapTexels ), smoothW );
-			}
-		} else {
-			sampledDiffuseColor = textureBSpline( map, vMapUv, mapTexels );
+		if ( smoothW > 0.0 ) {
+			sampledDiffuseColor = mix( sampledDiffuseColor,
+				textureBSpline( map, vMapUv, mapTexels ), smoothW );
 		}
-	} else {
-		sampledDiffuseColor = texture2D( map, vMapUv );
 	}
 	#ifdef DECODE_VIDEO_TEXTURE
 		sampledDiffuseColor = sRGBTransferEOTF( sampledDiffuseColor );
@@ -1336,29 +1321,26 @@ ${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLS
  * bank, and it is drawn through the smooth magnification filter instead. That
  * used to be done AFTER the chunk, which meant the chunk's own fetch and its
  * tangent-frame transform were computed and then overwritten on every deck
- * fragment. Done here instead, so the relief is read once, and at full smooth
- * weight it is read as the B-spline alone rather than as a mix with a plain
- * tap that the mix does not use.
+ * fragment, with the relief fetched a second time for the mix. Done here
+ * instead, the relief is read once — the plain tap, taken in uniform flow as
+ * the chunk always took it, is the mix's own first endpoint — and the frame
+ * transform happens once. The plain tap is not put under the weight, for the
+ * reason SURFACE_MAP_FRAGMENT gives.
  *
  * The other paths through the chunk — object-space normals, the bump map — are
  * the include itself, unchanged: they belong to every other body's surface and
- * there is nothing to save on them. The plain tap sits under the weight's own
- * saturation for the reason SURFACE_MAP_FRAGMENT gives: where the quad can
- * split, the tap's weight is zero.
+ * there is nothing to save on them.
  */
 const SURFACE_NORMAL_MAPS = /* glsl */ `
 #if defined( USE_NORMALMAP_TANGENTSPACE )
-	vec2 reliefTexels = vec2( textureSize( normalMap, 0 ) );
-	float reliefSmoothW = uCloudDeck > 0.0 ? smoothTexelWeight( vNormalMapUv, reliefTexels ) : 0.0;
-	vec4 reliefTexel;
-	if ( ${cloudTapKept('reliefSmoothW < 1.0')} ) {
-		reliefTexel = texture2D( normalMap, vNormalMapUv );
+	vec4 reliefTexel = texture2D( normalMap, vNormalMapUv );
+	if ( uCloudDeck > 0.0 ) {
+		vec2 reliefTexels = vec2( textureSize( normalMap, 0 ) );
+		float reliefSmoothW = smoothTexelWeight( vNormalMapUv, reliefTexels );
 		if ( reliefSmoothW > 0.0 ) {
 			reliefTexel = mix( reliefTexel,
 				textureBSpline( normalMap, vNormalMapUv, reliefTexels ), reliefSmoothW );
 		}
-	} else {
-		reliefTexel = textureBSpline( normalMap, vNormalMapUv, reliefTexels );
 	}
 	vec3 mapN = reliefTexel.xyz * 2.0 - 1.0;
 	mapN.xy *= normalScale;

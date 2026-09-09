@@ -50,7 +50,8 @@
  * source to convert on upload) and falls back to the bitmap decode here.
  */
 import * as THREE from 'three';
-import { debugLog } from '../../shared/debug';
+import { debugLog, debugWarn } from '../../shared/debug';
+import { setSingleChannelUploadUsable } from './texturePolicy';
 import { drainErrors } from '../../shared/three/glErrors';
 
 /** The app's texture loader. Shared so every fetch carries the same settings
@@ -339,6 +340,9 @@ function currentDecoder(): BitmapDecoder | null {
 }
 
 let probeVerdict: boolean | null = null;
+/** Whether the one-channel upload path was seen to work on this device; null
+ *  until a probe with a complete framebuffer has answered. */
+let redUploadVerdict: boolean | null = null;
 
 export type BitmapDecodePath = 'unprobed' | 'worker' | 'main-thread' | 'loader';
 /** DEV telemetry: which path streamed maps take right now. */
@@ -418,6 +422,61 @@ function readsBackInvertedGl(renderer: THREE.WebGLRenderer, bitmap: ImageBitmap)
   }
 }
 
+/**
+ * Upload the probe bitmap as a one-channel R8 texture and read it back: the
+ * path every one-channel mask takes (world/texturePolicy's 'mask' kind). A
+ * port that takes an RGBA bitmap but mishandles a RED one fails silently — a
+ * GL error and a texture of nothing, no exception anywhere — so the exact
+ * combination is proved on this device before any mask is stored that way.
+ * Null where no verdict could be reached (no complete framebuffer); otherwise
+ * whether the red channel came back as the rows that went in.
+ */
+function uploadsRedGl(renderer: THREE.WebGLRenderer, bitmap: ImageBitmap): boolean | null {
+  const gl = renderer.getContext() as WebGL2RenderingContext;
+  if (typeof gl.R8 !== 'number') return false;
+  const prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
+  const prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+  const prevFlip = gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL) as boolean;
+  const prevPremul = gl.getParameter(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL) as boolean;
+  const prevColorspace = gl.getParameter(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL) as number;
+  const tex = gl.createTexture();
+  const fbo = gl.createFramebuffer();
+  try {
+    drainErrors(gl); // start clean, so an error read below is this upload's own
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, gl.RED, gl.UNSIGNED_BYTE, bitmap);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    renderer.state.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) return null;
+    const px = new Uint8Array(8);
+    gl.readPixels(0, 0, 1, 2, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    if (gl.getError() !== gl.NO_ERROR) return false;
+    // White over black, whichever way up this platform decoded it (the flip
+    // probe answers that): red carries the row, and the channels the texture
+    // does not have read as zero with alpha one.
+    const rows = [px[0], px[4]];
+    return rows.includes(255) && rows.includes(0)
+      && px[1] === 0 && px[2] === 0 && px[3] === 255
+      && px[5] === 0 && px[6] === 0 && px[7] === 255;
+  } catch {
+    return null;
+  } finally {
+    renderer.state.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);
+    gl.bindTexture(gl.TEXTURE_2D, prevTex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, prevFlip);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, prevPremul);
+    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, prevColorspace);
+    gl.deleteFramebuffer(fbo);
+    gl.deleteTexture(tex);
+    drainErrors(gl);
+  }
+}
+
 function readsBackInverted2d(bitmap: ImageBitmap): boolean {
   const canvas = document.createElement('canvas');
   canvas.width = 1;
@@ -452,6 +511,17 @@ async function decoderHonoursFlip(decoder: BitmapDecoder): Promise<{ ok: boolean
     try {
       const gl = probeRenderer ? readsBackInvertedGl(probeRenderer, bitmap) : null;
       viaGl = gl !== null;
+      // The one-channel upload, proved on the same bitmap through the same
+      // context, once: every mask waits on this probe before it is fetched,
+      // so the verdict is in place before the first one is stored.
+      if (probeRenderer && gl !== null && redUploadVerdict === null) {
+        const red = uploadsRedGl(probeRenderer, bitmap);
+        if (red !== null) {
+          redUploadVerdict = red;
+          setSingleChannelUploadUsable(red);
+          if (!red) debugWarn('One-channel texture upload failed its probe: masks stay four channels wide');
+        }
+      }
       return { ok: gl ?? readsBackInverted2d(bitmap), viaGl };
     } finally {
       bitmap.close();
@@ -744,6 +814,7 @@ export function warmBitmapUploadProbe(renderer?: THREE.WebGLRenderer): void {
 export function setBitmapProbeForTests(result: boolean | null, realms?: { worker?: boolean; main?: boolean }): void {
   bitmapFlipProbe = result === null ? null : Promise.resolve(result);
   probeVerdict = result;
+  redUploadVerdict = null;
   verified.worker = realms?.worker ?? false;
   verified.main = realms?.main ?? (result === true && !realms?.worker);
   workerDecoder = null;

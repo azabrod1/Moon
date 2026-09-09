@@ -794,8 +794,6 @@ describe('the GPU-efficiency switches', () => {
     // then, verbatim, the condition the shipped text is left with — which is
     // what lets a hash of this text stand for the text that ships.
     const frag = fragmentOf('cloud');
-    expect(frag).toContain('if ( uPerfCloudTaps < 0.5 || smoothW < 1.0 ) {');
-    expect(frag).toContain('if ( uPerfCloudTaps < 0.5 || reliefSmoothW < 1.0 ) {');
     expect(frag).toContain('if (uPerfCloudTaps < 0.5 || cloudDetailW > 0.0) detail = textureGrad(uCloudDetail, detailUv, duvX, duvY);');
     expect(frag).toContain('if (uPerfCloudClear > 0.5 && uCloudDeck > 0.0 && cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }');
     expect(frag).toContain('if (uPerfGlintGate < 0.5 || any(greaterThan(glintCapped, vec3(0.0)))) {');

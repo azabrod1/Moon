@@ -31,9 +31,14 @@ export type TextureTier = (typeof TEXTURE_TIERS)[number];
  *   mask as green once by the roughness chunk; both files are grey to the
  *   texel (checked, not assumed) and both are stored one byte a texel instead
  *   of four, with the shader reading red. A quarter of the bytes per resident
- *   map and per fetch, and the same numbers: a box-filtered mip of one channel
- *   is that channel of the box-filtered mip. A map that is NOT grey must never
- *   be given this kind — red would silently become the answer for green.
+ *   map and per fetch, and the same numbers: level zero by construction, and
+ *   every mip under it wherever the driver's reduction is per-channel, which
+ *   any box or separable filter is — no specification names the filter, so
+ *   that part is measured rather than proved: the pixel gate's minified poses
+ *   (the limb, the whole disc) read the two storages as the same picture on
+ *   both engines. A map that is NOT grey must never be given this kind — red
+ *   would silently become the answer for green; `gen-tiles.mjs --grey` checks
+ *   the shipped sets texel by texel.
  */
 export type MapKind = 'color' | 'data' | 'mask';
 
@@ -177,11 +182,28 @@ export function resetDeviceCapsForTests(): void {
  * decode from sRGB; data maps (bump / normal / roughness) carry linear values
  * and must not be gamma-decoded. Call at every texture creation site.
  */
-/** Whether one-channel maps are stored as one channel. Always, outside a
- *  development build; the A/B needs a reload, because the format is decided
- *  when the texture is uploaded. */
+/** Whether this device has been seen to take a one-channel upload from a
+ *  decoded image. The bitmap loader proves the exact R8/RED path with a
+ *  readback before the first mask is stored (textureBitmapLoader's probe),
+ *  and a device that fails it keeps its masks four channels wide: the same
+ *  numbers, read from red either way, at four times the bytes. True until
+ *  proved otherwise, because the probe answers before any mask is uploaded. */
+let singleChannelUploadUsable = true;
+export function setSingleChannelUploadUsable(ok: boolean): void {
+  singleChannelUploadUsable = ok;
+}
+
+/** Whether one-channel maps are stored as one channel: always where the
+ *  device takes the upload, outside a development build; the DEV A/B needs a
+ *  reload, because the format is decided when the texture is uploaded. */
 function singleChannelMasks(): boolean {
-  return import.meta.env.DEV ? perfSwitchOn('r8-maps') : true;
+  return singleChannelUploadUsable && (import.meta.env.DEV ? perfSwitchOn('r8-maps') : true);
+}
+
+/** Bytes a texel of a 'mask' map holds on this device right now, for the
+ *  accounting that reserves a crop's bytes before it is fetched. */
+export function maskBytesPerTexel(): 1 | 4 {
+  return singleChannelMasks() ? 1 : 4;
 }
 
 export function applyTextureDefaults(tex: THREE.Texture, kind: MapKind): void {

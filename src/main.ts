@@ -24,6 +24,7 @@ import { BootRenderGate } from './app/bootRenderGate';
 import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn } from './app/perfSwitches';
 import { setBloomInternalDepth } from './app/bloomTargets';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
+import { BloomChainPass, FusedOutputPass } from './app/FusedOutputPass';
 import { bitmapDecodePath } from './planetarium/world/textureBitmapLoader';
 import { BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
 import { createLensPass, updateLensPass, type LensParams } from './app/LensPass';
@@ -436,13 +437,15 @@ function buildComposer(
   // builds an isotropic PSF around those final pixels. Screen-authored scene
   // primitives pre-distort themselves into the source (lensShader.ts), so their
   // sizes also remain invariant through this ordering.
+  // The last two full-screen passes as one (app/FusedOutputPass.ts): the one
+  // item here that cannot promise the same pixels, so it is built to be
+  // measured and is off unless something arms it. Never in production.
+  const fused = import.meta.env.DEV && enabled && perfSwitchOn('fused-final');
   if (enabled) {
-    bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(window.innerWidth, window.innerHeight),
-      bloom.strength,
-      BLOOM_RADIUS,
-      bloom.threshold,
-    );
+    const size = new THREE.Vector2(window.innerWidth, window.innerHeight);
+    bloomPass = fused
+      ? new BloomChainPass(size, bloom.strength, BLOOM_RADIUS, bloom.threshold)
+      : new UnrealBloomPass(size, bloom.strength, BLOOM_RADIUS, bloom.threshold);
     // Its eleven internal targets come with a depth plane nothing in the pass
     // tests or writes (app/bloomTargets.ts). Applied here rather than at the
     // switch, because a rebuild makes a fresh pass with three's defaults back.
@@ -451,7 +454,9 @@ function buildComposer(
     sizeBloomPass();
   }
 
-  composer.addPass(new OutputPass());
+  composer.addPass(fused && bloomPass
+    ? new FusedOutputPass(bloomPass as BloomChainPass)
+    : new OutputPass());
   composerBuiltFor = { cam, bloom, enabled, lens: lensRequestedStrength };
 }
 
@@ -480,6 +485,18 @@ buildComposer(planetariumCamera, PLANETARIUM_BLOOM, planetariumBloomEnabled());
 if (import.meta.env.DEV) {
   onPerfSwitch('bloom-nodepth', (on) => setBloomInternalDepth(bloomPass, !on));
   onPerfSwitch('depth-discard', (on) => { if (depthDiscardPass) depthDiscardPass.enabled = on; });
+  // The fused pass is a different chain, not a flag inside one, so this switch
+  // is the one that has to rebuild. Skipped on the first call, which arrives
+  // with the composer already built for the state it reports.
+  let fusedKnown = perfSwitchOn('fused-final');
+  onPerfSwitch('fused-final', (on) => {
+    if (on === fusedKnown) return;
+    fusedKnown = on;
+    composerBuiltFor = null;
+    if (appMode === 'planetarium') {
+      buildComposer(planetariumCamera, PLANETARIUM_BLOOM, planetariumBloomEnabled());
+    }
+  });
 }
 
 // Armed after first Planetarium activation: that render compiles the scene's

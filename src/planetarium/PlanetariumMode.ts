@@ -17,6 +17,7 @@ import {
   createSolarSystem,
   ORBIT_LINE_RESAMPLE_MAX_AGE_MS,
   orbitLineOpacity,
+  poseOrbitLine,
   resampleOrbitLines,
   type SolarSystemObjects,
   type PlanetariumLayout,
@@ -706,6 +707,10 @@ export class PlanetariumMode {
   private labelDistancesMode: LabelDistancesMode = 'hover';
   private showBodyMarkers = true;
   private showOrbitLines = false;
+  /** `?orbitanchor=0`: pose the orbit lines the old way — heliocentric
+   *  float32 vertices translated by −ship — the A/B for any question about
+   *  an orbit line moving when the ship does, and the kill switch. */
+  private readonly orbitAnchorEnabled = new URLSearchParams(location.search).get('orbitanchor') !== '0';
 
   // Hover/tap body reveal. `revealedBody` is the one body (planet, moon, or
   // 'Sun') whose label is drawn regardless of the label/marker settings and of
@@ -4744,8 +4749,16 @@ export class PlanetariumMode {
       if (systemGroup) systemGroup.position.copy(planet.group.position);
     }
 
-    for (const orbit of this.solarSystem.orbitLines) {
-      orbit.position.set(-px, -py, -pz);
+    // The orbit lines are the one thing here not posed at (world − ship):
+    // each line's float32 vertices are measured from an anchor near the ship
+    // and the line sits at (anchor − ship), so the GPU never subtracts two
+    // heliocentric floats (orbitLineAnchor.ts has the arithmetic and the
+    // bound; poseOrbitLine moves the anchor when the ship has drifted).
+    const orbitLines = this.solarSystem.orbitLines;
+    const orbitLineFrames = this.solarSystem.orbitLineFrames;
+    for (let i = 0; i < orbitLines.length; i++) {
+      if (this.orbitAnchorEnabled) poseOrbitLine(orbitLines[i], orbitLineFrames[i], px, py, pz);
+      else orbitLines[i].position.set(-px, -py, -pz);
     }
 
     this.solarSystem.asteroidBelt.position.set(-px, -py, -pz);
@@ -14442,6 +14455,22 @@ export class PlanetariumMode {
     this.player.group.visible = visible;
   }
 
+  /** Dev-only: the "Orbit lines" setting, so a capture can show the lines on
+   *  their own after devSetChrome(false) has hidden everything else. */
+  devSetOrbitLines(on: boolean): void {
+    this.showOrbitLines = on;
+  }
+
+  /** Dev-only: move the ship by (dx, dy, dz) AU and nothing else — no
+   *  velocity, no re-aim — so a probe can translate the camera through the
+   *  world one step at a time and watch what the scene does. For a pose
+   *  devFrameBody set up, whose camera stays at the scene origin. */
+  devNudge(dxAU: number, dyAU: number, dzAU: number): void {
+    this.player.posX += dxAU;
+    this.player.posY += dyAU;
+    this.player.posZ += dzAU;
+  }
+
   /** Dev-only: whether the ship is drawing right now, so a caller that hides
    *  it can put back what it found rather than what it assumes. */
   devShipVisible(): boolean {
@@ -15121,6 +15150,11 @@ export class PlanetariumMode {
       found: !!pos,
       radiusAU,
       bodyAbs: pos,
+      // The planet's own orbital velocity this frame (null for a moon or an
+      // unknown name): the direction a probe flies to move along its orbit line.
+      velAUPerS: mesh?.worldVelAUPerS
+        ? { x: mesh.worldVelAUPerS.x, y: mesh.worldVelAUPerS.y, z: mesh.worldVelAUPerS.z }
+        : null,
       parentAbs,
       playerAbs,
       distToBodyAU: pos ? Math.hypot(playerAbs.x - pos.x, playerAbs.y - pos.y, playerAbs.z - pos.z) : null,

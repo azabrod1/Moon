@@ -1147,6 +1147,10 @@ function installDevHooks() {
     setMapLayers: (partial: Record<string, boolean> | null) =>
       planetariumMode?.devSetMapLayers(partial as never) ?? null,
     setChrome: (visible: boolean) => planetariumMode?.devSetChrome(visible),
+    /** The "Orbit lines" setting on its own — setChrome(false) turns it off with the rest. */
+    setOrbitLines: (on: boolean) => planetariumMode?.devSetOrbitLines(on),
+    /** Move the ship by (dx, dy, dz) AU and nothing else; for a frame() pose, whose camera stays put. */
+    nudge: (dxAU: number, dyAU: number, dzAU: number) => planetariumMode?.devNudge(dxAU, dyAU, dzAU),
     setFov: (deg: number) => planetariumMode?.devSetFov(deg),
     setTimeMs: (utcMs: number) => planetariumMode?.devSetTimeMs(utcMs),
     getTimeMs: () => planetariumMode?.getCurrentUtcMs() ?? 0,

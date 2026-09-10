@@ -19,6 +19,7 @@ import {
   getPlanetOrbitalPosition,
   orbitLineOpacity,
   orbitLineSegmentCount,
+  poseOrbitLine,
   resampleOrbitLines,
   type SolarSystemObjects,
 } from './SolarSystem';
@@ -27,16 +28,23 @@ import {
   ORBIT_LINE_STENCIL_REF,
   applyOrbitLineStencilGate,
 } from './world/orbitLineStencil';
+import { ANCHOR_DRIFT_RATIO, type OrbitLineAnchorFrame } from './orbitLineAnchor';
 import { computeBodyPositionAU, eclipticToEquatorial } from '../astronomy/planetary';
+import { KM_PER_AU } from '../astronomy/constants';
 import { ASTEROID_BELT, PLANETARIUM_BODIES } from './planets/planetData';
 
 const J2000_UTC_MS = Date.UTC(2000, 0, 1, 12, 0, 0);
 
-function makeBareObjects(): Pick<SolarSystemObjects, 'orbitLines' | 'orbitLinesEpochUtcMs'> {
+function makeBareObjects(): Pick<
+  SolarSystemObjects,
+  'orbitLines' | 'orbitLineFrames' | 'orbitLinesEpochUtcMs'
+> {
   // Exactly the fields resampleOrbitLines declares it needs. Default Line2
-  // geometry is empty, so the first resample exercises the fill path.
+  // geometry is empty, so the first resample exercises the fill path, and
+  // no frames yet, so it creates them (anchored at the Sun).
   return {
     orbitLines: PLANETARIUM_BODIES.map(() => new Line2()),
+    orbitLineFrames: [],
     orbitLinesEpochUtcMs: 0,
   };
 }
@@ -47,15 +55,17 @@ function instanceStartOf(line: Line2): THREE.InterleavedBufferAttribute {
   return line.geometry.getAttribute('instanceStart') as THREE.InterleavedBufferAttribute;
 }
 
-/** The sampled polyline back out of the instanced pair layout. */
-function polylinePoints(line: Line2): THREE.Vector3[] {
+/** The sampled polyline back out of the instanced pair layout, heliocentric
+ *  again: the floats are measured from the frame's anchor. */
+function polylinePoints(line: Line2, frame: OrbitLineAnchorFrame): THREE.Vector3[] {
   const start = instanceStartOf(line);
   const end = line.geometry.getAttribute('instanceEnd') as THREE.InterleavedBufferAttribute;
+  const anchor = new THREE.Vector3(frame.anchor.x, frame.anchor.y, frame.anchor.z);
   const points: THREE.Vector3[] = [];
   for (let i = 0; i < start.count; i++) {
-    points.push(new THREE.Vector3().fromBufferAttribute(start, i));
+    points.push(new THREE.Vector3().fromBufferAttribute(start, i).add(anchor));
   }
-  points.push(new THREE.Vector3().fromBufferAttribute(end, end.count - 1));
+  points.push(new THREE.Vector3().fromBufferAttribute(end, end.count - 1).add(anchor));
   return points;
 }
 
@@ -198,7 +208,10 @@ describe('resampleOrbitLines', () => {
           const body = PLANETARIUM_BODIES[i];
           const pos = computeBodyPositionAU(body, epoch + staleMs);
           const p = new THREE.Vector3(pos.x, pos.y, pos.z);
-          const offAU = minDistToPolyline(p, polylinePoints(objects.orbitLines[i]));
+          const offAU = minDistToPolyline(
+            p,
+            polylinePoints(objects.orbitLines[i], objects.orbitLineFrames[i]),
+          );
           expect(offAU, `${body.name} @ ${new Date(epoch).toISOString()} +${staleMs / 86_400_000}d`)
             .toBeLessThan(body.radiusAU * 0.5);
         }
@@ -246,7 +259,7 @@ describe('resampleOrbitLines', () => {
     // near the seam).
     const objects = makeBareObjects();
     resampleOrbitLines(objects, 'realistic', J2000_UTC_MS);
-    const points = polylinePoints(objects.orbitLines[0]);
+    const points = polylinePoints(objects.orbitLines[0], objects.orbitLineFrames[0]);
     expect(points[0].distanceTo(points[points.length - 1])).toBeGreaterThan(0);
   });
 
@@ -286,11 +299,120 @@ describe('resampleOrbitLines', () => {
         const expected = eclipticToEquatorial(
           new THREE.Vector3(radiusAU * Math.cos(angle), 0, -radiusAU * Math.sin(angle)),
         );
-        // BufferAttribute is float32: ~1e-7 relative quantization.
+        // BufferAttribute is float32: ~1e-7 relative quantization. Fresh
+        // frames are anchored at the Sun, so the floats are heliocentric.
+        expect(objects.orbitLineFrames[i].anchor).toEqual({ x: 0, y: 0, z: 0 });
         const v = new THREE.Vector3().fromBufferAttribute(start, vertexIndex);
         expect(v.distanceTo(expected), PLANETARIUM_BODIES[i].name).toBeLessThan(1e-5 * (1 + radiusAU));
       }
     }
+  });
+});
+
+describe('poseOrbitLine', () => {
+  const MERCURY = 0;
+
+  /** A ship `besideAU` off Mercury's strip, beside a vertex a quarter of the
+   *  way along it, well away from the strip's open seam. */
+  function shipBesideMercury(frame: OrbitLineAnchorFrame, besideAU: number): THREE.Vector3 {
+    const k = Math.floor(frame.vertexCount / 4);
+    const v = new THREE.Vector3(frame.samples[k * 3], frame.samples[k * 3 + 1], frame.samples[k * 3 + 2]);
+    const next = new THREE.Vector3(frame.samples[k * 3 + 3], frame.samples[k * 3 + 4], frame.samples[k * 3 + 5]);
+    const tangent = next.clone().sub(v).normalize();
+    // Across the line and out of its plane: the orbit is near the ecliptic,
+    // so a unit vector along celestial north is far from parallel to it.
+    const across = new THREE.Vector3(0, 1, 0).cross(tangent).normalize();
+    return v.add(across.multiplyScalar(besideAU));
+  }
+
+  it('sits at (anchor − ship) and leaves the buffer alone while the ship is far from the line', () => {
+    const objects = makeBareObjects();
+    resampleOrbitLines(objects, 'realistic', J2000_UTC_MS);
+    const line = objects.orbitLines[MERCURY];
+    const frame = objects.orbitLineFrames[MERCURY];
+    const version = instanceStartOf(line).data.version;
+    // 0.9 AU out on the vernal-equinox axis: Mercury's orbit is 0.31–0.47 AU
+    // from the Sun, so the line is over 0.4 AU away and 0.9 AU of drift from
+    // the Sun anchor is nowhere near a hundred times that.
+    poseOrbitLine(line, frame, 0.9, 0, 0);
+    expect(frame.anchor).toEqual({ x: 0, y: 0, z: 0 });
+    expect(line.position.toArray()).toEqual([-0.9, 0, 0]);
+    expect(instanceStartOf(line).data.version).toBe(version);
+  });
+
+  it('moves the anchor to the ship once the drift passes the ratio, re-writing the same buffer', () => {
+    const objects = makeBareObjects();
+    resampleOrbitLines(objects, 'realistic', J2000_UTC_MS);
+    const line = objects.orbitLines[MERCURY];
+    const frame = objects.orbitLineFrames[MERCURY];
+    const geometry = line.geometry;
+    const attribute = instanceStartOf(line);
+    const version = attribute.data.version;
+    const sphereBefore = geometry.boundingSphere!.center.clone();
+    const besideAU = 150 / KM_PER_AU;
+    const ship = shipBesideMercury(frame, besideAU);
+    // Drift from the Sun anchor is the ship's ~0.4 AU heliocentric distance,
+    // against 150 km to the line: far past the ratio.
+    expect(ship.length()).toBeGreaterThan(ANCHOR_DRIFT_RATIO * besideAU);
+
+    poseOrbitLine(line, frame, ship.x, ship.y, ship.z);
+
+    expect(frame.anchor).toEqual({ x: ship.x, y: ship.y, z: ship.z });
+    expect(line.position.toArray()).toEqual([0, 0, 0]);
+    // Same geometry and buffer, re-uploaded, bounds moved with the vertices.
+    expect(line.geometry).toBe(geometry);
+    expect(instanceStartOf(line)).toBe(attribute);
+    expect(attribute.data.version).toBeGreaterThan(version);
+    expect(geometry.boundingSphere!.center.clone().sub(sphereBefore).add(ship).length()).toBeLessThan(1e-6);
+    // The floats are now measured from the ship: the vertex beside it is
+    // ~150 km of coordinate, not ~0.4 AU, and the strip is unchanged in the
+    // heliocentric frame.
+    const k = Math.floor(frame.vertexCount / 4);
+    const local = new THREE.Vector3().fromBufferAttribute(attribute, k);
+    expect(local.length()).toBeLessThan(besideAU * 1.001);
+    const heliocentric = polylinePoints(line, frame);
+    const sample = new THREE.Vector3(frame.samples[k * 3], frame.samples[k * 3 + 1], frame.samples[k * 3 + 2]);
+    expect(heliocentric[k].distanceTo(sample)).toBeLessThan(1e-9);
+    const mercury = computeBodyPositionAU(PLANETARIUM_BODIES[MERCURY], J2000_UTC_MS);
+    expect(minDistToPolyline(mercury, heliocentric)).toBeLessThan(PLANETARIUM_BODIES[MERCURY].radiusAU * 0.5);
+
+    // Posed again from the same spot: nothing to move, nothing uploaded.
+    const versionAfter = attribute.data.version;
+    poseOrbitLine(line, frame, ship.x, ship.y, ship.z);
+    expect(attribute.data.version).toBe(versionAfter);
+    expect(line.position.toArray()).toEqual([0, 0, 0]);
+  });
+
+  it('keeps a moved anchor through the periodic resample', () => {
+    const objects = makeBareObjects();
+    resampleOrbitLines(objects, 'realistic', J2000_UTC_MS);
+    const line = objects.orbitLines[MERCURY];
+    const frame = objects.orbitLineFrames[MERCURY];
+    const ship = shipBesideMercury(frame, 150 / KM_PER_AU);
+    poseOrbitLine(line, frame, ship.x, ship.y, ship.z);
+    const anchor = { ...frame.anchor };
+
+    resampleOrbitLines(objects, 'realistic', J2000_UTC_MS + 61 * 86_400_000);
+
+    expect(frame.anchor).toEqual(anchor);
+    // The new strip was written from the anchor it kept — the floats plus
+    // the anchor are the new samples — so no second upload waits on the next
+    // frame. The strip re-centred 61 days on, so the vertex beside the ship
+    // is a different index now; the orbit itself still passes the ship, and
+    // that vertex's float is ship-local, not heliocentric.
+    const heliocentric = polylinePoints(line, frame);
+    for (const k of [0, 17, frame.vertexCount - 1]) {
+      const sample = new THREE.Vector3(frame.samples[k * 3], frame.samples[k * 3 + 1], frame.samples[k * 3 + 2]);
+      // float32 vertices: ~6e-8 of their distance from the anchor, under 1 AU here.
+      expect(heliocentric[k].distanceTo(sample), `vertex ${k}`).toBeLessThan(1e-7);
+    }
+    let nearest = 0;
+    for (let k = 1; k < heliocentric.length; k++) {
+      if (heliocentric[k].distanceTo(ship) < heliocentric[nearest].distanceTo(ship)) nearest = k;
+    }
+    expect(heliocentric[nearest].distanceTo(ship)).toBeLessThan(0.01);
+    const local = new THREE.Vector3().fromBufferAttribute(instanceStartOf(line), nearest);
+    expect(local.length()).toBeLessThan(0.01);
   });
 });
 

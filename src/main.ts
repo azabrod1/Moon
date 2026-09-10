@@ -17,6 +17,8 @@ import type { ShipProfile } from './planetarium/PlayerShip';
 import { LANDED_NEAR_AU } from './planetarium/landedView';
 import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import type { VolumeCompareMode } from './volumeCompare/VolumeCompareMode';
+import type { InteriorMode } from './interior/InteriorMode';
+import type { ToolRequest } from './planetarium/toolRequest';
 import { canGPUDoBloom, halfFloatTargetSampleCounts } from './app/gpuCapability';
 import { installShaderSalt } from './app/shaderSalt';
 import { bloomPixelRatio, composerSamples, parseMsaaOverride, targetPixelRatio } from './app/renderResolution';
@@ -50,7 +52,7 @@ import {
 // ================================================================
 // Top-level mode
 // ================================================================
-type AppMode = 'planetarium' | 'moonFlight' | 'volumeCompare';
+type AppMode = 'planetarium' | 'moonFlight' | 'volumeCompare' | 'interior';
 let appMode: AppMode = 'planetarium';
 // switchAppMode early-returns on a same-mode call only after the first
 // activation has actually run (init() enters the planetarium through it).
@@ -58,6 +60,7 @@ let appModeInitialized = false;
 let planetariumMode: PlanetariumMode | null = null;
 let moonFlightMode: MoonFlightMode | null = null;
 let volumeCompareMode: VolumeCompareMode | null = null;
+let interiorMode: InteriorMode | null = null;
 let modeSwitchInFlight = false;
 
 // ================================================================
@@ -195,6 +198,10 @@ const flightCamera = new THREE.PerspectiveCamera(55, window.innerWidth / window.
 // --- Volume-compare camera (studio scale: container radius = 1 unit; near/far
 // bracket the [1.7, 8] orbit distance with room for the dimmed starfield shell) ---
 const vcCamera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.01, 300);
+// --- Look-inside camera (studio scale: body radius = 1 unit; the orbit never
+// comes inside 1.55, so the near plane can sit well out for depth precision
+// where the section faces meet the skin) ---
+const interiorCamera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.05, 300);
 
 let camera: THREE.PerspectiveCamera = planetariumCamera;
 
@@ -252,6 +259,17 @@ function getSceneTargetSamples(pixelRatio: number): number {
   // storage (a GLsizei truncates): the policy's 4K budget reads it.
   const devicePixels = Math.floor(window.innerWidth * pixelRatio) * Math.floor(window.innerHeight * pixelRatio);
   return composerSamples(pixelRatio, isMobile, devicePixels, msaaOverride, sceneSampleCounts);
+}
+
+/** Whether the frame's scene draw is multisampled on the current path. The
+ *  composer's scene target carries its own sample count, which can be zero;
+ *  the direct path draws into the canvas backbuffer, created with antialias
+ *  but granted samples only at the browser's discretion. The Look-inside tool
+ *  reads this to choose how its cut edge is antialiased (plan §5). */
+function sceneDrawMultisampled(): boolean {
+  if (sceneTarget) return sceneTarget.samples > 0;
+  const gl = renderer.getContext();
+  return (gl.getParameter(gl.SAMPLES) as number) > 0;
 }
 
 function applyRenderResolution() {
@@ -613,7 +631,7 @@ let plmActivated = false;
 
 /** True when the switch happened; false when refused (same mode, or one
  *  already in flight) or when it failed and the app fell back. */
-async function switchAppMode(newMode: AppMode): Promise<boolean> {
+async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<boolean> {
   if (newMode === appMode && appModeInitialized) return false;
   if (modeSwitchInFlight) return false;
   modeSwitchInFlight = true;
@@ -627,7 +645,8 @@ async function switchAppMode(newMode: AppMode): Promise<boolean> {
     transitionMsg.textContent =
       newMode === 'planetarium' ? 'Entering Planets...'
         : newMode === 'moonFlight' ? 'Entering Flight...'
-          : 'Gathering planets...';
+          : newMode === 'interior' ? 'Looking inside...'
+            : 'Gathering planets...';
     // The beat lets the fade-to-black actually show between two live modes.
     // On first boot the loading screen still covers everything, so the wait
     // would be 400 ms of nothing, serial, before any texture is even asked
@@ -645,6 +664,7 @@ async function switchAppMode(newMode: AppMode): Promise<boolean> {
       appMode = 'planetarium';
       if (moonFlightMode) moonFlightMode.deactivate();
       if (volumeCompareMode) volumeCompareMode.deactivate();
+      if (interiorMode) interiorMode.deactivate();
       scene.background = MODE_BACKGROUND;
 
       camera = planetariumCamera;
@@ -657,11 +677,12 @@ async function switchAppMode(newMode: AppMode): Promise<boolean> {
         // draws: into the composer's target when there is a composer, to the
         // canvas otherwise — the same branch renderScene takes.
         planetariumMode = new PlanetariumMode(scene, planetariumCamera, renderer, useBloom, () => composer !== null);
-        // The ☰ "How many fit?" item arrives here: the
-        // mode closes its own entry surfaces, then this callback owns the switch.
-        planetariumMode.onVolumeCompareRequest(() => {
-          if (modeSwitchInFlight || appMode === 'volumeCompare') return false;
-          return switchAppMode('volumeCompare');
+        // Every tool entry arrives here ("How many fit?", Look inside): the
+        // mode closes its own entry surfaces and snapshots the journey, then
+        // this callback owns the switch, carrying the request's context.
+        planetariumMode.onToolRequest((toolRequest) => {
+          if (modeSwitchInFlight || appMode === toolRequest.kind) return false;
+          return switchAppMode(toolRequest.kind, toolRequest);
         });
       }
       debugLog('Activating Planetarium mode');
@@ -694,6 +715,7 @@ async function switchAppMode(newMode: AppMode): Promise<boolean> {
       if (planetariumMode) planetariumMode.deactivate();
       plmActivated = false;
       if (volumeCompareMode) volumeCompareMode.deactivate();
+      if (interiorMode) interiorMode.deactivate();
       planetariumUI.style.display = 'none';
       scene.background = MODE_BACKGROUND;
 
@@ -720,7 +742,7 @@ async function switchAppMode(newMode: AppMode): Promise<boolean> {
       }
       debugLog('Moon flight mode active');
 
-    } else {
+    } else if (newMode === 'volumeCompare') {
       // --- Switch to Volume Compare ("How many fit?") ---
       // Dynamic import first, for the same reason as the flight branch: a
       // failed chunk fetch must not strand the user in a mode with no UI.
@@ -732,6 +754,7 @@ async function switchAppMode(newMode: AppMode): Promise<boolean> {
       if (planetariumMode) planetariumMode.deactivate();
       plmActivated = false;
       if (moonFlightMode) moonFlightMode.deactivate();
+      if (interiorMode) interiorMode.deactivate();
       // PlanetariumMode.deactivate already hides this; the explicit line keeps
       // parity with the flight branch and covers a switch from moon flight.
       planetariumUI.style.display = 'none';
@@ -753,6 +776,43 @@ async function switchAppMode(newMode: AppMode): Promise<boolean> {
       // the #mode-transition veil covers the load, so nothing half-loaded shows.
       await volumeCompareMode.activate();
       debugLog('Volume compare mode active');
+
+    } else if (newMode === 'interior') {
+      // --- Switch to Look inside ---
+      // Dynamic import first, as the other tools: a failed chunk fetch must
+      // not strand the user in a mode with no UI.
+      const interiorModule = interiorMode ? null : await (async () => {
+        debugLog('Loading interior module');
+        return import('./interior/InteriorMode');
+      })();
+      const bodyId = request?.kind === 'interior' ? request.bodyId : 'Earth';
+      // The tool poses the body at the planetarium's instant: read it before
+      // the planetarium is taken down.
+      const entryUtcMs = planetariumMode?.getCurrentUtcMs() ?? Date.now();
+      appMode = 'interior';
+      if (planetariumMode) planetariumMode.deactivate();
+      plmActivated = false;
+      if (moonFlightMode) moonFlightMode.deactivate();
+      if (volumeCompareMode) volumeCompareMode.deactivate();
+      planetariumUI.style.display = 'none';
+      scene.background = MODE_BACKGROUND;
+
+      camera = interiorCamera;
+      applyRenderResolution();
+      buildComposer(interiorCamera, { strength: 0.55, threshold: 0.95 });
+
+      if (!interiorMode) {
+        interiorMode = new interiorModule!.InteriorMode(scene, interiorCamera, renderer, sceneDrawMultisampled);
+        interiorMode.onExit(() => {
+          void switchAppMode('planetarium');
+        });
+      }
+      debugLog('Activating interior mode', { bodyId });
+      // Resolves once the body's map is applied; the veil covers the load.
+      await interiorMode.activate(bodyId, entryUtcMs);
+      debugLog('Interior mode active');
+    } else {
+      throw new Error(`Unknown app mode: ${String(newMode)}`);
     }
 
     appModeInitialized = true;
@@ -787,13 +847,16 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function getAutoMode(): 'planetarium' | 'volumeCompare' {
+function getAutoMode(): 'planetarium' | 'volumeCompare' | 'interior' {
   const params = new URLSearchParams(window.location.search);
   const auto = params.get('auto');
-  // 'volumeCompare' routes into the compare mode after the Planetarium boots.
+  // 'volumeCompare' routes into the compare mode after the Planetarium boots,
+  // 'interior' into the Look-inside tool (with `&body=` naming the body).
   // Everything else — 'planetarium', the retired-but-still-accepted 'moonView',
   // and absence — lands in the Planetarium.
-  return auto === 'volumeCompare' ? 'volumeCompare' : 'planetarium';
+  if (auto === 'volumeCompare') return 'volumeCompare';
+  if (auto === 'interior') return 'interior';
+  return 'planetarium';
 }
 
 // Dev-only bridge for the headless screenshot harness: pose the camera and set
@@ -1044,6 +1107,30 @@ function installDevHooks() {
     compareSkip: () => volumeCompareMode?.devSkip() ?? false,
     compareEsc: () => volumeCompareMode?.devEsc(),
     compareEndCard: () => volumeCompareMode?.devEndCard() ?? null,
+    // Look-inside bridge (phase-0 spike). interiorOpen routes through the
+    // Planetarium's real entry gate like compareOpen; the rest delegate to the
+    // live instance (null before first entry). interiorReady is true only once
+    // the map is applied and the cut has settled, so a capture waits on it.
+    interiorOpen: (bodyId = 'Earth') => planetariumMode?.devEnterInterior(bodyId) ?? false,
+    interiorExit: () => interiorMode?.devExit(),
+    interiorPick: (bodyId: string) => interiorMode?.devPick(bodyId) ?? false,
+    interiorView: (view: 'closed' | 'cutaway' | 'section') => interiorMode?.devView(view) ?? false,
+    interiorAngle: (deg: number, animate?: boolean) => interiorMode?.devAngle(deg, animate) ?? false,
+    interiorScale: (mode: 'true' | 'readable', blend?: number) => interiorMode?.devScale(mode, blend) ?? false,
+    interiorTime: (seconds: number) => interiorMode?.devTime(seconds) ?? false,
+    interiorFreeze: (on: boolean) => interiorMode?.devFreeze(on) ?? false,
+    interiorOrbit: (azimuthDeg: number, elevationDeg?: number, distance?: number) =>
+      interiorMode?.devOrbit(azimuthDeg, elevationDeg, distance) ?? false,
+    interiorReady: () => interiorMode?.devReady() ?? false,
+    interiorState: () => interiorMode?.devState() ?? null,
+    // Which path the frame draws on: composer target samples (0 = single
+    // sample), or the canvas backbuffer's on the direct path.
+    renderPath: () => ({
+      composer: composer !== null,
+      sceneTargetSamples: sceneTarget?.samples ?? null,
+      backbufferSamples: renderer.getContext().getParameter(renderer.getContext().SAMPLES) as number,
+      multisampled: sceneDrawMultisampled(),
+    }),
     // Raw scene handle for render forensics (visibility bisects: hide one
     // element at a time to isolate what's flashing/leaking light). DEV-only
     // like the rest of the bridge.
@@ -1223,6 +1310,9 @@ async function init() {
     } else if (appMode === 'volumeCompare' && volumeCompareMode) {
       volumeCompareMode.update(dt);
       exposureCurrent = 1;
+    } else if (appMode === 'interior' && interiorMode) {
+      interiorMode.update(dt);
+      exposureCurrent = 1;
     }
 
     // The capture pin wins over every mode's own exposure, including the
@@ -1261,6 +1351,12 @@ async function init() {
     if (!planetariumMode?.enterVolumeCompare()) {
       debugLog('?auto=volumeCompare ignored — the scene is owned by a tutorial or mission');
     }
+  } else if (autoMode === 'interior') {
+    // The same door, carrying the body: `?auto=interior&body=Europa`.
+    const bodyId = new URLSearchParams(window.location.search).get('body') || 'Earth';
+    if (!planetariumMode?.enterTool({ kind: 'interior', bodyId })) {
+      debugLog('?auto=interior ignored — the scene is owned by a tutorial or mission');
+    }
   }
 }
 
@@ -1287,12 +1383,15 @@ function syncViewport() {
   flightCamera.updateProjectionMatrix();
   vcCamera.aspect = w / h;
   vcCamera.updateProjectionMatrix();
+  interiorCamera.aspect = w / h;
+  interiorCamera.updateProjectionMatrix();
   moonFlightMode?.onResize(w / h);
   applyRenderResolution();
   // After the renderer's pixel ratio is (re)applied: retune star point sizes,
   // which are scaled by the renderer's ratio — both the compare and planetarium
   // starfields read renderer.getPixelRatio() in onResize, so they must run after.
   volumeCompareMode?.onResize(w / h);
+  interiorMode?.onResize(w / h);
   planetariumMode?.onResize();
   debugLog('Resize', { width: w, height: h, pixelRatio: renderer.getPixelRatio(), sceneSamples: sceneTarget?.samples ?? 0 });
 }

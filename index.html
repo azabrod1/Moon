@@ -1829,6 +1829,73 @@
     }
 
     /* ============================================= */
+    /* LOOK INSIDE (interior) — phase-0 spike UI       */
+    /* ============================================= */
+    /* Same anchoring as #volume-compare-ui: children opt into pointer events. */
+    #interior-ui { display: none; }
+    #interior-leave {
+      position: absolute; top: 14px; left: 14px; z-index: 20; pointer-events: auto;
+      background: rgba(6, 8, 12, 0.72); border-color: rgba(255, 255, 255, 0.18); color: var(--t1);
+    }
+    #interior-leave:hover { background: rgba(20, 24, 32, 0.82); border-color: rgba(255, 255, 255, 0.28); color: var(--t1); }
+    #interior-panel {
+      position: absolute; top: 16px; right: 16px; z-index: 18;
+      width: min(300px, calc(100vw - 32px)); padding: 16px 18px; pointer-events: auto;
+      max-height: calc(100vh - 32px); overflow-y: auto; scrollbar-width: thin;
+    }
+    .interior-body { font-family: var(--font-ui); font-size: 17px; font-weight: 600; color: var(--t1); letter-spacing: 0.2px; }
+    .interior-caption {
+      margin-top: 3px; font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--t3);
+    }
+    .interior-views { display: flex; gap: 6px; margin-top: 12px; }
+    .interior-view {
+      flex: 1; padding: 6px 4px; border-radius: var(--r-s); border: 1px solid var(--line);
+      background: rgba(255,255,255,0.02); color: var(--t2); font-family: var(--font-ui);
+      font-size: 11.5px; cursor: pointer; -webkit-tap-highlight-color: transparent;
+      transition: background 0.14s var(--ease), color 0.14s var(--ease), border-color 0.14s var(--ease);
+    }
+    .interior-view:hover { background: rgba(255,255,255,0.06); color: var(--t1); }
+    .interior-view.on { border-color: rgba(var(--accent-rgb),0.42); background: rgba(var(--accent-rgb),0.16); color: var(--t1); }
+    .interior-slider-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+    .interior-slider {
+      -webkit-appearance: none; appearance: none; flex: 1; height: 6px; border-radius: 999px;
+      background: rgba(255,255,255,0.10); outline: none; cursor: pointer;
+    }
+    .interior-slider::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none; width: 15px; height: 15px; border-radius: 50%;
+      background: #fff; border: 2px solid rgba(0,0,0,0.35); box-shadow: 0 0 6px rgba(0,0,0,0.5); cursor: pointer;
+    }
+    .interior-slider::-moz-range-thumb {
+      width: 15px; height: 15px; border-radius: 50%; background: #fff; border: 2px solid rgba(0,0,0,0.35); cursor: pointer;
+    }
+    .interior-angle-value {
+      flex: none; min-width: 34px; text-align: right; font-family: var(--font-mono);
+      font-size: 10.5px; color: var(--t2); font-variant-numeric: tabular-nums;
+    }
+    .interior-legend { margin-top: 12px; border-top: 1px solid var(--line-dim); }
+    .interior-row {
+      display: grid; grid-template-columns: 12px 1fr auto; gap: 10px; align-items: start;
+      padding: 8px 0; border-bottom: 1px solid var(--line-dim);
+    }
+    .interior-swatch { display: block; width: 12px; height: 12px; margin-top: 2px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.14); }
+    .interior-row-name { font-family: var(--font-ui); font-size: 12px; font-weight: 600; color: var(--t1); line-height: 1.3; }
+    .interior-row-detail { margin-top: 1px; font-size: 10.5px; line-height: 1.4; color: var(--t3); }
+    .interior-row-depth {
+      font-family: var(--font-mono); font-size: 10px; color: var(--t2); white-space: nowrap;
+      font-variant-numeric: tabular-nums; padding-top: 2px;
+    }
+    .interior-foot { --obs-hairline-dim: var(--line-dim); --obs-t2: var(--t2); }
+    .interior-note {
+      margin-top: 6px; text-align: right; font-family: var(--font-mono); font-size: 8px;
+      letter-spacing: 0.14em; color: var(--t3); text-transform: uppercase;
+    }
+    @media (max-width: 640px) {
+      #interior-panel { top: auto; bottom: 12px; left: 12px; right: 12px; width: auto; max-height: 40vh; padding: 12px 14px; }
+      .interior-row-detail { display: none; }
+    }
+
+    /* ============================================= */
     /* VOLUME COMPARE MODE ("How many fit?")         */
     /* ============================================= */
     /* Children anchor to #ui-overlay (the nearest positioned ancestor) exactly
@@ -4858,6 +4925,32 @@
           <div class="compare-endcard-rows" id="compare-endcard-rows"></div>
           <button type="button" class="compare-endcard-again" id="compare-endcard-again">Pour again</button>
         </div>
+      </div>
+    </div>
+    <div id="interior-ui">
+      <button class="act-btn act-leave" id="interior-leave" aria-label="Leave">
+        <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 5 L6.5 10 L11.5 15"></path><path d="M6.5 10 H15"></path></svg>
+        <span class="act-lbl">Leave</span>
+      </button>
+      <div id="interior-panel" class="pn pn-high">
+        <div class="interior-body" id="interior-body-name"></div>
+        <div class="interior-caption" id="interior-caption"></div>
+        <div class="interior-views" role="group" aria-label="View">
+          <button type="button" class="interior-view" id="interior-view-closed">Closed</button>
+          <button type="button" class="interior-view on" id="interior-view-cutaway">Cutaway</button>
+          <button type="button" class="interior-view" id="interior-view-section">Section</button>
+        </div>
+        <div class="interior-slider-row">
+          <input type="range" id="interior-angle" class="interior-slider" min="0" max="180" step="1" value="90" aria-label="Opening angle">
+          <span class="interior-angle-value" id="interior-angle-value">90°</span>
+        </div>
+        <div id="interior-legend" class="interior-legend"></div>
+        <label class="obs-foot interior-foot" id="interior-readable-row">
+          <input type="checkbox" id="interior-readable-toggle" checked>
+          <span class="obs-footlbl">Readable scale</span>
+          <span class="obs-tgl" aria-hidden="true"></span>
+        </label>
+        <div class="interior-note" id="interior-readable-note">Thin layers widened so you can see them</div>
       </div>
     </div>
   </div>

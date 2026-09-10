@@ -38,8 +38,9 @@ void main() {
 
 /** hash31 + noise3, the object-space value-noise pair both Sun fragment
  *  shaders build on. Interpolated into each program (separate compiles, so
- *  the shared names never collide). */
-const sunNoiseGLSL = /* glsl */ `
+ *  the shared names never collide). Exported for the Look-inside tool's
+ *  section faces, which draw every material family from this one noise. */
+export const sunNoiseGLSL = /* glsl */ `
 float hash31(vec3 p) {
   p = fract(p * 0.1031);
   p += dot(p, p.yzx + 33.33);

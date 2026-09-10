@@ -449,6 +449,7 @@ import {
 } from './map/miniChart';
 import { flushOrbitDamping } from './input/orbitDamping';
 import { formatBodyDistance, bodyDistanceQuantum } from './bodyDistance';
+import type { ToolRequest } from './toolRequest';
 
 /** How long a context-restore re-warm may keep the late-link check muted. */
 const REWARM_MUTE_MAX_MS = 15_000;
@@ -2183,17 +2184,17 @@ export class PlanetariumMode {
   // Mode switching lives in main.ts, not here; the "How many fit?" Tools entry
   // calls this stored callback so main.ts can drive switchAppMode
   // (MoonFlight's onExit idiom).
-  /** Owns the switch into the "How many fit?" tool; answers whether the
-   *  switch was taken — at once for a refusal (one already in flight), or
-   *  once the switch has run for a failure on the way in. */
-  private volumeCompareRequestCb: (() => boolean | Promise<boolean>) | null = null;
+  /** Owns the switch into a tool ("How many fit?", Look inside); answers
+   *  whether the switch was taken — at once for a refusal (one already in
+   *  flight), or once the switch has run for a failure on the way in. */
+  private toolRequestCb: ((request: ToolRequest) => boolean | Promise<boolean>) | null = null;
   /** A tool entry has been accepted and its switch has not settled yet. */
   private toolEntryPending = false;
   /** Bumped by every activate(): a tool entry settles against the activation
    *  it was made in, whatever the timing of a fallback re-activation. */
   private activationGen = 0;
-  onVolumeCompareRequest(cb: () => boolean | Promise<boolean>): void {
-    this.volumeCompareRequestCb = cb;
+  onToolRequest(cb: (request: ToolRequest) => boolean | Promise<boolean>): void {
+    this.toolRequestCb = cb;
   }
 
   active = false;
@@ -2866,7 +2867,7 @@ export class PlanetariumMode {
       }
 
       if (this.preToolState) {
-        // Returning from the volume-compare tool — restore the exact pre-tool
+        // Returning from a tool (How many fit?, Look inside) — restore the exact pre-tool
         // journey (landed body, camera, clock) captured on entry, not the store's
         // copy. Cleared so a later fresh activation reads the store normally.
         // Session-only landed sub-states (surface view, orbit details) drop, same
@@ -9569,12 +9570,19 @@ export class PlanetariumMode {
   // updateObservatoryButtonVisibility); transient popover in the Esc cascade and
   // the one-modal-at-a-time set, but NOT a new keyboard key.
 
-  /** Enter the "How many fit?" tool — the one door into it, for the ☰ item and
-   *  for a `?auto=volumeCompare` boot alike. A no-op while the tutorial or a
-   *  mission owns the scene; closes every entry surface first (the ☰ menu
-   *  auto-pauses ship + clock and restores on close, so leave with that
-   *  resolved, as startTutorial does). True when the switch was taken. */
+  /** Enter the "How many fit?" tool: the Tools item and a `?auto=volumeCompare`
+   *  boot alike come through enterTool. */
   enterVolumeCompare(): boolean {
+    return this.enterTool({ kind: 'volumeCompare' });
+  }
+
+  /** Enter a tool — the one door into every tool, for the Tools popover, a
+   *  map-card action and a `?auto=` boot alike; the request carries what the
+   *  tool opens on. A no-op while the tutorial or a mission owns the scene;
+   *  closes every entry surface first (the ☰ menu auto-pauses ship + clock
+   *  and restores on close, so leave with that resolved, as startTutorial
+   *  does). True when the switch was taken. */
+  enterTool(request: ToolRequest): boolean {
     // Close the entry surfaces before the guard (a refused click must not leave
     // a dead modal up) and before the snapshot: the ☰ menu and the help modal
     // auto-pause ship and clock, and the snapshot must capture the resumed
@@ -9593,7 +9601,7 @@ export class PlanetariumMode {
     // return, so leaving the tool — or a tab-close inside it — resumes exactly
     // here. Mirrors preMissionState + the tutorial's getState()-serves-snapshot.
     this.preToolState = this.getState();
-    const answer = this.volumeCompareRequestCb?.() ?? false;
+    const answer = this.toolRequestCb?.(request) ?? false;
     // A switch that did not happen while this mode stayed live — refused at
     // once, or failed on the way in before this mode was taken down — must
     // not leave the snapshot standing in for the journey in every save from
@@ -15259,6 +15267,12 @@ export class PlanetariumMode {
     this.enterVolumeCompare();
   }
 
+  /** Headless support: open the Look-inside tool on a body through the real
+   *  entry gate (snapshot + refusals), as compareOpen does. */
+  devEnterInterior(bodyId: string): boolean {
+    return this.enterTool({ kind: 'interior', bodyId });
+  }
+
   /** Headless support: enter the Observatory surface view ("Look up"). */
   devLookUp(): boolean {
     if (!this.landedOn) return false;
@@ -18254,7 +18268,7 @@ export class PlanetariumMode {
     if (this.tutorial) {
       return { ...this.tutorial.snapshot.state, timestamp: Date.now() };
     }
-    // While the volume-compare tool holds the scene, every persistence caller gets
+    // While a tool holds the scene, every persistence caller gets
     // the pre-tool snapshot (timestamp refreshed) — the same override the tutorial
     // uses — so deactivate's save + any autosave keep writing the journey the user
     // left, and a reload inside the tool resumes the pre-tool landing rather than

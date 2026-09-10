@@ -238,6 +238,10 @@ try {
     const ls = document.getElementById('loading-screen');
     return !ls || ls.classList.contains('hidden');
   }, { timeout: 90000 }).catch(() => {});
+  // Every switch as the app booted it: a shipped switch is on, a cost probe
+  // is off. Each key goes back to THIS after its capture, not to "on" — put
+  // back on, a probe would stay armed under every key captured after it.
+  const bootState = await page.evaluate(() => window.__moon.perfSwitches());
 
   await page.evaluate(() => {
     window.__moon.setChrome(false);
@@ -381,9 +385,9 @@ try {
       const noise = diffPngs(a, b);
       await page.evaluate(([k, v]) => window.__moon.perfArm(k, v), [key, !noiseFloor]);
       const c = await settleUntilStill(`${poseName} with ${key} on`);
-      // Put it back where the app defaults it, so one key's capture is never
+      // Put it back where the app booted it, so one key's capture is never
       // taken with another one's state changed underneath it.
-      await page.evaluate(([k]) => window.__moon.perfArm(k, true), [key]);
+      await page.evaluate(([k, v]) => window.__moon.perfArm(k, v), [key, bootState[key] ?? true]);
 
       const d = diffPngs(b, c);
       const tag = `${key}__${poseName}`;

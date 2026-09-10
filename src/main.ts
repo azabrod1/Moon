@@ -1108,6 +1108,8 @@ function installDevHooks() {
     observe: (name: string) => planetariumMode?.devObserve(name) ?? false,
     device: () => planetariumMode?.devDeviceProfile() ?? null,
     sectors: () => planetariumMode?.devSectorStats() ?? null,
+    /** Pin the render ratio (null hands it back) — the perf sweep's load amplifier, for a harness that profiles rather than sweeps. */
+    pinRatio: (ratio: number | null) => devPinPixelRatio(ratio),
     /** A GPU profile of the world frame measured on this device, per pass and per object (app/devGpuProfile.ts). */
     gpuProfile: async (opts?: GpuProfileOptions) => {
       if (!gpuProfiler) {

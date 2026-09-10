@@ -64,7 +64,12 @@ export function createShaderWarmupProbes(): WarmupProbes {
       // Opaque and transparent are two programs in three's cache key.
       transparent: combo.transparent === true,
     });
-    augmentSurfaceMaterial(mat, 'rocky'); // archetype is uniform-only — any value keys the same program
+    // The archetype is uniforms only, so any value keys the same program —
+    // except on the deck, whose archetype is a define (world/surfaceShading's
+    // SURFACE_ARCHETYPE_MACROS): the transparent combination is the deck's,
+    // and the probe has to carry the deck's define or it warms a program the
+    // deck never draws with.
+    augmentSurfaceMaterial(mat, combo.transparent ? 'cloud' : 'rocky');
     mats.push(mat);
     const mesh = new THREE.Mesh(geo, mat);
     // A probe lives at the origin for the whole session; a scene-wide pick

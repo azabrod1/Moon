@@ -255,7 +255,7 @@ describe('the close-range detail term', () => {
     // rung and the wrong mip wherever a quad straddles the fade.
     const glsl = fragment('airless');
     const block = glsl.slice(
-      glsl.indexOf('if (uSynthEnvelope > 0.0) {'),
+      glsl.indexOf('if (GROUND_ON(uSynthEnvelope > 0.0)) {'),
       glsl.indexOf('if (synthW > 0.0) {'),
     );
     // The branch's own block only — the terms after it (the sea's cloud
@@ -292,7 +292,13 @@ describe('the close-range detail term', () => {
     // would fork the cache per body and per tier.
     expect(fragment('airless', 'Rhea')).toBe(fragment('icy', 'Mimas'));
     expect(fragment('gas', 'Jupiter')).toBe(fragment('airless', 'Rhea'));
-    expect(fragment('airless')).not.toContain('#define');
+    // The one block of defines is the deck's archetype macros, which read the
+    // uniform everywhere but on the deck's own program (cloudDeck.test pins
+    // the block itself); nothing else in the text is a define.
+    const text = fragment('airless');
+    const macros = text.slice(text.indexOf('#ifdef CLOUD_DECK'), text.indexOf('#endif') + '#endif'.length);
+    expect(macros).toContain('#define GROUND_ON(x) (x)');
+    expect(text.replace(macros, '')).not.toContain('#define');
   });
 
   it('gives every body its own ground, and the same ground every session', () => {
@@ -795,7 +801,7 @@ describe('the GPU-efficiency switches', () => {
     // what lets a hash of this text stand for the text that ships.
     const frag = fragmentOf('cloud');
     expect(frag).toContain('if (uPerfCloudTaps < 0.5 || cloudDetailW > 0.0) detail = textureGrad(uCloudDetail, detailUv, duvX, duvY);');
-    expect(frag).toContain('if (uPerfCloudClear > 0.5 && uCloudDeck > 0.0 && cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }');
+    expect(frag).toContain('if (uPerfCloudClear > 0.5 && DECK_ON && cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }');
     expect(frag).toContain('if (uPerfGlintGate < 0.5 || any(greaterThan(glintCapped, vec3(0.0)))) {');
     expect(earthNightFragmentShader)
       .toContain('if (uPerfNightEarly > 0.5) { if (nightMix == 0.0) { gl_FragColor = vec4(0.0); return; } }');

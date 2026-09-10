@@ -2,9 +2,12 @@
  * The cloud deck's own shading terms: the numbers that author how a whole-globe
  * cloud sheet reads, each one paired with the GLSL that uses it so the two
  * cannot drift. The deck is drawn by the same augmented surface material every
- * other body uses (world/surfaceShading), and every term here is switched on by
- * a uniform rather than by a second copy of the shader — one compiled program
- * still serves every surface in the app.
+ * other body uses (world/surfaceShading), and every term here is switched on
+ * by a uniform rather than by a second copy of the shader — one injected text
+ * serves every surface in the app. The deck's own program (three keys it on
+ * transparency, so it has one either way) compiles with the deck's archetype
+ * as a define, which is what lets the compiler drop the branches the deck
+ * never takes; the text is the same text.
  *
  * COVERAGE IS THE ALPHA. The cloud map is a grey field, not a cut-out mask, and
  * for years the deck drew it at a flat 35 % over the whole globe: clear sky was

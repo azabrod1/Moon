@@ -456,7 +456,7 @@ function roughnessChunk(): string {
 /** The GLSL half of `waterGlossRoughness`, behind the uniform that is zero on
  *  every surface but a globe whose roughness map really is a water mask. */
 const WATER_GLOSS_GLSL = /* glsl */ `
-if (uWaterGloss > 0.0) {
+if (GROUND_ON(uWaterGloss > 0.0)) {
   roughnessFactor = max(${ROUGHNESS_MAP_LAND.toFixed(6)}
       - (${ROUGHNESS_MAP_LAND.toFixed(6)} - roughnessFactor) * uWaterGloss, 0.02);
 }`;
@@ -1030,7 +1030,7 @@ vec3 synthChart(vec2 c, vec2 cx, vec2 cy, vec2 seed, float wanted) {
 
 const SURFACE_DETAIL_BODY = /* glsl */ `
 #ifdef USE_MAP
-if (uSynthEnvelope > 0.0) {
+if (GROUND_ON(uSynthEnvelope > 0.0)) {
   // How magnified the map on THIS material is, on the one band the smooth
   // filter hands over on. Per material and per fragment, which is what makes it
   // right on a streamed body: a resident 16K tile reports its own size against
@@ -1193,7 +1193,29 @@ if (uSynthEnvelope > 0.0) {
  *  read (app/perfSwitches.ts). */
 const PERF_SWITCH_DECLS = /* glsl */ `uniform float uPerfCloudTaps;
 uniform float uPerfCloudClear;
-uniform float uPerfGlintGate;`;
+uniform float uPerfGlintGate;
+uniform float uProbeCloudSmooth;
+uniform float uProbeCloudDetail;
+uniform float uProbeCloudRelief;
+uniform float uProbeCloudAir;`;
+
+/**
+ * The cloud deck's cost probes (app/perfSwitches.ts, `cloud-probe-*`): each
+ * one takes a whole term off the deck so a device can price it. None of them
+ * is a change to the picture, so none of them has a cheap reading to keep — a
+ * production build has neither the uniform nor the condition, and the text
+ * is then exactly what it was before the probes existed. Each guard is the
+ * condition its term keeps running under: true wherever the probe is not
+ * armed, and always true on a surface that is not the deck, so a probe never
+ * reaches the ground the deck stands over. Plain constants rather than a
+ * helper called with the name, so the folded bundle carries neither the name
+ * nor the call.
+ */
+const SMOOTH_PROBE_GUARD = import.meta.env.DEV ? 'uProbeCloudSmooth < 0.5 && ' : '';
+const DETAIL_PROBE_GUARD = import.meta.env.DEV ? 'uProbeCloudDetail > 0.5 ? 0.0 : ' : '';
+const RELIEF_PROBE_OPEN = import.meta.env.DEV ? '\tif (uProbeCloudRelief < 0.5 || DECK_OFF) {\n' : '';
+const RELIEF_PROBE_CLOSE = import.meta.env.DEV ? '\t} // cloud relief probe\n' : '';
+const AIR_PROBE_GUARD = import.meta.env.DEV ? ' && (uProbeCloudAir < 0.5 || DECK_OFF)' : '';
 
 /** The switch a dead cloud tap is removed behind, as the condition that still
  *  takes the tap. Off, the fetch happens exactly where it happened before the
@@ -1230,8 +1252,8 @@ const cloudTapKept = (stillNeeded: string): string =>
  * depth, or one on premultiplied alpha, would need this reasoning done again.
  */
 const CLOUD_CLEAR_RETURN = import.meta.env.DEV
-  ? 'if (uPerfCloudClear > 0.5 && uCloudDeck > 0.0 && cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }'
-  : 'if (uCloudDeck > 0.0 && cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }';
+  ? 'if (uPerfCloudClear > 0.5 && DECK_ON && cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }'
+  : 'if (DECK_ON && cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }';
 
 /**
  * three's own <map_fragment>, with the deck's fetch put through the smooth
@@ -1240,18 +1262,23 @@ const CLOUD_CLEAR_RETURN = import.meta.env.DEV
  *
  * At full smooth weight the ordinary tap is not an endpoint of anything — the
  * mix returns the B-spline — and it is taken anyway, in flow that is uniform
- * across the draw, as three's chunk always took it. Taking it only under the
- * weight was measured as the same picture on two engines, but it puts an
- * implicit-LOD fetch under a per-fragment condition, where the language
- * leaves the mip undefined for a quad the condition splits, and the tap's
- * weight there is small rather than zero: a bound, not an identity. This
- * chunk is therefore three's own text plus the filter, exactly as it was, so
- * the deck's picture rests on nothing but the specification.
+ * across the draw, as three's chunk always took it. Two attempts to skip it
+ * there are on record, and both are closed. An implicit-LOD fetch under the
+ * weight was measured as the same picture on two engines, but it puts the
+ * fetch under a per-fragment condition, where the language leaves the mip
+ * undefined for a quad the condition splits, and the tap's weight there is
+ * small rather than zero: a bound, not an identity. A fetch handed explicit
+ * gradients under the same condition has a defined mip and a DIFFERENT one:
+ * against the implicit tap the pixel gate read 25 000 pixels at the
+ * terminator and 38 000 across the far disc, up to 24 levels, on Chromium —
+ * the two LOD paths do not agree. So this chunk is three's own text plus the
+ * filter, exactly as it was, and the deck's picture rests on nothing but the
+ * specification.
  */
 const SURFACE_MAP_FRAGMENT = /* glsl */ `
 #ifdef USE_MAP
 	vec4 sampledDiffuseColor = texture2D( map, vMapUv );
-	if ( uCloudDeck > 0.0 ) {
+	if ( ${SMOOTH_PROBE_GUARD}DECK_ON ) {
 		vec2 mapTexels = vec2( textureSize( map, 0 ) );
 		float smoothW = smoothTexelWeight( vMapUv, mapTexels );
 		if ( smoothW > 0.0 ) {
@@ -1266,7 +1293,36 @@ const SURFACE_MAP_FRAGMENT = /* glsl */ `
 #endif
 `;
 
+/**
+ * The cloud deck's archetype, decided when its program compiles.
+ *
+ * Every surface takes one injected text, and a body's class is a set of
+ * uniforms, so that three's program cache holds one program per map
+ * combination rather than one per body. The deck is the one surface that
+ * already has a program to itself — it is transparent, and opaque-or-not is
+ * part of three's cache key — so on the deck alone the archetype can be a
+ * define at no cost in programs: the compiler then drops every branch the
+ * deck never takes (the sea's gloss, the close-range synthesis, ring shadow,
+ * icy rim, planetshine, limb darkening) instead of carrying them past a
+ * uniform. On an Apple GPU that was measured as eight percent of the deck's
+ * draw. The three macros are the only spelling the injected text uses, so a
+ * program without the define reads exactly as it did: DECK_ON is the deck's
+ * own condition, DECK_OFF its negation, and GROUND_ON(x) is a condition the
+ * deck can never satisfy.
+ */
+const SURFACE_ARCHETYPE_MACROS = /* glsl */ `
+#ifdef CLOUD_DECK
+#define DECK_ON true
+#define DECK_OFF false
+#define GROUND_ON(x) false
+#else
+#define DECK_ON (uCloudDeck > 0.0)
+#define DECK_OFF (uCloudDeck == 0.0)
+#define GROUND_ON(x) (x)
+#endif`;
+
 const SURFACE_FRAGMENT_DECLS = /* glsl */ `
+${SURFACE_ARCHETYPE_MACROS}
 uniform vec3 uNightColor;
 uniform float uNightStrength;
 uniform float uTermWidth;
@@ -1333,8 +1389,8 @@ ${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLS
  */
 const SURFACE_NORMAL_MAPS = /* glsl */ `
 #if defined( USE_NORMALMAP_TANGENTSPACE )
-	vec4 reliefTexel = texture2D( normalMap, vNormalMapUv );
-	if ( uCloudDeck > 0.0 ) {
+${RELIEF_PROBE_OPEN}	vec4 reliefTexel = texture2D( normalMap, vNormalMapUv );
+	if ( ${SMOOTH_PROBE_GUARD}DECK_ON ) {
 		vec2 reliefTexels = vec2( textureSize( normalMap, 0 ) );
 		float reliefSmoothW = smoothTexelWeight( vNormalMapUv, reliefTexels );
 		if ( reliefSmoothW > 0.0 ) {
@@ -1345,7 +1401,7 @@ const SURFACE_NORMAL_MAPS = /* glsl */ `
 	vec3 mapN = reliefTexel.xyz * 2.0 - 1.0;
 	mapN.xy *= normalScale;
 	normal = normalize( tbn * mapN );
-#else
+${RELIEF_PROBE_CLOSE}#else
 #include <normal_fragment_maps>
 #endif
 `;
@@ -1368,7 +1424,7 @@ float cloudAlpha = 1.0;
 vec2 cloudNightUv = vec2(0.0);
 vec2 cloudNightDx = vec2(0.0);
 vec2 cloudNightDy = vec2(0.0);
-if (uCloudDeck > 0.0) {
+if (DECK_ON) {
   // Where this fragment is on the deck, as longitude and latitude. Every
   // derivative the block needs is taken HERE, inside the one branch that is
   // uniform across the draw: a derivative under a per-fragment condition is
@@ -1397,7 +1453,7 @@ if (uCloudDeck > 0.0) {
   vec2 detailUv = vec2(atan(dir.z, dir.x), asin(clamp(dir.y, -1.0, 1.0))) * ${CLOUD_DETAIL_UV_PER_RADIAN.toFixed(7)};
   vec2 duvX = dAngX * ${CLOUD_DETAIL_UV_PER_RADIAN.toFixed(7)};
   vec2 duvY = dAngY * ${CLOUD_DETAIL_UV_PER_RADIAN.toFixed(7)};
-  float cloudDetailW = cloudDetailFade(max(length(duvX), length(duvY)) * ${CLOUD_DETAIL_SIZE.toFixed(1)});
+  float cloudDetailW = ${DETAIL_PROBE_GUARD}cloudDetailFade(max(length(duvX), length(duvY)) * ${CLOUD_DETAIL_SIZE.toFixed(1)});
   // Explicit gradients, for the same reason the angles' were taken by hand: the
   // mip has to be chosen off a quantity that is continuous across the cut.
   // Past the fade the weight is exactly zero: the erosion's mix returns 1 and
@@ -1447,7 +1503,7 @@ ${SURFACE_DETAIL_BODY}
 ${CLOUD_CLEAR_RETURN}`;
 
 const SURFACE_FRAGMENT_BODY = /* glsl */ `{
-  if (uWaterGloss > 0.0) {
+  if (GROUND_ON(uWaterGloss > 0.0)) {
     vec3 glint = reflectedLight.directSpecular;
     outgoingLight -= glint - min(glint, vec3(${OCEAN_GLINT_CAP.toFixed(2)}));
   }
@@ -1466,7 +1522,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // orbital frame of it cannot do. Gated on the water gloss, which is nonzero
   // only where a real water mask says there is sea: one uniform branch, and no
   // fetch at all, on every other surface in the app.
-  if (uWaterGloss > 0.0) {
+  if (GROUND_ON(uWaterGloss > 0.0)) {
     float deckC = cos(uCloudShadowSpin);
     float deckS = sin(uCloudShadowSpin);
     // The deck's own object frame, which is the body frame turned back by the
@@ -1533,7 +1589,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // The deck's night weight is the shared one, but it is NOT the air's: a city
   // glowing through cloud happens on a device that baked no tables at all, so
   // it cannot ride uAirDensity the way the sky's own ambient does.
-  float cloudNight = uCloudDeck > 0.0
+  float cloudNight = DECK_ON
       ? nightWeight(clampCosine(dot(up, normalize(uSunDirWorld)))) * nightKeep
       : 0.0;
   float moonNight = uAirDensity > 0.0
@@ -1565,7 +1621,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   outgoingLight += max(nightAmbient, nightFloor);
   // Planetshine: parent-lit glow on the night side. Albedo-multiplicative,
   // so the eclipse color-dim carries through it automatically.
-  if (uPlanetshineIntensity > 0.0) {
+  if (GROUND_ON(uPlanetshineIntensity > 0.0)) {
     float pl = max(dot(normalize(normal), normalize(vPlanetshineViewDir)), 0.0);
     outgoingLight += diffuseColor.rgb * uPlanetshineColor * (uPlanetshineIntensity * pl * (1.0 - dayFactor) * nightKeep);
   }
@@ -1586,7 +1642,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // Icy moons: a cool Fresnel rim on the back-lit limb (ice scatters light).
   // Scaled by the (eclipse-dimmed) albedo brightness so it fades when the
   // moon sits in its parent shadow and no sunlight is there to scatter.
-  if (uIcyRim > 0.5) {
+  if (GROUND_ON(uIcyRim > 0.5)) {
     float rim = pow(1.0 - max(dot(normalize(normal), normalize(vViewPosition)), 0.0), 3.0);
     float back = max(-dot(normalize(normal), normalize(vSunViewDir)), 0.0);
     float lit = max(diffuseColor.r, max(diffuseColor.g, diffuseColor.b));
@@ -1595,7 +1651,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   vec3 sd = normalize(uSunDirLocal);
   // Ring shadow on the globe: trace toward the Sun to the ring plane
   // (y = 0) and dim by the rings opacity where it lands.
-  if (uRingOuter > 0.0 && abs(sd.y) > 1e-4) {
+  if (GROUND_ON(uRingOuter > 0.0 && abs(sd.y) > 1e-4)) {
     float tHit = -vObjPos.y / sd.y;
     if (tHit > 0.0) {
       vec3 hit = vObjPos + sd * tHit;
@@ -1619,7 +1675,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // Limb darkening: the disc dims toward its edge as the view ray grazes the
   // surface. mu = cos of the view angle — 1 at disc centre, 0 at the limb.
   // Applied last so it shades every lit term equally; 0 disables it.
-  if (uLimbDarkening > 0.0) {
+  if (GROUND_ON(uLimbDarkening > 0.0)) {
     float mu = max(dot(normalize(normal), normalize(vViewPosition)), 0.0);
     outgoingLight *= 1.0 - uLimbDarkening * (1.0 - mu);
   }
@@ -1647,7 +1703,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // is x T; what the air itself sends is + S. Zero on a body with no
   // tables, on a device with no tier, and between a lost context and the
   // re-bake — the same text either way, so one program serves every body.
-  if (uAirDensity > 0.0) {
+  if (uAirDensity > 0.0${AIR_PROBE_GUARD}) {
     // Where the segment ends. A mesh whose own radius is the altitude it stands
     // for ends at its own fragment; the cloud deck names its altitude instead,
     // because its sphere is built at the globe's coarse segment count and the
@@ -2100,6 +2156,10 @@ export function augmentSurfaceMaterial(
       shader.uniforms.uPerfCloudTaps = perfSwitchUniform('cloud-taps');
       shader.uniforms.uPerfCloudClear = perfSwitchUniform('cloud-clear');
       shader.uniforms.uPerfGlintGate = perfSwitchUniform('glint-gate');
+      shader.uniforms.uProbeCloudSmooth = perfSwitchUniform('cloud-probe-smooth');
+      shader.uniforms.uProbeCloudDetail = perfSwitchUniform('cloud-probe-detail');
+      shader.uniforms.uProbeCloudRelief = perfSwitchUniform('cloud-probe-relief');
+      shader.uniforms.uProbeCloudAir = perfSwitchUniform('cloud-probe-air');
     }
     shader.uniforms.uFrameSpin = uFrameSpin;
     shader.uniforms.uSynthDetail = uSynthDetail;
@@ -2127,7 +2187,15 @@ export function augmentSurfaceMaterial(
   // cache key — so every augmented material carries the same set, whether or
   // not its body has any air. Split them per body and the cache forks per body;
   // omit them and the injected lookup does not compile at all.
-  mat.defines = { ...mat.defines, ...atmosphereTableDefines(atmosphereSessionSizes()) };
+  // The deck's archetype is a define (SURFACE_ARCHETYPE_MACROS): the one
+  // surface whose program is already its own. Read once, here — a define is
+  // part of the program key, so a switch that moved mid-session would relink.
+  const deckProgram = archetype === 'cloud' && (import.meta.env.DEV ? perfSwitchOn('cloud-program') : true);
+  mat.defines = {
+    ...mat.defines,
+    ...atmosphereTableDefines(atmosphereSessionSizes()),
+    ...(deckProgram ? { CLOUD_DECK: '' } : {}),
+  };
   mat.needsUpdate = true;
   return fx;
 }

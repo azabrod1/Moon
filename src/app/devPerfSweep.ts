@@ -421,6 +421,13 @@ const EXPECTED_SWITCHES: Record<string, { off: string; on: string; needsReload?:
   'bloom-nodepth': { off: 'Bloom depth buffers back', on: 'Bloom depth buffers off' },
   'depth-discard': { off: 'Depth discard removed', on: 'Depth discard on' },
   'fused-final': { off: 'Fused final pass off', on: 'Fused final pass on', exact: false },
+  'cloud-program': { off: 'Deck program shared again', on: 'Deck program of its own', needsReload: true },
+  // The deck's cost probes: each takes one term off the cloud deck so a device
+  // can price it. Not changes, so never exact and never in the combined row.
+  'cloud-probe-smooth': { off: 'Deck smooth filter back', on: 'Deck smooth filter off', exact: false },
+  'cloud-probe-detail': { off: 'Deck detail term back', on: 'Deck detail term off', exact: false },
+  'cloud-probe-relief': { off: 'Deck relief map back', on: 'Deck relief map off', exact: false },
+  'cloud-probe-air': { off: 'Deck air back', on: 'Deck air off', exact: false },
 };
 
 /**

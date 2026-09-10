@@ -92,8 +92,8 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '2113094c044cbb5b16a863c59dd126e0ca6be1e2410517ca8b42805f16acab74';
-const PROD_FRAGMENT_HASH = 'f345f219aa1f310e30a9526081cd23d945ac6eb57a384a37414b5c8d8b18a566';
+const DEV_FRAGMENT_HASH = 'c79dfaf769cdbb8d635f842cf00f58ab9563a2cc3d0d337d24e654019ffb2fd3';
+const PROD_FRAGMENT_HASH = 'fb84aaaccfd7ab8fa40dfb9de31ca0f529a9554174125a4b9f9ddb3a0533174d';
 const PROD_NIGHT_FRAGMENT_HASH = '7b1b837a3b3d9b6454b6585b37bcb60749ee1e1cbdcb16aea38231ea4fea1c4c';
 
 describe('the injected surface shader', () => {
@@ -114,8 +114,11 @@ describe('the injected surface shader', () => {
       return hash(shader.vertexShader + shader.fragmentShader);
     });
     expect(new Set(texts).size).toBe(1);
-    // The defines are the other half of three's program key.
-    for (const m of [moon, mars, cloud, lit]) expect(m.defines).toEqual(earth.defines);
+    // The defines are the other half of three's program key. The deck alone
+    // carries its archetype as one — it has a program to itself either way,
+    // three keying it on transparency — and every other body shares a set.
+    for (const m of [moon, mars, lit]) expect(m.defines).toEqual(earth.defines);
+    expect(cloud.defines).toEqual({ ...earth.defines, CLOUD_DECK: '' });
     expect(earth.defines).toMatchObject(atmosphereTableDefines(ATMOSPHERE_TABLE_SIZES_FULL));
   });
 
@@ -154,11 +157,20 @@ describe('the injected surface shader', () => {
     // switch-ON reading, moves one of the two hashes and not the other.
     const shader = compile(augmented('earth'));
     const folded = shader.fragmentShader
-      .replace('uniform float uPerfCloudTaps;\nuniform float uPerfCloudClear;\nuniform float uPerfGlintGate;', '')
+      .replace('uniform float uPerfCloudTaps;\nuniform float uPerfCloudClear;\nuniform float uPerfGlintGate;'
+        + '\nuniform float uProbeCloudSmooth;\nuniform float uProbeCloudDetail;'
+        + '\nuniform float uProbeCloudRelief;\nuniform float uProbeCloudAir;', '')
       .replace(/uPerfCloudTaps < 0\.5 \|\| /g, '')
       .replace(/uPerfCloudClear > 0\.5 && /g, '')
-      .replace(/uPerfGlintGate < 0\.5 \|\| /g, '');
-    expect(folded).not.toMatch(/uPerf/);
+      .replace(/uPerfGlintGate < 0\.5 \|\| /g, '')
+      // The deck's cost probes have no cheap reading at all: the production
+      // text is the text without them.
+      .replace(/uProbeCloudSmooth < 0\.5 && /g, '')
+      .replace('\tif (uProbeCloudRelief < 0.5 || DECK_OFF) {\n', '')
+      .replace('\t} // cloud relief probe\n', '')
+      .replace('uProbeCloudDetail > 0.5 ? 0.0 : ', '')
+      .replace(' && (uProbeCloudAir < 0.5 || DECK_OFF)', '');
+    expect(folded).not.toMatch(/uPerf|uProbe/);
     expect(hash(import.meta.env.DEV ? folded : shader.fragmentShader)).toBe(PROD_FRAGMENT_HASH);
     const night = import.meta.env.DEV
       ? earthNightFragmentShader

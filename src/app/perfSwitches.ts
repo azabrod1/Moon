@@ -23,6 +23,21 @@
  * `fused-final` is the exception that is off by default: it is the one item
  * that cannot promise the same pixels (an intermediate half-float rounding
  * disappears), so it is built to be measured and reported, not to be run.
+ *
+ * `cloud-program` is decided when the deck's material compiles — its
+ * archetype becomes a compile-time define rather than a uniform, so the
+ * compiler drops every branch the deck never takes — which is why it is a
+ * reload switch: flipping it mid-session would relink the program inside the
+ * hold being measured.
+ *
+ * The four `cloud-probe-*` keys are not changes at all. Each one removes one
+ * of the cloud deck's terms outright — the smooth magnification filter, the
+ * close-range detail, the relief map, the air in front of the deck — so a
+ * device can say what that term costs, which is the number a decision about
+ * the deck has to rest on: the deck is one draw of the same surface program
+ * the ground uses, and a profiler can price the draw but not the terms inside
+ * it. They are off by default, never exact, never in the combined row, and a
+ * production build carries neither reading of them.
  */
 
 /** One switchable efficiency change. */
@@ -34,7 +49,12 @@ export type PerfSwitchKey =
   | 'r8-maps'
   | 'bloom-nodepth'
   | 'depth-discard'
-  | 'fused-final';
+  | 'fused-final'
+  | 'cloud-program'
+  | 'cloud-probe-smooth'
+  | 'cloud-probe-detail'
+  | 'cloud-probe-relief'
+  | 'cloud-probe-air';
 
 /**
  * What each switch does, in the words a sweep row is labelled with, and where
@@ -60,6 +80,11 @@ export const PERF_SWITCHES: ReadonlyArray<{
   { key: 'bloom-nodepth', label: 'Bloom targets without depth', on: true },
   { key: 'depth-discard', label: 'Scene depth/stencil discard', on: true },
   { key: 'fused-final', label: 'Fused bloom blend + output', on: false },
+  { key: 'cloud-program', label: 'Cloud deck program of its own', on: true, needsReload: true },
+  { key: 'cloud-probe-smooth', label: 'Cloud deck probe: smooth filter off', on: false },
+  { key: 'cloud-probe-detail', label: 'Cloud deck probe: detail term off', on: false },
+  { key: 'cloud-probe-relief', label: 'Cloud deck probe: relief map off', on: false },
+  { key: 'cloud-probe-air', label: 'Cloud deck probe: air off', on: false },
 ];
 
 /** Where each switch stands when nothing has touched it, as a plain literal:
@@ -74,6 +99,11 @@ const DEFAULT_ON: Record<PerfSwitchKey, boolean> = {
   'bloom-nodepth': true,
   'depth-discard': true,
   'fused-final': false,
+  'cloud-program': true,
+  'cloud-probe-smooth': false,
+  'cloud-probe-detail': false,
+  'cloud-probe-relief': false,
+  'cloud-probe-air': false,
 };
 
 const live: Record<string, boolean> = { ...DEFAULT_ON };

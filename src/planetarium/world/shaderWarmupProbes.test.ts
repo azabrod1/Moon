@@ -20,6 +20,10 @@ describe('shader warm-up probes', () => {
       expect(mat.normalMapType).toBe(THREE.TangentSpaceNormalMap);
       // Augmented like every body's surface: the table defines enter the key.
       expect(Object.keys(mat.defines ?? {})).toContain('TRANSMITTANCE_TEXTURE_WIDTH');
+      // The deck's program is the transparent one, and the deck's archetype
+      // is a define on it: a probe without it would warm a program the deck
+      // never draws with, and the deck would link cold on its first frame.
+      expect('CLOUD_DECK' in (mat.defines ?? {})).toBe(mat.transparent);
       expect(mat.onBeforeCompile).not.toBe(THREE.Material.prototype.onBeforeCompile);
       // Never pickable: a probe sits at the origin for the whole session.
       const hits: THREE.Intersection[] = [];

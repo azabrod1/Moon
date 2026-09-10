@@ -286,7 +286,9 @@ export function createGpuProfiler(deps: GpuProfileDeps): GpuProfiler {
   // Hooks live for the run and go back to what they replaced.
   const hooked: { pass: { render: (...args: unknown[]) => void }; own: PropertyDescriptor | undefined }[] = [];
   const hookedObjects: { o: Renderable; before: PropertyDescriptor | undefined; after: PropertyDescriptor | undefined }[] = [];
-  const hookedSet = new WeakSet<object>();
+  // Reset with the hooks: an object seen by one run has to be hooked again by
+  // the next, or a second run in the same session records no draws at all.
+  let hookedSet = new WeakSet<object>();
   const openSpans = new WeakMap<object, Span>();
 
   function hookPasses() {
@@ -348,6 +350,7 @@ export function createGpuProfiler(deps: GpuProfileDeps): GpuProfiler {
       else delete (o as { onAfterRender?: unknown }).onAfterRender;
     }
     hookedObjects.length = 0;
+    hookedSet = new WeakSet<object>();
   }
 
   function finishRun() {

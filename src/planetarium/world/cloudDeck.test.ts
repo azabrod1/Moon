@@ -52,7 +52,8 @@ function mockShader() {
   return {
     uniforms: {} as Record<string, unknown>,
     vertexShader: '#include <common>\nvoid main() {\n#include <begin_vertex>\n}',
-    fragmentShader: '#include <common>\nvoid main() {\n#include <normal_fragment_maps>\n#include <opaque_fragment>\n}',
+    // The map chunk is included as well: the deck's colour tap lives there.
+    fragmentShader: '#include <common>\nvoid main() {\n#include <map_fragment>\n#include <normal_fragment_maps>\n#include <opaque_fragment>\n}',
   };
 }
 
@@ -161,7 +162,7 @@ describe('the deck\'s alpha in the surface augmentation', () => {
     expect(CLOUD_ALBEDO_BLEND).toBeLessThan(1);
   });
 
-  it('stays one compiled program for every body', () => {
+  it('stays one injected text for every body, and one program for every body but the deck', () => {
     // The archetype is uniforms only. A term that forked the text — even by a
     // number interpolated per body — would be a program per body and per tier,
     // and the warm-up probes that pre-compile the app's variants would then be
@@ -172,8 +173,19 @@ describe('the deck\'s alpha in the surface augmentation', () => {
       const next = compiled(a);
       expect(next.shader.vertexShader, a).toBe(first.shader.vertexShader);
       expect(next.shader.fragmentShader, a).toBe(first.shader.fragmentShader);
-      expect(next.mat.defines, a).toEqual(first.mat.defines);
+      // The deck is the one exception in the DEFINES: its archetype is
+      // compiled in. It costs no program, because three already keys the
+      // deck's program on its transparency, and the text is the same text —
+      // the macros are the only spelling the injected text uses.
+      expect(next.mat.defines, a).toEqual(a === 'cloud'
+        ? { ...first.mat.defines, CLOUD_DECK: '' }
+        : first.mat.defines);
     }
+    const glsl = first.shader.fragmentShader;
+    expect(glsl).toContain('#ifdef CLOUD_DECK\n#define DECK_ON true\n#define DECK_OFF false\n#define GROUND_ON(x) false\n#else\n#define DECK_ON (uCloudDeck > 0.0)\n#define DECK_OFF (uCloudDeck == 0.0)\n#define GROUND_ON(x) (x)\n#endif');
+    // ...and no other spelling of the deck's condition survives outside them.
+    expect(glsl.split('uCloudDeck > 0.0')).toHaveLength(2);
+    expect(glsl.split('uCloudDeck == 0.0')).toHaveLength(2);
   });
 });
 
@@ -325,7 +337,7 @@ describe('the deck\'s detail term', () => {
     expect(glsl.match(/textureGrad\(uCloudDetail/g)).toHaveLength(1);
     expect(glsl.match(/uCloudDetail\s*,/g)).toHaveLength(1);
     // ...behind a uniform branch, so every other body pays a comparison.
-    expect(glsl).toContain('if (uCloudDeck > 0.0) {');
+    expect(glsl).toContain('if (DECK_ON) {');
     for (const a of ['airless', 'rocky', 'gas', 'icy', 'earth'] as SurfaceArchetype[]) {
       expect((compiled(a).shader.uniforms.uCloudDetailErode as { value: number }).value, a).toBe(0);
     }
@@ -353,7 +365,7 @@ describe('the deck\'s detail term', () => {
     // against a UNIFORM — the whole draw takes the same side of it, which is
     // what makes the derivative defined.
     const after = glsl.slice(glsl.indexOf('diffuseColor.a *= cloudAlpha;'), glsl.indexOf('#include <opaque_fragment>'));
-    const gloss = after.slice(after.indexOf('if (uWaterGloss > 0.0) {'), after.indexOf('float sunElevSin'));
+    const gloss = after.slice(after.indexOf('if (GROUND_ON(uWaterGloss > 0.0)) {'), after.indexOf('float sunElevSin'));
     expect(after.match(/dFd[xy]\(/g)).toHaveLength(2);
     expect(gloss.match(/dFd[xy]\(/g)).toHaveLength(2);
     // The clear-sky return (CLOUD_CLEAR_RETURN) sits after the last derivative
@@ -363,14 +375,17 @@ describe('the deck\'s detail term', () => {
     const ret = glsl.indexOf('cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }');
     expect(ret).toBeGreaterThan(glsl.indexOf('cloudNightDy = sphereEquirectUvGrad(objDir, dFdy(objDir));'));
     expect(ret).toBeLessThan(glsl.indexOf('diffuseColor.a *= cloudAlpha;'));
-    expect(glsl.slice(ret, glsl.indexOf('if (uWaterGloss > 0.0) {'))).not.toMatch(/dFd[xy]\(|fwidth\(/);
+    expect(glsl.slice(ret, glsl.indexOf('if (GROUND_ON(uWaterGloss > 0.0)) {'))).not.toMatch(/dFd[xy]\(|fwidth\(/);
     // The relief's plain tap is taken once, in uniform flow, as three's chunk
-    // always took it, and the smooth filter mixes from that same texel. An
-    // implicit-LOD fetch under the weight was measured as the same picture,
-    // but only the specification can promise it, and it does not.
+    // always took it, and the smooth filter mixes from that same texel. Two
+    // attempts to skip it at full weight are closed (SURFACE_MAP_FRAGMENT):
+    // an implicit fetch under the weight rests on undefined derivatives, and
+    // an explicit-gradient one under the weight picks a different mip.
     expect(glsl).toContain('vec4 reliefTexel = texture2D( normalMap, vNormalMapUv );');
     expect(glsl.match(/texture2D\( normalMap, vNormalMapUv \)/g)).toHaveLength(1);
     expect(glsl).not.toMatch(/SmoothW < 1\.0/);
+    expect(glsl).not.toContain('textureGrad( map,');
+    expect(glsl).not.toContain('textureGrad( normalMap,');
   });
 
   it('perturbs the normal upstream of the lights, not after them', () => {
@@ -409,7 +424,7 @@ describe('the deck lit from below', () => {
     );
     // The deck's night weight is the SHARED ramp, so the glow fades along the
     // same line the airglow and the sky's ambient do...
-    expect(glsl).toContain('cloudNight = uCloudDeck > 0.0\n      ? nightWeight(');
+    expect(glsl).toContain('cloudNight = DECK_ON\n      ? nightWeight(');
     // ...but not through uAirDensity: a city glowing through cloud happens on a
     // device that baked no tables at all.
     expect(glsl).not.toContain('cloudNight = uAirDensity');

@@ -41,6 +41,7 @@
  * to reach are an order of magnitude further out than that.
  */
 import * as THREE from 'three';
+import { ScreenCopy, canvasSampleCount, createScreenTarget, fitScreenTarget, screenTargetSamples } from '../../app/screenTarget';
 import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
@@ -803,6 +804,19 @@ export class SystemMap {
   /** Whether the corner chart clears its rectangle to the chart's own field
    *  (the shipped look) or draws over the world frame. Dev A/B. */
   private miniOpaque = true;
+  // Where the canvas has no samples of its own (main.ts: the default), the map
+  // and the chart draw onto a screen target with the samples the canvas used
+  // to have and are copied across byte for byte (app/screenTarget.ts). With
+  // `?canvasaa=1` the canvas is sampled and both draw straight onto it, as
+  // they always did. The map's target is the drawing buffer's size and costs
+  // 40 B per device pixel while the map is open (≈53 MB on a phone, ≈150 MB
+  // on a 2560×1440 monitor) — freed on close; the chart's is its rectangle.
+  private readonly canvasSampled: boolean;
+  private readonly screenSamples: number;
+  private mapTarget: THREE.WebGLRenderTarget | null = null;
+  private miniTarget: THREE.WebGLRenderTarget | null = null;
+  private screenCopy: ScreenCopy | null = null;
+  private readonly tmpDrawingBuffer = new THREE.Vector2();
   private miniBounds: MapCameraBounds = { minDist: 0, maxDist: 0, near: 0, far: 0 };
   /** Cost forensics for the corner chart (DEV only): the tick and the draw,
    *  wall ms, most recent first-in-first-out. The construction and first tick
@@ -1133,6 +1147,8 @@ export class SystemMap {
   constructor(renderer: THREE.WebGLRenderer, textures: MapTextureSource) {
     this.renderer = renderer;
     this.textures = textures;
+    this.canvasSampled = canvasSampleCount(renderer) > 0;
+    this.screenSamples = screenTargetSamples(renderer);
     this.scene.background = new THREE.Color(BG_COLOR);
 
     const el = renderer.domElement;
@@ -1578,6 +1594,7 @@ export class SystemMap {
   close(): void {
     if (!this.open) return;
     this.open = false;
+    this.releaseMapTarget();
     this.diving = false;
     this.cam = mapCameraReduce(this.cam, { kind: 'close' });
     this.flyElapsedMs = 0;
@@ -1664,6 +1681,10 @@ export class SystemMap {
    * disposed — the two mapGlobes rules hold to the end.
    */
   dispose(): void {
+    this.releaseMapTarget();
+    this.releaseMiniTarget();
+    this.screenCopy?.dispose();
+    this.screenCopy = null;
     this.close();
     const el = this.renderer.domElement;
     window.removeEventListener('wheel', this.onZoomWheelBeforeDolly, { capture: true });
@@ -2062,7 +2083,11 @@ export class SystemMap {
     const prevExposure = renderer.toneMappingExposure;
     renderer.getViewport(this.tmpViewport);
     renderer.getSize(this.tmpSize);
-    renderer.setRenderTarget(null);
+    // The map target is the drawing buffer's size, and the viewport below is
+    // CSS px that three multiplies by the pixel ratio: the two agree because
+    // the target is refitted to the drawing buffer on every frame.
+    const target = this.canvasSampled ? null : this.ensureMapTarget();
+    renderer.setRenderTarget(target);
     renderer.setScissorTest(false);
     renderer.setViewport(0, 0, this.tmpSize.x, this.tmpSize.y);
     renderer.autoClear = true;
@@ -2081,6 +2106,7 @@ export class SystemMap {
     // renderer on the map's target/viewport/autoClear/exposure state.
     try {
       renderer.render(this.scene, this.camera);
+      if (target) this.ensureScreenCopy().copy(renderer, target);
     } finally {
       renderer.setRenderTarget(prevTarget);
       renderer.setScissorTest(prevScissor);
@@ -2128,6 +2154,7 @@ export class SystemMap {
   closeMini(): void {
     if (!this.miniOpen) return;
     this.miniOpen = false;
+    this.releaseMiniTarget();
     if (blendUnpark(this.blendState) && this.sampled) {
       this.recompressOrbits();
       this.recomputeExtent();
@@ -2260,17 +2287,31 @@ export class SystemMap {
     renderer.getClearColor(this.tmpClearColor);
     const prevClearAlpha = renderer.getClearAlpha();
     try {
-      renderer.setRenderTarget(null);
+      // Onto the chart target, the rectangle's size in device pixels, where the
+      // canvas has no samples; onto the canvas, inside the rectangle, where it has.
+      const target = this.canvasSampled ? null : this.ensureMiniTarget(draw.widthDevicePx, draw.heightDevicePx);
+      renderer.setRenderTarget(target);
       // The world frame outside the rectangle has to survive untouched, so the
       // pass clears nothing on its own account.
       renderer.autoClear = false;
       // The world's near-Sun auto-exposure is live; the chart draws at neutral
       // and hands the world's value straight back.
       renderer.toneMappingExposure = MAP_EXPOSURE;
-      renderer.setViewport(draw.left, draw.bottom, draw.width, draw.height);
-      renderer.setScissor(draw.left, draw.bottom, draw.width, draw.height);
+      // The rect in CSS px either way (three multiplies by the pixel ratio, and
+      // the snap keeps that exact); on the target it sits at the origin.
+      const left = target ? 0 : draw.left;
+      const bottom = target ? 0 : draw.bottom;
+      renderer.setViewport(left, bottom, draw.width, draw.height);
+      renderer.setScissor(left, bottom, draw.width, draw.height);
       renderer.setScissorTest(true);
       if (!this.miniOpaque) this.scene.background = null;
+      if (target && !this.miniOpaque) {
+        // The transparent A/B on a target: the ground is a cleared alpha-0
+        // field, composited premultiplied onto the world frame below. On the
+        // canvas the world frame itself is the ground.
+        renderer.setClearColor(0x000000, 0);
+        renderer.clear(true, false, false);
+      }
       // A masked-off depth buffer would swallow the clear silently.
       renderer.state.buffers.depth.setMask(true);
       renderer.clearDepth();
@@ -2278,6 +2319,13 @@ export class SystemMap {
       // drawn at the canvas's would come out a fifth of a pixel wide.
       for (const o of this.orbits) o.material.resolution.set(draw.width, draw.height);
       renderer.render(this.scene, this.miniCamera);
+      if (target) {
+        // Into the rectangle on the canvas: the bytes the canvas would have drawn.
+        renderer.setRenderTarget(null);
+        renderer.setViewport(draw.left, draw.bottom, draw.width, draw.height);
+        renderer.setScissor(draw.left, draw.bottom, draw.width, draw.height);
+        this.ensureScreenCopy().copy(renderer, target, !this.miniOpaque);
+      }
     } finally {
       const el = renderer.domElement;
       for (const o of this.orbits) {
@@ -2306,6 +2354,37 @@ export class SystemMap {
    *  its rectangle to the chart's own field. */
   setMiniOpaque(opaque: boolean): void {
     this.miniOpaque = opaque;
+  }
+
+  // ── The screen targets ──────────────────────────────────────────────────
+
+  private ensureMapTarget(): THREE.WebGLRenderTarget {
+    this.renderer.getDrawingBufferSize(this.tmpDrawingBuffer);
+    const { x: w, y: h } = this.tmpDrawingBuffer;
+    if (!this.mapTarget) this.mapTarget = createScreenTarget(w, h, this.screenSamples);
+    else fitScreenTarget(this.mapTarget, w, h);
+    return this.mapTarget;
+  }
+
+  private ensureMiniTarget(w: number, h: number): THREE.WebGLRenderTarget {
+    if (!this.miniTarget) this.miniTarget = createScreenTarget(w, h, this.screenSamples);
+    else fitScreenTarget(this.miniTarget, w, h);
+    return this.miniTarget;
+  }
+
+  private ensureScreenCopy(): ScreenCopy {
+    return (this.screenCopy ??= new ScreenCopy());
+  }
+
+  /** A target goes with the view that used it: the map's on close, the chart's when it closes. */
+  private releaseMapTarget(): void {
+    this.mapTarget?.dispose();
+    this.mapTarget = null;
+  }
+
+  private releaseMiniTarget(): void {
+    this.miniTarget?.dispose();
+    this.miniTarget = null;
   }
 
   /** Dev forensics: what the corner chart costs and what pose it is holding.

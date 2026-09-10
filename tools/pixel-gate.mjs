@@ -53,6 +53,11 @@ const hideClouds = flag('hideclouds');
 // the same both times, and each capture still waits for the frame to stop
 // moving before it is taken.
 const reloadKey = arg('reload', '');
+// `--reloadq=<query>` is the same two-boot comparison for something that is not a
+// switch but a URL parameter — `canvasaa=1` puts the canvas's own samples back.
+const reloadQuery = arg('reloadq', '');
+// `--extra='&nofloat=1'` goes on every boot, both halves alike.
+const extraQuery = arg('extra', '');
 const keepAll = flag('keep');
 // The clock the whole run is frozen at. A pose is a camera and a date; nothing
 // else may move between the two halves of a comparison.
@@ -93,10 +98,28 @@ const POSES = {
   // the ground shader's own terms with the Earth-only ones switched off.
   moon: { call: ['frame', 'Moon', 0.85, 30], time: '2026-03-21T09:20:00Z', hold: 2500 },
   mars: { call: ['frame', 'Mars', 0.8, 25], time: '2026-03-21T09:20:00Z', hold: 2000 },
+  // The two things that draw straight onto the canvas: the System Map and the
+  // corner chart. Not switch poses, so only a `--poses=` that names them runs
+  // them; `also` runs after the pose is taken and `undo` before the next pose.
+  map: { call: ['jumpTo', 'Earth', 1], also: ['openMap'], undo: ['closeMap'], time: '2026-03-21T09:20:00Z', hold: 2500, optional: true },
+  chart: { call: ['limbView', 'Earth', 1.05, 55, 0, 0.35], also: ['setMiniChart', true], undo: ['setMiniChart', false], time: '2026-03-21T09:20:00Z', hold: 2500, optional: true },
 };
 
-const poseNames = arg('poses', Object.keys(POSES).join(','))
+const poseNames = arg('poses', Object.keys(POSES).filter((k) => !POSES[k].optional).join(','))
   .split(',').map((s) => s.trim()).filter(Boolean);
+
+/** Take a pose: the clock, the camera call, then its `also` step. False when the camera call refused. */
+async function takePose(page, pose) {
+  const [fn, ...args] = pose.call;
+  await page.evaluate(([t]) => window.__moon.setTimeMs(t), [Date.parse(pose.time ?? TIME_ISO)]);
+  const posed = await page.evaluate(([f, a]) => window.__moon[f](...a), [fn, args]);
+  if (!posed) return false;
+  if (pose.also) await page.evaluate(([f, a]) => { window.__moon[f](...a); }, [pose.also[0], pose.also.slice(1)]);
+  return true;
+}
+async function undoPose(page, pose) {
+  if (pose.undo) await page.evaluate(([f, a]) => { window.__moon[f](...a); }, [pose.undo[0], pose.undo.slice(1)]);
+}
 
 mkdirSync(outDir, { recursive: true });
 
@@ -193,7 +216,7 @@ try {
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
 
   const boot = async (off) => {
-    const q = off ? `&perfoff=${off}` : '';
+    const q = (off ? (reloadQuery ? `&${reloadQuery}` : `&perfoff=${off}`) : '') + extraQuery;
     await page.goto(`${url}/?auto=planetarium${q}`, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => !!(window.__moon && window.__moon.ready && window.__moon.ready()), { timeout: 90000 });
     await page.waitForFunction(() => {
@@ -209,7 +232,7 @@ try {
     });
   };
 
-  await page.goto(`${url}/?auto=planetarium`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${url}/?auto=planetarium${extraQuery}`, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => !!(window.__moon && window.__moon.ready && window.__moon.ready()), { timeout: 90000 });
   await page.waitForFunction(() => {
     const ls = document.getElementById('loading-screen');
@@ -275,20 +298,18 @@ try {
     return last;
   };
 
-  if (reloadKey) {
+  const reloadTag = reloadQuery || reloadKey;
+  if (reloadTag) {
     // Both halves of the A/B, pose by pose, out of two boots of the same page.
     const shots = [];
-    for (const off of ['', reloadKey]) {
+    for (const off of ['', reloadTag]) {
       await boot(off);
       const half = {};
       let warmedBoot = false;
       for (const poseName of poseNames) {
         const pose = POSES[poseName];
         if (!pose) continue;
-        const [fn, ...args] = pose.call;
-        await page.evaluate(([t]) => window.__moon.setTimeMs(t), [Date.parse(pose.time ?? TIME_ISO)]);
-        const posed = await page.evaluate(([f, a]) => window.__moon[f](...a), [fn, args]);
-        if (!posed) { console.log(`[gate] pose ${poseName} refused`); continue; }
+        if (!(await takePose(page, pose))) { console.log(`[gate] pose ${poseName} refused`); continue; }
         await page.waitForTimeout(pose.hold ?? 2000);
         await page.waitForFunction(() => {
           const st = window.__moon.sectors?.();
@@ -297,6 +318,7 @@ try {
         await page.waitForTimeout(600);
         if (!warmedBoot) { warmedBoot = true; await page.waitForTimeout(WARM_MS); }
         half[poseName] = await settleUntilStill(poseName);
+        await undoPose(page, pose);
       }
       shots.push(half);
     }
@@ -305,7 +327,7 @@ try {
       const off = shots[1][poseName];
       if (!on || !off) continue;
       const d = diffPngs(off, on);
-      const tag = `${reloadKey}__${poseName}`;
+      const tag = `${reloadTag.replace(/[^\w.-]+/g, '_')}__${poseName}`;
       const bad = d.pixels !== 0;
       if (bad || keepAll) {
         writeFileSync(path.join(outDir, `${tag}.off.png`), off);
@@ -313,8 +335,8 @@ try {
         if (bad && d.worst) worstCrop(off, on, d.worst, path.join(outDir, `${tag}.worst6x.png`));
       }
       if (bad && !reportOnly) failures++;
-      rows.push({ key: reloadKey, pose: poseName, diff: d });
-      console.log(`[gate] ${engine} ${reloadKey} @ ${poseName}: ${d.pixels === 0 ? 'ZERO'
+      rows.push({ key: reloadTag, pose: poseName, diff: d });
+      console.log(`[gate] ${engine} ${reloadTag} @ ${poseName}: ${d.pixels === 0 ? 'ZERO'
         : `${d.pixels} px, max ${d.maxAbs}, mean ${d.meanAbs.toFixed(2)} at ${d.worst.x},${d.worst.y}`}`);
     }
     poseNames.length = 0;
@@ -324,11 +346,7 @@ try {
   for (const poseName of poseNames) {
     const pose = POSES[poseName];
     if (!pose) { console.log(`[gate] unknown pose ${poseName}`); continue; }
-    const [fn, ...args] = pose.call;
-    const iso = pose.time ?? TIME_ISO;
-    await page.evaluate(([t]) => window.__moon.setTimeMs(t), [Date.parse(iso)]);
-    const posed = await page.evaluate(([f, a]) => window.__moon[f](...a), [fn, args]);
-    if (!posed) { console.log(`[gate] pose ${poseName} refused`); continue; }
+    if (!(await takePose(page, pose))) { console.log(`[gate] pose ${poseName} refused`); continue; }
     await page.waitForTimeout(pose.hold ?? 2000);
     // Tiles converged: nothing may land between the two halves of a comparison.
     await page.waitForFunction(() => {
@@ -387,6 +405,7 @@ try {
       const noiseNote = noise.pixels === 0 ? '' : `  [pose noise ${noise.pixels} px, max ${noise.maxAbs}]`;
       console.log(`[gate] ${engine} ${key} @ ${poseName}: ${verdict}${noiseNote}`);
     }
+    await undoPose(page, pose);
   }
 
   if (errors.length) {

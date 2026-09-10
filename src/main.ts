@@ -26,6 +26,7 @@ import { setBloomInternalDepth } from './app/bloomTargets';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass } from './app/FusedOutputPass';
 import type { GpuProfiler, GpuProfileOptions } from './app/devGpuProfile';
+import { ScreenCopy, canvasSampleCount, createScreenTarget, fitScreenTarget, screenTargetSamples } from './app/screenTarget';
 import { bitmapDecodePath } from './planetarium/world/textureBitmapLoader';
 import { BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
 import { createLensPass, devSetLensPassOff, updateLensPass, type LensParams } from './app/LensPass';
@@ -89,15 +90,17 @@ debugLog('Device detection', {
 let renderer: THREE.WebGLRenderer;
 try {
   renderer = new THREE.WebGLRenderer({
-    // Multisamples the canvas backbuffer only, which the no-float direct path
-    // and the System Map draw into. The composer path renders the scene into
-    // its own target, and that target carries its own sample count
-    // (buildComposer, app/renderResolution.ts) — so on that path the canvas
-    // receives one full-screen quad and its samples buy nothing but the
-    // resolve. `?canvasaa=0` asks for a context without them; a context
-    // attribute, so it needs a reload, and honoured in production because
-    // what that resolve costs is a question only the slow device can answer.
-    antialias: new URLSearchParams(location.search).get('canvasaa') !== '0',
+    // No samples of its own. The composer path renders the scene into its own
+    // target, which carries its own sample count (buildComposer,
+    // app/renderResolution.ts), and hands the canvas one full-screen quad: the
+    // canvas's samples smoothed nothing there and their resolve cost 2.9 ms of
+    // an iPhone's frame (20 %). What used to draw straight onto the canvas —
+    // the no-float direct path, the System Map, the corner chart — draws onto
+    // a screen target with the samples it had (app/screenTarget.ts) and is
+    // copied across. `?canvasaa=1` puts the canvas's samples back and every
+    // one of those draws onto the canvas as before: the kill switch, and the
+    // A/B's "before". A context attribute, so it takes a reload.
+    antialias: new URLSearchParams(location.search).get('canvasaa') === '1',
     powerPreference: 'high-performance',
     // The orbit-line/décor stencil contract (world/orbitLineStencil.ts) needs
     // a stencil buffer on the default framebuffer for the no-float direct
@@ -158,11 +161,22 @@ const supersampleFallback = useBloom && (sceneSampleCounts.length === 0 || msaaO
 // renderer-details log below reads the target ratio at module init.
 let pixelRatioPin: number | null = null;
 
+// What the canvas really got (a request is not always honoured) and the
+// samples a screen target carries here. Read once: neither can change.
+const canvasSamples = canvasSampleCount(renderer);
+const canvasSampled = canvasSamples > 0;
+const screenSamples = screenTargetSamples(renderer);
+if (new URLSearchParams(location.search).get('canvasaa') === '1' && !canvasSampled) {
+  debugWarn('canvasaa=1 asked for canvas samples and the context gave none');
+}
+
 try {
   const gl = renderer.getContext();
   debugLog('Renderer ready', {
     shadowMap: renderer.shadowMap.enabled,
     useBloom,
+    canvasSamples,
+    screenSamples,
     sceneSamples: getSceneTargetSamples(getTargetPixelRatio()),
     sceneSampleCounts,
     isMobile,
@@ -244,6 +258,25 @@ function ensureDirectLensTexture(): THREE.FramebufferTexture {
     directLensTexture.colorSpace = THREE.NoColorSpace;
   }
   return directLensTexture;
+}
+
+// The direct paths' screen target (app/screenTarget.ts): where the canvas has
+// no samples, the no-float lens path and the bare direct path draw into this
+// and copy across, exactly the bytes they used to draw onto the sampled
+// canvas. Sized to the drawing buffer on every use; built by buildComposer's
+// direct branches and dropped with them.
+let screenTarget: THREE.WebGLRenderTarget | null = null;
+let screenCopy: ScreenCopy | null = null;
+
+function ensureScreenTarget(): THREE.WebGLRenderTarget {
+  renderer.getDrawingBufferSize(directLensSize);
+  if (!screenTarget) screenTarget = createScreenTarget(directLensSize.x, directLensSize.y, screenSamples, { stencil: true, linear: true });
+  else fitScreenTarget(screenTarget, directLensSize.x, directLensSize.y);
+  return screenTarget;
+}
+
+function ensureScreenCopy(): ScreenCopy {
+  return (screenCopy ??= new ScreenCopy());
 }
 
 /** Capture pins (pinCapture): a golden has to be reproducible, and three of
@@ -354,6 +387,8 @@ function buildComposer(
   depthDiscardPass = null;
   directLensTexture?.dispose();
   directLensTexture = null;
+  screenTarget?.dispose();
+  screenTarget = null;
 
   // Whichever path is taken below, its passes (or, straight to canvas, the
   // scene's own materials) link their programs on the first render that uses
@@ -375,15 +410,17 @@ function buildComposer(
     return;
   }
 
-  // No float FBO: render straight to the default framebuffer first, where
-  // Three applies the normal HDR tone map, copy those display-referred bytes,
-  // then lens-resample them back to screen in renderScene(). This avoids the
-  // release-blocking HDR clamp caused by rendering linear light into RGBA8.
+  // No float FBO: render to a screen target first (or, with the canvas
+  // sampled, straight to the canvas), where Three applies the normal HDR tone
+  // map, then lens-resample those display-referred bytes to screen in
+  // renderScene(). This avoids the release-blocking HDR clamp caused by
+  // rendering linear light into RGBA8.
   if (wantsLens && !useBloom) {
     planetariumLens.strength = lensRequestedStrength;
     lensPass = createLensPass();
     lensPass.renderToScreen = true;
-    ensureDirectLensTexture();
+    if (canvasSampled) ensureDirectLensTexture();
+    else ensureScreenTarget();
     applyDesignFov(planetariumCamera, planetariumLens.designFovDeg);
     return;
   }
@@ -543,6 +580,10 @@ function devRenderTargets() {
   return {
     pixelRatio: renderer.getPixelRatio(),
     targetPixelRatio: getTargetPixelRatio(),
+    // The canvas's own samples (0 unless `?canvasaa=1`) and a screen target's.
+    canvasSamples,
+    screenSamples,
+    screenTarget: size(screenTarget),
     bloomRatio: bloomPixelRatio(window.devicePixelRatio, isMobile),
     drawingBuffer: { w: buffer.x, h: buffer.y, mpx: Math.round((buffer.x * buffer.y) / 1e4) / 100 },
     canvas: { w: canvas.width, h: canvas.height, cssW: canvas.clientWidth, cssH: canvas.clientHeight },
@@ -634,12 +675,17 @@ function renderScene(cam: THREE.Camera) {
       // the samples, not a full-screen quad (see buildComposer).
       if (sceneTarget && composer.readBuffer !== sceneTarget) composer.swapBuffers();
       composer.render();
-    } else if (lensPass && directLensTexture && cam === planetariumCamera) {
+    } else if (lensPass && cam === planetariumCamera) {
+      // No composer and a lens pass: buildComposer's no-float branch.
       // Tone map to the hardware backbuffer first, then copy and warp that LDR
       // image. `ShaderPass.render` only reads the fake target's texture when its
       // renderToScreen flag is set; the write target is intentionally unused.
-      renderer.setRenderTarget(null);
+      // Onto the screen target where the canvas has no samples; onto the
+      // canvas itself where it has (`?canvasaa=1`).
+      const direct = canvasSampled ? null : ensureScreenTarget();
+      renderer.setRenderTarget(direct);
       renderer.render(scene, cam);
+      renderer.setRenderTarget(null);
       // Synced BEFORE the flag is read: updateLensPass is what sets the flag,
       // from the strength, every frame. Under the flag it would run only while
       // the pass was already on, and one frame at zero strength (an aspect the
@@ -649,8 +695,16 @@ function renderScene(cam: THREE.Camera) {
       // path calls the pass by hand, so the flag has to be read by hand too.
       // Skipping it leaves the tone-mapped frame already on screen.
       if (lensPass.enabled) {
-        const texture = ensureDirectLensTexture();
-        renderer.copyFramebufferToTexture(texture);
+        // The lens resamples display-referred bytes: the screen target's own
+        // texture, or a copy of the canvas where the frame went there.
+        let texture: THREE.Texture;
+        if (direct) {
+          texture = direct.texture;
+        } else {
+          const copy = ensureDirectLensTexture();
+          renderer.copyFramebufferToTexture(copy);
+          texture = copy;
+        }
         lensPass.render(
           renderer,
           null as unknown as THREE.WebGLRenderTarget,
@@ -658,9 +712,18 @@ function renderScene(cam: THREE.Camera) {
           0,
           false,
         );
+      } else if (direct) {
+        ensureScreenCopy().copy(renderer, direct);
       }
-    } else {
+    } else if (canvasSampled) {
       renderer.render(scene, cam);
+    } else {
+      // The bare direct path (a non-planetarium camera with bloom off): the
+      // screen target, then the copy.
+      const direct = ensureScreenTarget();
+      renderer.setRenderTarget(direct);
+      renderer.render(scene, cam);
+      ensureScreenCopy().copy(renderer, direct);
     }
   } finally {
     if (import.meta.env.DEV) {

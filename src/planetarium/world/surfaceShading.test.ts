@@ -732,7 +732,8 @@ describe('the haze fade and the glint cap', () => {
     // the mirror term. The shadow must cut from what the cap left, or under
     // cloud the light goes negative and bloom paints a coloured core.
     const frag = fragmentOf('airless');
-    expect(frag).toContain('vec3 glintCapped = min(reflectedLight.directSpecular, vec3(2.50));');
+    expect(frag).toContain(`vec3 glintCapped = min(reflectedLight.directSpecular, vec3(${
+      import.meta.env.DEV ? 'uGlintCap' : '2.50'}));`);
     expect(frag).toContain('outgoingLight -= glintCapped * (1.0 - glintKeep);');
     expect(frag).not.toMatch(/reflectedLight\.directSpecular \* \(1\.0 - glintKeep\)/);
   });
@@ -772,7 +773,8 @@ describe('the haze fade and the glint cap', () => {
     expect(text).toContain('uniform float uAirBlend;');
     expect(text).toContain('outgoingLight = mix(outgoingLight, outgoingLight * airT + airS, uAirBlend);');
     expect(OCEAN_GLINT_CAP).toBeGreaterThan(1);
-    expect(text).toContain(`outgoingLight -= glint - min(glint, vec3(${OCEAN_GLINT_CAP.toFixed(2)}));`);
+    expect(text).toContain(`outgoingLight -= glint - min(glint, vec3(${
+      import.meta.env.DEV ? 'uGlintCap' : OCEAN_GLINT_CAP.toFixed(2)}));`);
   });
 });
 

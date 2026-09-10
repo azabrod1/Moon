@@ -387,6 +387,23 @@ export const OCEAN_GLINT_CAP = 2.50;
  *  two Fresnel curves per fragment, or handing the sea an ior of 1.33. */
 export const OCEAN_SPECULAR_KEEP = 0.5;
 
+/**
+ * The cap and the keep as the shader reads them. In a development build they
+ * are uniforms, so the glint can be tuned live at a pose (`__moon.glint`) and
+ * a sheet of candidates captured from one page load; a production build
+ * compiles the constants above as literals and carries no uniform, and the
+ * fold test pins that the two texts are the same text.
+ */
+export const devGlintUniforms: {
+  uGlintCap: { value: number };
+  uGlintKeep: { value: number };
+} = {
+  uGlintCap: { value: OCEAN_GLINT_CAP },
+  uGlintKeep: { value: OCEAN_SPECULAR_KEEP },
+};
+const GLINT_CAP_GLSL = import.meta.env.DEV ? 'uGlintCap' : OCEAN_GLINT_CAP.toFixed(2);
+const GLINT_KEEP_GLSL = import.meta.env.DEV ? 'uGlintKeep' : OCEAN_SPECULAR_KEEP.toFixed(4);
+
 /** The cloud deck's colour map, and the drift its own frame carries on top of
  *  the body's. Shared by every augmented surface so the ocean's mirror term can
  *  be cut where cloud stands between it and the Sun; the map is whatever rung
@@ -1199,6 +1216,10 @@ uniform float uProbeCloudDetail;
 uniform float uProbeCloudRelief;
 uniform float uProbeCloudAir;`;
 
+/** The glint's tuning uniforms (devGlintUniforms), development builds only. */
+const DEV_TUNING_DECLS = /* glsl */ `uniform float uGlintCap;
+uniform float uGlintKeep;`;
+
 /**
  * The cloud deck's cost probes (app/perfSwitches.ts, `cloud-probe-*`): each
  * one takes a whole term off the deck so a device can price it. None of them
@@ -1359,7 +1380,8 @@ uniform vec3 uAirlightScale;
 uniform sampler2D uTransmittance;
 uniform sampler2D uIrradiance;
 uniform sampler3D uScattering;
-${import.meta.env.DEV ? PERF_SWITCH_DECLS : ''}
+${import.meta.env.DEV ? `${PERF_SWITCH_DECLS}
+${DEV_TUNING_DECLS}` : ''}
 varying vec3 vSunViewDir;
 varying vec3 vMoonViewDir;
 varying vec3 vObjPos;
@@ -1505,7 +1527,7 @@ ${CLOUD_CLEAR_RETURN}`;
 const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   if (GROUND_ON(uWaterGloss > 0.0)) {
     vec3 glint = reflectedLight.directSpecular;
-    outgoingLight -= glint - min(glint, vec3(${OCEAN_GLINT_CAP.toFixed(2)}));
+    outgoingLight -= glint - min(glint, vec3(${GLINT_CAP_GLSL}));
   }
   // The deck's alpha, worked out with its colour above where the lights could
   // still see both. A deck at a flat opacity dims clear sky by that fraction
@@ -1543,7 +1565,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
     // above already took the rest off, and cutting the uncapped one here would
     // drive the light below zero under cloud, which the bloom then paints as a
     // yellow core in a blue ring.
-    vec3 glintCapped = min(reflectedLight.directSpecular, vec3(${OCEAN_GLINT_CAP.toFixed(2)}));
+    vec3 glintCapped = min(reflectedLight.directSpecular, vec3(${GLINT_CAP_GLSL}));
     // Wherever the Sun is below this fragment's horizon three's own N·L
     // saturates to zero and the capped glint is exactly zero in every channel:
     // the subtraction below is then a subtraction of nothing whatever the
@@ -1557,7 +1579,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
       float deckLum = dot(textureGrad(uCloudShadowMap, deckUv, deckDx, deckDy).rgb,
           vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')}));
       float glintKeep = (1.0 - cloudCoverage(deckLum))
-          * ${OCEAN_SPECULAR_KEEP.toFixed(4)};
+          * ${GLINT_KEEP_GLSL};
       outgoingLight -= glintCapped * (1.0 - glintKeep);
     }
   }
@@ -1798,7 +1820,42 @@ export function surfaceWaterGloss(mat: THREE.Material): boolean {
  *  ROUGHNESS_MAP_* pair), never for the flat stand-in a failed fetch leaves. */
 export function setSurfaceWaterGloss(mat: THREE.Material, on: boolean): void {
   const args = augmentArgs.get(mat);
-  if (args) args.uWaterGloss.value = on ? WATER_GLOSS_GAIN : 0;
+  if (!args) return;
+  args.uWaterGloss.value = on ? waterGlossGain() : 0;
+  if (import.meta.env.DEV) {
+    if (on && !glossyMaterials.has(mat)) {
+      glossyMaterials.add(mat);
+      mat.addEventListener('dispose', () => glossyMaterials.delete(mat));
+    } else if (!on) {
+      glossyMaterials.delete(mat);
+    }
+  }
+}
+
+/** The gain a water mask is read through: OCEAN_ROUGHNESS's, or in a
+ *  development build whatever `setDevOceanRoughness` last asked for. */
+function waterGlossGain(): number {
+  return import.meta.env.DEV
+    ? (ROUGHNESS_MAP_LAND - devOceanRoughness) / (ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER)
+    : WATER_GLOSS_GAIN;
+}
+let devOceanRoughness = OCEAN_ROUGHNESS;
+/** Every material currently reading its map as a water mask, so a live
+ *  roughness change reaches the sea already on screen and not only the next
+ *  sector to arrive. Development builds only; a disposed material leaves. */
+const glossyMaterials = new Set<THREE.Material>();
+
+/** Draw open water at this GGX roughness from now on, on every sea already
+ *  drawn and every one still to come (`__moon.glint`). Development only. */
+export function setDevOceanRoughness(roughness?: number): number {
+  if (!import.meta.env.DEV) return OCEAN_ROUGHNESS;
+  if (roughness === undefined) return devOceanRoughness;
+  devOceanRoughness = roughness;
+  for (const mat of glossyMaterials) {
+    const args = augmentArgs.get(mat);
+    if (args && args.uWaterGloss.value > 0) args.uWaterGloss.value = waterGlossGain();
+  }
+  return devOceanRoughness;
 }
 
 /**
@@ -2160,6 +2217,8 @@ export function augmentSurfaceMaterial(
       shader.uniforms.uProbeCloudDetail = perfSwitchUniform('cloud-probe-detail');
       shader.uniforms.uProbeCloudRelief = perfSwitchUniform('cloud-probe-relief');
       shader.uniforms.uProbeCloudAir = perfSwitchUniform('cloud-probe-air');
+      shader.uniforms.uGlintCap = devGlintUniforms.uGlintCap;
+      shader.uniforms.uGlintKeep = devGlintUniforms.uGlintKeep;
     }
     shader.uniforms.uFrameSpin = uFrameSpin;
     shader.uniforms.uSynthDetail = uSynthDetail;

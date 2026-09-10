@@ -33,7 +33,7 @@ import {
   augmentSurfaceMaterial,
   bindSurfaceAir,
   clearSurfaceAir,
-  type SurfaceArchetype,
+  type SurfaceArchetype, OCEAN_GLINT_CAP, OCEAN_SPECULAR_KEEP,
 } from './surfaceShading';
 
 /**
@@ -92,7 +92,7 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = 'c79dfaf769cdbb8d635f842cf00f58ab9563a2cc3d0d337d24e654019ffb2fd3';
+const DEV_FRAGMENT_HASH = 'ac205fe232b9e413792d743282524ad403adadb77c33e3e5a0bade0a1b4b54d3';
 const PROD_FRAGMENT_HASH = 'fb84aaaccfd7ab8fa40dfb9de31ca0f529a9554174125a4b9f9ddb3a0533174d';
 const PROD_NIGHT_FRAGMENT_HASH = '7b1b837a3b3d9b6454b6585b37bcb60749ee1e1cbdcb16aea38231ea4fea1c4c';
 
@@ -159,7 +159,8 @@ describe('the injected surface shader', () => {
     const folded = shader.fragmentShader
       .replace('uniform float uPerfCloudTaps;\nuniform float uPerfCloudClear;\nuniform float uPerfGlintGate;'
         + '\nuniform float uProbeCloudSmooth;\nuniform float uProbeCloudDetail;'
-        + '\nuniform float uProbeCloudRelief;\nuniform float uProbeCloudAir;', '')
+        + '\nuniform float uProbeCloudRelief;\nuniform float uProbeCloudAir;'
+        + '\nuniform float uGlintCap;\nuniform float uGlintKeep;', '')
       .replace(/uPerfCloudTaps < 0\.5 \|\| /g, '')
       .replace(/uPerfCloudClear > 0\.5 && /g, '')
       .replace(/uPerfGlintGate < 0\.5 \|\| /g, '')
@@ -169,8 +170,11 @@ describe('the injected surface shader', () => {
       .replace('\tif (uProbeCloudRelief < 0.5 || DECK_OFF) {\n', '')
       .replace('\t} // cloud relief probe\n', '')
       .replace('uProbeCloudDetail > 0.5 ? 0.0 : ', '')
-      .replace(' && (uProbeCloudAir < 0.5 || DECK_OFF)', '');
-    expect(folded).not.toMatch(/uPerf|uProbe/);
+      .replace(' && (uProbeCloudAir < 0.5 || DECK_OFF)', '')
+      // The glint's tuning uniforms read as the constants they default to.
+      .replace(/uGlintCap/g, OCEAN_GLINT_CAP.toFixed(2))
+      .replace(/uGlintKeep/g, OCEAN_SPECULAR_KEEP.toFixed(4));
+    expect(folded).not.toMatch(/uPerf|uProbe|uGlint/);
     expect(hash(import.meta.env.DEV ? folded : shader.fragmentShader)).toBe(PROD_FRAGMENT_HASH);
     const night = import.meta.env.DEV
       ? earthNightFragmentShader

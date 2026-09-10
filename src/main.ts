@@ -23,6 +23,7 @@ import { bloomPixelRatio, composerSamples, parseMsaaOverride, targetPixelRatio }
 import { BootRenderGate } from './app/bootRenderGate';
 import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn } from './app/perfSwitches';
 import { setBloomInternalDepth } from './app/bloomTargets';
+import { devGlintUniforms, setDevOceanRoughness } from './planetarium/world/surfaceShading';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass } from './app/FusedOutputPass';
 import type { GpuProfiler, GpuProfileOptions } from './app/devGpuProfile';
@@ -1110,6 +1111,15 @@ function installDevHooks() {
     sectors: () => planetariumMode?.devSectorStats() ?? null,
     /** Pin the render ratio (null hands it back) — the perf sweep's load amplifier, for a harness that profiles rather than sweeps. */
     pinRatio: (ratio: number | null) => devPinPixelRatio(ratio),
+    // The ocean glint's two authored numbers, live: the cap on the peak above
+    // white that the bloom sees, and the flat keep on the mirror term. Returns
+    // the current pair; a production build has neither knob.
+    glint: (opts?: { cap?: number; keep?: number; roughness?: number }) => {
+      if (opts?.cap !== undefined) devGlintUniforms.uGlintCap.value = opts.cap;
+      if (opts?.keep !== undefined) devGlintUniforms.uGlintKeep.value = opts.keep;
+      const roughness = setDevOceanRoughness(opts?.roughness);
+      return { cap: devGlintUniforms.uGlintCap.value, keep: devGlintUniforms.uGlintKeep.value, roughness };
+    },
     /** A GPU profile of the world frame measured on this device, per pass and per object (app/devGpuProfile.ts). */
     gpuProfile: async (opts?: GpuProfileOptions) => {
       if (!gpuProfiler) {
@@ -1341,6 +1351,18 @@ function installDevHooks() {
   // as a property chain so the perf sweep's own `perfArm` can be added later
   // without either set of keys erasing the other.
   installPerfSwitchBridge();
+  // `?glint=0.12` draws open water at that GGX roughness for the session, and
+  // `?glint=0.12,0.4,3` sets the mirror term's keep and cap with it: the same
+  // knobs as __moon.glint, reachable from a phone's address bar. DEV only.
+  if (import.meta.env.DEV) {
+    const glint = new URLSearchParams(location.search).get('glint');
+    if (glint) {
+      const [rough, keep, cap] = glint.split(',').map(Number);
+      if (Number.isFinite(rough)) setDevOceanRoughness(rough);
+      if (Number.isFinite(keep)) devGlintUniforms.uGlintKeep.value = keep;
+      if (Number.isFinite(cap)) devGlintUniforms.uGlintCap.value = cap;
+    }
+  }
   debugLog('Dev hooks installed (window.__moon)');
 }
 

@@ -27,7 +27,12 @@ import {
   eclipticToEquatorial,
   sampleOrbitLinePoints,
 } from './planetary';
-import { getElementsFromTable, getStandishElements } from './standish';
+import {
+  TABLE_BLEND_HALF_WIDTH_T,
+  getElementsFromTable,
+  getStandishElements,
+  tableBlendWeight,
+} from './standish';
 import { J2000, KM_PER_AU, RAD } from './constants';
 import { PLANETARIUM_BODIES } from '../planetarium/planets/planetData';
 
@@ -291,14 +296,82 @@ describe('getStandishElements', () => {
     expect(emb.ascendingNodeDeg).toBe(-5.11260389); // T2 EMB node is NOT zero
   });
 
-  it('selects Table 1 only inside 1800–2050', () => {
-    const inside = [J2000, J2000 - 2.0 * 36525, J2000 + 0.5 * 36525]; // 2000, 1800, 2050
+  it('uses Table 1 verbatim inside 1800–2050 and Table 2 verbatim beyond, outside the blend windows', () => {
+    const h = TABLE_BLEND_HALF_WIDTH_T;
+    const inside = [J2000, J2000 + (-2.0 + h) * 36525, J2000 + (0.5 - h) * 36525]; // 2000, 1805, 2045
     for (const jd of inside) {
       expect(getStandishElements('Mercury', jd)).toEqual(getElementsFromTable(1, 'Mercury', jd));
     }
-    const outside = [J2000 - 2.01 * 36525, J2000 + 0.51 * 36525]; // ~1799, ~2051
+    const outside = [J2000 + (-2.0 - h) * 36525, J2000 + (0.5 + h) * 36525]; // 1795, 2055
     for (const jd of outside) {
       expect(getStandishElements('Mercury', jd)).toEqual(getElementsFromTable(2, 'Mercury', jd));
+    }
+  });
+
+  it('blends the tables across the window at each boundary', () => {
+    // The weight: 0 across the fit, 1 beyond it, a smooth ramp in between
+    // that is exactly half way on the boundary itself.
+    expect(tableBlendWeight(0)).toBe(0);
+    expect(tableBlendWeight(-1.9)).toBe(0);
+    expect(tableBlendWeight(0.4)).toBe(0);
+    expect(tableBlendWeight(-2.5)).toBe(1);
+    expect(tableBlendWeight(5)).toBe(1);
+    expect(tableBlendWeight(0.5)).toBeCloseTo(0.5, 12);
+    expect(tableBlendWeight(-2)).toBeCloseTo(0.5, 12);
+    let prev = 0;
+    for (let T = 0.4; T <= 0.6; T += 0.001) {
+      const w = tableBlendWeight(T);
+      expect(w).toBeGreaterThanOrEqual(prev);
+      prev = w;
+    }
+    // On the 2050 boundary the elements sit between the two tables' values.
+    const jd = J2000 + 0.5 * 36525;
+    const one = getElementsFromTable(1, 'Uranus', jd);
+    const two = getElementsFromTable(2, 'Uranus', jd);
+    const mid = getStandishElements('Uranus', jd);
+    expect(mid.semiMajorAxisAU).toBeCloseTo((one.semiMajorAxisAU + two.semiMajorAxisAU) / 2, 12);
+    expect(mid.eccentricity).toBeCloseTo((one.eccentricity + two.eccentricity) / 2, 12);
+  });
+
+  it('carries every body across the 1800 and 2050 boundaries without a step', () => {
+    // An hour at a time through the forty days either side of each boundary,
+    // each hour's second difference (the change in the hourly motion) against
+    // the hourly motion itself. Gravity alone keeps that ratio under ~3e-3
+    // even for Mercury; the raw table handoff put millions of km into one
+    // hour at 2050 for the outer bodies — a ratio in the hundreds — which is
+    // what the blend removes. The same walk over the raw switch is the
+    // control that says the ratio can see it.
+    const hourDays = 1 / 24;
+    const raw = (name: string, jd: number) => {
+      const T = (jd - J2000) / 36525;
+      return computeKeplerPositionEquatorial(getElementsFromTable(T >= -2 && T <= 0.5 ? 1 : 2, name, jd));
+    };
+    const blended = (name: string, jd: number) =>
+      computeKeplerPositionEquatorial(getStandishElements(name, jd));
+    const worstRatio = (name: string, boundaryJd: number, at: typeof raw) => {
+      let worst = 0;
+      let prev: THREE.Vector3 | null = null;
+      let prevStep: THREE.Vector3 | null = null;
+      for (let jd = boundaryJd - 40; jd <= boundaryJd + 40; jd += hourDays) {
+        const pos = at(name, jd);
+        if (prev) {
+          const step = pos.clone().sub(prev);
+          if (prevStep) worst = Math.max(worst, step.clone().sub(prevStep).length() / step.length());
+          prevStep = step;
+        }
+        prev = pos;
+      }
+      return worst;
+    };
+    for (const boundaryJd of [J2000 - 2.0 * 36525, J2000 + 0.5 * 36525]) {
+      for (const planet of PLANETARIUM_BODIES) {
+        if (planet.name === 'Earth') continue; // Meeus, no tables
+        expect(worstRatio(planet.name, boundaryJd, blended), `${planet.name} @ JD ${boundaryJd}`)
+          .toBeLessThan(1e-2);
+      }
+    }
+    for (const name of ['Uranus', 'Neptune', 'Pluto']) {
+      expect(worstRatio(name, J2000 + 0.5 * 36525, raw), `${name} raw handoff`).toBeGreaterThan(1);
     }
   });
 

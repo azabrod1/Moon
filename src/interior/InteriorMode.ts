@@ -22,8 +22,16 @@
  * pattern drift run on it, never on the solar-system clock, and the dev
  * bridge can set and freeze it so a capture is reproducible.
  *
- * The inspector and the evidence popover (phase 1B) and Temperature mode
- * (phase 2B) are still to come; the legend reads the schema already.
+ * Hover and pin (plan §4): a pointer ray is picked on the CPU against the
+ * terraced cut (interiorPick, the same frame and remap the shaders use);
+ * the region under it is emphasised through two uniforms and its legend
+ * row lights; a hover card previews it; a tap or click pins the inspector
+ * (ui/LayerInspector), whose claim rows open the evidence popover
+ * (ui/EvidencePopover). Hovering a legend row emphasises the region in 3D.
+ * On touch a tap pins and a drag orbits. The Esc cascade: the popover, the
+ * picker, the pinned inspector, then the tool itself.
+ *
+ * Temperature mode and the competing-model switch are phase 2B.
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -31,7 +39,7 @@ import { DEG2RAD } from '../shared/math/angles';
 import { isPhoneViewport } from '../shared/dom';
 import { debugLog, debugWarn } from '../shared/debug';
 import { bodyDisplayName } from '../planetarium/surfaceView';
-import { InteriorScene, resolveInteriorBody, BODY_RADIUS, type InteriorBody } from './InteriorScene';
+import { InteriorScene, resolveInteriorBody, BODY_RADIUS, TERRACE_STEP, type InteriorBody } from './InteriorScene';
 import {
   CUT_VIEWS,
   CUT_VIEW_ANGLE_DEG,
@@ -50,10 +58,14 @@ import {
   projectedRadiusPx,
   readableRemap,
   toDisplayFraction,
+  toPhysicalFraction,
   type ReadableRemap,
 } from './interiorGeometry';
+import { createPickHit, pickInterior, type PickHit, type PickLayout, type PickSurface } from './interiorPick';
+import { claimScores, renderHoverCard, renderInspector } from './ui/LayerInspector';
+import { renderEvidencePopover } from './ui/EvidencePopover';
 import { COVERAGE_BADGE, INTERIOR_DEFAULT_BODY, coverageFor, coverageStateFor, defaultModelFor, modelFor } from './data/interiorRegistry';
-import { coverageBulk, type Coverage, type CoverageState } from './data/interiorTypes';
+import { coverageBulk, type ClaimKind, type Coverage, type CoverageState } from './data/interiorTypes';
 import { drawnFromModel, drawnUnresolved, outerFractionsInsideOut, type DrawnModel } from './drawnModel';
 import { BodyPicker } from '../planetarium/ui/BodyPicker';
 import { artParamsFor, depthTint, incandescence, swatchHex, type ArtParams } from './data/artParams';
@@ -84,6 +96,13 @@ const SCALE_BLEND_S = 0.5;
 const FPS_WINDOW = 60;
 /** Recompute the remap when the projected radius moves this much. */
 const REMAP_PX_TOLERANCE = 0.5;
+/** Emphasis eases in and out over this long. */
+const EMPHASIS_S = 0.16;
+/** A press that moves less than this (px) and ends within this (ms) is a tap, not a drag. */
+const TAP_MAX_PX = 8;
+const TAP_MAX_MS = 400;
+/** The hover card sits this far from the pointer. */
+const HOVER_CARD_OFFSET_PX = 14;
 
 export interface InteriorDevRegion {
   key: string;
@@ -91,6 +110,13 @@ export interface InteriorDevRegion {
   outerKm: number;
   /** Outer radius as drawn, a fraction of the disc. */
   displayOuter: number;
+}
+
+export interface InteriorDevHover {
+  surface: PickSurface;
+  regionKey: string;
+  /** Depth below the surface at the hit, km, physical; null on the skin. */
+  depthKm: number | null;
 }
 
 export interface InteriorDevState {
@@ -111,6 +137,11 @@ export interface InteriorDevState {
   ready: boolean;
   fps: number;
   regions: InteriorDevRegion[];
+  /** The hovered, pinned and emphasised regions by key, and the open claim. */
+  hover: string | null;
+  pinned: string | null;
+  evidence: ClaimKind | null;
+  emphasis: { region: string | null; amount: number };
 }
 
 function easeInOutCubic(t: number): number {
@@ -155,12 +186,14 @@ function orbitPose(azimuthDeg: number, elevationDeg: number, distance: number, o
 
 const ORIGIN = new THREE.Vector3(0, 0, 0);
 const tmpLocalUp = new THREE.Vector3();
+const tmpNdc = new THREE.Vector2();
 
 export class InteriorMode {
   private readonly camera: THREE.PerspectiveCamera;
   private readonly interiorScene: InteriorScene;
   private readonly controls: OrbitControls;
   private readonly isMultisampled: () => boolean;
+  private readonly domElement: HTMLElement;
 
   private active = false;
   private onExitCallback: (() => void) | null = null;
@@ -193,6 +226,20 @@ export class InteriorMode {
   private presentationSeconds = 0;
   private frozen = false;
 
+  // Hover, pin and emphasis.
+  private readonly raycaster = new THREE.Raycaster();
+  private readonly pickHit = createPickHit();
+  private readonly pickLayout: PickLayout;
+  private hoverIndex = -1;
+  private legendHoverIndex = -1;
+  private pinnedIndex = -1;
+  private emphasisIndex = -1;
+  private emphasisAmount = 0;
+  /** The claim index open in the popover, −1 when closed. */
+  private evidenceClaim = -1;
+  private tapStart: { x: number; y: number; t: number } | null = null;
+  private readonly reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
   private readonly fpsSamples: number[] = [];
   private topBarPrevDisplay: string | null = null;
 
@@ -205,7 +252,9 @@ export class InteriorMode {
   ) {
     this.camera = camera;
     this.isMultisampled = isMultisampled;
+    this.domElement = renderer.domElement;
     this.interiorScene = new InteriorScene(scene, renderer, floatCapable);
+    this.pickLayout = { frame: this.frame, outerDisplay: [1], terraceStep: TERRACE_STEP };
 
     this.controls = new OrbitControls(camera, renderer.domElement);
     this.controls.enabled = false;
@@ -285,6 +334,12 @@ export class InteriorMode {
     this.interiorScene.setVisible(true);
     this.controls.enabled = true;
     window.addEventListener('keydown', this.handleKeyDown);
+    this.domElement.addEventListener('pointermove', this.handlePointerMove);
+    this.domElement.addEventListener('pointerdown', this.handlePointerDown);
+    this.domElement.addEventListener('pointerup', this.handlePointerUp);
+    this.domElement.addEventListener('pointercancel', this.clearTap);
+    this.domElement.addEventListener('pointerleave', this.handlePointerLeave);
+    window.addEventListener('blur', this.clearTap);
     this.fpsSamples.length = 0;
     this.presentationSeconds = 0;
     this.frozen = false;
@@ -309,6 +364,14 @@ export class InteriorMode {
     if (ui) ui.style.display = 'none';
     this.controls.enabled = false;
     window.removeEventListener('keydown', this.handleKeyDown);
+    this.domElement.removeEventListener('pointermove', this.handlePointerMove);
+    this.domElement.removeEventListener('pointerdown', this.handlePointerDown);
+    this.domElement.removeEventListener('pointerup', this.handlePointerUp);
+    this.domElement.removeEventListener('pointercancel', this.clearTap);
+    this.domElement.removeEventListener('pointerleave', this.handlePointerLeave);
+    window.removeEventListener('blur', this.clearTap);
+    this.clearTap();
+    this.clearSelection();
     this.camera.clearViewOffset();
     const topBar = document.getElementById('top-bar');
     if (topBar) topBar.style.display = this.topBarPrevDisplay ?? '';
@@ -352,6 +415,7 @@ export class InteriorMode {
       window.innerHeight,
     );
     this.refreshRemapIfNeeded();
+    this.advanceEmphasis(dt);
   }
 
   private advanceCut(dt: number): void {
@@ -407,6 +471,7 @@ export class InteriorMode {
       };
     });
     this.interiorScene.applyRegions(looks);
+    this.pickLayout.outerDisplay = looks.map((look) => look.outerDisplay);
   }
 
   /** Each region's look, inside-out like the drawn model, with the family
@@ -461,6 +526,7 @@ export class InteriorMode {
       ? drawnFromModel(model)
       : drawnUnresolved(body.id, body.radiusKm, unresolvedComposition(this.coverage));
     this.remap = null; // the new model's boundaries go out on the next frame
+    this.clearSelection();
     this.renderPanel();
     this.interiorScene.setPose(body, this.utcMs);
     const applied = await this.interiorScene.loadBody(body, () => generation !== this.generation);
@@ -484,6 +550,10 @@ export class InteriorMode {
     });
     const toggle = document.getElementById('interior-readable-toggle') as HTMLInputElement | null;
     toggle?.addEventListener('change', () => this.setReadable(toggle.checked));
+    // The popover's backdrop closes it; the card's own close button too.
+    document.getElementById('interior-evidence')?.addEventListener('click', (event) => {
+      if (event.target === event.currentTarget) this.closeEvidence();
+    });
   }
 
   private renderPanel(): void {
@@ -514,6 +584,22 @@ export class InteriorMode {
         const row = document.createElement('div');
         row.className = 'interior-row';
         row.dataset.region = region.key;
+        row.dataset.index = String(index);
+        row.tabIndex = 0;
+        row.setAttribute('role', 'listitem');
+        row.setAttribute('aria-label', `${region.name}: open details`);
+        // The row is the region: hover emphasises it in 3-D, a click pins it.
+        row.addEventListener('pointerenter', () => this.setLegendHover(index));
+        row.addEventListener('pointerleave', () => {
+          if (this.legendHoverIndex === index) this.setLegendHover(-1);
+        });
+        row.addEventListener('click', () => this.togglePin(index));
+        row.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            this.togglePin(index);
+          }
+        });
         const swatch = document.createElement('i');
         swatch.className = 'interior-swatch';
         const swatchColor = swatchHex(art[index], incandescence(region.temperatureK ?? 0));
@@ -534,10 +620,206 @@ export class InteriorMode {
         legend.append(row);
       }
     }
+    this.syncLegendEmphasis();
+    this.renderPinned();
     this.syncViewButtons();
     this.syncAngleReadout();
     this.setReadable(this.readable);
   }
+
+  // ---- hover, pin, emphasis --------------------------------------------------
+
+  /** The nearest visible surface under a client-space point, or null off the body. */
+  private pickAt(clientX: number, clientY: number): PickHit | null {
+    const rect = this.domElement.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    tmpNdc.set(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+    this.raycaster.setFromCamera(tmpNdc, this.camera);
+    return pickInterior(this.raycaster.ray.origin, this.raycaster.ray.direction, this.pickLayout, this.pickHit);
+  }
+
+  /** Depth below the surface at a display radius, km: through the inverse
+   *  remap, so what the card says is physical whatever the Readable scale did. */
+  private depthKmAtDisplay(radiusDisplay: number): number {
+    const physical = this.remap ? toPhysicalFraction(this.remap, radiusDisplay) : radiusDisplay;
+    return this.drawn.referenceRadiusKm * (1 - Math.min(1, Math.max(0, physical)));
+  }
+
+  private setHover(index: number, clientX: number, clientY: number, depthKm: number | null): void {
+    if (index !== this.hoverIndex) {
+      this.hoverIndex = index;
+      this.syncLegendEmphasis();
+    }
+    const card = document.getElementById('interior-hover');
+    if (!card) return;
+    const region = index >= 0 ? this.drawn.regionsInsideOut[index] : undefined;
+    if (!region || this.picker.isOpen() || this.evidenceClaim >= 0) {
+      card.style.display = 'none';
+      return;
+    }
+    renderHoverCard(card, region, depthKm);
+    card.style.display = 'block';
+    // Beside the pointer, kept inside the viewport.
+    const x = Math.min(clientX + HOVER_CARD_OFFSET_PX, window.innerWidth - card.offsetWidth - 8);
+    const y = Math.min(clientY + HOVER_CARD_OFFSET_PX, window.innerHeight - card.offsetHeight - 8);
+    card.style.left = `${Math.max(8, x)}px`;
+    card.style.top = `${Math.max(8, y)}px`;
+  }
+
+  private clearHover(): void {
+    this.setHover(-1, 0, 0, null);
+  }
+
+  private setLegendHover(index: number): void {
+    this.legendHoverIndex = index;
+  }
+
+  private togglePin(index: number): void {
+    this.setPinned(this.pinnedIndex === index ? -1 : index);
+  }
+
+  private setPinned(index: number): void {
+    if (index === this.pinnedIndex) return;
+    this.pinnedIndex = index;
+    this.closeEvidence();
+    this.renderPinned();
+    this.syncLegendEmphasis();
+  }
+
+  /** The inspector for the pinned region: its own panel on desktop, docked
+   *  under the legend in the sheet on phones. Hidden when nothing is pinned. */
+  private renderPinned(): void {
+    const root = document.getElementById('interior-inspector');
+    if (!root) return;
+    const index = this.pinnedIndex;
+    if (index < 0 || index >= this.drawn.regionsInsideOut.length) {
+      root.style.display = 'none';
+      root.replaceChildren();
+      return;
+    }
+    const phone = isPhoneViewport();
+    const host = document.getElementById(phone ? 'interior-panel' : 'interior-ui');
+    if (host && root.parentElement !== host) host.append(root);
+    root.classList.toggle('docked', phone);
+    renderInspector(root, {
+      drawn: this.drawn,
+      index,
+      coverage: this.coverage,
+      onEvidence: (claimIndex) => this.openEvidence(claimIndex),
+      onClose: () => this.setPinned(-1),
+    });
+    root.style.display = '';
+    root.scrollTop = 0;
+    // In the sheet the inspector sits under the legend: bring it into view.
+    if (phone && host) host.scrollTop = Math.max(0, root.offsetTop - 8);
+  }
+
+  private openEvidence(claimIndex: number): void {
+    const region = this.drawn.regionsInsideOut[this.pinnedIndex];
+    const claim = region?.region?.claims[claimIndex];
+    const root = document.getElementById('interior-evidence');
+    const card = document.getElementById('interior-evidence-card');
+    if (!region || !claim || !root || !card) return;
+    const scores = claimScores({ drawn: this.drawn, index: this.pinnedIndex, coverage: this.coverage });
+    this.evidenceClaim = claimIndex;
+    renderEvidencePopover(card, { regionName: region.name, claim, score: scores[claimIndex], onClose: () => this.closeEvidence() });
+    root.classList.add('visible');
+    this.clearHover();
+    (card.querySelector('.pk-x') as HTMLElement | null)?.focus();
+  }
+
+  private closeEvidence(): void {
+    if (this.evidenceClaim < 0) return;
+    this.evidenceClaim = -1;
+    document.getElementById('interior-evidence')?.classList.remove('visible');
+  }
+
+  /** Nothing hovered, pinned or open: a body or model change, or leaving. */
+  private clearSelection(): void {
+    this.closeEvidence();
+    this.pinnedIndex = -1;
+    this.legendHoverIndex = -1;
+    this.clearHover();
+    this.renderPinned();
+    this.emphasisIndex = -1;
+    this.emphasisAmount = 0;
+    this.interiorScene.setEmphasis(-1, 0);
+  }
+
+  /** What the faces emphasise: a hovered legend row, else the hovered region, else the pinned one. */
+  private emphasisTarget(): number {
+    if (this.legendHoverIndex >= 0) return this.legendHoverIndex;
+    if (this.hoverIndex >= 0) return this.hoverIndex;
+    return this.pinnedIndex;
+  }
+
+  private advanceEmphasis(dt: number): void {
+    const target = this.emphasisTarget();
+    const step = this.reducedMotion.matches ? 1 : dt / EMPHASIS_S;
+    if (target >= 0) {
+      if (target !== this.emphasisIndex) {
+        this.emphasisIndex = target;
+        this.emphasisAmount = Math.min(this.emphasisAmount, 0.5); // a switch re-eases part way
+      }
+      this.emphasisAmount = Math.min(1, this.emphasisAmount + step);
+    } else {
+      this.emphasisAmount = Math.max(0, this.emphasisAmount - step);
+      if (this.emphasisAmount === 0) this.emphasisIndex = -1;
+    }
+    this.interiorScene.setEmphasis(this.emphasisIndex, this.emphasisAmount);
+  }
+
+  /** The legend's rows follow the 3-D state: hot for the hovered region, pinned for the pinned one. */
+  private syncLegendEmphasis(): void {
+    const legend = document.getElementById('interior-legend');
+    if (!legend) return;
+    for (const row of legend.querySelectorAll<HTMLElement>('.interior-row')) {
+      const index = Number(row.dataset.index);
+      row.classList.toggle('hot', index === this.hoverIndex);
+      row.classList.toggle('pinned', index === this.pinnedIndex);
+    }
+  }
+
+  // Pointer: hover on a fine pointer; a tap pins and a drag orbits on any.
+  private handlePointerMove = (event: PointerEvent) => {
+    if (!this.active || event.pointerType === 'touch') return;
+    if (this.tapStart && Math.hypot(event.clientX - this.tapStart.x, event.clientY - this.tapStart.y) > TAP_MAX_PX) {
+      this.clearHover(); // dragging the orbit
+      return;
+    }
+    const hit = this.pickAt(event.clientX, event.clientY);
+    if (hit && hit.surface !== 'skin') {
+      this.setHover(hit.regionIndex, event.clientX, event.clientY, this.depthKmAtDisplay(hit.radiusDisplay));
+    } else {
+      this.clearHover();
+    }
+  };
+
+  private handlePointerDown = (event: PointerEvent) => {
+    if (!this.active) return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    this.tapStart = { x: event.clientX, y: event.clientY, t: performance.now() };
+  };
+
+  private clearTap = () => {
+    this.tapStart = null;
+  };
+
+  private handlePointerUp = (event: PointerEvent) => {
+    const tap = this.tapStart;
+    this.clearTap();
+    if (!this.active || !tap) return;
+    const moved = Math.hypot(event.clientX - tap.x, event.clientY - tap.y);
+    if (moved > TAP_MAX_PX || performance.now() - tap.t > TAP_MAX_MS) return;
+    if (this.picker.isOpen() || this.evidenceClaim >= 0) return;
+    const hit = this.pickAt(event.clientX, event.clientY);
+    if (hit && hit.surface !== 'skin') this.togglePin(hit.regionIndex);
+    else this.setPinned(-1);
+  };
+
+  private handlePointerLeave = () => {
+    this.clearHover();
+  };
 
   private syncViewButtons(): void {
     const current = cutViewForAngle(this.angleToDeg);
@@ -553,12 +835,20 @@ export class InteriorMode {
     if (readout) readout.textContent = `${Math.round(this.angleDeg)}°`;
   }
 
-  /** The Esc cascade: the picker first, then the tool itself. */
+  /** The Esc cascade: the popover, the picker, the pinned inspector, then the tool itself. */
   private handleKeyDown = (event: KeyboardEvent) => {
     if (!this.active) return;
     if (event.key !== 'Escape') return;
+    if (this.evidenceClaim >= 0) {
+      this.closeEvidence();
+      return;
+    }
     if (this.picker.isOpen()) {
       this.picker.close();
+      return;
+    }
+    if (this.pinnedIndex >= 0) {
+      this.setPinned(-1);
       return;
     }
     this.requestExit();
@@ -603,6 +893,7 @@ export class InteriorMode {
     this.camera.aspect = aspect;
     this.applyViewportFraming();
     this.interiorScene.onResize();
+    this.renderPinned(); // re-dock across the breakpoint
   }
 
   // ---- dev bridge (DEV-only via window.__moon) -----------------------------
@@ -685,7 +976,50 @@ export class InteriorMode {
     if (!model) return false;
     this.drawn = drawnFromModel(model);
     this.remap = null;
+    this.clearSelection();
     this.renderPanel();
+    return true;
+  }
+
+  /** Pick at client coordinates and hover what is there, as the pointer would. */
+  devHover(x: number, y: number): InteriorDevHover | null {
+    if (!this.active) return null;
+    const hit = this.pickAt(x, y);
+    if (!hit) {
+      this.clearHover();
+      return null;
+    }
+    const region = this.drawn.regionsInsideOut[hit.regionIndex];
+    const depthKm = hit.surface === 'skin' ? null : this.depthKmAtDisplay(hit.radiusDisplay);
+    if (hit.surface !== 'skin') this.setHover(hit.regionIndex, x, y, depthKm);
+    else this.clearHover();
+    return { surface: hit.surface, regionKey: region.key, depthKm };
+  }
+
+  /** Pin a region by key (null unpins). */
+  devPin(regionKey: string | null): boolean {
+    if (!this.active) return false;
+    if (regionKey === null) {
+      this.setPinned(-1);
+      return true;
+    }
+    const index = this.drawn.regionsInsideOut.findIndex((region) => region.key === regionKey);
+    if (index < 0) return false;
+    this.setPinned(index);
+    return true;
+  }
+
+  /** Open the pinned region's claim of a kind in the popover (null closes it). */
+  devEvidence(claimKind: ClaimKind | null): boolean {
+    if (!this.active) return false;
+    if (claimKind === null) {
+      this.closeEvidence();
+      return true;
+    }
+    const region = this.drawn.regionsInsideOut[this.pinnedIndex]?.region;
+    const claimIndex = region ? region.claims.findIndex((claim) => claim.kind === claimKind) : -1;
+    if (claimIndex < 0) return false;
+    this.openEvidence(claimIndex);
     return true;
   }
 
@@ -714,6 +1048,10 @@ export class InteriorMode {
         outerKm: region.outerRadiusKm,
         displayOuter: this.remap ? toDisplayFraction(this.remap, fractions[index]) : fractions[index],
       })),
+      hover: regionsInsideOut[this.hoverIndex]?.key ?? null,
+      pinned: regionsInsideOut[this.pinnedIndex]?.key ?? null,
+      evidence: regionsInsideOut[this.pinnedIndex]?.region?.claims[this.evidenceClaim]?.kind ?? null,
+      emphasis: { region: regionsInsideOut[this.emphasisIndex]?.key ?? null, amount: this.emphasisAmount },
     };
   }
 

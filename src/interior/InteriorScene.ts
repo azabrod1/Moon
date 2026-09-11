@@ -56,7 +56,7 @@ import {
   type SectionRegionLook,
   type SectionUniforms,
 } from './rendering/sectionMaterial';
-import { createCutFaceBasis, createCutFrame, cutFaceBasis, type CutFrame } from './cutFrame';
+import { createCutFaceBasis, createCutFrame, cutFaceBasis, terraceOpeningAngle, type CutFrame } from './cutFrame';
 import { MAX_REGIONS } from './rendering/sectionMaterial';
 
 /** The body's radius in studio units; every framing number is relative to it. */
@@ -336,6 +336,12 @@ export class InteriorScene {
     }
   }
 
+  /** The emphasised region (inside-out index, −1 none) and how far in it is. */
+  setEmphasis(regionIndex: number, amount: number): void {
+    this.sectionUniforms.uEmphasis.value = regionIndex;
+    this.sectionUniforms.uEmphasisAmount.value = amount;
+  }
+
   /** Prefilter the studio environment once and hand it to the faces. Under
    *  the mode-transition veil on first entry, like the first shader compile. */
   private ensureEnvironment(): void {
@@ -408,8 +414,7 @@ export class InteriorScene {
         shell.mesh.visible = false;
         continue;
       }
-      const stepsInward = count - 1 - index;
-      const angle = Math.max(0, frame.openingAngle * (1 - stepsInward * TERRACE_STEP));
+      const angle = terraceOpeningAngle(frame.openingAngle, count - 1 - index, TERRACE_STEP);
       shell.cut.uCutHalfAngle.value = angle * 0.5;
       shell.mesh.visible = !isCrust; // the skin is the crust's shell
       const open = angle > 1e-4;

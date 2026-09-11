@@ -183,6 +183,25 @@ export function modelFor(bodyId: string, modelId: string): InteriorModel | null 
   return coverageModels(coverageFor(bodyId)).find((model) => model.modelId === modelId) ?? null;
 }
 
+/**
+ * Whether another model of the body draws a region differently or not at
+ * all (the rubric's competingTopology context): true when any other model
+ * lacks a region with this key, or places its outer boundary more than 1%
+ * of the reference radius away.
+ */
+export function competingTopology(coverage: Coverage, modelId: string, regionKey: string): boolean {
+  if (coverage.state !== 'competing') return false;
+  const own = coverage.models.find((model) => model.modelId === modelId);
+  const ownRegion = own?.regions.find((region) => region.key === regionKey);
+  if (!own || !ownRegion) return false;
+  return coverage.models.some((other) => {
+    if (other.modelId === modelId) return false;
+    const match = other.regions.find((region) => region.key === regionKey);
+    if (!match) return true;
+    return Math.abs(match.outerRadiusKm - ownRegion.outerRadiusKm) > 0.01 * own.referenceRadiusKm;
+  });
+}
+
 /** The picker's badge word for a coverage state. */
 export const COVERAGE_BADGE: Readonly<Record<CoverageState, string>> = {
   constrained: 'modelled',

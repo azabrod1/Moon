@@ -1887,8 +1887,14 @@
     .interior-legend { margin-top: 12px; border-top: 1px solid var(--line-dim); }
     .interior-row {
       display: grid; grid-template-columns: 12px 1fr auto; gap: 10px; align-items: start;
-      padding: 8px 0; border-bottom: 1px solid var(--line-dim);
+      padding: 8px 6px; margin: 0 -6px; border-bottom: 1px solid var(--line-dim);
+      border-radius: var(--r-s); cursor: pointer; -webkit-tap-highlight-color: transparent;
+      transition: background 0.14s var(--ease);
     }
+    /* Hovering a row emphasises the region in 3D; hovering the region lights its row. */
+    .interior-row:hover, .interior-row.hot { background: rgba(255,255,255,0.05); }
+    .interior-row.pinned { background: rgba(var(--accent-rgb),0.10); }
+    .interior-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
     .interior-swatch { display: block; width: 12px; height: 12px; margin-top: 2px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.14); }
     .interior-row-name { font-family: var(--font-ui); font-size: 12px; font-weight: 600; color: var(--t1); line-height: 1.3; }
     .interior-row-detail { margin-top: 1px; font-size: 10.5px; line-height: 1.4; color: var(--t3); }
@@ -1898,6 +1904,83 @@
     }
     /* The bulk line for a body drawn as an unresolved whole: what its density says. */
     .interior-coverage-note { margin-top: 8px; font-size: 10.5px; line-height: 1.45; color: var(--t3); }
+    /* Hover preview beside the pointer. */
+    .interior-hover {
+      position: fixed; z-index: 19; pointer-events: none; padding: 7px 10px; min-width: 120px;
+      max-width: 220px; border-radius: var(--r-s);
+    }
+    .ih-name { font-family: var(--font-ui); font-size: 12px; font-weight: 600; color: var(--t1); line-height: 1.3; }
+    .ih-kicker, .ii-kicker { margin-top: 2px; font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--t3); }
+    .ih-depth { margin-top: 3px; font-family: var(--font-mono); font-size: 10px; color: var(--t2); font-variant-numeric: tabular-nums; }
+    /* The pinned inspector: bottom-left on desktop, docked in the sheet on phones. */
+    .interior-inspector {
+      position: absolute; left: 16px; bottom: 16px; z-index: 18; width: min(360px, calc(100vw - 32px));
+      max-height: min(72vh, 680px); overflow-y: auto; scrollbar-width: thin; padding: 14px 18px 12px; pointer-events: auto;
+    }
+    .interior-inspector.docked { position: static; width: auto; max-height: none; padding: 10px 0 0; margin-top: 10px; border-top: 1px solid var(--line-dim); background: none; border-radius: 0; box-shadow: none; backdrop-filter: none; }
+    .ii-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+    .ii-name { font-family: var(--font-ui); font-size: 15px; font-weight: 600; color: var(--t1); line-height: 1.25; }
+    .ii-close { background: none; border: none; color: var(--t3); cursor: pointer; padding: 2px; flex: none; }
+    .ii-close:hover { color: var(--t1); }
+    .ii-close svg { width: 15px; height: 15px; }
+    .ii-depth { margin-top: 6px; font-family: var(--font-mono); font-size: 10px; color: var(--t2); font-variant-numeric: tabular-nums; }
+    .ii-text { margin: 8px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--t2); }
+    .ii-rheology { color: var(--t3); }
+    .ii-sec { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line-dim); font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--t3); }
+    .ii-line { display: grid; grid-template-columns: 96px 1fr; gap: 8px; padding: 4px 0; font-size: 11px; line-height: 1.45; }
+    .ii-key { color: var(--t3); }
+    .ii-val { color: var(--t2); }
+    .ii-note { margin-top: 3px; padding-left: 9px; border-left: 2px solid var(--line-dim); font-size: 10.5px; line-height: 1.5; color: var(--t3); }
+    .ii-annotation { margin-top: 4px; font-size: 11px; line-height: 1.5; color: var(--t2); }
+    .ii-annotation b { color: var(--t1); font-weight: 600; }
+    .ii-alt { margin-top: 12px; padding: 8px 10px; border-radius: var(--r-s); background: rgba(var(--accent-rgb),0.08); font-size: 11px; line-height: 1.5; color: var(--t2); }
+    .ii-alt b { color: var(--t1); font-weight: 600; }
+    .ii-foot, .ii-src { margin-top: 10px; font-size: 10px; line-height: 1.5; color: var(--t3); }
+    /* Claim rows: a button that opens the popover; the meter is the level. */
+    .ii-claim {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;
+      margin-top: 4px; padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--r-s);
+      background: rgba(255,255,255,0.02); color: var(--t1); font-family: var(--font-ui); font-size: 11.5px;
+      text-align: left; cursor: pointer; -webkit-tap-highlight-color: transparent;
+      transition: background 0.14s var(--ease), border-color 0.14s var(--ease);
+    }
+    .ii-claim:hover { background: rgba(255,255,255,0.06); border-color: rgba(var(--accent-rgb),0.4); }
+    .ii-claim:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+    .ii-claim-title { flex: 1; min-width: 0; }
+    .ev-meter-wrap { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+    .ev-level { font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--t2); white-space: nowrap; }
+    .ev-meter { display: inline-flex; gap: 2px; }
+    .ev-meter i { display: block; width: 7px; height: 8px; border-radius: 2px; background: rgba(255,255,255,0.10); }
+    .ev-meter i.on { background: var(--accent); }
+    .ev-score { font-family: var(--font-mono); font-size: 10px; color: var(--t2); font-variant-numeric: tabular-nums; min-width: 18px; text-align: right; }
+    /* The evidence popover. */
+    .interior-evidence-card { width: min(440px, calc(100vw - 32px)); max-height: min(82vh, 720px); }
+    .ev-body { padding: 4px 16px 14px; overflow-y: auto; scrollbar-width: thin; }
+    .ev-summary { display: flex; align-items: center; gap: 8px; }
+    .ev-reads { margin-top: 4px; font-size: 11.5px; color: var(--t2); line-height: 1.5; }
+    .ev-prob { margin-top: 6px; font-size: 11px; color: var(--t2); line-height: 1.5; }
+    .ev-row { margin-top: 8px; padding: 8px 10px; border-radius: var(--r-s); background: rgba(255,255,255,0.03); border-left: 2px solid var(--line); }
+    .ev-row.ev-supports { border-left-color: rgba(var(--accent-rgb),0.6); }
+    .ev-row.ev-challenges { border-left-color: rgba(255,120,90,0.7); }
+    .ev-row-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 11.5px; }
+    .ev-row-head b { color: var(--t1); font-weight: 600; }
+    .ev-tag { font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.12em; text-transform: uppercase; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--t3); }
+    .ev-tag-supports { color: var(--accent); border-color: rgba(var(--accent-rgb),0.4); }
+    .ev-tag-challenges { color: #ff9b7a; border-color: rgba(255,120,90,0.45); }
+    .ev-prov { margin-left: auto; font-family: var(--font-mono); font-size: 9.5px; color: var(--t3); }
+    .ev-oiau { display: grid; grid-template-columns: 70px 1fr; gap: 3px 8px; margin: 6px 0 0; font-size: 11px; line-height: 1.45; }
+    .ev-oiau dt { color: var(--t3); }
+    .ev-oiau dd { margin: 0; color: var(--t2); }
+    .ev-src { margin-top: 6px; font-size: 9.5px; line-height: 1.4; color: var(--t3); }
+    .ev-arith { margin-top: 4px; }
+    .ev-arith-line { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--line-dim); font-size: 11px; line-height: 1.45; color: var(--t2); }
+    .ev-arith-line.zero { color: var(--t3); }
+    .ev-arith-points { font-family: var(--font-mono); font-variant-numeric: tabular-nums; flex: none; }
+    .ev-total { color: var(--t1); font-weight: 600; border-bottom: none; }
+    .ev-rubric-level { display: grid; grid-template-columns: 118px 74px 1fr; gap: 6px; padding: 3px 0; font-size: 10.5px; line-height: 1.45; color: var(--t3); }
+    .ev-rubric-range { font-family: var(--font-mono); font-size: 9.5px; color: var(--t2); }
+    .ev-rubric { margin: 6px 0 0; padding-left: 16px; font-size: 10.5px; line-height: 1.5; color: var(--t3); }
+    .ev-rubric li { margin-top: 2px; }
     .interior-foot { --obs-hairline-dim: var(--line-dim); --obs-t2: var(--t2); }
     .interior-note {
       margin-top: 6px; text-align: right; font-family: var(--font-mono); font-size: 8px;
@@ -1906,6 +1989,8 @@
     @media (max-width: 640px) {
       #interior-panel { top: auto; bottom: 12px; left: 12px; right: 12px; width: auto; max-height: 40vh; padding: 12px 14px; }
       .interior-row-detail { display: none; }
+      .interior-hover { display: none !important; }
+      .ev-rubric-level { grid-template-columns: 1fr; gap: 1px; padding: 5px 0; }
     }
 
     /* ============================================= */
@@ -4965,7 +5050,7 @@
           <input type="range" id="interior-angle" class="interior-slider" min="0" max="180" step="1" value="90" aria-label="Opening angle">
           <span class="interior-angle-value" id="interior-angle-value">90°</span>
         </div>
-        <div id="interior-legend" class="interior-legend"></div>
+        <div id="interior-legend" class="interior-legend" role="list"></div>
         <div class="interior-coverage-note" id="interior-coverage-note" style="display:none"></div>
         <label class="obs-foot interior-foot" id="interior-readable-row">
           <input type="checkbox" id="interior-readable-toggle" checked>
@@ -4973,6 +5058,17 @@
           <span class="obs-tgl" aria-hidden="true"></span>
         </label>
         <div class="interior-note" id="interior-readable-note">Thin layers widened so you can see them</div>
+      </div>
+
+      <!-- Hover preview: follows the pointer over a region, never receives events. -->
+      <div id="interior-hover" class="interior-hover pn" aria-hidden="true" style="display:none"></div>
+
+      <!-- Pinned inspector: one region's reading. Docks into the panel on phones. -->
+      <div id="interior-inspector" class="interior-inspector pn pn-high" role="region" aria-label="Region details" style="display:none"></div>
+
+      <!-- Evidence popover: one claim's rows and the score arithmetic (a modal; Esc closes it first). -->
+      <div id="interior-evidence" class="body-picker">
+        <div class="body-picker-card pn pn-high interior-evidence-card" id="interior-evidence-card" role="dialog" aria-modal="true" aria-label="Evidence"></div>
       </div>
 
       <!-- Body picker (full-screen click-catcher; one-modal-at-a-time) -->

@@ -81,7 +81,8 @@ export const EARTH_MODEL: InteriorModel = {
           row('seismology', 'supports', OLDHAM, { observed: 'The S-wave shadow', inferred: 'Liquid', assumed: 'Shear waves need rigidity', uncertain: 'Nothing material' }),
         ]),
         claim('temperature', [
-          row('model', 'constrains', HIROSE, { observed: 'The inner-core boundary temperature and the core adiabat', inferred: 'About 4000 K at the top of the core', assumed: 'An adiabatic, well-mixed outer core', uncertain: '±500 K' }),
+          row('labHighPressure', 'supports', ANZELLINI, { observed: 'Iron\'s melting temperature at the inner-core boundary pressure', inferred: 'The temperature at the bottom of the outer core, a little below iron\'s melting point', assumed: 'Light elements depress melting by a few hundred kelvin', uncertain: '±500 K', year: 2013 }),
+          row('model', 'supports', HIROSE, { observed: 'The inner-core boundary temperature and the core adiabat', inferred: 'About 4000 K at the top of the core', assumed: 'An adiabatic, well-mixed outer core', uncertain: '±500 K' }),
         ]),
       ],
     },
@@ -107,7 +108,7 @@ export const EARTH_MODEL: InteriorModel = {
           row('labHighPressure', 'supports', RINGWOOD, { observed: 'Olivine and pyroxene transform to denser perovskite-structured minerals at 660-km pressures', inferred: 'The lower mantle is bridgmanite-dominated', assumed: 'A peridotitic bulk composition', uncertain: 'The iron content and the amount of subducted crust mixed in' }),
         ]),
         claim('temperature', [
-          row('model', 'constrains', KATSURA, { observed: 'The 410 and 660 km phase-transition depths and mineral physics', inferred: 'An adiabat near 1900 K at 660 km', assumed: 'Whole-mantle convection', uncertain: 'The steep thermal boundary layer at the core' }),
+          row('labHighPressure', 'supports', KATSURA, { observed: 'The pressures at which olivine transforms in the laboratory, against the seismic depths of the 410 and 660 km discontinuities', inferred: 'An adiabat near 1900 K at 660 km', assumed: 'Whole-mantle convection', uncertain: 'The steep thermal boundary layer at the core', year: 2010 }),
         ]),
       ],
     },

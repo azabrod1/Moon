@@ -36,6 +36,20 @@ describe('evidenceScore: the pinned worked examples', () => {
     expect(result.score).toBe(45);
     expect(result.level).toBe('constrained');
   });
+
+  it("Earth's outer-core temperature: a melting curve plus an adiabat model, unchallenged, is Constrained", () => {
+    const result = evidenceScore({ kind: 'temperature', evidence: [row('labHighPressure'), row('model')] });
+    // 35 as the first (and only) support, no second +10 for the same lab row, +10 unchallenged
+    expect(result.score).toBe(45);
+    expect(result.level).toBe('constrained');
+    expect(result.lines.filter((line) => line.evidence?.method === 'labHighPressure')).toHaveLength(1);
+  });
+
+  it('a claim on a model row alone is a Hypothesis', () => {
+    const result = evidenceScore({ kind: 'temperature', evidence: [row('model')] });
+    expect(result.score).toBe(10);
+    expect(result.level).toBe('hypothesis');
+  });
 });
 
 describe('evidenceScore: the rules', () => {

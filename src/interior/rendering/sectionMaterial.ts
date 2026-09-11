@@ -44,6 +44,12 @@
  * directly (uShellRegion) instead of resolving by radius, with no crease
  * and no lip lines.
  *
+ * Emphasis is uniform-driven (plan §4): uEmphasis names a region and
+ * uEmphasisAmount eases in. The named region brightens and its boundaries
+ * take a light outline; every other region desaturates and its heat dims,
+ * so the eye goes where the pointer or the legend row says. Nothing
+ * extrudes and nothing recompiles.
+ *
  * Injection points, in the order meshphysical.glsl.js runs them:
  *   after <color_fragment>        the region resolve → diffuseColor.rgb
  *   after <roughnessmap_fragment> roughnessFactor
@@ -84,6 +90,10 @@ export interface SectionUniforms {
   uTime: { value: number };
   /** 0..1, how much of a crease the hinge is: 1 closed-ish, 0 at Section. */
   uCorner: { value: number };
+  /** The emphasised region's inside-out index, or −1 for none. */
+  uEmphasis: { value: number };
+  /** 0..1, how far the emphasis has eased in. */
+  uEmphasisAmount: { value: number };
 }
 
 export function createSectionUniforms(): SectionUniforms {
@@ -109,6 +119,8 @@ export function createSectionUniforms(): SectionUniforms {
     uWorldToBody: { value: new THREE.Matrix3() },
     uTime: { value: 0 },
     uCorner: { value: 0 },
+    uEmphasis: { value: -1 },
+    uEmphasisAmount: { value: 0 },
   };
 }
 
@@ -188,8 +200,25 @@ uniform int uCount;
 uniform mat3 uWorldToBody;
 uniform float uTime;
 uniform float uCorner;
+uniform int uEmphasis;
+uniform float uEmphasisAmount;
 
 ${sunNoiseGLSL}
+
+// Emphasis: the named region brightens, the rest desaturate and cool.
+// emphasisMix is this pixel's membership of the named region (blended
+// across a soft boundary like everything else); outline is a light line on
+// its boundaries, 0 on a shell.
+void sectionEmphasis(float emphasisMix, float outline, inout vec3 albedo, inout vec3 heat, inout float glow) {
+  if (uEmphasisAmount <= 0.0) return;
+  float other = uEmphasisAmount * (1.0 - emphasisMix);
+  float luminance = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+  albedo = mix(albedo, vec3(luminance) * 0.7, other * 0.75);
+  heat *= 1.0 - 0.65 * other;
+  glow *= 1.0 - 0.65 * other;
+  albedo *= 1.0 + 0.16 * uEmphasisAmount * emphasisMix;
+  albedo = mix(albedo, vec3(1.0), outline * uEmphasisAmount * 0.8);
+}
 
 float sectionFbm(vec3 p) {
   float value = 0.0;
@@ -291,6 +320,8 @@ float interiorRelief = uRelief[0];
 float interiorAmbient = uAmbient[0];
 float interiorDepthShade = uDepthGrad[0] * regionT0;
 float boundaryShade = 1.0;
+float emphasisMix = uEmphasis == 0 ? 1.0 : 0.0;
+float interiorOutline = 0.0;
 for (int k = 1; k < ${MAX_REGIONS}; k++) {
   if (k >= uCount) break;
   float boundary = uOuter[k - 1];
@@ -309,6 +340,12 @@ for (int k = 1; k < ${MAX_REGIONS}; k++) {
   interiorRelief = mix(interiorRelief, uRelief[k], t);
   interiorAmbient = mix(interiorAmbient, uAmbient[k], t);
   interiorDepthShade = mix(interiorDepthShade, uDepthGrad[k] * regionT, t);
+  emphasisMix = mix(emphasisMix, uEmphasis == k ? 1.0 : 0.0, t);
+  if (uEmphasis == k || uEmphasis == k - 1) {
+    // The emphasised region's boundary, a line a couple of pixels wide.
+    float lineDistance = (sectionRadius - boundary) / (sectionPx * 1.4);
+    interiorOutline = max(interiorOutline, exp(-lineDistance * lineDistance));
+  }
   // The cutaway's lip: a shadow just inside a sharp boundary, a light rim
   // just outside it; neither where the transition is a physical blend.
   float crisp = 1.0 - smoothstep(sectionPx * 1.5, sectionPx * 6.0, uBlend[k - 1]);
@@ -325,6 +362,12 @@ boundaryShade *= 1.0 - 0.4 * exp(-underSkin * underSkin) * step(0.0, underSkin);
 // The crease where the two faces meet, gone at Section where they are coplanar.
 float interiorCrease = 1.0 - uCorner * 0.3 * (1.0 - smoothstep(0.0, 0.2, vSectionLocal.x));
 float interiorShade = (1.0 - interiorDepthShade) * interiorCrease * boundaryShade;
+if (uEmphasis == uCount - 1) {
+  // The outermost region's outer boundary is the disc's rim.
+  float rimDistance = (sectionRadius - uOuter[uCount - 1]) / (sectionPx * 1.4);
+  interiorOutline = max(interiorOutline, exp(-rimDistance * rimDistance));
+}
+sectionEmphasis(emphasisMix, interiorOutline, interiorAlbedo, interiorHeat, interiorGlow);
 // A hot face is a light more than a surface: its albedo gives way to its heat.
 diffuseColor.rgb = interiorAlbedo * interiorShade * (1.0 - 0.85 * interiorHeatStrength);
 `;
@@ -349,6 +392,8 @@ float interiorAmbient = uAmbient[uShellRegion];
 float shellLimb = 0.6 + 0.4 * abs(dot(normalize(vNormal), normalize(vViewPosition)));
 interiorHeat *= shellLimb;
 float interiorShade = 1.0;
+float interiorOutline = 0.0;
+sectionEmphasis(uShellRegion == uEmphasis ? 1.0 : 0.0, 0.0, interiorAlbedo, interiorHeat, interiorGlow);
 diffuseColor.rgb = interiorAlbedo * (1.0 - 0.85 * interiorHeatStrength);
 `;
 
@@ -386,6 +431,8 @@ totalEmissiveRadiance += interiorAlbedo * interiorAmbient * interiorShade * (1.0
 totalEmissiveRadiance += mix(interiorAlbedo, vec3(1.0, 0.7, 0.4), 0.5)
   * interiorGlow * (0.7 + 0.6 * interiorHeight) * interiorShade;
 totalEmissiveRadiance += interiorHeat * interiorShade;
+// The emphasis outline is a line, not a surface: it shows whatever the light does.
+totalEmissiveRadiance += vec3(0.85) * interiorOutline * uEmphasisAmount;
 `;
 
 export interface ShellOptions {

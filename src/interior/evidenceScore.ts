@@ -14,6 +14,9 @@
  *     modes)                                              +15 each, max +30
  *   a supporting laboratory row for the material state at those
  *     conditions                                                        +10
+ *     — or, when no direct or indirect method supports the claim, the
+ *     laboratory row is the first support (+35, not +10): a melting curve
+ *     plus an adiabat is how a temperature is known at all
  *   no challenging rows and no competing topology for this region       +10
  *   each challenging row                                   −25 each, max −50
  *   constraining rows                              0, listed in the popover
@@ -26,7 +29,9 @@
  * Pinned worked examples (evidenceScore.test.ts): Earth's outer core 95,
  * Directly detected; Jupiter's dilute core, gravity with competing topology,
  * Model-dependent; Io's shallow magma ocean, induction supported and Juno
- * challenged, Hypothesis; Callisto's ocean on induction alone, Constrained.
+ * challenged, Hypothesis; Callisto's ocean on induction alone, Constrained;
+ * Earth's outer-core temperature, a melting curve plus an adiabat model,
+ * Constrained.
  */
 import type { Claim, Evidence, EvidenceMethod } from './data/interiorTypes';
 
@@ -89,7 +94,8 @@ export interface ScoreContext {
   competingTopology?: boolean;
 }
 
-function methodLabel(method: EvidenceMethod): string {
+/** The method in the reader's words, for the score lines and the popover. */
+export function methodLabel(method: EvidenceMethod): string {
   switch (method) {
     case 'seismology': return 'seismology';
     case 'normalModes': return 'normal modes';
@@ -125,6 +131,7 @@ export function evidenceScore(claim: Claim, context: ScoreContext = {}): Evidenc
   const seenMethods = new Set<EvidenceMethod>();
   let firstClaimed = false;
 
+  let labClaimedFirst = false;
   if (directRow) {
     total += POINTS.firstDirect;
     seenMethods.add(directRow.method);
@@ -134,6 +141,13 @@ export function evidenceScore(claim: Claim, context: ScoreContext = {}): Evidenc
     total += POINTS.densityOnly;
     firstClaimed = true;
     lines.push({ label: 'Only the bulk density supports it', points: POINTS.densityOnly, evidence: densityRows[0] });
+  } else if (labRows.length > 0 && furtherCandidates.length === 0) {
+    // Nothing reaches the region and nothing indirect supports it: the
+    // laboratory is the support (a temperature from a melting curve).
+    total += POINTS.firstIndirect;
+    firstClaimed = true;
+    labClaimedFirst = true;
+    lines.push({ label: `Laboratory work at these conditions is the support (${methodLabel(labRows[0].method)})`, points: POINTS.firstIndirect, evidence: labRows[0] });
   }
 
   let furtherTotal = 0;
@@ -155,7 +169,7 @@ export function evidenceScore(claim: Claim, context: ScoreContext = {}): Evidenc
     lines.push({ label: `An independent method agrees: ${methodLabel(row.method)}`, points: POINTS.further, evidence: row });
   }
 
-  if (labRows.length > 0) {
+  if (labRows.length > 0 && !labClaimedFirst) {
     total += POINTS.lab;
     lines.push({ label: 'Laboratory work reproduces the state at these conditions', points: POINTS.lab, evidence: labRows[0] });
   }

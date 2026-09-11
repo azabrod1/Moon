@@ -14,6 +14,7 @@ import { validateCoverage, validateInteriorModel } from './validate';
 import {
   COVERAGE_BADGE,
   INTERIOR_DEFAULT_BODY,
+  competingTopology,
   coverageFor,
   coverageStateFor,
   defaultModelFor,
@@ -102,6 +103,21 @@ describe('interiorRegistry', () => {
         expect(relative, `${bodyId}/${model.modelId}: ${model.referenceRadiusKm} vs ${appRadius}`).toBeLessThan(tolerance);
       }
     }
+  });
+
+  it('knows which regions a rival model draws differently', () => {
+    const jupiter = coverageFor('Jupiter');
+    expect(competingTopology(jupiter, 'jupiter-dilute-core', 'diluteCore')).toBe(true);
+    expect(competingTopology(jupiter, 'jupiter-compact-core', 'compactCore')).toBe(true);
+    expect(competingTopology(jupiter, 'jupiter-dilute-core', 'atmosphere')).toBe(false);
+    // The metallic hydrogen region keeps its outer radius in both models: same topology.
+    expect(competingTopology(jupiter, 'jupiter-dilute-core', 'metallicHydrogen')).toBe(false);
+    const mars = coverageFor('Mars');
+    expect(competingTopology(mars, 'mars-large-liquid-core', 'core')).toBe(true); // 1830 vs 1650 km
+    expect(competingTopology(mars, 'mars-basal-molten-layer', 'basalMoltenLayer')).toBe(true);
+    expect(competingTopology(mars, 'mars-large-liquid-core', 'crust')).toBe(false);
+    expect(competingTopology(coverageFor('Earth'), 'earth-prem', 'innerCore')).toBe(false);
+    expect(competingTopology(jupiter, 'no-such-model', 'diluteCore')).toBe(false);
   });
 
   it('lists a history entry for every current model', () => {

@@ -161,6 +161,16 @@ export function insideWedge(frame: CutFrame, offsetFromCentre: THREE.Vector3): b
   return wedgeAngle(frame, offsetFromCentre) < frame.openingAngle * 0.5;
 }
 
+/**
+ * The opening angle of a terrace `stepsInward` regions below the crust:
+ * each region inward opens `step` of the full angle less, so the layers
+ * read as nested spheres, and a region far enough in is closed. The scene's
+ * shells and faces and the CPU pick use this one rule.
+ */
+export function terraceOpeningAngle(openingAngle: number, stepsInward: number, step: number): number {
+  return Math.max(0, openingAngle * (1 - stepsInward * step));
+}
+
 export function openingAngleDegToRad(deg: number): number {
   return THREE.MathUtils.clamp(deg, 0, MAX_OPENING_ANGLE_DEG) * DEG2RAD;
 }

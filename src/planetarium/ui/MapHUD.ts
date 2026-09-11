@@ -217,6 +217,7 @@ export class MapHUD {
     private readonly onClose: () => void,
     private readonly onVerb: (verb: MapVerb) => void,
     private readonly onFocus: () => void,
+    private readonly onInside: () => void,
     private readonly onOverview: () => void,
     private readonly onEvent: () => void,
   ) {}
@@ -356,6 +357,7 @@ export class MapHUD {
       if (!btn || btn.disabled) return;
       if (!this.cardClickAllowed(e, btn)) return;
       if (btn.dataset.action === 'focus') this.onFocus();
+      else if (btn.dataset.action === 'inside') this.onInside();
       else if (btn.dataset.verb) this.onVerb(btn.dataset.verb as MapVerb);
     });
   }
@@ -974,11 +976,11 @@ export class MapHUD {
         if (action.kind === 'commit') {
           btn.dataset.action = 'commit';
           btn.dataset.verb = action.verb;
-          // Only a commit waits on an arrival; Focus is a camera move and stays
-          // live throughout.
+          // Only a commit waits on an arrival; Focus is a camera move and Look
+          // inside leaves for a tool, so both stay live throughout.
           btn.disabled = disabled;
         } else {
-          btn.dataset.action = 'focus';
+          btn.dataset.action = action.kind;
         }
         btn.textContent = action.label;
         this.cardActions.appendChild(btn);

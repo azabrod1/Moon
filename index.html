@@ -1844,6 +1844,17 @@
       max-height: calc(100vh - 32px); overflow-y: auto; scrollbar-width: thin;
     }
     .interior-body { font-family: var(--font-ui); font-size: 17px; font-weight: 600; color: var(--t1); letter-spacing: 0.2px; }
+    /* The body name is a chip that opens the picker (the compare sentence's idiom). */
+    .interior-chip {
+      display: inline-flex; align-items: center; gap: 6px; padding: 0 1px; background: none; border: none;
+      border-bottom: 1px dashed rgba(255,255,255,0.28); cursor: pointer; -webkit-tap-highlight-color: transparent;
+    }
+    .interior-chip:hover { color: #fff; border-bottom-color: var(--accent); }
+    .interior-chip-caret { font-size: 11px; color: var(--t3); }
+    .interior-chip:hover .interior-chip-caret { color: var(--accent); }
+    /* Coverage word on a picker row: what the tool can honestly show for it. */
+    .pk-tag-cover { flex: none; font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.14em; text-transform: uppercase; padding: 2px 6px; border: 1px solid var(--line); border-radius: 999px; color: var(--t3); }
+    .pk-tag-cover.on { color: var(--accent); border-color: rgba(var(--accent-rgb), 0.4); }
     .interior-caption {
       margin-top: 3px; font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.12em;
       text-transform: uppercase; color: var(--t3);
@@ -2099,24 +2110,26 @@
     .compare-foot { margin-top: 12px; }
 
     /* Body picker modal (deck-row family; full-screen click-catcher) */
-    #compare-picker { display: none; position: fixed; inset: 0; z-index: 40; align-items: center; justify-content: center; pointer-events: auto; }
-    #compare-picker.visible { display: flex; }
-    .compare-picker-card {
+    /* Shared by the tools' pickers (planetarium/ui/BodyPicker): the compare
+       sentence's and the Look-inside body chip's. */
+    .body-picker { display: none; position: fixed; inset: 0; z-index: 40; align-items: center; justify-content: center; pointer-events: auto; }
+    .body-picker.visible { display: flex; }
+    .body-picker-card {
       width: min(340px, calc(100vw - 32px)); max-height: min(70vh, 560px);
       display: flex; flex-direction: column; overflow: hidden;
     }
-    .compare-picker-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 6px; }
-    .compare-picker-title { font-size: 13px; color: var(--t2); line-height: 1.4; }
-    .compare-picker-title b { color: var(--accent); font-weight: 600; }
-    .compare-picker-card .pk-x { background: none; border: none; color: var(--t3); cursor: pointer; padding: 2px; }
-    .compare-picker-card .pk-x:hover { color: var(--t1); }
-    .compare-picker-card .pk-x svg { width: 15px; height: 15px; }
+    .body-picker-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 6px; }
+    .body-picker-title { font-size: 13px; color: var(--t2); line-height: 1.4; }
+    .body-picker-title b { color: var(--accent); font-weight: 600; }
+    .body-picker-card .pk-x { background: none; border: none; color: var(--t3); cursor: pointer; padding: 2px; }
+    .body-picker-card .pk-x:hover { color: var(--t1); }
+    .body-picker-card .pk-x svg { width: 15px; height: 15px; }
     /* Picker rows are <button>s: strip the UA button chrome, or every non-header
        row renders as a light ButtonFace pill — a white-on-white Sun row and
        moons that scan as disabled. :where() keeps this at one-class specificity
        so the pk-planet sticky background and the pk-row hover states (later in
        the sheet) still win. */
-    .compare-picker-card :where(.pk-row) {
+    .body-picker-card :where(.pk-row) {
       border: none; background: none; width: 100%;
       font-family: var(--font-ui); text-align: left;
     }
@@ -4438,6 +4451,10 @@
               <h4>The whole system at once (<kbd>M</kbd>)</h4>
               <p>Press <kbd>M</kbd> for a map of the solar system with your ship on it, running on the same clock &mdash; speed time up and everything wheels around the Sun. Drag to turn the view, scroll to zoom, and switch between a compressed layout and true distances. <kbd>M</kbd> or Esc drops you back into the ship.</p>
             </section>
+            <section class="help-section">
+              <h4>Tools</h4>
+              <p>The Tools button holds the side quests. <strong>How many fit?</strong> pours one world into another and counts. <strong>Look inside</strong> cuts a world open: its layers at their real depths, glowing with their own heat, and a key that says what each is made of and how well we know it. Pick any planet or moon from its chip, or use <strong>Look inside</strong> on a body's map card. <strong>Leave</strong> (or Esc) puts you back exactly where you were.</p>
+            </section>
             <p class="help-signoff">Have fun out there.</p>
           </div>
           <div class="help-tutorial-row">
@@ -4895,10 +4912,10 @@
       </div>
 
       <!-- Body picker (full-screen click-catcher; one-modal-at-a-time) -->
-      <div id="compare-picker">
-        <div class="compare-picker-card pn pn-high">
-          <div class="compare-picker-head">
-            <div class="compare-picker-title" id="compare-picker-title"></div>
+      <div id="compare-picker" class="body-picker">
+        <div class="body-picker-card pn pn-high">
+          <div class="body-picker-head">
+            <div class="body-picker-title" id="compare-picker-title"></div>
             <button class="pk-x" id="compare-picker-close" aria-label="Close">
               <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
             </button>
@@ -4933,7 +4950,9 @@
         <span class="act-lbl">Leave</span>
       </button>
       <div id="interior-panel" class="pn pn-high">
-        <div class="interior-body" id="interior-body-name"></div>
+        <button type="button" class="interior-body interior-chip" id="interior-body-chip" title="Choose another world" aria-label="Choose another world">
+          <span id="interior-body-name"></span><span class="interior-chip-caret" aria-hidden="true">&#x25BE;</span>
+        </button>
         <div class="interior-caption" id="interior-caption"></div>
         <div class="interior-views" role="group" aria-label="View">
           <button type="button" class="interior-view" id="interior-view-closed">Closed</button>
@@ -4951,6 +4970,24 @@
           <span class="obs-tgl" aria-hidden="true"></span>
         </label>
         <div class="interior-note" id="interior-readable-note">Thin layers widened so you can see them</div>
+      </div>
+
+      <!-- Body picker (full-screen click-catcher; one-modal-at-a-time) -->
+      <div id="interior-picker" class="body-picker">
+        <div class="body-picker-card pn pn-high">
+          <div class="body-picker-head">
+            <div class="body-picker-title" id="interior-picker-title"></div>
+            <button class="pk-x" id="interior-picker-close" aria-label="Close">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
+            </button>
+          </div>
+          <div class="pk-search">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="9" cy="9" r="5.5"></circle><path d="M13.5 13.5 L17 17" stroke-linecap="round"></path></svg>
+            <input id="interior-picker-search" type="text" placeholder="Search bodies" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="pk-list" id="interior-picker-list"></div>
+          <div class="pk-empty" id="interior-picker-empty">No bodies match.</div>
+        </div>
       </div>
     </div>
   </div>

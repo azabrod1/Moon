@@ -85,9 +85,26 @@ export const SPIKE_BODY_IDS: readonly string[] = Object.keys(SPIKE_MODELS);
 
 export const SPIKE_DEFAULT_BODY = 'Earth';
 
-/** The spike's model for a body, or Earth's for a body it does not carry. */
-export function spikeModelFor(bodyId: string): SpikeModel {
-  return SPIKE_MODELS[bodyId] ?? SPIKE_MODELS[SPIKE_DEFAULT_BODY];
+/** Whether the spike carries a model for a body (the picker's coverage word). */
+export function spikeHasModel(bodyId: string): boolean {
+  return Object.prototype.hasOwnProperty.call(SPIKE_MODELS, bodyId);
+}
+
+/**
+ * The spike's model for a body, or, for a body it does not carry, one
+ * unresolved region the size of the body: the honest treatment (plan §9)
+ * rather than another body's layers wearing this one's skin.
+ */
+export function spikeModelFor(bodyId: string, radiusKm: number): SpikeModel {
+  const known = SPIKE_MODELS[bodyId];
+  if (known) return known;
+  return {
+    bodyId,
+    referenceRadiusKm: radiusKm,
+    regions: [
+      { key: 'interior', name: 'Interior', family: 'unresolved', phase: 'solid', outerRadiusKm: radiusKm, temperatureK: 200, composition: 'Not yet modelled here' },
+    ],
+  };
 }
 
 /** Outer radii as fractions of the reference radius, INSIDE-OUT and

@@ -15,6 +15,7 @@ Built with `Three.js`, `TypeScript`, `Vite`, and WebGL.
 - Toggle constellation overlays and gyro steering on supported mobile devices.
 - Save progress in the browser and resume later.
 - Replay historic journeys for Voyager 1, Voyager 2, Cassini-Huygens, New Horizons, and Juno.
+- Tools: pour one world into another and count how many fit, or look inside any planet or moon — its layers cut open at real depths, glowing with their own heat, with a key to what they are made of.
 
 ## Quick Start
 
@@ -50,6 +51,8 @@ npm run preview
 - Supported startup URL params:
   - `?auto=planetarium` — boot directly into the Planetarium (the default)
   - `?auto=moonView` — legacy value, still accepted; the retired Moon view's links land in the Planetarium
+  - `?auto=volumeCompare` — boot into the "How many fit?" tool
+  - `?auto=interior&body=<name>` — boot into the Look-inside tool on a planet or moon
 
 ## Data and Scripts
 

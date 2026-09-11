@@ -9,14 +9,16 @@
 export type MapVerb = 'travel' | 'observe' | 'pilot';
 
 /**
- * A card button. The two kinds are deliberately different types rather than one
- * widened verb union: Focus moves the map camera and commits nothing, so it
+ * A card button. The kinds are deliberately different types rather than one
+ * widened verb union: Focus moves the map camera and commits nothing, and
+ * Look inside opens a tool on the body and commits no arrival either, so both
  * must be structurally impossible to route into the arrival path that
  * Teleport / Observatory / Autopilot share.
  */
 export type MapCardAction =
   | { kind: 'commit'; verb: MapVerb; label: string }
-  | { kind: 'focus'; label: string };
+  | { kind: 'focus'; label: string }
+  | { kind: 'inside'; label: string };
 
 /** A body the map can act on — the same shape the landed body and every commit
  *  target already speak in, so a picked body needs no translation on its way to
@@ -30,23 +32,26 @@ export type MapBodyRef =
 /**
  * The buttons a picked body offers.
  *
- * | Target                  | Buttons                                    |
- * |-------------------------|--------------------------------------------|
- * | Planet, not here        | Teleport · Observatory · Autopilot · Focus |
- * | Sun                     | Teleport · Autopilot · Focus (no surface)  |
- * | The current landed body | Leave · Observatory · Focus                |
+ * | Target                  | Buttons                                                  |
+ * |-------------------------|----------------------------------------------------------|
+ * | Planet, not here        | Teleport · Observatory · Autopilot · Focus · Look inside |
+ * | Sun                     | Teleport · Autopilot · Focus (no surface, no interior)   |
+ * | The current landed body | Leave · Observatory · Focus · Look inside                |
  *
  * "Leave" is verb 'travel' whose sameBody path is a take-off; "Observatory" on
  * the landed body is verb 'observe' whose sameBody path reopens the panel.
  * Autopilot is withheld on the landed body — its sameBody branch would lift off
  * and park rather than engage. Focus is on every card: it flies the map camera
- * and nothing else, so no target can refuse it.
+ * and nothing else, so no target can refuse it. Look inside is on every body
+ * with an interior to show — every planet and moon; the Sun waits for its
+ * own model — and opens the Look-inside tool on it, committing no arrival.
  */
 export function mapCardActions(
   target: MapBodyRef,
   landedOn: MapBodyRef | null,
 ): MapCardAction[] {
   const focus: MapCardAction = { kind: 'focus', label: 'Focus' };
+  const inside: MapCardAction = { kind: 'inside', label: 'Look inside' };
   const sameBody =
     !!landedOn && landedOn.type === target.type && landedOn.name === target.name;
   if (sameBody) {
@@ -54,6 +59,7 @@ export function mapCardActions(
       { kind: 'commit', verb: 'travel', label: 'Leave' },
       { kind: 'commit', verb: 'observe', label: 'Observatory' },
       focus,
+      inside,
     ];
   }
   if (target.name === 'Sun') {
@@ -68,6 +74,7 @@ export function mapCardActions(
     { kind: 'commit', verb: 'observe', label: 'Observatory' },
     { kind: 'commit', verb: 'pilot', label: 'Autopilot' },
     focus,
+    inside,
   ];
 }
 

@@ -1757,6 +1757,7 @@ export class PlanetariumMode {
     () => (this.mapDiving ? this.cancelMapDive() : this.closeMap()),
     (verb) => this.commitMapCard(verb),
     () => this.focusMapCard(),
+    () => this.insideMapCard(),
     () => this.mapOverviewPressed(),
     () => this.warpToMapEvent(),
   );
@@ -9685,6 +9686,21 @@ export class PlanetariumMode {
     row.addEventListener('click', () => this.enterVolumeCompare());
     list.appendChild(row);
 
+    const insideRow = document.createElement('button');
+    insideRow.className = 'pk-row tools-row' + (running ? ' tools-dim' : '');
+    insideRow.disabled = running;
+    const insideInfo = document.createElement('span');
+    insideInfo.className = 'pk-info';
+    const insideName = document.createElement('b');
+    insideName.textContent = 'Look inside';
+    const insideSub = document.createElement('span');
+    insideSub.className = 'tools-sub';
+    insideSub.textContent = 'Cut a world open and see its layers.';
+    insideInfo.append(insideName, insideSub);
+    insideRow.append(insideInfo);
+    insideRow.addEventListener('click', () => this.enterTool({ kind: 'interior', bodyId: this.resolveInteriorBody() }));
+    list.appendChild(insideRow);
+
     // Historic journeys: one expandable group (parent row + a submenu of the five
     // missions) so the popover stays compact and reads as a single item until the
     // user opens it. Collapsed on every build — the menu opens tidy each time. Not
@@ -11730,6 +11746,28 @@ export class PlanetariumMode {
    *  are still one tap away on the body you are now looking at. */
   private focusMapCard(): boolean {
     return this.mapPicked ? this.focusMapBody(this.mapPicked.name) : false;
+  }
+
+  /**
+   * The card's Look inside: open the interior tool on the picked body. The
+   * body is captured before the chart closes (one instrument at a time), and
+   * the entry goes through the tool door, never the mode switch, so it gets
+   * the journey snapshot and the tutorial and mission refusals like any other.
+   */
+  private insideMapCard(): boolean {
+    if (!this.isMapOpen() || this.mapDiving || !this.mapPicked) return false;
+    const bodyId = this.mapPicked.name;
+    if (bodyId === 'Sun') return false;
+    this.closeMap();
+    return this.enterTool({ kind: 'interior', bodyId });
+  }
+
+  /**
+   * The body the Tools row opens the interior tool on: the body you stand on,
+   * else the planet whose system you are inside, else Earth.
+   */
+  private resolveInteriorBody(): string {
+    return this.landedOn?.name ?? this.nearestSystemPlanet ?? 'Earth';
   }
 
   /** Focus entry shared by the card button, the double-tap, and the bridge. */

@@ -32,9 +32,11 @@
 import * as THREE from 'three';
 import {
   loadTexture,
+  createLateTextureSlot,
   createMoonTextures,
   planetArchetype,
   moonArchetype,
+  type LateTextureSlot,
 } from '../planetarium/PlanetFactory';
 import { augmentSurfaceMaterial, type SurfaceShadingFx, type SurfaceArchetype } from '../planetarium/world/surfaceShading';
 import { createPlanetariumStarfield, setStarfieldPixelRatio } from '../planetarium/world/starfield';
@@ -250,6 +252,12 @@ export class InteriorScene {
    * Load a body's colour map and dress the skin in it. Generation-guarded by
    * the caller's `isStale`: a stale resolve disposes what it loaded and
    * leaves the live skin untouched. Resolves true once the map is applied.
+   *
+   * The loader resolves its procedural fallback after a timeout, and the
+   * first frames of this mode compile a dozen programs (a slow device stalls
+   * past that timeout compiling them), so the fetch is given a late slot: the
+   * real map, arriving after the fallback, is swapped onto the live skin —
+   * or disposed if a newer body has taken over by then.
    */
   async loadBody(body: InteriorBody, isStale: () => boolean): Promise<boolean> {
     if (!this.capsCaptured) {
@@ -257,9 +265,11 @@ export class InteriorScene {
       this.capsCaptured = true;
     }
     this.ensureEnvironment();
-    const texture = await this.loadBodyColor(body);
+    const late = createLateTextureSlot();
+    const texture = await this.loadBodyColor(body, late);
     if (isStale()) {
       texture.dispose();
+      late.connect((arrival) => arrival.dispose());
       return false;
     }
     const archetype: SurfaceArchetype = body.planet
@@ -276,12 +286,24 @@ export class InteriorScene {
     this.skinMesh.visible = true;
     previousMaterial?.dispose();
     previousTexture?.dispose();
+    late.connect((arrival) => {
+      // Only onto the skin this load dressed: a later body owns it otherwise.
+      if (this.skinMaterial !== material) {
+        arrival.dispose();
+        return;
+      }
+      const fallback = this.skinTexture;
+      material.map = arrival;
+      material.needsUpdate = true;
+      this.skinTexture = arrival;
+      if (fallback && fallback !== arrival) fallback.dispose();
+    });
     return true;
   }
 
-  private async loadBodyColor(body: InteriorBody): Promise<THREE.Texture> {
+  private async loadBodyColor(body: InteriorBody, late: LateTextureSlot): Promise<THREE.Texture> {
     const textureKey = body.planet?.textureKey ?? body.moon?.textureKey;
-    if (textureKey) return loadTexture(textureKey);
+    if (textureKey) return loadTexture(textureKey, '2k', 'color', { late });
     const moon = body.moon!;
     const { colorTex, bumpTex } = createMoonTextures(moon.color, moon.name, moon.radiusKm);
     bumpTex.dispose(); // colour only: the section, not the surface, is the product here
@@ -320,7 +342,7 @@ export class InteriorScene {
     if (this.environment || !this.floatCapable) return;
     const generator = new THREE.PMREMGenerator(this.renderer);
     const studio = buildStudioEnvironment();
-    this.environment = generator.fromScene(studio, 0.05).texture;
+    this.environment = generator.fromScene(studio, 0.04).texture;
     generator.dispose();
     for (const shell of this.regionShells) {
       shell.material.envMap = this.environment;

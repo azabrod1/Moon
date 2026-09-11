@@ -1118,6 +1118,8 @@ function installDevHooks() {
     interiorOpen: (bodyId = 'Earth') => planetariumMode?.devEnterInterior(bodyId) ?? false,
     interiorExit: () => interiorMode?.devExit(),
     interiorPick: (bodyId: string) => interiorMode?.devPick(bodyId) ?? false,
+    interiorPickerOpen: () => interiorMode?.devPickerOpen() ?? false,
+    interiorEsc: () => interiorMode?.devEsc(),
     interiorView: (view: 'closed' | 'cutaway' | 'section') => interiorMode?.devView(view) ?? false,
     interiorAngle: (deg: number, animate?: boolean) => interiorMode?.devAngle(deg, animate) ?? false,
     interiorScale: (mode: 'true' | 'readable', blend?: number) => interiorMode?.devScale(mode, blend) ?? false,

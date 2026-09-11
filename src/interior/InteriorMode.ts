@@ -48,7 +48,8 @@ import {
   toDisplayFraction,
   type ReadableRemap,
 } from './interiorGeometry';
-import { SPIKE_DEFAULT_BODY, outerFractionsInsideOut, spikeModelFor, type SpikeModel } from './data/spikeModels';
+import { SPIKE_DEFAULT_BODY, outerFractionsInsideOut, spikeHasModel, spikeModelFor, type SpikeModel } from './data/spikeModels';
+import { BodyPicker } from '../planetarium/ui/BodyPicker';
 import { artParamsFor, depthTint, incandescence, swatchHex, type ArtParams } from './data/artParams';
 import type { SectionRegionLook } from './rendering/sectionMaterial';
 
@@ -136,7 +137,8 @@ export class InteriorMode {
   private loading = false;
 
   private body: InteriorBody | null = null;
-  private model: SpikeModel = spikeModelFor(SPIKE_DEFAULT_BODY);
+  private model: SpikeModel = spikeModelFor(SPIKE_DEFAULT_BODY, 1);
+  private readonly picker: BodyPicker;
   private utcMs = Date.now();
 
   // The cut.
@@ -182,6 +184,35 @@ export class InteriorMode {
     this.controls.maxDistance = FRAMING.maxDistance;
     this.controls.target.copy(ORIGIN);
 
+    this.picker = new BodyPicker({
+      ids: {
+        root: 'interior-picker',
+        list: 'interior-picker-list',
+        title: 'interior-picker-title',
+        search: 'interior-picker-search',
+        empty: 'interior-picker-empty',
+        close: 'interior-picker-close',
+      },
+      includeSun: false, // the Sun waits for its own model (plan §9, phase 3)
+      renderTitle: (title) => {
+        const strong = document.createElement('b');
+        strong.textContent = 'Look inside';
+        title.append(strong, document.createTextNode(' another world'));
+      },
+      rowBadge: (name) => {
+        const pill = document.createElement('span');
+        const modelled = spikeHasModel(name);
+        pill.className = 'pk-tag-cover' + (modelled ? ' on' : '');
+        pill.textContent = modelled ? 'modelled' : 'unresolved';
+        return pill;
+      },
+      onPick: (name) => {
+        this.picker.close();
+        void this.commitBody(name);
+      },
+      onClose: () => {},
+    });
+
     this.bindPanel();
   }
 
@@ -215,6 +246,7 @@ export class InteriorMode {
     }
     const ui = document.getElementById('interior-ui');
     if (ui) ui.style.display = 'block';
+    this.picker.bind();
 
     this.interiorScene.setEdgeMode(this.isMultisampled());
     this.interiorScene.setVisible(true);
@@ -239,6 +271,7 @@ export class InteriorMode {
     this.generation++; // cancels any in-flight map load
     this.loading = false;
     this.interiorScene.setVisible(false);
+    this.picker.close();
     const ui = document.getElementById('interior-ui');
     if (ui) ui.style.display = 'none';
     this.controls.enabled = false;
@@ -390,10 +423,7 @@ export class InteriorMode {
     const generation = ++this.generation;
     this.loading = true;
     this.body = body;
-    this.model = spikeModelFor(body.id);
-    if (this.model.bodyId !== body.id) {
-      debugWarn('Look inside: no spike model for this body, drawing Earth\'s regions', { bodyId: body.id });
-    }
+    this.model = spikeModelFor(body.id, body.radiusKm);
     this.remap = null; // the new model's boundaries go out on the next frame
     this.renderPanel();
     this.interiorScene.setPose(body, this.utcMs);
@@ -408,6 +438,7 @@ export class InteriorMode {
 
   private bindPanel(): void {
     document.getElementById('interior-leave')?.addEventListener('click', () => this.requestExit());
+    document.getElementById('interior-body-chip')?.addEventListener('click', () => this.openPicker());
     for (const view of CUT_VIEWS) {
       document.getElementById(`interior-view-${view}`)?.addEventListener('click', () => this.setView(view));
     }
@@ -482,10 +513,21 @@ export class InteriorMode {
     if (readout) readout.textContent = `${Math.round(this.angleDeg)}°`;
   }
 
+  /** The Esc cascade: the picker first, then the tool itself. */
   private handleKeyDown = (event: KeyboardEvent) => {
     if (!this.active) return;
-    if (event.key === 'Escape') this.requestExit();
+    if (event.key !== 'Escape') return;
+    if (this.picker.isOpen()) {
+      this.picker.close();
+      return;
+    }
+    this.requestExit();
   };
+
+  private openPicker(): void {
+    if (!this.active) return;
+    this.picker.open();
+  }
 
   // ---- camera ----------------------------------------------------------------
 
@@ -531,8 +573,19 @@ export class InteriorMode {
 
   devPick(bodyId: string): boolean {
     if (!this.active) return false;
+    this.picker.close();
     void this.commitBody(bodyId);
     return true;
+  }
+
+  devPickerOpen(): boolean {
+    if (!this.active) return false;
+    this.openPicker();
+    return this.picker.isOpen();
+  }
+
+  devEsc(): void {
+    this.handleKeyDown(new KeyboardEvent('keydown', { key: 'Escape' }));
   }
 
   devView(view: CutView): boolean {

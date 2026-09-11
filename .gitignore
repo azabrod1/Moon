@@ -4,6 +4,9 @@ dist/
 *.local
 .claude/*
 !.claude/skills/
+# the shared permission allowlist: tracked so every checkout and every
+# cloud session starts with it (settings.local.json stays machine-local)
+!.claude/settings.json
 .chrome-*/
 .edge-headless-profile/
 browser-*.png

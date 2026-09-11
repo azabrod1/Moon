@@ -152,6 +152,8 @@ export interface InteriorDevState {
   displayMode: InteriorDisplayMode;
   /** The Temperature-mode scale, K, or null when no region's temperature is known. */
   temperatureRange: TemperatureRange | null;
+  /** Whether the rings are shown; null for a body without any. */
+  rings: boolean | null;
   view: CutView | null;
   openingAngleDeg: number;
   targetAngleDeg: number;
@@ -231,6 +233,7 @@ export class InteriorMode {
   private coverage: Coverage = coverageFor(INTERIOR_DEFAULT_BODY);
   private drawn: DrawnModel = drawnUnresolved(INTERIOR_DEFAULT_BODY, 1, '');
   private displayMode: InteriorDisplayMode = 'composition';
+  private ringsOn = true;
   private temperatureRange: TemperatureRange | null = null;
   private readonly picker: BodyPicker;
   private readonly ruler = new DepthRuler();
@@ -663,6 +666,7 @@ export class InteriorMode {
     this.applyDrawn(true);
     this.interiorScene.setPose(body, this.utcMs);
     this.interiorScene.presentBody(prepared, swap && animate ? SWAP_FADE_S : 0);
+    this.syncRingsRow();
     if (swap) {
       await this.interiorScene.fadeDone();
       if (stale()) return false;
@@ -698,6 +702,19 @@ export class InteriorMode {
     this.renderPanel(reveal);
   }
 
+  private setRings(on: boolean): void {
+    this.ringsOn = on;
+    this.interiorScene.setRingsVisible(on);
+    const toggle = document.getElementById('interior-rings-toggle') as HTMLInputElement | null;
+    if (toggle) toggle.checked = on;
+  }
+
+  /** The rings row shows only for a body that has rings. */
+  private syncRingsRow(): void {
+    const row = document.getElementById('interior-rings-row');
+    if (row) row.style.display = this.interiorScene.hasRings() ? '' : 'none';
+  }
+
   private setDisplayMode(mode: InteriorDisplayMode): void {
     this.displayMode = mode;
     this.interiorScene.setDisplayMode(mode === 'temperature' ? 1 : 0);
@@ -720,6 +737,8 @@ export class InteriorMode {
     });
     const toggle = document.getElementById('interior-readable-toggle') as HTMLInputElement | null;
     toggle?.addEventListener('change', () => this.setReadable(toggle.checked));
+    const rings = document.getElementById('interior-rings-toggle') as HTMLInputElement | null;
+    rings?.addEventListener('change', () => this.setRings(rings.checked));
     document.getElementById('interior-mode-composition')?.addEventListener('click', () => this.setDisplayMode('composition'));
     document.getElementById('interior-mode-temperature')?.addEventListener('click', () => this.setDisplayMode('temperature'));
     // The popover's backdrop closes it; the card's own close button too.
@@ -1220,6 +1239,12 @@ export class InteriorMode {
     return this.selectModel(modelId);
   }
 
+  devRings(on: boolean): boolean {
+    if (!this.active) return false;
+    this.setRings(on);
+    return true;
+  }
+
   devDisplayMode(mode: InteriorDisplayMode): boolean {
     if (!this.active || (mode !== 'composition' && mode !== 'temperature')) return false;
     this.setDisplayMode(mode);
@@ -1278,6 +1303,7 @@ export class InteriorMode {
       illustrative: this.drawn.illustrative,
       displayMode: this.displayMode,
       temperatureRange: this.temperatureRange,
+      rings: this.interiorScene.hasRings() ? this.ringsOn : null,
       view: cutViewForAngle(this.angleDeg),
       openingAngleDeg: this.angleDeg,
       targetAngleDeg: this.angleToDeg,

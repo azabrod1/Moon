@@ -36,8 +36,11 @@ import {
   createMoonTextures,
   planetArchetype,
   moonArchetype,
+  createAtmosphereMaterial,
+  ATMOSPHERES,
   type LateTextureSlot,
 } from '../planetarium/PlanetFactory';
+import { RING_CONFIGS, createPlanetRings, type RingShadingFx } from '../planetarium/planets/rings';
 import { augmentSurfaceMaterial, type SurfaceShadingFx, type SurfaceArchetype } from '../planetarium/world/surfaceShading';
 import { createPlanetariumStarfield, setStarfieldPixelRatio } from '../planetarium/world/starfield';
 import { applyLensShaderUniforms, type LensShaderUniforms } from '../shared/three/lensShader';
@@ -48,7 +51,7 @@ import { MOONS, type MoonData } from '../planetarium/planets/moonData';
 import { computeBodyOrientationQuaternion, ttJDFromUtcMs } from '../astronomy/planetary';
 import { computeMoonOffsetEquatorialAU } from '../astronomy/satellites';
 import { tidalLockQuaternion, tidalRollNorth } from '../planetarium/world/tidalLock';
-import { applySkinCut, configureSkinCutEdge, createSkinCutUniforms, type SkinCutUniforms } from './rendering/skinCut';
+import { applyAtmosphereCut, applySkinCut, configureSkinCutEdge, createSkinCutUniforms, type SkinCutUniforms } from './rendering/skinCut';
 import { applySkinFade, createSkinFadeUniforms, idleFadeTexture, type SkinFadeUniforms } from './rendering/skinFade';
 import {
   createSectionMaterial,
@@ -102,6 +105,10 @@ const FACE_ENV_INTENSITY = 1.0;
 const STUDIO_SOFTBOX_COLOR = new THREE.Color(1.0, 0.93, 0.82).multiplyScalar(1.1);
 const STUDIO_RIM_COLOR = new THREE.Color(0.55, 0.68, 1.0).multiplyScalar(0.8);
 const STUDIO_FLOOR_COLOR = new THREE.Color(0.15, 0.14, 0.12);
+/** The analytic air shell's presence in the studio (the planetarium's distance fade, held near). */
+const ATMOSPHERE_ALPHA = 0.7;
+/** The studio key's angular radius as the ring shadow's penumbra: a soft edge, not a point. */
+const RING_SUN_TAN = 0.004;
 
 function buildStudioEnvironment(): THREE.Scene {
   const studio = new THREE.Scene();
@@ -130,6 +137,7 @@ export interface InteriorBody {
 
 /** A body's skin, loaded and built but not yet on the mesh. */
 export interface PreparedSkin {
+  body: InteriorBody;
   material: THREE.MeshStandardMaterial;
   texture: THREE.Texture;
   late: LateTextureSlot;
@@ -177,6 +185,14 @@ export class InteriorScene {
   private readonly ghostCut: SkinCutUniforms;
   /** 0 stills every pattern (prefers-reduced-motion). */
   private motionScale = 1;
+  /** The air, cut by the same frame, for bodies that carry a shell; the rings, whole, as context. */
+  private readonly atmosphereMesh: THREE.Mesh;
+  private atmosphereMaterial: THREE.ShaderMaterial | null = null;
+  private ringMesh: THREE.Mesh | null = null;
+  private ringFx: RingShadingFx | null = null;
+  private ringsWanted = true;
+  private readonly poseQuaternion = new THREE.Quaternion();
+  private readonly ringSunLocal = new THREE.Vector3();
   private readonly sectionUniforms: SectionUniforms;
   private readonly faceGeometry: THREE.CircleGeometry;
   private readonly faceMaterial: THREE.MeshStandardMaterial;
@@ -235,6 +251,13 @@ export class InteriorScene {
     this.ghostMesh.visible = false;
     this.ghostMesh.renderOrder = 3;
     this.group.add(this.ghostMesh);
+    // The air: the planetarium's analytic shell, keyed to the studio light and
+    // cut with the skin; drawn last so it adds over the faces' rim.
+    this.atmosphereMesh = new THREE.Mesh(this.skinGeometry, new THREE.MeshBasicMaterial({ color: 0x000000 }));
+    this.atmosphereMesh.name = 'InteriorAtmosphere';
+    this.atmosphereMesh.visible = false;
+    this.atmosphereMesh.renderOrder = 4;
+    this.group.add(this.atmosphereMesh);
 
     this.sectionUniforms = createSectionUniforms();
     this.faceMaterial = createSectionMaterial(this.sectionUniforms);
@@ -315,7 +338,61 @@ export class InteriorScene {
       : body.moon
         ? moonArchetype(body.moon)
         : 'airless';
-    return { material: this.buildSkinMaterial(texture, archetype), texture, late };
+    return { body, material: this.buildSkinMaterial(texture, archetype), texture, late };
+  }
+
+  /** The body's context: its air shell if it has one, its rings if it has them. */
+  private dressContext(body: InteriorBody): void {
+    this.releaseContext();
+    const atmosphere = ATMOSPHERES[body.id];
+    if (atmosphere) {
+      const material = createAtmosphereMaterial(atmosphere, BODY_RADIUS, 'analytic', {
+        initialAlpha: ATMOSPHERE_ALPHA,
+        initialSunDir: this.keyDirection,
+      });
+      applyAtmosphereCut(material, this.cutUniforms);
+      this.atmosphereMaterial = material;
+      this.atmosphereMesh.material = material;
+      this.atmosphereMesh.scale.setScalar(atmosphere.scale);
+      this.atmosphereMesh.visible = true;
+    }
+    const rings = RING_CONFIGS[body.id];
+    if (rings) {
+      const { mesh, fx } = createPlanetRings(BODY_RADIUS, rings, RING_SUN_TAN);
+      mesh.name = 'InteriorRings';
+      mesh.renderOrder = 2;
+      mesh.quaternion.copy(this.poseQuaternion);
+      mesh.visible = this.ringsWanted;
+      this.group.add(mesh);
+      this.ringMesh = mesh;
+      this.ringFx = fx;
+    }
+  }
+
+  private releaseContext(): void {
+    this.atmosphereMesh.visible = false;
+    this.atmosphereMesh.material = new THREE.MeshBasicMaterial({ color: 0x000000 });
+    this.atmosphereMaterial?.dispose();
+    this.atmosphereMaterial = null;
+    if (this.ringMesh) {
+      this.group.remove(this.ringMesh);
+      this.ringMesh.geometry.dispose();
+      const material = this.ringMesh.material as THREE.MeshStandardMaterial;
+      material.map?.dispose();
+      material.dispose();
+      this.ringMesh = null;
+      this.ringFx = null;
+    }
+  }
+
+  /** Whether the current body has rings to show. */
+  hasRings(): boolean {
+    return this.ringMesh !== null;
+  }
+
+  setRingsVisible(on: boolean): void {
+    this.ringsWanted = on;
+    if (this.ringMesh) this.ringMesh.visible = on;
   }
 
   /** Whether a skin is on the body: false before the first body, so an entry has nothing to fade from. */
@@ -350,6 +427,7 @@ export class InteriorScene {
     } else {
       previousTexture?.dispose();
     }
+    this.dressContext(prepared.body);
     this.ghostMaterial?.dispose();
     const ghost = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.95, metalness: 0, transparent: true, opacity: 0, depthWrite: false });
     applySkinCut(ghost, this.ghostCut);
@@ -514,6 +592,8 @@ export class InteriorScene {
       quaternion.identity();
     }
     for (const shell of this.regionShells) shell.mesh.quaternion.copy(quaternion);
+    this.poseQuaternion.copy(quaternion);
+    this.ringMesh?.quaternion.copy(quaternion);
     tmpBasis.makeRotationFromQuaternion(quaternion).invert();
     this.worldToBody.setFromMatrix4(tmpBasis);
     this.sectionUniforms.uWorldToBody.value.copy(this.worldToBody);
@@ -593,6 +673,13 @@ export class InteriorScene {
       .normalize();
     this.keyLight.position.copy(this.keyDirection).multiplyScalar(KEY_LIGHT_DISTANCE);
     this.skinFx?.uSunDirWorld.value.copy(this.keyDirection);
+    if (this.atmosphereMaterial) (this.atmosphereMaterial.uniforms.uSunDirWorld.value as THREE.Vector3).copy(this.keyDirection);
+    if (this.ringFx) {
+      this.ringFx.uSunDirWorld.value.copy(this.keyDirection);
+      // The ring shader shadows in the planet's own frame.
+      tmpEnvQuaternion.copy(this.poseQuaternion).invert();
+      this.ringFx.uSunDirLocal.value.copy(this.ringSunLocal.copy(this.keyDirection).applyQuaternion(tmpEnvQuaternion));
+    }
     // The studio turns with the camera: the lookup is rotated by the inverse,
     // so the softbox stays upper-left of whoever is looking.
     tmpEnvQuaternion.copy(camera.quaternion).invert();
@@ -608,6 +695,7 @@ export class InteriorScene {
    *  planetarium's memory envelope cannot see what this mode leaves resident. */
   releaseBodyResources(): void {
     this.finishFade();
+    this.releaseContext();
     this.skinMesh.visible = false;
     this.skinMesh.material = new THREE.MeshStandardMaterial({ color: 0x000000 });
     this.skinMaterial?.dispose();

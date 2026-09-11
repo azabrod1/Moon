@@ -125,3 +125,39 @@ export function configureSkinCutEdge(material: THREE.MeshStandardMaterial, multi
   material.depthWrite = true;
   material.needsUpdate = true;
 }
+
+/**
+ * The same cut on the analytic atmosphere shell, which is a raw
+ * ShaderMaterial (shared/shaders/atmosphere) with no three chunks to hook.
+ * The shell is drawn from its far side (BackSide, additive), so a fragment's
+ * own direction from the centre points away from the viewer; what matters
+ * is the screen position it covers, which its reflection through the
+ * frame's view plane gives — at the limb, where the fringe lives, the two
+ * coincide, so the air's edge lands exactly on the skin's. The feather goes
+ * into the radiance, since an additive shell has no alpha to carry it.
+ */
+export function applyAtmosphereCut(material: THREE.ShaderMaterial, uniforms: SkinCutUniforms): void {
+  material.uniforms.uCutView = uniforms.uCutView;
+  material.uniforms.uCutSide = uniforms.uCutSide;
+  material.uniforms.uCutHalfAngle = uniforms.uCutHalfAngle;
+  const declarations = 'uniform vec3 uCutView;\nuniform vec3 uCutSide;\nuniform float uCutHalfAngle;\n';
+  const test = `
+  float interiorCutCoverage = 1.0;
+  if (uCutHalfAngle > 0.0) {
+    vec3 cutDirection = normalize(vWorldPos - vCenter);
+    float cutAlong = dot(cutDirection, uCutView);
+    if (cutAlong < 0.0) cutDirection -= 2.0 * cutAlong * uCutView;
+    float cutAngle = atan(abs(dot(cutDirection, uCutSide)), dot(cutDirection, uCutView));
+    float cutSigned = cutAngle - uCutHalfAngle;
+    float cutWidth = max(fwidth(cutSigned), 1e-5);
+    interiorCutCoverage = clamp(cutSigned / cutWidth + 0.5, 0.0, 1.0);
+    if (interiorCutCoverage <= 0.0) discard;
+  }
+`;
+  const fragment = material.fragmentShader;
+  if (!fragment.includes('gl_FragColor = vec4(radiance, 1.0);')) throw new Error('applyAtmosphereCut: the analytic shell shader changed shape');
+  material.fragmentShader = declarations + fragment
+    .replace('void main() {', `void main() {${test}`)
+    .replace('gl_FragColor = vec4(radiance, 1.0);', 'gl_FragColor = vec4(radiance * interiorCutCoverage, 1.0);');
+  material.needsUpdate = true;
+}

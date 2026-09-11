@@ -207,8 +207,10 @@ async function sweepBody(context, viewport, body) {
         const centreBlock = blockStats(image, Math.round(centre.x * scale - size / 2), Math.round(centre.y * scale - size / 2), size);
         const unknown = initial.temperatureRange === null || (await page.evaluate(() => document.querySelector('#interior-legend .interior-row:last-child .interior-swatch')?.classList.contains('hatched')));
         if (unknown) {
-          // The hatch: dark, and striped (a standard deviation a flat tone cannot have).
-          check(centreBlock.max < 90, `${tag}: unknown temperature at the centre is not dark (max luminance ${centreBlock.max.toFixed(0)})`);
+          // The hatch: grey (its light stripe is 0.15 linear, about 110 in sRGB,
+          // well under any warm scale colour) and striped, a standard
+          // deviation a flat tone cannot have.
+          check(centreBlock.max < 150, `${tag}: unknown temperature at the centre is not the grey hatch (max luminance ${centreBlock.max.toFixed(0)})`);
           check(centreBlock.std > 4, `${tag}: unknown temperature at the centre is not hatched (std ${centreBlock.std.toFixed(1)})`);
         } else {
           check(centreBlock.mean > 40, `${tag}: the known centre temperature is not drawn (mean luminance ${centreBlock.mean.toFixed(0)})`);

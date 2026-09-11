@@ -100,6 +100,18 @@ async function openTool(context, body, query = '') {
 }
 
 const settle = (page) => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve)))));
+/** Run `capture` with the depth ruler hidden: it draws its line through the disc centre and along the
+ *  face, so a pixel read of the face steps it aside (visibility, which the ruler's own display toggle
+ *  leaves alone). The saved captures keep it. */
+async function withoutRuler(page, capture) {
+  await page.evaluate(() => { document.getElementById('interior-ruler').style.visibility = 'hidden'; });
+  await settle(page);
+  try {
+    return await capture();
+  } finally {
+    await page.evaluate(() => { document.getElementById('interior-ruler').style.visibility = ''; });
+  }
+}
 async function ready(page) {
   await page.waitForFunction(() => window.__moon.interiorReady(), undefined, { timeout: 120000 });
   await page.evaluate(() => { window.__moon.interiorTime(12); window.__moon.interiorFreeze(true); });
@@ -122,6 +134,9 @@ async function sweepBody(context, viewport, body) {
   await ready(page);
   const initial = await state(page);
   const regionKeys = initial.regions.map((region) => region.key);
+
+  // 0. The body that opened is the one asked for: an unknown name falls back to the default with only a warning.
+  check(initial.bodyId === body, `${tag}: opened ${initial.bodyId || '(nothing)'} when ${body} was asked for`);
 
   // 1. The legend is the drawn model, outside-in.
   const rows = await legendRegions(page);
@@ -197,9 +212,9 @@ async function sweepBody(context, viewport, body) {
       await page.evaluate((value) => window.__moon.interiorView(value), view);
       await ready(page);
       const file = path.join(outDir, `${viewport.name}-${body}-${view}-${mode}.png`);
-      const png = await page.screenshot({ path: file, type: 'png' });
+      await page.screenshot({ path: file, type: 'png' });
       if (view === 'section' && mode === 'temperature') {
-        const image = decodePng(png);
+        const image = decodePng(await withoutRuler(page, () => page.screenshot({ type: 'png' })));
         const scale = image.width / viewport.width;
         const innermost = initial.regions[0];
         const innerPx = innermost.displayOuter * radiusPx * scale;
@@ -236,7 +251,7 @@ async function bandCase(context, viewport) {
   const centre = await discCentre(page, viewport);
   const radiusPx = current.projectedRadiusPx;
   const reference = 1560.8;
-  const image = decodePng(await page.screenshot({ type: 'png' }));
+  const image = decodePng(await withoutRuler(page, () => page.screenshot({ type: 'png' })));
   const scale = image.width / viewport.width;
   // True scale: display radius = physical radius. In the band (300–700 km) versus above it (800–1400 km).
   const inBandR = ((500 / reference) * radiusPx) * scale;
@@ -267,7 +282,8 @@ async function pathCases(context, viewport) {
     for (const mode of MODES) {
       await page.evaluate((value) => window.__moon.interiorMode(value), mode);
       await ready(page);
-      const image = decodePng(await page.screenshot({ path: path.join(outDir, `${viewport.name}-Earth-section-${mode}-${renderPath.name}.png`), type: 'png' }));
+      await page.screenshot({ path: path.join(outDir, `${viewport.name}-Earth-section-${mode}-${renderPath.name}.png`), type: 'png' });
+      const image = decodePng(await withoutRuler(page, () => page.screenshot({ type: 'png' })));
       const scale = image.width / viewport.width;
       const block = blockStats(image, Math.round(centre.x * scale - 8), Math.round(centre.y * scale - 8), 16);
       check(block.mean > 40, `${tag}/${mode}: the disc centre is dark (mean ${block.mean.toFixed(0)})`);

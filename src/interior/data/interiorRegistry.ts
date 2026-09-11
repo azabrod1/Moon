@@ -32,10 +32,20 @@ import { EUROPA_MODEL } from './models/europa';
 import { JUPITER_COMPACT_MODEL, JUPITER_DILUTE_MODEL, JUPITER_DISTINGUISHED_BY } from './models/jupiter';
 import { MARS_BASAL_LAYER_MODEL, MARS_DISTINGUISHED_BY, MARS_LIQUID_CORE_MODEL } from './models/mars';
 import { PHOBOS_BULK, PHOBOS_ILLUSTRATIVE_MODEL } from './models/phobos';
+import { TITAN_DISTINGUISHED_BY, TITAN_OCEAN_MODEL, TITAN_SLUSH_MODEL } from './models/titan';
+import { MERCURY_DISTINGUISHED_BY, MERCURY_INNER_CORE_MODEL, MERCURY_LIQUID_CORE_MODEL } from './models/mercury';
+import { VENUS_MODEL } from './models/venus';
+import { IO_MODEL } from './models/io';
+import { GANYMEDE_MODEL } from './models/ganymede';
+import { CALLISTO_DIFFERENTIATED_MODEL, CALLISTO_DISTINGUISHED_BY, CALLISTO_PARTIAL_MODEL } from './models/callisto';
+import { ENCELADUS_MODEL } from './models/enceladus';
+import { SATURN_MODEL } from './models/saturn';
+import { ICE_GIANT_DISTINGUISHED_BY, NEPTUNE_FUZZY_MODEL, NEPTUNE_LAYERED_MODEL, URANUS_FUZZY_MODEL, URANUS_LAYERED_MODEL } from './models/iceGiants';
+import { PLUTO_DISTINGUISHED_BY, PLUTO_FROZEN_MODEL, PLUTO_OCEAN_MODEL } from './models/pluto';
+import { TRITON_BULK, TRITON_ILLUSTRATIVE_MODEL } from './models/triton';
 
 export const INTERIOR_DEFAULT_BODY = 'Earth';
 
-const FACT_SHEET = 'Williams, NASA Planetary Fact Sheets (NASA GSFC), bulk parameters';
 const JPL_SATELLITES = 'JPL Solar System Dynamics, planetary satellite physical parameters (Jacobson et al.)';
 const THOMAS_2010 = 'Thomas (2010), Icarus 208, sizes, shapes, and derived properties of the saturnian satellites after the Cassini nominal mission';
 const ANDERSON_2005 = 'Anderson et al. (2005), Science 308, Amalthea\'s density is less than that of water';
@@ -50,24 +60,13 @@ interface BulkLine {
 
 /** Bulk densities for bodies without a model here, kg/m³, and the one-line reading of each. */
 const BULK: Readonly<Record<string, BulkLine>> = {
-  Mercury: { densityKgM3: 5429, source: FACT_SHEET, note: 'Nearly as dense as Earth in a body a third the size, so most of Mercury is metal: a core reaching about 85% of the radius, found liquid by MESSENGER\'s spin and gravity measurements. Not yet modelled here.' },
-  Venus: { densityKgM3: 5243, source: FACT_SHEET, note: 'Earth\'s density in Earth\'s size, so a similar iron core and silicate mantle are expected; no seismometer has run on Venus, and its core\'s state is not measured. Not yet modelled here.' },
-  Saturn: { densityKgM3: 687, source: FACT_SHEET, note: 'Lighter than water: hydrogen and helium nearly all the way down, over a core that Cassini\'s ring seismology found to be large and diffuse. Not yet modelled here.' },
-  Uranus: { densityKgM3: 1270, source: FACT_SHEET, note: 'Too dense for a hydrogen world, too light for rock: a deep layer of water, ammonia and methane fluids, with the proportions of rock and ice inside still open. Not yet modelled here.' },
-  Neptune: { densityKgM3: 1638, source: FACT_SHEET, note: 'Denser than Uranus in almost the same size, so more rock and ice inside; the same open question about how they are arranged. Not yet modelled here.' },
-  Pluto: { densityKgM3: 1854, source: STERN_2015, note: 'About two-thirds rock by mass under a thick water-ice shell, from New Horizons\' mass and size; a subsurface ocean is argued from the geology. Not yet modelled here.' },
   Deimos: { densityKgM3: 1470, source: JPL_SATELLITES, note: 'A density near Phobos\'s, measured to about ±13%, from Viking and Mars Express flybys. Like Phobos, probably porous; no measurement reaches its interior.' },
   Amalthea: { densityKgM3: 857, source: ANDERSON_2005, note: 'Less dense than water, from Galileo\'s final flyby: a loose pile of ice and rock with much empty space. No measurement reaches its interior.' },
-  Io: { densityKgM3: 3528, source: JPL_SATELLITES, note: 'The densest moon in the solar system, rock and iron throughout; Galileo\'s gravity found a metal core, and the tides that power its volcanoes keep the mantle partly molten. Not yet modelled here.' },
-  Ganymede: { densityKgM3: 1942, source: JPL_SATELLITES, note: 'Half rock and half ice by mass, fully separated into an iron core (it has its own magnetic field), a rock mantle and thick ice, with a salty ocean inside the ice. Not yet modelled here.' },
-  Callisto: { densityKgM3: 1834, source: JPL_SATELLITES, note: 'A rock-and-ice mix that Galileo\'s gravity found only partly separated, with an induced magnetic field pointing to an ocean under the ice. Not yet modelled here.' },
   Himalia: { densityKgM3: null, source: JPL_SATELLITES, note: 'A captured irregular moon; its mass is only roughly known, so the density is not a useful number. No measurement reaches its interior.' },
   Mimas: { densityKgM3: 1149, source: THOMAS_2010, note: 'Mostly water ice with some rock; its wobble, measured by Cassini, argues for an ocean or an oddly shaped core. Not yet modelled here.' },
-  Enceladus: { densityKgM3: 1609, source: THOMAS_2010, note: 'Rock and ice; Cassini\'s gravity and libration found a global ocean under the ice shell, feeding the plumes at the south pole. Not yet modelled here.' },
   Tethys: { densityKgM3: 984, source: THOMAS_2010, note: 'Almost pure water ice, lighter than liquid water, so nearly no rock inside. No measurement reaches its interior.' },
   Dione: { densityKgM3: 1478, source: THOMAS_2010, note: 'Ice with a rock fraction near half by mass; Cassini\'s gravity hints at an ocean, unconfirmed. No measurement reaches its interior.' },
   Rhea: { densityKgM3: 1237, source: THOMAS_2010, note: 'About three-quarters ice by mass; Cassini\'s gravity suggests the rock and ice are only partly separated. No measurement reaches its interior.' },
-  Titan: { densityKgM3: 1882, source: JPL_SATELLITES, note: 'Rock and ice about equal by mass; Cassini\'s tides and gravity found a liquid layer under the ice, read as a global salty ocean, over a mantle of high-pressure ice and rock. Not yet modelled here.' },
   Hyperion: { densityKgM3: 544, source: THOMAS_2010, note: 'Half the density of water: a sponge of ice with about half its volume empty, seen in Cassini\'s images. No measurement reaches its interior.' },
   Iapetus: { densityKgM3: 1088, source: THOMAS_2010, note: 'Mostly ice with a little rock; its shape froze when it spun far faster than it does now. No measurement reaches its interior.' },
   Phoebe: { densityKgM3: 1638, source: THOMAS_2010, note: 'Denser than Saturn\'s regular moons and darker: a captured body from the outer solar system, rock and ice, possibly once warm enough to settle. No measurement reaches its interior.' },
@@ -77,7 +76,6 @@ const BULK: Readonly<Record<string, BulkLine>> = {
   Titania: { densityKgM3: 1710, source: JPL_SATELLITES, note: 'About half rock by mass, from Voyager 2\'s tracking; models allow an ocean if there is enough ammonia, nothing confirms one.' },
   Oberon: { densityKgM3: 1630, source: JPL_SATELLITES, note: 'Rock and ice in similar shares, from Voyager 2\'s tracking; no measurement reaches its interior.' },
   Proteus: { densityKgM3: null, source: JPL_SATELLITES, note: 'Its mass is poorly known, so the density is not a useful number. Irregular in shape; no measurement reaches its interior.' },
-  Triton: { densityKgM3: 2061, source: JPL_SATELLITES, note: 'Two-thirds rock by mass under ice, from Voyager 2; a captured world whose geology suggests an ocean kept warm by tides and decay. Not yet modelled here.' },
   Nereid: { densityKgM3: null, source: JPL_SATELLITES, note: 'Its mass has not been measured, so nothing is known of its interior.' },
   Charon: { densityKgM3: 1702, source: STERN_2015, note: 'More ice than Pluto and less rock, from New Horizons; the surface records an ancient ocean freezing and cracking the crust. Not yet modelled here.' },
 };
@@ -146,6 +144,115 @@ const AUTHORED: Readonly<Record<string, Coverage>> = {
     illustrative: PHOBOS_ILLUSTRATIVE_MODEL,
     history: [
       { modelId: 'phobos-rubble-pile-illustrative', status: 'current', note: 'One way a body this light could be built; illustrative, never measured.', year: 2010 },
+    ],
+  },
+  Mercury: {
+    state: 'competing',
+    models: [MERCURY_LIQUID_CORE_MODEL, MERCURY_INNER_CORE_MODEL],
+    defaultModelId: MERCURY_LIQUID_CORE_MODEL.modelId,
+    distinguishedBy: MERCURY_DISTINGUISHED_BY,
+    history: [
+      { modelId: 'mercury-liquid-core', status: 'current', note: 'The libration of 2007 and MESSENGER\'s gravity: a liquid core to 85% of the radius.', year: 2012 },
+      { modelId: 'mercury-solid-inner-core', status: 'current', note: 'A solid iron centre argued from gravity with the spin state in 2019; not excluded, not confirmed.', year: 2019 },
+      { modelId: 'mercury-solid-throughout', status: 'superseded', note: 'Before the libration was measured, a core frozen solid was the expectation for so small a planet.', year: 2000 },
+    ],
+  },
+  Venus: {
+    state: 'constrained',
+    model: VENUS_MODEL,
+    history: [
+      { modelId: 'venus-radar-moi', status: 'current', note: 'The 2021 radar measurement of the moment of inertia with Magellan\'s tidal Love number.', year: 2021 },
+      { modelId: 'venus-earth-analogue', status: 'superseded', note: 'Until 2021 the core size was pure analogy with Earth, scaled by density.', year: 1996 },
+    ],
+  },
+  Io: {
+    state: 'constrained',
+    model: IO_MODEL,
+    history: [
+      { modelId: 'io-galileo-juno', status: 'current', note: 'Galileo\'s gravity for the core, Juno\'s tides for a mostly solid mantle.', year: 2024 },
+      { modelId: 'io-shallow-magma-ocean', status: 'disfavoured', note: 'A global magma ocean tens of km down, read from Galileo\'s induced field in 2011; Juno\'s tidal Love number in 2024 says the mantle is too stiff for one.', year: 2011 },
+    ],
+  },
+  Ganymede: {
+    state: 'constrained',
+    model: GANYMEDE_MODEL,
+    history: [
+      { modelId: 'ganymede-galileo-hubble', status: 'current', note: 'Galileo\'s gravity and intrinsic field, Hubble\'s auroral rocking for the ocean.', year: 2015 },
+    ],
+  },
+  Callisto: {
+    state: 'competing',
+    models: [CALLISTO_PARTIAL_MODEL, CALLISTO_DIFFERENTIATED_MODEL],
+    defaultModelId: CALLISTO_PARTIAL_MODEL.modelId,
+    distinguishedBy: CALLISTO_DISTINGUISHED_BY,
+    history: [
+      { modelId: 'callisto-partially-differentiated', status: 'current', note: 'Galileo\'s moment of inertia read with a hydrostatic Callisto.', year: 2001 },
+      { modelId: 'callisto-fully-differentiated', status: 'current', note: 'The same gravity without the hydrostatic assumption allows a rock core.', year: 2013 },
+    ],
+  },
+  Enceladus: {
+    state: 'constrained',
+    model: ENCELADUS_MODEL,
+    history: [
+      { modelId: 'enceladus-cassini', status: 'current', note: 'Cassini\'s gravity, the measured libration and the plume\'s chemistry.', year: 2016 },
+      { modelId: 'enceladus-regional-sea', status: 'superseded', note: 'Gravity alone (2014) needed only a sea under the south pole; the libration made it global.', year: 2014 },
+    ],
+  },
+  Saturn: {
+    state: 'constrained',
+    model: SATURN_MODEL,
+    history: [
+      { modelId: 'saturn-diffuse-core', status: 'current', note: 'Ring seismology (2021) and the Grand Finale gravity: a diffuse, stably stratified core to 60% of the radius.', year: 2021 },
+      { modelId: 'saturn-compact-core', status: 'superseded', note: 'A compact rock-ice core of 10–20 Earth masses, the picture before the rings were read as a seismograph.', year: 2010 },
+    ],
+  },
+  Uranus: {
+    state: 'competing',
+    models: [URANUS_LAYERED_MODEL, URANUS_FUZZY_MODEL],
+    defaultModelId: URANUS_LAYERED_MODEL.modelId,
+    distinguishedBy: ICE_GIANT_DISTINGUISHED_BY,
+    history: [
+      { modelId: 'uranus-layered', status: 'current', note: 'The three-layer fit to Voyager 2\'s flyby.', year: 2011 },
+      { modelId: 'uranus-fuzzy', status: 'current', note: 'Composition gradients with no distinct layers fit the same data.', year: 2020 },
+    ],
+  },
+  Neptune: {
+    state: 'competing',
+    models: [NEPTUNE_LAYERED_MODEL, NEPTUNE_FUZZY_MODEL],
+    defaultModelId: NEPTUNE_LAYERED_MODEL.modelId,
+    distinguishedBy: ICE_GIANT_DISTINGUISHED_BY,
+    history: [
+      { modelId: 'neptune-layered', status: 'current', note: 'The three-layer fit to Voyager 2\'s flyby, with Neptune\'s real internal heat.', year: 2011 },
+      { modelId: 'neptune-fuzzy', status: 'current', note: 'Composition gradients with no distinct layers fit the same data.', year: 2020 },
+      { modelId: 'neptune-diamond-rain', status: 'current', note: 'A hypothesis, not a region: methane at these depths can split into carbon, and the laboratory has made diamond under Neptune\'s conditions (Kraus 2017); whether diamonds fall inside Neptune is unobserved.', year: 2017 },
+    ],
+  },
+  Pluto: {
+    state: 'competing',
+    models: [PLUTO_OCEAN_MODEL, PLUTO_FROZEN_MODEL],
+    defaultModelId: PLUTO_OCEAN_MODEL.modelId,
+    distinguishedBy: PLUTO_DISTINGUISHED_BY,
+    history: [
+      { modelId: 'pluto-ocean', status: 'current', note: 'Sputnik Planitia\'s position read as an ocean beneath (2016), kept liquid under a hydrate lid (2019).', year: 2016 },
+      { modelId: 'pluto-frozen', status: 'current', note: 'Nitrogen loading alone reorients Pluto; no ocean needed.', year: 2016 },
+    ],
+  },
+  Triton: {
+    state: 'poorlyConstrained',
+    bulk: TRITON_BULK,
+    illustrative: TRITON_ILLUSTRATIVE_MODEL,
+    history: [
+      { modelId: 'triton-ocean-illustrative', status: 'current', note: 'A rock core, an ocean warmed by obliquity tides and decay, an ice shell: what models argue for; illustrative, never measured.', year: 2015 },
+    ],
+  },
+  Titan: {
+    state: 'competing',
+    models: [TITAN_OCEAN_MODEL, TITAN_SLUSH_MODEL],
+    defaultModelId: TITAN_OCEAN_MODEL.modelId,
+    distinguishedBy: TITAN_DISTINGUISHED_BY,
+    history: [
+      { modelId: 'titan-global-ocean', status: 'current', note: 'Cassini\'s tidal Love number (2012) read as a global ocean.', year: 2012 },
+      { modelId: 'titan-slush-no-ocean', status: 'current', note: 'A reported 2025 reanalysis with a warm ice mantle and melt pockets; entered as reported, awaiting review.', year: 2025 },
     ],
   },
 };

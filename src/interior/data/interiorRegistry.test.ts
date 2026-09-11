@@ -58,7 +58,18 @@ describe('interiorRegistry', () => {
     expect(coverageStateFor('Jupiter')).toBe('competing');
     expect(coverageStateFor('Mars')).toBe('competing');
     expect(coverageStateFor('Phobos')).toBe('poorlyConstrained');
-    expect(coverageStateFor('Mercury')).toBe('notYetModelled');
+    expect(coverageStateFor('Mercury')).toBe('competing');
+    expect(coverageStateFor('Venus')).toBe('constrained');
+    expect(coverageStateFor('Io')).toBe('constrained');
+    expect(coverageStateFor('Ganymede')).toBe('constrained');
+    expect(coverageStateFor('Callisto')).toBe('competing');
+    expect(coverageStateFor('Enceladus')).toBe('constrained');
+    expect(coverageStateFor('Titan')).toBe('competing');
+    expect(coverageStateFor('Saturn')).toBe('constrained');
+    expect(coverageStateFor('Uranus')).toBe('competing');
+    expect(coverageStateFor('Neptune')).toBe('competing');
+    expect(coverageStateFor('Pluto')).toBe('competing');
+    expect(coverageStateFor('Triton')).toBe('poorlyConstrained');
     expect(coverageStateFor('Nix')).toBe('notYetModelled');
     expect(INTERIOR_DEFAULT_BODY).toBe('Earth');
   });
@@ -70,7 +81,14 @@ describe('interiorRegistry', () => {
     // Phobos has an illustrative model, but it is drawn only on request.
     expect(defaultModelFor('Phobos')).toBeNull();
     expect(modelFor('Phobos', 'phobos-rubble-pile-illustrative')?.illustrative).toBe(true);
-    expect(defaultModelFor('Mercury')).toBeNull();
+    expect(defaultModelFor('Titan')?.modelId).toBe('titan-global-ocean');
+    expect(defaultModelFor('Mercury')?.modelId).toBe('mercury-liquid-core');
+    expect(defaultModelFor('Callisto')?.modelId).toBe('callisto-partially-differentiated');
+    expect(defaultModelFor('Uranus')?.modelId).toBe('uranus-layered');
+    expect(defaultModelFor('Pluto')?.modelId).toBe('pluto-ocean');
+    expect(defaultModelFor('Triton')).toBeNull();
+    expect(modelFor('Triton', 'triton-ocean-illustrative')?.illustrative).toBe(true);
+    expect(defaultModelFor('Nix')).toBeNull();
     expect(modelFor('Jupiter', 'jupiter-compact-core')?.modelId).toBe('jupiter-compact-core');
     expect(modelFor('Jupiter', 'no-such-model')).toBeNull();
   });
@@ -88,7 +106,7 @@ describe('interiorRegistry', () => {
         expect(density.value, bodyId).toBeLessThan(6000);
       }
     }
-    expect(coverageBulk(coverageFor('Mercury'))?.densityKgM3?.value).toBe(5429);
+    expect(coverageBulk(coverageFor('Deimos'))?.densityKgM3?.value).toBe(1470);
     expect(coverageBulk(coverageFor('Nix'))?.densityKgM3).toBeNull();
     expect(coverageBulk(coverageFor('Earth'))).toBeNull();
   });
@@ -121,7 +139,7 @@ describe('interiorRegistry', () => {
   });
 
   it('lists a history entry for every current model', () => {
-    for (const bodyId of ['Earth', 'Moon', 'Europa', 'Jupiter', 'Mars', 'Phobos']) {
+    for (const bodyId of ['Earth', 'Moon', 'Europa', 'Jupiter', 'Mars', 'Phobos', 'Mercury', 'Venus', 'Io', 'Ganymede', 'Callisto', 'Enceladus', 'Titan', 'Saturn', 'Uranus', 'Neptune', 'Pluto', 'Triton']) {
       const coverage = coverageFor(bodyId);
       for (const model of coverageModels(coverage)) {
         expect(coverage.history.some((entry) => entry.modelId === model.modelId), `${bodyId}/${model.modelId}`).toBe(true);

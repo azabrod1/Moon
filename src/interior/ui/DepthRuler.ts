@@ -2,13 +2,16 @@
  * The depth ruler on screen (plan §6): an SVG overlay that draws the
  * ruler.ts layout each frame — the region segments as lines following the
  * terraces, km ticks with labels thinned to the spacing the projection
- * leaves, region names on segments with room, annotation brackets on a
- * second tier below. Elements are pooled and re-posed, never rebuilt per
- * frame. Hidden on phones and while the cut is closed; it fades in with
- * the opening so it draws itself on the reveal.
+ * leaves, region names where the projection leaves room (the widest
+ * segments first, none printed over another), annotation brackets on
+ * tiers below that step apart wherever a span or a name would overlap
+ * (rulerLabels.ts holds both rules). Elements are pooled and re-posed,
+ * never rebuilt per frame. Hidden on phones and while the cut is closed;
+ * it fades in with the opening so it draws itself on the reveal.
  */
 import * as THREE from 'three';
 import type { RulerLayout } from '../ruler';
+import { assignTiers, estimateTextWidth, thinLabels, type Footprint, type LabelCandidate } from './rulerLabels';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const TICK_PX = 6;
@@ -18,14 +21,19 @@ const LABEL_GLYPH_PX = 6.2;
 const LABEL_MIN_GAP_PX = 10;
 /** A region name needs this much projected segment length. */
 const NAME_MIN_SEGMENT_PX = 44;
+/** The UI face at 10.5px runs about this wide per glyph; names are thinned by that width plus a gap. */
+const NAME_GLYPH_PX = 5.8;
+const NAME_MIN_GAP_PX = 8;
 const NAME_GAP_PX = 14;
 const BRACKET_GAP_PX = 30;
 const BRACKET_ARM_PX = 4;
-/** Brackets whose spans overlap along the ruler step down a tier each. */
+/** Brackets whose footprints (span with name) overlap along the ruler step down a tier each. */
 const BRACKET_TIER_PX = 15;
 const BRACKET_PAD_PX = 6;
 /** Below this projected span a bracket keeps its line but drops its name. */
 const BRACKET_NAME_MIN_PX = 14;
+/** The mono face at 8.5px with its tracking runs about this wide per glyph. */
+const BRACKET_GLYPH_PX = 6.2;
 
 interface Pool<T extends SVGElement> {
   elements: T[];
@@ -117,26 +125,37 @@ export class DepthRuler {
       perpY = -perpY;
     }
 
-    // Segments: one line per region along the terraces.
+    // Distance along the ruler from the rim, the axis the labels are thinned on.
+    const along = (point: [number, number]) => (point[0] - (rim?.[0] ?? 0)) * dirX + (point[1] - (rim?.[1] ?? 0)) * dirY;
+
+    // Segments: one line per region along the terraces, named where the
+    // projection leaves room: the widest first, none over another.
+    const segmentsOnScreen: { from: [number, number]; to: [number, number]; name: string }[] = [];
+    const nameCandidates: LabelCandidate[] = [];
     for (const segment of layout.segments) {
       const from = toScreen(segment.from);
       const to = toScreen(segment.to);
       if (!from || !to) continue;
+      segmentsOnScreen.push({ from, to, name: segment.name });
+      nameCandidates.push({
+        centre: (along(from) + along(to)) / 2,
+        halfWidth: estimateTextWidth(segment.name, NAME_GLYPH_PX) / 2,
+        span: Math.hypot(to[0] - from[0], to[1] - from[1]),
+      });
+    }
+    const namesKept = thinLabels(nameCandidates, { minSpanPx: NAME_MIN_SEGMENT_PX, gapPx: NAME_MIN_GAP_PX });
+    segmentsOnScreen.forEach(({ from, to, name }, index) => {
       const line = take(root, 'line', 'ruler-seg', this.segmentLines);
       line.setAttribute('x1', from[0].toFixed(1));
       line.setAttribute('y1', from[1].toFixed(1));
       line.setAttribute('x2', to[0].toFixed(1));
       line.setAttribute('y2', to[1].toFixed(1));
-      const length = Math.hypot(to[0] - from[0], to[1] - from[1]);
-      if (length >= NAME_MIN_SEGMENT_PX) {
-        const label = take(root, 'text', 'ruler-name', this.nameLabels);
-        const midX = (from[0] + to[0]) / 2 - perpX * NAME_GAP_PX;
-        const midY = (from[1] + to[1]) / 2 - perpY * NAME_GAP_PX;
-        label.setAttribute('x', midX.toFixed(1));
-        label.setAttribute('y', midY.toFixed(1));
-        label.textContent = segment.name;
-      }
-    }
+      if (!namesKept[index]) return;
+      const label = take(root, 'text', 'ruler-name', this.nameLabels);
+      label.setAttribute('x', ((from[0] + to[0]) / 2 - perpX * NAME_GAP_PX).toFixed(1));
+      label.setAttribute('y', ((from[1] + to[1]) / 2 - perpY * NAME_GAP_PX).toFixed(1));
+      label.textContent = name;
+    });
     release(this.segmentLines);
     release(this.nameLabels);
 
@@ -168,21 +187,30 @@ export class DepthRuler {
     release(this.tickLines);
     release(this.tickLabels);
 
-    // Brackets: a second tier below the names, stepping down where spans overlap
-    // along the ruler (the lithosphere and the transition zone sit close at the rim).
-    const placed: { tier: number; low: number; high: number }[] = [];
+    // Brackets: tiers below the names, stepping down where footprints overlap
+    // along the ruler. A footprint is the span with its name, so two short
+    // brackets with long names step apart even when their spans never touch
+    // (the lithosphere and the transition zone sit close at the rim); a span
+    // too short for its name keeps the line and drops the name.
+    const bracketsOnScreen: { from: [number, number]; to: [number, number]; name: string | null }[] = [];
+    const footprints: Footprint[] = [];
     for (const bracket of layout.brackets) {
       const from = toScreen(bracket.from);
       const to = toScreen(bracket.to);
       if (!from || !to) continue;
-      const alongFrom = (from[0] - (rim?.[0] ?? 0)) * dirX + (from[1] - (rim?.[1] ?? 0)) * dirY;
-      const alongTo = (to[0] - (rim?.[0] ?? 0)) * dirX + (to[1] - (rim?.[1] ?? 0)) * dirY;
+      const alongFrom = along(from);
+      const alongTo = along(to);
       const low = Math.min(alongFrom, alongTo) - BRACKET_PAD_PX;
       const high = Math.max(alongFrom, alongTo) + BRACKET_PAD_PX;
-      let tier = 0;
-      while (placed.some((other) => other.tier === tier && other.low < high && other.high > low)) tier++;
-      placed.push({ tier, low, high });
-      const gap = BRACKET_GAP_PX + tier * BRACKET_TIER_PX;
+      const named = high - low - 2 * BRACKET_PAD_PX >= BRACKET_NAME_MIN_PX;
+      const halfName = named ? estimateTextWidth(bracket.name, BRACKET_GLYPH_PX) / 2 : 0;
+      const centre = (alongFrom + alongTo) / 2;
+      footprints.push({ low: Math.min(low, centre - halfName), high: Math.max(high, centre + halfName) });
+      bracketsOnScreen.push({ from, to, name: named ? bracket.name : null });
+    }
+    const tiers = assignTiers(footprints);
+    bracketsOnScreen.forEach(({ from, to, name }, index) => {
+      const gap = BRACKET_GAP_PX + tiers[index] * BRACKET_TIER_PX;
       const offsetX = -perpX * gap;
       const offsetY = -perpY * gap;
       const armX = perpX * BRACKET_ARM_PX;
@@ -194,12 +222,12 @@ export class DepthRuler {
         `L ${(to[0] + offsetX).toFixed(1)} ${(to[1] + offsetY).toFixed(1)}`,
         `L ${(to[0] + offsetX + armX).toFixed(1)} ${(to[1] + offsetY + armY).toFixed(1)}`,
       ].join(' '));
-      if (high - low - 2 * BRACKET_PAD_PX < BRACKET_NAME_MIN_PX) continue;
+      if (name === null) return;
       const label = take(root, 'text', 'ruler-bracket-name', this.bracketLabels);
       label.setAttribute('x', ((from[0] + to[0]) / 2 + offsetX - perpX * LABEL_GAP_PX).toFixed(1));
       label.setAttribute('y', ((from[1] + to[1]) / 2 + offsetY - perpY * LABEL_GAP_PX).toFixed(1));
-      label.textContent = bracket.name;
-    }
+      label.textContent = name;
+    });
     release(this.bracketPaths);
     release(this.bracketLabels);
   }

@@ -46,14 +46,14 @@ import { createPlanetariumStarfield, setStarfieldPixelRatio } from '../planetari
 import { applyLensShaderUniforms, type LensShaderUniforms } from '../shared/three/lensShader';
 import { captureDeviceCaps } from '../planetarium/world/texturePolicy';
 import { profileForDevice, readDeviceSignals } from '../planetarium/world/gpuEnvelope';
-import { PLANETS, type PlanetData } from '../planetarium/planets/planetData';
-import { MOONS, type MoonData } from '../planetarium/planets/moonData';
+import type { PlanetData } from '../planetarium/planets/planetData';
+import type { InteriorBody } from './interiorBody';
 import { computeBodyOrientationQuaternion, ttJDFromUtcMs } from '../astronomy/planetary';
 import { computeMoonOffsetEquatorialAU } from '../astronomy/satellites';
 import { tidalLockQuaternion, tidalRollNorth } from '../planetarium/world/tidalLock';
 import { applyAtmosphereCut, applyPhotosphereCut, applySkinCut, configureSkinCutEdge, createSkinCutUniforms, type SkinCutUniforms } from './rendering/skinCut';
 import { SUN_ATMOSPHERE_TINT_RGB, sunPhotosphereFragmentShader, sunPhotosphereVertexShader } from '../shared/shaders/sun';
-import { SUN_DATA, SUN_POLE_DEC_DEG, SUN_POLE_RA_DEG } from '../planetarium/planets/planetData';
+import { SUN_POLE_DEC_DEG, SUN_POLE_RA_DEG } from '../planetarium/planets/planetData';
 import type { AtmosphereConfig } from '../planetarium/PlanetFactory';
 import { applySkinFade, createSkinFadeUniforms, idleFadeTexture, type SkinFadeUniforms } from './rendering/skinFade';
 import {
@@ -152,33 +152,12 @@ function buildStudioEnvironment(): THREE.Scene {
   return studio;
 }
 
-const PLANET_BY_NAME = new Map<string, PlanetData>(PLANETS.map((planet) => [planet.name, planet]));
-const MOON_BY_NAME = new Map<string, MoonData>(MOONS.map((moon) => [moon.name, moon]));
-
-/** A catalog body the tool can open: the Sun, or a planet or a moon with a radius and a map. */
-export interface InteriorBody {
-  id: string;
-  planet: PlanetData | null;
-  moon: MoonData | null;
-  /** The Sun: no map, the planetarium's photosphere shader as its skin. */
-  sun: boolean;
-  radiusKm: number;
-}
-
 /** A body's skin, loaded and built but not yet on the mesh. The Sun has no map and no late slot. */
 export interface PreparedSkin {
   body: InteriorBody;
   material: THREE.Material;
   texture: THREE.Texture | null;
   late: LateTextureSlot | null;
-}
-
-export function resolveInteriorBody(bodyId: string): InteriorBody | null {
-  if (bodyId === 'Sun') return { id: 'Sun', planet: null, moon: null, sun: true, radiusKm: SUN_DATA.radiusKm };
-  const planet = PLANET_BY_NAME.get(bodyId) ?? null;
-  const moon = planet ? null : MOON_BY_NAME.get(bodyId) ?? null;
-  if (!planet && !moon) return null;
-  return { id: bodyId, planet, moon, sun: false, radiusKm: planet?.radiusKm ?? moon!.radiusKm };
 }
 
 const tmpOffset = new THREE.Vector3();

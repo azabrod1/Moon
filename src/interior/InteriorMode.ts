@@ -43,7 +43,8 @@ import { DEG2RAD } from '../shared/math/angles';
 import { isPhoneViewport } from '../shared/dom';
 import { debugLog, debugWarn } from '../shared/debug';
 import { bodyDisplayName } from '../planetarium/surfaceView';
-import { InteriorScene, resolveInteriorBody, BODY_RADIUS, TERRACE_STEP, type InteriorBody } from './InteriorScene';
+import { InteriorScene, BODY_RADIUS, TERRACE_STEP } from './InteriorScene';
+import { resolveInteriorBody, type InteriorBody } from './interiorBody';
 import {
   CUT_VIEWS,
   CUT_VIEW_ANGLE_DEG,

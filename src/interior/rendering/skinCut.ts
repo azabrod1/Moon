@@ -116,7 +116,7 @@ export function applySkinCut(material: THREE.MeshStandardMaterial, uniforms: Ski
  * path. Multisampled targets take alpha-to-coverage and stay opaque; a
  * single-sample target blends the feather. Both write depth.
  */
-export function configureSkinCutEdge(material: THREE.MeshStandardMaterial, multisampled: boolean): void {
+export function configureSkinCutEdge(material: THREE.Material, multisampled: boolean): void {
   const wantAlphaToCoverage = multisampled;
   const wantTransparent = !multisampled;
   if (material.alphaToCoverage === wantAlphaToCoverage && material.transparent === wantTransparent) return;
@@ -126,38 +126,87 @@ export function configureSkinCutEdge(material: THREE.MeshStandardMaterial, multi
   material.needsUpdate = true;
 }
 
+export interface RawShaderCutOptions {
+  /** Add a world-position varying through the vertex shader (for a shader with no world position of its own). */
+  vertexVarying: boolean;
+  /** GLSL for the fragment's direction from the body centre (unit length not required). */
+  direction: string;
+  /** The output statement to replace, and its replacement carrying `interiorCutCoverage`. */
+  output: { find: string; replace: string };
+  /** Test the screen position a far-side fragment covers (a BackSide shell) rather than the fragment itself. */
+  reflectFarSide: boolean;
+}
+
 /**
- * The same cut on the analytic atmosphere shell, which is a raw
- * ShaderMaterial (shared/shaders/atmosphere) with no three chunks to hook.
- * The shell is drawn from its far side (BackSide, additive), so a fragment's
- * own direction from the centre points away from the viewer; what matters
- * is the screen position it covers, which its reflection through the
- * frame's view plane gives — at the limb, where the fringe lives, the two
- * coincide, so the air's edge lands exactly on the skin's. The feather goes
- * into the radiance, since an additive shell has no alpha to carry it.
+ * The cut on a raw ShaderMaterial with no three chunks to hook (the analytic
+ * atmosphere shell, the Sun's photosphere): the same test as the skin's,
+ * spliced in by text at the top of main, with the feather handed to the
+ * caller's output statement. Throws if the shader has changed shape, so a
+ * silent uncut shell can never ship.
  */
-export function applyAtmosphereCut(material: THREE.ShaderMaterial, uniforms: SkinCutUniforms): void {
+export function applyRawShaderCut(material: THREE.ShaderMaterial, uniforms: SkinCutUniforms, options: RawShaderCutOptions): void {
   material.uniforms.uCutView = uniforms.uCutView;
   material.uniforms.uCutSide = uniforms.uCutSide;
   material.uniforms.uCutHalfAngle = uniforms.uCutHalfAngle;
-  const declarations = 'uniform vec3 uCutView;\nuniform vec3 uCutSide;\nuniform float uCutHalfAngle;\n';
+  const declarations = 'uniform vec3 uCutView;\nuniform vec3 uCutSide;\nuniform float uCutHalfAngle;\n'
+    + (options.vertexVarying ? 'varying vec3 vInteriorCutWorld;\n' : '');
+  const reflect = options.reflectFarSide
+    ? '    float cutAlong = dot(cutDirection, uCutView);\n    if (cutAlong < 0.0) cutDirection -= 2.0 * cutAlong * uCutView;\n'
+    : '';
   const test = `
   float interiorCutCoverage = 1.0;
   if (uCutHalfAngle > 0.0) {
-    vec3 cutDirection = normalize(vWorldPos - vCenter);
-    float cutAlong = dot(cutDirection, uCutView);
-    if (cutAlong < 0.0) cutDirection -= 2.0 * cutAlong * uCutView;
-    float cutAngle = atan(abs(dot(cutDirection, uCutSide)), dot(cutDirection, uCutView));
+    vec3 cutDirection = normalize(${options.direction});
+${reflect}    float cutAngle = atan(abs(dot(cutDirection, uCutSide)), dot(cutDirection, uCutView));
     float cutSigned = cutAngle - uCutHalfAngle;
     float cutWidth = max(fwidth(cutSigned), 1e-5);
     interiorCutCoverage = clamp(cutSigned / cutWidth + 0.5, 0.0, 1.0);
     if (interiorCutCoverage <= 0.0) discard;
   }
 `;
-  const fragment = material.fragmentShader;
-  if (!fragment.includes('gl_FragColor = vec4(radiance, 1.0);')) throw new Error('applyAtmosphereCut: the analytic shell shader changed shape');
-  material.fragmentShader = declarations + fragment
+  if (!material.fragmentShader.includes(options.output.find) || !material.fragmentShader.includes('void main() {')) {
+    throw new Error('applyRawShaderCut: the shader changed shape');
+  }
+  if (options.vertexVarying) {
+    if (!material.vertexShader.includes('void main() {')) throw new Error('applyRawShaderCut: the vertex shader changed shape');
+    material.vertexShader = 'varying vec3 vInteriorCutWorld;\n' + material.vertexShader
+      .replace('void main() {', 'void main() {\n  vInteriorCutWorld = (modelMatrix * vec4(position, 1.0)).xyz;');
+  }
+  material.fragmentShader = declarations + material.fragmentShader
     .replace('void main() {', `void main() {${test}`)
-    .replace('gl_FragColor = vec4(radiance, 1.0);', 'gl_FragColor = vec4(radiance * interiorCutCoverage, 1.0);');
+    .replace(options.output.find, options.output.replace);
   material.needsUpdate = true;
+}
+
+/**
+ * The cut on the analytic atmosphere shell. The shell is drawn from its far
+ * side (BackSide, additive), so a fragment's own direction from the centre
+ * points away from the viewer; what matters is the screen position it
+ * covers, which its reflection through the frame's view plane gives — at
+ * the limb, where the fringe lives, the two coincide, so the air's edge
+ * lands exactly on the skin's. The feather goes into the radiance, since an
+ * additive shell has no alpha to carry it.
+ */
+export function applyAtmosphereCut(material: THREE.ShaderMaterial, uniforms: SkinCutUniforms): void {
+  applyRawShaderCut(material, uniforms, {
+    vertexVarying: false,
+    direction: 'vWorldPos - vCenter',
+    output: { find: 'gl_FragColor = vec4(radiance, 1.0);', replace: 'gl_FragColor = vec4(radiance * interiorCutCoverage, 1.0);' },
+    reflectFarSide: true,
+  });
+}
+
+/** The cut on the Sun's photosphere: the feather in alpha, so the edge takes the render
+ *  path's treatment like the skin; `exposure` scales the planetarium's HDR radiance down to
+ *  what a studio can show beside a section face. */
+export function applyPhotosphereCut(material: THREE.ShaderMaterial, uniforms: SkinCutUniforms, exposure: number): void {
+  applyRawShaderCut(material, uniforms, {
+    vertexVarying: true,
+    direction: 'vInteriorCutWorld',
+    output: {
+      find: 'gl_FragColor = vec4(color * radiance, 1.0);',
+      replace: `gl_FragColor = vec4(color * radiance * ${exposure.toFixed(3)}, interiorCutCoverage);`,
+    },
+    reflectFarSide: false,
+  });
 }

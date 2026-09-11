@@ -63,19 +63,23 @@ export interface ArtParams {
   depthGradient: number;
   /** Self-lit floor as a fraction of albedo, so a shadowed face stays legible. */
   ambient: number;
+  /** Multiplier on the region's incandescent radiance: below 1 for a family whose every
+   *  region would otherwise sit at the ramp's top (a star's plasma), so the pattern shows. */
+  heatGain: number;
 }
 
 const FAMILY_DEFAULT: Readonly<Record<MaterialFamily, ArtParams>> = {
-  metal: { colorA: 0xb8852c, colorB: 0xf2d27c, roughness: 0.5, metalness: 0.55, glow: 0.12, pattern: 'grain', motion: 0, scale: 75, relief: 7, depthGradient: 0.2, ambient: 0.22 },
-  silicate: { colorA: 0x3d1f13, colorB: 0x9a5030, roughness: 0.9, metalness: 0, glow: 0, pattern: 'lava', motion: 0.015, scale: 6, relief: 4, depthGradient: 0.3, ambient: 0.16 },
-  ice: { colorA: 0xbfdcee, colorB: 0xeaf5fb, roughness: 0.4, metalness: 0, glow: 0, pattern: 'crystal', motion: 0, scale: 30, relief: 0.5, depthGradient: 0.2, ambient: 0.3 },
-  water: { colorA: 0x184a8a, colorB: 0x3f8fd6, roughness: 0.2, metalness: 0, glow: 0, pattern: 'caustic', motion: 0.12, scale: 26, relief: 0.8, depthGradient: 0.35, ambient: 0.2 },
-  hydrogen: { colorA: 0xcbb283, colorB: 0xf6ead0, roughness: 0.85, metalness: 0, glow: 0, pattern: 'banding', motion: 0.03, scale: 110, relief: 0, depthGradient: 0.3, ambient: 0.18 },
-  metallicHydrogen: { colorA: 0x8c98a6, colorB: 0xe8edf2, roughness: 0.3, metalness: 0.6, glow: 0.05, pattern: 'flow', motion: 0.05, scale: 5, relief: 1.6, depthGradient: 0.15, ambient: 0.22 },
-  ionicFluid: { colorA: 0x2f8f8a, colorB: 0x7fd6cf, roughness: 0.3, metalness: 0.3, glow: 0.05, pattern: 'flow', motion: 0.06, scale: 6, relief: 2, depthGradient: 0.25, ambient: 0.2 },
-  plasma: { colorA: 0xffd27a, colorB: 0xfff4d6, roughness: 1, metalness: 0, glow: 0.8, pattern: 'mottle', motion: 0.2, scale: 30, relief: 0, depthGradient: 0, ambient: 0.3 },
-  mixed: { colorA: 0x6c5744, colorB: 0xb8a088, roughness: 0.9, metalness: 0.1, glow: 0, pattern: 'mottle', motion: 0, scale: 12, relief: 4, depthGradient: 0.25, ambient: 0.16 },
-  unresolved: { colorA: 0x666a72, colorB: 0x70747c, roughness: 1, metalness: 0, glow: 0, pattern: 'none', motion: 0, scale: 1, relief: 0, depthGradient: 0.1, ambient: 0.2 },
+  metal: { colorA: 0xb8852c, colorB: 0xf2d27c, roughness: 0.5, metalness: 0.55, glow: 0.12, pattern: 'grain', motion: 0, scale: 75, relief: 7, depthGradient: 0.2, ambient: 0.22, heatGain: 1 },
+  silicate: { colorA: 0x3d1f13, colorB: 0x9a5030, roughness: 0.9, metalness: 0, glow: 0, pattern: 'lava', motion: 0.015, scale: 6, relief: 4, depthGradient: 0.3, ambient: 0.16, heatGain: 1 },
+  ice: { colorA: 0xbfdcee, colorB: 0xeaf5fb, roughness: 0.4, metalness: 0, glow: 0, pattern: 'crystal', motion: 0, scale: 30, relief: 0.5, depthGradient: 0.2, ambient: 0.3, heatGain: 1 },
+  water: { colorA: 0x184a8a, colorB: 0x3f8fd6, roughness: 0.2, metalness: 0, glow: 0, pattern: 'caustic', motion: 0.12, scale: 26, relief: 0.8, depthGradient: 0.35, ambient: 0.2, heatGain: 1 },
+  hydrogen: { colorA: 0xcbb283, colorB: 0xf6ead0, roughness: 0.85, metalness: 0, glow: 0, pattern: 'banding', motion: 0.03, scale: 110, relief: 0, depthGradient: 0.3, ambient: 0.18, heatGain: 1 },
+  metallicHydrogen: { colorA: 0x8c98a6, colorB: 0xe8edf2, roughness: 0.3, metalness: 0.6, glow: 0.05, pattern: 'flow', motion: 0.05, scale: 5, relief: 1.6, depthGradient: 0.15, ambient: 0.22, heatGain: 1 },
+  ionicFluid: { colorA: 0x2f8f8a, colorB: 0x7fd6cf, roughness: 0.3, metalness: 0.3, glow: 0.05, pattern: 'flow', motion: 0.06, scale: 6, relief: 2, depthGradient: 0.25, ambient: 0.2, heatGain: 1 },
+  // A star: every region is a light, so the ramp is held down and the granulation carries the form.
+  plasma: { colorA: 0xffd27a, colorB: 0xfff4d6, roughness: 1, metalness: 0, glow: 0.25, pattern: 'mottle', motion: 0.2, scale: 30, relief: 0, depthGradient: 0, ambient: 0.3, heatGain: 0.22 },
+  mixed: { colorA: 0x6c5744, colorB: 0xb8a088, roughness: 0.9, metalness: 0.1, glow: 0, pattern: 'mottle', motion: 0, scale: 12, relief: 4, depthGradient: 0.25, ambient: 0.16, heatGain: 1 },
+  unresolved: { colorA: 0x666a72, colorB: 0x70747c, roughness: 1, metalness: 0, glow: 0, pattern: 'none', motion: 0, scale: 1, relief: 0, depthGradient: 0.1, ambient: 0.2, heatGain: 1 },
 };
 
 /** Phase-specific responses that differ from the family default. A liquid
@@ -161,7 +165,7 @@ export const PHASE_LABEL: Readonly<Record<Phase, string>> = {
   liquidMetal: 'liquid metal',
   superionic: 'superionic',
   gas: 'gas',
-  plasma: 'plasma',
+  plasma: 'fully ionised',
   unresolved: 'phase unresolved',
 };
 
@@ -198,6 +202,16 @@ const INCANDESCENCE_PEAK = 1.3;
 const INCANDESCENCE_WARMTH = 0.55;
 const INCANDESCENCE_WARMTH_ABOVE = 0.3;
 const INCANDESCENCE_MANTLE_K = 2600;
+/** Above this the display temperature grows as a square root: a star's zones,
+ *  millions of kelvin apart, still read as white, blue-white and blue in order.
+ *  Hue alone cannot separate them (every blackbody past 10,000 K is much the
+ *  same blue-white to the eye), so the radiance rises too, on a log of the
+ *  temperature: a fusion core is a stronger light than the zone that boils
+ *  above it, and only the core's grains cross the bloom threshold. */
+const INCANDESCENCE_HOT_K = 20_000;
+const INCANDESCENCE_HOT_GAIN = 6;
+const INCANDESCENCE_HOT_DECADES = 3;
+const INCANDESCENCE_HOT_BOOST = 4;
 
 function planckianSrgb(temperatureK: number): [number, number, number] {
   const t = Math.max(1000, Math.min(40_000, temperatureK)) / 100;
@@ -215,9 +229,11 @@ export function incandescence(temperatureK: number): Incandescence {
   // clamp the lookup at the point the eye first sees a glow.
   const displayK = DRAPER_POINT_K
     + (Math.min(temperatureK, INCANDESCENCE_MANTLE_K) - DRAPER_POINT_K) * INCANDESCENCE_WARMTH
-    + Math.max(0, temperatureK - INCANDESCENCE_MANTLE_K) * INCANDESCENCE_WARMTH_ABOVE;
+    + (Math.min(Math.max(0, temperatureK - INCANDESCENCE_MANTLE_K), INCANDESCENCE_HOT_K - INCANDESCENCE_MANTLE_K)) * INCANDESCENCE_WARMTH_ABOVE
+    + INCANDESCENCE_HOT_GAIN * Math.sqrt(Math.max(0, temperatureK - INCANDESCENCE_HOT_K));
   const [red, green, blue] = planckianSrgb(Math.max(displayK, 1000));
-  const radiance = 0.03 * strength + INCANDESCENCE_PEAK * Math.pow(strength, 0.9);
+  const hotDecades = Math.min(1, Math.max(0, Math.log10(Math.max(temperatureK, 1) / INCANDESCENCE_HOT_K) / INCANDESCENCE_HOT_DECADES));
+  const radiance = (0.03 * strength + INCANDESCENCE_PEAK * Math.pow(strength, 0.9)) * (1 + INCANDESCENCE_HOT_BOOST * hotDecades * hotDecades);
   const linear = (channel: number) => Math.pow(channel, 2.2) * radiance;
   const display = (channel: number) => Math.round(Math.max(0, Math.min(1, channel * (0.35 + 0.65 * strength))) * 255);
   return {

@@ -51,7 +51,10 @@ import { MOONS, type MoonData } from '../planetarium/planets/moonData';
 import { computeBodyOrientationQuaternion, ttJDFromUtcMs } from '../astronomy/planetary';
 import { computeMoonOffsetEquatorialAU } from '../astronomy/satellites';
 import { tidalLockQuaternion, tidalRollNorth } from '../planetarium/world/tidalLock';
-import { applyAtmosphereCut, applySkinCut, configureSkinCutEdge, createSkinCutUniforms, type SkinCutUniforms } from './rendering/skinCut';
+import { applyAtmosphereCut, applyPhotosphereCut, applySkinCut, configureSkinCutEdge, createSkinCutUniforms, type SkinCutUniforms } from './rendering/skinCut';
+import { SUN_ATMOSPHERE_TINT_RGB, sunPhotosphereFragmentShader, sunPhotosphereVertexShader } from '../shared/shaders/sun';
+import { SUN_DATA, SUN_POLE_DEC_DEG, SUN_POLE_RA_DEG } from '../planetarium/planets/planetData';
+import type { AtmosphereConfig } from '../planetarium/PlanetFactory';
 import { applySkinFade, createSkinFadeUniforms, idleFadeTexture, type SkinFadeUniforms } from './rendering/skinFade';
 import {
   createSectionMaterial,
@@ -109,6 +112,31 @@ const STUDIO_FLOOR_COLOR = new THREE.Color(0.15, 0.14, 0.12);
 const ATMOSPHERE_ALPHA = 0.7;
 /** The studio key's angular radius as the ring shadow's penumbra: a soft edge, not a point. */
 const RING_SUN_TAN = 0.004;
+/** The Sun's pole (IAU) and its sidereal spin (IAU 2009: W = 84.176° + 14.1844°/day), as the
+ *  orientation code reads a planet record. */
+const SUN_ORIENTATION = {
+  poleRaDeg: SUN_POLE_RA_DEG,
+  poleDecDeg: SUN_POLE_DEC_DEG,
+  primeMeridianDegAtJ2000: 84.176,
+  primeMeridianRateDegPerDay: 14.1844,
+} as PlanetData;
+/** The corona as exterior glow: the analytic shell in the Sun's colours, lit from the camera so
+ *  the fringe is even all round. Art, keyed like the planets' air. */
+const SUN_CORONA: AtmosphereConfig = {
+  dayColor: [1.0, 0.86, 0.62],
+  sunsetColor: [1.0, 0.62, 0.3],
+  mieColor: [1.0, 0.92, 0.75],
+  rayleighStrength: 1.6,
+  mieStrength: 0,
+  mieG: 0.5,
+  power: 1.2,
+  intensity: 1.0,
+  haloStrength: 0.8,
+  scale: 1.3,
+};
+/** The photosphere's HDR radiance (3.8 in the planetarium, where it is the light) scaled to
+ *  sit beside a section face without whiting the studio out. Art, documented. */
+const SUN_STUDIO_EXPOSURE = 0.5;
 
 function buildStudioEnvironment(): THREE.Scene {
   const studio = new THREE.Scene();
@@ -127,27 +155,30 @@ function buildStudioEnvironment(): THREE.Scene {
 const PLANET_BY_NAME = new Map<string, PlanetData>(PLANETS.map((planet) => [planet.name, planet]));
 const MOON_BY_NAME = new Map<string, MoonData>(MOONS.map((moon) => [moon.name, moon]));
 
-/** A catalog body the tool can open: a planet or a moon with a radius and a map. */
+/** A catalog body the tool can open: the Sun, or a planet or a moon with a radius and a map. */
 export interface InteriorBody {
   id: string;
   planet: PlanetData | null;
   moon: MoonData | null;
+  /** The Sun: no map, the planetarium's photosphere shader as its skin. */
+  sun: boolean;
   radiusKm: number;
 }
 
-/** A body's skin, loaded and built but not yet on the mesh. */
+/** A body's skin, loaded and built but not yet on the mesh. The Sun has no map and no late slot. */
 export interface PreparedSkin {
   body: InteriorBody;
-  material: THREE.MeshStandardMaterial;
-  texture: THREE.Texture;
-  late: LateTextureSlot;
+  material: THREE.Material;
+  texture: THREE.Texture | null;
+  late: LateTextureSlot | null;
 }
 
 export function resolveInteriorBody(bodyId: string): InteriorBody | null {
+  if (bodyId === 'Sun') return { id: 'Sun', planet: null, moon: null, sun: true, radiusKm: SUN_DATA.radiusKm };
   const planet = PLANET_BY_NAME.get(bodyId) ?? null;
   const moon = planet ? null : MOON_BY_NAME.get(bodyId) ?? null;
   if (!planet && !moon) return null;
-  return { id: bodyId, planet, moon, radiusKm: planet?.radiusKm ?? moon!.radiusKm };
+  return { id: bodyId, planet, moon, sun: false, radiusKm: planet?.radiusKm ?? moon!.radiusKm };
 }
 
 const tmpOffset = new THREE.Vector3();
@@ -169,7 +200,9 @@ export class InteriorScene {
   private readonly starfield: THREE.Points;
   private readonly skinGeometry: THREE.SphereGeometry;
   private readonly skinMesh: THREE.Mesh;
-  private skinMaterial: THREE.MeshStandardMaterial | null = null;
+  private skinMaterial: THREE.Material | null = null;
+  /** The photosphere while the Sun is the body: its clock is the presentation clock. */
+  private sunMaterial: THREE.ShaderMaterial | null = null;
   private skinFx: SurfaceShadingFx | null = null;
   private skinTexture: THREE.Texture | null = null;
   private readonly cutUniforms: SkinCutUniforms;
@@ -326,6 +359,7 @@ export class InteriorScene {
       this.capsCaptured = true;
     }
     this.ensureEnvironment();
+    if (body.sun) return { body, material: this.buildPhotosphereMaterial(), texture: null, late: null };
     const late = createLateTextureSlot();
     const texture = await this.loadBodyColor(body, late);
     if (isStale()) {
@@ -344,7 +378,7 @@ export class InteriorScene {
   /** The body's context: its air shell if it has one, its rings if it has them. */
   private dressContext(body: InteriorBody): void {
     this.releaseContext();
-    const atmosphere = ATMOSPHERES[body.id];
+    const atmosphere = body.sun ? SUN_CORONA : ATMOSPHERES[body.id];
     if (atmosphere) {
       const material = createAtmosphereMaterial(atmosphere, BODY_RADIUS, 'analytic', {
         initialAlpha: ATMOSPHERE_ALPHA,
@@ -355,6 +389,7 @@ export class InteriorScene {
       this.atmosphereMesh.material = material;
       this.atmosphereMesh.scale.setScalar(atmosphere.scale);
       this.atmosphereMesh.visible = true;
+      this.coronaLit = body.sun;
     }
     const rings = RING_CONFIGS[body.id];
     if (rings) {
@@ -370,6 +405,7 @@ export class InteriorScene {
   }
 
   private releaseContext(): void {
+    this.coronaLit = false;
     this.atmosphereMesh.visible = false;
     this.atmosphereMesh.material = new THREE.MeshBasicMaterial({ color: 0x000000 });
     this.atmosphereMaterial?.dispose();
@@ -385,6 +421,8 @@ export class InteriorScene {
     }
   }
 
+  private coronaLit = false;
+
   /** Whether the current body has rings to show. */
   hasRings(): boolean {
     return this.ringMesh !== null;
@@ -393,6 +431,24 @@ export class InteriorScene {
   setRingsVisible(on: boolean): void {
     this.ringsWanted = on;
     if (this.ringMesh) this.ringMesh.visible = on;
+  }
+
+  /** The Sun's skin: the planetarium's photosphere, granulating on the presentation clock, cut like a skin. */
+  private buildPhotosphereMaterial(): THREE.ShaderMaterial {
+    const material = new THREE.ShaderMaterial({
+      uniforms: {
+        time: { value: 0 },
+        uAtmosphereMix: { value: 0 },
+        uAtmosphereColor: { value: new THREE.Color(...SUN_ATMOSPHERE_TINT_RGB) },
+        uInteriorFade: { value: 1 },
+        uWhiteout: { value: 0 },
+      },
+      vertexShader: sunPhotosphereVertexShader,
+      fragmentShader: sunPhotosphereFragmentShader,
+    });
+    applyPhotosphereCut(material, this.cutUniforms, SUN_STUDIO_EXPOSURE);
+    configureSkinCutEdge(material, this.multisampled);
+    return material;
   }
 
   /** Whether a skin is on the body: false before the first body, so an entry has nothing to fade from. */
@@ -411,10 +467,13 @@ export class InteriorScene {
     const { material, texture, late } = prepared;
     const previousMaterial = this.skinMaterial;
     const previousTexture = this.skinTexture;
-    const fading = fadeSeconds > 0 && previousTexture !== null && previousMaterial !== null;
+    // The cross-fade lives in the standard skin's shader: only a map can fade into a map.
+    const fading = fadeSeconds > 0 && previousTexture !== null && previousMaterial !== null && texture !== null;
     this.finishFade(); // a fade cut short by a faster swap still resolves its waiters
     this.skinMesh.material = material;
     this.skinMaterial = material;
+    this.sunMaterial = prepared.body.sun ? (material as THREE.ShaderMaterial) : null;
+    this.skinFx = prepared.body.sun ? null : this.skinFx;
     this.skinTexture = texture;
     this.skinMesh.visible = true;
     previousMaterial?.dispose();
@@ -429,10 +488,14 @@ export class InteriorScene {
     }
     this.dressContext(prepared.body);
     this.ghostMaterial?.dispose();
+    this.ghostMaterial = null;
+    this.ghostMesh.visible = false;
+    if (!texture || !late) return; // the Sun: no ghost of a light, no late map
     const ghost = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.95, metalness: 0, transparent: true, opacity: 0, depthWrite: false });
     applySkinCut(ghost, this.ghostCut);
     this.ghostMaterial = ghost;
     this.ghostMesh.material = ghost;
+    const standard = material as THREE.MeshStandardMaterial;
     late.connect((arrival) => {
       // Only onto the skin this load dressed: a later body owns it otherwise.
       if (this.skinMaterial !== material) {
@@ -440,8 +503,8 @@ export class InteriorScene {
         return;
       }
       const fallback = this.skinTexture;
-      material.map = arrival;
-      material.needsUpdate = true;
+      standard.map = arrival;
+      standard.needsUpdate = true;
       ghost.map = arrival;
       ghost.needsUpdate = true;
       this.skinTexture = arrival;
@@ -582,7 +645,9 @@ export class InteriorScene {
    */
   setPose(body: InteriorBody, utcMs: number): void {
     const quaternion = this.skinMesh.quaternion;
-    if (body.planet) {
+    if (body.sun) {
+      computeBodyOrientationQuaternion(SUN_ORIENTATION, ttJDFromUtcMs(utcMs), quaternion);
+    } else if (body.planet) {
       computeBodyOrientationQuaternion(body.planet, ttJDFromUtcMs(utcMs), quaternion);
     } else if (body.moon) {
       computeMoonOffsetEquatorialAU(body.moon.name, body.moon.parentPlanet, utcMs, tmpOffset, tmpNormal);
@@ -643,6 +708,7 @@ export class InteriorScene {
 
   setPresentationTime(seconds: number): void {
     this.sectionUniforms.uTime.value = seconds;
+    if (this.sunMaterial) this.sunMaterial.uniforms.time.value = seconds;
   }
 
   /**
@@ -673,7 +739,8 @@ export class InteriorScene {
       .normalize();
     this.keyLight.position.copy(this.keyDirection).multiplyScalar(KEY_LIGHT_DISTANCE);
     this.skinFx?.uSunDirWorld.value.copy(this.keyDirection);
-    if (this.atmosphereMaterial) (this.atmosphereMaterial.uniforms.uSunDirWorld.value as THREE.Vector3).copy(this.keyDirection);
+    // A planet's air is lit by the studio key; the Sun's corona by the camera, so its fringe is even all round.
+    if (this.atmosphereMaterial) (this.atmosphereMaterial.uniforms.uSunDirWorld.value as THREE.Vector3).copy(this.coronaLit ? tmpBack : this.keyDirection);
     if (this.ringFx) {
       this.ringFx.uSunDirWorld.value.copy(this.keyDirection);
       // The ring shader shadows in the planet's own frame.
@@ -700,6 +767,7 @@ export class InteriorScene {
     this.skinMesh.material = new THREE.MeshStandardMaterial({ color: 0x000000 });
     this.skinMaterial?.dispose();
     this.skinMaterial = null;
+    this.sunMaterial = null;
     this.skinTexture?.dispose();
     this.skinTexture = null;
     this.skinFx = null;

@@ -43,6 +43,7 @@ import { SATURN_MODEL } from './models/saturn';
 import { ICE_GIANT_DISTINGUISHED_BY, NEPTUNE_FUZZY_MODEL, NEPTUNE_LAYERED_MODEL, URANUS_FUZZY_MODEL, URANUS_LAYERED_MODEL } from './models/iceGiants';
 import { PLUTO_DISTINGUISHED_BY, PLUTO_FROZEN_MODEL, PLUTO_OCEAN_MODEL } from './models/pluto';
 import { TRITON_BULK, TRITON_ILLUSTRATIVE_MODEL } from './models/triton';
+import { SUN_MODEL } from './models/sun';
 
 export const INTERIOR_DEFAULT_BODY = 'Earth';
 
@@ -93,6 +94,14 @@ function bulkLine(bodyId: string): { densityKgM3: Sourced<number> | null; note: 
 
 /** The bodies the app has authored, keyed by catalog name. */
 const AUTHORED: Readonly<Record<string, Coverage>> = {
+  Sun: {
+    state: 'constrained',
+    model: SUN_MODEL,
+    history: [
+      { modelId: 'sun-standard-model', status: 'current', note: 'The standard solar model, checked by helioseismology to a fraction of a percent and by the full neutrino flux since 2002.', year: 2005 },
+      { modelId: 'sun-solar-neutrino-problem', status: 'superseded', note: 'From 1968 to 2002 the core seemed to make a third of the neutrinos it should; the neutrinos were changing flavour, and the model stood.', year: 1968 },
+    ],
+  },
   Earth: {
     state: 'constrained',
     model: EARTH_MODEL,
@@ -258,11 +267,12 @@ const AUTHORED: Readonly<Record<string, Coverage>> = {
 };
 
 const CATALOG_BODY_IDS: readonly string[] = [
+  'Sun',
   ...PLANETARIUM_BODIES.map((planet) => planet.name),
   ...MOONS.map((moon) => moon.name),
 ];
 
-/** Every body the registry answers for: the planets, Pluto and the catalog moons. */
+/** Every body the registry answers for: the Sun, the planets, Pluto and the catalog moons. */
 export function interiorBodyIds(): readonly string[] {
   return CATALOG_BODY_IDS;
 }

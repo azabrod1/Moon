@@ -22,7 +22,7 @@ import {
   modelFor,
 } from './interiorRegistry';
 
-const CATALOG = [...PLANETARIUM_BODIES.map((planet) => planet.name), ...MOONS.map((moon) => moon.name)];
+const CATALOG = ['Sun', ...PLANETARIUM_BODIES.map((planet) => planet.name), ...MOONS.map((moon) => moon.name)];
 
 /** Bodies that are not spheres: their "mean radius" depends on how the
  *  ellipsoid is averaged, so the convention check is loosened to 3% and the
@@ -52,6 +52,7 @@ describe('interiorRegistry', () => {
   });
 
   it('has the first-release bodies in the states the plan names', () => {
+    expect(coverageStateFor('Sun')).toBe('constrained');
     expect(coverageStateFor('Earth')).toBe('constrained');
     expect(coverageStateFor('Moon')).toBe('constrained');
     expect(coverageStateFor('Europa')).toBe('constrained');
@@ -139,7 +140,7 @@ describe('interiorRegistry', () => {
   });
 
   it('lists a history entry for every current model', () => {
-    for (const bodyId of ['Earth', 'Moon', 'Europa', 'Jupiter', 'Mars', 'Phobos', 'Mercury', 'Venus', 'Io', 'Ganymede', 'Callisto', 'Enceladus', 'Titan', 'Saturn', 'Uranus', 'Neptune', 'Pluto', 'Triton']) {
+    for (const bodyId of ['Sun', 'Earth', 'Moon', 'Europa', 'Jupiter', 'Mars', 'Phobos', 'Mercury', 'Venus', 'Io', 'Ganymede', 'Callisto', 'Enceladus', 'Titan', 'Saturn', 'Uranus', 'Neptune', 'Pluto', 'Triton']) {
       const coverage = coverageFor(bodyId);
       for (const model of coverageModels(coverage)) {
         expect(coverage.history.some((entry) => entry.modelId === model.modelId), `${bodyId}/${model.modelId}`).toBe(true);

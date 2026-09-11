@@ -26,7 +26,12 @@ export const TEMPERATURE_SCALE_STOPS: readonly (readonly [number, number, number
 export interface TemperatureRange {
   minK: number;
   maxK: number;
+  /** Logarithmic when the range spans more than LOG_SCALE_RATIO (the Sun's 4,500 K to 15.7 million K). */
+  log: boolean;
 }
+
+/** A range wider than this ratio is drawn on a log scale, or the cool layers all sit at the bottom. */
+export const LOG_SCALE_RATIO = 50;
 
 /** The scale colour at t ∈ [0, 1], sRGB 0..1. */
 export function temperatureScaleColor(t: number): [number, number, number] {
@@ -59,6 +64,12 @@ export function temperatureScaleGradientCss(): string {
 
 /** Where a temperature sits on a body's scale, 0..1; clamped. */
 export function temperatureT(range: TemperatureRange, kelvin: number): number {
+  if (range.log) {
+    const low = Math.log(Math.max(range.minK, 1));
+    const high = Math.log(Math.max(range.maxK, 1));
+    if (!(high > low)) return 0.5;
+    return Math.min(1, Math.max(0, (Math.log(Math.max(kelvin, 1)) - low) / (high - low)));
+  }
   const span = range.maxK - range.minK;
   if (!(span > 0)) return 0.5;
   return Math.min(1, Math.max(0, (kelvin - range.minK) / span));
@@ -87,5 +98,5 @@ export function bodyTemperatureRange(quantities: readonly Quantity[]): Temperatu
     maxK = Math.max(maxK, endpoints.outerK, endpoints.innerK);
   }
   if (!Number.isFinite(minK) || !Number.isFinite(maxK)) return null;
-  return { minK, maxK };
+  return { minK, maxK, log: minK > 0 && maxK / minK > LOG_SCALE_RATIO };
 }

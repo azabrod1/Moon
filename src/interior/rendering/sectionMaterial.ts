@@ -115,9 +115,10 @@ export interface SectionUniforms {
   uTempInner: { value: number[] };
   uTempLog: { value: number[] };
   uTempKnown: { value: number[] };
-  /** The body's scale, K, and its six linear-RGB stops. */
+  /** The body's scale, K (1 = logarithmic), and its six linear-RGB stops. */
   uScaleMin: { value: number };
   uScaleMax: { value: number };
+  uScaleLog: { value: number };
   uScaleStops: { value: THREE.Vector3[] };
   /** The uncertainty band straddling region k's outer boundary, display radii; equal = none. */
   uBandLow: { value: number[] };
@@ -156,6 +157,7 @@ export function createSectionUniforms(): SectionUniforms {
     uTempKnown: { value: numbers() },
     uScaleMin: { value: 0 },
     uScaleMax: { value: 1 },
+    uScaleLog: { value: 0 },
     uScaleStops: { value: TEMPERATURE_SCALE_STOPS.map((stop) => new THREE.Vector3(srgbToLinear(stop[0]), srgbToLinear(stop[1]), srgbToLinear(stop[2]))) },
     uBandLow: { value: numbers() },
     uBandHigh: { value: numbers() },
@@ -170,6 +172,7 @@ function srgbToLinear(channel: number): number {
 export function writeTemperatureScale(uniforms: SectionUniforms, range: TemperatureRange | null): void {
   uniforms.uScaleMin.value = range ? range.minK : 0;
   uniforms.uScaleMax.value = range ? Math.max(range.maxK, range.minK + 1) : 1;
+  uniforms.uScaleLog.value = range?.log ? 1 : 0;
 }
 
 export interface SectionRegionLook {
@@ -216,7 +219,7 @@ export function writeSectionRegions(
     uniforms.uRelief.value[index] = art.relief;
     uniforms.uDepthGrad.value[index] = art.depthGradient;
     uniforms.uAmbient.value[index] = lustre ? art.ambient : art.ambient + 0.1 * art.metalness;
-    uniforms.uHeat.value[index].set(region.heat.emission[0], region.heat.emission[1], region.heat.emission[2]);
+    uniforms.uHeat.value[index].set(region.heat.emission[0], region.heat.emission[1], region.heat.emission[2]).multiplyScalar(art.heatGain);
     uniforms.uHeatStrength.value[index] = region.heat.strength;
     const temperature = index < count ? region.temperature : null;
     uniforms.uTempOuter.value[index] = temperature ? temperature.outerK : 0;
@@ -270,6 +273,7 @@ uniform float uTempLog[${MAX_REGIONS}];
 uniform float uTempKnown[${MAX_REGIONS}];
 uniform float uScaleMin;
 uniform float uScaleMax;
+uniform float uScaleLog;
 uniform vec3 uScaleStops[6];
 uniform float uBandLow[${MAX_REGIONS}];
 uniform float uBandHigh[${MAX_REGIONS}];
@@ -282,6 +286,10 @@ float sectionTempT(int k, float regionT) {
   float outerK = max(uTempOuter[k], 1.0);
   float innerK = max(uTempInner[k], 1.0);
   float kelvin = uTempLog[k] > 0.5 ? exp(mix(log(outerK), log(innerK), regionT)) : mix(outerK, innerK, regionT);
+  if (uScaleLog > 0.5) {
+    float low = log(max(uScaleMin, 1.0));
+    return clamp((log(max(kelvin, 1.0)) - low) / max(log(max(uScaleMax, 1.0)) - low, 1e-4), 0.0, 1.0);
+  }
   return clamp((kelvin - uScaleMin) / max(uScaleMax - uScaleMin, 1.0), 0.0, 1.0);
 }
 

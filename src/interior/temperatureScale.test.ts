@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EARTH_MODEL } from './data/models/earth';
 import { EUROPA_MODEL } from './data/models/europa';
+import { SUN_MODEL } from './data/models/sun';
 import { endpoints, UNKNOWN } from './data/modelHelpers';
 import {
   TEMPERATURE_SCALE_STOPS,
@@ -39,11 +40,13 @@ describe('temperatureScale', () => {
   });
 
   it('places a temperature on a range and clamps', () => {
-    const range = { minK: 200, maxK: 1200 };
+    const range = { minK: 200, maxK: 1200, log: false };
     expect(temperatureT(range, 200)).toBe(0);
     expect(temperatureT(range, 700)).toBe(0.5);
     expect(temperatureT(range, 5000)).toBe(1);
-    expect(temperatureT({ minK: 300, maxK: 300 }, 300)).toBe(0.5);
+    expect(temperatureT({ minK: 300, maxK: 300, log: false }, 300)).toBe(0.5);
+    // A log scale: the geometric middle sits at the middle.
+    expect(temperatureT({ minK: 100, maxK: 10_000, log: true }, 1000)).toBeCloseTo(0.5, 9);
   });
 
   it('reads endpoints from a quantity and nothing from unknown', () => {
@@ -53,9 +56,11 @@ describe('temperatureScale', () => {
   });
 
   it("spans a body's known temperatures and ignores its unknowns", () => {
-    expect(bodyTemperatureRange(EARTH_MODEL.regions.map((region) => region.temperatureK))).toEqual({ minK: 288, maxK: 5700 });
+    expect(bodyTemperatureRange(EARTH_MODEL.regions.map((region) => region.temperatureK))).toEqual({ minK: 288, maxK: 5700, log: false });
     // Europa's core temperature is unknown: the range comes from the other regions.
-    expect(bodyTemperatureRange(EUROPA_MODEL.regions.map((region) => region.temperatureK))).toEqual({ minK: 100, maxK: 1500 });
+    expect(bodyTemperatureRange(EUROPA_MODEL.regions.map((region) => region.temperatureK))).toEqual({ minK: 100, maxK: 1500, log: false });
+    // The Sun spans three and a half orders of magnitude: a log scale.
+    expect(bodyTemperatureRange(SUN_MODEL.regions.map((region) => region.temperatureK))).toEqual({ minK: 4500, maxK: 15_700_000, log: true });
     expect(bodyTemperatureRange([UNKNOWN])).toBeNull();
     expect(bodyTemperatureRange([])).toBeNull();
   });

@@ -13,8 +13,9 @@ import type { RulerLayout } from '../ruler';
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const TICK_PX = 6;
 const LABEL_GAP_PX = 10;
-/** Labels closer than this along the ruler are thinned. */
-const LABEL_MIN_SPACING_PX = 34;
+/** Labels are thinned to the width of the text between them (mono, about this wide per glyph) plus a gap. */
+const LABEL_GLYPH_PX = 6.2;
+const LABEL_MIN_GAP_PX = 10;
 /** A region name needs this much projected segment length. */
 const NAME_MIN_SEGMENT_PX = 44;
 const NAME_GAP_PX = 14;
@@ -142,6 +143,7 @@ export class DepthRuler {
     // Ticks, labels thinned to the spacing the projection leaves.
     let lastLabelX = -Infinity;
     let lastLabelY = -Infinity;
+    let lastLabelText = '';
     for (const tick of layout.ticks) {
       const at = toScreen(tick.point);
       if (!at) continue;
@@ -150,14 +152,17 @@ export class DepthRuler {
       line.setAttribute('y1', at[1].toFixed(1));
       line.setAttribute('x2', (at[0] + perpX * TICK_PX).toFixed(1));
       line.setAttribute('y2', (at[1] + perpY * TICK_PX).toFixed(1));
+      const text = tick.depthKm === 0 ? '0 km' : formatKm(tick.depthKm);
       const spacing = Math.hypot(at[0] - lastLabelX, at[1] - lastLabelY);
-      if (tick.major && spacing >= LABEL_MIN_SPACING_PX) {
+      const needed = ((lastLabelText.length + text.length) / 2) * LABEL_GLYPH_PX + LABEL_MIN_GAP_PX;
+      if (tick.major && spacing >= needed) {
         const label = take(root, 'text', 'ruler-label', this.tickLabels);
         label.setAttribute('x', (at[0] + perpX * LABEL_GAP_PX).toFixed(1));
         label.setAttribute('y', (at[1] + perpY * LABEL_GAP_PX).toFixed(1));
-        label.textContent = tick.depthKm === 0 ? '0 km' : formatKm(tick.depthKm);
+        label.textContent = text;
         lastLabelX = at[0];
         lastLabelY = at[1];
+        lastLabelText = text;
       }
     }
     release(this.tickLines);

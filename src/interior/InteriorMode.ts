@@ -313,7 +313,7 @@ export class InteriorMode {
         empty: 'interior-picker-empty',
         close: 'interior-picker-close',
       },
-      includeSun: false, // the Sun waits for its own model (plan §9, phase 3)
+      includeSun: true,
       renderTitle: (title) => {
         const strong = document.createElement('b');
         strong.textContent = 'Look inside';
@@ -652,7 +652,7 @@ export class InteriorMode {
       await this.cutSettled();
       if (stale()) {
         prepared.material.dispose();
-        prepared.texture.dispose();
+        prepared.texture?.dispose();
         return false;
       }
     }
@@ -1080,8 +1080,10 @@ export class InteriorMode {
     if (bar) bar.style.background = temperatureScaleGradientCss();
     const min = document.getElementById('interior-scale-min');
     const max = document.getElementById('interior-scale-max');
+    const mid = scale.querySelector('.interior-scale-mid');
     if (min) min.textContent = `${formatKm(range.minK)} K`;
     if (max) max.textContent = `${formatKm(range.maxK)} K`;
+    if (mid) mid.textContent = range.log ? 'temperature, log scale' : 'temperature';
     scale.style.display = '';
   }
 

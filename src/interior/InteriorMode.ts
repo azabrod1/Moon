@@ -31,7 +31,11 @@
  * On touch a tap pins and a drag orbits. The Esc cascade: the popover, the
  * picker, the pinned inspector, then the tool itself.
  *
- * Temperature mode and the competing-model switch are phase 2B.
+ * Two diagrams (plan §5): Composition, the material key, and Temperature,
+ * the body's own scale with a hatch for what nobody knows; the legend's
+ * swatches follow the mode so the key and the face never disagree. A body
+ * with competing models, or a poorly constrained one with an illustrative
+ * scenario, gets a model switch under its caption.
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -62,9 +66,19 @@ import {
   type ReadableRemap,
 } from './interiorGeometry';
 import { createPickHit, pickInterior, type PickHit, type PickLayout, type PickSurface } from './interiorPick';
-import { claimScores, renderHoverCard, renderInspector } from './ui/LayerInspector';
+import { renderHoverCard, renderInspector } from './ui/LayerInspector';
 import { renderEvidencePopover } from './ui/EvidencePopover';
 import { COVERAGE_BADGE, INTERIOR_DEFAULT_BODY, coverageFor, coverageStateFor, defaultModelFor, modelFor } from './data/interiorRegistry';
+import { coverageModels } from './data/interiorTypes';
+import {
+  bodyTemperatureRange,
+  temperatureEndpoints,
+  temperatureScaleGradientCss,
+  temperatureScaleHex,
+  temperatureT,
+  type TemperatureRange,
+} from './temperatureScale';
+import { buildMeter, claimScores } from './ui/LayerInspector';
 import { coverageBulk, type ClaimKind, type Coverage, type CoverageState } from './data/interiorTypes';
 import { drawnFromModel, drawnUnresolved, outerFractionsInsideOut, type DrawnModel } from './drawnModel';
 import { BodyPicker } from '../planetarium/ui/BodyPicker';
@@ -119,12 +133,17 @@ export interface InteriorDevHover {
   depthKm: number | null;
 }
 
+export type InteriorDisplayMode = 'composition' | 'temperature';
+
 export interface InteriorDevState {
   bodyId: string;
   /** The drawn model's id, or null for the unresolved whole. */
   modelId: string | null;
   coverage: CoverageState;
   illustrative: boolean;
+  displayMode: InteriorDisplayMode;
+  /** The Temperature-mode scale, K, or null when no region's temperature is known. */
+  temperatureRange: TemperatureRange | null;
   view: CutView | null;
   openingAngleDeg: number;
   targetAngleDeg: number;
@@ -203,6 +222,8 @@ export class InteriorMode {
   private body: InteriorBody | null = null;
   private coverage: Coverage = coverageFor(INTERIOR_DEFAULT_BODY);
   private drawn: DrawnModel = drawnUnresolved(INTERIOR_DEFAULT_BODY, 1, '');
+  private displayMode: InteriorDisplayMode = 'composition';
+  private temperatureRange: TemperatureRange | null = null;
   private readonly picker: BodyPicker;
   private utcMs = Date.now();
 
@@ -455,22 +476,31 @@ export class InteriorMode {
     const remap = readableRemap(fractions, minDisplayFraction(READABLE_MIN_PX, this.projectedPx), this.scaleBlend);
     this.remap = remap;
     const artInsideOut = this.regionArt();
+    const reference = this.drawn.referenceRadiusKm;
     const looks: SectionRegionLook[] = this.drawn.regionsInsideOut.map((region, index) => {
       // A physical transition's width, through the same remap as its boundary.
-      const halfPhysical = region.transitionKm / (2 * this.drawn.referenceRadiusKm);
+      const halfPhysical = region.transitionKm / (2 * reference);
       const blendDisplay = halfPhysical > 0
         ? (toDisplayFraction(remap, fractions[index] + halfPhysical) - toDisplayFraction(remap, fractions[index] - halfPhysical)) / 2
         : 0;
+      // Where the boundary might be, through the same remap: an interval or
+      // a spread of models; a qualitative note has no width to draw.
+      const location = region.region?.boundary.knowledge.location ?? null;
+      const band = location && (location.kind === 'interval' || location.kind === 'modelSpread')
+        ? { low: toDisplayFraction(remap, Math.max(0, location.low / reference)), high: toDisplayFraction(remap, Math.min(1, location.high / reference)) }
+        : null;
       return {
         outerDisplay: toDisplayFraction(remap, fractions[index]),
         blendDisplay,
         art: artInsideOut[index],
-        // An unknown temperature is cold, never a guessed glow; Temperature
-        // mode will hatch it (phase 2B).
+        // An unknown temperature is cold, never a guessed glow; Temperature mode hatches it.
         heat: incandescence(region.temperatureK ?? 0),
+        temperature: region.region ? temperatureEndpoints(region.region.temperatureK) : null,
+        bandDisplay: band && band.high > band.low ? band : null,
       };
     });
     this.interiorScene.applyRegions(looks);
+    this.interiorScene.setTemperatureScale(this.temperatureRange);
     this.pickLayout.outerDisplay = looks.map((look) => look.outerDisplay);
   }
 
@@ -525,15 +555,45 @@ export class InteriorMode {
     this.drawn = model
       ? drawnFromModel(model)
       : drawnUnresolved(body.id, body.radiusKm, unresolvedComposition(this.coverage));
-    this.remap = null; // the new model's boundaries go out on the next frame
-    this.clearSelection();
-    this.renderPanel();
+    this.applyDrawn();
     this.interiorScene.setPose(body, this.utcMs);
     const applied = await this.interiorScene.loadBody(body, () => generation !== this.generation);
     if (generation !== this.generation) return false;
     this.loading = false;
     debugLog('Look inside: body applied', { bodyId: body.id, applied });
     return applied;
+  }
+
+  /** Draw a model of the current body (null: the unresolved whole, for a
+   *  body whose coverage draws nothing by default). */
+  private selectModel(modelId: string | null): boolean {
+    if (!this.body) return false;
+    if (modelId === null) {
+      if (this.coverage.state !== 'poorlyConstrained' && this.coverage.state !== 'notYetModelled') return false;
+      this.drawn = drawnUnresolved(this.body.id, this.body.radiusKm, unresolvedComposition(this.coverage));
+    } else {
+      const model = modelFor(this.body.id, modelId);
+      if (!model) return false;
+      this.drawn = drawnFromModel(model);
+    }
+    this.applyDrawn();
+    return true;
+  }
+
+  /** A new drawn model: its scale, its boundaries on the next frame, a fresh panel. */
+  private applyDrawn(): void {
+    this.temperatureRange = bodyTemperatureRange(this.drawn.regionsInsideOut.flatMap((region) => (region.region ? [region.region.temperatureK] : [])));
+    this.remap = null; // the new model's boundaries go out on the next frame
+    this.clearSelection();
+    this.renderPanel();
+  }
+
+  private setDisplayMode(mode: InteriorDisplayMode): void {
+    this.displayMode = mode;
+    this.interiorScene.setDisplayMode(mode === 'temperature' ? 1 : 0);
+    document.getElementById('interior-mode-composition')?.classList.toggle('on', mode === 'composition');
+    document.getElementById('interior-mode-temperature')?.classList.toggle('on', mode === 'temperature');
+    this.renderPanel();
   }
 
   // ---- DOM -------------------------------------------------------------------
@@ -550,6 +610,8 @@ export class InteriorMode {
     });
     const toggle = document.getElementById('interior-readable-toggle') as HTMLInputElement | null;
     toggle?.addEventListener('change', () => this.setReadable(toggle.checked));
+    document.getElementById('interior-mode-composition')?.addEventListener('click', () => this.setDisplayMode('composition'));
+    document.getElementById('interior-mode-temperature')?.addEventListener('click', () => this.setDisplayMode('temperature'));
     // The popover's backdrop closes it; the card's own close button too.
     document.getElementById('interior-evidence')?.addEventListener('click', (event) => {
       if (event.target === event.currentTarget) this.closeEvidence();
@@ -572,10 +634,13 @@ export class InteriorMode {
       coverageNote.textContent = bulk ? bulk.note : '';
       coverageNote.style.display = bulk ? '' : 'none';
     }
+    this.renderModelSwitch();
+    const temperature = this.displayMode === 'temperature';
     const legend = document.getElementById('interior-legend');
     if (legend) {
       legend.replaceChildren();
       const art = this.regionArt();
+      const scores = this.drawn.regionsInsideOut.map((_, index) => claimScores({ drawn: this.drawn, index, coverage: this.coverage }));
       // The legend reads outside-in, the way a reader meets the layers.
       for (let index = this.drawn.regionsInsideOut.length - 1; index >= 0; index--) {
         const region = this.drawn.regionsInsideOut[index];
@@ -602,8 +667,17 @@ export class InteriorMode {
         });
         const swatch = document.createElement('i');
         swatch.className = 'interior-swatch';
-        const swatchColor = swatchHex(art[index], incandescence(region.temperatureK ?? 0));
-        swatch.style.background = `#${swatchColor.toString(16).padStart(6, '0')}`;
+        // The swatch is what the face shows in this mode: the material's tone
+        // (heated by its incandescence), or its place on the temperature scale.
+        if (!temperature) {
+          const swatchColor = swatchHex(art[index], incandescence(region.temperatureK ?? 0));
+          swatch.style.background = `#${swatchColor.toString(16).padStart(6, '0')}`;
+        } else if (region.temperatureK !== null && this.temperatureRange) {
+          const swatchColor = temperatureScaleHex(temperatureT(this.temperatureRange, region.temperatureK));
+          swatch.style.background = `#${swatchColor.toString(16).padStart(6, '0')}`;
+        } else {
+          swatch.classList.add('hatched');
+        }
         const text = document.createElement('div');
         text.className = 'interior-row-text';
         const title = document.createElement('div');
@@ -617,9 +691,18 @@ export class InteriorMode {
         depth.className = 'interior-row-depth';
         depth.textContent = `${formatKm(depthTop)}–${formatKm(depthBottom)} km`;
         row.append(swatch, text, depth);
+        // The existence claim's meter with its level word (plan §4).
+        const existence = region.region?.claims.findIndex((claim) => claim.kind === 'existence') ?? -1;
+        if (existence >= 0) {
+          const meter = document.createElement('div');
+          meter.className = 'interior-row-meter';
+          meter.append(buildMeter(scores[index][existence]));
+          row.append(meter);
+        }
         legend.append(row);
       }
     }
+    this.renderScale();
     this.syncLegendEmphasis();
     this.renderPinned();
     this.syncViewButtons();
@@ -821,6 +904,55 @@ export class InteriorMode {
     this.clearHover();
   };
 
+  /** The model switch under the caption: competing models by title, or a
+   *  poorly constrained body's unresolved whole and its illustrative scenario. */
+  private renderModelSwitch(): void {
+    const root = document.getElementById('interior-models');
+    const note = document.getElementById('interior-models-note');
+    if (!root || !note) return;
+    root.replaceChildren();
+    const choices: { modelId: string | null; label: string }[] = [];
+    let noteText = '';
+    if (this.coverage.state === 'competing') {
+      for (const model of coverageModels(this.coverage)) choices.push({ modelId: model.modelId, label: model.title });
+      noteText = this.coverage.distinguishedBy;
+    } else if (this.coverage.state === 'poorlyConstrained' && this.coverage.illustrative) {
+      choices.push({ modelId: null, label: 'Unresolved' });
+      choices.push({ modelId: this.coverage.illustrative.modelId, label: `${this.coverage.illustrative.title}, illustrative` });
+      noteText = this.drawn.illustrative ? 'One way it could be built, drawn to show the idea; nothing has measured it.' : '';
+    }
+    root.style.display = choices.length > 0 ? '' : 'none';
+    for (const choice of choices) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'interior-view interior-model' + (choice.modelId === this.drawn.modelId ? ' on' : '');
+      button.textContent = choice.label;
+      button.dataset.modelId = choice.modelId ?? '';
+      button.addEventListener('click', () => this.selectModel(choice.modelId));
+      root.append(button);
+    }
+    note.textContent = noteText;
+    note.style.display = noteText ? '' : 'none';
+  }
+
+  /** Temperature mode's key: the body's scale with its range, and the hatch. */
+  private renderScale(): void {
+    const scale = document.getElementById('interior-scale');
+    if (!scale) return;
+    const range = this.temperatureRange;
+    if (this.displayMode !== 'temperature' || !range) {
+      scale.style.display = 'none';
+      return;
+    }
+    const bar = document.getElementById('interior-scale-bar');
+    if (bar) bar.style.background = temperatureScaleGradientCss();
+    const min = document.getElementById('interior-scale-min');
+    const max = document.getElementById('interior-scale-max');
+    if (min) min.textContent = `${formatKm(range.minK)} K`;
+    if (max) max.textContent = `${formatKm(range.maxK)} K`;
+    scale.style.display = '';
+  }
+
   private syncViewButtons(): void {
     const current = cutViewForAngle(this.angleToDeg);
     for (const view of CUT_VIEWS) {
@@ -969,15 +1101,15 @@ export class InteriorMode {
   }
 
   /** Draw a named model of the current body (a competing alternative, or a
-   *  poorly constrained body's illustrative scenario). The UI switch is phase 2B. */
-  devModel(modelId: string): boolean {
-    if (!this.active || !this.body) return false;
-    const model = modelFor(this.body.id, modelId);
-    if (!model) return false;
-    this.drawn = drawnFromModel(model);
-    this.remap = null;
-    this.clearSelection();
-    this.renderPanel();
+   *  poorly constrained body's illustrative scenario), or null for the unresolved whole. */
+  devModel(modelId: string | null): boolean {
+    if (!this.active) return false;
+    return this.selectModel(modelId);
+  }
+
+  devDisplayMode(mode: InteriorDisplayMode): boolean {
+    if (!this.active || (mode !== 'composition' && mode !== 'temperature')) return false;
+    this.setDisplayMode(mode);
     return true;
   }
 
@@ -1031,6 +1163,8 @@ export class InteriorMode {
       modelId: this.drawn.modelId,
       coverage: this.coverage.state,
       illustrative: this.drawn.illustrative,
+      displayMode: this.displayMode,
+      temperatureRange: this.temperatureRange,
       view: cutViewForAngle(this.angleDeg),
       openingAngleDeg: this.angleDeg,
       targetAngleDeg: this.angleToDeg,

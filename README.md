@@ -52,7 +52,7 @@ npm run preview
   - `?auto=planetarium` — boot directly into the Planetarium (the default)
   - `?auto=moonView` — legacy value, still accepted; the retired Moon view's links land in the Planetarium
   - `?auto=volumeCompare` — boot into the "How many fit?" tool
-  - `?auto=interior&body=<name>` — boot into the Look-inside tool on a planet or moon
+  - `?auto=interior&body=<name>` — boot into the Look-inside tool on a planet or moon (its layers with their evidence, a Temperature mode on the body's own scale, and competing models where the data allow two)
 
 ## Data and Scripts
 

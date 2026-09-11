@@ -15,6 +15,7 @@ const PAPPALARDO = 'Pappalardo et al. (1999), JGR 104, does Europa have a subsur
 export const EUROPA_MODEL: InteriorModel = {
   body: 'Europa',
   modelId: 'europa-galileo',
+  title: 'Galileo',
   version: '0.1',
   review: 'provisional',
   reviewedOn: '2026-09-11',

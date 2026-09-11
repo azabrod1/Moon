@@ -9,9 +9,10 @@
  *     (seismology, normal modes counted as their own further row, helio-
  *     seismology, sample, in situ, neutrinos)                          +45
  *   first supporting row when only indirect methods support it         +35
- *   each further supporting row from a distinct method (indirect ones:
- *     gravity, moment of inertia, magnetic, tides, libration, normal
- *     modes)                                              +15 each, max +30
+ *   each further supporting row from a distinct method — an indirect one
+ *     (gravity, moment of inertia, magnetic, tides, libration, normal
+ *     modes) or a second direct one (samples beside seismology)
+ *                                                        +15 each, max +30
  *   a supporting laboratory row for the material state at those
  *     conditions                                                        +10
  *     — or, when no direct or indirect method supports the claim, the
@@ -124,7 +125,8 @@ export function evidenceScore(claim: Claim, context: ScoreContext = {}): Evidenc
   const labRows = supporting.filter((row) => row.method === 'labHighPressure');
   const densityRows = supporting.filter((row) => row.method === 'density');
   const modelRows = supporting.filter((row) => row.method === 'model');
-  const furtherCandidates = supporting.filter((row) => FURTHER_METHODS.has(row.method));
+  // A second direct method is a further method too: rock in hand beside the seismic Moho.
+  const furtherCandidates = supporting.filter((row) => FURTHER_METHODS.has(row.method) || (DIRECT_METHODS.has(row.method) && row !== directRow));
   const densityOnly = supporting.length > 0 && supporting.every((row) => row.method === 'density' || row.method === 'model') && densityRows.length > 0;
 
   let total = 0;
@@ -161,7 +163,7 @@ export function evidenceScore(claim: Claim, context: ScoreContext = {}): Evidenc
       continue;
     }
     if (furtherTotal >= POINTS.furtherMax) {
-      lines.push({ label: `Also the ${methodLabel(row.method)} (further methods already at their cap)`, points: 0, evidence: row });
+      lines.push({ label: `Also ${methodLabel(row.method)} (further methods already at their cap)`, points: 0, evidence: row });
       continue;
     }
     furtherTotal += POINTS.further;

@@ -1119,7 +1119,8 @@ function installDevHooks() {
     interiorExit: () => interiorMode?.devExit(),
     interiorPick: (bodyId: string) => interiorMode?.devPick(bodyId) ?? false,
     interiorPickerOpen: () => interiorMode?.devPickerOpen() ?? false,
-    interiorModel: (modelId: string) => interiorMode?.devModel(modelId) ?? false,
+    interiorModel: (modelId: string | null) => interiorMode?.devModel(modelId) ?? false,
+    interiorMode: (mode: 'composition' | 'temperature') => interiorMode?.devDisplayMode(mode) ?? false,
     interiorHover: (x: number, y: number) => interiorMode?.devHover(x, y) ?? null,
     interiorPin: (regionKey: string | null) => interiorMode?.devPin(regionKey) ?? false,
     interiorEvidence: (claimKind: 'existence' | 'extent' | 'state' | 'composition' | 'temperature' | null) =>

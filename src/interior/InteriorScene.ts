@@ -53,9 +53,11 @@ import {
   createSectionMaterial,
   createSectionUniforms,
   writeSectionRegions,
+  writeTemperatureScale,
   type SectionRegionLook,
   type SectionUniforms,
 } from './rendering/sectionMaterial';
+import type { TemperatureRange } from './temperatureScale';
 import { createCutFaceBasis, createCutFrame, cutFaceBasis, terraceOpeningAngle, type CutFrame } from './cutFrame';
 import { MAX_REGIONS } from './rendering/sectionMaterial';
 
@@ -334,6 +336,16 @@ export class InteriorScene {
       faces.b.scale.setScalar(Math.max(radius, 1e-4));
       this.regionShells[index].mesh.scale.setScalar(Math.max(radius, 1e-4));
     }
+  }
+
+  /** Composition (0) or Temperature (1): which diagram the faces draw. */
+  setDisplayMode(mode: 0 | 1): void {
+    this.sectionUniforms.uDisplayMode.value = mode;
+  }
+
+  /** The body's temperature scale for Temperature mode; null when nothing is known. */
+  setTemperatureScale(range: TemperatureRange | null): void {
+    writeTemperatureScale(this.sectionUniforms, range);
   }
 
   /** The emphasised region (inside-out index, −1 none) and how far in it is. */

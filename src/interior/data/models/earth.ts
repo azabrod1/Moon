@@ -16,10 +16,12 @@ const GLATZMAIER = 'Glatzmaier & Roberts (1995), Nature 377, a three-dimensional
 const HIROSE = 'Hirose, Labrosse & Hernlund (2013), Annu. Rev. Earth Planet. Sci. 41, composition and state of the core';
 const RINGWOOD = 'Ringwood (1975), Composition and Petrology of the Earth\'s Mantle';
 const KATSURA = 'Katsura et al. (2010), PEPI 183, adiabatic temperature profile in the mantle';
+const WATTS = 'Watts (2001), Isostasy and Flexure of the Lithosphere (Cambridge)';
 
 export const EARTH_MODEL: InteriorModel = {
   body: 'Earth',
   modelId: 'earth-prem',
+  title: 'PREM',
   version: '0.1',
   review: 'provisional',
   reviewedOn: '2026-09-11',
@@ -148,6 +150,7 @@ export const EARTH_MODEL: InteriorModel = {
         claim('existence', [
           row('seismology', 'supports', PREM, { observed: 'The Mohorovičić discontinuity: a jump in wave speed a few tens of km down', inferred: 'A distinct outer shell', assumed: '—', uncertain: 'Its thickness varies from 7 km to 70 km' }),
           row('sample', 'supports', RINGWOOD, { observed: 'Rock at the surface and in boreholes to 12 km', inferred: 'Its composition', assumed: '—', uncertain: 'The lower crust is inferred' }),
+          row('gravity', 'supports', WATTS, { observed: 'Mountains are not as heavy as they look: gravity over ranges falls short of their topography', inferred: 'A light crust floating on a denser mantle, thick under mountains (isostasy)', assumed: 'Airy or Pratt compensation', uncertain: 'The exact root depths' }),
         ]),
       ],
     },
@@ -157,5 +160,5 @@ export const EARTH_MODEL: InteriorModel = {
     { name: 'Transition zone', innerRadiusKm: 5711, outerRadiusKm: 5961, note: 'Between the 410 and 660 km discontinuities, where olivine transforms to denser phases.', source: PREM },
     { name: 'D″ layer', innerRadiusKm: 3480, outerRadiusKm: 3680, note: 'The lowest ~200 km of the mantle, hot and heterogeneous, above the core.', source: PREM },
   ],
-  sources: [PREM, LEHMANN, OLDHAM, ANZELLINI, DAVIES, GLATZMAIER, HIROSE, RINGWOOD, KATSURA],
+  sources: [PREM, LEHMANN, OLDHAM, ANZELLINI, DAVIES, GLATZMAIER, HIROSE, RINGWOOD, KATSURA, WATTS],
 };

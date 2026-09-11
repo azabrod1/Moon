@@ -14,6 +14,7 @@ const MURCHIE = 'Murchie et al. (2015), in Asteroids IV, the value of Phobos sam
 export const PHOBOS_ILLUSTRATIVE_MODEL: InteriorModel = {
   body: 'Phobos',
   modelId: 'phobos-rubble-pile-illustrative',
+  title: 'Rubble pile',
   version: '0.1',
   review: 'provisional',
   reviewedOn: '2026-09-11',

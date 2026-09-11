@@ -48,6 +48,7 @@ export function validateInteriorModel(model: InteriorModel): string[] {
     if (!annotation.source) problems.push(`${where}: annotation "${annotation.name}" has no source`);
   }
   if (model.sources.length === 0) problems.push(`${where}: no sources listed`);
+  if (!model.title.trim()) problems.push(`${where}: no title for the model switch`);
   if (model.review === 'reviewed' && !model.reviewedOn) problems.push(`${where}: reviewed but reviewedOn is empty`);
   return problems;
 }

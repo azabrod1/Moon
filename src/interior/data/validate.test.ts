@@ -23,6 +23,7 @@ function model(regions: Region[], overrides: Partial<InteriorModel> = {}): Inter
   return {
     body: 'Test',
     modelId: 'test',
+    title: 'Test',
     version: '1',
     review: 'provisional',
     reviewedOn: '2026-09-11',

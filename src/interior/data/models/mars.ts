@@ -88,6 +88,7 @@ const LIQUID_CORE_LARGE: Region = {
 export const MARS_LIQUID_CORE_MODEL: InteriorModel = {
   body: 'Mars',
   modelId: 'mars-large-liquid-core',
+  title: 'Large liquid core',
   version: '0.1',
   review: 'provisional',
   reviewedOn: '2026-09-11',
@@ -143,6 +144,7 @@ const BASAL_MOLTEN_LAYER: Region = {
 export const MARS_BASAL_LAYER_MODEL: InteriorModel = {
   ...MARS_LIQUID_CORE_MODEL,
   modelId: 'mars-basal-molten-layer',
+  title: 'Basal molten layer',
   overview: 'A smaller, denser liquid core under a layer of molten silicate rock about 150 km thick: the 2023 reinterpretation of InSight\'s data, which explains the core\'s apparent low density.',
   regions: [LIQUID_CORE_SMALL, BASAL_MOLTEN_LAYER, mantle(3339.5, 'Down to the molten layer at 1800 km'), CRUST],
 };

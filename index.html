@@ -1860,6 +1860,10 @@
       text-transform: uppercase; color: var(--t3);
     }
     .interior-views { display: flex; gap: 6px; margin-top: 12px; }
+    .interior-modes { margin-top: 8px; }
+    .interior-models { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+    .interior-models .interior-view { flex: 1 1 auto; font-size: 11px; padding: 5px 8px; }
+    .interior-models-note { margin-top: 6px; font-size: 10.5px; line-height: 1.45; color: var(--t3); }
     .interior-view {
       flex: 1; padding: 6px 4px; border-radius: var(--r-s); border: 1px solid var(--line);
       background: rgba(255,255,255,0.02); color: var(--t2); font-family: var(--font-ui);
@@ -1896,6 +1900,21 @@
     .interior-row.pinned { background: rgba(var(--accent-rgb),0.10); }
     .interior-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
     .interior-swatch { display: block; width: 12px; height: 12px; margin-top: 2px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.14); }
+    /* The no-data hatch, the same idea as the face's. */
+    .interior-swatch.hatched { background: repeating-linear-gradient(45deg, #3a3d44 0 2px, #16181c 2px 4px); }
+    /* The existence meter under a legend row's name (plan §4). */
+    .interior-row-meter { grid-column: 2 / 4; margin-top: -2px; }
+    .interior-row-meter .ev-level { font-size: 8px; }
+    .interior-row-meter .ev-meter i { width: 6px; height: 7px; }
+    .interior-scale { margin-top: 10px; }
+    .interior-scale-bar { height: 8px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.10); }
+    .interior-scale-labels {
+      display: flex; justify-content: space-between; gap: 8px; margin-top: 4px;
+      font-family: var(--font-mono); font-size: 9.5px; color: var(--t2); font-variant-numeric: tabular-nums;
+    }
+    .interior-scale-mid { color: var(--t3); letter-spacing: 0.12em; text-transform: uppercase; font-size: 8.5px; }
+    .interior-scale-note { display: flex; align-items: center; gap: 6px; margin-top: 5px; font-size: 10px; color: var(--t3); }
+    .interior-scale-note .interior-swatch { margin-top: 0; }
     .interior-row-name { font-family: var(--font-ui); font-size: 12px; font-weight: 600; color: var(--t1); line-height: 1.3; }
     .interior-row-detail { margin-top: 1px; font-size: 10.5px; line-height: 1.4; color: var(--t3); }
     .interior-row-depth {
@@ -1989,6 +2008,7 @@
     @media (max-width: 640px) {
       #interior-panel { top: auto; bottom: 12px; left: 12px; right: 12px; width: auto; max-height: 40vh; padding: 12px 14px; }
       .interior-row-detail { display: none; }
+      .interior-row-meter { display: none; }
       .interior-hover { display: none !important; }
       .ev-rubric-level { grid-template-columns: 1fr; gap: 1px; padding: 5px 0; }
     }
@@ -4540,7 +4560,7 @@
             </section>
             <section class="help-section">
               <h4>Tools</h4>
-              <p>The Tools button holds the side quests. <strong>How many fit?</strong> pours one world into another and counts. <strong>Look inside</strong> cuts a world open: its layers at their real depths, glowing with their own heat, and a key that says what each is made of and how well we know it. Pick any planet or moon from its chip, or use <strong>Look inside</strong> on a body's map card. <strong>Leave</strong> (or Esc) puts you back exactly where you were.</p>
+              <p>The Tools button holds the side quests. <strong>How many fit?</strong> pours one world into another and counts. <strong>Look inside</strong> cuts a world open: its layers at their real depths, glowing with their own heat, and a key that says what each is made of and how well we know it. Hover a layer to see it, click to read about it, and open any claim to see the evidence and how its score is made. <strong>Temperature</strong> swaps the materials for the heat, on that world's own scale; hatching means nobody knows. Where two models fit the data, both are there to switch between. Pick any planet or moon from its chip, or use <strong>Look inside</strong> on a body's map card. <strong>Leave</strong> (or Esc) puts you back exactly where you were.</p>
             </section>
             <p class="help-signoff">Have fun out there.</p>
           </div>
@@ -5041,6 +5061,9 @@
           <span id="interior-body-name"></span><span class="interior-chip-caret" aria-hidden="true">&#x25BE;</span>
         </button>
         <div class="interior-caption" id="interior-caption"></div>
+        <!-- Competing models, or a poorly constrained body's unresolved / illustrative choice. -->
+        <div id="interior-models" class="interior-models" role="group" aria-label="Model" style="display:none"></div>
+        <div id="interior-models-note" class="interior-models-note" style="display:none"></div>
         <div class="interior-views" role="group" aria-label="View">
           <button type="button" class="interior-view" id="interior-view-closed">Closed</button>
           <button type="button" class="interior-view on" id="interior-view-cutaway">Cutaway</button>
@@ -5050,7 +5073,17 @@
           <input type="range" id="interior-angle" class="interior-slider" min="0" max="180" step="1" value="90" aria-label="Opening angle">
           <span class="interior-angle-value" id="interior-angle-value">90°</span>
         </div>
+        <div class="interior-views interior-modes" role="group" aria-label="Display">
+          <button type="button" class="interior-view on" id="interior-mode-composition">Composition</button>
+          <button type="button" class="interior-view" id="interior-mode-temperature">Temperature</button>
+        </div>
         <div id="interior-legend" class="interior-legend" role="list"></div>
+        <!-- Temperature mode's key: this body's own scale, and the hatch for what nobody knows. -->
+        <div id="interior-scale" class="interior-scale" style="display:none">
+          <div class="interior-scale-bar" id="interior-scale-bar"></div>
+          <div class="interior-scale-labels"><span id="interior-scale-min"></span><span class="interior-scale-mid">temperature</span><span id="interior-scale-max"></span></div>
+          <div class="interior-scale-note"><i class="interior-swatch hatched" aria-hidden="true"></i>Not known</div>
+        </div>
         <div class="interior-coverage-note" id="interior-coverage-note" style="display:none"></div>
         <label class="obs-foot interior-foot" id="interior-readable-row">
           <input type="checkbox" id="interior-readable-toggle" checked>

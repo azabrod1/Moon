@@ -165,6 +165,8 @@ export interface Annotation {
 export interface InteriorModel {
   body: string;
   modelId: string;
+  /** Two to four words for the model switch: "Dilute core", "Basal molten layer". */
+  title: string;
   version: string;
   /** Provisional models carry the author's date and say so; a reviewed one names its review. */
   review: 'provisional' | 'reviewed';

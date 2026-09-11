@@ -50,6 +50,19 @@
  * so the eye goes where the pointer or the legend row says. Nothing
  * extrudes and nothing recompiles.
  *
+ * Temperature mode (plan §5, uDisplayMode 1) is a diagram: the face is
+ * unlit (diffuse black, emissive only) and its colour is the body's
+ * temperature scale at the temperature sampled at that pixel — each
+ * region's endpoints interpolated by its depth fraction, which is the same
+ * in display and physical space because the Readable remap is linear
+ * within a region. An unknown temperature is a screen-space hatch, never
+ * the coldest colour, and emphasis there is the outline alone.
+ *
+ * Uncertainty of a boundary's location (plan §6) is a faint hatched band
+ * straddling it, sized from the knowledge record and drawn in both modes;
+ * a distributed transition stays the blend it already is, so the two
+ * treatments compose.
+ *
  * Injection points, in the order meshphysical.glsl.js runs them:
  *   after <color_fragment>        the region resolve → diffuseColor.rgb
  *   after <roughnessmap_fragment> roughnessFactor
@@ -60,6 +73,7 @@
 import * as THREE from 'three';
 import { sunNoiseGLSL } from '../../shared/shaders/sun';
 import { PATTERN_INDEX, type ArtParams, type Incandescence } from '../data/artParams';
+import { TEMPERATURE_SCALE_STOPS, type TemperatureRange } from '../temperatureScale';
 
 export const MAX_REGIONS = 8;
 
@@ -94,6 +108,20 @@ export interface SectionUniforms {
   uEmphasis: { value: number };
   /** 0..1, how far the emphasis has eased in. */
   uEmphasisAmount: { value: number };
+  /** 0 composition, 1 temperature. */
+  uDisplayMode: { value: number };
+  /** Temperature at region k's top and bottom, K; log interpolation flag; 1 when known. */
+  uTempOuter: { value: number[] };
+  uTempInner: { value: number[] };
+  uTempLog: { value: number[] };
+  uTempKnown: { value: number[] };
+  /** The body's scale, K, and its six linear-RGB stops. */
+  uScaleMin: { value: number };
+  uScaleMax: { value: number };
+  uScaleStops: { value: THREE.Vector3[] };
+  /** The uncertainty band straddling region k's outer boundary, display radii; equal = none. */
+  uBandLow: { value: number[] };
+  uBandHigh: { value: number[] };
 }
 
 export function createSectionUniforms(): SectionUniforms {
@@ -121,7 +149,27 @@ export function createSectionUniforms(): SectionUniforms {
     uCorner: { value: 0 },
     uEmphasis: { value: -1 },
     uEmphasisAmount: { value: 0 },
+    uDisplayMode: { value: 0 },
+    uTempOuter: { value: numbers() },
+    uTempInner: { value: numbers() },
+    uTempLog: { value: numbers() },
+    uTempKnown: { value: numbers() },
+    uScaleMin: { value: 0 },
+    uScaleMax: { value: 1 },
+    uScaleStops: { value: TEMPERATURE_SCALE_STOPS.map((stop) => new THREE.Vector3(srgbToLinear(stop[0]), srgbToLinear(stop[1]), srgbToLinear(stop[2]))) },
+    uBandLow: { value: numbers() },
+    uBandHigh: { value: numbers() },
   };
+}
+
+function srgbToLinear(channel: number): number {
+  return channel <= 0.04045 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4);
+}
+
+/** The body's temperature scale; null when no region's temperature is known. */
+export function writeTemperatureScale(uniforms: SectionUniforms, range: TemperatureRange | null): void {
+  uniforms.uScaleMin.value = range ? range.minK : 0;
+  uniforms.uScaleMax.value = range ? Math.max(range.maxK, range.minK + 1) : 1;
 }
 
 export interface SectionRegionLook {
@@ -131,6 +179,10 @@ export interface SectionRegionLook {
   blendDisplay: number;
   art: ArtParams;
   heat: Incandescence;
+  /** The region's temperature endpoints, K, or null when unknown (drawn hatched in Temperature mode). */
+  temperature: { outerK: number; innerK: number; log: boolean } | null;
+  /** The uncertainty band straddling the region's OUTER boundary, display radii, or null. */
+  bandDisplay: { low: number; high: number } | null;
 }
 
 /**
@@ -165,6 +217,14 @@ export function writeSectionRegions(
     uniforms.uAmbient.value[index] = lustre ? art.ambient : art.ambient + 0.1 * art.metalness;
     uniforms.uHeat.value[index].set(region.heat.emission[0], region.heat.emission[1], region.heat.emission[2]);
     uniforms.uHeatStrength.value[index] = region.heat.strength;
+    const temperature = index < count ? region.temperature : null;
+    uniforms.uTempOuter.value[index] = temperature ? temperature.outerK : 0;
+    uniforms.uTempInner.value[index] = temperature ? temperature.innerK : 0;
+    uniforms.uTempLog.value[index] = temperature?.log ? 1 : 0;
+    uniforms.uTempKnown.value[index] = temperature ? 1 : 0;
+    const band = index < count ? region.bandDisplay : null;
+    uniforms.uBandLow.value[index] = band ? band.low : 0;
+    uniforms.uBandHigh.value[index] = band ? band.high : 0;
   }
 }
 
@@ -202,15 +262,51 @@ uniform float uTime;
 uniform float uCorner;
 uniform int uEmphasis;
 uniform float uEmphasisAmount;
+uniform int uDisplayMode;
+uniform float uTempOuter[${MAX_REGIONS}];
+uniform float uTempInner[${MAX_REGIONS}];
+uniform float uTempLog[${MAX_REGIONS}];
+uniform float uTempKnown[${MAX_REGIONS}];
+uniform float uScaleMin;
+uniform float uScaleMax;
+uniform vec3 uScaleStops[6];
+uniform float uBandLow[${MAX_REGIONS}];
+uniform float uBandHigh[${MAX_REGIONS}];
 
 ${sunNoiseGLSL}
+
+// Where region k's temperature sits on the body's scale at depth fraction
+// regionT (0 at its top, 1 at its bottom), 0..1.
+float sectionTempT(int k, float regionT) {
+  float outerK = max(uTempOuter[k], 1.0);
+  float innerK = max(uTempInner[k], 1.0);
+  float kelvin = uTempLog[k] > 0.5 ? exp(mix(log(outerK), log(innerK), regionT)) : mix(outerK, innerK, regionT);
+  return clamp((kelvin - uScaleMin) / max(uScaleMax - uScaleMin, 1.0), 0.0, 1.0);
+}
+
+// The scale colour at t, linear RGB: six stops, linear between them, the
+// same ramp the legend paints from temperatureScale.ts.
+vec3 sectionScaleColor(float t) {
+  float x = clamp(t, 0.0, 1.0) * 5.0;
+  int stop = int(floor(min(x, 4.999)));
+  float f = x - float(stop);
+  return mix(uScaleStops[stop], uScaleStops[stop + 1], f);
+}
+
+// A screen-space hatch for a temperature nobody knows: distinct from every
+// scale colour, and never mistaken for cold.
+vec3 sectionNoDataColor() {
+  float hatch = step(0.5, fract((gl_FragCoord.x + gl_FragCoord.y) / 10.0));
+  return mix(vec3(0.045), vec3(0.15), hatch);
+}
 
 // Emphasis: the named region brightens, the rest desaturate and cool.
 // emphasisMix is this pixel's membership of the named region (blended
 // across a soft boundary like everything else); outline is a light line on
-// its boundaries, 0 on a shell.
+// its boundaries, 0 on a shell. In Temperature mode only the outline
+// remains: the hue is the legend's, and nothing may shift it.
 void sectionEmphasis(float emphasisMix, float outline, inout vec3 albedo, inout vec3 heat, inout float glow) {
-  if (uEmphasisAmount <= 0.0) return;
+  if (uEmphasisAmount <= 0.0 || uDisplayMode == 1) return;
   float other = uEmphasisAmount * (1.0 - emphasisMix);
   float luminance = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
   albedo = mix(albedo, vec3(luminance) * 0.7, other * 0.75);
@@ -320,8 +416,11 @@ float interiorRelief = uRelief[0];
 float interiorAmbient = uAmbient[0];
 float interiorDepthShade = uDepthGrad[0] * regionT0;
 float boundaryShade = 1.0;
+float bandShade = 1.0;
 float emphasisMix = uEmphasis == 0 ? 1.0 : 0.0;
 float interiorOutline = 0.0;
+float interiorTempT = sectionTempT(0, regionT0);
+float interiorTempKnown = uTempKnown[0];
 for (int k = 1; k < ${MAX_REGIONS}; k++) {
   if (k >= uCount) break;
   float boundary = uOuter[k - 1];
@@ -341,6 +440,14 @@ for (int k = 1; k < ${MAX_REGIONS}; k++) {
   interiorAmbient = mix(interiorAmbient, uAmbient[k], t);
   interiorDepthShade = mix(interiorDepthShade, uDepthGrad[k] * regionT, t);
   emphasisMix = mix(emphasisMix, uEmphasis == k ? 1.0 : 0.0, t);
+  interiorTempT = mix(interiorTempT, sectionTempT(k, regionT), t);
+  interiorTempKnown = mix(interiorTempKnown, uTempKnown[k], t);
+  if (uBandHigh[k - 1] > uBandLow[k - 1]) {
+    // Where the boundary might be: a faint hatch across the whole band.
+    float inBand = step(uBandLow[k - 1], sectionRadius) * step(sectionRadius, uBandHigh[k - 1]);
+    float stripes = 0.5 + 0.5 * sin((gl_FragCoord.x - gl_FragCoord.y) * 0.9);
+    bandShade *= 1.0 - 0.16 * inBand * stripes;
+  }
   if (uEmphasis == k || uEmphasis == k - 1) {
     // The emphasised region's boundary, a line a couple of pixels wide.
     float lineDistance = (sectionRadius - boundary) / (sectionPx * 1.4);
@@ -361,7 +468,7 @@ float underSkin = (uOuter[uCount - 1] - sectionRadius) / (sectionPx * 3.5);
 boundaryShade *= 1.0 - 0.4 * exp(-underSkin * underSkin) * step(0.0, underSkin);
 // The crease where the two faces meet, gone at Section where they are coplanar.
 float interiorCrease = 1.0 - uCorner * 0.3 * (1.0 - smoothstep(0.0, 0.2, vSectionLocal.x));
-float interiorShade = (1.0 - interiorDepthShade) * interiorCrease * boundaryShade;
+float interiorShade = (1.0 - interiorDepthShade) * interiorCrease * boundaryShade * bandShade;
 if (uEmphasis == uCount - 1) {
   // The outermost region's outer boundary is the disc's rim.
   float rimDistance = (sectionRadius - uOuter[uCount - 1]) / (sectionPx * 1.4);
@@ -370,6 +477,7 @@ if (uEmphasis == uCount - 1) {
 sectionEmphasis(emphasisMix, interiorOutline, interiorAlbedo, interiorHeat, interiorGlow);
 // A hot face is a light more than a surface: its albedo gives way to its heat.
 diffuseColor.rgb = interiorAlbedo * interiorShade * (1.0 - 0.85 * interiorHeatStrength);
+if (uDisplayMode == 1) diffuseColor.rgb = vec3(0.0); // a diagram is unlit
 `;
 
 /** The shell variant of the resolve: one region's outer surface, sampled
@@ -392,24 +500,28 @@ float interiorAmbient = uAmbient[uShellRegion];
 float shellLimb = 0.6 + 0.4 * abs(dot(normalize(vNormal), normalize(vViewPosition)));
 interiorHeat *= shellLimb;
 float interiorShade = 1.0;
+float bandShade = 1.0;
 float interiorOutline = 0.0;
+float interiorTempT = sectionTempT(uShellRegion, 0.0);
+float interiorTempKnown = uTempKnown[uShellRegion];
 sectionEmphasis(uShellRegion == uEmphasis ? 1.0 : 0.0, 0.0, interiorAlbedo, interiorHeat, interiorGlow);
 diffuseColor.rgb = interiorAlbedo * (1.0 - 0.85 * interiorHeatStrength);
+if (uDisplayMode == 1) diffuseColor.rgb = vec3(0.0);
 `;
 
 const SECTION_ROUGHNESS = /* glsl */ `
-roughnessFactor = interiorRough;
+roughnessFactor = uDisplayMode == 1 ? 1.0 : interiorRough;
 `;
 
 const SECTION_METALNESS = /* glsl */ `
-metalnessFactor = interiorMetal;
+metalnessFactor = uDisplayMode == 1 ? 0.0 : interiorMetal;
 `;
 
 /** After <normal_fragment_maps>: the pattern's height as a bump, the
  *  construction of three's perturbNormalArb with the height's screen-space
  *  derivatives standing in for a bump map's. */
 const SECTION_NORMAL = /* glsl */ `
-if (interiorRelief > 0.0) {
+if (interiorRelief > 0.0 && uDisplayMode == 0) {
   vec2 heightGradient = vec2(dFdx(interiorHeight), dFdy(interiorHeight)) * interiorRelief;
   vec3 sigmaX = normalize(dFdx(-vViewPosition));
   vec3 sigmaY = normalize(dFdy(-vViewPosition));
@@ -427,10 +539,18 @@ if (interiorRelief > 0.0) {
  *  by the pattern so a crystalline core glows unevenly. Both take the same
  *  shading as the albedo, so a boundary line cuts the glow too. */
 const SECTION_EMISSIVE = /* glsl */ `
-totalEmissiveRadiance += interiorAlbedo * interiorAmbient * interiorShade * (1.0 - interiorHeatStrength);
-totalEmissiveRadiance += mix(interiorAlbedo, vec3(1.0, 0.7, 0.4), 0.5)
-  * interiorGlow * (0.7 + 0.6 * interiorHeight) * interiorShade;
-totalEmissiveRadiance += interiorHeat * interiorShade;
+if (uDisplayMode == 1) {
+  // The diagram: the scale colour at the sampled temperature, or the
+  // no-data hatch, dimmed only by an uncertainty band. 0.88 keeps the top
+  // of the scale under the bloom threshold.
+  vec3 scaleColor = sectionScaleColor(interiorTempT) * 0.88;
+  totalEmissiveRadiance = mix(sectionNoDataColor(), scaleColor, interiorTempKnown) * bandShade;
+} else {
+  totalEmissiveRadiance += interiorAlbedo * interiorAmbient * interiorShade * (1.0 - interiorHeatStrength);
+  totalEmissiveRadiance += mix(interiorAlbedo, vec3(1.0, 0.7, 0.4), 0.5)
+    * interiorGlow * (0.7 + 0.6 * interiorHeight) * interiorShade;
+  totalEmissiveRadiance += interiorHeat * interiorShade;
+}
 // The emphasis outline is a line, not a surface: it shows whatever the light does.
 totalEmissiveRadiance += vec3(0.85) * interiorOutline * uEmphasisAmount;
 `;

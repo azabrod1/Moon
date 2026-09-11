@@ -17,6 +17,7 @@ const KHAN = 'Khan et al. (2014), JGR Planets 119, geophysical evidence for melt
 export const MOON_MODEL: InteriorModel = {
   body: 'Moon',
   modelId: 'moon-apollo-grail',
+  title: 'Apollo and GRAIL',
   version: '0.1',
   review: 'provisional',
   reviewedOn: '2026-09-11',

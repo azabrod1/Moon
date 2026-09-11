@@ -87,6 +87,7 @@ const ENVELOPE: Region[] = [
 export const JUPITER_DILUTE_MODEL: InteriorModel = {
   body: 'Jupiter',
   modelId: 'jupiter-dilute-core',
+  title: 'Dilute core',
   version: '0.1',
   review: 'provisional',
   reviewedOn: '2026-09-11',
@@ -145,6 +146,7 @@ const COMPACT_CORE: Region = {
 export const JUPITER_COMPACT_MODEL: InteriorModel = {
   ...JUPITER_DILUTE_MODEL,
   modelId: 'jupiter-compact-core',
+  title: 'Compact core',
   overview: 'The classical picture: a compact core of rock and ice about ten Earth masses, with the heavy elements settled at the centre and a metallic hydrogen envelope above it.',
   regions: [
     COMPACT_CORE,

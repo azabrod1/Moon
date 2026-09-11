@@ -41,7 +41,7 @@ export function rubricLines(): string[] {
   return [
     `First supporting row from a method that reaches the region itself (seismology, samples, in-situ, neutrinos, helioseismology): +${POINTS.firstDirect}`,
     `First supporting row when only indirect methods support it: +${POINTS.firstIndirect}`,
-    `Each further supporting method (gravity, moment of inertia, magnetic field, tides, libration, normal modes): +${POINTS.further}, up to +${POINTS.furtherMax}`,
+    `Each further supporting method, indirect (gravity, moment of inertia, magnetic field, tides, libration, normal modes) or a second direct one: +${POINTS.further}, up to +${POINTS.furtherMax}`,
     `Laboratory work reproducing the state at those conditions: +${POINTS.lab}`,
     `Nothing published argues against it and no rival model draws it differently: +${POINTS.unchallenged}`,
     `Each challenging row: ${POINTS.challenge}, down to ${POINTS.challengeMax}`,

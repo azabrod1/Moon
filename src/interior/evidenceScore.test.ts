@@ -45,6 +45,13 @@ describe('evidenceScore: the pinned worked examples', () => {
     expect(result.lines.filter((line) => line.evidence?.method === 'labHighPressure')).toHaveLength(1);
   });
 
+  it("Earth's crust: the seismic Moho, rock in hand and isostasy, unchallenged, is Directly detected", () => {
+    const result = evidenceScore(claim(row('seismology'), row('sample'), row('gravity')));
+    // 45 direct + 15 a second direct method + 15 gravity + 10 unchallenged
+    expect(result.score).toBe(85);
+    expect(result.level).toBe('directlyDetected');
+  });
+
   it('a claim on a model row alone is a Hypothesis', () => {
     const result = evidenceScore({ kind: 'temperature', evidence: [row('model')] });
     expect(result.score).toBe(10);

@@ -9,6 +9,7 @@ import {
   insideWedge,
   openingAngleDegToRad,
   wedgeAngle,
+  yawCutFrame,
 } from './cutFrame';
 
 const centre = new THREE.Vector3(0, 0, 0);
@@ -151,6 +152,26 @@ describe('the three named views', () => {
     expect(cutViewForAngle(90.2)).toBe('cutaway');
     expect(cutViewForAngle(180)).toBe('section');
     expect(cutViewForAngle(60)).toBeNull();
+  });
+});
+
+describe('yawCutFrame', () => {
+  it('turns the view axis about the hinge by the angle and keeps the frame orthonormal', () => {
+    const { position, localUp } = orbitCamera(0, 0);
+    const frame = computeCutFrame(position, localUp, centre, 1);
+    const before = frame.view.clone();
+    yawCutFrame(frame, THREE.MathUtils.degToRad(20));
+    expect(frame.view.angleTo(before)).toBeCloseTo(THREE.MathUtils.degToRad(20), 9);
+    expect(Math.abs(frame.view.dot(frame.hinge))).toBeLessThan(1e-9);
+    expect(Math.abs(frame.side.dot(frame.hinge))).toBeLessThan(1e-9);
+    expect(Math.abs(frame.side.dot(frame.view))).toBeLessThan(1e-9);
+    expect(new THREE.Vector3().crossVectors(frame.hinge, frame.view).dot(frame.side)).toBeCloseTo(1, 9);
+    // The hinge is untouched and a zero yaw is the identity.
+    expectVectorClose(frame.hinge, new THREE.Vector3(0, 1, 0));
+    const same = computeCutFrame(position, localUp, centre, 1);
+    const copy = same.view.clone();
+    yawCutFrame(same, 0);
+    expectVectorClose(same.view, copy, 12);
   });
 });
 

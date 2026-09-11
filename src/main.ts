@@ -802,7 +802,11 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
       buildComposer(interiorCamera, { strength: 0.6, threshold: 0.95 });
 
       if (!interiorMode) {
-        interiorMode = new interiorModule!.InteriorMode(scene, interiorCamera, renderer, useBloom, sceneDrawMultisampled);
+        // `?lustre=0` turns the faces' studio reflection off (no prefiltered
+        // environment): the A/B for any question about what the environment
+        // does to the picture, and the kill switch.
+        const lustre = useBloom && new URLSearchParams(window.location.search).get('lustre') !== '0';
+        interiorMode = new interiorModule!.InteriorMode(scene, interiorCamera, renderer, lustre, sceneDrawMultisampled);
         interiorMode.onExit(() => {
           void switchAppMode('planetarium');
         });

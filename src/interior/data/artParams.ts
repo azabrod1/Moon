@@ -77,9 +77,9 @@ export interface ArtParams {
 
 const FAMILY_DEFAULT: Readonly<Record<MaterialFamily, ArtParams>> = {
   metal: { colorA: 0xb8852c, colorB: 0xf2d27c, roughness: 0.5, metalness: 0.55, glow: 0.12, pattern: 'grain', motion: 0, scale: 75, relief: 7, depthGradient: 0.2, ambient: 0.22 },
-  rock: { colorA: 0x3d1f13, colorB: 0x9a5030, roughness: 0.9, metalness: 0, glow: 0, pattern: 'lava', motion: 0.015, scale: 9, relief: 5, depthGradient: 0.3, ambient: 0.16 },
-  ice: { colorA: 0xbfdcee, colorB: 0xeaf5fb, roughness: 0.3, metalness: 0, glow: 0, pattern: 'crystal', motion: 0, scale: 30, relief: 1.5, depthGradient: 0.2, ambient: 0.3 },
-  water: { colorA: 0x184a8a, colorB: 0x3f8fd6, roughness: 0.12, metalness: 0, glow: 0, pattern: 'caustic', motion: 0.12, scale: 26, relief: 2, depthGradient: 0.35, ambient: 0.2 },
+  rock: { colorA: 0x3d1f13, colorB: 0x9a5030, roughness: 0.9, metalness: 0, glow: 0, pattern: 'lava', motion: 0.015, scale: 6, relief: 4, depthGradient: 0.3, ambient: 0.16 },
+  ice: { colorA: 0xbfdcee, colorB: 0xeaf5fb, roughness: 0.4, metalness: 0, glow: 0, pattern: 'crystal', motion: 0, scale: 30, relief: 0.5, depthGradient: 0.2, ambient: 0.3 },
+  water: { colorA: 0x184a8a, colorB: 0x3f8fd6, roughness: 0.2, metalness: 0, glow: 0, pattern: 'caustic', motion: 0.12, scale: 26, relief: 0.8, depthGradient: 0.35, ambient: 0.2 },
   hydrogen: { colorA: 0xcbb283, colorB: 0xf6ead0, roughness: 0.85, metalness: 0, glow: 0, pattern: 'banding', motion: 0.03, scale: 110, relief: 0, depthGradient: 0.3, ambient: 0.18 },
   metallicHydrogen: { colorA: 0x8c98a6, colorB: 0xe8edf2, roughness: 0.3, metalness: 0.6, glow: 0.05, pattern: 'flow', motion: 0.05, scale: 5, relief: 1.6, depthGradient: 0.15, ambient: 0.22 },
   ionic: { colorA: 0x2f8f8a, colorB: 0x7fd6cf, roughness: 0.3, metalness: 0.3, glow: 0.05, pattern: 'flow', motion: 0.06, scale: 6, relief: 2, depthGradient: 0.25, ambient: 0.2 },
@@ -94,7 +94,7 @@ const PHASE_OVERRIDE: Readonly<Partial<Record<`${MaterialFamily}:${MaterialPhase
   'metal:solid': { colorA: 0xd39a3a, colorB: 0xffe9a0, roughness: 0.5, metalness: 0.5, glow: 0.34 },
   'rock:liquid': { colorA: 0xb8481f, colorB: 0xffa04a, roughness: 0.5, glow: 0.3, pattern: 'flow', motion: 0.06, scale: 5, relief: 2 },
   'rock:mixed': { pattern: 'mottle', scale: 10, relief: 4 },
-  'ice:liquid': { colorA: 0x184a8a, colorB: 0x3f8fd6, roughness: 0.12, pattern: 'caustic', motion: 0.12, scale: 26, relief: 2, depthGradient: 0.35, ambient: 0.2 },
+  'ice:liquid': { colorA: 0x184a8a, colorB: 0x3f8fd6, roughness: 0.2, pattern: 'caustic', motion: 0.12, scale: 26, relief: 0.8, depthGradient: 0.35, ambient: 0.2 },
   'hydrogen:supercritical': { colorA: 0xcdbb95, colorB: 0xe8d9b8, roughness: 0.7 },
   'mixed:solid': { pattern: 'mottle' },
   'mixed:mixed': { pattern: 'mottle' },
@@ -192,7 +192,7 @@ export interface Incandescence {
 
 export const DRAPER_POINT_K = 800;
 const INCANDESCENCE_FULL_K = 3800;
-const INCANDESCENCE_PEAK = 1.2;
+const INCANDESCENCE_PEAK = 1.3;
 /** Display warmth: the hue is taken at a compressed temperature — this
  *  fraction of the way from the Draper point up to MANTLE_K, and a smaller
  *  fraction beyond it. The strict Planckian white of a 5,000 K core is what
@@ -221,7 +221,7 @@ export function incandescence(temperatureK: number): Incandescence {
     + (Math.min(temperatureK, INCANDESCENCE_MANTLE_K) - DRAPER_POINT_K) * INCANDESCENCE_WARMTH
     + Math.max(0, temperatureK - INCANDESCENCE_MANTLE_K) * INCANDESCENCE_WARMTH_ABOVE;
   const [red, green, blue] = planckianSrgb(Math.max(displayK, 1000));
-  const radiance = 0.03 * strength + INCANDESCENCE_PEAK * Math.pow(strength, 1.5);
+  const radiance = 0.03 * strength + INCANDESCENCE_PEAK * Math.pow(strength, 0.9);
   const linear = (channel: number) => Math.pow(channel, 2.2) * radiance;
   const display = (channel: number) => Math.round(Math.max(0, Math.min(1, channel * (0.35 + 0.65 * strength))) * 255);
   return {

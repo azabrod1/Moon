@@ -164,3 +164,22 @@ export function insideWedge(frame: CutFrame, offsetFromCentre: THREE.Vector3): b
 export function openingAngleDegToRad(deg: number): number {
   return THREE.MathUtils.clamp(deg, 0, MAX_OPENING_ANGLE_DEG) * DEG2RAD;
 }
+
+const yawScratch = new THREE.Vector3();
+
+/**
+ * Turn the wedge about the hinge by `yawRad`, so it is no longer symmetric
+ * about the view axis: one face turns toward the viewer, the other away,
+ * and the terraces show on the near face as curved steps rather than a
+ * crease looked at head-on. The frame stays orthonormal and the skin, the
+ * faces and the pick all read the turned frame, so nothing disagrees.
+ */
+export function yawCutFrame(frame: CutFrame, yawRad: number): CutFrame {
+  if (yawRad === 0) return frame;
+  const cosYaw = Math.cos(yawRad);
+  const sinYaw = Math.sin(yawRad);
+  yawScratch.copy(frame.view).multiplyScalar(cosYaw).addScaledVector(frame.side, sinYaw);
+  frame.view.copy(yawScratch).normalize();
+  frame.side.crossVectors(frame.hinge, frame.view).normalize();
+  return frame;
+}

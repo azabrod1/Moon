@@ -214,23 +214,24 @@ vec4 sectionSample(int k, vec3 bodyPoint, float regionT, out float heatMask) {
   float height = -1.0;
   heatMask = 1.0;
   if (pattern == 8) {
-    // lava: a cooling crust of dark plates, the melt glowing in the cracks
+    // lava: glowing rock veined by thin, darker, cooler seams, with a slow
+    // broad variation — the melt is the body of it, the veins the minority
     vec3 q = bodyPoint * scale + vec3(drift, -drift * 0.6, drift * 0.3);
-    float plates = sectionFbm(q);
+    float broad = sectionFbm(q * 0.45);
     // fbm sits near 0.5, so the ridge is high almost everywhere: only a tight
-    // threshold leaves cracks as the thin bright minority between dark plates.
+    // threshold leaves the veins as thin lines.
     float ridge = 1.0 - abs(2.0 * sectionFbm(q * 1.7 + 3.1) - 1.0);
-    float cracks = smoothstep(0.86, 0.985, ridge);
+    float veins = smoothstep(0.86, 0.985, ridge);
     float fine = noise3(q * 6.0);
-    mixValue = plates * 0.4 + fine * 0.15 + cracks * 0.45;
-    heatMask = 0.05 + 1.0 * cracks + 0.1 * fine * (1.0 - cracks) * plates;
-    height = 1.0 - cracks * 0.8 + plates * 0.2;
+    mixValue = 0.55 + 0.35 * (broad - 0.5) - 0.4 * veins;
+    heatMask = (0.8 + 0.5 * (broad - 0.5) + 0.12 * (fine - 0.5)) * (1.0 - 0.7 * veins);
+    height = 0.5 + 0.4 * (broad - 0.5) - 0.5 * veins;
   } else if (pattern == 1) {
     // grain: faceted crystalline metal
     float cells = noise3(bodyPoint * scale);
     float fine = noise3(bodyPoint * scale * 3.1 + 7.0);
     mixValue = step(0.55, cells) * 0.55 + fine * 0.45;
-    heatMask = 0.5 + 0.5 * mixValue;
+    heatMask = 0.6 + 0.4 * mixValue;
   } else if (pattern == 2) {
     // swirl: slow convection in a solid-state mantle
     vec3 q = bodyPoint * scale + vec3(drift, -drift * 0.7, drift * 0.4);
@@ -240,7 +241,7 @@ vec4 sectionSample(int k, vec3 bodyPoint, float regionT, out float heatMask) {
     // flow: liquid metal, faster and more layered
     vec3 q = bodyPoint * scale + vec3(drift * 2.0, drift, -drift * 1.5);
     mixValue = sectionFbm(q * 1.5 + sectionFbm(q) * 2.0);
-    heatMask = 0.3 + 0.95 * mixValue;
+    heatMask = 0.6 + 0.6 * mixValue;
   } else if (pattern == 4) {
     // caustic: ridged shimmer for water and brine
     vec3 q = bodyPoint * scale + vec3(drift, drift * 1.3, -drift);
@@ -343,6 +344,10 @@ float interiorMetal = uMetal[uShellRegion];
 float interiorGlow = uGlow[uShellRegion];
 float interiorRelief = uRelief[uShellRegion];
 float interiorAmbient = uAmbient[uShellRegion];
+// A glowing sphere still reads as a sphere: its heat falls off toward the
+// limb (the emission is not lambertian, but the eye expects the form).
+float shellLimb = 0.6 + 0.4 * abs(dot(normalize(vNormal), normalize(vViewPosition)));
+interiorHeat *= shellLimb;
 float interiorShade = 1.0;
 diffuseColor.rgb = interiorAlbedo * (1.0 - 0.85 * interiorHeatStrength);
 `;

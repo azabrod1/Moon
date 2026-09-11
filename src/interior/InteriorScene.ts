@@ -60,7 +60,7 @@ import { MAX_REGIONS } from './rendering/sectionMaterial';
 /** The body's radius in studio units; every framing number is relative to it. */
 export const BODY_RADIUS = 1;
 /** Each region inward opens this fraction of the angle less than the one above. */
-export const TERRACE_STEP = 0.11;
+export const TERRACE_STEP = 0.2;
 
 // --- lighting --------------------------------------------------------------
 // The compare studio's key, but camera-relative: expressed in the camera's

@@ -36,6 +36,7 @@ import {
   createCutFrame,
   cutViewForAngle,
   openingAngleDegToRad,
+  yawCutFrame,
   type CutView,
 } from './cutFrame';
 import {
@@ -68,6 +69,9 @@ const FRAMING = {
 
 /** The cut opens and closes over this long, on an ease-in-out. */
 const CUT_ANIMATION_S = 0.9;
+/** The wedge is turned this far off the view axis, so the viewer looks at
+ *  its near face and along its terraces rather than straight into the crease. */
+const WEDGE_YAW_DEG = 22;
 /** The Readable blend eases over this long. */
 const SCALE_BLEND_S = 0.5;
 const FPS_WINDOW = 60;
@@ -271,6 +275,7 @@ export class InteriorMode {
     // camera's own up, so nothing snaps through the poles.
     tmpLocalUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
     computeCutFrame(this.camera.position, tmpLocalUp, ORIGIN, openingAngleDegToRad(this.angleDeg), this.frame);
+    yawCutFrame(this.frame, WEDGE_YAW_DEG * DEG2RAD);
     this.interiorScene.applyCut(this.frame);
     this.interiorScene.updateForCamera(this.camera);
 

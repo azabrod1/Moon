@@ -1896,6 +1896,8 @@
       font-family: var(--font-mono); font-size: 10px; color: var(--t2); white-space: nowrap;
       font-variant-numeric: tabular-nums; padding-top: 2px;
     }
+    /* The bulk line for a body drawn as an unresolved whole: what its density says. */
+    .interior-coverage-note { margin-top: 8px; font-size: 10.5px; line-height: 1.45; color: var(--t3); }
     .interior-foot { --obs-hairline-dim: var(--line-dim); --obs-t2: var(--t2); }
     .interior-note {
       margin-top: 6px; text-align: right; font-family: var(--font-mono); font-size: 8px;
@@ -4964,6 +4966,7 @@
           <span class="interior-angle-value" id="interior-angle-value">90°</span>
         </div>
         <div id="interior-legend" class="interior-legend"></div>
+        <div class="interior-coverage-note" id="interior-coverage-note" style="display:none"></div>
         <label class="obs-foot interior-foot" id="interior-readable-row">
           <input type="checkbox" id="interior-readable-toggle" checked>
           <span class="obs-footlbl">Readable scale</span>

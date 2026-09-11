@@ -9,9 +9,11 @@
  * Phase changes the response, not the caption: solid and liquid iron are
  * different looks. Families, not per-planet shaders: one noise (the Sun's,
  * shared/shaders/sun.ts) feeds every pattern, and a body's regions only
- * choose family and phase. A model may override a region's glow where a
- * presentation choice is justified (a core drawn hot); nothing else is
- * overridable, so the vocabulary stays fixed across bodies.
+ * choose family and phase — the schema's own vocabulary (interiorTypes
+ * MaterialFamily and Phase), so a model can never name a look this table
+ * lacks. Nothing is overridable per model: heat comes from the region's
+ * temperature (incandescence, below), and the vocabulary stays fixed
+ * across bodies.
  *
  * Depth is drawn two ways, both policy here. Within a region, the face
  * darkens from the region's top to its bottom (`depthGradient`), so each
@@ -22,19 +24,7 @@
  * exempt: they are drawn hot, and heat, not darkness, says "deep" there.
  */
 
-export type MaterialFamily =
-  | 'metal'
-  | 'rock'
-  | 'ice'
-  | 'water'
-  | 'hydrogen'
-  | 'metallicHydrogen'
-  | 'ionic'
-  | 'plasma'
-  | 'mixed'
-  | 'unresolved';
-
-export type MaterialPhase = 'solid' | 'liquid' | 'gas' | 'supercritical' | 'plasma' | 'mixed';
+import type { MaterialFamily, Phase } from './interiorTypes';
 
 /** The shader's pattern switch; the index is what the uniform carries. */
 export type PatternKind = 'none' | 'grain' | 'swirl' | 'flow' | 'caustic' | 'banding' | 'mottle' | 'crystal' | 'lava';
@@ -77,50 +67,53 @@ export interface ArtParams {
 
 const FAMILY_DEFAULT: Readonly<Record<MaterialFamily, ArtParams>> = {
   metal: { colorA: 0xb8852c, colorB: 0xf2d27c, roughness: 0.5, metalness: 0.55, glow: 0.12, pattern: 'grain', motion: 0, scale: 75, relief: 7, depthGradient: 0.2, ambient: 0.22 },
-  rock: { colorA: 0x3d1f13, colorB: 0x9a5030, roughness: 0.9, metalness: 0, glow: 0, pattern: 'lava', motion: 0.015, scale: 6, relief: 4, depthGradient: 0.3, ambient: 0.16 },
+  silicate: { colorA: 0x3d1f13, colorB: 0x9a5030, roughness: 0.9, metalness: 0, glow: 0, pattern: 'lava', motion: 0.015, scale: 6, relief: 4, depthGradient: 0.3, ambient: 0.16 },
   ice: { colorA: 0xbfdcee, colorB: 0xeaf5fb, roughness: 0.4, metalness: 0, glow: 0, pattern: 'crystal', motion: 0, scale: 30, relief: 0.5, depthGradient: 0.2, ambient: 0.3 },
   water: { colorA: 0x184a8a, colorB: 0x3f8fd6, roughness: 0.2, metalness: 0, glow: 0, pattern: 'caustic', motion: 0.12, scale: 26, relief: 0.8, depthGradient: 0.35, ambient: 0.2 },
   hydrogen: { colorA: 0xcbb283, colorB: 0xf6ead0, roughness: 0.85, metalness: 0, glow: 0, pattern: 'banding', motion: 0.03, scale: 110, relief: 0, depthGradient: 0.3, ambient: 0.18 },
   metallicHydrogen: { colorA: 0x8c98a6, colorB: 0xe8edf2, roughness: 0.3, metalness: 0.6, glow: 0.05, pattern: 'flow', motion: 0.05, scale: 5, relief: 1.6, depthGradient: 0.15, ambient: 0.22 },
-  ionic: { colorA: 0x2f8f8a, colorB: 0x7fd6cf, roughness: 0.3, metalness: 0.3, glow: 0.05, pattern: 'flow', motion: 0.06, scale: 6, relief: 2, depthGradient: 0.25, ambient: 0.2 },
+  ionicFluid: { colorA: 0x2f8f8a, colorB: 0x7fd6cf, roughness: 0.3, metalness: 0.3, glow: 0.05, pattern: 'flow', motion: 0.06, scale: 6, relief: 2, depthGradient: 0.25, ambient: 0.2 },
   plasma: { colorA: 0xffd27a, colorB: 0xfff4d6, roughness: 1, metalness: 0, glow: 0.8, pattern: 'mottle', motion: 0.2, scale: 30, relief: 0, depthGradient: 0, ambient: 0.3 },
   mixed: { colorA: 0x6c5744, colorB: 0xb8a088, roughness: 0.9, metalness: 0.1, glow: 0, pattern: 'mottle', motion: 0, scale: 12, relief: 4, depthGradient: 0.25, ambient: 0.16 },
   unresolved: { colorA: 0x666a72, colorB: 0x70747c, roughness: 1, metalness: 0, glow: 0, pattern: 'none', motion: 0, scale: 1, relief: 0, depthGradient: 0.1, ambient: 0.2 },
 };
 
-/** Phase-specific responses that differ from the family default. */
-const PHASE_OVERRIDE: Readonly<Partial<Record<`${MaterialFamily}:${MaterialPhase}`, Partial<ArtParams>>>> = {
+/** Phase-specific responses that differ from the family default. A liquid
+ *  metal flows; a solid one has grain. Molten rock flows too, and a partial
+ *  melt is rock with the flow beginning in it. Superionic water (Uranus and
+ *  Neptune) is a dark crystalline conductor, not a sea. A metal whose phase
+ *  is unresolved keeps the family default. */
+const PHASE_OVERRIDE: Readonly<Partial<Record<`${MaterialFamily}:${Phase}`, Partial<ArtParams>>>> = {
+  'metal:liquidMetal': { colorA: 0xc8892a, colorB: 0xffd978, roughness: 0.32, metalness: 0.6, glow: 0.2, pattern: 'flow', motion: 0.08, scale: 6, relief: 1.3 },
   'metal:liquid': { colorA: 0xc8892a, colorB: 0xffd978, roughness: 0.32, metalness: 0.6, glow: 0.2, pattern: 'flow', motion: 0.08, scale: 6, relief: 1.3 },
   'metal:solid': { colorA: 0xd39a3a, colorB: 0xffe9a0, roughness: 0.5, metalness: 0.5, glow: 0.34 },
-  'rock:liquid': { colorA: 0xb8481f, colorB: 0xffa04a, roughness: 0.5, glow: 0.3, pattern: 'flow', motion: 0.06, scale: 5, relief: 2 },
-  'rock:mixed': { pattern: 'mottle', scale: 10, relief: 4 },
-  'ice:liquid': { colorA: 0x184a8a, colorB: 0x3f8fd6, roughness: 0.2, pattern: 'caustic', motion: 0.12, scale: 26, relief: 0.8, depthGradient: 0.35, ambient: 0.2 },
-  'hydrogen:supercritical': { colorA: 0xcdbb95, colorB: 0xe8d9b8, roughness: 0.7 },
+  'silicate:liquid': { colorA: 0xb8481f, colorB: 0xffa04a, roughness: 0.5, glow: 0.3, pattern: 'flow', motion: 0.06, scale: 5, relief: 2 },
+  'silicate:partialMelt': { colorA: 0x5a2a16, colorB: 0xc0663a, roughness: 0.75, glow: 0.1, pattern: 'lava', motion: 0.03, scale: 6, relief: 3 },
+  'water:superionic': { colorA: 0x12303e, colorB: 0x2c6a7c, roughness: 0.35, metalness: 0.25, pattern: 'crystal', motion: 0, scale: 24, relief: 1.2, depthGradient: 0.25, ambient: 0.18 },
+  'water:supercriticalFluid': { colorA: 0x1f5a86, colorB: 0x4f9bd0, roughness: 0.3, pattern: 'flow', motion: 0.08, scale: 8, relief: 1 },
+  'hydrogen:supercriticalFluid': { colorA: 0xcdbb95, colorB: 0xe8d9b8, roughness: 0.7 },
   'mixed:solid': { pattern: 'mottle' },
-  'mixed:mixed': { pattern: 'mottle' },
 };
 
 /** How much darker a family's deeper regions are drawn than its shallower
  *  ones, at the centre of the body. Cores are drawn hot instead. */
 export const FAMILY_DEPTH_DARKENING: Readonly<Record<MaterialFamily, number>> = {
   metal: 0,
-  rock: 0.5,
+  silicate: 0.5,
   ice: 0.25,
   water: 0.25,
   hydrogen: 0.35,
   metallicHydrogen: 0.1,
-  ionic: 0.2,
+  ionicFluid: 0.2,
   plasma: 0,
   mixed: 0.15,
   unresolved: 0.1,
 };
 
-export function artParamsFor(family: MaterialFamily, phase: MaterialPhase, glowOverride?: number): ArtParams {
+export function artParamsFor(family: MaterialFamily, phase: Phase): ArtParams {
   const base = FAMILY_DEFAULT[family];
   const override = PHASE_OVERRIDE[`${family}:${phase}`];
-  const merged = override ? { ...base, ...override } : { ...base };
-  if (glowOverride !== undefined) merged.glow = glowOverride;
-  return merged;
+  return override ? { ...base, ...override } : { ...base };
 }
 
 /** Scale an sRGB hex colour's channels by `factor` (0..1 darkens). */
@@ -149,24 +142,27 @@ export function depthTint(art: ArtParams, family: MaterialFamily, depthMidFracti
 /** Human labels for the legend and the inspector. */
 export const FAMILY_LABEL: Readonly<Record<MaterialFamily, string>> = {
   metal: 'Iron and nickel',
-  rock: 'Silicate rock',
+  silicate: 'Silicate rock',
   ice: 'Ice',
-  water: 'Liquid water',
+  water: 'Water',
   hydrogen: 'Hydrogen and helium',
   metallicHydrogen: 'Metallic hydrogen',
-  ionic: 'Ionic fluid',
+  ionicFluid: 'Ionic fluid',
   plasma: 'Plasma',
   mixed: 'Mixed',
   unresolved: 'Unresolved',
 };
 
-export const PHASE_LABEL: Readonly<Record<MaterialPhase, string>> = {
+export const PHASE_LABEL: Readonly<Record<Phase, string>> = {
   solid: 'solid',
+  partialMelt: 'partly molten',
   liquid: 'liquid',
+  supercriticalFluid: 'supercritical fluid',
+  liquidMetal: 'liquid metal',
+  superionic: 'superionic',
   gas: 'gas',
-  supercritical: 'supercritical fluid',
   plasma: 'plasma',
-  mixed: 'mixed phases',
+  unresolved: 'phase unresolved',
 };
 
 /**

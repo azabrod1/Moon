@@ -1,11 +1,17 @@
 /**
- * Mode controller for the Look-inside tool (phase-0 spike). Owns the
- * camera, its OrbitControls, the DOM (a small panel: body name, the three
- * views, the opening-angle slider, a legend and the Readable toggle), the
+ * Mode controller for the Look-inside tool. Owns the camera, its
+ * OrbitControls, the DOM (the panel: body chip, caption, the three views,
+ * the opening-angle slider, a legend and the Readable toggle), the
  * presentation clock and the cut animation; InteriorScene owns the studio
  * content. The mode maps the pure modules — cutFrame for where the cut is,
- * interiorGeometry for the Readable remap — onto the scene's per-frame
- * uniforms.
+ * interiorGeometry for the Readable remap, drawnModel for the model's
+ * regions — onto the scene's per-frame uniforms.
+ *
+ * What is drawn comes from the registry (data/interiorRegistry): a
+ * constrained body draws its model, a competing body its default (the
+ * others switchable, devModel for now), a poorly constrained or not yet
+ * modelled body draws an unresolved whole with its bulk line — an
+ * illustrative scenario only on request, and labelled.
  *
  * Session-only: every activate() opens on the body it is handed and
  * touches no storage keys. Body changes run under a generation guard, the
@@ -16,10 +22,8 @@
  * pattern drift run on it, never on the solar-system clock, and the dev
  * bridge can set and freeze it so a capture is reproducible.
  *
- * SPIKE: the interior models are the hard-coded tables in data/spikeModels
- * and the panel is the minimum needed to judge the cut. The Tools row, the
- * map-card action, the picker, the inspector and the evidence popover come
- * with phases 1 and 2.
+ * The inspector and the evidence popover (phase 1B) and Temperature mode
+ * (phase 2B) are still to come; the legend reads the schema already.
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -48,7 +52,9 @@ import {
   toDisplayFraction,
   type ReadableRemap,
 } from './interiorGeometry';
-import { SPIKE_DEFAULT_BODY, outerFractionsInsideOut, spikeHasModel, spikeModelFor, type SpikeModel } from './data/spikeModels';
+import { COVERAGE_BADGE, INTERIOR_DEFAULT_BODY, coverageFor, coverageStateFor, defaultModelFor, modelFor } from './data/interiorRegistry';
+import { coverageBulk, type Coverage, type CoverageState } from './data/interiorTypes';
+import { drawnFromModel, drawnUnresolved, outerFractionsInsideOut, type DrawnModel } from './drawnModel';
 import { BodyPicker } from '../planetarium/ui/BodyPicker';
 import { artParamsFor, depthTint, incandescence, swatchHex, type ArtParams } from './data/artParams';
 import type { SectionRegionLook } from './rendering/sectionMaterial';
@@ -89,6 +95,10 @@ export interface InteriorDevRegion {
 
 export interface InteriorDevState {
   bodyId: string;
+  /** The drawn model's id, or null for the unresolved whole. */
+  modelId: string | null;
+  coverage: CoverageState;
+  illustrative: boolean;
   view: CutView | null;
   openingAngleDeg: number;
   targetAngleDeg: number;
@@ -110,6 +120,27 @@ function easeInOutCubic(t: number): number {
 function formatKm(km: number): string {
   if (km < 10) return km.toFixed(1);
   return Math.round(km).toLocaleString('en-US');
+}
+
+/** The one line under the body chip: what is drawn and how much to trust it. */
+function captionFor(coverage: Coverage, drawn: DrawnModel): string {
+  const radius = `radius ${formatKm(drawn.referenceRadiusKm)} km`;
+  const model = drawn.model;
+  if (model) {
+    const review = model.review === 'reviewed' ? 'Reviewed model' : 'Provisional model';
+    if (model.illustrative) return `Illustrative scenario, not a measurement · ${radius}`;
+    if (coverage.state === 'competing') return `${review}, one of ${coverage.models.length} · ${radius}`;
+    return `${review} · ${radius}`;
+  }
+  const bulk = coverageBulk(coverage)?.densityKgM3 ?? null;
+  const density = bulk ? `bulk density ${Math.round(bulk.value).toLocaleString('en-US')} kg/m³` : 'no measured density';
+  const lead = coverage.state === 'notYetModelled' ? 'Not yet modelled here' : 'Interior unresolved';
+  return `${lead} · ${density}`;
+}
+
+/** The legend row for the unresolved whole. */
+function unresolvedComposition(coverage: Coverage): string {
+  return coverage.state === 'notYetModelled' ? 'Not yet modelled here' : 'Not measured';
 }
 
 function orbitPose(azimuthDeg: number, elevationDeg: number, distance: number, out: THREE.Vector3): THREE.Vector3 {
@@ -137,7 +168,8 @@ export class InteriorMode {
   private loading = false;
 
   private body: InteriorBody | null = null;
-  private model: SpikeModel = spikeModelFor(SPIKE_DEFAULT_BODY, 1);
+  private coverage: Coverage = coverageFor(INTERIOR_DEFAULT_BODY);
+  private drawn: DrawnModel = drawnUnresolved(INTERIOR_DEFAULT_BODY, 1, '');
   private readonly picker: BodyPicker;
   private utcMs = Date.now();
 
@@ -201,9 +233,10 @@ export class InteriorMode {
       },
       rowBadge: (name) => {
         const pill = document.createElement('span');
-        const modelled = spikeHasModel(name);
-        pill.className = 'pk-tag-cover' + (modelled ? ' on' : '');
-        pill.textContent = modelled ? 'modelled' : 'unresolved';
+        const state = coverageStateFor(name);
+        const drawnByDefault = state === 'constrained' || state === 'competing';
+        pill.className = 'pk-tag-cover' + (drawnByDefault ? ' on' : '');
+        pill.textContent = COVERAGE_BADGE[state];
         return pill;
       },
       onPick: (name) => {
@@ -229,7 +262,7 @@ export class InteriorMode {
   /**
    * Open on a body at the planetarium's instant. Resolves once the map is
    * applied — the #mode-transition veil covers the load, so nothing
-   * half-loaded shows. A body the spike does not model opens as Earth.
+   * half-loaded shows. A name the catalog lacks opens as Earth.
    */
   async activate(bodyId: string, utcMs: number): Promise<void> {
     this.active = true;
@@ -354,14 +387,13 @@ export class InteriorMode {
     }
     this.remapPx = this.projectedPx;
     this.remapBlend = this.scaleBlend;
-    const fractions = outerFractionsInsideOut(this.model);
+    const fractions = outerFractionsInsideOut(this.drawn);
     const remap = readableRemap(fractions, minDisplayFraction(READABLE_MIN_PX, this.projectedPx), this.scaleBlend);
     this.remap = remap;
-    const regionsInsideOut = this.model.regions.slice().reverse();
-    const artInsideOut = this.regionArt().reverse();
-    const looks: SectionRegionLook[] = regionsInsideOut.map((region, index) => {
+    const artInsideOut = this.regionArt();
+    const looks: SectionRegionLook[] = this.drawn.regionsInsideOut.map((region, index) => {
       // A physical transition's width, through the same remap as its boundary.
-      const halfPhysical = (region.transitionKm ?? 0) / (2 * this.model.referenceRadiusKm);
+      const halfPhysical = region.transitionKm / (2 * this.drawn.referenceRadiusKm);
       const blendDisplay = halfPhysical > 0
         ? (toDisplayFraction(remap, fractions[index] + halfPhysical) - toDisplayFraction(remap, fractions[index] - halfPhysical)) / 2
         : 0;
@@ -369,21 +401,21 @@ export class InteriorMode {
         outerDisplay: toDisplayFraction(remap, fractions[index]),
         blendDisplay,
         art: artInsideOut[index],
-        heat: incandescence(region.temperatureK),
+        // An unknown temperature is cold, never a guessed glow; Temperature
+        // mode will hatch it (phase 2B).
+        heat: incandescence(region.temperatureK ?? 0),
       };
     });
     this.interiorScene.applyRegions(looks);
   }
 
-  /** Each region's look, OUTSIDE-IN like the model, with the family depth
-   *  tint applied — the one place the legend and the faces get their colours. */
+  /** Each region's look, inside-out like the drawn model, with the family
+   *  depth tint applied — the one place the legend and the faces get their colours. */
   private regionArt(): ArtParams[] {
-    const regions = this.model.regions;
-    const reference = this.model.referenceRadiusKm;
-    return regions.map((region, index) => {
-      const innerKm = regions[index + 1]?.outerRadiusKm ?? 0;
-      const depthMidFraction = 1 - (region.outerRadiusKm + innerKm) / (2 * reference);
-      return depthTint(artParamsFor(region.family, region.phase, region.glow), region.family, depthMidFraction);
+    const reference = this.drawn.referenceRadiusKm;
+    return this.drawn.regionsInsideOut.map((region) => {
+      const depthMidFraction = 1 - (region.outerRadiusKm + region.innerRadiusKm) / (2 * reference);
+      return depthTint(artParamsFor(region.family, region.phase), region.family, depthMidFraction);
     });
   }
 
@@ -418,12 +450,16 @@ export class InteriorMode {
     let body = resolveInteriorBody(bodyId);
     if (!body) {
       debugWarn('Look inside: unknown body, opening Earth instead', { bodyId });
-      body = resolveInteriorBody(SPIKE_DEFAULT_BODY)!;
+      body = resolveInteriorBody(INTERIOR_DEFAULT_BODY)!;
     }
     const generation = ++this.generation;
     this.loading = true;
     this.body = body;
-    this.model = spikeModelFor(body.id, body.radiusKm);
+    this.coverage = coverageFor(body.id);
+    const model = defaultModelFor(body.id);
+    this.drawn = model
+      ? drawnFromModel(model)
+      : drawnUnresolved(body.id, body.radiusKm, unresolvedComposition(this.coverage));
     this.remap = null; // the new model's boundaries go out on the next frame
     this.renderPanel();
     this.interiorScene.setPose(body, this.utcMs);
@@ -458,25 +494,29 @@ export class InteriorMode {
       name.textContent = display.charAt(0).toUpperCase() + display.slice(1);
     }
     const caption = document.getElementById('interior-caption');
-    if (caption) caption.textContent = `Provisional model · radius ${formatKm(this.model.referenceRadiusKm)} km`;
+    if (caption) caption.textContent = captionFor(this.coverage, this.drawn);
+    const coverageNote = document.getElementById('interior-coverage-note');
+    if (coverageNote) {
+      // The bulk line, only when nothing is drawn: what the density says.
+      const bulk = this.drawn.model === null ? coverageBulk(this.coverage) : null;
+      coverageNote.textContent = bulk ? bulk.note : '';
+      coverageNote.style.display = bulk ? '' : 'none';
+    }
     const legend = document.getElementById('interior-legend');
     if (legend) {
       legend.replaceChildren();
-      let innerKm = 0;
-      const regions = this.model.regions;
       const art = this.regionArt();
-      for (let index = 0; index < regions.length; index++) {
-        const region = regions[index];
-        const next = regions[index + 1];
-        innerKm = next ? next.outerRadiusKm : 0;
-        const depthTop = this.model.referenceRadiusKm - region.outerRadiusKm;
-        const depthBottom = this.model.referenceRadiusKm - innerKm;
+      // The legend reads outside-in, the way a reader meets the layers.
+      for (let index = this.drawn.regionsInsideOut.length - 1; index >= 0; index--) {
+        const region = this.drawn.regionsInsideOut[index];
+        const depthTop = this.drawn.referenceRadiusKm - region.outerRadiusKm;
+        const depthBottom = this.drawn.referenceRadiusKm - region.innerRadiusKm;
         const row = document.createElement('div');
         row.className = 'interior-row';
         row.dataset.region = region.key;
         const swatch = document.createElement('i');
         swatch.className = 'interior-swatch';
-        const swatchColor = swatchHex(art[index], incandescence(region.temperatureK));
+        const swatchColor = swatchHex(art[index], incandescence(region.temperatureK ?? 0));
         swatch.style.background = `#${swatchColor.toString(16).padStart(6, '0')}`;
         const text = document.createElement('div');
         text.className = 'interior-row-text';
@@ -637,11 +677,26 @@ export class InteriorMode {
     return this.active && !this.loading && this.angleElapsedS >= CUT_ANIMATION_S && this.scaleBlend === this.scaleBlendTarget;
   }
 
+  /** Draw a named model of the current body (a competing alternative, or a
+   *  poorly constrained body's illustrative scenario). The UI switch is phase 2B. */
+  devModel(modelId: string): boolean {
+    if (!this.active || !this.body) return false;
+    const model = modelFor(this.body.id, modelId);
+    if (!model) return false;
+    this.drawn = drawnFromModel(model);
+    this.remap = null;
+    this.renderPanel();
+    return true;
+  }
+
   devState(): InteriorDevState {
-    const fractions = outerFractionsInsideOut(this.model);
-    const regionsInsideOut = this.model.regions.slice().reverse();
+    const fractions = outerFractionsInsideOut(this.drawn);
+    const regionsInsideOut = this.drawn.regionsInsideOut;
     return {
       bodyId: this.body?.id ?? '',
+      modelId: this.drawn.modelId,
+      coverage: this.coverage.state,
+      illustrative: this.drawn.illustrative,
       view: cutViewForAngle(this.angleDeg),
       openingAngleDeg: this.angleDeg,
       targetAngleDeg: this.angleToDeg,

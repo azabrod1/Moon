@@ -1111,7 +1111,7 @@ function installDevHooks() {
     compareSkip: () => volumeCompareMode?.devSkip() ?? false,
     compareEsc: () => volumeCompareMode?.devEsc(),
     compareEndCard: () => volumeCompareMode?.devEndCard() ?? null,
-    // Look-inside bridge (phase-0 spike). interiorOpen routes through the
+    // Look-inside bridge. interiorOpen routes through the
     // Planetarium's real entry gate like compareOpen; the rest delegate to the
     // live instance (null before first entry). interiorReady is true only once
     // the map is applied and the cut has settled, so a capture waits on it.
@@ -1119,6 +1119,7 @@ function installDevHooks() {
     interiorExit: () => interiorMode?.devExit(),
     interiorPick: (bodyId: string) => interiorMode?.devPick(bodyId) ?? false,
     interiorPickerOpen: () => interiorMode?.devPickerOpen() ?? false,
+    interiorModel: (modelId: string) => interiorMode?.devModel(modelId) ?? false,
     interiorEsc: () => interiorMode?.devEsc(),
     interiorView: (view: 'closed' | 'cutaway' | 'section') => interiorMode?.devView(view) ?? false,
     interiorAngle: (deg: number, animate?: boolean) => interiorMode?.devAngle(deg, animate) ?? false,

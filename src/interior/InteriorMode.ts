@@ -67,6 +67,8 @@ import {
 } from './interiorGeometry';
 import { createPickHit, pickInterior, type PickHit, type PickLayout, type PickSurface } from './interiorPick';
 import { renderHoverCard, renderInspector } from './ui/LayerInspector';
+import { DepthRuler } from './ui/DepthRuler';
+import { rulerLayout, rulerSide, type RulerInput } from './ruler';
 import { renderEvidencePopover } from './ui/EvidencePopover';
 import { COVERAGE_BADGE, INTERIOR_DEFAULT_BODY, coverageFor, coverageStateFor, defaultModelFor, modelFor } from './data/interiorRegistry';
 import { coverageModels } from './data/interiorTypes';
@@ -121,6 +123,8 @@ const TAP_MAX_PX = 8;
 const TAP_MAX_MS = 400;
 /** The hover card sits this far from the pointer. */
 const HOVER_CARD_OFFSET_PX = 14;
+/** The ruler is fully drawn once the cut has opened this far. */
+const RULER_FULL_DEG = 40;
 
 export interface InteriorDevRegion {
   key: string;
@@ -229,6 +233,8 @@ export class InteriorMode {
   private displayMode: InteriorDisplayMode = 'composition';
   private temperatureRange: TemperatureRange | null = null;
   private readonly picker: BodyPicker;
+  private readonly ruler = new DepthRuler();
+  private readonly cameraDirection = new THREE.Vector3();
   private utcMs = Date.now();
 
   // The cut.
@@ -359,6 +365,7 @@ export class InteriorMode {
     const ui = document.getElementById('interior-ui');
     if (ui) ui.style.display = 'block';
     this.picker.bind();
+    this.ruler.bind('interior-ruler');
 
     this.interiorScene.setEdgeMode(this.isMultisampled());
     this.interiorScene.setVisible(true);
@@ -398,6 +405,7 @@ export class InteriorMode {
     this.loading = false;
     this.interiorScene.setVisible(false);
     this.picker.close();
+    this.ruler.hide();
     const ui = document.getElementById('interior-ui');
     if (ui) ui.style.display = 'none';
     this.controls.enabled = false;
@@ -455,6 +463,31 @@ export class InteriorMode {
     );
     this.refreshRemapIfNeeded();
     this.advanceEmphasis(dt);
+    this.renderRuler();
+  }
+
+  /** The depth ruler along the near face, through the remap; hidden on phones and while the cut is closed. */
+  private renderRuler(): void {
+    if (isPhoneViewport() || !this.remap || this.angleDeg <= 0.5 || this.loading) {
+      this.ruler.hide();
+      return;
+    }
+    this.cameraDirection.copy(this.camera.position).normalize();
+    const input: RulerInput = {
+      frame: this.frame,
+      side: rulerSide(this.frame, this.cameraDirection),
+      referenceRadiusKm: this.drawn.referenceRadiusKm,
+      remap: this.remap,
+      outerDisplay: this.pickLayout.outerDisplay,
+      regionsInsideOut: this.drawn.regionsInsideOut,
+      annotations: this.drawn.model?.annotations ?? [],
+      terraceStep: TERRACE_STEP,
+    };
+    // The camera's matrices are current from the last render; the projection
+    // is a frame behind at worst, which the eye cannot see.
+    this.camera.updateMatrixWorld();
+    const opacity = Math.min(1, this.angleDeg / RULER_FULL_DEG);
+    this.ruler.render(rulerLayout(input), this.camera, window.innerWidth, window.innerHeight, opacity);
   }
 
   private advanceCut(dt: number): void {

@@ -1927,6 +1927,15 @@
     }
     /* The bulk line for a body drawn as an unresolved whole: what its density says. */
     .interior-coverage-note { margin-top: 8px; font-size: 10.5px; line-height: 1.45; color: var(--t3); }
+    /* The depth ruler overlay. */
+    .interior-ruler { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 17; overflow: visible; }
+    .interior-ruler .ruler-seg { stroke: rgba(255,255,255,0.55); stroke-width: 1; }
+    .interior-ruler .ruler-tick { stroke: rgba(255,255,255,0.7); stroke-width: 1; }
+    .interior-ruler .ruler-tick.minor { stroke: rgba(255,255,255,0.4); }
+    .interior-ruler .ruler-label { font-family: var(--font-mono); font-size: 9.5px; fill: var(--t2); text-anchor: middle; dominant-baseline: middle; paint-order: stroke; stroke: rgba(0,0,0,0.6); stroke-width: 3px; stroke-linejoin: round; }
+    .interior-ruler .ruler-name { font-family: var(--font-ui); font-size: 10.5px; fill: var(--t1); text-anchor: middle; dominant-baseline: middle; paint-order: stroke; stroke: rgba(0,0,0,0.6); stroke-width: 3px; stroke-linejoin: round; }
+    .interior-ruler .ruler-bracket { fill: none; stroke: rgba(255,255,255,0.45); stroke-width: 1; }
+    .interior-ruler .ruler-bracket-name { font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.1em; text-transform: uppercase; fill: var(--t3); text-anchor: middle; dominant-baseline: middle; paint-order: stroke; stroke: rgba(0,0,0,0.6); stroke-width: 3px; stroke-linejoin: round; }
     /* Hover preview beside the pointer. */
     .interior-hover {
       position: fixed; z-index: 19; pointer-events: none; padding: 7px 10px; min-width: 120px;
@@ -2014,6 +2023,7 @@
       .interior-row-detail { display: none; }
       .interior-row-meter { display: none; }
       .interior-hover { display: none !important; }
+      .interior-ruler { display: none !important; }
       .ev-rubric-level { grid-template-columns: 1fr; gap: 1px; padding: 5px 0; }
     }
 
@@ -5096,6 +5106,9 @@
         </label>
         <div class="interior-note" id="interior-readable-note">Thin layers widened so you can see them</div>
       </div>
+
+      <!-- The depth ruler: an SVG overlay posed each frame along the section's near edge; hidden on phones. -->
+      <svg id="interior-ruler" class="interior-ruler" aria-hidden="true" style="display:none"></svg>
 
       <!-- Hover preview: follows the pointer over a region, never receives events. -->
       <div id="interior-hover" class="interior-hover pn" aria-hidden="true" style="display:none"></div>

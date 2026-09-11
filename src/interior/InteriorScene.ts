@@ -1,9 +1,19 @@
 /**
  * The Look-inside studio scene: one body at unit radius, opened by the cut
  * frame. A skin wearing the body's own colour map (borrowed through the same
- * loader the compare studio uses, owned and disposed here), two lit
- * half-disc section faces, a studio key and fill, and a dimmed starfield —
- * everything under one group flipped visible on activate. The body wears
+ * loader the compare studio uses, owned and disposed here), lit section
+ * faces, a studio key and fill, and a dimmed starfield — everything under
+ * one group flipped visible on activate.
+ *
+ * The cut is terraced: each region inward is cut a little narrower than the
+ * one above it (TERRACE_STEP of the opening angle per region), so a wedge
+ * shows the mantle's outer surface as a step around the core, the way a
+ * cutaway illustration does. Per region there is a shell (its outer sphere,
+ * discarded inside its own wedge, dressed in the region's look) and a pair
+ * of half-disc faces at its own angle; the crust's shell is the textured
+ * skin itself. An outer region's face runs to the centre, and its inner
+ * part is hidden inside the next region's solid, so depth does the
+ * terracing — nothing is stitched. The body wears
  * its real pose (IAU pole and spin for planets, the tidal lock for moons)
  * at the planetarium's instant; the light is a studio key that rides with
  * the camera so the section faces are always lit from a three-quarter,
@@ -44,10 +54,13 @@ import {
   type SectionRegionLook,
   type SectionUniforms,
 } from './rendering/sectionMaterial';
-import { createCutFaceBasis, cutFaceBasis, type CutFrame } from './cutFrame';
+import { createCutFaceBasis, createCutFrame, cutFaceBasis, type CutFrame } from './cutFrame';
+import { MAX_REGIONS } from './rendering/sectionMaterial';
 
 /** The body's radius in studio units; every framing number is relative to it. */
 export const BODY_RADIUS = 1;
+/** Each region inward opens this fraction of the angle less than the one above. */
+export const TERRACE_STEP = 0.11;
 
 // --- lighting --------------------------------------------------------------
 // The compare studio's key, but camera-relative: expressed in the camera's
@@ -58,16 +71,46 @@ export const BODY_RADIUS = 1;
 const KEY_LIGHT_CAMERA_DIR = new THREE.Vector3(-0.6, 0.5, 0.65).normalize();
 const KEY_LIGHT_DISTANCE = 6;
 const KEY_LIGHT_COLOR = 0xffe8c8;
-const KEY_LIGHT_INTENSITY = 5.5;
+const KEY_LIGHT_INTENSITY = 4.5;
 const FILL_SKY_COLOR = 0xaeb6c6;
 const FILL_GROUND_COLOR = 0x2a2622;
-const FILL_HEMI_INTENSITY = 1.5;
+const FILL_HEMI_INTENSITY = 2.0;
 // The skin's night side takes the planetshine channel as a faint studio
 // fill, the compare fillers' idiom, so the unlit limb reads as a dim world.
 const FILL_SHINE_COLOR = 0x9aa4b8;
 const FILL_SHINE_DIR = new THREE.Vector3(0.4, 0.2, 1).normalize();
 const FILL_SHINE_INTENSITY = 1.2;
 const STARFIELD_DIM = 0.45;
+// The studio the section faces reflect: a black stage with one large warm
+// softbox upper-left of the viewer and a small cool panel low on the right,
+// prefiltered once per session and turned with the camera each frame so the
+// sheen sits where the key does. A liquid-iron core or a metallic-hydrogen
+// layer reads as metal only with something structured to mirror — a grey
+// room gives a dull blur and a flat diffuse wash that hides the key's
+// direction. Without float targets the environment cannot be prefiltered
+// and the faces fall back to a matte look (lustre off).
+const FACE_ENV_INTENSITY = 1.0;
+// The softbox sits high: a face square to the camera mirrors what is behind
+// the viewer, and a bright panel there is a flat blast with a bloom halo,
+// not a sheen. High and to the left, the roughness lobe catches its edge
+// and the reflection is a gradient across the face, which is the sheen.
+const STUDIO_SOFTBOX_COLOR = new THREE.Color(1.0, 0.93, 0.82).multiplyScalar(1.1);
+const STUDIO_RIM_COLOR = new THREE.Color(0.55, 0.68, 1.0).multiplyScalar(0.8);
+const STUDIO_FLOOR_COLOR = new THREE.Color(0.15, 0.14, 0.12);
+
+function buildStudioEnvironment(): THREE.Scene {
+  const studio = new THREE.Scene();
+  const panel = (width: number, height: number, color: THREE.Color, position: THREE.Vector3) => {
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(width, height), new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide }));
+    mesh.position.copy(position);
+    mesh.lookAt(0, 0, 0);
+    studio.add(mesh);
+  };
+  panel(7, 5, STUDIO_SOFTBOX_COLOR, new THREE.Vector3(-3, 5.5, 3));
+  panel(3, 6, STUDIO_RIM_COLOR, new THREE.Vector3(6, -1.5, -3));
+  panel(24, 24, STUDIO_FLOOR_COLOR, new THREE.Vector3(0, -7, 0));
+  return studio;
+}
 
 const PLANET_BY_NAME = new Map<string, PlanetData>(PLANETS.map((planet) => [planet.name, planet]));
 const MOON_BY_NAME = new Map<string, MoonData>(MOONS.map((moon) => [moon.name, moon]));
@@ -92,9 +135,11 @@ const tmpNormal = new THREE.Vector3();
 const tmpRollNorth = new THREE.Vector3();
 const tmpBasis = new THREE.Matrix4();
 const tmpFace = createCutFaceBasis();
+const tmpTerraceFrame = createCutFrame();
 const tmpRight = new THREE.Vector3();
 const tmpUp = new THREE.Vector3();
 const tmpBack = new THREE.Vector3();
+const tmpEnvQuaternion = new THREE.Quaternion();
 
 export class InteriorScene {
   private readonly scene: THREE.Scene;
@@ -111,16 +156,23 @@ export class InteriorScene {
   private readonly sectionUniforms: SectionUniforms;
   private readonly faceGeometry: THREE.CircleGeometry;
   private readonly faceMaterial: THREE.MeshStandardMaterial;
-  private readonly faceA: THREE.Mesh;
-  private readonly faceB: THREE.Mesh;
+  /** Face pairs per region, inside-out; [count-1] is the crust's, at the full angle. */
+  private readonly regionFaces: { a: THREE.Mesh; b: THREE.Mesh }[] = [];
+  private readonly shellGeometry: THREE.SphereGeometry;
+  /** Terrace shells per region, inside-out; the crust has none (the skin is its shell). */
+  private readonly regionShells: { mesh: THREE.Mesh; material: THREE.MeshStandardMaterial; cut: SkinCutUniforms; region: { value: number } }[] = [];
+  private regionCount = 1;
   private readonly keyDirection = new THREE.Vector3(0, 0, 1);
   private readonly worldToBody = new THREE.Matrix3();
   private capsCaptured = false;
   private multisampled = true;
+  private readonly floatCapable: boolean;
+  private environment: THREE.Texture | null = null;
 
-  constructor(scene: THREE.Scene, renderer: THREE.WebGLRenderer) {
+  constructor(scene: THREE.Scene, renderer: THREE.WebGLRenderer, floatCapable: boolean) {
     this.scene = scene;
     this.renderer = renderer;
+    this.floatCapable = floatCapable;
     this.group = new THREE.Group();
     this.group.name = 'InteriorRoot';
     this.group.visible = false;
@@ -152,13 +204,33 @@ export class InteriorScene {
     // The cut-frame face basis (radial, up, normal) is right-handed and maps
     // onto this geometry's (X, Y, Z) without a mirror.
     this.faceGeometry = new THREE.CircleGeometry(BODY_RADIUS, 160, -Math.PI / 2, Math.PI);
-    this.faceA = new THREE.Mesh(this.faceGeometry, this.faceMaterial);
-    this.faceB = new THREE.Mesh(this.faceGeometry, this.faceMaterial);
-    this.faceA.name = 'InteriorFaceA';
-    this.faceB.name = 'InteriorFaceB';
-    this.faceA.visible = false;
-    this.faceB.visible = false;
-    this.group.add(this.faceA, this.faceB);
+    this.shellGeometry = new THREE.SphereGeometry(BODY_RADIUS, 128, 64);
+    for (let index = 0; index < MAX_REGIONS; index++) {
+      const a = new THREE.Mesh(this.faceGeometry, this.faceMaterial);
+      const b = new THREE.Mesh(this.faceGeometry, this.faceMaterial);
+      a.name = `InteriorFaceA${index}`;
+      b.name = `InteriorFaceB${index}`;
+      a.visible = false;
+      b.visible = false;
+      this.group.add(a, b);
+      this.regionFaces.push({ a, b });
+      // One shell material per region: its own region index and cut angle,
+      // one shared program (the shader text is identical).
+      const region = { value: index };
+      const cut: SkinCutUniforms = {
+        uCutView: this.cutUniforms.uCutView,
+        uCutSide: this.cutUniforms.uCutSide,
+        uCutHalfAngle: { value: 0 },
+        uCutFeather: this.cutUniforms.uCutFeather,
+      };
+      const material = createSectionMaterial(this.sectionUniforms, { shellRegion: region });
+      applySkinCut(material, cut);
+      const mesh = new THREE.Mesh(this.shellGeometry, material);
+      mesh.name = `InteriorShell${index}`;
+      mesh.visible = false;
+      this.group.add(mesh);
+      this.regionShells.push({ mesh, material, cut, region });
+    }
 
     scene.add(this.group);
   }
@@ -171,6 +243,7 @@ export class InteriorScene {
   setEdgeMode(multisampled: boolean): void {
     this.multisampled = multisampled;
     if (this.skinMaterial) configureSkinCutEdge(this.skinMaterial, multisampled);
+    for (const shell of this.regionShells) configureSkinCutEdge(shell.material, multisampled);
   }
 
   /**
@@ -183,6 +256,7 @@ export class InteriorScene {
       captureDeviceCaps(this.renderer, profileForDevice(readDeviceSignals(this.renderer.getContext())));
       this.capsCaptured = true;
     }
+    this.ensureEnvironment();
     const texture = await this.loadBodyColor(body);
     if (isStale()) {
       texture.dispose();
@@ -229,7 +303,40 @@ export class InteriorScene {
 
   /** The region looks, inside-out, with their boundaries already remapped to display space. */
   applyRegions(regionsInsideOut: readonly SectionRegionLook[]): void {
-    writeSectionRegions(this.sectionUniforms, regionsInsideOut);
+    writeSectionRegions(this.sectionUniforms, regionsInsideOut, this.floatCapable);
+    this.regionCount = Math.max(1, Math.min(regionsInsideOut.length, MAX_REGIONS));
+    for (let index = 0; index < MAX_REGIONS; index++) {
+      const radius = index < this.regionCount ? regionsInsideOut[index].outerDisplay : 0;
+      const faces = this.regionFaces[index];
+      faces.a.scale.setScalar(Math.max(radius, 1e-4));
+      faces.b.scale.setScalar(Math.max(radius, 1e-4));
+      this.regionShells[index].mesh.scale.setScalar(Math.max(radius, 1e-4));
+    }
+  }
+
+  /** Prefilter the studio environment once and hand it to the faces. Under
+   *  the mode-transition veil on first entry, like the first shader compile. */
+  private ensureEnvironment(): void {
+    if (this.environment || !this.floatCapable) return;
+    const generator = new THREE.PMREMGenerator(this.renderer);
+    const studio = buildStudioEnvironment();
+    this.environment = generator.fromScene(studio, 0.05).texture;
+    generator.dispose();
+    for (const shell of this.regionShells) {
+      shell.material.envMap = this.environment;
+      shell.material.envMapIntensity = FACE_ENV_INTENSITY;
+      shell.material.needsUpdate = true;
+    }
+    studio.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (mesh.isMesh) {
+        mesh.geometry.dispose();
+        (mesh.material as THREE.Material).dispose();
+      }
+    });
+    this.faceMaterial.envMap = this.environment;
+    this.faceMaterial.envMapIntensity = FACE_ENV_INTENSITY;
+    this.faceMaterial.needsUpdate = true;
   }
 
   /**
@@ -248,28 +355,53 @@ export class InteriorScene {
     } else {
       quaternion.identity();
     }
+    for (const shell of this.regionShells) shell.mesh.quaternion.copy(quaternion);
     tmpBasis.makeRotationFromQuaternion(quaternion).invert();
     this.worldToBody.setFromMatrix4(tmpBasis);
     this.sectionUniforms.uWorldToBody.value.copy(this.worldToBody);
   }
 
-  /** Point the faces and the skin's discard at the frame; hides the faces when closed. */
+  /**
+   * Point every region's faces and shell at the frame, terraced: the crust
+   * (the outermost region) opens by the full angle, each region inward by
+   * TERRACE_STEP less. Faces hide when their region is closed.
+   */
   applyCut(frame: CutFrame): void {
     this.cutUniforms.uCutView.value.copy(frame.view);
     this.cutUniforms.uCutSide.value.copy(frame.side);
     this.cutUniforms.uCutHalfAngle.value = frame.openingAngle * 0.5;
     // The corner where the faces meet is a crease; a Section has none.
     this.sectionUniforms.uCorner.value = 1 - frame.openingAngle / Math.PI;
-    const open = frame.openingAngle > 1e-4;
-    this.faceA.visible = open;
-    this.faceB.visible = open;
-    if (!open) return;
-    const faceA = cutFaceBasis(frame, 'a', tmpFace);
-    tmpBasis.makeBasis(faceA.radial, faceA.up, faceA.normal);
-    this.faceA.quaternion.setFromRotationMatrix(tmpBasis);
-    const faceB = cutFaceBasis(frame, 'b', tmpFace);
-    tmpBasis.makeBasis(faceB.radial, faceB.up, faceB.normal);
-    this.faceB.quaternion.setFromRotationMatrix(tmpBasis);
+    tmpTerraceFrame.view.copy(frame.view);
+    tmpTerraceFrame.side.copy(frame.side);
+    tmpTerraceFrame.hinge.copy(frame.hinge);
+    const count = this.regionCount;
+    for (let index = 0; index < MAX_REGIONS; index++) {
+      const faces = this.regionFaces[index];
+      const shell = this.regionShells[index];
+      const isCrust = index === count - 1;
+      if (index >= count) {
+        faces.a.visible = false;
+        faces.b.visible = false;
+        shell.mesh.visible = false;
+        continue;
+      }
+      const stepsInward = count - 1 - index;
+      const angle = Math.max(0, frame.openingAngle * (1 - stepsInward * TERRACE_STEP));
+      shell.cut.uCutHalfAngle.value = angle * 0.5;
+      shell.mesh.visible = !isCrust; // the skin is the crust's shell
+      const open = angle > 1e-4;
+      faces.a.visible = open;
+      faces.b.visible = open;
+      if (!open) continue;
+      tmpTerraceFrame.openingAngle = angle;
+      const faceA = cutFaceBasis(tmpTerraceFrame, 'a', tmpFace);
+      tmpBasis.makeBasis(faceA.radial, faceA.up, faceA.normal);
+      faces.a.quaternion.setFromRotationMatrix(tmpBasis);
+      const faceB = cutFaceBasis(tmpTerraceFrame, 'b', tmpFace);
+      tmpBasis.makeBasis(faceB.radial, faceB.up, faceB.normal);
+      faces.b.quaternion.setFromRotationMatrix(tmpBasis);
+    }
   }
 
   setPresentationTime(seconds: number): void {
@@ -304,6 +436,11 @@ export class InteriorScene {
       .normalize();
     this.keyLight.position.copy(this.keyDirection).multiplyScalar(KEY_LIGHT_DISTANCE);
     this.skinFx?.uSunDirWorld.value.copy(this.keyDirection);
+    // The studio turns with the camera: the lookup is rotated by the inverse,
+    // so the softbox stays upper-left of whoever is looking.
+    tmpEnvQuaternion.copy(camera.quaternion).invert();
+    this.faceMaterial.envMapRotation.setFromQuaternion(tmpEnvQuaternion);
+    for (const shell of this.regionShells) shell.material.envMapRotation.setFromQuaternion(tmpEnvQuaternion);
   }
 
   onResize(): void {
@@ -324,8 +461,16 @@ export class InteriorScene {
 
   dispose(): void {
     this.releaseBodyResources();
+    this.faceMaterial.envMap = null;
+    for (const shell of this.regionShells) {
+      shell.material.envMap = null;
+      shell.material.dispose();
+    }
+    this.environment?.dispose();
+    this.environment = null;
     this.scene.remove(this.group);
     this.skinGeometry.dispose();
+    this.shellGeometry.dispose();
     this.faceGeometry.dispose();
     this.faceMaterial.dispose();
     this.starfield.geometry.dispose();

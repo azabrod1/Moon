@@ -799,10 +799,10 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
 
       camera = interiorCamera;
       applyRenderResolution();
-      buildComposer(interiorCamera, { strength: 0.55, threshold: 0.95 });
+      buildComposer(interiorCamera, { strength: 0.6, threshold: 0.95 });
 
       if (!interiorMode) {
-        interiorMode = new interiorModule!.InteriorMode(scene, interiorCamera, renderer, sceneDrawMultisampled);
+        interiorMode = new interiorModule!.InteriorMode(scene, interiorCamera, renderer, useBloom, sceneDrawMultisampled);
         interiorMode.onExit(() => {
           void switchAppMode('planetarium');
         });

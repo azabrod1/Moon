@@ -48,7 +48,7 @@ import {
   type ReadableRemap,
 } from './interiorGeometry';
 import { SPIKE_DEFAULT_BODY, outerFractionsInsideOut, spikeModelFor, type SpikeModel } from './data/spikeModels';
-import { artParamsFor } from './data/artParams';
+import { artParamsFor, depthTint, incandescence, swatchHex, type ArtParams } from './data/artParams';
 import type { SectionRegionLook } from './rendering/sectionMaterial';
 
 const FRAMING = {
@@ -162,11 +162,12 @@ export class InteriorMode {
     scene: THREE.Scene,
     camera: THREE.PerspectiveCamera,
     renderer: THREE.WebGLRenderer,
+    floatCapable: boolean,
     isMultisampled: () => boolean,
   ) {
     this.camera = camera;
     this.isMultisampled = isMultisampled;
-    this.interiorScene = new InteriorScene(scene, renderer);
+    this.interiorScene = new InteriorScene(scene, renderer, floatCapable);
 
     this.controls = new OrbitControls(camera, renderer.domElement);
     this.controls.enabled = false;
@@ -316,13 +317,36 @@ export class InteriorMode {
     this.remapPx = this.projectedPx;
     this.remapBlend = this.scaleBlend;
     const fractions = outerFractionsInsideOut(this.model);
-    this.remap = readableRemap(fractions, minDisplayFraction(READABLE_MIN_PX, this.projectedPx), this.scaleBlend);
+    const remap = readableRemap(fractions, minDisplayFraction(READABLE_MIN_PX, this.projectedPx), this.scaleBlend);
+    this.remap = remap;
     const regionsInsideOut = this.model.regions.slice().reverse();
-    const looks: SectionRegionLook[] = regionsInsideOut.map((region, index) => ({
-      outerDisplay: toDisplayFraction(this.remap!, fractions[index]),
-      art: artParamsFor(region.family, region.phase, region.glow),
-    }));
+    const artInsideOut = this.regionArt().reverse();
+    const looks: SectionRegionLook[] = regionsInsideOut.map((region, index) => {
+      // A physical transition's width, through the same remap as its boundary.
+      const halfPhysical = (region.transitionKm ?? 0) / (2 * this.model.referenceRadiusKm);
+      const blendDisplay = halfPhysical > 0
+        ? (toDisplayFraction(remap, fractions[index] + halfPhysical) - toDisplayFraction(remap, fractions[index] - halfPhysical)) / 2
+        : 0;
+      return {
+        outerDisplay: toDisplayFraction(remap, fractions[index]),
+        blendDisplay,
+        art: artInsideOut[index],
+        heat: incandescence(region.temperatureK),
+      };
+    });
     this.interiorScene.applyRegions(looks);
+  }
+
+  /** Each region's look, OUTSIDE-IN like the model, with the family depth
+   *  tint applied — the one place the legend and the faces get their colours. */
+  private regionArt(): ArtParams[] {
+    const regions = this.model.regions;
+    const reference = this.model.referenceRadiusKm;
+    return regions.map((region, index) => {
+      const innerKm = regions[index + 1]?.outerRadiusKm ?? 0;
+      const depthMidFraction = 1 - (region.outerRadiusKm + innerKm) / (2 * reference);
+      return depthTint(artParamsFor(region.family, region.phase, region.glow), region.family, depthMidFraction);
+    });
   }
 
   // ---- the cut and the scale ----------------------------------------------
@@ -404,6 +428,7 @@ export class InteriorMode {
       legend.replaceChildren();
       let innerKm = 0;
       const regions = this.model.regions;
+      const art = this.regionArt();
       for (let index = 0; index < regions.length; index++) {
         const region = regions[index];
         const next = regions[index + 1];
@@ -415,8 +440,8 @@ export class InteriorMode {
         row.dataset.region = region.key;
         const swatch = document.createElement('i');
         swatch.className = 'interior-swatch';
-        const art = artParamsFor(region.family, region.phase, region.glow);
-        swatch.style.background = `#${art.colorA.toString(16).padStart(6, '0')}`;
+        const swatchColor = swatchHex(art[index], incandescence(region.temperatureK));
+        swatch.style.background = `#${swatchColor.toString(16).padStart(6, '0')}`;
         const text = document.createElement('div');
         text.className = 'interior-row-text';
         const title = document.createElement('div');

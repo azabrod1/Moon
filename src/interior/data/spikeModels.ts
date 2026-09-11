@@ -21,8 +21,16 @@ export interface SpikeRegion {
   outerRadiusKm: number;
   /** One line for the legend row. */
   composition: string;
-  /** Presentation override: draw the region hot. Art, not a temperature. */
+  /** Representative temperature, K, PROVISIONAL like everything here. The
+   *  face's incandescence is computed from it (artParams.incandescence), so
+   *  a hot mantle glows dull red and a core white-yellow, honestly. */
+  temperatureK: number;
+  /** Presentation override: extra glow on top of the incandescence. */
   glow?: number;
+  /** Width, km, of the physical transition at this region's OUTER boundary
+   *  (into the region above): a gradual change of state is drawn as a blend
+   *  over its width rather than a line. Absent means sharp. */
+  transitionKm?: number;
 }
 
 export interface SpikeModel {
@@ -36,39 +44,39 @@ export const SPIKE_MODELS: Readonly<Record<string, SpikeModel>> = {
     bodyId: 'Earth',
     referenceRadiusKm: 6371,
     regions: [
-      { key: 'crust', name: 'Crust', family: 'rock', phase: 'solid', outerRadiusKm: 6371, composition: 'Granitic and basaltic rock', glow: 0 },
-      { key: 'upperMantle', name: 'Upper mantle', family: 'rock', phase: 'solid', outerRadiusKm: 6336, composition: 'Peridotite, olivine and pyroxene', glow: 0.04 },
-      { key: 'lowerMantle', name: 'Lower mantle', family: 'rock', phase: 'solid', outerRadiusKm: 5711, composition: 'Bridgmanite and ferropericlase', glow: 0.06 },
-      { key: 'outerCore', name: 'Outer core', family: 'metal', phase: 'liquid', outerRadiusKm: 3480, composition: 'Liquid iron and nickel with light elements' },
-      { key: 'innerCore', name: 'Inner core', family: 'metal', phase: 'solid', outerRadiusKm: 1221, composition: 'Solid iron and nickel' },
+      { key: 'crust', name: 'Crust', family: 'rock', phase: 'solid', outerRadiusKm: 6371, temperatureK: 600, composition: 'Granitic and basaltic rock', glow: 0 },
+      { key: 'upperMantle', name: 'Upper mantle', family: 'rock', phase: 'solid', outerRadiusKm: 6336, temperatureK: 1500, composition: 'Peridotite, olivine and pyroxene' },
+      { key: 'lowerMantle', name: 'Lower mantle', family: 'rock', phase: 'solid', outerRadiusKm: 5711, temperatureK: 2600, composition: 'Bridgmanite and ferropericlase' },
+      { key: 'outerCore', name: 'Outer core', family: 'metal', phase: 'liquid', outerRadiusKm: 3480, temperatureK: 4500, composition: 'Liquid iron and nickel with light elements' },
+      { key: 'innerCore', name: 'Inner core', family: 'metal', phase: 'solid', outerRadiusKm: 1221, temperatureK: 5500, composition: 'Solid iron and nickel' },
     ],
   },
   Europa: {
     bodyId: 'Europa',
     referenceRadiusKm: 1560.8,
     regions: [
-      { key: 'iceShell', name: 'Ice shell', family: 'ice', phase: 'solid', outerRadiusKm: 1560.8, composition: 'Water ice' },
-      { key: 'ocean', name: 'Ocean', family: 'water', phase: 'liquid', outerRadiusKm: 1540, composition: 'Salty liquid water' },
-      { key: 'mantle', name: 'Rocky mantle', family: 'rock', phase: 'solid', outerRadiusKm: 1440, composition: 'Silicate rock', glow: 0 },
-      { key: 'core', name: 'Metallic core', family: 'metal', phase: 'solid', outerRadiusKm: 500, composition: 'Iron and iron sulphide, size poorly constrained', glow: 0.14 },
+      { key: 'iceShell', name: 'Ice shell', family: 'ice', phase: 'solid', outerRadiusKm: 1560.8, temperatureK: 180, composition: 'Water ice' },
+      { key: 'ocean', name: 'Ocean', family: 'water', phase: 'liquid', outerRadiusKm: 1540, temperatureK: 273, composition: 'Salty liquid water' },
+      { key: 'mantle', name: 'Rocky mantle', family: 'rock', phase: 'solid', outerRadiusKm: 1440, temperatureK: 1300, composition: 'Silicate rock' },
+      { key: 'core', name: 'Metallic core', family: 'metal', phase: 'solid', outerRadiusKm: 500, temperatureK: 1800, composition: 'Iron and iron sulphide, size poorly constrained' },
     ],
   },
   Jupiter: {
     bodyId: 'Jupiter',
     referenceRadiusKm: 69_911,
     regions: [
-      { key: 'atmosphere', name: 'Outer atmosphere', family: 'hydrogen', phase: 'gas', outerRadiusKm: 69_911, composition: 'Hydrogen and helium with ammonia clouds' },
-      { key: 'molecularEnvelope', name: 'Molecular hydrogen envelope', family: 'hydrogen', phase: 'supercritical', outerRadiusKm: 69_000, composition: 'Supercritical hydrogen and helium' },
-      { key: 'metallicHydrogen', name: 'Metallic hydrogen', family: 'metallicHydrogen', phase: 'liquid', outerRadiusKm: 59_000, composition: 'Liquid metallic hydrogen', glow: 0.08 },
-      { key: 'diluteCore', name: 'Dilute core', family: 'mixed', phase: 'mixed', outerRadiusKm: 31_500, composition: 'Rock and ice mixed into hydrogen, no sharp boundary', glow: 0.12 },
+      { key: 'atmosphere', name: 'Outer atmosphere', family: 'hydrogen', phase: 'gas', outerRadiusKm: 69_911, temperatureK: 300, composition: 'Hydrogen and helium with ammonia clouds' },
+      { key: 'molecularEnvelope', name: 'Molecular hydrogen envelope', family: 'hydrogen', phase: 'supercritical', outerRadiusKm: 69_000, temperatureK: 3000, composition: 'Supercritical hydrogen and helium' },
+      { key: 'metallicHydrogen', name: 'Metallic hydrogen', family: 'metallicHydrogen', phase: 'liquid', outerRadiusKm: 59_000, temperatureK: 11_000, composition: 'Liquid metallic hydrogen', transitionKm: 3500 },
+      { key: 'diluteCore', name: 'Dilute core', family: 'mixed', phase: 'mixed', outerRadiusKm: 31_500, temperatureK: 20_000, composition: 'Rock and ice mixed into hydrogen, no sharp boundary', transitionKm: 9000 },
     ],
   },
   Phobos: {
     bodyId: 'Phobos',
     referenceRadiusKm: 11.3,
     regions: [
-      { key: 'regolith', name: 'Regolith', family: 'mixed', phase: 'solid', outerRadiusKm: 11.3, composition: 'Loose dust and rubble, about 100 m deep' },
-      { key: 'interior', name: 'Fractured interior', family: 'unresolved', phase: 'solid', outerRadiusKm: 11.2, composition: 'Porous rock, roughly a third empty space; composition unresolved' },
+      { key: 'regolith', name: 'Regolith', family: 'mixed', phase: 'solid', outerRadiusKm: 11.3, temperatureK: 240, composition: 'Loose dust and rubble, about 100 m deep' },
+      { key: 'interior', name: 'Fractured interior', family: 'unresolved', phase: 'solid', outerRadiusKm: 11.2, temperatureK: 230, composition: 'Porous rock, roughly a third empty space; composition unresolved' },
     ],
   },
 };

@@ -278,9 +278,14 @@ async function pathCases(context, viewport) {
 try {
   for (const viewport of VIEWPORTS) {
     const context = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height }, deviceScaleFactor: 1 });
+    // A clean boot per page: the saved journey lives in localStorage AND the
+    // store's IndexedDB, and a page that finds one asks whether to resume —
+    // a prompt the ?auto= entry waits on, which is a hang in a battery.
     await context.addInitScript(() => {
       try {
         localStorage.clear();
+        sessionStorage.clear();
+        indexedDB.deleteDatabase('orbital-sim-storage');
         localStorage.setItem('planetarium-help-seen', '1');
         localStorage.setItem('planetarium-surface-hint-seen', '1');
       } catch {}

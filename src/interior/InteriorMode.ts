@@ -102,6 +102,10 @@ const FRAMING = {
 
 /** The cut opens and closes over this long, on an ease-in-out. */
 const CUT_ANIMATION_S = 0.9;
+/** A body swap cross-fades the skin over this long, behind the closed cut. */
+const SWAP_FADE_S = 0.45;
+/** The reveal's exterior ghost starts this opaque and clears as the cut opens. */
+const GHOST_OPACITY = 0.32;
 /** The wedge is turned this far off the view axis, so the viewer looks at
  *  its near face and along its terraces rather than straight into the crease. */
 const WEDGE_YAW_DEG = 22;
@@ -233,6 +237,8 @@ export class InteriorMode {
   private angleFromDeg = 0;
   private angleToDeg = CUT_VIEW_ANGLE_DEG.cutaway;
   private angleElapsedS = CUT_ANIMATION_S;
+  /** The opening the viewer chose: what a swap reopens to, whatever a close in flight targets. */
+  private chosenDeg = CUT_VIEW_ANGLE_DEG.cutaway;
 
   // The Readable scale.
   private readable = true;
@@ -260,6 +266,9 @@ export class InteriorMode {
   private evidenceClaim = -1;
   private tapStart: { x: number; y: number; t: number } | null = null;
   private readonly reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  /** The cut is opening onto a freshly presented body: the ghost lingers over the opening. */
+  private revealing = false;
+  private cutSettledResolvers: (() => void)[] = [];
 
   private readonly fpsSamples: number[] = [];
   private topBarPrevDisplay: string | null = null;
@@ -366,13 +375,21 @@ export class InteriorMode {
     this.frozen = false;
 
     this.frameInitial();
+    this.interiorScene.setMotionScale(this.reducedMotion.matches ? 0 : 1);
     // Open closed, then swing to the default view once the map is on: the
     // reveal. Phones open on Section, the view that reads at a small size.
     this.angleDeg = 0;
-    this.setTargetAngle(0, false);
+    this.setTargetAngle(0, false, false);
     await this.commitBody(bodyId);
     if (!this.active) return;
-    this.setTargetAngle(CUT_VIEW_ANGLE_DEG[isPhoneViewport() ? 'section' : 'cutaway'], true);
+    this.reveal(CUT_VIEW_ANGLE_DEG[isPhoneViewport() ? 'section' : 'cutaway']);
+  }
+
+  /** Open the cut onto a freshly presented body, the exterior ghost lingering over the opening. */
+  private reveal(toDeg: number): void {
+    const animate = !this.reducedMotion.matches;
+    this.revealing = animate;
+    this.setTargetAngle(toDeg, animate);
   }
 
   deactivate(): void {
@@ -419,6 +436,7 @@ export class InteriorMode {
 
     this.advanceCut(dt);
     this.advanceScale(dt);
+    this.interiorScene.advance(dt);
     this.controls.update();
 
     // The cut frame follows the camera continuously (plan §5): hinge = the
@@ -442,12 +460,35 @@ export class InteriorMode {
   private advanceCut(dt: number): void {
     if (this.angleElapsedS >= CUT_ANIMATION_S) {
       this.angleDeg = this.angleToDeg;
+      this.settleCut();
       return;
     }
     this.angleElapsedS = Math.min(CUT_ANIMATION_S, this.angleElapsedS + dt);
     const t = easeInOutCubic(this.angleElapsedS / CUT_ANIMATION_S);
     this.angleDeg = this.angleFromDeg + (this.angleToDeg - this.angleFromDeg) * t;
+    // The reveal's ghost: the removed skin lingers, translucent, and clears as the cut opens.
+    if (this.revealing) this.interiorScene.setGhost(GHOST_OPACITY * (1 - t));
     this.syncAngleReadout();
+    if (this.angleElapsedS >= CUT_ANIMATION_S) this.settleCut();
+  }
+
+  /** The cut animation has landed: the ghost clears and anyone waiting on the close proceeds. */
+  private settleCut(): void {
+    if (this.revealing) {
+      this.revealing = false;
+      this.interiorScene.setGhost(0);
+    }
+    if (this.cutSettledResolvers.length > 0) {
+      const resolvers = this.cutSettledResolvers;
+      this.cutSettledResolvers = [];
+      for (const resolve of resolvers) resolve();
+    }
+  }
+
+  /** Resolves on the frame the cut animation lands (at once when it is not moving). */
+  private cutSettled(): Promise<void> {
+    if (this.angleElapsedS >= CUT_ANIMATION_S) return Promise.resolve();
+    return new Promise((resolve) => this.cutSettledResolvers.push(resolve));
   }
 
   private advanceScale(dt: number): void {
@@ -516,8 +557,9 @@ export class InteriorMode {
 
   // ---- the cut and the scale ----------------------------------------------
 
-  private setTargetAngle(deg: number, animate: boolean): void {
+  private setTargetAngle(deg: number, animate: boolean, remember = true): void {
     const target = THREE.MathUtils.clamp(deg, 0, MAX_OPENING_ANGLE_DEG);
+    if (remember) this.chosenDeg = target;
     this.angleFromDeg = this.angleDeg;
     this.angleToDeg = target;
     this.angleElapsedS = animate ? 0 : CUT_ANIMATION_S;
@@ -541,6 +583,15 @@ export class InteriorMode {
 
   // ---- body ------------------------------------------------------------------
 
+  /**
+   * Bring a body in. The first body of a session loads under the veil with
+   * the cut closed and is presented at once; a swap is the ceremony of plan
+   * §4: the cut closes over the old body while the new map loads, the skin
+   * cross-fades behind the closed cut once both are done, the panel turns
+   * over, and the cut reopens onto the new body with the exterior ghost.
+   * Nothing half-loaded is ever shown, and a newer pick cancels an older
+   * one at every await.
+   */
   private async commitBody(bodyId: string): Promise<boolean> {
     let body = resolveInteriorBody(bodyId);
     if (!body) {
@@ -548,20 +599,45 @@ export class InteriorMode {
       body = resolveInteriorBody(INTERIOR_DEFAULT_BODY)!;
     }
     const generation = ++this.generation;
+    const stale = () => generation !== this.generation;
+    const animate = !this.reducedMotion.matches;
+    const swap = this.body !== null && this.interiorScene.hasSkin();
+    const reopenDeg = this.chosenDeg;
     this.loading = true;
+    if (swap) {
+      this.revealing = false;
+      this.interiorScene.setGhost(0);
+      this.clearSelection();
+      this.setTargetAngle(0, animate, false); // the ceremony's close is not a chosen view
+    }
+    const prepared = await this.interiorScene.prepareBody(body, stale);
+    if (!prepared || stale()) return false;
+    if (swap) {
+      await this.cutSettled();
+      if (stale()) {
+        prepared.material.dispose();
+        prepared.texture.dispose();
+        return false;
+      }
+    }
+    // The swap moment: the faces and the panel turn over behind the closed cut.
     this.body = body;
     this.coverage = coverageFor(body.id);
     const model = defaultModelFor(body.id);
     this.drawn = model
       ? drawnFromModel(model)
       : drawnUnresolved(body.id, body.radiusKm, unresolvedComposition(this.coverage));
-    this.applyDrawn();
+    this.applyDrawn(true);
     this.interiorScene.setPose(body, this.utcMs);
-    const applied = await this.interiorScene.loadBody(body, () => generation !== this.generation);
-    if (generation !== this.generation) return false;
+    this.interiorScene.presentBody(prepared, swap && animate ? SWAP_FADE_S : 0);
+    if (swap) {
+      await this.interiorScene.fadeDone();
+      if (stale()) return false;
+      this.reveal(reopenDeg);
+    }
     this.loading = false;
-    debugLog('Look inside: body applied', { bodyId: body.id, applied });
-    return applied;
+    debugLog('Look inside: body applied', { bodyId: body.id, swap });
+    return true;
   }
 
   /** Draw a model of the current body (null: the unresolved whole, for a
@@ -580,12 +656,13 @@ export class InteriorMode {
     return true;
   }
 
-  /** A new drawn model: its scale, its boundaries on the next frame, a fresh panel. */
-  private applyDrawn(): void {
+  /** A new drawn model: its scale, its boundaries on the next frame, a fresh panel
+   *  (its rows fading in outside-in when a body is revealed). */
+  private applyDrawn(reveal = false): void {
     this.temperatureRange = bodyTemperatureRange(this.drawn.regionsInsideOut.flatMap((region) => (region.region ? [region.region.temperatureK] : [])));
     this.remap = null; // the new model's boundaries go out on the next frame
     this.clearSelection();
-    this.renderPanel();
+    this.renderPanel(reveal);
   }
 
   private setDisplayMode(mode: InteriorDisplayMode): void {
@@ -618,7 +695,7 @@ export class InteriorMode {
     });
   }
 
-  private renderPanel(): void {
+  private renderPanel(reveal = false): void {
     const body = this.body;
     const name = document.getElementById('interior-body-name');
     if (name && body) {
@@ -639,6 +716,8 @@ export class InteriorMode {
     const legend = document.getElementById('interior-legend');
     if (legend) {
       legend.replaceChildren();
+      // Rows fade in outside-in on a reveal; any other re-render is instant.
+      legend.classList.toggle('reveal', reveal && !this.reducedMotion.matches);
       const art = this.regionArt();
       const scores = this.drawn.regionsInsideOut.map((_, index) => claimScores({ drawn: this.drawn, index, coverage: this.coverage }));
       // The legend reads outside-in, the way a reader meets the layers.
@@ -650,6 +729,7 @@ export class InteriorMode {
         row.className = 'interior-row';
         row.dataset.region = region.key;
         row.dataset.index = String(index);
+        row.style.setProperty('--row', String(this.drawn.regionsInsideOut.length - 1 - index));
         row.tabIndex = 0;
         row.setAttribute('role', 'listitem');
         row.setAttribute('aria-label', `${region.name}: open details`);
@@ -1097,7 +1177,7 @@ export class InteriorMode {
 
   /** True only once the map is applied and the cut has settled. */
   devReady(): boolean {
-    return this.active && !this.loading && this.angleElapsedS >= CUT_ANIMATION_S && this.scaleBlend === this.scaleBlendTarget;
+    return this.active && !this.loading && !this.interiorScene.isFading() && this.angleElapsedS >= CUT_ANIMATION_S && this.scaleBlend === this.scaleBlendTarget;
   }
 
   /** Draw a named model of the current body (a competing alternative, or a

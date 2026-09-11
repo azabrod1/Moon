@@ -196,6 +196,7 @@ export function writeSectionRegions(
   uniforms: SectionUniforms,
   regionsInsideOut: readonly SectionRegionLook[],
   lustre = true,
+  motionScale = 1,
 ): void {
   const count = Math.min(regionsInsideOut.length, MAX_REGIONS);
   uniforms.uCount.value = Math.max(1, count);
@@ -210,7 +211,7 @@ export function writeSectionRegions(
     uniforms.uMetal.value[index] = lustre ? art.metalness : Math.min(art.metalness, 0.25);
     uniforms.uGlow.value[index] = art.glow;
     uniforms.uPattern.value[index] = PATTERN_INDEX[art.pattern];
-    uniforms.uMotion.value[index] = art.motion;
+    uniforms.uMotion.value[index] = art.motion * motionScale;
     uniforms.uScale.value[index] = art.scale;
     uniforms.uRelief.value[index] = art.relief;
     uniforms.uDepthGrad.value[index] = art.depthGradient;

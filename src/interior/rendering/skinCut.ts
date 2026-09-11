@@ -32,6 +32,8 @@ export interface SkinCutUniforms {
   uCutHalfAngle: { value: number };
   /** 1 feathers the edge with fwidth, 0 is a hard step. */
   uCutFeather: { value: number };
+  /** 1 keeps only the wedge instead of removing it: the reveal's exterior ghost. */
+  uCutInvert: { value: number };
 }
 
 export function createSkinCutUniforms(): SkinCutUniforms {
@@ -40,6 +42,7 @@ export function createSkinCutUniforms(): SkinCutUniforms {
     uCutSide: { value: new THREE.Vector3(1, 0, 0) },
     uCutHalfAngle: { value: 0 },
     uCutFeather: { value: 1 },
+    uCutInvert: { value: 0 },
   };
 }
 
@@ -57,15 +60,16 @@ uniform vec3 uCutView;
 uniform vec3 uCutSide;
 uniform float uCutHalfAngle;
 uniform float uCutFeather;
+uniform float uCutInvert;
 `;
 
 /** Runs at the top of main: the removed fragments never reach the lighting. */
 const CUT_FRAGMENT = /* glsl */ `
 float interiorCutCoverage = 1.0;
-if (uCutHalfAngle > 0.0) {
+if (uCutHalfAngle > 0.0 || uCutInvert > 0.5) {
   vec3 cutDirection = normalize(vInteriorCutWorld);
   float cutAngle = atan(abs(dot(cutDirection, uCutSide)), dot(cutDirection, uCutView));
-  float cutSigned = cutAngle - uCutHalfAngle;
+  float cutSigned = (cutAngle - uCutHalfAngle) * (1.0 - 2.0 * uCutInvert);
   float cutWidth = max(fwidth(cutSigned), 1e-5);
   interiorCutCoverage = uCutFeather > 0.5
     ? clamp(cutSigned / cutWidth + 0.5, 0.0, 1.0)
@@ -92,6 +96,7 @@ export function applySkinCut(material: THREE.MeshStandardMaterial, uniforms: Ski
     shader.uniforms.uCutSide = uniforms.uCutSide;
     shader.uniforms.uCutHalfAngle = uniforms.uCutHalfAngle;
     shader.uniforms.uCutFeather = uniforms.uCutFeather;
+    shader.uniforms.uCutInvert = uniforms.uCutInvert;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>\n${CUT_PARS_VERTEX}`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>\n${CUT_VERTEX}`);

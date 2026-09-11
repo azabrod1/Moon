@@ -1895,6 +1895,10 @@
       border-radius: var(--r-s); cursor: pointer; -webkit-tap-highlight-color: transparent;
       transition: background 0.14s var(--ease);
     }
+    /* A revealed body's rows arrive outside-in. */
+    @keyframes interior-row-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    .interior-legend.reveal .interior-row { animation: interior-row-in 320ms var(--ease) both; animation-delay: calc(var(--row, 0) * 55ms); }
+    @media (prefers-reduced-motion: reduce) { .interior-legend.reveal .interior-row { animation: none; } }
     /* Hovering a row emphasises the region in 3D; hovering the region lights its row. */
     .interior-row:hover, .interior-row.hot { background: rgba(255,255,255,0.05); }
     .interior-row.pinned { background: rgba(var(--accent-rgb),0.10); }

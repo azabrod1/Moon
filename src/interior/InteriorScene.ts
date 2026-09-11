@@ -49,6 +49,7 @@ import { computeBodyOrientationQuaternion, ttJDFromUtcMs } from '../astronomy/pl
 import { computeMoonOffsetEquatorialAU } from '../astronomy/satellites';
 import { tidalLockQuaternion, tidalRollNorth } from '../planetarium/world/tidalLock';
 import { applySkinCut, configureSkinCutEdge, createSkinCutUniforms, type SkinCutUniforms } from './rendering/skinCut';
+import { applySkinFade, createSkinFadeUniforms, idleFadeTexture, type SkinFadeUniforms } from './rendering/skinFade';
 import {
   createSectionMaterial,
   createSectionUniforms,
@@ -127,6 +128,13 @@ export interface InteriorBody {
   radiusKm: number;
 }
 
+/** A body's skin, loaded and built but not yet on the mesh. */
+export interface PreparedSkin {
+  material: THREE.MeshStandardMaterial;
+  texture: THREE.Texture;
+  late: LateTextureSlot;
+}
+
 export function resolveInteriorBody(bodyId: string): InteriorBody | null {
   const planet = PLANET_BY_NAME.get(bodyId) ?? null;
   const moon = planet ? null : MOON_BY_NAME.get(bodyId) ?? null;
@@ -157,6 +165,18 @@ export class InteriorScene {
   private skinFx: SurfaceShadingFx | null = null;
   private skinTexture: THREE.Texture | null = null;
   private readonly cutUniforms: SkinCutUniforms;
+  /** The body swap's cross-fade: the outgoing map, blended out in the incoming skin's shader. */
+  private readonly fadeUniforms: SkinFadeUniforms;
+  private fadeSeconds = 0;
+  private fadeElapsedS = 0;
+  private fadeOutgoing: THREE.Texture | null = null;
+  private fadeResolvers: (() => void)[] = [];
+  /** The reveal's exterior ghost: the removed wedge of the skin, translucent, fading as the cut opens. */
+  private readonly ghostMesh: THREE.Mesh;
+  private ghostMaterial: THREE.MeshStandardMaterial | null = null;
+  private readonly ghostCut: SkinCutUniforms;
+  /** 0 stills every pattern (prefers-reduced-motion). */
+  private motionScale = 1;
   private readonly sectionUniforms: SectionUniforms;
   private readonly faceGeometry: THREE.CircleGeometry;
   private readonly faceMaterial: THREE.MeshStandardMaterial;
@@ -195,12 +215,26 @@ export class InteriorScene {
     this.group.add(this.starfield);
 
     this.cutUniforms = createSkinCutUniforms();
+    this.fadeUniforms = createSkinFadeUniforms();
     // 128×64, the compare studio's count: a coarser sphere scallops the limb.
     this.skinGeometry = new THREE.SphereGeometry(BODY_RADIUS, 128, 64);
     this.skinMesh = new THREE.Mesh(this.skinGeometry, new THREE.MeshStandardMaterial({ color: 0x000000 }));
     this.skinMesh.name = 'InteriorSkin';
     this.skinMesh.visible = false; // nothing half-loaded is ever shown
     this.group.add(this.skinMesh);
+    // The ghost keeps only the wedge (the inverted cut) and draws last, blended over the faces.
+    this.ghostCut = {
+      uCutView: this.cutUniforms.uCutView,
+      uCutSide: this.cutUniforms.uCutSide,
+      uCutHalfAngle: this.cutUniforms.uCutHalfAngle,
+      uCutFeather: this.cutUniforms.uCutFeather,
+      uCutInvert: { value: 1 },
+    };
+    this.ghostMesh = new THREE.Mesh(this.skinGeometry, new THREE.MeshStandardMaterial({ color: 0x000000 }));
+    this.ghostMesh.name = 'InteriorGhost';
+    this.ghostMesh.visible = false;
+    this.ghostMesh.renderOrder = 3;
+    this.group.add(this.ghostMesh);
 
     this.sectionUniforms = createSectionUniforms();
     this.faceMaterial = createSectionMaterial(this.sectionUniforms);
@@ -226,6 +260,7 @@ export class InteriorScene {
         uCutSide: this.cutUniforms.uCutSide,
         uCutHalfAngle: { value: 0 },
         uCutFeather: this.cutUniforms.uCutFeather,
+        uCutInvert: { value: 0 },
       };
       const material = createSectionMaterial(this.sectionUniforms, { shellRegion: region });
       applySkinCut(material, cut);
@@ -251,9 +286,10 @@ export class InteriorScene {
   }
 
   /**
-   * Load a body's colour map and dress the skin in it. Generation-guarded by
-   * the caller's `isStale`: a stale resolve disposes what it loaded and
-   * leaves the live skin untouched. Resolves true once the map is applied.
+   * Load a body's colour map and build its skin material, without showing
+   * either: the caller presents it when the ceremony is ready (a swap
+   * closes the cut first). Generation-guarded by `isStale`: a stale resolve
+   * disposes what it loaded and returns null.
    *
    * The loader resolves its procedural fallback after a timeout, and the
    * first frames of this mode compile a dozen programs (a slow device stalls
@@ -261,7 +297,7 @@ export class InteriorScene {
    * real map, arriving after the fallback, is swapped onto the live skin —
    * or disposed if a newer body has taken over by then.
    */
-  async loadBody(body: InteriorBody, isStale: () => boolean): Promise<boolean> {
+  async prepareBody(body: InteriorBody, isStale: () => boolean): Promise<PreparedSkin | null> {
     if (!this.capsCaptured) {
       captureDeviceCaps(this.renderer, profileForDevice(readDeviceSignals(this.renderer.getContext())));
       this.capsCaptured = true;
@@ -272,22 +308,53 @@ export class InteriorScene {
     if (isStale()) {
       texture.dispose();
       late.connect((arrival) => arrival.dispose());
-      return false;
+      return null;
     }
     const archetype: SurfaceArchetype = body.planet
       ? planetArchetype(body.planet)
       : body.moon
         ? moonArchetype(body.moon)
         : 'airless';
-    const material = this.buildSkinMaterial(texture, archetype);
+    return { material: this.buildSkinMaterial(texture, archetype), texture, late };
+  }
+
+  /** Whether a skin is on the body: false before the first body, so an entry has nothing to fade from. */
+  hasSkin(): boolean {
+    return this.skinMaterial !== null;
+  }
+
+  /**
+   * Dress the skin in a prepared body. With `fadeSeconds` above zero and a
+   * skin already on, the outgoing map is blended out inside the incoming
+   * skin's shader over that long (resolved by advance()); otherwise the swap
+   * is immediate. Either way nothing half-loaded shows: the map is already
+   * here. The ghost takes the same map, for the reveal that follows.
+   */
+  presentBody(prepared: PreparedSkin, fadeSeconds: number): void {
+    const { material, texture, late } = prepared;
     const previousMaterial = this.skinMaterial;
     const previousTexture = this.skinTexture;
+    const fading = fadeSeconds > 0 && previousTexture !== null && previousMaterial !== null;
+    this.finishFade(); // a fade cut short by a faster swap still resolves its waiters
     this.skinMesh.material = material;
     this.skinMaterial = material;
     this.skinTexture = texture;
     this.skinMesh.visible = true;
     previousMaterial?.dispose();
-    previousTexture?.dispose();
+    if (fading) {
+      this.fadeOutgoing = previousTexture;
+      this.fadeUniforms.uSkinFadeMap.value = previousTexture!;
+      this.fadeUniforms.uSkinFade.value = 0;
+      this.fadeSeconds = fadeSeconds;
+      this.fadeElapsedS = 0;
+    } else {
+      previousTexture?.dispose();
+    }
+    this.ghostMaterial?.dispose();
+    const ghost = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.95, metalness: 0, transparent: true, opacity: 0, depthWrite: false });
+    applySkinCut(ghost, this.ghostCut);
+    this.ghostMaterial = ghost;
+    this.ghostMesh.material = ghost;
     late.connect((arrival) => {
       // Only onto the skin this load dressed: a later body owns it otherwise.
       if (this.skinMaterial !== material) {
@@ -297,10 +364,60 @@ export class InteriorScene {
       const fallback = this.skinTexture;
       material.map = arrival;
       material.needsUpdate = true;
+      ghost.map = arrival;
+      ghost.needsUpdate = true;
       this.skinTexture = arrival;
       if (fallback && fallback !== arrival) fallback.dispose();
     });
+  }
+
+  /** prepare + present at once, for the first entry under the veil. Resolves true once the map is applied. */
+  async loadBody(body: InteriorBody, isStale: () => boolean): Promise<boolean> {
+    const prepared = await this.prepareBody(body, isStale);
+    if (!prepared) return false;
+    this.presentBody(prepared, 0);
     return true;
+  }
+
+  /** Resolves once the current cross-fade has finished (at once when none runs). */
+  fadeDone(): Promise<void> {
+    if (this.fadeOutgoing === null) return Promise.resolve();
+    return new Promise((resolve) => this.fadeResolvers.push(resolve));
+  }
+
+  isFading(): boolean {
+    return this.fadeOutgoing !== null;
+  }
+
+  /** Per-frame: the cross-fade's clock. */
+  advance(dt: number): void {
+    if (this.fadeOutgoing === null) return;
+    this.fadeElapsedS += dt;
+    const t = Math.min(1, this.fadeElapsedS / Math.max(this.fadeSeconds, 1e-3));
+    this.fadeUniforms.uSkinFade.value = t * t * (3 - 2 * t);
+    if (t >= 1) this.finishFade();
+  }
+
+  private finishFade(): void {
+    this.fadeUniforms.uSkinFade.value = 1;
+    this.fadeUniforms.uSkinFadeMap.value = idleFadeTexture();
+    this.fadeOutgoing?.dispose();
+    this.fadeOutgoing = null;
+    const resolvers = this.fadeResolvers;
+    this.fadeResolvers = [];
+    for (const resolve of resolvers) resolve();
+  }
+
+  /** The reveal ghost's opacity: 0 hides it. */
+  setGhost(opacity: number): void {
+    const visible = opacity > 0.002 && this.ghostMaterial !== null;
+    this.ghostMesh.visible = visible;
+    if (visible && this.ghostMaterial) this.ghostMaterial.opacity = opacity;
+  }
+
+  /** 0 stills every pattern; applied on the next applyRegions. */
+  setMotionScale(scale: number): void {
+    this.motionScale = scale;
   }
 
   private async loadBodyColor(body: InteriorBody, late: LateTextureSlot): Promise<THREE.Texture> {
@@ -319,6 +436,7 @@ export class InteriorScene {
     fx.uPlanetshineColor.value.setHex(FILL_SHINE_COLOR);
     fx.uPlanetshineDir.value.copy(FILL_SHINE_DIR);
     fx.uPlanetshineIntensity.value = FILL_SHINE_INTENSITY;
+    applySkinFade(material, this.fadeUniforms);
     applySkinCut(material, this.cutUniforms);
     configureSkinCutEdge(material, this.multisampled);
     this.skinFx = fx;
@@ -327,7 +445,7 @@ export class InteriorScene {
 
   /** The region looks, inside-out, with their boundaries already remapped to display space. */
   applyRegions(regionsInsideOut: readonly SectionRegionLook[]): void {
-    writeSectionRegions(this.sectionUniforms, regionsInsideOut, this.floatCapable);
+    writeSectionRegions(this.sectionUniforms, regionsInsideOut, this.floatCapable, this.motionScale);
     this.regionCount = Math.max(1, Math.min(regionsInsideOut.length, MAX_REGIONS));
     for (let index = 0; index < MAX_REGIONS; index++) {
       const radius = index < this.regionCount ? regionsInsideOut[index].outerDisplay : 0;
@@ -489,6 +607,7 @@ export class InteriorScene {
   /** Hand the body's map back: the next activate reloads regardless, and the
    *  planetarium's memory envelope cannot see what this mode leaves resident. */
   releaseBodyResources(): void {
+    this.finishFade();
     this.skinMesh.visible = false;
     this.skinMesh.material = new THREE.MeshStandardMaterial({ color: 0x000000 });
     this.skinMaterial?.dispose();
@@ -496,6 +615,10 @@ export class InteriorScene {
     this.skinTexture?.dispose();
     this.skinTexture = null;
     this.skinFx = null;
+    this.ghostMesh.visible = false;
+    this.ghostMesh.material = new THREE.MeshStandardMaterial({ color: 0x000000 });
+    this.ghostMaterial?.dispose();
+    this.ghostMaterial = null;
   }
 
   dispose(): void {

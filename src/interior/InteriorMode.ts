@@ -125,6 +125,7 @@ import { buildMeter, claimScores } from './ui/LayerInspector';
 import { coverageBulk, type ClaimKind, type Coverage, type CoverageState } from './data/interiorTypes';
 import { drawnFromModel, drawnUnresolved, outerFractionsInsideOut, type DrawnModel } from './drawnModel';
 import { BodyPicker } from '../planetarium/ui/BodyPicker';
+import { coverageTags } from './ui/coverageTag';
 import { PHASE_LABEL, incandescence, swatchHex } from './data/artParams';
 
 const FRAMING = {
@@ -507,23 +508,8 @@ export class InteriorMode {
         strong.textContent = 'Look inside';
         title.append(strong, document.createTextNode(' another world'));
       },
-      rowBadge: (name) => {
-        const tags = document.createElement('span');
-        tags.className = 'pk-tags';
-        if (name === this.body?.id) {
-          const here = document.createElement('span');
-          here.className = 'pk-tag-cover on';
-          here.textContent = 'open now';
-          tags.append(here);
-        }
-        const pill = document.createElement('span');
-        const coverage = coverageFor(name);
-        const drawnByDefault = coverage.state === 'constrained' || coverage.state === 'competing';
-        pill.className = 'pk-tag-cover' + (drawnByDefault ? ' on' : '');
-        pill.textContent = coverageBadge(coverage);
-        tags.append(pill);
-        return tags;
-      },
+      // The same pills the planetarium's Tools row shows, from the one builder.
+      rowBadge: (name) => coverageTags(name, name === this.body?.id ? 'open now' : null),
       onPick: (name) => {
         this.picker.close();
         void this.commitBody(name);

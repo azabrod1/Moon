@@ -4,6 +4,9 @@ dist/
 *.local
 .claude/*
 !.claude/skills/
+# the shared allowlist: tracked so cloud sessions, which never see
+# settings.local.json, do not start with zero permission rules
+!.claude/settings.json
 .chrome-*/
 .edge-headless-profile/
 browser-*.png

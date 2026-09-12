@@ -46,7 +46,7 @@ const ICE_SHELL: Region = {
   temperatureK: endpoints(260, 40, ROBUCHON, 'modelled'),
   pressureGPa: endpoints(0.15, 0, ROBUCHON, 'modelled'),
   densityKgM3: endpoints(940, 920, ROBUCHON, 'modelled'),
-  heat: heat([{ kind: 'none', note: 'Cold and rigid; nitrogen ice convects in Sputnik Planitia on top of it.' }], 'Heat from below', 'conduction'),
+  heat: heat([{ kind: 'none', note: 'Cold and rigid; nitrogen ice convects in Sputnik Planitia on top of it.' }], 'heat from below', 'conduction'),
   claims: [
     claim('existence', [
       row('inSitu', 'supports', STERN, { observed: 'New Horizons imaged water-ice mountains and volatile-ice plains', inferred: 'A water-ice shell with volatile ices on top', assumed: '—', uncertain: 'Its thickness', mission: 'New Horizons', year: 2015 }),
@@ -79,7 +79,7 @@ export const PLUTO_OCEAN_MODEL: InteriorModel = {
       temperatureK: endpoints(300, 260, KAMATA, 'modelled'),
       pressureGPa: endpoints(0.4, 0.15, ROBUCHON, 'modelled'),
       densityKgM3: endpoints(1100, 1000, NIMMO, 'modelled'),
-      heat: heat([{ kind: 'none', note: 'Warmed by the rock core, insulated by hydrates above.' }], 'Heat from the core', 'convection'),
+      heat: heat([{ kind: 'none', note: 'Warmed by the rock core, insulated by hydrates above.' }], 'heat from the core', 'convection'),
       claims: [
         claim('existence', [
           row('gravity', 'supports', NIMMO, { observed: 'Sputnik Planitia, a deep basin, lies almost exactly opposite Charon, where a mass excess would migrate', inferred: 'The basin is a mass excess: nitrogen ice above a dense ocean that rose into the thinned shell', assumed: 'Pluto reoriented to put the excess on the tidal axis', uncertain: 'Nitrogen loading alone might suffice', mission: 'New Horizons', year: 2016 }),

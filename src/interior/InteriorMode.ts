@@ -9,14 +9,19 @@
  *
  * What is drawn comes from the registry (data/interiorRegistry): a
  * constrained body draws its model, a competing body its default (the
- * others switchable, devModel for now), a poorly constrained or not yet
- * modelled body draws an unresolved whole with its bulk line — an
- * illustrative scenario only on request, and labelled.
+ * others switchable from the model switch under the caption), a poorly
+ * constrained or not yet modelled body draws an unresolved whole with its
+ * bulk line — an illustrative scenario only on request, and labelled.
  *
  * Session-only: every activate() opens on the body it is handed and
  * touches no storage keys. Body changes run under a generation guard, the
  * compare studio's idiom: every async map resolve checks staleness and, if
- * a newer pick landed, disposes what it loaded and bails.
+ * a newer pick landed, disposes what it loaded and bails. Every commit owns
+ * its own reveal, so a pick that lands during the first load supersedes
+ * the entry's and still opens the cut. A body that cannot be brought in (a
+ * throw in its preparation or its presentation) leaves the previous body
+ * on, reopens the cut onto it and warns through debugWarn; on a first
+ * entry the throw reaches the mode switch, which falls back.
  *
  * The presentation clock is the tool's own: the cut animation and the
  * pattern drift run on it, never on the solar-system clock, and the dev
@@ -43,20 +48,38 @@ import { DEG2RAD } from '../shared/math/angles';
 import { isPhoneViewport } from '../shared/dom';
 import { debugLog, debugWarn } from '../shared/debug';
 import { bodyDisplayName } from '../planetarium/surfaceView';
-import { InteriorScene, BODY_RADIUS, TERRACE_STEP } from './InteriorScene';
+import { InteriorScene, BODY_RADIUS, TERRACE_STEP, type PreparedSkin } from './InteriorScene';
 import { resolveInteriorBody, type InteriorBody } from './interiorBody';
 import {
   CUT_VIEWS,
   CUT_VIEW_ANGLE_DEG,
-  MAX_OPENING_ANGLE_DEG,
   computeCutFrame,
   createCutFrame,
   cutViewForAngle,
   openingAngleDegToRad,
+  wedgeYawForOpening,
   yawCutFrame,
+  type CutFaceSide,
   type CutView,
 } from './cutFrame';
 import {
+  EMPHASIS_S,
+  advanceCutTween,
+  advanceEmphasis,
+  captionFor,
+  createCutTween,
+  createEmphasisState,
+  cutTweenSettled,
+  emphasisTarget,
+  regionArtInsideOut,
+  regionLooks,
+  setCutTarget,
+  stepToward,
+  unresolvedComposition,
+} from './interiorLogic';
+import { formatKm, formatNumber } from './ui/inspectorText';
+import {
+  IDENTITY_REMAP,
   READABLE_MIN_PX,
   framingDistance,
   minDisplayFraction,
@@ -69,13 +92,12 @@ import {
 import { createPickHit, pickInterior, type PickHit, type PickLayout, type PickSurface } from './interiorPick';
 import { renderHoverCard, renderInspector } from './ui/LayerInspector';
 import { DepthRuler } from './ui/DepthRuler';
-import { rulerLayout, rulerSide, type RulerInput } from './ruler';
+import { createRulerLayout, rulerLayout, rulerSide, type RulerInput } from './ruler';
 import { renderEvidencePopover } from './ui/EvidencePopover';
-import { COVERAGE_BADGE, INTERIOR_DEFAULT_BODY, coverageFor, coverageStateFor, defaultModelFor, modelFor } from './data/interiorRegistry';
+import { INTERIOR_DEFAULT_BODY, coverageBadge, coverageFor, defaultModelFor, modelFor } from './data/interiorRegistry';
 import { coverageModels } from './data/interiorTypes';
 import {
   bodyTemperatureRange,
-  temperatureEndpoints,
   temperatureScaleGradientCss,
   temperatureScaleHex,
   temperatureT,
@@ -85,8 +107,7 @@ import { buildMeter, claimScores } from './ui/LayerInspector';
 import { coverageBulk, type ClaimKind, type Coverage, type CoverageState } from './data/interiorTypes';
 import { drawnFromModel, drawnUnresolved, outerFractionsInsideOut, type DrawnModel } from './drawnModel';
 import { BodyPicker } from '../planetarium/ui/BodyPicker';
-import { artParamsFor, depthTint, incandescence, swatchHex, type ArtParams } from './data/artParams';
-import type { SectionRegionLook } from './rendering/sectionMaterial';
+import { incandescence, swatchHex } from './data/artParams';
 
 const FRAMING = {
   fovDeg: 40,
@@ -103,8 +124,6 @@ const FRAMING = {
   phoneWidthFraction: 0.84,
 } as const;
 
-/** The cut opens and closes over this long, on an ease-in-out. */
-const CUT_ANIMATION_S = 0.9;
 /** A body swap cross-fades the skin over this long, behind the closed cut. */
 const SWAP_FADE_S = 0.45;
 /** The reveal's exterior ghost starts this opaque and clears as the cut opens. */
@@ -117,8 +136,6 @@ const SCALE_BLEND_S = 0.5;
 const FPS_WINDOW = 60;
 /** Recompute the remap when the projected radius moves this much. */
 const REMAP_PX_TOLERANCE = 0.5;
-/** Emphasis eases in and out over this long. */
-const EMPHASIS_S = 0.16;
 /** A press that moves less than this (px) and ends within this (ms) is a tap, not a drag. */
 const TAP_MAX_PX = 8;
 const TAP_MAX_MS = 400;
@@ -164,6 +181,8 @@ export interface InteriorDevState {
   presentationSeconds: number;
   frozen: boolean;
   loading: boolean;
+  /** Whether a skin is on the body: false before the first body lands. */
+  skin: boolean;
   ready: boolean;
   fps: number;
   regions: InteriorDevRegion[];
@@ -172,36 +191,6 @@ export interface InteriorDevState {
   pinned: string | null;
   evidence: ClaimKind | null;
   emphasis: { region: string | null; amount: number };
-}
-
-function easeInOutCubic(t: number): number {
-  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-}
-
-function formatKm(km: number): string {
-  if (km < 10) return km.toFixed(1);
-  return Math.round(km).toLocaleString('en-US');
-}
-
-/** The one line under the body chip: what is drawn and how much to trust it. */
-function captionFor(coverage: Coverage, drawn: DrawnModel): string {
-  const radius = `radius ${formatKm(drawn.referenceRadiusKm)} km`;
-  const model = drawn.model;
-  if (model) {
-    const review = model.review === 'reviewed' ? 'Reviewed model' : 'Provisional model';
-    if (model.illustrative) return `Illustrative scenario, not a measurement · ${radius}`;
-    if (coverage.state === 'competing') return `${review}, one of ${coverage.models.length} · ${radius}`;
-    return `${review} · ${radius}`;
-  }
-  const bulk = coverageBulk(coverage)?.densityKgM3 ?? null;
-  const density = bulk ? `bulk density ${Math.round(bulk.value).toLocaleString('en-US')} kg/m³` : 'no measured density';
-  const lead = coverage.state === 'notYetModelled' ? 'Not yet modelled here' : 'Interior unresolved';
-  return `${lead} · ${density}`;
-}
-
-/** The legend row for the unresolved whole. */
-function unresolvedComposition(coverage: Coverage): string {
-  return coverage.state === 'notYetModelled' ? 'Not yet modelled here' : 'Not measured';
 }
 
 function orbitPose(azimuthDeg: number, elevationDeg: number, distance: number, out: THREE.Vector3): THREE.Vector3 {
@@ -241,14 +230,36 @@ export class InteriorMode {
   private readonly cameraDirection = new THREE.Vector3();
   private utcMs = Date.now();
 
-  // The cut.
+  // The cut: the frame the scene reads and the tween that moves its opening.
   private readonly frame = createCutFrame();
-  private angleDeg = 0;
-  private angleFromDeg = 0;
-  private angleToDeg = CUT_VIEW_ANGLE_DEG.cutaway;
-  private angleElapsedS = CUT_ANIMATION_S;
-  /** The opening the viewer chose: what a swap reopens to, whatever a close in flight targets. */
-  private chosenDeg = CUT_VIEW_ANGLE_DEG.cutaway;
+  private readonly cut = createCutTween(CUT_VIEW_ANGLE_DEG.cutaway);
+
+  // The ruler: its input and layout are reused frame after frame, and it is
+  // laid out and drawn again only when one of the things it depends on moved.
+  private readonly rulerInput: RulerInput = {
+    frame: this.frame,
+    side: 'a',
+    referenceRadiusKm: 1,
+    remap: IDENTITY_REMAP,
+    outerDisplay: [1],
+    regionsInsideOut: [],
+    annotations: [],
+    terraceStep: TERRACE_STEP,
+  };
+  private readonly rulerLayoutCache = createRulerLayout();
+  private readonly rulerKey = {
+    angleDeg: NaN,
+    remap: null as ReadableRemap | null,
+    drawn: null as DrawnModel | null,
+    side: 'a' as CutFaceSide,
+    opacity: -1,
+    width: 0,
+    height: 0,
+    cameraWorld: new THREE.Matrix4(),
+    projection: new THREE.Matrix4(),
+  };
+  /** The ruler was hidden or never drawn: the next render must draw whatever the key says. */
+  private rulerStale = true;
 
   // The Readable scale.
   private readable = true;
@@ -270,8 +281,7 @@ export class InteriorMode {
   private hoverIndex = -1;
   private legendHoverIndex = -1;
   private pinnedIndex = -1;
-  private emphasisIndex = -1;
-  private emphasisAmount = 0;
+  private readonly emphasis = createEmphasisState();
   /** The claim index open in the popover, −1 when closed. */
   private evidenceClaim = -1;
   private tapStart: { x: number; y: number; t: number } | null = null;
@@ -322,10 +332,10 @@ export class InteriorMode {
       },
       rowBadge: (name) => {
         const pill = document.createElement('span');
-        const state = coverageStateFor(name);
-        const drawnByDefault = state === 'constrained' || state === 'competing';
+        const coverage = coverageFor(name);
+        const drawnByDefault = coverage.state === 'constrained' || coverage.state === 'competing';
         pill.className = 'pk-tag-cover' + (drawnByDefault ? ' on' : '');
-        pill.textContent = COVERAGE_BADGE[state];
+        pill.textContent = coverageBadge(coverage);
         return pill;
       },
       onPick: (name) => {
@@ -387,13 +397,13 @@ export class InteriorMode {
 
     this.frameInitial();
     this.interiorScene.setMotionScale(this.reducedMotion.matches ? 0 : 1);
-    // Open closed, then swing to the default view once the map is on: the
-    // reveal. Phones open on Section, the view that reads at a small size.
-    this.angleDeg = 0;
+    // Open closed, then swing to the chosen view once the map is on: the
+    // reveal, which the commit owns (a pick during this load supersedes the
+    // entry's commit, and that pick's commit reveals instead). Phones open
+    // on Section, the view that reads at a small size.
+    this.setTargetAngle(CUT_VIEW_ANGLE_DEG[isPhoneViewport() ? 'section' : 'cutaway'], false);
     this.setTargetAngle(0, false, false);
     await this.commitBody(bodyId);
-    if (!this.active) return;
-    this.reveal(CUT_VIEW_ANGLE_DEG[isPhoneViewport() ? 'section' : 'cutaway']);
   }
 
   /** Open the cut onto a freshly presented body, the exterior ghost lingering over the opening. */
@@ -407,6 +417,8 @@ export class InteriorMode {
     this.active = false;
     this.generation++; // cancels any in-flight map load
     this.loading = false;
+    // A swap parked on the closing cut wakes, finds itself stale and frees what it prepared.
+    this.settleCut();
     this.interiorScene.setVisible(false);
     this.picker.close();
     this.ruler.hide();
@@ -451,14 +463,9 @@ export class InteriorMode {
     this.interiorScene.advance(dt);
     this.controls.update();
 
-    // The cut frame follows the camera continuously (plan §5): hinge = the
-    // camera's own up, so nothing snaps through the poles.
-    tmpLocalUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
-    computeCutFrame(this.camera.position, tmpLocalUp, ORIGIN, openingAngleDegToRad(this.angleDeg), this.frame);
-    yawCutFrame(this.frame, WEDGE_YAW_DEG * DEG2RAD);
-    this.interiorScene.applyCut(this.frame);
-    this.interiorScene.updateForCamera(this.camera);
-
+    // The regions go out before the cut is posed: applyCut sizes the faces
+    // and the shells by the region count, so a model that changed since the
+    // last frame is drawn whole, never with the old count for one frame.
     this.projectedPx = projectedRadiusPx(
       BODY_RADIUS,
       this.camera.position.distanceTo(ORIGIN),
@@ -466,47 +473,75 @@ export class InteriorMode {
       window.innerHeight,
     );
     this.refreshRemapIfNeeded();
+
+    // The cut frame follows the camera continuously (plan §5): hinge = the
+    // camera's own up, so nothing snaps through the poles.
+    tmpLocalUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+    computeCutFrame(this.camera.position, tmpLocalUp, ORIGIN, openingAngleDegToRad(this.cut.angleDeg), this.frame);
+    // The wedge yaw tapers to none at Section, so the disc is face-on there.
+    yawCutFrame(this.frame, wedgeYawForOpening(this.frame.openingAngle, WEDGE_YAW_DEG * DEG2RAD));
+    this.interiorScene.applyCut(this.frame);
+    this.interiorScene.updateForCamera(this.camera);
+
     this.advanceEmphasis(dt);
     this.renderRuler();
   }
 
-  /** The depth ruler along the near face, through the remap; hidden on phones and while the cut is closed. */
+  /** The depth ruler along the near face, through the remap; hidden on phones
+   *  and while the cut is closed. Laid out and drawn again only when something
+   *  it depends on moved — the cut, the remap, the model, the face it sits on,
+   *  the camera, the viewport, its opacity — so a frame at rest costs nothing here. */
   private renderRuler(): void {
-    if (isPhoneViewport() || !this.remap || this.angleDeg <= 0.5 || this.loading) {
+    if (isPhoneViewport() || !this.remap || this.cut.angleDeg <= 0.5 || this.loading) {
       this.ruler.hide();
+      this.rulerStale = true;
       return;
     }
-    this.cameraDirection.copy(this.camera.position).normalize();
-    const input: RulerInput = {
-      frame: this.frame,
-      side: rulerSide(this.frame, this.cameraDirection),
-      referenceRadiusKm: this.drawn.referenceRadiusKm,
-      remap: this.remap,
-      outerDisplay: this.pickLayout.outerDisplay,
-      regionsInsideOut: this.drawn.regionsInsideOut,
-      annotations: this.drawn.model?.annotations ?? [],
-      terraceStep: TERRACE_STEP,
-    };
     // The camera's matrices are current from the last render; the projection
     // is a frame behind at worst, which the eye cannot see.
     this.camera.updateMatrixWorld();
-    const opacity = Math.min(1, this.angleDeg / RULER_FULL_DEG);
-    this.ruler.render(rulerLayout(input), this.camera, window.innerWidth, window.innerHeight, opacity);
+    this.cameraDirection.copy(this.camera.position).normalize();
+    const side = rulerSide(this.frame, this.cameraDirection);
+    const opacity = Math.min(1, this.cut.angleDeg / RULER_FULL_DEG);
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    const key = this.rulerKey;
+    const unchanged = !this.rulerStale
+      && key.angleDeg === this.cut.angleDeg && key.remap === this.remap && key.drawn === this.drawn && key.side === side
+      && key.opacity === opacity && key.width === width && key.height === height
+      && key.cameraWorld.equals(this.camera.matrixWorld) && key.projection.equals(this.camera.projectionMatrix);
+    if (unchanged) return;
+    key.angleDeg = this.cut.angleDeg;
+    key.remap = this.remap;
+    key.drawn = this.drawn;
+    key.side = side;
+    key.opacity = opacity;
+    key.width = width;
+    key.height = height;
+    key.cameraWorld.copy(this.camera.matrixWorld);
+    key.projection.copy(this.camera.projectionMatrix);
+    this.rulerStale = false;
+    const input = this.rulerInput;
+    input.side = side;
+    input.referenceRadiusKm = this.drawn.referenceRadiusKm;
+    input.remap = this.remap;
+    input.outerDisplay = this.pickLayout.outerDisplay;
+    input.regionsInsideOut = this.drawn.regionsInsideOut;
+    input.annotations = this.drawn.model?.annotations ?? [];
+    this.ruler.render(rulerLayout(input, this.rulerLayoutCache), this.camera, width, height, opacity);
   }
 
   private advanceCut(dt: number): void {
-    if (this.angleElapsedS >= CUT_ANIMATION_S) {
-      this.angleDeg = this.angleToDeg;
+    if (cutTweenSettled(this.cut)) {
+      advanceCutTween(this.cut, dt);
       this.settleCut();
       return;
     }
-    this.angleElapsedS = Math.min(CUT_ANIMATION_S, this.angleElapsedS + dt);
-    const t = easeInOutCubic(this.angleElapsedS / CUT_ANIMATION_S);
-    this.angleDeg = this.angleFromDeg + (this.angleToDeg - this.angleFromDeg) * t;
+    const progress = advanceCutTween(this.cut, dt);
     // The reveal's ghost: the removed skin lingers, translucent, and clears as the cut opens.
-    if (this.revealing) this.interiorScene.setGhost(GHOST_OPACITY * (1 - t));
+    if (this.revealing) this.interiorScene.setGhost(GHOST_OPACITY * (1 - progress));
     this.syncAngleReadout();
-    if (this.angleElapsedS >= CUT_ANIMATION_S) this.settleCut();
+    if (cutTweenSettled(this.cut)) this.settleCut();
   }
 
   /** The cut animation has landed: the ghost clears and anyone waiting on the close proceeds. */
@@ -524,16 +559,15 @@ export class InteriorMode {
 
   /** Resolves on the frame the cut animation lands (at once when it is not moving). */
   private cutSettled(): Promise<void> {
-    if (this.angleElapsedS >= CUT_ANIMATION_S) return Promise.resolve();
+    if (cutTweenSettled(this.cut)) return Promise.resolve();
     return new Promise((resolve) => this.cutSettledResolvers.push(resolve));
   }
 
   private advanceScale(dt: number): void {
-    if (this.scaleBlend === this.scaleBlendTarget) return;
-    const step = dt / SCALE_BLEND_S;
-    this.scaleBlend = this.scaleBlend < this.scaleBlendTarget
-      ? Math.min(this.scaleBlendTarget, this.scaleBlend + step)
-      : Math.max(this.scaleBlendTarget, this.scaleBlend - step);
+    // Under prefers-reduced-motion the Readable morph lands at once, like the rest of the tool's motion.
+    this.scaleBlend = this.reducedMotion.matches
+      ? this.scaleBlendTarget
+      : stepToward(this.scaleBlend, this.scaleBlendTarget, dt / SCALE_BLEND_S);
   }
 
   /**
@@ -550,57 +584,19 @@ export class InteriorMode {
     }
     this.remapPx = this.projectedPx;
     this.remapBlend = this.scaleBlend;
-    const fractions = outerFractionsInsideOut(this.drawn);
-    const remap = readableRemap(fractions, minDisplayFraction(READABLE_MIN_PX, this.projectedPx), this.scaleBlend);
+    const remap = readableRemap(outerFractionsInsideOut(this.drawn), minDisplayFraction(READABLE_MIN_PX, this.projectedPx), this.scaleBlend);
     this.remap = remap;
-    const artInsideOut = this.regionArt();
-    const reference = this.drawn.referenceRadiusKm;
-    const looks: SectionRegionLook[] = this.drawn.regionsInsideOut.map((region, index) => {
-      // A physical transition's width, through the same remap as its boundary.
-      const halfPhysical = region.transitionKm / (2 * reference);
-      const blendDisplay = halfPhysical > 0
-        ? (toDisplayFraction(remap, fractions[index] + halfPhysical) - toDisplayFraction(remap, fractions[index] - halfPhysical)) / 2
-        : 0;
-      // Where the boundary might be, through the same remap: an interval or
-      // a spread of models; a qualitative note has no width to draw.
-      const location = region.region?.boundary.knowledge.location ?? null;
-      const band = location && (location.kind === 'interval' || location.kind === 'modelSpread')
-        ? { low: toDisplayFraction(remap, Math.max(0, location.low / reference)), high: toDisplayFraction(remap, Math.min(1, location.high / reference)) }
-        : null;
-      return {
-        outerDisplay: toDisplayFraction(remap, fractions[index]),
-        blendDisplay,
-        art: artInsideOut[index],
-        // An unknown temperature is cold, never a guessed glow; Temperature mode hatches it.
-        heat: incandescence(region.temperatureK ?? 0),
-        temperature: region.region ? temperatureEndpoints(region.region.temperatureK) : null,
-        bandDisplay: band && band.high > band.low ? band : null,
-      };
-    });
+    const looks = regionLooks(this.drawn, remap, regionArtInsideOut(this.drawn), this.temperatureRange);
     this.interiorScene.applyRegions(looks);
     this.interiorScene.setTemperatureScale(this.temperatureRange);
     this.pickLayout.outerDisplay = looks.map((look) => look.outerDisplay);
   }
 
-  /** Each region's look, inside-out like the drawn model, with the family
-   *  depth tint applied — the one place the legend and the faces get their colours. */
-  private regionArt(): ArtParams[] {
-    const reference = this.drawn.referenceRadiusKm;
-    return this.drawn.regionsInsideOut.map((region) => {
-      const depthMidFraction = 1 - (region.outerRadiusKm + region.innerRadiusKm) / (2 * reference);
-      return depthTint(artParamsFor(region.family, region.phase), region.family, depthMidFraction);
-    });
-  }
-
   // ---- the cut and the scale ----------------------------------------------
 
   private setTargetAngle(deg: number, animate: boolean, remember = true): void {
-    const target = THREE.MathUtils.clamp(deg, 0, MAX_OPENING_ANGLE_DEG);
-    if (remember) this.chosenDeg = target;
-    this.angleFromDeg = this.angleDeg;
-    this.angleToDeg = target;
-    this.angleElapsedS = animate ? 0 : CUT_ANIMATION_S;
-    if (!animate) this.angleDeg = target;
+    // Under prefers-reduced-motion every move of the cut lands at once, the view buttons' included.
+    setCutTarget(this.cut, deg, animate && !this.reducedMotion.matches, remember);
     this.syncViewButtons();
     this.syncAngleReadout();
   }
@@ -626,8 +622,11 @@ export class InteriorMode {
    * §4: the cut closes over the old body while the new map loads, the skin
    * cross-fades behind the closed cut once both are done, the panel turns
    * over, and the cut reopens onto the new body with the exterior ghost.
-   * Nothing half-loaded is ever shown, and a newer pick cancels an older
-   * one at every await.
+   * Either way the commit reveals onto what it presented. Nothing
+   * half-loaded is ever shown, and a newer pick cancels an older one at
+   * every await. A throw on the way (a shader that changed shape, a moon
+   * without a map) leaves the body that was on, reopens onto it and warns;
+   * on a first entry it reaches the mode switch instead.
    */
   private async commitBody(bodyId: string): Promise<boolean> {
     let body = resolveInteriorBody(bodyId);
@@ -635,11 +634,13 @@ export class InteriorMode {
       debugWarn('Look inside: unknown body, opening Earth instead', { bodyId });
       body = resolveInteriorBody(INTERIOR_DEFAULT_BODY)!;
     }
+    // The body already on, with nothing in flight: nothing to bring in.
+    if (this.body?.id === body.id && !this.loading && this.interiorScene.hasSkin()) return true;
     const generation = ++this.generation;
     const stale = () => generation !== this.generation;
     const animate = !this.reducedMotion.matches;
     const swap = this.body !== null && this.interiorScene.hasSkin();
-    const reopenDeg = this.chosenDeg;
+    const reopenDeg = this.cut.chosenDeg;
     this.loading = true;
     if (swap) {
       this.revealing = false;
@@ -647,35 +648,48 @@ export class InteriorMode {
       this.clearSelection();
       this.setTargetAngle(0, animate, false); // the ceremony's close is not a chosen view
     }
-    const prepared = await this.interiorScene.prepareBody(body, stale);
-    if (!prepared || stale()) return false;
-    if (swap) {
-      await this.cutSettled();
-      if (stale()) {
-        prepared.material.dispose();
-        prepared.texture?.dispose();
-        return false;
+    let prepared: PreparedSkin | null = null;
+    let presented = false;
+    try {
+      prepared = await this.interiorScene.prepareBody(body, stale);
+      if (!prepared || stale()) return false;
+      if (swap) {
+        await this.cutSettled();
+        if (stale()) return false;
       }
-    }
-    // The swap moment: the faces and the panel turn over behind the closed cut.
-    this.body = body;
-    this.coverage = coverageFor(body.id);
-    const model = defaultModelFor(body.id);
-    this.drawn = model
-      ? drawnFromModel(model)
-      : drawnUnresolved(body.id, body.radiusKm, unresolvedComposition(this.coverage));
-    this.applyDrawn(true);
-    this.interiorScene.setPose(body, this.utcMs);
-    this.interiorScene.presentBody(prepared, swap && animate ? SWAP_FADE_S : 0);
-    this.syncRingsRow();
-    if (swap) {
-      await this.interiorScene.fadeDone();
-      if (stale()) return false;
+      // The swap moment, behind the closed cut: the pose and the skin first
+      // (the steps that can throw, and a throw there leaves the old body
+      // whole), then the faces and the panel turn over.
+      this.interiorScene.setPose(body, this.utcMs);
+      this.interiorScene.presentBody(prepared, swap && animate ? SWAP_FADE_S : 0);
+      presented = true;
+      this.body = body;
+      this.coverage = coverageFor(body.id);
+      const model = defaultModelFor(body.id);
+      this.drawn = model
+        ? drawnFromModel(model)
+        : drawnUnresolved(body.id, body.radiusKm, unresolvedComposition(this.coverage));
+      this.applyDrawn(true);
+      this.syncRingsRow();
+      if (swap) {
+        await this.interiorScene.fadeDone();
+        if (stale()) return false;
+      }
       this.reveal(reopenDeg);
+      debugLog('Look inside: body applied', { bodyId: body.id, swap });
+      return true;
+    } catch (error) {
+      if (stale()) return false; // a newer pick owns the state now
+      debugWarn('Look inside: the body could not be brought in', { bodyId: body.id, swap, error: String(error) });
+      if (!swap) throw error; // a first entry has nothing to reopen onto: the mode switch falls back
+      this.reveal(reopenDeg); // the body that was on is still on
+      return false;
+    } finally {
+      // A prepared skin nobody presented is freed, its late slot included; a
+      // stale commit's flags belong to the newer commit and are left alone.
+      if (prepared && !presented) this.interiorScene.discardPrepared(prepared);
+      if (!stale()) this.loading = false;
     }
-    this.loading = false;
-    debugLog('Look inside: body applied', { bodyId: body.id, swap });
-    return true;
   }
 
   /** Draw a model of the current body (null: the unresolved whole, for a
@@ -694,11 +708,14 @@ export class InteriorMode {
     return true;
   }
 
-  /** A new drawn model: its scale, its boundaries on the next frame, a fresh panel
-   *  (its rows fading in outside-in when a body is revealed). */
+  /** A new drawn model: its scale, its boundaries on the faces at once, a fresh
+   *  panel (its rows fading in outside-in when a body is revealed). */
   private applyDrawn(reveal = false): void {
     this.temperatureRange = bodyTemperatureRange(this.drawn.regionsInsideOut.flatMap((region) => (region.region ? [region.region.temperatureK] : [])));
-    this.remap = null; // the new model's boundaries go out on the next frame
+    // The new model's boundaries go out now, not on the next frame: the faces,
+    // the pick layout and the ruler never see the old model's count or radii.
+    this.remap = null;
+    this.refreshRemapIfNeeded();
     this.clearSelection();
     this.renderPanel(reveal);
   }
@@ -771,7 +788,7 @@ export class InteriorMode {
       legend.replaceChildren();
       // Rows fade in outside-in on a reveal; any other re-render is instant.
       legend.classList.toggle('reveal', reveal && !this.reducedMotion.matches);
-      const art = this.regionArt();
+      const art = regionArtInsideOut(this.drawn);
       const scores = this.drawn.regionsInsideOut.map((_, index) => claimScores({ drawn: this.drawn, index, coverage: this.coverage }));
       // The legend reads outside-in, the way a reader meets the layers.
       for (let index = this.drawn.regionsInsideOut.length - 1; index >= 0; index--) {
@@ -937,6 +954,7 @@ export class InteriorMode {
     const card = document.getElementById('interior-evidence-card');
     if (!region || !claim || !root || !card) return;
     const scores = claimScores({ drawn: this.drawn, index: this.pinnedIndex, coverage: this.coverage });
+    this.picker.close(); // one modal at a time
     this.evidenceClaim = claimIndex;
     renderEvidencePopover(card, { regionName: region.name, claim, score: scores[claimIndex], onClose: () => this.closeEvidence() });
     root.classList.add('visible');
@@ -957,32 +975,16 @@ export class InteriorMode {
     this.legendHoverIndex = -1;
     this.clearHover();
     this.renderPinned();
-    this.emphasisIndex = -1;
-    this.emphasisAmount = 0;
+    this.emphasis.index = -1;
+    this.emphasis.amount = 0;
     this.interiorScene.setEmphasis(-1, 0);
   }
 
-  /** What the faces emphasise: a hovered legend row, else the hovered region, else the pinned one. */
-  private emphasisTarget(): number {
-    if (this.legendHoverIndex >= 0) return this.legendHoverIndex;
-    if (this.hoverIndex >= 0) return this.hoverIndex;
-    return this.pinnedIndex;
-  }
-
   private advanceEmphasis(dt: number): void {
-    const target = this.emphasisTarget();
+    const target = emphasisTarget(this.legendHoverIndex, this.hoverIndex, this.pinnedIndex);
     const step = this.reducedMotion.matches ? 1 : dt / EMPHASIS_S;
-    if (target >= 0) {
-      if (target !== this.emphasisIndex) {
-        this.emphasisIndex = target;
-        this.emphasisAmount = Math.min(this.emphasisAmount, 0.5); // a switch re-eases part way
-      }
-      this.emphasisAmount = Math.min(1, this.emphasisAmount + step);
-    } else {
-      this.emphasisAmount = Math.max(0, this.emphasisAmount - step);
-      if (this.emphasisAmount === 0) this.emphasisIndex = -1;
-    }
-    this.interiorScene.setEmphasis(this.emphasisIndex, this.emphasisAmount);
+    advanceEmphasis(this.emphasis, target, step);
+    this.interiorScene.setEmphasis(this.emphasis.index, this.emphasis.amount);
   }
 
   /** The legend's rows follow the 3-D state: hot for the hovered region, pinned for the pinned one. */
@@ -1082,14 +1084,14 @@ export class InteriorMode {
     const min = document.getElementById('interior-scale-min');
     const max = document.getElementById('interior-scale-max');
     const mid = scale.querySelector('.interior-scale-mid');
-    if (min) min.textContent = `${formatKm(range.minK)} K`;
-    if (max) max.textContent = `${formatKm(range.maxK)} K`;
+    if (min) min.textContent = `${formatNumber(range.minK)} K`;
+    if (max) max.textContent = `${formatNumber(range.maxK)} K`;
     if (mid) mid.textContent = range.log ? 'temperature, log scale' : 'temperature';
     scale.style.display = '';
   }
 
   private syncViewButtons(): void {
-    const current = cutViewForAngle(this.angleToDeg);
+    const current = cutViewForAngle(this.cut.toDeg);
     for (const view of CUT_VIEWS) {
       document.getElementById(`interior-view-${view}`)?.classList.toggle('on', view === current);
     }
@@ -1097,9 +1099,9 @@ export class InteriorMode {
 
   private syncAngleReadout(): void {
     const slider = document.getElementById('interior-angle') as HTMLInputElement | null;
-    if (slider && document.activeElement !== slider) slider.value = String(Math.round(this.angleDeg));
+    if (slider && document.activeElement !== slider) slider.value = String(Math.round(this.cut.angleDeg));
     const readout = document.getElementById('interior-angle-value');
-    if (readout) readout.textContent = `${Math.round(this.angleDeg)}°`;
+    if (readout) readout.textContent = `${Math.round(this.cut.angleDeg)}°`;
   }
 
   /** The Esc cascade: the popover, the picker, the pinned inspector, then the tool itself. */
@@ -1123,6 +1125,7 @@ export class InteriorMode {
 
   private openPicker(): void {
     if (!this.active) return;
+    this.closeEvidence(); // one modal at a time
     this.picker.open();
   }
 
@@ -1234,9 +1237,17 @@ export class InteriorMode {
     return true;
   }
 
-  /** True only once the map is applied and the cut has settled. */
+  /** True only once the map is applied (the real one, not the loader's
+   *  fallback with the real one still to come), the regions are on the faces,
+   *  and the cut and the Readable morph have settled. */
   devReady(): boolean {
-    return this.active && !this.loading && !this.interiorScene.isFading() && this.angleElapsedS >= CUT_ANIMATION_S && this.scaleBlend === this.scaleBlendTarget;
+    return this.active
+      && !this.loading
+      && this.remap !== null
+      && !this.interiorScene.isFading()
+      && !this.interiorScene.awaitingLateMap()
+      && cutTweenSettled(this.cut)
+      && this.scaleBlend === this.scaleBlendTarget;
   }
 
   /** Draw a named model of the current body (a competing alternative, or a
@@ -1267,6 +1278,11 @@ export class InteriorMode {
       return null;
     }
     const region = this.drawn.regionsInsideOut[hit.regionIndex];
+    if (!region) {
+      // The pick layout and the drawn model are refreshed together; a hit past the model is nothing to hover.
+      this.clearHover();
+      return null;
+    }
     const depthKm = hit.surface === 'skin' ? null : this.depthKmAtDisplay(hit.radiusDisplay);
     if (hit.surface !== 'skin') this.setHover(hit.regionIndex, x, y, depthKm);
     else this.clearHover();
@@ -1311,15 +1327,16 @@ export class InteriorMode {
       displayMode: this.displayMode,
       temperatureRange: this.temperatureRange,
       rings: this.interiorScene.hasRings() ? this.ringsOn : null,
-      view: cutViewForAngle(this.angleDeg),
-      openingAngleDeg: this.angleDeg,
-      targetAngleDeg: this.angleToDeg,
+      view: cutViewForAngle(this.cut.angleDeg),
+      openingAngleDeg: this.cut.angleDeg,
+      targetAngleDeg: this.cut.toDeg,
       readable: this.readable,
       scaleBlend: this.scaleBlend,
       projectedRadiusPx: this.projectedPx,
       presentationSeconds: this.presentationSeconds,
       frozen: this.frozen,
       loading: this.loading,
+      skin: this.interiorScene.hasSkin(),
       ready: this.devReady(),
       fps: this.avgFps(),
       regions: regionsInsideOut.map((region, index) => ({
@@ -1331,7 +1348,7 @@ export class InteriorMode {
       hover: regionsInsideOut[this.hoverIndex]?.key ?? null,
       pinned: regionsInsideOut[this.pinnedIndex]?.key ?? null,
       evidence: regionsInsideOut[this.pinnedIndex]?.region?.claims[this.evidenceClaim]?.kind ?? null,
-      emphasis: { region: regionsInsideOut[this.emphasisIndex]?.key ?? null, amount: this.emphasisAmount },
+      emphasis: { region: regionsInsideOut[this.emphasis.index]?.key ?? null, amount: this.emphasis.amount },
     };
   }
 

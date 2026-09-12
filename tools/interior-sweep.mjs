@@ -7,10 +7,23 @@
 // every render path draws the disc — then writes a capture per body × view ×
 // mode for a look. Runs at desktop and 390×844 by default.
 //
+// The opt-in lifecycle scenario (--scenario=lifecycle) drives the tool's
+// ceremonies through their races instead: a rapid double pick, a pick during
+// the reveal and during the cross-fade, the Esc cascade with the picker and
+// the evidence popover closing each other, prefers-reduced-motion (every
+// move lands at once), the phone's docked inspector, and interiorReady()
+// against a colour map held back past the loader's timeout (the tool shows
+// the loader's fallback, and must not call itself ready until the real map
+// lands). Each case asserts the tool ends sane: a skin on, the cut open at
+// the chosen angle, interiorReady() true, the legend the drawn model, no
+// page errors.
+//
 // Prereq: npm run dev (port 5173)
 //   node tools/interior-sweep.mjs
 //   node tools/interior-sweep.mjs --bodies=Earth,Europa --viewport=desktop --out=planning/interior-sweep
 //   node tools/interior-sweep.mjs --paths=0            # skip the render-path cases
+//   node tools/interior-sweep.mjs --scenario=lifecycle # the ceremonies' races instead of the sweep
+//   node tools/interior-sweep.mjs --scenario=sweep,lifecycle
 //
 // Frame delivery is tools/smoothness-gate.mjs's job, not this one's; on a
 // software GPU the numbers here would mean nothing.
@@ -30,6 +43,9 @@ const outDir = arg('out', 'planning/interior-sweep');
 const bodies = arg('bodies', 'Earth,Moon,Europa,Jupiter,Mars,Phobos,Mercury').split(',').filter(Boolean);
 const viewportChoice = arg('viewport', 'both');
 const runPaths = arg('paths', '1') !== '0';
+const scenarios = arg('scenario', 'sweep').split(',').filter(Boolean);
+const runSweep = scenarios.includes('sweep');
+const runLifecycle = scenarios.includes('lifecycle');
 await mkdir(outDir, { recursive: true });
 
 const VIEWPORTS = [
@@ -88,9 +104,12 @@ function blockStats(image, x0, y0, size) {
   return { mean, std: Math.sqrt(Math.max(0, variance)), max, count };
 }
 
-async function openTool(context, body, query = '') {
+/** Open the tool on a body in a fresh page. `reducedMotion` emulates the
+ *  media query before the app boots, so the tool reads it from its first frame. */
+async function openTool(context, body, query = '', { reducedMotion = false } = {}) {
   const page = await context.newPage();
   page.setDefaultTimeout(240000);
+  if (reducedMotion) await page.emulateMedia({ reducedMotion: 'reduce' });
   const errors = [];
   page.on('pageerror', (error) => errors.push(String(error).slice(0, 300)));
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text().slice(0, 300)); });
@@ -158,9 +177,9 @@ async function sweepBody(context, viewport, body) {
   await page.evaluate(() => window.__moon.interiorPin(null));
 
   // 3. A hover sweep across the section resolves regions in order outward
-  // from the centre, at rest and mid-blend. Both directions: the wedge is
-  // yawed, so on the side the disc tilts away the intact skin hides the
-  // outermost sliver of the rim, and only the near-tilted side shows it all.
+  // from the centre, at rest and mid-blend. Both directions: at Section the
+  // wedge yaw has tapered to none and the disc is face-on, so both sides
+  // must show every region out to the rim.
   await page.evaluate(() => window.__moon.interiorView('section'));
   await ready(page);
   const centre = await discCentre(page, viewport);
@@ -295,6 +314,199 @@ async function pathCases(context, viewport) {
   }
 }
 
+// ---- the lifecycle scenario ---------------------------------------------------
+
+/** The opening the tool chooses for itself on a viewport: Section on a phone, Cutaway elsewhere. */
+const chosenAngleDeg = (viewport) => (viewport.width <= 640 ? 180 : 90);
+
+async function waitReady(page, timeout = 120000) {
+  await page.waitForFunction(() => window.__moon.interiorReady(), undefined, { timeout });
+}
+
+/** Wait for the tool to be ready and assert it ended where a reader expects: the body asked
+ *  for, a skin on it, the cut open at the chosen angle, the legend the drawn model. */
+async function saneEnd(page, tag, { body, angleDeg }) {
+  await waitReady(page);
+  const current = await state(page);
+  check(current.bodyId === body, `${tag}: ends on ${current.bodyId || '(nothing)'}, expected ${body}`);
+  check(current.skin === true, `${tag}: no skin on the body at the end`);
+  check(current.ready === true, `${tag}: interiorReady() is false at the end`);
+  check(current.loading === false, `${tag}: still loading at the end`);
+  check(Math.abs(current.openingAngleDeg - angleDeg) < 0.5, `${tag}: the cut is open at ${current.openingAngleDeg.toFixed(1)}°, expected ${angleDeg}°`);
+  check(current.regions.length > 0, `${tag}: no regions drawn`);
+  const rows = await legendRegions(page);
+  check(rows.length === current.regions.length, `${tag}: legend has ${rows.length} rows for ${current.regions.length} regions`);
+  return current;
+}
+
+/** Two picks in one task: the first is superseded before its map lands; the second is what the tool ends on. */
+async function rapidDoublePickCase(context, viewport) {
+  const tag = `${viewport.name}/lifecycle rapid double pick`;
+  console.log(`\n== ${tag}`);
+  const { page, errors } = await openTool(context, 'Earth');
+  await page.evaluate(() => { window.__moon.interiorPick('Mars'); window.__moon.interiorPick('Europa'); });
+  await saneEnd(page, tag, { body: 'Europa', angleDeg: chosenAngleDeg(viewport) });
+  check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
+  await page.close();
+}
+
+/** A pick while the previous swap's reveal is still opening the cut. */
+async function pickDuringRevealCase(context, viewport) {
+  const tag = `${viewport.name}/lifecycle pick during the reveal`;
+  console.log(`\n== ${tag}`);
+  const { page, errors } = await openTool(context, 'Earth');
+  await page.evaluate(() => window.__moon.interiorPick('Mars'));
+  // The reveal: Mars is on, the load is done, and the cut is still on its way open.
+  await page.waitForFunction(() => {
+    const current = window.__moon.interiorState();
+    return current.bodyId === 'Mars' && !current.loading && current.openingAngleDeg < current.targetAngleDeg - 5;
+  }, undefined, { timeout: 120000 });
+  await page.evaluate(() => window.__moon.interiorPick('Moon'));
+  await saneEnd(page, tag, { body: 'Moon', angleDeg: chosenAngleDeg(viewport) });
+  check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
+  await page.close();
+}
+
+/** A pick while the previous swap's cross-fade runs behind the closed cut. */
+async function pickDuringFadeCase(context, viewport) {
+  const tag = `${viewport.name}/lifecycle pick during the fade`;
+  console.log(`\n== ${tag}`);
+  const { page, errors } = await openTool(context, 'Earth');
+  await page.evaluate(() => window.__moon.interiorPick('Mars'));
+  // The fade: the body has turned over (Mars is on) but the commit is still loading, i.e. fading.
+  await page.waitForFunction(() => {
+    const current = window.__moon.interiorState();
+    return current.bodyId === 'Mars';
+  }, undefined, { timeout: 120000 });
+  const during = await state(page);
+  notes.push(`${tag}: second pick made with loading=${during.loading} angle=${during.openingAngleDeg.toFixed(1)}`);
+  await page.evaluate(() => window.__moon.interiorPick('Saturn'));
+  const end = await saneEnd(page, tag, { body: 'Saturn', angleDeg: chosenAngleDeg(viewport) });
+  check(end.rings === true, `${tag}: Saturn's rings are ${end.rings}, expected on`);
+  check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
+  await page.close();
+}
+
+/** Esc closes one thing at a time — the popover, the picker, the pin, then the tool — and
+ *  the picker and the popover close each other. */
+async function escCascadeCase(context, viewport) {
+  const tag = `${viewport.name}/lifecycle Esc cascade`;
+  console.log(`\n== ${tag}`);
+  const { page, errors } = await openTool(context, 'Earth');
+  const pickerOpen = () => page.evaluate(() => document.getElementById('interior-picker').classList.contains('visible'));
+  const evidenceOpen = () => page.evaluate(() => document.getElementById('interior-evidence').classList.contains('visible'));
+  await page.evaluate(() => window.__moon.interiorPin('outerCore'));
+  check((await state(page)).pinned === 'outerCore', `${tag}: pin refused`);
+  check(await page.evaluate(() => window.__moon.interiorEvidence('existence')), `${tag}: evidence refused`);
+  check(await evidenceOpen(), `${tag}: the popover did not open`);
+  // Opening the picker closes the popover.
+  check(await page.evaluate(() => window.__moon.interiorPickerOpen()), `${tag}: picker refused`);
+  check(await pickerOpen(), `${tag}: the picker did not open`);
+  check(!(await evidenceOpen()) && (await state(page)).evidence === null, `${tag}: the popover stayed open under the picker`);
+  // Opening the popover closes the picker.
+  check(await page.evaluate(() => window.__moon.interiorEvidence('existence')), `${tag}: evidence refused with the picker open`);
+  check(await evidenceOpen() && !(await pickerOpen()), `${tag}: the picker stayed open under the popover`);
+  // The cascade.
+  await page.evaluate(() => window.__moon.interiorEsc());
+  let current = await state(page);
+  check(!(await evidenceOpen()) && current.evidence === null && current.pinned === 'outerCore', `${tag}: the first Esc did not close only the popover`);
+  await page.evaluate(() => window.__moon.interiorPickerOpen());
+  await page.evaluate(() => window.__moon.interiorEsc());
+  current = await state(page);
+  check(!(await pickerOpen()) && current.pinned === 'outerCore', `${tag}: the second Esc did not close only the picker`);
+  await page.evaluate(() => window.__moon.interiorEsc());
+  current = await state(page);
+  check(current.pinned === null, `${tag}: the third Esc did not unpin`);
+  await page.evaluate(() => window.__moon.interiorEsc());
+  await page.waitForFunction(() => document.getElementById('interior-ui').style.display === 'none', undefined, { timeout: 60000 });
+  await settle(page);
+  current = await state(page);
+  check(current.ready === false, `${tag}: the tool still reports ready after leaving`);
+  check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
+  await page.close();
+}
+
+/** Under prefers-reduced-motion every move lands at once: a view change, the Readable morph, a swap. */
+async function reducedMotionCase(context, viewport) {
+  const tag = `${viewport.name}/lifecycle reduced motion`;
+  console.log(`\n== ${tag}`);
+  const { page, errors } = await openTool(context, 'Earth', '', { reducedMotion: true });
+  check(await page.evaluate(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches), `${tag}: the media query is not emulated`);
+  await page.evaluate(() => window.__moon.interiorView('section'));
+  await settle(page);
+  let current = await state(page);
+  check(Math.abs(current.openingAngleDeg - 180) < 0.01, `${tag}: Section is at ${current.openingAngleDeg.toFixed(1)}° three frames after the view change; it should land at once`);
+  // The Readable toggle through the DOM, the way a reader reaches it: the morph must not ease.
+  await page.evaluate(() => { const toggle = document.getElementById('interior-readable-toggle'); toggle.checked = false; toggle.dispatchEvent(new Event('change')); });
+  await settle(page);
+  current = await state(page);
+  check(current.readable === false && current.scaleBlend === 0, `${tag}: the Readable morph is at ${current.scaleBlend} three frames after the toggle; it should land at once`);
+  await page.evaluate(() => { const toggle = document.getElementById('interior-readable-toggle'); toggle.checked = true; toggle.dispatchEvent(new Event('change')); });
+  await settle(page);
+  check((await state(page)).scaleBlend === 1, `${tag}: the Readable morph did not land at once on the way back`);
+  await page.evaluate(() => window.__moon.interiorPick('Mars'));
+  await saneEnd(page, tag, { body: 'Mars', angleDeg: 180 });
+  check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
+  await page.close();
+}
+
+/** The pinned inspector docks under the legend in the sheet on a phone, and stands alone on desktop. */
+async function dockedInspectorCase(context, viewport) {
+  const tag = `${viewport.name}/lifecycle docked inspector`;
+  console.log(`\n== ${tag}`);
+  const { page, errors } = await openTool(context, 'Earth');
+  await page.evaluate(() => window.__moon.interiorPin('outerCore'));
+  await settle(page);
+  const inspector = await page.evaluate(() => {
+    const root = document.getElementById('interior-inspector');
+    return { docked: root.classList.contains('docked'), parent: root.parentElement?.id ?? '', display: getComputedStyle(root).display, name: root.querySelector('.ii-name')?.textContent ?? '' };
+  });
+  const phone = viewport.width <= 640;
+  check(inspector.display !== 'none', `${tag}: the inspector is hidden after a pin`);
+  check(inspector.name === 'Outer core', `${tag}: the inspector shows "${inspector.name}"`);
+  check(inspector.docked === phone, `${tag}: docked=${inspector.docked} on a ${phone ? 'phone' : 'desktop'} viewport`);
+  check(inspector.parent === (phone ? 'interior-panel' : 'interior-ui'), `${tag}: the inspector sits in #${inspector.parent}`);
+  check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
+  await page.close();
+}
+
+/** A colour map held past the loader's timeout: the tool presents the loader's fallback and must
+ *  not call itself ready until the real map lands through the late slot. */
+async function lateMapCase(context, viewport) {
+  const tag = `${viewport.name}/lifecycle late map`;
+  console.log(`\n== ${tag}`);
+  const { page, errors } = await openTool(context, 'Earth');
+  const held = [];
+  const marsMap = '**/textures/mars.v2.webp';
+  await page.route(marsMap, (route) => { held.push(route); });
+  await page.evaluate(() => window.__moon.interiorPick('Mars'));
+  // The loader gives the fallback after its timeout (8 s) and the swap completes on it.
+  await page.waitForFunction(() => {
+    const current = window.__moon.interiorState();
+    return current.bodyId === 'Mars' && !current.loading && Math.abs(current.openingAngleDeg - current.targetAngleDeg) < 0.01;
+  }, undefined, { timeout: 90000 });
+  await settle(page);
+  const onFallback = await state(page);
+  check(onFallback.skin === true, `${tag}: no skin on Mars while the map is held`);
+  check(onFallback.ready === false, `${tag}: interiorReady() is true while the real map is still held back`);
+  notes.push(`${tag}: ${held.length} request(s) held before release`);
+  await page.unroute(marsMap);
+  for (const route of held.splice(0)) await route.continue().catch(() => {});
+  await saneEnd(page, tag, { body: 'Mars', angleDeg: chosenAngleDeg(viewport) });
+  check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
+  await page.close();
+}
+
+async function lifecycleCases(context, viewport) {
+  await rapidDoublePickCase(context, viewport);
+  await pickDuringRevealCase(context, viewport);
+  await pickDuringFadeCase(context, viewport);
+  await escCascadeCase(context, viewport);
+  await reducedMotionCase(context, viewport);
+  await dockedInspectorCase(context, viewport);
+  if (viewport.name === 'desktop') await lateMapCase(context, viewport);
+}
+
 try {
   for (const viewport of VIEWPORTS) {
     const context = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height }, deviceScaleFactor: 1 });
@@ -310,9 +522,12 @@ try {
         localStorage.setItem('planetarium-surface-hint-seen', '1');
       } catch {}
     });
-    for (const body of bodies) await sweepBody(context, viewport, body);
-    if (bodies.includes('Europa')) await bandCase(context, viewport);
-    if (runPaths && viewport.name === 'desktop') await pathCases(context, viewport);
+    if (runSweep) {
+      for (const body of bodies) await sweepBody(context, viewport, body);
+      if (bodies.includes('Europa')) await bandCase(context, viewport);
+      if (runPaths && viewport.name === 'desktop') await pathCases(context, viewport);
+    }
+    if (runLifecycle) await lifecycleCases(context, viewport);
     await context.close();
   }
 } finally {

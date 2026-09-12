@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { validateCoverage, validateInteriorModel } from './validate';
-import type { Coverage, InteriorModel, Region } from './interiorTypes';
+import { MAX_REGIONS, type Coverage, type InteriorModel, type Region } from './interiorTypes';
 
 function region(key: string, outerRadiusKm: number, innerK: number, outerK: number): Region {
   return {
@@ -74,6 +74,57 @@ describe('validateInteriorModel', () => {
     }));
     expect(problems).toContainEqual(expect.stringContaining('does not lie within the body'));
   });
+
+  it('refuses more regions than the studio draws', () => {
+    const many: Region[] = [];
+    for (let index = 0; index < MAX_REGIONS + 1; index++) {
+      many.push(region(`r${index}`, (index + 1) * 100, 2000 - index * 100, 2000 - index * 100 - 50));
+    }
+    const problems = validateInteriorModel(model(many, { referenceRadiusKm: (MAX_REGIONS + 1) * 100 }));
+    expect(problems).toContainEqual(expect.stringContaining(`draws at most ${MAX_REGIONS}`));
+    expect(validateInteriorModel(model(many.slice(0, MAX_REGIONS), { referenceRadiusKm: MAX_REGIONS * 100 }))).toEqual([]);
+  });
+
+  it('refuses two regions with one key', () => {
+    const problems = validateInteriorModel(model([region('core', 400, 2000, 1500), region('core', 1000, 1500, 300)]));
+    expect(problems).toContainEqual(expect.stringContaining('another region already has this key'));
+  });
+
+  it('requires a boundary interval or spread to bracket the radius it is drawn at, with a confidence in (0, 1]', () => {
+    const missed = region('core', 400, 2000, 1500);
+    missed.boundary.knowledge.location = { kind: 'interval', low: 410, high: 450, level: 0.9, source: 's' };
+    expect(validateInteriorModel(model([missed, region('mantle', 1000, 1500, 300)]))).toContainEqual(expect.stringContaining('does not bracket the outer radius 400 km'));
+    const spread = region('core', 400, 2000, 1500);
+    spread.boundary.knowledge.location = { kind: 'modelSpread', low: 100, high: 300, models: ['a', 'b'] };
+    expect(validateInteriorModel(model([spread, region('mantle', 1000, 1500, 300)]))).toContainEqual(expect.stringContaining('modelSpread 100–300 km does not bracket'));
+    const overconfident = region('core', 400, 2000, 1500);
+    overconfident.boundary.knowledge.location = { kind: 'interval', low: 390, high: 410, level: 90, source: 's' };
+    expect(validateInteriorModel(model([overconfident, region('mantle', 1000, 1500, 300)]))).toContainEqual(expect.stringContaining('level 90 is not a confidence'));
+    const bracketed = region('core', 400, 2000, 1500);
+    bracketed.boundary.knowledge.location = { kind: 'interval', low: 390, high: 410, level: 0.9, source: 's' };
+    expect(validateInteriorModel(model([bracketed, region('mantle', 1000, 1500, 300)]))).toEqual([]);
+  });
+
+  it('keeps a probability between 0 and 1', () => {
+    const tooSure = region('core', 1000, 2000, 1500);
+    tooSure.claims.push({ kind: 'state', evidence: [], probability: { value: 90, proposition: 'p', source: 's' } });
+    expect(validateInteriorModel(model([tooSure]))).toContainEqual(expect.stringContaining('probability of 90 is not between 0 and 1'));
+  });
+
+  it("refuses a temperature interpolated 'none' and a profile out of radius order", () => {
+    const stepped = region('core', 1000, 2000, 1500);
+    stepped.temperatureK = { kind: 'endpoints', inner: { value: 2000, source: 's', basis: 'modelled' }, outer: { value: 1500, source: 's', basis: 'modelled' }, interpolation: 'none' };
+    expect(validateInteriorModel(model([stepped]))).toContainEqual(expect.stringContaining("cannot be interpolated 'none'"));
+    const shuffled = region('core', 1000, 2000, 1500);
+    shuffled.temperatureK = { kind: 'profile', samples: [{ radiusKm: 0, value: 2000 }, { radiusKm: 800, value: 1700 }, { radiusKm: 400, value: 1900 }], interpolation: 'linear', source: 's', basis: 'modelled' };
+    expect(validateInteriorModel(model([shuffled]))).toContainEqual(expect.stringContaining('temperature profile\'s samples are not in ascending radius at sample 2'));
+    const pressure = region('core', 1000, 2000, 1500);
+    pressure.pressureGPa = { kind: 'profile', samples: [{ radiusKm: 500, value: 10 }, { radiusKm: 500, value: 5 }], interpolation: 'linear', source: 's', basis: 'modelled' };
+    expect(validateInteriorModel(model([pressure]))).toContainEqual(expect.stringContaining('pressure profile\'s samples are not in ascending radius'));
+    const ordered = region('core', 1000, 2000, 1500);
+    ordered.temperatureK = { kind: 'profile', samples: [{ radiusKm: 0, value: 2000 }, { radiusKm: 500, value: 1800 }, { radiusKm: 1000, value: 1500 }], interpolation: 'linear', source: 's', basis: 'modelled' };
+    expect(validateInteriorModel(model([ordered]))).toEqual([]);
+  });
 });
 
 describe('validateCoverage', () => {
@@ -97,5 +148,14 @@ describe('validateCoverage', () => {
 
   it('flags a model filed under the wrong body', () => {
     expect(validateCoverage('Other', { state: 'constrained', model: good, history: [] })).toContainEqual(expect.stringContaining('is for Test'));
+  });
+
+  it('forbids an illustrative label on a constrained or competing model', () => {
+    const scenario = { ...good, illustrative: true };
+    expect(validateCoverage('Test', { state: 'constrained', model: scenario, history: [] })).toContainEqual(expect.stringContaining('labelled illustrative, but a constrained entry'));
+    const other = { ...good, modelId: 'other' };
+    const competing: Coverage = { state: 'competing', models: [scenario, other], defaultModelId: 'test', distinguishedBy: 'd', history: [] };
+    expect(validateCoverage('Test', competing)).toContainEqual(expect.stringContaining('labelled illustrative, but a competing entry'));
+    expect(validateCoverage('Test', { ...competing, models: [good, other] })).toEqual([]);
   });
 });

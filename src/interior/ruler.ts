@@ -73,6 +73,11 @@ export interface RulerLayout {
   brackets: RulerBracket[];
 }
 
+/** An empty layout to fill: rulerLayout reuses its entries and their vectors frame after frame. */
+export function createRulerLayout(): RulerLayout {
+  return { stepKm: 0, ticks: [], segments: [], brackets: [] };
+}
+
 const NICE_STEPS = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10_000, 20_000, 50_000, 100_000, 200_000];
 
 /** The tick spacing, km: the smallest nice step that fits at most eight ticks in the radius. */
@@ -108,30 +113,43 @@ function rulerPointAtDisplay(input: RulerInput, display: number, out: THREE.Vect
   return out.copy(basis.radial).multiplyScalar(display);
 }
 
-export function rulerLayout(input: RulerInput): RulerLayout {
+/** Lay the ruler out. With `out`, the previous layout's entries and vectors
+ *  are reused (pooled), so a per-frame caller allocates nothing at rest. */
+export function rulerLayout(input: RulerInput, out: RulerLayout = createRulerLayout()): RulerLayout {
   const reference = input.referenceRadiusKm;
   const stepKm = niceStepKm(reference);
-  const ticks: RulerTick[] = [];
-  for (let depthKm = 0; depthKm <= reference + 1e-9; depthKm += stepKm) {
-    ticks.push({ depthKm, point: rulerPoint(input, depthKm), major: true });
-  }
+  out.stepKm = stepKm;
+  let tickCount = 0;
+  const placeTick = (depthKm: number, major: boolean) => {
+    const tick = out.ticks[tickCount] ?? (out.ticks[tickCount] = { depthKm: 0, point: new THREE.Vector3(), major: true });
+    tick.depthKm = depthKm;
+    tick.major = major;
+    rulerPoint(input, depthKm, tick.point);
+    tickCount++;
+  };
+  for (let depthKm = 0; depthKm <= reference + 1e-9; depthKm += stepKm) placeTick(depthKm, true);
   // The centre, when the last step does not land on it.
-  const last = ticks[ticks.length - 1];
-  if (last && reference - last.depthKm > stepKm * 0.25) {
-    ticks.push({ depthKm: reference, point: rulerPoint(input, reference), major: false });
-  }
-  const segments: RulerSegment[] = input.regionsInsideOut.map((region, index) => ({
-    key: region.key,
-    name: region.name,
-    from: rulerPointAtDisplay(input, input.outerDisplay[index], new THREE.Vector3()),
-    to: rulerPointAtDisplay(input, index > 0 ? input.outerDisplay[index - 1] + 1e-6 : 0, new THREE.Vector3()),
-  }));
-  const brackets: RulerBracket[] = input.annotations.map((annotation) => ({
-    name: annotation.name,
-    from: rulerPoint(input, reference - annotation.outerRadiusKm),
-    to: rulerPoint(input, reference - annotation.innerRadiusKm),
-  }));
-  return { stepKm, ticks, segments, brackets };
+  const last = out.ticks[tickCount - 1];
+  if (last && reference - last.depthKm > stepKm * 0.25) placeTick(reference, false);
+  out.ticks.length = tickCount;
+
+  input.regionsInsideOut.forEach((region, index) => {
+    const segment = out.segments[index] ?? (out.segments[index] = { key: '', name: '', from: new THREE.Vector3(), to: new THREE.Vector3() });
+    segment.key = region.key;
+    segment.name = region.name;
+    rulerPointAtDisplay(input, input.outerDisplay[index], segment.from);
+    rulerPointAtDisplay(input, index > 0 ? input.outerDisplay[index - 1] + 1e-6 : 0, segment.to);
+  });
+  out.segments.length = input.regionsInsideOut.length;
+
+  input.annotations.forEach((annotation, index) => {
+    const bracket = out.brackets[index] ?? (out.brackets[index] = { name: '', from: new THREE.Vector3(), to: new THREE.Vector3() });
+    bracket.name = annotation.name;
+    rulerPoint(input, reference - annotation.outerRadiusKm, bracket.from);
+    rulerPoint(input, reference - annotation.innerRadiusKm, bracket.to);
+  });
+  out.brackets.length = input.annotations.length;
+  return out;
 }
 
 /** Which face carries the ruler: the one turned more toward the camera. */

@@ -26,6 +26,13 @@
  * Face A lies at +θ/2 from the view axis, face B at −θ/2; each face's normal
  * points into the removed wedge, i.e. toward the viewer.
  *
+ * The wedge is yawed about the hinge (yawCutFrame) so a cutaway shows its
+ * near face and its terraces obliquely rather than a crease looked at
+ * head-on. The yaw is the full WEDGE yaw up to Cutaway and tapers smoothly
+ * to none at Section (wedgeYawForOpening), so the Section disc is face-on
+ * as plan §5 says: at θ = 180° the display radius along the screen is the
+ * disc's radius, which the battery's pixel reads rely on.
+ *
  * Pure: no DOM, no renderer, only three's vector math.
  */
 import * as THREE from 'three';
@@ -177,6 +184,18 @@ export function openingAngleDegToRad(deg: number): number {
 }
 
 const yawScratch = new THREE.Vector3();
+
+/**
+ * The wedge yaw to apply at an opening angle: `fullYawRad` up to Cutaway
+ * (θ ≤ π/2), then a smoothstep down to exactly 0 at Section (θ = π), so the
+ * disc turns face-on as the cut opens fully and nothing jumps on the way.
+ */
+export function wedgeYawForOpening(openingAngle: number, fullYawRad: number): number {
+  const cutaway = CUT_VIEW_ANGLE_DEG.cutaway * DEG2RAD;
+  if (openingAngle <= cutaway) return fullYawRad;
+  const t = Math.min(1, (openingAngle - cutaway) / (Math.PI - cutaway));
+  return fullYawRad * (1 - t * t * (3 - 2 * t));
+}
 
 /**
  * Turn the wedge about the hinge by `yawRad`, so it is no longer symmetric

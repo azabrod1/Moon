@@ -70,7 +70,7 @@ export const SUN_MODEL: InteriorModel = {
       temperatureK: endpoints(7_000_000, 2_000_000, BAHCALL, 'modelled'),
       pressureGPa: endpoints(1.5e6, 1000, BAHCALL, 'modelled'),
       densityKgM3: endpoints(20_000, 200, BAHCALL, 'modelled'),
-      heat: heat([{ kind: 'none', note: 'Carries the core\'s light outward by radiation over about a hundred thousand years.' }], 'The core\'s light', 'radiation'),
+      heat: heat([{ kind: 'none', note: 'Carries the core\'s light outward by radiation over about a hundred thousand years.' }], 'the core\'s light', 'radiation'),
       claims: [
         claim('existence', [
           row('helioseismology', 'supports', CHRISTENSEN, { observed: 'Sound speed rising smoothly inward through this zone', inferred: 'A stable, non-convecting region in radiative equilibrium', assumed: 'The equation of state', uncertain: 'Composition details', year: 1996 }),
@@ -89,7 +89,7 @@ export const SUN_MODEL: InteriorModel = {
       temperatureK: endpoints(2_000_000, 6500, BAHCALL, 'modelled'),
       pressureGPa: endpoints(1000, 1e-5, BAHCALL, 'modelled'),
       densityKgM3: endpoints(200, 0.0003, BAHCALL, 'modelled'),
-      heat: heat([{ kind: 'none', note: 'Carries the heat the last third of the way by convection.' }], 'Heat from the radiative zone', 'convection'),
+      heat: heat([{ kind: 'none', note: 'Carries the heat the last third of the way by convection.' }], 'heat from the radiative zone', 'convection'),
       claims: [
         claim('existence', [
           row('helioseismology', 'supports', BASU, { observed: 'A kink in the sound-speed profile at 0.713 of the radius', inferred: 'The base of the convection zone, where the temperature gradient changes', assumed: 'Spherical symmetry', uncertain: '±0.001 of the radius', year: 1997 }),
@@ -109,7 +109,7 @@ export const SUN_MODEL: InteriorModel = {
       temperatureK: endpoints(6500, 4500, ASPLUND, 'measured'),
       pressureGPa: endpoints(1e-5, 1e-7, ASPLUND, 'measured'),
       densityKgM3: endpoints(0.0003, 0.00001, ASPLUND, 'measured'),
-      heat: heat([{ kind: 'none', note: 'Radiates the Sun\'s light into space at 5,772 K.' }], 'Heat from the convection below', 'radiation'),
+      heat: heat([{ kind: 'none', note: 'Radiates the Sun\'s light into space at 5,772 K.' }], 'heat from the convection below', 'radiation'),
       claims: [
         claim('existence', [
           row('inSitu', 'supports', KIRCHHOFF, { observed: 'The dark lines in the Sun\'s spectrum', inferred: 'A layer of cooler gas absorbing the light from below: the photosphere', assumed: '—', uncertain: '—', year: 1859 }),

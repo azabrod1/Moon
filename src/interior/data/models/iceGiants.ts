@@ -53,7 +53,7 @@ function envelope(facts: IceGiantFacts): Region[] {
       temperatureK: endpoints(2500, 350, HELLED_2011, 'modelled'),
       pressureGPa: endpoints(20, 0.1, HELLED_2011, 'modelled'),
       densityKgM3: endpoints(500, 30, HELLED_2011, 'modelled'),
-      heat: heat([{ kind: 'gravitationalContraction', note: 'Slow contraction since formation.' }], 'Heat from below', 'convection'),
+      heat: heat([{ kind: 'gravitationalContraction', note: 'Slow contraction since formation.' }], 'heat from below', 'convection'),
       claims: [
         claim('existence', [
           row('gravity', 'supports', facts.gravitySource, { observed: `Voyager 2's tracking gives the mass and the gravity harmonics J₂ and J₄, with a bulk density of ${facts.bulkDensity} kg/m³`, inferred: 'A light outer envelope of hydrogen and helium over denser material', assumed: 'A rotation rate', uncertain: 'Its mass fraction, 5–20%', mission: 'Voyager 2', year: facts.body === 'Uranus' ? 1986 : 1989 }),
@@ -72,7 +72,7 @@ function envelope(facts: IceGiantFacts): Region[] {
       temperatureK: endpoints(350, facts.surfaceK, facts.atmosphereSource, 'measured'),
       pressureGPa: endpoints(0.1, 0, facts.atmosphereSource, 'measured'),
       densityKgM3: endpoints(30, 0.4, facts.atmosphereSource, 'measured'),
-      heat: heat([{ kind: 'none', note: facts.body === 'Neptune' ? 'Warmed from below more than by the Sun.' : 'Warmed by faint sunlight; almost no heat from below.' }], 'Sunlight and heat from below', 'convection'),
+      heat: heat([{ kind: 'none', note: facts.body === 'Neptune' ? 'Warmed from below more than by the Sun.' : 'Warmed by faint sunlight; almost no heat from below.' }], 'sunlight and heat from below', 'convection'),
       claims: [
         claim('existence', [
           row('inSitu', 'supports', facts.atmosphereSource, { observed: 'Occultation temperature and pressure profiles', inferred: 'The weather layer', assumed: '—', uncertain: '—', mission: 'Voyager 2', year: facts.body === 'Uranus' ? 1987 : 1992 }),
@@ -131,7 +131,7 @@ function layeredModel(facts: IceGiantFacts): InteriorModel {
         temperatureK: endpoints(Math.round(centreK * 0.85), 3000, HELLED_2011, 'modelled'),
         pressureGPa: endpoints(500, 100, HELLED_2011, 'modelled'),
         densityKgM3: endpoints(4500, 3000, HELLED_2011, 'modelled'),
-        heat: heat([{ kind: 'gravitationalContraction', note: 'Formation heat, leaving slowly.' }], 'Heat from the core', 'conduction'),
+        heat: heat([{ kind: 'gravitationalContraction', note: 'Formation heat, leaving slowly.' }], 'heat from the core', 'conduction'),
         claims: [
           claim('existence', [
             row('labHighPressure', 'supports', MILLOT, { observed: 'Shock-compressed water ice X-rayed at 100–400 GPa forms a superionic crystal', inferred: 'The deep ice layer of Uranus and Neptune is superionic', assumed: 'The planets\' pressure and temperature profiles', uncertain: 'The exact boundary', year: 2019 }),
@@ -150,7 +150,7 @@ function layeredModel(facts: IceGiantFacts): InteriorModel {
         temperatureK: endpoints(3000, 2500, HELLED_2011, 'modelled'),
         pressureGPa: endpoints(100, 20, HELLED_2011, 'modelled'),
         densityKgM3: endpoints(3000, 1200, HELLED_2011, 'modelled'),
-        heat: heat([{ kind: 'gravitationalContraction', note: 'Formation heat, carried by convection in this shell.' }], 'Heat from below', 'convection'),
+        heat: heat([{ kind: 'gravitationalContraction', note: 'Formation heat, carried by convection in this shell.' }], 'heat from below', 'convection'),
         claims: [
           claim('existence', [
             row('gravity', 'supports', facts.gravitySource, { observed: 'Gravity harmonics and density', inferred: 'A thick layer of "ice" (water, ammonia, methane) makes up most of the mass', assumed: 'Three layers', uncertain: 'Its rock content', mission: 'Voyager 2', year: facts.body === 'Uranus' ? 1986 : 1989 }),
@@ -208,7 +208,7 @@ function fuzzyModel(facts: IceGiantFacts, layered: InteriorModel): InteriorModel
         temperatureK: endpoints(4000, 2500, HELLED_FORTNEY, 'modelled'),
         pressureGPa: endpoints(200, 20, HELLED_FORTNEY, 'modelled'),
         densityKgM3: endpoints(4000, 1200, HELLED_FORTNEY, 'modelled'),
-        heat: heat([{ kind: 'gravitationalContraction', note: 'Formation heat.' }], 'Heat from below', 'mixed'),
+        heat: heat([{ kind: 'gravitationalContraction', note: 'Formation heat.' }], 'heat from below', 'mixed'),
         claims: [
           claim('existence', [
             row('model', 'supports', HELLED_FORTNEY, { observed: 'The same gradient models', inferred: 'A water-dominated middle', assumed: 'As above', uncertain: 'As above', year: 2020 }),

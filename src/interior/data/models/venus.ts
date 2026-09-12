@@ -65,7 +65,7 @@ export const VENUS_MODEL: InteriorModel = {
       temperatureK: endpoints(4000, 1500, AITTA, 'modelled'),
       pressureGPa: endpoints(120, 1, AITTA, 'modelled'),
       densityKgM3: endpoints(5500, 3300, AITTA, 'modelled'),
-      heat: heat([{ kind: 'radiogenicDecay', note: 'Uranium, thorium and potassium; with no plate tectonics the heat leaves in episodes.' }], 'Heat from the core', 'convection'),
+      heat: heat([{ kind: 'radiogenicDecay', note: 'Uranium, thorium and potassium; with no plate tectonics the heat leaves in episodes.' }], 'heat from the core', 'convection'),
       claims: [
         claim('existence', [
           row('momentOfInertia', 'supports', MARGOT, { observed: 'Moment of inertia and density', inferred: 'A rocky mantle over the core', assumed: 'Hydrostatic Venus', uncertain: 'Its exact thickness', year: 2021 }),
@@ -84,7 +84,7 @@ export const VENUS_MODEL: InteriorModel = {
       temperatureK: endpoints(1500, 737, AITTA, 'modelled'),
       pressureGPa: endpoints(1, 0, AITTA, 'modelled'),
       densityKgM3: endpoints(2900, 2800, JAMES, 'inferred'),
-      heat: heat([{ kind: 'radiogenicDecay', note: 'Heat-producing elements in the crust.' }], 'Heat from the mantle, and a surface at 737 K under the atmosphere', 'conduction'),
+      heat: heat([{ kind: 'radiogenicDecay', note: 'Heat-producing elements in the crust.' }], 'heat from the mantle, and a surface at 737 K under the atmosphere', 'conduction'),
       claims: [
         claim('existence', [
           row('inSitu', 'supports', VENERA, { observed: 'Venera 13 and 14 analysed basaltic rock at the surface', inferred: 'A basaltic crust', assumed: '—', uncertain: 'Its depth', mission: 'Venera', year: 1984 }),

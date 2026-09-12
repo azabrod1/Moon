@@ -91,11 +91,6 @@ export function depthRangeText(region: Region, innerRadiusKm: number, referenceR
   return `${formatKm(top)}–${formatKm(bottom)} km down`;
 }
 
-/** A region's span as radii from the centre. */
-export function radiusRangeText(region: Region, innerRadiusKm: number): string {
-  return `${formatKm(innerRadiusKm)}–${formatKm(region.outerRadiusKm)} km from the centre`;
-}
-
 /** The thickness of a region, km. */
 export function thicknessText(region: Region, innerRadiusKm: number): string {
   return `${formatKm(region.outerRadiusKm - innerRadiusKm)} km thick`;
@@ -127,11 +122,12 @@ export function boundaryText(region: Region): string {
   return location ? `${physical}; placed at ${location}.` : `${physical}.`;
 }
 
-/** The heat budget as a sentence or two. */
+/** The heat budget as a sentence or two. `received` is authored as the phrase
+ *  that follows "warmed by", so it is printed as written: a proper noun keeps its capital. */
 export function heatText(heat: HeatBudget): string {
   const generated = heat.generated.map((entry) => HEAT_KIND_WORD[entry.kind]);
   const sources = generated.length === 0 ? 'No heat of its own' : `Heat from ${generated.join(', ')}`;
-  const received = heat.received ? `; warmed by ${heat.received.charAt(0).toLowerCase()}${heat.received.slice(1)}` : '';
+  const received = heat.received ? `; warmed by ${heat.received}` : '';
   const moved = heat.transport === 'unresolved' ? 'how it moves is unresolved' : `moved ${TRANSPORT_WORD[heat.transport]}`;
   return `${sources}${received}; ${moved}.`;
 }

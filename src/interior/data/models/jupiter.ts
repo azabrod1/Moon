@@ -32,7 +32,7 @@ const ENVELOPE: Region[] = [
     heat: heat([
       { kind: 'gravitationalContraction', note: 'Jupiter still shrinks slowly, releasing gravitational energy.' },
       { kind: 'heliumRain', note: 'Helium droplets separate and sink through the metallic layer, releasing energy.' },
-    ], 'Heat from the core', 'convection'),
+    ], 'heat from the core', 'convection'),
     claims: [
       claim('existence', [
         row('magnetic', 'supports', CONNERNEY, { observed: 'Jupiter\'s enormous, complex magnetic field, mapped by Juno', inferred: 'A deep, convecting, electrically conducting fluid: metallic hydrogen', assumed: 'Dynamo theory', uncertain: 'The exact depth the dynamo runs at', mission: 'Juno', year: 2018 }),
@@ -55,7 +55,7 @@ const ENVELOPE: Region[] = [
     temperatureK: endpoints(8000, 1000, DEBRAS, 'modelled'),
     pressureGPa: endpoints(150, 0.5, GUILLOT, 'modelled', 'log'),
     densityKgM3: endpoints(900, 50, GUILLOT, 'modelled'),
-    heat: heat([{ kind: 'gravitationalContraction', note: 'Slow contraction releases heat throughout.' }], 'Heat from below', 'convection'),
+    heat: heat([{ kind: 'gravitationalContraction', note: 'Slow contraction releases heat throughout.' }], 'heat from below', 'convection'),
     claims: [
       claim('existence', [
         row('gravity', 'supports', WAHL, { observed: 'Gravity harmonics', inferred: 'A low-density outer envelope', assumed: 'Hydrogen–helium equation of state', uncertain: 'Helium distribution', mission: 'Juno', year: 2017 }),
@@ -75,7 +75,7 @@ const ENVELOPE: Region[] = [
     temperatureK: endpoints(1000, 110, GALILEO, 'measured'),
     pressureGPa: endpoints(0.5, 0.00001, GALILEO, 'measured', 'log'),
     densityKgM3: endpoints(50, 0.2, GALILEO, 'inferred'),
-    heat: heat([{ kind: 'none', note: 'It radiates the heat that rises from below and the sunlight it absorbs.' }], 'Sunlight from above, heat from below', 'radiation'),
+    heat: heat([{ kind: 'none', note: 'It radiates the heat that rises from below and the sunlight it absorbs.' }], 'sunlight from above, heat from below', 'radiation'),
     claims: [
       claim('existence', [
         row('inSitu', 'supports', GALILEO, { observed: 'The Galileo probe\'s descent through the clouds', inferred: 'The atmosphere\'s structure to 22 bar', assumed: '—', uncertain: 'Regional variation', mission: 'Galileo', year: 1998 }),

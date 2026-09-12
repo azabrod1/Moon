@@ -44,9 +44,19 @@ describe('temperatureScale', () => {
     expect(temperatureT(range, 200)).toBe(0);
     expect(temperatureT(range, 700)).toBe(0.5);
     expect(temperatureT(range, 5000)).toBe(1);
-    expect(temperatureT({ minK: 300, maxK: 300, log: false }, 300)).toBe(0.5);
+    // A zero-span range is floored to one kelvin, as the shader floors it: the value sits at 0, not in the middle.
+    expect(temperatureT({ minK: 300, maxK: 300, log: false }, 300)).toBe(0);
+    expect(temperatureT({ minK: 300, maxK: 300, log: false }, 301)).toBe(1);
+    expect(temperatureT({ minK: 300, maxK: 300, log: true }, 300)).toBe(0);
     // A log scale: the geometric middle sits at the middle.
     expect(temperatureT({ minK: 100, maxK: 10_000, log: true }, 1000)).toBeCloseTo(0.5, 9);
+  });
+
+  it('treats a single known value as no scale', () => {
+    // Nothing to place one value between: the range is null, so the faces hatch and the legend hides the scale.
+    expect(bodyTemperatureRange([endpoints(300, 300, 's', 'inferred')])).toBeNull();
+    expect(bodyTemperatureRange([endpoints(300, 300, 's', 'inferred'), endpoints(300, 300, 's', 'inferred'), UNKNOWN])).toBeNull();
+    expect(bodyTemperatureRange([endpoints(301, 300, 's', 'inferred')])).toEqual({ minK: 300, maxK: 301, log: false });
   });
 
   it('reads endpoints from a quantity and nothing from unknown', () => {

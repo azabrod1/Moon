@@ -61,7 +61,7 @@ export const SATURN_MODEL: InteriorModel = {
       temperatureK: endpoints(8000, 6000, FORTNEY, 'modelled'),
       pressureGPa: endpoints(400, 150, FORTNEY, 'modelled'),
       densityKgM3: endpoints(2500, 1000, FORTNEY, 'modelled'),
-      heat: heat([{ kind: 'heliumRain', note: 'Helium droplets falling through the hydrogen release gravitational energy, the extra light Saturn gives off.' }], 'Heat from the core', 'convection'),
+      heat: heat([{ kind: 'heliumRain', note: 'Helium droplets falling through the hydrogen release gravitational energy, the extra light Saturn gives off.' }], 'heat from the core', 'convection'),
       claims: [
         claim('existence', [
           row('magnetic', 'supports', DOUGHERTY, { observed: 'A dipole field almost perfectly aligned with the spin axis, measured from inside the rings', inferred: 'A dynamo in a conducting fluid shell deep inside: metallic hydrogen', assumed: 'Dynamo theory; a stably stratified layer above smooths the field', uncertain: 'The depth of the dynamo', mission: 'Cassini', year: 2018 }),
@@ -80,7 +80,7 @@ export const SATURN_MODEL: InteriorModel = {
       temperatureK: endpoints(6000, 500, FORTNEY, 'modelled'),
       pressureGPa: endpoints(150, 0.1, FORTNEY, 'modelled'),
       densityKgM3: endpoints(1000, 50, FORTNEY, 'modelled'),
-      heat: heat([{ kind: 'gravitationalContraction', note: 'Slow contraction since formation.' }], 'Heat from below', 'convection'),
+      heat: heat([{ kind: 'gravitationalContraction', note: 'Slow contraction since formation.' }], 'heat from below', 'convection'),
       claims: [
         claim('existence', [
           row('gravity', 'supports', IESS, { observed: 'The gravity harmonics with the bulk density of 687 kg/m³', inferred: 'A deep hydrogen–helium envelope', assumed: 'Equations of state', uncertain: 'The helium fraction with depth', mission: 'Cassini', year: 2019 }),
@@ -99,7 +99,7 @@ export const SATURN_MODEL: InteriorModel = {
       temperatureK: endpoints(500, 134, LINDAL, 'measured'),
       pressureGPa: endpoints(0.1, 0, LINDAL, 'measured'),
       densityKgM3: endpoints(50, 0.2, LINDAL, 'measured'),
-      heat: heat([{ kind: 'none', note: 'Warmed by sunlight and from below.' }], 'Sunlight and heat from below', 'convection'),
+      heat: heat([{ kind: 'none', note: 'Warmed by sunlight and from below.' }], 'sunlight and heat from below', 'convection'),
       claims: [
         claim('existence', [
           row('inSitu', 'supports', LINDAL, { observed: 'Radio occultation temperature and pressure profiles', inferred: 'The weather layer', assumed: '—', uncertain: '—', mission: 'Voyager', year: 1985 }),

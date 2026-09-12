@@ -61,7 +61,7 @@ export const ENCELADUS_MODEL: InteriorModel = {
       temperatureK: endpoints(274, 272, CADEK, 'inferred'),
       pressureGPa: endpoints(0.01, 0.002, CADEK, 'modelled'),
       densityKgM3: endpoints(1030, 1020, CADEK, 'inferred'),
-      heat: heat([{ kind: 'none', note: 'Warmed from the core, vented at the south pole.' }], 'Heat from the hydrothermal core', 'convection'),
+      heat: heat([{ kind: 'none', note: 'Warmed from the core, vented at the south pole.' }], 'heat from the hydrothermal core', 'convection'),
       claims: [
         claim('existence', [
           row('libration', 'supports', THOMAS, { observed: 'Seven years of Cassini images show Enceladus rocking by 0.12° as it orbits', inferred: 'The shell is not attached to the core: a global ocean decouples it', assumed: 'A rigid shell', uncertain: 'The shell\'s mean thickness', mission: 'Cassini', year: 2016 }),
@@ -84,7 +84,7 @@ export const ENCELADUS_MODEL: InteriorModel = {
       temperatureK: endpoints(272, 75, CADEK, 'inferred'),
       pressureGPa: endpoints(0.002, 0, CADEK, 'modelled'),
       densityKgM3: endpoints(930, 920, CADEK, 'inferred'),
-      heat: heat([{ kind: 'tidal', note: 'Tidal flexing in the thin south-polar shell.' }], 'Heat from the ocean below', 'conduction'),
+      heat: heat([{ kind: 'tidal', note: 'Tidal flexing in the thin south-polar shell.' }], 'heat from the ocean below', 'conduction'),
       claims: [
         claim('existence', [
           row('inSitu', 'supports', PORCO, { observed: 'Images and spectra of the surface', inferred: 'A water-ice shell', assumed: '—', uncertain: '—', mission: 'Cassini', year: 2006 }),

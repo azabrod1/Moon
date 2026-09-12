@@ -4,7 +4,7 @@
  * gravity. PROVISIONAL: awaiting scientific review.
  */
 import type { InteriorModel } from '../interiorTypes';
-import { claim, distributed, endpoints, heat, modelSpread, qualitative, row, sharp, sourced, UNKNOWN } from '../modelHelpers';
+import { claim, distributed, endpoints, heat, modelSpread, row, sharp, sourced, UNKNOWN } from '../modelHelpers';
 
 const KIVELSON = 'Kivelson et al. (2000), Science 289, Galileo magnetometer measurements: a stronger case for a subsurface ocean at Europa';
 const ANDERSON = 'Anderson et al. (1998), Science 281, Europa\'s differentiated internal structure: inferences from four Galileo encounters';
@@ -77,7 +77,7 @@ export const EUROPA_MODEL: InteriorModel = {
       temperatureK: endpoints(273, 271, SCHUBERT, 'inferred'),
       pressureGPa: endpoints(0.15, 0.02, SCHUBERT, 'modelled'),
       densityKgM3: endpoints(1050, 1000, SCHUBERT, 'inferred'),
-      heat: heat([{ kind: 'tidal', note: 'Tidal heating in the ice and rock keeps it liquid.' }], 'Heat from the rocky mantle', 'convection'),
+      heat: heat([{ kind: 'tidal', note: 'Tidal heating in the ice and rock keeps it liquid.' }], 'heat from the rocky mantle', 'convection'),
       claims: [
         claim('existence', [
           row('magnetic', 'supports', KIVELSON, { observed: 'Galileo\'s magnetometer saw Europa\'s induced field flip with Jupiter\'s rotating field on every pass', inferred: 'A conducting layer near the surface: a salty global ocean', assumed: 'The conductor is salt water, not something else', uncertain: 'Its thickness and salinity trade against each other', mission: 'Galileo', year: 2000 }),
@@ -100,7 +100,7 @@ export const EUROPA_MODEL: InteriorModel = {
       temperatureK: endpoints(271, 100, SCHUBERT, 'inferred'),
       pressureGPa: endpoints(0.02, 0, SCHUBERT, 'modelled'),
       densityKgM3: endpoints(930, 920, SCHUBERT, 'inferred'),
-      heat: heat([{ kind: 'tidal', note: 'Tidal flexing warms the ice, most where it is thick and warm.' }], 'Heat from the ocean below', 'mixed'),
+      heat: heat([{ kind: 'tidal', note: 'Tidal flexing warms the ice, most where it is thick and warm.' }], 'heat from the ocean below', 'mixed'),
       claims: [
         claim('existence', [
           row('inSitu', 'supports', PAPPALARDO, { observed: 'Spectra and images of the surface: water ice everywhere', inferred: 'A solid ice surface', assumed: '—', uncertain: '—', mission: 'Galileo', year: 1999 }),
@@ -114,6 +114,3 @@ export const EUROPA_MODEL: InteriorModel = {
   annotations: [],
   sources: [KIVELSON, ANDERSON, SCHUBERT, BILLINGS, PAPPALARDO],
 };
-
-/** Where the ocean's roof is, for the legend caption: a qualitative note, since the shell thickness is the debate. */
-export const EUROPA_SHELL_NOTE = qualitative('Ice shell thickness is the open question: 5 to 30 km depending on method');

@@ -29,7 +29,7 @@ const CRUST: Region = {
   temperatureK: endpoints(700, 440, HAUCK, 'modelled'),
   pressureGPa: endpoints(0.5, 0, HAUCK, 'modelled'),
   densityKgM3: endpoints(3000, 2900, PADOVAN, 'inferred'),
-  heat: heat([{ kind: 'radiogenicDecay', note: 'Heat-producing elements in the crust.' }], 'Heat from the mantle', 'conduction'),
+  heat: heat([{ kind: 'radiogenicDecay', note: 'Heat-producing elements in the crust.' }], 'heat from the mantle', 'conduction'),
   claims: [
     claim('existence', [
       row('gravity', 'supports', PADOVAN, { observed: 'MESSENGER\'s geoid against its topography', inferred: 'A crust about 35 km thick, thinner than once thought', assumed: 'Airy isostasy', uncertain: '±18 km', mission: 'MESSENGER', year: 2015 }),
@@ -49,7 +49,7 @@ const MANTLE: Region = {
   temperatureK: endpoints(1900, 700, HAUCK, 'modelled'),
   pressureGPa: endpoints(5.5, 0.5, HAUCK, 'modelled'),
   densityKgM3: endpoints(3400, 3200, SMITH, 'inferred'),
-  heat: heat([{ kind: 'radiogenicDecay', note: 'Uranium, thorium and potassium.' }], 'Heat from the core', 'convection'),
+  heat: heat([{ kind: 'radiogenicDecay', note: 'Uranium, thorium and potassium.' }], 'heat from the core', 'convection'),
   claims: [
     claim('existence', [
       row('gravity', 'supports', SMITH, { observed: 'MESSENGER\'s gravity field and Mercury\'s bulk density', inferred: 'A thin silicate shell over a huge core', assumed: 'A layered interior', uncertain: 'Its thickness trades against the core radius', mission: 'MESSENGER', year: 2012 }),
@@ -111,7 +111,7 @@ const INNER_CORE: Region = {
   temperatureK: endpoints(2100, 2000, HAUCK, 'modelled'),
   pressureGPa: endpoints(50, 40, HAUCK, 'modelled'),
   densityKgM3: endpoints(8000, 7800, GENOVA, 'modelled'),
-  heat: heat([{ kind: 'latentCrystallisation', note: 'Freezing iron releases latent heat that helps drive the dynamo.' }], 'Conduction from the liquid core', 'conduction'),
+  heat: heat([{ kind: 'latentCrystallisation', note: 'Freezing iron releases latent heat that helps drive the dynamo.' }], 'conduction from the liquid core', 'conduction'),
   claims: [
     claim('existence', [
       row('gravity', 'supports', GENOVA, { observed: 'MESSENGER\'s gravity field together with the spin state', inferred: 'The density distribution fits best with a solid inner core about 1000 km across', assumed: 'A particular core composition', uncertain: 'Model-dependent; a smaller or absent inner core is not excluded', mission: 'MESSENGER', year: 2019 }),

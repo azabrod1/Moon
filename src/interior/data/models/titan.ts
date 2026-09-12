@@ -49,7 +49,7 @@ const HIGH_PRESSURE_ICE: Region = {
   temperatureK: endpoints(400, 270, FORTES, 'modelled'),
   pressureGPa: endpoints(1.5, 0.6, FORTES, 'modelled'),
   densityKgM3: endpoints(1350, 1250, FORTES, 'modelled'),
-  heat: heat([{ kind: 'none', note: 'Carries heat from the core toward the ocean.' }], 'Heat from the rock core', 'convection'),
+  heat: heat([{ kind: 'none', note: 'Carries heat from the core toward the ocean.' }], 'heat from the rock core', 'convection'),
   claims: [
     claim('existence', [
       row('model', 'supports', FORTES, { observed: 'The pressure at the base of a Titan-sized water layer exceeds ice VI\'s stability field', inferred: 'Water below the ocean must be dense ice, not liquid', assumed: 'A water layer several hundred km thick', uncertain: 'Its thickness trades against the core size', year: 2012 }),
@@ -69,7 +69,7 @@ const OCEAN: Region = {
   temperatureK: endpoints(270, 255, FORTES, 'modelled'),
   pressureGPa: endpoints(0.6, 0.1, FORTES, 'modelled'),
   densityKgM3: endpoints(1150, 1050, FORTES, 'modelled'),
-  heat: heat([{ kind: 'tidal', note: 'Saturn\'s tides flex Titan on its 16-day orbit.' }], 'Heat from below', 'convection'),
+  heat: heat([{ kind: 'tidal', note: 'Saturn\'s tides flex Titan on its 16-day orbit.' }], 'heat from below', 'convection'),
   claims: [
     claim('existence', [
       row('tides', 'supports', IESS_2012, { observed: 'Cassini measured Titan\'s gravity changing over its orbit: a tidal Love number k₂ of about 0.6', inferred: 'Titan deforms far more than a solid body would: a global liquid layer decouples the shell', assumed: 'The deformation is elastic and the shell is thin enough to flex', uncertain: 'A partly molten or very soft interior could mimic some of it', mission: 'Cassini', year: 2012 }),
@@ -93,7 +93,7 @@ const ICE_SHELL: Region = {
   temperatureK: endpoints(255, 94, HUYGENS, 'inferred'),
   pressureGPa: endpoints(0.1, 0, FORTES, 'modelled'),
   densityKgM3: endpoints(950, 930, FORTES, 'modelled'),
-  heat: heat([{ kind: 'tidal', note: 'Some tidal flexing warms the shell.' }], 'Heat from the ocean below', 'conduction'),
+  heat: heat([{ kind: 'tidal', note: 'Some tidal flexing warms the shell.' }], 'heat from the ocean below', 'conduction'),
   claims: [
     claim('existence', [
       row('inSitu', 'supports', HUYGENS, { observed: 'Huygens landed on a damp, icy plain at 94 K', inferred: 'A water-ice crust', assumed: '—', uncertain: '—', mission: 'Cassini–Huygens', year: 2005 }),
@@ -131,7 +131,7 @@ const WARM_ICE_MANTLE: Region = {
   temperatureK: endpoints(400, 255, REANALYSIS_2025, 'modelled'),
   pressureGPa: endpoints(1.5, 0.1, FORTES, 'modelled'),
   densityKgM3: endpoints(1300, 1000, FORTES, 'modelled'),
-  heat: heat([{ kind: 'tidal', note: 'Tidal flexing, dissipated in soft ice.' }], 'Heat from the rock core', 'convection'),
+  heat: heat([{ kind: 'tidal', note: 'Tidal flexing, dissipated in soft ice.' }], 'heat from the rock core', 'convection'),
   claims: [
     claim('existence', [
       row('model', 'supports', REANALYSIS_2025, { observed: 'Cassini\'s tidal response, re-fit with a soft, partly molten ice mantle', inferred: 'No global ocean is needed to explain the tides', assumed: 'A warm, dissipative ice rheology', uncertain: 'Reported, not yet reviewed; the original ocean fit stands', year: 2025 }),

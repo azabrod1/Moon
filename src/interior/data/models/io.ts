@@ -82,7 +82,7 @@ export const IO_MODEL: InteriorModel = {
       temperatureK: endpoints(1400, 110, KESZTHELYI, 'modelled'),
       pressureGPa: endpoints(0.1, 0, MOORE, 'modelled'),
       densityKgM3: endpoints(3000, 2800, MOORE, 'modelled'),
-      heat: heat([{ kind: 'none', note: 'Heat passes through it in volcanoes.' }], 'Heat from the mantle', 'conduction'),
+      heat: heat([{ kind: 'none', note: 'Heat passes through it in volcanoes.' }], 'heat from the mantle', 'conduction'),
       claims: [
         claim('existence', [
           row('inSitu', 'supports', MOORE, { observed: 'Galileo imaged active lava lakes, plumes and mountains', inferred: 'A solid, mobile crust of lava and sulphur', assumed: '—', uncertain: 'Its thickness, 20–50 km', mission: 'Galileo', year: 2007 }),

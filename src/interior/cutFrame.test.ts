@@ -9,6 +9,7 @@ import {
   insideWedge,
   openingAngleDegToRad,
   wedgeAngle,
+  wedgeYawForOpening,
   yawCutFrame,
 } from './cutFrame';
 
@@ -175,6 +176,49 @@ describe('yawCutFrame', () => {
     const copy = same.view.clone();
     yawCutFrame(same, 0);
     expectVectorClose(same.view, copy, 12);
+  });
+});
+
+describe('wedgeYawForOpening', () => {
+  const full = THREE.MathUtils.degToRad(22);
+
+  it('keeps the full yaw up to Cutaway and none at Section, tapering smoothly between', () => {
+    expect(wedgeYawForOpening(0, full)).toBe(full);
+    expect(wedgeYawForOpening(openingAngleDegToRad(45), full)).toBe(full);
+    expect(wedgeYawForOpening(openingAngleDegToRad(CUT_VIEW_ANGLE_DEG.cutaway), full)).toBe(full);
+    const midTaperDeg = (CUT_VIEW_ANGLE_DEG.cutaway + CUT_VIEW_ANGLE_DEG.section) / 2;
+    expect(wedgeYawForOpening(openingAngleDegToRad(midTaperDeg), full)).toBeCloseTo(full / 2, 12);
+    expect(wedgeYawForOpening(openingAngleDegToRad(CUT_VIEW_ANGLE_DEG.section), full)).toBe(0);
+    let previous = full;
+    let largestStep = 0;
+    for (let deg = 0; deg <= 180; deg += 0.5) {
+      const yaw = wedgeYawForOpening(openingAngleDegToRad(deg), full);
+      expect(yaw).toBeLessThanOrEqual(previous + 1e-12);
+      largestStep = Math.max(largestStep, previous - yaw);
+      previous = yaw;
+    }
+    // Smooth: no half-degree step moves the yaw more than a smoothstep's steepest slope
+    // (1.5 over the taper's span) would, so a kink or a jump anywhere fails here.
+    const taperSpanDeg = CUT_VIEW_ANGLE_DEG.section - CUT_VIEW_ANGLE_DEG.cutaway;
+    expect(largestStep).toBeLessThan(full * 1.5 * (0.5 / taperSpanDeg) * 1.01);
+  });
+
+  it('leaves the Section disc face-on: the yawed frame at θ = π is the unyawed one', () => {
+    const { position, localUp } = orbitCamera(30, 20);
+    const plain = computeCutFrame(position, localUp, centre, Math.PI);
+    const yawed = computeCutFrame(position, localUp, centre, Math.PI, createCutFrame());
+    yawCutFrame(yawed, wedgeYawForOpening(yawed.openingAngle, full));
+    expectVectorClose(yawed.view, plain.view, 12);
+    expectVectorClose(yawed.side, plain.side, 12);
+    const faceA = cutFaceBasis(yawed, 'a');
+    // The disc's normal is the line of sight: its radial spans the screen.
+    expectVectorClose(faceA.normal, plain.view, 12);
+    expect(Math.abs(faceA.radial.dot(plain.view))).toBeLessThan(1e-12);
+    // At Cutaway the same camera gets the full yaw.
+    const cutaway = computeCutFrame(position, localUp, centre, Math.PI / 2, createCutFrame());
+    const before = cutaway.view.clone();
+    yawCutFrame(cutaway, wedgeYawForOpening(cutaway.openingAngle, full));
+    expect(cutaway.view.angleTo(before)).toBeCloseTo(full, 9);
   });
 });
 

@@ -88,6 +88,31 @@ describe('rulerLayout', () => {
     expect(layout.brackets[0].to.length()).toBeCloseTo(5711 / 6371, 9);
   });
 
+  it('reuses a layout it is handed, its vectors included, and shortens it to fit', () => {
+    const pooled = rulerLayout(input());
+    const tickVectors = pooled.ticks.map((tick) => tick.point);
+    const segmentVectors = pooled.segments.map((segment) => segment.from);
+    const again = rulerLayout(input(), pooled);
+    expect(again).toBe(pooled);
+    again.ticks.forEach((tick, index) => expect(tick.point).toBe(tickVectors[index]));
+    again.segments.forEach((segment, index) => expect(segment.from).toBe(segmentVectors[index]));
+    // A smaller body: fewer ticks and regions, the extra entries dropped, the rest re-posed.
+    const smaller = rulerLayout(input({
+      referenceRadiusKm: 1560.8,
+      outerDisplay: [0.4, 1],
+      regionsInsideOut: [
+        { key: 'core', name: 'Core', outerRadiusKm: 600, innerRadiusKm: 0 },
+        { key: 'shell', name: 'Shell', outerRadiusKm: 1560.8, innerRadiusKm: 600 },
+      ],
+      annotations: [],
+    }), pooled);
+    expect(smaller.stepKm).toBe(200);
+    expect(smaller.ticks.map((tick) => tick.depthKm)).toEqual([0, 200, 400, 600, 800, 1000, 1200, 1400, 1560.8]);
+    expect(smaller.segments.map((segment) => segment.key)).toEqual(['core', 'shell']);
+    expect(smaller.brackets).toHaveLength(0);
+    expect(smaller.ticks[0].point).toBe(tickVectors[0]);
+  });
+
   it('chooses the face turned more toward the camera', () => {
     const frame = computeCutFrame(new THREE.Vector3(0, 0, 5), new THREE.Vector3(0, 1, 0), new THREE.Vector3(), Math.PI / 2, createCutFrame());
     // Camera exactly on the view axis: a tie, resolved to face A.

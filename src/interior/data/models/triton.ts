@@ -58,7 +58,7 @@ export const TRITON_ILLUSTRATIVE_MODEL: InteriorModel = {
       temperatureK: endpoints(300, 250, HUSSMANN, 'modelled'),
       pressureGPa: endpoints(0.5, 0.35, HUSSMANN, 'modelled'),
       densityKgM3: endpoints(1100, 1000, HUSSMANN, 'modelled'),
-      heat: heat([{ kind: 'tidal', note: 'Obliquity tides could keep it liquid.' }], 'Heat from the core', 'convection'),
+      heat: heat([{ kind: 'tidal', note: 'Obliquity tides could keep it liquid.' }], 'heat from the core', 'convection'),
       claims: [
         claim('existence', [
           row('model', 'supports', NIMMO, { observed: 'Triton\'s young surface and its tilted orbit', inferred: 'Obliquity tides dissipate enough heat to keep an ocean and drive resurfacing', assumed: 'A dissipative ice shell', uncertain: 'Entirely a model; no measurement', year: 2015 }),
@@ -77,7 +77,7 @@ export const TRITON_ILLUSTRATIVE_MODEL: InteriorModel = {
       temperatureK: endpoints(250, 38, HUSSMANN, 'modelled'),
       pressureGPa: endpoints(0.35, 0, HUSSMANN, 'modelled'),
       densityKgM3: endpoints(950, 920, HUSSMANN, 'modelled'),
-      heat: heat([{ kind: 'tidal', note: 'Tidal flexing in the shell.' }], 'Heat from below', 'conduction'),
+      heat: heat([{ kind: 'tidal', note: 'Tidal flexing in the shell.' }], 'heat from below', 'conduction'),
       claims: [
         claim('existence', [
           row('inSitu', 'supports', SMITH, { observed: 'Voyager 2 imaged a young, sparsely cratered surface of ices with active plumes', inferred: 'An ice shell resurfaced recently', assumed: '—', uncertain: 'Its thickness', mission: 'Voyager 2', year: 1989 }),

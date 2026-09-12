@@ -11,6 +11,7 @@
  */
 import * as THREE from 'three';
 import type { RulerLayout } from '../ruler';
+import { formatKm } from './inspectorText';
 import { assignTiers, estimateTextWidth, thinLabels, type Footprint, type LabelCandidate } from './rulerLabels';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -60,10 +61,6 @@ function take<K extends keyof SVGElementTagNameMap>(root: SVGSVGElement, tag: K,
 function release<T extends SVGElement>(store: Pool<T>): void {
   for (let index = store.used; index < store.elements.length; index++) store.elements[index].style.display = 'none';
   store.used = 0;
-}
-
-function formatKm(km: number): string {
-  return km < 10 ? km.toFixed(1) : Math.round(km).toLocaleString('en-US');
 }
 
 const projected = new THREE.Vector3();

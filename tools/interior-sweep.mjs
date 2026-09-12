@@ -444,12 +444,12 @@ async function reducedMotionCase(context, viewport) {
   await settle(page);
   let current = await state(page);
   check(Math.abs(current.openingAngleDeg - 180) < 0.01, `${tag}: Section is at ${current.openingAngleDeg.toFixed(1)}° three frames after the view change; it should land at once`);
-  // The Readable toggle through the DOM, the way a reader reaches it: the morph must not ease.
-  await page.evaluate(() => { const toggle = document.getElementById('interior-readable-toggle'); toggle.checked = false; toggle.dispatchEvent(new Event('change')); });
+  // The Readable | True segment through the DOM, the way a reader reaches it: the morph must not ease.
+  await page.evaluate(() => document.getElementById('interior-scale-true').click());
   await settle(page);
   current = await state(page);
   check(current.readable === false && current.scaleBlend === 0, `${tag}: the Readable morph is at ${current.scaleBlend} three frames after the toggle; it should land at once`);
-  await page.evaluate(() => { const toggle = document.getElementById('interior-readable-toggle'); toggle.checked = true; toggle.dispatchEvent(new Event('change')); });
+  await page.evaluate(() => document.getElementById('interior-scale-readable').click());
   await settle(page);
   check((await state(page)).scaleBlend === 1, `${tag}: the Readable morph did not land at once on the way back`);
   await page.evaluate(() => window.__moon.interiorPick('Mars'));

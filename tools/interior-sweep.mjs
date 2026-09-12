@@ -450,7 +450,7 @@ async function reducedMotionCase(context, viewport) {
   await page.close();
 }
 
-/** The pinned inspector docks under the legend in the sheet on a phone, and stands alone on desktop. */
+/** The pinned inspector takes over the sheet's scrolling body on a phone, and stands alone on desktop. */
 async function dockedInspectorCase(context, viewport) {
   const tag = `${viewport.name}/lifecycle docked inspector`;
   console.log(`\n== ${tag}`);
@@ -465,7 +465,7 @@ async function dockedInspectorCase(context, viewport) {
   check(inspector.display !== 'none', `${tag}: the inspector is hidden after a pin`);
   check(inspector.name === 'Outer core', `${tag}: the inspector shows "${inspector.name}"`);
   check(inspector.docked === phone, `${tag}: docked=${inspector.docked} on a ${phone ? 'phone' : 'desktop'} viewport`);
-  check(inspector.parent === (phone ? 'interior-panel' : 'interior-ui'), `${tag}: the inspector sits in #${inspector.parent}`);
+  check(inspector.parent === (phone ? 'interior-scroll' : 'interior-ui'), `${tag}: the inspector sits in #${inspector.parent}`);
   check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
   await page.close();
 }

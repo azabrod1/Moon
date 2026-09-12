@@ -1006,16 +1006,18 @@ export class InteriorScene {
       material.bumpMap = detail.bump;
       material.bumpScale = BODY_RADIUS * SKIN_BUMP_SCALE;
     }
-    if (detail.roughness) {
+    if (isRealMap(detail.roughness)) {
       // The mask drives roughness (ocean glossy, land and ice matte) and the
-      // gloss remap below turns that into the sun glint on the seas — but only
-      // once the mask really is one. Water is a dielectric: metalness stays 0.
+      // gloss remap below turns that into the sun glint on the seas. Water is a
+      // dielectric: metalness stays 0. The loader's flat stand-in is never
+      // bound: it has no late slot here, and a flat half-gloss over the whole
+      // body for the session would be worse than the plain skin.
       material.roughnessMap = detail.roughness;
       material.roughness = 1;
       material.metalness = 0;
     }
     const fx = augmentSurfaceMaterial(material, archetype);
-    if (detail.roughness) setSurfaceWaterGloss(material, isRealMap(detail.roughness));
+    if (isRealMap(detail.roughness)) setSurfaceWaterGloss(material, true);
     fx.uSunDirWorld.value.copy(this.keyDirection);
     fx.uPlanetshineColor.value.setHex(FILL_SHINE_COLOR);
     fx.uPlanetshineDir.value.copy(FILL_SHINE_DIR);

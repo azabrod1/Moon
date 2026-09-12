@@ -301,6 +301,11 @@ export class InteriorMode {
   private readonly interiorScene: InteriorScene;
   private readonly controls: OrbitControls;
   private readonly isMultisampled: () => boolean;
+  /** Whether the frame is drawn into a render target (the composer) or straight
+   *  to the canvas: three keys every program on it, so the reveal's warm-up
+   *  must compile with the live path's kind of target bound. A different
+   *  question from isMultisampled, and the owner of the composer answers it. */
+  private readonly drawsThroughComposer: () => boolean;
   private readonly renderer: THREE.WebGLRenderer;
   private readonly domElement: HTMLElement;
 
@@ -400,9 +405,11 @@ export class InteriorMode {
     renderer: THREE.WebGLRenderer,
     floatCapable: boolean,
     isMultisampled: () => boolean,
+    drawsThroughComposer: () => boolean,
   ) {
     this.camera = camera;
     this.isMultisampled = isMultisampled;
+    this.drawsThroughComposer = drawsThroughComposer;
     this.renderer = renderer;
     this.domElement = renderer.domElement;
     this.interiorScene = new InteriorScene(scene, renderer, floatCapable);
@@ -769,7 +776,9 @@ export class InteriorMode {
    * §4: the cut closes over the old body while the new map loads, the skin
    * cross-fades behind the closed cut once both are done, the panel turns
    * over, and the cut reopens onto the new body with the exterior ghost.
-   * Either way the commit reveals onto what it presented. Nothing
+   * Either way the commit reveals onto what it presented, and onto programs
+   * that are already linked: a first entry warms the whole reveal under the
+   * veil, a swap the prepared skin inside its own close. Nothing
    * half-loaded is ever shown, and a newer pick cancels an older one at
    * every await. A throw on the way (a shader that changed shape, a moon
    * without a map) leaves the body that was on, reopens onto it and warns;
@@ -812,6 +821,11 @@ export class InteriorMode {
       if (!prepared || stale()) return false;
       markOpenStep(watch, 'prepareEnd');
       if (swap) {
+        // The close is 0.9 s of animation with nothing else to do in it: the
+        // prepared skin's program is linked in that window, so the cross-fade
+        // does not stall on it.
+        await this.interiorScene.warmUpPreparedSkin(prepared, this.camera, this.drawsThroughComposer());
+        if (stale()) return false;
         await this.cutSettled();
         if (stale()) return false;
       }
@@ -833,6 +847,17 @@ export class InteriorMode {
       if (swap) {
         await this.interiorScene.fadeDone();
         if (stale()) return false;
+      } else {
+        // A first entry is where the studio's programs are paid for: the faces,
+        // the shells and the ghost are hidden until the cut opens, so they used
+        // to be compiled on the frames the reveal is drawn on. Linked here
+        // instead, under the veil, with the cut still closed and nothing on
+        // screen to disturb (InteriorScene.warmUpRevealShaders). Fail-open: a
+        // warm-up that cannot run leaves the reveal exactly as it was.
+        markOpenStep(watch, 'precompileStart');
+        await this.interiorScene.warmUpRevealShaders(this.camera, this.drawsThroughComposer());
+        if (stale()) return false;
+        markOpenStep(watch, 'precompileEnd');
       }
       markOpenStep(watch, 'revealStart');
       watch.timings.programsAtReveal = this.programCount();

@@ -769,6 +769,7 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
     // and so is the destination's UI while it activates. That is deliberate:
     // the arrival veil is the thing that catches pointers, and anything
     // committed here belongs to the mode that is still on screen.
+    //
     // The Look-inside chunk goes out BEFORE the beat and is awaited inside its
     // branch, so the fetch and the fade overlap. On a phone the 232 KB module
     // is a fetch of the same order as the beat, and the two ran one after the
@@ -781,7 +782,7 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
     const interiorModuleFetch = newMode === 'interior' && !interiorMode
       ? (debugLog('Loading interior module'), import('./interior/InteriorMode'))
       : null;
-    interiorModuleFetch?.catch(() => {});
+    void interiorModuleFetch?.catch(() => {});
     const beatStartedAt = performance.now();
     if (appModeInitialized) await sleep(400);
     const beatMs = performance.now() - beatStartedAt;
@@ -818,8 +819,8 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
         // resolves from that map — and silent: a failure here is the switch's
         // to report, and it retries the fetch itself.
         planetariumMode.onToolWarm(() => {
-          import('./interior/InteriorMode').catch(() => {});
-          import('./volumeCompare/VolumeCompareMode').catch(() => {});
+          void import('./interior/InteriorMode').catch(() => {});
+          void import('./volumeCompare/VolumeCompareMode').catch(() => {});
         });
       }
       debugLog('Activating Planetarium mode');
@@ -917,11 +918,9 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
     } else if (newMode === 'interior') {
       // --- Switch to Look inside ---
       // Dynamic import first, as the other tools: a failed chunk fetch must
-      // not strand the user in a mode with no UI. This one is started above the
+      // not strand the user in a mode with no UI. This one was started above the
       // fade beat (and prefetched from the Tools popover), so what is awaited
-      // here is usually nothing at all.
-      // Started above, before the fade beat; what is left of the fetch is what
-      // the switch waits for here, before any teardown.
+      // here — before any teardown, as ever — is usually nothing at all.
       const importStartedAt = performance.now();
       const interiorModule = interiorModuleFetch ? await interiorModuleFetch : null;
       const importMs = performance.now() - importStartedAt;
@@ -946,7 +945,12 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
         // environment): the A/B for any question about what the environment
         // does to the picture, and the kill switch.
         const lustre = useBloom && new URLSearchParams(window.location.search).get('lustre') !== '0';
-        interiorMode = new interiorModule!.InteriorMode(scene, interiorCamera, renderer, lustre, sceneDrawMultisampled);
+        // The last argument answers "does the frame go into a target": the
+        // tool's reveal warm-up compiles with that kind of target bound, the
+        // same question PlanetariumMode's boot warm-up is handed.
+        interiorMode = new interiorModule!.InteriorMode(
+          scene, interiorCamera, renderer, lustre, sceneDrawMultisampled, () => composer !== null,
+        );
         interiorMode.onExit(() => {
           void switchAppMode('planetarium');
         });

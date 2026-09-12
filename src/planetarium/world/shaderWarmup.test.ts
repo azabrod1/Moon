@@ -78,6 +78,7 @@ function makeRenderer(opts: {
   const scissor = new THREE.Vector4(0, 0, 640, 480);
   let scissorTest = false;
   const targetsSeenAtCompile: Array<THREE.WebGLRenderTarget | null> = [];
+  const compileArgs: Array<{ scene: THREE.Object3D; targetScene: THREE.Object3D | null }> = [];
   const renders: RenderSnapshot[] = [];
   const setTargetCalls: Array<THREE.WebGLRenderTarget | null> = [];
   const events: string[] = []; // one ordered log across compile/render/setRenderTarget
@@ -93,7 +94,12 @@ function makeRenderer(opts: {
       if (opts.failRestoreTo !== undefined && t === opts.failRestoreTo && setTargetCalls.length > 0) throw new Error('restore failed');
       current = t; setTargetCalls.push(t); events.push('setTarget');
     },
-    compileAsync: () => { events.push('compile'); targetsSeenAtCompile.push(current); return (opts.compile ?? (() => Promise.resolve()))(); },
+    compileAsync: (compileScene, _camera, targetScene) => {
+      events.push('compile');
+      targetsSeenAtCompile.push(current);
+      compileArgs.push({ scene: compileScene, targetScene: targetScene ?? null });
+      return (opts.compile ?? (() => Promise.resolve()))();
+    },
     render: () => {
       events.push('render');
       renders.push({
@@ -115,7 +121,7 @@ function makeRenderer(opts: {
     setScissorTest: (b) => { scissorTest = b; },
   };
   return {
-    renderer, targetsSeenAtCompile, renders, setTargetCalls, events,
+    renderer, targetsSeenAtCompile, compileArgs, renders, setTargetCalls, events,
     state: () => ({ current, viewport: viewport.toArray(), scissor: scissor.toArray(), scissorTest }),
   };
 }
@@ -198,6 +204,28 @@ describe('warmUpSceneShaders', () => {
     expect(rig.renders).toHaveLength(1);
     expect(rig.renders[0].target).toBeNull();
     expect(rig.state().current).toBeNull();
+  });
+
+  it('compiles the whole scene by default, and only the named subtree when one is given', async () => {
+    const { scene, probe, camera } = makeScene();
+    const studio = new THREE.Group();
+    studio.add(new THREE.Mesh(new THREE.SphereGeometry(1, 4, 2), new THREE.MeshStandardMaterial()));
+    scene.add(studio);
+
+    const whole = makeRenderer({ probes: [probe] });
+    await warmUpSceneShaders(whole.renderer, scene, camera, { drawsThroughComposer: false, probeGroups: [probe] });
+    // No subtree: three's own default, the scene itself, with no target scene.
+    expect(whole.compileArgs).toEqual([{ scene, targetScene: null }]);
+
+    const subtree = makeRenderer({ probes: [probe] });
+    await warmUpSceneShaders(subtree.renderer, scene, camera, {
+      drawsThroughComposer: false,
+      probeGroups: [probe],
+      compileSubtree: studio,
+    });
+    // The subtree's materials, the scene's lights — and the draw is still the scene's.
+    expect(subtree.compileArgs).toEqual([{ scene: studio, targetScene: scene }]);
+    expect(subtree.renders).toHaveLength(1);
   });
 
   it('a hung compileAsync poll does not hold boot: the draw still happens after the timeout', async () => {

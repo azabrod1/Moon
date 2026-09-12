@@ -23,14 +23,20 @@
  * clock; this owns the scene content and its GPU resources. Nothing here
  * reaches into the Planetarium's state.
  *
- * Texture ownership is explicit: prepareBody resolves the map and builds
- * the skin off the mesh under the caller's staleness guard, presentBody
+ * Texture ownership is explicit: prepareBody starts the map's fetch, runs the
+ * studio's prefilter while it is in flight, and builds the skin off the mesh
+ * under the caller's staleness guard (a prefilter that throws adopts the fetch
+ * it overlapped, so nothing is left unowned); presentBody
  * swaps it in and only then disposes the old one, and discardPrepared frees
  * a prepared skin that is never presented (its late slot included), so no
  * frame samples freed memory and nothing arriving late is held for ever.
  * Everything that can throw for a body — the shader splices, a moon's
  * procedural map — happens in prepareBody or before the skin swap, so a
- * failure leaves the previous body whole. Anisotropy, tier caps and the
+ * failure leaves the previous body whole. The programs the reveal draws are
+ * linked before the cut opens rather than on the frames it opens over
+ * (warmUpRevealShaders under the veil, warmUpPreparedSkin in a swap's close);
+ * both compile this group alone, in the live scene's render state, and both are
+ * fail-open. Anisotropy, tier caps and the
  * memory profile are captured once per session by whichever tool opens
  * first (the compare studio's rule).
  */
@@ -50,6 +56,8 @@ import { augmentSurfaceMaterial, type SurfaceShadingFx, type SurfaceArchetype } 
 import { createPlanetariumStarfield, setStarfieldPixelRatio } from '../planetarium/world/starfield';
 import { applyLensShaderUniforms, type LensShaderUniforms } from '../shared/three/lensShader';
 import { captureDeviceCaps } from '../planetarium/world/texturePolicy';
+import { warmUpSceneShaders } from '../planetarium/world/shaderWarmup';
+import { debugLog, debugWarn } from '../shared/debug';
 import { profileForDevice, readDeviceSignals } from '../planetarium/world/gpuEnvelope';
 import type { PlanetData } from '../planetarium/planets/planetData';
 import type { InteriorBody } from './interiorBody';
@@ -237,6 +245,9 @@ export class InteriorScene {
   private readonly keyDirection = new THREE.Vector3(0, 0, 1);
   private readonly worldToBody = new THREE.Matrix3();
   private capsCaptured = false;
+  /** The sub-pixel sphere the shader warm-up's probes wear; built on the first
+   *  warm-up and disposed with the scene. */
+  private warmupProbeGeometry: THREE.SphereGeometry | null = null;
   private multisampled = true;
   private readonly floatCapable: boolean;
   private environment: THREE.Texture | null = null;
@@ -355,21 +366,40 @@ export class InteriorScene {
    * closes the cut first). Generation-guarded by `isStale`: a stale resolve
    * disposes what it loaded and returns null.
    *
-   * The loader resolves its procedural fallback after a timeout, and the
-   * first frames of this mode compile a dozen programs (a slow device stalls
-   * past that timeout compiling them), so the fetch is given a late slot: the
-   * real map, arriving after the fallback, is swapped onto the live skin —
-   * or disposed if a newer body has taken over by then.
+   * The map's fetch and the studio's prefilter overlap: the fetch goes out
+   * first and the PMREM runs while it is in flight. They need nothing from
+   * each other, and one after the other they were the whole of a first entry's
+   * wait — on a software GPU the prefilter alone is seconds, and a phone pays
+   * both in a serial line before anything is on screen. The device caps stay
+   * ahead of the fetch: the tier and the anisotropy the loader applies are read
+   * from them.
+   *
+   * The loader resolves its procedural fallback after a timeout, so the fetch
+   * is given a late slot: the real map, arriving after the fallback, is swapped
+   * onto the live skin — or disposed if a newer body has taken over by then.
    */
   async prepareBody(body: InteriorBody, isStale: () => boolean): Promise<PreparedSkin | null> {
     if (!this.capsCaptured) {
       captureDeviceCaps(this.renderer, profileForDevice(readDeviceSignals(this.renderer.getContext())));
       this.capsCaptured = true;
     }
-    this.ensureEnvironment();
-    if (body.sun) return { body, material: this.buildPhotosphereMaterial(), texture: null, late: null, fx: null };
+    if (body.sun) {
+      this.ensureEnvironment();
+      return { body, material: this.buildPhotosphereMaterial(), texture: null, late: null, fx: null };
+    }
     const late = createLateTextureSlot();
-    const texture = await this.loadBodyColor(body, late);
+    const pendingTexture = this.loadBodyColor(body, late);
+    try {
+      this.ensureEnvironment();
+    } catch (error) {
+      // The fetch is already out: adopt it, so a prefilter that throws cannot
+      // leave a texture nobody owns (or an unhandled rejection) behind it. The
+      // throw still reaches the caller, which leaves the previous body whole.
+      void pendingTexture.then((texture) => texture.dispose(), () => {});
+      late.connect((arrival) => arrival.dispose());
+      throw error;
+    }
+    const texture = await pendingTexture;
     if (isStale()) {
       texture.dispose();
       late.connect((arrival) => arrival.dispose());
@@ -534,6 +564,127 @@ export class InteriorScene {
       this.lateMapPending = false;
       if (fallback && fallback !== arrival) fallback.dispose();
     });
+  }
+
+  /**
+   * Link every program the reveal is about to draw, while the veil still covers
+   * the canvas.
+   *
+   * Nothing compiles the section before the cut opens: the faces hide while
+   * their region is closed (applyCut), the ghost until the reveal, and the skin,
+   * the air and the rings are dressed a few milliseconds before it with no frame
+   * in between — so all of it used to be built on the frames the reader watches
+   * the reveal on. Measured on a software GPU that is the whole of the reveal's
+   * first frame, five to seven programs deep; on a phone it is the stall the map
+   * loader's own timeout was written around (see prepareBody).
+   *
+   * What is compiled is this group's materials (`compileSubtree`) in the live
+   * scene's render state: three initializes every material it traverses, visible
+   * or not, so the group is exactly the right root — no face has to be shown for
+   * it and no frame can catch a pose that never existed — while the lights and
+   * the bound target still come from the frame the reveal will be drawn in.
+   * Programs are keyed on both, and a program built in another state is one the
+   * reveal cannot use.
+   *
+   * The warm-up's own one-pixel draw is what forces the driver to finish a link
+   * it only promised. The faces, the shells and the ghost are hidden, so they
+   * take sub-pixel probes wearing their LIVE materials (the planetarium's
+   * warm-up idiom — a copy's program is freed with the copy); the skin, the air
+   * and the rings are visible by then and the draw finds them itself.
+   *
+   * Fail-open throughout: this only buys a reveal that does not stutter, and a
+   * program that misses it links on its first real draw as it always did.
+   */
+  async warmUpRevealShaders(camera: THREE.PerspectiveCamera, drawsThroughComposer: boolean): Promise<void> {
+    const probeGroup = new THREE.Group();
+    probeGroup.name = 'InteriorWarmupProbes';
+    probeGroup.visible = false;
+    try {
+      for (const material of this.revealMaterials()) probeGroup.add(this.buildWarmupProbe(material));
+      this.group.add(probeGroup);
+      const { resolved, warmDrawMs } = await warmUpSceneShaders(this.renderer, this.scene, camera, {
+        drawsThroughComposer,
+        probeGroups: [probeGroup],
+        compileSubtree: this.group,
+        // Every pending program in this task, no frame yielded: the veil is up,
+        // so a yielded frame is the reader's wait either way — shaderWarmup's
+        // own rule for work paid behind a cover.
+        resolvePerFrame: Number.POSITIVE_INFINITY,
+        onError: (stage, error) => debugWarn(`Look inside: reveal warm-up ${stage} failed`, { error: String(error) }),
+      });
+      // Which programs this built, by material, and what each cost: the reading
+      // that says whether the set is the one the reveal draws and nothing more.
+      debugLog('Look inside: reveal warm-up', {
+        programs: resolved.length,
+        warmDrawMs: Math.round(warmDrawMs),
+        built: resolved.map((row) => `${row.name || '?'} ${Math.round(row.ms)}ms`),
+      });
+    } catch (error) {
+      debugWarn('Look inside: the reveal warm-up could not run', { error: String(error) });
+    } finally {
+      this.group.remove(probeGroup);
+      probeGroup.clear(); // live materials and a shared geometry: nothing here is this group's to dispose
+    }
+  }
+
+  /**
+   * Link a prepared skin's program before it is worn. A swap's close is 0.9 s
+   * of animation with nothing else to do in it, and the material built in
+   * prepareBody is on no mesh yet, so its program would otherwise be built at
+   * the cross-fade — the one moment of the ceremony that has to be smooth.
+   * Usually a cache hit (one body's skin keys like another's), and not for the
+   * Sun's photosphere, which is a program of its own. Fail-open.
+   */
+  async warmUpPreparedSkin(prepared: PreparedSkin, camera: THREE.PerspectiveCamera, drawsThroughComposer: boolean): Promise<void> {
+    const probeGroup = new THREE.Group();
+    probeGroup.name = 'InteriorPreparedSkinProbe';
+    probeGroup.visible = false;
+    probeGroup.add(this.buildWarmupProbe(prepared.material));
+    this.group.add(probeGroup);
+    try {
+      const { resolved, warmDrawMs } = await warmUpSceneShaders(this.renderer, this.scene, camera, {
+        drawsThroughComposer,
+        probeGroups: [probeGroup],
+        compileSubtree: this.group,
+        resolvePerFrame: Number.POSITIVE_INFINITY,
+        onError: (stage, error) => debugWarn(`Look inside: prepared-skin warm-up ${stage} failed`, { error: String(error) }),
+      });
+      // Usually nothing: one body's skin keys like another's. Logged only when
+      // this window actually built something, so the common case stays quiet.
+      if (resolved.length > 0) {
+        debugLog('Look inside: prepared-skin warm-up', {
+          programs: resolved.length,
+          warmDrawMs: Math.round(warmDrawMs),
+          built: resolved.map((row) => `${row.name || '?'} ${Math.round(row.ms)}ms`),
+        });
+      }
+    } catch (error) {
+      debugWarn('Look inside: the prepared-skin warm-up could not run', { error: String(error) });
+    } finally {
+      this.group.remove(probeGroup);
+      probeGroup.clear();
+    }
+  }
+
+  /** The materials the reveal draws that no earlier frame has drawn: the
+   *  section faces, every terrace shell, and the exterior ghost. The skin, the
+   *  air and the rings are visible by then and the warm-up's draw finds them
+   *  itself. */
+  private revealMaterials(): THREE.Material[] {
+    const materials: THREE.Material[] = [this.faceMaterial];
+    for (const shell of this.regionShells) materials.push(shell.material);
+    if (this.ghostMaterial) materials.push(this.ghostMaterial);
+    return materials;
+  }
+
+  /** A sub-pixel mesh wearing a live material, for the warm-up's one-pixel
+   *  draw. Never raycast, and never in the scene for a frame the reader sees:
+   *  the warm-up adds it, shows it inside its own draw, and removes it. */
+  private buildWarmupProbe(material: THREE.Material): THREE.Mesh {
+    this.warmupProbeGeometry ??= new THREE.SphereGeometry(1e-9, 4, 2);
+    const mesh = new THREE.Mesh(this.warmupProbeGeometry, material);
+    mesh.raycast = () => {};
+    return mesh;
   }
 
   /** Whether the skin still wears the loader's fallback with the real map to come. */
@@ -814,6 +965,8 @@ export class InteriorScene {
     this.skinGeometry.dispose();
     this.shellGeometry.dispose();
     this.faceGeometry.dispose();
+    this.warmupProbeGeometry?.dispose();
+    this.warmupProbeGeometry = null;
     this.faceMaterial.dispose();
     this.starfield.geometry.dispose();
     (this.starfield.material as THREE.Material).dispose();

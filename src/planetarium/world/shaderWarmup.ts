@@ -27,6 +27,18 @@
  * forcing one program's share per idle frame (`resolveProgramLinks`), and the
  * draw finds nothing left.
  *
+ * three's compile initializes every material it TRAVERSES, visible or not, in
+ * the render state of the compile. For a whole-scene warm-up that is the point.
+ * For a warm-up of one subtree of a big scene — a tool's studio inside the
+ * planetarium's scene, whose own lights are on and whose bodies are hidden — it
+ * would build a program for every material in that scene, in a light state
+ * nothing there will ever be drawn in: measured on the Look-inside studio, 21
+ * programs nobody draws beside the dozen that were wanted (75 against 54, for
+ * a reveal that needs five of them). `compileSubtree` names
+ * the subtree to compile; the lights, the fog and the environment still come
+ * from the scene (three's third compileAsync argument), and the warm draw is
+ * still the scene's, so what is linked is what the next frame will draw.
+ *
  * Contract, pinned by shaderWarmup.test.ts:
  *  - `compileAsync` runs with a `WebGLRenderTarget` bound when the live path
  *    draws through the composer, and with the canvas (null) bound otherwise
@@ -38,6 +50,9 @@
  *    (Safari commonly lacks KHR_parallel_shader_compile, where compileAsync
  *    cannot prove that the driver linked anything — the draw forces it);
  *  - the wait on compileAsync is bounded (a hung poll must not hold boot);
+ *  - `compileSubtree`, when given, is what `compileAsync` is handed, with the
+ *    scene passed as its target scene (the lights and the environment), and the
+ *    warm draw is still the whole scene's;
  *  - the resolve phase runs between the compile and the draw, one program per
  *    frame by default and every pending program at once when the caller is
  *    behind the load screen (`resolvePerFrame: Infinity`, where a frame yielded
@@ -72,7 +87,7 @@ export interface ProgramLinkResolver {
 export interface ShaderWarmupRenderer extends ProgramLinkResolver {
   getRenderTarget(): THREE.WebGLRenderTarget | null;
   setRenderTarget(target: THREE.WebGLRenderTarget | null): void;
-  compileAsync(scene: THREE.Object3D, camera: THREE.Camera): Promise<unknown>;
+  compileAsync(scene: THREE.Object3D, camera: THREE.Camera, targetScene?: THREE.Object3D | null): Promise<unknown>;
   render(scene: THREE.Object3D, camera: THREE.Camera): void;
   getViewport(target: THREE.Vector4): THREE.Vector4;
   setViewport(x: number, y: number, width: number, height: number): void;
@@ -89,6 +104,10 @@ export interface ShaderWarmupOptions {
   /** Invisible probe groups already added to the scene, carrying material
    *  variants that real meshes only reach later. Made visible for the draw. */
   probeGroups: readonly THREE.Group[];
+  /** Compile only this subtree's materials instead of the whole scene's, with
+   *  the scene's own lights and environment behind them (see the header): what
+   *  a tool that owns one group of a shared scene wants, and nothing else. */
+  compileSubtree?: THREE.Object3D;
   /** Cap on the compileAsync wait. Default 3000 ms. */
   timeoutMs?: number;
   /** How many programs the resolve phase may force per frame. Default 1 — one
@@ -238,7 +257,8 @@ export async function warmUpSceneShaders(
       target = (options.createTarget ?? (() => new THREE.WebGLRenderTarget(1, 1)))();
     }
     renderer.setRenderTarget(target);
-    compiled = renderer.compileAsync(scene, camera).then(
+    const compileRoot = options.compileSubtree ?? scene;
+    compiled = renderer.compileAsync(compileRoot, camera, compileRoot === scene ? null : scene).then(
       () => undefined,
       (err) => report('compile', err),
     );

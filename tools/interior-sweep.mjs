@@ -11,7 +11,9 @@
 // ceremonies through their races instead: a rapid double pick, a pick during
 // the reveal and during the cross-fade, the Esc cascade with the picker and
 // the evidence popover closing each other, prefers-reduced-motion (every
-// move lands at once), the phone's docked inspector, and interiorReady()
+// move lands at once), the phone's docked inspector, the phone sheet's drag
+// (the height follows the finger, clamps at its peek, and a tap and a flick
+// each land at an end, with the body's framing following), and interiorReady()
 // against a colour map held back past the loader's timeout (the tool shows
 // the loader's fallback, and must not call itself ready until the real map
 // lands). Each case asserts the tool ends sane: a skin on, the cut open at
@@ -143,12 +145,12 @@ async function ready(page) {
 const state = (page) => page.evaluate(() => window.__moon.interiorState());
 const legendRegions = (page) => page.evaluate(() => [...document.querySelectorAll('#interior-legend .interior-row')].map((row) => row.dataset.region));
 
-/** The disc centre in client px: the body sits at the origin, shifted up above the phone's
- *  sheet or left of the desktop panel by half its width (InteriorMode.applyViewportFraming). */
+/** The disc centre in client px: the body sits at the origin, and the mode's own
+ *  projection offset is what moves it — up above the phone's sheet, however tall
+ *  the reader has drawn it, or left of the desktop panel by half its width. */
 async function discCentre(page, viewport) {
-  if (viewport.width <= 640) return { x: viewport.width / 2, y: viewport.height / 2 - Math.round(viewport.height * 0.17) };
-  const panelWidth = await page.evaluate(() => document.getElementById('interior-panel')?.getBoundingClientRect().width ?? 0);
-  return { x: viewport.width / 2 - Math.round(panelWidth / 2), y: viewport.height / 2 };
+  const { viewOffset } = await state(page);
+  return { x: viewport.width / 2 - viewOffset.x, y: viewport.height / 2 - viewOffset.y };
 }
 
 async function sweepBody(context, viewport, body) {
@@ -211,7 +213,8 @@ async function sweepBody(context, viewport, body) {
       check(seen.length === regionKeys.length, `${tag}: at Readable, the sweep reached ${seen.length} of ${regionKeys.length} regions (${seen})`);
     }
   }
-  await page.evaluate(() => window.__moon.interiorScale('readable'));
+  // Back to the tool's default, True, which is what the captures below show.
+  await page.evaluate(() => window.__moon.interiorScale('true'));
   await page.evaluate(() => window.__moon.interiorHover(-1, -1));
 
   // 4. A model switch adds and removes rows.
@@ -444,14 +447,16 @@ async function reducedMotionCase(context, viewport) {
   await settle(page);
   let current = await state(page);
   check(Math.abs(current.openingAngleDeg - 180) < 0.01, `${tag}: Section is at ${current.openingAngleDeg.toFixed(1)}° three frames after the view change; it should land at once`);
-  // The Readable | True segment through the DOM, the way a reader reaches it: the morph must not ease.
-  await page.evaluate(() => document.getElementById('interior-scale-true').click());
-  await settle(page);
-  current = await state(page);
-  check(current.readable === false && current.scaleBlend === 0, `${tag}: the Readable morph is at ${current.scaleBlend} three frames after the toggle; it should land at once`);
+  // The Readable | True segment through the DOM, the way a reader reaches it: the
+  // morph must not ease. True is the default, so Readable is the first move.
+  check((await state(page)).readable === false, `${tag}: the tool did not open at True`);
   await page.evaluate(() => document.getElementById('interior-scale-readable').click());
   await settle(page);
-  check((await state(page)).scaleBlend === 1, `${tag}: the Readable morph did not land at once on the way back`);
+  current = await state(page);
+  check(current.readable === true && current.scaleBlend === 1, `${tag}: the Readable morph is at ${current.scaleBlend} three frames after the toggle; it should land at once`);
+  await page.evaluate(() => document.getElementById('interior-scale-true').click());
+  await settle(page);
+  check((await state(page)).scaleBlend === 0, `${tag}: the Readable morph did not land at once on the way back`);
   await page.evaluate(() => window.__moon.interiorPick('Mars'));
   await saneEnd(page, tag, { body: 'Mars', angleDeg: 180 });
   check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
@@ -505,6 +510,99 @@ async function lateMapCase(context, viewport) {
   await page.close();
 }
 
+/** The phone sheet is a drag, not only a toggle: its height follows the finger,
+ *  clamps at its peek, and a tap and a flick each land it at an end — with the
+ *  body's framing following, so the disc stays in the band above the sheet. */
+async function sheetDragCase(context, viewport) {
+  const tag = `${viewport.name}/lifecycle sheet drag`;
+  console.log(`\n== ${tag}`);
+  const { page, errors } = await openTool(context, 'Earth');
+  await ready(page);
+  const panelHeight = () => page.evaluate(() => Math.round(document.getElementById('interior-panel').getBoundingClientRect().height));
+  const gripCentre = () => page.evaluate(() => {
+    const box = document.getElementById('interior-grip').getBoundingClientRect();
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  });
+  const expanded = () => page.evaluate(() => document.getElementById('interior-grip').getAttribute('aria-expanded'));
+  /** The height once the sheet has caught up with the height the tool asked
+   *  for: a snap eases in CSS, and on a slow machine that takes many frames. */
+  const settledHeight = async () => {
+    await page.waitForFunction(() => {
+      const panel = document.getElementById('interior-panel');
+      const asked = parseFloat(panel.style.getPropertyValue('--sheet-h'));
+      return !Number.isFinite(asked) || Math.abs(panel.getBoundingClientRect().height - asked) <= 1;
+    }, undefined, { timeout: 60000, polling: 100 }).catch(() => {});
+    return panelHeight();
+  };
+  /** Whether both rows of view buttons are inside the sheet's scrolling body. */
+  const buttonsInView = () => page.evaluate(() => {
+    const buttons = document.getElementById('interior-mode-temperature').getBoundingClientRect();
+    const body = document.getElementById('interior-scroll').getBoundingClientRect();
+    return buttons.top >= body.top - 1 && buttons.bottom <= body.bottom + 1;
+  });
+  const framingShift = async () => (await state(page)).viewOffset.y;
+  /** A drag of the grip, upward positive: four steps 150 ms apart, well under
+   *  the speed that would read as a flick. A flick itself is not driven from
+   *  here — one synthesised move costs about a frame over the wire, so on a
+   *  software renderer the fastest gesture this can send still reads as a slow
+   *  drag; the threshold lives in InteriorMode, and the drag, the clamp and the
+   *  tap below are what a battery can honestly assert. */
+  const dragGrip = async (byPx) => {
+    const from = await gripCentre();
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    const steps = 4;
+    for (let step = 1; step <= steps; step++) {
+      await page.mouse.move(from.x, from.y - (byPx * step) / steps);
+      await page.waitForTimeout(150);
+    }
+    const heightUnderTheFinger = await panelHeight();
+    await page.mouse.up();
+    await settledHeight(); // a snap eases over 260 ms
+    return heightUnderTheFinger;
+  };
+
+  // The sheet opens at its peek, with the body in the band above it.
+  const peek = await panelHeight();
+  const peekShift = await framingShift();
+  check(await buttonsInView(), `${tag}: the sheet's peek (${peek} px) cuts off the rows of view buttons`);
+  check(peek < viewport.height / 2, `${tag}: the sheet opens at ${peek} px, over half of ${viewport.height}`);
+  check(await expanded() === 'false', `${tag}: the grip reports expanded at the peek`);
+  check(peekShift > 0, `${tag}: the body is not lifted above the sheet (viewOffset.y ${peekShift})`);
+
+  // A slow drag up: the height follows the finger and the framing follows the height.
+  const dragged = await dragGrip(200);
+  const draggedShift = await framingShift();
+  check(dragged === await panelHeight(), `${tag}: the sheet moved on release (${dragged} px under the finger) without a flick`);
+  check(draggedShift > peekShift, `${tag}: the body did not follow the taller sheet (viewOffset.y ${peekShift} to ${draggedShift})`);
+
+  // A long drag down clamps at the peek, and the framing comes back with it.
+  await dragGrip(-400);
+  const backDown = await panelHeight();
+  check(Math.abs(backDown - peek) <= 2, `${tag}: dragging past the bottom left the sheet at ${backDown} px, expected the peek ${peek}`);
+  const backShift = await framingShift();
+  check(Math.abs(backShift - peekShift) <= 2, `${tag}: the body did not come back with the sheet (viewOffset.y ${backShift}, expected ${peekShift})`);
+
+  // A tap goes to the other end: the sheet's own content, under the 85% cap.
+  await page.evaluate(() => document.getElementById('interior-grip').click());
+  const full = await settledHeight();
+  check(full > peek, `${tag}: a tap left the sheet at ${full} px, no taller than its peek ${peek}`);
+  check(full <= Math.round(viewport.height * 0.85) + 1, `${tag}: the sheet grew to ${full} px, past 85% of ${viewport.height}`);
+  check(await expanded() === 'true', `${tag}: the grip does not report expanded at the full height`);
+  // Which says what the drag above should have reached: the finger, or that ceiling.
+  const wanted = Math.min(peek + 200, full);
+  check(Math.abs(dragged - wanted) <= 12, `${tag}: a 200 px drag from ${peek} px left the sheet at ${dragged} px, expected ${wanted}`);
+
+  // And back: a tap at the full height returns the sheet to its peek.
+  await page.evaluate(() => document.getElementById('interior-grip').click());
+  const backToPeek = await settledHeight();
+  check(Math.abs(backToPeek - peek) <= 2, `${tag}: a tap at the full height left the sheet at ${backToPeek} px, expected the peek ${peek}`);
+  check(await expanded() === 'false', `${tag}: the grip still reports expanded back at the peek`);
+  notes.push(`${tag}: peek ${peek} full ${full}, a 200 px drag reached ${dragged}; viewOffset.y ${peekShift} to ${draggedShift}`);
+  check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
+  await page.close();
+}
+
 async function lifecycleCases(context, viewport) {
   await rapidDoublePickCase(context, viewport);
   await pickDuringRevealCase(context, viewport);
@@ -512,6 +610,7 @@ async function lifecycleCases(context, viewport) {
   await escCascadeCase(context, viewport);
   await reducedMotionCase(context, viewport);
   await dockedInspectorCase(context, viewport);
+  if (viewport.name === 'phone') await sheetDragCase(context, viewport);
   if (viewport.name === 'desktop') await lateMapCase(context, viewport);
 }
 

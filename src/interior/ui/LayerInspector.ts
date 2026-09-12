@@ -10,7 +10,8 @@
  *
  * Every number goes through inspectorText, so the words are the same ones
  * the tests pin, and the score beside every claim is evidenceScore's,
- * never a stored one.
+ * never a stored one. Where the copy names the reader's own gesture it asks
+ * the pointer (pointerVerb): a finger taps, a mouse clicks.
  */
 import type { Annotation, ClaimKind, Coverage } from '../data/interiorTypes';
 import { coverageBulk } from '../data/interiorTypes';
@@ -51,6 +52,11 @@ export function buildMeter(score: EvidenceScore, options: { numeral?: boolean } 
   return wrap;
 }
 
+/** The word for the gesture the reader has: a finger taps, a mouse clicks. */
+export function pointerVerb(): string {
+  return window.matchMedia?.('(pointer: coarse)').matches ? 'tap' : 'click';
+}
+
 export function familyPhaseText(region: DrawnRegion): string {
   return `${FAMILY_LABEL[region.family]} · ${PHASE_LABEL[region.phase]}`;
 }
@@ -61,7 +67,8 @@ export function renderHoverCard(card: HTMLElement, region: DrawnRegion, depthKm:
   card.append(element('div', 'ih-name', region.name));
   card.append(element('div', 'ih-kicker', familyPhaseText(region)));
   if (depthKm !== null) card.append(element('div', 'ih-depth', `${formatKm(Math.max(0, depthKm))} km down`));
-  card.append(element('div', 'ih-hint', 'Click to read'));
+  const verb = pointerVerb();
+  card.append(element('div', 'ih-hint', `${verb.charAt(0).toUpperCase()}${verb.slice(1)} to read`));
 }
 
 export interface InspectorContext {
@@ -127,7 +134,7 @@ export function renderInspector(root: HTMLElement, context: InspectorContext): v
 
   const scores = claimScores(context);
   if (schema.claims.length > 0) {
-    root.append(element('div', 'ii-sec', 'How sure we are · click a row for the evidence'));
+    root.append(element('div', 'ii-sec', `How sure we are · ${pointerVerb()} a row for the evidence`));
     schema.claims.forEach((claim, claimIndex) => {
       const button = element('button', 'ii-claim');
       button.type = 'button';

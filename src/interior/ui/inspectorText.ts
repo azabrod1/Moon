@@ -167,6 +167,15 @@ export function temperatureQuantityText(quantity: Quantity, noData = 'not known'
   return `${rangeText(bounds.low, bounds.high)} K · ${rangeText(bounds.low + KELVIN_ZERO_C, bounds.high + KELVIN_ZERO_C)} °C (${basis})`;
 }
 
+/** A temperature for a legend row: kelvin alone, "1,100–1,600 K" or "5,800 K",
+ *  and '' when nobody knows it. The celsius and the basis word stay in the
+ *  inspector, where there is room for them. */
+export function temperatureRangeText(quantity: Quantity): string {
+  const bounds = quantityBounds(quantity);
+  if (!bounds) return '';
+  return `${rangeText(bounds.low, bounds.high)} K`;
+}
+
 /** "1.3 million" or "240,000": a count of atmospheres a reader can hold. */
 export function atmospheresText(atmospheres: number): string {
   if (atmospheres >= 1e6) return `${DECIMAL.format(Math.round(atmospheres / 1e5) / 10)} million`;

@@ -12,8 +12,9 @@
  *                      and the ruler read one set of display radii
  *   the region art     each region's look with the family depth tint, the one
  *                      place the legend and the faces get their colours
- *   the caption        the line under the body chip: what is drawn and how
- *                      much to trust it, and the legend row of an unresolved whole
+ *   the caption        the line under the body's name: what is drawn and how
+ *                      much to trust it, the legend row of an unresolved whole,
+ *                      and the thickness note under the Readable | True segment
  *   the emphasis       what the faces emphasise (a hovered legend row, else
  *                      the hovered region, else the pinned one) and how its
  *                      amount eases in, switches part way and fades out
@@ -162,6 +163,15 @@ export function captionFor(coverage: Coverage, drawn: DrawnModel): string {
 /** The legend row for the unresolved whole. */
 export function unresolvedComposition(coverage: Coverage): string {
   return coverage.state === 'notYetModelled' ? 'Not yet modelled here' : 'Not measured';
+}
+
+/** The note under the Layer thickness segment: what the reader is looking at,
+ *  and — at true thickness — how many layers are too thin to see at the disc's
+ *  current size, which is what Readable is there to fix. */
+export function thicknessNoteText(readable: boolean, tooThinToSeeCount: number): string {
+  if (readable) return 'Thin layers widened so you can see them';
+  if (tooThinToSeeCount <= 0) return 'Layers at their true thickness';
+  return `Layers at their true thickness · ${tooThinToSeeCount} too thin to see`;
 }
 
 // ---- the emphasis -----------------------------------------------------------

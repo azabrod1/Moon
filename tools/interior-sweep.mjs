@@ -60,6 +60,9 @@ const PATHS = [
   { name: 'nofloat', query: '&nofloat=1' },
 ];
 
+/** The hover sweep runs along the hinge, this far to one side of it so it lands on a face, not the seam. */
+const SWEEP_OFF_HINGE_PX = 3;
+
 const failures = [];
 const notes = [];
 function check(condition, message) {
@@ -177,9 +180,12 @@ async function sweepBody(context, viewport, body) {
   await page.evaluate(() => window.__moon.interiorPin(null));
 
   // 3. A hover sweep across the section resolves regions in order outward
-  // from the centre, at rest and mid-blend. Both directions: at Section the
-  // wedge yaw has tapered to none and the disc is face-on, so both sides
-  // must show every region out to the rim.
+  // from the centre, at rest and mid-blend. Along the hinge (screen-vertical),
+  // a few px to one side of it: at Section the disc is face-on, but each inner
+  // region's face is tilted toward the viewer by the terrace step, so along the
+  // horizontal its near edge overhangs the outer face in perspective and hides
+  // a thin rim band; along the hinge nothing overhangs. Both directions, so
+  // both faces show every region out to the rim.
   await page.evaluate(() => window.__moon.interiorView('section'));
   await ready(page);
   const centre = await discCentre(page, viewport);
@@ -192,7 +198,7 @@ async function sweepBody(context, viewport, body) {
       let previousIndex = -1;
       let monotone = true;
       for (let dx = 0; dx <= radiusPx + 4; dx += 2) {
-        const hit = await page.evaluate(([x, y]) => window.__moon.interiorHover(x, y), [centre.x + direction * dx, centre.y]);
+        const hit = await page.evaluate(([x, y]) => window.__moon.interiorHover(x, y), [centre.x + SWEEP_OFF_HINGE_PX, centre.y + direction * dx]);
         if (!hit || hit.surface === 'skin') continue;
         const index = regionKeys.indexOf(hit.regionKey);
         if (index < previousIndex) monotone = false;

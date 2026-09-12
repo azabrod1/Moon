@@ -9768,8 +9768,10 @@ export class PlanetariumMode {
     insideName.textContent = 'Look inside';
     const insideSub = document.createElement('span');
     insideSub.className = 'tools-sub';
-    // Names the body the row will open, so nobody is surprised by Earth.
-    insideSub.textContent = `Cut ${bodyDisplayName(this.resolveInteriorBody())} open and see its layers.`;
+    // Never a body name. The row names no world because it opens on none:
+    // out in deep space it used to read "Cut Earth open", which is a promise
+    // about a planet the reader is nowhere near.
+    insideSub.textContent = 'Cut a world open and see its layers.';
     insideInfo.append(insideName, insideSub);
     insideRow.append(insideInfo);
     insideRow.addEventListener('click', () => this.enterTool({ kind: 'interior', bodyId: this.resolveInteriorBody() }));

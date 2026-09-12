@@ -13,6 +13,7 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { PLANETARIUM_BODIES, ASTEROID_BELT, type PlanetData } from './planets/planetData';
 import { augmentPointsMaterialWithSubpixelEnergy } from '../shared/three/pointEnergy';
+import { augmentPointsMaterialWithRoundDots } from '../shared/three/roundPoint';
 import { createPlanetMesh, createPlanetariumSun, type PlanetMesh } from './PlanetFactory';
 import {
   computeBodyPositionAU,
@@ -462,6 +463,10 @@ export function createAsteroidBelt(): THREE.Points {
   // display (a 1× monitor showed the belt three times as bright as a 2× one).
   // The controller feeds the renderer's pixel ratio at boot and every resize.
   belt.userData.pointEnergyUniforms = augmentPointsMaterialWithSubpixelEnergy(material);
+  // three's stock point is a hard square, and a belt dot seen from Earth is
+  // three or four device pixels wide, so the band along the ecliptic crawled
+  // as the camera moved. Round and soft like a star once a dot is two pixels.
+  augmentPointsMaterialWithRoundDots(material);
   // Belt dots are usually NEARER than the outer rings, so without this gate
   // they pass the depth test and stud every ring behind them (Alex's tan
   // bumps: 1.6 studs per 1000 line px, +52 luma each).

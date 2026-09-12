@@ -99,6 +99,11 @@ describe('orbit-line stencil contract', () => {
 });
 
 describe('asteroid belt', () => {
+  it('draws its dots round and soft rather than as three\'s stock squares', () => {
+    const material = createAsteroidBelt().material as THREE.PointsMaterial;
+    expect(material.customProgramCacheKey()).toContain('roundPoint');
+  });
+
   it('builds the same position and colour buffers on every load', () => {
     const first = createAsteroidBelt();
     const second = createAsteroidBelt();

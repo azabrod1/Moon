@@ -166,11 +166,12 @@ const GHOST_OPACITY = 0.32;
 const WEDGE_YAW_DEG = 22;
 /** ...and this far at Section, where the turn tapers out. Not zero: a disc
  *  face-on is a flat circle, and on a body with no rings and no air around it
- *  nothing else says the circle is a sphere with its near half gone. A few
- *  degrees leave a sliver of the skin's rim on one side and put the two halves
- *  of every terrace at different angles to the key, so the middle reads as a
- *  crease rather than a seam. */
-const SECTION_YAW_DEG = 10;
+ *  nothing else says the circle is a sphere with its near half gone. This
+ *  much leaves a crescent of the skin's rim on one side (about a twentieth of
+ *  the radius wide — ten degrees showed a hair, which the Moon's one brown
+ *  mantle swallowed) and puts the two halves of every terrace at different
+ *  angles to the key, so the middle reads as a crease rather than a seam. */
+const SECTION_YAW_DEG = 18;
 /** The Readable blend eases over this long. */
 const SCALE_BLEND_S = 0.5;
 const FPS_WINDOW = 60;

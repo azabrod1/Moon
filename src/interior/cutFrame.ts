@@ -40,7 +40,7 @@
  * What that costs anything measuring the disc on screen: the yaw turns the cut
  * plane about the hinge, so the disc's extent ALONG the hinge is still its
  * display radius while across the hinge it is foreshortened by cos(yaw) —
- * about 1.5% at a ten-degree floor. A pixel read of the disc measures along
+ * 5% at an eighteen-degree floor. A pixel read of the disc measures along
  * the hinge, or allows for the cosine.
  *
  * Pure: no DOM, no renderer, only three's vector math.

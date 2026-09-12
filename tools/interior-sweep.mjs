@@ -288,7 +288,7 @@ async function bandCase(context, viewport) {
   const scale = image.width / viewport.width;
   // True scale: display radius = physical radius. In the band (300–700 km) versus above it (800–1400 km).
   // Read across the hinge, where the Section yaw floor foreshortens the disc by
-  // cos(yaw) — about 1.5%, so these land at 508 km and 1015 km, each still well
+  // cos(yaw) — about 5%, so these land at 526 km and 1051 km, each still well
   // inside the band it is asking about. The hinge itself is where the two faces
   // meet, and a seam through the block would be variance this check reads as a hatch.
   const inBandR = ((500 / reference) * radiusPx) * scale;

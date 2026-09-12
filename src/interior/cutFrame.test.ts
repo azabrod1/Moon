@@ -182,7 +182,7 @@ describe('yawCutFrame', () => {
 describe('wedgeYawForOpening', () => {
   const full = THREE.MathUtils.degToRad(22);
   // The mode's SECTION_YAW_DEG: the floor the taper ends on, not zero.
-  const floor = THREE.MathUtils.degToRad(10);
+  const floor = THREE.MathUtils.degToRad(18);
 
   it('keeps the full yaw up to Cutaway and the floor at Section, tapering smoothly between', () => {
     expect(wedgeYawForOpening(0, full, floor)).toBe(full);

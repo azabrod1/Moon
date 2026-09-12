@@ -183,11 +183,12 @@ async function sweepBody(context, viewport, body) {
 
   // 3. A hover sweep across the section resolves regions in order outward
   // from the centre, at rest and mid-blend. Along the hinge (screen-vertical),
-  // a few px to one side of it: at Section the disc is face-on, but each inner
-  // region's face is tilted toward the viewer by the terrace step, so along the
-  // horizontal its near edge overhangs the outer face in perspective and hides
-  // a thin rim band; along the hinge nothing overhangs. Both directions, so
-  // both faces show every region out to the rim.
+  // a few px to one side of it: the cut plane is turned about the hinge (the
+  // Section yaw floor, cutFrame.ts) and each inner region's face is tilted
+  // further by the terrace step, so along the horizontal a near edge overhangs
+  // the face outside it in perspective and hides a thin rim band. The hinge is
+  // the one screen direction neither turn foreshortens and nothing overhangs.
+  // Both directions along it, so both faces show every region out to the rim.
   await page.evaluate(() => window.__moon.interiorView('section'));
   await ready(page);
   const centre = await discCentre(page, viewport);
@@ -284,6 +285,10 @@ async function bandCase(context, viewport) {
   const image = decodePng(await withoutRuler(page, () => page.screenshot({ type: 'png' })));
   const scale = image.width / viewport.width;
   // True scale: display radius = physical radius. In the band (300–700 km) versus above it (800–1400 km).
+  // Read across the hinge, where the Section yaw floor foreshortens the disc by
+  // cos(yaw) — about 1.5%, so these land at 508 km and 1015 km, each still well
+  // inside the band it is asking about. The hinge itself is where the two faces
+  // meet, and a seam through the block would be variance this check reads as a hatch.
   const inBandR = ((500 / reference) * radiusPx) * scale;
   const outBandR = ((1000 / reference) * radiusPx) * scale;
   const size = 14;

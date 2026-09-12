@@ -163,6 +163,13 @@ const GHOST_OPACITY = 0.32;
 /** The wedge is turned this far off the view axis, so the viewer looks at
  *  its near face and along its terraces rather than straight into the crease. */
 const WEDGE_YAW_DEG = 22;
+/** ...and this far at Section, where the turn tapers out. Not zero: a disc
+ *  face-on is a flat circle, and on a body with no rings and no air around it
+ *  nothing else says the circle is a sphere with its near half gone. A few
+ *  degrees leave a sliver of the skin's rim on one side and put the two halves
+ *  of every terrace at different angles to the key, so the middle reads as a
+ *  crease rather than a seam. */
+const SECTION_YAW_DEG = 10;
 /** The Readable blend eases over this long. */
 const SCALE_BLEND_S = 0.5;
 const FPS_WINDOW = 60;
@@ -673,8 +680,9 @@ export class InteriorMode {
     // camera's own up, so nothing snaps through the poles.
     tmpLocalUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
     computeCutFrame(this.camera.position, tmpLocalUp, ORIGIN, openingAngleDegToRad(this.cut.angleDeg), this.frame);
-    // The wedge yaw tapers to none at Section, so the disc is face-on there.
-    yawCutFrame(this.frame, wedgeYawForOpening(this.frame.openingAngle, WEDGE_YAW_DEG * DEG2RAD));
+    // The wedge yaw tapers from the cutaway's full turn to the Section floor,
+    // which is what keeps a Section reading as a sphere and not as a disc.
+    yawCutFrame(this.frame, wedgeYawForOpening(this.frame.openingAngle, WEDGE_YAW_DEG * DEG2RAD, SECTION_YAW_DEG * DEG2RAD));
     this.interiorScene.applyCut(this.frame);
     this.interiorScene.updateForCamera(this.camera);
 

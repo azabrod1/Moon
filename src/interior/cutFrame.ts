@@ -29,9 +29,19 @@
  * The wedge is yawed about the hinge (yawCutFrame) so a cutaway shows its
  * near face and its terraces obliquely rather than a crease looked at
  * head-on. The yaw is the full WEDGE yaw up to Cutaway and tapers smoothly
- * to none at Section (wedgeYawForOpening), so the Section disc is face-on
- * as plan §5 says: at θ = 180° the display radius along the screen is the
- * disc's radius, which the battery's pixel reads rely on.
+ * from there to a FLOOR at Section (wedgeYawForOpening) — not to none. A
+ * Section with no yaw at all is a disc face-on, and on a body with no rings
+ * and no air to give it depth (the Moon) that reads as a coloured circle laid
+ * over the world rather than a world with its near half taken off. The floor
+ * keeps the cut plane a few degrees off the line of sight, so a sliver of the
+ * skin's rim stands on one side and each terrace's two halves take the key
+ * light differently.
+ *
+ * What that costs anything measuring the disc on screen: the yaw turns the cut
+ * plane about the hinge, so the disc's extent ALONG the hinge is still its
+ * display radius while across the hinge it is foreshortened by cos(yaw) —
+ * about 1.5% at a ten-degree floor. A pixel read of the disc measures along
+ * the hinge, or allows for the cosine.
  *
  * Pure: no DOM, no renderer, only three's vector math.
  */
@@ -187,14 +197,16 @@ const yawScratch = new THREE.Vector3();
 
 /**
  * The wedge yaw to apply at an opening angle: `fullYawRad` up to Cutaway
- * (θ ≤ π/2), then a smoothstep down to exactly 0 at Section (θ = π), so the
- * disc turns face-on as the cut opens fully and nothing jumps on the way.
+ * (θ ≤ CUT_VIEW_ANGLE_DEG.cutaway), then a smoothstep down to `sectionYawRad`
+ * at Section (θ = π) — the floor that keeps the disc reading as a sphere with
+ * its near half removed. The taper is flat at both ends, so nothing jumps on
+ * the way; a floor of 0 gives the face-on Section back.
  */
-export function wedgeYawForOpening(openingAngle: number, fullYawRad: number): number {
+export function wedgeYawForOpening(openingAngle: number, fullYawRad: number, sectionYawRad: number): number {
   const cutaway = CUT_VIEW_ANGLE_DEG.cutaway * DEG2RAD;
   if (openingAngle <= cutaway) return fullYawRad;
   const t = Math.min(1, (openingAngle - cutaway) / (Math.PI - cutaway));
-  return fullYawRad * (1 - t * t * (3 - 2 * t));
+  return sectionYawRad + (fullYawRad - sectionYawRad) * (1 - t * t * (3 - 2 * t));
 }
 
 /**

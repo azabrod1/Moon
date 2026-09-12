@@ -13,6 +13,15 @@
  * constrained or not yet modelled body draws an unresolved whole with its
  * bulk line — an illustrative scenario only on request, and labelled.
  *
+ * On a phone the panel is a sheet the reader drags: the grip's pointer
+ * gestures set its height freely between a peek and its own content (a flick
+ * throws it to either end, a press that stays put toggles), and the body's
+ * framing follows — the disc is centred in the band above the sheet, clear of
+ * the Leave button, gliding with the snap and sticking to the finger. The
+ * layers are drawn at their true thickness by default, the body's own
+ * proportions; the note under the segment counts the layers too thin to see at
+ * the current size, which is what Readable is there for.
+ *
  * Session-only: every activate() opens on the body it is handed and
  * touches no storage keys. Body changes run under a generation guard, the
  * compare studio's idiom: every async map resolve checks staleness and, if
@@ -119,12 +128,26 @@ const FRAMING = {
   minDistance: 1.55,
   maxDistance: 9,
   dampingFactor: 0.06,
-  /** Phones: the legend is a bottom sheet, so the body sits in the upper part
-   *  of the viewport — a projection offset (screen space, orbit-independent)
-   *  of this fraction of the height, and the disc fits the width less. */
-  phoneViewShiftFraction: 0.17,
+  /** Phones: the legend is a bottom sheet, so the disc fits the width less. */
   phoneWidthFraction: 0.84,
 } as const;
+
+/** Phones: the sheet's resting height reaches the last row of view buttons —
+ *  the body's name, the way to another world and both rows of buttons within
+ *  reach — with this much air under it. The fraction stands in before the panel
+ *  has been laid out and is the floor; the second caps what content may claim. */
+const SHEET_PEEK_FRACTION = 0.3;
+const SHEET_PEEK_TAIL_PX = 10;
+const SHEET_PEEK_MAX_FRACTION = 0.45;
+/** The sheet never takes more of the screen than this, however tall its content. */
+const SHEET_FULL_FRACTION = 0.85;
+/** A flick: a release moving at least this fast (px/ms) throws the sheet to the
+ *  end it was going, instead of leaving it where the finger stopped. */
+const SHEET_FLICK_PX_PER_MS = 0.6;
+/** A sheet snap eases over this long, and the body's framing glides with it. */
+const SHEET_SNAP_S = 0.26;
+/** The disc is never pushed under the Leave button: this much is kept clear above it. */
+const TOP_CLEAR_PX = 72;
 
 /** A body swap cross-fades the skin over this long, behind the closed cut. */
 const SWAP_FADE_S = 0.45;
@@ -163,6 +186,23 @@ export interface InteriorDevHover {
 
 export type InteriorDisplayMode = 'composition' | 'temperature';
 
+/** A finger on the sheet's grip: where it took hold, the heights it may drag
+ *  between (measured once, so a move costs no layout), and how fast it is going. */
+interface SheetDrag {
+  pointerId: number;
+  startClientY: number;
+  startHeightPx: number;
+  peekPx: number;
+  fullPx: number;
+  lastClientY: number;
+  /** Event times, not clock reads: a slow frame must not distort a gesture. */
+  lastMoveMs: number;
+  /** px/ms, positive upward — the direction the sheet grows. */
+  velocityPxPerMs: number;
+  startMs: number;
+  movedPx: number;
+}
+
 export interface InteriorDevState {
   bodyId: string;
   /** The drawn model's id, or null for the unresolved whole. */
@@ -180,6 +220,9 @@ export interface InteriorDevState {
   readable: boolean;
   scaleBlend: number;
   projectedRadiusPx: number;
+  /** The projection offset the camera applies right now, px: the disc's centre
+   *  is the viewport's centre less this. */
+  viewOffset: { x: number; y: number };
   presentationSeconds: number;
   frozen: boolean;
   loading: boolean;
@@ -301,6 +344,21 @@ export class InteriorMode {
   private revealing = false;
   private cutSettledResolvers: (() => void)[] = [];
 
+  // The phone sheet: its height is what the drag leaves behind, and the body's
+  // framing follows it. The projection offset the camera applies is eased
+  // toward its target so the disc glides with a snap and sticks to a finger.
+  private sheetHeightPx = 0;
+  /** The height the reader had before the inspector took the sheet, or null. */
+  private sheetHeightBeforeInspectPx: number | null = null;
+  private sheetDrag: SheetDrag | null = null;
+  /** A drag that moved: the click that ends the gesture is its tail, not a tap. */
+  private sheetDragMoved = false;
+  private viewOffsetXPx = 0;
+  private viewOffsetYPx = 0;
+  private viewOffsetYTargetPx = 0;
+  /** The distance the glide in flight spans, so it takes SHEET_SNAP_S whatever its length. */
+  private viewOffsetSpanPx = 0;
+
   private readonly fpsSamples: number[] = [];
   private topBarPrevDisplay: string | null = null;
 
@@ -415,6 +473,7 @@ export class InteriorMode {
     this.presentationSeconds = 0;
     this.frozen = false;
 
+    this.resetSheetHeight();
     this.frameInitial();
     this.interiorScene.setMotionScale(this.reducedMotion.matches ? 0 : 1);
     // Open closed, then swing to the chosen view once the map is on: the
@@ -454,6 +513,16 @@ export class InteriorMode {
     window.removeEventListener('blur', this.clearTap);
     this.clearTap();
     this.clearSelection();
+    this.sheetDrag = null;
+    this.sheetDragMoved = false;
+    this.sheetHeightPx = 0;
+    this.sheetHeightBeforeInspectPx = null;
+    const panel = document.getElementById('interior-panel');
+    panel?.classList.remove('snapping');
+    panel?.style.removeProperty('--sheet-h');
+    this.viewOffsetXPx = 0;
+    this.viewOffsetYPx = 0;
+    this.viewOffsetYTargetPx = 0;
     this.camera.clearViewOffset();
     const topBar = document.getElementById('top-bar');
     if (topBar) topBar.style.display = this.topBarPrevDisplay ?? '';
@@ -482,6 +551,7 @@ export class InteriorMode {
     this.advanceScale(dt);
     this.interiorScene.advance(dt);
     this.controls.update();
+    this.advanceViewShift(dt);
 
     // The regions go out before the cut is posed: applyCut sizes the faces
     // and the shells by the region count, so a model that changed since the
@@ -767,10 +837,12 @@ export class InteriorMode {
     if (toggle) toggle.checked = on;
   }
 
-  /** The rings row shows only for a body that has rings. */
+  /** The rings row shows only for a body that has rings, which makes the footer
+   *  taller — so the sheet's resting height follows it. */
   private syncRingsRow(): void {
     const row = document.getElementById('interior-rings-row');
     if (row) row.style.display = this.interiorScene.hasRings() ? '' : 'none';
+    this.syncSheetToContent();
   }
 
   private setDisplayMode(mode: InteriorDisplayMode): void {
@@ -796,14 +868,7 @@ export class InteriorMode {
     });
     document.getElementById('interior-scale-readable')?.addEventListener('click', () => this.setReadable(true));
     document.getElementById('interior-scale-true')?.addEventListener('click', () => this.setReadable(false));
-    const grip = document.getElementById('interior-grip');
-    grip?.addEventListener('click', () => {
-      const panel = document.getElementById('interior-panel');
-      const expanded = panel?.classList.toggle('expanded') ?? false;
-      grip.setAttribute('aria-expanded', String(expanded));
-      grip.setAttribute('aria-label', expanded ? 'Shrink the panel' : 'Expand the panel');
-      this.updateScrollCue();
-    });
+    this.bindSheetGrip();
     document.getElementById('interior-scroll')?.addEventListener('scroll', () => this.updateScrollCue(), { passive: true });
     const more = document.getElementById('interior-models-more');
     more?.addEventListener('click', () => {
@@ -941,7 +1006,174 @@ export class InteriorMode {
     this.syncViewButtons();
     this.syncAngleReadout();
     this.setReadable(this.readable);
+    this.syncSheetToContent();
     requestAnimationFrame(() => this.updateScrollCue());
+  }
+
+  // ---- the phone sheet -------------------------------------------------------
+
+  /**
+   * The sheet's grip: a drag handle on a phone. The height follows the finger
+   * between the sheet's peek and its full height, a flick throws it to the end
+   * it was going, and a press that stays put toggles peek ↔ full. The toggle is
+   * the click, so a keyboard reaches it too; a drag suppresses the click that
+   * follows it.
+   */
+  private bindSheetGrip(): void {
+    const grip = document.getElementById('interior-grip');
+    if (!grip) return;
+    grip.addEventListener('pointerdown', (event) => {
+      if (!isPhoneViewport() || this.sheetDrag !== null) return;
+      try {
+        grip.setPointerCapture(event.pointerId);
+      } catch {
+        return; // the pointer is already gone: never arm a gesture that cannot end
+      }
+      // Gesture times come from the events themselves, not from the clock the
+      // handler reads: a frame that took a while to render must not make a
+      // quick flick read as a slow drag, or a tap as a long press.
+      const nowMs = event.timeStamp;
+      // A snap in flight stops where the eye sees it: the finger takes the sheet
+      // from that height, not from the one the snap was heading for.
+      const panel = document.getElementById('interior-panel');
+      const startHeightPx = panel ? Math.round(panel.getBoundingClientRect().height) : this.peekHeightPx();
+      this.sheetDragMoved = false;
+      this.sheetDrag = {
+        pointerId: event.pointerId,
+        startClientY: event.clientY,
+        startHeightPx,
+        peekPx: this.peekHeightPx(),
+        fullPx: this.fullHeightPx(),
+        lastClientY: event.clientY,
+        lastMoveMs: nowMs,
+        velocityPxPerMs: 0,
+        startMs: nowMs,
+        movedPx: 0,
+      };
+      this.setSheetHeight(startHeightPx, { snap: false, bounds: this.sheetDrag });
+    });
+    grip.addEventListener('pointermove', (event) => {
+      const drag = this.sheetDrag;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      const nowMs = event.timeStamp;
+      const sinceLastMoveMs = nowMs - drag.lastMoveMs;
+      if (sinceLastMoveMs > 0) drag.velocityPxPerMs = (drag.lastClientY - event.clientY) / sinceLastMoveMs;
+      drag.movedPx = Math.max(drag.movedPx, Math.abs(event.clientY - drag.startClientY));
+      drag.lastClientY = event.clientY;
+      drag.lastMoveMs = nowMs;
+      // The finger asks for a height; the sheet gives what it can of it.
+      this.setSheetHeight(drag.startHeightPx + (drag.startClientY - event.clientY), { snap: false, bounds: drag });
+    });
+    const endDrag = (event: PointerEvent) => {
+      const drag = this.sheetDrag;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      this.sheetDrag = null;
+      const heldStill = drag.movedPx <= TAP_MAX_PX && event.timeStamp - drag.startMs <= TAP_MAX_MS;
+      if (heldStill) return; // the click that follows is the tap, and toggles the sheet
+      this.sheetDragMoved = true;
+      // The click the browser makes out of this gesture is its tail, not a tap.
+      // It is dispatched in the same task as the pointerup, so the next turn of
+      // the loop is the earliest a real tap — or a keyboard Enter — could come.
+      window.setTimeout(() => { this.sheetDragMoved = false; }, 0);
+      // A flick lands at the end it was thrown at; anything slower stays where the finger left it.
+      if (Math.abs(drag.velocityPxPerMs) >= SHEET_FLICK_PX_PER_MS) {
+        this.setSheetHeight(drag.velocityPxPerMs > 0 ? drag.fullPx : drag.peekPx, { snap: true, bounds: drag });
+      }
+    };
+    grip.addEventListener('pointerup', endDrag);
+    grip.addEventListener('pointercancel', endDrag);
+    grip.addEventListener('lostpointercapture', endDrag);
+    grip.addEventListener('click', () => {
+      if (this.sheetDragMoved) {
+        this.sheetDragMoved = false;
+        return;
+      }
+      if (!isPhoneViewport()) return;
+      const fullPx = this.fullHeightPx();
+      const atFull = this.sheetHeightPx >= fullPx - 1;
+      this.setSheetHeight(atFull ? this.peekHeightPx() : fullPx, { snap: true });
+    });
+  }
+
+  /** The sheet's resting height: down to the last row of view buttons, with the
+   *  footer that never scrolls away under it, so everything a reader switches
+   *  between is one tap away before they have dragged anything. */
+  private peekHeightPx(): number {
+    const fractionPx = Math.round(window.innerHeight * SHEET_PEEK_FRACTION);
+    const lastButtonRow = document.getElementById('interior-mode-temperature')?.parentElement;
+    if (!lastButtonRow || lastButtonRow.offsetHeight <= 0) return fractionPx;
+    const footer = document.getElementById('interior-footer');
+    const footerHeightPx = footer && getComputedStyle(footer).display !== 'none' ? footer.offsetHeight : 0;
+    // offsetTop is measured from the panel, the positioned ancestor, and does
+    // not move with the sheet's own scrolling: this is the unscrolled reach.
+    const throughButtonsPx = lastButtonRow.offsetTop + lastButtonRow.offsetHeight + SHEET_PEEK_TAIL_PX + footerHeightPx;
+    return Math.min(Math.max(fractionPx, throughButtonsPx), Math.round(window.innerHeight * SHEET_PEEK_MAX_FRACTION));
+  }
+
+  /** The sheet's ceiling: its own content — the grip, everything the body
+   *  scrolls and the footer that never scrolls away — capped at a fraction of
+   *  the viewport, so a short panel never shows empty glass under its last row. */
+  private fullHeightPx(): number {
+    const scroll = document.getElementById('interior-scroll');
+    if (!scroll) return this.peekHeightPx();
+    const grip = document.getElementById('interior-grip');
+    const footer = document.getElementById('interior-footer');
+    const footerHeightPx = footer && getComputedStyle(footer).display !== 'none' ? footer.offsetHeight : 0;
+    const contentPx = (grip?.offsetHeight ?? 0) + scroll.scrollHeight + footerHeightPx;
+    return Math.max(this.peekHeightPx(), Math.min(Math.round(window.innerHeight * SHEET_FULL_FRACTION), contentPx));
+  }
+
+  /**
+   * Set the sheet's height (px), clamped to what the sheet may be. A snap eases
+   * the height in CSS and glides the body's framing with it; a drag transitions
+   * nothing, so the sheet and the disc both stay under the finger. `bounds` is
+   * a gesture's own measurement, kept so a move costs no layout.
+   */
+  private setSheetHeight(
+    heightPx: number,
+    options: { snap: boolean; bounds?: { peekPx: number; fullPx: number }; frameAtOnce?: boolean },
+  ): void {
+    const panel = document.getElementById('interior-panel');
+    if (!panel || !isPhoneViewport()) return;
+    const peekPx = options.bounds?.peekPx ?? this.peekHeightPx();
+    const fullPx = Math.max(peekPx, options.bounds?.fullPx ?? this.fullHeightPx());
+    const clampedPx = Math.round(Math.min(fullPx, Math.max(peekPx, heightPx)));
+    panel.classList.toggle('snapping', options.snap && !this.reducedMotion.matches);
+    this.sheetHeightPx = clampedPx;
+    panel.style.setProperty('--sheet-h', `${clampedPx}px`);
+    // The grip says where the sheet is: expanded only when it is at its ceiling.
+    const grip = document.getElementById('interior-grip');
+    if (grip) {
+      const atFull = clampedPx >= fullPx - 1;
+      grip.setAttribute('aria-expanded', String(atFull));
+      grip.setAttribute('aria-label', atFull ? 'Shrink the panel' : 'Expand the panel');
+    }
+    this.applyViewportFraming(options.frameAtOnce === true);
+    this.updateScrollCue();
+  }
+
+  /** A fresh entry: the sheet rests at its peek, with the body framed above it. */
+  private resetSheetHeight(): void {
+    this.sheetHeightBeforeInspectPx = null;
+    if (!isPhoneViewport()) return;
+    this.setSheetHeight(this.peekHeightPx(), { snap: false, frameAtOnce: true });
+  }
+
+  /** The panel's content is what sets the sheet's resting height — a body with
+   *  rings has a taller footer — so a sheet still at rest follows the content
+   *  when it turns over. One the reader has drawn taller stays where they put it. */
+  private syncSheetToContent(): void {
+    if (!isPhoneViewport() || this.sheetDrag !== null) return;
+    const peekPx = this.peekHeightPx();
+    if (this.sheetHeightPx <= peekPx) this.setSheetHeight(peekPx, { snap: true });
+  }
+
+  /** Leaving the inspector: the sheet goes back to the height the reader had. */
+  private restoreSheetHeightAfterInspect(): void {
+    const heightPx = this.sheetHeightBeforeInspectPx;
+    this.sheetHeightBeforeInspectPx = null;
+    if (heightPx === null || !isPhoneViewport()) return;
+    this.setSheetHeight(heightPx, { snap: true });
   }
 
   /** The fade at the panel's bottom edge: only while there is more below it. */
@@ -1020,6 +1252,7 @@ export class InteriorMode {
       root.style.display = 'none';
       root.replaceChildren();
       document.getElementById('interior-panel')?.classList.remove('inspecting');
+      this.restoreSheetHeightAfterInspect();
       this.updateScrollCue();
       return;
     }
@@ -1046,9 +1279,10 @@ export class InteriorMode {
     const panel = document.getElementById('interior-panel');
     panel?.classList.toggle('inspecting', phone);
     if (phone) {
-      // The inspector needs the room: the sheet opens to its full height with it.
-      panel?.classList.add('expanded');
-      document.getElementById('interior-grip')?.setAttribute('aria-expanded', 'true');
+      // The inspector needs the room: the sheet opens to its full height with
+      // it, and the height the reader had is kept for when they come back.
+      if (this.sheetHeightBeforeInspectPx === null) this.sheetHeightBeforeInspectPx = this.sheetHeightPx;
+      this.setSheetHeight(this.fullHeightPx(), { snap: true });
     }
     root.style.display = '';
     root.scrollTop = 0;
@@ -1271,7 +1505,6 @@ export class InteriorMode {
   private frameInitial(): void {
     this.controls.target.copy(ORIGIN);
     this.camera.up.set(0, 1, 0);
-    this.applyViewportFraming();
     const distance = framingDistance(
       this.camera.aspect,
       FRAMING.fovDeg,
@@ -1280,29 +1513,75 @@ export class InteriorMode {
     );
     orbitPose(FRAMING.azimuthDeg, FRAMING.elevationDeg, distance, this.camera.position);
     this.controls.update();
+    // Last, and from the posed camera: how much room the disc leaves above it is
+    // what decides the shift, so the pose has to be the one it will be drawn at.
+    this.applyViewportFraming(true);
   }
 
-  /** The projection shift, screen space and orbit-independent: on a phone the body
-   *  draws in the upper part of the viewport, above the sheet; on desktop it sits
+  /** The projection shift, screen space and orbit-independent: on a phone the
+   *  disc is centred in the free band above the sheet, however tall the reader
+   *  has drawn it, and never pushed under the Leave button; on desktop it sits
    *  left of the panel, by half the panel's width, so the wedge never crowds it. */
-  private applyViewportFraming(): void {
-    const width = window.innerWidth;
+  private applyViewportFraming(atOnce = false): void {
     const height = window.innerHeight;
     if (isPhoneViewport()) {
-      const shift = Math.round(height * FRAMING.phoneViewShiftFraction);
-      this.camera.setViewOffset(width, height, 0, shift, width, height);
+      if (this.sheetHeightPx <= 0) this.sheetHeightPx = this.peekHeightPx();
+      const discRadiusPx = projectedRadiusPx(
+        BODY_RADIUS,
+        this.camera.position.distanceTo(ORIGIN),
+        this.camera.fov,
+        height,
+      );
+      const headroomPx = height / 2 - discRadiusPx - TOP_CLEAR_PX;
+      this.setViewOffsetTarget(0, Math.max(0, Math.min(this.sheetHeightPx / 2, headroomPx)), atOnce);
     } else {
       const panel = document.getElementById('interior-panel');
-      const shift = panel ? Math.round(panel.getBoundingClientRect().width / 2) : 0;
-      if (shift > 0) this.camera.setViewOffset(width, height, shift, 0, width, height);
-      else this.camera.clearViewOffset();
+      this.setViewOffsetTarget(panel ? Math.round(panel.getBoundingClientRect().width / 2) : 0, 0, true);
     }
+  }
+
+  /** Ask for a projection offset. The x lands at once — the desktop panel does
+   *  not move under the reader — and the y glides, so the body follows the
+   *  sheet's snap instead of jumping with it. A finger on the grip, reduced
+   *  motion and a fresh entry all take the offset at once. */
+  private setViewOffsetTarget(xPx: number, yPx: number, atOnce: boolean): void {
+    this.viewOffsetXPx = xPx;
+    this.viewOffsetYTargetPx = yPx;
+    if (atOnce || this.reducedMotion.matches || this.sheetDrag !== null) {
+      this.viewOffsetYPx = yPx;
+      this.viewOffsetSpanPx = 0;
+    } else {
+      this.viewOffsetSpanPx = Math.abs(yPx - this.viewOffsetYPx);
+    }
+    this.applyViewOffset();
+  }
+
+  /** Put the offset the camera holds this frame onto its projection. */
+  private applyViewOffset(): void {
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    const x = Math.round(this.viewOffsetXPx);
+    const y = Math.round(this.viewOffsetYPx);
+    if (x === 0 && y === 0) this.camera.clearViewOffset();
+    else this.camera.setViewOffset(width, height, x, y, width, height);
     this.camera.updateProjectionMatrix();
+  }
+
+  /** The framing's glide: the applied shift steps toward its target over
+   *  SHEET_SNAP_S, so a sheet snap and the body's move read as one gesture. */
+  private advanceViewShift(dt: number): void {
+    if (this.viewOffsetYPx === this.viewOffsetYTargetPx) return;
+    const remainingPx = Math.abs(this.viewOffsetYTargetPx - this.viewOffsetYPx);
+    const stepPx = this.viewOffsetSpanPx > 0 ? (this.viewOffsetSpanPx * dt) / SHEET_SNAP_S : remainingPx;
+    this.viewOffsetYPx = stepToward(this.viewOffsetYPx, this.viewOffsetYTargetPx, stepPx);
+    this.applyViewOffset();
   }
 
   onResize(aspect: number): void {
     this.camera.aspect = aspect;
-    this.applyViewportFraming();
+    // The reader's sheet height survives a rotation, re-clamped to the new viewport.
+    if (isPhoneViewport()) this.setSheetHeight(this.sheetHeightPx > 0 ? this.sheetHeightPx : this.peekHeightPx(), { snap: false, frameAtOnce: true });
+    else this.applyViewportFraming(true);
     this.interiorScene.onResize();
     this.renderPinned(); // re-dock across the breakpoint
   }
@@ -1470,6 +1749,7 @@ export class InteriorMode {
       readable: this.readable,
       scaleBlend: this.scaleBlend,
       projectedRadiusPx: this.projectedPx,
+      viewOffset: { x: this.viewOffsetXPx, y: this.viewOffsetYPx },
       presentationSeconds: this.presentationSeconds,
       frozen: this.frozen,
       loading: this.loading,

@@ -338,7 +338,7 @@ describe('the deck\'s detail term', () => {
     // exactly such a condition: on a driver that takes the licence, the deck
     // gets a wrong mip and a wrong slope wherever the quad straddles the fade.
     const glsl = compiled('cloud').shader.fragmentShader;
-    const block = glsl.slice(glsl.indexOf('float cloudAlpha = 1.0;'), glsl.indexOf('vec4 detail = textureGrad'));
+    const block = glsl.slice(glsl.indexOf('float cloudAlpha = 1.0;'), glsl.indexOf('vec4 detail = vec4(0.0);'));
     // The deck's own block only — the injection point carries other terms
     // after it, and each answers for its own derivatives.
     const inner = glsl.slice(
@@ -356,6 +356,21 @@ describe('the deck\'s detail term', () => {
     const gloss = after.slice(after.indexOf('if (uWaterGloss > 0.0) {'), after.indexOf('float sunElevSin'));
     expect(after.match(/dFd[xy]\(/g)).toHaveLength(2);
     expect(gloss.match(/dFd[xy]\(/g)).toHaveLength(2);
+    // The clear-sky return (CLOUD_CLEAR_RETURN) sits after the last derivative
+    // the deck's path takes and before the alpha is applied, and between it
+    // and the sea's uniform compare there is no derivative and no fwidth: the
+    // lanes it leaves divergent never reach one.
+    const ret = glsl.indexOf('cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }');
+    expect(ret).toBeGreaterThan(glsl.indexOf('cloudNightDy = sphereEquirectUvGrad(objDir, dFdy(objDir));'));
+    expect(ret).toBeLessThan(glsl.indexOf('diffuseColor.a *= cloudAlpha;'));
+    expect(glsl.slice(ret, glsl.indexOf('if (uWaterGloss > 0.0) {'))).not.toMatch(/dFd[xy]\(|fwidth\(/);
+    // The relief's plain tap is taken once, in uniform flow, as three's chunk
+    // always took it, and the smooth filter mixes from that same texel. An
+    // implicit-LOD fetch under the weight was measured as the same picture,
+    // but only the specification can promise it, and it does not.
+    expect(glsl).toContain('vec4 reliefTexel = texture2D( normalMap, vNormalMapUv );');
+    expect(glsl.match(/texture2D\( normalMap, vNormalMapUv \)/g)).toHaveLength(1);
+    expect(glsl).not.toMatch(/SmoothW < 1\.0/);
   });
 
   it('perturbs the normal upstream of the lights, not after them', () => {

@@ -23,9 +23,14 @@ import { canGPUDoBloom, halfFloatTargetSampleCounts } from './app/gpuCapability'
 import { installShaderSalt } from './app/shaderSalt';
 import { bloomPixelRatio, composerSamples, parseMsaaOverride, targetPixelRatio } from './app/renderResolution';
 import { BootRenderGate } from './app/bootRenderGate';
+import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn } from './app/perfSwitches';
+import { setBloomInternalDepth } from './app/bloomTargets';
+import { DepthDiscardPass } from './app/DepthDiscardPass';
+import { BloomChainPass, FusedOutputPass } from './app/FusedOutputPass';
+import type { GpuProfiler, GpuProfileOptions } from './app/devGpuProfile';
 import { bitmapDecodePath } from './planetarium/world/textureBitmapLoader';
 import { BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
-import { createLensPass, updateLensPass, type LensParams } from './app/LensPass';
+import { createLensPass, devSetLensPassOff, updateLensPass, type LensParams } from './app/LensPass';
 import { applyDesignFov, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
 import { loadBrightStarCatalog } from './planetarium/world/starCatalogLoader';
 import { debugError, debugLog, debugWarn } from './shared/debug';
@@ -90,8 +95,12 @@ try {
     // Multisamples the canvas backbuffer only, which the no-float direct path
     // and the System Map draw into. The composer path renders the scene into
     // its own target, and that target carries its own sample count
-    // (buildComposer, app/renderResolution.ts).
-    antialias: true,
+    // (buildComposer, app/renderResolution.ts) — so on that path the canvas
+    // receives one full-screen quad and its samples buy nothing but the
+    // resolve. `?canvasaa=0` asks for a context without them; a context
+    // attribute, so it needs a reload, and honoured in production because
+    // what that resolve costs is a question only the slow device can answer.
+    antialias: new URLSearchParams(location.search).get('canvasaa') !== '0',
     powerPreference: 'high-performance',
     // The orbit-line/décor stencil contract (world/orbitLineStencil.ts) needs
     // a stencil buffer on the default framebuffer for the no-float direct
@@ -218,6 +227,7 @@ let sceneTarget: THREE.WebGLRenderTarget | null = null;
 // (app/bootRenderGate.ts). The simulation runs every frame regardless.
 const bootRender = new BootRenderGate();
 let bloomPass: UnrealBloomPass | null = null;
+let depthDiscardPass: DepthDiscardPass | null = null;
 let lensPass: ReturnType<typeof createLensPass> | null = null;
 let directLensTexture: THREE.FramebufferTexture | null = null;
 const directLensSize = new THREE.Vector2();
@@ -359,6 +369,7 @@ function buildComposer(
   }
   lensPass = null;
   bloomPass = null; // disposed above with the composer's passes
+  depthDiscardPass = null;
   directLensTexture?.dispose();
   directLensTexture = null;
 
@@ -425,6 +436,12 @@ function buildComposer(
   composer.setPixelRatio(pixelRatio);
   composer.setSize(window.innerWidth, window.innerHeight);
   composer.addPass(new RenderPass(scene, cam));
+  // The world's depth and stencil have no reader past this point
+  // (app/DepthDiscardPass.ts). Enabled/disabled rather than added/removed, so
+  // the A/B never rebuilds the chain it is being measured against.
+  depthDiscardPass = new DepthDiscardPass();
+  depthDiscardPass.enabled = import.meta.env.DEV ? perfSwitchOn('depth-discard') : true;
+  composer.addPass(depthDiscardPass);
 
   if (wantsLens) {
     planetariumLens.strength = lensRequestedStrength;
@@ -439,18 +456,26 @@ function buildComposer(
   // builds an isotropic PSF around those final pixels. Screen-authored scene
   // primitives pre-distort themselves into the source (lensShader.ts), so their
   // sizes also remain invariant through this ordering.
+  // The last two full-screen passes as one (app/FusedOutputPass.ts): the one
+  // item here that cannot promise the same pixels, so it is built to be
+  // measured and is off unless something arms it. Never in production.
+  const fused = import.meta.env.DEV && enabled && perfSwitchOn('fused-final');
   if (enabled) {
-    bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(window.innerWidth, window.innerHeight),
-      bloom.strength,
-      BLOOM_RADIUS,
-      bloom.threshold,
-    );
+    const size = new THREE.Vector2(window.innerWidth, window.innerHeight);
+    bloomPass = fused
+      ? new BloomChainPass(size, bloom.strength, BLOOM_RADIUS, bloom.threshold)
+      : new UnrealBloomPass(size, bloom.strength, BLOOM_RADIUS, bloom.threshold);
+    // Its eleven internal targets come with a depth plane nothing in the pass
+    // tests or writes (app/bloomTargets.ts). Applied here rather than at the
+    // switch, because a rebuild makes a fresh pass with three's defaults back.
+    setBloomInternalDepth(bloomPass, import.meta.env.DEV ? !perfSwitchOn('bloom-nodepth') : false);
     composer.addPass(bloomPass);
     sizeBloomPass();
   }
 
-  composer.addPass(new OutputPass());
+  composer.addPass(fused && bloomPass
+    ? new FusedOutputPass(bloomPass as BloomChainPass)
+    : new OutputPass());
   composerBuiltFor = { cam, bloom, enabled, lens: lensRequestedStrength };
 }
 
@@ -472,9 +497,81 @@ function setPlanetariumBloom(on: boolean) {
 applyRenderResolution();
 buildComposer(planetariumCamera, PLANETARIUM_BLOOM, planetariumBloomEnabled());
 
+// The bloom pass's own targets, switched back and forth against the picture
+// they had. It reaches into the live pass rather than rebuilding the chain: a
+// rebuild relinks every pass's program, which is not what this measures.
+// DEV only — a production build folds the switch to the state it ships in.
+if (import.meta.env.DEV) {
+  onPerfSwitch('bloom-nodepth', (on) => setBloomInternalDepth(bloomPass, !on));
+  onPerfSwitch('depth-discard', (on) => { if (depthDiscardPass) depthDiscardPass.enabled = on; });
+  // The fused pass is a different chain, not a flag inside one, so this switch
+  // is the one that has to rebuild. Skipped on the first call, which arrives
+  // with the composer already built for the state it reports.
+  let fusedKnown = perfSwitchOn('fused-final');
+  onPerfSwitch('fused-final', (on) => {
+    if (on === fusedKnown) return;
+    fusedKnown = on;
+    composerBuiltFor = null;
+    if (appMode === 'planetarium') {
+      buildComposer(planetariumCamera, PLANETARIUM_BLOOM, planetariumBloomEnabled());
+    }
+  });
+}
+
 // Armed after first Planetarium activation: that render compiles the scene's
 // shaders and uploads textures, so its duration is a startup phase of its own.
 let measureNextSceneFrame = false;
+
+// Both ends of the app's own tick, for a diagnostic that has to tell a frame
+// the app spent 30 ms inside from a frame it was handed 30 ms apart. Null
+// unless the on-device perf overlay is running, and never installed in a
+// production build.
+let frameProbe: { start(): void; end(): void } | null = null;
+// The GPU profile (app/devGpuProfile.ts) brackets the world draw with its
+// spans while a run is on; loaded by the first `__moon.gpuProfile()` call.
+let gpuProfiler: GpuProfiler | null = null;
+
+/**
+ * Pin the render resolution and re-run the app's own resize path, so the
+ * composer targets, the star point sizes and the mode's layout all follow it
+ * exactly as they do when a display changes. Null hands the ratio back.
+ */
+function devPinPixelRatio(ratio: number | null): void {
+  pixelRatioPin = ratio;
+  syncViewport();
+}
+
+/**
+ * Every surface a frame is actually drawn into, in device pixels.
+ *
+ * A resolution switch that changes the renderer's ratio but leaves a target at
+ * its old size costs nothing and reads as if the pixels were free, so the
+ * sizes themselves are the evidence rather than the timing. The bloom chain is
+ * deliberately not on the scene's ratio (app/renderResolution.ts sizes it at
+ * the old floor so the glow keeps its width), which is why it is listed
+ * separately instead of being assumed to follow.
+ */
+function devRenderTargets() {
+  const buffer = renderer.getDrawingBufferSize(new THREE.Vector2());
+  const canvas = renderer.domElement;
+  const size = (t: { width: number; height: number } | null | undefined) =>
+    (t ? { w: t.width, h: t.height, mpx: Math.round((t.width * t.height) / 1e4) / 100 } : null);
+  const bloomMip = (bloomPass as unknown as { renderTargetsHorizontal?: THREE.WebGLRenderTarget[] } | null)
+    ?.renderTargetsHorizontal?.[0] ?? null;
+  return {
+    pixelRatio: renderer.getPixelRatio(),
+    targetPixelRatio: getTargetPixelRatio(),
+    bloomRatio: bloomPixelRatio(window.devicePixelRatio, isMobile),
+    drawingBuffer: { w: buffer.x, h: buffer.y, mpx: Math.round((buffer.x * buffer.y) / 1e4) / 100 },
+    canvas: { w: canvas.width, h: canvas.height, cssW: canvas.clientWidth, cssH: canvas.clientHeight },
+    sceneTarget: sceneTarget
+      ? { ...size(sceneTarget)!, samples: sceneTarget.samples }
+      : null,
+    composerPartner: size(composer?.renderTarget2),
+    // Half the bloom pass's requested resolution: the first mip it blurs.
+    bloomMip0: size(bloomMip),
+  };
+}
 
 // One frame of the world: the map's own scene while the map is open, else the
 // composer frame plus the corner chart. The animation loop calls it through
@@ -496,6 +593,12 @@ function drawWorldFrame() {
         surfacePerfEndRender(perfRender, renderer.info.programs?.length ?? 0, renderer.info.memory.textures);
       }
     }
+  } else if (import.meta.env.DEV && gpuProfiler?.active) {
+    // The same two draws as below, measured.
+    gpuProfiler.frame(
+      () => renderScene(camera),
+      () => { if (appMode === 'planetarium') planetariumMode?.renderMiniChartFrame(); },
+    );
   } else {
     renderScene(camera);
     // The corner chart draws over the finished world frame, inside its own
@@ -555,16 +658,25 @@ function renderScene(cam: THREE.Camera) {
       // renderToScreen flag is set; the write target is intentionally unused.
       renderer.setRenderTarget(null);
       renderer.render(scene, cam);
-      const texture = ensureDirectLensTexture();
-      renderer.copyFramebufferToTexture(texture);
+      // Synced BEFORE the flag is read: updateLensPass is what sets the flag,
+      // from the strength, every frame. Under the flag it would run only while
+      // the pass was already on, and one frame at zero strength (an aspect the
+      // overscan cannot cover) would switch the lens off for the session.
       updateLensPass(lensPass, planetariumLens, planetariumCamera.fov, planetariumCamera.aspect);
-      lensPass.render(
-        renderer,
-        null as unknown as THREE.WebGLRenderTarget,
-        { texture } as unknown as THREE.WebGLRenderTarget,
-        0,
-        false,
-      );
+      // A disabled pass does not run, exactly as the composer skips one: this
+      // path calls the pass by hand, so the flag has to be read by hand too.
+      // Skipping it leaves the tone-mapped frame already on screen.
+      if (lensPass.enabled) {
+        const texture = ensureDirectLensTexture();
+        renderer.copyFramebufferToTexture(texture);
+        lensPass.render(
+          renderer,
+          null as unknown as THREE.WebGLRenderTarget,
+          { texture } as unknown as THREE.WebGLRenderTarget,
+          0,
+          false,
+        );
+      }
     } else {
       renderer.render(scene, cam);
     }
@@ -1000,6 +1112,24 @@ function installDevHooks() {
     observe: (name: string) => planetariumMode?.devObserve(name) ?? false,
     device: () => planetariumMode?.devDeviceProfile() ?? null,
     sectors: () => planetariumMode?.devSectorStats() ?? null,
+    /** A GPU profile of the world frame measured on this device, per pass and per object (app/devGpuProfile.ts). */
+    gpuProfile: async (opts?: GpuProfileOptions) => {
+      if (!gpuProfiler) {
+        const { createGpuProfiler } = await import('./app/devGpuProfile');
+        gpuProfiler = createGpuProfiler({
+          gl: renderer.getContext(),
+          passes: () => (composer?.passes ?? []).map((pass) => ({
+            name: pass === lensPass ? 'Lens' : pass === bloomPass ? 'Bloom' : pass.constructor.name,
+            pass: pass as unknown as { render: (...args: unknown[]) => void },
+          })),
+          sceneRoot: () => scene,
+          bindScreen: () => renderer.setRenderTarget(null),
+        });
+      }
+      const result = await gpuProfiler.run(opts);
+      (window as any).__moon.gpuProfileResult = result;
+      return result;
+    },
     ladder: () => planetariumMode?.devLadderStats() ?? null,
     // Pixels per texel of the map each close body is really drawing. Reports
     // with the sector streamer off (?sectors=0), which is what a close-range
@@ -1084,6 +1214,10 @@ function installDevHooks() {
     setMapLayers: (partial: Record<string, boolean> | null) =>
       planetariumMode?.devSetMapLayers(partial as never) ?? null,
     setChrome: (visible: boolean) => planetariumMode?.devSetChrome(visible),
+    /** The "Orbit lines" setting on its own — setChrome(false) turns it off with the rest. */
+    setOrbitLines: (on: boolean) => planetariumMode?.devSetOrbitLines(on),
+    /** Move the ship by (dx, dy, dz) AU and nothing else; for a frame() pose, whose camera stays put. */
+    nudge: (dxAU: number, dyAU: number, dzAU: number) => planetariumMode?.devNudge(dxAU, dyAU, dzAU),
     setFov: (deg: number) => planetariumMode?.devSetFov(deg),
     setTimeMs: (utcMs: number) => planetariumMode?.devSetTimeMs(utcMs),
     getTimeMs: () => planetariumMode?.getCurrentUtcMs() ?? 0,
@@ -1241,6 +1375,11 @@ function installDevHooks() {
     }));
   };
   (window as any).__moonWarm = { queueTextureWarm, pumpTextureWarmQueue, invalidateTextureWarmCache };
+  // The GPU-efficiency A/B switches (app/perfSwitches.ts). Installed after the
+  // bridge object is built, because that assignment replaces it wholesale, and
+  // as a property chain so the perf sweep's own `perfArm` can be added later
+  // without either set of keys erasing the other.
+  installPerfSwitchBridge();
   debugLog('Dev hooks installed (window.__moon)');
 }
 
@@ -1292,6 +1431,10 @@ async function init() {
     requestAnimationFrame(animate);
     if (import.meta.env.DEV) surfacePerfFrameStart(rafTimestamp);
     if (import.meta.env.DEV) smoothTraceFrameStart(rafTimestamp);
+    // Wall clock at the callback, not the rAF timestamp: after a busy main
+    // thread the timestamp is the frame the browser meant to start, which is
+    // already stale by the time this runs.
+    if (import.meta.env.DEV && frameProbe) frameProbe.start();
     // Drift poll on a countdown: innerWidth/innerHeight are cheap but not
     // free at once-per-frame, and the events below re-arm an immediate check
     // for every transition that announces itself (visualViewport covers the
@@ -1333,6 +1476,7 @@ async function init() {
     if (exposurePin !== null) exposureCurrent = exposurePin;
     renderer.toneMappingExposure = exposureCurrent;
     if (bootRender.shouldRender()) drawWorldFrame();
+    if (import.meta.env.DEV && frameProbe) frameProbe.end();
   }
 
   animate();
@@ -1342,6 +1486,32 @@ async function init() {
   // deliberately early: an entry stall can overlap the last texture-loading
   // unit, and the profiler must remain usable while `ready()` is still false.
   if (import.meta.env.DEV) installDevHooks();
+
+  // `?perf=1` — the on-device perf sweep. A phone has no console and an
+  // M-series Mac cannot rank a phone's costs, so the ranking is measured on
+  // the screen that is slow. Imported on demand behind the DEV check, so a
+  // production build carries none of it and no other DEV boot loads it.
+  if (import.meta.env.DEV && new URLSearchParams(location.search).get('perf') === '1') {
+    void import('./app/devPerfSweep')
+      .then(({ installPerfSweep }) => installPerfSweep({
+        ready: () => plmActivated,
+        setSynthesis: (on) => planetariumMode?.devSetSynthesis(on),
+        setRoleHidden: (role, hidden) => planetariumMode?.devSetRoleHidden(role, hidden),
+        setSectorMeshes: (visible) => planetariumMode?.devSetSectorMeshesVisible(visible),
+        setChrome: (visible) => planetariumMode?.devSetChrome(visible),
+        setShip: (visible) => planetariumMode?.devSetShipVisible(visible),
+        shipVisible: () => planetariumMode?.devShipVisible() ?? true,
+        budget: () => planetariumMode?.devFrameBudget() ?? null,
+        resetBudget: () => planetariumMode?.devResetFrameBudget(),
+        passes: () => ({ bloom: bloomPass, lens: lensPass }),
+        setLens: (on) => devSetLensPassOff(!on),
+        pinPixelRatio: devPinPixelRatio,
+        pixelRatio: () => renderer.getPixelRatio(),
+        renderTargets: devRenderTargets,
+        setFrameProbe: (probe) => { frameProbe = probe; },
+      }))
+      .catch((err) => debugWarn('The perf overlay did not load', err));
+  }
 
   const autoMode = getAutoMode();
   debugLog('Boot mode', { autoMode });

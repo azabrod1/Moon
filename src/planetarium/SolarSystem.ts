@@ -5,7 +5,11 @@
  *
  * Orbit lines are Line2 fat lines (pixel-authored width, butt caps, feathered
  * edges — see createOrbitLineMaterial) pre-distorted for the lens pass, with a
- * per-frame opacity law (orbitLineOpacity) driven by PlanetariumMode.
+ * per-frame opacity law (orbitLineOpacity) driven by PlanetariumMode. Their
+ * vertices are float32 measured from an anchor near the ship, not from the
+ * Sun, and the line is posed at (anchor − ship) each frame — orbitLineAnchor.ts
+ * has the arithmetic, the bound, and the re-anchor rule; poseOrbitLine below
+ * applies it.
  */
 import * as THREE from 'three';
 import { Line2 } from 'three/addons/lines/Line2.js';
@@ -30,6 +34,13 @@ import {
   type LensShaderUniforms,
 } from '../shared/three/lensShader';
 import { smoothstepUnclamped } from '../shared/math/smoothstep';
+import {
+  createOrbitLineAnchorFrame,
+  orbitLineAnchorNeedsMove,
+  setOrbitLineAnchorSamples,
+  writeAnchoredSegmentPairs,
+  type OrbitLineAnchorFrame,
+} from './orbitLineAnchor';
 
 export type PlanetariumLayout = 'aligned' | 'realistic';
 export const CREATE_SOLAR_SYSTEM_TOTAL_UNITS =
@@ -44,6 +55,9 @@ export interface SolarSystemObjects {
   sun: THREE.Group;
   planets: PlanetMesh[];
   orbitLines: Line2[];
+  /** Each line's double-precision samples and the anchor its float32
+   *  vertices are measured from, orbitLines[i] ↔ orbitLineFrames[i]. */
+  orbitLineFrames: OrbitLineAnchorFrame[];
   /** Sim epoch the orbit lines were last sampled at (lazy drift rebuild). */
   orbitLinesEpochUtcMs: number;
   /** One shared uniform block for every orbit line's lens pre-distortion —
@@ -137,23 +151,55 @@ function sampleLinePoints(
 
 /**
  * Re-sample every orbit line's geometry at the given sim epoch and re-stamp
- * orbitLinesEpochUtcMs. Writes each polyline in place via setOrbitLinePoints —
+ * orbitLinesEpochUtcMs. Writes each polyline in place via writeOrbitLine —
  * replacing the Line objects would break the orbitLines[i] ↔
  * PLANETARIUM_BODIES[i] coupling — including fresh bounds (an updated buffer
  * never invalidates the cached sphere, which would leave frustum culling
- * stale). The staleness *policy* (when to call this) lives with the caller,
+ * stale). Each line keeps the anchor it had (a line with no frame yet gets
+ * one anchored at the Sun); whether the ship has drifted from it is the next
+ * frame's question, and the answer does not depend on the samples. The
+ * staleness *policy* (when to call this) lives with the caller,
  * PlanetariumMode.rebuildOrbitLinesIfStale.
  */
 export function resampleOrbitLines(
-  objects: Pick<SolarSystemObjects, 'orbitLines' | 'orbitLinesEpochUtcMs'>,
+  objects: Pick<SolarSystemObjects, 'orbitLines' | 'orbitLineFrames' | 'orbitLinesEpochUtcMs'>,
   layoutMode: PlanetariumLayout,
   utcMs: number,
 ): void {
   for (let i = 0; i < objects.orbitLines.length; i++) {
     const points = sampleLinePoints(PLANETARIUM_BODIES[i], layoutMode, utcMs);
-    setOrbitLinePoints(objects.orbitLines[i], points);
+    const frame = (objects.orbitLineFrames[i] ??= createOrbitLineAnchorFrame());
+    setOrbitLineAnchorSamples(frame, points);
+    writeOrbitLine(objects.orbitLines[i], frame);
   }
   objects.orbitLinesEpochUtcMs = utcMs;
+}
+
+/**
+ * Pose one orbit line for this frame's render origin — the ship at
+ * (px, py, pz), heliocentric AU. If the ship has drifted far enough from the
+ * line's anchor for float32 rounding to reach the screen (orbitLineAnchor's
+ * rule), the anchor moves to the ship and the line is re-written into its
+ * own buffer first. Then the line sits at (anchor − ship), computed here in
+ * double: the translation the GPU sees is that small difference, never
+ * −ship. Everything else under the floating origin is posed at
+ * (world − ship) in PlanetariumMode.applyFloatingOrigin; this is the same
+ * idea with the vertex data's own zero moved along.
+ */
+export function poseOrbitLine(
+  line: Line2,
+  frame: OrbitLineAnchorFrame,
+  px: number,
+  py: number,
+  pz: number,
+): void {
+  if (orbitLineAnchorNeedsMove(frame, px, py, pz)) {
+    frame.anchor.x = px;
+    frame.anchor.y = py;
+    frame.anchor.z = pz;
+    writeOrbitLine(line, frame);
+  }
+  line.position.set(frame.anchor.x - px, frame.anchor.y - py, frame.anchor.z - pz);
 }
 
 /**
@@ -326,75 +372,71 @@ export function createOrbitLineMaterial(
   return material;
 }
 
-/**
- * (Re)fill a Line2's polyline. Same segment count writes the pair-format
- * positions into the existing instanced buffer (LineGeometry.setPositions
- * would allocate a fresh GPU buffer per call — the periodic drift resample
- * must not churn); a different count (aligned ↔ realistic switch) swaps in a
- * fresh geometry and disposes the old one so its GPU buffers release
- * deterministically. Bounding box before sphere: the sphere centres on the
- * cached box.
- */
-function setOrbitLinePoints(line: Line2, points: THREE.Vector3[]): void {
-  const geometry = line.geometry;
+/** The geometry's instanced pair buffer, if it is laid out as
+ *  LineSegmentsGeometry lays one out and holds exactly `segments` pairs. */
+function segmentPairBufferOf(geometry: THREE.BufferGeometry, segments: number): Float32Array | null {
   const start = geometry.getAttribute('instanceStart') as
     | THREE.InterleavedBufferAttribute
     | undefined;
   const end = geometry.getAttribute('instanceEnd') as
     | THREE.InterleavedBufferAttribute
     | undefined;
-  const pairFloats = (points.length - 1) * 6;
   if (
-    start !== undefined &&
-    end !== undefined &&
-    start.data === end.data &&
-    start.data.stride === 6 &&
-    start.offset === 0 &&
-    end.offset === 3 &&
-    start.data.array.length === pairFloats
+    start === undefined ||
+    end === undefined ||
+    start.data !== end.data ||
+    start.data.stride !== 6 ||
+    start.offset !== 0 ||
+    end.offset !== 3
   ) {
-    const array = start.data.array as Float32Array;
-    for (let i = 0; i < points.length - 1; i++) {
-      const a = points[i];
-      const b = points[i + 1];
-      const o = i * 6;
-      array[o] = a.x;
-      array[o + 1] = a.y;
-      array[o + 2] = a.z;
-      array[o + 3] = b.x;
-      array[o + 4] = b.y;
-      array[o + 5] = b.z;
-    }
-    start.data.needsUpdate = true;
-    geometry.instanceCount = start.count;
-    geometry.computeBoundingBox();
-    geometry.computeBoundingSphere();
-    return;
+    return null;
   }
+  const array = start.data.array;
+  return array instanceof Float32Array && array.length === segments * 6 ? array : null;
+}
 
-  const flat = new Float32Array(points.length * 3);
-  for (let i = 0; i < points.length; i++) {
-    flat[i * 3] = points[i].x;
-    flat[i * 3 + 1] = points[i].y;
-    flat[i * 3 + 2] = points[i].z;
+/**
+ * (Re)write a Line2's polyline from its frame, measured from the frame's
+ * anchor. Same segment count writes the pair-format positions into the
+ * existing instanced buffer (LineGeometry.setPositions would allocate a fresh
+ * GPU buffer per call — the periodic drift resample and every re-anchor must
+ * not churn); a different count (aligned ↔ realistic switch) swaps in a fresh
+ * geometry sized for it and disposes the old one so its GPU buffers release
+ * deterministically. Bounding box before sphere: the sphere centres on the
+ * cached box, and both are in the anchored frame the vertices are in.
+ */
+function writeOrbitLine(line: Line2, frame: OrbitLineAnchorFrame): void {
+  const segments = Math.max(0, frame.vertexCount - 1);
+  let pairs = segmentPairBufferOf(line.geometry, segments);
+  if (pairs === null) {
+    const fresh = new LineGeometry();
+    // Sized by a zero fill; the anchored pairs land in it just below.
+    fresh.setPositions(new Float32Array(frame.vertexCount * 3));
+    (fresh.getAttribute('instanceStart') as THREE.InterleavedBufferAttribute).data.setUsage(
+      THREE.DynamicDrawUsage,
+    );
+    line.geometry.dispose();
+    line.geometry = fresh;
+    pairs = segmentPairBufferOf(fresh, segments);
+    if (pairs === null) throw new Error('LineGeometry did not lay out the instanced pairs as expected');
   }
-  const fresh = new LineGeometry();
-  fresh.setPositions(flat);
-  (fresh.getAttribute('instanceStart') as THREE.InterleavedBufferAttribute).data.setUsage(
-    THREE.DynamicDrawUsage,
-  );
-  geometry.dispose();
-  line.geometry = fresh;
+  writeAnchoredSegmentPairs(frame, pairs);
+  const geometry = line.geometry;
+  const start = geometry.getAttribute('instanceStart') as THREE.InterleavedBufferAttribute;
+  start.data.needsUpdate = true;
+  geometry.instanceCount = start.count;
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
 }
 
 function createOrbitLine(
-  points: THREE.Vector3[],
+  frame: OrbitLineAnchorFrame,
   color: number,
   opacity: number,
   lensUniforms: LensShaderUniforms,
 ): Line2 {
   const line = new Line2(new LineGeometry(), createOrbitLineMaterial(color, opacity, lensUniforms));
-  setOrbitLinePoints(line, points);
+  writeOrbitLine(line, frame);
   line.renderOrder = ORBIT_LINE_RENDER_ORDER;
   return line;
 }
@@ -453,6 +495,7 @@ export function createAsteroidBelt(): THREE.Points {
   });
 
   const belt = new THREE.Points(geometry, material);
+  belt.name = 'Asteroid belt';
   // Fade belt dots that sit behind the Sun's glare. The uniform refs are driven
   // per frame by the controller; inactive until then, so the belt is unchanged.
   belt.userData.sunGlareMaskUniforms = augmentPointsMaterialWithSunGlareMask(material);
@@ -497,12 +540,17 @@ export async function createSolarSystem(
   const orbitLinesEpochUtcMs = (date ?? new Date()).getTime();
   const orbitLensUniforms = createLensShaderUniforms();
   const orbitLines: Line2[] = [];
+  const orbitLineFrames: OrbitLineAnchorFrame[] = [];
   for (let i = 0; i < PLANETARIUM_BODIES.length; i++) {
     const body = PLANETARIUM_BODIES[i];
-    const orbitPoints = sampleLinePoints(body, layoutMode, orbitLinesEpochUtcMs);
-    const line = createOrbitLine(orbitPoints, body.color, 0.2, orbitLensUniforms);
+    // Anchored at the Sun until the first frame poses it: only a line the
+    // ship is near re-anchors then, the rest never need to.
+    const frame = createOrbitLineAnchorFrame();
+    setOrbitLineAnchorSamples(frame, sampleLinePoints(body, layoutMode, orbitLinesEpochUtcMs));
+    const line = createOrbitLine(frame, body.color, 0.2, orbitLensUniforms);
     line.name = `orbit-${body.name}`;
     orbitLines.push(line);
+    orbitLineFrames.push(frame);
     completedUnits += 1;
     reportProgress();
   }
@@ -515,6 +563,7 @@ export async function createSolarSystem(
     sun,
     planets,
     orbitLines,
+    orbitLineFrames,
     orbitLinesEpochUtcMs,
     orbitLensUniforms,
     asteroidBelt,

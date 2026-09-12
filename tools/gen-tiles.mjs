@@ -51,6 +51,7 @@
 //   node tools/gen-tiles.mjs earth --level=1    # one level of it
 //   node tools/gen-tiles.mjs --all              # every job
 //   node tools/gen-tiles.mjs earth --verify     # reassemble + gate only
+//   node tools/gen-tiles.mjs earth --grey       # the mask sets only: every texel r = g = b
 //   node tools/gen-tiles.mjs --index            # re-hash the sets on disk only
 //   --cache=<dir>  source cache (default .moon-data-cache)
 //   --root=<dir>   tiles root (default public/textures/tiles). A level too
@@ -586,9 +587,37 @@ async function cutDataCrops(srcPath, key, tier, spanU = 1) {
   await cutGrid(rows, GRID_16K, content, key, tier, DATA_WEBP, spanU);
 }
 
+/** Every texel of a mask set, and of the base map it is cut from, has red
+ *  equal to green and blue. The app stores these one byte a texel
+ *  (world/texturePolicy's 'mask' kind; sectorStreamer's CROP_KIND names the
+ *  crops) and its roughness chunk reads red where three's reads green, so a
+ *  file with any colour in it would change Earth's ocean gloss with every
+ *  other gate still green. Every file is decoded and checked, not trusted —
+ *  after the set is written and on every --verify. The sets are lossless, so
+ *  a grey source stays grey through the cut; this is a check on the source. */
+async function greyGate({ key, tier, base }) {
+  const dir = await setDir(key, tier);
+  const files = [path.join(TEX, base), ...tileNames(await readdir(dir)).map((f) => path.join(dir, f))];
+  let texels = 0;
+  for (const file of files) {
+    const { data, info } = await sharp(file).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    texels += info.width * info.height;
+    if (info.channels === 1) continue;
+    for (let i = 0; i < data.length; i += info.channels) {
+      if (data[i] !== data[i + 1] || data[i] !== data[i + 2]) {
+        throw new Error(`${path.relative(TEX, file)}: texel ${i / info.channels} is (${data[i]}, ${data[i + 1]}, ${data[i + 2]}), not grey — the app stores this map as one channel and reads red`);
+      }
+    }
+  }
+  console.log(`  grey ${key}/${tier}: ${files.length} files, ${(texels / 1e6).toFixed(1)} Mtexel, every texel r = g = b -> PASS`);
+}
+
 /** Earth's roughness map from the water score gradeOceanInPlace returns:
  *  water glossy (0.45 — a broad sun sheen, not a mirror dot), land matte
- *  (0.92), stored in every channel (MeshStandardMaterial reads .g). The
+ *  (0.92), stored in every channel: the app holds it one byte a texel and
+ *  reads red where three's chunk reads green (world/texturePolicy's 'mask'
+ *  kind), so red HAS to be green, and greyGate refuses a file where it is
+ *  not. The
  *  full-resolution score is area-averaged down, so a coast is a soft
  *  fractional edge rather than a stair of 16K texels: to 4096 for the
  *  sector crops (a quarter of the colour tiles' resolution is where the
@@ -1271,6 +1300,13 @@ export const JOBS = {
     dataCrops: [
       { src: path.join(TEX, 'earth-bump.webp'), key: 'earth-bump', tier: '2k' },
     ],
+    // The two sets the app holds one byte a texel, reading red for the
+    // channel the shader asked for: exact only while every texel is grey,
+    // which greyGate checks after a cut and on --verify.
+    grey: [
+      { key: 'earth-bump', tier: '2k', base: 'earth-bump.webp' },
+      { key: 'earth-roughness.v2', tier: '4k', base: 'earth-roughness.v2.webp' },
+    ],
   },
   // NASA Black Marble 2016, the VIIRS night-lights composite, as its own map
   // family beside the day one: the shipped 2K night map is 20 km per pixel,
@@ -1419,7 +1455,7 @@ const levelsOf = (job) => (job.levels ?? []).filter((_, i) => wantedLevel === nu
 async function main() {
   const names = flag('all') ? Object.keys(JOBS) : jobsWanted;
   if (names.length === 0 && !flag('index')) {
-    console.error('usage: node tools/gen-tiles.mjs <job...> | --all | --index  [--verify | --crops] [--level=n] [--cache=dir] [--root=dir]');
+    console.error('usage: node tools/gen-tiles.mjs <job...> | --all | --index  [--verify | --crops | --grey] [--level=n] [--cache=dir] [--root=dir]');
     process.exit(2);
   }
   for (const name of names) {
@@ -1427,7 +1463,12 @@ async function main() {
     if (!job) { console.error(`unknown job ${name}`); process.exit(2); }
     const t0 = Date.now();
     console.log(`== ${name}`);
-    if (flag('verify')) {
+    if (flag('grey')) {
+      // Check only, of the one property the app's one-channel storage rests
+      // on; a minute of decoding, against the hour a whole --verify is.
+      for (const g of job.grey ?? []) await greyGate(g);
+      if (!(job.grey ?? []).length) console.log('  no mask sets in this job');
+    } else if (flag('verify')) {
       // Check only: a flat job has no tile set to verify, and must not be
       // re-encoded by a verification run.
       if (!job.flat) {
@@ -1442,6 +1483,7 @@ async function main() {
           await childGroupGate(job.key, job.levels[i - 1].tier, job.levels[i - 1].grid, CONTENT, job.levels[i].tier, CONTENT);
         }
       }
+      for (const g of job.grey ?? []) await greyGate(g);
     } else if (flag('crops')) {
       // Data crops only: a relief / roughness map changed under an unchanged
       // colour set (the tiles and downsamples are left alone). A derived map
@@ -1452,6 +1494,7 @@ async function main() {
         await job.derive(water, rows.width, rows.height);
         await rows.close();
       }
+      for (const g of job.grey ?? []) await greyGate(g);
     } else if (job.flat) {
       await writeWebp(sharp(job.flat.src(), { limitInputPixels: false }).removeAlpha()
         .resize(4096, 2048, { fit: 'fill', kernel: 'lanczos3' }), job.flat.out);
@@ -1492,13 +1535,17 @@ async function main() {
       // them where they are.
       if (wantedLevel === null || Number(wantedLevel) === 0) {
         for (const d of job.dataCrops ?? []) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1);
+        for (const g of job.grey ?? []) await greyGate(g);
       }
     }
     console.log(`  ${((Date.now() - t0) / 1000).toFixed(0)} s`);
   }
   // Always last, whatever ran: the app reads its set hashes out of the
   // generated table, so a cut that did not refresh it would leave every URL
-  // pointing at the set it replaced.
+  // pointing at the set it replaced. A --grey run cut nothing and writes
+  // nothing — a rewrite of the same table would still touch a file the dev
+  // server watches.
+  if (flag('grey')) return;
   console.log('== index');
   await indexSets();
 }

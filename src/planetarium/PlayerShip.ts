@@ -71,6 +71,7 @@ export class PlayerShip {
 
   constructor() {
     this.group = new THREE.Group();
+    this.group.name = 'Ship';
 
     // The rig-scaled reference radius: the hull and every chase-view pad
     // derive from the same base (see cruiseView.ts), so the ship's on-screen

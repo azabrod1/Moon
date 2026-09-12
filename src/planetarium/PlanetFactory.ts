@@ -493,13 +493,15 @@ function createFallbackTexture(key: string, kind: MapKind = 'color'): THREE.Text
   canvas.height = 128;
   const ctx = canvas.getContext('2d')!;
 
-  if (kind === 'data') {
+  if (kind === 'data' || kind === 'mask') {
     // A failed data map (roughness / bump) should read neutral, not as colour
-    // noise: flat mid-grey in linear space.
+    // noise: flat mid-grey in linear space. Stood up under the kind it stands
+    // in for, so a one-channel slot gets a one-channel stand-in and the shader
+    // reading red finds the same grey either way.
     ctx.fillStyle = '#808080';
     ctx.fillRect(0, 0, 256, 128);
     const tex = new THREE.CanvasTexture(canvas);
-    applyTextureDefaults(tex, 'data');
+    applyTextureDefaults(tex, kind);
     tex.userData.proceduralFallback = true;
     return tex;
   }
@@ -850,10 +852,12 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     ? Promise.all([
         loadTexture('earthNight', '2k', 'color', { late: earthLate.night }),
         loadTexture('earthClouds', '2k', 'color', { late: earthLate.clouds }),
-        // Height map: linear, not sRGB. Kind is what types each late swap too.
-        loadTexture('earthBump', '2k', 'data', { late: earthLate.bump }),
-        // Ocean-glint roughness: linear.
-        loadTexture('earthRoughness', '2k', 'data', { late: earthLate.roughness }),
+        // Height map: linear, not sRGB, and grey — one channel, read as red
+        // three times by three's bump chunk. Kind is what types each late swap
+        // too, and what decides the storage (world/texturePolicy).
+        loadTexture('earthBump', '2k', 'mask', { late: earthLate.bump }),
+        // Ocean-glint roughness: linear, and grey the same way.
+        loadTexture('earthRoughness', '2k', 'mask', { late: earthLate.roughness }),
       ])
     : null;
   const texture = await surfaceTexturePromise;
@@ -945,6 +949,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
 
   const mesh = new THREE.Mesh(geo, mat);
   group.add(mesh);
+  mesh.name = `${planet.name} surface`;
 
   // Atmosphere glow for planets with atmospheres
   let atmosphere: THREE.Mesh | undefined;
@@ -975,6 +980,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     nightMaterial = nightMat;
     nightMesh = new THREE.Mesh(nightGeo, nightMat);
     group.add(nightMesh);
+    nightMesh.name = `${planet.name} night`;
 
     const cloudGeo = new THREE.SphereGeometry(planet.radiusAU * EARTH_CLOUD_SHELL_SCALE, segments, segments / 2);
     const cloudMat = new THREE.MeshStandardMaterial({
@@ -1012,6 +1018,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     augmentSurfaceMaterial(cloudMat, 'cloud', ringShadow, sunTan, fx);
     cloudsMesh = new THREE.Mesh(cloudGeo, cloudMat);
     group.add(cloudsMesh);
+    cloudsMesh.name = `${planet.name} clouds`;
     // The cloud deck is its own colour map on its own shell, so it carries its
     // own handle: the globe and the clouds sharpen independently.
     const cloudsUpgrade = makeTextureUpgrade('earthClouds', cloudMat);

@@ -1693,9 +1693,11 @@ describe('the ladder against the sector memory envelope', () => {
     // It is now unreachable. The rung that would cross the envelope less the
     // tiles' floor is refused before it is fetched, so the ladder settles
     // under that line and the tiles keep their floor whatever the session
-    // has toured.
+    // has toured. The line moved up 2.7 MiB when the height and water crops
+    // went to one byte a texel: a sector set holds less, so its floor reserves
+    // less and the maps are left more.
     const ceiling = ladderCeilingBytes(UNMEASURED_TOUCH_PROFILE, UNMEASURED_TOUCH_PROFILE.sectorFloorBytes);
-    expect(mib(ceiling)).toBeCloseTo(273.7, 1);
+    expect(mib(ceiling)).toBeCloseTo(276.4, 1);
     expect(UNMEASURED_TOUCH_PROFILE.envelopeBytes - ceiling)
       .toBeGreaterThanOrEqual(2 * sectorSetGpuBytes(SECTOR_SETS.Earth));
     // Six 4K maps fit under it; the seventh does not.

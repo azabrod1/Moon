@@ -17,6 +17,7 @@ import {
   createSolarSystem,
   ORBIT_LINE_RESAMPLE_MAX_AGE_MS,
   orbitLineOpacity,
+  poseOrbitLine,
   resampleOrbitLines,
   type SolarSystemObjects,
   type PlanetariumLayout,
@@ -40,7 +41,7 @@ import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arriv
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { advanceSurfaceAir, bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, setSurfaceSynthesis, settleSurfaceAir, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
-import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, warmBudgetMs } from './world/textureWarmer';
+import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, textureWarmQueueDepth, warmBudgetMs } from './world/textureWarmer';
 import { beginSlicedUpload, stepSlicedUpload } from './world/slicedUpload';
 import { smoothTraceVeil } from './smoothnessTrace';
 import {
@@ -157,7 +158,7 @@ import {
   type PlatformFamily,
   type ReleaseCandidate,
 } from './world/gpuEnvelope';
-import { AtmosphereLut, type AtmosphereBakeStats, type AtmosphereTables } from './world/atmosphereLut';
+import { AtmosphereLut, lastBakeSliceSample, type AtmosphereBakeStats, type AtmosphereTables } from './world/atmosphereLut';
 import { bindAtmosphereShellTables, restShellCrossfade, setAtmosphereShellGroundSegments, shellTierAlphas, stepShellCrossfade, type ShellCrossfade } from './world/atmosphereShell';
 import {
   ATMOSPHERE_SPECS,
@@ -707,6 +708,10 @@ export class PlanetariumMode {
   private labelDistancesMode: LabelDistancesMode = 'hover';
   private showBodyMarkers = true;
   private showOrbitLines = false;
+  /** `?orbitanchor=0`: pose the orbit lines the old way — heliocentric
+   *  float32 vertices translated by −ship — the A/B for any question about
+   *  an orbit line moving when the ship does, and the kill switch. */
+  private readonly orbitAnchorEnabled = new URLSearchParams(location.search).get('orbitanchor') !== '0';
 
   // Hover/tap body reveal. `revealedBody` is the one body (planet, moon, or
   // 'Sun') whose label is drawn regardless of the label/marker settings and of
@@ -1159,11 +1164,24 @@ export class PlanetariumMode {
    *  from a profile and a floor at each site. */
   private readonly memory: MemoryEnvelope;
   private readonly sectorsEnabled = new URLSearchParams(location.search).get('sectors') !== '0';
-  /** `?synth=0` holds the close-range detail synthesis at zero on every
-   *  surface. The A/B arm for a look question about it, and the only way to see
-   *  what a magnified surface looks like without it at a pose where it is fully
-   *  faded in — the term's whole purpose is to be invisible until then. */
-  private readonly synthesisEnabled = new URLSearchParams(location.search).get('synth') !== '0';
+  /** What `?synth=0` asked for: the close-range detail synthesis held at zero
+   *  on every surface. The A/B arm for a look question about it, and the only
+   *  way to see what a magnified surface looks like without it at a pose where
+   *  it is fully faded in — the term's whole purpose is to be invisible until
+   *  then. Kept apart from the live flag so a dev measurement that switches the
+   *  term for a few seconds hands back what the URL asked for, not "on". */
+  private readonly synthesisDefault = new URLSearchParams(location.search).get('synth') !== '0';
+  /** What the term is running under right now (devSetSynthesis). */
+  private synthesisEnabled = this.synthesisDefault;
+  /** Scene roles a dev measurement is holding off screen, or null when none
+   *  is. Read where the per-frame passes decide what draws, so a role that the
+   *  app re-asserts every frame stays hidden for as long as it is asked to.
+   *  Never set outside a DEV build. */
+  private devHiddenRoles: { atmosphere: boolean; clouds: boolean; nightLights: boolean } | null = null;
+  /** The last frame's frame-sliced spend, for the dev frame-budget readout:
+   *  what the warm pump was allowed and what it took. Null until a DEV
+   *  measurement asks for it. */
+  private devWarmSpend: { budgetMs: number; spentMs: number; queued: number } | null = null;
   /** The memory readout under `?debug=1` (reportMemoryDebug). The overlay is
    *  the only console a phone has without a cable, so the line has to be rare
    *  enough to read: one every 5 s, or as soon as a figure moves by more than
@@ -3363,9 +3381,13 @@ export class PlanetariumMode {
         // The night shell has a visibility of its own (the Earth-detail range
         // gate), so its family reads that flag rather than the globe's.
         if (planet.nightMesh && planet.nightRadiusAU) {
+          // A family told it is hidden releases every tile it holds, so a dev
+          // role switch — which has to be reversible within a few seconds —
+          // does not count as hidden here. Only the shell's own range gate does.
+          const devHidden = import.meta.env.DEV && this.devHiddenRoles?.nightLights === true;
           this.visitSectorBody(
             sectors, sectorFamilyKey(name, 'night'), name, planet.nightMesh, planet.nightRadiusAU,
-            !planet.nightMesh.visible,
+            !planet.nightMesh.visible && !devHidden,
           );
         }
       }
@@ -4429,7 +4451,17 @@ export class PlanetariumMode {
     // being asked of the frame — otherwise the whole decode+upload bill lands
     // inside whatever gesture first draws the map. Runs in every mode so
     // landed sessions warm up too.
-    pumpTextureWarmQueue(warmBudgetMs(this.frameIntervalMs), this.frameIntervalMs);
+    const warmBudget = warmBudgetMs(this.frameIntervalMs);
+    if (import.meta.env.DEV && this.devWarmSpend) {
+      const queued = textureWarmQueueDepth();
+      const startedAt = performance.now();
+      pumpTextureWarmQueue(warmBudget, this.frameIntervalMs);
+      this.devWarmSpend.budgetMs = warmBudget;
+      this.devWarmSpend.spentMs = performance.now() - startedAt;
+      this.devWarmSpend.queued = queued;
+    } else {
+      pumpTextureWarmQueue(warmBudget, this.frameIntervalMs);
+    }
     // Climb any committed destination's warm ladder (see
     // warmArrivalDestination) — a no-op the moment every goal has disarmed.
     this.pumpArrivalWarmGoals();
@@ -4726,8 +4758,16 @@ export class PlanetariumMode {
       if (systemGroup) systemGroup.position.copy(planet.group.position);
     }
 
-    for (const orbit of this.solarSystem.orbitLines) {
-      orbit.position.set(-px, -py, -pz);
+    // The orbit lines are the one thing here not posed at (world − ship):
+    // each line's float32 vertices are measured from an anchor near the ship
+    // and the line sits at (anchor − ship), so the GPU never subtracts two
+    // heliocentric floats (orbitLineAnchor.ts has the arithmetic and the
+    // bound; poseOrbitLine moves the anchor when the ship has drifted).
+    const orbitLines = this.solarSystem.orbitLines;
+    const orbitLineFrames = this.solarSystem.orbitLineFrames;
+    for (let i = 0; i < orbitLines.length; i++) {
+      if (this.orbitAnchorEnabled) poseOrbitLine(orbitLines[i], orbitLineFrames[i], px, py, pz);
+      else orbitLines[i].position.set(-px, -py, -pz);
     }
 
     this.solarSystem.asteroidBelt.position.set(-px, -py, -pz);
@@ -5942,8 +5982,12 @@ export class PlanetariumMode {
         const keepEarthDetail =
           dist <= PlanetariumMode.EARTH_DETAIL_MIN_DISTANCE_AU ||
           renderedAngularDiameter >= PlanetariumMode.EARTH_DETAIL_MIN_ANGULAR_DIAMETER_RAD;
-        if (planet.nightMesh) planet.nightMesh.visible = keepEarthDetail;
-        if (planet.cloudsMesh) planet.cloudsMesh.visible = keepEarthDetail;
+        // The dev role switches ride on top of the range gate: both flags are
+        // re-asserted every frame, so a role held off screen has to be
+        // subtracted here rather than by writing `visible` from outside.
+        const hidden = import.meta.env.DEV ? this.devHiddenRoles : null;
+        if (planet.nightMesh) planet.nightMesh.visible = keepEarthDetail && !hidden?.nightLights;
+        if (planet.cloudsMesh) planet.cloudsMesh.visible = keepEarthDetail && !hidden?.clouds;
       }
     }
 
@@ -14472,6 +14516,111 @@ export class PlanetariumMode {
     this.player.group.visible = visible;
   }
 
+  /** Dev-only: the "Orbit lines" setting, so a capture can show the lines on
+   *  their own after devSetChrome(false) has hidden everything else. */
+  devSetOrbitLines(on: boolean): void {
+    this.showOrbitLines = on;
+  }
+
+  /** Dev-only: move the ship by (dx, dy, dz) AU and nothing else — no
+   *  velocity, no re-aim — so a probe can translate the camera through the
+   *  world one step at a time and watch what the scene does. For a pose
+   *  devFrameBody set up, whose camera stays at the scene origin. */
+  devNudge(dxAU: number, dyAU: number, dzAU: number): void {
+    this.player.posX += dxAU;
+    this.player.posY += dyAU;
+    this.player.posZ += dzAU;
+  }
+
+  /** Dev-only: whether the ship is drawing right now, so a caller that hides
+   *  it can put back what it found rather than what it assumes. */
+  devShipVisible(): boolean {
+    return this.player.group.visible;
+  }
+
+  /**
+   * Dev-only: hold the close-range detail synthesis on or off, or (null) hand
+   * it back to what the URL asked for. Drives the same path `?synth=0` does —
+   * the term's target goes to zero and eases there — so the two arms of an A/B
+   * are the same arm.
+   */
+  devSetSynthesis(on: boolean | null): void {
+    this.synthesisEnabled = on ?? this.synthesisDefault;
+  }
+
+  /**
+   * Dev-only: hold one scene role off screen, or hand it back. What a role
+   * costs is only measurable one role at a time, and the measurement has to
+   * leave the scene exactly as it found it.
+   *
+   * The cloud and night shells have their visibility re-asserted every frame
+   * by Earth's detail-range gate, so those two are subtracted there and this
+   * only raises the flag. The atmosphere shells are written once and stay:
+   * nothing else touches their own visibility, only their parent group's.
+   */
+  devSetRoleHidden(role: 'atmosphere' | 'clouds' | 'nightLights', hidden: boolean): void {
+    this.devHiddenRoles ??= { atmosphere: false, clouds: false, nightLights: false };
+    this.devHiddenRoles[role] = hidden;
+    if (role !== 'atmosphere' || !this.solarSystem) return;
+    for (const planet of this.solarSystem.planets) {
+      if (planet.atmosphere) planet.atmosphere.visible = !hidden;
+    }
+  }
+
+  /** Dev-only: take the streamed sector tiles off screen while leaving every
+   *  one of them resident, so turning it back on costs no re-stream. */
+  devSetSectorMeshesVisible(visible: boolean): void {
+    this.sectors?.devSetMeshesVisible(visible);
+  }
+
+  /**
+   * Dev-only: what the frame-sliced work is budgeting itself against, and what
+   * it is actually taking.
+   *
+   * The budgets are shares of a smoothed frame interval, so a scene that makes
+   * frames long licences longer slices, which is one of the ways a frame rate
+   * can hold itself down. Reading the interval beside each consumer's budget,
+   * spend and queue depth is what tells that apart from a scene that is simply
+   * expensive. Arms the warm pump's own timing on the first call.
+   */
+  devFrameBudget(): {
+    frameIntervalMs: number;
+    reseeding: boolean;
+    warm: { budgetMs: number; spentMs: number; queued: number };
+    bake: { budgetMs: number; spentMs: number; stepsLeft: number; ageMs: number } | null;
+    tiles: { resident: number; loading: number; inflight: number };
+  } {
+    this.devWarmSpend ??= { budgetMs: 0, spentMs: 0, queued: 0 };
+    const slice = lastBakeSliceSample();
+    const tiles = this.sectors?.stats() ?? null;
+    return {
+      frameIntervalMs: this.frameIntervalMs,
+      reseeding: this.frameInterval.reseeding,
+      warm: { ...this.devWarmSpend },
+      bake: slice
+        ? {
+          budgetMs: slice.budgetMs,
+          spentMs: slice.spentMs,
+          stepsLeft: slice.stepsLeft,
+          ageMs: performance.now() - slice.atMs,
+        }
+        : null,
+      tiles: {
+        resident: tiles?.resident ?? 0,
+        loading: tiles?.loading ?? 0,
+        inflight: tiles?.inflight ?? 0,
+      },
+    };
+  }
+
+  /** Dev-only: believe the next frame outright instead of easing toward it —
+   *  the same reset coming back to a hidden tab performs. If the frame rate
+   *  recovers on this alone, the slices had grown to fit the frames they were
+   *  making long. */
+  devResetFrameBudget(): void {
+    this.frameInterval.resume();
+  }
+
   /**
    * Place a bright-red marker SPRITE at a DISPLAYED screen pixel and cull it
    * through the REAL analytic occlusion path (`isScreenPointOccluded` against the
@@ -15062,6 +15211,11 @@ export class PlanetariumMode {
       found: !!pos,
       radiusAU,
       bodyAbs: pos,
+      // The planet's own orbital velocity this frame (null for a moon or an
+      // unknown name): the direction a probe flies to move along its orbit line.
+      velAUPerS: mesh?.worldVelAUPerS
+        ? { x: mesh.worldVelAUPerS.x, y: mesh.worldVelAUPerS.y, z: mesh.worldVelAUPerS.z }
+        : null,
       parentAbs,
       playerAbs,
       distToBodyAU: pos ? Math.hypot(playerAbs.x - pos.x, playerAbs.y - pos.y, playerAbs.z - pos.z) : null,

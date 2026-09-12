@@ -459,8 +459,10 @@ describe('SectorStreamer', () => {
     // The touch row is stopped by its ceiling, four short of its cap of 8.
     expect(EARTH_FITS_TOUCH).toBe(6);
     expect(EARTH_HELD_TOUCH).toBe(6);
-    // The desktop row is stopped by its cap, six short of what 512 MiB buys.
-    expect(EARTH_FITS_DESKTOP).toBe(22);
+    // The desktop row is stopped by its cap, seven short of what 512 MiB buys
+    // — one more than before the height and water crops went to one byte a
+    // texel, which is the same tiles held smaller.
+    expect(EARTH_FITS_DESKTOP).toBe(23);
     expect(EARTH_HELD_DESKTOP).toBe(16);
   });
 
@@ -682,9 +684,11 @@ describe('SectorStreamer', () => {
     const s = makeStreamer(DESKTOP, { load: loader.load, warm: warm.warm });
     s.register(earth);
     s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
-    // One colour tile plus two crops (bump, roughness), RGBA8 with mips.
+    // One colour tile plus two crops (bump, roughness), all with mips: the
+    // tile RGBA8, the crops one byte a texel — they are grey maps with one
+    // channel anything reads (world/texturePolicy's 'mask' kind).
     const tile = Math.round(2048 * 2048 * 4 * (4 / 3));
-    const crop = Math.round(272 * 272 * 4 * (4 / 3));
+    const crop = Math.round(272 * 272 * 1 * (4 / 3));
     expect(s.stats().bodies.Earth.measuredGpuBytes).toBe(tile + 2 * crop);
     expect(s.stats().measuredGpuBytes).toBe(tile + 2 * crop);
     // The figure survives the bitmap being closed after upload.

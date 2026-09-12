@@ -94,6 +94,7 @@ export class MoonDots {
     });
 
     this.points = new THREE.Points(this.geo, this.mat);
+    this.points.name = 'Moon dots';
     this.points.frustumCulled = false;
     this.points.renderOrder = 0;
   }

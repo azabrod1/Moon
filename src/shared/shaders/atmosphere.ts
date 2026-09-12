@@ -219,6 +219,31 @@ void main() {
 }
 `;
 
+/**
+ * The night shell's early-out.
+ *
+ * `nightMix` is EXACTLY zero for every fragment the Sun is above (the
+ * smoothstep saturates at its upper edge) and it scales both the colour and
+ * the alpha of a source blended (SRC_ALPHA, ONE) — so a lit fragment's whole
+ * contribution is already nothing, and writing that nothing outright is the
+ * same picture without the chroma gate, the trace through the column of air in
+ * front of it or that trace's two table lookups. Written and not discarded: a
+ * night SECTOR draws with this program and writes offset depth to hide the
+ * shell under it, and a discarded fragment writes no depth, which would let
+ * the shell through in a rectangle.
+ *
+ * The map fetch stays ABOVE it, where the flow is uniform across the draw, and
+ * that placement is measured rather than cautious. Moving the fetch under the
+ * branch was tried both ways on ANGLE/Metal against a capture of the shipped
+ * picture: as `textureGrad` with the UV's own hoisted gradients it moved
+ * 1324 pixels of a night frame by up to 18 counts (an explicit gradient is not
+ * the footprint the implicit path picks), and as an implicit `texture2D` under
+ * the branch it moved two pixels on a crescent's terminator, which is the
+ * undefined derivative the spec warns about arriving exactly where it was
+ * predicted. Both are the picture changing. The fetch stays.
+ */
+const NIGHT_EARLY_OUT_GLSL = 'if (nightMix == 0.0) { gl_FragColor = vec4(0.0); return; }';
+
 // uUvOffset / uUvRepeat select the part of `nightTexture` this mesh draws.
 // The whole-globe shell takes (0,0) and (1,1); a sector tile takes the
 // transform that lands its own global equirect rectangle on the tile's
@@ -234,6 +259,7 @@ uniform float uAirDensity;
 uniform float uPlanetRadius;
 uniform float uAirLookupRadius;
 uniform sampler2D uTransmittance;
+${import.meta.env.DEV ? 'uniform float uPerfNightEarly;' : ''}
 varying vec2 vUv;
 varying vec3 vNormal;
 varying vec3 vSunDir;
@@ -242,16 +268,23 @@ varying vec3 vAirFrag;
 
 void main() {
   vec4 nightColor = texture2D(nightTexture, vUv * uUvRepeat + uUvOffset);
+  // Show night lights only on dark side
+  float sunDot = dot(vNormal, vSunDir);
+  float nightMix = 1.0 - smoothstep(${EARTH_NIGHT_MIX_DARK.toFixed(1)}, ${EARTH_NIGHT_MIX_LIT.toFixed(1)}, sunDot); // ordered edges (reversed smoothstep is undefined)
+  ${import.meta.env.DEV
+    ? `if (uPerfNightEarly > 0.5) { ${NIGHT_EARLY_OUT_GLSL} }`
+    : NIGHT_EARLY_OUT_GLSL}
   // The composite's lights and its blue casts separate on the sign of the
   // chroma, with a gap between them (EARTH_NIGHT_COLD_CUT states the gap and
   // the measurements). Additive over a dark globe, an ice sheet at +38 counts
   // of b-r is a lit continent that blooms, so fade a pixel out by how blue it
   // is: gone by the cut, untouched from neutral upward.
   nightColor.rgb *= smoothstep(${(-EARTH_NIGHT_COLD_CUT / 255).toFixed(6)}, 0.0, nightColor.r - nightColor.b);
-  // Show night lights only on dark side
-  float sunDot = dot(vNormal, vSunDir);
-  float nightMix = 1.0 - smoothstep(${EARTH_NIGHT_MIX_DARK.toFixed(1)}, ${EARTH_NIGHT_MIX_LIT.toFixed(1)}, sunDot); // ordered edges (reversed smoothstep is undefined)
   vec3 lit = nightColor.rgb * nightMix * ${EARTH_NIGHT_MIX_SCALE.toFixed(1)} * ${EARTH_NIGHT_WARM_GLSL};
+  // The column in front of this fragment, and the two table lookups that read
+  // it: with the early-out applied only the fragments that still carry light
+  // reach this, which is what the whole lit hemisphere used to pay for a
+  // result multiplied by zero.
   if (uAirDensity > 0.0) {
     AerialSegment seg = aerialSegment(
         vAirCam / uPlanetRadius, normalize(vAirFrag) * uAirLookupRadius, normalize(sunDirection));

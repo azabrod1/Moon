@@ -51,6 +51,7 @@ import {
   atmosphereSessionSizes,
   atmosphereTableDefines,
 } from './atmosphereLut';
+import { perfSwitchUniform } from '../../app/perfSwitches';
 import { NIGHT_LIGHTS_AIR_LOOKUP_RADIUS, type SurfaceAirFx } from './surfaceShading';
 import type { SectorMaps } from './sectorMaterial';
 import type { SectorFamily } from './sectorStreamer';
@@ -107,6 +108,12 @@ export function createEarthNightShellMaterial(
       // AFTER the air so it wins over the surface archetype's radius, and
       // handed on to the sectors like every other shared uniform.
       uAirLookupRadius: { value: NIGHT_LIGHTS_AIR_LOOKUP_RADIUS },
+      // The A/B for the early-out the fragment shader carries. Shared, like
+      // every other uniform here, so the shell and its sectors switch in the
+      // same frame — a capture of two halves of the disc under two different
+      // paths would not be a comparison of anything. Nothing in a production
+      // build: the shader there has one path and no uniform to read.
+      ...(import.meta.env.DEV ? { uPerfNightEarly: perfSwitchUniform('night-early') } : {}),
     },
     atmosphereTableDefines(atmosphereSessionSizes()),
   );

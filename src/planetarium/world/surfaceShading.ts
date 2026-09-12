@@ -100,6 +100,7 @@ import {
   type AtmosphereTables,
 } from './atmosphereLut';
 import { AIRLIGHT_SCALE } from './atmosphereModel';
+import { perfSwitchOn, perfSwitchUniform } from '../../app/perfSwitches';
 import { EARTH_NIGHT_COLD_CUT, EARTH_NIGHT_WARM_GLSL } from '../../shared/shaders/atmosphere';
 import {
   CLOUD_ALBEDO,
@@ -421,6 +422,35 @@ export function waterGlossRoughness(mapRoughness: number): number {
     ROUGHNESS_MAP_LAND - (ROUGHNESS_MAP_LAND - mapRoughness) * WATER_GLOSS_GAIN,
     0.02,
   );
+}
+
+/**
+ * three's own <roughnessmap_fragment>, reading RED instead of green.
+ *
+ * three reads green so a roughness map can be one channel of a packed
+ * occlusion/roughness/metalness image. Nothing here packs anything: the only
+ * roughness map any surface in this app binds is Earth's water mask, a grey
+ * image where red IS green — which is what lets it be stored one byte a texel
+ * instead of four (world/texturePolicy's 'mask' kind), on the globe and on
+ * every resident sector's crop of it. A packed map bound here would need this
+ * line back on green and its storage back to four channels.
+ */
+const SURFACE_ROUGHNESSMAP_FRAGMENT = /* glsl */ `
+float roughnessFactor = roughness;
+#ifdef USE_ROUGHNESSMAP
+	roughnessFactor *= texture2D( roughnessMap, vRoughnessMapUv ).r;
+#endif
+`;
+
+/** The roughness chunk this build compiles. In DEV with one-channel storage
+ *  switched off (`?perfoff=r8-maps`) the map is RGBA again and three's own
+ *  chunk reads green from it, as it did before the change — so that switch's
+ *  A/B compares the two whole pipelines, storage and channel together, rather
+ *  than two readings of red. A production build compiles the red read alone. */
+function roughnessChunk(): string {
+  return import.meta.env.DEV && !perfSwitchOn('r8-maps')
+    ? '#include <roughnessmap_fragment>'
+    : SURFACE_ROUGHNESSMAP_FRAGMENT;
 }
 
 /** The GLSL half of `waterGlossRoughness`, behind the uniform that is zero on
@@ -1158,10 +1188,65 @@ if (uSynthEnvelope > 0.0) {
 }
 #endif`;
 
+/** The GPU-efficiency switches this shader carries, declared only where they
+ *  exist: a production build compiles one path per item and has no uniform to
+ *  read (app/perfSwitches.ts). */
+const PERF_SWITCH_DECLS = /* glsl */ `uniform float uPerfCloudTaps;
+uniform float uPerfCloudClear;
+uniform float uPerfGlintGate;`;
+
+/** The switch a dead cloud tap is removed behind, as the condition that still
+ *  takes the tap. Off, the fetch happens exactly where it happened before the
+ *  change; a production build has neither the switch nor the second reading. */
+const cloudTapKept = (stillNeeded: string): string =>
+  (import.meta.env.DEV ? `uPerfCloudTaps < 0.5 || ${stillNeeded}` : stillNeeded);
+
+/**
+ * The clear-sky early-out: a deck fragment with no cloud on it, written out as
+ * nothing and left.
+ *
+ * Placed at the END of the injected normal block, after the close-range
+ * detail's own derivatives have been taken, so every derivative the deck's
+ * path takes is above it, in flow that is uniform across the draw. What it
+ * skips is everything downstream: three's whole physical lighting, the night
+ * floor and the sky's ambient, the moonlight pair, the eclipse trace, the city
+ * glow through the deck and the six aerial-perspective lookups.
+ *
+ * Past the return the lanes that carried on are in divergent flow, so nothing
+ * on the deck's path below it may take a derivative or an implicit-LOD fetch.
+ * That holds on three facts, each load-bearing: three's own chunks past this
+ * point fetch only maps the deck does not bind (emissive, ambient occlusion,
+ * light and environment maps) and shadow maps the renderer never enables; the
+ * surface body's own derivatives below it, the sea's lookup into the deck map,
+ * sit under `uWaterGloss > 0.0`, which is zero on the deck; and the atmosphere
+ * tables are unmipped LinearFilter textures, so their lookups have no level
+ * to mispick. Binding one of those maps on the deck, or enabling shadow maps,
+ * is a change to this reasoning. cloudDeck.test.ts pins the derivative order.
+ *
+ * `vec4(0.0)` and not a discard, and the two are not interchangeable here:
+ * this is the ONE material in the app whose archetype is 'cloud', and it draws
+ * with `depthWrite: false` into a plain source-alpha blend, so a zero alpha
+ * leaves the destination bit for bit. A cloud-archetype surface that wrote
+ * depth, or one on premultiplied alpha, would need this reasoning done again.
+ */
+const CLOUD_CLEAR_RETURN = import.meta.env.DEV
+  ? 'if (uPerfCloudClear > 0.5 && uCloudDeck > 0.0 && cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }'
+  : 'if (uCloudDeck > 0.0 && cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }';
+
 /**
  * three's own <map_fragment>, with the deck's fetch put through the smooth
  * magnification filter. The ordinary bilinear tap happens for every surface;
  * the four extra ones sit behind a weight that is zero on all of them.
+ *
+ * At full smooth weight the ordinary tap is not an endpoint of anything — the
+ * mix returns the B-spline — and it is taken anyway, in flow that is uniform
+ * across the draw, as three's chunk always took it. Taking it only under the
+ * weight was measured as the same picture on two engines, but it puts an
+ * implicit-LOD fetch under a per-fragment condition, where the language
+ * leaves the mip undefined for a quad the condition splits, and the tap's
+ * weight there is small rather than zero: a bound, not an identity. This
+ * chunk is therefore three's own text plus the filter, exactly as it was, so
+ * the deck's picture rests on nothing but the specification.
  */
 const SURFACE_MAP_FRAGMENT = /* glsl */ `
 #ifdef USE_MAP
@@ -1218,6 +1303,7 @@ uniform vec3 uAirlightScale;
 uniform sampler2D uTransmittance;
 uniform sampler2D uIrradiance;
 uniform sampler3D uScattering;
+${import.meta.env.DEV ? PERF_SWITCH_DECLS : ''}
 varying vec3 vSunViewDir;
 varying vec3 vMoonViewDir;
 varying vec3 vObjPos;
@@ -1225,6 +1311,44 @@ varying vec3 vPlanetshineViewDir;
 varying vec3 vAirCam;
 varying vec3 vAirFrag;
 ${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}${CLOUD_DETAIL_GLSL}${SPHERE_EQUIRECT_UV_GLSL}${SMOOTH_TEXEL_GLSL}${SURFACE_DETAIL_GLSL}`;
+
+/**
+ * three's <normal_fragment_maps>, with the tangent-space branch taken over.
+ *
+ * The deck's height field is its coarsest map by far — tens of kilometres to
+ * the texel where its colour map is a few — so it is the layer whose bilinear
+ * facets read first, as flat-shaded quilting across the interior of every
+ * bank, and it is drawn through the smooth magnification filter instead. That
+ * used to be done AFTER the chunk, which meant the chunk's own fetch and its
+ * tangent-frame transform were computed and then overwritten on every deck
+ * fragment, with the relief fetched a second time for the mix. Done here
+ * instead, the relief is read once — the plain tap, taken in uniform flow as
+ * the chunk always took it, is the mix's own first endpoint — and the frame
+ * transform happens once. The plain tap is not put under the weight, for the
+ * reason SURFACE_MAP_FRAGMENT gives.
+ *
+ * The other paths through the chunk — object-space normals, the bump map — are
+ * the include itself, unchanged: they belong to every other body's surface and
+ * there is nothing to save on them.
+ */
+const SURFACE_NORMAL_MAPS = /* glsl */ `
+#if defined( USE_NORMALMAP_TANGENTSPACE )
+	vec4 reliefTexel = texture2D( normalMap, vNormalMapUv );
+	if ( uCloudDeck > 0.0 ) {
+		vec2 reliefTexels = vec2( textureSize( normalMap, 0 ) );
+		float reliefSmoothW = smoothTexelWeight( vNormalMapUv, reliefTexels );
+		if ( reliefSmoothW > 0.0 ) {
+			reliefTexel = mix( reliefTexel,
+				textureBSpline( normalMap, vNormalMapUv, reliefTexels ), reliefSmoothW );
+		}
+	}
+	vec3 mapN = reliefTexel.xyz * 2.0 - 1.0;
+	mapN.xy *= normalScale;
+	normal = normalize( tbn * mapN );
+#else
+#include <normal_fragment_maps>
+#endif
+`;
 
 // Injected after lighting but before <opaque_fragment> writes outgoingLight into
 // gl_FragColor — so terms land in linear radiance (tone-mapped downstream) and
@@ -1245,23 +1369,6 @@ vec2 cloudNightUv = vec2(0.0);
 vec2 cloudNightDx = vec2(0.0);
 vec2 cloudNightDy = vec2(0.0);
 if (uCloudDeck > 0.0) {
-  #ifdef USE_NORMALMAP_TANGENTSPACE
-  // The relief again, off the same tangent frame three's chunk used but through
-  // the smooth magnification filter. The deck's height field is its coarsest
-  // map by far — tens of kilometres to the texel where its colour map is a few
-  // — so it is the layer whose bilinear facets read first, as flat-shaded
-  // quilting across the interior of every bank. Redone here rather than in
-  // place of the chunk, because that chunk also carries the object-space and
-  // bump paths every other body's surface takes.
-  vec2 reliefTexels = vec2(textureSize(normalMap, 0));
-  float reliefSmoothW = smoothTexelWeight(vNormalMapUv, reliefTexels);
-  if (reliefSmoothW > 0.0) {
-    vec3 smoothMapN = mix(texture2D(normalMap, vNormalMapUv),
-        textureBSpline(normalMap, vNormalMapUv, reliefTexels), reliefSmoothW).xyz * 2.0 - 1.0;
-    smoothMapN.xy *= normalScale;
-    normal = normalize(tbn * smoothMapN);
-  }
-  #endif
   // Where this fragment is on the deck, as longitude and latitude. Every
   // derivative the block needs is taken HERE, inside the one branch that is
   // uniform across the draw: a derivative under a per-fragment condition is
@@ -1293,7 +1400,10 @@ if (uCloudDeck > 0.0) {
   float cloudDetailW = cloudDetailFade(max(length(duvX), length(duvY)) * ${CLOUD_DETAIL_SIZE.toFixed(1)});
   // Explicit gradients, for the same reason the angles' were taken by hand: the
   // mip has to be chosen off a quantity that is continuous across the cut.
-  vec4 detail = textureGrad(uCloudDetail, detailUv, duvX, duvY);
+  // Past the fade the weight is exactly zero: the erosion's mix returns 1 and
+  // the relief block below is not entered, so the fetch has no reader.
+  vec4 detail = vec4(0.0);
+  if (${cloudTapKept('cloudDetailW > 0.0')}) detail = textureGrad(uCloudDetail, detailUv, duvX, duvY);
   // The deck's alpha is the coverage its own map states. It is worked out HERE,
   // upstream of every light, because the colour has to change with it: the map
   // states coverage and not albedo, so once the alpha carries that coverage the
@@ -1305,7 +1415,8 @@ if (uCloudDeck > 0.0) {
   // ...eroded by the detail noise where the coverage is at an EDGE. A cloud
   // map's edges are the resolution its authoring stopped at; the noise puts the
   // ragged margin back. Solid cloud keeps its interior and clear sky gains no
-  // wisps — the band is zero at both ends.
+  // wisps — the band is zero at both ends, which is also what keeps an exactly
+  // clear fragment exactly clear through this.
   cloudAlpha *= mix(1.0, mix(1.0 - uCloudDetailErode, 1.0, detail.r),
       cloudEdgeBand(cloudAlpha) * cloudDetailW);
   // The hue survives; the brightness is pulled toward the cloud's own albedo by
@@ -1332,7 +1443,8 @@ if (uCloudDeck > 0.0) {
     }
   }
 }
-${SURFACE_DETAIL_BODY}`;
+${SURFACE_DETAIL_BODY}
+${CLOUD_CLEAR_RETURN}`;
 
 const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   if (uWaterGloss > 0.0) {
@@ -1365,18 +1477,33 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
     // Explicit gradients, taken analytically from the direction's: the UV
     // jumps a whole turn at the date line, and an implicit derivative read
     // across that jump would pick the coarsest mip down that one column of
-    // pixels — a hairline of average cloud drawn over the sea.
-    float deckLum = dot(textureGrad(uCloudShadowMap, sphereEquirectUv(deckDir),
-            sphereEquirectUvGrad(deckDir, dFdx(deckDir)),
-            sphereEquirectUvGrad(deckDir, dFdy(deckDir))).rgb,
-        vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')}));
-    float glintKeep = (1.0 - cloudCoverage(deckLum))
-        * ${OCEAN_SPECULAR_KEEP.toFixed(4)};
-    // Cut from the CAPPED glint: the cap above already took the rest off, and
-    // cutting the uncapped term here would drive the light below zero under
-    // cloud, which the bloom then paints as a yellow core in a blue ring.
-    outgoingLight -= min(reflectedLight.directSpecular, vec3(${OCEAN_GLINT_CAP.toFixed(2)}))
-        * (1.0 - glintKeep);
+    // pixels — a hairline of average cloud drawn over the sea. Taken HERE and
+    // not inside the gate below: this branch is a compare against a uniform,
+    // which the whole draw takes the same side of, and the gate is not.
+    vec2 deckUv = sphereEquirectUv(deckDir);
+    vec2 deckDx = sphereEquirectUvGrad(deckDir, dFdx(deckDir));
+    vec2 deckDy = sphereEquirectUvGrad(deckDir, dFdy(deckDir));
+    // The glint this mask exists to cut: the CAPPED term, because the cap
+    // above already took the rest off, and cutting the uncapped one here would
+    // drive the light below zero under cloud, which the bloom then paints as a
+    // yellow core in a blue ring.
+    vec3 glintCapped = min(reflectedLight.directSpecular, vec3(${OCEAN_GLINT_CAP.toFixed(2)}));
+    // Wherever the Sun is below this fragment's horizon three's own N·L
+    // saturates to zero and the capped glint is exactly zero in every channel:
+    // the subtraction below is then a subtraction of nothing whatever the
+    // mask says, and the whole cloud-map read is spent on it. Gated on the
+    // term itself rather than on "night side", because it is the perturbed
+    // normal that decides whether there is a highlight, and uWaterGloss is a
+    // material-wide enable rather than a per-fragment test for sea.
+    if (${import.meta.env.DEV
+      ? 'uPerfGlintGate < 0.5 || any(greaterThan(glintCapped, vec3(0.0)))'
+      : 'any(greaterThan(glintCapped, vec3(0.0)))'}) {
+      float deckLum = dot(textureGrad(uCloudShadowMap, deckUv, deckDx, deckDy).rgb,
+          vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')}));
+      float glintKeep = (1.0 - cloudCoverage(deckLum))
+          * ${OCEAN_SPECULAR_KEEP.toFixed(4)};
+      outgoingLight -= glintCapped * (1.0 - glintKeep);
+    }
   }
   // The sine of the Sun's elevation at this fragment, off the perturbed normal:
   // the Sun's own Lambert term, which is what the day factor and the Moon's
@@ -1966,6 +2093,14 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uCloudDetailErode = uCloudDetailErode;
     shader.uniforms.uCloudCityGlow = uCloudCityGlow;
     shader.uniforms.uCloudDetailRelief = uCloudDetailRelief;
+    // The efficiency A/B switches, shared objects so a flip reaches the globe,
+    // its streamed sectors and the deck in one frame. Absent from a production
+    // build along with the second path each of them selects.
+    if (import.meta.env.DEV) {
+      shader.uniforms.uPerfCloudTaps = perfSwitchUniform('cloud-taps');
+      shader.uniforms.uPerfCloudClear = perfSwitchUniform('cloud-clear');
+      shader.uniforms.uPerfGlintGate = perfSwitchUniform('glint-gate');
+    }
     shader.uniforms.uFrameSpin = uFrameSpin;
     shader.uniforms.uSynthDetail = uSynthDetail;
     shader.uniforms.uSynthGrain = uSynthGrain;
@@ -1984,8 +2119,8 @@ export function augmentSurfaceMaterial(
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>${SURFACE_FRAGMENT_DECLS}`)
       .replace('#include <map_fragment>', SURFACE_MAP_FRAGMENT)
-      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>${WATER_GLOSS_GLSL}`)
-      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>${SURFACE_NORMAL_BODY}`)
+      .replace('#include <roughnessmap_fragment>', `${roughnessChunk()}${WATER_GLOSS_GLSL}`)
+      .replace('#include <normal_fragment_maps>', `${SURFACE_NORMAL_MAPS}${SURFACE_NORMAL_BODY}`)
       .replace('#include <opaque_fragment>', `${SURFACE_FRAGMENT_BODY}\n#include <opaque_fragment>`);
   };
   // The table dimensions are #defines, and a define is part of three's program

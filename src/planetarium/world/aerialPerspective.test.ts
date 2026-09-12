@@ -89,6 +89,13 @@ function augmented(archetype: SurfaceArchetype): THREE.MeshStandardMaterial {
 
 const hash = (glsl: string): string => createHash('sha256').update(glsl).digest('hex');
 
+/** The injected fragment text as a development build compiles it — both
+ *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
+ *  production build does, the cheap reading alone; and the night shell's. */
+const DEV_FRAGMENT_HASH = '2113094c044cbb5b16a863c59dd126e0ca6be1e2410517ca8b42805f16acab74';
+const PROD_FRAGMENT_HASH = 'f345f219aa1f310e30a9526081cd23d945ac6eb57a384a37414b5c8d8b18a566';
+const PROD_NIGHT_FRAGMENT_HASH = '7b1b837a3b3d9b6454b6585b37bcb60749ee1e1cbdcb16aea38231ea4fea1c4c';
+
 describe('the injected surface shader', () => {
   it('is one text for every body and both tiers', () => {
     // Earth with air, the Moon without, Mars with its own, and the cloud deck.
@@ -122,11 +129,47 @@ describe('the injected surface shader', () => {
     // runs against each other rather than against the committed set, which was
     // recorded on a different driver and does not reproduce byte for byte
     // anywhere else.
+    //
+    // Under vitest this is the DEVELOPMENT text: the GPU-efficiency switches
+    // (app/perfSwitches.ts) put both readings of each change into the shader
+    // here, behind a uniform, so a capture can be taken either way out of one
+    // page load. A production build folds each of them to its cheap reading
+    // alone, and that text has its own pin: the test below ties the two.
     const shader = compile(augmented('earth'));
     expect(hash(shader.vertexShader))
       .toBe('862f7224fafb480070aebf0c7c125dddbd78c879780eb072e96988333154322a');
     expect(hash(shader.fragmentShader))
-      .toBe('058f4cc1324ba555126eb9b98edf706bc51a55d74f9799aab4a4fef749ed4130');
+      .toBe(import.meta.env.DEV ? DEV_FRAGMENT_HASH : PROD_FRAGMENT_HASH);
+  });
+
+  it('folds to the production text by deleting the switch guards, and nothing else', () => {
+    // A production build carries neither the switch uniforms nor the guard
+    // each cheap path sits behind: `import.meta.env.DEV ? both : cheap` folds
+    // to the cheap reading. So the shipped text is this text with three
+    // declarations and three guard prefixes deleted — and this pins that it
+    // is EXACTLY that, by hashing the deletion against the hash the same
+    // test records when it runs as a production build:
+    //   NODE_ENV=production npx vitest run --mode production src/planetarium/world/aerialPerspective.test.ts
+    // A guard written in any other shape, or a cheap path that is not its
+    // switch-ON reading, moves one of the two hashes and not the other.
+    const shader = compile(augmented('earth'));
+    const folded = shader.fragmentShader
+      .replace('uniform float uPerfCloudTaps;\nuniform float uPerfCloudClear;\nuniform float uPerfGlintGate;', '')
+      .replace(/uPerfCloudTaps < 0\.5 \|\| /g, '')
+      .replace(/uPerfCloudClear > 0\.5 && /g, '')
+      .replace(/uPerfGlintGate < 0\.5 \|\| /g, '');
+    expect(folded).not.toMatch(/uPerf/);
+    expect(hash(import.meta.env.DEV ? folded : shader.fragmentShader)).toBe(PROD_FRAGMENT_HASH);
+    const night = import.meta.env.DEV
+      ? earthNightFragmentShader
+        .replace('uniform float uPerfNightEarly;', '')
+        .replace(
+          'if (uPerfNightEarly > 0.5) { if (nightMix == 0.0) { gl_FragColor = vec4(0.0); return; } }',
+          'if (nightMix == 0.0) { gl_FragColor = vec4(0.0); return; }',
+        )
+      : earthNightFragmentShader;
+    expect(night).not.toMatch(/uPerf/);
+    expect(hash(night)).toBe(PROD_NIGHT_FRAGMENT_HASH);
   });
 
   it('reuses the tables\' own lookup GLSL rather than a second transcription', () => {

@@ -7,6 +7,7 @@ import {
   readableRemap,
   toDisplayFraction,
   toPhysicalFraction,
+  tooThinToSeeCount,
 } from './interiorGeometry';
 
 // Earth's five regions, inside-out, as fractions of 6371 km.
@@ -121,5 +122,23 @@ describe('framingDistance', () => {
     const horizontalHalf = Math.atan(Math.tan((20 * Math.PI) / 180) * (390 / 844));
     expect(phone).toBeCloseTo(1 / Math.sin(0.92 * horizontalHalf), 9);
     expect(phone).toBeGreaterThan(wide);
+  });
+});
+
+describe('tooThinToSeeCount', () => {
+  it('counts the regions under the minimum at true thickness', () => {
+    // Earth's thinnest regions are the crust (35 km of 6,371) and the
+    // transition zone: on a 200 px disc they are 1.1 px and 19.6 px, so one
+    // of the five is under six pixels; on a 60 px disc the lower mantle's
+    // neighbours go too.
+    expect(tooThinToSeeCount(EARTH, 6, 200)).toBe(1);
+    expect(tooThinToSeeCount(EARTH, 6, 60)).toBe(2);
+    expect(tooThinToSeeCount(EARTH, 6, 2000)).toBe(0);
+  });
+
+  it('counts nothing before the disc has a size, and nothing for one whole region', () => {
+    expect(tooThinToSeeCount(EARTH, 6, 0)).toBe(0);
+    expect(tooThinToSeeCount(EARTH, 0, 200)).toBe(0);
+    expect(tooThinToSeeCount([1], 6, 200)).toBe(0);
   });
 });

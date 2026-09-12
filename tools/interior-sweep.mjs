@@ -211,7 +211,8 @@ async function sweepBody(context, viewport, body) {
       check(seen.length === regionKeys.length, `${tag}: at Readable, the sweep reached ${seen.length} of ${regionKeys.length} regions (${seen})`);
     }
   }
-  await page.evaluate(() => window.__moon.interiorScale('readable'));
+  // Back to the tool's default, True, which is what the captures below show.
+  await page.evaluate(() => window.__moon.interiorScale('true'));
   await page.evaluate(() => window.__moon.interiorHover(-1, -1));
 
   // 4. A model switch adds and removes rows.
@@ -444,14 +445,16 @@ async function reducedMotionCase(context, viewport) {
   await settle(page);
   let current = await state(page);
   check(Math.abs(current.openingAngleDeg - 180) < 0.01, `${tag}: Section is at ${current.openingAngleDeg.toFixed(1)}° three frames after the view change; it should land at once`);
-  // The Readable | True segment through the DOM, the way a reader reaches it: the morph must not ease.
-  await page.evaluate(() => document.getElementById('interior-scale-true').click());
-  await settle(page);
-  current = await state(page);
-  check(current.readable === false && current.scaleBlend === 0, `${tag}: the Readable morph is at ${current.scaleBlend} three frames after the toggle; it should land at once`);
+  // The Readable | True segment through the DOM, the way a reader reaches it: the
+  // morph must not ease. True is the default, so Readable is the first move.
+  check((await state(page)).readable === false, `${tag}: the tool did not open at True`);
   await page.evaluate(() => document.getElementById('interior-scale-readable').click());
   await settle(page);
-  check((await state(page)).scaleBlend === 1, `${tag}: the Readable morph did not land at once on the way back`);
+  current = await state(page);
+  check(current.readable === true && current.scaleBlend === 1, `${tag}: the Readable morph is at ${current.scaleBlend} three frames after the toggle; it should land at once`);
+  await page.evaluate(() => document.getElementById('interior-scale-true').click());
+  await settle(page);
+  check((await state(page)).scaleBlend === 0, `${tag}: the Readable morph did not land at once on the way back`);
   await page.evaluate(() => window.__moon.interiorPick('Mars'));
   await saneEnd(page, tag, { body: 'Mars', angleDeg: 180 });
   check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);

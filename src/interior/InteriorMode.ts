@@ -1,9 +1,9 @@
 /**
  * Mode controller for the Look-inside tool. Owns the camera, its
- * OrbitControls, the DOM (the panel: body chip, caption, the three views,
- * the opening-angle slider, a legend and the Readable toggle), the
- * presentation clock and the cut animation; InteriorScene owns the studio
- * content. The mode maps the pure modules — cutFrame for where the cut is,
+ * OrbitControls, the DOM (the panel: the body's name and the way to another
+ * world, the caption, the three views, the opening-angle slider, a legend and
+ * the Readable | True segment), the presentation clock and the cut animation;
+ * InteriorScene owns the studio content. The mode maps the pure modules — cutFrame for where the cut is,
  * interiorGeometry for the Readable remap, drawnModel for the model's
  * regions — onto the scene's per-frame uniforms.
  *
@@ -75,9 +75,10 @@ import {
   regionLooks,
   setCutTarget,
   stepToward,
+  thicknessNoteText,
   unresolvedComposition,
 } from './interiorLogic';
-import { formatKm, formatNumber, temperatureQuantityText } from './ui/inspectorText';
+import { formatKm, formatNumber, temperatureQuantityText, temperatureRangeText } from './ui/inspectorText';
 import {
   IDENTITY_REMAP,
   READABLE_MIN_PX,
@@ -87,6 +88,7 @@ import {
   readableRemap,
   toDisplayFraction,
   toPhysicalFraction,
+  tooThinToSeeCount,
   type ReadableRemap,
 } from './interiorGeometry';
 import { createPickHit, pickInterior, type PickHit, type PickLayout, type PickSurface } from './interiorPick';
@@ -107,7 +109,7 @@ import { buildMeter, claimScores } from './ui/LayerInspector';
 import { coverageBulk, type ClaimKind, type Coverage, type CoverageState } from './data/interiorTypes';
 import { drawnFromModel, drawnUnresolved, outerFractionsInsideOut, type DrawnModel } from './drawnModel';
 import { BodyPicker } from '../planetarium/ui/BodyPicker';
-import { incandescence, swatchHex } from './data/artParams';
+import { PHASE_LABEL, incandescence, swatchHex } from './data/artParams';
 
 const FRAMING = {
   fovDeg: 40,
@@ -266,13 +268,14 @@ export class InteriorMode {
   /** The ruler was hidden or never drawn: the next render must draw whatever the key says. */
   private rulerStale = true;
 
-  // The Readable scale.
-  private readable = true;
+  // The Readable scale: off by default, so a reader's first look is the body's
+  // own proportions and the note offers Readable where it would help.
+  private readable = false;
   /** The model switch's note, and whether the reader has opened it past its first line. */
   private modelsNoteText = '';
   private modelsNoteExpanded = false;
-  private scaleBlend = 1;
-  private scaleBlendTarget = 1;
+  private scaleBlend = 0;
+  private scaleBlendTarget = 0;
   private remap: ReadableRemap | null = null;
   private remapPx = -1;
   private remapBlend = -1;
@@ -607,6 +610,8 @@ export class InteriorMode {
     this.interiorScene.applyRegions(looks);
     this.interiorScene.setTemperatureScale(this.temperatureRange);
     this.pickLayout.outerDisplay = looks.map((look) => look.outerDisplay);
+    // The disc's size moved, so the count of layers too thin to see may have too.
+    this.syncThicknessNote();
   }
 
   // ---- the cut and the scale ----------------------------------------------
@@ -632,10 +637,21 @@ export class InteriorMode {
     const row = document.getElementById('interior-readable-row');
     if (row) row.style.display = oneRegion ? 'none' : '';
     const note = document.getElementById('interior-readable-note');
-    if (note) {
-      note.textContent = on ? 'Thin layers widened so you can see them' : 'Layers at their true thickness';
-      note.style.display = oneRegion ? 'none' : '';
-    }
+    if (note) note.style.display = oneRegion ? 'none' : '';
+    this.syncThicknessNote();
+  }
+
+  /** The note under the Layer thickness segment. At true thickness it counts the
+   *  layers too thin to see at the disc's current size, so Readable offers itself
+   *  exactly where it helps; the DOM is written only when the words change. */
+  private syncThicknessNote(): void {
+    const note = document.getElementById('interior-readable-note');
+    if (!note) return;
+    const tooThin = this.readable
+      ? 0
+      : tooThinToSeeCount(outerFractionsInsideOut(this.drawn), READABLE_MIN_PX, this.projectedPx);
+    const text = thicknessNoteText(this.readable, tooThin);
+    if (note.textContent !== text) note.textContent = text;
   }
 
   // ---- body ------------------------------------------------------------------
@@ -770,6 +786,7 @@ export class InteriorMode {
   private bindPanel(): void {
     document.getElementById('interior-leave')?.addEventListener('click', () => this.requestExit());
     document.getElementById('interior-body-chip')?.addEventListener('click', () => this.openPicker());
+    document.getElementById('interior-change-body')?.addEventListener('click', () => this.openPicker());
     for (const view of CUT_VIEWS) {
       document.getElementById(`interior-view-${view}`)?.addEventListener('click', () => this.setView(view));
     }
@@ -880,10 +897,28 @@ export class InteriorMode {
           ? (region.region ? temperatureQuantityText(region.region.temperatureK) : 'not known')
           : region.composition;
         text.append(title, detail);
-        const depth = document.createElement('div');
-        depth.className = 'interior-row-depth';
-        depth.textContent = `${formatKm(depthTop)}–${formatKm(depthBottom)} km`;
-        row.append(swatch, text, depth);
+        // The row's second line: how deep it lies, what state it is in and how
+        // hot it is — the three things a reader compares between layers, at both
+        // breakpoints, since the phone has no room for the detail line above it.
+        // Each piece carries its own separator, so a line that wraps on a narrow
+        // panel never begins with a middot.
+        const secondLine = document.createElement('div');
+        secondLine.className = 'interior-row-depth';
+        const pieces = [`${formatKm(depthTop)}–${formatKm(depthBottom)} km`];
+        const phase = PHASE_LABEL[region.phase];
+        if (phase) pieces.push(phase);
+        // Kelvin alone here; the celsius and the basis word are the inspector's.
+        const temperatureRange = region.region ? temperatureRangeText(region.region.temperatureK) : '';
+        if (temperatureRange) pieces.push(temperatureRange);
+        for (let pieceIndex = 0; pieceIndex < pieces.length; pieceIndex++) {
+          const last = pieceIndex === pieces.length - 1;
+          const part = document.createElement('span');
+          part.className = 'interior-row-part';
+          part.textContent = last ? pieces[pieceIndex] : `${pieces[pieceIndex]} ·`;
+          secondLine.append(part);
+          if (!last) secondLine.append(document.createTextNode(' '));
+        }
+        row.append(swatch, text, secondLine);
         // The existence claim's meter with its level word (plan §4).
         const existence = region.region?.claims.findIndex((claim) => claim.kind === 'existence') ?? -1;
         if (existence >= 0) {
@@ -897,7 +932,7 @@ export class InteriorMode {
     }
     const legendHead = document.getElementById('interior-legend-head');
     if (legendHead) {
-      legendHead.textContent = temperature ? 'Layers, outside in · their temperatures' : 'Layers, outside in · how sure we are each exists';
+      legendHead.textContent = temperature ? 'Outside in · their temperatures' : 'Outside in · how sure each exists';
       legendHead.style.display = this.drawn.regionsInsideOut.length > 1 ? '' : 'none';
     }
     this.renderScale();

@@ -13,6 +13,10 @@
  * full policy, and the two are interpolated knot by knot, so an animated
  * blend never reorders boundaries.
  *
+ * The same inputs answer the note's question — how many regions are too thin
+ * to see at their true thickness (`tooThinToSeeCount`), which is the count the
+ * True note reports.
+ *
  * Everything the user reads stays physical: depth labels, temperatures and
  * the pick pass through `toPhysicalFraction`, the inverse of what the faces
  * draw with. Tool modes render rectilinear (no lens), so the projected radius
@@ -44,6 +48,29 @@ export const READABLE_MIN_PX = 6;
 export function minDisplayFraction(minPx: number, projectedRadiusPx: number): number {
   if (!(projectedRadiusPx > 0) || !(minPx > 0)) return 0;
   return minPx / projectedRadiusPx;
+}
+
+/**
+ * How many regions are thinner than `minPx` on screen when they are drawn at
+ * their true thickness: what the True note reports, so a reader whose thinnest
+ * layers have vanished is told that Readable is what would show them. The
+ * fractions are the regions' outer radii, inside-out and increasing, as
+ * fractions of the reference radius; a disc with no size yet counts nothing.
+ */
+export function tooThinToSeeCount(
+  outerFractionsInsideOut: readonly number[],
+  minPx: number,
+  projectedRadiusPx: number,
+): number {
+  if (!(projectedRadiusPx > 0) || !(minPx > 0)) return 0;
+  let count = 0;
+  let previousOuter = 0;
+  for (const outer of outerFractionsInsideOut) {
+    const thicknessPx = Math.max(0, outer - previousOuter) * projectedRadiusPx;
+    if (thicknessPx < minPx) count++;
+    previousOuter = outer;
+  }
+  return count;
 }
 
 /**

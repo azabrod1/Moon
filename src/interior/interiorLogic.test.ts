@@ -18,6 +18,7 @@ import {
   regionLooks,
   setCutTarget,
   stepToward,
+  thicknessNoteText,
   unresolvedComposition,
 } from './interiorLogic';
 import { bodyTemperatureRange } from './temperatureScale';
@@ -199,5 +200,15 @@ describe('the emphasis', () => {
     // Reduced motion lands at once.
     advanceEmphasis(state, 3, 1);
     expect(state).toEqual({ index: 3, amount: 1 });
+  });
+});
+
+describe('thicknessNoteText', () => {
+  it('says what the reader is looking at, and how many layers the true scale hides', () => {
+    expect(thicknessNoteText(true, 0)).toBe('Thin layers widened so you can see them');
+    expect(thicknessNoteText(true, 3)).toBe('Thin layers widened so you can see them');
+    expect(thicknessNoteText(false, 0)).toBe('Layers at their true thickness');
+    expect(thicknessNoteText(false, 1)).toBe('Layers at their true thickness · 1 too thin to see');
+    expect(thicknessNoteText(false, 2)).toBe('Layers at their true thickness · 2 too thin to see');
   });
 });

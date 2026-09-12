@@ -15,6 +15,7 @@ import {
   quantityText,
   reviewDateText,
   temperatureQuantityText,
+  temperatureRangeText,
   uncertaintyText,
 } from './inspectorText';
 
@@ -52,6 +53,12 @@ describe('inspectorText', () => {
     expect(pressureQuantityText(endpoints(136, 24, 'src', 'inferred'))).toBe('24–136 GPa (inferred); about 236,856–1.3 million atmospheres');
     expect(atmospheresText(1_342_184)).toBe('1.3 million');
     expect(atmospheresText(236_856)).toBe('236,856');
+  });
+
+  it('reads a legend row temperature as kelvin alone, and unknown as nothing', () => {
+    expect(temperatureRangeText(endpoints(1600, 1100, 'src', 'inferred'))).toBe('1,100–1,600 K');
+    expect(temperatureRangeText(endpoints(5800, 5800, 'src', 'measured', 'none'))).toBe('5,800 K');
+    expect(temperatureRangeText(UNKNOWN)).toBe('');
   });
 
   it('prints a review date as a reader writes one', () => {

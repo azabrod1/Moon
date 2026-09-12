@@ -1008,7 +1008,13 @@ export class InteriorMode {
       back.addEventListener('click', () => this.setPinned(-1));
       root.prepend(back);
     }
-    document.getElementById('interior-panel')?.classList.toggle('inspecting', phone);
+    const panel = document.getElementById('interior-panel');
+    panel?.classList.toggle('inspecting', phone);
+    if (phone) {
+      // The inspector needs the room: the sheet opens to its full height with it.
+      panel?.classList.add('expanded');
+      document.getElementById('interior-grip')?.setAttribute('aria-expanded', 'true');
+    }
     root.style.display = '';
     root.scrollTop = 0;
     if (phone && host) host.scrollTop = 0;

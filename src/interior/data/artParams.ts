@@ -96,9 +96,9 @@ const FAMILY_DEFAULT: Readonly<Record<MaterialFamily, ArtParams>> = {
   water: family({ colorA: 0x06182e, colorB: 0x1f5f9a, roughness: 0.4, metalness: 0, glow: 0, pattern: 'caustic', motion: 0.12, scale: 40, relief: 0.6, depthGradient: 0.35, ambient: 0.2, heatGain: 1 }),
   // Envelope: broad soft zonal bands, cream at the top, amber and turbulent below; its hot
   // base glows warm through the bands rather than whiting them out.
-  hydrogen: family({ colorA: 0xc9a56a, colorB: 0xf6ead0, roughness: 0.85, metalness: 0, glow: 0, pattern: 'banding', motion: 0.03, scale: 16, relief: 0, depthGradient: 0.35, ambient: 0.18, heatGain: 0.5, heatTint: 0xffd9a0 }),
+  hydrogen: family({ colorA: 0xa8823f, colorB: 0xf6ead0, roughness: 0.85, metalness: 0, glow: 0, pattern: 'banding', motion: 0.03, scale: 40, relief: 0, depthGradient: 0.35, ambient: 0.18, heatGain: 0.4, heatTint: 0xffd9a0 }),
   // A dark liquid mirror with a gold glow inside it, not a white blast.
-  metallicHydrogen: family({ colorA: 0x2a3340, colorB: 0x9aa8b8, roughness: 0.15, metalness: 0.6, glow: 0.05, pattern: 'flow', motion: 0.05, scale: 5, relief: 1.6, depthGradient: 0.15, ambient: 0.22, heatGain: 0.35, heatTint: 0xffcc80 }),
+  metallicHydrogen: family({ colorA: 0x1e2630, colorB: 0x7d8a9a, roughness: 0.15, metalness: 0.6, glow: 0.05, pattern: 'flow', motion: 0.05, scale: 5, relief: 1.6, depthGradient: 0.15, ambient: 0.22, heatGain: 0.25, heatTint: 0xffcc80 }),
   // A conducting sea: its own electric teal wins over the heat, which glows through it.
   ionicFluid: family({ colorA: 0x1f7f9a, colorB: 0x5fc8e0, roughness: 0.3, metalness: 0.3, glow: 0.05, pattern: 'flow', motion: 0.06, scale: 6, relief: 2, depthGradient: 0.25, ambient: 0.2, heatGain: 0.3, heatTint: 0x60c8ff }),
   // A star: every region is a light. The palette (amber to yellow-white) is the emission,
@@ -106,7 +106,7 @@ const FAMILY_DEFAULT: Readonly<Record<MaterialFamily, ArtParams>> = {
   plasma: family({ colorA: 0xff9a2a, colorB: 0xffe0a0, roughness: 1, metalness: 0, glow: 0, pattern: 'mottle', motion: 0.2, scale: 30, relief: 0, depthGradient: 0, ambient: 0, heatGain: 1, selfLit: true }),
   // A mix: cold it is a mottled rock-and-ice mud; hot (a giant's diluted core) it glows a
   // deep gold through its own mottle rather than blasting white.
-  mixed: family({ colorA: 0x6c5744, colorB: 0xb8a088, roughness: 0.9, metalness: 0.1, glow: 0, pattern: 'mottle', motion: 0, scale: 12, relief: 4, depthGradient: 0.25, ambient: 0.16, heatGain: 0.45, heatTint: 0xffd090 }),
+  mixed: family({ colorA: 0x6c5744, colorB: 0xb8a088, roughness: 0.9, metalness: 0, glow: 0, pattern: 'mottle', motion: 0, scale: 12, relief: 2.5, depthGradient: 0.25, ambient: 0.16, heatGain: 0.45, heatTint: 0xffd090 }),
   // Unknown: the same hatch Temperature mode uses for "not known", lighter, so the disc reads
   // as deliberately blank rather than unfinished.
   unresolved: family({ colorA: 0x5c6068, colorB: 0x7a7e86, roughness: 1, metalness: 0, glow: 0, pattern: 'hatch', motion: 0, scale: 1, relief: 0, depthGradient: 0.1, ambient: 0.2, heatGain: 1 }),

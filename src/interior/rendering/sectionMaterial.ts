@@ -497,7 +497,7 @@ vec4 sectionSample(int k, vec3 bodyPoint, float regionT, out float heatMask) {
     float axial = length(bodyPoint.xz);
     float turbulence = sectionFbm(bodyPoint * 3.0 + vec3(drift));
     float wobble = turbulence * (2.0 + 6.0 * regionT);
-    float amplitude = 0.25 * (1.0 - 0.5 * regionT);
+    float amplitude = 0.35 * (1.0 - 0.5 * regionT);
     mixValue = 0.5 + amplitude * sin(axial * scale + wobble) + 0.2 * (turbulence - 0.5) * regionT;
     heatMask = 0.7 + 0.5 * mixValue;
   } else if (pattern == 6) {
@@ -512,7 +512,9 @@ vec4 sectionSample(int k, vec3 bodyPoint, float regionT, out float heatMask) {
       float angle = atan(bodyPoint.z, bodyPoint.x);
       float streaks = noise3(vec3(angle * 14.0, length(bodyPoint) * 6.0, 1.7));
       float structure = mix(cells, 0.5 + 0.12 * (streaks - 0.5), stillness);
-      mixValue = mix(0.25 + 0.5 * structure, 0.75 + 0.25 * structure, level);
+      // Amber at the surface zones, gold at depth, cream only at the core: the palette
+      // whitens on the square of the level, so the convective zone keeps its colour.
+      mixValue = mix(0.15 + 0.45 * structure, 0.6 + 0.4 * structure, level * level);
       heatMask = 0.75 + 0.5 * structure;
       height = structure;
     } else {
@@ -679,7 +681,7 @@ roughnessFactor = uDisplayMode == 1 ? 1.0 : interiorRough;
 /** A metal's studio sheen fades as its heat rises: a white-hot core is a light, and a mirror
  *  of the softbox on top of it only reads as a pale wash. */
 const SECTION_METALNESS = /* glsl */ `
-metalnessFactor = uDisplayMode == 1 ? 0.0 : interiorMetal * (1.0 - 0.5 * interiorHeatStrength);
+metalnessFactor = uDisplayMode == 1 ? 0.0 : interiorMetal * (1.0 - 0.35 * interiorHeatStrength);
 `;
 
 /** After <normal_fragment_maps>: the pattern's height as a bump, the

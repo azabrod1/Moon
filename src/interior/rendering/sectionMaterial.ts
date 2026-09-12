@@ -497,7 +497,7 @@ vec4 sectionSample(int k, vec3 bodyPoint, float regionT, out float heatMask) {
     float axial = length(bodyPoint.xz);
     float turbulence = sectionFbm(bodyPoint * 3.0 + vec3(drift));
     float wobble = turbulence * (2.0 + 6.0 * regionT);
-    float amplitude = 0.35 * (1.0 - 0.5 * regionT);
+    float amplitude = 0.45 * (1.0 - 0.5 * regionT);
     mixValue = 0.5 + amplitude * sin(axial * scale + wobble) + 0.2 * (turbulence - 0.5) * regionT;
     heatMask = 0.7 + 0.5 * mixValue;
   } else if (pattern == 6) {

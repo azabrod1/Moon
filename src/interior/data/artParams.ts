@@ -96,7 +96,7 @@ const FAMILY_DEFAULT: Readonly<Record<MaterialFamily, ArtParams>> = {
   water: family({ colorA: 0x06182e, colorB: 0x1f5f9a, roughness: 0.4, metalness: 0, glow: 0, pattern: 'caustic', motion: 0.12, scale: 40, relief: 0.6, depthGradient: 0.35, ambient: 0.2, heatGain: 1 }),
   // Envelope: broad soft zonal bands, cream at the top, amber and turbulent below; its hot
   // base glows warm through the bands rather than whiting them out.
-  hydrogen: family({ colorA: 0xa8823f, colorB: 0xf6ead0, roughness: 0.85, metalness: 0, glow: 0, pattern: 'banding', motion: 0.03, scale: 40, relief: 0, depthGradient: 0.35, ambient: 0.18, heatGain: 0.4, heatTint: 0xffd9a0 }),
+  hydrogen: family({ colorA: 0xa8823f, colorB: 0xf6ead0, roughness: 0.85, metalness: 0, glow: 0, pattern: 'banding', motion: 0.03, scale: 40, relief: 0, depthGradient: 0.35, ambient: 0.18, heatGain: 0.2, heatTint: 0xffd9a0 }),
   // A dark liquid mirror with a gold glow inside it, not a white blast.
   metallicHydrogen: family({ colorA: 0x1e2630, colorB: 0x7d8a9a, roughness: 0.15, metalness: 0.6, glow: 0.05, pattern: 'flow', motion: 0.05, scale: 5, relief: 1.6, depthGradient: 0.15, ambient: 0.22, heatGain: 0.25, heatTint: 0xffcc80 }),
   // A conducting sea: its own electric teal wins over the heat, which glows through it.

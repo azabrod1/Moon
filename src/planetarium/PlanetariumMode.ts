@@ -2218,6 +2218,26 @@ export class PlanetariumMode {
     this.toolRequestCb = cb;
   }
 
+  /** A door to a tool has become visible — the Tools popover, or a body card
+   *  carrying Look inside. The owner of the switch may fetch the tool chunks
+   *  now, before the reader asks for one: on a phone that fetch is otherwise
+   *  paid after the tap, behind the fade, with nothing to look at. Called often
+   *  and answered cheaply (the browser's module map caches the fetch). */
+  private toolWarmCb: (() => void) | null = null;
+  onToolWarm(cb: () => void): void {
+    this.toolWarmCb = cb;
+  }
+
+  /** Fail-open: warming a chunk buys a faster open and nothing else, so a throw
+   *  here must not take the menu or the card down with it. */
+  private warmToolChunks(): void {
+    try {
+      this.toolWarmCb?.();
+    } catch (err) {
+      debugWarn('Tool chunk prefetch failed', { err: String(err) });
+    }
+  }
+
   active = false;
   /** True from the start of activate() until the saved (or pre-tool) journey
    *  has been restored onto the ship. update() returns immediately while it is
@@ -9696,6 +9716,8 @@ export class PlanetariumMode {
     this.closeDeck();
     this.closeSurfaceTargetMenu();
     this.buildToolsMenu();
+    // Both rows here are one tap from a mode switch that fetches a chunk.
+    this.warmToolChunks();
     menu.classList.add('visible');
     // Anchor the card under the Tools button. Measured after .visible (a
     // display:none card has no width) and clamped to the viewport — on narrow
@@ -11620,6 +11642,8 @@ export class PlanetariumMode {
     // a bare point steps aside for it.
     this.dismissMapTeleportChip();
     const actions = mapCardActions(target, this.landedOn);
+    // A card with a Look inside button is the tool's other door.
+    if (actions.some((action) => action.kind === 'inside')) this.warmToolChunks();
     const color = this.bodyTintCss(name);
     // Zero only while there is no map open to measure against.
     const distAU = this.systemMap?.trueDistanceFromShip(

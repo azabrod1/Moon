@@ -769,6 +769,19 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
     // and so is the destination's UI while it activates. That is deliberate:
     // the arrival veil is the thing that catches pointers, and anything
     // committed here belongs to the mode that is still on screen.
+    // The Look-inside chunk goes out BEFORE the beat and is awaited inside its
+    // branch, so the fetch and the fade overlap. On a phone the 232 KB module
+    // is a fetch of the same order as the beat, and the two ran one after the
+    // other for no reason: the beat is a fade nobody is reading, and the branch
+    // still awaits the import before it takes the current mode down, so a
+    // chunk that will not load leaves the user looking at the mode they came
+    // from and the notice does the talking. The no-op catch only keeps a
+    // failure from being reported as an unhandled rejection while nothing is
+    // awaiting it yet — the await below is what handles it.
+    const interiorModuleFetch = newMode === 'interior' && !interiorMode
+      ? (debugLog('Loading interior module'), import('./interior/InteriorMode'))
+      : null;
+    interiorModuleFetch?.catch(() => {});
     const beatStartedAt = performance.now();
     if (appModeInitialized) await sleep(400);
     const beatMs = performance.now() - beatStartedAt;
@@ -797,6 +810,16 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
         planetariumMode.onToolRequest((toolRequest) => {
           if (modeSwitchInFlight || appMode === toolRequest.kind) return false;
           return switchAppMode(toolRequest.kind, toolRequest);
+        });
+        // A door to a tool has just become visible (the Tools popover, a map
+        // card carrying Look inside): fetch the tool chunks now, so a tap finds
+        // them in the browser's module map instead of waiting on the network
+        // behind the fade. Idempotent — a second import() of the same module
+        // resolves from that map — and silent: a failure here is the switch's
+        // to report, and it retries the fetch itself.
+        planetariumMode.onToolWarm(() => {
+          import('./interior/InteriorMode').catch(() => {});
+          import('./volumeCompare/VolumeCompareMode').catch(() => {});
         });
       }
       debugLog('Activating Planetarium mode');
@@ -894,12 +917,13 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
     } else if (newMode === 'interior') {
       // --- Switch to Look inside ---
       // Dynamic import first, as the other tools: a failed chunk fetch must
-      // not strand the user in a mode with no UI.
+      // not strand the user in a mode with no UI. This one is started above the
+      // fade beat (and prefetched from the Tools popover), so what is awaited
+      // here is usually nothing at all.
+      // Started above, before the fade beat; what is left of the fetch is what
+      // the switch waits for here, before any teardown.
       const importStartedAt = performance.now();
-      const interiorModule = interiorMode ? null : await (async () => {
-        debugLog('Loading interior module');
-        return import('./interior/InteriorMode');
-      })();
+      const interiorModule = interiorModuleFetch ? await interiorModuleFetch : null;
       const importMs = performance.now() - importStartedAt;
       const bodyId = request?.kind === 'interior' ? request.bodyId : 'Earth';
       // The tool poses the body at the planetarium's instant: read it before

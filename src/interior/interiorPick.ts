@@ -15,10 +15,13 @@
  * A face shows whichever region the hit radius falls in (the shader resolves
  * by radius), and the nearest surviving hit along the ray wins, which is
  * what the depth buffer does. Everything here is in the studio's world
- * space, where the body is a unit sphere at the origin.
+ * space, where the body is a unit sphere at the origin. Like the scene, the
+ * pick draws at most MAX_REGIONS regions (the validator refuses more), so
+ * a hit never names a region the faces do not show.
  */
 import * as THREE from 'three';
 import { createCutFaceBasis, createCutFrame, cutFaceBasis, terraceOpeningAngle, wedgeAngle, type CutFrame } from './cutFrame';
+import { MAX_REGIONS } from './data/interiorTypes';
 
 export interface PickLayout {
   /** The full-angle cut frame, as applied to the scene (after the yaw). */
@@ -46,12 +49,19 @@ export function createPickHit(): PickHit {
   return { surface: 'skin', regionIndex: 0, radiusDisplay: 0, distance: Infinity, point: new THREE.Vector3() };
 }
 
-/** The region whose display shell contains a radius: the first whose outer radius reaches it. */
+/** The region whose display shell contains a radius: the first whose outer
+ *  radius reaches it, among the regions that are drawn. */
 export function regionIndexAtRadius(outerDisplay: readonly number[], radiusDisplay: number): number {
-  for (let index = 0; index < outerDisplay.length; index++) {
+  const count = drawnRegionCount(outerDisplay);
+  for (let index = 0; index < count; index++) {
     if (radiusDisplay <= outerDisplay[index]) return index;
   }
-  return outerDisplay.length - 1;
+  return count - 1;
+}
+
+/** How many of the regions the studio draws: the scene's own cap. */
+export function drawnRegionCount(outerDisplay: readonly number[]): number {
+  return Math.min(outerDisplay.length, MAX_REGIONS);
 }
 
 const terraceFrame = createCutFrame();
@@ -83,7 +93,7 @@ export function pickInterior(
   layout: PickLayout,
   out: PickHit = createPickHit(),
 ): PickHit | null {
-  const count = layout.outerDisplay.length;
+  const count = drawnRegionCount(layout.outerDisplay);
   if (count === 0) return null;
   let bestDistance = Infinity;
   let found = false;

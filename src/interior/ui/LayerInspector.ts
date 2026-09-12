@@ -16,8 +16,9 @@ import type { Annotation, ClaimKind, Coverage } from '../data/interiorTypes';
 import { coverageBulk } from '../data/interiorTypes';
 import { competingTopology } from '../data/interiorRegistry';
 import { FAMILY_LABEL, PHASE_LABEL } from '../data/artParams';
-import { EVIDENCE_LEVEL_LABEL, SHOW_EVIDENCE_NUMERALS, evidenceScore, meterSegments, type EvidenceScore } from '../evidenceScore';
+import { EVIDENCE_LEVEL_LABEL, SHOW_EVIDENCE_NUMERALS, evidenceScore, type EvidenceScore } from '../evidenceScore';
 import type { DrawnModel, DrawnRegion } from '../drawnModel';
+import { closeButton, element, meterBar } from './dom';
 import { boundaryText, depthRangeText, formatKm, heatText, quantityText, sourcedText, thicknessText } from './inspectorText';
 
 export const CLAIM_TITLE: Readonly<Record<ClaimKind, string>> = {
@@ -28,24 +29,10 @@ export const CLAIM_TITLE: Readonly<Record<ClaimKind, string>> = {
   temperature: 'Its temperature',
 };
 
-function element<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text?: string): HTMLElementTagNameMap[K] {
-  const node = document.createElement(tag);
-  node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
-}
-
 /** The five-segment meter with the level word and, behind the flag, the numeral. */
 export function buildMeter(score: EvidenceScore): HTMLElement {
   const wrap = element('span', 'ev-meter-wrap');
-  wrap.append(element('span', `ev-level ev-${score.level}`, EVIDENCE_LEVEL_LABEL[score.level]));
-  const meter = element('span', 'ev-meter');
-  meter.setAttribute('aria-hidden', 'true');
-  const filled = meterSegments(score.score);
-  for (let segment = 0; segment < 5; segment++) {
-    meter.append(element('i', segment < filled ? 'on' : ''));
-  }
-  wrap.append(meter);
+  wrap.append(element('span', `ev-level ev-${score.level}`, EVIDENCE_LEVEL_LABEL[score.level]), meterBar(score.score));
   if (SHOW_EVIDENCE_NUMERALS) wrap.append(element('span', 'ev-score', String(score.score)));
   return wrap;
 }
@@ -101,12 +88,7 @@ export function renderInspector(root: HTMLElement, context: InspectorContext): v
   const head = element('div', 'ii-head');
   const titles = element('div', 'ii-titles');
   titles.append(element('div', 'ii-name', region.name), element('div', 'ii-kicker', familyPhaseText(region)));
-  const close = element('button', 'pk-x ii-close');
-  close.type = 'button';
-  close.setAttribute('aria-label', 'Close');
-  close.innerHTML = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>';
-  close.addEventListener('click', () => context.onClose());
-  head.append(titles, close);
+  head.append(titles, closeButton(() => context.onClose(), 'pk-x ii-close'));
   root.append(head);
 
   const schema = region.region;

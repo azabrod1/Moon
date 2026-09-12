@@ -13,19 +13,12 @@ import {
   EVIDENCE_LEVEL_READS_AS,
   POINTS,
   methodLabel,
-  meterSegments,
   type EvidenceLevel,
   type EvidenceScore,
 } from '../evidenceScore';
 import { CLAIM_TITLE } from './LayerInspector';
+import { closeButton, element, meterBar } from './dom';
 import { RELATION_WORD, provenanceText } from './inspectorText';
-
-function element<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text?: string): HTMLElementTagNameMap[K] {
-  const node = document.createElement(tag);
-  node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
-}
 
 const LEVEL_ORDER: readonly EvidenceLevel[] = ['directlyDetected', 'wellConstrained', 'constrained', 'modelDependent', 'hypothesis'];
 
@@ -73,22 +66,16 @@ export function renderEvidencePopover(card: HTMLElement, context: EvidencePopove
   const head = element('div', 'body-picker-head');
   const title = element('div', 'body-picker-title');
   title.append(element('b', '', context.regionName), document.createTextNode(` · ${CLAIM_TITLE[claim.kind].toLowerCase()}`));
-  const close = element('button', 'pk-x');
-  close.type = 'button';
-  close.setAttribute('aria-label', 'Close');
-  close.innerHTML = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>';
-  close.addEventListener('click', () => context.onClose());
-  head.append(title, close);
+  head.append(title, closeButton(() => context.onClose()));
   card.append(head);
 
   const body = element('div', 'ev-body');
   const summary = element('div', 'ev-summary');
-  summary.append(element('span', `ev-level ev-${score.level}`, EVIDENCE_LEVEL_LABEL[score.level]));
-  const meter = element('span', 'ev-meter');
-  meter.setAttribute('aria-hidden', 'true');
-  const filled = meterSegments(score.score);
-  for (let segment = 0; segment < 5; segment++) meter.append(element('i', segment < filled ? 'on' : ''));
-  summary.append(meter, element('span', 'ev-score', `${score.score} of ${POINTS.max}`));
+  summary.append(
+    element('span', `ev-level ev-${score.level}`, EVIDENCE_LEVEL_LABEL[score.level]),
+    meterBar(score.score),
+    element('span', 'ev-score', `${score.score} of ${POINTS.max}`),
+  );
   body.append(summary);
   body.append(element('div', 'ev-reads', EVIDENCE_LEVEL_READS_AS[score.level]));
   if (claim.probability) {

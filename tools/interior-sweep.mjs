@@ -156,9 +156,9 @@ async function sweepBody(context, viewport, body) {
   await page.evaluate(() => window.__moon.interiorPin(null));
 
   // 3. A hover sweep across the section resolves regions in order outward
-  // from the centre, at rest and mid-blend. Both directions: the wedge is
-  // yawed, so on the side the disc tilts away the intact skin hides the
-  // outermost sliver of the rim, and only the near-tilted side shows it all.
+  // from the centre, at rest and mid-blend. Both directions: at Section the
+  // wedge yaw has tapered to none and the disc is face-on, so both sides
+  // must show every region out to the rim.
   await page.evaluate(() => window.__moon.interiorView('section'));
   await ready(page);
   const centre = await discCentre(page, viewport);

@@ -48,14 +48,30 @@ import { resolveInteriorBody, type InteriorBody } from './interiorBody';
 import {
   CUT_VIEWS,
   CUT_VIEW_ANGLE_DEG,
-  MAX_OPENING_ANGLE_DEG,
   computeCutFrame,
   createCutFrame,
   cutViewForAngle,
   openingAngleDegToRad,
+  wedgeYawForOpening,
   yawCutFrame,
   type CutView,
 } from './cutFrame';
+import {
+  EMPHASIS_S,
+  advanceCutTween,
+  advanceEmphasis,
+  captionFor,
+  createCutTween,
+  createEmphasisState,
+  cutTweenSettled,
+  emphasisTarget,
+  regionArtInsideOut,
+  regionLooks,
+  setCutTarget,
+  stepToward,
+  unresolvedComposition,
+} from './interiorLogic';
+import { formatKm, formatNumber } from './ui/inspectorText';
 import {
   READABLE_MIN_PX,
   framingDistance,
@@ -75,7 +91,6 @@ import { INTERIOR_DEFAULT_BODY, coverageBadge, coverageFor, defaultModelFor, mod
 import { coverageModels } from './data/interiorTypes';
 import {
   bodyTemperatureRange,
-  temperatureEndpoints,
   temperatureScaleGradientCss,
   temperatureScaleHex,
   temperatureT,
@@ -85,8 +100,7 @@ import { buildMeter, claimScores } from './ui/LayerInspector';
 import { coverageBulk, type ClaimKind, type Coverage, type CoverageState } from './data/interiorTypes';
 import { drawnFromModel, drawnUnresolved, outerFractionsInsideOut, type DrawnModel } from './drawnModel';
 import { BodyPicker } from '../planetarium/ui/BodyPicker';
-import { artParamsFor, depthTint, incandescence, swatchHex, type ArtParams } from './data/artParams';
-import type { SectionRegionLook } from './rendering/sectionMaterial';
+import { incandescence, swatchHex } from './data/artParams';
 
 const FRAMING = {
   fovDeg: 40,
@@ -103,8 +117,6 @@ const FRAMING = {
   phoneWidthFraction: 0.84,
 } as const;
 
-/** The cut opens and closes over this long, on an ease-in-out. */
-const CUT_ANIMATION_S = 0.9;
 /** A body swap cross-fades the skin over this long, behind the closed cut. */
 const SWAP_FADE_S = 0.45;
 /** The reveal's exterior ghost starts this opaque and clears as the cut opens. */
@@ -117,8 +129,6 @@ const SCALE_BLEND_S = 0.5;
 const FPS_WINDOW = 60;
 /** Recompute the remap when the projected radius moves this much. */
 const REMAP_PX_TOLERANCE = 0.5;
-/** Emphasis eases in and out over this long. */
-const EMPHASIS_S = 0.16;
 /** A press that moves less than this (px) and ends within this (ms) is a tap, not a drag. */
 const TAP_MAX_PX = 8;
 const TAP_MAX_MS = 400;
@@ -174,36 +184,6 @@ export interface InteriorDevState {
   emphasis: { region: string | null; amount: number };
 }
 
-function easeInOutCubic(t: number): number {
-  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-}
-
-function formatKm(km: number): string {
-  if (km < 10) return km.toFixed(1);
-  return Math.round(km).toLocaleString('en-US');
-}
-
-/** The one line under the body chip: what is drawn and how much to trust it. */
-function captionFor(coverage: Coverage, drawn: DrawnModel): string {
-  const radius = `radius ${formatKm(drawn.referenceRadiusKm)} km`;
-  const model = drawn.model;
-  if (model) {
-    const review = model.review === 'reviewed' ? 'Reviewed model' : 'Provisional model';
-    if (model.illustrative) return `Illustrative scenario, not a measurement · ${radius}`;
-    if (coverage.state === 'competing') return `${review}, one of ${coverage.models.length} · ${radius}`;
-    return `${review} · ${radius}`;
-  }
-  const bulk = coverageBulk(coverage)?.densityKgM3 ?? null;
-  const density = bulk ? `bulk density ${Math.round(bulk.value).toLocaleString('en-US')} kg/m³` : 'no measured density';
-  const lead = coverage.state === 'notYetModelled' ? 'Not yet modelled here' : 'Interior unresolved';
-  return `${lead} · ${density}`;
-}
-
-/** The legend row for the unresolved whole. */
-function unresolvedComposition(coverage: Coverage): string {
-  return coverage.state === 'notYetModelled' ? 'Not yet modelled here' : 'Not measured';
-}
-
 function orbitPose(azimuthDeg: number, elevationDeg: number, distance: number, out: THREE.Vector3): THREE.Vector3 {
   const azimuth = azimuthDeg * DEG2RAD;
   const elevation = elevationDeg * DEG2RAD;
@@ -241,14 +221,9 @@ export class InteriorMode {
   private readonly cameraDirection = new THREE.Vector3();
   private utcMs = Date.now();
 
-  // The cut.
+  // The cut: the frame the scene reads and the tween that moves its opening.
   private readonly frame = createCutFrame();
-  private angleDeg = 0;
-  private angleFromDeg = 0;
-  private angleToDeg = CUT_VIEW_ANGLE_DEG.cutaway;
-  private angleElapsedS = CUT_ANIMATION_S;
-  /** The opening the viewer chose: what a swap reopens to, whatever a close in flight targets. */
-  private chosenDeg = CUT_VIEW_ANGLE_DEG.cutaway;
+  private readonly cut = createCutTween(CUT_VIEW_ANGLE_DEG.cutaway);
 
   // The Readable scale.
   private readable = true;
@@ -270,8 +245,7 @@ export class InteriorMode {
   private hoverIndex = -1;
   private legendHoverIndex = -1;
   private pinnedIndex = -1;
-  private emphasisIndex = -1;
-  private emphasisAmount = 0;
+  private readonly emphasis = createEmphasisState();
   /** The claim index open in the popover, −1 when closed. */
   private evidenceClaim = -1;
   private tapStart: { x: number; y: number; t: number } | null = null;
@@ -389,7 +363,7 @@ export class InteriorMode {
     this.interiorScene.setMotionScale(this.reducedMotion.matches ? 0 : 1);
     // Open closed, then swing to the default view once the map is on: the
     // reveal. Phones open on Section, the view that reads at a small size.
-    this.angleDeg = 0;
+    this.cut.angleDeg = 0;
     this.setTargetAngle(0, false, false);
     await this.commitBody(bodyId);
     if (!this.active) return;
@@ -454,8 +428,9 @@ export class InteriorMode {
     // The cut frame follows the camera continuously (plan §5): hinge = the
     // camera's own up, so nothing snaps through the poles.
     tmpLocalUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
-    computeCutFrame(this.camera.position, tmpLocalUp, ORIGIN, openingAngleDegToRad(this.angleDeg), this.frame);
-    yawCutFrame(this.frame, WEDGE_YAW_DEG * DEG2RAD);
+    computeCutFrame(this.camera.position, tmpLocalUp, ORIGIN, openingAngleDegToRad(this.cut.angleDeg), this.frame);
+    // The wedge yaw tapers to none at Section, so the disc is face-on there.
+    yawCutFrame(this.frame, wedgeYawForOpening(this.frame.openingAngle, WEDGE_YAW_DEG * DEG2RAD));
     this.interiorScene.applyCut(this.frame);
     this.interiorScene.updateForCamera(this.camera);
 
@@ -472,7 +447,7 @@ export class InteriorMode {
 
   /** The depth ruler along the near face, through the remap; hidden on phones and while the cut is closed. */
   private renderRuler(): void {
-    if (isPhoneViewport() || !this.remap || this.angleDeg <= 0.5 || this.loading) {
+    if (isPhoneViewport() || !this.remap || this.cut.angleDeg <= 0.5 || this.loading) {
       this.ruler.hide();
       return;
     }
@@ -490,23 +465,21 @@ export class InteriorMode {
     // The camera's matrices are current from the last render; the projection
     // is a frame behind at worst, which the eye cannot see.
     this.camera.updateMatrixWorld();
-    const opacity = Math.min(1, this.angleDeg / RULER_FULL_DEG);
+    const opacity = Math.min(1, this.cut.angleDeg / RULER_FULL_DEG);
     this.ruler.render(rulerLayout(input), this.camera, window.innerWidth, window.innerHeight, opacity);
   }
 
   private advanceCut(dt: number): void {
-    if (this.angleElapsedS >= CUT_ANIMATION_S) {
-      this.angleDeg = this.angleToDeg;
+    if (cutTweenSettled(this.cut)) {
+      advanceCutTween(this.cut, dt);
       this.settleCut();
       return;
     }
-    this.angleElapsedS = Math.min(CUT_ANIMATION_S, this.angleElapsedS + dt);
-    const t = easeInOutCubic(this.angleElapsedS / CUT_ANIMATION_S);
-    this.angleDeg = this.angleFromDeg + (this.angleToDeg - this.angleFromDeg) * t;
+    const progress = advanceCutTween(this.cut, dt);
     // The reveal's ghost: the removed skin lingers, translucent, and clears as the cut opens.
-    if (this.revealing) this.interiorScene.setGhost(GHOST_OPACITY * (1 - t));
+    if (this.revealing) this.interiorScene.setGhost(GHOST_OPACITY * (1 - progress));
     this.syncAngleReadout();
-    if (this.angleElapsedS >= CUT_ANIMATION_S) this.settleCut();
+    if (cutTweenSettled(this.cut)) this.settleCut();
   }
 
   /** The cut animation has landed: the ghost clears and anyone waiting on the close proceeds. */
@@ -524,16 +497,12 @@ export class InteriorMode {
 
   /** Resolves on the frame the cut animation lands (at once when it is not moving). */
   private cutSettled(): Promise<void> {
-    if (this.angleElapsedS >= CUT_ANIMATION_S) return Promise.resolve();
+    if (cutTweenSettled(this.cut)) return Promise.resolve();
     return new Promise((resolve) => this.cutSettledResolvers.push(resolve));
   }
 
   private advanceScale(dt: number): void {
-    if (this.scaleBlend === this.scaleBlendTarget) return;
-    const step = dt / SCALE_BLEND_S;
-    this.scaleBlend = this.scaleBlend < this.scaleBlendTarget
-      ? Math.min(this.scaleBlendTarget, this.scaleBlend + step)
-      : Math.max(this.scaleBlendTarget, this.scaleBlend - step);
+    this.scaleBlend = stepToward(this.scaleBlend, this.scaleBlendTarget, dt / SCALE_BLEND_S);
   }
 
   /**
@@ -550,57 +519,18 @@ export class InteriorMode {
     }
     this.remapPx = this.projectedPx;
     this.remapBlend = this.scaleBlend;
-    const fractions = outerFractionsInsideOut(this.drawn);
-    const remap = readableRemap(fractions, minDisplayFraction(READABLE_MIN_PX, this.projectedPx), this.scaleBlend);
+    const remap = readableRemap(outerFractionsInsideOut(this.drawn), minDisplayFraction(READABLE_MIN_PX, this.projectedPx), this.scaleBlend);
     this.remap = remap;
-    const artInsideOut = this.regionArt();
-    const reference = this.drawn.referenceRadiusKm;
-    const looks: SectionRegionLook[] = this.drawn.regionsInsideOut.map((region, index) => {
-      // A physical transition's width, through the same remap as its boundary.
-      const halfPhysical = region.transitionKm / (2 * reference);
-      const blendDisplay = halfPhysical > 0
-        ? (toDisplayFraction(remap, fractions[index] + halfPhysical) - toDisplayFraction(remap, fractions[index] - halfPhysical)) / 2
-        : 0;
-      // Where the boundary might be, through the same remap: an interval or
-      // a spread of models; a qualitative note has no width to draw.
-      const location = region.region?.boundary.knowledge.location ?? null;
-      const band = location && (location.kind === 'interval' || location.kind === 'modelSpread')
-        ? { low: toDisplayFraction(remap, Math.max(0, location.low / reference)), high: toDisplayFraction(remap, Math.min(1, location.high / reference)) }
-        : null;
-      return {
-        outerDisplay: toDisplayFraction(remap, fractions[index]),
-        blendDisplay,
-        art: artInsideOut[index],
-        // An unknown temperature is cold, never a guessed glow; Temperature mode hatches it.
-        heat: incandescence(region.temperatureK ?? 0),
-        temperature: region.region ? temperatureEndpoints(region.region.temperatureK) : null,
-        bandDisplay: band && band.high > band.low ? band : null,
-      };
-    });
+    const looks = regionLooks(this.drawn, remap, regionArtInsideOut(this.drawn), this.temperatureRange);
     this.interiorScene.applyRegions(looks);
     this.interiorScene.setTemperatureScale(this.temperatureRange);
     this.pickLayout.outerDisplay = looks.map((look) => look.outerDisplay);
   }
 
-  /** Each region's look, inside-out like the drawn model, with the family
-   *  depth tint applied — the one place the legend and the faces get their colours. */
-  private regionArt(): ArtParams[] {
-    const reference = this.drawn.referenceRadiusKm;
-    return this.drawn.regionsInsideOut.map((region) => {
-      const depthMidFraction = 1 - (region.outerRadiusKm + region.innerRadiusKm) / (2 * reference);
-      return depthTint(artParamsFor(region.family, region.phase), region.family, depthMidFraction);
-    });
-  }
-
   // ---- the cut and the scale ----------------------------------------------
 
   private setTargetAngle(deg: number, animate: boolean, remember = true): void {
-    const target = THREE.MathUtils.clamp(deg, 0, MAX_OPENING_ANGLE_DEG);
-    if (remember) this.chosenDeg = target;
-    this.angleFromDeg = this.angleDeg;
-    this.angleToDeg = target;
-    this.angleElapsedS = animate ? 0 : CUT_ANIMATION_S;
-    if (!animate) this.angleDeg = target;
+    setCutTarget(this.cut, deg, animate, remember);
     this.syncViewButtons();
     this.syncAngleReadout();
   }
@@ -639,7 +569,7 @@ export class InteriorMode {
     const stale = () => generation !== this.generation;
     const animate = !this.reducedMotion.matches;
     const swap = this.body !== null && this.interiorScene.hasSkin();
-    const reopenDeg = this.chosenDeg;
+    const reopenDeg = this.cut.chosenDeg;
     this.loading = true;
     if (swap) {
       this.revealing = false;
@@ -771,7 +701,7 @@ export class InteriorMode {
       legend.replaceChildren();
       // Rows fade in outside-in on a reveal; any other re-render is instant.
       legend.classList.toggle('reveal', reveal && !this.reducedMotion.matches);
-      const art = this.regionArt();
+      const art = regionArtInsideOut(this.drawn);
       const scores = this.drawn.regionsInsideOut.map((_, index) => claimScores({ drawn: this.drawn, index, coverage: this.coverage }));
       // The legend reads outside-in, the way a reader meets the layers.
       for (let index = this.drawn.regionsInsideOut.length - 1; index >= 0; index--) {
@@ -957,32 +887,16 @@ export class InteriorMode {
     this.legendHoverIndex = -1;
     this.clearHover();
     this.renderPinned();
-    this.emphasisIndex = -1;
-    this.emphasisAmount = 0;
+    this.emphasis.index = -1;
+    this.emphasis.amount = 0;
     this.interiorScene.setEmphasis(-1, 0);
   }
 
-  /** What the faces emphasise: a hovered legend row, else the hovered region, else the pinned one. */
-  private emphasisTarget(): number {
-    if (this.legendHoverIndex >= 0) return this.legendHoverIndex;
-    if (this.hoverIndex >= 0) return this.hoverIndex;
-    return this.pinnedIndex;
-  }
-
   private advanceEmphasis(dt: number): void {
-    const target = this.emphasisTarget();
+    const target = emphasisTarget(this.legendHoverIndex, this.hoverIndex, this.pinnedIndex);
     const step = this.reducedMotion.matches ? 1 : dt / EMPHASIS_S;
-    if (target >= 0) {
-      if (target !== this.emphasisIndex) {
-        this.emphasisIndex = target;
-        this.emphasisAmount = Math.min(this.emphasisAmount, 0.5); // a switch re-eases part way
-      }
-      this.emphasisAmount = Math.min(1, this.emphasisAmount + step);
-    } else {
-      this.emphasisAmount = Math.max(0, this.emphasisAmount - step);
-      if (this.emphasisAmount === 0) this.emphasisIndex = -1;
-    }
-    this.interiorScene.setEmphasis(this.emphasisIndex, this.emphasisAmount);
+    advanceEmphasis(this.emphasis, target, step);
+    this.interiorScene.setEmphasis(this.emphasis.index, this.emphasis.amount);
   }
 
   /** The legend's rows follow the 3-D state: hot for the hovered region, pinned for the pinned one. */
@@ -1082,14 +996,14 @@ export class InteriorMode {
     const min = document.getElementById('interior-scale-min');
     const max = document.getElementById('interior-scale-max');
     const mid = scale.querySelector('.interior-scale-mid');
-    if (min) min.textContent = `${formatKm(range.minK)} K`;
-    if (max) max.textContent = `${formatKm(range.maxK)} K`;
+    if (min) min.textContent = `${formatNumber(range.minK)} K`;
+    if (max) max.textContent = `${formatNumber(range.maxK)} K`;
     if (mid) mid.textContent = range.log ? 'temperature, log scale' : 'temperature';
     scale.style.display = '';
   }
 
   private syncViewButtons(): void {
-    const current = cutViewForAngle(this.angleToDeg);
+    const current = cutViewForAngle(this.cut.toDeg);
     for (const view of CUT_VIEWS) {
       document.getElementById(`interior-view-${view}`)?.classList.toggle('on', view === current);
     }
@@ -1097,9 +1011,9 @@ export class InteriorMode {
 
   private syncAngleReadout(): void {
     const slider = document.getElementById('interior-angle') as HTMLInputElement | null;
-    if (slider && document.activeElement !== slider) slider.value = String(Math.round(this.angleDeg));
+    if (slider && document.activeElement !== slider) slider.value = String(Math.round(this.cut.angleDeg));
     const readout = document.getElementById('interior-angle-value');
-    if (readout) readout.textContent = `${Math.round(this.angleDeg)}°`;
+    if (readout) readout.textContent = `${Math.round(this.cut.angleDeg)}°`;
   }
 
   /** The Esc cascade: the popover, the picker, the pinned inspector, then the tool itself. */
@@ -1232,7 +1146,7 @@ export class InteriorMode {
 
   /** True only once the map is applied and the cut has settled. */
   devReady(): boolean {
-    return this.active && !this.loading && !this.interiorScene.isFading() && this.angleElapsedS >= CUT_ANIMATION_S && this.scaleBlend === this.scaleBlendTarget;
+    return this.active && !this.loading && !this.interiorScene.isFading() && cutTweenSettled(this.cut) && this.scaleBlend === this.scaleBlendTarget;
   }
 
   /** Draw a named model of the current body (a competing alternative, or a
@@ -1307,9 +1221,9 @@ export class InteriorMode {
       displayMode: this.displayMode,
       temperatureRange: this.temperatureRange,
       rings: this.interiorScene.hasRings() ? this.ringsOn : null,
-      view: cutViewForAngle(this.angleDeg),
-      openingAngleDeg: this.angleDeg,
-      targetAngleDeg: this.angleToDeg,
+      view: cutViewForAngle(this.cut.angleDeg),
+      openingAngleDeg: this.cut.angleDeg,
+      targetAngleDeg: this.cut.toDeg,
       readable: this.readable,
       scaleBlend: this.scaleBlend,
       projectedRadiusPx: this.projectedPx,
@@ -1327,7 +1241,7 @@ export class InteriorMode {
       hover: regionsInsideOut[this.hoverIndex]?.key ?? null,
       pinned: regionsInsideOut[this.pinnedIndex]?.key ?? null,
       evidence: regionsInsideOut[this.pinnedIndex]?.region?.claims[this.evidenceClaim]?.kind ?? null,
-      emphasis: { region: regionsInsideOut[this.emphasisIndex]?.key ?? null, amount: this.emphasisAmount },
+      emphasis: { region: regionsInsideOut[this.emphasis.index]?.key ?? null, amount: this.emphasis.amount },
     };
   }
 

@@ -8452,6 +8452,14 @@ export class PlanetariumMode {
     return this.sunExposure;
   }
 
+  /** DEV A/B (`__moon.setBeltVisible`): hold the asteroid belt out of every
+   *  frame. The belt's dots are three's default square point sprite, so they
+   *  are the first suspect for speckle along the ecliptic. */
+  private devBeltHidden = false;
+  devSetBeltVisible(visible: boolean): void {
+    if (import.meta.env.DEV) this.devBeltHidden = !visible;
+  }
+
   private updateOrbitLineVisibility() {
     if (!this.solarSystem) return;
     // Surface view shows the sky, not the scene furniture — a planet's orbit
@@ -8462,7 +8470,12 @@ export class PlanetariumMode {
     // photometric (a real belt asteroid sits far below naked-eye), so on the
     // eclipse-dimmed surface sky they were the only "stars" that survived the
     // exposure — a false string of dots along the ecliptic.
-    this.solarSystem.asteroidBelt.visible = this.landedView !== 'surface';
+    // ...and the dev A/B below hides it wherever it is drawn, which is how a
+    // "what is that speckle" question is answered with a picture rather than
+    // an argument: this line runs every frame, so a plain visible = false
+    // from the bridge would be overwritten by the next one.
+    this.solarSystem.asteroidBelt.visible = this.landedView !== 'surface'
+      && !(import.meta.env.DEV && this.devBeltHidden);
     const playerSunDistAU = this.player.getDistanceFromSun();
     // Scene coords: the Sun sits at -player (floating origin), both call sites
     // run after applyFloatingOrigin and the camera pose, so this is fresh.

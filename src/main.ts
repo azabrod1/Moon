@@ -1222,6 +1222,7 @@ function installDevHooks() {
     setMapLayers: (partial: Record<string, boolean> | null) =>
       planetariumMode?.devSetMapLayers(partial as never) ?? null,
     setChrome: (visible: boolean) => planetariumMode?.devSetChrome(visible),
+    setBeltVisible: (visible: boolean) => planetariumMode?.devSetBeltVisible(visible),
     setFov: (deg: number) => planetariumMode?.devSetFov(deg),
     setTimeMs: (utcMs: number) => planetariumMode?.devSetTimeMs(utcMs),
     getTimeMs: () => planetariumMode?.getCurrentUtcMs() ?? 0,

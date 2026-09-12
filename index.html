@@ -4690,6 +4690,27 @@
         </div>
       </div>
 
+      <!-- Which world to look inside: the Look-inside row asks before the tool
+           is entered. The shared BodyPicker's third instance (the compare
+           studio's and the tool's own are the others) — full-screen
+           click-catcher, one modal at a time. -->
+      <div id="tools-inside-picker" class="body-picker">
+        <div class="body-picker-card pn pn-high">
+          <div class="body-picker-head">
+            <div class="body-picker-title" id="tools-inside-picker-title"></div>
+            <button class="pk-x" id="tools-inside-picker-close" aria-label="Close">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
+            </button>
+          </div>
+          <div class="pk-search">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="9" cy="9" r="5.5"></circle><path d="M13.5 13.5 L17 17" stroke-linecap="round"></path></svg>
+            <input id="tools-inside-picker-search" type="text" placeholder="Search bodies" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="pk-list" id="tools-inside-picker-list"></div>
+          <div class="pk-empty" id="tools-inside-picker-empty">No bodies match.</div>
+        </div>
+      </div>
+
       <!-- System map: a full-screen schematic of the solar system (z 27, the
            deck's slot). The layer passes pointers through to the canvas so
            empty-space drags orbit/zoom the map; the HUD children capture their

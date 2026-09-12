@@ -1291,6 +1291,7 @@ function installDevHooks() {
     // Planetarium's real entry gate like compareOpen; the rest delegate to the
     // live instance (null before first entry). interiorReady is true only once
     // the map is applied and the cut has settled, so a capture waits on it.
+    toolsInsideOpen: () => planetariumMode?.devToolsInsideOpen() ?? false,
     interiorOpen: (bodyId = 'Earth') => planetariumMode?.devEnterInterior(bodyId) ?? false,
     interiorExit: () => interiorMode?.devExit(),
     interiorPick: (bodyId: string) => interiorMode?.devPick(bodyId) ?? false,

@@ -19,17 +19,28 @@
  * the camera so the section faces are always lit from a three-quarter,
  * whatever the orbit. Studio light with real pose, per plan §5.
  *
+ * The skin is the planetarium's own, not a plainer copy of it: the body's
+ * colour map through the same surface shader, and with it whatever detail the
+ * planetarium gives that body — Earth's cloud deck on its own shell, its bump
+ * relief, and the water mask its ocean glints through; a measured elevation
+ * normal where one exists (Mars). They are fetched beside the colour map, cut
+ * by the same frame, posed and hidden with the skin and freed with it. Earth's
+ * night lights are the one thing deliberately left out: the studio's fill
+ * lights the far side, so there is no night here for them to show in.
+ *
  * The mode owns the camera, the OrbitControls, the DOM and the presentation
  * clock; this owns the scene content and its GPU resources. Nothing here
  * reaches into the Planetarium's state.
  *
- * Texture ownership is explicit: prepareBody starts the map's fetch, runs the
- * studio's prefilter while it is in flight, and builds the skin off the mesh
- * under the caller's staleness guard (a prefilter that throws adopts the fetch
- * it overlapped, so nothing is left unowned); presentBody
- * swaps it in and only then disposes the old one, and discardPrepared frees
- * a prepared skin that is never presented (its late slot included), so no
- * frame samples freed memory and nothing arriving late is held for ever.
+ * Texture ownership is explicit: prepareBody starts the colour map's fetch and
+ * every other map that body wears with it, runs the studio's prefilter while
+ * they are in flight, and builds the skin (and its cloud deck) off the mesh
+ * under the caller's staleness guard — a prefilter that throws adopts the
+ * fetches it overlapped, so nothing is left unowned; presentBody swaps them in
+ * and only then disposes the old ones, and discardPrepared frees a prepared
+ * skin that is never presented (its detail maps, its deck and its late slots
+ * included), so no frame samples freed memory and nothing arriving late is
+ * held for ever.
  * Everything that can throw for a body — the shader splices, a moon's
  * procedural map — happens in prepareBody or before the skin swap, so a
  * failure leaves the previous body whole. The programs the reveal draws are
@@ -49,10 +60,13 @@ import {
   moonArchetype,
   createAtmosphereMaterial,
   ATMOSPHERES,
+  MOON_NORMAL_KEYS,
+  PLANET_NORMAL_KEYS,
   type LateTextureSlot,
 } from '../planetarium/PlanetFactory';
 import { RING_CONFIGS, createPlanetRings, type RingShadingFx } from '../planetarium/planets/rings';
-import { augmentSurfaceMaterial, type SurfaceShadingFx, type SurfaceArchetype } from '../planetarium/world/surfaceShading';
+import { augmentSurfaceMaterial, setSurfaceWaterGloss, type SurfaceShadingFx, type SurfaceArchetype } from '../planetarium/world/surfaceShading';
+import { CLOUD_NORMAL_SCALE, cloudShellScale } from '../planetarium/world/cloudDeck';
 import { createPlanetariumStarfield, setStarfieldPixelRatio } from '../planetarium/world/starfield';
 import { applyLensShaderUniforms, type LensShaderUniforms } from '../shared/three/lensShader';
 import { captureDeviceCaps } from '../planetarium/world/texturePolicy';
@@ -83,6 +97,13 @@ import { MAX_REGIONS } from './rendering/sectionMaterial';
 
 /** The body's radius in studio units; every framing number is relative to it. */
 export const BODY_RADIUS = 1;
+/** Earth's height field, in body radii — the planetarium's own 0.02 of the body. */
+const SKIN_BUMP_SCALE = 0.02;
+/** How deep a measured relief is drawn, by its map key. The planetarium halves
+ *  Mars's MOLA — rainbow-decoded, noisy, and harsh on crater rims at full
+ *  strength — and leaves the Moon's LOLA at its authored depth; a section's
+ *  skin is the same surface, so it is drawn at the same depth. */
+const MEASURED_NORMAL_SCALE: Record<string, number> = { marsNormal: 0.5 };
 /** Each region inward opens this fraction of the angle less than the one above. */
 export const TERRACE_STEP = 0.2;
 
@@ -179,6 +200,73 @@ export interface PreparedSkin {
   late: LateTextureSlot | null;
   /** The surface shading's uniforms, bound to this material; fed the key direction once it is presented. */
   fx: SurfaceShadingFx | null;
+  /** Every map loaded for the skin beside its colour — relief, the water mask —
+   *  owned by this skin and freed with it, bound or not: a stand-in that
+   *  arrived instead of a real map is not bound and is still this skin's. */
+  detail: readonly THREE.Texture[];
+  /** Earth's cloud deck, built and waiting for its shell. Null for every other body. */
+  clouds: PreparedClouds | null;
+}
+
+/** A cloud deck, built but not yet hung on its shell. */
+export interface PreparedClouds {
+  material: THREE.MeshStandardMaterial;
+  /** The deck's colour map (replaced if a late arrival lands) and its relief. */
+  color: THREE.Texture;
+  normal: THREE.Texture | null;
+  /** The shell's radius in body radii — the real cloud top over the real body. */
+  shellScale: number;
+  /** Where the real colour map lands when the loader handed over its stand-in. */
+  late: LateTextureSlot;
+  /** True while the deck wears that stand-in: a flat white sheet read as
+   *  coverage would wrap the body in an opaque shell, so the deck stays off
+   *  until the map is real. */
+  awaitingMap: boolean;
+}
+
+/** What a body wears beside its colour map, in flight. One shape for every
+ *  body — null-heavy on purpose, so there is one place that frees it. */
+interface PreparedDetail {
+  /** Relief for the skin: a measured normal (Mars) or a height field (Earth). */
+  normal: THREE.Texture | null;
+  bump: THREE.Texture | null;
+  /** The ocean's gloss mask. */
+  roughness: THREE.Texture | null;
+  /** The cloud deck's colour and relief, the shell they hang on, and the slot
+   *  a colour map that missed the loader's timeout arrives through. */
+  cloudColor: THREE.Texture | null;
+  cloudNormal: THREE.Texture | null;
+  cloudLate: LateTextureSlot | null;
+  cloudShellScale: number;
+  /** How deep the measured relief is drawn (MEASURED_NORMAL_SCALE). */
+  normalScale: number;
+}
+
+/** Free a body's detail maps: a prepare that went stale, or a prefilter that
+ *  threw over fetches already in flight. */
+function discardDetail(detail: PreparedDetail): void {
+  detail.normal?.dispose();
+  detail.bump?.dispose();
+  detail.roughness?.dispose();
+  detail.cloudColor?.dispose();
+  detail.cloudNormal?.dispose();
+  detail.cloudLate?.connect((arrival) => arrival.dispose());
+}
+
+/** Free a cloud deck that was built and never hung (or never will be again). */
+function discardClouds(clouds: PreparedClouds): void {
+  clouds.material.dispose();
+  clouds.color.dispose();
+  clouds.normal?.dispose();
+  clouds.late.connect((arrival) => arrival.dispose());
+}
+
+/** Whether a map is the real thing rather than the loader's stand-in. The flat
+ *  grey a failed fetch leaves behind is not a water mask (its gloss would put
+ *  an ocean's sheen on the whole body) and not a relief (as a tangent normal it
+ *  is the zero vector); a flat white one is not a cloud deck. */
+function isRealMap(texture: THREE.Texture | null | undefined): texture is THREE.Texture {
+  return !!texture && texture.userData?.proceduralFallback !== true;
 }
 
 const tmpOffset = new THREE.Vector3();
@@ -208,6 +296,13 @@ export class InteriorScene {
   private sunMaterial: THREE.ShaderMaterial | null = null;
   private skinFx: SurfaceShadingFx | null = null;
   private skinTexture: THREE.Texture | null = null;
+  /** The maps the live skin wears beside its colour, freed when it is. */
+  private skinDetail: readonly THREE.Texture[] = [];
+  /** The cloud deck on the body right now (Earth alone), and its maps. */
+  private readonly cloudMesh: THREE.Mesh;
+  private cloudMaterial: THREE.MeshStandardMaterial | null = null;
+  private cloudColor: THREE.Texture | null = null;
+  private cloudNormal: THREE.Texture | null = null;
   /** The skin wears the loader's procedural fallback and the real map is still to come through the late slot. */
   private lateMapPending = false;
   /** What a mesh wears when it wears nothing: one material, never disposed until the scene is. */
@@ -290,6 +385,14 @@ export class InteriorScene {
     this.skinMesh.name = 'InteriorSkin';
     this.skinMesh.visible = false; // nothing half-loaded is ever shown
     this.group.add(this.skinMesh);
+    // Earth's cloud deck: its own shell a cloud top above the skin, wearing
+    // the same cut. Scaled per body when it is dressed; transparent by nature,
+    // so it keeps its own edge treatment rather than the skin's (setEdgeMode).
+    this.cloudMesh = new THREE.Mesh(this.skinGeometry, this.placeholderMaterial);
+    this.cloudMesh.name = 'InteriorClouds';
+    this.cloudMesh.visible = false;
+    this.cloudMesh.renderOrder = 1;
+    this.group.add(this.cloudMesh);
     // The ghost keeps only the wedge (the inverted cut) and draws last, blended over the faces.
     this.ghostCut = {
       uCutView: this.cutUniforms.uCutView,
@@ -353,7 +456,11 @@ export class InteriorScene {
     this.group.visible = on;
   }
 
-  /** Which edge the cut feather becomes on this render path (plan §5). */
+  /** Which edge the cut feather becomes on this render path (plan §5). The
+   *  cloud deck is not in this: it is transparent on every path by nature (a
+   *  deck writes no depth and blends its own coverage), and that is exactly
+   *  what carries the cut's feathered alpha, on the same wedge plane as the
+   *  skin's edge. Given the skin's treatment it would turn opaque. */
   setEdgeMode(multisampled: boolean): void {
     this.multisampled = multisampled;
     if (this.skinMaterial) configureSkinCutEdge(this.skinMaterial, multisampled);
@@ -385,24 +492,27 @@ export class InteriorScene {
     }
     if (body.sun) {
       this.ensureEnvironment();
-      return { body, material: this.buildPhotosphereMaterial(), texture: null, late: null, fx: null };
+      return { body, material: this.buildPhotosphereMaterial(), texture: null, late: null, fx: null, detail: [], clouds: null };
     }
     const late = createLateTextureSlot();
     const pendingTexture = this.loadBodyColor(body, late);
+    const pendingDetail = this.loadBodyDetail(body);
     try {
       this.ensureEnvironment();
     } catch (error) {
-      // The fetch is already out: adopt it, so a prefilter that throws cannot
-      // leave a texture nobody owns (or an unhandled rejection) behind it. The
-      // throw still reaches the caller, which leaves the previous body whole.
+      // The fetches are already out: adopt them, so a prefilter that throws
+      // cannot leave a texture nobody owns (or an unhandled rejection) behind
+      // it. The throw still reaches the caller, which leaves the previous body whole.
       void pendingTexture.then((texture) => texture.dispose(), () => {});
       late.connect((arrival) => arrival.dispose());
+      void pendingDetail.then(discardDetail, () => {});
       throw error;
     }
-    const texture = await pendingTexture;
+    const [texture, detail] = await Promise.all([pendingTexture, pendingDetail]);
     if (isStale()) {
       texture.dispose();
       late.connect((arrival) => arrival.dispose());
+      discardDetail(detail);
       return null;
     }
     const archetype: SurfaceArchetype = body.planet
@@ -410,16 +520,89 @@ export class InteriorScene {
       : body.moon
         ? moonArchetype(body.moon)
         : 'airless';
-    const { material, fx } = this.buildSkinMaterial(texture, archetype);
-    return { body, material, texture, late, fx };
+    const { material, fx } = this.buildSkinMaterial(texture, archetype, detail);
+    const skinDetail = [detail.normal, detail.bump, detail.roughness].filter((map): map is THREE.Texture => map !== null);
+    return { body, material, texture, late, fx, detail: skinDetail, clouds: this.buildCloudDeck(detail, fx) };
   }
 
-  /** Free a prepared skin that will never be presented: its material, its
-   *  map, and whatever its late slot delivers afterwards. */
+  /**
+   * The maps a body wears beside its colour, started with it and awaited
+   * together: Earth's cloud deck, its bump relief and the water mask its ocean
+   * glints through — the planetarium's own set, which is what its Earth has
+   * always had and the tool's had not — plus a measured elevation normal for
+   * any body that has one (Mars's MOLA, the Moon's LOLA). Nothing else in the
+   * catalog has detail maps.
+   *
+   * Only the deck's colour map gets a late slot. It is the one whose absence
+   * shows: no deck at all, or the loader's flat white sheet wrapped round the
+   * body. A relief or a gloss mask that misses the timeout stands in as flat
+   * grey, which is read here as "no relief, no gloss" and never bound.
+   */
+  private async loadBodyDetail(body: InteriorBody): Promise<PreparedDetail> {
+    const detail: PreparedDetail = {
+      normal: null, bump: null, roughness: null,
+      cloudColor: null, cloudNormal: null, cloudLate: null, cloudShellScale: 1, normalScale: 1,
+    };
+    const planet = body.planet;
+    const pending: Promise<void>[] = [];
+    const normalKey = planet ? PLANET_NORMAL_KEYS[planet.name] : body.moon ? MOON_NORMAL_KEYS[body.moon.name] : undefined;
+    if (normalKey) {
+      detail.normalScale = MEASURED_NORMAL_SCALE[normalKey] ?? 1;
+      pending.push(loadTexture(normalKey, '2k', 'data').then((map) => { detail.normal = map; }));
+    }
+    if (planet?.name === 'Earth') {
+      detail.cloudLate = createLateTextureSlot();
+      detail.cloudShellScale = cloudShellScale(planet.radiusKm);
+      const cloudLate = detail.cloudLate;
+      pending.push(loadTexture('earthBump', '2k', 'mask').then((map) => { detail.bump = map; }));
+      pending.push(loadTexture('earthRoughness', '2k', 'mask').then((map) => { detail.roughness = map; }));
+      pending.push(loadTexture('earthClouds', '2k', 'color', { late: cloudLate }).then((map) => { detail.cloudColor = map; }));
+      pending.push(loadTexture('earthCloudsNormal', '2k', 'data').then((map) => { detail.cloudNormal = map; }));
+    }
+    await Promise.all(pending);
+    return detail;
+  }
+
+  /**
+   * Earth's cloud deck: the planetarium's material on a shell of its own, one
+   * real cloud top above the skin. Its alpha is the coverage its map states,
+   * read in the surface augmentation (world/cloudDeck), so clear sky ends up
+   * with no deck on it; it shares the skin's shading uniforms, so one key
+   * direction lights both; and it takes the skin's cut, so the wedge removes
+   * the air over the section as well as the ground. Built off the mesh like
+   * the skin, so a stale load frees it with no frame the wiser.
+   */
+  private buildCloudDeck(detail: PreparedDetail, fx: SurfaceShadingFx): PreparedClouds | null {
+    const color = detail.cloudColor;
+    const late = detail.cloudLate;
+    if (!color || !late) return null;
+    // A relief that came back as the loader's flat grey is the zero vector as a
+    // tangent normal: it would unlight the deck rather than leave it alone.
+    const normal = isRealMap(detail.cloudNormal) ? detail.cloudNormal : null;
+    if (detail.cloudNormal && detail.cloudNormal !== normal) detail.cloudNormal.dispose();
+    const material = new THREE.MeshStandardMaterial({
+      map: color,
+      transparent: true,
+      opacity: 1,
+      depthWrite: false,
+      roughness: 1,
+      normalMap: normal,
+      normalScale: new THREE.Vector2(CLOUD_NORMAL_SCALE, CLOUD_NORMAL_SCALE),
+    });
+    augmentSurfaceMaterial(material, 'cloud', undefined, 0, fx);
+    applySkinCut(material, this.cutUniforms);
+    return { material, color, normal, shellScale: detail.cloudShellScale, late, awaitingMap: !isRealMap(color) };
+  }
+
+  /** Free a prepared skin that will never be presented: its material, every
+   *  map loaded for it (its colour, its detail, its cloud deck's), and
+   *  whatever its late slots deliver afterwards. */
   discardPrepared(prepared: PreparedSkin): void {
     prepared.material.dispose();
     prepared.texture?.dispose();
     prepared.late?.connect((arrival) => arrival.dispose());
+    for (const map of prepared.detail) map.dispose();
+    if (prepared.clouds) discardClouds(prepared.clouds);
   }
 
   /** The body's context: its air shell if it has one, its rings if it has them. */
@@ -508,9 +691,15 @@ export class InteriorScene {
    * skin already on, the outgoing map is blended out inside the incoming
    * skin's shader over that long (resolved by advance()); otherwise the swap
    * is immediate. Either way nothing half-loaded shows: the map is already
-   * here. The ghost takes the same map, for the reveal that follows. The
+   * here. The ghost takes the same map, for the reveal that follows — the
+   * skin's alone; the cloud deck's wedge simply goes with the cut. The
    * body's context (its air, its rings) is dressed first: it is the one step
    * here that can throw, and a throw then leaves the previous skin on.
+   *
+   * The deck itself is not in the cross-fade: only a map can fade into a map,
+   * and the incoming deck's shell has no outgoing map of its own to blend
+   * from. It turns over with the skin, behind the closed cut the swap
+   * ceremony holds.
    */
   presentBody(prepared: PreparedSkin, fadeSeconds: number): void {
     const { material, texture, late } = prepared;
@@ -527,6 +716,11 @@ export class InteriorScene {
     this.skinTexture = texture;
     this.skinMesh.visible = true;
     previousMaterial?.dispose();
+    // The outgoing skin's detail maps go with its material (nothing draws it
+    // again); only its colour is held back, and only while the fade reads it.
+    this.releaseSkinDetail();
+    this.skinDetail = prepared.detail;
+    this.dressClouds(prepared.clouds);
     if (fading) {
       this.fadeOutgoing = previousTexture;
       this.fadeUniforms.uSkinFadeMap.value = previousTexture!;
@@ -564,6 +758,53 @@ export class InteriorScene {
       this.lateMapPending = false;
       if (fallback && fallback !== arrival) fallback.dispose();
     });
+  }
+
+  /** Hang a prepared cloud deck on its shell and take the last body's down.
+   *  A deck still wearing the loader's stand-in stays hidden until its real
+   *  map lands through the late slot — a flat white sheet read as coverage is
+   *  an opaque shell around the body, which is worse than no clouds. */
+  private dressClouds(clouds: PreparedClouds | null): void {
+    this.releaseClouds();
+    if (!clouds) return;
+    this.cloudMaterial = clouds.material;
+    this.cloudColor = clouds.color;
+    this.cloudNormal = clouds.normal;
+    this.cloudMesh.material = clouds.material;
+    this.cloudMesh.scale.setScalar(clouds.shellScale);
+    this.cloudMesh.quaternion.copy(this.skinMesh.quaternion);
+    this.cloudMesh.visible = !clouds.awaitingMap;
+    clouds.late.connect((arrival) => {
+      // Only onto the deck this load built: a later body owns the shell otherwise.
+      if (this.cloudMaterial !== clouds.material) {
+        arrival.dispose();
+        return;
+      }
+      const standIn = this.cloudColor;
+      clouds.material.map = arrival;
+      clouds.material.needsUpdate = true;
+      this.cloudColor = arrival;
+      this.cloudMesh.visible = this.skinMesh.visible;
+      if (standIn && standIn !== arrival) standIn.dispose();
+    });
+  }
+
+  /** Take the deck off the shell and free it. */
+  private releaseClouds(): void {
+    this.cloudMesh.visible = false;
+    this.cloudMesh.material = this.placeholderMaterial;
+    this.cloudMaterial?.dispose();
+    this.cloudMaterial = null;
+    this.cloudColor?.dispose();
+    this.cloudColor = null;
+    this.cloudNormal?.dispose();
+    this.cloudNormal = null;
+  }
+
+  /** Free the maps the skin wore beside its colour. */
+  private releaseSkinDetail(): void {
+    for (const map of this.skinDetail) map.dispose();
+    this.skinDetail = [];
   }
 
   /**
@@ -640,6 +881,9 @@ export class InteriorScene {
     probeGroup.name = 'InteriorPreparedSkinProbe';
     probeGroup.visible = false;
     probeGroup.add(this.buildWarmupProbe(prepared.material));
+    // The deck is a program of its own, and a swap onto Earth would otherwise
+    // build it at the cross-fade — the one moment that has to be smooth.
+    if (prepared.clouds) probeGroup.add(this.buildWarmupProbe(prepared.clouds.material));
     this.group.add(probeGroup);
     try {
       const { resolved, warmDrawMs } = await warmUpSceneShaders(this.renderer, this.scene, camera, {
@@ -667,13 +911,15 @@ export class InteriorScene {
   }
 
   /** The materials the reveal draws that no earlier frame has drawn: the
-   *  section faces, every terrace shell, and the exterior ghost. The skin, the
-   *  air and the rings are visible by then and the warm-up's draw finds them
-   *  itself. */
+   *  section faces, every terrace shell, the exterior ghost, and the cloud
+   *  deck (which is its own program, and hidden whenever it is still waiting
+   *  for its map). The skin, the air and the rings are visible by then and the
+   *  warm-up's draw finds them itself. */
   private revealMaterials(): THREE.Material[] {
     const materials: THREE.Material[] = [this.faceMaterial];
     for (const shell of this.regionShells) materials.push(shell.material);
     if (this.ghostMaterial) materials.push(this.ghostMaterial);
+    if (this.cloudMaterial) materials.push(this.cloudMaterial);
     return materials;
   }
 
@@ -742,10 +988,34 @@ export class InteriorScene {
     return colorTex;
   }
 
-  /** The skin material and its shading uniforms; nothing here binds to the live skin (presentBody does). */
-  private buildSkinMaterial(texture: THREE.Texture, archetype: SurfaceArchetype): { material: THREE.MeshStandardMaterial; fx: SurfaceShadingFx } {
+  /** The skin material and its shading uniforms, dressed in whatever detail
+   *  the body has (bound before the augment, as PlanetFactory binds it, so the
+   *  program is compiled with it in); nothing here binds to the live skin
+   *  (presentBody does). */
+  private buildSkinMaterial(
+    texture: THREE.Texture,
+    archetype: SurfaceArchetype,
+    detail: PreparedDetail,
+  ): { material: THREE.MeshStandardMaterial; fx: SurfaceShadingFx } {
     const material = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.95, metalness: 0 });
+    if (isRealMap(detail.normal)) {
+      material.normalMap = detail.normal;
+      material.normalScale.set(detail.normalScale, detail.normalScale);
+      material.userData.hasRealNormal = true;
+    } else if (isRealMap(detail.bump)) {
+      material.bumpMap = detail.bump;
+      material.bumpScale = BODY_RADIUS * SKIN_BUMP_SCALE;
+    }
+    if (detail.roughness) {
+      // The mask drives roughness (ocean glossy, land and ice matte) and the
+      // gloss remap below turns that into the sun glint on the seas — but only
+      // once the mask really is one. Water is a dielectric: metalness stays 0.
+      material.roughnessMap = detail.roughness;
+      material.roughness = 1;
+      material.metalness = 0;
+    }
     const fx = augmentSurfaceMaterial(material, archetype);
+    if (detail.roughness) setSurfaceWaterGloss(material, isRealMap(detail.roughness));
     fx.uSunDirWorld.value.copy(this.keyDirection);
     fx.uPlanetshineColor.value.setHex(FILL_SHINE_COLOR);
     fx.uPlanetshineDir.value.copy(FILL_SHINE_DIR);
@@ -829,6 +1099,7 @@ export class InteriorScene {
       quaternion.identity();
     }
     for (const shell of this.regionShells) shell.mesh.quaternion.copy(quaternion);
+    this.cloudMesh.quaternion.copy(quaternion);
     this.poseQuaternion.copy(quaternion);
     this.ringMesh?.quaternion.copy(quaternion);
     tmpBasis.makeRotationFromQuaternion(quaternion).invert();
@@ -942,6 +1213,8 @@ export class InteriorScene {
     this.sunMaterial = null;
     this.skinTexture?.dispose();
     this.skinTexture = null;
+    this.releaseSkinDetail();
+    this.releaseClouds();
     this.skinFx = null;
     this.lateMapPending = false;
     this.ghostMesh.visible = false;

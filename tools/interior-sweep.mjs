@@ -13,7 +13,9 @@
 // the evidence popover closing each other, prefers-reduced-motion (every
 // move lands at once), the phone's docked inspector, the phone sheet's drag
 // (the height follows the finger, clamps at its peek, and a tap and a flick
-// each land at an end, with the body's framing following), and interiorReady()
+// each land at an end, with the body's framing following), the planetarium's
+// Tools row (it asks which world before it enters anything, and the world
+// picked there is the one the tool opens on), and interiorReady()
 // against a colour map held back past the loader's timeout (the tool shows
 // the loader's fallback, and must not call itself ready until the real map
 // lands). Each case asserts the tool ends sane: a skin on, the cut open at
@@ -183,11 +185,12 @@ async function sweepBody(context, viewport, body) {
 
   // 3. A hover sweep across the section resolves regions in order outward
   // from the centre, at rest and mid-blend. Along the hinge (screen-vertical),
-  // a few px to one side of it: at Section the disc is face-on, but each inner
-  // region's face is tilted toward the viewer by the terrace step, so along the
-  // horizontal its near edge overhangs the outer face in perspective and hides
-  // a thin rim band; along the hinge nothing overhangs. Both directions, so
-  // both faces show every region out to the rim.
+  // a few px to one side of it: the cut plane is turned about the hinge (the
+  // Section yaw floor, cutFrame.ts) and each inner region's face is tilted
+  // further by the terrace step, so along the horizontal a near edge overhangs
+  // the face outside it in perspective and hides a thin rim band. The hinge is
+  // the one screen direction neither turn foreshortens and nothing overhangs.
+  // Both directions along it, so both faces show every region out to the rim.
   await page.evaluate(() => window.__moon.interiorView('section'));
   await ready(page);
   const centre = await discCentre(page, viewport);
@@ -284,6 +287,10 @@ async function bandCase(context, viewport) {
   const image = decodePng(await withoutRuler(page, () => page.screenshot({ type: 'png' })));
   const scale = image.width / viewport.width;
   // True scale: display radius = physical radius. In the band (300–700 km) versus above it (800–1400 km).
+  // Read across the hinge, where the Section yaw floor foreshortens the disc by
+  // cos(yaw) — about 1.5%, so these land at 508 km and 1015 km, each still well
+  // inside the band it is asking about. The hinge itself is where the two faces
+  // meet, and a seam through the block would be variance this check reads as a hatch.
   const inBandR = ((500 / reference) * radiusPx) * scale;
   const outBandR = ((1000 / reference) * radiusPx) * scale;
   const size = 14;
@@ -603,7 +610,56 @@ async function sheetDragCase(context, viewport) {
   await page.close();
 }
 
+/** The Tools row is a question, not a destination: tapping it puts the shared
+ *  picker up with no tool entered, and the body picked there — Mars, which is
+ *  neither the old default nor anywhere near the boot camera — is what the
+ *  tool opens on. Boots the planetarium rather than the tool, so it is the
+ *  only case here that walks in through the real front door. */
+async function toolsRowPickerCase(context, viewport) {
+  const tag = `${viewport.name}/lifecycle Tools row picker`;
+  console.log(`\n== ${tag}`);
+  const page = await context.newPage();
+  page.setDefaultTimeout(240000);
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(String(error).slice(0, 300)));
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text().slice(0, 300)); });
+  await page.goto(`${baseUrl}/?auto=planetarium`, { waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => !!(window.__moon && window.__moon.ready && window.__moon.ready()), undefined, { timeout: 300000 });
+  await page.waitForFunction(() => {
+    const loading = document.getElementById('loading-screen');
+    return !loading || loading.classList.contains('hidden');
+  }, undefined, { timeout: 120000 }).catch(() => {});
+  const insideRow = '#tools-menu-list [data-tool="interior"]';
+  await page.evaluate(() => document.getElementById('planetarium-btn-tools').click());
+  await settle(page);
+  const sub = await page.evaluate((selector) => document.querySelector(`${selector} .tools-sub`)?.textContent ?? '', insideRow);
+  check(sub === 'Cut a world open and see its layers.', `${tag}: the row's sub-line reads "${sub}"`);
+  await page.evaluate((selector) => document.querySelector(selector).click(), insideRow);
+  await page.waitForFunction(() => window.__moon.toolsInsideOpen(), undefined, { timeout: 60000 });
+  check(await page.evaluate(() => !document.getElementById('tools-menu').classList.contains('visible')),
+    `${tag}: the Tools popover stayed open under the picker`);
+  check(await page.evaluate(() => document.getElementById('interior-ui').style.display !== 'block'),
+    `${tag}: the tool was entered before any world was picked`);
+  const rows = () => page.evaluate(() => [...document.querySelectorAll('#tools-inside-picker-list .pk-row')]
+    .map((row) => ({ name: row.querySelector('b')?.textContent ?? '', text: row.textContent ?? '' })));
+  const listed = await rows();
+  check(listed.some((row) => row.name === 'Sun') && listed.some((row) => row.name === 'Mars'),
+    `${tag}: the picker lists ${listed.length} bodies, without the Sun or Mars among them`);
+  // The pills ride in on the tool's chunk, a dynamic import: a beat behind the rows.
+  await page.waitForFunction(() => !!document.querySelector('#tools-inside-picker-list .pk-row .pk-tag-cover'),
+    undefined, { timeout: 60000 }).catch(() => {});
+  const mars = (await rows()).find((row) => row.name === 'Mars');
+  check(!!mars && mars.text.includes('models'), `${tag}: Mars's row carries no coverage pill ("${mars?.text ?? ''}")`);
+  await page.evaluate(() => [...document.querySelectorAll('#tools-inside-picker-list .pk-row')]
+    .find((row) => row.querySelector('b')?.textContent === 'Mars').click());
+  await saneEnd(page, tag, { body: 'Mars', angleDeg: chosenAngleDeg(viewport) });
+  check(await page.evaluate(() => !window.__moon.toolsInsideOpen()), `${tag}: the picker is still up inside the tool`);
+  check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
+  await page.close();
+}
+
 async function lifecycleCases(context, viewport) {
+  await toolsRowPickerCase(context, viewport);
   await rapidDoublePickCase(context, viewport);
   await pickDuringRevealCase(context, viewport);
   await pickDuringFadeCase(context, viewport);

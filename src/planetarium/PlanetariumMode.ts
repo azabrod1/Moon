@@ -365,6 +365,7 @@ import {
   type HistoricMissionId,
   type HistoricMilestone,
 } from './missions/historicJourneys';
+import { BodyPicker } from './ui/BodyPicker';
 import { PlanetariumBottomBar } from './ui/PlanetariumBottomBar';
 import { PlanetariumHelpModal } from './ui/PlanetariumHelpModal';
 import { PlanetariumMenuPanel } from './ui/PlanetariumMenuPanel';
@@ -8658,6 +8659,9 @@ export class PlanetariumMode {
       // on purpose — during the deck theater the open deck is tutorial-owned, and
       // closing just it would leave the pending commit to teleport anyway.
       if (this.tutorial) { this.stopTutorial({ restore: true, toast: 'skip' }); return; }
+      // The Look-inside row's picker stands over the popover that opened it
+      // (already folded away), so it is the first of the two to go.
+      if (this.insidePicker?.isOpen()) { this.insidePicker.close(); return; }
       // Tools is a transient popover — above the deck rung (the ☰ menu is
       // deliberately NOT in the cascade; Tools is).
       if (this.isToolsMenuOpen()) { this.closeToolsMenu(); return; }
@@ -9638,9 +9642,12 @@ export class PlanetariumMode {
 
   // ── Tools front door ─────────────────────────────────────
   // The cluster button (right of Observe) opens an anchored popover launching
-  // the "How many fit?" tool. Visible in cruise AND landed (missions hide it via
+  // the "How many fit?" tool, and — through a picker of its own, since a tool
+  // that cuts one world open has to be told which — the Look-inside tool.
+  // Visible in cruise AND landed (missions hide it via
   // updateObservatoryButtonVisibility); transient popover in the Esc cascade and
-  // the one-modal-at-a-time set, but NOT a new keyboard key.
+  // the one-modal-at-a-time set, but NOT a new keyboard key. Both surfaces fold
+  // away together: closeToolsMenu takes the picker with the popover.
 
   /** Enter the "How many fit?" tool: the Tools item and a `?auto=volumeCompare`
    *  boot alike come through enterTool. */
@@ -9696,6 +9703,13 @@ export class PlanetariumMode {
   }
 
 
+  /** The picker the Look-inside row opens: which world to cut, asked before
+   *  the tool is entered. Built on the first tap. */
+  private insidePicker: BodyPicker | null = null;
+  /** Its coverage pills, once the tool's chunk has landed (see
+   *  openInsidePicker); null until then, and the rows stand without them. */
+  private insideCoverageTags: ((bodyId: string, lede: string | null) => HTMLElement) | null = null;
+
   private isToolsMenuOpen(): boolean {
     return document.getElementById('tools-menu')?.classList.contains('visible') ?? false;
   }
@@ -9710,11 +9724,14 @@ export class PlanetariumMode {
     if (!menu) return;
     // A committed dive owns the map; superseding it would drop the commit.
     if (this.mapDiving) return;
-    // One modal at a time — Tools joins the deck / ☰ / Look-at trio.
+    // One modal at a time — Tools joins the deck / ☰ / Look-at trio. Its own
+    // picker goes too: the popover is what opens it, and reopening the popover
+    // over a picker it already handed off to would be two doors at once.
     this.closeMap({ restore: false });
     this.closeMenuPanel();
     this.closeDeck();
     this.closeSurfaceTargetMenu();
+    this.insidePicker?.close();
     this.buildToolsMenu();
     // Both rows here are one tap from a mode switch that fetches a chunk.
     this.warmToolChunks();
@@ -9732,8 +9749,68 @@ export class PlanetariumMode {
     }
   }
 
+  /** Fold the Tools front door away — the popover and, with it, the picker its
+   *  Look-inside row opens. Every one-modal-at-a-time site and every teardown
+   *  already calls this meaning "whatever Tools has on screen", so the two
+   *  surfaces go together and no caller has to learn about the second one. */
   private closeToolsMenu() {
     document.getElementById('tools-menu')?.classList.remove('visible');
+    this.insidePicker?.close();
+  }
+
+  /**
+   * The Look-inside row: ask which world before entering the tool. The tool
+   * used to open on a body nobody chose (where you stood, else the system you
+   * were in, else Earth), which in deep space is Earth by default — so the
+   * row is a question now, and the answer is what the tool opens on. The map
+   * card's Look inside stays direct: there the card IS the body.
+   *
+   * Built on the first tap and kept, like the tool's own picker. Its coverage
+   * pills come from the interior registry, which is every model's text: the
+   * planetarium reaches it through a dynamic import (the popover already
+   * prefetched the tool's chunk when it opened, so the wait is normally none)
+   * and the rows repaint when it lands. Fail-open — a picker with no pills
+   * still picks.
+   */
+  private openInsidePicker(): void {
+    // The popover this row lives in folded the deck, the ☰ menu and the
+    // Look-at menu away when it opened; this folds the popover itself.
+    this.closeToolsMenu();
+    if (this.tutorial !== null || this.isMissionActive()) return;
+    this.insidePicker ??= new BodyPicker({
+      ids: {
+        root: 'tools-inside-picker',
+        list: 'tools-inside-picker-list',
+        title: 'tools-inside-picker-title',
+        search: 'tools-inside-picker-search',
+        empty: 'tools-inside-picker-empty',
+        close: 'tools-inside-picker-close',
+      },
+      includeSun: true,
+      renderTitle: (title) => {
+        const strong = document.createElement('b');
+        strong.textContent = 'Look inside';
+        title.append(strong, document.createTextNode(' which world?'));
+      },
+      // "here" is the body under your feet — a place, which is why the compare
+      // studio's picker never says it and this one does.
+      rowBadge: (name) => this.insideCoverageTags?.(name, name === this.landedOn?.name ? 'here' : null) ?? null,
+      onPick: (name) => {
+        this.insidePicker?.close();
+        this.enterTool({ kind: 'interior', bodyId: name });
+      },
+      onClose: () => {},
+    });
+    this.insidePicker.bind();
+    this.insidePicker.open();
+    if (this.insideCoverageTags) return;
+    void import('../interior/ui/coverageTag').then(
+      (module) => {
+        this.insideCoverageTags = module.coverageTags;
+        if (this.insidePicker?.isOpen()) this.insidePicker.rebuild();
+      },
+      (err) => debugWarn('Look inside: the picker\'s coverage pills could not be loaded', { err: String(err) }),
+    );
   }
 
   /** Rebuild the popover rows (built dynamically so the tutorial-disabled state
@@ -9746,6 +9823,7 @@ export class PlanetariumMode {
     const running = this.tutorial !== null;
     const row = document.createElement('button');
     row.className = 'pk-row tools-row' + (running ? ' tools-dim' : '');
+    row.dataset.tool = 'volumeCompare';
     row.disabled = running;
     const info = document.createElement('span');
     info.className = 'pk-info';
@@ -9761,6 +9839,7 @@ export class PlanetariumMode {
 
     const insideRow = document.createElement('button');
     insideRow.className = 'pk-row tools-row' + (running ? ' tools-dim' : '');
+    insideRow.dataset.tool = 'interior';
     insideRow.disabled = running;
     const insideInfo = document.createElement('span');
     insideInfo.className = 'pk-info';
@@ -9768,11 +9847,13 @@ export class PlanetariumMode {
     insideName.textContent = 'Look inside';
     const insideSub = document.createElement('span');
     insideSub.className = 'tools-sub';
-    // Names the body the row will open, so nobody is surprised by Earth.
-    insideSub.textContent = `Cut ${bodyDisplayName(this.resolveInteriorBody())} open and see its layers.`;
+    // Never a body name. The row names no world because it opens on none:
+    // out in deep space it used to read "Cut Earth open", which is a promise
+    // about a planet the reader is nowhere near.
+    insideSub.textContent = 'Cut a world open and see its layers.';
     insideInfo.append(insideName, insideSub);
     insideRow.append(insideInfo);
-    insideRow.addEventListener('click', () => this.enterTool({ kind: 'interior', bodyId: this.resolveInteriorBody() }));
+    insideRow.addEventListener('click', () => this.openInsidePicker());
     list.appendChild(insideRow);
 
     // Historic journeys: one expandable group (parent row + a submenu of the five
@@ -11843,14 +11924,6 @@ export class PlanetariumMode {
     const entered = this.enterTool({ kind: 'interior', bodyId });
     if (entered) this.reopenMapAfterTool = true;
     return entered;
-  }
-
-  /**
-   * The body the Tools row opens the interior tool on: the body you stand on,
-   * else the planet whose system you are inside, else Earth.
-   */
-  private resolveInteriorBody(): string {
-    return this.landedOn?.name ?? this.nearestSystemPlanet ?? 'Earth';
   }
 
   /** Focus entry shared by the card button, the double-tap, and the bridge. */
@@ -15499,9 +15572,15 @@ export class PlanetariumMode {
   }
 
   /** Headless support: open the Look-inside tool on a body through the real
-   *  entry gate (snapshot + refusals), as compareOpen does. */
+   *  entry gate (snapshot + refusals), as compareOpen does. The Tools row's
+   *  own door is the picker below; this one skips it, as `?auto=interior` does. */
   devEnterInterior(bodyId: string): boolean {
     return this.enterTool({ kind: 'interior', bodyId });
+  }
+
+  /** Headless support: whether the Tools row's which-world picker is up. */
+  devToolsInsideOpen(): boolean {
+    return this.insidePicker?.isOpen() ?? false;
   }
 
   /** Headless support: enter the Observatory surface view ("Look up"). */

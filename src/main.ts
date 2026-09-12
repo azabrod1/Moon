@@ -769,7 +769,9 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
     // and so is the destination's UI while it activates. That is deliberate:
     // the arrival veil is the thing that catches pointers, and anything
     // committed here belongs to the mode that is still on screen.
+    const beatStartedAt = performance.now();
     if (appModeInitialized) await sleep(400);
+    const beatMs = performance.now() - beatStartedAt;
 
     if (newMode === 'planetarium') {
       // --- Switch to Planetarium ---
@@ -893,10 +895,12 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
       // --- Switch to Look inside ---
       // Dynamic import first, as the other tools: a failed chunk fetch must
       // not strand the user in a mode with no UI.
+      const importStartedAt = performance.now();
       const interiorModule = interiorMode ? null : await (async () => {
         debugLog('Loading interior module');
         return import('./interior/InteriorMode');
       })();
+      const importMs = performance.now() - importStartedAt;
       const bodyId = request?.kind === 'interior' ? request.bodyId : 'Earth';
       // The tool poses the body at the planetarium's instant: read it before
       // the planetarium is taken down.
@@ -925,7 +929,17 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
       }
       debugLog('Activating interior mode', { bodyId });
       // Resolves once the body's map is applied; the veil covers the load.
+      const activateStartedAt = performance.now();
       await interiorMode.activate(bodyId, entryUtcMs);
+      // What the switch itself cost, beside the tool's own marks
+      // (`interiorState().timings`): the fade beat, the wait left for the
+      // chunk, and the activation. On a phone `?debug=1` is the only place
+      // these can be read, and they are where the open's first second goes.
+      debugLog('Look inside: switch timings', {
+        beatMs: Math.round(beatMs),
+        importMs: Math.round(importMs),
+        activateMs: Math.round(performance.now() - activateStartedAt),
+      });
       debugLog('Interior mode active');
     } else {
       throw new Error(`Unknown app mode: ${String(newMode)}`);

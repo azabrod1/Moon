@@ -27,6 +27,13 @@
  * pattern drift run on it, never on the solar-system clock, and the dev
  * bridge can set and freeze it so a capture is reproducible.
  *
+ * Every open is timed. One stopwatch per open (the activate's, or a swap's
+ * own from the pick) marks the steps the reader waits through — prepare,
+ * present, precompile, the reveal, the first frame after it and ready — and
+ * carries the renderer's program count at the reveal and once ready. The set
+ * reaches the bridge as `interiorState().timings` and debugLog once, so the
+ * question "what is it doing for those seconds" is answerable on a phone.
+ *
  * Hover and pin (plan §4): a pointer ray is picked on the CPU against the
  * terraced cut (interiorPick, the same frame and remap the shaders use);
  * the region under it is emphasised through two uniforms and its legend
@@ -161,6 +168,81 @@ export interface InteriorDevHover {
 
 export type InteriorDisplayMode = 'composition' | 'temperature';
 
+/**
+ * What one open of a body cost, ms from the activate (or, for a swap, from the
+ * pick) that started it — null for a step not reached yet. The tool's open is a
+ * chain of serial steps, and the only way to say which one a reader is waiting
+ * on is to mark them: the bridge serves these as `interiorState().timings` and
+ * the mode logs them once through debugLog, so `?debug=1` on a phone answers
+ * the question on the device that is slow.
+ */
+export interface InteriorOpenTimings {
+  /** The session's first entry (which pays the shader compiles) or a later swap. */
+  kind: 'entry' | 'swap';
+  /** The body these marks describe. */
+  bodyId: string;
+  /** The colour map's fetch and the skin build (InteriorScene.prepareBody). */
+  prepareStart: number | null;
+  prepareEnd: number | null;
+  /** The skin, the air and the rings on the body (InteriorScene.presentBody). */
+  present: number | null;
+  /** Linking the programs the reveal draws, under the veil (a first entry only). */
+  precompileStart: number | null;
+  precompileEnd: number | null;
+  /** The cut starts opening. */
+  revealStart: number | null;
+  /** The first frame drawn after the reveal started: the first one a reader sees. */
+  firstFrame: number | null;
+  /** The first frame devReady() is true: the map applied, the cut and the morph settled. */
+  ready: number | null;
+  /** renderer.info.programs.length as the reveal starts and once ready — how many
+   *  programs the studio still compiles while the reader is watching. */
+  programsAtReveal: number | null;
+  programsWhenReady: number | null;
+}
+
+/** The steps an open marks, in the order they happen. */
+type OpenTimingMark =
+  | 'prepareStart' | 'prepareEnd' | 'present'
+  | 'precompileStart' | 'precompileEnd'
+  | 'revealStart' | 'firstFrame' | 'ready';
+
+/** One open's stopwatch: the marks it fills in and the instant they measure
+ *  from. A commit holds its own, so a superseded commit's late steps land in an
+ *  object nobody reads instead of overwriting the live open's marks. */
+interface OpenStopwatch {
+  readonly startedAt: number;
+  readonly timings: InteriorOpenTimings;
+}
+
+function startOpenStopwatch(kind: 'entry' | 'swap', bodyId: string): OpenStopwatch {
+  return {
+    startedAt: performance.now(),
+    timings: {
+      kind,
+      bodyId,
+      prepareStart: null,
+      prepareEnd: null,
+      present: null,
+      precompileStart: null,
+      precompileEnd: null,
+      revealStart: null,
+      firstFrame: null,
+      ready: null,
+      programsAtReveal: null,
+      programsWhenReady: null,
+    },
+  };
+}
+
+/** Mark one step, to a tenth of a millisecond. The first mark of a step stands:
+ *  a step reached twice (a reveal onto the body that was already on) is still
+ *  the moment the reader waited for. */
+function markOpenStep(watch: OpenStopwatch, step: OpenTimingMark): void {
+  if (watch.timings[step] !== null) return;
+  watch.timings[step] = Math.round((performance.now() - watch.startedAt) * 10) / 10;
+}
+
 export interface InteriorDevState {
   bodyId: string;
   /** The drawn model's id, or null for the unresolved whole. */
@@ -191,6 +273,8 @@ export interface InteriorDevState {
   pinned: string | null;
   evidence: ClaimKind | null;
   emphasis: { region: string | null; amount: number };
+  /** What the open of this body cost, step by step (see InteriorOpenTimings). */
+  timings: InteriorOpenTimings;
 }
 
 function orbitPose(azimuthDeg: number, elevationDeg: number, distance: number, out: THREE.Vector3): THREE.Vector3 {
@@ -217,6 +301,7 @@ export class InteriorMode {
   private readonly interiorScene: InteriorScene;
   private readonly controls: OrbitControls;
   private readonly isMultisampled: () => boolean;
+  private readonly renderer: THREE.WebGLRenderer;
   private readonly domElement: HTMLElement;
 
   private active = false;
@@ -301,6 +386,14 @@ export class InteriorMode {
   private readonly fpsSamples: number[] = [];
   private topBarPrevDisplay: string | null = null;
 
+  // What the open cost. The stopwatch of the open that is running or last ran;
+  // devState serves its marks and update() logs them once, when it settles.
+  private openStopwatch: OpenStopwatch = startOpenStopwatch('entry', '');
+  /** The reveal has started and the frame after it is not marked yet. */
+  private awaitingFirstRevealFrame = false;
+  /** The current open's marks have not been logged yet. */
+  private openTimingsLogged = true;
+
   constructor(
     scene: THREE.Scene,
     camera: THREE.PerspectiveCamera,
@@ -310,6 +403,7 @@ export class InteriorMode {
   ) {
     this.camera = camera;
     this.isMultisampled = isMultisampled;
+    this.renderer = renderer;
     this.domElement = renderer.domElement;
     this.interiorScene = new InteriorScene(scene, renderer, floatCapable);
     this.pickLayout = { frame: this.frame, outerDisplay: [1], terraceStep: TERRACE_STEP };
@@ -381,6 +475,10 @@ export class InteriorMode {
    * half-loaded shows. A name the catalog lacks opens as Earth.
    */
   async activate(bodyId: string, utcMs: number): Promise<void> {
+    // The open's stopwatch starts here, so every mark is measured from the
+    // instant the mode was handed the body (a swap later starts its own).
+    this.openStopwatch = startOpenStopwatch('entry', bodyId);
+    this.openTimingsLogged = false;
     this.active = true;
     this.utcMs = utcMs;
     this.camera.near = 0.05;
@@ -502,6 +600,31 @@ export class InteriorMode {
 
     this.advanceEmphasis(dt);
     this.renderRuler();
+    this.traceOpenProgress();
+  }
+
+  /** The open's last two marks, both of them frames rather than steps: the first
+   *  frame drawn after the reveal started (the first one the reader sees) and
+   *  the first frame everything has settled on. The set is logged once, there —
+   *  `?debug=1` on a phone then says where the open's time went. */
+  private traceOpenProgress(): void {
+    const watch = this.openStopwatch;
+    if (this.awaitingFirstRevealFrame) {
+      this.awaitingFirstRevealFrame = false;
+      markOpenStep(watch, 'firstFrame');
+    }
+    if (this.openTimingsLogged || watch.timings.revealStart === null || !this.devReady()) return;
+    this.openTimingsLogged = true;
+    markOpenStep(watch, 'ready');
+    watch.timings.programsWhenReady = this.programCount();
+    debugLog('Look inside: open timings', { ...watch.timings });
+  }
+
+  /** How many shader programs the renderer holds right now: the count before
+   *  and after a reveal says how much of the studio compiles in front of the
+   *  reader instead of under the veil. */
+  private programCount(): number {
+    return this.renderer.info.programs?.length ?? 0;
   }
 
   /** The depth ruler along the near face, through the remap; hidden on phones
@@ -665,6 +788,15 @@ export class InteriorMode {
     const animate = !this.reducedMotion.matches;
     const swap = this.body !== null && this.interiorScene.hasSkin();
     const reopenDeg = this.cut.chosenDeg;
+    // A swap is its own open, timed from the pick; a first entry's marks are
+    // measured from activate(), which started that stopwatch. Either way this
+    // commit marks into the object it holds here: a commit superseded by a
+    // newer pick writes its late steps into nobody's timings.
+    const watch = swap
+      ? (this.openStopwatch = startOpenStopwatch('swap', body.id))
+      : this.openStopwatch;
+    if (swap) this.openTimingsLogged = false;
+    else watch.timings.bodyId = body.id;
     this.loading = true;
     if (swap) {
       this.revealing = false;
@@ -675,8 +807,10 @@ export class InteriorMode {
     let prepared: PreparedSkin | null = null;
     let presented = false;
     try {
+      markOpenStep(watch, 'prepareStart');
       prepared = await this.interiorScene.prepareBody(body, stale);
       if (!prepared || stale()) return false;
+      markOpenStep(watch, 'prepareEnd');
       if (swap) {
         await this.cutSettled();
         if (stale()) return false;
@@ -686,6 +820,7 @@ export class InteriorMode {
       // whole), then the faces and the panel turn over.
       this.interiorScene.setPose(body, this.utcMs);
       this.interiorScene.presentBody(prepared, swap && animate ? SWAP_FADE_S : 0);
+      markOpenStep(watch, 'present');
       presented = true;
       this.body = body;
       this.coverage = coverageFor(body.id);
@@ -699,6 +834,9 @@ export class InteriorMode {
         await this.interiorScene.fadeDone();
         if (stale()) return false;
       }
+      markOpenStep(watch, 'revealStart');
+      watch.timings.programsAtReveal = this.programCount();
+      this.awaitingFirstRevealFrame = true;
       this.reveal(reopenDeg);
       debugLog('Look inside: body applied', { bodyId: body.id, swap });
       return true;
@@ -1451,6 +1589,7 @@ export class InteriorMode {
       pinned: regionsInsideOut[this.pinnedIndex]?.key ?? null,
       evidence: regionsInsideOut[this.pinnedIndex]?.region?.claims[this.evidenceClaim]?.kind ?? null,
       emphasis: { region: regionsInsideOut[this.emphasis.index]?.key ?? null, amount: this.emphasis.amount },
+      timings: { ...this.openStopwatch.timings },
     };
   }
 

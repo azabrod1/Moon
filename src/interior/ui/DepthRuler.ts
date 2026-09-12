@@ -26,7 +26,7 @@ const NAME_MIN_SEGMENT_PX = 44;
 const NAME_GLYPH_PX = 5.8;
 const NAME_MIN_GAP_PX = 8;
 const NAME_GAP_PX = 14;
-const BRACKET_GAP_PX = 30;
+const BRACKET_GAP_PX = 46;
 const BRACKET_ARM_PX = 4;
 /** Brackets whose footprints (span with name) overlap along the ruler step down a tier each. */
 const BRACKET_TIER_PX = 15;

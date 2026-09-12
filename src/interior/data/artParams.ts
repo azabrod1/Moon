@@ -103,7 +103,7 @@ const FAMILY_DEFAULT: Readonly<Record<MaterialFamily, ArtParams>> = {
   ionicFluid: family({ colorA: 0x1f7f9a, colorB: 0x5fc8e0, roughness: 0.3, metalness: 0.3, glow: 0.05, pattern: 'flow', motion: 0.06, scale: 6, relief: 2, depthGradient: 0.25, ambient: 0.2, heatGain: 0.3, heatTint: 0x60c8ff }),
   // A star: every region is a light. The palette (amber to yellow-white) is the emission,
   // granulated at the surface and boiling in cells below, brightest at the core.
-  plasma: family({ colorA: 0xffb84a, colorB: 0xfff1cc, roughness: 1, metalness: 0, glow: 0, pattern: 'mottle', motion: 0.2, scale: 30, relief: 0, depthGradient: 0, ambient: 0, heatGain: 1, selfLit: true }),
+  plasma: family({ colorA: 0xff9a2a, colorB: 0xffe0a0, roughness: 1, metalness: 0, glow: 0, pattern: 'mottle', motion: 0.2, scale: 30, relief: 0, depthGradient: 0, ambient: 0, heatGain: 1, selfLit: true }),
   // A mix: cold it is a mottled rock-and-ice mud; hot (a giant's diluted core) it glows a
   // deep gold through its own mottle rather than blasting white.
   mixed: family({ colorA: 0x6c5744, colorB: 0xb8a088, roughness: 0.9, metalness: 0.1, glow: 0, pattern: 'mottle', motion: 0, scale: 12, relief: 4, depthGradient: 0.25, ambient: 0.16, heatGain: 0.45, heatTint: 0xffd090 }),

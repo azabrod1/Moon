@@ -2103,6 +2103,8 @@ export class PlanetariumMode {
    *  clock on return — and what getState() serves meanwhile, so a tab-close inside
    *  the tool reloads to the pre-tool landing. Same idiom as preMissionState. */
   private preToolState: PlanetariumState | null = null;
+  /** Set when a tool was entered from a map card, so leaving it reopens the map. */
+  private reopenMapAfterTool = false;
   private deferredResumePromptState: PlanetariumState | null = null;
   private resumeShipAfterMenu = false;
   private resumeTimeAfterMenu = false;
@@ -2876,6 +2878,11 @@ export class PlanetariumMode {
         const pre = this.preToolState;
         this.preToolState = null;
         this.restoreState(pre);
+        if (this.reopenMapAfterTool) {
+          // Entered from a map card: the reader was reading the map, so hand it back.
+          this.reopenMapAfterTool = false;
+          this.openMap();
+        }
       } else if (savedState && shouldPromptForResume) {
         this.restoreState(savedState);
         this.deferredResumePromptState = savedState;
@@ -9695,7 +9702,8 @@ export class PlanetariumMode {
     insideName.textContent = 'Look inside';
     const insideSub = document.createElement('span');
     insideSub.className = 'tools-sub';
-    insideSub.textContent = 'Cut a world open and see its layers.';
+    // Names the body the row will open, so nobody is surprised by Earth.
+    insideSub.textContent = `Cut ${bodyDisplayName(this.resolveInteriorBody())} open and see its layers.`;
     insideInfo.append(insideName, insideSub);
     insideRow.append(insideInfo);
     insideRow.addEventListener('click', () => this.enterTool({ kind: 'interior', bodyId: this.resolveInteriorBody() }));
@@ -10075,6 +10083,11 @@ export class PlanetariumMode {
       if (label) label.textContent = this.showShip ? 'On' : 'Off';
     });
 
+    // The ☰ menu's door to the Tools popover, for anyone who never hovers the icon.
+    document.getElementById('planetarium-btn-tools')?.addEventListener('click', () => {
+      this.closeMenuPanel();
+      this.openToolsMenu();
+    });
     document.getElementById('settings-gyro-toggle')?.addEventListener('click', () => {
       void this.gyro.toggle();
     });
@@ -11759,7 +11772,9 @@ export class PlanetariumMode {
     const bodyId = this.mapPicked.name;
     if (bodyId === 'Sun') return false;
     this.closeMap();
-    return this.enterTool({ kind: 'interior', bodyId });
+    const entered = this.enterTool({ kind: 'interior', bodyId });
+    if (entered) this.reopenMapAfterTool = true;
+    return entered;
   }
 
   /**

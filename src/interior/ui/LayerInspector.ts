@@ -16,10 +16,21 @@ import type { Annotation, ClaimKind, Coverage } from '../data/interiorTypes';
 import { coverageBulk } from '../data/interiorTypes';
 import { competingTopology } from '../data/interiorRegistry';
 import { FAMILY_LABEL, PHASE_LABEL } from '../data/artParams';
-import { EVIDENCE_LEVEL_LABEL, SHOW_EVIDENCE_NUMERALS, evidenceScore, type EvidenceScore } from '../evidenceScore';
+import { EVIDENCE_LEVEL_LABEL, EVIDENCE_LEVEL_READS_AS, POINTS, SHOW_EVIDENCE_NUMERALS, evidenceScore, type EvidenceScore } from '../evidenceScore';
 import type { DrawnModel, DrawnRegion } from '../drawnModel';
 import { closeButton, element, meterBar } from './dom';
-import { boundaryText, depthRangeText, formatKm, heatText, quantityText, sourcedText, thicknessText } from './inspectorText';
+import {
+  boundaryText,
+  depthRangeText,
+  formatKm,
+  heatText,
+  pressureQuantityText,
+  quantityText,
+  reviewDateText,
+  sourcedText,
+  temperatureQuantityText,
+  thicknessText,
+} from './inspectorText';
 
 export const CLAIM_TITLE: Readonly<Record<ClaimKind, string>> = {
   existence: 'This region exists',
@@ -29,11 +40,14 @@ export const CLAIM_TITLE: Readonly<Record<ClaimKind, string>> = {
   temperature: 'Its temperature',
 };
 
-/** The five-segment meter with the level word and, behind the flag, the numeral. */
-export function buildMeter(score: EvidenceScore): HTMLElement {
+/** The five-segment meter with the level word (its plain gloss on hover) and, where asked for
+ *  and behind the flag, the numeral "65 of 95". The legend leaves the numeral to the inspector. */
+export function buildMeter(score: EvidenceScore, options: { numeral?: boolean } = {}): HTMLElement {
   const wrap = element('span', 'ev-meter-wrap');
-  wrap.append(element('span', `ev-level ev-${score.level}`, EVIDENCE_LEVEL_LABEL[score.level]), meterBar(score.score));
-  if (SHOW_EVIDENCE_NUMERALS) wrap.append(element('span', 'ev-score', String(score.score)));
+  const level = element('span', `ev-level ev-${score.level}`, EVIDENCE_LEVEL_LABEL[score.level]);
+  level.title = EVIDENCE_LEVEL_READS_AS[score.level];
+  wrap.append(level, meterBar(score.score));
+  if (SHOW_EVIDENCE_NUMERALS && options.numeral) wrap.append(element('span', 'ev-score', `${score.score} of ${POINTS.max}`));
   return wrap;
 }
 
@@ -47,6 +61,7 @@ export function renderHoverCard(card: HTMLElement, region: DrawnRegion, depthKm:
   card.append(element('div', 'ih-name', region.name));
   card.append(element('div', 'ih-kicker', familyPhaseText(region)));
   if (depthKm !== null) card.append(element('div', 'ih-depth', `${formatKm(Math.max(0, depthKm))} km down`));
+  card.append(element('div', 'ih-hint', 'Click to read'));
 }
 
 export interface InspectorContext {
@@ -93,15 +108,16 @@ export function renderInspector(root: HTMLElement, context: InspectorContext): v
 
   const schema = region.region;
   if (!schema) {
-    // The unresolved whole: the bulk line is all there is to say.
+    // The unresolved whole: the bulk line is all there is to say, and the panel already
+    // carries the note, so the card keeps to the number and its source.
     const bulk = coverageBulk(coverage);
     root.append(element('div', 'ii-depth', `${formatKm(drawn.referenceRadiusKm)} km to the centre`));
-    root.append(element('p', 'ii-text', bulk ? bulk.note : region.composition));
+    root.append(element('p', 'ii-text', region.composition));
     if (bulk?.densityKgM3) {
       root.append(line('Bulk density', `${formatKm(bulk.densityKgM3.value)} kg/m³ (${bulk.densityKgM3.basis})`));
       root.append(element('div', 'ii-src', bulk.densityKgM3.source));
     }
-    root.append(element('div', 'ii-foot', 'No interior model is drawn for this body; the flat grey is the no-data treatment, not a material.'));
+    root.append(element('div', 'ii-foot', 'No interior model is drawn for this body; the grey hatch means not known, not a material.'));
     return;
   }
 
@@ -111,21 +127,21 @@ export function renderInspector(root: HTMLElement, context: InspectorContext): v
 
   const scores = claimScores(context);
   if (schema.claims.length > 0) {
-    root.append(element('div', 'ii-sec', 'Evidence'));
+    root.append(element('div', 'ii-sec', 'How sure we are · click a row for the evidence'));
     schema.claims.forEach((claim, claimIndex) => {
       const button = element('button', 'ii-claim');
       button.type = 'button';
       button.dataset.claim = claim.kind;
       button.setAttribute('aria-label', `${CLAIM_TITLE[claim.kind]}: ${EVIDENCE_LEVEL_LABEL[scores[claimIndex].level]}, open the evidence`);
-      button.append(element('span', 'ii-claim-title', CLAIM_TITLE[claim.kind]), buildMeter(scores[claimIndex]));
+      button.append(element('span', 'ii-claim-title', CLAIM_TITLE[claim.kind]), buildMeter(scores[claimIndex], { numeral: true }));
       button.addEventListener('click', () => context.onEvidence(claimIndex));
       root.append(button);
     });
   }
 
   root.append(element('div', 'ii-sec', 'Conditions'));
-  root.append(line('Temperature', quantityText(schema.temperatureK, 'K')));
-  root.append(line('Pressure', quantityText(schema.pressureGPa, 'GPa')));
+  root.append(line('Temperature', temperatureQuantityText(schema.temperatureK)));
+  root.append(line('Pressure', pressureQuantityText(schema.pressureGPa)));
   root.append(line('Density', quantityText(schema.densityKgM3, 'kg/m³')));
   root.append(line('Boundary above', boundaryText(schema)));
 
@@ -145,17 +161,26 @@ export function renderInspector(root: HTMLElement, context: InspectorContext): v
     }
   }
 
+  // Past readings: how the picture of this body has changed, from the registry's history.
+  const past = coverage.history.filter((entry) => entry.status !== 'current' || entry.modelId !== drawn.modelId);
+  if (past.length > 0) {
+    root.append(element('div', 'ii-sec', 'Past readings'));
+    for (const entry of past) {
+      const row = element('div', 'ii-annotation');
+      row.append(element('b', '', `${entry.year} · ${PAST_STATUS_WORD[entry.status]}`), document.createTextNode(` ${entry.note}`));
+      root.append(row);
+    }
+  }
+
   const model = drawn.model;
   if (model) {
-    if (coverage.state === 'competing') {
-      const others = coverage.models.filter((candidate) => candidate.modelId !== model.modelId);
-      if (others.length > 0) {
-        const alt = element('div', 'ii-alt');
-        alt.append(element('b', '', 'Another reading. '), document.createTextNode(coverage.distinguishedBy));
-        root.append(alt);
-      }
-    }
-    const review = model.review === 'reviewed' ? `reviewed ${model.reviewedOn}` : `provisional, ${model.reviewedOn}`;
-    root.append(element('div', 'ii-foot', `${model.modelId} v${model.version} · ${review} · epoch ${model.epoch}. Colours and textures are illustrative treatments, not data.`));
+    const review = model.review === 'reviewed' ? `Reviewed model, ${reviewDateText(model.reviewedOn)}` : `Provisional model, last checked ${reviewDateText(model.reviewedOn)}`;
+    root.append(element('div', 'ii-foot', `${review}. Colours and textures are illustrative, not data.`));
   }
 }
+
+const PAST_STATUS_WORD: Readonly<Record<'current' | 'superseded' | 'disfavoured', string>> = {
+  current: 'also current',
+  superseded: 'superseded',
+  disfavoured: 'disfavoured',
+};

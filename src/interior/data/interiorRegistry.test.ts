@@ -44,8 +44,8 @@ describe('interiorRegistry', () => {
   it('badges a competing entry with its model count', () => {
     expect(coverageBadge(coverageFor('Jupiter'))).toBe('two models');
     expect(coverageBadge(coverageFor('Earth'))).toBe('modelled');
-    expect(coverageBadge(coverageFor('Phobos'))).toBe('poorly known');
-    expect(coverageBadge(coverageFor('Nix'))).toBe('not yet');
+    expect(coverageBadge(coverageFor('Phobos'))).toBe('little known');
+    expect(coverageBadge(coverageFor('Nix'))).toBe('no model yet');
     const jupiter = coverageFor('Jupiter');
     if (jupiter.state !== 'competing') throw new Error('Jupiter is a competing entry');
     const third = { ...jupiter.models[0], modelId: 'third' };

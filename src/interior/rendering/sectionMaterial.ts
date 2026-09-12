@@ -245,7 +245,7 @@ export function writeSectionRegions(
     uniforms.uAmbient.value[index] = lustre ? art.ambient : art.ambient + 0.1 * art.metalness;
     if (art.selfLit) {
       // A light: the palette is the emission; the radiance says where in the body's heat it sits.
-      uniforms.uHeat.value[index].setScalar((SELF_LIT_FLOOR + SELF_LIT_RANGE * heatLevels[index]) * art.heatGain);
+      uniforms.uHeat.value[index].setScalar((SELF_LIT_FLOOR + SELF_LIT_RANGE * Math.pow(heatLevels[index], 3)) * art.heatGain);
     } else {
       const tint = linearTint(art.heatTint);
       uniforms.uHeat.value[index]
@@ -268,9 +268,10 @@ export function writeSectionRegions(
 }
 
 /** A self-lit region's radiance: this floor at the body's coolest self-lit zone, rising by the
- *  range to its hottest, so only the core crosses the bloom threshold. */
-const SELF_LIT_FLOOR = 0.55;
-const SELF_LIT_RANGE = 0.8;
+ *  range on the cube of its heat level, so the zones read in order and only the core crosses
+ *  the bloom threshold. */
+const SELF_LIT_FLOOR = 0.35;
+const SELF_LIT_RANGE = 0.85;
 
 function linearTint(hex: number): [number, number, number] {
   return [srgbToLinear(((hex >> 16) & 0xff) / 255), srgbToLinear(((hex >> 8) & 0xff) / 255), srgbToLinear((hex & 0xff) / 255)];
@@ -392,11 +393,13 @@ vec3 sectionScaleColor(float t) {
   return mix(uScaleStops[stop], uScaleStops[stop + 1], f);
 }
 
-// A screen-space hatch for a temperature nobody knows: distinct from every
-// scale colour, and never mistaken for cold.
+// A screen-space crosshatch for a temperature nobody knows: distinct from
+// every scale colour, never mistaken for cold, and crossed so it is never
+// mistaken for an uncertain boundary's single-direction band either.
 vec3 sectionNoDataColor() {
-  float hatch = step(0.5, fract((gl_FragCoord.x + gl_FragCoord.y) / 10.0));
-  return mix(vec3(0.045), vec3(0.15), hatch);
+  float hatchA = step(0.5, fract((gl_FragCoord.x + gl_FragCoord.y) / 10.0));
+  float hatchB = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) / 10.0));
+  return mix(vec3(0.045), vec3(0.15), max(hatchA, hatchB));
 }
 
 // Emphasis: the rest desaturate a little and their heat dims a little, so

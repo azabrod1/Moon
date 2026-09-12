@@ -331,8 +331,8 @@ export function coverageBadge(coverage: Coverage): string {
       return `${COUNT_WORD[count] ?? String(count)} models`;
     }
     case 'poorlyConstrained':
-      return 'poorly known';
+      return 'little known';
     case 'notYetModelled':
-      return 'not yet';
+      return 'no model yet';
   }
 }

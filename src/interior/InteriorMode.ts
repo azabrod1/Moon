@@ -77,7 +77,7 @@ import {
   stepToward,
   unresolvedComposition,
 } from './interiorLogic';
-import { formatKm, formatNumber } from './ui/inspectorText';
+import { formatKm, formatNumber, temperatureQuantityText } from './ui/inspectorText';
 import {
   IDENTITY_REMAP,
   READABLE_MIN_PX,
@@ -207,6 +207,11 @@ const ORIGIN = new THREE.Vector3(0, 0, 0);
 const tmpLocalUp = new THREE.Vector3();
 const tmpNdc = new THREE.Vector2();
 
+/** "288 K · 15 °C": the scale's ends in both units. */
+function kelvinWithCelsius(kelvin: number): string {
+  return `${formatNumber(kelvin)} K · ${formatNumber(Math.round(kelvin - 273.15))} °C`;
+}
+
 export class InteriorMode {
   private readonly camera: THREE.PerspectiveCamera;
   private readonly interiorScene: InteriorScene;
@@ -263,6 +268,9 @@ export class InteriorMode {
 
   // The Readable scale.
   private readable = true;
+  /** The model switch's note, and whether the reader has opened it past its first line. */
+  private modelsNoteText = '';
+  private modelsNoteExpanded = false;
   private scaleBlend = 1;
   private scaleBlendTarget = 1;
   private remap: ReadableRemap | null = null;
@@ -331,12 +339,21 @@ export class InteriorMode {
         title.append(strong, document.createTextNode(' another world'));
       },
       rowBadge: (name) => {
+        const tags = document.createElement('span');
+        tags.className = 'pk-tags';
+        if (name === this.body?.id) {
+          const here = document.createElement('span');
+          here.className = 'pk-tag-cover on';
+          here.textContent = 'open now';
+          tags.append(here);
+        }
         const pill = document.createElement('span');
         const coverage = coverageFor(name);
         const drawnByDefault = coverage.state === 'constrained' || coverage.state === 'competing';
         pill.className = 'pk-tag-cover' + (drawnByDefault ? ' on' : '');
         pill.textContent = coverageBadge(coverage);
-        return pill;
+        tags.append(pill);
+        return tags;
       },
       onPick: (name) => {
         this.picker.close();
@@ -492,7 +509,7 @@ export class InteriorMode {
    *  it depends on moved — the cut, the remap, the model, the face it sits on,
    *  the camera, the viewport, its opacity — so a frame at rest costs nothing here. */
   private renderRuler(): void {
-    if (isPhoneViewport() || !this.remap || this.cut.angleDeg <= 0.5 || this.loading) {
+    if (isPhoneViewport() || !this.remap || this.cut.angleDeg <= 0.5 || this.loading || this.evidenceClaim >= 0) {
       this.ruler.hide();
       this.rulerStale = true;
       return;
@@ -608,10 +625,17 @@ export class InteriorMode {
   private setReadable(on: boolean): void {
     this.readable = on;
     this.scaleBlendTarget = on ? 1 : 0;
-    const toggle = document.getElementById('interior-readable-toggle') as HTMLInputElement | null;
-    if (toggle) toggle.checked = on;
+    document.getElementById('interior-scale-readable')?.classList.toggle('on', on);
+    document.getElementById('interior-scale-true')?.classList.toggle('on', !on);
+    // Both states say what they show; a one-region body has nothing to widen.
+    const oneRegion = this.drawn.regionsInsideOut.length <= 1;
+    const row = document.getElementById('interior-readable-row');
+    if (row) row.style.display = oneRegion ? 'none' : '';
     const note = document.getElementById('interior-readable-note');
-    if (note) note.style.display = on ? '' : 'none';
+    if (note) {
+      note.textContent = on ? 'Thin layers widened so you can see them' : 'Layers at their true thickness';
+      note.style.display = oneRegion ? 'none' : '';
+    }
   }
 
   // ---- body ------------------------------------------------------------------
@@ -753,8 +777,22 @@ export class InteriorMode {
     slider?.addEventListener('input', () => {
       this.setTargetAngle(Number(slider.value), false);
     });
-    const toggle = document.getElementById('interior-readable-toggle') as HTMLInputElement | null;
-    toggle?.addEventListener('change', () => this.setReadable(toggle.checked));
+    document.getElementById('interior-scale-readable')?.addEventListener('click', () => this.setReadable(true));
+    document.getElementById('interior-scale-true')?.addEventListener('click', () => this.setReadable(false));
+    const grip = document.getElementById('interior-grip');
+    grip?.addEventListener('click', () => {
+      const panel = document.getElementById('interior-panel');
+      const expanded = panel?.classList.toggle('expanded') ?? false;
+      grip.setAttribute('aria-expanded', String(expanded));
+      grip.setAttribute('aria-label', expanded ? 'Shrink the panel' : 'Expand the panel');
+      this.updateScrollCue();
+    });
+    document.getElementById('interior-scroll')?.addEventListener('scroll', () => this.updateScrollCue(), { passive: true });
+    const more = document.getElementById('interior-models-more');
+    more?.addEventListener('click', () => {
+      this.modelsNoteExpanded = !this.modelsNoteExpanded;
+      this.syncModelsNote();
+    });
     const rings = document.getElementById('interior-rings-toggle') as HTMLInputElement | null;
     rings?.addEventListener('change', () => this.setRings(rings.checked));
     document.getElementById('interior-mode-composition')?.addEventListener('click', () => this.setDisplayMode('composition'));
@@ -819,7 +857,9 @@ export class InteriorMode {
         swatch.className = 'interior-swatch';
         // The swatch is what the face shows in this mode: the material's tone
         // (heated by its incandescence), or its place on the temperature scale.
-        if (!temperature) {
+        if (!temperature && art[index].pattern === 'hatch') {
+          swatch.classList.add('hatched'); // the unresolved whole is hatched in both modes
+        } else if (!temperature) {
           const swatchColor = swatchHex(art[index], incandescence(region.temperatureK ?? 0));
           swatch.style.background = `#${swatchColor.toString(16).padStart(6, '0')}`;
         } else if (region.temperatureK !== null && this.temperatureRange) {
@@ -835,7 +875,10 @@ export class InteriorMode {
         title.textContent = region.name;
         const detail = document.createElement('div');
         detail.className = 'interior-row-detail';
-        detail.textContent = region.composition;
+        // In Temperature mode the row says the temperature, since that is what the face shows.
+        detail.textContent = temperature
+          ? (region.region ? temperatureQuantityText(region.region.temperatureK) : 'not known')
+          : region.composition;
         text.append(title, detail);
         const depth = document.createElement('div');
         depth.className = 'interior-row-depth';
@@ -846,11 +889,16 @@ export class InteriorMode {
         if (existence >= 0) {
           const meter = document.createElement('div');
           meter.className = 'interior-row-meter';
-          meter.append(buildMeter(scores[index][existence]));
+          meter.append(buildMeter(scores[index][existence])); // no numeral in the legend; the inspector carries it
           row.append(meter);
         }
         legend.append(row);
       }
+    }
+    const legendHead = document.getElementById('interior-legend-head');
+    if (legendHead) {
+      legendHead.textContent = temperature ? 'Layers, outside in · their temperatures' : 'Layers, outside in · how sure we are each exists';
+      legendHead.style.display = this.drawn.regionsInsideOut.length > 1 ? '' : 'none';
     }
     this.renderScale();
     this.syncLegendEmphasis();
@@ -858,6 +906,14 @@ export class InteriorMode {
     this.syncViewButtons();
     this.syncAngleReadout();
     this.setReadable(this.readable);
+    requestAnimationFrame(() => this.updateScrollCue());
+  }
+
+  /** The fade at the panel's bottom edge: only while there is more below it. */
+  private updateScrollCue(): void {
+    const scroll = document.getElementById('interior-scroll');
+    if (!scroll) return;
+    scroll.classList.toggle('can-scroll', scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop > 2);
   }
 
   // ---- hover, pin, emphasis --------------------------------------------------
@@ -928,10 +984,12 @@ export class InteriorMode {
     if (index < 0 || index >= this.drawn.regionsInsideOut.length) {
       root.style.display = 'none';
       root.replaceChildren();
+      document.getElementById('interior-panel')?.classList.remove('inspecting');
+      this.updateScrollCue();
       return;
     }
     const phone = isPhoneViewport();
-    const host = document.getElementById(phone ? 'interior-panel' : 'interior-ui');
+    const host = document.getElementById(phone ? 'interior-scroll' : 'interior-ui');
     if (host && root.parentElement !== host) host.append(root);
     root.classList.toggle('docked', phone);
     renderInspector(root, {
@@ -941,10 +999,20 @@ export class InteriorMode {
       onEvidence: (claimIndex) => this.openEvidence(claimIndex),
       onClose: () => this.setPinned(-1),
     });
+    if (phone) {
+      // The sheet becomes the inspector, with the way back to the layers at its top.
+      const back = document.createElement('button');
+      back.type = 'button';
+      back.className = 'ii-back';
+      back.textContent = '‹ Back to layers';
+      back.addEventListener('click', () => this.setPinned(-1));
+      root.prepend(back);
+    }
+    document.getElementById('interior-panel')?.classList.toggle('inspecting', phone);
     root.style.display = '';
     root.scrollTop = 0;
-    // In the sheet the inspector sits under the legend: bring it into view.
-    if (phone && host) host.scrollTop = Math.max(0, root.offsetTop - 8);
+    if (phone && host) host.scrollTop = 0;
+    this.updateScrollCue();
   }
 
   private openEvidence(claimIndex: number): void {
@@ -1043,19 +1111,24 @@ export class InteriorMode {
    *  poorly constrained body's unresolved whole and its illustrative scenario. */
   private renderModelSwitch(): void {
     const root = document.getElementById('interior-models');
-    const note = document.getElementById('interior-models-note');
-    if (!root || !note) return;
+    const kicker = document.getElementById('interior-models-kicker');
+    if (!root || !kicker) return;
     root.replaceChildren();
     const choices: { modelId: string | null; label: string }[] = [];
     let noteText = '';
+    let kickerText = '';
     if (this.coverage.state === 'competing') {
       for (const model of coverageModels(this.coverage)) choices.push({ modelId: model.modelId, label: model.title });
       noteText = this.coverage.distinguishedBy;
+      kickerText = `${coverageBadge(this.coverage)} fit the data`;
     } else if (this.coverage.state === 'poorlyConstrained' && this.coverage.illustrative) {
       choices.push({ modelId: null, label: 'Unresolved' });
       choices.push({ modelId: this.coverage.illustrative.modelId, label: `${this.coverage.illustrative.title}, illustrative` });
       noteText = this.drawn.illustrative ? 'One way it could be built, drawn to show the idea; nothing has measured it.' : '';
+      kickerText = 'What to draw';
     }
+    kicker.textContent = kickerText;
+    kicker.style.display = choices.length > 0 ? '' : 'none';
     root.style.display = choices.length > 0 ? '' : 'none';
     for (const choice of choices) {
       const button = document.createElement('button');
@@ -1066,8 +1139,22 @@ export class InteriorMode {
       button.addEventListener('click', () => this.selectModel(choice.modelId));
       root.append(button);
     }
-    note.textContent = noteText;
-    note.style.display = noteText ? '' : 'none';
+    this.modelsNoteText = noteText;
+    this.syncModelsNote();
+  }
+
+  /** The model note: one line with "more" until the reader asks for the rest. */
+  private syncModelsNote(): void {
+    const note = document.getElementById('interior-models-note');
+    const text = document.getElementById('interior-models-note-text');
+    const more = document.getElementById('interior-models-more');
+    if (!note || !text || !more) return;
+    text.textContent = this.modelsNoteText;
+    note.style.display = this.modelsNoteText ? '' : 'none';
+    note.classList.toggle('collapsed', !this.modelsNoteExpanded);
+    more.textContent = this.modelsNoteExpanded ? 'less' : 'more';
+    more.setAttribute('aria-expanded', String(this.modelsNoteExpanded));
+    this.updateScrollCue();
   }
 
   /** Temperature mode's key: the body's scale with its range, and the hatch. */
@@ -1084,9 +1171,18 @@ export class InteriorMode {
     const min = document.getElementById('interior-scale-min');
     const max = document.getElementById('interior-scale-max');
     const mid = scale.querySelector('.interior-scale-mid');
-    if (min) min.textContent = `${formatNumber(range.minK)} K`;
-    if (max) max.textContent = `${formatNumber(range.maxK)} K`;
-    if (mid) mid.textContent = range.log ? 'temperature, log scale' : 'temperature';
+    if (min) min.textContent = kelvinWithCelsius(range.minK);
+    if (max) max.textContent = kelvinWithCelsius(range.maxK);
+    if (mid) mid.textContent = range.log ? 'temperature · log scale, each step ×10' : 'temperature';
+    // The band key line, only where a boundary is drawn with a band.
+    const bandNote = document.getElementById('interior-band-note');
+    if (bandNote) {
+      const banded = this.drawn.regionsInsideOut.some((region) => {
+        const kind = region.region?.boundary.knowledge.location?.kind;
+        return kind === 'interval' || kind === 'modelSpread';
+      });
+      bandNote.style.display = banded ? '' : 'none';
+    }
     scale.style.display = '';
   }
 

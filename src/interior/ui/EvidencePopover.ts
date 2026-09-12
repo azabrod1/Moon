@@ -33,13 +33,13 @@ const LEVEL_RANGE: Readonly<Record<EvidenceLevel, string>> = {
 /** The rubric's rules as the reader sees them, one line each. */
 export function rubricLines(): string[] {
   return [
-    `First supporting row from a method that reaches the region itself (seismology, samples, in-situ, neutrinos, helioseismology): +${POINTS.firstDirect}`,
-    `First supporting row when only indirect methods support it: +${POINTS.firstIndirect}`,
+    `The first piece of evidence from a method that reaches the region itself (seismology, samples, in-situ, neutrinos, helioseismology): +${POINTS.firstDirect}`,
+    `The first piece of evidence when only indirect methods support it: +${POINTS.firstIndirect}`,
     `Each further supporting method, indirect (gravity, moment of inertia, magnetic field, tides, libration, normal modes) or a second direct one: +${POINTS.further}, up to +${POINTS.furtherMax}`,
     `Laboratory work reproducing the state at those conditions: +${POINTS.lab}`,
     `Nothing published argues against it and no rival model draws it differently: +${POINTS.unchallenged}`,
-    `Each challenging row: ${POINTS.challenge}, down to ${POINTS.challengeMax}`,
-    'Constraining rows, consistent models, a second row of a method already counted, and the bulk density beside stronger evidence: 0, listed for the reader',
+    `Each piece of evidence that argues against it: ${POINTS.challenge}, down to ${POINTS.challengeMax}`,
+    'Evidence that only narrows it, consistent models, a second piece from a method already counted, and the bulk density beside stronger evidence: 0, listed so you can see them',
     `Only the bulk density: +${POINTS.densityOnly}, and never above Model-dependent`,
     `The score is rounded to fives and never reaches 100: ${POINTS.max} is the ceiling.`,
     `Directly detected needs a measurement that reaches the region and a score of ${DIRECTLY_DETECTED_MIN_SCORE} or more; the same score without one is Well constrained.`,

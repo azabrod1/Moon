@@ -57,7 +57,7 @@ export const EVIDENCE_LEVEL_READS_AS: Readonly<Record<EvidenceLevel, string>> = 
   directlyDetected: 'A measurement reaches this region itself',
   wellConstrained: 'Several independent measurements agree, none reaching it directly',
   constrained: 'One class of measurement plus models',
-  modelDependent: 'Interior models with real degeneracy',
+  modelDependent: 'Several different interiors fit the same data',
   hypothesis: 'Plausible, unconfirmed, or challenged',
 };
 

@@ -1829,6 +1829,271 @@
     }
 
     /* ============================================= */
+    /* LOOK INSIDE (interior)                          */
+    /* ============================================= */
+    /* Same anchoring as #volume-compare-ui: children opt into pointer events. */
+    #interior-ui { display: none; }
+    #interior-leave {
+      position: absolute; top: 14px; left: 14px; z-index: 20; pointer-events: auto;
+      background: rgba(6, 8, 12, 0.72); border-color: rgba(255, 255, 255, 0.18); color: var(--t1);
+    }
+    #interior-leave:hover { background: rgba(20, 24, 32, 0.82); border-color: rgba(255, 255, 255, 0.28); color: var(--t1); }
+    #interior-panel {
+      position: absolute; top: 16px; right: 16px; z-index: 18;
+      width: min(300px, calc(100vw - 32px)); padding: 0; pointer-events: auto;
+      max-height: calc(100vh - 32px); display: flex; flex-direction: column; overflow: hidden;
+    }
+    /* The body of the panel scrolls; the footer stays. A fade at the bottom says there is more. */
+    .interior-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px 18px 10px; scrollbar-width: thin; }
+    .interior-scroll.can-scroll {
+      -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent);
+      mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent);
+    }
+    .interior-footer { flex: none; padding: 8px 18px 14px; border-top: 1px solid var(--line-dim); }
+    .interior-foot-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 4px; font-size: 12px; color: var(--t2); }
+    .interior-scale-seg { margin-top: 0; flex: 0 0 auto; width: 132px; }
+    .interior-scale-seg .interior-view { padding: 4px 6px; font-size: 11px; }
+    .interior-grip { display: none; }
+    .interior-body { font-family: var(--font-ui); font-size: 17px; font-weight: 600; color: var(--t1); letter-spacing: 0.2px; }
+    /* The name and the way to another world share a row: the name left, the button right. */
+    .interior-body-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    /* The body name opens the picker too, but the button beside it is what says so. */
+    .interior-chip {
+      display: inline-flex; align-items: center; min-width: 0; padding: 0; background: none; border: none;
+      text-align: left; cursor: pointer; -webkit-tap-highlight-color: transparent;
+    }
+    .interior-chip:hover { color: #fff; }
+    /* The way to another world: a bordered pill in the view buttons' clothes. */
+    #interior-change-body {
+      flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; min-height: 36px;
+      padding: 0 11px; border-radius: 999px; white-space: nowrap;
+    }
+    .interior-change-caret { font-size: 10px; color: var(--t3); }
+    #interior-change-body:hover .interior-change-caret, #interior-change-body:focus-visible .interior-change-caret { color: var(--accent); }
+    /* Coverage word on a picker row: what the tool can honestly show for it. */
+    .pk-tag-cover { flex: none; font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.14em; text-transform: uppercase; padding: 2px 6px; border: 1px solid var(--line); border-radius: 999px; color: var(--t3); }
+    .pk-tag-cover.on { color: var(--accent); border-color: rgba(var(--accent-rgb), 0.4); }
+    .pk-tags { display: inline-flex; gap: 4px; flex: none; }
+    .interior-caption {
+      margin-top: 3px; font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--t2);
+    }
+    .interior-views { display: flex; gap: 6px; margin-top: 12px; }
+    .interior-modes { margin-top: 8px; }
+    .interior-models-kicker, .interior-legend-head {
+      margin-top: 12px; font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--t2);
+    }
+    .interior-models { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+    .interior-models .interior-view { flex: 1 1 auto; font-size: 11px; padding: 5px 8px; }
+    .interior-models-note { margin-top: 6px; font-size: 11px; line-height: 1.45; color: var(--t2); }
+    .interior-models-note.collapsed .interior-models-note-text { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+    .interior-more { background: none; border: none; padding: 0; font: inherit; font-size: 10.5px; color: var(--accent); cursor: pointer; }
+    .interior-more:hover { text-decoration: underline; }
+    .interior-view {
+      flex: 1; padding: 6px 4px; border-radius: var(--r-s); border: 1px solid var(--line);
+      background: rgba(255,255,255,0.02); color: var(--t2); font-family: var(--font-ui);
+      font-size: 11.5px; cursor: pointer; -webkit-tap-highlight-color: transparent;
+      transition: background 0.14s var(--ease), color 0.14s var(--ease), border-color 0.14s var(--ease);
+    }
+    .interior-view:hover { background: rgba(255,255,255,0.06); color: var(--t1); }
+    .interior-view.on { border-color: rgba(var(--accent-rgb),0.42); background: rgba(var(--accent-rgb),0.16); color: var(--t1); }
+    .interior-slider-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+    .interior-slider-label { flex: none; font-size: 10.5px; color: var(--t2); }
+    .interior-slider {
+      -webkit-appearance: none; appearance: none; flex: 1; height: 6px; border-radius: 999px;
+      background: rgba(255,255,255,0.10); outline: none; cursor: pointer;
+    }
+    .interior-slider::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none; width: 15px; height: 15px; border-radius: 50%;
+      background: #fff; border: 2px solid rgba(0,0,0,0.35); box-shadow: 0 0 6px rgba(0,0,0,0.5); cursor: pointer;
+    }
+    .interior-slider::-moz-range-thumb {
+      width: 15px; height: 15px; border-radius: 50%; background: #fff; border: 2px solid rgba(0,0,0,0.35); cursor: pointer;
+    }
+    .interior-angle-value {
+      flex: none; min-width: 34px; text-align: right; font-family: var(--font-mono);
+      font-size: 10.5px; color: var(--t2); font-variant-numeric: tabular-nums;
+    }
+    .interior-legend { margin-top: 4px; border-top: 1px solid var(--line-dim); }
+    .interior-row {
+      display: grid; grid-template-columns: 12px 1fr auto; gap: 10px; align-items: start;
+      padding: 8px 6px; margin: 0 -6px; border-bottom: 1px solid var(--line-dim);
+      border-radius: var(--r-s); cursor: pointer; -webkit-tap-highlight-color: transparent;
+      transition: background 0.14s var(--ease);
+    }
+    /* A revealed body's rows arrive outside-in. */
+    @keyframes interior-row-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    .interior-legend.reveal .interior-row { animation: interior-row-in 320ms var(--ease) both; animation-delay: calc(var(--row, 0) * 55ms); }
+    @media (prefers-reduced-motion: reduce) { .interior-legend.reveal .interior-row { animation: none; } }
+    /* Hovering a row emphasises the region in 3D; hovering the region lights its row. */
+    .interior-row:hover, .interior-row.hot { background: rgba(255,255,255,0.05); }
+    .interior-row.pinned { background: rgba(var(--accent-rgb),0.10); }
+    .interior-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+    .interior-swatch { display: block; width: 12px; height: 12px; margin-top: 2px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.14); }
+    /* The no-data hatch, the same idea as the face's. */
+    .interior-swatch.hatched { background: repeating-linear-gradient(45deg, #3a3d44 0 2px, transparent 2px 5px), repeating-linear-gradient(-45deg, #3a3d44 0 2px, #16181c 2px 5px); }
+    /* An uncertain boundary's band: single stripes, the other way, so it never reads as "not known". */
+    .interior-swatch.banded { background: repeating-linear-gradient(-45deg, rgba(255,255,255,0.35) 0 1px, transparent 1px 4px), #2a2d34; }
+    /* The existence meter under a legend row's second line (plan §4). */
+    .interior-row-meter { grid-column: 2 / 4; grid-row: 3; margin-top: -2px; }
+    .interior-row-meter .ev-level { font-size: 9.5px; }
+    .interior-row-meter .ev-meter i { width: 6px; height: 7px; }
+    .interior-scale { margin-top: 10px; }
+    .interior-scale-bar { height: 8px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.10); }
+    .interior-scale-labels {
+      display: flex; justify-content: space-between; gap: 8px; margin-top: 4px;
+      font-family: var(--font-mono); font-size: 9.5px; color: var(--t2); font-variant-numeric: tabular-nums;
+    }
+    .interior-scale-mid { color: var(--t2); letter-spacing: 0.1em; text-transform: uppercase; font-size: 9px; text-align: center; }
+    .interior-scale-note { display: flex; align-items: center; gap: 6px; margin-top: 5px; font-size: 10.5px; color: var(--t2); }
+    .interior-scale-note .interior-swatch { margin-top: 0; }
+    .interior-row-name { font-family: var(--font-ui); font-size: 12px; font-weight: 600; color: var(--t1); line-height: 1.3; }
+    .interior-row-detail { margin-top: 1px; font-size: 10.5px; line-height: 1.4; color: var(--t2); }
+    /* The row's second line: how deep, what state, how hot. One line where it
+       fits; each piece is unbreakable, so a wrap lands between them. */
+    .interior-row-depth {
+      grid-column: 2 / 4; grid-row: 2; margin-top: 2px;
+      font-family: var(--font-mono); font-size: 10px; color: var(--t2);
+      font-variant-numeric: tabular-nums; line-height: 1.4;
+    }
+    .interior-row-part { white-space: nowrap; }
+    /* The bulk line for a body drawn as an unresolved whole: what its density says. */
+    .interior-coverage-note { margin-top: 8px; font-size: 11px; line-height: 1.45; color: var(--t2); }
+    /* The depth ruler overlay. */
+    .interior-ruler { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 17; overflow: visible; }
+    .interior-ruler .ruler-seg { stroke: rgba(255,255,255,0.55); stroke-width: 1; }
+    .interior-ruler .ruler-tick { stroke: rgba(255,255,255,0.7); stroke-width: 1; }
+    .interior-ruler .ruler-tick.minor { stroke: rgba(255,255,255,0.4); }
+    .interior-ruler .ruler-label { font-family: var(--font-mono); font-size: 9.5px; fill: var(--t2); text-anchor: middle; dominant-baseline: middle; paint-order: stroke; stroke: rgba(0,0,0,0.85); stroke-width: 3px; stroke-linejoin: round; }
+    .interior-ruler .ruler-name { font-family: var(--font-ui); font-size: 10.5px; fill: var(--t1); text-anchor: middle; dominant-baseline: middle; paint-order: stroke; stroke: rgba(0,0,0,0.85); stroke-width: 3px; stroke-linejoin: round; }
+    .interior-ruler .ruler-bracket { fill: none; stroke: rgba(255,255,255,0.45); stroke-width: 1; }
+    .interior-ruler .ruler-bracket-name { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; fill: var(--t2); text-anchor: middle; dominant-baseline: middle; paint-order: stroke; stroke: rgba(0,0,0,0.85); stroke-width: 3px; stroke-linejoin: round; }
+    /* Hover preview beside the pointer. */
+    .interior-hover {
+      position: fixed; z-index: 19; pointer-events: none; padding: 7px 10px; min-width: 120px;
+      max-width: 220px; border-radius: var(--r-s);
+    }
+    .ih-name { font-family: var(--font-ui); font-size: 12px; font-weight: 600; color: var(--t1); line-height: 1.3; }
+    .ih-kicker, .ii-kicker { margin-top: 2px; font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--t3); }
+    .ih-depth { margin-top: 3px; font-family: var(--font-mono); font-size: 10px; color: var(--t2); font-variant-numeric: tabular-nums; }
+    .ih-hint { margin-top: 5px; font-size: 10px; color: var(--t2); opacity: 0.8; }
+    /* The pinned inspector: bottom-left on desktop, docked in the sheet on phones. */
+    .interior-inspector {
+      position: absolute; left: 16px; bottom: 16px; z-index: 18; width: min(360px, calc(100vw - 32px));
+      max-height: min(72vh, 680px); overflow-y: auto; scrollbar-width: thin; padding: 14px 18px 12px; pointer-events: auto;
+    }
+    .interior-inspector.docked { position: static; width: auto; max-height: none; padding: 10px 0 0; margin-top: 10px; border-top: 1px solid var(--line-dim); background: none; border-radius: 0; box-shadow: none; backdrop-filter: none; }
+    .ii-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+    .ii-name { font-family: var(--font-ui); font-size: 15px; font-weight: 600; color: var(--t1); line-height: 1.25; }
+    .ii-close { background: none; border: none; color: var(--t3); cursor: pointer; padding: 2px; flex: none; }
+    .ii-close:hover { color: var(--t1); }
+    .ii-close svg { width: 15px; height: 15px; }
+    .ii-depth { margin-top: 6px; font-family: var(--font-mono); font-size: 10px; color: var(--t2); font-variant-numeric: tabular-nums; }
+    .ii-text { margin: 8px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--t2); }
+    .ii-rheology { color: var(--t3); }
+    .ii-sec { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line-dim); font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--t3); }
+    .ii-line { display: grid; grid-template-columns: 96px 1fr; gap: 8px; padding: 4px 0; font-size: 11px; line-height: 1.45; }
+    .ii-key { color: var(--t3); }
+    .ii-val { color: var(--t2); }
+    .ii-note { margin-top: 3px; padding-left: 9px; border-left: 2px solid var(--line-dim); font-size: 10.5px; line-height: 1.5; color: var(--t3); }
+    .ii-annotation { margin-top: 4px; font-size: 11px; line-height: 1.5; color: var(--t2); }
+    .ii-annotation b { color: var(--t1); font-weight: 600; }
+    .ii-alt { margin-top: 12px; padding: 8px 10px; border-radius: var(--r-s); background: rgba(var(--accent-rgb),0.08); font-size: 11px; line-height: 1.5; color: var(--t2); }
+    .ii-alt b { color: var(--t1); font-weight: 600; }
+    .ii-foot, .ii-src { margin-top: 10px; font-size: 10.5px; line-height: 1.5; color: var(--t2); }
+    /* Claim rows: a button that opens the popover; the meter is the level. */
+    .ii-claim {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;
+      margin-top: 4px; padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--r-s);
+      background: rgba(255,255,255,0.02); color: var(--t1); font-family: var(--font-ui); font-size: 11.5px;
+      text-align: left; cursor: pointer; -webkit-tap-highlight-color: transparent;
+      transition: background 0.14s var(--ease), border-color 0.14s var(--ease);
+    }
+    .ii-claim::after { content: '\203A'; flex: none; margin-left: 2px; font-size: 15px; line-height: 1; color: var(--t3); }
+    .ii-claim:hover { background: rgba(255,255,255,0.06); border-color: rgba(var(--accent-rgb),0.4); }
+    .ii-claim:hover::after { color: var(--t1); }
+    /* Phones: the docked inspector's way back to the layers. */
+    .ii-back { display: none; }
+    .ii-claim:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+    .ii-claim-title { flex: 1; min-width: 0; }
+    .ev-meter-wrap { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+    .ev-level { font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--t2); white-space: nowrap; }
+    .ev-meter { display: inline-flex; gap: 2px; }
+    .ev-meter i { display: block; width: 7px; height: 8px; border-radius: 2px; background: rgba(255,255,255,0.10); }
+    .ev-meter i.on { background: var(--accent); }
+    .ev-score { font-family: var(--font-mono); font-size: 10px; color: var(--t2); font-variant-numeric: tabular-nums; min-width: 18px; text-align: right; }
+    /* The evidence popover. */
+    .interior-evidence-card { width: min(440px, calc(100vw - 32px)); max-height: min(82vh, 720px); }
+    .ev-body { padding: 4px 16px 14px; overflow-y: auto; scrollbar-width: thin; }
+    .ev-summary { display: flex; align-items: center; gap: 8px; }
+    .ev-reads { margin-top: 4px; font-size: 11.5px; color: var(--t2); line-height: 1.5; }
+    .ev-prob { margin-top: 6px; font-size: 11px; color: var(--t2); line-height: 1.5; }
+    .ev-row { margin-top: 8px; padding: 8px 10px; border-radius: var(--r-s); background: rgba(255,255,255,0.03); border-left: 2px solid var(--line); }
+    .ev-row.ev-supports { border-left-color: rgba(var(--accent-rgb),0.6); }
+    .ev-row.ev-challenges { border-left-color: rgba(255,120,90,0.7); }
+    .ev-row-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 11.5px; }
+    .ev-row-head b { color: var(--t1); font-weight: 600; }
+    .ev-tag { font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.12em; text-transform: uppercase; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--t3); }
+    .ev-tag-supports { color: var(--accent); border-color: rgba(var(--accent-rgb),0.4); }
+    .ev-tag-challenges { color: #ff9b7a; border-color: rgba(255,120,90,0.45); }
+    .ev-prov { margin-left: auto; font-family: var(--font-mono); font-size: 9.5px; color: var(--t3); }
+    .ev-oiau { display: grid; grid-template-columns: 70px 1fr; gap: 3px 8px; margin: 6px 0 0; font-size: 11px; line-height: 1.45; }
+    .ev-oiau dt { color: var(--t3); }
+    .ev-oiau dd { margin: 0; color: var(--t2); }
+    .ev-src { margin-top: 6px; font-size: 9.5px; line-height: 1.4; color: var(--t3); }
+    .ev-arith { margin-top: 4px; }
+    .ev-arith-line { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--line-dim); font-size: 11px; line-height: 1.45; color: var(--t2); }
+    .ev-arith-line.zero { color: var(--t3); }
+    .ev-arith-points { font-family: var(--font-mono); font-variant-numeric: tabular-nums; flex: none; }
+    .ev-total { color: var(--t1); font-weight: 600; border-bottom: none; }
+    .ev-rubric-level { display: grid; grid-template-columns: 118px 74px 1fr; gap: 6px; padding: 3px 0; font-size: 10.5px; line-height: 1.45; color: var(--t3); }
+    .ev-rubric-range { font-family: var(--font-mono); font-size: 9.5px; color: var(--t2); }
+    .ev-rubric { margin: 6px 0 0; padding-left: 16px; font-size: 10.5px; line-height: 1.5; color: var(--t3); }
+    .ev-rubric li { margin-top: 2px; }
+    .interior-foot { --obs-hairline-dim: var(--line-dim); --obs-t2: var(--t2); }
+    .interior-note { margin-top: 4px; text-align: right; font-size: 10.5px; line-height: 1.4; color: var(--t2); }
+    @media (max-width: 640px) {
+      /* The sheet's height is the reader's: the drag writes --sheet-h, and only a
+         snap eases it, so the sheet follows a finger exactly while it is down. */
+      #interior-panel { top: auto; bottom: 12px; left: 12px; right: 12px; width: auto; height: var(--sheet-h, 30vh); max-height: 85vh; }
+      #interior-panel.snapping { transition: height 260ms var(--ease); }
+      /* The grip is a drag handle: a wide, finger-sized band around a 4 px bar. */
+      .interior-grip {
+        display: flex; flex: none; align-items: center; justify-content: center; width: 100%; height: 28px;
+        padding: 0; background: none; border: none; cursor: grab; touch-action: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .interior-grip:active { cursor: grabbing; }
+      .interior-grip span { display: block; width: 38px; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.3); }
+      #interior-change-body { min-height: 40px; }
+      .interior-scroll { padding: 0 14px 6px; }
+      .interior-footer { padding: 6px 14px 10px; }
+      .interior-slider-row { display: none; }
+      .interior-view { min-height: 40px; }
+      .interior-scale-seg .interior-view { min-height: 36px; }
+      .interior-row { min-height: 44px; align-items: center; }
+      .interior-row-detail { display: none; }
+      /* The meter keeps its word: the pips above, the level under them, right-aligned. */
+      .interior-row-meter { grid-column: 3; grid-row: 1; margin-top: 0; justify-self: end; }
+      .interior-row-meter .ev-meter-wrap { flex-direction: column-reverse; align-items: flex-end; gap: 2px; }
+      .interior-row-meter .ev-level { font-size: 8px; color: var(--t3); text-align: right; }
+      .interior-row-meter .ev-score { display: none; }
+      .interior-row-depth { margin-top: 1px; font-size: 9px; }
+      /* One line of what the legend is, at a size a phone can read. */
+      .interior-legend-head { font-size: 10px; margin-top: 10px; }
+      .ii-close { width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; }
+      .interior-inspector.docked .ii-back { display: inline-flex; align-items: center; gap: 4px; margin: 4px 0 6px; padding: 8px 4px; background: none; border: none; color: var(--accent); font: inherit; font-size: 12px; cursor: pointer; }
+      #interior-panel.inspecting .interior-scroll > :not(#interior-inspector) { display: none !important; }
+      #interior-panel.inspecting .interior-footer { display: none; }
+      #interior-evidence.visible { background: rgba(0,0,0,0.45); }
+      .interior-evidence-card { width: calc(100vw - 16px); max-height: 92vh; }
+      .interior-hover { display: none !important; }
+      .interior-ruler { display: none !important; }
+      .ev-rubric-level { grid-template-columns: 1fr; gap: 1px; padding: 5px 0; }
+    }
+
+    /* ============================================= */
     /* VOLUME COMPARE MODE ("How many fit?")         */
     /* ============================================= */
     /* Children anchor to #ui-overlay (the nearest positioned ancestor) exactly
@@ -2032,24 +2297,26 @@
     .compare-foot { margin-top: 12px; }
 
     /* Body picker modal (deck-row family; full-screen click-catcher) */
-    #compare-picker { display: none; position: fixed; inset: 0; z-index: 40; align-items: center; justify-content: center; pointer-events: auto; }
-    #compare-picker.visible { display: flex; }
-    .compare-picker-card {
+    /* Shared by the tools' pickers (planetarium/ui/BodyPicker): the compare
+       sentence's and the Look-inside body chip's. */
+    .body-picker { display: none; position: fixed; inset: 0; z-index: 40; align-items: center; justify-content: center; pointer-events: auto; }
+    .body-picker.visible { display: flex; }
+    .body-picker-card {
       width: min(340px, calc(100vw - 32px)); max-height: min(70vh, 560px);
       display: flex; flex-direction: column; overflow: hidden;
     }
-    .compare-picker-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 6px; }
-    .compare-picker-title { font-size: 13px; color: var(--t2); line-height: 1.4; }
-    .compare-picker-title b { color: var(--accent); font-weight: 600; }
-    .compare-picker-card .pk-x { background: none; border: none; color: var(--t3); cursor: pointer; padding: 2px; }
-    .compare-picker-card .pk-x:hover { color: var(--t1); }
-    .compare-picker-card .pk-x svg { width: 15px; height: 15px; }
+    .body-picker-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 6px; }
+    .body-picker-title { font-size: 13px; color: var(--t2); line-height: 1.4; }
+    .body-picker-title b { color: var(--accent); font-weight: 600; }
+    .body-picker-card .pk-x { background: none; border: none; color: var(--t3); cursor: pointer; padding: 2px; }
+    .body-picker-card .pk-x:hover { color: var(--t1); }
+    .body-picker-card .pk-x svg { width: 15px; height: 15px; }
     /* Picker rows are <button>s: strip the UA button chrome, or every non-header
        row renders as a light ButtonFace pill — a white-on-white Sun row and
        moons that scan as disabled. :where() keeps this at one-class specificity
        so the pk-planet sticky background and the pk-row hover states (later in
        the sheet) still win. */
-    .compare-picker-card :where(.pk-row) {
+    .body-picker-card :where(.pk-row) {
       border: none; background: none; width: 100%;
       font-family: var(--font-ui); text-align: left;
     }
@@ -4086,6 +4353,7 @@
         <button class="menu-action" id="planetarium-btn-new">New Journey</button>
         <button class="menu-action" id="planetarium-btn-tutorial">Tutorial</button>
         <button class="menu-action" id="planetarium-btn-map">System map</button>
+        <button class="menu-action" id="planetarium-btn-tools">Tools</button>
         <div class="menu-divider"></div>
         <div class="settings-row">
           <span class="settings-label">Show ship</span>
@@ -4371,6 +4639,10 @@
               <h4>The whole system at once (<kbd>M</kbd>)</h4>
               <p>Press <kbd>M</kbd> for a map of the solar system with your ship on it, running on the same clock &mdash; speed time up and everything wheels around the Sun. Drag to turn the view, scroll to zoom, and switch between a compressed layout and true distances. <kbd>M</kbd> or Esc drops you back into the ship.</p>
             </section>
+            <section class="help-section">
+              <h4>Tools</h4>
+              <p>The Tools button holds the side quests. <strong>How many fit?</strong> pours one world into another and counts. <strong>Look inside</strong> cuts a world open: its layers at their real depths, glowing with their own heat, and a key that says what each is made of and how well we know it. Hover a layer to see it, click to read about it, and open any claim to see the evidence and how its score is made. <strong>Temperature</strong> swaps the materials for the heat, on that world's own scale; hatching means nobody knows. Where two models fit the data, both are there to switch between. The Sun is there too, from its fusion core out to the photosphere. Pick any planet or moon from its chip, or use <strong>Look inside</strong> on a body's map card. <strong>Leave</strong> (or Esc) puts you back exactly where you were.</p>
+            </section>
             <p class="help-signoff">Have fun out there.</p>
           </div>
           <div class="help-tutorial-row">
@@ -4415,6 +4687,27 @@
         <div class="tools-card pn pn-high">
           <div class="tools-head"><h3>Tools</h3></div>
           <div class="pk-list" id="tools-menu-list"></div>
+        </div>
+      </div>
+
+      <!-- Which world to look inside: the Look-inside row asks before the tool
+           is entered. The shared BodyPicker's third instance (the compare
+           studio's and the tool's own are the others) — full-screen
+           click-catcher, one modal at a time. -->
+      <div id="tools-inside-picker" class="body-picker">
+        <div class="body-picker-card pn pn-high">
+          <div class="body-picker-head">
+            <div class="body-picker-title" id="tools-inside-picker-title"></div>
+            <button class="pk-x" id="tools-inside-picker-close" aria-label="Close">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
+            </button>
+          </div>
+          <div class="pk-search">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="9" cy="9" r="5.5"></circle><path d="M13.5 13.5 L17 17" stroke-linecap="round"></path></svg>
+            <input id="tools-inside-picker-search" type="text" placeholder="Search bodies" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="pk-list" id="tools-inside-picker-list"></div>
+          <div class="pk-empty" id="tools-inside-picker-empty">No bodies match.</div>
         </div>
       </div>
 
@@ -4828,10 +5121,10 @@
       </div>
 
       <!-- Body picker (full-screen click-catcher; one-modal-at-a-time) -->
-      <div id="compare-picker">
-        <div class="compare-picker-card pn pn-high">
-          <div class="compare-picker-head">
-            <div class="compare-picker-title" id="compare-picker-title"></div>
+      <div id="compare-picker" class="body-picker">
+        <div class="body-picker-card pn pn-high">
+          <div class="body-picker-head">
+            <div class="body-picker-title" id="compare-picker-title"></div>
             <button class="pk-x" id="compare-picker-close" aria-label="Close">
               <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
             </button>
@@ -4857,6 +5150,101 @@
           <div class="compare-endcard-trylabel">Try next</div>
           <div class="compare-endcard-rows" id="compare-endcard-rows"></div>
           <button type="button" class="compare-endcard-again" id="compare-endcard-again">Pour again</button>
+        </div>
+      </div>
+    </div>
+    <div id="interior-ui">
+      <button class="act-btn act-leave" id="interior-leave" aria-label="Leave">
+        <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 5 L6.5 10 L11.5 15"></path><path d="M6.5 10 H15"></path></svg>
+        <span class="act-lbl">Leave</span>
+      </button>
+      <div id="interior-panel" class="pn pn-high">
+        <!-- Phones: the panel is a sheet; the grip toggles it between its peek and its full height. -->
+        <button type="button" class="interior-grip" id="interior-grip" aria-label="Expand the panel" aria-expanded="false"><span aria-hidden="true"></span></button>
+        <div class="interior-scroll" id="interior-scroll">
+          <div class="interior-body-row">
+            <button type="button" class="interior-body interior-chip" id="interior-body-chip" title="Look inside another world" aria-label="Look inside another world">
+              <span id="interior-body-name"></span>
+            </button>
+            <button type="button" class="interior-view interior-change-body" id="interior-change-body" aria-label="Look inside another world">Change world<span class="interior-change-caret" aria-hidden="true">&#x25BE;</span></button>
+          </div>
+          <div class="interior-caption" id="interior-caption"></div>
+          <div class="interior-views" role="group" aria-label="View">
+            <button type="button" class="interior-view" id="interior-view-closed">Closed</button>
+            <button type="button" class="interior-view on" id="interior-view-cutaway">Cutaway</button>
+            <button type="button" class="interior-view" id="interior-view-section">Section</button>
+          </div>
+          <div class="interior-slider-row">
+            <span class="interior-slider-label" id="interior-angle-label">Opening</span>
+            <input type="range" id="interior-angle" class="interior-slider" min="0" max="180" step="1" value="120" aria-labelledby="interior-angle-label">
+            <span class="interior-angle-value" id="interior-angle-value">120°</span>
+          </div>
+          <div class="interior-views interior-modes" role="group" aria-label="Display">
+            <button type="button" class="interior-view on" id="interior-mode-composition">Composition</button>
+            <button type="button" class="interior-view" id="interior-mode-temperature">Temperature</button>
+          </div>
+          <div class="interior-legend-head" id="interior-legend-head">Outside in · how sure each exists</div>
+          <div id="interior-legend" class="interior-legend" role="list"></div>
+          <!-- Temperature mode's key: this body's own scale, the hatch for what nobody knows, the stripes for a boundary nobody has placed. -->
+          <div id="interior-scale" class="interior-scale" style="display:none">
+            <div class="interior-scale-bar" id="interior-scale-bar"></div>
+            <div class="interior-scale-labels"><span id="interior-scale-min"></span><span class="interior-scale-mid">temperature</span><span id="interior-scale-max"></span></div>
+            <div class="interior-scale-note"><i class="interior-swatch hatched" aria-hidden="true"></i>Not known</div>
+            <div class="interior-scale-note" id="interior-band-note" style="display:none"><i class="interior-swatch banded" aria-hidden="true"></i>Faint stripes: where a boundary might be</div>
+          </div>
+          <div class="interior-coverage-note" id="interior-coverage-note" style="display:none"></div>
+          <!-- Competing models, or a poorly constrained body's unresolved / illustrative choice: a data choice, so it sits under the layers. -->
+          <div class="interior-models-kicker" id="interior-models-kicker" style="display:none"></div>
+          <div id="interior-models" class="interior-models" role="group" aria-label="Model" style="display:none"></div>
+          <div id="interior-models-note" class="interior-models-note collapsed" style="display:none"><span class="interior-models-note-text" id="interior-models-note-text"></span> <button type="button" class="interior-more" id="interior-models-more" aria-expanded="false">more</button></div>
+        </div>
+        <!-- The footer never scrolls away: the two things a reader may want to switch at any time. -->
+        <div class="interior-footer" id="interior-footer">
+          <div class="interior-foot-row" id="interior-readable-row">
+            <span class="obs-footlbl">Layer thickness</span>
+            <div class="interior-views interior-scale-seg" role="group" aria-label="Layer thickness">
+              <button type="button" class="interior-view" id="interior-scale-readable">Readable</button>
+              <button type="button" class="interior-view on" id="interior-scale-true">True</button>
+            </div>
+          </div>
+          <div class="interior-note" id="interior-readable-note">Layers at their true thickness</div>
+          <label class="obs-foot interior-foot" id="interior-rings-row" style="display:none">
+            <input type="checkbox" id="interior-rings-toggle" checked>
+            <span class="obs-footlbl">Rings</span>
+            <span class="obs-tgl" aria-hidden="true"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- The depth ruler: an SVG overlay posed each frame along the section's near edge; hidden on phones. -->
+      <svg id="interior-ruler" class="interior-ruler" aria-hidden="true" style="display:none"></svg>
+
+      <!-- Hover preview: follows the pointer over a region, never receives events. -->
+      <div id="interior-hover" class="interior-hover pn" aria-hidden="true" style="display:none"></div>
+
+      <!-- Pinned inspector: one region's reading. Docks into the panel on phones. -->
+      <div id="interior-inspector" class="interior-inspector pn pn-high" role="region" aria-label="Region details" style="display:none"></div>
+
+      <!-- Evidence popover: one claim's rows and the score arithmetic (a modal; Esc closes it first). -->
+      <div id="interior-evidence" class="body-picker">
+        <div class="body-picker-card pn pn-high interior-evidence-card" id="interior-evidence-card" role="dialog" aria-modal="true" aria-label="Evidence"></div>
+      </div>
+
+      <!-- Body picker (full-screen click-catcher; one-modal-at-a-time) -->
+      <div id="interior-picker" class="body-picker">
+        <div class="body-picker-card pn pn-high">
+          <div class="body-picker-head">
+            <div class="body-picker-title" id="interior-picker-title"></div>
+            <button class="pk-x" id="interior-picker-close" aria-label="Close">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
+            </button>
+          </div>
+          <div class="pk-search">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="9" cy="9" r="5.5"></circle><path d="M13.5 13.5 L17 17" stroke-linecap="round"></path></svg>
+            <input id="interior-picker-search" type="text" placeholder="Search bodies" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="pk-list" id="interior-picker-list"></div>
+          <div class="pk-empty" id="interior-picker-empty">No bodies match.</div>
         </div>
       </div>
     </div>

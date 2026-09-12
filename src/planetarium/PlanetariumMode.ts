@@ -17,6 +17,7 @@ import {
   createSolarSystem,
   ORBIT_LINE_RESAMPLE_MAX_AGE_MS,
   orbitLineOpacity,
+  poseOrbitLine,
   resampleOrbitLines,
   type SolarSystemObjects,
   type PlanetariumLayout,
@@ -364,6 +365,7 @@ import {
   type HistoricMissionId,
   type HistoricMilestone,
 } from './missions/historicJourneys';
+import { BodyPicker } from './ui/BodyPicker';
 import { PlanetariumBottomBar } from './ui/PlanetariumBottomBar';
 import { PlanetariumHelpModal } from './ui/PlanetariumHelpModal';
 import { PlanetariumMenuPanel } from './ui/PlanetariumMenuPanel';
@@ -449,6 +451,7 @@ import {
 } from './map/miniChart';
 import { flushOrbitDamping } from './input/orbitDamping';
 import { formatBodyDistance, bodyDistanceQuantum } from './bodyDistance';
+import type { ToolRequest } from './toolRequest';
 
 /** How long a context-restore re-warm may keep the late-link check muted. */
 const REWARM_MUTE_MAX_MS = 15_000;
@@ -706,6 +709,10 @@ export class PlanetariumMode {
   private labelDistancesMode: LabelDistancesMode = 'hover';
   private showBodyMarkers = true;
   private showOrbitLines = false;
+  /** `?orbitanchor=0`: pose the orbit lines the old way — heliocentric
+   *  float32 vertices translated by −ship — the A/B for any question about
+   *  an orbit line moving when the ship does, and the kill switch. */
+  private readonly orbitAnchorEnabled = new URLSearchParams(location.search).get('orbitanchor') !== '0';
 
   // Hover/tap body reveal. `revealedBody` is the one body (planet, moon, or
   // 'Sun') whose label is drawn regardless of the label/marker settings and of
@@ -1769,6 +1776,7 @@ export class PlanetariumMode {
     () => (this.mapDiving ? this.cancelMapDive() : this.closeMap()),
     (verb) => this.commitMapCard(verb),
     () => this.focusMapCard(),
+    () => this.insideMapCard(),
     () => this.mapOverviewPressed(),
     () => this.warpToMapEvent(),
   );
@@ -2114,6 +2122,8 @@ export class PlanetariumMode {
    *  clock on return — and what getState() serves meanwhile, so a tab-close inside
    *  the tool reloads to the pre-tool landing. Same idiom as preMissionState. */
   private preToolState: PlanetariumState | null = null;
+  /** Set when a tool was entered from a map card, so leaving it reopens the map. */
+  private reopenMapAfterTool = false;
   private deferredResumePromptState: PlanetariumState | null = null;
   private resumeShipAfterMenu = false;
   private resumeTimeAfterMenu = false;
@@ -2196,17 +2206,37 @@ export class PlanetariumMode {
   // Mode switching lives in main.ts, not here; the "How many fit?" Tools entry
   // calls this stored callback so main.ts can drive switchAppMode
   // (MoonFlight's onExit idiom).
-  /** Owns the switch into the "How many fit?" tool; answers whether the
-   *  switch was taken — at once for a refusal (one already in flight), or
-   *  once the switch has run for a failure on the way in. */
-  private volumeCompareRequestCb: (() => boolean | Promise<boolean>) | null = null;
+  /** Owns the switch into a tool ("How many fit?", Look inside); answers
+   *  whether the switch was taken — at once for a refusal (one already in
+   *  flight), or once the switch has run for a failure on the way in. */
+  private toolRequestCb: ((request: ToolRequest) => boolean | Promise<boolean>) | null = null;
   /** A tool entry has been accepted and its switch has not settled yet. */
   private toolEntryPending = false;
   /** Bumped by every activate(): a tool entry settles against the activation
    *  it was made in, whatever the timing of a fallback re-activation. */
   private activationGen = 0;
-  onVolumeCompareRequest(cb: () => boolean | Promise<boolean>): void {
-    this.volumeCompareRequestCb = cb;
+  onToolRequest(cb: (request: ToolRequest) => boolean | Promise<boolean>): void {
+    this.toolRequestCb = cb;
+  }
+
+  /** A door to a tool has become visible — the Tools popover, or a body card
+   *  carrying Look inside. The owner of the switch may fetch the tool chunks
+   *  now, before the reader asks for one: on a phone that fetch is otherwise
+   *  paid after the tap, behind the fade, with nothing to look at. Called often
+   *  and answered cheaply (the browser's module map caches the fetch). */
+  private toolWarmCb: (() => void) | null = null;
+  onToolWarm(cb: () => void): void {
+    this.toolWarmCb = cb;
+  }
+
+  /** Fail-open: warming a chunk buys a faster open and nothing else, so a throw
+   *  here must not take the menu or the card down with it. */
+  private warmToolChunks(): void {
+    try {
+      this.toolWarmCb?.();
+    } catch (err) {
+      debugWarn('Tool chunk prefetch failed', { err: String(err) });
+    }
   }
 
   active = false;
@@ -2879,7 +2909,7 @@ export class PlanetariumMode {
       }
 
       if (this.preToolState) {
-        // Returning from the volume-compare tool — restore the exact pre-tool
+        // Returning from a tool (How many fit?, Look inside) — restore the exact pre-tool
         // journey (landed body, camera, clock) captured on entry, not the store's
         // copy. Cleared so a later fresh activation reads the store normally.
         // Session-only landed sub-states (surface view, orbit details) drop, same
@@ -2887,6 +2917,11 @@ export class PlanetariumMode {
         const pre = this.preToolState;
         this.preToolState = null;
         this.restoreState(pre);
+        if (this.reopenMapAfterTool) {
+          // Entered from a map card: the reader was reading the map, so hand it back.
+          this.reopenMapAfterTool = false;
+          this.openMap();
+        }
       } else if (savedState && shouldPromptForResume) {
         this.restoreState(savedState);
         this.deferredResumePromptState = savedState;
@@ -4744,8 +4779,16 @@ export class PlanetariumMode {
       if (systemGroup) systemGroup.position.copy(planet.group.position);
     }
 
-    for (const orbit of this.solarSystem.orbitLines) {
-      orbit.position.set(-px, -py, -pz);
+    // The orbit lines are the one thing here not posed at (world − ship):
+    // each line's float32 vertices are measured from an anchor near the ship
+    // and the line sits at (anchor − ship), so the GPU never subtracts two
+    // heliocentric floats (orbitLineAnchor.ts has the arithmetic and the
+    // bound; poseOrbitLine moves the anchor when the ship has drifted).
+    const orbitLines = this.solarSystem.orbitLines;
+    const orbitLineFrames = this.solarSystem.orbitLineFrames;
+    for (let i = 0; i < orbitLines.length; i++) {
+      if (this.orbitAnchorEnabled) poseOrbitLine(orbitLines[i], orbitLineFrames[i], px, py, pz);
+      else orbitLines[i].position.set(-px, -py, -pz);
     }
 
     this.solarSystem.asteroidBelt.position.set(-px, -py, -pz);
@@ -8629,6 +8672,9 @@ export class PlanetariumMode {
       // on purpose — during the deck theater the open deck is tutorial-owned, and
       // closing just it would leave the pending commit to teleport anyway.
       if (this.tutorial) { this.stopTutorial({ restore: true, toast: 'skip' }); return; }
+      // The Look-inside row's picker stands over the popover that opened it
+      // (already folded away), so it is the first of the two to go.
+      if (this.insidePicker?.isOpen()) { this.insidePicker.close(); return; }
       // Tools is a transient popover — above the deck rung (the ☰ menu is
       // deliberately NOT in the cascade; Tools is).
       if (this.isToolsMenuOpen()) { this.closeToolsMenu(); return; }
@@ -9609,16 +9655,26 @@ export class PlanetariumMode {
 
   // ── Tools front door ─────────────────────────────────────
   // The cluster button (right of Observe) opens an anchored popover launching
-  // the "How many fit?" tool. Visible in cruise AND landed (missions hide it via
+  // the "How many fit?" tool, and — through a picker of its own, since a tool
+  // that cuts one world open has to be told which — the Look-inside tool.
+  // Visible in cruise AND landed (missions hide it via
   // updateObservatoryButtonVisibility); transient popover in the Esc cascade and
-  // the one-modal-at-a-time set, but NOT a new keyboard key.
+  // the one-modal-at-a-time set, but NOT a new keyboard key. Both surfaces fold
+  // away together: closeToolsMenu takes the picker with the popover.
 
-  /** Enter the "How many fit?" tool — the one door into it, for the ☰ item and
-   *  for a `?auto=volumeCompare` boot alike. A no-op while the tutorial or a
-   *  mission owns the scene; closes every entry surface first (the ☰ menu
-   *  auto-pauses ship + clock and restores on close, so leave with that
-   *  resolved, as startTutorial does). True when the switch was taken. */
+  /** Enter the "How many fit?" tool: the Tools item and a `?auto=volumeCompare`
+   *  boot alike come through enterTool. */
   enterVolumeCompare(): boolean {
+    return this.enterTool({ kind: 'volumeCompare' });
+  }
+
+  /** Enter a tool — the one door into every tool, for the Tools popover, a
+   *  map-card action and a `?auto=` boot alike; the request carries what the
+   *  tool opens on. A no-op while the tutorial or a mission owns the scene;
+   *  closes every entry surface first (the ☰ menu auto-pauses ship + clock
+   *  and restores on close, so leave with that resolved, as startTutorial
+   *  does). True when the switch was taken. */
+  enterTool(request: ToolRequest): boolean {
     // Close the entry surfaces before the guard (a refused click must not leave
     // a dead modal up) and before the snapshot: the ☰ menu and the help modal
     // auto-pause ship and clock, and the snapshot must capture the resumed
@@ -9637,7 +9693,7 @@ export class PlanetariumMode {
     // return, so leaving the tool — or a tab-close inside it — resumes exactly
     // here. Mirrors preMissionState + the tutorial's getState()-serves-snapshot.
     this.preToolState = this.getState();
-    const answer = this.volumeCompareRequestCb?.() ?? false;
+    const answer = this.toolRequestCb?.(request) ?? false;
     // A switch that did not happen while this mode stayed live — refused at
     // once, or failed on the way in before this mode was taken down — must
     // not leave the snapshot standing in for the journey in every save from
@@ -9660,6 +9716,13 @@ export class PlanetariumMode {
   }
 
 
+  /** The picker the Look-inside row opens: which world to cut, asked before
+   *  the tool is entered. Built on the first tap. */
+  private insidePicker: BodyPicker | null = null;
+  /** Its coverage pills, once the tool's chunk has landed (see
+   *  openInsidePicker); null until then, and the rows stand without them. */
+  private insideCoverageTags: ((bodyId: string, lede: string | null) => HTMLElement) | null = null;
+
   private isToolsMenuOpen(): boolean {
     return document.getElementById('tools-menu')?.classList.contains('visible') ?? false;
   }
@@ -9674,12 +9737,17 @@ export class PlanetariumMode {
     if (!menu) return;
     // A committed dive owns the map; superseding it would drop the commit.
     if (this.mapDiving) return;
-    // One modal at a time — Tools joins the deck / ☰ / Look-at trio.
+    // One modal at a time — Tools joins the deck / ☰ / Look-at trio. Its own
+    // picker goes too: the popover is what opens it, and reopening the popover
+    // over a picker it already handed off to would be two doors at once.
     this.closeMap({ restore: false });
     this.closeMenuPanel();
     this.closeDeck();
     this.closeSurfaceTargetMenu();
+    this.insidePicker?.close();
     this.buildToolsMenu();
+    // Both rows here are one tap from a mode switch that fetches a chunk.
+    this.warmToolChunks();
     menu.classList.add('visible');
     // Anchor the card under the Tools button. Measured after .visible (a
     // display:none card has no width) and clamped to the viewport — on narrow
@@ -9694,8 +9762,68 @@ export class PlanetariumMode {
     }
   }
 
+  /** Fold the Tools front door away — the popover and, with it, the picker its
+   *  Look-inside row opens. Every one-modal-at-a-time site and every teardown
+   *  already calls this meaning "whatever Tools has on screen", so the two
+   *  surfaces go together and no caller has to learn about the second one. */
   private closeToolsMenu() {
     document.getElementById('tools-menu')?.classList.remove('visible');
+    this.insidePicker?.close();
+  }
+
+  /**
+   * The Look-inside row: ask which world before entering the tool. The tool
+   * used to open on a body nobody chose (where you stood, else the system you
+   * were in, else Earth), which in deep space is Earth by default — so the
+   * row is a question now, and the answer is what the tool opens on. The map
+   * card's Look inside stays direct: there the card IS the body.
+   *
+   * Built on the first tap and kept, like the tool's own picker. Its coverage
+   * pills come from the interior registry, which is every model's text: the
+   * planetarium reaches it through a dynamic import (the popover already
+   * prefetched the tool's chunk when it opened, so the wait is normally none)
+   * and the rows repaint when it lands. Fail-open — a picker with no pills
+   * still picks.
+   */
+  private openInsidePicker(): void {
+    // The popover this row lives in folded the deck, the ☰ menu and the
+    // Look-at menu away when it opened; this folds the popover itself.
+    this.closeToolsMenu();
+    if (this.tutorial !== null || this.isMissionActive()) return;
+    this.insidePicker ??= new BodyPicker({
+      ids: {
+        root: 'tools-inside-picker',
+        list: 'tools-inside-picker-list',
+        title: 'tools-inside-picker-title',
+        search: 'tools-inside-picker-search',
+        empty: 'tools-inside-picker-empty',
+        close: 'tools-inside-picker-close',
+      },
+      includeSun: true,
+      renderTitle: (title) => {
+        const strong = document.createElement('b');
+        strong.textContent = 'Look inside';
+        title.append(strong, document.createTextNode(' which world?'));
+      },
+      // "here" is the body under your feet — a place, which is why the compare
+      // studio's picker never says it and this one does.
+      rowBadge: (name) => this.insideCoverageTags?.(name, name === this.landedOn?.name ? 'here' : null) ?? null,
+      onPick: (name) => {
+        this.insidePicker?.close();
+        this.enterTool({ kind: 'interior', bodyId: name });
+      },
+      onClose: () => {},
+    });
+    this.insidePicker.bind();
+    this.insidePicker.open();
+    if (this.insideCoverageTags) return;
+    void import('../interior/ui/coverageTag').then(
+      (module) => {
+        this.insideCoverageTags = module.coverageTags;
+        if (this.insidePicker?.isOpen()) this.insidePicker.rebuild();
+      },
+      (err) => debugWarn('Look inside: the picker\'s coverage pills could not be loaded', { err: String(err) }),
+    );
   }
 
   /** Rebuild the popover rows (built dynamically so the tutorial-disabled state
@@ -9708,6 +9836,7 @@ export class PlanetariumMode {
     const running = this.tutorial !== null;
     const row = document.createElement('button');
     row.className = 'pk-row tools-row' + (running ? ' tools-dim' : '');
+    row.dataset.tool = 'volumeCompare';
     row.disabled = running;
     const info = document.createElement('span');
     info.className = 'pk-info';
@@ -9720,6 +9849,25 @@ export class PlanetariumMode {
     row.append(info);
     row.addEventListener('click', () => this.enterVolumeCompare());
     list.appendChild(row);
+
+    const insideRow = document.createElement('button');
+    insideRow.className = 'pk-row tools-row' + (running ? ' tools-dim' : '');
+    insideRow.dataset.tool = 'interior';
+    insideRow.disabled = running;
+    const insideInfo = document.createElement('span');
+    insideInfo.className = 'pk-info';
+    const insideName = document.createElement('b');
+    insideName.textContent = 'Look inside';
+    const insideSub = document.createElement('span');
+    insideSub.className = 'tools-sub';
+    // Never a body name. The row names no world because it opens on none:
+    // out in deep space it used to read "Cut Earth open", which is a promise
+    // about a planet the reader is nowhere near.
+    insideSub.textContent = 'Cut a world open and see its layers.';
+    insideInfo.append(insideName, insideSub);
+    insideRow.append(insideInfo);
+    insideRow.addEventListener('click', () => this.openInsidePicker());
+    list.appendChild(insideRow);
 
     // Historic journeys: one expandable group (parent row + a submenu of the five
     // missions) so the popover stays compact and reads as a single item until the
@@ -10095,6 +10243,11 @@ export class PlanetariumMode {
       if (label) label.textContent = this.showShip ? 'On' : 'Off';
     });
 
+    // The ☰ menu's door to the Tools popover, for anyone who never hovers the icon.
+    document.getElementById('planetarium-btn-tools')?.addEventListener('click', () => {
+      this.closeMenuPanel();
+      this.openToolsMenu();
+    });
     document.getElementById('settings-gyro-toggle')?.addEventListener('click', () => {
       void this.gyro.toggle();
     });
@@ -11583,6 +11736,8 @@ export class PlanetariumMode {
     // a bare point steps aside for it.
     this.dismissMapTeleportChip();
     const actions = mapCardActions(target, this.landedOn);
+    // A card with a Look inside button is the tool's other door.
+    if (actions.some((action) => action.kind === 'inside')) this.warmToolChunks();
     const color = this.bodyTintCss(name);
     // Zero only while there is no map open to measure against.
     const distAU = this.systemMap?.trueDistanceFromShip(
@@ -11766,6 +11921,22 @@ export class PlanetariumMode {
    *  are still one tap away on the body you are now looking at. */
   private focusMapCard(): boolean {
     return this.mapPicked ? this.focusMapBody(this.mapPicked.name) : false;
+  }
+
+  /**
+   * The card's Look inside: open the interior tool on the picked body. The
+   * body is captured before the chart closes (one instrument at a time), and
+   * the entry goes through the tool door, never the mode switch, so it gets
+   * the journey snapshot and the tutorial and mission refusals like any other.
+   */
+  private insideMapCard(): boolean {
+    if (!this.isMapOpen() || this.mapDiving || !this.mapPicked) return false;
+    const bodyId = this.mapPicked.name;
+    if (bodyId === 'Sun') return false;
+    this.closeMap();
+    const entered = this.enterTool({ kind: 'interior', bodyId });
+    if (entered) this.reopenMapAfterTool = true;
+    return entered;
   }
 
   /** Focus entry shared by the card button, the double-tap, and the bridge. */
@@ -14455,6 +14626,22 @@ export class PlanetariumMode {
     this.player.group.visible = visible;
   }
 
+  /** Dev-only: the "Orbit lines" setting, so a capture can show the lines on
+   *  their own after devSetChrome(false) has hidden everything else. */
+  devSetOrbitLines(on: boolean): void {
+    this.showOrbitLines = on;
+  }
+
+  /** Dev-only: move the ship by (dx, dy, dz) AU and nothing else — no
+   *  velocity, no re-aim — so a probe can translate the camera through the
+   *  world one step at a time and watch what the scene does. For a pose
+   *  devFrameBody set up, whose camera stays at the scene origin. */
+  devNudge(dxAU: number, dyAU: number, dzAU: number): void {
+    this.player.posX += dxAU;
+    this.player.posY += dyAU;
+    this.player.posZ += dzAU;
+  }
+
   /** Dev-only: whether the ship is drawing right now, so a caller that hides
    *  it can put back what it found rather than what it assumes. */
   devShipVisible(): boolean {
@@ -15134,6 +15321,11 @@ export class PlanetariumMode {
       found: !!pos,
       radiusAU,
       bodyAbs: pos,
+      // The planet's own orbital velocity this frame (null for a moon or an
+      // unknown name): the direction a probe flies to move along its orbit line.
+      velAUPerS: mesh?.worldVelAUPerS
+        ? { x: mesh.worldVelAUPerS.x, y: mesh.worldVelAUPerS.y, z: mesh.worldVelAUPerS.z }
+        : null,
       parentAbs,
       playerAbs,
       distToBodyAU: pos ? Math.hypot(playerAbs.x - pos.x, playerAbs.y - pos.y, playerAbs.z - pos.z) : null,
@@ -15390,6 +15582,18 @@ export class PlanetariumMode {
    *  gets (the raw switchAppMode path would bypass the pre-tool snapshot). */
   devEnterVolumeCompare(): void {
     this.enterVolumeCompare();
+  }
+
+  /** Headless support: open the Look-inside tool on a body through the real
+   *  entry gate (snapshot + refusals), as compareOpen does. The Tools row's
+   *  own door is the picker below; this one skips it, as `?auto=interior` does. */
+  devEnterInterior(bodyId: string): boolean {
+    return this.enterTool({ kind: 'interior', bodyId });
+  }
+
+  /** Headless support: whether the Tools row's which-world picker is up. */
+  devToolsInsideOpen(): boolean {
+    return this.insidePicker?.isOpen() ?? false;
   }
 
   /** Headless support: enter the Observatory surface view ("Look up"). */
@@ -18387,7 +18591,7 @@ export class PlanetariumMode {
     if (this.tutorial) {
       return { ...this.tutorial.snapshot.state, timestamp: Date.now() };
     }
-    // While the volume-compare tool holds the scene, every persistence caller gets
+    // While a tool holds the scene, every persistence caller gets
     // the pre-tool snapshot (timestamp refreshed) — the same override the tutorial
     // uses — so deactivate's save + any autosave keep writing the journey the user
     // left, and a reload inside the tool resumes the pre-tool landing rather than

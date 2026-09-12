@@ -19,7 +19,7 @@ describe('mapCardActions', () => {
     const actions = mapCardActions(planet('Mars'), null);
     expect(verbs(actions)).toEqual(['travel', 'observe', 'pilot']);
     expect(actions.map((a) => a.label)).toEqual([
-      'Teleport', 'Observatory', 'Autopilot', 'Focus',
+      'Teleport', 'Observatory', 'Autopilot', 'Focus', 'Look inside',
     ]);
   });
 
@@ -32,8 +32,22 @@ describe('mapCardActions', () => {
   it('offers Leave + Observatory on the current landed body, never Autopilot', () => {
     const actions = mapCardActions(planet('Earth'), planet('Earth'));
     expect(verbs(actions)).toEqual(['travel', 'observe']);
-    expect(actions.map((a) => a.label)).toEqual(['Leave', 'Observatory', 'Focus']);
+    expect(actions.map((a) => a.label)).toEqual(['Leave', 'Observatory', 'Focus', 'Look inside']);
     expect(verbs(actions)).not.toContain('pilot');
+  });
+
+  it('offers Look inside on every planet and moon but never on the Sun, and never as a commit', () => {
+    for (const [target, landed] of [
+      [planet('Mars'), null],
+      [planet('Earth'), planet('Earth')],
+      [moon('Europa'), null],
+      [planet('Jupiter'), moon('Io')],
+    ] as const) {
+      const inside = mapCardActions(target, landed).filter((a) => a.kind === 'inside');
+      expect(inside).toHaveLength(1);
+      expect(inside[0].label).toBe('Look inside');
+    }
+    expect(mapCardActions(planet('Sun'), null).some((a) => a.kind === 'inside')).toBe(false);
   });
 
   it('treats a picked planet as not-here when you are landed on its moon', () => {
@@ -58,8 +72,10 @@ describe('mapCardActions', () => {
       const focus = actions.filter((a) => a.kind === 'focus');
       expect(focus).toHaveLength(1);
       expect(focus[0].label).toBe('Focus');
-      // The commit path reads `verb`; a focus action simply does not carry one.
-      expect(actions[actions.length - 1].kind).toBe('focus');
+      // The commit path reads `verb`; neither Focus nor Look inside carries one,
+      // and both come after every commit.
+      const lastCommit = actions.map((a) => a.kind).lastIndexOf('commit');
+      expect(actions.findIndex((a) => a.kind === 'focus')).toBeGreaterThan(lastCommit);
     }
   });
 });

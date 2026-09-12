@@ -1,0 +1,77 @@
+import { describe, expect, it } from 'vitest';
+import { EARTH_MODEL } from './data/models/earth';
+import { EUROPA_MODEL } from './data/models/europa';
+import { SUN_MODEL } from './data/models/sun';
+import { endpoints, UNKNOWN } from './data/modelHelpers';
+import {
+  TEMPERATURE_SCALE_STOPS,
+  bodyTemperatureRange,
+  temperatureEndpoints,
+  temperatureScaleColor,
+  temperatureScaleGradientCss,
+  temperatureScaleHex,
+  temperatureT,
+} from './temperatureScale';
+
+describe('temperatureScale', () => {
+  it('runs from the first stop to the last, monotone in brightness', () => {
+    expect(temperatureScaleColor(0)).toEqual([...TEMPERATURE_SCALE_STOPS[0]]);
+    expect(temperatureScaleColor(1)).toEqual([...TEMPERATURE_SCALE_STOPS[TEMPERATURE_SCALE_STOPS.length - 1]]);
+    let previous = -1;
+    for (let step = 0; step <= 20; step++) {
+      const [red, green, blue] = temperatureScaleColor(step / 20);
+      const luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+      expect(luminance).toBeGreaterThan(previous);
+      previous = luminance;
+    }
+    expect(temperatureScaleColor(-1)).toEqual(temperatureScaleColor(0));
+    expect(temperatureScaleColor(2)).toEqual(temperatureScaleColor(1));
+  });
+
+  it('keeps the top of the ramp below the bloom threshold in luminance', () => {
+    const [red, green, blue] = temperatureScaleColor(1);
+    expect(0.2126 * red + 0.7152 * green + 0.0722 * blue).toBeLessThan(0.97);
+  });
+
+  it('gives a hex and a CSS gradient from the same stops', () => {
+    expect(temperatureScaleHex(0)).toBe((18 << 16) | (8 << 8) | 38);
+    expect(temperatureScaleGradientCss()).toContain('rgb(18,8,38) 0%');
+    expect(temperatureScaleGradientCss()).toContain('100%');
+  });
+
+  it('places a temperature on a range and clamps', () => {
+    const range = { minK: 200, maxK: 1200, log: false };
+    expect(temperatureT(range, 200)).toBe(0);
+    expect(temperatureT(range, 700)).toBe(0.5);
+    expect(temperatureT(range, 5000)).toBe(1);
+    // A zero-span range is floored to one kelvin, as the shader floors it: the value sits at 0, not in the middle.
+    expect(temperatureT({ minK: 300, maxK: 300, log: false }, 300)).toBe(0);
+    expect(temperatureT({ minK: 300, maxK: 300, log: false }, 301)).toBe(1);
+    expect(temperatureT({ minK: 300, maxK: 300, log: true }, 300)).toBe(0);
+    // A log scale: the geometric middle sits at the middle.
+    expect(temperatureT({ minK: 100, maxK: 10_000, log: true }, 1000)).toBeCloseTo(0.5, 9);
+  });
+
+  it('treats a single known value as no scale', () => {
+    // Nothing to place one value between: the range is null, so the faces hatch and the legend hides the scale.
+    expect(bodyTemperatureRange([endpoints(300, 300, 's', 'inferred')])).toBeNull();
+    expect(bodyTemperatureRange([endpoints(300, 300, 's', 'inferred'), endpoints(300, 300, 's', 'inferred'), UNKNOWN])).toBeNull();
+    expect(bodyTemperatureRange([endpoints(301, 300, 's', 'inferred')])).toEqual({ minK: 300, maxK: 301, log: false });
+  });
+
+  it('reads endpoints from a quantity and nothing from unknown', () => {
+    expect(temperatureEndpoints(endpoints(5700, 5400, 's', 'inferred'))).toEqual({ outerK: 5400, innerK: 5700, log: false });
+    expect(temperatureEndpoints(endpoints(10, 1, 's', 'modelled', 'log'))?.log).toBe(true);
+    expect(temperatureEndpoints(UNKNOWN)).toBeNull();
+  });
+
+  it("spans a body's known temperatures and ignores its unknowns", () => {
+    expect(bodyTemperatureRange(EARTH_MODEL.regions.map((region) => region.temperatureK))).toEqual({ minK: 288, maxK: 5700, log: false });
+    // Europa's core temperature is unknown: the range comes from the other regions.
+    expect(bodyTemperatureRange(EUROPA_MODEL.regions.map((region) => region.temperatureK))).toEqual({ minK: 100, maxK: 1500, log: false });
+    // The Sun spans three and a half orders of magnitude: a log scale.
+    expect(bodyTemperatureRange(SUN_MODEL.regions.map((region) => region.temperatureK))).toEqual({ minK: 4500, maxK: 15_700_000, log: true });
+    expect(bodyTemperatureRange([UNKNOWN])).toBeNull();
+    expect(bodyTemperatureRange([])).toBeNull();
+  });
+});

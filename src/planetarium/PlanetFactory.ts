@@ -131,8 +131,10 @@ export function setWarmEligibleMoonParents(parents: ReadonlySet<string>): void {
 }
 
 // Planets with a real measured elevation-derived normal map (linear data map):
-// they drop the colour-as-bump fallback in favour of the true relief.
-const PLANET_NORMAL_KEYS: Record<string, string> = {
+// they drop the colour-as-bump fallback in favour of the true relief. Exported
+// because the Look-inside studio dresses its skin from the same list: the tool
+// must not show a different planet from the one outside it.
+export const PLANET_NORMAL_KEYS: Record<string, string> = {
   Mars: 'marsNormal',
 };
 
@@ -1614,8 +1616,9 @@ export function paintMoonTextures(moon: MoonMesh): void {
 
 // Moons with a real measured elevation-derived normal map (linear data map,
 // keyed into PLANET_TEXTURE_FILES). Only Earth's Moon today (LOLA via gen-maps);
-// others fall back to the procedural bump.
-const MOON_NORMAL_KEYS: Record<string, string> = {
+// others fall back to the procedural bump. Exported beside PLANET_NORMAL_KEYS,
+// for the Look-inside studio's skin.
+export const MOON_NORMAL_KEYS: Record<string, string> = {
   Moon: 'moonNormal',
 };
 

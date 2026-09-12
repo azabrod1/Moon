@@ -10,6 +10,17 @@
  * Quoted worst errors inside 1800–2050: tens of arcsec for the inner planets,
  * ~0.11°/0.17° for Jupiter/Saturn.
  *
+ * The two fits do not meet at their boundary: at 2050 they place Uranus 5.8
+ * million km apart (Neptune 1.8, Pluto 2.8 — a few arcminutes at their
+ * distance), so a clock crossing the boundary would step a body sideways by
+ * hundreds of its radii, and an orbit line sampled across it (Uranus's,
+ * Neptune's and Pluto's all are, their periods being what they are) would
+ * carry a jog. So across a window of TABLE_BLEND_HALF_WIDTH_T either side of
+ * each boundary the elements are blended from one table into the other
+ * (tableBlendWeight, a smoothstep, so velocity is continuous too); outside
+ * the windows each table is used verbatim. The blend is the only place a
+ * position comes from both fits at once.
+ *
  * Values are transcribed VERBATIM from the JPL p_elem_t1.txt / p_elem_t2.txt
  * source files — never re-round them; standish.test.ts spot-checks oddball
  * digits and pins five epochs of JPL Horizons vectors against the
@@ -112,6 +123,51 @@ function normalizeDeg180(deg: number): number {
   return wrapped > 180 ? wrapped - 360 : wrapped;
 }
 
+/**
+ * Half-width, in Julian centuries, of the window either side of a table
+ * boundary over which the two fits are blended. Five years: the largest
+ * disagreement at a boundary (Uranus at 2050, 5.8 million km) spread over
+ * ten years is a fraction of a percent of the body's orbital speed, and no
+ * Horizons golden sits inside a window.
+ */
+export const TABLE_BLEND_HALF_WIDTH_T = 0.05;
+
+/**
+ * The Table-2 weight at T: 0 inside Table 1's fit, 1 beyond it, and a
+ * smoothstep across the window at each boundary (1800 and 2050).
+ */
+export function tableBlendWeight(T: number): number {
+  const h = TABLE_BLEND_HALF_WIDTH_T;
+  if (T <= TABLE_1_MIN_T - h || T >= TABLE_1_MAX_T + h) return 1;
+  if (T >= TABLE_1_MIN_T + h && T <= TABLE_1_MAX_T - h) return 0;
+  // How far into the window toward Table 2, as a fraction of its width.
+  const x = T < TABLE_1_MIN_T + h
+    ? (TABLE_1_MIN_T + h - T) / (2 * h)
+    : (T - (TABLE_1_MAX_T - h)) / (2 * h);
+  return x * x * (3 - 2 * x);
+}
+
+/** a + w·(b − a) for an angle in degrees, the short way round. */
+function blendDeg(a: number, b: number, w: number): number {
+  return a + w * normalizeDeg180(b - a);
+}
+
+const blendScratchOne = {} as KeplerElements;
+const blendScratchTwo = {} as KeplerElements;
+
+/** Elements `w` of the way from `one` to `two`, angles blended the short way
+ *  round; the mean anomaly is renormalised the way propagate leaves it. */
+function blendElements(one: KeplerElements, two: KeplerElements, w: number, out?: KeplerElements): KeplerElements {
+  const el = out ?? ({} as KeplerElements);
+  el.semiMajorAxisAU = one.semiMajorAxisAU + w * (two.semiMajorAxisAU - one.semiMajorAxisAU);
+  el.eccentricity = one.eccentricity + w * (two.eccentricity - one.eccentricity);
+  el.inclinationDeg = one.inclinationDeg + w * (two.inclinationDeg - one.inclinationDeg);
+  el.lonPerihelionDeg = blendDeg(one.lonPerihelionDeg, two.lonPerihelionDeg, w);
+  el.ascendingNodeDeg = blendDeg(one.ascendingNodeDeg, two.ascendingNodeDeg, w);
+  el.meanAnomalyDeg = normalizeDeg180(blendDeg(one.meanAnomalyDeg, two.meanAnomalyDeg, w));
+  return el;
+}
+
 function propagate(
   row: StandishRow,
   extras: ExtraTerms | undefined,
@@ -142,7 +198,8 @@ function propagate(
 /**
  * Elements for a planetarium body at a TT Julian Day. Table 1 inside its
  * 1800–2050 fit, Table 2 (with its M correction terms) everywhere else,
- * clamped to Table 2's 3000 BC – 3000 AD validity.
+ * clamped to Table 2's 3000 BC – 3000 AD validity — and a blend of the two
+ * across the window at each boundary (see the header and tableBlendWeight).
  */
 export function getStandishElements(
   name: string,
@@ -150,8 +207,15 @@ export function getStandishElements(
   out?: KeplerElements,
 ): KeplerElements {
   const T = (jdTT - J2000) / DAYS_PER_JULIAN_CENTURY;
-  const table = T >= TABLE_1_MIN_T && T <= TABLE_1_MAX_T ? 1 : 2;
-  return getElementsFromTable(table, name, jdTT, out);
+  const w = tableBlendWeight(T);
+  if (w === 0) return getElementsFromTable(1, name, jdTT, out);
+  if (w === 1) return getElementsFromTable(2, name, jdTT, out);
+  return blendElements(
+    getElementsFromTable(1, name, jdTT, blendScratchOne),
+    getElementsFromTable(2, name, jdTT, blendScratchTwo),
+    w,
+    out,
+  );
 }
 
 /** @internal Exposed for tests only (table handoff + verbatim value spot-checks). */

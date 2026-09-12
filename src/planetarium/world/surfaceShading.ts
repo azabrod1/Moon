@@ -358,16 +358,25 @@ export const ROUGHNESS_MAP_LAND = 0.92;
 export const ROUGHNESS_MAP_WATER = 0.45;
 
 /**
- * What open water is drawn at instead: a GGX alpha of 0.04, an order of
- * magnitude less solid angle than the shipped value spreads the Sun over. At
- * 400 km the reflection stops being a wash that never got past mid-grey and
- * becomes a core that clips to white, in a patch about half as wide.
+ * What open water is drawn at instead: a GGX alpha of 0.0144 (three squares
+ * the roughness), a far smaller solid angle than the shipped value spreads the
+ * Sun over, so the reflection is a core that clips to white rather than a
+ * wash that never got past mid-grey.
  *
- * Not lower. The lobe's tails — the glitter that reaches out of the core — fall
- * with the square of alpha, so every step tighter buys a little less core and
- * costs a lot of tail, and past this the sea is a mirror with a point on it.
+ * It was 0.2 (alpha 0.04). From a whole-disc distance that patch, with the
+ * bloom spread around its clipped core, read as too strong; one radius out it
+ * washed the top third of the frame milky and took the clouds' contrast with
+ * it. A sheet of six widths from 0.2 down to 0.08, captured from one page
+ * load, had the glow and the patch shrinking together: the width is the one
+ * number that moves both. A lower cap turns the core into a flat grey coin,
+ * because the tone mapper draws a value of one as light grey, and a lower
+ * keep with the core held white leaves the frame as it was. 0.12 halves the
+ * patch and keeps blue sea around it close in.
+ *
+ * Not much lower: the lobe's tails fall with the square of alpha, and by 0.08
+ * the sea begins to read as a mirror with a point on it.
  */
-export const OCEAN_ROUGHNESS = 0.2;
+export const OCEAN_ROUGHNESS = 0.12;
 /**
  * Where the Sun's image lands on the sea the mirror lobe runs far past white.
  * The tone-mapper clips that to a white patch, which a camera does too, but

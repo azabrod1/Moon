@@ -1070,7 +1070,20 @@ export class InteriorMode {
     if (legend) {
       legend.replaceChildren();
       // Rows fade in outside-in on a reveal; any other re-render is instant.
-      legend.classList.toggle('reveal', reveal && !this.reducedMotion.matches);
+      const revealRows = reveal && !this.reducedMotion.matches;
+      legend.classList.toggle('reveal', revealRows);
+      if (revealRows) {
+        // The class comes off once the last row (the innermost, appended last
+        // with the longest delay) has faded in. A display:none cancels a CSS
+        // animation and a return to display restarts it, so a legend left
+        // wearing the class would replay its fade every time the phone's
+        // inspector gave the sheet back to the layers.
+        legend.addEventListener('animationend', function settleReveal(event: AnimationEvent) {
+          if (event.animationName !== 'interior-row-in' || event.target !== legend.lastElementChild) return;
+          legend.classList.remove('reveal');
+          legend.removeEventListener('animationend', settleReveal);
+        });
+      }
       const art = regionArtInsideOut(this.drawn);
       const scores = this.drawn.regionsInsideOut.map((_, index) => claimScores({ drawn: this.drawn, index, coverage: this.coverage }));
       // The legend reads outside-in, the way a reader meets the layers.

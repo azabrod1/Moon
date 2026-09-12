@@ -323,7 +323,9 @@ async function pathCases(context, viewport) {
 // ---- the lifecycle scenario ---------------------------------------------------
 
 /** The opening the tool chooses for itself on a viewport: Section on a phone, Cutaway elsewhere. */
-const chosenAngleDeg = (viewport) => (viewport.width <= 640 ? 180 : 90);
+/** The opening the tool chooses on entry: Section on a phone, the 120° cutaway on desktop
+ *  (cutFrame.ts CUT_VIEW_ANGLE_DEG). */
+const chosenAngleDeg = (viewport) => (viewport.width <= 640 ? 180 : 120);
 
 async function waitReady(page, timeout = 120000) {
   await page.waitForFunction(() => window.__moon.interiorReady(), undefined, { timeout });

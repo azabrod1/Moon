@@ -60,7 +60,7 @@ export const GANYMEDE_MODEL: InteriorModel = {
       temperatureK: endpoints(1500, 900, SOHL, 'modelled'),
       pressureGPa: endpoints(7, 1.6, SOHL, 'modelled'),
       densityKgM3: endpoints(3500, 3200, ANDERSON, 'modelled'),
-      heat: heat([{ kind: 'radiogenicDecay', note: 'Uranium, thorium and potassium in the rock.' }], 'Heat from the core', 'convection'),
+      heat: heat([{ kind: 'radiogenicDecay', note: 'Uranium, thorium and potassium in the rock.' }], 'heat from the core', 'convection'),
       claims: [
         claim('existence', [
           row('momentOfInertia', 'supports', ANDERSON, { observed: 'Moment of inertia with the density', inferred: 'A rock layer between the metal and the water', assumed: 'Hydrostatic equilibrium', uncertain: 'Its outer radius', mission: 'Galileo', year: 1996 }),
@@ -79,7 +79,7 @@ export const GANYMEDE_MODEL: InteriorModel = {
       temperatureK: endpoints(900, 270, VANCE, 'modelled'),
       pressureGPa: endpoints(1.6, 0.3, VANCE, 'modelled'),
       densityKgM3: endpoints(1400, 1250, VANCE, 'modelled'),
-      heat: heat([{ kind: 'none', note: 'Carries heat upward from the rock.' }], 'Heat from the mantle', 'convection'),
+      heat: heat([{ kind: 'none', note: 'Carries heat upward from the rock.' }], 'heat from the mantle', 'convection'),
       claims: [
         claim('existence', [
           row('model', 'supports', VANCE, { observed: 'Pressure at the base of an 800 km water layer exceeds 1 GPa', inferred: 'Water there is dense ice, not liquid', assumed: 'The hydrosphere thickness', uncertain: 'Whether pockets of brine sit between ice layers', year: 2014 }),
@@ -98,7 +98,7 @@ export const GANYMEDE_MODEL: InteriorModel = {
       temperatureK: endpoints(270, 255, VANCE, 'modelled'),
       pressureGPa: endpoints(0.3, 0.15, VANCE, 'modelled'),
       densityKgM3: endpoints(1150, 1050, VANCE, 'modelled'),
-      heat: heat([{ kind: 'none', note: 'Warmed from below.' }], 'Heat from the ice below', 'convection'),
+      heat: heat([{ kind: 'none', note: 'Warmed from below.' }], 'heat from the ice below', 'convection'),
       claims: [
         claim('existence', [
           row('magnetic', 'supports', SAUR, { observed: 'Hubble watched Ganymede\'s auroral ovals rock by only 2° as Jupiter\'s field swept past, not the 6° a moon without a conductor would show', inferred: 'A conducting layer near the surface: a salty ocean', assumed: 'The conductor is salt water', uncertain: 'Its depth and thickness', mission: 'Hubble', year: 2015 }),
@@ -120,7 +120,7 @@ export const GANYMEDE_MODEL: InteriorModel = {
       temperatureK: endpoints(255, 110, VANCE, 'modelled'),
       pressureGPa: endpoints(0.15, 0, VANCE, 'modelled'),
       densityKgM3: endpoints(930, 920, VANCE, 'modelled'),
-      heat: heat([{ kind: 'none', note: 'Cold and rigid.' }], 'Heat from the ocean below', 'conduction'),
+      heat: heat([{ kind: 'none', note: 'Cold and rigid.' }], 'heat from the ocean below', 'conduction'),
       claims: [
         claim('existence', [
           row('inSitu', 'supports', SCHUBERT, { observed: 'Spectra and images: water ice across the surface', inferred: 'A solid ice surface', assumed: '—', uncertain: '—', mission: 'Galileo', year: 2004 }),

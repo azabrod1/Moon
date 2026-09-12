@@ -22,17 +22,23 @@
  *   each challenging row                                   −25 each, max −50
  *   constraining rows                              0, listed in the popover
  *   density-only support                     +15, level capped Model-dependent
+ *   a density row beside stronger evidence, a second row of a method
+ *     already counted, a consistent model               0, listed all the same
  *
- * Levels: Directly detected 85–95 with a direct row present; Well
- * constrained 65–84; Constrained 45–64; Model-dependent 25–44; Hypothesis
- * under 25. The score never reaches 100 by construction.
+ * Every evidence row of a claim produces exactly one line, so the popover's
+ * arithmetic accounts for every row it lists above it.
+ *
+ * Levels: Directly detected from 65 with a direct row present; Well
+ * constrained from 65 without one; Constrained 45–64; Model-dependent 25–44;
+ * Hypothesis under 25. The score never reaches 100 by construction.
  *
  * Pinned worked examples (evidenceScore.test.ts): Earth's outer core 95,
- * Directly detected; Jupiter's dilute core, gravity with competing topology,
- * Model-dependent; Io's shallow magma ocean, induction supported and Juno
- * challenged, Hypothesis; Callisto's ocean on induction alone, Constrained;
- * Earth's outer-core temperature, a melting curve plus an adiabat model,
- * Constrained.
+ * Directly detected; Earth's inner core 80 and the Sun's core 70, Directly
+ * detected on the shipped models; Jupiter's dilute core, gravity with
+ * competing topology, Model-dependent; Io's shallow magma ocean, induction
+ * supported and Juno challenged, Hypothesis; Callisto's ocean on induction
+ * alone, Constrained; Earth's outer-core temperature, a melting curve plus an
+ * adiabat model, Constrained.
  */
 import type { Claim, Evidence, EvidenceMethod } from './data/interiorTypes';
 
@@ -49,7 +55,7 @@ export const EVIDENCE_LEVEL_LABEL: Readonly<Record<EvidenceLevel, string>> = {
 /** How each level reads, for the legend and the popover explainer. */
 export const EVIDENCE_LEVEL_READS_AS: Readonly<Record<EvidenceLevel, string>> = {
   directlyDetected: 'A measurement reaches this region itself',
-  wellConstrained: 'Several independent measurements agree',
+  wellConstrained: 'Several independent measurements agree, none reaching it directly',
   constrained: 'One class of measurement plus models',
   modelDependent: 'Interior models with real degeneracy',
   hypothesis: 'Plausible, unconfirmed, or challenged',
@@ -154,7 +160,10 @@ export function evidenceScore(claim: Claim, context: ScoreContext = {}): Evidenc
 
   let furtherTotal = 0;
   for (const row of furtherCandidates) {
-    if (seenMethods.has(row.method)) continue;
+    if (seenMethods.has(row.method)) {
+      lines.push({ label: `Also ${methodLabel(row.method)}: the same method, already counted`, points: 0, evidence: row });
+      continue;
+    }
     seenMethods.add(row.method);
     if (!firstClaimed) {
       total += POINTS.firstIndirect;
@@ -171,13 +180,30 @@ export function evidenceScore(claim: Claim, context: ScoreContext = {}): Evidenc
     lines.push({ label: `An independent method agrees: ${methodLabel(row.method)}`, points: POINTS.further, evidence: row });
   }
 
-  if (labRows.length > 0 && !labClaimedFirst) {
-    total += POINTS.lab;
-    lines.push({ label: 'Laboratory work reproduces the state at these conditions', points: POINTS.lab, evidence: labRows[0] });
-  }
+  // The first laboratory row earns (or already claimed the first support); any other is the method again.
+  labRows.forEach((row, index) => {
+    if (index === 0) {
+      if (labClaimedFirst) return;
+      total += POINTS.lab;
+      lines.push({ label: 'Laboratory work reproduces the state at these conditions', points: POINTS.lab, evidence: row });
+      return;
+    }
+    lines.push({ label: `Also ${methodLabel(row.method)}: the same method, already counted`, points: 0, evidence: row });
+  });
+
+  // A density row beside stronger evidence earns nothing but is still accounted for.
+  densityRows.forEach((row, index) => {
+    if (densityOnly && index === 0) return; // the density-only support above
+    lines.push({
+      label: densityOnly
+        ? `Also ${methodLabel(row.method)}: the same method, already counted`
+        : 'The bulk density is consistent, beside stronger evidence',
+      points: 0,
+      evidence: row,
+    });
+  });
 
   for (const row of modelRows) {
-    if (densityOnly && row === densityRows[0]) continue;
     lines.push({ label: `An interior model is consistent (${methodLabel(row.method)})`, points: 0, evidence: row });
   }
   for (const row of constraining) {
@@ -208,9 +234,11 @@ export function evidenceScore(claim: Claim, context: ScoreContext = {}): Evidenc
   return { score, level, lines, direct: !!directRow };
 }
 
+/** The level a score stands for; from 65 a direct row makes it Directly detected. */
+export const DIRECTLY_DETECTED_MIN_SCORE = 65;
+
 export function levelFor(score: number, direct: boolean): EvidenceLevel {
-  if (score >= 85 && direct) return 'directlyDetected';
-  if (score >= 65) return 'wellConstrained';
+  if (score >= DIRECTLY_DETECTED_MIN_SCORE) return direct ? 'directlyDetected' : 'wellConstrained';
   if (score >= 45) return 'constrained';
   if (score >= 25) return 'modelDependent';
   return 'hypothesis';

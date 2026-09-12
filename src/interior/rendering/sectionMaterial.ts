@@ -73,9 +73,10 @@
 import * as THREE from 'three';
 import { sunNoiseGLSL } from '../../shared/shaders/sun';
 import { PATTERN_INDEX, type ArtParams, type Incandescence } from '../data/artParams';
-import { TEMPERATURE_SCALE_STOPS, type TemperatureRange } from '../temperatureScale';
+import { LINEAR_SPAN_FLOOR_K, TEMPERATURE_SCALE_STOPS, type TemperatureRange } from '../temperatureScale';
+import { MAX_REGIONS } from '../data/interiorTypes';
 
-export const MAX_REGIONS = 8;
+export { MAX_REGIONS };
 
 export interface SectionUniforms {
   /** Outer radius of region k in display space, inside-out, increasing; the last used one is 1. */
@@ -168,10 +169,11 @@ function srgbToLinear(channel: number): number {
   return channel <= 0.04045 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4);
 }
 
-/** The body's temperature scale; null when no region's temperature is known. */
+/** The body's temperature scale; null when no region's temperature is known.
+ *  The span is floored as sectionTempT floors it, so the two never disagree. */
 export function writeTemperatureScale(uniforms: SectionUniforms, range: TemperatureRange | null): void {
   uniforms.uScaleMin.value = range ? range.minK : 0;
-  uniforms.uScaleMax.value = range ? Math.max(range.maxK, range.minK + 1) : 1;
+  uniforms.uScaleMax.value = range ? Math.max(range.maxK, range.minK + LINEAR_SPAN_FLOOR_K) : 1;
   uniforms.uScaleLog.value = range?.log ? 1 : 0;
 }
 

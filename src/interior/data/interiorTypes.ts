@@ -63,11 +63,16 @@ export interface Sourced<T> {
   note?: string;
 }
 
-/** A quantity the renderer may sample. 'unknown' renders as no-data, never as a default. */
+/** A quantity the renderer may sample. 'unknown' renders as no-data, never as
+ *  a default. The faces draw a temperature by interpolating its endpoints (or
+ *  its profile, samples in ascending radius), linear or log; 'none' is for a
+ *  quantity that is one number across the region and is never drawn as a ramp,
+ *  so the validator refuses it on a temperature. */
 export type Quantity =
   | { kind: 'endpoints'; inner: Sourced<number>; outer: Sourced<number>; interpolation: 'linear' | 'log' | 'none' }
   | {
       kind: 'profile';
+      /** Ascending in radiusKm: the first sample is the deepest. */
       samples: { radiusKm: number; value: number }[];
       interpolation: 'linear' | 'log' | 'none';
       source: string;
@@ -122,10 +127,6 @@ export type HeatKind =
   | 'fusion'
   | 'none';
 
-export const HEAT_KINDS: readonly HeatKind[] = [
-  'radiogenicDecay', 'primordial', 'latentCrystallisation', 'tidal', 'gravitationalContraction', 'heliumRain', 'fusion', 'none',
-];
-
 export interface HeatBudget {
   generated: { kind: HeatKind; note: string }[];
   /** What warms the region from outside, or null when nothing worth naming does. */
@@ -161,6 +162,10 @@ export interface Annotation {
   note: string;
   source: string;
 }
+
+/** The most regions a model may draw: the section shader's uniform arrays, the
+ *  studio's face pairs and shells are sized to it, and the validator refuses more. */
+export const MAX_REGIONS = 8;
 
 export interface InteriorModel {
   body: string;
@@ -255,38 +260,4 @@ export function representativeTemperatureK(quantity: Quantity): number | null {
     return quantity.samples.reduce((sum, sample) => sum + sample.value, 0) / quantity.samples.length;
   }
   return null;
-}
-
-/**
- * Sample a quantity at a physical radius (km): endpoints interpolate between
- * the region's inner and outer radius (linear or log), profiles interpolate
- * between their samples, unknown is null. The caller supplies the region's
- * radial span for the endpoint case.
- */
-export function sampleQuantity(quantity: Quantity, radiusKm: number, innerRadiusKm: number, outerRadiusKm: number): number | null {
-  if (quantity.kind === 'unknown') return null;
-  if (quantity.kind === 'endpoints') {
-    const span = outerRadiusKm - innerRadiusKm;
-    const t = span > 0 ? Math.min(1, Math.max(0, (radiusKm - innerRadiusKm) / span)) : 0;
-    return interpolate(quantity.inner.value, quantity.outer.value, t, quantity.interpolation);
-  }
-  const samples = quantity.samples;
-  if (samples.length === 0) return null;
-  if (radiusKm <= samples[0].radiusKm) return samples[0].value;
-  for (let index = 1; index < samples.length; index++) {
-    const lower = samples[index - 1];
-    const upper = samples[index];
-    if (radiusKm <= upper.radiusKm) {
-      const span = upper.radiusKm - lower.radiusKm;
-      const t = span > 0 ? (radiusKm - lower.radiusKm) / span : 1;
-      return interpolate(lower.value, upper.value, t, quantity.interpolation);
-    }
-  }
-  return samples[samples.length - 1].value;
-}
-
-function interpolate(from: number, to: number, t: number, mode: 'linear' | 'log' | 'none'): number {
-  if (mode === 'none') return t < 0.5 ? from : to;
-  if (mode === 'log' && from > 0 && to > 0) return Math.exp(Math.log(from) + (Math.log(to) - Math.log(from)) * t);
-  return from + (to - from) * t;
 }

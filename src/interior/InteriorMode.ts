@@ -71,7 +71,7 @@ import { renderHoverCard, renderInspector } from './ui/LayerInspector';
 import { DepthRuler } from './ui/DepthRuler';
 import { rulerLayout, rulerSide, type RulerInput } from './ruler';
 import { renderEvidencePopover } from './ui/EvidencePopover';
-import { COVERAGE_BADGE, INTERIOR_DEFAULT_BODY, coverageFor, coverageStateFor, defaultModelFor, modelFor } from './data/interiorRegistry';
+import { INTERIOR_DEFAULT_BODY, coverageBadge, coverageFor, defaultModelFor, modelFor } from './data/interiorRegistry';
 import { coverageModels } from './data/interiorTypes';
 import {
   bodyTemperatureRange,
@@ -322,10 +322,10 @@ export class InteriorMode {
       },
       rowBadge: (name) => {
         const pill = document.createElement('span');
-        const state = coverageStateFor(name);
-        const drawnByDefault = state === 'constrained' || state === 'competing';
+        const coverage = coverageFor(name);
+        const drawnByDefault = coverage.state === 'constrained' || coverage.state === 'competing';
         pill.className = 'pk-tag-cover' + (drawnByDefault ? ' on' : '');
-        pill.textContent = COVERAGE_BADGE[state];
+        pill.textContent = coverageBadge(coverage);
         return pill;
       },
       onPick: (name) => {

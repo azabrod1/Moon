@@ -35,7 +35,7 @@ export const PHOBOS_ILLUSTRATIVE_MODEL: InteriorModel = {
       temperatureK: UNKNOWN,
       pressureGPa: UNKNOWN,
       densityKgM3: endpoints(1860, 1860, ANDERT, 'measured', 'none'),
-      heat: heat([{ kind: 'none', note: 'Too small to keep any heat of its own.' }], 'Sunlight and Mars-shine at the surface', 'conduction'),
+      heat: heat([{ kind: 'none', note: 'Too small to keep any heat of its own.' }], 'sunlight and Mars-shine at the surface', 'conduction'),
       claims: [
         claim('existence', [
           row('density', 'supports', ANDERT, { observed: 'Mars Express flyby tracking gives a mass; the shape model gives a volume; bulk density 1860 ± 13 kg/m³', inferred: 'Far less dense than solid rock: the interior holds a great deal of empty space or ice', assumed: 'The shape model\'s volume', uncertain: 'Whether the porosity is macro (rubble) or micro, and whether ice contributes', mission: 'Mars Express', year: 2010 }),
@@ -54,7 +54,7 @@ export const PHOBOS_ILLUSTRATIVE_MODEL: InteriorModel = {
       temperatureK: endpoints(240, 230, WILLNER, 'inferred'),
       pressureGPa: UNKNOWN,
       densityKgM3: endpoints(1600, 1600, WILLNER, 'modelled', 'none'),
-      heat: heat([{ kind: 'none', note: 'Warmed by the Sun and by Mars.' }], 'Sunlight', 'conduction'),
+      heat: heat([{ kind: 'none', note: 'Warmed by the Sun and by Mars.' }], 'sunlight', 'conduction'),
       claims: [
         claim('existence', [
           row('inSitu', 'supports', WILLNER, { observed: 'Images of grooves, craters and a dusty surface', inferred: 'A loose regolith layer', assumed: '—', uncertain: 'Its depth', mission: 'Mars Express', year: 2014 }),

@@ -319,10 +319,20 @@ export function competingTopology(coverage: Coverage, modelId: string, regionKey
   });
 }
 
-/** The picker's badge word for a coverage state. */
-export const COVERAGE_BADGE: Readonly<Record<CoverageState, string>> = {
-  constrained: 'modelled',
-  competing: 'two models',
-  poorlyConstrained: 'poorly known',
-  notYetModelled: 'not yet',
-};
+const COUNT_WORD: readonly string[] = ['no', 'one', 'two', 'three', 'four', 'five', 'six'];
+
+/** The picker's badge for a coverage entry: a competing entry counts its models. */
+export function coverageBadge(coverage: Coverage): string {
+  switch (coverage.state) {
+    case 'constrained':
+      return 'modelled';
+    case 'competing': {
+      const count = coverage.models.length;
+      return `${COUNT_WORD[count] ?? String(count)} models`;
+    }
+    case 'poorlyConstrained':
+      return 'poorly known';
+    case 'notYetModelled':
+      return 'not yet';
+  }
+}

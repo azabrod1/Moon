@@ -37,7 +37,7 @@ export const MOON_MODEL: InteriorModel = {
       temperatureK: endpoints(1700, 1650, KHAN, 'modelled'),
       pressureGPa: endpoints(5.2, 5.0, WEBER, 'modelled'),
       densityKgM3: endpoints(7800, 7800, BRIAUD, 'inferred'),
-      heat: heat([{ kind: 'latentCrystallisation', note: 'If it is still growing, freezing releases latent heat.' }], 'Conduction from the outer core', 'conduction'),
+      heat: heat([{ kind: 'latentCrystallisation', note: 'If it is still growing, freezing releases latent heat.' }], 'conduction from the outer core', 'conduction'),
       claims: [
         claim('existence', [
           row('seismology', 'supports', WEBER, { observed: 'Weak reflections in stacked Apollo seismograms at the depth expected for a solid inner core', inferred: 'A solid centre about 240 km across', assumed: 'Array stacking recovers real reflections from noisy records', uncertain: 'The signal is faint; other studies do not require it', mission: 'Apollo', year: 2011 }),
@@ -80,7 +80,7 @@ export const MOON_MODEL: InteriorModel = {
       temperatureK: endpoints(1600, 1500, KHAN, 'modelled'),
       pressureGPa: endpoints(4.6, 4.0, WEBER, 'modelled'),
       densityKgM3: endpoints(3400, 3400, WEBER, 'modelled'),
-      heat: heat([{ kind: 'radiogenicDecay', note: 'Heat-producing elements concentrated in late-crystallising material that sank.' }, { kind: 'tidal', note: 'Tidal flexing by Earth dissipates most where the rock is soft.' }], 'Heat from the core', 'mixed'),
+      heat: heat([{ kind: 'radiogenicDecay', note: 'Heat-producing elements concentrated in late-crystallising material that sank.' }, { kind: 'tidal', note: 'Tidal flexing by Earth dissipates most where the rock is soft.' }], 'heat from the core', 'mixed'),
       claims: [
         claim('existence', [
           row('seismology', 'supports', WEBER, { observed: 'A low-velocity zone above the core in the stacked data', inferred: 'Partially molten rock at the base of the mantle', assumed: 'Reflections are real', uncertain: 'Thickness and melt fraction', mission: 'Apollo', year: 2011 }),
@@ -119,7 +119,7 @@ export const MOON_MODEL: InteriorModel = {
       temperatureK: endpoints(600, 250, KHAN, 'modelled'),
       pressureGPa: endpoints(0.2, 0, WEBER, 'modelled'),
       densityKgM3: endpoints(2550, 2550, WIECZOREK, 'measured'),
-      heat: heat([{ kind: 'radiogenicDecay', note: 'Concentrated in the Procellarum KREEP terrane.' }], 'Heat from the mantle', 'conduction'),
+      heat: heat([{ kind: 'radiogenicDecay', note: 'Concentrated in the Procellarum KREEP terrane.' }], 'heat from the mantle', 'conduction'),
       claims: [
         claim('existence', [
           row('gravity', 'supports', WIECZOREK, { observed: 'GRAIL\'s gravity field resolves the crust\'s density and thickness', inferred: 'A crust 34–43 km thick on average, porous', assumed: 'Crustal density from Apollo samples', uncertain: 'Thickness under the far side', mission: 'GRAIL', year: 2013 }),

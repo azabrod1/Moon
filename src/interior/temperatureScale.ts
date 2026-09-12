@@ -9,7 +9,12 @@
  *
  * A body's range is the span of its known temperatures, endpoint to
  * endpoint; a region whose temperature is unknown contributes nothing and
- * is drawn hatched, never as the coldest colour. Pure: no three, no DOM.
+ * is drawn hatched, never as the coldest colour. A single known value is no
+ * scale at all (nothing to place it between), so the range is null and the
+ * body's temperatures are drawn as unknown. Where a temperature sits on the
+ * scale (temperatureT) is the shader's sectionTempT in TypeScript, floors
+ * included, and rendering/sectionMaterial.test.ts holds the two together.
+ * Pure: no three, no DOM.
  */
 import type { Quantity } from './data/interiorTypes';
 
@@ -62,17 +67,20 @@ export function temperatureScaleGradientCss(): string {
   return `linear-gradient(90deg, ${stops.join(', ')})`;
 }
 
-/** Where a temperature sits on a body's scale, 0..1; clamped. */
+/** The shader's floors on a scale's span, so a degenerate range divides by
+ *  these rather than by zero: one kelvin on a linear scale, 1e-4 in log space. */
+export const LINEAR_SPAN_FLOOR_K = 1;
+export const LOG_SPAN_FLOOR = 1e-4;
+
+/** Where a temperature sits on a body's scale, 0..1; clamped. The same
+ *  arithmetic as the faces' sectionTempT, so the legend swatch is the face. */
 export function temperatureT(range: TemperatureRange, kelvin: number): number {
   if (range.log) {
     const low = Math.log(Math.max(range.minK, 1));
     const high = Math.log(Math.max(range.maxK, 1));
-    if (!(high > low)) return 0.5;
-    return Math.min(1, Math.max(0, (Math.log(Math.max(kelvin, 1)) - low) / (high - low)));
+    return Math.min(1, Math.max(0, (Math.log(Math.max(kelvin, 1)) - low) / Math.max(high - low, LOG_SPAN_FLOOR)));
   }
-  const span = range.maxK - range.minK;
-  if (!(span > 0)) return 0.5;
-  return Math.min(1, Math.max(0, (kelvin - range.minK) / span));
+  return Math.min(1, Math.max(0, (kelvin - range.minK) / Math.max(range.maxK - range.minK, LINEAR_SPAN_FLOOR_K)));
 }
 
 /** The known endpoints of a quantity, K, or null when it says nothing. */
@@ -87,7 +95,8 @@ export function temperatureEndpoints(quantity: Quantity): { outerK: number; inne
   return null;
 }
 
-/** The span of a body's known temperatures, or null when no region says. */
+/** The span of a body's known temperatures, or null when no region says —
+ *  or when every known value is the same one, which no scale can place. */
 export function bodyTemperatureRange(quantities: readonly Quantity[]): TemperatureRange | null {
   let minK = Infinity;
   let maxK = -Infinity;
@@ -97,6 +106,6 @@ export function bodyTemperatureRange(quantities: readonly Quantity[]): Temperatu
     minK = Math.min(minK, endpoints.outerK, endpoints.innerK);
     maxK = Math.max(maxK, endpoints.outerK, endpoints.innerK);
   }
-  if (!Number.isFinite(minK) || !Number.isFinite(maxK)) return null;
+  if (!Number.isFinite(minK) || !Number.isFinite(maxK) || !(maxK > minK)) return null;
   return { minK, maxK, log: minK > 0 && maxK / minK > LOG_SCALE_RATIO };
 }

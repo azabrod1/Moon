@@ -3,6 +3,8 @@ import { EARTH_MODEL } from '../data/models/earth';
 import { EUROPA_MODEL } from '../data/models/europa';
 import { JUPITER_DILUTE_MODEL } from '../data/models/jupiter';
 import { endpoints, heat, UNKNOWN } from '../data/modelHelpers';
+import { coverageModels } from '../data/interiorTypes';
+import { coverageFor, interiorBodyIds } from '../data/interiorRegistry';
 import { boundaryText, depthRangeText, heatText, provenanceText, quantityText, uncertaintyText } from './inspectorText';
 
 describe('inspectorText', () => {
@@ -32,11 +34,29 @@ describe('inspectorText', () => {
     expect(uncertaintyText({ kind: 'qualitative', note: 'Open' })).toBe('Open');
   });
 
-  it('turns a heat budget into a sentence', () => {
-    expect(heatText(heat([{ kind: 'radiogenicDecay', note: 'x' }], 'Heat from the core', 'convection')))
+  it('turns a heat budget into a sentence, printing what warms it as written', () => {
+    expect(heatText(heat([{ kind: 'radiogenicDecay', note: 'x' }], 'heat from the core', 'convection')))
       .toBe('Heat from radioactive decay; warmed by heat from the core; moved by convection.');
     expect(heatText(heat([{ kind: 'none', note: 'x' }], null, 'unresolved')))
       .toBe('Heat from none of its own; how it moves is unresolved.');
+    // A proper noun in the phrase keeps its capital.
+    expect(heatText(heat([{ kind: 'tidal', note: 'x' }], "Jupiter's tides", 'convection')))
+      .toBe("Heat from tidal flexing; warmed by Jupiter's tides; moved by convection.");
+  });
+
+  it('ships every heat phrase in the case it is printed in', () => {
+    // The phrase follows "warmed by": it starts lowercase unless its first word is a proper noun.
+    const properNouns = /^(Sun|Mars|Jupiter|Saturn|Uranus|Neptune|Earth|Pluto|Io|Europa|Ganymede|Callisto|Titan|Enceladus|Triton|Phobos|Deimos|Charon|Moon|Venus|Mercury)\b/;
+    for (const bodyId of interiorBodyIds()) {
+      for (const model of coverageModels(coverageFor(bodyId))) {
+        for (const region of model.regions) {
+          const received = region.heat.received;
+          if (!received) continue;
+          const first = received.charAt(0);
+          expect(first === first.toLowerCase() || properNouns.test(received), `${bodyId}/${region.key}: "${received}"`).toBe(true);
+        }
+      }
+    }
   });
 
   it('formats provenance', () => {

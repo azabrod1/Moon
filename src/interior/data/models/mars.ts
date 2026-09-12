@@ -27,7 +27,7 @@ const CRUST: Region = {
   temperatureK: endpoints(500, 210, KNAPMEYER, 'modelled'),
   pressureGPa: endpoints(0.6, 0, KNAPMEYER, 'modelled'),
   densityKgM3: endpoints(2900, 2700, KNAPMEYER, 'inferred'),
-  heat: heat([{ kind: 'radiogenicDecay', note: 'Heat-producing elements concentrated in the crust.' }], 'Heat from the mantle', 'conduction'),
+  heat: heat([{ kind: 'radiogenicDecay', note: 'Heat-producing elements concentrated in the crust.' }], 'heat from the mantle', 'conduction'),
   claims: [
     claim('existence', [
       row('seismology', 'supports', KNAPMEYER, { observed: 'Receiver functions under the InSight lander show two or three crustal layers', inferred: 'A crust 24–72 km thick, thinner under the lander', assumed: 'The lander site is representative of the north', uncertain: 'Whether the deeper layer is crust or mantle', mission: 'InSight', year: 2021 }),
@@ -48,7 +48,7 @@ function mantle(outerRadiusKm: number, innerRadiusNote: string): Region {
     temperatureK: endpoints(1900, 500, KHAN, 'modelled'),
     pressureGPa: endpoints(19, 0.6, STAHLER, 'modelled'),
     densityKgM3: endpoints(4100, 3400, STAHLER, 'inferred'),
-    heat: heat([{ kind: 'radiogenicDecay', note: 'Uranium, thorium and potassium.' }], 'Heat from the core', 'convection'),
+    heat: heat([{ kind: 'radiogenicDecay', note: 'Uranium, thorium and potassium.' }], 'heat from the core', 'convection'),
     claims: [
       claim('existence', [
         row('seismology', 'supports', STAHLER, { observed: 'Marsquake waves crossing it, including those turning above the core', inferred: 'A thick solid silicate mantle', assumed: '—', uncertain: 'Its lowest part is the open question', mission: 'InSight', year: 2021 }),
@@ -131,7 +131,7 @@ const BASAL_MOLTEN_LAYER: Region = {
   temperatureK: endpoints(2100, 2000, KHAN, 'modelled'),
   pressureGPa: endpoints(21, 19, KHAN, 'modelled'),
   densityKgM3: endpoints(4400, 4300, KHAN, 'modelled'),
-  heat: heat([{ kind: 'radiogenicDecay', note: 'Enriched in uranium, thorium and potassium: a hot blanket over the core.' }], 'Heat from the core', 'convection'),
+  heat: heat([{ kind: 'radiogenicDecay', note: 'Enriched in uranium, thorium and potassium: a hot blanket over the core.' }], 'heat from the core', 'convection'),
   claims: [
     claim('existence', [
       row('seismology', 'supports', KHAN, { observed: 'Deep-diving wave arrivals and the reflector depth', inferred: 'A ~150 km molten silicate layer between mantle and core', assumed: 'The reflector is the layer\'s top, not the metal', uncertain: 'Its thickness and whether it is fully molten', mission: 'InSight', year: 2023 }),

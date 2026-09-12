@@ -8,6 +8,7 @@
  */
 import type { Claim } from '../data/interiorTypes';
 import {
+  DIRECTLY_DETECTED_MIN_SCORE,
   EVIDENCE_LEVEL_LABEL,
   EVIDENCE_LEVEL_READS_AS,
   POINTS,
@@ -29,8 +30,8 @@ function element<K extends keyof HTMLElementTagNameMap>(tag: K, className: strin
 const LEVEL_ORDER: readonly EvidenceLevel[] = ['directlyDetected', 'wellConstrained', 'constrained', 'modelDependent', 'hypothesis'];
 
 const LEVEL_RANGE: Readonly<Record<EvidenceLevel, string>> = {
-  directlyDetected: '85–95, with a direct measurement',
-  wellConstrained: '65–84',
+  directlyDetected: `${DIRECTLY_DETECTED_MIN_SCORE} and up, with a measurement that reaches the region`,
+  wellConstrained: `${DIRECTLY_DETECTED_MIN_SCORE} and up, without one`,
   constrained: '45–64',
   modelDependent: '25–44',
   hypothesis: 'under 25',
@@ -45,9 +46,10 @@ export function rubricLines(): string[] {
     `Laboratory work reproducing the state at those conditions: +${POINTS.lab}`,
     `Nothing published argues against it and no rival model draws it differently: +${POINTS.unchallenged}`,
     `Each challenging row: ${POINTS.challenge}, down to ${POINTS.challengeMax}`,
-    'Constraining rows and consistent models: 0, listed for the reader',
+    'Constraining rows, consistent models, a second row of a method already counted, and the bulk density beside stronger evidence: 0, listed for the reader',
     `Only the bulk density: +${POINTS.densityOnly}, and never above Model-dependent`,
     `The score is rounded to fives and never reaches 100: ${POINTS.max} is the ceiling.`,
+    `Directly detected needs a measurement that reaches the region and a score of ${DIRECTLY_DETECTED_MIN_SCORE} or more; the same score without one is Well constrained.`,
   ];
 }
 

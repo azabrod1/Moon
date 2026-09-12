@@ -24,7 +24,7 @@ const OCEAN: Region = {
   temperatureK: endpoints(260, 250, SCHUBERT, 'modelled'),
   pressureGPa: endpoints(0.2, 0.15, SCHUBERT, 'modelled'),
   densityKgM3: endpoints(1100, 1050, SCHUBERT, 'modelled'),
-  heat: heat([{ kind: 'none', note: 'Kept liquid by a little radiogenic heat and antifreeze.' }], 'Heat from the interior', 'conduction'),
+  heat: heat([{ kind: 'none', note: 'Kept liquid by a little radiogenic heat and antifreeze.' }], 'heat from the interior', 'conduction'),
   claims: [
     claim('existence', [
       row('magnetic', 'supports', ZIMMER, { observed: 'Galileo\'s magnetometer saw an induced dipole responding to Jupiter\'s rotating field', inferred: 'A conducting layer near the surface: a salty ocean', assumed: 'The conductor is salt water', uncertain: 'An ionosphere was proposed instead and disfavoured', mission: 'Galileo', year: 2000 }),
@@ -46,7 +46,7 @@ const ICE_SHELL: Region = {
   temperatureK: endpoints(250, 120, SCHUBERT, 'modelled'),
   pressureGPa: endpoints(0.15, 0, SCHUBERT, 'modelled'),
   densityKgM3: endpoints(930, 920, SCHUBERT, 'modelled'),
-  heat: heat([{ kind: 'none', note: 'Cold and rigid.' }], 'Heat from the ocean below', 'conduction'),
+  heat: heat([{ kind: 'none', note: 'Cold and rigid.' }], 'heat from the ocean below', 'conduction'),
   claims: [
     claim('existence', [
       row('inSitu', 'supports', SCHUBERT, { observed: 'Images and spectra of an ice-and-dust surface', inferred: 'A solid ice shell', assumed: '—', uncertain: 'Its thickness, ~150 km', mission: 'Galileo', year: 2004 }),
@@ -129,7 +129,7 @@ export const CALLISTO_DIFFERENTIATED_MODEL: InteriorModel = {
       temperatureK: endpoints(600, 260, SCHUBERT, 'modelled'),
       pressureGPa: endpoints(1.5, 0.2, SCHUBERT, 'modelled'),
       densityKgM3: endpoints(1300, 1100, GAO, 'modelled'),
-      heat: heat([{ kind: 'none', note: 'Carries heat from the rock.' }], 'Heat from the core', 'conduction'),
+      heat: heat([{ kind: 'none', note: 'Carries heat from the rock.' }], 'heat from the core', 'conduction'),
       claims: [
         claim('existence', [
           row('model', 'supports', GAO, { observed: 'The same re-fit', inferred: 'An ice mantle above the core', assumed: 'As above', uncertain: 'As above', year: 2013 }),

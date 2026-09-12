@@ -42,7 +42,7 @@ export const EARTH_MODEL: InteriorModel = {
       temperatureK: endpoints(5700, 5400, ANZELLINI, 'inferred'),
       pressureGPa: endpoints(364, 329, PREM, 'inferred'),
       densityKgM3: endpoints(13090, 12760, PREM, 'inferred'),
-      heat: heat([{ kind: 'latentCrystallisation', note: 'The inner core grows as the outer core freezes onto it, releasing latent heat and light elements.' }], 'Conduction from the outer core', 'conduction'),
+      heat: heat([{ kind: 'latentCrystallisation', note: 'The inner core grows as the outer core freezes onto it, releasing latent heat and light elements.' }], 'conduction from the outer core', 'conduction'),
       claims: [
         claim('existence', [
           row('seismology', 'supports', LEHMANN, { observed: 'Faint P-wave arrivals inside the core shadow zone', inferred: 'A boundary deep in the core reflects and refracts them', assumed: 'A spherically symmetric core', uncertain: 'Nothing about its size from this alone', year: 1936 }),
@@ -103,7 +103,7 @@ export const EARTH_MODEL: InteriorModel = {
       heat: heat([
         { kind: 'radiogenicDecay', note: 'Uranium, thorium and potassium decaying throughout the mantle.' },
         { kind: 'primordial', note: 'Heat of formation and of core separation, still escaping.' },
-      ], 'Heat from the core below', 'convection'),
+      ], 'heat from the core below', 'convection'),
       claims: [
         claim('existence', [
           row('seismology', 'supports', PREM, { observed: 'Smoothly rising wave speeds from 660 km down to 2891 km, with a sharp drop at the core', inferred: 'One thick solid shell above the core', assumed: 'Spherical symmetry to first order', uncertain: 'Lateral structure; the D″ layer at its base' }),
@@ -126,7 +126,7 @@ export const EARTH_MODEL: InteriorModel = {
       temperatureK: endpoints(1900, 800, KATSURA, 'inferred'),
       pressureGPa: endpoints(24, 1, PREM, 'inferred'),
       densityKgM3: endpoints(3990, 3380, PREM, 'inferred'),
-      heat: heat([{ kind: 'radiogenicDecay', note: 'Uranium, thorium and potassium.' }], 'Heat from the lower mantle', 'convection'),
+      heat: heat([{ kind: 'radiogenicDecay', note: 'Uranium, thorium and potassium.' }], 'heat from the lower mantle', 'convection'),
       claims: [
         claim('existence', [
           row('seismology', 'supports', PREM, { observed: 'Wave speeds between the Moho and the 660-km discontinuity, with a jump at 410 km', inferred: 'A distinct shell whose minerals change phase with depth', assumed: 'Spherical symmetry', uncertain: 'Lateral variation is large here' }),
@@ -145,7 +145,7 @@ export const EARTH_MODEL: InteriorModel = {
       temperatureK: endpoints(800, 288, KATSURA, 'inferred'),
       pressureGPa: endpoints(1, 0, PREM, 'inferred'),
       densityKgM3: endpoints(2900, 2600, PREM, 'measured'),
-      heat: heat([{ kind: 'radiogenicDecay', note: 'Continental crust is rich in uranium, thorium and potassium.' }], 'Heat from the mantle', 'conduction'),
+      heat: heat([{ kind: 'radiogenicDecay', note: 'Continental crust is rich in uranium, thorium and potassium.' }], 'heat from the mantle', 'conduction'),
       claims: [
         claim('existence', [
           row('seismology', 'supports', PREM, { observed: 'The Mohorovičić discontinuity: a jump in wave speed a few tens of km down', inferred: 'A distinct outer shell', assumed: '—', uncertain: 'Its thickness varies from 7 km to 70 km' }),

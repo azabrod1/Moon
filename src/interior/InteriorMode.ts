@@ -1142,8 +1142,9 @@ export class InteriorMode {
     this.controls.update();
   }
 
-  /** The phone's projection shift: the body draws in the upper part of the
-   *  viewport, above the sheet, whatever the orbit. Desktop clears it. */
+  /** The projection shift, screen space and orbit-independent: on a phone the body
+   *  draws in the upper part of the viewport, above the sheet; on desktop it sits
+   *  left of the panel, by half the panel's width, so the wedge never crowds it. */
   private applyViewportFraming(): void {
     const width = window.innerWidth;
     const height = window.innerHeight;
@@ -1151,7 +1152,10 @@ export class InteriorMode {
       const shift = Math.round(height * FRAMING.phoneViewShiftFraction);
       this.camera.setViewOffset(width, height, 0, shift, width, height);
     } else {
-      this.camera.clearViewOffset();
+      const panel = document.getElementById('interior-panel');
+      const shift = panel ? Math.round(panel.getBoundingClientRect().width / 2) : 0;
+      if (shift > 0) this.camera.setViewOffset(width, height, shift, 0, width, height);
+      else this.camera.clearViewOffset();
     }
     this.camera.updateProjectionMatrix();
   }

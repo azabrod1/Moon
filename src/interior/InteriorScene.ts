@@ -95,6 +95,9 @@ const FILL_SHINE_COLOR = 0x9aa4b8;
 const FILL_SHINE_DIR = new THREE.Vector3(0.4, 0.2, 1).normalize();
 const FILL_SHINE_INTENSITY = 1.2;
 const STARFIELD_DIM = 0.45;
+/** The backdrop behind the starfield: a faint dark-blue radial glow, linear, so the body has
+ *  air around it rather than a hole. Drawn first at the far plane, writing no depth. */
+const VIGNETTE_CENTRE_COLOR = new THREE.Color(0.006, 0.01, 0.02);
 // The studio the section faces reflect: a black stage with one large warm
 // softbox upper-left of the viewer and a small cool panel low on the right,
 // prefiltered once per session and turned with the camera each frame so the
@@ -139,7 +142,7 @@ const SUN_CORONA: AtmosphereConfig = {
 };
 /** The photosphere's HDR radiance (3.8 in the planetarium, where it is the light) scaled to
  *  sit beside a section face without whiting the studio out. Art, documented. */
-const SUN_STUDIO_EXPOSURE = 0.5;
+const SUN_STUDIO_EXPOSURE = 0.3;
 
 function buildStudioEnvironment(): THREE.Scene {
   const studio = new THREE.Scene();
@@ -182,6 +185,7 @@ export class InteriorScene {
   /** The renderer's tone curve before the studio took it, restored on dispose. */
   private readonly previousToneMapping: THREE.ToneMapping;
   private readonly starfield: THREE.Points;
+  private readonly vignette: THREE.Mesh;
   private readonly skinGeometry: THREE.SphereGeometry;
   private readonly skinMesh: THREE.Mesh;
   private skinMaterial: THREE.Material | null = null;
@@ -253,6 +257,8 @@ export class InteriorScene {
     this.starfield = createPlanetariumStarfield(renderer.getPixelRatio());
     dimStarfield(this.starfield, STARFIELD_DIM);
     this.group.add(this.starfield);
+    this.vignette = buildVignette();
+    this.group.add(this.vignette);
 
     this.cutUniforms = createSkinCutUniforms();
     this.fadeUniforms = createSkinFadeUniforms();
@@ -375,7 +381,7 @@ export class InteriorScene {
         initialAlpha: ATMOSPHERE_ALPHA,
         initialSunDir: this.keyDirection,
       });
-      applyAtmosphereCut(material, this.cutUniforms);
+      applyAtmosphereCut(material, this.cutUniforms, body.sun ? atmosphere.scale : undefined);
       this.atmosphereMaterial = material;
       this.atmosphereMesh.material = material;
       this.atmosphereMesh.scale.setScalar(atmosphere.scale);
@@ -785,7 +791,35 @@ export class InteriorScene {
     this.faceMaterial.dispose();
     this.starfield.geometry.dispose();
     (this.starfield.material as THREE.Material).dispose();
+    this.vignette.geometry.dispose();
+    (this.vignette.material as THREE.Material).dispose();
   }
+}
+
+function buildVignette(): THREE.Mesh {
+  const material = new THREE.ShaderMaterial({
+    uniforms: { uVignetteColor: { value: VIGNETTE_CENTRE_COLOR } },
+    vertexShader: /* glsl */ `
+      varying vec2 vVignetteUv;
+      void main() {
+        vVignetteUv = uv;
+        gl_Position = vec4(position.xy, 1.0, 1.0);
+      }`,
+    fragmentShader: /* glsl */ `
+      uniform vec3 uVignetteColor;
+      varying vec2 vVignetteUv;
+      void main() {
+        float radius = length(vVignetteUv * 2.0 - 1.0);
+        gl_FragColor = vec4(uVignetteColor * (1.0 - smoothstep(0.15, 1.15, radius)), 1.0);
+      }`,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
+  mesh.name = 'InteriorVignette';
+  mesh.frustumCulled = false;
+  mesh.renderOrder = -10;
+  return mesh;
 }
 
 function dimStarfield(stars: THREE.Points, dim: number): void {

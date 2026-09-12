@@ -121,10 +121,12 @@ async function ready(page) {
 const state = (page) => page.evaluate(() => window.__moon.interiorState());
 const legendRegions = (page) => page.evaluate(() => [...document.querySelectorAll('#interior-legend .interior-row')].map((row) => row.dataset.region));
 
-/** The disc centre in client px: the body sits at the origin; project it. */
+/** The disc centre in client px: the body sits at the origin, shifted up above the phone's
+ *  sheet or left of the desktop panel by half its width (InteriorMode.applyViewportFraming). */
 async function discCentre(page, viewport) {
-  const shift = viewport.width <= 640 ? Math.round(viewport.height * 0.17) : 0;
-  return { x: viewport.width / 2, y: viewport.height / 2 - shift };
+  if (viewport.width <= 640) return { x: viewport.width / 2, y: viewport.height / 2 - Math.round(viewport.height * 0.17) };
+  const panelWidth = await page.evaluate(() => document.getElementById('interior-panel')?.getBoundingClientRect().width ?? 0);
+  return { x: viewport.width / 2 - Math.round(panelWidth / 2), y: viewport.height / 2 };
 }
 
 async function sweepBody(context, viewport, body) {

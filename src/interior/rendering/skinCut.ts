@@ -135,6 +135,9 @@ export interface RawShaderCutOptions {
   output: { find: string; replace: string };
   /** Test the screen position a far-side fragment covers (a BackSide shell) rather than the fragment itself. */
   reflectFarSide: boolean;
+  /** The shell's radius in body radii: when set, only fragments that project inside the body's
+   *  disc are cut, and the shell's glow beyond the disc keeps shining through the wedge. */
+  discGateScale?: number;
 }
 
 /**
@@ -153,13 +156,17 @@ export function applyRawShaderCut(material: THREE.ShaderMaterial, uniforms: Skin
   const reflect = options.reflectFarSide
     ? '    float cutAlong = dot(cutDirection, uCutView);\n    if (cutAlong < 0.0) cutDirection -= 2.0 * cutAlong * uCutView;\n'
     : '';
+  // Beyond the disc the wedge has nothing to open: a halo there is kept whole.
+  const gate = options.discGateScale !== undefined
+    ? `    if (length(cross(cutDirection, uCutView)) * ${options.discGateScale.toFixed(4)} >= 1.0) cutSigned = 1e3;\n`
+    : '';
   const test = `
   float interiorCutCoverage = 1.0;
   if (uCutHalfAngle > 0.0) {
     vec3 cutDirection = normalize(${options.direction});
 ${reflect}    float cutAngle = atan(abs(dot(cutDirection, uCutSide)), dot(cutDirection, uCutView));
     float cutSigned = cutAngle - uCutHalfAngle;
-    float cutWidth = max(fwidth(cutSigned), 1e-5);
+${gate}    float cutWidth = max(fwidth(cutSigned), 1e-5);
     interiorCutCoverage = clamp(cutSigned / cutWidth + 0.5, 0.0, 1.0);
     if (interiorCutCoverage <= 0.0) discard;
   }
@@ -185,14 +192,19 @@ ${reflect}    float cutAngle = atan(abs(dot(cutDirection, uCutSide)), dot(cutDir
  * covers, which its reflection through the frame's view plane gives — at
  * the limb, where the fringe lives, the two coincide, so the air's edge
  * lands exactly on the skin's. The feather goes into the radiance, since an
- * additive shell has no alpha to carry it.
+ * additive shell has no alpha to carry it. A wide shell (the Sun's corona,
+ * whose halo reaches well beyond the disc) passes its scale as the disc
+ * gate: an additive shell cannot occlude, so cutting its glow beyond the
+ * disc would only punch a hood-shaped hole in the halo; inside the disc the
+ * faces occlude it with depth, and at the limb the two agree.
  */
-export function applyAtmosphereCut(material: THREE.ShaderMaterial, uniforms: SkinCutUniforms): void {
+export function applyAtmosphereCut(material: THREE.ShaderMaterial, uniforms: SkinCutUniforms, discGateScale?: number): void {
   applyRawShaderCut(material, uniforms, {
     vertexVarying: false,
     direction: 'vWorldPos - vCenter',
     output: { find: 'gl_FragColor = vec4(radiance, 1.0);', replace: 'gl_FragColor = vec4(radiance * interiorCutCoverage, 1.0);' },
     reflectFarSide: true,
+    discGateScale,
   });
 }
 

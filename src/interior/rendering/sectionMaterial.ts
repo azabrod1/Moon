@@ -112,6 +112,8 @@ export interface SectionUniforms {
   uSelfLit: { value: number[] };
   /** A self-lit region's place in the body's heat, 0 at the coolest zone to 1 at the hottest. */
   uHeatLevel: { value: number[] };
+  /** The lift on the body's hottest region's heat at its bottom (1 elsewhere), graded by depth. */
+  uHeatBoost: { value: number[] };
   uCount: { value: number };
   /** World → body-space rotation (the inverse of the body's pose). */
   uWorldToBody: { value: THREE.Matrix3 };
@@ -161,6 +163,7 @@ export function createSectionUniforms(): SectionUniforms {
     uHeatStrength: { value: numbers() },
     uSelfLit: { value: numbers() },
     uHeatLevel: { value: numbers() },
+    uHeatBoost: { value: numbers().map(() => 1) },
     uCount: { value: 1 },
     uWorldToBody: { value: new THREE.Matrix3() },
     uTime: { value: 0 },
@@ -243,11 +246,11 @@ export function writeSectionRegions(
       uniforms.uHeat.value[index].setScalar((SELF_LIT_FLOOR + SELF_LIT_RANGE * heatLevels[index]) * art.heatGain);
     } else {
       const tint = linearTint(art.heatTint);
-      const boost = index === hottestIndex ? INCANDESCENCE_HOTTEST_BOOST : 1;
       uniforms.uHeat.value[index]
         .set(region.heat.emission[0] * tint[0], region.heat.emission[1] * tint[1], region.heat.emission[2] * tint[2])
-        .multiplyScalar(art.heatGain * boost);
+        .multiplyScalar(art.heatGain);
     }
+    uniforms.uHeatBoost.value[index] = index === hottestIndex ? INCANDESCENCE_HOTTEST_BOOST : 1;
     uniforms.uHeatStrength.value[index] = region.heat.strength;
     uniforms.uSelfLit.value[index] = art.selfLit ? 1 : 0;
     uniforms.uHeatLevel.value[index] = heatLevels[index];
@@ -344,6 +347,7 @@ uniform vec3 uHeat[${MAX_REGIONS}];
 uniform float uHeatStrength[${MAX_REGIONS}];
 uniform float uSelfLit[${MAX_REGIONS}];
 uniform float uHeatLevel[${MAX_REGIONS}];
+uniform float uHeatBoost[${MAX_REGIONS}];
 uniform int uCount;
 uniform mat3 uWorldToBody;
 uniform float uTime;
@@ -540,8 +544,9 @@ float heatMask0;
 vec4 sectionFirst = sectionSample(0, sectionBodyPoint, regionT0, heatMask0);
 vec3 interiorAlbedo = sectionFirst.rgb;
 float interiorHeight = sectionFirst.a;
-// Hotter inward within a region too: the heat brightens toward the bottom.
-vec3 interiorHeat = uHeat[0] * heatMask0 * (0.8 + 0.35 * regionT0);
+// Hotter inward within a region too: the heat brightens toward the bottom, and the body's
+// hottest region takes its lift there, so only the middle of a core blooms.
+vec3 interiorHeat = uHeat[0] * heatMask0 * (0.8 + 0.35 * regionT0) * mix(1.0, uHeatBoost[0], regionT0);
 float interiorHeatStrength = uHeatStrength[0];
 float interiorSelfLit = uSelfLit[0];
 float interiorRough = uRough[0];
@@ -569,7 +574,7 @@ for (int k = 1; k < ${MAX_REGIONS}; k++) {
   vec4 sampleK = sectionSample(k, sectionBodyPoint, regionT, heatMaskK);
   interiorAlbedo = mix(interiorAlbedo, sampleK.rgb, t);
   interiorHeight = mix(interiorHeight, sampleK.a, t);
-  interiorHeat = mix(interiorHeat, uHeat[k] * heatMaskK * (0.8 + 0.35 * regionT), t);
+  interiorHeat = mix(interiorHeat, uHeat[k] * heatMaskK * (0.8 + 0.35 * regionT) * mix(1.0, uHeatBoost[k], regionT), t);
   interiorHeatStrength = mix(interiorHeatStrength, uHeatStrength[k], t);
   interiorSelfLit = mix(interiorSelfLit, uSelfLit[k], t);
   interiorRough = mix(interiorRough, uRough[k], t);
@@ -666,8 +671,10 @@ const SECTION_ROUGHNESS = /* glsl */ `
 roughnessFactor = uDisplayMode == 1 ? 1.0 : interiorRough;
 `;
 
+/** A metal's studio sheen fades as its heat rises: a white-hot core is a light, and a mirror
+ *  of the softbox on top of it only reads as a pale wash. */
 const SECTION_METALNESS = /* glsl */ `
-metalnessFactor = uDisplayMode == 1 ? 0.0 : interiorMetal;
+metalnessFactor = uDisplayMode == 1 ? 0.0 : interiorMetal * (1.0 - 0.5 * interiorHeatStrength);
 `;
 
 /** After <normal_fragment_maps>: the pattern's height as a bump, the

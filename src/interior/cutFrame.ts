@@ -16,7 +16,8 @@
  *
  * The three named views are geometry, not limits of a formula:
  *   Closed    θ = 0     no faces are drawn and the skin is whole
- *   Cutaway   θ = 90°   two faces, each 45° off the view axis
+ *   Cutaway   θ = 120°  two faces, each 60° off the view axis: the terraces read as
+ *                       stepped ledges and the core shows whole, where 90° left it a sliver
  *   Section   θ = 180°  one full disc perpendicular to the view axis; the
  *                       near hemisphere is removed
  *
@@ -37,7 +38,7 @@ export const CUT_VIEWS: readonly CutView[] = ['closed', 'cutaway', 'section'];
 /** The opening angle each named view sets, in degrees. */
 export const CUT_VIEW_ANGLE_DEG: Readonly<Record<CutView, number>> = {
   closed: 0,
-  cutaway: 90,
+  cutaway: 120,
   section: 180,
 };
 

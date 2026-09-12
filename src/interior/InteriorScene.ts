@@ -79,13 +79,16 @@ export const TERRACE_STEP = 0.2;
 // of whatever the viewer is looking from. A world-fixed key would put the
 // faces in the dark on the far side of an orbit, and the faces are the
 // product here.
-const KEY_LIGHT_CAMERA_DIR = new THREE.Vector3(-0.6, 0.5, 0.65).normalize();
+// A directional key, a little more frontal than before, so the exterior wraps in light
+// around the wedge and each face takes a gradient across its width; the fill is held
+// low so the terraces' ledge shadows and the faces' relief are not washed flat.
+const KEY_LIGHT_CAMERA_DIR = new THREE.Vector3(-0.35, 0.4, 0.85).normalize();
 const KEY_LIGHT_DISTANCE = 6;
 const KEY_LIGHT_COLOR = 0xffe8c8;
-const KEY_LIGHT_INTENSITY = 4.5;
+const KEY_LIGHT_INTENSITY = 2.6;
 const FILL_SKY_COLOR = 0xaeb6c6;
 const FILL_GROUND_COLOR = 0x2a2622;
-const FILL_HEMI_INTENSITY = 2.0;
+const FILL_HEMI_INTENSITY = 1.0;
 // The skin's night side takes the planetshine channel as a faint studio
 // fill, the compare fillers' idiom, so the unlit limb reads as a dim world.
 const FILL_SHINE_COLOR = 0x9aa4b8;
@@ -175,7 +178,9 @@ export class InteriorScene {
   private readonly scene: THREE.Scene;
   private readonly renderer: THREE.WebGLRenderer;
   private readonly group: THREE.Group;
-  private readonly keyLight: THREE.PointLight;
+  private readonly keyLight: THREE.DirectionalLight;
+  /** The renderer's tone curve before the studio took it, restored on dispose. */
+  private readonly previousToneMapping: THREE.ToneMapping;
   private readonly starfield: THREE.Points;
   private readonly skinGeometry: THREE.SphereGeometry;
   private readonly skinMesh: THREE.Mesh;
@@ -225,14 +230,21 @@ export class InteriorScene {
     this.scene = scene;
     this.renderer = renderer;
     this.floatCapable = floatCapable;
+    // The studio's tone curve: Neutral keeps a hot face's hue where ACES turns everything
+    // past mid-grey toward white, so a molten core reads as gold rather than cream. The
+    // renderer's curve is the planetarium's; the OutputPass re-reads it every frame, so it
+    // is set for the studio's life and given back on dispose. Art, documented.
+    this.previousToneMapping = renderer.toneMapping;
+    renderer.toneMapping = THREE.NeutralToneMapping;
     this.group = new THREE.Group();
     this.group.name = 'InteriorRoot';
     this.group.visible = false;
 
     // Lights live inside the group so they can never leak into another mode.
-    this.keyLight = new THREE.PointLight(KEY_LIGHT_COLOR, KEY_LIGHT_INTENSITY, 0, 0.5);
+    this.keyLight = new THREE.DirectionalLight(KEY_LIGHT_COLOR, KEY_LIGHT_INTENSITY);
     this.keyLight.position.set(0, 0, KEY_LIGHT_DISTANCE);
     this.group.add(this.keyLight);
+    this.group.add(this.keyLight.target); // aimed at the body, at the origin
     this.group.add(new THREE.HemisphereLight(FILL_SKY_COLOR, FILL_GROUND_COLOR, FILL_HEMI_INTENSITY));
 
     // Dimmed starfield backdrop, this scene's own instance: scaling the colour
@@ -757,6 +769,7 @@ export class InteriorScene {
   }
 
   dispose(): void {
+    this.renderer.toneMapping = this.previousToneMapping;
     this.releaseBodyResources();
     this.faceMaterial.envMap = null;
     for (const shell of this.regionShells) {

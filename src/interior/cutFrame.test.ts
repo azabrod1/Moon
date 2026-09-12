@@ -119,12 +119,15 @@ describe('the three named views', () => {
     expectVectorClose(faceB.radial, side.clone().negate());
   });
 
-  it('Cutaway puts each face 45° off the view axis, normal into the wedge', () => {
+  it('Cutaway puts each face plane half the opening off the view axis, normal into the wedge', () => {
     const frame = computeCutFrame(position, localUp, centre, openingAngleDegToRad(CUT_VIEW_ANGLE_DEG.cutaway));
     const faceA = cutFaceBasis(frame, 'a');
     const faceB = cutFaceBasis(frame, 'b');
-    expect(faceA.normal.angleTo(view)).toBeCloseTo(Math.PI / 4, 9);
-    expect(faceB.normal.angleTo(view)).toBeCloseTo(Math.PI / 4, 9);
+    // Each face plane sits half the opening off the view axis (60° at the 120° cutaway), so
+    // its normal sits the complement, (π − θ)/2 = 30°, off the axis.
+    const normalOffView = (Math.PI - openingAngleDegToRad(CUT_VIEW_ANGLE_DEG.cutaway)) / 2;
+    expect(faceA.normal.angleTo(view)).toBeCloseTo(normalOffView, 9);
+    expect(faceB.normal.angleTo(view)).toBeCloseTo(normalOffView, 9);
     expect(faceA.normal.dot(faceA.radial)).toBeCloseTo(0, 9);
     expect(faceB.normal.dot(faceB.radial)).toBeCloseTo(0, 9);
     // The normals face the viewer, and each points away from its own side.
@@ -149,7 +152,7 @@ describe('the three named views', () => {
 
   it('names the angle each view sets', () => {
     expect(cutViewForAngle(0)).toBe('closed');
-    expect(cutViewForAngle(90.2)).toBe('cutaway');
+    expect(cutViewForAngle(120.2)).toBe('cutaway');
     expect(cutViewForAngle(180)).toBe('section');
     expect(cutViewForAngle(60)).toBeNull();
   });

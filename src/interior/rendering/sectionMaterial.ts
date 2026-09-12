@@ -34,10 +34,19 @@
  * never the solar-system clock.
  *
  * Heat is the fourth channel. Each region carries its incandescence (linear
- * HDR radiance from its temperature, artParams.incandescence), which the
- * pattern grains — lava glows in its cracks, a crystalline core in its
- * facets — and adds as emission; the hotter the region, the more its heat
- * outweighs its albedo. The bloom pass bleeds what crosses its threshold.
+ * HDR radiance from its temperature, artParams.incandescence, through the
+ * family's heat tint), which the pattern grains — lava glows in its
+ * fissures, a crystalline core in its facets — and adds as emission; the
+ * hotter the region, the more its heat outweighs its albedo, and what
+ * albedo survives takes the heat's hue. Only the body's hottest region
+ * is lifted past the bloom threshold (INCANDESCENCE_HOTTEST_BOOST), so a
+ * core bleeds and a mantle keeps its colour. A self-lit region (a star's
+ * plasma) has no albedo at all: its patterned palette is its emission,
+ * scaled by where the region sits in the body's heat (uHeatLevel).
+ *
+ * The terraces cast: the inner region's shell stands on the next face just
+ * outside their boundary, and a soft contact shadow at its foot is what
+ * makes a ledge read as a ledge rather than a painted ring.
  *
  * The same shader also dresses the terrace shells (InteriorScene): a shell
  * is one region's outer surface, so its variant samples that region
@@ -59,9 +68,11 @@
  * the coldest colour, and emphasis there is the outline alone.
  *
  * Uncertainty of a boundary's location (plan §6) is a faint hatched band
- * straddling it, sized from the knowledge record and drawn in both modes;
- * a distributed transition stays the blend it already is, so the two
- * treatments compose.
+ * straddling it in Temperature mode, sized from the knowledge record; in
+ * Composition mode the boundary's blend is widened to the band instead —
+ * a soft edge is the honest picture of a line nobody has placed, and a
+ * hatch across half a radius reads as wood grain. A distributed transition
+ * stays the blend it already is, so the treatments compose.
  *
  * Injection points, in the order meshphysical.glsl.js runs them:
  *   after <color_fragment>        the region resolve → diffuseColor.rgb
@@ -72,7 +83,7 @@
  */
 import * as THREE from 'three';
 import { sunNoiseGLSL } from '../../shared/shaders/sun';
-import { PATTERN_INDEX, type ArtParams, type Incandescence } from '../data/artParams';
+import { INCANDESCENCE_HOTTEST_BOOST, PATTERN_INDEX, type ArtParams, type Incandescence } from '../data/artParams';
 import { TEMPERATURE_SCALE_STOPS, type TemperatureRange } from '../temperatureScale';
 
 export const MAX_REGIONS = 8;
@@ -97,6 +108,10 @@ export interface SectionUniforms {
   uHeat: { value: THREE.Vector3[] };
   /** 0 cold .. 1 fully incandescent. */
   uHeatStrength: { value: number[] };
+  /** 1 for a region that is a light (a star's plasma): no albedo, its palette is its emission. */
+  uSelfLit: { value: number[] };
+  /** A self-lit region's place in the body's heat, 0 at the coolest zone to 1 at the hottest. */
+  uHeatLevel: { value: number[] };
   uCount: { value: number };
   /** World → body-space rotation (the inverse of the body's pose). */
   uWorldToBody: { value: THREE.Matrix3 };
@@ -144,6 +159,8 @@ export function createSectionUniforms(): SectionUniforms {
     uAmbient: { value: numbers() },
     uHeat: { value: Array.from({ length: MAX_REGIONS }, () => new THREE.Vector3()) },
     uHeatStrength: { value: numbers() },
+    uSelfLit: { value: numbers() },
+    uHeatLevel: { value: numbers() },
     uCount: { value: 1 },
     uWorldToBody: { value: new THREE.Matrix3() },
     uTime: { value: 0 },
@@ -203,6 +220,8 @@ export function writeSectionRegions(
 ): void {
   const count = Math.min(regionsInsideOut.length, MAX_REGIONS);
   uniforms.uCount.value = Math.max(1, count);
+  const hottestIndex = hottestRegionIndex(regionsInsideOut, count);
+  const heatLevels = selfLitHeatLevels(regionsInsideOut, count);
   for (let index = 0; index < MAX_REGIONS; index++) {
     const region = regionsInsideOut[Math.min(index, count - 1)];
     const art = region.art;
@@ -219,8 +238,19 @@ export function writeSectionRegions(
     uniforms.uRelief.value[index] = art.relief;
     uniforms.uDepthGrad.value[index] = art.depthGradient;
     uniforms.uAmbient.value[index] = lustre ? art.ambient : art.ambient + 0.1 * art.metalness;
-    uniforms.uHeat.value[index].set(region.heat.emission[0], region.heat.emission[1], region.heat.emission[2]).multiplyScalar(art.heatGain);
+    if (art.selfLit) {
+      // A light: the palette is the emission; the radiance says where in the body's heat it sits.
+      uniforms.uHeat.value[index].setScalar((SELF_LIT_FLOOR + SELF_LIT_RANGE * heatLevels[index]) * art.heatGain);
+    } else {
+      const tint = linearTint(art.heatTint);
+      const boost = index === hottestIndex ? INCANDESCENCE_HOTTEST_BOOST : 1;
+      uniforms.uHeat.value[index]
+        .set(region.heat.emission[0] * tint[0], region.heat.emission[1] * tint[1], region.heat.emission[2] * tint[2])
+        .multiplyScalar(art.heatGain * boost);
+    }
     uniforms.uHeatStrength.value[index] = region.heat.strength;
+    uniforms.uSelfLit.value[index] = art.selfLit ? 1 : 0;
+    uniforms.uHeatLevel.value[index] = heatLevels[index];
     const temperature = index < count ? region.temperature : null;
     uniforms.uTempOuter.value[index] = temperature ? temperature.outerK : 0;
     uniforms.uTempInner.value[index] = temperature ? temperature.innerK : 0;
@@ -230,6 +260,58 @@ export function writeSectionRegions(
     uniforms.uBandLow.value[index] = band ? band.low : 0;
     uniforms.uBandHigh.value[index] = band ? band.high : 0;
   }
+}
+
+/** A self-lit region's radiance: this floor at the body's coolest self-lit zone, rising by the
+ *  range to its hottest, so only the core crosses the bloom threshold. */
+const SELF_LIT_FLOOR = 0.55;
+const SELF_LIT_RANGE = 0.8;
+
+function linearTint(hex: number): [number, number, number] {
+  return [srgbToLinear(((hex >> 16) & 0xff) / 255), srgbToLinear(((hex >> 8) & 0xff) / 255), srgbToLinear((hex & 0xff) / 255)];
+}
+
+/** The lit region with the highest bottom temperature: the one the scene lets bloom. */
+function hottestRegionIndex(regionsInsideOut: readonly SectionRegionLook[], count: number): number {
+  let hottest = -1;
+  let hottestK = -Infinity;
+  for (let index = 0; index < count; index++) {
+    const region = regionsInsideOut[index];
+    if (region.art.selfLit || !region.temperature) continue;
+    const bottomK = Math.max(region.temperature.innerK, region.temperature.outerK);
+    if (bottomK > hottestK) {
+      hottestK = bottomK;
+      hottest = index;
+    }
+  }
+  return hottest;
+}
+
+/** Where each self-lit region sits in the body's heat, by the log of its bottom temperature
+ *  between the coolest self-lit top and the hottest self-lit bottom; 1 when there is only
+ *  one, 0.5 when a temperature is unknown, 0 for a region that is not self-lit. */
+function selfLitHeatLevels(regionsInsideOut: readonly SectionRegionLook[], count: number): number[] {
+  const levels = Array.from({ length: MAX_REGIONS }, () => 0);
+  let coolestK = Infinity;
+  let hottestK = -Infinity;
+  for (let index = 0; index < count; index++) {
+    const region = regionsInsideOut[index];
+    if (!region.art.selfLit || !region.temperature) continue;
+    coolestK = Math.min(coolestK, region.temperature.outerK, region.temperature.innerK);
+    hottestK = Math.max(hottestK, region.temperature.outerK, region.temperature.innerK);
+  }
+  const span = Number.isFinite(coolestK) && hottestK > coolestK ? Math.log(hottestK / Math.max(coolestK, 1)) : 0;
+  for (let index = 0; index < count; index++) {
+    const region = regionsInsideOut[index];
+    if (!region.art.selfLit) continue;
+    if (!region.temperature) {
+      levels[index] = 0.5;
+      continue;
+    }
+    const bottomK = Math.max(region.temperature.innerK, region.temperature.outerK, 1);
+    levels[index] = span > 0 ? Math.max(0, Math.min(1, Math.log(bottomK / Math.max(coolestK, 1)) / span)) : 1;
+  }
+  return levels;
 }
 
 const SECTION_PARS_VERTEX = /* glsl */ `
@@ -260,6 +342,8 @@ uniform float uDepthGrad[${MAX_REGIONS}];
 uniform float uAmbient[${MAX_REGIONS}];
 uniform vec3 uHeat[${MAX_REGIONS}];
 uniform float uHeatStrength[${MAX_REGIONS}];
+uniform float uSelfLit[${MAX_REGIONS}];
+uniform float uHeatLevel[${MAX_REGIONS}];
 uniform int uCount;
 uniform mat3 uWorldToBody;
 uniform float uTime;
@@ -309,20 +393,24 @@ vec3 sectionNoDataColor() {
   return mix(vec3(0.045), vec3(0.15), hatch);
 }
 
-// Emphasis: the named region brightens, the rest desaturate and cool.
-// emphasisMix is this pixel's membership of the named region (blended
-// across a soft boundary like everything else); outline is a light line on
-// its boundaries, 0 on a shell. In Temperature mode only the outline
-// remains: the hue is the legend's, and nothing may shift it.
-void sectionEmphasis(float emphasisMix, float outline, inout vec3 albedo, inout vec3 heat, inout float glow) {
+// Emphasis: the rest desaturate a little and their heat dims a little, so
+// the named region is the one still fully alive (its own lift is a higher
+// ambient floor, in the emissive stage, never a brighter albedo). emphasisMix
+// is this pixel's membership of the named region (blended across a soft
+// boundary like everything else). In Temperature mode nothing shifts: the
+// hue is the legend's, and only the outline remains.
+void sectionEmphasis(float emphasisMix, inout vec3 albedo, inout vec3 heat, inout float glow) {
   if (uEmphasisAmount <= 0.0 || uDisplayMode == 1) return;
   float other = uEmphasisAmount * (1.0 - emphasisMix);
   float luminance = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
-  albedo = mix(albedo, vec3(luminance) * 0.7, other * 0.75);
-  heat *= 1.0 - 0.65 * other;
-  glow *= 1.0 - 0.65 * other;
-  albedo *= 1.0 + 0.16 * uEmphasisAmount * emphasisMix;
-  albedo = mix(albedo, vec3(1.0), outline * uEmphasisAmount * 0.8);
+  albedo = mix(albedo, vec3(luminance) * 0.85, other * 0.4);
+  heat *= 1.0 - 0.3 * other;
+  glow *= 1.0 - 0.3 * other;
+}
+
+// The hue of a heat colour, max channel 1: what a hot region's surviving albedo takes on.
+vec3 sectionHeatHue(vec3 heat) {
+  return heat / max(max(max(heat.r, heat.g), heat.b), 1e-3);
 }
 
 float sectionFbm(vec3 p) {
@@ -339,7 +427,7 @@ float sectionFbm(vec3 p) {
 // One region's tone and height at a body-space point. Patterns are indexed
 // by artParams.PATTERN_INDEX; regionT runs 0 at the region's top to 1 at
 // its bottom; the height feeds the derivative bump, and heatMask grains the
-// region's incandescence (lava glows in its cracks, a core in its facets).
+// region's incandescence (lava glows in its fissures, a core in its facets).
 vec4 sectionSample(int k, vec3 bodyPoint, float regionT, out float heatMask) {
   int pattern = int(uPattern[k] + 0.5);
   float scale = uScale[k];
@@ -348,54 +436,91 @@ vec4 sectionSample(int k, vec3 bodyPoint, float regionT, out float heatMask) {
   float height = -1.0;
   heatMask = 1.0;
   if (pattern == 8) {
-    // lava: glowing rock veined by thin, darker, cooler seams, with a slow
-    // broad variation — the melt is the body of it, the veins the minority
+    // lava: a field of dark cooled plates split by glowing fissures — the
+    // fissures are the bright minority, at two widths, and the plates between
+    // them are where the crust has skinned over
     vec3 q = bodyPoint * scale + vec3(drift, -drift * 0.6, drift * 0.3);
     float broad = sectionFbm(q * 0.45);
-    // fbm sits near 0.5, so the ridge is high almost everywhere: only a tight
-    // threshold leaves the veins as thin lines.
-    float ridge = 1.0 - abs(2.0 * sectionFbm(q * 1.7 + 3.1) - 1.0);
-    float veins = smoothstep(0.86, 0.985, ridge);
+    float ridgeWide = 1.0 - abs(2.0 * sectionFbm(q * 1.7 + 3.1) - 1.0);
+    float ridgeFine = 1.0 - abs(2.0 * sectionFbm(q * 3.4 + 7.3) - 1.0);
+    float veins = max(smoothstep(0.82, 0.985, ridgeWide), 0.6 * smoothstep(0.9, 0.995, ridgeFine));
     float fine = noise3(q * 6.0);
-    mixValue = 0.55 + 0.35 * (broad - 0.5) - 0.4 * veins;
-    heatMask = (0.8 + 0.5 * (broad - 0.5) + 0.12 * (fine - 0.5)) * (1.0 - 0.7 * veins);
-    height = 0.5 + 0.4 * (broad - 0.5) - 0.5 * veins;
+    mixValue = 0.25 + 0.2 * (broad - 0.5) + 0.75 * veins;
+    heatMask = 0.35 + 0.9 * veins + 0.2 * (broad - 0.5) + 0.08 * (fine - 0.5);
+    height = 0.5 + 0.3 * (broad - 0.5) + 0.5 * veins;
+  } else if (pattern == 9) {
+    // mineral: solid rock in slow convection — domain-warped cells stretched
+    // along the radial direction into plumes; no cracks, the heat in the cells
+    vec3 q = bodyPoint * scale + vec3(drift, -drift * 0.7, drift * 0.4);
+    vec3 radial = normalize(bodyPoint + vec3(1e-4));
+    vec3 stretched = q - radial * dot(q, radial) * 0.55;
+    float warp = sectionFbm(stretched);
+    float cells = sectionFbm(stretched + 1.6 * vec3(warp, -warp, warp * 0.5));
+    mixValue = cells;
+    heatMask = 0.6 + 0.8 * cells;
+    height = cells;
   } else if (pattern == 1) {
     // grain: faceted crystalline metal
     float cells = noise3(bodyPoint * scale);
     float fine = noise3(bodyPoint * scale * 3.1 + 7.0);
     mixValue = step(0.55, cells) * 0.55 + fine * 0.45;
-    heatMask = 0.6 + 0.4 * mixValue;
+    heatMask = 0.4 + 0.9 * mixValue;
   } else if (pattern == 2) {
     // swirl: slow convection in a solid-state mantle
     vec3 q = bodyPoint * scale + vec3(drift, -drift * 0.7, drift * 0.4);
     float warp = sectionFbm(q);
     mixValue = sectionFbm(q + 1.7 * vec3(warp, -warp, warp * 0.5));
   } else if (pattern == 3) {
-    // flow: liquid metal, faster and more layered
+    // flow: liquid metal, faster and more layered, with convective structure in its heat
     vec3 q = bodyPoint * scale + vec3(drift * 2.0, drift, -drift * 1.5);
     mixValue = sectionFbm(q * 1.5 + sectionFbm(q) * 2.0);
-    heatMask = 0.6 + 0.6 * mixValue;
+    heatMask = 0.35 + 0.95 * mixValue;
   } else if (pattern == 4) {
-    // caustic: ridged shimmer for water and brine
+    // caustic: a soft two-octave shimmer in deep water, lighter toward the ice
+    // above it, so the light seems to come from there
     vec3 q = bodyPoint * scale + vec3(drift, drift * 1.3, -drift);
     float ridge = 1.0 - abs(2.0 * noise3(q) - 1.0);
-    mixValue = pow(ridge, 3.0) * 0.8 + noise3(q * 2.3) * 0.2;
+    float ridgeFine = 1.0 - abs(2.0 * noise3(q * 2.3 + 4.2) - 1.0);
+    mixValue = 0.35 * pow(ridge, 3.0) + 0.2 * pow(ridgeFine, 3.0) + 0.15 * noise3(q * 2.3) + 0.25 * (1.0 - regionT);
   } else if (pattern == 5) {
-    // banding: cylinders about the spin axis (body-space Y), softened by
-    // noise and fading toward the region's bottom as the flow gives way
+    // banding: broad soft zonal bands, cylinders about the spin axis (body-space
+    // Y), with turbulence growing toward the region's bottom as the flow gives way
     float axial = length(bodyPoint.xz);
-    float wobble = sectionFbm(bodyPoint * 3.0 + vec3(drift)) * 2.0;
-    float amplitude = 0.5 * (1.0 - 0.6 * regionT);
-    mixValue = 0.5 + amplitude * sin(axial * scale + wobble);
+    float turbulence = sectionFbm(bodyPoint * 3.0 + vec3(drift));
+    float wobble = turbulence * (2.0 + 6.0 * regionT);
+    float amplitude = 0.25 * (1.0 - 0.5 * regionT);
+    mixValue = 0.5 + amplitude * sin(axial * scale + wobble) + 0.2 * (turbulence - 0.5) * regionT;
     heatMask = 0.7 + 0.5 * mixValue;
   } else if (pattern == 6) {
-    // mottle: an unresolved mix
-    mixValue = sectionFbm(bodyPoint * scale);
-    heatMask = 0.45 + 0.8 * mixValue;
+    if (uSelfLit[k] > 0.5) {
+      // a star's zones: granules at the surface, boiling cells below, a still
+      // radiative depth with faint radial streaks, the palette whitening inward
+      float level = uHeatLevel[k];
+      float cellScale = scale * mix(1.0, 0.27, level);
+      vec3 q = bodyPoint * cellScale + vec3(drift, -drift * 0.8, drift * 0.5);
+      float cells = sectionFbm(q);
+      float stillness = smoothstep(0.55, 0.95, level);
+      float angle = atan(bodyPoint.z, bodyPoint.x);
+      float streaks = noise3(vec3(angle * 14.0, length(bodyPoint) * 6.0, 1.7));
+      float structure = mix(cells, 0.5 + 0.12 * (streaks - 0.5), stillness);
+      mixValue = mix(0.25 + 0.5 * structure, 0.75 + 0.25 * structure, level);
+      heatMask = 0.75 + 0.5 * structure;
+      height = structure;
+    } else {
+      // mottle: an unresolved mix
+      mixValue = sectionFbm(bodyPoint * scale);
+      heatMask = 0.45 + 0.8 * mixValue;
+    }
   } else if (pattern == 7) {
-    // crystal: faint large facets in ice
-    mixValue = 0.35 + 0.3 * step(0.5, noise3(bodyPoint * scale)) + 0.2 * noise3(bodyPoint * scale * 4.0);
+    // crystal: glassy facets in ice at two sizes, catching the key
+    float coarse = step(0.5, noise3(bodyPoint * scale));
+    float fine = step(0.5, noise3(bodyPoint * scale * 2.1 + 5.0));
+    mixValue = 0.3 + 0.3 * coarse + 0.15 * fine + 0.2 * noise3(bodyPoint * scale * 4.0);
+    height = 0.5 * coarse + 0.3 * fine;
+  } else if (pattern == 10) {
+    // hatch: the "not known" hatch, lighter — a deliberately blank disc
+    float stripe = step(0.5, fract((gl_FragCoord.x + gl_FragCoord.y) / 10.0));
+    mixValue = 0.35 + 0.4 * stripe;
   }
   return vec4(mix(uColorA[k], uColorB[k], mixValue), height < 0.0 ? mixValue : height);
 }
@@ -418,6 +543,7 @@ float interiorHeight = sectionFirst.a;
 // Hotter inward within a region too: the heat brightens toward the bottom.
 vec3 interiorHeat = uHeat[0] * heatMask0 * (0.8 + 0.35 * regionT0);
 float interiorHeatStrength = uHeatStrength[0];
+float interiorSelfLit = uSelfLit[0];
 float interiorRough = uRough[0];
 float interiorMetal = uMetal[0];
 float interiorGlow = uGlow[0];
@@ -433,7 +559,10 @@ float interiorTempKnown = uTempKnown[0];
 for (int k = 1; k < ${MAX_REGIONS}; k++) {
   if (k >= uCount) break;
   float boundary = uOuter[k - 1];
-  float halfWidth = max(uBlend[k - 1], sectionPx);
+  // In Composition an uncertain boundary is a wide blend; in Temperature it is a hatched band.
+  float bandHalf = uDisplayMode == 1 ? 0.0 : 0.5 * max(uBandHigh[k - 1] - uBandLow[k - 1], 0.0);
+  float blendWidth = max(uBlend[k - 1], bandHalf);
+  float halfWidth = max(blendWidth, sectionPx);
   float t = smoothstep(boundary - halfWidth, boundary + halfWidth, sectionRadius);
   float regionT = clamp((uOuter[k] - sectionRadius) / max(uOuter[k] - boundary, 1e-4), 0.0, 1.0);
   float heatMaskK;
@@ -442,6 +571,7 @@ for (int k = 1; k < ${MAX_REGIONS}; k++) {
   interiorHeight = mix(interiorHeight, sampleK.a, t);
   interiorHeat = mix(interiorHeat, uHeat[k] * heatMaskK * (0.8 + 0.35 * regionT), t);
   interiorHeatStrength = mix(interiorHeatStrength, uHeatStrength[k], t);
+  interiorSelfLit = mix(interiorSelfLit, uSelfLit[k], t);
   interiorRough = mix(interiorRough, uRough[k], t);
   interiorMetal = mix(interiorMetal, uMetal[k], t);
   interiorGlow = mix(interiorGlow, uGlow[k], t);
@@ -451,7 +581,7 @@ for (int k = 1; k < ${MAX_REGIONS}; k++) {
   emphasisMix = mix(emphasisMix, uEmphasis == k ? 1.0 : 0.0, t);
   interiorTempT = mix(interiorTempT, sectionTempT(k, regionT), t);
   interiorTempKnown = mix(interiorTempKnown, uTempKnown[k], t);
-  if (uBandHigh[k - 1] > uBandLow[k - 1]) {
+  if (uDisplayMode == 1 && uBandHigh[k - 1] > uBandLow[k - 1]) {
     // Where the boundary might be: a faint hatch across the whole band.
     float inBand = step(uBandLow[k - 1], sectionRadius) * step(sectionRadius, uBandHigh[k - 1]);
     float stripes = 0.5 + 0.5 * sin((gl_FragCoord.x - gl_FragCoord.y) * 0.9);
@@ -464,28 +594,36 @@ for (int k = 1; k < ${MAX_REGIONS}; k++) {
   }
   // The cutaway's lip: a shadow just inside a sharp boundary, a light rim
   // just outside it; neither where the transition is a physical blend.
-  float crisp = 1.0 - smoothstep(sectionPx * 1.5, sectionPx * 6.0, uBlend[k - 1]);
+  float crisp = 1.0 - smoothstep(sectionPx * 1.5, sectionPx * 6.0, blendWidth);
   float inside = (boundary - sectionRadius) / (sectionPx * 3.5);
   float shadow = exp(-inside * inside) * step(0.0, inside);
   float outside = (sectionRadius - boundary) / (sectionPx * 1.6);
   float rim = exp(-outside * outside) * step(0.0, outside);
   boundaryShade *= 1.0 - 0.42 * crisp * shadow;
   boundaryShade *= 1.0 + 0.22 * crisp * rim;
+  // The terrace above: the inner region's shell stands on this face just outside
+  // the boundary, and its foot casts a soft contact shadow, sized to the body.
+  float foot = (sectionRadius - boundary) / max(0.06 * boundary, sectionPx * 2.0);
+  boundaryShade *= 1.0 - 0.35 * crisp * exp(-foot * foot) * step(0.0, foot);
 }
 // The skin overhangs the disc's rim.
 float underSkin = (uOuter[uCount - 1] - sectionRadius) / (sectionPx * 3.5);
 boundaryShade *= 1.0 - 0.4 * exp(-underSkin * underSkin) * step(0.0, underSkin);
 // The crease where the two faces meet, gone at Section where they are coplanar.
-float interiorCrease = 1.0 - uCorner * 0.3 * (1.0 - smoothstep(0.0, 0.2, vSectionLocal.x));
+float interiorCrease = 1.0 - uCorner * 0.45 * (1.0 - smoothstep(0.0, 0.45, vSectionLocal.x));
 float interiorShade = (1.0 - interiorDepthShade) * interiorCrease * boundaryShade * bandShade;
 if (uEmphasis == uCount - 1) {
   // The outermost region's outer boundary is the disc's rim.
   float rimDistance = (sectionRadius - uOuter[uCount - 1]) / (sectionPx * 1.4);
   interiorOutline = max(interiorOutline, exp(-rimDistance * rimDistance));
 }
-sectionEmphasis(emphasisMix, interiorOutline, interiorAlbedo, interiorHeat, interiorGlow);
-// A hot face is a light more than a surface: its albedo gives way to its heat.
-diffuseColor.rgb = interiorAlbedo * interiorShade * (1.0 - 0.85 * interiorHeatStrength);
+float interiorEmphasis = emphasisMix;
+sectionEmphasis(emphasisMix, interiorAlbedo, interiorHeat, interiorGlow);
+// A hot face is a light more than a surface: its albedo gives way to its heat, and
+// what survives takes the heat's hue, so liquid iron stays iron rather than going grey.
+// A self-lit region has no albedo at all.
+interiorAlbedo = mix(interiorAlbedo, interiorAlbedo * sectionHeatHue(interiorHeat), 0.5 * interiorHeatStrength);
+diffuseColor.rgb = interiorAlbedo * interiorShade * (1.0 - 0.55 * interiorHeatStrength) * (1.0 - interiorSelfLit);
 if (uDisplayMode == 1) diffuseColor.rgb = vec3(0.0); // a diagram is unlit
 `;
 
@@ -499,8 +637,12 @@ vec3 interiorAlbedo = shellSample.rgb;
 float interiorHeight = shellSample.a;
 vec3 interiorHeat = uHeat[uShellRegion] * shellHeatMask;
 float interiorHeatStrength = uHeatStrength[uShellRegion];
-float interiorRough = uRough[uShellRegion];
-float interiorMetal = uMetal[uShellRegion];
+float interiorSelfLit = uSelfLit[uShellRegion];
+// A shell seen at a grazing angle would flare in the softbox as a bright sliver along
+// the hinge: its sheen is held down (rough, and its metalness fading as it turns away).
+float shellFacing = abs(dot(normalize(vNormal), normalize(vViewPosition)));
+float interiorRough = max(uRough[uShellRegion], 0.6);
+float interiorMetal = uMetal[uShellRegion] * sqrt(shellFacing);
 float interiorGlow = uGlow[uShellRegion];
 float interiorRelief = uRelief[uShellRegion];
 float interiorAmbient = uAmbient[uShellRegion];
@@ -513,8 +655,10 @@ float bandShade = 1.0;
 float interiorOutline = 0.0;
 float interiorTempT = sectionTempT(uShellRegion, 0.0);
 float interiorTempKnown = uTempKnown[uShellRegion];
-sectionEmphasis(uShellRegion == uEmphasis ? 1.0 : 0.0, 0.0, interiorAlbedo, interiorHeat, interiorGlow);
-diffuseColor.rgb = interiorAlbedo * (1.0 - 0.85 * interiorHeatStrength);
+float interiorEmphasis = uShellRegion == uEmphasis ? 1.0 : 0.0;
+sectionEmphasis(interiorEmphasis, interiorAlbedo, interiorHeat, interiorGlow);
+interiorAlbedo = mix(interiorAlbedo, interiorAlbedo * sectionHeatHue(interiorHeat), 0.5 * interiorHeatStrength);
+diffuseColor.rgb = interiorAlbedo * (1.0 - 0.55 * interiorHeatStrength) * (1.0 - interiorSelfLit);
 if (uDisplayMode == 1) diffuseColor.rgb = vec3(0.0);
 `;
 
@@ -555,13 +699,16 @@ if (uDisplayMode == 1) {
   vec3 scaleColor = sectionScaleColor(interiorTempT) * 0.88;
   totalEmissiveRadiance = mix(sectionNoDataColor(), scaleColor, interiorTempKnown) * bandShade;
 } else {
-  totalEmissiveRadiance += interiorAlbedo * interiorAmbient * interiorShade * (1.0 - interiorHeatStrength);
+  // The emphasised region's lift is a higher self-lit floor, not a brighter albedo.
+  float ambientLift = 1.0 + 0.5 * uEmphasisAmount * interiorEmphasis;
+  totalEmissiveRadiance += interiorAlbedo * interiorAmbient * ambientLift * interiorShade * (1.0 - interiorHeatStrength) * (1.0 - interiorSelfLit);
   totalEmissiveRadiance += mix(interiorAlbedo, vec3(1.0, 0.7, 0.4), 0.5)
     * interiorGlow * (0.7 + 0.6 * interiorHeight) * interiorShade;
-  totalEmissiveRadiance += interiorHeat * interiorShade;
+  // A lit surface adds its heat; a light IS its heat, patterned by its palette.
+  totalEmissiveRadiance += mix(interiorHeat, interiorAlbedo * interiorHeat, interiorSelfLit) * interiorShade;
 }
-// The emphasis outline is a line, not a surface: it shows whatever the light does.
-totalEmissiveRadiance += vec3(0.85) * interiorOutline * uEmphasisAmount;
+// The emphasis outline is a line, not a surface: a light rim held under the bloom threshold.
+totalEmissiveRadiance += vec3(0.45) * interiorOutline * uEmphasisAmount;
 `;
 
 export interface ShellOptions {

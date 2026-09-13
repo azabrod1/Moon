@@ -14,12 +14,24 @@
  * camera's local up is always perpendicular to its view direction. A
  * body-locked cut (a chosen meridian) is a later option.
  *
- * The three named views are geometry, not limits of a formula:
- *   Closed    θ = 0     no faces are drawn and the skin is whole
+ * The three named views are geometry, not limits of a formula. The panel's
+ * labels read differently from these identifiers, which stay as the geometry
+ * named them:
+ *   Closed    θ = 0     no faces are drawn and the skin is whole. The panel
+ *                       says "Outside": at θ = 0 the studio draws the air shell
+ *                       as well as the skin, so what a reader sees on Venus is
+ *                       its cloud deck, and four models in the catalog (Jupiter,
+ *                       Saturn, the ice giants, the Sun) have no surface to name
  *   Cutaway   θ = 120°  two faces, each 60° off the view axis: the terraces read as
  *                       stepped ledges and the core shows whole, where 90° left it a sliver
  *   Section   θ = 180°  one full disc perpendicular to the view axis; the
- *                       near hemisphere is removed
+ *                       near hemisphere is removed. The panel says "Full":
+ *                       the end of the opening the slider runs, and the only
+ *                       candidate that fits the desktop panel's three-up row
+ *                       (a 73 px content box — "Cross-section" measures 73.3).
+ *                       "section" stays the code's word for a cut face at ANY
+ *                       angle (rendering/sectionMaterial.ts draws the 120° pair
+ *                       with the same shader)
  *
  * Basis: (view, side, hinge) is right-handed with side = hinge × view. A
  * rotation about the hinge by α carries view to cos α·view + sin α·side.

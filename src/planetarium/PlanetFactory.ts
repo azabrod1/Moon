@@ -38,6 +38,7 @@ import {
 } from '../shared/shaders/sun';
 import { debugWarn } from '../shared/debug';
 import { CLOUD_NORMAL_SCALE, cloudShellScale } from './world/cloudDeck';
+import { CLOUD_DECK_DEPTH_BIAS_UNITS } from './world/shellDepthBias';
 import { applyTextureDefaults, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
 import {
   augmentSurfaceMaterial, setSurfaceCraterShare, setSurfaceWaterGloss,
@@ -1000,6 +1001,14 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
       // whole-globe deck's height field is a brightness proxy, not measured
       // elevation: at 1 the cloud banks emboss into ridges under a low sun.
       normalScale: new THREE.Vector2(CLOUD_NORMAL_SCALE, CLOUD_NORMAL_SCALE),
+      // Lifted clear of the globe's own depth: 10 km of clearance is under one
+      // depth step at cruise range, where the near plane is pinned to the ship
+      // (world/shellDepthBias states the whole ladder). Without it the globe
+      // beats the deck on scattered fragments and punches bare ocean through
+      // solid cloud.
+      polygonOffset: true,
+      polygonOffsetFactor: 0,
+      polygonOffsetUnits: -CLOUD_DECK_DEPTH_BIAS_UNITS,
     });
     // Ranked like the globe's map: the deck takes tier arrivals from two
     // directions — its upgrade handle and its late slot — and both have to be

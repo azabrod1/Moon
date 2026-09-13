@@ -52,6 +52,7 @@ import {
   atmosphereTableDefines,
 } from './atmosphereLut';
 import { perfSwitchUniform } from '../../app/perfSwitches';
+import { NIGHT_SHELL_DEPTH_BIAS_UNITS, nightSectorDepthBiasUnits } from './shellDepthBias';
 import { NIGHT_LIGHTS_AIR_LOOKUP_RADIUS, type SurfaceAirFx } from './surfaceShading';
 import type { SectorMaps } from './sectorMaterial';
 import type { SectorFamily } from './sectorStreamer';
@@ -80,6 +81,13 @@ function nightMaterial(
     transparent: true,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
+    // Lifted off the globe for the same reason the deck above it is: 6.4 km of
+    // clearance is under one depth step at cruise range (world/shellDepthBias).
+    // The sectors that replace this shell keep their own step on top of the
+    // shared base, so a sector still beats the shell it stands in for.
+    polygonOffset: true,
+    polygonOffsetFactor: 0,
+    polygonOffsetUnits: -NIGHT_SHELL_DEPTH_BIAS_UNITS,
   });
 }
 
@@ -152,7 +160,7 @@ export function createEarthNightSectorMaterial(
   // where it would pull a sector out through the cloud deck above it.
   mat.polygonOffset = true;
   mat.polygonOffsetFactor = 0;
-  mat.polygonOffsetUnits = -(level + 1);
+  mat.polygonOffsetUnits = -nightSectorDepthBiasUnits(level);
   return mat;
 }
 

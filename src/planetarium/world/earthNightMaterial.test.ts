@@ -25,7 +25,7 @@ import {
   EARTH_NIGHT_WARM,
   EARTH_NIGHT_WARM_GLSL,
 } from '../../shared/shaders/atmosphere';
-import { sectorRenderOrder } from './sectorMaterial';
+import { CLOUD_DECK_DEPTH_BIAS_UNITS, nightSectorDepthBiasUnits } from './shellDepthBias';
 import {
   augmentSurfaceMaterial, createSurfaceAirFx, NIGHT_LIGHTS_AIR_LOOKUP_RADIUS,
 } from './surfaceShading';
@@ -119,15 +119,25 @@ describe('the night sector material', () => {
   it('writes depth in the transparent pass, which is what suppresses the shell', () => {
     // The shell writes no depth, so a sector that wrote none either would add
     // on top of it and every resident sector would be exactly twice as bright.
-    // The sector writes depth at the shell's own radius, pulled one unit
-    // nearer per level so the shell's coincident fragments are strictly
-    // further and fail the test. `transparent` keeps it out of the opaque
-    // list, where a negative renderOrder would draw it before the globe and
-    // punch the globe out under it.
+    // The sector writes depth at the shell's own radius, pulled nearer than the
+    // shell so the shell's coincident fragments are strictly further and fail
+    // the test. `transparent` keeps it out of the opaque list, where a negative
+    // renderOrder would draw it before the globe and punch the globe out under
+    // it.
+    //
+    // Both rungs ride on the shared base lift that holds Earth's thin shells
+    // clear of the globe's own depth (world/shellDepthBias) — what this pins is
+    // the ORDER, not the base, so the base can move without touching a number
+    // here: the shell strictly in front of the globe, every sector strictly in
+    // front of the shell, and one step per level with the finest nearest.
     const shell = shellOn(null);
     expect(shell.depthWrite).toBe(false);
     expect(shell.transparent).toBe(true);
     expect(shell.blending).toBe(THREE.AdditiveBlending);
+    expect(shell.polygonOffset).toBe(true);
+    expect(shell.polygonOffsetFactor).toBe(0);
+    expect(shell.polygonOffsetUnits).toBeLessThan(0);
+    let previousUnits = shell.polygonOffsetUnits;
     for (const level of [0, 1, 2]) {
       const sector = createEarthNightSectorMaterial(shell, { map: tile(SECTOR_GRID_16K, 0, 0) }, level);
       expect(sector.depthWrite, `level ${level}`).toBe(true);
@@ -136,9 +146,13 @@ describe('the night sector material', () => {
       expect(sector.blending, `level ${level}`).toBe(THREE.AdditiveBlending);
       expect(sector.polygonOffset, `level ${level}`).toBe(true);
       expect(sector.polygonOffsetFactor, `level ${level}`).toBe(0);
-      // One step per level, in the same direction the draw order runs.
-      expect(sector.polygonOffsetUnits, `level ${level}`).toBe(sectorRenderOrder(level));
+      // Nearer than the shell it replaces, and one step nearer per level.
+      expect(sector.polygonOffsetUnits, `level ${level}`).toBe(previousUnits - 1);
+      previousUnits = sector.polygonOffsetUnits;
     }
+    // ...and the deck above every night rung, so city lights never draw
+    // through a cloud top.
+    expect(CLOUD_DECK_DEPTH_BIAS_UNITS).toBeGreaterThan(nightSectorDepthBiasUnits(2));
   });
 
   it('samples the tile through the rectangle the tile was cut on', () => {

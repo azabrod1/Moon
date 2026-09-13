@@ -1166,11 +1166,12 @@ export class InteriorMode {
         legend.append(row);
       }
     }
+    // The kicker names the meter beside every row, which is the same existence
+    // claim in both modes, so the words live in index.html and only the
+    // visibility is per-model: the rows' own depth lines already read outside
+    // in, and Temperature's colours are keyed by the scale bar under the list.
     const legendHead = document.getElementById('interior-legend-head');
-    if (legendHead) {
-      legendHead.textContent = temperature ? 'Outside in · their temperatures' : 'Outside in · how sure each exists';
-      legendHead.style.display = this.drawn.regionsInsideOut.length > 1 ? '' : 'none';
-    }
+    if (legendHead) legendHead.style.display = this.drawn.regionsInsideOut.length > 1 ? '' : 'none';
     this.renderScale();
     this.syncLegendEmphasis();
     this.renderPinned();

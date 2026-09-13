@@ -142,10 +142,17 @@ const FRAMING = {
 
 /** Phones: the sheet's resting height reaches the last row of view buttons —
  *  the body's name, the way to another world and both rows of buttons within
- *  reach — with this much air under it. The fraction stands in before the panel
- *  has been laid out and is the floor; the second caps what content may claim. */
+ *  reach — with this much under it. The tail is not air: .interior-scroll's
+ *  fade is 26 px, so a tail shorter than that lands the fade ON the mode
+ *  buttons, drawing a live control down to about a quarter opacity, and spends
+ *  the cue that there is more below on content already in sight. At 40 the
+ *  buttons clear the fade and it dissolves the top of the first legend row
+ *  instead — the thing worth going down for, and the only part of the tool's
+ *  evidence a phone can otherwise reach only by dragging first. The fraction
+ *  stands in before the panel has been laid out and is the floor; the third
+ *  caps what content may claim. */
 const SHEET_PEEK_FRACTION = 0.3;
-const SHEET_PEEK_TAIL_PX = 10;
+const SHEET_PEEK_TAIL_PX = 40;
 const SHEET_PEEK_MAX_FRACTION = 0.45;
 /** The sheet never takes more of the screen than this, however tall its content. */
 const SHEET_FULL_FRACTION = 0.85;
@@ -1281,7 +1288,9 @@ export class InteriorMode {
 
   /** The sheet's resting height: down to the last row of view buttons, with the
    *  footer that never scrolls away under it, so everything a reader switches
-   *  between is one tap away before they have dragged anything. */
+   *  between is one tap away before they have dragged anything — and far enough
+   *  past them that the scroll fade falls on the legend's first row rather than
+   *  on the buttons, which is how the sheet says it has more under it. */
   private peekHeightPx(): number {
     const fractionPx = Math.round(window.innerHeight * SHEET_PEEK_FRACTION);
     const lastButtonRow = document.getElementById('interior-mode-temperature')?.parentElement;

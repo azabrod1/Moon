@@ -1868,7 +1868,7 @@
       flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; min-height: 36px;
       padding: 0 11px; border-radius: 999px; white-space: nowrap;
     }
-    .interior-change-caret { font-size: 10px; color: var(--t3); }
+    .interior-change-caret { font-size: 10px; color: var(--t2); }
     #interior-change-body:hover .interior-change-caret, #interior-change-body:focus-visible .interior-change-caret { color: var(--accent); }
     /* Coverage word on a picker row: what the tool can honestly show for it. */
     .pk-tag-cover { flex: none; font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.14em; text-transform: uppercase; padding: 2px 6px; border: 1px solid var(--line); border-radius: 999px; color: var(--t3); }
@@ -1896,7 +1896,11 @@
       font-size: 11.5px; cursor: pointer; -webkit-tap-highlight-color: transparent;
       transition: background 0.14s var(--ease), color 0.14s var(--ease), border-color 0.14s var(--ease);
     }
-    .interior-view:hover { background: rgba(255,255,255,0.06); color: var(--t1); }
+    /* Touch latches :hover on the last element a finger met, so an unguarded
+       hover fill leaves an UNSELECTED button lit beside the selected one — two
+       lit buttons in an exclusive group. .on follows at equal specificity and
+       wins on source order, so this rule stays put. */
+    @media (hover: hover) { .interior-view:hover { background: rgba(255,255,255,0.06); color: var(--t1); } }
     .interior-view.on { border-color: rgba(var(--accent-rgb),0.42); background: rgba(var(--accent-rgb),0.16); color: var(--t1); }
     .interior-slider-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
     .interior-slider-label { flex: none; font-size: 10.5px; color: var(--t2); }
@@ -1927,7 +1931,9 @@
     .interior-legend.reveal .interior-row { animation: interior-row-in 320ms var(--ease) both; animation-delay: calc(var(--row, 0) * 55ms); }
     @media (prefers-reduced-motion: reduce) { .interior-legend.reveal .interior-row { animation: none; } }
     /* Hovering a row emphasises the region in 3D; hovering the region lights its row. */
-    .interior-row:hover, .interior-row.hot { background: rgba(255,255,255,0.05); }
+    @media (hover: hover) { .interior-row:hover { background: rgba(255,255,255,0.05); } }
+    /* .hot is the 3D pick's doing, not the pointer's, so it stays unguarded. */
+    .interior-row.hot { background: rgba(255,255,255,0.05); }
     .interior-row.pinned { background: rgba(var(--accent-rgb),0.10); }
     .interior-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
     .interior-swatch { display: block; width: 12px; height: 12px; margin-top: 2px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.14); }
@@ -2071,7 +2077,7 @@
       .interior-footer { padding: 6px 14px 10px; }
       .interior-slider-row { display: none; }
       .interior-view { min-height: 40px; }
-      .interior-scale-seg .interior-view { min-height: 36px; }
+      .interior-scale-seg .interior-view { min-height: 40px; }
       .interior-row { min-height: 44px; align-items: center; }
       .interior-row-detail { display: none; }
       /* The meter keeps its word: the pips above, the level under them, right-aligned. */
@@ -2082,6 +2088,9 @@
       .interior-row-depth { margin-top: 1px; font-size: 9px; }
       /* One line of what the legend is, at a size a phone can read. */
       .interior-legend-head { font-size: 10px; margin-top: 10px; }
+      /* The panel's honesty line, at a size a phone can read; the tracking eases
+         so the string's rendered width stays about where it was. */
+      .interior-caption { font-size: 10.5px; letter-spacing: 0.09em; }
       .ii-close { width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; }
       .interior-inspector.docked .ii-back { display: inline-flex; align-items: center; gap: 4px; margin: 4px 0 6px; padding: 8px 4px; background: none; border: none; color: var(--accent); font: inherit; font-size: 12px; cursor: pointer; }
       #interior-panel.inspecting .interior-scroll > :not(#interior-inspector) { display: none !important; }
@@ -5158,32 +5167,32 @@
         <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 5 L6.5 10 L11.5 15"></path><path d="M6.5 10 H15"></path></svg>
         <span class="act-lbl">Leave</span>
       </button>
-      <div id="interior-panel" class="pn pn-high">
+      <div id="interior-panel" class="pn pn-high" role="region" aria-label="Look inside">
         <!-- Phones: the panel is a sheet; the grip toggles it between its peek and its full height. -->
         <button type="button" class="interior-grip" id="interior-grip" aria-label="Expand the panel" aria-expanded="false"><span aria-hidden="true"></span></button>
         <div class="interior-scroll" id="interior-scroll">
           <div class="interior-body-row">
-            <button type="button" class="interior-body interior-chip" id="interior-body-chip" title="Look inside another world" aria-label="Look inside another world">
+            <button type="button" class="interior-body interior-chip" id="interior-body-chip" title="Look inside another world">
               <span id="interior-body-name"></span>
             </button>
-            <button type="button" class="interior-view interior-change-body" id="interior-change-body" aria-label="Look inside another world">Change world<span class="interior-change-caret" aria-hidden="true">&#x25BE;</span></button>
+            <button type="button" class="interior-view interior-change-body" id="interior-change-body" title="Look inside another world">Change world<span class="interior-change-caret" aria-hidden="true">&#x25BE;</span></button>
           </div>
           <div class="interior-caption" id="interior-caption"></div>
-          <div class="interior-views" role="group" aria-label="View">
-            <button type="button" class="interior-view" id="interior-view-closed">Outside</button>
-            <button type="button" class="interior-view on" id="interior-view-cutaway">Cutaway</button>
-            <button type="button" class="interior-view" id="interior-view-section">Full</button>
+          <div class="interior-views" role="radiogroup" aria-label="View">
+            <button type="button" class="interior-view" id="interior-view-closed" role="radio" aria-checked="false">Outside</button>
+            <button type="button" class="interior-view on" id="interior-view-cutaway" role="radio" aria-checked="true">Cutaway</button>
+            <button type="button" class="interior-view" id="interior-view-section" role="radio" aria-checked="false">Full</button>
           </div>
           <div class="interior-slider-row">
             <span class="interior-slider-label" id="interior-angle-label">Opening</span>
             <input type="range" id="interior-angle" class="interior-slider" min="0" max="180" step="1" value="120" aria-labelledby="interior-angle-label">
             <span class="interior-angle-value" id="interior-angle-value">120°</span>
           </div>
-          <div class="interior-views interior-modes" role="group" aria-label="Display">
-            <button type="button" class="interior-view on" id="interior-mode-composition">Composition</button>
-            <button type="button" class="interior-view" id="interior-mode-temperature">Temperature</button>
+          <div class="interior-views interior-modes" role="radiogroup" aria-label="Display">
+            <button type="button" class="interior-view on" id="interior-mode-composition" role="radio" aria-checked="true">Composition</button>
+            <button type="button" class="interior-view" id="interior-mode-temperature" role="radio" aria-checked="false">Temperature</button>
           </div>
-          <div class="interior-legend-head" id="interior-legend-head">Evidence that each layer is there</div>
+          <div class="interior-legend-head" id="interior-legend-head">Evidence it's there</div>
           <div id="interior-legend" class="interior-legend" role="list"></div>
           <!-- Temperature mode's key: this body's own scale, the hatch for what nobody knows, the stripes for a boundary nobody has placed. -->
           <div id="interior-scale" class="interior-scale" style="display:none">
@@ -5202,12 +5211,12 @@
         <div class="interior-footer" id="interior-footer">
           <div class="interior-foot-row" id="interior-readable-row">
             <span class="obs-footlbl">Layer thickness</span>
-            <div class="interior-views interior-scale-seg" role="group" aria-label="Layer thickness">
-              <button type="button" class="interior-view" id="interior-scale-readable">Readable</button>
-              <button type="button" class="interior-view on" id="interior-scale-true">True</button>
+            <div class="interior-views interior-scale-seg" role="radiogroup" aria-label="Layer thickness">
+              <button type="button" class="interior-view" id="interior-scale-readable" role="radio" aria-checked="false">Readable</button>
+              <button type="button" class="interior-view on" id="interior-scale-true" role="radio" aria-checked="true">True</button>
             </div>
           </div>
-          <div class="interior-note" id="interior-readable-note">Layers at their true thickness</div>
+          <div class="interior-note" id="interior-readable-note" aria-live="polite">Layers at their true thickness</div>
           <label class="obs-foot interior-foot" id="interior-rings-row" style="display:none">
             <input type="checkbox" id="interior-rings-toggle" checked>
             <span class="obs-footlbl">Rings</span>

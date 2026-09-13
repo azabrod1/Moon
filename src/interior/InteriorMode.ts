@@ -345,6 +345,16 @@ const ORIGIN = new THREE.Vector3(0, 0, 0);
 const tmpLocalUp = new THREE.Vector3();
 const tmpNdc = new THREE.Vector2();
 
+/** A segment button's selected state in both readings: the lit class the eye
+ *  takes it from, and the aria-checked a screen reader does. The three segments
+ *  are radiogroups (index.html), which have no selected state without it. */
+function setSegmentOn(id: string, on: boolean): void {
+  const button = document.getElementById(id);
+  if (!button) return;
+  button.classList.toggle('on', on);
+  button.setAttribute('aria-checked', String(on));
+}
+
 /** "288 K · 15 °C": the scale's ends in both units. */
 function kelvinWithCelsius(kelvin: number): string {
   return `${formatNumber(kelvin)} K · ${formatNumber(Math.round(kelvin - 273.15))} °C`;
@@ -825,8 +835,8 @@ export class InteriorMode {
   private setReadable(on: boolean): void {
     this.readable = on;
     this.scaleBlendTarget = on ? 1 : 0;
-    document.getElementById('interior-scale-readable')?.classList.toggle('on', on);
-    document.getElementById('interior-scale-true')?.classList.toggle('on', !on);
+    setSegmentOn('interior-scale-readable', on);
+    setSegmentOn('interior-scale-true', !on);
     // Both states say what they show; a one-region body has nothing to widen.
     const oneRegion = this.drawn.regionsInsideOut.length <= 1;
     const row = document.getElementById('interior-readable-row');
@@ -1006,8 +1016,8 @@ export class InteriorMode {
   private setDisplayMode(mode: InteriorDisplayMode): void {
     this.displayMode = mode;
     this.interiorScene.setDisplayMode(mode === 'temperature' ? 1 : 0);
-    document.getElementById('interior-mode-composition')?.classList.toggle('on', mode === 'composition');
-    document.getElementById('interior-mode-temperature')?.classList.toggle('on', mode === 'temperature');
+    setSegmentOn('interior-mode-composition', mode === 'composition');
+    setSegmentOn('interior-mode-temperature', mode === 'temperature');
     this.renderPanel();
   }
 
@@ -1048,7 +1058,9 @@ export class InteriorMode {
     const name = document.getElementById('interior-body-name');
     if (name && body) {
       const display = bodyDisplayName(body.id);
-      name.textContent = display.charAt(0).toUpperCase() + display.slice(1);
+      const titled = display.charAt(0).toUpperCase() + display.slice(1);
+      name.textContent = titled;
+      document.getElementById('interior-body-chip')?.setAttribute('aria-label', `${titled} — look inside another world`);
     }
     const caption = document.getElementById('interior-caption');
     if (caption) caption.textContent = captionFor(this.coverage, this.drawn);
@@ -1636,7 +1648,7 @@ export class InteriorMode {
   private syncViewButtons(): void {
     const current = cutViewForAngle(this.cut.toDeg);
     for (const view of CUT_VIEWS) {
-      document.getElementById(`interior-view-${view}`)?.classList.toggle('on', view === current);
+      setSegmentOn(`interior-view-${view}`, view === current);
     }
   }
 

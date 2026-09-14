@@ -265,12 +265,43 @@ const STANDISH_MIN_UTC_MS = utcMsAtTtJD(STANDISH_MIN_JD);
 const STANDISH_MAX_UTC_MS = utcMsAtTtJD(STANDISH_MAX_JD);
 
 /**
- * The period that spans one sampled line and spaces its vertices. Kepler's
- * third law from the catalog semi-major axis is plenty for placing a seam,
- * and sharing it is what keeps the sampler and the index math in step.
+ * The period that spans one sampled line and spaces its vertices.
+ *
+ * It has to be the period the SAMPLED POSITIONS repeat over, not a nominal
+ * one. The strip's two ends meet half a period from the body, so a period
+ * that disagrees with the positions leaves those ends apart by however far
+ * the body travels in the difference. Saturn is why this no longer reads the
+ * catalog axis: the catalog's 9.588 AU and the element set's 9.53667594 AU
+ * differ by 54 parts in 10,000 — every other body agrees to within 5 — which
+ * put the two ends 71.6 Mkm apart with a 2.5 degree tangent mismatch, an
+ * 18 px break in the far arc seen from a ship at Saturn. Taking the axis from
+ * the element set the positions are propagated from closes that to 61,000 km,
+ * a 1170x reduction, and leaves every other body's residual gap where it was.
+ * That residual is genuine one-period element drift (Uranus 3.6 Mkm, Pluto
+ * 2.1 Mkm) and must stay open — the strip is a strip, not a closed ring.
+ *
+ * Earth is the exception here for the same reason it is for position: it
+ * renders from Meeus and has no element set to read, since its Standish row
+ * is the Earth-Moon barycentre that only the tests consume. Its catalog axis
+ * already closes its own strip tightest, so it keeps it.
+ *
+ * Read once per body at J2000 and cached. It must NOT vary with the sampling
+ * epoch: the period both spaces the vertices and is shared with
+ * trajectoryLineBodyFraction, so a period that drifted with the clock would
+ * slide every fraction consumer under it.
  */
-function trajectoryPeriodMs(planet: PlanetData): number {
-  return 365.25 * Math.pow(planet.semiMajorAxisAU, 1.5) * 86_400_000;
+const trajectoryPeriodMsByName = new Map<string, number>();
+const periodElementsScratch = {} as KeplerElements;
+
+export function trajectoryPeriodMs(planet: PlanetData): number {
+  const cached = trajectoryPeriodMsByName.get(planet.name);
+  if (cached !== undefined) return cached;
+  const semiMajorAxisAU = isMeeusPositioned(planet)
+    ? planet.semiMajorAxisAU
+    : getStandishElements(planet.name, J2000, periodElementsScratch).semiMajorAxisAU;
+  const periodMs = 365.25 * Math.pow(semiMajorAxisAU, 1.5) * 86_400_000;
+  trajectoryPeriodMsByName.set(planet.name, periodMs);
+  return periodMs;
 }
 
 /**

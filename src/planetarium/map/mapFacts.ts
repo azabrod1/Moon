@@ -19,6 +19,7 @@
 import { PLANETARIUM_BODIES, SUN_DATA } from '../planets/planetData';
 import { MOONS } from '../planets/moonData';
 import { getMoonDisplayOrbit } from '../../astronomy/satellites';
+import { trajectoryPeriodMs } from '../../astronomy/planetary';
 import { bodyDisplayName } from '../surfaceView';
 import { mapBody } from './mapBodies';
 
@@ -83,6 +84,9 @@ const MOON_BY_NAME = new Map(MOONS.map((moon) => [moon.name, moon]));
  * one-liner: the card then paints neither, which is the honest answer — an
  * invented row would read as a measurement.
  */
+/** Days the sampler counts a year as, so the card and the strip agree. */
+const JULIAN_YEAR_MS = 365.25 * 86_400_000;
+
 export function mapFactRows(name: string): MapFacts {
   const body = mapBody(name);
   if (!body) return { rows: [], oneLiner: '' };
@@ -130,9 +134,11 @@ export function mapFactRows(name: string): MapFacts {
       { label: 'Gravity', value: `${sig3(planet.surfaceGravityG)} g` },
       { label: 'Tilt', value: { tiltDeg: planet.axialTiltDeg } },
       { label: 'Atmosphere', value: planet.atmosphere ?? 'None' },
-      // Kepler's third law in units where Earth is 1 — the catalog stores no
-      // period, and a^1.5 is exact enough that Earth comes out at 1.00.
-      { label: 'Year', value: fmtYears(planet.semiMajorAxisAU ** 1.5) },
+      // The orbit line's own sampling period, not a^1.5 off the catalog axis:
+      // one source of truth, so the number on this card and the loop drawn on
+      // the chart can never disagree. It is also the correct one — the catalog
+      // axis reads Saturn's year as 29.7 where its elements say 29.5.
+      { label: 'Year', value: fmtYears(trajectoryPeriodMs(planet) / JULIAN_YEAR_MS) },
       // Math.abs is defensive: every catalog rotation period is positive, and
       // a retrograde spin is what the tilt glyph says, not this row.
       { label: 'Day', value: fmtDays(Math.abs(planet.rotationPeriodHours) / 24) },

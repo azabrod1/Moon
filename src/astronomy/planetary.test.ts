@@ -33,7 +33,7 @@ import { dateToJD, findEvent, sunPosition } from './ephemeris';
 import { deltaTDaysAtDate } from './deltaT';
 import { accumulatedPrecessionLonDeg } from './precession';
 import { getStandishElements, type KeplerElements } from './standish';
-import { DEG, J2000, OBLIQUITY_DEG, RAD } from './constants';
+import { DEG, J2000, KM_PER_AU, OBLIQUITY_DEG, RAD } from './constants';
 import { PLANETARIUM_BODIES, PLANETS } from '../planetarium/planets/planetData';
 
 function norm360(deg: number): number {
@@ -410,14 +410,56 @@ describe('orbit-line trajectory sampling', () => {
     }
   });
 
+  it('closes the strip on the period the positions actually keep', () => {
+    // The two ends of a strip meet half a period from the body, so they only
+    // land together if the period matches the elements the samples are
+    // propagated from. Saturn is the body that exposes it: its catalog axis
+    // (9.588 AU) and its element axis (9.53667594) disagree by 54 parts in
+    // 10,000, where every other body agrees to within 5.
+    const saturn = PLANETARIUM_BODIES.find((p) => p.name === 'Saturn')!;
+    const segments = 4096;
+    const strip = sampleTrajectoryLinePoints(saturn, TODAY_MS, segments);
+    const gapKm = strip[0].distanceTo(strip[segments]) * KM_PER_AU;
+
+    // The counterfactual, sampled the way the catalog axis would have: same
+    // positions, wrong span. It is the comparison that makes the number mean
+    // something — a threshold on its own would just be a curve fit.
+    const catalogPeriodMs = 365.25 * saturn.semiMajorAxisAU ** 1.5 * 86_400_000;
+    const catalogStrip = Array.from({ length: segments + 1 }, (_, i) =>
+      computeBodyPositionAU(saturn, TODAY_MS + (i / segments - 0.5) * catalogPeriodMs));
+    const catalogGapKm = catalogStrip[0].distanceTo(catalogStrip[segments]) * KM_PER_AU;
+
+    expect(catalogGapKm).toBeGreaterThan(50e6);   // measured 71.7 Mkm
+    expect(gapKm).toBeLessThan(5e6);              // measured 0.32 Mkm — 228x closer
+    expect(gapKm).toBeLessThan(catalogGapKm / 20);
+
+    // And the strip stays a STRIP. Every body's remaining gap is genuine
+    // one-period element drift and must not be closed: a body whose orbit
+    // really has moved on in a period has to show it.
+    const neptune = PLANETARIUM_BODIES.find((p) => p.name === 'Neptune')!;
+    const neptuneStrip = sampleTrajectoryLinePoints(neptune, TODAY_MS, segments);
+    expect(neptuneStrip[0].distanceTo(neptuneStrip[segments]) * KM_PER_AU).toBeGreaterThan(1e6);
+  });
+
   it('samples an unchanged trajectory inside the element tables', () => {
     // Vertices captured from the implementation before the clamp existed, so
     // dates in normal use can never shift.
+    //
+    // Re-pinned once, when trajectoryPeriodMs moved from the catalog axis to
+    // the element set the positions propagate from. A vertex sits at
+    // (i/segments − 0.5)·period from the epoch, so a changed period slides its
+    // INSTANT and the body is sampled a little further along the same path.
+    // Each value below moved by exactly the along-track distance that slide
+    // predicts — Mercury's period grows 0.0338 d, moving its end vertices
+    // 24.4 min ≈ 4.28e-4 AU; Pluto's grows 7.29 d, moving its ends 8.3e-3 AU;
+    // and EARTH DID NOT MOVE AT ALL, digit for digit, because it renders from
+    // Meeus and keeps the catalog axis. That last one is the control: it says
+    // the re-pin is the period change and nothing else.
     const pinned: Record<string, [number, number, number][]> = {
       Mercury: [
-        [-0.386162580868, -0.046510443847, 0.161982283037],
-        [0.213430738183, -0.196952516747, 0.327276918536],
-        [-0.386350184923, -0.046084476307, 0.161220675913],
+        [-0.386253044467, -0.04630602171, 0.161617167319],
+        [0.213350856795, -0.196976196955, 0.327336743822],
+        [-0.386260196095, -0.046288955683, 0.161585990728],
       ],
       Earth: [
         [-0.56514561749, 0.320652791149, -0.73959296003],
@@ -425,9 +467,9 @@ describe('orbit-line trajectory sampling', () => {
         [-0.565072428897, 0.320672885432, -0.73963930795],
       ],
       Pluto: [
-        [8.281972048607, 11.368945327422, -44.43617176275],
-        [-14.640470670596, -3.625333859281, 25.752389737417],
-        [8.201920610862, 11.399950209489, -44.441357394118],
+        [8.289962711434, 11.366724053783, -44.436768413344],
+        [-14.643035214216, -3.624102712959, 25.750920510632],
+        [8.193927278336, 11.402166313808, -44.44073991009],
       ],
     };
     const vertices = [0, 3, 8];

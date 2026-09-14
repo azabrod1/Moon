@@ -123,13 +123,26 @@ export const ORBIT_LINE_RESAMPLE_MAX_AGE_MS = 60 * 86_400_000;
  * under ~a quarter of the body's own radius — the planet has to sit ON its
  * line even at landed zoom: N ≈ 2π·√(a / (8·R/4)), rounded up to a multiple
  * of 256. The old global 256 left every planet 1–13 body radii off its line
- * mid-chord (Pluto: ~200 — tiny body, enormous orbit; it clamps at 8192 for
- * ~0.37 R there).
+ * mid-chord (Pluto: ~200 — tiny body, enormous orbit).
+ *
+ * The ceiling is a memory bound, not a quality choice, and it is deliberately
+ * ABOVE every shipped body's ideal: Pluto asks for the most at 9,984 and is
+ * the only one that ever came near it. The old 8,192 clipped Pluto's ask by
+ * 1.22x for 43 KB of buffer, which left it right on the half-radius bound the
+ * resample test holds — close enough that merely re-phasing its samples
+ * pushed it over. Buying the 43 KB back is the whole fix.
+ *
+ * What this does NOT size against is VIEWING distance. The criterion is the
+ * body's own radius, so a body parked a few radii away still reads tens of
+ * pixels off its line mid-chord; that budget wants measuring in screen space,
+ * and this comment should be rewritten by whoever does it.
  */
+const ORBIT_LINE_MAX_SEGMENTS = 16_384;
+
 export function orbitLineSegmentCount(planet: PlanetData): number {
   const aKm = planet.semiMajorAxisAU * KM_PER_AU;
   const ideal = Math.ceil(2 * Math.PI * Math.sqrt(aKm / (2 * planet.radiusKm)));
-  return Math.min(8192, Math.max(1024, Math.ceil(ideal / 256) * 256));
+  return Math.min(ORBIT_LINE_MAX_SEGMENTS, Math.max(1024, Math.ceil(ideal / 256) * 256));
 }
 
 /**

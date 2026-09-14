@@ -67,15 +67,25 @@ float lensShaderRadial(float theta) {
     + uLensStrength * 2.0 * tan(theta * 0.5);
 }
 
+// Widest half-angle the solve may return, matching MAX_THETA in
+// shared/math/lensProjection.ts. Without it the Newton step can walk past
+// 90 degrees for a radius the blend cannot reach (2*tan(theta/2) only reaches
+// 2 AS theta reaches 90), and tan() then returns a NEGATIVE source radius:
+// the vertex is placed on the opposite side of the frame. The CPU seam has
+// always clamped; this is the same guard, so the two agree everywhere.
+const float LENS_MAX_THETA = 1.53588974;
+
 float lensShaderRadialInverse(float radius) {
-  float theta = atan(radius);
+  if (radius <= 0.0) return 0.0;
+  if (radius >= lensShaderRadial(LENS_MAX_THETA)) return LENS_MAX_THETA;
+  float theta = min(atan(radius), LENS_MAX_THETA);
   for (int i = 0; i < 8; i++) {
     float t = tan(theta);
     float th = tan(theta * 0.5);
     float f = (1.0 - uLensStrength) * t + uLensStrength * 2.0 * th - radius;
     float df = (1.0 - uLensStrength) * (1.0 + t * t)
       + uLensStrength * (1.0 + th * th);
-    theta -= f / df;
+    theta = clamp(theta - f / df, 0.0, LENS_MAX_THETA);
   }
   return theta;
 }

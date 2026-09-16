@@ -2249,6 +2249,15 @@ export class PlanetariumMode {
    *  straight to the canvas" — the owner of the composer supplies it, so the
    *  boot shader warm-up compiles the variant the frame actually draws. */
   private readonly rendersThroughComposer: () => boolean;
+  /** The ratio the SCENE is drawn at, in device pixels per CSS pixel. The
+   *  renderer's own ratio is the canvas's; under the upscaler
+   *  (app/renderResolution.ts renderPixelRatio) the composer draws the scene
+   *  smaller and resamples it up, and everything that sizes a thing in the
+   *  scene target's own pixels — point sizes, the lens sprites' framebuffer
+   *  size — reads this instead. The sector ladder and the close-range density
+   *  keep the renderer's ratio on purpose: the tiles and the synthesis are the
+   *  ones chosen for the canvas. */
+  private readonly scenePixelRatio: () => number;
   // Dev tripwire for the warm-up: program count right after it, compared a
   // couple of frames later — the first live frames must not compile anything
   // it missed (that stall is the very thing it exists to prevent).
@@ -2295,12 +2304,14 @@ export class PlanetariumMode {
     renderer: THREE.WebGLRenderer,
     useBloom = true,
     rendersThroughComposer: () => boolean = () => useBloom,
+    scenePixelRatio: () => number = () => renderer.getPixelRatio(),
   ) {
     this.scene = scene;
     this.camera = camera;
     this.renderer = renderer;
     this.useBloom = useBloom;
     this.rendersThroughComposer = rendersThroughComposer;
+    this.scenePixelRatio = scenePixelRatio;
     // Read the device once, before any body loads, so anisotropy and tier
     // limits apply to the very first textures created and every later
     // decision spends the same numbers. The signals and the profile are this
@@ -2815,7 +2826,7 @@ export class PlanetariumMode {
         // Add everything to scene
         this.scene.add(this.solarSystem.sun);
         this.scene.add(this.solarSystem.asteroidBelt);
-        setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, this.renderer.getPixelRatio());
+        setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, this.scenePixelRatio());
 
         performance.mark('plm:moon-meshes:start');
         for (const planet of this.solarSystem.planets) {
@@ -2890,7 +2901,7 @@ export class PlanetariumMode {
       // Create the Planetarium starfield.
       if (!this.starfield) {
         performance.mark('plm:starfield:start');
-        this.starfield = createPlanetariumStarfield(this.renderer.getPixelRatio());
+        this.starfield = createPlanetariumStarfield(this.scenePixelRatio());
         this.scene.add(this.starfield);
         performance.measure('plm:starfield', 'plm:starfield:start');
       }
@@ -2904,7 +2915,7 @@ export class PlanetariumMode {
         for (const planet of this.solarSystem.planets) {
           dotCount += this.planetMoons.get(planet.data.name)?.length ?? 0;
         }
-        this.moonDots = new MoonDots(dotCount, this.renderer.getPixelRatio());
+        this.moonDots = new MoonDots(dotCount, this.scenePixelRatio());
         this.scene.add(this.moonDots.points);
       }
 
@@ -4385,12 +4396,14 @@ export class PlanetariumMode {
   }
 
   /** Called by main.ts after it reapplies the render resolution on a window
-   *  resize (which may reclamp the renderer's pixel ratio). Star point sizes
-   *  track the renderer's ratio, so retune them to the new value. */
+   *  resize (which may reclamp the renderer's pixel ratio) and when the
+   *  upscaler changes the scene ratio. Star point sizes track the scene's
+   *  ratio, so retune them to the new value. */
   onResize(): void {
-    if (this.starfield) setStarfieldPixelRatio(this.starfield, this.renderer.getPixelRatio());
-    if (this.moonDots) this.moonDots.setPixelRatio(this.renderer.getPixelRatio());
-    if (this.solarSystem) setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, this.renderer.getPixelRatio());
+    const sceneRatio = this.scenePixelRatio();
+    if (this.starfield) setStarfieldPixelRatio(this.starfield, sceneRatio);
+    if (this.moonDots) this.moonDots.setPixelRatio(sceneRatio);
+    if (this.solarSystem) setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, sceneRatio);
     // A resize can carry the layout across the breakpoint, and the phone
     // invariant — the expanded sheet and the body card are never up together —
     // is otherwise enforced only on the edges that OPEN one of them. A window
@@ -5308,7 +5321,7 @@ export class PlanetariumMode {
       this.camera,
       canvasW,
       canvasH,
-      this.renderer.getPixelRatio(),
+      this.scenePixelRatio(),
     );
     const params = this.moonDotParams;
     const sun = this.solarSystem.sun.position;
@@ -6569,7 +6582,7 @@ export class PlanetariumMode {
         const slot = scenePositions.get(planet.data.name)!;
         slot.x = p.x; slot.y = p.y; slot.z = p.z;
       }
-      this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
+      this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer, this.scenePixelRatio());
       this.collectDynamicOccluders();
       if (pickerWanted) {
         this.buildBodyPickList(scenePositions, excludeName);
@@ -7437,7 +7450,7 @@ export class PlanetariumMode {
         params,
         viewportWidth,
         this.camera,
-        this.renderer.getPixelRatio(),
+        this.scenePixelRatio(),
       );
     }
     const beltUniforms = this.solarSystem?.asteroidBelt.userData.sunGlareMaskUniforms as
@@ -7448,7 +7461,7 @@ export class PlanetariumMode {
       params,
       viewportWidth,
       this.camera,
-      this.renderer.getPixelRatio(),
+      this.scenePixelRatio(),
     );
   }
 
@@ -7690,14 +7703,14 @@ export class PlanetariumMode {
       this.camera,
       viewportWidth,
       viewportHeight,
-      this.renderer.getPixelRatio(),
+      this.scenePixelRatio(),
     );
     if (ghostMat) applyLensShaderUniforms(
       ghostMat.uniforms as unknown as LensShaderUniforms,
       this.camera,
       viewportWidth,
       viewportHeight,
-      this.renderer.getPixelRatio(),
+      this.scenePixelRatio(),
     );
     let targetExposure = 1;
     let visibleFraction = 1;

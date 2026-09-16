@@ -10,7 +10,8 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { OutputTargetPass, SharpenPass, UpscalePass } from './app/UpscalePass';
+import { RCAS_DEFAULT_STOPS } from './app/fsr1';
 
 import { PlanetariumMode, FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS } from './planetarium/PlanetariumMode';
 import type { ShipProfile } from './planetarium/PlayerShip';
@@ -21,9 +22,12 @@ import type { InteriorMode } from './interior/InteriorMode';
 import type { ToolRequest } from './planetarium/toolRequest';
 import { canGPUDoBloom, halfFloatTargetSampleCounts } from './app/gpuCapability';
 import { installShaderSalt } from './app/shaderSalt';
-import { bloomPixelRatio, composerSamples, parseMsaaOverride, targetPixelRatio } from './app/renderResolution';
+import {
+  bloomPixelRatio, composerSamples, parseMsaaOverride, parseUpscaleParam, renderPixelRatio, targetPixelRatio,
+  UPSCALE_RENDER_PIXEL_RATIO, upscalePolicy, type UpscaleFilter,
+} from './app/renderResolution';
 import { BootRenderGate } from './app/bootRenderGate';
-import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn } from './app/perfSwitches';
+import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn, setPerfSwitch } from './app/perfSwitches';
 import { setBloomInternalDepth } from './app/bloomTargets';
 import { devGlintUniforms, setDevOceanRoughness } from './planetarium/world/surfaceShading';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
@@ -174,6 +178,17 @@ if (new URLSearchParams(location.search).get('canvasaa') === '1' && !canvasSampl
   debugWarn('canvasaa=1 asked for canvas samples and the context gave none');
 }
 
+// The upscaler (app/UpscalePass.ts; the policy in app/renderResolution.ts):
+// the planetarium's scene drawn at a lower ratio than the canvas and
+// resampled up to it. `?upscale=` names the scene ratio on any build (0 or
+// off = off: the kill switch once upscalePolicy turns it on somewhere);
+// unasked, the policy decides. The filter and the sharpen stops are dev
+// dials, live through `__moon.upscale`.
+const upscaleParam = parseUpscaleParam(location.search, import.meta.env.DEV);
+let upscaleRenderRatio: number | null = upscaleParam ? upscaleParam.renderRatio : upscalePolicy(isMobile);
+let upscaleFilter: UpscaleFilter = upscaleParam?.filter ?? 'easu';
+let upscaleSharpenStops: number | null = upscaleParam?.sharpen === undefined ? RCAS_DEFAULT_STOPS : upscaleParam.sharpen;
+
 try {
   const gl = renderer.getContext();
   debugLog('Renderer ready', {
@@ -244,6 +259,11 @@ const bootRender = new BootRenderGate();
 let bloomPass: UnrealBloomPass | null = null;
 let depthDiscardPass: DepthDiscardPass | null = null;
 let lensPass: ReturnType<typeof createLensPass> | null = null;
+// The finishing pass and, on the planetarium's composer, the upscaler's two
+// after it (app/UpscalePass.ts); all three disposed with the composer.
+let outputTargetPass: OutputTargetPass | null = null;
+let upscalePass: UpscalePass | null = null;
+let sharpenPass: SharpenPass | null = null;
 let directLensTexture: THREE.FramebufferTexture | null = null;
 const directLensSize = new THREE.Vector2();
 
@@ -298,6 +318,20 @@ function getTargetPixelRatio(): number {
   return targetPixelRatio(window.devicePixelRatio, isMobile, supersampleFallback);
 }
 
+/** The ratio a composer built for `cam` draws its scene at
+ *  (app/renderResolution.ts renderPixelRatio): below the output ratio only
+ *  with the upscaler on, and only for the planetarium's own composer — the
+ *  other modes' composers, and the direct path, stay at the output ratio. */
+function scenePixelRatioFor(cam: THREE.Camera, outputRatio: number): number {
+  return cam === planetariumCamera ? renderPixelRatio(outputRatio, upscaleRenderRatio) : outputRatio;
+}
+
+/** The ratio the live frame's scene is drawn at. */
+function getScenePixelRatio(): number {
+  const outputRatio = getTargetPixelRatio();
+  return composer ? scenePixelRatioFor(composerBuiltFor?.cam ?? camera, outputRatio) : outputRatio;
+}
+
 function getSceneTargetSamples(pixelRatio: number): number {
   // The scene target's size in device pixels, floored as GL sizes the
   // storage (a GLsizei truncates): the policy's 4K budget reads it.
@@ -321,16 +355,20 @@ function applyRenderResolution() {
   renderer.setPixelRatio(pixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
   if (composer && sceneTarget) {
+    // The composer is sized at the scene ratio: the output ratio, or below it
+    // with the upscaler on (app/UpscalePass.ts), in which case the last
+    // passes carry the frame up to the canvas the renderer was just sized to.
+    const sceneRatio = getScenePixelRatio();
     // A page zoom, a move to another monitor or a resize across the 4K
     // budget can change the sample count: retarget it and drop the GL
     // objects so the next bind allocates the new layout (setSize alone only
     // disposes on a dimension change).
-    const samples = getSceneTargetSamples(pixelRatio);
+    const samples = getSceneTargetSamples(sceneRatio);
     if (sceneTarget.samples !== samples) {
       sceneTarget.samples = samples;
       sceneTarget.dispose();
     }
-    composer.setPixelRatio(pixelRatio);
+    composer.setPixelRatio(sceneRatio);
     composer.setSize(window.innerWidth, window.innerHeight);
     sizeBloomPass();
   }
@@ -404,6 +442,9 @@ function buildComposer(
   lensPass = null;
   bloomPass = null; // disposed above with the composer's passes
   depthDiscardPass = null;
+  outputTargetPass = null;
+  upscalePass = null;
+  sharpenPass = null;
   directLensTexture?.dispose();
   directLensTexture = null;
   screenTarget?.dispose();
@@ -451,11 +492,13 @@ function buildComposer(
   // on low-density displays, multisampling (app/renderResolution.ts). The
   // passes after it read only its resolved colour, so the depth and stencil
   // samples are never blitted across. setSize below sets the dimensions.
-  const pixelRatio = getTargetPixelRatio();
+  // Sized at the scene ratio: the output ratio unless this is the
+  // planetarium's composer with the upscaler on (scenePixelRatioFor).
+  const sceneRatio = scenePixelRatioFor(cam, getTargetPixelRatio());
   sceneTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
     type: THREE.HalfFloatType,
     stencilBuffer: true,
-    samples: getSceneTargetSamples(pixelRatio),
+    samples: getSceneTargetSamples(sceneRatio),
     resolveDepthBuffer: false,
   });
   composer = new EffectComposer(renderer, sceneTarget);
@@ -471,7 +514,7 @@ function buildComposer(
   partner.samples = 0;
   partner.depthBuffer = false;
   partner.stencilBuffer = false;
-  composer.setPixelRatio(pixelRatio);
+  composer.setPixelRatio(sceneRatio);
   composer.setSize(window.innerWidth, window.innerHeight);
   composer.addPass(new RenderPass(scene, cam));
   // The world's depth and stencil have no reader past this point
@@ -511,10 +554,70 @@ function buildComposer(
     sizeBloomPass();
   }
 
-  composer.addPass(fused && bloomPass
+  // The finishing pass, and on the planetarium's composer — the one whose
+  // scene ratio can sit below the canvas's — the upscaler's two after it
+  // (app/UpscalePass.ts). With those two disabled the finishing pass is the
+  // last enabled pass and draws the canvas exactly as OutputPass did; enabled
+  // (applyUpscalePasses, from the live state) they take the frame from its
+  // own target up to the canvas.
+  outputTargetPass = fused && bloomPass
     ? new FusedOutputPass(bloomPass as BloomChainPass)
-    : new OutputPass());
+    : new OutputTargetPass();
+  composer.addPass(outputTargetPass);
+  if (cam === planetariumCamera) {
+    upscalePass = new UpscalePass(outputTargetPass);
+    sharpenPass = new SharpenPass(upscalePass);
+    composer.addPass(upscalePass);
+    composer.addPass(sharpenPass);
+  }
   composerBuiltFor = { cam, bloom, enabled, lens: lensRequestedStrength };
+  applyUpscalePasses();
+}
+
+/** Whether the live frame's scene is drawn below the output ratio. */
+function upscaleActive(): boolean {
+  return composer !== null && composerBuiltFor?.cam === planetariumCamera
+    && getScenePixelRatio() < getTargetPixelRatio();
+}
+
+/**
+ * Point the upscale passes at the live state: EASU on when the scene is below
+ * the output ratio and the filter is EASU — the bilinear control arm is no
+ * pass at all, the finishing pass drawing the smaller buffer straight to the
+ * canvas through the composer target's own linear filter — and RCAS after it
+ * unless the stops are null.
+ */
+function applyUpscalePasses(): void {
+  const easu = upscaleActive() && upscaleFilter === 'easu';
+  if (upscalePass) upscalePass.enabled = easu;
+  if (sharpenPass) {
+    sharpenPass.enabled = easu && upscaleSharpenStops !== null;
+    sharpenPass.setSharpness(upscaleSharpenStops ?? RCAS_DEFAULT_STOPS);
+  }
+}
+
+/** Apply a change to the upscaler's state: the passes, then the resize path,
+ *  which re-sizes the composer at the new scene ratio and retunes every point
+ *  size through the modes' onResize. */
+function applyUpscale(): void {
+  applyUpscalePasses();
+  syncViewport();
+}
+
+/** Where the upscaler stands, for the bridge and a capture's log. */
+function upscaleState() {
+  const outputRatio = getTargetPixelRatio();
+  const sceneRatio = getScenePixelRatio();
+  return {
+    outputRatio,
+    sceneRatio,
+    factor: outputRatio / sceneRatio,
+    active: upscaleActive(),
+    request: upscaleRenderRatio,
+    filter: upscaleFilter,
+    sharpen: upscaleSharpenStops,
+    passes: { easu: upscalePass?.enabled ?? false, rcas: sharpenPass?.enabled ?? false },
+  };
 }
 
 // Dev bloom toggle: flip the runtime flag, rebuild the planetarium composer
@@ -553,6 +656,21 @@ if (import.meta.env.DEV) {
     if (appMode === 'planetarium') {
       buildComposer(planetariumCamera, PLANETARIUM_BLOOM, planetariumBloomEnabled());
     }
+  });
+  // The upscaler's key: the sweep's handle on it and the pixel gate's. A URL
+  // that asked for the upscaler arms it here, so the sweep's row reads as the
+  // cost it removes; a flip from either side goes through applyUpscale, and
+  // the ratio it comes back on with is the one it had (or the URL's, or the
+  // policy's own).
+  if (upscaleRenderRatio !== null) setPerfSwitch('upscale', true);
+  let upscaleKnown = perfSwitchOn('upscale');
+  onPerfSwitch('upscale', (on) => {
+    if (on === upscaleKnown) return;
+    upscaleKnown = on;
+    upscaleRenderRatio = on
+      ? (upscaleRenderRatio ?? upscaleParam?.renderRatio ?? UPSCALE_RENDER_PIXEL_RATIO)
+      : null;
+    applyUpscale();
   });
 }
 
@@ -610,6 +728,12 @@ function devRenderTargets() {
       ? { ...size(sceneTarget)!, samples: sceneTarget.samples }
       : null,
     composerPartner: size(composer?.renderTarget2),
+    // The scene ratio (below the output ratio only with the upscaler on) and
+    // the upscaler's own targets: the tone-mapped frame at scene size and
+    // EASU's result at output size (null while RCAS does not follow).
+    sceneRatio: getScenePixelRatio(),
+    ldrTarget: size(outputTargetPass?.target),
+    upTarget: size(upscalePass?.target),
     // Half the bloom pass's requested resolution: the first mip it blurs.
     bloomMip0: size(bloomMip),
   };
@@ -868,7 +992,9 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
         // The boot shader warm-up compiles the variant the frame actually
         // draws: into the composer's target when there is a composer, to the
         // canvas otherwise — the same branch renderScene takes.
-        planetariumMode = new PlanetariumMode(scene, planetariumCamera, renderer, useBloom, () => composer !== null);
+        planetariumMode = new PlanetariumMode(
+          scene, planetariumCamera, renderer, useBloom, () => composer !== null, () => getScenePixelRatio(),
+        );
         // Every tool entry arrives here ("How many fit?", Look inside): the
         // mode closes its own entry surfaces and snapshots the journey, then
         // this callback owns the switch, carrying the request's context.
@@ -1220,6 +1346,27 @@ function installDevHooks() {
     sectors: () => planetariumMode?.devSectorStats() ?? null,
     /** Pin the render ratio (null hands it back) — the perf sweep's load amplifier, for a harness that profiles rather than sweeps. */
     pinRatio: (ratio: number | null) => devPinPixelRatio(ratio),
+    /** Every surface a frame is drawn into, in device pixels (the perf sweep installs the same under `?perf=1`; here for any harness). */
+    perfTargets: () => devRenderTargets(),
+    /** The upscaler, live (app/UpscalePass.ts): `ratio` = the scene ratio (null = off), `sharpen` = RCAS stops (null = RCAS off), `filter` = 'easu' | 'bilinear' (the control arm). No argument reads; null turns it off. Returns where it stands. */
+    upscale: (opts?: { ratio?: number | null; sharpen?: number | null; filter?: UpscaleFilter } | null) => {
+      if (opts !== undefined) {
+        if (opts === null) {
+          upscaleRenderRatio = null;
+        } else {
+          if (opts.ratio !== undefined) upscaleRenderRatio = opts.ratio;
+          if (opts.sharpen !== undefined) upscaleSharpenStops = opts.sharpen;
+          if (opts.filter !== undefined) upscaleFilter = opts.filter;
+        }
+        // The switch mirrors on/off and its listener applies that change; a
+        // change inside the on state (the ratio, the filter, the stops) is
+        // applied here.
+        const nowOn = upscaleRenderRatio !== null;
+        if (perfSwitchOn('upscale') !== nowOn) setPerfSwitch('upscale', nowOn);
+        else applyUpscale();
+      }
+      return upscaleState();
+    },
     // The ocean glint's two authored numbers, live: the cap on the peak above
     // white that the bloom sees, and the flat keep on the mirror term. Returns
     // the current pair; a production build has neither knob.
@@ -1236,7 +1383,10 @@ function installDevHooks() {
         gpuProfiler = createGpuProfiler({
           gl: renderer.getContext(),
           passes: () => (composer?.passes ?? []).map((pass) => ({
-            name: pass === lensPass ? 'Lens' : pass === bloomPass ? 'Bloom' : pass.constructor.name,
+            name: pass === lensPass ? 'Lens'
+              : pass === bloomPass ? 'Bloom'
+              : pass === outputTargetPass && !(pass instanceof FusedOutputPass) ? 'OutputPass'
+              : pass.constructor.name,
             pass: pass as unknown as { render: (...args: unknown[]) => void },
           })),
           sceneRoot: () => scene,
@@ -1394,6 +1544,9 @@ function installDevHooks() {
     renderPath: () => ({
       composer: composer !== null,
       sceneTargetSamples: sceneTarget?.samples ?? null,
+      // The scene's ratio against the canvas's: apart only with the upscaler on.
+      sceneRatio: getScenePixelRatio(),
+      outputRatio: getTargetPixelRatio(),
       backbufferSamples: renderer.getContext().getParameter(renderer.getContext().SAMPLES) as number,
       multisampled: sceneDrawMultisampled(),
     }),

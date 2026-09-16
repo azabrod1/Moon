@@ -38,6 +38,15 @@
  * the ground uses, and a profiler can price the draw but not the terms inside
  * it. They are off by default, never exact, never in the combined row, and a
  * production build carries neither reading of them.
+ *
+ * `upscale` is the sweep's handle on a feature that lives in production code
+ * (app/UpscalePass.ts: the scene drawn at a lower ratio and resampled up to
+ * the canvas; `?upscale=` reaches it on any build, and the policy in
+ * app/renderResolution.ts decides what a build does unasked). It is not
+ * exact — it is the one change here that is meant to be seen — so it is
+ * never in the combined row; the key exists so the sweep prices it and the
+ * pixel gate captures both arms out of one page load. main.ts arms it when a
+ * URL asks for the upscaler, so the row reads as the cost it removes.
  */
 
 /** One switchable efficiency change. */
@@ -54,7 +63,8 @@ export type PerfSwitchKey =
   | 'cloud-probe-smooth'
   | 'cloud-probe-detail'
   | 'cloud-probe-relief'
-  | 'cloud-probe-air';
+  | 'cloud-probe-air'
+  | 'upscale';
 
 /**
  * What each switch does, in the words a sweep row is labelled with, and where
@@ -85,6 +95,7 @@ export const PERF_SWITCHES: ReadonlyArray<{
   { key: 'cloud-probe-detail', label: 'Cloud deck probe: detail term off', on: false },
   { key: 'cloud-probe-relief', label: 'Cloud deck probe: relief map off', on: false },
   { key: 'cloud-probe-air', label: 'Cloud deck probe: air off', on: false },
+  { key: 'upscale', label: 'Upscale: scene at a lower ratio, EASU+RCAS to the canvas', on: false },
 ];
 
 /** Where each switch stands when nothing has touched it, as a plain literal:
@@ -104,6 +115,7 @@ const DEFAULT_ON: Record<PerfSwitchKey, boolean> = {
   'cloud-probe-detail': false,
   'cloud-probe-relief': false,
   'cloud-probe-air': false,
+  'upscale': false,
 };
 
 const live: Record<string, boolean> = { ...DEFAULT_ON };

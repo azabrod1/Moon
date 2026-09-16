@@ -360,6 +360,10 @@ export class PlanetLabels {
   collectForegroundDiscs(
     planetPositions: Map<string, { x: number; y: number; z: number }>,
     renderer: THREE.WebGLRenderer,
+    // The ratio the SCENE is drawn at: the lens uniforms size the label
+    // sprites in the scene target's own pixels, which under the upscaler
+    // (app/renderResolution.ts) is not the canvas's ratio.
+    pixelRatio: number = renderer.getPixelRatio(),
   ) {
     const canvasWidth = renderer.domElement.clientWidth;
     const canvasHeight = renderer.domElement.clientHeight;
@@ -368,7 +372,7 @@ export class PlanetLabels {
       this.camera,
       canvasWidth,
       canvasHeight,
-      renderer.getPixelRatio(),
+      pixelRatio,
     );
     this.foregroundDiscs.length = 0;
     const camX = this.camera.position.x;

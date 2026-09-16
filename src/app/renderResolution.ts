@@ -30,6 +30,23 @@
  * was, at exactly the cost it was. The no-float direct path on a 1× monitor
  * now renders native with the backbuffer's own multisampling instead of the
  * 1.5× supersample.
+ *
+ * The upscaler (app/UpscalePass.ts) splits one ratio into two. The OUTPUT
+ * ratio is targetPixelRatio: the renderer and its canvas, the System Map, the
+ * corner chart, the direct path. The SCENE ratio, renderPixelRatio, is what
+ * the planetarium's composer is sized at — the scene, the lens, the bloom's
+ * source and the tone map all draw at it — and one edge-aware resample (FSR 1
+ * EASU, with RCAS after it) carries the frame up to the canvas. A phone's
+ * frame at Earth's shell is GPU-bound per pixel, and 1.5 against 2 is 0.5625
+ * of them. Everything that sizes a thing in the scene's own framebuffer
+ * pixels — star and moon-dot point sizes, the belt's sub-pixel energy, the
+ * lens sprites' framebuffer size — reads the scene ratio, which at 1.5 is the
+ * configuration a 1.5× desktop display runs; the sector ladder and the
+ * close-range density keep the output ratio, so the tiles and the synthesis
+ * are the ones chosen for the canvas. Wide-line widths are CSS-sized (three
+ * refreshes their resolution from the renderer's CSS viewport, whatever
+ * target is bound) and need nothing. upscalePolicy says what a build does
+ * unasked; `?upscale=` overrides it on any build.
  */
 
 /** Desktop cap: a 3× display renders at 2.5 device px per CSS px. */
@@ -147,6 +164,85 @@ export function composerSamples(
   if (!Number.isFinite(above)) return 0;
   const affordable = above <= SCENE_TARGET_SAMPLES && devicePixels <= ECONOMY_ABOVE_DEVICE_PIXELS;
   return affordable ? above : 0;
+}
+
+/** The scene ratio the upscale switch uses where nothing names one: 1.5 on a
+ *  2× phone is a 1.33 upscale, inside EASU's range with the smallest loss. */
+export const UPSCALE_RENDER_PIXEL_RATIO = 1.5;
+/** EASU is specified good up to 2× linear; the scene ratio never goes below
+ *  the output ratio over this. */
+export const MAX_UPSCALE_FACTOR = 2;
+
+/**
+ * The ratio the planetarium's scene target is drawn at. `request` is the
+ * scene ratio asked for (the URL, the switch, the policy); null, or a request
+ * at or above the output ratio, means the upscaler is off and the scene draws
+ * at the output ratio as it always did.
+ */
+export function renderPixelRatio(outputRatio: number, request: number | null): number {
+  if (request === null || !(request > 0) || request >= outputRatio) return outputRatio;
+  return Math.max(request, outputRatio / MAX_UPSCALE_FACTOR);
+}
+
+export type UpscaleFilter = 'easu' | 'bilinear';
+
+/** What a `?upscale=` URL asked for. */
+export interface UpscaleRequest {
+  /** The scene ratio; null = the upscaler off. */
+  renderRatio: number | null;
+  /** DEV only: `bilinear` is the control arm — the same lower ratio with no
+   *  upscale pass, the finishing pass drawing the smaller buffer straight to
+   *  the canvas through a linear filter, which is what a browser's stretch
+   *  of a smaller canvas would do. */
+  filter?: UpscaleFilter;
+  /** DEV only: RCAS in stops below its maximum (0 = sharpest); null = RCAS off. */
+  sharpen?: number | null;
+}
+
+/**
+ * The `?upscale=` startup param: a scene ratio (`?upscale=1.5`), or `0`/`off`
+ * for the upscaler off — the kill switch once a policy turns it on — on any
+ * build. The dev server also takes `?upscale=1.5,bilinear` (the control arm)
+ * and `?sharpen=<stops>|off` (RCAS). Absent or unreadable means follow the
+ * policy.
+ */
+export function parseUpscaleParam(search: string, dev: boolean): UpscaleRequest | null {
+  const params = new URLSearchParams(search);
+  const raw = params.get('upscale');
+  if (raw === null || raw.trim() === '') return null;
+  const [first, ...rest] = raw.split(',').map((s) => s.trim().toLowerCase());
+  let renderRatio: number | null;
+  if (first === 'off' || first === '0') {
+    renderRatio = null;
+  } else {
+    const n = Number(first);
+    if (!Number.isFinite(n) || !(n > 0)) return null;
+    renderRatio = n;
+  }
+  const request: UpscaleRequest = { renderRatio };
+  if (!dev) return request;
+  if (rest.includes('bilinear')) request.filter = 'bilinear';
+  const sharpen = params.get('sharpen');
+  if (sharpen !== null) {
+    const s = sharpen.trim().toLowerCase();
+    if (s === 'off') request.sharpen = null;
+    else {
+      const n = Number(s);
+      if (Number.isFinite(n) && n >= 0) request.sharpen = n;
+    }
+  }
+  return request;
+}
+
+/**
+ * The scene ratio a build uses with no `?upscale=` word: null everywhere.
+ * The upscaler is the one change in this file that is meant to be seen, and
+ * nothing ships until it has been seen on the phone beside the frame it
+ * replaces; turning it on for a class of device is one line here, with its
+ * test.
+ */
+export function upscalePolicy(_mobile: boolean): number | null {
+  return null;
 }
 
 /**

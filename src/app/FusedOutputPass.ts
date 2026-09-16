@@ -31,9 +31,9 @@
  */
 import * as THREE from 'three';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { OutputShader } from 'three/addons/shaders/OutputShader.js';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
+import { OutputTargetPass } from './UpscalePass';
 
 /** The blur axes the pass carries as statics, which its published types do
  *  not name. */
@@ -144,8 +144,10 @@ function fusedFragmentText(): string {
     ));
 }
 
-/** OutputPass with the bloom composite added before the tone curve. */
-export class FusedOutputPass extends OutputPass {
+/** The finishing pass (app/UpscalePass.ts OutputTargetPass, three's
+ *  OutputPass with a target of its own when the upscaler follows) with the
+ *  bloom composite added before the tone curve. */
+export class FusedOutputPass extends OutputTargetPass {
   constructor(bloom: BloomChainPass) {
     super();
     this.material.fragmentShader = fusedFragmentText();

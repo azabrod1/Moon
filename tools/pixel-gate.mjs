@@ -56,6 +56,11 @@ const reloadKey = arg('reload', '');
 // `--reloadq=<query>` is the same two-boot comparison for something that is not a
 // switch but a URL parameter — `canvasaa=1` puts the canvas's own samples back.
 const reloadQuery = arg('reloadq', '');
+// `--urlb=<url>` is the two-boot comparison across two SERVERS: the second
+// boot goes to that url instead, same query, same poses, same pins — which is
+// how a branch's default frame is held against main's, byte for byte, when
+// the change it carries is off by default.
+const urlB = arg('urlb', '');
 // `--extra='&nofloat=1'` goes on every boot, both halves alike.
 const extraQuery = arg('extra', '');
 const keepAll = flag('keep');
@@ -66,6 +71,10 @@ const TIME_ISO = arg('time', '2026-03-21T09:20:00Z');
 // finished answering for — a glare readback still a frame behind — is a
 // difference nothing in the shader made.
 const SETTLE_FRAMES = Number(arg('settle', '3'));
+// The render ratio every capture is pinned at. 1 is the gate's own floor; a
+// switch that only exists below a display's ratio (`upscale` renders the
+// scene at 1.5 under a canvas at 2) is captured with `--ratio=2`.
+const PIN_RATIO = Number(arg('ratio', '1'));
 
 /**
  * The poses. Each one names the thing a switch could break, and between them
@@ -216,20 +225,21 @@ try {
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
 
   const boot = async (off) => {
-    const q = (off ? (reloadQuery ? `&${reloadQuery}` : `&perfoff=${off}`) : '') + extraQuery;
-    await page.goto(`${url}/?auto=planetarium${q}`, { waitUntil: 'domcontentloaded' });
+    const q = (off ? (reloadQuery ? `&${reloadQuery}` : reloadKey ? `&perfoff=${off}` : '') : '') + extraQuery;
+    const base = off && urlB ? urlB : url;
+    await page.goto(`${base}/?auto=planetarium${q}`, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => !!(window.__moon && window.__moon.ready && window.__moon.ready()), { timeout: 90000 });
     await page.waitForFunction(() => {
       const ls = document.getElementById('loading-screen');
       return !ls || ls.classList.contains('hidden');
     }, { timeout: 90000 }).catch(() => {});
-    await page.evaluate(() => {
+    await page.evaluate((ratio) => {
       window.__moon.setChrome(false);
       window.__moon.setShipVisible(false);
       window.__moon.setTimeRate(0);
       window.__moon.setAutoExposure(false);
-      window.__moon.pinCapture({ near: 1e-7, exposure: 1, pixelRatio: 1 });
-    });
+      window.__moon.pinCapture({ near: 1e-7, exposure: 1, pixelRatio: ratio });
+    }, PIN_RATIO);
   };
 
   await page.goto(`${url}/?auto=planetarium${extraQuery}`, { waitUntil: 'domcontentloaded' });
@@ -243,14 +253,14 @@ try {
   // back on, a probe would stay armed under every key captured after it.
   const bootState = await page.evaluate(() => window.__moon.perfSwitches());
 
-  await page.evaluate(() => {
+  await page.evaluate((ratio) => {
     window.__moon.setChrome(false);
     window.__moon.setShipVisible(false);
     window.__moon.setTimeRate(0);
     window.__moon.setAutoExposure(false);
     // The three things a capture depends on that move on their own.
-    window.__moon.pinCapture({ near: 1e-7, exposure: 1, pixelRatio: 1 });
-  });
+    window.__moon.pinCapture({ near: 1e-7, exposure: 1, pixelRatio: ratio });
+  }, PIN_RATIO);
 
   if (hideClouds) {
     const hidden = await page.evaluate(() => {
@@ -302,7 +312,7 @@ try {
     return last;
   };
 
-  const reloadTag = reloadQuery || reloadKey;
+  const reloadTag = reloadQuery || reloadKey || (urlB ? 'server-b' : '');
   if (reloadTag) {
     // Both halves of the A/B, pose by pose, out of two boots of the same page.
     const shots = [];

@@ -6,11 +6,16 @@ import {
   ECONOMY_ABOVE_DEVICE_PIXELS,
   MAX_TARGET_PIXEL_RATIO_DESKTOP,
   MAX_TARGET_PIXEL_RATIO_MOBILE,
+  MAX_UPSCALE_FACTOR,
   parseMsaaOverride,
+  parseUpscaleParam,
   policySamples,
+  renderPixelRatio,
   SCENE_TARGET_SAMPLES,
   SCENE_TARGET_SAMPLES_ECONOMY,
   targetPixelRatio,
+  UPSCALE_RENDER_PIXEL_RATIO,
+  upscalePolicy,
 } from './renderResolution';
 
 const QHD = 2560 * 1440;
@@ -150,5 +155,66 @@ describe('parseMsaaOverride', () => {
     expect(parseMsaaOverride('?msaa=1', true)).toBeNull();
     expect(parseMsaaOverride('?msaa=3', true)).toBeNull();
     expect(parseMsaaOverride('?msaa=16', true)).toBeNull();
+  });
+});
+
+describe('renderPixelRatio (the upscaler)', () => {
+  it('is the output ratio with nothing asked, or with a request at or above it', () => {
+    expect(renderPixelRatio(2, null)).toBe(2);
+    expect(renderPixelRatio(2, 2)).toBe(2);
+    expect(renderPixelRatio(2, 3)).toBe(2);
+    expect(renderPixelRatio(1, 1.5)).toBe(1); // a 1× monitor asked for 1.5: nothing to upscale
+  });
+
+  it('is the request below the output ratio', () => {
+    expect(renderPixelRatio(2, UPSCALE_RENDER_PIXEL_RATIO)).toBe(1.5);
+    expect(renderPixelRatio(2, 1.7)).toBe(1.7);
+    expect(renderPixelRatio(2.5, 1.5)).toBe(1.5);
+  });
+
+  it('never goes below the output ratio over the largest factor EASU is specified for', () => {
+    expect(renderPixelRatio(2, 0.5)).toBe(2 / MAX_UPSCALE_FACTOR);
+    expect(renderPixelRatio(3, 1)).toBe(1.5);
+  });
+
+  it('treats an unreadable request as nothing asked', () => {
+    expect(renderPixelRatio(2, 0)).toBe(2);
+    expect(renderPixelRatio(2, -1)).toBe(2);
+    expect(renderPixelRatio(2, Number.NaN)).toBe(2);
+  });
+});
+
+describe('parseUpscaleParam', () => {
+  it('follows the policy when absent or unreadable', () => {
+    expect(parseUpscaleParam('', true)).toBeNull();
+    expect(parseUpscaleParam('?msaa=0', true)).toBeNull();
+    expect(parseUpscaleParam('?upscale=', true)).toBeNull();
+    expect(parseUpscaleParam('?upscale=abc', true)).toBeNull();
+    expect(parseUpscaleParam('?upscale=-1', false)).toBeNull();
+  });
+
+  it('reads a scene ratio on any build, and off as the kill switch', () => {
+    expect(parseUpscaleParam('?upscale=1.5', false)).toEqual({ renderRatio: 1.5 });
+    expect(parseUpscaleParam('?upscale=1.5', true)).toEqual({ renderRatio: 1.5 });
+    expect(parseUpscaleParam('?upscale=0', false)).toEqual({ renderRatio: null });
+    expect(parseUpscaleParam('?upscale=off', false)).toEqual({ renderRatio: null });
+    expect(parseUpscaleParam('?upscale=OFF', true)).toEqual({ renderRatio: null });
+  });
+
+  it('takes the control arm and the sharpen stops on the dev server only', () => {
+    expect(parseUpscaleParam('?upscale=1.5,bilinear', true)).toEqual({ renderRatio: 1.5, filter: 'bilinear' });
+    expect(parseUpscaleParam('?upscale=1.5,bilinear', false)).toEqual({ renderRatio: 1.5 });
+    expect(parseUpscaleParam('?upscale=1.5&sharpen=off', true)).toEqual({ renderRatio: 1.5, sharpen: null });
+    expect(parseUpscaleParam('?upscale=1.5&sharpen=0.5', true)).toEqual({ renderRatio: 1.5, sharpen: 0.5 });
+    expect(parseUpscaleParam('?upscale=1.5&sharpen=0', true)).toEqual({ renderRatio: 1.5, sharpen: 0 });
+    expect(parseUpscaleParam('?upscale=1.5&sharpen=-1', true)).toEqual({ renderRatio: 1.5 });
+    expect(parseUpscaleParam('?upscale=1.5&sharpen=off', false)).toEqual({ renderRatio: 1.5 });
+  });
+});
+
+describe('upscalePolicy', () => {
+  it('turns nothing on unasked: the upscaler ships off until it has been seen on the phone', () => {
+    expect(upscalePolicy(true)).toBeNull();
+    expect(upscalePolicy(false)).toBeNull();
   });
 });

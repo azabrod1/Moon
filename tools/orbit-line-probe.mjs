@@ -86,7 +86,13 @@ function ridgeRows(png) {
 const median = (a) => { const s = a.filter(Number.isFinite).sort((p, q) => p - q); return s.length ? s[s.length >> 1] : NaN; };
 
 const release = await takeBrowserLock('orbit-line');
-const browser = await chromium.launch({ headless: true, args: GPU_ARGS });
+// PW_CHROMIUM: a pinned browser, as tools/shoot.mjs takes it, for a machine
+// whose installed Chromium is not the one this Playwright would download.
+const browser = await chromium.launch({
+  headless: true,
+  executablePath: process.env.PW_CHROMIUM || undefined,
+  args: process.env.PW_CHROMIUM ? [...GPU_ARGS, '--use-angle=swiftshader', '--no-sandbox'] : GPU_ARGS,
+});
 let allPass = true;
 const report = {};
 try {

@@ -1149,6 +1149,8 @@ function installDevHooks() {
     setChrome: (visible: boolean) => planetariumMode?.devSetChrome(visible),
     /** The "Orbit lines" setting on its own — setChrome(false) turns it off with the rest. */
     setOrbitLines: (on: boolean) => planetariumMode?.devSetOrbitLines(on),
+    /** The orbit-line bend pass (src/planetarium/orbitLineBend.ts): which line it is rounding this frame and its readings, or null. */
+    orbitBend: () => planetariumMode?.devOrbitBend() ?? null,
     /** Move the ship by (dx, dy, dz) AU and nothing else; for a frame() pose, whose camera stays put. */
     nudge: (dxAU: number, dyAU: number, dzAU: number) => planetariumMode?.devNudge(dxAU, dyAU, dzAU),
     setFov: (deg: number) => planetariumMode?.devSetFov(deg),

@@ -17,6 +17,7 @@ import {
   createSolarSystem,
   ORBIT_LINE_RESAMPLE_MAX_AGE_MS,
   orbitLineOpacity,
+  bendOrbitLine,
   poseOrbitLine,
   resampleOrbitLines,
   type SolarSystemObjects,
@@ -219,6 +220,7 @@ import {
   type SurfaceTargetChoice,
 } from './surfaceView';
 import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
+import type { OrbitLineBendState, OrbitLineBendView } from './orbitLineBend';
 import {
   applyDesignFov,
   displayFovDeg,
@@ -711,6 +713,18 @@ export class PlanetariumMode {
    *  float32 vertices translated by −ship — the A/B for any question about
    *  an orbit line moving when the ship does, and the kill switch. */
   private readonly orbitAnchorEnabled = new URLSearchParams(location.search).get('orbitanchor') !== '0';
+  /** `?orbitbend=0`: leave the corner an orbit line shows from beside it as
+   *  the exact projection draws it — the A/B for the minimum-bend-radius pass
+   *  (src/planetarium/orbitLineBend.ts), and the kill switch. */
+  private readonly orbitBendEnabled = new URLSearchParams(location.search).get('orbitbend') !== '0';
+  /** Camera basis and position handed to the bend pass; one object, reused. */
+  private readonly orbitBendView: OrbitLineBendView = {
+    camX: 0, camY: 0, camZ: 0,
+    rightX: 1, rightY: 0, rightZ: 0,
+    upX: 0, upY: 1, upZ: 0,
+    forwardX: 0, forwardY: 0, forwardZ: -1,
+    focalPx: 0,
+  };
 
   // Hover/tap body reveal. `revealedBody` is the one body (planet, moon, or
   // 'Sun') whose label is drawn regardless of the label/marker settings and of
@@ -8491,6 +8505,7 @@ export class PlanetariumMode {
         body.semiMajorAxisAU,
       );
     }
+    if (!hideAll && this.orbitBendEnabled) this.bendOrbitLines();
     if (!hideAll) {
       // One shared uniform block for all nine lines' width pre-distortion
       // (material.resolution itself is refreshed by LineSegments2 per draw).
@@ -8501,6 +8516,58 @@ export class PlanetariumMode {
         this.renderer.domElement.clientHeight,
       );
     }
+  }
+
+  /**
+   * The minimum-bend-radius pass over every orbit line, from this frame's
+   * camera: its world basis and its heliocentric position (scene position
+   * plus the render origin), and the rectilinear focal length of the DISPLAY
+   * FOV in CSS px — the lens is applied by the GPU on top, so the pass works
+   * in pre-lens pixels. Runs here because both call sites of
+   * updateOrbitLineVisibility follow the floating origin and the camera pose.
+   */
+  private bendOrbitLines(): void {
+    if (!this.solarSystem) return;
+    const cam = this.camera as THREE.PerspectiveCamera;
+    cam.updateMatrixWorld();
+    const m = cam.matrixWorld.elements;
+    const view = this.orbitBendView;
+    view.rightX = m[0];
+    view.rightY = m[1];
+    view.rightZ = m[2];
+    view.upX = m[4];
+    view.upY = m[5];
+    view.upZ = m[6];
+    view.forwardX = -m[8];
+    view.forwardY = -m[9];
+    view.forwardZ = -m[10];
+    view.camX = m[12] + this.renderOriginAU.x;
+    view.camY = m[13] + this.renderOriginAU.y;
+    view.camZ = m[14] + this.renderOriginAU.z;
+    const heightPx = Math.max(1, this.renderer.domElement.clientHeight);
+    view.focalPx = heightPx / 2 / Math.tan((displayFovDeg(cam) / 2) * DEG2RAD);
+    const { orbitLines, orbitLineFrames, orbitLineBendStates } = this.solarSystem;
+    const started = performance.now();
+    for (let i = 0; i < orbitLines.length; i++) {
+      bendOrbitLine(orbitLines[i], orbitLineFrames[i], orbitLineBendStates[i], view);
+    }
+    this.orbitBendLastMs = performance.now() - started;
+  }
+
+  /** Main-thread time the last bend pass took over all nine lines, ms. */
+  private orbitBendLastMs = 0;
+
+  /** Dev-only: the bend pass's state for the line it is treating, if any,
+   *  and what the whole pass cost this frame. */
+  devOrbitBend(): { body: string; state: OrbitLineBendState; passMs: number } | null {
+    if (!this.solarSystem) return null;
+    const states = this.solarSystem.orbitLineBendStates;
+    for (let i = 0; i < states.length; i++) {
+      if (states[i].active) {
+        return { body: PLANETARIUM_BODIES[i].name, state: { ...states[i] }, passMs: this.orbitBendLastMs };
+      }
+    }
+    return null;
   }
 
   private processInput(dt: number) {

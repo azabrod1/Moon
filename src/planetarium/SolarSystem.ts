@@ -9,7 +9,9 @@
  * vertices are float32 measured from an anchor near the ship, not from the
  * Sun, and the line is posed at (anchor − ship) each frame — orbitLineAnchor.ts
  * has the arithmetic, the bound, and the re-anchor rule; poseOrbitLine below
- * applies it.
+ * applies it. From beside a line its projection turns through a corner
+ * narrower than the line is wide; orbitLineBend.ts rounds that one corner
+ * on screen, and bendOrbitLine below applies it after the pose.
  */
 import * as THREE from 'three';
 import { Line2 } from 'three/addons/lines/Line2.js';
@@ -41,6 +43,12 @@ import {
   writeAnchoredSegmentPairs,
   type OrbitLineAnchorFrame,
 } from './orbitLineAnchor';
+import {
+  applyOrbitLineBend,
+  createOrbitLineBendState,
+  type OrbitLineBendState,
+  type OrbitLineBendView,
+} from './orbitLineBend';
 
 export type PlanetariumLayout = 'aligned' | 'realistic';
 export const CREATE_SOLAR_SYSTEM_TOTAL_UNITS =
@@ -58,6 +66,9 @@ export interface SolarSystemObjects {
   /** Each line's double-precision samples and the anchor its float32
    *  vertices are measured from, orbitLines[i] ↔ orbitLineFrames[i]. */
   orbitLineFrames: OrbitLineAnchorFrame[];
+  /** Each line's minimum-bend-radius pass (orbitLineBend.ts): what it wrote
+   *  last frame, so it can put it back, and its diagnostics. */
+  orbitLineBendStates: OrbitLineBendState[];
   /** Sim epoch the orbit lines were last sampled at (lazy drift rebuild). */
   orbitLinesEpochUtcMs: number;
   /** One shared uniform block for every orbit line's lens pre-distortion —
@@ -213,6 +224,31 @@ export function poseOrbitLine(
     writeOrbitLine(line, frame);
   }
   line.position.set(frame.anchor.x - px, frame.anchor.y - py, frame.anchor.z - pz);
+}
+
+/**
+ * Round the corner one orbit line shows from up close (orbitLineBend.ts has
+ * the why and the how). Runs after poseOrbitLine, once the camera is posed
+ * for the frame, on every line: the pass gates itself on the camera's
+ * distance to the line and restores whatever it wrote last frame, so far
+ * lines cost a nearest-vertex search and nothing is uploaded for them. What
+ * it does write is uploaded as a range, so a treated Pluto line moves a few
+ * hundred vertices to the GPU, not its 240 KB.
+ */
+export function bendOrbitLine(
+  line: Line2,
+  frame: OrbitLineAnchorFrame,
+  state: OrbitLineBendState,
+  view: OrbitLineBendView,
+): void {
+  const segments = Math.max(0, frame.vertexCount - 1);
+  const pairs = segmentPairBufferOf(line.geometry, segments);
+  if (pairs === null) return;
+  const write = applyOrbitLineBend(frame, view, state, pairs);
+  if (write === null) return;
+  const start = line.geometry.getAttribute('instanceStart') as THREE.InterleavedBufferAttribute;
+  start.data.addUpdateRange(write.start, write.count);
+  start.data.needsUpdate = true;
 }
 
 /**
@@ -436,6 +472,12 @@ function writeOrbitLine(line: Line2, frame: OrbitLineAnchorFrame): void {
   writeAnchoredSegmentPairs(frame, pairs);
   const geometry = line.geometry;
   const start = geometry.getAttribute('instanceStart') as THREE.InterleavedBufferAttribute;
+  // As an explicit whole-buffer range, not the bare flag: the bend pass may
+  // add a partial range in the same frame, and three uploads only the ranges
+  // it holds — a bare flag beside a partial range would upload the partial
+  // range alone and leave the rest of this rewrite on the CPU.
+  start.data.clearUpdateRanges();
+  start.data.addUpdateRange(0, pairs.length);
   start.data.needsUpdate = true;
   geometry.instanceCount = start.count;
   geometry.computeBoundingBox();
@@ -554,6 +596,7 @@ export async function createSolarSystem(
   const orbitLensUniforms = createLensShaderUniforms();
   const orbitLines: Line2[] = [];
   const orbitLineFrames: OrbitLineAnchorFrame[] = [];
+  const orbitLineBendStates: OrbitLineBendState[] = [];
   for (let i = 0; i < PLANETARIUM_BODIES.length; i++) {
     const body = PLANETARIUM_BODIES[i];
     // Anchored at the Sun until the first frame poses it: only a line the
@@ -564,6 +607,7 @@ export async function createSolarSystem(
     line.name = `orbit-${body.name}`;
     orbitLines.push(line);
     orbitLineFrames.push(frame);
+    orbitLineBendStates.push(createOrbitLineBendState());
     completedUnits += 1;
     reportProgress();
   }
@@ -577,6 +621,7 @@ export async function createSolarSystem(
     planets,
     orbitLines,
     orbitLineFrames,
+    orbitLineBendStates,
     orbitLinesEpochUtcMs,
     orbitLensUniforms,
     asteroidBelt,

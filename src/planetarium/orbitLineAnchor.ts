@@ -145,7 +145,7 @@ export function setOrbitLineAnchorSamples(
 }
 
 /** Squared distance from (px,py,pz) to the segment (ax..bx …). */
-function segmentDistanceSq(
+export function segmentDistanceSq(
   px: number, py: number, pz: number,
   ax: number, ay: number, az: number,
   bx: number, by: number, bz: number,

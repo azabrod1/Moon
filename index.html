@@ -3485,6 +3485,40 @@
       transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
     }
     #system-map-ui .map-tp-chip.visible { display: block; }
+    /* The hold ring: centred on the press, drawn only while `visible`. The
+       ring starts wide and faint and closes on the point as the count runs,
+       ending at the size of a finger pad — a hold reads as something being
+       measured rather than a press going unanswered. `forwards` holds the
+       closed pose for the beat before the chip replaces it. */
+    #system-map-ui .map-tp-hold {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 56px;
+      height: 56px;
+      margin: -28px 0 0 -28px;
+      border-radius: 50%;
+      border: 2px solid rgba(var(--accent-rgb), 0.85);
+      box-shadow: 0 0 12px rgba(var(--accent-rgb), 0.35), inset 0 0 8px rgba(var(--accent-rgb), 0.2);
+      pointer-events: none;
+      display: none;
+      z-index: 2;
+    }
+    #system-map-ui .map-tp-hold.visible {
+      display: block;
+      animation-name: map-tp-hold-close;
+      animation-timing-function: cubic-bezier(0.3, 0, 0.2, 1);
+      animation-fill-mode: forwards;
+    }
+    @keyframes map-tp-hold-close {
+      from { transform: scale(1.6); opacity: 0; }
+      20% { opacity: 0.9; }
+      to { transform: scale(0.75); opacity: 1; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      /* No closing ring: the still cue is the ring itself, at its final size. */
+      #system-map-ui .map-tp-hold.visible { animation: none; transform: scale(0.75); opacity: 1; }
+    }
     #system-map-ui .map-tp-chip:hover {
       background: rgba(var(--accent-rgb), 0.22);
       border-color: rgba(var(--accent-rgb), 0.8);
@@ -4728,6 +4762,11 @@
              this at the point, and it follows that point every frame. Text and
              placement are written by the mode. -->
         <button id="map-tp-chip" class="map-tp-chip" type="button"></button>
+        <!-- The hold's count: a ring under the finger that closes over the
+             press window (its duration is written by the mode from the same
+             constant the timer uses). Hidden the moment the press ends or the
+             chip takes over. -->
+        <div id="map-tp-hold" class="map-tp-hold" aria-hidden="true"></div>
         <!-- Two lines, once a session, above the world bar: the gestures the
              panel's buttons do not carry. Fades on its own or the first time
              one of them is used. -->
@@ -4847,7 +4886,7 @@
               <div class="map-help-row"><b>Drag</b><span>turns the view</span></div>
               <div class="map-help-row"><b><span class="map-help-fine">Scroll · pinch</span><span class="map-help-coarse">Pinch</span></b><span>zooms<span class="map-help-fine">, riding the cursor</span></span></div>
               <div class="map-help-row"><b>Double-tap</b><span>focuses a body and follows it</span></div>
-              <div class="map-help-row"><b><span class="map-help-fine">Right-click · hold</span><span class="map-help-coarse">Hold</span></b><span>offers a teleport to that point in space; the chip confirms it</span></div>
+              <div class="map-help-row"><b><span class="map-help-fine">Right-click</span><span class="map-help-coarse">Hold</span></b><span>offers a teleport to that point in space; the chip confirms it</span></div>
               <div class="map-help-row map-help-keys"><b><kbd class="kbd">M</kbd> <kbd class="kbd">Esc</kbd></b><span>M opens and closes the map; Esc backs out one step</span></div>
               <p class="map-help-note">The map runs on the sim clock — the time bar below still drives it.</p>
             </div>

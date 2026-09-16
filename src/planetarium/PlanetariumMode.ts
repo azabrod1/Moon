@@ -435,6 +435,8 @@ import { isTap } from './map/mapPicking';
 import { projectMapPoint } from './map/mapProjection';
 import {
   makeTeleportPick,
+  teleportArrivalToast,
+  teleportNeighbourhood,
   outerOrbitExtentAU,
   resolveTeleportPick,
   teleportChipLabel,
@@ -1009,6 +1011,10 @@ export class PlanetariumMode {
    *  never mistaken for a hold; short enough that the offer feels like an
    *  answer to the press rather than a delay. */
   private static readonly MAP_TP_PRESS_MS = 450;
+  /** The hold's own cue: a ring under the finger that closes over the press
+   *  window, so the wait reads as a count rather than a dead press, and a
+   *  gesture found by accident teaches itself. */
+  private mapTpHoldEl: HTMLElement | null = null;
   /** The chip floats this far above the point it names, so the point itself
    *  stays visible under it. */
   private static readonly MAP_TP_CHIP_LIFT_PX = 14;
@@ -9091,11 +9097,17 @@ export class PlanetariumMode {
       // proximity-capped → the cap), not the throttle setting — the setting
       // kept "25k km/s" on screen over a parked ship. Slow deep-space speeds
       // drop to km/s so a governed crawl never reads "0.0c".
+      // A parked ship says so rather than reading "0 km/s": zero is also
+      // what a paused clock or a grazing cap reads, and only the word tells
+      // the reader that the ship itself is holding and a throttle-up un-parks
+      // it. Not while landed — the ground, not a park, is holding it.
       const actualC = this.player.speedC;
       const speedText =
-        this.inSystemMode || actualC < 0.05
-          ? (actualC < 0.0005 ? '0 km/s' : this.formatSystemSpeed(actualC))
-          : `${actualC.toFixed(1)}c`;
+        !this.player.moving && !this.landedOn
+          ? 'Parked'
+          : this.inSystemMode || actualC < 0.05
+            ? (actualC < 0.0005 ? '0 km/s' : this.formatSystemSpeed(actualC))
+            : `${actualC.toFixed(1)}c`;
       if (speedText !== this.lastSpeedText) {
         this.lastSpeedText = speedText;
         this.speedValueEl.textContent = speedText;
@@ -12301,6 +12313,7 @@ export class PlanetariumMode {
       () => this.matureMapLongPress(),
       PlanetariumMode.MAP_TP_PRESS_MS,
     );
+    this.showMapHoldRing(e.clientX, e.clientY);
   }
 
   private cancelMapLongPress(): void {
@@ -12309,6 +12322,31 @@ export class PlanetariumMode {
       this.mapTpPressTimer = 0;
     }
     this.mapTpPressPointerId = null;
+    this.hideMapHoldRing();
+  }
+
+  /** Put the hold ring under the press and start its close. The animation is
+   *  the stylesheet's; its duration is written here so the ring and the timer
+   *  that matures the press can never disagree about how long a hold is. A
+   *  press that ends early (a tap, a drag, a second finger) hides it through
+   *  cancelMapLongPress; a matured one hides it as the chip takes over. */
+  private showMapHoldRing(clientX: number, clientY: number): void {
+    if (!this.mapTpHoldEl) this.mapTpHoldEl = document.getElementById('map-tp-hold');
+    const ring = this.mapTpHoldEl;
+    if (!ring) return;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    ring.style.left = `${Math.round(clientX - rect.left)}px`;
+    ring.style.top = `${Math.round(clientY - rect.top)}px`;
+    ring.style.animationDuration = `${PlanetariumMode.MAP_TP_PRESS_MS}ms`;
+    // Remove and re-add so a second press restarts the animation from zero —
+    // a class already present would leave the ring at its finished pose.
+    ring.classList.remove('visible');
+    void ring.offsetWidth;
+    ring.classList.add('visible');
+  }
+
+  private hideMapHoldRing(): void {
+    this.mapTpHoldEl?.classList.remove('visible');
   }
 
   /**
@@ -12324,6 +12362,9 @@ export class PlanetariumMode {
     const pointerId = this.mapTpPressPointerId;
     this.mapTpPressTimer = 0;
     this.mapTpPressPointerId = null;
+    // The count is over either way: the chip answers a matured hold, and a
+    // hold that resolves to nothing must not leave a finished ring standing.
+    this.hideMapHoldRing();
     if (pointerId === null || !this.isMapOpen() || !this.systemMap) return;
     if (this.mapDiving || this.isMapCameraFlying()) return;
     const rect = this.renderer.domElement.getBoundingClientRect();
@@ -12365,7 +12406,7 @@ export class PlanetariumMode {
     if (map.chartPointInRevealedSystem(pick.chartX, pick.chartY, pick.chartZ)) return false;
     this.mapTpPoint = { x: pick.x, y: pick.y, z: pick.z };
     this.mapTpRadiusAU = pick.radiusAU;
-    this.showMapTeleportChip(teleportChipLabel(pick.radiusAU));
+    this.showMapTeleportChip(teleportChipLabel(pick.radiusAU, pick.clamped));
     return true;
   }
 
@@ -12512,10 +12553,19 @@ export class PlanetariumMode {
    * 1c, and that command would outlive this jump and launch a deliberately
    * resting ship the moment the throttle came up.
    *
-   * The ship arrives at rest facing the Sun. A body arrival stays under way
-   * because it has a subject to close on; a chosen point in empty space has
-   * none, so rest is the honest answer — and the throttle revives it (together
-   * with the clock, if the jump was made paused).
+   * The ship arrives at the speed it was doing: a teleport moves the ship and
+   * leaves the pilot's controls alone, the throttle and the `moving` flag both
+   * (the one rule every teleport in the app now shares — see
+   * applyJumpDestination). A cruising ship arrives cruising; a parked one
+   * arrives parked, and the pill says so. A point in empty space is a vantage
+   * rather than a subject, so a ship under way drifting off it costs nothing
+   * the view can show. From the ground the takeoff's own launch stands: a
+   * landed ship has no cruise state to carry, and a teleport from the surface
+   * is a takeoff.
+   *
+   * It faces the neighbourhood: the planet whose moon system the point sits
+   * in when there is one (the same reach the veil warm-up reads), else the
+   * Sun, the one landmark every point in open space shares.
    *
    * The veil still gates it: a point chosen among a planet's moons warms that
    * system first, so the arrival never reveals a half-painted one.
@@ -12523,11 +12573,14 @@ export class PlanetariumMode {
   private applyFreeSpaceTeleport(
     point: { x: number; y: number; z: number; radiusAU: number },
   ): void {
-    this.arriveAtSystem(this.nearestSystemAt(point.x, point.y, point.z), () => {
+    const systemName = this.nearestSystemAt(point.x, point.y, point.z);
+    this.arriveAtSystem(systemName, () => {
       // A teleport from the ground must hold the throttle as the pilot left it
       // too: exitLandedMode restores an ordinary takeoff, which floors the
       // command at 1c and drops the system throttle to a near-planet crawl —
-      // both of which would outlive this jump. Snapshot around it.
+      // both of which would outlive this jump. Snapshot around it. `moving`
+      // is deliberately NOT snapshotted: a landed ship's false is the ground
+      // holding it, not a park, and the takeoff's launch is the right exit.
       const speedCmd = this.landedOn ? this.preLandSpeed : this.player.speedMultiplier;
       const systemCmd = this.player.systemSpeedMultiplier;
       if (this.landedOn) this.exitLandedMode();
@@ -12544,18 +12597,23 @@ export class PlanetariumMode {
       // next frame — you would leave the chosen point before ever seeing it.
       this.disengageAutopilot();
       this.player.setPosition(point.x, point.y, point.z);
-      this.player.headTowardPoint(0, 0, 0); // the Sun sits at the scene origin
+      // The planet whose moons the point sits among, else the Sun at the
+      // scene origin. Read from the live positions the warm-up test read, so
+      // the nose and the veil agree about which system this is.
+      const facing = systemName ? this.planetWorldPositions.get(systemName) : undefined;
+      if (facing) this.player.headTowardPoint(facing.x, facing.y, facing.z);
+      else this.player.headTowardPoint(0, 0, 0);
       // A teleport is a flight discontinuity: no eased cap and no partial
       // clear-hold may cross it, and the Sun can go from hidden behind a body
       // to bare in one frame.
       this.bodyCap = initialBodyCapState();
       this.noteSunViewDiscontinuity();
-      // Park LAST, and here rather than inside a jump helper: the never-park
-      // default of a body arrival is load-bearing, and a park flag threaded
-      // through it would outlive this jump.
-      this.player.moving = false;
       this.resetCruiseCamera();
-      this.notification.show(`Parked ${formatBodyDistance(point.radiusAU)} from the Sun`);
+      this.updateSpeedSlider(); // the pill: "Parked" or the speed, whichever the pilot left
+      const neighbourhood = systemName
+        ? `among the moons of ${bodyDisplayName(systemName)}`
+        : teleportNeighbourhood(point.radiusAU, PLANETARIUM_BODIES);
+      this.notification.show(teleportArrivalToast(point.radiusAU, neighbourhood));
     }, false);
   }
 
@@ -14063,10 +14121,14 @@ export class PlanetariumMode {
     this.player.posZ = destination.position.z;
     this.player.headTowardPoint(destination.lookTarget.x, destination.lookTarget.y, destination.lookTarget.z);
 
-    // A teleport always arrives under way. Parking is a caller decision (dev
-    // framing, tutorial freeze-frames), never the arrival default — a park
-    // left set here outlives the jump and freezes every later arrival too.
-    this.player.moving = true;
+    // A teleport arrives at the speed the ship was doing: the throttle and the
+    // `moving` flag are the pilot's, and a jump that pressed Space for them
+    // (in either direction) was the surprise. A parked ship arrives parked at
+    // the standoff — visibly so, the pill reads "Parked" — and throttle-up
+    // revives it exactly as it does after an autopilot arrival. Callers that
+    // park for their own reasons (dev framing, tutorial freeze-frames) still
+    // do so AFTER the jump, as before; what changed is that a jump no longer
+    // undoes a park the pilot made.
 
     // A teleport is a discontinuity: a tight cap eased down at the previous
     // body must not ramp-limit the arrival scene's first seconds, and no

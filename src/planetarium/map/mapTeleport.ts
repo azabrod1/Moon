@@ -31,6 +31,10 @@
  * (behind the camera), and one arriving so nearly edge-on that a pixel of aim
  * slides the hit point across the system. Clamping a miss into a max-range
  * teleport would send the ship to the rim for a click that meant nothing.
+ *
+ * The words at both ends of the gesture live here too: the chip's line (which
+ * says when the range limit moved the point) and the arrival toast's
+ * neighbourhood — which charted orbits the chosen radius sits among.
  */
 import { formatBodyDistance } from '../bodyDistance';
 import { unmapRadius, type MapCurve } from './mapProjection';
@@ -181,7 +185,65 @@ export function resolveTeleportPick(
 }
 
 /** The confirm chip's line. The distance is the whole reason the gesture
- *  confirms rather than jumping: it is what makes the choice an informed one. */
-export function teleportChipLabel(radiusAU: number): string {
-  return `Teleport here · ${formatBodyDistance(radiusAU)} from the Sun`;
+ *  confirms rather than jumping: it is what makes the choice an informed one.
+ *  A clamped point says so: the chip has walked to the range shell, and a line
+ *  that still read as "here" would name a place the press did not make. */
+export function teleportChipLabel(radiusAU: number, clamped = false): string {
+  const where = `${formatBodyDistance(radiusAU)} from the Sun`;
+  return clamped ? `Teleport here · ${where} (range limit)` : `Teleport here · ${where}`;
+}
+
+/** How close to a charted orbit a point has to sit, as a fraction of that
+ *  orbit's radius, to be described by it rather than by its neighbours. Wide
+ *  enough to absorb a real orbit's eccentricity (Mars swings ±9%); narrow
+ *  enough that the middle of a gap still reads as a gap. */
+export const TP_NEAR_ORBIT_FRACTION = 0.1;
+
+/**
+ * Where a chosen radius sits among the charted orbits, in words: the arrival
+ * toast's orientation line. On a compressed chart the pixel-to-AU relation is
+ * nonlinear, so the number alone is a surprise more often than not; the
+ * neighbourhood is what tells the reader what they will see when the veil
+ * lifts. Orbits arrive in any order; a point within TP_NEAR_ORBIT_FRACTION of
+ * one is "near the orbit of" it, else it is between two, inside the innermost
+ * or beyond the outermost. Names are the catalog's own — the caller decides
+ * how they are displayed.
+ */
+export function teleportNeighbourhood(
+  radiusAU: number,
+  orbits: readonly { name: string; semiMajorAxisAU: number }[],
+): string {
+  const sorted = orbits
+    .filter((orbit) => Number.isFinite(orbit.semiMajorAxisAU) && orbit.semiMajorAxisAU > 0)
+    .slice()
+    .sort((a, b) => a.semiMajorAxisAU - b.semiMajorAxisAU);
+  if (sorted.length === 0 || !Number.isFinite(radiusAU)) return '';
+  let nearest = sorted[0];
+  for (const orbit of sorted) {
+    if (Math.abs(orbit.semiMajorAxisAU - radiusAU) < Math.abs(nearest.semiMajorAxisAU - radiusAU)) {
+      nearest = orbit;
+    }
+  }
+  if (Math.abs(nearest.semiMajorAxisAU - radiusAU) <= nearest.semiMajorAxisAU * TP_NEAR_ORBIT_FRACTION) {
+    return `near the orbit of ${nearest.name}`;
+  }
+  const innermost = sorted[0];
+  const outermost = sorted[sorted.length - 1];
+  if (radiusAU < innermost.semiMajorAxisAU) return `inside the orbit of ${innermost.name}`;
+  if (radiusAU > outermost.semiMajorAxisAU) return `beyond the orbit of ${outermost.name}`;
+  for (let index = 0; index + 1 < sorted.length; index++) {
+    if (radiusAU > sorted[index].semiMajorAxisAU && radiusAU < sorted[index + 1].semiMajorAxisAU) {
+      return `between ${sorted[index].name} and ${sorted[index + 1].name}`;
+    }
+  }
+  return '';
+}
+
+/** The arrival toast: the distance, then where that is. `neighbourhood` is
+ *  either teleportNeighbourhood's line or the moon-system line the caller
+ *  writes when the point landed among a planet's moons; empty means the
+ *  distance stands alone. */
+export function teleportArrivalToast(radiusAU: number, neighbourhood: string): string {
+  const distance = `${formatBodyDistance(radiusAU)} from the Sun`;
+  return neighbourhood ? `${distance}, ${neighbourhood}` : distance;
 }

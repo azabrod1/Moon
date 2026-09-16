@@ -4,7 +4,9 @@ import {
   makeTeleportPick,
   outerOrbitExtentAU,
   resolveTeleportPick,
+  teleportArrivalToast,
   teleportChipLabel,
+  teleportNeighbourhood,
   teleportRangeAU,
   TP_EXTENT_MARGIN,
   TP_MIN_INCIDENCE,
@@ -285,5 +287,54 @@ describe('teleportChipLabel', () => {
   it('says where the point is, in the app’s own distance words', () => {
     expect(teleportChipLabel(12.345)).toBe('Teleport here · 12.35 AU from the Sun');
     expect(teleportChipLabel(TP_MIN_RADIUS_AU)).toBe('Teleport here · 0.10 AU from the Sun');
+  });
+
+  it('says when the range limit moved the point', () => {
+    expect(teleportChipLabel(TP_MIN_RADIUS_AU, true)).toBe(
+      'Teleport here · 0.10 AU from the Sun (range limit)',
+    );
+    expect(teleportChipLabel(12.345, false)).toBe('Teleport here · 12.35 AU from the Sun');
+  });
+});
+
+describe('teleportNeighbourhood', () => {
+  const orbits = PLANETARIUM_BODIES.map((body) => ({
+    name: body.name,
+    semiMajorAxisAU: body.semiMajorAxisAU,
+  }));
+
+  it('names the gap a point sits in', () => {
+    expect(teleportNeighbourhood(2.8, orbits)).toBe('between Mars and Jupiter');
+    expect(teleportNeighbourhood(12, orbits)).toBe('between Saturn and Uranus');
+  });
+
+  it('names the orbit a point sits near, inside the near-orbit band', () => {
+    expect(teleportNeighbourhood(1.52, orbits)).toBe('near the orbit of Mars');
+    expect(teleportNeighbourhood(5.0, orbits)).toBe('near the orbit of Jupiter');
+    // Just outside the band on either side falls back to the gap.
+    expect(teleportNeighbourhood(1.524 * 1.11, orbits)).toBe('between Mars and Jupiter');
+    expect(teleportNeighbourhood(1.524 * 0.89, orbits)).toBe('between Earth and Mars');
+  });
+
+  it('names the ends: inside the innermost orbit, beyond the outermost', () => {
+    expect(teleportNeighbourhood(TP_MIN_RADIUS_AU, orbits)).toBe('inside the orbit of Mercury');
+    expect(teleportNeighbourhood(EXTENT_AU * TP_EXTENT_MARGIN, orbits)).toBe('beyond the orbit of Pluto');
+  });
+
+  it('reads the orbits in any order and ignores a broken one', () => {
+    const shuffled = [...orbits].reverse();
+    shuffled.push({ name: 'Ghost', semiMajorAxisAU: NaN });
+    expect(teleportNeighbourhood(2.8, shuffled)).toBe('between Mars and Jupiter');
+    expect(teleportNeighbourhood(2.8, [])).toBe('');
+    expect(teleportNeighbourhood(NaN, orbits)).toBe('');
+  });
+});
+
+describe('teleportArrivalToast', () => {
+  it('puts the distance first and the neighbourhood after it', () => {
+    expect(teleportArrivalToast(2.8, 'between Mars and Jupiter')).toBe(
+      '2.80 AU from the Sun, between Mars and Jupiter',
+    );
+    expect(teleportArrivalToast(2.8, '')).toBe('2.80 AU from the Sun');
   });
 });

@@ -4071,20 +4071,28 @@ export class SystemMap {
   }
 
   /**
-   * Whether a chart point falls inside a revealed moon system's drawn
-   * envelope. A revealed system is drawn in AMPLIFIED space — its parent's
-   * radius is blown up until the moons separate — so the chart radius of a
-   * point in there says nothing about a real distance from the Sun. Anything
-   * reading the chart back into real space refuses inside these shells rather
-   * than answering a point nowhere near the pixel it was given.
+   * Whether a chart ray passes over a REVEALED moon system: within the
+   * system's ring reach of its parent's chart position, ahead of the camera.
+   * Asked of the ray rather than of the ecliptic-plane hit on purpose: the
+   * parent sits off that plane (Jupiter by up to ~0.12 AU) and the hit for a
+   * pixel over its moons lands wherever the view angle throws it — from a low
+   * angle, well outside the rings. The rays that reach the rings on screen
+   * are exactly the rays that pass within the reach in chart space, whatever
+   * the pose. `dir` must be unit length.
    */
-  chartPointInRevealedSystem(x: number, y: number, z: number): boolean {
+  rayMeetsRevealedSystem(origin: THREE.Vector3, dir: THREE.Vector3): boolean {
     for (const system of this.moonSystems) {
       if (!system.revealed) continue;
       const reach = this.systemRingReachAU(system);
       if (!(reach > 0)) continue;
       const p = system.parent.dot.position;
-      if (Math.hypot(x - p.x, y - p.y, z - p.z) <= reach) return true;
+      const vx = p.x - origin.x;
+      const vy = p.y - origin.y;
+      const vz = p.z - origin.z;
+      const along = vx * dir.x + vy * dir.y + vz * dir.z;
+      if (along <= 0) continue; // behind the camera
+      const perpSq = vx * vx + vy * vy + vz * vz - along * along;
+      if (perpSq <= reach * reach) return true;
     }
     return false;
   }

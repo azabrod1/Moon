@@ -3485,6 +3485,40 @@
       transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
     }
     #system-map-ui .map-tp-chip.visible { display: block; }
+    /* The point's own mark: a small accent disc with a dark keyline so it
+       reads on a bright orbit line as well as on black. Centred on the
+       point; the chip's translate rule moves the chip, this moves the dot. */
+    #system-map-ui .map-tp-dot {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 10px;
+      height: 10px;
+      margin: -5px 0 0 -5px;
+      border-radius: 50%;
+      background: rgb(var(--accent-rgb));
+      box-shadow: 0 0 0 2px rgba(12, 14, 20, 0.9), 0 0 10px rgba(var(--accent-rgb), 0.6);
+      pointer-events: none;
+      display: none;
+      z-index: 2;
+    }
+    #system-map-ui .map-tp-dot.visible { display: block; }
+    /* The tether: a hairline from the dot to the chip's foot, drawn only when
+       the chip has been pushed off its anchor (an edge clamp, or a point the
+       range limit moved). Rotated about its left end, which sits on the dot;
+       its width is the distance. */
+    #system-map-ui .map-tp-tether {
+      position: absolute;
+      left: 0;
+      top: 0;
+      height: 0;
+      border-top: 1px solid rgba(var(--accent-rgb), 0.7);
+      transform-origin: 0 0;
+      pointer-events: none;
+      display: none;
+      z-index: 2;
+    }
+    #system-map-ui .map-tp-tether.visible { display: block; }
     /* The hold ring: centred on the press, drawn only while `visible`. The
        ring starts wide and faint and closes on the point as the count runs,
        ending at the size of a finger pad — a hold reads as something being
@@ -4386,7 +4420,7 @@
         <button class="menu-action" id="planetarium-btn-save">Save</button>
         <button class="menu-action" id="planetarium-btn-new">New Journey</button>
         <button class="menu-action" id="planetarium-btn-tutorial">Tutorial</button>
-        <button class="menu-action" id="planetarium-btn-map">System map</button>
+        <button class="menu-action" id="planetarium-btn-map">Map</button>
         <button class="menu-action" id="planetarium-btn-tools">Tools</button>
         <div class="menu-divider"></div>
         <div class="settings-row">
@@ -4762,6 +4796,13 @@
              this at the point, and it follows that point every frame. Text and
              placement are written by the mode. -->
         <button id="map-tp-chip" class="map-tp-chip" type="button"></button>
+        <!-- The point the chip names, drawn at the point itself: the chip is
+             clamped inside the frame and the range limit can move the point,
+             so "here" needs its own mark. The tether joins the two whenever
+             the chip has been pulled away from its anchor. Both are placed
+             by the mode with the chip. -->
+        <div id="map-tp-dot" class="map-tp-dot" aria-hidden="true"></div>
+        <div id="map-tp-tether" class="map-tp-tether" aria-hidden="true"></div>
         <!-- The hold's count: a ring under the finger that closes over the
              press window (its duration is written by the mode from the same
              constant the timer uses). Hidden the moment the press ends or the
@@ -4781,11 +4822,11 @@
           <button id="map-help-chip" class="map-help-chip pn pn-high" type="button" title="Help" aria-label="Help" aria-expanded="false" aria-controls="map-help-card">
             <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6.9 7.1 C6.9 5.3 8.3 4.1 10 4.1 S13.1 5.4 13.1 7.1 C13.1 9.7 10 9.5 10 12.1"></path><circle cx="10" cy="15.5" r="1.05" fill="currentColor" stroke="none"></circle></svg>
           </button>
-          <div id="map-panel" class="map-panel pn pn-high" role="region" aria-label="System map controls">
+          <div id="map-panel" class="map-panel pn pn-high" role="region" aria-label="Map controls">
             <div class="map-panel-grip" aria-hidden="true"></div>
             <div class="map-panel-head">
               <span class="map-panel-glyph"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="10" cy="10" r="3.6"></circle><ellipse cx="10" cy="10" rx="8.2" ry="3.1" transform="rotate(-18 10 10)"></ellipse></svg></span>
-              <b class="map-panel-title">System map</b>
+              <b class="map-panel-title">Solar system</b>
               <button id="map-panel-collapse" class="map-panel-btn" type="button" title="Collapse" aria-label="Collapse the panel" aria-controls="map-panel-body" aria-expanded="true">
                 <svg class="map-panel-chev" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 8 L10 12.5 L14.5 8"></path></svg>
               </button>
@@ -4874,9 +4915,9 @@
                scroll and fold can never clip it. The `?` chip is its
                disclosure; the M badge the header used to wear lives on as the
                keys row here. -->
-          <div id="map-help-card" class="map-help-card pn pn-high" role="dialog" aria-label="Reading the chart" aria-hidden="true">
+          <div id="map-help-card" class="map-help-card pn pn-high" role="dialog" aria-label="Reading the map" aria-hidden="true">
             <div class="map-help-head">
-              <b class="map-help-eyebrow">Reading the chart</b>
+              <b class="map-help-eyebrow">Reading the map</b>
               <button id="map-help-close" class="map-panel-btn" type="button" aria-label="Close help">
                 <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
               </button>
@@ -5102,7 +5143,7 @@
       <!-- Corner chart: the WebGL draws inside this rectangle, and the element
            is its frame and its tap target. Position and size are written by the
            TS from the same rect the scissor uses. -->
-      <button id="mini-chart" aria-label="Open system map"></button>
+      <button id="mini-chart" aria-label="Open the map"></button>
 
       <div id="planetarium-notification"></div>
       <div id="planetarium-loading-msg" style="position:absolute;bottom:50%;left:50%;transform:translate(-50%,50%);font-size:13px;color:var(--text-dim);letter-spacing:2px;display:none;"></div>

@@ -1920,6 +1920,13 @@ export class PlanetariumMode {
   private mapTpPoint: { x: number; y: number; z: number } | null = null;
   private mapTpRadiusAU = 0;
   private mapTpChipEl: HTMLElement | null = null;
+  /** The point's own mark and the hairline to the chip (see updateMapTeleportChip). */
+  private mapTpDotEl: HTMLElement | null = null;
+  private mapTpTetherEl: HTMLElement | null = null;
+  private mapTpDotX = NaN;
+  private mapTpDotY = NaN;
+  /** Whether the chip hangs below its anchor (near the top edge) rather than above. */
+  private mapTpChipBelow = false;
   private mapTpChipWired = false;
   private mapTpChipX = NaN;
   private mapTpChipY = NaN;
@@ -9097,17 +9104,20 @@ export class PlanetariumMode {
       // proximity-capped → the cap), not the throttle setting — the setting
       // kept "25k km/s" on screen over a parked ship. Slow deep-space speeds
       // drop to km/s so a governed crawl never reads "0.0c".
-      // A parked ship says so rather than reading "0 km/s": zero is also
-      // what a paused clock or a grazing cap reads, and only the word tells
-      // the reader that the ship itself is holding and a throttle-up un-parks
-      // it. Not while landed — the ground, not a park, is holding it.
+      // A parked ship says so rather than reading "0 km/s", and so does a
+      // ship the paused clock is holding: zero is what both read, and only the
+      // word tells the reader which it is — a throttle-up un-parks the one,
+      // the time bar releases the other. Neither while landed: the ground,
+      // not a park or a pause, is holding it there.
       const actualC = this.player.speedC;
       const speedText =
         !this.player.moving && !this.landedOn
           ? 'Parked'
-          : this.inSystemMode || actualC < 0.05
-            ? (actualC < 0.0005 ? '0 km/s' : this.formatSystemSpeed(actualC))
-            : `${actualC.toFixed(1)}c`;
+          : this.player.held && !this.landedOn
+            ? 'Paused'
+            : this.inSystemMode || actualC < 0.05
+              ? (actualC < 0.0005 ? '0 km/s' : this.formatSystemSpeed(actualC))
+              : `${actualC.toFixed(1)}c`;
       if (speedText !== this.lastSpeedText) {
         this.lastSpeedText = speedText;
         this.speedValueEl.textContent = speedText;
@@ -10137,7 +10147,7 @@ export class PlanetariumMode {
     // closes both entry surfaces itself (their auto-pause must resolve
     // before the snapshot is taken).
     document.getElementById('planetarium-btn-tutorial')?.addEventListener('click', () => this.startTutorial());
-    // ☰ "System map": close the menu (restoring its auto-pause) then open the
+    // ☰ "Map": close the menu (restoring its auto-pause) then open the
     // map. The M key is the other front door.
     document.getElementById('planetarium-btn-map')?.addEventListener('click', () => {
       this.closeMenuPanel();
@@ -10902,13 +10912,26 @@ export class PlanetariumMode {
   /** Dev bridge: the teleport gesture at a canvas pixel — the same resolution
    *  a right-click or a matured hold runs, body pick included, so a click on a
    *  body opens its card here too. Returns what the chip now offers. */
-  devMapTeleportAt(xPx: number, yPx: number): ReturnType<PlanetariumMode['devMapTeleportState']> {
+  devMapTeleportAt(
+    xPx: number,
+    yPx: number,
+  ): ReturnType<PlanetariumMode['devMapTeleportState']> | { hit: string; reason: string } {
     if (this.isMapOpen() && !this.mapDiving && !this.isMapCameraFlying() && this.systemMap) {
       const hit = this.systemMap.pick(xPx, yPx, 'mouse');
       if (hit.kind === 'body') this.openMapCard(hit.name);
       else if (hit.kind === 'empty') this.offerMapTeleport(xPx, yPx);
+      const state = this.devMapTeleportState();
+      // No offer standing: say what the press met instead, so a harness can
+      // tell a body under the pixel from a ray the guards swallowed.
+      return state ?? {
+        hit: hit.kind === 'body' ? `body:${hit.name}` : hit.kind,
+        // Only an empty-chart press ran the offer; any other hit's reason
+        // would be a stale one from an earlier press.
+        reason: hit.kind === 'empty' ? this.mapTpLastReason : 'not-empty',
+      };
     }
-    return this.devMapTeleportState();
+    // The map is closed, diving or mid-flight: no press is taken here.
+    return this.devMapTeleportState() ?? { hit: 'unavailable', reason: 'not-accepting' };
   }
 
   /** Dev bridge: the offer standing over the chart, or null for none. */
@@ -12386,13 +12409,30 @@ export class PlanetariumMode {
    * Read a point on the chart back into real space and put the offer on it.
    * False when the gesture resolves to nothing — a ray that misses the
    * ecliptic plane, one arriving too nearly edge-on to mean a place, or a
-   * point inside a revealed moon system, whose chart space is amplified around
-   * its parent and says nothing about a distance from the Sun.
+   * ray over a revealed moon system, whose chart space is amplified around
+   * its parent and says nothing about a distance from the Sun. That last case
+   * is the one the user made on purpose and can fix, so it is the one that
+   * answers: a line saying to zoom out, where the other misses stay silent
+   * (a ray into the void was never a place to begin with).
    */
   private offerMapTeleport(xPx: number, yPx: number): boolean {
+    return this.tryOfferMapTeleport(xPx, yPx) === 'offered';
+  }
+
+  /** Why the last gesture produced no offer — for the dev bridge, which is how
+   *  a harness tells a swallowed ray from a press that landed on a body. */
+  private mapTpLastReason: 'offered' | 'no-map' | 'miss' | 'in-system' = 'miss';
+
+  private tryOfferMapTeleport(xPx: number, yPx: number): 'offered' | 'no-map' | 'miss' | 'in-system' {
+    const reason = this.resolveMapTeleportOffer(xPx, yPx);
+    this.mapTpLastReason = reason;
+    return reason;
+  }
+
+  private resolveMapTeleportOffer(xPx: number, yPx: number): 'offered' | 'no-map' | 'miss' | 'in-system' {
     const map = this.systemMap;
-    if (!map) return false;
-    if (!map.chartRayAt(xPx, yPx, this.mapTpRayOrigin, this.mapTpRayDir)) return false;
+    if (!map) return 'no-map';
+    if (!map.chartRayAt(xPx, yPx, this.mapTpRayOrigin, this.mapTpRayDir)) return 'miss';
     const pick = resolveTeleportPick(
       this.mapTpRayOrigin,
       this.mapTpRayDir,
@@ -12402,17 +12442,24 @@ export class PlanetariumMode {
       PlanetariumMode.MAP_TP_EXTENT_AU,
       this.mapTpPick,
     );
-    if (!pick) return false;
-    if (map.chartPointInRevealedSystem(pick.chartX, pick.chartY, pick.chartZ)) return false;
+    if (!pick) return 'miss';
+    // Tested on the ray, not the plane hit: the parent sits off the ecliptic,
+    // and the hit for a pixel over its moons can land outside the rings.
+    if (map.rayMeetsRevealedSystem(this.mapTpRayOrigin, this.mapTpRayDir)) {
+      this.notification.show('Zoom out past the moons to teleport here');
+      return 'in-system';
+    }
     this.mapTpPoint = { x: pick.x, y: pick.y, z: pick.z };
     this.mapTpRadiusAU = pick.radiusAU;
     this.showMapTeleportChip(teleportChipLabel(pick.radiusAU, pick.clamped));
-    return true;
+    return 'offered';
   }
 
   /** Cache the chip and wire its press once (the MapHUD bind idiom). */
   private bindMapTeleportChip(): void {
     this.mapTpChipEl = document.getElementById('map-tp-chip');
+    this.mapTpDotEl = document.getElementById('map-tp-dot');
+    this.mapTpTetherEl = document.getElementById('map-tp-tether');
     if (this.mapTpChipWired || !this.mapTpChipEl) return;
     this.mapTpChipWired = true;
     // A deliberate press on the chip always begins with its own pointerdown;
@@ -12445,6 +12492,8 @@ export class PlanetariumMode {
     // the pixel the last one was left at.
     this.mapTpChipX = NaN;
     this.mapTpChipY = NaN;
+    this.mapTpDotX = NaN;
+    this.mapTpDotY = NaN;
     this.updateMapTeleportChip();
   }
 
@@ -12461,6 +12510,8 @@ export class PlanetariumMode {
     this.mapTpPoint = null;
     this.mapTpRadiusAU = 0;
     this.mapTpChipEl?.classList.remove('visible');
+    this.mapTpDotEl?.classList.remove('visible');
+    this.mapTpTetherEl?.classList.remove('visible');
     // An offer dismissed by Esc must not leave the keyboard on a chip that is
     // no longer there.
     this.mapTpChipEl?.blur();
@@ -12481,9 +12532,12 @@ export class PlanetariumMode {
     projectMapPoint(point.x, point.y, point.z, map.getBlend(), map.getCurve(), this.mapTpChart);
     if (!map.projectChartPoint(this.mapTpChart, this.mapTpScreen)) {
       el.classList.remove('visible');
+      this.mapTpDotEl?.classList.remove('visible');
+      this.mapTpTetherEl?.classList.remove('visible');
       return;
     }
     el.classList.add('visible');
+    this.placeMapTeleportDot();
     // Write only on a change: a settled chart re-derives the same pixel every
     // frame (the label pass's rule). The x clamp keeps the whole line inside
     // the frame — a phone press near an edge would otherwise clip the chip
@@ -12493,18 +12547,63 @@ export class PlanetariumMode {
     const rawX = Math.round(this.mapTpScreen.x);
     const maxX = window.innerWidth - halfW - 8;
     const x = maxX > halfW + 8 ? Math.round(Math.min(Math.max(rawX, halfW + 8), maxX)) : rawX;
-    // The y clamp mirrors it for the top edge: the chip body hangs above the
-    // anchor (translateY(-100%) plus the lift), so an anchor high in the frame
-    // would draw it off-screen — yet the standing offer still owns the next
-    // Esc. Pin it fully on-frame instead; the tether stretches like x's.
+    // The top edge flips rather than clamps: the chip body hangs above the
+    // anchor (translateY(-100%) plus the lift), so an anchor high in the
+    // frame would draw it off-screen — and a chip pinned down onto the frame
+    // would sit on the point's own mark. Below the anchor it covers nothing
+    // and the dot stays in view; the tether then only ever answers the x
+    // clamp. Keyed on the raw anchor so the flip cannot chatter.
     const minY = this.mapTpChipH + PlanetariumMode.MAP_TP_CHIP_LIFT_PX + 8;
-    const y = Math.round(Math.max(this.mapTpScreen.y, minY));
-    if (x === this.mapTpChipX && y === this.mapTpChipY) return;
+    const below = this.mapTpScreen.y < minY;
+    const y = Math.round(this.mapTpScreen.y);
+    if (x === this.mapTpChipX && y === this.mapTpChipY && below === this.mapTpChipBelow) return;
     this.mapTpChipX = x;
     this.mapTpChipY = y;
-    el.style.transform = `translate(-50%, -100%) translate(${x}px, ${
-      y - PlanetariumMode.MAP_TP_CHIP_LIFT_PX
-    }px)`;
+    this.mapTpChipBelow = below;
+    el.style.transform = below
+      ? `translate(-50%, 0) translate(${x}px, ${y + PlanetariumMode.MAP_TP_CHIP_LIFT_PX}px)`
+      : `translate(-50%, -100%) translate(${x}px, ${y - PlanetariumMode.MAP_TP_CHIP_LIFT_PX}px)`;
+    this.placeMapTeleportTether();
+  }
+
+  /** The dot sits on the projected point itself — never on the chip's
+   *  clamped pixel — and, like the chip, writes only when the pixel moves. */
+  private placeMapTeleportDot(): void {
+    const dot = this.mapTpDotEl;
+    if (!dot) return;
+    dot.classList.add('visible');
+    const x = Math.round(this.mapTpScreen.x);
+    const y = Math.round(this.mapTpScreen.y);
+    if (x === this.mapTpDotX && y === this.mapTpDotY) return;
+    this.mapTpDotX = x;
+    this.mapTpDotY = y;
+    dot.style.transform = `translate(${x}px, ${y}px)`;
+    // The tether's far end is the chip's foot, so a moved dot re-draws it even
+    // when the chip's own pixel held (an edge clamp does exactly that).
+    this.placeMapTeleportTether();
+  }
+
+  /** How far the chip's foot may sit from the point before the hairline joins
+   *  them: the lift plus a little, so the ordinary hover-above pose draws
+   *  none and only a real displacement (a frame clamp, a range clamp) does. */
+  private static readonly MAP_TP_TETHER_MIN_PX = PlanetariumMode.MAP_TP_CHIP_LIFT_PX + 6;
+
+  private placeMapTeleportTether(): void {
+    const tether = this.mapTpTetherEl;
+    if (!tether || !Number.isFinite(this.mapTpChipX) || !Number.isFinite(this.mapTpDotX)) return;
+    const footX = this.mapTpChipX;
+    const footY = this.mapTpChipY + (this.mapTpChipBelow ? 1 : -1) * PlanetariumMode.MAP_TP_CHIP_LIFT_PX;
+    const dx = footX - this.mapTpDotX;
+    const dy = footY - this.mapTpDotY;
+    const length = Math.hypot(dx, dy);
+    if (length < PlanetariumMode.MAP_TP_TETHER_MIN_PX) {
+      tether.classList.remove('visible');
+      return;
+    }
+    tether.classList.add('visible');
+    const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+    tether.style.width = `${Math.round(length)}px`;
+    tether.style.transform = `translate(${this.mapTpDotX}px, ${this.mapTpDotY}px) rotate(${angleDeg.toFixed(1)}deg)`;
   }
 
   /**

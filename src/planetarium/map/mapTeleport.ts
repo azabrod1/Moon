@@ -73,8 +73,8 @@ export const TP_MIN_RADIUS_AU = 0.1;
 export const TP_EXTENT_MARGIN = 1.3;
 
 /** Where a teleport gesture landed: the real heliocentric point in AU, the
- *  chart-space point it was read from (the caller's revealed-system test lives
- *  in that amplified space), and how far from the Sun the chip will say it is. */
+ *  chart-space point it was read from (what the dev bridge and the tests read
+ *  back), and how far from the Sun the chip will say it is. */
 export interface TeleportPick {
   x: number;
   y: number;

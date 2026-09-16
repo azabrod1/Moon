@@ -62,8 +62,17 @@
  * ---------------------------------------------------------------------------
  */
 
-/** RCAS's default sharpness, in stops below maximum (0 = sharpest; each stop halves). */
-export const RCAS_DEFAULT_STOPS = 0.2;
+/**
+ * RCAS's default sharpness, in stops below maximum (0 = sharpest; each stop
+ * halves). One stop: the value at which the upscaled frame's edge energy
+ * (mean gradient of luma) matches the native 2× frame it replaces — 1.02×
+ * on Earth's whole disc, 1.00× at a close pass over the limb, measured on a
+ * 430×932 @2 capture (planning/_upscale-stops.mjs). The reference's usual
+ * 0.2 reads 1.22× native, visibly crisper than the frame it stands in for;
+ * EASU alone reads 0.93×. Stars are untouched by any of it: an isolated
+ * point on a black ring is exactly what RCAS's limiter holds at zero.
+ */
+export const RCAS_DEFAULT_STOPS = 1;
 
 /**
  * The linear sharpness RCAS multiplies its lobe by, from stops (FsrRcasCon):

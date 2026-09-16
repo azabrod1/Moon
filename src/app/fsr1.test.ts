@@ -33,7 +33,10 @@ describe('rcasSharpness', () => {
     expect(rcasSharpness(0)).toBe(1);
     expect(rcasSharpness(1)).toBe(0.5);
     expect(rcasSharpness(2)).toBe(0.25);
-    expect(rcasSharpness(RCAS_DEFAULT_STOPS)).toBeCloseTo(Math.pow(2, -0.2), 12);
+    // The default is one stop: where the upscaled frame's edge energy matches
+    // the native frame's (the header of fsr1.ts carries the measurement).
+    expect(RCAS_DEFAULT_STOPS).toBe(1);
+    expect(rcasSharpness(RCAS_DEFAULT_STOPS)).toBe(0.5);
   });
 
   it('never sharpens past the maximum', () => {

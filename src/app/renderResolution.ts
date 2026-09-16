@@ -245,6 +245,28 @@ export function upscalePolicy(_mobile: boolean): number | null {
   return null;
 }
 
+/** The `?ratio=` pin's bounds: below 0.5 nothing is legible, above 4 a phone's
+ *  scene target alone passes 60 MB and the composer's chain multiplies it. */
+export const PIXEL_RATIO_PIN_MIN = 0.5;
+export const PIXEL_RATIO_PIN_MAX = 4;
+
+/**
+ * The `?ratio=` startup param, honoured on the dev server only (`dev`): pins
+ * the OUTPUT ratio for the session, caps and floors ignored, so a phone can
+ * be shown its full panel (`?ratio=3` on a 3× phone the policy caps at 2)
+ * or a 2× Mac a 1× monitor's frame, from an address bar, as two links to
+ * compare. The same pin as `__moon.pinRatio`. Absent, unreadable, or outside
+ * PIXEL_RATIO_PIN_MIN..MAX means follow the policy.
+ */
+export function parsePixelRatioPin(search: string, dev: boolean): number | null {
+  if (!dev) return null;
+  const raw = new URLSearchParams(search).get('ratio');
+  if (raw === null || raw.trim() === '') return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < PIXEL_RATIO_PIN_MIN || n > PIXEL_RATIO_PIN_MAX) return null;
+  return n;
+}
+
 /**
  * The `?msaa=` startup param. `0` turns the scene target's multisampling off
  * on any build: the support kill switch, like `?sectors=0`. `2`/`4`/`8`

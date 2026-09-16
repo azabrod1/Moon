@@ -23,8 +23,8 @@ import type { ToolRequest } from './planetarium/toolRequest';
 import { canGPUDoBloom, halfFloatTargetSampleCounts } from './app/gpuCapability';
 import { installShaderSalt } from './app/shaderSalt';
 import {
-  bloomPixelRatio, composerSamples, parseMsaaOverride, parseUpscaleParam, renderPixelRatio, targetPixelRatio,
-  UPSCALE_RENDER_PIXEL_RATIO, upscalePolicy, type UpscaleFilter,
+  bloomPixelRatio, composerSamples, parseMsaaOverride, parsePixelRatioPin, parseUpscaleParam, renderPixelRatio,
+  targetPixelRatio, UPSCALE_RENDER_PIXEL_RATIO, upscalePolicy, type UpscaleFilter,
 } from './app/renderResolution';
 import { BootRenderGate } from './app/bootRenderGate';
 import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn, setPerfSwitch } from './app/perfSwitches';
@@ -166,8 +166,11 @@ const sceneSampleCounts = useBloom ? halfFloatTargetSampleCounts(renderer) : [];
 // at all. The no-float direct path has the backbuffer's own multisampling.
 const supersampleFallback = useBloom && (sceneSampleCounts.length === 0 || msaaOverride === 0);
 // The capture pin on the pixel ratio (see pinCapture), declared before the
-// renderer-details log below reads the target ratio at module init.
-let pixelRatioPin: number | null = null;
+// renderer-details log below reads the target ratio at module init. The dev
+// server's `?ratio=` starts the session pinned (app/renderResolution.ts
+// parsePixelRatioPin): a phone shown its full panel beside its capped frame,
+// as two links; the bloom chain keeps the display's own ratio either way.
+let pixelRatioPin: number | null = parsePixelRatioPin(location.search, import.meta.env.DEV);
 
 // What the canvas really got (a request is not always honoured) and the
 // samples a screen target carries here. Read once: neither can change.

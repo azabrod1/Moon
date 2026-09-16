@@ -8,7 +8,10 @@ import {
   MAX_TARGET_PIXEL_RATIO_MOBILE,
   MAX_UPSCALE_FACTOR,
   parseMsaaOverride,
+  parsePixelRatioPin,
   parseUpscaleParam,
+  PIXEL_RATIO_PIN_MAX,
+  PIXEL_RATIO_PIN_MIN,
   policySamples,
   renderPixelRatio,
   SCENE_TARGET_SAMPLES,
@@ -209,6 +212,26 @@ describe('parseUpscaleParam', () => {
     expect(parseUpscaleParam('?upscale=1.5&sharpen=0', true)).toEqual({ renderRatio: 1.5, sharpen: 0 });
     expect(parseUpscaleParam('?upscale=1.5&sharpen=-1', true)).toEqual({ renderRatio: 1.5 });
     expect(parseUpscaleParam('?upscale=1.5&sharpen=off', false)).toEqual({ renderRatio: 1.5 });
+  });
+});
+
+describe('parsePixelRatioPin', () => {
+  it('pins the output ratio on the dev server only', () => {
+    expect(parsePixelRatioPin('?ratio=3', true)).toBe(3);
+    expect(parsePixelRatioPin('?ratio=1', true)).toBe(1);
+    expect(parsePixelRatioPin('?upscale=1.5&ratio=2.5', true)).toBe(2.5);
+    expect(parsePixelRatioPin('?ratio=3', false)).toBeNull();
+  });
+
+  it('follows the policy when absent, unreadable, or out of bounds', () => {
+    expect(parsePixelRatioPin('', true)).toBeNull();
+    expect(parsePixelRatioPin('?ratio=', true)).toBeNull();
+    expect(parsePixelRatioPin('?ratio=abc', true)).toBeNull();
+    expect(parsePixelRatioPin('?ratio=0', true)).toBeNull();
+    expect(parsePixelRatioPin('?ratio=0.25', true)).toBeNull();
+    expect(parsePixelRatioPin('?ratio=8', true)).toBeNull();
+    expect(parsePixelRatioPin(`?ratio=${PIXEL_RATIO_PIN_MAX}`, true)).toBe(PIXEL_RATIO_PIN_MAX);
+    expect(parsePixelRatioPin(`?ratio=${PIXEL_RATIO_PIN_MIN}`, true)).toBe(PIXEL_RATIO_PIN_MIN);
   });
 });
 

@@ -594,6 +594,10 @@ function applyUpscalePasses(): void {
     sharpenPass.enabled = easu && upscaleSharpenStops !== null;
     sharpenPass.setSharpness(upscaleSharpenStops ?? RCAS_DEFAULT_STOPS);
   }
+  // Said through debugLog, so a phone's ?debug=1 overlay answers whether the
+  // frame it shows is upscaled: Safari's address bar hides the query that
+  // asked for it, and a screenshot of the stats cannot tell the two apart.
+  if (upscalePass) debugLog('Upscale', upscaleState());
 }
 
 /** Apply a change to the upscaler's state: the passes, then the resize path,

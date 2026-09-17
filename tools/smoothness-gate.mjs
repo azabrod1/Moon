@@ -697,8 +697,16 @@ function qualitySteps({ id, where, device, levels, boot = '&quality=medium', inj
           // Down: 200 intervals at 30 ms, over budget with an idle main
           // thread, which is what a GPU-bound frame looks like. Up: 600 clean
           // ones at half the budget, past the probe wait in the rule's clock.
-          const samples = kind === 'down' ? stream(base, 200, 30) : stream(base, 600, budgetMs / 2);
-          ruleClockMs = samples[samples.length - 1].nowMs + 10_000;
+          // The up stream carries 800 clean intervals, not the 480 the rule
+          // needs, because the step lands inside the stream and its
+          // verification window has to close inside it too — a verification
+          // still open when the next stream arrives is resolved by THAT
+          // stream's evidence, and the step it was asked for never happens.
+          const samples = kind === 'down' ? stream(base, 200, 30) : stream(base, 800, budgetMs / 2);
+          // Past the session ceiling's own hold in the rule's clock, so each
+          // stream is judged on its own evidence and not on what the last one
+          // latched.
+          ruleClockMs = samples[samples.length - 1].nowMs + 70_000;
           record(injectNames[i], () => window.__moon.quality({ inject: samples }));
         }
         await nap(holdMs);

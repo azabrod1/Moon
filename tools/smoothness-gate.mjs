@@ -7,7 +7,14 @@
 //   node tools/smoothness-gate.mjs --rescore=/tmp/moon-shots/smooth/baseline
 //   node tools/smoothness-gate.mjs --scenario=boot --cold-cache --label=cold
 //   node tools/smoothness-gate.mjs --scenario=earth-near --no-precise-memory
+//   node tools/smoothness-gate.mjs --scenario=quality-steps --engine=webkit
 //   node tools/smoothness-gate.mjs --list
+//
+// Most scenarios hold one pose and ask what the app does to the frames. Two do
+// the opposite: `quality-steps` and `phone-quality-steps` CHANGE the graphics
+// quality on a timer at Earth's shell — every menu level, then two Dynamic
+// rungs the rule itself asks for — and score the frame each change lands on
+// against two 60 Hz vsyncs. They carry their own verdict for that reason.
 //
 // Needs a dev server (this checkout, `npx vite --port 5656 --strictPort`) and,
 // for the sector tiles, a tile host (`node planning/_tiles-serve.mjs` on 5622).
@@ -59,7 +66,7 @@
 // at all — so for anything that leans on how a browser hands an image to the
 // GPU, a green phone row here is not evidence about Safari. Measure that in
 // WebKit (the repo's Safari oracle) before calling such a thing done.
-import { chromium } from 'playwright';
+import { chromium, webkit } from 'playwright';
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -119,6 +126,11 @@ const UPLOAD_BUDGET_MS = 8;
 const GC_DROP_MIB = 5;
 
 const DESKTOP = { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 };
+// The 16" MacBook Pro's own window, which is the display the graphics-quality
+// levels are judged on: what High comes to, and which Dynamic rungs exist at
+// all, are decided from the CSS size and the output ratio, so a scenario about
+// the levels has to run at the size somebody is looking at.
+const MAC_WINDOW = { viewport: { width: 1728, height: 1117 }, deviceScaleFactor: 2 };
 // An iPhone 14 Pro Max viewport at its real device pixel ratio. The UA matters:
 // the device profile reads it, and a phone profile is a different app.
 const PHONE = {
@@ -179,10 +191,21 @@ async function openPage(browser, device, cpuThrottle = 0) {
   const notes = [];
   if (cpuThrottle > 1) {
     // The renderer's own main thread, slowed by the protocol — the only way
-    // this machine can stand in for phone silicon.
-    const cdp = await context.newCDPSession(page);
-    await cdp.send('Emulation.setCPUThrottlingRate', { rate: cpuThrottle });
-    notes.push(`CPU throttled ${cpuThrottle}x`);
+    // this machine can stand in for phone silicon. It is a CDP command, so a
+    // row that needs it is a Chromium row; said out loud rather than applied
+    // silently to nothing.
+    if (ENGINE === 'webkit') {
+      notes.push(`CPU throttle ${cpuThrottle}x NOT applied: it is a CDP command and this run is WebKit`
+        + ' — the row is a phone viewport and a phone UA on this machine\'s own cores');
+    } else {
+      const cdp = await context.newCDPSession(page);
+      await cdp.send('Emulation.setCPUThrottlingRate', { rate: cpuThrottle });
+      notes.push(`CPU throttled ${cpuThrottle}x`);
+    }
+  }
+  if (ENGINE === 'webkit') {
+    notes.push('WebKit: no performance.memory and no longtask observer, so the heap and long-task'
+      + ' columns are unmeasured rather than clean');
   }
   page.on('pageerror', (e) => notes.push(`pageerror: ${String(e).slice(0, 200)}`));
   page.on('crash', () => notes.push('the renderer process CRASHED'));
@@ -522,6 +545,241 @@ async function flyTerminator(page, note, extra) {
     await sleep(1_000);
   }
   await sleep(3_000);
+}
+
+// ------------------------------------------------- the graphics-quality step
+
+/** The bar a resolution step is held to: two 60 Hz vsyncs, which is the budget
+ *  of the person looking at it rather than the rate this machine happens to
+ *  deliver. Headless Chromium hands out ~8.3 ms frames, so the run's own
+ *  two-vsync figure is stricter and is printed beside the verdict. */
+const STEP_BUDGET_MS = 2 * (1000 / 60);
+/** How long after a step the frames still belong to it: a re-allocation's
+ *  driver work, a first bind of a re-sized target and the first frame each
+ *  re-pointed pass draws all land inside this. */
+const STEP_AFTER_MS = 2_000;
+
+/**
+ * What one graphics-quality step costs the frame it lands on.
+ *
+ * Every other scenario here holds the resolution still. This one changes it on
+ * a timer while parked at Earth's shell (1.05 radii) — the pose the whole
+ * campaign is judged at, and the dearest frame a step can land in: the tiles
+ * resident, the air and the cloud deck on screen, every full-screen pass in
+ * the chain. A step re-sizes the composer's targets, re-points the resample
+ * passes and retunes the three point sizes authored in scene pixels
+ * (main.ts applySceneResolution); the question is whether the frame that lands
+ * on is one a person can feel.
+ *
+ * Two kinds of step, because they arrive through different doors: the MENU's
+ * (`setQuality`, a whole level at once, including High's supersample) and the
+ * RULE's (`quality({inject})`, a Dynamic rung the controller asked for after
+ * an over-budget stream and then a clean one). A pin cannot stand in for the
+ * second — a pin holds the rule idle by design.
+ *
+ * Nothing crosses the protocol inside the scored window: the whole sequence
+ * runs from ONE evaluate on in-page timers, because a round trip lands a
+ * 16.7 ms frame of the harness's own making right where the step is being
+ * measured. And the same frames are read a second time inside the page, from
+ * the rAF callbacks' own entry times, because a raf TIMESTAMP goes stale
+ * behind a busy main thread and would under-report the very hitch this is
+ * looking for. Both readings are in the JSON; a disagreement between them is
+ * reported rather than resolved.
+ */
+function qualitySteps({ id, where, device, levels }) {
+  // Written by run(), read by verify(): the in-page second reading.
+  let probe = null;
+  const marksExpected = [...levels, 'inject-down', 'inject-up'];
+  return {
+    id,
+    title: `Graphics quality: ${marksExpected.join(' -> ')} at Earth's shell, ${where}`,
+    device,
+    // The steps only. Everything before the first one is a boot, a jump and a
+    // tile settle that no step owns.
+    window: ['steps'],
+    async run(page, note) {
+      // Booted at medium: a known starting rung, and Dynamic not already
+      // climbing when the first step is asked for.
+      note(`renderer: ${await bootTo(page, '&quality=medium', 200)}`);
+      note(`device: ${JSON.stringify(await page.evaluate(() => window.__moon.device()))}`);
+      note(`quality: ${JSON.stringify(await page.evaluate(() => {
+        const q = window.__moon.quality();
+        return { level: q.level, output: q.outputRatio, ladder: q.ladder, high: q.bounds.high,
+          highOffered: q.bounds.highOffered, reason: q.reason, mb: Math.round(q.bytes / 1e5) / 10 };
+      }))}`);
+      await sleep(2_000);
+      // jumpTo's multiplier scales the standard standoff; 0.13125 of it is
+      // 1.05 radii, just above the collision shell.
+      await page.evaluate(() => window.__moon.jumpTo('Earth', 0.13125));
+      await sleep(3_000);
+      // The tiles for this pose land BEFORE the first step, or an upload
+      // beside a step would be charged to it. Waited out in the page.
+      await page.evaluate(async () => {
+        const nap = (ms) => new Promise((r) => { setTimeout(r, ms); });
+        const deadline = performance.now() + 60_000;
+        for (;;) {
+          const s = window.__moon.sectors?.();
+          if (!s || s.inflight === 0 || performance.now() > deadline) break;
+          await nap(250);
+        }
+        await nap(5_000);
+      });
+      note(`posed at ${round1(await page.evaluate(() => {
+        const p = window.__moon.probe('Earth');
+        return p && p.found && p.radiusAU ? p.distToBodyAU / p.radiusAU : null;
+      }))} radii`);
+      note(`sectors before the steps: ${JSON.stringify(await page.evaluate(() => window.__moon.sectors()))}`);
+      await mark(page, 'steps');
+      probe = await page.evaluate(async ({ wanted, holdMs, budgetMs }) => {
+        const nap = (ms) => new Promise((r) => { setTimeout(r, ms); });
+        // The second reading: when each frame's callback actually RAN.
+        const entries = [];
+        let running = true;
+        const tick = () => {
+          entries.push(performance.now());
+          if (running) requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+        // An interval stream for the rule: `count` intervals of `intervalMs`
+        // with an idle main thread, which is what a GPU-bound frame looks
+        // like and the only kind the rule counts when it is over budget.
+        const stream = (baseMs, count, intervalMs) => {
+          const list = [];
+          for (let i = 1; i <= count; i++) {
+            list.push({ nowMs: baseMs + i * intervalMs, intervalMs, mainThreadMs: 5, workedMs: 0, eligible: true });
+          }
+          return list;
+        };
+        const steps = [];
+        const record = (name, apply) => {
+          const before = window.__moon.quality();
+          // The mark and the step in one task: a mark a round trip away from
+          // the step would put the harness's own frame between them.
+          window.__moon.smoothMark(`q:${name}`);
+          const atMs = performance.now();
+          const entry = entries.length;
+          const after = apply();
+          steps.push({
+            name,
+            atMs,
+            entry,
+            from: { rung: before.rung, sceneRatio: before.sceneRatio, mode: before.mode },
+            to: { level: after.level, rung: after.rung, sceneRatio: after.sceneRatio, mode: after.mode },
+            lastStep: after.lastStep,
+            sceneTarget: window.__moon.perfTargets().sceneTarget,
+            moved: Math.abs(after.sceneRatio - before.sceneRatio) > 1e-6,
+          });
+        };
+        for (const level of wanted) {
+          await nap(holdMs);
+          record(level, () => window.__moon.setQuality(level));
+        }
+        await nap(holdMs);
+        // The rule's own steps, last: an injected stream carries its own
+        // clock, so the rule is deaf to real frames for as long as the stream
+        // ran ahead of them, and nothing after this would be measured.
+        const downBase = performance.now();
+        record('inject-down', () => window.__moon.quality({ inject: stream(downBase, 200, 30) }));
+        await nap(holdMs);
+        // Past the probe wait in the rule's own clock, then a clean second.
+        const upBase = downBase + 200 * 30 + 10_000;
+        record('inject-up', () => window.__moon.quality({ inject: stream(upBase, 600, budgetMs / 2) }));
+        await nap(holdMs);
+        running = false;
+        return { steps, entries };
+      }, { wanted: levels, holdMs: 4_000, budgetMs: 1000 / 60 });
+      for (const s of probe.steps) {
+        note(`step ${s.name}: rung ${s.from.rung} -> ${s.to.rung}, scene ${round1(s.from.sceneRatio)}`
+          + ` -> ${round1(s.to.sceneRatio)} (${s.to.mode}, ${s.sceneTarget?.w}x${s.sceneTarget?.h})`
+          + `${s.moved ? '' : ' — the ratio did not move'}`);
+      }
+    },
+    verify(analysis, trace) {
+      const problems = [];
+      const marks = trace.events.filter((e) => e.kind === 'mark' && String(e.name).startsWith('q:'));
+      for (const name of marksExpected) {
+        if (!marks.some((m) => m.name === `q:${name}`)) {
+          problems.push(`no q:${name} mark in the trace — that step never ran`);
+        }
+      }
+      // A step that moved nothing measures nothing. At least the three that
+      // must move on every display have to have moved the scene ratio.
+      const moved = (probe?.steps ?? []).filter((s) => s.moved);
+      if (moved.length < 3) {
+        problems.push(`only ${moved.length} of ${probe?.steps?.length ?? 0} steps moved the scene ratio`
+          + ' — the scenario scored frames around changes that did not happen');
+      }
+      const rows = [];
+      for (const m of marks) {
+        // The step's own frame is the first one to START after it: the work
+        // it caused is inside that frame, and the gap that reports it is the
+        // one measured at its end.
+        const after = [];
+        for (let i = m.frame + 1; i < trace.gapMs.length; i++) {
+          if (trace.atMs[i] > m.atMs + STEP_AFTER_MS) break;
+          if (trace.gapMs[i] === null) continue;
+          after.push({ i, gap: trace.gapMs[i] });
+        }
+        const step = probe?.steps?.find((s) => `q:${s.name}` === m.name) ?? null;
+        const worst = after.reduce((a, b) => (b.gap > a.gap ? b : a), { i: -1, gap: 0 });
+        // The same window read from the callbacks' own entry times.
+        let probeStepMs = null;
+        let probeWorstMs = null;
+        if (step && probe) {
+          const from = step.entry;
+          for (let i = from + 1; i < probe.entries.length; i++) {
+            if (probe.entries[i] > step.atMs + STEP_AFTER_MS) break;
+            const gap = probe.entries[i] - probe.entries[i - 1];
+            if (probeStepMs === null) probeStepMs = gap;
+            probeWorstMs = Math.max(probeWorstMs ?? 0, gap);
+          }
+        }
+        rows.push({
+          mark: m.name,
+          frame: m.frame,
+          movedTo: step ? { rung: step.to.rung, sceneRatio: step.to.sceneRatio, mode: step.to.mode } : null,
+          sceneTarget: step?.sceneTarget ?? null,
+          stepFrameMs: round2(after[0]?.gap ?? 0),
+          worstAfterMs: round2(worst.gap),
+          worstAfterFrame: worst.i,
+          framesScored: after.length,
+          callbackStepMs: probeStepMs === null ? null : round2(probeStepMs),
+          callbackWorstMs: probeWorstMs === null ? null : round2(probeWorstMs),
+        });
+        if (!after.length) {
+          problems.push(`${m.name}: no frame was recorded in the ${STEP_AFTER_MS / 1000} s after the step`);
+          continue;
+        }
+        const stepMs = Math.max(after[0].gap, probeStepMs ?? 0);
+        const worstMs = Math.max(worst.gap, probeWorstMs ?? 0);
+        if (stepMs > STEP_BUDGET_MS) {
+          problems.push(`${m.name}: the step frame took ${round2(stepMs)} ms, over the`
+            + ` ${round2(STEP_BUDGET_MS)} ms bar`);
+        } else if (worstMs > STEP_BUDGET_MS) {
+          problems.push(`${m.name}: a frame of ${round2(worstMs)} ms in the`
+            + ` ${STEP_AFTER_MS / 1000} s after the step (frame ${worst.i})`);
+        }
+      }
+      analysis.qualitySteps = rows;
+      analysis.stepBudgetMs = round2(STEP_BUDGET_MS);
+      if (probe) analysis.qualityStepDetail = probe.steps;
+      // A step must not be bought with a long task elsewhere in the stepping
+      // phase — but only from the first step onward. The boot, the jump and
+      // the tile settle ahead of it pay costs no step owns (a phone viewport
+      // spends 121 ms in one task there, ten seconds before anything is
+      // asked to change), and a row that went red for those would be red
+      // whatever a step did.
+      const stepsAtMs = trace.events.find((e) => e.kind === 'mark' && e.name === 'steps')?.atMs ?? 0;
+      const worstTaskMs = (trace.longTasks ?? [])
+        .filter((t) => t.atMs >= stepsAtMs)
+        .reduce((worst, t) => Math.max(worst, t.durationMs), 0);
+      analysis.stepPhaseLongTaskMaxMs = round2(worstTaskMs);
+      if (worstTaskMs > LONG_TASK_MS) {
+        problems.push(`a ${round2(worstTaskMs)} ms long task ran during the stepping phase`);
+      }
+      return problems;
+    },
+  };
 }
 
 // ----------------------------------------------------------------- scenarios
@@ -925,6 +1183,22 @@ const SCENARIOS = [
     ),
     selfTestOnly: true,
   },
+  qualitySteps({
+    id: 'quality-steps',
+    where: 'Mac window (1728x1117 @2)',
+    device: MAC_WINDOW,
+    // Every level the menu row offers on this display, in the order it cycles
+    // them, so each step is one a person can really make — High included,
+    // which only a display that offers it can be asked for.
+    levels: ['low', 'medium', 'high', 'dynamic'],
+  }),
+  qualitySteps({
+    id: 'phone-quality-steps',
+    where: 'phone (430x932 @3)',
+    device: PHONE,
+    // High is not offered on a phone, so the row omits it and so does this.
+    levels: ['low', 'medium', 'dynamic'],
+  }),
 ];
 
 // ------------------------------------------------------------------ analysis
@@ -1364,10 +1638,18 @@ const COLD_ARGS = COLD_CACHE
 // chrome  — installed Google Chrome, headed. Ground truth, and the only engine
 //           that must stay visible: an occluded window throttles rAF to 1 Hz
 //           and every gap it reports is a lie.
+// webkit  — Playwright's WebKit, the repo's Safari oracle. Three columns go
+//           blank there and the run says so rather than reading them as
+//           zeros: the heap (no performance.memory), the long tasks (no
+//           longtask PerformanceObserver) and the CPU throttle (CDP only, so
+//           every 4x phone row is Chromium's alone). What it does answer is
+//           frame delivery in the other engine, which is the half of a
+//           smoothness question a Chromium run cannot speak for.
 const ENGINES = {
   shell: { headless: true, args: [...GPU_ARGS, ...MEMORY_ARGS, ...COLD_ARGS] },
   new: { headless: true, channel: 'chromium', args: [...GPU_ARGS, ...MEMORY_ARGS, ...COLD_ARGS] },
   chrome: { headless: false, channel: 'chrome', args: [...GPU_ARGS, ...MEMORY_ARGS, ...COLD_ARGS] },
+  webkit: { engine: webkit, headless: true },
 };
 
 const launchBrowser = () => {
@@ -1376,6 +1658,7 @@ const launchBrowser = () => {
     console.error(`Unknown --engine=${ENGINE}. Known: ${Object.keys(ENGINES).join(', ')}`);
     process.exit(2);
   }
+  if (options.engine) return options.engine.launch({ headless: options.headless });
   return chromium.launch({
     executablePath: process.env.PW_CHROMIUM || undefined,
     ...options,

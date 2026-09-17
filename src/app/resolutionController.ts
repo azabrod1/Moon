@@ -48,16 +48,23 @@
  * span, not their sum: the cheap update-only ticks between draws would
  * otherwise hide the one that slipped.
  *
- * **Windows are authored in SECONDS and counted in intervals** — three
- * seconds for a down decision, eight for an up probe, converted at the budget
- * (180 and 480 at 60 fps, 90 and 240 at 30) with a staleness cap so a window
- * can never be assembled out of evidence from a minute ago. At the longest
- * window and the lowest counted rate the span is 14.5 s against the 15 s
- * horizon, which is the margin the fixed counts had. A streaming descent over
- * Earth does sliced work on many frames in a row; with a share-of-frames gate
- * the controller would go silent in both directions during exactly the long
- * hot flight the phone requirement is about, where with counted windows the
- * evidence merely accumulates more slowly.
+ * **Windows are authored in SECONDS and counted in intervals** — six seconds
+ * for a down decision, ten for an up probe, converted at the budget (360 and
+ * 600 at 60 fps, 180 and 300 at 30) with a staleness cap so a window can never
+ * be assembled out of evidence from half a minute ago. At the longest window
+ * and the lowest counted rate the span is 18.2 s against the 20 s horizon,
+ * which is the margin the shorter windows had at 15 s. A streaming descent
+ * over Earth does sliced work on many frames in a row; with a share-of-frames
+ * gate the controller would go silent in both directions during exactly the
+ * long hot flight the phone requirement is about, where with counted windows
+ * the evidence merely accumulates more slowly.
+ *
+ * **A rung change drops the window outright**, because the evidence describes
+ * the configuration it was measured in. So a second down-step needs its own
+ * six seconds rather than firing two seconds later on the first step's
+ * evidence, and medium to the floor is at least twelve seconds of sustained
+ * trouble. `DOWN_SPACING_MS` is only the minimum between changes; at these
+ * window lengths the evidence is what binds.
  *
  * **The statistic** is the mean of the window's counted intervals with the
  * three longest dropped — a fixed count, because a percentage trim is biased
@@ -65,9 +72,12 @@
  * 600 ms stall is ONE late callback, so one or two hitches fall out of the
  * statistic by construction rather than by a rule. At 60 Hz vsync, with a
  * fraction p of frames a tick late, the derived boundaries are: DOWN when the
- * trimmed mean passes 19.2 ms, which is p > 0.166, about 51 fps; UP-eligible
- * at or under 17.0 ms, which is p ≤ 0.026, about 58.5 fps. Steady 55 fps sits
- * between them and moves nothing, which is the tolerance band.
+ * trimmed mean passes 19.2 ms, which is p > 0.157, about 52 fps; UP-eligible
+ * at or under 17.0 ms, which is p ≤ 0.025, about 58.5 fps. Steady 55 fps sits
+ * between them and moves nothing, which is the tolerance band. A longer window
+ * moves those shares a little — the trim is a fixed three, so it is a smaller
+ * share of a longer window — which is why the suite derives them from the rule
+ * rather than transcribing them.
  *
  * **Up under a cap is a search, not a measurement.** Where a draw covers two
  * or more callbacks, every frame that fits the period reports exactly the
@@ -137,12 +147,15 @@
  *  why the main-thread test is what admits a jittery on-time frame. */
 export const BUDGET_MS = 1000 / 60;
 
-/** Wall seconds of counted evidence behind a down decision. */
-export const DOWN_WINDOW_S = 3;
+/** Wall seconds of counted evidence behind a down decision. Long enough that
+ *  a passing hot patch — a descent, a burst of uploads — is over before the
+ *  window is full, because the picture changing is more noticeable than the
+ *  two seconds of slow frames it saves. */
+export const DOWN_WINDOW_S = 6;
 
 /** And behind an up probe: more evidence is asked for before taking pixels
  *  than before giving them back. */
-export const UP_WINDOW_S = 8;
+export const UP_WINDOW_S = 10;
 
 /** Counted intervals in a window of `seconds` at `budgetMs`. */
 export function windowCounted(seconds: number, budgetMs: number): number {
@@ -156,8 +169,11 @@ export const DOWN_WINDOW_COUNTED = windowCounted(DOWN_WINDOW_S, BUDGET_MS);
 export const UP_WINDOW_COUNTED = windowCounted(UP_WINDOW_S, BUDGET_MS);
 
 /** No window is assembled out of intervals older than this, however few have
- *  been counted since. */
-export const STALENESS_MS = 15_000;
+ *  been counted since. It has to clear the longest window at the lowest
+ *  counted rate the app sees: ten seconds of counted evidence at a 55 % rate
+ *  spans 18.2 s, so 20 s leaves 1.8 s of margin and 15 s would have made the
+ *  up path unable to assemble a window at all. */
+export const STALENESS_MS = 20_000;
 
 /** Intervals dropped from a window before the mean: the longest three, so two
  *  or three hitches in a window cannot move a decision. */
@@ -199,7 +215,9 @@ export const REALLOC_SETTLE_MS = 250;
 /** How long an up-step is watched before it is trusted. */
 export const VERIFY_MS = 1000;
 
-/** The least time between changes for a down decision. */
+/** The least time between changes for a down decision. A floor rather than
+ *  the thing that binds: a change drops the window, so the next down-step
+ *  cannot arrive before a whole new window of evidence has been counted. */
 export const DOWN_SPACING_MS = 2000;
 
 /** The wait before a first up probe, doubling on each probe that fails and

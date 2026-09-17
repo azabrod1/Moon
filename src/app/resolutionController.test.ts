@@ -5,6 +5,7 @@ import {
   DOWN_FACTOR,
   DOWN_SPACING_MS,
   DOWN_WINDOW_COUNTED,
+  DOWN_WINDOW_S,
   FLOOR_LATCH_MIN_GAIN,
   LATCH_HOLD_MS,
   MAIN_THREAD_SHARE,
@@ -15,6 +16,7 @@ import {
   TRIM_COUNT,
   UP_FACTOR,
   UP_WINDOW_COUNTED,
+  UP_WINDOW_S,
   VERIFY_MS,
   ZERO_COUNTED_WARN_MS,
   type Decision,
@@ -94,17 +96,23 @@ function oneInLate(late: number): (rung: number, i: number) => number {
   return (_rung, i) => ((i + 1) % late === 0 ? 2 * TICK : TICK);
 }
 
+/** Frames enough to fill a down window twice over: every stream below is
+ *  sized off the rule's own window rather than off a number that would go
+ *  quietly wrong the next time a window length moves. */
+const TWO_DOWN_WINDOWS = 2 * DOWN_WINDOW_COUNTED;
+
 describe('the statistic — hitches and bursts move nothing', () => {
   it('lets one 600 ms stall through: a stall is one late callback, not thirty', () => {
     const rig = new Rig(new ResolutionController(SHORT_LADDER));
-    rig.run(400, (_r, i) => (i === 200 ? 600 : TICK));
+    rig.run(TWO_DOWN_WINDOWS, (_r, i) => (i === DOWN_WINDOW_COUNTED ? 600 : TICK));
     expect(rig.applied).toEqual([]);
     expect(rig.rung).toBe(SHORT_LADDER.mediumIndex);
   });
 
   it('lets two 500 ms bursts through', () => {
     const rig = new Rig(new ResolutionController(SHORT_LADDER));
-    rig.run(400, (_r, i) => (i === 120 || i === 260 ? 500 : TICK));
+    const at = [Math.round(DOWN_WINDOW_COUNTED * 0.6), Math.round(DOWN_WINDOW_COUNTED * 1.3)];
+    rig.run(TWO_DOWN_WINDOWS, (_r, i) => (at.includes(i) ? 500 : TICK));
     expect(rig.applied).toEqual([]);
   });
 
@@ -116,16 +124,22 @@ describe('the statistic — hitches and bursts move nothing', () => {
 
   it('is the trimmed mean, so three hitches in one window still do not step', () => {
     const rig = new Rig(new ResolutionController(SHORT_LADDER));
-    rig.run(200, (_r, i) => (i === 100 || i === 120 || i === 140 ? 500 : TICK));
+    // All three inside the last full window, so none of them is merely stale.
+    const at = [0.4, 0.6, 0.8].map((f) => DOWN_WINDOW_COUNTED + Math.round(DOWN_WINDOW_COUNTED * f));
+    rig.run(TWO_DOWN_WINDOWS + 20, (_r, i) => (at.includes(i) ? 500 : TICK));
     expect(rig.applied).toEqual([]);
     expect(TRIM_COUNT).toBe(3);
   });
 });
 
+/** The rate a stream of one-in-`late` frames a tick late really delivers. */
+const rateFor = (late: number): number => 1000 / (TICK * (1 + 1 / late));
+
 describe('the derived frame-rate boundaries at 60 Hz vsync', () => {
   it('holds still at a steady 55 fps — the tolerance band', () => {
     const rig = new Rig(new ResolutionController(FULL_LADDER));
-    rig.run(2000, oneInLate(11));
+    expect(Math.round(rateFor(11))).toBe(55);
+    rig.run(4 * UP_WINDOW_COUNTED, oneInLate(11));
     expect(rig.applied).toEqual([]);
     const mean = rig.controller.state().trimmedMeanMs ?? 0;
     expect(mean).toBeGreaterThan(UP_FACTOR * BUDGET_MS);
@@ -134,30 +148,70 @@ describe('the derived frame-rate boundaries at 60 Hz vsync', () => {
 
   it('steps down at a steady 50 fps', () => {
     const rig = new Rig(new ResolutionController(SHORT_LADDER));
-    rig.run(400, oneInLate(5));
+    expect(Math.round(rateFor(5))).toBe(50);
+    rig.run(TWO_DOWN_WINDOWS, oneInLate(5));
     expect(rig.applied.length).toBeGreaterThanOrEqual(1);
     expect(rig.applied[0].reason).toBe('down');
     expect(rig.applied[0].to).toBe(SHORT_LADDER.mediumIndex - 1);
   });
 
-  it('puts the down boundary at about 51 fps: one late in six steps, one in seven does not', () => {
+  it('puts the down boundary at about 52 fps, and the header quotes what the rule does', () => {
+    // Derived from the rule by bisection, never transcribed: a longer window
+    // is a smaller share of it for a fixed trim of three, so the share moves
+    // whenever a window length does.
+    const share = boundaryShare(BUDGET_MS, BUDGET_MS,
+      (rig) => rig.applied.some((a) => a.reason === 'down'));
+    expect(Math.round(1000 / (BUDGET_MS * (1 + share)))).toBe(52);
+    // And the pair either side of it behaves the way the boundary says.
     const steps = new Rig(new ResolutionController(SHORT_LADDER));
-    steps.run(400, oneInLate(6));
+    steps.run(TWO_DOWN_WINDOWS, oneInLate(Math.floor(1 / share)));
     expect(steps.applied.map((a) => a.reason)).toContain('down');
 
     const holds = new Rig(new ResolutionController(SHORT_LADDER));
-    holds.run(400, oneInLate(7));
+    holds.run(TWO_DOWN_WINDOWS, oneInLate(Math.ceil(1 / share)));
     expect(holds.applied).toEqual([]);
   });
 
-  it('puts the up boundary just under 59 fps: one late in forty climbs, one in thirty does not', () => {
+  it('puts the up boundary just under 59 fps', () => {
+    // The same bisection read the other way round: the share at which a
+    // machine STOPS being allowed to climb.
+    const share = boundaryShare(BUDGET_MS, BUDGET_MS,
+      (rig) => !rig.applied.some((a) => a.reason === 'up'));
+    expect(1000 / (BUDGET_MS * (1 + share))).toBeGreaterThan(58);
+    expect(1000 / (BUDGET_MS * (1 + share))).toBeLessThan(59);
+
     const climbs = new Rig(new ResolutionController(FULL_LADDER));
-    climbs.run(1200, oneInLate(40));
+    climbs.run(3 * UP_WINDOW_COUNTED, oneInLate(Math.ceil(1 / share)));
     expect(climbs.applied.map((a) => a.reason)).toContain('up');
 
     const holds = new Rig(new ResolutionController(FULL_LADDER));
-    holds.run(1200, oneInLate(30));
+    holds.run(3 * UP_WINDOW_COUNTED, oneInLate(Math.floor(1 / share)));
     expect(holds.applied).toEqual([]);
+  });
+});
+
+describe('how long a slide takes', () => {
+  it('drops the window on a down step, so the second needs its own six seconds', () => {
+    const rig = new Rig(new ResolutionController(SHORT_LADDER));
+    rig.run(4 * DOWN_WINDOW_COUNTED, () => 2 * TICK);
+    const downs = rig.applied.filter((a) => a.reason === 'down');
+    expect(downs).toHaveLength(2);
+    // Not DOWN_SPACING_MS after the first: a whole fresh window of counted
+    // evidence, which at this rate is more than the six seconds it is worth.
+    expect(downs[1].atMs - downs[0].atMs).toBeGreaterThan(DOWN_WINDOW_S * 1000);
+    expect(DOWN_SPACING_MS).toBeLessThan(DOWN_WINDOW_S * 1000);
+    // Medium to the floor is therefore at least two windows of trouble.
+    expect(downs[1].atMs).toBeGreaterThan(2 * DOWN_WINDOW_S * 1000);
+  });
+
+  it('holds still for five minutes at a steady 55 fps', () => {
+    // The no-oscillation run at the shipped windows: nothing in the tolerance
+    // band may move the picture, however long it is held.
+    const rig = new Rig(new ResolutionController(FULL_LADDER));
+    rig.run(Math.ceil(300_000 / TICK), oneInLate(11));
+    expect(rig.nowMs).toBeGreaterThan(300_000);
+    expect(rig.applied).toEqual([]);
+    expect(rig.rung).toBe(FULL_LADDER.mediumIndex);
   });
 });
 
@@ -202,19 +256,19 @@ describe('what counts', () => {
 
   it('ignores an ineligible frame, and will not assemble a window out of stale evidence', () => {
     const rig = new Rig(new ResolutionController(SHORT_LADDER));
+    const half = Math.floor(DOWN_WINDOW_COUNTED / 2);
     // Half a window of genuinely slow frames...
-    rig.run(100, () => 2 * TICK);
+    rig.run(half, () => 2 * TICK);
     expect(rig.applied).toEqual([]);
-    // ...then twenty seconds with nothing on screen...
-    rig.run(20, () => 1000, { eligible: false });
+    // ...then well past the staleness horizon with nothing on screen...
+    rig.run(Math.ceil(STALENESS_MS / 1000) + 5, () => 1000, { eligible: false });
     // ...then another half window, which cannot be joined to the first.
-    rig.run(100, () => 2 * TICK);
+    rig.run(half, () => 2 * TICK);
     expect(rig.applied).toEqual([]);
     expect(rig.controller.state().countedWindow).toBeLessThan(DOWN_WINDOW_COUNTED);
-    expect(rig.controller.state().countedWindow).toBe(100);
-    expect(STALENESS_MS).toBe(15_000);
-    // The rest of a fresh window does step it.
-    rig.run(120, () => 2 * TICK);
+    expect(rig.controller.state().countedWindow).toBe(half);
+    // A whole fresh window does step it.
+    rig.run(DOWN_WINDOW_COUNTED, () => 2 * TICK);
     expect(rig.applied.map((a) => a.reason)).toEqual(['down']);
   });
 });
@@ -244,7 +298,7 @@ describe('the slide down', () => {
 describe('the floor latch', () => {
   it('hands medium back when 44 % fewer pixels changed nothing, and stops trying', () => {
     const rig = new Rig(new ResolutionController(SHORT_LADDER));
-    rig.run(1200, () => 2 * TICK);
+    rig.run(4 * DOWN_WINDOW_COUNTED, () => 2 * TICK);
     expect(rig.applied.map((a) => a.reason)).toEqual(['down', 'down', 'floor latch']);
     expect(rig.rung).toBe(SHORT_LADDER.mediumIndex);
     const state = rig.controller.state();
@@ -254,7 +308,7 @@ describe('the floor latch', () => {
     // And it holds: no further down-step while the latch stands.
     const before = rig.applied.length;
     const latchedAt = rig.nowMs;
-    rig.run(600, () => 2 * TICK);
+    rig.run(DOWN_WINDOW_COUNTED + 60, () => 2 * TICK);
     expect(rig.nowMs - latchedAt).toBeLessThan(LATCH_HOLD_MS[0]);
     expect(rig.applied.length).toBe(before);
   });
@@ -262,7 +316,7 @@ describe('the floor latch', () => {
   it('keeps the floor when it earned it', () => {
     const rig = new Rig(new ResolutionController(SHORT_LADDER));
     // Over budget at every rung, but each rung is measurably better.
-    rig.run(2000, (rung) => (rung === 2 ? 40 : rung === 1 ? 30 : 24));
+    rig.run(4 * DOWN_WINDOW_COUNTED, (rung) => (rung === 2 ? 40 : rung === 1 ? 30 : 24));
     expect(rig.applied.map((a) => a.reason)).toEqual(['down', 'down']);
     expect(rig.rung).toBe(0);
     expect(rig.controller.state().latch).toBeNull();
@@ -374,24 +428,25 @@ describe('events', () => {
     expect(rig.controller.state().countedWindow).toBe(0);
     rig.controller.notify('unpin', rig.nowMs);
     expect(rig.controller.state().idle).toBe(false);
-    rig.run(220, () => 2 * TICK);
+    rig.run(DOWN_WINDOW_COUNTED + 40, () => 2 * TICK);
     expect(rig.applied.map((a) => a.reason)).toEqual(['down']);
   });
 
   it('drops the window on an arrival or a resize rather than reading across it', () => {
     const rig = new Rig(new ResolutionController(SHORT_LADDER));
-    rig.run(170, () => 2 * TICK);
+    const nearly = DOWN_WINDOW_COUNTED - 10;
+    rig.run(nearly, () => 2 * TICK);
     rig.controller.notify('arrival', rig.nowMs);
     expect(rig.controller.state().countedWindow).toBe(0);
-    rig.run(170, () => 2 * TICK);
+    rig.run(nearly, () => 2 * TICK);
     expect(rig.applied).toEqual([]);
-    rig.run(20, () => 2 * TICK);
+    rig.run(30, () => 2 * TICK);
     expect(rig.applied.map((a) => a.reason)).toEqual(['down']);
   });
 
   it('a focus gain steps nothing by itself, and drops the evidence it gained across', () => {
     const rig = new Rig(new ResolutionController(SHORT_LADDER));
-    rig.run(170, () => 2 * TICK);
+    rig.run(DOWN_WINDOW_COUNTED - 10, () => 2 * TICK);
     // Away for a while: those intervals are the browser's throttle.
     rig.run(200, () => 900, { eligible: false });
     rig.controller.notify('focus', rig.nowMs);
@@ -431,9 +486,10 @@ describe('setLadder', () => {
 
   it('settles after the re-clamp instead of deciding on the old evidence', () => {
     const rig = new Rig(new ResolutionController(SHORT_LADDER));
-    rig.run(170, () => 2 * TICK);
+    rig.run(DOWN_WINDOW_COUNTED - 10, () => 2 * TICK);
     rig.controller.setLadder(SHORT_LADDER, rig.nowMs);
-    rig.run(20, () => 2 * TICK);
+    // Enough frames to have finished the window it was denied.
+    rig.run(30, () => 2 * TICK);
     expect(rig.applied).toEqual([]);
   });
 });
@@ -451,7 +507,8 @@ describe('diagnosis', () => {
 
   it('reports the window, the ladder and the budget it is running', () => {
     const rig = new Rig(new ResolutionController(FULL_LADDER));
-    rig.run(300, () => TICK);
+    // Past a down window and short of an up one, so both bounds below bite.
+    rig.run(DOWN_WINDOW_COUNTED + 60, () => TICK);
     const state = rig.controller.state();
     expect(state.budgetMs).toBeCloseTo(BUDGET_MS, 6);
     expect(state.downCounted).toBe(DOWN_WINDOW_COUNTED);
@@ -468,7 +525,7 @@ describe('diagnosis', () => {
 
   it('records what the floor has to beat once a slide starts', () => {
     const rig = new Rig(new ResolutionController(SHORT_LADDER));
-    rig.run(220, () => 2 * TICK);
+    rig.run(DOWN_WINDOW_COUNTED + 40, () => 2 * TICK);
     expect(rig.applied.map((a) => a.reason)).toEqual(['down']);
     expect(rig.controller.state().floorReference).toBeCloseTo(2 * TICK, 1);
     expect(rig.controller.state().lastStep).toMatchObject({ from: 2, to: 1, reason: 'down' });
@@ -509,30 +566,41 @@ function boundaryShare(
 describe('the budget the Frame rate row sets', () => {
   it('converts the windows from seconds, and 60 fps is today to the interval', () => {
     const controller = new ResolutionController(FULL_LADDER);
-    expect(controller.state().downCounted).toBe(180);
-    expect(controller.state().upCounted).toBe(480);
-    const table: [number, number, number][] = [
-      [1000 / 60, 180, 480],
-      [1000 / 30, 90, 240],
-      [1000 / 120, 360, 960],
-      [1000 / 144, 432, 1152],
-      [1000 / 240, 720, 1920],
-    ];
-    for (const [budgetMs, down, up] of table) {
+    // The two figures the header quotes, at the default budget.
+    expect(controller.state().downCounted).toBe(360);
+    expect(controller.state().upCounted).toBe(600);
+    // And at every other budget the counts are still the same SECONDS: the
+    // property the seconds-authored windows exist for, derived rather than
+    // transcribed, so a window length that moves cannot leave a row behind.
+    for (const budgetMs of [1000 / 60, 1000 / 30, 1000 / 120, 1000 / 144, 1000 / 240]) {
       controller.setBudget(budgetMs, 0, { cause: 'user' });
-      expect([controller.state().downCounted, controller.state().upCounted]).toEqual([down, up]);
+      const { downCounted, upCounted } = controller.state();
+      expect(downCounted * budgetMs).toBeCloseTo(DOWN_WINDOW_S * 1000, 0);
+      expect(upCounted * budgetMs).toBeCloseTo(UP_WINDOW_S * 1000, 0);
+      expect(Number.isInteger(downCounted) && Number.isInteger(upCounted)).toBe(true);
     }
+  });
+
+  it('gives the longest window room inside the staleness horizon', () => {
+    // Ten seconds of COUNTED evidence at the 55 % counted rate a streaming
+    // flight leaves has to fit inside the horizon, or the up path could never
+    // assemble a window at all: 18.2 s against 20 s.
+    const span = (UP_WINDOW_COUNTED / 0.55) * BUDGET_MS;
+    expect(Math.round(span / 100) / 10).toBe(18.2);
+    expect(span).toBeGreaterThan(UP_WINDOW_S * 1000);
+    expect(span).toBeLessThan(STALENESS_MS);
   });
 
   it('re-allocates the ring, so a 120 fps target can fill an up window at all', () => {
     const rig = new Rig(new ResolutionController(FULL_LADDER));
     rig.controller.setBudget(1000 / 120, 0, { cause: 'user', quantised: false });
-    expect(rig.controller.state().upCounted).toBe(960);
-    // The window has to be able to HOLD 960 intervals at 8.33 ms — with the
-    // 480-slot ring the default sizes, it never could, and a 120 fps target
+    const wanted = rig.controller.state().upCounted;
+    expect(wanted).toBeGreaterThan(UP_WINDOW_COUNTED);
+    // The window has to be able to HOLD that many intervals at 8.33 ms — with
+    // the ring the default budget sizes it never could, and a 120 fps target
     // would have been unable to probe up at all.
-    rig.run(1000, () => 1000 / 240);
-    expect(rig.controller.state().countedWindow).toBeGreaterThanOrEqual(960);
+    rig.run(wanted + 200, () => 1000 / 240);
+    expect(rig.controller.state().countedWindow).toBeGreaterThanOrEqual(wanted);
     // And past the probe wait it climbs.
     rig.run(3000, () => 1000 / 240);
     expect(rig.applied.map((a) => a.reason)).toContain('up');
@@ -628,7 +696,7 @@ describe('the budget the Frame rate row sets', () => {
 describe('what a budget change invalidates', () => {
   it('drops the evidence and moves no rung', () => {
     const rig = new Rig(new ResolutionController(SHORT_LADDER));
-    rig.run(170, () => 2 * TICK);
+    rig.run(DOWN_WINDOW_COUNTED - 10, () => 2 * TICK);
     rig.controller.setBudget(1000 / 30, rig.nowMs, { cause: 'user' });
     expect(rig.controller.state().countedWindow).toBe(0);
     expect(rig.rung).toBe(SHORT_LADDER.mediumIndex);
@@ -639,8 +707,8 @@ describe('what a budget change invalidates', () => {
     const latched = (): Rig => {
       const rig = new Rig(new ResolutionController(SHORT_LADDER));
       // Slide to the floor on frames fewer pixels do not help, and be handed
-      // medium back with the latch.
-      rig.run(1500, () => 2 * TICK);
+      // medium back with the latch: two down windows and the floor's own.
+      rig.run(4 * DOWN_WINDOW_COUNTED, () => 2 * TICK);
       expect(rig.controller.state().latch).not.toBeNull();
       return rig;
     };

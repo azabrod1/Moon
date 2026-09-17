@@ -718,7 +718,7 @@ function qualitySteps({ id, where, device, levels, boot = '&quality=medium', inj
           // still open when the next stream arrives is resolved by THAT
           // stream's evidence, and the step it was asked for never happens.
           const samples = kind === 'down'
-            ? stream(base, Math.max(200, Math.round(live.downCounted * 1.2)), budgetMs * 1.8)
+            ? stream(base, Math.round(live.downCounted * 1.2), budgetMs * 1.8)
             : stream(base, Math.round(upCounted * 1.7), budgetMs / 2);
           // Past the session ceiling's own hold in the rule's clock, so each
           // stream is judged on its own evidence and not on what the last one

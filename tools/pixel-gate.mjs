@@ -107,6 +107,12 @@ const POSES = {
   // the ground shader's own terms with the Earth-only ones switched off.
   moon: { call: ['frame', 'Moon', 0.85, 30], time: '2026-03-21T09:20:00Z', hold: 2500 },
   mars: { call: ['frame', 'Mars', 0.8, 25], time: '2026-03-21T09:20:00Z', hold: 2000 },
+  // Earth small in a wide field of sky: the stars, the moon dots and the
+  // asteroid belt, none of which the surface poses above have more than a
+  // corner of. The point sprites are sized and lit by their own rules
+  // (starPointMapping's pointSpritePixelRatio, shared/three/pointEnergy), so a
+  // change to those rules has nothing to move in a frame filled by a planet.
+  sky: { call: ['frame', 'Earth', 0.12, 0, 20, 0, 0.15], time: '2026-03-21T09:20:00Z', hold: 2500, optional: true },
   // The two things that draw straight onto the canvas: the System Map and the
   // corner chart. Not switch poses, so only a `--poses=` that names them runs
   // them; `also` runs after the pose is taken and `undo` before the next pose.

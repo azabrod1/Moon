@@ -11,7 +11,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { DownsamplePass, OutputTargetPass, SharpenPass, UpscalePass, type DownsampleFilter } from './app/UpscalePass';
-import { RCAS_DEFAULT_STOPS } from './app/fsr1';
+import { RCAS_DEFAULT_STOPS, rcasStopsForFactor } from './app/fsr1';
 
 import { PlanetariumMode, FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS } from './planetarium/PlanetariumMode';
 import type { ShipProfile } from './planetarium/PlayerShip';
@@ -209,7 +209,13 @@ let upscalePinRatio: number | null = upscaleParam?.renderRatio ?? null;
  *  frame, byte for byte. */
 let upscaleRenderRatio: number | null = null;
 let upscaleFilter: UpscaleFilter = upscaleParam?.filter ?? 'easu';
+/** RCAS's stops, once something has named them: `?sharpen=` or the bridge.
+ *  Unasked, the stops come from the factor the frame is upscaled by
+ *  (app/fsr1.ts rcasStopsForFactor) — one stop was matched at 4/3 and
+ *  over-sharpens at a shallower rung — so this stays null and nothing here
+ *  owns them. */
 let upscaleSharpenStops: number | null = upscaleParam?.sharpen === undefined ? RCAS_DEFAULT_STOPS : upscaleParam.sharpen;
+let upscaleSharpenPinned = upscaleParam?.sharpen !== undefined;
 // Which kernel carries a frame drawn LARGER than the canvas down onto it. The
 // box is the compositor's own shrink, the look that was judged the sharper
 // one; `?downsample=tent` is the A/B, dev server only.
@@ -901,6 +907,23 @@ function upscaleActive(): boolean {
 }
 
 /**
+ * RCAS's stops for the frame as it stands: whatever `?sharpen=` or the bridge
+ * pinned, else the stops measured for the factor this frame is being upscaled
+ * by. Null means RCAS off, which only a pin can ask for.
+ *
+ * The factor is the live one rather than the level's, so a Dynamic rung
+ * carries the stops its own depth was calibrated at — one stop matched at 4/3
+ * reads five per cent sharper than native at 1.15, and a step that comes out
+ * sharper than the frame before it is the one thing a rung change must not do.
+ */
+function upscaleSharpenStopsLive(): number | null {
+  if (upscaleSharpenPinned) return upscaleSharpenStops;
+  const sceneRatio = getScenePixelRatio();
+  if (!(sceneRatio > 0)) return RCAS_DEFAULT_STOPS;
+  return rcasStopsForFactor(getTargetPixelRatio() / sceneRatio);
+}
+
+/**
  * Point the resample passes at the live state: EASU on when the scene is
  * below the output ratio and the filter is EASU — the bilinear control arm is
  * no pass at all, the finishing pass drawing the smaller buffer straight to
@@ -918,8 +941,9 @@ function applyUpscalePasses(): void {
   const easu = mode === 'upscale' && upscaleFilter === 'easu';
   if (upscalePass) upscalePass.enabled = easu;
   if (sharpenPass) {
-    sharpenPass.enabled = easu && upscaleSharpenStops !== null;
-    sharpenPass.setSharpness(upscaleSharpenStops ?? RCAS_DEFAULT_STOPS);
+    const stops = upscaleSharpenStopsLive();
+    sharpenPass.enabled = easu && stops !== null;
+    sharpenPass.setSharpness(stops ?? RCAS_DEFAULT_STOPS);
   }
   if (downsamplePass) {
     downsamplePass.enabled = mode === 'supersample';
@@ -1083,7 +1107,10 @@ function upscaleState() {
     request: upscaleRenderRatio,
     filter: upscaleFilter,
     downsample: downsampleFilter,
-    sharpen: upscaleSharpenStops,
+    // What RCAS is really running at, and whether anything named it: unasked,
+    // the stops follow the factor above.
+    sharpen: upscaleSharpenStopsLive(),
+    sharpenPinned: upscaleSharpenPinned,
     passes: {
       easu: upscalePass?.enabled ?? false,
       rcas: sharpenPass?.enabled ?? false,
@@ -1830,8 +1857,8 @@ function installDevHooks() {
     pinRatio: (ratio: number | null) => devPinPixelRatio(ratio),
     /** Every surface a frame is drawn into, in device pixels (the perf sweep installs the same under `?perf=1`; here for any harness). */
     perfTargets: () => devRenderTargets(),
-    /** The resample, live (app/UpscalePass.ts): `ratio` = the scene ratio (null = the level's own), `sharpen` = RCAS stops (null = RCAS off), `filter` = 'easu' | 'bilinear' (the upscale control arm) or 'box' | 'tent' (the downsample A/B). No argument reads; null hands the ratio back to the quality level. Returns where it stands. */
-    upscale: (opts?: { ratio?: number | null; sharpen?: number | null; filter?: UpscaleFilter | DownsampleFilter } | null) => {
+    /** The resample, live (app/UpscalePass.ts): `ratio` = the scene ratio (null = the level's own), `sharpen` = RCAS stops (null = RCAS off, `'auto'` back to the factor's own measured stops), `filter` = 'easu' | 'bilinear' (the upscale control arm) or 'box' | 'tent' (the downsample A/B). No argument reads; null hands the ratio back to the quality level. Returns where it stands. */
+    upscale: (opts?: { ratio?: number | null; sharpen?: number | null | 'auto'; filter?: UpscaleFilter | DownsampleFilter } | null) => {
       if (opts !== undefined) {
         if (opts === null || opts.ratio === null) {
           // The ratio goes back to the quality level.
@@ -1842,7 +1869,13 @@ function installDevHooks() {
           upscalePinRatio = opts.ratio;
         }
         if (opts !== null) {
-          if (opts.sharpen !== undefined) upscaleSharpenStops = opts.sharpen;
+          // Naming the stops pins them; 'auto' hands them back to the factor.
+          if (opts.sharpen === 'auto') {
+            upscaleSharpenPinned = false;
+          } else if (opts.sharpen !== undefined) {
+            upscaleSharpenStops = opts.sharpen;
+            upscaleSharpenPinned = true;
+          }
           if (opts.filter === 'box' || opts.filter === 'tent') downsampleFilter = opts.filter;
           else if (opts.filter !== undefined) upscaleFilter = opts.filter;
         }

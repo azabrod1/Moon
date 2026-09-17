@@ -64,13 +64,18 @@
 
 /**
  * RCAS's default sharpness, in stops below maximum (0 = sharpest; each stop
- * halves). One stop: the value at which the upscaled frame's edge energy
- * (mean gradient of luma) matches the native 2× frame it replaces — 1.02×
- * on Earth's whole disc, 1.00× at a close pass over the limb, measured on a
- * 430×932 @2 capture (planning/_upscale-stops.mjs). The reference's usual
- * 0.2 reads 1.22× native, visibly crisper than the frame it stands in for;
- * EASU alone reads 0.93×. Stars are untouched by any of it: an isolated
- * point on a black ring is exactly what RCAS's limiter holds at zero.
+ * halves), at the factor it was matched at: a scene drawn at 1.5 under a
+ * canvas at 2, which is a factor of 4/3. One stop is the value at which the
+ * upscaled frame's edge energy (mean gradient of luma) matches the native 2×
+ * frame it replaces — 1.02× on Earth's whole disc, 1.00× at a close pass over
+ * the limb, measured on a 430×932 @2 capture (planning/_upscale-stops.mjs).
+ * The reference's usual 0.2 reads 1.22× native, visibly crisper than the
+ * frame it stands in for; EASU alone reads 0.93×. Stars are untouched by any
+ * of it: an isolated point on a black ring is exactly what RCAS's limiter
+ * holds at zero.
+ *
+ * It is the default in the sense of "the value a factor of 4/3 takes";
+ * rcasStopsForFactor below is what a shallower rung takes.
  */
 export const RCAS_DEFAULT_STOPS = 1;
 
@@ -80,6 +85,49 @@ export const RCAS_DEFAULT_STOPS = 1;
  */
 export function rcasSharpness(stops: number): number {
   return Math.pow(2, -Math.max(0, stops));
+}
+
+/**
+ * The two upscale factors RCAS's stops have been MEASURED at, each by the
+ * same method: sweep the stops at a fixed pose and take the arm whose edge
+ * energy over the whole frame matches the native frame it replaces
+ * (planning/_upscale-stops.mjs captures, planning/_upscale-stats.mjs reads).
+ *
+ * At 4/3 — Low on a 2× phone, and the factor the sweep was first run at —
+ * that is one stop: 0.97× and 0.99× of native over the frame at the two
+ * poses, 1.02× and 1.01× over Earth's disc.
+ *
+ * At 1.15 — Dynamic's first rung down — it is 1.6 stops: 0.999× of native
+ * over the frame at BOTH poses, 1.026× and 1.003× over the disc. One stop
+ * there reads 1.046× and 1.059× over the frame, i.e. five per cent SHARPER
+ * than the frame it stands in for, which is a visible pop in the wrong
+ * direction on a step whose whole point is to be invisible. (Measured
+ * 2026-09-17 at scene 1.739 under a canvas at 2, the same 430×932 @2
+ * capture, over the whole-disc and close-limb poses.)
+ */
+export const RCAS_MEASURED_POINTS: readonly { factor: number; stops: number }[] = [
+  { factor: 1.15, stops: 1.6 },
+  { factor: 4 / 3, stops: RCAS_DEFAULT_STOPS },
+];
+
+/**
+ * RCAS's stops for the factor a frame is actually being upscaled by.
+ *
+ * One stop is not one answer. The sharpen exists to put back what EASU took
+ * out, and EASU takes out less the shallower the upscale — 0.94× of native at
+ * factor 1.15 against 0.88× at 4/3 — so the stop matched at 4/3 over-sharpens
+ * at a shallower rung. Linear between the two measured factors, and held flat
+ * outside them: below 1.15 no arm has been looked at and the shallower
+ * measurement is the softer, safer end of the two, and above 4/3 (only a DEV
+ * `?upscale=` reaches it) the measured stop stands rather than an
+ * extrapolation nobody has seen.
+ */
+export function rcasStopsForFactor(factor: number): number {
+  const [low, high] = RCAS_MEASURED_POINTS;
+  if (!Number.isFinite(factor) || factor <= low.factor) return low.stops;
+  if (factor >= high.factor) return high.stops;
+  const t = (factor - low.factor) / (high.factor - low.factor);
+  return low.stops + t * (high.stops - low.stops);
 }
 
 /**

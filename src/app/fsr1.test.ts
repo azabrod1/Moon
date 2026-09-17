@@ -6,6 +6,7 @@ import {
   RCAS_FRAGMENT_SHADER,
   easuConstants,
   rcasSharpness,
+  rcasStopsForFactor,
 } from './fsr1';
 
 describe('easuConstants', () => {
@@ -41,6 +42,53 @@ describe('rcasSharpness', () => {
 
   it('never sharpens past the maximum', () => {
     expect(rcasSharpness(-3)).toBe(1);
+  });
+});
+
+describe('rcasStopsForFactor', () => {
+  it('gives each measured factor the stops it was measured at', () => {
+    // 4/3 is Low on a 2x phone (scene 1.5) and a 1x desktop (scene 0.75).
+    expect(rcasStopsForFactor(4 / 3)).toBe(RCAS_DEFAULT_STOPS);
+    // 1.15 is Dynamic's first rung down, where one stop reads five per cent
+    // sharper than the frame it replaces.
+    expect(rcasStopsForFactor(1.15)).toBeCloseTo(1.6, 12);
+  });
+
+  it('interpolates between them: the second rung down is a hair over one stop', () => {
+    // The rung at 1/1.33 of the output ratio, which is a factor of 1.33 —
+    // just under the 4/3 the stop was matched at.
+    expect(rcasStopsForFactor(1.33)).toBeCloseTo(1.011, 3);
+    // The midpoint of the two factors is the midpoint of the two stops.
+    const mid = (1.15 + 4 / 3) / 2;
+    expect(rcasStopsForFactor(mid)).toBeCloseTo((1.6 + RCAS_DEFAULT_STOPS) / 2, 12);
+  });
+
+  it('holds flat outside the measured range rather than extrapolating', () => {
+    // Below the shallowest measurement: the softer end, not a sharpen nobody
+    // has looked at.
+    expect(rcasStopsForFactor(1.05)).toBe(1.6);
+    expect(rcasStopsForFactor(1)).toBe(1.6);
+    // Above the deepest: EASU's stated limit is 2x and only a DEV pin reaches
+    // past 4/3, so the measured stop stands.
+    expect(rcasStopsForFactor(1.5)).toBe(RCAS_DEFAULT_STOPS);
+    expect(rcasStopsForFactor(2)).toBe(RCAS_DEFAULT_STOPS);
+  });
+
+  it('never sharpens more at a shallower upscale', () => {
+    let previous = Infinity;
+    for (let factor = 1; factor <= 2.001; factor += 0.01) {
+      const stops = rcasStopsForFactor(factor);
+      expect(stops).toBeLessThanOrEqual(previous + 1e-12);
+      previous = stops;
+    }
+  });
+
+  it('answers the numbers a division by a degenerate ratio can produce', () => {
+    // Nothing finite to interpolate on: the softest measured end, which
+    // sharpens least and cannot pop.
+    expect(rcasStopsForFactor(Number.NaN)).toBe(1.6);
+    expect(rcasStopsForFactor(Number.POSITIVE_INFINITY)).toBe(1.6);
+    expect(rcasStopsForFactor(0)).toBe(1.6);
   });
 });
 

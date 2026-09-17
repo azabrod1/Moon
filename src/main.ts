@@ -396,7 +396,12 @@ function setQualityLevel(level: QualityLevel): void {
  * supersample at Earth's shell.
  */
 function getTilePixelRatio(): number {
-  return qualityLevel === 'high' ? getScenePixelRatio() : getTargetPixelRatio();
+  // High's own bound rather than the live scene ratio, so a measurement pin
+  // moves the scene ratio and nothing else: `?upscale=1.5` at High would
+  // otherwise ask the streamer for a COARSER tier than Medium draws, which is
+  // a picture cut no measurement is allowed to make.
+  if (upscalePinned || qualityLevel !== 'high') return getTargetPixelRatio();
+  return qualityBoundsLive.high;
 }
 
 /** Where graphics quality stands: the level, the rung, what this display

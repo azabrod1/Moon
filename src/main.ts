@@ -1808,6 +1808,9 @@ function installDevHooks() {
       if (opts === null) {
         exposurePin = null;
         pixelRatioPin = null;
+        // The same pin `pinRatio` writes: Dynamic must step back in when it
+        // is released, exactly as it stepped out when it was set.
+        refreshQualityPin();
         applyRenderResolution();
         return { near: planetariumCamera.near, exposure: exposureCurrent, pixelRatio: renderer.getPixelRatio() };
       }
@@ -1818,6 +1821,10 @@ function installDevHooks() {
       if (typeof opts.exposure === 'number') exposurePin = opts.exposure;
       if (typeof opts.pixelRatio === 'number' && opts.pixelRatio > 0) {
         pixelRatioPin = opts.pixelRatio;
+        // A pinned output ratio is a measurement, and a capture harness that
+        // pins one must not be measuring a live rule: Dynamic steps out of
+        // the way here as it does for `pinRatio`.
+        refreshQualityPin();
         applyRenderResolution();
       }
       return {

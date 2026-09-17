@@ -633,7 +633,15 @@ function qualitySteps({ id, where, device, levels, boot = '&quality=medium', inj
       }))} radii`);
       note(`sectors before the steps: ${JSON.stringify(await page.evaluate(() => window.__moon.sectors()))}`);
       await mark(page, 'steps');
-      probe = await page.evaluate(async ({ wanted, holdMs, budgetMs, injectKinds, injectNames }) => {
+      probe = await page.evaluate(async ({ wanted, holdMs, injectKinds, injectNames }) => {
+        // The budget and the window length come from the RULE, never from a
+        // constant here: the Frame rate row moves both, and a stream injected
+        // at 60 fps into a rule holding 30 would be evidence about another
+        // question — and 600 samples would not fill the up window a 120 fps
+        // target asks for.
+        const live = window.__moon.quality();
+        const budgetMs = live.budgetMs;
+        const upCounted = live.upCounted;
         const nap = (ms) => new Promise((r) => { setTimeout(r, ms); });
         // The second reading: when each frame's callback actually RAN.
         const entries = [];
@@ -694,15 +702,17 @@ function qualitySteps({ id, where, device, levels, boot = '&quality=medium', inj
           await nap(holdMs);
           const kind = injectKinds[i];
           const base = ruleClockMs;
-          // Down: 200 intervals at 30 ms, over budget with an idle main
-          // thread, which is what a GPU-bound frame looks like. Up: 600 clean
-          // ones at half the budget, past the probe wait in the rule's clock.
-          // The up stream carries 800 clean intervals, not the 480 the rule
-          // needs, because the step lands inside the stream and its
+          // Down: a window and a bit of intervals at 1.8x the budget, over it
+          // with an idle main thread, which is what a GPU-bound frame looks
+          // like. Up: clean ones at half the budget, past the probe wait in
+          // the rule's clock. The up stream carries about 1.7 windows, not
+          // one, because the step lands inside the stream and its
           // verification window has to close inside it too — a verification
           // still open when the next stream arrives is resolved by THAT
           // stream's evidence, and the step it was asked for never happens.
-          const samples = kind === 'down' ? stream(base, 200, 30) : stream(base, 800, budgetMs / 2);
+          const samples = kind === 'down'
+            ? stream(base, Math.max(200, Math.round(live.downCounted * 1.2)), budgetMs * 1.8)
+            : stream(base, Math.round(upCounted * 1.7), budgetMs / 2);
           // Past the session ceiling's own hold in the rule's clock, so each
           // stream is judged on its own evidence and not on what the last one
           // latched.
@@ -713,7 +723,7 @@ function qualitySteps({ id, where, device, levels, boot = '&quality=medium', inj
         running = false;
         return { steps, entries };
       }, {
-        wanted: levels, holdMs: 4_000, budgetMs: 1000 / 60,
+        wanted: levels, holdMs: 4_000,
         injectKinds: injects, injectNames: injectMarks,
       });
       for (const s of probe.steps) {
@@ -814,6 +824,255 @@ function qualitySteps({ id, where, device, levels, boot = '&quality=medium', inj
       analysis.stepPhaseLongTaskMaxMs = round2(worstTaskMs);
       if (worstTaskMs > LONG_TASK_MS) {
         problems.push(`a ${round2(worstTaskMs)} ms long task ran during the stepping phase`);
+      }
+      return problems;
+    },
+  };
+}
+
+
+/**
+ * Does the Frame rate row deliver the rate it says?
+ *
+ * Every other scenario here asks what the app does to the frames it is given.
+ * This one asks what the app does with the frames it CHOOSES to draw: parked
+ * at Earth's shell under an explicit `?fps=`, it reads the app's own draw log
+ * — the timestamp of every drawn frame — and checks the intervals against the
+ * period the schedule derived, the count against the wall clock, and the word
+ * on the debug line against the same arithmetic done here rather than read
+ * back from the app.
+ *
+ * The alternation matters as much as the mean. A schedule that chased a
+ * deadline on WebKit's timestamps drew 16 ms and 50 ms alternately at a 30
+ * target while averaging 33, which is worse to look at than an honest 20 fps;
+ * so every interval is checked, not the average.
+ *
+ * Run it with `--extra='&fps=30'` (or 60, or 120), and with `&refresh=120`
+ * beside it to ask what a fast display would do on a 60 Hz machine.
+ */
+function fpsPacing({ id, where, device, boot = '' }) {
+  let probe = null;
+  return {
+    id,
+    title: `Frame rate: the draws land on the period, at Earth's shell, ${where}`,
+    device,
+    window: ['paced'],
+    async run(page, note) {
+      note(`renderer: ${await bootTo(page, boot, 120)}`);
+      await sleep(2_000);
+      await page.evaluate(() => window.__moon.jumpTo('Earth', 0.13125));
+      await sleep(3_000);
+      // The tiles land before the measured window: an upload beside a draw
+      // would be charged to the pacing.
+      await page.evaluate(async () => {
+        const nap = (ms) => new Promise((r) => { setTimeout(r, ms); });
+        const deadline = performance.now() + 60_000;
+        for (;;) {
+          const st = window.__moon.sectors?.();
+          if (!st || st.inflight === 0 || performance.now() > deadline) break;
+          await nap(250);
+        }
+        await nap(5_000);
+      });
+      const fpsBefore = await page.evaluate(() => window.__moon.quality().fps);
+      note(`schedule: ${JSON.stringify(fpsBefore)}`);
+      await mark(page, 'paced');
+      // Ten seconds, measured inside the page: a round trip would put a frame
+      // of the harness's own making inside the window being measured.
+      probe = await page.evaluate(async (holdMs) => {
+        const nap = (ms) => new Promise((r) => { setTimeout(r, ms); });
+        const from = window.__moon.quality().fps.drawSeq;
+        const startedAtMs = performance.now();
+        await nap(holdMs);
+        const endedAtMs = performance.now();
+        const fps = window.__moon.quality().fps;
+        return {
+          wallMs: endedAtMs - startedAtMs,
+          draws: fps.drawSeq - from,
+          fps,
+          log: window.__moon.drawLog(1200),
+        };
+      }, 10_000);
+      note(`drew ${probe.draws} frames in ${round2(probe.wallMs)} ms`
+        + ` (${round1((probe.draws * 1000) / probe.wallMs)}/s)`);
+    },
+    verify(analysis) {
+      const problems = [];
+      if (!probe) return ['the pacing probe never ran'];
+      const fps = probe.fps;
+      const period = fps.periodMs;
+      // Only the log inside the measured window, and only its intervals.
+      const log = probe.log.filter((d) => d.t >= probe.log[0].t);
+      const intervals = log.slice(1).map((d, i) => d.t - log[i].t);
+      const inWindow = intervals.slice(-Math.round(probe.draws));
+      const worst = inWindow.reduce((m, v) => Math.max(m, Math.abs(v - period)), 0);
+      const histogram = {};
+      for (const v of inWindow) {
+        const bucket = String(Math.round(v / 4) * 4);
+        histogram[bucket] = (histogram[bucket] ?? 0) + 1;
+      }
+      analysis.fps = {
+        requested: fps.requested,
+        idleCadenceMs: round2(fps.idleCadenceMs),
+        observedCadenceMs: fps.observedCadenceMs === null ? null : round2(fps.observedCadenceMs),
+        ticksPerDraw: fps.ticksPerDraw,
+        periodMs: round2(period),
+        budgetMs: round2(fps.budgetMs),
+        capped: fps.capped,
+        held: fps.held,
+        draws: probe.draws,
+        wallMs: round2(probe.wallMs),
+        drawnRate: round1((probe.draws * 1000) / probe.wallMs),
+        worstDeviationMs: round2(worst),
+        intervals: {
+          min: round2(Math.min(...inWindow)),
+          max: round2(Math.max(...inWindow)),
+          histogram,
+        },
+      };
+      if (fps.held !== null) problems.push(`the cap was held open by ${fps.held} — nothing was paced`);
+      // Every interval within 4 ms of the period. A deadline-chasing schedule
+      // alternated 16 and 50 here.
+      if (worst > 4) {
+        problems.push(`a draw interval was ${round2(worst)} ms off the ${round2(period)} ms period`
+          + ` (min ${round2(Math.min(...inWindow))}, max ${round2(Math.max(...inWindow))})`);
+      }
+      // The count, within 3 %.
+      const expected = probe.wallMs / period;
+      const off = Math.abs(probe.draws - expected) / expected;
+      if (off > 0.03) {
+        problems.push(`drew ${probe.draws} frames where the period says ${Math.round(expected)}`
+          + ` (${round1(off * 100)} % off)`);
+      }
+      // The capped word, derived here rather than read back from the app.
+      const asked = fps.requested === 'screen' ? null : 1000 / fps.requested;
+      const expectedWord = asked === null
+        ? 'no'
+        : fps.ticksPerDraw === 1 && fps.observedCadenceMs !== null
+          && fps.observedCadenceMs > fps.idleCadenceMs * 1.1 && fps.observedCadenceMs > asked * 1.05
+          ? 'by the browser'
+          : fps.ticksPerDraw === 1 && fps.idleCadenceMs > asked * 1.05
+            ? 'by the screen'
+            : Math.abs(period - asked) > asked * 0.02 ? 'rounded' : 'no';
+      if (fps.capped !== expectedWord) {
+        problems.push(`the debug line says "${fps.capped}" where the schedule's own numbers say`
+          + ` "${expectedWord}"`);
+      }
+      return problems;
+    },
+  };
+}
+
+/**
+ * A throttle entered mid-session — Low Power Mode, the iOS thermal cap, a
+ * GPU-bound stretch — with a frame-rate target standing.
+ *
+ * The defect this exists for: a counter that divided the CALIBRATED refresh
+ * would multiply the throttle by its own divisor, so a 60 Hz session
+ * throttled to 30 callbacks a second would draw 15 at a 30 target and the
+ * rule would then read 66 ms intervals against a 33 ms budget and slide the
+ * picture down two rungs on top of it.
+ *
+ * The throttle is the app's own callbacks halved, installed before the app
+ * loads and armed once it is parked, so the boot calibrates at the display's
+ * real rate and the change is genuinely mid-session. Halving the delivery
+ * costs no main-thread time, which is what a throttle from outside the app
+ * looks like from in here.
+ */
+function fpsThrottle({ id, where, device, boot = '&fps=30' }) {
+  let probe = null;
+  return {
+    id,
+    title: `Frame rate: a mid-session callback throttle, ${where}`,
+    device,
+    window: ['throttled'],
+    async run(page, note) {
+      await page.addInitScript(() => {
+        const real = window.requestAnimationFrame.bind(window);
+        window.__halveRaf = false;
+        window.requestAnimationFrame = (cb) => {
+          let pending = false;
+          const step = (t) => {
+            if (window.__halveRaf && !pending) {
+              pending = true;
+              real(step);
+              return;
+            }
+            pending = false;
+            cb(t);
+          };
+          return real(step);
+        };
+      });
+      note(`renderer: ${await bootTo(page, boot, 120)}`);
+      await sleep(2_000);
+      await page.evaluate(() => window.__moon.jumpTo('Earth', 0.13125));
+      await sleep(3_000);
+      await page.evaluate(async () => {
+        const nap = (ms) => new Promise((r) => { setTimeout(r, ms); });
+        const deadline = performance.now() + 60_000;
+        for (;;) {
+          const st = window.__moon.sectors?.();
+          if (!st || st.inflight === 0 || performance.now() > deadline) break;
+          await nap(250);
+        }
+        await nap(5_000);
+      });
+      await mark(page, 'throttled');
+      probe = await page.evaluate(async (holdMs) => {
+        const nap = (ms) => new Promise((r) => { setTimeout(r, ms); });
+        const before = window.__moon.quality();
+        window.__halveRaf = true;
+        // Long enough for the delivered-cadence window to see the throttle
+        // and for the rule to have assembled a window of its own.
+        await nap(4_000);
+        const fromDraw = window.__moon.quality().fps.drawSeq;
+        const startedAtMs = performance.now();
+        await nap(holdMs);
+        const after = window.__moon.quality();
+        window.__halveRaf = false;
+        return {
+          before: { rung: before.rung, sceneRatio: before.sceneRatio, fps: before.fps },
+          after: { rung: after.rung, sceneRatio: after.sceneRatio, fps: after.fps, lastStep: after.lastStep },
+          wallMs: performance.now() - startedAtMs,
+          draws: after.fps.drawSeq - fromDraw,
+        };
+      }, 8_000);
+      note(`throttled: ${probe.draws} draws in ${round2(probe.wallMs)} ms`
+        + ` (${round1((probe.draws * 1000) / probe.wallMs)}/s)`);
+    },
+    verify(analysis) {
+      const problems = [];
+      if (!probe) return ['the throttle probe never ran'];
+      const rate = (probe.draws * 1000) / probe.wallMs;
+      const asked = probe.before.fps.requested === 'screen' ? 60 : probe.before.fps.requested;
+      analysis.fpsThrottle = {
+        requested: probe.before.fps.requested,
+        idleBefore: round2(probe.before.fps.idleCadenceMs),
+        idleAfter: round2(probe.after.fps.idleCadenceMs),
+        observedAfter: probe.after.fps.observedCadenceMs === null
+          ? null : round2(probe.after.fps.observedCadenceMs),
+        ticksBefore: probe.before.fps.ticksPerDraw,
+        ticksAfter: probe.after.fps.ticksPerDraw,
+        rungBefore: probe.before.rung,
+        rungAfter: probe.after.rung,
+        drawnRate: round1(rate),
+        lastStep: probe.after.lastStep,
+      };
+      // The draws hold the rate the stream can still carry, not half of it.
+      if (rate < asked * 0.85) {
+        problems.push(`drew ${round1(rate)}/s under the throttle where ${asked} was asked for`
+          + ` — the cap multiplied the throttle instead of absorbing it`);
+      }
+      // The calibration is the DISPLAY, and a throttle is not the display.
+      const drift = Math.abs(probe.after.fps.idleCadenceMs - probe.before.fps.idleCadenceMs);
+      if (drift > 0.5) {
+        problems.push(`idleCadenceMs moved ${round2(drift)} ms under a throttle`
+          + ' — a slower stream is load, never the display');
+      }
+      // And the picture stays where it was.
+      if (probe.after.rung !== probe.before.rung) {
+        problems.push(`the rung moved ${probe.before.rung} -> ${probe.after.rung} under the throttle`);
       }
       return problems;
     },
@@ -1262,6 +1521,26 @@ const SCENARIOS = [
     injects: ['down', 'up', 'down', 'up'],
     everyStepMoves: true,
   }),
+  // Ask for a rate with --extra='&fps=30' (or 60, or 120), and add
+  // '&refresh=120' to ask what a fast display would do on this machine.
+  fpsPacing({
+    id: 'fps-pacing',
+    where: 'Mac window (1728x1117 @2)',
+    device: MAC_WINDOW,
+    boot: '&quality=medium',
+  }),
+  fpsPacing({
+    id: 'phone-fps-pacing',
+    where: 'phone (430x932 @3)',
+    device: PHONE,
+    boot: '&quality=medium',
+  }),
+  fpsThrottle({
+    id: 'fps-throttle',
+    where: 'Mac window (1728x1117 @2), 30 fps asked for',
+    device: MAC_WINDOW,
+    boot: '&quality=dynamic&fps=30',
+  }),
 ];
 
 // ------------------------------------------------------------------ analysis
@@ -1300,7 +1579,27 @@ function percentile(sortedAsc, fraction) {
 const round2 = (v) => Math.round(v * 100) / 100;
 
 function analyze(trace, scenario, notes) {
-  const { gapMs, causeMask, atMs, events, longTasks, heapMB } = trace;
+  const { causeMask, atMs, events, longTasks, heapMB } = trace;
+  // Which callbacks DREW. With the Frame rate row at a target the app
+  // presents on some callbacks and not others, and a stream of smooth 16.7 ms
+  // ticks says nothing about a picture running at 30 — so a capped run is
+  // scored on the intervals between the frames a person saw, and the fixed
+  // p99 budget follows the run's own frame rather than 60 fps.
+  const drew = trace.drew ?? null;
+  const capped = drew ? drew.some((d) => d === false) : false;
+  let gapMs = trace.gapMs;
+  if (capped) {
+    const drawGaps = new Array(trace.gapMs.length).fill(null);
+    let lastDrawAtMs = null;
+    for (let i = 0; i < drew.length; i++) {
+      if (!drew[i]) continue;
+      if (lastDrawAtMs !== null) drawGaps[i] = round2(atMs[i] - lastDrawAtMs);
+      lastDrawAtMs = atMs[i];
+    }
+    gapMs = drawGaps;
+    notes.push(`the run is capped: ${drew.filter(Boolean).length} of ${drew.length} callbacks drew,`
+      + ' and every gap below is draw to draw');
+  }
   const windows = veilWindows(causeMask);
   const revealEvent = events.find((e) => e.kind === 'mark' && e.name === 'reveal');
   const revealFrame = revealEvent ? revealEvent.frame : 0;
@@ -1426,7 +1725,11 @@ function analyze(trace, scenario, notes) {
     failures.push(`${over2x} frame(s) over two vsyncs (${twoVsyncMs} ms) outside veils,`
       + ` ${over4x} of them over four (${fourVsyncMs} ms), worst ${maxMs} ms`);
   }
-  if (p99 > P99_BUDGET_MS) failures.push(`p99 ${p99} ms over the ${P99_BUDGET_MS} ms budget`);
+  // 20 ms against a 16.7 ms frame is a fifth of a frame of tail. Under a cap
+  // the same claim has to be made against the frame the app is drawing, or a
+  // 30 fps target would be red by construction.
+  const p99BudgetMs = capped ? round2(vsyncMs * (P99_BUDGET_MS / (1000 / 60))) : P99_BUDGET_MS;
+  if (p99 > p99BudgetMs) failures.push(`p99 ${p99} ms over the ${p99BudgetMs} ms budget`);
   if (maxTaskMs > LONG_TASK_MS) {
     failures.push(`${tasksOutside.filter((t) => t.durationMs > LONG_TASK_MS).length} long task(s)`
       + ` over ${LONG_TASK_MS} ms after reveal, worst ${round2(maxTaskMs)} ms`);
@@ -1452,6 +1755,11 @@ function analyze(trace, scenario, notes) {
     revealFrame,
     revealAtMs,
     scoredFrames: gaps.length,
+    /** Whether the app skipped any callback: a capped run is read draw to
+     *  draw, and says so. */
+    capped,
+    drawnFrames: drew ? drew.filter(Boolean).length : gapMs.length,
+    p99BudgetMs,
     veiledFrames: veiled.length,
     veilWindows: windows.length,
     veilMsTotal: round2(veilSpans.reduce((a, [x, y]) => a + (y - x), 0)),

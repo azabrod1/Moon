@@ -291,9 +291,16 @@ try {
   // for a while before anything is captured.
   const WARM_MS = Number(arg('warm', '25000'));
 
+  // Settle on DRAWS, not on callbacks. Under a frame-rate target (`?fps=`)
+  // some callbacks present nothing at all, so waiting two of them can capture
+  // a frame the app has not finished changing; `waitForDraw` waits for the
+  // world to be drawn twice. It falls back to the two-rAF wait on a build
+  // that has no such hook.
   const settleFrames = async (n = 4) => {
     for (let i = 0; i < n; i++) {
-      await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      await page.evaluate(() => (window.__moon.waitForDraw
+        ? window.__moon.waitForDraw(2)
+        : new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))));
     }
   };
 

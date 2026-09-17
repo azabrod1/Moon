@@ -309,41 +309,49 @@ describe('an up probe and its verification', () => {
     expect(state.ceiling?.untilMs).toBeCloseTo((revert?.atMs ?? 0) + CEILING_HOLD_MS, -1);
   });
 
-  it('backs off 8, 16, 32, 64 seconds and no further', () => {
+  it('backs off 8 seconds then 16, and a second failure at the same rung ends it for the session', () => {
     const rig = new Rig(new ResolutionController(MAC_LADDER));
     const waits: number[] = [];
     for (let i = 0; i < 6; i++) {
       rig.run(8000, (rung) => (rung > MAC_LADDER.mediumIndex ? 2 * TICK : TICK));
       waits.push(rig.controller.state().probeWaitMs);
     }
-    expect(waits[waits.length - 1]).toBe(64_000);
-    expect(Math.max(...waits)).toBe(64_000);
+    // Two probes, two reverts, and then nothing: the second failure at the
+    // same rung says this configuration does not have it.
+    expect(rig.applied.filter((a) => a.reason === 'up')).toHaveLength(2);
+    expect(rig.applied.filter((a) => a.reason === 'revert')).toHaveLength(2);
+    // 8 s, doubled once per failure, and the backoff never gets a third
+    // failure to double on.
+    expect(Math.max(...waits)).toBe(4 * PROBE_WAIT_MS);
+    expect(rig.controller.state().sessionCeiling).toBe(MAC_LADDER.mediumIndex + 1);
     expect(rig.rung).toBe(MAC_LADDER.mediumIndex);
+  });
+
+  it('a budget change clears the session ceiling, because it was a ceiling for another question', () => {
+    const rig = new Rig(new ResolutionController(MAC_LADDER));
+    rig.run(24_000, (rung) => (rung > MAC_LADDER.mediumIndex ? 2 * TICK : TICK));
+    expect(rig.controller.state().sessionCeiling).toBe(MAC_LADDER.mediumIndex + 1);
+    rig.controller.setBudget(1000 / 30, rig.nowMs, { cause: 'user' });
+    expect(rig.controller.state().sessionCeiling).toBeNull();
   });
 });
 
-describe('UP_RULE', () => {
+describe('the up path on a fast display', () => {
   /** A 120 Hz machine: medium fits inside one vsync, anything sharper needs
-   *  two. */
+   *  two. At the default budget it is meant to spend the refresh rate for the
+   *  sharper picture — which rate it runs at is the Frame rate row's
+   *  question. */
   const machine = (rung: number): number => (rung > MAC_LADDER.mediumIndex ? TICK : TICK_120);
 
-  it("'sixty' spends the refresh rate for the sharper picture and settles at the top", () => {
-    const rig = new Rig(new ResolutionController(MAC_LADDER, { upRule: 'sixty' }));
+  it('climbs to the sharpest rung and settles there', () => {
+    const rig = new Rig(new ResolutionController(MAC_LADDER));
     rig.run(6000, machine);
     expect(rig.rung).toBe(MAC_LADDER.rungs.length - 1);
     expect(rig.applied.filter((a) => a.reason === 'revert')).toEqual([]);
   });
 
-  it("'panel' keeps 120 fps at medium instead", () => {
-    const rig = new Rig(new ResolutionController(MAC_LADDER, { upRule: 'panel' }));
-    rig.run(6000, machine);
-    expect(rig.rung).toBe(MAC_LADDER.mediumIndex);
-    expect(rig.applied.filter((a) => a.reason === 'revert').length).toBeGreaterThanOrEqual(1);
-    expect(rig.controller.state().panelPeriodMs).toBeCloseTo(TICK_120, 2);
-  });
-
-  it("'panel' still steps down on the 60 fps budget, not on the panel's period", () => {
-    const rig = new Rig(new ResolutionController(PHONE_LADDER, { upRule: 'panel' }));
+  it('steps down on the budget, not on the panel period', () => {
+    const rig = new Rig(new ResolutionController(PHONE_LADDER));
     // A 120 Hz phone panel delivering two ticks: 60 fps, which is fine.
     rig.run(1200, () => TICK);
     expect(rig.applied).toEqual([]);
@@ -438,11 +446,14 @@ describe('diagnosis', () => {
     expect(state.trimmedMeanMs).toBeNull();
   });
 
-  it('reports the window, the ladder and the rule it is running', () => {
-    const rig = new Rig(new ResolutionController(MAC_LADDER, { upRule: 'panel' }));
+  it('reports the window, the ladder and the budget it is running', () => {
+    const rig = new Rig(new ResolutionController(MAC_LADDER));
     rig.run(300, () => TICK);
     const state = rig.controller.state();
-    expect(state.upRule).toBe('panel');
+    expect(state.budgetMs).toBeCloseTo(BUDGET_MS, 6);
+    expect(state.downCounted).toBe(DOWN_WINDOW_COUNTED);
+    expect(state.upCounted).toBe(UP_WINDOW_COUNTED);
+    expect(state.sessionCeiling).toBeNull();
     expect(state.rung).toBe(2);
     expect(state.sceneRatio).toBe(2);
     expect(state.countedWindow).toBeGreaterThan(DOWN_WINDOW_COUNTED);
@@ -458,5 +469,192 @@ describe('diagnosis', () => {
     expect(rig.applied.map((a) => a.reason)).toEqual(['down']);
     expect(rig.controller.state().floorReference).toBeCloseTo(2 * TICK, 1);
     expect(rig.controller.state().lastStep).toMatchObject({ from: 2, to: 1, reason: 'down' });
+  });
+});
+
+// ---------------------------------------------------------------- the budget
+//
+// The Frame rate row moves what a frame is measured against. These pin what
+// that does to the windows, the boundaries and the evidence — and that at the
+// row's default nothing here is touched at all.
+
+/** Every boundary in the header derived from the rule itself, at a budget, by
+ *  bisection on the share of frames that come in a tick late. */
+function boundaryShare(
+  budgetMs: number,
+  refreshMs: number,
+  decide: (rig: Rig) => boolean,
+): number {
+  let low = 0;
+  let high = 1;
+  for (let step = 0; step < 18; step++) {
+    const p = (low + high) / 2;
+    const rig = new Rig(new ResolutionController(MAC_LADDER));
+    rig.controller.setBudget(budgetMs, 0, { cause: 'user', quantised: budgetMs > refreshMs * 1.5 });
+    // A deterministic share, not a random one: every 1/p-th frame is late by
+    // one refresh, which is what a vsync miss costs.
+    const every = p <= 0 ? Infinity : Math.round(1 / p);
+    rig.run(Math.round(60_000 / budgetMs), (_r, i) => (
+      every !== Infinity && i % every === every - 1 ? budgetMs + refreshMs : budgetMs
+    ));
+    if (decide(rig)) high = p;
+    else low = p;
+  }
+  return (low + high) / 2;
+}
+
+describe('the budget the Frame rate row sets', () => {
+  it('converts the windows from seconds, and 60 fps is today to the interval', () => {
+    const controller = new ResolutionController(MAC_LADDER);
+    expect(controller.state().downCounted).toBe(180);
+    expect(controller.state().upCounted).toBe(480);
+    const table: [number, number, number][] = [
+      [1000 / 60, 180, 480],
+      [1000 / 30, 90, 240],
+      [1000 / 120, 360, 960],
+      [1000 / 144, 432, 1152],
+      [1000 / 240, 720, 1920],
+    ];
+    for (const [budgetMs, down, up] of table) {
+      controller.setBudget(budgetMs, 0, { cause: 'user' });
+      expect([controller.state().downCounted, controller.state().upCounted]).toEqual([down, up]);
+    }
+  });
+
+  it('re-allocates the ring, so a 120 fps target can fill an up window at all', () => {
+    const rig = new Rig(new ResolutionController(MAC_LADDER));
+    rig.controller.setBudget(1000 / 120, 0, { cause: 'user', quantised: false });
+    expect(rig.controller.state().upCounted).toBe(960);
+    // The window has to be able to HOLD 960 intervals at 8.33 ms — with the
+    // 480-slot ring the default sizes, it never could, and a 120 fps target
+    // would have been unable to probe up at all.
+    rig.run(1000, () => 1000 / 240);
+    expect(rig.controller.state().countedWindow).toBeGreaterThanOrEqual(960);
+    // And past the probe wait it climbs.
+    rig.run(3000, () => 1000 / 240);
+    expect(rig.applied.map((a) => a.reason)).toContain('up');
+  });
+
+  it('derives its down and up boundaries at every budget', () => {
+    const rows: { budgetMs: number; refreshMs: number }[] = [
+      { budgetMs: 1000 / 60, refreshMs: 1000 / 60 },
+      { budgetMs: 1000 / 30, refreshMs: 1000 / 60 },
+      { budgetMs: 1000 / 120, refreshMs: 1000 / 120 },
+    ];
+    for (const row of rows) {
+      const down = boundaryShare(row.budgetMs, row.refreshMs,
+        (rig) => rig.applied.some((a) => a.reason === 'down'));
+      // The rule's own arithmetic: the trimmed mean passes DOWN_FACTOR of the
+      // budget when the share of late frames does.
+      const predicted = (DOWN_FACTOR - 1) * row.budgetMs / row.refreshMs;
+      expect(down).toBeGreaterThan(predicted * 0.7);
+      expect(down).toBeLessThan(predicted * 1.5);
+    }
+  });
+
+  it('holds still for five minutes at 28 ms against a 33 ms budget', () => {
+    // The phone interim: a fixed level plus a 30 fps target, with frames that
+    // fit the period. Nothing may oscillate.
+    const rig = new Rig(new ResolutionController(MAC_LADDER));
+    rig.controller.setBudget(1000 / 30, 0, { cause: 'user', quantised: true });
+    rig.run(Math.round(300_000 / (1000 / 30)), (rung) => (rung > MAC_LADDER.mediumIndex ? 40 : 1000 / 30), {
+      mainThreadMs: 5,
+      mainThreadSumMs: 9,
+    });
+    // At most one probe up and its revert, then quiet: the second failure at
+    // the same rung ends it for the session.
+    expect(rig.applied.filter((a) => a.reason === 'down')).toEqual([]);
+    expect(rig.applied.filter((a) => a.reason === 'up').length).toBeLessThanOrEqual(2);
+    expect(rig.rung).toBe(MAC_LADDER.mediumIndex);
+  });
+
+  it('climbs back out of Low at a 30 fps target once the device cools', () => {
+    const rig = new Rig(new ResolutionController(PHONE_LADDER));
+    rig.controller.setBudget(1000 / 30, 0, { cause: 'user', quantised: true });
+    // Hot, and pixel-bound: every rung down really is cheaper, so the slide
+    // reaches the floor and the floor check holds it there.
+    const hot = [1000 / 30, 42, 50];
+    rig.run(1200, (rung) => hot[rung], { mainThreadMs: 4, mainThreadSumMs: 8 });
+    expect(rig.rung).toBe(0);
+    expect(rig.controller.state().latch).toBeNull();
+    // Cooled: eight seconds of counted evidence plus the probe wait per rung
+    // gets the picture back, rather than never.
+    rig.run(3000, () => 1000 / 30, { mainThreadMs: 4, mainThreadSumMs: 8 });
+    expect(rig.rung).toBe(PHONE_LADDER.mediumIndex);
+  });
+
+  it('asks for headroom before probing up only where a draw covers several ticks', () => {
+    const busy = { mainThreadMs: 9, mainThreadSumMs: 25 };
+    // Quantised: 25 ms of main thread inside a 33 ms interval is no headroom.
+    const capped = new Rig(new ResolutionController(MAC_LADDER));
+    capped.controller.setBudget(1000 / 30, 0, { cause: 'user', quantised: true });
+    capped.run(1400, () => 1000 / 30, busy);
+    expect(capped.applied.filter((a) => a.reason === 'up')).toEqual([]);
+    // The same evidence with one draw per callback is the up path this branch
+    // has always had, and it probes.
+    const plain = new Rig(new ResolutionController(MAC_LADDER));
+    plain.controller.setBudget(1000 / 30, 0, { cause: 'user', quantised: false });
+    plain.run(1400, () => 1000 / 30, busy);
+    expect(plain.applied.map((a) => a.reason)).toContain('up');
+  });
+
+  it('takes the sum for headroom and the longest tick for exclusion', () => {
+    // A 15 ms drawn tick with three 2 ms skipped ticks behind it: max 15,
+    // sum 21. Over budget, the app can explain it, so it does not count.
+    const rig = new Rig(new ResolutionController(PHONE_LADDER));
+    rig.controller.setBudget(1000 / 30, 0, { cause: 'user', quantised: true });
+    rig.run(400, () => 45, { mainThreadMs: 15, mainThreadSumMs: 21 });
+    expect(rig.applied).toEqual([]);
+    expect(rig.controller.state().countedWindow).toBe(0);
+    // The same span with a 6 ms drawn tick is evidence, and steps down.
+    const counted = new Rig(new ResolutionController(PHONE_LADDER));
+    counted.controller.setBudget(1000 / 30, 0, { cause: 'user', quantised: true });
+    counted.run(400, () => 45, { mainThreadMs: 6, mainThreadSumMs: 12 });
+    expect(counted.applied.map((a) => a.reason)).toContain('down');
+  });
+
+  it('takes mainThreadMs as the sum where a caller gives only one figure', () => {
+    // The bridge shape a harness writes: one main-thread number per sample.
+    const rig = new Rig(new ResolutionController(MAC_LADDER));
+    rig.controller.setBudget(1000 / 30, 0, { cause: 'user', quantised: true });
+    rig.run(1400, () => 1000 / 30, { mainThreadMs: 25 });
+    expect(rig.applied.filter((a) => a.reason === 'up')).toEqual([]);
+  });
+});
+
+describe('what a budget change invalidates', () => {
+  it('drops the evidence and moves no rung', () => {
+    const rig = new Rig(new ResolutionController(PHONE_LADDER));
+    rig.run(170, () => 2 * TICK);
+    rig.controller.setBudget(1000 / 30, rig.nowMs, { cause: 'user' });
+    expect(rig.controller.state().countedWindow).toBe(0);
+    expect(rig.rung).toBe(PHONE_LADDER.mediumIndex);
+    expect(rig.applied).toEqual([]);
+  });
+
+  it('a USER change drops the not-pixel-bound latch; an AUTOMATIC one keeps it', () => {
+    const latched = (): Rig => {
+      const rig = new Rig(new ResolutionController(PHONE_LADDER));
+      // Slide to the floor on frames fewer pixels do not help, and be handed
+      // medium back with the latch.
+      rig.run(1500, () => 2 * TICK);
+      expect(rig.controller.state().latch).not.toBeNull();
+      return rig;
+    };
+    const auto = latched();
+    auto.controller.setBudget(1000 / 30, auto.nowMs, { cause: 'auto' });
+    expect(auto.controller.state().latch).not.toBeNull();
+    const user = latched();
+    user.controller.setBudget(1000 / 30, user.nowMs, { cause: 'user' });
+    expect(user.controller.state().latch).toBeNull();
+  });
+
+  it('null is the default budget, which is what Screen holds', () => {
+    const controller = new ResolutionController(MAC_LADDER);
+    controller.setBudget(1000 / 30, 0, { cause: 'user' });
+    expect(controller.state().budgetMs).toBeCloseTo(1000 / 30, 6);
+    controller.setBudget(null, 0, { cause: 'user' });
+    expect(controller.state().budgetMs).toBeCloseTo(BUDGET_MS, 6);
+    expect(controller.state().downCounted).toBe(DOWN_WINDOW_COUNTED);
   });
 });

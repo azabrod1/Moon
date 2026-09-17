@@ -54,9 +54,14 @@
  * planetarium's composer wants the warp and the other three do not, and bloom
  * can be off on any of them. There is one composer in the app, rebuilt per
  * camera, so a single memoised text would hand whichever mode was entered first
- * its own text to every later mode — and a warped text on a material with no
- * warp uniforms is a TypeError in three's uniform upload on that mode's first
- * render, not a wrong pixel. The texts are assembled on first use rather than
+ * its own text to every later mode. Nothing would break out loud: three uploads
+ * only the uniforms a material carries, so a warped text on a material with no
+ * warp uniforms reads a strength of zero and draws the plain read — Look inside
+ * would pay the Newton solve's branch for nothing, and a text with no glow line
+ * handed to a composer with a bloom chain would draw no glow at all, silently.
+ * A text per variant, and a wiring check that knows which edits each variant is
+ * made of, is what makes either mistake a failing test rather than a picture
+ * somebody has to notice. The texts are assembled on first use rather than
  * at module load: a module-level string edit is work a bundler keeps (built
  * eagerly, the replacements survived tree-shaking and shipped).
  */

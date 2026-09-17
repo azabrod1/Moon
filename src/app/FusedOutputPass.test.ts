@@ -23,8 +23,10 @@ describe('the finishing pass’s four shader texts', () => {
     // There is one composer in the app, rebuilt per camera: the planetarium
     // wants the warp and the other three modes do not. A single memoised text
     // would hand whichever mode was entered first its own text to every later
-    // one — and a warped text on a material with no warp uniforms is a
-    // TypeError inside three's uniform upload, not a soft wrong frame.
+    // one — silently: three uploads only the uniforms a material carries, so a
+    // warped text on a material without the warp uniforms draws the plain read
+    // at a strength of zero, and a text without the glow line on a composer
+    // with a bloom chain draws no glow at all.
     const texts = VARIANTS.map((v) => fusedFragmentText(v));
     expect(new Set(texts).size).toBe(4);
     for (const [i, variant] of VARIANTS.entries()) {

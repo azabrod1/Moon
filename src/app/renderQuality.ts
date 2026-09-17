@@ -340,6 +340,12 @@ export interface QualityControl {
   set(level: QualityLevel): void;
   /** What this display offers, `highOffered` included. */
   bounds(): QualityBounds;
+  /** What the scene-sized render targets really hold, in bytes: the size they
+   *  are ALLOCATED at, which under Dynamic is the ladder's top rung whatever
+   *  rung is being drawn (app/sceneSubRect.ts). The `?debug=1` memory line
+   *  reads it rather than deriving a figure from the drawing buffer, which
+   *  would report the rung and understate what the device is holding. */
+  targetBytes(): number;
 }
 
 /**

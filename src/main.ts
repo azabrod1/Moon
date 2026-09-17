@@ -36,11 +36,15 @@ import {
 } from './app/resolutionController';
 import { markPending, clearPending, pendingAtBoot, readQualityLevel, writeQualityLevel } from './app/qualitySetting';
 import {
+  HIGH_PASS_UV_ANCHOR, allocationSceneRatio, applySubRect, parseAllocParam, patchUvScale, sceneRects,
+  type SceneRects, type SubRectUniforms, type TargetSize,
+} from './app/sceneSubRect';
+import {
   classifyDevice, devEnvelopeOverride, deviceProfileFor, platformFamily, readDeviceSignals,
 } from './planetarium/world/gpuEnvelope';
 import { BootRenderGate } from './app/bootRenderGate';
 import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn } from './app/perfSwitches';
-import { holdBloomSize, setBloomInternalDepth } from './app/bloomTargets';
+import { bloomHighPassMaterial, holdBloomSize, setBloomInternalDepth } from './app/bloomTargets';
 import { devGlintUniforms, setDevOceanRoughness } from './planetarium/world/surfaceShading';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass } from './app/FusedOutputPass';
@@ -48,7 +52,7 @@ import type { GpuProfiler, GpuProfileOptions } from './app/devGpuProfile';
 import { ScreenCopy, canvasSampleCount, createScreenTarget, fitScreenTarget, screenTargetSamples } from './app/screenTarget';
 import { bitmapDecodePath } from './planetarium/world/textureBitmapLoader';
 import { BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
-import { createLensPass, devSetLensPassOff, updateLensPass, type LensParams } from './app/LensPass';
+import { createLensPass, devSetLensPassOff, lensSubRectUniforms, updateLensPass, type LensParams } from './app/LensPass';
 import { applyDesignFov, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
 import { loadBrightStarCatalog } from './planetarium/world/starCatalogLoader';
 import { debugError, debugLog, debugWarn } from './shared/debug';
@@ -221,6 +225,12 @@ let upscaleSharpenPinned = upscaleParam?.sharpen !== undefined;
 // one; `?downsample=tent` is the A/B, dev server only.
 let downsampleFilter: DownsampleFilter =
   import.meta.env.DEV && new URLSearchParams(location.search).get('downsample') === 'tent' ? 'tent' : 'box';
+/** Whether Dynamic allocates its scene-sized targets once at the ladder's top
+ *  rung and draws every rung into a sub-rectangle of them
+ *  (app/sceneSubRect.ts). `?alloc=0`, on any build, goes back to a
+ *  re-allocation on every rung change: the kill switch, and the A/B for a
+ *  sub-rect bug on a device that is not here. */
+const fixedSceneAllocation = parseAllocParam(location.search);
 
 // ================================================================
 // Graphics quality
@@ -281,14 +291,20 @@ let qualitySweepHold = false;
  * The level this boot runs at: the URL's word, else the saved setting, else
  * the default.
  *
- * `?quality=` is this boot's own instruction and wins outright. A SAVED level
- * goes through the boot-loop guard: a machine that cannot allocate what the
- * setting asks for would otherwise re-apply it on the reload after it died,
- * with no way out but clearing site data. So a saved non-default level is
- * written as a pending marker before it is applied, and the marker is cleared
- * the moment the first frame is live; a marker still standing at boot means
- * the last boot never reached a frame under it, so this one takes medium and
- * says which level it refused.
+ * `?quality=` is this boot's own instruction and wins outright. Every other
+ * level goes through the boot-loop guard: a machine that cannot allocate what
+ * the setting asks for would otherwise re-apply it on the reload after it
+ * died, with no way out but clearing site data. So the level is written as a
+ * pending marker before it is applied, and the marker is cleared the moment
+ * the first frame is live; a marker still standing at boot means the last boot
+ * never reached a frame under it, so this one takes medium and says which
+ * level it refused.
+ *
+ * The guard covers the DEFAULT, not just a saved choice: the default is
+ * Dynamic, and Dynamic now allocates its targets at the ladder's top rung
+ * (app/sceneSubRect.ts) — the largest allocation the app ever makes by itself.
+ * Medium is the one level left unmarked: it is what the guard falls back TO,
+ * and what it allocates is the floor every other level is measured from.
  */
 function resolveBootQualityLevel(): QualityLevel {
   const asked = parseQualityParam(location.search, import.meta.env.DEV);
@@ -298,10 +314,9 @@ function resolveBootQualityLevel(): QualityLevel {
     debugWarn(`The last boot never reached a frame at graphics quality "${stuck}" — this one draws at medium`);
     return 'medium';
   }
-  const saved = readQualityLevel();
-  if (saved === null) return DEFAULT_QUALITY;
-  if (saved !== DEFAULT_QUALITY) markPending(saved);
-  return saved;
+  const level = readQualityLevel() ?? DEFAULT_QUALITY;
+  if (level !== 'medium') markPending(level);
+  return level;
 }
 
 /** Everything the bounds depend on, read off the live display. */
@@ -335,9 +350,19 @@ function qualitySceneRatioRequest(): number | null {
   return Math.abs(ratio - qualityBoundsLive.medium) < 1e-9 ? null : ratio;
 }
 
-/** Write the one request every path reads: the measurement pin's ratio while
- *  one stands, else the level's own. */
+/** The boot warm-up's rung while it draws one (warmSceneAllocation), so the
+ *  covered frames really go through each resample path. Null at every other
+ *  moment of the session. */
+let sceneRatioWarm: number | null = null;
+
+/** Write the one request every path reads: the warm-up's rung while it holds
+ *  one, else the measurement pin's ratio while one stands, else the level's
+ *  own. */
 function updateSceneRatioRequest(): void {
+  if (sceneRatioWarm !== null) {
+    upscaleRenderRatio = sceneRatioWarm;
+    return;
+  }
   upscaleRenderRatio = upscalePinned ? upscalePinRatio : qualitySceneRatioRequest();
 }
 
@@ -440,15 +465,31 @@ function qualityReadout() {
     panelPeriodMs: state.panelPeriodMs,
     bytes: qualityRenderTargetBytes(),
     reason: qualityBoundsLive.reason,
+    // What the scene-sized targets are allocated at against what this rung
+    // draws into them, and whether the fixed allocation is on at all
+    // (`?alloc=0` turns it off).
+    alloc: {
+      fixed: fixedAllocationFor(composerCamera()),
+      switchOn: fixedSceneAllocation,
+      ratio: sceneAllocationRatioFor(composerCamera()),
+      w: sceneRectsLive.alloc.width,
+      h: sceneRectsLive.alloc.height,
+      drawW: sceneRectsLive.draw.width,
+      drawH: sceneRectsLive.draw.height,
+    },
   };
 }
 
-/** What the scene-sized render targets hold at the live ratio, in bytes: the
- *  figure the byte budget is checked against, so a device can be asked what
- *  it is really holding. Zero with no composer. */
+/** What the scene-sized render targets hold, in bytes: the figure the byte
+ *  budget is checked against, so a device can be asked what it is really
+ *  holding. From the ALLOCATION, not the rung — under Dynamic they are the
+ *  ladder's top rung at every rung, which is the memory the fixed allocation
+ *  trades for the step. Zero with no composer. */
 function qualityRenderTargetBytes(): number {
   if (!sceneTarget) return 0;
-  return renderTargetBytes(window.innerWidth, window.innerHeight, getScenePixelRatio(), sceneTarget.samples);
+  return renderTargetBytes(
+    window.innerWidth, window.innerHeight, sceneAllocationRatioFor(composerCamera()), sceneTarget.samples,
+  );
 }
 
 updateSceneRatioRequest();
@@ -520,6 +561,18 @@ debugLog('Post-processing config', { useBloom });
 let composer: EffectComposer | null = null;
 /** The composer target RenderPass draws the scene into (buildComposer). */
 let sceneTarget: THREE.WebGLRenderTarget | null = null;
+/** What the scene-sized targets are allocated at, in device pixels, and where
+ *  the frame sits inside that (app/sceneSubRect.ts). Zeroed on every composer
+ *  build, so the first size always reaches the targets. */
+let sceneAllocSize: TargetSize = { width: 0, height: 0 };
+let sceneRectsLive: SceneRects = sceneRects({ width: 1, height: 1 }, { width: 1, height: 1 });
+/** The last clamp reported, so a tripwire that stays tripped says so once. */
+let sceneRectClampSaid = '';
+/** The sub-rect uniforms of the two passes that read a scene-sized target and
+ *  are not ours to declare: the lens pass and the bloom bright pass. The
+ *  finishing pass carries its own (app/UpscalePass.ts). */
+let lensSubRect: SubRectUniforms | null = null;
+let bloomSubRect: SubRectUniforms | null = null;
 // Whether a frame draws the world at all: under the loading screen only on
 // request, every frame once revealed, never after a boot failure
 // (app/bootRenderGate.ts). The simulation runs every frame regardless.
@@ -642,26 +695,125 @@ function applyRenderResolution() {
     // side of it at the quality level's own ratio (app/UpscalePass.ts), in
     // which case the last passes carry the frame across to the canvas the
     // renderer was just sized to.
-    sizeComposerToScene(getScenePixelRatio());
+    sizeComposerToScene(composerCamera());
     sizeBloomPass();
   }
 }
 
+/** The camera the live composer was built for — the planetarium's, except
+ *  inside another mode. */
+function composerCamera(): THREE.Camera {
+  return composerBuiltFor?.cam ?? camera;
+}
+
 /**
- * Size the composer's targets for a scene ratio.
+ * Whether the scene-sized targets are allocated once at the ladder's top rung
+ * and every rung drawn into a sub-rectangle of them (app/sceneSubRect.ts).
+ *
+ * Dynamic only: a fixed level never steps, so it would pay the memory for
+ * nothing and Medium stays today's frame by construction rather than by
+ * measurement. The planetarium's composer only: no other mode draws at a ratio
+ * of its own, and entering the Look-inside tool would otherwise allocate the
+ * ladder's top rung twice a visit. And not while a measurement pin owns the
+ * scene ratio — a pin can ask for a ratio outside the ladder altogether, so it
+ * allocates for itself and hands the allocation back on release.
+ */
+function fixedAllocationFor(cam: THREE.Camera): boolean {
+  return fixedSceneAllocation
+    && cam === planetariumCamera
+    && qualityLevel === 'dynamic'
+    && !upscalePinned;
+}
+
+/** The ratio those targets are ALLOCATED at, as against the one being drawn. */
+function sceneAllocationRatioFor(cam: THREE.Camera): number {
+  return allocationSceneRatio(
+    scenePixelRatioFor(cam, getTargetPixelRatio()),
+    qualityLadderLive,
+    fixedAllocationFor(cam),
+  );
+}
+
+/**
+ * Size the composer's targets, and point the frame at its sub-rectangle of
+ * them.
  *
  * In explicit DEVICE pixels with the composer's own pixel ratio held at 1:
  * three multiplies the size it is given by that ratio with no flooring, and
  * GL stores a target with a GLsizei, so a fractional ratio through the
  * composer's own multiply leaves the target's recorded width a fraction above
  * the storage the driver made — and the resample's uniforms are derived from
- * that width. Both writers of the composer's size use this one function, or a
- * resize would re-derive a different size from a rung change.
+ * that width. Every writer of the composer's size goes through this one
+ * function, or a resize would re-derive a different size from a rung change.
+ *
+ * The targets are re-sized only when the ALLOCATION moved, which under Dynamic
+ * is a resize, a level change or a pin — never a rung. A rung change reaches GL
+ * as a viewport and a few uniforms and moves no memory at all, which is the
+ * whole of the fixed allocation.
  */
-function sizeComposerToScene(sceneRatio: number): void {
+function sizeComposerToScene(cam: THREE.Camera): void {
   if (!composer) return;
-  const { width, height } = sceneTargetSize(window.innerWidth, window.innerHeight, sceneRatio);
-  composer.setSize(width, height);
+  const alloc = sceneTargetSize(window.innerWidth, window.innerHeight, sceneAllocationRatioFor(cam));
+  if (alloc.width !== sceneAllocSize.width || alloc.height !== sceneAllocSize.height) {
+    composer.setSize(alloc.width, alloc.height);
+    sceneAllocSize = alloc;
+  }
+  const draw = sceneTargetSize(window.innerWidth, window.innerHeight, scenePixelRatioFor(cam, getTargetPixelRatio()));
+  applySceneViewports(draw.width, draw.height);
+}
+
+/**
+ * Point the scene-sized targets at the sub-rectangle the frame is drawn into:
+ * the scene target, the composer's ping-pong partner and the finishing pass's
+ * LDR target.
+ *
+ * The ONLY writer of those three targets' viewport, scissor box and scissor
+ * test. `RenderTarget.setSize` resets both rectangles to the whole target every
+ * time it is called — even when the size is unchanged — so this runs after
+ * every size, and nothing else may write them: a frame drawn at the whole
+ * allocation with the resample's uniforms still on the sub-rect is a garbage
+ * frame rather than a crash.
+ *
+ * The origin is (0, 0) and that is load-bearing rather than a convention: the
+ * point-sprite kernel every star and moon dot runs and the resample shaders
+ * read `gl_FragCoord` as framebuffer-absolute and divide by a size derived
+ * from the CSS box and the scene ratio, so a centred sub-rect would misplace
+ * every sprite and every tap.
+ *
+ * A draw larger than its allocation is clamped and said out loud rather than
+ * drawn: GL clips a viewport larger than its framebuffer in silence, and the
+ * frame would come out short with every uniform believing otherwise.
+ */
+function applySceneViewports(width: number, height: number): void {
+  if (!composer || !sceneTarget) return;
+  const rects = sceneRects(sceneAllocSize, { width, height });
+  if (rects.clamped) {
+    const said = `${width}x${height} in ${sceneAllocSize.width}x${sceneAllocSize.height}`;
+    if (said !== sceneRectClampSaid) {
+      sceneRectClampSaid = said;
+      debugWarn('The scene is drawn larger than the targets allocated for it', said);
+    }
+  }
+  sceneRectsLive = rects;
+  const { width: w, height: h } = rects.draw;
+  // Made now under a fixed allocation, because a rung change must not be the
+  // first thing that ever binds it; left lazy otherwise, so a build that never
+  // resamples allocates nothing.
+  const ldr = outputTargetPass?.ensureTarget(
+    rects.alloc.width, rects.alloc.height, fixedAllocationFor(composerCamera()),
+  ) ?? null;
+  for (const target of [sceneTarget, composer.renderTarget2, ldr]) {
+    if (!target) continue;
+    target.viewport.set(0, 0, w, h);
+    target.scissor.set(0, 0, w, h);
+    // Off where the frame fills its target: that is the state three leaves a
+    // target in, and the frame it draws there is the one that shipped.
+    target.scissorTest = w < target.width || h < target.height;
+  }
+  // Every reader of a scene-sized target, told where inside it to look.
+  applySubRect(lensSubRect, rects);
+  applySubRect(bloomSubRect, rects);
+  applySubRect(outputTargetPass?.subRect ?? null, rects);
 }
 
 // The composer sizes every pass at the scene's size; the bloom chain is sized
@@ -735,6 +887,10 @@ function buildComposer(
   lensPass = null;
   bloomPass = null; // disposed above with the composer's passes
   sizeBloomChain = null;
+  lensSubRect = null;
+  bloomSubRect = null;
+  // Nothing is allocated yet, so the first size below always reaches GL.
+  sceneAllocSize = { width: 0, height: 0 };
   depthDiscardPass = null;
   outputTargetPass = null;
   upscalePass = null;
@@ -790,7 +946,6 @@ function buildComposer(
   // Sized at the scene ratio: the output ratio unless this is the
   // planetarium's composer with the upscaler on (scenePixelRatioFor).
   const outputRatio = getTargetPixelRatio();
-  const sceneRatio = scenePixelRatioFor(cam, outputRatio);
   sceneTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
     type: THREE.HalfFloatType,
     stencilBuffer: true,
@@ -819,7 +974,12 @@ function buildComposer(
   // The composer's own ratio stays at 1 for the life of the chain and every
   // size it is given is in device pixels (sizeComposerToScene).
   composer.setPixelRatio(1);
-  sizeComposerToScene(sceneRatio);
+  // The allocation, decided here under the loading screen rather than on a
+  // later climb: a lazy allocation would pay exactly the hitch the fixed one
+  // exists to delete, in front of the user, on a device the rule has just
+  // found fast. The passes are sized again at the end of the build, once they
+  // all exist.
+  sizeComposerToScene(cam);
   composer.addPass(new RenderPass(scene, cam));
   // The world's depth and stencil have no reader past this point
   // (app/DepthDiscardPass.ts). Enabled/disabled rather than added/removed, so
@@ -831,6 +991,7 @@ function buildComposer(
   if (wantsLens) {
     planetariumLens.strength = lensRequestedStrength;
     lensPass = createLensPass();
+    lensSubRect = lensSubRectUniforms(lensPass);
     composer.addPass(lensPass);
   } else {
     planetariumLens.strength = 0;
@@ -854,6 +1015,10 @@ function buildComposer(
     // tests or writes (app/bloomTargets.ts). Applied here rather than at the
     // switch, because a rebuild makes a fresh pass with three's defaults back.
     setBloomInternalDepth(bloomPass, import.meta.env.DEV ? !perfSwitchOn('bloom-nodepth') : false);
+    // The one material in the chain that reads the buffer the scene was drawn
+    // into: patched before its first render, so the bright pass takes the
+    // sub-rectangle's content and not the allocation's (app/sceneSubRect.ts).
+    bloomSubRect = patchUvScale(bloomHighPassMaterial(bloomPass), HIGH_PASS_UV_ANCHOR);
     // Before the pass joins the chain: addPass sizes it too.
     sizeBloomChain = holdBloomSize(bloomPass);
     composer.addPass(bloomPass);
@@ -882,6 +1047,9 @@ function buildComposer(
     composer.addPass(downsamplePass);
   }
   composerBuiltFor = { cam, bloom, enabled, lens: lensRequestedStrength };
+  // Every pass exists now: the same rectangle again, this time reaching the
+  // finishing pass's own target and the three sampling sites' uniforms.
+  sizeComposerToScene(cam);
   applyUpscalePasses();
 }
 
@@ -966,19 +1134,22 @@ function applyUpscalePasses(): void {
  * the scene's ratio, and a Dynamic step going through it would fold the sheet
  * under the user's finger several times a minute.
  *
- * So a ratio change does exactly four things: re-size the composer's targets,
- * point the resample passes at the new direction, retune the three point
- * sizes that are authored in the scene's own framebuffer pixels, and say so
- * once. The sample count is not touched (it comes off the output ratio), the
- * bloom chain is not touched (its size is held away from the composer's
- * cascade), the renderer and the canvas are not touched (the output ratio has
- * not moved), and nothing is added to or removed from the chain, so no
- * program relinks.
+ * So a ratio change does exactly four things: point the scene-sized targets at
+ * the sub-rectangle the new ratio draws into, point the resample passes at the
+ * new direction, retune the three point sizes that are authored in the scene's
+ * own framebuffer pixels, and say so once. Under Dynamic the targets are
+ * already the size they need to be (app/sceneSubRect.ts), so nothing is
+ * allocated or freed at all; at a fixed level the allocation follows the
+ * level, which is a click rather than a step. The sample count is not touched
+ * (it comes off the output ratio), the bloom chain is not touched (its size is
+ * held away from the composer's cascade), the renderer and the canvas are not
+ * touched (the output ratio has not moved), and nothing is added to or removed
+ * from the chain, so no program relinks.
  */
 function applySceneResolution(why: string): void {
   updateSceneRatioRequest();
   const sceneRatio = getScenePixelRatio();
-  sizeComposerToScene(sceneRatio);
+  sizeComposerToScene(composerCamera());
   applyUpscalePasses();
   planetariumMode?.onScenePixelRatioChanged();
   debugLog('Quality', {
@@ -988,7 +1159,8 @@ function applySceneResolution(why: string): void {
     sceneRatio,
     outputRatio: getTargetPixelRatio(),
     mode: sceneRatioMode(),
-    sceneTarget: sceneTarget ? `${sceneTarget.width}x${sceneTarget.height}` : null,
+    sceneDraw: `${sceneRectsLive.draw.width}x${sceneRectsLive.draw.height}`,
+    sceneAlloc: sceneTarget ? `${sceneTarget.width}x${sceneTarget.height}` : null,
     mb: Math.round(qualityRenderTargetBytes() / 1e5) / 10,
   });
 }
@@ -1201,6 +1373,11 @@ function devRenderTargets() {
     (t ? { w: t.width, h: t.height, mpx: Math.round((t.width * t.height) / 1e4) / 100 } : null);
   const bloomMip = (bloomPass as unknown as { renderTargetsHorizontal?: THREE.WebGLRenderTarget[] } | null)
     ?.renderTargetsHorizontal?.[0] ?? null;
+  // [x, y, width, height] and whether the scissor is on: a target still at its
+  // whole size reads as its own dimensions with the test off.
+  const viewportOf = (t: THREE.WebGLRenderTarget | null) => (t
+    ? { rect: [t.viewport.x, t.viewport.y, t.viewport.z, t.viewport.w], scissorTest: t.scissorTest }
+    : null);
   return {
     pixelRatio: renderer.getPixelRatio(),
     targetPixelRatio: getTargetPixelRatio(),
@@ -1215,6 +1392,20 @@ function devRenderTargets() {
       ? { ...size(sceneTarget)!, samples: sceneTarget.samples }
       : null,
     composerPartner: size(composer?.renderTarget2),
+    // What the scene-sized targets are ALLOCATED at, the sub-rectangle this
+    // rung DRAWS into, and each target's own rectangle (app/sceneSubRect.ts).
+    // Under Dynamic the two differ at every rung but the ladder's top, and a
+    // run that means to prove fewer pixels were drawn has to read the draw
+    // size — the allocation does not move.
+    sceneAlloc: { w: sceneRectsLive.alloc.width, h: sceneRectsLive.alloc.height },
+    sceneDraw: { w: sceneRectsLive.draw.width, h: sceneRectsLive.draw.height },
+    sceneAllocFixed: fixedAllocationFor(composerCamera()),
+    uvScale: [sceneRectsLive.uvScale.x, sceneRectsLive.uvScale.y],
+    sceneViewport: {
+      scene: viewportOf(sceneTarget),
+      partner: viewportOf(composer?.renderTarget2 ?? null),
+      ldr: viewportOf(outputTargetPass?.target ?? null),
+    },
     // The scene ratio (either side of the output ratio with a quality level
     // or a Dynamic rung) and the resample's own targets: the tone-mapped
     // frame at scene size and EASU's result at output size (null while RCAS
@@ -1274,9 +1465,56 @@ function drawWorldFrame() {
 // The loading screen goes: draw one frame first, so the frame under the fade
 // is fresh and any program a pass still had to link is linked under the
 // cover, then let every frame draw.
+/**
+ * Bind everything a Dynamic rung can reach, while the screen is still covered.
+ *
+ * three allocates a render target's GL storage on the first BIND, not when the
+ * target is made or sized; the composer skips a disabled pass outright; and
+ * the finishing pass's LDR target and EASU's target are both made on the first
+ * render that needs them. So a session that boots at the medium rung has never
+ * touched the far side of its own allocation, has never linked the two
+ * resample programs, and would pay for all of it on the first rung change —
+ * the very hitch a fixed allocation exists to delete, moved rather than
+ * removed. So: one frame at the ladder's bottom rung (the LDR target, EASU,
+ * RCAS), one at its top rung (the whole allocation touched, and the box where
+ * the ladder has a rung above medium), and then back to the rung this session
+ * starts on.
+ *
+ * Only where the allocation is fixed. Everywhere else a rung change re-sizes
+ * the targets anyway, and these frames would be three boot draws bought for
+ * nothing.
+ */
+function warmSceneAllocation(): void {
+  const cam = composerCamera();
+  if (!composer || !fixedAllocationFor(cam)) return;
+  const rungs = qualityLadderLive.rungs;
+  const warmed = [rungs[0], rungs[rungs.length - 1]].filter((r) => typeof r === 'number');
+  if (warmed.length === 0) return;
+  // The first visible frame's measurement belongs to the first visible frame.
+  const measuring = measureNextSceneFrame;
+  measureNextSceneFrame = false;
+  const startedMs = performance.now();
+  for (const ratio of warmed) {
+    sceneRatioWarm = ratio;
+    applySceneResolution('boot warm-up');
+    renderScene(camera);
+  }
+  sceneRatioWarm = null;
+  applySceneResolution('boot warm-up done');
+  measureNextSceneFrame = measuring;
+  debugLog('Scene allocation warmed', {
+    rungs: warmed.map((r) => Math.round(r * 100) / 100),
+    alloc: `${sceneRectsLive.alloc.width}x${sceneRectsLive.alloc.height}`,
+    ms: Math.round(performance.now() - startedMs),
+  });
+}
+
 function revealLoadingScreen() {
   // A failed boot keeps its error screen; there is nothing to reveal.
   if (bootRender.current === 'failed') return;
+  // Before the reveal's own frame, so every target, program and page of the
+  // allocation has been touched under the cover.
+  warmSceneAllocation();
   if (bootRender.revealRender()) drawWorldFrame();
   // The draw only queues the GPU's work; on ANGLE-Metal the pipeline states
   // are built when the draws execute. Where finish blocks (WebKit, Firefox)
@@ -1498,7 +1736,12 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
           // The ☰ panel's graphics-quality row: the level and what this
           // display offers are read here, and the row writes back through the
           // same narrow path every other level change takes.
-          { level: () => qualityLevel, set: setQualityLevel, bounds: () => qualityBoundsLive },
+          {
+            level: () => qualityLevel,
+            set: setQualityLevel,
+            bounds: () => qualityBoundsLive,
+            targetBytes: () => qualityRenderTargetBytes(),
+          },
         );
         // Every tool entry arrives here ("How many fit?", Look inside): the
         // mode closes its own entry surfaces and snapshots the journey, then
@@ -1809,7 +2052,10 @@ function installDevHooks() {
         exposurePin = null;
         pixelRatioPin = null;
         // The same pin `pinRatio` writes: Dynamic must step back in when it
-        // is released, exactly as it stepped out when it was set.
+        // is released, exactly as it stepped out when it was set. The bounds
+        // are re-derived first, because the output ratio decides what every
+        // level means, which rungs exist and how large the targets are.
+        recomputeQualityBounds();
         refreshQualityPin();
         applyRenderResolution();
         return { near: planetariumCamera.near, exposure: exposureCurrent, pixelRatio: renderer.getPixelRatio() };
@@ -1823,7 +2069,9 @@ function installDevHooks() {
         pixelRatioPin = opts.pixelRatio;
         // A pinned output ratio is a measurement, and a capture harness that
         // pins one must not be measuring a live rule: Dynamic steps out of
-        // the way here as it does for `pinRatio`.
+        // the way here as it does for `pinRatio`. The bounds follow the pinned
+        // ratio first, or the targets would be sized for the old one.
+        recomputeQualityBounds();
         refreshQualityPin();
         applyRenderResolution();
       }

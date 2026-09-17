@@ -4011,11 +4011,16 @@ export class PlanetariumMode {
   }
 
   /** GPU bytes the frame itself holds at this device's pixel ratio: the
-   *  drawing buffer, and — when the world renders through the composer — its
-   *  two half-float targets plus the bloom chain (a half-resolution bright
+   *  drawing buffer, and — when the world renders through the composer — the
+   *  scene-sized targets plus the bloom chain (a half-resolution bright
    *  pass and five horizontal/vertical pairs halving from there). An estimate
    *  of a chain main.ts owns, printed for the same reason as the boot maps:
    *  a 1170x2532 phone at DPR 3 pays it before a single map loads.
+   *
+   *  The scene-sized figure comes from main rather than from the drawing
+   *  buffer, because the scene is not drawn at the canvas's ratio: it is the
+   *  size those targets are ALLOCATED at, which under Dynamic is the ladder's
+   *  top rung at every rung.
    */
   private renderTargetGpuBytes(): number {
     const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
@@ -4024,7 +4029,7 @@ export class PlanetariumMode {
     // The default framebuffer: colour, and depth+stencil beside it.
     let bytes = w * h * 4 + w * h * 4;
     if (!this.rendersThroughComposer()) return bytes;
-    bytes += 2 * w * h * 8;
+    bytes += this.quality.targetBytes();
     if (!this.useBloom) return bytes;
     let bw = Math.round(w / 2);
     let bh = Math.round(h / 2);

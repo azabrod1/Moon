@@ -53,11 +53,15 @@
  * the bytes per scene pixel depend on the sample count: at a ratio r on a
  * W x H CSS canvas the scene-sized targets are the scene colour (RGBA16F,
  * 8 B per sample) and its depth/stencil (4 B per sample), the resolve texture
- * when the target is multisampled (8 B), the composer's ping-pong partner
- * (RGBA16F, 8 B — the lens pass writes it every frame) and the LDR target the
- * tone map writes (RGBA8, 4 B). With no samples that is 24 B a pixel; with
- * four (a 1x monitor's output policy, held across every rung) it is 68 B.
- * `high` and every up rung must keep that sum at or under
+ * when the target is multisampled (8 B) and the LDR target the tone map writes
+ * (RGBA8, 4 B). With no samples that is 16 B a pixel; with four (a 1x
+ * monitor's output policy, held across every rung) it is 60 B. The composer's
+ * ping-pong partner (RGBA16F, 8 B) is counted only where the chain binds it:
+ * the `?fused=0` chain, whose lens pass writes it every frame. The chain that
+ * ships never binds it, and three gives a target GL storage on its first bind
+ * and not before, so there it costs nothing and is not counted — a level is
+ * offered wherever the bytes really fit, and a user it does not suit can
+ * switch back. `high` and every up rung must keep that sum at or under
  * RENDER_TARGET_ENVELOPE_SHARE of the device's texture envelope.
  *
  * That share is not a share of free memory: the sector tiles and the globe
@@ -153,6 +157,10 @@ export interface QualityBoundsInput {
   /** The sample count the OUTPUT ratio's policy chose, held across every
    *  rung (renderResolution.ts composerSamples). */
   samples: number;
+  /** Whether the composer's ping-pong partner is bound at all: true on the
+   *  `?fused=0` chain, where the lens pass writes it every frame, and false on
+   *  the chain that ships, where no pass swaps and three never allocates it. */
+  partnerBound: boolean;
   /** False on the no-float path, where there is no composer to re-size and
    *  every level is medium. */
   hasComposer: boolean;
@@ -207,28 +215,32 @@ export function sceneTargetSize(cssWidth: number, cssHeight: number, sceneRatio:
 /**
  * The bytes the scene-sized render targets hold at a scene ratio: the
  * multisampled colour and depth/stencil, the resolve texture when there are
- * samples, the composer's partner buffer and the LDR target. The figure
- * `perfTargets()` reports and the one the byte budget below is checked
- * against.
+ * samples, the LDR target, and the composer's partner buffer where the chain
+ * binds it. The figure `perfTargets()` reports and the one the byte budget
+ * below is checked against.
  *
- * **The partner's 8 B a pixel is deliberate headroom, not an accident.** On the
- * shipped chain no pass swaps, so nothing ever binds the composer's ping-pong
- * partner and three gives it no GL storage at all (`?fused=0` does bind it).
- * Taking those bytes out of this figure would be an accounting fix that frees
- * nothing and widens High's reach instead: at 0 samples it is a third of the
- * total, so a 5K iMac at 2.5× falls from 553 MB to 369 MB against its ~429 MB
- * share and a 320 MiB tablet from 154 MB to 102 MB against ~134 MB — both flip
- * from refused to offered, on device classes nobody here has measured. That is
- * a decision about which devices are handed a few hundred megabytes of
- * supersampled targets, so it stays counted until it is made on purpose.
+ * The partner is the whole difference between the two chains' figures — a
+ * third of the total at 0 samples — and it decides where High is offered: a
+ * 5K iMac at 2.5x holds 369 MB of targets on the shipped chain against a
+ * ~429 MB share, and 553 MB on `?fused=0`, so it is offered the one and
+ * refused the other; a 320 MiB tablet at 2.5x reads 102 MB against ~134 MB
+ * and 154 MB. The figure follows what the GPU really holds, which is what a
+ * budget is for; a device the wider offer does not suit has Medium one tap
+ * away in the same menu row.
  */
-export function renderTargetBytes(cssWidth: number, cssHeight: number, sceneRatio: number, samples: number): number {
+export function renderTargetBytes(
+  cssWidth: number,
+  cssHeight: number,
+  sceneRatio: number,
+  samples: number,
+  partnerBound: boolean,
+): number {
   const { width, height } = sceneTargetSize(cssWidth, cssHeight, sceneRatio);
   const perSample = Math.max(1, Math.floor(samples));
   const colour = 8 * perSample;
   const depthStencil = 4 * perSample;
   const resolve = samples > 0 ? 8 : 0;
-  const partner = 8;
+  const partner = partnerBound ? 8 : 0;
   const ldr = 4;
   return width * height * (colour + depthStencil + resolve + partner + ldr);
 }
@@ -261,7 +273,7 @@ function highBound(input: QualityBoundsInput, medium: number): { high: number; r
       reason = 'gl size';
       continue;
     }
-    if (renderTargetBytes(input.cssWidth, input.cssHeight, ratio, input.samples) <= budget) {
+    if (renderTargetBytes(input.cssWidth, input.cssHeight, ratio, input.samples, input.partnerBound) <= budget) {
       return { high: ratio, reason: null };
     }
     reason = 'byte budget';

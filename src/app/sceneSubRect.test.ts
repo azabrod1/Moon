@@ -20,6 +20,7 @@ const DESKTOP: QualityBoundsInput = {
   cssWidth: 1728,
   cssHeight: 1117,
   samples: 0,
+  partnerBound: false,
   hasComposer: true,
   supersampleFallback: false,
   maxGlSize: 16384,

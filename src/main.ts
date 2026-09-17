@@ -240,6 +240,25 @@ let downsampleFilter: DownsampleFilter =
  *  sub-rect bug on a device that is not here. */
 const fixedSceneAllocation = parseAllocParam(location.search);
 
+/**
+ * Whether the frame ends in ONE finishing pass — the lens warp, the glow and
+ * the tone map in a single draw (app/FusedOutputPass.ts) — or in the three
+ * separate full-resolution passes that came before it. Read here, before the
+ * quality bounds are first computed, because the byte budget counts the
+ * composer's partner only on the chain that binds it.
+ *
+ * `?fused=0` on any build is the kill switch and is fixed for the session, so
+ * `composerBuiltFor` needs no field for it. In DEV the switch registry says the
+ * same thing through `?perfoff=fused-final` or `__moon.perfArm`, whose listener
+ * rebuilds the chain live for a capture — and with `?fused=0` already in the
+ * URL such an arm rebuilds the same chain twice and changes nothing, which is
+ * harmless and is the param winning.
+ */
+const fusedFinalParam = parseFusedParam(location.search);
+function fusedFinalOn(): boolean {
+  return fusedFinalParam && (import.meta.env.DEV ? perfSwitchOn('fused-final') : true);
+}
+
 // ================================================================
 // Graphics quality
 // ================================================================
@@ -327,6 +346,9 @@ function qualityBoundsInput(): QualityBoundsInput {
     cssHeight: window.innerHeight,
     // From the output ratio and held there across every level and rung.
     samples: getSceneTargetSamples(outputRatio),
+    // The composer's partner is bound, and so costs memory, only on the
+    // `?fused=0` chain (app/FusedOutputPass.ts).
+    partnerBound: !fusedFinalOn(),
     // The planetarium gets a composer wherever the GPU can render half-float
     // (buildComposer). Without one there is no target to re-size, no resample
     // pass to enable, and every level is medium.
@@ -497,6 +519,7 @@ function qualityRenderTargetBytes(): number {
   if (!sceneTarget) return 0;
   return renderTargetBytes(
     window.innerWidth, window.innerHeight, sceneAllocationRatioFor(composerCamera()), sceneTarget.samples,
+    !fusedFinalOn(),
   );
 }
 
@@ -1006,23 +1029,6 @@ function planetariumBloomEnabled(): boolean {
 // renders at 1, and the dev auto lock (setAutoExposure) pins it to 1 too.
 let exposureCurrent = 1;
 let autoExposure = true;
-
-/**
- * Whether the frame ends in ONE finishing pass — the lens warp, the glow and
- * the tone map in a single draw (app/FusedOutputPass.ts) — or in the three
- * separate full-resolution passes that came before it.
- *
- * `?fused=0` on any build is the kill switch and is fixed for the session, so
- * `composerBuiltFor` needs no field for it. In DEV the switch registry says the
- * same thing through `?perfoff=fused-final` or `__moon.perfArm`, whose listener
- * rebuilds the chain live for a capture — and with `?fused=0` already in the
- * URL such an arm rebuilds the same chain twice and changes nothing, which is
- * harmless and is the param winning.
- */
-const fusedFinalParam = parseFusedParam(location.search);
-function fusedFinalOn(): boolean {
-  return fusedFinalParam && (import.meta.env.DEV ? perfSwitchOn('fused-final') : true);
-}
 
 // What the live composer was built for: an identical request is a no-op.
 // The boot builds one at module load and the first mode switch asked for the

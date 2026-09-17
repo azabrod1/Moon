@@ -199,6 +199,7 @@ function inputFor(device: Device, over: Partial<QualityBoundsInput> = {}): Quali
     cssWidth: device.cssWidth,
     cssHeight: device.cssHeight,
     samples: policySamples(outputRatio, mobile, size.width * size.height),
+    partnerBound: false,
     hasComposer: true,
     supersampleFallback,
     maxGlSize: 16384,
@@ -234,7 +235,7 @@ describe('qualityBounds — medium and low', () => {
 });
 
 describe('qualityBounds — high against the byte budget', () => {
-  it("offers 3 on Alex's 16\" Mac: 417 MB of targets inside 40 % of 1024 MiB", () => {
+  it("offers 3 on Alex's 16\" Mac: 278 MB of targets inside 40 % of 1024 MiB", () => {
     const input = inputFor(MACBOOK_16);
     expect(classifyDevice(MACBOOK_16.signals)).toBe('desktop');
     expect(input.platform).toBe('apple');
@@ -244,19 +245,35 @@ describe('qualityBounds — high against the byte budget', () => {
     expect(bounds.high).toBe(3);
     expect(bounds.highOffered).toBe(true);
     expect(bounds.reason).toBeNull();
-    const bytes = renderTargetBytes(input.cssWidth, input.cssHeight, 3, 0);
-    expect(Math.round(bytes / 1e6)).toBe(417);
+    const bytes = renderTargetBytes(input.cssWidth, input.cssHeight, 3, 0, false);
+    expect(Math.round(bytes / 1e6)).toBe(278);
+    // On the `?fused=0` chain the partner is bound and counted: 417 MB, still
+    // inside the share.
+    expect(Math.round(renderTargetBytes(input.cssWidth, input.cssHeight, 3, 0, true) / 1e6)).toBe(417);
     expect(bytes).toBeLessThanOrEqual(RENDER_TARGET_ENVELOPE_SHARE * input.envelopeBytes);
   });
 
-  it('refuses both supersamples on a 5K iMac: 2.5 alone is 553 MB', () => {
+  it('offers 2.5 on a 5K iMac, where 3 is over the share and the partner decides', () => {
+    // The partner is a third of the figure at 0 samples, and this is the
+    // display where it decides: 369 MB of targets at 2.5x on the chain that
+    // ships fit a ~429 MB share, 553 MB with the partner bound do not.
     const input = inputFor(IMAC_5K);
     const bounds = qualityBounds(input);
-    expect(Math.round(renderTargetBytes(input.cssWidth, input.cssHeight, 2.5, 0) / 1e6)).toBe(553);
-    expect(bounds.high).toBe(bounds.medium);
-    expect(bounds.highOffered).toBe(false);
-    expect(bounds.reason).toBe('byte budget');
-    expect(bounds.upRungs).toEqual([2]);
+    expect(Math.round(renderTargetBytes(input.cssWidth, input.cssHeight, 2.5, 0, false) / 1e6)).toBe(369);
+    expect(renderTargetBytes(input.cssWidth, input.cssHeight, 3, 0, false)).toBeGreaterThan(
+      RENDER_TARGET_ENVELOPE_SHARE * input.envelopeBytes,
+    );
+    expect(bounds.high).toBe(2.5);
+    expect(bounds.highOffered).toBe(true);
+    expect(bounds.reason).toBeNull();
+    expect(bounds.upRungs).toEqual([2, 2.5]);
+    // The `?fused=0` chain binds it, and there both supersamples are refused.
+    const old = qualityBounds({ ...input, partnerBound: true });
+    expect(Math.round(renderTargetBytes(input.cssWidth, input.cssHeight, 2.5, 0, true) / 1e6)).toBe(553);
+    expect(old.high).toBe(old.medium);
+    expect(old.highOffered).toBe(false);
+    expect(old.reason).toBe('byte budget');
+    expect(old.upRungs).toEqual([2]);
   });
 
   it('offers 3 on a 13" iPad Pro, whose envelope is 1536 MiB', () => {
@@ -266,27 +283,33 @@ describe('qualityBounds — high against the byte budget', () => {
     expect(input.envelopeBytes).toBe(1536 * MiB);
     const bounds = qualityBounds(input);
     expect(bounds.high).toBe(3);
-    expect(Math.round(renderTargetBytes(input.cssWidth, input.cssHeight, 3, 0) / 1e6)).toBe(307);
+    expect(Math.round(renderTargetBytes(input.cssWidth, input.cssHeight, 3, 0, false) / 1e6)).toBe(204);
   });
 
-  it('refuses it on an Android tablet, whose envelope is 320 MiB', () => {
+  it('offers 2.5 and not 3 on an Android tablet, whose envelope is 320 MiB', () => {
     const input = inputFor(ANDROID_TABLET);
     expect(classifyDevice(ANDROID_TABLET.signals)).toBe('tablet');
     expect(input.platform).toBe('android');
     expect(input.envelopeBytes).toBe(320 * MiB);
     const bounds = qualityBounds(input);
-    expect(bounds.high).toBe(bounds.medium);
-    expect(bounds.reason).toBe('byte budget');
-    // The smallest candidate alone is over the share: 2000x3200 at 24 B.
-    expect(Math.round(renderTargetBytes(input.cssWidth, input.cssHeight, 2.5, 0) / 1e6)).toBe(154);
-    expect(renderTargetBytes(input.cssWidth, input.cssHeight, 2.5, input.samples)).toBeGreaterThan(
+    // 2000x3200 at 16 B is 102 MB against a ~134 MB share; 3x would be 148 MB.
+    expect(Math.round(renderTargetBytes(input.cssWidth, input.cssHeight, 2.5, 0, false) / 1e6)).toBe(102);
+    expect(bounds.high).toBe(2.5);
+    expect(bounds.highOffered).toBe(true);
+    expect(renderTargetBytes(input.cssWidth, input.cssHeight, 3, input.samples, false)).toBeGreaterThan(
       RENDER_TARGET_ENVELOPE_SHARE * input.envelopeBytes,
     );
+    // With the partner bound (`?fused=0`) even the smallest candidate is over
+    // the share: 154 MB, and High is refused.
+    const old = qualityBounds({ ...input, partnerBound: true });
+    expect(Math.round(renderTargetBytes(input.cssWidth, input.cssHeight, 2.5, 0, true) / 1e6)).toBe(154);
+    expect(old.high).toBe(old.medium);
+    expect(old.reason).toBe('byte budget');
   });
 
   it("offers 3 on Alex's iPhone, whose envelope was measured at 1024 MiB", () => {
     // No rule asks whether this is a phone: what decides is the envelope its
-    // row carries and the 87 MB the panel's own 1290x2796 costs.
+    // row carries and the 58 MB the panel's own 1290x2796 costs.
     const input = inputFor(IPHONE);
     expect(classifyDevice(IPHONE.signals)).toBe('phone');
     expect(input.envelopeBytes).toBe(1024 * MiB);
@@ -296,8 +319,8 @@ describe('qualityBounds — high against the byte budget', () => {
     expect(bounds.highOffered).toBe(true);
     expect(bounds.reason).toBeNull();
     expect(sceneTargetSize(input.cssWidth, input.cssHeight, 3)).toEqual({ width: 1290, height: 2796 });
-    expect(Math.round(renderTargetBytes(input.cssWidth, input.cssHeight, 3, input.samples) / 1e6)).toBe(87);
-    expect(renderTargetBytes(input.cssWidth, input.cssHeight, 3, input.samples)).toBeLessThanOrEqual(
+    expect(Math.round(renderTargetBytes(input.cssWidth, input.cssHeight, 3, input.samples, false) / 1e6)).toBe(58);
+    expect(renderTargetBytes(input.cssWidth, input.cssHeight, 3, input.samples, false)).toBeLessThanOrEqual(
       RENDER_TARGET_ENVELOPE_SHARE * input.envelopeBytes,
     );
   });
@@ -307,8 +330,8 @@ describe('qualityBounds — high against the byte budget', () => {
     expect(input.samples).toBe(4);
     const bounds = qualityBounds(input);
     expect(bounds.high).toBe(1.25);
-    expect(Math.round(renderTargetBytes(input.cssWidth, input.cssHeight, 1.25, 4) / 1e6)).toBe(392);
-    expect(renderTargetBytes(input.cssWidth, input.cssHeight, 1.5, 4)).toBeGreaterThan(
+    expect(Math.round(renderTargetBytes(input.cssWidth, input.cssHeight, 1.25, 4, false) / 1e6)).toBe(346);
+    expect(renderTargetBytes(input.cssWidth, input.cssHeight, 1.5, 4, false)).toBeGreaterThan(
       RENDER_TARGET_ENVELOPE_SHARE * input.envelopeBytes,
     );
   });
@@ -349,10 +372,10 @@ describe('qualityBounds — where high is not offered at all', () => {
     expect(bounds.high).toBe(bounds.medium);
     expect(bounds.highOffered).toBe(false);
     expect(bounds.reason).toBe('byte budget');
-    // Even the smallest supersample is nearly five times the share here:
-    // 392 MB of targets against 76.8 MiB.
-    const smallest = renderTargetBytes(input.cssWidth, input.cssHeight, 1.25, input.samples);
-    expect(Math.round(smallest / 1e6)).toBe(392);
+    // Even the smallest supersample is over four times the share here:
+    // 346 MB of targets against 76.8 MiB.
+    const smallest = renderTargetBytes(input.cssWidth, input.cssHeight, 1.25, input.samples, false);
+    expect(Math.round(smallest / 1e6)).toBe(346);
     expect(smallest).toBeGreaterThan(4 * RENDER_TARGET_ENVELOPE_SHARE * envelopeBytes);
   });
 
@@ -454,17 +477,21 @@ describe('qualityBounds — the rungs', () => {
 });
 
 describe('renderTargetBytes', () => {
-  it('is 24 bytes a scene pixel with no samples', () => {
-    expect(renderTargetBytes(100, 100, 1, 0)).toBe(100 * 100 * 24);
+  it('is 16 bytes a scene pixel with no samples, 24 where the partner is bound', () => {
+    expect(renderTargetBytes(100, 100, 1, 0, false)).toBe(100 * 100 * 16);
+    // The `?fused=0` chain's lens pass writes the composer's partner every
+    // frame, so there it is storage and counts.
+    expect(renderTargetBytes(100, 100, 1, 0, true)).toBe(100 * 100 * 24);
   });
 
   it('counts the samples in the colour and the depth, plus the resolve', () => {
-    expect(renderTargetBytes(100, 100, 1, 4)).toBe(100 * 100 * 68);
-    expect(renderTargetBytes(100, 100, 1, 2)).toBe(100 * 100 * 44);
+    expect(renderTargetBytes(100, 100, 1, 4, false)).toBe(100 * 100 * 60);
+    expect(renderTargetBytes(100, 100, 1, 4, true)).toBe(100 * 100 * 68);
+    expect(renderTargetBytes(100, 100, 1, 2, false)).toBe(100 * 100 * 36);
   });
 
   it('measures the floored size, not the fractional one', () => {
-    expect(renderTargetBytes(101, 101, 1.5, 0)).toBe(151 * 151 * 24);
+    expect(renderTargetBytes(101, 101, 1.5, 0, false)).toBe(151 * 151 * 16);
   });
 });
 

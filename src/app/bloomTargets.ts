@@ -28,10 +28,24 @@ interface BloomInternals {
   renderTargetBright: THREE.WebGLRenderTarget;
   renderTargetsHorizontal: THREE.WebGLRenderTarget[];
   renderTargetsVertical: THREE.WebGLRenderTarget[];
-  materialHighPassFilter: THREE.Material;
+  materialHighPassFilter: THREE.ShaderMaterial;
   separableBlurMaterials: THREE.Material[];
   compositeMaterial: THREE.Material;
   blendMaterial: THREE.Material;
+}
+
+/**
+ * The bright pass's material — the one material in the chain that reads the
+ * buffer the scene was drawn into, so it is the one that has to be told where
+ * inside that buffer the frame is (app/sceneSubRect.ts).
+ *
+ * Everything after it reads the pass's own mips, which are full images of
+ * whatever the bright pass took, at the bloom chain's own size: the blurs, the
+ * composite and the additive blend need no rectangle and are deliberately left
+ * exactly as three wrote them.
+ */
+export function bloomHighPassMaterial(pass: UnrealBloomPass): THREE.ShaderMaterial {
+  return (pass as unknown as BloomInternals).materialHighPassFilter;
 }
 
 /**

@@ -34,6 +34,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputShader } from 'three/addons/shaders/OutputShader.js';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import { OutputTargetPass } from './UpscalePass';
+import { OUTPUT_UV_ANCHOR, patchUvScale, uvScaleIsWired } from './sceneSubRect';
 
 /** The blur axes the pass carries as statics, which its published types do
  *  not name. */
@@ -150,16 +151,25 @@ function fusedFragmentText(): string {
 export class FusedOutputPass extends OutputTargetPass {
   constructor(bloom: BloomChainPass) {
     super();
+    // Its own text goes over the one the finishing pass built, the sub-rect
+    // edit included, so the scaled read has to be put back on top of it — and
+    // only the tDiffuse read is scaled: the glow it adds is a full image of
+    // the sub-rect's content, sampled edge to edge like the blend it replaces.
     this.material.fragmentShader = fusedFragmentText();
+    this.subRect = patchUvScale(this.material, OUTPUT_UV_ANCHOR);
     this.material.uniforms.tBloom = { value: bloom.compositeTexture };
     this.material.needsUpdate = true;
   }
 }
 
-/** Whether the fused text really carries both of its edits — a silent
- *  no-op replace would be a pass that drops the glow entirely. */
-export function fusedFragmentIsWired(): boolean {
-  const text = fusedFragmentText();
+/** Whether the fused text really carries all of its edits — a silent no-op
+ *  replace would be a pass that drops the glow entirely, or one that reads its
+ *  whole allocation where the frame is only a corner of it. Given the pass's
+ *  own material it checks what that material really compiles; given nothing,
+ *  the assembled text's two bloom edits. */
+export function fusedFragmentIsWired(material?: THREE.ShaderMaterial): boolean {
+  const text = material?.fragmentShader ?? fusedFragmentText();
   return text.includes('uniform sampler2D tBloom;')
-    && text.includes('gl_FragColor.rgb += texture2D( tBloom, vUv ).rgb;');
+    && text.includes('gl_FragColor.rgb += texture2D( tBloom, vUv ).rgb;')
+    && (material === undefined || uvScaleIsWired(material));
 }

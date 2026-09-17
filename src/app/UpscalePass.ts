@@ -38,6 +38,14 @@
  * upscaler off allocates nothing, and fitted on every render (a no-op when
  * unchanged).
  *
+ * Under a fixed allocation (app/sceneSubRect.ts) the scene-sized buffers are
+ * larger than the frame and the frame sits in a sub-rectangle at their origin.
+ * EASU and the box therefore take their input size from the input target's
+ * VIEWPORT rather than its width, the finishing pass carries the same
+ * rectangle into its own target, and its read of the scene buffer is scaled
+ * and clamped by the uniforms the patch installs. RCAS is the exception: it
+ * reads EASU's own output-sized target, which is always full.
+ *
  * The materials are RawShaderMaterials on purpose: three re-keys a
  * ShaderMaterial's program on the destination's colour space and tone
  * mapping, so a pass that draws the canvas one frame and a target the next
@@ -83,6 +91,7 @@ import {
   easuConstants,
   rcasSharpness,
 } from './fsr1';
+import { OUTPUT_UV_ANCHOR, patchUvScale, type SubRectUniforms } from './sceneSubRect';
 
 /** An 8-bit colour-only target with raw storage and a linear filter. */
 export function createLdrTarget(): THREE.WebGLRenderTarget {
@@ -107,6 +116,20 @@ function fitTarget(target: THREE.WebGLRenderTarget, width: number, height: numbe
   if (target.width !== w || target.height !== h) target.setSize(w, h);
 }
 
+/**
+ * The part of a target a frame was really drawn into: its viewport, which
+ * three keeps at the whole target unless something narrowed it. Under a fixed
+ * allocation (app/sceneSubRect.ts) that is the rung's own sub-rectangle at the
+ * origin, and it is what the resample must derive its taps from — the target's
+ * width would step outside the image into the region the rung above drew.
+ */
+function drawnSize(target: THREE.WebGLRenderTarget): { width: number; height: number } {
+  return {
+    width: Math.min(target.width, Math.max(1, Math.round(target.viewport.z))),
+    height: Math.min(target.height, Math.max(1, Math.round(target.viewport.w))),
+  };
+}
+
 function rawMaterial(fragmentShader: string, uniforms: Record<string, THREE.IUniform>): THREE.RawShaderMaterial {
   return new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3,
@@ -128,9 +151,29 @@ export class OutputTargetPass extends OutputPass {
    *  render has needed it, null again after dispose. */
   target: THREE.WebGLRenderTarget | null = null;
 
+  /** Where its read of the scene-sized buffer lands (app/sceneSubRect.ts).
+   *  Not readonly: the fused variant writes its own shader text over this
+   *  one's and patches it again. */
+  subRect: SubRectUniforms;
+
   constructor() {
     super();
     this.needsSwap = false;
+    this.subRect = patchUvScale(this.material, OUTPUT_UV_ANCHOR);
+  }
+
+  /**
+   * The LDR target at this size. `create` is false for a caller that only
+   * wants to fix up a target that already exists — a fixed allocation makes it
+   * eagerly so its rectangle can be set before any frame needs it, and every
+   * other path leaves it lazy, so a build that never resamples allocates
+   * nothing.
+   */
+  ensureTarget(width: number, height: number, create: boolean): THREE.WebGLRenderTarget | null {
+    if (!this.target && !create) return null;
+    const target = (this.target ??= createLdrTarget());
+    fitTarget(target, width, height);
+    return target;
   }
 
   render(
@@ -144,8 +187,10 @@ export class OutputTargetPass extends OutputPass {
       super.render(renderer, writeBuffer, readBuffer, deltaTime, maskActive);
       return;
     }
-    const target = (this.target ??= createLdrTarget());
-    fitTarget(target, readBuffer.width, readBuffer.height);
+    // At the read buffer's own size, sub-rectangle and all: the frame lands in
+    // the same corner of this target as it did in the one it came from, which
+    // is what lets the resample read it with the same rectangle.
+    const target = this.ensureTarget(readBuffer.width, readBuffer.height, true)!;
     super.render(renderer, target, readBuffer, deltaTime, maskActive);
   }
 
@@ -188,10 +233,11 @@ export class UpscalePass extends Pass {
     renderer.getDrawingBufferSize(this.bufferSize);
     const outW = Math.max(1, Math.floor(this.bufferSize.x));
     const outH = Math.max(1, Math.floor(this.bufferSize.y));
+    const drawn = drawnSize(input);
     const u = this.material.uniforms;
     u.tInput.value = input.texture;
-    (u.uCon0.value as THREE.Vector4).fromArray(easuConstants(input.width, input.height, outW, outH));
-    (u.uInputMax.value as THREE.Vector2).set(input.width - 1, input.height - 1);
+    (u.uCon0.value as THREE.Vector4).fromArray(easuConstants(drawn.width, drawn.height, outW, outH));
+    (u.uInputMax.value as THREE.Vector2).set(drawn.width - 1, drawn.height - 1);
     if (this.renderToScreen) {
       renderer.setRenderTarget(null);
     } else {
@@ -357,9 +403,12 @@ export class DownsamplePass extends Pass {
     // The finishing pass drew the canvas itself: there is nothing to average.
     if (!input) return;
     renderer.getDrawingBufferSize(this.bufferSize);
+    const drawn = drawnSize(input);
     const u = this.material.uniforms;
     u.tInput.value = input.texture;
-    (u.uInputSize.value as THREE.Vector2).set(input.width, input.height);
+    // Both the footprint's width and the clamp on its taps come off this one
+    // uniform, so the sub-rectangle's size fixes the pair at once.
+    (u.uInputSize.value as THREE.Vector2).set(drawn.width, drawn.height);
     (u.uOutputSize.value as THREE.Vector2).set(
       Math.max(1, Math.floor(this.bufferSize.x)),
       Math.max(1, Math.floor(this.bufferSize.y)),
@@ -414,6 +463,10 @@ export class SharpenPass extends Pass {
     if (!input) return;
     const u = this.material.uniforms;
     u.tInput.value = input.texture;
+    // The upscale pass's own target, at OUTPUT size and filled edge to edge —
+    // never a sub-rectangle of a scene-sized allocation, whatever the rung. Its
+    // whole width is the image, and a bound taken from the scene's sub-rect
+    // would clamp the right and top of the frame to interior texels.
     (u.uInputMax.value as THREE.Vector2).set(input.width - 1, input.height - 1);
     // Always the last pass: the canvas.
     renderer.setRenderTarget(null);

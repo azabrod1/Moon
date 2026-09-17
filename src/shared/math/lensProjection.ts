@@ -311,6 +311,12 @@ uniform float uStrength;
 uniform float uAspect;
 uniform float uTanHalfRender;
 uniform float uREdge;
+// The source may be a sub-rectangle of a larger allocation (app/sceneSubRect.ts):
+// every read is scaled into it and stopped half a texel short of its far edge,
+// so no bilinear tap reaches the region outside it. Both are 1 where the frame
+// fills its target, and the scaled read is then the same texel.
+uniform vec2 uUvScale;
+uniform vec2 uUvMax;
 varying vec2 vUv;
 
 float lensRadial(float theta) {
@@ -322,7 +328,7 @@ void main() {
   vec2 d = vec2(ndc.x * uAspect, ndc.y);
   float rOut = length(d) * uREdge;
   if (rOut < 1e-6 || uStrength <= 0.0) {
-    gl_FragColor = texture2D(tDiffuse, vUv);
+    gl_FragColor = texture2D(tDiffuse, min(vUv * uUvScale, uUvMax));
     return;
   }
   // Invert R(theta) by Newton from the rectilinear estimate. Same iteration
@@ -339,6 +345,6 @@ void main() {
   vec2 srcNdc = normalize(d) * srcRadius;
   vec2 srcUv = vec2(srcNdc.x / uAspect, srcNdc.y) * 0.5 + 0.5;
   // By construction the overscan covers the frame; clamp guards float fringe.
-  gl_FragColor = texture2D(tDiffuse, clamp(srcUv, 0.0, 1.0));
+  gl_FragColor = texture2D(tDiffuse, clamp(srcUv * uUvScale, vec2(0.0), uUvMax));
 }
 `;

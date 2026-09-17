@@ -5,8 +5,10 @@
  * per-frame uniform sync happens in main's render loop from the camera's
  * `userData.lens`, so dev FOV poses and resizes never leave the pass stale.
  */
+import * as THREE from 'three';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { lensPassFragmentShader, lensRadial } from '../shared/math/lensProjection';
+import type { SubRectUniforms } from './sceneSubRect';
 
 import { DEG2RAD as DEG } from '../shared/math/angles';
 
@@ -22,6 +24,11 @@ export interface LensParams {
   effectiveStrength?: number;
 }
 
+/** The pass's own sub-rect uniforms, for the one writer of them. */
+export function lensSubRectUniforms(pass: ShaderPass): SubRectUniforms {
+  return { uUvScale: pass.uniforms.uUvScale, uUvMax: pass.uniforms.uUvMax };
+}
+
 export function createLensPass(): ShaderPass {
   return new ShaderPass({
     name: 'LensPass',
@@ -31,6 +38,10 @@ export function createLensPass(): ShaderPass {
       uAspect: { value: 1 },
       uTanHalfRender: { value: 1 },
       uREdge: { value: 1 },
+      // The source's sub-rectangle (app/sceneSubRect.ts). 1 until something
+      // says otherwise, which is what the direct no-float path leaves them at.
+      uUvScale: { value: new THREE.Vector2(1, 1) },
+      uUvMax: { value: new THREE.Vector2(1, 1) },
     },
     vertexShader: /* glsl */ `
 varying vec2 vUv;

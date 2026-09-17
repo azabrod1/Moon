@@ -390,15 +390,30 @@ describe('a stream slower than the display', () => {
 });
 
 describe('what it tells the rest of the app', () => {
-  it('says nothing at all while Screen holds, because nothing it derives moves', () => {
+  it('never moves the budget while Screen holds, whatever the display is', () => {
     const cadence = cadenceFor('screen');
-    cadence.takeChange();
+    // Screen's first derivation is the default budget, so there is nothing
+    // for the controller to be told.
+    expect(cadence.takeChange()?.budgetChanged).toBe(false);
     run(cadence, grid(120, 3), { covered: true });
     const change = cadence.takeChange();
     // A calibration under Screen may report the display for the debug line,
     // but it can never move the budget.
     expect(change?.budgetChanged ?? false).toBe(false);
     expect(cadence.state().budgetMs).toBeCloseTo(BUDGET_MS, 6);
+  });
+
+  it('hands the boot budget over even where the calibration confirms it', () => {
+    // A 30 fps boot on a 60 Hz screen: the constructor derives 33.33 and the
+    // covered calibration lands on exactly the same number. Without the
+    // constructor's own change the controller would never hear it and would
+    // defend 60 fps with pixels while the row asked for 30.
+    const cadence = cadenceFor('30');
+    const first = cadence.takeChange();
+    expect(first?.budgetChanged).toBe(true);
+    expect(first?.readout.budgetMs).toBeCloseTo(1000 / 30, 4);
+    run(cadence, grid(60, 2), { covered: true });
+    expect(cadence.state().budgetMs).toBeCloseTo(1000 / 30, 4);
   });
 
   it('a raise is an automatic change; the row is a user change', () => {

@@ -192,10 +192,12 @@ export class FrameCadence {
       this.idleMs = this.pinnedMs;
       this.calibrated = true;
     }
+    // The constructor's derivation is a change like any other, and it has to
+    // be taken: a target boot derives its budget here, and a display where
+    // the later calibration lands on the same number would otherwise never
+    // tell the controller at all — a 30 fps session on a 60 Hz screen was
+    // measured defending 16.67 ms because of it.
     this.recompute('user');
-    // The constructor's own derivation is the session's starting point, not a
-    // change anybody has to be told about.
-    this.change = null;
   }
 
   /** The row picked a value. Screen forces `ticksPerDraw` to 1. */

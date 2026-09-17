@@ -586,10 +586,11 @@ const STEP_AFTER_MS = 2_000;
  * looking for. Both readings are in the JSON; a disagreement between them is
  * reported rather than resolved.
  */
-function qualitySteps({ id, where, device, levels }) {
+function qualitySteps({ id, where, device, levels, boot = '&quality=medium', injects = ['down', 'up'], everyStepMoves = false }) {
   // Written by run(), read by verify(): the in-page second reading.
   let probe = null;
-  const marksExpected = [...levels, 'inject-down', 'inject-up'];
+  const injectMarks = injects.map((kind, i) => `inject-${kind}${i >= 2 ? `-again` : ''}`);
+  const marksExpected = [...levels, ...injectMarks];
   return {
     id,
     title: `Graphics quality: ${marksExpected.join(' -> ')} at Earth's shell, ${where}`,
@@ -599,8 +600,10 @@ function qualitySteps({ id, where, device, levels }) {
     window: ['steps'],
     async run(page, note) {
       // Booted at medium: a known starting rung, and Dynamic not already
-      // climbing when the first step is asked for.
-      note(`renderer: ${await bootTo(page, '&quality=medium', 200)}`);
+      // climbing when the first step is asked for. The fresh-Dynamic variant
+      // boots at dynamic instead and never visits another level, so the paths
+      // a rung change needs are as cold as they are in a real session.
+      note(`renderer: ${await bootTo(page, boot, 200)}`);
       note(`device: ${JSON.stringify(await page.evaluate(() => window.__moon.device()))}`);
       note(`quality: ${JSON.stringify(await page.evaluate(() => {
         const q = window.__moon.quality();
@@ -630,7 +633,7 @@ function qualitySteps({ id, where, device, levels }) {
       }))} radii`);
       note(`sectors before the steps: ${JSON.stringify(await page.evaluate(() => window.__moon.sectors()))}`);
       await mark(page, 'steps');
-      probe = await page.evaluate(async ({ wanted, holdMs, budgetMs }) => {
+      probe = await page.evaluate(async ({ wanted, holdMs, budgetMs, injectKinds, injectNames }) => {
         const nap = (ms) => new Promise((r) => { setTimeout(r, ms); });
         // The second reading: when each frame's callback actually RAN.
         const entries = [];
@@ -667,6 +670,12 @@ function qualitySteps({ id, where, device, levels }) {
             to: { level: after.level, rung: after.rung, sceneRatio: after.sceneRatio, mode: after.mode },
             lastStep: after.lastStep,
             sceneTarget: window.__moon.perfTargets().sceneTarget,
+            // What the frame is drawn into against what is allocated for it:
+            // under a fixed allocation the target's own size stops moving and
+            // only the draw does, so a gate that reads the target alone would
+            // report every step as a step that changed nothing.
+            sceneDraw: window.__moon.perfTargets().sceneDraw ?? null,
+            sceneAlloc: window.__moon.perfTargets().sceneAlloc ?? null,
             moved: Math.abs(after.sceneRatio - before.sceneRatio) > 1e-6,
           });
         };
@@ -674,23 +683,36 @@ function qualitySteps({ id, where, device, levels }) {
           await nap(holdMs);
           record(level, () => window.__moon.setQuality(level));
         }
-        await nap(holdMs);
         // The rule's own steps, last: an injected stream carries its own
         // clock, so the rule is deaf to real frames for as long as the stream
-        // ran ahead of them, and nothing after this would be measured.
-        const downBase = performance.now();
-        record('inject-down', () => window.__moon.quality({ inject: stream(downBase, 200, 30) }));
-        await nap(holdMs);
-        // Past the probe wait in the rule's own clock, then a clean second.
-        const upBase = downBase + 200 * 30 + 10_000;
-        record('inject-up', () => window.__moon.quality({ inject: stream(upBase, 600, budgetMs / 2) }));
+        // ran ahead of them, and nothing after this would be measured. The
+        // clock runs forward across the whole sequence, which is what lets the
+        // same pair be asked for twice — the first expansion of a path against
+        // a repeat of it.
+        let ruleClockMs = performance.now();
+        for (let i = 0; i < injectKinds.length; i++) {
+          await nap(holdMs);
+          const kind = injectKinds[i];
+          const base = ruleClockMs;
+          // Down: 200 intervals at 30 ms, over budget with an idle main
+          // thread, which is what a GPU-bound frame looks like. Up: 600 clean
+          // ones at half the budget, past the probe wait in the rule's clock.
+          const samples = kind === 'down' ? stream(base, 200, 30) : stream(base, 600, budgetMs / 2);
+          ruleClockMs = samples[samples.length - 1].nowMs + 10_000;
+          record(injectNames[i], () => window.__moon.quality({ inject: samples }));
+        }
         await nap(holdMs);
         running = false;
         return { steps, entries };
-      }, { wanted: levels, holdMs: 4_000, budgetMs: 1000 / 60 });
+      }, {
+        wanted: levels, holdMs: 4_000, budgetMs: 1000 / 60,
+        injectKinds: injects, injectNames: injectMarks,
+      });
       for (const s of probe.steps) {
+        const drawn = s.sceneDraw ? `${s.sceneDraw.w}x${s.sceneDraw.h}` : `${s.sceneTarget?.w}x${s.sceneTarget?.h}`;
+        const alloc = s.sceneAlloc ? ` in ${s.sceneAlloc.w}x${s.sceneAlloc.h}` : '';
         note(`step ${s.name}: rung ${s.from.rung} -> ${s.to.rung}, scene ${round1(s.from.sceneRatio)}`
-          + ` -> ${round1(s.to.sceneRatio)} (${s.to.mode}, ${s.sceneTarget?.w}x${s.sceneTarget?.h})`
+          + ` -> ${round1(s.to.sceneRatio)} (${s.to.mode}, drew ${drawn}${alloc})`
           + `${s.moved ? '' : ' — the ratio did not move'}`);
       }
     },
@@ -703,12 +725,20 @@ function qualitySteps({ id, where, device, levels }) {
         }
       }
       // A step that moved nothing measures nothing. At least the three that
-      // must move on every display have to have moved the scene ratio.
-      const moved = (probe?.steps ?? []).filter((s) => s.moved);
-      if (moved.length < 3) {
-        problems.push(`only ${moved.length} of ${probe?.steps?.length ?? 0} steps moved the scene ratio`
+      // must move on every display have to have moved the scene ratio — and
+      // where every step is the rule's own, every one of them must.
+      const steps = probe?.steps ?? [];
+      const moved = steps.filter((s) => s.moved);
+      const needed = everyStepMoves ? steps.length : 3;
+      if (steps.length === 0 || moved.length < needed) {
+        problems.push(`only ${moved.length} of ${steps.length} steps moved the scene ratio`
           + ' — the scenario scored frames around changes that did not happen');
       }
+      // The allocation is the other half of the claim: under a fixed
+      // allocation the targets must be the same size at the last step as at
+      // the first, or a rung is still moving memory.
+      const allocs = steps.map((s) => (s.sceneAlloc ? `${s.sceneAlloc.w}x${s.sceneAlloc.h}` : null)).filter(Boolean);
+      analysis.qualityStepAllocs = [...new Set(allocs)];
       const rows = [];
       for (const m of marks) {
         // The step's own frame is the first one to START after it: the work
@@ -1198,6 +1228,31 @@ const SCENARIOS = [
     device: PHONE,
     // High is not offered on a phone, so the row omits it and so does this.
     levels: ['low', 'medium', 'dynamic'],
+  }),
+  // The two above visit Low and High before they ever ask the rule for a rung,
+  // which warms the very paths whose COLD cost a Dynamic session pays: the
+  // finishing pass's own target, EASU's target, both resample programs and the
+  // far side of the allocation. These boot straight into Dynamic and never
+  // leave it, so the first rung change is a real session's first rung change —
+  // and each path is then asked for a second time, so the first use of one can
+  // be told from a repeat of it.
+  qualitySteps({
+    id: 'dynamic-boot-steps',
+    where: 'Mac window (1728x1117 @2), booted at Dynamic',
+    device: MAC_WINDOW,
+    levels: [],
+    boot: '&quality=dynamic',
+    injects: ['down', 'up', 'down', 'up'],
+    everyStepMoves: true,
+  }),
+  qualitySteps({
+    id: 'phone-dynamic-boot-steps',
+    where: 'phone (430x932 @3), booted at Dynamic',
+    device: PHONE,
+    levels: [],
+    boot: '&quality=dynamic',
+    injects: ['down', 'up', 'down', 'up'],
+    everyStepMoves: true,
   }),
 ];
 

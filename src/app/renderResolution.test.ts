@@ -6,6 +6,7 @@ import {
   ECONOMY_ABOVE_DEVICE_PIXELS,
   MAX_TARGET_PIXEL_RATIO_DESKTOP,
   MAX_TARGET_PIXEL_RATIO_MOBILE,
+  MAX_SUPERSAMPLE_FACTOR,
   MAX_UPSCALE_FACTOR,
   parseMsaaOverride,
   parsePixelRatioPin,
@@ -90,6 +91,22 @@ describe('policySamples', () => {
     expect(policySamples(1, true, QHD)).toBe(0);
     expect(policySamples(2, true, QHD)).toBe(0);
   });
+
+  it('is asked with the OUTPUT ratio, so a scene ratio either side of it keeps one layout', () => {
+    // main.ts calls this with the output ratio and holds the count across
+    // every quality level and every Dynamic rung: the count has two step
+    // functions inside the range a slide traverses, and following the scene
+    // ratio would change the antialiasing character mid-slide — on a Windows
+    // laptop at 125 % it would give the CHEAPER rung twice the samples and
+    // more multisampled storage than Medium.
+    expect(policySamples(1.25, false, QHD)).toBe(SCENE_TARGET_SAMPLES_ECONOMY);
+    expect(policySamples(1.25 * 0.75, false, QHD)).toBe(SCENE_TARGET_SAMPLES); // the scene ratio: not asked
+    // The one place holding the count changes what ships: a 2× Mac told
+    // `?upscale=1` used to draw its scene target with four samples (the scene
+    // ratio's count) and now draws it with none (the canvas's).
+    expect(policySamples(2, false, QHD)).toBe(0);
+    expect(policySamples(1, false, QHD)).toBe(SCENE_TARGET_SAMPLES);
+  });
 });
 
 describe('composerSamples', () => {
@@ -161,12 +178,11 @@ describe('parseMsaaOverride', () => {
   });
 });
 
-describe('renderPixelRatio (the upscaler)', () => {
-  it('is the output ratio with nothing asked, or with a request at or above it', () => {
+describe('renderPixelRatio (the scene ratio either side of the canvas)', () => {
+  it('is the output ratio with nothing asked, or with a request equal to it', () => {
     expect(renderPixelRatio(2, null)).toBe(2);
     expect(renderPixelRatio(2, 2)).toBe(2);
-    expect(renderPixelRatio(2, 3)).toBe(2);
-    expect(renderPixelRatio(1, 1.5)).toBe(1); // a 1× monitor asked for 1.5: nothing to upscale
+    expect(renderPixelRatio(1, 1)).toBe(1);
   });
 
   it('is the request below the output ratio', () => {
@@ -175,9 +191,24 @@ describe('renderPixelRatio (the upscaler)', () => {
     expect(renderPixelRatio(2.5, 1.5)).toBe(1.5);
   });
 
+  it('honours a request ABOVE the output ratio — the supersample the levels offer', () => {
+    // A request above the canvas's ratio used to be refused outright; High
+    // and Dynamic's up rungs are exactly that request, drawn larger and
+    // averaged down (app/UpscalePass.ts DownsamplePass).
+    expect(renderPixelRatio(2, 2.5)).toBe(2.5);
+    expect(renderPixelRatio(2, 3)).toBe(3);
+    expect(renderPixelRatio(1, 1.25)).toBe(1.25);
+    expect(renderPixelRatio(1, 1.5)).toBe(1.5);
+  });
+
   it('never goes below the output ratio over the largest factor EASU is specified for', () => {
     expect(renderPixelRatio(2, 0.5)).toBe(2 / MAX_UPSCALE_FACTOR);
     expect(renderPixelRatio(3, 1)).toBe(1.5);
+  });
+
+  it('never goes above it by more than the largest supersample the policy offers', () => {
+    expect(renderPixelRatio(2, 4)).toBe(2 * MAX_SUPERSAMPLE_FACTOR);
+    expect(renderPixelRatio(1, 99)).toBe(MAX_SUPERSAMPLE_FACTOR);
   });
 
   it('treats an unreadable request as nothing asked', () => {

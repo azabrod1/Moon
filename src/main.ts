@@ -10,7 +10,7 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { OutputTargetPass, SharpenPass, UpscalePass } from './app/UpscalePass';
+import { DownsamplePass, OutputTargetPass, SharpenPass, UpscalePass, type DownsampleFilter } from './app/UpscalePass';
 import { RCAS_DEFAULT_STOPS } from './app/fsr1';
 
 import { PlanetariumMode, FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS } from './planetarium/PlanetariumMode';
@@ -191,6 +191,11 @@ const upscaleParam = parseUpscaleParam(location.search, import.meta.env.DEV);
 let upscaleRenderRatio: number | null = upscaleParam ? upscaleParam.renderRatio : upscalePolicy(isMobile);
 let upscaleFilter: UpscaleFilter = upscaleParam?.filter ?? 'easu';
 let upscaleSharpenStops: number | null = upscaleParam?.sharpen === undefined ? RCAS_DEFAULT_STOPS : upscaleParam.sharpen;
+// Which kernel carries a frame drawn LARGER than the canvas down onto it. The
+// box is the compositor's own shrink, the look that was judged the sharper
+// one; `?downsample=tent` is the A/B, dev server only.
+let downsampleFilter: DownsampleFilter =
+  import.meta.env.DEV && new URLSearchParams(location.search).get('downsample') === 'tent' ? 'tent' : 'box';
 
 try {
   const gl = renderer.getContext();
@@ -267,6 +272,7 @@ let lensPass: ReturnType<typeof createLensPass> | null = null;
 let outputTargetPass: OutputTargetPass | null = null;
 let upscalePass: UpscalePass | null = null;
 let sharpenPass: SharpenPass | null = null;
+let downsamplePass: DownsamplePass | null = null;
 let directLensTexture: THREE.FramebufferTexture | null = null;
 const directLensSize = new THREE.Vector2();
 
@@ -448,6 +454,7 @@ function buildComposer(
   outputTargetPass = null;
   upscalePass = null;
   sharpenPass = null;
+  downsamplePass = null;
   directLensTexture?.dispose();
   directLensTexture = null;
   screenTarget?.dispose();
@@ -558,11 +565,13 @@ function buildComposer(
   }
 
   // The finishing pass, and on the planetarium's composer — the one whose
-  // scene ratio can sit below the canvas's — the upscaler's two after it
-  // (app/UpscalePass.ts). With those two disabled the finishing pass is the
-  // last enabled pass and draws the canvas exactly as OutputPass did; enabled
-  // (applyUpscalePasses, from the live state) they take the frame from its
-  // own target up to the canvas.
+  // scene ratio can sit either side of the canvas's — the three resample
+  // passes after it (app/UpscalePass.ts). With all three disabled the
+  // finishing pass is the last enabled pass and draws the canvas exactly as
+  // OutputPass did; enabled (applyUpscalePasses, from the live state) they
+  // take the frame from its own target across to the canvas. Never more than
+  // one direction at a time, which is why the downsample can sit last: three
+  // gives the canvas to the last ENABLED pass every render.
   outputTargetPass = fused && bloomPass
     ? new FusedOutputPass(bloomPass as BloomChainPass)
     : new OutputTargetPass();
@@ -570,40 +579,69 @@ function buildComposer(
   if (cam === planetariumCamera) {
     upscalePass = new UpscalePass(outputTargetPass);
     sharpenPass = new SharpenPass(upscalePass);
+    downsamplePass = new DownsamplePass(outputTargetPass);
+    downsamplePass.setFilter(downsampleFilter);
     composer.addPass(upscalePass);
     composer.addPass(sharpenPass);
+    composer.addPass(downsamplePass);
   }
   composerBuiltFor = { cam, bloom, enabled, lens: lensRequestedStrength };
   applyUpscalePasses();
 }
 
+/** Which side of the canvas the live frame's scene is drawn on: smaller
+ *  (resampled up), the same (nothing between the tone map and the canvas), or
+ *  larger (averaged down). A pass costs a whole canvas of fill, so the
+ *  comparison is exact — a ratio a hair off its own output ratio must read as
+ *  native rather than buy two passes for nothing. */
+type SceneRatioMode = 'upscale' | 'native' | 'supersample';
+
+function sceneRatioMode(): SceneRatioMode {
+  if (composer === null || composerBuiltFor?.cam !== planetariumCamera) return 'native';
+  const outputRatio = getTargetPixelRatio();
+  const sceneRatio = getScenePixelRatio();
+  if (sceneRatio < outputRatio - 1e-6) return 'upscale';
+  if (sceneRatio > outputRatio + 1e-6) return 'supersample';
+  return 'native';
+}
+
 /** Whether the live frame's scene is drawn below the output ratio. */
 function upscaleActive(): boolean {
-  return composer !== null && composerBuiltFor?.cam === planetariumCamera
-    && getScenePixelRatio() < getTargetPixelRatio();
+  return sceneRatioMode() === 'upscale';
 }
 
 /**
- * Point the upscale passes at the live state: EASU on when the scene is below
- * the output ratio and the filter is EASU — the bilinear control arm is no
- * pass at all, the finishing pass drawing the smaller buffer straight to the
- * canvas through the composer target's own linear filter — and RCAS after it
- * unless the stops are null.
+ * Point the resample passes at the live state: EASU on when the scene is
+ * below the output ratio and the filter is EASU — the bilinear control arm is
+ * no pass at all, the finishing pass drawing the smaller buffer straight to
+ * the canvas through the composer target's own linear filter — RCAS after it
+ * unless the stops are null, and the downsample alone when the scene is above
+ * the output ratio (never RCAS: a shrink does not need its edges put back).
+ *
+ * Enable and disable only. No pass is added or removed, no material is rebuilt
+ * and the raw shaders ignore the destination's colour space, so nothing
+ * relinks here — which is why a rung change is cheap, and why it needs no
+ * covered render to hide a compile.
  */
 function applyUpscalePasses(): void {
-  const easu = upscaleActive() && upscaleFilter === 'easu';
+  const mode = sceneRatioMode();
+  const easu = mode === 'upscale' && upscaleFilter === 'easu';
   if (upscalePass) upscalePass.enabled = easu;
   if (sharpenPass) {
     sharpenPass.enabled = easu && upscaleSharpenStops !== null;
     sharpenPass.setSharpness(upscaleSharpenStops ?? RCAS_DEFAULT_STOPS);
   }
-  // Said through debugLog, so a phone's ?debug=1 overlay answers whether the
-  // frame it shows is upscaled: Safari's address bar hides the query that
-  // asked for it, and a screenshot of the stats cannot tell the two apart.
+  if (downsamplePass) {
+    downsamplePass.enabled = mode === 'supersample';
+    downsamplePass.setFilter(downsampleFilter);
+  }
+  // Said through debugLog, so a phone's ?debug=1 overlay answers which of the
+  // three a frame is on: Safari's address bar hides the query that asked for
+  // it, and a screenshot of the stats cannot tell them apart.
   if (upscalePass) debugLog('Upscale', upscaleState());
 }
 
-/** Apply a change to the upscaler's state: the passes, then the resize path,
+/** Apply a change to the resample's state: the passes, then the resize path,
  *  which re-sizes the composer at the new scene ratio and retunes every point
  *  size through the modes' onResize. */
 function applyUpscale(): void {
@@ -611,19 +649,25 @@ function applyUpscale(): void {
   syncViewport();
 }
 
-/** Where the upscaler stands, for the bridge and a capture's log. */
+/** Where the resample stands, for the bridge and a capture's log. */
 function upscaleState() {
   const outputRatio = getTargetPixelRatio();
   const sceneRatio = getScenePixelRatio();
   return {
     outputRatio,
     sceneRatio,
+    mode: sceneRatioMode(),
     factor: outputRatio / sceneRatio,
     active: upscaleActive(),
     request: upscaleRenderRatio,
     filter: upscaleFilter,
+    downsample: downsampleFilter,
     sharpen: upscaleSharpenStops,
-    passes: { easu: upscalePass?.enabled ?? false, rcas: sharpenPass?.enabled ?? false },
+    passes: {
+      easu: upscalePass?.enabled ?? false,
+      rcas: sharpenPass?.enabled ?? false,
+      box: downsamplePass?.enabled ?? false,
+    },
   };
 }
 
@@ -1355,15 +1399,16 @@ function installDevHooks() {
     pinRatio: (ratio: number | null) => devPinPixelRatio(ratio),
     /** Every surface a frame is drawn into, in device pixels (the perf sweep installs the same under `?perf=1`; here for any harness). */
     perfTargets: () => devRenderTargets(),
-    /** The upscaler, live (app/UpscalePass.ts): `ratio` = the scene ratio (null = off), `sharpen` = RCAS stops (null = RCAS off), `filter` = 'easu' | 'bilinear' (the control arm). No argument reads; null turns it off. Returns where it stands. */
-    upscale: (opts?: { ratio?: number | null; sharpen?: number | null; filter?: UpscaleFilter } | null) => {
+    /** The resample, live (app/UpscalePass.ts): `ratio` = the scene ratio (null = the level's own), `sharpen` = RCAS stops (null = RCAS off), `filter` = 'easu' | 'bilinear' (the upscale control arm) or 'box' | 'tent' (the downsample A/B). No argument reads; null hands the ratio back to the quality level. Returns where it stands. */
+    upscale: (opts?: { ratio?: number | null; sharpen?: number | null; filter?: UpscaleFilter | DownsampleFilter } | null) => {
       if (opts !== undefined) {
         if (opts === null) {
           upscaleRenderRatio = null;
         } else {
           if (opts.ratio !== undefined) upscaleRenderRatio = opts.ratio;
           if (opts.sharpen !== undefined) upscaleSharpenStops = opts.sharpen;
-          if (opts.filter !== undefined) upscaleFilter = opts.filter;
+          if (opts.filter === 'box' || opts.filter === 'tent') downsampleFilter = opts.filter;
+          else if (opts.filter !== undefined) upscaleFilter = opts.filter;
         }
         // The switch mirrors on/off and its listener applies that change; a
         // change inside the on state (the ratio, the filter, the stops) is

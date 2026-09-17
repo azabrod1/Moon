@@ -35,8 +35,9 @@
  * ratio is targetPixelRatio: the renderer and its canvas, the System Map, the
  * corner chart, the direct path. The SCENE ratio, renderPixelRatio, is what
  * the planetarium's composer is sized at — the scene, the lens, the bloom's
- * source and the tone map all draw at it — and one edge-aware resample (FSR 1
- * EASU, with RCAS after it) carries the frame up to the canvas. A phone's
+ * source and the tone map all draw at it — and one resample carries the frame
+ * across to the canvas: an edge-aware one up (FSR 1 EASU, with RCAS after it)
+ * where the scene is smaller, an area box down where it is larger. A phone's
  * frame at Earth's shell is GPU-bound per pixel, and 1.5 against 2 is 0.5625
  * of them. Everything that sizes a thing in the scene's own framebuffer
  * pixels — star and moon-dot point sizes, the belt's sub-pixel energy, the
@@ -172,16 +173,28 @@ export const UPSCALE_RENDER_PIXEL_RATIO = 1.5;
 /** EASU is specified good up to 2× linear; the scene ratio never goes below
  *  the output ratio over this. */
 export const MAX_UPSCALE_FACTOR = 2;
+/**
+ * And never above it by more than this. 1.5 is the top of the quality levels'
+ * own ladder (app/renderQuality.ts), and the clamp is here so that no URL,
+ * level or bridge call can ask the composer for a target larger than the
+ * policy ever offers: at 1.5 a 2× display's scene target is 2.25× the pixels
+ * and the byte budget is what decides whether even that is allowed.
+ */
+export const MAX_SUPERSAMPLE_FACTOR = 1.5;
 
 /**
  * The ratio the planetarium's scene target is drawn at. `request` is the
- * scene ratio asked for (the URL, the switch, the policy); null, or a request
- * at or above the output ratio, means the upscaler is off and the scene draws
- * at the output ratio as it always did.
+ * scene ratio asked for (the quality level, the `?upscale=` pin, the bridge);
+ * null or unreadable means the scene draws at the output ratio as it always
+ * did. A request BELOW the output ratio is an upscale, one ABOVE it a
+ * supersample, and each is clamped to the factor its resample is specified
+ * for.
  */
 export function renderPixelRatio(outputRatio: number, request: number | null): number {
-  if (request === null || !(request > 0) || request >= outputRatio) return outputRatio;
-  return Math.max(request, outputRatio / MAX_UPSCALE_FACTOR);
+  if (request === null || !(request > 0)) return outputRatio;
+  const floor = outputRatio / MAX_UPSCALE_FACTOR;
+  const ceiling = outputRatio * MAX_SUPERSAMPLE_FACTOR;
+  return Math.min(ceiling, Math.max(floor, request));
 }
 
 export type UpscaleFilter = 'easu' | 'bilinear';

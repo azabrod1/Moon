@@ -11,10 +11,17 @@
 // Requirement: ZERO differing pixels. A run that reports anything else is a
 // change that must not ship as written.
 //
+// One change here cannot promise zero: the finishing pass's fold
+// (app/FusedOutputPass.ts), where an intermediate half-float rounding
+// disappeared. `--report` prints the numbers instead of a verdict, and the two
+// statistics it is judged on are `max` and `over1` — the count of pixels past
+// one least significant bit.
+//
 // Usage (dev server on :5680, machine browser lock taken automatically):
 //   node tools/pixel-gate.mjs --keys=night-early
 //   node tools/pixel-gate.mjs --keys=night-early,cloud-clear --poses=night,terminator
-//   node tools/pixel-gate.mjs --keys=fused-final --report      # E7: numbers, not a verdict
+//   node tools/pixel-gate.mjs --reload=fused-final --report    # numbers, not a verdict
+//   node tools/pixel-gate.mjs --reload=fused-final --report --extra='&quality=medium'
 //   node tools/pixel-gate.mjs --engine=webkit --keys=night-early,cloud-clear,cloud-taps,glint-gate
 import { chromium, webkit } from 'playwright';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -82,7 +89,10 @@ const PIN_RATIO = Number(arg('ratio', '1'));
  * two states of the cloud deck, the limb, a resident tile's edge and a frame
  * with the Sun in it.
  *
- * `hold` is extra settle for a pose whose tiles have to arrive first.
+ * `hold` is extra settle for a pose whose tiles have to arrive first, `ready`
+ * names a bridge predicate the pose waits on before it is taken, and `also` /
+ * `undo` are lists of bridge calls run after the pose is up and before the next
+ * one.
  */
 const POSES = {
   // Low orbit, fully sunlit: the deck, the ground, the tiles and the air all
@@ -103,6 +113,12 @@ const POSES = {
   limb: { call: ['limbView', 'Earth', 1.02, 45, 20, 1], time: '2026-03-21T09:20:00Z', hold: 3000 },
   // A pose the Sun is in, for the bloom threshold crossings.
   sun: { call: ['frameSun', 0.6, 40, -0.2, 0.1], time: '2026-03-21T09:20:00Z', hold: 1500 },
+  // The same Sun in a CORNER of the frame. The lens warp's deviation from a
+  // plain read is largest there, and the frame's own boundary is there: a
+  // bright source just outside the displayed frame but inside the overscan can
+  // only reach the picture at a corner. Anything a warped bloom read moves
+  // shows here before it shows anywhere else.
+  'sun-corner': { call: ['frameSun', 0.6, 40, -0.85, 0.8], time: '2026-03-21T09:20:00Z', hold: 1500 },
   // A second surface family, with no cloud deck and no night shell over it:
   // the ground shader's own terms with the Earth-only ones switched off.
   moon: { call: ['frame', 'Moon', 0.85, 30], time: '2026-03-21T09:20:00Z', hold: 2500 },
@@ -116,38 +132,83 @@ const POSES = {
   // The two things that draw straight onto the canvas: the System Map and the
   // corner chart. Not switch poses, so only a `--poses=` that names them runs
   // them; `also` runs after the pose is taken and `undo` before the next pose.
-  map: { call: ['jumpTo', 'Earth', 1], also: ['openMap'], undo: ['closeMap'], time: '2026-03-21T09:20:00Z', hold: 2500, optional: true },
-  chart: { call: ['limbView', 'Earth', 1.05, 55, 0, 0.35], also: ['setMiniChart', true], undo: ['setMiniChart', false], time: '2026-03-21T09:20:00Z', hold: 2500, optional: true },
+  map: { call: ['jumpTo', 'Earth', 1], also: [['openMap']], undo: [['closeMap']], time: '2026-03-21T09:20:00Z', hold: 2500, optional: true },
+  chart: { call: ['limbView', 'Earth', 1.05, 55, 0, 0.35], also: [['setMiniChart', true]], undo: [['setMiniChart', false]], time: '2026-03-21T09:20:00Z', hold: 2500, optional: true },
+  // The other two composers a change to the finishing pass reaches: the "How
+  // many fit?" tool and Look inside. Both are entered through the app's own
+  // door, both carry bloom and neither carries the lens, and neither has
+  // pixels in any other battery. Look inside's presentation clock is set to a
+  // fixed second and frozen, or two boots would settle its ceremony at two
+  // different moments and difference that.
+  compare: { call: ['compareOpen'], undo: [['compareEsc']], hold: 4000, optional: true },
+  interior: {
+    call: ['interiorOpen', 'Earth'],
+    // The presentation clock set to a fixed second and frozen, and the camera
+    // put at explicit angles: two boots would otherwise settle the studio's
+    // ceremony and its framing at two different moments and difference that.
+    also: [['interiorTime', 12], ['interiorFreeze', true], ['interiorOrbit', 35, 18]],
+    ready: 'interiorReady',
+    undo: [['interiorEsc']],
+    hold: 4000,
+    optional: true,
+  },
 };
 
 const poseNames = arg('poses', Object.keys(POSES).filter((k) => !POSES[k].optional).join(','))
   .split(',').map((s) => s.trim()).filter(Boolean);
 
-/** Take a pose: the clock, the camera call, then its `also` step. False when the camera call refused. */
+/** One bridge call, `[name, ...args]`. */
+async function bridgeCall(page, call) {
+  return page.evaluate(([f, a]) => window.__moon[f](...a), [call[0], call.slice(1)]);
+}
+
+/** Take a pose: the clock, the camera call, its `ready` wait, then its `also`
+ *  calls. False when the camera call refused. The `also` calls come after the
+ *  wait, because a pose that has one is a mode still opening, and its own
+ *  reveal would overwrite a framing or a clock set before it landed. */
 async function takePose(page, pose) {
-  const [fn, ...args] = pose.call;
   await page.evaluate(([t]) => window.__moon.setTimeMs(t), [Date.parse(pose.time ?? TIME_ISO)]);
-  const posed = await page.evaluate(([f, a]) => window.__moon[f](...a), [fn, args]);
-  if (!posed) return false;
-  if (pose.also) await page.evaluate(([f, a]) => { window.__moon[f](...a); }, [pose.also[0], pose.also.slice(1)]);
+  const posed = await bridgeCall(page, pose.call);
+  if (posed === false) return false;
+  if (pose.ready) {
+    await page.waitForFunction(([p]) => !!window.__moon[p]?.(), [pose.ready], { timeout: 120000 });
+  }
+  for (const call of pose.also ?? []) await bridgeCall(page, call);
   return true;
 }
 async function undoPose(page, pose) {
-  if (pose.undo) await page.evaluate(([f, a]) => { window.__moon[f](...a); }, [pose.undo[0], pose.undo.slice(1)]);
+  if (!pose.undo) return;
+  for (const call of pose.undo) await bridgeCall(page, call);
+  // A pose that left a tool or the map hands the app back asynchronously, and
+  // a tool entry is refused outright while a mode switch is still in flight —
+  // so the pose after one of these would report "refused" for a reason that is
+  // only the pose before it not having finished leaving.
+  await page.waitForTimeout(pose.undoSettleMs ?? 3000);
 }
 
 mkdirSync(outDir, { recursive: true });
 
-/** Differing pixels between two PNG buffers, and where the worst one is. */
+/**
+ * Differing pixels between two PNG buffers, and where the worst one is.
+ *
+ * `over1` is the count past one least significant bit — pixels at |Δ| ≥ 2 —
+ * and `over1Frac` its share of the frame. A change that cannot promise the same
+ * pixels is judged on those two rather than on `pixels`: a sparse scatter of
+ * single-bit flips is a rounding that moved, and a patch of 2 LSB and up is
+ * something to look at.
+ */
 function diffPngs(a, b) {
-  if (Buffer.compare(a, b) === 0) return { bytes: 'identical', pixels: 0, maxAbs: 0, meanAbs: 0 };
+  if (Buffer.compare(a, b) === 0) {
+    return { bytes: 'identical', pixels: 0, maxAbs: 0, meanAbs: 0, over1: 0, over1Frac: 0 };
+  }
   const da = decodePng(a);
   const db = decodePng(b);
   if (da.width !== db.width || da.height !== db.height || da.channels !== db.channels) {
-    return { pixels: -1, maxAbs: 255, meanAbs: 255, note: 'size mismatch' };
+    return { pixels: -1, maxAbs: 255, meanAbs: 255, over1: -1, over1Frac: 1, note: 'size mismatch' };
   }
   const ch = da.channels;
   let pixels = 0;
+  let over1 = 0;
   let maxAbs = 0;
   let sumAbs = 0;
   let worst = { x: 0, y: 0 };
@@ -158,6 +219,7 @@ function diffPngs(a, b) {
       for (let c = 0; c < 3; c++) d = Math.max(d, Math.abs(da.pixels[i + c] - db.pixels[i + c]));
       if (d > 0) {
         pixels++;
+        if (d >= 2) over1++;
         sumAbs += d;
         if (d > maxAbs) { maxAbs = d; worst = { x, y }; }
       }
@@ -165,6 +227,8 @@ function diffPngs(a, b) {
   }
   return {
     pixels,
+    over1,
+    over1Frac: over1 / (da.width * da.height),
     maxAbs,
     meanAbs: pixels ? sumAbs / pixels : 0,
     meanOverFrame: sumAbs / (da.width * da.height),
@@ -172,6 +236,14 @@ function diffPngs(a, b) {
     width: da.width,
     height: da.height,
   };
+}
+
+/** How a difference reads on the console: the count, the two statistics the
+ *  bar is written in, and where to look. */
+function verdictOf(d) {
+  if (d.pixels === 0) return 'ZERO';
+  return `${d.pixels} px, max ${d.maxAbs}, over1 ${d.over1} (${(d.over1Frac * 100).toFixed(4)}% of frame),`
+    + ` mean ${d.meanAbs.toFixed(2)} at ${d.worst.x},${d.worst.y}`;
 }
 
 /** The worst region at 6×, so a difference can be looked at rather than
@@ -309,6 +381,26 @@ try {
     return page.screenshot();
   };
 
+  // Which arm a capture really came from, in the app's own words. `--ratio=` and
+  // `pinCapture` hold the OUTPUT ratio, not the fixed allocation, so a plain
+  // boot captures at whatever rung Dynamic was holding with a sub-rectangle
+  // under it (uvScale below 1) while `--extra='&quality=medium'` captures with
+  // the frame filling its allocation (uvScale 1). The sheet has to say which,
+  // or a 1-LSB dither from the sub-rect read is read as the change.
+  const armState = () => page.evaluate(() => {
+    const t = window.__moon.perfTargets?.();
+    if (!t) return null;
+    return {
+      uvScale: t.uvScale,
+      quality: t.quality,
+      sceneRatio: t.sceneRatio,
+      sceneAlloc: t.sceneAlloc,
+      sceneDraw: t.sceneDraw,
+      partnerAllocated: t.composerPartner?.allocated ?? null,
+      switches: window.__moon.perfSwitches?.() ?? null,
+    };
+  });
+
   // Wait until two captures in a row are the same bytes. A rung of the colour
   // ladder that lands a second late, a tile that finishes its upload, a pass
   // whose program links on its first render after a rebuild — each is a
@@ -328,10 +420,15 @@ try {
   const reloadTag = reloadQuery || reloadKey || (urlB ? 'server-b' : '');
   if (reloadTag) {
     // Both halves of the A/B, pose by pose, out of two boots of the same page.
+    // The FIRST boot is the plain one — for a switch that ships on, that is the
+    // ON arm — and the second carries `?perfoff=<key>`, the URL parameter or
+    // the other server.
     const shots = [];
+    const states = [];
     for (const off of ['', reloadTag]) {
       await boot(off);
       const half = {};
+      const halfState = {};
       let warmedBoot = false;
       for (const poseName of poseNames) {
         const pose = POSES[poseName];
@@ -345,9 +442,11 @@ try {
         await page.waitForTimeout(600);
         if (!warmedBoot) { warmedBoot = true; await page.waitForTimeout(WARM_MS); }
         half[poseName] = await settleUntilStill(poseName);
+        halfState[poseName] = await armState();
         await undoPose(page, pose);
       }
       shots.push(half);
+      states.push(halfState);
     }
     for (const poseName of poseNames) {
       const on = shots[0][poseName];
@@ -362,9 +461,10 @@ try {
         if (bad && d.worst) worstCrop(off, on, d.worst, path.join(outDir, `${tag}.worst6x.png`));
       }
       if (bad && !reportOnly) failures++;
-      rows.push({ key: reloadTag, pose: poseName, diff: d });
-      console.log(`[gate] ${engine} ${reloadTag} @ ${poseName}: ${d.pixels === 0 ? 'ZERO'
-        : `${d.pixels} px, max ${d.maxAbs}, mean ${d.meanAbs.toFixed(2)} at ${d.worst.x},${d.worst.y}`}`);
+      const arm = { on: states[0][poseName] ?? null, off: states[1][poseName] ?? null };
+      rows.push({ key: reloadTag, pose: poseName, diff: d, arm });
+      const uv = arm.on?.uvScale ? ` [uvScale ${arm.on.uvScale.map((n) => n.toFixed(4)).join(',')}]` : '';
+      console.log(`[gate] ${engine} ${reloadTag} @ ${poseName}: ${verdictOf(d)}${uv}`);
     }
     poseNames.length = 0;
   }
@@ -390,7 +490,7 @@ try {
       await page.evaluate(() => window.__moon.setBloom(true));
       const withBloom = await shoot();
       const d = diffPngs(noBloom, withBloom);
-      console.log(`[gate] bloom @ ${poseName}: ${d.pixels} px touched, max ${d.maxAbs}`);
+      console.log(`[gate] bloom @ ${poseName}: ${d.pixels} px touched, max ${d.maxAbs}, over1 ${d.over1}`);
       rows.push({ key: 'bloom-engagement', pose: poseName, diff: d });
       continue;
     }
@@ -425,12 +525,11 @@ try {
       const unstable = noise.pixels !== 0;
       if (bad && !unstable && !reportOnly) failures++;
       if (unstable) unstablePoses++;
-      rows.push({ key, pose: poseName, noise, diff: d });
-      const verdict = d.pixels === 0
-        ? 'ZERO'
-        : `${d.pixels} px, max ${d.maxAbs}, mean ${d.meanAbs.toFixed(2)} (over frame ${d.meanOverFrame.toExponential(2)}) at ${d.worst.x},${d.worst.y}`;
+      const arm = await armState();
+      rows.push({ key, pose: poseName, noise, diff: d, arm });
       const noiseNote = noise.pixels === 0 ? '' : `  [pose noise ${noise.pixels} px, max ${noise.maxAbs}]`;
-      console.log(`[gate] ${engine} ${key} @ ${poseName}: ${verdict}${noiseNote}`);
+      const uv = arm?.uvScale ? ` [uvScale ${arm.uvScale.map((n) => n.toFixed(4)).join(',')}]` : '';
+      console.log(`[gate] ${engine} ${key} @ ${poseName}: ${verdictOf(d)}${noiseNote}${uv}`);
     }
     await undoPose(page, pose);
   }

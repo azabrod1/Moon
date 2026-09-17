@@ -40,6 +40,14 @@
  * `x * 1.0` is exact in IEEE arithmetic. So the same shader text carries the
  * unscaled frame unchanged.
  *
+ * **A site may read through the lens warp instead.** On the fused chain the
+ * bloom bright pass and the finishing pass sample the scene image at the
+ * warped position rather than at their own `vUv`, and the inverse map
+ * (shared/math/lensProjection.ts lensSourceUv) applies the scale and the clamp
+ * inside itself — so such a site scales exactly once, in the warp, and the
+ * function's text is put in beside the two declarations rather than being
+ * copied into each shader.
+ *
  * **The multisampled resolve.** three resolves a multisampled target with
  * `blitFramebuffer(0, 0, width, height, …)` over the whole allocation at the
  * end of every render, while the target's scissor box and scissor test are
@@ -52,6 +60,7 @@
  * expected there, not proven.
  */
 import * as THREE from 'three';
+import { lensSourceUvGlsl } from '../shared/math/lensProjection';
 import type { QualityLadder } from './renderQuality';
 
 /** A target's size in device pixels. */
@@ -147,37 +156,69 @@ export const OUTPUT_UV_ANCHOR = 'gl_FragColor = texture2D( tDiffuse, vUv );';
 
 const UV_SCALE_DECLARATIONS = '\nuniform vec2 uUvScale;\nuniform vec2 uUvMax;';
 const UV_READ_SCALED = 'texture2D( tDiffuse, min( vUv * uUvScale, uUvMax ) )';
+/** The same read taken through the lens warp: the inverse map hands back a uv
+ *  already scaled into the sub-rectangle and clamped inside it, so a site that
+ *  warps does not also scale (shared/math/lensProjection.ts lensSourceUv). */
+const UV_READ_WARPED = 'texture2D( tDiffuse, lensSourceUv( vUv ) )';
 
-/** Whether a material's fragment text carries the scaled read — the check a
- *  pass makes of its own shader after any other edit to it. */
+/** Whether a material's fragment text reads a scene-sized target through the
+ *  sub-rectangle — the check a pass makes of its own shader after any other
+ *  edit to it. Either form counts: the plain scaled read, or the warp, which
+ *  scales inside itself. */
 export function uvScaleIsWired(material: THREE.ShaderMaterial): boolean {
-  return material.fragmentShader.includes('uniform vec2 uUvScale;')
-    && material.fragmentShader.includes(UV_READ_SCALED);
+  const text = material.fragmentShader;
+  return text.includes('uniform vec2 uUvScale;')
+    && (text.includes(UV_READ_SCALED) || text.includes(UV_READ_WARPED));
 }
 
 /**
- * Scale one sampling site's read of a scene-sized target, and hand back the
- * uniforms that drive it.
+ * Scale one sampling site's read of a scene-sized target — optionally taking
+ * it through the lens warp — and hand the text back.
  *
- * The one place any of these shaders is edited: three's own text for the
- * bright pass and the finishing pass, patched at construction, with a throw
- * rather than a silent no-op if a three release has reformatted it. Calling it
- * twice on the same material (the fused finishing pass re-applies it after
- * writing its own text) keeps the uniforms already installed, so a reference
- * taken from the first call stays live.
+ * The one place three's own text for the bright pass and the finishing pass is
+ * edited, with a throw rather than a silent no-op if a three release has
+ * reformatted it. With `lens` the read goes through `lensSourceUv`, whose
+ * definition is put in beside the two declarations: one GLSL definition of the
+ * inverse map for every shader that reads a scene image, so the lens pass, the
+ * bright pass and the finishing pass cannot warp differently.
  */
-export function patchUvScale(material: THREE.ShaderMaterial, anchor: string): SubRectUniforms {
-  const text = material.fragmentShader;
+export function scaleSceneRead(text: string, anchor: string, lens = false): string {
   if (!anchor.includes(UV_READ) || !text.includes(anchor) || !text.includes(UV_UNIFORM_ANCHOR)) {
-    throw new Error(`patchUvScale: the installed three no longer carries ${JSON.stringify(anchor)}`);
+    throw new Error(`scaleSceneRead: the installed three no longer carries ${JSON.stringify(anchor)}`);
   }
-  material.fragmentShader = text
-    .replace(UV_UNIFORM_ANCHOR, UV_UNIFORM_ANCHOR + UV_SCALE_DECLARATIONS)
-    .replace(anchor, anchor.replace(UV_READ, UV_READ_SCALED));
+  const declarations = UV_UNIFORM_ANCHOR + UV_SCALE_DECLARATIONS + (lens ? `\n${lensSourceUvGlsl}` : '');
+  return text
+    .replace(UV_UNIFORM_ANCHOR, declarations)
+    .replace(anchor, anchor.replace(UV_READ, lens ? UV_READ_WARPED : UV_READ_SCALED));
+}
+
+/**
+ * Apply `scaleSceneRead` to a material, and hand back the uniforms that drive
+ * it.
+ *
+ * Patched at construction. Calling it twice on the same material (the
+ * finishing pass re-applies it after writing its own text) keeps the uniforms
+ * already installed, so a reference taken from the first call stays live. The
+ * four warp uniforms are NOT installed here — with `lens` the caller owns
+ * them, because the fused chain shares one set of uniform objects between two
+ * materials (app/LensPass.ts installLensUniforms).
+ */
+export function patchSceneRead(
+  material: THREE.ShaderMaterial,
+  anchor: string,
+  lens = false,
+): SubRectUniforms {
+  material.fragmentShader = scaleSceneRead(material.fragmentShader, anchor, lens);
   const uniforms = material.uniforms as Record<string, THREE.IUniform>;
   const installed = installSubRectUniforms(uniforms);
   material.needsUpdate = true;
   return installed;
+}
+
+/** `patchSceneRead` without the warp: the spelling for a site that reads the
+ *  frame as it was drawn. */
+export function patchUvScale(material: THREE.ShaderMaterial, anchor: string): SubRectUniforms {
+  return patchSceneRead(material, anchor);
 }
 
 /** The pair, made once per material and reused if it is patched again. */

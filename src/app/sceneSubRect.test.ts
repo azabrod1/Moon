@@ -5,11 +5,11 @@ import { OutputShader } from 'three/addons/shaders/OutputShader.js';
 import { LuminosityHighPassShader } from 'three/addons/shaders/LuminosityHighPassShader.js';
 import {
   HIGH_PASS_UV_ANCHOR, OUTPUT_UV_ANCHOR, UV_READ, UV_UNIFORM_ANCHOR,
-  allocationSceneRatio, applySubRect, installSubRectUniforms, parseAllocParam, patchUvScale,
-  sceneRects, uvScaleIsWired,
+  allocationSceneRatio, applySubRect, installSubRectUniforms, parseAllocParam, patchSceneRead,
+  patchUvScale, sceneRects, uvScaleIsWired,
 } from './sceneSubRect';
 import { dynamicLadder, qualityBounds, sceneTargetSize, type QualityBoundsInput } from './renderQuality';
-import { lensPassFragmentShader } from '../shared/math/lensProjection';
+import { lensSourceUvGlsl } from '../shared/math/lensProjection';
 
 /** A display whose bounds offer High: the case where the allocation and the
  *  rung differ at all. */
@@ -167,13 +167,67 @@ describe('the shader anchors, against the installed three', () => {
   });
 });
 
-describe('the lens pass’s own two reads', () => {
+describe('the inverse map’s own two reads', () => {
   it('both go through the sub-rectangle', () => {
     // The early-out (the optical centre, and a strength of zero) and the
     // warped lookup. A scale applied to one and not the other would move the
-    // frame's centre against its edges.
-    expect(lensPassFragmentShader).toContain('texture2D(tDiffuse, min(vUv * uUvScale, uUvMax))');
-    expect(lensPassFragmentShader).toContain('clamp(srcUv * uUvScale, vec2(0.0), uUvMax)');
-    expect(lensPassFragmentShader).not.toContain('clamp(srcUv, 0.0, 1.0)');
+    // frame's centre against its edges. Pinned on the shared function rather
+    // than on the lens pass, because the bright pass and the finishing pass
+    // read through the same two lines.
+    expect(lensSourceUvGlsl).toContain('min(vUv * uUvScale, uUvMax)');
+    expect(lensSourceUvGlsl).toContain('clamp(srcUv * uUvScale, vec2(0.0), uUvMax)');
+    expect(lensSourceUvGlsl).not.toContain('clamp(srcUv, 0.0, 1.0)');
+  });
+});
+
+describe('a site that reads through the lens warp', () => {
+  const outputMaterial = () => new THREE.ShaderMaterial({
+    uniforms: THREE.UniformsUtils.clone(OutputShader.uniforms),
+    fragmentShader: OutputShader.fragmentShader,
+  });
+
+  it('warps its read and carries the function once', () => {
+    const material = outputMaterial();
+    const uniforms = patchSceneRead(material, OUTPUT_UV_ANCHOR, true);
+    expect(uvScaleIsWired(material)).toBe(true);
+    expect(material.fragmentShader).toContain('texture2D( tDiffuse, lensSourceUv( vUv ) )');
+    expect(material.fragmentShader).not.toContain('texture2D( tDiffuse, min( vUv * uUvScale, uUvMax ) )');
+    expect(material.fragmentShader).toContain(lensSourceUvGlsl);
+    expect(material.uniforms.uUvMax).toBe(uniforms.uUvMax);
+  });
+
+  it('declares each uniform exactly once, either way round', () => {
+    // Two declarations of the same uniform do not compile, and the wiring
+    // checks are string checks: nothing else would catch it before a black
+    // frame on the mode that built the material.
+    for (const lens of [false, true]) {
+      const material = outputMaterial();
+      patchSceneRead(material, OUTPUT_UV_ANCHOR, lens);
+      for (const declaration of ['uniform vec2 uUvScale;', 'uniform vec2 uUvMax;']) {
+        expect(material.fragmentShader.split(declaration)).toHaveLength(2);
+      }
+      // The warp's own four come with the function, and only with it.
+      expect(material.fragmentShader.includes('uniform float uStrength;')).toBe(lens);
+    }
+  });
+
+  it('throws on the bright pass’s anchor too, rather than patching nothing', () => {
+    const material = new THREE.ShaderMaterial({
+      uniforms: {},
+      fragmentShader: 'uniform sampler2D tDiffuse;\nvoid main() { gl_FragColor = vec4(1.0); }',
+    });
+    expect(() => patchSceneRead(material, HIGH_PASS_UV_ANCHOR, true)).toThrow(/no longer carries/);
+  });
+
+  it('is what the bright pass really gets from three’s own text', () => {
+    const material = new THREE.ShaderMaterial({
+      uniforms: THREE.UniformsUtils.clone(LuminosityHighPassShader.uniforms),
+      fragmentShader: LuminosityHighPassShader.fragmentShader,
+    });
+    patchSceneRead(material, HIGH_PASS_UV_ANCHOR, true);
+    expect(material.fragmentShader).toContain('vec4 texel = texture2D( tDiffuse, lensSourceUv( vUv ) );');
+    // Threshold, smooth width and default colour are untouched: the pass is the
+    // same high pass, reading a different position.
+    expect(material.fragmentShader).toContain('smoothstep( luminosityThreshold, luminosityThreshold + smoothWidth, v )');
   });
 });

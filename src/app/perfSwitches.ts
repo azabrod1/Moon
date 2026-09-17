@@ -20,9 +20,16 @@
  * away and emits the cheap text alone, with no uniform, no branch and no key
  * string left in `dist/`.
  *
- * `fused-final` is the exception that is off by default: it is the one item
- * that cannot promise the same pixels (an intermediate half-float rounding
- * disappears), so it is built to be measured and reported, not to be run.
+ * `fused-final` is the exception to that last part. It is the one item that
+ * cannot promise exactly the same pixels — the lens warp, the glow and the tone
+ * map became one draw, and an intermediate half-float rounding disappeared with
+ * the surfaces between them — so the picture it replaces has to stay reachable
+ * on a real build. Both of its chains therefore ship, and the URL parameter
+ * `?fused=0` is the door to the old one in production; this key is only the DEV
+ * spelling of the same choice, which the pixel gate uses to arm the change
+ * inside one session. Arming it rebuilds the composer, so it is a reload switch
+ * as far as the sweep is concerned: a relink inside a measured hold is measured
+ * as the thing being measured.
  *
  * `cloud-program` is decided when the deck's material compiles — its
  * archetype becomes a compile-time define rather than a uniform, so the
@@ -69,7 +76,9 @@ export type PerfSwitchKey =
  *
  * The default is also what a production build compiles: a switch that defaults
  * on has its cheap path as the only path there, and one that defaults off has
- * neither path.
+ * neither path. The exception is a key whose old path is a kill switch reached
+ * by a URL parameter of its own — `fused-final` — where both paths are in the
+ * production bundle and only this registry's reading of them is DEV.
  */
 export const PERF_SWITCHES: ReadonlyArray<{
   key: PerfSwitchKey;
@@ -86,7 +95,7 @@ export const PERF_SWITCHES: ReadonlyArray<{
   { key: 'r8-maps', label: 'One-channel bump/water maps', on: true, needsReload: true },
   { key: 'bloom-nodepth', label: 'Bloom targets without depth', on: true },
   { key: 'depth-discard', label: 'Scene depth/stencil discard', on: true },
-  { key: 'fused-final', label: 'Fused bloom blend + output', on: false },
+  { key: 'fused-final', label: 'Lens, glow and tone map as one pass', on: true, needsReload: true },
   { key: 'cloud-program', label: 'Cloud deck program of its own', on: true, needsReload: true },
   { key: 'cloud-probe-smooth', label: 'Cloud deck probe: smooth filter off', on: false },
   { key: 'cloud-probe-detail', label: 'Cloud deck probe: detail term off', on: false },
@@ -105,7 +114,7 @@ const DEFAULT_ON: Record<PerfSwitchKey, boolean> = {
   'r8-maps': true,
   'bloom-nodepth': true,
   'depth-discard': true,
-  'fused-final': false,
+  'fused-final': true,
   'cloud-program': true,
   'cloud-probe-smooth': false,
   'cloud-probe-detail': false,

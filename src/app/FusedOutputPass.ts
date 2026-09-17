@@ -1,40 +1,76 @@
 /**
- * The last two full-screen passes of the frame, folded into one.
+ * The finishing pass: the lens warp, the glow and the tone map in one draw.
  *
- * The chain ends with UnrealBloomPass adding its glow into the lens result at
- * full resolution — a read, an add and a write of a whole RGBA16F surface —
- * and then OutputPass reading that same surface back to tone-map it onto the
- * canvas. On a tile-based GPU each of those is a render pass of its own: the
- * attachment is loaded into tile memory, touched once and stored back. Folding
- * them removes one full-resolution read-modify-write and one whole pass
- * boundary; the glow is still composited at half resolution by the bloom
- * chain, and the lens still runs before the blur, because a blur of a warped
- * image is not a warp of a blurred one.
+ * This is the chain that ships. The frame used to end with three
+ * full-resolution trips over a half-float surface between the scene and the
+ * tone curve — the lens pass writing its warped image, the bloom blend reading
+ * that surface back to add the glow into it, and the output pass reading the
+ * result to tone-map it — and on a tile-based GPU each of those is a render
+ * pass of its own: the attachment is loaded into tile memory, touched once and
+ * stored back. Now the bright pass reads the scene image THROUGH the warp, and
+ * one finishing pass does `tonemap( scene(warp(uv)) + composite(uv) )`. Gone
+ * from every frame: one full-resolution write and read, and one full-resolution
+ * read-modify-write. On the composers without a lens (Volume Compare, Look
+ * inside, the dormant flight mode) the blend used to draw into the
+ * multisampled scene target itself, so a second full resolve of it goes too.
  *
- * THIS IS THE ONE ITEM THAT CANNOT PROMISE THE SAME PIXELS, and it is off by
- * default for that reason. The current chain computes
- * `tonemap( fp16( lens + bloom ) )`: the sum lands in a half-float surface and
- * is rounded there before the tone curve reads it. Fused, the sum stays in the
- * fragment shader's own precision and that rounding disappears. Everything
- * else is held identical — the composite is the same half-resolution texture
- * sampled the same way, the add is the same (ONE, ONE) the blend material's
- * premultiplied additive blending performs, and the exposure, the tone curve
- * and the output colour transform are OutputShader's own text with one line
- * added to it.
+ * What is added: the warp's Newton solve also runs in the bright pass, at half
+ * the bloom size — a quarter of the pixels — so about 1.25× the warp
+ * arithmetic of the old chain for one fewer full-resolution surface.
  *
- * Built to be measured and reported. Nothing here runs unless the switch is
- * armed, and a production build carries none of it: the classes are reached
- * only from a DEV branch, and the fused text is put together on first use
- * rather than at module load, so there is no top-level work for the bundler
- * to keep. (Built eagerly, the two string replacements survived tree-shaking
- * and the text shipped.)
+ * **Why the bloom stays in output space.** The bright pass warps its read
+ * rather than the composite being looked up through the warp at the end. The
+ * other way round changes three things at once: the halo becomes anisotropic
+ * where the lens stretches, a bright source outside the displayed frame but
+ * inside the overscan starts blooming into it, and the halo's width follows the
+ * local magnification. Warping the bright pass's read keeps all three as they
+ * were — every mip is the picture the chain blurs today, and the composite is
+ * added at `vUv` exactly as the blend added it.
+ *
+ * **What cannot be byte-identical.** Four differences, all small, none of them
+ * hidden:
+ *  1. `lens + bloom` is no longer rounded to fp16 before the tone curve, so the
+ *     8-bit output can flip by a least significant bit, sparsely. This one
+ *     reaches every composer, the lens-less ones included.
+ *  2. The bright pass's input. It used to take a bilinear sample, at the bloom
+ *     chain's own texel centres, of the full-size warped image — itself a
+ *     bilinear sample of the scene. Now it takes one bilinear sample of the
+ *     scene at the warped position, and a bilinear of a bilinear has the wider
+ *     footprint, so the bright target is a hair sharper before five octaves of
+ *     blur. Differences show, if anywhere, at bright edges: the Sun's limb, the
+ *     glint's peak, a plume.
+ *  3. The frame boundary. The old bright pass read the lens OUTPUT, which holds
+ *     displayed pixels only, clamped half a texel inside the sub-rect. A
+ *     bilinear tap on the SCENE at the warped position can reach half a scene
+ *     texel past the displayed corner into the overscan, so a bright source
+ *     just outside the frame can contribute at the very corner.
+ *  4. At strength 0 there is no warp at all and only (1) applies.
+ *
+ * `?fused=0` on any build puts the old three-pass chain back — the kill switch,
+ * and the A/B for anything the four differences might have moved. In DEV
+ * `?perfoff=fused-final` does the same through the switch registry.
+ *
+ * **Four shader texts, one per variant.** `{ lens, glow }` × {true, false}: the
+ * planetarium's composer wants the warp and the other three do not, and bloom
+ * can be off on any of them. There is one composer in the app, rebuilt per
+ * camera, so a single memoised text would hand whichever mode was entered first
+ * its own text to every later mode — and a warped text on a material with no
+ * warp uniforms is a TypeError in three's uniform upload on that mode's first
+ * render, not a wrong pixel. The texts are assembled on first use rather than
+ * at module load: a module-level string edit is work a bundler keeps (built
+ * eagerly, the replacements survived tree-shaking and shipped).
  */
 import * as THREE from 'three';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputShader } from 'three/addons/shaders/OutputShader.js';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import { OutputTargetPass } from './UpscalePass';
-import { OUTPUT_UV_ANCHOR, patchUvScale, uvScaleIsWired } from './sceneSubRect';
+import { bloomHighPassMaterial } from './bloomTargets';
+import { installLensUniforms, type LensUniforms } from './LensPass';
+import {
+  HIGH_PASS_UV_ANCHOR, OUTPUT_UV_ANCHOR, installSubRectUniforms, patchSceneRead, scaleSceneRead,
+  type SubRectUniforms,
+} from './sceneSubRect';
 
 /** The blur axes the pass carries as statics, which its published types do
  *  not name. */
@@ -69,9 +105,21 @@ interface BloomInternals {
  * once. It tracks the installed three version's own render().
  */
 export class BloomChainPass extends UnrealBloomPass {
-  /** The half-resolution glow the fused output pass adds. */
+  /** The half-resolution glow the finishing pass adds. */
   get compositeTexture(): THREE.Texture {
     return (this as unknown as BloomInternals).renderTargetsHorizontal[0].texture;
+  }
+
+  /**
+   * Take the bright pass's read of the scene image through the lens warp, on
+   * the shared uniform objects, and hand back the sub-rect pair its own writer
+   * drives. Called once per build, before the pass's first render.
+   */
+  installLensWarp(lens: LensUniforms): SubRectUniforms {
+    const material = bloomHighPassMaterial(this);
+    const subRect = patchSceneRead(material, HIGH_PASS_UV_ANCHOR, true);
+    installLensUniforms(material.uniforms as Record<string, THREE.IUniform>, lens);
+    return subRect;
   }
 
   render(
@@ -114,7 +162,7 @@ export class BloomChainPass extends UnrealBloomPass {
     }
 
     // 3. the composite, at half resolution — and then stop. The additive
-    //    full-screen draw that used to follow is the output pass's first line.
+    //    full-screen draw that used to follow is the finishing pass's first line.
     p._fsQuad.material = p.compositeMaterial;
     p.compositeMaterial.uniforms.bloomStrength.value = this.strength;
     p.compositeMaterial.uniforms.bloomRadius.value = this.radius;
@@ -128,48 +176,93 @@ export class BloomChainPass extends UnrealBloomPass {
   }
 }
 
-/** OutputShader's own fragment text, with the glow added to the sample it
- *  starts from — the same add (ONE, ONE) the blend material performed, in the
- *  same place in the pipeline, one surface earlier. Assembled on first use
- *  (see the header): a module-level string edit is work a bundler keeps. */
-let fusedFragment: string | null = null;
-function fusedFragmentText(): string {
-  return (fusedFragment ??= OutputShader.fragmentShader
-    .replace(
-      'uniform sampler2D tDiffuse;',
-      'uniform sampler2D tDiffuse;\n\t\tuniform sampler2D tBloom;',
-    )
-    .replace(
-      'gl_FragColor = texture2D( tDiffuse, vUv );',
-      'gl_FragColor = texture2D( tDiffuse, vUv );\n\t\t\tgl_FragColor.rgb += texture2D( tBloom, vUv ).rgb;',
-    ));
+/** Which of the finishing pass's two optional halves a text carries: the lens
+ *  warp on its read of the scene, and the glow added before the tone curve. */
+export interface FusedVariant {
+  lens: boolean;
+  glow: boolean;
 }
 
-/** The finishing pass (app/UpscalePass.ts OutputTargetPass, three's
- *  OutputPass with a target of its own when the upscaler follows) with the
- *  bloom composite added before the tone curve. */
+/** The glow line, and the sampler it reads: the same add (ONE, ONE) the bloom
+ *  blend material performed, in the same place in the pipeline, one surface
+ *  earlier. */
+const GLOW_DECLARATION = 'uniform sampler2D tDiffuse;\n\t\tuniform sampler2D tBloom;';
+const GLOW_LINE = `${OUTPUT_UV_ANCHOR}\n\t\t\tgl_FragColor.rgb += texture2D( tBloom, vUv ).rgb;`;
+
+const fusedTexts = new Map<string, string>();
+
+/** One variant's fragment text, assembled on first use and kept. */
+export function fusedFragmentText(variant: FusedVariant): string {
+  const key = `${variant.lens ? 'warp' : 'flat'}:${variant.glow ? 'glow' : 'plain'}`;
+  let text = fusedTexts.get(key);
+  if (text === undefined) {
+    const withGlow = variant.glow
+      ? OutputShader.fragmentShader
+        .replace('uniform sampler2D tDiffuse;', GLOW_DECLARATION)
+        .replace(OUTPUT_UV_ANCHOR, GLOW_LINE)
+      : OutputShader.fragmentShader;
+    text = scaleSceneRead(withGlow, OUTPUT_UV_ANCHOR, variant.lens);
+    fusedTexts.set(key, text);
+  }
+  return text;
+}
+
+/**
+ * Whether a variant's text really carries the edits that variant is made of.
+ *
+ * Every one of them is a string replacement into three's own shader, and a
+ * replacement that found nothing is silent: a pass that drops the glow
+ * entirely, one that reads its whole allocation where the frame is a corner of
+ * it, or one whose warp is missing so the frame comes out rectilinear. Given
+ * the pass's material it checks what that material really compiles; given the
+ * variant alone, the assembled text.
+ */
+export function fusedFragmentIsWired(variant: FusedVariant, material?: THREE.ShaderMaterial): boolean {
+  const text = material?.fragmentShader ?? fusedFragmentText(variant);
+  const carries = (needle: string, wanted: boolean): boolean => text.includes(needle) === wanted;
+  return text.split('uniform vec2 uUvScale;').length === 2
+    && text.includes('uniform vec2 uUvMax;')
+    && carries('vec2 lensSourceUv(vec2 vUv)', variant.lens)
+    && carries('texture2D( tDiffuse, lensSourceUv( vUv ) )', variant.lens)
+    && carries('texture2D( tDiffuse, min( vUv * uUvScale, uUvMax ) )', !variant.lens)
+    && carries('uniform sampler2D tBloom;', variant.glow)
+    && carries('gl_FragColor.rgb += texture2D( tBloom, vUv ).rgb;', variant.glow);
+}
+
+/**
+ * The `?fused=0` kill switch, on any build: the old three-pass chain back — a
+ * lens pass of its own, the bloom blend, then three's output pass. The A/B for
+ * anything the fused pass's four differences might have moved, in the house
+ * style of `?alloc=0` and `?ride=0`.
+ */
+export function parseFusedParam(search: string): boolean {
+  return new URLSearchParams(search).get('fused') !== '0';
+}
+
+/**
+ * The finishing pass (app/UpscalePass.ts OutputTargetPass — three's OutputPass
+ * with a target of its own when the upscaler follows), reading the scene image
+ * through the lens warp and adding the bloom composite before the tone curve.
+ *
+ * With neither half it is three's own OutputPass text with the scaled read,
+ * which is what the pass was before the fold.
+ */
 export class FusedOutputPass extends OutputTargetPass {
-  constructor(bloom: BloomChainPass) {
+  readonly variant: FusedVariant;
+
+  constructor(opts: { bloom: BloomChainPass | null; lens: LensUniforms | null }) {
     super();
-    // Its own text goes over the one the finishing pass built, the sub-rect
-    // edit included, so the scaled read has to be put back on top of it — and
-    // only the tDiffuse read is scaled: the glow it adds is a full image of
-    // the sub-rect's content, sampled edge to edge like the blend it replaces.
-    this.material.fragmentShader = fusedFragmentText();
-    this.subRect = patchUvScale(this.material, OUTPUT_UV_ANCHOR);
-    this.material.uniforms.tBloom = { value: bloom.compositeTexture };
+    this.variant = { lens: opts.lens !== null, glow: opts.bloom !== null };
+    // The variant's whole text goes over the one OutputTargetPass built — the
+    // scaled read is already in it, so it is not patched again — and the
+    // uniforms that drive it stay the pair the base constructor installed, so
+    // the reference its owner took is still the live one. Only the tDiffuse
+    // read is scaled: the glow is a full image of the sub-rect's content,
+    // sampled edge to edge like the blend it replaces.
+    this.material.fragmentShader = fusedFragmentText(this.variant);
+    this.subRect = installSubRectUniforms(this.material.uniforms);
+    if (opts.bloom) this.material.uniforms.tBloom = { value: opts.bloom.compositeTexture };
+    if (opts.lens) installLensUniforms(this.material.uniforms, opts.lens);
     this.material.needsUpdate = true;
   }
-}
-
-/** Whether the fused text really carries all of its edits — a silent no-op
- *  replace would be a pass that drops the glow entirely, or one that reads its
- *  whole allocation where the frame is only a corner of it. Given the pass's
- *  own material it checks what that material really compiles; given nothing,
- *  the assembled text's two bloom edits. */
-export function fusedFragmentIsWired(material?: THREE.ShaderMaterial): boolean {
-  const text = material?.fragmentShader ?? fusedFragmentText();
-  return text.includes('uniform sampler2D tBloom;')
-    && text.includes('gl_FragColor.rgb += texture2D( tBloom, vUv ).rgb;')
-    && (material === undefined || uvScaleIsWired(material));
 }

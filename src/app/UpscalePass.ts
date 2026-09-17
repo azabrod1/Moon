@@ -5,7 +5,9 @@
  * app/fsr1.ts).
  *
  *   … Bloom
- *   OutputTargetPass   tone map + display encode. To the canvas when it is the
+ *   OutputTargetPass   tone map + display encode — and, as FusedOutputPass on
+ *                      the shipped chain, the lens warp and the glow with it
+ *                      (app/FusedOutputPass.ts). To the canvas when it is the
  *                      last enabled pass — three's OutputPass, byte for byte —
  *                      else into its own 8-bit target at scene size.
  *   UpscalePass        EASU: that target → the canvas at output size, or → its
@@ -16,14 +18,20 @@
  *                      together with the two above.
  *
  * Why the finishing pass owns a target instead of writing the composer's
- * writeBuffer: after the lens pass swapped, the writeBuffer is the scene
- * target itself — half-float, with a depth/stencil plane DepthDiscardPass has
- * just invalidated and OutputPass's material would depth-test against, and
- * multisampled on a desktop, so a quad drawn into it is resolved again. An
- * 8-bit target is what FSR asks for (32 bpp, display-encoded) and exactly the
- * bytes the canvas would have held. Its storage is named RGBA8 by hand for the
- * same reason screenTarget.ts names it: an sRGB storage would be decoded on
- * every fetch, and the filter would run on linear light.
+ * writeBuffer. The reason that holds on every chain is FSR's input: 8-bit,
+ * 32 bpp, display-encoded, which is exactly the bytes the canvas would have
+ * held. Its storage is named RGBA8 by hand for the same reason screenTarget.ts
+ * names it: an sRGB storage would be decoded on every fetch, and the filter
+ * would run on linear light.
+ *
+ * On the `?fused=0` chain there is more to it: the lens pass has swapped, so
+ * the writeBuffer is the scene target itself — half-float, with a
+ * depth/stencil plane DepthDiscardPass has just invalidated and OutputPass's
+ * material would depth-test against, and multisampled on a desktop, so a quad
+ * drawn into it is resolved again. On the fused chain nothing swaps at all and
+ * the writeBuffer is the composer's partner, which no pass ever binds — so
+ * writing it would be the first thing to give that target GL storage, which is
+ * the memory the fused chain does not spend.
  *
  * None of the three swaps the composer's buffers (needsSwap false), so the
  * parity guard in main's renderScene is untouched. The composer decides which

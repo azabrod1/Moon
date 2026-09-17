@@ -356,10 +356,13 @@ export interface PerfSweepDeps {
   shipVisible: () => boolean;
   budget: () => FrameBudgetReadout | null;
   resetBudget: () => void;
-  /** The composer's passes, or null where this build has none of that pass. */
-  passes: () => { bloom: { enabled: boolean } | null; lens: { enabled: boolean } | null };
-  /** The lens pass held off, or released. Not the flag on the pass: its owner
-   *  rewrites that flag from the lens strength every frame (app/LensPass.ts). */
+  /** The bloom pass, or null where this build has none; and whether the
+   *  composer carries the lens warp at all — on the shipped chain it is two
+   *  shaders' arithmetic rather than a pass, so there is nothing to hand over. */
+  passes: () => { bloom: { enabled: boolean } | null; lensWarp: boolean };
+  /** The lens warp held at zero strength, or released. Not a flag on a pass:
+   *  its owner rewrites the warp from the lens strength every frame
+   *  (app/LensPass.ts). */
   setLens: (on: boolean) => void;
   pinPixelRatio: (ratio: number | null) => void;
   pixelRatio: () => number;
@@ -413,9 +416,15 @@ export interface PerfSwitch {
  * the CANDIDATE is, and for a switch that ships on the candidate is the switch
  * turned off, which is the cost it removes — plus the two facts the bridge
  * readout cannot carry: that the one-channel maps are already on the GPU when
- * a run starts, so flipping them needs a reload, and that the fused final pass
- * is the one item not promising the same pixels, so it never joins the
+ * a run starts, so flipping them needs a reload, and that the finishing pass's
+ * fold is the one item not promising the same pixels, so it never joins the
  * combined total.
+ *
+ * `fused-final` is listed here as a reload switch because arming it rebuilds
+ * the composer, which disposes and relinks every pass — inside a measured hold
+ * that link IS the measurement. So the sweep never holds it: it appears in the
+ * run's "not swept" line, the Phone preset included, and the number of record
+ * for it is a two-boot `?fused=0` A/B with `__moon.gpuProfile` on each boot.
  */
 const EXPECTED_SWITCHES: Record<string, { off: string; on: string; needsReload?: boolean; exact?: boolean }> = {
   'night-early': { off: 'Night early-out removed', on: 'Night early-out on' },
@@ -425,7 +434,7 @@ const EXPECTED_SWITCHES: Record<string, { off: string; on: string; needsReload?:
   'r8-maps': { off: 'One-channel maps off', on: 'One-channel maps on', needsReload: true },
   'bloom-nodepth': { off: 'Bloom depth buffers back', on: 'Bloom depth buffers off' },
   'depth-discard': { off: 'Depth discard removed', on: 'Depth discard on' },
-  'fused-final': { off: 'Fused final pass off', on: 'Fused final pass on', exact: false },
+  'fused-final': { off: 'Finishing pass split in three again', on: 'Lens, glow and tone map as one pass', needsReload: true, exact: false },
   'cloud-program': { off: 'Deck program shared again', on: 'Deck program of its own', needsReload: true },
   // The deck's cost probes: each takes one term off the cloud deck so a device
   // can price it. Not changes, so never exact and never in the combined row.
@@ -549,7 +558,11 @@ function buildArms(deps: PerfSweepDeps, resting: RestingRatio): Arm[] {
       'Bloom off',
       (applied) => {
         // The pass is skipped, not removed: rebuilding the composer would
-        // relink every program inside the hold that is being measured.
+        // relink every program inside the hold that is being measured. So the
+        // row is the bloom chain's cost, not a picture without a glow — with
+        // the chain skipped the finishing pass keeps adding the last composite
+        // it drew, held. `__moon.setBloom(false)` is the picture arm: it
+        // rebuilds, and the finishing pass then has no glow line at all.
         const bloom = deps.passes().bloom;
         if (bloom) bloom.enabled = !applied;
       },
@@ -557,17 +570,22 @@ function buildArms(deps: PerfSweepDeps, resting: RestingRatio): Arm[] {
     ),
     config(
       'lens',
-      'Lens off',
+      'Lens warp off',
       (applied) => {
-        // Skipping the lens pass leaves off-axis discs egg-shaped and the DOM
-        // overlays pre-distorted for the hold, which is a look, not a break;
-        // rebuilding the chain to avoid that would cost a relink instead.
-        // Through the owner's own seam and not the pass's flag: that flag is
-        // rewritten from the lens strength every frame, and a row that set it
-        // once measured one frame of the switch and the rest of the hold off.
+        // On the shipped chain this is ARITHMETIC, not a pass: the warp lives
+        // inside the bloom bright pass and the finishing pass, so holding it
+        // off takes the Newton solve out of two shaders and removes no pass at
+        // all. (On the `?fused=0` chain it does skip a whole full-resolution
+        // pass, which is what the row used to read as — the two are not
+        // comparable numbers.) Either way, off-axis discs go egg-shaped and the
+        // DOM overlays stay pre-distorted for the hold, which is a look, not a
+        // break; rebuilding the chain to avoid that would cost a relink
+        // instead. Through the owner's own seam, because the warp is rewritten
+        // from the lens strength every frame and a row that set it once
+        // measured one frame of the switch and the rest of the hold off.
         deps.setLens(!applied);
       },
-      () => deps.passes().lens !== null,
+      () => deps.passes().lensWarp,
     ),
     // Through the app's own resize path, so the composer's scene target and
     // its partner are reallocated at the new ratio. A switch that moved the

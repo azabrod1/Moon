@@ -10,6 +10,7 @@ import {
   lensOverscanFovDeg,
   lensPassFragmentShader,
   lensRadial,
+  lensSourceUvGlsl,
   lensRadialInverse,
   lensUnwarpNdc,
   lensWarpNdc,
@@ -257,10 +258,37 @@ describe('lensMaxFrameScale', () => {
   });
 });
 
+describe('the shared inverse-map GLSL', () => {
+  it('is the pass text’s own definition, verbatim', () => {
+    // Three shaders read a scene image through this function — the lens pass,
+    // the bloom bright pass and the finishing pass — and a second copy of the
+    // arithmetic is a way for them to warp differently. So the pass composes
+    // the shared text rather than restating it.
+    expect(lensPassFragmentShader).toContain(lensSourceUvGlsl);
+    expect(lensPassFragmentShader).toContain('texture2D(tDiffuse, lensSourceUv(vUv))');
+  });
+
+  it('declares the four warp uniforms and neither sub-rect uniform', () => {
+    // uUvScale/uUvMax belong to whoever composes this text — the pass below, or
+    // the insertion app/sceneSubRect.ts makes into three's shaders — and a
+    // duplicate declaration does not compile, which a string check cannot see.
+    for (const u of ['uStrength', 'uAspect', 'uTanHalfRender', 'uREdge']) {
+      expect(lensSourceUvGlsl).toContain(`uniform float ${u};`);
+    }
+    expect(lensSourceUvGlsl).not.toContain('uniform vec2 uUvScale;');
+    expect(lensSourceUvGlsl).not.toContain('uniform vec2 uUvMax;');
+    // And the assembled pass declares each of them exactly once.
+    for (const declaration of ['uniform vec2 uUvScale;', 'uniform vec2 uUvMax;']) {
+      expect(lensPassFragmentShader.split(declaration)).toHaveLength(2);
+    }
+  });
+});
+
 describe('CPU/GPU inverse convergence', () => {
   it('the shader shares the CPU iteration budget', () => {
     // The shader interpolates LENS_INVERSE_ITERATIONS into its loop bound.
     expect(lensPassFragmentShader).toContain(`i < ${LENS_INVERSE_ITERATIONS};`);
+    expect(lensSourceUvGlsl).toContain(`i < ${LENS_INVERSE_ITERATIONS};`);
   });
 
   it('shader and CPU inverse agree to <0.01° across the frame at the wide-FOV cap', () => {

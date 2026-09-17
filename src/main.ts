@@ -52,12 +52,15 @@ import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn } from './app/perfS
 import { bloomHighPassMaterial, holdBloomSize, setBloomInternalDepth } from './app/bloomTargets';
 import { devGlintUniforms, setDevOceanRoughness } from './planetarium/world/surfaceShading';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
-import { BloomChainPass, FusedOutputPass } from './app/FusedOutputPass';
+import { BloomChainPass, FusedOutputPass, parseFusedParam } from './app/FusedOutputPass';
 import type { GpuProfiler, GpuProfileOptions } from './app/devGpuProfile';
 import { ScreenCopy, canvasSampleCount, createScreenTarget, fitScreenTarget, screenTargetSamples } from './app/screenTarget';
 import { bitmapDecodePath } from './planetarium/world/textureBitmapLoader';
 import { BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
-import { createLensPass, devSetLensPassOff, lensSubRectUniforms, updateLensPass, type LensParams } from './app/LensPass';
+import {
+  createLensPass, devSetLensPassOff, lensSubRectUniforms, makeLensUniforms, syncLensUniforms,
+  updateLensPass, type LensParams, type LensUniforms,
+} from './app/LensPass';
 import { applyDesignFov, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
 import { loadBrightStarCatalog } from './planetarium/world/starCatalogLoader';
 import { debugError, debugLog, debugWarn } from './shared/debug';
@@ -721,6 +724,11 @@ let sceneRectClampSaid = '';
  *  finishing pass carries its own (app/UpscalePass.ts). */
 let lensSubRect: SubRectUniforms | null = null;
 let bloomSubRect: SubRectUniforms | null = null;
+/** The lens warp's four uniforms on the fused chain, shared by the two
+ *  materials that read the scene image (app/LensPass.ts). Null where the
+ *  composer carries no warp, and on the `?fused=0` chain, where a lens pass of
+ *  its own owns them. */
+let composerLens: LensUniforms | null = null;
 // Whether a frame draws the world at all: under the loading screen only on
 // request, every frame once revealed, never after a boot failure
 // (app/bootRenderGate.ts). The simulation runs every frame regardless.
@@ -999,6 +1007,23 @@ function planetariumBloomEnabled(): boolean {
 let exposureCurrent = 1;
 let autoExposure = true;
 
+/**
+ * Whether the frame ends in ONE finishing pass — the lens warp, the glow and
+ * the tone map in a single draw (app/FusedOutputPass.ts) — or in the three
+ * separate full-resolution passes that came before it.
+ *
+ * `?fused=0` on any build is the kill switch and is fixed for the session, so
+ * `composerBuiltFor` needs no field for it. In DEV the switch registry says the
+ * same thing through `?perfoff=fused-final` or `__moon.perfArm`, whose listener
+ * rebuilds the chain live for a capture — and with `?fused=0` already in the
+ * URL such an arm rebuilds the same chain twice and changes nothing, which is
+ * harmless and is the param winning.
+ */
+const fusedFinalParam = parseFusedParam(location.search);
+function fusedFinalOn(): boolean {
+  return fusedFinalParam && (import.meta.env.DEV ? perfSwitchOn('fused-final') : true);
+}
+
 // What the live composer was built for: an identical request is a no-op.
 // The boot builds one at module load and the first mode switch asked for the
 // same one again, which threw away every pass program only to relink it on
@@ -1037,6 +1062,7 @@ function buildComposer(
   sizeBloomChain = null;
   lensSubRect = null;
   bloomSubRect = null;
+  composerLens = null;
   // Nothing is allocated yet, so the first size below always reaches GL.
   sceneAllocSize = { width: 0, height: 0 };
   depthDiscardPass = null;
@@ -1108,13 +1134,17 @@ function buildComposer(
   });
   composer = new EffectComposer(renderer, sceneTarget);
   // The composer clones the scene target for its ping-pong partner. Only
-  // full-screen quads ever land there (the lens output, bloom's composite),
-  // so it carries neither the samples nor the depth/stencil planes: a
-  // single-sample colour buffer. renderScene keeps the scene target in the
-  // read slot, the one RenderPass draws into. (Without the lens pass —
-  // flight, compare — bloom's composite blends into the scene target
-  // itself, so those modes resolve it twice a frame; accepted, both are
-  // small scenes.)
+  // full-screen quads ever land there (on the `?fused=0` chain: the lens
+  // output, bloom's composite), so it carries neither the samples nor the
+  // depth/stencil planes: a single-sample colour buffer. renderScene keeps the
+  // scene target in the read slot, the one RenderPass draws into. On the fused
+  // chain no pass swaps and nothing ever binds the partner, so three — which
+  // allocates a target's GL objects on the first bind — gives it no storage at
+  // all; `perfTargets().composerPartner.allocated` is the reading of that.
+  // (On `?fused=0` without a lens pass — flight, compare, Look inside —
+  // bloom's composite blends into the scene target itself, so those modes
+  // resolve it twice a frame; accepted, all three are small scenes, and the
+  // fused chain does not do it.)
   const partner = composer.renderTarget2;
   partner.samples = 0;
   partner.depthBuffer = false;
@@ -1136,11 +1166,24 @@ function buildComposer(
   depthDiscardPass.enabled = import.meta.env.DEV ? perfSwitchOn('depth-discard') : true;
   composer.addPass(depthDiscardPass);
 
+  // One finishing pass for the warp, the glow and the tone curve, or the three
+  // full-resolution passes that came before it (app/FusedOutputPass.ts). Both
+  // chains ship, because `?fused=0` is the kill switch for the one item that
+  // cannot promise exactly the same pixels.
+  const fused = fusedFinalOn();
+
   if (wantsLens) {
     planetariumLens.strength = lensRequestedStrength;
-    lensPass = createLensPass();
-    lensSubRect = lensSubRectUniforms(lensPass);
-    composer.addPass(lensPass);
+    if (fused) {
+      // No pass of its own: the warp is four uniforms and one GLSL function
+      // inside the two shaders that read the scene image, and one shared set of
+      // uniform objects keeps them from warping differently.
+      composerLens = makeLensUniforms();
+    } else {
+      lensPass = createLensPass();
+      lensSubRect = lensSubRectUniforms(lensPass);
+      composer.addPass(lensPass);
+    }
   } else {
     planetariumLens.strength = 0;
   }
@@ -1149,11 +1192,9 @@ function buildComposer(
   // Bloom is output-space: the lens first makes a round limb, then the blur
   // builds an isotropic PSF around those final pixels. Screen-authored scene
   // primitives pre-distort themselves into the source (lensShader.ts), so their
-  // sizes also remain invariant through this ordering.
-  // The last two full-screen passes as one (app/FusedOutputPass.ts): the one
-  // item here that cannot promise the same pixels, so it is built to be
-  // measured and is off unless something arms it. Never in production.
-  const fused = import.meta.env.DEV && enabled && perfSwitchOn('fused-final');
+  // sizes also remain invariant through this ordering. The fused chain keeps
+  // that ordering by warping the bright pass's own read, so every mip is the
+  // picture the blur chain had when a lens pass ran first.
   if (enabled) {
     const size = new THREE.Vector2(window.innerWidth, window.innerHeight);
     bloomPass = fused
@@ -1165,8 +1206,11 @@ function buildComposer(
     setBloomInternalDepth(bloomPass, import.meta.env.DEV ? !perfSwitchOn('bloom-nodepth') : false);
     // The one material in the chain that reads the buffer the scene was drawn
     // into: patched before its first render, so the bright pass takes the
-    // sub-rectangle's content and not the allocation's (app/sceneSubRect.ts).
-    bloomSubRect = patchUvScale(bloomHighPassMaterial(bloomPass), HIGH_PASS_UV_ANCHOR);
+    // sub-rectangle's content and not the allocation's (app/sceneSubRect.ts) —
+    // through the warp where the composer carries one.
+    bloomSubRect = composerLens
+      ? (bloomPass as BloomChainPass).installLensWarp(composerLens)
+      : patchUvScale(bloomHighPassMaterial(bloomPass), HIGH_PASS_UV_ANCHOR);
     // Before the pass joins the chain: addPass sizes it too.
     sizeBloomChain = holdBloomSize(bloomPass);
     composer.addPass(bloomPass);
@@ -1181,8 +1225,11 @@ function buildComposer(
   // take the frame from its own target across to the canvas. Never more than
   // one direction at a time, which is why the downsample can sit last: three
   // gives the canvas to the last ENABLED pass every render.
-  outputTargetPass = fused && bloomPass
-    ? new FusedOutputPass(bloomPass as BloomChainPass)
+  outputTargetPass = fused
+    ? new FusedOutputPass({
+      bloom: bloomPass ? (bloomPass as BloomChainPass) : null,
+      lens: composerLens,
+    })
     : new OutputTargetPass();
   composer.addPass(outputTargetPass);
   if (cam === planetariumCamera) {
@@ -1492,8 +1539,11 @@ if (import.meta.env.DEV) {
   onPerfSwitch('bloom-nodepth', (on) => setBloomInternalDepth(bloomPass, !on));
   onPerfSwitch('depth-discard', (on) => { if (depthDiscardPass) depthDiscardPass.enabled = on; });
   // The fused pass is a different chain, not a flag inside one, so this switch
-  // is the one that has to rebuild. Skipped on the first call, which arrives
-  // with the composer already built for the state it reports.
+  // is the one that has to rebuild — which is why the sweep may not hold it
+  // inside a measured block, and why the pixel gate takes it across two boots.
+  // This listener is here for the gate's in-session capture. Skipped on the
+  // first call, which arrives with the composer already built for the state it
+  // reports.
   let fusedKnown = perfSwitchOn('fused-final');
   onPerfSwitch('fused-final', (on) => {
     if (on === fusedKnown) return;
@@ -1553,6 +1603,17 @@ function devRenderTargets() {
   const viewportOf = (t: THREE.WebGLRenderTarget | null) => (t
     ? { rect: [t.viewport.x, t.viewport.y, t.viewport.z, t.viewport.w], scissorTest: t.scissorTest }
     : null);
+  // Whether three holds GL objects for a target — it builds them on the first
+  // BIND, not when the target is made or sized, so a target nothing ever binds
+  // costs no memory however large it says it is. The condition three itself
+  // tests before setting one up. On the fused chain no pass swaps, so nothing
+  // writes the composer's writeBuffer and the partner is never allocated;
+  // `renderTargetBytes` still counts its bytes, deliberately (renderQuality.ts).
+  const allocatedOf = (t: THREE.WebGLRenderTarget | null | undefined): boolean => {
+    if (!t) return false;
+    const props = renderer.properties.get(t) as { __webglFramebuffer?: unknown } | undefined;
+    return props?.__webglFramebuffer !== undefined;
+  };
   return {
     pixelRatio: renderer.getPixelRatio(),
     targetPixelRatio: getTargetPixelRatio(),
@@ -1566,7 +1627,9 @@ function devRenderTargets() {
     sceneTarget: sceneTarget
       ? { ...size(sceneTarget)!, samples: sceneTarget.samples }
       : null,
-    composerPartner: size(composer?.renderTarget2),
+    composerPartner: composer
+      ? { ...size(composer.renderTarget2)!, allocated: allocatedOf(composer.renderTarget2) }
+      : null,
     // What the scene-sized targets are ALLOCATED at, the sub-rectangle this
     // rung DRAWS into, and each target's own rectangle (app/sceneSubRect.ts).
     // Under Dynamic the two differ at every rung but the ladder's top, and a
@@ -1719,16 +1782,24 @@ function renderScene(cam: THREE.Camera) {
   try {
     if (composer) {
       // Uniform sync every frame: dev poses change the design FOV and resizes
-      // change the aspect, and a stale warp misplaces every pixel.
-      if (lensPass && cam === planetariumCamera) {
-        updateLensPass(lensPass, planetariumLens, planetariumCamera.fov, planetariumCamera.aspect);
+      // change the aspect, and a stale warp misplaces every pixel. The fused
+      // chain writes the four shared uniforms; the `?fused=0` chain's own lens
+      // pass takes its flag from the same numbers.
+      if (cam === planetariumCamera) {
+        if (composerLens) {
+          syncLensUniforms(composerLens, planetariumLens, planetariumCamera.fov, planetariumCamera.aspect);
+        } else if (lensPass) {
+          updateLensPass(lensPass, planetariumLens, planetariumCamera.fov, planetariumCamera.aspect);
+        }
       }
-      // RenderPass draws the scene into the composer's read buffer. The
-      // composer swaps after every swapping pass, OutputPass included, so a
-      // chain with an odd number of them (flight and compare: no lens) ends
-      // each frame with the pair swapped, and every fresh build starts with
-      // the partner in front. Put the scene target back so the geometry gets
-      // the samples, not a full-screen quad (see buildComposer).
+      // RenderPass draws the scene into the composer's READ buffer, and three's
+      // EffectComposer constructor puts the partner in that slot, so every
+      // fresh build starts with the partner in front. This line is the one
+      // thing that puts the scene target back, so the geometry gets the
+      // samples rather than a full-screen quad (see buildComposer). It also
+      // covers a chain that ends a frame swapped: on the fused chain nothing
+      // swaps at all, and on `?fused=0` the lens pass is the only swapper
+      // (OutputTargetPass and the resample passes all set needsSwap false).
       if (sceneTarget && composer.readBuffer !== sceneTarget) composer.swapBuffers();
       composer.render();
     } else if (lensPass && cam === planetariumCamera) {
@@ -2386,10 +2457,16 @@ function installDevHooks() {
         const { createGpuProfiler } = await import('./app/devGpuProfile');
         gpuProfiler = createGpuProfiler({
           gl: renderer.getContext(),
+          // The names the two chains' tables are lined up by: `Lens`, `Bloom`
+          // and `OutputPass` on `?fused=0`, and `Bloom` (now including the
+          // warp) plus `Finishing` on the fused chain. A removed pass takes a
+          // span floor with it, so a per-pass comparison across the two arms
+          // overstates the saving unless the floor is quoted beside it.
           passes: () => (composer?.passes ?? []).map((pass) => ({
             name: pass === lensPass ? 'Lens'
               : pass === bloomPass ? 'Bloom'
-              : pass === outputTargetPass && !(pass instanceof FusedOutputPass) ? 'OutputPass'
+              : pass instanceof FusedOutputPass ? 'Finishing'
+              : pass === outputTargetPass ? 'OutputPass'
               : pass.constructor.name,
             pass: pass as unknown as { render: (...args: unknown[]) => void },
           })),
@@ -2833,7 +2910,10 @@ async function init() {
         shipVisible: () => planetariumMode?.devShipVisible() ?? true,
         budget: () => planetariumMode?.devFrameBudget() ?? null,
         resetBudget: () => planetariumMode?.devResetFrameBudget(),
-        passes: () => ({ bloom: bloomPass, lens: lensPass }),
+        // Whether the composer carries a warp at all — a lens pass of its own
+        // on `?fused=0`, the shared uniforms on the fused chain — rather than
+        // the pass, which the fused chain does not have.
+        passes: () => ({ bloom: bloomPass, lensWarp: lensPass !== null || composerLens !== null }),
         setLens: (on) => devSetLensPassOff(!on),
         pinPixelRatio: devPinPixelRatio,
         pixelRatio: () => renderer.getPixelRatio(),

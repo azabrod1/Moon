@@ -301,36 +301,38 @@ export function displayFovDeg(camera: {
 }
 
 /**
- * GLSL for the lens pass fragment: inverse map per output pixel (Newton on
- * the same radial blend), sampling the rectilinear source. Interpolated into
- * LensPass so the CPU forward map above and the GPU inverse can't drift.
+ * GLSL for the inverse map: one output pixel's position → the texel of the
+ * rectilinear scene image that lands there (Newton on the same radial blend).
+ * Interpolated into every shader that reads a scene image through the lens, so
+ * the CPU forward map above and the GPU inverse can't drift, and neither can
+ * the readers drift from each other: the lens pass on the no-float path, the
+ * bloom bright pass and the finishing pass all sample through this one
+ * function.
+ *
+ * It declares ONLY the four warp uniforms. `uUvScale`/`uUvMax` — the
+ * sub-rectangle of the allocation the frame was drawn into
+ * (app/sceneSubRect.ts) — are declared by whoever composes this text, exactly
+ * once: the lens pass's own text below, or the insertion app/sceneSubRect.ts
+ * makes into three's shaders. A second declaration would not compile, and a
+ * string check cannot see that.
  */
-export const lensPassFragmentShader = /* glsl */ `
-uniform sampler2D tDiffuse;
+export const lensSourceUvGlsl = /* glsl */ `
 uniform float uStrength;
 uniform float uAspect;
 uniform float uTanHalfRender;
 uniform float uREdge;
-// The source may be a sub-rectangle of a larger allocation (app/sceneSubRect.ts):
-// every read is scaled into it and stopped half a texel short of its far edge,
-// so no bilinear tap reaches the region outside it. Both are 1 where the frame
-// fills its target, and the scaled read is then the same texel.
-uniform vec2 uUvScale;
-uniform vec2 uUvMax;
-varying vec2 vUv;
 
 float lensRadial(float theta) {
   return (1.0 - uStrength) * tan(theta) + uStrength * 2.0 * tan(theta * 0.5);
 }
 
-void main() {
+vec2 lensSourceUv(vec2 vUv) {
   vec2 ndc = vUv * 2.0 - 1.0;
   vec2 d = vec2(ndc.x * uAspect, ndc.y);
   float rOut = length(d) * uREdge;
-  if (rOut < 1e-6 || uStrength <= 0.0) {
-    gl_FragColor = texture2D(tDiffuse, min(vUv * uUvScale, uUvMax));
-    return;
-  }
+  // The optical centre, and a strength of zero: the plain scaled read, which
+  // is what the frame is when nothing is warping it.
+  if (rOut < 1e-6 || uStrength <= 0.0) return min(vUv * uUvScale, uUvMax);
   // Invert R(theta) by Newton from the rectilinear estimate. Same iteration
   // budget as the CPU seam (LENS_INVERSE_ITERATIONS) so overlay and pixels agree.
   float theta = atan(rOut);
@@ -345,6 +347,26 @@ void main() {
   vec2 srcNdc = normalize(d) * srcRadius;
   vec2 srcUv = vec2(srcNdc.x / uAspect, srcNdc.y) * 0.5 + 0.5;
   // By construction the overscan covers the frame; clamp guards float fringe.
-  gl_FragColor = texture2D(tDiffuse, clamp(srcUv * uUvScale, vec2(0.0), uUvMax));
+  return clamp(srcUv * uUvScale, vec2(0.0), uUvMax);
+}
+`;
+
+/**
+ * The lens pass fragment: the shared inverse map, one sample per output pixel.
+ * The pass itself survives for the no-float direct path (where it resamples
+ * tone-mapped bytes) and for the `?fused=0` composer chain.
+ */
+export const lensPassFragmentShader = /* glsl */ `
+uniform sampler2D tDiffuse;
+// The source may be a sub-rectangle of a larger allocation (app/sceneSubRect.ts):
+// every read is scaled into it and stopped half a texel short of its far edge,
+// so no bilinear tap reaches the region outside it. Both are 1 where the frame
+// fills its target, and the scaled read is then the same texel.
+uniform vec2 uUvScale;
+uniform vec2 uUvMax;
+varying vec2 vUv;
+${lensSourceUvGlsl}
+void main() {
+  gl_FragColor = texture2D(tDiffuse, lensSourceUv(vUv));
 }
 `;

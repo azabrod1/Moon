@@ -210,6 +210,17 @@ export function sceneTargetSize(cssWidth: number, cssHeight: number, sceneRatio:
  * samples, the composer's partner buffer and the LDR target. The figure
  * `perfTargets()` reports and the one the byte budget below is checked
  * against.
+ *
+ * **The partner's 8 B a pixel is deliberate headroom, not an accident.** On the
+ * shipped chain no pass swaps, so nothing ever binds the composer's ping-pong
+ * partner and three gives it no GL storage at all (`?fused=0` does bind it).
+ * Taking those bytes out of this figure would be an accounting fix that frees
+ * nothing and widens High's reach instead: at 0 samples it is a third of the
+ * total, so a 5K iMac at 2.5× falls from 553 MB to 369 MB against its ~429 MB
+ * share and a 320 MiB tablet from 154 MB to 102 MB against ~134 MB — both flip
+ * from refused to offered, on device classes nobody here has measured. That is
+ * a decision about which devices are handed a few hundred megabytes of
+ * supersampled targets, so it stays counted until it is made on purpose.
  */
 export function renderTargetBytes(cssWidth: number, cssHeight: number, sceneRatio: number, samples: number): number {
   const { width, height } = sceneTargetSize(cssWidth, cssHeight, sceneRatio);

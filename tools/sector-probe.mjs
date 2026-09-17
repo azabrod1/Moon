@@ -13,6 +13,7 @@
 //   node tools/sector-probe.mjs
 //   node tools/sector-probe.mjs --scenario=budget,sweep
 //   node tools/sector-probe.mjs --url=http://localhost:5676 --tiles=http://localhost:5622/
+//   node tools/sector-probe.mjs --scenario=budget,envelope,gpu --extra='&quality=high'
 //
 // Prereqs: a dev server for this checkout (`npx vite --port 5676 --strictPort`)
 // and, for the levels the app does not ship inside itself, a tile host
@@ -77,6 +78,15 @@ function arg(name, fallback) {
 const URL_BASE = arg('url', 'http://localhost:5676');
 const TILES = arg('tiles', 'http://localhost:5622/');
 const TILES_QUERY = TILES ? `&tiles=${encodeURIComponent(TILES)}` : '';
+// Appended to every boot this battery opens, after each scenario's own query.
+// The A/B seam, the same one the smoothness gate carries: a switch given here
+// turns the whole battery into the same battery with that switch thrown, which
+// is how the tile figures are shown to be about the switch rather than about
+// the machine. `--extra='&quality=high'` is the one this exists for — the
+// fixed High level chooses the sector tiles for the pixels it really draws
+// (main.ts getTilePixelRatio), so it asks the streamer for a finer tier inside
+// the same envelope, and only this battery can say what that costs.
+const EXTRA_QUERY = arg('extra', '');
 const ONLY = arg('scenario', '').split(',').map((s) => s.trim()).filter(Boolean);
 const CYCLES = Number(arg('cycles', '8'));
 const TOUR_CONTEXT = arg('context', 'desktop');
@@ -169,7 +179,7 @@ async function boot(browser, { context = CONTEXTS.desktop, query = '', init } = 
   page.on('pageerror', (e) => errors.push('pageerror: ' + String(e)));
   page.on('console', (m) => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
   page.on('request', (r) => { if (r.url().includes('/tiles/')) tileRequests.push(r.url()); });
-  await page.goto(`${URL_BASE}/?auto=planetarium${query}${TILES_QUERY}`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${URL_BASE}/?auto=planetarium${query}${TILES_QUERY}${EXTRA_QUERY}`, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => !!(window.__moon && window.__moon.ready && window.__moon.ready()), null, { timeout: 90_000 });
   await page.waitForFunction(
     () => { const ls = document.getElementById('loading-screen'); return !ls || ls.classList.contains('hidden'); },

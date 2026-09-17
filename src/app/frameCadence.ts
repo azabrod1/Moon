@@ -153,6 +153,9 @@ export class FrameCadence {
   private ticks = 1;
   private periodMs = ASSUMED_CADENCE_MS;
   private budget = BUDGET_MS;
+  /** How long after a draw a broken stream is declared: a period and a half
+   *  of DELIVERED callbacks. */
+  private missedAfterMs = MISSED_PERIOD_FACTOR * ASSUMED_CADENCE_MS;
 
   /** Callbacks since the last draw, and the last draw's timestamp: the whole
    *  schedule. */
@@ -244,8 +247,12 @@ export class FrameCadence {
     this.since++;
     if (this.since >= this.ticks) return true;
     // A stream that stopped delivering — a hidden tab, a stall — draws now
-    // rather than waiting out a count that will not arrive.
-    if (this.lastDrawT !== null && t - this.lastDrawT >= MISSED_PERIOD_FACTOR * this.periodMs) return true;
+    // rather than waiting out a count that will not arrive. Measured against
+    // the DELIVERED cadence, not the display's: they are the same number on a
+    // real screen, but `?refresh=` pins a cadence faster than the callbacks
+    // really come, and a threshold derived from the pretend one lands between
+    // two real callbacks and fires on every draw.
+    if (this.lastDrawT !== null && t - this.lastDrawT >= this.missedAfterMs) return true;
     return false;
   }
 
@@ -328,10 +335,20 @@ export class FrameCadence {
     const ms = (t - this.coverStartT) / this.coverIntervals;
     this.coverStartT = t;
     this.coverIntervals = 0;
+    // The covered window measured the DELIVERED stream as well as the
+    // display, and the first live tick needs both: without a delivered
+    // reading the missed-period rule would spend the first second on the
+    // display's cadence, which under `?refresh=` is not the stream's.
+    this.observedMs = ms;
     // The fastest window a long cover produced: a window can read slower than
     // the display (a stall inside it lengthens the span) but never faster.
     if (this.coverBestMs === null || ms < this.coverBestMs) this.coverBestMs = ms;
-    if (this.pinnedMs !== null) return;
+    if (this.pinnedMs !== null) {
+      // The pin owns the display's cadence, but the delivered one it has just
+      // learned still feeds the missed-period rule.
+      this.recompute('auto');
+      return;
+    }
     if (this.idleMs === this.coverBestMs && this.calibrated) return;
     this.idleMs = this.coverBestMs;
     this.calibrated = true;
@@ -397,6 +414,8 @@ export class FrameCadence {
     // delivered rate: a throttle must not relax what a frame is measured
     // against.
     this.periodMs = this.ticks * this.idleMs;
+    this.missedAfterMs = MISSED_PERIOD_FACTOR * this.ticks
+      * Math.max(this.idleMs, this.observedMs ?? this.idleMs);
     this.budget = this.screen ? BUDGET_MS : Math.max(this.periodMs, this.requestedMs);
     const budgetChanged = Math.abs(this.budget - before.budget) > 1e-9;
     const paced = this.ticks !== before.ticks || Math.abs(this.periodMs - before.period) > 1e-9;

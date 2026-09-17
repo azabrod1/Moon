@@ -304,6 +304,19 @@ describe('the schedule', () => {
     expect(draws).toEqual(stream);
   });
 
+  it('never fires the missed-period rule on a stream that is merely slower than the pin', () => {
+    // `?refresh=120` on a machine delivering 60 callbacks a second: the
+    // pretended period (4 x 8.33 = 33.3) lands between two real callbacks, so
+    // a threshold derived from it would fire on the third of every four and
+    // the target would be missed by a quarter.
+    const cadence = cadenceFor('30', { pinnedCadenceMs: 1000 / 120 });
+    run(cadence, grid(60, 2), { covered: true });
+    expect(cadence.state().ticksPerDraw).toBe(4);
+    const { indices } = runIndexed(cadence, grid(60, 12).map((t) => t + 100_000));
+    const steps = new Set(indices.slice(1).map((v, i) => v - indices[i]));
+    expect([...steps]).toEqual([4]);
+  });
+
   it('a hidden tab comes back drawing, not waiting out a count', () => {
     const cadence = calibrated('30', 60);
     const before = run(cadence, grid(60, 2).map((t) => t + 100_000));

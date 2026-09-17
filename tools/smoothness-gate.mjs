@@ -893,14 +893,15 @@ function fpsPacing({ id, where, device, boot = '' }) {
       // of the harness's own making inside the window being measured.
       probe = await page.evaluate(async (holdMs) => {
         const nap = (ms) => new Promise((r) => { setTimeout(r, ms); });
-        const from = window.__moon.quality().fps.drawSeq;
+        const before = window.__moon.quality().fps;
         const startedAtMs = performance.now();
         await nap(holdMs);
         const endedAtMs = performance.now();
         const fps = window.__moon.quality().fps;
         return {
           wallMs: endedAtMs - startedAtMs,
-          draws: fps.drawSeq - from,
+          draws: fps.drawSeq - before.drawSeq,
+          callbacks: fps.tickSeq - before.tickSeq,
           fps,
           log: window.__moon.drawLog(1200),
         };
@@ -948,7 +949,19 @@ function fpsPacing({ id, where, device, boot = '' }) {
           histogram,
         },
       };
+      analysis.fps.callbacks = probe.callbacks;
       if (fps.held !== null) problems.push(`the cap was held open by ${fps.held} — nothing was paced`);
+      // One draw per callback is not pacing at all: the app presents
+      // everything it is given, and the intervals are the browser's own
+      // delivery, which no schedule can even out. What IS the claim there is
+      // that nothing was skipped.
+      if (fps.ticksPerDraw === 1) {
+        const missed = probe.callbacks - probe.draws;
+        if (missed > Math.max(2, probe.callbacks * 0.01)) {
+          problems.push(`skipped ${missed} of ${probe.callbacks} callbacks at one draw a callback`);
+        }
+        return problems;
+      }
       // Every interval within 4 ms of the period. A deadline-chasing schedule
       // alternated 16 and 50 here.
       if (worst > 4) {
@@ -1043,6 +1056,7 @@ function fpsThrottle({ id, where, device, boot = '&fps=30' }) {
       probe = await page.evaluate(async (holdMs) => {
         const nap = (ms) => new Promise((r) => { setTimeout(r, ms); });
         const before = window.__moon.quality();
+        const armedAtMs = performance.now();
         window.__halveRaf = true;
         // Long enough for the delivered-cadence window to see the throttle
         // and for the rule to have assembled a window of its own.
@@ -1053,7 +1067,8 @@ function fpsThrottle({ id, where, device, boot = '&fps=30' }) {
         const after = window.__moon.quality();
         window.__halveRaf = false;
         return {
-          before: { rung: before.rung, sceneRatio: before.sceneRatio, fps: before.fps },
+          armedAtMs,
+          before: { rung: before.rung, sceneRatio: before.sceneRatio, fps: before.fps, lastStep: before.lastStep },
           after: { rung: after.rung, sceneRatio: after.sceneRatio, fps: after.fps, lastStep: after.lastStep },
           wallMs: performance.now() - startedAtMs,
           draws: after.fps.drawSeq - fromDraw,
@@ -1091,9 +1106,17 @@ function fpsThrottle({ id, where, device, boot = '&fps=30' }) {
         problems.push(`idleCadenceMs moved ${round2(drift)} ms under a throttle`
           + ' — a slower stream is load, never the display');
       }
-      // And the picture stays where it was.
-      if (probe.after.rung !== probe.before.rung) {
-        problems.push(`the rung moved ${probe.before.rung} -> ${probe.after.rung} under the throttle`);
+      // And the picture does not SLIDE. A step down (or the floor check
+      // handing medium back) is the failure this exists for: the throttle
+      // must not be read as the scene costing more. An up probe is the
+      // designed search under a quantised interval — where every frame that
+      // fits reports exactly the period, the controller can only find the
+      // ceiling by climbing into it — so it is reported, not failed.
+      const step = probe.after.lastStep;
+      const inWindow = step !== null && step.atMs >= probe.armedAtMs;
+      analysis.fpsThrottle.stepInWindow = inWindow ? step : null;
+      if (inWindow && (step.reason === 'down' || step.reason === 'floor latch')) {
+        problems.push(`the rung slid ${step.from} -> ${step.to} (${step.reason}) under the throttle`);
       }
       return problems;
     },

@@ -4395,15 +4395,31 @@ export class PlanetariumMode {
     if (this.constellations) this.constellations.setVisible(visible && this.showConstellations);
   }
 
-  /** Called by main.ts after it reapplies the render resolution on a window
-   *  resize (which may reclamp the renderer's pixel ratio) and when the
-   *  upscaler changes the scene ratio. Star point sizes track the scene's
-   *  ratio, so retune them to the new value. */
-  onResize(): void {
+  /**
+   * The scene's pixel ratio moved and nothing else did — a graphics-quality
+   * level, a Dynamic rung, the `?upscale=` pin (main.ts applySceneResolution).
+   *
+   * Three things in the scene are authored in the scene target's own
+   * framebuffer pixels and have to be retuned when it is re-sized: the star
+   * point sizes, the moon dots' and the asteroid belt's sub-pixel energy.
+   * Every other consumer of the scene ratio reads `scenePixelRatio()` per
+   * frame already, and the lens pass has no size uniforms at all — so this is
+   * the whole of it, and it must stay that way: a resolution step happens
+   * while the user is looking at a moving frame, and the resize path's DOM
+   * measurement and map-sheet fold have no business on it.
+   */
+  onScenePixelRatioChanged(): void {
     const sceneRatio = this.scenePixelRatio();
     if (this.starfield) setStarfieldPixelRatio(this.starfield, sceneRatio);
     if (this.moonDots) this.moonDots.setPixelRatio(sceneRatio);
     if (this.solarSystem) setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, sceneRatio);
+  }
+
+  /** Called by main.ts after it reapplies the render resolution on a window
+   *  resize (which may reclamp the renderer's pixel ratio). The scene ratio
+   *  can have moved with it, so the point sizes are retuned here too. */
+  onResize(): void {
+    this.onScenePixelRatioChanged();
     // A resize can carry the layout across the breakpoint, and the phone
     // invariant — the expanded sheet and the body card are never up together —
     // is otherwise enforced only on the edges that OPEN one of them. A window

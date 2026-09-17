@@ -26,9 +26,10 @@ import {
   bloomPixelRatio, composerSamples, parseMsaaOverride, parsePixelRatioPin, parseUpscaleParam, renderPixelRatio,
   targetPixelRatio, UPSCALE_RENDER_PIXEL_RATIO, upscalePolicy, type UpscaleFilter,
 } from './app/renderResolution';
+import { sceneTargetSize } from './app/renderQuality';
 import { BootRenderGate } from './app/bootRenderGate';
 import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn, setPerfSwitch } from './app/perfSwitches';
-import { setBloomInternalDepth } from './app/bloomTargets';
+import { holdBloomSize, setBloomInternalDepth } from './app/bloomTargets';
 import { devGlintUniforms, setDevOceanRoughness } from './planetarium/world/surfaceShading';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass } from './app/FusedOutputPass';
@@ -265,6 +266,10 @@ let sceneTarget: THREE.WebGLRenderTarget | null = null;
 // (app/bootRenderGate.ts). The simulation runs every frame regardless.
 const bootRender = new BootRenderGate();
 let bloomPass: UnrealBloomPass | null = null;
+/** The live bloom pass's real `setSize`, held away from the composer's resize
+ *  cascade (app/bloomTargets.ts holdBloomSize); null while there is no bloom
+ *  pass. sizeBloomPass is the only caller. */
+let sizeBloomChain: ((width: number, height: number) => void) | null = null;
 let depthDiscardPass: DepthDiscardPass | null = null;
 let lensPass: ReturnType<typeof createLensPass> | null = null;
 // The finishing pass and, on the planetarium's composer, the upscaler's two
@@ -364,32 +369,52 @@ function applyRenderResolution() {
   renderer.setPixelRatio(pixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
   if (composer && sceneTarget) {
-    // The composer is sized at the scene ratio: the output ratio, or below it
-    // with the upscaler on (app/UpscalePass.ts), in which case the last
-    // passes carry the frame up to the canvas the renderer was just sized to.
-    const sceneRatio = getScenePixelRatio();
     // A page zoom, a move to another monitor or a resize across the 4K
     // budget can change the sample count: retarget it and drop the GL
     // objects so the next bind allocates the new layout (setSize alone only
-    // disposes on a dimension change).
-    const samples = getSceneTargetSamples(sceneRatio);
+    // disposes on a dimension change). The count comes off the OUTPUT ratio,
+    // so a quality level or a Dynamic rung never changes it.
+    const samples = getSceneTargetSamples(pixelRatio);
     if (sceneTarget.samples !== samples) {
       sceneTarget.samples = samples;
       sceneTarget.dispose();
     }
-    composer.setPixelRatio(sceneRatio);
-    composer.setSize(window.innerWidth, window.innerHeight);
+    // The composer is sized at the scene ratio: the output ratio, or either
+    // side of it at the quality level's own ratio (app/UpscalePass.ts), in
+    // which case the last passes carry the frame across to the canvas the
+    // renderer was just sized to.
+    sizeComposerToScene(getScenePixelRatio());
     sizeBloomPass();
   }
 }
 
-// The composer sizes every pass at the scene's ratio; the bloom chain is
-// re-sized afterwards at its own (app/renderResolution.ts bloomPixelRatio:
-// the renderer's old floor, kept for the chain alone), so the glow keeps the
-// width and the cost it had on every display.
+/**
+ * Size the composer's targets for a scene ratio.
+ *
+ * In explicit DEVICE pixels with the composer's own pixel ratio held at 1:
+ * three multiplies the size it is given by that ratio with no flooring, and
+ * GL stores a target with a GLsizei, so a fractional ratio through the
+ * composer's own multiply leaves the target's recorded width a fraction above
+ * the storage the driver made — and the resample's uniforms are derived from
+ * that width. Both writers of the composer's size use this one function, or a
+ * resize would re-derive a different size from a rung change.
+ */
+function sizeComposerToScene(sceneRatio: number): void {
+  if (!composer) return;
+  const { width, height } = sceneTargetSize(window.innerWidth, window.innerHeight, sceneRatio);
+  composer.setSize(width, height);
+}
+
+// The composer sizes every pass at the scene's size; the bloom chain is sized
+// separately at its own ratio (app/renderResolution.ts bloomPixelRatio: the
+// renderer's old floor, kept for the chain alone), so the glow keeps the width
+// and the cost it had on every display. This is the chain's ONLY writer — the
+// composer's cascade is held off the instance (app/bloomTargets.ts
+// holdBloomSize), because sizing eleven half-float targets to the scene and
+// back is the whole cost of a resolution step.
 function sizeBloomPass() {
   const ratio = bloomPixelRatio(window.devicePixelRatio, isMobile);
-  bloomPass?.setSize(window.innerWidth * ratio, window.innerHeight * ratio);
+  sizeBloomChain?.(window.innerWidth * ratio, window.innerHeight * ratio);
 }
 
 // Bloom radius (shared across modes) and the planetarium threshold live in
@@ -450,6 +475,7 @@ function buildComposer(
   }
   lensPass = null;
   bloomPass = null; // disposed above with the composer's passes
+  sizeBloomChain = null;
   depthDiscardPass = null;
   outputTargetPass = null;
   upscalePass = null;
@@ -504,11 +530,18 @@ function buildComposer(
   // samples are never blitted across. setSize below sets the dimensions.
   // Sized at the scene ratio: the output ratio unless this is the
   // planetarium's composer with the upscaler on (scenePixelRatioFor).
-  const sceneRatio = scenePixelRatioFor(cam, getTargetPixelRatio());
+  const outputRatio = getTargetPixelRatio();
+  const sceneRatio = scenePixelRatioFor(cam, outputRatio);
   sceneTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
     type: THREE.HalfFloatType,
     stencilBuffer: true,
-    samples: getSceneTargetSamples(sceneRatio),
+    // From the OUTPUT ratio, and held there across every quality level and
+    // every Dynamic rung: the policy's count has two step functions inside
+    // the range a slide traverses, so a count that followed the scene ratio
+    // would change the antialiasing character mid-slide and re-allocate the
+    // whole target — and on a scaled Windows display it would hand the
+    // cheaper rung MORE multisampled storage than the one above it.
+    samples: getSceneTargetSamples(outputRatio),
     resolveDepthBuffer: false,
   });
   composer = new EffectComposer(renderer, sceneTarget);
@@ -524,8 +557,10 @@ function buildComposer(
   partner.samples = 0;
   partner.depthBuffer = false;
   partner.stencilBuffer = false;
-  composer.setPixelRatio(sceneRatio);
-  composer.setSize(window.innerWidth, window.innerHeight);
+  // The composer's own ratio stays at 1 for the life of the chain and every
+  // size it is given is in device pixels (sizeComposerToScene).
+  composer.setPixelRatio(1);
+  sizeComposerToScene(sceneRatio);
   composer.addPass(new RenderPass(scene, cam));
   // The world's depth and stencil have no reader past this point
   // (app/DepthDiscardPass.ts). Enabled/disabled rather than added/removed, so
@@ -560,6 +595,8 @@ function buildComposer(
     // tests or writes (app/bloomTargets.ts). Applied here rather than at the
     // switch, because a rebuild makes a fresh pass with three's defaults back.
     setBloomInternalDepth(bloomPass, import.meta.env.DEV ? !perfSwitchOn('bloom-nodepth') : false);
+    // Before the pass joins the chain: addPass sizes it too.
+    sizeBloomChain = holdBloomSize(bloomPass);
     composer.addPass(bloomPass);
     sizeBloomPass();
   }
@@ -641,12 +678,38 @@ function applyUpscalePasses(): void {
   if (upscalePass) debugLog('Upscale', upscaleState());
 }
 
-/** Apply a change to the resample's state: the passes, then the resize path,
- *  which re-sizes the composer at the new scene ratio and retunes every point
- *  size through the modes' onResize. */
-function applyUpscale(): void {
+/**
+ * Draw the scene at a new ratio, and change nothing else.
+ *
+ * The narrow path. The resize path (syncViewport) exists for a viewport that
+ * really moved: it re-writes four cameras' aspects, re-derives the lens
+ * overscan, re-sizes the renderer and its canvas, measures the map panel and
+ * card — synchronous DOM layout — folds the phone's map sheet when the body
+ * card is up, and logs a Resize line. None of that has anything to do with
+ * the scene's ratio, and a Dynamic step going through it would fold the sheet
+ * under the user's finger several times a minute.
+ *
+ * So a ratio change does exactly four things: re-size the composer's targets,
+ * point the resample passes at the new direction, retune the three point
+ * sizes that are authored in the scene's own framebuffer pixels, and say so
+ * once. The sample count is not touched (it comes off the output ratio), the
+ * bloom chain is not touched (its size is held away from the composer's
+ * cascade), the renderer and the canvas are not touched (the output ratio has
+ * not moved), and nothing is added to or removed from the chain, so no
+ * program relinks.
+ */
+function applySceneResolution(why: string): void {
+  const sceneRatio = getScenePixelRatio();
+  sizeComposerToScene(sceneRatio);
   applyUpscalePasses();
-  syncViewport();
+  planetariumMode?.onScenePixelRatioChanged();
+  debugLog('Quality', {
+    why,
+    sceneRatio,
+    outputRatio: getTargetPixelRatio(),
+    mode: sceneRatioMode(),
+    sceneTarget: sceneTarget ? `${sceneTarget.width}x${sceneTarget.height}` : null,
+  });
 }
 
 /** Where the resample stands, for the bridge and a capture's log. */
@@ -710,7 +773,7 @@ if (import.meta.env.DEV) {
   });
   // The upscaler's key: the sweep's handle on it and the pixel gate's. A URL
   // that asked for the upscaler arms it here, so the sweep's row reads as the
-  // cost it removes; a flip from either side goes through applyUpscale, and
+  // cost it removes; a flip from either side goes through the narrow path, and
   // the ratio it comes back on with is the one it had (or the URL's, or the
   // policy's own).
   if (upscaleRenderRatio !== null) setPerfSwitch('upscale', true);
@@ -721,7 +784,7 @@ if (import.meta.env.DEV) {
     upscaleRenderRatio = on
       ? (upscaleRenderRatio ?? upscaleParam?.renderRatio ?? UPSCALE_RENDER_PIXEL_RATIO)
       : null;
-    applyUpscale();
+    applySceneResolution('upscale switch');
   });
 }
 
@@ -1415,7 +1478,7 @@ function installDevHooks() {
         // applied here.
         const nowOn = upscaleRenderRatio !== null;
         if (perfSwitchOn('upscale') !== nowOn) setPerfSwitch('upscale', nowOn);
-        else applyUpscale();
+        else applySceneResolution('upscale bridge');
       }
       return upscaleState();
     },

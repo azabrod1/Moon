@@ -1,5 +1,6 @@
 /**
- * What UnrealBloomPass allocates that its own picture never reads.
+ * What UnrealBloomPass allocates that its own picture never reads, and who is
+ * allowed to re-allocate it.
  *
  * The pass builds eleven render targets — one bright-pass and five
  * horizontal/vertical blur pairs — and asks three for each of them with a type
@@ -31,6 +32,30 @@ interface BloomInternals {
   separableBlurMaterials: THREE.Material[];
   compositeMaterial: THREE.Material;
   blendMaterial: THREE.Material;
+}
+
+/**
+ * Take the pass's own `setSize` away from the composer and hand it back to
+ * its caller.
+ *
+ * EffectComposer sizes every pass on every `setSize`, and UnrealBloomPass is
+ * the only pass in this app's chain that allocates when asked: its
+ * `setSize` re-sizes eleven half-float targets, and a render target disposes
+ * its GL objects on any dimension change. The bloom chain is deliberately NOT
+ * on the scene's ratio — it keeps the renderer's old floor so the glow holds
+ * the width and the cost it had on every display — so every composer resize
+ * used to size the chain to the scene, dispose it, and then size it back:
+ * ~115 MB of allocation churn at 1728x1117 with the chain at 2, ~185 MB with
+ * the scene at 3. A dynamic resolution step pays that on every rung.
+ *
+ * So the instance's method becomes a no-op and the real one is returned. The
+ * chain then has exactly one writer of its size, which is the only one that
+ * ever wanted to write it.
+ */
+export function holdBloomSize(pass: UnrealBloomPass): (width: number, height: number) => void {
+  const size = pass.setSize.bind(pass);
+  pass.setSize = () => {};
+  return size;
 }
 
 /** Every target the pass renders into, bright pass and both blur chains. */

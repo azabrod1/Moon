@@ -418,6 +418,26 @@ export function deviceProfileFor(cls: DeviceClass, family: PlatformFamily): Devi
   return DEVICE_PROFILES[family][cls];
 }
 
+/**
+ * `?envelope=<MiB>` in dev shrinks the shared envelope, which is the one knob
+ * that puts a desktop under a phone's pressure without a phone. The ceiling
+ * and the floor are the profile's; only the shared envelope moves.
+ *
+ * It lives here, beside the table it overrides, because two callers have to
+ * agree on the answer: the planetarium's texture profile (the tiles and the
+ * globe ladder spend it) and the render-target byte budget in main (the
+ * quality levels are measured against a share of it). Two copies of a DEV
+ * override would drift, and the A/B would then shrink one spender and not
+ * the other. Dropped from a production build with the rest of the DEV
+ * branches.
+ */
+export function devEnvelopeOverride(profile: DeviceProfile): DeviceProfile {
+  if (!import.meta.env.DEV || typeof location === 'undefined') return profile;
+  const asked = Number(new URLSearchParams(location.search).get('envelope'));
+  if (!Number.isFinite(asked) || asked <= 0) return profile;
+  return { ...profile, envelopeBytes: Math.round(asked * 1024 * 1024) };
+}
+
 // --- The envelope arithmetic -------------------------------------------------
 //
 // Two managers spend one envelope: the sector streamer's per-slot ledger (with

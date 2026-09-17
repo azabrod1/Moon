@@ -363,6 +363,11 @@ export interface PerfSweepDeps {
   setLens: (on: boolean) => void;
   pinPixelRatio: (ratio: number | null) => void;
   pixelRatio: () => number;
+  /** Hold the dynamic-resolution controller idle for the whole run, and let
+   *  it go at the end. A pinned ratio already holds it, but the un-pin comes
+   *  on a device this run has just heated, and the run's last act must not be
+   *  to hand a hot device to a rule that then steps. */
+  holdQuality: (held: boolean) => void;
   /** Every surface a frame is drawn into, in device pixels — the evidence that
    *  a resolution switch really moved the pixels. */
   renderTargets: () => unknown;
@@ -1071,6 +1076,7 @@ export function installPerfSweep(deps: PerfSweepDeps): void {
 
   function setRunning(on: boolean): void {
     running = on;
+    deps.holdQuality(on);
     goBtn.disabled = on;
     phoneBtn.disabled = on;
     quickBtn.disabled = on;

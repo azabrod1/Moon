@@ -306,8 +306,10 @@ export function bakeSliceBudgetMs(frameIntervalMs: number): number {
 
 /** One frame-sliced step of a bake: the budget the slice was cut to, what its
  *  draws actually took on the main thread, and how many steps are still to
- *  come. Recorded only under a DEV guard, for the frame-budget readout that
- *  asks what each budgeted consumer is spending. */
+ *  come. Recorded in every build: the frame-budget readout reads it under the
+ *  perf overlay, and the resolution controller reads it in production, where a
+ *  frame that spent its time on a bake slice is no evidence about what the
+ *  scene costs at the resolution it was drawn at. */
 export interface BakeSliceSample {
   atMs: number;
   budgetMs: number;
@@ -1552,7 +1554,7 @@ export class AtmosphereLut {
           return false;
         }
         const allowed = this.sliceDrawCount(steps, i);
-        const sliceBudgetMs = import.meta.env.DEV ? bakeSliceBudgetMs(this.frameIntervalMs()) : 0;
+        const sliceBudgetMs = bakeSliceBudgetMs(this.frameIntervalMs());
         const sliceStart = performance.now();
         const prevTarget = this.renderer.getRenderTarget();
         const prevAutoClear = this.renderer.autoClear;
@@ -1577,14 +1579,12 @@ export class AtmosphereLut {
         const sliceEnd = performance.now();
         submitMs += sliceEnd - sliceStart;
         slices++;
-        if (import.meta.env.DEV) {
-          lastBakeSlice = {
-            atMs: sliceEnd,
-            budgetMs: sliceBudgetMs,
-            spentMs: sliceEnd - sliceStart,
-            stepsLeft: steps.length - i,
-          };
-        }
+        lastBakeSlice = {
+          atMs: sliceEnd,
+          budgetMs: sliceBudgetMs,
+          spentMs: sliceEnd - sliceStart,
+          stepsLeft: steps.length - i,
+        };
         // Links all precede draws, so a slice always takes at least one step.
         // The guard stays because the cost of being wrong is a boot idle that
         // spins on a step it will not run.

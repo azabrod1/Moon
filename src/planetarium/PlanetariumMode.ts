@@ -148,6 +148,7 @@ import { FrameIntervalTracker } from './world/frameInterval';
 import { planLadderPressure } from './world/ladderPressure';
 import {
   classifyDevice,
+  devEnvelopeOverride,
   deviceProfileFor,
   MemoryEnvelope,
   planRelease,
@@ -577,17 +578,6 @@ interface SurfaceDensityReadout extends SurfaceDensity {
   envelope: number;
   /** Wall clock of the last easing step, for the rate limiter's dt. */
   stampMs: number;
-}
-
-/** `?envelope=<MiB>` in dev shrinks the memory envelope, which is the one
- *  knob that puts a desktop under a phone's pressure without a phone. The
- *  ceiling and the floor are the profile's; only the shared envelope moves.
- *  Dropped from a production build with the rest of the DEV branches. */
-function devEnvelopeOverride(profile: DeviceProfile): DeviceProfile {
-  if (!import.meta.env.DEV || typeof location === 'undefined') return profile;
-  const asked = Number(new URLSearchParams(location.search).get('envelope'));
-  if (!Number.isFinite(asked) || asked <= 0) return profile;
-  return { ...profile, envelopeBytes: Math.round(asked * 1024 * 1024) };
 }
 
 /** Whether this GPU has a compressed format the KTX2 transcoder can target.
@@ -1183,6 +1173,9 @@ export class PlanetariumMode {
    *  what the warm pump was allowed and what it took. Null until a DEV
    *  measurement asks for it. */
   private devWarmSpend: { budgetMs: number; spentMs: number; queued: number } | null = null;
+  /** Frame-sliced work done in the frame now being drawn (frameWork). Reset
+   *  at the top of every update, so main reads the previous frame's total. */
+  private frameWorkMs = 0;
   /** The memory readout under `?debug=1` (reportMemoryDebug). The overlay is
    *  the only console a phone has without a cable, so the line has to be rare
    *  enough to read: one every 5 s, or as soon as a figure moves by more than
@@ -2250,14 +2243,18 @@ export class PlanetariumMode {
    *  boot shader warm-up compiles the variant the frame actually draws. */
   private readonly rendersThroughComposer: () => boolean;
   /** The ratio the SCENE is drawn at, in device pixels per CSS pixel. The
-   *  renderer's own ratio is the canvas's; under the upscaler
-   *  (app/renderResolution.ts renderPixelRatio) the composer draws the scene
-   *  smaller and resamples it up, and everything that sizes a thing in the
-   *  scene target's own pixels — point sizes, the lens sprites' framebuffer
-   *  size — reads this instead. The sector ladder and the close-range density
-   *  keep the renderer's ratio on purpose: the tiles and the synthesis are the
-   *  ones chosen for the canvas. */
+   *  renderer's own ratio is the canvas's; under a quality level or a Dynamic
+   *  rung (app/renderResolution.ts renderPixelRatio) the composer draws the
+   *  scene either side of it and resamples across, and everything that sizes
+   *  a thing in the scene target's own pixels — point sizes, the lens
+   *  sprites' framebuffer size — reads this instead. */
   private readonly scenePixelRatio: () => number;
+  /** The ratio the sector tiles and the close-range detail are chosen for.
+   *  The canvas's ratio, except at the FIXED High level, where it is the
+   *  scene's: a fixed ratio picks its tiles once, so High really draws the
+   *  tiles its pixels deserve, while a Dynamic slide must never swap the
+   *  tiles under the user. */
+  private readonly tilePixelRatio: () => number;
   // Dev tripwire for the warm-up: program count right after it, compared a
   // couple of frames later — the first live frames must not compile anything
   // it missed (that stall is the very thing it exists to prevent).
@@ -2305,6 +2302,7 @@ export class PlanetariumMode {
     useBloom = true,
     rendersThroughComposer: () => boolean = () => useBloom,
     scenePixelRatio: () => number = () => renderer.getPixelRatio(),
+    tilePixelRatio: () => number = () => renderer.getPixelRatio(),
   ) {
     this.scene = scene;
     this.camera = camera;
@@ -2312,6 +2310,7 @@ export class PlanetariumMode {
     this.useBloom = useBloom;
     this.rendersThroughComposer = rendersThroughComposer;
     this.scenePixelRatio = scenePixelRatio;
+    this.tilePixelRatio = tilePixelRatio;
     // Read the device once, before any body loads, so anisotropy and tier
     // limits apply to the very first textures created and every later
     // decision spends the same numbers. The signals and the profile are this
@@ -3369,7 +3368,7 @@ export class PlanetariumMode {
       return;
     }
     const canvasH = this.renderer.domElement.clientHeight;
-    const dpr = this.renderer.getPixelRatio();
+    const dpr = this.tilePixelRatio();
     this.sectorFrameCanvasW = this.renderer.domElement.clientWidth;
     this.sectorFrameCanvasH = canvasH;
     this.sectorFrameDpr = dpr;
@@ -4477,6 +4476,10 @@ export class PlanetariumMode {
   }
 
   update(dt: number): void {
+    // Before the early return: a frame this mode sits out did no sliced work
+    // of its own, and a stale total would exclude it from the resolution
+    // measurement for good.
+    this.frameWorkMs = 0;
     if (!this.active || this.restoring || !this.solarSystem) return;
     // Written inside the frame it describes: a frame trace that scored the
     // veil a frame late would blame the world for the cut's first hitch.
@@ -4502,15 +4505,18 @@ export class PlanetariumMode {
     // inside whatever gesture first draws the map. Runs in every mode so
     // landed sessions warm up too.
     const warmBudget = warmBudgetMs(this.frameIntervalMs);
+    // Timed in production, not only under the perf overlay: what this pump
+    // spends is what makes a frame's interval no evidence about the scene's
+    // own cost (frameWork), and two clock reads a frame is what that costs.
+    const queued = import.meta.env.DEV ? textureWarmQueueDepth() : 0;
+    const warmStartedAt = performance.now();
+    pumpTextureWarmQueue(warmBudget, this.frameIntervalMs);
+    const warmSpentMs = performance.now() - warmStartedAt;
+    this.frameWorkMs += warmSpentMs;
     if (import.meta.env.DEV && this.devWarmSpend) {
-      const queued = textureWarmQueueDepth();
-      const startedAt = performance.now();
-      pumpTextureWarmQueue(warmBudget, this.frameIntervalMs);
       this.devWarmSpend.budgetMs = warmBudget;
-      this.devWarmSpend.spentMs = performance.now() - startedAt;
+      this.devWarmSpend.spentMs = warmSpentMs;
       this.devWarmSpend.queued = queued;
-    } else {
-      pumpTextureWarmQueue(warmBudget, this.frameIntervalMs);
     }
     // Climb any committed destination's warm ladder (see
     // warmArrivalDestination) — a no-op the moment every goal has disarmed.
@@ -4926,7 +4932,7 @@ export class PlanetariumMode {
     const measured = mapWidth > 0 && estPx > densityRelevantDiameterPx(mapWidth)
       ? measureSurfaceDensity(
         centre, renderedRadiusAU, mapWidth, this.camera, canvasW, canvasH,
-        this.renderer.getPixelRatio(), this.bodyBasis(mesh), this.densityScratch,
+        this.tilePixelRatio(), this.bodyBasis(mesh), this.densityScratch,
       )
       : null;
     const target = this.synthesisEnabled ? measured?.magnified ?? 0 : 0;
@@ -10603,6 +10609,36 @@ export class PlanetariumMode {
    */
   private arrivalVeilUp(): boolean {
     return this.arrivalInFlight || performance.now() < this.arrivalVeilClearAtMs;
+  }
+
+  /** The same answer for main.ts, which needs it every frame: a frame behind
+   *  the veil says nothing about what the scene costs, so it is not evidence
+   *  for the resolution controller and the controller must not change the
+   *  picture under a veil either. */
+  isArrivalVeilUp(): boolean {
+    return this.arrivalVeilUp();
+  }
+
+  /**
+   * Frame-sliced work this frame actually DID, in milliseconds: the texture
+   * warm pump (which is also where the sliced uploader and every sector tile
+   * goes) and an atmosphere bake slice stamped since `sinceMs`.
+   *
+   * Read by main.ts at the top of the next frame, for the frame before it —
+   * an interval measures the frame that produced it, and a frame that spent
+   * four milliseconds uploading a tile is not evidence about what the scene
+   * costs at this resolution. Fetches in flight are deliberately NOT counted:
+   * a long streaming descent over Earth has something in flight almost
+   * continuously, and counting that would silence the measurement for exactly
+   * the flight it exists to watch.
+   */
+  frameWork(sinceMs: number): number {
+    let ms = this.frameWorkMs;
+    const slice = lastBakeSliceSample();
+    // A bake slice runs in its own animation frame, not inside update(), so
+    // it is found by its stamp rather than accumulated.
+    if (slice !== null && slice.atMs >= sinceMs) ms += slice.spentMs;
+    return ms;
   }
 
   /** main.ts draws this over the world frame, after the composer has finished

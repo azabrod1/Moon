@@ -24,11 +24,22 @@ import { canGPUDoBloom, halfFloatTargetSampleCounts } from './app/gpuCapability'
 import { installShaderSalt } from './app/shaderSalt';
 import {
   bloomPixelRatio, composerSamples, parseMsaaOverride, parsePixelRatioPin, parseUpscaleParam, renderPixelRatio,
-  targetPixelRatio, UPSCALE_RENDER_PIXEL_RATIO, upscalePolicy, type UpscaleFilter,
+  targetPixelRatio, type UpscaleFilter,
 } from './app/renderResolution';
-import { sceneTargetSize } from './app/renderQuality';
+import {
+  DEFAULT_QUALITY, dynamicLadder, parseQualityParam, qualityBounds, renderTargetBytes, sceneRatioForLevel,
+  sceneTargetSize, type QualityBounds, type QualityBoundsInput, type QualityLadder, type QualityLevel,
+} from './app/renderQuality';
+import {
+  BUDGET_MS, ResolutionController, ZERO_COUNTED_WARN_MS,
+  type Decision, type IntervalSample, type UpRule,
+} from './app/resolutionController';
+import { markPending, clearPending, pendingAtBoot, readQualityLevel, writeQualityLevel } from './app/qualitySetting';
+import {
+  classifyDevice, devEnvelopeOverride, deviceProfileFor, platformFamily, readDeviceSignals,
+} from './planetarium/world/gpuEnvelope';
 import { BootRenderGate } from './app/bootRenderGate';
-import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn, setPerfSwitch } from './app/perfSwitches';
+import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn } from './app/perfSwitches';
 import { holdBloomSize, setBloomInternalDepth } from './app/bloomTargets';
 import { devGlintUniforms, setDevOceanRoughness } from './planetarium/world/surfaceShading';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
@@ -182,14 +193,21 @@ if (new URLSearchParams(location.search).get('canvasaa') === '1' && !canvasSampl
   debugWarn('canvasaa=1 asked for canvas samples and the context gave none');
 }
 
-// The upscaler (app/UpscalePass.ts; the policy in app/renderResolution.ts):
-// the planetarium's scene drawn at a lower ratio than the canvas and
-// resampled up to it. `?upscale=` names the scene ratio on any build (0 or
-// off = off: the kill switch once upscalePolicy turns it on somewhere);
-// unasked, the policy decides. The filter and the sharpen stops are dev
-// dials, live through `__moon.upscale`.
+// The resample (app/UpscalePass.ts; the policy in app/renderResolution.ts):
+// the planetarium's scene drawn at a ratio of its own and carried across to
+// the canvas. `?upscale=` names that ratio on any build and PINS it — while
+// it stands it owns the scene ratio outright, the graphics-quality level is
+// held out of the way and Dynamic is idle, which is what a measurement asks
+// for (`?upscale=0` therefore pins the canvas's own ratio: the kill switch).
+// Unasked, the quality level below decides. The filter and the sharpen stops
+// are dev dials, live through `__moon.upscale`.
 const upscaleParam = parseUpscaleParam(location.search, import.meta.env.DEV);
-let upscaleRenderRatio: number | null = upscaleParam ? upscaleParam.renderRatio : upscalePolicy(isMobile);
+let upscalePinned = upscaleParam !== null;
+let upscalePinRatio: number | null = upscaleParam?.renderRatio ?? null;
+/** The one scene-ratio request every path reads: the pin's, or the quality
+ *  level's (updateSceneRatioRequest). Null means the output ratio — today's
+ *  frame, byte for byte. */
+let upscaleRenderRatio: number | null = null;
 let upscaleFilter: UpscaleFilter = upscaleParam?.filter ?? 'easu';
 let upscaleSharpenStops: number | null = upscaleParam?.sharpen === undefined ? RCAS_DEFAULT_STOPS : upscaleParam.sharpen;
 // Which kernel carries a frame drawn LARGER than the canvas down onto it. The
@@ -197,6 +215,233 @@ let upscaleSharpenStops: number | null = upscaleParam?.sharpen === undefined ? R
 // one; `?downsample=tent` is the A/B, dev server only.
 let downsampleFilter: DownsampleFilter =
   import.meta.env.DEV && new URLSearchParams(location.search).get('downsample') === 'tent' ? 'tent' : 'box';
+
+// ================================================================
+// Graphics quality
+// ================================================================
+// What Low, Medium, High and Dynamic mean on the display in front of the user
+// is app/renderQuality.ts; when Dynamic steps is app/resolutionController.ts;
+// this is the wiring. Everything moves the SCENE ratio only — the canvas, the
+// System Map, the corner chart and the direct path stay on the output ratio,
+// and so do the sector tiles and the close-range detail except at the fixed
+// High level (getTilePixelRatio).
+
+/**
+ * Which answer Dynamic's up path uses, the one open question in the rule.
+ *
+ * 'sixty' probes up whenever the window is inside the 60 fps budget, so a
+ * 120 Hz machine climbs to its sharpest rung and runs at 60. 'panel' probes up
+ * only while the window is inside the panel's own period, so a 120 Hz machine
+ * keeps 120 and the sharper picture stays behind the High level. Down
+ * decisions hold 60 fps either way. Both are built; this is the default until
+ * the two have been seen side by side as motion.
+ */
+export const UP_RULE: UpRule = 'sixty';
+
+// The device, classified once, here: the bounds are needed before the
+// planetarium mode exists. The mode reads the same signals off the same
+// context and lands on the same class and family, and its texture profile
+// goes through the same devEnvelopeOverride, so the byte budget below is
+// measured against the envelope the sector streamer really spends — the DEV
+// `?envelope=` shrink included, which is how "does the budget bind" is asked
+// on a desktop.
+const deviceSignals = readDeviceSignals(renderer.getContext());
+const deviceClass = classifyDevice(deviceSignals);
+const devicePlatform = platformFamily(deviceSignals);
+const deviceEnvelopeBytes = devEnvelopeOverride(deviceProfileFor(deviceClass, devicePlatform)).envelopeBytes;
+
+/** min(MAX_TEXTURE_SIZE, MAX_RENDERBUFFER_SIZE). A target above either yields
+ *  an incomplete framebuffer — a black frame, with no fallback — so no level
+ *  and no rung may cross it in either dimension. */
+const maxGlTargetSize = (() => {
+  const gl = renderer.getContext();
+  const texture = renderer.capabilities.maxTextureSize;
+  const buffer = gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) as number;
+  return Number.isFinite(buffer) && buffer > 0 ? Math.min(texture, buffer) : texture;
+})();
+
+let qualityLevel: QualityLevel = resolveBootQualityLevel();
+let qualityBoundsLive: QualityBounds = qualityBounds(qualityBoundsInput());
+let qualityLadderLive: QualityLadder = dynamicLadder(qualityBoundsLive);
+const resolutionController = new ResolutionController(qualityLadderLive, { upRule: UP_RULE });
+/** Whether a pin currently holds Dynamic out of the way (refreshQualityPin). */
+let qualityIdle = false;
+/** The `?perf=1` sweep holds it idle for its whole run: the sweep pins and
+ *  un-pins the output ratio itself, and the un-pin at the end would otherwise
+ *  wake the controller on a device the run has just heated. */
+let qualitySweepHold = false;
+
+/**
+ * The level this boot runs at: the URL's word, else the saved setting, else
+ * the default.
+ *
+ * `?quality=` is this boot's own instruction and wins outright. A SAVED level
+ * goes through the boot-loop guard: a machine that cannot allocate what the
+ * setting asks for would otherwise re-apply it on the reload after it died,
+ * with no way out but clearing site data. So a saved non-default level is
+ * written as a pending marker before it is applied, and the marker is cleared
+ * the moment the first frame is live; a marker still standing at boot means
+ * the last boot never reached a frame under it, so this one takes medium and
+ * says which level it refused.
+ */
+function resolveBootQualityLevel(): QualityLevel {
+  const asked = parseQualityParam(location.search, import.meta.env.DEV);
+  if (asked !== null) return asked;
+  const stuck = pendingAtBoot();
+  if (stuck !== null) {
+    debugWarn(`The last boot never reached a frame at graphics quality "${stuck}" — this one draws at medium`);
+    return 'medium';
+  }
+  const saved = readQualityLevel();
+  if (saved === null) return DEFAULT_QUALITY;
+  if (saved !== DEFAULT_QUALITY) markPending(saved);
+  return saved;
+}
+
+/** Everything the bounds depend on, read off the live display. */
+function qualityBoundsInput(): QualityBoundsInput {
+  const outputRatio = getTargetPixelRatio();
+  return {
+    outputRatio,
+    deviceClass,
+    platform: devicePlatform,
+    envelopeBytes: deviceEnvelopeBytes,
+    cssWidth: window.innerWidth,
+    cssHeight: window.innerHeight,
+    // From the output ratio and held there across every level and rung.
+    samples: getSceneTargetSamples(outputRatio),
+    // The planetarium gets a composer wherever the GPU can render half-float
+    // (buildComposer). Without one there is no target to re-size, no resample
+    // pass to enable, and every level is medium.
+    hasComposer: useBloom,
+    supersampleFallback,
+    maxGlSize: maxGlTargetSize,
+  };
+}
+
+/** The scene ratio the live level asks for, or null for "the output ratio" —
+ *  which is what Medium has to stay, byte for byte. */
+function qualitySceneRatioRequest(): number | null {
+  if (!useBloom) return null;
+  const ratio = qualityLevel === 'dynamic'
+    ? resolutionController.sceneRatio
+    : sceneRatioForLevel(qualityLevel, qualityBoundsLive);
+  return Math.abs(ratio - qualityBoundsLive.medium) < 1e-9 ? null : ratio;
+}
+
+/** Write the one request every path reads: the measurement pin's ratio while
+ *  one stands, else the level's own. */
+function updateSceneRatioRequest(): void {
+  upscaleRenderRatio = upscalePinned ? upscalePinRatio : qualitySceneRatioRequest();
+}
+
+/**
+ * The bounds depend on the output ratio, the CSS size and the sample count,
+ * and a move to another monitor or a page zoom changes all three — which
+ * changes what every level means and which rungs exist. Recompute them,
+ * re-clamp Dynamic's rung to the nearest rung the new ladder offers, and
+ * re-derive the request. The caller re-sizes.
+ */
+function recomputeQualityBounds(): void {
+  qualityBoundsLive = qualityBounds(qualityBoundsInput());
+  qualityLadderLive = dynamicLadder(qualityBoundsLive);
+  if (qualityLevel === 'dynamic') resolutionController.setLadder(qualityLadderLive, performance.now());
+  updateSceneRatioRequest();
+}
+
+/**
+ * Every pin that holds Dynamic idle: a measurement that owns the ratio
+ * (`?upscale=`, the DEV `?ratio=` / `__moon.pinRatio`), the perf sweep's run,
+ * a fixed level, and a build with no composer to re-size. Idle means no
+ * interval counts and no decision is made — not that the controller forgets
+ * what it learned.
+ */
+function refreshQualityPin(): void {
+  const pinned = upscalePinned
+    || pixelRatioPin !== null
+    || qualitySweepHold
+    || qualityLevel !== 'dynamic'
+    || !useBloom;
+  if (pinned === qualityIdle) return;
+  qualityIdle = pinned;
+  resolutionController.notify(pinned ? 'pin' : 'unpin', performance.now());
+}
+
+/**
+ * The graphics-quality level, changed. Saves the choice — on its own
+ * localStorage key, never in the journey save, so New Journey cannot clear it
+ * — and re-draws at the new ratio through the narrow path.
+ *
+ * This is the function the menu row writes through.
+ */
+function setQualityLevel(level: QualityLevel): void {
+  if (level === qualityLevel) return;
+  qualityLevel = level;
+  writeQualityLevel(level);
+  refreshQualityPin();
+  // Dynamic picks up the ladder for this display and starts from whichever
+  // rung it last held; the evidence behind that rung is dropped either way.
+  if (level === 'dynamic') resolutionController.setLadder(qualityLadderLive, performance.now());
+  applySceneResolution(`level ${level}`);
+}
+
+/**
+ * The ratio the sector tiles and the close-range detail are chosen for.
+ *
+ * The canvas's, except at the FIXED High level. A ratio that CHANGES must not
+ * reach the streamer — a slide would swap the tiles under the user, which is
+ * the one thing a resolution mechanism is not allowed to do — but a fixed
+ * level picks its tiles once, and High drawing the canvas's tiles into three
+ * times the pixels was most of why `?ratio=3` looked better than a
+ * supersample at Earth's shell.
+ */
+function getTilePixelRatio(): number {
+  return qualityLevel === 'high' ? getScenePixelRatio() : getTargetPixelRatio();
+}
+
+/** Where graphics quality stands: the level, the rung, what this display
+ *  offers, and the decision rule's own window. */
+function qualityReadout() {
+  const state = resolutionController.state();
+  const sceneRatio = getScenePixelRatio();
+  return {
+    level: qualityLevel,
+    rung: state.rung,
+    sceneRatio,
+    outputRatio: getTargetPixelRatio(),
+    tileRatio: getTilePixelRatio(),
+    mode: sceneRatioMode(),
+    bounds: qualityBoundsLive,
+    ladder: qualityLadderLive.rungs,
+    budgetMs: BUDGET_MS,
+    window: {
+      trimmedMeanMs: state.trimmedMeanMs,
+      countedRate: state.countedRate,
+      counted: state.countedWindow,
+      silentMs: state.silentMs,
+    },
+    probeWaitMs: state.probeWaitMs,
+    ceiling: state.ceiling,
+    latch: state.latch,
+    lastStep: state.lastStep,
+    idle: state.idle,
+    upRule: state.upRule,
+    panelPeriodMs: state.panelPeriodMs,
+    bytes: qualityRenderTargetBytes(),
+    reason: qualityBoundsLive.reason,
+  };
+}
+
+/** What the scene-sized render targets hold at the live ratio, in bytes: the
+ *  figure the byte budget is checked against, so a device can be asked what
+ *  it is really holding. Zero with no composer. */
+function qualityRenderTargetBytes(): number {
+  if (!sceneTarget) return 0;
+  return renderTargetBytes(window.innerWidth, window.innerHeight, getScenePixelRatio(), sceneTarget.samples);
+}
+
+updateSceneRatioRequest();
+refreshQualityPin();
 
 try {
   const gl = renderer.getContext();
@@ -208,6 +453,9 @@ try {
     sceneSamples: getSceneTargetSamples(getTargetPixelRatio()),
     sceneSampleCounts,
     isMobile,
+    quality: qualityLevel,
+    deviceClass,
+    devicePlatform,
     glVersion: gl.getParameter(gl.VERSION),
     shadingLanguage: gl.getParameter(gl.SHADING_LANGUAGE_VERSION),
   });
@@ -699,16 +947,121 @@ function applyUpscalePasses(): void {
  * program relinks.
  */
 function applySceneResolution(why: string): void {
+  updateSceneRatioRequest();
   const sceneRatio = getScenePixelRatio();
   sizeComposerToScene(sceneRatio);
   applyUpscalePasses();
   planetariumMode?.onScenePixelRatioChanged();
   debugLog('Quality', {
     why,
+    level: qualityLevel,
+    rung: resolutionController.rung,
     sceneRatio,
     outputRatio: getTargetPixelRatio(),
     mode: sceneRatioMode(),
     sceneTarget: sceneTarget ? `${sceneTarget.width}x${sceneTarget.height}` : null,
+    mb: Math.round(qualityRenderTargetBytes() / 1e5) / 10,
+  });
+}
+
+// --- Dynamic's per-frame evidence -------------------------------------------
+//
+// The controller is pure and stepped once a frame with one interval; these are
+// the figures main has to keep from one frame to the next to describe it.
+
+/** The wall clock at the previous frame's callback: the interval's start, and
+ *  the window the previous frame's sliced work is looked for in. */
+let lastFrameAtMs = performance.now();
+/** The previous frame's own main-thread time, loop start to end of draw. */
+let loopBusyMs = 0;
+/** Programs linked as of the previous frame: a frame whose count grew paid a
+ *  link inside its draw. */
+let lastProgramCount = 0;
+/** Whether the previous frame's endpoint was eligible. An interval needs BOTH
+ *  of its endpoints to be, or a resume's first interval — which spans the
+ *  whole time the tab was away — would be counted as the scene's own. */
+let lastFrameEligible = false;
+/** Whether an arrival veil was up in the previous frame, so its coming down
+ *  can be reported once. */
+let arrivalVeilWasUp = false;
+/** Seeded true and tracked by events rather than polled: a page reached from
+ *  a link that was never clicked reports no focus while animating perfectly
+ *  well, and polling document.hasFocus() would exclude every frame of the
+ *  session with no symptom but a Dynamic that never moves. */
+let pageFocused = true;
+/** The silence check runs on a countdown rather than every frame. */
+let qualitySilenceCountdown = 0;
+let qualitySilenceSaid = false;
+const QUALITY_SILENCE_CHECK_FRAMES = 300;
+
+/**
+ * One frame of evidence for Dynamic, and the rung it asks for.
+ *
+ * Every field describes the interval that ENDS at `nowMs` — the frame before
+ * this one, which is the frame that produced it. An interval charged to the
+ * frame that merely reported it would credit a tile upload's cost to the
+ * clean frame after it, and near Earth, where sliced work lands on
+ * alternating frames, the statistic would become the mean of exactly the long
+ * intervals the exclusion exists to remove.
+ */
+function stepQuality(nowMs: number): void {
+  const previousFrameAtMs = lastFrameAtMs;
+  lastFrameAtMs = nowMs;
+  const programs = renderer.info.programs?.length ?? lastProgramCount;
+  const linked = programs > lastProgramCount;
+  lastProgramCount = programs;
+  // Work the previous frame actually DID: its texture uploads and bake
+  // slices, and a program link. A link cannot be timed apart from the draw it
+  // happened inside, so the frame's whole busy time stands in for it — an
+  // upper bound, and all that is asked is whether the frame did work at all.
+  const workedMs = (planetariumMode?.frameWork(previousFrameAtMs) ?? 0) + (linked ? loopBusyMs : 0);
+  const veilUp = planetariumMode?.isArrivalVeilUp() ?? false;
+  if (arrivalVeilWasUp && !veilUp) resolutionController.notify('arrival', nowMs);
+  arrivalVeilWasUp = veilUp;
+  const eligibleNow = appMode === 'planetarium'
+    && document.visibilityState === 'visible'
+    && pageFocused
+    && bootRender.current === 'live'
+    && !veilUp;
+  const eligible = eligibleNow && lastFrameEligible;
+  lastFrameEligible = eligibleNow;
+  const decision = resolutionController.step({
+    nowMs,
+    intervalMs: nowMs - previousFrameAtMs,
+    mainThreadMs: loopBusyMs,
+    workedMs,
+    eligible,
+  });
+  if (decision !== null) applyQualityDecision(decision, nowMs);
+  if (--qualitySilenceCountdown <= 0) {
+    qualitySilenceCountdown = QUALITY_SILENCE_CHECK_FRAMES;
+    reportQualitySilence();
+  }
+}
+
+/** Move the rung the controller asked for, then tell it the move landed: an
+ *  up-step opens its verification window, a down-step starts its spacing. */
+function applyQualityDecision(decision: Decision, nowMs: number): void {
+  const kind = decision.reason === 'up' ? 'up' : decision.reason === 'down' ? 'down' : 'restore';
+  resolutionController.onApplied(nowMs, kind);
+  applySceneResolution(`dynamic ${decision.reason}`);
+}
+
+/** A counted rate stuck at zero is a defect — a gate that never opened —
+ *  rather than a quiet scene, and the only way to see it on a phone is to say
+ *  so through the debug overlay. Said once per stretch of silence. */
+function reportQualitySilence(): void {
+  const state = resolutionController.state();
+  if (state.idle || state.silentMs <= ZERO_COUNTED_WARN_MS) {
+    qualitySilenceSaid = false;
+    return;
+  }
+  if (qualitySilenceSaid) return;
+  qualitySilenceSaid = true;
+  debugWarn('No frame has counted toward the graphics-quality measurement', {
+    silentMs: Math.round(state.silentMs),
+    countedRate: state.countedRate,
+    rung: state.rung,
   });
 }
 
@@ -771,21 +1124,6 @@ if (import.meta.env.DEV) {
       buildComposer(planetariumCamera, PLANETARIUM_BLOOM, planetariumBloomEnabled());
     }
   });
-  // The upscaler's key: the sweep's handle on it and the pixel gate's. A URL
-  // that asked for the upscaler arms it here, so the sweep's row reads as the
-  // cost it removes; a flip from either side goes through the narrow path, and
-  // the ratio it comes back on with is the one it had (or the URL's, or the
-  // policy's own).
-  if (upscaleRenderRatio !== null) setPerfSwitch('upscale', true);
-  let upscaleKnown = perfSwitchOn('upscale');
-  onPerfSwitch('upscale', (on) => {
-    if (on === upscaleKnown) return;
-    upscaleKnown = on;
-    upscaleRenderRatio = on
-      ? (upscaleRenderRatio ?? upscaleParam?.renderRatio ?? UPSCALE_RENDER_PIXEL_RATIO)
-      : null;
-    applySceneResolution('upscale switch');
-  });
 }
 
 // Armed after first Planetarium activation: that render compiles the scene's
@@ -808,6 +1146,9 @@ let gpuProfiler: GpuProfiler | null = null;
  */
 function devPinPixelRatio(ratio: number | null): void {
   pixelRatioPin = ratio;
+  // A pinned output ratio is a measurement: Dynamic steps out of the way
+  // before the resize path re-derives everything from it.
+  refreshQualityPin();
   syncViewport();
 }
 
@@ -842,10 +1183,18 @@ function devRenderTargets() {
       ? { ...size(sceneTarget)!, samples: sceneTarget.samples }
       : null,
     composerPartner: size(composer?.renderTarget2),
-    // The scene ratio (below the output ratio only with the upscaler on) and
-    // the upscaler's own targets: the tone-mapped frame at scene size and
-    // EASU's result at output size (null while RCAS does not follow).
+    // The scene ratio (either side of the output ratio with a quality level
+    // or a Dynamic rung) and the resample's own targets: the tone-mapped
+    // frame at scene size and EASU's result at output size (null while RCAS
+    // does not follow). `sceneBytes` is what the scene-sized targets hold
+    // together — the figure the byte budget is checked against, and the one a
+    // device can be asked for directly.
     sceneRatio: getScenePixelRatio(),
+    sceneSamples: sceneTarget?.samples ?? 0,
+    sceneBytes: qualityRenderTargetBytes(),
+    quality: qualityLevel,
+    rung: resolutionController.rung,
+    tilePixelRatio: getTilePixelRatio(),
     ldrTarget: size(outputTargetPass?.target),
     upTarget: size(upscalePass?.target),
     // Half the bloom pass's requested resolution: the first mip it blurs.
@@ -905,6 +1254,11 @@ function revealLoadingScreen() {
   // fade begins.
   renderer.getContext().finish();
   bootRender.markLive();
+  // A frame is on screen under whatever level this boot applied, so the
+  // boot-loop marker has done its job.
+  clearPending();
+  // And from here the frames are the scene's own: the covered boot's were not.
+  resolutionController.notify('boot', performance.now());
   document.getElementById('loading-screen')?.classList.add('hidden');
 }
 
@@ -1107,7 +1461,8 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
         // draws: into the composer's target when there is a composer, to the
         // canvas otherwise — the same branch renderScene takes.
         planetariumMode = new PlanetariumMode(
-          scene, planetariumCamera, renderer, useBloom, () => composer !== null, () => getScenePixelRatio(),
+          scene, planetariumCamera, renderer, useBloom, () => composer !== null,
+          () => getScenePixelRatio(), () => getTilePixelRatio(),
         );
         // Every tool entry arrives here ("How many fit?", Look inside): the
         // mode closes its own entry surfaces and snapshots the journey, then
@@ -1290,6 +1645,10 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
     // degraded but the user can still see a scene and click their way out.
     modeTransition.classList.remove('active');
     modeSwitchInFlight = false;
+    // A tool owns the scene and its own composer, and the frames either side
+    // of the switch are the switch's: the resolution measurement starts again
+    // from whichever mode this left the app in.
+    resolutionController.notify('resize', performance.now());
   }
   // A failure after the current mode was taken down would leave a mode with
   // no UI and no exit; the planetarium is the one mode that always comes back.
@@ -1465,22 +1824,43 @@ function installDevHooks() {
     /** The resample, live (app/UpscalePass.ts): `ratio` = the scene ratio (null = the level's own), `sharpen` = RCAS stops (null = RCAS off), `filter` = 'easu' | 'bilinear' (the upscale control arm) or 'box' | 'tent' (the downsample A/B). No argument reads; null hands the ratio back to the quality level. Returns where it stands. */
     upscale: (opts?: { ratio?: number | null; sharpen?: number | null; filter?: UpscaleFilter | DownsampleFilter } | null) => {
       if (opts !== undefined) {
-        if (opts === null) {
-          upscaleRenderRatio = null;
-        } else {
-          if (opts.ratio !== undefined) upscaleRenderRatio = opts.ratio;
+        if (opts === null || opts.ratio === null) {
+          // The ratio goes back to the quality level.
+          upscalePinned = false;
+          upscalePinRatio = null;
+        } else if (opts.ratio !== undefined) {
+          upscalePinned = true;
+          upscalePinRatio = opts.ratio;
+        }
+        if (opts !== null) {
           if (opts.sharpen !== undefined) upscaleSharpenStops = opts.sharpen;
           if (opts.filter === 'box' || opts.filter === 'tent') downsampleFilter = opts.filter;
           else if (opts.filter !== undefined) upscaleFilter = opts.filter;
         }
-        // The switch mirrors on/off and its listener applies that change; a
-        // change inside the on state (the ratio, the filter, the stops) is
-        // applied here.
-        const nowOn = upscaleRenderRatio !== null;
-        if (perfSwitchOn('upscale') !== nowOn) setPerfSwitch('upscale', nowOn);
-        else applySceneResolution('upscale bridge');
+        refreshQualityPin();
+        applySceneResolution('upscale bridge');
       }
       return upscaleState();
+    },
+    /**
+     * Graphics quality: the level, the rung Dynamic sits on, what this display
+     * offers and the decision rule's own window. `{level}` is the same as
+     * setQuality; `{inject}` feeds synthetic intervals straight to the rule
+     * (app/resolutionController.ts IntervalSample) so a browser run can prove
+     * the plumbing — a rung moving and the targets re-sizing — without faking
+     * load, which no pin can do (a pin holds the rule idle by design).
+     */
+    quality: (opts?: { inject?: IntervalSample[] } | null) => {
+      for (const sample of opts?.inject ?? []) {
+        const decision = resolutionController.step(sample);
+        if (decision !== null) applyQualityDecision(decision, sample.nowMs);
+      }
+      return qualityReadout();
+    },
+    /** Pick a level, exactly as the menu row does: saved, applied, reported. */
+    setQuality: (level: QualityLevel) => {
+      setQualityLevel(level);
+      return qualityReadout();
     },
     // The ocean glint's two authored numbers, live: the cap on the peak above
     // white that the bloom sees, and the flat keep on the mirror term. Returns
@@ -1828,12 +2208,19 @@ async function init() {
 
   function animate(rafTimestamp = performance.now()) {
     requestAnimationFrame(animate);
-    if (import.meta.env.DEV) surfacePerfFrameStart(rafTimestamp);
-    if (import.meta.env.DEV) smoothTraceFrameStart(rafTimestamp);
     // Wall clock at the callback, not the rAF timestamp: after a busy main
     // thread the timestamp is the frame the browser meant to start, which is
-    // already stale by the time this runs.
+    // already stale by the time this runs. Taken first, and once: it is both
+    // the simulation's clock and the end of the interval the resolution
+    // controller reads.
+    const now = performance.now();
+    if (import.meta.env.DEV) surfacePerfFrameStart(rafTimestamp);
+    if (import.meta.env.DEV) smoothTraceFrameStart(rafTimestamp);
     if (import.meta.env.DEV && frameProbe) frameProbe.start();
+    // At the top, before the scene updates: the sample describes the interval
+    // that ENDS now, i.e. the frame before this one, and the figures it needs
+    // are the ones that frame left behind.
+    stepQuality(now);
     // Drift poll on a countdown: innerWidth/innerHeight are cheap but not
     // free at once-per-frame, and the events below re-arm an immediate check
     // for every transition that announces itself (visualViewport covers the
@@ -1846,7 +2233,6 @@ async function init() {
       viewportCheckCountdown = 3;
       syncViewportIfDrifted();
     }
-    const now = performance.now();
     const rawDt = (now - lastTime) / 1000;
     const dt = Math.min(rawDt, 0.1); // cap at 100ms to avoid huge jumps
     lastTime = now;
@@ -1876,6 +2262,11 @@ async function init() {
     renderer.toneMappingExposure = exposureCurrent;
     if (bootRender.shouldRender()) drawWorldFrame();
     if (import.meta.env.DEV && frameProbe) frameProbe.end();
+    // Both ends of the app's own tick, in every build: what the next frame
+    // hands the resolution controller as this frame's main-thread time. A
+    // late interval whose app tick was small is a late frame the app cannot
+    // explain by itself, which is the only case fewer pixels would fix.
+    loopBusyMs = performance.now() - now;
   }
 
   animate();
@@ -1908,6 +2299,11 @@ async function init() {
         pixelRatio: () => renderer.getPixelRatio(),
         renderTargets: devRenderTargets,
         setFrameProbe: (probe) => { frameProbe = probe; },
+        // Dynamic is held idle for the whole run, not just while the
+        // amplifier's pin stands: the sweep un-pins at the end, on a device
+        // it has just heated, and a controller woken there would step on the
+        // way out of a measurement.
+        holdQuality: (held) => { qualitySweepHold = held; refreshQualityPin(); },
       }))
       .catch((err) => debugWarn('The perf overlay did not load', err));
   }
@@ -1968,14 +2364,25 @@ function syncViewport() {
   interiorCamera.aspect = w / h;
   interiorCamera.updateProjectionMatrix();
   moonFlightMode?.onResize(w / h);
+  // Before the resolution is re-applied: the output ratio or the CSS size may
+  // have moved, and both change what every quality level means, which rungs
+  // exist and how many bytes they hold. The rung is re-clamped into the new
+  // ladder here, so the size below is already the settled one.
+  recomputeQualityBounds();
   applyRenderResolution();
+  applyUpscalePasses();
   // After the renderer's pixel ratio is (re)applied: retune star point sizes,
   // which are scaled by the renderer's ratio — both the compare and planetarium
   // starfields read renderer.getPixelRatio() in onResize, so they must run after.
   volumeCompareMode?.onResize(w / h);
   interiorMode?.onResize(w / h);
   planetariumMode?.onResize();
-  debugLog('Resize', { width: w, height: h, pixelRatio: renderer.getPixelRatio(), sceneSamples: sceneTarget?.samples ?? 0 });
+  // The frames around a resize are the browser's, not the scene's.
+  resolutionController.notify('resize', performance.now());
+  debugLog('Resize', {
+    width: w, height: h, pixelRatio: renderer.getPixelRatio(),
+    sceneSamples: sceneTarget?.samples ?? 0, sceneRatio: getScenePixelRatio(),
+  });
 }
 
 window.addEventListener('resize', syncViewport);
@@ -1990,7 +2397,17 @@ let viewportCheckCountdown = 0;
 const armViewportCheck = () => { viewportCheckDirty = true; };
 window.addEventListener('orientationchange', armViewportCheck);
 window.visualViewport?.addEventListener('resize', armViewportCheck);
-document.addEventListener('visibilitychange', armViewportCheck);
+document.addEventListener('visibilitychange', () => {
+  armViewportCheck();
+  // Coming back: the frames either side of the gap are the browser's throttle
+  // and not the scene's cost, so the measurement starts again from here.
+  if (document.visibilityState === 'visible') resolutionController.notify('focus', performance.now());
+});
+window.addEventListener('focus', () => {
+  pageFocused = true;
+  resolutionController.notify('focus', performance.now());
+});
+window.addEventListener('blur', () => { pageFocused = false; });
 
 // A mouse click leaves the pressed button focused, and the browser then turns
 // the next Space press into a re-fire of that button — so "click Faster, hit

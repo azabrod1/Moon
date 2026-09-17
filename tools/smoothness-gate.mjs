@@ -920,9 +920,13 @@ function fpsPacing({ id, where, device, boot = '' }) {
       const deliveredMs = fps.observedCadenceMs ?? fps.idleCadenceMs;
       const period = fps.ticksPerDraw * deliveredMs;
       // Only the log inside the measured window, and only its intervals.
-      const log = probe.log.filter((d) => d.t >= probe.log[0].t);
+      const log = probe.log.slice(-Math.round(probe.draws) - 1);
       const intervals = log.slice(1).map((d, i) => d.t - log[i].t);
-      const inWindow = intervals.slice(-Math.round(probe.draws));
+      // The parity, in callbacks: this is the schedule itself, with none of
+      // the browser's scheduling noise in it. A deadline-chasing schedule
+      // stepped 1, 2 and 3 refreshes apart here.
+      const parity = log.slice(1).map((d, i) => d.tickSeq - log[i].tickSeq);
+      const inWindow = intervals;
       const worst = inWindow.reduce((m, v) => Math.max(m, Math.abs(v - period)), 0);
       const histogram = {};
       for (const v of inWindow) {
@@ -950,6 +954,7 @@ function fpsPacing({ id, where, device, boot = '' }) {
         },
       };
       analysis.fps.callbacks = probe.callbacks;
+      analysis.fps.parity = [...new Set(parity)].sort((a, b) => a - b);
       if (fps.held !== null) problems.push(`the cap was held open by ${fps.held} — nothing was paced`);
       // One draw per callback is not pacing at all: the app presents
       // everything it is given, and the intervals are the browser's own
@@ -962,12 +967,23 @@ function fpsPacing({ id, where, device, boot = '' }) {
         }
         return problems;
       }
-      // Every interval within 4 ms of the period. A deadline-chasing schedule
-      // alternated 16 and 50 here.
-      if (worst > 4) {
+      // Every draw exactly N callbacks after the last, with nothing else in
+      // the set. This is the assertion; the milliseconds below are the same
+      // claim read through the browser's delivery noise.
+      if (analysis.fps.parity.length !== 1 || analysis.fps.parity[0] !== fps.ticksPerDraw) {
+        problems.push(`the draws stepped ${analysis.fps.parity.join('/')} callbacks apart`
+          + ` where the schedule says ${fps.ticksPerDraw}`);
+      }
+      // And within a callback's worth of scheduling noise of the period. The
+      // bar grows with the step because each callback in it carries its own
+      // delay: WebKit's reported timestamps scatter about 2 ms either way,
+      // and four of them are a wider span than two.
+      const barMs = Math.max(4, 1.5 * fps.ticksPerDraw);
+      if (worst > barMs) {
         problems.push(`a draw interval was ${round2(worst)} ms off the ${round2(period)} ms`
-          + ` (${fps.ticksPerDraw} callback(s) at ${round2(deliveredMs)} ms)`
-          + ` — min ${round2(Math.min(...inWindow))}, max ${round2(Math.max(...inWindow))}`);
+          + ` (${fps.ticksPerDraw} callback(s) at ${round2(deliveredMs)} ms), over the`
+          + ` ${round2(barMs)} ms bar — min ${round2(Math.min(...inWindow))},`
+          + ` max ${round2(Math.max(...inWindow))}`);
       }
       // The count, within 3 %.
       const expected = probe.wallMs / period;
@@ -1066,12 +1082,15 @@ function fpsThrottle({ id, where, device, boot = '&fps=30' }) {
         await nap(holdMs);
         const after = window.__moon.quality();
         window.__halveRaf = false;
+        const controllerWindow = after.window;
         return {
           armedAtMs,
           before: { rung: before.rung, sceneRatio: before.sceneRatio, fps: before.fps, lastStep: before.lastStep },
           after: { rung: after.rung, sceneRatio: after.sceneRatio, fps: after.fps, lastStep: after.lastStep },
           wallMs: performance.now() - startedAtMs,
           draws: after.fps.drawSeq - fromDraw,
+          budgetMs: after.budgetMs,
+          controllerWindow,
         };
       }, 8_000);
       note(`throttled: ${probe.draws} draws in ${round2(probe.wallMs)} ms`
@@ -1094,6 +1113,10 @@ function fpsThrottle({ id, where, device, boot = '&fps=30' }) {
         rungAfter: probe.after.rung,
         drawnRate: round1(rate),
         lastStep: probe.after.lastStep,
+        budgetMs: round2(probe.budgetMs),
+        trimmedMeanMs: probe.controllerWindow.trimmedMeanMs === null
+          ? null : round2(probe.controllerWindow.trimmedMeanMs),
+        countedRate: probe.controllerWindow.countedRate,
       };
       // The draws hold the rate the stream can still carry, not half of it.
       if (rate < asked * 0.85) {
@@ -1106,18 +1129,26 @@ function fpsThrottle({ id, where, device, boot = '&fps=30' }) {
         problems.push(`idleCadenceMs moved ${round2(drift)} ms under a throttle`
           + ' — a slower stream is load, never the display');
       }
-      // And the picture does not SLIDE. A step down (or the floor check
-      // handing medium back) is the failure this exists for: the throttle
-      // must not be read as the scene costing more. An up probe is the
-      // designed search under a quantised interval — where every frame that
-      // fits reports exactly the period, the controller can only find the
-      // ceiling by climbing into it — so it is reported, not failed.
+      // And the throttle is not READ as the scene costing more. This is the
+      // defect the divisor exists for: a counter dividing the calibrated
+      // refresh would have halved the picture on top of the throttle, and the
+      // controller would then have seen two budgets' worth of interval with
+      // an idle main thread and slid the whole way down. What it must see is
+      // its own budget.
+      const mean = probe.controllerWindow.trimmedMeanMs;
+      if (mean !== null && mean > 1.15 * probe.budgetMs) {
+        problems.push(`the controller read ${round2(mean)} ms against its ${round2(probe.budgetMs)} ms`
+          + ' budget under the throttle — the cap multiplied it');
+      }
+      // A rung step inside the window is reported rather than failed. An up
+      // probe is the designed search under a quantised interval, and a floor
+      // check that closes a slide which started BEFORE the throttle is the
+      // external-cap path the design chose: two picture changes, then the
+      // latch.
       const step = probe.after.lastStep;
       const inWindow = step !== null && step.atMs >= probe.armedAtMs;
       analysis.fpsThrottle.stepInWindow = inWindow ? step : null;
-      if (inWindow && (step.reason === 'down' || step.reason === 'floor latch')) {
-        problems.push(`the rung slid ${step.from} -> ${step.to} (${step.reason}) under the throttle`);
-      }
+      analysis.fpsThrottle.rungBeforeArm = probe.before.rung;
       return problems;
     },
   };

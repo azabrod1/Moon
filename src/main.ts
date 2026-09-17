@@ -599,11 +599,16 @@ function setFrameRate(rate: FrameRate): void {
 }
 
 // The draw log: the last draws as the pacing gate reads them — which frame,
-// when the browser scheduled it, when the callback ran, and what that tick
-// cost. Preallocated and written on the render path, so it allocates nothing;
-// DEV only, like every other bridge reading.
+// which animation callback it landed on, when the browser scheduled it, when
+// the callback ran, and what that tick cost. The callback number is what makes
+// the schedule checkable at all: a draw interval in milliseconds carries the
+// browser's own scheduling noise, where "exactly N callbacks apart" is a
+// property of the schedule and nothing else. Preallocated and written on the
+// render path, so it allocates nothing; DEV only, like every other bridge
+// reading.
 const DRAW_LOG_SIZE = 1200;
 const drawLogSeq = new Float64Array(DRAW_LOG_SIZE);
+const drawLogTick = new Float64Array(DRAW_LOG_SIZE);
 const drawLogT = new Float64Array(DRAW_LOG_SIZE);
 const drawLogNow = new Float64Array(DRAW_LOG_SIZE);
 const drawLogBusy = new Float64Array(DRAW_LOG_SIZE);
@@ -612,6 +617,7 @@ let drawLogCount = 0;
 
 function recordDraw(t: number, nowMs: number, busyMs: number): void {
   drawLogSeq[drawLogHead] = drawSeq;
+  drawLogTick[drawLogHead] = tickSeq;
   drawLogT[drawLogHead] = t;
   drawLogNow[drawLogHead] = nowMs;
   drawLogBusy[drawLogHead] = busyMs;
@@ -619,12 +625,20 @@ function recordDraw(t: number, nowMs: number, busyMs: number): void {
   if (drawLogCount < DRAW_LOG_SIZE) drawLogCount++;
 }
 
-function readDrawLog(n: number): { drawSeq: number; t: number; nowMs: number; busyMs: number }[] {
+interface DrawLogEntry { drawSeq: number; tickSeq: number; t: number; nowMs: number; busyMs: number }
+
+function readDrawLog(n: number): DrawLogEntry[] {
   const want = Math.max(0, Math.min(Math.floor(n), drawLogCount));
-  const out: { drawSeq: number; t: number; nowMs: number; busyMs: number }[] = [];
+  const out: DrawLogEntry[] = [];
   for (let i = want; i > 0; i--) {
     const at = (drawLogHead - i + DRAW_LOG_SIZE) % DRAW_LOG_SIZE;
-    out.push({ drawSeq: drawLogSeq[at], t: drawLogT[at], nowMs: drawLogNow[at], busyMs: drawLogBusy[at] });
+    out.push({
+      drawSeq: drawLogSeq[at],
+      tickSeq: drawLogTick[at],
+      t: drawLogT[at],
+      nowMs: drawLogNow[at],
+      busyMs: drawLogBusy[at],
+    });
   }
   return out;
 }
@@ -2340,9 +2354,9 @@ function installDevHooks() {
       setFrameRate(rate);
       return qualityReadout().fps;
     },
-    /** The last n draws: `{ drawSeq, t, nowMs, busyMs }`, oldest first. What
-     *  the pacing gate reads — the intervals between draws, not between
-     *  callbacks. */
+    /** The last n draws: `{ drawSeq, tickSeq, t, nowMs, busyMs }`, oldest
+     *  first. What the pacing gate reads — the intervals between draws, not
+     *  between callbacks, and which callback each one landed on. */
     drawLog: (n = 600) => readDrawLog(n),
     /**
      * Settle on DRAWS rather than on callbacks: the wait a capture needs under

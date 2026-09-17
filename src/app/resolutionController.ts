@@ -82,14 +82,15 @@
  * **Up under a cap is a search, not a measurement.** Where a draw covers two
  * or more callbacks, every frame that fits the period reports exactly the
  * period, so a rung up that still fits shows no change at all and the
- * controller would climb until a frame misses. Two gates answer that, and
- * BOTH are inert unless the caller says the intervals are quantised, so the
- * up path at the row's default is untouched. The first is headroom: the
+ * controller would climb until a frame misses. Two things bound that search.
+ * The first is headroom, and it is inert unless the caller says the intervals
+ * are quantised, so the up path at the row's default is untouched: the
  * main-thread milliseconds SUMMED over each interval — an up probe is a search
  * under quantisation, and the CPU's share of the whole interval is what says
- * the frame has room. The second is the session ceiling below. The headroom
- * bar is half the budget, and it is priced against a real phone's busy profile
- * before an explicit target ships as a phone default.
+ * the frame has room. The bar is half the budget, and it is priced against a
+ * real phone's busy profile before an explicit target ships as a phone
+ * default. The second is the ceiling's escalation below, which applies at
+ * every budget: a probe can fail at most four times at a rung in a session.
  *
  * **A step is verified, and the floor is justified.** After any rung change
  * comes a short reallocation settle in which nothing is counted; after an
@@ -111,13 +112,18 @@
  * a device with a hard external frame cap would otherwise change its picture
  * twice a minute for the life of the session.
  *
- * A SECOND failed probe at the same rung, with nothing in between that cleared
- * the evidence, latches that rung as a ceiling for the session. Under
- * quantisation a probe that fails shows nothing until it misses, so a rung
- * that has failed twice on its own evidence is a rung this configuration does
- * not have. It is cleared by a budget change or a new ladder (a resize, a
- * level change) and by nothing else — an arrival fires on every teleport, and
- * a ceiling cleared several times a journey would not be a session's.
+ * A failed probe's ceiling ESCALATES with each consecutive failure at the same
+ * rung — a minute, four minutes, sixteen, then the rest of the session, the
+ * floor latch's own ladder — rather than locking the rung for the session on
+ * the second failure. A probe is the only way back up, and each one costs two
+ * visible changes, so the escalation bounds the worst case at eight changes
+ * spread over about twenty minutes and then silence; but a device whose frames
+ * missed at the shell may fit them in deep space a few minutes later, and a
+ * session lock would have kept a phone that cooled there soft for the rest of
+ * its run. The count resets when a probe at that rung holds, and the ceiling
+ * is cleared by a budget change or a new ladder (a resize, a level change) and
+ * by nothing else — an arrival fires on every teleport, and a ceiling cleared
+ * several times a journey would bound nothing.
  *
  * **Focus, and why there is no jump back on a resume.** An interval whose
  * endpoints were not both visible, focused and uncovered does not count, and
@@ -227,8 +233,10 @@ export const PROBE_WAIT_MS = 8000;
 /** Where the doubling stops. */
 export const PROBE_WAIT_MAX_MS = 64_000;
 
-/** How long a failed probe's rung is held as a ceiling. */
-export const CEILING_HOLD_MS = 60_000;
+/** How long a failed probe's rung is held as a ceiling, per consecutive
+ *  failure at that rung: a minute, four minutes, sixteen, then the rest of
+ *  the session — the not-pixel-bound latch's own escalation. */
+export const CEILING_HOLD_MS: readonly number[] = [60_000, 240_000, 960_000, Infinity];
 
 /** The improvement the floor rung must show over the mean that started the
  *  slide, or the device is not pixel-bound and gets medium back. 3 % against
@@ -318,8 +326,9 @@ export interface ControllerState {
   silentMs: number;
   /** The current wait before an up probe. */
   probeWaitMs: number;
-  /** The rung a failed probe latched, and until when. */
-  ceiling: { rung: number; untilMs: number } | null;
+  /** The rung a failed probe latched, until when, and how many consecutive
+   *  failures there — 1 a minute, 2 four minutes, 3 sixteen, 4 the session. */
+  ceiling: { rung: number; untilMs: number; escalation: number } | null;
   /** The not-pixel-bound latch: while it stands there are no down-steps.
    *  `escalation` counts the failures — 1 a minute, 2 four minutes, 3 the
    *  session. */
@@ -334,8 +343,6 @@ export interface ControllerState {
   /** Counted intervals a decision needs at this budget. */
   downCounted: number;
   upCounted: number;
-  /** A rung two probes failed at: no probe reaches it again this session. */
-  sessionCeiling: number | null;
 }
 
 /**
@@ -466,11 +473,11 @@ export class ResolutionController {
   private verifyUntilMs: number | null = null;
   private verifyFromIndex = 0;
   private probeWait = PROBE_WAIT_MS;
-  private ceiling: { rung: number; untilMs: number } | null = null;
+  private ceiling: { rung: number; untilMs: number; escalation: number } | null = null;
   /** The rung the last probe failed at, held until something clears the
-   *  evidence: a second failure there is the session ceiling. */
+   *  evidence, and how many times in a row: the next failure there escalates. */
   private lastFailedProbeRung: number | null = null;
-  private sessionCeiling: number | null = null;
+  private ceilingFailures = 0;
   private latch: { untilMs: number; escalation: number } | null = null;
   private latchFailures = 0;
   private floorReference: number | null = null;
@@ -586,7 +593,7 @@ export class ResolutionController {
     this.pending = null;
     this.verifyUntilMs = null;
     this.ceiling = null;
-    this.sessionCeiling = null;
+    this.ceilingFailures = 0;
     this.lastFailedProbeRung = null;
     this.floorReference = null;
     if (opts.cause === 'user') {
@@ -660,7 +667,7 @@ export class ResolutionController {
     this.pending = null;
     this.verifyUntilMs = null;
     this.ceiling = null;
-    this.sessionCeiling = null;
+    this.ceilingFailures = 0;
     this.lastFailedProbeRung = null;
     this.floorReference = null;
     this.clockMs = nowMs;
@@ -691,7 +698,6 @@ export class ResolutionController {
       budgetMs: this.budgetMs,
       downCounted: this.downCounted,
       upCounted: this.upCounted,
-      sessionCeiling: this.sessionCeiling,
     };
   }
 
@@ -727,15 +733,18 @@ export class ResolutionController {
     if (stat === null || stat.count < VERIFY_MIN_COUNTED) return null;
     if (stat.meanMs > this.verifyThresholdMs()) {
       this.probeWait = Math.min(PROBE_WAIT_MAX_MS, this.probeWait * 2);
-      this.ceiling = { rung: this.index, untilMs: nowMs + CEILING_HOLD_MS };
-      // Twice at the same rung, with nothing in between that cleared the
-      // evidence: this configuration does not have that rung.
-      if (this.lastFailedProbeRung === this.index) this.sessionCeiling = this.index;
+      // Again at the same rung, with nothing in between that cleared the
+      // evidence: the hold escalates, a minute to four to sixteen to the
+      // session. A different rung starts its own count.
+      this.ceilingFailures = this.lastFailedProbeRung === this.index ? this.ceilingFailures + 1 : 0;
+      const hold = CEILING_HOLD_MS[Math.min(this.ceilingFailures, CEILING_HOLD_MS.length - 1)];
+      this.ceiling = { rung: this.index, untilMs: nowMs + hold, escalation: this.ceilingFailures + 1 };
       this.lastFailedProbeRung = this.index;
       return this.emit(this.verifyFromIndex, 'revert');
     }
     this.probeWait = PROBE_WAIT_MS;
     this.lastFailedProbeRung = null;
+    this.ceilingFailures = 0;
     return null;
   }
 
@@ -773,7 +782,6 @@ export class ResolutionController {
     const next = this.index + 1;
     if (next >= this.rungs.length) return null;
     if (this.ceiling !== null && next >= this.ceiling.rung) return null;
-    if (this.sessionCeiling !== null && next >= this.sessionCeiling) return null;
     if (nowMs - this.lastChangeMs < this.probeWait) return null;
     const stat = this.window.trimmedMean(this.upCounted, TRIM_COUNT, nowMs - STALENESS_MS);
     if (stat === null || stat.count < this.upCounted) return null;

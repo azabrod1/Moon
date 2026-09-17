@@ -467,7 +467,6 @@ function qualityReadout() {
     latch: state.latch,
     lastStep: state.lastStep,
     idle: state.idle,
-    sessionCeiling: state.sessionCeiling,
     bytes: qualityRenderTargetBytes(),
     reason: qualityBoundsLive.reason,
     // What the scene-sized targets are allocated at against what this rung

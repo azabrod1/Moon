@@ -363,33 +363,80 @@ describe('an up probe and its verification', () => {
     const state = rig.controller.state();
     expect(state.probeWaitMs).toBe(2 * PROBE_WAIT_MS);
     expect(state.ceiling?.rung).toBe(FULL_LADDER.mediumIndex + 1);
-    expect(state.ceiling?.untilMs).toBeCloseTo((revert?.atMs ?? 0) + CEILING_HOLD_MS, -1);
+    expect(state.ceiling?.untilMs).toBeCloseTo((revert?.atMs ?? 0) + CEILING_HOLD_MS[0], -1);
+    expect(state.ceiling?.escalation).toBe(1);
   });
 
-  it('backs off 8 seconds then 16, and a second failure at the same rung ends it for the session', () => {
+  it('backs off 8, 16, 32 seconds, and each failure at the same rung holds the ceiling longer', () => {
     const rig = new Rig(new ResolutionController(FULL_LADDER));
     const waits: number[] = [];
+    // Thirteen minutes of a device whose frames miss the moment it climbs.
     for (let i = 0; i < 6; i++) {
       rig.run(8000, (rung) => (rung > FULL_LADDER.mediumIndex ? 2 * TICK : TICK));
       waits.push(rig.controller.state().probeWaitMs);
     }
-    // Two probes, two reverts, and then nothing: the second failure at the
-    // same rung says this configuration does not have it.
-    expect(rig.applied.filter((a) => a.reason === 'up')).toHaveLength(2);
-    expect(rig.applied.filter((a) => a.reason === 'revert')).toHaveLength(2);
-    // 8 s, doubled once per failure, and the backoff never gets a third
-    // failure to double on.
-    expect(Math.max(...waits)).toBe(4 * PROBE_WAIT_MS);
-    expect(rig.controller.state().sessionCeiling).toBe(FULL_LADDER.mediumIndex + 1);
+    // Three probes and three reverts: a minute's hold after the first, four
+    // minutes after the second, and the sixteen after the third outlasts the
+    // run.
+    const reverts = rig.applied.filter((a) => a.reason === 'revert');
+    expect(rig.applied.filter((a) => a.reason === 'up')).toHaveLength(3);
+    expect(reverts).toHaveLength(3);
+    expect(reverts[1].atMs - reverts[0].atMs).toBeGreaterThan(CEILING_HOLD_MS[0]);
+    expect(reverts[2].atMs - reverts[1].atMs).toBeGreaterThan(CEILING_HOLD_MS[1]);
+    // 8 s, doubled once per failure.
+    expect(Math.max(...waits)).toBe(8 * PROBE_WAIT_MS);
+    const state = rig.controller.state();
+    expect(state.ceiling?.rung).toBe(FULL_LADDER.mediumIndex + 1);
+    expect(state.ceiling?.escalation).toBe(3);
     expect(rig.rung).toBe(FULL_LADDER.mediumIndex);
   });
 
-  it('a budget change clears the session ceiling, because it was a ceiling for another question', () => {
+  it('escalates a minute, four, sixteen, then the session, and never probes that rung again', () => {
+    const rig = new Rig(new ResolutionController(FULL_LADDER));
+    // Forty minutes of the same device: four probes in the first twenty-two
+    // minutes, then silence.
+    rig.run(144_000, (rung) => (rung > FULL_LADDER.mediumIndex ? 2 * TICK : TICK));
+    const reverts = rig.applied.filter((a) => a.reason === 'revert');
+    expect(rig.applied.filter((a) => a.reason === 'up')).toHaveLength(4);
+    expect(reverts).toHaveLength(4);
+    expect(reverts[3].atMs - reverts[2].atMs).toBeGreaterThan(CEILING_HOLD_MS[2]);
+    expect(reverts[3].atMs).toBeLessThan(22 * 60_000);
+    const state = rig.controller.state();
+    expect(state.ceiling?.escalation).toBe(4);
+    expect(state.ceiling?.untilMs).toBe(Infinity);
+    expect(rig.rung).toBe(FULL_LADDER.mediumIndex);
+  });
+
+  it('a probe that holds resets the escalation for that rung', () => {
+    const rig = new Rig(new ResolutionController(FULL_LADDER));
+    // Two failures at the first rung above medium in the first 200 s, then
+    // the frames fit there.
+    let fits = false;
+    const frame = (rung: number) => (rung > FULL_LADDER.mediumIndex && !fits ? 2 * TICK : TICK);
+    rig.run(12_000, frame);
+    expect(rig.controller.state().ceiling?.escalation).toBe(2);
+    fits = true;
+    rig.run(12_000, frame);
+    // The four-minute ceiling ran out and the probe held.
+    expect(rig.rung).toBeGreaterThan(FULL_LADDER.mediumIndex);
+    expect(rig.controller.state().ceiling).toBeNull();
+    // Then the frames miss again: a slide down, and the next failed probe
+    // starts a fresh count rather than escalating from where it left off.
+    fits = false;
+    // A minute: long enough for the slide down and one failed probe, short of
+    // the second that the first's minute-long ceiling would allow.
+    rig.run(4_000, frame);
+    const reverts = rig.applied.filter((a) => a.reason === 'revert');
+    expect(reverts.length).toBe(3);
+    expect(rig.controller.state().ceiling?.escalation).toBe(1);
+  });
+
+  it('a budget change clears the ceiling and its escalation, because it was a ceiling for another question', () => {
     const rig = new Rig(new ResolutionController(FULL_LADDER));
     rig.run(24_000, (rung) => (rung > FULL_LADDER.mediumIndex ? 2 * TICK : TICK));
-    expect(rig.controller.state().sessionCeiling).toBe(FULL_LADDER.mediumIndex + 1);
+    expect(rig.controller.state().ceiling?.escalation).toBe(3);
     rig.controller.setBudget(1000 / 30, rig.nowMs, { cause: 'user' });
-    expect(rig.controller.state().sessionCeiling).toBeNull();
+    expect(rig.controller.state().ceiling).toBeNull();
   });
 });
 
@@ -513,7 +560,7 @@ describe('diagnosis', () => {
     expect(state.budgetMs).toBeCloseTo(BUDGET_MS, 6);
     expect(state.downCounted).toBe(DOWN_WINDOW_COUNTED);
     expect(state.upCounted).toBe(UP_WINDOW_COUNTED);
-    expect(state.sessionCeiling).toBeNull();
+    expect(state.ceiling).toBeNull();
     expect(state.rung).toBe(2);
     expect(state.sceneRatio).toBe(2);
     expect(state.countedWindow).toBeGreaterThan(DOWN_WINDOW_COUNTED);
@@ -632,8 +679,9 @@ describe('the budget the Frame rate row sets', () => {
       mainThreadMs: 5,
       mainThreadSumMs: 9,
     });
-    // At most one probe up and its revert, then quiet: the second failure at
-    // the same rung ends it for the session.
+    // At most two probes up and their reverts, then quiet: the ceiling holds
+    // a minute after the first failure and four after the second, so a third
+    // cannot come inside five minutes.
     expect(rig.applied.filter((a) => a.reason === 'down')).toEqual([]);
     expect(rig.applied.filter((a) => a.reason === 'up').length).toBeLessThanOrEqual(2);
     expect(rig.rung).toBe(FULL_LADDER.mediumIndex);

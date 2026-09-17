@@ -720,9 +720,9 @@ function qualitySteps({ id, where, device, levels, boot = '&quality=medium', inj
           const samples = kind === 'down'
             ? stream(base, Math.round(live.downCounted * 1.2), budgetMs * 1.8)
             : stream(base, Math.round(upCounted * 1.7), budgetMs / 2);
-          // Past the session ceiling's own hold in the rule's clock, so each
-          // stream is judged on its own evidence and not on what the last one
-          // latched.
+          // Past a first failure's ceiling hold (a minute) in the rule's
+          // clock, so each stream is judged on its own evidence and not on
+          // what the last one latched.
           ruleClockMs = samples[samples.length - 1].nowMs + 70_000;
           record(injectNames[i], () => window.__moon.quality({ inject: samples }));
         }

@@ -22,13 +22,7 @@ import {
   lensShaderGLSL,
   type LensShaderUniforms,
 } from '../../shared/three/lensShader';
-
-/** gl_PointSize is framebuffer pixels, so a point that should read as N CSS px
- *  must be N × the renderer's pixel ratio — capped at 2 to match the sizes the
- *  shared mapping was tuned against (same clamp the starfield uses). */
-function moonDotPixelRatio(rendererPixelRatio: number): number {
-  return Math.min(rendererPixelRatio, 2);
-}
+import { pointSpritePixelRatio } from './starPointMapping';
 
 export class MoonDots {
   readonly points: THREE.Points;
@@ -39,7 +33,10 @@ export class MoonDots {
   private sizes: Float32Array;
   private alphas: Float32Array;
 
-  constructor(count: number, rendererPixelRatio: number) {
+  /** `sceneRatio` is the ratio the dots are rasterised at, `outputRatio` the
+   *  one the canvas is presented at — see starPointMapping's
+   *  `pointSpritePixelRatio`, which the starfield sizes through too. */
+  constructor(count: number, sceneRatio: number, outputRatio: number) {
     this.positions = new Float32Array(count * 3);
     this.colors = new Float32Array(count * 3);
     this.sizes = new Float32Array(count);
@@ -53,7 +50,7 @@ export class MoonDots {
 
     this.mat = new THREE.ShaderMaterial({
       uniforms: {
-        pixelRatio: { value: moonDotPixelRatio(rendererPixelRatio) },
+        pixelRatio: { value: pointSpritePixelRatio(sceneRatio, outputRatio) },
         ...createLensShaderUniforms(),
       },
       // The lens-aware point-sprite kernels are shared with the starfield
@@ -99,9 +96,10 @@ export class MoonDots {
     this.points.renderOrder = 0;
   }
 
-  /** Retune point size when the renderer's pixel ratio changes (DPR / resize). */
-  setPixelRatio(rendererPixelRatio: number): void {
-    this.mat.uniforms.pixelRatio.value = moonDotPixelRatio(rendererPixelRatio);
+  /** Retune point size when either pixel ratio changes — a DPR or resize
+   *  change to the output ratio, or a quality rung moving the scene ratio. */
+  setPixelRatio(sceneRatio: number, outputRatio: number): void {
+    this.mat.uniforms.pixelRatio.value = pointSpritePixelRatio(sceneRatio, outputRatio);
   }
 
   /** Keep source-prewarp point footprints invariant in final framebuffer px. */

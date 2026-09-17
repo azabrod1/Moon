@@ -6,6 +6,7 @@ import {
   POINT_ENERGY_FRAGMENT_ANCHOR,
   POINT_ENERGY_VERTEX_ANCHOR,
   pointEnergyScale,
+  setPointEnergyPixelRatio,
 } from './pointEnergy';
 import { augmentPointsMaterialWithSunGlareMask } from '../../planetarium/world/sunGlareMask';
 
@@ -82,8 +83,48 @@ describe('chained onto the belt material', () => {
   it('hands three the live uniform objects and its own program key', () => {
     const { mat, glare, energy, shader } = compose();
     expect(shader.uniforms.uPointPixelRatio).toBe(energy.uPointPixelRatio);
+    expect(shader.uniforms.uPointSceneScale).toBe(energy.uPointSceneScale);
     expect(shader.uniforms.uSunMaskActive).toBe(glare.uSunMaskActive);
     expect(mat.customProgramCacheKey()).toContain('pointEnergy');
     expect(mat.customProgramCacheKey()).not.toBe(new THREE.PointsMaterial().customProgramCacheKey());
+  });
+
+  // three sizes a stock point from the OUTPUT ratio and the points are drawn
+  // into the SCENE target, so the size has to be carried across before the
+  // energy — or the round-dot profile — reads it.
+  it('puts the scene scale on gl_PointSize before anything reads the size', () => {
+    const { shader } = compose();
+    const v = shader.vertexShader;
+    expect(v).toContain('uniform float uPointSceneScale;');
+    expect(v).toContain('float pointWantPx = gl_PointSize * uPointSceneScale;');
+    expect(v.indexOf('float pointWantPx =')).toBeLessThan(v.indexOf('float pointRefPx ='));
+    expect(v.indexOf('float pointWantPx =')).toBeLessThan(v.indexOf('gl_PointSize = max(pointWantPx, 1.0)'));
+    expect(v.split('uniform float uPointSceneScale;').length).toBe(2); // declared once
+  });
+
+  it('is a no-op on a scene drawn at the canvas’s own ratio', () => {
+    const { mat, energy } = compose();
+    const points = new THREE.Points(new THREE.BufferGeometry(), mat);
+    points.userData.pointEnergyUniforms = energy;
+    for (const r of [1, 1.5, 2, 2.5, 3]) {
+      setPointEnergyPixelRatio(points, r, r);
+      expect(energy.uPointSceneScale.value).toBe(1);
+      expect(energy.uPointPixelRatio.value).toBe(r);
+    }
+  });
+
+  it('carries a supersampled rung across, and the energy then asks for none', () => {
+    const { mat, energy } = compose();
+    const points = new THREE.Points(new THREE.BufferGeometry(), mat);
+    points.userData.pointEnergyUniforms = energy;
+    setPointEnergyPixelRatio(points, 3, 2);
+    expect(energy.uPointSceneScale.value).toBeCloseTo(1.5, 12);
+    expect(energy.uPointPixelRatio.value).toBe(3);
+    // A dot that is P framebuffer px at Medium wants 1.5 P at scene 3, whose
+    // reference size is P again — so a dot at or above a pixel takes no lift,
+    // exactly as it takes none at Medium.
+    for (const p of [1, 1.4, 2, 5]) {
+      expect(pointEnergyScale(p * 1.5, 3)).toBeCloseTo(pointEnergyScale(p, 2), 12);
+    }
   });
 });

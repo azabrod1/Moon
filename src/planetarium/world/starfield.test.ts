@@ -59,7 +59,7 @@ describe('starfield bloom-threshold invariant', () => {
 
 describe('starfield décor stencil gate', () => {
   it('tests against the orbit-line stamp without stamping anything itself', () => {
-    const starfield = createPlanetariumStarfield(2);
+    const starfield = createPlanetariumStarfield(2, 2);
     const material = starfield.material as THREE.ShaderMaterial;
     expect(material.stencilWrite).toBe(true);
     expect(material.stencilWriteMask).toBe(0x00);

@@ -1566,7 +1566,9 @@ export class CompareScene {
 
     // Dimmed starfield backdrop (VC owns this instance; scaling the colour buffer
     // dims it without touching the shared factory).
-    this.starfield = createPlanetariumStarfield(this.renderer.getPixelRatio());
+    // Scene ratio = output ratio: the graphics-quality levels drive only the
+    // planetarium's camera, so this tool's frame is the canvas's own.
+    this.starfield = createPlanetariumStarfield(this.renderer.getPixelRatio(), this.renderer.getPixelRatio());
     dimStarfield(this.starfield, STARFIELD_DIM);
     this.group.add(this.starfield);
 
@@ -3464,7 +3466,7 @@ export class CompareScene {
    *  (which may reclamp the renderer's pixel ratio). Star point sizes track
    *  the renderer's ratio, so retune them to the new value. */
   onResize(): void {
-    setStarfieldPixelRatio(this.starfield, this.renderer.getPixelRatio());
+    setStarfieldPixelRatio(this.starfield, this.renderer.getPixelRatio(), this.renderer.getPixelRatio());
   }
 
   /** The starfield's applied point-size pixel ratio — QA reads this to assert

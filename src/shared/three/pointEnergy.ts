@@ -14,6 +14,27 @@
  * byte for byte; a denser one (2.5×, where the clamp gives a dot less light
  * than the reference) comes up to match.
  *
+ * One thing has to be undone before any of that arithmetic is true. three
+ * sizes a stock point from the OUTPUT pixel ratio — `uniforms.size.value =
+ * material.size * pixelRatio`, where `pixelRatio` is `renderer.getPixelRatio()`
+ * (WebGLMaterials.js) — but the points are rasterised into the SCENE target,
+ * whose ratio the graphics-quality levels move independently. Left alone, a
+ * supersampled rung draws the dot at the same framebuffer size in a framebuffer
+ * whose pixels are two thirds as wide, i.e. two thirds of its CSS size and four
+ * ninths of its light. `uPointSceneScale` = sceneRatio / outputRatio is the
+ * correction, applied to gl_PointSize before anything reads it, so the dot
+ * keeps its CSS size at every rung and the energy below is reckoned against the
+ * size it really wants. It is exactly 1 wherever the scene is drawn at the
+ * canvas's own ratio.
+ *
+ * roundPoint.ts's soft profile reads gl_PointSize after this, so it too is now
+ * in the scene target's pixels. That is the right unit for it — its ramp is an
+ * argument about one FRAGMENT's centre, and the fragments are the target's —
+ * but it means the profile's weight is deliberately raster-dependent: the same
+ * dot is a part-square at a low rung and fully round from two scene pixels up.
+ * The energy above does not compensate for the profile's integral, so a dot
+ * sitting on that ramp carries slightly less light where the ramp is partial.
+ *
  * Chains onto whatever onBeforeCompile the material already carries (the
  * belt's Sun-glare mask), and injects at anchors every stock points shader
  * has. The star and moon-dot shaders carry their own kernel
@@ -29,12 +50,15 @@ export const POINT_ENERGY_FRAGMENT_ANCHOR = '#include <opaque_fragment>';
 
 export interface PointEnergyUniforms {
   uPointPixelRatio: { value: number };
+  uPointSceneScale: { value: number };
 }
 
 /**
  * The alpha scale the shader applies: light per CSS area the clamp gives a
  * point of `wantPx` device pixels on a display at `pixelRatio`, over the same
  * on the reference display (the fragment then holds the final alpha at 1).
+ * `wantPx` is the size the dot wants in the target it is drawn into, i.e. after
+ * `uPointSceneScale`, and `pixelRatio` is that target's own ratio.
  * The GLSL below mirrors this line for line; the test pins both ends.
  */
 export function pointEnergyScale(wantPx: number, pixelRatio: number): number {
@@ -44,7 +68,12 @@ export function pointEnergyScale(wantPx: number, pixelRatio: number): number {
 }
 
 export function augmentPointsMaterialWithSubpixelEnergy(mat: THREE.PointsMaterial): PointEnergyUniforms {
-  const u: PointEnergyUniforms = { uPointPixelRatio: { value: POINT_ENERGY_REFERENCE_RATIO } };
+  const u: PointEnergyUniforms = {
+    uPointPixelRatio: { value: POINT_ENERGY_REFERENCE_RATIO },
+    // 1 until told otherwise: a scene drawn at the canvas's own ratio, which
+    // is what every material gets before the resolution levels speak.
+    uPointSceneScale: { value: 1 },
+  };
   const previous = mat.onBeforeCompile;
   // three keys a material's program on its onBeforeCompile source unless told
   // otherwise; every material this wraps would share ours, whatever hook it
@@ -55,11 +84,14 @@ export function augmentPointsMaterialWithSubpixelEnergy(mat: THREE.PointsMateria
     previous?.(shader, renderer);
     Object.assign(shader.uniforms, u);
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nuniform float uPointPixelRatio;\nvarying float vPointEnergy;')
+      .replace(
+        '#include <common>',
+        '#include <common>\nuniform float uPointPixelRatio;\nuniform float uPointSceneScale;\nvarying float vPointEnergy;',
+      )
       .replace(
         POINT_ENERGY_VERTEX_ANCHOR,
         [
-          `float pointWantPx = gl_PointSize;`,
+          `float pointWantPx = gl_PointSize * uPointSceneScale;`,
           `float pointRefPx = pointWantPx * ${POINT_ENERGY_REFERENCE_RATIO.toFixed(1)} / uPointPixelRatio;`,
           `float pointScale = max(pointRefPx, 1.0) / max(pointWantPx, 1.0) * uPointPixelRatio / ${POINT_ENERGY_REFERENCE_RATIO.toFixed(1)};`,
           `vPointEnergy = pointScale * pointScale;`,
@@ -75,8 +107,20 @@ export function augmentPointsMaterialWithSubpixelEnergy(mat: THREE.PointsMateria
   return u;
 }
 
-/** Tell an augmented Points object the renderer's current pixel ratio (boot and every resize). */
-export function setPointEnergyPixelRatio(points: THREE.Points, rendererPixelRatio: number): void {
+/**
+ * Tell an augmented Points object both current pixel ratios — at boot, on every
+ * resize, and on every graphics-quality rung. `sceneRatio` is the ratio of the
+ * target the points are drawn into (the one the energy is reckoned against);
+ * `outputRatio` is `renderer.getPixelRatio()`, the one three sized
+ * `gl_PointSize` from, and the two together undo that (see the header).
+ */
+export function setPointEnergyPixelRatio(
+  points: THREE.Points,
+  sceneRatio: number,
+  outputRatio: number,
+): void {
   const u = points.userData.pointEnergyUniforms as PointEnergyUniforms | undefined;
-  if (u) u.uPointPixelRatio.value = rendererPixelRatio;
+  if (!u) return;
+  u.uPointPixelRatio.value = sceneRatio;
+  u.uPointSceneScale.value = sceneRatio / outputRatio;
 }

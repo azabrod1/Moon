@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   STAR_FAINT_ANCHOR_MAG,
   STAR_POINT_MAPPING,
+  pointSpritePixelRatio,
   starBeyondAnchorScale,
   starFaintFraction,
   starPointBaseSize,
@@ -75,5 +76,48 @@ describe('starPointMapping — formulas', () => {
     const v = starPointVisual(2, 6.5, STAR_POINT_MAPPING, scratch);
     expect(v).toBe(scratch);
     expect(v).toEqual(starPointVisual(2, 6.5));
+  });
+});
+
+// The sizing rule the starfield and the moon dots share. Its whole job is to
+// keep a sky point the same CSS size when the scene's resolution moves under a
+// fixed canvas, and to be EXACTLY the old `min(outputRatio, 2)` when it does
+// not — the graphics-quality campaign's promise is that Medium is today's
+// frame byte for byte, and a uniform one float apart is a different frame.
+describe('pointSpritePixelRatio', () => {
+  it('is exactly min(outputRatio, 2) wherever the scene is the canvas', () => {
+    for (const r of [1, 1.25, 1.5, 1.6, 1.739, 1.9, 2, 2.5, 3]) {
+      expect(pointSpritePixelRatio(r, r)).toBe(Math.min(r, 2));
+    }
+  });
+
+  it('holds the CSS size when a rung moves the scene under a 2x canvas', () => {
+    // At an output ratio of 2 the cap never bites, so the point is sized in
+    // whatever pixels the scene is drawn in and its CSS size never moves.
+    for (const scene of [1.5, 1.739, 2, 2.5, 3]) {
+      const px = pointSpritePixelRatio(scene, 2);
+      expect(px).toBeCloseTo(scene, 12);
+      expect(px / scene).toBeCloseTo(pointSpritePixelRatio(2, 2) / 2, 12); // same CSS size
+    }
+  });
+
+  it('keeps the display cap on a 2.5x desktop, at every rung', () => {
+    // The cap holds a point at the device size it has on a 2x display: on a
+    // 2.5x canvas that is size × 2 OUTPUT px, and it stays size × 2 output px
+    // when Low drops the scene to 1.875 — where the old rule, fed the scene
+    // ratio, gave min(1.875, 2) = 1.875 and drew the point 25 % larger.
+    const cssAtMedium = pointSpritePixelRatio(2.5, 2.5) / 2.5;
+    expect(cssAtMedium).toBeCloseTo(2 / 2.5, 12);
+    const low = pointSpritePixelRatio(1.875, 2.5);
+    expect(low).toBeCloseTo(1.5, 12); // scene px
+    expect(low / 1.875).toBeCloseTo(cssAtMedium, 12); // the same CSS size
+    expect(low / 1.875 * 2.5).toBeCloseTo(2, 12); // = size × 2 output px, not 2.5
+  });
+
+  it('a 3x scene on a 2x canvas is two thirds larger in scene px, not two thirds smaller', () => {
+    // The defect this rule fixes, stated as a number: fed the scene ratio, the
+    // cap gave min(3, 2) = 2 and every star was 2/3 of its CSS size at High.
+    expect(pointSpritePixelRatio(3, 2)).toBe(3);
+    expect(Math.min(3, 2)).toBe(2);
   });
 });

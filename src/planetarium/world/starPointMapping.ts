@@ -76,6 +76,38 @@ export function starBeyondAnchorScale(
 
 export type StarPointMapping = typeof STAR_POINT_MAPPING;
 
+/**
+ * The pixel ratio a sky point's `gl_PointSize` is sized by — shared by the
+ * starfield and the moon dots, whose sizes come out of the mapping above and
+ * must stay the same size as each other.
+ *
+ * gl_PointSize is in framebuffer pixels, so a point that should read as N CSS
+ * px is N × the ratio of the target it is rasterised INTO. Since the
+ * graphics-quality levels landed that is the SCENE ratio, which need not be the
+ * ratio the canvas is presented at: a supersampled rung draws the scene at 3
+ * and carries it down onto a 2× canvas, a rung down draws at 1.5 and carries it
+ * up (app/renderResolution.ts).
+ *
+ * The ≤ 2 cap is against the DISPLAY's density and nothing else. The sizes
+ * above were dialled on a 2× display, and the intent is that a denser display
+ * holds them at that device-pixel size instead of growing them — so the cap
+ * fixes the point's CSS size at `min(outputRatio, 2) / outputRatio` of the
+ * mapping's own, and the scene ratio then scales that CSS size into the pixels
+ * actually being drawn. Capping the SCENE ratio instead makes a resolution rung
+ * change the point's CSS size, which is a different picture per rung rather
+ * than the same picture at a different resolution.
+ *
+ * Where the scene ratio equals the output ratio — every fixed Medium frame, and
+ * every canvas the resolution levels are not driving — `sceneRatio/outputRatio`
+ * is exactly 1 and this is exactly `min(outputRatio, 2)`, the value before this
+ * argument existed. The divide is written first for that reason: it makes the
+ * identity exact in float rather than merely true in arithmetic (at an output
+ * ratio of 1.6, `r × min(r,2) / r` is not `r`).
+ */
+export function pointSpritePixelRatio(sceneRatio: number, outputRatio: number): number {
+  return (sceneRatio / outputRatio) * Math.min(outputRatio, 2);
+}
+
 /** Screen brightness scalar for a point of the given apparent magnitude. */
 export function starPointBrightness(mag: number, p: StarPointMapping = STAR_POINT_MAPPING): number {
   return clamp(p.brightMul - (mag + p.brightBias) / p.brightDiv, p.brightMin, p.brightMax);

@@ -2835,7 +2835,11 @@ export class PlanetariumMode {
         // Add everything to scene
         this.scene.add(this.solarSystem.sun);
         this.scene.add(this.solarSystem.asteroidBelt);
-        setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, this.scenePixelRatio());
+        setPointEnergyPixelRatio(
+          this.solarSystem.asteroidBelt,
+          this.scenePixelRatio(),
+          this.renderer.getPixelRatio(),
+        );
 
         performance.mark('plm:moon-meshes:start');
         for (const planet of this.solarSystem.planets) {
@@ -2910,7 +2914,7 @@ export class PlanetariumMode {
       // Create the Planetarium starfield.
       if (!this.starfield) {
         performance.mark('plm:starfield:start');
-        this.starfield = createPlanetariumStarfield(this.scenePixelRatio());
+        this.starfield = createPlanetariumStarfield(this.scenePixelRatio(), this.renderer.getPixelRatio());
         this.scene.add(this.starfield);
         performance.measure('plm:starfield', 'plm:starfield:start');
       }
@@ -2924,7 +2928,7 @@ export class PlanetariumMode {
         for (const planet of this.solarSystem.planets) {
           dotCount += this.planetMoons.get(planet.data.name)?.length ?? 0;
         }
-        this.moonDots = new MoonDots(dotCount, this.scenePixelRatio());
+        this.moonDots = new MoonDots(dotCount, this.scenePixelRatio(), this.renderer.getPixelRatio());
         this.scene.add(this.moonDots.points);
       }
 
@@ -4417,12 +4421,20 @@ export class PlanetariumMode {
    * the whole of it, and it must stay that way: a resolution step happens
    * while the user is looking at a moving frame, and the resize path's DOM
    * measurement and map-sheet fold have no business on it.
+   *
+   * All three take BOTH ratios. Each of them is a CSS size scaled into the
+   * pixels it is drawn in, and the cap the two sprite layers apply (and the
+   * size three gives a stock point) is a property of the DISPLAY, not of the
+   * scene target — so neither ratio on its own can size any of them. The same
+   * pair is handed over at construction, because a session can boot straight
+   * into High or Low and never reach this hook.
    */
   onScenePixelRatioChanged(): void {
     const sceneRatio = this.scenePixelRatio();
-    if (this.starfield) setStarfieldPixelRatio(this.starfield, sceneRatio);
-    if (this.moonDots) this.moonDots.setPixelRatio(sceneRatio);
-    if (this.solarSystem) setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, sceneRatio);
+    const outputRatio = this.renderer.getPixelRatio();
+    if (this.starfield) setStarfieldPixelRatio(this.starfield, sceneRatio, outputRatio);
+    if (this.moonDots) this.moonDots.setPixelRatio(sceneRatio, outputRatio);
+    if (this.solarSystem) setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, sceneRatio, outputRatio);
   }
 
   /** Called by main.ts after it reapplies the render resolution on a window

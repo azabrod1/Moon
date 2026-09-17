@@ -371,7 +371,9 @@ export class InteriorScene {
     // Dimmed starfield backdrop, this scene's own instance: scaling the colour
     // buffer dims it without touching the shared factory (the compare
     // studio's way; the gain uniform is the telescope's, not a dimmer).
-    this.starfield = createPlanetariumStarfield(renderer.getPixelRatio());
+    // Scene ratio = output ratio: the graphics-quality levels drive only the
+    // planetarium's camera, so the studio's frame is the canvas's own.
+    this.starfield = createPlanetariumStarfield(renderer.getPixelRatio(), renderer.getPixelRatio());
     dimStarfield(this.starfield, STARFIELD_DIM);
     this.group.add(this.starfield);
     this.vignette = buildVignette();
@@ -1200,7 +1202,7 @@ export class InteriorScene {
   }
 
   onResize(): void {
-    setStarfieldPixelRatio(this.starfield, this.renderer.getPixelRatio());
+    setStarfieldPixelRatio(this.starfield, this.renderer.getPixelRatio(), this.renderer.getPixelRatio());
   }
 
   /** Hand the body's map back: the next activate reloads regardless, and the

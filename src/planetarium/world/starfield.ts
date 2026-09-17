@@ -11,6 +11,7 @@ import { applyOrbitLineStencilGate } from './orbitLineStencil';
 import { lensPointSpriteFragmentGLSL, lensPointSpriteVertexGLSL } from '../../shared/three/lensShader';
 import {
   STAR_FAINT_ANCHOR_MAG,
+  pointSpritePixelRatio,
   starBeyondAnchorScale,
   starPointBrightness,
   starPointVisual,
@@ -58,26 +59,23 @@ export function starRenderColor(colorIndex: number, magnitude: number): THREE.Co
   return getStarColor(colorIndex).multiplyScalar(starPointBrightness(magnitude));
 }
 
-/**
- * gl_PointSize is in framebuffer pixels, so a star that should read as N CSS px
- * must be sized N × the renderer's pixel ratio — the ratio the canvas is
- * actually drawn at (app/renderResolution.ts), NOT window.devicePixelRatio.
- * The ≤2 cap keeps the point-size tuning: the sizes above were dialled
- * against a ratio of 2 and stay at that device-pixel size on denser displays.
- */
-function starPixelRatio(rendererPixelRatio: number): number {
-  return Math.min(rendererPixelRatio, 2);
-}
-
-/** Retune the star point size when the renderer's pixel ratio changes (DPR /
- *  monitor change, or a resize that reclamps it). */
-export function setStarfieldPixelRatio(starfield: THREE.Points, rendererPixelRatio: number): void {
+/** Retune the star point size when either pixel ratio changes — a DPR or
+ *  monitor change, a resize that reclamps the output ratio, or a
+ *  graphics-quality rung moving the scene ratio under a fixed canvas. */
+export function setStarfieldPixelRatio(
+  starfield: THREE.Points,
+  sceneRatio: number,
+  outputRatio: number,
+): void {
   const mat = starfield.material as THREE.ShaderMaterial;
   const uniform = mat.uniforms?.pixelRatio;
-  if (uniform) uniform.value = starPixelRatio(rendererPixelRatio);
+  if (uniform) uniform.value = pointSpritePixelRatio(sceneRatio, outputRatio);
 }
 
-export function createPlanetariumStarfield(rendererPixelRatio: number): THREE.Points {
+/** `sceneRatio` is the ratio the stars are rasterised at, `outputRatio` the
+ *  one the canvas is presented at; they differ only where the resolution
+ *  levels drive the scene (see pointSpritePixelRatio). */
+export function createPlanetariumStarfield(sceneRatio: number, outputRatio: number): THREE.Points {
   // Filter out Sol (rendered as 3D mesh)
   const catalog = brightStarCatalog().filter((s) => s.magnitude > -10);
   const starCount = catalog.length;
@@ -126,7 +124,7 @@ export function createPlanetariumStarfield(rendererPixelRatio: number): THREE.Po
   // Custom shader for per-vertex star size + opacity
   const mat = new THREE.ShaderMaterial({
     uniforms: {
-      pixelRatio: { value: starPixelRatio(rendererPixelRatio) },
+      pixelRatio: { value: pointSpritePixelRatio(sceneRatio, outputRatio) },
       // Telescope light grasp, driven only by the surface view's narrow field.
       // Exactly 1 everywhere else, where it is a no-op on every star.
       uStarGain: { value: 1 },

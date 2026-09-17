@@ -16,6 +16,16 @@
  * (pointEnergy.ts) has already given that pixel the light the dot is owed.
  * The profile comes in across the second pixel of size and is whole from two.
  *
+ * That makes roundness a property of the RASTER, not of the display: the size
+ * it ramps on is gl_PointSize in the target being drawn, which since the
+ * graphics-quality levels landed is the scene target and not the canvas
+ * (pointEnergy.ts's uPointSceneScale puts it in those pixels). So the same dot
+ * is a part-square at a resolution rung below the canvas's and fully round from
+ * two scene pixels up — deliberately, because the flicker the ramp exists to
+ * remove is a flicker in those fragments. A dot sitting on the ramp therefore
+ * carries a little less light at the lower rung; the sub-pixel energy does not
+ * correct for the profile's integral.
+ *
  * Chains onto whatever onBeforeCompile the material already carries, and reads
  * the point size after every write to it, the sub-pixel clamp included.
  */

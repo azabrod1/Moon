@@ -464,6 +464,7 @@ function qualityReadout() {
     },
     probeWaitMs: state.probeWaitMs,
     ceiling: state.ceiling,
+    probation: state.probation,
     latch: state.latch,
     lastStep: state.lastStep,
     idle: state.idle,

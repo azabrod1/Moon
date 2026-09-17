@@ -9,6 +9,7 @@ import {
   FLOOR_LATCH_MIN_GAIN,
   LATCH_HOLD_MS,
   MAIN_THREAD_SHARE,
+  PROBE_HOLD_MS,
   PROBE_WAIT_MS,
   REALLOC_SETTLE_MS,
   ResolutionController,
@@ -416,10 +417,12 @@ describe('an up probe and its verification', () => {
     rig.run(12_000, frame);
     expect(rig.controller.state().ceiling?.escalation).toBe(2);
     fits = true;
-    rig.run(12_000, frame);
-    // The four-minute ceiling ran out and the probe held.
+    rig.run(20_000, frame);
+    // The four-minute ceiling ran out and the probe held through its whole
+    // probation.
     expect(rig.rung).toBeGreaterThan(FULL_LADDER.mediumIndex);
     expect(rig.controller.state().ceiling).toBeNull();
+    expect(rig.controller.state().probation).toBeNull();
     // Then the frames miss again: a slide down, and the next failed probe
     // starts a fresh count rather than escalating from where it left off.
     fits = false;
@@ -436,6 +439,91 @@ describe('an up probe and its verification', () => {
     rig.run(24_000, (rung) => (rung > FULL_LADDER.mediumIndex ? 2 * TICK : TICK));
     expect(rig.controller.state().ceiling?.escalation).toBe(3);
     rig.controller.setBudget(1000 / 30, rig.nowMs, { cause: 'user' });
+    expect(rig.controller.state().ceiling).toBeNull();
+  });
+});
+
+describe('an up-step on probation', () => {
+  /** The straddle: the rung above medium passes its verification second by a
+   *  hair and then sits a hair over the down bar, while medium sits under the
+   *  up bar — the pose a Mac at a tight budget showed, where the picture
+   *  cycled every ten to forty seconds with nothing failing. */
+  function straddle(rig: Rig): (rung: number) => number {
+    return (rung) => {
+      if (rung <= FULL_LADDER.mediumIndex) return TICK;
+      const lastUp = [...rig.applied].reverse().find((a) => a.reason === 'up');
+      const sinceUp = rig.nowMs - (lastUp?.atMs ?? 0);
+      return sinceUp < REALLOC_SETTLE_MS + VERIFY_MS + 250 ? 1.14 * TICK : 1.16 * TICK;
+    };
+  }
+
+  it('a rung handed back inside two minutes is a failed probe, so a straddle escalates instead of hunting', () => {
+    const rig = new Rig(new ResolutionController(FULL_LADDER));
+    // Half an hour at the straddle.
+    rig.run(108_000, straddle(rig));
+    const ups = rig.applied.filter((a) => a.reason === 'up');
+    const reverts = rig.applied.filter((a) => a.reason === 'revert');
+    // Every step back down is the probe failing; none is a plain slide.
+    expect(rig.applied.filter((a) => a.reason === 'down')).toEqual([]);
+    expect(ups).toHaveLength(4);
+    expect(reverts).toHaveLength(4);
+    // The first hand-back comes from the down window, after the verification
+    // second let the rung through.
+    expect(reverts[0].atMs - ups[0].atMs).toBeGreaterThan(REALLOC_SETTLE_MS + VERIFY_MS);
+    expect(reverts[0].atMs - ups[0].atMs).toBeLessThan(2 * DOWN_WINDOW_S * 1000);
+    // A minute, four, sixteen, then the session: eight changes inside
+    // twenty-two minutes and nothing after.
+    expect(ups[1].atMs - reverts[0].atMs).toBeGreaterThanOrEqual(CEILING_HOLD_MS[0]);
+    expect(ups[2].atMs - reverts[1].atMs).toBeGreaterThanOrEqual(CEILING_HOLD_MS[1]);
+    expect(ups[3].atMs - reverts[2].atMs).toBeGreaterThanOrEqual(CEILING_HOLD_MS[2]);
+    expect(reverts[3].atMs).toBeLessThan(22 * 60_000);
+    const state = rig.controller.state();
+    expect(state.ceiling?.rung).toBe(FULL_LADDER.mediumIndex + 1);
+    expect(state.ceiling?.escalation).toBe(4);
+    expect(state.ceiling?.untilMs).toBe(Infinity);
+    expect(state.probation).toBeNull();
+    expect(rig.rung).toBe(FULL_LADDER.mediumIndex);
+  });
+
+  /** One rung above medium, so a device whose frames fit has one probe to
+   *  make and then nothing to climb to. */
+  const ONE_UP_LADDER: RungLadder = { rungs: [2 / 1.33, 2 / 1.15, 2, 2.5], mediumIndex: 2 };
+
+  it('a down more than two minutes after a probe is a slide, and the probation is reported while it stands', () => {
+    const rig = new Rig(new ResolutionController(ONE_UP_LADDER));
+    let slow = false;
+    const frame = (rung: number) => (rung > ONE_UP_LADDER.mediumIndex && slow ? 1.16 * TICK : TICK);
+    // One probe up, then a hold well past the probation.
+    rig.run(1200, frame);
+    const up = rig.applied.find((a) => a.reason === 'up');
+    expect(up).toBeDefined();
+    expect(rig.controller.state().probation).toEqual({
+      rung: ONE_UP_LADDER.mediumIndex + 1,
+      untilMs: (up?.atMs ?? 0) + PROBE_HOLD_MS,
+    });
+    rig.run(Math.round(PROBE_HOLD_MS / TICK), frame);
+    expect(rig.controller.state().probation).toBeNull();
+    // Then the frames go over the bar: a plain slide, no ceiling.
+    slow = true;
+    rig.run(600, frame);
+    const last = rig.applied[rig.applied.length - 1];
+    expect(last.reason).toBe('down');
+    expect(rig.controller.state().ceiling).toBeNull();
+    expect(rig.controller.state().probeWaitMs).toBe(PROBE_WAIT_MS);
+  });
+
+  it('an arrival ends the probation: a down after a new pose is a new question', () => {
+    const rig = new Rig(new ResolutionController(ONE_UP_LADDER));
+    let slow = false;
+    const frame = (rung: number) => (rung > ONE_UP_LADDER.mediumIndex && slow ? 1.16 * TICK : TICK);
+    rig.run(1200, frame);
+    expect(rig.controller.state().probation).not.toBeNull();
+    rig.controller.notify('arrival', rig.nowMs);
+    expect(rig.controller.state().probation).toBeNull();
+    slow = true;
+    rig.run(600, frame);
+    const last = rig.applied[rig.applied.length - 1];
+    expect(last.reason).toBe('down');
     expect(rig.controller.state().ceiling).toBeNull();
   });
 });

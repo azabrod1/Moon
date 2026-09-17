@@ -120,10 +120,26 @@
  * spread over about twenty minutes and then silence; but a device whose frames
  * missed at the shell may fit them in deep space a few minutes later, and a
  * session lock would have kept a phone that cooled there soft for the rest of
- * its run. The count resets when a probe at that rung holds, and the ceiling
- * is cleared by a budget change or a new ladder (a resize, a level change) and
- * by nothing else — an arrival fires on every teleport, and a ceiling cleared
- * several times a journey would bound nothing.
+ * its run. The count resets when a probe at that rung holds through its
+ * probation (below), and the ceiling is cleared by a budget change or a new
+ * ladder (a resize, a level change) and by nothing else — an arrival fires on
+ * every teleport, and a ceiling cleared several times a journey would bound
+ * nothing.
+ *
+ * **An up-step is on probation for two minutes.** The verification second
+ * catches a rung whose frames miss outright, not one that lands just inside
+ * the down bar. Measured, at a tight budget on a Mac: the rung above read
+ * 9.55 ms against a down bar of 9.58, the rung below 8.17 against an up bar of
+ * 8.50, and the picture cycled between the two every ten to forty seconds with
+ * nothing failing — each up passed its verification, each down came from the
+ * down window, and no ceiling was ever set. So a down decision from a rung
+ * reached by a probe less than two minutes earlier IS that probe failing, and
+ * takes the failure's whole treatment: the wait doubles and the rung's ceiling
+ * escalates. A pose that straddles the bar then costs at most the escalation's
+ * eight changes over twenty minutes and sits one rung below for the rest of
+ * the session. The probation is cleared by whatever clears the verification —
+ * a budget or ladder change, an arrival, a pin, a focus gain — because a down
+ * after a new pose is a new question rather than a probe failing.
  *
  * **Focus, and why there is no jump back on a resume.** An interval whose
  * endpoints were not both visible, focused and uncovered does not count, and
@@ -227,7 +243,7 @@ export const VERIFY_MS = 1000;
 export const DOWN_SPACING_MS = 2000;
 
 /** The wait before a first up probe, doubling on each probe that fails and
- *  reset by one that holds. */
+ *  reset by one that holds through its probation. */
 export const PROBE_WAIT_MS = 8000;
 
 /** Where the doubling stops. */
@@ -237,6 +253,12 @@ export const PROBE_WAIT_MAX_MS = 64_000;
  *  failure at that rung: a minute, four minutes, sixteen, then the rest of
  *  the session — the not-pixel-bound latch's own escalation. */
 export const CEILING_HOLD_MS: readonly number[] = [60_000, 240_000, 960_000, Infinity];
+
+/** How long an up-step has to hold. A down decision from that rung sooner is
+ *  the probe failing, not a slide: it lands just inside the down bar, and
+ *  without this the rule would hand the rung back and probe it again for as
+ *  long as the pose lasts. */
+export const PROBE_HOLD_MS = 120_000;
 
 /** The improvement the floor rung must show over the mean that started the
  *  slide, or the device is not pixel-bound and gets medium back. 3 % against
@@ -329,6 +351,9 @@ export interface ControllerState {
   /** The rung a failed probe latched, until when, and how many consecutive
    *  failures there — 1 a minute, 2 four minutes, 3 sixteen, 4 the session. */
   ceiling: { rung: number; untilMs: number; escalation: number } | null;
+  /** The rung the last probe reached and until when it is on probation: a
+   *  down from it before then is the probe failing. */
+  probation: { rung: number; untilMs: number } | null;
   /** The not-pixel-bound latch: while it stands there are no down-steps.
    *  `escalation` counts the failures — 1 a minute, 2 four minutes, 3 the
    *  session. */
@@ -478,6 +503,8 @@ export class ResolutionController {
    *  evidence, and how many times in a row: the next failure there escalates. */
   private lastFailedProbeRung: number | null = null;
   private ceilingFailures = 0;
+  /** The rung the last probe reached, on probation until then. */
+  private probation: { rung: number; untilMs: number } | null = null;
   private latch: { untilMs: number; escalation: number } | null = null;
   private latchFailures = 0;
   private floorReference: number | null = null;
@@ -528,6 +555,14 @@ export class ResolutionController {
     if (this.idle || this.pending !== null) return null;
     if (this.ceiling !== null && sample.nowMs >= this.ceiling.untilMs) this.ceiling = null;
     if (this.latch !== null && sample.nowMs >= this.latch.untilMs) this.latch = null;
+    if (this.probation !== null && sample.nowMs >= this.probation.untilMs) {
+      // Held through the whole probation: the probe succeeded, so the wait
+      // and the rung's failure count start over.
+      this.probation = null;
+      this.probeWait = PROBE_WAIT_MS;
+      this.lastFailedProbeRung = null;
+      this.ceilingFailures = 0;
+    }
     if (!settled) return null;
     if (this.verifyUntilMs !== null) {
       if (sample.nowMs < this.verifyUntilMs) return null;
@@ -558,8 +593,12 @@ export class ResolutionController {
     if (kind === 'up') {
       this.verifyUntilMs = this.settleUntilMs + VERIFY_MS;
       this.verifyFromIndex = from;
+      this.probation = { rung: this.index, untilMs: nowMs + PROBE_HOLD_MS };
     } else {
       this.verifyUntilMs = null;
+      // A down, a revert, a floor latch or a ladder change: the rung the last
+      // probe reached is no longer the rung, so there is nothing on probation.
+      this.probation = null;
     }
   }
 
@@ -592,6 +631,7 @@ export class ResolutionController {
     else this.window.clear();
     this.pending = null;
     this.verifyUntilMs = null;
+    this.probation = null;
     this.ceiling = null;
     this.ceilingFailures = 0;
     this.lastFailedProbeRung = null;
@@ -613,6 +653,9 @@ export class ResolutionController {
     this.window.clear();
     this.pending = null;
     this.verifyUntilMs = null;
+    // Whatever drops the verification drops the probation with it: a down
+    // after an arrival or a focus gain is a new question, not a probe failing.
+    this.probation = null;
     switch (event) {
       case 'pin':
         this.idle = true;
@@ -666,6 +709,7 @@ export class ResolutionController {
     this.window.clear();
     this.pending = null;
     this.verifyUntilMs = null;
+    this.probation = null;
     this.ceiling = null;
     this.ceilingFailures = 0;
     this.lastFailedProbeRung = null;
@@ -692,6 +736,7 @@ export class ResolutionController {
       silentMs: Math.max(0, this.clockMs - since),
       probeWaitMs: this.probeWait,
       ceiling: this.ceiling === null ? null : { ...this.ceiling },
+      probation: this.probation === null ? null : { ...this.probation },
       latch: this.latch === null ? null : { ...this.latch },
       lastStep: this.lastStep === null ? null : { ...this.lastStep },
       floorReference: this.floorReference,
@@ -732,20 +777,27 @@ export class ResolutionController {
     const stat = this.window.trimmedMean(this.upCounted, VERIFY_TRIM_COUNT, nowMs - STALENESS_MS);
     if (stat === null || stat.count < VERIFY_MIN_COUNTED) return null;
     if (stat.meanMs > this.verifyThresholdMs()) {
-      this.probeWait = Math.min(PROBE_WAIT_MAX_MS, this.probeWait * 2);
-      // Again at the same rung, with nothing in between that cleared the
-      // evidence: the hold escalates, a minute to four to sixteen to the
-      // session. A different rung starts its own count.
-      this.ceilingFailures = this.lastFailedProbeRung === this.index ? this.ceilingFailures + 1 : 0;
-      const hold = CEILING_HOLD_MS[Math.min(this.ceilingFailures, CEILING_HOLD_MS.length - 1)];
-      this.ceiling = { rung: this.index, untilMs: nowMs + hold, escalation: this.ceilingFailures + 1 };
-      this.lastFailedProbeRung = this.index;
+      this.failProbe(nowMs);
       return this.emit(this.verifyFromIndex, 'revert');
     }
-    this.probeWait = PROBE_WAIT_MS;
-    this.lastFailedProbeRung = null;
-    this.ceilingFailures = 0;
+    // Through the second: the probe stands, and is judged again by its
+    // probation. Nothing is reset here — a rung that passes this second and
+    // is handed back a minute later has failed, and its count must say so.
     return null;
+  }
+
+  /** The probe at the current rung failed — its verification second was over
+   *  budget, or a down decision came inside its probation: the wait doubles
+   *  and the rung is held as a ceiling. Again at the same rung, with nothing
+   *  in between that cleared the evidence, the hold escalates, a minute to
+   *  four to sixteen to the session; a different rung starts its own count. */
+  private failProbe(nowMs: number): void {
+    this.probeWait = Math.min(PROBE_WAIT_MAX_MS, this.probeWait * 2);
+    this.ceilingFailures = this.lastFailedProbeRung === this.index ? this.ceilingFailures + 1 : 0;
+    const hold = CEILING_HOLD_MS[Math.min(this.ceilingFailures, CEILING_HOLD_MS.length - 1)];
+    this.ceiling = { rung: this.index, untilMs: nowMs + hold, escalation: this.ceilingFailures + 1 };
+    this.lastFailedProbeRung = this.index;
+    this.probation = null;
   }
 
   private downDecision(nowMs: number): Decision | null {
@@ -755,6 +807,12 @@ export class ResolutionController {
     if (stat === null || stat.count < this.downCounted) return null;
     // A full window inside the budget: this rung holds.
     if (stat.meanMs <= DOWN_FACTOR * this.budgetMs) return null;
+    // Handed back inside its probation: the probe that reached this rung has
+    // failed, and the step is its revert rather than a slide.
+    if (this.probation !== null && this.probation.rung === this.index && nowMs < this.probation.untilMs) {
+      this.failProbe(nowMs);
+      return this.emit(this.index - 1, 'revert');
+    }
     // The mean at medium is what the floor will have to beat. Only a slide
     // that starts at medium can be judged that way; one that starts lower
     // (after a ladder change) leaves the reference unset and the floor check

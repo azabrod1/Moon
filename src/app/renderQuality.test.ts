@@ -36,8 +36,9 @@ const MiB = 1024 * 1024;
 /**
  * The devices are recorded the way gpuEnvelope's fixtures record them — every
  * signal literal — and the class, the family and the envelope come out of the
- * live table rather than being asserted here, so a bound that depends on a
- * class is pinned against the classifier itself.
+ * live table rather than being asserted here. No bound reads the class any
+ * more; it reaches the bounds only through the envelope its row carries, which
+ * is exactly what these rows exercise.
  */
 function signals(over: Partial<DeviceSignals>): DeviceSignals {
   return {
@@ -193,7 +194,6 @@ function inputFor(device: Device, over: Partial<QualityBoundsInput> = {}): Quali
   const size = sceneTargetSize(device.cssWidth, device.cssHeight, outputRatio);
   return {
     outputRatio,
-    deviceClass,
     platform,
     envelopeBytes: profile.envelopeBytes,
     cssWidth: device.cssWidth,
@@ -236,7 +236,7 @@ describe('qualityBounds — medium and low', () => {
 describe('qualityBounds — high against the byte budget', () => {
   it("offers 3 on Alex's 16\" Mac: 417 MB of targets inside 40 % of 1024 MiB", () => {
     const input = inputFor(MACBOOK_16);
-    expect(input.deviceClass).toBe('desktop');
+    expect(classifyDevice(MACBOOK_16.signals)).toBe('desktop');
     expect(input.platform).toBe('apple');
     expect(input.envelopeBytes).toBe(1024 * MiB);
     expect(input.samples).toBe(0);
@@ -261,7 +261,7 @@ describe('qualityBounds — high against the byte budget', () => {
 
   it('offers 3 on a 13" iPad Pro, whose envelope is 1536 MiB', () => {
     const input = inputFor(IPAD_PRO_13);
-    expect(input.deviceClass).toBe('tablet');
+    expect(classifyDevice(IPAD_PRO_13.signals)).toBe('tablet');
     expect(input.platform).toBe('apple');
     expect(input.envelopeBytes).toBe(1536 * MiB);
     const bounds = qualityBounds(input);
@@ -271,12 +271,35 @@ describe('qualityBounds — high against the byte budget', () => {
 
   it('refuses it on an Android tablet, whose envelope is 320 MiB', () => {
     const input = inputFor(ANDROID_TABLET);
-    expect(input.deviceClass).toBe('tablet');
+    expect(classifyDevice(ANDROID_TABLET.signals)).toBe('tablet');
     expect(input.platform).toBe('android');
     expect(input.envelopeBytes).toBe(320 * MiB);
     const bounds = qualityBounds(input);
     expect(bounds.high).toBe(bounds.medium);
     expect(bounds.reason).toBe('byte budget');
+    // The smallest candidate alone is over the share: 2000x3200 at 24 B.
+    expect(Math.round(renderTargetBytes(input.cssWidth, input.cssHeight, 2.5, 0) / 1e6)).toBe(154);
+    expect(renderTargetBytes(input.cssWidth, input.cssHeight, 2.5, input.samples)).toBeGreaterThan(
+      RENDER_TARGET_ENVELOPE_SHARE * input.envelopeBytes,
+    );
+  });
+
+  it("offers 3 on Alex's iPhone, whose envelope was measured at 1024 MiB", () => {
+    // No rule asks whether this is a phone: what decides is the envelope its
+    // row carries and the 87 MB the panel's own 1290x2796 costs.
+    const input = inputFor(IPHONE);
+    expect(classifyDevice(IPHONE.signals)).toBe('phone');
+    expect(input.envelopeBytes).toBe(1024 * MiB);
+    expect(input.outputRatio).toBe(2);
+    const bounds = qualityBounds(input);
+    expect(bounds.high).toBe(3);
+    expect(bounds.highOffered).toBe(true);
+    expect(bounds.reason).toBeNull();
+    expect(sceneTargetSize(input.cssWidth, input.cssHeight, 3)).toEqual({ width: 1290, height: 2796 });
+    expect(Math.round(renderTargetBytes(input.cssWidth, input.cssHeight, 3, input.samples) / 1e6)).toBe(87);
+    expect(renderTargetBytes(input.cssWidth, input.cssHeight, 3, input.samples)).toBeLessThanOrEqual(
+      RENDER_TARGET_ENVELOPE_SHARE * input.envelopeBytes,
+    );
   });
 
   it('counts the samples: a 1440p 1x monitor with four gets 1.25, not 1.5', () => {
@@ -307,24 +330,30 @@ describe('qualityBounds — high against the byte budget', () => {
 });
 
 describe('qualityBounds — where high is not offered at all', () => {
-  it('a phone keeps medium: heat, not headroom, is what binds', () => {
-    const input = inputFor(IPHONE);
-    expect(input.deviceClass).toBe('phone');
-    const bounds = qualityBounds(input);
-    expect(bounds.high).toBe(2);
-    expect(bounds.highOffered).toBe(false);
-    expect(bounds.reason).toBe('phone');
-    // The bytes would have allowed it, which is why the class rule has to
-    // exist rather than falling out of the budget.
-    expect(renderTargetBytes(input.cssWidth, input.cssHeight, 3, 0)).toBeLessThan(
-      RENDER_TARGET_ENVELOPE_SHARE * input.envelopeBytes,
-    );
+  it('no bound asks what kind of chassis it is: the same inputs decide alike', () => {
+    // The whole of package H in one row. A phone's signals and a desktop's
+    // reach the same bounds when the ratio, the canvas, the samples and the
+    // envelope are the same — so an edge case in the classifier cannot cost
+    // anybody a level.
+    const phone = inputFor(IPHONE);
+    const asDesktop = qualityBounds({ ...phone, platform: 'apple' });
+    expect(qualityBounds(phone)).toEqual(asDesktop);
   });
 
-  it('the limited class keeps medium', () => {
-    const bounds = boundsFor(MONITOR_1440P, { deviceClass: 'limited' });
+  it('a limited machine keeps medium — its 192 MiB envelope refuses it', () => {
+    // The class no longer refuses anything; the envelope its row carries does.
+    const envelopeBytes = deviceProfileFor('limited', 'other').envelopeBytes;
+    expect(envelopeBytes).toBe(192 * MiB);
+    const input = inputFor(MONITOR_1440P, { envelopeBytes });
+    const bounds = qualityBounds(input);
     expect(bounds.high).toBe(bounds.medium);
-    expect(bounds.reason).toBe('limited');
+    expect(bounds.highOffered).toBe(false);
+    expect(bounds.reason).toBe('byte budget');
+    // Even the smallest supersample is nearly five times the share here:
+    // 392 MB of targets against 76.8 MiB.
+    const smallest = renderTargetBytes(input.cssWidth, input.cssHeight, 1.25, input.samples);
+    expect(Math.round(smallest / 1e6)).toBe(392);
+    expect(smallest).toBeGreaterThan(4 * RENDER_TARGET_ENVELOPE_SHARE * envelopeBytes);
   });
 
   it('with no composer every level is medium and the ladder is one rung', () => {
@@ -363,7 +392,7 @@ describe('qualityBounds — where high is not offered at all', () => {
 });
 
 describe('qualityBounds — the rungs', () => {
-  it("are the phone's 2 -> 1.74 -> 1.5, in the factors they were calibrated at", () => {
+  it("are the phone's 1.5 -> 1.74 -> 2 -> 2.5 -> 3, in the factors they were calibrated at", () => {
     const bounds = boundsFor(IPHONE);
     expect(bounds.downRungs).toHaveLength(3);
     expect(bounds.downRungs[0]).toBe(2);
@@ -371,12 +400,22 @@ describe('qualityBounds — the rungs', () => {
     expect(bounds.downRungs[2]).toBeCloseTo(2 / 1.33, 6);
     expect(bounds.downRungs[1]).toBeCloseTo(1.74, 2);
     expect(bounds.downRungs[2]).toBeCloseTo(1.5, 2);
-    // Nothing above medium on a phone, so Dynamic's ladder is the slide down.
-    expect(bounds.upRungs).toEqual([2]);
+    // And the budget lets the panel's own 3 in, so the phone's ladder is the
+    // Mac's shape: the slide down, and two rungs of supersample above.
+    expect(bounds.upRungs).toEqual([2, 2.5, 3]);
     const ladder = dynamicLadder(bounds);
-    expect(ladder.rungs).toHaveLength(3);
+    expect(ladder.rungs).toHaveLength(5);
     expect(ladder.mediumIndex).toBe(2);
     expect(ladder.rungs[ladder.mediumIndex]).toBe(2);
+  });
+
+  it('a ladder tops out at medium only where the bounds refuse a supersample', () => {
+    // What used to be every phone is now only a display the facts refuse:
+    // here the GPU completed no multisampled half-float target.
+    const bounds = boundsFor(IPHONE, { supersampleFallback: true });
+    expect(bounds.upRungs).toEqual([bounds.medium]);
+    const ladder = dynamicLadder(bounds);
+    expect(ladder.mediumIndex).toBe(ladder.rungs.length - 1);
   });
 
   it("are the Mac's five, ascending, with medium in the middle", () => {

@@ -253,7 +253,8 @@ const fixedSceneAllocation = parseAllocParam(location.search);
 // goes through the same devEnvelopeOverride, so the byte budget below is
 // measured against the envelope the sector streamer really spends — the DEV
 // `?envelope=` shrink included, which is how "does the budget bind" is asked
-// on a desktop.
+// on a desktop. The class reaches the quality bounds ONLY through that
+// envelope: no rule there asks what kind of chassis this is.
 const deviceSignals = readDeviceSignals(renderer.getContext());
 const deviceClass = classifyDevice(deviceSignals);
 const devicePlatform = platformFamily(deviceSignals);
@@ -317,7 +318,6 @@ function qualityBoundsInput(): QualityBoundsInput {
   const outputRatio = getTargetPixelRatio();
   return {
     outputRatio,
-    deviceClass,
     platform: devicePlatform,
     envelopeBytes: deviceEnvelopeBytes,
     cssWidth: window.innerWidth,

@@ -16,15 +16,24 @@
  * - **high** supersamples: the largest of 1.5x and 1.25x the output ratio
  *   whose scene-sized targets fit the byte budget below AND the GL size
  *   limit. It is offered on every display that has a composer, because a
- *   resolution scale is what a game offers and the budget and the measurement
- *   are what decide — except where it would be a bad trade or an inert
- *   choice, and then it is OMITTED rather than silently applied as medium:
- *   a phone (heat, not headroom, is what binds there), the `limited` class,
- *   a machine whose GPU completed no multisampled half-float target
- *   (supersampleFallback — its output ratio is already the old 1.5
- *   supersample floor and the scene has no other antialiasing left), and the
- *   no-float path, where there is no composer to resize and every level is
- *   medium. `highOffered` says which, and `reason` says why not.
+ *   resolution scale is what a game offers and the budget and the GL limit
+ *   are facts about the machine rather than a guess about it. Only a fact
+ *   withholds it, and then it is OMITTED rather than silently applied as
+ *   medium: the no-float path, where there is no composer to resize and every
+ *   level is medium; a machine whose GPU completed no multisampled half-float
+ *   target (supersampleFallback — its output ratio is already the old 1.5
+ *   supersample floor and the scene has no other antialiasing left); a target
+ *   over the GL size limit; and the byte budget. `highOffered` says which, and
+ *   `reason` says why not.
+ *
+ * **No rule here asks what kind of chassis it is running on.** A `deviceClass`
+ * test refused High on a phone and on the `limited` class, and both are gone:
+ * a class is a guess with edge cases, and the two refusals it stood in for are
+ * already made by measurements. A `limited` device's envelope is 192 MiB, so
+ * 40 % of it is 76.8 MiB and the budget below refuses a sharper canvas on any
+ * display worth the name without the class being named. And a phone's heat is
+ * answered by Dynamic — the slide down and the floor latch, which measure the
+ * device in front of them — not by withholding a level the user can choose.
  * - **dynamic** slides over a ladder of rungs at factors that earn the two
  *   full-screen passes a rung costs: down 1, 1/1.15, 1/1.33 and up 1, 1.25,
  *   1.5, all relative to the output ratio and clamped into [low, high]. A
@@ -69,7 +78,7 @@
  * never reaches either.
  */
 
-import type { DeviceClass, PlatformFamily } from '../planetarium/world/gpuEnvelope';
+import type { PlatformFamily } from '../planetarium/world/gpuEnvelope';
 import { DESKTOP_FLOOR_PIXEL_RATIO, MAX_UPSCALE_FACTOR } from './renderResolution';
 
 /** The four levels, in the order the menu offers them. */
@@ -111,11 +120,10 @@ export const QUALITY_UP_RUNG_FACTORS: readonly number[] = [1, 1.25, 1.5];
  *  about 20 % of what the device was measured to survive. */
 export const RENDER_TARGET_ENVELOPE_SHARE = 0.4;
 
-/** Why `high` is not offered on this display. */
+/** Why `high` is not offered on this display. Every one of them is a fact
+ *  about the machine — no chassis is named. */
 export type HighDenialReason =
   | 'no composer'
-  | 'phone'
-  | 'limited'
   | 'supersample fallback'
   | 'byte budget'
   | 'gl size';
@@ -128,8 +136,6 @@ export interface QualityBoundsInput {
   /** The output ratio (renderResolution.ts targetPixelRatio), which no level
    *  changes. Every bound and every rung is relative to it. */
   outputRatio: number;
-  /** The class the device classified as (gpuEnvelope.ts classifyDevice). */
-  deviceClass: DeviceClass;
   /** Whose platform it is. Recorded rather than read: the family reaches the
    *  bounds through the envelope its row in the table carries, and no rule
    *  here asks the question directly — which is why an Apple tablet clears
@@ -228,8 +234,6 @@ function ladderFrom(factors: readonly number[], outputRatio: number, low: number
 /** The largest offered supersample, or medium with the reason it was refused. */
 function highBound(input: QualityBoundsInput, medium: number): { high: number; reason: HighDenialReason | null } {
   if (!input.hasComposer) return { high: medium, reason: 'no composer' };
-  if (input.deviceClass === 'phone') return { high: medium, reason: 'phone' };
-  if (input.deviceClass === 'limited') return { high: medium, reason: 'limited' };
   if (input.supersampleFallback) return { high: medium, reason: 'supersample fallback' };
   const budget = RENDER_TARGET_ENVELOPE_SHARE * Math.max(0, input.envelopeBytes);
   // Largest first: the biggest candidate that fits is the one offered, and

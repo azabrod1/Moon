@@ -1568,8 +1568,10 @@ const SCENARIOS = [
     id: 'phone-quality-steps',
     where: 'phone (430x932 @3)',
     device: PHONE,
-    // High is not offered on a phone, so the row omits it and so does this.
-    levels: ['low', 'medium', 'dynamic'],
+    // The same four the Mac row takes: nothing in the bounds asks what kind
+    // of chassis this is, so a phone whose envelope and canvas clear the byte
+    // budget offers High and the row has to step through it.
+    levels: ['low', 'medium', 'high', 'dynamic'],
   }),
   // The two above visit Low and High before they ever ask the rule for a rung,
   // which warms the very paths whose COLD cost a Dynamic session pays: the

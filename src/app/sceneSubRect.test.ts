@@ -11,11 +11,10 @@ import {
 import { dynamicLadder, qualityBounds, sceneTargetSize, type QualityBoundsInput } from './renderQuality';
 import { lensPassFragmentShader } from '../shared/math/lensProjection';
 
-/** A desktop that offers High: the only chassis where the allocation and the
+/** A display whose bounds offer High: the case where the allocation and the
  *  rung differ at all. */
 const DESKTOP: QualityBoundsInput = {
   outputRatio: 2,
-  deviceClass: 'desktop',
   platform: 'apple',
   envelopeBytes: 2_000 * 1024 * 1024,
   cssWidth: 1728,
@@ -26,8 +25,10 @@ const DESKTOP: QualityBoundsInput = {
   maxGlSize: 16384,
 };
 
-/** A phone: High is not offered, so its ladder tops out at medium. */
-const PHONE: QualityBoundsInput = { ...DESKTOP, deviceClass: 'phone', cssWidth: 430, cssHeight: 932 };
+/** A display whose bounds refuse High — here because its GPU completed no
+ *  multisampled half-float target — so its ladder tops out at medium and the
+ *  frame always fills its allocation. */
+const NO_SUPERSAMPLE: QualityBoundsInput = { ...DESKTOP, supersampleFallback: true };
 
 const ladderFor = (input: QualityBoundsInput) => dynamicLadder(qualityBounds(input));
 
@@ -50,12 +51,12 @@ describe('the allocation size', () => {
     }
   });
 
-  it('is medium’s own size on a phone, where the ladder tops out there', () => {
-    const ladder = ladderFor(PHONE);
+  it('is medium’s own size where the ladder tops out there', () => {
+    const ladder = ladderFor(NO_SUPERSAMPLE);
     expect(allocationSceneRatio(ladder.rungs[0], ladder, true)).toBe(2);
     // So the frame at medium fills its allocation and nothing is scaled.
-    const alloc = sceneTargetSize(PHONE.cssWidth, PHONE.cssHeight, 2);
-    const rects = sceneRects(alloc, sceneTargetSize(PHONE.cssWidth, PHONE.cssHeight, 2));
+    const alloc = sceneTargetSize(NO_SUPERSAMPLE.cssWidth, NO_SUPERSAMPLE.cssHeight, 2);
+    const rects = sceneRects(alloc, sceneTargetSize(NO_SUPERSAMPLE.cssWidth, NO_SUPERSAMPLE.cssHeight, 2));
     expect(rects.uvScale).toEqual({ x: 1, y: 1 });
     expect(rects.clamped).toBe(false);
   });

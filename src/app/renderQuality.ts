@@ -25,15 +25,6 @@
  *   supersample floor and the scene has no other antialiasing left); a target
  *   over the GL size limit; and the byte budget. `highOffered` says which, and
  *   `reason` says why not.
- *
- * **No rule here asks what kind of chassis it is running on.** A `deviceClass`
- * test refused High on a phone and on the `limited` class, and both are gone:
- * a class is a guess with edge cases, and the two refusals it stood in for are
- * already made by measurements. A `limited` device's envelope is 192 MiB, so
- * 40 % of it is 76.8 MiB and the budget below refuses a sharper canvas on any
- * display worth the name without the class being named. And a phone's heat is
- * answered by Dynamic — the slide down and the floor latch, which measure the
- * device in front of them — not by withholding a level the user can choose.
  * - **dynamic** slides over a ladder of rungs at factors that earn the two
  *   full-screen passes a rung costs: down 1, 1/1.15, 1/1.33 and up 1, 1.25,
  *   1.5, all relative to the output ratio and clamped into [low, high]. A
@@ -46,6 +37,17 @@
  * output) — 1.504 against 1.5 on a 2x phone. Both are "the 1.5 the upscaler
  * was measured at"; the ladder is stated in the factors the rungs were
  * calibrated at rather than bent to meet Low exactly.
+ *
+ * **No rule here asks what kind of chassis it is running on.** A `deviceClass`
+ * test used to refuse High on a phone and on the `limited` class, and both are
+ * gone: a class is a guess with edge cases, and what the two refusals stood in
+ * for is already decided by measurement. A `limited` device's envelope is
+ * 192 MiB, so 40 % of it is 76.8 MiB and the byte budget below refuses a
+ * sharper canvas there without the class being named. And a phone's heat is
+ * answered by Dynamic — the slide down and the floor latch, which measure the
+ * device in front of them — rather than by withholding a level the user can
+ * choose. The platform family stays, recorded and unread, for the note on it
+ * below.
  *
  * **The byte budget.** The risk in supersampling is bytes, not pixels, and
  * the bytes per scene pixel depend on the sample count: at a ratio r on a

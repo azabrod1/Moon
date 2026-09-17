@@ -453,6 +453,7 @@ import {
 import { flushOrbitDamping } from './input/orbitDamping';
 import { formatBodyDistance, bodyDistanceQuantum } from './bodyDistance';
 import type { ToolRequest } from './toolRequest';
+import { nextQualityLevel, QUALITY_LEVEL_LABELS, type QualityControl } from '../app/renderQuality';
 
 /** How long a context-restore re-warm may keep the late-link check muted. */
 const REWARM_MUTE_MAX_MS = 15_000;
@@ -2255,6 +2256,10 @@ export class PlanetariumMode {
    *  tiles its pixels deserve, while a Dynamic slide must never swap the
    *  tiles under the user. */
   private readonly tilePixelRatio: () => number;
+  /** The graphics-quality level, owned by the entry point (it decides the
+   *  scene ratio before this mode exists and saves the choice on its own key).
+   *  All this mode does is draw the ☰ panel's row and cycle it. */
+  private readonly quality: QualityControl;
   // Dev tripwire for the warm-up: program count right after it, compared a
   // couple of frames later — the first live frames must not compile anything
   // it missed (that stall is the very thing it exists to prevent).
@@ -2303,6 +2308,10 @@ export class PlanetariumMode {
     rendersThroughComposer: () => boolean = () => useBloom,
     scenePixelRatio: () => number = () => renderer.getPixelRatio(),
     tilePixelRatio: () => number = () => renderer.getPixelRatio(),
+    // Required, unlike its neighbours: the ☰ panel's graphics-quality row has
+    // no sensible stand-in — a stub would leave a live button that changes
+    // nothing — so a caller has to hand over the real setting.
+    quality: QualityControl,
   ) {
     this.scene = scene;
     this.camera = camera;
@@ -2311,6 +2320,7 @@ export class PlanetariumMode {
     this.rendersThroughComposer = rendersThroughComposer;
     this.scenePixelRatio = scenePixelRatio;
     this.tilePixelRatio = tilePixelRatio;
+    this.quality = quality;
     // Read the device once, before any body loads, so anisotropy and tier
     // limits apply to the very first textures created and every later
     // decision spends the same numbers. The signals and the profile are this
@@ -2968,6 +2978,7 @@ export class PlanetariumMode {
     window.addEventListener('keyup', this.handleKeyUp);
     this.gyro.attach();
     this.syncGyroWidget();
+    this.syncQualityWidget();
 
     // Wire up UI controls (once only)
     if (!this.uiWired) {
@@ -10149,6 +10160,7 @@ export class PlanetariumMode {
         this.player.moving = false;
         this.timeState.paused = true;
         this.updateTimeUI();
+        this.syncQualityWidget();
         this.menuPanel.show();
       }
     });
@@ -10342,6 +10354,14 @@ export class PlanetariumMode {
       const label = document.getElementById('settings-throttle-label');
       if (label) label.textContent = this.systemSlowdown ? 'On' : 'Off';
       this.updateSpeedSlider();
+    });
+
+    // Graphics quality, in the "Label distances" shape: one button whose label
+    // cycles. High is left out of the cycle on a display that does not offer
+    // it, so the button never lands on a choice that would change nothing.
+    document.getElementById('settings-quality-toggle')?.addEventListener('click', () => {
+      this.quality.set(nextQualityLevel(this.quality.level(), this.quality.bounds().highOffered));
+      this.syncQualityWidget();
     });
 
     // Full-screen mobile flight zone
@@ -19245,6 +19265,22 @@ export class PlanetariumMode {
               ? 'Gyro steering is active'
               : 'Enable gyro steering',
       );
+    }
+  }
+
+  /** Redraw the ☰ panel's graphics-quality button. The level lives in the
+   *  entry point, so the widget is pushed rather than polled: on activation,
+   *  when the row itself cycles it, and when the panel opens — a level can
+   *  also arrive from the URL or the DEV bridge, and the open is the moment
+   *  the label has to be right. Highlighted off Dynamic, the way its
+   *  neighbours highlight their non-default state. */
+  private syncQualityWidget() {
+    const level = this.quality.level();
+    setText('settings-quality-label', QUALITY_LEVEL_LABELS[level]);
+    const toggle = document.getElementById('settings-quality-toggle');
+    if (toggle) {
+      toggle.classList.toggle('active', level !== 'dynamic');
+      toggle.setAttribute('aria-pressed', level !== 'dynamic' ? 'true' : 'false');
     }
   }
 

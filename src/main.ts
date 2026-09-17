@@ -1468,6 +1468,10 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
         planetariumMode = new PlanetariumMode(
           scene, planetariumCamera, renderer, useBloom, () => composer !== null,
           () => getScenePixelRatio(), () => getTilePixelRatio(),
+          // The ☰ panel's graphics-quality row: the level and what this
+          // display offers are read here, and the row writes back through the
+          // same narrow path every other level change takes.
+          { level: () => qualityLevel, set: setQualityLevel, bounds: () => qualityBoundsLive },
         );
         // Every tool entry arrives here ("How many fit?", Look inside): the
         // mode closes its own entry surfaces and snapshots the journey, then

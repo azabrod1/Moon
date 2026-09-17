@@ -75,8 +75,18 @@ import { DESKTOP_FLOOR_PIXEL_RATIO, MAX_UPSCALE_FACTOR } from './renderResolutio
 /** The four levels, in the order the menu offers them. */
 export type QualityLevel = 'low' | 'medium' | 'high' | 'dynamic';
 
-/** Every level, in menu order. */
+/** Every level, in menu order: the order the ☰ panel's one button cycles
+ *  through, a ramp from the cheapest picture to the one that decides for
+ *  itself, so the two extremes are never adjacent. */
 export const QUALITY_LEVELS: readonly QualityLevel[] = ['low', 'medium', 'high', 'dynamic'];
+
+/** What each level is called on the button. */
+export const QUALITY_LEVEL_LABELS: Record<QualityLevel, string> = {
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  dynamic: 'Dynamic',
+};
 
 /** The level a session starts at with nothing saved and nothing in the URL. */
 export const DEFAULT_QUALITY: QualityLevel = 'dynamic';
@@ -295,6 +305,41 @@ export function sceneRatioForLevel(level: QualityLevel, bounds: QualityBounds): 
     case 'dynamic':
       return bounds.medium;
   }
+}
+
+/**
+ * The next level the ☰ panel's button lands on, in QUALITY_LEVELS order and
+ * wrapping round. Where High is not offered it is left OUT of the cycle
+ * altogether rather than offered as a choice that would apply as Medium: the
+ * label set on such a display is Low / Medium / Dynamic.
+ *
+ * A level the cycle does not offer is still a position in the order — the DEV
+ * `?quality=high` boots a phone at High — so the walk starts from where that
+ * level sits and lands on the next one this display does offer.
+ */
+export function nextQualityLevel(current: QualityLevel, highOffered: boolean): QualityLevel {
+  const at = QUALITY_LEVELS.indexOf(current);
+  const from = at < 0 ? QUALITY_LEVELS.length - 1 : at;
+  for (let step = 1; step <= QUALITY_LEVELS.length; step += 1) {
+    const level = QUALITY_LEVELS[(from + step) % QUALITY_LEVELS.length];
+    if (level !== 'high' || highOffered) return level;
+  }
+  return current;
+}
+
+/**
+ * What the ☰ panel's graphics-quality row reads and writes. The level itself
+ * is owned by the entry point — it decides the scene ratio before the
+ * planetarium exists, and it is saved on its own key so a New Journey cannot
+ * clear it — and the row only cycles it and reports where it stands.
+ */
+export interface QualityControl {
+  /** The level the session is running at. */
+  level(): QualityLevel;
+  /** Pick a level: saved, and applied to the live frame. */
+  set(level: QualityLevel): void;
+  /** What this display offers, `highOffered` included. */
+  bounds(): QualityBounds;
 }
 
 /**

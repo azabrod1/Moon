@@ -318,10 +318,26 @@ export interface BakeSliceSample {
 }
 
 let lastBakeSlice: BakeSliceSample | null = null;
+let bakeSliceSpendMs = 0;
 
 /** The most recent bake slice, or null when no bake has sliced this session. */
 export function lastBakeSliceSample(): BakeSliceSample | null {
   return lastBakeSlice;
+}
+
+/**
+ * Everything the bake has spent since this was last called, and zeroed.
+ *
+ * An accumulator rather than the last sample's stamp, because one draw can
+ * cover several animation frames: a bake slice runs in its own frame, so a
+ * span between two draws may hold two or three of them, and reading only the
+ * newest would charge the span a fraction of what it really spent — on
+ * exactly the streaming descent the exclusion exists for.
+ */
+export function takeBakeSliceSpendMs(): number {
+  const spent = bakeSliceSpendMs;
+  bakeSliceSpendMs = 0;
+  return spent;
 }
 
 /**
@@ -1585,6 +1601,7 @@ export class AtmosphereLut {
           spentMs: sliceEnd - sliceStart,
           stepsLeft: steps.length - i,
         };
+        bakeSliceSpendMs += lastBakeSlice.spentMs;
         // Links all precede draws, so a slice always takes at least one step.
         // The guard stays because the cost of being wrong is a boot idle that
         // spins on a step it will not run.

@@ -459,6 +459,9 @@ export class InteriorMode {
   private viewOffsetSpanPx = 0;
 
   private readonly fpsSamples: number[] = [];
+  /** Seconds since the last drawn frame: what the gauge divides, so it counts
+   *  draws rather than ticks. */
+  private presentAccumS = 0;
   private topBarPrevDisplay: string | null = null;
 
   // What the open cost. The stopwatch of the open that is running or last ran;
@@ -637,12 +640,21 @@ export class InteriorMode {
 
   // ---- per-frame -----------------------------------------------------------
 
-  update(dt: number): void {
+  /**
+   * One tick. `willDraw` is whether it ends in a drawn frame — false only
+   * where the Frame rate row's target skips one, and the tool takes the cap
+   * like the app it was launched from. The studio's own simulation runs on
+   * every tick; the ruler, which is laid out against the camera, waits for a
+   * draw, and so does the gauge, which reports the rate a reader sees.
+   */
+  update(dt: number, willDraw = true): void {
     if (!this.active) return;
-    if (dt > 0) {
-      this.fpsSamples.push(1 / dt);
+    this.presentAccumS += dt;
+    if (willDraw && this.presentAccumS > 0) {
+      this.fpsSamples.push(1 / this.presentAccumS);
       if (this.fpsSamples.length > FPS_WINDOW) this.fpsSamples.shift();
     }
+    if (willDraw) this.presentAccumS = 0;
     if (!this.frozen) this.presentationSeconds += dt;
     this.interiorScene.setPresentationTime(this.presentationSeconds);
 
@@ -674,7 +686,17 @@ export class InteriorMode {
     this.interiorScene.updateForCamera(this.camera);
 
     this.advanceEmphasis(dt);
-    this.renderRuler();
+    if (willDraw) this.renderRuler();
+  }
+
+  /**
+   * A frame has been drawn. The open's last two marks are both frames rather
+   * than steps — the first one the reader SEES and the first one everything
+   * has settled on — so they are taken here and not inside update(), where a
+   * tick that drew nothing would claim them.
+   */
+  afterDraw(_drawSeq: number, _nowMs: number): void {
+    if (!this.active) return;
     this.traceOpenProgress();
   }
 

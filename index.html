@@ -730,6 +730,18 @@
       padding: 8px;
       pointer-events: auto;
       min-width: 190px;
+      /* The panel is taller than a small phone's screen with eleven settings
+         rows in it, and the page itself cannot scroll (html, body are
+         overflow: hidden), so the last row would simply be unreachable. The
+         vh line is the fallback for an engine without dvh, which would
+         otherwise drop the whole declaration; touch-action because the body
+         sets none, and overscroll-behavior so a flick at the end of the list
+         does not pull the page behind it. */
+      max-height: calc(100vh - 68px);
+      max-height: calc(100dvh - 68px);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      touch-action: pan-y;
       /* Above the observatory panel (21) and the tutorial card (30): the wrap card
          points at this menu, so it must open over the card on phones too. */
       z-index: 34;
@@ -4417,6 +4429,13 @@
           <button class="settings-toggle" id="settings-quality-toggle"
                   aria-label="Graphics quality" aria-pressed="false">
             <span id="settings-quality-label">Dynamic</span>
+          </button>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Frame rate</span>
+          <button class="settings-toggle" id="settings-fps-toggle"
+                  aria-label="Frame rate" aria-pressed="false">
+            <span id="settings-fps-label">Screen</span>
           </button>
         </div>
         <div class="menu-build" id="menu-build"></div>

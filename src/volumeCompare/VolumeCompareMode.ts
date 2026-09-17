@@ -172,6 +172,9 @@ export class VolumeCompareMode {
   };
 
   private fpsSamples: number[] = [];
+  /** Seconds since the last drawn frame: what the gauge divides, so it counts
+   *  draws rather than ticks. */
+  private presentAccumS = 0;
   private lastDefaultDistance: number = VC_FRAMING.distance;
 
   private topBarPrevDisplay: string | null = null;
@@ -358,7 +361,11 @@ export class VolumeCompareMode {
 
   // ---- per-frame -----------------------------------------------------------
 
-  update(dt: number): void {
+  /** One tick. `willDraw` is whether it ends in a drawn frame — false only
+   *  where the Frame rate row's target skips one. The pour and the camera run
+   *  on every tick; the preview label is anchored to the camera, so it is
+   *  written on the ticks that draw, and the gauge counts those too. */
+  update(dt: number, willDraw = true): void {
     if (!this.active) return;
     this.applyCardPan(dt);
     this.applyMeasuredFraming(dt);
@@ -377,12 +384,14 @@ export class VolumeCompareMode {
         this.panelClock = 0;
       }
     }
-    this.updateMobilePreviewLabel();
+    if (willDraw) this.updateMobilePreviewLabel();
 
-    if (dt > 0) {
-      this.fpsSamples.push(1 / dt);
+    this.presentAccumS += dt;
+    if (willDraw && this.presentAccumS > 0) {
+      this.fpsSamples.push(1 / this.presentAccumS);
       if (this.fpsSamples.length > FPS_WINDOW) this.fpsSamples.shift();
     }
+    if (willDraw) this.presentAccumS = 0;
   }
 
   /**

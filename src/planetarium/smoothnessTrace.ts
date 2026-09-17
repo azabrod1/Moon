@@ -72,6 +72,10 @@ export interface SmoothTrace {
   /** raf-to-raf delta; the first frame has no predecessor and reads null. */
   gapMs: (number | null)[];
   causeMask: number[];
+  /** Whether the world was drawn on that callback. With the Frame rate row at
+   *  a target, a callback may present nothing at all, and a stream of smooth
+   *  16.7 ms ticks says nothing about a picture running at 30. */
+  drew: boolean[];
   /** JS heap in MiB where the browser exposes it, else null. Sampled. */
   heapMB: (number | null)[];
   events: SmoothEvent[];
@@ -96,6 +100,7 @@ interface Recorder {
   atMs: Float64Array;
   gapMs: Float64Array;
   causeMask: Uint16Array;
+  drew: Uint8Array;
   heapMB: Float32Array;
   lastRafMs: number | null;
   events: SmoothEvent[];
@@ -163,6 +168,7 @@ export function smoothTraceStart(
     atMs: new Float64Array(max),
     gapMs: new Float64Array(max),
     causeMask: new Uint16Array(max),
+    drew: new Uint8Array(max),
     heapMB: new Float32Array(max),
     lastRafMs: null,
     events: [],
@@ -191,8 +197,12 @@ export function smoothTraceArmed(): boolean {
  * the raf timestamp: the gap between consecutive raf timestamps is what the
  * compositor actually delivered, and reading performance.now() instead would
  * fold this recorder's own position in the frame into the number.
+ *
+ * `drew` is whether the world is drawn on this callback. It defaults to true
+ * because that is what a loop with no frame-rate cap does, and it is recorded
+ * per frame so the gate scores the intervals a person SAW.
  */
-export function smoothTraceFrameStart(rafTimestampMs: number): void {
+export function smoothTraceFrameStart(rafTimestampMs: number, drew = true): void {
   if (!import.meta.env.DEV) return;
   const target = rec;
   if (!target) return;
@@ -205,6 +215,7 @@ export function smoothTraceFrameStart(rafTimestampMs: number): void {
   target.gapMs[i] = target.lastRafMs === null ? Number.NaN : rafTimestampMs - target.lastRafMs;
   target.lastRafMs = rafTimestampMs;
   target.causeMask[i] = 0;
+  target.drew[i] = drew ? 1 : 0;
   if (i % HEAP_SAMPLE_EVERY === 0) target.heapMB[i] = heapMiB();
 }
 
@@ -258,11 +269,13 @@ export function smoothTraceSnapshot(): SmoothTrace | null {
   const atMs: number[] = new Array(n);
   const gapMs: (number | null)[] = new Array(n);
   const causeMask: number[] = new Array(n);
+  const drew: boolean[] = new Array(n);
   const heapMB: (number | null)[] = new Array(n);
   for (let i = 0; i < n; i++) {
     atMs[i] = round2(target.atMs[i]);
     gapMs[i] = Number.isNaN(target.gapMs[i]) ? null : round2(target.gapMs[i]);
     causeMask[i] = target.causeMask[i];
+    drew[i] = target.drew[i] === 1;
     heapMB[i] = Number.isNaN(target.heapMB[i]) ? null : round2(target.heapMB[i]);
   }
   return {
@@ -273,6 +286,7 @@ export function smoothTraceSnapshot(): SmoothTrace | null {
     atMs,
     gapMs,
     causeMask,
+    drew,
     heapMB,
     events: target.events.slice(),
     longTasks: target.longTasks.slice(),

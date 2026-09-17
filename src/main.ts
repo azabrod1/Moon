@@ -31,9 +31,14 @@ import {
   sceneTargetSize, type QualityBounds, type QualityBoundsInput, type QualityLadder, type QualityLevel,
 } from './app/renderQuality';
 import {
-  BUDGET_MS, ResolutionController, ZERO_COUNTED_WARN_MS,
-  type Decision, type IntervalSample, type UpRule,
+  ResolutionController, ZERO_COUNTED_WARN_MS,
+  type Decision, type IntervalSample,
 } from './app/resolutionController';
+import { FrameCadence, parseRefreshParam } from './app/frameCadence';
+import {
+  isScreenRate, requestedMsFor, resolveBootFrameRate, writeFrameRate,
+  type FrameRate,
+} from './app/frameRateSetting';
 import { markPending, clearPending, pendingAtBoot, readQualityLevel, writeQualityLevel } from './app/qualitySetting';
 import {
   HIGH_PASS_UV_ANCHOR, allocationSceneRatio, applySubRect, parseAllocParam, patchUvScale, sceneRects,
@@ -242,18 +247,6 @@ const fixedSceneAllocation = parseAllocParam(location.search);
 // and so do the sector tiles and the close-range detail except at the fixed
 // High level (getTilePixelRatio).
 
-/**
- * Which answer Dynamic's up path uses, the one open question in the rule.
- *
- * 'sixty' probes up whenever the window is inside the 60 fps budget, so a
- * 120 Hz machine climbs to its sharpest rung and runs at 60. 'panel' probes up
- * only while the window is inside the panel's own period, so a 120 Hz machine
- * keeps 120 and the sharper picture stays behind the High level. Down
- * decisions hold 60 fps either way. Both are built; this is the default until
- * the two have been seen side by side as motion.
- */
-export const UP_RULE: UpRule = 'sixty';
-
 // The device, classified once, here: the bounds are needed before the
 // planetarium mode exists. The mode reads the same signals off the same
 // context and lands on the same class and family, and its texture profile
@@ -279,7 +272,7 @@ const maxGlTargetSize = (() => {
 let qualityLevel: QualityLevel = resolveBootQualityLevel();
 let qualityBoundsLive: QualityBounds = qualityBounds(qualityBoundsInput());
 let qualityLadderLive: QualityLadder = dynamicLadder(qualityBoundsLive);
-const resolutionController = new ResolutionController(qualityLadderLive, { upRule: UP_RULE });
+const resolutionController = new ResolutionController(qualityLadderLive);
 /** Whether a pin currently holds Dynamic out of the way (refreshQualityPin). */
 let qualityIdle = false;
 /** The `?perf=1` sweep holds it idle for its whole run: the sweep pins and
@@ -449,7 +442,20 @@ function qualityReadout() {
     mode: sceneRatioMode(),
     bounds: qualityBoundsLive,
     ladder: qualityLadderLive.rungs,
-    budgetMs: BUDGET_MS,
+    // The LIVE budget, which the Frame rate row moves: a harness that injects
+    // a stream has to derive its own from this, or it would inject evidence
+    // about another question.
+    budgetMs: state.budgetMs,
+    downCounted: state.downCounted,
+    upCounted: state.upCounted,
+    // The schedule: what was asked for, what the display delivers, and how
+    // often the loop draws (app/frameCadence.ts).
+    fps: {
+      ...frameCadence.state(),
+      drawSeq,
+      tickSeq,
+      held: frameCapHeldBy(),
+    },
     window: {
       trimmedMeanMs: state.trimmedMeanMs,
       countedRate: state.countedRate,
@@ -461,8 +467,7 @@ function qualityReadout() {
     latch: state.latch,
     lastStep: state.lastStep,
     idle: state.idle,
-    upRule: state.upRule,
-    panelPeriodMs: state.panelPeriodMs,
+    sessionCeiling: state.sessionCeiling,
     bytes: qualityRenderTargetBytes(),
     reason: qualityBoundsLive.reason,
     // What the scene-sized targets are allocated at against what this rung
@@ -494,6 +499,135 @@ function qualityRenderTargetBytes(): number {
 
 updateSceneRatioRequest();
 refreshQualityPin();
+
+// ================================================================
+// Frame rate
+// ================================================================
+// How often the loop DRAWS (app/frameCadence.ts) against what the user asked
+// for (app/frameRateSetting.ts). "Screen", the default, paces nothing: every
+// callback draws and the resolution controller keeps its own 60 fps budget,
+// so a session at the default runs the loop and the rule of a build with no
+// row at all. A target is pacing PLUS a budget the app then defends with
+// pixels — `setBudget` below is the only door that moves it, and at the
+// default it is never called.
+
+/** The row's value this session: the URL's word, else the saved one, else
+ *  Screen. */
+let frameRate: FrameRate = resolveBootFrameRate(location.search);
+/** True where this boot's URL named a frame rate. A capture pin then leaves
+ *  the cap alone: a run under `?fps=` is a run ABOUT the pacing, and it waits
+ *  on a draw (`__moon.waitForDraw`) instead of on two callbacks. */
+const frameRateFromUrl = new URLSearchParams(location.search).has('fps');
+const frameCadence = new FrameCadence({
+  screen: isScreenRate(frameRate),
+  requestedMs: requestedMsFor(frameRate),
+  // DEV `?refresh=<hz>`: be a 120 Hz screen on a 60 Hz one.
+  pinnedCadenceMs: parseRefreshParam(location.search, import.meta.env.DEV),
+});
+/** Frames the world was drawn in, and animation callbacks taken. */
+let drawSeq = 0;
+let tickSeq = 0;
+/** A draw asked for out of band — the one painted frame a cover has to show
+ *  before it lifts. Consumed by the next tick, whatever the cadence says. */
+let forcedDrawRequest = false;
+/** The `?perf=1` sweep's run, and a capture pin: both count callbacks against
+ *  the wall clock, so for their duration every callback draws. Kept apart
+ *  from `pixelRatioPin`, which `?ratio=` and a capture pin share — pixels and
+ *  pacing are different questions. */
+let frameCapSweepHold = false;
+let frameCapCaptureHold = false;
+
+function frameCapHeld(): boolean {
+  if (frameCapSweepHold) return true;
+  if (import.meta.env.DEV && gpuProfiler?.active) return true;
+  return frameCapCaptureHold && !frameRateFromUrl;
+}
+
+/** What is holding the cap open, for the readout. */
+function frameCapHeldBy(): string | null {
+  if (frameCapSweepHold) return 'the perf sweep';
+  if (import.meta.env.DEV && gpuProfiler?.active) return 'the GPU profile';
+  if (frameCapCaptureHold && !frameRateFromUrl) return 'a capture pin';
+  return null;
+}
+
+/**
+ * Tell the resolution controller what a frame is now measured against, and say
+ * so once through debugLog so `?debug=1` answers it on a phone.
+ *
+ * Only a real budget move disturbs the controller: under Screen the budget is
+ * the constant it has always held, so nothing here reaches it and the rule is
+ * the one `?fps=` was never passed to.
+ */
+function applyCadenceChange(cause: 'user' | 'auto'): void {
+  const change = frameCadence.takeChange();
+  if (change === null) return;
+  const fps = change.readout;
+  if (change.budgetChanged) {
+    resolutionController.setBudget(fps.budgetMs, performance.now(), {
+      cause: cause === 'user' ? 'user' : change.cause,
+      quantised: frameCadence.quantised,
+    });
+  }
+  const hz = Math.round(1000 / fps.idleCadenceMs);
+  const every = fps.ticksPerDraw === 1 ? 'every tick'
+    : fps.ticksPerDraw === 2 ? 'every 2nd tick'
+      : fps.ticksPerDraw === 3 ? 'every 3rd tick'
+        : `every ${fps.ticksPerDraw}th tick`;
+  debugLog('Frame rate', {
+    requested: fps.requested,
+    screen: `${hz} Hz${fps.assumed ? ' (assumed)' : ''}${fps.pinned ? ' (pinned)' : ''}`,
+    draws: `${every}, ${Math.round(fps.periodMs * 10) / 10} ms`,
+    delivering: fps.observedCadenceMs === null ? null : `${Math.round(1000 / fps.observedCadenceMs)}/s`,
+    budgetMs: Math.round(fps.budgetMs * 100) / 100,
+    capped: fps.capped,
+  });
+}
+
+/**
+ * The Frame rate row, changed. Saves the choice on its own key — never in the
+ * journey save, so New Journey and a restore leave it alone — and re-derives
+ * the schedule. A settings change never moves the rung by itself; what it
+ * moves is the budget the next window is judged against.
+ */
+function setFrameRate(rate: FrameRate): void {
+  if (rate === frameRate) return;
+  frameRate = rate;
+  writeFrameRate(rate);
+  frameCadence.setRate(isScreenRate(rate), requestedMsFor(rate));
+  applyCadenceChange('user');
+}
+
+// The draw log: the last draws as the pacing gate reads them — which frame,
+// when the browser scheduled it, when the callback ran, and what that tick
+// cost. Preallocated and written on the render path, so it allocates nothing;
+// DEV only, like every other bridge reading.
+const DRAW_LOG_SIZE = 1200;
+const drawLogSeq = new Float64Array(DRAW_LOG_SIZE);
+const drawLogT = new Float64Array(DRAW_LOG_SIZE);
+const drawLogNow = new Float64Array(DRAW_LOG_SIZE);
+const drawLogBusy = new Float64Array(DRAW_LOG_SIZE);
+let drawLogHead = 0;
+let drawLogCount = 0;
+
+function recordDraw(t: number, nowMs: number, busyMs: number): void {
+  drawLogSeq[drawLogHead] = drawSeq;
+  drawLogT[drawLogHead] = t;
+  drawLogNow[drawLogHead] = nowMs;
+  drawLogBusy[drawLogHead] = busyMs;
+  drawLogHead = (drawLogHead + 1) % DRAW_LOG_SIZE;
+  if (drawLogCount < DRAW_LOG_SIZE) drawLogCount++;
+}
+
+function readDrawLog(n: number): { drawSeq: number; t: number; nowMs: number; busyMs: number }[] {
+  const want = Math.max(0, Math.min(Math.floor(n), drawLogCount));
+  const out: { drawSeq: number; t: number; nowMs: number; busyMs: number }[] = [];
+  for (let i = want; i > 0; i--) {
+    const at = (drawLogHead - i + DRAW_LOG_SIZE) % DRAW_LOG_SIZE;
+    out.push({ drawSeq: drawLogSeq[at], t: drawLogT[at], nowMs: drawLogNow[at], busyMs: drawLogBusy[at] });
+  }
+  return out;
+}
 
 try {
   const gl = renderer.getContext();
@@ -1170,13 +1304,22 @@ function applySceneResolution(why: string): void {
 // The controller is pure and stepped once a frame with one interval; these are
 // the figures main has to keep from one frame to the next to describe it.
 
-/** The wall clock at the previous frame's callback: the interval's start, and
- *  the window the previous frame's sliced work is looked for in. */
+/** The wall clock at the previous DRAW's callback: the interval's start. */
 let lastFrameAtMs = performance.now();
-/** The previous frame's own main-thread time, loop start to end of draw. */
+/** The previous TICK's own main-thread time, loop start to end of its work. */
 let loopBusyMs = 0;
-/** Programs linked as of the previous frame: a frame whose count grew paid a
- *  link inside its draw. */
+/** The longest single tick since the last draw, and all of them added up. A
+ *  draw may cover several ticks, and the two figures answer different
+ *  questions: the longest is the one that slipped a callback (exclusion), the
+ *  sum is the CPU's share of the whole interval (headroom). */
+let busyMaxSinceDraw = 0;
+let busySumSinceDraw = 0;
+/** Sliced work charged on a tick main.ts owns rather than the mode: a program
+ *  link. Accumulated across the skipped ticks and taken at the draw, because
+ *  a link on a skipped tick is still work inside the interval. */
+let linkWorkMs = 0;
+/** Programs linked as of the previous tick: a tick whose count grew paid a
+ *  link inside it. */
 let lastProgramCount = 0;
 /** Whether the previous frame's endpoint was eligible. An interval needs BOTH
  *  of its endpoints to be, or a resume's first interval — which spans the
@@ -1190,32 +1333,49 @@ let arrivalVeilWasUp = false;
  *  well, and polling document.hasFocus() would exclude every frame of the
  *  session with no symptom but a Dynamic that never moves. */
 let pageFocused = true;
-/** The silence check runs on a countdown rather than every frame. */
+/** The silence check runs on a countdown of DRAWS rather than every frame: at
+ *  a 30 fps target that is every ten seconds. */
 let qualitySilenceCountdown = 0;
 let qualitySilenceSaid = false;
 const QUALITY_SILENCE_CHECK_FRAMES = 300;
 
 /**
- * One frame of evidence for Dynamic, and the rung it asks for.
+ * One tick's program-count check, on EVERY tick.
  *
- * Every field describes the interval that ENDS at `nowMs` — the frame before
- * this one, which is the frame that produced it. An interval charged to the
- * frame that merely reported it would credit a tile upload's cost to the
- * clean frame after it, and near Earth, where sliced work lands on
- * alternating frames, the statistic would become the mean of exactly the long
- * intervals the exclusion exists to remove.
+ * A link cannot be timed apart from the tick it happened inside, so that
+ * tick's whole busy time stands in for it — an upper bound, and all that is
+ * asked is whether the interval did work at all. It has to run on every tick
+ * rather than on draws: with a cap on, a link can land on a tick that draws
+ * nothing, and charging it to the drawn tick beside it would describe the
+ * wrong frame.
+ */
+function noteProgramLinks(): void {
+  const programs = renderer.info.programs?.length ?? lastProgramCount;
+  if (programs > lastProgramCount) linkWorkMs += loopBusyMs;
+  lastProgramCount = programs;
+}
+
+/**
+ * One drawn frame of evidence for Dynamic, and the rung it asks for.
+ *
+ * Every field describes the interval that ENDS at `nowMs` — the span since the
+ * previous DRAW, and everything the app did inside it. An interval charged to
+ * the frame that merely reported it would credit a tile upload's cost to the
+ * clean frame after it, and near Earth, where sliced work lands on alternating
+ * frames, the statistic would become the mean of exactly the long intervals
+ * the exclusion exists to remove.
  */
 function stepQuality(nowMs: number): void {
   const previousFrameAtMs = lastFrameAtMs;
   lastFrameAtMs = nowMs;
-  const programs = renderer.info.programs?.length ?? lastProgramCount;
-  const linked = programs > lastProgramCount;
-  lastProgramCount = programs;
-  // Work the previous frame actually DID: its texture uploads and bake
-  // slices, and a program link. A link cannot be timed apart from the draw it
-  // happened inside, so the frame's whole busy time stands in for it — an
-  // upper bound, and all that is asked is whether the frame did work at all.
-  const workedMs = (planetariumMode?.frameWork(previousFrameAtMs) ?? 0) + (linked ? loopBusyMs : 0);
+  // Everything the span spent: the mode's sliced work (uploads, bake slices)
+  // wherever in the span it landed, and any program link.
+  const workedMs = (planetariumMode?.takeFrameWork() ?? 0) + linkWorkMs;
+  const mainThreadMs = busyMaxSinceDraw;
+  const mainThreadSumMs = busySumSinceDraw;
+  linkWorkMs = 0;
+  busyMaxSinceDraw = 0;
+  busySumSinceDraw = 0;
   const veilUp = planetariumMode?.isArrivalVeilUp() ?? false;
   if (arrivalVeilWasUp && !veilUp) resolutionController.notify('arrival', nowMs);
   arrivalVeilWasUp = veilUp;
@@ -1229,7 +1389,8 @@ function stepQuality(nowMs: number): void {
   const decision = resolutionController.step({
     nowMs,
     intervalMs: nowMs - previousFrameAtMs,
-    mainThreadMs: loopBusyMs,
+    mainThreadMs,
+    mainThreadSumMs,
     workedMs,
     eligible,
   });
@@ -1742,6 +1903,14 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
             bounds: () => qualityBoundsLive,
             targetBytes: () => qualityRenderTargetBytes(),
           },
+          // And the Frame rate row beside it, which also carries the one
+          // out-of-band draw request: a cover that has to show a painted
+          // frame before it lifts cannot depend on the row's value for it.
+          {
+            rate: () => frameRate,
+            set: setFrameRate,
+            requestDraw: () => { forcedDrawRequest = true; },
+          },
         );
         // Every tool entry arrives here ("How many fit?", Look inside): the
         // mode closes its own entry surfaces and snapshots the journey, then
@@ -2051,6 +2220,7 @@ function installDevHooks() {
       if (opts === null) {
         exposurePin = null;
         pixelRatioPin = null;
+        frameCapCaptureHold = false;
         // The same pin `pinRatio` writes: Dynamic must step back in when it
         // is released, exactly as it stepped out when it was set. The bounds
         // are re-derived first, because the output ratio decides what every
@@ -2060,6 +2230,12 @@ function installDevHooks() {
         applyRenderResolution();
         return { near: planetariumCamera.near, exposure: exposureCurrent, pixelRatio: renderer.getPixelRatio() };
       }
+      // A capture settles on callbacks, so under a frame-rate target it would
+      // otherwise read a tick that drew nothing: for the pin's duration every
+      // callback draws. Not derived from `pixelRatioPin`, which `?ratio=`
+      // shares — and lifted where this boot's URL asked for a frame rate,
+      // because such a run is a measurement OF the pacing.
+      frameCapCaptureHold = true;
       if (typeof opts.near === 'number' && opts.near > 0) {
         planetariumCamera.near = opts.near;
         planetariumCamera.updateProjectionMatrix();
@@ -2159,6 +2335,28 @@ function installDevHooks() {
       setQualityLevel(level);
       return qualityReadout();
     },
+    /** Pick a frame rate, exactly as the menu row does. */
+    setFps: (rate: FrameRate) => {
+      setFrameRate(rate);
+      return qualityReadout().fps;
+    },
+    /** The last n draws: `{ drawSeq, t, nowMs, busyMs }`, oldest first. What
+     *  the pacing gate reads — the intervals between draws, not between
+     *  callbacks. */
+    drawLog: (n = 600) => readDrawLog(n),
+    /**
+     * Settle on DRAWS rather than on callbacks: the wait a capture needs under
+     * a frame-rate target, where a callback may draw nothing at all. Two draws
+     * by default, which is what the two-rAF settles everywhere else mean.
+     */
+    waitForDraw: (n = 2) => new Promise<number>((resolve) => {
+      const from = drawSeq;
+      const poll = () => {
+        if (drawSeq - from >= n) resolve(drawSeq);
+        else requestAnimationFrame(poll);
+      };
+      requestAnimationFrame(poll);
+    }),
     // The ocean glint's two authored numbers, live: the cap on the peak above
     // white that the bloom sees, and the flat keep on the mirror term. Returns
     // the current pair; a production build has neither knob.
@@ -2511,13 +2709,29 @@ async function init() {
     // the simulation's clock and the end of the interval the resolution
     // controller reads.
     const now = performance.now();
-    if (import.meta.env.DEV) surfacePerfFrameStart(rafTimestamp);
-    if (import.meta.env.DEV) smoothTraceFrameStart(rafTimestamp);
+    tickSeq++;
+    // The schedule, in two calls, each made exactly once and unconditionally:
+    // `observe` feeds the calibration, `due` advances the draw counter. A
+    // second read, or a reorder behind a short-circuit, would change the
+    // cadence. Their answer is OR-ed with the holds, never short-circuited.
+    const covered = bootRender.current !== 'live';
+    frameCadence.observe(rafTimestamp, covered);
+    applyCadenceChange('auto');
+    const due = frameCadence.due(rafTimestamp);
+    const forced = forcedDrawRequest;
+    forcedDrawRequest = false;
+    // Under the cover the gate itself decides (draw on request only), so the
+    // cap must not skip the requested frame; a failed boot draws nothing
+    // either way.
+    const willDraw = covered || frameCapHeld() || forced || due;
+    noteProgramLinks();
+    if (import.meta.env.DEV && willDraw) surfacePerfFrameStart(rafTimestamp);
+    if (import.meta.env.DEV) smoothTraceFrameStart(rafTimestamp, willDraw);
     if (import.meta.env.DEV && frameProbe) frameProbe.start();
     // At the top, before the scene updates: the sample describes the interval
-    // that ENDS now, i.e. the frame before this one, and the figures it needs
-    // are the ones that frame left behind.
-    stepQuality(now);
+    // that ENDS now, i.e. the span since the previous draw, and the figures it
+    // needs are the ones that span left behind.
+    if (willDraw) stepQuality(now);
     // Drift poll on a countdown: innerWidth/innerHeight are cheap but not
     // free at once-per-frame, and the events below re-arm an immediate check
     // for every transition that announces itself (visualViewport covers the
@@ -2534,8 +2748,11 @@ async function init() {
     const dt = Math.min(rawDt, 0.1); // cap at 100ms to avoid huge jumps
     lastTime = now;
 
+    // The simulation runs on every tick; only what the frame PRESENTS —
+    // camera-anchored DOM, the map's projection ledger, the chart — waits for
+    // a tick that draws.
     if (appMode === 'planetarium' && planetariumMode) {
-      planetariumMode.update(dt);
+      planetariumMode.update(dt, willDraw);
       if (autoExposure) {
         // Already smoothed by the mode's own meter; applied as is.
         exposureCurrent = planetariumMode.takeExposureTarget();
@@ -2546,10 +2763,10 @@ async function init() {
       moonFlightMode.update(dt);
       exposureCurrent = 1; // other modes render neutral; the veil covers the reset
     } else if (appMode === 'volumeCompare' && volumeCompareMode) {
-      volumeCompareMode.update(dt);
+      volumeCompareMode.update(dt, willDraw);
       exposureCurrent = 1;
     } else if (appMode === 'interior' && interiorMode) {
-      interiorMode.update(dt);
+      interiorMode.update(dt, willDraw);
       exposureCurrent = 1;
     }
 
@@ -2557,13 +2774,25 @@ async function init() {
     // planetarium's per-frame solar adaptation.
     if (exposurePin !== null) exposureCurrent = exposurePin;
     renderer.toneMappingExposure = exposureCurrent;
-    if (bootRender.shouldRender()) drawWorldFrame();
+    let drew = false;
+    if (willDraw && bootRender.shouldRender()) {
+      drawWorldFrame();
+      drawSeq++;
+      drew = true;
+      // Every draw resets the count, forced or due, so a cover, a veil or a
+      // capture pin can never leave a schedule running ahead of the clock.
+      frameCadence.drew(rafTimestamp);
+      if (appMode === 'interior') interiorMode?.afterDraw(drawSeq, now);
+    }
     if (import.meta.env.DEV && frameProbe) frameProbe.end();
-    // Both ends of the app's own tick, in every build: what the next frame
-    // hands the resolution controller as this frame's main-thread time. A
-    // late interval whose app tick was small is a late frame the app cannot
+    // Both ends of the app's own tick, in every build: what the next draw
+    // hands the resolution controller as the span's main-thread time. A late
+    // interval whose app ticks were small is a late frame the app cannot
     // explain by itself, which is the only case fewer pixels would fix.
     loopBusyMs = performance.now() - now;
+    if (loopBusyMs > busyMaxSinceDraw) busyMaxSinceDraw = loopBusyMs;
+    busySumSinceDraw += loopBusyMs;
+    if (import.meta.env.DEV && drew) recordDraw(rafTimestamp, now, loopBusyMs);
   }
 
   animate();
@@ -2600,7 +2829,10 @@ async function init() {
         // amplifier's pin stands: the sweep un-pins at the end, on a device
         // it has just heated, and a controller woken there would step on the
         // way out of a measurement.
-        holdQuality: (held) => { qualitySweepHold = held; refreshQualityPin(); },
+        // And the frame-rate cap with it: the sweep's own fps row counts rAF
+        // callbacks against the wall clock, which a cap would make a reading
+        // of the display rather than of the layer under test.
+        holdQuality: (held) => { qualitySweepHold = held; frameCapSweepHold = held; refreshQualityPin(); },
       }))
       .catch((err) => debugWarn('The perf overlay did not load', err));
   }
@@ -2697,8 +2929,13 @@ window.visualViewport?.addEventListener('resize', armViewportCheck);
 document.addEventListener('visibilitychange', () => {
   armViewportCheck();
   // Coming back: the frames either side of the gap are the browser's throttle
-  // and not the scene's cost, so the measurement starts again from here.
-  if (document.visibilityState === 'visible') resolutionController.notify('focus', performance.now());
+  // and not the scene's cost, so the measurement starts again from here — and
+  // a cadence window that straddles the time the tab was away says nothing
+  // about the display either.
+  if (document.visibilityState === 'visible') {
+    resolutionController.notify('focus', performance.now());
+    frameCadence.resume();
+  }
 });
 window.addEventListener('focus', () => {
   pageFocused = true;

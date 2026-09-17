@@ -159,7 +159,10 @@ import {
   type PlatformFamily,
   type ReleaseCandidate,
 } from './world/gpuEnvelope';
-import { AtmosphereLut, lastBakeSliceSample, type AtmosphereBakeStats, type AtmosphereTables } from './world/atmosphereLut';
+import {
+  AtmosphereLut, lastBakeSliceSample, takeBakeSliceSpendMs,
+  type AtmosphereBakeStats, type AtmosphereTables,
+} from './world/atmosphereLut';
 import { bindAtmosphereShellTables, restShellCrossfade, setAtmosphereShellGroundSegments, shellTierAlphas, stepShellCrossfade, type ShellCrossfade } from './world/atmosphereShell';
 import {
   ATMOSPHERE_SPECS,
@@ -454,6 +457,7 @@ import { flushOrbitDamping } from './input/orbitDamping';
 import { formatBodyDistance, bodyDistanceQuantum } from './bodyDistance';
 import type { ToolRequest } from './toolRequest';
 import { nextQualityLevel, QUALITY_LEVEL_LABELS, type QualityControl } from '../app/renderQuality';
+import { FRAME_RATE_LABELS, nextFrameRate, type FrameRateControl } from '../app/frameRateSetting';
 
 /** How long a context-restore re-warm may keep the late-link check muted. */
 const REWARM_MUTE_MAX_MS = 15_000;
@@ -1174,7 +1178,10 @@ export class PlanetariumMode {
    *  what the warm pump was allowed and what it took. Null until a DEV
    *  measurement asks for it. */
   private devWarmSpend: { budgetMs: number; spentMs: number; queued: number } | null = null;
-  /** Frame-sliced work done in the frame now being drawn (frameWork). Reset
+  /** Frame-sliced work done since the last draw took it (takeFrameWork). Not
+   *  reset per update: a draw may cover several ticks, and the uploads this
+   *  pump is deliberately given the skipped ticks for are inside the interval
+   *  the sample describes. Reset
    *  at the top of every update, so main reads the previous frame's total. */
   private frameWorkMs = 0;
   /** The memory readout under `?debug=1` (reportMemoryDebug). The overlay is
@@ -1530,6 +1537,12 @@ export class PlanetariumMode {
   // map's scale animation rides it, so a hitch advances that animation by at
   // most a tenth of a second. Set at the top of update().
   private lastFrameDtMs = 16;
+  /** The DRAW-to-draw interval: `lastFrameDtMs` summed over the ticks since
+   *  the last drawn frame. Every draw-gated animation is advanced by this and
+   *  never by the tick's, or a 30 fps target would run the map's fly, its
+   *  focus pulse and its zoom ease at half speed. */
+  private presentDtMs = 16;
+  private presentAccumMs = 0;
 
   private timeState: SimulationTime = {
     currentUtcMs: Date.now(),
@@ -2260,6 +2273,7 @@ export class PlanetariumMode {
    *  scene ratio before this mode exists and saves the choice on its own key).
    *  All this mode does is draw the ☰ panel's row and cycle it. */
   private readonly quality: QualityControl;
+  private readonly frameRate: FrameRateControl;
   // Dev tripwire for the warm-up: program count right after it, compared a
   // couple of frames later — the first live frames must not compile anything
   // it missed (that stall is the very thing it exists to prevent).
@@ -2312,6 +2326,8 @@ export class PlanetariumMode {
     // no sensible stand-in — a stub would leave a live button that changes
     // nothing — so a caller has to hand over the real setting.
     quality: QualityControl,
+    // The Frame rate row beside it, for the same reason.
+    frameRate: FrameRateControl,
   ) {
     this.scene = scene;
     this.camera = camera;
@@ -2321,6 +2337,7 @@ export class PlanetariumMode {
     this.scenePixelRatio = scenePixelRatio;
     this.tilePixelRatio = tilePixelRatio;
     this.quality = quality;
+    this.frameRate = frameRate;
     // Read the device once, before any body loads, so anisotropy and tier
     // limits apply to the very first textures created and every later
     // decision spends the same numbers. The signals and the profile are this
@@ -2720,15 +2737,23 @@ export class PlanetariumMode {
 
   /** Per-frame bookkeeping shared verbatim by both frame drivers (update and
    *  updateLanded): FPS over wall-clock (independent of dt capping) and the
-   *  8 Hz UI-refresh accumulator. Returns whether this frame refreshes UI. */
-  private tickFrameCadence(dt: number): boolean {
-    this.fpsFrames++;
-    const fpsNow = performance.now();
-    const fpsElapsed = (fpsNow - this.fpsLastTime) / 1000;
-    if (fpsElapsed >= 0.5) {
-      this.fpsDisplay = Math.round(this.fpsFrames / fpsElapsed);
-      this.fpsFrames = 0;
-      this.fpsLastTime = fpsNow;
+   *  8 Hz UI-refresh accumulator. Returns whether this frame refreshes UI.
+   *
+   *  The two halves count different things on purpose. The gauge counts
+   *  DRAWS, because what it reports is the rate a person sees — under a frame
+   *  rate target a tick that drew nothing is not a frame. The UI accumulator
+   *  stays on ticks: it is summed dt, so it is wall time either way, and
+   *  eight refreshes a second is eight refreshes a second. */
+  private tickFrameCadence(dt: number, willDraw = true): boolean {
+    if (willDraw) {
+      this.fpsFrames++;
+      const fpsNow = performance.now();
+      const fpsElapsed = (fpsNow - this.fpsLastTime) / 1000;
+      if (fpsElapsed >= 0.5) {
+        this.fpsDisplay = Math.round(this.fpsFrames / fpsElapsed);
+        this.fpsFrames = 0;
+        this.fpsLastTime = fpsNow;
+      }
     }
     this.uiRefreshAccumulator += dt;
     const shouldRefreshUi = this.uiRefreshAccumulator >= PlanetariumMode.UI_REFRESH_INTERVAL_S;
@@ -2983,6 +3008,7 @@ export class PlanetariumMode {
     this.gyro.attach();
     this.syncGyroWidget();
     this.syncQualityWidget();
+    this.syncFrameRateWidget();
 
     // Wire up UI controls (once only)
     if (!this.uiWired) {
@@ -4503,16 +4529,34 @@ export class PlanetariumMode {
     this.rebaselineLinkedPrograms();
   }
 
-  update(dt: number): void {
-    // Before the early return: a frame this mode sits out did no sliced work
-    // of its own, and a stale total would exclude it from the resolution
-    // measurement for good.
-    this.frameWorkMs = 0;
+  /**
+   * One tick.
+   *
+   * `willDraw` is whether this tick ends in a drawn frame — false only where
+   * the Frame rate row's target skips one. Everything that MOVES THE WORLD
+   * runs on every tick: the clock, input, the ship, the ride frame, the
+   * autopilot and its arrival check, collisions, the floating origin, the
+   * camera pose, exposure, the sliced pump and the bake, the tutorial and the
+   * veils. What waits for a draw is everything that PRESENTS it — the
+   * camera-anchored DOM labels and markers, the map's projection ledger, the
+   * corner chart — because those commit a pose to the screen, and a pose
+   * committed on a tick nothing drew would sit a period ahead of the picture
+   * under it.
+   */
+  update(dt: number, willDraw = true): void {
     if (!this.active || this.restoring || !this.solarSystem) return;
     // Written inside the frame it describes: a frame trace that scored the
     // veil a frame late would blame the world for the cut's first hitch.
     if (import.meta.env.DEV) smoothTraceVeil(this.arrivalVeilUp());
+    // The TICK's own interval: the frame-sliced work budgets against this
+    // (frameInterval.observe below), and update() still runs on every tick,
+    // so it must stay the tick's and not the draw-to-draw span's.
     this.lastFrameDtMs = dt * 1000;
+    this.presentAccumMs += this.lastFrameDtMs;
+    if (willDraw) {
+      this.presentDtMs = this.presentAccumMs;
+      this.presentAccumMs = 0;
+    }
     this.frameInterval.observe(this.lastFrameDtMs);
     this.frameStamp++;
     if (this.knownProgramIds !== null) {
@@ -4562,12 +4606,14 @@ export class PlanetariumMode {
       // driving exposure keeps adapting in updateSunShader, which runs in the
       // landed pipeline too so Observatory sun views stay protected).
       this.exposureTarget = 1;
-      this.updateLanded(dt);
+      this.updateLanded(dt, willDraw);
       // End of the landed branch: positions are final, refresh the map if open.
-      this.updateMapView();
-      // Runs here too, so the ground is one of the states that stands the
-      // corner chart down rather than a state it is simply never told about.
-      this.updateMiniChart();
+      if (willDraw) {
+        this.updateMapView();
+        // Runs here too, so the ground is one of the states that stands the
+        // corner chart down rather than a state it is simply never told about.
+        this.updateMiniChart();
+      }
       return;
     }
 
@@ -4693,7 +4739,7 @@ export class PlanetariumMode {
 
     this.updateCruiseCamera(dt);
 
-    const shouldRefreshUi = this.tickFrameCadence(dt);
+    const shouldRefreshUi = this.tickFrameCadence(dt, willDraw);
 
     // Check orbit crossings and visits after scale/collision are applied so the
     // reachable interaction shell matches the visual shell.
@@ -4730,6 +4776,12 @@ export class PlanetariumMode {
     // (`mapOpen` also gates the other world-presentation passes below — the
     // world composer is bypassed entirely while the chart owns the frame, so
     // per-frame work whose only output is the world render is pure waste.)
+    //
+    // This one pass stays on the TICK under a frame-rate cap while the
+    // presentation below does not: it spends bandwidth from a projection —
+    // deciding which map tiers to fetch — rather than committing a pose to
+    // the screen, and a phone that fetched half as often would look worse for
+    // longer.
     const mapOpen = this.isMapOpen();
     this.updateMemoryPasses(mapOpen);
     this.reportMemoryDebug(performance.now());
@@ -4747,7 +4799,7 @@ export class PlanetariumMode {
     // rest of the world passes while the map owns the frame — the label pass
     // that reads the contributions is gated the same way, and the fill reruns
     // before the first world render after the map closes.
-    if (!mapOpen) this.updateMoonDotsForCamera();
+    if (!mapOpen && willDraw) this.updateMoonDotsForCamera();
 
     // Coverage meter: output-space overlap of the displayed tangent footprint,
     // not the overscan camera's rectilinear angular box. Telemetry for
@@ -4778,12 +4830,12 @@ export class PlanetariumMode {
     // Main (flight) path: landedOn is null here — narrowed by early return above.
     // The hull test rides along only here: the ship is drawn in flight, so its
     // beacon occlusion needs the precise raycast.
-    if (!mapOpen) {
+    if (!mapOpen && willDraw) {
       this.runBodyLabelPipeline(undefined, this.isMarkerBehindShip);
     }
 
     // Update constellation labels
-    if (this.constellations && this.showConstellations && !mapOpen) {
+    if (this.constellations && this.showConstellations && !mapOpen && willDraw) {
       this.constellations.updateLabels(
         this.camera,
         this.renderer.domElement.clientWidth,
@@ -4807,12 +4859,14 @@ export class PlanetariumMode {
       this.updateSpeedSlider();
     }
 
-    if (import.meta.env.DEV && this.devTraceMesh) this.devTraceRecord();
+    if (import.meta.env.DEV && this.devTraceMesh && willDraw) this.devTraceRecord();
 
     // End of the cruise branch: ship position finalized after collisions,
     // refresh the map if open.
-    this.updateMapView();
-    this.updateMiniChart();
+    if (willDraw) {
+      this.updateMapView();
+      this.updateMiniChart();
+    }
   }
 
   private applyFloatingOrigin() {
@@ -10178,6 +10232,7 @@ export class PlanetariumMode {
         this.timeState.paused = true;
         this.updateTimeUI();
         this.syncQualityWidget();
+        this.syncFrameRateWidget();
         this.menuPanel.show();
       }
     });
@@ -10379,6 +10434,14 @@ export class PlanetariumMode {
     document.getElementById('settings-quality-toggle')?.addEventListener('click', () => {
       this.quality.set(nextQualityLevel(this.quality.level(), this.quality.bounds().highOffered));
       this.syncQualityWidget();
+    });
+
+    // Frame rate, the same shape. Every value is offered on every display: on
+    // a 60 Hz screen 120 means "as fast as the screen", the way a game's cap
+    // above the monitor's rate does, and the ?debug=1 line says so.
+    document.getElementById('settings-fps-toggle')?.addEventListener('click', () => {
+      this.frameRate.set(nextFrameRate(this.frameRate.rate()));
+      this.syncFrameRateWidget();
     });
 
     // Full-screen mobile flight zone
@@ -10626,7 +10689,8 @@ export class PlanetariumMode {
       // Never landed: the ground is one of the states that stands the chart
       // down, so a live corner chart is always a flying one.
       null,
-      this.lastFrameDtMs,
+      // Draw-to-draw, like the full chart's: this runs on drawing ticks only.
+      this.presentDtMs,
       // The DRAWN size, not the one that was asked for: the camera aspect and
       // every screen-metered marker have to describe the rectangle the driver
       // is given, which the device snap may have shaved by a fraction of a px.
@@ -10657,24 +10721,27 @@ export class PlanetariumMode {
   }
 
   /**
-   * Frame-sliced work this frame actually DID, in milliseconds: the texture
-   * warm pump (which is also where the sliced uploader and every sector tile
-   * goes) and an atmosphere bake slice stamped since `sinceMs`.
+   * Frame-sliced work done since this was last called, in milliseconds, and
+   * zeroed: the texture warm pump (which is also where the sliced uploader
+   * and every sector tile goes) and every atmosphere bake slice in the span.
    *
-   * Read by main.ts at the top of the next frame, for the frame before it —
-   * an interval measures the frame that produced it, and a frame that spent
+   * Read by main.ts at the top of each DRAW, for the span that ended there —
+   * an interval measures the work that produced it, and a span that spent
    * four milliseconds uploading a tile is not evidence about what the scene
-   * costs at this resolution. Fetches in flight are deliberately NOT counted:
+   * costs at this resolution. It returns-and-zeroes rather than being found by
+   * stamp because with a frame-rate target a span covers several ticks, and
+   * the pump is deliberately given the ones that draw nothing. Fetches in
+   * flight are deliberately NOT counted:
    * a long streaming descent over Earth has something in flight almost
    * continuously, and counting that would silence the measurement for exactly
    * the flight it exists to watch.
    */
-  frameWork(sinceMs: number): number {
-    let ms = this.frameWorkMs;
-    const slice = lastBakeSliceSample();
-    // A bake slice runs in its own animation frame, not inside update(), so
-    // it is found by its stamp rather than accumulated.
-    if (slice !== null && slice.atMs >= sinceMs) ms += slice.spentMs;
+  takeFrameWork(): number {
+    // The bake's own accumulator, which runs in animation frames of its own
+    // rather than inside update(): several of its slices can land in one
+    // draw-to-draw span, and all of them are the span's.
+    const ms = this.frameWorkMs + takeBakeSliceSpendMs();
+    this.frameWorkMs = 0;
     return ms;
   }
 
@@ -11459,7 +11526,10 @@ export class PlanetariumMode {
       // Effective motion — held reads as still, same as the corner chart.
       this.player.moving && !this.player.held,
       this.landedOn,
-      this.lastFrameDtMs,
+      // The DRAW-to-draw interval: the chart spends this on its fly, its
+      // focus pulse and its zoom ease inside the same call as the projection,
+      // and this call only happens on a tick that draws.
+      this.presentDtMs,
     );
     // Hover after the bodies have moved and before anything reads the frame:
     // the anchors this resolves against are the ones just written.
@@ -17234,7 +17304,7 @@ export class PlanetariumMode {
    * track the target while tracking is on. Runs at the end of updateLanded
    * so this frame's moon positions are already in place.
    */
-  private updateSurfaceCamera(dt: number) {
+  private updateSurfaceCamera(dt: number, willDraw = true) {
     const targetPos = this.resolveSurfaceTargetScenePos(this.surfaceTarget, this.tmpSurfaceTargetPos);
     if (!targetPos) {
       // Unresolvable target must not stall a pending exit ease forever.
@@ -17362,6 +17432,12 @@ export class PlanetariumMode {
     // refresh matrixWorldInverse until render time, so a projection off the raw
     // lookAt/position would lag a frame while tracking or dragging the look.
     this.camera.updateMatrixWorld();
+
+    // From here down is presentation: the HUD's own bracket, reticle and
+    // chevron sit on the target's projection, so they are written on the
+    // ticks that draw and on no others. A bracket placed on a tick nothing
+    // drew would sit one period away from the disc under it.
+    if (!willDraw) return;
 
     // Marker over the tracked target (per-frame screen projection): brackets
     // for a resolvable disc, the hairline reticle for sub-pixel specks (the
@@ -17832,6 +17908,13 @@ export class PlanetariumMode {
             // of the session.
             for (const e of pending) cancelTextureUpgrade(e.up, 'keep');
             pumpTextureWarmQueue(Number.POSITIVE_INFINITY, this.frameIntervalMs);
+            // The painted, teleported scene has to be ON SCREEN before the
+            // cover goes, and under a frame-rate target the next tick may not
+            // be a drawing one. Ask for that one frame rather than making the
+            // veil a hold: a veil that drew every tick would have a phone
+            // drawing sixty covered frames a second at the exact moment it is
+            // decoding and uploading the destination's maps.
+            this.frameRate.requestDraw();
             // Hold the cover until the painted, teleported scene has rendered
             // (the landed/jumped system first appears on the next
             // update→render) and at least the min dwell, so a fast machine
@@ -18574,7 +18657,7 @@ export class PlanetariumMode {
     this.notification.show(`Departing ${bodyDisplayName(bodyName)}`);
   }
 
-  private updateLanded(dt: number) {
+  private updateLanded(dt: number, willDraw = true) {
     if (!this.solarSystem) return;
 
     // Advance astronomical time — planets keep moving/rotating
@@ -18606,7 +18689,7 @@ export class PlanetariumMode {
       this.camera.updateMatrixWorld();
     }
 
-    const shouldRefreshUi = this.tickFrameCadence(dt);
+    const shouldRefreshUi = this.tickFrameCadence(dt, willDraw);
 
     this.updatePlanetScaling();
     this.reassertShipProfile();
@@ -18621,7 +18704,7 @@ export class PlanetariumMode {
     this.updateMemoryPasses(mapOpen);
     // Shadow spots/guides live in the world scene, which the map never draws —
     // same gate as the cruise branch, and they rebuild on the first frame back.
-    if (!mapOpen) this.updateShadowVisuals();
+    if (!mapOpen && willDraw) this.updateShadowVisuals();
     if (shouldRefreshUi) this.updateOrbitDetails();
     this.pumpObservatoryEventSearch();
 
@@ -18631,17 +18714,17 @@ export class PlanetariumMode {
     // dots after the surface camera re-pins (labels are hidden there anyway).
     // Skipped under the open map like the cruise branch: nothing draws or reads
     // the fill until the first world frame after close, which refills it.
-    if (this.landedView !== 'surface' && !mapOpen) this.updateMoonDotsForCamera();
+    if (this.landedView !== 'surface' && !mapOpen && willDraw) this.updateMoonDotsForCamera();
 
     // Occlusion + label/marker + hover-reveal pipeline while landed; surface
     // view runs its own hidden-label handling, so skip it there.
-    if (this.landedView !== 'surface' && !mapOpen) {
+    if (this.landedView !== 'surface' && !mapOpen && willDraw) {
       const landedPlanetName = this.landedOn?.type === 'planet' ? this.landedOn.name : undefined;
       this.runBodyLabelPipeline(landedPlanetName);
     }
 
     // Update constellation labels while landed
-    if (this.constellations && this.showConstellations && !mapOpen) {
+    if (this.constellations && this.showConstellations && !mapOpen && willDraw) {
       this.constellations.updateLabels(
         this.camera,
         this.renderer.domElement.clientWidth,
@@ -18654,11 +18737,11 @@ export class PlanetariumMode {
     // so the vantage and look target use this frame's positions (the skipped
     // controls block above runs before those refreshes).
     if (this.landedView === 'surface') {
-      this.updateSurfaceCamera(dt);
+      this.updateSurfaceCamera(dt, willDraw);
       // Dots after the surface camera re-pins: from a moon's surface the sibling
       // moons are real angular points (anchorRatio 0 → true sizes), so the
       // photometry is honest naked-eye sky.
-      this.updateMoonDotsForCamera();
+      if (willDraw) this.updateMoonDotsForCamera();
     }
     // After the surface re-pin: the Sun metering (screen position, occlusion,
     // corona gate) must read this frame's camera pose, not last frame's.
@@ -18666,7 +18749,7 @@ export class PlanetariumMode {
     // NDC projection reads directly.
     this.camera.updateMatrixWorld();
     this.updateSunShader(dt);
-    if (!mapOpen) {
+    if (!mapOpen && willDraw) {
       // Landed reticle + orbit-detail foci are world-anchored HTML; the map
       // force-hides them and the passes that place them can rest.
       this.updateShadowGuideCamera();
@@ -19298,6 +19381,20 @@ export class PlanetariumMode {
     if (toggle) {
       toggle.classList.toggle('active', level !== 'dynamic');
       toggle.setAttribute('aria-pressed', level !== 'dynamic' ? 'true' : 'false');
+    }
+  }
+
+  /** Redraw the ☰ panel's frame-rate button, pushed on the same three beats
+   *  as its neighbour — the value can also arrive from the URL or the DEV
+   *  bridge. Highlighted off Screen, which is the default and today's
+   *  behaviour. */
+  private syncFrameRateWidget() {
+    const rate = this.frameRate.rate();
+    setText('settings-fps-label', FRAME_RATE_LABELS[rate]);
+    const toggle = document.getElementById('settings-fps-toggle');
+    if (toggle) {
+      toggle.classList.toggle('active', rate !== 'screen');
+      toggle.setAttribute('aria-pressed', rate !== 'screen' ? 'true' : 'false');
     }
   }
 

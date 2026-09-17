@@ -171,6 +171,9 @@ export class FrameCadence {
   /** Whether a divisor has been derived from a real cadence yet. The first
    *  one is taken outright; only later ones are held against it. */
   private ticksSettled = false;
+  /** Whether the schedule has ever been reported: the first reading is a line
+   *  on the debug overlay whether or not it moved anything. */
+  private everReported = false;
 
   private rateStartT: number | null = null;
   private rateDraws = 0;
@@ -397,7 +400,12 @@ export class FrameCadence {
     this.budget = this.screen ? BUDGET_MS : Math.max(this.periodMs, this.requestedMs);
     const budgetChanged = Math.abs(this.budget - before.budget) > 1e-9;
     const paced = this.ticks !== before.ticks || Math.abs(this.periodMs - before.period) > 1e-9;
-    if (!budgetChanged && !paced && cause !== 'user') return;
+    // The first reading is always worth reporting, even where nothing it
+    // derives moved: `?debug=1` on a 60 Hz phone at the default would
+    // otherwise never say what the schedule decided.
+    const first = this.calibrated && !this.everReported;
+    if (!budgetChanged && !paced && !first && cause !== 'user') return;
+    this.everReported = this.everReported || this.calibrated;
     this.change = { readout: this.state(), budgetChanged, cause };
   }
 

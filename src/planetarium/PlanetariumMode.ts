@@ -4569,7 +4569,9 @@ export class PlanetariumMode {
     // One damping step runs per frame (the controls wrapper enforces it), so
     // size that step by the frame's real duration: the coast then decays at
     // e^(−t/τ) in wall time on any refresh rate, and a hitch frame advances
-    // by exactly the time it took.
+    // by exactly the time it took. That is also why a frame-rate cap leaves
+    // it alone — it is already dt-sized, and it runs on the tick with the
+    // camera it damps.
     this.controls.dampingFactor = cameraFollowGain(dt, ORBIT_DAMPING_TAU_S);
 
     // Upload one budget's worth of freshly loaded textures while nothing is

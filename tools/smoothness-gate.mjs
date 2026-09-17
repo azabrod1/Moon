@@ -589,6 +589,8 @@ const STEP_AFTER_MS = 2_000;
 function qualitySteps({ id, where, device, levels, boot = '&quality=medium', injects = ['down', 'up'], everyStepMoves = false }) {
   // Written by run(), read by verify(): the in-page second reading.
   let probe = null;
+  // And the schedule this run was taken under.
+  let schedule = null;
   const injectMarks = injects.map((kind, i) => `inject-${kind}${i >= 2 ? `-again` : ''}`);
   const marksExpected = [...levels, ...injectMarks];
   return {
@@ -610,6 +612,11 @@ function qualitySteps({ id, where, device, levels, boot = '&quality=medium', inj
         return { level: q.level, output: q.outputRatio, ladder: q.ladder, high: q.bounds.high,
           highOffered: q.bounds.highOffered, reason: q.reason, mb: Math.round(q.bytes / 1e5) / 10 };
       }))}`);
+      // At the Frame rate row's default every callback draws, which is what
+      // makes this row's numbers comparable with the ones taken before the row
+      // existed. A run that paced would be measuring another app.
+      schedule = await page.evaluate(() => window.__moon.quality().fps);
+      note(`frame rate: ${JSON.stringify(schedule)}`);
       await sleep(2_000);
       // jumpTo's multiplier scales the standard standoff; 0.13125 of it is
       // 1.05 radii, just above the collision shell.
@@ -736,6 +743,11 @@ function qualitySteps({ id, where, device, levels, boot = '&quality=medium', inj
     },
     verify(analysis, trace) {
       const problems = [];
+      analysis.fps = schedule;
+      if (!schedule || schedule.ticksPerDraw !== 1) {
+        problems.push(`the run drew every ${schedule?.ticksPerDraw} callback(s) —`
+          + ' this row is only comparable at the Frame rate row\'s default');
+      }
       const marks = trace.events.filter((e) => e.kind === 'mark' && String(e.name).startsWith('q:'));
       for (const name of marksExpected) {
         if (!marks.some((m) => m.name === `q:${name}`)) {

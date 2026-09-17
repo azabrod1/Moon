@@ -19,7 +19,6 @@ import {
   SCENE_TARGET_SAMPLES_ECONOMY,
   targetPixelRatio,
   UPSCALE_RENDER_PIXEL_RATIO,
-  upscalePolicy,
 } from './renderResolution';
 
 const QHD = 2560 * 1440;
@@ -263,12 +262,5 @@ describe('parsePixelRatioPin', () => {
     expect(parsePixelRatioPin('?ratio=8', true)).toBeNull();
     expect(parsePixelRatioPin(`?ratio=${PIXEL_RATIO_PIN_MAX}`, true)).toBe(PIXEL_RATIO_PIN_MAX);
     expect(parsePixelRatioPin(`?ratio=${PIXEL_RATIO_PIN_MIN}`, true)).toBe(PIXEL_RATIO_PIN_MIN);
-  });
-});
-
-describe('upscalePolicy', () => {
-  it('turns nothing on unasked: the upscaler ships off until it has been seen on the phone', () => {
-    expect(upscalePolicy(true)).toBeNull();
-    expect(upscalePolicy(false)).toBeNull();
   });
 });

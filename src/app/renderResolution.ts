@@ -44,10 +44,13 @@
  * lens sprites' framebuffer size — reads the scene ratio, which at 1.5 is the
  * configuration a 1.5× desktop display runs; the sector ladder and the
  * close-range density keep the output ratio, so the tiles and the synthesis
- * are the ones chosen for the canvas. Wide-line widths are CSS-sized (three
+ * are the ones chosen for the canvas (the one exception is the FIXED High
+ * level, main.ts getTilePixelRatio: a ratio that never changes can pick its
+ * tiles once, where a ratio that slides must not). Wide-line widths are CSS-sized (three
  * refreshes their resolution from the renderer's CSS viewport, whatever
- * target is bound) and need nothing. upscalePolicy says what a build does
- * unasked; `?upscale=` overrides it on any build.
+ * target is bound) and need nothing. The graphics-quality level decides the
+ * scene ratio a build draws at unasked (app/renderQuality.ts); `?upscale=`
+ * pins it on any build, for a measurement.
  */
 
 /** Desktop cap: a 3× display renders at 2.5 device px per CSS px. */
@@ -245,17 +248,6 @@ export function parseUpscaleParam(search: string, dev: boolean): UpscaleRequest 
     }
   }
   return request;
-}
-
-/**
- * The scene ratio a build uses with no `?upscale=` word: null everywhere.
- * The upscaler is the one change in this file that is meant to be seen, and
- * nothing ships until it has been seen on the phone beside the frame it
- * replaces; turning it on for a class of device is one line here, with its
- * test.
- */
-export function upscalePolicy(_mobile: boolean): number | null {
-  return null;
 }
 
 /** The `?ratio=` pin's bounds: below 0.5 nothing is legible, above 4 a phone's

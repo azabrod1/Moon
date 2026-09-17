@@ -48,6 +48,10 @@ const bodies = arg('bodies', 'Earth,Moon,Europa,Jupiter,Mars,Phobos,Mercury').sp
 const viewportChoice = arg('viewport', 'both');
 const runPaths = arg('paths', '1') !== '0';
 const scenarios = arg('scenario', 'sweep').split(',').filter(Boolean);
+// Appended to every page this opens, both doors alike: `--extra='&fps=30'`
+// runs the whole sweep under a frame-rate target, where a callback may draw
+// nothing and every wait has to be a wait for a DRAW.
+const extraQuery = arg('extra', '');
 const runSweep = scenarios.includes('sweep');
 const runLifecycle = scenarios.includes('lifecycle');
 await mkdir(outDir, { recursive: true });
@@ -120,12 +124,16 @@ async function openTool(context, body, query = '', { reducedMotion = false } = {
   const errors = [];
   page.on('pageerror', (error) => errors.push(String(error).slice(0, 300)));
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text().slice(0, 300)); });
-  await page.goto(`${baseUrl}/?auto=interior&body=${body}${query}`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${baseUrl}/?auto=interior&body=${body}${query}${extraQuery}`, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => !!(window.__moon && window.__moon.interiorReady && window.__moon.interiorReady()), undefined, { timeout: 240000 });
   return { page, errors };
 }
 
-const settle = (page) => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve)))));
+// Settle on DRAWS where the app offers it: under a frame-rate target a
+// callback may present nothing, so three callbacks is not three frames.
+const settle = (page) => page.evaluate(() => (window.__moon.waitForDraw
+  ? window.__moon.waitForDraw(3)
+  : new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve))))));
 /** Run `capture` with the depth ruler hidden: it draws its line through the disc centre and along the
  *  face, so a pixel read of the face steps it aside (visibility, which the ruler's own display toggle
  *  leaves alone). The saved captures keep it. */
@@ -623,7 +631,7 @@ async function toolsRowPickerCase(context, viewport) {
   const errors = [];
   page.on('pageerror', (error) => errors.push(String(error).slice(0, 300)));
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text().slice(0, 300)); });
-  await page.goto(`${baseUrl}/?auto=planetarium`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${baseUrl}/?auto=planetarium${extraQuery}`, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => !!(window.__moon && window.__moon.ready && window.__moon.ready()), undefined, { timeout: 300000 });
   await page.waitForFunction(() => {
     const loading = document.getElementById('loading-screen');

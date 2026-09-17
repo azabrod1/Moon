@@ -912,7 +912,12 @@ function fpsPacing({ id, where, device, boot = '' }) {
       const problems = [];
       if (!probe) return ['the pacing probe never ran'];
       const fps = probe.fps;
-      const period = fps.periodMs;
+      // What a draw interval should BE: N callbacks, at the rate the browser
+      // is really delivering them. On a real display that is the schedule's
+      // own period; under `?refresh=` — a 60 Hz machine told to behave as a
+      // 120 Hz one — it is not, and the parity is the thing being measured.
+      const deliveredMs = fps.observedCadenceMs ?? fps.idleCadenceMs;
+      const period = fps.ticksPerDraw * deliveredMs;
       // Only the log inside the measured window, and only its intervals.
       const log = probe.log.filter((d) => d.t >= probe.log[0].t);
       const intervals = log.slice(1).map((d, i) => d.t - log[i].t);
@@ -928,7 +933,8 @@ function fpsPacing({ id, where, device, boot = '' }) {
         idleCadenceMs: round2(fps.idleCadenceMs),
         observedCadenceMs: fps.observedCadenceMs === null ? null : round2(fps.observedCadenceMs),
         ticksPerDraw: fps.ticksPerDraw,
-        periodMs: round2(period),
+        schedulePeriodMs: round2(fps.periodMs),
+        expectedIntervalMs: round2(period),
         budgetMs: round2(fps.budgetMs),
         capped: fps.capped,
         held: fps.held,
@@ -946,18 +952,21 @@ function fpsPacing({ id, where, device, boot = '' }) {
       // Every interval within 4 ms of the period. A deadline-chasing schedule
       // alternated 16 and 50 here.
       if (worst > 4) {
-        problems.push(`a draw interval was ${round2(worst)} ms off the ${round2(period)} ms period`
-          + ` (min ${round2(Math.min(...inWindow))}, max ${round2(Math.max(...inWindow))})`);
+        problems.push(`a draw interval was ${round2(worst)} ms off the ${round2(period)} ms`
+          + ` (${fps.ticksPerDraw} callback(s) at ${round2(deliveredMs)} ms)`
+          + ` — min ${round2(Math.min(...inWindow))}, max ${round2(Math.max(...inWindow))}`);
       }
       // The count, within 3 %.
       const expected = probe.wallMs / period;
       const off = Math.abs(probe.draws - expected) / expected;
       if (off > 0.03) {
-        problems.push(`drew ${probe.draws} frames where the period says ${Math.round(expected)}`
-          + ` (${round1(off * 100)} % off)`);
+        problems.push(`drew ${probe.draws} frames where ${fps.ticksPerDraw} callback(s) a draw`
+          + ` says ${Math.round(expected)} (${round1(off * 100)} % off)`);
       }
       // The capped word, derived here rather than read back from the app.
       const asked = fps.requested === 'screen' ? null : 1000 / fps.requested;
+      // The word is about the SCHEDULE's period, which is what the app shows.
+      const schedulePeriod = fps.periodMs;
       const expectedWord = asked === null
         ? 'no'
         : fps.ticksPerDraw === 1 && fps.observedCadenceMs !== null
@@ -965,7 +974,7 @@ function fpsPacing({ id, where, device, boot = '' }) {
           ? 'by the browser'
           : fps.ticksPerDraw === 1 && fps.idleCadenceMs > asked * 1.05
             ? 'by the screen'
-            : Math.abs(period - asked) > asked * 0.02 ? 'rounded' : 'no';
+            : Math.abs(schedulePeriod - asked) > asked * 0.02 ? 'rounded' : 'no';
       if (fps.capped !== expectedWord) {
         problems.push(`the debug line says "${fps.capped}" where the schedule's own numbers say`
           + ` "${expectedWord}"`);

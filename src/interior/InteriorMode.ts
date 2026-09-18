@@ -49,7 +49,8 @@
  * row lights; a hover card previews it; a tap or click pins the inspector
  * (ui/LayerInspector), whose claim rows open the evidence popover
  * (ui/EvidencePopover). Hovering a legend row emphasises the region in 3D.
- * On touch a tap pins and a drag orbits. The Esc cascade: the popover, the
+ * On touch a tap pins and a drag orbits; interiorInteraction tells the two
+ * apart, and a pinch is neither. The Esc cascade: the popover, the
  * picker, the pinned inspector, then the tool itself.
  *
  * Two diagrams (plan §5): Composition, the material key, and Temperature,
@@ -65,6 +66,7 @@ import { isPhoneViewport } from '../shared/dom';
 import { debugLog, debugWarn } from '../shared/debug';
 import { bodyDisplayName } from '../planetarium/surfaceView';
 import { InteriorScene, BODY_RADIUS, TERRACE_STEP, type PreparedSkin } from './InteriorScene';
+import { TAP_MAX_MS, TAP_MAX_PX, TapRecognizer, type PointerSample } from './interiorInteraction';
 import { resolveInteriorBody, type InteriorBody } from './interiorBody';
 import {
   CUT_VIEWS,
@@ -177,9 +179,6 @@ const SCALE_BLEND_S = 0.5;
 const FPS_WINDOW = 60;
 /** Recompute the remap when the projected radius moves this much. */
 const REMAP_PX_TOLERANCE = 0.5;
-/** A press that moves less than this (px) and ends within this (ms) is a tap, not a drag. */
-const TAP_MAX_PX = 8;
-const TAP_MAX_MS = 400;
 /** The hover card sits this far from the pointer. */
 const HOVER_CARD_OFFSET_PX = 14;
 /** The ruler is fully drawn once the cut has opened this far. */
@@ -437,7 +436,8 @@ export class InteriorMode {
   private readonly emphasis = createEmphasisState();
   /** The claim index open in the popover, −1 when closed. */
   private evidenceClaim = -1;
-  private tapStart: { x: number; y: number; t: number } | null = null;
+  /** Which canvas gesture is a tap (pin) and which a drag or a pinch (the orbit's). */
+  private readonly tap = new TapRecognizer();
   private readonly reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   /** The cut is opening onto a freshly presented body: the ghost lingers over the opening. */
   private revealing = false;
@@ -568,9 +568,12 @@ export class InteriorMode {
     this.domElement.addEventListener('pointermove', this.handlePointerMove);
     this.domElement.addEventListener('pointerdown', this.handlePointerDown);
     this.domElement.addEventListener('pointerup', this.handlePointerUp);
-    this.domElement.addEventListener('pointercancel', this.clearTap);
+    this.domElement.addEventListener('pointercancel', this.handlePointerCancel);
+    // OrbitControls captures the pointer on its down; a capture lost mid-gesture
+    // is an up this never sees.
+    this.domElement.addEventListener('lostpointercapture', this.handlePointerCancel);
     this.domElement.addEventListener('pointerleave', this.handlePointerLeave);
-    window.addEventListener('blur', this.clearTap);
+    window.addEventListener('blur', this.handleBlur);
     this.fpsSamples.length = 0;
     this.presentationSeconds = 0;
     this.frozen = false;
@@ -610,10 +613,11 @@ export class InteriorMode {
     this.domElement.removeEventListener('pointermove', this.handlePointerMove);
     this.domElement.removeEventListener('pointerdown', this.handlePointerDown);
     this.domElement.removeEventListener('pointerup', this.handlePointerUp);
-    this.domElement.removeEventListener('pointercancel', this.clearTap);
+    this.domElement.removeEventListener('pointercancel', this.handlePointerCancel);
+    this.domElement.removeEventListener('lostpointercapture', this.handlePointerCancel);
     this.domElement.removeEventListener('pointerleave', this.handlePointerLeave);
-    window.removeEventListener('blur', this.clearTap);
-    this.clearTap();
+    window.removeEventListener('blur', this.handleBlur);
+    this.tap.reset();
     this.clearSelection();
     this.sheetDrag = null;
     this.sheetDragMoved = false;
@@ -1535,9 +1539,13 @@ export class InteriorMode {
   }
 
   // Pointer: hover on a fine pointer; a tap pins and a drag orbits on any.
+  // Every pointer's moves reach the recognizer, a touch's included: its travel
+  // is what tells a drag from a tap, and only the hover is a fine pointer's.
   private handlePointerMove = (event: PointerEvent) => {
-    if (!this.active || event.pointerType === 'touch') return;
-    if (this.tapStart && Math.hypot(event.clientX - this.tapStart.x, event.clientY - this.tapStart.y) > TAP_MAX_PX) {
+    if (!this.active) return;
+    this.tap.move(pointerSample(event));
+    if (event.pointerType === 'touch') return;
+    if (this.tap.dragging()) {
       this.clearHover(); // dragging the orbit
       return;
     }
@@ -1551,20 +1559,20 @@ export class InteriorMode {
 
   private handlePointerDown = (event: PointerEvent) => {
     if (!this.active) return;
-    if (event.pointerType === 'mouse' && event.button !== 0) return;
-    this.tapStart = { x: event.clientX, y: event.clientY, t: performance.now() };
+    this.tap.down(pointerSample(event), event.pointerType !== 'mouse' || event.button === 0);
   };
 
-  private clearTap = () => {
-    this.tapStart = null;
+  private handlePointerCancel = (event: PointerEvent) => {
+    this.tap.cancel(event.pointerId);
+  };
+
+  private handleBlur = () => {
+    this.tap.reset();
   };
 
   private handlePointerUp = (event: PointerEvent) => {
-    const tap = this.tapStart;
-    this.clearTap();
-    if (!this.active || !tap) return;
-    const moved = Math.hypot(event.clientX - tap.x, event.clientY - tap.y);
-    if (moved > TAP_MAX_PX || performance.now() - tap.t > TAP_MAX_MS) return;
+    if (!this.active) return;
+    if (!this.tap.up(pointerSample(event))) return;
     if (this.picker.isOpen() || this.evidenceClaim >= 0) return;
     const hit = this.pickAt(event.clientX, event.clientY);
     if (hit && hit.surface !== 'skin') this.togglePin(hit.regionIndex);
@@ -1969,4 +1977,9 @@ export class InteriorMode {
     for (const sample of this.fpsSamples) sum += sample;
     return sum / this.fpsSamples.length;
   }
+}
+
+/** The recognizer's reading of a pointer event: its id, its client point and its own clock. */
+function pointerSample(event: PointerEvent): PointerSample {
+  return { pointerId: event.pointerId, x: event.clientX, y: event.clientY, timeMs: event.timeStamp };
 }

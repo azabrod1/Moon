@@ -15,6 +15,7 @@ import {
   emphasisTarget,
   modelStatusText,
   radiusLineText,
+  radiusValueText,
   regionArtInsideOut,
   regionLooks,
   setCutTarget,
@@ -207,6 +208,9 @@ describe('the panel lines', () => {
     // An unresolved whole has a radius and no model to name a convention.
     expect(radiusLineText(drawnUnresolved('Phobos', 11.1, 'x'))).toBe('Radius 11 km'); // formatKm: whole above 10
     expect(radiusLineText(drawnUnresolved('Dactyl', 0.7, 'x'))).toBe('Radius 0.7 km');
+    // The value on its own is what the line wraps, so the model page never has to strip the label off.
+    expect(radiusValueText(drawnFromModel(EARTH_MODEL))).toBe('6,371 km, volumetric mean');
+    expect(radiusValueText(drawnUnresolved('Phobos', 11.1, 'x'))).toBe('11 km');
   });
 
   it('names one hidden layer and counts several', () => {

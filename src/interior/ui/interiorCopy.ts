@@ -2,6 +2,9 @@
  * The Look-inside tool's recurring words, in one place: the button names,
  * headings and field labels the TypeScript writes into the panel, so a
  * wording change is one edit and a test can pin that none of them is empty.
+ * The controls that live in the markup (index.html) carry the same words
+ * as static text; the test reads the markup and pins that each of those
+ * constants is still there, so the two cannot drift apart unnoticed.
  *
  * What belongs here is only the fixed furniture. Scientific description
  * stays with the model it describes (`data/models/*`), where its source
@@ -50,6 +53,9 @@ export const BOUNDARY_ABOVE = 'Boundary above';
 export const CUT_ANGLE = 'Cut angle';
 export const ENLARGE_THIN_LAYERS = 'Enlarge thin layers';
 export const THIN_LAYERS_ENLARGED = 'Thin layers enlarged';
+/** The one-tap link beside the thin-layers note, and the word it turns into once they are enlarged. */
+export const ENLARGE = 'Enlarge';
+export const ACTUAL_SIZE = 'Actual size';
 export const RINGS = 'Rings';
 export const TEMPERATURE_UNIT = 'Temperature unit';
 
@@ -66,14 +72,6 @@ export const OBSERVATION = 'Observation';
 export const INTERPRETATION = 'Interpretation';
 export const LIMITATIONS = 'Assumptions and limitations';
 export const SOURCES = 'Sources';
-
-// ---- while a body arrives, and when it does not ------------------------------
-
-export const LOADING = (bodyName: string): string => `Loading ${bodyName}…`;
-/** A body that failed to load names what is on screen instead, so the reader
- *  is never left wondering which world they are looking at. */
-export const COULD_NOT_LOAD = (bodyName: string, showing: string): string =>
-  `Could not load ${bodyName}. Showing ${showing}.`;
 
 // ---- the words on the switches ----------------------------------------------
 

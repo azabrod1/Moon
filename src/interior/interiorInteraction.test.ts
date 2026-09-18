@@ -125,6 +125,30 @@ describe('a cancel', () => {
     expect(tap.up(at(1, 100, 100, 260))).toBe(true);
   });
 
+  it('drops the candidate whichever pointer is named: a stray cancel ends the lone finger’s tap too', () => {
+    // The cancel takes no account of whose id it carries, so the finger that
+    // never heard of pointer 2 loses its tap as well. Letting it survive is a
+    // deliberate change of rule, not a refactor.
+    const tap = new TapRecognizer();
+    tap.down(at(1, 100, 100, 0));
+    tap.cancel(2);
+    expect(tap.pressed()).toBe(true);
+    expect(tap.dragging()).toBe(true);
+    expect(tap.up(at(1, 100, 100, 50))).toBe(false);
+  });
+
+  it('lets the same finger tap again after its drag was cancelled: the new press moved nowhere', () => {
+    const tap = new TapRecognizer();
+    tap.down(at(1, 0, 0, 0));
+    tap.move(at(1, 40, 0, 30)); // well past TAP_MAX_PX: a drag
+    expect(tap.dragging()).toBe(true);
+    tap.cancel(1);
+    // The same finger presses again where it stopped and lifts without moving.
+    tap.down(at(1, 40, 0, 40));
+    expect(tap.dragging()).toBe(false);
+    expect(tap.up(at(1, 40, 0, 80))).toBe(true);
+  });
+
   it('a reset lets a pointer whose up never came be forgotten', () => {
     const tap = new TapRecognizer();
     tap.down(at(7, 100, 100, 0));

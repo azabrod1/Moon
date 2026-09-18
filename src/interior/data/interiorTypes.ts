@@ -9,9 +9,10 @@
  * state — an unresolved family, an unknown quantity, a null bulk density —
  * and renders as its no-data treatment, never as a plausible default.
  *
- * A claim stores evidence only: its level and score are computed by
- * evidenceScore(), never authored, so the number on screen is always the
- * rubric applied to the rows the reader can open.
+ * A claim stores evidence only. Its standing is read off the KIND of its
+ * evidence by `evidenceSummary` (observed, inferred, contested…), never
+ * authored and never scored: there is deliberately no points rubric, so
+ * the phrase on screen is always what the rows the reader can open say.
  */
 
 export type MaterialFamily =
@@ -109,7 +110,7 @@ export interface Evidence {
 
 export type ClaimKind = 'existence' | 'extent' | 'state' | 'composition' | 'temperature';
 
-/** A claim stores evidence only. Its level and score are computed by evidenceScore(), never authored. */
+/** A claim stores evidence only. Its standing is read off the kind of that evidence by `evidenceSummary`, never authored. */
 export interface Claim {
   kind: ClaimKind;
   evidence: Evidence[];

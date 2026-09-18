@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { projectedRadiusPx } from './interiorGeometry';
-import { fitDistance, stageViewOffset, visibleStageRect, zoomRatio, type StageObstacles } from './interiorLayout';
+import { fitDistance, framingDistance, stageViewOffset, visibleStageRect, zoomRatio, type StageObstacles } from './interiorLayout';
 
 const NO_OBSTACLES: StageObstacles = { top: 0, bottom: 0, left: 0, right: 0 };
 
@@ -133,10 +133,46 @@ describe('fitDistance', () => {
     expect(fitDistance(square, 900, 40, 1, fill)).toBeLessThan(tallDistance);
   });
 
-  it('has no finite answer for a stage or a fill of nothing', () => {
+  it('has no finite answer for a stage, a fill or a body of nothing', () => {
     expect(fitDistance({ x: 0, y: 0, width: 0, height: 400 }, 844, 40, 1, 0.9)).toBe(Number.POSITIVE_INFINITY);
     expect(fitDistance({ x: 0, y: 0, width: 366, height: 478 }, 844, 40, 1, 0)).toBe(Number.POSITIVE_INFINITY);
     expect(fitDistance({ x: 0, y: 0, width: 366, height: 478 }, 0, 40, 1, 0.9)).toBe(Number.POSITIVE_INFINITY);
+    // A radius of nothing is refused too: a fit of 0 would park the camera inside the body.
+    expect(fitDistance({ x: 0, y: 0, width: 366, height: 478 }, 844, 40, 0, 0.9)).toBe(Number.POSITIVE_INFINITY);
+  });
+});
+
+describe('framingDistance', () => {
+  const MIN_DISTANCE = 1.55;
+  const MAX_DISTANCE = 9;
+
+  it('asks for the same distance twice when nothing changed between the calls', () => {
+    // The first framing: the fit grows from 7.11 to 9 with the camera at the old fit (no reader zoom).
+    const first = framingDistance(9, 7.11, 7.11, MIN_DISTANCE, MAX_DISTANCE);
+    expect(first).toBeCloseTo(9, 10);
+    // The second, before the glide has moved the camera: handed the distance the first asked for.
+    expect(framingDistance(9, 9, first, MIN_DISTANCE, MAX_DISTANCE)).toBeCloseTo(first, 10);
+  });
+
+  it('keeps a glide on course: the pending target is the zoom to read, never the mid-glide position', () => {
+    // Mid-glide the camera sits at 7.4737 on its way to 9. A re-framing handed the target still asks
+    // for 9; one handed the position would have stopped the glide there and read 0.83 as a reader zoom.
+    expect(framingDistance(9, 9, 9, MIN_DISTANCE, MAX_DISTANCE)).toBe(9);
+    expect(framingDistance(9, 9, 7.4737, MIN_DISTANCE, MAX_DISTANCE)).toBeCloseTo(7.4737, 6);
+  });
+
+  it('carries a real reader zoom across a change of fit, inside the camera range', () => {
+    // The reader zoomed to half the fit: the new fit keeps that ratio.
+    expect(framingDistance(8, 6, 3, MIN_DISTANCE, MAX_DISTANCE)).toBeCloseTo(4, 10);
+    // ...never closer than the camera's floor, nor farther than its ceiling.
+    expect(framingDistance(2, 6, 3, MIN_DISTANCE, MAX_DISTANCE)).toBe(MIN_DISTANCE);
+    expect(framingDistance(8, 6, 12, MIN_DISTANCE, MAX_DISTANCE)).toBe(MAX_DISTANCE);
+  });
+
+  it('reads as the fit itself before there is a fit or a distance to compare with', () => {
+    expect(framingDistance(5, 0, 0, MIN_DISTANCE, MAX_DISTANCE)).toBe(5);
+    expect(framingDistance(5, 0, 7, MIN_DISTANCE, MAX_DISTANCE)).toBe(5);
+    expect(framingDistance(5, 6, 0, MIN_DISTANCE, MAX_DISTANCE)).toBe(5);
   });
 });
 

@@ -57,6 +57,8 @@ export function minDisplayFraction(minPx: number, projectedRadiusPx: number): nu
  * layers have vanished is told that Readable is what would show them. The
  * fractions are the regions' outer radii, inside-out and increasing, as
  * fractions of the reference radius; a disc with no size yet counts nothing.
+ * The tool itself names the layers, so it reads `tooThinToSeeIndices`; this
+ * count is kept as the test's cross-check on that list's length.
  */
 export function tooThinToSeeCount(
   outerFractionsInsideOut: readonly number[],

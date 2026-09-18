@@ -55,7 +55,13 @@ export function methodLabel(method: EvidenceMethod): string {
 }
 
 /** Methods that reach the region itself: the measurement is taken of it or inside it. */
-const DIRECT_METHODS: ReadonlySet<EvidenceMethod> = new Set(['seismology', 'helioseismology', 'sample', 'inSitu', 'neutrinos']);
+const DIRECT_METHOD_LIST = ['seismology', 'helioseismology', 'sample', 'inSitu', 'neutrinos'] as const satisfies readonly EvidenceMethod[];
+type DirectMethod = (typeof DIRECT_METHOD_LIST)[number];
+const DIRECT_METHODS: ReadonlySet<EvidenceMethod> = new Set<EvidenceMethod>(DIRECT_METHOD_LIST);
+
+function isDirectMethod(method: EvidenceMethod): method is DirectMethod {
+  return DIRECT_METHODS.has(method);
+}
 
 /** Methods that read a region from outside the whole body: how it pulls, spins, flexes or conducts. */
 const INDIRECT_METHODS: ReadonlySet<EvidenceMethod> = new Set(['gravity', 'momentOfInertia', 'magnetic', 'tides', 'libration', 'normalModes']);
@@ -70,8 +76,10 @@ export function withArticle(label: string): string {
 }
 
 /** Each direct method's own phrase: a returned sample and a seismometer both reach the
- *  region, but not in the same way, so neither borrows the other's words. */
-const OBSERVED_PHRASE: Readonly<Partial<Record<EvidenceMethod, string>>> = {
+ *  region, but not in the same way, so neither borrows the other's words. Typed over the
+ *  direct set, so a method added there without its phrase is a compile error, never a
+ *  generic line on screen. */
+const OBSERVED_PHRASE: Readonly<Record<DirectMethod, string>> = {
   seismology: 'Observed by seismology',
   helioseismology: 'Observed by helioseismology',
   neutrinos: 'Observed by neutrinos',
@@ -116,13 +124,10 @@ export function claimEvidenceSummary(claim: Claim): EvidenceSummary {
 
   const supporting = claim.evidence.filter((row) => row.relation === 'supports');
 
-  const directRow = supporting.find((row) => DIRECT_METHODS.has(row.method));
-  if (directRow) {
-    return {
-      standing: 'observed',
-      phrase: OBSERVED_PHRASE[directRow.method] ?? `Observed by ${withArticle(methodLabel(directRow.method))}`,
-      methods: [directRow.method],
-    };
+  for (const row of supporting) {
+    const method = row.method;
+    if (!isDirectMethod(method)) continue;
+    return { standing: 'observed', phrase: OBSERVED_PHRASE[method], methods: [method] };
   }
 
   const indirectMethods = distinctMethods(supporting.filter((row) => INDIRECT_METHODS.has(row.method)));

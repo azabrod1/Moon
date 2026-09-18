@@ -285,7 +285,6 @@ export class InteriorScene {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly group: THREE.Group;
   private readonly keyLight: THREE.DirectionalLight;
-  /** The renderer's tone curve before the studio took it, restored on dispose. */
   private readonly starfield: THREE.Points;
   private readonly vignette: THREE.Mesh;
   private readonly skinGeometry: THREE.SphereGeometry;
@@ -667,13 +666,20 @@ export class InteriorScene {
     if (this.ringMesh) this.ringMesh.visible = on;
   }
 
-  /** The radius that bounds what shows of the body: the rings' outer edge while
-   *  they show, the body's own otherwise — what the framing has to fit. */
+  /** The radius that bounds what shows of the body — what the framing has to
+   *  fit: the rings' outer edge while they show, the air shell's while it
+   *  does (a planet's sits a few percent out and changes nothing the fill's
+   *  margin did not already allow; the Sun's corona at 1.3× is what keeps
+   *  its glow off the strip and inside the viewport), the body's own otherwise. */
   boundRadius(): number {
+    let bound = BODY_RADIUS;
+    if (this.atmosphereMesh.visible) bound = Math.max(bound, BODY_RADIUS * this.atmosphereMesh.scale.x);
     const rings = this.ringMesh;
-    if (!rings || !rings.visible) return BODY_RADIUS;
-    if (!rings.geometry.boundingSphere) rings.geometry.computeBoundingSphere();
-    return Math.max(BODY_RADIUS, rings.geometry.boundingSphere?.radius ?? BODY_RADIUS);
+    if (rings && rings.visible) {
+      if (!rings.geometry.boundingSphere) rings.geometry.computeBoundingSphere();
+      bound = Math.max(bound, rings.geometry.boundingSphere?.radius ?? BODY_RADIUS);
+    }
+    return bound;
   }
 
   /** The Sun's skin: the planetarium's photosphere, granulating on the presentation clock, cut like a skin. */

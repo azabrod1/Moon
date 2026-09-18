@@ -197,9 +197,15 @@ const RADIUS_CONVENTION_WORD: Readonly<Record<InteriorModel['radiusConvention'],
   equatorial: 'equatorial',
 };
 
-export function radiusLineText(drawn: DrawnModel): string {
-  const radius = `Radius ${formatKm(drawn.referenceRadiusKm)} km`;
+/** The radius on its own, with the convention it is measured by: "6,371 km, volumetric mean". */
+export function radiusValueText(drawn: DrawnModel): string {
+  const radius = `${formatKm(drawn.referenceRadiusKm)} km`;
   return drawn.model ? `${radius}, ${RADIUS_CONVENTION_WORD[drawn.model.radiusConvention]}` : radius;
+}
+
+/** The same as a line, under its label; the model page shows the value beside the label instead. */
+export function radiusLineText(drawn: DrawnModel): string {
+  return `Radius ${radiusValueText(drawn)}`;
 }
 
 /** The note beside the thickness control: what the reader is looking at, and —

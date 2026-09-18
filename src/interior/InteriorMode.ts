@@ -121,13 +121,13 @@ import {
   tooThinToSeeIndices,
   type ReadableRemap,
 } from './interiorGeometry';
-import { fitDistance, stageViewOffset, visibleStageRect, zoomRatio, type StageRect } from './interiorLayout';
+import { fitDistance, framingDistance, stageViewOffset, visibleStageRect, type StageRect } from './interiorLayout';
 import { createPickHit, pickInterior, type PickHit, type PickLayout, type PickSurface } from './interiorPick';
 import { renderHoverCard, renderPage, type InteriorPanelPage } from './ui/InteriorPages';
 import { DepthRuler } from './ui/DepthRuler';
 import { createRulerLayout, rulerLayout, rulerSide, type RulerInput } from './ruler';
 import { regionEvidenceSummary } from './evidenceSummary';
-import { CHOOSE_BODY, ILLUSTRATIVE_NOTE, INTERIOR_MODEL, LAYERS, STRUCTURE_UNCERTAIN } from './ui/interiorCopy';
+import { ACTUAL_SIZE, CHOOSE_BODY, ENLARGE, ILLUSTRATIVE_NOTE, INTERIOR_MODEL, LAYERS, MODEL_AND_SOURCES, STRUCTURE_UNCERTAIN } from './ui/interiorCopy';
 import { INTERIOR_DEFAULT_BODY, coverageBadge, coverageFor, defaultModelFor, modelFor } from './data/interiorRegistry';
 import { coverageModels } from './data/interiorTypes';
 import {
@@ -176,6 +176,8 @@ const SHEET_FULL_FRACTION = 0.85;
 const SHEET_FLICK_PX_PER_MS = 0.6;
 /** A sheet snap eases over this long, and the body's framing glides with it. */
 const SHEET_SNAP_S = 0.26;
+/** A camera found farther than this (scene units) from where the distance glide last put it was moved by the reader. */
+const GLIDE_YIELD_DISTANCE = 1e-6;
 
 /** A body swap cross-fades the skin over this long, behind the closed cut. */
 const SWAP_FADE_S = 0.45;
@@ -468,6 +470,12 @@ export class InteriorMode {
   /** The view options card is up, and who opened it (focus goes back there). */
   private optionsOpen = false;
   private optionsOpener: HTMLElement | null = null;
+  /** Who opened the body picker: focus goes back there when it closes. */
+  private pickerOpener: HTMLElement | null = null;
+  /** The region whose page the host shows, so a return to the layers can hand focus to its row. */
+  private pageRegionKey: string | null = null;
+  /** The reveal in flight's animationend listener, aborted by the next render so a superseded reveal leaves none behind. */
+  private revealSettle: AbortController | null = null;
   /** Which canvas gesture is a tap (pin) and which a drag or a pinch (the orbit's). */
   private readonly tap = new TapRecognizer();
   private readonly reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -494,6 +502,8 @@ export class InteriorMode {
   /** The camera distance the framing glides toward (0: nothing pending) and that glide's span. */
   private distanceTargetNow = 0;
   private distanceSpan = 0;
+  /** The distance the glide wrote on its last step (0: none yet). A camera found elsewhere was moved by the reader, and the glide yields. */
+  private distanceGlideWrote = 0;
 
   private readonly fpsSamples: number[] = [];
   /** Seconds since the last drawn frame: what the gauge divides, so it counts
@@ -555,7 +565,12 @@ export class InteriorMode {
         this.picker.close();
         void this.commitBody(name);
       },
-      onClose: () => this.setBackgroundInert(false),
+      onClose: () => {
+        this.setBackgroundInert(false); // first: an inert strip takes no focus
+        const opener = this.pickerOpener;
+        this.pickerOpener = null;
+        if (this.active && opener && opener.isConnected) opener.focus();
+      },
     });
 
     this.bindPanel();
@@ -669,7 +684,12 @@ export class InteriorMode {
     this.viewOffsetYTargetPx = 0;
     this.fitDistanceNow = 0;
     this.distanceTargetNow = 0;
+    this.distanceGlideWrote = 0;
     this.layersScrollTop = 0;
+    this.pickerOpener = null;
+    this.pageRegionKey = null;
+    this.revealSettle?.abort();
+    this.revealSettle = null;
     this.camera.clearViewOffset();
     const topBar = document.getElementById('top-bar');
     if (topBar) topBar.style.display = this.topBarPrevDisplay ?? '';
@@ -854,7 +874,10 @@ export class InteriorMode {
 
   /**
    * The Readable policy, recomputed when the disc's projected size or the
-   * blend moves: region boundaries go to the faces in display space.
+   * blend moves: region boundaries go to the faces in display space. At rest
+   * this returns at once; through a framing glide (a sheet snap, a page
+   * change) the projected size moves every frame, so it re-runs for the
+   * glide's quarter second and then rests again.
    */
   private refreshRemapIfNeeded(): void {
     if (
@@ -921,7 +944,7 @@ export class InteriorMode {
       const rowMoved = row.style.display !== display;
       if (rowMoved) row.style.display = display;
       if (label.textContent !== text) label.textContent = text;
-      const toggleText = this.readable ? 'Actual size' : 'Enlarge';
+      const toggleText = this.readable ? ACTUAL_SIZE : ENLARGE;
       if (toggle.textContent !== toggleText) toggle.textContent = toggleText;
       if (rowMoved) this.syncSheetToContent();
     }
@@ -1164,7 +1187,12 @@ export class InteriorMode {
     const name = document.getElementById('interior-body-name');
     if (name && body) {
       const display = bodyDisplayName(body.id);
-      name.textContent = display.charAt(0).toUpperCase() + display.slice(1);
+      const shown = display.charAt(0).toUpperCase() + display.slice(1);
+      name.textContent = shown;
+      // The chip's accessible name carries the body's: what a reader sees
+      // ("Earth") is what a voice-control user can say, and a screen reader
+      // hears which world is open before the offer to change it.
+      document.getElementById('interior-body-chip')?.setAttribute('aria-label', `${shown}: ${CHOOSE_BODY.toLowerCase()}`);
     }
     const subtitle = document.getElementById('interior-subtitle');
     if (subtitle) {
@@ -1187,17 +1215,25 @@ export class InteriorMode {
       // Rows fade in outside-in on a reveal; any other re-render is instant.
       const revealRows = reveal && !this.reducedMotion.matches;
       legend.classList.toggle('reveal', revealRows);
+      // A reveal superseded before its last row landed (a pick during another
+      // body's reveal) must not leave its listener behind to strip a later
+      // reveal's class early: one controller per render, the previous aborted.
+      this.revealSettle?.abort();
+      this.revealSettle = null;
       if (revealRows) {
         // The class comes off once the last row (the innermost, appended last
         // with the longest delay) has faded in. A display:none cancels a CSS
         // animation and a return to display restarts it, so a legend left
         // wearing the class would replay its fade every time the phone's
         // inspector gave the sheet back to the layers.
-        legend.addEventListener('animationend', function settleReveal(event: AnimationEvent) {
+        const settle = new AbortController();
+        this.revealSettle = settle;
+        legend.addEventListener('animationend', (event: AnimationEvent) => {
           if (event.animationName !== 'interior-row-in' || event.target !== legend.lastElementChild) return;
           legend.classList.remove('reveal');
-          legend.removeEventListener('animationend', settleReveal);
-        });
+          settle.abort();
+          if (this.revealSettle === settle) this.revealSettle = null;
+        }, { signal: settle.signal });
       }
       const art = regionArtInsideOut(this.drawn);
       // The legend reads outside-in, the way a reader meets the layers.
@@ -1212,7 +1248,7 @@ export class InteriorMode {
         row.style.setProperty('--row', String(this.drawn.regionsInsideOut.length - 1 - index));
         row.tabIndex = 0;
         row.setAttribute('role', 'listitem');
-        row.setAttribute('aria-label', `${region.name}: open details`);
+        row.setAttribute('aria-label', `${region.name}: open summary`);
         // The row is the region: hover emphasises it in 3-D, a click pins it.
         row.addEventListener('pointerenter', () => this.setLegendHover(index));
         row.addEventListener('pointerleave', () => {
@@ -1285,10 +1321,12 @@ export class InteriorMode {
         legend.append(row);
       }
     }
-    const legendHead = document.getElementById('interior-legend-head');
-    if (legendHead) {
-      const count = this.drawn.regionsInsideOut.length;
-      legendHead.textContent = count > 1 ? `${LAYERS} · ${count}` : LAYERS;
+    // The Layers heading and the phone sheet's disclosure say the same thing; one shows per breakpoint.
+    const layerCount = this.drawn.regionsInsideOut.length;
+    const legendHeading = layerCount > 1 ? `${LAYERS} · ${layerCount}` : LAYERS;
+    for (const id of ['interior-legend-title', 'interior-legend-head']) {
+      const head = document.getElementById(id);
+      if (head) head.textContent = legendHeading;
     }
     this.renderScale();
     this.syncLegendEmphasis();
@@ -1587,12 +1625,28 @@ export class InteriorMode {
       this.renderPage();
       return;
     }
+    // Keyboard focus is moved on purpose where the swap would drop it: a
+    // focused row loses its rendering when the layers hide, and a page's
+    // buttons are destroyed when the host is refilled — either way the
+    // browser would send focus to the document's body and the reader would
+    // start over from the top. Focus that is elsewhere (a canvas tap, the
+    // options card, the dev bridge) is left where it is.
+    const focused = document.activeElement;
+    const focusInHost = focused instanceof HTMLElement && host.contains(focused);
+    const focusInLayers = focused instanceof HTMLElement && layersPage.contains(focused);
     if (page.kind === 'layers') {
+      const leavingModelPage = host.dataset.page === 'model';
+      const leavingRegionKey = this.pageRegionKey;
+      this.pageRegionKey = null;
       host.hidden = true;
       host.replaceChildren();
       delete host.dataset.page;
       layersPage.hidden = false;
       scroll.scrollTop = this.layersScrollTop;
+      if (focusInHost) {
+        if (leavingModelPage) document.getElementById('interior-model-info')?.focus({ preventScroll: true });
+        else this.focusLegendRow(leavingRegionKey);
+      }
       this.restoreSheetHeightAfterInspect();
       this.updateScrollCue();
       return;
@@ -1609,9 +1663,13 @@ export class InteriorMode {
       onEvidence: (claimKind) => { if (regionKey !== null) this.showPage({ kind: 'evidence', regionKey, claimKind }); },
       onModel: () => this.showPage({ kind: 'model' }),
     });
+    // The host is named for what it shows: the region, or the model page.
+    host.setAttribute('aria-label', page.kind === 'model' ? MODEL_AND_SOURCES : this.drawn.regionsInsideOut[regionIndex]?.name ?? LAYERS);
+    this.pageRegionKey = regionKey;
     layersPage.hidden = true;
     // Shown BEFORE the sheet is measured: a hidden page measures as nothing.
     host.hidden = false;
+    if (focusInHost || focusInLayers) host.querySelector<HTMLElement>('.ii-back')?.focus({ preventScroll: true });
     if (isPhoneViewport()) {
       // The height the reader had is kept for when they come back to the layers.
       if (this.sheetHeightBeforeInspectPx === null) this.sheetHeightBeforeInspectPx = this.sheetHeightPx;
@@ -1620,6 +1678,15 @@ export class InteriorMode {
     scroll.scrollTop = 0;
     if (asked) asked.scrollIntoView({ block: 'start', behavior: this.reducedMotion.matches ? 'auto' : 'smooth' });
     this.updateScrollCue();
+  }
+
+  /** A region's legend row (or, with none named, the first) takes focus without scrolling the list. */
+  private focusLegendRow(regionKey: string | null): void {
+    const legend = document.getElementById('interior-legend');
+    if (!legend) return;
+    const row = (regionKey !== null ? legend.querySelector<HTMLElement>(`.interior-row[data-region="${CSS.escape(regionKey)}"]`) : null)
+      ?? legend.querySelector<HTMLElement>('.interior-row');
+    row?.focus({ preventScroll: true });
   }
 
   /** Nothing hovered, selected or open: a body or model change, or leaving. */
@@ -1795,6 +1862,10 @@ export class InteriorMode {
     if (!this.active) return;
     if (event.key !== 'Escape') return;
     event.preventDefault();
+    // One physical press, one rung: a held Esc auto-repeats about thirty times
+    // a second, and every rung here is a discrete dismissal — the last one a
+    // mode switch, which a quarter-second hold would otherwise reach.
+    if (event.repeat) return;
     this.escapeOnce();
   };
 
@@ -1820,10 +1891,17 @@ export class InteriorMode {
     this.requestExit();
   }
 
+  /** The body picker: a modal like the options card, so the panel and the
+   *  strip go inert under it and focus returns to what opened it — the body
+   *  chip, unless the keyboard had something else in the strip or the panel. */
   private openPicker(): void {
     if (!this.active) return;
     this.closeOptions(); // one modal at a time
     this.clearHover();
+    const focused = document.activeElement;
+    this.pickerOpener = focused instanceof HTMLElement && focused.closest('#interior-top, #interior-panel') !== null
+      ? focused
+      : document.getElementById('interior-body-chip');
     this.picker.open();
     this.setBackgroundInert(true);
   }
@@ -1905,19 +1983,23 @@ export class InteriorMode {
   private applyViewportFraming(atOnce = false): void {
     const stage = this.stageRect();
     const fit = this.fitFor(stage);
-    const current = this.camera.position.distanceTo(ORIGIN);
-    const ratio = this.fitDistanceNow > 0 && current > 0
-      ? zoomRatio(current, this.fitDistanceNow, FRAMING.minDistance / fit, FRAMING.maxDistance / fit)
-      : 1;
+    const livePosition = this.camera.position.distanceTo(ORIGIN);
+    // The zoom is read off where the camera is going: a glide in flight is the
+    // framing's own move, and a second request inside it (a pin and then its
+    // Details, or the thin-layers row coming and going as the disc resizes)
+    // must land where the first was going — not stop the glide where it had
+    // got to and remember the shortfall as the reader's zoom from then on.
+    const settledDistance = this.distanceTargetNow > 0 ? this.distanceTargetNow : livePosition;
+    const distance = framingDistance(fit, this.fitDistanceNow, settledDistance, FRAMING.minDistance, FRAMING.maxDistance);
     this.fitDistanceNow = fit;
-    const distance = THREE.MathUtils.clamp(fit * ratio, FRAMING.minDistance, FRAMING.maxDistance);
+    this.distanceGlideWrote = 0;
     const immediate = atOnce || this.reducedMotion.matches || this.sheetDrag !== null;
     if (immediate) {
       this.distanceTargetNow = 0;
       this.setCameraDistance(distance);
     } else {
       this.distanceTargetNow = distance;
-      this.distanceSpan = Math.abs(distance - current);
+      this.distanceSpan = Math.abs(distance - livePosition);
     }
     const offset = stageViewOffset(stage, window.innerWidth, window.innerHeight);
     this.setViewOffsetTarget(offset.x, offset.y, atOnce);
@@ -1960,15 +2042,21 @@ export class InteriorMode {
   /** The framing's glide: the applied shift steps toward its target over
    *  SHEET_SNAP_S, so a sheet snap and the body's move read as one gesture. */
   private advanceViewShift(dt: number): void {
-    // The distance's glide, at the shift's pace; landed, the reader's own zoom is theirs again.
+    // The distance's glide, at the shift's pace; landed, the reader's own zoom
+    // is theirs again — and so it is the moment their wheel or pinch moves the
+    // camera off where the glide last put it: the glide yields rather than
+    // drag the camera back against their hand every frame.
     if (this.distanceTargetNow > 0) {
       const current = this.camera.position.distanceTo(ORIGIN);
+      const readerMovedIt = this.distanceGlideWrote > 0 && Math.abs(current - this.distanceGlideWrote) > GLIDE_YIELD_DISTANCE;
       const remaining = Math.abs(this.distanceTargetNow - current);
-      if (remaining < 1e-6) {
+      if (readerMovedIt || remaining < 1e-6) {
         this.distanceTargetNow = 0;
+        this.distanceGlideWrote = 0;
       } else {
         const step = this.distanceSpan > 0 ? (this.distanceSpan * dt) / SHEET_SNAP_S : remaining;
         this.setCameraDistance(stepToward(current, this.distanceTargetNow, step));
+        this.distanceGlideWrote = this.camera.position.distanceTo(ORIGIN);
       }
     }
     if (this.viewOffsetYPx === this.viewOffsetYTargetPx) return;

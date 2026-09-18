@@ -1907,12 +1907,13 @@
     .interior-view:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
     /* The thin-layers note and its one-tap enlargement. */
     .interior-thin-note { margin-top: 10px; font-size: 11.5px; line-height: 1.45; color: var(--t2); }
-    /* The Layers row: a heading on a desktop, the sheet's disclosure on a phone. */
+    /* The Layers row: a heading on a desktop, the sheet's disclosure button on a phone — two elements in one look, one shown per breakpoint. */
     .interior-legend-head {
       display: flex; align-items: center; justify-content: space-between; width: 100%; margin-top: 14px; padding: 6px 0;
       background: none; border: none; border-bottom: 1px solid var(--line-dim); font-family: var(--font-mono); font-size: 9.5px;
       letter-spacing: 0.12em; text-transform: uppercase; color: var(--t2); text-align: left; cursor: default;
     }
+    .interior-legend-disclosure { display: none; }
     .interior-legend { margin-top: 2px; }
     .interior-row {
       display: grid; grid-template-columns: 12px 1fr; gap: 2px 10px; align-items: start;
@@ -2002,6 +2003,8 @@
     .ii-foot, .ii-src { margin-top: 10px; font-size: 11px; line-height: 1.5; color: var(--t2); }
     /* The evidence page: a group per property, a row per piece of evidence. */
     .ev-group { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line-dim); }
+    /* The group the reader asked for by its claim: the page scrolls to it, and its rule says so. */
+    .ev-group.asked { border-top: 2px solid rgba(var(--accent-rgb), 0.55); }
     .ev-group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
     .ev-group-title { font-family: var(--font-ui); font-size: 13px; font-weight: 600; color: var(--t1); }
     .ev-group-head .ii-standing { margin-top: 0; font-size: 11px; }
@@ -2049,8 +2052,9 @@
       #interior-panel { top: auto; bottom: 12px; left: 12px; right: 12px; width: auto; height: var(--sheet-h, 30vh); max-height: 85vh; }
       #interior-panel.snapping { transition: height 260ms var(--ease); }
       .interior-top { top: 10px; left: 10px; right: 10px; gap: 6px; }
-      .interior-body-btn { font-size: 14px; padding: 0 10px; }
-      .interior-options-btn { padding: 0 10px; }
+      /* Phone targets: the house 44 px, as the rows and the page buttons below already get. */
+      .interior-body-btn { font-size: 14px; padding: 0 10px; min-height: 44px; }
+      .interior-options-btn { padding: 0 10px; min-height: 44px; }
       .interior-grip {
         display: flex; flex: none; align-items: center; justify-content: center; width: 100%; height: 28px;
         padding: 0; background: none; border: none; cursor: grab; touch-action: none;
@@ -2059,12 +2063,17 @@
       .interior-grip:active { cursor: grabbing; }
       .interior-grip span { display: block; width: 38px; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.3); }
       .interior-scroll { padding: 0 14px calc(8px + env(safe-area-inset-bottom, 0px)); }
-      .interior-view { min-height: 40px; }
-      .interior-scale-seg .interior-view { min-height: 36px; }
+      .interior-view { min-height: 44px; }
+      .interior-scale-seg .interior-view { min-height: 44px; }
+      /* The thin-layers note is a row with its link a full-height target; "more" grows its hit area around its text. */
+      .interior-thin-note { display: flex; align-items: center; flex-wrap: wrap; gap: 0 8px; }
+      #interior-thin-toggle { min-height: 44px; }
+      #interior-models-more { padding: 12px 6px; margin: -12px -6px; }
       .interior-row { min-height: 44px; align-items: center; }
-      .interior-legend-head { min-height: 40px; cursor: pointer; }
-      .interior-legend-head::after { content: '\25BE'; font-size: 11px; color: var(--t3); }
-      .interior-legend-head[aria-expanded="true"]::after { content: '\25B4'; }
+      .interior-legend-title { display: none; }
+      .interior-legend-disclosure { display: flex; min-height: 44px; cursor: pointer; }
+      .interior-legend-disclosure::after { content: '\25BE'; font-size: 11px; color: var(--t3); }
+      .interior-legend-disclosure[aria-expanded="true"]::after { content: '\25B4'; }
       .ii-action { min-height: 44px; }
       .ii-back { min-height: 44px; }
       .ii-line { grid-template-columns: 96px 1fr; }
@@ -5115,7 +5124,7 @@
 
       <!-- Body picker (full-screen click-catcher; one-modal-at-a-time) -->
       <div id="compare-picker" class="body-picker">
-        <div class="body-picker-card pn pn-high">
+        <div class="body-picker-card pn pn-high" role="dialog" aria-modal="true" aria-labelledby="compare-picker-title">
           <div class="body-picker-head">
             <div class="body-picker-title" id="compare-picker-title"></div>
             <button class="pk-x" id="compare-picker-close" aria-label="Close">
@@ -5186,8 +5195,9 @@
             </div>
             <!-- Layers too thin to see at this size, and the one-tap way to widen them. -->
             <div class="interior-thin-note" id="interior-thin-note" style="display:none"><span id="interior-thin-text"></span> <button type="button" class="interior-more" id="interior-thin-toggle">Enlarge</button></div>
-            <!-- On a phone the Layers row is the sheet's disclosure: it opens the sheet to the list. -->
-            <button type="button" class="interior-legend-head" id="interior-legend-head" aria-expanded="false">Layers</button>
+            <!-- The Layers row: a heading on a desktop; on a phone the sheet's disclosure, which opens the sheet to the list. One shows per breakpoint. -->
+            <div class="interior-legend-head interior-legend-title" id="interior-legend-title" role="heading" aria-level="2">Layers</div>
+            <button type="button" class="interior-legend-head interior-legend-disclosure" id="interior-legend-head" aria-expanded="false">Layers</button>
             <div id="interior-legend" class="interior-legend" role="list"></div>
             <div class="interior-coverage-note" id="interior-coverage-note" style="display:none"></div>
             <!-- Competing models, or a poorly constrained body's unresolved / illustrative choice: a data choice, so it sits under the layers. -->
@@ -5246,7 +5256,7 @@
 
       <!-- Body picker (full-screen click-catcher; one-modal-at-a-time) -->
       <div id="interior-picker" class="body-picker">
-        <div class="body-picker-card pn pn-high">
+        <div class="body-picker-card pn pn-high" role="dialog" aria-modal="true" aria-labelledby="interior-picker-title">
           <div class="body-picker-head">
             <div class="body-picker-title" id="interior-picker-title"></div>
             <button class="pk-x" id="interior-picker-close" aria-label="Close">

@@ -19,6 +19,36 @@ function shippedClaim(model: InteriorModel, regionKey: string, kind: ClaimKind):
   return region.claims.find((candidate) => candidate.kind === kind)!;
 }
 
+/** Every method the schema names. It is a record rather than a list so a new
+ *  method fails to compile here until it is given a label of its own. */
+const EVERY_METHOD: Readonly<Record<EvidenceMethod, true>> = {
+  seismology: true,
+  normalModes: true,
+  helioseismology: true,
+  neutrinos: true,
+  gravity: true,
+  momentOfInertia: true,
+  magnetic: true,
+  tides: true,
+  libration: true,
+  labHighPressure: true,
+  sample: true,
+  inSitu: true,
+  density: true,
+  model: true,
+};
+
+describe('methodLabel', () => {
+  it('has words for every method in the schema, so no reader meets a blank', () => {
+    const methods = Object.keys(EVERY_METHOD) as EvidenceMethod[];
+    for (const method of methods) {
+      const label = methodLabel(method);
+      expect(typeof label, method).toBe('string');
+      expect(label.length, method).toBeGreaterThan(0);
+    }
+  });
+});
+
 describe('withArticle', () => {
   it('gives the three singular properties their article and leaves the rest alone', () => {
     expect(withArticle(methodLabel('gravity'))).toBe('the gravity field');
@@ -40,6 +70,15 @@ describe('claimEvidenceSummary: one rule at a time', () => {
     expect(claimEvidenceSummary(claim(row('sample', 'challenges'))).phrase).toBe('Contested by samples');
     // The first challenging row names it, even where a second one follows.
     expect(claimEvidenceSummary(claim(row('tides', 'challenges'), row('model', 'challenges'))).phrase).toBe('Contested by tides');
+  });
+
+  it('is contested even where nothing supports it: the challenge is read before the support', () => {
+    // Only a constraining row and a challenge: the claim has no support at all,
+    // yet it is the argument against it a reader should meet, not "Hypothesis".
+    const contested = claimEvidenceSummary(claim(row('model', 'constrains'), row('gravity', 'challenges')));
+    expect(contested.standing).toBe('contested');
+    expect(contested.phrase).toBe('Contested by the gravity field');
+    expect(contested.methods).toEqual(['gravity']);
   });
 
   it('gives each direct method its own observed phrase', () => {

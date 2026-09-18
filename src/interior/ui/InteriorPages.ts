@@ -30,7 +30,7 @@ import { coverageBulk, coverageModels } from '../data/interiorTypes';
 import { FAMILY_LABEL, PHASE_LABEL } from '../data/artParams';
 import type { DrawnModel, DrawnRegion } from '../drawnModel';
 import { STANDING_READS_AS, regionEvidenceSummary, type EvidenceSummary } from '../evidenceSummary';
-import { modelStatusText, radiusLineText } from '../interiorLogic';
+import { modelStatusText, radiusValueText } from '../interiorLogic';
 import { element } from './dom';
 import { evidenceGroups } from './evidenceView';
 import {
@@ -43,6 +43,7 @@ import {
   boundaryText,
   depthBelowSurfaceText,
   formatKm,
+  formatNumber,
   heatText,
   pressureQuantityText,
   quantityText,
@@ -163,7 +164,7 @@ function renderSummary(root: HTMLElement, context: PageContext): void {
     const facts = element('div', 'ii-facts');
     facts.append(fact('Radius', `${formatKm(drawn.referenceRadiusKm)} km`));
     const bulk = coverageBulk(context.coverage);
-    if (bulk?.densityKgM3) facts.append(fact('Bulk density', `${formatKm(bulk.densityKgM3.value)} kg/m³`));
+    if (bulk?.densityKgM3) facts.append(fact('Bulk density', `${formatNumber(bulk.densityKgM3.value)} kg/m³`));
     root.append(facts);
     root.append(element('div', 'ii-foot', 'No interior model is drawn for this body; the grey hatch means not known, not a material.'));
     const actions = element('div', 'ii-actions');
@@ -283,7 +284,7 @@ function renderModel(root: HTMLElement, context: PageContext): void {
   head.append(element('div', 'ii-name', model ? model.title : modelStatusText(coverage, drawn)));
   root.append(head);
   root.append(element('p', 'ii-text', modelStatusText(coverage, drawn)));
-  root.append(propertyLine('Radius', radiusLineText(drawn).replace(/^Radius /, '')));
+  root.append(propertyLine('Radius', radiusValueText(drawn)));
   if (coverage.state === 'competing') {
     root.append(element('div', 'ii-sec', `${coverageModels(coverage).length} models fit the data`));
     root.append(element('p', 'ii-text', coverage.distinguishedBy));

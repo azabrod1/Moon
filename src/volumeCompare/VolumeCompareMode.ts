@@ -181,7 +181,9 @@ export class VolumeCompareMode {
 
   private handleKeyDown = (e: KeyboardEvent) => {
     if (!this.active) return;
-    if (e.key === 'Escape') this.escCascade();
+    // One physical press, one rung: a held Esc auto-repeats about thirty times
+    // a second, and every rung of the cascade is a discrete dismissal.
+    if (e.key === 'Escape' && !e.repeat) this.escCascade();
   };
 
   // Tap-to-skip: a quick tap on the scene during the overflow spill jumps

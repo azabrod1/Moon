@@ -115,9 +115,10 @@ export function visibleStageRect(
  *
  * The exact inverse of `projectedRadiusPx`: that one reads the disc's angular
  * radius asin(radius / distance) off the distance, this one reads the distance
- * off the tangent the wanted pixels ask for. A stage or a fill of nothing has
- * no finite answer and says so with Infinity rather than quietly framing the
- * body somewhere wrong.
+ * off the tangent the wanted pixels ask for. A stage, a fill or a body of
+ * nothing has no finite answer and says so with Infinity rather than quietly
+ * framing the body somewhere wrong (a radius of nothing would put the camera
+ * inside it).
  */
 export function fitDistance(
   stage: StageRect,
@@ -127,7 +128,7 @@ export function fitDistance(
   fill: number,
 ): number {
   const targetRadiusPx = (fill * Math.min(stage.width, stage.height)) / 2;
-  if (!(targetRadiusPx > 0) || !(viewportHeight > 0)) return Number.POSITIVE_INFINITY;
+  if (!(targetRadiusPx > 0) || !(viewportHeight > 0) || !(boundRadius > 0)) return Number.POSITIVE_INFINITY;
   const halfFovRad = (fovDeg * Math.PI) / 360;
   // tan of the angular radius the disc must subtend to cover that many pixels.
   const angularTangent = (targetRadiusPx * Math.tan(halfFovRad)) / (viewportHeight / 2);
@@ -170,4 +171,29 @@ export function zoomRatio(
     return clampToRange(1, minRatio, maxRatio);
   }
   return clampToRange(currentDistance / fitDistanceValue, minRatio, maxRatio);
+}
+
+/**
+ * The distance a re-framing asks for: the new fit, times the zoom the reader
+ * had relative to the last one, clamped to the camera's range. The zoom is
+ * read off `settledDistance` — where the camera is GOING, not where it is: a
+ * glide in flight is the framing's own move, so handing this the camera's
+ * mid-glide position would read the glide as a zoom, stop it short and
+ * remember the shortfall as the reader's choice for every fit after. Two
+ * calls with nothing changed between them therefore ask for the same
+ * distance, which is what lets a sheet snap and a page change inside one
+ * gesture land where the first of them was going. No last fit yet, or no
+ * distance yet, reads as the fit itself.
+ */
+export function framingDistance(
+  fit: number,
+  lastFit: number,
+  settledDistance: number,
+  minDistance: number,
+  maxDistance: number,
+): number {
+  const ratio = settledDistance > 0
+    ? zoomRatio(settledDistance, lastFit, minDistance / fit, maxDistance / fit)
+    : clampToRange(1, minDistance / fit, maxDistance / fit);
+  return clampToRange(fit * ratio, minDistance, maxDistance);
 }

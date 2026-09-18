@@ -143,6 +143,18 @@ describe('tooThinToSeeCount', () => {
     expect(tooThinToSeeCount([1], 6, 200)).toBe(0);
   });
 
+  it('keeps a layer that projects to exactly the minimum: the rule is strictly thinner', () => {
+    // 0.03 of a 200 px radius is 6.0 px, the minimum itself, and the rule is
+    // `thicknessPx < minPx`, so that layer still counts as seen.
+    const exactlySixPixels = [0.03, 1];
+    expect(tooThinToSeeCount(exactlySixPixels, 6, 200)).toBe(0);
+    expect(tooThinToSeeIndices(exactlySixPixels, 6, 200)).toEqual([]);
+    // A hair thinner — 0.0299 is 5.98 px — and the same layer goes.
+    const justUnderSixPixels = [0.0299, 1];
+    expect(tooThinToSeeCount(justUnderSixPixels, 6, 200)).toBe(1);
+    expect(tooThinToSeeIndices(justUnderSixPixels, 6, 200)).toEqual([0]);
+  });
+
   it('names the same regions it counts, so a note can point at one', () => {
     // The crust is the outermost of the five; at 60 px the upper mantle goes too.
     expect(tooThinToSeeIndices(EARTH, 6, 200)).toEqual([4]);

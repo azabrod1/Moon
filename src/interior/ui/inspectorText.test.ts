@@ -115,6 +115,20 @@ describe('inspectorText', () => {
     expect(temperatureRangeText(UNKNOWN, 'celsius')).toBe('');
   });
 
+  it('joins two below-zero celsius ends with the word “to”, the low end first', () => {
+    // 260 K is −13 °C and 200 K is −73 °C: a dash between them would sit
+    // against the minus sign and read as arithmetic.
+    expect(temperatureRangeText(endpoints(260, 200, 'src', 'inferred'), 'celsius')).toBe('−73 to −13 °C');
+  });
+
+  it('keeps the dash when the low end rounds to 0 °C, where there is no minus sign to sit against', () => {
+    // 273.2 K is 0.05 °C, which rounds to a bare 0, so the span reads as any
+    // positive one does; 400 K is 127 °C.
+    expect(temperatureRangeText(endpoints(400, 273.2, 'src', 'modelled'), 'celsius')).toBe('0–127 °C');
+    // A hair below freezing rounds to −0, which prints as 0 and takes the dash too.
+    expect(temperatureRangeText(endpoints(400, 273.1, 'src', 'modelled'), 'celsius')).toBe('0–127 °C');
+  });
+
   it('prints a review date as a reader writes one', () => {
     expect(reviewDateText('2026-09-11')).toBe('11 Sep 2026');
     expect(reviewDateText('soon')).toBe('soon');

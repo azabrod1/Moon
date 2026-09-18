@@ -19,6 +19,7 @@ import { LANDED_NEAR_AU } from './planetarium/landedView';
 import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import type { VolumeCompareMode } from './volumeCompare/VolumeCompareMode';
 import type { InteriorMode } from './interior/InteriorMode';
+import { applyRenderProfile, toneMappingWord, type AppMode } from './app/renderProfile';
 import type { ToolRequest } from './planetarium/toolRequest';
 import { canGPUDoBloom, halfFloatTargetSampleCounts } from './app/gpuCapability';
 import { installShaderSalt } from './app/shaderSalt';
@@ -87,7 +88,6 @@ import {
 // ================================================================
 // Top-level mode
 // ================================================================
-type AppMode = 'planetarium' | 'moonFlight' | 'volumeCompare' | 'interior';
 let appMode: AppMode = 'planetarium';
 // switchAppMode early-returns on a same-mode call only after the first
 // activation has actually run (init() enters the planetarium through it).
@@ -143,7 +143,9 @@ try {
   debugError('Failed to create WebGL renderer', err);
   throw err;
 }
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
+// The tone curve is the mode's (app/renderProfile): the switch applies it
+// when it brings a mode up, and no mode writes it for itself.
+applyRenderProfile(renderer, appMode);
 renderer.toneMappingExposure = 1.0;
 document.body.appendChild(renderer.domElement);
 renderer.domElement.addEventListener('webglcontextlost', (event) => {
@@ -1981,6 +1983,7 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
       if (volumeCompareMode) volumeCompareMode.deactivate();
       if (interiorMode) interiorMode.deactivate();
       scene.background = MODE_BACKGROUND;
+      applyRenderProfile(renderer, 'planetarium');
 
       camera = planetariumCamera;
       applyRenderResolution();
@@ -2063,6 +2066,7 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
       if (interiorMode) interiorMode.deactivate();
       planetariumUI.style.display = 'none';
       scene.background = MODE_BACKGROUND;
+      applyRenderProfile(renderer, 'moonFlight');
 
       camera = flightCamera;
       applyRenderResolution();
@@ -2104,6 +2108,7 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
       // parity with the flight branch and covers a switch from moon flight.
       planetariumUI.style.display = 'none';
       scene.background = MODE_BACKGROUND;
+      applyRenderProfile(renderer, 'volumeCompare');
 
       camera = vcCamera;
       applyRenderResolution();
@@ -2142,6 +2147,9 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
       if (volumeCompareMode) volumeCompareMode.deactivate();
       planetariumUI.style.display = 'none';
       scene.background = MODE_BACKGROUND;
+      // The studio's curve, before its warm-up links anything: a program keyed
+      // on the planetarium's curve is one the reveal could not use.
+      applyRenderProfile(renderer, 'interior');
 
       camera = interiorCamera;
       applyRenderResolution();
@@ -2639,6 +2647,10 @@ function installDevHooks() {
     // sample), or the canvas backbuffer's on the direct path.
     renderPath: () => ({
       composer: composer !== null,
+      // The tone curve the renderer holds right now: 'aces' in the planetarium,
+      // 'neutral' in the Look-inside studio, and the planetarium's again after
+      // a visit — the profile is the switch's (app/renderProfile).
+      toneMapping: toneMappingWord(renderer.toneMapping),
       sceneTargetSamples: sceneTarget?.samples ?? null,
       // The scene's ratio against the canvas's: apart only with the upscaler on.
       sceneRatio: getScenePixelRatio(),

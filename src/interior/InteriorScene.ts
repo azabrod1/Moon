@@ -286,7 +286,6 @@ export class InteriorScene {
   private readonly group: THREE.Group;
   private readonly keyLight: THREE.DirectionalLight;
   /** The renderer's tone curve before the studio took it, restored on dispose. */
-  private readonly previousToneMapping: THREE.ToneMapping;
   private readonly starfield: THREE.Points;
   private readonly vignette: THREE.Mesh;
   private readonly skinGeometry: THREE.SphereGeometry;
@@ -351,12 +350,12 @@ export class InteriorScene {
     this.scene = scene;
     this.renderer = renderer;
     this.floatCapable = floatCapable;
-    // The studio's tone curve: Neutral keeps a hot face's hue where ACES turns everything
-    // past mid-grey toward white, so a molten core reads as gold rather than cream. The
-    // renderer's curve is the planetarium's; the OutputPass re-reads it every frame, so it
-    // is set for the studio's life and given back on dispose. Art, documented.
-    this.previousToneMapping = renderer.toneMapping;
-    renderer.toneMapping = THREE.NeutralToneMapping;
+    // The studio's tone curve is Neutral: it keeps a hot face's hue where ACES
+    // turns everything past mid-grey toward white, so a molten core reads as
+    // gold rather than cream. Art, documented — but the renderer's curve is the
+    // mode switch's to set (app/renderProfile), not this scene's: main caches
+    // this mode and never disposes it, so a curve set here for the studio's
+    // life was the planetarium's curve for the rest of the session.
     this.group = new THREE.Group();
     this.group.name = 'InteriorRoot';
     this.group.visible = false;
@@ -1228,7 +1227,6 @@ export class InteriorScene {
   }
 
   dispose(): void {
-    this.renderer.toneMapping = this.previousToneMapping;
     this.releaseBodyResources();
     this.placeholderMaterial.dispose();
     this.faceMaterial.envMap = null;

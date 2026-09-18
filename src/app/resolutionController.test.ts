@@ -342,6 +342,29 @@ describe('the floor latch', () => {
     expect(floor).toBeLessThan(40 * (1 - FLOOR_LATCH_MIN_GAIN));
   });
 
+  it('keeps a floor that beats the rung above it on a chip that throttled mid-slide', () => {
+    const rig = new Rig(new ResolutionController(SHORT_LADDER));
+    // Medium reads a shade over the bar as the throttle hits — one frame in
+    // four a tick late, a 20.8 ms mean — and every rung below then runs on a
+    // chip three times slower: 41 ms at the rung above the floor, 33 at the
+    // floor. Against medium's stale 20.8 the floor is a loss; against the 41
+    // it returned a fifth of the frame, which is what the pixels bought.
+    rig.run(4 * DOWN_WINDOW_COUNTED, (rung, i) => (rung === 2 ? ((i + 1) % 4 === 0 ? 2 * TICK : TICK) : rung === 1 ? 41 : 33));
+    expect(rig.applied.map((a) => a.reason)).toEqual(['down', 'down']);
+    expect(rig.rung).toBe(0);
+    expect(rig.controller.state().latch).toBeNull();
+  });
+
+  it('still hands medium back when the floor beats neither reading', () => {
+    const rig = new Rig(new ResolutionController(SHORT_LADDER));
+    // The same throttle mid-slide, but the floor reads what the rung above
+    // read: the pixels bought nothing at all.
+    rig.run(4 * DOWN_WINDOW_COUNTED, (rung, i) => (rung === 2 ? ((i + 1) % 4 === 0 ? 2 * TICK : TICK) : 41));
+    expect(rig.applied.map((a) => a.reason)).toEqual(['down', 'down', 'floor latch']);
+    expect(rig.rung).toBe(SHORT_LADDER.mediumIndex);
+    expect(rig.controller.state().latch?.escalation).toBe(1);
+  });
+
   it('escalates a minute, four minutes, then the session', () => {
     const rig = new Rig(new ResolutionController(SHORT_LADDER));
     // Fifteen minutes of a device that is not pixel-bound: it slides to the

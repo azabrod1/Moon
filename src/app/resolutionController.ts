@@ -117,7 +117,11 @@
  * is worse after a step that helped. The slide is bounded (two rungs, 44 % of
  * the pixels), so the check is made ONCE, at the floor: if the floor's
  * trimmed mean is not at least FLOOR_LATCH_MIN_GAIN lower than the mean that
- * triggered the first step down from medium, the device is not pixel-bound —
+ * triggered the first step down from medium, nor than the mean that triggered
+ * the last step (the rung just above, as it read most recently — a chip that
+ * throttled mid-slide makes medium's reading stale, and a floor judged
+ * against it alone was handed medium back at half the floor's rate), the
+ * device is not pixel-bound —
  * it is main-thread-bound, or capped from outside the app, which is what iOS
  * does under thermal pressure — so medium is handed back and the latch stops
  * the controller taking the picture again. 44 % fewer pixels that changed
@@ -375,6 +379,9 @@ export interface ControllerState {
   /** The mean that triggered the first step down from medium: what the floor
    *  has to beat. */
   floorReference: number | null;
+  /** The mean that triggered the latest step down — the rung just above the
+   *  floor as it last read — which the floor may beat instead. */
+  stepReference: number | null;
   /** What a frame at or below Medium is measured against right now. */
   budgetMs: number;
   /** What a rung above Medium is measured against — the display's own tick
@@ -529,6 +536,7 @@ export class ResolutionController {
   private latch: { untilMs: number; escalation: number } | null = null;
   private latchFailures = 0;
   private floorReference: number | null = null;
+  private stepReference: number | null = null;
   private lastStep: { atMs: number; from: number; to: number; reason: StepReason } | null = null;
 
   private pending: Decision | null = null;
@@ -668,6 +676,7 @@ export class ResolutionController {
     this.ceilingFailures = 0;
     this.lastFailedProbeRung = null;
     this.floorReference = null;
+    this.stepReference = null;
     if (opts.cause === 'user') {
       this.latch = null;
       this.latchFailures = 0;
@@ -746,6 +755,7 @@ export class ResolutionController {
     this.ceilingFailures = 0;
     this.lastFailedProbeRung = null;
     this.floorReference = null;
+    this.stepReference = null;
     this.clockMs = nowMs;
     this.settleUntilMs = nowMs + REALLOC_SETTLE_MS;
     this.lastChangeMs = nowMs;
@@ -772,6 +782,7 @@ export class ResolutionController {
       latch: this.latch === null ? null : { ...this.latch },
       lastStep: this.lastStep === null ? null : { ...this.lastStep },
       floorReference: this.floorReference,
+      stepReference: this.stepReference,
       budgetMs: this.budgetMs,
       aboveBudgetMs: this.aboveBudgetMs,
       aboveAllowed: this.aboveAllowed,
@@ -861,6 +872,9 @@ export class ResolutionController {
     // (after a ladder change) leaves the reference unset and the floor check
     // silent.
     if (this.index === this.mediumIndex) this.floorReference = stat.meanMs;
+    // And the rung above the floor as it last read, for a device that got
+    // slower while the slide was under way.
+    this.stepReference = stat.meanMs;
     return this.emit(this.index - 1, 'down');
   }
 
@@ -869,9 +883,16 @@ export class ResolutionController {
     if (this.latch !== null || this.floorReference === null || this.index === this.mediumIndex) return null;
     const stat = this.window.trimmedMean(this.downCounted, TRIM_COUNT, nowMs - STALENESS_MS);
     if (stat === null || stat.count < this.downCounted) return null;
-    const reference = this.floorReference;
+    // The floor is held to the slower of the two readings it can beat: Medium
+    // as it read when the slide began, or the rung just above as it read last.
+    // A chip that stepped down mid-slide leaves Medium's reading stale — a
+    // phone at Earth's shell read Medium at 17 ms as the throttle hit, the
+    // rung above the floor at 41 and the floor at 33, and against the 17 the
+    // floor looked like a loss while Medium itself was by then at 46.
+    const reference = Math.max(this.floorReference, this.stepReference ?? 0);
     // Answered either way: a fresh slide from medium sets a fresh reference.
     this.floorReference = null;
+    this.stepReference = null;
     if (stat.meanMs <= reference * (1 - FLOOR_LATCH_MIN_GAIN)) return null;
     const hold = LATCH_HOLD_MS[Math.min(this.latchFailures, LATCH_HOLD_MS.length - 1)];
     this.latchFailures++;

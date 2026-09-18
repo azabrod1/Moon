@@ -1123,7 +1123,9 @@ export class InteriorScene {
   /**
    * Point every region's faces and shell at the frame, terraced: the crust
    * (the outermost region) opens by the full angle, each region inward by
-   * TERRACE_STEP less. Faces hide when their region is closed.
+   * TERRACE_STEP less. Faces hide when their region is closed. Under a closed
+   * cut the skin is the whole picture, so no inner shell is submitted at all:
+   * every one of them sat behind the skin, fully shaded and fully overdrawn.
    */
   applyCut(frame: CutFrame): void {
     this.cutUniforms.uCutView.value.copy(frame.view);
@@ -1135,6 +1137,7 @@ export class InteriorScene {
     tmpTerraceFrame.side.copy(frame.side);
     tmpTerraceFrame.hinge.copy(frame.hinge);
     const count = this.regionCount;
+    const cutOpen = frame.openingAngle > 1e-4;
     for (let index = 0; index < MAX_REGIONS; index++) {
       const faces = this.regionFaces[index];
       const shell = this.regionShells[index];
@@ -1147,7 +1150,7 @@ export class InteriorScene {
       }
       const angle = terraceOpeningAngle(frame.openingAngle, count - 1 - index, TERRACE_STEP);
       shell.cut.uCutHalfAngle.value = angle * 0.5;
-      shell.mesh.visible = !isCrust; // the skin is the crust's shell
+      shell.mesh.visible = !isCrust && cutOpen; // the skin is the crust's shell, and the whole of a closed body
       const open = angle > 1e-4;
       faces.a.visible = open;
       faces.b.visible = open;

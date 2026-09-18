@@ -1,11 +1,8 @@
 /**
- * The small DOM pieces the inspector and the evidence popover share: an
- * element with a class and text, the close button with its cross (the
- * picker's pk-x, so every card closes with the same glyph), and the
- * five-segment evidence meter. One definition each, so the two cards
- * cannot drift apart.
+ * The small DOM pieces the panel's pages share: an element with a class and
+ * text, and the close button with its cross (the picker's pk-x, so every card
+ * closes with the same glyph). One definition each, so no two cards drift apart.
  */
-import { meterSegments } from '../evidenceScore';
 
 export function element<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -24,13 +21,4 @@ export function closeButton(onClose: () => void, className = 'pk-x'): HTMLButton
   close.innerHTML = CLOSE_CROSS_SVG;
   close.addEventListener('click', onClose);
   return close;
-}
-
-/** The five-segment meter for a score, filled in fifths; decorative beside its level word. */
-export function meterBar(score: number): HTMLElement {
-  const meter = element('span', 'ev-meter');
-  meter.setAttribute('aria-hidden', 'true');
-  const filled = meterSegments(score);
-  for (let segment = 0; segment < 5; segment++) meter.append(element('i', segment < filled ? 'on' : ''));
-  return meter;
 }

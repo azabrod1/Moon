@@ -15,6 +15,12 @@
  *   the caption        the line under the body's name: what is drawn and how
  *                      much to trust it, the legend row of an unresolved whole,
  *                      and the thickness note under the Readable | True segment
+ *   the panel lines    the short lines the panel writes about the model as a
+ *                      whole — the subtitle under the body's name, the status
+ *                      line on the Model & sources page, the radius with the
+ *                      convention it is measured by, and the note about the
+ *                      layers too thin to see — each a sentence about what is
+ *                      drawn, so the DOM layer only places them
  *   the emphasis       what the faces emphasise (a hovered legend row, else
  *                      the hovered region, else the pinned one) and how its
  *                      amount eases in, switches part way and fades out
@@ -23,12 +29,13 @@
  */
 import { MAX_OPENING_ANGLE_DEG } from './cutFrame';
 import { artParamsFor, depthTint, incandescence, type ArtParams } from './data/artParams';
-import { coverageBulk, type Coverage } from './data/interiorTypes';
+import type { Coverage, InteriorModel } from './data/interiorTypes';
 import { outerFractionsInsideOut, type DrawnModel } from './drawnModel';
 import { toDisplayFraction, type ReadableRemap } from './interiorGeometry';
 import type { SectionRegionLook } from './rendering/sectionMaterial';
 import { temperatureEndpoints, type TemperatureRange } from './temperatureScale';
-import { formatKm } from './ui/inspectorText';
+import { ILLUSTRATIVE_NOTE, STRUCTURE_UNCERTAIN, THIN_LAYERS_ENLARGED } from './ui/interiorCopy';
+import { formatKm, NOT_KNOWN, reviewDateText } from './ui/inspectorText';
 
 // ---- the cut tween ----------------------------------------------------------
 
@@ -144,34 +151,66 @@ export function regionLooks(
 
 // ---- the caption ------------------------------------------------------------
 
-/** The one line under the body chip: what is drawn and how much to trust it. */
-export function captionFor(coverage: Coverage, drawn: DrawnModel): string {
-  const radius = `radius ${formatKm(drawn.referenceRadiusKm)} km`;
-  const model = drawn.model;
-  if (model) {
-    const review = model.review === 'reviewed' ? 'Reviewed model' : 'Provisional model';
-    if (model.illustrative) return `Illustrative scenario, not a measurement · ${radius}`;
-    if (coverage.state === 'competing') return `${review}, one of ${coverage.models.length} · ${radius}`;
-    return `${review} · ${radius}`;
-  }
-  const bulk = coverageBulk(coverage)?.densityKgM3 ?? null;
-  const density = bulk ? `bulk density ${Math.round(bulk.value).toLocaleString('en-US')} kg/m³` : 'no measured density';
-  const lead = coverage.state === 'notYetModelled' ? 'Not yet modelled here' : 'Interior unresolved';
-  return `${lead} · ${density}`;
+/** What is said when nothing is drawn: this app has no model for the body, or
+ *  the science has none to give it. The distinction is the reader's to know —
+ *  an app that has not got round to a world must not sound like a world nobody
+ *  has measured. */
+const NO_MODEL_IN_APP = 'No interior model available in this app';
+
+function nothingDrawnText(coverage: Coverage): string {
+  return coverage.state === 'notYetModelled' ? NO_MODEL_IN_APP : STRUCTURE_UNCERTAIN;
 }
 
-/** The legend row for the unresolved whole. */
+/** The legend row for the unresolved whole: the composition column has nothing
+ *  to put in it, and says so in the same words every other empty field uses. */
 export function unresolvedComposition(coverage: Coverage): string {
-  return coverage.state === 'notYetModelled' ? 'Not yet modelled here' : 'Not measured';
+  return coverage.state === 'notYetModelled' ? NO_MODEL_IN_APP : NOT_KNOWN;
 }
 
-/** The note under the Layer thickness segment: what the reader is looking at,
- *  and — at true thickness — how many layers are too thin to see at the disc's
- *  current size, which is what Readable is there to fix. */
-export function thicknessNoteText(readable: boolean, tooThinToSeeCount: number): string {
-  if (readable) return 'Thin layers widened so you can see them';
-  if (tooThinToSeeCount <= 0) return 'Layers at their true thickness';
-  return `Layers at their true thickness · ${tooThinToSeeCount} too thin to see`;
+// ---- the panel lines --------------------------------------------------------
+
+/** The one short line that may sit under the body's name, and '' when there is
+ *  nothing to add: an ordinary drawn model needs no caveat, whether or not it
+ *  has rivals — the model switch is where a reader meets those. */
+export function subtitleFor(coverage: Coverage, drawn: DrawnModel): string {
+  if (!drawn.model) return nothingDrawnText(coverage);
+  return drawn.illustrative ? 'Illustrative scenario' : '';
+}
+
+/** The status line on the Model & sources page: which kind of model this is and
+ *  when it was last looked at. A scenario says it is a scenario and gives no
+ *  date — a date on an illustration would read as a measurement's currency. */
+export function modelStatusText(coverage: Coverage, drawn: DrawnModel): string {
+  const model = drawn.model;
+  if (!model) return nothingDrawnText(coverage);
+  if (drawn.illustrative) return ILLUSTRATIVE_NOTE;
+  return model.review === 'reviewed'
+    ? `Reviewed model, ${reviewDateText(model.reviewedOn)}`
+    : `App model awaiting scientific review, last checked ${reviewDateText(model.reviewedOn)}`;
+}
+
+/** Which radius the drawn model is measured against: a flattened body's
+ *  equatorial radius and its volumetric mean differ by thousands of km, so the
+ *  convention is part of the number. An unresolved whole has only the radius. */
+const RADIUS_CONVENTION_WORD: Readonly<Record<InteriorModel['radiusConvention'], string>> = {
+  volumetricMean: 'volumetric mean',
+  equatorial: 'equatorial',
+};
+
+export function radiusLineText(drawn: DrawnModel): string {
+  const radius = `Radius ${formatKm(drawn.referenceRadiusKm)} km`;
+  return drawn.model ? `${radius}, ${RADIUS_CONVENTION_WORD[drawn.model.radiusConvention]}` : radius;
+}
+
+/** The note beside the thickness control: what the reader is looking at, and —
+ *  at true thickness — which layers the disc's current size hides. One layer is
+ *  named, because a reader can then look for it; several are counted, because a
+ *  list of names is longer than the note it sits in. */
+export function thinLayersNoteText(readable: boolean, tooThinNames: readonly string[]): string {
+  if (readable) return THIN_LAYERS_ENLARGED;
+  if (tooThinNames.length === 0) return '';
+  if (tooThinNames.length === 1) return `${tooThinNames[0]} is too thin to see at this size`;
+  return `${tooThinNames.length} layers are too thin to see at this size`;
 }
 
 // ---- the emphasis -----------------------------------------------------------

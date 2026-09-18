@@ -667,6 +667,15 @@ export class InteriorScene {
     if (this.ringMesh) this.ringMesh.visible = on;
   }
 
+  /** The radius that bounds what shows of the body: the rings' outer edge while
+   *  they show, the body's own otherwise — what the framing has to fit. */
+  boundRadius(): number {
+    const rings = this.ringMesh;
+    if (!rings || !rings.visible) return BODY_RADIUS;
+    if (!rings.geometry.boundingSphere) rings.geometry.computeBoundingSphere();
+    return Math.max(BODY_RADIUS, rings.geometry.boundingSphere?.radius ?? BODY_RADIUS);
+  }
+
   /** The Sun's skin: the planetarium's photosphere, granulating on the presentation clock, cut like a skin. */
   private buildPhotosphereMaterial(): THREE.ShaderMaterial {
     const material = new THREE.ShaderMaterial({

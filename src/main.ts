@@ -2634,6 +2634,10 @@ function installDevHooks() {
     interiorEvidence: (claimKind: 'existence' | 'extent' | 'state' | 'composition' | 'temperature' | null) =>
       interiorMode?.devEvidence(claimKind) ?? false,
     interiorEsc: () => interiorMode?.devEsc(),
+    // The panel's pages: layers, or the selected region's summary / details / evidence, or the model page.
+    interiorPage: (kind: 'layers' | 'summary' | 'details' | 'evidence' | 'model') => interiorMode?.devPage(kind) ?? false,
+    interiorUnit: (unit: 'kelvin' | 'celsius') => interiorMode?.devUnit(unit) ?? false,
+    interiorOptionsOpen: () => interiorMode?.devOptionsOpen() ?? false,
     interiorView: (view: 'closed' | 'cutaway' | 'section') => interiorMode?.devView(view) ?? false,
     interiorAngle: (deg: number, animate?: boolean) => interiorMode?.devAngle(deg, animate) ?? false,
     interiorScale: (mode: 'true' | 'readable', blend?: number) => interiorMode?.devScale(mode, blend) ?? false,

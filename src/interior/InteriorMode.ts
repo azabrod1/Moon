@@ -1,11 +1,11 @@
 /**
  * Mode controller for the Look-inside tool. Owns the camera, its
- * OrbitControls, the DOM (the panel: the body's name and the way to another
- * world, the caption, the three views, the opening-angle slider, a legend and
- * the Readable | True segment), the presentation clock and the cut animation;
- * InteriorScene owns the studio content. The mode maps the pure modules — cutFrame for where the cut is,
- * interiorGeometry for the Readable remap, drawnModel for the model's
- * regions — onto the scene's per-frame uniforms.
+ * OrbitControls, the DOM (the strip along the top, the panel with its pages,
+ * the view options and the picker), the presentation clock and the cut
+ * animation; InteriorScene owns the studio content. The mode maps the pure
+ * modules — cutFrame for where the cut is, interiorGeometry for the Readable
+ * remap, interiorLayout for the framing, drawnModel for the model's regions —
+ * onto the scene's per-frame uniforms.
  *
  * What is drawn comes from the registry (data/interiorRegistry): a
  * constrained body draws its model, a competing body its default (the
@@ -15,12 +15,14 @@
  *
  * On a phone the panel is a sheet the reader drags: the grip's pointer
  * gestures set its height freely between a peek and its own content (a flick
- * throws it to either end, a press that stays put toggles), and the body's
- * framing follows — the disc is centred in the band above the sheet, clear of
- * the Leave button, gliding with the snap and sticking to the finger. The
- * layers are drawn at their true thickness by default, the body's own
- * proportions; the note under the segment counts the layers too thin to see at
- * the current size, which is what Readable is there for.
+ * throws it to either end, a press that stays put toggles, and so does the
+ * Layers row), and the body's framing follows — fitted to the band above the
+ * sheet and centred in it, gliding with the snap and sticking to the finger.
+ * A page opens the sheet to its own content: a summary is a compact card, the
+ * details and the evidence a reading height. The layers are drawn at their
+ * true thickness by default, the body's own proportions; the note under the
+ * display buttons names the layers too thin to see at the current size, with
+ * the one-tap way to enlarge them.
  *
  * Session-only: every activate() opens on the body it is handed and
  * touches no storage keys. Body changes run under a generation guard, the
@@ -43,21 +45,32 @@
  * reaches the bridge as `interiorState().timings` and debugLog once, so the
  * question "what is it doing for those seconds" is answerable on a phone.
  *
- * Hover and pin (plan §4): a pointer ray is picked on the CPU against the
- * terraced cut (interiorPick, the same frame and remap the shaders use);
- * the region under it is emphasised through two uniforms and its legend
- * row lights; a hover card previews it; a tap or click pins the inspector
- * (ui/LayerInspector), whose claim rows open the evidence popover
- * (ui/EvidencePopover). Hovering a legend row emphasises the region in 3D.
- * On touch a tap pins and a drag orbits; interiorInteraction tells the two
- * apart, and a pinch is neither. The Esc cascade: the popover, the
- * picker, the pinned inspector, then the tool itself.
+ * Hover and pin: a pointer ray is picked on the CPU against the terraced cut
+ * (interiorPick, the same frame and remap the shaders use); the region under
+ * it is emphasised through two uniforms and its legend row lights; a hover
+ * card previews it on a fine pointer; a tap or click SELECTS it, which opens
+ * its summary page in the panel (ui/InteriorPages: the summary, its details,
+ * its evidence grouped by property, and the model page — one host, one page
+ * at a time, the layer list the page they all return to). Hovering a legend
+ * row emphasises the region in 3D. On touch a tap selects and a drag orbits;
+ * interiorInteraction tells the two apart, and a pinch is neither. The Esc
+ * cascade: the view options, the picker, a page back to its summary, the
+ * selection, then the tool itself.
  *
- * Two diagrams (plan §5): Composition, the material key, and Temperature,
- * the body's own scale with a hatch for what nobody knows; the legend's
- * swatches follow the mode so the key and the face never disagree. A body
- * with competing models, or a poorly constrained one with an illustrative
- * scenario, gets a model switch under its caption.
+ * Two diagrams: Materials, the material key, and Temperature, the body's own
+ * scale with a hatch for what nobody knows, in the reader's unit (kelvin
+ * unless they ask for celsius, session-only); the legend's swatches follow
+ * the mode so the key and the face never disagree. A body with competing
+ * models, or a poorly constrained one with an illustrative scenario, gets a
+ * model switch under its layers. The controls a reader touches rarely — the
+ * cut angle, the thin-layer enlargement, the rings, the unit — live behind
+ * View options in the strip along the top, beside the way back and the one
+ * body selector.
+ *
+ * The framing is stage-aware (interiorLayout): the body is fitted to the
+ * rectangle the panel and the strip leave free and centred in it, and the
+ * fit follows the sheet's height on a phone, keeping the zoom the reader had
+ * relative to it.
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -84,7 +97,6 @@ import {
   EMPHASIS_S,
   advanceCutTween,
   advanceEmphasis,
-  captionFor,
   createCutTween,
   createEmphasisState,
   cutTweenSettled,
@@ -93,27 +105,29 @@ import {
   regionLooks,
   setCutTarget,
   stepToward,
-  thicknessNoteText,
+  subtitleFor,
+  thinLayersNoteText,
   unresolvedComposition,
 } from './interiorLogic';
-import { formatKm, formatNumber, temperatureQuantityText, temperatureRangeText } from './ui/inspectorText';
+import { NOT_KNOWN, formatKm, temperatureQuantityText, temperatureRangeText, temperatureValueText, type TemperatureUnit } from './ui/inspectorText';
 import {
   IDENTITY_REMAP,
   READABLE_MIN_PX,
-  framingDistance,
   minDisplayFraction,
   projectedRadiusPx,
   readableRemap,
   toDisplayFraction,
   toPhysicalFraction,
-  tooThinToSeeCount,
+  tooThinToSeeIndices,
   type ReadableRemap,
 } from './interiorGeometry';
+import { fitDistance, stageViewOffset, visibleStageRect, zoomRatio, type StageRect } from './interiorLayout';
 import { createPickHit, pickInterior, type PickHit, type PickLayout, type PickSurface } from './interiorPick';
-import { renderHoverCard, renderInspector } from './ui/LayerInspector';
+import { renderHoverCard, renderPage, type InteriorPanelPage } from './ui/InteriorPages';
 import { DepthRuler } from './ui/DepthRuler';
 import { createRulerLayout, rulerLayout, rulerSide, type RulerInput } from './ruler';
-import { renderEvidencePopover } from './ui/EvidencePopover';
+import { regionEvidenceSummary } from './evidenceSummary';
+import { CHOOSE_BODY, ILLUSTRATIVE_NOTE, INTERIOR_MODEL, LAYERS, STRUCTURE_UNCERTAIN } from './ui/interiorCopy';
 import { INTERIOR_DEFAULT_BODY, coverageBadge, coverageFor, defaultModelFor, modelFor } from './data/interiorRegistry';
 import { coverageModels } from './data/interiorTypes';
 import {
@@ -123,7 +137,6 @@ import {
   temperatureT,
   type TemperatureRange,
 } from './temperatureScale';
-import { buildMeter, claimScores } from './ui/LayerInspector';
 import { coverageBulk, type ClaimKind, type Coverage, type CoverageState } from './data/interiorTypes';
 import { drawnFromModel, drawnUnresolved, outerFractionsInsideOut, type DrawnModel } from './drawnModel';
 import { BodyPicker } from '../planetarium/ui/BodyPicker';
@@ -138,15 +151,22 @@ const FRAMING = {
   minDistance: 1.55,
   maxDistance: 9,
   dampingFactor: 0.06,
-  /** Phones: the legend is a bottom sheet, so the disc fits the width less. */
-  phoneWidthFraction: 0.84,
+  /** How much of the stage's shorter side the disc's diameter takes. */
+  fill: 0.9,
+  /** The stage keeps at least this much of the viewport's shorter side, so a
+   *  reading-height sheet never shrinks the body to a coin behind it. */
+  stageMinFraction: 0.5,
+  /** Air between the stage and what bounds it. */
+  stageMarginPx: 12,
 } as const;
 
 /** Phones: the sheet's resting height reaches the last row of view buttons —
  *  the body's name, the way to another world and both rows of buttons within
  *  reach — with this much air under it. The fraction stands in before the panel
  *  has been laid out and is the floor; the second caps what content may claim. */
-const SHEET_PEEK_FRACTION = 0.3;
+const SHEET_PEEK_FRACTION = 0.16;
+/** The sheet's own air under it (index.html: bottom: 12px), part of what it takes from the stage. */
+const SHEET_BOTTOM_MARGIN_PX = 12;
 const SHEET_PEEK_TAIL_PX = 10;
 const SHEET_PEEK_MAX_FRACTION = 0.45;
 /** The sheet never takes more of the screen than this, however tall its content. */
@@ -156,8 +176,6 @@ const SHEET_FULL_FRACTION = 0.85;
 const SHEET_FLICK_PX_PER_MS = 0.6;
 /** A sheet snap eases over this long, and the body's framing glides with it. */
 const SHEET_SNAP_S = 0.26;
-/** The disc is never pushed under the Leave button: this much is kept clear above it. */
-const TOP_CLEAR_PX = 72;
 
 /** A body swap cross-fades the skin over this long, behind the closed cut. */
 const SWAP_FADE_S = 0.45;
@@ -325,6 +343,10 @@ export interface InteriorDevState {
   hover: string | null;
   pinned: string | null;
   evidence: ClaimKind | null;
+  /** The page the panel shows, the reader's temperature unit, and whether View options is up. */
+  page: InteriorPanelPage['kind'];
+  unit: TemperatureUnit;
+  optionsOpen: boolean;
   emphasis: { region: string | null; amount: number };
   /** What the open of this body cost, step by step (see InteriorOpenTimings). */
   timings: InteriorOpenTimings;
@@ -344,9 +366,12 @@ const ORIGIN = new THREE.Vector3(0, 0, 0);
 const tmpLocalUp = new THREE.Vector3();
 const tmpNdc = new THREE.Vector2();
 
-/** "288 K · 15 °C": the scale's ends in both units. */
-function kelvinWithCelsius(kelvin: number): string {
-  return `${formatNumber(kelvin)} K · ${formatNumber(Math.round(kelvin - 273.15))} °C`;
+/** A button in a radio group: its on class and its checked state, together. */
+function setRadio(id: string, on: boolean): void {
+  const button = document.getElementById(id);
+  if (!button) return;
+  button.classList.toggle('on', on);
+  button.setAttribute('aria-checked', String(on));
 }
 
 export class InteriorMode {
@@ -434,8 +459,15 @@ export class InteriorMode {
   private legendHoverIndex = -1;
   private pinnedIndex = -1;
   private readonly emphasis = createEmphasisState();
-  /** The claim index open in the popover, −1 when closed. */
-  private evidenceClaim = -1;
+  /** The page the panel shows: the layers, or one region's summary, details or evidence, or the model. */
+  private page: InteriorPanelPage = { kind: 'layers' };
+  /** The reader's temperature unit, session-only. */
+  private temperatureUnit: TemperatureUnit = 'kelvin';
+  /** Where the layer list was scrolled to when a page left it, restored on the way back. */
+  private layersScrollTop = 0;
+  /** The view options card is up, and who opened it (focus goes back there). */
+  private optionsOpen = false;
+  private optionsOpener: HTMLElement | null = null;
   /** Which canvas gesture is a tap (pin) and which a drag or a pinch (the orbit's). */
   private readonly tap = new TapRecognizer();
   private readonly reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -457,6 +489,11 @@ export class InteriorMode {
   private viewOffsetYTargetPx = 0;
   /** The distance the glide in flight spans, so it takes SHEET_SNAP_S whatever its length. */
   private viewOffsetSpanPx = 0;
+  /** The fit distance the stage last asked for: a reader's zoom is kept as a ratio to it. */
+  private fitDistanceNow = 0;
+  /** The camera distance the framing glides toward (0: nothing pending) and that glide's span. */
+  private distanceTargetNow = 0;
+  private distanceSpan = 0;
 
   private readonly fpsSamples: number[] = [];
   /** Seconds since the last drawn frame: what the gauge divides, so it counts
@@ -509,8 +546,8 @@ export class InteriorMode {
       includeSun: true,
       renderTitle: (title) => {
         const strong = document.createElement('b');
-        strong.textContent = 'Look inside';
-        title.append(strong, document.createTextNode(' another world'));
+        strong.textContent = CHOOSE_BODY;
+        title.append(strong);
       },
       // The same pills the planetarium's Tools row shows, from the one builder.
       rowBadge: (name) => coverageTags(name, name === this.body?.id ? 'open now' : null),
@@ -518,7 +555,7 @@ export class InteriorMode {
         this.picker.close();
         void this.commitBody(name);
       },
-      onClose: () => {},
+      onClose: () => this.setBackgroundInert(false),
     });
 
     this.bindPanel();
@@ -605,6 +642,7 @@ export class InteriorMode {
     this.settleCut();
     this.interiorScene.setVisible(false);
     this.picker.close();
+    this.closeOptions();
     this.ruler.hide();
     const ui = document.getElementById('interior-ui');
     if (ui) ui.style.display = 'none';
@@ -629,6 +667,9 @@ export class InteriorMode {
     this.viewOffsetXPx = 0;
     this.viewOffsetYPx = 0;
     this.viewOffsetYTargetPx = 0;
+    this.fitDistanceNow = 0;
+    this.distanceTargetNow = 0;
+    this.layersScrollTop = 0;
     this.camera.clearViewOffset();
     const topBar = document.getElementById('top-bar');
     if (topBar) topBar.style.display = this.topBarPrevDisplay ?? '';
@@ -733,7 +774,7 @@ export class InteriorMode {
    *  it depends on moved — the cut, the remap, the model, the face it sits on,
    *  the camera, the viewport, its opacity — so a frame at rest costs nothing here. */
   private renderRuler(): void {
-    if (isPhoneViewport() || !this.remap || this.cut.angleDeg <= 0.5 || this.loading || this.evidenceClaim >= 0) {
+    if (isPhoneViewport() || !this.remap || this.cut.angleDeg <= 0.5 || this.loading) {
       this.ruler.hide();
       this.rulerStale = true;
       return;
@@ -851,28 +892,44 @@ export class InteriorMode {
   private setReadable(on: boolean): void {
     this.readable = on;
     this.scaleBlendTarget = on ? 1 : 0;
-    document.getElementById('interior-scale-readable')?.classList.toggle('on', on);
-    document.getElementById('interior-scale-true')?.classList.toggle('on', !on);
-    // Both states say what they show; a one-region body has nothing to widen.
+    const toggle = document.getElementById('interior-readable-toggle') as HTMLInputElement | null;
+    if (toggle) toggle.checked = on;
+    // A one-region body has nothing to widen.
     const oneRegion = this.drawn.regionsInsideOut.length <= 1;
     const row = document.getElementById('interior-readable-row');
     if (row) row.style.display = oneRegion ? 'none' : '';
-    const note = document.getElementById('interior-readable-note');
-    if (note) note.style.display = oneRegion ? 'none' : '';
     this.syncThicknessNote();
   }
 
-  /** The note under the Layer thickness segment. At true thickness it counts the
-   *  layers too thin to see at the disc's current size, so Readable offers itself
-   *  exactly where it helps; the DOM is written only when the words change. */
+  /** The thin-layers note under the display buttons: which layers are too thin
+   *  to see at the disc's current size, with the one-tap way to enlarge them —
+   *  or, enlarged, the word that says so. The same words sit under the switch
+   *  in View options. The DOM is written only when the words change, and the
+   *  sheet's resting height follows the row's coming and going. */
   private syncThicknessNote(): void {
+    const names = this.readable
+      ? []
+      : tooThinToSeeIndices(outerFractionsInsideOut(this.drawn), READABLE_MIN_PX, this.projectedPx)
+        .map((index) => this.drawn.regionsInsideOut[index]?.name ?? '')
+        .filter((name) => name !== '');
+    const text = thinLayersNoteText(this.readable, names);
+    const row = document.getElementById('interior-thin-note');
+    const label = document.getElementById('interior-thin-text');
+    const toggle = document.getElementById('interior-thin-toggle');
+    if (row && label && toggle) {
+      const display = text ? '' : 'none';
+      const rowMoved = row.style.display !== display;
+      if (rowMoved) row.style.display = display;
+      if (label.textContent !== text) label.textContent = text;
+      const toggleText = this.readable ? 'Actual size' : 'Enlarge';
+      if (toggle.textContent !== toggleText) toggle.textContent = toggleText;
+      if (rowMoved) this.syncSheetToContent();
+    }
     const note = document.getElementById('interior-readable-note');
-    if (!note) return;
-    const tooThin = this.readable
-      ? 0
-      : tooThinToSeeCount(outerFractionsInsideOut(this.drawn), READABLE_MIN_PX, this.projectedPx);
-    const text = thicknessNoteText(this.readable, tooThin);
-    if (note.textContent !== text) note.textContent = text;
+    if (note) {
+      if (note.textContent !== text) note.textContent = text;
+      note.style.display = text ? '' : 'none';
+    }
   }
 
   // ---- body ------------------------------------------------------------------
@@ -1019,6 +1076,7 @@ export class InteriorMode {
     this.interiorScene.setRingsVisible(on);
     const toggle = document.getElementById('interior-rings-toggle') as HTMLInputElement | null;
     if (toggle) toggle.checked = on;
+    this.applyViewportFraming(false); // the rings widen what has to fit
   }
 
   /** The rings row shows only for a body that has rings, which makes the footer
@@ -1026,14 +1084,23 @@ export class InteriorMode {
   private syncRingsRow(): void {
     const row = document.getElementById('interior-rings-row');
     if (row) row.style.display = this.interiorScene.hasRings() ? '' : 'none';
-    this.syncSheetToContent();
+    this.applyViewportFraming(false);
   }
 
   private setDisplayMode(mode: InteriorDisplayMode): void {
     this.displayMode = mode;
     this.interiorScene.setDisplayMode(mode === 'temperature' ? 1 : 0);
-    document.getElementById('interior-mode-composition')?.classList.toggle('on', mode === 'composition');
-    document.getElementById('interior-mode-temperature')?.classList.toggle('on', mode === 'temperature');
+    setRadio('interior-mode-composition', mode === 'composition');
+    setRadio('interior-mode-temperature', mode === 'temperature');
+    this.renderPanel();
+  }
+
+  /** The reader's temperature unit: every temperature the panel shows follows it. */
+  private setUnit(unit: TemperatureUnit): void {
+    if (unit === this.temperatureUnit) return;
+    this.temperatureUnit = unit;
+    setRadio('interior-unit-kelvin', unit === 'kelvin');
+    setRadio('interior-unit-celsius', unit === 'celsius');
     this.renderPanel();
   }
 
@@ -1042,16 +1109,27 @@ export class InteriorMode {
   private bindPanel(): void {
     document.getElementById('interior-leave')?.addEventListener('click', () => this.requestExit());
     document.getElementById('interior-body-chip')?.addEventListener('click', () => this.openPicker());
-    document.getElementById('interior-change-body')?.addEventListener('click', () => this.openPicker());
-    for (const view of CUT_VIEWS) {
-      document.getElementById(`interior-view-${view}`)?.addEventListener('click', () => this.setView(view));
-    }
+    const optionsOpen = document.getElementById('interior-options-open');
+    optionsOpen?.addEventListener('click', () => this.openOptions(optionsOpen));
+    document.getElementById('interior-options-close')?.addEventListener('click', () => this.closeOptions());
+    // The card's backdrop closes it, like the picker's.
+    document.getElementById('interior-options')?.addEventListener('click', (event) => {
+      if (event.target === event.currentTarget) this.closeOptions();
+    });
+    this.bindRadioGroup(CUT_VIEWS.map((view) => `interior-view-${view}`), (index) => this.setView(CUT_VIEWS[index]));
+    this.bindRadioGroup(['interior-mode-composition', 'interior-mode-temperature'], (index) => this.setDisplayMode(index === 0 ? 'composition' : 'temperature'));
+    this.bindRadioGroup(['interior-unit-kelvin', 'interior-unit-celsius'], (index) => this.setUnit(index === 0 ? 'kelvin' : 'celsius'));
     const slider = document.getElementById('interior-angle') as HTMLInputElement | null;
     slider?.addEventListener('input', () => {
       this.setTargetAngle(Number(slider.value), false);
     });
-    document.getElementById('interior-scale-readable')?.addEventListener('click', () => this.setReadable(true));
-    document.getElementById('interior-scale-true')?.addEventListener('click', () => this.setReadable(false));
+    const readable = document.getElementById('interior-readable-toggle') as HTMLInputElement | null;
+    readable?.addEventListener('change', () => this.setReadable(readable.checked));
+    document.getElementById('interior-thin-toggle')?.addEventListener('click', () => this.setReadable(!this.readable));
+    document.getElementById('interior-legend-head')?.addEventListener('click', () => {
+      if (isPhoneViewport()) this.toggleSheet();
+    });
+    document.getElementById('interior-model-info')?.addEventListener('click', () => this.showPage({ kind: 'model' }));
     this.bindSheetGrip();
     document.getElementById('interior-scroll')?.addEventListener('scroll', () => this.updateScrollCue(), { passive: true });
     const more = document.getElementById('interior-models-more');
@@ -1061,11 +1139,23 @@ export class InteriorMode {
     });
     const rings = document.getElementById('interior-rings-toggle') as HTMLInputElement | null;
     rings?.addEventListener('change', () => this.setRings(rings.checked));
-    document.getElementById('interior-mode-composition')?.addEventListener('click', () => this.setDisplayMode('composition'));
-    document.getElementById('interior-mode-temperature')?.addEventListener('click', () => this.setDisplayMode('temperature'));
-    // The popover's backdrop closes it; the card's own close button too.
-    document.getElementById('interior-evidence')?.addEventListener('click', (event) => {
-      if (event.target === event.currentTarget) this.closeEvidence();
+  }
+
+  /** A row of buttons as a radio group: a click picks, and the arrow keys move the pick. */
+  private bindRadioGroup(buttonIds: readonly string[], onPick: (index: number) => void): void {
+    const buttons = buttonIds.map((id) => document.getElementById(id));
+    buttons.forEach((button, index) => {
+      if (!button) return;
+      button.addEventListener('click', () => onPick(index));
+      button.addEventListener('keydown', (event) => {
+        const step = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1
+          : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 0;
+        if (step === 0) return;
+        event.preventDefault();
+        const next = (index + step + buttons.length) % buttons.length;
+        onPick(next);
+        buttons[next]?.focus();
+      });
     });
   }
 
@@ -1076,8 +1166,12 @@ export class InteriorMode {
       const display = bodyDisplayName(body.id);
       name.textContent = display.charAt(0).toUpperCase() + display.slice(1);
     }
-    const caption = document.getElementById('interior-caption');
-    if (caption) caption.textContent = captionFor(this.coverage, this.drawn);
+    const subtitle = document.getElementById('interior-subtitle');
+    if (subtitle) {
+      const text = subtitleFor(this.coverage, this.drawn);
+      subtitle.textContent = text;
+      subtitle.style.display = text ? '' : 'none';
+    }
     const coverageNote = document.getElementById('interior-coverage-note');
     if (coverageNote) {
       // The bulk line, only when nothing is drawn: what the density says.
@@ -1106,7 +1200,6 @@ export class InteriorMode {
         });
       }
       const art = regionArtInsideOut(this.drawn);
-      const scores = this.drawn.regionsInsideOut.map((_, index) => claimScores({ drawn: this.drawn, index, coverage: this.coverage }));
       // The legend reads outside-in, the way a reader meets the layers.
       for (let index = this.drawn.regionsInsideOut.length - 1; index >= 0; index--) {
         const region = this.drawn.regionsInsideOut[index];
@@ -1156,7 +1249,7 @@ export class InteriorMode {
         detail.className = 'interior-row-detail';
         // In Temperature mode the row says the temperature, since that is what the face shows.
         detail.textContent = temperature
-          ? (region.region ? temperatureQuantityText(region.region.temperatureK) : 'not known')
+          ? (region.region ? temperatureQuantityText(region.region.temperatureK, this.temperatureUnit) : NOT_KNOWN)
           : region.composition;
         text.append(title, detail);
         // The row's second line: how deep it lies, what state it is in and how
@@ -1168,8 +1261,8 @@ export class InteriorMode {
         const pieces = [`${formatKm(depthTop)}–${formatKm(depthBottom)} km`];
         const phase = PHASE_LABEL[region.phase];
         if (phase) pieces.push(phase);
-        // Kelvin alone here; the celsius and the basis word are the inspector's.
-        const temperatureRange = region.region ? temperatureRangeText(region.region.temperatureK) : '';
+        // The reader's unit; the basis word is the details page's.
+        const temperatureRange = region.region ? temperatureRangeText(region.region.temperatureK, this.temperatureUnit) : '';
         if (temperatureRange) pieces.push(temperatureRange);
         for (let pieceIndex = 0; pieceIndex < pieces.length; pieceIndex++) {
           const last = pieceIndex === pieces.length - 1;
@@ -1180,25 +1273,26 @@ export class InteriorMode {
           if (!last) secondLine.append(document.createTextNode(' '));
         }
         row.append(swatch, text, secondLine);
-        // The existence claim's meter with its level word (plan §4).
-        const existence = region.region?.claims.findIndex((claim) => claim.kind === 'existence') ?? -1;
-        if (existence >= 0) {
-          const meter = document.createElement('div');
-          meter.className = 'interior-row-meter';
-          meter.append(buildMeter(scores[index][existence])); // no numeral in the legend; the inspector carries it
-          row.append(meter);
+        // What the evidence makes of the region, in words from the KIND of
+        // evidence (evidenceSummary) — never a score.
+        if (region.region) {
+          const summary = regionEvidenceSummary(region.region);
+          const standing = document.createElement('div');
+          standing.className = `interior-row-standing ii-standing-${summary.standing}`;
+          standing.textContent = summary.phrase;
+          row.append(standing);
         }
         legend.append(row);
       }
     }
     const legendHead = document.getElementById('interior-legend-head');
     if (legendHead) {
-      legendHead.textContent = 'Layers';
-      legendHead.style.display = this.drawn.regionsInsideOut.length > 1 ? '' : 'none';
+      const count = this.drawn.regionsInsideOut.length;
+      legendHead.textContent = count > 1 ? `${LAYERS} · ${count}` : LAYERS;
     }
     this.renderScale();
     this.syncLegendEmphasis();
-    this.renderPinned();
+    this.renderPage();
     this.syncViewButtons();
     this.syncAngleReadout();
     this.setReadable(this.readable);
@@ -1284,38 +1378,38 @@ export class InteriorMode {
         this.sheetDragMoved = false;
         return;
       }
-      if (!isPhoneViewport()) return;
-      const fullPx = this.fullHeightPx();
-      const atFull = this.sheetHeightPx >= fullPx - 1;
-      this.setSheetHeight(atFull ? this.peekHeightPx() : fullPx, { snap: true });
+      this.toggleSheet();
     });
   }
 
-  /** The sheet's resting height: down to the last row of view buttons, with the
-   *  footer that never scrolls away under it, so everything a reader switches
-   *  between is one tap away before they have dragged anything. */
-  private peekHeightPx(): number {
-    const fractionPx = Math.round(window.innerHeight * SHEET_PEEK_FRACTION);
-    const lastButtonRow = document.getElementById('interior-mode-temperature')?.parentElement;
-    if (!lastButtonRow || lastButtonRow.offsetHeight <= 0) return fractionPx;
-    const footer = document.getElementById('interior-footer');
-    const footerHeightPx = footer && getComputedStyle(footer).display !== 'none' ? footer.offsetHeight : 0;
-    // offsetTop is measured from the panel, the positioned ancestor, and does
-    // not move with the sheet's own scrolling: this is the unscrolled reach.
-    const throughButtonsPx = lastButtonRow.offsetTop + lastButtonRow.offsetHeight + SHEET_PEEK_TAIL_PX + footerHeightPx;
-    return Math.min(Math.max(fractionPx, throughButtonsPx), Math.round(window.innerHeight * SHEET_PEEK_MAX_FRACTION));
+  /** Peek ↔ full: the grip's press and the Layers row both do this. */
+  private toggleSheet(): void {
+    if (!isPhoneViewport()) return;
+    const fullPx = this.fullHeightPx();
+    const atFull = this.sheetHeightPx >= fullPx - 1;
+    this.setSheetHeight(atFull ? this.peekHeightPx() : fullPx, { snap: true });
   }
 
-  /** The sheet's ceiling: its own content — the grip, everything the body
-   *  scrolls and the footer that never scrolls away — capped at a fraction of
-   *  the viewport, so a short panel never shows empty glass under its last row. */
+  /** The sheet's resting height: down through the Layers row, so the two rows of
+   *  buttons and the way to the list are one tap away before anything is dragged. */
+  private peekHeightPx(): number {
+    const fractionPx = Math.round(window.innerHeight * SHEET_PEEK_FRACTION);
+    const lastRow = document.getElementById('interior-legend-head');
+    if (!lastRow || lastRow.offsetHeight <= 0) return fractionPx;
+    // offsetTop is measured from the panel, the positioned ancestor, and does
+    // not move with the sheet's own scrolling: this is the unscrolled reach.
+    const throughRowPx = lastRow.offsetTop + lastRow.offsetHeight + SHEET_PEEK_TAIL_PX;
+    return Math.min(Math.max(fractionPx, throughRowPx), Math.round(window.innerHeight * SHEET_PEEK_MAX_FRACTION));
+  }
+
+  /** The sheet's ceiling: its own content — the grip and everything the page
+   *  scrolls — capped at a fraction of the viewport, so a short page (a summary)
+   *  never shows empty glass under its last row. */
   private fullHeightPx(): number {
     const scroll = document.getElementById('interior-scroll');
     if (!scroll) return this.peekHeightPx();
     const grip = document.getElementById('interior-grip');
-    const footer = document.getElementById('interior-footer');
-    const footerHeightPx = footer && getComputedStyle(footer).display !== 'none' ? footer.offsetHeight : 0;
-    const contentPx = (grip?.offsetHeight ?? 0) + scroll.scrollHeight + footerHeightPx;
+    const contentPx = (grip?.offsetHeight ?? 0) + scroll.scrollHeight;
     return Math.max(this.peekHeightPx(), Math.min(Math.round(window.innerHeight * SHEET_FULL_FRACTION), contentPx));
   }
 
@@ -1343,6 +1437,7 @@ export class InteriorMode {
       const atFull = clampedPx >= fullPx - 1;
       grip.setAttribute('aria-expanded', String(atFull));
       grip.setAttribute('aria-label', atFull ? 'Shrink the panel' : 'Expand the panel');
+      document.getElementById('interior-legend-head')?.setAttribute('aria-expanded', String(atFull));
     }
     this.applyViewportFraming(options.frameAtOnce === true);
     this.updateScrollCue();
@@ -1405,7 +1500,7 @@ export class InteriorMode {
     const card = document.getElementById('interior-hover');
     if (!card) return;
     const region = index >= 0 ? this.drawn.regionsInsideOut[index] : undefined;
-    if (!region || this.picker.isOpen() || this.evidenceClaim >= 0) {
+    if (!region || this.modalOpen()) {
       card.style.display = 'none';
       return;
     }
@@ -1426,102 +1521,114 @@ export class InteriorMode {
     this.legendHoverIndex = index;
   }
 
+  /** A tap or a row on a region selects it and opens its summary; the same
+   *  region again keeps it, so a reader who taps twice is not bounced back to
+   *  the list — the summary's own Layers row is the way out. */
   private togglePin(index: number): void {
-    this.setPinned(this.pinnedIndex === index ? -1 : index);
+    if (index === this.pinnedIndex && this.page.kind !== 'layers') return;
+    this.setPinned(index);
   }
 
+  /** Select a region (its summary opens) or none (back to the layers). */
   private setPinned(index: number): void {
-    if (index === this.pinnedIndex) return;
-    this.pinnedIndex = index;
-    this.closeEvidence();
-    this.renderPinned();
+    const region = this.drawn.regionsInsideOut[index];
+    if (!region) {
+      if (this.pinnedIndex < 0 && this.page.kind === 'layers') return;
+      this.pinnedIndex = -1;
+      this.page = { kind: 'layers' };
+    } else {
+      this.pinnedIndex = index;
+      this.page = { kind: 'summary', regionKey: region.key };
+    }
+    this.clearHover();
+    this.renderPage();
     this.syncLegendEmphasis();
   }
 
-  /** The inspector for the pinned region: its own panel on desktop, docked
-   *  under the legend in the sheet on phones. Hidden when nothing is pinned. */
-  private renderPinned(): void {
-    const root = document.getElementById('interior-inspector');
-    if (!root) return;
-    const index = this.pinnedIndex;
-    if (index < 0 || index >= this.drawn.regionsInsideOut.length) {
-      root.style.display = 'none';
-      root.replaceChildren();
-      document.getElementById('interior-panel')?.classList.remove('inspecting');
+  /** Go to a page. A region page keeps that region selected (and emphasised). */
+  private showPage(page: InteriorPanelPage): void {
+    this.page = page;
+    if (page.kind !== 'layers' && page.kind !== 'model') this.pinnedIndex = this.regionIndexFor(page.regionKey);
+    this.clearHover();
+    this.renderPage();
+    this.syncLegendEmphasis();
+  }
+
+  private regionIndexFor(regionKey: string): number {
+    return this.drawn.regionsInsideOut.findIndex((region) => region.key === regionKey);
+  }
+
+  /** The claim kind the evidence page shows, or null when it is not the page. */
+  private evidenceKind(): ClaimKind | null {
+    return this.page.kind === 'evidence' ? this.page.claimKind : null;
+  }
+
+  private modalOpen(): boolean {
+    return this.picker.isOpen() || this.optionsOpen;
+  }
+
+  /** The page the panel shows, rendered into its host: the layer list, or one
+   *  region's summary, details or evidence, or the model page. A region page
+   *  whose region the drawn model no longer has falls back to the layers. On a
+   *  phone a page opens the sheet to its own content — a summary is a short
+   *  card, the details a reading height — and the layers get back the height
+   *  and the scroll the reader left them at. */
+  private renderPage(): void {
+    const host = document.getElementById('interior-inspector');
+    const layersPage = document.getElementById('interior-page-layers');
+    const scroll = document.getElementById('interior-scroll');
+    if (!host || !layersPage || !scroll) return;
+    const page = this.page;
+    const regionKey = page.kind === 'layers' || page.kind === 'model' ? null : page.regionKey;
+    const regionIndex = regionKey === null ? -1 : this.regionIndexFor(regionKey);
+    if (regionKey !== null && regionIndex < 0) {
+      this.page = { kind: 'layers' };
+      this.pinnedIndex = -1;
+      this.renderPage();
+      return;
+    }
+    if (page.kind === 'layers') {
+      host.hidden = true;
+      host.replaceChildren();
+      delete host.dataset.page;
+      layersPage.hidden = false;
+      scroll.scrollTop = this.layersScrollTop;
       this.restoreSheetHeightAfterInspect();
       this.updateScrollCue();
       return;
     }
-    const phone = isPhoneViewport();
-    const host = document.getElementById(phone ? 'interior-scroll' : 'interior-ui');
-    if (host && root.parentElement !== host) host.append(root);
-    root.classList.toggle('docked', phone);
-    // Docked, the inspector is the sheet's content, not a panel of its own: the
-    // glass rule (body.mat-glass .pn) outranks the docked reset, so the panel
-    // classes come off with the dock and go back on for the desktop's standalone card.
-    root.classList.toggle('pn', !phone);
-    root.classList.toggle('pn-high', !phone);
-    renderInspector(root, {
+    if (!layersPage.hidden) this.layersScrollTop = scroll.scrollTop;
+    const asked = renderPage(host, page, {
       drawn: this.drawn,
-      index,
       coverage: this.coverage,
-      onEvidence: (claimIndex) => this.openEvidence(claimIndex),
-      onClose: () => this.setPinned(-1),
+      unit: this.temperatureUnit,
+      index: regionIndex,
+      onLayers: () => this.setPinned(-1),
+      onSummary: () => { if (regionKey !== null) this.showPage({ kind: 'summary', regionKey }); },
+      onDetails: () => { if (regionKey !== null) this.showPage({ kind: 'details', regionKey }); },
+      onEvidence: (claimKind) => { if (regionKey !== null) this.showPage({ kind: 'evidence', regionKey, claimKind }); },
+      onModel: () => this.showPage({ kind: 'model' }),
     });
-    if (phone) {
-      // The sheet becomes the inspector, with the way back to the layers at its top.
-      const back = document.createElement('button');
-      back.type = 'button';
-      back.className = 'ii-back';
-      back.textContent = '‹ Back to layers';
-      back.addEventListener('click', () => this.setPinned(-1));
-      root.prepend(back);
-    }
-    const panel = document.getElementById('interior-panel');
-    panel?.classList.toggle('inspecting', phone);
-    // Shown BEFORE the sheet is measured: with the inspector still hidden and
-    // its siblings hidden by the inspecting class, the sheet measured as
-    // nothing and the first pin opened it to its peek.
-    root.style.display = '';
-    root.scrollTop = 0;
-    if (phone) {
-      // The inspector needs the room: the sheet opens to its full height with
-      // it, and the height the reader had is kept for when they come back.
+    layersPage.hidden = true;
+    // Shown BEFORE the sheet is measured: a hidden page measures as nothing.
+    host.hidden = false;
+    if (isPhoneViewport()) {
+      // The height the reader had is kept for when they come back to the layers.
       if (this.sheetHeightBeforeInspectPx === null) this.sheetHeightBeforeInspectPx = this.sheetHeightPx;
       this.setSheetHeight(this.fullHeightPx(), { snap: true });
     }
-    if (phone && host) host.scrollTop = 0;
+    scroll.scrollTop = 0;
+    if (asked) asked.scrollIntoView({ block: 'start', behavior: this.reducedMotion.matches ? 'auto' : 'smooth' });
     this.updateScrollCue();
   }
 
-  private openEvidence(claimIndex: number): void {
-    const region = this.drawn.regionsInsideOut[this.pinnedIndex];
-    const claim = region?.region?.claims[claimIndex];
-    const root = document.getElementById('interior-evidence');
-    const card = document.getElementById('interior-evidence-card');
-    if (!region || !claim || !root || !card) return;
-    const scores = claimScores({ drawn: this.drawn, index: this.pinnedIndex, coverage: this.coverage });
-    this.picker.close(); // one modal at a time
-    this.evidenceClaim = claimIndex;
-    renderEvidencePopover(card, { regionName: region.name, claim, score: scores[claimIndex], onClose: () => this.closeEvidence() });
-    root.classList.add('visible');
-    this.clearHover();
-    (card.querySelector('.pk-x') as HTMLElement | null)?.focus();
-  }
-
-  private closeEvidence(): void {
-    if (this.evidenceClaim < 0) return;
-    this.evidenceClaim = -1;
-    document.getElementById('interior-evidence')?.classList.remove('visible');
-  }
-
-  /** Nothing hovered, pinned or open: a body or model change, or leaving. */
+  /** Nothing hovered, selected or open: a body or model change, or leaving. */
   private clearSelection(): void {
-    this.closeEvidence();
+    this.page = { kind: 'layers' };
     this.pinnedIndex = -1;
     this.legendHoverIndex = -1;
     this.clearHover();
-    this.renderPinned();
+    this.renderPage();
     this.emphasis.index = -1;
     this.emphasis.amount = 0;
     this.interiorScene.setEmphasis(-1, 0);
@@ -1580,7 +1687,7 @@ export class InteriorMode {
   private handlePointerUp = (event: PointerEvent) => {
     if (!this.active) return;
     if (!this.tap.up(pointerSample(event))) return;
-    if (this.picker.isOpen() || this.evidenceClaim >= 0) return;
+    if (this.modalOpen()) return;
     const hit = this.pickAt(event.clientX, event.clientY);
     if (hit && hit.surface !== 'skin') this.togglePin(hit.regionIndex);
     else this.setPinned(-1);
@@ -1605,10 +1712,10 @@ export class InteriorMode {
       noteText = this.coverage.distinguishedBy;
       kickerText = `${coverageBadge(this.coverage)} fit the data`;
     } else if (this.coverage.state === 'poorlyConstrained' && this.coverage.illustrative) {
-      choices.push({ modelId: null, label: 'Unresolved' });
-      choices.push({ modelId: this.coverage.illustrative.modelId, label: `${this.coverage.illustrative.title}, illustrative` });
-      noteText = this.drawn.illustrative ? 'One way it could be built, drawn to show the idea; nothing has measured it.' : '';
-      kickerText = 'What to draw';
+      choices.push({ modelId: null, label: STRUCTURE_UNCERTAIN });
+      choices.push({ modelId: this.coverage.illustrative.modelId, label: `${this.coverage.illustrative.title} (illustrative)` });
+      noteText = this.drawn.illustrative ? ILLUSTRATIVE_NOTE : '';
+      kickerText = INTERIOR_MODEL;
     }
     kicker.textContent = kickerText;
     kicker.style.display = choices.length > 0 ? '' : 'none';
@@ -1654,9 +1761,9 @@ export class InteriorMode {
     const min = document.getElementById('interior-scale-min');
     const max = document.getElementById('interior-scale-max');
     const mid = scale.querySelector('.interior-scale-mid');
-    if (min) min.textContent = kelvinWithCelsius(range.minK);
-    if (max) max.textContent = kelvinWithCelsius(range.maxK);
-    if (mid) mid.textContent = range.log ? 'temperature · log scale, each step ×10' : 'temperature';
+    if (min) min.textContent = temperatureValueText(range.minK, this.temperatureUnit);
+    if (max) max.textContent = temperatureValueText(range.maxK, this.temperatureUnit);
+    if (mid) mid.textContent = range.log ? 'Temperature (log scale)' : 'Temperature';
     // The band key line, only where a boundary is drawn with a band.
     const bandNote = document.getElementById('interior-band-note');
     if (bandNote) {
@@ -1671,9 +1778,7 @@ export class InteriorMode {
 
   private syncViewButtons(): void {
     const current = cutViewForAngle(this.cut.toDeg);
-    for (const view of CUT_VIEWS) {
-      document.getElementById(`interior-view-${view}`)?.classList.toggle('on', view === current);
-    }
+    for (const view of CUT_VIEWS) setRadio(`interior-view-${view}`, view === current);
   }
 
   private syncAngleReadout(): void {
@@ -1683,29 +1788,74 @@ export class InteriorMode {
     if (readout) readout.textContent = `${Math.round(this.cut.angleDeg)}°`;
   }
 
-  /** The Esc cascade: the popover, the picker, the pinned inspector, then the tool itself. */
+  /** The Esc cascade: the view options, the picker, a page back to its region's
+   *  summary (the model page back to the layers), the selection, then the tool
+   *  itself. The event is spent here, so the app behind hears no Escape. */
   private handleKeyDown = (event: KeyboardEvent) => {
     if (!this.active) return;
     if (event.key !== 'Escape') return;
-    if (this.evidenceClaim >= 0) {
-      this.closeEvidence();
+    event.preventDefault();
+    this.escapeOnce();
+  };
+
+  /** One step of the Esc cascade. */
+  private escapeOnce(): void {
+    if (this.optionsOpen) {
+      this.closeOptions();
       return;
     }
     if (this.picker.isOpen()) {
       this.picker.close();
       return;
     }
-    if (this.pinnedIndex >= 0) {
+    const page = this.page;
+    if (page.kind === 'details' || page.kind === 'evidence') {
+      this.showPage({ kind: 'summary', regionKey: page.regionKey });
+      return;
+    }
+    if (page.kind === 'model' || this.pinnedIndex >= 0) {
       this.setPinned(-1);
       return;
     }
     this.requestExit();
-  };
+  }
 
   private openPicker(): void {
     if (!this.active) return;
-    this.closeEvidence(); // one modal at a time
+    this.closeOptions(); // one modal at a time
+    this.clearHover();
     this.picker.open();
+    this.setBackgroundInert(true);
+  }
+
+  /** The view options card: a modal, so it and the picker close each other and
+   *  the panel and the strip go inert under it; focus goes back to its opener. */
+  private openOptions(opener: HTMLElement | null): void {
+    if (!this.active || this.optionsOpen) return;
+    this.picker.close();
+    this.optionsOpen = true;
+    this.optionsOpener = opener;
+    this.clearHover();
+    document.getElementById('interior-options')?.classList.add('visible');
+    this.setBackgroundInert(true);
+    (document.getElementById('interior-options-close') as HTMLElement | null)?.focus();
+  }
+
+  private closeOptions(): void {
+    if (!this.optionsOpen) return;
+    this.optionsOpen = false;
+    document.getElementById('interior-options')?.classList.remove('visible');
+    this.setBackgroundInert(false);
+    const opener = this.optionsOpener;
+    this.optionsOpener = null;
+    if (opener && opener.isConnected) opener.focus();
+  }
+
+  /** Under a modal the panel and the strip take no focus and no clicks. */
+  private setBackgroundInert(inert: boolean): void {
+    for (const id of ['interior-panel', 'interior-top']) {
+      document.getElementById(id)?.toggleAttribute('inert', inert);
+    }
   }
 
   // ---- camera ----------------------------------------------------------------
@@ -1713,39 +1863,71 @@ export class InteriorMode {
   private frameInitial(): void {
     this.controls.target.copy(ORIGIN);
     this.camera.up.set(0, 1, 0);
-    const distance = framingDistance(
-      this.camera.aspect,
-      FRAMING.fovDeg,
-      undefined,
-      isPhoneViewport() ? FRAMING.phoneWidthFraction : undefined,
-    );
-    orbitPose(FRAMING.azimuthDeg, FRAMING.elevationDeg, distance, this.camera.position);
+    // Posed at the fit for the stage as it is now; the offset follows from that pose.
+    const fit = this.fitFor(this.stageRect());
+    this.fitDistanceNow = fit;
+    this.distanceTargetNow = 0;
+    this.distanceSpan = 0;
+    orbitPose(FRAMING.azimuthDeg, FRAMING.elevationDeg, fit, this.camera.position);
     this.controls.update();
-    // Last, and from the posed camera: how much room the disc leaves above it is
-    // what decides the shift, so the pose has to be the one it will be drawn at.
     this.applyViewportFraming(true);
   }
 
-  /** The projection shift, screen space and orbit-independent: on a phone the
-   *  disc is centred in the free band above the sheet, however tall the reader
-   *  has drawn it, and never pushed under the Leave button; on desktop it sits
-   *  left of the panel, by half the panel's width, so the wedge never crowds it. */
-  private applyViewportFraming(atOnce = false): void {
+  /** The rectangle the body may occupy: the viewport less the strip along the
+   *  top and the sheet (phones) or the side panel (desktop), with air around it. */
+  private stageRect(): StageRect {
+    const width = window.innerWidth;
     const height = window.innerHeight;
+    const strip = document.getElementById('interior-top');
+    const top = strip ? Math.max(0, Math.round(strip.getBoundingClientRect().bottom)) : 0;
+    const obstacles = { top, bottom: 0, left: 0, right: 0 };
     if (isPhoneViewport()) {
       if (this.sheetHeightPx <= 0) this.sheetHeightPx = this.peekHeightPx();
-      const discRadiusPx = projectedRadiusPx(
-        BODY_RADIUS,
-        this.camera.position.distanceTo(ORIGIN),
-        this.camera.fov,
-        height,
-      );
-      const headroomPx = height / 2 - discRadiusPx - TOP_CLEAR_PX;
-      this.setViewOffsetTarget(0, Math.max(0, Math.min(this.sheetHeightPx / 2, headroomPx)), atOnce);
+      obstacles.bottom = this.sheetHeightPx + SHEET_BOTTOM_MARGIN_PX;
     } else {
       const panel = document.getElementById('interior-panel');
-      this.setViewOffsetTarget(panel ? Math.round(panel.getBoundingClientRect().width / 2) : 0, 0, true);
+      obstacles.right = panel ? Math.max(0, Math.round(width - panel.getBoundingClientRect().left)) : 0;
     }
+    const minSize = Math.round(FRAMING.stageMinFraction * Math.min(width, height));
+    return visibleStageRect(width, height, obstacles, FRAMING.stageMarginPx, minSize);
+  }
+
+  /** The distance that fits the body — its rings included when they show — to the stage. */
+  private fitFor(stage: StageRect): number {
+    const fit = fitDistance(stage, window.innerHeight, this.camera.fov, this.interiorScene.boundRadius(), FRAMING.fill);
+    return Number.isFinite(fit) ? THREE.MathUtils.clamp(fit, FRAMING.minDistance, FRAMING.maxDistance) : FRAMING.maxDistance;
+  }
+
+  /** The framing for the stage as it is now: the body fitted to it, keeping the
+   *  zoom the reader had relative to the last fit, and centred in it. On a phone
+   *  the distance and the shift glide with a sheet snap and stick to a finger on
+   *  the grip; on desktop the x lands at once, since the panel does not move. */
+  private applyViewportFraming(atOnce = false): void {
+    const stage = this.stageRect();
+    const fit = this.fitFor(stage);
+    const current = this.camera.position.distanceTo(ORIGIN);
+    const ratio = this.fitDistanceNow > 0 && current > 0
+      ? zoomRatio(current, this.fitDistanceNow, FRAMING.minDistance / fit, FRAMING.maxDistance / fit)
+      : 1;
+    this.fitDistanceNow = fit;
+    const distance = THREE.MathUtils.clamp(fit * ratio, FRAMING.minDistance, FRAMING.maxDistance);
+    const immediate = atOnce || this.reducedMotion.matches || this.sheetDrag !== null;
+    if (immediate) {
+      this.distanceTargetNow = 0;
+      this.setCameraDistance(distance);
+    } else {
+      this.distanceTargetNow = distance;
+      this.distanceSpan = Math.abs(distance - current);
+    }
+    const offset = stageViewOffset(stage, window.innerWidth, window.innerHeight);
+    this.setViewOffsetTarget(offset.x, offset.y, atOnce);
+  }
+
+  /** Move the camera along its own line of sight to a distance from the body. */
+  private setCameraDistance(distance: number): void {
+    const current = this.camera.position.distanceTo(ORIGIN);
+    if (current <= 0 || Math.abs(current - distance) < 1e-6) return;
+    this.camera.position.multiplyScalar(distance / current);
   }
 
   /** Ask for a projection offset. The x lands at once — the desktop panel does
@@ -1778,6 +1960,17 @@ export class InteriorMode {
   /** The framing's glide: the applied shift steps toward its target over
    *  SHEET_SNAP_S, so a sheet snap and the body's move read as one gesture. */
   private advanceViewShift(dt: number): void {
+    // The distance's glide, at the shift's pace; landed, the reader's own zoom is theirs again.
+    if (this.distanceTargetNow > 0) {
+      const current = this.camera.position.distanceTo(ORIGIN);
+      const remaining = Math.abs(this.distanceTargetNow - current);
+      if (remaining < 1e-6) {
+        this.distanceTargetNow = 0;
+      } else {
+        const step = this.distanceSpan > 0 ? (this.distanceSpan * dt) / SHEET_SNAP_S : remaining;
+        this.setCameraDistance(stepToward(current, this.distanceTargetNow, step));
+      }
+    }
     if (this.viewOffsetYPx === this.viewOffsetYTargetPx) return;
     const remainingPx = Math.abs(this.viewOffsetYTargetPx - this.viewOffsetYPx);
     const stepPx = this.viewOffsetSpanPx > 0 ? (this.viewOffsetSpanPx * dt) / SHEET_SNAP_S : remainingPx;
@@ -1791,7 +1984,7 @@ export class InteriorMode {
     if (isPhoneViewport()) this.setSheetHeight(this.sheetHeightPx > 0 ? this.sheetHeightPx : this.peekHeightPx(), { snap: false, frameAtOnce: true });
     else this.applyViewportFraming(true);
     this.interiorScene.onResize();
-    this.renderPinned(); // re-dock across the breakpoint
+    this.renderPage(); // the page's host rules follow the breakpoint
   }
 
   // ---- dev bridge (DEV-only via window.__moon) -----------------------------
@@ -1814,7 +2007,7 @@ export class InteriorMode {
   }
 
   devEsc(): void {
-    this.handleKeyDown(new KeyboardEvent('keydown', { key: 'Escape' }));
+    this.escapeOnce();
   }
 
   devView(view: CutView): boolean {
@@ -1929,15 +2122,46 @@ export class InteriorMode {
   /** Open the pinned region's claim of a kind in the popover (null closes it). */
   devEvidence(claimKind: ClaimKind | null): boolean {
     if (!this.active) return false;
+    const region = this.drawn.regionsInsideOut[this.pinnedIndex];
+    if (!region) return false;
     if (claimKind === null) {
-      this.closeEvidence();
+      if (this.page.kind === 'evidence') this.showPage({ kind: 'summary', regionKey: region.key });
       return true;
     }
-    const region = this.drawn.regionsInsideOut[this.pinnedIndex]?.region;
-    const claimIndex = region ? region.claims.findIndex((claim) => claim.kind === claimKind) : -1;
-    if (claimIndex < 0) return false;
-    this.openEvidence(claimIndex);
+    if (!region.region?.claims.some((claim) => claim.kind === claimKind)) return false;
+    this.showPage({ kind: 'evidence', regionKey: region.key, claimKind });
     return true;
+  }
+
+  /** Headless support: go to a page of the panel (a region page needs a selection). */
+  devPage(kind: InteriorPanelPage['kind']): boolean {
+    if (!this.active) return false;
+    if (kind === 'layers') {
+      this.setPinned(-1);
+      return true;
+    }
+    if (kind === 'model') {
+      this.showPage({ kind: 'model' });
+      return true;
+    }
+    const region = this.drawn.regionsInsideOut[this.pinnedIndex];
+    if (!region) return false;
+    if (kind === 'evidence') this.showPage({ kind: 'evidence', regionKey: region.key, claimKind: null });
+    else this.showPage({ kind, regionKey: region.key });
+    return true;
+  }
+
+  devUnit(unit: TemperatureUnit): boolean {
+    if (!this.active || (unit !== 'kelvin' && unit !== 'celsius')) return false;
+    this.setUnit(unit);
+    return true;
+  }
+
+  /** Headless support: put the view options up. */
+  devOptionsOpen(): boolean {
+    if (!this.active) return false;
+    this.openOptions(document.getElementById('interior-options-open'));
+    return this.optionsOpen;
   }
 
   devState(): InteriorDevState {
@@ -1972,7 +2196,10 @@ export class InteriorMode {
       })),
       hover: regionsInsideOut[this.hoverIndex]?.key ?? null,
       pinned: regionsInsideOut[this.pinnedIndex]?.key ?? null,
-      evidence: regionsInsideOut[this.pinnedIndex]?.region?.claims[this.evidenceClaim]?.kind ?? null,
+      evidence: this.evidenceKind(),
+      page: this.page.kind,
+      unit: this.temperatureUnit,
+      optionsOpen: this.optionsOpen,
       emphasis: { region: regionsInsideOut[this.emphasis.index]?.key ?? null, amount: this.emphasis.amount },
       timings: { ...this.openStopwatch.timings },
     };

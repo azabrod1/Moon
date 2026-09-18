@@ -9,19 +9,23 @@ import {
   CUT_ANIMATION_S,
   advanceCutTween,
   advanceEmphasis,
-  captionFor,
   createCutTween,
   createEmphasisState,
   cutTweenSettled,
   emphasisTarget,
+  modelStatusText,
+  radiusLineText,
   regionArtInsideOut,
   regionLooks,
   setCutTarget,
   stepToward,
-  thicknessNoteText,
+  subtitleFor,
+  thinLayersNoteText,
   unresolvedComposition,
 } from './interiorLogic';
+import { ILLUSTRATIVE_NOTE, THIN_LAYERS_ENLARGED } from './ui/interiorCopy';
 import { bodyTemperatureRange } from './temperatureScale';
+import { reviewDateText } from './ui/inspectorText';
 
 describe('the cut tween', () => {
   it('sets at once when not animated and remembers the chosen opening', () => {
@@ -158,20 +162,59 @@ describe('the look mapping', () => {
   });
 });
 
-describe('the caption', () => {
-  it('says what is drawn and how much to trust it', () => {
-    const earth = coverageFor('Earth');
-    expect(captionFor(earth, drawnFromModel(EARTH_MODEL))).toBe('Provisional model · radius 6,371 km');
-    const jupiter = coverageFor('Jupiter');
-    expect(captionFor(jupiter, drawnFromModel(JUPITER_DILUTE_MODEL))).toBe('Provisional model, one of 2 · radius 69,911 km');
+describe('the unresolved whole', () => {
+  it('says what this app has, then what anyone has', () => {
     const phobos = coverageFor('Phobos');
-    if (phobos.state !== 'poorlyConstrained' || !phobos.illustrative) throw new Error('Phobos carries an illustrative model');
-    expect(captionFor(phobos, drawnFromModel(phobos.illustrative))).toMatch(/^Illustrative scenario, not a measurement · radius /);
-    expect(captionFor(phobos, drawnUnresolved('Phobos', 11.1, unresolvedComposition(phobos)))).toBe('Interior unresolved · bulk density 1,860 kg/m³');
     const nix = coverageFor('Nix');
-    expect(captionFor(nix, drawnUnresolved('Nix', 20, unresolvedComposition(nix)))).toBe('Not yet modelled here · no measured density');
-    expect(unresolvedComposition(nix)).toBe('Not yet modelled here');
-    expect(unresolvedComposition(phobos)).toBe('Not measured');
+    // The legend row of an unresolved whole: what this app has, then what
+    // anyone has. A body nobody has measured must not read as an oversight here.
+    expect(unresolvedComposition(nix)).toBe('No interior model available in this app');
+    expect(unresolvedComposition(phobos)).toBe('Not known');
+  });
+});
+
+describe('the panel lines', () => {
+  const earth = coverageFor('Earth');
+  const jupiter = coverageFor('Jupiter');
+  const nix = coverageFor('Nix');
+  const phobos = coverageFor('Phobos');
+  if (phobos.state !== 'poorlyConstrained' || !phobos.illustrative) throw new Error('Phobos carries an illustrative model');
+
+  it('gives a drawn model no subtitle, and says what is wrong when there is none', () => {
+    expect(subtitleFor(earth, drawnFromModel(EARTH_MODEL))).toBe('');
+    // One of two competing models is still an ordinary model: the switch is where rivals are met.
+    expect(subtitleFor(jupiter, drawnFromModel(JUPITER_DILUTE_MODEL))).toBe('');
+    expect(subtitleFor(phobos, drawnFromModel(phobos.illustrative!))).toBe('Illustrative scenario');
+    expect(subtitleFor(phobos, drawnUnresolved('Phobos', 11.1, unresolvedComposition(phobos)))).toBe('Structure uncertain');
+    expect(subtitleFor(nix, drawnUnresolved('Nix', 20, unresolvedComposition(nix)))).toBe('No interior model available in this app');
+  });
+
+  it('says on the sources page which kind of model this is and when it was last looked at', () => {
+    expect(modelStatusText(earth, drawnFromModel(EARTH_MODEL)))
+      .toBe(`App model awaiting scientific review, last checked ${reviewDateText(EARTH_MODEL.reviewedOn)}`);
+    const reviewed = { ...EARTH_MODEL, review: 'reviewed' as const, reviewedOn: '2026-09-11' };
+    expect(modelStatusText(earth, drawnFromModel(reviewed))).toBe('Reviewed model, 11 Sep 2026');
+    // A scenario says it is one and carries no date: a date would read as currency.
+    expect(modelStatusText(phobos, drawnFromModel(phobos.illustrative!))).toBe(ILLUSTRATIVE_NOTE);
+    expect(modelStatusText(nix, drawnUnresolved('Nix', 20, 'x'))).toBe('No interior model available in this app');
+    expect(modelStatusText(phobos, drawnUnresolved('Phobos', 11.1, 'x'))).toBe('Structure uncertain');
+  });
+
+  it('gives the radius the convention it is measured by', () => {
+    expect(radiusLineText(drawnFromModel(EARTH_MODEL))).toBe('Radius 6,371 km, volumetric mean');
+    const equatorial = { ...JUPITER_DILUTE_MODEL, radiusConvention: 'equatorial' as const };
+    expect(radiusLineText(drawnFromModel(equatorial))).toBe('Radius 69,911 km, equatorial');
+    // An unresolved whole has a radius and no model to name a convention.
+    expect(radiusLineText(drawnUnresolved('Phobos', 11.1, 'x'))).toBe('Radius 11 km'); // formatKm: whole above 10
+    expect(radiusLineText(drawnUnresolved('Dactyl', 0.7, 'x'))).toBe('Radius 0.7 km');
+  });
+
+  it('names one hidden layer and counts several', () => {
+    expect(thinLayersNoteText(true, [])).toBe(THIN_LAYERS_ENLARGED);
+    expect(thinLayersNoteText(true, ['Crust', 'Mantle'])).toBe(THIN_LAYERS_ENLARGED);
+    expect(thinLayersNoteText(false, [])).toBe('');
+    expect(thinLayersNoteText(false, ['Crust'])).toBe('Crust is too thin to see at this size');
+    expect(thinLayersNoteText(false, ['Crust', 'Upper mantle'])).toBe('2 layers are too thin to see at this size');
   });
 });
 
@@ -203,12 +246,3 @@ describe('the emphasis', () => {
   });
 });
 
-describe('thicknessNoteText', () => {
-  it('says what the reader is looking at, and how many layers the true scale hides', () => {
-    expect(thicknessNoteText(true, 0)).toBe('Thin layers widened so you can see them');
-    expect(thicknessNoteText(true, 3)).toBe('Thin layers widened so you can see them');
-    expect(thicknessNoteText(false, 0)).toBe('Layers at their true thickness');
-    expect(thicknessNoteText(false, 1)).toBe('Layers at their true thickness · 1 too thin to see');
-    expect(thicknessNoteText(false, 2)).toBe('Layers at their true thickness · 2 too thin to see');
-  });
-});

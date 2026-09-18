@@ -11,7 +11,7 @@
 // ceremonies through their races instead: a rapid double pick, a pick during
 // the reveal and during the cross-fade, the Esc cascade with the picker and
 // the evidence popover closing each other, prefers-reduced-motion (every
-// move lands at once), the phone's docked inspector, the phone sheet's drag
+// move lands at once), the inspector page (a pin's summary and the pages on from it), the phone sheet's drag
 // (the height follows the finger, clamps at its peek, and a tap and a flick
 // each land at an end, with the body's framing following), the planetarium's
 // Tools row (it asks which world before it enters anything, and the world
@@ -420,29 +420,38 @@ async function escCascadeCase(context, viewport) {
   console.log(`\n== ${tag}`);
   const { page, errors } = await openTool(context, 'Earth');
   const pickerOpen = () => page.evaluate(() => document.getElementById('interior-picker').classList.contains('visible'));
-  const evidenceOpen = () => page.evaluate(() => document.getElementById('interior-evidence').classList.contains('visible'));
+  const optionsOpen = () => page.evaluate(() => document.getElementById('interior-options').classList.contains('visible'));
+  const pageShown = () => page.evaluate(() => document.getElementById('interior-inspector').dataset.page ?? 'layers');
   await page.evaluate(() => window.__moon.interiorPin('outerCore'));
-  check((await state(page)).pinned === 'outerCore', `${tag}: pin refused`);
-  check(await page.evaluate(() => window.__moon.interiorEvidence('existence')), `${tag}: evidence refused`);
-  check(await evidenceOpen(), `${tag}: the popover did not open`);
-  // Opening the picker closes the popover.
-  check(await page.evaluate(() => window.__moon.interiorPickerOpen()), `${tag}: picker refused`);
-  check(await pickerOpen(), `${tag}: the picker did not open`);
-  check(!(await evidenceOpen()) && (await state(page)).evidence === null, `${tag}: the popover stayed open under the picker`);
-  // Opening the popover closes the picker.
-  check(await page.evaluate(() => window.__moon.interiorEvidence('existence')), `${tag}: evidence refused with the picker open`);
-  check(await evidenceOpen() && !(await pickerOpen()), `${tag}: the picker stayed open under the popover`);
-  // The cascade.
-  await page.evaluate(() => window.__moon.interiorEsc());
   let current = await state(page);
-  check(!(await evidenceOpen()) && current.evidence === null && current.pinned === 'outerCore', `${tag}: the first Esc did not close only the popover`);
+  check(current.pinned === 'outerCore' && current.page === 'summary', `${tag}: a pin did not open the summary (page ${current.page})`);
+  check(await page.evaluate(() => window.__moon.interiorEvidence('existence')), `${tag}: evidence refused`);
+  current = await state(page);
+  check(current.page === 'evidence' && current.evidence === 'existence' && (await pageShown()) === 'evidence', `${tag}: the evidence page did not open`);
+  // The two modals close each other; a page is not a modal and stays under them.
+  check(await page.evaluate(() => window.__moon.interiorOptionsOpen()), `${tag}: view options refused`);
+  check(await optionsOpen(), `${tag}: view options did not open`);
+  check(await page.evaluate(() => window.__moon.interiorPickerOpen()), `${tag}: picker refused`);
+  check(await pickerOpen() && !(await optionsOpen()), `${tag}: view options stayed open under the picker`);
+  check(await page.evaluate(() => window.__moon.interiorOptionsOpen()), `${tag}: view options refused with the picker open`);
+  check(await optionsOpen() && !(await pickerOpen()), `${tag}: the picker stayed open under view options`);
+  check((await state(page)).page === 'evidence', `${tag}: the evidence page did not stay under the modals`);
+  check(await page.evaluate(() => document.getElementById('interior-panel').hasAttribute('inert')), `${tag}: the panel is not inert under a modal`);
+  // The cascade: the modal, then the page back to the summary, then the selection.
+  await page.evaluate(() => window.__moon.interiorEsc());
+  current = await state(page);
+  check(!(await optionsOpen()) && current.page === 'evidence', `${tag}: the first Esc did not close only view options`);
+  check(!(await page.evaluate(() => document.getElementById('interior-panel').hasAttribute('inert'))), `${tag}: the panel stayed inert after the modal closed`);
+  await page.evaluate(() => window.__moon.interiorEsc());
+  current = await state(page);
+  check(current.page === 'summary' && current.evidence === null && current.pinned === 'outerCore', `${tag}: the second Esc did not take the evidence page back to the summary`);
   await page.evaluate(() => window.__moon.interiorPickerOpen());
   await page.evaluate(() => window.__moon.interiorEsc());
   current = await state(page);
-  check(!(await pickerOpen()) && current.pinned === 'outerCore', `${tag}: the second Esc did not close only the picker`);
+  check(!(await pickerOpen()) && current.pinned === 'outerCore' && current.page === 'summary', `${tag}: the third Esc did not close only the picker`);
   await page.evaluate(() => window.__moon.interiorEsc());
   current = await state(page);
-  check(current.pinned === null, `${tag}: the third Esc did not unpin`);
+  check(current.pinned === null && current.page === 'layers' && (await pageShown()) === 'layers', `${tag}: the fourth Esc did not unselect`);
   await page.evaluate(() => window.__moon.interiorEsc());
   await page.waitForFunction(() => document.getElementById('interior-ui').style.display === 'none', undefined, { timeout: 60000 });
   await settle(page);
@@ -462,38 +471,60 @@ async function reducedMotionCase(context, viewport) {
   await settle(page);
   let current = await state(page);
   check(Math.abs(current.openingAngleDeg - 180) < 0.01, `${tag}: Section is at ${current.openingAngleDeg.toFixed(1)}° three frames after the view change; it should land at once`);
-  // The Readable | True segment through the DOM, the way a reader reaches it: the
-  // morph must not ease. True is the default, so Readable is the first move.
-  check((await state(page)).readable === false, `${tag}: the tool did not open at True`);
-  await page.evaluate(() => document.getElementById('interior-scale-readable').click());
+  // The Enlarge thin layers switch through the DOM, the way a reader reaches it
+  // (View options): the morph must not ease. Actual size is the default, so
+  // enlarging is the first move.
+  check((await state(page)).readable === false, `${tag}: the tool did not open at actual size`);
+  await page.evaluate(() => document.getElementById('interior-readable-toggle').click());
   await settle(page);
   current = await state(page);
-  check(current.readable === true && current.scaleBlend === 1, `${tag}: the Readable morph is at ${current.scaleBlend} three frames after the toggle; it should land at once`);
-  await page.evaluate(() => document.getElementById('interior-scale-true').click());
+  check(current.readable === true && current.scaleBlend === 1, `${tag}: the enlargement morph is at ${current.scaleBlend} three frames after the toggle; it should land at once`);
+  await page.evaluate(() => document.getElementById('interior-readable-toggle').click());
   await settle(page);
-  check((await state(page)).scaleBlend === 0, `${tag}: the Readable morph did not land at once on the way back`);
+  check((await state(page)).scaleBlend === 0, `${tag}: the enlargement morph did not land at once on the way back`);
   await page.evaluate(() => window.__moon.interiorPick('Mars'));
   await saneEnd(page, tag, { body: 'Mars', angleDeg: 180 });
   check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
   await page.close();
 }
 
-/** The pinned inspector takes over the sheet's scrolling body on a phone, and stands alone on desktop. */
+/** A pin opens the region's summary page inside the panel — the sheet's scrolling body on a phone,
+ *  the side panel on desktop, never a card of its own — and the pages lead on to the details, the
+ *  evidence and back to the layers. */
 async function dockedInspectorCase(context, viewport) {
-  const tag = `${viewport.name}/lifecycle docked inspector`;
+  const tag = `${viewport.name}/lifecycle inspector page`;
   console.log(`\n== ${tag}`);
   const { page, errors } = await openTool(context, 'Earth');
   await page.evaluate(() => window.__moon.interiorPin('outerCore'));
   await settle(page);
-  const inspector = await page.evaluate(() => {
+  const inspect = () => page.evaluate(() => {
     const root = document.getElementById('interior-inspector');
-    return { docked: root.classList.contains('docked'), parent: root.parentElement?.id ?? '', display: getComputedStyle(root).display, name: root.querySelector('.ii-name')?.textContent ?? '' };
+    const layers = document.getElementById('interior-page-layers');
+    return {
+      page: root.dataset.page ?? 'layers',
+      parent: root.parentElement?.id ?? '',
+      display: getComputedStyle(root).display,
+      layersDisplay: getComputedStyle(layers).display,
+      name: root.querySelector('.ii-name')?.textContent ?? '',
+      text: root.textContent ?? '',
+      standalone: root.classList.contains('pn'),
+    };
   });
-  const phone = viewport.width <= 640;
-  check(inspector.display !== 'none', `${tag}: the inspector is hidden after a pin`);
-  check(inspector.name === 'Outer core', `${tag}: the inspector shows "${inspector.name}"`);
-  check(inspector.docked === phone, `${tag}: docked=${inspector.docked} on a ${phone ? 'phone' : 'desktop'} viewport`);
-  check(inspector.parent === (phone ? 'interior-scroll' : 'interior-ui'), `${tag}: the inspector sits in #${inspector.parent}`);
+  let inspector = await inspect();
+  check(inspector.display !== 'none' && inspector.page === 'summary', `${tag}: the summary is not shown after a pin (page ${inspector.page})`);
+  check(inspector.layersDisplay === 'none', `${tag}: the layers page stayed visible under the summary`);
+  check(inspector.name === 'Outer core', `${tag}: the summary shows "${inspector.name}"`);
+  check(inspector.parent === 'interior-scroll' && !inspector.standalone, `${tag}: the summary is not the panel's own content (in #${inspector.parent}, standalone ${inspector.standalone})`);
+  check(!/of 95|rubric|published rule/i.test(inspector.text), `${tag}: the summary still carries the score`);
+  check(await page.evaluate(() => window.__moon.interiorPage('details')), `${tag}: the details page refused`);
+  inspector = await inspect();
+  check(inspector.page === 'details' && /Properties/.test(inspector.text) && /Heat sources/.test(inspector.text), `${tag}: the details page is missing its sections`);
+  check(await page.evaluate(() => window.__moon.interiorPage('evidence')), `${tag}: the evidence page refused`);
+  inspector = await inspect();
+  check(inspector.page === 'evidence' && /Structure/.test(inspector.text) && /Observed by seismology/.test(inspector.text), `${tag}: the evidence page is missing its groups`);
+  check(await page.evaluate(() => window.__moon.interiorPage('layers')), `${tag}: the layers refused`);
+  inspector = await inspect();
+  check(inspector.display === 'none' && inspector.layersDisplay !== 'none' && (await state(page)).pinned === null, `${tag}: the layers did not come back`);
   check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
   await page.close();
 }

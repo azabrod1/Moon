@@ -15,7 +15,8 @@
  *
  * The same inputs answer the note's question — how many regions are too thin
  * to see at their true thickness (`tooThinToSeeCount`), which is the count the
- * True note reports.
+ * True note reports, and which ones they are (`tooThinToSeeIndices`), so the
+ * note can name a single hidden layer. One rule answers both.
  *
  * Everything the user reads stays physical: depth labels, temperatures and
  * the pick pass through `toPhysicalFraction`, the inverse of what the faces
@@ -62,15 +63,40 @@ export function tooThinToSeeCount(
   minPx: number,
   projectedRadiusPx: number,
 ): number {
-  if (!(projectedRadiusPx > 0) || !(minPx > 0)) return 0;
   let count = 0;
+  forEachTooThinToSee(outerFractionsInsideOut, minPx, projectedRadiusPx, () => count++);
+  return count;
+}
+
+/** The same regions as `tooThinToSeeCount`, by their inside-out index, so a
+ *  caller can name them; the count is this list's length by construction. */
+export function tooThinToSeeIndices(
+  outerFractionsInsideOut: readonly number[],
+  minPx: number,
+  projectedRadiusPx: number,
+): number[] {
+  const indices: number[] = [];
+  forEachTooThinToSee(outerFractionsInsideOut, minPx, projectedRadiusPx, (index) => indices.push(index));
+  return indices;
+}
+
+/** The one rule, walked once: a region whose true thickness projects to fewer
+ *  than `minPx` pixels. A disc with no size yet has nothing to report, and the
+ *  count path allocates nothing. */
+function forEachTooThinToSee(
+  outerFractionsInsideOut: readonly number[],
+  minPx: number,
+  projectedRadiusPx: number,
+  visit: (index: number) => void,
+): void {
+  if (!(projectedRadiusPx > 0) || !(minPx > 0)) return;
   let previousOuter = 0;
-  for (const outer of outerFractionsInsideOut) {
+  for (let index = 0; index < outerFractionsInsideOut.length; index++) {
+    const outer = outerFractionsInsideOut[index];
     const thicknessPx = Math.max(0, outer - previousOuter) * projectedRadiusPx;
-    if (thicknessPx < minPx) count++;
+    if (thicknessPx < minPx) visit(index);
     previousOuter = outer;
   }
-  return count;
 }
 
 /**

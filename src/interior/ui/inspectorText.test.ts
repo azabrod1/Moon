@@ -8,14 +8,19 @@ import { coverageFor, interiorBodyIds } from '../data/interiorRegistry';
 import {
   atmospheresText,
   boundaryText,
+  depthBelowSurfaceText,
   depthRangeText,
   heatText,
+  NOT_KNOWN,
   pressureQuantityText,
   provenanceText,
   quantityText,
   reviewDateText,
+  roundToSignificant,
   temperatureQuantityText,
   temperatureRangeText,
+  temperatureValueText,
+  thicknessText,
   uncertaintyText,
 } from './inspectorText';
 
@@ -23,15 +28,22 @@ describe('inspectorText', () => {
   it('reads a quantity outer to inner with its basis, and unknown as no data', () => {
     expect(quantityText(endpoints(5700, 5400, 'src', 'inferred'), 'K')).toBe('5,400–5,700 K (inferred)');
     expect(quantityText(endpoints(1860, 1860, 'src', 'measured', 'none'), 'kg/m³')).toBe('1,860 kg/m³ (measured)');
-    expect(quantityText(UNKNOWN, 'K')).toBe('not known');
+    expect(quantityText(UNKNOWN, 'K')).toBe(NOT_KNOWN);
+    expect(NOT_KNOWN).toBe('Not known');
     expect(quantityText(endpoints(0.6, 0, 'src', 'modelled'), 'GPa')).toBe('0–0.6 GPa (modelled)');
     expect(quantityText({ kind: 'profile', samples: [{ radiusKm: 0, value: 10 }, { radiusKm: 1, value: 30 }], interpolation: 'linear', source: 's', basis: 'measured' }, 'K'))
       .toBe('10–30 K (measured, 2 samples)');
   });
 
-  it('gives depths below the surface for a region', () => {
+  it('gives depths below the surface for a region, and its thickness', () => {
     const outerCore = EARTH_MODEL.regions[1];
     expect(depthRangeText(outerCore, 1221.5, 6371)).toBe('2,891–5,150 km down');
+    // The panel labels these itself, so the text is the numbers and nothing else.
+    expect(depthBelowSurfaceText(outerCore, 1221.5, 6371)).toBe('2,891–5,150 km');
+    expect(thicknessText(outerCore, 1221.5)).toBe('2,259 km');
+    const crust = EARTH_MODEL.regions[4];
+    expect(depthBelowSurfaceText(crust, 6336, 6371)).toBe('0–35 km');
+    expect(thicknessText(crust, 6336)).toBe('35 km');
   });
 
   it('describes a boundary from its transition and its knowledge', () => {
@@ -47,18 +59,60 @@ describe('inspectorText', () => {
     expect(boundaryText(noted)).toBe('A sharp boundary. The depth is read from crater shapes.');
   });
 
-  it('reads a temperature with its celsius and a pressure with its atmospheres', () => {
-    expect(temperatureQuantityText(endpoints(3700, 1900, 'src', 'inferred'))).toBe('1,900–3,700 K · 1,627–3,427 °C (inferred)');
-    expect(temperatureQuantityText(UNKNOWN)).toBe('not known');
-    expect(pressureQuantityText(endpoints(136, 24, 'src', 'inferred'))).toBe('24–136 GPa (inferred); about 236,856–1.3 million atmospheres');
+  // The inspector used to print kelvin and celsius side by side; it now prints
+  // the ONE unit the reader chose, so the legend row and the inspector line
+  // never carry different numbers for the same layer.
+  it('reads a temperature in the one unit asked for, with its basis word', () => {
+    expect(temperatureQuantityText(endpoints(5400, 4000, 'src', 'inferred'))).toBe('4,000–5,400 K (inferred)');
+    expect(temperatureQuantityText(endpoints(5400, 4000, 'src', 'inferred'), 'celsius')).toBe('3,727–5,127 °C (inferred)');
+    expect(temperatureQuantityText(endpoints(3700, 1900, 'src', 'inferred'))).toBe('1,900–3,700 K (inferred)');
+    // A profile keeps its sample count beside the basis word.
+    const profile = { kind: 'profile' as const, samples: [{ radiusKm: 0, value: 10 }, { radiusKm: 1, value: 30 }], interpolation: 'linear' as const, source: 's', basis: 'measured' as const };
+    expect(temperatureQuantityText(profile)).toBe('10–30 K (measured, 2 samples)');
+    expect(temperatureQuantityText(UNKNOWN)).toBe(NOT_KNOWN);
+    expect(temperatureQuantityText(UNKNOWN, 'celsius', '—')).toBe('—');
+    // Below zero celsius the ends are joined by a word: a dash against a minus reads as arithmetic.
+    expect(temperatureQuantityText(endpoints(600, 250, 'src', 'inferred'), 'celsius')).toBe('−23 to 327 °C (inferred)');
+  });
+
+  it('reads one temperature in either unit, with a real minus sign', () => {
+    expect(temperatureValueText(5400, 'kelvin')).toBe('5,400 K');
+    expect(temperatureValueText(5400, 'celsius')).toBe('5,127 °C');
+    expect(temperatureValueText(250, 'celsius')).toBe('−23 °C');
+    expect(temperatureValueText(250, 'celsius')).not.toContain('-'); // U+002D is a hyphen, not a minus
+    expect(temperatureValueText(250, 'kelvin')).toBe('250 K');
+    // A hair below freezing is 0 °C, never "−0 °C".
+    expect(temperatureValueText(273.1, 'celsius')).toBe('0 °C');
+  });
+
+  it('reads a pressure with a gloss rounded to two significant figures', () => {
+    expect(pressureQuantityText(endpoints(136, 24, 'src', 'inferred'))).toBe('24–136 GPa (inferred); about 240,000–1.3 million atmospheres');
+    // 0.2 GPa is 1,974 atmospheres: the gloss is a feel for the size, so it says 2,000.
+    expect(pressureQuantityText(endpoints(0.2, 0.2, 'src', 'measured', 'none'))).toBe('0.2 GPa (measured); about 2,000 atmospheres');
+    expect(pressureQuantityText(UNKNOWN)).toBe(NOT_KNOWN);
     expect(atmospheresText(1_342_184)).toBe('1.3 million');
     expect(atmospheresText(236_856)).toBe('236,856');
   });
 
-  it('reads a legend row temperature as kelvin alone, and unknown as nothing', () => {
+  it('keeps a number to the significant figures it deserves', () => {
+    expect(roundToSignificant(236_856, 2)).toBe(240_000);
+    expect(roundToSignificant(1_342_184, 2)).toBe(1_300_000);
+    expect(roundToSignificant(1974, 2)).toBe(2000);
+    expect(roundToSignificant(5.678, 3)).toBeCloseTo(5.68, 12);
+    expect(roundToSignificant(-1974, 2)).toBe(-2000); // negatives round by magnitude
+    expect(roundToSignificant(0, 2)).toBe(0);
+    expect(roundToSignificant(Infinity, 2)).toBe(Infinity);
+    expect(roundToSignificant(1974, 0)).toBe(1974); // no digits to keep: the number as it came
+  });
+
+  it('reads a legend row temperature as the range alone, and unknown as nothing', () => {
     expect(temperatureRangeText(endpoints(1600, 1100, 'src', 'inferred'))).toBe('1,100–1,600 K');
     expect(temperatureRangeText(endpoints(5800, 5800, 'src', 'measured', 'none'))).toBe('5,800 K');
+    expect(temperatureRangeText(endpoints(5400, 4000, 'src', 'inferred'), 'celsius')).toBe('3,727–5,127 °C');
+    expect(temperatureRangeText(endpoints(600, 250, 'src', 'inferred'), 'celsius')).toBe('−23 to 327 °C');
+    expect(temperatureRangeText(endpoints(250, 250, 'src', 'inferred', 'none'), 'celsius')).toBe('−23 °C');
     expect(temperatureRangeText(UNKNOWN)).toBe('');
+    expect(temperatureRangeText(UNKNOWN, 'celsius')).toBe('');
   });
 
   it('prints a review date as a reader writes one', () => {

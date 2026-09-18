@@ -2,11 +2,22 @@
  * The words the inspector and the popover put beside the data (plan §8):
  * pure formatters from schema values to strings, so what a reader sees can
  * be pinned by a test and every number keeps its basis. A quantity reads
- * as its range with the basis word; unknown reads as "not known", never as
- * a number.
+ * as its range with the basis word; unknown reads as NOT_KNOWN, never as a
+ * number. A temperature is shown in ONE unit at a time — the one the reader
+ * chose — so a legend row and an inspector line never disagree, and a
+ * negative bound takes a real minus sign with the word "to" between the
+ * ends, because a dash beside a minus reads as arithmetic.
  */
 import type { Basis, HeatBudget, HeatKind, Quantity, Region, Sourced, Uncertainty } from '../data/interiorTypes';
 import type { EvidenceRelation } from '../data/interiorTypes';
+
+/** Which unit a temperature is shown in: the reader's choice, one at a time. */
+export type TemperatureUnit = 'kelvin' | 'celsius';
+
+/** The one phrase for a number this app does not have. It is capitalised
+ *  because it stands alone in a field, where a lowercase phrase reads like a
+ *  sentence with its start cut off. */
+export const NOT_KNOWN = 'Not known';
 
 export const BASIS_WORD: Readonly<Record<Basis, string>> = {
   measured: 'measured',
@@ -56,13 +67,23 @@ export function formatKm(km: number): string {
   return Math.abs(km) >= 10 ? NUMBER.format(km) : ONE_DECIMAL.format(km);
 }
 
+/** A number kept to `digits` significant figures: 236,856 → 240,000 at two.
+ *  A converted gloss must not claim precision its conversion never had. Zero
+ *  and the non-finite come back as they went in; negatives round by magnitude. */
+export function roundToSignificant(value: number, digits: number): number {
+  if (value === 0 || !Number.isFinite(value) || !(digits >= 1)) return value;
+  const exponent = Math.floor(Math.log10(Math.abs(value)));
+  const step = Math.pow(10, exponent - Math.floor(digits) + 1);
+  return Math.round(value / step) * step;
+}
+
 /**
  * A quantity as text: "inner–outer unit (basis)" for endpoints, the range
  * of the samples for a profile, and the no-data phrase for unknown. The
  * inner value is listed first because the inspector reads deep to shallow
  * within a region as the legend reads the body outside-in.
  */
-export function quantityText(quantity: Quantity, unit: string, noData = 'not known'): string {
+export function quantityText(quantity: Quantity, unit: string, noData: string = NOT_KNOWN): string {
   if (quantity.kind === 'unknown') return noData;
   if (quantity.kind === 'endpoints') {
     const inner = quantity.inner.value;
@@ -88,16 +109,22 @@ export function sourcedText(sourced: Sourced<string>): string {
   return sourced.note ? `${sourced.value}. ${sourced.note}` : sourced.value;
 }
 
-/** A region's span as depths below the surface, "top–bottom km". */
-export function depthRangeText(region: Region, innerRadiusKm: number, referenceRadiusKm: number): string {
+/** A region's span as depths below the surface, "0–40 km": the bare numbers,
+ *  for a panel whose own label already says what they measure. */
+export function depthBelowSurfaceText(region: Region, innerRadiusKm: number, referenceRadiusKm: number): string {
   const top = referenceRadiusKm - region.outerRadiusKm;
   const bottom = referenceRadiusKm - innerRadiusKm;
-  return `${formatKm(top)}–${formatKm(bottom)} km down`;
+  return `${formatKm(top)}–${formatKm(bottom)} km`;
 }
 
-/** The thickness of a region, km. */
+/** The same span for a line that carries no label of its own, "0–40 km down". */
+export function depthRangeText(region: Region, innerRadiusKm: number, referenceRadiusKm: number): string {
+  return `${depthBelowSurfaceText(region, innerRadiusKm, referenceRadiusKm)} down`;
+}
+
+/** The thickness of a region, "40 km"; the UI labels it. */
 export function thicknessText(region: Region, innerRadiusKm: number): string {
-  return `${formatKm(region.outerRadiusKm - innerRadiusKm)} km thick`;
+  return `${formatKm(region.outerRadiusKm - innerRadiusKm)} km`;
 }
 
 /** An uncertainty record as one line: a place for an interval or a spread, the note itself otherwise. */
@@ -159,21 +186,53 @@ function rangeText(low: number, high: number, format: (value: number) => string 
   return low === high ? format(low) : `${format(low)}–${format(high)}`;
 }
 
-/** A temperature with its celsius beside it: "1,900–3,700 K · 1,600–3,400 °C (inferred)". */
-export function temperatureQuantityText(quantity: Quantity, noData = 'not known'): string {
+/** U+2212, the minus sign a number takes; the hyphen on the keyboard is a hyphen. */
+const MINUS_SIGN = '\u2212';
+
+const TEMPERATURE_UNIT_SYMBOL: Readonly<Record<TemperatureUnit, string>> = { kelvin: 'K', celsius: '°C' };
+
+/** A temperature in whole degrees of the unit asked for, with no unit after
+ *  it: "5,400", "5,127", "−23". Rounding to whole is what makes −0.15 °C read
+ *  as 0 rather than as a minus sign in front of nothing. */
+function temperatureNumberText(kelvin: number, unit: TemperatureUnit): string {
+  const rounded = Math.round(unit === 'celsius' ? kelvin + KELVIN_ZERO_C : kelvin);
+  const value = rounded === 0 ? 0 : rounded; // −0 would print its own sign
+  const formatted = formatNumber(value);
+  return formatted.startsWith('-') ? `${MINUS_SIGN}${formatted.slice(1)}` : formatted;
+}
+
+/** The two ends of a temperature span in one unit, no unit after them: one
+ *  number when they round together, a dash between them, or the word "to"
+ *  when the low end is negative and a dash would sit against its minus sign. */
+function temperatureSpanText(lowKelvin: number, highKelvin: number, unit: TemperatureUnit): string {
+  const low = temperatureNumberText(lowKelvin, unit);
+  const high = temperatureNumberText(highKelvin, unit);
+  if (low === high) return low;
+  return low.startsWith(MINUS_SIGN) ? `${low} to ${high}` : `${low}–${high}`;
+}
+
+/** One temperature in the reader's unit: "5,400 K", "5,127 °C", "−23 °C". */
+export function temperatureValueText(kelvin: number, unit: TemperatureUnit): string {
+  return `${temperatureNumberText(kelvin, unit)} ${TEMPERATURE_UNIT_SYMBOL[unit]}`;
+}
+
+/** A temperature with its basis word, in the one unit the reader chose:
+ *  "4,000–5,400 K (inferred)", "3,727–5,127 °C (inferred)", and the no-data
+ *  phrase when nobody knows it. A profile also says how many samples it is. */
+export function temperatureQuantityText(quantity: Quantity, unit: TemperatureUnit = 'kelvin', noData: string = NOT_KNOWN): string {
   const bounds = quantityBounds(quantity);
   if (!bounds) return noData;
   const basis = bounds.samples > 0 ? `${bounds.basis}, ${bounds.samples} samples` : bounds.basis;
-  return `${rangeText(bounds.low, bounds.high)} K · ${rangeText(bounds.low + KELVIN_ZERO_C, bounds.high + KELVIN_ZERO_C)} °C (${basis})`;
+  return `${temperatureSpanText(bounds.low, bounds.high, unit)} ${TEMPERATURE_UNIT_SYMBOL[unit]} (${basis})`;
 }
 
-/** A temperature for a legend row: kelvin alone, "1,100–1,600 K" or "5,800 K",
- *  and '' when nobody knows it. The celsius and the basis word stay in the
- *  inspector, where there is room for them. */
-export function temperatureRangeText(quantity: Quantity): string {
+/** A temperature for a legend row: the range alone, "1,100–1,600 K" or
+ *  "5,800 K", and '' when nobody knows it. The basis word stays in the
+ *  inspector, where there is room for it. */
+export function temperatureRangeText(quantity: Quantity, unit: TemperatureUnit = 'kelvin'): string {
   const bounds = quantityBounds(quantity);
   if (!bounds) return '';
-  return `${rangeText(bounds.low, bounds.high)} K`;
+  return `${temperatureSpanText(bounds.low, bounds.high, unit)} ${TEMPERATURE_UNIT_SYMBOL[unit]}`;
 }
 
 /** "1.3 million" or "240,000": a count of atmospheres a reader can hold. */
@@ -184,12 +243,20 @@ export function atmospheresText(atmospheres: number): string {
 
 const ATMOSPHERES_PER_GPA = 9869;
 
+/** The gloss is a feel for the size, not a measurement: two significant
+ *  figures, so "about 240,000 atmospheres" never pretends to the last digit. */
+const ATMOSPHERES_DIGITS = 2;
+
 /** A pressure in gigapascals with a gloss in atmospheres: "24–136 GPa (inferred); about 240,000–1.3 million atmospheres". */
-export function pressureQuantityText(quantity: Quantity, noData = 'not known'): string {
+export function pressureQuantityText(quantity: Quantity, noData: string = NOT_KNOWN): string {
   const bounds = quantityBounds(quantity);
   if (!bounds) return noData;
   const basis = bounds.samples > 0 ? `${bounds.basis}, ${bounds.samples} samples` : bounds.basis;
-  const gloss = rangeText(bounds.low * ATMOSPHERES_PER_GPA, bounds.high * ATMOSPHERES_PER_GPA, atmospheresText);
+  const gloss = rangeText(
+    roundToSignificant(bounds.low * ATMOSPHERES_PER_GPA, ATMOSPHERES_DIGITS),
+    roundToSignificant(bounds.high * ATMOSPHERES_PER_GPA, ATMOSPHERES_DIGITS),
+    atmospheresText,
+  );
   return `${rangeText(bounds.low, bounds.high)} GPa (${basis}); about ${gloss} atmospheres`;
 }
 

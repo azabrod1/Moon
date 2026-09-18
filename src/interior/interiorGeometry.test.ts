@@ -8,6 +8,7 @@ import {
   toDisplayFraction,
   toPhysicalFraction,
   tooThinToSeeCount,
+  tooThinToSeeIndices,
 } from './interiorGeometry';
 
 // Earth's five regions, inside-out, as fractions of 6371 km.
@@ -140,5 +141,18 @@ describe('tooThinToSeeCount', () => {
     expect(tooThinToSeeCount(EARTH, 6, 0)).toBe(0);
     expect(tooThinToSeeCount(EARTH, 0, 200)).toBe(0);
     expect(tooThinToSeeCount([1], 6, 200)).toBe(0);
+  });
+
+  it('names the same regions it counts, so a note can point at one', () => {
+    // The crust is the outermost of the five; at 60 px the upper mantle goes too.
+    expect(tooThinToSeeIndices(EARTH, 6, 200)).toEqual([4]);
+    expect(tooThinToSeeIndices(EARTH, 6, 60)).toEqual([3, 4]);
+    expect(tooThinToSeeIndices(EARTH, 6, 2000)).toEqual([]);
+    expect(tooThinToSeeIndices(EARTH, 6, 0)).toEqual([]);
+    expect(tooThinToSeeIndices(EARTH, 0, 200)).toEqual([]);
+    // One rule: the count is the list's length at every size the disc can take.
+    for (const projectedPx of [0, 1, 17, 60, 200, 640, 2000]) {
+      expect(tooThinToSeeIndices(EARTH, 6, projectedPx)).toHaveLength(tooThinToSeeCount(EARTH, 6, projectedPx));
+    }
   });
 });

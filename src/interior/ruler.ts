@@ -6,15 +6,14 @@
  * Readable scale the ticks visibly stretch where a thin layer was widened
  * — the ruler is how the remap stays honest.
  *
- * The faces are terraced, so the ruler is not one straight line: region
- * k's segment lies on region k's own face (at its own terrace angle) from
- * its outer display radius in to its inner one, and the segments step
- * across the shells between them. Each point is a world position on a face;
- * the caller projects them. Pure: three math only, no DOM.
+ * One wedge is cut through the whole body, so the ruler is ONE straight
+ * line: every point is the chosen face's radial direction times a display
+ * radius, rim to centre, and the region segments are stretches of that one
+ * line rather than steps across a terrace. Each point is a world position
+ * on the face; the caller projects them. Pure: three math only, no DOM.
  */
 import * as THREE from 'three';
-import { cutFaceBasis, createCutFaceBasis, createCutFrame, terraceOpeningAngle, type CutFrame, type CutFaceSide } from './cutFrame';
-import { regionIndexAtRadius } from './interiorPick';
+import { cutFaceBasis, createCutFaceBasis, type CutFrame, type CutFaceSide } from './cutFrame';
 import { toDisplayFraction, type ReadableRemap } from './interiorGeometry';
 
 export interface RulerRegionInput {
@@ -41,7 +40,6 @@ export interface RulerInput {
   outerDisplay: readonly number[];
   regionsInsideOut: readonly RulerRegionInput[];
   annotations: readonly RulerAnnotationInput[];
-  terraceStep: number;
 }
 
 export interface RulerTick {
@@ -88,13 +86,13 @@ export function niceStepKm(radiusKm: number, maxTicks = 8): number {
   return NICE_STEPS[NICE_STEPS.length - 1];
 }
 
-const scratchFrame = createCutFrame();
 const scratchBasis = createCutFaceBasis();
 
 /**
  * The world position of a physical depth on the ruler's face: the depth
- * becomes a display radius through the remap, that radius names the region
- * whose face (at its own terrace angle) carries it.
+ * becomes a display radius through the remap, and that radius is measured
+ * along the face's radial from the centre. The face is the same one at
+ * every depth, so every ruler point lies on one line.
  */
 export function rulerPoint(input: RulerInput, depthKm: number, out = new THREE.Vector3()): THREE.Vector3 {
   const physical = Math.min(1, Math.max(0, 1 - depthKm / input.referenceRadiusKm));
@@ -103,13 +101,7 @@ export function rulerPoint(input: RulerInput, depthKm: number, out = new THREE.V
 }
 
 function rulerPointAtDisplay(input: RulerInput, display: number, out: THREE.Vector3): THREE.Vector3 {
-  const count = input.outerDisplay.length;
-  const regionIndex = regionIndexAtRadius(input.outerDisplay, display);
-  scratchFrame.view.copy(input.frame.view);
-  scratchFrame.side.copy(input.frame.side);
-  scratchFrame.hinge.copy(input.frame.hinge);
-  scratchFrame.openingAngle = terraceOpeningAngle(input.frame.openingAngle, count - 1 - regionIndex, input.terraceStep);
-  const basis = cutFaceBasis(scratchFrame, input.side, scratchBasis);
+  const basis = cutFaceBasis(input.frame, input.side, scratchBasis);
   return out.copy(basis.radial).multiplyScalar(display);
 }
 
@@ -152,9 +144,28 @@ export function rulerLayout(input: RulerInput, out: RulerLayout = createRulerLay
   return out;
 }
 
-/** Which face carries the ruler: the one turned more toward the camera. */
+/**
+ * Which face carries the ruler, and how squarely it meets the eye: the
+ * ruler goes on the face turned more toward the camera (`rulerSide`), and
+ * `rulerFacing` is that face's own normal against the line of sight — 1
+ * looking straight down it, 0 edge-on, negative once BOTH faces have turned
+ * away. The cut is body-locked, so a reader can orbit round behind it; the
+ * caller hides the ruler once the facing drops under its floor (a line of
+ * ticks laid on a face seen nearly edge-on is unreadable before the face
+ * turns away) rather than draw it over the back of a body they cannot see into.
+ */
 export function rulerSide(frame: CutFrame, cameraDirection: THREE.Vector3): CutFaceSide {
-  const a = cutFaceBasis(frame, 'a', scratchBasis).normal.dot(cameraDirection);
-  const b = cutFaceBasis(frame, 'b', scratchBasis).normal.dot(cameraDirection);
-  return a >= b ? 'a' : 'b';
+  return facingA(frame, cameraDirection) >= facingB(frame, cameraDirection) ? 'a' : 'b';
+}
+
+export function rulerFacing(frame: CutFrame, cameraDirection: THREE.Vector3): number {
+  return Math.max(facingA(frame, cameraDirection), facingB(frame, cameraDirection));
+}
+
+function facingA(frame: CutFrame, cameraDirection: THREE.Vector3): number {
+  return cutFaceBasis(frame, 'a', scratchBasis).normal.dot(cameraDirection);
+}
+
+function facingB(frame: CutFrame, cameraDirection: THREE.Vector3): number {
+  return cutFaceBasis(frame, 'b', scratchBasis).normal.dot(cameraDirection);
 }

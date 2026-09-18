@@ -1,26 +1,30 @@
 /**
  * The CPU pick for the Look-inside tool (plan §5, Picking): a pointer ray
- * against exactly what the studio draws — the terraced cut — using the same
- * cut frame, the same terrace rule and the same display radii as the
- * shaders, so a hover can never land on a discarded skin fragment, on a
- * face hidden under the shell above it, or on a far-side region through an
- * intact hemisphere. No GPU readback.
+ * against exactly what the studio draws — ONE wedge taken out of the whole
+ * body — read off the same cut frame and the same display radii the shaders
+ * read, so a hover can never land on a discarded skin fragment or reach a
+ * region through an intact hemisphere. No GPU readback: a readback would
+ * cost a stall every pointer move, and the geometry here is two surface
+ * kinds of closed form.
  *
- * The drawn geometry, inside-out region k of n with display radius R_k:
- *   its shell   a sphere of radius R_k, removed inside its own wedge
- *               (terraceOpeningAngle(θ, n−1−k)); region n−1's shell is the
- *               skin
- *   its faces   two half-discs of radius R_k on the wedge's bounding planes,
- *               each extending from the hinge along +radial, front side only
- * A face shows whichever region the hit radius falls in (the shader resolves
- * by radius), and the nearest surviving hit along the ray wins, which is
- * what the depth buffer does. Everything here is in the studio's world
- * space, where the body is a unit sphere at the origin. Like the scene, the
- * pick draws at most MAX_REGIONS regions (the validator refuses more), so
- * a hit never names a region the faces do not show.
+ * The cut removes the wedge from every layer alike, so those two kinds are
+ * all there is:
+ *   the skin   the unit sphere, gone wherever the wedge opens (insideWedge,
+ *              the very test the skin's shader applies per fragment). It
+ *              stands for the outermost drawn region, at display radius 1.
+ *   the faces  two half-discs of radius 1 on the wedge's bounding planes,
+ *              each running from the hinge along +radial, front side only.
+ *              One flat cut through the whole body, so a face shows every
+ *              region and the one at a hit is whichever the hit RADIUS
+ *              falls in — which is how the shader resolves that fragment.
+ * The nearest surviving hit along the ray wins, because that is what the
+ * depth buffer does with the same surfaces. Everything is in the studio's
+ * world space, where the body is a unit sphere at the origin. Like the
+ * scene, the pick draws at most MAX_REGIONS regions (the validator refuses
+ * more), so a hit never names a region the faces do not show.
  */
 import * as THREE from 'three';
-import { createCutFaceBasis, createCutFrame, cutFaceBasis, terraceOpeningAngle, wedgeAngle, type CutFrame } from './cutFrame';
+import { createCutFaceBasis, cutFaceBasis, insideWedge, type CutFaceSide, type CutFrame } from './cutFrame';
 import { MAX_REGIONS } from './data/interiorTypes';
 
 export interface PickLayout {
@@ -28,11 +32,9 @@ export interface PickLayout {
   frame: CutFrame;
   /** Display-space outer radii, inside-out and increasing; the last is 1. */
   outerDisplay: readonly number[];
-  /** The terrace step the scene uses (InteriorScene.TERRACE_STEP). */
-  terraceStep: number;
 }
 
-export type PickSurface = 'face' | 'shell' | 'skin';
+export type PickSurface = 'face' | 'skin';
 
 export interface PickHit {
   surface: PickSurface;
@@ -64,7 +66,9 @@ export function drawnRegionCount(outerDisplay: readonly number[]): number {
   return Math.min(outerDisplay.length, MAX_REGIONS);
 }
 
-const terraceFrame = createCutFrame();
+/** The two faces as a constant, so the loop below allocates nothing. */
+const FACE_SIDES: readonly CutFaceSide[] = ['a', 'b'];
+
 const faceBasis = createCutFaceBasis();
 const scratchPoint = new THREE.Vector3();
 const EPSILON = 1e-7;
@@ -95,36 +99,34 @@ export function pickInterior(
 ): PickHit | null {
   const count = drawnRegionCount(layout.outerDisplay);
   if (count === 0) return null;
+  const frame = layout.frame;
   let bestDistance = Infinity;
   let found = false;
-  terraceFrame.view.copy(layout.frame.view);
-  terraceFrame.side.copy(layout.frame.side);
-  terraceFrame.hinge.copy(layout.frame.hinge);
-  for (let index = 0; index < count; index++) {
-    const radius = layout.outerDisplay[index];
-    const angle = terraceOpeningAngle(layout.frame.openingAngle, count - 1 - index, layout.terraceStep);
-    terraceFrame.openingAngle = angle;
 
-    // The shell: the sphere's near side, unless the cut removed it there.
-    const shellDistance = sphereNearDistance(origin, direction, radius);
-    if (shellDistance > 0 && shellDistance < bestDistance) {
-      scratchPoint.copy(origin).addScaledVector(direction, shellDistance);
-      const removed = angle > 0 && wedgeAngle(terraceFrame, scratchPoint) < angle * 0.5;
-      if (!removed) {
-        bestDistance = shellDistance;
-        found = true;
-        out.surface = index === count - 1 ? 'skin' : 'shell';
-        out.regionIndex = index;
-        out.radiusDisplay = radius;
-        out.distance = shellDistance;
-        out.point.copy(scratchPoint);
-      }
+  // The skin: the sphere's near side, unless the cut removed it there. A
+  // removed near side is no window onto the far one — the far side is
+  // discarded inside the same wedge — so only the near root is tried, and
+  // where both are gone the faces are what the ray can still meet.
+  const skinDistance = sphereNearDistance(origin, direction, 1);
+  if (skinDistance > 0) {
+    scratchPoint.copy(origin).addScaledVector(direction, skinDistance);
+    if (!insideWedge(frame, scratchPoint)) {
+      bestDistance = skinDistance;
+      found = true;
+      out.surface = 'skin';
+      out.regionIndex = count - 1;
+      out.radiusDisplay = 1;
+      out.distance = skinDistance;
+      out.point.copy(scratchPoint);
     }
+  }
 
-    if (angle <= 0) continue;
-    // The two faces: front side of a half-disc plane through the origin.
-    for (const side of ['a', 'b'] as const) {
-      const basis = cutFaceBasis(terraceFrame, side, faceBasis);
+  // The two faces: the front side of a half-disc plane through the origin,
+  // at the FULL opening angle — one plane for every region, so which region
+  // answers follows from the hit's radius and never from which face it was.
+  if (frame.openingAngle > 0) {
+    for (const side of FACE_SIDES) {
+      const basis = cutFaceBasis(frame, side, faceBasis);
       const facing = direction.dot(basis.normal);
       if (facing >= -EPSILON) continue; // back side or edge-on
       const faceDistance = -origin.dot(basis.normal) / facing;
@@ -132,7 +134,7 @@ export function pickInterior(
       scratchPoint.copy(origin).addScaledVector(direction, faceDistance);
       if (scratchPoint.dot(basis.radial) < 0) continue; // the other half of the disc
       const hitRadius = scratchPoint.length();
-      if (hitRadius > radius) continue;
+      if (hitRadius > 1) continue; // past the rim: the plane runs on, the face does not
       bestDistance = faceDistance;
       found = true;
       out.surface = 'face';

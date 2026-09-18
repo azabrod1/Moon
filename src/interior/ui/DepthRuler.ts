@@ -1,7 +1,7 @@
 /**
  * The depth ruler on screen (plan §6): an SVG overlay that draws the
- * ruler.ts layout each frame — the region segments as lines following the
- * terraces, km ticks with labels thinned to the spacing the projection
+ * ruler.ts layout each frame — the region segments as lines along the one
+ * straight ruler, km ticks with labels thinned to the spacing the projection
  * leaves, region names where the projection leaves room (the widest
  * segments first, none printed over another), annotation brackets on
  * tiers below that step apart wherever a span or a name would overlap

@@ -16,13 +16,14 @@
  * own width. The regions blend outside-in, so the loop is branch-free and a
  * thin crust is never lost to a texel.
  *
- * Depth is drawn as in a cutaway illustration. A sharp boundary carries a
- * shadow line just inside it (the layer above overhangs the one below) and
- * a light rim just outside (the lip that catches the key); both fade out as
- * the boundary's blend widens, because a gradual transition has no lip.
- * Within a region the face darkens from top to bottom by the region's
- * depthGradient, and the disc's rim darkens under the skin's overhang. A
- * crease shadow darkens the hinge where the two faces meet, gone at Section.
+ * The face is a plane, drawn as a diagram of a solid. Within a region it
+ * darkens from top to bottom by the region's depthGradient; a sharp
+ * boundary carries a hairline (one pixel, a little darker, the way a
+ * drawing marks a contact) where a gradual one carries none, its blend
+ * being its own edge; and a crease shadow darkens the hinge where the two
+ * faces meet at a right angle, gone at Section where they are one plane.
+ * Nothing bevels, glows or overhangs: a lip and a rim on every boundary made
+ * the section read as a turned bowl, and a section is a cut.
  *
  * Patterns are 3-D fields in BODY space (the world position turned by the
  * inverse of the body's pose), so a face shows a coherent slice of a solid
@@ -44,20 +45,12 @@
  * plasma) has no albedo at all: its patterned palette is its emission,
  * scaled by where the region sits in the body's heat (uHeatLevel).
  *
- * The terraces cast: the inner region's shell stands on the next face just
- * outside their boundary, and a soft contact shadow at its foot is what
- * makes a ledge read as a ledge rather than a painted ring.
- *
- * The same shader also dresses the terrace shells (InteriorScene): a shell
- * is one region's outer surface, so its variant samples that region
- * directly (uShellRegion) instead of resolving by radius, with no crease
- * and no lip lines.
- *
  * Emphasis is uniform-driven (plan §4): uEmphasis names a region and
- * uEmphasisAmount eases in. The named region brightens and its boundaries
- * take a light outline; every other region desaturates and its heat dims,
- * so the eye goes where the pointer or the legend row says. Nothing
- * extrudes and nothing recompiles.
+ * uEmphasisAmount eases in. The named region's boundaries take a light
+ * outline, a couple of screen pixels wide at any zoom, and its self-lit
+ * floor lifts a little; nothing else changes — dimming the rest made a
+ * pinned crust grey out almost the whole interior, and the outline is enough
+ * to say where the eye should go. Nothing extrudes and nothing recompiles.
  *
  * Temperature mode (plan §5, uDisplayMode 1) is a diagram: the face is
  * unlit (diffuse black, emissive only) and its colour is the body's
@@ -68,11 +61,11 @@
  * the coldest colour, and emphasis there is the outline alone.
  *
  * Uncertainty of a boundary's location (plan §6) is a faint hatched band
- * straddling it in Temperature mode, sized from the knowledge record; in
- * Composition mode the boundary's blend is widened to the band instead —
- * a soft edge is the honest picture of a line nobody has placed, and a
- * hatch across half a radius reads as wood grain. A distributed transition
- * stays the blend it already is, so the treatments compose.
+ * straddling it, sized from the knowledge record, in both modes: where the
+ * line might be is a fact about our knowledge, not a physical transition,
+ * so it never widens the composition blend — a boundary the model calls
+ * sharp stays sharp under the band, and a distributed transition stays the
+ * blend it already is, so the treatments compose.
  *
  * Injection points, in the order meshphysical.glsl.js runs them:
  *   after <color_fragment>        the region resolve → diffuseColor.rgb
@@ -402,21 +395,6 @@ vec3 sectionNoDataColor() {
   return mix(vec3(0.045), vec3(0.15), max(hatchA, hatchB));
 }
 
-// Emphasis: the rest desaturate a little and their heat dims a little, so
-// the named region is the one still fully alive (its own lift is a higher
-// ambient floor, in the emissive stage, never a brighter albedo). emphasisMix
-// is this pixel's membership of the named region (blended across a soft
-// boundary like everything else). In Temperature mode nothing shifts: the
-// hue is the legend's, and only the outline remains.
-void sectionEmphasis(float emphasisMix, inout vec3 albedo, inout vec3 heat, inout float glow) {
-  if (uEmphasisAmount <= 0.0 || uDisplayMode == 1) return;
-  float other = uEmphasisAmount * (1.0 - emphasisMix);
-  float luminance = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
-  albedo = mix(albedo, vec3(luminance) * 0.85, other * 0.4);
-  heat *= 1.0 - 0.3 * other;
-  glow *= 1.0 - 0.3 * other;
-}
-
 // The hue of a heat colour, max channel 1: what a hot region's surviving albedo takes on.
 vec3 sectionHeatHue(vec3 heat) {
   return heat / max(max(max(heat.r, heat.g), heat.b), 1e-3);
@@ -539,10 +517,9 @@ vec4 sectionSample(int k, vec3 bodyPoint, float regionT, out float heatMask) {
 
 /** After <color_fragment>: resolve the region and its blended look. */
 const SECTION_RESOLVE = /* glsl */ `
-// The body sits at the origin and every face plane passes through it, so the
-// world position's length IS the display radius — for a terrace disc scaled
-// to its region's radius as much as for the crust's full disc (the local
-// coordinate would be the unit geometry's, and read every disc as the whole body).
+// The body sits at the origin and both face planes pass through it, so the
+// world position's length IS the display radius — what the pick and the ruler
+// measure too, so the three agree by construction.
 float sectionRadius = length(vSectionWorld);
 float sectionPx = max(fwidth(sectionRadius), 1e-5); // one screen pixel, display units
 vec3 sectionBodyPoint = uWorldToBody * vSectionWorld;
@@ -571,9 +548,9 @@ float interiorTempKnown = uTempKnown[0];
 for (int k = 1; k < ${MAX_REGIONS}; k++) {
   if (k >= uCount) break;
   float boundary = uOuter[k - 1];
-  // In Composition an uncertain boundary is a wide blend; in Temperature it is a hatched band.
-  float bandHalf = uDisplayMode == 1 ? 0.0 : 0.5 * max(uBandHigh[k - 1] - uBandLow[k - 1], 0.0);
-  float blendWidth = max(uBlend[k - 1], bandHalf);
+  // The blend is the physical transition's width and nothing else: where the
+  // line might be is the hatched band below, never a wider blend.
+  float blendWidth = uBlend[k - 1];
   float halfWidth = max(blendWidth, sectionPx);
   float t = smoothstep(boundary - halfWidth, boundary + halfWidth, sectionRadius);
   float regionT = clamp((uOuter[k] - sectionRadius) / max(uOuter[k] - boundary, 1e-4), 0.0, 1.0);
@@ -593,8 +570,8 @@ for (int k = 1; k < ${MAX_REGIONS}; k++) {
   emphasisMix = mix(emphasisMix, uEmphasis == k ? 1.0 : 0.0, t);
   interiorTempT = mix(interiorTempT, sectionTempT(k, regionT), t);
   interiorTempKnown = mix(interiorTempKnown, uTempKnown[k], t);
-  if (uDisplayMode == 1 && uBandHigh[k - 1] > uBandLow[k - 1]) {
-    // Where the boundary might be: a faint hatch across the whole band.
+  if (uBandHigh[k - 1] > uBandLow[k - 1]) {
+    // Where the boundary might be: a faint hatch across the whole band, in both modes.
     float inBand = step(uBandLow[k - 1], sectionRadius) * step(sectionRadius, uBandHigh[k - 1]);
     float stripes = 0.5 + 0.5 * sin((gl_FragCoord.x - gl_FragCoord.y) * 0.9);
     bandShade *= 1.0 - 0.16 * inBand * stripes;
@@ -604,23 +581,12 @@ for (int k = 1; k < ${MAX_REGIONS}; k++) {
     float lineDistance = (sectionRadius - boundary) / (sectionPx * 1.4);
     interiorOutline = max(interiorOutline, exp(-lineDistance * lineDistance));
   }
-  // The cutaway's lip: a shadow just inside a sharp boundary, a light rim
-  // just outside it; neither where the transition is a physical blend.
+  // A sharp boundary is a hairline, a pixel wide and a little darker, the way a
+  // diagram marks a contact; a physical blend is its own edge and gets none.
   float crisp = 1.0 - smoothstep(sectionPx * 1.5, sectionPx * 6.0, blendWidth);
-  float inside = (boundary - sectionRadius) / (sectionPx * 3.5);
-  float shadow = exp(-inside * inside) * step(0.0, inside);
-  float outside = (sectionRadius - boundary) / (sectionPx * 1.6);
-  float rim = exp(-outside * outside) * step(0.0, outside);
-  boundaryShade *= 1.0 - 0.42 * crisp * shadow;
-  boundaryShade *= 1.0 + 0.22 * crisp * rim;
-  // The terrace above: the inner region's shell stands on this face just outside
-  // the boundary, and its foot casts a soft contact shadow, sized to the body.
-  float foot = (sectionRadius - boundary) / max(0.06 * boundary, sectionPx * 2.0);
-  boundaryShade *= 1.0 - 0.35 * crisp * exp(-foot * foot) * step(0.0, foot);
+  float hairline = (sectionRadius - boundary) / (sectionPx * 0.9);
+  boundaryShade *= 1.0 - 0.2 * crisp * exp(-hairline * hairline);
 }
-// The skin overhangs the disc's rim.
-float underSkin = (uOuter[uCount - 1] - sectionRadius) / (sectionPx * 3.5);
-boundaryShade *= 1.0 - 0.4 * exp(-underSkin * underSkin) * step(0.0, underSkin);
 // The crease where the two faces meet, gone at Section where they are coplanar.
 float interiorCrease = 1.0 - uCorner * 0.45 * (1.0 - smoothstep(0.0, 0.45, vSectionLocal.x));
 float interiorShade = (1.0 - interiorDepthShade) * interiorCrease * boundaryShade * bandShade;
@@ -630,48 +596,12 @@ if (uEmphasis == uCount - 1) {
   interiorOutline = max(interiorOutline, exp(-rimDistance * rimDistance));
 }
 float interiorEmphasis = emphasisMix;
-sectionEmphasis(emphasisMix, interiorAlbedo, interiorHeat, interiorGlow);
 // A hot face is a light more than a surface: its albedo gives way to its heat, and
 // what survives takes the heat's hue, so liquid iron stays iron rather than going grey.
 // A self-lit region has no albedo at all.
 interiorAlbedo = mix(interiorAlbedo, interiorAlbedo * sectionHeatHue(interiorHeat), 0.5 * interiorHeatStrength);
 diffuseColor.rgb = interiorAlbedo * interiorShade * (1.0 - 0.55 * interiorHeatStrength) * (1.0 - interiorSelfLit);
 if (uDisplayMode == 1) diffuseColor.rgb = vec3(0.0); // a diagram is unlit
-`;
-
-/** The shell variant of the resolve: one region's outer surface, sampled
- *  directly, with neither crease nor lip lines (its edges are the cut). */
-const SHELL_RESOLVE = /* glsl */ `
-vec3 sectionBodyPoint = uWorldToBody * vSectionWorld;
-float shellHeatMask;
-vec4 shellSample = sectionSample(uShellRegion, sectionBodyPoint, 0.0, shellHeatMask);
-vec3 interiorAlbedo = shellSample.rgb;
-float interiorHeight = shellSample.a;
-vec3 interiorHeat = uHeat[uShellRegion] * shellHeatMask;
-float interiorHeatStrength = uHeatStrength[uShellRegion];
-float interiorSelfLit = uSelfLit[uShellRegion];
-// A shell seen at a grazing angle would flare in the softbox as a bright sliver along
-// the hinge: its sheen is held down (rough, and its metalness fading as it turns away).
-float shellFacing = abs(dot(normalize(vNormal), normalize(vViewPosition)));
-float interiorRough = max(uRough[uShellRegion], 0.6);
-float interiorMetal = uMetal[uShellRegion] * sqrt(shellFacing);
-float interiorGlow = uGlow[uShellRegion];
-float interiorRelief = uRelief[uShellRegion];
-float interiorAmbient = uAmbient[uShellRegion];
-// A glowing sphere still reads as a sphere: its heat falls off toward the
-// limb (the emission is not lambertian, but the eye expects the form).
-float shellLimb = 0.6 + 0.4 * abs(dot(normalize(vNormal), normalize(vViewPosition)));
-interiorHeat *= shellLimb;
-float interiorShade = 1.0;
-float bandShade = 1.0;
-float interiorOutline = 0.0;
-float interiorTempT = sectionTempT(uShellRegion, 0.0);
-float interiorTempKnown = uTempKnown[uShellRegion];
-float interiorEmphasis = uShellRegion == uEmphasis ? 1.0 : 0.0;
-sectionEmphasis(interiorEmphasis, interiorAlbedo, interiorHeat, interiorGlow);
-interiorAlbedo = mix(interiorAlbedo, interiorAlbedo * sectionHeatHue(interiorHeat), 0.5 * interiorHeatStrength);
-diffuseColor.rgb = interiorAlbedo * (1.0 - 0.55 * interiorHeatStrength) * (1.0 - interiorSelfLit);
-if (uDisplayMode == 1) diffuseColor.rgb = vec3(0.0);
 `;
 
 const SECTION_ROUGHNESS = /* glsl */ `
@@ -725,12 +655,7 @@ if (uDisplayMode == 1) {
 totalEmissiveRadiance += vec3(0.45) * interiorOutline * uEmphasisAmount;
 `;
 
-export interface ShellOptions {
-  /** The region (inside-out index) whose outer surface this material dresses. */
-  shellRegion: { value: number };
-}
-
-export function createSectionMaterial(uniforms: SectionUniforms, shell?: ShellOptions): THREE.MeshStandardMaterial {
+export function createSectionMaterial(uniforms: SectionUniforms): THREE.MeshStandardMaterial {
   const material = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     roughness: 1,
@@ -739,19 +664,17 @@ export function createSectionMaterial(uniforms: SectionUniforms, shell?: ShellOp
   });
   material.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);
-    if (shell) shader.uniforms.uShellRegion = shell.shellRegion;
-    const pars = shell ? `${SECTION_PARS_FRAGMENT}\nuniform int uShellRegion;` : SECTION_PARS_FRAGMENT;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>\n${SECTION_PARS_VERTEX}`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>\n${SECTION_VERTEX}`);
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', `#include <common>\n${pars}`)
-      .replace('#include <color_fragment>', `#include <color_fragment>\n${shell ? SHELL_RESOLVE : SECTION_RESOLVE}`)
+      .replace('#include <common>', `#include <common>\n${SECTION_PARS_FRAGMENT}`)
+      .replace('#include <color_fragment>', `#include <color_fragment>\n${SECTION_RESOLVE}`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>\n${SECTION_ROUGHNESS}`)
       .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>\n${SECTION_METALNESS}`)
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>\n${SECTION_NORMAL}`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>\n${SECTION_EMISSIVE}`);
   };
-  material.customProgramCacheKey = () => (shell ? 'interiorShell' : 'interiorSection');
+  material.customProgramCacheKey = () => 'interiorSection';
   return material;
 }

@@ -2643,6 +2643,8 @@ function installDevHooks() {
     interiorScale: (mode: 'true' | 'readable', blend?: number) => interiorMode?.devScale(mode, blend) ?? false,
     interiorTime: (seconds: number) => interiorMode?.devTime(seconds) ?? false,
     interiorFreeze: (on: boolean) => interiorMode?.devFreeze(on) ?? false,
+    interiorCutFollow: (on: boolean) => interiorMode?.devCutFollow(on) ?? false,
+    interiorResetView: () => interiorMode?.devResetView() ?? false,
     interiorOrbit: (azimuthDeg: number, elevationDeg?: number, distance?: number) =>
       interiorMode?.devOrbit(azimuthDeg, elevationDeg, distance) ?? false,
     interiorReady: () => interiorMode?.devReady() ?? false,

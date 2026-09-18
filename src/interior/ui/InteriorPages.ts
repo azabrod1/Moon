@@ -19,7 +19,10 @@
  *             one), the radius convention, competing pictures, and the
  *             earlier ones
  *
- * The hover card is here too: the desktop's preview beside the pointer.
+ * A thin layer's summary carries the Magnified section (thinLayerInset): the
+ * strip of the radial profile around it at the layer's own scale, because on
+ * the globe such a layer is a hairline the reader can be told about but not
+ * look at. The hover card is here too: the desktop's preview beside the pointer.
  *
  * Every number goes through inspectorText in the reader's unit, so the words
  * are the ones the tests pin. A region drawn as an unresolved whole has no
@@ -27,12 +30,13 @@
  */
 import type { ClaimKind, Coverage } from '../data/interiorTypes';
 import { coverageBulk, coverageModels } from '../data/interiorTypes';
-import { FAMILY_LABEL, PHASE_LABEL } from '../data/artParams';
+import { FAMILY_LABEL, PHASE_LABEL, incandescence, swatchHex } from '../data/artParams';
 import type { DrawnModel, DrawnRegion } from '../drawnModel';
 import { STANDING_READS_AS, regionEvidenceSummary, type EvidenceSummary } from '../evidenceSummary';
-import { modelStatusText, radiusValueText } from '../interiorLogic';
+import { modelStatusText, radiusValueText, regionArtInsideOut } from '../interiorLogic';
 import { element } from './dom';
 import { evidenceGroups } from './evidenceView';
+import { isThinLayer, renderThinLayerInset, thinLayerInset } from './thinLayerInset';
 import {
   BOUNDARY_ABOVE, DENSITY, DEPTH_BELOW_SURFACE, DETAILS, EARLIER_MODELS, EVIDENCE_AND_SOURCES, HEAT_SOURCES,
   INTERPRETATION, LAYERS, LIMITATIONS, MODEL_AND_SOURCES, OBSERVATION, PRESSURE, PROPERTIES, RELATED_STRUCTURES,
@@ -178,9 +182,28 @@ function renderSummary(root: HTMLElement, context: PageContext): void {
   facts.append(fact(DEPTH_BELOW_SURFACE, depthBelowSurfaceText(schema, region.innerRadiusKm, drawn.referenceRadiusKm)));
   facts.append(fact(TEMPERATURE, temperatureRangeText(schema.temperatureK, unit) || NOT_KNOWN));
   root.append(facts);
+  appendThinLayerInset(root, drawn, context.index);
   const actions = element('div', 'ii-actions');
   actions.append(actionButton(DETAILS, context.onDetails), actionButton(EVIDENCE_AND_SOURCES, () => context.onEvidence(null)));
   root.append(actions);
+}
+
+/** The Magnified section, for a layer too thin to see on the globe at its
+ *  true size: the bands wear the legend's swatches, built here exactly as the
+ *  legend builds them, so the strip and the list agree on every colour. */
+function appendThinLayerInset(root: HTMLElement, drawn: DrawnModel, index: number): void {
+  if (!isThinLayer(drawn, index)) return;
+  const art = regionArtInsideOut(drawn);
+  const swatches = drawn.regionsInsideOut.map((region, regionIndex) => swatchHex(art[regionIndex], incandescence(region.temperatureK ?? 0)));
+  const layout = thinLayerInset(drawn, index, swatches);
+  if (!layout) return;
+  const figure = element('figure', 'ii-inset');
+  figure.append(element('div', 'ii-sec', layout.title));
+  const strip = renderThinLayerInset(layout);
+  strip.setAttribute('width', '100%');
+  figure.append(strip);
+  figure.append(element('figcaption', 'ii-inset-caption', layout.caption));
+  root.append(figure);
 }
 
 // ---- the details ------------------------------------------------------------

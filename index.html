@@ -1994,6 +1994,16 @@
     .ii-actions { display: flex; gap: 8px; margin-top: 14px; }
     .ii-action { min-height: 38px; font-size: 12px; }
     .ii-sec { margin-top: 14px; padding-top: 8px; border-top: 1px solid var(--line-dim); font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--t3); }
+    /* The Magnified section: a thin layer's strip at its own scale, on its summary page. */
+    .ii-inset { margin: 0; }
+    .interior-inset { display: block; width: 100%; height: auto; margin-top: 8px; border-radius: 6px; background: rgba(0, 0, 0, 0.28); }
+    .interior-inset .inset-selected { stroke: rgba(255, 255, 255, 0.85); }
+    .interior-inset .inset-boundary { stroke: rgba(0, 0, 0, 0.6); }
+    .interior-inset .inset-continues { stroke: rgba(255, 255, 255, 0.35); }
+    .interior-inset .inset-label { fill: rgba(255, 255, 255, 0.82); font-family: inherit; paint-order: stroke fill; stroke: rgba(0, 0, 0, 0.55); stroke-width: 2.5px; stroke-linejoin: round; }
+    .interior-inset .inset-depth { font-family: var(--font-mono); font-size: 9.5px; fill: rgba(255, 255, 255, 0.72); }
+    .interior-inset .inset-thickness { fill: #fff; font-weight: 600; }
+    .ii-inset-caption { margin-top: 6px; font-size: 11px; line-height: 1.4; color: var(--t2); }
     .ii-line { display: grid; grid-template-columns: 108px 1fr; gap: 8px; padding: 5px 0; font-size: 11.5px; line-height: 1.45; }
     .ii-key { color: var(--t3); }
     .ii-val { color: var(--t2); }
@@ -5223,8 +5233,8 @@
           <div class="interior-options-body">
             <div class="interior-slider-row">
               <span class="interior-slider-label" id="interior-angle-label">Cut angle</span>
-              <input type="range" id="interior-angle" class="interior-slider" min="0" max="180" step="1" value="120" aria-labelledby="interior-angle-label">
-              <span class="interior-angle-value" id="interior-angle-value">120°</span>
+              <input type="range" id="interior-angle" class="interior-slider" min="0" max="180" step="1" value="90" aria-labelledby="interior-angle-label">
+              <span class="interior-angle-value" id="interior-angle-value">90°</span>
             </div>
             <label class="obs-foot interior-foot" id="interior-readable-row">
               <input type="checkbox" id="interior-readable-toggle">
@@ -5232,6 +5242,14 @@
               <span class="obs-tgl" aria-hidden="true"></span>
             </label>
             <div class="interior-note" id="interior-readable-note" style="display:none"></div>
+            <!-- The cut is locked to the body: orbiting turns the body under it. This row makes it follow the camera instead; Reset view brings the camera and the cut back to where the tool opened. -->
+            <label class="obs-foot interior-foot" id="interior-follow-row">
+              <input type="checkbox" id="interior-follow-toggle">
+              <span class="obs-footlbl">Cut faces the camera</span>
+              <span class="obs-tgl" aria-hidden="true"></span>
+            </label>
+            <div class="interior-note">Off, the cut stays where it is on the body while you orbit, like a cut in a solid.</div>
+            <button type="button" class="interior-link" id="interior-reset-view">Reset view</button>
             <label class="obs-foot interior-foot" id="interior-rings-row" style="display:none">
               <input type="checkbox" id="interior-rings-toggle" checked>
               <span class="obs-footlbl">Rings</span>

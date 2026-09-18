@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { computeCutFrame, createCutFrame } from './cutFrame';
+import { computeCutFrame, createCutFaceBasis, createCutFrame, cutFaceBasis } from './cutFrame';
 import { IDENTITY_REMAP, readableRemap } from './interiorGeometry';
-import { niceStepKm, rulerLayout, rulerPoint, rulerSide, type RulerInput } from './ruler';
+import { niceStepKm, rulerFacing, rulerLayout, rulerPoint, rulerSide, type RulerInput } from './ruler';
+
+/** A camera on +Z with +Y up: view (0,0,1), hinge (0,1,0), side (1,0,0). */
+function frameAt(openingAngle: number) {
+  return computeCutFrame(new THREE.Vector3(0, 0, 5), new THREE.Vector3(0, 1, 0), new THREE.Vector3(), openingAngle, createCutFrame());
+}
 
 function input(overrides: Partial<RulerInput> = {}): RulerInput {
-  const frame = computeCutFrame(new THREE.Vector3(0, 0, 5), new THREE.Vector3(0, 1, 0), new THREE.Vector3(), Math.PI, createCutFrame());
   return {
-    frame,
+    frame: frameAt(Math.PI),
     side: 'a',
     referenceRadiusKm: 6371,
     remap: IDENTITY_REMAP,
@@ -20,7 +24,6 @@ function input(overrides: Partial<RulerInput> = {}): RulerInput {
       { key: 'crust', name: 'Crust', outerRadiusKm: 6371, innerRadiusKm: 6336 },
     ],
     annotations: [{ name: 'Transition zone', innerRadiusKm: 5711, outerRadiusKm: 5961 }],
-    terraceStep: 0.2,
     ...overrides,
   };
 }
@@ -47,15 +50,20 @@ describe('rulerPoint', () => {
     expect(centre.length()).toBeCloseTo(0, 9);
   });
 
-  it('places a depth on the face of the region that owns it, at that face\'s terrace angle', () => {
-    // 4000 km down is the outer core (region 1): its face opens θ₁ = π·(1 − 3·0.2) = 0.4π, half 0.2π.
-    const point = rulerPoint(input(), 4000);
-    const radius = point.length();
+  it('places every depth on the one full-angle face, whichever region owns it', () => {
+    // 4000 km down is the outer core, but the cut is one wedge through the
+    // whole body: the point is simply the face's radial at that radius.
+    const section = rulerPoint(input(), 4000);
+    const radius = section.length();
     expect(radius).toBeCloseTo(1 - 4000 / 6371, 9);
-    const half = 0.4 * Math.PI / 2;
-    // radial_A = cos(half)·view + sin(half)·side, view = +Z, side = +X.
-    expect(point.z / radius).toBeCloseTo(Math.cos(half), 9);
-    expect(point.x / radius).toBeCloseTo(Math.sin(half), 9);
+    expect(section.x / radius).toBeCloseTo(1, 9);
+    expect(section.z / radius).toBeCloseTo(0, 9);
+    // At a 90° opening, face A's radial is cos45°·view + sin45°·side.
+    const quarter = rulerPoint(input({ frame: frameAt(Math.PI / 2) }), 4000);
+    expect(quarter.length()).toBeCloseTo(radius, 9);
+    expect(quarter.x / radius).toBeCloseTo(Math.SQRT1_2, 9);
+    expect(quarter.z / radius).toBeCloseTo(Math.SQRT1_2, 9);
+    expect(quarter.y).toBeCloseTo(0, 9);
   });
 
   it('stretches through the Readable remap: the crust tick moves inward as the crust is widened', () => {
@@ -88,6 +96,26 @@ describe('rulerLayout', () => {
     expect(layout.brackets[0].to.length()).toBeCloseTo(5711 / 6371, 9);
   });
 
+  it('lays every point on one straight line out of the centre: the cut has no terraces to step across', () => {
+    // A 90° opening, where the face is tilted out of every scene axis, so a
+    // point that wandered off the line would show in all three components.
+    const laid = input({ frame: frameAt(Math.PI / 2) });
+    const layout = rulerLayout(laid);
+    const radial = cutFaceBasis(laid.frame, 'a', createCutFaceBasis()).radial;
+    const points = [
+      ...layout.ticks.map((tick) => tick.point),
+      ...layout.segments.flatMap((segment) => [segment.from, segment.to]),
+      ...layout.brackets.flatMap((bracket) => [bracket.from, bracket.to]),
+    ];
+    expect(points.length).toBeGreaterThan(10);
+    for (const point of points) {
+      const along = point.dot(radial);
+      expect(along).toBeGreaterThanOrEqual(0);
+      // point = along · radial exactly: nothing off the line, nothing behind the hinge.
+      expect(point.distanceTo(radial.clone().multiplyScalar(along))).toBeLessThan(1e-9);
+    }
+  });
+
   it('reuses a layout it is handed, its vectors included, and shortens it to fit', () => {
     const pooled = rulerLayout(input());
     const tickVectors = pooled.ticks.map((tick) => tick.point);
@@ -114,11 +142,26 @@ describe('rulerLayout', () => {
   });
 
   it('chooses the face turned more toward the camera', () => {
-    const frame = computeCutFrame(new THREE.Vector3(0, 0, 5), new THREE.Vector3(0, 1, 0), new THREE.Vector3(), Math.PI / 2, createCutFrame());
+    const frame = frameAt(Math.PI / 2);
     // Camera exactly on the view axis: a tie, resolved to face A.
     expect(rulerSide(frame, new THREE.Vector3(0, 0, 1))).toBe('a');
     // Camera swung toward −side: face B (its normal has a +side component) faces it more.
     expect(rulerSide(frame, new THREE.Vector3(0.5, 0, 0.87).normalize())).toBe('b');
     expect(rulerSide(frame, new THREE.Vector3(-0.5, 0, 0.87).normalize())).toBe('a');
+  });
+
+  it('reports how squarely the nearer face meets the eye, and turns negative behind the body', () => {
+    // At Section both faces look straight down the view axis.
+    expect(rulerFacing(frameAt(Math.PI), new THREE.Vector3(0, 0, 1))).toBeCloseTo(1, 9);
+    // At a 90° opening each face is 45° off it.
+    expect(rulerFacing(frameAt(Math.PI / 2), new THREE.Vector3(0, 0, 1))).toBeCloseTo(Math.SQRT1_2, 9);
+    // Orbited round behind the cut, both faces have turned away.
+    expect(rulerFacing(frameAt(Math.PI), new THREE.Vector3(0, 0, -1))).toBeCloseTo(-1, 9);
+    expect(rulerFacing(frameAt(Math.PI / 2), new THREE.Vector3(0, 0, -1))).toBeLessThan(0);
+    // The face rulerSide picks is the one the facing reports.
+    const frame = frameAt(Math.PI / 2);
+    const camera = new THREE.Vector3(0.5, 0, 0.87).normalize();
+    const picked = cutFaceBasis(frame, rulerSide(frame, camera), createCutFaceBasis());
+    expect(rulerFacing(frame, camera)).toBeCloseTo(picked.normal.dot(camera), 12);
   });
 });

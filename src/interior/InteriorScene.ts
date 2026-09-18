@@ -5,19 +5,18 @@
  * faces, a studio key and fill, and a dimmed starfield — everything under
  * one group flipped visible on activate.
  *
- * The cut is terraced: each region inward is cut a little narrower than the
- * one above it (TERRACE_STEP of the opening angle per region), so a wedge
- * shows the mantle's outer surface as a step around the core, the way a
- * cutaway illustration does. Per region there is a shell (its outer sphere,
- * discarded inside its own wedge, dressed in the region's look) and a pair
- * of half-disc faces at its own angle; the crust's shell is the textured
- * skin itself. An outer region's face runs to the centre, and its inner
- * part is hidden inside the next region's solid, so depth does the
- * terracing — nothing is stitched. The body wears
- * its real pose (IAU pole and spin for planets, the tidal lock for moons)
- * at the planetarium's instant; the light is a studio key that rides with
- * the camera so the section faces are always lit from a three-quarter,
- * whatever the orbit. Studio light with real pose, per plan §5.
+ * The cut is one wedge through every layer: two half-disc faces of the
+ * body's radius on the wedge's bounding planes (cutFrame.ts), each showing
+ * every region from the rim to the centre, since the section shader resolves
+ * the region at a fragment by its radius; the exterior skin is discarded
+ * inside the same wedge. Nothing is stepped and nothing is stitched: the
+ * picture is two planes and a sphere, which is what a cut in a solid looks
+ * like. The body wears its real pose (IAU pole and spin for planets, the
+ * tidal lock for moons) at the planetarium's instant, and the cut is locked
+ * to that pose by the mode (the frame it hands applyCut is rebuilt from a
+ * body-space anchor every frame); the light is a studio key that rides with
+ * the camera, so whichever face the reader has turned toward them is lit
+ * from a three-quarter. Studio light with real pose, per plan §5.
  *
  * The skin is the planetarium's own, not a plainer copy of it: the body's
  * colour map through the same surface shader, and with it whatever detail the
@@ -92,8 +91,7 @@ import {
   type SectionUniforms,
 } from './rendering/sectionMaterial';
 import type { TemperatureRange } from './temperatureScale';
-import { createCutFaceBasis, createCutFrame, cutFaceBasis, terraceOpeningAngle, type CutFrame } from './cutFrame';
-import { MAX_REGIONS } from './rendering/sectionMaterial';
+import { createCutFaceBasis, cutFaceBasis, type CutFrame } from './cutFrame';
 
 /** The body's radius in studio units; every framing number is relative to it. */
 export const BODY_RADIUS = 1;
@@ -104,8 +102,6 @@ const SKIN_BUMP_SCALE = 0.02;
  *  strength — and leaves the Moon's LOLA at its authored depth; a section's
  *  skin is the same surface, so it is drawn at the same depth. */
 const MEASURED_NORMAL_SCALE: Record<string, number> = { marsNormal: 0.5 };
-/** Each region inward opens this fraction of the angle less than the one above. */
-export const TERRACE_STEP = 0.2;
 
 // --- lighting --------------------------------------------------------------
 // The compare studio's key, but camera-relative: expressed in the camera's
@@ -115,7 +111,7 @@ export const TERRACE_STEP = 0.2;
 // product here.
 // A directional key, a little more frontal than before, so the exterior wraps in light
 // around the wedge and each face takes a gradient across its width; the fill is held
-// low so the terraces' ledge shadows and the faces' relief are not washed flat.
+// low so the crease at the hinge and the faces' relief are not washed flat.
 const KEY_LIGHT_CAMERA_DIR = new THREE.Vector3(-0.35, 0.4, 0.85).normalize();
 const KEY_LIGHT_DISTANCE = 6;
 const KEY_LIGHT_COLOR = 0xffe8c8;
@@ -274,7 +270,6 @@ const tmpNormal = new THREE.Vector3();
 const tmpRollNorth = new THREE.Vector3();
 const tmpBasis = new THREE.Matrix4();
 const tmpFace = createCutFaceBasis();
-const tmpTerraceFrame = createCutFrame();
 const tmpRight = new THREE.Vector3();
 const tmpUp = new THREE.Vector3();
 const tmpBack = new THREE.Vector3();
@@ -329,12 +324,9 @@ export class InteriorScene {
   private readonly sectionUniforms: SectionUniforms;
   private readonly faceGeometry: THREE.CircleGeometry;
   private readonly faceMaterial: THREE.MeshStandardMaterial;
-  /** Face pairs per region, inside-out; [count-1] is the crust's, at the full angle. */
-  private readonly regionFaces: { a: THREE.Mesh; b: THREE.Mesh }[] = [];
-  private readonly shellGeometry: THREE.SphereGeometry;
-  /** Terrace shells per region, inside-out; the crust has none (the skin is its shell). */
-  private readonly regionShells: { mesh: THREE.Mesh; material: THREE.MeshStandardMaterial; cut: SkinCutUniforms; region: { value: number } }[] = [];
-  private regionCount = 1;
+  /** The two section faces: half-discs of the body's radius on the wedge's bounding planes. */
+  private readonly faceA: THREE.Mesh;
+  private readonly faceB: THREE.Mesh;
   private readonly keyDirection = new THREE.Vector3(0, 0, 1);
   private readonly worldToBody = new THREE.Matrix3();
   private capsCaptured = false;
@@ -423,34 +415,13 @@ export class InteriorScene {
     // The cut-frame face basis (radial, up, normal) is right-handed and maps
     // onto this geometry's (X, Y, Z) without a mirror.
     this.faceGeometry = new THREE.CircleGeometry(BODY_RADIUS, 160, -Math.PI / 2, Math.PI);
-    this.shellGeometry = new THREE.SphereGeometry(BODY_RADIUS, 128, 64);
-    for (let index = 0; index < MAX_REGIONS; index++) {
-      const a = new THREE.Mesh(this.faceGeometry, this.faceMaterial);
-      const b = new THREE.Mesh(this.faceGeometry, this.faceMaterial);
-      a.name = `InteriorFaceA${index}`;
-      b.name = `InteriorFaceB${index}`;
-      a.visible = false;
-      b.visible = false;
-      this.group.add(a, b);
-      this.regionFaces.push({ a, b });
-      // One shell material per region: its own region index and cut angle,
-      // one shared program (the shader text is identical).
-      const region = { value: index };
-      const cut: SkinCutUniforms = {
-        uCutView: this.cutUniforms.uCutView,
-        uCutSide: this.cutUniforms.uCutSide,
-        uCutHalfAngle: { value: 0 },
-        uCutFeather: this.cutUniforms.uCutFeather,
-        uCutInvert: { value: 0 },
-      };
-      const material = createSectionMaterial(this.sectionUniforms, { shellRegion: region });
-      applySkinCut(material, cut);
-      const mesh = new THREE.Mesh(this.shellGeometry, material);
-      mesh.name = `InteriorShell${index}`;
-      mesh.visible = false;
-      this.group.add(mesh);
-      this.regionShells.push({ mesh, material, cut, region });
-    }
+    this.faceA = new THREE.Mesh(this.faceGeometry, this.faceMaterial);
+    this.faceB = new THREE.Mesh(this.faceGeometry, this.faceMaterial);
+    this.faceA.name = 'InteriorFaceA';
+    this.faceB.name = 'InteriorFaceB';
+    this.faceA.visible = false;
+    this.faceB.visible = false;
+    this.group.add(this.faceA, this.faceB);
 
     scene.add(this.group);
   }
@@ -467,7 +438,6 @@ export class InteriorScene {
   setEdgeMode(multisampled: boolean): void {
     this.multisampled = multisampled;
     if (this.skinMaterial) configureSkinCutEdge(this.skinMaterial, multisampled);
-    for (const shell of this.regionShells) configureSkinCutEdge(shell.material, multisampled);
   }
 
   /**
@@ -831,7 +801,7 @@ export class InteriorScene {
    * the canvas.
    *
    * Nothing compiles the section before the cut opens: the faces hide while
-   * their region is closed (applyCut), the ghost until the reveal, and the skin,
+   * the cut is closed (applyCut), the ghost until the reveal, and the skin,
    * the air and the rings are dressed a few milliseconds before it with no frame
    * in between — so all of it used to be built on the frames the reader watches
    * the reveal on. Measured on a software GPU that is the whole of the reveal's
@@ -847,7 +817,7 @@ export class InteriorScene {
    * reveal cannot use.
    *
    * The warm-up's own one-pixel draw is what forces the driver to finish a link
-   * it only promised. The faces, the shells and the ghost are hidden, so they
+   * it only promised. The faces and the ghost are hidden, so they
    * take sub-pixel probes wearing their LIVE materials (the planetarium's
    * warm-up idiom — a copy's program is freed with the copy); the skin, the air
    * and the rings are visible by then and the draw finds them itself.
@@ -930,13 +900,12 @@ export class InteriorScene {
   }
 
   /** The materials the reveal draws that no earlier frame has drawn: the
-   *  section faces, every terrace shell, the exterior ghost, and the cloud
+   *  section faces, the exterior ghost, and the cloud
    *  deck (which is its own program, and hidden whenever it is still waiting
    *  for its map). The skin, the air and the rings are visible by then and the
    *  warm-up's draw finds them itself. */
   private revealMaterials(): THREE.Material[] {
     const materials: THREE.Material[] = [this.faceMaterial];
-    for (const shell of this.regionShells) materials.push(shell.material);
     if (this.ghostMaterial) materials.push(this.ghostMaterial);
     if (this.cloudMaterial) materials.push(this.cloudMaterial);
     return materials;
@@ -1047,17 +1016,11 @@ export class InteriorScene {
     return { material, fx };
   }
 
-  /** The region looks, inside-out, with their boundaries already remapped to display space. */
+  /** The region looks, inside-out, with their boundaries already remapped to
+   *  display space. The faces are the body's radius whatever the regions —
+   *  the shader draws the boundaries — so a model change moves no geometry. */
   applyRegions(regionsInsideOut: readonly SectionRegionLook[]): void {
     writeSectionRegions(this.sectionUniforms, regionsInsideOut, this.floatCapable, this.motionScale);
-    this.regionCount = Math.max(1, Math.min(regionsInsideOut.length, MAX_REGIONS));
-    for (let index = 0; index < MAX_REGIONS; index++) {
-      const radius = index < this.regionCount ? regionsInsideOut[index].outerDisplay : 0;
-      const faces = this.regionFaces[index];
-      faces.a.scale.setScalar(Math.max(radius, 1e-4));
-      faces.b.scale.setScalar(Math.max(radius, 1e-4));
-      this.regionShells[index].mesh.scale.setScalar(Math.max(radius, 1e-4));
-    }
   }
 
   /** Composition (0) or Temperature (1): which diagram the faces draw. */
@@ -1098,11 +1061,6 @@ export class InteriorScene {
       });
     }
     this.environmentTarget = target;
-    for (const shell of this.regionShells) {
-      shell.material.envMap = target.texture;
-      shell.material.envMapIntensity = FACE_ENV_INTENSITY;
-      shell.material.needsUpdate = true;
-    }
     this.faceMaterial.envMap = target.texture;
     this.faceMaterial.envMapIntensity = FACE_ENV_INTENSITY;
     this.faceMaterial.needsUpdate = true;
@@ -1126,7 +1084,6 @@ export class InteriorScene {
     } else {
       quaternion.identity();
     }
-    for (const shell of this.regionShells) shell.mesh.quaternion.copy(quaternion);
     this.cloudMesh.quaternion.copy(quaternion);
     this.poseQuaternion.copy(quaternion);
     this.ringMesh?.quaternion.copy(quaternion);
@@ -1135,12 +1092,17 @@ export class InteriorScene {
     this.sectionUniforms.uWorldToBody.value.copy(this.worldToBody);
   }
 
+  /** The pose the body wears right now, for the mode's body-space anchor of
+   *  the cut. Read-only by contract: copy it, never write it. */
+  pose(): THREE.Quaternion {
+    return this.poseQuaternion;
+  }
+
   /**
-   * Point every region's faces and shell at the frame, terraced: the crust
-   * (the outermost region) opens by the full angle, each region inward by
-   * TERRACE_STEP less. Faces hide when their region is closed. Under a closed
-   * cut the skin is the whole picture, so no inner shell is submitted at all:
-   * every one of them sat behind the skin, fully shaded and fully overdrawn.
+   * Point the skin's discard and the two faces at the frame: each face's
+   * basis is the wedge's bounding plane on its side, at the full opening
+   * angle, and both hide while the cut is closed — the skin is then the
+   * whole picture and nothing sits behind it to be overdrawn.
    */
   applyCut(frame: CutFrame): void {
     this.cutUniforms.uCutView.value.copy(frame.view);
@@ -1148,36 +1110,16 @@ export class InteriorScene {
     this.cutUniforms.uCutHalfAngle.value = frame.openingAngle * 0.5;
     // The corner where the faces meet is a crease; a Section has none.
     this.sectionUniforms.uCorner.value = 1 - frame.openingAngle / Math.PI;
-    tmpTerraceFrame.view.copy(frame.view);
-    tmpTerraceFrame.side.copy(frame.side);
-    tmpTerraceFrame.hinge.copy(frame.hinge);
-    const count = this.regionCount;
-    const cutOpen = frame.openingAngle > 1e-4;
-    for (let index = 0; index < MAX_REGIONS; index++) {
-      const faces = this.regionFaces[index];
-      const shell = this.regionShells[index];
-      const isCrust = index === count - 1;
-      if (index >= count) {
-        faces.a.visible = false;
-        faces.b.visible = false;
-        shell.mesh.visible = false;
-        continue;
-      }
-      const angle = terraceOpeningAngle(frame.openingAngle, count - 1 - index, TERRACE_STEP);
-      shell.cut.uCutHalfAngle.value = angle * 0.5;
-      shell.mesh.visible = !isCrust && cutOpen; // the skin is the crust's shell, and the whole of a closed body
-      const open = angle > 1e-4;
-      faces.a.visible = open;
-      faces.b.visible = open;
-      if (!open) continue;
-      tmpTerraceFrame.openingAngle = angle;
-      const faceA = cutFaceBasis(tmpTerraceFrame, 'a', tmpFace);
-      tmpBasis.makeBasis(faceA.radial, faceA.up, faceA.normal);
-      faces.a.quaternion.setFromRotationMatrix(tmpBasis);
-      const faceB = cutFaceBasis(tmpTerraceFrame, 'b', tmpFace);
-      tmpBasis.makeBasis(faceB.radial, faceB.up, faceB.normal);
-      faces.b.quaternion.setFromRotationMatrix(tmpBasis);
-    }
+    const open = frame.openingAngle > 1e-4;
+    this.faceA.visible = open;
+    this.faceB.visible = open;
+    if (!open) return;
+    const faceA = cutFaceBasis(frame, 'a', tmpFace);
+    tmpBasis.makeBasis(faceA.radial, faceA.up, faceA.normal);
+    this.faceA.quaternion.setFromRotationMatrix(tmpBasis);
+    const faceB = cutFaceBasis(frame, 'b', tmpFace);
+    tmpBasis.makeBasis(faceB.radial, faceB.up, faceB.normal);
+    this.faceB.quaternion.setFromRotationMatrix(tmpBasis);
   }
 
   setPresentationTime(seconds: number): void {
@@ -1225,7 +1167,6 @@ export class InteriorScene {
     // so the softbox stays upper-left of whoever is looking.
     tmpEnvQuaternion.copy(camera.quaternion).invert();
     this.faceMaterial.envMapRotation.setFromQuaternion(tmpEnvQuaternion);
-    for (const shell of this.regionShells) shell.material.envMapRotation.setFromQuaternion(tmpEnvQuaternion);
   }
 
   onResize(): void {
@@ -1258,17 +1199,12 @@ export class InteriorScene {
     this.releaseBodyResources();
     this.placeholderMaterial.dispose();
     this.faceMaterial.envMap = null;
-    for (const shell of this.regionShells) {
-      shell.material.envMap = null;
-      shell.material.dispose();
-    }
     // After every envMap reference above is detached: the target frees the
     // texture with its framebuffer, once.
     this.environmentTarget?.dispose();
     this.environmentTarget = null;
     this.scene.remove(this.group);
     this.skinGeometry.dispose();
-    this.shellGeometry.dispose();
     this.faceGeometry.dispose();
     this.warmupProbeGeometry?.dispose();
     this.warmupProbeGeometry = null;

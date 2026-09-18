@@ -45,7 +45,7 @@
  * reaches the bridge as `interiorState().timings` and debugLog once, so the
  * question "what is it doing for those seconds" is answerable on a phone.
  *
- * Hover and pin: a pointer ray is picked on the CPU against the terraced cut
+ * Hover and pin: a pointer ray is picked on the CPU against the wedge cut
  * (interiorPick, the same frame and remap the shaders use); the region under
  * it is emphasised through two uniforms and its legend row lights; a hover
  * card previews it on a fine pointer; a tap or click SELECTS it, which opens
@@ -78,19 +78,24 @@ import { DEG2RAD } from '../shared/math/angles';
 import { isPhoneViewport } from '../shared/dom';
 import { debugLog, debugWarn } from '../shared/debug';
 import { bodyDisplayName } from '../planetarium/surfaceView';
-import { InteriorScene, BODY_RADIUS, TERRACE_STEP, type PreparedSkin } from './InteriorScene';
+import { InteriorScene, BODY_RADIUS, type PreparedSkin } from './InteriorScene';
 import { TAP_MAX_MS, TAP_MAX_PX, TapRecognizer, type PointerSample } from './interiorInteraction';
 import { resolveInteriorBody, type InteriorBody } from './interiorBody';
 import {
   CUT_VIEWS,
   CUT_VIEW_ANGLE_DEG,
+  anchorCutFrame,
+  blendCutFrames,
   computeCutFrame,
+  copyCutFrame,
+  createCutAnchor,
   createCutFrame,
+  frameFromAnchor,
   cutViewForAngle,
   openingAngleDegToRad,
-  wedgeYawForOpening,
   yawCutFrame,
   type CutFaceSide,
+  type CutFrame,
   type CutView,
 } from './cutFrame';
 import {
@@ -125,7 +130,7 @@ import { fitDistance, framingDistance, stageViewOffset, visibleStageRect, type S
 import { createPickHit, pickInterior, type PickHit, type PickLayout, type PickSurface } from './interiorPick';
 import { renderHoverCard, renderPage, type InteriorPanelPage } from './ui/InteriorPages';
 import { DepthRuler } from './ui/DepthRuler';
-import { createRulerLayout, rulerLayout, rulerSide, type RulerInput } from './ruler';
+import { createRulerLayout, rulerFacing, rulerLayout, rulerSide, type RulerInput } from './ruler';
 import { regionEvidenceSummary } from './evidenceSummary';
 import { ACTUAL_SIZE, CHOOSE_BODY, ENLARGE, ILLUSTRATIVE_NOTE, INTERIOR_MODEL, LAYERS, MODEL_AND_SOURCES, STRUCTURE_UNCERTAIN } from './ui/interiorCopy';
 import { INTERIOR_DEFAULT_BODY, coverageBadge, coverageFor, defaultModelFor, modelFor } from './data/interiorRegistry';
@@ -183,17 +188,22 @@ const GLIDE_YIELD_DISTANCE = 1e-6;
 const SWAP_FADE_S = 0.45;
 /** The reveal's exterior ghost starts this opaque and clears as the cut opens. */
 const GHOST_OPACITY = 0.32;
-/** The wedge is turned this far off the view axis, so the viewer looks at
- *  its near face and along its terraces rather than straight into the crease. */
-const WEDGE_YAW_DEG = 22;
-/** ...and this far at Section, where the turn tapers out. Not zero: a disc
+/** The wedge is turned this far about the hinge when the cut is chosen from
+ *  the camera, so the viewer looks at one face (25° off face-on at the
+ *  quarter wedge) and along the other (65° off) rather than straight into
+ *  the crease. At Section it is what keeps the disc off face-on: a disc
  *  face-on is a flat circle, and on a body with no rings and no air around it
- *  nothing else says the circle is a sphere with its near half gone. This
- *  much leaves a crescent of the skin's rim on one side (about a twentieth of
- *  the radius wide — ten degrees showed a hair, which the Moon's one brown
- *  mantle swallowed) and puts the two halves of every terrace at different
- *  angles to the key, so the middle reads as a crease rather than a seam. */
-const SECTION_YAW_DEG = 18;
+ *  nothing else says the circle is a sphere with its near half gone; this
+ *  much leaves a crescent of the skin's rim on one side about a sixteenth of
+ *  the radius wide (ten degrees showed a hair, which the Moon's one brown
+ *  mantle swallowed). One yaw for every view: the cut is locked to the body
+ *  once chosen, so a per-view yaw would only move it when the view changed. */
+const CUT_YAW_DEG = 20;
+/** "Cut faces the camera" swings a locked cut round to the camera over this long. */
+const CUT_SWING_S = 0.35;
+/** The ruler hides once both faces have turned this far from facing the camera
+ *  (the cosine: about 80°), where a line laid along one would be read edge-on. */
+const RULER_FACING_MIN = 0.17;
 /** The Readable blend eases over this long. */
 const SCALE_BLEND_S = 0.5;
 const FPS_WINDOW = 60;
@@ -327,6 +337,10 @@ export interface InteriorDevState {
   view: CutView | null;
   openingAngleDeg: number;
   targetAngleDeg: number;
+  /** Whether the cut follows the camera (View options) rather than staying locked to the body. */
+  cutFollow: boolean;
+  /** The cut frame's world axes right now, so a sweep can see whether an orbit moved it. */
+  cutFrame: { view: [number, number, number]; hinge: [number, number, number]; side: [number, number, number] };
   readable: boolean;
   scaleBlend: number;
   projectedRadiusPx: number;
@@ -366,6 +380,7 @@ function orbitPose(azimuthDeg: number, elevationDeg: number, distance: number, o
 
 const ORIGIN = new THREE.Vector3(0, 0, 0);
 const tmpLocalUp = new THREE.Vector3();
+const tmpCameraFrame = createCutFrame();
 const tmpNdc = new THREE.Vector2();
 
 /** A button in a radio group: its on class and its checked state, together. */
@@ -405,9 +420,16 @@ export class InteriorMode {
   private readonly cameraDirection = new THREE.Vector3();
   private utcMs = Date.now();
 
-  // The cut: the frame the scene reads and the tween that moves its opening.
+  // The cut: the frame the scene reads, the anchor it is rebuilt from under
+  // the body's pose (the lock), and the tween that moves its opening.
   private readonly frame = createCutFrame();
+  private readonly cutAnchor = createCutAnchor();
   private readonly cut = createCutTween(CUT_VIEW_ANGLE_DEG.cutaway);
+  /** "Cut faces the camera": the frame follows the camera instead of the body. Session-only. */
+  private cutFollow = false;
+  /** The swing from a locked frame to the camera's when the option turns on: where it started and how far along it is (Infinity: none). */
+  private readonly cutSwingFrom = createCutFrame();
+  private cutSwingElapsedS = Infinity;
 
   // The ruler: its input and layout are reused frame after frame, and it is
   // laid out and drawn again only when one of the things it depends on moved.
@@ -419,7 +441,6 @@ export class InteriorMode {
     outerDisplay: [1],
     regionsInsideOut: [],
     annotations: [],
-    terraceStep: TERRACE_STEP,
   };
   private readonly rulerLayoutCache = createRulerLayout();
   private readonly rulerKey = {
@@ -533,7 +554,7 @@ export class InteriorMode {
     this.renderer = renderer;
     this.domElement = renderer.domElement;
     this.interiorScene = new InteriorScene(scene, renderer, floatCapable);
-    this.pickLayout = { frame: this.frame, outerDisplay: [1], terraceStep: TERRACE_STEP };
+    this.pickLayout = { frame: this.frame, outerDisplay: [1] };
 
     this.controls = new OrbitControls(camera, renderer.domElement);
     this.controls.enabled = false;
@@ -690,6 +711,7 @@ export class InteriorMode {
     this.pageRegionKey = null;
     this.revealSettle?.abort();
     this.revealSettle = null;
+    this.cutSwingElapsedS = Infinity;
     this.camera.clearViewOffset();
     const topBar = document.getElementById('top-bar');
     if (topBar) topBar.style.display = this.topBarPrevDisplay ?? '';
@@ -740,13 +762,9 @@ export class InteriorMode {
     );
     this.refreshRemapIfNeeded();
 
-    // The cut frame follows the camera continuously (plan §5): hinge = the
-    // camera's own up, so nothing snaps through the poles.
-    tmpLocalUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
-    computeCutFrame(this.camera.position, tmpLocalUp, ORIGIN, openingAngleDegToRad(this.cut.angleDeg), this.frame);
-    // The wedge yaw tapers from the cutaway's full turn to the Section floor,
-    // which is what keeps a Section reading as a sphere and not as a disc.
-    yawCutFrame(this.frame, wedgeYawForOpening(this.frame.openingAngle, WEDGE_YAW_DEG * DEG2RAD, SECTION_YAW_DEG * DEG2RAD));
+    // The cut is locked to the body: its frame is rebuilt from the anchor under
+    // the body's pose, so an orbit turns the body under a cut that stays put.
+    this.poseCutFrame(dt);
     this.interiorScene.applyCut(this.frame);
     this.interiorScene.updateForCamera(this.camera);
 
@@ -803,6 +821,12 @@ export class InteriorMode {
     // is a frame behind at worst, which the eye cannot see.
     this.camera.updateMatrixWorld();
     this.cameraDirection.copy(this.camera.position).normalize();
+    // Orbited behind the cut, both faces turn away and the ruler's line would be edge-on.
+    if (rulerFacing(this.frame, this.cameraDirection) < RULER_FACING_MIN) {
+      this.ruler.hide();
+      this.rulerStale = true;
+      return;
+    }
     const side = rulerSide(this.frame, this.cameraDirection);
     const opacity = Math.min(1, this.cut.angleDeg / RULER_FULL_DEG);
     const width = window.innerWidth;
@@ -831,6 +855,72 @@ export class InteriorMode {
     input.regionsInsideOut = this.drawn.regionsInsideOut;
     input.annotations = this.drawn.model?.annotations ?? [];
     this.ruler.render(rulerLayout(input, this.rulerLayoutCache), this.camera, width, height, opacity);
+  }
+
+  /** The camera-facing frame at the current opening, yawed: what the lock is
+   *  chosen from, and what "Cut faces the camera" follows. */
+  private cameraCutFrame(out: CutFrame): CutFrame {
+    tmpLocalUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+    computeCutFrame(this.camera.position, tmpLocalUp, ORIGIN, openingAngleDegToRad(this.cut.angleDeg), out);
+    return yawCutFrame(out, CUT_YAW_DEG * DEG2RAD);
+  }
+
+  /** Lock the cut where the camera sees it now: the anchor, in the body's own
+   *  coordinates. On entry, at a body swap (a new pose under the same camera)
+   *  and at Reset view. */
+  private lockCutToCamera(): void {
+    this.cameraCutFrame(this.frame);
+    anchorCutFrame(this.frame, this.interiorScene.pose(), this.cutAnchor);
+    this.cutSwingElapsedS = Infinity;
+    this.rulerStale = true;
+  }
+
+  /** The frame for this tick: rebuilt from the anchor under the body's pose,
+   *  or the camera's own while the cut follows it, with a short eased swing
+   *  from the one to the other when the option turns on. Following, the anchor
+   *  is kept at the frame, so turning the option off freezes the cut where it
+   *  is with no jump. */
+  private poseCutFrame(dt: number): void {
+    const openingAngle = openingAngleDegToRad(this.cut.angleDeg);
+    if (!this.cutFollow) {
+      frameFromAnchor(this.cutAnchor, this.interiorScene.pose(), openingAngle, this.frame);
+      return;
+    }
+    this.cameraCutFrame(tmpCameraFrame);
+    if (this.cutSwingElapsedS < CUT_SWING_S) {
+      this.cutSwingElapsedS += dt;
+      const progress = Math.min(1, this.cutSwingElapsedS / CUT_SWING_S);
+      blendCutFrames(this.cutSwingFrom, tmpCameraFrame, progress * progress * (3 - 2 * progress), this.frame);
+      this.rulerStale = true;
+    } else {
+      copyCutFrame(tmpCameraFrame, this.frame);
+    }
+    anchorCutFrame(this.frame, this.interiorScene.pose(), this.cutAnchor);
+  }
+
+  /** "Cut faces the camera" on or off. On swings the cut round to the camera
+   *  rather than snapping it (at once under reduced motion); off leaves it where
+   *  it is, which the anchor already holds. */
+  private setCutFollow(on: boolean): void {
+    const toggle = document.getElementById('interior-follow-toggle') as HTMLInputElement | null;
+    if (toggle && toggle.checked !== on) toggle.checked = on;
+    if (on === this.cutFollow) return;
+    this.cutFollow = on;
+    if (on && !this.reducedMotion.matches) {
+      copyCutFrame(this.frame, this.cutSwingFrom);
+      this.cutSwingElapsedS = 0;
+    } else {
+      this.cutSwingElapsedS = Infinity;
+    }
+    this.rulerStale = true;
+  }
+
+  /** Reset view: the camera back to the entry pose and fit for the stage as it
+   *  is now, and the cut chosen from there again. Nothing else changes — not the
+   *  view, the display mode, the model or the thin-layer option. */
+  private resetView(): void {
+    this.frameInitial();
+    this.lockCutToCamera();
   }
 
   private advanceCut(dt: number): void {
@@ -1020,6 +1110,9 @@ export class InteriorMode {
       // (the steps that can throw, and a throw there leaves the old body
       // whole), then the faces and the panel turn over.
       this.interiorScene.setPose(body, this.utcMs);
+      // The new body's pose under the reader's camera: the cut is chosen afresh,
+      // so a swap opens facing them wherever they had orbited to.
+      this.lockCutToCamera();
       this.interiorScene.presentBody(prepared, swap && animate ? SWAP_FADE_S : 0);
       markOpenStep(watch, 'present');
       presented = true;
@@ -1148,6 +1241,9 @@ export class InteriorMode {
     });
     const readable = document.getElementById('interior-readable-toggle') as HTMLInputElement | null;
     readable?.addEventListener('change', () => this.setReadable(readable.checked));
+    const follow = document.getElementById('interior-follow-toggle') as HTMLInputElement | null;
+    follow?.addEventListener('change', () => this.setCutFollow(follow.checked));
+    document.getElementById('interior-reset-view')?.addEventListener('click', () => this.resetView());
     document.getElementById('interior-thin-toggle')?.addEventListener('click', () => this.setReadable(!this.readable));
     document.getElementById('interior-legend-head')?.addEventListener('click', () => {
       if (isPhoneViewport()) this.toggleSheet();
@@ -2134,6 +2230,20 @@ export class InteriorMode {
     return true;
   }
 
+  /** "Cut faces the camera", as the View options row sets it. */
+  devCutFollow(on: boolean): boolean {
+    if (!this.active) return false;
+    this.setCutFollow(on);
+    return true;
+  }
+
+  /** Reset view, as its button does. */
+  devResetView(): boolean {
+    if (!this.active) return false;
+    this.resetView();
+    return true;
+  }
+
   devOrbit(azimuthDeg: number, elevationDeg: number = FRAMING.elevationDeg, distance?: number): boolean {
     if (!this.active) return false;
     const current = distance ?? this.camera.position.distanceTo(this.controls.target);
@@ -2266,6 +2376,8 @@ export class InteriorMode {
       view: cutViewForAngle(this.cut.angleDeg),
       openingAngleDeg: this.cut.angleDeg,
       targetAngleDeg: this.cut.toDeg,
+      cutFollow: this.cutFollow,
+      cutFrame: { view: this.frame.view.toArray(), hinge: this.frame.hinge.toArray(), side: this.frame.side.toArray() },
       readable: this.readable,
       scaleBlend: this.scaleBlend,
       projectedRadiusPx: this.projectedPx,

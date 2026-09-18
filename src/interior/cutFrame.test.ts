@@ -2,14 +2,18 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import {
   CUT_VIEW_ANGLE_DEG,
+  anchorCutFrame,
+  blendCutFrames,
   computeCutFrame,
+  createCutAnchor,
   createCutFrame,
   cutFaceBasis,
   cutViewForAngle,
+  frameFromAnchor,
+  frameQuaternion,
   insideWedge,
   openingAngleDegToRad,
   wedgeAngle,
-  wedgeYawForOpening,
   yawCutFrame,
 } from './cutFrame';
 
@@ -124,9 +128,11 @@ describe('the three named views', () => {
     const frame = computeCutFrame(position, localUp, centre, openingAngleDegToRad(CUT_VIEW_ANGLE_DEG.cutaway));
     const faceA = cutFaceBasis(frame, 'a');
     const faceB = cutFaceBasis(frame, 'b');
-    // Each face plane sits half the opening off the view axis (60° at the 120° cutaway), so
-    // its normal sits the complement, (π − θ)/2 = 30°, off the axis.
+    // Each face plane sits half the opening off the view axis (45° at the 90° quarter wedge),
+    // so its normal sits the complement, (π − θ)/2, off the axis: 45° again.
+    expect(CUT_VIEW_ANGLE_DEG.cutaway).toBe(90);
     const normalOffView = (Math.PI - openingAngleDegToRad(CUT_VIEW_ANGLE_DEG.cutaway)) / 2;
+    expect(normalOffView).toBeCloseTo(Math.PI / 4, 12);
     expect(faceA.normal.angleTo(view)).toBeCloseTo(normalOffView, 9);
     expect(faceB.normal.angleTo(view)).toBeCloseTo(normalOffView, 9);
     expect(faceA.normal.dot(faceA.radial)).toBeCloseTo(0, 9);
@@ -135,9 +141,14 @@ describe('the three named views', () => {
     expect(faceA.normal.dot(view)).toBeGreaterThan(0);
     expect(faceA.normal.dot(side)).toBeLessThan(0);
     expect(faceB.normal.dot(side)).toBeGreaterThan(0);
-    // A point on the view axis is removed; one 60° round is kept.
+    // A point on the view axis is removed, one 40° round with it; one 60° round is kept.
     expect(insideWedge(frame, new THREE.Vector3(0, 0, 1))).toBe(true);
+    expect(insideWedge(frame, new THREE.Vector3(Math.sin(0.7), 0, Math.cos(0.7)))).toBe(true);
     expect(insideWedge(frame, new THREE.Vector3(Math.sin(1.05), 0, Math.cos(1.05)))).toBe(false);
+    // The quarter wedge reaches the centre: both faces run from the hinge to the rim, so
+    // every layer shows on each of them — there is nothing stepped for a deeper layer.
+    expect(faceA.radial.length()).toBeCloseTo(1, 12);
+    expect(faceB.radial.length()).toBeCloseTo(1, 12);
   });
 
   it('every face basis is right-handed so a +Z half-disc maps without a mirror', () => {
@@ -153,7 +164,8 @@ describe('the three named views', () => {
 
   it('names the angle each view sets', () => {
     expect(cutViewForAngle(0)).toBe('closed');
-    expect(cutViewForAngle(120.2)).toBe('cutaway');
+    expect(cutViewForAngle(90.2)).toBe('cutaway');
+    expect(cutViewForAngle(120)).toBeNull();
     expect(cutViewForAngle(180)).toBe('section');
     expect(cutViewForAngle(60)).toBeNull();
   });
@@ -179,57 +191,116 @@ describe('yawCutFrame', () => {
   });
 });
 
-describe('wedgeYawForOpening', () => {
-  const full = THREE.MathUtils.degToRad(22);
-  // The mode's SECTION_YAW_DEG: the floor the taper ends on, not zero.
-  const floor = THREE.MathUtils.degToRad(18);
+describe('the yaw at Section', () => {
+  const yaw = THREE.MathUtils.degToRad(20);
 
-  it('keeps the full yaw up to Cutaway and the floor at Section, tapering smoothly between', () => {
-    expect(wedgeYawForOpening(0, full, floor)).toBe(full);
-    expect(wedgeYawForOpening(openingAngleDegToRad(45), full, floor)).toBe(full);
-    expect(wedgeYawForOpening(openingAngleDegToRad(CUT_VIEW_ANGLE_DEG.cutaway), full, floor)).toBe(full);
-    const midTaperDeg = (CUT_VIEW_ANGLE_DEG.cutaway + CUT_VIEW_ANGLE_DEG.section) / 2;
-    expect(wedgeYawForOpening(openingAngleDegToRad(midTaperDeg), full, floor)).toBeCloseTo((full + floor) / 2, 12);
-    expect(wedgeYawForOpening(openingAngleDegToRad(CUT_VIEW_ANGLE_DEG.section), full, floor)).toBe(floor);
-    let previous = full;
-    let largestStep = 0;
-    for (let deg = 0; deg <= 180; deg += 0.5) {
-      const yaw = wedgeYawForOpening(openingAngleDegToRad(deg), full, floor);
-      expect(yaw).toBeLessThanOrEqual(previous + 1e-12);
-      expect(yaw).toBeGreaterThanOrEqual(floor - 1e-12);
-      largestStep = Math.max(largestStep, previous - yaw);
-      previous = yaw;
-    }
-    // Smooth: no half-degree step moves the yaw more than a smoothstep's steepest slope
-    // (1.5 over the taper's span) would, so a kink or a jump anywhere fails here.
-    const taperSpanDeg = CUT_VIEW_ANGLE_DEG.section - CUT_VIEW_ANGLE_DEG.cutaway;
-    expect(largestStep).toBeLessThan((full - floor) * 1.5 * (0.5 / taperSpanDeg) * 1.01);
-    // A floor of zero is the old face-on Section, still reachable.
-    expect(wedgeYawForOpening(openingAngleDegToRad(CUT_VIEW_ANGLE_DEG.section), full, 0)).toBe(0);
-  });
-
-  it('keeps the Section disc off face-on by the floor, turned about the hinge alone', () => {
+  it('keeps the Section disc off face-on by the yaw, turned about the hinge alone', () => {
     const { position, localUp } = orbitCamera(30, 20);
     const plain = computeCutFrame(position, localUp, centre, Math.PI);
     const yawed = computeCutFrame(position, localUp, centre, Math.PI, createCutFrame());
-    yawCutFrame(yawed, wedgeYawForOpening(yawed.openingAngle, full, floor));
-    expect(yawed.view.angleTo(plain.view)).toBeCloseTo(floor, 9);
+    yawCutFrame(yawed, yaw);
+    expect(yawed.view.angleTo(plain.view)).toBeCloseTo(yaw, 9);
     // Turned about the hinge and nothing else: the hinge is where it was, so the
-    // disc keeps its full radius along the screen-vertical and loses cos(floor)
+    // disc keeps its full radius along the screen-vertical and loses cos(yaw)
     // across it — which is what a pixel read of the disc has to allow for.
     expectVectorClose(yawed.hinge, plain.hinge, 12);
     expect(yawed.view.dot(plain.hinge)).toBeCloseTo(0, 12);
     const faceA = cutFaceBasis(yawed, 'a');
     // The disc's normal is the yawed view, not the line of sight.
     expectVectorClose(faceA.normal, yawed.view, 12);
-    expect(faceA.normal.angleTo(plain.view)).toBeCloseTo(floor, 9);
-    // Its radial still spans the screen, tilted out of it by the floor.
-    expect(Math.abs(faceA.radial.dot(plain.view))).toBeCloseTo(Math.sin(floor), 9);
-    // At Cutaway the same camera gets the full yaw.
-    const cutaway = computeCutFrame(position, localUp, centre, Math.PI / 2, createCutFrame());
-    const before = cutaway.view.clone();
-    yawCutFrame(cutaway, wedgeYawForOpening(cutaway.openingAngle, full, floor));
-    expect(cutaway.view.angleTo(before)).toBeCloseTo(full, 9);
+    expect(faceA.normal.angleTo(plain.view)).toBeCloseTo(yaw, 9);
+    // Its radial still spans the screen, tilted out of it by the yaw.
+    expect(Math.abs(faceA.radial.dot(plain.view))).toBeCloseTo(Math.sin(yaw), 9);
+  });
+
+  it('at Cutaway turns one face toward the camera and the other away by the same yaw', () => {
+    const { position, localUp } = orbitCamera(30, 20);
+    const lineOfSight = position.clone().normalize();
+    const frame = computeCutFrame(position, localUp, centre, Math.PI / 2, createCutFrame());
+    yawCutFrame(frame, yaw);
+    const faceA = cutFaceBasis(frame, 'a');
+    const faceB = cutFaceBasis(frame, 'b');
+    // normal · line of sight = sin(θ/2 ± yaw): face A 25° off face-on, face B 65° off.
+    expect(faceA.normal.dot(lineOfSight)).toBeCloseTo(Math.sin(Math.PI / 4 + yaw), 9);
+    expect(faceB.normal.dot(lineOfSight)).toBeCloseTo(Math.sin(Math.PI / 4 - yaw), 9);
+  });
+});
+
+describe('the body lock', () => {
+  const pose = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.4, -1.1, 0.25));
+
+  it('gives a frame back through its anchor under the same pose', () => {
+    const { position, localUp } = orbitCamera(-28, 16);
+    const chosen = computeCutFrame(position, localUp, centre, Math.PI / 2, createCutFrame());
+    yawCutFrame(chosen, THREE.MathUtils.degToRad(20));
+    const anchor = anchorCutFrame(chosen, pose, createCutAnchor());
+    const rebuilt = frameFromAnchor(anchor, pose, chosen.openingAngle, createCutFrame());
+    expectVectorClose(rebuilt.view, chosen.view, 12);
+    expectVectorClose(rebuilt.hinge, chosen.hinge, 12);
+    expectVectorClose(rebuilt.side, chosen.side, 12);
+    expect(rebuilt.openingAngle).toBe(chosen.openingAngle);
+    // The anchor is in the body's coordinates: with the identity pose it IS the world frame.
+    const identityAnchor = anchorCutFrame(chosen, new THREE.Quaternion(), createCutAnchor());
+    expectVectorClose(identityAnchor.view, chosen.view, 12);
+    expectVectorClose(identityAnchor.hinge, chosen.hinge, 12);
+  });
+
+  it('turns with the body: a pose change carries the cut with the material, and a camera move does not', () => {
+    const { position, localUp } = orbitCamera(-28, 16);
+    const chosen = computeCutFrame(position, localUp, centre, Math.PI / 2, createCutFrame());
+    const anchor = anchorCutFrame(chosen, pose, createCutAnchor());
+    const turn = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.7);
+    const turnedPose = turn.clone().multiply(pose);
+    const turned = frameFromAnchor(anchor, turnedPose, chosen.openingAngle, createCutFrame());
+    expectVectorClose(turned.view, chosen.view.clone().applyQuaternion(turn), 12);
+    expectVectorClose(turned.hinge, chosen.hinge.clone().applyQuaternion(turn), 12);
+    expectVectorClose(turned.side, chosen.side.clone().applyQuaternion(turn), 12);
+    // Nothing in the rebuilt frame reads the camera: the same anchor and pose give the
+    // same frame whatever the camera does, which is the whole point of the lock.
+    const elsewhere = frameFromAnchor(anchor, pose, Math.PI, createCutFrame());
+    expectVectorClose(elsewhere.view, chosen.view, 12);
+    expect(elsewhere.openingAngle).toBe(Math.PI);
+  });
+
+  it('rebuilds an orthonormal frame from an anchor that rounding has sheared', () => {
+    const anchor = createCutAnchor();
+    anchor.view.set(0.3, 0.2, 0.9).normalize();
+    anchor.hinge.set(0.01, 1, 0.05); // neither unit nor perpendicular
+    const frame = frameFromAnchor(anchor, pose, 1.2, createCutFrame());
+    expect(frame.view.length()).toBeCloseTo(1, 12);
+    expect(frame.hinge.length()).toBeCloseTo(1, 12);
+    expect(frame.side.length()).toBeCloseTo(1, 12);
+    expect(frame.view.dot(frame.hinge)).toBeCloseTo(0, 12);
+    expect(frame.view.dot(frame.side)).toBeCloseTo(0, 12);
+    expect(frame.hinge.dot(frame.side)).toBeCloseTo(0, 12);
+    expectVectorClose(new THREE.Vector3().crossVectors(frame.hinge, frame.view), frame.side, 12);
+  });
+
+  it('blends two frames along the shortest arc, orthonormal throughout, at the destination\'s opening', () => {
+    const from = computeCutFrame(orbitCamera(-28, 16).position, orbitCamera(-28, 16).localUp, centre, Math.PI / 2, createCutFrame());
+    const to = computeCutFrame(orbitCamera(50, -10).position, orbitCamera(50, -10).localUp, centre, Math.PI, createCutFrame());
+    const atStart = blendCutFrames(from, to, 0, createCutFrame());
+    expectVectorClose(atStart.view, from.view, 9);
+    expectVectorClose(atStart.hinge, from.hinge, 9);
+    expect(atStart.openingAngle).toBe(Math.PI);
+    const atEnd = blendCutFrames(from, to, 1, createCutFrame());
+    expectVectorClose(atEnd.view, to.view, 9);
+    expectVectorClose(atEnd.side, to.side, 9);
+    const whole = frameQuaternion(from).angleTo(frameQuaternion(to));
+    let previous = 0;
+    for (const t of [0.1, 0.25, 0.5, 0.75, 0.9]) {
+      const blended = blendCutFrames(from, to, t, createCutFrame());
+      expect(blended.view.dot(blended.hinge)).toBeCloseTo(0, 9);
+      expect(blended.hinge.dot(blended.side)).toBeCloseTo(0, 9);
+      expectVectorClose(new THREE.Vector3().crossVectors(blended.hinge, blended.view), blended.side, 9);
+      // A slerp: the rotation from the start grows in proportion to t.
+      const travelled = frameQuaternion(from).angleTo(frameQuaternion(blended));
+      expect(travelled).toBeCloseTo(whole * t, 6);
+      expect(travelled).toBeGreaterThan(previous);
+      previous = travelled;
+    }
+    // Clamped: nothing overshoots.
+    expectVectorClose(blendCutFrames(from, to, 1.5, createCutFrame()).view, to.view, 9);
   });
 });
 

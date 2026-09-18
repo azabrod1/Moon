@@ -8,7 +8,10 @@
 // mode for a look. Runs at desktop and 390×844 by default.
 //
 // The opt-in lifecycle scenario (--scenario=lifecycle) drives the tool's
-// ceremonies through their races instead: a rapid double pick, a pick during
+// ceremonies through their races instead: the body-locked cut (an orbit
+// leaves its frame alone and from behind the exterior hides it; "Cut faces
+// the camera" swings it round; Reset view restores the entry frame), a
+// rapid double pick, a pick during
 // the reveal and during the cross-fade, the Esc cascade with View options and
 // the picker closing each other and then a page back to its summary,
 // prefers-reduced-motion (every move lands at once), the inspector page (a
@@ -198,11 +201,10 @@ async function sweepBody(context, viewport, body) {
   // 3. A hover sweep across the section resolves regions in order outward
   // from the centre, at rest and mid-blend. Along the hinge (screen-vertical),
   // a few px to one side of it: the cut plane is turned about the hinge (the
-  // Section yaw floor, cutFrame.ts) and each inner region's face is tilted
-  // further by the terrace step, so along the horizontal a near edge overhangs
-  // the face outside it in perspective and hides a thin rim band. The hinge is
-  // the one screen direction neither turn foreshortens and nothing overhangs.
-  // Both directions along it, so both faces show every region out to the rim.
+  // yaw, cutFrame.ts), so across the hinge the disc is foreshortened by the
+  // yaw's cosine and a thin rim band can hide behind the skin's edge in
+  // perspective; along the hinge nothing is foreshortened. Both directions
+  // along it, so both faces show every region out to the rim.
   await page.evaluate(() => window.__moon.interiorView('section'));
   await ready(page);
   const centre = await discCentre(page, viewport);
@@ -299,9 +301,9 @@ async function bandCase(context, viewport) {
   const image = decodePng(await withoutRuler(page, () => page.screenshot({ type: 'png' })));
   const scale = image.width / viewport.width;
   // True scale: display radius = physical radius. In the band (300–700 km) versus above it (800–1400 km).
-  // Read across the hinge, where the Section yaw floor foreshortens the disc by
-  // cos(yaw) — about 5%, so these land at 526 km and 1051 km, each still well
-  // inside the band it is asking about. The hinge itself is where the two faces
+  // Read across the hinge, where the cut's yaw foreshortens the disc by
+  // cos(yaw) — about 6%, so these land at about 530 km and 1060 km, each still
+  // well inside the band it is asking about. The hinge itself is where the two faces
   // meet, and a seam through the block would be variance this check reads as a hatch.
   const inBandR = ((500 / reference) * radiusPx) * scale;
   const outBandR = ((1000 / reference) * radiusPx) * scale;
@@ -344,10 +346,9 @@ async function pathCases(context, viewport) {
 
 // ---- the lifecycle scenario ---------------------------------------------------
 
-/** The opening the tool chooses for itself on a viewport: Section on a phone, Cutaway elsewhere. */
-/** The opening the tool chooses on entry: Section on a phone, the 120° cutaway on desktop
+/** The opening the tool chooses on entry: Section on a phone, the 90° quarter wedge on desktop
  *  (cutFrame.ts CUT_VIEW_ANGLE_DEG). */
-const chosenAngleDeg = (viewport) => (viewport.width <= 640 ? 180 : 120);
+const chosenAngleDeg = (viewport) => (viewport.width <= 640 ? 180 : 90);
 
 async function waitReady(page, timeout = 120000) {
   await page.waitForFunction(() => window.__moon.interiorReady(), undefined, { timeout });
@@ -751,8 +752,71 @@ async function toolsRowPickerCase(context, viewport) {
   await page.close();
 }
 
+/** The cut is locked to the body: an orbit turns the body under it and leaves its frame
+ *  alone, and from behind the cut is hidden by the intact exterior; "Cut faces the camera"
+ *  swings it round to the camera and off freezes it there; Reset view chooses it afresh from
+ *  the entry pose, which is the frame the tool opened with. */
+async function bodyLockedCutCase(context, viewport) {
+  const tag = `${viewport.name}/lifecycle body-locked cut`;
+  console.log(`\n== ${tag}`);
+  const { page, errors } = await openTool(context, 'Earth');
+  await ready(page);
+  const axes = (current) => [...current.cutFrame.view, ...current.cutFrame.hinge, ...current.cutFrame.side];
+  const maxDelta = (a, b) => Math.max(...a.map((value, index) => Math.abs(value - b[index])));
+  const orbit = async (azimuthDeg, elevationDeg) => {
+    await page.evaluate(([azimuth, elevation]) => window.__moon.interiorOrbit(azimuth, elevation), [azimuthDeg, elevationDeg]);
+    await settle(page);
+  };
+  const rulerHidden = () => page.evaluate(() => document.getElementById('interior-ruler').style.display === 'none');
+  const atRest = await state(page);
+  check(atRest.cutFollow === false, `${tag}: the cut follows the camera by default`);
+  const centre = await discCentre(page, viewport);
+  const centreHit = await page.evaluate(([x, y]) => window.__moon.interiorHover(x, y), [centre.x, centre.y]);
+  check(centreHit && centreHit.surface === 'face', `${tag}: the disc centre is not on a face at rest (${JSON.stringify(centreHit)})`);
+  // An orbit of forty degrees: the body turns under the cut, and the frame does not move.
+  await orbit(12, 28);
+  const orbited = await state(page);
+  check(maxDelta(axes(orbited), axes(atRest)) < 1e-9, `${tag}: an orbit moved the cut frame (by ${maxDelta(axes(orbited), axes(atRest))})`);
+  // From behind, the cut is behind the exterior: the centre of the disc is intact skin.
+  await orbit(152, 16);
+  const behind = await state(page);
+  check(maxDelta(axes(behind), axes(atRest)) < 1e-9, `${tag}: the orbit round the back moved the cut frame`);
+  const behindCentre = await discCentre(page, viewport);
+  const behindHit = await page.evaluate(([x, y]) => window.__moon.interiorHover(x, y), [behindCentre.x, behindCentre.y]);
+  check(behindHit && behindHit.surface === 'skin', `${tag}: from behind the disc centre is not intact skin (${JSON.stringify(behindHit)})`);
+  if (viewport.name === 'desktop') check(await rulerHidden(), `${tag}: the ruler is still drawn with both faces turned away`);
+  // Following: the cut swings round to the camera and the frame is a new one.
+  check(await page.evaluate(() => window.__moon.interiorCutFollow(true)), `${tag}: interiorCutFollow(true) refused`);
+  await page.waitForTimeout(600);
+  await settle(page);
+  const following = await state(page);
+  check(following.cutFollow === true, `${tag}: cutFollow is not reported on`);
+  check(maxDelta(axes(following), axes(atRest)) > 0.1, `${tag}: following, the cut did not swing round to the camera`);
+  const followingCentre = await discCentre(page, viewport);
+  const followingHit = await page.evaluate(([x, y]) => window.__moon.interiorHover(x, y), [followingCentre.x, followingCentre.y]);
+  check(followingHit && followingHit.surface === 'face', `${tag}: following, the disc centre is not on a face (${JSON.stringify(followingHit)})`);
+  if (viewport.name === 'desktop') check(!(await rulerHidden()), `${tag}: the ruler stayed hidden once the cut faced the camera`);
+  // Off again: frozen where it is, and the next orbit leaves it there.
+  await page.evaluate(() => window.__moon.interiorCutFollow(false));
+  await settle(page);
+  const frozen = await state(page);
+  check(maxDelta(axes(frozen), axes(following)) < 1e-6, `${tag}: turning following off moved the cut`);
+  await orbit(100, -10);
+  const frozenOrbited = await state(page);
+  check(maxDelta(axes(frozenOrbited), axes(frozen)) < 1e-9, `${tag}: an orbit moved the frozen cut`);
+  // Reset view: the entry pose, and the frame the tool opened with.
+  check(await page.evaluate(() => window.__moon.interiorResetView()), `${tag}: interiorResetView() refused`);
+  await settle(page);
+  const reset = await state(page);
+  check(maxDelta(axes(reset), axes(atRest)) < 1e-6, `${tag}: Reset view did not restore the entry frame (by ${maxDelta(axes(reset), axes(atRest))})`);
+  check(reset.cutFollow === false && Math.abs(reset.openingAngleDeg - atRest.openingAngleDeg) < 0.01, `${tag}: Reset view changed the following or the opening`);
+  check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
+  await page.close();
+}
+
 async function lifecycleCases(context, viewport) {
   await toolsRowPickerCase(context, viewport);
+  await bodyLockedCutCase(context, viewport);
   await rapidDoublePickCase(context, viewport);
   await pickDuringRevealCase(context, viewport);
   await pickDuringFadeCase(context, viewport);

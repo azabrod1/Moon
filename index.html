@@ -1995,7 +1995,10 @@
       position: absolute; left: 16px; bottom: 16px; z-index: 18; width: min(360px, calc(100vw - 32px));
       max-height: min(72vh, 680px); overflow-y: auto; scrollbar-width: thin; padding: 14px 18px 12px; pointer-events: auto;
     }
-    .interior-inspector.docked { position: static; width: auto; max-height: none; padding: 10px 0 0; margin-top: 10px; border-top: 1px solid var(--line-dim); background: none; border-radius: 0; box-shadow: none; backdrop-filter: none; }
+    /* Docked (phones), the inspector is the sheet's content, not a second glass panel inside it: the
+       mode takes .pn/.pn-high off it with the dock (body.mat-glass .pn outranks this rule), and this
+       clears the rest so a stray panel class could never bring the glass, the blur or the shadow back. */
+    .interior-inspector.docked { position: static; width: auto; max-height: none; padding: 10px 0 0; margin-top: 10px; border: none; border-top: 1px solid var(--line-dim); background: none; border-radius: 0; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
     .ii-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
     .ii-name { font-family: var(--font-ui); font-size: 15px; font-weight: 600; color: var(--t1); line-height: 1.25; }
     .ii-close { background: none; border: none; color: var(--t3); cursor: pointer; padding: 2px; flex: none; }

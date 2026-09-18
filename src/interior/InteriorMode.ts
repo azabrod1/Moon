@@ -1457,6 +1457,11 @@ export class InteriorMode {
     const host = document.getElementById(phone ? 'interior-scroll' : 'interior-ui');
     if (host && root.parentElement !== host) host.append(root);
     root.classList.toggle('docked', phone);
+    // Docked, the inspector is the sheet's content, not a panel of its own: the
+    // glass rule (body.mat-glass .pn) outranks the docked reset, so the panel
+    // classes come off with the dock and go back on for the desktop's standalone card.
+    root.classList.toggle('pn', !phone);
+    root.classList.toggle('pn-high', !phone);
     renderInspector(root, {
       drawn: this.drawn,
       index,
@@ -1475,14 +1480,17 @@ export class InteriorMode {
     }
     const panel = document.getElementById('interior-panel');
     panel?.classList.toggle('inspecting', phone);
+    // Shown BEFORE the sheet is measured: with the inspector still hidden and
+    // its siblings hidden by the inspecting class, the sheet measured as
+    // nothing and the first pin opened it to its peek.
+    root.style.display = '';
+    root.scrollTop = 0;
     if (phone) {
       // The inspector needs the room: the sheet opens to its full height with
       // it, and the height the reader had is kept for when they come back.
       if (this.sheetHeightBeforeInspectPx === null) this.sheetHeightBeforeInspectPx = this.sheetHeightPx;
       this.setSheetHeight(this.fullHeightPx(), { snap: true });
     }
-    root.style.display = '';
-    root.scrollTop = 0;
     if (phone && host) host.scrollTop = 0;
     this.updateScrollCue();
   }

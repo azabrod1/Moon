@@ -122,6 +122,32 @@ function blockStats(image, x0, y0, size) {
   return { mean, std: Math.sqrt(Math.max(0, variance)), max, count };
 }
 
+/** The block's luminance spread with each column's mean taken out: a smooth
+ *  radial ramp (the temperature scale across the disc, which runs along x at
+ *  the centre row) leaves nothing, while a hatch's diagonal stripes vary
+ *  within every column and survive. What "is there a hatch here" asks. */
+function blockDetrendedStd(image, x0, y0, size) {
+  const columns = [];
+  for (let x = x0; x < x0 + size; x++) {
+    const values = [];
+    for (let y = y0; y < y0 + size; y++) {
+      if (x < 0 || y < 0 || x >= image.width || y >= image.height) continue;
+      values.push(luminance(image.pixels, image.channels, y * image.width + x));
+    }
+    if (values.length) columns.push(values);
+  }
+  let sumSquares = 0;
+  let count = 0;
+  for (const values of columns) {
+    const mean = values.reduce((total, value) => total + value, 0) / values.length;
+    for (const value of values) {
+      sumSquares += (value - mean) * (value - mean);
+      count++;
+    }
+  }
+  return count ? Math.sqrt(sumSquares / count) : 0;
+}
+
 /** Open the tool on a body in a fresh page. `reducedMotion` emulates the
  *  media query before the app boots, so the tool reads it from its first frame. */
 async function openTool(context, body, query = '', { reducedMotion = false } = {}) {
@@ -308,10 +334,12 @@ async function bandCase(context, viewport) {
   const inBandR = ((500 / reference) * radiusPx) * scale;
   const outBandR = ((1000 / reference) * radiusPx) * scale;
   const size = 14;
-  const inBand = blockStats(image, Math.round(centre.x * scale + inBandR - size / 2), Math.round(centre.y * scale - size / 2), size);
-  const outBand = blockStats(image, Math.round(centre.x * scale + outBandR - size / 2), Math.round(centre.y * scale - size / 2), size);
-  notes.push(`${tag}: in-band std ${inBand.std.toFixed(2)} out-of-band std ${outBand.std.toFixed(2)}`);
-  check(inBand.std > outBand.std * 2.5 && inBand.std > 3, `${tag}: no hatched band where the boundary is uncertain (std ${inBand.std.toFixed(2)} in, ${outBand.std.toFixed(2)} out)`);
+  // The temperature ramp runs radially, so a block out of the band still carries a
+  // gradient; the ramp is taken out column by column and what is left is the hatch.
+  const inBand = blockDetrendedStd(image, Math.round(centre.x * scale + inBandR - size / 2), Math.round(centre.y * scale - size / 2), size);
+  const outBand = blockDetrendedStd(image, Math.round(centre.x * scale + outBandR - size / 2), Math.round(centre.y * scale - size / 2), size);
+  notes.push(`${tag}: in-band detrended std ${inBand.toFixed(2)} out-of-band ${outBand.toFixed(2)}`);
+  check(inBand > outBand * 2.5 && inBand > 3, `${tag}: no hatched band where the boundary is uncertain (detrended std ${inBand.toFixed(2)} in, ${outBand.toFixed(2)} out)`);
   await page.screenshot({ path: path.join(outDir, `${viewport.name}-Europa-band-true-temperature.png`) });
   check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
   await page.close();

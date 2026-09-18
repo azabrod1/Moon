@@ -471,6 +471,10 @@ function qualityReadout() {
     // a stream has to derive its own from this, or it would inject evidence
     // about another question.
     budgetMs: state.budgetMs,
+    // What a rung above Medium is held to, and whether one may be taken on
+    // its own at all (the display's own tick at the row's default).
+    aboveBudgetMs: state.aboveBudgetMs,
+    aboveAllowed: state.aboveAllowed,
     downCounted: state.downCounted,
     upCounted: state.upCounted,
     // The schedule: what was asked for, what the display delivers, and how
@@ -531,11 +535,12 @@ refreshQualityPin();
 // ================================================================
 // How often the loop DRAWS (app/frameCadence.ts) against what the user asked
 // for (app/frameRateSetting.ts). "Screen", the default, paces nothing: every
-// callback draws and the resolution controller keeps its own 60 fps budget,
-// so a session at the default runs the loop and the rule of a build with no
-// row at all. A target is pacing PLUS a budget the app then defends with
-// pixels — `setBudget` below is the only door that moves it, and at the
-// default it is never called.
+// callback draws and the resolution controller keeps its own 60 fps budget at
+// and below Medium. What the default does tell the controller is the display's
+// own tick, which is what a rung ABOVE Medium is held to — and on a display
+// with no finer tick than 60 fps it tells it there is none, so Dynamic there
+// is Medium and below. A target is pacing PLUS a budget the app then defends
+// with pixels in both directions — `setBudget` below is the only door.
 
 /** The row's value this session: the URL's word, else the saved one, else
  *  Screen. */
@@ -581,9 +586,10 @@ function frameCapHeldBy(): string | null {
  * Tell the resolution controller what a frame is now measured against, and say
  * so once through debugLog so `?debug=1` answers it on a phone.
  *
- * Only a real budget move disturbs the controller: under Screen the budget is
- * the constant it has always held, so nothing here reaches it and the rule is
- * the one `?fps=` was never passed to.
+ * Only a real move of what the controller is held to disturbs it: under Screen
+ * on a 60 Hz display that is the constant it has always held and nothing here
+ * reaches it; on a faster display the calibrated tick reaches it once, as the
+ * bar a sharper rung is measured against.
  */
 function applyCadenceChange(cause: 'user' | 'auto'): void {
   const change = frameCadence.takeChange();
@@ -593,6 +599,7 @@ function applyCadenceChange(cause: 'user' | 'auto'): void {
     resolutionController.setBudget(fps.budgetMs, performance.now(), {
       cause: cause === 'user' ? 'user' : change.cause,
       quantised: frameCadence.quantised,
+      above: { budgetMs: fps.sharperBudgetMs, allowed: fps.sharperAllowed },
     });
   }
   const hz = Math.round(1000 / fps.idleCadenceMs);
@@ -606,6 +613,8 @@ function applyCadenceChange(cause: 'user' | 'auto'): void {
     draws: `${every}, ${Math.round(fps.periodMs * 10) / 10} ms`,
     delivering: fps.observedCadenceMs === null ? null : `${Math.round(1000 / fps.observedCadenceMs)}/s`,
     budgetMs: Math.round(fps.budgetMs * 100) / 100,
+    // What a rung above Medium is held to, or that none is taken on its own.
+    sharper: fps.sharperAllowed ? `${Math.round(fps.sharperBudgetMs * 100) / 100} ms` : 'Medium and below',
     capped: fps.capped,
   });
 }

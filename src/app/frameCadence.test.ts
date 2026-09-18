@@ -390,17 +390,40 @@ describe('a stream slower than the display', () => {
 });
 
 describe('what it tells the rest of the app', () => {
-  it('never moves the budget while Screen holds, whatever the display is', () => {
+  it('never moves the 60 fps budget while Screen holds; a faster display hands over the tick a sharper rung is held to', () => {
     const cadence = cadenceFor('screen');
-    // Screen's first derivation is the default budget, so there is nothing
-    // for the controller to be told.
+    // Screen's first derivation is the default budget with the climb above
+    // Medium closed, which is what the controller starts with, so there is
+    // nothing for it to be told.
     expect(cadence.takeChange()?.budgetChanged).toBe(false);
+    expect(cadence.state().sharperAllowed).toBe(false);
     run(cadence, grid(120, 3), { covered: true });
     const change = cadence.takeChange();
-    // A calibration under Screen may report the display for the debug line,
-    // but it can never move the budget.
-    expect(change?.budgetChanged ?? false).toBe(false);
+    // A 120 Hz calibration under Screen leaves the budget alone and opens the
+    // climb above Medium against the display's own tick — that IS a change
+    // the controller has to hear.
+    expect(change?.budgetChanged).toBe(true);
     expect(cadence.state().budgetMs).toBeCloseTo(BUDGET_MS, 6);
+    expect(cadence.state().sharperBudgetMs).toBeCloseTo(1000 / 120, 4);
+    expect(cadence.state().sharperAllowed).toBe(true);
+  });
+
+  it('a 60 Hz display under Screen allows no rung above Medium, and a row allows every rung', () => {
+    const sixty = cadenceFor('screen');
+    run(sixty, grid(60, 3), { covered: true });
+    expect(sixty.state().calibrated).toBe(true);
+    // 16.67 is not a finer tick than 60 fps: the climb stays closed and the
+    // controller is not disturbed for it.
+    expect(sixty.state().sharperAllowed).toBe(false);
+    expect(sixty.state().sharperBudgetMs).toBeCloseTo(BUDGET_MS, 6);
+    expect(sixty.takeChange()?.budgetChanged ?? false).toBe(false);
+    // The row's 60 on a 120 Hz display: a rate the user asked to be defended
+    // with pixels, so the bar above Medium is the row's own budget.
+    const row = cadenceFor('60');
+    run(row, grid(120, 3), { covered: true });
+    expect(row.state().sharperAllowed).toBe(true);
+    expect(row.state().sharperBudgetMs).toBeCloseTo(row.state().budgetMs, 6);
+    expect(row.state().budgetMs).toBeCloseTo(1000 / 60, 4);
   });
 
   it('hands the boot budget over even where the calibration confirms it', () => {

@@ -92,6 +92,21 @@ class Rig {
   }
 }
 
+/** The Frame rate row at 60 fps: a rate the user asked to be defended with
+ *  pixels, so a rung above Medium is allowed and every rung is held to the
+ *  same 16.67 ms — the bar the probe and probation tests below are written
+ *  against. At the row's default a rung above Medium is measured against
+ *  the display's own tick instead, and a 60 Hz display allows none. */
+function sixtyRow(rig: Rig): void {
+  rig.controller.setBudget(1000 / 60, 0, { cause: 'user' });
+}
+
+/** A 120 Hz display at the row's default: a rung above Medium is allowed and
+ *  held to one of its ticks, 8.33 ms; Medium and below keep the 60 fps bar. */
+function fastScreen(rig: Rig): void {
+  rig.controller.setBudget(null, 0, { cause: 'auto', above: { budgetMs: TICK_120, allowed: true } });
+}
+
 /** A stream at a steady rate: one frame in `late` is a tick late. */
 function oneInLate(late: number): (rung: number, i: number) => number {
   return (_rung, i) => ((i + 1) % late === 0 ? 2 * TICK : TICK);
@@ -182,10 +197,12 @@ describe('the derived frame-rate boundaries at 60 Hz vsync', () => {
     expect(1000 / (BUDGET_MS * (1 + share))).toBeLessThan(59);
 
     const climbs = new Rig(new ResolutionController(FULL_LADDER));
+    sixtyRow(climbs);
     climbs.run(3 * UP_WINDOW_COUNTED, oneInLate(Math.ceil(1 / share)));
     expect(climbs.applied.map((a) => a.reason)).toContain('up');
 
     const holds = new Rig(new ResolutionController(FULL_LADDER));
+    sixtyRow(holds);
     holds.run(3 * UP_WINDOW_COUNTED, oneInLate(Math.floor(1 / share)));
     expect(holds.applied).toEqual([]);
   });
@@ -343,9 +360,10 @@ describe('the floor latch', () => {
 });
 
 describe('an up probe and its verification', () => {
-  it('climbs a Mac that holds 60 fps, one rung at a time, to the top', () => {
+  it('climbs a 120 Hz Mac one rung at a time to the top while every frame fits one tick', () => {
     const rig = new Rig(new ResolutionController(FULL_LADDER));
-    rig.run(4000, () => TICK);
+    fastScreen(rig);
+    rig.run(4000, () => TICK_120);
     expect(rig.applied.map((a) => a.reason)).toEqual(['up', 'up']);
     expect(rig.rung).toBe(FULL_LADDER.rungs.length - 1);
     expect(rig.controller.state().probeWaitMs).toBe(PROBE_WAIT_MS);
@@ -353,6 +371,7 @@ describe('an up probe and its verification', () => {
 
   it('reverts a probe whose next second is over budget inside 1.25 s, doubles the wait and latches a ceiling', () => {
     const rig = new Rig(new ResolutionController(FULL_LADDER));
+    sixtyRow(rig);
     // Fine at medium; the moment it climbs, the frame goes to 30 fps.
     rig.run(1200, (rung) => (rung > FULL_LADDER.mediumIndex ? 2 * TICK : TICK));
     const up = rig.applied.find((a) => a.reason === 'up');
@@ -370,6 +389,7 @@ describe('an up probe and its verification', () => {
 
   it('backs off 8, 16, 32 seconds, and each failure at the same rung holds the ceiling longer', () => {
     const rig = new Rig(new ResolutionController(FULL_LADDER));
+    sixtyRow(rig);
     const waits: number[] = [];
     // Thirteen minutes of a device whose frames miss the moment it climbs.
     for (let i = 0; i < 6; i++) {
@@ -394,6 +414,7 @@ describe('an up probe and its verification', () => {
 
   it('escalates a minute, four, sixteen, then the session, and never probes that rung again', () => {
     const rig = new Rig(new ResolutionController(FULL_LADDER));
+    sixtyRow(rig);
     // Forty minutes of the same device: four probes in the first twenty-two
     // minutes, then silence.
     rig.run(144_000, (rung) => (rung > FULL_LADDER.mediumIndex ? 2 * TICK : TICK));
@@ -410,6 +431,7 @@ describe('an up probe and its verification', () => {
 
   it('a probe that holds resets the escalation for that rung', () => {
     const rig = new Rig(new ResolutionController(FULL_LADDER));
+    sixtyRow(rig);
     // Two failures at the first rung above medium in the first 200 s, then
     // the frames fit there.
     let fits = false;
@@ -436,6 +458,7 @@ describe('an up probe and its verification', () => {
 
   it('a budget change clears the ceiling and its escalation, because it was a ceiling for another question', () => {
     const rig = new Rig(new ResolutionController(FULL_LADDER));
+    sixtyRow(rig);
     rig.run(24_000, (rung) => (rung > FULL_LADDER.mediumIndex ? 2 * TICK : TICK));
     expect(rig.controller.state().ceiling?.escalation).toBe(3);
     rig.controller.setBudget(1000 / 30, rig.nowMs, { cause: 'user' });
@@ -459,6 +482,7 @@ describe('an up-step on probation', () => {
 
   it('a rung handed back inside two minutes is a failed probe, so a straddle escalates instead of hunting', () => {
     const rig = new Rig(new ResolutionController(FULL_LADDER));
+    sixtyRow(rig);
     // Half an hour at the straddle.
     rig.run(108_000, straddle(rig));
     const ups = rig.applied.filter((a) => a.reason === 'up');
@@ -491,6 +515,7 @@ describe('an up-step on probation', () => {
 
   it('a down more than two minutes after a probe is a slide, and the probation is reported while it stands', () => {
     const rig = new Rig(new ResolutionController(ONE_UP_LADDER));
+    sixtyRow(rig);
     let slow = false;
     const frame = (rung: number) => (rung > ONE_UP_LADDER.mediumIndex && slow ? 1.16 * TICK : TICK);
     // One probe up, then a hold well past the probation.
@@ -514,6 +539,7 @@ describe('an up-step on probation', () => {
 
   it('an arrival ends the probation: a down after a new pose is a new question', () => {
     const rig = new Rig(new ResolutionController(ONE_UP_LADDER));
+    sixtyRow(rig);
     let slow = false;
     const frame = (rung: number) => (rung > ONE_UP_LADDER.mediumIndex && slow ? 1.16 * TICK : TICK);
     rig.run(1200, frame);
@@ -528,22 +554,75 @@ describe('an up-step on probation', () => {
   });
 });
 
-describe('the up path on a fast display', () => {
-  /** A 120 Hz machine: medium fits inside one vsync, anything sharper needs
-   *  two. At the default budget it is meant to spend the refresh rate for the
-   *  sharper picture — which rate it runs at is the Frame rate row's
-   *  question. */
-  const machine = (rung: number): number => (rung > FULL_LADDER.mediumIndex ? TICK : TICK_120);
+describe('a rung above Medium is held to the display’s own tick', () => {
+  it('never climbs above Medium on a 60 Hz display at the row’s default', () => {
+    // Every frame on time reads 16.67 ms whether it cost 11 ms or 16, so the
+    // rule cannot see headroom and must not climb blind: a phone at Earth's
+    // shell was measured going from a locked 60 fps into the fifties that way.
+    const fresh = new Rig(new ResolutionController(FULL_LADDER));
+    fresh.run(6000, () => TICK);
+    expect(fresh.applied).toEqual([]);
+    expect(fresh.rung).toBe(FULL_LADDER.mediumIndex);
+    expect(fresh.controller.state().aboveAllowed).toBe(false);
+    // Nor once the display has been calibrated at 60.
+    const calibrated = new Rig(new ResolutionController(FULL_LADDER));
+    calibrated.controller.setBudget(null, 0, { cause: 'auto', above: { budgetMs: BUDGET_MS, allowed: false } });
+    calibrated.run(6000, () => TICK);
+    expect(calibrated.applied).toEqual([]);
+  });
 
-  it('climbs to the sharpest rung and settles there', () => {
+  it('climbs a 120 Hz display only while the frame fits one tick, and keeps the rate over the pixels', () => {
+    /** Medium and the rung above fit one vsync; the sharpest needs two. The
+     *  earlier rule spent the refresh rate on the sharper picture — a Mac
+     *  measured going from 120 fps to 80 — and now the sharper rung is kept
+     *  only while 120 holds. */
+    const machine = (rung: number): number => (rung > FULL_LADDER.mediumIndex + 1 ? TICK : TICK_120);
     const rig = new Rig(new ResolutionController(FULL_LADDER));
-    rig.run(6000, machine);
-    expect(rig.rung).toBe(FULL_LADDER.rungs.length - 1);
-    expect(rig.applied.filter((a) => a.reason === 'revert')).toEqual([]);
+    fastScreen(rig);
+    rig.run(12_000, machine);
+    expect(rig.rung).toBe(FULL_LADDER.mediumIndex + 1);
+    // The probe to the sharpest rung came back inside its verification second
+    // and its rung is held as a ceiling.
+    expect(rig.applied.filter((a) => a.reason === 'revert').length).toBeGreaterThanOrEqual(1);
+    expect(rig.controller.state().ceiling?.rung).toBe(FULL_LADDER.mediumIndex + 2);
+  });
+
+  it('hands a sharper rung back when the screen’s rate is lost, and never goes below Medium for it', () => {
+    const rig = new Rig(new ResolutionController(FULL_LADDER));
+    fastScreen(rig);
+    rig.run(3000, () => TICK_120);
+    expect(rig.rung).toBeGreaterThan(FULL_LADDER.mediumIndex);
+    // Two ticks a frame: a perfectly even 60 fps, which loses the sharper
+    // rungs one at a time and is exactly what Medium is allowed to cost.
+    rig.run(3000, () => TICK);
+    expect(rig.rung).toBe(FULL_LADDER.mediumIndex);
+    expect(rig.applied.every((a) => a.to >= FULL_LADDER.mediumIndex)).toBe(true);
+    // Four ticks is 30 fps, which Medium is not allowed to cost — and a rung
+    // below it that really is cheaper is kept (a floor that changed nothing
+    // would be the not-pixel-bound latch, which is another test).
+    rig.run(1200, (rung) => (rung >= FULL_LADDER.mediumIndex ? 2 * TICK : TICK));
+    expect(rig.rung).toBeLessThan(FULL_LADDER.mediumIndex);
+  });
+
+  it('a row’s target is defended with pixels in both directions', () => {
+    // The 60 fps row on any display: the user asked for 60, so the picture is
+    // as sharp as 60 allows, which is the rule the default used to have.
+    const rig = new Rig(new ResolutionController(FULL_LADDER));
+    sixtyRow(rig);
+    rig.run(4000, () => TICK);
+    expect(rig.applied.map((a) => a.reason)).toEqual(['up', 'up']);
+    expect(rig.controller.state().aboveAllowed).toBe(true);
+    expect(rig.controller.state().aboveBudgetMs).toBeCloseTo(1000 / 60, 6);
+    // And Screen on a 120 Hz display reports the tick it holds the climb to.
+    const fast = new Rig(new ResolutionController(FULL_LADDER));
+    fastScreen(fast);
+    expect(fast.controller.state().aboveBudgetMs).toBeCloseTo(TICK_120, 6);
+    expect(fast.controller.state().budgetMs).toBeCloseTo(BUDGET_MS, 6);
   });
 
   it('steps down on the budget, not on the panel period', () => {
     const rig = new Rig(new ResolutionController(SHORT_LADDER));
+    fastScreen(rig);
     // A 120 Hz phone panel delivering two ticks: 60 fps, which is fine.
     rig.run(1200, () => TICK);
     expect(rig.applied).toEqual([]);
@@ -605,6 +684,7 @@ describe('events', () => {
 describe('setLadder', () => {
   it('re-clamps the current rung to the nearest the new ladder offers', () => {
     const rig = new Rig(new ResolutionController(FULL_LADDER));
+    sixtyRow(rig);
     rig.run(4000, () => TICK);
     expect(rig.rung).toBe(4);
     const decision = rig.controller.setLadder(SHORT_LADDER, rig.nowMs);
@@ -649,6 +729,10 @@ describe('diagnosis', () => {
     expect(state.downCounted).toBe(DOWN_WINDOW_COUNTED);
     expect(state.upCounted).toBe(UP_WINDOW_COUNTED);
     expect(state.ceiling).toBeNull();
+    // Until a display with a finer tick than 60 fps says so, no rung above
+    // Medium is taken on its own.
+    expect(state.aboveAllowed).toBe(false);
+    expect(state.aboveBudgetMs).toBeCloseTo(BUDGET_MS, 6);
     expect(state.rung).toBe(2);
     expect(state.sceneRatio).toBe(2);
     expect(state.countedWindow).toBeGreaterThan(DOWN_WINDOW_COUNTED);

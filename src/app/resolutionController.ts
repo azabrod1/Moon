@@ -17,21 +17,35 @@
  * work lands on alternating frames, the statistic would then be the mean of
  * exactly the long intervals the exclusion was written to remove.
  *
- * **Budget: 60 fps unless the Frame rate row says otherwise.** Under vsync a
- * frame is delivered on a refresh tick, so a frame's cost never appears in the
- * intervals: on a 120 Hz panel a 12 ms frame is delivered at 16.67 ms. Holding
- * the panel's own rate would make every such frame a miss and pin a 120 Hz
- * machine at medium with a 120 → 60 cliff on each probe. Holding 60 means: as
- * sharp as 60 fps allows, evenly paced — a two-tick frame on a 120 Hz panel is
- * even — and a fast panel still runs at its own rate whenever the frame is
- * cheap. There is no refresh-rate estimator in the DOWN path at all, and so no
- * boot pollution and no panel list.
+ * **Budget: 60 fps at and below Medium, unless the Frame rate row says
+ * otherwise.** Under vsync a frame is delivered on a refresh tick, so a
+ * frame's cost never appears in the intervals: on a 120 Hz panel a 12 ms frame
+ * is delivered at 16.67 ms. Holding the panel's own rate for the slide DOWN
+ * would make every such frame a miss and take pixels from a 120 Hz machine
+ * that is delivering a perfectly even 60, so below Medium the bar is 60 fps
+ * on every display. `BUDGET_MS` is that default and `setBudget` is the one
+ * door that moves it: the Frame rate row's target is a rate the app then has
+ * to DEFEND with pixels, so the budget follows it (app/frameCadence.ts derives
+ * the number).
  *
- * `BUDGET_MS` is that default and `setBudget` is the one door that moves it:
- * the Frame rate row's target is a rate the app then has to DEFEND with
- * pixels, so the budget follows it (app/frameCadence.ts derives the number).
- * At the row's default, "Screen", nothing calls `setBudget` at all and every
- * path below is the one a build with no row takes.
+ * **Above Medium the bar is the display's own tick, and on a 60 Hz display
+ * there is no climb at all.** Taking a rung above Medium asks a different
+ * question — may the picture be made sharper than it was? — and the intervals
+ * can only answer it where the display has a finer tick than the budget: on a
+ * 120 Hz panel a frame that fits one tick reads 8.33 ms and one that needs two
+ * reads 16.67, so the rule can see whether the full rate holds. On a 60 Hz
+ * panel an 11 ms frame and a 16 ms one both read 16.67 and the rule is blind;
+ * an earlier version climbed while frames were on time and was measured
+ * climbing until they missed — a phone at Earth's shell going from a locked
+ * 60 fps to the fifties and hotter, a 120 Hz Mac from 120 fps to 80. So a rung
+ * above Medium is taken, kept and verified against `aboveBudgetMs` — the
+ * display's cadence under the row's default, where that is faster than 60 —
+ * and where there is no finer tick (`aboveAllowed` false) Dynamic is Medium
+ * and below, and High is the menu's choice. A row's own target is a rate the
+ * user asked to be defended with pixels, so under a row the bar above Medium
+ * is the row's budget and the climb is allowed. The rung a sharper picture is
+ * handed back to is Medium, never lower: a display that cannot hold its own
+ * rate at the sharper rung is not made softer than it was for it.
  *
  * **Counted intervals.** An interval votes when both its endpoints were
  * eligible (visible, focused, uncovered), no frame-sliced work was done in
@@ -155,13 +169,11 @@
  * would exclude every frame of the session with no symptom but a controller
  * that never moves.
  *
- * **Which rate a fast display runs at is the Frame rate row's question, not
- * this file's.** The up path probes whenever the window is inside the budget,
- * so a 120 Hz machine at the default climbs to its sharpest rung and runs at
- * 60; a user who wants 120 asks for it in the menu, and the budget follows
- * them. An earlier draft estimated the panel's own period here from a low
- * percentile of counted intervals and made the up test stricter with it; the
- * row answers the same question out loud, so the estimator is gone.
+ * **No estimator of the panel's period lives here.** The display's cadence
+ * comes in through `setBudget` from app/frameCadence.ts, which calibrates it
+ * under the boot cover and raises it on faster live evidence; an earlier
+ * draft estimated it from a low percentile of counted intervals, and a fast
+ * misread there was a budget too tight for the display.
  */
 
 /** The budget every display is held to unless the Frame rate row moves it:
@@ -363,8 +375,12 @@ export interface ControllerState {
   /** The mean that triggered the first step down from medium: what the floor
    *  has to beat. */
   floorReference: number | null;
-  /** What a frame is measured against right now. */
+  /** What a frame at or below Medium is measured against right now. */
   budgetMs: number;
+  /** What a rung above Medium is measured against — the display's own tick
+   *  at the row's default — and whether one may be taken on its own at all. */
+  aboveBudgetMs: number;
+  aboveAllowed: boolean;
   /** Counted intervals a decision needs at this budget. */
   downCounted: number;
   upCounted: number;
@@ -471,6 +487,11 @@ export class ResolutionController {
   /** What a frame is measured against, and the window lengths derived from
    *  it. `setBudget` is the only writer. */
   private budgetMs = BUDGET_MS;
+  /** The bar above Medium, and whether a rung above it may be taken at all.
+   *  Closed until `setBudget` says the display has a finer tick to measure a
+   *  sharper rung against, or a row asked for a rate to defend. */
+  private aboveBudgetMs = BUDGET_MS;
+  private aboveAllowed = false;
   private downCounted = DOWN_WINDOW_COUNTED;
   private upCounted = UP_WINDOW_COUNTED;
   /** Whether a draw covers several callbacks, which is the only case the two
@@ -614,14 +635,25 @@ export class ResolutionController {
    * that latch is a fact about the device rather than about the budget.
    *
    * `quantised` says whether a draw now covers several callbacks. It arms the
-   * two gates that only make sense there, and at the row's default nothing
-   * calls this at all.
+   * two gates that only make sense there.
+   *
+   * `above` is what a rung above Medium is held to and whether one may be
+   * taken at all (the header). Left out, a row's budget is defended in both
+   * directions and the default budget closes the climb — which is what Screen
+   * on a display with no finer tick than 60 fps means.
    */
-  setBudget(budgetMs: number | null, nowMs: number, opts: { cause: BudgetCause; quantised?: boolean }): void {
+  setBudget(
+    budgetMs: number | null,
+    nowMs: number,
+    opts: { cause: BudgetCause; quantised?: boolean; above?: { budgetMs: number; allowed: boolean } },
+  ): void {
     const next = budgetMs === null || !Number.isFinite(budgetMs) || budgetMs <= 0 ? BUDGET_MS : budgetMs;
     this.clockMs = nowMs;
     this.quantised = opts.quantised ?? false;
     this.budgetMs = next;
+    const above = opts.above ?? { budgetMs: next, allowed: budgetMs !== null };
+    this.aboveBudgetMs = Number.isFinite(above.budgetMs) && above.budgetMs > 0 ? above.budgetMs : next;
+    this.aboveAllowed = above.allowed;
     this.downCounted = windowCounted(DOWN_WINDOW_S, next);
     const upCounted = windowCounted(UP_WINDOW_S, next);
     this.upCounted = upCounted;
@@ -741,6 +773,8 @@ export class ResolutionController {
       lastStep: this.lastStep === null ? null : { ...this.lastStep },
       floorReference: this.floorReference,
       budgetMs: this.budgetMs,
+      aboveBudgetMs: this.aboveBudgetMs,
+      aboveAllowed: this.aboveAllowed,
       downCounted: this.downCounted,
       upCounted: this.upCounted,
     };
@@ -762,14 +796,21 @@ export class ResolutionController {
     return this.pending;
   }
 
-  /** The bar a window has to clear to probe up. */
-  private upThresholdMs(): number {
-    return UP_FACTOR * this.budgetMs;
+  /** What a frame at this rung is held to: the display's own tick above
+   *  Medium, the budget at and below it (the header). */
+  private budgetAt(index: number): number {
+    return index > this.mediumIndex ? this.aboveBudgetMs : this.budgetMs;
   }
 
-  /** The reading that undoes a probe: a genuinely over-budget second. */
+  /** The bar a window has to clear to probe up to `next`. */
+  private upThresholdMs(next: number): number {
+    return UP_FACTOR * this.budgetAt(next);
+  }
+
+  /** The reading that undoes a probe: a genuinely over-budget second at the
+   *  rung being verified. */
   private verifyThresholdMs(): number {
-    return DOWN_FACTOR * this.budgetMs;
+    return DOWN_FACTOR * this.budgetAt(this.index);
   }
 
   private finishVerification(nowMs: number): Decision | null {
@@ -805,8 +846,10 @@ export class ResolutionController {
     if (nowMs - this.lastChangeMs < DOWN_SPACING_MS) return null;
     const stat = this.window.trimmedMean(this.downCounted, TRIM_COUNT, nowMs - STALENESS_MS);
     if (stat === null || stat.count < this.downCounted) return null;
-    // A full window inside the budget: this rung holds.
-    if (stat.meanMs <= DOWN_FACTOR * this.budgetMs) return null;
+    // A full window inside this rung's bar: it holds. Above Medium the bar is
+    // the display's own tick, so a sharper rung that has lost the screen's
+    // full rate is handed back — to Medium at most, never past it for that.
+    if (stat.meanMs <= DOWN_FACTOR * this.budgetAt(this.index)) return null;
     // Handed back inside its probation: the probe that reached this rung has
     // failed, and the step is its revert rather than a slide.
     if (this.probation !== null && this.probation.rung === this.index && nowMs < this.probation.untilMs) {
@@ -839,11 +882,15 @@ export class ResolutionController {
   private upDecision(nowMs: number): Decision | null {
     const next = this.index + 1;
     if (next >= this.rungs.length) return null;
+    // A rung above Medium is taken only where the display has a tick fine
+    // enough to measure it against (the header): with no such tick the climb
+    // would be blind, and Dynamic stops at Medium.
+    if (next > this.mediumIndex && !this.aboveAllowed) return null;
     if (this.ceiling !== null && next >= this.ceiling.rung) return null;
     if (nowMs - this.lastChangeMs < this.probeWait) return null;
     const stat = this.window.trimmedMean(this.upCounted, TRIM_COUNT, nowMs - STALENESS_MS);
     if (stat === null || stat.count < this.upCounted) return null;
-    if (stat.meanMs > this.upThresholdMs()) return null;
+    if (stat.meanMs > this.upThresholdMs(next)) return null;
     // Headroom, and only where a draw covers several callbacks: there every
     // frame that fits reports exactly the period, so the interval says
     // nothing about what the frame had left and the main thread has to.

@@ -22,6 +22,22 @@
  *    session delivering 30 callbacks a second must still read its frames as
  *    over budget, because that is the down-step it needs.
  *
+ * **A sharper rung is measured against the display's own tick.** The budget
+ * above is what a frame at or below Medium is held to: 60 fps at the default.
+ * Above Medium the question is different — may the picture be made sharper
+ * than it was? — and on a display whose tick IS 60 fps the intervals cannot
+ * answer it: an 11 ms frame and a 16 ms frame are both delivered on the next
+ * tick and read the same, so a rule that climbed while frames were on time
+ * climbed blind until they missed, and was measured doing exactly that — a
+ * phone at Earth's shell going from a locked 60 fps to the fifties and hotter,
+ * a 120 Hz Mac from 120 fps to 80. So `sharperBudgetMs` is the display's own
+ * cadence where that is faster than 60 fps — a sharper rung is kept only while
+ * the screen's full rate holds — and `sharperAllowed` is false where there is
+ * no finer tick to measure against: a 60 Hz display is then Medium and below
+ * under Dynamic, and High is the menu's choice. A row's own target is a rate
+ * the user asked to be defended with pixels, so under a row both are the row's
+ * budget.
+ *
  * **Pacing follows the delivered cadence; the budget follows the display.**
  * A counter that divides the calibrated refresh would amplify any slowdown by
  * `ticksPerDraw` — a 60 Hz session throttled to 30 callbacks a second would
@@ -92,6 +108,11 @@ export const ASSUMED_CADENCE_MS = 1000 / 60;
  *  stall — and draws now whatever the count says. */
 export const MISSED_PERIOD_FACTOR = 1.5;
 
+/** How much faster than 60 fps the display's tick has to be before a sharper
+ *  rung can be measured against it. A 60 Hz display reads 16.6–16.8 ms and
+ *  must not count; 90 Hz (11.1 ms) must. */
+export const SHARPER_TICK_MARGIN = 0.1;
+
 /** Why the delivered rate is not the requested one. */
 export type FrameRateCap = 'no' | 'by the screen' | 'by the browser' | 'rounded';
 
@@ -103,9 +124,18 @@ export interface FrameCadenceReadout {
   observedCadenceMs: number | null;
   ticksPerDraw: number;
   periodMs: number;
-  /** What the resolution controller is held to — `max(period, requested)`,
-   *  except under Screen, which is today's constant on every display. */
+  /** What the resolution controller is held to at and below Medium —
+   *  `max(period, requested)`, except under Screen, which is today's constant
+   *  on every display. */
   budgetMs: number;
+  /** What a rung ABOVE Medium is held to: the display's own tick under Screen
+   *  where that is faster than 60 fps, else the budget. */
+  sharperBudgetMs: number;
+  /** Whether Dynamic may take a rung above Medium on its own at all: under
+   *  Screen only where the display has a finer tick than 60 fps to measure it
+   *  against; under a row always, because the row is a rate the user asked to
+   *  be defended with pixels. */
+  sharperAllowed: boolean;
   /** Draws a second, measured over the last full second of draws. */
   drawnRate: number;
   capped: FrameRateCap;
@@ -120,7 +150,8 @@ export interface FrameCadenceReadout {
 /** A change worth telling the rest of the app about. */
 export interface FrameCadenceChange {
   readout: FrameCadenceReadout;
-  /** Whether `budgetMs` moved — the only reason to disturb the controller. */
+  /** Whether what the controller is held to moved — `budgetMs`, or the
+   *  sharper rungs' bar — the only reason to disturb it. */
   budgetChanged: boolean;
   /** A user's change (the row, the bridge) drops everything the controller
    *  learned; an automatic one (a cadence raise) keeps what is a fact about
@@ -153,6 +184,10 @@ export class FrameCadence {
   private ticks = 1;
   private periodMs = ASSUMED_CADENCE_MS;
   private budget = BUDGET_MS;
+  /** What a rung above Medium is held to, and whether one may be taken at
+   *  all — the display's tick under Screen where it is finer than 60 fps. */
+  private sharperBudget = BUDGET_MS;
+  private sharperAllowed = false;
   /** How long after a draw a broken stream is declared: a period and a half
    *  of DELIVERED callbacks. */
   private missedAfterMs = MISSED_PERIOD_FACTOR * ASSUMED_CADENCE_MS;
@@ -318,6 +353,8 @@ export class FrameCadence {
       ticksPerDraw: this.ticks,
       periodMs: this.periodMs,
       budgetMs: this.budget,
+      sharperBudgetMs: this.sharperBudget,
+      sharperAllowed: this.sharperAllowed,
       drawnRate: this.drawnRate,
       capped: this.cappedBy(),
       assumed: this.assumed,
@@ -395,7 +432,13 @@ export class FrameCadence {
   }
 
   private recompute(cause: 'user' | 'auto'): void {
-    const before = { ticks: this.ticks, period: this.periodMs, budget: this.budget };
+    const before = {
+      ticks: this.ticks,
+      period: this.periodMs,
+      budget: this.budget,
+      sharper: this.sharperBudget,
+      allowed: this.sharperAllowed,
+    };
     // Pacing divides the DELIVERED cadence, so a throttled stream draws every
     // callback instead of halving the picture on top of the throttle. A
     // pinned cadence is the exception: `?refresh=` exists to make a 60 Hz
@@ -419,7 +462,21 @@ export class FrameCadence {
     this.missedAfterMs = MISSED_PERIOD_FACTOR * this.ticks
       * Math.max(this.idleMs, this.observedMs ?? this.idleMs);
     this.budget = this.screen ? BUDGET_MS : Math.max(this.periodMs, this.requestedMs);
-    const budgetChanged = Math.abs(this.budget - before.budget) > 1e-9;
+    // Above Medium: the display's own tick under Screen, where it is finer
+    // than 60 fps; a 60 Hz display has no finer tick, so a sharper rung is not
+    // taken on its own there at all. A row's target is defended with pixels in
+    // both directions (see the header).
+    if (this.screen) {
+      const finer = this.calibrated && this.idleMs < BUDGET_MS * (1 - SHARPER_TICK_MARGIN);
+      this.sharperBudget = finer ? this.idleMs : BUDGET_MS;
+      this.sharperAllowed = finer;
+    } else {
+      this.sharperBudget = this.budget;
+      this.sharperAllowed = true;
+    }
+    const budgetChanged = Math.abs(this.budget - before.budget) > 1e-9
+      || Math.abs(this.sharperBudget - before.sharper) > 1e-9
+      || this.sharperAllowed !== before.allowed;
     const paced = this.ticks !== before.ticks || Math.abs(this.periodMs - before.period) > 1e-9;
     // The first reading is always worth reporting, even where nothing it
     // derives moved: `?debug=1` on a 60 Hz phone at the default would

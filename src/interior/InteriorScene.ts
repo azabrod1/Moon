@@ -344,7 +344,10 @@ export class InteriorScene {
   private warmupProbeGeometry: THREE.SphereGeometry | null = null;
   private multisampled = true;
   private readonly floatCapable: boolean;
-  private environment: THREE.Texture | null = null;
+  /** The prefiltered studio environment, the whole render target: its texture is
+   *  what the faces reflect, and the target is what frees it (a texture's own
+   *  dispose leaves the framebuffer behind). Built once, under the first veil. */
+  private environmentTarget: THREE.WebGLRenderTarget | null = null;
 
   constructor(scene: THREE.Scene, renderer: THREE.WebGLRenderer, floatCapable: boolean) {
     this.scene = scene;
@@ -1061,24 +1064,31 @@ export class InteriorScene {
   /** Prefilter the studio environment once and hand it to the faces. Under
    *  the mode-transition veil on first entry, like the first shader compile. */
   private ensureEnvironment(): void {
-    if (this.environment || !this.floatCapable) return;
+    if (this.environmentTarget || !this.floatCapable) return;
     const generator = new THREE.PMREMGenerator(this.renderer);
     const studio = buildStudioEnvironment();
-    this.environment = generator.fromScene(studio, 0.04).texture;
-    generator.dispose();
+    let target: THREE.WebGLRenderTarget;
+    try {
+      target = generator.fromScene(studio, 0.04);
+    } finally {
+      // The generator's own targets and the studio's meshes are scratch either
+      // way, a prefilter that throws included (prepareBody adopts that throw).
+      generator.dispose();
+      studio.traverse((object) => {
+        const mesh = object as THREE.Mesh;
+        if (mesh.isMesh) {
+          mesh.geometry.dispose();
+          (mesh.material as THREE.Material).dispose();
+        }
+      });
+    }
+    this.environmentTarget = target;
     for (const shell of this.regionShells) {
-      shell.material.envMap = this.environment;
+      shell.material.envMap = target.texture;
       shell.material.envMapIntensity = FACE_ENV_INTENSITY;
       shell.material.needsUpdate = true;
     }
-    studio.traverse((object) => {
-      const mesh = object as THREE.Mesh;
-      if (mesh.isMesh) {
-        mesh.geometry.dispose();
-        (mesh.material as THREE.Material).dispose();
-      }
-    });
-    this.faceMaterial.envMap = this.environment;
+    this.faceMaterial.envMap = target.texture;
     this.faceMaterial.envMapIntensity = FACE_ENV_INTENSITY;
     this.faceMaterial.needsUpdate = true;
   }
@@ -1234,8 +1244,10 @@ export class InteriorScene {
       shell.material.envMap = null;
       shell.material.dispose();
     }
-    this.environment?.dispose();
-    this.environment = null;
+    // After every envMap reference above is detached: the target frees the
+    // texture with its framebuffer, once.
+    this.environmentTarget?.dispose();
+    this.environmentTarget = null;
     this.scene.remove(this.group);
     this.skinGeometry.dispose();
     this.shellGeometry.dispose();

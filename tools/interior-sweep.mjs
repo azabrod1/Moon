@@ -1,6 +1,6 @@
 // The Look-inside battery (plan §11): drives the tool through the dev bridge
 // and asserts what a reader relies on — the legend matches the drawn model,
-// the inspector says what the model says, a hover across the section
+// the pages say what the model says, a hover across the section
 // resolves regions in order even mid-animation of the Readable remap, a
 // model switch adds and removes rows, a region with an unknown temperature
 // is hatched and never coloured, an uncertain boundary carries its band, and
@@ -9,9 +9,13 @@
 //
 // The opt-in lifecycle scenario (--scenario=lifecycle) drives the tool's
 // ceremonies through their races instead: a rapid double pick, a pick during
-// the reveal and during the cross-fade, the Esc cascade with the picker and
-// the evidence popover closing each other, prefers-reduced-motion (every
-// move lands at once), the inspector page (a pin's summary and the pages on from it), the phone sheet's drag
+// the reveal and during the cross-fade, the Esc cascade with View options and
+// the picker closing each other and then a page back to its summary,
+// prefers-reduced-motion (every move lands at once), the inspector page (a
+// pin's summary and the pages on from it; the keyboard's way through them —
+// a row's Enter opens its summary with focus inside, one Escape, its repeats
+// ignored, returns focus to the row; and a model switch that drops the pinned
+// region falls back to the layers), the phone sheet's drag
 // (the height follows the finger, clamps at its peek, and a tap and a flick
 // each land at an end, with the body's framing following), the planetarium's
 // Tools row (it asks which world before it enters anything, and the world
@@ -491,7 +495,11 @@ async function reducedMotionCase(context, viewport) {
 /** A pin opens the region's summary page inside the panel — the sheet's scrolling body on a phone,
  *  the side panel on desktop, never a card of its own — and the pages lead on to the details, the
  *  evidence and back to the layers. */
-async function dockedInspectorCase(context, viewport) {
+/** Mars's two models: the basal molten layer is a region only one of them has. */
+const MARS_LIQUID_MODEL = 'mars-large-liquid-core';
+const MARS_BASAL_MODEL = 'mars-basal-molten-layer';
+
+async function inspectorPageCase(context, viewport) {
   const tag = `${viewport.name}/lifecycle inspector page`;
   console.log(`\n== ${tag}`);
   const { page, errors } = await openTool(context, 'Earth');
@@ -525,6 +533,52 @@ async function dockedInspectorCase(context, viewport) {
   check(await page.evaluate(() => window.__moon.interiorPage('layers')), `${tag}: the layers refused`);
   inspector = await inspect();
   check(inspector.display === 'none' && inspector.layersDisplay !== 'none' && (await state(page)).pinned === null, `${tag}: the layers did not come back`);
+
+  // The keyboard's way through the pages: Enter on a row opens its summary with
+  // focus inside it (the browser would otherwise drop focus to the body when the
+  // row's page hides), and one Escape brings the reader back to that row. The
+  // press is held: its auto-repeats must take no further rung, or a quarter
+  // second on the key would walk the cascade out of the tool.
+  await page.focus('#interior-legend .interior-row[data-region="outerCore"]');
+  await page.keyboard.press('Enter');
+  await settle(page);
+  const afterEnter = await page.evaluate(() => ({
+    page: document.getElementById('interior-inspector').dataset.page ?? 'layers',
+    focusInPage: document.activeElement?.closest('#interior-inspector') !== null,
+    focusText: document.activeElement?.textContent?.trim() ?? '',
+  }));
+  check(afterEnter.page === 'summary' && afterEnter.focusInPage, `${tag}: Enter on a row left focus outside its summary (page ${afterEnter.page}, focus on "${afterEnter.focusText}")`);
+  await page.evaluate(() => {
+    for (let repeat = 0; repeat < 8; repeat++) {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', repeat: repeat > 0, bubbles: true, cancelable: true }));
+    }
+  });
+  await settle(page);
+  const afterEscape = await page.evaluate(() => ({
+    page: document.getElementById('interior-inspector').dataset.page ?? 'layers',
+    focusRegion: document.activeElement?.closest('.interior-row')?.dataset.region ?? null,
+    toolOpen: document.getElementById('interior-ui').style.display !== 'none',
+  }));
+  check(afterEscape.toolOpen, `${tag}: a held Escape's repeats walked the cascade out of the tool`);
+  check(afterEscape.page === 'layers', `${tag}: one Escape from the summary landed on ${afterEscape.page}`);
+  check(afterEscape.focusRegion === 'outerCore', `${tag}: focus did not return to the row after Escape (on ${afterEscape.focusRegion})`);
+
+  // A model switch that drops the pinned region: the page falls back to the
+  // layers rather than rendering a region the drawn model no longer has.
+  await page.evaluate(() => window.__moon.interiorPick('Mars'));
+  // The outgoing body's own ready state must not satisfy the wait: Mars first, then ready.
+  await page.waitForFunction(() => window.__moon.interiorState().bodyId === 'Mars', undefined, { timeout: 120000 });
+  await ready(page);
+  check(await page.evaluate((id) => window.__moon.interiorModel(id), MARS_BASAL_MODEL), `${tag}: interiorModel(${MARS_BASAL_MODEL}) refused`);
+  await settle(page);
+  check(await page.evaluate(() => window.__moon.interiorPin('basalMoltenLayer')), `${tag}: the basal layer would not pin`);
+  await settle(page);
+  check((await state(page)).page === 'summary', `${tag}: the basal layer's summary did not open`);
+  check(await page.evaluate((id) => window.__moon.interiorModel(id), MARS_LIQUID_MODEL), `${tag}: interiorModel(${MARS_LIQUID_MODEL}) refused`);
+  await settle(page);
+  const afterSwitch = await state(page);
+  inspector = await inspect();
+  check(afterSwitch.page === 'layers' && afterSwitch.pinned === null && inspector.display === 'none', `${tag}: a switch to a model without the pinned region left page ${afterSwitch.page}, pinned ${afterSwitch.pinned}, host ${inspector.display}`);
   check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
   await page.close();
 }
@@ -704,7 +758,7 @@ async function lifecycleCases(context, viewport) {
   await pickDuringFadeCase(context, viewport);
   await escCascadeCase(context, viewport);
   await reducedMotionCase(context, viewport);
-  await dockedInspectorCase(context, viewport);
+  await inspectorPageCase(context, viewport);
   if (viewport.name === 'phone') await sheetDragCase(context, viewport);
   if (viewport.name === 'desktop') await lateMapCase(context, viewport);
 }

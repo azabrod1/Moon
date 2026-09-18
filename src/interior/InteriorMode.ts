@@ -1160,8 +1160,7 @@ export class InteriorMode {
           : region.composition;
         text.append(title, detail);
         // The row's second line: how deep it lies, what state it is in and how
-        // hot it is — the three things a reader compares between layers, at both
-        // breakpoints, since the phone has no room for the detail line above it.
+        // hot it is — the three things a reader compares between layers.
         // Each piece carries its own separator, so a line that wraps on a narrow
         // panel never begins with a middot.
         const secondLine = document.createElement('div');
@@ -1194,7 +1193,7 @@ export class InteriorMode {
     }
     const legendHead = document.getElementById('interior-legend-head');
     if (legendHead) {
-      legendHead.textContent = temperature ? 'Outside in · their temperatures' : 'Outside in · how sure each exists';
+      legendHead.textContent = 'Layers';
       legendHead.style.display = this.drawn.regionsInsideOut.length > 1 ? '' : 'none';
     }
     this.renderScale();

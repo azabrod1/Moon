@@ -121,6 +121,6 @@ export function renderEvidencePopover(card: HTMLElement, context: EvidencePopove
   const rules = element('ul', 'ev-rubric');
   for (const rule of rubricLines()) rules.append(element('li', '', rule));
   body.append(rules);
-  body.append(element('div', 'ii-foot', 'The score is computed from these rows by a published rule; nothing about certainty is typed in by hand.'));
+  body.append(element('div', 'ii-foot', 'The score is this app\'s own reading of the rows above, by the rubric they follow; nothing about certainty is typed in by hand.'));
   card.append(body);
 }

@@ -41,9 +41,12 @@
  * Every open is timed. One stopwatch per open (the activate's, or a swap's
  * own from the pick) marks the steps the reader waits through — prepare,
  * present, precompile, the reveal, the first frame after it and ready — and
- * carries the renderer's program count at the reveal and once ready. The set
- * reaches the bridge as `interiorState().timings` and debugLog once, so the
- * question "what is it doing for those seconds" is answerable on a phone.
+ * carries the renderer's program count at the reveal and once ready. An entry
+ * takes two more marks from main, which owns the veil: when it finished
+ * lifting and the first frame drawn after that, the first one a reader can
+ * see. The set reaches the bridge as `interiorState().timings` and debugLog
+ * once, so the question "what is it doing for those seconds" is answerable on
+ * a phone.
  *
  * Hover and pin: a pointer ray is picked on the CPU against the wedge cut
  * (interiorPick, the same frame and remap the shaders use); the region under
@@ -261,6 +264,13 @@ export type InteriorDisplayMode = 'composition' | 'temperature';
  * on is to mark them: the bridge serves these as `interiorState().timings` and
  * the mode logs them once through debugLog, so `?debug=1` on a phone answers
  * the question on the device that is slow.
+ *
+ * Two of the marks are not this mode's to take. The mode-switch veil belongs to
+ * main, and it is what stands between a reader and everything drawn before it
+ * lifts: `firstFrame` is the first frame after the reveal started, which on a
+ * first entry is routinely still behind black. So main marks `veilLifted` and
+ * `firstVisibleFrame` through markUncovered, and only an entry carries them —
+ * a swap has no veil.
  */
 export interface InteriorOpenTimings {
   /** The session's first entry (which pays the shader compiles) or a later swap. */
@@ -277,8 +287,14 @@ export interface InteriorOpenTimings {
   precompileEnd: number | null;
   /** The cut starts opening. */
   revealStart: number | null;
-  /** The first frame drawn after the reveal started: the first one a reader sees. */
+  /** The first frame drawn with the body on the mesh. On an entry it is behind
+   *  the veil, and it is the frame the veil must not lift before. */
   firstFrame: number | null;
+  /** The veil finished fading out (its own transitionend, not the class change),
+   *  and the first frame drawn after that: the first one a reader can actually
+   *  see. Main's marks, an entry's alone. */
+  veilLifted: number | null;
+  firstVisibleFrame: number | null;
   /** The first frame devReady() is true: the map applied, the cut and the morph settled. */
   ready: number | null;
   /** renderer.info.programs.length as the reveal starts and once ready — how many
@@ -293,16 +309,26 @@ type OpenTimingMark =
   | 'precompileStart' | 'precompileEnd'
   | 'revealStart' | 'firstFrame' | 'ready';
 
+/** The two marks main takes and hands over (see InteriorOpenTimings). */
+export type UncoveredMark = 'veilLifted' | 'firstVisibleFrame';
+
 /** One open's stopwatch: the marks it fills in and the instant they measure
  *  from. A commit holds its own, so a superseded commit's late steps land in an
- *  object nobody reads instead of overwriting the live open's marks. */
+ *  object nobody reads instead of overwriting the live open's marks. The id is
+ *  what an outside marker names: main takes the veil's marks after activate
+ *  resolves and writes them a fade later, by which time a pick may have
+ *  installed a stopwatch of its own. */
 interface OpenStopwatch {
+  readonly id: number;
   readonly startedAt: number;
   readonly timings: InteriorOpenTimings;
 }
 
+let openSequence = 0;
+
 function startOpenStopwatch(kind: 'entry' | 'swap', bodyId: string): OpenStopwatch {
   return {
+    id: ++openSequence,
     startedAt: performance.now(),
     timings: {
       kind,
@@ -314,6 +340,8 @@ function startOpenStopwatch(kind: 'entry' | 'swap', bodyId: string): OpenStopwat
       precompileEnd: null,
       revealStart: null,
       firstFrame: null,
+      veilLifted: null,
+      firstVisibleFrame: null,
       ready: null,
       programsAtReveal: null,
       programsWhenReady: null,
@@ -595,8 +623,8 @@ export class InteriorMode {
   // What the open cost. The stopwatch of the open that is running or last ran;
   // devState serves its marks and update() logs them once, when it settles.
   private openStopwatch: OpenStopwatch = startOpenStopwatch('entry', '');
-  /** The reveal has started and the frame after it is not marked yet. */
-  private awaitingFirstRevealFrame = false;
+  /** The body is on the mesh and the first frame drawn with it is not marked yet. */
+  private awaitingFirstBodyFrame = false;
   /** The current open's marks have not been logged yet. */
   private openTimingsLogged = true;
 
@@ -846,14 +874,15 @@ export class InteriorMode {
     this.traceOpenProgress();
   }
 
-  /** The open's last two marks, both of them frames rather than steps: the first
-   *  frame drawn after the reveal started (the first one the reader sees) and
-   *  the first frame everything has settled on. The set is logged once, there —
-   *  `?debug=1` on a phone then says where the open's time went. */
+  /** The open's frame marks, taken here because they are frames rather than
+   *  steps: the first frame drawn with the new body on it — the frame the veil
+   *  must not lift before — and the first frame everything has settled on. The
+   *  set is logged once, there — `?debug=1` on a phone then says where the
+   *  open's time went. */
   private traceOpenProgress(): void {
     const watch = this.openStopwatch;
-    if (this.awaitingFirstRevealFrame) {
-      this.awaitingFirstRevealFrame = false;
+    if (this.awaitingFirstBodyFrame) {
+      this.awaitingFirstBodyFrame = false;
       markOpenStep(watch, 'firstFrame');
     }
     if (this.openTimingsLogged || watch.timings.revealStart === null || !this.devReady()) return;
@@ -868,6 +897,25 @@ export class InteriorMode {
    *  reader instead of under the veil. */
   private programCount(): number {
     return this.renderer.info.programs?.length ?? 0;
+  }
+
+  /** Which open is being timed right now. Main takes this the moment activate
+   *  resolves and names it when it hands the veil's marks over. */
+  openId(): number {
+    return this.openStopwatch.id;
+  }
+
+  /** Copy one of the veil's marks into the open that asked for it, ms from that
+   *  open's start; returns what was written, or null when the mark was refused.
+   *  Refused unless the named open is still the live one and is an entry: a
+   *  pick during the load installs a stopwatch of its own, and a swap has no
+   *  veil, so a mark written blindly would land in the wrong open's timings. */
+  markUncovered(openId: number, mark: UncoveredMark, atMs: number): number | null {
+    const watch = this.openStopwatch;
+    if (watch.id !== openId || watch.timings.kind !== 'entry' || watch.timings[mark] !== null) return null;
+    const value = Math.round((atMs - watch.startedAt) * 10) / 10;
+    watch.timings[mark] = value;
+    return value;
   }
 
   /** The depth ruler along the near face, through the remap; hidden on phones
@@ -1191,6 +1239,7 @@ export class InteriorMode {
       this.lockCutToCamera();
       this.interiorScene.presentBody(prepared, swap && animate ? SWAP_FADE_S : 0);
       markOpenStep(watch, 'present');
+      this.awaitingFirstBodyFrame = true;
       presented = true;
       this.body = body;
       this.coverage = coverageFor(body.id);
@@ -1217,7 +1266,6 @@ export class InteriorMode {
       }
       markOpenStep(watch, 'revealStart');
       watch.timings.programsAtReveal = this.programCount();
-      this.awaitingFirstRevealFrame = true;
       this.reveal(reopenDeg);
       debugLog('Look inside: body applied', { bodyId: body.id, swap });
       return true;

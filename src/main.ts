@@ -1899,6 +1899,45 @@ const planetariumUI = document.getElementById('planetarium-ui')!;
 const modeTransition = document.getElementById('mode-transition')!;
 const transitionMsg = document.getElementById('transition-msg')!;
 
+/**
+ * Resolves when the veil has finished lifting — `#mode-transition`'s own
+ * transitionend for its opacity, not the instant the class came off (the fade
+ * runs for 0.3 s after that). Until then the screen is black, so everything a
+ * mode drew before this moment was drawn for nobody, which is exactly what a
+ * timing has to be able to say.
+ *
+ * A tab hidden across the switch may never finish the transition, so the wait
+ * is capped and resolves anyway rather than stranding whoever is waiting.
+ */
+function veilLifted(capMs = 2000): Promise<number> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      modeTransition.removeEventListener('transitionend', onTransitionEnd);
+      resolve(performance.now());
+    };
+    const onTransitionEnd = (event: Event): void => {
+      const transition = event as TransitionEvent;
+      if (transition.target !== modeTransition || transition.propertyName !== 'opacity') return;
+      if (modeTransition.classList.contains('active')) return; // the fade to black, not the lift
+      finish();
+    };
+    modeTransition.addEventListener('transitionend', onTransitionEnd);
+    const timer = setTimeout(finish, capMs);
+  });
+}
+
+/** Resolves on the next frame the app DRAWS, with that frame's own timestamp.
+ *  A callback is not a draw under a frame-rate target, and "the first frame
+ *  after the veil lifted" is a question about drawn frames. */
+const nextDrawWaiters: ((nowMs: number) => void)[] = [];
+function afterNextDraw(): Promise<number> {
+  return new Promise((resolve) => nextDrawWaiters.push(resolve));
+}
+
 function setLoadingPercentText(text: string) {
   // A failed boot's error message owns the screen: a still-running loader
   // branch (the solar system keeps fetching after the catalog gate throws)
@@ -2174,15 +2213,31 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
       // Resolves once the body's map is applied; the veil covers the load.
       const activateStartedAt = performance.now();
       await interiorMode.activate(bodyId, entryUtcMs);
+      const activateMs = performance.now() - activateStartedAt;
       // What the switch itself cost, beside the tool's own marks
       // (`interiorState().timings`): the fade beat, the wait left for the
       // chunk, and the activation. On a phone `?debug=1` is the only place
       // these can be read, and they are where the open's first second goes.
-      debugLog('Look inside: switch timings', {
-        beatMs: Math.round(beatMs),
-        importMs: Math.round(importMs),
-        activateMs: Math.round(performance.now() - activateStartedAt),
-      });
+      //
+      // The last two are the veil's, which is main's alone: when it finished
+      // lifting and the first frame drawn after that — the first frame the
+      // reader actually saw. They land a fade after this point, so the line
+      // waits for them and the whole of what the reader waited through is one
+      // line. The tool takes copies for its own timings, and refuses them if a
+      // pick has taken the open over by then (they are an entry's marks).
+      const openedMode = interiorMode;
+      const openId = openedMode.openId();
+      void (async () => {
+        const veilLiftedMs = openedMode.markUncovered(openId, 'veilLifted', await veilLifted());
+        const firstVisibleFrameMs = openedMode.markUncovered(openId, 'firstVisibleFrame', await afterNextDraw());
+        debugLog('Look inside: switch timings', {
+          beatMs: Math.round(beatMs),
+          importMs: Math.round(importMs),
+          activateMs: Math.round(activateMs),
+          veilLiftedMs,
+          firstVisibleFrameMs,
+        });
+      })();
       debugLog('Interior mode active');
     } else {
       throw new Error(`Unknown app mode: ${String(newMode)}`);
@@ -2912,6 +2967,9 @@ async function init() {
       // capture pin can never leave a schedule running ahead of the clock.
       frameCadence.drew(rafTimestamp);
       if (appMode === 'interior') interiorMode?.afterDraw(drawSeq, now);
+      if (nextDrawWaiters.length > 0) {
+        for (const resolve of nextDrawWaiters.splice(0, nextDrawWaiters.length)) resolve(now);
+      }
     }
     if (import.meta.env.DEV && frameProbe) frameProbe.end();
     // Both ends of the app's own tick, in every build: what the next draw

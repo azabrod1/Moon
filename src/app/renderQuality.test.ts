@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_QUALITY,
   dynamicLadder,
-  nextQualityLevel,
   parseQualityParam,
   QUALITY_LEVELS,
   QUALITY_LEVEL_LABELS,
@@ -16,7 +15,6 @@ import {
   sceneTargetSize,
   type QualityBounds,
   type QualityBoundsInput,
-  type QualityLevel,
 } from './renderQuality';
 import {
   DESKTOP_FLOOR_PIXEL_RATIO,
@@ -522,42 +520,8 @@ describe('parseQualityParam', () => {
   });
 });
 
-describe('nextQualityLevel', () => {
-  it('cycles Low, Medium, High, Dynamic and round again', () => {
-    expect(nextQualityLevel('low', true)).toBe('medium');
-    expect(nextQualityLevel('medium', true)).toBe('high');
-    expect(nextQualityLevel('high', true)).toBe('dynamic');
-    expect(nextQualityLevel('dynamic', true)).toBe('low');
-  });
-
-  it('leaves High out of the cycle where it is not offered', () => {
-    expect(nextQualityLevel('low', false)).toBe('medium');
-    expect(nextQualityLevel('medium', false)).toBe('dynamic');
-    expect(nextQualityLevel('dynamic', false)).toBe('low');
-  });
-
-  it('walks off a level the display does not offer', () => {
-    // The DEV `?quality=high` boots a phone at High: the button has to lead
-    // somewhere, and the next level in the order is Dynamic.
-    expect(nextQualityLevel('high', false)).toBe('dynamic');
-  });
-
-  it('visits every offered level in one loop', () => {
-    for (const highOffered of [true, false]) {
-      const seen: QualityLevel[] = [];
-      let level: QualityLevel = 'low';
-      for (let step = 0; step < 8; step += 1) {
-        seen.push(level);
-        level = nextQualityLevel(level, highOffered);
-        if (level === 'low') break;
-      }
-      expect(new Set(seen)).toEqual(new Set(
-        QUALITY_LEVELS.filter((l) => l !== 'high' || highOffered),
-      ));
-    }
-  });
-
-  it('names every level on the button', () => {
+describe('the levels the menu offers', () => {
+  it('names every level on its segment', () => {
     for (const level of QUALITY_LEVELS) {
       expect(QUALITY_LEVEL_LABELS[level]).toBe(level[0].toUpperCase() + level.slice(1));
     }

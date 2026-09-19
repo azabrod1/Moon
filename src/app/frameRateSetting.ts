@@ -29,14 +29,14 @@ import type { QualityStorage } from './qualitySetting';
 /** The saved value. */
 export const FRAME_RATE_STORAGE_KEY = 'planetarium-frame-rate';
 
-/** The row's cycle, in order. */
+/** Every value, in the order the menu offers them. */
 export const FRAME_RATES = ['screen', '30', '60', '120'] as const;
 export type FrameRate = (typeof FRAME_RATES)[number];
 
 /** Today's behaviour, named. */
 export const DEFAULT_FRAME_RATE: FrameRate = 'screen';
 
-/** What the row's button reads. Plain, and in the panel's voice. */
+/** What each segment reads. Plain, and in the panel's voice. */
 export const FRAME_RATE_LABELS: Record<FrameRate, string> = {
   screen: 'Screen',
   '30': '30 fps',
@@ -44,7 +44,7 @@ export const FRAME_RATE_LABELS: Record<FrameRate, string> = {
   '120': '120 fps',
 };
 
-/** What the row does to the app, so the row itself owns no policy. */
+/** What the control does to the app, so the control itself owns no policy. */
 export interface FrameRateControl {
   /** The value the session is running at. */
   rate(): FrameRate;
@@ -118,13 +118,6 @@ export function parseFrameRateParam(search: string): FrameRate | null {
  *  Screen. The URL is this boot's own instruction and wins outright. */
 export function resolveBootFrameRate(search: string, storage: QualityStorage | null = null): FrameRate {
   return parseFrameRateParam(search) ?? readFrameRate(storage) ?? DEFAULT_FRAME_RATE;
-}
-
-/** The next value in the row's cycle. */
-export function nextFrameRate(current: FrameRate): FrameRate {
-  const at = FRAME_RATES.indexOf(current);
-  const from = at < 0 ? FRAME_RATES.length - 1 : at;
-  return FRAME_RATES[(from + 1) % FRAME_RATES.length];
 }
 
 /** Whether a value paces nothing. */

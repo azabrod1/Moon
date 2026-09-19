@@ -40,15 +40,14 @@
  *
  * The yaw turns the wedge about the hinge so the viewer looks at one face
  * obliquely and along the other rather than straight into the crease: at
- * Cutaway one face is a few tens of degrees off face-on and the other grazes,
- * and at Section the disc is the same few tens of degrees off face-on, which
- * leaves a crescent of the skin's rim standing on one side — without it a
- * Section on a body with no rings and no air (the Moon) is a coloured circle
- * laid over the world rather than a world with its near half taken off. What
- * that costs anything measuring the disc on screen: the disc's extent ALONG
- * the hinge is still its display radius while across the hinge it is
- * foreshortened by cos(yaw). A pixel read of the disc measures along the
- * hinge, or allows for the cosine.
+ * Cutaway one face is a few tens of degrees off face-on and the other grazes.
+ * It belongs to the wedge, not to the disc: a Section disc turned off the
+ * camera shows the skin's far half past its edge as a crescent, which every
+ * reader took for a fault, so the yaw fades to nothing as the opening widens
+ * to Section (cutYawRad) — the disc faces the camera exactly, its extent on
+ * screen is its display radius in every direction, and a pixel read of it
+ * allows for nothing. The anchor holds the unyawed frame; the mode applies
+ * the yaw the current opening calls for when it poses the frame.
  *
  * Pure: no DOM, no renderer, only three's vector math.
  */
@@ -209,7 +208,6 @@ export function yawCutFrame(frame: CutFrame, yawRad: number): CutFrame {
   return frame;
 }
 
-/** Copy a frame's axes and opening into another. */
 /**
  * The yaw the cut is drawn with at an opening. The quarter wedge is turned
  * this much about the hinge so one face meets the eye more squarely than the
@@ -225,6 +223,7 @@ export function cutYawRad(openingAngleRad: number, fullYawRad: number): number {
   return fullYawRad * Math.max(0, 1 - (openingAngleRad - quarter) / quarter);
 }
 
+/** Copy a frame's axes and opening into another. */
 export function copyCutFrame(from: CutFrame, out: CutFrame): CutFrame {
   out.view.copy(from.view);
   out.hinge.copy(from.hinge);

@@ -35,7 +35,7 @@ import type { Coverage, InteriorModel } from './data/interiorTypes';
 import { outerFractionsInsideOut, type DrawnModel } from './drawnModel';
 import { toDisplayFraction, type ReadableRemap } from './interiorGeometry';
 import type { SectionRegionLook } from './rendering/sectionMaterial';
-import { temperatureKnotsK, temperatureLog } from './temperatureProfile';
+import { temperatureLog } from './temperatureProfile';
 import { ILLUSTRATIVE_NOTE, STRUCTURE_UNCERTAIN, THIN_LAYERS_ENLARGED } from './ui/interiorCopy';
 import { formatKm, NOT_KNOWN, reviewDateText } from './ui/inspectorText';
 
@@ -141,7 +141,7 @@ export function regionLooks(
       ? { low: toDisplayFraction(remap, Math.max(0, location.low / reference)), high: toDisplayFraction(remap, Math.min(1, location.high / reference)) }
       : null;
     const quantity = region.region?.temperatureK ?? null;
-    const knotsK = quantity ? temperatureKnotsK(quantity, region.innerRadiusKm, region.outerRadiusKm) : null;
+    const knotsK = region.temperatureKnotsK;
     return {
       outerDisplay: toDisplayFraction(remap, fractions[index]),
       blendDisplay,

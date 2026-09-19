@@ -18,6 +18,9 @@
  * - fitInSpan: a label is kept inside the span it may occupy (the disc's
  *   chord at its height), shifted in when it hangs over, dropped when the
  *   span cannot hold it.
+ * - orientTextAxes: the face's projected axes as a label's basis — turned
+ *   upright, reading left to right, never squashed past a floor — so text
+ *   drawn in the plane of a face stays text.
  */
 
 export interface LabelCandidate {
@@ -123,4 +126,34 @@ export function fitInSpan(centre: number, halfWidth: number, low: number, high: 
   if (centre - halfWidth < low) return low + halfWidth;
   if (centre + halfWidth > high) return high - halfWidth;
   return centre;
+}
+
+export type Axis2 = readonly [number, number];
+
+/**
+ * The face's projected axes at a label's anchor, made a basis text can be
+ * drawn in: `along` is the screen vector per square-on px along the ruler,
+ * `up` the same up the face (screen y grows downward). Turned over when the
+ * face's up points down the screen, so the glyphs stay upright; the baseline
+ * reversed when the basis is mirrored, so the text reads left to right and
+ * the glyphs are never mirrored; and neither axis shorter than `floor` of
+ * square-on, so a face turned away keeps its text legible while the ticks
+ * beside it foreshorten fully.
+ */
+export function orientTextAxes(along: Axis2, up: Axis2, floor: number): { along: Axis2; up: Axis2 } {
+  // 0 - x rather than -x: a negated zero is still zero, not -0.
+  const reversed = (axis: Axis2): Axis2 => [0 - axis[0], 0 - axis[1]];
+  let baseline: Axis2 = along;
+  let rise: Axis2 = up;
+  if (rise[1] > 0) {
+    baseline = reversed(baseline);
+    rise = reversed(rise);
+  }
+  if (baseline[0] * -rise[1] - baseline[1] * -rise[0] < 0) baseline = reversed(baseline);
+  const lifted = (axis: Axis2): Axis2 => {
+    const length = Math.hypot(axis[0], axis[1]);
+    if (length >= floor || length < 1e-6) return axis;
+    return [(axis[0] * floor) / length, (axis[1] * floor) / length];
+  };
+  return { along: lifted(baseline), up: lifted(rise) };
 }

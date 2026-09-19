@@ -30,10 +30,10 @@
  */
 import type { ClaimKind, Coverage } from '../data/interiorTypes';
 import { coverageBulk, coverageModels } from '../data/interiorTypes';
-import { FAMILY_LABEL, PHASE_LABEL, incandescence, swatchHex } from '../data/artParams';
+import { FAMILY_LABEL, PHASE_LABEL } from '../data/artParams';
 import type { DrawnModel, DrawnRegion } from '../drawnModel';
 import { STANDING_READS_AS, regionEvidenceSummary, type EvidenceSummary } from '../evidenceSummary';
-import { modelStatusText, radiusValueText, regionArtInsideOut } from '../interiorLogic';
+import { modelStatusText, radiusValueText } from '../interiorLogic';
 import { element } from './dom';
 import { evidenceGroups } from './evidenceView';
 import { isThinLayer, renderThinLayerInset, thinLayerInset } from './thinLayerInset';
@@ -73,6 +73,8 @@ export interface PageContext {
   index: number;
   /** Whether the globe, at its current size, draws the layer too thin to see: what the inset's caption says. */
   tooThinOnGlobe: (index: number) => boolean;
+  /** The legend's swatch per region, inside-out, sRGB hex, as the display mode has them: what the inset's bands wear. */
+  legendSwatches: readonly number[];
   onLayers: () => void;
   onSummary: () => void;
   onDetails: () => void;
@@ -176,19 +178,18 @@ function renderSummary(root: HTMLElement, context: PageContext): void {
   facts.append(fact(DEPTH_BELOW_SURFACE, depthBelowSurfaceText(schema, region.innerRadiusKm, drawn.referenceRadiusKm)));
   facts.append(fact(TEMPERATURE, temperatureRangeText(schema.temperatureK, unit) || NOT_KNOWN));
   root.append(facts);
-  appendThinLayerInset(root, drawn, context.index, context.tooThinOnGlobe(context.index));
+  appendThinLayerInset(root, drawn, context.index, context.tooThinOnGlobe(context.index), context.legendSwatches);
   const actions = element('div', 'ii-actions');
   actions.append(actionButton(DETAILS, context.onDetails), actionButton(EVIDENCE_AND_SOURCES, () => context.onEvidence(null)));
   root.append(actions);
 }
 
 /** The Magnified section, for a layer too thin to see on the globe at its
- *  true size: the bands wear the legend's swatches, built here exactly as the
- *  legend builds them, so the strip and the list agree on every colour. */
-function appendThinLayerInset(root: HTMLElement, drawn: DrawnModel, index: number, tooThinOnGlobe: boolean): void {
+ *  true size: the bands wear the legend's own swatches, handed in by the mode
+ *  as the display mode has them, so the strip and the list agree on every
+ *  colour in both modes. */
+function appendThinLayerInset(root: HTMLElement, drawn: DrawnModel, index: number, tooThinOnGlobe: boolean, swatches: readonly number[]): void {
   if (!isThinLayer(drawn, index)) return;
-  const art = regionArtInsideOut(drawn);
-  const swatches = drawn.regionsInsideOut.map((region, regionIndex) => swatchHex(art[regionIndex], incandescence(region.temperatureK ?? 0)));
   const layout = thinLayerInset(drawn, index, swatches, tooThinOnGlobe);
   if (!layout) return;
   const figure = element('figure', 'ii-inset');

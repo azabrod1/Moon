@@ -65,9 +65,9 @@
  * the mode so the key and the face never disagree. A body with competing
  * models, or a poorly constrained one with an illustrative scenario, gets a
  * model switch under its layers. The controls a reader touches rarely — the
- * cut angle, the thin-layer enlargement, the rings, the unit — live behind
- * View options in the strip along the top, beside the way back and the one
- * body selector.
+ * cut angle, the thin-layer enlargement, "Cut faces the camera", Reset view,
+ * the rings, the unit — live behind View options in the strip along the top,
+ * beside the way back and the one body selector.
  *
  * The framing is stage-aware (interiorLayout): the body is fitted to the
  * rectangle the panel and the strip leave free and centred in it, and the
@@ -137,7 +137,7 @@ import { familyPhaseText, renderPage, type InteriorPanelPage } from './ui/Interi
 import { HoverCard, domHoverCardSurface, hoverDepthText } from './ui/hoverCard';
 import { DepthRuler } from './ui/DepthRuler';
 import { createRulerLayout, rulerFacing, rulerLayout, rulerPoint, rulerSide, type RulerInput } from './ruler';
-import { sampleTemperatureK } from './temperatureProfile';
+import { knotsTemperatureK } from './temperatureProfile';
 import { diagramFaceHex } from './rendering/outputTransform';
 import type { SectionRegionLook } from './rendering/sectionMaterial';
 import { regionEvidenceSummary } from './evidenceSummary';
@@ -218,7 +218,6 @@ const SCALE_BLEND_S = 0.5;
 const FPS_WINDOW = 60;
 /** Recompute the remap when the projected radius moves this much. */
 const REMAP_PX_TOLERANCE = 0.5;
-/** The hover card sits this far from the pointer. */
 /** The ruler is fully drawn once the cut has opened this far. */
 const RULER_FULL_DEG = 40;
 
@@ -404,6 +403,8 @@ const ORIGIN = new THREE.Vector3(0, 0, 0);
 const tmpLocalUp = new THREE.Vector3();
 const tmpCameraFrame = createCutFrame();
 const tmpRulerBasis = createCutFaceBasis();
+/** The ground of the legend's hatch swatch (index.html .interior-swatch.hatched), for a band the strip cannot hatch. */
+const HATCH_GROUND_HEX = 0x2a2d34;
 const tmpNdc = new THREE.Vector2();
 const tmpProbePoint = new THREE.Vector3();
 
@@ -508,6 +509,9 @@ export class InteriorMode {
   /** The preview beside a fine pointer, built on first use; the pointer's latest
    *  move waits here for the frame, so a burst of moves is one pick. */
   private hoverCard: HoverCard | null = null;
+  /** The card's content and viewport, reused per hovering frame (ui/hoverCard reads the name and kicker on a region change only). */
+  private readonly hoverContent = { key: '', name: '', kicker: '' };
+  private readonly hoverViewport = { width: 0, height: 0 };
   private pendingHover: { x: number; y: number } | null = null;
   private legendHoverIndex = -1;
   private pinnedIndex = -1;
@@ -781,9 +785,10 @@ export class InteriorMode {
     this.controls.update();
     this.advanceViewShift(dt);
 
-    // The regions go out before the cut is posed: applyCut sizes the faces
-    // and the shells by the region count, so a model that changed since the
-    // last frame is drawn whole, never with the old count for one frame.
+    // The regions go out before the cut is posed and the hover is picked: the
+    // remap refresh writes the pick layout's display radii, which flushHover
+    // reads later this tick, so a model that changed since the last frame is
+    // picked whole, never with the old radii for one frame.
     this.projectedPx = projectedRadiusPx(
       BODY_RADIUS,
       this.camera.position.distanceTo(ORIGIN),
@@ -1235,15 +1240,13 @@ export class InteriorMode {
     this.interiorScene.setRingsVisible(on);
     const toggle = document.getElementById('interior-rings-toggle') as HTMLInputElement | null;
     if (toggle) toggle.checked = on;
-    this.applyViewportFraming(false); // the rings widen what has to fit
+    // The rings are context, not in the fit (InteriorScene.boundRadius), so the framing has nothing to follow.
   }
 
-  /** The rings row shows only for a body that has rings, which makes the footer
-   *  taller — so the sheet's resting height follows it. */
+  /** The rings row in View options shows only for a body that has rings. */
   private syncRingsRow(): void {
     const row = document.getElementById('interior-rings-row');
     if (row) row.style.display = this.interiorScene.hasRings() ? '' : 'none';
-    this.applyViewportFraming(false);
   }
 
   private setDisplayMode(mode: InteriorDisplayMode): void {
@@ -1375,6 +1378,7 @@ export class InteriorMode {
         }, { signal: settle.signal });
       }
       const art = regionArtInsideOut(this.drawn);
+      const swatches = this.legendSwatchHexes();
       // The legend reads outside-in, the way a reader meets the layers.
       for (let index = this.drawn.regionsInsideOut.length - 1; index >= 0; index--) {
         const region = this.drawn.regionsInsideOut[index];
@@ -1403,17 +1407,12 @@ export class InteriorMode {
         const swatch = document.createElement('i');
         swatch.className = 'interior-swatch';
         // The swatch is what the face shows in this mode: the material's tone
-        // (heated by its incandescence), or its place on the temperature scale.
-        if (!temperature && art[index].pattern === 'hatch') {
-          swatch.classList.add('hatched'); // the unresolved whole is hatched in both modes
-        } else if (!temperature) {
-          const swatchColor = swatchHex(art[index], incandescence(region.temperatureK ?? 0));
-          swatch.style.background = `#${swatchColor.toString(16).padStart(6, '0')}`;
-        } else if (region.temperatureK !== null && this.temperatureRange) {
-          const swatchColor = temperatureScaleHex(temperatureT(this.temperatureRange, region.temperatureK));
-          swatch.style.background = `#${swatchColor.toString(16).padStart(6, '0')}`;
-        } else {
+        // (heated by its incandescence), or its place on the temperature scale;
+        // a region the mode hatches (the unresolved whole, an unknown temperature) wears the hatch.
+        if ((!temperature && art[index].pattern === 'hatch') || (temperature && (region.temperatureK === null || !this.temperatureRange))) {
           swatch.classList.add('hatched');
+        } else {
+          swatch.style.background = `#${swatches[index].toString(16).padStart(6, '0')}`;
         }
         const text = document.createElement('div');
         text.className = 'interior-row-text';
@@ -1681,13 +1680,31 @@ export class InteriorMode {
       return;
     }
     const card = this.ensureHoverCard();
-    card?.show(
-      { key: region.key, name: region.name, kicker: familyPhaseText(region) },
-      hoverDepthText(depthKm),
-      clientX,
-      clientY,
-      { width: window.innerWidth, height: window.innerHeight },
-    );
+    if (!card) return;
+    // The card reads the name and kicker only on a region change; nothing is rebuilt per frame for it to ignore.
+    const content = this.hoverContent;
+    if (content.key !== region.key) {
+      content.key = region.key;
+      content.name = region.name;
+      content.kicker = familyPhaseText(region);
+    }
+    this.hoverViewport.width = window.innerWidth;
+    this.hoverViewport.height = window.innerHeight;
+    card.show(content, hoverDepthText(depthKm), clientX, clientY, this.hoverViewport);
+  }
+
+  /** The legend's swatch per region, inside-out, as the display mode shows the
+   *  faces: the material's tone heated by its incandescence, or its place on the
+   *  temperature scale (the hatch's ground where the mode hatches it). One list
+   *  for the rows and the Magnified section, so the two cannot disagree. */
+  private legendSwatchHexes(): number[] {
+    const temperature = this.displayMode === 'temperature';
+    const art = regionArtInsideOut(this.drawn);
+    return this.drawn.regionsInsideOut.map((region, index) => {
+      if (!temperature) return swatchHex(art[index], incandescence(region.temperatureK ?? 0));
+      if (region.temperatureK !== null && this.temperatureRange) return temperatureScaleHex(temperatureT(this.temperatureRange, region.temperatureK));
+      return HATCH_GROUND_HEX;
+    });
   }
 
   /** The card, built once from its host on first use; the fonts arriving re-measures it. */
@@ -1826,8 +1843,10 @@ export class InteriorMode {
       coverage: this.coverage,
       unit: this.temperatureUnit,
       index: regionIndex,
-      // The inset's caption says "too thin to see" only when the globe's note would say it too.
+      // The inset's caption says "too thin to see" only when the globe's note would say it too,
+      // and its bands wear the legend's swatches as this mode has them.
       tooThinOnGlobe: (index) => !this.readable && tooThinToSeeIndices(outerFractionsInsideOut(this.drawn), READABLE_MIN_PX, this.projectedPx).includes(index),
+      legendSwatches: this.legendSwatchHexes(),
       onLayers: () => this.setPinned(-1),
       onSummary: () => { if (regionKey !== null) this.showPage({ kind: 'summary', regionKey }); },
       onDetails: () => { if (regionKey !== null) this.showPage({ kind: 'details', regionKey }); },
@@ -2239,6 +2258,10 @@ export class InteriorMode {
 
   onResize(aspect: number): void {
     this.camera.aspect = aspect;
+    // The card's cached size and place belong to the old viewport (a breakpoint may
+    // even have hidden it): drop the hover and measure afresh on the next one.
+    this.clearHover();
+    this.hoverCard?.invalidateSize();
     // The reader's sheet height survives a rotation, re-clamped to the new viewport.
     if (isPhoneViewport()) this.setSheetHeight(this.sheetHeightPx > 0 ? this.sheetHeightPx : this.peekHeightPx(), { snap: false, frameAtOnce: true });
     else this.applyViewportFraming(true);
@@ -2397,7 +2420,9 @@ export class InteriorMode {
     const look = this.looks[index];
     if (!region || !quantity || !look) return null;
     const midKm = (region.innerRadiusKm + region.outerRadiusKm) / 2;
-    const kelvin = sampleTemperatureK(quantity, midKm, region.innerRadiusKm, region.outerRadiusKm);
+    // The temperature the FACE samples there: the knots at mid depth, which for a profile is
+    // the ramp's chord rather than the profile itself (temperatureProfile.knotsTemperatureK).
+    const kelvin = look.temperature ? knotsTemperatureK(look.temperature.knotsK, look.temperature.log, 0.5) : null;
     if (kelvin === null) return null;
     const display = toDisplayFraction(this.remap, midKm / this.drawn.referenceRadiusKm);
     for (const other of this.looks) {

@@ -20,7 +20,6 @@ import {
   INCANDESCENCE_HOT_DECADES,
   INCANDESCENCE_HOT_K,
   INCANDESCENCE_PEAK,
-  forgeSrgb,
   incandescence,
 } from '../data/artParams';
 import { drawnFromModel } from '../drawnModel';
@@ -52,13 +51,12 @@ function clamp(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
-/** sectionScaleT, transcribed from the GLSL over the written uniforms. */
+/** sectionScaleT, transcribed from the GLSL over the written uniforms (the log scale's own logs among them). */
 function shaderScaleT(uniforms: SectionUniforms, kelvin: number): number {
   const scaleMin = uniforms.uScaleMin.value;
   const scaleMax = uniforms.uScaleMax.value;
   if (uniforms.uScaleLog.value > 0.5) {
-    const low = Math.log(Math.max(scaleMin, 1));
-    return clamp((Math.log(Math.max(kelvin, 1)) - low) / Math.max(Math.log(Math.max(scaleMax, 1)) - low, 1e-4));
+    return clamp((Math.log(Math.max(kelvin, 1)) - uniforms.uScaleLogMin.value) / uniforms.uScaleLogSpan.value);
   }
   return clamp((kelvin - scaleMin) / Math.max(scaleMax - scaleMin, 1));
 }
@@ -139,21 +137,46 @@ describe('the temperature scale, CPU and GPU', () => {
   });
 
   it('keeps the shader text on the same arithmetic', () => {
-    // The floors, as the GLSL spells them; a change to either side must come here.
+    // The floors, as the GLSL spells them; a change to either side must come here. The log
+    // scale's own logs are uniforms, floored where they are written.
     expect(SECTION_SHADER_TEXT).toContain(`max(uScaleMax - uScaleMin, ${LINEAR_SPAN_FLOOR_K.toFixed(1)})`);
     expect(LOG_SPAN_FLOOR).toBe(1e-4);
-    expect(SECTION_SHADER_TEXT).toContain('max(log(max(uScaleMax, 1.0)) - low, 1e-4)');
-    expect(SECTION_SHADER_TEXT).toContain('float low = log(max(uScaleMin, 1.0));');
-    // The knots, mixed on a line or a log, and hatched only against a scale.
+    expect(SECTION_SHADER_TEXT).toContain('return clamp((log(max(kelvin, 1.0)) - uScaleLogMin) / uScaleLogSpan, 0.0, 1.0);');
+    const zeroSpanLog = createSectionUniforms();
+    writeTemperatureScale(zeroSpanLog, { minK: 1000, maxK: 1000, log: true });
+    expect(zeroSpanLog.uScaleLogSpan.value).toBeGreaterThanOrEqual(LOG_SPAN_FLOOR);
+    expect(zeroSpanLog.uScaleLogMin.value).toBeCloseTo(Math.log(1000), 12);
+    // The knots: packed four to a vec4, the component picked by a mask, the pair chosen by the
+    // depth fraction, mixed on a line or a log, and hatched only against a scale.
     expect(SECTION_SHADER_TEXT).toContain(`uniform vec4 uTempKnot[${MAX_REGIONS * KNOT_VEC4S}];`);
+    expect(SECTION_SHADER_TEXT).toContain(`vec4 four = uTempKnot[k * ${KNOT_VEC4S} + j / 4];`);
+    expect(SECTION_SHADER_TEXT).toContain('vec4 mask = vec4(equal(ivec4(j - (j / 4) * 4), ivec4(0, 1, 2, 3)));');
+    expect(SECTION_SHADER_TEXT).toContain('return max(dot(four, mask), 1.0);');
     expect(SECTION_SHADER_TEXT).toContain(`clamp(regionT, 0.0, 1.0) * ${(TEMPERATURE_KNOTS - 1).toFixed(1)};`);
-    expect(SECTION_SHADER_TEXT).toContain('exp(mix(log(a), log(b), f)) : mix(a, b, f)');
+    expect(SECTION_SHADER_TEXT).toContain(`int j = int(floor(min(x, ${(TEMPERATURE_KNOTS - 1).toFixed(1)} - 0.001)));`);
+    expect(SECTION_SHADER_TEXT).toContain('return uTempLog[k] > 0.5 ? exp(mix(log(a), log(b), f)) : mix(a, b, f);');
     expect(SECTION_SHADER_TEXT).toContain('uTempKnown[k] * uScaleKnown');
     expect(SECTION_SHADER_TEXT).toContain('uTempKnown[0] * uScaleKnown');
+    // One diagram per draw, the local temperature sampled once per region and feeding either.
+    expect(SECTION_SHADER_TEXT).toContain('bool sectionMaterials = uDisplayMode == 0;');
+    expect(SECTION_SHADER_TEXT).toContain('float kelvin0 = sectionTempK(0, regionT0);');
+    expect(SECTION_SHADER_TEXT).toContain('float kelvinK = sectionTempK(k, regionT);');
+    expect(SECTION_SHADER_TEXT).toContain('interiorHeat = sectionHeat(0, regionT0, kelvin0, heatMask0, interiorHeatStrength);');
+    expect(SECTION_SHADER_TEXT).toContain('interiorTempT = mix(interiorTempT, sectionScaleT(kelvinK), t);');
+    expect(SECTION_SHADER_TEXT.match(/if \(sectionMaterials\) \{/g)).toHaveLength(2);
+    // The heat's composition: the incandescence through the family's tint and gain, grained, lifted toward the hottest region's bottom.
+    expect(SECTION_SHADER_TEXT).toContain('return radiance * uHeat[k] * heatMask * mix(1.0, uHeatBoost[k], regionT);');
+    expect(SECTION_SHADER_TEXT).toContain('return vec4(pow(forge, vec3(2.2)) * radiance, strength);');
+    // The rim's own band, read after the loop that reads every other boundary as the next region's.
+    expect(SECTION_SHADER_TEXT).toContain('if (uBandHigh[uCount - 1] > uBandLow[uCount - 1]) {');
     // The diagram is unlit: a metal with a black albedo, at the documented exposure.
     expect(SECTION_SHADER_TEXT).toContain('metalnessFactor = uDisplayMode == 1 ? 1.0');
     expect(SECTION_SHADER_TEXT).toContain(`sectionScaleColor(interiorTempT) * ${DIAGRAM_EXPOSURE};`);
     expect(SECTION_SHADER_TEXT).toContain('return sectionSrgbToLinear(mix(uScaleStops[stop], uScaleStops[stop + 1], f));');
+    expect(SECTION_SHADER_TEXT).toContain('float x = clamp(t, 0.0, 1.0) * 5.0;');
+    expect(SECTION_SHADER_TEXT).toContain('int stop = int(floor(min(x, 4.999)));');
+    // three's sRGB transfer, as colorspace_pars_fragment writes it.
+    expect(SECTION_SHADER_TEXT).toContain('return mix(pow(c * 0.9478672986 + vec3(0.0521327014), vec3(2.4)), c * 0.0773993808, vec3(lessThanEqual(c, vec3(0.04045))));');
     // The incandescence's literals are artParams' constants.
     expect(SECTION_SHADER_TEXT).toContain(`(kelvin - ${DRAPER_POINT_K.toFixed(1)}) / ${(INCANDESCENCE_FULL_K - DRAPER_POINT_K).toFixed(1)}`);
     expect(SECTION_SHADER_TEXT).toContain(`/ ${INCANDESCENCE_HOT_K.toFixed(1)}) * 0.4342944819 / ${INCANDESCENCE_HOT_DECADES.toFixed(1)}`);
@@ -196,7 +219,7 @@ describe('the shader text', () => {
     const defined = new Set([...SECTION_SHADER_TEXT.matchAll(/^(?:float|vec[234]|int|void) (section\w+)\(/gm)].map((match) => match[1]));
     const called = new Set([...SECTION_SHADER_TEXT.matchAll(/\b(section\w+)\(/g)].map((match) => match[1]));
     for (const name of called) expect(defined, `${name}() is called but never defined`).toContain(name);
-    for (const name of ['sectionNoDataColor', 'sectionScaleColor', 'sectionTempT', 'sectionTempK', 'sectionIncandescence', 'sectionHeat', 'sectionSample']) {
+    for (const name of ['sectionNoDataColor', 'sectionScaleColor', 'sectionScaleT', 'sectionTempK', 'sectionIncandescence', 'sectionHeat', 'sectionSample']) {
       expect(defined).toContain(name);
     }
   });
@@ -262,11 +285,6 @@ describe('the temperature and the heat at a pixel, CPU and GPU', () => {
       for (let channel = 0; channel < 3; channel++) {
         expect(fromShader.emission[channel], `${kelvin} K channel ${channel}`).toBeCloseTo(expected.emission[channel], 9);
       }
-      // The ramp the shader unrolls is the ramp the swatch reads.
-      const forge = forgeSrgb(kelvin);
-      const ramp = shaderIncandescence(kelvin).emission.map((channel) => (expected.strength > 0 ? channel : 0));
-      expect(ramp.length).toBe(3);
-      expect(forge.every((channel) => channel >= 0 && channel <= 1)).toBe(true);
     }
   });
 });

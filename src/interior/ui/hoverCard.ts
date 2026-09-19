@@ -80,8 +80,15 @@ export class HoverCard {
       this.surface.setVisible(true);
       this.visible = true;
     }
-    if (remeasure || !this.size) this.size = this.surface.measure();
-    const { x, y } = placeHoverCard(pointerX, pointerY, this.size.width, this.size.height, viewport);
+    let size = this.size;
+    if (remeasure || !size) {
+      // A card measured while something hides it (a breakpoint's display:none, a detached host)
+      // reads 0×0: placed with that, clamped against nothing, but never remembered, so the
+      // next show measures again once it can be seen.
+      size = this.surface.measure();
+      this.size = size.width > 0 && size.height > 0 ? size : null;
+    }
+    const { x, y } = placeHoverCard(pointerX, pointerY, size.width, size.height, viewport);
     this.surface.place(x, y);
   }
 
@@ -95,7 +102,8 @@ export class HoverCard {
     return this.visible;
   }
 
-  /** The next show measures again: the fonts arrived, or the viewport changed under the card. */
+  /** The next show measures again: the fonts arrived, or the viewport changed under the card
+   *  (InteriorMode.onResize calls this, and drops the hover with it). */
   invalidateSize(): void {
     this.size = null;
   }

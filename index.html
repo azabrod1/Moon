@@ -2000,6 +2000,8 @@
     .interior-inset { display: block; width: 100%; height: auto; margin-top: 8px; border-radius: 6px; background: rgba(0, 0, 0, 0.28); }
     .interior-inset .inset-selected { stroke: rgba(255, 255, 255, 0.85); }
     .interior-inset .inset-boundary { stroke: rgba(0, 0, 0, 0.6); }
+    /* A distributed boundary is a fade, never a box: the gradient rect takes no outline. */
+    .interior-inset .inset-transition { stroke: none; }
     .interior-inset .inset-continues { stroke: rgba(255, 255, 255, 0.35); }
     .interior-inset .inset-label { fill: rgba(255, 255, 255, 0.82); font-family: inherit; paint-order: stroke fill; stroke: rgba(0, 0, 0, 0.55); stroke-width: 2.5px; stroke-linejoin: round; }
     .interior-inset .inset-depth { font-family: var(--font-mono); font-size: 9.5px; fill: rgba(255, 255, 255, 0.72); }
@@ -5247,7 +5249,7 @@
             </label>
             <div class="interior-note" id="interior-readable-note" style="display:none"></div>
             <!-- The cut is locked to the body: orbiting turns the body under it. This row makes it follow the camera instead; Reset view brings the camera and the cut back to where the tool opened. -->
-            <label class="obs-foot interior-foot" id="interior-follow-row">
+            <label class="obs-foot interior-foot">
               <input type="checkbox" id="interior-follow-toggle">
               <span class="obs-footlbl">Cut faces the camera</span>
               <span class="obs-tgl" aria-hidden="true"></span>

@@ -11,7 +11,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { ATMOSPHERES, createAtmosphereMaterial } from '../../planetarium/PlanetFactory';
 import { SUN_ATMOSPHERE_TINT_RGB, sunPhotosphereFragmentShader, sunPhotosphereVertexShader } from '../../shared/shaders/sun';
-import { applyAtmosphereCut, applyPhotosphereCut, applyRawShaderCut, createSkinCutUniforms } from './skinCut';
+import { computeCutFrame, cutFaceBasis, insideWedge } from '../cutFrame';
+import { SKIN_CUT_FRAGMENT_TEXT, applyAtmosphereCut, applyPhotosphereCut, applyRawShaderCut, createSkinCutUniforms } from './skinCut';
 
 const interiorSceneSource = readFileSync(fileURLToPath(new URL('../InteriorScene.ts', import.meta.url)), 'utf8');
 
@@ -80,6 +81,51 @@ describe('the raw-shader cuts', () => {
     expect(interiorSceneSource).toContain('applyPhotosphereCut(material, this.cutUniforms, SUN_STUDIO_EXPOSURE);');
     // The rings take the same cut, on the standard-material path.
     expect(interiorSceneSource).toContain('applySkinCut(mesh.material as THREE.MeshStandardMaterial, this.cutUniforms);');
+  });
+
+  it("pin the skin's own discard: the plane pair, inverted for the ghost, and the feather in alpha", () => {
+    // The standard-material path — the skin, the rings — carries its own copy of the test; a change there must come here.
+    expect(SKIN_CUT_FRAGMENT_TEXT).toContain('return -min(dot(offset, uCutNormalA), dot(offset, uCutNormalB));');
+    expect(SKIN_CUT_FRAGMENT_TEXT).toContain('float cutSigned = interiorCutOutside(vInteriorCutWorld) * (1.0 - 2.0 * uCutInvert);');
+    expect(SKIN_CUT_FRAGMENT_TEXT).toContain('? clamp(cutSigned / cutWidth + 0.5, 0.0, 1.0)');
+    expect(SKIN_CUT_FRAGMENT_TEXT).toContain(': step(0.0, cutSigned);');
+    expect(SKIN_CUT_FRAGMENT_TEXT).toContain('diffuseColor.a *= interiorCutCoverage;');
+  });
+
+  it("gate a halo on the coverage, after the feather, so the gate's step is never the width the feather measures", () => {
+    const uniforms = createSkinCutUniforms();
+    const material = createAtmosphereMaterial(ATMOSPHERES.Earth, 1, 'analytic', { initialAlpha: 0.7, initialSunDir: new THREE.Vector3(0, 0, 1) });
+    applyAtmosphereCut(material, uniforms, 1.3);
+    const text = material.fragmentShader;
+    const feather = text.indexOf('interiorCutCoverage = clamp(cutSigned / cutWidth + 0.5, 0.0, 1.0);');
+    const gate = text.indexOf('* 1.3000 >= 1.0) interiorCutCoverage = 1.0;');
+    expect(feather).toBeGreaterThan(0);
+    expect(gate).toBeGreaterThan(feather);
+    expect(text).not.toContain('cutSigned = 1e3');
+  });
+
+  it("remove exactly the wedge the pick removes, from the face basis's own normals, at every opening and pose", () => {
+    // Not a transcription: the normals come from cutFaceBasis, the wedge from insideWedge, and the two must agree.
+    const centre = new THREE.Vector3();
+    let agreed = 0;
+    for (const openingDeg of [5, 45, 90, 135, 179, 180]) {
+      for (const [azimuthDeg, elevationDeg] of [[0, 0], [-28, 16], [152, 16], [90, -40]]) {
+        const az = THREE.MathUtils.degToRad(azimuthDeg);
+        const el = THREE.MathUtils.degToRad(elevationDeg);
+        const position = new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), Math.cos(az) * Math.cos(el)).multiplyScalar(3);
+        const frame = computeCutFrame(position, new THREE.Vector3(0, 1, 0), centre, THREE.MathUtils.degToRad(openingDeg));
+        const normalA = cutFaceBasis(frame, 'a').normal.clone();
+        const normalB = cutFaceBasis(frame, 'b').normal.clone();
+        for (let sample = 0; sample < 400; sample++) {
+          const point = new THREE.Vector3(Math.sin(sample * 1.7) * 0.9, Math.cos(sample * 0.37) * 0.9, Math.sin(sample * 0.91 + 2.0) * 0.9);
+          const outside = -Math.min(point.dot(normalA), point.dot(normalB));
+          if (Math.abs(outside) < 1e-6) continue; // on the edge itself
+          expect(outside < 0).toBe(insideWedge(frame, point));
+          agreed++;
+        }
+      }
+    }
+    expect(agreed).toBeGreaterThan(9000);
   });
 
   it('remove the same wedge as the angle test, and stay linear at the hinge where the angle has no answer', () => {

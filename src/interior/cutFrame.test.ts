@@ -192,18 +192,19 @@ describe('yawCutFrame', () => {
   });
 });
 
-describe('the yaw at Section', () => {
+describe('the yaw', () => {
   const yaw = THREE.MathUtils.degToRad(20);
 
-  it('keeps the Section disc off face-on by the yaw, turned about the hinge alone', () => {
+  // The algebra of yawCutFrame on a full disc: what the app never draws (cutYawRad is 0 at
+  // Section, so the disc faces the camera), pinned so the turn the quarter wedge relies on
+  // is known to be about the hinge alone.
+  it('turns a full disc about the hinge alone, by exactly the yaw', () => {
     const { position, localUp } = orbitCamera(30, 20);
     const plain = computeCutFrame(position, localUp, centre, Math.PI);
     const yawed = computeCutFrame(position, localUp, centre, Math.PI, createCutFrame());
     yawCutFrame(yawed, yaw);
     expect(yawed.view.angleTo(plain.view)).toBeCloseTo(yaw, 9);
-    // Turned about the hinge and nothing else: the hinge is where it was, so the
-    // disc keeps its full radius along the screen-vertical and loses cos(yaw)
-    // across it — which is what a pixel read of the disc has to allow for.
+    // Turned about the hinge and nothing else: the hinge is where it was.
     expectVectorClose(yawed.hinge, plain.hinge, 12);
     expect(yawed.view.dot(plain.hinge)).toBeCloseTo(0, 12);
     const faceA = cutFaceBasis(yawed, 'a');

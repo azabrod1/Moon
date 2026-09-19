@@ -16,7 +16,7 @@
  * a scale of one value — its span is zero and the legend's bar is one colour
  * with that value at both ends — so known data is never relabelled unknown
  * by a scale too narrow to place it (plan F22). Where a temperature sits on
- * the scale (temperatureT) is the shader's sectionTempT in TypeScript,
+ * the scale (temperatureT) is the shader's sectionScaleT in TypeScript,
  * floors included, and rendering/sectionMaterial.test.ts holds the two
  * together. Pure: no three, no DOM.
  */

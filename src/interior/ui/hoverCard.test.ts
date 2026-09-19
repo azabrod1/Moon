@@ -93,3 +93,29 @@ describe('HoverCard', () => {
     expect(take().pop()).toBe(`place:${1400 - 200 - HOVER_CARD_MARGIN_PX},${800 - 60 - HOVER_CARD_MARGIN_PX}`);
   });
 });
+
+describe('HoverCard under a hidden host', () => {
+  it('never remembers a 0×0 measurement, and measures again on the next show', () => {
+    let hidden = true;
+    const calls: string[] = [];
+    const surface: HoverCardSurface = {
+      setContent: () => { calls.push('content'); },
+      setDepth: () => { calls.push('depth'); },
+      measure: () => { calls.push('measure'); return hidden ? { width: 0, height: 0 } : { width: 140, height: 52 }; },
+      place: (x, y) => { calls.push(`place:${x},${y}`); },
+      setVisible: () => { calls.push('visible'); },
+    };
+    const card = new HoverCard(surface);
+    card.show(crust, '12 km down', 100, 200, viewport);
+    expect(calls).toContain('measure');
+    calls.length = 0;
+    // The same region, a depth line of the same length: nothing would re-measure a cached size.
+    hidden = false;
+    card.show(crust, '13 km down', 100, 200, viewport);
+    expect(calls).toEqual(['depth', 'measure', `place:${114},${214}`]);
+    calls.length = 0;
+    // Now it is cached: the next move only places.
+    card.show(crust, '14 km down', 100, 200, viewport);
+    expect(calls).toEqual(['depth', `place:${114},${214}`]);
+  });
+});

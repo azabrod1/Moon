@@ -234,11 +234,10 @@ async function sweepBody(context, viewport, body) {
 
   // 3. A hover sweep across the section resolves regions in order outward
   // from the centre, at rest and mid-blend. Along the hinge (screen-vertical),
-  // a few px to one side of it: the cut plane is turned about the hinge (the
-  // yaw, cutFrame.ts), so across the hinge the disc is foreshortened by the
-  // yaw's cosine and a thin rim band can hide behind the skin's edge in
-  // perspective; along the hinge nothing is foreshortened. Both directions
-  // along it, so both faces show every region out to the rim.
+  // a few px to one side of it: the Section disc faces the camera (the wedge's
+  // yaw fades to nothing at Section, cutFrame.cutYawRad), and along the hinge
+  // the two half-discs meet, so a walk to either side of it crosses one face
+  // each. Both directions along it, so both faces show every region out to the rim.
   await page.evaluate(() => window.__moon.interiorView('section'));
   await ready(page);
   const centre = await discCentre(page, viewport);
@@ -267,6 +266,19 @@ async function sweepBody(context, viewport, body) {
   // Back to the tool's default, True, which is what the captures below show.
   await page.evaluate(() => window.__moon.interiorScale('true'));
   await page.evaluate(() => window.__moon.interiorHover(-1, -1));
+
+  // 2b. On desktop the depth ruler lies on its face (ui/DepthRuler): its km labels exist at the
+  // quarter wedge and each is placed by a matrix transform, never a flat x/y.
+  if (!viewport.touch) {
+    await page.evaluate(() => window.__moon.interiorView('cutaway'));
+    await ready(page);
+    const rulerText = await page.evaluate(() => [...document.querySelectorAll('#interior-ruler .ruler-label')]
+      .filter((element) => element.style.display !== 'none')
+      .map((element) => ({ transform: element.getAttribute('transform') ?? '', text: element.textContent ?? '' })));
+    check(rulerText.length >= 2, `${tag}: the ruler shows ${rulerText.length} km label(s) at the quarter wedge`);
+    check(rulerText.every((label) => label.transform.startsWith('matrix(')), `${tag}: a ruler label is not laid in the face's plane (${JSON.stringify(rulerText.slice(0, 3))})`);
+    check(rulerText.some((label) => / km$/.test(label.text)) && rulerText.some((label) => label.text === '0'), `${tag}: the ruler's rim reads 0 and its deepest label carries the unit (${rulerText.map((label) => label.text).join(' | ')})`);
+  }
 
   // 3a. A real pointer: the mode keeps a move for the frame and picks once there, so the
   // card follows a mouse without a rebuild per event (plan F27). Desktop only — a touch
@@ -399,7 +411,10 @@ async function sweepBody(context, viewport, body) {
   await page.close();
 }
 
-/** Europa's core boundary is a model spread of 300–700 km: the band must be there in Temperature mode. */
+/** Europa's rocky mantle's outer boundary is a model spread of 1410–1480 km, between two regions
+ *  whose temperatures are known: the band must be there in Temperature mode. (The core's boundary
+ *  at 500 km is a spread too, but the core's temperature is unknown and the diagram hatches it,
+ *  so a block on that boundary reads the no-data hatch whether or not the band is drawn.) */
 async function bandCase(context, viewport) {
   const tag = `${viewport.name}/Europa band`;
   console.log(`\n== ${tag}`);
@@ -412,16 +427,17 @@ async function bandCase(context, viewport) {
   const reference = 1560.8;
   const image = decodePng(await withoutRuler(page, () => page.screenshot({ type: 'png' })));
   const scale = image.width / viewport.width;
-  // True scale: display radius = physical radius. In the band (300–700 km) versus above it (800–1400 km).
-  // Read across the hinge, where the cut's yaw foreshortens the disc by
-  // cos(yaw) — about 6%, so these land at about 530 km and 1060 km, each still
-  // well inside the band it is asking about. The hinge itself is where the two faces
-  // meet, and a seam through the block would be variance this check reads as a hatch.
-  const inBandR = ((500 / reference) * radiusPx) * scale;
-  const outBandR = ((1000 / reference) * radiusPx) * scale;
+  // True scale: display radius = physical radius, and the Section disc faces the camera, so a
+  // radius lands where it says. In the band (1410–1480 km, centred on 1445) versus below it
+  // (1250 km, mid-mantle, a known temperature and no band). Read across the hinge: the hinge
+  // itself is where the two faces meet, and a seam through the block would be variance this
+  // check reads as a hatch.
+  const inBandR = ((1445 / reference) * radiusPx) * scale;
+  const outBandR = ((1250 / reference) * radiusPx) * scale;
   const size = 14;
   // The temperature ramp runs radially, so a block out of the band still carries a
-  // gradient; the ramp is taken out column by column and what is left is the hatch.
+  // gradient, and the mantle–ocean step falls across columns; the ramp is taken out
+  // column by column and what is left is the hatch.
   const inBand = blockDetrendedStd(image, Math.round(centre.x * scale + inBandR - size / 2), Math.round(centre.y * scale - size / 2), size);
   const outBand = blockDetrendedStd(image, Math.round(centre.x * scale + outBandR - size / 2), Math.round(centre.y * scale - size / 2), size);
   notes.push(`${tag}: in-band detrended std ${inBand.toFixed(2)} out-of-band ${outBand.toFixed(2)}`);
@@ -899,11 +915,18 @@ async function bodyLockedCutCase(context, viewport) {
   const behindHit = await page.evaluate(([x, y]) => window.__moon.interiorHover(x, y), [behindCentre.x, behindCentre.y]);
   check(behindHit && behindHit.surface === 'skin', `${tag}: from behind the disc centre is not intact skin (${JSON.stringify(behindHit)})`);
   if (viewport.name === 'desktop') check(await rulerHidden(), `${tag}: the ruler is still drawn with both faces turned away`);
-  // Following: the cut swings round to the camera and the frame is a new one.
+  // Following: the cut swings round to the camera and the frame is a new one. The swing
+  // runs on the tool's own ticks (CUT_SWING_S of them), and a software GPU ticks slowly,
+  // so the frame is read once it stops moving between draws rather than after a fixed wait.
   check(await page.evaluate(() => window.__moon.interiorCutFollow(true)), `${tag}: interiorCutFollow(true) refused`);
-  await page.waitForTimeout(600);
-  await settle(page);
-  const following = await state(page);
+  let following = await state(page);
+  for (let draws = 0; draws < 40; draws++) {
+    await settle(page);
+    const next = await state(page);
+    const moved = maxDelta(axes(next), axes(following));
+    following = next;
+    if (draws > 0 && moved < 1e-9) break;
+  }
   check(following.cutFollow === true, `${tag}: cutFollow is not reported on`);
   check(maxDelta(axes(following), axes(atRest)) > 0.1, `${tag}: following, the cut did not swing round to the camera`);
   const followingCentre = await discCentre(page, viewport);

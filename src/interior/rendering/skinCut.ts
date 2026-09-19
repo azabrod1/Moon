@@ -99,6 +99,9 @@ const CUT_ALPHA = /* glsl */ `
 diffuseColor.a *= interiorCutCoverage;
 `;
 
+/** The standard-material cut as one text, for the test that pins its arithmetic. */
+export const SKIN_CUT_FRAGMENT_TEXT = [CUT_PARS_FRAGMENT, CUT_FRAGMENT, CUT_ALPHA].join('\n');
+
 /**
  * Compose the discard onto a standard material that may already carry
  * surfaceShading's hook. Assigns the uniforms by reference, so the scene
@@ -175,17 +178,20 @@ export function applyRawShaderCut(material: THREE.ShaderMaterial, uniforms: Skin
     ? '    float cutAlong = dot(cutOffset, uCutCamera);\n    if (cutAlong < 0.0) cutOffset -= 2.0 * cutAlong * uCutCamera;\n'
     : '';
   // Beyond the disc the wedge has nothing to open: a halo there is kept whole.
+  // The gate lands on the COVERAGE, after the feather: a sentinel written into
+  // the signed distance would be the step the feather's fwidth measures on the
+  // quads straddling the gate, and half-covered them on both sides.
   const gate = options.discGateScale !== undefined
-    ? `    if (length(cross(normalize(cutOffset), uCutCamera)) * ${options.discGateScale.toFixed(4)} >= 1.0) cutSigned = 1e3;\n`
+    ? `    if (length(cross(normalize(cutOffset), uCutCamera)) * ${options.discGateScale.toFixed(4)} >= 1.0) interiorCutCoverage = 1.0;\n`
     : '';
   const test = `
   float interiorCutCoverage = 1.0;
   if (uCutHalfAngle > 0.0) {
     vec3 cutOffset = ${options.direction};
 ${reflect}    float cutSigned = -min(dot(cutOffset, uCutNormalA), dot(cutOffset, uCutNormalB));
-${gate}    float cutWidth = max(fwidth(cutSigned), 1e-5);
+    float cutWidth = max(fwidth(cutSigned), 1e-5);
     interiorCutCoverage = clamp(cutSigned / cutWidth + 0.5, 0.0, 1.0);
-    if (interiorCutCoverage <= 0.0) discard;
+${gate}    if (interiorCutCoverage <= 0.0) discard;
   }
 `;
   if (!material.fragmentShader.includes(options.output.find) || !material.fragmentShader.includes('void main() {')) {

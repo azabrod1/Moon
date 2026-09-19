@@ -27,7 +27,7 @@
 import * as THREE from 'three';
 import type { RulerLayout } from '../ruler';
 import { formatKm } from './inspectorText';
-import { assignTiers, estimateTextWidth, fitInSpan, labelStride, thinLabels, type Footprint, type LabelCandidate } from './rulerLabels';
+import { assignTiers, estimateTextWidth, fitInSpan, labelStride, orientTextAxes, thinLabels, type Footprint, type LabelCandidate } from './rulerLabels';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 /** A tick's length up from the line, px on a face seen square-on. */
@@ -102,6 +102,12 @@ const projected = new THREE.Vector3();
 const probeWorld = new THREE.Vector3();
 const rulerDirection = new THREE.Vector3();
 const cameraRight = new THREE.Vector3();
+/** Midpoints of the segments and brackets, pooled so a frame at rest allocates none. */
+const midpointPool: THREE.Vector3[] = [];
+function midpointOf(from: THREE.Vector3, to: THREE.Vector3, slot: number): THREE.Vector3 {
+  const vector = midpointPool[slot] ?? (midpointPool[slot] = new THREE.Vector3());
+  return vector.copy(from).add(to).multiplyScalar(0.5);
+}
 
 export class DepthRuler {
   private root: SVGSVGElement | null = null;
@@ -167,21 +173,12 @@ export class DepthRuler {
       const upProbe = inPlane(point, alongPx, upPx + PLANE_PROBE * pxPerUnit);
       if (!at || !alongProbe || !upProbe) return null;
       const scale = 1 / (PLANE_PROBE * pxPerUnit);
-      let along: ScreenPoint = [(alongProbe[0] - at[0]) * scale, (alongProbe[1] - at[1]) * scale];
-      let upAxis: ScreenPoint = [(upProbe[0] - at[0]) * scale, (upProbe[1] - at[1]) * scale];
-      // Upright: the face's up must point up the screen; turned over, the text turns with it.
-      if (upAxis[1] > 0) {
-        along = [-along[0], -along[1]];
-        upAxis = [-upAxis[0], -upAxis[1]];
-      }
-      // Reading left to right: a mirrored basis flips the baseline, never the glyphs.
-      if (along[0] * -upAxis[1] - along[1] * -upAxis[0] < 0) along = [-along[0], -along[1]];
-      const floor = (axis: ScreenPoint): ScreenPoint => {
-        const length = Math.hypot(axis[0], axis[1]);
-        if (length >= TEXT_SQUASH_FLOOR || length < 1e-6) return axis;
-        return [(axis[0] * TEXT_SQUASH_FLOOR) / length, (axis[1] * TEXT_SQUASH_FLOOR) / length];
-      };
-      return { at, along: floor(along), up: floor(upAxis) };
+      const oriented = orientTextAxes(
+        [(alongProbe[0] - at[0]) * scale, (alongProbe[1] - at[1]) * scale],
+        [(upProbe[0] - at[0]) * scale, (upProbe[1] - at[1]) * scale],
+        TEXT_SQUASH_FLOOR,
+      );
+      return { at, along: [oriented.along[0], oriented.along[1]], up: [oriented.up[0], oriented.up[1]] };
     };
     const placeText = (label: SVGTextElement, text: PlaneText, content: string) => {
       label.setAttribute('transform', `matrix(${text.along[0].toFixed(4)} ${text.along[1].toFixed(4)} ${(-text.up[0]).toFixed(4)} ${(-text.up[1]).toFixed(4)} ${text.at[0].toFixed(1)} ${text.at[1].toFixed(1)})`);
@@ -202,16 +199,24 @@ export class DepthRuler {
       dirY = dy / length;
     }
     const along = (point: ScreenPoint) => (point[0] - (rim?.[0] ?? 0)) * dirX + (point[1] - (rim?.[1] ?? 0)) * dirY;
-    /** The disc's extent along the ruler at `upPx` off the line, in screen along-px: the chord a label must fit. */
+    /** The disc's extent along the ruler at `upPx` off the line, in screen along-px: the chord a
+     *  label must fit. It depends on the height alone, so each height is projected once a frame. */
+    const chords = new Map<number, [number, number] | null>();
     const chordAt = (upPx: number): [number, number] | null => {
+      const known = chords.get(upPx);
+      if (known !== undefined) return known;
       const offset = upPx / pxPerUnit;
       const half = Math.sqrt(Math.max(0, 1 - offset * offset));
       const low = inPlane(centre, -half * pxPerUnit, upPx);
       const high = inPlane(centre, half * pxPerUnit, upPx);
-      if (!low || !high) return null;
-      const a = along(low);
-      const b = along(high);
-      return [Math.min(a, b), Math.max(a, b)];
+      let chord: [number, number] | null = null;
+      if (low && high) {
+        const a = along(low);
+        const b = along(high);
+        chord = [Math.min(a, b), Math.max(a, b)];
+      }
+      chords.set(upPx, chord);
+      return chord;
     };
     /** A label kept inside the chord: its anchor shifted along the ruler by the difference, or null when it cannot fit. */
     const insideChord = (point: THREE.Vector3, alongPx: number, upPx: number, halfWidthPx: number): { text: PlaneText; half: number } | null => {
@@ -234,11 +239,12 @@ export class DepthRuler {
     const segmentsOnScreen: { from: ScreenPoint; to: ScreenPoint; name: string; midpoint: THREE.Vector3 }[] = [];
     const nameCandidates: LabelCandidate[] = [];
     const nameTexts: ({ text: PlaneText; half: number } | null)[] = [];
+    let midpointSlot = 0;
     for (const segment of layout.segments) {
       const from = toScreen(segment.from);
       const to = toScreen(segment.to);
       if (!from || !to) continue;
-      const midpoint = probeWorld.copy(segment.from).add(segment.to).multiplyScalar(0.5).clone();
+      const midpoint = midpointOf(segment.from, segment.to, midpointSlot++);
       const placed = insideChord(midpoint, 0, -NAME_GAP_PX, estimateTextWidth(segment.name, NAME_GLYPH_PX) / 2);
       segmentsOnScreen.push({ from, to, name: segment.name, midpoint });
       nameTexts.push(placed);
@@ -321,7 +327,7 @@ export class DepthRuler {
       const alongTo = along(to);
       const low = Math.min(alongFrom, alongTo) - BRACKET_PAD_PX;
       const high = Math.max(alongFrom, alongTo) + BRACKET_PAD_PX;
-      const midpoint = probeWorld.copy(bracket.from).add(bracket.to).multiplyScalar(0.5).clone();
+      const midpoint = midpointOf(bracket.from, bracket.to, midpointSlot++);
       const halfNamePx = estimateTextWidth(bracket.name, BRACKET_GLYPH_PX) / 2;
       const probe = planeText(midpoint, 0, -BRACKET_GAP_PX);
       const halfNameDrawn = probe ? drawnHalf(probe, halfNamePx) : halfNamePx;

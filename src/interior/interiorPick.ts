@@ -103,10 +103,14 @@ export function pickInterior(
   let bestDistance = Infinity;
   let found = false;
 
-  // The skin: the sphere's near side, unless the cut removed it there. A
-  // removed near side is no window onto the far one — the far side is
-  // discarded inside the same wedge — so only the near root is tried, and
-  // where both are gone the faces are what the ray can still meet.
+  // The skin: the sphere's near side, unless the cut removed it there. Only
+  // the near root is tried: the skin is drawn FrontSide (InteriorScene's
+  // standard material), so the far side's inside is culled and a ray through
+  // a removed near side meets the faces, never the far skin. A skin drawn
+  // double-sided would need the far root tested here too.
+  // (The far root is essentially never inside the wedge itself — a near point on
+  // the view axis has its far point at wedge angle ~π — so the wedge is not what
+  // keeps it unpickable.)
   const skinDistance = sphereNearDistance(origin, direction, 1);
   if (skinDistance > 0) {
     scratchPoint.copy(origin).addScaledVector(direction, skinDistance);

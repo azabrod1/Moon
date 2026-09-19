@@ -16,6 +16,12 @@ export default defineConfig({
   build: {
     outDir: 'dist',
   },
+  server: {
+    // A worktree under .claude/ carries its own index.html, and an HTML file
+    // appearing anywhere in the root is a full reload to every open page —
+    // which killed a browser battery mid-run. planning/ is local scratch.
+    watch: { ignored: ['**/.claude/**', '**/planning/**'] },
+  },
   define: {
     __BUILD_TAG__: JSON.stringify(`${buildTag} · ${buildDate}`),
   },

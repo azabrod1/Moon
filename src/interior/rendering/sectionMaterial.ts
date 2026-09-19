@@ -102,7 +102,7 @@ import {
   PATTERN_INDEX,
   type ArtParams,
 } from '../data/artParams';
-import { LINEAR_SPAN_FLOOR_K, TEMPERATURE_SCALE_STOPS, type TemperatureRange } from '../temperatureScale';
+import { LINEAR_SPAN_FLOOR_K, LOG_SPAN_FLOOR, TEMPERATURE_SCALE_STOPS, type TemperatureRange } from '../temperatureScale';
 import { TEMPERATURE_KNOTS } from '../temperatureProfile';
 import { MAX_REGIONS } from '../data/interiorTypes';
 import { DIAGRAM_EXPOSURE } from './outputTransform';
@@ -166,6 +166,10 @@ export interface SectionUniforms {
   uScaleMin: { value: number };
   uScaleMax: { value: number };
   uScaleLog: { value: number };
+  /** log(max(minK, 1)) and the floored log span (temperatureScale.LOG_SPAN_FLOOR): the scale's
+   *  own logs, taken once here rather than twice per region per fragment. */
+  uScaleLogMin: { value: number };
+  uScaleLogSpan: { value: number };
   uScaleKnown: { value: number };
   uScaleStops: { value: THREE.Vector3[] };
   /** The uncertainty band straddling region k's outer boundary, display radii; equal = none. */
@@ -209,6 +213,8 @@ export function createSectionUniforms(): SectionUniforms {
     uScaleMin: { value: 0 },
     uScaleMax: { value: 1 },
     uScaleLog: { value: 0 },
+    uScaleLogMin: { value: 0 },
+    uScaleLogSpan: { value: 1 },
     uScaleKnown: { value: 0 },
     uScaleStops: { value: TEMPERATURE_SCALE_STOPS.map((stop) => new THREE.Vector3(stop[0], stop[1], stop[2])) },
     uBandLow: { value: numbers() },
@@ -221,12 +227,18 @@ function srgbToLinear(channel: number): number {
 }
 
 /** The body's temperature scale; null when no region's temperature is known,
- *  which hatches every face. The span is floored as sectionTempT floors it,
+ *  which hatches every face. The span is floored as sectionScaleT floors it,
  *  so the two never disagree; a scale of one value keeps its one value. */
 export function writeTemperatureScale(uniforms: SectionUniforms, range: TemperatureRange | null): void {
-  uniforms.uScaleMin.value = range ? range.minK : 0;
-  uniforms.uScaleMax.value = range ? Math.max(range.maxK, range.minK + LINEAR_SPAN_FLOOR_K) : 1;
+  const minK = range ? range.minK : 0;
+  const maxK = range ? Math.max(range.maxK, range.minK + LINEAR_SPAN_FLOOR_K) : 1;
+  uniforms.uScaleMin.value = minK;
+  uniforms.uScaleMax.value = maxK;
   uniforms.uScaleLog.value = range?.log ? 1 : 0;
+  // The log scale's arithmetic (temperatureScale.temperatureT), its two logs taken here.
+  const logMin = Math.log(Math.max(minK, 1));
+  uniforms.uScaleLogMin.value = logMin;
+  uniforms.uScaleLogSpan.value = Math.max(Math.log(Math.max(maxK, 1)) - logMin, LOG_SPAN_FLOOR);
   uniforms.uScaleKnown.value = range ? 1 : 0;
 }
 
@@ -429,6 +441,8 @@ uniform float uTempKnown[${MAX_REGIONS}];
 uniform float uScaleMin;
 uniform float uScaleMax;
 uniform float uScaleLog;
+uniform float uScaleLogMin;
+uniform float uScaleLogSpan;
 uniform float uScaleKnown;
 uniform vec3 uScaleStops[6];
 uniform float uBandLow[${MAX_REGIONS}];
@@ -456,18 +470,11 @@ float sectionTempK(int k, float regionT) {
   return uTempLog[k] > 0.5 ? exp(mix(log(a), log(b), f)) : mix(a, b, f);
 }
 
-// Where a temperature sits on the body's scale, 0..1: temperatureScale.temperatureT.
+// Where a temperature sits on the body's scale, 0..1: temperatureScale.temperatureT. The
+// logs of the scale's ends are uniforms (writeTemperatureScale), not two logs per call.
 float sectionScaleT(float kelvin) {
-  if (uScaleLog > 0.5) {
-    float low = log(max(uScaleMin, 1.0));
-    return clamp((log(max(kelvin, 1.0)) - low) / max(log(max(uScaleMax, 1.0)) - low, 1e-4), 0.0, 1.0);
-  }
+  if (uScaleLog > 0.5) return clamp((log(max(kelvin, 1.0)) - uScaleLogMin) / uScaleLogSpan, 0.0, 1.0);
   return clamp((kelvin - uScaleMin) / max(uScaleMax - uScaleMin, 1.0), 0.0, 1.0);
-}
-
-// Where region k's temperature at depth fraction regionT sits on the body's scale, 0..1.
-float sectionTempT(int k, float regionT) {
-  return sectionScaleT(sectionTempK(k, regionT));
 }
 
 // sRGB to linear, three's own transfer (colorspace_pars_fragment), so a mix
@@ -500,7 +507,7 @@ vec4 sectionIncandescence(float kelvin) {
   float strength = ramp > 0.0 ? pow(ramp, 0.8) : 0.0;
   vec3 forge = sectionForgeSrgb(kelvin);
   float hotDecades = clamp(log(max(kelvin, 1.0) / ${glslFloat(INCANDESCENCE_HOT_K)}) * 0.4342944819 / ${glslFloat(INCANDESCENCE_HOT_DECADES)}, 0.0, 1.0);
-  // pow(0, y) is left to the driver by the spec, so a cold pixel never asks for it.
+  // A cold pixel skips the pow (pow(0.0, 0.9) is 0 by the spec; this only saves the call).
   float peak = strength > 0.0 ? pow(strength, 0.9) : 0.0;
   float radiance = (0.03 * strength + ${glslFloat(INCANDESCENCE_PEAK)} * peak) * (1.0 + ${glslFloat(INCANDESCENCE_HOT_BOOST)} * hotDecades * hotDecades);
   return vec4(pow(forge, vec3(2.2)) * radiance, strength);
@@ -513,13 +520,13 @@ float sectionSelfLitRadiance(float kelvin, float known) {
   return ${glslFloat(SELF_LIT_FLOOR)} + ${glslFloat(SELF_LIT_RANGE)} * level * level * level;
 }
 
-// Region k's heat at depth fraction regionT: its incandescence at the local
-// temperature (a light's radiance at it instead), through the family's tint
-// and gain, grained by the pattern, the body's hottest region lifted toward
-// its bottom; an unknown temperature is cold. strength is how much the
-// heat dominates the albedo there.
-vec3 sectionHeat(int k, float regionT, float heatMask, out float strength) {
-  float kelvin = sectionTempK(k, regionT);
+// Region k's heat at depth fraction regionT, kelvin its local temperature
+// there (sampled once by the caller, since the diagram reads it too): its
+// incandescence at that temperature (a light's radiance at it instead),
+// through the family's tint and gain, grained by the pattern, the body's
+// hottest region lifted toward its bottom; an unknown temperature is cold.
+// strength is how much the heat dominates the albedo there.
+vec3 sectionHeat(int k, float regionT, float kelvin, float heatMask, out float strength) {
   float known = uTempKnown[k];
   vec4 glow = sectionIncandescence(kelvin) * known;
   vec3 radiance = mix(glow.rgb, vec3(sectionSelfLitRadiance(kelvin, known)), uSelfLit[k]);
@@ -665,14 +672,28 @@ float sectionRadius = length(vSectionWorld);
 float sectionPx = max(fwidth(sectionRadius), 1e-5); // one screen pixel, display units
 vec3 sectionBodyPoint = uWorldToBody * vSectionWorld;
 float regionT0 = clamp((uOuter[0] - sectionRadius) / max(uOuter[0], 1e-4), 0.0, 1.0);
-float heatMask0;
-vec4 sectionFirst = sectionSample(0, sectionBodyPoint, regionT0, heatMask0);
-vec3 interiorAlbedo = sectionFirst.rgb;
-float interiorHeight = sectionFirst.a;
-// The heat is the local temperature's, so a region brightens toward its base by being
-// hotter there; the body's hottest region takes its lift there, so only the middle of a core blooms.
-float interiorHeatStrength;
-vec3 interiorHeat = sectionHeat(0, regionT0, heatMask0, interiorHeatStrength);
+// One diagram per draw: the Materials chain (the pattern and the heat) or the Temperature
+// chain (the place on the scale), never both for a pixel that shows one — uDisplayMode is a
+// uniform, so the branch is the same for every fragment and costs nothing in divergence.
+// The local temperature feeds either, sampled once per region.
+bool sectionMaterials = uDisplayMode == 0;
+float kelvin0 = sectionTempK(0, regionT0);
+vec3 interiorAlbedo = vec3(0.0);
+float interiorHeight = 0.0;
+float interiorHeatStrength = 0.0;
+vec3 interiorHeat = vec3(0.0);
+float interiorTempT = 0.0;
+if (sectionMaterials) {
+  float heatMask0;
+  vec4 sectionFirst = sectionSample(0, sectionBodyPoint, regionT0, heatMask0);
+  interiorAlbedo = sectionFirst.rgb;
+  interiorHeight = sectionFirst.a;
+  // The heat is the local temperature's, so a region brightens toward its base by being
+  // hotter there; the body's hottest region takes its lift there, so only the middle of a core blooms.
+  interiorHeat = sectionHeat(0, regionT0, kelvin0, heatMask0, interiorHeatStrength);
+} else {
+  interiorTempT = sectionScaleT(kelvin0);
+}
 float interiorSelfLit = uSelfLit[0];
 float interiorRough = uRough[0];
 float interiorMetal = uMetal[0];
@@ -684,7 +705,6 @@ float boundaryShade = 1.0;
 float bandShade = 1.0;
 float emphasisMix = uEmphasis == 0 ? 1.0 : 0.0;
 float interiorOutline = 0.0;
-float interiorTempT = sectionTempT(0, regionT0);
 float interiorTempKnown = uTempKnown[0] * uScaleKnown;
 for (int k = 1; k < ${MAX_REGIONS}; k++) {
   if (k >= uCount) break;
@@ -695,14 +715,19 @@ for (int k = 1; k < ${MAX_REGIONS}; k++) {
   float halfWidth = max(blendWidth, sectionPx);
   float t = smoothstep(boundary - halfWidth, boundary + halfWidth, sectionRadius);
   float regionT = clamp((uOuter[k] - sectionRadius) / max(uOuter[k] - boundary, 1e-4), 0.0, 1.0);
-  float heatMaskK;
-  vec4 sampleK = sectionSample(k, sectionBodyPoint, regionT, heatMaskK);
-  interiorAlbedo = mix(interiorAlbedo, sampleK.rgb, t);
-  interiorHeight = mix(interiorHeight, sampleK.a, t);
-  float strengthK;
-  vec3 heatK = sectionHeat(k, regionT, heatMaskK, strengthK);
-  interiorHeat = mix(interiorHeat, heatK, t);
-  interiorHeatStrength = mix(interiorHeatStrength, strengthK, t);
+  float kelvinK = sectionTempK(k, regionT);
+  if (sectionMaterials) {
+    float heatMaskK;
+    vec4 sampleK = sectionSample(k, sectionBodyPoint, regionT, heatMaskK);
+    interiorAlbedo = mix(interiorAlbedo, sampleK.rgb, t);
+    interiorHeight = mix(interiorHeight, sampleK.a, t);
+    float strengthK;
+    vec3 heatK = sectionHeat(k, regionT, kelvinK, heatMaskK, strengthK);
+    interiorHeat = mix(interiorHeat, heatK, t);
+    interiorHeatStrength = mix(interiorHeatStrength, strengthK, t);
+  } else {
+    interiorTempT = mix(interiorTempT, sectionScaleT(kelvinK), t);
+  }
   interiorSelfLit = mix(interiorSelfLit, uSelfLit[k], t);
   interiorRough = mix(interiorRough, uRough[k], t);
   interiorMetal = mix(interiorMetal, uMetal[k], t);
@@ -711,7 +736,6 @@ for (int k = 1; k < ${MAX_REGIONS}; k++) {
   interiorAmbient = mix(interiorAmbient, uAmbient[k], t);
   interiorDepthShade = mix(interiorDepthShade, uDepthGrad[k] * regionT, t);
   emphasisMix = mix(emphasisMix, uEmphasis == k ? 1.0 : 0.0, t);
-  interiorTempT = mix(interiorTempT, sectionTempT(k, regionT), t);
   interiorTempKnown = mix(interiorTempKnown, uTempKnown[k] * uScaleKnown, t);
   if (uBandHigh[k - 1] > uBandLow[k - 1]) {
     // Where the boundary might be: a faint hatch across the whole band, in both modes.
@@ -729,6 +753,13 @@ for (int k = 1; k < ${MAX_REGIONS}; k++) {
   float crisp = 1.0 - smoothstep(sectionPx * 1.5, sectionPx * 6.0, blendWidth);
   float hairline = (sectionRadius - boundary) / (sectionPx * 0.9);
   boundaryShade *= 1.0 - 0.2 * crisp * exp(-hairline * hairline);
+}
+// The outermost region's own band straddles the rim (a surface whose radius is itself
+// uncertain): the loop reads each boundary as the next region's, so the rim's is read here.
+if (uBandHigh[uCount - 1] > uBandLow[uCount - 1]) {
+  float rimBand = step(uBandLow[uCount - 1], sectionRadius) * step(sectionRadius, uBandHigh[uCount - 1]);
+  float rimStripes = 0.5 + 0.5 * sin((gl_FragCoord.x - gl_FragCoord.y) * 0.9);
+  bandShade *= 1.0 - 0.16 * rimBand * rimStripes;
 }
 // The crease where the two faces meet, gone at Section where they are coplanar.
 float interiorCrease = 1.0 - uCorner * 0.45 * (1.0 - smoothstep(0.0, 0.45, vSectionLocal.x));

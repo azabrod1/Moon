@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assignTiers, estimateTextWidth, thinLabels, type LabelCandidate, labelStride, fitInSpan } from './rulerLabels';
+import { assignTiers, estimateTextWidth, thinLabels, type LabelCandidate, labelStride, fitInSpan, orientTextAxes } from './rulerLabels';
 
 const rule = { minSpanPx: 44, gapPx: 8 };
 
@@ -137,5 +137,31 @@ describe('fitInSpan', () => {
 
   it('refuses a label wider than the span', () => {
     expect(fitInSpan(50, 60, 0, 100)).toBeNull();
+  });
+});
+
+describe('orientTextAxes', () => {
+  it('leaves a square-on, upright basis alone', () => {
+    expect(orientTextAxes([1, 0], [0, -1], 0.55)).toEqual({ along: [1, 0], up: [0, -1] });
+  });
+
+  it('turns a face seen upside down through 180°, so the glyphs stay upright', () => {
+    expect(orientTextAxes([-1, 0], [0, 1], 0.55)).toEqual({ along: [1, 0], up: [0, -1] });
+  });
+
+  it('reverses only the baseline of a mirrored basis, so the text reads left to right unmirrored', () => {
+    expect(orientTextAxes([-1, 0], [0, -1], 0.55)).toEqual({ along: [1, 0], up: [0, -1] });
+  });
+
+  it('lifts a foreshortened axis to the floor and keeps its direction', () => {
+    const { along, up } = orientTextAxes([0.2, 0], [0, -0.3], 0.55);
+    expect(along[0]).toBeCloseTo(0.55, 12);
+    expect(along[1]).toBe(0);
+    expect(up[1]).toBeCloseTo(-0.55, 12);
+    expect(orientTextAxes([0.8, 0], [0, -0.9], 0.55)).toEqual({ along: [0.8, 0], up: [0, -0.9] });
+  });
+
+  it('leaves a vanished axis at zero rather than inventing a direction', () => {
+    expect(orientTextAxes([0, 0], [0, -1], 0.55).along).toEqual([0, 0]);
   });
 });

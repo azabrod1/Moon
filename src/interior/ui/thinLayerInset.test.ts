@@ -27,6 +27,7 @@ function region(key: string, innerRadiusKm: number, outerRadiusKm: number, trans
     outerRadiusKm,
     innerRadiusKm,
     temperatureK: null,
+  temperatureKnotsK: null,
     composition: 'test',
     transitionKm,
     region: null,

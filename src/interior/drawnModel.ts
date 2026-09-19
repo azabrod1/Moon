@@ -8,7 +8,7 @@
  * Readable remap happens downstream in interiorGeometry.
  */
 import type { InteriorModel, MaterialFamily, Phase, Region } from './data/interiorTypes';
-import { representativeTemperatureK } from './temperatureProfile';
+import { representativeTemperatureK, temperatureKnotsK } from './temperatureProfile';
 
 export interface DrawnRegion {
   key: string;
@@ -19,8 +19,12 @@ export interface DrawnRegion {
   innerRadiusKm: number;
   /** The temperature at the middle of the region through the shared sampler
    *  (temperatureProfile), K, or null when the model says unknown: the one
-   *  number a swatch stands for. The faces read the whole ramp. */
+   *  number a swatch stands for. The faces read the whole ramp: */
   temperatureK: number | null;
+  /** The ramp as the faces' knots (temperatureProfile.temperatureKnotsK), top
+   *  to bottom, or null when unknown. Physical, so built once here rather than
+   *  on every remap refresh that rebuilds the looks. */
+  temperatureKnotsK: readonly number[] | null;
   /** The one-line composition for the legend row. */
   composition: string;
   /** Width, km, of the physical transition at this region's OUTER boundary; 0 when sharp or unknown. */
@@ -51,6 +55,7 @@ export function drawnFromModel(model: InteriorModel): DrawnModel {
       outerRadiusKm: region.outerRadiusKm,
       innerRadiusKm,
       temperatureK: representativeTemperatureK(region.temperatureK, innerRadiusKm, region.outerRadiusKm),
+      temperatureKnotsK: temperatureKnotsK(region.temperatureK, innerRadiusKm, region.outerRadiusKm),
       composition: region.composition.value,
       transitionKm: region.boundary.transition.kind === 'distributed' ? region.boundary.transition.widthKm.value : 0,
       region,
@@ -84,6 +89,7 @@ export function drawnUnresolved(bodyId: string, radiusKm: number, composition: s
         outerRadiusKm: radiusKm,
         innerRadiusKm: 0,
         temperatureK: null,
+        temperatureKnotsK: null,
         composition,
         transitionKm: 0,
         region: null,

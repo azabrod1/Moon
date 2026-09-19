@@ -1950,9 +1950,15 @@ function afterNextDraw(): Promise<number> {
  * nothing at all, and a cap that ran while it was hidden would take the veil
  * off over the last frame of the mode the reader left — which is exactly the
  * picture the veil exists to hide.
+ *
+ * Under the boot cover the loop draws ONLY on request (app/bootRenderGate),
+ * so the request goes to the gate as well as to the frame-rate cap — without
+ * it the first switch of a boot would wait out its whole cap for a frame that
+ * was never going to be drawn.
  */
 function drawnFrame(capMs: number): Promise<void> {
   forcedDrawRequest = true;
+  bootRender.requestCoveredRender();
   return new Promise((resolve) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1975,6 +1981,7 @@ function drawnFrame(capMs: number): Promise<void> {
         left -= performance.now() - since;
       } else {
         forcedDrawRequest = true; // a tab coming back owes the cover a frame
+        bootRender.requestCoveredRender();
         arm();
       }
     };

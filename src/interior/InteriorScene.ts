@@ -39,9 +39,12 @@
  * under the caller's staleness guard — a prefilter that throws adopts the
  * fetches it overlapped, so nothing is left unowned; presentBody swaps them in
  * and only then disposes the old ones, and discardPrepared frees a prepared
- * skin that is never presented (its detail maps, its deck and its late slots
- * included), so no frame samples freed memory and nothing arriving late is
- * held for ever.
+ * skin that is never presented (its detail maps, its deck, its context and its
+ * late slots included), so no frame samples freed memory and nothing arriving
+ * late is held for ever. The body's air, rings and ghost are prepared with the
+ * skin for the same reason the skin is (PreparedContext): three frees a program
+ * the moment its last material is disposed, so a replacement built after the
+ * outgoing one is disposed relinks it in front of the reader.
  * Everything that can throw for a body — the shader splices, a moon's
  * procedural map — happens in prepareBody or before the skin swap, so a
  * failure leaves the previous body whole. The programs the reveal draws are
@@ -228,6 +231,33 @@ export interface PreparedSkin {
   detail: readonly THREE.Texture[];
   /** Earth's cloud deck, built and waiting for its shell. Null for every other body. */
   clouds: PreparedClouds | null;
+  /** Everything else the body wears, built with the skin (see PreparedContext). */
+  context: PreparedContext;
+}
+
+/**
+ * What a body wears beside its skin — the air shell, the rings, and the ghost
+ * the reveal fades out — built in prepareBody and worn at presentBody.
+ *
+ * Built early for one reason: three refcounts programs, and deletes one the
+ * moment its last material is disposed. Dressed at present time, each of these
+ * replaced an outgoing material that had just been disposed, so its program's
+ * count reached zero, the driver freed it, and the replacement relinked it from
+ * scratch on the frames the reader watches the swap on. Built here, the
+ * incoming material is alive (and its program probed) while the outgoing one
+ * still is, so the count goes 1 → 2 → 1 and the program is never freed. It is
+ * what the skin has always done.
+ */
+export interface PreparedContext {
+  /** The reveal's exterior ghost — the removed wedge of the skin, translucent.
+   *  Null for a body with no map to wear (the Sun). */
+  ghost: THREE.MeshStandardMaterial | null;
+  /** The air, cut by the same frame, at the scale its shell is drawn at; the
+   *  Sun's corona is lit from behind and says so. */
+  atmosphere: { material: THREE.ShaderMaterial; scale: number; corona: boolean } | null;
+  /** The rings, whole, on their own mesh: its geometry and its canvas map are
+   *  this set's until it is worn or discarded. */
+  rings: { mesh: THREE.Mesh; fx: RingShadingFx } | null;
 }
 
 /** A cloud deck, built but not yet hung on its shell. */
@@ -273,6 +303,23 @@ function discardDetail(detail: PreparedDetail): void {
   detail.cloudColor?.dispose();
   detail.cloudNormal?.dispose();
   detail.cloudLate?.connect((arrival) => arrival.dispose());
+}
+
+/** Free a prepared context that was never worn (or one taken off). The ring
+ *  mesh's geometry and its canvas map go with it: nothing else holds them. */
+function discardContext(group: THREE.Group, context: PreparedContext): void {
+  context.ghost?.dispose();
+  context.atmosphere?.material.dispose();
+  if (context.rings) disposeRingMesh(group, context.rings.mesh);
+}
+
+/** Take a ring mesh out of the group and free everything it owns. */
+function disposeRingMesh(group: THREE.Group, mesh: THREE.Mesh): void {
+  group.remove(mesh);
+  mesh.geometry.dispose();
+  const material = mesh.material as THREE.MeshStandardMaterial;
+  material.map?.dispose();
+  material.dispose();
 }
 
 /** Free a cloud deck that was built and never hung (or never will be again). */
@@ -506,7 +553,13 @@ export class InteriorScene {
     }
     if (body.sun) {
       this.ensureEnvironment();
-      return { body, material: this.buildPhotosphereMaterial(), texture: null, late: null, fx: null, detail: [], clouds: null };
+      // The corona is a program of its own (the disc gate's scale is baked into
+      // the shader text for the Sun alone), so this branch needs its context
+      // prepared as much as any other.
+      return {
+        body, material: this.buildPhotosphereMaterial(), texture: null, late: null, fx: null, detail: [], clouds: null,
+        context: this.prepareContext(body, null),
+      };
     }
     const late = createLateTextureSlot();
     const pendingTexture = this.loadBodyColor(body, late);
@@ -536,7 +589,55 @@ export class InteriorScene {
         : 'airless';
     const { material, fx } = this.buildSkinMaterial(texture, archetype, detail);
     const skinDetail = [detail.normal, detail.bump, detail.roughness].filter((map): map is THREE.Texture => map !== null);
-    return { body, material, texture, late, fx, detail: skinDetail, clouds: this.buildCloudDeck(detail, fx) };
+    return {
+      body, material, texture, late, fx, detail: skinDetail, clouds: this.buildCloudDeck(detail, fx),
+      context: this.prepareContext(body, texture),
+    };
+  }
+
+  /**
+   * Build the body's air, its rings and its ghost, off the mesh: the set
+   * presentBody will wear (see PreparedContext for why it is built this early).
+   *
+   * The ring mesh joins the studio group hidden, because the warm-up compiles
+   * this group and three initializes every material it TRAVERSES, visible or
+   * not — a material on nothing at all would be missed. It must stay a compile
+   * and never become a draw: the ring material is transparent and double-sided,
+   * and three builds a back-side and a front-side program for such a material,
+   * which is the pair a swap onto Saturn used to link at present time.
+   */
+  private prepareContext(body: InteriorBody, texture: THREE.Texture | null): PreparedContext {
+    const context: PreparedContext = { ghost: null, atmosphere: null, rings: null };
+    const atmosphere = body.sun ? SUN_CORONA : ATMOSPHERES[body.id];
+    if (atmosphere) {
+      const material = createAtmosphereMaterial(atmosphere, BODY_RADIUS, 'analytic', {
+        initialAlpha: ATMOSPHERE_ALPHA,
+        initialSunDir: this.keyDirection,
+      });
+      applyAtmosphereCut(material, this.cutUniforms, body.sun ? atmosphere.scale : undefined);
+      context.atmosphere = { material, scale: atmosphere.scale, corona: !!body.sun };
+    }
+    const rings = RING_CONFIGS[body.id];
+    if (rings) {
+      const { mesh, fx } = createPlanetRings(BODY_RADIUS, rings, RING_SUN_TAN);
+      // The rings take the cut too: the sector inside the wedge goes with the
+      // quarter of the body, the way a cutaway of Saturn is drawn, so the near
+      // arc never lies across the section it would otherwise cross. Their
+      // material blends already (transparent, no depth write), so the feather
+      // needs no edge treatment of its own.
+      applySkinCut(mesh.material as THREE.MeshStandardMaterial, this.cutUniforms);
+      mesh.name = 'InteriorRings';
+      mesh.renderOrder = 2;
+      mesh.visible = false; // worn at present time, traversed by the warm-up now
+      this.group.add(mesh);
+      context.rings = { mesh, fx };
+    }
+    if (texture) {
+      const ghost = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.95, metalness: 0, transparent: true, opacity: 0, depthWrite: false });
+      applySkinCut(ghost, this.ghostCut);
+      context.ghost = ghost;
+    }
+    return context;
   }
 
   /**
@@ -617,41 +718,50 @@ export class InteriorScene {
     prepared.late?.connect((arrival) => arrival.dispose());
     for (const map of prepared.detail) map.dispose();
     if (prepared.clouds) discardClouds(prepared.clouds);
+    discardContext(this.group, prepared.context);
   }
 
-  /** The body's context: its air shell if it has one, its rings if it has them. */
-  private dressContext(body: InteriorBody): void {
-    this.releaseContext();
-    const atmosphere = body.sun ? SUN_CORONA : ATMOSPHERES[body.id];
-    if (atmosphere) {
-      const material = createAtmosphereMaterial(atmosphere, BODY_RADIUS, 'analytic', {
-        initialAlpha: ATMOSPHERE_ALPHA,
-        initialSunDir: this.keyDirection,
-      });
-      applyAtmosphereCut(material, this.cutUniforms, body.sun ? atmosphere.scale : undefined);
-      this.atmosphereMaterial = material;
-      this.atmosphereMesh.material = material;
-      this.atmosphereMesh.scale.setScalar(atmosphere.scale);
+  /** Wear a prepared context: the air on its shell, the rings in the group, the
+   *  ghost on its mesh — and only THEN take the outgoing set off. The order is
+   *  the point: a program whose last material is disposed is deleted by three,
+   *  and the replacement would relink it on the frame the reader is watching. */
+  private adoptContext(context: PreparedContext): void {
+    const outgoingAtmosphere = this.atmosphereMaterial;
+    const outgoingRings = this.ringMesh;
+    const outgoingGhost = this.ghostMaterial;
+
+    if (context.atmosphere) {
+      this.atmosphereMesh.material = context.atmosphere.material;
+      this.atmosphereMesh.scale.setScalar(context.atmosphere.scale);
       this.atmosphereMesh.visible = true;
-      this.coronaLit = body.sun;
+      this.atmosphereMaterial = context.atmosphere.material;
+      this.coronaLit = context.atmosphere.corona;
+    } else {
+      this.atmosphereMesh.visible = false;
+      this.atmosphereMesh.material = this.placeholderMaterial;
+      this.atmosphereMaterial = null;
+      this.coronaLit = false;
     }
-    const rings = RING_CONFIGS[body.id];
-    if (rings) {
-      const { mesh, fx } = createPlanetRings(BODY_RADIUS, rings, RING_SUN_TAN);
-      // The rings take the cut too: the sector inside the wedge goes with the
-      // quarter of the body, the way a cutaway of Saturn is drawn, so the near
-      // arc never lies across the section it would otherwise cross. Their
-      // material blends already (transparent, no depth write), so the feather
-      // needs no edge treatment of its own.
-      applySkinCut(mesh.material as THREE.MeshStandardMaterial, this.cutUniforms);
-      mesh.name = 'InteriorRings';
-      mesh.renderOrder = 2;
+
+    if (context.rings) {
+      const mesh = context.rings.mesh;
+      if (mesh.parent !== this.group) this.group.add(mesh);
       mesh.quaternion.copy(this.poseQuaternion);
       mesh.visible = this.ringsWanted;
-      this.group.add(mesh);
       this.ringMesh = mesh;
-      this.ringFx = fx;
+      this.ringFx = context.rings.fx;
+    } else {
+      this.ringMesh = null;
+      this.ringFx = null;
     }
+
+    this.ghostMaterial = context.ghost;
+    this.ghostMesh.material = context.ghost ?? this.placeholderMaterial;
+    this.ghostMesh.visible = false;
+
+    if (outgoingAtmosphere && outgoingAtmosphere !== this.atmosphereMaterial) outgoingAtmosphere.dispose();
+    if (outgoingRings && outgoingRings !== this.ringMesh) disposeRingMesh(this.group, outgoingRings);
+    if (outgoingGhost && outgoingGhost !== this.ghostMaterial) outgoingGhost.dispose();
   }
 
   private releaseContext(): void {
@@ -661,11 +771,7 @@ export class InteriorScene {
     this.atmosphereMaterial?.dispose();
     this.atmosphereMaterial = null;
     if (this.ringMesh) {
-      this.group.remove(this.ringMesh);
-      this.ringMesh.geometry.dispose();
-      const material = this.ringMesh.material as THREE.MeshStandardMaterial;
-      material.map?.dispose();
-      material.dispose();
+      disposeRingMesh(this.group, this.ringMesh);
       this.ringMesh = null;
       this.ringFx = null;
     }
@@ -726,9 +832,10 @@ export class InteriorScene {
    * skin's shader over that long (resolved by advance()); otherwise the swap
    * is immediate. Either way nothing half-loaded shows: the map is already
    * here. The ghost takes the same map, for the reveal that follows — the
-   * skin's alone; the cloud deck's wedge simply goes with the cut. The
-   * body's context (its air, its rings) is dressed first: it is the one step
-   * here that can throw, and a throw then leaves the previous skin on.
+   * skin's alone; the cloud deck's wedge simply goes with the cut. The body's
+   * context (its air, its rings, its ghost) was built with the skin and is
+   * simply worn here, before the outgoing one comes off: nothing in this
+   * method loads, builds or can throw.
    *
    * The deck itself is not in the cross-fade: only a map can fade into a map,
    * and the incoming deck's shell has no outgoing map of its own to blend
@@ -737,7 +844,7 @@ export class InteriorScene {
    */
   presentBody(prepared: PreparedSkin, fadeSeconds: number): void {
     const { material, texture, late } = prepared;
-    this.dressContext(prepared.body);
+    this.adoptContext(prepared.context);
     const previousMaterial = this.skinMaterial;
     const previousTexture = this.skinTexture;
     // The cross-fade lives in the standard skin's shader: only a map can fade into a map.
@@ -764,16 +871,9 @@ export class InteriorScene {
     } else {
       previousTexture?.dispose();
     }
-    this.ghostMaterial?.dispose();
-    this.ghostMaterial = null;
-    this.ghostMesh.visible = false;
-    this.ghostMesh.material = this.placeholderMaterial;
     this.lateMapPending = false;
-    if (!texture || !late) return; // the Sun: no ghost of a light, no late map
-    const ghost = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.95, metalness: 0, transparent: true, opacity: 0, depthWrite: false });
-    applySkinCut(ghost, this.ghostCut);
-    this.ghostMaterial = ghost;
-    this.ghostMesh.material = ghost;
+    const ghost = this.ghostMaterial;
+    if (!texture || !late || !ghost) return; // the Sun: no ghost of a light, no late map
     // The loader hands out its procedural fallback past its timeout; the real map then comes late.
     this.lateMapPending = texture.userData.proceduralFallback === true;
     const standard = material as THREE.MeshStandardMaterial;
@@ -903,12 +1003,23 @@ export class InteriorScene {
   }
 
   /**
-   * Link a prepared skin's program before it is worn. A swap's close is 0.9 s
-   * of animation with nothing else to do in it, and the material built in
-   * prepareBody is on no mesh yet, so its program would otherwise be built at
-   * the cross-fade — the one moment of the ceremony that has to be smooth.
-   * Usually a cache hit (one body's skin keys like another's), and not for the
-   * Sun's photosphere, which is a program of its own. Fail-open.
+   * Link every program a prepared body will draw, before it is worn: its skin,
+   * its cloud deck, its ghost and its air. The material built in prepareBody is
+   * on no mesh yet, so without this each one's program is built at the moment
+   * it goes on — the cross-fade, the one moment of the ceremony that has to be
+   * smooth. The rings need no probe: their mesh is already in the group,
+   * hidden, and three initializes every material it traverses. That has to stay
+   * a compile and never become a draw: their material is transparent and
+   * double-sided, which is two programs, and a draw would build one.
+   *
+   * Usually a cache hit (one body's skin keys like another's), and never for
+   * the Sun's photosphere or its corona, which are programs of their own.
+   * Fail-open.
+   *
+   * The links are resolved one per frame, because this runs inside a close the
+   * reader can SEE: a cold driver can put several resolves of 1.4-2.9 ms in
+   * here, which is for the close's frames to spread and not for one of them to
+   * eat.
    */
   async warmUpPreparedSkin(prepared: PreparedSkin, camera: THREE.PerspectiveCamera, drawsThroughComposer: boolean): Promise<void> {
     const probeGroup = new THREE.Group();
@@ -918,13 +1029,15 @@ export class InteriorScene {
     // The deck is a program of its own, and a swap onto Earth would otherwise
     // build it at the cross-fade — the one moment that has to be smooth.
     if (prepared.clouds) probeGroup.add(this.buildWarmupProbe(prepared.clouds.material));
+    if (prepared.context.ghost) probeGroup.add(this.buildWarmupProbe(prepared.context.ghost));
+    if (prepared.context.atmosphere) probeGroup.add(this.buildWarmupProbe(prepared.context.atmosphere.material));
     this.group.add(probeGroup);
     try {
       const { resolved, warmDrawMs } = await warmUpSceneShaders(this.renderer, this.scene, camera, {
         drawsThroughComposer,
         probeGroups: [probeGroup],
         compileSubtree: this.group,
-        resolvePerFrame: Number.POSITIVE_INFINITY,
+        resolvePerFrame: 1,
         onError: (stage, error) => debugWarn(`Look inside: prepared-skin warm-up ${stage} failed`, { error: String(error) }),
       });
       // Usually nothing: one body's skin keys like another's. Logged only when

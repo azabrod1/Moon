@@ -411,38 +411,40 @@ async function sweepBody(context, viewport, body) {
   await page.close();
 }
 
-/** Europa's rocky mantle's outer boundary is a model spread of 1410–1480 km, between two regions
- *  whose temperatures are known: the band must be there in Temperature mode. (The core's boundary
- *  at 500 km is a spread too, but the core's temperature is unknown and the diagram hatches it,
- *  so a block on that boundary reads the no-data hatch whether or not the band is drawn.) */
+/** Saturn's diffuse core's outer boundary is a model spread of 30,000–40,000 km, between two
+ *  regions whose temperatures are known and BRIGHT on Saturn's scale (about 8,000 K of a 134 K to
+ *  12,000 K log scale): the band must be there in Temperature mode. Europa's spreads are the
+ *  wrong probe — its core is unknown and hatched with the no-data hatch, so a block on that
+ *  boundary reads a hatch whether or not the band is drawn, and its mantle band sits at the
+ *  scale's dark end, where a 16% stripe is two grey levels. */
 async function bandCase(context, viewport) {
-  const tag = `${viewport.name}/Europa band`;
+  const tag = `${viewport.name}/Saturn band`;
   console.log(`\n== ${tag}`);
-  const { page, errors } = await openTool(context, 'Europa');
+  const { page, errors } = await openTool(context, 'Saturn');
   await page.evaluate(() => { window.__moon.interiorView('section'); window.__moon.interiorMode('temperature'); window.__moon.interiorScale('true', 0); });
   await ready(page);
   const current = await state(page);
   const centre = await discCentre(page, viewport);
   const radiusPx = current.projectedRadiusPx;
-  const reference = 1560.8;
+  const reference = 58_232; // Saturn's volumetric mean radius, the model's referenceRadiusKm
   const image = decodePng(await withoutRuler(page, () => page.screenshot({ type: 'png' })));
   const scale = image.width / viewport.width;
   // True scale: display radius = physical radius, and the Section disc faces the camera, so a
-  // radius lands where it says. In the band (1410–1480 km, centred on 1445) versus below it
-  // (1250 km, mid-mantle, a known temperature and no band). Read across the hinge: the hinge
-  // itself is where the two faces meet, and a seam through the block would be variance this
-  // check reads as a hatch.
-  const inBandR = ((1445 / reference) * radiusPx) * scale;
-  const outBandR = ((1250 / reference) * radiusPx) * scale;
+  // radius lands where it says. In the band (30,000–40,000 km, centred on the boundary at 35,000)
+  // versus the envelope at 49,500 km (a known temperature, outside both of Saturn's bands — the
+  // envelope's own runs 40,000–45,000). Read across the hinge: the hinge itself is where the two
+  // faces meet, and a seam through the block would be variance this check reads as a hatch.
+  const inBandR = ((35_000 / reference) * radiusPx) * scale;
+  const outBandR = ((49_500 / reference) * radiusPx) * scale;
   const size = 14;
   // The temperature ramp runs radially, so a block out of the band still carries a
-  // gradient, and the mantle–ocean step falls across columns; the ramp is taken out
-  // column by column and what is left is the hatch.
+  // gradient, and the core's 8,000 km physical blend is a radial one too; the ramp is
+  // taken out column by column and what is left is the hatch.
   const inBand = blockDetrendedStd(image, Math.round(centre.x * scale + inBandR - size / 2), Math.round(centre.y * scale - size / 2), size);
   const outBand = blockDetrendedStd(image, Math.round(centre.x * scale + outBandR - size / 2), Math.round(centre.y * scale - size / 2), size);
   notes.push(`${tag}: in-band detrended std ${inBand.toFixed(2)} out-of-band ${outBand.toFixed(2)}`);
   check(inBand > outBand * 2.5 && inBand > 3, `${tag}: no hatched band where the boundary is uncertain (detrended std ${inBand.toFixed(2)} in, ${outBand.toFixed(2)} out)`);
-  await page.screenshot({ path: path.join(outDir, `${viewport.name}-Europa-band-true-temperature.png`) });
+  await page.screenshot({ path: path.join(outDir, `${viewport.name}-Saturn-band-true-temperature.png`) });
   check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
   await page.close();
 }
@@ -981,7 +983,7 @@ try {
     });
     if (runSweep) {
       for (const body of bodies) await sweepBody(context, viewport, body);
-      if (bodies.includes('Europa')) await bandCase(context, viewport);
+      if (bodies.includes('Saturn')) await bandCase(context, viewport);
       if (runPaths && viewport.name === 'desktop') await pathCases(context, viewport);
     }
     if (runLifecycle) await lifecycleCases(context, viewport);

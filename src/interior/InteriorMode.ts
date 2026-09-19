@@ -1205,6 +1205,13 @@ export class InteriorMode {
         : drawnUnresolved(body.id, body.radiusKm, unresolvedComposition(this.coverage));
       this.applyDrawn(true);
       this.syncRingsRow();
+      // The fit is the body's own: an air shell (the Sun's corona at 1.3 radii, a planet's
+      // thinner one) is part of what has to reach the stage, and InteriorScene.boundRadius knows
+      // it only once the context is dressed, which presentBody has just done. The entry frames
+      // itself before that, on the bare radius, so the Sun's corona was cropped by the stage, and
+      // a swap never re-fitted at all. Taken at once, behind the closed cut: no camera move is
+      // seen, and the reader's own zoom is kept as its ratio to the fit.
+      this.applyViewportFraming(true);
       if (swap) {
         await this.interiorScene.fadeDone();
         if (stale()) return false;
@@ -1220,16 +1227,6 @@ export class InteriorMode {
         if (stale()) return false;
         markOpenStep(watch, 'precompileEnd');
       }
-      // The fit is the body's own: an air shell (the Sun's corona at 1.3 radii, a planet's
-      // thinner one) is part of what has to reach the stage, and InteriorScene.boundRadius only
-      // knows it once the context is dressed, which presentBody did above. The entry framed
-      // itself before that, on the bare radius, so the Sun's corona was cropped by the stage;
-      // a swap never re-fitted at all. Taken HERE, after the fade or the warm-up rather than
-      // between them: it reads the stage out of the DOM, and a forced layout in the window
-      // where a shader warm-up polls its programs surfaced a race in the planetarium's own
-      // warm-up. At once, and behind the closed cut, so no camera move is seen; the reader's
-      // zoom is kept as its ratio to the fit.
-      this.applyViewportFraming(true);
       markOpenStep(watch, 'revealStart');
       watch.timings.programsAtReveal = this.programCount();
       this.awaitingFirstRevealFrame = true;

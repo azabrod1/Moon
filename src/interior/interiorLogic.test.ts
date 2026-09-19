@@ -84,6 +84,31 @@ describe('the cut tween', () => {
     expect(tween.angleDeg).toBeLessThan(reached);
   });
 
+  it('takes the length the move was given, and the reader\'s own by default', () => {
+    // A ceremony's close, an entry's opening and a swap's reopen each carry
+    // their own length; a view button and the angle slider carry CUT_ANIMATION_S.
+    const tween = createCutTween(0);
+    setCutTarget(tween, 180, true, true, 0.25);
+    expect(tween.durationS).toBe(0.25);
+    let frames = 0;
+    while (!cutTweenSettled(tween)) { advanceCutTween(tween, 0.05); frames++; }
+    expect(frames).toBe(5); // 0.25 s of 50 ms steps, and not one step more
+    expect(tween.angleDeg).toBe(180);
+
+    setCutTarget(tween, 0, true);
+    expect(tween.durationS).toBe(CUT_ANIMATION_S);
+    frames = 0;
+    while (!cutTweenSettled(tween)) { advanceCutTween(tween, 0.05); frames++; }
+    expect(frames).toBe(Math.round(CUT_ANIMATION_S / 0.05));
+
+    // A move of no length lands at once, animated or not — no division by zero
+    // on the way (prefers-reduced-motion takes the un-animated path instead).
+    setCutTarget(tween, 90, true, true, 0);
+    expect(cutTweenSettled(tween)).toBe(true);
+    expect(advanceCutTween(tween, 1 / 60)).toBe(1);
+    expect(tween.angleDeg).toBe(90);
+  });
+
   it('steps a value toward a target without overshooting', () => {
     expect(stepToward(0, 1, 0.3)).toBeCloseTo(0.3, 12);
     expect(stepToward(0.9, 1, 0.3)).toBe(1);

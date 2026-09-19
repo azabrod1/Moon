@@ -42,7 +42,9 @@ import { formatKm, NOT_KNOWN, reviewDateText } from './ui/inspectorText';
 
 // ---- the cut tween ----------------------------------------------------------
 
-/** The cut opens and closes over this long, on an ease-in-out. */
+/** The cut opens and closes over this long, on an ease-in-out — the reader's
+ *  own moves (a view button, the angle slider). A ceremony's moves carry their
+ *  own lengths (interiorTransition), which is why a move states its duration. */
 export const CUT_ANIMATION_S = 0.9;
 
 export interface CutTween {
@@ -50,14 +52,17 @@ export interface CutTween {
   angleDeg: number;
   fromDeg: number;
   toDeg: number;
-  /** Seconds into the current move; at CUT_ANIMATION_S or more the tween is at rest. */
+  /** Seconds into the current move; at `durationS` or more the tween is at rest. */
   elapsedS: number;
+  /** How long the move in flight takes: the entry's opening, a swap's close and
+   *  its reopen each have their own, and the reader's own moves keep theirs. */
+  durationS: number;
   /** The opening the viewer chose: what a swap reopens to, whatever a close in flight targets. */
   chosenDeg: number;
 }
 
 export function createCutTween(initialDeg: number): CutTween {
-  return { angleDeg: initialDeg, fromDeg: initialDeg, toDeg: initialDeg, elapsedS: CUT_ANIMATION_S, chosenDeg: initialDeg };
+  return { angleDeg: initialDeg, fromDeg: initialDeg, toDeg: initialDeg, elapsedS: CUT_ANIMATION_S, durationS: CUT_ANIMATION_S, chosenDeg: initialDeg };
 }
 
 export function easeInOutCubic(t: number): number {
@@ -69,18 +74,21 @@ function clampDeg(deg: number): number {
 }
 
 /** Aim the cut at an opening: animated from where it is, or set at once.
- *  `remember` is false for a ceremony's close, which is not a chosen view. */
-export function setCutTarget(tween: CutTween, deg: number, animate: boolean, remember = true): void {
+ *  `remember` is false for a ceremony's close, which is not a chosen view;
+ *  `durationS` is how long this move takes, the reader's own length unless the
+ *  caller has one of its own. */
+export function setCutTarget(tween: CutTween, deg: number, animate: boolean, remember = true, durationS = CUT_ANIMATION_S): void {
   const target = clampDeg(deg);
   if (remember) tween.chosenDeg = target;
   tween.fromDeg = tween.angleDeg;
   tween.toDeg = target;
-  tween.elapsedS = animate ? 0 : CUT_ANIMATION_S;
+  tween.durationS = Math.max(0, durationS);
+  tween.elapsedS = animate ? 0 : tween.durationS;
   if (!animate) tween.angleDeg = target;
 }
 
 export function cutTweenSettled(tween: CutTween): boolean {
-  return tween.elapsedS >= CUT_ANIMATION_S;
+  return tween.elapsedS >= tween.durationS;
 }
 
 /** Advance the tween by `dt` seconds: the eased progress of the current move (1 at rest). */
@@ -89,8 +97,8 @@ export function advanceCutTween(tween: CutTween, dt: number): number {
     tween.angleDeg = tween.toDeg;
     return 1;
   }
-  tween.elapsedS = Math.min(CUT_ANIMATION_S, tween.elapsedS + dt);
-  const progress = easeInOutCubic(tween.elapsedS / CUT_ANIMATION_S);
+  tween.elapsedS = Math.min(tween.durationS, tween.elapsedS + dt);
+  const progress = easeInOutCubic(tween.elapsedS / tween.durationS);
   tween.angleDeg = tween.fromDeg + (tween.toDeg - tween.fromDeg) * progress;
   return progress;
 }

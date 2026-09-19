@@ -1883,6 +1883,12 @@
     #loading-screen h1 { font-family: var(--font); font-size: 40px; font-weight: 200; letter-spacing: 12px; color: var(--text-primary); text-transform: uppercase; }
     #loading-screen p { font-family: var(--font); font-size: 13px; color: var(--text-dim); margin-top: 12px; letter-spacing: 2px; }
 
+    /* The veil's two lengths, and the only place either is written: the fade to
+       black that every mode switch waits out before it takes the old mode down,
+       and the lift at the far end, once the new one has drawn a frame. The
+       switch reads the duration back off this element (src/main.ts) rather than
+       keeping a copy of the number. */
+    :root { --veil-fade: 0.25s; --veil-lift: 0.2s; }
     #mode-transition {
       position: fixed;
       top: 0; left: 0; right: 0; bottom: 0;
@@ -1890,9 +1896,9 @@
       z-index: 50;
       opacity: 0;
       pointer-events: none;
-      transition: opacity 0.3s ease;
+      transition: opacity var(--veil-lift) ease;
     }
-    #mode-transition.active { opacity: 1; }
+    #mode-transition.active { opacity: 1; transition: opacity var(--veil-fade) ease; }
     #mode-transition p {
       position: absolute; top: 50%; left: 50%;
       transform: translate(-50%, -50%);

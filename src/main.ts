@@ -19,6 +19,7 @@ import { LANDED_NEAR_AU } from './planetarium/landedView';
 import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import type { VolumeCompareMode } from './volumeCompare/VolumeCompareMode';
 import type { InteriorMode } from './interior/InteriorMode';
+import { setInteriorTransition } from './interior/interiorTransition';
 import { applyRenderProfile, toneMappingWord, type AppMode } from './app/renderProfile';
 import type { ToolRequest } from './planetarium/toolRequest';
 import { canGPUDoBloom, halfFloatTargetSampleCounts } from './app/gpuCapability';
@@ -1938,6 +1939,73 @@ function afterNextDraw(): Promise<number> {
   return new Promise((resolve) => nextDrawWaiters.push(resolve));
 }
 
+/**
+ * Resolves once the app has actually DRAWN a frame — what the veil comes off
+ * over, instead of a fixed sleep that was a guess at the same thing. The draw
+ * is requested outright (`forcedDrawRequest`, the hook the arrival veil uses),
+ * so a frame-rate target cannot make the cover wait out a whole period for a
+ * frame pacing was about to skip.
+ *
+ * The cap counts only the time the page was VISIBLE. A hidden tab draws
+ * nothing at all, and a cap that ran while it was hidden would take the veil
+ * off over the last frame of the mode the reader left — which is exactly the
+ * picture the veil exists to hide.
+ */
+function drawnFrame(capMs: number): Promise<void> {
+  forcedDrawRequest = true;
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let left = capMs;
+    let since = performance.now();
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+      resolve();
+    };
+    const arm = (): void => {
+      since = performance.now();
+      timer = setTimeout(finish, Math.max(0, left));
+    };
+    const onVisibility = (): void => {
+      if (document.visibilityState === 'hidden') {
+        clearTimeout(timer);
+        left -= performance.now() - since;
+      } else {
+        forcedDrawRequest = true; // a tab coming back owes the cover a frame
+        arm();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    if (document.visibilityState !== 'hidden') arm();
+    void afterNextDraw().then(finish);
+  });
+}
+
+/** How long the veil's current fade takes, read from the element itself.
+ *  index.html holds the two lengths (`--veil-fade` while it covers,
+ *  `--veil-lift` while it comes off) and this is the only reader of them: a
+ *  constant here beside them would be a second writer of one fact. */
+function veilDurationMs(): number {
+  const declared = getComputedStyle(modeTransition).transitionDuration.split(',')[0]?.trim() ?? '';
+  const value = Number.parseFloat(declared);
+  if (!Number.isFinite(value)) return 250;
+  return declared.endsWith('ms') ? value : value * 1000;
+}
+
+/** A frame's worth of slack, so a beat can never end on a half-covered screen. */
+const ONE_FRAME_MS = 17;
+/** How long past the lift's own length to wait for its `transitionend` before
+ *  standing in for it. A cancelled transition, a re-added `.active` and a tab
+ *  hidden mid-fade all lose the event, and the cut must open either way. */
+const LIFT_EVENT_GRACE_MS = 250;
+/** The last resort on the wait for the destination's first drawn frame. It is
+ *  generous on purpose: the veil coming off early shows the mode the reader
+ *  left, and only visible time counts toward it. */
+const VEIL_DRAW_CAP_MS = 5000;
+
 function setLoadingPercentText(text: string) {
   // A failed boot's error message owns the screen: a still-running loader
   // branch (the solar system keeps fetching after the catalog gate throws)
@@ -1979,6 +2047,9 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
   const from = appMode;
   let switched = false;
   let failed = false;
+  /** What the destination wants done the instant the veil starts coming off
+   *  (the Look-inside tool: its marks, and the cut it held closed). */
+  let afterVeilRemoved: (() => void) | null = null;
 
   try {
     modeTransition.classList.add('active');
@@ -2012,7 +2083,10 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
       : null;
     void interiorModuleFetch?.catch(() => {});
     const beatStartedAt = performance.now();
-    if (appModeInitialized) await sleep(400);
+    // The beat is the veil's own fade plus a frame — one number, held in the
+    // CSS (see veilDurationMs), where a screen that is only half covered when
+    // the teardown starts is the thing being prevented.
+    if (appModeInitialized) await sleep(veilDurationMs() + ONE_FRAME_MS);
     const beatMs = performance.now() - beatStartedAt;
 
     if (newMode === 'planetarium') {
@@ -2227,17 +2301,26 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
       // pick has taken the open over by then (they are an entry's marks).
       const openedMode = interiorMode;
       const openId = openedMode.openId();
-      void (async () => {
-        const veilLiftedMs = openedMode.markUncovered(openId, 'veilLifted', await veilLifted());
-        const firstVisibleFrameMs = openedMode.markUncovered(openId, 'firstVisibleFrame', await afterNextDraw());
-        debugLog('Look inside: switch timings', {
-          beatMs: Math.round(beatMs),
-          importMs: Math.round(importMs),
-          activateMs: Math.round(activateMs),
-          veilLiftedMs,
-          firstVisibleFrameMs,
-        });
-      })();
+      afterVeilRemoved = () => {
+        void (async () => {
+          // The lift is the tool's cue as well as its mark: it keeps the cut
+          // closed under the veil so the whole opening is seen, and opens it
+          // here (INTERIOR_TRANSITION.revealAfterVeil; with the old order this
+          // call finds nothing pending and does nothing). Whichever comes
+          // first — the transition's own end or the timer standing in for a
+          // lost one — reveals; the other is a no-op.
+          const veilLiftedMs = openedMode.markUncovered(openId, 'veilLifted', await veilLifted(veilDurationMs() + LIFT_EVENT_GRACE_MS));
+          openedMode.revealAfterVeil(openId);
+          const firstVisibleFrameMs = openedMode.markUncovered(openId, 'firstVisibleFrame', await afterNextDraw());
+          debugLog('Look inside: switch timings', {
+            beatMs: Math.round(beatMs),
+            importMs: Math.round(importMs),
+            activateMs: Math.round(activateMs),
+            veilLiftedMs,
+            firstVisibleFrameMs,
+          });
+        })();
+      };
       debugLog('Interior mode active');
     } else {
       throw new Error(`Unknown app mode: ${String(newMode)}`);
@@ -2246,7 +2329,9 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
     appModeInitialized = true;
     switched = true;
 
-    await sleep(100);
+    // The veil comes off over a PAINTED frame of the mode that was just
+    // activated, never over a timer's guess at one.
+    await drawnFrame(VEIL_DRAW_CAP_MS);
   } catch (err) {
     debugError('Mode switch failed', { from, to: newMode, err });
     console.error('Mode switch failed:', err);
@@ -2255,6 +2340,10 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
     // The veil must never strand: if a mode activation throws, the app is
     // degraded but the user can still see a scene and click their way out.
     modeTransition.classList.remove('active');
+    // Only now does the lift begin, so whatever waits on it is started here
+    // rather than a few awaits earlier, where its own fallback timer would be
+    // counting down a fade that had not started.
+    afterVeilRemoved?.();
     modeSwitchInFlight = false;
     // A tool owns the scene and its own composer, and the frames either side
     // of the switch are the switch's: the resolution measurement starts again
@@ -2708,6 +2797,27 @@ function installDevHooks() {
     interiorOrbit: (azimuthDeg: number, elevationDeg?: number, distance?: number) =>
       interiorMode?.devOrbit(azimuthDeg, elevationDeg, distance) ?? false,
     interiorReady: () => interiorMode?.devReady() ?? false,
+    // The ceremony's lengths for this page load, so a sheet of candidates comes
+    // out of one build: `beat` and `lift` are the veil's two fades (the CSS's
+    // own numbers, which the switch reads back off the element), the rest the
+    // studio's moves, and `revealAfterVeil` the order. Session-only.
+    interiorTransition: (patch: {
+      beat?: number; lift?: number; open?: number; close?: number; dissolve?: number; reopen?: number; revealAfterVeil?: boolean;
+    } = {}) => {
+      const root = document.documentElement;
+      if (typeof patch.beat === 'number') root.style.setProperty('--veil-fade', `${patch.beat}s`);
+      if (typeof patch.lift === 'number') root.style.setProperty('--veil-lift', `${patch.lift}s`);
+      const timings = setInteriorTransition({
+        openS: patch.open, closeS: patch.close, dissolveS: patch.dissolve, reopenS: patch.reopen,
+        revealAfterVeil: patch.revealAfterVeil,
+      });
+      const style = getComputedStyle(root);
+      return {
+        beat: style.getPropertyValue('--veil-fade').trim(),
+        lift: style.getPropertyValue('--veil-lift').trim(),
+        ...timings,
+      };
+    },
     interiorState: () => interiorMode?.devState() ?? null,
     // Which path the frame draws on: composer target samples (0 = single
     // sample), or the canvas backbuffer's on the direct path.

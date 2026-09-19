@@ -529,7 +529,67 @@ async function saneEnd(page, tag, { body, angleDeg }) {
   check(current.regions.length > 0, `${tag}: no regions drawn`);
   const rows = await legendRegions(page);
   check(rows.length === current.regions.length, `${tag}: legend has ${rows.length} rows for ${current.regions.length} regions`);
+  // A swap's programs are all linked inside its close, under the cut: a count
+  // that grew between the reveal and ready is a program built on the frames
+  // the reader was watching.
+  const marks = current.timings;
+  if (marks && marks.kind === 'swap' && marks.programsAtReveal !== null && marks.programsWhenReady !== null) {
+    check(marks.programsWhenReady === marks.programsAtReveal,
+      `${tag}: the program count grew from ${marks.programsAtReveal} at the reveal to ${marks.programsWhenReady} once ready`);
+  }
   return current;
+}
+
+/** Open the planetarium and wait for it to settle: where every entry into the
+ *  tool really starts, and the only place the veil's lift can be watched. */
+async function openPlanetarium(context) {
+  const page = await context.newPage();
+  page.setDefaultTimeout(240000);
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(String(error).slice(0, 300)));
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text().slice(0, 300)); });
+  await page.goto(`${baseUrl}/?auto=planetarium${extraQuery}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => !!window.__moon?.ready?.()
+    && !document.getElementById('mode-transition')?.classList.contains('active'), undefined, { timeout: 240000 });
+  return { page, errors };
+}
+
+/**
+ * Enter the tool and stop inside the veil's lift — the window where the body is
+ * presented with its cut closed and the reveal is waiting for the veil to
+ * finish coming off. The whole thing runs in ONE evaluate: the window is the
+ * lift's own length, and a round trip per poll would step straight over it.
+ * `act` is what to do the instant it is caught.
+ */
+async function inTheLift(page, body, act = 'nothing') {
+  return page.evaluate(async ({ body, act }) => {
+    window.__moon.interiorOpen(body);
+    for (let frame = 0; frame < 1800; frame++) {
+      const current = window.__moon.interiorState();
+      if (current && current.revealWaiting) {
+        const caught = {
+          bodyId: current.bodyId,
+          angleDeg: current.openingAngleDeg,
+          ready: window.__moon.interiorReady(),
+          loading: current.loading,
+          skin: current.skin,
+          revealStart: current.timings.revealStart,
+          firstFrame: current.timings.firstFrame,
+        };
+        if (act === 'exit') window.__moon.interiorExit();
+        if (act === 'pick') window.__moon.interiorPick('Mars');
+        if (act === 'hide') {
+          // Not a hidden tab — headless keeps drawing — but it is what the
+          // app's own visibility handling is given to read.
+          Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+          document.dispatchEvent(new Event('visibilitychange'));
+        }
+        return caught;
+      }
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    return null;
+  }, { body, act });
 }
 
 /** Two picks in one task: the first is superseded before its map lands; the second is what the tool ends on. */
@@ -565,17 +625,143 @@ async function pickDuringFadeCase(context, viewport) {
   const tag = `${viewport.name}/lifecycle pick during the fade`;
   console.log(`\n== ${tag}`);
   const { page, errors } = await openTool(context, 'Earth');
-  await page.evaluate(() => window.__moon.interiorPick('Mars'));
-  // The fade: the body has turned over (Mars is on) but the commit is still loading, i.e. fading.
-  await page.waitForFunction(() => {
-    const current = window.__moon.interiorState();
-    return current.bodyId === 'Mars';
-  }, undefined, { timeout: 120000 });
-  const during = await state(page);
-  notes.push(`${tag}: second pick made with loading=${during.loading} angle=${during.openingAngleDeg.toFixed(1)}`);
-  await page.evaluate(() => window.__moon.interiorPick('Saturn'));
+  // The dissolve is exactly the interval between `present` and `revealStart` on
+  // a swap's own marks, and it is a quarter of a second: the poll and the
+  // second pick go in ONE evaluate, because a round trip per poll steps over
+  // it. (A freeze is no help here — devFreeze holds the presentation clock,
+  // and the cut and the dissolve run on the frame's own dt.)
+  const caught = await page.evaluate(async () => {
+    window.__moon.interiorPick('Mars');
+    for (let frame = 0; frame < 1800; frame++) {
+      const marks = window.__moon.interiorState().timings;
+      if (marks.kind === 'swap' && marks.present !== null && marks.revealStart === null) {
+        const during = window.__moon.interiorState();
+        window.__moon.interiorPick('Saturn');
+        return { loading: during.loading, angleDeg: during.openingAngleDeg, bodyId: during.bodyId };
+      }
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    return null;
+  });
+  check(caught !== null, `${tag}: the dissolve was never caught (presented with no reveal yet)`);
+  if (caught) {
+    check(caught.bodyId === 'Mars', `${tag}: the dissolve was caught on ${caught.bodyId}, expected Mars`);
+    check(caught.loading === true, `${tag}: the commit says it is done while the skin is still dissolving`);
+    check(caught.angleDeg < 1, `${tag}: the cut is ${caught.angleDeg.toFixed(1)}° open during the dissolve, expected closed`);
+  }
   const end = await saneEnd(page, tag, { body: 'Saturn', angleDeg: chosenAngleDeg(viewport) });
   check(end.rings === true, `${tag}: Saturn's rings are ${end.rings}, expected on`);
+  check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
+  await page.close();
+}
+
+/**
+ * The veil never lifts onto anything unready, and nothing is left stranded if
+ * the reader acts inside the lift.
+ *
+ * The entry's cut opens once the veil has finished coming off, so there is a
+ * window — the lift's own length — in which the body is presented, the cut is
+ * closed and settled and every reveal program is linked. The tool must call
+ * itself NOT ready in there (a capture would otherwise take a closed body for
+ * the finished picture), and whatever the reader does in there must win: an
+ * exit leaves, a pick brings its own body in and opens onto it.
+ */
+async function liftWindowCase(context, viewport) {
+  const tag = `${viewport.name}/lifecycle the veil's lift`;
+  console.log(`\n== ${tag}`);
+
+  // 1. Inside the lift: presented, closed, and not ready.
+  {
+    const { page, errors } = await openPlanetarium(context);
+    const caught = await inTheLift(page, 'Earth');
+    check(caught !== null, `${tag}: the lift window was never caught`);
+    if (caught) {
+      check(caught.ready === false, `${tag}: interiorReady() is true with the cut still closed`);
+      check(caught.angleDeg < 1, `${tag}: the cut is ${caught.angleDeg.toFixed(1)}° open inside the lift, expected closed`);
+      check(caught.skin === true, `${tag}: no skin on the body inside the lift`);
+      check(caught.revealStart === null, `${tag}: the reveal had already started inside the lift`);
+      check(caught.firstFrame !== null, `${tag}: the studio had not drawn a frame when the veil started lifting`);
+    }
+    await saneEnd(page, `${tag} (opens after the lift)`, { body: 'Earth', angleDeg: chosenAngleDeg(viewport) });
+    const after = await state(page);
+    const marks = after.timings;
+    check(marks.firstFrame !== null && marks.veilLifted !== null && marks.firstFrame <= marks.veilLifted,
+      `${tag}: the veil lifted at ${marks.veilLifted} with the first drawn frame at ${marks.firstFrame}`);
+    check(marks.revealStart !== null && marks.veilLifted <= marks.revealStart,
+      `${tag}: the reveal started at ${marks.revealStart}, before the veil lifted at ${marks.veilLifted}`);
+    check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
+    await page.close();
+  }
+
+  // 2. An exit inside the lift: the tool goes, and nothing opens behind it.
+  {
+    const { page, errors } = await openPlanetarium(context);
+    const caught = await inTheLift(page, 'Earth', 'exit');
+    check(caught !== null, `${tag} (exit): the lift window was never caught`);
+    await page.waitForFunction(() => document.getElementById('interior-ui').style.display === 'none'
+      && !document.getElementById('mode-transition').classList.contains('active'), undefined, { timeout: 120000 });
+    await page.waitForTimeout(600); // past the reveal that would have fired
+    const left = await state(page);
+    check(left === null || left.ready === false, `${tag} (exit): the tool still calls itself ready after leaving`);
+    check(errors.length === 0, `${tag} (exit): page errors: ${errors.join(' | ')}`);
+    // And the tool opens again afterwards, on the body asked for.
+    await page.evaluate(() => window.__moon.interiorOpen('Mars'));
+    await saneEnd(page, `${tag} (re-entry)`, { body: 'Mars', angleDeg: chosenAngleDeg(viewport) });
+    await page.close();
+  }
+
+  // 3. A pick inside the lift: the pick owns the reveal, not the entry.
+  {
+    const { page, errors } = await openPlanetarium(context);
+    const caught = await inTheLift(page, 'Earth', 'pick');
+    check(caught !== null, `${tag} (pick): the lift window was never caught`);
+    const end = await saneEnd(page, `${tag} (pick)`, { body: 'Mars', angleDeg: chosenAngleDeg(viewport) });
+    check(end.timings.kind === 'swap', `${tag} (pick): the open that finished was an ${end.timings.kind}, expected the pick's swap`);
+    check(errors.length === 0, `${tag} (pick): page errors: ${errors.join(' | ')}`);
+    await page.close();
+  }
+
+  // 4. A tab that says it is hidden inside the lift. Headless keeps drawing, so
+  //    this exercises the app's visibility handling and not a real background
+  //    tab: what it proves is that the reveal is not stranded by it.
+  {
+    const { page, errors } = await openPlanetarium(context);
+    const caught = await inTheLift(page, 'Earth', 'hide');
+    check(caught !== null, `${tag} (hidden): the lift window was never caught`);
+    await saneEnd(page, `${tag} (hidden)`, { body: 'Earth', angleDeg: chosenAngleDeg(viewport) });
+    check(errors.length === 0, `${tag} (hidden): page errors: ${errors.join(' | ')}`);
+    await page.close();
+  }
+  notes.push(`${tag}: the hidden-tab arm reports visibilityState only; headless keeps animating, so a true background tab is unverified here`);
+}
+
+/** The veil's `transitionend` never arrives — a cancelled transition, a tab
+ *  hidden mid-fade, a re-added cover. The timer standing in for it must open
+ *  the cut all the same. */
+async function lostLiftEventCase(context, viewport) {
+  const tag = `${viewport.name}/lifecycle the lift event lost`;
+  console.log(`\n== ${tag}`);
+  const page = await context.newPage();
+  page.setDefaultTimeout(240000);
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(String(error).slice(0, 300)));
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text().slice(0, 300)); });
+  // Swallow every transitionend the veil would hand out, before the app runs.
+  await page.addInitScript(() => {
+    const install = () => {
+      const veil = document.getElementById('mode-transition');
+      if (!veil) return;
+      const original = veil.addEventListener.bind(veil);
+      veil.addEventListener = (type, listener, options) => {
+        if (type === 'transitionend') return;
+        return original(type, listener, options);
+      };
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install);
+    else install();
+  });
+  await page.goto(`${baseUrl}/?auto=interior&body=Earth${extraQuery}`, { waitUntil: 'domcontentloaded' });
+  await saneEnd(page, tag, { body: 'Earth', angleDeg: chosenAngleDeg(viewport) });
   check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
   await page.close();
 }
@@ -989,6 +1175,8 @@ async function lifecycleCases(context, viewport) {
   await rapidDoublePickCase(context, viewport);
   await pickDuringRevealCase(context, viewport);
   await pickDuringFadeCase(context, viewport);
+  await liftWindowCase(context, viewport);
+  await lostLiftEventCase(context, viewport);
   await escCascadeCase(context, viewport);
   await reducedMotionCase(context, viewport);
   await inspectorPageCase(context, viewport);

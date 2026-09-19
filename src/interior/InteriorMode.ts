@@ -34,9 +34,11 @@
  * on, reopens the cut onto it and warns through debugWarn; on a first
  * entry the throw reaches the mode switch, which falls back.
  *
- * The presentation clock is the tool's own: the cut animation and the
- * pattern drift run on it, never on the solar-system clock, and the dev
- * bridge can set and freeze it so a capture is reproducible.
+ * The presentation clock is the tool's own: the pattern drift runs on it,
+ * never on the solar-system clock, and the dev bridge can set and freeze it so
+ * a capture is reproducible. The ceremony does NOT run on it — the cut tween
+ * and the skin's dissolve advance on the frame's own dt, so a freeze holds the
+ * patterns still and lets the ceremony finish.
  *
  * Every open is timed. One stopwatch per open (the activate's, or a swap's
  * own from the pick) marks the steps the reader waits through — prepare,
@@ -86,6 +88,7 @@ import { bodyDisplayName } from '../planetarium/surfaceView';
 import { InteriorScene, BODY_RADIUS, type PreparedSkin } from './InteriorScene';
 import { TAP_MAX_MS, TAP_MAX_PX, TapRecognizer, type PointerSample } from './interiorInteraction';
 import { resolveInteriorBody, type InteriorBody } from './interiorBody';
+import { INTERIOR_TRANSITION } from './interiorTransition';
 import {
   CUT_VIEWS,
   CUT_VIEW_ANGLE_DEG,
@@ -107,6 +110,7 @@ import {
   type CutView,
 } from './cutFrame';
 import {
+  CUT_ANIMATION_S,
   EMPHASIS_S,
   advanceCutTween,
   advanceEmphasis,
@@ -198,8 +202,6 @@ const SHEET_SNAP_S = 0.26;
 /** A camera found farther than this (scene units) from where the distance glide last put it was moved by the reader. */
 const GLIDE_YIELD_DISTANCE = 1e-6;
 
-/** A body swap cross-fades the skin over this long, behind the closed cut. */
-const SWAP_FADE_S = 0.45;
 /** The reveal's exterior ghost starts this opaque and clears as the cut opens. */
 const GHOST_OPACITY = 0.32;
 /** The quarter wedge is turned this far about the hinge from where the camera
@@ -401,6 +403,9 @@ export interface InteriorDevState {
   presentationSeconds: number;
   frozen: boolean;
   loading: boolean;
+  /** An entry that is presented with its cut closed, waiting for the veil to
+   *  finish lifting before it opens. Never ready while this is true. */
+  revealWaiting: boolean;
   /** Whether a skin is on the body: false before the first body lands. */
   skin: boolean;
   ready: boolean;
@@ -625,6 +630,10 @@ export class InteriorMode {
   private openStopwatch: OpenStopwatch = startOpenStopwatch('entry', '');
   /** The body is on the mesh and the first frame drawn with it is not marked yet. */
   private awaitingFirstBodyFrame = false;
+  /** An entry whose cut is closed, presented and waiting for the veil to lift
+   *  (INTERIOR_TRANSITION.revealAfterVeil). Null once it has opened, and
+   *  dropped by anything that supersedes it: a pick, an exit, another switch. */
+  private pendingReveal: { openId: number; toDeg: number } | null = null;
   /** The current open's marks have not been logged yet. */
   private openTimingsLogged = true;
 
@@ -752,16 +761,17 @@ export class InteriorMode {
   }
 
   /** Open the cut onto a freshly presented body, the exterior ghost lingering over the opening. */
-  private reveal(toDeg: number): void {
+  private reveal(toDeg: number, durationS: number): void {
     const animate = !this.reducedMotion.matches;
     this.revealing = animate;
-    this.setTargetAngle(toDeg, animate);
+    this.setTargetAngle(toDeg, animate, true, durationS);
   }
 
   deactivate(): void {
     this.active = false;
     this.generation++; // cancels any in-flight map load
     this.loading = false;
+    this.pendingReveal = null; // an entry that left before its veil lifted has nothing to open
     // A swap parked on the closing cut wakes, finds itself stale and frees what it prepared.
     this.settleCut();
     this.interiorScene.setVisible(false);
@@ -890,6 +900,32 @@ export class InteriorMode {
     markOpenStep(watch, 'ready');
     watch.timings.programsWhenReady = this.programCount();
     debugLog('Look inside: open timings', { ...watch.timings });
+  }
+
+  /** Open the cut on what was presented, and take the reveal's marks. */
+  private startReveal(watch: OpenStopwatch, toDeg: number, swap: boolean): void {
+    markOpenStep(watch, 'revealStart');
+    watch.timings.programsAtReveal = this.programCount();
+    this.reveal(toDeg, swap ? INTERIOR_TRANSITION.reopenS : INTERIOR_TRANSITION.openS);
+  }
+
+  /** The veil has finished lifting: open the cut on the entry that was waiting
+   *  for it. Idempotent and named to its open — the veil's transitionend and
+   *  the timer that stands in for a lost one both call it, and a pick, an exit
+   *  or another mode switch in between has already dropped what it would have
+   *  opened. Returns whether this call was the one that opened the cut. */
+  revealAfterVeil(openId: number): boolean {
+    const pending = this.pendingReveal;
+    if (!pending || pending.openId !== openId || this.openStopwatch.id !== openId || !this.active) return false;
+    this.pendingReveal = null;
+    this.startReveal(this.openStopwatch, pending.toDeg, false);
+    return true;
+  }
+
+  /** Whether an entry is presented and waiting for the veil to lift before it
+   *  opens. Nothing is ready while this is true. */
+  revealWaiting(): boolean {
+    return this.pendingReveal !== null;
   }
 
   /** How many shader programs the renderer holds right now: the count before
@@ -1115,9 +1151,9 @@ export class InteriorMode {
 
   // ---- the cut and the scale ----------------------------------------------
 
-  private setTargetAngle(deg: number, animate: boolean, remember = true): void {
+  private setTargetAngle(deg: number, animate: boolean, remember = true, durationS = CUT_ANIMATION_S): void {
     // Under prefers-reduced-motion every move of the cut lands at once, the view buttons' included.
-    setCutTarget(this.cut, deg, animate && !this.reducedMotion.matches, remember);
+    setCutTarget(this.cut, deg, animate && !this.reducedMotion.matches, remember, durationS);
     this.syncViewButtons();
     this.syncAngleReadout();
   }
@@ -1195,6 +1231,9 @@ export class InteriorMode {
     if (this.body?.id === body.id && !this.loading && this.interiorScene.hasSkin()) return true;
     const generation = ++this.generation;
     const stale = () => generation !== this.generation;
+    // Whatever this commit is, it owns the reveal from here: an entry's
+    // pending one belongs to an open that has been superseded.
+    this.pendingReveal = null;
     const animate = !this.reducedMotion.matches;
     const swap = this.body !== null && this.interiorScene.hasSkin();
     const reopenDeg = this.cut.chosenDeg;
@@ -1212,7 +1251,7 @@ export class InteriorMode {
       this.revealing = false;
       this.interiorScene.setGhost(0);
       this.clearSelection();
-      this.setTargetAngle(0, animate, false); // the ceremony's close is not a chosen view
+      this.setTargetAngle(0, animate, false, INTERIOR_TRANSITION.closeS); // the ceremony's close is not a chosen view
     }
     let prepared: PreparedSkin | null = null;
     let presented = false;
@@ -1237,7 +1276,7 @@ export class InteriorMode {
       // The new body's pose under the reader's camera: the cut is chosen afresh,
       // so a swap opens facing them wherever they had orbited to.
       this.lockCutToCamera();
-      this.interiorScene.presentBody(prepared, swap && animate ? SWAP_FADE_S : 0);
+      this.interiorScene.presentBody(prepared, swap && animate ? INTERIOR_TRANSITION.dissolveS : 0);
       markOpenStep(watch, 'present');
       this.awaitingFirstBodyFrame = true;
       presented = true;
@@ -1264,16 +1303,25 @@ export class InteriorMode {
         if (stale()) return false;
         markOpenStep(watch, 'precompileEnd');
       }
-      markOpenStep(watch, 'revealStart');
-      watch.timings.programsAtReveal = this.programCount();
-      this.reveal(reopenDeg);
+      if (!swap && INTERIOR_TRANSITION.revealAfterVeil) {
+        // The opening is worth seeing, so it waits for the veil: activate
+        // resolves here with the body presented and the cut still closed, main
+        // lifts the veil onto a drawn frame of the studio, and its
+        // transitionend (or the timer that stands in for a lost one) opens the
+        // cut through revealAfterVeil. Until that has happened this open is not
+        // ready — a capture would otherwise take the closed body for the
+        // finished picture.
+        this.pendingReveal = { openId: watch.id, toDeg: reopenDeg };
+      } else {
+        this.startReveal(watch, reopenDeg, swap);
+      }
       debugLog('Look inside: body applied', { bodyId: body.id, swap });
       return true;
     } catch (error) {
       if (stale()) return false; // a newer pick owns the state now
       debugWarn('Look inside: the body could not be brought in', { bodyId: body.id, swap, error: String(error) });
       if (!swap) throw error; // a first entry has nothing to reopen onto: the mode switch falls back
-      this.reveal(reopenDeg); // the body that was on is still on
+      this.reveal(reopenDeg, INTERIOR_TRANSITION.reopenS); // the body that was on is still on
       return false;
     } finally {
       // A prepared skin nobody presented is freed, its late slot included; a
@@ -2437,6 +2485,9 @@ export class InteriorMode {
   devReady(): boolean {
     return this.active
       && !this.loading
+      // Presented, closed and waiting for the veil is not ready: the cut has
+      // settled and the map is on, and the picture is still a closed body.
+      && this.pendingReveal === null
       && this.remap !== null
       && !this.interiorScene.isFading()
       && !this.interiorScene.awaitingLateMap()
@@ -2612,6 +2663,8 @@ export class InteriorMode {
       presentationSeconds: this.presentationSeconds,
       frozen: this.frozen,
       loading: this.loading,
+      /** Presented and closed, waiting for the veil to lift before it opens. */
+      revealWaiting: this.pendingReveal !== null,
       skin: this.interiorScene.hasSkin(),
       ready: this.devReady(),
       fps: this.avgFps(),

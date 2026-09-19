@@ -72,6 +72,8 @@ export const OBSERVATION = 'Observation';
 export const INTERPRETATION = 'Interpretation';
 export const ASSUMES = 'Assumes';
 export const UNCERTAIN = 'Uncertain';
+/** Under a region's name on the face, in Temperature mode, where the diagram hatches it. */
+export const TEMPERATURE_NOT_KNOWN = 'Temperature not known';
 export const SOURCES = 'Sources';
 
 // ---- the words on the switches ----------------------------------------------

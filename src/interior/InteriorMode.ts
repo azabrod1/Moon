@@ -136,12 +136,12 @@ import { createPickHit, pickInterior, type PickHit, type PickLayout, type PickSu
 import { familyPhaseText, renderPage, type InteriorPanelPage } from './ui/InteriorPages';
 import { HoverCard, domHoverCardSurface, hoverDepthText } from './ui/hoverCard';
 import { DepthRuler } from './ui/DepthRuler';
-import { createRulerLayout, rulerFacing, rulerLayout, rulerPoint, rulerSide, type RulerInput } from './ruler';
+import { createRulerLayout, rulerFacing, rulerLayout, rulerPoint, rulerSide, type RulerInput, type RulerRegionInput } from './ruler';
 import { knotsTemperatureK } from './temperatureProfile';
 import { diagramFaceHex } from './rendering/outputTransform';
-import type { SectionRegionLook } from './rendering/sectionMaterial';
+import { hottestRegionIndex, selfLitLevels, selfLitRadiance, type SectionRegionLook } from './rendering/sectionMaterial';
 import { regionEvidenceSummary } from './evidenceSummary';
-import { ACTUAL_SIZE, CHOOSE_BODY, ENLARGE, ILLUSTRATIVE_NOTE, INTERIOR_MODEL, LAYERS, MODEL_AND_SOURCES, STRUCTURE_UNCERTAIN } from './ui/interiorCopy';
+import { ACTUAL_SIZE, CHOOSE_BODY, ENLARGE, ILLUSTRATIVE_NOTE, INTERIOR_MODEL, LAYERS, MODEL_AND_SOURCES, STRUCTURE_UNCERTAIN, TEMPERATURE_NOT_KNOWN } from './ui/interiorCopy';
 import { INTERIOR_DEFAULT_BODY, coverageBadge, coverageFor, defaultModelFor, modelFor } from './data/interiorRegistry';
 import { coverageModels } from './data/interiorTypes';
 import {
@@ -155,7 +155,7 @@ import { coverageBulk, type ClaimKind, type Coverage, type CoverageState } from 
 import { drawnFromModel, drawnUnresolved, outerFractionsInsideOut, type DrawnModel } from './drawnModel';
 import { BodyPicker } from '../planetarium/ui/BodyPicker';
 import { coverageTags } from './ui/coverageTag';
-import { PHASE_LABEL, incandescence, swatchHex } from './data/artParams';
+import { PHASE_LABEL, incandescence, selfLitSwatchHex, swatchHex } from './data/artParams';
 
 const FRAMING = {
   fovDeg: 40,
@@ -181,7 +181,9 @@ const FRAMING = {
 const SHEET_PEEK_FRACTION = 0.16;
 /** The sheet's own air under it (index.html: bottom: 12px), part of what it takes from the stage. */
 const SHEET_BOTTOM_MARGIN_PX = 12;
-const SHEET_PEEK_TAIL_PX = 10;
+/** Past the legend head, the top of the first layer row shows at the peek, so the sheet
+ *  says there is a list to pull up (plan V18). */
+const SHEET_PEEK_TAIL_PX = 22;
 const SHEET_PEEK_MAX_FRACTION = 0.45;
 /** The sheet never takes more of the screen than this, however tall its content. */
 const SHEET_FULL_FRACTION = 0.85;
@@ -405,6 +407,9 @@ const tmpCameraFrame = createCutFrame();
 const tmpRulerBasis = createCutFaceBasis();
 /** The ground of the legend's hatch swatch (index.html .interior-swatch.hatched), for a band the strip cannot hatch. */
 const HATCH_GROUND_HEX = 0x2a2d34;
+/** How far the body's hottest lit region's swatch goes toward white past its heat colour:
+ *  its face takes INCANDESCENCE_HOTTEST_BOOST and is the one thing that blooms. */
+const HOTTEST_SWATCH_LIFT = 0.5;
 const tmpNdc = new THREE.Vector2();
 const tmpProbePoint = new THREE.Vector3();
 
@@ -473,6 +478,7 @@ export class InteriorMode {
     remap: null as ReadableRemap | null,
     drawn: null as DrawnModel | null,
     side: 'a' as CutFaceSide,
+    mode: 'composition' as InteriorDisplayMode,
     opacity: -1,
     width: 0,
     height: 0,
@@ -481,6 +487,26 @@ export class InteriorMode {
   };
   /** The ruler was hidden or never drawn: the next render must draw whatever the key says. */
   private rulerStale = true;
+  /** The ruler's regions for the drawn model in the display mode: in Temperature mode a region
+   *  whose temperature nobody knows carries the note the face is hatched for, so the hatch is
+   *  never mistaken for a texture (the legend says it too, but the reader is looking at the disc). */
+  private rulerRegionsCache: { drawn: DrawnModel | null; mode: InteriorDisplayMode; regions: RulerRegionInput[] } = { drawn: null, mode: 'composition', regions: [] };
+
+  private rulerRegions(): RulerRegionInput[] {
+    const cache = this.rulerRegionsCache;
+    if (cache.drawn === this.drawn && cache.mode === this.displayMode) return cache.regions;
+    const temperature = this.displayMode === 'temperature';
+    cache.drawn = this.drawn;
+    cache.mode = this.displayMode;
+    cache.regions = this.drawn.regionsInsideOut.map((region) => ({
+      key: region.key,
+      name: region.name,
+      outerRadiusKm: region.outerRadiusKm,
+      innerRadiusKm: region.innerRadiusKm,
+      note: temperature && region.temperatureK === null ? TEMPERATURE_NOT_KNOWN : '',
+    }));
+    return cache.regions;
+  }
 
   // The Readable scale: off by default, so a reader's first look is the body's
   // own proportions and the note offers Readable where it would help.
@@ -871,6 +897,7 @@ export class InteriorMode {
     const key = this.rulerKey;
     const unchanged = !this.rulerStale
       && key.angleDeg === this.cut.angleDeg && key.remap === this.remap && key.drawn === this.drawn && key.side === side
+      && key.mode === this.displayMode
       && key.opacity === opacity && key.width === width && key.height === height
       && key.cameraWorld.equals(this.camera.matrixWorld) && key.projection.equals(this.camera.projectionMatrix);
     if (unchanged) return;
@@ -878,6 +905,7 @@ export class InteriorMode {
     key.remap = this.remap;
     key.drawn = this.drawn;
     key.side = side;
+    key.mode = this.displayMode;
     key.opacity = opacity;
     key.width = width;
     key.height = height;
@@ -889,7 +917,7 @@ export class InteriorMode {
     input.referenceRadiusKm = this.drawn.referenceRadiusKm;
     input.remap = this.remap;
     input.outerDisplay = this.pickLayout.outerDisplay;
-    input.regionsInsideOut = this.drawn.regionsInsideOut;
+    input.regionsInsideOut = this.rulerRegions();
     input.annotations = this.drawn.model?.annotations ?? [];
     // The ruler is drawn in the plane of its face: its marks and labels are laid along the face's own axes.
     const basis = cutFaceBasis(this.frame, side, tmpRulerBasis);
@@ -1700,10 +1728,15 @@ export class InteriorMode {
   private legendSwatchHexes(): number[] {
     const temperature = this.displayMode === 'temperature';
     const art = regionArtInsideOut(this.drawn);
+    const levels = selfLitLevels(this.looks);
+    const hottest = hottestRegionIndex(this.looks, this.looks.length);
     return this.drawn.regionsInsideOut.map((region, index) => {
-      if (!temperature) return swatchHex(art[index], incandescence(region.temperatureK ?? 0));
-      if (region.temperatureK !== null && this.temperatureRange) return temperatureScaleHex(temperatureT(this.temperatureRange, region.temperatureK));
-      return HATCH_GROUND_HEX;
+      if (temperature) {
+        if (region.temperatureK !== null && this.temperatureRange) return temperatureScaleHex(temperatureT(this.temperatureRange, region.temperatureK));
+        return HATCH_GROUND_HEX;
+      }
+      if (art[index].selfLit) return selfLitSwatchHex(art[index], levels[index], selfLitRadiance(levels[index]) / selfLitRadiance(1));
+      return swatchHex(art[index], incandescence(region.temperatureK ?? 0), index === hottest ? HOTTEST_SWATCH_LIFT : 0);
     });
   }
 

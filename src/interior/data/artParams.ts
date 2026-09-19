@@ -13,8 +13,9 @@
  * every pattern, and a body's regions only choose family and phase — the
  * schema's own vocabulary (interiorTypes MaterialFamily and Phase), so a
  * model can never name a look this table lacks. A region may carry a small
- * `look` adjustment (a hue turn and a saturation, applied by adjustArt) so
- * Mars reads rustier than Venus; nothing else is overridable per model.
+ * `look` adjustment (a hue turn, a saturation and a lightness, applied by
+ * adjustArt) so Mars reads rustier than Venus and a crust paler than its
+ * mantle; nothing else is overridable per model.
  * Heat comes from the region's temperature (incandescence, below), and the
  * vocabulary stays fixed across bodies.
  *
@@ -27,7 +28,7 @@
  * exempt: they are drawn hot, and heat, not darkness, says "deep" there.
  */
 
-import type { MaterialFamily, Phase } from './interiorTypes';
+import type { MaterialFamily, Phase, RegionLook } from './interiorTypes';
 
 /** The shader's pattern switch; the index is what the uniform carries. */
 export type PatternKind = 'none' | 'grain' | 'swirl' | 'flow' | 'caustic' | 'banding' | 'mottle' | 'crystal' | 'lava' | 'mineral' | 'hatch';
@@ -86,19 +87,20 @@ function family(params: FamilyParams): ArtParams {
 }
 
 const FAMILY_DEFAULT: Readonly<Record<MaterialFamily, ArtParams>> = {
-  metal: family({ colorA: 0xb8852c, colorB: 0xf2d27c, roughness: 0.5, metalness: 0.55, glow: 0.12, pattern: 'grain', motion: 0, scale: 75, relief: 7, depthGradient: 0.2, ambient: 0.22, heatGain: 1 }),
-  // Solid rock: convection cells drawn as radial plumes, olivine-brown at the top and glowing
-  // toward the bottom by its own heat. No cracks: a solid mantle has none.
-  silicate: family({ colorA: 0x4a3520, colorB: 0x8a4a22, roughness: 0.7, metalness: 0, glow: 0, pattern: 'mineral', motion: 0.012, scale: 6, relief: 3, depthGradient: 0.3, ambient: 0.16, heatGain: 1 }),
+  // Iron: a neutral warm-grey metal — the heat says a core is hot, the base never says gold.
+  metal: family({ colorA: 0x9e8c74, colorB: 0xd6c9b0, roughness: 0.5, metalness: 0.55, glow: 0.1, pattern: 'grain', motion: 0, scale: 36, relief: 7, depthGradient: 0.2, ambient: 0.27, heatGain: 1 }),
+  // Solid rock: convection cells drawn as radial plumes, a cool olivine-brown at the top and
+  // glowing toward the bottom by its own heat. No cracks: a solid mantle has none.
+  silicate: family({ colorA: 0x4a3b2c, colorB: 0x8a5a36, roughness: 0.7, metalness: 0, glow: 0, pattern: 'mineral', motion: 0.012, scale: 6, relief: 3, depthGradient: 0.4, ambient: 0.2, heatGain: 1 }),
   // Ice: glassy, faceted, with a cold self-lit floor so the key's warmth never bleaches its blue.
   ice: family({ colorA: 0xbfdcee, colorB: 0xeaf5fb, roughness: 0.25, metalness: 0, glow: 0, pattern: 'crystal', motion: 0, scale: 40, relief: 2, depthGradient: 0.2, ambient: 0.45, heatGain: 1 }),
   // Water: deep, dark, lit from the ice above it, with a soft two-octave shimmer.
-  water: family({ colorA: 0x06182e, colorB: 0x1f5f9a, roughness: 0.4, metalness: 0, glow: 0, pattern: 'caustic', motion: 0.12, scale: 40, relief: 0.6, depthGradient: 0.35, ambient: 0.2, heatGain: 1 }),
+  water: family({ colorA: 0x06182e, colorB: 0x1f5f9a, roughness: 0.4, metalness: 0, glow: 0, pattern: 'caustic', motion: 0.12, scale: 40, relief: 0.6, depthGradient: 0.35, ambient: 0.28, heatGain: 1 }),
   // Envelope: broad soft zonal bands, cream at the top, amber and turbulent below; its hot
   // base glows warm through the bands rather than whiting them out.
-  hydrogen: family({ colorA: 0xa8823f, colorB: 0xf6ead0, roughness: 0.85, metalness: 0, glow: 0, pattern: 'banding', motion: 0.03, scale: 40, relief: 0, depthGradient: 0.35, ambient: 0.18, heatGain: 0.2, heatTint: 0xffd9a0 }),
+  hydrogen: family({ colorA: 0xa8823f, colorB: 0xf6ead0, roughness: 0.85, metalness: 0, glow: 0, pattern: 'banding', motion: 0.03, scale: 40, relief: 0, depthGradient: 0.35, ambient: 0.18, heatGain: 0.12, heatTint: 0xffd9a0 }),
   // A dark liquid mirror with a gold glow inside it, not a white blast.
-  metallicHydrogen: family({ colorA: 0x1e2630, colorB: 0x7d8a9a, roughness: 0.15, metalness: 0.6, glow: 0.05, pattern: 'flow', motion: 0.05, scale: 5, relief: 1.6, depthGradient: 0.15, ambient: 0.22, heatGain: 0.25, heatTint: 0xffcc80 }),
+  metallicHydrogen: family({ colorA: 0x1e2630, colorB: 0x7d8a9a, roughness: 0.15, metalness: 0.6, glow: 0.05, pattern: 'flow', motion: 0.05, scale: 5, relief: 1.6, depthGradient: 0.15, ambient: 0.22, heatGain: 0.1, heatTint: 0xffcc80 }),
   // A conducting sea: its own electric teal wins over the heat, which glows through it.
   ionicFluid: family({ colorA: 0x1f7f9a, colorB: 0x5fc8e0, roughness: 0.3, metalness: 0.3, glow: 0.05, pattern: 'flow', motion: 0.06, scale: 6, relief: 2, depthGradient: 0.25, ambient: 0.2, heatGain: 0.3, heatTint: 0x60c8ff }),
   // A star: every region is a light. The palette (amber to yellow-white) is the emission,
@@ -106,7 +108,7 @@ const FAMILY_DEFAULT: Readonly<Record<MaterialFamily, ArtParams>> = {
   plasma: family({ colorA: 0xff9a2a, colorB: 0xffe0a0, roughness: 1, metalness: 0, glow: 0, pattern: 'mottle', motion: 0.2, scale: 30, relief: 0, depthGradient: 0, ambient: 0, heatGain: 1, selfLit: true }),
   // A mix: cold it is a mottled rock-and-ice mud; hot (a giant's diluted core) it glows a
   // deep gold through its own mottle rather than blasting white.
-  mixed: family({ colorA: 0x6c5744, colorB: 0xb8a088, roughness: 0.9, metalness: 0, glow: 0, pattern: 'mottle', motion: 0, scale: 12, relief: 2.5, depthGradient: 0.25, ambient: 0.16, heatGain: 0.45, heatTint: 0xffd090 }),
+  mixed: family({ colorA: 0x66584a, colorB: 0xa89a86, roughness: 0.9, metalness: 0, glow: 0, pattern: 'mottle', motion: 0, scale: 12, relief: 2.5, depthGradient: 0.25, ambient: 0.16, heatGain: 0.35, heatTint: 0xffd090 }),
   // Unknown: the same hatch Temperature mode uses for "not known", lighter, so the disc reads
   // as deliberately blank rather than unfinished.
   unresolved: family({ colorA: 0x5c6068, colorB: 0x7a7e86, roughness: 1, metalness: 0, glow: 0, pattern: 'hatch', motion: 0, scale: 1, relief: 0, depthGradient: 0.1, ambient: 0.2, heatGain: 1 }),
@@ -119,11 +121,11 @@ const FAMILY_DEFAULT: Readonly<Record<MaterialFamily, ArtParams>> = {
  *  dark crystalline conductor, not a sea. A metal whose phase is unresolved
  *  keeps the family default. */
 const PHASE_OVERRIDE: Readonly<Partial<Record<`${MaterialFamily}:${Phase}`, Partial<ArtParams>>>> = {
-  'metal:liquidMetal': { colorA: 0xc8892a, colorB: 0xffd978, roughness: 0.32, metalness: 0.6, glow: 0.2, pattern: 'flow', motion: 0.08, scale: 6, relief: 1.3 },
-  'metal:liquid': { colorA: 0xc8892a, colorB: 0xffd978, roughness: 0.32, metalness: 0.6, glow: 0.2, pattern: 'flow', motion: 0.08, scale: 6, relief: 1.3 },
-  'metal:solid': { colorA: 0xd39a3a, colorB: 0xffe9a0, roughness: 0.5, metalness: 0.5, glow: 0.34 },
+  'metal:liquidMetal': { colorA: 0xa8906c, colorB: 0xe2cfa8, roughness: 0.32, metalness: 0.6, glow: 0.16, pattern: 'flow', motion: 0.08, scale: 6, relief: 1.3 },
+  'metal:liquid': { colorA: 0xa8906c, colorB: 0xe2cfa8, roughness: 0.32, metalness: 0.6, glow: 0.16, pattern: 'flow', motion: 0.08, scale: 6, relief: 1.3 },
+  'metal:solid': { colorA: 0xb3a48c, colorB: 0xe4dac6, roughness: 0.5, metalness: 0.5, glow: 0.22 },
   'silicate:liquid': { colorA: 0x3a1208, colorB: 0xff9a3a, roughness: 0.5, glow: 0.2, pattern: 'lava', motion: 0.05, scale: 5, relief: 2 },
-  'silicate:partialMelt': { colorA: 0x3f1a0e, colorB: 0xc86a34, roughness: 0.65, glow: 0.1, pattern: 'lava', motion: 0.03, scale: 6, relief: 3 },
+  'silicate:partialMelt': { colorA: 0x4a2a1c, colorB: 0xb86a3c, roughness: 0.65, glow: 0.08, pattern: 'lava', motion: 0.03, scale: 6, relief: 3 },
   'water:superionic': { colorA: 0x102a44, colorB: 0x2a6a8a, roughness: 0.35, metalness: 0.25, pattern: 'crystal', motion: 0, scale: 24, relief: 1.2, depthGradient: 0.25, ambient: 0.18, heatGain: 0.3, heatTint: 0x5fb8ff },
   'water:supercriticalFluid': { colorA: 0x1f5a86, colorB: 0x4f9bd0, roughness: 0.3, pattern: 'flow', motion: 0.08, scale: 8, relief: 1 },
   'hydrogen:supercriticalFluid': { colorA: 0xcdbb95, colorB: 0xe8d9b8, roughness: 0.7 },
@@ -167,23 +169,24 @@ export function tintHexColor(hex: number, tint: number): number {
 }
 
 /**
- * Turn an sRGB hex colour's hue by `hueShiftDeg` and scale its saturation by
- * `saturation` (1 leaves it), keeping its lightness: a region's `look`
- * adjustment, applied to both tones so the swatch and the face agree.
+ * Turn an sRGB hex colour's hue by `hueShiftDeg`, scale its saturation by
+ * `saturation` and its lightness by `lightness` (1 leaves either), in HSL: a
+ * region's `look` adjustment, applied to both tones so the swatch and the
+ * face agree.
  */
-export function adjustHexColor(hex: number, hueShiftDeg: number, saturation: number): number {
-  if (hueShiftDeg === 0 && saturation === 1) return hex;
+export function adjustHexColor(hex: number, hueShiftDeg: number, saturation: number, lightness = 1): number {
+  if (hueShiftDeg === 0 && saturation === 1 && lightness === 1) return hex;
   const red = ((hex >> 16) & 0xff) / 255;
   const green = ((hex >> 8) & 0xff) / 255;
   const blue = (hex & 0xff) / 255;
   const max = Math.max(red, green, blue);
   const min = Math.min(red, green, blue);
-  const lightness = (max + min) / 2;
+  const lightnessIn = (max + min) / 2;
   const delta = max - min;
   let hue = 0;
   let sat = 0;
   if (delta > 1e-6) {
-    sat = delta / (1 - Math.abs(2 * lightness - 1));
+    sat = delta / (1 - Math.abs(2 * lightnessIn - 1));
     if (max === red) hue = ((green - blue) / delta) % 6;
     else if (max === green) hue = (blue - red) / delta + 2;
     else hue = (red - green) / delta + 4;
@@ -191,9 +194,10 @@ export function adjustHexColor(hex: number, hueShiftDeg: number, saturation: num
   }
   hue = (((hue + hueShiftDeg) % 360) + 360) % 360;
   sat = Math.max(0, Math.min(1, sat * saturation));
-  const chroma = (1 - Math.abs(2 * lightness - 1)) * sat;
+  const lightnessOut = Math.max(0, Math.min(1, lightnessIn * lightness));
+  const chroma = (1 - Math.abs(2 * lightnessOut - 1)) * sat;
   const second = chroma * (1 - Math.abs(((hue / 60) % 2) - 1));
-  const match = lightness - chroma / 2;
+  const match = lightnessOut - chroma / 2;
   const sector = Math.min(Math.floor(hue / 60), 5);
   const sectors: [number, number, number][] = [
     [chroma, second, 0],
@@ -208,19 +212,18 @@ export function adjustHexColor(hex: number, hueShiftDeg: number, saturation: num
   return (toByte(red1) << 16) | (toByte(green1) << 8) | toByte(blue1);
 }
 
-/** A region's `look` adjustment: a hue turn in degrees and a saturation scale. */
-export interface LookAdjustment {
-  hueShiftDeg?: number;
-  saturation?: number;
-}
-
-/** A region's look with its `look` adjustment applied to both tones. */
-export function adjustArt(art: ArtParams, look: LookAdjustment | undefined): ArtParams {
+/** A region's look with its `look` adjustment (interiorTypes.RegionLook) applied to both tones. */
+export function adjustArt(art: ArtParams, look: RegionLook | undefined): ArtParams {
   if (!look) return art;
   const hueShiftDeg = look.hueShiftDeg ?? 0;
   const saturation = look.saturation ?? 1;
-  if (hueShiftDeg === 0 && saturation === 1) return art;
-  return { ...art, colorA: adjustHexColor(art.colorA, hueShiftDeg, saturation), colorB: adjustHexColor(art.colorB, hueShiftDeg, saturation) };
+  const lightness = look.lightness ?? 1;
+  if (hueShiftDeg === 0 && saturation === 1 && lightness === 1) return art;
+  return {
+    ...art,
+    colorA: adjustHexColor(art.colorA, hueShiftDeg, saturation, lightness),
+    colorB: adjustHexColor(art.colorB, hueShiftDeg, saturation, lightness),
+  };
 }
 
 /**
@@ -290,12 +293,18 @@ export interface Incandescence {
 
 export const DRAPER_POINT_K = 800;
 export const INCANDESCENCE_FULL_K = 3800;
+/** The strength's curve between the two: above 1, the glow comes on late — a mantle at
+ *  1,500 K is rock with a dull red at its base, not a red-hot slab, and the amber belongs to
+ *  the layers past 2,500 K. */
+export const INCANDESCENCE_ONSET_POWER = 1.2;
 /** Radiance at full strength for any region but the body's hottest: under the tone curve's
- *  knee and the bloom threshold, so a mantle and an outer core keep their colour. */
-export const INCANDESCENCE_PEAK = 0.6;
+ *  knee and the bloom threshold, so a mantle and an outer core keep their colour — and low
+ *  enough that the material shows through its own heat (plan F21: the heat is a tint on the
+ *  material, never a replacement for it). */
+export const INCANDESCENCE_PEAK = 0.42;
 /** The body's hottest region is lifted by this toward its centre (the shader grades the lift
  *  by depth within the region), so the middle of a core is the one thing that blooms. */
-export const INCANDESCENCE_HOTTEST_BOOST = 2.2;
+export const INCANDESCENCE_HOTTEST_BOOST = 1.7;
 /** Above this the radiance rises on a log of the temperature: a star's zones, millions of
  *  kelvin apart and all white, still read in order — a fusion core is a stronger light than
  *  the zone that boils above it. */
@@ -334,7 +343,7 @@ export function forgeSrgb(temperatureK: number): [number, number, number] {
 
 export function incandescence(temperatureK: number): Incandescence {
   const ramp = Math.max(0, Math.min(1, (temperatureK - DRAPER_POINT_K) / (INCANDESCENCE_FULL_K - DRAPER_POINT_K)));
-  const strength = Math.pow(ramp, 0.8);
+  const strength = Math.pow(ramp, INCANDESCENCE_ONSET_POWER);
   const [red, green, blue] = forgeSrgb(temperatureK);
   const hotDecades = Math.min(1, Math.max(0, Math.log10(Math.max(temperatureK, 1) / INCANDESCENCE_HOT_K) / INCANDESCENCE_HOT_DECADES));
   const radiance = (0.03 * strength + INCANDESCENCE_PEAK * Math.pow(strength, 0.9)) * (1 + INCANDESCENCE_HOT_BOOST * hotDecades * hotDecades);
@@ -347,16 +356,54 @@ export function incandescence(temperatureK: number): Incandescence {
   };
 }
 
-/** The legend swatch: the albedo tone for a cold region, the incandescent
- *  colour (through the family's heat tint) for a hot one, blended by how
- *  much the heat dominates. A self-lit region's swatch is its own palette. */
-export function swatchHex(art: ArtParams, heat: Incandescence): number {
+/** How far a fully incandescent region's swatch goes toward its heat colour: the rest is
+ *  the material's own tone, as on the face, where the albedo keeps most of itself under heat
+ *  (sectionMaterial's resolve) — so two hot metals stay two swatches. */
+export const SWATCH_HEAT_MAX = 0.7;
+
+function mixHex(fromHex: number, toHex: number, t: number): number {
+  const mix = (a: number, b: number) => Math.round(a + (b - a) * t);
+  const red = mix((fromHex >> 16) & 0xff, (toHex >> 16) & 0xff);
+  const green = mix((fromHex >> 8) & 0xff, (toHex >> 8) & 0xff);
+  const blue = mix(fromHex & 0xff, toHex & 0xff);
+  return (red << 16) | (green << 8) | blue;
+}
+
+/** The legend swatch of a lit region: the albedo tone for a cold one, pulled toward the
+ *  incandescent colour (through the family's heat tint) by how much the heat dominates, and
+ *  never all the way; `lift` takes the body's hottest region the rest of the way toward
+ *  white, which is what its boost does to the face. (A self-lit region's swatch is
+ *  selfLitSwatchHex; this returns its base tone.) */
+export function swatchHex(art: ArtParams, heat: Incandescence, lift = 0): number {
   if (art.selfLit || heat.strength <= 0) return art.colorA;
   const heatHex = tintHexColor(heat.swatchHex, art.heatTint);
-  const mix = (a: number, b: number, t: number) => Math.round(a + (b - a) * t);
-  const t = Math.min(1, heat.strength * 1.2) * (0.5 + 0.5 * art.heatGain);
-  const red = mix((art.colorA >> 16) & 0xff, (heatHex >> 16) & 0xff, t);
-  const green = mix((art.colorA >> 8) & 0xff, (heatHex >> 8) & 0xff, t);
-  const blue = mix(art.colorA & 0xff, heatHex & 0xff, t);
-  return (red << 16) | (green << 8) | blue;
+  const t = Math.min(SWATCH_HEAT_MAX, heat.strength * 0.85) * (0.5 + 0.5 * art.heatGain);
+  const heated = mixHex(art.colorA, heatHex, t);
+  return lift > 0 ? mixHex(heated, 0xffffff, Math.min(1, lift)) : heated;
+}
+
+/** The self-lit mottle's tone at a region's level (0 the body's coolest zone, 1 its
+ *  hottest): where between the palette's two tones the pattern sits on average, and past the
+ *  second tone toward white at the top — the shader's own mapping (sectionSample's self-lit
+ *  branch), which the test holds it to. May exceed 1: an extrapolation past colorB. */
+export function selfLitToneMix(level: number): number {
+  const clamped = Math.max(0, Math.min(1, level));
+  const structure = 0.5;
+  const whiten = Math.pow(clamped, 6);
+  return (0.15 + 0.45 * structure) + ((0.6 + 0.4 * structure) - (0.15 + 0.45 * structure)) * clamped * clamped + 0.5 * whiten;
+}
+
+/** The legend swatch of a self-lit region: the pattern's average tone at the region's
+ *  level, darkened by its radiance relative to the body's brightest zone (`valueFraction`,
+ *  0..1, in linear light) — so a star's zones are four swatches in the order the faces
+ *  draw them, the photosphere a dark amber and the core near white. */
+export function selfLitSwatchHex(art: ArtParams, level: number, valueFraction: number): number {
+  const mixValue = selfLitToneMix(level);
+  const channel = (shift: number) => {
+    const from = (art.colorA >> shift) & 0xff;
+    const to = (art.colorB >> shift) & 0xff;
+    const tone = Math.max(0, Math.min(255, from + (to - from) * mixValue));
+    return Math.round(tone * Math.pow(Math.max(0, Math.min(1, valueFraction)), 1 / 2.2));
+  };
+  return (channel(16) << 16) | (channel(8) << 8) | channel(0);
 }

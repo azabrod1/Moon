@@ -139,6 +139,8 @@ export const EARTH_MODEL: InteriorModel = {
       name: 'Crust',
       family: 'silicate',
       phase: 'solid',
+      // Basalt and granite: a grey rock, not the mantle's olive-brown.
+      look: { hueShiftDeg: -12, saturation: 0.5, lightness: 1.35 },
       outerRadiusKm: 6371,
       boundary: sharp(),
       composition: sourced('Basalt under the oceans, granite-dominated continents', RINGWOOD, 'measured'),

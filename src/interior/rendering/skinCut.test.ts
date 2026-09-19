@@ -48,7 +48,8 @@ describe('the raw-shader cuts', () => {
       fragmentShader: sunPhotosphereFragmentShader,
     });
     expect(() => applyPhotosphereCut(material, uniforms, 0.5)).not.toThrow();
-    expect(material.fragmentShader).toContain('gl_FragColor = vec4(color * radiance * 0.500, interiorCutCoverage);');
+    expect(material.fragmentShader).toContain('vec3 studioColor = mix(color, vec3(1.000, 0.600, 0.220), 0.000);');
+    expect(material.fragmentShader).toContain('gl_FragColor = vec4(studioColor * (radiance * 0.500 + 0.000 * limbDarkening), interiorCutCoverage);');
     expect(material.vertexShader).toContain('vInteriorCutWorld = (modelMatrix * vec4(position, 1.0)).xyz;');
     expect(material.fragmentShader).toContain('varying vec3 vInteriorCutWorld;');
     expect(material.uniforms.uCutNormalB).toBe(uniforms.uCutNormalB);
@@ -78,7 +79,7 @@ describe('the raw-shader cuts', () => {
     expect(call?.[1]).toBe('analytic');
     // The corona passes its scale as the disc gate; the planets' air passes nothing.
     expect(interiorSceneSource).toContain('applyAtmosphereCut(material, this.cutUniforms, body.sun ? atmosphere.scale : undefined);');
-    expect(interiorSceneSource).toContain('applyPhotosphereCut(material, this.cutUniforms, SUN_STUDIO_EXPOSURE);');
+    expect(interiorSceneSource).toContain('applyPhotosphereCut(material, this.cutUniforms, SUN_STUDIO_EXPOSURE, SUN_STUDIO_LIFT, SUN_STUDIO_TINT);');
     // The rings take the same cut, on the standard-material path.
     expect(interiorSceneSource).toContain('applySkinCut(mesh.material as THREE.MeshStandardMaterial, this.cutUniforms);');
   });

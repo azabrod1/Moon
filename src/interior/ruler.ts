@@ -1,7 +1,9 @@
 /**
  * The depth ruler's geometry (plan §6): km ticks from the rim to the
  * centre along the near edge of a section face, region names on the
- * segments with room, annotation brackets as a second tier. Every tick is
+ * segments with room (a region may carry a note to go under its name — what
+ * Temperature mode says of a region whose temperature nobody knows), annotation
+ * brackets as a second tier. Every tick is
  * placed at its PHYSICAL depth through the Readable remap, so on the
  * Readable scale the ticks visibly stretch where a thin layer was widened
  * — the ruler is how the remap stays honest.
@@ -22,6 +24,8 @@ export interface RulerRegionInput {
   /** Physical outer radius, km. */
   outerRadiusKm: number;
   innerRadiusKm: number;
+  /** A line under the name on the face, or none. */
+  note?: string;
 }
 
 export interface RulerAnnotationInput {
@@ -53,6 +57,8 @@ export interface RulerTick {
 export interface RulerSegment {
   key: string;
   name: string;
+  /** The line under the name, '' for none; drawn only with the name. */
+  note: string;
   /** World positions on the region's face: the outer end (shallower) and the inner end (deeper). */
   from: THREE.Vector3;
   to: THREE.Vector3;
@@ -126,9 +132,10 @@ export function rulerLayout(input: RulerInput, out: RulerLayout = createRulerLay
   out.ticks.length = tickCount;
 
   input.regionsInsideOut.forEach((region, index) => {
-    const segment = out.segments[index] ?? (out.segments[index] = { key: '', name: '', from: new THREE.Vector3(), to: new THREE.Vector3() });
+    const segment = out.segments[index] ?? (out.segments[index] = { key: '', name: '', note: '', from: new THREE.Vector3(), to: new THREE.Vector3() });
     segment.key = region.key;
     segment.name = region.name;
+    segment.note = region.note ?? '';
     rulerPointAtDisplay(input, input.outerDisplay[index], segment.from);
     rulerPointAtDisplay(input, index > 0 ? input.outerDisplay[index - 1] + 1e-6 : 0, segment.to);
   });

@@ -235,16 +235,27 @@ export function applyAtmosphereCut(material: THREE.ShaderMaterial, uniforms: Ski
   });
 }
 
+/** The one amber a studio photosphere's granules and lanes are pulled toward (sRGB-ish,
+ *  linear in the shader): a filtered photograph's orange, between the shader's lane amber
+ *  and its white-hot granule. */
+export const PHOTOSPHERE_STUDIO_TONE: readonly [number, number, number] = [1.0, 0.6, 0.22];
+
 /** The cut on the Sun's photosphere: the feather in alpha, so the edge takes the render
- *  path's treatment like the skin; `exposure` scales the planetarium's HDR radiance down to
- *  what a studio can show beside a section face. */
-export function applyPhotosphereCut(material: THREE.ShaderMaterial, uniforms: SkinCutUniforms, exposure: number): void {
+ *  path's treatment like the skin. The planetarium's photosphere is a light whose
+ *  granulation is authored for a star that saturates to white — its granules are white and
+ *  eight times its amber lanes — and a studio cannot show that beside a section face:
+ *  `exposure` scales the HDR radiance down, `lift` adds a floor of the skin's own colour
+ *  under it (by the limb darkening, so the limb stays a limb) and `tint` pulls both colours
+ *  toward PHOTOSPHERE_STUDIO_TONE, so the surface is a textured orange disc under the bloom
+ *  threshold — the Sun as a filter shows it — rather than white spots on gold. */
+export function applyPhotosphereCut(material: THREE.ShaderMaterial, uniforms: SkinCutUniforms, exposure: number, lift = 0, tint = 0): void {
+  const [red, green, blue] = PHOTOSPHERE_STUDIO_TONE;
   applyRawShaderCut(material, uniforms, {
     vertexVarying: true,
     direction: 'vInteriorCutWorld',
     output: {
       find: 'gl_FragColor = vec4(color * radiance, 1.0);',
-      replace: `gl_FragColor = vec4(color * radiance * ${exposure.toFixed(3)}, interiorCutCoverage);`,
+      replace: `vec3 studioColor = mix(color, vec3(${red.toFixed(3)}, ${green.toFixed(3)}, ${blue.toFixed(3)}), ${tint.toFixed(3)});\n  gl_FragColor = vec4(studioColor * (radiance * ${exposure.toFixed(3)} + ${lift.toFixed(3)} * limbDarkening), interiorCutCoverage);`,
     },
     reflectFarSide: false,
   });

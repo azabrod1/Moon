@@ -110,15 +110,24 @@ const MEASURED_NORMAL_SCALE: Record<string, number> = { marsNormal: 0.5 };
 // faces in the dark on the far side of an orbit, and the faces are the
 // product here.
 // A directional key, a little more frontal than before, so the exterior wraps in light
-// around the wedge and each face takes a gradient across its width; the fill is held
-// low so the crease at the hinge and the faces' relief are not washed flat.
+// around the wedge and each face takes a gradient across its width; the fill is moderate:
+// low enough that the crease at the hinge and the faces' relief are not washed flat, high
+// enough that the face turned from the key never reads as a hole beside the lit one
+// (plan F19: legible from the inspection angles, with restrained fill).
 const KEY_LIGHT_CAMERA_DIR = new THREE.Vector3(-0.35, 0.4, 0.85).normalize();
 const KEY_LIGHT_DISTANCE = 6;
 const KEY_LIGHT_COLOR = 0xffe8c8;
 const KEY_LIGHT_INTENSITY = 2.6;
 const FILL_SKY_COLOR = 0xaeb6c6;
 const FILL_GROUND_COLOR = 0x2a2622;
-const FILL_HEMI_INTENSITY = 1.0;
+const FILL_HEMI_INTENSITY = 1.4;
+// The faces' own fill, a Lambert term inside the section shader (never a scene light, so
+// the skin keeps one sun): camera-relative from the right, cool against the warm key, so
+// the face turned from the key is lit from its own side and the two faces still read as
+// two — the plan's F19: legible from the inspection angles, the crease kept.
+const FACE_FILL_CAMERA_DIR = new THREE.Vector3(0.75, 0.2, 0.62).normalize();
+const FACE_FILL_COLOR = 0xd0dcf0;
+const FACE_FILL_INTENSITY = 1.8;
 // The skin's night side takes the planetshine channel as a faint studio
 // fill, the compare fillers' idiom, so the unlit limb reads as a dim world.
 const FILL_SHINE_COLOR = 0x9aa4b8;
@@ -144,6 +153,11 @@ const FACE_ENV_INTENSITY = 1.0;
 const STUDIO_SOFTBOX_COLOR = new THREE.Color(1.0, 0.93, 0.82).multiplyScalar(1.1);
 const STUDIO_RIM_COLOR = new THREE.Color(0.55, 0.68, 1.0).multiplyScalar(0.8);
 const STUDIO_FLOOR_COLOR = new THREE.Color(0.15, 0.14, 0.12);
+// A second, cooler and dimmer panel to the right and behind: a face turned from the softbox
+// reflects the right-hand half of the studio, behind the body's plane once the wedge's yaw
+// turns it further, and a metal there reflected the dark and read as a hole beside the lit
+// face (the plan's F19) — a fill light cannot give a mirror something to reflect.
+const STUDIO_FILL_PANEL_COLOR = new THREE.Color(0.72, 0.8, 0.95).multiplyScalar(0.6);
 /** The analytic air shell's presence in the studio (the planetarium's distance fade, held near). */
 const ATMOSPHERE_ALPHA = 0.7;
 /** The studio key's angular radius as the ring shadow's penumbra: a soft edge, not a point. */
@@ -170,9 +184,18 @@ const SUN_CORONA: AtmosphereConfig = {
   haloStrength: 0.8,
   scale: 1.3,
 };
-/** The photosphere's HDR radiance (3.8 in the planetarium, where it is the light) scaled to
- *  sit beside a section face without whiting the studio out. Art, documented. */
-const SUN_STUDIO_EXPOSURE = 0.3;
+/** The photosphere in the studio (skinCut.applyPhotosphereCut): the planetarium's HDR
+ *  radiance (3.8 there, where it is the light; its granules reach 1.4× that and its lanes
+ *  0.15×) scaled almost away, over a floor of the skin's own colour, both colours pulled
+ *  nearly all the way to one amber — the brightest granule lands at ~0.7, the lanes at
+ *  ~0.6 and the limb at ~0.3, all under the bloom threshold. The shader's granules are
+ *  authored for a close approach, each a few percent of the disc across; seen whole they
+ *  are a leopard's spots, so the studio shows the Sun as a filtered photograph does: an
+ *  orange disc, faintly mottled, darker at the limb, with the core the one thing that
+ *  blooms. Art, documented. */
+const SUN_STUDIO_EXPOSURE = 0.025;
+const SUN_STUDIO_LIFT = 0.58;
+const SUN_STUDIO_TINT = 0.9;
 
 function buildStudioEnvironment(): THREE.Scene {
   const studio = new THREE.Scene();
@@ -183,6 +206,7 @@ function buildStudioEnvironment(): THREE.Scene {
     studio.add(mesh);
   };
   panel(7, 5, STUDIO_SOFTBOX_COLOR, new THREE.Vector3(-3, 5.5, 3));
+  panel(6, 6, STUDIO_FILL_PANEL_COLOR, new THREE.Vector3(5.5, 1.5, -3.5));
   panel(3, 6, STUDIO_RIM_COLOR, new THREE.Vector3(6, -1.5, -3));
   panel(24, 24, STUDIO_FLOOR_COLOR, new THREE.Vector3(0, -7, 0));
   return studio;
@@ -411,6 +435,8 @@ export class InteriorScene {
     this.group.add(this.atmosphereMesh);
 
     this.sectionUniforms = createSectionUniforms();
+    this.sectionUniforms.uFaceFillDir.value.copy(FACE_FILL_CAMERA_DIR); // view space: camera-relative by construction
+    this.sectionUniforms.uFaceFill.value.setFromColor(new THREE.Color(FACE_FILL_COLOR)).multiplyScalar(FACE_FILL_INTENSITY);
     this.faceMaterial = createSectionMaterial(this.sectionUniforms);
     // A unit half-disc in +X: vertices from −90° to +90° so x ≥ 0, normal +Z.
     // The cut-frame face basis (radial, up, normal) is right-handed and maps
@@ -670,7 +696,7 @@ export class InteriorScene {
       vertexShader: sunPhotosphereVertexShader,
       fragmentShader: sunPhotosphereFragmentShader,
     });
-    applyPhotosphereCut(material, this.cutUniforms, SUN_STUDIO_EXPOSURE);
+    applyPhotosphereCut(material, this.cutUniforms, SUN_STUDIO_EXPOSURE, SUN_STUDIO_LIFT, SUN_STUDIO_TINT);
     configureSkinCutEdge(material, this.multisampled);
     return material;
   }

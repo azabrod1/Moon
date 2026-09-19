@@ -94,6 +94,8 @@ export const MOON_MODEL: InteriorModel = {
       name: 'Mantle',
       family: 'silicate',
       phase: 'solid',
+      // Iron-rich olivine and pyroxene: a greyer rock than Earth's mantle.
+      look: { saturation: 0.6 },
       outerRadiusKm: 1697,
       boundary: sharp(interval(1690, 1705, 0.68, WIECZOREK)),
       composition: sourced('Olivine and pyroxene, iron-richer than Earth\'s mantle', APOLLO, 'inferred'),
@@ -113,6 +115,8 @@ export const MOON_MODEL: InteriorModel = {
       name: 'Crust',
       family: 'silicate',
       phase: 'solid',
+      // Anorthosite: a pale grey mineral, not a brown.
+      look: { hueShiftDeg: -10, saturation: 0.45, lightness: 1.25 },
       outerRadiusKm: 1737.4,
       boundary: sharp(),
       composition: sourced('Anorthosite highlands, basalt in the maria', APOLLO, 'measured'),

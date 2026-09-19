@@ -7,7 +7,7 @@
  * know which it holds. Pure and DOM-free; every value stays physical — the
  * Readable remap happens downstream in interiorGeometry.
  */
-import type { InteriorModel, MaterialFamily, Phase, Region } from './data/interiorTypes';
+import type { InteriorModel, MaterialFamily, Phase, Region, RegionLook } from './data/interiorTypes';
 import { representativeTemperatureK, temperatureKnotsK } from './temperatureProfile';
 
 export interface DrawnRegion {
@@ -15,6 +15,8 @@ export interface DrawnRegion {
   name: string;
   family: MaterialFamily;
   phase: Phase;
+  /** The model's adjustment to the family look, or null for the family as it comes. */
+  look: RegionLook | null;
   outerRadiusKm: number;
   innerRadiusKm: number;
   /** The temperature at the middle of the region through the shared sampler
@@ -52,6 +54,7 @@ export function drawnFromModel(model: InteriorModel): DrawnModel {
       name: region.name,
       family: region.family,
       phase: region.phase,
+      look: region.look ?? null,
       outerRadiusKm: region.outerRadiusKm,
       innerRadiusKm,
       temperatureK: representativeTemperatureK(region.temperatureK, innerRadiusKm, region.outerRadiusKm),
@@ -86,6 +89,7 @@ export function drawnUnresolved(bodyId: string, radiusKm: number, composition: s
         name: 'Interior',
         family: 'unresolved',
         phase: 'unresolved',
+        look: null,
         outerRadiusKm: radiusKm,
         innerRadiusKm: 0,
         temperatureK: null,

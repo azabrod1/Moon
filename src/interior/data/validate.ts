@@ -8,7 +8,10 @@
  * interval or model spread brackets the radius it is drawn at, an interval's
  * level in (0, 1]; temperatures never decrease inward where known, are never
  * interpolated 'none' (the faces draw a ramp), and profile samples ascend in
- * radius; annotations lie within the body; competing models share one
+ * radius; a region's look adjustment is a small one (a hue turn within
+ * ±LOOK_HUE_SHIFT_MAX_DEG, a saturation in [0, LOOK_SATURATION_MAX], a lightness
+ * in [LOOK_LIGHTNESS_MIN, LOOK_LIGHTNESS_MAX]), so a model tunes its family's
+ * look and never repaints it; annotations lie within the body; competing models share one
  * reference radius; only a poorly constrained body's scenario is labelled
  * illustrative, and it is labelled in its own data; a body drawn as an
  * unresolved whole says why. A problem is a sentence an author can act on,
@@ -16,6 +19,12 @@
  */
 import type { Coverage, InteriorModel, Quantity, Region } from './interiorTypes';
 import { MAX_REGIONS, coverageModels } from './interiorTypes';
+
+/** The most a region's look may turn the family hue, degrees, and scale its saturation and lightness. */
+export const LOOK_HUE_SHIFT_MAX_DEG = 45;
+export const LOOK_SATURATION_MAX = 1.5;
+export const LOOK_LIGHTNESS_MIN = 0.5;
+export const LOOK_LIGHTNESS_MAX = 1.6;
 
 export function validateInteriorModel(model: InteriorModel): string[] {
   const problems: string[] = [];
@@ -110,6 +119,20 @@ function validateRegion(region: Region, where: string): string[] {
   }
   for (const generated of region.heat.generated) {
     if (!generated.note) problems.push(`${here}: heat source ${generated.kind} has no note`);
+  }
+  if (region.look) {
+    const hueShiftDeg = region.look.hueShiftDeg ?? 0;
+    const saturation = region.look.saturation ?? 1;
+    if (!(Number.isFinite(hueShiftDeg) && Math.abs(hueShiftDeg) <= LOOK_HUE_SHIFT_MAX_DEG)) {
+      problems.push(`${here}: the look's hue turn of ${hueShiftDeg}° is not within ±${LOOK_HUE_SHIFT_MAX_DEG}°`);
+    }
+    if (!(Number.isFinite(saturation) && saturation >= 0 && saturation <= LOOK_SATURATION_MAX)) {
+      problems.push(`${here}: the look's saturation of ${saturation} is not between 0 and ${LOOK_SATURATION_MAX}`);
+    }
+    const lightness = region.look.lightness ?? 1;
+    if (!(Number.isFinite(lightness) && lightness >= LOOK_LIGHTNESS_MIN && lightness <= LOOK_LIGHTNESS_MAX)) {
+      problems.push(`${here}: the look's lightness of ${lightness} is not between ${LOOK_LIGHTNESS_MIN} and ${LOOK_LIGHTNESS_MAX}`);
+    }
   }
   return problems;
 }

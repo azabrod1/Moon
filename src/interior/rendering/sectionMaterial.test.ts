@@ -19,8 +19,12 @@ import {
   INCANDESCENCE_HOT_BOOST,
   INCANDESCENCE_HOT_DECADES,
   INCANDESCENCE_HOT_K,
+  INCANDESCENCE_ONSET_POWER,
   INCANDESCENCE_PEAK,
   incandescence,
+  selfLitSwatchHex,
+  selfLitToneMix,
+  swatchHex,
 } from '../data/artParams';
 import { drawnFromModel } from '../drawnModel';
 import { IDENTITY_REMAP } from '../interiorGeometry';
@@ -41,7 +45,11 @@ import {
   SECTION_SHADER_TEXT,
   SELF_LIT_FLOOR,
   SELF_LIT_RANGE,
+  SELF_LIT_REGION_MIX,
   createSectionUniforms,
+  hottestRegionIndex,
+  selfLitLevels,
+  selfLitRadiance,
   writeSectionRegions,
   writeTemperatureScale,
   type SectionUniforms,
@@ -87,7 +95,7 @@ function shaderIncandescence(kelvin: number): { emission: [number, number, numbe
     color = color.map((channel, channelIndex) => channel + (stopColor[channelIndex] - channel) * t) as [number, number, number];
   }
   const ramp = clamp((kelvin - DRAPER_POINT_K) / (INCANDESCENCE_FULL_K - DRAPER_POINT_K));
-  const strength = ramp > 0 ? Math.pow(ramp, 0.8) : 0;
+  const strength = ramp > 0 ? Math.pow(ramp, INCANDESCENCE_ONSET_POWER) : 0;
   const hotDecades = clamp((Math.log(Math.max(kelvin, 1) / INCANDESCENCE_HOT_K) * 0.4342944819) / INCANDESCENCE_HOT_DECADES);
   const radiance = (0.03 * strength + INCANDESCENCE_PEAK * Math.pow(strength, 0.9)) * (1 + INCANDESCENCE_HOT_BOOST * hotDecades * hotDecades);
   return { emission: color.map((channel) => Math.pow(channel, 2.2) * radiance) as [number, number, number], strength };
@@ -182,7 +190,15 @@ describe('the temperature scale, CPU and GPU', () => {
     expect(SECTION_SHADER_TEXT).toContain(`/ ${INCANDESCENCE_HOT_K.toFixed(1)}) * 0.4342944819 / ${INCANDESCENCE_HOT_DECADES.toFixed(1)}`);
     expect(SECTION_SHADER_TEXT).toContain(`(0.03 * strength + ${INCANDESCENCE_PEAK} * peak)`);
     expect(SECTION_SHADER_TEXT).toContain(`${INCANDESCENCE_HOT_BOOST.toFixed(1)} * hotDecades * hotDecades`);
+    expect(SECTION_SHADER_TEXT).toContain(`float strength = ramp > 0.0 ? pow(ramp, ${INCANDESCENCE_ONSET_POWER}) : 0.0;`);
     expect(SECTION_SHADER_TEXT).toContain(`${SELF_LIT_FLOOR} + ${SELF_LIT_RANGE} * level * level * level`);
+    // A self-lit pixel's place is the local temperature's, pulled part way to its region's.
+    expect(SECTION_SHADER_TEXT).toContain(`float level = mix(localLevel, regionLevel, ${SELF_LIT_REGION_MIX});`);
+    expect(SECTION_SHADER_TEXT).toContain('sectionSelfLitRadiance(kelvin, known, uHeatLevel[k])');
+    // The self-lit palette's tone mapping, which artParams.selfLitToneMix mirrors for the legend.
+    expect(SECTION_SHADER_TEXT).toContain('mixValue = mix(0.15 + 0.45 * structure, 0.6 + 0.4 * structure, level * level) + 0.5 * whiten;');
+    // The faces' own fill: a Lambert term on the albedo the resolve left, Materials only.
+    expect(SECTION_SHADER_TEXT).toContain('totalEmissiveRadiance += diffuseColor.rgb * RECIPROCAL_PI * uFaceFill * max(dot(normal, uFaceFillDir), 0.0);');
     const floatText = (value: number) => (String(value).includes('.') ? String(value) : `${value}.0`);
     for (const [stopK, color] of FORGE_STOPS.slice(1)) {
       expect(SECTION_SHADER_TEXT).toContain(`vec3(${color.map(floatText).join(', ')})`);
@@ -274,6 +290,42 @@ describe('the temperature and the heat at a pixel, CPU and GPU', () => {
     expect(sunUniforms.uSelfLitSpanLog.value).toBeCloseTo(Math.log(15_700_000 / 4500), 12);
     expect(sunUniforms.uHeatLevel.value[0]).toBe(1); // the core, the hottest zone
     expect(sunUniforms.uHeatLevel.value[sun.regionsInsideOut.length - 1]).toBeLessThan(0.3); // the photosphere
+  });
+
+  it('gives a star\'s zones their levels, and the legend a swatch per zone in the order the faces draw them', () => {
+    const sun = drawnFromModel(SUN_MODEL);
+    const looks = regionLooks(sun, IDENTITY_REMAP, regionArtInsideOut(sun));
+    const uniforms = createSectionUniforms();
+    writeSectionRegions(uniforms, looks);
+    const levels = selfLitLevels(looks);
+    expect(levels).toHaveLength(looks.length);
+    for (let index = 0; index < looks.length; index++) expect(levels[index]).toBe(uniforms.uHeatLevel.value[index]);
+    // Nothing on the Sun is a lit region: no boost, and no hottest lit region for the legend to lift.
+    expect(hottestRegionIndex(looks, looks.length)).toBe(-1);
+    // The radiance curve is the shader's: the floor at the coolest zone, floor + range at the hottest.
+    expect(selfLitRadiance(0)).toBe(SELF_LIT_FLOOR);
+    expect(selfLitRadiance(1)).toBeCloseTo(SELF_LIT_FLOOR + SELF_LIT_RANGE, 12);
+    // The tone mapping is the shader's at structure 0.5: colorA-ward at the surface, past colorB at the core.
+    expect(selfLitToneMix(0)).toBeCloseTo(0.375, 12);
+    expect(selfLitToneMix(1)).toBeCloseTo(1.3, 12);
+    // Four swatches, each brighter than the one outside it, and each at least 30 levels from every other.
+    const swatches = looks.map((look, index) => selfLitSwatchHex(look.art, levels[index], selfLitRadiance(levels[index]) / selfLitRadiance(1)));
+    const luma = (hex: number) => 0.299 * ((hex >> 16) & 255) + 0.587 * ((hex >> 8) & 255) + 0.114 * (hex & 255);
+    for (let index = 1; index < swatches.length; index++) expect(luma(swatches[index - 1]), `zone ${index}`).toBeGreaterThan(luma(swatches[index]));
+    const maxChannelDelta = (a: number, b: number) => Math.max(Math.abs(((a >> 16) & 255) - ((b >> 16) & 255)), Math.abs(((a >> 8) & 255) - ((b >> 8) & 255)), Math.abs((a & 255) - (b & 255)));
+    for (let outer = 0; outer < swatches.length; outer++) {
+      for (let inner = outer + 1; inner < swatches.length; inner++) expect(maxChannelDelta(swatches[outer], swatches[inner]), `${outer} vs ${inner}`).toBeGreaterThanOrEqual(30);
+    }
+    // A self-lit region's plain swatch is its base tone; the lit-region swatch never goes all the way to its heat.
+    expect(swatchHex(looks[0].art, incandescence(15_700_000))).toBe(looks[0].art.colorA);
+    const earth = drawnFromModel(EARTH_MODEL);
+    const earthLooks = regionLooks(earth, IDENTITY_REMAP, regionArtInsideOut(earth));
+    const innerCore = earthLooks[0].art;
+    const plain = swatchHex(innerCore, incandescence(5500));
+    const lifted = swatchHex(innerCore, incandescence(5500), 0.3);
+    expect(plain).not.toBe(innerCore.colorA);
+    expect(luma(lifted)).toBeGreaterThan(luma(plain));
+    expect(hottestRegionIndex(earthLooks, earthLooks.length)).toBe(0);
   });
 
   it('computes the incandescence the swatch is computed from, at every temperature that matters', () => {

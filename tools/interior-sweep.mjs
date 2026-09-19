@@ -355,6 +355,36 @@ async function sweepBody(context, viewport, body) {
   } else {
     notes.push(`${tag}: no region offered a face probe (every middle under a band or a blend, or no scale)`);
   }
+
+  // 3c. On desktop a region whose temperature nobody knows says so on the face itself: under
+  // its name on the ruler (ui/DepthRuler's note, ui/interiorCopy.TEMPERATURE_NOT_KNOWN), in
+  // Temperature mode only, so the no-data hatch is never left to read as a texture. The note
+  // goes only with a name the projection has room for, so it is required where the hatched
+  // region is the innermost (its segment runs to the centre) and only noted elsewhere.
+  if (!viewport.touch) {
+    const rulerNotes = () => page.evaluate(() => [...document.querySelectorAll('#interior-ruler .ruler-note')]
+      .filter((element) => element.style.display !== 'none')
+      .map((element) => ({ transform: element.getAttribute('transform') ?? '', text: element.textContent ?? '' })));
+    const hatchedKeys = await page.evaluate(() => [...document.querySelectorAll('#interior-legend .interior-row')]
+      .filter((row) => row.querySelector('.interior-swatch')?.classList.contains('hatched'))
+      .map((row) => row.getAttribute('data-region')));
+    const shownNotes = await rulerNotes();
+    check(shownNotes.every((note) => note.text === 'Temperature not known' && note.transform.startsWith('matrix(')),
+      `${tag}: a ruler note is not the Temperature-mode note laid in the face's plane (${JSON.stringify(shownNotes)})`);
+    if (hatchedKeys.length === 0) {
+      check(shownNotes.length === 0, `${tag}: ${shownNotes.length} ruler note(s) with no hatched region`);
+    } else if (hatchedKeys.includes(regionKeys[0])) {
+      check(shownNotes.length >= 1, `${tag}: ${regionKeys[0]}'s temperature is not known and hatched, but the face carries no note`);
+    } else {
+      notes.push(`${tag}: hatched ${hatchedKeys.join(', ')}; ${shownNotes.length} note(s) on the face`);
+    }
+    await page.evaluate(() => window.__moon.interiorMode('composition'));
+    await ready(page);
+    const materialsNotes = await rulerNotes();
+    check(materialsNotes.length === 0, `${tag}: ${materialsNotes.length} Temperature-mode note(s) survive in Materials mode`);
+    await page.evaluate(() => window.__moon.interiorMode('temperature'));
+    await ready(page);
+  }
   await page.evaluate(() => window.__moon.interiorMode('composition'));
   await ready(page);
 

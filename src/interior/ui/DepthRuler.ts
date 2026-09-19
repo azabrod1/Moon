@@ -15,7 +15,9 @@
  * sequence; the rim reads "0" and the deepest label carries the unit; a
  * label that would sit inside a core too small to hold it is dropped, so
  * the innermost region stays legible; region names go where the projection
- * leaves room (the widest segments first, none over another); annotation
+ * leaves room (the widest segments first, none over another), and a region's
+ * note sits under its name, only with it and only where the chord holds it;
+ * annotation
  * brackets sit on tiers below the names, stepping apart wherever a span or
  * a name would overlap, and a bracket is drawn only WITH its name — a span
  * that has no room for its name on the body is not drawn as an anonymous
@@ -35,6 +37,9 @@ const TICK_PX = 6;
 /** The km labels sit this far up from the line; names this far below it. */
 const LABEL_GAP_PX = 10;
 const NAME_GAP_PX = 14;
+/** A region's note sits this far below the line, under its name, in the smaller face. */
+const NOTE_GAP_PX = 26;
+const NOTE_GLYPH_PX = 5.3;
 /** Labels are thinned to the width of the text between them (mono, about this wide per glyph) plus a gap. */
 const LABEL_GLYPH_PX = 6.2;
 const LABEL_MIN_GAP_PX = 10;
@@ -115,6 +120,7 @@ export class DepthRuler {
   private readonly tickLines = pool<'line'>();
   private readonly tickLabels = pool<'text'>();
   private readonly nameLabels = pool<'text'>();
+  private readonly noteLabels = pool<'text'>();
   private readonly bracketPaths = pool<'path'>();
   private readonly bracketLabels = pool<'text'>();
 
@@ -236,9 +242,10 @@ export class DepthRuler {
 
     // Segments: one line per region along the one straight ruler, named where
     // the projection leaves room: the widest first, none over another.
-    const segmentsOnScreen: { from: ScreenPoint; to: ScreenPoint; name: string; midpoint: THREE.Vector3 }[] = [];
+    const segmentsOnScreen: { from: ScreenPoint; to: ScreenPoint; name: string; note: string; midpoint: THREE.Vector3 }[] = [];
     const nameCandidates: LabelCandidate[] = [];
     const nameTexts: ({ text: PlaneText; half: number } | null)[] = [];
+    const noteTexts: ({ text: PlaneText; half: number } | null)[] = [];
     let midpointSlot = 0;
     for (const segment of layout.segments) {
       const from = toScreen(segment.from);
@@ -246,8 +253,9 @@ export class DepthRuler {
       if (!from || !to) continue;
       const midpoint = midpointOf(segment.from, segment.to, midpointSlot++);
       const placed = insideChord(midpoint, 0, -NAME_GAP_PX, estimateTextWidth(segment.name, NAME_GLYPH_PX) / 2);
-      segmentsOnScreen.push({ from, to, name: segment.name, midpoint });
+      segmentsOnScreen.push({ from, to, name: segment.name, note: segment.note, midpoint });
       nameTexts.push(placed);
+      noteTexts.push(segment.note && placed ? insideChord(midpoint, 0, -NOTE_GAP_PX, estimateTextWidth(segment.note, NOTE_GLYPH_PX) / 2) : null);
       nameCandidates.push({
         centre: placed ? along(placed.text.at) : (along(from) + along(to)) / 2,
         halfWidth: placed ? placed.half : Infinity,
@@ -255,7 +263,7 @@ export class DepthRuler {
       });
     }
     const namesKept = thinLabels(nameCandidates, { minSpanPx: NAME_MIN_SEGMENT_PX, gapPx: NAME_MIN_GAP_PX });
-    segmentsOnScreen.forEach(({ from, to, name }, index) => {
+    segmentsOnScreen.forEach(({ from, to, name, note }, index) => {
       const line = take(root, 'line', 'ruler-seg', this.segmentLines);
       line.setAttribute('x1', from[0].toFixed(1));
       line.setAttribute('y1', from[1].toFixed(1));
@@ -264,9 +272,13 @@ export class DepthRuler {
       const placed = nameTexts[index];
       if (!namesKept[index] || !placed) return;
       placeText(take(root, 'text', 'ruler-name', this.nameLabels), placed.text, name);
+      // The note goes with the name, where the chord holds it too.
+      const notePlaced = noteTexts[index];
+      if (notePlaced) placeText(take(root, 'text', 'ruler-note', this.noteLabels), notePlaced.text, note);
     });
     release(this.segmentLines);
     release(this.nameLabels);
+    release(this.noteLabels);
 
     // The innermost region's segment: a core too small for a label keeps the labels off itself.
     const innermost = segmentsOnScreen[0] ?? null;

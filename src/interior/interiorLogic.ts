@@ -12,8 +12,9 @@
  *                      and the ruler read one set of display radii; and its
  *                      temperature as the shader's knots, through the one
  *                      sampler (temperatureProfile) every reader of it shares
- *   the region art     each region's look with the family depth tint, the one
- *                      place the legend and the faces get their colours
+ *   the region art     each region's look — the family's, with the model's own
+ *                      adjustment and the family depth tint — the one place the
+ *                      legend and the faces get their colours
  *   the caption        the line under the body's name: what is drawn and how
  *                      much to trust it, the legend row of an unresolved whole,
  *                      and the thickness note under the Readable | True segment
@@ -30,7 +31,7 @@
  * Pure: no three, no DOM.
  */
 import { MAX_OPENING_ANGLE_DEG } from './cutFrame';
-import { artParamsFor, depthTint, type ArtParams } from './data/artParams';
+import { adjustArt, artParamsFor, depthTint, type ArtParams } from './data/artParams';
 import type { Coverage, InteriorModel } from './data/interiorTypes';
 import { outerFractionsInsideOut, type DrawnModel } from './drawnModel';
 import { toDisplayFraction, type ReadableRemap } from './interiorGeometry';
@@ -102,13 +103,15 @@ export function stepToward(value: number, target: number, step: number): number 
 
 // ---- the look mapping -------------------------------------------------------
 
-/** Each region's look, inside-out like the drawn model, with the family
- *  depth tint applied — the one place the legend and the faces get their colours. */
+/** Each region's look, inside-out like the drawn model: the family's, with the
+ *  model's own adjustment (a hue turn, a saturation) and then the family depth
+ *  tint — the one place the legend and the faces get their colours. */
 export function regionArtInsideOut(drawn: DrawnModel): ArtParams[] {
   const reference = drawn.referenceRadiusKm;
   return drawn.regionsInsideOut.map((region) => {
     const depthMidFraction = 1 - (region.outerRadiusKm + region.innerRadiusKm) / (2 * reference);
-    return depthTint(artParamsFor(region.family, region.phase), region.family, depthMidFraction);
+    const art = adjustArt(artParamsFor(region.family, region.phase), region.look ?? undefined);
+    return depthTint(art, region.family, depthMidFraction);
   });
 }
 

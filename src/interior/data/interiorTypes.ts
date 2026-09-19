@@ -138,12 +138,24 @@ export interface HeatBudget {
 }
 
 /** One shell of the non-overlapping radial partition the renderer draws. */
+/** A small adjustment to a region's family look — a hue turn in degrees, a
+ *  saturation scale and a lightness scale — so a rustier rock reads rustier and
+ *  a crust of pale anorthosite or granite reads paler and greyer than the mantle
+ *  under it; art, applied to the swatch and the face alike (artParams.adjustArt),
+ *  and the only per-region say a model has in how its material is drawn. */
+export interface RegionLook {
+  hueShiftDeg?: number;
+  saturation?: number;
+  lightness?: number;
+}
+
 export interface Region {
   key: string;
   name: string;
   family: MaterialFamily;
   phase: Phase;
   rheology?: string;
+  look?: RegionLook;
   /** Exact; the inner radius is the previous region's outer radius. */
   outerRadiusKm: number;
   /** This region's outer boundary. */

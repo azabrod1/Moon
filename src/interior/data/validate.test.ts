@@ -105,6 +105,24 @@ describe('validateInteriorModel', () => {
     expect(validateInteriorModel(model([bracketed, region('mantle', 1000, 1500, 300)]))).toEqual([]);
   });
 
+  it("keeps a region's look a small adjustment: a hue turn within the limit, a saturation in range", () => {
+    const fine = region('core', 400, 2000, 1500);
+    fine.look = { hueShiftDeg: -10, saturation: 0.45 };
+    expect(validateInteriorModel(model([fine, region('mantle', 1000, 1500, 300)]))).toEqual([]);
+    const turned = region('core', 400, 2000, 1500);
+    turned.look = { hueShiftDeg: 90 };
+    expect(validateInteriorModel(model([turned, region('mantle', 1000, 1500, 300)]))).toContainEqual(expect.stringContaining('hue turn of 90°'));
+    const washed = region('core', 400, 2000, 1500);
+    washed.look = { saturation: -0.1 };
+    expect(validateInteriorModel(model([washed, region('mantle', 1000, 1500, 300)]))).toContainEqual(expect.stringContaining('saturation of -0.1'));
+    const blown = region('core', 400, 2000, 1500);
+    blown.look = { saturation: 2 };
+    expect(validateInteriorModel(model([blown, region('mantle', 1000, 1500, 300)]))).toContainEqual(expect.stringContaining('saturation of 2'));
+    const bleached = region('core', 400, 2000, 1500);
+    bleached.look = { lightness: 2 };
+    expect(validateInteriorModel(model([bleached, region('mantle', 1000, 1500, 300)]))).toContainEqual(expect.stringContaining('lightness of 2'));
+  });
+
   it('keeps a probability between 0 and 1', () => {
     const tooSure = region('core', 1000, 2000, 1500);
     tooSure.claims.push({ kind: 'state', evidence: [], probability: { value: 90, proposition: 'p', source: 's' } });

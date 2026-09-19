@@ -85,6 +85,18 @@ describe('rulerLayout', () => {
     expect(layout.ticks[0].point.length()).toBeCloseTo(1, 9);
   });
 
+  it("carries a region's note onto its segment, and none where the region has none", () => {
+    const layout = rulerLayout(input({
+      regionsInsideOut: [
+        { key: 'core', name: 'Core', outerRadiusKm: 1221, innerRadiusKm: 0, note: 'Temperature not known' },
+        { key: 'mantle', name: 'Mantle', outerRadiusKm: 6371, innerRadiusKm: 1221 },
+      ],
+      outerDisplay: [0.19, 1],
+      annotations: [],
+    }));
+    expect(layout.segments.map((segment) => segment.note)).toEqual(['Temperature not known', '']);
+  });
+
   it('gives one segment per region from its outer edge in to its inner one, and a bracket per annotation', () => {
     const layout = rulerLayout(input());
     expect(layout.segments.map((segment) => segment.key)).toEqual(['innerCore', 'outerCore', 'lowerMantle', 'upperMantle', 'crust']);

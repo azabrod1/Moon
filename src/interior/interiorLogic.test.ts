@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { EARTH_MODEL } from './data/models/earth';
 import { EUROPA_MODEL } from './data/models/europa';
 import { JUPITER_DILUTE_MODEL } from './data/models/jupiter';
+import { MOON_MODEL } from './data/models/moon';
 import { coverageFor } from './data/interiorRegistry';
 import { drawnFromModel, drawnUnresolved, outerFractionsInsideOut } from './drawnModel';
 import { IDENTITY_REMAP, readableRemap, toDisplayFraction, toPhysicalFraction } from './interiorGeometry';
@@ -164,6 +165,33 @@ describe('the look mapping', () => {
     const art = regionArtInsideOut(earth);
     expect(art).toHaveLength(earth.regionsInsideOut.length);
     for (const params of art) expect(params.colorA).toBeGreaterThanOrEqual(0);
+  });
+
+  it("applies a region's own look before the depth tint, and only where a model gives one", () => {
+    const moon = drawnFromModel(MOON_MODEL);
+    const crustIndex = moon.regionsInsideOut.findIndex((region) => region.key === 'crust');
+    expect(moon.regionsInsideOut[crustIndex].look).toEqual({ hueShiftDeg: -10, saturation: 0.45, lightness: 1.25 });
+    const asAuthored = regionArtInsideOut(moon);
+    const plain = drawnFromModel({ ...MOON_MODEL, regions: MOON_MODEL.regions.map((region) => ({ ...region, look: undefined })) });
+    const withoutLooks = regionArtInsideOut(plain);
+    // The crust's grey is its look: without it the crust is the family brown at its depth.
+    expect(asAuthored[crustIndex].colorA).not.toBe(withoutLooks[crustIndex].colorA);
+    expect(asAuthored[crustIndex].colorB).not.toBe(withoutLooks[crustIndex].colorB);
+    const saturationOf = (hex: number) => {
+      const channels = [(hex >> 16) & 255, (hex >> 8) & 255, hex & 255];
+      const max = Math.max(...channels);
+      const min = Math.min(...channels);
+      return max === 0 ? 0 : (max - min) / max;
+    };
+    expect(saturationOf(asAuthored[crustIndex].colorA)).toBeLessThan(saturationOf(withoutLooks[crustIndex].colorA));
+    // A region with no look is the family look at its depth, unchanged.
+    const coreIndex = moon.regionsInsideOut.findIndex((region) => region.key === 'innerCore');
+    expect(moon.regionsInsideOut[coreIndex].look).toBeNull();
+    expect(asAuthored[coreIndex]).toEqual(withoutLooks[coreIndex]);
+    // Everything but the two tones is the family's.
+    const { colorA: _a, colorB: _b, ...authoredRest } = asAuthored[crustIndex];
+    const { colorA: _c, colorB: _d, ...plainRest } = withoutLooks[crustIndex];
+    expect(authoredRest).toEqual(plainRest);
   });
 });
 

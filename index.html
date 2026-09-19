@@ -717,19 +717,19 @@
       .act-tip { transition: none; }
     }
 
-    /* Menu panel */
+    /* Menu panel — one popover with pages inside it (ui/PlanetariumMenuPanel.ts).
+       The material is the app's elevated glass (.pn .pn-high), the same surface
+       as the Tools card and the deck rather than a lookalike box. The width is
+       fixed on every screen so a page change never moves the outline. */
     #planetarium-menu-panel {
       display: none;
       position: absolute;
       top: 56px;
-      right: 12px;
-      background: var(--panel-bg);
-      backdrop-filter: blur(12px);
-      border: 1px solid var(--panel-border);
-      border-radius: 8px;
-      padding: 8px;
+      right: max(12px, env(safe-area-inset-right, 0px));
+      width: min(304px, calc(100vw - 24px));
+      border-radius: var(--r-l);
+      padding: 8px 8px calc(8px + env(safe-area-inset-bottom, 0px));
       pointer-events: auto;
-      min-width: 190px;
       /* The panel is taller than a small phone's screen with eleven settings
          rows in it, and the page itself cannot scroll (html, body are
          overflow: hidden), so the last row would simply be unreachable. The
@@ -740,14 +740,154 @@
       max-height: calc(100vh - 68px);
       max-height: calc(100dvh - 68px);
       overflow-y: auto;
+      /* A page sliding out is never a reason to scroll sideways. */
+      overflow-x: hidden;
       overscroll-behavior: contain;
       touch-action: pan-y;
       /* Above the observatory panel (21) and the tutorial card (30): the wrap card
          points at this menu, so it must open over the card on phones too. */
       z-index: 34;
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
-    #planetarium-menu-panel.visible { display: block; }
+    /* The pages share one grid cell, so one can slide out while the other
+       slides in; align-content keeps a short page at the top of the panel
+       instead of stretching it down the cell. */
+    #planetarium-menu-panel.visible {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      align-content: start;
+    }
+    .menu-page {
+      grid-area: 1 / 1;
+      min-width: 0;
+      transition: transform 0.22s var(--ease), opacity 0.22s var(--ease);
+    }
+    /* The author display above would beat the hidden attribute's own rule and
+       leave both pages stacked on top of each other. */
+    .menu-page[hidden] { display: none !important; }
+    .menu-page-enter-right { transform: translateX(100%); opacity: 0; }
+    .menu-page-enter-left { transform: translateX(-100%); opacity: 0; }
+    .menu-page-exit-left { transform: translateX(-100%); opacity: 0; }
+    .menu-page-exit-right { transform: translateX(100%); opacity: 0; }
+    /* The outgoing page leaves the flow for the length of the slide, so the
+       panel's outline takes the incoming page's height in one step rather
+       than being held open by the page that is leaving. */
+    .menu-page-leaving { position: absolute; top: 0; left: 0; width: 100%; }
+    @media (prefers-reduced-motion: reduce) {
+      .menu-page { transition: none; }
+    }
+    /* A sub-page's header: the way back first, then what the page is. */
+    .menu-head { display: flex; align-items: center; gap: 4px; padding: 4px 2px 10px; }
+    .menu-head h3 {
+      margin: 0;
+      font-family: var(--font);
+      font-size: 15px;
+      font-weight: 500;
+      letter-spacing: 0.5px;
+      color: var(--t1);
+    }
+    .menu-back {
+      flex: none;
+      width: 26px; height: 26px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border: none; background: none; border-radius: var(--r-s);
+      color: var(--t2); font-family: var(--font); font-size: 18px; line-height: 1;
+      cursor: pointer;
+      transition: background 0.14s var(--ease), color 0.14s var(--ease);
+    }
+    .menu-back:hover { background: rgba(255, 255, 255, 0.06); color: var(--t1); }
+    /* A tier row: the name, where it stands, and the chevron into its page.
+       The deck's row family, so it sits in the list with the actions. */
+    .menu-tier {
+      width: 100%;
+      border: none;
+      background: none;
+      font-family: var(--font);
+      text-align: left;
+    }
+    .menu-tier b { flex: none; font-size: 12.5px; font-weight: 500; color: var(--t1); }
+    .menu-tier-value {
+      flex: 1; min-width: 0; text-align: right;
+      font-size: 11.5px; color: var(--t2);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .menu-tier-chevron { flex: none; font-size: 12px; line-height: 1; color: var(--t3); }
+    /* A field on a sub-page: the eyebrow, the control, the line that says what
+       the choice means. */
+    .menu-field { padding: 0 3px; }
+    .menu-field + .menu-field { margin-top: 15px; }
+    .menu-field-label {
+      margin-bottom: 6px;
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--t2);
+    }
+    .menu-note {
+      margin: 7px 1px 0;
+      font-size: 11px;
+      line-height: 1.5;
+      color: var(--t3);
+      text-wrap: pretty;
+    }
+    /* The segmented control, in the map scale's hairline track. */
+    .menu-seg {
+      display: flex;
+      height: 30px;
+      border: 1px solid var(--line-dim);
+      border-radius: var(--r-s);
+      background: rgba(255, 255, 255, 0.04);
+      overflow: hidden;
+    }
+    .menu-seg-btn {
+      flex: 1;
+      min-width: 0;
+      border: none;
+      background: none;
+      padding: 0;
+      font-family: var(--font-ui);
+      font-size: 11.5px;
+      font-weight: 500;
+      letter-spacing: 0.2px;
+      color: var(--t2);
+      cursor: pointer;
+      white-space: nowrap;
+      -webkit-tap-highlight-color: transparent;
+      transition: background 0.16s var(--ease), color 0.16s var(--ease);
+    }
+    .menu-seg-btn[hidden] { display: none; }
+    .menu-seg-btn + .menu-seg-btn { border-left: 1px solid var(--line-dim); }
+    .menu-seg-btn:hover { color: var(--t1); }
+    .menu-seg-btn.on { background: rgba(var(--accent-rgb), 0.16); color: var(--t1); }
+    .menu-seg-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
+    /* What Dynamic is drawing right now: the word, and a pip per rung with the
+       one in use lit. The captions sit in a grid of the same cells as the pips,
+       so each one lands under the rung it names. */
+    .menu-live-word { font-size: 12px; color: var(--t1); }
+    .menu-ladder, .menu-ladder-captions {
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: 42px;
+      justify-content: start;
+      justify-items: center;
+      align-items: center;
+    }
+    .menu-ladder { margin-top: 8px; height: 10px; }
+    .menu-pip {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--line);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
+    }
+    .menu-pip.on { background: var(--accent); box-shadow: 0 0 7px rgba(var(--accent-rgb), 0.55); }
+    .menu-ladder-captions {
+      margin-top: 5px;
+      font-family: var(--font-mono);
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--t3);
+      white-space: nowrap;
+    }
     .menu-build {
       /* Hidden unless ?debug=1 reveals it — the rule stays here (not only in
          the script) so the empty element can't leave its divider and padding
@@ -763,20 +903,31 @@
       user-select: text;
     }
     .menu-action {
-      display: block;
+      display: flex;
+      align-items: center;
       width: 100%;
-      padding: 7px 10px;
+      min-height: 30px;
+      padding: 6px 9px;
       border: none;
-      border-radius: 5px;
+      border-radius: var(--r-s);
       background: none;
       color: var(--text-primary);
-      font-size: 12px;
+      font-size: 12.5px;
       font-family: var(--font);
       text-align: left;
       cursor: pointer;
       transition: background 0.12s;
     }
     .menu-action:hover { background: rgba(255, 255, 255, 0.06); }
+    /* A finger needs a bigger target than a pointer does. The rows grow, the
+       type does not — the panel is already the tallest thing on a small phone,
+       and it scrolls. */
+    @media (hover: none) and (pointer: coarse) {
+      .menu-action, .settings-row { min-height: 36px; }
+      .menu-tier { min-height: 36px; }
+      .menu-seg { height: 36px; }
+      .menu-back { width: 32px; height: 32px; }
+    }
 
     /* Observatory (landed-mode) tokens alias the Obsidian palette in :root above;
        warm (--obs-warm / --ember) stays reserved for "happening now". */
@@ -1266,11 +1417,12 @@
       justify-content: space-between;
       align-items: center;
       gap: 12px;
-      padding: 4px 0;
+      padding: 4px 3px;
+      min-height: 30px;
     }
     .settings-label {
       color: var(--text-primary);
-      font-size: 11px;
+      font-size: 12px;
       letter-spacing: 0.1px;
     }
     .settings-label.is-mixed {
@@ -1311,12 +1463,12 @@
       font-variant-numeric: tabular-nums;
     }
     .settings-toggle {
-      padding: 3px 10px;
+      padding: 4px 10px;
       border: 1px solid transparent;
-      border-radius: 4px;
+      border-radius: var(--r-s);
       background: rgba(255, 255, 255, 0.04);
       color: var(--text-secondary);
-      font-size: 11px;
+      font-size: 11.5px;
       cursor: pointer;
       font-family: var(--font);
       transition: all 0.15s;
@@ -4410,94 +4562,129 @@
         </button>
       </div>
 
-      <!-- Menu dropdown (Help, journey actions, settings) -->
-      <div id="planetarium-menu-panel">
-        <button class="menu-action" id="planetarium-btn-help">Help</button>
-        <button class="menu-action" id="planetarium-btn-save">Save</button>
-        <button class="menu-action" id="planetarium-btn-new">New Journey</button>
-        <button class="menu-action" id="planetarium-btn-tutorial">Tutorial</button>
-        <button class="menu-action" id="planetarium-btn-map">System map</button>
-        <button class="menu-action" id="planetarium-btn-tools">Tools</button>
-        <div class="menu-divider"></div>
-        <div class="settings-row">
-          <span class="settings-label">Show ship</span>
-          <button class="settings-toggle" id="settings-ship-toggle">
-            <span id="settings-ship-label">On</span>
+      <!-- Menu dropdown: one popover with pages inside it (ui/PlanetariumMenuPanel.ts).
+           The root is the list of actions, the tier rows and the flat toggles; a
+           .menu-tier row opens the page it names and the page's back button
+           returns. A future tier is markup and nothing else. -->
+      <div id="planetarium-menu-panel" class="pn pn-high">
+        <div class="menu-page" data-page="root">
+          <button class="menu-action" id="planetarium-btn-help">Help</button>
+          <button class="menu-action" id="planetarium-btn-save">Save</button>
+          <button class="menu-action" id="planetarium-btn-new">New Journey</button>
+          <button class="menu-action" id="planetarium-btn-tutorial">Tutorial</button>
+          <button class="menu-action" id="planetarium-btn-map">System map</button>
+          <button class="menu-action" id="planetarium-btn-tools">Tools</button>
+          <div class="menu-divider"></div>
+          <button type="button" class="pk-row menu-tier" data-open="graphics">
+            <b>Graphics</b>
+            <span class="menu-tier-value">Dynamic</span>
+            <span class="menu-tier-chevron" aria-hidden="true">&rsaquo;</span>
           </button>
+          <div class="menu-divider"></div>
+          <div class="settings-row">
+            <span class="settings-label">Show ship</span>
+            <button class="settings-toggle" id="settings-ship-toggle">
+              <span id="settings-ship-label">On</span>
+            </button>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Gyro steer</span>
+            <button class="settings-toggle" id="settings-gyro-toggle">
+              <span id="settings-gyro-label">Off</span>
+            </button>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Constellations</span>
+            <button class="settings-toggle" id="settings-constellations-toggle">
+              <span id="settings-constellations-label">Off</span>
+            </button>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Planet labels</span>
+            <button class="settings-toggle" id="settings-labels-toggle">
+              <span id="settings-labels-label">On</span>
+            </button>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Label distances</span>
+            <button class="settings-toggle" id="settings-label-distances-toggle"
+                    aria-label="Label distances" aria-pressed="false">
+              <span id="settings-label-distances-label">On hover</span>
+            </button>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Planet markers</span>
+            <button class="settings-toggle" id="settings-markers-toggle">
+              <span id="settings-markers-label">On</span>
+            </button>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Orbit lines</span>
+            <button class="settings-toggle" id="settings-orbits-toggle"
+                    aria-label="Orbit lines" aria-pressed="false">
+              <span id="settings-orbits-label">Off</span>
+            </button>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Mini map</span>
+            <button class="settings-toggle" id="settings-mini-toggle"
+                    aria-label="Mini map" aria-pressed="false">
+              <span id="settings-mini-label">Off</span>
+            </button>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Mini map size</span>
+            <button class="settings-toggle" id="settings-minisize-toggle"
+                    aria-label="Mini map size" aria-pressed="false">
+              <span id="settings-minisize-label">Medium</span>
+            </button>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Slower near planets</span>
+            <button class="settings-toggle" id="settings-throttle-toggle">
+              <span id="settings-throttle-label">On</span>
+            </button>
+          </div>
+          <div class="menu-build" id="menu-build"></div>
         </div>
-        <div class="settings-row">
-          <span class="settings-label">Gyro steer</span>
-          <button class="settings-toggle" id="settings-gyro-toggle">
-            <span id="settings-gyro-label">Off</span>
-          </button>
+
+        <!-- Graphics: how many pixels the picture is drawn at, and how often. -->
+        <div class="menu-page" data-page="graphics" id="menu-page-graphics" hidden>
+          <div class="menu-head">
+            <button type="button" class="menu-back" aria-label="Back"><span aria-hidden="true">&lsaquo;</span></button>
+            <h3>Graphics</h3>
+          </div>
+          <div class="menu-field">
+            <div class="menu-field-label">Quality</div>
+            <div class="menu-seg" role="radiogroup" aria-label="Graphics quality"
+                 aria-describedby="settings-quality-note" id="settings-quality-seg">
+              <button type="button" class="menu-seg-btn" role="radio" aria-checked="false" data-value="low" id="settings-quality-low">Low</button>
+              <button type="button" class="menu-seg-btn" role="radio" aria-checked="false" data-value="medium" id="settings-quality-medium">Medium</button>
+              <button type="button" class="menu-seg-btn" role="radio" aria-checked="false" data-value="high" id="settings-quality-high">High</button>
+              <button type="button" class="menu-seg-btn" role="radio" aria-checked="true" data-value="dynamic" id="settings-quality-dynamic">Dynamic</button>
+            </div>
+            <div class="menu-note" id="settings-quality-note"></div>
+          </div>
+          <!-- Only under Dynamic, and only where the ladder has more than one
+               rung: one pip is a decoration, not a readout. -->
+          <div class="menu-field" id="settings-quality-live" hidden>
+            <div class="menu-field-label">Now rendering</div>
+            <div class="menu-live-word" id="settings-quality-live-word"></div>
+            <div class="menu-ladder" id="settings-quality-ladder" aria-hidden="true"></div>
+            <div class="menu-ladder-captions" id="settings-quality-captions" aria-hidden="true"></div>
+          </div>
+          <div class="menu-field">
+            <div class="menu-field-label">Frame rate</div>
+            <div class="menu-seg" role="radiogroup" aria-label="Frame rate"
+                 aria-describedby="settings-fps-note" id="settings-fps-seg">
+              <button type="button" class="menu-seg-btn" role="radio" aria-checked="true" data-value="screen" id="settings-fps-screen">Screen</button>
+              <button type="button" class="menu-seg-btn" role="radio" aria-checked="false" data-value="30" id="settings-fps-30">30 fps</button>
+              <button type="button" class="menu-seg-btn" role="radio" aria-checked="false" data-value="60" id="settings-fps-60">60 fps</button>
+              <button type="button" class="menu-seg-btn" role="radio" aria-checked="false" data-value="120" id="settings-fps-120">120 fps</button>
+            </div>
+            <div class="menu-note" id="settings-fps-note"></div>
+          </div>
         </div>
-        <div class="settings-row">
-          <span class="settings-label">Constellations</span>
-          <button class="settings-toggle" id="settings-constellations-toggle">
-            <span id="settings-constellations-label">Off</span>
-          </button>
-        </div>
-        <div class="settings-row">
-          <span class="settings-label">Planet labels</span>
-          <button class="settings-toggle" id="settings-labels-toggle">
-            <span id="settings-labels-label">On</span>
-          </button>
-        </div>
-        <div class="settings-row">
-          <span class="settings-label">Label distances</span>
-          <button class="settings-toggle" id="settings-label-distances-toggle"
-                  aria-label="Label distances" aria-pressed="false">
-            <span id="settings-label-distances-label">On hover</span>
-          </button>
-        </div>
-        <div class="settings-row">
-          <span class="settings-label">Planet markers</span>
-          <button class="settings-toggle" id="settings-markers-toggle">
-            <span id="settings-markers-label">On</span>
-          </button>
-        </div>
-        <div class="settings-row">
-          <span class="settings-label">Orbit lines</span>
-          <button class="settings-toggle" id="settings-orbits-toggle"
-                  aria-label="Orbit lines" aria-pressed="false">
-            <span id="settings-orbits-label">Off</span>
-          </button>
-        </div>
-        <div class="settings-row">
-          <span class="settings-label">Mini map</span>
-          <button class="settings-toggle" id="settings-mini-toggle"
-                  aria-label="Mini map" aria-pressed="false">
-            <span id="settings-mini-label">Off</span>
-          </button>
-        </div>
-        <div class="settings-row">
-          <span class="settings-label">Mini map size</span>
-          <button class="settings-toggle" id="settings-minisize-toggle"
-                  aria-label="Mini map size" aria-pressed="false">
-            <span id="settings-minisize-label">Medium</span>
-          </button>
-        </div>
-        <div class="settings-row">
-          <span class="settings-label">Slower near planets</span>
-          <button class="settings-toggle" id="settings-throttle-toggle">
-            <span id="settings-throttle-label">On</span>
-          </button>
-        </div>
-        <div class="settings-row">
-          <span class="settings-label">Graphics quality</span>
-          <button class="settings-toggle" id="settings-quality-toggle"
-                  aria-label="Graphics quality" aria-pressed="false">
-            <span id="settings-quality-label">Dynamic</span>
-          </button>
-        </div>
-        <div class="settings-row">
-          <span class="settings-label">Frame rate</span>
-          <button class="settings-toggle" id="settings-fps-toggle"
-                  aria-label="Frame rate" aria-pressed="false">
-            <span id="settings-fps-label">Screen</span>
-          </button>
-        </div>
-        <div class="menu-build" id="menu-build"></div>
       </div>
 
       <!-- Observatory panel: vantage + phase hero + surface-view entry + event jumps -->

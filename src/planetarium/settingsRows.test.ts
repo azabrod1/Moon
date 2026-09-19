@@ -1,27 +1,46 @@
 import { describe, expect, it } from 'vitest';
 import html from '../../index.html?raw';
 import mode from './PlanetariumMode.ts?raw';
+import panel from './ui/PlanetariumMenuPanel.ts?raw';
+import segmented from './ui/SegmentedControl.ts?raw';
+import { QUALITY_LEVELS } from '../app/renderQuality';
+import { FRAME_RATES } from '../app/frameRateSetting';
 
-// The ☰ panel's settings rows are vanilla HTML and the mode reaches them by
-// id, so nothing but a running app connects the two: a row renamed in the HTML
-// leaves a button that does nothing, and a row read by the mode with no
-// element leaves a setting with no control. These tests read both files as
-// text and pin the id sets against each other.
+// The ☰ panel is vanilla HTML and the TypeScript reaches it by id, so nothing
+// but a running app connects the two: a row renamed in the HTML leaves a
+// button that does nothing, and an id read by the mode with no element leaves
+// a setting with no control. These tests read both sides as text and pin the
+// id sets against each other.
 //
-// Scoped to the `settings-…-toggle` / `settings-…-label` pairs, which are one
-// shape with one owner (PlanetariumMode's wireUpUI and its sync helpers). The
-// panel's other ids are read from several places and would make this a
-// whole-app id audit instead.
+// The reading side is every module that looks an id up: the mode, the panel
+// itself, and the segmented control's wiring.
+//
+// What these tests CANNOT see is the panel's behaviour — the page slide, the
+// focus moves, reset-to-root on hide. There is no jsdom in this repo, and a
+// fake DOM would only pin the fake. That behaviour is proved in a real browser
+// by the capture run (planning/menu-tiers), on Chromium and on WebKit.
+
+const ts = [mode, panel, segmented].join('\n');
 
 function idsIn(text: string, pattern: RegExp): Set<string> {
   return new Set([...text.matchAll(pattern)].map((m) => m[1]));
 }
 
+const panelMarkup = html.slice(
+  html.indexOf('<div id="planetarium-menu-panel"'),
+  html.indexOf('<!-- Observatory panel:'),
+);
+const rootPage = panelMarkup.slice(
+  panelMarkup.indexOf('data-page="root"'),
+  panelMarkup.indexOf('data-page="graphics"'),
+);
+const graphicsPage = panelMarkup.slice(panelMarkup.indexOf('data-page="graphics"'));
+
 const declared = idsIn(html, /id="(settings-[a-z-]+-(?:toggle|label))"/g);
-const read = idsIn(mode, /'(settings-[a-z-]+-(?:toggle|label))'/g);
+const read = idsIn(ts, /'(settings-[a-z-]+-(?:toggle|label))'/g);
 
 describe('☰ settings rows', () => {
-  it('declares every id the mode reads', () => {
+  it('declares every id the TypeScript reads', () => {
     expect([...read].filter((id) => !declared.has(id))).toEqual([]);
   });
 
@@ -39,48 +58,114 @@ describe('☰ settings rows', () => {
   });
 });
 
-describe('the graphics-quality and frame-rate rows', () => {
-  it('sit at the end of the panel, after "Slower near planets", quality then frame rate', () => {
-    const throttle = html.indexOf('id="settings-throttle-toggle"');
-    const quality = html.indexOf('id="settings-quality-toggle"');
-    const fps = html.indexOf('id="settings-fps-toggle"');
-    const build = html.indexOf('id="menu-build"');
-    expect(throttle).toBeGreaterThan(0);
-    expect(quality).toBeGreaterThan(throttle);
-    expect(fps).toBeGreaterThan(quality);
-    expect(build).toBeGreaterThan(fps);
+describe('the Graphics page', () => {
+  // Every id in the page, and every id the TypeScript asks the page for. The
+  // segments are the one set the TypeScript never names: it reads the group
+  // and each segment's data-value, so their ids are pinned below against the
+  // level and rate lists instead.
+  const pageIds = [...idsIn(graphicsPage, /id="([a-z0-9-]+)"/g)]
+    .filter((id) => id !== 'menu-page-graphics');
+  const pageRead = idsIn(ts, /(?:getElementById|setText)\('(settings-[a-z0-9-]+|menu-page-[a-z0-9-]+)'/g);
+  const segmentIds = new Set([
+    ...QUALITY_LEVELS.map((level) => `settings-quality-${level}`),
+    ...FRAME_RATES.map((rate) => `settings-fps-${rate}`),
+  ]);
+
+  it('lives inside the panel, behind a tier row that names it', () => {
+    expect(panelMarkup).toContain('class="menu-page" data-page="graphics"');
+    expect(panelMarkup).toContain('data-open="graphics"');
+    expect(graphicsPage).toContain('class="menu-back"');
   });
 
-  for (const label of ['Graphics quality', 'Frame rate']) {
-    it(`"${label}" is one cycling button in the multi-state idiom`, () => {
-      // One `.settings-toggle`, not a row of four: four buttons reading Low /
-      // Medium / High / Dynamic want about 357 px, and the panel has no
-      // max-width, so on a 315 px phone the row would push the panel off the
-      // left edge. `aria-pressed` is what "Label distances" carries.
-      const row = html.match(
-        new RegExp(`<div class="settings-row">\\s*<span class="settings-label">${label}</span>[\\s\\S]*?</div>`),
-      );
-      expect(row).not.toBeNull();
-      const markup = row?.[0] ?? '';
-      expect([...markup.matchAll(/<button/g)]).toHaveLength(1);
-      expect(markup).toContain('class="settings-toggle"');
-      expect(markup).toContain('aria-pressed=');
-    });
-  }
+  it('declares every id the TypeScript writes into it', () => {
+    const missing = [...pageRead].filter((id) => !html.includes(`id="${id}"`));
+    expect(missing).toEqual([]);
+  });
 
-  it('the panel scrolls, so the last row is reachable on a small phone', () => {
+  it('carries nothing the TypeScript never reads', () => {
+    expect(pageIds.filter((id) => !pageRead.has(id) && !segmentIds.has(id))).toEqual([]);
+  });
+
+  it('gives every level and every frame rate a segment of its own', () => {
+    for (const id of segmentIds) expect(graphicsPage, id).toContain(`id="${id}"`);
+    for (const level of QUALITY_LEVELS) expect(graphicsPage).toContain(`data-value="${level}"`);
+    for (const rate of FRAME_RATES) expect(graphicsPage).toContain(`data-value="${rate}"`);
+  });
+
+  it('holds both controls as radiogroups of checkable radios', () => {
+    const groups = [...panelMarkup.matchAll(/role="radiogroup"[\s\S]*?<\/div>/g)].map((m) => m[0]);
+    expect(groups).toHaveLength(2);
+    for (const group of groups) {
+      const radios = [...group.matchAll(/role="radio"/g)];
+      expect(radios.length).toBeGreaterThanOrEqual(2);
+      expect([...group.matchAll(/aria-checked=/g)]).toHaveLength(radios.length);
+    }
+  });
+
+  it('describes each group by the note under it', () => {
+    expect(graphicsPage).toContain('aria-describedby="settings-quality-note"');
+    expect(graphicsPage).toContain('aria-describedby="settings-fps-note"');
+  });
+
+  it('leaves the old cycling buttons behind in both files', () => {
+    // Four buttons reading Low / Medium / High / Dynamic wanted about 357 px
+    // and the old panel was 190 px wide, which is why the setting was one
+    // button whose label cycled. The control has a line of its own inside a
+    // 304 px page now, so the four choices are all on screen at once.
+    for (const id of ['settings-quality-toggle', 'settings-fps-toggle']) {
+      expect(html).not.toContain(id);
+      expect(ts).not.toContain(id);
+    }
+  });
+});
+
+describe('the root page', () => {
+  it('puts the Graphics tier between the actions and the toggles', () => {
+    const tools = rootPage.indexOf('id="planetarium-btn-tools"');
+    const tier = rootPage.indexOf('data-open="graphics"');
+    const ship = rootPage.indexOf('id="settings-ship-toggle"');
+    const throttle = rootPage.indexOf('id="settings-throttle-toggle"');
+    const build = rootPage.indexOf('id="menu-build"');
+    expect(tools).toBeGreaterThan(0);
+    expect(tier).toBeGreaterThan(tools);
+    expect(ship).toBeGreaterThan(tier);
+    expect(build).toBeGreaterThan(throttle);
+  });
+
+  it('keeps the build stamp last, where ?debug=1 reveals it', () => {
+    expect(rootPage.indexOf('id="menu-build"'))
+      .toBeGreaterThan(rootPage.lastIndexOf('class="settings-row"'));
+  });
+});
+
+describe('the panel\'s own rules', () => {
+  it('hides the page that is not current, over its own display', () => {
+    // .menu-page carries an author display (the pages share one grid cell),
+    // which would beat the hidden attribute's UA rule and leave both pages
+    // stacked on top of each other.
+    const rule = html.match(/\.menu-page\[hidden\] \{[^}]*\}/)?.[0] ?? '';
+    expect(rule).toContain('display: none');
+    expect(rule).toContain('!important');
+  });
+
+  it('stills the slide for a reader who asked for less motion', () => {
+    const block = html.match(/@media \(prefers-reduced-motion: reduce\) \{\s*\.menu-page \{[^}]*\}/)?.[0] ?? '';
+    expect(block).toContain('transition: none');
+  });
+
+  it('scrolls, so the last row is reachable on a small phone', () => {
     // Eleven settings rows put the panel's bottom around 578 px by the CSS
     // arithmetic, and the page itself cannot scroll (html, body are
     // overflow: hidden), so without this the last row is simply unreachable
     // at 320x568.
-    const panel = html.match(/#planetarium-menu-panel \{[\s\S]*?\n {4}\}/)?.[0] ?? '';
-    expect(panel).toContain('overflow-y: auto');
-    expect(panel).toContain('overscroll-behavior: contain');
-    expect(panel).toContain('touch-action: pan-y');
+    const panelCss = html.match(/#planetarium-menu-panel \{[\s\S]*?\n {4}\}/)?.[0] ?? '';
+    expect(panelCss).toContain('overflow-y: auto');
+    expect(panelCss).toContain('overscroll-behavior: contain');
+    expect(panelCss).toContain('touch-action: pan-y');
     // The dvh line with a vh fallback before it: an engine without dvh would
     // drop the whole declaration and restore the unreachable row.
-    expect(panel).toContain('max-height: calc(100vh - 68px)');
-    expect(panel.indexOf('max-height: calc(100vh - 68px)'))
-      .toBeLessThan(panel.indexOf('max-height: calc(100dvh - 68px)'));
+    expect(panelCss).toContain('max-height: calc(100vh - 68px)');
+    expect(panelCss.indexOf('max-height: calc(100vh - 68px)'))
+      .toBeLessThan(panelCss.indexOf('max-height: calc(100dvh - 68px)'));
   });
 });

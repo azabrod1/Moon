@@ -11,13 +11,19 @@
  *
  * The pages share one grid cell, so a page change slides: the outgoing page
  * moves out and the incoming one in, 220 ms on transform and opacity, which
- * is compositor work. Nothing animates the panel's HEIGHT — the outline takes
- * the incoming page's height in one step, the way every other resize in this
- * app does — and the outgoing page is taken out of flow for the slide so it
- * cannot hold the old height open. The panel clips while a slide runs and
- * gets its scrolling back when it settles, on the transition's end or on a
- * safety timeout, so an interrupted slide can never leave the panel unable to
- * scroll. `prefers-reduced-motion: reduce` swaps the pages outright.
+ * is compositor work. The slide is a Web Animations call with both keyframes
+ * spelled out, not a CSS transition off a toggled class: a transition starts
+ * from whatever style the engine computed last, and a page that has been
+ * measured while hidden already has one, so toggling a start class on it
+ * began a transition and taking the class off reversed it to nothing — the
+ * page snapped into place. Nothing animates the panel's HEIGHT — the outline
+ * takes the incoming page's height in one step, the way every other resize in
+ * this app does — and the outgoing page is taken out of flow for the slide so
+ * it cannot hold the old height open. The panel clips while a slide runs and
+ * gets its scrolling back when it settles, when the entering page's animation
+ * finishes or on a safety timeout, so an interrupted slide can never leave the
+ * panel unable to scroll. `prefers-reduced-motion: reduce` swaps the pages
+ * outright.
  *
  * **Hiding resets to the root.** The menu always opens on the list, and no
  * page is remembered across a close: that is what a popover does, and there
@@ -74,6 +80,9 @@ export class PlanetariumMenuPanel {
   private settleTimer: number | null = null;
 
   private reduceMotion: MediaQueryList | null = null;
+
+  /** The app's own easing (`--ease` on the root), read once. */
+  private easing: string | null = null;
 
   private el(): HTMLElement | null {
     return document.getElementById('planetarium-menu-panel');
@@ -171,6 +180,14 @@ export class PlanetariumMenuPanel {
     this.settle();
   }
 
+  private ease(): string {
+    if (this.easing === null) {
+      const declared = getComputedStyle(document.documentElement).getPropertyValue('--ease').trim();
+      this.easing = declared || 'ease-out';
+    }
+    return this.easing;
+  }
+
   private prefersReducedMotion(): boolean {
     if (!this.reduceMotion) this.reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
     return this.reduceMotion.matches;
@@ -190,21 +207,28 @@ export class PlanetariumMenuPanel {
     next.hidden = false;
     panel.scrollTop = 0;
 
-    if (from && from !== next && !this.prefersReducedMotion()) {
-      next.classList.add(forward ? 'menu-page-enter-right' : 'menu-page-enter-left');
+    if (from && from !== next && !this.prefersReducedMotion() && typeof next.animate === 'function') {
       from.classList.add('menu-page-leaving');
       panel.style.overflow = 'hidden';
-      // One reflow so the browser has the entering page's start position to
-      // transition FROM; without it the class removal below is coalesced with
-      // the class addition above and nothing moves.
-      void panel.offsetWidth;
-      next.classList.remove('menu-page-enter-right', 'menu-page-enter-left');
-      from.classList.add(forward ? 'menu-page-exit-left' : 'menu-page-exit-right');
-      const onEnd = () => {
-        next.removeEventListener('transitionend', onEnd);
-        this.settle(generation);
-      };
-      next.addEventListener('transitionend', onEnd);
+      // Going deeper, the old page leaves to the left and the new one comes in
+      // from the right; coming back, the other way round. `fill: forwards`
+      // holds each page at its end pose until settle() cancels the animation,
+      // so the leaving page cannot flash back into view between finishing
+      // and being hidden.
+      const away = forward ? '-100%' : '100%';
+      const fromSide = forward ? '100%' : '-100%';
+      const options: KeyframeAnimationOptions = { duration: SLIDE_MS, easing: this.ease(), fill: 'forwards' };
+      from.animate([
+        { transform: 'none', opacity: 1 },
+        { transform: `translateX(${away})`, opacity: 0 },
+      ], options);
+      const enter = next.animate([
+        { transform: `translateX(${fromSide})`, opacity: 0 },
+        { transform: 'none', opacity: 1 },
+      ], options);
+      // A cancelled animation rejects `finished`; settle() is what cancels it,
+      // so there is nothing to do then.
+      enter.finished.then(() => this.settle(generation), () => {});
       if (this.settleTimer !== null) window.clearTimeout(this.settleTimer);
       this.settleTimer = window.setTimeout(() => this.settle(generation), SLIDE_SAFETY_MS);
     } else {
@@ -224,9 +248,10 @@ export class PlanetariumMenuPanel {
   }
 
   /** End of a slide, or a reset: every page but the current one hidden, every
-   *  transition class off, and the panel scrolling again. Runs for a given
-   *  navigation only while that navigation is still the latest one, so a
-   *  superseded slide cleans nothing up under its successor. */
+   *  slide animation cancelled and the leaving page back in flow, and the
+   *  panel scrolling again. Runs for a given navigation only while that
+   *  navigation is still the latest one, so a superseded slide cleans nothing
+   *  up under its successor. */
   private settle(generation?: number): void {
     if (generation !== undefined && generation !== this.generation) return;
     if (this.settleTimer !== null) {
@@ -235,11 +260,8 @@ export class PlanetariumMenuPanel {
     }
     const panel = this.el();
     for (const page of this.pages()) {
-      page.classList.remove(
-        'menu-page-enter-right', 'menu-page-enter-left',
-        'menu-page-exit-left', 'menu-page-exit-right',
-        'menu-page-leaving',
-      );
+      if (typeof page.getAnimations === 'function') for (const animation of page.getAnimations()) animation.cancel();
+      page.classList.remove('menu-page-leaving');
       page.hidden = page.dataset.page !== this.currentPage;
     }
     // Never leave an inline overflow behind: the panel's own rule is what

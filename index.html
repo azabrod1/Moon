@@ -757,24 +757,27 @@
       align-content: start;
     }
     .menu-page {
-      grid-area: 1 / 1;
+      /* All four lines named, because a page leaving the flow for the slide
+         is positioned against its grid area, and an auto end line would run
+         that area out to the panel's padding edge and make the leaving page
+         8 px wider than the one arriving. */
+      grid-area: 1 / 1 / 2 / 2;
       min-width: 0;
-      transition: transform 0.22s var(--ease), opacity 0.22s var(--ease);
     }
     /* The author display above would beat the hidden attribute's own rule and
        leave both pages stacked on top of each other. */
     .menu-page[hidden] { display: none !important; }
-    .menu-page-enter-right { transform: translateX(100%); opacity: 0; }
-    .menu-page-enter-left { transform: translateX(-100%); opacity: 0; }
-    .menu-page-exit-left { transform: translateX(-100%); opacity: 0; }
-    .menu-page-exit-right { transform: translateX(100%); opacity: 0; }
-    /* The outgoing page leaves the flow for the length of the slide, so the
-       panel's outline takes the incoming page's height in one step rather
-       than being held open by the page that is leaving. */
-    .menu-page-leaving { position: absolute; top: 0; left: 0; width: 100%; }
-    @media (prefers-reduced-motion: reduce) {
-      .menu-page { transition: none; }
-    }
+    /* The slide itself is a Web Animations call in ui/PlanetariumMenuPanel.ts
+       (transform and opacity on the two pages, honouring prefers-reduced-motion
+       there): no transition here, so a page shown or hidden by any other route
+       never animates by accident. The outgoing page leaves the flow for the
+       length of the slide, so the panel's outline takes the incoming page's
+       height in one step rather than being held open by the page that is
+       leaving. Zero insets, because an absolutely positioned grid item with a
+       grid-area measures from that area, not from the panel's padding box, and
+       the area IS the incoming page's box, so the two stay aligned as they
+       cross. */
+    .menu-page-leaving { position: absolute; top: 0; left: 0; right: 0; }
     /* A sub-page's header: the way back first, then what the page is. */
     .menu-head { display: flex; align-items: center; gap: 4px; padding: 4px 2px 10px; }
     .menu-head h3 {
@@ -1417,7 +1420,9 @@
       justify-content: space-between;
       align-items: center;
       gap: 12px;
-      padding: 4px 3px;
+      /* The same inset as .menu-action and .pk-row above, so every label in
+         the list starts on one line and every control ends on one. */
+      padding: 4px 9px;
       min-height: 30px;
     }
     .settings-label {

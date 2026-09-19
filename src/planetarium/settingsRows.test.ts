@@ -149,8 +149,14 @@ describe('the panel\'s own rules', () => {
   });
 
   it('stills the slide for a reader who asked for less motion', () => {
-    const block = html.match(/@media \(prefers-reduced-motion: reduce\) \{\s*\.menu-page \{[^}]*\}/)?.[0] ?? '';
-    expect(block).toContain('transition: none');
+    // The slide is a Web Animations call in the panel class, so the
+    // reduced-motion check lives there too: the page is swapped outright and
+    // no animation is created. The CSS carries no transition on a page, so
+    // nothing can animate by another route.
+    expect(panel).toContain('prefers-reduced-motion: reduce');
+    expect(panel).toContain('.animate(');
+    const pageRule = html.match(/\.menu-page \{[^}]*\}/)?.[0] ?? '';
+    expect(pageRule).not.toContain('transition');
   });
 
   it('scrolls, so the last row is reachable on a small phone', () => {

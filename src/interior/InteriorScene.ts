@@ -181,7 +181,7 @@ const SUN_CORONA: AtmosphereConfig = {
   mieG: 0.5,
   power: 1.2,
   intensity: 1.0,
-  haloStrength: 0.8,
+  haloStrength: 0.55,
   scale: 1.3,
 };
 /** The photosphere in the studio (skinCut.applyPhotosphereCut): the planetarium's HDR
@@ -193,8 +193,8 @@ const SUN_CORONA: AtmosphereConfig = {
  *  are a leopard's spots, so the studio shows the Sun as a filtered photograph does: an
  *  orange disc, faintly mottled, darker at the limb, with the core the one thing that
  *  blooms. Art, documented. */
-const SUN_STUDIO_EXPOSURE = 0.025;
-const SUN_STUDIO_LIFT = 0.58;
+const SUN_STUDIO_EXPOSURE = 0.03;
+const SUN_STUDIO_LIFT = 0.62;
 const SUN_STUDIO_TINT = 0.9;
 
 function buildStudioEnvironment(): THREE.Scene {

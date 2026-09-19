@@ -44,6 +44,7 @@ import {
   MAX_REGIONS,
   SECTION_SHADER_TEXT,
   SELF_LIT_FLOOR,
+  SELF_LIT_POWER,
   SELF_LIT_RANGE,
   SELF_LIT_REGION_MIX,
   createSectionUniforms,
@@ -191,7 +192,7 @@ describe('the temperature scale, CPU and GPU', () => {
     expect(SECTION_SHADER_TEXT).toContain(`(0.03 * strength + ${INCANDESCENCE_PEAK} * peak)`);
     expect(SECTION_SHADER_TEXT).toContain(`${INCANDESCENCE_HOT_BOOST.toFixed(1)} * hotDecades * hotDecades`);
     expect(SECTION_SHADER_TEXT).toContain(`float strength = ramp > 0.0 ? pow(ramp, ${INCANDESCENCE_ONSET_POWER}) : 0.0;`);
-    expect(SECTION_SHADER_TEXT).toContain(`${SELF_LIT_FLOOR} + ${SELF_LIT_RANGE} * level * level * level`);
+    expect(SECTION_SHADER_TEXT).toContain(`${SELF_LIT_FLOOR} + ${SELF_LIT_RANGE} * pow(level, ${SELF_LIT_POWER}.0)`);
     // A self-lit pixel's place is the local temperature's, pulled part way to its region's.
     expect(SECTION_SHADER_TEXT).toContain(`float level = mix(localLevel, regionLevel, ${SELF_LIT_REGION_MIX});`);
     expect(SECTION_SHADER_TEXT).toContain('sectionSelfLitRadiance(kelvin, known, uHeatLevel[k])');

@@ -238,7 +238,7 @@ export function applyAtmosphereCut(material: THREE.ShaderMaterial, uniforms: Ski
 /** The one amber a studio photosphere's granules and lanes are pulled toward (sRGB-ish,
  *  linear in the shader): a filtered photograph's orange, between the shader's lane amber
  *  and its white-hot granule. */
-export const PHOTOSPHERE_STUDIO_TONE: readonly [number, number, number] = [1.0, 0.6, 0.22];
+export const PHOTOSPHERE_STUDIO_TONE: readonly [number, number, number] = [1.0, 0.55, 0.16];
 
 /** The cut on the Sun's photosphere: the feather in alpha, so the edge takes the render
  *  path's treatment like the skin. The planetarium's photosphere is a light whose

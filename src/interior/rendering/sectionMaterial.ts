@@ -321,18 +321,22 @@ export function writeSectionRegions(
 }
 
 /** A self-lit pixel's radiance: this floor at the body's coolest self-lit temperature, rising
- *  by the range on the cube of its place between it and the hottest — the local temperature's
- *  log place, pulled SELF_LIT_REGION_MIX of the way to its region's, so a star's zones step
- *  at their boundaries the way a diagram draws shells while the temperature still rises
- *  within each; the zones read in order and only the core crosses the bloom threshold. */
-export const SELF_LIT_FLOOR = 0.18;
-export const SELF_LIT_RANGE = 0.95;
+ *  by the range on the SELF_LIT_POWER-th power of its place between it and the hottest — the
+ *  local temperature's log place, pulled SELF_LIT_REGION_MIX of the way to its region's, so a
+ *  star's zones step at their boundaries the way a diagram draws shells while the temperature
+ *  still rises within each. The power keeps the zones apart in value: the Sun's convective
+ *  zone an orange at 0.2–0.6, its radiative zone a yellow at 0.75–0.95, its core a white at
+ *  1.2–1.36 — the one thing past the bloom threshold, so it is the one thing that blooms,
+ *  and by a margin that leaves its own edge and the zone around it readable. */
+export const SELF_LIT_FLOOR = 0.16;
+export const SELF_LIT_RANGE = 1.2;
+export const SELF_LIT_POWER = 4;
 export const SELF_LIT_REGION_MIX = 0.6;
 
 /** The radiance at a level (0 the coolest self-lit zone, 1 the hottest), the shader's curve. */
 export function selfLitRadiance(level: number): number {
   const clamped = Math.max(0, Math.min(1, level));
-  return SELF_LIT_FLOOR + SELF_LIT_RANGE * clamped * clamped * clamped;
+  return SELF_LIT_FLOOR + SELF_LIT_RANGE * Math.pow(clamped, SELF_LIT_POWER);
 }
 
 /** Each region's self-lit level as the shader holds it (uHeatLevel), inside-out; 0 for a lit region. */
@@ -543,7 +547,7 @@ vec4 sectionIncandescence(float kelvin) {
 float sectionSelfLitRadiance(float kelvin, float known, float regionLevel) {
   float localLevel = known < 0.5 ? 0.5 : (uSelfLitSpanLog > 0.0 ? clamp(log(max(kelvin, 1.0) / uSelfLitCoolK) / uSelfLitSpanLog, 0.0, 1.0) : 1.0);
   float level = mix(localLevel, regionLevel, ${glslFloat(SELF_LIT_REGION_MIX)});
-  return ${glslFloat(SELF_LIT_FLOOR)} + ${glslFloat(SELF_LIT_RANGE)} * level * level * level;
+  return ${glslFloat(SELF_LIT_FLOOR)} + ${glslFloat(SELF_LIT_RANGE)} * pow(level, ${glslFloat(SELF_LIT_POWER)});
 }
 
 // Region k's heat at depth fraction regionT, kelvin its local temperature
@@ -664,7 +668,8 @@ vec4 sectionSample(int k, vec3 bodyPoint, float regionT, out float heatMask) {
       float cellScale = scale * mix(1.0, 0.27, level);
       vec3 q = bodyPoint * cellScale + vec3(drift, -drift * 0.8, drift * 0.5);
       float cells = sectionFbm(q);
-      float stillness = smoothstep(0.55, 0.95, level);
+      // The convective zone boils to its base; only the radiative zone and the core are still.
+      float stillness = smoothstep(0.8, 0.96, level);
       float angle = atan(bodyPoint.z, bodyPoint.x);
       float streaks = noise3(vec3(angle * 14.0, length(bodyPoint) * 6.0, 1.7));
       float structure = mix(cells, 0.5 + 0.12 * (streaks - 0.5), stillness);
@@ -675,7 +680,7 @@ vec4 sectionSample(int k, vec3 bodyPoint, float regionT, out float heatMask) {
       float whiten = level * level * level;
       whiten *= whiten;
       mixValue = mix(0.15 + 0.45 * structure, 0.6 + 0.4 * structure, level * level) + 0.5 * whiten;
-      heatMask = 0.75 + 0.5 * structure;
+      heatMask = 0.55 + 0.9 * structure;
       height = structure;
     } else {
       // mottle: an unresolved mix
@@ -801,8 +806,10 @@ if (uBandHigh[uCount - 1] > uBandLow[uCount - 1]) {
   bandShade *= 1.0 - 0.14 * rimBand * rimStripes;
   bandLift += 0.03 * rimBand * rimStripes;
 }
-// The crease where the two faces meet, gone at Section where they are coplanar.
-float interiorCrease = 1.0 - uCorner * 0.45 * (1.0 - smoothstep(0.0, 0.45, vSectionLocal.x));
+// The crease where the two faces meet, gone at Section where they are coplanar: a light
+// touch over a third of the face, because the wedge's yaw foreshortens one face and a
+// deeper, wider crease was most of what showed of it.
+float interiorCrease = 1.0 - uCorner * 0.3 * (1.0 - smoothstep(0.0, 0.35, vSectionLocal.x));
 float interiorShade = (1.0 - interiorDepthShade) * interiorCrease * boundaryShade * bandShade;
 if (uEmphasis == uCount - 1) {
   // The outermost region's outer boundary is the disc's rim.

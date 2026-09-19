@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assignTiers, estimateTextWidth, thinLabels, type LabelCandidate } from './rulerLabels';
+import { assignTiers, estimateTextWidth, thinLabels, type LabelCandidate, labelStride, fitInSpan } from './rulerLabels';
 
 const rule = { minSpanPx: 44, gapPx: 8 };
 
@@ -91,5 +91,51 @@ describe('estimateTextWidth', () => {
   it('scales with the glyph count', () => {
     expect(estimateTextWidth('Rock core', 5.8)).toBeCloseTo(52.2);
     expect(estimateTextWidth('', 5.8)).toBe(0);
+  });
+});
+
+describe('labelStride', () => {
+  const halves = (count: number, half: number) => Array.from({ length: count }, () => half);
+
+  it('keeps every label when neighbours clear the gap', () => {
+    expect(labelStride([0, 60, 120, 180], halves(4, 15), 10, 18)).toBe(1);
+  });
+
+  it('thins to every second tick as a series rather than dropping one from the middle', () => {
+    // 35 px apart with 15 px half-widths: neighbours collide, every second one clears.
+    expect(labelStride([0, 35, 70, 105, 140], halves(5, 15), 10, 18)).toBe(2);
+  });
+
+  it('counts the unit on the deepest kept label', () => {
+    // Every second tick would clear at 42 px, but the deepest carries " km" and needs 9 px more.
+    expect(labelStride([0, 21, 42, 63, 84], halves(5, 15), 10, 0)).toBe(2);
+    expect(labelStride([0, 21, 42, 63, 84], halves(5, 15), 10, 18)).toBe(5);
+  });
+
+  it('reads the ticks in axis order however the projection spaces them', () => {
+    // The Readable remap spreads the shallow ticks and packs the deep ones: every
+    // second still collides at the deep end, every fifth clears.
+    expect(labelStride([0, 90, 150, 180, 195, 205, 210], halves(7, 12), 8, 0)).toBe(5);
+  });
+
+  it('falls back to the first label alone when no stride fits', () => {
+    const stride = labelStride([0, 5, 10, 15], halves(4, 15), 10, 18);
+    expect(Math.ceil(4 / stride)).toBe(1);
+    expect(labelStride([0], [15], 10, 18)).toBe(1);
+  });
+});
+
+describe('fitInSpan', () => {
+  it('leaves a label that already sits inside the span', () => {
+    expect(fitInSpan(50, 10, 0, 100)).toBe(50);
+  });
+
+  it('shifts a label that hangs over an end to the end', () => {
+    expect(fitInSpan(5, 10, 0, 100)).toBe(10);
+    expect(fitInSpan(98, 10, 0, 100)).toBe(90);
+  });
+
+  it('refuses a label wider than the span', () => {
+    expect(fitInSpan(50, 60, 0, 100)).toBeNull();
   });
 });

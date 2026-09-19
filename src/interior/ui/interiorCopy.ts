@@ -70,7 +70,8 @@ export const TEXTURES_NOTE = 'Colours distinguish materials. Interior textures a
 export const EVIDENCE = 'Evidence';
 export const OBSERVATION = 'Observation';
 export const INTERPRETATION = 'Interpretation';
-export const LIMITATIONS = 'Assumptions and limitations';
+export const ASSUMES = 'Assumes';
+export const UNCERTAIN = 'Uncertain';
 export const SOURCES = 'Sources';
 
 // ---- the words on the switches ----------------------------------------------

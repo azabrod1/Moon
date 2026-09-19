@@ -92,7 +92,8 @@ describe('evidenceGroups', () => {
     expect(supporting.provenance).toBe('Galileo, 2001');
     expect(supporting.observation).toBe('Doppler tracking gives a moment of inertia of 0.377');
     expect(supporting.interpretation).toBe('A dense core under a rock mantle');
-    expect(supporting.limitations).toBe('Hydrostatic equilibrium. Its size trades against its sulphur content.');
+    expect(supporting.assumed).toBe('Hydrostatic equilibrium.');
+    expect(supporting.uncertain).toBe('Its size trades against its sulphur content.');
     expect(supporting.source).toBe(SOURCE);
 
     expect(challenging.method).toBe('Interior model');
@@ -101,7 +102,8 @@ describe('evidenceGroups', () => {
     expect(challenging.provenance).toBe('');
     expect(challenging.observation).toBe('');
     expect(challenging.interpretation).toBe('A gradient fits the same data');
-    expect(challenging.limitations).toBe('');
+    expect(challenging.assumed).toBe('');
+    expect(challenging.uncertain).toBe('');
   });
 
   it('carries a published probability as its line, and nothing where there is none', () => {
@@ -119,7 +121,8 @@ describe('evidenceGroups', () => {
     expect(state.probability).toBe(`Published: 88% that the layer is liquid (${SOURCE})`);
     expect(temperature.title).toBe('Temperature');
     expect(temperature.probability).toBeNull();
-    expect(temperature.entries[0].limitations).toBe('±500 K.');
+    expect(temperature.entries[0].assumed).toBe('');
+    expect(temperature.entries[0].uncertain).toBe('±500 K.');
   });
 
   it("reads Earth's outer core as its claims are authored", () => {
@@ -137,6 +140,7 @@ describe('evidenceGroups', () => {
     expect(groups[0].entries[0].observation).toContain('No direct S waves beyond 104°');
     expect(groups[0].entries.map((entry) => entry.method)).toEqual(['Seismology', 'Normal modes', 'Magnetic field', 'High-pressure laboratory']);
     // The state claim's only row leaves nothing open: "Nothing material" is not a placeholder.
-    expect(groups[1].entries[0].limitations).toBe('Shear waves need rigidity. Nothing material.');
+    expect(groups[1].entries[0].assumed).toBe('Shear waves need rigidity.');
+    expect(groups[1].entries[0].uncertain).toBe('Nothing material.');
   });
 });

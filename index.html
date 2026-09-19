@@ -1873,11 +1873,12 @@
       width: min(340px, calc(100vw - 32px)); padding: 0; pointer-events: auto;
       max-height: calc(100vh - 80px); display: flex; flex-direction: column; overflow: hidden;
     }
-    .interior-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 14px 18px 12px; scrollbar-width: thin; }
-    /* A fade at the bottom says there is more; short, so the last row never reads as disabled. */
+    .interior-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 14px 18px 16px; scrollbar-width: thin; }
+    /* A fade at the bottom says there is more: deep enough that a line half out of view reads as
+       cut by the fold, not sliced by the panel; never so deep that the last row reads as disabled. */
     .interior-scroll.can-scroll {
-      -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), rgba(0,0,0,0.35));
-      mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), rgba(0,0,0,0.35));
+      -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 30px), rgba(0,0,0,0.12));
+      mask-image: linear-gradient(to bottom, #000 calc(100% - 30px), rgba(0,0,0,0.12));
     }
     .interior-page[hidden] { display: none; }
     .interior-grip { display: none; }
@@ -1967,7 +1968,7 @@
     .interior-ruler .ruler-label { font-family: var(--font-mono); font-size: 9.5px; fill: var(--t2); text-anchor: middle; dominant-baseline: middle; paint-order: stroke; stroke: rgba(0,0,0,0.85); stroke-width: 3px; stroke-linejoin: round; }
     .interior-ruler .ruler-name { font-family: var(--font-ui); font-size: 10.5px; fill: var(--t1); text-anchor: middle; dominant-baseline: middle; paint-order: stroke; stroke: rgba(0,0,0,0.85); stroke-width: 3px; stroke-linejoin: round; }
     .interior-ruler .ruler-bracket { fill: none; stroke: rgba(255,255,255,0.45); stroke-width: 1; }
-    .interior-ruler .ruler-bracket-name { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; fill: var(--t2); text-anchor: middle; dominant-baseline: middle; paint-order: stroke; stroke: rgba(0,0,0,0.85); stroke-width: 3px; stroke-linejoin: round; }
+    .interior-ruler .ruler-bracket-name { font-family: var(--font-ui); font-size: 9.5px; fill: var(--t2); text-anchor: middle; dominant-baseline: middle; paint-order: stroke; stroke: rgba(0,0,0,0.85); stroke-width: 3px; stroke-linejoin: round; }
     /* Hover preview beside the pointer. */
     .interior-hover {
       position: fixed; left: 0; top: 0; z-index: 19; pointer-events: none; padding: 7px 10px; min-width: 120px;
@@ -2009,7 +2010,7 @@
     .ii-val { color: var(--t2); }
     .ii-note { margin-top: 3px; padding-left: 9px; border-left: 2px solid var(--line-dim); font-size: 11px; line-height: 1.5; color: var(--t3); }
     .ii-annotation { margin-top: 5px; font-size: 11.5px; line-height: 1.5; color: var(--t2); }
-    .ii-annotation b { color: var(--t1); font-weight: 600; }
+    .ii-annotation b { display: block; color: var(--t1); font-weight: 600; }
     .ii-foot, .ii-src { margin-top: 10px; font-size: 11px; line-height: 1.5; color: var(--t2); }
     /* The evidence page: a group per property, a row per piece of evidence. */
     .ev-group { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line-dim); }
@@ -2033,6 +2034,7 @@
     .ev-part-val { margin-top: 2px; font-size: 11.5px; line-height: 1.5; color: var(--t2); user-select: text; -webkit-user-select: text; }
     /* View options. */
     .interior-options-card { width: min(380px, calc(100vw - 32px)); }
+    #interior-options-close:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
     .interior-options-body { padding: 4px 16px 14px; }
     .interior-slider-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; min-height: 36px; }
     .interior-slider-label { flex: none; font-size: 12px; color: var(--t2); }
@@ -2079,7 +2081,8 @@
       .interior-thin-note { display: flex; align-items: center; flex-wrap: wrap; gap: 0 8px; }
       #interior-thin-toggle { min-height: 44px; }
       #interior-models-more { padding: 12px 6px; margin: -12px -6px; }
-      .interior-row { min-height: 44px; align-items: center; }
+      /* The row keeps its tap height; the swatch stays on the title's line, as on desktop. */
+      .interior-row { min-height: 44px; }
       .interior-legend-title { display: none; }
       .interior-legend-disclosure { display: flex; min-height: 44px; cursor: pointer; }
       .interior-legend-disclosure::after { content: '\25BE'; font-size: 11px; color: var(--t3); }
@@ -5201,8 +5204,9 @@
               <div class="interior-scale-bar" id="interior-scale-bar"></div>
               <div class="interior-scale-labels"><span id="interior-scale-min"></span><span class="interior-scale-mid">Temperature</span><span id="interior-scale-max"></span></div>
               <div class="interior-scale-note"><i class="interior-swatch hatched" aria-hidden="true"></i>Not known</div>
-              <div class="interior-scale-note" id="interior-band-note" style="display:none"><i class="interior-swatch banded" aria-hidden="true"></i>Boundary location uncertain</div>
             </div>
+            <!-- The stripes for a boundary nobody has placed are drawn in both modes, so their key shows in both. -->
+            <div class="interior-scale-note interior-band-note" id="interior-band-note" style="display:none"><i class="interior-swatch banded" aria-hidden="true"></i>Boundary location uncertain</div>
             <!-- Layers too thin to see at this size, and the one-tap way to widen them. -->
             <div class="interior-thin-note" id="interior-thin-note" style="display:none"><span id="interior-thin-text"></span> <button type="button" class="interior-more" id="interior-thin-toggle">Enlarge</button></div>
             <!-- The Layers row: a heading on a desktop; on a phone the sheet's disclosure, which opens the sheet to the list. One shows per breakpoint. -->

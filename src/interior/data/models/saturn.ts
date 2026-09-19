@@ -45,7 +45,7 @@ export const SATURN_MODEL: InteriorModel = {
       heat: heat([{ kind: 'gravitationalContraction', note: 'Heat of formation, leaving slowly through a stably stratified region.' }], null, 'conduction'),
       claims: [
         claim('existence', [
-          row('seismology', 'supports', MANKOVICH, { observed: 'Density waves in the C ring at frequencies set by oscillations inside Saturn (kronoseismology)', inferred: 'Gravity modes that need a stably stratified, heavy-element-rich region reaching about 60% of the radius', assumed: 'The waves are driven by the planet\'s normal modes', uncertain: 'The core\'s exact profile and how it formed', mission: 'Cassini', year: 2021 }),
+          row('ringSeismology', 'supports', MANKOVICH, { observed: 'Density waves in the C ring at frequencies set by oscillations inside Saturn (kronoseismology)', inferred: 'Gravity modes that need a stably stratified, heavy-element-rich region reaching about 60% of the radius', assumed: 'The waves are driven by the planet\'s normal modes', uncertain: 'The core\'s exact profile and how it formed', mission: 'Cassini', year: 2021 }),
           row('gravity', 'supports', IESS, { observed: 'Cassini\'s Grand Finale orbits measured the gravity harmonics between the rings and the cloud tops', inferred: 'A heavy-element content and deep differential rotation consistent with the diffuse picture', assumed: 'A rotation profile', uncertain: 'Degenerate with the wind depth', mission: 'Cassini', year: 2019 }),
         ]),
       ],

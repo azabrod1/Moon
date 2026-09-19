@@ -15,6 +15,7 @@ import {
   openingAngleDegToRad,
   wedgeAngle,
   yawCutFrame,
+  cutYawRad,
 } from './cutFrame';
 
 const centre = new THREE.Vector3(0, 0, 0);
@@ -327,5 +328,18 @@ describe('wedgeAngle', () => {
       previous = inside;
     }
     expect(flips).toBe(1);
+  });
+});
+
+describe('cutYawRad', () => {
+  it('is whole up to the quarter wedge, nothing at Section, and between on the opening', () => {
+    expect(cutYawRad(0, 0.3)).toBeCloseTo(0.3);
+    expect(cutYawRad(Math.PI / 2, 0.3)).toBeCloseTo(0.3);
+    expect(cutYawRad((3 * Math.PI) / 4, 0.3)).toBeCloseTo(0.15);
+    expect(cutYawRad(Math.PI, 0.3)).toBe(0);
+  });
+
+  it('never goes negative past a full opening', () => {
+    expect(cutYawRad(Math.PI + 0.1, 0.3)).toBe(0);
   });
 });

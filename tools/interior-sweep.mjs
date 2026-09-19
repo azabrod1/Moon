@@ -64,8 +64,9 @@ const runLifecycle = scenarios.includes('lifecycle');
 await mkdir(outDir, { recursive: true });
 
 const VIEWPORTS = [
-  { name: 'desktop', width: 1400, height: 800 },
-  { name: 'phone', width: 390, height: 844 },
+  { name: 'desktop', width: 1400, height: 800, touch: false },
+  // The phone is a touch device to the checks (no hover), though the context stays a mouse's for the drags.
+  { name: 'phone', width: 390, height: 844, touch: true },
 ].filter((viewport) => viewportChoice === 'both' || viewport.name === viewportChoice);
 const VIEWS = ['closed', 'cutaway', 'section'];
 const MODES = ['composition', 'temperature'];
@@ -79,6 +80,9 @@ const PATHS = [
  *  channel, 0..255: the composer's half-float rounding, the canvas's 8 bits and a software
  *  GPU's arithmetic, never a different curve — a wrong transfer or a stray light is tens. */
 const FACE_PROBE_TOLERANCE = 6;
+/** A region drawn thinner than this on screen has no pixel of its own at its middle: the limb's air,
+ *  the rim's antialiasing and its neighbours all land in the 3×3 block the probe reads. Skipped, and said. */
+const FACE_PROBE_MIN_THICKNESS_PX = 6;
 /** The hover sweep runs along the hinge, this far to one side of it so it lands on a face, not the seam. */
 const SWEEP_OFF_HINGE_PX = 3;
 
@@ -269,7 +273,7 @@ async function sweepBody(context, viewport, body) {
   // has no hover — and through Playwright's mouse, which raises the pointer events a
   // mouse does. The centre of the disc at Section is the innermost region; far off the
   // disc is nothing, and the card goes.
-  if (!viewport.hasTouch) {
+  if (!viewport.touch) {
     await page.mouse.move(centre.x + SWEEP_OFF_HINGE_PX, centre.y);
     await settle(page);
     const shown = await page.evaluate(() => {
@@ -298,7 +302,12 @@ async function sweepBody(context, viewport, body) {
   const probes = [];
   for (const key of regionKeys) {
     const probe = await page.evaluate((regionKey) => window.__moon.interiorFaceProbe(regionKey), key);
-    if (probe) probes.push({ key, ...probe });
+    if (!probe) continue;
+    if (probe.thicknessPx < FACE_PROBE_MIN_THICKNESS_PX) {
+      notes.push(`${tag}: ${key} is ${probe.thicknessPx.toFixed(1)} px thick on screen, too thin for a face pixel of its own; not probed`);
+      continue;
+    }
+    probes.push({ key, ...probe });
   }
   if (probes.length > 0) {
     const image = decodePng(await withoutRuler(page, () => page.screenshot({ type: 'png' })));

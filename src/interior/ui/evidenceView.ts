@@ -41,8 +41,12 @@ export interface EvidenceEntryView {
   observation: string;
   /** What it was read to mean. */
   interpretation: string;
-  /** What the reading assumes and what stays open, as sentences; '' when both are placeholders. */
-  limitations: string;
+  /** What the reading assumes, and what it leaves open, each as a sentence under its own
+   *  label; '' where the author left a placeholder. Two labelled lines, because the two
+   *  run together read as one broken sentence ("Shear waves need a solid. The precise
+   *  radius from this alone."). */
+  assumed: string;
+  uncertain: string;
   source: string;
 }
 
@@ -95,7 +99,8 @@ function entryView(row: Evidence): EvidenceEntryView {
     provenance: provenanceText(row.mission, row.year),
     observation: readable(row.observed),
     interpretation: readable(row.inferred),
-    limitations: sentenceJoin([row.assumed, row.uncertain]),
+    assumed: sentenceJoin([row.assumed]),
+    uncertain: sentenceJoin([row.uncertain]),
     source: readable(row.source),
   };
 }

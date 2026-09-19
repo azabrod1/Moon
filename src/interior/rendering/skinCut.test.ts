@@ -22,10 +22,14 @@ describe('the raw-shader cuts', () => {
     expect(() => applyAtmosphereCut(material, uniforms)).not.toThrow();
     expect(material.fragmentShader).toContain('gl_FragColor = vec4(radiance * interiorCutCoverage, 1.0);');
     expect(material.fragmentShader).toContain('uniform float uCutHalfAngle;');
-    // The far-side reflection: the shell is drawn from its back, so the test is on the screen position covered.
-    expect(material.fragmentShader).toContain('if (cutAlong < 0.0) cutDirection -= 2.0 * cutAlong * uCutView;');
+    // The far-side reflection: the shell is drawn from its back, so the test is on the screen
+    // position covered — through the plane facing the camera this frame, not the wedge's axis.
+    expect(material.fragmentShader).toContain('if (cutAlong < 0.0) cutOffset -= 2.0 * cutAlong * uCutCamera;');
+    // The wedge is the pair of half-spaces its faces bound: outside by the distance to the nearer plane.
+    expect(material.fragmentShader).toContain('float cutSigned = -min(dot(cutOffset, uCutNormalA), dot(cutOffset, uCutNormalB));');
     expect(material.uniforms.uCutHalfAngle).toBe(uniforms.uCutHalfAngle);
-    expect(material.uniforms.uCutView).toBe(uniforms.uCutView);
+    expect(material.uniforms.uCutNormalA).toBe(uniforms.uCutNormalA);
+    expect(material.uniforms.uCutCamera).toBe(uniforms.uCutCamera);
     expect(material.version).toBeGreaterThan(0); // needsUpdate was set: the spliced text compiles afresh
   });
 
@@ -46,7 +50,7 @@ describe('the raw-shader cuts', () => {
     expect(material.fragmentShader).toContain('gl_FragColor = vec4(color * radiance * 0.500, interiorCutCoverage);');
     expect(material.vertexShader).toContain('vInteriorCutWorld = (modelMatrix * vec4(position, 1.0)).xyz;');
     expect(material.fragmentShader).toContain('varying vec3 vInteriorCutWorld;');
-    expect(material.uniforms.uCutSide).toBe(uniforms.uCutSide);
+    expect(material.uniforms.uCutNormalB).toBe(uniforms.uCutNormalB);
   });
 
   it('refuse a shader that changed shape rather than shipping it uncut', () => {
@@ -74,5 +78,30 @@ describe('the raw-shader cuts', () => {
     // The corona passes its scale as the disc gate; the planets' air passes nothing.
     expect(interiorSceneSource).toContain('applyAtmosphereCut(material, this.cutUniforms, body.sun ? atmosphere.scale : undefined);');
     expect(interiorSceneSource).toContain('applyPhotosphereCut(material, this.cutUniforms, SUN_STUDIO_EXPOSURE);');
+    // The rings take the same cut, on the standard-material path.
+    expect(interiorSceneSource).toContain('applySkinCut(mesh.material as THREE.MeshStandardMaterial, this.cutUniforms);');
+  });
+
+  it('remove the same wedge as the angle test, and stay linear at the hinge where the angle has no answer', () => {
+    // The GLSL's interiorCutOutside in TypeScript: outside by the distance to the nearer bounding plane.
+    const half = Math.PI / 4;
+    const view = new THREE.Vector3(0, 0, 1);
+    const side = new THREE.Vector3(1, 0, 0);
+    const normalA = view.clone().multiplyScalar(Math.sin(half)).addScaledVector(side, -Math.cos(half));
+    const normalB = view.clone().multiplyScalar(Math.sin(half)).addScaledVector(side, Math.cos(half));
+    const outside = (point: THREE.Vector3) => -Math.min(point.dot(normalA), point.dot(normalB));
+    const angleInside = (point: THREE.Vector3) => Math.atan2(Math.abs(point.dot(side)), point.dot(view)) < half;
+    for (let step = 0; step < 360; step += 7) {
+      for (const y of [-0.9, 0, 0.7]) {
+        const radians = (step * Math.PI) / 180;
+        const point = new THREE.Vector3(Math.sin(radians) * 0.6, y, Math.cos(radians) * 0.6);
+        if (Math.abs(Math.abs(Math.atan2(Math.abs(point.dot(side)), point.dot(view))) - half) < 1e-6) continue; // on the edge itself
+        expect(outside(point) < 0).toBe(angleInside(point));
+      }
+    }
+    // On the hinge line the planes meet: the distance is exactly zero, with a finite slope either way.
+    expect(outside(new THREE.Vector3(0, 1, 0))).toBeCloseTo(0, 12);
+    expect(outside(new THREE.Vector3(0, 1, 1e-3))).toBeCloseTo(-1e-3 * Math.sin(half), 9);
+    expect(outside(new THREE.Vector3(0, 1, -1e-3))).toBeCloseTo(1e-3 * Math.sin(half), 9);
   });
 });

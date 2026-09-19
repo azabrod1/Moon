@@ -13,6 +13,11 @@
  *   it overlaps nothing placed before it. A footprint is the bracket's span
  *   together with its name's extent, so two short brackets with long names
  *   step apart even when their spans never touch.
+ * - labelStride: the km labels are thinned as a SERIES, every second, fifth
+ *   or tenth tick, never one torn from the middle of an even sequence.
+ * - fitInSpan: a label is kept inside the span it may occupy (the disc's
+ *   chord at its height), shifted in when it hangs over, dropped when the
+ *   span cannot hold it.
  */
 
 export interface LabelCandidate {
@@ -69,4 +74,53 @@ export function assignTiers(footprints: readonly Footprint[]): number[] {
 /** A label's width from its text, for a font that sets about `glyphPx` per glyph. */
 export function estimateTextWidth(text: string, glyphPx: number): number {
   return text.length * glyphPx;
+}
+
+/**
+ * The stride that thins one row of tick labels as a SERIES: every n-th tick
+ * keeps its label, the smallest n at which every neighbouring pair of kept
+ * labels clears the gap, so the numbers that remain are evenly spaced (a
+ * 0 / 2,000 / 4,000 axis) instead of a sequence with holes torn in it. The
+ * candidates are the major ticks in axis order, `along` where each sits on
+ * the axis in px and `halfWidth` half its text's on-screen width. The unit
+ * goes on the deepest kept label, so that one is `unitPx` wider on the check.
+ * Past the widest stride nothing fits, and the answer is the tick count: only
+ * the first label survives.
+ */
+export function labelStride(
+  along: readonly number[],
+  halfWidths: readonly number[],
+  gapPx: number,
+  unitPx: number,
+  strides: readonly number[] = [1, 2, 5, 10],
+): number {
+  const count = along.length;
+  if (count <= 1) return 1;
+  for (const stride of strides) {
+    const kept: number[] = [];
+    for (let index = 0; index < count; index += stride) kept.push(index);
+    const deepest = kept[kept.length - 1];
+    let clear = true;
+    for (let position = 1; position < kept.length && clear; position++) {
+      const previous = kept[position - 1];
+      const current = kept[position];
+      const width = halfWidths[previous] + halfWidths[current] + (current === deepest ? unitPx / 2 : 0);
+      if (Math.abs(along[current] - along[previous]) < width + gapPx) clear = false;
+    }
+    if (clear) return stride;
+  }
+  return count;
+}
+
+/**
+ * Where a label centred at `centre` with half-width `halfWidth` goes to stay
+ * inside [low, high]: itself when it already does, shifted to the nearer end
+ * when it fits but hangs over, and null when the span is too short for it —
+ * a name that cannot sit on the body is not drawn off it.
+ */
+export function fitInSpan(centre: number, halfWidth: number, low: number, high: number): number | null {
+  if (high - low < 2 * halfWidth) return null;
+  if (centre - halfWidth < low) return low + halfWidth;
+  if (centre + halfWidth > high) return high - halfWidth;
+  return centre;
 }

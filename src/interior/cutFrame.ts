@@ -210,6 +210,21 @@ export function yawCutFrame(frame: CutFrame, yawRad: number): CutFrame {
 }
 
 /** Copy a frame's axes and opening into another. */
+/**
+ * The yaw the cut is drawn with at an opening. The quarter wedge is turned
+ * this much about the hinge so one face meets the eye more squarely than the
+ * other (a three-quarter view, the face the ruler goes on); a full disc must
+ * face the camera exactly, or the skin's far half shows past its edge as a
+ * crescent. So the yaw is whole up to the quarter wedge and fades to nothing
+ * at Section, on the opening angle — the anchor holds the unyawed frame, and
+ * a view change swings the cut as it opens.
+ */
+export function cutYawRad(openingAngleRad: number, fullYawRad: number): number {
+  const quarter = Math.PI / 2;
+  if (openingAngleRad <= quarter) return fullYawRad;
+  return fullYawRad * Math.max(0, 1 - (openingAngleRad - quarter) / quarter);
+}
+
 export function copyCutFrame(from: CutFrame, out: CutFrame): CutFrame {
   out.view.copy(from.view);
   out.hinge.copy(from.hinge);

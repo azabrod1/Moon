@@ -276,9 +276,11 @@ describe('thinLayerInset invariants', () => {
   it('says what it is and how honestly it is drawn', () => {
     const layout = thinLayerInset(earth, crustIndex, earthSwatches)!;
     expect(INSET_TITLE).toBe('Magnified section');
-    expect(INSET_CAPTION).toBe('Drawn to this layer\'s own scale: on the globe it is too thin to see at true size.');
+    expect(INSET_CAPTION).toBe('Drawn to this layer\'s own scale: on the globe it is too thin to see at this size.');
     expect(layout.title).toBe(INSET_TITLE);
     expect(layout.caption).toBe(INSET_CAPTION);
+    // Where the globe does show the layer, the caption must not say it is too thin to see.
+    expect(thinLayerInset(earth, crustIndex, earthSwatches, false)!.caption).toBe('Drawn to this layer\'s own scale.');
     // No magnification factor anywhere: the globe's scale moves with the camera.
     expect(`${layout.title} ${layout.caption} ${layout.ariaLabel}`).not.toMatch(/×|\bx\s*\d/);
   });

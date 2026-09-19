@@ -390,8 +390,9 @@ export class InteriorScene {
     this.group.add(this.cloudMesh);
     // The ghost keeps only the wedge (the inverted cut) and draws last, blended over the faces.
     this.ghostCut = {
-      uCutView: this.cutUniforms.uCutView,
-      uCutSide: this.cutUniforms.uCutSide,
+      uCutNormalA: this.cutUniforms.uCutNormalA,
+      uCutNormalB: this.cutUniforms.uCutNormalB,
+      uCutCamera: this.cutUniforms.uCutCamera,
       uCutHalfAngle: this.cutUniforms.uCutHalfAngle,
       uCutFeather: this.cutUniforms.uCutFeather,
       uCutInvert: { value: 1 },
@@ -597,6 +598,12 @@ export class InteriorScene {
     const rings = RING_CONFIGS[body.id];
     if (rings) {
       const { mesh, fx } = createPlanetRings(BODY_RADIUS, rings, RING_SUN_TAN);
+      // The rings take the cut too: the sector inside the wedge goes with the
+      // quarter of the body, the way a cutaway of Saturn is drawn, so the near
+      // arc never lies across the section it would otherwise cross. Their
+      // material blends already (transparent, no depth write), so the feather
+      // needs no edge treatment of its own.
+      applySkinCut(mesh.material as THREE.MeshStandardMaterial, this.cutUniforms);
       mesh.name = 'InteriorRings';
       mesh.renderOrder = 2;
       mesh.quaternion.copy(this.poseQuaternion);
@@ -636,19 +643,17 @@ export class InteriorScene {
     if (this.ringMesh) this.ringMesh.visible = on;
   }
 
-  /** The radius that bounds what shows of the body — what the framing has to
-   *  fit: the rings' outer edge while they show, the air shell's while it
-   *  does (a planet's sits a few percent out and changes nothing the fill's
-   *  margin did not already allow; the Sun's corona at 1.3× is what keeps
-   *  its glow off the strip and inside the viewport), the body's own otherwise. */
+  /** The radius that bounds what the framing has to fit: the air shell's
+   *  while it shows (a planet's sits a few percent out and changes nothing
+   *  the fill's margin did not already allow; the Sun's corona at 1.3× is
+   *  what keeps its glow off the strip and inside the viewport), the body's
+   *  own otherwise. The rings are NOT in it: they are context, and fitting
+   *  Saturn's span into the stage drew the body — the subject — at half the
+   *  size of a ringless world. They run off the stage instead, as they did
+   *  on a phone all along. */
   boundRadius(): number {
     let bound = BODY_RADIUS;
     if (this.atmosphereMesh.visible) bound = Math.max(bound, BODY_RADIUS * this.atmosphereMesh.scale.x);
-    const rings = this.ringMesh;
-    if (rings && rings.visible) {
-      if (!rings.geometry.boundingSphere) rings.geometry.computeBoundingSphere();
-      bound = Math.max(bound, rings.geometry.boundingSphere?.radius ?? BODY_RADIUS);
-    }
     return bound;
   }
 
@@ -1105,19 +1110,19 @@ export class InteriorScene {
    * whole picture and nothing sits behind it to be overdrawn.
    */
   applyCut(frame: CutFrame): void {
-    this.cutUniforms.uCutView.value.copy(frame.view);
-    this.cutUniforms.uCutSide.value.copy(frame.side);
     this.cutUniforms.uCutHalfAngle.value = frame.openingAngle * 0.5;
     // The corner where the faces meet is a crease; a Section has none.
     this.sectionUniforms.uCorner.value = 1 - frame.openingAngle / Math.PI;
     const open = frame.openingAngle > 1e-4;
     this.faceA.visible = open;
     this.faceB.visible = open;
-    if (!open) return;
+    // The faces' planes are the discard's planes: one basis feeds both.
     const faceA = cutFaceBasis(frame, 'a', tmpFace);
+    this.cutUniforms.uCutNormalA.value.copy(faceA.normal);
     tmpBasis.makeBasis(faceA.radial, faceA.up, faceA.normal);
     this.faceA.quaternion.setFromRotationMatrix(tmpBasis);
     const faceB = cutFaceBasis(frame, 'b', tmpFace);
+    this.cutUniforms.uCutNormalB.value.copy(faceB.normal);
     tmpBasis.makeBasis(faceB.radial, faceB.up, faceB.normal);
     this.faceB.quaternion.setFromRotationMatrix(tmpBasis);
   }
@@ -1154,6 +1159,8 @@ export class InteriorScene {
       .addScaledVector(tmpBack, KEY_LIGHT_CAMERA_DIR.z)
       .normalize();
     this.keyLight.position.copy(this.keyDirection).multiplyScalar(KEY_LIGHT_DISTANCE);
+    // The shells drawn from their far side reflect through the plane facing the camera now.
+    this.cutUniforms.uCutCamera.value.copy(camera.position).sub(this.group.position).normalize();
     this.skinFx?.uSunDirWorld.value.copy(this.keyDirection);
     // A planet's air is lit by the studio key; the Sun's corona by the camera, so its fringe is even all round.
     if (this.atmosphereMaterial) (this.atmosphereMaterial.uniforms.uSunDirWorld.value as THREE.Vector3).copy(this.coronaLit ? tmpBack : this.keyDirection);

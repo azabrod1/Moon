@@ -39,7 +39,9 @@ export const INSET_HEIGHT = 128;
 export const LAYER_BAND_PX = 44;
 
 export const INSET_TITLE = 'Magnified section';
-export const INSET_CAPTION = 'Drawn to this layer\'s own scale: on the globe it is too thin to see at true size.';
+export const INSET_CAPTION = 'Drawn to this layer\'s own scale: on the globe it is too thin to see at this size.';
+/** The caption when the globe does show the layer (a larger disc, or the layers enlarged): the strip is still its own scale. */
+export const INSET_CAPTION_VISIBLE = 'Drawn to this layer\'s own scale.';
 
 /** What the top of the outermost layer and the bottom of the innermost are called. */
 export const SURFACE_LABEL = 'Surface';
@@ -124,7 +126,7 @@ function cssHex(swatch: number): string {
  * it. Null when the layer is thick enough to read on the globe, or when the
  * model does not draw that index.
  */
-export function thinLayerInset(drawn: DrawnModel, index: number, swatchesInsideOut: readonly number[]): InsetLayout | null {
+export function thinLayerInset(drawn: DrawnModel, index: number, swatchesInsideOut: readonly number[], tooThinOnGlobe = true): InsetLayout | null {
   if (!isThinLayer(drawn, index)) return null;
   const regions = drawnRegions(drawn);
   const selected = regions[index];
@@ -206,7 +208,7 @@ export function thinLayerInset(drawn: DrawnModel, index: number, swatchesInsideO
 
   return {
     title: INSET_TITLE,
-    caption: INSET_CAPTION,
+    caption: tooThinOnGlobe ? INSET_CAPTION : INSET_CAPTION_VISIBLE,
     ariaLabel,
     width: INSET_WIDTH,
     height: INSET_HEIGHT,
@@ -220,10 +222,12 @@ export function thinLayerInset(drawn: DrawnModel, index: number, swatchesInsideO
 // ---- the drawing ------------------------------------------------------------
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
-/** Names sit in from the left edge, depths and the thickness from the right. */
+/** Names sit in from the left edge, with the selected layer's thickness under its name; depths from the right. */
 const NAME_X = 8;
 const DEPTH_X = INSET_WIDTH - 8;
-const THICKNESS_X = INSET_WIDTH - 12;
+/** The selected band's name rises to make room for the thickness line beneath it. */
+const NAME_LIFT_PX = 6;
+const THICKNESS_DROP_PX = 7;
 const LABEL_SIZE_PX = 10.5;
 /** Half the label's cap height: a text placed by its middle needs it, and dominant-baseline is not worth the risk. */
 const BASELINE_NUDGE_PX = 3.6;
@@ -354,10 +358,12 @@ export function renderThinLayerInset(layout: InsetLayout): SVGSVGElement {
 
   for (const band of layout.bands) {
     if (band.bottom - band.top < NAME_MIN_BAND_PX) continue;
-    root.append(label('inset-name', NAME_X, (band.top + band.bottom) / 2 + BASELINE_NUDGE_PX, 'start', band.labelText));
-  }
-  if (selected?.thicknessText) {
-    root.append(label('inset-thickness', THICKNESS_X, (selected.top + selected.bottom) / 2 + BASELINE_NUDGE_PX, 'end', selected.thicknessText));
+    const middle = (band.top + band.bottom) / 2 + BASELINE_NUDGE_PX;
+    // The selected band says its thickness under its name, on the same side,
+    // so the depth axis on the right never repeats the number at the boundary.
+    const lifted = band.thicknessText ? middle - NAME_LIFT_PX : middle;
+    root.append(label('inset-name', NAME_X, lifted, 'start', band.labelText));
+    if (band.thicknessText) root.append(label('inset-thickness', NAME_X, middle + THICKNESS_DROP_PX, 'start', band.thicknessText));
   }
 
   // The selected layer's own depths always read; another boundary's label is

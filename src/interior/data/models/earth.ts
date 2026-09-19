@@ -46,7 +46,7 @@ export const EARTH_MODEL: InteriorModel = {
       claims: [
         claim('existence', [
           row('seismology', 'supports', LEHMANN, { observed: 'Faint P-wave arrivals inside the core shadow zone', inferred: 'A boundary deep in the core reflects and refracts them', assumed: 'A spherically symmetric core', uncertain: 'Nothing about its size from this alone', year: 1936 }),
-          row('normalModes', 'supports', PREM, { observed: 'The periods of Earth\'s free oscillations after great earthquakes', inferred: 'A solid core of this radius and rigidity fits them', assumed: 'Elastic, self-gravitating Earth', uncertain: 'Anisotropy and fine structure' }),
+          row('normalModes', 'supports', PREM, { observed: 'The periods of Earth\'s free oscillations after great earthquakes', inferred: 'A solid core of this radius and rigidity fits them', assumed: 'Elastic, self-gravitating Earth', uncertain: 'Anisotropy and fine structure', year: 1981 }),
           row('labHighPressure', 'supports', ANZELLINI, { observed: 'Iron\'s melting temperature at core pressures in a laser-heated diamond anvil', inferred: 'Iron is solid at the inner-core boundary temperature', assumed: 'Light elements change the melting point modestly', uncertain: 'The exact composition, hence the exact melting point', year: 2013 }),
         ]),
         claim('state', [
@@ -75,7 +75,7 @@ export const EARTH_MODEL: InteriorModel = {
       claims: [
         claim('existence', [
           row('seismology', 'supports', OLDHAM, { observed: 'No direct S waves beyond 104° from an earthquake, and P waves bent into a shadow zone', inferred: 'A fluid region at this depth that shear waves cannot cross', assumed: 'Shear waves need a solid', uncertain: 'The precise radius from this alone', year: 1914 }),
-          row('normalModes', 'supports', PREM, { observed: 'Free-oscillation periods', inferred: 'A fluid shell of this radius and density', assumed: 'Elastic Earth', uncertain: 'Fine structure at its top and bottom' }),
+          row('normalModes', 'supports', PREM, { observed: 'Free-oscillation periods', inferred: 'A fluid shell of this radius and density', assumed: 'Elastic Earth', uncertain: 'Fine structure at its top and bottom', year: 1981 }),
           row('magnetic', 'supports', GLATZMAIER, { observed: 'Earth\'s dipole field and its secular variation and reversals', inferred: 'A convecting conducting fluid deep inside sustains a dynamo', assumed: 'Dynamo theory', uncertain: 'The details of the flow', year: 1995 }),
           row('labHighPressure', 'supports', ANZELLINI, { observed: 'Iron\'s melting curve to core pressures', inferred: 'Iron is molten at outer-core conditions', assumed: 'A modest depression from light elements', uncertain: 'Composition', year: 2013 }),
         ]),

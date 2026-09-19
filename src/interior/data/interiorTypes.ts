@@ -40,6 +40,8 @@ export type Phase =
 
 export type EvidenceMethod =
   | 'seismology'
+  /** Waves in a planet's rings driven by oscillations inside it (kronoseismology). */
+  | 'ringSeismology'
   | 'normalModes'
   | 'helioseismology'
   | 'neutrinos'

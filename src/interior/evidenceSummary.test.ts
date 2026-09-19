@@ -23,6 +23,7 @@ function shippedClaim(model: InteriorModel, regionKey: string, kind: ClaimKind):
  *  method fails to compile here until it is given a label of its own. */
 const EVERY_METHOD: Readonly<Record<EvidenceMethod, true>> = {
   seismology: true,
+  ringSeismology: true,
   normalModes: true,
   helioseismology: true,
   neutrinos: true,
@@ -54,7 +55,7 @@ describe('withArticle', () => {
     expect(withArticle(methodLabel('gravity'))).toBe('the gravity field');
     expect(withArticle(methodLabel('momentOfInertia'))).toBe('the moment of inertia');
     expect(withArticle(methodLabel('magnetic'))).toBe('the magnetic field');
-    for (const method of ['sample', 'neutrinos', 'tides', 'libration', 'seismology', 'helioseismology', 'normalModes', 'inSitu', 'labHighPressure', 'density', 'model'] as const) {
+    for (const method of ['sample', 'neutrinos', 'tides', 'libration', 'seismology', 'ringSeismology', 'helioseismology', 'normalModes', 'inSitu', 'labHighPressure', 'density', 'model'] as const) {
       expect(withArticle(methodLabel(method))).toBe(methodLabel(method));
     }
   });

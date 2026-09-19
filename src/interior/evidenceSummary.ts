@@ -38,6 +38,7 @@ export interface EvidenceSummary {
 export function methodLabel(method: EvidenceMethod): string {
   switch (method) {
     case 'seismology': return 'seismology';
+    case 'ringSeismology': return 'ring seismology';
     case 'normalModes': return 'normal modes';
     case 'helioseismology': return 'helioseismology';
     case 'neutrinos': return 'neutrinos';
@@ -55,7 +56,7 @@ export function methodLabel(method: EvidenceMethod): string {
 }
 
 /** Methods that reach the region itself: the measurement is taken of it or inside it. */
-const DIRECT_METHOD_LIST = ['seismology', 'helioseismology', 'sample', 'inSitu', 'neutrinos'] as const satisfies readonly EvidenceMethod[];
+const DIRECT_METHOD_LIST = ['seismology', 'ringSeismology', 'helioseismology', 'sample', 'inSitu', 'neutrinos'] as const satisfies readonly EvidenceMethod[];
 type DirectMethod = (typeof DIRECT_METHOD_LIST)[number];
 const DIRECT_METHODS: ReadonlySet<EvidenceMethod> = new Set<EvidenceMethod>(DIRECT_METHOD_LIST);
 
@@ -81,6 +82,9 @@ export function withArticle(label: string): string {
  *  generic line on screen. */
 const OBSERVED_PHRASE: Readonly<Record<DirectMethod, string>> = {
   seismology: 'Observed by seismology',
+  // A gas giant has no seismometer: the rings are the instrument, and the phrase says so, or
+  // "seismology" on Saturn reads as a mistake.
+  ringSeismology: 'Observed by ring seismology',
   helioseismology: 'Observed by helioseismology',
   neutrinos: 'Observed by neutrinos',
   sample: 'Seen in returned samples',

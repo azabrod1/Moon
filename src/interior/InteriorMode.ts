@@ -91,7 +91,10 @@ import {
   computeCutFrame,
   copyCutFrame,
   createCutAnchor,
+  createCutFaceBasis,
   createCutFrame,
+  cutFaceBasis,
+  cutYawRad,
   frameFromAnchor,
   cutViewForAngle,
   openingAngleDegToRad,
@@ -194,17 +197,17 @@ const GLIDE_YIELD_DISTANCE = 1e-6;
 const SWAP_FADE_S = 0.45;
 /** The reveal's exterior ghost starts this opaque and clears as the cut opens. */
 const GHOST_OPACITY = 0.32;
-/** The wedge is turned this far about the hinge when the cut is chosen from
- *  the camera, so the viewer looks at one face (25° off face-on at the
- *  quarter wedge) and along the other (65° off) rather than straight into
- *  the crease. At Section it is what keeps the disc off face-on: a disc
- *  face-on is a flat circle, and on a body with no rings and no air around it
- *  nothing else says the circle is a sphere with its near half gone; this
- *  much leaves a crescent of the skin's rim on one side about a sixteenth of
- *  the radius wide (ten degrees showed a hair, which the Moon's one brown
- *  mantle swallowed). One yaw for every view: the cut is locked to the body
- *  once chosen, so a per-view yaw would only move it when the view changed. */
+/** The quarter wedge is turned this far about the hinge from where the camera
+ *  chose it, so the viewer looks at one face (25° off face-on) and along the
+ *  other (65° off) rather than straight into the crease. The yaw belongs to
+ *  the wedge, not the disc: a full disc turned this far shows the skin's far
+ *  half past its edge as a crescent (a sixteenth of the radius on a ringless
+ *  world, the whole corona's gap on the Sun), which every reader took for a
+ *  fault. So it fades to nothing as the opening widens to Section
+ *  (cutFrame.cutYawRad): the anchor holds the unyawed frame the camera chose,
+ *  and the pose applies the yaw the current opening calls for. */
 const CUT_YAW_DEG = 20;
+const CUT_YAW_RAD = CUT_YAW_DEG * DEG2RAD;
 /** "Cut faces the camera" swings a locked cut round to the camera over this long. */
 const CUT_SWING_S = 0.35;
 /** The ruler hides once both faces have turned this far from facing the camera
@@ -237,6 +240,8 @@ export interface InteriorDevFaceProbe {
   /** The legend swatch for the region, and that swatch through the output path (rendering/outputTransform). */
   swatchHex: number;
   faceHex: number;
+  /** How thick the region is drawn on screen, px: a layer a few px thick has no pixel of its own to read. */
+  thicknessPx: number;
 }
 
 export interface InteriorDevHover {
@@ -398,6 +403,7 @@ function orbitPose(azimuthDeg: number, elevationDeg: number, distance: number, o
 const ORIGIN = new THREE.Vector3(0, 0, 0);
 const tmpLocalUp = new THREE.Vector3();
 const tmpCameraFrame = createCutFrame();
+const tmpRulerBasis = createCutFaceBasis();
 const tmpNdc = new THREE.Vector2();
 const tmpProbePoint = new THREE.Vector3();
 
@@ -880,36 +886,44 @@ export class InteriorMode {
     input.outerDisplay = this.pickLayout.outerDisplay;
     input.regionsInsideOut = this.drawn.regionsInsideOut;
     input.annotations = this.drawn.model?.annotations ?? [];
-    this.ruler.render(rulerLayout(input, this.rulerLayoutCache), this.camera, width, height, opacity);
+    // The ruler is drawn in the plane of its face: its marks and labels are laid along the face's own axes.
+    const basis = cutFaceBasis(this.frame, side, tmpRulerBasis);
+    this.ruler.render(rulerLayout(input, this.rulerLayoutCache), this.camera, width, height, opacity, basis.radial, basis.up);
   }
 
-  /** The camera-facing frame at the current opening, yawed: what the lock is
+  /** The camera-facing frame at the current opening, unyawed: what the lock is
    *  chosen from, and what "Cut faces the camera" follows. */
   private cameraCutFrame(out: CutFrame): CutFrame {
     tmpLocalUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
-    computeCutFrame(this.camera.position, tmpLocalUp, ORIGIN, openingAngleDegToRad(this.cut.angleDeg), out);
-    return yawCutFrame(out, CUT_YAW_DEG * DEG2RAD);
+    return computeCutFrame(this.camera.position, tmpLocalUp, ORIGIN, openingAngleDegToRad(this.cut.angleDeg), out);
+  }
+
+  /** The frame as drawn: the unyawed frame turned by the yaw the current opening calls for. */
+  private yawForOpening(frame: CutFrame): CutFrame {
+    return yawCutFrame(frame, cutYawRad(frame.openingAngle, CUT_YAW_RAD));
   }
 
   /** Lock the cut where the camera sees it now: the anchor, in the body's own
-   *  coordinates. On entry, at a body swap (a new pose under the same camera)
-   *  and at Reset view. */
+   *  coordinates, holding the unyawed frame. On entry, at a body swap (a new
+   *  pose under the same camera) and at Reset view. */
   private lockCutToCamera(): void {
     this.cameraCutFrame(this.frame);
     anchorCutFrame(this.frame, this.interiorScene.pose(), this.cutAnchor);
+    this.yawForOpening(this.frame);
     this.cutSwingElapsedS = Infinity;
     this.rulerStale = true;
   }
 
   /** The frame for this tick: rebuilt from the anchor under the body's pose,
    *  or the camera's own while the cut follows it, with a short eased swing
-   *  from the one to the other when the option turns on. Following, the anchor
-   *  is kept at the frame, so turning the option off freezes the cut where it
-   *  is with no jump. */
+   *  from the one to the other when the option turns on, then yawed for the
+   *  opening. Following, the anchor is kept at the (unyawed) frame, so turning
+   *  the option off freezes the cut where it is with no jump. */
   private poseCutFrame(dt: number): void {
     const openingAngle = openingAngleDegToRad(this.cut.angleDeg);
     if (!this.cutFollow) {
       frameFromAnchor(this.cutAnchor, this.interiorScene.pose(), openingAngle, this.frame);
+      this.yawForOpening(this.frame);
       return;
     }
     this.cameraCutFrame(tmpCameraFrame);
@@ -922,6 +936,7 @@ export class InteriorMode {
       copyCutFrame(tmpCameraFrame, this.frame);
     }
     anchorCutFrame(this.frame, this.interiorScene.pose(), this.cutAnchor);
+    this.yawForOpening(this.frame);
   }
 
   /** "Cut faces the camera" on or off. On swings the cut round to the camera
@@ -933,7 +948,8 @@ export class InteriorMode {
     if (on === this.cutFollow) return;
     this.cutFollow = on;
     if (on && !this.reducedMotion.matches) {
-      copyCutFrame(this.frame, this.cutSwingFrom);
+      // The swing runs between unyawed frames; the pose yaws its result.
+      frameFromAnchor(this.cutAnchor, this.interiorScene.pose(), openingAngleDegToRad(this.cut.angleDeg), this.cutSwingFrom);
       this.cutSwingElapsedS = 0;
     } else {
       this.cutSwingElapsedS = Infinity;
@@ -1420,8 +1436,9 @@ export class InteriorMode {
         const pieces = [`${formatKm(depthTop)}–${formatKm(depthBottom)} km`];
         const phase = PHASE_LABEL[region.phase];
         if (phase) pieces.push(phase);
-        // The reader's unit; the basis word is the details page's.
-        const temperatureRange = region.region ? temperatureRangeText(region.region.temperatureK, this.temperatureUnit) : '';
+        // The reader's unit; the basis word is the details page's. In Temperature
+        // mode the detail line above already says the range, so this one does not.
+        const temperatureRange = region.region && !temperature ? temperatureRangeText(region.region.temperatureK, this.temperatureUnit) : '';
         if (temperatureRange) pieces.push(temperatureRange);
         for (let pieceIndex = 0; pieceIndex < pieces.length; pieceIndex++) {
           const last = pieceIndex === pieces.length - 1;
@@ -1809,6 +1826,8 @@ export class InteriorMode {
       coverage: this.coverage,
       unit: this.temperatureUnit,
       index: regionIndex,
+      // The inset's caption says "too thin to see" only when the globe's note would say it too.
+      tooThinOnGlobe: (index) => !this.readable && tooThinToSeeIndices(outerFractionsInsideOut(this.drawn), READABLE_MIN_PX, this.projectedPx).includes(index),
       onLayers: () => this.setPinned(-1),
       onSummary: () => { if (regionKey !== null) this.showPage({ kind: 'summary', regionKey }); },
       onDetails: () => { if (regionKey !== null) this.showPage({ kind: 'details', regionKey }); },
@@ -1969,6 +1988,16 @@ export class InteriorMode {
     const scale = document.getElementById('interior-scale');
     if (!scale) return;
     const range = this.temperatureRange;
+    // The band key line, wherever a boundary is drawn with a band: the stripes
+    // are drawn in both modes, so the key shows in both, outside the scale.
+    const bandNote = document.getElementById('interior-band-note');
+    if (bandNote) {
+      const banded = this.drawn.regionsInsideOut.some((region) => {
+        const kind = region.region?.boundary.knowledge.location?.kind;
+        return kind === 'interval' || kind === 'modelSpread';
+      });
+      bandNote.style.display = banded ? '' : 'none';
+    }
     if (this.displayMode !== 'temperature' || !range) {
       scale.style.display = 'none';
       return;
@@ -1982,15 +2011,6 @@ export class InteriorMode {
     if (min) min.textContent = temperatureValueText(range.minK, this.temperatureUnit);
     if (max) max.textContent = temperatureValueText(range.maxK, this.temperatureUnit);
     if (mid) mid.textContent = range.log ? 'Temperature (log scale)' : 'Temperature';
-    // The band key line, only where a boundary is drawn with a band.
-    const bandNote = document.getElementById('interior-band-note');
-    if (bandNote) {
-      const banded = this.drawn.regionsInsideOut.some((region) => {
-        const kind = region.region?.boundary.knowledge.location?.kind;
-        return kind === 'interval' || kind === 'modelSpread';
-      });
-      bandNote.style.display = banded ? '' : 'none';
-    }
     scale.style.display = '';
   }
 
@@ -2317,7 +2337,10 @@ export class InteriorMode {
       && !this.interiorScene.isFading()
       && !this.interiorScene.awaitingLateMap()
       && cutTweenSettled(this.cut)
-      && this.scaleBlend === this.scaleBlendTarget;
+      && this.scaleBlend === this.scaleBlendTarget
+      // The framing's glide has landed: a capture after a pin or a sheet snap sees the body where it settles.
+      && this.distanceTargetNow === 0
+      && this.viewOffsetYPx === this.viewOffsetYTargetPx;
   }
 
   /** Draw a named model of the current body (a competing alternative, or a
@@ -2398,6 +2421,7 @@ export class InteriorMode {
       kelvin,
       swatchHex: temperatureScaleHex(t),
       faceHex: diagramFaceHex(t),
+      thicknessPx: (look.outerDisplay - (inner?.outerDisplay ?? 0)) * this.projectedPx,
     };
   }
 

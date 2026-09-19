@@ -48,7 +48,9 @@
  * Hover and pin: a pointer ray is picked on the CPU against the wedge cut
  * (interiorPick, the same frame and remap the shaders use); the region under
  * it is emphasised through two uniforms and its legend row lights; a hover
- * card previews it on a fine pointer; a tap or click SELECTS it, which opens
+ * card previews it on a fine pointer (ui/hoverCard: built once and moved, a
+ * pointer's moves kept for the frame so a burst is one pick); a tap or click
+ * SELECTS it, which opens
  * its summary page in the panel (ui/InteriorPages: the summary, its details,
  * its evidence grouped by property, and the model page — one host, one page
  * at a time, the layer list the page they all return to). Hovering a legend
@@ -128,9 +130,13 @@ import {
 } from './interiorGeometry';
 import { fitDistance, framingDistance, stageViewOffset, visibleStageRect, type StageRect } from './interiorLayout';
 import { createPickHit, pickInterior, type PickHit, type PickLayout, type PickSurface } from './interiorPick';
-import { renderHoverCard, renderPage, type InteriorPanelPage } from './ui/InteriorPages';
+import { familyPhaseText, renderPage, type InteriorPanelPage } from './ui/InteriorPages';
+import { HoverCard, domHoverCardSurface, hoverDepthText } from './ui/hoverCard';
 import { DepthRuler } from './ui/DepthRuler';
-import { createRulerLayout, rulerFacing, rulerLayout, rulerSide, type RulerInput } from './ruler';
+import { createRulerLayout, rulerFacing, rulerLayout, rulerPoint, rulerSide, type RulerInput } from './ruler';
+import { sampleTemperatureK } from './temperatureProfile';
+import { diagramFaceHex } from './rendering/outputTransform';
+import type { SectionRegionLook } from './rendering/sectionMaterial';
 import { regionEvidenceSummary } from './evidenceSummary';
 import { ACTUAL_SIZE, CHOOSE_BODY, ENLARGE, ILLUSTRATIVE_NOTE, INTERIOR_MODEL, LAYERS, MODEL_AND_SOURCES, STRUCTURE_UNCERTAIN } from './ui/interiorCopy';
 import { INTERIOR_DEFAULT_BODY, coverageBadge, coverageFor, defaultModelFor, modelFor } from './data/interiorRegistry';
@@ -210,7 +216,6 @@ const FPS_WINDOW = 60;
 /** Recompute the remap when the projected radius moves this much. */
 const REMAP_PX_TOLERANCE = 0.5;
 /** The hover card sits this far from the pointer. */
-const HOVER_CARD_OFFSET_PX = 14;
 /** The ruler is fully drawn once the cut has opened this far. */
 const RULER_FULL_DEG = 40;
 
@@ -220,6 +225,18 @@ export interface InteriorDevRegion {
   outerKm: number;
   /** Outer radius as drawn, a fraction of the disc. */
   displayOuter: number;
+}
+
+/** Where a region's middle sits on a face in Temperature mode, and the colours the diagram promises there. */
+export interface InteriorDevFaceProbe {
+  /** Client px of the region's mid-depth on the face the ruler runs down. */
+  x: number;
+  y: number;
+  /** The temperature there through the shared sampler, K. */
+  kelvin: number;
+  /** The legend swatch for the region, and that swatch through the output path (rendering/outputTransform). */
+  swatchHex: number;
+  faceHex: number;
 }
 
 export interface InteriorDevHover {
@@ -382,6 +399,7 @@ const ORIGIN = new THREE.Vector3(0, 0, 0);
 const tmpLocalUp = new THREE.Vector3();
 const tmpCameraFrame = createCutFrame();
 const tmpNdc = new THREE.Vector2();
+const tmpProbePoint = new THREE.Vector3();
 
 /** A button in a radio group: its on class and its checked state, together. */
 function setRadio(id: string, on: boolean): void {
@@ -466,6 +484,8 @@ export class InteriorMode {
   private scaleBlend = 0;
   private scaleBlendTarget = 0;
   private remap: ReadableRemap | null = null;
+  /** The looks the faces draw right now, inside-out: what the face probe reads its bands and blends from. */
+  private looks: SectionRegionLook[] = [];
   private remapPx = -1;
   private remapBlend = -1;
   private projectedPx = 0;
@@ -479,6 +499,10 @@ export class InteriorMode {
   private readonly pickHit = createPickHit();
   private readonly pickLayout: PickLayout;
   private hoverIndex = -1;
+  /** The preview beside a fine pointer, built on first use; the pointer's latest
+   *  move waits here for the frame, so a burst of moves is one pick. */
+  private hoverCard: HoverCard | null = null;
+  private pendingHover: { x: number; y: number } | null = null;
   private legendHoverIndex = -1;
   private pinnedIndex = -1;
   private readonly emphasis = createEmphasisState();
@@ -768,6 +792,8 @@ export class InteriorMode {
     this.interiorScene.applyCut(this.frame);
     this.interiorScene.updateForCamera(this.camera);
 
+    // The pointer's latest move, picked once now that the frame's layout is current.
+    this.flushHover();
     this.advanceEmphasis(dt);
     if (willDraw) this.renderRuler();
   }
@@ -981,7 +1007,8 @@ export class InteriorMode {
     this.remapBlend = this.scaleBlend;
     const remap = readableRemap(outerFractionsInsideOut(this.drawn), minDisplayFraction(READABLE_MIN_PX, this.projectedPx), this.scaleBlend);
     this.remap = remap;
-    const looks = regionLooks(this.drawn, remap, regionArtInsideOut(this.drawn), this.temperatureRange);
+    const looks = regionLooks(this.drawn, remap, regionArtInsideOut(this.drawn));
+    this.looks = looks;
     this.interiorScene.applyRegions(looks);
     this.interiorScene.setTemperatureScale(this.temperatureRange);
     this.pickLayout.outerDisplay = looks.map((look) => look.outerDisplay);
@@ -1631,23 +1658,52 @@ export class InteriorMode {
       this.hoverIndex = index;
       this.syncLegendEmphasis();
     }
-    const card = document.getElementById('interior-hover');
-    if (!card) return;
     const region = index >= 0 ? this.drawn.regionsInsideOut[index] : undefined;
     if (!region || this.modalOpen()) {
-      card.style.display = 'none';
+      this.hoverCard?.hide();
       return;
     }
-    renderHoverCard(card, region, depthKm);
-    card.style.display = 'block';
-    // Beside the pointer, kept inside the viewport.
-    const x = Math.min(clientX + HOVER_CARD_OFFSET_PX, window.innerWidth - card.offsetWidth - 8);
-    const y = Math.min(clientY + HOVER_CARD_OFFSET_PX, window.innerHeight - card.offsetHeight - 8);
-    card.style.left = `${Math.max(8, x)}px`;
-    card.style.top = `${Math.max(8, y)}px`;
+    const card = this.ensureHoverCard();
+    card?.show(
+      { key: region.key, name: region.name, kicker: familyPhaseText(region) },
+      hoverDepthText(depthKm),
+      clientX,
+      clientY,
+      { width: window.innerWidth, height: window.innerHeight },
+    );
+  }
+
+  /** The card, built once from its host on first use; the fonts arriving re-measures it. */
+  private ensureHoverCard(): HoverCard | null {
+    if (this.hoverCard) return this.hoverCard;
+    const host = document.getElementById('interior-hover');
+    if (!host) return null;
+    const card = new HoverCard(domHoverCardSurface(host));
+    this.hoverCard = card;
+    document.fonts?.ready.then(() => card.invalidateSize(), () => {});
+    return card;
+  }
+
+  /** Hover what is under a client point: a region's face, or nothing. */
+  private hoverAt(clientX: number, clientY: number): void {
+    const hit = this.pickAt(clientX, clientY);
+    if (hit && hit.surface !== 'skin') {
+      this.setHover(hit.regionIndex, clientX, clientY, this.depthKmAtDisplay(hit.radiusDisplay));
+    } else {
+      this.clearHover();
+    }
+  }
+
+  /** The pointer's latest move, if one is waiting: one pick per frame however many moves arrived. */
+  private flushHover(): void {
+    const pending = this.pendingHover;
+    if (!pending) return;
+    this.pendingHover = null;
+    this.hoverAt(pending.x, pending.y);
   }
 
   private clearHover(): void {
+    this.pendingHover = null;
     this.setHover(-1, 0, 0, null);
   }
 
@@ -1826,12 +1882,9 @@ export class InteriorMode {
       this.clearHover(); // dragging the orbit
       return;
     }
-    const hit = this.pickAt(event.clientX, event.clientY);
-    if (hit && hit.surface !== 'skin') {
-      this.setHover(hit.regionIndex, event.clientX, event.clientY, this.depthKmAtDisplay(hit.radiusDisplay));
-    } else {
-      this.clearHover();
-    }
+    // Kept for the frame: the pick and the card wait for update(), so a burst of
+    // moves between two frames is one pick and one placement.
+    this.pendingHover = { x: event.clientX, y: event.clientY };
   };
 
   private handlePointerDown = (event: PointerEvent) => {
@@ -1845,6 +1898,7 @@ export class InteriorMode {
 
   private handleBlur = () => {
     this.tap.reset();
+    this.clearHover();
   };
 
   private handlePointerUp = (event: PointerEvent) => {
@@ -1920,7 +1974,8 @@ export class InteriorMode {
       return;
     }
     const bar = document.getElementById('interior-scale-bar');
-    if (bar) bar.style.background = temperatureScaleGradientCss();
+    // A scale of one value is one colour, the bottom of the ramp, where the faces draw it.
+    if (bar) bar.style.background = range.maxK > range.minK ? temperatureScaleGradientCss() : `#${temperatureScaleHex(0).toString(16).padStart(6, '0')}`;
     const min = document.getElementById('interior-scale-min');
     const max = document.getElementById('interior-scale-max');
     const mid = scale.querySelector('.interior-scale-mid');
@@ -2299,9 +2354,51 @@ export class InteriorMode {
       return null;
     }
     const depthKm = hit.surface === 'skin' ? null : this.depthKmAtDisplay(hit.radiusDisplay);
+    this.pendingHover = null; // the harness's hover lands now, not on the next frame
     if (hit.surface !== 'skin') this.setHover(hit.regionIndex, x, y, depthKm);
     else this.clearHover();
     return { surface: hit.surface, regionKey: region.key, depthKm };
+  }
+
+  /** Where a region's middle sits on the face right now, client px, with the
+   *  colours the diagram promises there: the region's legend swatch, and that
+   *  swatch through the output path (rendering/outputTransform). What the sweep
+   *  holds a face pixel to. Null off Temperature mode, for an unknown temperature
+   *  or a body with no scale, and where the middle lies under an uncertainty
+   *  band or inside a physical blend, which are drawn over it. */
+  devFaceProbe(regionKey: string): InteriorDevFaceProbe | null {
+    if (!this.active || !this.remap || this.displayMode !== 'temperature' || !this.temperatureRange) return null;
+    const index = this.regionIndexFor(regionKey);
+    const region = this.drawn.regionsInsideOut[index];
+    const quantity = region?.region?.temperatureK;
+    const look = this.looks[index];
+    if (!region || !quantity || !look) return null;
+    const midKm = (region.innerRadiusKm + region.outerRadiusKm) / 2;
+    const kelvin = sampleTemperatureK(quantity, midKm, region.innerRadiusKm, region.outerRadiusKm);
+    if (kelvin === null) return null;
+    const display = toDisplayFraction(this.remap, midKm / this.drawn.referenceRadiusKm);
+    for (const other of this.looks) {
+      if (other.bandDisplay && display >= other.bandDisplay.low && display <= other.bandDisplay.high) return null;
+    }
+    const inner = index > 0 ? this.looks[index - 1] : null;
+    if (Math.abs(display - look.outerDisplay) <= look.blendDisplay || (inner && Math.abs(display - inner.outerDisplay) <= inner.blendDisplay)) return null;
+    // The point the ruler would mark at that depth, projected as the ruler is.
+    this.camera.updateMatrixWorld();
+    this.cameraDirection.copy(this.camera.position).normalize();
+    const input = this.rulerInput;
+    input.side = rulerSide(this.frame, this.cameraDirection);
+    input.referenceRadiusKm = this.drawn.referenceRadiusKm;
+    input.remap = this.remap;
+    const point = rulerPoint(input, this.drawn.referenceRadiusKm - midKm, tmpProbePoint).project(this.camera);
+    const rect = this.domElement.getBoundingClientRect();
+    const t = temperatureT(this.temperatureRange, kelvin);
+    return {
+      x: rect.left + ((point.x + 1) / 2) * rect.width,
+      y: rect.top + ((1 - point.y) / 2) * rect.height,
+      kelvin,
+      swatchHex: temperatureScaleHex(t),
+      faceHex: diagramFaceHex(t),
+    };
   }
 
   /** Pin a region by key (null unpins). */

@@ -9,7 +9,9 @@
  *                      region's outer boundary, the half-width of its physical
  *                      transition and the band where its boundary might be,
  *                      each through the Readable remap, so the faces, the pick
- *                      and the ruler read one set of display radii
+ *                      and the ruler read one set of display radii; and its
+ *                      temperature as the shader's knots, through the one
+ *                      sampler (temperatureProfile) every reader of it shares
  *   the region art     each region's look with the family depth tint, the one
  *                      place the legend and the faces get their colours
  *   the caption        the line under the body's name: what is drawn and how
@@ -28,12 +30,12 @@
  * Pure: no three, no DOM.
  */
 import { MAX_OPENING_ANGLE_DEG } from './cutFrame';
-import { artParamsFor, depthTint, incandescence, type ArtParams } from './data/artParams';
+import { artParamsFor, depthTint, type ArtParams } from './data/artParams';
 import type { Coverage, InteriorModel } from './data/interiorTypes';
 import { outerFractionsInsideOut, type DrawnModel } from './drawnModel';
 import { toDisplayFraction, type ReadableRemap } from './interiorGeometry';
 import type { SectionRegionLook } from './rendering/sectionMaterial';
-import { temperatureEndpoints, type TemperatureRange } from './temperatureScale';
+import { temperatureKnotsK, temperatureLog } from './temperatureProfile';
 import { ILLUSTRATIVE_NOTE, STRUCTURE_UNCERTAIN, THIN_LAYERS_ENLARGED } from './ui/interiorCopy';
 import { formatKm, NOT_KNOWN, reviewDateText } from './ui/inspectorText';
 
@@ -114,17 +116,18 @@ export function regionArtInsideOut(drawn: DrawnModel): ArtParams[] {
  * The region looks the faces draw, inside-out, every radius through the
  * remap: the outer boundary; the half-width of a physical transition (its
  * two edges mapped and halved, so a widened thin layer keeps a blend that
- * fits it); and the band where the boundary might be (an interval or a
- * spread of models — a qualitative note has no width to draw), which
- * straddles the boundary at every blend because the remap is monotone. A
- * null temperature range draws every temperature as unknown, so the faces
- * and the legend never disagree about whether there is a scale.
+ * fits it); the band where the boundary might be (an interval or a spread
+ * of models — a qualitative note has no width to draw), which straddles the
+ * boundary at every blend because the remap is monotone; and the region's
+ * temperature as the shader's knots through the shared sampler
+ * (temperatureProfile), which the Temperature diagram and the Materials
+ * glow both read, or null when nobody knows it — drawn cold, and hatched
+ * where the diagram has a scale to hatch against.
  */
 export function regionLooks(
   drawn: DrawnModel,
   remap: ReadableRemap,
   artInsideOut: readonly ArtParams[],
-  temperatureRange: TemperatureRange | null,
 ): SectionRegionLook[] {
   const fractions = outerFractionsInsideOut(drawn);
   const reference = drawn.referenceRadiusKm;
@@ -137,13 +140,13 @@ export function regionLooks(
     const band = location && (location.kind === 'interval' || location.kind === 'modelSpread')
       ? { low: toDisplayFraction(remap, Math.max(0, location.low / reference)), high: toDisplayFraction(remap, Math.min(1, location.high / reference)) }
       : null;
+    const quantity = region.region?.temperatureK ?? null;
+    const knotsK = quantity ? temperatureKnotsK(quantity, region.innerRadiusKm, region.outerRadiusKm) : null;
     return {
       outerDisplay: toDisplayFraction(remap, fractions[index]),
       blendDisplay,
       art: artInsideOut[index],
-      // An unknown temperature is cold, never a guessed glow; Temperature mode hatches it.
-      heat: incandescence(region.temperatureK ?? 0),
-      temperature: region.region && temperatureRange ? temperatureEndpoints(region.region.temperatureK) : null,
+      temperature: quantity && knotsK ? { knotsK, log: temperatureLog(quantity) } : null,
       bandDisplay: band && band.high > band.low ? band : null,
     };
   });

@@ -2630,6 +2630,7 @@ function installDevHooks() {
     interiorMode: (mode: 'composition' | 'temperature') => interiorMode?.devDisplayMode(mode) ?? false,
     interiorRings: (on: boolean) => interiorMode?.devRings(on) ?? false,
     interiorHover: (x: number, y: number) => interiorMode?.devHover(x, y) ?? null,
+    interiorFaceProbe: (regionKey: string) => interiorMode?.devFaceProbe(regionKey) ?? null,
     interiorPin: (regionKey: string | null) => interiorMode?.devPin(regionKey) ?? false,
     interiorEvidence: (claimKind: 'existence' | 'extent' | 'state' | 'composition' | 'temperature' | null) =>
       interiorMode?.devEvidence(claimKind) ?? false,

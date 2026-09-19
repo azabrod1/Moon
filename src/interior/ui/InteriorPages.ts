@@ -22,7 +22,7 @@
  * A thin layer's summary carries the Magnified section (thinLayerInset): the
  * strip of the radial profile around it at the layer's own scale, because on
  * the globe such a layer is a hairline the reader can be told about but not
- * look at. The hover card is here too: the desktop's preview beside the pointer.
+ * look at. The hover card beside the pointer is ui/hoverCard.ts.
  *
  * Every number goes through inspectorText in the reader's unit, so the words
  * are the ones the tests pin. A region drawn as an unresolved whole has no
@@ -80,14 +80,6 @@ export interface PageContext {
 
 export function familyPhaseText(region: DrawnRegion): string {
   return `${FAMILY_LABEL[region.family]} · ${PHASE_LABEL[region.phase]}`;
-}
-
-/** The hover preview: name, material and phase, the depth under the pointer. */
-export function renderHoverCard(card: HTMLElement, region: DrawnRegion, depthKm: number | null): void {
-  card.replaceChildren();
-  card.append(element('div', 'ih-name', region.name));
-  card.append(element('div', 'ih-kicker', familyPhaseText(region)));
-  if (depthKm !== null) card.append(element('div', 'ih-depth', `${formatKm(Math.max(0, depthKm))} km down`));
 }
 
 /** Render one page into the host. Returns the element a caller may want to bring into view (an asked-for evidence group), or null. */

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { Quantity } from './data/interiorTypes';
 import { EARTH_MODEL } from './data/models/earth';
 import { EUROPA_MODEL } from './data/models/europa';
 import { SUN_MODEL } from './data/models/sun';
@@ -6,7 +7,6 @@ import { endpoints, UNKNOWN } from './data/modelHelpers';
 import {
   TEMPERATURE_SCALE_STOPS,
   bodyTemperatureRange,
-  temperatureEndpoints,
   temperatureScaleColor,
   temperatureScaleGradientCss,
   temperatureScaleHex,
@@ -52,17 +52,18 @@ describe('temperatureScale', () => {
     expect(temperatureT({ minK: 100, maxK: 10_000, log: true }, 1000)).toBeCloseTo(0.5, 9);
   });
 
-  it('treats a single known value as no scale', () => {
-    // Nothing to place one value between: the range is null, so the faces hatch and the legend hides the scale.
-    expect(bodyTemperatureRange([endpoints(300, 300, 's', 'inferred')])).toBeNull();
-    expect(bodyTemperatureRange([endpoints(300, 300, 's', 'inferred'), endpoints(300, 300, 's', 'inferred'), UNKNOWN])).toBeNull();
+  it('keeps a single known value as a scale of one value, never as no scale', () => {
+    // One value is still known: the span is zero (the floors place it at the bottom) and the
+    // legend shows the one value at both ends, rather than hatching a temperature the model gives.
+    expect(bodyTemperatureRange([endpoints(300, 300, 's', 'inferred')])).toEqual({ minK: 300, maxK: 300, log: false });
+    expect(bodyTemperatureRange([endpoints(300, 300, 's', 'inferred'), endpoints(300, 300, 's', 'inferred'), UNKNOWN])).toEqual({ minK: 300, maxK: 300, log: false });
     expect(bodyTemperatureRange([endpoints(301, 300, 's', 'inferred')])).toEqual({ minK: 300, maxK: 301, log: false });
+    expect(temperatureT({ minK: 300, maxK: 300, log: false }, 300)).toBe(0);
   });
 
-  it('reads endpoints from a quantity and nothing from unknown', () => {
-    expect(temperatureEndpoints(endpoints(5700, 5400, 's', 'inferred'))).toEqual({ outerK: 5400, innerK: 5700, log: false });
-    expect(temperatureEndpoints(endpoints(10, 1, 's', 'modelled', 'log'))?.log).toBe(true);
-    expect(temperatureEndpoints(UNKNOWN)).toBeNull();
+  it('spans every sample of a profile, not only its ends', () => {
+    const profile: Quantity = { kind: 'profile', samples: [{ radiusKm: 0, value: 2000 }, { radiusKm: 400, value: 2600 }, { radiusKm: 1000, value: 1500 }], interpolation: 'linear', source: 's', basis: 'modelled' };
+    expect(bodyTemperatureRange([profile])).toEqual({ minK: 1500, maxK: 2600, log: false });
   });
 
   it("spans a body's known temperatures and ignores its unknowns", () => {

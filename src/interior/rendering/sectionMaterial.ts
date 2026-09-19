@@ -34,16 +34,25 @@
  * shared/shaders/sun.ts). Motion runs on the tool's presentation clock,
  * never the solar-system clock.
  *
- * Heat is the fourth channel. Each region carries its incandescence (linear
- * HDR radiance from its temperature, artParams.incandescence, through the
- * family's heat tint), which the pattern grains — lava glows in its
- * fissures, a crystalline core in its facets — and adds as emission; the
- * hotter the region, the more its heat outweighs its albedo, and what
- * albedo survives takes the heat's hue. Only the body's hottest region
- * is lifted past the bloom threshold (INCANDESCENCE_HOTTEST_BOOST), so a
- * core bleeds and a mantle keeps its colour. A self-lit region (a star's
- * plasma) has no albedo at all: its patterned palette is its emission,
- * scaled by where the region sits in the body's heat (uHeatLevel).
+ * Heat is the fourth channel, and it is the local temperature's. Each
+ * region hands the shader its temperature as knots (temperatureProfile:
+ * TEMPERATURE_KNOTS values at even depth fractions through the shared
+ * sampler), and at every pixel the face reads the temperature there
+ * (sectionTempK) and computes its incandescence from it — the same forge
+ * ramp and strength artParams.incandescence gives a swatch, transcribed to
+ * GLSL and held to the TypeScript by sectionMaterial.test.ts — through the
+ * family's heat tint and gain, grained by the pattern (lava glows in its
+ * fissures, a crystalline core in its facets), and added as emission. So a
+ * mantle glows brighter toward its base because it IS hotter there, and a
+ * boundary where the model's temperature is continuous carries no step in
+ * the glow: the Materials view and the Temperature view read one
+ * temperature (plan F22). What is art stays apart from it: the tint, the
+ * gain, and the lift on the body's hottest region toward its bottom
+ * (INCANDESCENCE_HOTTEST_BOOST), which is exposure, so a core bleeds past
+ * the bloom threshold and a mantle keeps its colour. A self-lit region (a
+ * star's plasma) has no albedo at all: its patterned palette is its
+ * emission, at a radiance from the local temperature's place between the
+ * body's coolest and hottest self-lit temperatures.
  *
  * Emphasis is uniform-driven (plan §4): uEmphasis names a region and
  * uEmphasisAmount eases in. The named region's boundaries take a light
@@ -53,12 +62,17 @@
  * to say where the eye should go. Nothing extrudes and nothing recompiles.
  *
  * Temperature mode (plan §5, uDisplayMode 1) is a diagram: the face is
- * unlit (diffuse black, emissive only) and its colour is the body's
- * temperature scale at the temperature sampled at that pixel — each
- * region's endpoints interpolated by its depth fraction, which is the same
- * in display and physical space because the Readable remap is linear
- * within a region. An unknown temperature is a screen-space hatch, never
- * the coldest colour, and emphasis there is the outline alone.
+ * unlit (no diffuse, no specular — metalness 1 over a black albedo leaves
+ * nothing for the studio to light — emissive only) and its colour is the
+ * body's temperature scale at the temperature sampled at that pixel, from
+ * the same knots the glow reads; the depth fraction is the same in display
+ * and physical space because the Readable remap is linear within a region.
+ * The scale's six stops are mixed in sRGB, as the legend's gradient and the
+ * swatches mix them, and linearised after, so the face is the swatch through
+ * the output path rendering/outputTransform.ts states. An unknown
+ * temperature is a screen-space hatch, never the coldest colour, and so is
+ * every temperature when the body has no scale; emphasis there is the
+ * outline alone.
  *
  * Uncertainty of a boundary's location (plan §6) is a faint hatched band
  * straddling it, sized from the knowledge record, in both modes: where the
@@ -76,11 +90,27 @@
  */
 import * as THREE from 'three';
 import { sunNoiseGLSL } from '../../shared/shaders/sun';
-import { INCANDESCENCE_HOTTEST_BOOST, PATTERN_INDEX, type ArtParams, type Incandescence } from '../data/artParams';
+import {
+  DRAPER_POINT_K,
+  FORGE_STOPS,
+  INCANDESCENCE_FULL_K,
+  INCANDESCENCE_HOTTEST_BOOST,
+  INCANDESCENCE_HOT_BOOST,
+  INCANDESCENCE_HOT_DECADES,
+  INCANDESCENCE_HOT_K,
+  INCANDESCENCE_PEAK,
+  PATTERN_INDEX,
+  type ArtParams,
+} from '../data/artParams';
 import { LINEAR_SPAN_FLOOR_K, TEMPERATURE_SCALE_STOPS, type TemperatureRange } from '../temperatureScale';
+import { TEMPERATURE_KNOTS } from '../temperatureProfile';
 import { MAX_REGIONS } from '../data/interiorTypes';
+import { DIAGRAM_EXPOSURE } from './outputTransform';
 
 export { MAX_REGIONS };
+
+/** A region's knots packed four to a vec4: the uniform slots a float array would spend one knot each. */
+export const KNOT_VEC4S = Math.ceil(TEMPERATURE_KNOTS / 4);
 
 export interface SectionUniforms {
   /** Outer radius of region k in display space, inside-out, increasing; the last used one is 1. */
@@ -98,14 +128,19 @@ export interface SectionUniforms {
   uRelief: { value: number[] };
   uDepthGrad: { value: number[] };
   uAmbient: { value: number[] };
-  /** Incandescent radiance per region, linear HDR. */
+  /** A lit region's multiplier on the incandescence the shader computes from its local
+   *  temperature: the family's heat tint (linear) by its gain. A self-lit region's is its
+   *  gain alone, on the radiance its local temperature earns it. */
   uHeat: { value: THREE.Vector3[] };
-  /** 0 cold .. 1 fully incandescent. */
-  uHeatStrength: { value: number[] };
   /** 1 for a region that is a light (a star's plasma): no albedo, its palette is its emission. */
   uSelfLit: { value: number[] };
-  /** A self-lit region's place in the body's heat, 0 at the coolest zone to 1 at the hottest. */
+  /** A self-lit region's place in the body's heat, 0 at the coolest zone to 1 at the hottest:
+   *  the regime its pattern draws (granules, cells, a still depth). */
   uHeatLevel: { value: number[] };
+  /** The coolest self-lit temperature, K, and the log of the hottest over it: the local
+   *  temperature's place between them sets a self-lit pixel's radiance. */
+  uSelfLitCoolK: { value: number };
+  uSelfLitSpanLog: { value: number };
   /** The lift on the body's hottest region's heat at its bottom (1 elsewhere), graded by depth. */
   uHeatBoost: { value: number[] };
   uCount: { value: number };
@@ -121,15 +156,17 @@ export interface SectionUniforms {
   uEmphasisAmount: { value: number };
   /** 0 composition, 1 temperature. */
   uDisplayMode: { value: number };
-  /** Temperature at region k's top and bottom, K; log interpolation flag; 1 when known. */
-  uTempOuter: { value: number[] };
-  uTempInner: { value: number[] };
+  /** Region k's temperature at TEMPERATURE_KNOTS even depth fractions, top to bottom, K,
+   *  packed four to a vec4 (KNOT_VEC4S per region); 1 K where unknown, so a log is safe. */
+  uTempKnot: { value: THREE.Vector4[] };
+  /** 1 when region k's knots are mixed on a log; 1 when its temperature is known at all. */
   uTempLog: { value: number[] };
   uTempKnown: { value: number[] };
-  /** The body's scale, K (1 = logarithmic), and its six linear-RGB stops. */
+  /** The body's scale, K (1 = logarithmic; 1 when there is one), and its six sRGB stops. */
   uScaleMin: { value: number };
   uScaleMax: { value: number };
   uScaleLog: { value: number };
+  uScaleKnown: { value: number };
   uScaleStops: { value: THREE.Vector3[] };
   /** The uncertainty band straddling region k's outer boundary, display radii; equal = none. */
   uBandLow: { value: number[] };
@@ -154,9 +191,10 @@ export function createSectionUniforms(): SectionUniforms {
     uDepthGrad: { value: numbers() },
     uAmbient: { value: numbers() },
     uHeat: { value: Array.from({ length: MAX_REGIONS }, () => new THREE.Vector3()) },
-    uHeatStrength: { value: numbers() },
     uSelfLit: { value: numbers() },
     uHeatLevel: { value: numbers() },
+    uSelfLitCoolK: { value: 1 },
+    uSelfLitSpanLog: { value: 0 },
     uHeatBoost: { value: numbers().map(() => 1) },
     uCount: { value: 1 },
     uWorldToBody: { value: new THREE.Matrix3() },
@@ -165,14 +203,14 @@ export function createSectionUniforms(): SectionUniforms {
     uEmphasis: { value: -1 },
     uEmphasisAmount: { value: 0 },
     uDisplayMode: { value: 0 },
-    uTempOuter: { value: numbers() },
-    uTempInner: { value: numbers() },
+    uTempKnot: { value: Array.from({ length: MAX_REGIONS * KNOT_VEC4S }, () => new THREE.Vector4(1, 1, 1, 1)) },
     uTempLog: { value: numbers() },
     uTempKnown: { value: numbers() },
     uScaleMin: { value: 0 },
     uScaleMax: { value: 1 },
     uScaleLog: { value: 0 },
-    uScaleStops: { value: TEMPERATURE_SCALE_STOPS.map((stop) => new THREE.Vector3(srgbToLinear(stop[0]), srgbToLinear(stop[1]), srgbToLinear(stop[2]))) },
+    uScaleKnown: { value: 0 },
+    uScaleStops: { value: TEMPERATURE_SCALE_STOPS.map((stop) => new THREE.Vector3(stop[0], stop[1], stop[2])) },
     uBandLow: { value: numbers() },
     uBandHigh: { value: numbers() },
   };
@@ -182,12 +220,14 @@ function srgbToLinear(channel: number): number {
   return channel <= 0.04045 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4);
 }
 
-/** The body's temperature scale; null when no region's temperature is known.
- *  The span is floored as sectionTempT floors it, so the two never disagree. */
+/** The body's temperature scale; null when no region's temperature is known,
+ *  which hatches every face. The span is floored as sectionTempT floors it,
+ *  so the two never disagree; a scale of one value keeps its one value. */
 export function writeTemperatureScale(uniforms: SectionUniforms, range: TemperatureRange | null): void {
   uniforms.uScaleMin.value = range ? range.minK : 0;
   uniforms.uScaleMax.value = range ? Math.max(range.maxK, range.minK + LINEAR_SPAN_FLOOR_K) : 1;
   uniforms.uScaleLog.value = range?.log ? 1 : 0;
+  uniforms.uScaleKnown.value = range ? 1 : 0;
 }
 
 export interface SectionRegionLook {
@@ -196,9 +236,10 @@ export interface SectionRegionLook {
   /** Blend half-width of the boundary at outerDisplay, display space; 0 for sharp. */
   blendDisplay: number;
   art: ArtParams;
-  heat: Incandescence;
-  /** The region's temperature endpoints, K, or null when unknown (drawn hatched in Temperature mode). */
-  temperature: { outerK: number; innerK: number; log: boolean } | null;
+  /** The region's temperature as the shader's knots (TEMPERATURE_KNOTS values from its top
+   *  to its bottom, K) and how to mix between them, or null when unknown — drawn cold, and
+   *  hatched in Temperature mode. */
+  temperature: { knotsK: readonly number[]; log: boolean } | null;
   /** The uncertainty band straddling the region's OUTER boundary, display radii, or null. */
   bandDisplay: { low: number; high: number } | null;
 }
@@ -219,7 +260,9 @@ export function writeSectionRegions(
   const count = Math.min(regionsInsideOut.length, MAX_REGIONS);
   uniforms.uCount.value = Math.max(1, count);
   const hottestIndex = hottestRegionIndex(regionsInsideOut, count);
-  const heatLevels = selfLitHeatLevels(regionsInsideOut, count);
+  const selfLit = selfLitHeat(regionsInsideOut, count);
+  uniforms.uSelfLitCoolK.value = selfLit.coolestK;
+  uniforms.uSelfLitSpanLog.value = selfLit.spanLog;
   for (let index = 0; index < MAX_REGIONS; index++) {
     const region = regionsInsideOut[Math.min(index, count - 1)];
     const art = region.art;
@@ -237,21 +280,19 @@ export function writeSectionRegions(
     uniforms.uDepthGrad.value[index] = art.depthGradient;
     uniforms.uAmbient.value[index] = lustre ? art.ambient : art.ambient + 0.1 * art.metalness;
     if (art.selfLit) {
-      // A light: the palette is the emission; the radiance says where in the body's heat it sits.
-      uniforms.uHeat.value[index].setScalar((SELF_LIT_FLOOR + SELF_LIT_RANGE * Math.pow(heatLevels[index], 3)) * art.heatGain);
+      uniforms.uHeat.value[index].setScalar(art.heatGain);
     } else {
       const tint = linearTint(art.heatTint);
-      uniforms.uHeat.value[index]
-        .set(region.heat.emission[0] * tint[0], region.heat.emission[1] * tint[1], region.heat.emission[2] * tint[2])
-        .multiplyScalar(art.heatGain);
+      uniforms.uHeat.value[index].set(tint[0], tint[1], tint[2]).multiplyScalar(art.heatGain);
     }
     uniforms.uHeatBoost.value[index] = index === hottestIndex ? INCANDESCENCE_HOTTEST_BOOST : 1;
-    uniforms.uHeatStrength.value[index] = region.heat.strength;
     uniforms.uSelfLit.value[index] = art.selfLit ? 1 : 0;
-    uniforms.uHeatLevel.value[index] = heatLevels[index];
+    uniforms.uHeatLevel.value[index] = selfLit.levels[index];
     const temperature = index < count ? region.temperature : null;
-    uniforms.uTempOuter.value[index] = temperature ? temperature.outerK : 0;
-    uniforms.uTempInner.value[index] = temperature ? temperature.innerK : 0;
+    for (let knot = 0; knot < TEMPERATURE_KNOTS; knot++) {
+      const kelvin = temperature ? Math.max(temperature.knotsK[Math.min(knot, temperature.knotsK.length - 1)] ?? 1, 1) : 1;
+      uniforms.uTempKnot.value[index * KNOT_VEC4S + Math.floor(knot / 4)].setComponent(knot % 4, kelvin);
+    }
     uniforms.uTempLog.value[index] = temperature?.log ? 1 : 0;
     uniforms.uTempKnown.value[index] = temperature ? 1 : 0;
     const band = index < count ? region.bandDisplay : null;
@@ -260,24 +301,32 @@ export function writeSectionRegions(
   }
 }
 
-/** A self-lit region's radiance: this floor at the body's coolest self-lit zone, rising by the
- *  range on the cube of its heat level, so the zones read in order and only the core crosses
- *  the bloom threshold. */
-const SELF_LIT_FLOOR = 0.35;
-const SELF_LIT_RANGE = 0.85;
+/** A self-lit pixel's radiance: this floor at the body's coolest self-lit temperature, rising
+ *  by the range on the cube of the local temperature's log place between it and the hottest,
+ *  so the zones read in order and only the core crosses the bloom threshold. */
+export const SELF_LIT_FLOOR = 0.35;
+export const SELF_LIT_RANGE = 0.85;
 
 function linearTint(hex: number): [number, number, number] {
   return [srgbToLinear(((hex >> 16) & 0xff) / 255), srgbToLinear(((hex >> 8) & 0xff) / 255), srgbToLinear((hex & 0xff) / 255)];
 }
 
-/** The lit region with the highest bottom temperature: the one the scene lets bloom. */
+function hottestKnotK(temperature: SectionRegionLook['temperature']): number {
+  return temperature ? Math.max(...temperature.knotsK) : -Infinity;
+}
+
+function coolestKnotK(temperature: SectionRegionLook['temperature']): number {
+  return temperature ? Math.min(...temperature.knotsK) : Infinity;
+}
+
+/** The lit region with the highest temperature anywhere in it: the one the scene lets bloom. */
 function hottestRegionIndex(regionsInsideOut: readonly SectionRegionLook[], count: number): number {
   let hottest = -1;
   let hottestK = -Infinity;
   for (let index = 0; index < count; index++) {
     const region = regionsInsideOut[index];
     if (region.art.selfLit || !region.temperature) continue;
-    const bottomK = Math.max(region.temperature.innerK, region.temperature.outerK);
+    const bottomK = hottestKnotK(region.temperature);
     if (bottomK > hottestK) {
       hottestK = bottomK;
       hottest = index;
@@ -286,20 +335,22 @@ function hottestRegionIndex(regionsInsideOut: readonly SectionRegionLook[], coun
   return hottest;
 }
 
-/** Where each self-lit region sits in the body's heat, by the log of its bottom temperature
- *  between the coolest self-lit top and the hottest self-lit bottom; 1 when there is only
- *  one, 0.5 when a temperature is unknown, 0 for a region that is not self-lit. */
-function selfLitHeatLevels(regionsInsideOut: readonly SectionRegionLook[], count: number): number[] {
+/** The self-lit regions' place in the body's heat: per region, the log of its hottest
+ *  temperature between the coolest self-lit temperature and the hottest (1 when there is
+ *  only one, 0.5 when a temperature is unknown, 0 for a region that is not self-lit) — the
+ *  regime its pattern draws — with the coolest temperature and the log span themselves, which
+ *  the shader places each pixel's own temperature on. */
+function selfLitHeat(regionsInsideOut: readonly SectionRegionLook[], count: number): { levels: number[]; coolestK: number; spanLog: number } {
   const levels = Array.from({ length: MAX_REGIONS }, () => 0);
   let coolestK = Infinity;
   let hottestK = -Infinity;
   for (let index = 0; index < count; index++) {
     const region = regionsInsideOut[index];
     if (!region.art.selfLit || !region.temperature) continue;
-    coolestK = Math.min(coolestK, region.temperature.outerK, region.temperature.innerK);
-    hottestK = Math.max(hottestK, region.temperature.outerK, region.temperature.innerK);
+    coolestK = Math.min(coolestK, coolestKnotK(region.temperature));
+    hottestK = Math.max(hottestK, hottestKnotK(region.temperature));
   }
-  const span = Number.isFinite(coolestK) && hottestK > coolestK ? Math.log(hottestK / Math.max(coolestK, 1)) : 0;
+  const spanLog = Number.isFinite(coolestK) && hottestK > coolestK ? Math.log(hottestK / Math.max(coolestK, 1)) : 0;
   for (let index = 0; index < count; index++) {
     const region = regionsInsideOut[index];
     if (!region.art.selfLit) continue;
@@ -307,10 +358,30 @@ function selfLitHeatLevels(regionsInsideOut: readonly SectionRegionLook[], count
       levels[index] = 0.5;
       continue;
     }
-    const bottomK = Math.max(region.temperature.innerK, region.temperature.outerK, 1);
-    levels[index] = span > 0 ? Math.max(0, Math.min(1, Math.log(bottomK / Math.max(coolestK, 1)) / span)) : 1;
+    const bottomK = Math.max(hottestKnotK(region.temperature), 1);
+    levels[index] = spanLog > 0 ? Math.max(0, Math.min(1, Math.log(bottomK / Math.max(coolestK, 1)) / spanLog)) : 1;
   }
-  return levels;
+  return { levels, coolestK: Number.isFinite(coolestK) ? Math.max(coolestK, 1) : 1, spanLog };
+}
+
+/** A GLSL float literal that is never mistaken for an int. */
+function glslFloat(value: number): string {
+  const text = String(value);
+  return text.includes('.') || text.includes('e') ? text : `${text}.0`;
+}
+
+/** The forge ramp as a chain of mixes over artParams.FORGE_STOPS: piecewise linear in sRGB
+ *  between the stops, held at the first below and the last above — forgeSrgb, generated. */
+function forgeRampGlsl(): string {
+  const [firstK, firstColor] = FORGE_STOPS[0];
+  const lines = [`  vec3 color = vec3(${firstColor.map(glslFloat).join(', ')});`];
+  let previousK = firstK;
+  for (let index = 1; index < FORGE_STOPS.length; index++) {
+    const [stopK, color] = FORGE_STOPS[index];
+    lines.push(`  color = mix(color, vec3(${color.map(glslFloat).join(', ')}), clamp((kelvin - ${glslFloat(previousK)}) / ${glslFloat(stopK - previousK)}, 0.0, 1.0));`);
+    previousK = stopK;
+  }
+  return lines.join('\n');
 }
 
 const SECTION_PARS_VERTEX = /* glsl */ `
@@ -340,9 +411,10 @@ uniform float uRelief[${MAX_REGIONS}];
 uniform float uDepthGrad[${MAX_REGIONS}];
 uniform float uAmbient[${MAX_REGIONS}];
 uniform vec3 uHeat[${MAX_REGIONS}];
-uniform float uHeatStrength[${MAX_REGIONS}];
 uniform float uSelfLit[${MAX_REGIONS}];
 uniform float uHeatLevel[${MAX_REGIONS}];
+uniform float uSelfLitCoolK;
+uniform float uSelfLitSpanLog;
 uniform float uHeatBoost[${MAX_REGIONS}];
 uniform int uCount;
 uniform mat3 uWorldToBody;
@@ -351,25 +423,41 @@ uniform float uCorner;
 uniform int uEmphasis;
 uniform float uEmphasisAmount;
 uniform int uDisplayMode;
-uniform float uTempOuter[${MAX_REGIONS}];
-uniform float uTempInner[${MAX_REGIONS}];
+uniform vec4 uTempKnot[${MAX_REGIONS * KNOT_VEC4S}];
 uniform float uTempLog[${MAX_REGIONS}];
 uniform float uTempKnown[${MAX_REGIONS}];
 uniform float uScaleMin;
 uniform float uScaleMax;
 uniform float uScaleLog;
+uniform float uScaleKnown;
 uniform vec3 uScaleStops[6];
 uniform float uBandLow[${MAX_REGIONS}];
 uniform float uBandHigh[${MAX_REGIONS}];
 
 ${sunNoiseGLSL}
 
-// Where region k's temperature sits on the body's scale at depth fraction
-// regionT (0 at its top, 1 at its bottom), 0..1.
-float sectionTempT(int k, float regionT) {
-  float outerK = max(uTempOuter[k], 1.0);
-  float innerK = max(uTempInner[k], 1.0);
-  float kelvin = uTempLog[k] > 0.5 ? exp(mix(log(outerK), log(innerK), regionT)) : mix(outerK, innerK, regionT);
+// Region k's knot j, K (floored at one kelvin): four knots to a vec4, the
+// component picked by a mask rather than a computed subscript.
+float sectionKnotK(int k, int j) {
+  vec4 four = uTempKnot[k * ${KNOT_VEC4S} + j / 4];
+  vec4 mask = vec4(equal(ivec4(j - (j / 4) * 4), ivec4(0, 1, 2, 3)));
+  return max(dot(four, mask), 1.0);
+}
+
+// Region k's temperature at depth fraction regionT (0 at its top, 1 at its
+// bottom), K: the knot pair the fraction falls between, mixed on a line or a
+// log as the quantity declares — temperatureProfile.knotsTemperatureK.
+float sectionTempK(int k, float regionT) {
+  float x = clamp(regionT, 0.0, 1.0) * ${glslFloat(TEMPERATURE_KNOTS - 1)};
+  int j = int(floor(min(x, ${glslFloat(TEMPERATURE_KNOTS - 1)} - 0.001)));
+  float f = x - float(j);
+  float a = sectionKnotK(k, j);
+  float b = sectionKnotK(k, j + 1);
+  return uTempLog[k] > 0.5 ? exp(mix(log(a), log(b), f)) : mix(a, b, f);
+}
+
+// Where a temperature sits on the body's scale, 0..1: temperatureScale.temperatureT.
+float sectionScaleT(float kelvin) {
   if (uScaleLog > 0.5) {
     float low = log(max(uScaleMin, 1.0));
     return clamp((log(max(kelvin, 1.0)) - low) / max(log(max(uScaleMax, 1.0)) - low, 1e-4), 0.0, 1.0);
@@ -377,13 +465,66 @@ float sectionTempT(int k, float regionT) {
   return clamp((kelvin - uScaleMin) / max(uScaleMax - uScaleMin, 1.0), 0.0, 1.0);
 }
 
-// The scale colour at t, linear RGB: six stops, linear between them, the
-// same ramp the legend paints from temperatureScale.ts.
+// Where region k's temperature at depth fraction regionT sits on the body's scale, 0..1.
+float sectionTempT(int k, float regionT) {
+  return sectionScaleT(sectionTempK(k, regionT));
+}
+
+// sRGB to linear, three's own transfer (colorspace_pars_fragment), so a mix
+// made in sRGB comes out of the canvas as the sRGB the legend painted.
+vec3 sectionSrgbToLinear(vec3 c) {
+  return mix(pow(c * 0.9478672986 + vec3(0.0521327014), vec3(2.4)), c * 0.0773993808, vec3(lessThanEqual(c, vec3(0.04045))));
+}
+
+// The scale colour at t, linear RGB: six sRGB stops mixed in sRGB — the way
+// the legend's gradient and the swatches mix them (temperatureScale.ts) —
+// then linearised for the emissive.
 vec3 sectionScaleColor(float t) {
   float x = clamp(t, 0.0, 1.0) * 5.0;
   int stop = int(floor(min(x, 4.999)));
   float f = x - float(stop);
-  return mix(uScaleStops[stop], uScaleStops[stop + 1], f);
+  return sectionSrgbToLinear(mix(uScaleStops[stop], uScaleStops[stop + 1], f));
+}
+
+// The forge ramp, sRGB, by temperature: artParams.forgeSrgb, generated from its stops.
+vec3 sectionForgeSrgb(float kelvin) {
+${forgeRampGlsl()}
+  return color;
+}
+
+// Incandescence from a temperature: the emitted radiance (linear HDR, rgb)
+// and how much the heat dominates the albedo (a, 0 cold .. 1 fully
+// incandescent) — artParams.incandescence, held to it by the tests.
+vec4 sectionIncandescence(float kelvin) {
+  float ramp = clamp((kelvin - ${glslFloat(DRAPER_POINT_K)}) / ${glslFloat(INCANDESCENCE_FULL_K - DRAPER_POINT_K)}, 0.0, 1.0);
+  float strength = ramp > 0.0 ? pow(ramp, 0.8) : 0.0;
+  vec3 forge = sectionForgeSrgb(kelvin);
+  float hotDecades = clamp(log(max(kelvin, 1.0) / ${glslFloat(INCANDESCENCE_HOT_K)}) * 0.4342944819 / ${glslFloat(INCANDESCENCE_HOT_DECADES)}, 0.0, 1.0);
+  // pow(0, y) is left to the driver by the spec, so a cold pixel never asks for it.
+  float peak = strength > 0.0 ? pow(strength, 0.9) : 0.0;
+  float radiance = (0.03 * strength + ${glslFloat(INCANDESCENCE_PEAK)} * peak) * (1.0 + ${glslFloat(INCANDESCENCE_HOT_BOOST)} * hotDecades * hotDecades);
+  return vec4(pow(forge, vec3(2.2)) * radiance, strength);
+}
+
+// A self-lit pixel's radiance: the local temperature's log place between the
+// body's coolest and hottest self-lit temperatures, cubed, over a floor.
+float sectionSelfLitRadiance(float kelvin, float known) {
+  float level = known < 0.5 ? 0.5 : (uSelfLitSpanLog > 0.0 ? clamp(log(max(kelvin, 1.0) / uSelfLitCoolK) / uSelfLitSpanLog, 0.0, 1.0) : 1.0);
+  return ${glslFloat(SELF_LIT_FLOOR)} + ${glslFloat(SELF_LIT_RANGE)} * level * level * level;
+}
+
+// Region k's heat at depth fraction regionT: its incandescence at the local
+// temperature (a light's radiance at it instead), through the family's tint
+// and gain, grained by the pattern, the body's hottest region lifted toward
+// its bottom; an unknown temperature is cold. strength is how much the
+// heat dominates the albedo there.
+vec3 sectionHeat(int k, float regionT, float heatMask, out float strength) {
+  float kelvin = sectionTempK(k, regionT);
+  float known = uTempKnown[k];
+  vec4 glow = sectionIncandescence(kelvin) * known;
+  vec3 radiance = mix(glow.rgb, vec3(sectionSelfLitRadiance(kelvin, known)), uSelfLit[k]);
+  strength = glow.a;
+  return radiance * uHeat[k] * heatMask * mix(1.0, uHeatBoost[k], regionT);
 }
 
 // A screen-space crosshatch for a temperature nobody knows: distinct from
@@ -528,10 +669,10 @@ float heatMask0;
 vec4 sectionFirst = sectionSample(0, sectionBodyPoint, regionT0, heatMask0);
 vec3 interiorAlbedo = sectionFirst.rgb;
 float interiorHeight = sectionFirst.a;
-// Hotter inward within a region too: the heat brightens toward the bottom, and the body's
-// hottest region takes its lift there, so only the middle of a core blooms.
-vec3 interiorHeat = uHeat[0] * heatMask0 * (0.8 + 0.35 * regionT0) * mix(1.0, uHeatBoost[0], regionT0);
-float interiorHeatStrength = uHeatStrength[0];
+// The heat is the local temperature's, so a region brightens toward its base by being
+// hotter there; the body's hottest region takes its lift there, so only the middle of a core blooms.
+float interiorHeatStrength;
+vec3 interiorHeat = sectionHeat(0, regionT0, heatMask0, interiorHeatStrength);
 float interiorSelfLit = uSelfLit[0];
 float interiorRough = uRough[0];
 float interiorMetal = uMetal[0];
@@ -544,7 +685,7 @@ float bandShade = 1.0;
 float emphasisMix = uEmphasis == 0 ? 1.0 : 0.0;
 float interiorOutline = 0.0;
 float interiorTempT = sectionTempT(0, regionT0);
-float interiorTempKnown = uTempKnown[0];
+float interiorTempKnown = uTempKnown[0] * uScaleKnown;
 for (int k = 1; k < ${MAX_REGIONS}; k++) {
   if (k >= uCount) break;
   float boundary = uOuter[k - 1];
@@ -558,8 +699,10 @@ for (int k = 1; k < ${MAX_REGIONS}; k++) {
   vec4 sampleK = sectionSample(k, sectionBodyPoint, regionT, heatMaskK);
   interiorAlbedo = mix(interiorAlbedo, sampleK.rgb, t);
   interiorHeight = mix(interiorHeight, sampleK.a, t);
-  interiorHeat = mix(interiorHeat, uHeat[k] * heatMaskK * (0.8 + 0.35 * regionT) * mix(1.0, uHeatBoost[k], regionT), t);
-  interiorHeatStrength = mix(interiorHeatStrength, uHeatStrength[k], t);
+  float strengthK;
+  vec3 heatK = sectionHeat(k, regionT, heatMaskK, strengthK);
+  interiorHeat = mix(interiorHeat, heatK, t);
+  interiorHeatStrength = mix(interiorHeatStrength, strengthK, t);
   interiorSelfLit = mix(interiorSelfLit, uSelfLit[k], t);
   interiorRough = mix(interiorRough, uRough[k], t);
   interiorMetal = mix(interiorMetal, uMetal[k], t);
@@ -569,7 +712,7 @@ for (int k = 1; k < ${MAX_REGIONS}; k++) {
   interiorDepthShade = mix(interiorDepthShade, uDepthGrad[k] * regionT, t);
   emphasisMix = mix(emphasisMix, uEmphasis == k ? 1.0 : 0.0, t);
   interiorTempT = mix(interiorTempT, sectionTempT(k, regionT), t);
-  interiorTempKnown = mix(interiorTempKnown, uTempKnown[k], t);
+  interiorTempKnown = mix(interiorTempKnown, uTempKnown[k] * uScaleKnown, t);
   if (uBandHigh[k - 1] > uBandLow[k - 1]) {
     // Where the boundary might be: a faint hatch across the whole band, in both modes.
     float inBand = step(uBandLow[k - 1], sectionRadius) * step(sectionRadius, uBandHigh[k - 1]);
@@ -609,9 +752,10 @@ roughnessFactor = uDisplayMode == 1 ? 1.0 : interiorRough;
 `;
 
 /** A metal's studio sheen fades as its heat rises: a white-hot core is a light, and a mirror
- *  of the softbox on top of it only reads as a pale wash. */
+ *  of the softbox on top of it only reads as a pale wash. The diagram is a metal with a black
+ *  albedo: three's specular colour is then black too, so nothing in the studio lights it. */
 const SECTION_METALNESS = /* glsl */ `
-metalnessFactor = uDisplayMode == 1 ? 0.0 : interiorMetal * (1.0 - 0.35 * interiorHeatStrength);
+metalnessFactor = uDisplayMode == 1 ? 1.0 : interiorMetal * (1.0 - 0.35 * interiorHeatStrength);
 `;
 
 /** After <normal_fragment_maps>: the pattern's height as a bump, the
@@ -638,9 +782,9 @@ if (interiorRelief > 0.0 && uDisplayMode == 0) {
 const SECTION_EMISSIVE = /* glsl */ `
 if (uDisplayMode == 1) {
   // The diagram: the scale colour at the sampled temperature, or the
-  // no-data hatch, dimmed only by an uncertainty band. 0.88 keeps the top
-  // of the scale under the bloom threshold.
-  vec3 scaleColor = sectionScaleColor(interiorTempT) * 0.88;
+  // no-data hatch, dimmed only by an uncertainty band. The exposure keeps the
+  // top of the scale under the bloom threshold (outputTransform.DIAGRAM_EXPOSURE).
+  vec3 scaleColor = sectionScaleColor(interiorTempT) * ${glslFloat(DIAGRAM_EXPOSURE)};
   totalEmissiveRadiance = mix(sectionNoDataColor(), scaleColor, interiorTempKnown) * bandShade;
 } else {
   // The emphasised region's lift is a higher self-lit floor, not a brighter albedo.
@@ -678,3 +822,6 @@ export function createSectionMaterial(uniforms: SectionUniforms): THREE.MeshStan
   material.customProgramCacheKey = () => 'interiorSection';
   return material;
 }
+
+/** The injected GLSL as one text, for the tests that pin its arithmetic to the TypeScript. */
+export const SECTION_SHADER_TEXT = [SECTION_PARS_FRAGMENT, SECTION_RESOLVE, SECTION_ROUGHNESS, SECTION_METALNESS, SECTION_NORMAL, SECTION_EMISSIVE].join('\n');

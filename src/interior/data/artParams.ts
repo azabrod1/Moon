@@ -289,22 +289,22 @@ export interface Incandescence {
 }
 
 export const DRAPER_POINT_K = 800;
-const INCANDESCENCE_FULL_K = 3800;
+export const INCANDESCENCE_FULL_K = 3800;
 /** Radiance at full strength for any region but the body's hottest: under the tone curve's
  *  knee and the bloom threshold, so a mantle and an outer core keep their colour. */
-const INCANDESCENCE_PEAK = 0.6;
+export const INCANDESCENCE_PEAK = 0.6;
 /** The body's hottest region is lifted by this toward its centre (the shader grades the lift
  *  by depth within the region), so the middle of a core is the one thing that blooms. */
 export const INCANDESCENCE_HOTTEST_BOOST = 2.2;
 /** Above this the radiance rises on a log of the temperature: a star's zones, millions of
  *  kelvin apart and all white, still read in order — a fusion core is a stronger light than
  *  the zone that boils above it. */
-const INCANDESCENCE_HOT_K = 20_000;
-const INCANDESCENCE_HOT_DECADES = 3;
-const INCANDESCENCE_HOT_BOOST = 4;
+export const INCANDESCENCE_HOT_K = 20_000;
+export const INCANDESCENCE_HOT_DECADES = 3;
+export const INCANDESCENCE_HOT_BOOST = 4;
 
 /** The forge ramp, sRGB, by physical temperature. Linear between stops; white beyond. */
-const FORGE_STOPS: readonly (readonly [number, readonly [number, number, number]])[] = [
+export const FORGE_STOPS: readonly (readonly [number, readonly [number, number, number]])[] = [
   [800, [0.55, 0.08, 0.02]],
   [1300, [0.85, 0.18, 0.05]],
   [2000, [1.0, 0.45, 0.08]],

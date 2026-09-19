@@ -25,7 +25,7 @@ import {
   unresolvedComposition,
 } from './interiorLogic';
 import { ILLUSTRATIVE_NOTE, THIN_LAYERS_ENLARGED } from './ui/interiorCopy';
-import { bodyTemperatureRange } from './temperatureScale';
+import { TEMPERATURE_KNOTS, temperatureKnotsK } from './temperatureProfile';
 import { reviewDateText } from './ui/inspectorText';
 
 describe('the cut tween', () => {
@@ -95,14 +95,13 @@ describe('the cut tween', () => {
 describe('the look mapping', () => {
   const europa = drawnFromModel(EUROPA_MODEL);
   const europaArt = regionArtInsideOut(europa);
-  const europaRange = bodyTemperatureRange(EUROPA_MODEL.regions.map((region) => region.temperatureK));
 
   it("keeps a boundary's uncertainty band straddling it in display space at every blend", () => {
     // Europa's core boundary is a model spread that brackets its radius (the validator's rule).
     const fractions = outerFractionsInsideOut(europa);
     for (const blend of [0, 0.5, 1]) {
       const remap = readableRemap(fractions, 0.08, blend);
-      const looks = regionLooks(europa, remap, europaArt, europaRange);
+      const looks = regionLooks(europa, remap, europaArt);
       expect(looks).toHaveLength(europa.regionsInsideOut.length);
       const core = looks[0];
       expect(core.bandDisplay).not.toBeNull();
@@ -120,14 +119,14 @@ describe('the look mapping', () => {
   it('widens a physical transition through the same remap as its boundary and leaves a sharp one at zero', () => {
     const jupiter = drawnFromModel(JUPITER_DILUTE_MODEL);
     const fractions = outerFractionsInsideOut(jupiter);
-    const identity = regionLooks(jupiter, IDENTITY_REMAP, regionArtInsideOut(jupiter), null);
+    const identity = regionLooks(jupiter, IDENTITY_REMAP, regionArtInsideOut(jupiter));
     const core = jupiter.regionsInsideOut[0];
     expect(core.transitionKm).toBeGreaterThan(0);
     expect(identity[0].blendDisplay).toBeCloseTo(core.transitionKm / (2 * jupiter.referenceRadiusKm), 12);
     // Through a remap the transition's two edges go where the boundary goes, so the physical width
     // reads back (to within the mean of the two slopes the knot at the boundary puts on its halves).
     const remap = readableRemap(fractions, 0.3, 1);
-    const readable = regionLooks(jupiter, remap, regionArtInsideOut(jupiter), null);
+    const readable = regionLooks(jupiter, remap, regionArtInsideOut(jupiter));
     const edgeLow = toPhysicalFraction(remap, readable[0].outerDisplay - readable[0].blendDisplay);
     const edgeHigh = toPhysicalFraction(remap, readable[0].outerDisplay + readable[0].blendDisplay);
     const physicalWidth = core.transitionKm / jupiter.referenceRadiusKm;
@@ -136,23 +135,28 @@ describe('the look mapping', () => {
     expect(readable[0].blendDisplay).toBeCloseTo(
       (toDisplayFraction(remap, fractions[0] + halfPhysical) - toDisplayFraction(remap, fractions[0] - halfPhysical)) / 2, 12);
     const earth = drawnFromModel(EARTH_MODEL);
-    const sharp = regionLooks(earth, IDENTITY_REMAP, regionArtInsideOut(earth), null);
+    const sharp = regionLooks(earth, IDENTITY_REMAP, regionArtInsideOut(earth));
     expect(sharp[0].blendDisplay).toBe(0);
   });
 
-  it('draws every temperature as unknown when the body has no scale, and the endpoints when it has one', () => {
-    const withScale = regionLooks(europa, IDENTITY_REMAP, europaArt, europaRange);
-    expect(withScale[3].temperature).not.toBeNull(); // the ice shell's temperature is known
-    expect(withScale[0].temperature).toBeNull(); // the core's is not
-    const withoutScale = regionLooks(europa, IDENTITY_REMAP, europaArt, null);
-    for (const look of withoutScale) expect(look.temperature).toBeNull();
-    // The unresolved whole: one region, no band, no temperature, cold.
+  it('hands the faces a known temperature as knots through the shared sampler, and nothing for an unknown one', () => {
+    const looks = regionLooks(europa, IDENTITY_REMAP, europaArt);
+    const iceShell = europa.regionsInsideOut[3];
+    const knots = looks[3].temperature; // the ice shell's temperature is known
+    expect(knots).not.toBeNull();
+    expect(knots!.knotsK).toHaveLength(TEMPERATURE_KNOTS);
+    expect(knots!.knotsK).toEqual(temperatureKnotsK(iceShell.region!.temperatureK, iceShell.innerRadiusKm, iceShell.outerRadiusKm));
+    expect(knots!.log).toBe(false);
+    expect(looks[0].temperature).toBeNull(); // the core's is not: drawn cold, hatched
+    // The scale is the shader's own uniform (writeTemperatureScale), not the look's: a body with no
+    // scale hatches every face there, and a known temperature still glows.
+    // The unresolved whole: one region, no band, no temperature.
     const unresolved = drawnUnresolved('Nix', 20, 'Not yet modelled here');
-    const looks = regionLooks(unresolved, IDENTITY_REMAP, regionArtInsideOut(unresolved), null);
-    expect(looks).toHaveLength(1);
-    expect(looks[0].outerDisplay).toBe(1);
-    expect(looks[0].bandDisplay).toBeNull();
-    expect(looks[0].heat.strength).toBe(0);
+    const whole = regionLooks(unresolved, IDENTITY_REMAP, regionArtInsideOut(unresolved));
+    expect(whole).toHaveLength(1);
+    expect(whole[0].outerDisplay).toBe(1);
+    expect(whole[0].bandDisplay).toBeNull();
+    expect(whole[0].temperature).toBeNull();
   });
 
   it('tints each region by the depth of its middle', () => {

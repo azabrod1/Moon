@@ -8,7 +8,7 @@
  * Readable remap happens downstream in interiorGeometry.
  */
 import type { InteriorModel, MaterialFamily, Phase, Region } from './data/interiorTypes';
-import { representativeTemperatureK } from './data/interiorTypes';
+import { representativeTemperatureK } from './temperatureProfile';
 
 export interface DrawnRegion {
   key: string;
@@ -17,7 +17,9 @@ export interface DrawnRegion {
   phase: Phase;
   outerRadiusKm: number;
   innerRadiusKm: number;
-  /** Representative temperature, K, or null when the model says unknown. */
+  /** The temperature at the middle of the region through the shared sampler
+   *  (temperatureProfile), K, or null when the model says unknown: the one
+   *  number a swatch stands for. The faces read the whole ramp. */
   temperatureK: number | null;
   /** The one-line composition for the legend row. */
   composition: string;
@@ -48,7 +50,7 @@ export function drawnFromModel(model: InteriorModel): DrawnModel {
       phase: region.phase,
       outerRadiusKm: region.outerRadiusKm,
       innerRadiusKm,
-      temperatureK: representativeTemperatureK(region.temperatureK),
+      temperatureK: representativeTemperatureK(region.temperatureK, innerRadiusKm, region.outerRadiusKm),
       composition: region.composition.value,
       transitionKm: region.boundary.transition.kind === 'distributed' ? region.boundary.transition.widthKm.value : 0,
       region,

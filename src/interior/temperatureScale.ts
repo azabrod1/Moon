@@ -2,21 +2,26 @@
  * The Temperature-mode scale (plan §5): body-specific, labelled with its
  * range, and the one definition the faces and the legend share. The colour
  * ramp is six sRGB stops from a near-black violet through crimson and
- * orange to a pale yellow, linear between stops; the shader carries the
- * same stops (linearised) and interpolates the same way, so the swatch
- * beside a region is the colour on its face. The top of the ramp stays
+ * orange to a pale yellow, linear between stops IN sRGB — the space the
+ * legend's CSS gradient and the swatches mix in — and the shader carries the
+ * same stops, mixes them the same way and only then linearises, so the
+ * colour on a face is the colour beside its row (rendering/outputTransform
+ * says what the output path then does to it). The top of the ramp stays
  * below the bloom threshold, so a diagram never blooms.
  *
- * A body's range is the span of its known temperatures, endpoint to
- * endpoint; a region whose temperature is unknown contributes nothing and
- * is drawn hatched, never as the coldest colour. A single known value is no
- * scale at all (nothing to place it between), so the range is null and the
- * body's temperatures are drawn as unknown. Where a temperature sits on the
- * scale (temperatureT) is the shader's sectionTempT in TypeScript, floors
- * included, and rendering/sectionMaterial.test.ts holds the two together.
- * Pure: no three, no DOM.
+ * A body's range is the span of its known temperatures, every sample of a
+ * profile included (temperatureProfile.temperatureExtremes); a region whose
+ * temperature is unknown contributes nothing and is drawn hatched, never as
+ * the coldest colour. A body whose known temperatures are all one value has
+ * a scale of one value — its span is zero and the legend's bar is one colour
+ * with that value at both ends — so known data is never relabelled unknown
+ * by a scale too narrow to place it (plan F22). Where a temperature sits on
+ * the scale (temperatureT) is the shader's sectionTempT in TypeScript,
+ * floors included, and rendering/sectionMaterial.test.ts holds the two
+ * together. Pure: no three, no DOM.
  */
 import type { Quantity } from './data/interiorTypes';
+import { temperatureExtremes } from './temperatureProfile';
 
 /** sRGB 0..1, cold to hot. */
 export const TEMPERATURE_SCALE_STOPS: readonly (readonly [number, number, number])[] = [
@@ -83,29 +88,17 @@ export function temperatureT(range: TemperatureRange, kelvin: number): number {
   return Math.min(1, Math.max(0, (kelvin - range.minK) / Math.max(range.maxK - range.minK, LINEAR_SPAN_FLOOR_K)));
 }
 
-/** The known endpoints of a quantity, K, or null when it says nothing. */
-export function temperatureEndpoints(quantity: Quantity): { outerK: number; innerK: number; log: boolean } | null {
-  if (quantity.kind === 'endpoints') {
-    return { outerK: quantity.outer.value, innerK: quantity.inner.value, log: quantity.interpolation === 'log' };
-  }
-  if (quantity.kind === 'profile' && quantity.samples.length > 0) {
-    const samples = quantity.samples;
-    return { outerK: samples[samples.length - 1].value, innerK: samples[0].value, log: quantity.interpolation === 'log' };
-  }
-  return null;
-}
-
-/** The span of a body's known temperatures, or null when no region says —
- *  or when every known value is the same one, which no scale can place. */
+/** The span of a body's known temperatures, or null when no region says. A
+ *  single known value is a span of zero, still a scale (see the header). */
 export function bodyTemperatureRange(quantities: readonly Quantity[]): TemperatureRange | null {
   let minK = Infinity;
   let maxK = -Infinity;
   for (const quantity of quantities) {
-    const endpoints = temperatureEndpoints(quantity);
-    if (!endpoints) continue;
-    minK = Math.min(minK, endpoints.outerK, endpoints.innerK);
-    maxK = Math.max(maxK, endpoints.outerK, endpoints.innerK);
+    const extremes = temperatureExtremes(quantity);
+    if (!extremes) continue;
+    minK = Math.min(minK, extremes.minK);
+    maxK = Math.max(maxK, extremes.maxK);
   }
-  if (!Number.isFinite(minK) || !Number.isFinite(maxK) || !(maxK > minK)) return null;
+  if (!Number.isFinite(minK) || !Number.isFinite(maxK)) return null;
   return { minK, maxK, log: minK > 0 && maxK / minK > LOG_SCALE_RATIO };
 }

@@ -75,6 +75,10 @@ const PATHS = [
   { name: 'nofloat', query: '&nofloat=1' },
 ];
 
+/** How far a face pixel may sit from the colour the output transform promises for it, per
+ *  channel, 0..255: the composer's half-float rounding, the canvas's 8 bits and a software
+ *  GPU's arithmetic, never a different curve — a wrong transfer or a stray light is tens. */
+const FACE_PROBE_TOLERANCE = 6;
 /** The hover sweep runs along the hinge, this far to one side of it so it lands on a face, not the seam. */
 const SWEEP_OFF_HINGE_PX = 3;
 
@@ -259,6 +263,79 @@ async function sweepBody(context, viewport, body) {
   // Back to the tool's default, True, which is what the captures below show.
   await page.evaluate(() => window.__moon.interiorScale('true'));
   await page.evaluate(() => window.__moon.interiorHover(-1, -1));
+
+  // 3a. A real pointer: the mode keeps a move for the frame and picks once there, so the
+  // card follows a mouse without a rebuild per event (plan F27). Desktop only — a touch
+  // has no hover — and through Playwright's mouse, which raises the pointer events a
+  // mouse does. The centre of the disc at Section is the innermost region; far off the
+  // disc is nothing, and the card goes.
+  if (!viewport.hasTouch) {
+    await page.mouse.move(centre.x + SWEEP_OFF_HINGE_PX, centre.y);
+    await settle(page);
+    const shown = await page.evaluate(() => {
+      const card = document.getElementById('interior-hover');
+      return { display: getComputedStyle(card).display, text: card.textContent ?? '', transform: getComputedStyle(card).transform, hover: window.__moon.interiorState().hover };
+    });
+    const innermost = initial.regions[0];
+    check(shown.display !== 'none' && shown.hover === innermost.key && shown.text.includes(innermost.name),
+      `${tag}: a mouse over the centre should show ${innermost.name}'s card (display ${shown.display}, hover ${shown.hover}, "${shown.text}")`);
+    check(shown.transform !== 'none', `${tag}: the hover card is placed by a transform, not by left/top (${shown.transform})`);
+    await page.mouse.move(2, 2);
+    await settle(page);
+    const gone = await page.evaluate(() => ({ display: getComputedStyle(document.getElementById('interior-hover')).display, hover: window.__moon.interiorState().hover }));
+    check(gone.display === 'none' && gone.hover === null, `${tag}: the card should go when the mouse leaves the disc (display ${gone.display}, hover ${gone.hover})`);
+  }
+
+  // 3b. In Temperature mode the face at a region's middle is the region's legend
+  // swatch through the output path — the transform src/interior/rendering/
+  // outputTransform.ts states, verified here on the real renderer rather than
+  // believed. The probe (interiorFaceProbe) names the pixel and the two colours;
+  // it is null for a region whose middle the diagram draws something else over
+  // (an uncertainty band, a physical blend, an unknown temperature), and for
+  // a body with no scale. The swatch is read back from the legend's own DOM.
+  await page.evaluate(() => window.__moon.interiorMode('temperature'));
+  await ready(page);
+  const probes = [];
+  for (const key of regionKeys) {
+    const probe = await page.evaluate((regionKey) => window.__moon.interiorFaceProbe(regionKey), key);
+    if (probe) probes.push({ key, ...probe });
+  }
+  if (probes.length > 0) {
+    const image = decodePng(await withoutRuler(page, () => page.screenshot({ type: 'png' })));
+    const scale = image.width / viewport.width;
+    const hex = (value) => `#${value.toString(16).padStart(6, '0')}`;
+    for (const probe of probes) {
+      const swatch = await page.evaluate((regionKey) => {
+        const element = document.querySelector(`#interior-legend .interior-row[data-region="${regionKey}"] .interior-swatch`);
+        return element ? getComputedStyle(element).backgroundColor : null;
+      }, probe.key);
+      const expectedSwatch = `rgb(${(probe.swatchHex >> 16) & 255}, ${(probe.swatchHex >> 8) & 255}, ${probe.swatchHex & 255})`;
+      check(swatch === expectedSwatch, `${tag}: ${probe.key}'s legend swatch is ${swatch}, the scale says ${expectedSwatch}`);
+      // The mean of a small block around the probe, against the transform's promise.
+      const size = 3;
+      const x0 = Math.round(probe.x * scale - size / 2);
+      const y0 = Math.round(probe.y * scale - size / 2);
+      const sums = [0, 0, 0];
+      let count = 0;
+      for (let y = y0; y < y0 + size; y++) {
+        for (let x = x0; x < x0 + size; x++) {
+          if (x < 0 || y < 0 || x >= image.width || y >= image.height) continue;
+          const offset = (y * image.width + x) * image.channels;
+          for (let channel = 0; channel < 3; channel++) sums[channel] += image.pixels[offset + channel];
+          count++;
+        }
+      }
+      const seen = sums.map((sum) => sum / Math.max(count, 1));
+      const expected = [(probe.faceHex >> 16) & 255, (probe.faceHex >> 8) & 255, probe.faceHex & 255];
+      const worst = Math.max(...seen.map((value, channel) => Math.abs(value - expected[channel])));
+      notes.push(`${tag}: ${probe.key} face at (${probe.x.toFixed(0)}, ${probe.y.toFixed(0)}) reads rgb(${seen.map((value) => value.toFixed(1)).join(', ')}) for ${hex(probe.faceHex)} (swatch ${hex(probe.swatchHex)}, ${probe.kelvin.toFixed(0)} K), off by ${worst.toFixed(1)}`);
+      check(worst <= FACE_PROBE_TOLERANCE, `${tag}: ${probe.key}'s face reads rgb(${seen.map((value) => value.toFixed(1)).join(', ')}) where the transform promises ${hex(probe.faceHex)} (off by ${worst.toFixed(1)}, tolerance ${FACE_PROBE_TOLERANCE})`);
+    }
+  } else {
+    notes.push(`${tag}: no region offered a face probe (every middle under a band or a blend, or no scale)`);
+  }
+  await page.evaluate(() => window.__moon.interiorMode('composition'));
+  await ready(page);
 
   // 4. A model switch adds and removes rows.
   const coverage = initial.coverage;

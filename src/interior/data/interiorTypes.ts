@@ -252,13 +252,3 @@ export function coverageModels(coverage: Coverage): InteriorModel[] {
       return [];
   }
 }
-
-/** A representative temperature for a region, K, or null when unknown: the
- *  mean of its endpoints, or the mean of its profile samples. */
-export function representativeTemperatureK(quantity: Quantity): number | null {
-  if (quantity.kind === 'endpoints') return (quantity.inner.value + quantity.outer.value) / 2;
-  if (quantity.kind === 'profile' && quantity.samples.length > 0) {
-    return quantity.samples.reduce((sum, sample) => sum + sample.value, 0) / quantity.samples.length;
-  }
-  return null;
-}

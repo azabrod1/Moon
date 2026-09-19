@@ -191,6 +191,8 @@ export class PlanetLabels {
   // Pooled contest inputs, refilled each frame from the entries' slots.
   private contestants: PlanetLabelContestant[] = [];
   private contestBlockers: LabelRect[] = [];
+  /** Chrome no label may print into this frame (renderLabels' keepOutRect). */
+  private contestKeepOuts: LabelRect[] = [];
   private revealedRectScratch: LabelRect = { x: 0, y: 0, w: 0, h: 0 };
   private revealedRectEntry: PlanetLabel | null = null;
 
@@ -460,6 +462,11 @@ export class PlanetLabels {
        *  pass and moves sub-pixel per frame). Planet labels must clear it:
        *  the whole-system pileup printed Mercury's name into the Sun's. */
       sunLabelRect?: LabelRect | null;
+      /** Chrome no label may print into — the corner chart's rectangle while
+       *  the chart is up. This layer sits above the canvas the chart is
+       *  drawn on, so a label placed there sits across its orbits; the
+       *  reveal's exempt label yields to it too. */
+      keepOutRect?: LabelRect | null;
       /** Precise hull test for marker-vs-ship occlusion. The ship's
        *  foreground disc is a generous circle — right for keeping text off
        *  the hull, but wrong in both directions for a beacon: culling by the
@@ -480,6 +487,7 @@ export class PlanetLabels {
       sunMask,
       sunPos,
       sunLabelRect,
+      keepOutRect,
       markerShipTest,
     } = options;
     const maskActive = !!sunMask && sunMask.active;
@@ -760,7 +768,9 @@ export class PlanetLabels {
     if (this.contestants.length > 0) {
       this.contestBlockers.length = 0;
       if (sunLabelRect) this.contestBlockers.push(sunLabelRect);
-      resolvePlanetLabelContest(this.contestants, this.contestBlockers);
+      this.contestKeepOuts.length = 0;
+      if (keepOutRect) this.contestKeepOuts.push(keepOutRect);
+      resolvePlanetLabelContest(this.contestants, this.contestBlockers, this.contestKeepOuts);
       for (const entry of this.labels) {
         if (!entry.labelVisible) continue;
         if (!entry.contestSlot.place) {

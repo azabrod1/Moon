@@ -245,6 +245,38 @@ function bothAlwaysDraw(a: MoonLabelCandidate, b: MoonLabelCandidate): boolean {
 
 /** Whether two candidate rects overlap. `settled` picks the smaller leave rect,
  *  used only when both labels were already placed last frame. */
+/** A rectangle labels may not print into, CSS px from the canvas's top-left
+ *  (the planet labels' LabelRect shape, kept structural so this module stays
+ *  free of that one's imports). */
+export interface LabelKeepOut {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Whether a candidate's box lands in a keep-out. The box is where the DOM
+ * puts it: centred on `sx`, hanging ABOVE the anchor (`translate(-50%,
+ * -100%)` plus a small lift the caller's margin absorbs), one label height
+ * tall. Plain overlap — chrome does not drift, so there is no hysteresis to
+ * keep.
+ */
+function candidateInKeepOut(
+  c: MoonLabelCandidate,
+  keepOut: LabelKeepOut,
+  params: MoonLabelPlacementParams,
+): boolean {
+  const left = c.sx - c.halfW;
+  const right = c.sx + c.halfW;
+  const top = c.sy - params.labelHeightPx;
+  const bottom = c.sy;
+  return left < keepOut.x + keepOut.w
+    && keepOut.x < right
+    && top < keepOut.y + keepOut.h
+    && keepOut.y < bottom;
+}
+
 function rectsCollide(
   a: MoonLabelCandidate,
   b: MoonLabelCandidate,
@@ -285,6 +317,7 @@ export function placeMoonLabels(
   prevPlaced: ReadonlySet<string>,
   params: MoonLabelPlacementParams = MOON_LABEL_PLACEMENT_PARAMS,
   edgeCapPerSystem: number = Infinity,
+  keepOuts: readonly LabelKeepOut[] = [],
 ): void {
   candidates.sort(
     (a, b) =>
@@ -298,6 +331,13 @@ export function placeMoonLabels(
   let placedCount = 0;
   for (let i = 0; i < candidates.length; i++) {
     const c = candidates[i];
+    // Chrome first: a label whose box lands on the corner chart never places,
+    // target and reveal included — the two "always draw" ranks are about other
+    // LABELS yielding, not about printing across the chart's orbits.
+    if (keepOuts.length > 0 && keepOuts.some((k) => candidateInKeepOut(c, k, params))) {
+      c.placed = false;
+      continue;
+    }
     const cSettled = prevPlaced.has(c.name);
     const capped = !c.onScreen && !c.isTarget && !c.isRevealed;
     let collides = false;

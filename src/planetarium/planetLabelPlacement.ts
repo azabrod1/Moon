@@ -83,10 +83,18 @@ function collides(c: PlanetLabelContestant, other: LabelRect, otherSettled: bool
  * each one's `place`. Exempt labels rank first; everyone else by priority
  * with the incumbent defence added; name breaks ties so the order — and the
  * winner of an exact tie — is deterministic frame to frame.
+ *
+ * `blockers` are other labels a contestant must clear (the Sun's), which an
+ * exempt label outranks. `keepOuts` are chrome — the corner chart's rectangle
+ * — that NO label may print into, the reveal included: the label layer sits
+ * above the canvas the chart is drawn on, so a name placed there would sit
+ * across the chart's orbits, and a hover's reveal is not a licence for that.
+ * A keep-out is tested plain, no hysteresis: chrome does not drift.
  */
 export function resolvePlanetLabelContest(
   contestants: PlanetLabelContestant[],
   blockers: readonly LabelRect[] = [],
+  keepOuts: readonly LabelRect[] = [],
 ): void {
   contestants.sort((a, b) => {
     if (a.exempt !== b.exempt) return a.exempt ? -1 : 1;
@@ -99,6 +107,13 @@ export function resolvePlanetLabelContest(
   for (let i = 0; i < contestants.length; i++) {
     const c = contestants[i];
     c.place = true;
+    for (const keepOut of keepOuts) {
+      if (overlaps(c, 0, keepOut, 0)) {
+        c.place = false;
+        break;
+      }
+    }
+    if (!c.place) continue;
     if (c.exempt) continue;
     for (const blocker of blockers) {
       if (collides(c, blocker, true)) {

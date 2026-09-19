@@ -105,15 +105,14 @@ import type { LandedTarget } from '../PlanetariumStore';
 import {
   makeMiniBodyKey,
   miniBodiesStale,
+  miniMarkSizes,
   miniNeedsReseat,
   stampMiniBodyKey,
-  MINI_BODY_SIZE_PARAMS,
   MINI_MARKER_ZOOM_PARAMS,
-  MINI_SHIP_PX,
-  MINI_SUN_SIZE_PARAMS,
   MINI_SUN_HALO_RADII,
   type MiniBodyKey,
   type MiniDrawRect,
+  type MiniMarkSizes,
 } from './miniChart';
 import {
   labelClearanceRadiusPx,
@@ -236,7 +235,11 @@ import {
   LABEL_NOMINAL_HALF_WIDTH_PX,
 } from './mapLabels';
 import { debugWarn } from '../../shared/debug';
-import { createMapMoonRingMaterial, createMapPlanetOrbitMaterial } from './mapOrbitMaterial';
+import {
+  createMapMoonRingMaterial,
+  createMapPlanetOrbitMaterial,
+  MAP_PLANET_ORBIT_LINE_WIDTH_PX,
+} from './mapOrbitMaterial';
 
 /**
  * Read-only access to the world's live surface textures. The map re-reads these
@@ -804,6 +807,23 @@ export class SystemMap {
   /** Whether the corner chart clears its rectangle to the chart's own field
    *  (the shipped look) or draws over the world frame. Dev A/B. */
   private miniOpaque = true;
+  /** The corner chart's marks for its current presentation scale
+   *  (miniChart.ts miniMarkSizes): the mini view reads these, and they are
+   *  rebuilt only when the scale changes — a resize, never a cruise frame. */
+  private miniMarks: MiniMarkSizes = miniMarkSizes(1);
+  private miniPresentationScale = 1;
+  /**
+   * A reserve for the chart's screen target, device px, or null. While a
+   * resize gesture is live the chart's rectangle changes on every frame it
+   * moves, and refitting the target to each one would free and allocate a
+   * multisampled target per frame — the cost the Dynamic quality level was
+   * built to avoid (app/sceneSubRect.ts). So the gesture reserves the target
+   * at the largest rectangle it can reach, every frame of it draws into a
+   * sub-rectangle at the target's origin, and the copy reads only that
+   * sub-rectangle. Released, the next draw refits the target to what it
+   * holds: two allocations a gesture instead of one a frame.
+   */
+  private miniTargetReserve: { widthDevicePx: number; heightDevicePx: number } | null = null;
   // Where the canvas has no samples of its own (main.ts: the default), the map
   // and the chart draw onto a screen target with the samples the canvas used
   // to have and are copied across byte for byte (app/screenTarget.ts). With
@@ -905,6 +925,9 @@ export class SystemMap {
     markerZoomParams: MAP_MARKER_ZOOM_DEFAULTS,
     globeMinPx: MAP_GLOBE_MIN_PX,
   };
+  /** The corner chart's pass. Its marks (`shipPx`, `sizeParams`,
+   *  `sunSizeParams`) are re-pointed at `miniMarks` whenever the chart's
+   *  presentation scale changes — see updateMini. */
   private miniView: MapDrawView = {
     camera: null as unknown as THREE.PerspectiveCamera,
     widthPx: 1,
@@ -912,10 +935,10 @@ export class SystemMap {
     trueScaleTarget: false,
     trueScaleBlend: 0,
     withMoons: false,
-    shipPx: MINI_SHIP_PX,
+    shipPx: this.miniMarks.shipPx,
     sunHaloRadii: MINI_SUN_HALO_RADII,
-    sizeParams: MINI_BODY_SIZE_PARAMS,
-    sunSizeParams: MINI_SUN_SIZE_PARAMS,
+    sizeParams: this.miniMarks.body,
+    sunSizeParams: this.miniMarks.sun,
     markerZoomParams: MINI_MARKER_ZOOM_PARAMS,
     globeMinPx: 0,
   };
@@ -2168,6 +2191,13 @@ export class SystemMap {
    * skipped: none of them can show at this size, and the moons in particular
    * must stay exactly as the last full-chart close left them (hidden, and
    * holding no borrowed paint).
+   *
+   * `presentationScale` is how much bigger than its default the chart's marks
+   * draw (miniChart.ts miniPresentationScale — 1 at the default width). The
+   * marks are rebuilt only when it changes, and the projection revision is
+   * bumped with them, the way a viewport change bumps it: every drawn size is
+   * metered in screen px, and the next pass must re-decide rather than carry
+   * the old decision.
    */
   updateMini(
     utcMs: number,
@@ -2182,9 +2212,19 @@ export class SystemMap {
     dtMs: number,
     widthPx: number,
     heightPx: number,
+    presentationScale = 1,
   ): void {
     if (!this.miniOpen || this.open) return;
     const t0 = import.meta.env.DEV ? performance.now() : 0;
+
+    if (presentationScale !== this.miniPresentationScale) {
+      this.miniPresentationScale = presentationScale;
+      this.miniMarks = miniMarkSizes(presentationScale);
+      this.miniView.shipPx = this.miniMarks.shipPx;
+      this.miniView.sizeParams = this.miniMarks.body;
+      this.miniView.sunSizeParams = this.miniMarks.sun;
+      this.projectionRevision++;
+    }
 
     this.clockUtcMs = utcMs;
     // The orbit lines are the chart. A map never opened has none, and the fade
@@ -2316,20 +2356,31 @@ export class SystemMap {
       renderer.state.buffers.depth.setMask(true);
       renderer.clearDepth();
       // Line2 converts its px linewidth through this resolution, so a chart
-      // drawn at the canvas's would come out a fifth of a pixel wide.
-      for (const o of this.orbits) o.material.resolution.set(draw.width, draw.height);
+      // drawn at the canvas's would come out a fifth of a pixel wide. A big
+      // chart's lines thicken a little with it (miniMarkSizes); the full
+      // chart's own width goes back in `finally`, since these are its lines.
+      const lineWidth = MAP_PLANET_ORBIT_LINE_WIDTH_PX * this.miniMarks.lineWidthScale;
+      for (const o of this.orbits) {
+        o.material.resolution.set(draw.width, draw.height);
+        o.material.linewidth = lineWidth;
+      }
       renderer.render(this.scene, this.miniCamera);
       if (target) {
-        // Into the rectangle on the canvas: the bytes the canvas would have drawn.
+        // Into the rectangle on the canvas: the bytes the canvas would have
+        // drawn. The target may be reserved larger than the rectangle
+        // (a resize in flight): the copy reads the drawn sub-rectangle only.
         renderer.setRenderTarget(null);
         renderer.setViewport(draw.left, draw.bottom, draw.width, draw.height);
         renderer.setScissor(draw.left, draw.bottom, draw.width, draw.height);
-        this.ensureScreenCopy().copy(renderer, target, !this.miniOpaque);
+        this.ensureScreenCopy().copy(
+          renderer, target, !this.miniOpaque, draw.widthDevicePx, draw.heightDevicePx,
+        );
       }
     } finally {
       const el = renderer.domElement;
       for (const o of this.orbits) {
         o.material.resolution.set(Math.max(el.clientWidth, 1), Math.max(el.clientHeight, 1));
+        o.material.linewidth = MAP_PLANET_ORBIT_LINE_WIDTH_PX;
       }
       this.scene.background = prevBackground;
       // Rebind the prior target BEFORE handing the clear colour back: the
@@ -2356,6 +2407,18 @@ export class SystemMap {
     this.miniOpaque = opaque;
   }
 
+  /**
+   * Hold the chart's screen target at least this big, in device px, for the
+   * length of a resize gesture (see `miniTargetReserve`); null releases it,
+   * and the next draw refits the target to the rectangle it draws. A no-op on
+   * a sampled canvas, which draws straight into its scissor.
+   */
+  setMiniTargetReserve(reserve: { widthDevicePx: number; heightDevicePx: number } | null): void {
+    this.miniTargetReserve = reserve && reserve.widthDevicePx >= 1 && reserve.heightDevicePx >= 1
+      ? { widthDevicePx: Math.round(reserve.widthDevicePx), heightDevicePx: Math.round(reserve.heightDevicePx) }
+      : null;
+  }
+
   // ── The screen targets ──────────────────────────────────────────────────
 
   private ensureMapTarget(): THREE.WebGLRenderTarget {
@@ -2366,9 +2429,16 @@ export class SystemMap {
     return this.mapTarget;
   }
 
+  /** The chart's target, at least `w × h` device px: exactly that at rest,
+   *  the reserve's size while a resize holds one (never smaller than the
+   *  rectangle, whatever the reserve says — a rectangle larger than its
+   *  reserve is drawn whole, not clipped). */
   private ensureMiniTarget(w: number, h: number): THREE.WebGLRenderTarget {
-    if (!this.miniTarget) this.miniTarget = createScreenTarget(w, h, this.screenSamples);
-    else fitScreenTarget(this.miniTarget, w, h);
+    const reserve = this.miniTargetReserve;
+    const allocW = reserve ? Math.max(w, reserve.widthDevicePx) : w;
+    const allocH = reserve ? Math.max(h, reserve.heightDevicePx) : h;
+    if (!this.miniTarget) this.miniTarget = createScreenTarget(allocW, allocH, this.screenSamples);
+    else fitScreenTarget(this.miniTarget, allocW, allocH);
     return this.miniTarget;
   }
 
@@ -2404,6 +2474,13 @@ export class SystemMap {
     bodyPasses: number;
     tickMs: number[];
     renderMs: number[];
+    /** The marks this pass draws with, and the scale they were built for. */
+    presentationScale: number;
+    marks: MiniMarkSizes;
+    /** The chart's screen target as allocated, device px (null on a sampled
+     *  canvas, or before the first draw), and the reserve a resize holds. */
+    targetAlloc: { widthDevicePx: number; heightDevicePx: number } | null;
+    targetReserve: { widthDevicePx: number; heightDevicePx: number } | null;
   } {
     return {
       open: this.miniOpen,
@@ -2419,6 +2496,12 @@ export class SystemMap {
       bodyPasses: this.miniBodyPasses,
       tickMs: this.miniTickMs.slice(),
       renderMs: this.miniRenderMs.slice(),
+      presentationScale: this.miniPresentationScale,
+      marks: this.miniMarks,
+      targetAlloc: this.miniTarget
+        ? { widthDevicePx: this.miniTarget.width, heightDevicePx: this.miniTarget.height }
+        : null,
+      targetReserve: this.miniTargetReserve ? { ...this.miniTargetReserve } : null,
     };
   }
 

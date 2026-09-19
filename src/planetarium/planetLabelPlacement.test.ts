@@ -116,3 +116,35 @@ describe('resolvePlanetLabelContest', () => {
     expect(placed(cs)).toEqual(['Jupiter']);
   });
 });
+
+describe('keep-outs — chrome no label may print into', () => {
+  const chart = { x: 0, y: 0, w: 200, h: 150 };
+
+  it('drops any contestant whose box lands on a keep-out, the exempt reveal included', () => {
+    const inside = contestant('Mercury', 100, 1, { y: 60 });
+    const revealed = contestant('Venus', 150, 2, { y: 100, exempt: true });
+    const outside = contestant('Mars', 400, 0, { y: 60 });
+    const cs = [inside, revealed, outside];
+    resolvePlanetLabelContest(cs, [], [chart]);
+    expect(placed(cs)).toEqual(['Mars']);
+  });
+
+  it('tests the keep-out plain, no hysteresis: a box that only touches the edge is clear', () => {
+    const touching = contestant('Mercury', 200, 1, { y: 0, incumbent: false });
+    const cs = [touching];
+    resolvePlanetLabelContest(cs, [], [chart]);
+    expect(placed(cs)).toEqual(['Mercury']);
+    const settled = contestant('Venus', 199, 1, { y: 0, incumbent: true });
+    const cs2 = [settled];
+    resolvePlanetLabelContest(cs2, [], [chart]);
+    expect(placed(cs2)).toEqual([]);
+  });
+
+  it('a dropped label frees its slot for the next in rank', () => {
+    const inside = contestant('Venus', 100, 5, { y: 60 });
+    const rival = contestant('Mercury', 100, 1, { y: 200 });
+    const cs = [inside, rival];
+    resolvePlanetLabelContest(cs, [], [chart]);
+    expect(placed(cs)).toEqual(['Mercury']);
+  });
+});

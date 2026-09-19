@@ -1698,18 +1698,27 @@
       #planetarium-keys-hint { display: none; }
     }
 
-    /* Corner chart — the frame around the WebGL rectangle, and the surface that
-       takes the tap. It sits ABOVE the touch flight zone (12): on coarse
-       pointers that zone is a transparent full-width layer that captures every
-       pointerdown, so a hit test on the canvas underneath would never fire. It
-       covers the chart and nothing else, and steering stays live everywhere
-       else — unlike the full map, the corner chart does not take the sky away.
-       Left of the bottom bar (18) and the action cluster (28) in the stack, so
-       neither is ever blocked by it. Geometry (left/top/width/height) is
-       written by the TS from the same rect the scissor uses. */
-    #mini-chart {
+    /* Corner chart — the box carries the chart's rectangle (left/top/width/
+       height, written by the TS from the same rect the scissor uses) and takes
+       no pointers itself. Inside it, the button is the frame around the WebGL
+       rectangle and the surface that takes the tap, and the grip at its
+       bottom-right corner resizes the chart. The box sits ABOVE the touch
+       flight zone (12): on coarse pointers that zone is a transparent
+       full-width layer that captures every pointerdown, so a hit test on the
+       canvas underneath would never fire. It covers the chart and nothing
+       else, and steering stays live everywhere else — unlike the full map,
+       the corner chart does not take the sky away. Left of the bottom bar (18)
+       and the action cluster (28) in the stack, so neither is ever blocked
+       by it. */
+    #mini-chart-box {
       display: none;
       position: absolute;
+      z-index: 14;
+      pointer-events: none;
+    }
+    #mini-chart {
+      position: absolute;
+      inset: 0;
       padding: 0;
       background: transparent;
       border: 1px solid var(--line);
@@ -1717,18 +1726,69 @@
       box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
       pointer-events: auto;
       cursor: pointer;
-      z-index: 14;
       touch-action: none;
       -webkit-tap-highlight-color: transparent;
-      transition: border-color var(--dur) var(--ease);
+      transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
     }
-    #mini-chart:hover { border-color: rgba(255, 255, 255, 0.22); }
+    #mini-chart-box:hover #mini-chart { border-color: rgba(255, 255, 255, 0.22); }
     #mini-chart:focus-visible {
       outline: 2px solid rgba(var(--accent-rgb), 0.75);
       outline-offset: 2px;
     }
+    /* The grip: three hairlines hatched into the frame's corner, in the
+       frame's own line. A fine pointer finds it by hovering the chart; a
+       coarse one, which cannot hover, always sees it faintly. Its hit area
+       reaches 10 px past the frame's corner — 30 px square, a thumb's worth —
+       so it takes little from the tap target inside and little from the
+       steering zone outside. The glyph is CSS, no asset: a repeating gradient
+       clipped to the lower-right triangle. */
+    #mini-chart-grip {
+      position: absolute;
+      right: -10px;
+      bottom: -10px;
+      width: 30px;
+      height: 30px;
+      pointer-events: auto;
+      cursor: nwse-resize;
+      touch-action: none;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+      -webkit-user-select: none;
+      opacity: 0;
+      transition: opacity var(--dur) var(--ease);
+    }
+    #mini-chart-grip::before {
+      content: '';
+      position: absolute;
+      right: 12px;
+      bottom: 12px;
+      width: 10px;
+      height: 10px;
+      background: repeating-linear-gradient(135deg, transparent 0 2.5px, rgba(255, 255, 255, 0.62) 2.5px 3.5px);
+      clip-path: polygon(100% 0, 100% 100%, 0 100%);
+      transition: background var(--dur) var(--ease);
+    }
+    #mini-chart-box:hover #mini-chart-grip,
+    #mini-chart:focus-visible ~ #mini-chart-grip { opacity: 1; }
+    @media (hover: none) {
+      #mini-chart-grip { opacity: 0.6; }
+    }
+    /* Mid-resize: the frame takes the accent, the grip its full strength, and
+       the cursor keeps the grip's shape wherever the pointer wanders — the
+       button's own pointer cursor would otherwise flicker in under it. */
+    #mini-chart-box.resizing #mini-chart {
+      border-color: rgba(var(--accent-rgb), 0.55);
+      box-shadow: 0 8px 26px rgba(0, 0, 0, 0.55);
+    }
+    #mini-chart-box.resizing #mini-chart-grip { opacity: 1; }
+    #mini-chart-box.resizing #mini-chart-grip::before {
+      background: repeating-linear-gradient(135deg, transparent 0 2.5px, rgba(var(--accent-rgb), 0.9) 2.5px 3.5px);
+    }
+    body.mini-chart-resizing,
+    body.mini-chart-resizing * { cursor: nwse-resize !important; }
+    body.mini-chart-resizing { user-select: none; -webkit-user-select: none; }
     @media (prefers-reduced-motion: reduce) {
-      #mini-chart { transition: none; }
+      #mini-chart, #mini-chart-grip, #mini-chart-grip::before { transition: none; }
     }
 
     /* Resume prompt */
@@ -4419,6 +4479,13 @@
           </button>
         </div>
         <div class="settings-row">
+          <span class="settings-label">Mini map size</span>
+          <button class="settings-toggle" id="settings-minisize-toggle"
+                  aria-label="Mini map size" aria-pressed="false">
+            <span id="settings-minisize-label">Medium</span>
+          </button>
+        </div>
+        <div class="settings-row">
           <span class="settings-label">Slower near planets</span>
           <button class="settings-toggle" id="settings-throttle-toggle">
             <span id="settings-throttle-label">On</span>
@@ -5086,10 +5153,15 @@
         </div>
       </div>
 
-      <!-- Corner chart: the WebGL draws inside this rectangle, and the element
-           is its frame and its tap target. Position and size are written by the
-           TS from the same rect the scissor uses. -->
-      <button id="mini-chart" aria-label="Open system map"></button>
+      <!-- Corner chart: the WebGL draws inside this box, whose position and
+           size the TS writes from the same rect the scissor uses. The button
+           is the frame and the tap target; the grip at its bottom-right corner
+           resizes the chart by drag (the ☰ "Mini map size" row is the same
+           control for a keyboard, so the grip carries no name of its own). -->
+      <div id="mini-chart-box">
+        <button id="mini-chart" aria-label="Open system map"></button>
+        <div id="mini-chart-grip" aria-hidden="true"></div>
+      </div>
 
       <div id="planetarium-notification"></div>
       <div id="planetarium-loading-msg" style="position:absolute;bottom:50%;left:50%;transform:translate(-50%,50%);font-size:13px;color:var(--text-dim);letter-spacing:2px;display:none;"></div>

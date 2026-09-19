@@ -91,6 +91,10 @@ export class SunLabel {
     // recreating the exact pileup the contest removes. The user's reveal
     // gesture outranks the anchor label; it returns on unhover.
     yieldToRect?: LabelRect | null,
+    // Chrome the label may not print into — the corner chart's rectangle,
+    // which is drawn on the canvas under this layer. The anchor label yields
+    // to it the way every other label does.
+    keepOutRect?: LabelRect | null,
   ): void {
     if (!this.el) return;
     if (!labelsOn && !revealed) {
@@ -125,12 +129,13 @@ export class SunLabel {
       && screenY > -LABEL_MARGIN_PX && screenY < canvas.clientHeight + LABEL_MARGIN_PX;
 
     let yielded = false;
-    if (yieldToRect) {
+    if (yieldToRect || keepOutRect) {
       this.yieldScratch.x = screenX;
       this.yieldScratch.y = screenY + labelOffsetY;
       this.yieldScratch.w = this.boxW;
       this.yieldScratch.h = this.boxH;
-      yielded = rectsOverlap(this.yieldScratch, yieldToRect);
+      yielded = (!!yieldToRect && rectsOverlap(this.yieldScratch, yieldToRect))
+        || (!!keepOutRect && rectsOverlap(this.yieldScratch, keepOutRect));
     }
 
     if (!occluded && !yielded && onScreen) {

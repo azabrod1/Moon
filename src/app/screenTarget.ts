@@ -112,11 +112,18 @@ void main() {
   gl_Position = vec4( position.xy, 0.0, 1.0 );
 }`;
 
+// `uUvScale` is the sub-rectangle read (app/sceneSubRect.ts's idiom): a target
+// drawn into at its origin but allocated larger has its image in the
+// bottom-left `uUvScale` of the texture. The copy is 1:1 and nearest-filtered
+// onto a viewport the drawn size, so each fragment's scaled `vUv` lands on its
+// own texel's centre and no tap reaches the region past the drawn edge; at
+// (1, 1) the multiply is exact and the full-target copy is the bytes it was.
 const COPY_FRAGMENT = /* glsl */ `
 uniform sampler2D tDiffuse;
+uniform vec2 uUvScale;
 varying vec2 vUv;
 void main() {
-  gl_FragColor = texture2D( tDiffuse, vUv );
+  gl_FragColor = texture2D( tDiffuse, vUv * uUvScale );
 }`;
 
 /** Copies a screen target's bytes onto whatever is bound — the canvas, inside the current viewport and scissor. */
@@ -126,7 +133,7 @@ export class ScreenCopy {
 
   constructor() {
     this.material = new THREE.ShaderMaterial({
-      uniforms: { tDiffuse: { value: null } },
+      uniforms: { tDiffuse: { value: null }, uUvScale: { value: new THREE.Vector2(1, 1) } },
       vertexShader: COPY_VERTEX,
       fragmentShader: COPY_FRAGMENT,
       depthTest: false,
@@ -137,10 +144,26 @@ export class ScreenCopy {
     this.quad = new FullScreenQuad(this.material);
   }
 
-  /** Draw `target` onto the canvas. `premultiplied` composites a transparent image over what is there. */
-  copy(renderer: THREE.WebGLRenderer, target: THREE.WebGLRenderTarget, premultiplied = false): void {
+  /**
+   * Draw `target` onto the canvas. `premultiplied` composites a transparent
+   * image over what is there. `drawWidth × drawHeight`, in the target's
+   * device pixels, is the sub-rectangle at the target's origin that was drawn
+   * into when the target is allocated larger than what it holds; left out,
+   * the whole target is the image.
+   */
+  copy(
+    renderer: THREE.WebGLRenderer,
+    target: THREE.WebGLRenderTarget,
+    premultiplied = false,
+    drawWidth: number = target.width,
+    drawHeight: number = target.height,
+  ): void {
     const m = this.material;
     m.uniforms.tDiffuse.value = target.texture;
+    m.uniforms.uUvScale.value.set(
+      Math.min(1, Math.max(drawWidth, 1) / Math.max(target.width, 1)),
+      Math.min(1, Math.max(drawHeight, 1) / Math.max(target.height, 1)),
+    );
     if (premultiplied) {
       m.blending = THREE.CustomBlending;
       m.blendSrc = THREE.OneFactor;

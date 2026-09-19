@@ -445,14 +445,28 @@ import {
   type TeleportPick,
 } from './map/mapTeleport';
 import {
+  clampMiniSizeScale,
   miniChartRect,
   miniChartVisible,
   miniDrawRect,
+  miniPresentationScale,
   miniRectStale,
+  miniScaleForWidth,
+  miniSizeDetentAt,
+  miniSizeDetentScale,
+  miniSizeLabel,
+  miniSizeRange,
+  nextMiniSizeDetent,
+  writeMiniKeepOut,
+  MINI_SIZE_DEFAULT_SCALE,
+  MINI_SIZE_MAX_SCALE,
   type MiniChartRect,
   type MiniChartVisibility,
   type MiniDrawRect,
+  type MiniSizeRange,
 } from './map/miniChart';
+import { MiniChartSurface } from './ui/MiniChartSurface';
+import type { LabelRect } from './planetLabelPlacement';
 import { flushOrbitDamping } from './input/orbitDamping';
 import { formatBodyDistance, bodyDistanceQuantum } from './bodyDistance';
 import type { ToolRequest } from './toolRequest';
@@ -1729,7 +1743,27 @@ export class PlanetariumMode {
   /** Stored corner-chart preference — null until the user flips the ☰ toggle,
    *  the skyPref idiom: an untouched preference is never persisted. */
   private miniChartPrefStored: boolean | null = null;
-  private miniChartEl: HTMLElement | null = null;
+  /** The chart's DOM — the box the rect is written to, the tap button, the
+   *  resize grip — and every gesture on it (ui/MiniChartSurface). */
+  private miniSurface = new MiniChartSurface();
+  /** The chart's size, as a multiple of the width the layout gives it on its
+   *  own (map/miniChart.ts). The rect is built from it; a live gesture moves
+   *  it on every frame it moves. */
+  private miniSizeScale = MINI_SIZE_DEFAULT_SCALE;
+  /** Stored size preference — null until the user resizes the chart, the
+   *  miniChartPrefStored idiom: dev and capture paths move the size without
+   *  touching it. */
+  private miniSizePrefStored: number | null = null;
+  /** What this canvas allows the size to be, and how much bigger than its
+   *  default the chart's marks draw — both rebuilt with the rect. */
+  private miniSizeRangeCache: MiniSizeRange = { defaultWidthPx: 1, minWidthPx: 1, maxWidthPx: 1 };
+  private miniPresentation = 1;
+  /** The chart's rectangle with a margin, in the label passes' own shape:
+   *  chrome no body label may print into while the chart is up, because the
+   *  label layer sits above the canvas the chart is drawn on. Rebuilt with
+   *  the rect; `labelKeepOuts` is the one-slot list the moon pass takes. */
+  private miniKeepOut: LabelRect = { x: 0, y: 0, w: 0, h: 0 };
+  private labelKeepOuts: LabelRect[] = [];
   private miniRect: MiniChartRect = { left: 0, top: 0, width: 0, height: 0 };
   /** The same rectangle snapped inward to whole device pixels — what is
    *  actually drawn, and what the chart's camera is metered against. */
@@ -1737,12 +1771,13 @@ export class PlanetariumMode {
     left: 0, bottom: 0, width: 0, height: 0,
     leftDevicePx: 0, bottomDevicePx: 0, widthDevicePx: 0, heightDevicePx: 0,
   };
-  /** The canvas and pixel ratio the cached rects were built for. Both are pure
-   *  functions of those, so a frame that finds them unchanged reuses the
-   *  objects — and the ratio matters as much as the size, since the snap is
-   *  what turns a CSS rectangle into device rows. */
+  /** The canvas, size scale and pixel ratio the cached rects were built for.
+   *  All are pure functions of those, so a frame that finds them unchanged
+   *  reuses the objects — and the ratio matters as much as the size, since
+   *  the snap is what turns a CSS rectangle into device rows. */
   private miniRectCanvasW = -1;
   private miniRectCanvasH = -1;
+  private miniRectSizeScale = -1;
   private miniRectPixelRatio = -1;
   /** Scratch for getDrawingBufferSize — read only on rect rebuilds. */
   private miniBufferSize = new THREE.Vector2();
@@ -6718,6 +6753,9 @@ export class PlanetariumMode {
           // Last frame's rect (the Sun label updates after this pass; it
           // moves sub-pixel per frame, so the lag is invisible).
           sunLabelRect: this.sunLabel.blockerRect(),
+          // The corner chart's rectangle while it is up: a name placed there
+          // would sit across the chart's orbits.
+          keepOutRect: this.miniLabelKeepOut(),
           markerShipTest,
         });
       }
@@ -7447,7 +7485,14 @@ export class PlanetariumMode {
     candidates.length = candidateCount;
     // On a phone-width canvas each system pins at most one off-screen moon's
     // label to the margins — see edgeLabelSystemCap. Desktop is uncapped.
-    placeMoonLabels(candidates, this.moonLabelIncumbents, placement, edgeLabelSystemCap(canvasW));
+    // The corner chart's rectangle, while it is up, is chrome no label may
+    // print into (the planet pass takes the same rect).
+    const keepOut = this.miniLabelKeepOut();
+    this.labelKeepOuts.length = 0;
+    if (keepOut) this.labelKeepOuts.push(keepOut);
+    placeMoonLabels(
+      candidates, this.moonLabelIncumbents, placement, edgeLabelSystemCap(canvasW), this.labelKeepOuts,
+    );
     // Apply the decision, and record this frame's winners as the next frame's
     // incumbents. The two sets are swapped rather than rebuilt, and a name that
     // stops being a candidate simply ages out of the buffer being refilled.
@@ -9148,6 +9193,8 @@ export class PlanetariumMode {
       this.sunGlareMaskParams,
       // Fresh this frame: renderLabels just placed the revealed label.
       this.planetLabels?.revealedLabelRect() ?? null,
+      // And the corner chart's rectangle, which no label prints into.
+      this.miniLabelKeepOut(),
     );
   }
 
@@ -10423,6 +10470,14 @@ export class PlanetariumMode {
       this.setMiniChartEnabled(!this.showMiniChart);
     });
 
+    // The chart's size, in the Graphics-quality idiom: one button stepping
+    // Small → Medium → Large, and from a dragged size to the first detent
+    // above it. The grip and a pinch on the chart move the same scale; all
+    // three are deliberate picks, so all three persist.
+    document.getElementById('settings-minisize-toggle')?.addEventListener('click', () => {
+      this.setMiniSizeScale(miniSizeDetentScale(nextMiniSizeDetent(this.miniSizeScale)), { persist: true });
+    });
+
     document.getElementById('settings-throttle-toggle')?.addEventListener('click', () => {
       this.systemSlowdown = !this.systemSlowdown;
       const label = document.getElementById('settings-throttle-label');
@@ -10652,12 +10707,18 @@ export class PlanetariumMode {
     const canvasW = Math.max(el.clientWidth, 1);
     const canvasH = Math.max(el.clientHeight, 1);
     const pixelRatio = this.renderer.getPixelRatio();
-    if (miniRectStale(this.miniRectCanvasW, this.miniRectCanvasH, canvasW, canvasH)
-      || this.miniRectPixelRatio !== pixelRatio) {
+    if (miniRectStale(
+      this.miniRectCanvasW, this.miniRectCanvasH, this.miniRectSizeScale,
+      canvasW, canvasH, this.miniSizeScale,
+    ) || this.miniRectPixelRatio !== pixelRatio) {
       this.miniRectCanvasW = canvasW;
       this.miniRectCanvasH = canvasH;
+      this.miniRectSizeScale = this.miniSizeScale;
       this.miniRectPixelRatio = pixelRatio;
-      this.miniRect = miniChartRect(canvasW, canvasH);
+      this.miniSizeRangeCache = miniSizeRange(canvasW, canvasH);
+      this.miniRect = miniChartRect(canvasW, canvasH, this.miniSizeScale);
+      this.miniPresentation = miniPresentationScale(this.miniRect.width, this.miniSizeRangeCache.defaultWidthPx);
+      writeMiniKeepOut(this.miniRect, this.miniKeepOut);
       // The REAL buffer dims, not css·ratio: the renderer floors that product
       // on both axes, and the snap's whole job is agreeing with the driver.
       this.renderer.getDrawingBufferSize(this.miniBufferSize);
@@ -10698,6 +10759,9 @@ export class PlanetariumMode {
       // is given, which the device snap may have shaved by a fraction of a px.
       draw.width,
       draw.height,
+      // How much bigger than its default this chart's marks draw — 1 at and
+      // below the default width, so a chart never resized is drawn as it was.
+      this.miniPresentation,
     );
   }
 
@@ -10754,65 +10818,114 @@ export class PlanetariumMode {
     this.systemMap.renderMini(this.miniDraw);
   }
 
+  /**
+   * The chart's keep-out for the label passes, or null while the chart is
+   * down. The passes run before the chart's own update in a frame, so they
+   * read the chart as it was a frame ago — the Sun label's blocker rect has
+   * the same lag, and it is invisible.
+   */
+  private miniLabelKeepOut(): LabelRect | null {
+    return this.systemMap?.isMiniOpen() ? this.miniKeepOut : null;
+  }
+
   private hideMiniChart(): void {
+    // Whatever gesture was in flight ends here: a resize commits what it had,
+    // a held tap opens nothing. Then the chart itself stands down.
+    this.miniSurface.abort();
     if (this.systemMap?.isMiniOpen()) this.systemMap.closeMini();
     this.setMiniChartSurfaceShown(false);
   }
 
-  /** The stylesheet hides the surface by default, so shown/hidden is an inline
-   *  display either way — an empty string would hand it back to the rule that
-   *  hides it. Written only on a change; the property is read every frame. */
   private setMiniChartSurfaceShown(shown: boolean): void {
-    const el = this.miniChartSurface();
-    if (!el) return;
-    const want = shown ? 'block' : 'none';
-    if (el.style.display !== want) el.style.display = want;
+    if (this.ensureMiniSurface()) this.miniSurface.setShown(shown);
   }
 
   private applyMiniChartSurface(): void {
-    const el = this.miniChartSurface();
-    if (!el) return;
-    el.style.left = `${this.miniRect.left}px`;
-    el.style.top = `${this.miniRect.top}px`;
-    el.style.width = `${this.miniRect.width}px`;
-    el.style.height = `${this.miniRect.height}px`;
+    if (this.ensureMiniSurface()) this.miniSurface.setRect(this.miniRect);
   }
 
   /**
-   * The chart's tap target, wired once. It has to be a real DOM surface: on
-   * coarse pointers the flight zone is a transparent full-width layer above
-   * the canvas, so a canvas hit-test never fires under it, and a pointerdown
-   * check could never intercept a wheel in any case. It sits ABOVE that zone
-   * and covers the whole rectangle, and the zone stays live everywhere else —
-   * unlike the full map, the corner chart does not take steering away.
+   * The chart's DOM, bound once: the box the rect is written to, the button
+   * that takes the tap, the grip that resizes (ui/MiniChartSurface owns the
+   * elements and every gesture on them). This is the host the surface talks
+   * to — what a gesture may size the chart to, what it asks for as it moves,
+   * and what it commits.
    */
-  private miniChartSurface(): HTMLElement | null {
-    if (this.miniChartEl) return this.miniChartEl;
-    const el = document.getElementById('mini-chart');
-    if (!el) return null;
-    this.miniChartEl = el;
-    el.addEventListener('pointerdown', (e) => {
-      const pe = e as PointerEvent;
-      if (pe.button !== 0) return;
-      e.preventDefault();
-      e.stopPropagation();
-      this.openMap();
+  private ensureMiniSurface(): boolean {
+    if (this.miniSurface.isBound()) return true;
+    const bound = this.miniSurface.bind({
+      openMap: () => this.openMap(),
+      widthPx: () => this.miniRect.width,
+      // Measured against the canvas as it is at the gesture's start, not the
+      // cache: the cache is written on drawn frames, and a gesture can begin
+      // on a frame the canvas moved on.
+      sizeRange: () => {
+        const el = this.renderer.domElement;
+        return miniSizeRange(Math.max(el.clientWidth, 1), Math.max(el.clientHeight, 1));
+      },
+      // A width in, a scale kept: the scale is what the rect is built from
+      // and what the save carries, so one preference means the same thing
+      // on every canvas. Only a commit is the user's size.
+      setWidthPx: (widthPx, phase) => {
+        this.setMiniSizeScale(miniScaleForWidth(this.miniSizeRangeCache, widthPx), { persist: phase === 'commit' });
+      },
+      resetSize: () => this.setMiniSizeScale(MINI_SIZE_DEFAULT_SCALE, { persist: true }),
+      resizeStarted: () => this.reserveMiniTarget(true),
+      resizeEnded: () => this.reserveMiniTarget(false),
     });
-    // Swallow the scroll over the chart: the world is not what a wheel here
-    // means, and the corner chart has no zoom of its own.
-    el.addEventListener('wheel', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-    }, { passive: false });
-    el.addEventListener('keydown', (e) => {
-      const ke = e as KeyboardEvent;
-      if (ke.key !== 'Enter' && ke.key !== ' ') return;
-      e.preventDefault();
-      e.stopPropagation();
-      this.openMap();
-    });
-    this.applyMiniChartSurface();
-    return el;
+    if (bound) this.miniSurface.setRect(this.miniRect);
+    return bound;
+  }
+
+  /**
+   * The chart's size, as a multiple of the width the layout gives it on its
+   * own. The rect cache reads it next frame and rebuilds; a live gesture
+   * moves it on every frame it moves, and only a deliberate pick — a commit,
+   * the ☰ row, the grip's double-tap — writes the stored preference. Dev and
+   * capture paths move the size without touching that.
+   */
+  private setMiniSizeScale(scale: number, options: { persist: boolean }): void {
+    const clamped = clampMiniSizeScale(scale);
+    this.miniSizeScale = clamped;
+    if (options.persist) this.miniSizePrefStored = clamped;
+    this.syncMiniSizeWidget();
+  }
+
+  /** Redraw the ☰ panel's size button: the detent's name, or Custom for a
+   *  dragged size, highlighted off Medium the way its neighbours highlight
+   *  their non-default state. Pushed on every size change and on restore. */
+  private syncMiniSizeWidget(): void {
+    setText('settings-minisize-label', miniSizeLabel(this.miniSizeScale));
+    const toggle = document.getElementById('settings-minisize-toggle');
+    if (toggle) {
+      const offDefault = miniSizeDetentAt(this.miniSizeScale) !== 'medium';
+      toggle.classList.toggle('active', offDefault);
+      toggle.setAttribute('aria-pressed', offDefault ? 'true' : 'false');
+    }
+  }
+
+  /**
+   * For the length of a resize gesture, hold the chart's screen target at the
+   * largest rectangle the gesture can reach on this canvas, in device pixels
+   * (SystemMap.setMiniTargetReserve): every frame of the drag then draws into
+   * a sub-rectangle of one allocation instead of freeing and allocating a
+   * multisampled target per frame. Released when the gesture ends.
+   */
+  private reserveMiniTarget(on: boolean): void {
+    if (!this.systemMap) return;
+    if (!on) {
+      this.systemMap.setMiniTargetReserve(null);
+      return;
+    }
+    const el = this.renderer.domElement;
+    const canvasW = Math.max(el.clientWidth, 1);
+    const canvasH = Math.max(el.clientHeight, 1);
+    const ceiling = miniChartRect(canvasW, canvasH, MINI_SIZE_MAX_SCALE);
+    this.renderer.getDrawingBufferSize(this.miniBufferSize);
+    const draw = miniDrawRect(
+      ceiling, canvasW, canvasH, this.miniBufferSize.x, this.miniBufferSize.y, this.renderer.getPixelRatio(),
+    );
+    this.systemMap.setMiniTargetReserve({ widthDevicePx: draw.widthDevicePx, heightDevicePx: draw.heightDevicePx });
   }
 
   /** The ☰ toggle, and the dev bridge behind it. */
@@ -10830,6 +10943,13 @@ export class PlanetariumMode {
     this.setMiniChartEnabled(enabled);
   }
 
+  /** Dev bridge: size the corner chart without a gesture — the scale the ☰
+   *  row and the grip move, held to its bounds, and NOT persisted, so a
+   *  capture never writes a size into the journey save. */
+  devSetMiniSize(scale: number): void {
+    this.setMiniSizeScale(scale, { persist: false });
+  }
+
   /** Dev bridge: draw the corner chart over the world frame instead of on its
    *  own field, so both looks can be captured. */
   devSetMiniOpaque(opaque: boolean): void {
@@ -10845,6 +10965,14 @@ export class PlanetariumMode {
     constructMs: number;
     rectBuilds: number;
     veilUp: boolean;
+    /** The size: the scale the rect is built from, the stored preference
+     *  (null until the user resized), what this canvas allows, and the
+     *  gesture in flight, if any. */
+    sizeScale: number;
+    sizePref: number | null;
+    sizeRange: MiniSizeRange;
+    sizeLabel: string;
+    surface: ReturnType<MiniChartSurface['state']>;
   }) | null {
     if (!this.systemMap) return null;
     return {
@@ -10855,6 +10983,11 @@ export class PlanetariumMode {
       constructMs: this.miniConstructMs,
       rectBuilds: this.miniRectBuilds,
       veilUp: this.arrivalVeilUp(),
+      sizeScale: this.miniSizeScale,
+      sizePref: this.miniSizePrefStored,
+      sizeRange: this.miniSizeRangeCache,
+      sizeLabel: miniSizeLabel(this.miniSizeScale),
+      surface: this.miniSurface.state(),
     };
   }
 
@@ -18819,6 +18952,8 @@ export class PlanetariumMode {
       // Absent until the toggle is flipped, like skyPref below — the widget
       // state itself is NOT the preference (dev/capture paths move it).
       miniChartPref: this.miniChartPrefStored ?? undefined,
+      // And the chart's size the same way: absent until the user resized it.
+      miniChartSizePref: this.miniSizePrefStored ?? undefined,
       landedOn: this.landedOn,
       systemSpeed: this.player.systemSpeedMultiplier,
       systemSlowdown: this.systemSlowdown,
@@ -18921,6 +19056,9 @@ export class PlanetariumMode {
     // default change is for.
     this.miniChartPrefStored = saved.miniChartPref ?? null;
     this.setMiniChartEnabled(saved.miniChartPref ?? false);
+    // The size, the same shape: a save with no opinion draws the default.
+    this.miniSizePrefStored = saved.miniChartSizePref ?? null;
+    this.setMiniSizeScale(saved.miniChartSizePref ?? MINI_SIZE_DEFAULT_SCALE, { persist: false });
 
     // Restore autopilot target (kept even when landed — resumes on exit).
     // Pre-provenance saves migrate by heuristic in the store sanitizer (only

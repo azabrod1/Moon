@@ -6,11 +6,30 @@
  *
  * It is the same chart the full-screen map draws, at a viewport a tenth the
  * area, so nothing metered in screen pixels can be carried over: a marker sized
- * for a 900 px canvas covers a sixth of a 138 px chart. The size knobs below
+ * for a 900 px canvas covers a sixth of a 150 px chart. The size knobs below
  * are the corner chart's own, and they follow the same rule the full chart's do
  * — ordered by true radius, floored so nothing vanishes, capped so the orbits
  * stay the subject — except the zoom response, which the mini pins off (γ 0):
  * its framing never zooms, so its marks have nothing to answer.
+ *
+ * **The chart is the user's to size.** One number, the size scale, says how
+ * big the chart is as a multiple of the width this layout would give it on its
+ * own, so one preference means the same thing on a monitor and on a phone:
+ * 1.5 is "half again as big as the chart you would have had", whichever band
+ * the canvas falls in. The rectangle it asks for is then held to a floor and a
+ * ceiling measured against THIS canvas (`miniSizeRange`), so a size dragged
+ * out on a monitor lands at what a phone can afford rather than off its edge.
+ * The shape never changes — a corner drag, a pinch and the ☰ row all move the
+ * one scale — because the chart is a disc seen from three-quarters overhead
+ * and a different aspect would be a different framing, not a bigger box.
+ *
+ * A bigger box gets bigger marks, gently (`miniPresentationScale`): the
+ * framing is fixed, so at twice the width every orbit is drawn at twice the
+ * pixels per AU, and marks held at their small-chart size would read as a
+ * chart drawn for a smaller box. They grow on a compressive law and never
+ * reach the full chart's sizes, so the orbits stay the subject at every size;
+ * at and below the default width nothing changes, and today's chart is drawn
+ * exactly as it was.
  */
 
 import {
@@ -31,8 +50,8 @@ export interface MiniChartRect {
 }
 
 /** Width at the three layout bands, and the top-left inset each sits at. */
-const MINI_WIDE_PX = 184;
-const MINI_NARROW_PX = 124;
+const MINI_WIDE_PX = 200;
+const MINI_NARROW_PX = 132;
 const MINI_TINY_PX = 104;
 /** Height as a fraction of width: the chart is a disc seen from 3/4 overhead,
  *  so it is wider than it is tall and a square box would waste its bottom. */
@@ -50,10 +69,211 @@ const MINI_TINY_INSET_X = 8;
 /** The mobile breakpoint the rest of the UI uses, and the small-phone band. */
 const MINI_NARROW_MAX_W = MOBILE_BREAKPOINT_PX;
 const MINI_TINY_MAX_W = 380;
-/** However the bands work out, the chart never eats more of the view than
- *  this — a short landscape phone would otherwise wear it like a blindfold. */
+/** However the bands work out, the DEFAULT chart never eats more of the view
+ *  than this — a short landscape phone would otherwise wear it like a
+ *  blindfold. */
 const MINI_MAX_CANVAS_FRAC_W = 0.42;
 const MINI_MAX_CANVAS_FRAC_H = 0.28;
+
+// ── The user's size ─────────────────────────────────────────────────────────
+
+/** The size scale's own bounds: what a preference may ask for, before this
+ *  canvas has its say. 2.2× the desktop default is a 440 px chart, at which
+ *  the inner system reads at a glance; below 0.6× the ship and the inner
+ *  planets are one smear. */
+export const MINI_SIZE_MIN_SCALE = 0.6;
+export const MINI_SIZE_MAX_SCALE = 2.2;
+/** Today's chart, by construction: scale 1 is the band's own width. */
+export const MINI_SIZE_DEFAULT_SCALE = 1;
+/** Legibility floor in CSS px, whatever the scale asks: below this the ship
+ *  marker alone is a seventh of the chart. */
+const MINI_MIN_WIDTH_PX = 96;
+/** The caps a DRAG may reach — looser than the default's, because a user who
+ *  pulled the chart out asked for it, and still short of a blindfold: on a
+ *  390 × 844 phone the ceiling is a 234 px chart, and in landscape the height
+ *  cap binds first. */
+const MINI_HARD_CANVAS_FRAC_W = 0.6;
+const MINI_HARD_CANVAS_FRAC_H = 0.4;
+
+/** What this canvas allows: the width the layout gives on its own, and the
+ *  floor and ceiling a size may be held to. Measured once at a gesture's
+ *  start, so a move costs no layout. */
+export interface MiniSizeRange {
+  /** The band's width after the default caps — the rect at scale 1. */
+  defaultWidthPx: number;
+  minWidthPx: number;
+  maxWidthPx: number;
+}
+
+/** The three sizes the ☰ row offers, as scales. A drag lands anywhere between
+ *  the floor and the ceiling; the row steps through these. */
+export type MiniSizeDetent = 'small' | 'medium' | 'large';
+export const MINI_SIZE_DETENTS: readonly { detent: MiniSizeDetent; scale: number; label: string }[] = [
+  { detent: 'small', scale: 0.75, label: 'Small' },
+  { detent: 'medium', scale: MINI_SIZE_DEFAULT_SCALE, label: 'Medium' },
+  { detent: 'large', scale: 1.5, label: 'Large' },
+];
+/** How near a detent a scale has to be to wear its name. */
+const MINI_SIZE_DETENT_EPSILON = 0.02;
+/** How near a detent a RELEASED drag has to land to settle on it — a soft
+ *  click into Small, Medium or Large, so a chart dragged back to about where
+ *  it started reads Medium again rather than 0.98. */
+const MINI_SIZE_SNAP_EPSILON = 0.04;
+
+/** A scale a preference or a bridge call handed in, made safe: NaN and the
+ *  like read as the default, everything else is held to the scale's bounds. */
+export function clampMiniSizeScale(scale: number): number {
+  if (!Number.isFinite(scale)) return MINI_SIZE_DEFAULT_SCALE;
+  return Math.min(MINI_SIZE_MAX_SCALE, Math.max(MINI_SIZE_MIN_SCALE, scale));
+}
+
+/** The band's width and inset for a canvas of this width. */
+function miniBand(canvasWidthPx: number): { widthPx: number; leftPx: number } {
+  if (canvasWidthPx <= MINI_TINY_MAX_W) return { widthPx: MINI_TINY_PX, leftPx: MINI_TINY_INSET_X };
+  if (canvasWidthPx <= MINI_NARROW_MAX_W) return { widthPx: MINI_NARROW_PX, leftPx: MINI_NARROW_INSET_X };
+  return { widthPx: MINI_WIDE_PX, leftPx: MINI_WIDE_INSET_X };
+}
+
+/** The width the layout gives on its own: the band, shrunk on the binding
+ *  axis by the default caps, keeping the shape. Rounded, so it is exactly the
+ *  width the rect at scale 1 draws. */
+function miniDefaultWidthPx(canvasWidthPx: number, canvasHeightPx: number): number {
+  const width = miniBand(canvasWidthPx).widthPx;
+  const height = width * MINI_ASPECT_H;
+  // Shrink on the binding axis, keeping the shape — a squashed chart would
+  // re-fit to a different framing rather than just showing less of the room.
+  const shrink = Math.min(
+    1,
+    (canvasWidthPx * MINI_MAX_CANVAS_FRAC_W) / width,
+    (canvasHeightPx * MINI_MAX_CANVAS_FRAC_H) / height,
+  );
+  return Math.round(width * shrink);
+}
+
+export function miniSizeRange(canvasWidthPx: number, canvasHeightPx: number): MiniSizeRange {
+  const cw = Math.max(canvasWidthPx, 1);
+  const ch = Math.max(canvasHeightPx, 1);
+  const defaultWidthPx = miniDefaultWidthPx(cw, ch);
+  // The floor never sits above the default: a canvas too small for the
+  // legibility floor still gets the chart it always had.
+  const minWidthPx = Math.min(
+    defaultWidthPx,
+    Math.max(MINI_MIN_WIDTH_PX, Math.round(defaultWidthPx * MINI_SIZE_MIN_SCALE)),
+  );
+  // Nor does the ceiling sit below it: the hard caps are looser than the
+  // default's on both axes, so this only ever binds above the default, but
+  // the guard says so rather than relying on the two pairs staying ordered.
+  const maxWidthPx = Math.max(
+    defaultWidthPx,
+    Math.min(
+      Math.round(defaultWidthPx * MINI_SIZE_MAX_SCALE),
+      Math.floor(cw * MINI_HARD_CANVAS_FRAC_W),
+      Math.floor((ch * MINI_HARD_CANVAS_FRAC_H) / MINI_ASPECT_H),
+    ),
+  );
+  return { defaultWidthPx, minWidthPx, maxWidthPx };
+}
+
+/** The width a scale draws at on this canvas: the default times the scale,
+ *  held to the range. */
+export function miniWidthForScale(range: MiniSizeRange, scale: number): number {
+  const asked = range.defaultWidthPx * clampMiniSizeScale(scale);
+  return Math.round(Math.min(range.maxWidthPx, Math.max(range.minWidthPx, asked)));
+}
+
+/** The scale a width means on this canvas — what a gesture commits. Held to
+ *  the scale's own bounds, so a width the caps cut short still saves as the
+ *  size it drew at, and a monitor can honour the rest of the ask. */
+export function miniScaleForWidth(range: MiniSizeRange, widthPx: number): number {
+  if (!(range.defaultWidthPx > 0)) return MINI_SIZE_DEFAULT_SCALE;
+  return clampMiniSizeScale(widthPx / range.defaultWidthPx);
+}
+
+/** The detent a scale sits on, or 'custom' between them. */
+export function miniSizeDetentAt(scale: number): MiniSizeDetent | 'custom' {
+  for (const entry of MINI_SIZE_DETENTS) {
+    if (Math.abs(scale - entry.scale) <= MINI_SIZE_DETENT_EPSILON) return entry.detent;
+  }
+  return 'custom';
+}
+
+/** What the ☰ row's button reads for a scale. Plain, in the panel's voice. */
+export function miniSizeLabel(scale: number): string {
+  const detent = miniSizeDetentAt(scale);
+  if (detent === 'custom') return 'Custom';
+  return MINI_SIZE_DETENTS.find((entry) => entry.detent === detent)?.label ?? 'Custom';
+}
+
+export function miniSizeDetentScale(detent: MiniSizeDetent): number {
+  return MINI_SIZE_DETENTS.find((entry) => entry.detent === detent)?.scale ?? MINI_SIZE_DEFAULT_SCALE;
+}
+
+/** Where the ☰ row goes from a scale: the next detent round the cycle from
+ *  the one it sits on, or — from a dragged, custom size — the first detent
+ *  above it, wrapping to Small past Large. So one press from a chart pulled a
+ *  little past Medium reads Large, which is the nearest thing to what the
+ *  user was reaching for. */
+export function nextMiniSizeDetent(scale: number): MiniSizeDetent {
+  const at = miniSizeDetentAt(scale);
+  if (at !== 'custom') {
+    const index = MINI_SIZE_DETENTS.findIndex((entry) => entry.detent === at);
+    return MINI_SIZE_DETENTS[(index + 1) % MINI_SIZE_DETENTS.length].detent;
+  }
+  const above = MINI_SIZE_DETENTS.find((entry) => entry.scale > scale);
+  return above ? above.detent : MINI_SIZE_DETENTS[0].detent;
+}
+
+/**
+ * The width a corner drag asks for. The grip is the bottom-right corner and
+ * the shape is fixed, so the pointer's two axes have to agree on one width:
+ * the dominant one wins, measured in width (the vertical travel divided by
+ * the aspect), so a pull straight down grows the chart as surely as a pull
+ * to the right, and a diagonal pull keeps the corner under the finger.
+ */
+export function miniDragWidth(startWidthPx: number, dxPx: number, dyPx: number): number {
+  const byX = dxPx;
+  const byY = dyPx / MINI_ASPECT_H;
+  return startWidthPx + (Math.abs(byX) >= Math.abs(byY) ? byX : byY);
+}
+
+/** The width a pinch asks for: the chart scales with the distance between
+ *  the two fingers. A degenerate distance (the fingers on one point) asks for
+ *  nothing. */
+export function miniPinchWidth(startWidthPx: number, startDistancePx: number, distancePx: number): number {
+  if (!(startDistancePx > 0) || !(distancePx > 0)) return startWidthPx;
+  return startWidthPx * (distancePx / startDistancePx);
+}
+
+/** Where a released gesture settles: on a detent it landed near, else where
+ *  the finger left it. */
+export function miniReleaseScale(scale: number): number {
+  for (const entry of MINI_SIZE_DETENTS) {
+    if (Math.abs(scale - entry.scale) <= MINI_SIZE_SNAP_EPSILON) return entry.scale;
+  }
+  return clampMiniSizeScale(scale);
+}
+
+/** The same settle, in the width a gesture works in. */
+export function miniReleaseWidth(range: MiniSizeRange, widthPx: number): number {
+  return miniWidthForScale(range, miniReleaseScale(miniScaleForWidth(range, widthPx)));
+}
+
+/** The compressive law the marks grow on: at twice the width they are about
+ *  1.5× their size, and at the scale's ceiling about 1.6× — under the full
+ *  chart's on every mark. */
+const MINI_PRESENTATION_GAMMA = 0.6;
+
+/**
+ * How much bigger the marks draw for a chart of this width. Exactly 1 at and
+ * below the default width, so today's chart is drawn as it was; above it the
+ * law above, capped where the scale caps.
+ */
+export function miniPresentationScale(widthPx: number, defaultWidthPx: number): number {
+  if (!(widthPx > 0) || !(defaultWidthPx > 0)) return 1;
+  const ratio = widthPx / defaultWidthPx;
+  if (!(ratio > 1)) return 1;
+  return Math.pow(Math.min(ratio, MINI_SIZE_MAX_SCALE), MINI_PRESENTATION_GAMMA);
+}
 
 /**
  * Marker sizes for the corner chart, in its own screen px. Same shape as the
@@ -97,34 +317,76 @@ export const MINI_SHIP_PX = 14;
 export const MINI_SUN_HALO_RADII = 2.1;
 
 /**
- * Where the chart sits for a canvas of this size. One definition: the WebGL
- * scissor rectangle and the DOM surface that frames it and takes the tap are
- * both written from this, so they cannot drift apart.
+ * The marks a chart of a given presentation scale draws with: the mini's own
+ * size policy with its floor and cap scaled, its Sun, its ship, and how much
+ * the orbit lines thicken. Gamma and the reference radius are the full
+ * chart's, untouched — the mini stays a shrunk copy of that policy at every
+ * size, never a different one. The lines take the square root of the scale:
+ * the orbit is the subject, and a line that thickened as fast as the marks
+ * would read as a heavier chart rather than a bigger one.
  */
-export function miniChartRect(canvasWidthPx: number, canvasHeightPx: number): MiniChartRect {
+export interface MiniMarkSizes {
+  body: MapBodySizeParams;
+  sun: MapSunSizeParams;
+  /** The ship marker's full sprite extent, screen px. */
+  shipPx: number;
+  /** Multiplier on the orbit material's authored line width. */
+  lineWidthScale: number;
+}
+
+export function miniMarkSizes(presentationScale: number): MiniMarkSizes {
+  const s = Number.isFinite(presentationScale) && presentationScale > 0 ? presentationScale : 1;
+  return {
+    body: { ...MINI_BODY_SIZE_PARAMS, minPx: MINI_BODY_SIZE_PARAMS.minPx * s, maxPx: MINI_BODY_SIZE_PARAMS.maxPx * s },
+    sun: { ...MINI_SUN_SIZE_PARAMS, pivotPx: MINI_SUN_SIZE_PARAMS.pivotPx * s, floorPx: MINI_SUN_SIZE_PARAMS.floorPx * s },
+    shipPx: MINI_SHIP_PX * s,
+    lineWidthScale: Math.sqrt(s),
+  };
+}
+
+/**
+ * Where the chart sits for a canvas of this size, at a size scale. One
+ * definition: the WebGL scissor rectangle and the DOM surface that frames it
+ * and takes the tap are both written from this, so they cannot drift apart.
+ * At scale 1 it is the band's own rect, exactly as it was.
+ */
+export function miniChartRect(
+  canvasWidthPx: number,
+  canvasHeightPx: number,
+  sizeScale: number = MINI_SIZE_DEFAULT_SCALE,
+): MiniChartRect {
   const cw = Math.max(canvasWidthPx, 1);
   const ch = Math.max(canvasHeightPx, 1);
-  let width = MINI_WIDE_PX;
-  let left = MINI_WIDE_INSET_X;
-  const top = MINI_INSET_Y;
-  if (cw <= MINI_TINY_MAX_W) {
-    width = MINI_TINY_PX;
-    left = MINI_TINY_INSET_X;
-  } else if (cw <= MINI_NARROW_MAX_W) {
-    width = MINI_NARROW_PX;
-    left = MINI_NARROW_INSET_X;
-  }
-  let height = width * MINI_ASPECT_H;
-  // Shrink on the binding axis, keeping the shape — a squashed chart would
-  // re-fit to a different framing rather than just showing less of the room.
-  const shrink = Math.min(
-    1,
-    (cw * MINI_MAX_CANVAS_FRAC_W) / width,
-    (ch * MINI_MAX_CANVAS_FRAC_H) / height,
-  );
-  width = Math.round(width * shrink);
-  height = Math.round(height * shrink);
-  return { left, top, width, height };
+  const width = miniWidthForScale(miniSizeRange(cw, ch), sizeScale);
+  const height = Math.round(width * MINI_ASPECT_H);
+  return { left: miniBand(cw).leftPx, top: MINI_INSET_Y, width, height };
+}
+
+/**
+ * The chart as chrome the body labels may not print into. The label layer
+ * sits above the canvas the chart is drawn on, so a planet's, a moon's or the
+ * Sun's name whose box lands on the chart would sit across its orbits; every
+ * label pass takes this rectangle as a keep-out. A small margin keeps a name
+ * from kissing the frame.
+ */
+export const MINI_LABEL_KEEP_OUT_MARGIN_PX = 6;
+
+export interface MiniKeepOutRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Write the chart's keep-out for `rect` into `out` (the label passes' own
+ *  rect shape, top-left in CSS px) and hand it back — no allocation on a
+ *  rect rebuild. */
+export function writeMiniKeepOut(rect: MiniChartRect, out: MiniKeepOutRect): MiniKeepOutRect {
+  out.x = rect.left - MINI_LABEL_KEEP_OUT_MARGIN_PX;
+  out.y = rect.top - MINI_LABEL_KEEP_OUT_MARGIN_PX;
+  out.w = rect.width + 2 * MINI_LABEL_KEEP_OUT_MARGIN_PX;
+  out.h = rect.height + 2 * MINI_LABEL_KEEP_OUT_MARGIN_PX;
+  return out;
 }
 
 /**
@@ -281,18 +543,22 @@ export function miniNeedsReseat(extentAU: number, seatedExtentAU: number): boole
 }
 
 /**
- * Whether the cached rectangle was built for a different canvas. The rect is a
- * pure function of the canvas size, so it is rebuilt when — and only when —
- * that size changes; every other frame reuses the object, which is what keeps
- * the steady state free of allocation.
+ * Whether the cached rectangle was built for a different canvas or size. The
+ * rect is a pure function of the canvas size and the size scale, so it is
+ * rebuilt when — and only when — one of those changes; every other frame
+ * reuses the object, which is what keeps the steady state free of allocation.
+ * A drag changes the scale every frame it moves, and rebuilds on every one of
+ * those: that is the gesture's cost, not the steady state's.
  */
 export function miniRectStale(
   cachedWidthPx: number,
   cachedHeightPx: number,
+  cachedSizeScale: number,
   widthPx: number,
   heightPx: number,
+  sizeScale: number,
 ): boolean {
-  return cachedWidthPx !== widthPx || cachedHeightPx !== heightPx;
+  return cachedWidthPx !== widthPx || cachedHeightPx !== heightPx || cachedSizeScale !== sizeScale;
 }
 
 /**

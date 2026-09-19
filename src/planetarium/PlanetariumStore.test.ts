@@ -6,6 +6,7 @@ import {
 } from './PlanetariumStore';
 import { SPEED_MAX, SYSTEM_SPEED_MAX } from './shipLimits';
 import { PlayerShip } from './PlayerShip';
+import { MINI_SIZE_MAX_SCALE, MINI_SIZE_MIN_SCALE } from './map/miniChart';
 
 /** A minimal valid raw save; fields under test get spread over it. */
 function rawSave(overrides: Record<string, unknown>): Record<string, unknown> {
@@ -160,6 +161,39 @@ describe('skyPref stays tri-state (absent until the user flips the toggle)', () 
 
   it('the default state leaves it unset', () => {
     expect('skyPref' in createDefaultPlanetariumState()).toBe(false);
+  });
+});
+
+describe('miniChartSizePref stays tri-state (absent until the user resizes the chart)', () => {
+  it('round-trips a size the user chose', () => {
+    expect(sanitizePlanetariumState(rawSave({ miniChartSizePref: 1.5 }))?.miniChartSizePref).toBe(1.5);
+    expect(sanitizePlanetariumState(rawSave({ miniChartSizePref: 0.75 }))?.miniChartSizePref).toBe(0.75);
+  });
+
+  it('holds a size to the scale\'s own bounds', () => {
+    expect(sanitizePlanetariumState(rawSave({ miniChartSizePref: 9 }))?.miniChartSizePref)
+      .toBe(MINI_SIZE_MAX_SCALE);
+    expect(sanitizePlanetariumState(rawSave({ miniChartSizePref: 0.1 }))?.miniChartSizePref)
+      .toBe(MINI_SIZE_MIN_SCALE);
+  });
+
+  it('a session that never resized the chart saves no field at all', () => {
+    const state = sanitizePlanetariumState(rawSave({}));
+    expect(state?.miniChartSizePref).toBeUndefined();
+    expect('miniChartSizePref' in JSON.parse(JSON.stringify(state))).toBe(false);
+  });
+
+  it('non-numeric garbage sanitizes to absent, not to a default', () => {
+    expect(sanitizePlanetariumState(rawSave({ miniChartSizePref: 'big' }))?.miniChartSizePref).toBeUndefined();
+    expect(sanitizePlanetariumState(rawSave({ miniChartSizePref: Number.NaN }))?.miniChartSizePref).toBeUndefined();
+    expect(sanitizePlanetariumState(rawSave({ miniChartSizePref: null }))?.miniChartSizePref).toBeUndefined();
+    // JSON has no Infinity; a hand-edited string of one still reads as absent.
+    expect(sanitizePlanetariumState(rawSave({ miniChartSizePref: Number.POSITIVE_INFINITY }))?.miniChartSizePref)
+      .toBeUndefined();
+  });
+
+  it('the default state leaves it unset', () => {
+    expect('miniChartSizePref' in createDefaultPlanetariumState()).toBe(false);
   });
 });
 

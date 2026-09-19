@@ -28,6 +28,11 @@ export function applyMapOrbitButtCaps(material: LineMaterial): LineMaterial {
   return material;
 }
 
+/** The planet orbits' authored line width, screen px. The corner chart draws
+ *  the same materials and thickens them for a big chart from this one number
+ *  (SystemMap.renderMini), so it is named rather than repeated. */
+export const MAP_PLANET_ORBIT_LINE_WIDTH_PX = 1.5;
+
 /**
  * The map's planet-orbit line material. depthTest ON: a true-sized globe
  * writes depth, so the line dies at the limb and re-emerges past it — a body
@@ -36,7 +41,7 @@ export function applyMapOrbitButtCaps(material: LineMaterial): LineMaterial {
  */
 export function createMapPlanetOrbitMaterial(opacity: number): LineMaterial {
   return applyMapOrbitButtCaps(new LineMaterial({
-    linewidth: 1.5,
+    linewidth: MAP_PLANET_ORBIT_LINE_WIDTH_PX,
     vertexColors: true,
     transparent: true,
     opacity,

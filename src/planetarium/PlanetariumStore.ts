@@ -12,6 +12,7 @@ import { TIME_RATE_PRESETS } from './timeRates';
 import { MAX_UTC_MS } from '../astronomy/constants';
 import { debugWarn } from '../shared/debug';
 import { SPEED_MAX, SYSTEM_SPEED_MAX } from './shipLimits';
+import { clampMiniSizeScale } from './map/miniChart';
 
 const STORAGE_KEY = 'orbital-sim-planetarium-state';
 const LEGACY_STORAGE_KEY = 'orbital-sim-explore-state';
@@ -74,6 +75,11 @@ export interface PlanetariumState {
   // deliberately ignored on read: every save from the on-by-default era baked
   // `true` without a user behind it.)
   miniChartPref?: boolean;
+  /** The corner chart's size, as a multiple of the width the layout gives it
+   *  on its own (map/miniChart.ts). Absent until the user resizes the chart —
+   *  by the grip, a pinch or the ☰ row — the miniChartPref idiom: the widget
+   *  state is not the preference, and a save never bakes a default. */
+  miniChartSizePref?: number;
   landedOn?: LandedTarget;   // planet/moon the player is currently landed on
   systemSpeed?: number;      // system speed multiplier (fraction of c)
   systemSlowdown?: boolean;  // whether system slowdown is enabled
@@ -177,6 +183,12 @@ export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null 
     // No default, like skyPref below: only a save whose user actually pressed
     // the toggle carries an opinion about the corner chart.
     miniChartPref: typeof record.miniChartPref === 'boolean' ? record.miniChartPref : undefined,
+    // Same tri-state: only a chart the user actually resized carries a size,
+    // held to the scale's own bounds so a hand-edited save cannot ask for a
+    // chart the size of the screen.
+    miniChartSizePref: isFiniteNumber(record.miniChartSizePref)
+      ? clampMiniSizeScale(record.miniChartSizePref)
+      : undefined,
     landedOn: sanitizeLandedOn(record.landedOn),
     systemSpeed: isFiniteNumber(record.systemSpeed)
       ? Math.max(0, Math.min(SYSTEM_SPEED_MAX, record.systemSpeed))

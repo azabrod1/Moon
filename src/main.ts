@@ -2547,6 +2547,10 @@ function installDevHooks() {
     // it costs per frame.
     setMiniChart: (on: boolean) => planetariumMode?.devSetMiniChart(on),
     setMiniOpaque: (opaque: boolean) => planetariumMode?.devSetMiniOpaque(opaque),
+    // The chart's size: the scale the ☰ row and the corner grip move (1 is
+    // the layout's own width), applied without persisting; miniState reports
+    // it with the range this canvas allows and any gesture in flight.
+    setMiniSize: (scale: number) => planetariumMode?.devSetMiniSize(scale),
     miniState: () => planetariumMode?.devMiniState() ?? null,
     // Fly to a body and follow it; null flies back out to the overview.
     mapFocus: (name: string | null) => planetariumMode?.devMapFocus(name) ?? false,

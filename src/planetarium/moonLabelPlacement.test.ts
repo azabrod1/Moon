@@ -434,3 +434,34 @@ describe('moonLabelPlacement — enter/leave rect hysteresis', () => {
     expect(run(overlapping)).toEqual(['Io']);
   });
 });
+
+describe('moonLabelPlacement — the corner chart\'s keep-out', () => {
+  const chart = { x: 0, y: 0, w: 200, h: 150 };
+
+  it('never places a label whose box lands on the chart, target and reveal included', () => {
+    const cs = [
+      cand('Io', { sx: 100, sy: 100, isTarget: true }),
+      cand('Europa', { sx: 100, sy: 140, isRevealed: true }),
+      cand('Ganymede', { sx: 400, sy: 100 }),
+    ];
+    placeMoonLabels(cs, NONE, P, Infinity, [chart]);
+    expect(placed(cs)).toEqual(['Ganymede']);
+  });
+
+  it('measures the box where the DOM hangs it: above the anchor', () => {
+    // An anchor just under the chart's bottom edge hangs its label INTO it.
+    const under = cand('Io', { sx: 100, sy: 150 + P.labelHeightPx / 2 });
+    placeMoonLabels([under], NONE, P, Infinity, [chart]);
+    expect(under.placed).toBe(false);
+    // One a full label height below hangs clear.
+    const clear = cand('Europa', { sx: 100, sy: 150 + P.labelHeightPx + 1 });
+    placeMoonLabels([clear], NONE, P, Infinity, [chart]);
+    expect(clear.placed).toBe(true);
+  });
+
+  it('with no keep-outs the contest is exactly what it was', () => {
+    const cs = [cand('Io', { sx: 100, sy: 100, isTarget: true }), cand('Europa', { sx: 400, sy: 100 })];
+    placeMoonLabels(cs, NONE, P, Infinity, []);
+    expect(placed(cs)).toEqual(['Europa', 'Io']);
+  });
+});

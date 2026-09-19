@@ -12,8 +12,8 @@
  * such a reading is available, what it resolves, and what it costs — it
  * decides nothing and steers nothing.
  *
- * Three clocks, cycled frame by frame at one frozen pose so that a device
- * heating under its own measurement drifts through all three equally rather
+ * The clocks are cycled frame by frame at one frozen pose, so that a device
+ * heating under its own measurement drifts through all of them equally rather
  * than through one:
  *
  *  - **fence**: `fenceSync(SYNC_GPU_COMMANDS_COMPLETE)` after the frame's
@@ -27,6 +27,14 @@
  *    WebKit. The reading is `signalled − submitted`: not the GPU's duration
  *    but the latency until completion was noticed, which is the quantity a
  *    margin-to-deadline rule would want anyway.
+ *  - **fence-drained**: the same fence, but with everything the previous
+ *    frames left waited out before this frame's draws are issued. A plain
+ *    fence measures the latency until ALL work queued before it completes,
+ *    and a renderer whose CPU is allowed to run ahead has one or two frames
+ *    queued at any moment, so at a load the device cannot keep up with the
+ *    plain reading grows with the backlog and is no longer the frame's cost.
+ *    Draining first removes the backlog and leaves the fence's own notice
+ *    lag, which is the bias a production reading would have to subtract.
  *  - **fence-start**: the same fence inserted BEFORE the draws, as a control.
  *    A fence signals when the commands QUEUED BEFORE IT complete, so this one
  *    can signal while the frame is still being drawn and its reading is not a
@@ -70,7 +78,7 @@ import {
 } from './gpuClockStats';
 import { createReadbackWait } from './devGpuProfile';
 
-export type GpuClockName = 'fence' | 'fence-start' | 'readback' | 'timer';
+export type GpuClockName = 'fence' | 'fence-drained' | 'fence-start' | 'readback' | 'timer';
 
 export interface GpuClockPollOptions {
   /** The task source the poll loop runs on. `window.postMessage` is the fastest thing WebKit offers; a MessageChannel is the second arm. */
@@ -159,6 +167,8 @@ export interface GpuClockLevel {
   samplePolls: { before: number; after: number; signalled: boolean }[];
   samplePollSummary: PollSummary | null;
   frames: GpuClockFrame[];
+  /** Frames drawn and thrown away at this level because a poll loop was still running. */
+  skipped: number;
   notes: string[];
 }
 
@@ -198,10 +208,22 @@ export interface GpuClock {
   run: (opts?: GpuClockOptions) => Promise<GpuClockResult>;
 }
 
-/** The observed grid of `performance.now()`: read it faster than it advances. */
-function clockGranularity(samples = 4000): number | null {
-  const xs = new Array<number>(samples);
-  for (let i = 0; i < samples; i++) xs[i] = performance.now();
+/**
+ * The observed grid of `performance.now()`: read it faster than it advances.
+ *
+ * Bounded by TIME and not by a sample count, because the coarser the clock
+ * the more reads it takes to catch it moving — a fixed few thousand reads fit
+ * inside one tick of WebKit's millisecond clock and would answer that the
+ * clock never moved, which is the opposite of what it found.
+ */
+function clockGranularity(budgetMs = 12, maxSamples = 400000): number | null {
+  const xs: number[] = [];
+  const started = performance.now();
+  for (let i = 0; i < maxSamples; i++) {
+    const t = performance.now();
+    xs.push(t);
+    if (t - started >= budgetMs) break;
+  }
   return minNonZeroDelta(xs);
 }
 
@@ -330,7 +352,10 @@ export function createGpuClock(deps: GpuClockDeps): GpuClock {
   let seq = 0;
   let runStartedMs = 0;
   let lastFrameAtMs: number | null = null;
-  const drawStamps: number[] = [];
+  // One stamp list per level, not one shared list: a level's drawn rate is
+  // summarised again when the run ends, and a shared list would hand every
+  // level the last one's cadence.
+  let levelStamps: number[][] = [];
   const notes: string[] = [];
   let resolveRun: ((r: GpuClockResult) => void) | null = null;
   let rejectRun: ((e: unknown) => void) | null = null;
@@ -362,10 +387,19 @@ export function createGpuClock(deps: GpuClockDeps): GpuClock {
     };
   }
 
-  function drawFence(record: GpuClockFrame, draw: () => void, before: boolean) {
+  function drawFence(record: GpuClockFrame, draw: () => void, mode: 'end' | 'start' | 'drained') {
     // A fence before the draws is the control: it signals when the commands
     // ALREADY queued complete, which can be while this frame is still being
     // drawn.
+    const before = mode === 'start';
+    if (mode === 'drained') {
+      // Whatever the previous frames left is waited out first, so the fence
+      // times this frame's work and not a backlog the renderer was allowed to
+      // build ahead of the GPU.
+      const d0 = performance.now();
+      readback!.wait();
+      record.preDrainMs = performance.now() - d0;
+    }
     let sync: WebGLSync | null = null;
     let submittedAt = 0;
     if (before) {
@@ -467,7 +501,7 @@ export function createGpuClock(deps: GpuClockDeps): GpuClock {
     return all;
   }
 
-  function summariseLevel(lv: GpuClockLevel) {
+  function summariseLevel(lv: GpuClockLevel, stamps: readonly number[]) {
     const byClock = new Map<GpuClockName, GpuClockFrame[]>();
     for (const f of lv.frames) {
       const list = byClock.get(f.clock) ?? [];
@@ -495,13 +529,13 @@ export function createGpuClock(deps: GpuClockDeps): GpuClock {
         biasVsTimerMs: name === 'timer' ? null : deltaOfMedians(own, timerReadings),
       };
     }
-    lv.drawnRateHz = ratePerSecond(drawStamps);
-    lv.drawnIntervalMs = summarise(intervalsOf(drawStamps));
+    lv.drawnRateHz = ratePerSecond(stamps);
+    lv.drawnIntervalMs = summarise(intervalsOf(stamps));
   }
 
   function finishRun() {
     resolveTimers(true);
-    for (const lv of levels) summariseLevel(lv);
+    levels.forEach((lv, i) => summariseLevel(lv, levelStamps[i] ?? []));
     const canvas = gl.canvas as HTMLCanvasElement;
     const result: GpuClockResult = {
       at: new Date().toISOString(),
@@ -550,10 +584,9 @@ export function createGpuClock(deps: GpuClockDeps): GpuClock {
   }
 
   function advanceLevel() {
-    summariseLevel(level());
+    summariseLevel(level(), levelStamps[levelIndex] ?? []);
     levelIndex += 1;
     if (levelIndex >= levels.length) { finishRun(); return; }
-    drawStamps.length = 0;
     measuredInLevel = 0;
     framesInPhase = 0;
     phase = 'settle';
@@ -599,17 +632,22 @@ export function createGpuClock(deps: GpuClockDeps): GpuClock {
       }
       // measure
       const clock = opts.clocks[measuredInLevel % opts.clocks.length];
+      const fenceClock = clock !== 'readback' && clock !== 'timer';
+      if (fenceClock && outstandingPolls > 0) {
+        // One fence at a time, or this frame's reading would measure the last
+        // frame's tail. The frame is drawn and thrown away rather than
+        // charged to the arm: at a load where a poll loop outlives the frame
+        // interval, consuming the slot would hand every one of this arm's
+        // frames to the arm before it and leave this one with nothing.
+        draw();
+        level().skipped += 1;
+        return;
+      }
       const record = newFrameRecord(clock, interval);
-      drawStamps.push(now);
+      levelStamps[levelIndex].push(now);
       if (clock === 'readback') drawReadback(record, draw);
       else if (clock === 'timer') drawTimer(record, draw);
-      else if (outstandingPolls > 0) {
-        // One fence at a time: a loop still running would have this frame's
-        // reading measure the last frame's tail.
-        draw();
-        record.capped = true;
-        level().notes.push('A poll loop was still running when the next fence frame came: that frame has no reading.');
-      } else drawFence(record, draw, clock === 'fence-start');
+      else drawFence(record, draw, clock === 'fence-start' ? 'start' : clock === 'fence-drained' ? 'drained' : 'end');
       level().frames.push(record);
       measuredInLevel += 1;
       if (measuredInLevel >= opts.frames * opts.clocks.length) {
@@ -660,6 +698,7 @@ export function createGpuClock(deps: GpuClockDeps): GpuClock {
       samplePolls: [],
       samplePollSummary: null,
       frames: [],
+      skipped: 0,
       notes: [],
     }));
     levelIndex = 0;
@@ -667,7 +706,7 @@ export function createGpuClock(deps: GpuClockDeps): GpuClock {
     framesInPhase = 0;
     measuredInLevel = 0;
     seq = 0;
-    drawStamps.length = 0;
+    levelStamps = levels.map(() => []);
     lastFrameAtMs = null;
     runStartedMs = performance.now();
     deps.pinRatio(levels[0].ratio);

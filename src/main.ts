@@ -62,6 +62,7 @@ import {
 import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass, parseFusedParam } from './app/FusedOutputPass';
 import type { GpuProfiler, GpuProfileOptions } from './app/devGpuProfile';
+import type { GpuClock, GpuClockOptions } from './app/devGpuClock';
 import { ScreenCopy, canvasSampleCount, createScreenTarget, fitScreenTarget, screenTargetSamples } from './app/screenTarget';
 import { bitmapDecodePath } from './planetarium/world/textureBitmapLoader';
 import { BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
@@ -1591,6 +1592,12 @@ let frameProbe: { start(): void; end(): void } | null = null;
 // The GPU profile (app/devGpuProfile.ts) brackets the world draw with its
 // spans while a run is on; loaded by the first `__moon.gpuProfile()` call.
 let gpuProfiler: GpuProfiler | null = null;
+// The GPU-clock measurement (app/devGpuClock.ts): can this engine time its
+// own frame finely enough to steer by? It fences, reads back or times the
+// same draws the profile brackets; loaded by the first `__moon.gpuClock()`
+// call. Deliberately NOT a frame-cap hold — whether its poll loop costs the
+// app frames is one of the things it measures.
+let gpuClock: GpuClock | null = null;
 
 /**
  * Pin the render resolution and re-run the app's own resize path, so the
@@ -1710,6 +1717,14 @@ function drawWorldFrame() {
   } else if (import.meta.env.DEV && gpuProfiler?.active) {
     // The same two draws as below, measured.
     gpuProfiler.frame(
+      () => renderScene(camera),
+      () => { if (appMode === 'planetarium') planetariumMode?.renderMiniChartFrame(); },
+    );
+  } else if (import.meta.env.DEV && gpuClock?.active) {
+    // The same two draws again, with a fence, a readback or a GPU timer
+    // closed around them — the frame's end is where a production clock would
+    // have to take its reading.
+    gpuClock.frame(
       () => renderScene(camera),
       () => { if (appMode === 'planetarium') planetariumMode?.renderMiniChartFrame(); },
     );
@@ -2712,6 +2727,25 @@ function installDevHooks() {
       }
       const result = await gpuProfiler.run(opts);
       (window as any).__moon.gpuProfileResult = result;
+      return result;
+    },
+    /**
+     * Can this engine time its own frame's GPU cost finely enough for the
+     * resolution rule to steer by (app/devGpuClock.ts)? Cycles a fence poll,
+     * the profiler's readback and a GPU timer over the same frames at each
+     * output ratio it is given, and answers with the frames themselves.
+     */
+    gpuClock: async (opts?: GpuClockOptions) => {
+      if (!gpuClock) {
+        const { createGpuClock } = await import('./app/devGpuClock');
+        gpuClock = createGpuClock({
+          gl: renderer.getContext(),
+          pinRatio: devPinPixelRatio,
+          targets: () => devRenderTargets(),
+        });
+      }
+      const result = await gpuClock.run(opts);
+      (window as any).__moon.gpuClockResult = result;
       return result;
     },
     ladder: () => planetariumMode?.devLadderStats() ?? null,

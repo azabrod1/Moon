@@ -29,7 +29,9 @@
  *
  * The mode owns the camera, the OrbitControls, the DOM and the presentation
  * clock; this owns the scene content and its GPU resources. Nothing here
- * reaches into the Planetarium's state.
+ * reaches into the Planetarium's state — and the group is IN the shared scene
+ * only while the tool is open (setVisible), so the planetarium's own
+ * whole-scene warm-ups never traverse a studio nobody is looking at.
  *
  * Texture ownership is explicit: prepareBody starts the colour map's fetch and
  * every other map that body wears with it, runs the studio's prefilter while
@@ -449,12 +451,24 @@ export class InteriorScene {
     this.faceA.visible = false;
     this.faceB.visible = false;
     this.group.add(this.faceA, this.faceB);
-
-    scene.add(this.group);
+    // The group joins the scene when the tool opens and leaves when it closes
+    // (setVisible): until then there is nothing here for the planetarium's own
+    // whole-scene warm-ups to traverse.
   }
 
+  /** Show the studio, or take it away. It leaves the scene entirely while the
+   *  tool is closed: the planetarium's own whole-scene warm-ups traverse
+   *  everything in the scene and would compile every studio material in the
+   *  planetarium's light state — programs nothing there draws — for the rest of
+   *  a session in which the tool was opened once. Out of the scene there is
+   *  nothing for them to find, and rejoining costs one list insertion. */
   setVisible(on: boolean): void {
     this.group.visible = on;
+    if (on) {
+      if (this.group.parent !== this.scene) this.scene.add(this.group);
+    } else if (this.group.parent === this.scene) {
+      this.scene.remove(this.group);
+    }
   }
 
   /** Which edge the cut feather becomes on this render path (plan §5). The

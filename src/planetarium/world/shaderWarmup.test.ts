@@ -79,6 +79,10 @@ function makeRenderer(opts: {
   let scissorTest = false;
   const targetsSeenAtCompile: Array<THREE.WebGLRenderTarget | null> = [];
   const compileArgs: Array<{ scene: THREE.Object3D; targetScene: THREE.Object3D | null }> = [];
+  // Where the compile root sat WHILE it was compiled: the light gather reads
+  // the scene graph as it is at that instant, not as it is afterwards.
+  const compileParents: Array<THREE.Object3D | null> = [];
+  const compileSceneChildren: Array<THREE.Object3D[]> = [];
   const renders: RenderSnapshot[] = [];
   const setTargetCalls: Array<THREE.WebGLRenderTarget | null> = [];
   const events: string[] = []; // one ordered log across compile/render/setRenderTarget
@@ -98,6 +102,8 @@ function makeRenderer(opts: {
       events.push('compile');
       targetsSeenAtCompile.push(current);
       compileArgs.push({ scene: compileScene, targetScene: targetScene ?? null });
+      compileParents.push(compileScene.parent);
+      compileSceneChildren.push([...((targetScene ?? compileScene).children)]);
       return (opts.compile ?? (() => Promise.resolve()))();
     },
     render: () => {
@@ -121,7 +127,7 @@ function makeRenderer(opts: {
     setScissorTest: (b) => { scissorTest = b; },
   };
   return {
-    renderer, targetsSeenAtCompile, compileArgs, renders, setTargetCalls, events,
+    renderer, targetsSeenAtCompile, compileArgs, compileParents, compileSceneChildren, renders, setTargetCalls, events,
     state: () => ({ current, viewport: viewport.toArray(), scissor: scissor.toArray(), scissorTest }),
   };
 }
@@ -559,5 +565,116 @@ describe('how the app spends the resolve phase', () => {
     const shell = /private async warmAtmosphereShellProgram[\s\S]*?\n  \}/.exec(mode())?.[0] ?? '';
     expect(shell).toContain('warmUpSceneShaders(');
     expect(shell).not.toContain('resolvePerFrame');
+  });
+});
+
+describe('warmUpSceneShaders: a subtree already inside the scene', () => {
+  /** A scene whose middle child is the tool's group, with a light of its own —
+   *  the Look-inside studio's shape: the group is in the scene AND is the
+   *  compile root, which is what makes three count its lights twice. */
+  function makeStudioScene() {
+    const { scene, probe, camera } = makeScene();
+    const studio = new THREE.Group();
+    studio.add(new THREE.DirectionalLight(0xffffff, 1));
+    studio.add(new THREE.Mesh(new THREE.SphereGeometry(1, 4, 2), new THREE.MeshStandardMaterial()));
+    const after = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial());
+    scene.add(studio, after);
+    return { scene, studio, after, probe, camera };
+  }
+
+  it('lifts the subtree out for the compile and puts it back at the same index', async () => {
+    const { scene, studio, probe, camera } = makeStudioScene();
+    const indexBefore = scene.children.indexOf(studio);
+    const rig = makeRenderer({ probes: [probe] });
+
+    await warmUpSceneShaders(rig.renderer, scene, camera, {
+      drawsThroughComposer: false,
+      probeGroups: [probe],
+      compileSubtree: studio,
+    });
+
+    // Out of the scene while the programs are created: three gathers the
+    // target scene's lights and then the compile root's when the two differ,
+    // so a group left in the scene has its own lights counted twice.
+    expect(rig.compileParents).toEqual([null]);
+    expect(rig.compileSceneChildren[0]).not.toContain(studio);
+    // …and back where it was, with the warm draw still the whole scene's.
+    expect(studio.parent).toBe(scene);
+    expect(scene.children.indexOf(studio)).toBe(indexBefore);
+    expect(rig.renders).toHaveLength(1);
+    expect(rig.compileArgs).toEqual([{ scene: studio, targetScene: scene }]);
+  });
+
+  it('puts it back before anything is awaited', async () => {
+    const { scene, studio, probe, camera } = makeStudioScene();
+    const seen: Array<[string, boolean]> = [];
+    const rig = makeRenderer({
+      probes: [probe],
+      compile: () => {
+        seen.push(['inside the call', studio.parent === scene]);
+        return Promise.resolve().then(() => { seen.push(['first microtask after it', studio.parent === scene]); });
+      },
+    });
+
+    await warmUpSceneShaders(rig.renderer, scene, camera, {
+      drawsThroughComposer: false,
+      probeGroups: [probe],
+      compileSubtree: studio,
+    });
+
+    // The detach brackets one synchronous statement — compileAsync creates
+    // every program and requests every link before it returns its promise — so
+    // nothing, not even a microtask, can observe a scene missing the group.
+    expect(seen).toEqual([['inside the call', false], ['first microtask after it', true]]);
+  });
+
+  it('puts it back when compileAsync throws synchronously', async () => {
+    const { scene, studio, probe, camera } = makeStudioScene();
+    const indexBefore = scene.children.indexOf(studio);
+    const onError = vi.fn();
+    const rig = makeRenderer({ probes: [probe], compile: () => { throw new Error('no context'); } });
+
+    await warmUpSceneShaders(rig.renderer, scene, camera, {
+      drawsThroughComposer: false,
+      probeGroups: [probe],
+      compileSubtree: studio,
+      onError,
+    });
+
+    expect(onError).toHaveBeenCalledWith('compile', expect.any(Error));
+    expect(studio.parent).toBe(scene);
+    expect(scene.children.indexOf(studio)).toBe(indexBefore);
+  });
+
+  it('leaves a subtree that is not in the scene alone', async () => {
+    const { scene, probe, camera } = makeScene();
+    const loose = new THREE.Group();
+    loose.add(new THREE.Mesh(new THREE.SphereGeometry(1, 4, 2), new THREE.MeshStandardMaterial()));
+    const rig = makeRenderer({ probes: [probe] });
+
+    await warmUpSceneShaders(rig.renderer, scene, camera, {
+      drawsThroughComposer: false,
+      probeGroups: [probe],
+      compileSubtree: loose,
+    });
+
+    // Nothing to detach: three's second gather is exactly what such a tree wants.
+    expect(loose.parent).toBeNull();
+    expect(rig.compileArgs).toEqual([{ scene: loose, targetScene: scene }]);
+  });
+
+  it('leaves the whole-scene callers untouched', async () => {
+    // PlanetariumMode's three: the boot warm-up, rewarmShaderProbes and
+    // warmAtmosphereShellProgram all compile the scene itself and pass no
+    // subtree. Nothing may be lifted out of anything for them.
+    const { scene, probe, camera } = makeScene();
+    const childrenBefore = [...scene.children];
+    const rig = makeRenderer({ probes: [probe] });
+
+    await warmUpSceneShaders(rig.renderer, scene, camera, { drawsThroughComposer: false, probeGroups: [probe] });
+
+    expect(rig.compileArgs).toEqual([{ scene, targetScene: null }]);
+    expect(rig.compileParents).toEqual([null]); // the scene's own parent, unchanged
+    expect(scene.children).toEqual(childrenBefore);
   });
 });

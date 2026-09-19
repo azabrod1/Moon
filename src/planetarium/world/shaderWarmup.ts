@@ -39,6 +39,18 @@
  * from the scene (three's third compileAsync argument), and the warm draw is
  * still the scene's, so what is linked is what the next frame will draw.
  *
+ * Such a subtree is lifted out of its parent for the compile itself. Three
+ * pushes the target scene's visible lights and then the compile root's when
+ * the two differ, which is right for an object not yet added to the scene and
+ * wrong for a group that is already in it: its own lights are counted twice,
+ * and every program is built for two directional and two hemisphere lights —
+ * a variant nothing draws, with the one-light program linked again on the
+ * first real frame. The detach brackets one synchronous statement (compileAsync
+ * creates every program and requests every link before it returns), the group
+ * goes back at the same index in a `finally`, and nothing can render in
+ * between. The environment and the fog are read off the TARGET scene, so the
+ * detach cannot change how they key either.
+ *
  * Contract, pinned by shaderWarmup.test.ts:
  *  - `compileAsync` runs with a `WebGLRenderTarget` bound when the live path
  *    draws through the composer, and with the canvas (null) bound otherwise
@@ -53,6 +65,10 @@
  *  - `compileSubtree`, when given, is what `compileAsync` is handed, with the
  *    scene passed as its target scene (the lights and the environment), and the
  *    warm draw is still the whole scene's;
+ *  - a `compileSubtree` that is inside the scene is detached from its parent
+ *    for that one call and reattached at the same index before anything is
+ *    awaited, a synchronous throw included; a subtree that is not in the scene,
+ *    and the whole-scene path, are left alone;
  *  - the resolve phase runs between the compile and the draw, one program per
  *    frame by default and every pending program at once when the caller is
  *    behind the load screen (`resolvePerFrame: Infinity`, where a frame yielded
@@ -230,6 +246,35 @@ export async function resolveProgramLinks(
   return timings;
 }
 
+/**
+ * Take `subtree` out of its parent and hand back the call that puts it back
+ * where it was, or null when it is not inside `scene` at all — a genuinely
+ * detached tree is what three's second light gather was written for, and the
+ * whole-scene path never comes here.
+ *
+ * The index is restored as well as the parent: three's sort keys never read
+ * sibling order, but a restore that reorders the scene is a change nobody
+ * asked for.
+ */
+function detachForCompile(subtree: THREE.Object3D, scene: THREE.Object3D): (() => void) | null {
+  const parent = subtree.parent;
+  if (!parent) return null;
+  let ancestor: THREE.Object3D | null = parent;
+  while (ancestor && ancestor !== scene) ancestor = ancestor.parent;
+  if (ancestor !== scene) return null;
+  const index = parent.children.indexOf(subtree);
+  parent.remove(subtree);
+  return () => {
+    if (subtree.parent === parent) return;
+    parent.add(subtree);
+    const at = parent.children.indexOf(subtree);
+    if (index >= 0 && at >= 0 && at !== index) {
+      parent.children.splice(at, 1);
+      parent.children.splice(index, 0, subtree);
+    }
+  };
+}
+
 export async function warmUpSceneShaders(
   renderer: ShaderWarmupRenderer,
   scene: THREE.Object3D,
@@ -258,10 +303,27 @@ export async function warmUpSceneShaders(
     }
     renderer.setRenderTarget(target);
     const compileRoot = options.compileSubtree ?? scene;
-    compiled = renderer.compileAsync(compileRoot, camera, compileRoot === scene ? null : scene).then(
-      () => undefined,
-      (err) => report('compile', err),
-    );
+    const wholeScene = compileRoot === scene;
+    // Three gathers the target scene's visible lights and then the compile
+    // root's when the two differ — written for an object not yet added to the
+    // scene. A tool's group IS in the scene and owns its own lights, so each of
+    // them is found twice and every program is built for two directional and
+    // two hemisphere lights: a variant no frame draws, beside the one that is
+    // then linked again on the first real draw. Lifting the group out for the
+    // one synchronous call that creates the programs puts it back to one
+    // gather, and the warm draw below is still the whole scene's.
+    const reattach = wholeScene ? null : detachForCompile(compileRoot, scene);
+    try {
+      compiled = renderer.compileAsync(compileRoot, camera, wholeScene ? null : scene).then(
+        () => undefined,
+        (err) => report('compile', err),
+      );
+    } finally {
+      // Before anything is awaited: compileAsync submits every link before it
+      // returns its promise, so nothing — not even a microtask — sees a scene
+      // with the group missing. A synchronous throw comes back through here too.
+      reattach?.();
+    }
   } catch (err) {
     report('compile', err);
   } finally {

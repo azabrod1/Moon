@@ -4591,6 +4591,18 @@
             <span class="menu-tier-chevron" aria-hidden="true">&rsaquo;</span>
           </button>
           <div class="menu-divider"></div>
+          <!-- The browser has its own way in from a desktop keyboard, but only
+               Windows and Linux spell it F11: a Mac spells it Ctrl-Cmd-F, and a
+               phone has no keyboard at all — which is where the toolbars cost
+               the most. The row is removed at wire-up on a browser that offers
+               no element full screen, and the F note on a touch device. -->
+          <div class="settings-row" id="settings-fullscreen-row">
+            <span class="settings-label">Full screen<span class="settings-label-note" id="settings-fullscreen-note"> F</span></span>
+            <button class="settings-toggle" id="settings-fullscreen-toggle"
+                    aria-label="Full screen" aria-pressed="false">
+              <span id="settings-fullscreen-label">Off</span>
+            </button>
+          </div>
           <div class="settings-row">
             <span class="settings-label">Show ship</span>
             <button class="settings-toggle" id="settings-ship-toggle">
@@ -5324,7 +5336,7 @@
       </div>
 
       <div id="planetarium-keys-hint">
-        <kbd>A</kbd><kbd>D</kbd> yaw &nbsp; <kbd>↑</kbd><kbd>↓</kbd> pitch &nbsp; <kbd>W</kbd><kbd>S</kbd> thrust &nbsp; <kbd>O</kbd> observatory &nbsp; <kbd>T</kbd> teleport &nbsp; <kbd>P</kbd> autopilot &nbsp; <kbd>M</kbd> map &nbsp; <kbd>,</kbd><kbd>.</kbd> time &nbsp; <kbd>N</kbd> now
+        <kbd>A</kbd><kbd>D</kbd> yaw &nbsp; <kbd>↑</kbd><kbd>↓</kbd> pitch &nbsp; <kbd>W</kbd><kbd>S</kbd> thrust &nbsp; <kbd>O</kbd> observatory &nbsp; <kbd>T</kbd> teleport &nbsp; <kbd>P</kbd> autopilot &nbsp; <kbd>M</kbd> map &nbsp; <kbd>,</kbd><kbd>.</kbd> time &nbsp; <kbd>N</kbd> now<span id="keys-hint-fullscreen"> &nbsp; <kbd>F</kbd> full screen</span>
       </div>
 
       <!-- Touch flight zone (mobile only) -->

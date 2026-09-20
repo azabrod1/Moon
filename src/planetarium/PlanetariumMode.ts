@@ -472,6 +472,7 @@ import { formatBodyDistance, bodyDistanceQuantum } from './bodyDistance';
 import type { ToolRequest } from './toolRequest';
 import { type QualityControl, type QualityLevel } from '../app/renderQuality';
 import { FRAME_RATES, type FrameRate, type FrameRateControl } from '../app/frameRateSetting';
+import { fullscreenOffered, isFullscreen, toggleFullscreen, watchFullscreen } from '../app/fullscreen';
 import {
   FRAME_RATE_NOTES, QUALITY_LEVEL_NOTES, graphicsSummary, offeredQualityLevels, qualityReadout,
 } from '../app/graphicsMenu';
@@ -8977,6 +8978,20 @@ export class PlanetariumMode {
       return;
     }
 
+    // F takes the window full screen and gives it back. Below the arrival-veil
+    // guard with every other verb on purpose: the transition is a resize, and
+    // a resize re-derives the quality ladder and can re-allocate the scene
+    // targets — not something to run through the middle of a ceremony. The
+    // deck-open branch above already returned, so F types into its search.
+    if (key === 'f' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (this.isMissionActive() || this.isHelpOpen() || !fullscreenOffered()) return;
+      e.preventDefault();
+      // A held F auto-repeats; without this it would flap the window.
+      if (e.repeat) return;
+      this.toggleFullscreenFromUi();
+      return;
+    }
+
     // Time throttle keys ride beside the deck verbs: , . step the rate, N
     // jumps the clock to now — landed and surface view included. The ☰ menu
     // joins the guard set: it auto-pauses the clock while open, and stepping
@@ -10414,6 +10429,31 @@ export class PlanetariumMode {
       });
     }
 
+    // Full screen. The browser owns the state — Escape, F11 and the window's
+    // own control all leave without passing through this button — so the click
+    // only asks, and the label is read back from the browser (see
+    // syncFullscreenLabel for the three signals that write it). Where
+    // the browser offers no element full screen (an iframe without the
+    // permission, a full screen that is video-only) the row is removed rather
+    // than left as a control that could only ever fail: the rule the Graphics
+    // page uses for a level a display cannot draw. Nothing is persisted —
+    // entering needs a user gesture, so a saved "on" could not be reapplied at
+    // boot and the menu would open showing a state the window is not in.
+    if (fullscreenOffered()) {
+      document.getElementById('settings-fullscreen-toggle')?.addEventListener('click', () => {
+        this.toggleFullscreenFromUi();
+      });
+      // Wired for the session: wireUpUI runs once, so this is never doubled,
+      // and the label must stay true while another mode owns the screen.
+      watchFullscreen(() => this.syncFullscreenLabel());
+      this.syncFullscreenLabel();
+      // The key is the desktop's way in; a touch device has no F to press.
+      if (this.isTouchDevice) document.getElementById('settings-fullscreen-note')?.remove();
+    } else {
+      document.getElementById('settings-fullscreen-row')?.remove();
+      document.getElementById('keys-hint-fullscreen')?.remove();
+    }
+
     // Show ship toggle
     document.getElementById('settings-ship-toggle')?.addEventListener('click', () => {
       this.showShip = !this.showShip;
@@ -10497,7 +10537,13 @@ export class PlanetariumMode {
     // is kept up to date while it is closed — a level from the URL or the DEV
     // bridge is read on the next open.
     this.menuPanel.wire({
-      onShow: () => this.syncGraphicsPage(),
+      onShow: () => {
+        // The row is only readable while the panel is open, so this is the
+        // moment its label has to be true — whatever events were missed
+        // while it was closed.
+        this.syncFullscreenLabel();
+        this.syncGraphicsPage();
+      },
       onPageOpen: () => this.syncGraphicsPage(),
     });
 
@@ -19519,6 +19565,43 @@ export class PlanetariumMode {
               : 'Enable gyro steering',
       );
     }
+  }
+
+  /**
+   * Ask for the transition, and write the label once it lands.
+   *
+   * The change event is not enough on its own, and neither is this. The event
+   * is the only signal that sees a way out the app never started — Escape,
+   * F11, the window's own control, the OS — and it is what keeps the row true
+   * while somebody watches it. But it is not guaranteed to arrive: a headless
+   * Chromium here was caught entering full screen, `fullscreenElement` set on
+   * the document, without ever dispatching `fullscreenchange`, and the row
+   * then read Off over a full-screen window. The promise settles for every
+   * transition the app itself started, so the two together cover both halves.
+   * The write is idempotent and two DOM calls, so a browser that fires the
+   * event as well simply does it twice.
+   */
+  private toggleFullscreenFromUi() {
+    void toggleFullscreen().then(() => this.syncFullscreenLabel());
+  }
+
+  /**
+   * The ☰ row's full-screen label, written from the browser's own state.
+   *
+   * Three things call this and all three are needed. The `fullscreenchange`
+   * subscription is the only one that sees a way out the app never started —
+   * Escape, F11, the window's own control — and it keeps the row true while
+   * somebody is watching it. `toggleFullscreenFromUi` covers the transitions
+   * the app did start, because that event is not guaranteed to arrive. And
+   * the panel's own `onShow` covers everything either of them missed while
+   * the row was not on screen, which is the only time it matters. The write
+   * is idempotent, so calling it more than it needs costs two DOM calls.
+   */
+  private syncFullscreenLabel() {
+    const on = isFullscreen();
+    const label = document.getElementById('settings-fullscreen-label');
+    if (label) label.textContent = on ? 'On' : 'Off';
+    document.getElementById('settings-fullscreen-toggle')?.setAttribute('aria-pressed', String(on));
   }
 
   /**

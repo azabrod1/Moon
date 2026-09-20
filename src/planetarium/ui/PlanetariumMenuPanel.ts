@@ -22,8 +22,19 @@
  * it cannot hold the old height open. The panel clips while a slide runs and
  * gets its scrolling back when it settles, when the entering page's animation
  * finishes or on a safety timeout, so an interrupted slide can never leave the
- * panel unable to scroll. `prefers-reduced-motion: reduce` swaps the pages
- * outright.
+ * panel unable to scroll. Only the vertical axis is held, so the stylesheet's
+ * sideways rule keeps clipping the pages throughout.
+ *
+ * **Focus never scrolls.** The incoming page is still a page-width off to the
+ * right when its back button takes focus, and a panel that scrolled that
+ * button into view would carry every row across with it and then snap back
+ * when the slide settles — a jump of 20 px in a desktop window and 26 px at a
+ * phone width, which is what a reader sees as the text bouncing. A panel whose
+ * overflow is hidden is still a scroll container (hidden only takes the
+ * scrollbar away, and clip is not available: it computes back to hidden beside
+ * a scrolling axis), so the focus call itself is what has to refuse, and
+ * settling puts any sideways offset back to zero regardless.
+ * `prefers-reduced-motion: reduce` swaps the pages outright.
  *
  * **Hiding resets to the root.** The menu always opens on the list, and no
  * page is remembered across a close: that is what a popover does, and there
@@ -155,7 +166,7 @@ export class PlanetariumMenuPanel {
   back(): void {
     const opener = this.opener;
     this.navigate(ROOT_PAGE, false);
-    opener?.focus();
+    opener?.focus({ preventScroll: true });
   }
 
   /** Write the value a tier row carries on its right — "Dynamic · Medium".
@@ -209,7 +220,7 @@ export class PlanetariumMenuPanel {
 
     if (from && from !== next && !this.prefersReducedMotion() && typeof next.animate === 'function') {
       from.classList.add('menu-page-leaving');
-      panel.style.overflow = 'hidden';
+      panel.style.overflowY = 'hidden';
       // Going deeper, the old page leaves to the left and the new one comes in
       // from the right; coming back, the other way round. `fill: forwards`
       // holds each page at its end pose until settle() cancels the animation,
@@ -235,7 +246,7 @@ export class PlanetariumMenuPanel {
       this.settle(generation);
     }
 
-    this.focusTargetFor(to)?.focus();
+    this.focusTargetFor(to)?.focus({ preventScroll: true });
     this.hooks.onPageOpen?.(to);
   }
 
@@ -265,8 +276,13 @@ export class PlanetariumMenuPanel {
       page.hidden = page.dataset.page !== this.currentPage;
     }
     // Never leave an inline overflow behind: the panel's own rule is what
-    // makes a tall list reachable on a small phone.
-    panel?.style.removeProperty('overflow');
-    if (panel) panel.scrollTop = 0;
+    // makes a tall list reachable on a small phone. The sideways offset is put
+    // back too, in case an engine scrolled the panel across despite the focus
+    // asking it not to — the panel has no sideways scrolling to offer.
+    panel?.style.removeProperty('overflow-y');
+    if (panel) {
+      panel.scrollTop = 0;
+      panel.scrollLeft = 0;
+    }
   }
 }

@@ -159,6 +159,22 @@ describe('the panel\'s own rules', () => {
     expect(pageRule).not.toContain('transition');
   });
 
+  it('never lets focus scroll the panel sideways mid-slide', () => {
+    // The incoming page is a page-width off to the right when its back button
+    // takes focus. A panel that scrolled that button into view carried every
+    // row across with it and snapped back when the slide settled — 26 px at a
+    // phone width in WebKit, which reads as the text bouncing. Every focus
+    // call in here refuses the scroll, and the slide holds the vertical axis
+    // alone so the sideways clip in the CSS is never replaced.
+    const focusCalls = panel.match(/\.focus\([^)]*\)/g) ?? [];
+    expect(focusCalls.length).toBeGreaterThan(0);
+    for (const call of focusCalls) expect(call).toContain('preventScroll: true');
+    expect(panel).toContain('panel.style.overflowY');
+    expect(panel).not.toMatch(/style\.overflow\s*=/);
+    expect(panel).toContain("removeProperty('overflow-y')");
+    expect(panel).toContain('panel.scrollLeft = 0');
+  });
+
   it('scrolls, so the last row is reachable on a small phone', () => {
     // Eleven settings rows put the panel's bottom around 578 px by the CSS
     // arithmetic, and the page itself cannot scroll (html, body are

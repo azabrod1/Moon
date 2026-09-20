@@ -470,8 +470,12 @@ import type { LabelRect } from './planetLabelPlacement';
 import { flushOrbitDamping } from './input/orbitDamping';
 import { formatBodyDistance, bodyDistanceQuantum } from './bodyDistance';
 import type { ToolRequest } from './toolRequest';
-import { nextQualityLevel, QUALITY_LEVEL_LABELS, type QualityControl } from '../app/renderQuality';
-import { FRAME_RATE_LABELS, nextFrameRate, type FrameRateControl } from '../app/frameRateSetting';
+import { type QualityControl, type QualityLevel } from '../app/renderQuality';
+import { FRAME_RATES, type FrameRate, type FrameRateControl } from '../app/frameRateSetting';
+import {
+  FRAME_RATE_NOTES, QUALITY_LEVEL_NOTES, graphicsSummary, offeredQualityLevels, qualityReadout,
+} from '../app/graphicsMenu';
+import { setSegmentOffered, setSegmentValue, wireSegmented } from './ui/SegmentedControl';
 
 /** How long a context-restore re-warm may keep the late-link check muted. */
 const REWARM_MUTE_MAX_MS = 15_000;
@@ -3042,8 +3046,6 @@ export class PlanetariumMode {
     window.addEventListener('keyup', this.handleKeyUp);
     this.gyro.attach();
     this.syncGyroWidget();
-    this.syncQualityWidget();
-    this.syncFrameRateWidget();
 
     // Wire up UI controls (once only)
     if (!this.uiWired) {
@@ -4494,8 +4496,19 @@ export class PlanetariumMode {
    * scene target — so neither ratio on its own can size any of them. The same
    * pair is handed over at construction, because a session can boot straight
    * into High or Low and never reach this hook.
+   *
+   * One thing on SCREEN is about the ratio rather than drawn in it: the ☰
+   * menu's "Now rendering" line, which is the whole point of the readout —
+   * the menu's auto-pause does not hold the resolution controller idle (only
+   * a measurement pin does), so the rung can legitimately move while the
+   * reader is watching it. It is admitted here behind a guard that costs two
+   * field reads: the panel has to be open AND standing on the Graphics page.
+   * The sync itself is the full one, because a rotation can change what this
+   * display offers (the bounds are recomputed before this hook runs on a
+   * resize) and the DEV bridge can set a level without touching the segments.
    */
   onScenePixelRatioChanged(): void {
+    if (this.menuPanel.isOpen() && this.menuPanel.page() === 'graphics') this.syncGraphicsPage();
     const sceneRatio = this.scenePixelRatio();
     const outputRatio = this.renderer.getPixelRatio();
     if (this.starfield) setStarfieldPixelRatio(this.starfield, sceneRatio, outputRatio);
@@ -10280,8 +10293,6 @@ export class PlanetariumMode {
         this.player.moving = false;
         this.timeState.paused = true;
         this.updateTimeUI();
-        this.syncQualityWidget();
-        this.syncFrameRateWidget();
         this.menuPanel.show();
       }
     });
@@ -10485,20 +10496,27 @@ export class PlanetariumMode {
       this.updateSpeedSlider();
     });
 
-    // Graphics quality, in the "Label distances" shape: one button whose label
-    // cycles. High is left out of the cycle on a display that does not offer
-    // it, so the button never lands on a choice that would change nothing.
-    document.getElementById('settings-quality-toggle')?.addEventListener('click', () => {
-      this.quality.set(nextQualityLevel(this.quality.level(), this.quality.bounds().highOffered));
-      this.syncQualityWidget();
+    // The ☰ panel's pages. The panel drives its own navigation (a tier row
+    // opens the page it names, the back button returns); the mode is told when
+    // it opens so it can re-read what it draws in there. Nothing in the panel
+    // is kept up to date while it is closed — a level from the URL or the DEV
+    // bridge is read on the next open.
+    this.menuPanel.wire({
+      onShow: () => this.syncGraphicsPage(),
+      onPageOpen: () => this.syncGraphicsPage(),
     });
 
-    // Frame rate, the same shape. Every value is offered on every display: on
-    // a 60 Hz screen 120 means "as fast as the screen", the way a game's cap
-    // above the monitor's rate does, and the ?debug=1 line says so.
-    document.getElementById('settings-fps-toggle')?.addEventListener('click', () => {
-      this.frameRate.set(nextFrameRate(this.frameRate.rate()));
-      this.syncFrameRateWidget();
+    // Graphics quality and Frame rate: a segment each, on the Graphics page.
+    // The segments are markup; these two lines connect them to the controls
+    // that own the values. A level this display does not offer has no segment
+    // at all, so a pick is always a choice that changes something.
+    wireSegmented(document.getElementById('settings-quality-seg'), (value) => {
+      this.quality.set(value as QualityLevel);
+      this.syncGraphicsPage();
+    });
+    wireSegmented(document.getElementById('settings-fps-seg'), (value) => {
+      this.frameRate.set(value as FrameRate);
+      this.syncGraphicsPage();
     });
 
     // Full-screen mobile flight zone
@@ -19508,34 +19526,73 @@ export class PlanetariumMode {
     }
   }
 
-  /** Redraw the ☰ panel's graphics-quality button. The level lives in the
-   *  entry point, so the widget is pushed rather than polled: on activation,
-   *  when the row itself cycles it, and when the panel opens — a level can
-   *  also arrive from the URL or the DEV bridge, and the open is the moment
-   *  the label has to be right. Highlighted off Dynamic, the way its
-   *  neighbours highlight their non-default state. */
-  private syncQualityWidget() {
+  /**
+   * Redraw the ☰ panel's Graphics page and the tier row that leads to it.
+   *
+   * The values live outside the mode — the level in the entry point, saved on
+   * its own key; the rate in its own control — so the page is pushed rather
+   * than polled: when the panel opens, when a page opens, on a pick, and,
+   * under Dynamic, whenever the scene ratio moves. Nothing is pushed while the
+   * panel is closed; a level that arrived from the URL or the DEV bridge is
+   * read on the next open.
+   *
+   * What this display does not offer has no segment at all rather than a dead
+   * one, and "Now rendering" appears only where it has something to say: under
+   * Dynamic, on a ladder with more than one rung.
+   */
+  private syncGraphicsPage() {
     const level = this.quality.level();
-    setText('settings-quality-label', QUALITY_LEVEL_LABELS[level]);
-    const toggle = document.getElementById('settings-quality-toggle');
-    if (toggle) {
-      toggle.classList.toggle('active', level !== 'dynamic');
-      toggle.setAttribute('aria-pressed', level !== 'dynamic' ? 'true' : 'false');
+    const bounds = this.quality.bounds();
+    const sceneRatio = this.scenePixelRatio();
+    const qualitySeg = document.getElementById('settings-quality-seg');
+    setSegmentOffered(qualitySeg, offeredQualityLevels(bounds));
+    setSegmentValue(qualitySeg, level);
+    setText('settings-quality-note', QUALITY_LEVEL_NOTES[level]);
+
+    const rate = this.frameRate.rate();
+    const fpsSeg = document.getElementById('settings-fps-seg');
+    setSegmentOffered(fpsSeg, FRAME_RATES);
+    setSegmentValue(fpsSeg, rate);
+    setText('settings-fps-note', FRAME_RATE_NOTES[rate]);
+
+    const readout = qualityReadout(sceneRatio, bounds);
+    const live = document.getElementById('settings-quality-live');
+    const show = level === 'dynamic' && readout.rungs.length > 1;
+    if (live) live.hidden = !show;
+    if (show) {
+      setText('settings-quality-live-word', readout.word);
+      this.renderQualityLadder(readout);
     }
+    this.menuPanel.setTierValue('graphics', graphicsSummary(level, sceneRatio, bounds));
   }
 
-  /** Redraw the ☰ panel's frame-rate button, pushed on the same three beats
-   *  as its neighbour — the value can also arrive from the URL or the DEV
-   *  bridge. Highlighted off Screen, which is the default and today's
-   *  behaviour. */
-  private syncFrameRateWidget() {
-    const rate = this.frameRate.rate();
-    setText('settings-fps-label', FRAME_RATE_LABELS[rate]);
-    const toggle = document.getElementById('settings-fps-toggle');
-    if (toggle) {
-      toggle.classList.toggle('active', rate !== 'screen');
-      toggle.setAttribute('aria-pressed', rate !== 'screen' ? 'true' : 'false');
+  /** The rung ladder under "Now rendering": a pip per rung with the one being
+   *  drawn lit, and three captions in a grid of the same cells, so each lands
+   *  under the rung it names. The ends are named only where they are rungs of
+   *  their own — a display with no supersample has Medium as its top pip, and
+   *  one whose Low collapses onto Medium has it as the bottom one. */
+  private renderQualityLadder(readout: ReturnType<typeof qualityReadout>) {
+    const ladder = document.getElementById('settings-quality-ladder');
+    if (ladder) {
+      ladder.replaceChildren(...readout.rungs.map((_, i) => {
+        const pip = document.createElement('span');
+        pip.className = i === readout.rungIndex ? 'menu-pip on' : 'menu-pip';
+        return pip;
+      }));
     }
+    const captions = document.getElementById('settings-quality-captions');
+    if (!captions) return;
+    const words = readout.rungs.map((_, i) => {
+      if (i === readout.mediumIndex) return 'Medium';
+      if (i === 0 && readout.mediumIndex > 0) return 'Low';
+      if (i === readout.highIndex) return 'High';
+      return '';
+    });
+    captions.replaceChildren(...words.map((word) => {
+      const cell = document.createElement('span');
+      cell.textContent = word;
+      return cell;
+    }));
   }
 
   private setFlightTouchFromPoint(clientX: number, clientY: number) {

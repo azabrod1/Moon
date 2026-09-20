@@ -82,6 +82,8 @@ const PATHS = [
 const FACE_PROBE_TOLERANCE = 6;
 /** A region drawn thinner than this on screen has no pixel of its own at its middle: the limb's air,
  *  the rim's antialiasing and its neighbours all land in the 3×3 block the probe reads. Skipped, and said. */
+/** How far above the sky a block must sit to count as corona still glowing. */
+const CORONA_SKY_MARGIN = 3;
 const FACE_PROBE_MIN_THICKNESS_PX = 6;
 /** The hover sweep runs along the hinge, this far to one side of it so it lands on a face, not the seam. */
 const SWEEP_OFF_HINGE_PX = 3;
@@ -1201,6 +1203,77 @@ async function bodyLockedCutCase(context, viewport) {
   await page.close();
 }
 
+/**
+ * Two things a body swap must get right, both of which shipped broken and were caught by a
+ * review of the merged branch rather than by this battery:
+ *
+ *   the hover card   its cached content is keyed by REGION key, and a dozen models call their
+ *                    innermost region 'core'. Hovering one world's core, swapping, and hovering
+ *                    the next world's must rewrite the card, not match the cache and keep the
+ *                    first world's name and material.
+ *   the framing      the fit is the body WITH its air (InteriorScene.boundRadius): the Sun's
+ *                    corona reaches 1.3 radii, and a fit taken before the body was presented
+ *                    used the bare radius and cropped the corona against the stage.
+ */
+async function swapFreshnessCase(context, viewport) {
+  const tag = `${viewport.name}/lifecycle swap freshness`;
+  console.log(`\n== ${tag}`);
+  const { page, errors } = await openTool(context, 'Ganymede');
+  await page.evaluate(() => window.__moon.interiorView('section'));
+  await ready(page);
+
+  // The hover card across a swap. Desktop only: a touch has no hover.
+  if (!viewport.touch) {
+    const centre = await discCentre(page, viewport);
+    const hoverAtCentre = async () => {
+      await page.mouse.move(centre.x + SWEEP_OFF_HINGE_PX, centre.y);
+      await settle(page);
+      return page.evaluate(() => ({ text: document.getElementById('interior-hover').textContent ?? '', hover: window.__moon.interiorState().hover }));
+    };
+    const first = await hoverAtCentre();
+    const firstRegion = (await state(page)).regions[0];
+    check(first.hover === firstRegion.key && first.text.includes(firstRegion.name), `${tag}: Ganymede's innermost region did not show its card (hover ${first.hover}, "${first.text}")`);
+    await page.mouse.move(2, 2);
+    await settle(page);
+    await page.evaluate(() => window.__moon.interiorPick('Venus'));
+    await ready(page);
+    const second = await hoverAtCentre();
+    const secondRegion = (await state(page)).regions[0];
+    // The two share a region key; only the words tell them apart.
+    check(firstRegion.key === secondRegion.key, `${tag}: the two bodies' innermost keys differ (${firstRegion.key} vs ${secondRegion.key}); this case needs two that share one`);
+    check(second.text.includes(secondRegion.name), `${tag}: after the swap the card still reads the old world's region ("${second.text}", expected ${secondRegion.name})`);
+    check(second.text !== first.text, `${tag}: the card's words did not change across the swap ("${second.text}")`);
+  }
+
+  // The framing takes the air shell in. The Sun is the body that shows it: its corona is 1.3
+  // radii, so a fit on the bare radius crops it. Read off the picture — the glow must fall back
+  // to the sky inside the stage rather than run off its top edge.
+  await page.evaluate(() => window.__moon.interiorPick('Sun'));
+  await ready(page);
+  await page.evaluate(() => window.__moon.interiorView('cutaway'));
+  await ready(page);
+  const image = decodePng(await withoutRuler(page, () => page.screenshot({ type: 'png' })));
+  const scale = image.width / viewport.width;
+  const centre = await discCentre(page, viewport);
+  const stageTop = Math.round((await page.evaluate(() => {
+    const strip = document.getElementById('interior-top');
+    return strip ? strip.getBoundingClientRect().bottom : 0;
+  })) * scale);
+  const columnX = Math.round(centre.x * scale);
+  const sky = blockStats(image, Math.round(4 * scale), stageTop + Math.round(4 * scale), Math.round(6 * scale)).mean;
+  // Scan up the disc's own column from its centre: where does the corona reach the sky again?
+  let fadesAt = null;
+  for (let y = Math.round(centre.y * scale); y >= stageTop; y--) {
+    if (blockStats(image, columnX - 2, y - 2, 5).mean < sky + CORONA_SKY_MARGIN) { fadesAt = y; break; }
+  }
+  check(fadesAt !== null, `${tag}: the Sun's corona still glows at the top of the stage (sky ${sky.toFixed(1)}); the fit is not taking the air shell in`);
+  notes.push(`${tag}: the corona fades to sky at y=${fadesAt ?? 'never'} (stage top ${stageTop}, sky ${sky.toFixed(1)})`);
+  await page.screenshot({ path: path.join(outDir, `${viewport.name}-Sun-corona-fit.png`) });
+
+  check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
+  await page.close();
+}
+
 async function lifecycleCases(context, viewport) {
   await toolsRowPickerCase(context, viewport);
   await bodyLockedCutCase(context, viewport);
@@ -1211,6 +1284,7 @@ async function lifecycleCases(context, viewport) {
   await lostLiftEventCase(context, viewport);
   await escCascadeCase(context, viewport);
   await reducedMotionCase(context, viewport);
+  await swapFreshnessCase(context, viewport);
   await inspectorPageCase(context, viewport);
   if (viewport.name === 'phone') await sheetDragCase(context, viewport);
   if (viewport.name === 'desktop') await lateMapCase(context, viewport);

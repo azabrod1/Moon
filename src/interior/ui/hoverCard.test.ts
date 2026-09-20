@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { HOVER_CARD_MARGIN_PX, HOVER_CARD_OFFSET_PX, HoverCard, hoverDepthText, placeHoverCard, type HoverCardSurface } from './hoverCard';
+import { HOVER_CARD_MARGIN_PX, HOVER_CARD_OFFSET_PX, HoverCard, hoverCardKey, hoverDepthText, placeHoverCard, type HoverCardSurface } from './hoverCard';
 
 /** A surface that records every call, with a size that follows its content. */
 function fakeSurface(size = { width: 140, height: 52 }) {
@@ -28,6 +28,20 @@ describe('placeHoverCard', () => {
   });
 });
 
+describe('hoverCardKey', () => {
+  it('tells two worlds\' regions apart where they share a region key', () => {
+    // A dozen shipped models name their innermost region 'core'; the card caches on this key
+    // alone, so hovering one world's core and then another's must not compare equal.
+    expect(hoverCardKey('Ganymede', 'ganymede-differentiated', 'core')).not.toBe(hoverCardKey('Venus', 'venus-earthlike', 'core'));
+    // Two models of ONE body are two different drawings of it, and their regions differ too.
+    expect(hoverCardKey('Jupiter', 'jupiter-dilute-core', 'core')).not.toBe(hoverCardKey('Jupiter', 'jupiter-compact-core', 'core'));
+    // The unresolved whole has no model id and still keys apart from every other body's.
+    expect(hoverCardKey('Phobos', null, 'interior')).not.toBe(hoverCardKey('Nix', null, 'interior'));
+    // The same region of the same drawing is the same key, or a pointer move would rewrite the card.
+    expect(hoverCardKey('Earth', 'earth-prem', 'crust')).toBe(hoverCardKey('Earth', 'earth-prem', 'crust'));
+  });
+});
+
 describe('hoverDepthText', () => {
   it('formats the depth and never says a negative one', () => {
     expect(hoverDepthText(1234.4)).toBe('1,234 km down');
@@ -48,6 +62,19 @@ describe('HoverCard', () => {
     // The same depth text again: nothing but the move.
     card.show(crust, '15 km down', 111, 205, viewport);
     expect(take()).toEqual(['place:125,219']);
+  });
+
+  it('rewrites its words when the key changes, which is how a body swap reaches it', () => {
+    const { surface, take } = fakeSurface();
+    const card = new HoverCard(surface);
+    const ganymedeCore = { key: hoverCardKey('Ganymede', 'g', 'core'), name: 'Iron core', kicker: 'Iron and nickel · liquid metal' };
+    const venusCore = { key: hoverCardKey('Venus', 'v', 'core'), name: 'Core', kicker: 'Iron and nickel · phase unresolved' };
+    card.show(ganymedeCore, '100 km down', 10, 10, viewport);
+    take();
+    // The mode hides the card across the swap; the card must still rewrite on the next show.
+    card.hide();
+    card.show(venusCore, '5,992 km down', 10, 10, viewport);
+    expect(take().join(' ')).toContain('content:Core|Iron and nickel · phase unresolved');
   });
 
   it('measures again when the content could have changed its size', () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_FRAME_RATE, FRAME_RATES, FRAME_RATE_LABELS, FRAME_RATE_STORAGE_KEY,
-  clearFrameRate, isScreenRate, nextFrameRate, parseFrameRateParam, readFrameRate,
+  clearFrameRate, isScreenRate, parseFrameRateParam, readFrameRate,
   requestedMsFor, resolveBootFrameRate, writeFrameRate,
 } from './frameRateSetting';
 import type { QualityStorage } from './qualitySetting';
@@ -64,15 +64,10 @@ describe('precedence', () => {
   });
 });
 
-describe('the row', () => {
-  it('cycles Screen, 30, 60, 120 and back', () => {
+describe('the frame-rate control', () => {
+  it('offers Screen, 30, 60 and 120, in that order', () => {
     expect(FRAME_RATES).toEqual(['screen', '30', '60', '120']);
-    let rate = DEFAULT_FRAME_RATE;
-    const seen = FRAME_RATES.map(() => {
-      rate = nextFrameRate(rate);
-      return rate;
-    });
-    expect(seen).toEqual(['30', '60', '120', 'screen']);
+    expect(DEFAULT_FRAME_RATE).toBe('screen');
   });
 
   it('labels every value in the panel\'s plain voice', () => {

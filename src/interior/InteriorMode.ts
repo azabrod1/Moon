@@ -149,7 +149,7 @@ import {
 import { fitDistance, framingDistance, stageViewOffset, visibleStageRect, type StageRect } from './interiorLayout';
 import { createPickHit, pickInterior, type PickHit, type PickLayout, type PickSurface } from './interiorPick';
 import { familyPhaseText, renderPage, type InteriorPanelPage } from './ui/InteriorPages';
-import { HoverCard, domHoverCardSurface, hoverDepthText } from './ui/hoverCard';
+import { HoverCard, domHoverCardSurface, hoverCardKey, hoverDepthText } from './ui/hoverCard';
 import { DepthRuler } from './ui/DepthRuler';
 import { createRulerLayout, rulerFacing, rulerLayout, rulerPoint, rulerSide, type RulerInput, type RulerRegionInput } from './ruler';
 import { knotsTemperatureK } from './temperatureProfile';
@@ -477,6 +477,11 @@ export class InteriorMode {
    *  move waits here for the frame, so a burst of moves is one pick. */
   private hoverCard: HoverCard | null = null;
   /** The card's content and viewport, reused per hovering frame (ui/hoverCard reads the name and kicker on a region change only). */
+  /** What the hover card last wrote, so a move inside one region rewrites nothing. The key is
+   *  hoverCardKey's — the body and the model in front of the region — because the card caches
+   *  on it too, and a bare region key is shared across worlds (a dozen models call their
+   *  innermost region 'core'): on that, hovering Ganymede's core and then Venus's compared
+   *  equal and the card kept Ganymede's words. */
   private readonly hoverContent = { key: '', name: '', kicker: '' };
   private readonly hoverViewport = { width: 0, height: 0 };
   private pendingHover: { x: number; y: number } | null = null;
@@ -1207,6 +1212,13 @@ export class InteriorMode {
         : drawnUnresolved(body.id, body.radiusKm, unresolvedComposition(this.coverage));
       this.applyDrawn(true);
       this.syncRingsRow();
+      // The fit is the body's own: an air shell (the Sun's corona at 1.3 radii, a planet's
+      // thinner one) is part of what has to reach the stage, and InteriorScene.boundRadius knows
+      // it only once the context is dressed, which presentBody has just done. The entry frames
+      // itself before that, on the bare radius, so the Sun's corona was cropped by the stage, and
+      // a swap never re-fitted at all. Taken at once, behind the closed cut: no camera move is
+      // seen, and the reader's own zoom is kept as its ratio to the fit.
+      this.applyViewportFraming(true);
       if (swap) {
         await this.interiorScene.fadeDone();
         if (stale()) return false;
@@ -1730,8 +1742,9 @@ export class InteriorMode {
     if (!card) return;
     // The card reads the name and kicker only on a region change; nothing is rebuilt per frame for it to ignore.
     const content = this.hoverContent;
-    if (content.key !== region.key) {
-      content.key = region.key;
+    const key = hoverCardKey(this.drawn.bodyId, this.drawn.modelId, region.key);
+    if (content.key !== key) {
+      content.key = key;
       content.name = region.name;
       content.kicker = familyPhaseText(region);
     }

@@ -14,12 +14,21 @@
 import { element } from './dom';
 import { formatKm } from './inspectorText';
 
+/** A card key that is unique across bodies and models, not only within one (see HoverCardContent.key). */
+export function hoverCardKey(bodyId: string, modelId: string | null, regionKey: string): string {
+  return `${bodyId}/${modelId ?? 'unresolved'}/${regionKey}`;
+}
+
 /** The card sits this far from the pointer, and never closer than the margin to the viewport's edges. */
 export const HOVER_CARD_OFFSET_PX = 14;
 export const HOVER_CARD_MARGIN_PX = 8;
 
 export interface HoverCardContent {
-  /** What tells one region's card from another's: the region key. */
+  /** What tells one region's card from another's, and the ONLY thing the caches compare —
+   *  this card's `shownKey` and the mode's own copy of the content. A bare region key will
+   *  not do: a dozen models call their innermost region 'core', so two worlds' cores would
+   *  compare equal and the card would keep the first world's words. Build it with
+   *  hoverCardKey, which puts the body and the model in front of the region. */
   key: string;
   name: string;
   /** The line under the name: the material family and the phase. */

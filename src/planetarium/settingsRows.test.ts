@@ -121,20 +121,51 @@ describe('the Graphics page', () => {
 
 describe('the root page', () => {
   it('puts the Graphics tier between the actions and the toggles', () => {
-    const tools = rootPage.indexOf('id="planetarium-btn-tools"');
+    const lastAction = rootPage.indexOf('id="planetarium-btn-map"');
     const tier = rootPage.indexOf('data-open="graphics"');
     const ship = rootPage.indexOf('id="settings-ship-toggle"');
     const throttle = rootPage.indexOf('id="settings-throttle-toggle"');
     const build = rootPage.indexOf('id="menu-build"');
-    expect(tools).toBeGreaterThan(0);
-    expect(tier).toBeGreaterThan(tools);
+    expect(lastAction).toBeGreaterThan(0);
+    expect(tier).toBeGreaterThan(lastAction);
     expect(ship).toBeGreaterThan(tier);
     expect(build).toBeGreaterThan(throttle);
+  });
+
+  it('leaves the Tools row to the cluster button alone', () => {
+    // The root page carried a Tools row with the SAME id as the cluster's
+    // Tools button. getElementById answers with the first element in document
+    // order, which is the cluster button, so the row's listener was bound to
+    // the button a second time and the row itself had none: it never did
+    // anything from the day it was written. The front door is the cluster
+    // icon; the row is gone and so is the listener that missed it.
+    expect(rootPage).not.toContain('id="planetarium-btn-tools"');
+    // One element, one listener: a second binding here is the tell that some
+    // other element has taken the name back.
+    const bindings = ts.match(
+      /getElementById\('planetarium-btn-tools'\)\?\.addEventListener/g,
+    ) ?? [];
+    expect(bindings).toHaveLength(1);
   });
 
   it('keeps the build stamp last, where ?debug=1 reveals it', () => {
     expect(rootPage.indexOf('id="menu-build"'))
       .toBeGreaterThan(rootPage.lastIndexOf('class="settings-row"'));
+  });
+});
+
+describe('the ids the TypeScript reaches by name', () => {
+  it('declares each one exactly once in the document', () => {
+    // Every id in here is read back with getElementById, which answers with
+    // the FIRST element carrying the name and never says there was a second.
+    // A duplicate is therefore silent: one of the two elements is wired twice
+    // and the other is wired not at all, and only a running app shows it.
+    const seen = new Map<string, number>();
+    for (const match of html.matchAll(/\sid="([^"]+)"/g)) {
+      seen.set(match[1], (seen.get(match[1]) ?? 0) + 1);
+    }
+    const duplicated = [...seen].filter(([, count]) => count > 1).map(([id]) => id);
+    expect(duplicated).toEqual([]);
   });
 });
 

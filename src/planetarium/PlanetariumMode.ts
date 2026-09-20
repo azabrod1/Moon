@@ -10422,11 +10422,6 @@ export class PlanetariumMode {
       if (label) label.textContent = this.showShip ? 'On' : 'Off';
     });
 
-    // The ☰ menu's door to the Tools popover, for anyone who never hovers the icon.
-    document.getElementById('planetarium-btn-tools')?.addEventListener('click', () => {
-      this.closeMenuPanel();
-      this.openToolsMenu();
-    });
     document.getElementById('settings-gyro-toggle')?.addEventListener('click', () => {
       void this.gyro.toggle();
     });

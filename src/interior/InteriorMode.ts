@@ -636,6 +636,8 @@ export class InteriorMode {
   private pendingReveal: { openId: number; toDeg: number } | null = null;
   /** The current open's marks have not been logged yet. */
   private openTimingsLogged = true;
+  /** The studio's held programs have been asked for (once a session). */
+  private studioWarmStarted = false;
 
   constructor(
     scene: THREE.Scene,
@@ -900,6 +902,22 @@ export class InteriorMode {
     markOpenStep(watch, 'ready');
     watch.timings.programsWhenReady = this.programCount();
     debugLog('Look inside: open timings', { ...watch.timings });
+    this.warmStudioPrograms();
+  }
+
+  /** With the first body settled in front of the reader, link the rest of the
+   *  studio's programs in the idle behind it and hold them for the session
+   *  (InteriorScene.warmUpStudioPrograms): a body change after this compiles
+   *  nothing, on a cold driver cache as much as a warm one. A pick that lands
+   *  before it starts owns the frames instead, and this asks again on the next
+   *  settled open. */
+  private warmStudioPrograms(): void {
+    if (this.studioWarmStarted) return;
+    this.studioWarmStarted = true;
+    const generation = this.generation;
+    void this.interiorScene
+      .warmUpStudioPrograms(this.camera, this.drawsThroughComposer(), () => generation !== this.generation || !this.active)
+      .then((ran) => { if (!ran) this.studioWarmStarted = false; });
   }
 
   /** Open the cut on what was presented, and take the reveal's marks. */

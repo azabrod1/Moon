@@ -35,7 +35,12 @@
 //     reader waits for, built while they are watching);
 //   - `programsWhenReady !== programsAtReveal` on a swap (the same, counted);
 //   - an entry whose veil lifted before a frame of the studio was drawn, or
-//     after the reveal started (firstFrame < veilLifted < revealStart).
+//     after the reveal started (firstFrame < veilLifted < revealStart);
+//   - a body seen twice that builds anything but its own skin, or builds it
+//     anywhere but inside the close: the studio holds its own programs (rings,
+//     air, corona, photosphere, ghost, deck) for the session, and a body's skin
+//     is the one thing left that a body change can compile — which is what the
+//     close's warm-up is for.
 //
 // One browser at a time on this machine (tools/browserLock.mjs), real GPU.
 import { chromium } from 'playwright';
@@ -416,6 +421,30 @@ try {
         `${record.kind} ${record.bodyId}: the veil lifted at ${marks.veilLifted}ms with the studio's first frame at ${marks.firstFrame}`);
       check(marks.revealStart !== null && marks.veilLifted <= marks.revealStart,
         `${record.kind} ${record.bodyId}: the reveal started at ${marks.revealStart}ms, before the veil lifted at ${marks.veilLifted}ms`);
+    }
+    // A body seen twice must bring nothing new: the studio's own programs are
+    // held for the session, so the only thing a repeat visit could build is a
+    // skin the driver has already seen. Program counts are compared per body,
+    // because each body's SKIN keys differently and only the body on screen
+    // has one alive — the count moves with the body and must not move with the
+    // visit.
+    const visits = new Map();
+    for (const record of results.filter((row) => row.kind === 'swap' && row.timings)) {
+      const seen = visits.get(record.bodyId) ?? [];
+      seen.push(record);
+      visits.set(record.bodyId, seen);
+      if (seen.length === 1) continue; // the first visit can still overlap the idle warm-up
+      // Nothing but the skin, and nothing outside the close. Every other
+      // program the studio draws is held for the session.
+      const late = record.shaders.filter((shader) => shader.mark > (record.timings.present ?? 0));
+      check(late.length === 0, `${record.bodyId} compiled ${late.length} fragment shaders after present on a repeat visit`);
+      check(record.shaders.length <= 1,
+        `${record.bodyId} compiled ${record.shaders.length} fragment shaders on a repeat visit, at most its own skin was expected`);
+      if (seen.length > 2) {
+        const previous = seen[seen.length - 2].timings.programsWhenReady;
+        check(record.timings.programsWhenReady === previous,
+          `${record.bodyId} holds ${record.timings.programsWhenReady} programs on visit ${seen.length}, ${previous} on the one before`);
+      }
     }
     check(pageErrors.length === 0, `page errors: ${pageErrors.slice(0, 3).join(' | ')}`);
   }

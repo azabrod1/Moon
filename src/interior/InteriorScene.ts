@@ -100,6 +100,13 @@ import { createCutFaceBasis, cutFaceBasis, type CutFrame } from './cutFrame';
 
 /** The body's radius in studio units; every framing number is relative to it. */
 export const BODY_RADIUS = 1;
+/** Whose rings and whose air the held program set is built from. The programs
+ *  are body-independent — every ringed planet's rings are one material shape
+ *  with its own uniforms, and so is every planet's analytic air — so one of
+ *  each covers the catalog; the Sun's corona is the exception and is held
+ *  beside them (buildHeldPrograms). */
+const HELD_RING_BODY = 'Saturn';
+const HELD_AIR_BODY = 'Earth';
 /** Earth's height field, in body radii — the planetarium's own 0.02 of the body. */
 const SKIN_BUMP_SCALE = 0.02;
 /** How deep a measured relief is drawn, by its map key. The planetarium halves
@@ -406,6 +413,12 @@ export class InteriorScene {
   /** The sub-pixel sphere the shader warm-up's probes wear; built on the first
    *  warm-up and disposed with the scene. */
   private warmupProbeGeometry: THREE.SphereGeometry | null = null;
+  /** The studio's own programs, held for the session (warmUpStudioPrograms). */
+  private heldGroup: THREE.Group | null = null;
+  private heldMaterials: THREE.Material[] = [];
+  private heldRings: THREE.Mesh | null = null;
+  private heldTexture: THREE.Texture | null = null;
+  private studioWarmed = false;
   private multisampled = true;
   private readonly floatCapable: boolean;
   /** The prefiltered studio environment, the whole render target: its texture is
@@ -1057,6 +1070,130 @@ export class InteriorScene {
     }
   }
 
+  /**
+   * Build one material of each kind the studio draws and keep it for the
+   * session, on a hidden probe inside the group.
+   *
+   * Three frees a program when its last material is disposed, so the swap that
+   * takes a body's air, rings or ghost off is the swap that frees their
+   * programs — and the next body with rings builds them again. Inside a close
+   * the reader is watching: on a driver whose cache had never seen the studio,
+   * a first swap onto Saturn spent two 74 ms stalls there, the ring material's
+   * two programs (it is transparent and double-sided, which is a back-side and
+   * a front-side program) being submitted and then built. A twin material with
+   * the same key holds the count above zero, so the program survives every
+   * body change and is built exactly once per session.
+   *
+   * The set is small because the studio's is: the rings, the analytic air, the
+   * Sun's corona (its own program — the disc gate's scale is baked into the
+   * shader text for the Sun alone), the Sun's photosphere, the reveal's ghost
+   * and the cloud deck. The section faces are already one material for the
+   * session, and the skin is never freed because a swap probes the incoming one
+   * while the outgoing one is still alive. Each twin is built through the same
+   * factory as the real thing, because a key that differs by one define is a
+   * program the real material cannot use.
+   *
+   * The probes are invisible and never drawn — the rings must stay a compile,
+   * a draw would build one of their two programs — and the group leaves the
+   * scene when the tool closes, so the planetarium's own warm-ups never find
+   * them.
+   */
+  private buildHeldPrograms(): void {
+    if (this.heldGroup) return;
+    const held = new THREE.Group();
+    held.name = 'InteriorHeldPrograms';
+    held.visible = false;
+    const stand = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+    stand.needsUpdate = true;
+    this.heldTexture = stand;
+
+    const rings = createPlanetRings(BODY_RADIUS, RING_CONFIGS[HELD_RING_BODY], RING_SUN_TAN);
+    applySkinCut(rings.mesh.material as THREE.MeshStandardMaterial, this.cutUniforms);
+    rings.mesh.name = 'InteriorHeldRings';
+    rings.mesh.visible = false;
+    rings.mesh.raycast = () => {};
+    held.add(rings.mesh);
+    this.heldRings = rings.mesh;
+
+    const airs: Array<[AtmosphereConfig | undefined, number | undefined]> = [
+      [ATMOSPHERES[HELD_AIR_BODY], undefined],
+      [SUN_CORONA, SUN_CORONA.scale],
+    ];
+    for (const [config, scale] of airs) {
+      if (!config) continue;
+      const material = createAtmosphereMaterial(config, BODY_RADIUS, 'analytic', {
+        initialAlpha: ATMOSPHERE_ALPHA,
+        initialSunDir: this.keyDirection,
+      });
+      applyAtmosphereCut(material, this.cutUniforms, scale);
+      this.heldMaterials.push(material);
+    }
+    this.heldMaterials.push(this.buildPhotosphereMaterial());
+
+    const ghost = new THREE.MeshStandardMaterial({ map: stand, roughness: 0.95, metalness: 0, transparent: true, opacity: 0, depthWrite: false });
+    applySkinCut(ghost, this.ghostCut);
+    this.heldMaterials.push(ghost);
+
+    const deck = new THREE.MeshStandardMaterial({
+      map: stand,
+      transparent: true,
+      opacity: 1,
+      depthWrite: false,
+      roughness: 1,
+      normalMap: stand,
+      normalScale: new THREE.Vector2(CLOUD_NORMAL_SCALE, CLOUD_NORMAL_SCALE),
+    });
+    augmentSurfaceMaterial(deck, 'cloud', undefined, 0);
+    applySkinCut(deck, this.cutUniforms);
+    this.heldMaterials.push(deck);
+
+    for (const material of this.heldMaterials) held.add(this.buildWarmupProbe(material));
+    this.group.add(held);
+    this.heldGroup = held;
+  }
+
+  /**
+   * Link the studio's held programs in the idle behind the first settled body,
+   * one per frame, so that every later body change finds them built (see
+   * buildHeldPrograms for what is held and why). Runs once a session, and
+   * costs the reader nothing: the picture is already on screen and settled,
+   * and a program a frame is the floor a build can be spread to.
+   *
+   * `isStale` is the mode's generation: a pick that lands before this starts
+   * owns the frames instead. Once it is under way it finishes — a swap during
+   * it is exactly what the programs are for, nothing here is disposed, and the
+   * compile's own bind is one synchronous block that cannot interleave with
+   * another warm-up's.
+   *
+   * Returns whether it ran, so a caller that was refused can ask again.
+   */
+  async warmUpStudioPrograms(camera: THREE.PerspectiveCamera, drawsThroughComposer: boolean, isStale: () => boolean): Promise<boolean> {
+    if (this.studioWarmed || isStale()) return false;
+    this.studioWarmed = true;
+    const startedAt = performance.now();
+    try {
+      this.buildHeldPrograms();
+      const { resolved, warmDrawMs } = await warmUpSceneShaders(this.renderer, this.scene, camera, {
+        drawsThroughComposer,
+        probeGroups: [],
+        compileSubtree: this.group,
+        // The reader is looking at a settled body: a program a frame.
+        resolvePerFrame: 1,
+        onError: (stage, error) => debugWarn(`Look inside: studio warm-up ${stage} failed`, { error: String(error) }),
+      });
+      debugLog('Look inside: studio warm-up', {
+        programs: resolved.length,
+        heldMaterials: this.heldMaterials.length + 1, // the ring mesh carries one of its own
+        ms: Math.round(performance.now() - startedAt),
+        warmDrawMs: Math.round(warmDrawMs),
+        built: resolved.map((row) => `${row.name || '?'} ${Math.round(row.ms)}ms`),
+      });
+    } catch (error) {
+      debugWarn('Look inside: the studio warm-up could not run', { error: String(error) });
+    }
+    return true;
+  }
+
   /** The materials the reveal draws that no earlier frame has drawn: the
    *  section faces, the exterior ghost, and the cloud
    *  deck (which is its own program, and hidden whenever it is still waiting
@@ -1357,6 +1494,17 @@ export class InteriorScene {
 
   dispose(): void {
     this.releaseBodyResources();
+    if (this.heldRings) disposeRingMesh(this.heldGroup ?? this.group, this.heldRings);
+    this.heldRings = null;
+    for (const material of this.heldMaterials) material.dispose();
+    this.heldMaterials = [];
+    this.heldTexture?.dispose();
+    this.heldTexture = null;
+    if (this.heldGroup) {
+      this.group.remove(this.heldGroup);
+      this.heldGroup.clear();
+      this.heldGroup = null;
+    }
     this.placeholderMaterial.dispose();
     this.faceMaterial.envMap = null;
     // After every envMap reference above is detached: the target frees the

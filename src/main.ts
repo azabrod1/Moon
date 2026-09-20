@@ -1951,34 +1951,54 @@ function afterNextDraw(): Promise<number> {
  * off over the last frame of the mode the reader left — which is exactly the
  * picture the veil exists to hide.
  *
+ * `minCoveredMs` is a FLOOR of covered time on top of that frame, for a
+ * destination whose programs are not linked under the cover: one drawn frame
+ * proves the picture exists, not that the driver has finished building
+ * everything the next few frames will need, and a mode that compiles its
+ * materials lazily pays those builds on its second and third frames — which
+ * would now land on the lifting veil. The floor is the covered time the fixed
+ * sleep used to give them.
+ *
  * Under the boot cover the loop draws ONLY on request (app/bootRenderGate),
  * so the request goes to the gate as well as to the frame-rate cap — without
  * it the first switch of a boot would wait out its whole cap for a frame that
  * was never going to be drawn.
  */
-function drawnFrame(capMs: number): Promise<void> {
+function drawnFrame(capMs: number, options: { minCoveredMs?: number } = {}): Promise<void> {
+  const floorMs = Math.max(0, options.minCoveredMs ?? 0);
   forcedDrawRequest = true;
   bootRender.requestCoveredRender();
   return new Promise((resolve) => {
     let settled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let left = capMs;
+    let drawn = false;
+    let floorLeft = floorMs;
+    let capLeft = capMs;
     let since = performance.now();
+    let floorTimer: ReturnType<typeof setTimeout> | undefined;
+    let capTimer: ReturnType<typeof setTimeout> | undefined;
     const finish = (): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      clearTimeout(floorTimer);
+      clearTimeout(capTimer);
       document.removeEventListener('visibilitychange', onVisibility);
       resolve();
     };
+    // Both conditions, never one: a frame has been drawn AND the cover has had
+    // its floor of visible time.
+    const reached = (): void => { if (drawn && floorLeft <= 0) finish(); };
     const arm = (): void => {
       since = performance.now();
-      timer = setTimeout(finish, Math.max(0, left));
+      if (floorLeft > 0) floorTimer = setTimeout(() => { floorLeft = 0; reached(); }, floorLeft);
+      capTimer = setTimeout(finish, Math.max(0, capLeft));
     };
     const onVisibility = (): void => {
       if (document.visibilityState === 'hidden') {
-        clearTimeout(timer);
-        left -= performance.now() - since;
+        const spent = performance.now() - since;
+        floorLeft -= spent;
+        capLeft -= spent;
+        clearTimeout(floorTimer);
+        clearTimeout(capTimer);
       } else {
         forcedDrawRequest = true; // a tab coming back owes the cover a frame
         bootRender.requestCoveredRender();
@@ -1987,7 +2007,7 @@ function drawnFrame(capMs: number): Promise<void> {
     };
     document.addEventListener('visibilitychange', onVisibility);
     if (document.visibilityState !== 'hidden') arm();
-    void afterNextDraw().then(finish);
+    void afterNextDraw().then(() => { drawn = true; reached(); });
   });
 }
 
@@ -2012,6 +2032,13 @@ const LIFT_EVENT_GRACE_MS = 250;
  *  generous on purpose: the veil coming off early shows the mode the reader
  *  left, and only visible time counts toward it. */
 const VEIL_DRAW_CAP_MS = 5000;
+/** How long the cover stays up for a mode that links no programs under it.
+ *  Only Look inside warms its whole reveal behind the veil; the planetarium,
+ *  Compare and Flight build their materials on the first frames they draw, and
+ *  a program built on the second or third would be built on the lift. This is
+ *  the covered time they have always had (the fixed sleep it replaced), so no
+ *  switch ends up with less cover than before. */
+const VEIL_LAZY_COMPILE_FLOOR_MS = 100;
 
 function setLoadingPercentText(text: string) {
   // A failed boot's error message owns the screen: a still-running loader
@@ -2337,8 +2364,11 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
     switched = true;
 
     // The veil comes off over a PAINTED frame of the mode that was just
-    // activated, never over a timer's guess at one.
-    await drawnFrame(VEIL_DRAW_CAP_MS);
+    // activated, never over a timer's guess at one — and, where that mode
+    // compiles its materials on the frames it draws rather than under the
+    // cover, no sooner than the covered time it has always had.
+    const linksUnderTheVeil = newMode === 'interior';
+    await drawnFrame(VEIL_DRAW_CAP_MS, { minCoveredMs: linksUnderTheVeil ? 0 : VEIL_LAZY_COMPILE_FLOOR_MS });
   } catch (err) {
     debugError('Mode switch failed', { from, to: newMode, err });
     console.error('Mode switch failed:', err);

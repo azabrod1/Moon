@@ -663,6 +663,51 @@ describe('warmUpSceneShaders: a subtree already inside the scene', () => {
     expect(rig.compileArgs).toEqual([{ scene: loose, targetScene: scene }]);
   });
 
+  it('leaves a subtree inside a different, detached root alone', async () => {
+    // The walk up the parents is what rejects this one, not the "no parent at
+    // all" branch: the studio HAS a parent, and that parent is not in the
+    // scene being compiled, so three's second light gather is right for it.
+    const { scene, probe, camera } = makeScene();
+    const elsewhere = new THREE.Group(); // a root of its own, never added to the scene
+    const studio = new THREE.Group();
+    studio.add(new THREE.Mesh(new THREE.SphereGeometry(1, 4, 2), new THREE.MeshStandardMaterial()));
+    elsewhere.add(studio);
+    const rig = makeRenderer({ probes: [probe] });
+
+    await warmUpSceneShaders(rig.renderer, scene, camera, {
+      drawsThroughComposer: false,
+      probeGroups: [probe],
+      compileSubtree: studio,
+    });
+
+    expect(rig.compileParents).toEqual([elsewhere]);
+    expect(studio.parent).toBe(elsewhere);
+    expect(elsewhere.children).toEqual([studio]);
+  });
+
+  it('lifts a subtree two levels down out of ITS parent, and back at its index there', async () => {
+    const { scene, probe, camera } = makeScene();
+    const holder = new THREE.Group();
+    const before = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial());
+    const studio = new THREE.Group();
+    studio.add(new THREE.DirectionalLight(0xffffff, 1));
+    const after = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial());
+    holder.add(before, studio, after);
+    scene.add(holder);
+    const rig = makeRenderer({ probes: [probe] });
+
+    await warmUpSceneShaders(rig.renderer, scene, camera, {
+      drawsThroughComposer: false,
+      probeGroups: [probe],
+      compileSubtree: studio,
+    });
+
+    expect(rig.compileParents).toEqual([null]); // out of the graph for the compile
+    expect(studio.parent).toBe(holder);
+    expect(holder.children).toEqual([before, studio, after]);
+    expect(scene.children).toContain(holder);
+  });
+
   it('leaves the whole-scene callers untouched', async () => {
     // PlanetariumMode's three: the boot warm-up, rewarmShaderProbes and
     // warmAtmosphereShellProgram all compile the scene itself and pass no

@@ -542,9 +542,10 @@ async function saneEnd(page, tag, { body, angleDeg }) {
 
 /** Open the planetarium and wait for it to settle: where every entry into the
  *  tool really starts, and the only place the veil's lift can be watched. */
-async function openPlanetarium(context) {
+async function openPlanetarium(context, { reducedMotion = false } = {}) {
   const page = await context.newPage();
   page.setDefaultTimeout(240000);
+  if (reducedMotion) await page.emulateMedia({ reducedMotion: 'reduce' });
   const errors = [];
   page.on('pageerror', (error) => errors.push(String(error).slice(0, 300)));
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text().slice(0, 300)); });
@@ -839,6 +840,37 @@ async function reducedMotionCase(context, viewport) {
   await saneEnd(page, tag, { body: 'Mars', angleDeg: 180 });
   check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
   await page.close();
+
+  // The entry itself: with motion stilled there is no opening to watch, so the
+  // cut must already be at its angle when the veil comes off. Waiting for the
+  // lift would show a CLOSED body fading in and then snapping open at the end
+  // of it — worse than what it replaced, and not what "reduced motion stills
+  // all of it" says.
+  const entry = await openPlanetarium(context, { reducedMotion: true });
+  const angles = await entry.page.evaluate(async () => {
+    const veil = document.getElementById('mode-transition');
+    let liftedAt = null;
+    new MutationObserver(() => {
+      if (!veil.classList.contains('active') && liftedAt === null) liftedAt = performance.now();
+    }).observe(veil, { attributes: true, attributeFilter: ['class'] });
+    window.__moon.interiorOpen('Earth');
+    const samples = [];
+    for (let frame = 0; frame < 1800; frame++) {
+      if (liftedAt !== null) {
+        samples.push(window.__moon.interiorState().openingAngleDeg);
+        if (performance.now() - liftedAt > 400) break;
+      }
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    return samples;
+  });
+  const smallest = angles.length ? Math.min(...angles) : -1;
+  check(angles.length > 0, `${tag}: the veil never lifted on the entry`);
+  check(smallest >= chosenAngleDeg(viewport) - 0.5,
+    `${tag}: the cut was ${smallest.toFixed(1)}° open after the veil lifted, expected ${chosenAngleDeg(viewport)}° with motion stilled`);
+  await saneEnd(entry.page, `${tag} (entry)`, { body: 'Earth', angleDeg: chosenAngleDeg(viewport) });
+  check(entry.errors.length === 0, `${tag} (entry): page errors: ${entry.errors.join(' | ')}`);
+  await entry.page.close();
 }
 
 /** A pin opens the region's summary page inside the panel — the sheet's scrolling body on a phone,

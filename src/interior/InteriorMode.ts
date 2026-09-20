@@ -90,6 +90,14 @@ import { TAP_MAX_MS, TAP_MAX_PX, TapRecognizer, type PointerSample } from './int
 import { resolveInteriorBody, type InteriorBody } from './interiorBody';
 import { INTERIOR_TRANSITION } from './interiorTransition';
 import {
+  markOpenStep,
+  markUncoveredStep,
+  startOpenStopwatch,
+  type InteriorOpenTimings,
+  type OpenStopwatch,
+  type UncoveredMark,
+} from './openTimings';
+import {
   CUT_VIEWS,
   CUT_VIEW_ANGLE_DEG,
   anchorCutFrame,
@@ -258,106 +266,6 @@ export interface InteriorDevHover {
 }
 
 export type InteriorDisplayMode = 'composition' | 'temperature';
-
-/**
- * What one open of a body cost, ms from the activate (or, for a swap, from the
- * pick) that started it — null for a step not reached yet. The tool's open is a
- * chain of serial steps, and the only way to say which one a reader is waiting
- * on is to mark them: the bridge serves these as `interiorState().timings` and
- * the mode logs them once through debugLog, so `?debug=1` on a phone answers
- * the question on the device that is slow.
- *
- * Two of the marks are not this mode's to take. The mode-switch veil belongs to
- * main, and it is what stands between a reader and everything drawn before it
- * lifts: `firstFrame` is the first frame after the reveal started, which on a
- * first entry is routinely still behind black. So main marks `veilLifted` and
- * `firstVisibleFrame` through markUncovered, and only an entry carries them —
- * a swap has no veil.
- */
-export interface InteriorOpenTimings {
-  /** The session's first entry (which pays the shader compiles) or a later swap. */
-  kind: 'entry' | 'swap';
-  /** The body these marks describe. */
-  bodyId: string;
-  /** The colour map's fetch and the skin build (InteriorScene.prepareBody). */
-  prepareStart: number | null;
-  prepareEnd: number | null;
-  /** The skin, the air and the rings on the body (InteriorScene.presentBody). */
-  present: number | null;
-  /** Linking the programs the reveal draws, under the veil (a first entry only). */
-  precompileStart: number | null;
-  precompileEnd: number | null;
-  /** The cut starts opening. */
-  revealStart: number | null;
-  /** The first frame drawn with the body on the mesh. On an entry it is behind
-   *  the veil, and it is the frame the veil must not lift before. */
-  firstFrame: number | null;
-  /** The veil finished fading out (its own transitionend, not the class change),
-   *  and the first frame drawn after that: the first one a reader can actually
-   *  see. Main's marks, an entry's alone. */
-  veilLifted: number | null;
-  firstVisibleFrame: number | null;
-  /** The first frame devReady() is true: the map applied, the cut and the morph settled. */
-  ready: number | null;
-  /** renderer.info.programs.length as the reveal starts and once ready — how many
-   *  programs the studio still compiles while the reader is watching. */
-  programsAtReveal: number | null;
-  programsWhenReady: number | null;
-}
-
-/** The steps an open marks, in the order they happen. */
-type OpenTimingMark =
-  | 'prepareStart' | 'prepareEnd' | 'present'
-  | 'precompileStart' | 'precompileEnd'
-  | 'revealStart' | 'firstFrame' | 'ready';
-
-/** The two marks main takes and hands over (see InteriorOpenTimings). */
-export type UncoveredMark = 'veilLifted' | 'firstVisibleFrame';
-
-/** One open's stopwatch: the marks it fills in and the instant they measure
- *  from. A commit holds its own, so a superseded commit's late steps land in an
- *  object nobody reads instead of overwriting the live open's marks. The id is
- *  what an outside marker names: main takes the veil's marks after activate
- *  resolves and writes them a fade later, by which time a pick may have
- *  installed a stopwatch of its own. */
-interface OpenStopwatch {
-  readonly id: number;
-  readonly startedAt: number;
-  readonly timings: InteriorOpenTimings;
-}
-
-let openSequence = 0;
-
-function startOpenStopwatch(kind: 'entry' | 'swap', bodyId: string): OpenStopwatch {
-  return {
-    id: ++openSequence,
-    startedAt: performance.now(),
-    timings: {
-      kind,
-      bodyId,
-      prepareStart: null,
-      prepareEnd: null,
-      present: null,
-      precompileStart: null,
-      precompileEnd: null,
-      revealStart: null,
-      firstFrame: null,
-      veilLifted: null,
-      firstVisibleFrame: null,
-      ready: null,
-      programsAtReveal: null,
-      programsWhenReady: null,
-    },
-  };
-}
-
-/** Mark one step, to a tenth of a millisecond. The first mark of a step stands:
- *  a step reached twice (a reveal onto the body that was already on) is still
- *  the moment the reader waited for. */
-function markOpenStep(watch: OpenStopwatch, step: OpenTimingMark): void {
-  if (watch.timings[step] !== null) return;
-  watch.timings[step] = Math.round((performance.now() - watch.startedAt) * 10) / 10;
-}
 
 /** A finger on the sheet's grip: where it took hold, the heights it may drag
  *  between (measured once, so a move costs no layout), and how fast it is going. */
@@ -628,8 +536,11 @@ export class InteriorMode {
   // What the open cost. The stopwatch of the open that is running or last ran;
   // devState serves its marks and update() logs them once, when it settles.
   private openStopwatch: OpenStopwatch = startOpenStopwatch('entry', '');
-  /** The body is on the mesh and the first frame drawn with it is not marked yet. */
-  private awaitingFirstBodyFrame = false;
+  /** The open whose body is on the mesh with its first drawn frame still
+   *  unmarked, or null. It carries the open's id because a pick during a
+   *  dissolve installs a new stopwatch before that frame is drawn, and the
+   *  mark belongs to the open that presented it. */
+  private awaitingFirstBodyFrame: number | null = null;
   /** An entry whose cut is closed, presented and waiting for the veil to lift
    *  (INTERIOR_TRANSITION.revealAfterVeil). Null once it has opened, and
    *  dropped by anything that supersedes it: a pick, an exit, another switch. */
@@ -893,9 +804,10 @@ export class InteriorMode {
    *  open's time went. */
   private traceOpenProgress(): void {
     const watch = this.openStopwatch;
-    if (this.awaitingFirstBodyFrame) {
-      this.awaitingFirstBodyFrame = false;
-      markOpenStep(watch, 'firstFrame');
+    if (this.awaitingFirstBodyFrame !== null) {
+      const openId = this.awaitingFirstBodyFrame;
+      this.awaitingFirstBodyFrame = null;
+      if (openId === watch.id) markOpenStep(watch, 'firstFrame');
     }
     if (this.openTimingsLogged || watch.timings.revealStart === null || !this.devReady()) return;
     this.openTimingsLogged = true;
@@ -940,12 +852,6 @@ export class InteriorMode {
     return true;
   }
 
-  /** Whether an entry is presented and waiting for the veil to lift before it
-   *  opens. Nothing is ready while this is true. */
-  revealWaiting(): boolean {
-    return this.pendingReveal !== null;
-  }
-
   /** How many shader programs the renderer holds right now: the count before
    *  and after a reveal says how much of the studio compiles in front of the
    *  reader instead of under the veil. */
@@ -959,17 +865,10 @@ export class InteriorMode {
     return this.openStopwatch.id;
   }
 
-  /** Copy one of the veil's marks into the open that asked for it, ms from that
-   *  open's start; returns what was written, or null when the mark was refused.
-   *  Refused unless the named open is still the live one and is an entry: a
-   *  pick during the load installs a stopwatch of its own, and a swap has no
-   *  veil, so a mark written blindly would land in the wrong open's timings. */
+  /** Copy one of the veil's marks into the open that asked for it (the rule,
+   *  and why it refuses, is openTimings.markUncoveredStep). */
   markUncovered(openId: number, mark: UncoveredMark, atMs: number): number | null {
-    const watch = this.openStopwatch;
-    if (watch.id !== openId || watch.timings.kind !== 'entry' || watch.timings[mark] !== null) return null;
-    const value = Math.round((atMs - watch.startedAt) * 10) / 10;
-    watch.timings[mark] = value;
-    return value;
+    return markUncoveredStep(this.openStopwatch, openId, mark, atMs, this.active);
   }
 
   /** The depth ruler along the near face, through the remap; hidden on phones
@@ -1279,9 +1178,11 @@ export class InteriorMode {
       if (!prepared || stale()) return false;
       markOpenStep(watch, 'prepareEnd');
       if (swap) {
-        // The close is 0.9 s of animation with nothing else to do in it: the
-        // prepared skin's program is linked in that window, so the cross-fade
-        // does not stall on it.
+        // The close is the window this work runs inside: the prepared skin's
+        // program is linked and resolved while the cut is closing, so the
+        // cross-fade — the one moment of the ceremony that has to be smooth —
+        // never stalls on it. If the work outlasts the close the cut simply
+        // waits closed, which is the honest picture of a slow load.
         await this.interiorScene.warmUpPreparedSkin(prepared, this.camera, this.drawsThroughComposer());
         if (stale()) return false;
         await this.cutSettled();
@@ -1296,7 +1197,7 @@ export class InteriorMode {
       this.lockCutToCamera();
       this.interiorScene.presentBody(prepared, swap && animate ? INTERIOR_TRANSITION.dissolveS : 0);
       markOpenStep(watch, 'present');
-      this.awaitingFirstBodyFrame = true;
+      this.awaitingFirstBodyFrame = watch.id;
       presented = true;
       this.body = body;
       this.coverage = coverageFor(body.id);
@@ -1321,7 +1222,11 @@ export class InteriorMode {
         if (stale()) return false;
         markOpenStep(watch, 'precompileEnd');
       }
-      if (!swap && INTERIOR_TRANSITION.revealAfterVeil) {
+      // Under prefers-reduced-motion the cut has no opening to show, so there
+      // is nothing to wait for and waiting would be a closed body fading in and
+      // then snapping open at the end of the lift. It reveals here, and the
+      // veil comes off over the body as it will stay.
+      if (!swap && INTERIOR_TRANSITION.revealAfterVeil && !this.reducedMotion.matches) {
         // The opening is worth seeing, so it waits for the veil: activate
         // resolves here with the body presented and the cut still closed, main
         // lifts the veil onto a drawn frame of the studio, and its

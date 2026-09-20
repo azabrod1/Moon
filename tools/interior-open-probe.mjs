@@ -145,13 +145,15 @@ async function waitForOpen(page, bodyId, deadlineMs, { hasBridge, lines, from })
   if (hasBridge) {
     return page.evaluate(async ({ bodyId, deadlineMs }) => {
       const started = performance.now();
-      const settled = () => {
-        const state = window.__moon.interiorState();
-        return !!state && state.bodyId === bodyId && window.__moon.interiorReady()
-          && !document.getElementById('mode-transition')?.classList.contains('active');
-      };
+      const veil = document.getElementById('mode-transition');
+      // interiorReady() alone per frame: building the whole devState object
+      // every animation frame is work inside the window being measured, and
+      // the body it settled on is read once, after.
       for (;;) {
-        if (settled()) return { ok: true, waitedMs: performance.now() - started };
+        if (window.__moon.interiorReady() && !veil?.classList.contains('active')) {
+          const state = window.__moon.interiorState();
+          if (state && state.bodyId === bodyId) return { ok: true, waitedMs: performance.now() - started };
+        }
         if (performance.now() - started > deadlineMs) return { ok: false, waitedMs: performance.now() - started };
         await new Promise((resolve) => requestAnimationFrame(resolve));
       }

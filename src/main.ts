@@ -20,6 +20,7 @@ import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import type { VolumeCompareMode } from './volumeCompare/VolumeCompareMode';
 import type { InteriorMode } from './interior/InteriorMode';
 import { setInteriorTransition } from './interior/interiorTransition';
+import { parseCssDurationMs } from './shared/cssDuration';
 import { applyRenderProfile, toneMappingWord, type AppMode } from './app/renderProfile';
 import type { ToolRequest } from './planetarium/toolRequest';
 import { canGPUDoBloom, halfFloatTargetSampleCounts } from './app/gpuCapability';
@@ -1964,16 +1965,16 @@ function afterNextDraw(): Promise<number> {
  * it the first switch of a boot would wait out its whole cap for a frame that
  * was never going to be drawn.
  */
-function drawnFrame(capMs: number, options: { minCoveredMs?: number } = {}): Promise<void> {
+function drawnFrame(capMs: number, options: { minCoveredMs?: number } = {}): Promise<number | null> {
   const floorMs = Math.max(0, options.minCoveredMs ?? 0);
   forcedDrawRequest = true;
   bootRender.requestCoveredRender();
   return new Promise((resolve) => {
     let settled = false;
-    let drawn = false;
+    let drawnAt: number | null = null;
     let floorLeft = floorMs;
     let capLeft = capMs;
-    let since = performance.now();
+    let armedAt: number | null = null;
     let floorTimer: ReturnType<typeof setTimeout> | undefined;
     let capTimer: ReturnType<typeof setTimeout> | undefined;
     const finish = (): void => {
@@ -1982,21 +1983,26 @@ function drawnFrame(capMs: number, options: { minCoveredMs?: number } = {}): Pro
       clearTimeout(floorTimer);
       clearTimeout(capTimer);
       document.removeEventListener('visibilitychange', onVisibility);
-      resolve();
+      resolve(drawnAt);
     };
     // Both conditions, never one: a frame has been drawn AND the cover has had
     // its floor of visible time.
-    const reached = (): void => { if (drawn && floorLeft <= 0) finish(); };
+    const reached = (): void => { if (drawnAt !== null && floorLeft <= 0) finish(); };
     const arm = (): void => {
-      since = performance.now();
+      armedAt = performance.now();
       if (floorLeft > 0) floorTimer = setTimeout(() => { floorLeft = 0; reached(); }, floorLeft);
       capTimer = setTimeout(finish, Math.max(0, capLeft));
     };
     const onVisibility = (): void => {
       if (document.visibilityState === 'hidden') {
-        const spent = performance.now() - since;
-        floorLeft -= spent;
-        capLeft -= spent;
+        // A page that started hidden never armed anything, so there is no
+        // elapsed visible time to take off.
+        if (armedAt !== null) {
+          const spent = performance.now() - armedAt;
+          floorLeft -= spent;
+          capLeft -= spent;
+          armedAt = null;
+        }
         clearTimeout(floorTimer);
         clearTimeout(capTimer);
       } else {
@@ -2007,23 +2013,30 @@ function drawnFrame(capMs: number, options: { minCoveredMs?: number } = {}): Pro
     };
     document.addEventListener('visibilitychange', onVisibility);
     if (document.visibilityState !== 'hidden') arm();
-    void afterNextDraw().then(() => { drawn = true; reached(); });
+    void afterNextDraw().then((at) => { drawnAt = at; reached(); });
   });
 }
 
+/** What to wait when the veil's own duration cannot be read at all (a style
+ *  that did not apply, a browser that reports nothing). Deliberately NOT the
+ *  number in the CSS — a copy of that would be the second writer this reader
+ *  exists to avoid — but longer than any fade we ship, because every use of it
+ *  is a wait for the screen to be covered, and waiting too long costs a beat
+ *  while waiting too little shows the mode being taken down. */
+const VEIL_FALLBACK_COVER_MS = 300;
+
 /** How long the veil's current fade takes, read from the element itself.
  *  index.html holds the two lengths (`--veil-fade` while it covers,
- *  `--veil-lift` while it comes off) and this is the only reader of them: a
- *  constant here beside them would be a second writer of one fact. */
+ *  `--veil-lift` while it comes off) and this is their only reader. */
 function veilDurationMs(): number {
-  const declared = getComputedStyle(modeTransition).transitionDuration.split(',')[0]?.trim() ?? '';
-  const value = Number.parseFloat(declared);
-  if (!Number.isFinite(value)) return 250;
-  return declared.endsWith('ms') ? value : value * 1000;
+  return parseCssDurationMs(getComputedStyle(modeTransition).transitionDuration) ?? VEIL_FALLBACK_COVER_MS;
 }
 
 /** A frame's worth of slack, so a beat can never end on a half-covered screen. */
 const ONE_FRAME_MS = 17;
+/** The longest veil fade the DEV knob will set, seconds: past this a switch is
+ *  indistinguishable from a hang, and every value it takes is in seconds. */
+const MAX_VEIL_FADE_S = 5;
 /** How long past the lift's own length to wait for its `transitionend` before
  *  standing in for it. A cancelled transition, a re-added `.active` and a tab
  *  hidden mid-fade all lose the event, and the cut must open either way. */
@@ -2345,7 +2358,12 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
           // lost one — reveals; the other is a no-op.
           const veilLiftedMs = openedMode.markUncovered(openId, 'veilLifted', await veilLifted(veilDurationMs() + LIFT_EVENT_GRACE_MS));
           openedMode.revealAfterVeil(openId);
-          const firstVisibleFrameMs = openedMode.markUncovered(openId, 'firstVisibleFrame', await afterNextDraw());
+          const drawnAt = await drawnFrame(VEIL_DRAW_CAP_MS);
+          const firstVisibleFrameMs = drawnAt === null ? null : openedMode.markUncovered(openId, 'firstVisibleFrame', drawnAt);
+          // A refused mark means this open stopped being the one the veil was
+          // covering — an exit during the lift, or a pick that took it over.
+          // There is no line to write about a body the reader never saw.
+          if (veilLiftedMs === null || firstVisibleFrameMs === null) return;
           debugLog('Look inside: switch timings', {
             beatMs: Math.round(beatMs),
             importMs: Math.round(importMs),
@@ -2834,16 +2852,23 @@ function installDevHooks() {
     interiorOrbit: (azimuthDeg: number, elevationDeg?: number, distance?: number) =>
       interiorMode?.devOrbit(azimuthDeg, elevationDeg, distance) ?? false,
     interiorReady: () => interiorMode?.devReady() ?? false,
-    // The ceremony's lengths for this page load, so a sheet of candidates comes
-    // out of one build: `beat` and `lift` are the veil's two fades (the CSS's
-    // own numbers, which the switch reads back off the element), the rest the
-    // studio's moves, and `revealAfterVeil` the order. Session-only.
+    // The ceremony's lengths for this page load, ALL IN SECONDS, so a sheet of
+    // candidates comes out of one build: `beat` and `lift` are the veil's two
+    // fades (the CSS's own numbers, which the switch reads back off the
+    // element), the rest the studio's moves, and `revealAfterVeil` the order.
+    // Session-only. A fade is clamped to something a reader could sit through:
+    // `{beat: 250}` is a typo for a quarter of a second, and a 250-second veil
+    // is indistinguishable from a hang.
     interiorTransition: (patch: {
       beat?: number; lift?: number; open?: number; close?: number; dissolve?: number; reopen?: number; revealAfterVeil?: boolean;
     } = {}) => {
       const root = document.documentElement;
-      if (typeof patch.beat === 'number') root.style.setProperty('--veil-fade', `${patch.beat}s`);
-      if (typeof patch.lift === 'number') root.style.setProperty('--veil-lift', `${patch.lift}s`);
+      const fadeSeconds = (value: unknown): number | null =>
+        (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.min(value, MAX_VEIL_FADE_S) : null);
+      const beat = fadeSeconds(patch.beat);
+      const lift = fadeSeconds(patch.lift);
+      if (beat !== null) root.style.setProperty('--veil-fade', `${beat}s`);
+      if (lift !== null) root.style.setProperty('--veil-lift', `${lift}s`);
       const timings = setInteriorTransition({
         openS: patch.open, closeS: patch.close, dissolveS: patch.dissolve, reopenS: patch.reopen,
         revealAfterVeil: patch.revealAfterVeil,

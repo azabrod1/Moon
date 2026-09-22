@@ -13,6 +13,7 @@
  */
 import * as THREE from 'three';
 import { MOBILE_BREAKPOINT_PX, isPhoneViewport } from '../shared/dom';
+import { handleFullscreenKey } from '../app/fullscreen';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { DEG2RAD } from '../shared/math/angles';
 import {
@@ -181,6 +182,8 @@ export class VolumeCompareMode {
 
   private handleKeyDown = (e: KeyboardEvent) => {
     if (!this.active) return;
+    // F is full screen here as in the planetarium (app/fullscreen.ts).
+    if (handleFullscreenKey(e)) return;
     // One physical press, one rung: a held Esc auto-repeats about thirty times
     // a second, and every rung of the cascade is a discrete dismissal.
     if (e.key === 'Escape' && !e.repeat) this.escCascade();

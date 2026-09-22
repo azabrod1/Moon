@@ -730,7 +730,7 @@
       border-radius: var(--r-l);
       padding: 8px 8px calc(8px + env(safe-area-inset-bottom, 0px));
       pointer-events: auto;
-      /* The panel is taller than a small phone's screen with eleven settings
+      /* The panel is taller than a small phone's screen with its dozen settings
          rows in it, and the page itself cannot scroll (html, body are
          overflow: hidden), so the last row would simply be unreachable. The
          vh line is the fallback for an engine without dvh, which would
@@ -1425,6 +1425,9 @@
       padding: 4px 9px;
       min-height: 30px;
     }
+    /* The display above would beat the hidden attribute's own rule, and a row
+       the device cannot use (Full screen) would show anyway. */
+    .settings-row[hidden] { display: none; }
     .settings-label {
       color: var(--text-primary);
       font-size: 12px;
@@ -4590,6 +4593,15 @@
             <span class="menu-tier-value">Dynamic</span>
             <span class="menu-tier-chevron" aria-hidden="true">&rsaquo;</span>
           </button>
+          <!-- Hidden until the browser says the page may go full screen
+               (app/fullscreen.ts): a row that could only fail is not offered. -->
+          <div class="settings-row" hidden>
+            <span class="settings-label">Full screen</span>
+            <button class="settings-toggle" id="settings-fullscreen-toggle"
+                    aria-label="Full screen" aria-pressed="false" title="Full screen (F)">
+              <span id="settings-fullscreen-label">Off</span>
+            </button>
+          </div>
           <div class="menu-divider"></div>
           <div class="settings-row">
             <span class="settings-label">Show ship</span>

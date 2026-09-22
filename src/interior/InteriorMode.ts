@@ -84,6 +84,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { DEG2RAD } from '../shared/math/angles';
 import { isPhoneViewport } from '../shared/dom';
 import { debugLog, debugWarn } from '../shared/debug';
+import { handleFullscreenKey } from '../app/fullscreen';
 import { bodyDisplayName } from '../planetarium/surfaceView';
 import { InteriorScene, BODY_RADIUS, type PreparedSkin } from './InteriorScene';
 import { TAP_MAX_MS, TAP_MAX_PX, TapRecognizer, type PointerSample } from './interiorInteraction';
@@ -2115,6 +2116,8 @@ export class InteriorMode {
    *  itself. The event is spent here, so the app behind hears no Escape. */
   private handleKeyDown = (event: KeyboardEvent) => {
     if (!this.active) return;
+    // F is full screen here as in the planetarium (app/fullscreen.ts).
+    if (handleFullscreenKey(event)) return;
     if (event.key !== 'Escape') return;
     event.preventDefault();
     // One physical press, one rung: a held Esc auto-repeats about thirty times

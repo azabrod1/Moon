@@ -92,7 +92,14 @@ describe('the night sector material', () => {
     expect(sector.uniforms.uAirDensity.value).toBe(1);
     // Transmittance only: adding the in-scatter here would count the night
     // side's airlight twice, once on the globe and once on the lights over it.
-    expect(shell.fragmentShader).toContain('lit *= aerialTransmittance(uTransmittance, seg);');
+    // Behind the same weight as the ground under them — the loading fade and
+    // the body's grade on a direct view — so the lights and the ground they
+    // stand on are hazed as one.
+    expect(shell.fragmentShader).toContain('float airWeight = uAirBlend * aerialHazeWeight(seg, uSurfaceHaze);');
+    expect(shell.fragmentShader)
+      .toContain('lit *= mix(vec3(1.0), aerialTransmittance(uTransmittance, seg), airWeight);');
+    expect(sector.uniforms.uSurfaceHaze).toBe(air.uSurfaceHaze);
+    expect(sector.uniforms.uAirBlend).toBe(air.uAirBlend);
     // The shader's own text, not the function library prepended in front of it.
     expect(earthNightFragmentShader).not.toContain('aerialInscatter');
     // One program: same text, same table dimensions. A sector compiled against

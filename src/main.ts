@@ -53,7 +53,12 @@ import {
 import { BootRenderGate } from './app/bootRenderGate';
 import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn } from './app/perfSwitches';
 import { bloomHighPassMaterial, holdBloomSize, setBloomInternalDepth } from './app/bloomTargets';
-import { devGlintUniforms, setDevOceanRoughness } from './planetarium/world/surfaceShading';
+import {
+  devGlintUniforms,
+  setDevOceanRoughness,
+  setDevSurfaceHaze,
+  SURFACE_HAZE_CLEAR_VIEW,
+} from './planetarium/world/surfaceShading';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass, parseFusedParam } from './app/FusedOutputPass';
 import type { GpuProfiler, GpuProfileOptions } from './app/devGpuProfile';
@@ -2673,6 +2678,15 @@ function installDevHooks() {
       const roughness = setDevOceanRoughness(opts?.roughness);
       return { cap: devGlintUniforms.uGlintCap.value, keep: devGlintUniforms.uGlintKeep.value, roughness };
     },
+    // The grade on a surface's haze, live: how much of the air's haze a direct
+    // view shows (world/surfaceShading SURFACE_HAZE_CLEAR_VIEW; 1 is the
+    // physics, and the horizon carries the whole column whatever the number),
+    // on every body with tables from the next frame. Returns the override in
+    // force beside the authored numbers; a production build has no knob.
+    haze: (opts?: { clear?: number | null }) => ({
+      clear: setDevSurfaceHaze(opts?.clear),
+      authored: SURFACE_HAZE_CLEAR_VIEW,
+    }),
     /** A GPU profile of the world frame measured on this device, per pass and per object (app/devGpuProfile.ts). */
     gpuProfile: async (opts?: GpuProfileOptions) => {
       if (!gpuProfiler) {
@@ -3009,6 +3023,12 @@ function installDevHooks() {
       if (Number.isFinite(keep)) devGlintUniforms.uGlintKeep.value = keep;
       if (Number.isFinite(cap)) devGlintUniforms.uGlintCap.value = cap;
     }
+    // `?haze=0.35` shows that much of the air's haze in every direct view of a
+    // surface for the session: the __moon.haze knob, reachable from a phone's
+    // address bar, so two strengths are two links to compare. DEV only.
+    // An empty value is a mistyped link, not a request for zero.
+    const haze = new URLSearchParams(location.search).get('haze');
+    if (haze && Number.isFinite(Number(haze))) setDevSurfaceHaze(Number(haze));
   }
   debugLog('Dev hooks installed (window.__moon)');
 }

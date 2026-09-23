@@ -771,7 +771,10 @@ describe('the haze fade and the glint cap', () => {
   it('is drawn as the twin fades it, and the sea hands bloom no more than the cap', () => {
     const text = fragmentOf('airless');
     expect(text).toContain('uniform float uAirBlend;');
-    expect(text).toContain('outgoingLight = mix(outgoingLight, outgoingLight * airT + airS, uAirBlend);');
+    // The fade and the body's grade on a direct view are one weight, and the
+    // haze is applied once behind it.
+    expect(text).toContain('float airWeight = uAirBlend * aerialHazeWeight(seg, uSurfaceHaze);');
+    expect(text).toContain('outgoingLight = mix(outgoingLight, outgoingLight * airT + airS, airWeight);');
     expect(OCEAN_GLINT_CAP).toBeGreaterThan(1);
     expect(text).toContain(`outgoingLight -= glint - min(glint, vec3(${
       import.meta.env.DEV ? 'uGlintCap' : OCEAN_GLINT_CAP.toFixed(2)}));`);

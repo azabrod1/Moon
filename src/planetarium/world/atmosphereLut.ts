@@ -821,6 +821,20 @@ AerialSegment aerialForLight(AerialSegment seg, vec3 lightDir) {
   return seg;
 }
 
+// How much of the segment's haze a surface shows: clearViewStrength where
+// the line of sight stands on the ground, one where it grazes it, so the
+// horizon always carries the whole column and meets the limb the shell draws.
+// A presentation grade on the surface alone (SURFACE_HAZE_CLEAR_VIEW in
+// world/surfaceShading); the shell never reads it. The angle is taken against
+// the radial normal at the segment's END, never a relief-perturbed material
+// normal: the ground, the deck above it and the additive lights on it must
+// agree about one column, and only the geometry is common to all three.
+float aerialHazeWeight(AerialSegment seg, float clearViewStrength) {
+  vec3 up = normalize(seg.origin + seg.view * seg.d);
+  float grazing = 1.0 - clamp(dot(up, -seg.view), 0.0, 1.0);
+  return mix(clearViewStrength, 1.0, grazing * grazing);
+}
+
 /** What survives the segment: the fraction of the surface's own light that
  *  reaches the camera. A difference of two optical depths, never a quotient of
  *  two transmittances. */

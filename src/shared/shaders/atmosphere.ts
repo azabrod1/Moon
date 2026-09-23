@@ -256,6 +256,8 @@ uniform vec2 uUvOffset;
 uniform vec2 uUvRepeat;
 uniform vec3 sunDirection;
 uniform float uAirDensity;
+uniform float uAirBlend;
+uniform float uSurfaceHaze;
 uniform float uPlanetRadius;
 uniform float uAirLookupRadius;
 uniform sampler2D uTransmittance;
@@ -288,7 +290,12 @@ void main() {
   if (uAirDensity > 0.0) {
     AerialSegment seg = aerialSegment(
         vAirCam / uPlanetRadius, normalize(vAirFrag) * uAirLookupRadius, normalize(sunDirection));
-    if (seg.valid) lit *= aerialTransmittance(uTransmittance, seg);
+    if (seg.valid) {
+      // The ground's same grade and loading fade, with no second in-scatter:
+      // these lights add to the already-hazed surface underneath.
+      float airWeight = uAirBlend * aerialHazeWeight(seg, uSurfaceHaze);
+      lit *= mix(vec3(1.0), aerialTransmittance(uTransmittance, seg), airWeight);
+    }
   }
   // nightMix scales the colour AND the alpha, and the material blends
   // additively (SRC_ALPHA, ONE), so the lights actually fade as nightMix

@@ -229,6 +229,7 @@ import {
   lensDisplayHalfTan,
   lensMaxFrameScale,
 } from '../shared/math/lensProjection';
+import { lensProximityFactor, sphereAngularRadius } from '../shared/math/lensProximity';
 import { SUN_ATMOSPHERE_TINT_RGB, SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../shared/shaders/sun';
 import { landedFrameCamDistAU, landedMinDistanceAU, landedNearAU, LANDED_NEAR_AU } from './landedView';
 import {
@@ -726,6 +727,26 @@ export class PlanetariumMode {
    *  float32 vertices translated by −ship — the A/B for any question about
    *  an orbit line moving when the ship does, and the kill switch. */
   private readonly orbitAnchorEnabled = new URLSearchParams(location.search).get('orbitanchor') !== '0';
+
+  /** `?lensramp=1`: fade the stereographic lens out as one body fills the
+   *  view (shared/math/lensProximity.ts). OFF unless asked — the moving A/B
+   *  (an approach, a departure, a look-away while parked, both arms) has not
+   *  been judged yet — and `__moon.setLensRamp(on)` flips it live. */
+  private lensRampEnabled = new URLSearchParams(location.search).get('lensramp') === '1';
+
+  /** What the ramp did this frame, for `__moon.lensRamp()`. `applied` is the
+   *  strength the shaders read (`effectiveStrength`); `devPose` says the
+   *  cruise camera pass was skipped for a dev camera, where the ramp never
+   *  runs; `applies` counts the projection rebuilds it has asked for. */
+  private readonly lensRampState = {
+    enabled: false,
+    factor: 1,
+    applied: 1,
+    angularRadiusDeg: 0,
+    body: null as string | null,
+    devPose: false,
+    applies: 0,
+  };
 
   // Hover/tap body reveal. `revealedBody` is the one body (planet, moon, or
   // 'Sun') whose label is drawn regardless of the label/marker settings and of
@@ -4319,6 +4340,8 @@ export class PlanetariumMode {
     // An activation interrupted before its restore landed must not leave the
     // gate closed for the next one.
     this.restoring = false;
+    // The lens ramp is a cruise-frame quantity: the camera leaves at full strength.
+    this.resetLensProximity();
     // Clear + cut: deactivation is an authored discontinuity (the next
     // activation reposes absolutely), so the aim adopts fresh on return.
     clearArrivalLook(this.cruiseAim);
@@ -4657,6 +4680,9 @@ export class PlanetariumMode {
       // landed pipeline too so Observatory sun views stay protected).
       this.exposureTarget = 1;
       this.updateLanded(dt, willDraw);
+      // Reads 1 while landed — a ship that landed from the park must not keep
+      // the pinhole it arrived with (updateLensProximity).
+      this.updateLensProximity();
       // End of the landed branch: positions are final, refresh the map if open.
       if (willDraw) {
         this.updateMapView();
@@ -4811,6 +4837,9 @@ export class PlanetariumMode {
     // days, so "last frame's positions" can be a different sky — and BEFORE
     // the label pass, which projects through the final camera.
     this.updateCruiseCameraSafety();
+    // The lens proximity ramp reads the shells that pass just built, from
+    // the final camera position; before the aim stage, which only rotates.
+    this.updateLensProximity();
     this.updateCruiseAimStage(dt);
 
     // Raise map resolution and sphere detail for any body that grows large on
@@ -13926,17 +13955,95 @@ export class PlanetariumMode {
     return cap;
   }
 
-  private pushCameraShell(sceneX: number, sceneY: number, sceneZ: number, surfaceRadiusAU: number) {
+  private pushCameraShell(
+    sceneX: number, sceneY: number, sceneZ: number,
+    surfaceRadiusAU: number, discRadiusAU: number, name: string,
+  ) {
     let s = this.cameraShellPool[this.cameraShellCount];
     if (!s) {
-      s = { x: 0, y: 0, z: 0, surfaceRadiusAU: 0 };
+      s = { x: 0, y: 0, z: 0, surfaceRadiusAU: 0, discRadiusAU: 0, name: '' };
       this.cameraShellPool.push(s);
     }
     s.x = sceneX;
     s.y = sceneY;
     s.z = sceneZ;
     s.surfaceRadiusAU = surfaceRadiusAU;
+    s.discRadiusAU = discRadiusAU;
+    s.name = name;
     this.cameraShellCount++;
+  }
+
+  /**
+   * The lens proximity ramp (shared/math/lensProximity.ts): scale the
+   * requested lens strength by the largest angular radius any body's rendered
+   * disc subtends from the FINAL camera position, so a body that fills the
+   * view is drawn through a plain pinhole and everything farther out stays
+   * exactly what it was. A pure function of the pose — no easing, no memory —
+   * recomputed every frame it can run, and 1 wherever it cannot: landed and
+   * surface view (the observatory wants the lens, with the Moon off-axis at
+   * a 45° FOV), a dev camera (the capture fleet pins pixels close in), or the
+   * ramp switched off. Called from BOTH branches of update(): the landed
+   * branch returns before the cruise camera pass, and a ship that landed from
+   * the 198 km park would otherwise keep the pinhole it arrived with.
+   *
+   * Reads the camera shell pool the cruise camera pass built this frame —
+   * `discRadiusAU`, the rendered surface: never the envelope, never the Sun's
+   * governed 1.2× surface, which reads 90° at its park. The factor is exact:
+   * any change re-applies the design FOV through setDisplayFov, the one legal
+   * FOV writer, which folds it into `effectiveStrength` for every reader. No
+   * deadband — one would leave 0.0015 parked as "off" and 0.9985 as "full".
+   * That is hundreds of projection rebuilds across an approach, each a 4×4
+   * build and one Newton solve; `lensRampState.applies` counts them so a
+   * measurement can say whether that ever matters.
+   */
+  private updateLensProximity(): void {
+    const lens = this.camera.userData.lens as
+      | { strength: number; designFovDeg: number; effectiveStrength?: number; proximityFactor?: number }
+      | undefined;
+    if (!lens) return;
+    const state = this.lensRampState;
+    const devPose = this.devFreeCamera;
+    const cruise = this.landedOn === null && this.landedView !== 'surface';
+    let factor = 1;
+    let angularRadius = 0;
+    let body: string | null = null;
+    if (this.lensRampEnabled && cruise && !devPose) {
+      const cam = this.camera.position;
+      for (let i = 0; i < this.cameraShellCount; i++) {
+        const shell = this.cameraShellPool[i];
+        const dx = shell.x - cam.x;
+        const dy = shell.y - cam.y;
+        const dz = shell.z - cam.z;
+        const angle = sphereAngularRadius(shell.discRadiusAU, Math.sqrt(dx * dx + dy * dy + dz * dz));
+        if (angle > angularRadius) {
+          angularRadius = angle;
+          body = shell.name;
+        }
+      }
+      factor = lensProximityFactor(angularRadius);
+    }
+    state.enabled = this.lensRampEnabled;
+    state.factor = factor;
+    state.angularRadiusDeg = angularRadius * RAD2DEG;
+    state.body = body;
+    state.devPose = devPose;
+    if ((lens.proximityFactor ?? 1) !== factor) {
+      lens.proximityFactor = factor;
+      this.setDisplayFov(displayFovDeg(this.camera));
+      state.applies++;
+    }
+    state.applied = lens.effectiveStrength ?? lens.strength;
+  }
+
+  /** Full lens strength, now — for a discontinuity the per-frame ramp will
+   *  not see (deactivation hands the camera to another mode). */
+  private resetLensProximity(): void {
+    const lens = this.camera.userData.lens as { proximityFactor?: number } | undefined;
+    if (!lens || (lens.proximityFactor ?? 1) === 1) return;
+    lens.proximityFactor = 1;
+    this.setDisplayFov(displayFovDeg(this.camera));
+    this.lensRampState.factor = 1;
+    this.lensRampState.applies++;
   }
 
   /** Camera safety + dynamic near plane, cruise only. Collisions move only
@@ -13967,8 +14074,8 @@ export class PlanetariumMode {
       });
     }
     this.cameraShellCount = 0;
-    this.forEachGovernedMoon((x, y, z, renderedR) =>
-      this.pushCameraShell(x - px, y - py, z - pz, renderedR));
+    this.forEachGovernedMoon((x, y, z, renderedR, name) =>
+      this.pushCameraShell(x - px, y - py, z - pz, renderedR, renderedR, name));
     if (this.solarSystem) {
       for (const planet of this.solarSystem.planets) {
         const wp = planet.worldPosAU;
@@ -13976,11 +14083,17 @@ export class PlanetariumMode {
         this.pushCameraShell(
           wp.x - px, wp.y - py, wp.z - pz,
           planetEnvelopeRadiusAU(planet.data.radiusAU, planet.group.scale.x, ATMOSPHERE_SHELL_SCALES[planet.data.name]),
+          // The disc the eye reads is the rendered surface, not the air shell.
+          planet.data.radiusAU * planet.group.scale.x,
+          planet.data.name,
         );
       }
       // The Sun sits at the heliocentric origin; its governed surface floats
-      // above the photosphere (no collision shell exists to back this up).
-      this.pushCameraShell(-px, -py, -pz, (KM_CONSTANTS.SUN_RADIUS / KM_PER_AU) * SUN_APPROACH_SURFACE_RADII);
+      // above the photosphere (no collision shell exists to back this up) —
+      // and its DISC is the photosphere itself: keyed on the 1.2x surface the
+      // lens ramp would read the park as 90° and switch fully off.
+      const photosphereAU = KM_CONSTANTS.SUN_RADIUS / KM_PER_AU;
+      this.pushCameraShell(-px, -py, -pz, photosphereAU * SUN_APPROACH_SURFACE_RADII, photosphereAU, 'Sun');
     }
 
     const camPos = this.camera.position;
@@ -14944,6 +15057,29 @@ export class PlanetariumMode {
    *  for the occlusion pass but wants the ship out of frame). */
   devSetShipVisible(visible: boolean): void {
     this.player.group.visible = visible;
+  }
+
+  /** Dev-only: the lens proximity ramp's state this frame (`__moon.lensRamp()`). */
+  devLensRamp(): {
+    enabled: boolean; factor: number; applied: number; angularRadiusDeg: number;
+    body: string | null; devPose: boolean; applies: number;
+  } {
+    return { ...this.lensRampState };
+  }
+
+  /** Dev-only: switch the lens proximity ramp on or off live, as `?lensramp=1` does at boot. */
+  devSetLensRamp(enabled: boolean): boolean {
+    this.lensRampEnabled = enabled;
+    return this.lensRampEnabled;
+  }
+
+  /** Dev-only: lift off — the deck's own "lift off and park nearby" path
+   *  (commitDeckPick on your own row), which a postcard jump never takes:
+   *  a jump from the ground leaves `landedOn` set. False when not landed. */
+  devTakeoff(): boolean {
+    if (!this.landedOn) return false;
+    this.exitLandedMode();
+    return true;
   }
 
   /** Dev-only: the "Orbit lines" setting, so a capture can show the lines on

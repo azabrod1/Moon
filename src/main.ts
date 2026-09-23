@@ -2584,10 +2584,16 @@ function installDevHooks() {
     pilotTo: (name: string) => planetariumMode?.devPilotTo(name) ?? false,
     /** What the ship rides right now (rideFrame.ts): weight, km/s, carriers. */
     rideState: () => planetariumMode?.devRideState() ?? null,
+    /** The lens proximity ramp this frame (shared/math/lensProximity.ts): its factor, the strength the shaders read, the disc that drove it, and whether a dev pose skipped it. */
+    lensRamp: () => planetariumMode?.devLensRamp() ?? null,
+    /** Switch the lens proximity ramp on or off live, as `?lensramp=1` does at boot. */
+    setLensRamp: (enabled: boolean) => planetariumMode?.devSetLensRamp(enabled) ?? false,
     travelTo: (name: string) => planetariumMode?.devTravelTo(name) ?? false,
     arrivalPose: () => planetariumMode?.devArrivalPose() ?? null,
     governorOwner: () => planetariumMode?.devGovernorOwner() ?? null,
     land: (name: string) => planetariumMode?.devLand(name) ?? false,
+    /** Lift off from a landed body the way the deck's own row does; false when not landed. */
+    takeoff: () => planetariumMode?.devTakeoff() ?? false,
     observe: (name: string) => planetariumMode?.devObserve(name) ?? false,
     device: () => planetariumMode?.devDeviceProfile() ?? null,
     sectors: () => planetariumMode?.devSectorStats() ?? null,

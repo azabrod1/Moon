@@ -169,12 +169,19 @@ export function ringAnnulusDistanceAU(
 
 /** One governed body as the camera-safety pass sees it: center position (in
  *  the camera's own frame) and the body's outermost rendered surface radius
- *  (envelope for planets, rendered mesh for moons) — margin NOT included. */
+ *  (envelope for planets, rendered mesh for moons, the governed surface for
+ *  the Sun) — margin NOT included. Beside it, for the lens proximity ramp,
+ *  the radius of the DISC the eye reads — the rendered surface with no air
+ *  shell, the Sun's photosphere — and the body's name for the readout: the
+ *  ramp keyed on the envelope would read the Sun's park as 90° and switch
+ *  the lens fully off. */
 export interface CameraBodyShell {
   x: number;
   y: number;
   z: number;
   surfaceRadiusAU: number;
+  discRadiusAU: number;
+  name: string;
 }
 
 /**

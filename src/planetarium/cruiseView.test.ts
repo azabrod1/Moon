@@ -226,7 +226,7 @@ describe('escapeCameraPenetrations', () => {
   const MARGIN = CAMERA_BODY_MARGIN_AU;
   const MOON_SURFACE = 1_737.4 * KM;
   const shell = (x: number, y: number, z: number, surfaceRadiusAU: number) =>
-    ({ x, y, z, surfaceRadiusAU });
+    ({ x, y, z, surfaceRadiusAU, discRadiusAU: surfaceRadiusAU, name: 'body' });
   const clearOf = (cam: { x: number; y: number; z: number }, s: ReturnType<typeof shell>) =>
     Math.hypot(cam.x - s.x, cam.y - s.y, cam.z - s.z) >= s.surfaceRadiusAU + MARGIN - 1e-15;
 
@@ -287,8 +287,8 @@ describe('escapeCameraPenetrations', () => {
 describe('nearestShellSurfaceDistanceAU', () => {
   it('reports the tightest surface distance across the set', () => {
     const shells = [
-      { x: 0, y: 0, z: 0, surfaceRadiusAU: 1_737.4 * KM },
-      { x: 10_000 * KM, y: 0, z: 0, surfaceRadiusAU: 3_000 * KM },
+      { x: 0, y: 0, z: 0, surfaceRadiusAU: 1_737.4 * KM, discRadiusAU: 1_737.4 * KM, name: 'Moon' },
+      { x: 10_000 * KM, y: 0, z: 0, surfaceRadiusAU: 3_000 * KM, discRadiusAU: 3_000 * KM, name: 'other' },
     ];
     const cam = { x: 2_257 * KM, y: 0, z: 0 };
     // 519.6 km above the first body's surface; ~4,743 km from the second's.

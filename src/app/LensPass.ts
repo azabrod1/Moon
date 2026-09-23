@@ -33,6 +33,12 @@ export interface LensParams {
    *  very wide design FOVs force the strength down — a pinhole source can't
    *  feed a full stereographic frame past ~80° corners. */
   effectiveStrength?: number;
+  /** The proximity ramp's factor on `strength` (shared/math/lensProximity.ts),
+   *  written by the planetarium each frame from the largest disc in view;
+   *  absent or 1 leaves the requested strength alone. `effectiveStrength`
+   *  carries the product, so every reader of it follows the ramp without
+   *  knowing it exists. */
+  proximityFactor?: number;
 }
 
 /** The pass's own sub-rect uniforms, for the one writer of them. */

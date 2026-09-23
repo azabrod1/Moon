@@ -210,6 +210,40 @@ describe('applyDesignFov / displayFovDeg / lensDisplayHalfTan', () => {
     expect(displayFovDeg({ fov: 32, userData: {} })).toBe(32);
   });
 
+  it('folds the proximity factor into the effective strength and the overscan', () => {
+    const camera = {
+      fov: 60,
+      aspect: 16 / 9,
+      userData: {
+        lens: { strength: 1, designFovDeg: 60, proximityFactor: 1 } as {
+          strength: number; designFovDeg: number; effectiveStrength?: number; proximityFactor?: number;
+        },
+      },
+      updateProjectionMatrix() { /* noop */ },
+    };
+    applyDesignFov(camera, 60);
+    const fullOverscan = camera.fov;
+    expect(camera.userData.lens.effectiveStrength).toBe(1);
+    expect(fullOverscan).toBeGreaterThan(60);
+    // Half the request: the overscan narrows with it; the design FOV stays.
+    camera.userData.lens.proximityFactor = 0.5;
+    applyDesignFov(camera, 60);
+    expect(camera.userData.lens.effectiveStrength).toBeCloseTo(0.5, 12);
+    expect(camera.fov).toBeCloseTo(lensOverscanFovDeg(60, camera.aspect, 0.5), 9);
+    expect(camera.fov).toBeLessThan(fullOverscan);
+    expect(displayFovDeg(camera)).toBe(60);
+    // Ramped fully off: a pinhole, whose render FOV IS the design FOV.
+    camera.userData.lens.proximityFactor = 0;
+    applyDesignFov(camera, 60);
+    expect(camera.userData.lens.effectiveStrength).toBe(0);
+    expect(camera.fov).toBe(60);
+    // No factor at all: the requested strength, exactly as before the ramp existed.
+    delete camera.userData.lens.proximityFactor;
+    applyDesignFov(camera, 60);
+    expect(camera.userData.lens.effectiveStrength).toBe(1);
+    expect(camera.fov).toBe(fullOverscan);
+  });
+
   it('display half-tangent reduces to tan(fov/2) at strength 0', () => {
     expect(lensDisplayHalfTan(60, 0)).toBeCloseTo(Math.tan(30 * DEG), 12);
     expect(lensDisplayHalfTan(60, 1)).toBeCloseTo(2 * Math.tan(15 * DEG), 12);

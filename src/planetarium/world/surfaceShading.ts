@@ -47,6 +47,10 @@
  * here, rather than in the globe's material alone, because a streamed sector
  * draws ABOVE the globe and would otherwise be the one unhazed layer, in
  * exactly the near-band view the haze exists for.
+ * Earth's surface presentation blends that result more lightly in a direct
+ * view and at full strength at the horizon (aerialHazeWeight). The physical
+ * tables and sky shell stay untouched; the shared air block carries the same
+ * grade to the globe, streamed sectors, clouds and additive night lights.
  *
  * That segment ends at the fragment for a surface whose mesh really is at the
  * altitude it stands for, and at a stated radius for the cloud deck, whose
@@ -1372,6 +1376,7 @@ uniform vec3 uMoonDirWorld;
 uniform vec3 uMoonIrradiance;
 uniform float uAirDensity;
 uniform float uAirBlend;
+uniform float uSurfaceHaze;
 uniform float uAirLookupRadius;
 uniform float uWaterGloss;
 uniform sampler2D uCloudShadowMap;
@@ -1762,7 +1767,8 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
       // The tables arrive a few seconds into a session, and the haze they
       // bring would otherwise switch on across the whole ground in one frame:
       // it fades in over a moment instead.
-      outgoingLight = mix(outgoingLight, outgoingLight * airT + airS, uAirBlend);
+      float airWeight = uAirBlend * aerialHazeWeight(seg, uSurfaceHaze);
+      outgoingLight = mix(outgoingLight, outgoingLight * airT + airS, airWeight);
     }
   }
 }`;
@@ -2002,6 +2008,7 @@ export function createSurfaceAirFx(): SurfaceAirFx {
     uAirDensity: { value: 0 },
     // 0 → 1 over SURFACE_AIR_FADE_S after the tables bind; the haze is scaled by it.
     uAirBlend: { value: 0 },
+    uSurfaceHaze: { value: 1 },
     uPlanetRadius: { value: 1 },
     uSolarIrradiance: { value: 1 },
     uAirlightScale: { value: new THREE.Vector3(...AIRLIGHT_SCALE) },
@@ -2041,6 +2048,10 @@ export function bindSurfaceAir(
   air.uIrradiance.value = tables.irradiance;
   air.uPlanetRadius.value = planetRadius;
   air.uSolarIrradiance.value = solarIrradiance;
+  // An authored surface grade, not a change to atmospheric density: full
+  // strength at the horizon, a quieter wash in direct views of Earth. Kept
+  // apart from the loading fade so the sky shell still completes its fade.
+  air.uSurfaceHaze.value = tables.params.name === 'Earth' ? 0.35 : 1;
   // Switching on starts the fade; a rebind of live air leaves it where it is.
   if (air.uAirDensity.value === 0) air.uAirBlend.value = 0;
   air.uAirDensity.value = 1;

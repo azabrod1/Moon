@@ -821,6 +821,17 @@ AerialSegment aerialForLight(AerialSegment seg, vec3 lightDir) {
   return seg;
 }
 
+// Presentation strength over a surface, independent of the sky shell and of
+// camera distance. Keep the full column at the horizon, where it must meet
+// the limb, but let a clear view retain the surface's contrast. Use the radial
+// normal at the segment's endpoint, never a relief-perturbed material normal:
+// ground, cloud and additive city lights must agree about the same column.
+float aerialHazeWeight(AerialSegment seg, float clearViewStrength) {
+  vec3 up = normalize(seg.origin + seg.view * seg.d);
+  float grazing = 1.0 - clamp(dot(up, -seg.view), 0.0, 1.0);
+  return mix(clearViewStrength, 1.0, grazing * grazing);
+}
+
 /** What survives the segment: the fraction of the surface's own light that
  *  reaches the camera. A difference of two optical depths, never a quotient of
  *  two transmittances. */

@@ -1109,6 +1109,8 @@ export class ResolutionController {
       this.probation = null;
     }
     this.resetClockEvidence(nowMs);
+    // Only a probe the clock made keeps its failures past its probation.
+    this.probationByClock = false;
     if (kind === 'up' && climb !== null && this.index > this.mediumIndex) {
       // A clock probe: the clock verifies it, and the rung is the clock's.
       this.clockEarned = true;
@@ -1121,7 +1123,6 @@ export class ResolutionController {
         deadlineMs: null,
       };
     } else {
-      if (kind !== 'up') this.probationByClock = false;
       // A new rung is a new question: whatever verification stood was for
       // the rung that was.
       this.clockVerify = null;
@@ -1170,6 +1171,7 @@ export class ResolutionController {
     this.pending = null;
     this.verifyUntilMs = null;
     this.probation = null;
+    this.probationByClock = false;
     this.ceiling = null;
     this.ceilingFailures = 0;
     this.lastFailedProbeRung = null;
@@ -1199,6 +1201,7 @@ export class ResolutionController {
     // Whatever drops the verification drops the probation with it: a down
     // after an arrival or a focus gain is a new question, not a probe failing.
     this.probation = null;
+    this.probationByClock = false;
     this.resetClockEvidence(nowMs);
     switch (event) {
       case 'pin':
@@ -1258,6 +1261,7 @@ export class ResolutionController {
     this.pending = null;
     this.verifyUntilMs = null;
     this.probation = null;
+    this.probationByClock = false;
     this.ceiling = null;
     this.ceilingFailures = 0;
     this.lastFailedProbeRung = null;
@@ -1676,6 +1680,7 @@ export class ResolutionController {
     this.ceiling = { rung: this.index, untilMs: nowMs + hold, escalation: this.ceilingFailures + 1 };
     this.lastFailedProbeRung = this.index;
     this.probation = null;
+    this.probationByClock = false;
   }
 
   private downDecision(nowMs: number): Decision | null {

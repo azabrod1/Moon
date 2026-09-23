@@ -73,10 +73,10 @@ import {
   intervalsOf,
   deltaOfMedians,
   type Summary,
-  type PollStamp,
   type PollSummary,
 } from './gpuClockStats';
 import { createReadbackWait } from './devGpuProfile';
+import { pollFence } from './fencePoll';
 
 export type GpuClockName = 'fence' | 'fence-drained' | 'fence-start' | 'readback' | 'timer';
 
@@ -227,106 +227,6 @@ function clockGranularity(budgetMs = 12, maxSamples = 400000): number | null {
   return minNonZeroDelta(xs);
 }
 
-/**
- * A task loop that polls one fence's status until it signals.
- *
- * The loop's task source is the whole point: a sync object's cached status is
- * refreshed at most once per task in both engines, so the achieved poll
- * interval is the resolution of the reading and nothing inside a task can
- * improve it. Each poll stamps the clock either side of the call, because the
- * call is a synchronous trip into the GPU process and that cost is what the
- * method would charge a production frame.
- */
-function pollFence(
-  gl2: WebGL2RenderingContext,
-  sync: WebGLSync,
-  submittedAtMs: number,
-  poll: Required<GpuClockPollOptions>,
-  keepStamps: boolean,
-  token: string,
-  done: (out: {
-    signalledAtMs: number | null;
-    askedAtMs: number | null;
-    polls: number;
-    costMs: number;
-    intervalMeanMs: number | null;
-    intervalMaxMs: number | null;
-    stamps: PollStamp[];
-    signalledOnFirstPoll: boolean;
-    capped: boolean;
-  }) => void,
-): () => void {
-  const stamps: PollStamp[] = [];
-  let polls = 0;
-  let tasks = 0;
-  let cancelled = false;
-  let costMs = 0;
-  let intervalSum = 0;
-  let intervalMax = 0;
-  let prevAsk = -1;
-  let stop: () => void = () => {};
-
-  const finish = (signalledAtMs: number | null, askedAtMs: number | null, capped: boolean) => {
-    stop();
-    gl2.deleteSync(sync);
-    done({
-      signalledAtMs,
-      askedAtMs,
-      // Counted by the loop itself, so every frame carries its cost and its
-      // achieved interval even where the raw stamps are not kept.
-      polls,
-      costMs,
-      intervalMeanMs: polls > 1 ? intervalSum / (polls - 1) : null,
-      intervalMaxMs: polls > 1 ? intervalMax : null,
-      stamps: keepStamps ? stamps : [],
-      signalledOnFirstPoll: polls === 1 && signalledAtMs !== null,
-      capped,
-    });
-  };
-
-  const step = () => {
-    if (cancelled) return;
-    tasks += 1;
-    if (tasks % poll.stride !== 0) { post(); return; }
-    const before = performance.now();
-    const status = gl2.getSyncParameter(sync, gl2.SYNC_STATUS);
-    const after = performance.now();
-    polls += 1;
-    costMs += after - before;
-    if (prevAsk >= 0) {
-      const gap = before - prevAsk;
-      intervalSum += gap;
-      if (gap > intervalMax) intervalMax = gap;
-    }
-    prevAsk = before;
-    if (keepStamps && stamps.length < poll.keepStamps) {
-      stamps.push({ before, after });
-    }
-    if (status === gl2.SIGNALED) { finish(after, before, false); return; }
-    if (polls >= poll.capPolls || after - submittedAtMs >= poll.capMs) { finish(null, null, true); return; }
-    post();
-  };
-
-  let post: () => void;
-  if (poll.source === 'channel') {
-    const channel = new MessageChannel();
-    channel.port1.onmessage = step;
-    post = () => channel.port2.postMessage(token);
-    stop = () => { channel.port1.onmessage = null; channel.port1.close(); channel.port2.close(); };
-  } else {
-    const onMessage = (e: MessageEvent) => { if (e.data === token) step(); };
-    window.addEventListener('message', onMessage);
-    post = () => window.postMessage(token, '*');
-    stop = () => window.removeEventListener('message', onMessage);
-  }
-  post();
-  return () => {
-    cancelled = true;
-    stop();
-    gl2.deleteSync(sync);
-  };
-}
-
 export function createGpuClock(deps: GpuClockDeps): GpuClock {
   const gl = deps.gl;
   const gl2 = gl as WebGL2RenderingContext;
@@ -427,7 +327,15 @@ export function createGpuClock(deps: GpuClockDeps): GpuClock {
     const keep = level().samplePolls.length === 0 && record.clock === 'fence';
     outstandingPolls += 1;
     const submitted = submittedAt;
-    cancelPoll = pollFence(gl2, sync, submitted, opts.poll, keep, `moon-gpu-clock-${record.seq}`, (out) => {
+    // The shared loop (app/fencePoll.ts), with the measurement's own options:
+    // its task source, its stride and its raw stamps.
+    cancelPoll = pollFence(gl2, sync, submitted, {
+      source: opts.poll.source,
+      stride: opts.poll.stride,
+      capMs: opts.poll.capMs,
+      capPolls: opts.poll.capPolls,
+      keepStamps: keep ? opts.poll.keepStamps : 0,
+    }, (out) => {
       outstandingPolls -= 1;
       cancelPoll = null;
       record.readingMs = out.signalledAtMs === null ? null : out.signalledAtMs - submitted;

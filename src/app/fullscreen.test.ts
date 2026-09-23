@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { isFullscreenKey, type FullscreenKeyEvent } from './fullscreen';
 import fullscreenSource from './fullscreen.ts?raw';
+import html from '../../index.html?raw';
 import planetariumSource from '../planetarium/PlanetariumMode.ts?raw';
 import interiorSource from '../interior/InteriorMode.ts?raw';
 import compareSource from '../volumeCompare/VolumeCompareMode.ts?raw';
@@ -48,6 +49,29 @@ describe('the F key', () => {
     for (const tag of ['BODY', 'BUTTON', 'CANVAS', 'svg']) {
       expect(isFullscreenKey(press({ key: 'f', target: typedInto(tag) })), tag).toBe(true);
     }
+  });
+});
+
+describe('the ☰ row\'s key chip', () => {
+  const toggle = html.indexOf('id="settings-fullscreen-toggle"');
+  const row = html.slice(html.lastIndexOf('<div class="settings-row"', toggle), html.indexOf('</div>', toggle));
+
+  it('names the key the shortcut listens for, to the eye and to a screen reader', () => {
+    // The chip is the only place a reader learns F exists, so a key changed in
+    // isFullscreenKey must not leave the row naming the old one.
+    const chip = row.match(/<kbd class="kbd">([^<]+)<\/kbd>/)?.[1];
+    const announced = row.match(/aria-keyshortcuts="([^"]+)"/)?.[1];
+    expect(chip).toBeDefined();
+    expect(isFullscreenKey(press({ key: chip! }))).toBe(true);
+    expect(announced).toBe(chip);
+  });
+
+  it('is hidden where there is no keyboard to press it', () => {
+    // The row is offered on phones and tablets too; a key chip there names a
+    // keyboard the reader does not have. The menu's touch block is where the
+    // rows already grow for a finger.
+    const touchBlock = html.match(/@media \(hover: none\) and \(pointer: coarse\) \{\s*\.menu-action, \.settings-row[\s\S]*?\n {4}\}/)?.[0] ?? '';
+    expect(touchBlock).toContain('.settings-label .kbd { display: none; }');
   });
 });
 

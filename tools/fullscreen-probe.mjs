@@ -15,12 +15,14 @@
 //                the lock; Ctrl+F and Alt+F stay the browser's; with the deck
 //                open, F types into its search; a refused request says so in
 //                a toast and leaves the row Off; F works while landed. The
-//                menu is captured Off and On.
+//                row names F with a key chip and aria-keyshortcuts. The menu
+//                is captured Off and On.
 //   tools        F enters and leaves in Look inside and in How many fit?.
 //   unavailable  where document.fullscreenEnabled is false there is no row and
 //                F does nothing.
-//   phone        at 390×844 on a touch canvas the row is there, a tap enters,
-//                and the panel still fits the screen; captured Off and On.
+//   phone        at 390×844 on a touch canvas the row is there without its key
+//                chip, a tap enters, and the panel still fits the screen;
+//                captured Off and On.
 //
 // What no Playwright run can show: its Chromium takes a page full screen
 // without resizing the window, and its key presses reach the page without
@@ -98,12 +100,15 @@ try {
   const state = (page) => page.evaluate(() => {
     const toggle = document.getElementById('settings-fullscreen-toggle');
     const row = toggle?.closest('.settings-row');
+    const chip = row?.querySelector('.settings-label .kbd');
     return {
       fullscreen: document.fullscreenElement === document.documentElement,
       label: document.getElementById('settings-fullscreen-label')?.textContent ?? null,
       pressed: toggle?.getAttribute('aria-pressed') ?? null,
       rowShown: !!row && !row.hidden && getComputedStyle(row).display !== 'none',
-      title: toggle?.getAttribute('title') ?? null,
+      // The chip's own display: the touch rule hides the chip, not the row.
+      chip: chip ? { text: chip.textContent, shown: getComputedStyle(chip).display !== 'none' } : null,
+      keys: toggle?.getAttribute('aria-keyshortcuts') ?? null,
       log: window.__fsLog.splice(0),
     };
   });
@@ -136,7 +141,8 @@ try {
     await openMenu(page);
     let s = await state(page);
     check(s.rowShown && s.label === 'Off' && s.pressed === 'false' && !s.fullscreen, 'row shown, Off, not full screen', s);
-    check(s.title === 'Full screen (F)', 'the row\'s tooltip names F', s.title);
+    check(s.chip?.text === 'F' && s.chip.shown && s.keys === 'F',
+      'the row names F with a key chip, and to a screen reader', { chip: s.chip, keys: s.keys });
     await page.locator('#planetarium-menu-panel').screenshot({ path: `${OUT}/desktop-menu-off.png` });
 
     await page.click('#settings-fullscreen-toggle');
@@ -287,6 +293,7 @@ try {
     await settle(page, 400);
     let s = await state(page);
     check(s.rowShown && s.label === 'Off', 'phone: the row is there', s);
+    check(s.chip !== null && !s.chip.shown, 'phone: no key chip on a touch screen', s.chip);
     await page.screenshot({ path: `${OUT}/phone-menu-off.png` });
     await page.tap('#settings-fullscreen-toggle');
     await settle(page);

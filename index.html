@@ -930,6 +930,8 @@
       .menu-tier { min-height: 36px; }
       .menu-seg { height: 36px; }
       .menu-back { width: 32px; height: 32px; }
+      /* A key chip names a keyboard a finger does not have. */
+      .settings-label .kbd { display: none; }
     }
 
     /* Observatory (landed-mode) tokens alias the Obsidian palette in :root above;
@@ -1433,6 +1435,8 @@
       font-size: 12px;
       letter-spacing: 0.1px;
     }
+    /* A row's shortcut, after its name (Full screen's F). */
+    .settings-label .kbd { margin-left: 6px; }
     .settings-label.is-mixed {
       text-transform: none;
       letter-spacing: 0;
@@ -4596,9 +4600,9 @@
           <!-- Hidden until the browser says the page may go full screen
                (app/fullscreen.ts): a row that could only fail is not offered. -->
           <div class="settings-row" hidden>
-            <span class="settings-label">Full screen</span>
+            <span class="settings-label">Full screen <kbd class="kbd">F</kbd></span>
             <button class="settings-toggle" id="settings-fullscreen-toggle"
-                    aria-label="Full screen" aria-pressed="false" title="Full screen (F)">
+                    aria-label="Full screen" aria-keyshortcuts="F" aria-pressed="false">
               <span id="settings-fullscreen-label">Off</span>
             </button>
           </div>

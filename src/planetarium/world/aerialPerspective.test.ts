@@ -7,6 +7,7 @@ import {
   EARTH_NIGHT_WARM_GLSL, earthNightFragmentShader, earthNightVertexShader,
 } from '../../shared/shaders/atmosphere';
 import {
+  ATMOSPHERE_SPECS,
   ATMOSPHERE_TABLE_SIZES_FULL,
   atmosphereParams,
   profileDensity,
@@ -323,7 +324,30 @@ describe('the grade on a direct view', () => {
     expect(shell.fragmentShader).not.toContain('uSurfaceHaze');
   });
 
+  it('stands on the shaded point: the segment\'s end is where the angle is taken', () => {
+    // The weight reads the radial normal at origin + view * d. That is the
+    // point only because the segment keeps its END where the caller put it
+    // whatever it does to its start: outside the air the origin moves to the
+    // entry point and d shortens by the same length; inside it neither moves.
+    const params = atmosphereParams('Earth');
+    const end = (seg: ReturnType<typeof aerialSegmentRay>) =>
+      seg.origin.map((o, i) => o + seg.view[i] * seg.d);
+    const ground: [number, number, number] = [Math.cos(0.3), Math.sin(0.3), 0];
+    const fromSpace = aerialSegmentRay(params, [8, 0, 0], ground, [1, 0, 0]);
+    expect(fromSpace.valid).toBe(true);
+    expect(fromSpace.d).toBeLessThan(8);          // it starts at the entry point...
+    end(fromSpace).forEach((v, i) => expect(v).toBeCloseTo(ground[i], 9)); // ...and ends on the ground
+    const fromInside = aerialSegmentRay(params, [1.005, 0, 0], ground, [1, 0, 0]);
+    expect(fromInside.valid).toBe(true);
+    end(fromInside).forEach((v, i) => expect(v).toBeCloseTo(ground[i], 9));
+  });
+
   it('is the body\'s own number once its tables bind, and the physics before', () => {
+    // A grade is for a body that has tables to grade: a key that names no
+    // atmosphere would read as 1 and nobody would know.
+    for (const body of Object.keys(SURFACE_HAZE_CLEAR_VIEW)) {
+      expect(ATMOSPHERE_SPECS[body]).toBeDefined();
+    }
     const air = createSurfaceAirFx();
     expect(air.uSurfaceHaze.value).toBe(1);
     bindSurfaceAir(air, fakeTables('Earth'), 4.2635e-5, 1);

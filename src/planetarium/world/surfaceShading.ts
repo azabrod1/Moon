@@ -47,6 +47,12 @@
  * here, rather than in the globe's material alone, because a streamed sector
  * draws ABOVE the globe and would otherwise be the one unhazed layer, in
  * exactly the near-band view the haze exists for.
+ *
+ * That segment ends at the fragment for a surface whose mesh really is at the
+ * altitude it stands for, and at a stated radius for the cloud deck, whose
+ * coarse sphere sags kilometres between its vertices. `AIR_LOOKUP_RADIUS` is
+ * where each archetype's segment really ends.
+ *
  * How much of that haze a DIRECT view shows is a body's own number
  * (SURFACE_HAZE_CLEAR_VIEW), and the weight it sets climbs to one at the
  * horizon whatever the number, because that is where the ground's haze has to
@@ -54,11 +60,6 @@
  * the globe, its sectors, the deck and the additive night lights are graded
  * together: a deck hazed harder than the ground under it would read as a
  * second, higher sky.
- *
- * That segment ends at the fragment for a surface whose mesh really is at the
- * altitude it stands for, and at a stated radius for the cloud deck, whose
- * coarse sphere sags kilometres between its vertices. `AIR_LOOKUP_RADIUS` is
- * where each archetype's segment really ends.
  *
  * The injection has five points: the declarations at <common>; the deck's
  * smoothed colour fetch at <map_fragment>; the ocean's gloss remap at
@@ -280,11 +281,15 @@ export const SURFACE_HAZE_CLEAR_VIEW: Readonly<Record<string, number>> = {
 
 let devSurfaceHaze: number | undefined;
 /** Haze every direct view at this strength from now on, on every body with
- *  tables (`__moon.haze`); reads back the override in force, undefined when
- *  the authored numbers stand. Development builds only. */
-export function setDevSurfaceHaze(clearView?: number): number | undefined {
+ *  tables (`__moon.haze`), held to 0..1 because past 1 the mix leaves the
+ *  physics; null puts the authored numbers back. Reads back the override in
+ *  force, undefined when the authored numbers stand. Development builds only. */
+export function setDevSurfaceHaze(clearView?: number | null): number | undefined {
   if (!import.meta.env.DEV) return undefined;
-  if (clearView !== undefined) devSurfaceHaze = clearView;
+  if (clearView === null) devSurfaceHaze = undefined;
+  else if (clearView !== undefined && Number.isFinite(clearView)) {
+    devSurfaceHaze = Math.min(1, Math.max(0, clearView));
+  }
   return devSurfaceHaze;
 }
 
@@ -2089,7 +2094,8 @@ export function bindSurfaceAir(
   // uniform, apart from the loading fade: the fade also drives the shell's
   // crossfade, and a grade folded into it would leave the shell stuck part
   // way between its tiers.
-  air.uSurfaceHaze.value = devSurfaceHaze ?? SURFACE_HAZE_CLEAR_VIEW[tables.body] ?? 1;
+  air.uSurfaceHaze.value = (import.meta.env.DEV ? devSurfaceHaze : undefined)
+    ?? SURFACE_HAZE_CLEAR_VIEW[tables.body] ?? 1;
   // Switching on starts the fade; a rebind of live air leaves it where it is.
   if (air.uAirDensity.value === 0) air.uAirBlend.value = 0;
   air.uAirDensity.value = 1;

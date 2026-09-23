@@ -2683,7 +2683,7 @@ function installDevHooks() {
     // physics, and the horizon carries the whole column whatever the number),
     // on every body with tables from the next frame. Returns the override in
     // force beside the authored numbers; a production build has no knob.
-    haze: (opts?: { clear?: number }) => ({
+    haze: (opts?: { clear?: number | null }) => ({
       clear: setDevSurfaceHaze(opts?.clear),
       authored: SURFACE_HAZE_CLEAR_VIEW,
     }),
@@ -3026,8 +3026,9 @@ function installDevHooks() {
     // `?haze=0.35` shows that much of the air's haze in every direct view of a
     // surface for the session: the __moon.haze knob, reachable from a phone's
     // address bar, so two strengths are two links to compare. DEV only.
+    // An empty value is a mistyped link, not a request for zero.
     const haze = new URLSearchParams(location.search).get('haze');
-    if (haze !== null && Number.isFinite(Number(haze))) setDevSurfaceHaze(Number(haze));
+    if (haze && Number.isFinite(Number(haze))) setDevSurfaceHaze(Number(haze));
   }
   debugLog('Dev hooks installed (window.__moon)');
 }

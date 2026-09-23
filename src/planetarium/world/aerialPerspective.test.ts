@@ -30,11 +30,14 @@ import { CASTER_PERIGEE_MARGIN } from './moonShadowCasters';
 import {
   AIR_LOOKUP_RADIUS,
   NIGHT_LIGHTS_AIR_LOOKUP_RADIUS,
+  SURFACE_HAZE_CLEAR_VIEW,
   augmentSurfaceMaterial,
   bindSurfaceAir,
   clearSurfaceAir,
+  createSurfaceAirFx,
   type SurfaceArchetype, OCEAN_GLINT_CAP, OCEAN_SPECULAR_KEEP,
 } from './surfaceShading';
+import { createEarthNightShellMaterial } from './earthNightMaterial';
 
 /**
  * Aerial perspective — the air between the camera and everything drawn in front
@@ -73,6 +76,7 @@ function compile(mat: THREE.Material): {
 /** Tables with the right shape for the binder — nothing samples them here. */
 function fakeTables(body: string): AtmosphereTables {
   return {
+    body,
     params: atmosphereParams(body),
     sizes: ATMOSPHERE_TABLE_SIZES_FULL,
     transmittance: new THREE.DataTexture(),
@@ -92,9 +96,9 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = 'ac205fe232b9e413792d743282524ad403adadb77c33e3e5a0bade0a1b4b54d3';
-const PROD_FRAGMENT_HASH = 'fb84aaaccfd7ab8fa40dfb9de31ca0f529a9554174125a4b9f9ddb3a0533174d';
-const PROD_NIGHT_FRAGMENT_HASH = '7b1b837a3b3d9b6454b6585b37bcb60749ee1e1cbdcb16aea38231ea4fea1c4c';
+const DEV_FRAGMENT_HASH = '6a91ae319327dd945782ad43867e65244d49ca9e652c323314a54bf41ecab92a';
+const PROD_FRAGMENT_HASH = '97ef7a4c6b452b6e71d5428c469b441193c4f79b3b0312ceaabd4220e62f3412';
+const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 
 describe('the injected surface shader', () => {
   it('is one text for every body and both tiers', () => {
@@ -267,8 +271,10 @@ describe('the layer rule', () => {
     expect(glsl).toMatch(
       /vec3 airS = aerialInscatter\(uScattering, seg, airT\)\s*\n\s*\* uAirlightScale \* \(uSolarIrradiance \* sunVisible\);/,
     );
-    // Applied once, behind the fade that brings the haze in when the tables bind.
-    expect(glsl).toContain('outgoingLight = mix(outgoingLight, outgoingLight * airT + airS, uAirBlend);');
+    // Applied once, behind the fade that brings the haze in when the tables
+    // bind and the body's own grade on a direct view (SURFACE_HAZE_CLEAR_VIEW).
+    expect(glsl).toContain('float airWeight = uAirBlend * aerialHazeWeight(seg, uSurfaceHaze);');
+    expect(glsl).toContain('outgoingLight = mix(outgoingLight, outgoingLight * airT + airS, airWeight);');
     // Two in-scatter lookups, and they are the two SOURCES — one traversal,
     // the Sun's angles and the Moon's. A third would be a second traversal.
     expect(glsl.match(/aerialInscatter\(uScattering/g)).toHaveLength(2);
@@ -284,6 +290,58 @@ describe('the layer rule', () => {
     expect(shell.fragmentShader).not.toContain('aerialTransmittance(');
     expect(shell.fragmentShader).not.toContain('aerialInscatter(');
     expect(shell.fragmentShader).not.toContain(AERIAL_PERSPECTIVE_GLSL);
+  });
+});
+
+describe('the grade on a direct view', () => {
+  // How much of the haze a surface shows where the line of sight stands on the
+  // ground is the body's own number; where it grazes the ground the weight is
+  // one, so the horizon carries the whole column and meets the limb the shell
+  // draws. A grade on the surface alone: the shell never reads it.
+  it('is one weight, derived once in the shared text', () => {
+    expect(AERIAL_PERSPECTIVE_GLSL.match(/float aerialHazeWeight\(AerialSegment seg, float clearViewStrength\)/g))
+      .toHaveLength(1);
+    // Against the radial normal at the segment's END: the ground, the deck and
+    // the lights must agree about one column, and only the geometry is common.
+    expect(AERIAL_PERSPECTIVE_GLSL).toContain('vec3 up = normalize(seg.origin + seg.view * seg.d);');
+    expect(AERIAL_PERSPECTIVE_GLSL).toContain('return mix(clearViewStrength, 1.0, grazing * grazing);');
+  });
+
+  it('reaches every layer over the surface, and the shell not at all', () => {
+    const weight = 'float airWeight = uAirBlend * aerialHazeWeight(seg, uSurfaceHaze);';
+    for (const archetype of ['earth', 'cloud'] as const) {
+      expect(compile(augmented(archetype)).fragmentShader).toContain(weight);
+    }
+    // The additive lights take the same weight on their transmittance alone.
+    expect(earthNightFragmentShader).toContain(weight);
+    expect(earthNightFragmentShader)
+      .toContain('lit *= mix(vec3(1.0), aerialTransmittance(uTransmittance, seg), airWeight);');
+    const shell = createAtmosphereShellMaterial({
+      planetRadius: 4.2635e-5, body: 'Earth', sizes: ATMOSPHERE_TABLE_SIZES_FULL,
+    });
+    expect(shell.fragmentShader).not.toContain('aerialHazeWeight(');
+    expect(shell.fragmentShader).not.toContain('uSurfaceHaze');
+  });
+
+  it('is the body\'s own number once its tables bind, and the physics before', () => {
+    const air = createSurfaceAirFx();
+    expect(air.uSurfaceHaze.value).toBe(1);
+    bindSurfaceAir(air, fakeTables('Earth'), 4.2635e-5, 1);
+    expect(SURFACE_HAZE_CLEAR_VIEW.Earth).toBeGreaterThan(0);
+    expect(SURFACE_HAZE_CLEAR_VIEW.Earth).toBeLessThan(1);
+    expect(air.uSurfaceHaze.value).toBe(SURFACE_HAZE_CLEAR_VIEW.Earth);
+    // Mars keeps its physics: a dusty haze is the look of that planet.
+    bindSurfaceAir(air, fakeTables('Mars'), 2.2e-5, 1);
+    expect(air.uSurfaceHaze.value).toBe(1);
+    // Its own uniform, apart from the loading fade the shell's crossfade reads.
+    expect(air.uAirBlend.value).toBe(0);
+  });
+
+  it('is one object for the ground, the deck and the lights', () => {
+    const air = createSurfaceAirFx();
+    const night = createEarthNightShellMaterial(null, air);
+    expect(night.uniforms.uSurfaceHaze).toBe(air.uSurfaceHaze);
+    expect(night.uniforms.uAirBlend).toBe(air.uAirBlend);
   });
 });
 

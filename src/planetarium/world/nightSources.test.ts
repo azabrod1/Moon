@@ -555,7 +555,7 @@ describe('the night ground', () => {
     // An additive layer over a surface that has already added the air's own
     // light gets x T and no S, whichever source lit it.
     const night = src('../../shared/shaders/atmosphere.ts');
-    expect(night).toContain('if (seg.valid) lit *= aerialTransmittance(uTransmittance, seg);');
+    expect(night).toContain('lit *= mix(vec3(1.0), aerialTransmittance(uTransmittance, seg), airWeight);');
     expect(night).not.toContain('aerialInscatter');
   });
 });

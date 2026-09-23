@@ -163,6 +163,19 @@ export function regionLooks(
   });
 }
 
+/**
+ * Whether the layer list carries the key for the uncertain-boundary band:
+ * only while some band is drawn at least `minPx` thick on screen — the
+ * readable minimum the thin-layers note judges a layer by — because a key
+ * for stripes nobody can find explains nothing, and every one of Earth's
+ * boundaries carries a ±5 km interval that is under a pixel at any size the
+ * stage allows. A disc with no size yet shows no key.
+ */
+export function bandKeyShown(looks: readonly SectionRegionLook[], projectedRadiusPx: number, minPx: number): boolean {
+  if (!(projectedRadiusPx > 0)) return false;
+  return looks.some((look) => look.bandDisplay !== null && (look.bandDisplay.high - look.bandDisplay.low) * projectedRadiusPx >= minPx);
+}
+
 // ---- the caption ------------------------------------------------------------
 
 /** What is said when nothing is drawn: this app has no model for the body, or

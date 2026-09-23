@@ -10,6 +10,7 @@ import {
   CUT_ANIMATION_S,
   advanceCutTween,
   advanceEmphasis,
+  bandKeyShown,
   createCutTween,
   createEmphasisState,
   cutTweenSettled,
@@ -217,6 +218,35 @@ describe('the look mapping', () => {
     const { colorA: _a, colorB: _b, ...authoredRest } = asAuthored[crustIndex];
     const { colorA: _c, colorB: _d, ...plainRest } = withoutLooks[crustIndex];
     expect(authoredRest).toEqual(plainRest);
+  });
+});
+
+describe('the band key', () => {
+  const earth = drawnFromModel(EARTH_MODEL);
+  const art = regionArtInsideOut(earth);
+
+  it('shows only while a band is drawn wide enough to see, on the readable minimum', () => {
+    // At true thickness on a stage-sized disc every Earth band is under the minimum: the
+    // ±5 km intervals are under a pixel, and the Moho's spread of models about 4 px.
+    const trueLooks = regionLooks(earth, IDENTITY_REMAP, art);
+    const bands = trueLooks.filter((look) => look.bandDisplay !== null);
+    expect(bands.length).toBeGreaterThan(0);
+    expect(bandKeyShown(trueLooks, 375, 6)).toBe(false);
+    // Enlarged, the crust is widened to the minimum and the band around its base with it.
+    const remap = readableRemap(outerFractionsInsideOut(earth), 6 / 375, 1);
+    const readableLooks = regionLooks(earth, remap, art);
+    expect(bandKeyShown(readableLooks, 375, 6)).toBe(true);
+    // A disc big enough to draw the Moho's band at the minimum shows it at true thickness too.
+    expect(bandKeyShown(trueLooks, 1200, 6)).toBe(true);
+  });
+
+  it('shows nothing for a disc with no size yet, or a model with no band', () => {
+    const looks = regionLooks(earth, IDENTITY_REMAP, art);
+    expect(bandKeyShown(looks, 0, 6)).toBe(false);
+    expect(bandKeyShown(looks, Number.NaN, 6)).toBe(false);
+    const jupiter = drawnFromModel(JUPITER_DILUTE_MODEL);
+    const jupiterLooks = regionLooks(jupiter, IDENTITY_REMAP, regionArtInsideOut(jupiter));
+    expect(bandKeyShown(jupiterLooks, 1e6, 6)).toBe(jupiterLooks.some((look) => look.bandDisplay !== null));
   });
 });
 

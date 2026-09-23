@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { projectedRadiusPx } from './interiorGeometry';
-import { fitDistance, framingDistance, stageViewOffset, visibleStageRect, zoomRatio, type StageObstacles } from './interiorLayout';
+import { STUDIO_LENS, fitDistance, framingDistance, hingeEndRisePx, stageViewOffset, visibleStageRect, zoomRatio, type StageObstacles } from './interiorLayout';
 
 const NO_OBSTACLES: StageObstacles = { top: 0, bottom: 0, left: 0, right: 0 };
 
@@ -200,5 +200,25 @@ describe('zoomRatio', () => {
     const newFit = fitDistance(raised, PHONE.height, 40, 1, 0.9);
     expect(newFit * ratio).toBeCloseTo(newFit * 0.7, 12);
     expect(newFit * ratio).toBeGreaterThan(readerDistance); // the taller sheet pulls back
+  });
+});
+
+describe('the studio lens', () => {
+  // The desktop stage: a 1600×900 viewport less the strip and the side panel; the phone's: 390×844 less the strip and the sheet.
+  const desktopStage = { x: 0, y: 66, width: 1180, height: 834 };
+  const phoneStage = { x: 0, y: 60, width: 390, height: 480 };
+  const nearFace = (25 * Math.PI) / 180; // the yawed wedge's near face, 25° off the line of sight
+
+  it("puts the hinge's ends within a pixel and a bit of the disc's edge at the fit, on a desktop stage and a phone's", () => {
+    for (const [stage, viewportHeight] of [[desktopStage, 900], [phoneStage, 844]] as const) {
+      const fit = fitDistance(stage, viewportHeight, STUDIO_LENS.fovDeg, 1, STUDIO_LENS.fill);
+      const radiusPx = projectedRadiusPx(1, fit, STUDIO_LENS.fovDeg, viewportHeight);
+      expect(hingeEndRisePx(fit, radiusPx, nearFace)).toBeLessThan(1.5);
+    }
+  });
+
+  it('is what cured the crease: the 40° lens it replaces rose a dozen pixels at the same fit', () => {
+    const fit = fitDistance(desktopStage, 900, 40, 1, 0.9);
+    expect(hingeEndRisePx(fit, projectedRadiusPx(1, fit, 40, 900), nearFace)).toBeGreaterThan(10);
   });
 });

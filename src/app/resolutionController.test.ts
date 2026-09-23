@@ -2,6 +2,17 @@ import { describe, expect, it } from 'vitest';
 import {
   BUDGET_MS,
   CEILING_HOLD_MS,
+  CLOCK_DELIVERY_GUARD,
+  CLOCK_DELIVERY_SPAN_MS,
+  CLOCK_DELIVERY_UP,
+  CLOCK_DOWN_COUNT,
+  CLOCK_GAP_MS,
+  CLOCK_INTERVAL_DOWN,
+  CLOCK_SILENCE_SPAN_MS,
+  CLOCK_PANIC_COUNT,
+  CLOCK_UP_COUNT,
+  CLOCK_UP_SPAN_MS,
+  CLOCK_VERIFY_MS,
   DOWN_FACTOR,
   DOWN_SPACING_MS,
   DOWN_WINDOW_COUNTED,
@@ -21,10 +32,12 @@ import {
   VERIFY_MS,
   ZERO_COUNTED_WARN_MS,
   type Decision,
+  type GpuObservation,
   type IntervalSample,
   type RungLadder,
   type StepReason,
 } from './resolutionController';
+import { CLOCK_DOWN_SHARE, CLOCK_EXPONENT, CLOCK_UP_SHARE, STARVED_SHARE_MAX } from './gpuFrameClockPolicy';
 
 /** One vsync tick on a 60 Hz panel, as a delivered interval reads. */
 const TICK = 16.67;
@@ -970,5 +983,736 @@ describe('what a budget change invalidates', () => {
     controller.setBudget(null, 0, { cause: 'user' });
     expect(controller.state().budgetMs).toBeCloseTo(BUDGET_MS, 6);
     expect(controller.state().downCounted).toBe(DOWN_WINDOW_COUNTED);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The GPU clock, where the tick is blind.
+// ---------------------------------------------------------------------------
+
+/** What the clock reads for one sampled frame: a number is a trusted reading
+ *  with 2 ms of it spent building the frame; null is no reading at all. */
+type ClockRead = number | { readingMs: number; busyMs?: number; starved?: boolean } | null;
+
+/**
+ * The Rig with the sensor beside it, as main.ts drives the pair: each drawn
+ * frame is tagged with its draw number and the generation at the end of its
+ * draw, one eligible frame in `duty` is fenced when the controller wants a
+ * reading and none is out, and the reading arrives `lag` steps later —
+ * paired, as the real one is, with the draw it measured. A lag of 1 is a
+ * reading that finished before the next callback; 2 or more is one that came
+ * in late.
+ */
+class ClockRig extends Rig {
+  drawSeq = 0;
+  duty = 4;
+  lag = 1;
+  /** Deliver readings even where the controller says it would not read them. */
+  force = false;
+  delivered = 0;
+  private countdown = 0;
+  private steps = 0;
+  private inFlight: { dueStep: number; obs: GpuObservation } | null = null;
+
+  runClock(
+    frames: number,
+    interval: (rung: number, i: number) => number,
+    clock: (rung: number, i: number) => ClockRead,
+    over: Partial<IntervalSample> = {},
+  ): void {
+    for (let i = 0; i < frames; i++) {
+      const rung = this.controller.rung;
+      const intervalMs = interval(rung, i);
+      this.nowMs += intervalMs;
+      this.steps++;
+      let gpu: GpuObservation | null = null;
+      if (this.inFlight !== null && this.inFlight.dueStep <= this.steps) {
+        gpu = this.inFlight.obs;
+        this.inFlight = null;
+        this.delivered++;
+      }
+      const sample: IntervalSample = {
+        nowMs: this.nowMs,
+        intervalMs,
+        mainThreadMs: 5,
+        workedMs: 0,
+        eligible: true,
+        drawSeq: this.drawSeq,
+        gpu,
+        ...over,
+      };
+      const decision = this.controller.step(sample);
+      if (decision !== null) this.apply(decision);
+      // This tick's draw, at the rung any decision just applied.
+      this.drawSeq++;
+      if (!this.force && !this.controller.wantsClock()) continue;
+      if (this.countdown > 0) { this.countdown--; continue; }
+      if (this.inFlight !== null) continue;
+      const read = clock(this.controller.rung, i);
+      if (read === null) continue;
+      this.countdown = this.duty - 1;
+      const r = typeof read === 'number' ? { readingMs: read } : read;
+      this.inFlight = {
+        dueStep: this.steps + this.lag,
+        obs: {
+          drawSeq: this.drawSeq,
+          generation: this.controller.generation,
+          sampledAtMs: this.nowMs,
+          readingMs: r.readingMs,
+          busyMs: r.busyMs ?? 2,
+          starved: r.starved ?? false,
+          gridMs: 1,
+        },
+      };
+    }
+  }
+
+  /** Drop whatever is out, the way a duty change does. */
+  dropInFlight(): void {
+    this.inFlight = null;
+  }
+}
+
+/** A 60 Hz display under Screen: the tick is not finer than the budget and no
+ *  row asked for a rate, so the intervals take no rung above Medium. */
+function blindScreen(rig: Rig): void {
+  rig.controller.setBudget(null, 0, { cause: 'auto', above: { budgetMs: BUDGET_MS, allowed: false } });
+}
+
+/** Seconds of frames at the 60 Hz tick. */
+const seconds = (s: number): number => Math.round((s * 1000) / TICK);
+
+const MEDIUM = FULL_LADDER.mediumIndex;
+const TOP = FULL_LADDER.rungs.length - 1;
+
+/** One rung above Medium, so a heating device has one rung to earn and lose. */
+const ONE_ABOVE: RungLadder = { rungs: [2 / 1.33, 2 / 1.15, 2, 2.5], mediumIndex: 2 };
+
+/** A clean 60 fps stream. */
+const onTime = (): number => TICK;
+
+describe('the GPU clock climbs where the tick is blind', () => {
+  it('climbs a 60 Hz display to the top at 7 ms and holds, without redefining aboveAllowed', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.runClock(seconds(60), onTime, () => 7);
+    expect(rig.applied.map((a) => a.reason)).toEqual(['up', 'up']);
+    expect(rig.rung).toBe(TOP);
+    const state = rig.controller.state();
+    expect(state.aboveAllowed).toBe(false);
+    expect(state.clock.steering).toBe(true);
+    expect(state.clock.earned).toBe(true);
+    expect(state.clock.verify).toBeNull();
+    expect(state.clock.last?.why).toBe('climb');
+  });
+
+  it('refuses at 12 ms: the next rung’s predicted p90 does not fit the share', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.runClock(seconds(60), onTime, () => 12);
+    expect(rig.applied).toEqual([]);
+    const state = rig.controller.state();
+    expect(state.clock.predictedNextMs).not.toBeNull();
+    expect(state.clock.predictedNextMs!).toBeGreaterThan(CLOCK_UP_SHARE * BUDGET_MS);
+  });
+
+  it('predicts the next rung from the pre-submit part and the rest scaled by the ratio', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    // Held at Medium with a ceiling on the rung above, so the state keeps
+    // reporting the prediction without the climb taking it.
+    rig.runClock(seconds(12), onTime, () => ({ readingMs: 10, busyMs: 3 }));
+    const predicted = rig.controller.state().clock;
+    const expected = 3 + 7 * Math.pow(2.5 / 2, CLOCK_EXPONENT);
+    if (rig.rung === MEDIUM) expect(predicted.predictedNextMs).toBeCloseTo(expected, 6);
+    else expect(rig.applied[0].reason).toBe('up');
+  });
+
+  it('with no clock evidence is exactly the rule as it was: Medium and below', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.runClock(seconds(60), onTime, () => null);
+    expect(rig.applied).toEqual([]);
+    expect(rig.controller.state().clock.counted).toBe(0);
+  });
+
+  it('needs a whole window: at one frame in sixteen the climb waits for its count', () => {
+    const quick = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(quick);
+    quick.runClock(seconds(40), onTime, () => 7);
+    const sparse = new ClockRig(new ResolutionController(FULL_LADDER));
+    sparse.duty = 16;
+    blindScreen(sparse);
+    sparse.runClock(seconds(40), onTime, () => 7);
+    const firstUp = (rig: ClockRig) => rig.applied.find((a) => a.reason === 'up')?.atMs ?? Infinity;
+    // Both need the ten-second interval window; the sparse clock also needs
+    // its 32 readings, which at 3.75 a second take 8.5 s of their own.
+    expect(firstUp(quick)).toBeLessThan(11_000);
+    expect(firstUp(sparse)).toBeGreaterThanOrEqual(firstUp(quick));
+    expect(firstUp(sparse)).toBeGreaterThanOrEqual((CLOCK_UP_COUNT * 16 * TICK) - 1);
+    expect(CLOCK_UP_SPAN_MS).toBe(6000);
+  });
+});
+
+describe('the GPU clock never opens the interval up-path (the gates a clock climb shares)', () => {
+  it('holds at Medium through a minute of clean 60 fps with the clock at 14 ms', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.runClock(seconds(60), onTime, () => 14);
+    expect(rig.applied).toEqual([]);
+  });
+
+  it('never climbs on an idle-looking GPU while the frames are late', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.runClock(seconds(60), () => 2 * TICK, () => 6);
+    expect(rig.applied.some((a) => a.reason === 'up' && a.to > MEDIUM)).toBe(false);
+    expect(rig.applied.every((a) => a.to <= MEDIUM)).toBe(true);
+  });
+
+  it('never climbs while the not-pixel-bound latch stands, and the sensor is not asked to run', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    // A slide that changed nothing: Medium back with the latch.
+    rig.run(4 * DOWN_WINDOW_COUNTED, () => 2 * TICK);
+    const latch = rig.controller.state().latch;
+    expect(latch).not.toBeNull();
+    expect(rig.controller.wantsClock()).toBe(false);
+    const applied = rig.applied.length;
+    rig.force = true;
+    rig.runClock(Math.floor((latch!.untilMs - rig.nowMs) / TICK) - 1, onTime, () => 6);
+    expect(rig.applied.slice(applied).some((a) => a.reason === 'up')).toBe(false);
+  });
+
+  it('changes nothing on a 120 Hz display, even with absurd readings either way', () => {
+    const machine = (rung: number): number => (rung > MEDIUM + 1 ? TICK : TICK_120);
+    const plain = new Rig(new ResolutionController(FULL_LADDER));
+    fastScreen(plain);
+    plain.run(seconds(80), machine);
+    for (const absurd of [0.5, Infinity, 90]) {
+      const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+      fastScreen(rig);
+      rig.force = true;
+      rig.runClock(seconds(80), machine, () => absurd);
+      expect(rig.applied).toEqual(plain.applied);
+      expect(rig.controller.state().clock.steering).toBe(false);
+      expect(rig.controller.state().clock.counted).toBe(0);
+      expect(rig.controller.wantsClock()).toBe(false);
+    }
+  });
+
+  it('a row’s target ignores the clock', () => {
+    const plain = new Rig(new ResolutionController(FULL_LADDER));
+    sixtyRow(plain);
+    plain.run(4000, onTime);
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    sixtyRow(rig);
+    rig.force = true;
+    rig.runClock(4000, onTime, () => 30);
+    expect(rig.applied).toEqual(plain.applied);
+    expect(rig.controller.state().clock.steering).toBe(false);
+  });
+
+  it('does not ask for readings where it could not use them', () => {
+    const short = new ResolutionController(SHORT_LADDER);
+    short.setBudget(null, 0, { cause: 'auto', above: { budgetMs: BUDGET_MS, allowed: false } });
+    expect(short.wantsClock()).toBe(false);
+    const blind = new ResolutionController(FULL_LADDER);
+    blind.setBudget(null, 0, { cause: 'auto', above: { budgetMs: BUDGET_MS, allowed: false } });
+    expect(blind.wantsClock()).toBe(true);
+    blind.notify('pin', 0);
+    expect(blind.wantsClock()).toBe(false);
+    blind.notify('unpin', 0);
+    expect(blind.wantsClock()).toBe(true);
+    blind.setClockOff('turned off');
+    expect(blind.wantsClock()).toBe(false);
+  });
+});
+
+describe('a reading is admitted only with its own frame', () => {
+  it('pairs a late reading with its frame’s verdict', () => {
+    const late = new ClockRig(new ResolutionController(FULL_LADDER));
+    late.lag = 3;
+    blindScreen(late);
+    late.runClock(seconds(60), onTime, () => 7);
+    expect(late.rung).toBe(TOP);
+    expect(late.controller.state().clock.dropped.unpaired).toBe(0);
+  });
+
+  it('drops a reading whose frame did not count', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.runClock(seconds(20), onTime, () => 7, { workedMs: 3 });
+    const state = rig.controller.state();
+    expect(state.clock.counted).toBe(0);
+    expect(state.clock.dropped.uncounted).toBeGreaterThan(0);
+    expect(rig.applied).toEqual([]);
+  });
+
+  it('drops a reading of an older generation — one in flight across a rung change or an arrival', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    rig.lag = 2;
+    blindScreen(rig);
+    rig.runClock(seconds(3), onTime, () => 7);
+    const before = rig.controller.state().clock.dropped.stale;
+    // An arrival lands while a reading is out.
+    rig.runClock(1, onTime, () => 7);
+    rig.controller.notify('arrival', rig.nowMs);
+    rig.runClock(8, onTime, () => 7);
+    expect(rig.controller.state().clock.dropped.stale).toBeGreaterThan(before);
+  });
+
+  it('drops a reading of a frame drawn inside the settle', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.runClock(seconds(2), onTime, () => 7);
+    rig.controller.notify('resize', rig.nowMs);
+    rig.runClock(seconds(1), onTime, () => 7);
+    // The readings in the ring are all from frames drawn after the settle.
+    expect(rig.controller.state().clock.counted).toBeGreaterThan(0);
+    expect(rig.controller.state().clock.counted).toBeLessThanOrEqual(Math.ceil(seconds(1) / 4));
+  });
+
+  it('a duty change clears the readings taken at the old duty', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.runClock(seconds(5), onTime, () => 7);
+    expect(rig.controller.state().clock.counted).toBeGreaterThan(0);
+    rig.dropInFlight();
+    rig.controller.clearClockEvidence(rig.nowMs);
+    expect(rig.controller.state().clock.counted).toBe(0);
+  });
+});
+
+describe('the sensor’s own work is not the pixels’', () => {
+  it('excludes a late interval the sensor explains, and counts one it does not', () => {
+    const explained = new Rig(new ResolutionController(SHORT_LADDER));
+    explained.run(TWO_DOWN_WINDOWS, () => 2 * TICK, { sensorMs: 2 * TICK - BUDGET_MS + 0.5 });
+    expect(explained.controller.state().countedWindow).toBe(0);
+    expect(explained.applied).toEqual([]);
+    const not = new Rig(new ResolutionController(SHORT_LADDER));
+    not.run(TWO_DOWN_WINDOWS, () => 2 * TICK, { sensorMs: 1 });
+    expect(not.applied.map((a) => a.reason)).toContain('down');
+  });
+
+  it('never excludes an on-time frame for the sensor’s work: a hair over the budget is vsync jitter', () => {
+    const rig = new Rig(new ResolutionController(SHORT_LADDER));
+    rig.run(600, (_r, i) => (i % 2 === 0 ? 16.8 : 16.55), { sensorMs: 2 });
+    expect(rig.controller.state().countedRate).toBe(1);
+  });
+});
+
+/** Up to the top by the clock at 7 ms, then past the probation so a hand-back
+ *  is a slide rather than the probe failing. */
+function earnedTop(): ClockRig {
+  const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+  blindScreen(rig);
+  rig.runClock(seconds(40), onTime, () => 7);
+  expect(rig.rung).toBe(TOP);
+  return rig;
+}
+
+describe('a rung the clock earned is kept only while the clock vouches for it', () => {
+  it('hands back at 15.5 ms, to Medium and never below, as a measured failure even after the probation', () => {
+    const rig = earnedTop();
+    rig.runClock(Math.ceil(PROBE_HOLD_MS / TICK), onTime, () => 7);
+    expect(rig.controller.state().probation).toBeNull();
+    const from = rig.applied.length;
+    rig.runClock(seconds(20), onTime, () => 15.5);
+    const after = rig.applied.slice(from);
+    expect(after.length).toBeGreaterThanOrEqual(1);
+    expect(rig.rung).toBe(MEDIUM);
+    expect(after.every((a) => a.to >= MEDIUM)).toBe(true);
+    expect(after[0].reason).toBe('revert');
+    expect(rig.controller.state().ceiling?.rung).toBe(TOP);
+  });
+
+  it('reverts a probe whose verification reads 15.5 ms, and escalates the ceiling like any failed probe', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.runClock(seconds(20), onTime, (rung) => (rung > MEDIUM ? 15.5 : 7));
+    const up = rig.applied.find((a) => a.reason === 'up');
+    const revert = rig.applied.find((a) => a.reason === 'revert');
+    expect(up).toBeDefined();
+    expect(revert?.to).toBe(MEDIUM);
+    expect(revert!.atMs - up!.atMs).toBeLessThan(REALLOC_SETTLE_MS + CLOCK_VERIFY_MS);
+    const state = rig.controller.state();
+    expect(state.ceiling?.rung).toBe(MEDIUM + 1);
+    expect(state.ceiling?.escalation).toBe(1);
+    expect(state.probeWaitMs).toBe(2 * PROBE_WAIT_MS);
+    expect(state.clock.last?.why).toBe('verify');
+    // Again after the minute: the second failure holds the rung four minutes.
+    rig.runClock(seconds(90), onTime, (rung) => (rung > MEDIUM ? 15.5 : 7));
+    expect(rig.controller.state().ceiling?.escalation).toBe(2);
+  });
+
+  it('a hand-back inside the probation is the probe failing', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    let slow = false;
+    rig.runClock(seconds(15), onTime, (rung) => (rung > MEDIUM && slow ? 15.5 : 7));
+    expect(rig.rung).toBe(MEDIUM + 1);
+    expect(rig.controller.state().probation).not.toBeNull();
+    slow = true;
+    rig.runClock(seconds(10), onTime, (rung) => (rung > MEDIUM && slow ? 15.5 : 7));
+    const last = rig.applied[rig.applied.length - 1];
+    expect(last.reason).toBe('revert');
+    expect(rig.controller.state().ceiling?.rung).toBe(MEDIUM + 1);
+  });
+
+  it('hands back at once on four readings in a row over the budget — a capped fence among them', () => {
+    const rig = earnedTop();
+    rig.runClock(Math.ceil(PROBE_HOLD_MS / TICK), onTime, () => 7);
+    const from = rig.applied.length;
+    const atMs = rig.nowMs;
+    rig.runClock(seconds(1), onTime, (_r, i) => (i % 2 === 0 ? Infinity : 20));
+    const step = rig.applied[from];
+    expect(step).toBeDefined();
+    expect(step.to).toBe(TOP - 1);
+    expect(step.atMs - atMs).toBeLessThanOrEqual((CLOCK_PANIC_COUNT + 1) * rig.duty * TICK + 1);
+    expect(rig.controller.state().clock.last?.why === 'panic' || rig.controller.state().clock.last?.why === 'verify').toBe(true);
+    expect(CLOCK_PANIC_COUNT).toBe(4);
+  });
+
+  it('holds the delivered rate, not the clock: an under-reading clock at 55 fps goes back to Medium within a delivery span', () => {
+    const rig = earnedTop();
+    rig.runClock(Math.ceil(PROBE_HOLD_MS / TICK), onTime, () => 7);
+    const from = rig.applied.length;
+    const atMs = rig.nowMs;
+    rig.runClock(seconds(2 * DOWN_WINDOW_S), oneInLate(11), () => 10);
+    const step = rig.applied[from];
+    expect(step).toBeDefined();
+    expect(step.to).toBe(MEDIUM);
+    expect(step.reason).toBe('revert');
+    expect(step.atMs - atMs).toBeLessThanOrEqual(CLOCK_DELIVERY_SPAN_MS + 2 * TICK);
+    expect(rig.controller.state().clock.last?.why).toBe('delivery');
+    expect(rig.controller.state().ceiling?.rung).toBe(TOP);
+    expect(CLOCK_INTERVAL_DOWN).toBe(1.05);
+  });
+
+  it('counts every drawn frame for delivery — a streaming overrun is not excused there', () => {
+    const rig = earnedTop();
+    rig.runClock(Math.ceil(PROBE_HOLD_MS / TICK), onTime, () => 7);
+    const from = rig.applied.length;
+    // 58 fps, every late frame carrying sliced work: the counted intervals see
+    // a clean 60, the screen does not.
+    let i = 0;
+    for (let k = 0; k < seconds(8); k++) {
+      const late = (++i % 29) === 0;
+      rig.runClock(1, () => (late ? 2 * TICK : TICK), () => 7, late ? { workedMs: 3 } : {});
+    }
+    expect(rig.applied.slice(from)[0]?.to).toBe(MEDIUM);
+    expect(rig.controller.state().clock.last?.why).toBe('delivery');
+    expect(CLOCK_DELIVERY_GUARD).toBe(1.02);
+  });
+
+  it('never climbs while the delivered rate is short of the screen’s, even if every counted interval is clean', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    let i = 0;
+    for (let k = 0; k < seconds(60); k++) {
+      const late = (++i % 40) === 0;
+      rig.runClock(1, () => (late ? 2 * TICK : TICK), () => 7, late ? { workedMs: 3 } : {});
+    }
+    expect(rig.applied).toEqual([]);
+    expect(rig.controller.state().clock.deliveredMs!).toBeGreaterThan(CLOCK_DELIVERY_UP * BUDGET_MS);
+  });
+
+  it('goes back to Medium, with no ceiling, when the readings stop', () => {
+    const rig = earnedTop();
+    const from = rig.applied.length;
+    rig.runClock(seconds(30), onTime, () => null);
+    const after = rig.applied.slice(from);
+    expect(after.map((a) => a.reason)).toEqual(['restore']);
+    expect(rig.rung).toBe(MEDIUM);
+    expect(rig.controller.state().ceiling).toBeNull();
+    expect(rig.controller.state().clock.last?.why).toBe('silent');
+  });
+
+  it('goes back to Medium, with no ceiling, when the clock is lost', () => {
+    const rig = earnedTop();
+    const wait = rig.controller.state().probeWaitMs;
+    rig.controller.setClockOff('the WebGL context was lost');
+    rig.runClock(2, onTime, () => 7);
+    expect(rig.applied[rig.applied.length - 1].reason).toBe('restore');
+    expect(rig.rung).toBe(MEDIUM);
+    expect(rig.controller.state().ceiling).toBeNull();
+    expect(rig.controller.state().probeWaitMs).toBe(wait);
+    // And it does not climb again while off.
+    rig.runClock(seconds(40), onTime, () => 7);
+    expect(rig.rung).toBe(MEDIUM);
+  });
+
+  it('never touches the floor’s references', () => {
+    const rig = earnedTop();
+    rig.runClock(seconds(20), onTime, () => 15.5);
+    const state = rig.controller.state();
+    expect(state.floorReference).toBeNull();
+    expect(state.stepReference).toBeNull();
+  });
+});
+
+describe('a rung the clock earned is re-earned after every evidence reset', () => {
+  it('keeps the rung when the readings after an arrival still fit', () => {
+    const rig = earnedTop();
+    const from = rig.applied.length;
+    rig.controller.notify('arrival', rig.nowMs);
+    expect(rig.controller.state().clock.verify?.kind).toBe('reset');
+    rig.runClock(seconds(4), onTime, () => 7);
+    expect(rig.applied.slice(from)).toEqual([]);
+    expect(rig.controller.state().clock.verify).toBeNull();
+  });
+
+  it('restores Medium with no ceiling and no longer wait when they do not', () => {
+    const rig = earnedTop();
+    const wait = rig.controller.state().probeWaitMs;
+    rig.controller.notify('resize', rig.nowMs);
+    rig.runClock(seconds(4), onTime, () => 15.5);
+    const last = rig.applied[rig.applied.length - 1];
+    expect(last.reason).toBe('restore');
+    expect(last.to).toBe(MEDIUM);
+    const state = rig.controller.state();
+    expect(state.ceiling).toBeNull();
+    expect(state.probeWaitMs).toBe(wait);
+  });
+
+  it('restores Medium when too few readings arrive in time', () => {
+    const rig = earnedTop();
+    rig.controller.notify('focus', rig.nowMs);
+    rig.runClock(seconds(4), onTime, () => null);
+    expect(rig.applied[rig.applied.length - 1].reason).toBe('restore');
+    expect(rig.controller.state().clock.last?.why).toBe('unverified');
+  });
+
+  it('re-earns across a pin: nothing is read while it holds, and the rung is verified when it lifts', () => {
+    const rig = earnedTop();
+    const from = rig.applied.length;
+    rig.controller.notify('pin', rig.nowMs);
+    rig.force = true;
+    rig.runClock(seconds(10), onTime, () => 7);
+    expect(rig.controller.state().clock.counted).toBe(0);
+    expect(rig.controller.state().clock.dropped.notSteering).toBeGreaterThan(0);
+    rig.force = false;
+    rig.controller.notify('unpin', rig.nowMs);
+    expect(rig.controller.state().clock.verify?.kind).toBe('reset');
+    rig.runClock(seconds(4), onTime, () => 7);
+    expect(rig.applied.slice(from)).toEqual([]);
+    expect(rig.rung).toBe(TOP);
+  });
+
+  it('re-earns after a ladder change — a resize, a fixed level back to Dynamic', () => {
+    const rig = earnedTop();
+    rig.controller.setLadder(FULL_LADDER, rig.nowMs);
+    expect(rig.controller.state().clock.verify?.kind).toBe('reset');
+    rig.runClock(seconds(4), onTime, () => 15.5);
+    expect(rig.rung).toBe(MEDIUM);
+    // A ladder with nothing above Medium re-clamps the rung and ends the
+    // clock's hold outright.
+    const top = earnedTop();
+    top.controller.setLadder(SHORT_LADDER, top.nowMs);
+    expect(top.controller.state().clock.earned).toBe(false);
+    expect(top.controller.state().clock.verify).toBeNull();
+  });
+
+  it('re-earns after a budget change that leaves the tick blind, and hands the rung to the tick when it is not', () => {
+    const rig = earnedTop();
+    blindScreen(rig);
+    expect(rig.controller.state().clock.verify?.kind).toBe('reset');
+    const tick = earnedTop();
+    fastScreen(tick);
+    expect(tick.controller.state().clock.earned).toBe(false);
+    expect(tick.controller.state().clock.verify).toBeNull();
+  });
+
+  it('an ?upscale= pin is a pin: the clock steps out and re-earns the rung after it', () => {
+    const rig = earnedTop();
+    rig.controller.notify('pin', rig.nowMs);
+    rig.runClock(seconds(5), onTime, () => 15.5);
+    expect(rig.rung).toBe(TOP);
+    rig.controller.notify('unpin', rig.nowMs);
+    rig.runClock(seconds(4), onTime, () => 15.5);
+    expect(rig.rung).toBe(MEDIUM);
+    expect(rig.applied[rig.applied.length - 1].reason).toBe('restore');
+  });
+});
+
+describe('a clock probe short of evidence', () => {
+  it('reverts when fewer than eight readings arrive in three seconds, without a ceiling', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    // Plenty at Medium; at the sharper rung almost no frame is sampled.
+    rig.runClock(seconds(14), onTime, (rung, i) => (rung > MEDIUM ? (i % 60 === 0 ? 7 : null) : 7));
+    const up = rig.applied.find((a) => a.reason === 'up');
+    const revert = rig.applied.find((a) => a.reason === 'revert');
+    expect(up).toBeDefined();
+    expect(revert).toBeDefined();
+    // A second of visible drawing with no reading is enough to call it.
+    expect(revert!.atMs - up!.atMs).toBeGreaterThanOrEqual(CLOCK_GAP_MS);
+    expect(revert!.atMs - up!.atMs).toBeLessThanOrEqual(CLOCK_VERIFY_MS + REALLOC_SETTLE_MS);
+    expect(rig.controller.state().ceiling).toBeNull();
+    expect(rig.controller.state().clock.last?.why).toBe('unverified');
+  });
+
+  it('fails when the readings it did get were starved or capped', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.runClock(seconds(14), onTime, (rung) => (rung > MEDIUM ? { readingMs: 7, starved: true } : 7));
+    expect(rig.applied.find((a) => a.reason === 'revert')).toBeDefined();
+    expect(rig.controller.state().ceiling?.rung).toBe(MEDIUM + 1);
+  });
+
+  it('starvation that appears only at the sharper rung is bounded by the ceiling’s escalation', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.runClock(seconds(20 * 60), onTime, (rung) => (rung > MEDIUM ? { readingMs: 7, starved: true } : 7));
+    const ups = rig.applied.filter((a) => a.reason === 'up');
+    expect(ups.length).toBeLessThanOrEqual(4);
+    expect(rig.rung).toBe(MEDIUM);
+  });
+});
+
+describe('the clock’s evidence', () => {
+  it('keeps starved readings out of the statistic, and a starved share over its bound blocks a climb', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.runClock(seconds(60), onTime, (_r, i) => ({ readingMs: 7, starved: i % 5 < 2 }));
+    expect(rig.applied).toEqual([]);
+    expect(rig.controller.state().clock.starvedShare!).toBeGreaterThan(STARVED_SHARE_MAX);
+  });
+
+  it('a starved share at a rung it earned long ago is silence: Medium, no ceiling', () => {
+    const rig = earnedTop();
+    rig.runClock(Math.ceil(PROBE_HOLD_MS / TICK), onTime, () => 7);
+    rig.runClock(seconds(20), onTime, () => ({ readingMs: 7, starved: true }));
+    expect(rig.rung).toBe(MEDIUM);
+    expect(rig.applied[rig.applied.length - 1].reason).toBe('restore');
+    expect(rig.controller.state().ceiling).toBeNull();
+  });
+
+  it('takes one reversal as the scene moving, and turns itself off on the second', () => {
+    // Each sharper rung reads 2.5 ms FASTER than the one below it.
+    const read = (rung: number): number => 9.5 - 2.5 * (rung - MEDIUM);
+    const once = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(once);
+    once.runClock(seconds(15), onTime, read);
+    expect(once.rung).toBe(MEDIUM + 1);
+    expect(once.controller.state().clock.reversals).toBe(1);
+    expect(once.controller.state().clock.off).toBeNull();
+    once.runClock(seconds(20), onTime, read);
+    const state = once.controller.state();
+    expect(state.clock.reversals).toBe(2);
+    expect(state.clock.off).toMatch(/faster than the rung below, 2 times/);
+    expect(state.clock.last?.why).toBe('reversal');
+    expect(once.rung).toBe(MEDIUM);
+    once.runClock(seconds(60), onTime, read);
+    expect(once.rung).toBe(MEDIUM);
+    expect(once.controller.wantsClock()).toBe(false);
+  });
+
+  it('fails a probe once when the intervals and the clock fail on the same second', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.runClock(seconds(20), (rung) => (rung > MEDIUM ? 2 * TICK : TICK), (rung) => (rung > MEDIUM ? Infinity : 7));
+    const state = rig.controller.state();
+    expect(rig.applied.filter((a) => a.reason === 'revert')).toHaveLength(1);
+    expect(state.ceiling?.escalation).toBe(1);
+    expect(state.probeWaitMs).toBe(2 * PROBE_WAIT_MS);
+  });
+
+  it('reports the down window’s size it hands back on', () => {
+    expect(CLOCK_DOWN_COUNT).toBe(16);
+    expect(CLOCK_DOWN_SHARE).toBe(0.9);
+    expect(CLOCK_UP_SHARE).toBeGreaterThan(0);
+  });
+});
+
+describe('silence, and the grace a reset gets', () => {
+  it('a second of visible drawing with no admissible reading is silence', () => {
+    const rig = earnedTop();
+    const from = rig.applied.length;
+    const atMs = rig.nowMs;
+    rig.runClock(seconds(3), onTime, () => null);
+    const step = rig.applied.slice(from)[0];
+    expect(step.reason).toBe('restore');
+    expect(step.atMs - atMs).toBeLessThanOrEqual(CLOCK_GAP_MS + 2 * TICK);
+    expect(rig.controller.state().clock.last?.why).toBe('silent');
+  });
+
+  it('too few readings in the last six seconds is silence, once the evidence is that old', () => {
+    const rig = earnedTop();
+    rig.duty = 40;
+    const from = rig.applied.length;
+    rig.runClock(seconds(10), onTime, () => 7);
+    const step = rig.applied.slice(from)[0];
+    expect(step?.reason).toBe('restore');
+    expect(rig.controller.state().clock.last?.why).toBe('silent');
+    expect(CLOCK_SILENCE_SPAN_MS).toBe(6000);
+  });
+
+  it('starvation over its share of the last attempts is silence', () => {
+    const rig = earnedTop();
+    const from = rig.applied.length;
+    rig.runClock(seconds(5), onTime, (_r, i) => ({ readingMs: 7, starved: i % 3 !== 0 }));
+    expect(rig.applied.slice(from)[0]?.reason).toBe('restore');
+    expect(rig.controller.state().clock.last?.why).toBe('starved');
+    expect(rig.controller.state().ceiling).toBeNull();
+  });
+
+  it('starts the grace at the first eligible frame, so a veil cannot use it up', () => {
+    const rig = earnedTop();
+    const from = rig.applied.length;
+    rig.controller.notify('arrival', rig.nowMs);
+    // Five seconds covered: nothing counts, nothing is decided.
+    rig.runClock(seconds(5), onTime, () => 7, { eligible: false });
+    expect(rig.applied.slice(from)).toEqual([]);
+    expect(rig.controller.state().clock.verify?.deadlineMs).toBeNull();
+    rig.runClock(seconds(4), onTime, () => 7);
+    expect(rig.applied.slice(from)).toEqual([]);
+    expect(rig.rung).toBe(TOP);
+  });
+
+  it('never restarts a deadline that is already running', () => {
+    const rig = earnedTop();
+    rig.controller.notify('resize', rig.nowMs);
+    rig.runClock(2, onTime, () => null);
+    const deadline = rig.controller.state().clock.verify?.deadlineMs;
+    expect(deadline).not.toBeNull();
+    rig.runClock(seconds(0.5), onTime, () => null);
+    rig.controller.notify('arrival', rig.nowMs);
+    rig.controller.clearClockEvidence(rig.nowMs);
+    rig.runClock(1, onTime, () => null);
+    expect(rig.controller.state().clock.verify?.deadlineMs).toBe(deadline);
+  });
+
+  it('suspends a rung the clock earned while the page is away, and re-earns it on the way back', () => {
+    const rig = earnedTop();
+    const from = rig.applied.length;
+    rig.runClock(seconds(30), onTime, () => null, { eligible: false });
+    expect(rig.applied.slice(from)).toEqual([]);
+    rig.controller.notify('focus', rig.nowMs);
+    rig.runClock(seconds(4), onTime, () => 7);
+    expect(rig.applied.slice(from)).toEqual([]);
+    expect(rig.rung).toBe(TOP);
+  });
+});
+
+describe('a clock rung’s failures add up across its probation', () => {
+  it('a device that heats slowly — earn, hold past the probation, fail, cool, repeat — escalates', () => {
+    const rig = new ClockRig(new ResolutionController(ONE_ABOVE));
+    blindScreen(rig);
+    let hot = false;
+    const read = (rung: number): number => (rung > MEDIUM && hot ? 15.5 : 7);
+    const ceilings: number[] = [];
+    for (let round = 0; round < 3; round++) {
+      hot = false;
+      // Climb and hold past the two-minute probation.
+      rig.runClock(seconds(CEILING_HOLD_MS[Math.min(round, CEILING_HOLD_MS.length - 1)] / 1000 + 150), onTime, read);
+      expect(rig.rung).toBe(MEDIUM + 1);
+      hot = true;
+      rig.runClock(seconds(10), onTime, read);
+      expect(rig.rung).toBe(MEDIUM);
+      ceilings.push(rig.controller.state().ceiling?.escalation ?? 0);
+    }
+    expect(ceilings).toEqual([1, 2, 3]);
   });
 });

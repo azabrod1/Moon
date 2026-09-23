@@ -160,7 +160,7 @@ import {
   type ReleaseCandidate,
 } from './world/gpuEnvelope';
 import {
-  AtmosphereLut, lastBakeSliceSample, takeBakeSliceSpendMs,
+  AtmosphereLut, lastBakeSliceSample, takeBakeSliceSpendMs, peekBakeSliceSpendMs,
   type AtmosphereBakeStats, type AtmosphereTables,
 } from './world/atmosphereLut';
 import { bindAtmosphereShellTables, restShellCrossfade, setAtmosphereShellGroundSegments, shellTierAlphas, stepShellCrossfade, type ShellCrossfade } from './world/atmosphereShell';
@@ -10850,6 +10850,17 @@ export class PlanetariumMode {
     const ms = this.frameWorkMs + takeBakeSliceSpendMs();
     this.frameWorkMs = 0;
     return ms;
+  }
+
+  /**
+   * The frame-sliced work since the last take, without taking it. Read at the
+   * end of a draw by the GPU frame clock (app/gpuFrameClock.ts), which fences
+   * only a frame whose own tick did no sliced work — an upload's GPU cost
+   * would otherwise be timed as the pixels' — while the take at the next draw
+   * still charges the whole span to the interval it belongs to.
+   */
+  peekFrameWork(): number {
+    return this.frameWorkMs + peekBakeSliceSpendMs();
   }
 
   /** main.ts draws this over the world frame, after the composer has finished

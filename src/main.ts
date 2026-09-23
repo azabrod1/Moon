@@ -35,8 +35,9 @@ import {
 } from './app/renderQuality';
 import {
   ResolutionController, ZERO_COUNTED_WARN_MS,
-  type Decision, type IntervalSample,
+  type Decision, type GpuObservation, type IntervalSample,
 } from './app/resolutionController';
+import { createGpuFrameClock, parseGpuClockParam } from './app/gpuFrameClock';
 import { FrameCadence, parseRefreshParam } from './app/frameCadence';
 import {
   isScreenRate, requestedMsFor, resolveBootFrameRate, writeFrameRate,
@@ -156,8 +157,11 @@ try {
 applyRenderProfile(renderer, appMode);
 renderer.toneMappingExposure = 1.0;
 document.body.appendChild(renderer.domElement);
+/** Set once the context is lost: the GPU frame clock's fences die with it. */
+let contextLost = false;
 renderer.domElement.addEventListener('webglcontextlost', (event) => {
   event.preventDefault();
+  contextLost = true;
   debugError('WebGL context lost');
 });
 renderer.domElement.addEventListener('webglcontextrestored', () => {
@@ -507,6 +511,11 @@ function qualityReadout() {
     latch: state.latch,
     lastStep: state.lastStep,
     idle: state.idle,
+    // The GPU frame clock: the sensor (what it samples, discards and costs)
+    // and the rule's side of it (whether it steers, its windows, why a rung
+    // moved) — app/gpuFrameClock.ts, app/resolutionController.ts.
+    gpu: gpuFrameClock.state(),
+    clock: state.clock,
     bytes: qualityRenderTargetBytes(),
     reason: qualityBoundsLive.reason,
     // What the scene-sized targets are allocated at against what this rung
@@ -1382,6 +1391,7 @@ function applySceneResolution(why: string): void {
     sceneDraw: `${sceneRectsLive.draw.width}x${sceneRectsLive.draw.height}`,
     sceneAlloc: sceneTarget ? `${sceneTarget.width}x${sceneTarget.height}` : null,
     mb: Math.round(qualityRenderTargetBytes() / 1e5) / 10,
+    gpu: gpuClockLine(),
   });
 }
 
@@ -1419,6 +1429,105 @@ let arrivalVeilWasUp = false;
  *  well, and polling document.hasFocus() would exclude every frame of the
  *  session with no symptom but a Dynamic that never moves. */
 let pageFocused = true;
+/** Whether this tick's frame could count, as the step at its top judged it:
+ *  what the GPU frame clock arms on at the end of the draw. */
+let lastEligibleNow = false;
+
+// --- The GPU frame clock ----------------------------------------------------
+//
+// Where the display's tick cannot tell an 11 ms frame from a 16 ms one, the
+// controller steers a rung above Medium by a fence reading of the frame
+// instead (app/gpuFrameClock.ts). It samples only where the controller will
+// read it; a reading is handed to the NEXT step and admitted there only if the
+// interval of the frame it measured counted; and its own CPU is reported as the
+// interval's `sensorMs` and kept out of the tick's busy figures.
+
+/** A reading that finished since the last step, for that step to pair. */
+let gpuPending: GpuObservation | null = null;
+/** The sensor's CPU since the last step, and inside the current tick. */
+let sensorSinceStep = 0;
+let sensorTickMs = 0;
+const gpuFrameClock = createGpuFrameClock({
+  gl: renderer.getContext(),
+  killed: parseGpuClockParam(location.search),
+  onSample: (sample) => {
+    gpuPending = {
+      drawSeq: sample.drawSeq,
+      generation: sample.generation,
+      sampledAtMs: sample.sampledAtMs,
+      readingMs: sample.readingMs,
+      busyMs: sample.busyMs,
+      starved: sample.starved,
+      gridMs: sample.gridMs,
+    };
+  },
+  onWork: (ms) => { sensorSinceStep += ms; },
+  onDuty: (duty) => {
+    // Readings taken at the old duty are dropped, and a reading still out
+    // with them.
+    gpuPending = null;
+    resolutionController.clearClockEvidence(performance.now());
+    debugLog('GPU clock', { duty });
+  },
+  onDisabled: (reason) => {
+    gpuPending = null;
+    resolutionController.setClockOff(reason);
+    debugWarn('The GPU clock is off for this session', { reason });
+  },
+});
+// No clock at all — `?gpuclock=0`, or no WebGL2 — is the rule as it was.
+if (!gpuFrameClock.usable) resolutionController.setClockOff(gpuFrameClock.state().reason ?? 'no clock');
+
+/**
+ * At the end of a drawn frame: the sensor flushes while the controller would
+ * read it and fences the sampled frame. `wanted` is every condition under which
+ * a reading could steer; `eligible` is whether this frame could count; `clean`
+ * is whether its own tick did no sliced work and linked no program.
+ */
+function gpuClockAfterDraw(nowMs: number): void {
+  sensorTickMs = 0;
+  if (!gpuFrameClock.usable) return;
+  if (contextLost) {
+    gpuFrameClock.disable('the WebGL context was lost');
+    return;
+  }
+  const t0 = performance.now();
+  const measuring = import.meta.env.DEV && (gpuProfiler?.active === true || gpuClock?.active === true);
+  const wanted = appMode === 'planetarium'
+    && qualityLevel === 'dynamic'
+    && !qualityIdle
+    && !measuring
+    && resolutionController.wantsClock();
+  const eligible = lastEligibleNow
+    && appMode === 'planetarium'
+    && !(planetariumMode?.isMapOpen() ?? true)
+    && !measuring;
+  const clean = (planetariumMode?.peekFrameWork() ?? 1) === 0
+    && (renderer.info.programs?.length ?? 0) === lastProgramCount;
+  gpuFrameClock.afterDraw({
+    drawSeq,
+    callbackStartMs: nowMs,
+    wanted,
+    eligible,
+    clean,
+    barMs: resolutionController.clockBarMs,
+    generation: resolutionController.generation,
+  });
+  sensorTickMs = performance.now() - t0;
+}
+
+/** The clock in a few characters for the `?debug=1` Quality line: the p90
+ *  against the bar, the trusted readings in reach and the duty, or why it is
+ *  off. */
+function gpuClockLine(): string {
+  const gpu = gpuFrameClock.state();
+  const clock = resolutionController.state().clock;
+  if (!gpuFrameClock.usable) return `off: ${gpu.reason ?? clock.off ?? 'unavailable'}`;
+  if (!clock.steering) return 'not steering';
+  const p90 = clock.p90Ms === null ? '–' : Number.isFinite(clock.p90Ms) ? clock.p90Ms.toFixed(1) : 'capped';
+  return `${p90}/${clock.barMs.toFixed(1)} n=${clock.counted} duty ${gpu.duty}`;
+}
+
 /** The silence check runs on a countdown of DRAWS rather than every frame: at
  *  a 30 fps target that is every ten seconds. */
 let qualitySilenceCountdown = 0;
@@ -1472,6 +1581,14 @@ function stepQuality(nowMs: number): void {
     && !veilUp;
   const eligible = eligibleNow && lastFrameEligible;
   lastFrameEligible = eligibleNow;
+  lastEligibleNow = eligibleNow;
+  // The interval belongs to the previous draw, whose number `drawSeq` still
+  // is; a GPU reading that finished since the last step rides along to be
+  // paired with its own draw's verdict.
+  const gpu = gpuPending;
+  gpuPending = null;
+  const sensorMs = sensorSinceStep;
+  sensorSinceStep = 0;
   const decision = resolutionController.step({
     nowMs,
     intervalMs: nowMs - previousFrameAtMs,
@@ -1479,8 +1596,15 @@ function stepQuality(nowMs: number): void {
     mainThreadSumMs,
     workedMs,
     eligible,
+    drawSeq,
+    gpu,
+    sensorMs,
   });
   if (decision !== null) applyQualityDecision(decision, nowMs);
+  // The controller turned the clock off itself (a repeated reversal): the
+  // sensor stops for the session with it.
+  const off = resolutionController.clockOff;
+  if (off !== null && gpuFrameClock.usable) gpuFrameClock.disable(off);
   if (--qualitySilenceCountdown <= 0) {
     qualitySilenceCountdown = QUALITY_SILENCE_CHECK_FRAMES;
     reportQualitySilence();
@@ -2458,6 +2582,10 @@ function getAutoMode(): 'planetarium' | 'volumeCompare' | 'interior' {
 // Dev-only bridge for the headless screenshot harness: pose the camera and set
 // the clock from out of process. The call site is guarded by a DEV check, so a
 // production build dead-code-eliminates this entirely.
+/** Draw numbers for the DEV bridge's synthetic GPU readings: counting down
+ *  from -1, so they can never be mistaken for a real draw's. */
+let devInjectSeq = -1;
+
 function installDevHooks() {
   installSurfacePerfInputTracing();
   (window as any).__moon = {
@@ -2650,13 +2778,62 @@ function installDevHooks() {
      * the plumbing — a rung moving and the targets re-sizing — without faking
      * load, which no pin can do (a pin holds the rule idle by design).
      */
-    quality: (opts?: { inject?: IntervalSample[] } | null) => {
+    quality: (opts?: {
+      inject?: IntervalSample[];
+      injectGpu?: { readingMs: number; busyMs?: number; starved?: boolean; intervalMs?: number }[];
+    } | null) => {
       for (const sample of opts?.inject ?? []) {
         const decision = resolutionController.step(sample);
         if (decision !== null) applyQualityDecision(decision, sample.nowMs);
       }
+      // A GPU reading paired with a synthetic frame of its own, the way the
+      // sensor's are: the frame counts, and its reading is admitted with it.
+      // Call once a frame from a page's own rAF, with the sensor muted
+      // (`gpuFrameClock({ mute: true })`) so its real readings stay out.
+      for (const r of opts?.injectGpu ?? []) {
+        const nowMs = performance.now();
+        const intervalMs = r.intervalMs ?? resolutionController.clockBarMs;
+        const seq = devInjectSeq--;
+        const decision = resolutionController.step({
+          nowMs,
+          intervalMs,
+          mainThreadMs: 1,
+          workedMs: 0,
+          eligible: true,
+          drawSeq: seq,
+          gpu: {
+            drawSeq: seq,
+            generation: resolutionController.generation,
+            sampledAtMs: nowMs - intervalMs,
+            readingMs: r.readingMs,
+            busyMs: r.busyMs ?? 2,
+            starved: r.starved ?? false,
+            gridMs: 1,
+          },
+        });
+        if (decision !== null) applyQualityDecision(decision, nowMs);
+      }
       return qualityReadout();
     },
+    /**
+     * The GPU frame clock, live (app/gpuFrameClock.ts): `on` turns it off or
+     * back on for the controller too; `force` samples regardless of what the
+     * controller wants (the pixel gate's arm, under a capture pin); `mute`
+     * stops the sampling without telling the controller (the inject arm);
+     * `flushEvery` false flushes only the fenced frames (the flush A/B);
+     * `duty` pins one (the on/off smoothness arm); `record` keeps up to that
+     * many raw samples for `gpuFrameSamples()`. Returns the sensor's state.
+     */
+    gpuFrameClock: (opts?: { on?: boolean; force?: boolean; mute?: boolean; flushEvery?: boolean; duty?: number; record?: number }) => {
+      if (opts) {
+        gpuFrameClock.devSet(opts);
+        if (opts.on === false) resolutionController.setClockOff('turned off from the bridge');
+        if (opts.on === true && gpuFrameClock.usable) resolutionController.setClockOff(null);
+      }
+      return gpuFrameClock.state();
+    },
+    /** The samples the GPU frame clock kept since `gpuFrameClock({ record: n })`, taken. */
+    gpuFrameSamples: () => gpuFrameClock.devTakeSamples(),
     /** Pick a level, exactly as the menu row does: saved, applied, reported. */
     setQuality: (level: QualityLevel) => {
       setQualityLevel(level);
@@ -3185,10 +3362,13 @@ async function init() {
     if (exposurePin !== null) exposureCurrent = exposurePin;
     renderer.toneMappingExposure = exposureCurrent;
     let drew = false;
+    sensorTickMs = 0;
     if (willDraw && bootRender.shouldRender()) {
       drawWorldFrame();
       drawSeq++;
       drew = true;
+      // After the corner chart: the fence has to close every draw of the frame.
+      gpuClockAfterDraw(now);
       // Every draw resets the count, forced or due, so a cover, a veil or a
       // capture pin can never leave a schedule running ahead of the clock.
       frameCadence.drew(rafTimestamp);
@@ -3202,7 +3382,9 @@ async function init() {
     // hands the resolution controller as the span's main-thread time. A late
     // interval whose app ticks were small is a late frame the app cannot
     // explain by itself, which is the only case fewer pixels would fix.
-    loopBusyMs = performance.now() - now;
+    // The GPU clock's fence and flush are the sensor's, not the app's: they
+    // reach the controller as the interval's sensorMs instead.
+    loopBusyMs = performance.now() - now - sensorTickMs;
     if (loopBusyMs > busyMaxSinceDraw) busyMaxSinceDraw = loopBusyMs;
     busySumSinceDraw += loopBusyMs;
     if (import.meta.env.DEV && drew) recordDraw(rafTimestamp, now, loopBusyMs);

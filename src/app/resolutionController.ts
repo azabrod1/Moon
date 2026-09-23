@@ -29,7 +29,8 @@
  * the number).
  *
  * **Above Medium the bar is the display's own tick, and on a 60 Hz display
- * there is no climb at all.** Taking a rung above Medium asks a different
+ * the intervals take no climb at all — only the GPU clock can (below).**
+ * Taking a rung above Medium asks a different
  * question — may the picture be made sharper than it was? — and the intervals
  * can only answer it where the display has a finer tick than the budget: on a
  * 120 Hz panel a frame that fits one tick reads 8.33 ms and one that needs two
@@ -173,12 +174,83 @@
  * would exclude every frame of the session with no symptom but a controller
  * that never moves.
  *
+ * **The GPU clock, where the tick is blind.** On a display whose tick is not
+ * finer than the budget and with no row target (`aboveAllowed` false — every
+ * 60 Hz phone, Safari on a Mac), a rung above Medium may be taken when the
+ * frame clock of app/gpuFrameClock.ts says there is room, and is handed back
+ * when it says the room is gone. `aboveAllowed` keeps its meaning — the tick,
+ * or a row — and the clock is a separate branch that never opens the interval
+ * up-path: where the tick IS finer the clock does nothing at all, because
+ * there the intervals are a direct measurement and the clock a latency with
+ * an engine's bias. Where there is no clock (WebGL1, `?gpuclock=0`) the rule
+ * is exactly what it was. The slide below Medium never reads the clock.
+ *
+ * A reading is admitted only paired with the verdict on the interval of the
+ * frame it measured (`IntervalSample.gpu`, matched by `drawSeq`, whichever
+ * later step it arrives on): a frame whose interval did not count, one drawn
+ * before a settle ended, or one from an older generation — every rung change,
+ * event, budget and ladder bumps it — measured something else. Starved
+ * readings never enter a statistic; capped ones count as over the bar.
+ *
+ * A clock climb is one rung, and needs everything an interval climb needs
+ * that still means something on a blind tick — the probe wait, no ceiling on
+ * the rung, the up window of intervals within its bar (the frames are not
+ * already late: a device capped from outside the app would otherwise climb
+ * on an idle-looking GPU), no not-pixel-bound latch — plus a clock window of
+ * at least `CLOCK_UP_COUNT` trusted readings spanning `CLOCK_UP_SPAN_MS`, a
+ * starved share within bounds, and the p90 of the next rung's predicted
+ * readings (app/gpuFrameClockPolicy.ts `predictReadingMs`) inside
+ * `CLOCK_UP_SHARE` of the budget. The p90 and not the median: under motion a
+ * median can read ample room while nearly half the frames sit at the deadline.
+ *
+ * A rung the clock earned is kept only while the clock vouches for it. Right
+ * after the climb, and again after ANY evidence reset while it stands (a rung
+ * change, an arrival, a resize, a focus gain, a pin lifted, a budget or a
+ * ladder), `CLOCK_VERIFY_COUNT` fresh readings must arrive within
+ * `CLOCK_VERIFY_MS` and pass — their mean with the longest dropped inside
+ * `CLOCK_DOWN_SHARE` of the budget. A probe that fails that is the probe
+ * failing (a revert, the wait doubled, the ceiling's escalation), and so are
+ * starved or capped readings repeating through it; a reset that is not
+ * re-earned in time is a plain restore to Medium, with no ceiling and no
+ * longer wait, because a lifecycle event is not the rung failing. After that
+ * the rung is handed back — one rung, never below Medium — by any of: the p90
+ * of a window of at least `CLOCK_DOWN_COUNT` readings spanning
+ * `CLOCK_DOWN_SPAN_MS` above `CLOCK_DOWN_SHARE` of the budget;
+ * `CLOCK_PANIC_COUNT` readings in a row over the budget; or the intervals'
+ * down window over `CLOCK_INTERVAL_DOWN` of the budget, a tighter bar than
+ * the tick's, because a phone at 52–58 fps at a sharper rung is the
+ * regression this rule exists to prevent. Inside its probation each of those
+ * is the probe failing. And the clock going quiet — too few readings in the
+ * staleness horizon, starved readings over their share, or the sensor off —
+ * returns the rung to Medium with no ceiling: no clock is the rule as it was,
+ * applied to the rung as well as to the climb. Once a climb's verification
+ * has measured the sharper rung, a clock that read it LOWER than the rung
+ * below (by more than its grid) is not tracking the load, and is off for the
+ * session. None of the clock's decisions touch the floor's references, which
+ * are interval evidence.
+ *
+ * Not in this version: the slide below Medium by the clock; a bias
+ * calibration; a timer query; the clock on a display with a finer tick or
+ * under a row target (a row's cadence can be quantised too — deferred, not
+ * claimed sufficient); a predictive extrapolation term; and the phone's own
+ * numbers, which the constants wait on.
+ *
  * **No estimator of the panel's period lives here.** The display's cadence
  * comes in through `setBudget` from app/frameCadence.ts, which calibrates it
  * under the boot cover and raises it on faster live evidence; an earlier
  * draft estimated it from a low percentile of counted intervals, and a fast
  * misread there was a budget too tight for the display.
  */
+
+import {
+  CLOCK_DOWN_SHARE,
+  CLOCK_UP_SHARE,
+  REVERSAL_MS,
+  REVERSAL_REPEATS,
+  STARVED_SHARE_MAX,
+  isReversal,
+  predictReadingMs,
+} from './gpuFrameClockPolicy';
 
 /** The budget every display is held to unless the Frame rate row moves it:
  *  60 fps. A delivered 60 Hz interval reads at or a hair above this, which is
@@ -290,6 +362,89 @@ export const LATCH_HOLD_MS: readonly number[] = [60_000, 240_000, Infinity];
  *  a phone can say so through `?debug=1`. */
 export const ZERO_COUNTED_WARN_MS = 30_000;
 
+/** Trusted clock readings, and the seconds they must span, behind a clock
+ *  climb: a median of that size was stable to ±1.5 ms p10–p90 on the one Mac
+ *  measured, and the span keeps a burst of readings from one pose deciding. */
+export const CLOCK_UP_COUNT = 32;
+export const CLOCK_UP_SPAN_MS = 6000;
+
+/** And behind a hand-back by the clock. */
+export const CLOCK_DOWN_COUNT = 16;
+export const CLOCK_DOWN_SPAN_MS = 3000;
+
+/** Fresh readings a rung the clock earned must produce, and how long it has
+ *  to produce them, after the climb and after every evidence reset: fixed,
+ *  so a duty of 8 or 16 still reaches a verdict inside the time. */
+export const CLOCK_VERIFY_COUNT = 8;
+export const CLOCK_VERIFY_MS = 3000;
+
+/** Readings in a row over the budget that hand the rung back at once. */
+export const CLOCK_PANIC_COUNT = 4;
+
+/** The intervals' down bar at a rung the clock earned: about 57 fps, where
+ *  the tick's own bar would be 52. */
+export const CLOCK_INTERVAL_DOWN = 1.05;
+
+/** Starved or capped readings through a clock probe's verification that,
+ *  once they are over the starved share, are the probe failing rather than
+ *  merely short of evidence. */
+export const CLOCK_PROBE_BAD_MIN = 2;
+
+/** The recent attempts the starved share is read over, and how many of them a
+ *  share needs before it means anything. */
+export const CLOCK_STARVED_WINDOW = 16;
+export const CLOCK_STARVED_MIN = 8;
+
+/** Silence: this long of active, visible drawing with no admissible reading. */
+export const CLOCK_GAP_MS = 1000;
+
+/** Silence, too: fewer than `CLOCK_DOWN_COUNT` trusted readings in the
+ *  preceding span this long, once the clock's evidence is that old. */
+export const CLOCK_SILENCE_SPAN_MS = 6000;
+
+/** Every frame drawn, untrimmed and unfiltered — streaming, main-thread and
+ *  sensor overruns included, only the page away, covered or pinned left out —
+ *  over this span: its mean must be within `CLOCK_DELIVERY_UP` of the budget
+ *  for a clock climb, and a rung the clock earned goes back to Medium when it
+ *  passes `CLOCK_DELIVERY_GUARD`. 58 fps is 17.24 ms, which a trimmed mean of
+ *  counted intervals against 1.05 × the budget would let through; permission
+ *  to KEEP extra pixels is not a question about what the pixels cost. */
+export const CLOCK_DELIVERY_SPAN_MS = 6000;
+export const CLOCK_DELIVERY_UP = 1.01;
+export const CLOCK_DELIVERY_GUARD = 1.02;
+
+/** Readings the clock keeps. At most one reading a frame, and a 6 s window at
+ *  60 fps and one frame in four is 90 of them. */
+const CLOCK_RING_SIZE = 256;
+
+/** Recent frames whose interval verdict is kept for a late reading to find. */
+const VERDICT_RING_SIZE = 8;
+
+/** Eligible steps kept for the delivery guard: six seconds at 120 callbacks a
+ *  second, which a pinned 60 Hz cadence on a 120 Hz engine delivers. */
+const DELIVERY_RING_SIZE = 1024;
+
+/** A GPU clock reading of one frame (app/gpuFrameClock.ts). */
+export interface GpuObservation {
+  /** The draw the fence closed. */
+  drawSeq: number;
+  /** The controller's generation when that draw ended. */
+  generation: number;
+  /** When that draw's animation callback started: what the settle and the
+   *  staleness horizon judge the reading by. */
+  sampledAtMs: number;
+  /** Signalled less the callback start; Infinity for a capped fence. */
+  readingMs: number;
+  /** Submitted less the callback start: the part that does not grow with
+   *  pixels. */
+  busyMs: number;
+  /** The poll that saw the signal came after a gap the clock cannot vouch
+   *  for. Never enters a statistic. */
+  starved: boolean;
+  /** performance.now()'s grid as the sensor has seen it. */
+  gridMs?: number | null;
+}
+
 /** One frame's evidence: the interval that ENDS at `nowMs`, and the previous
  *  frame's own figures, which are what produced it. */
 export interface IntervalSample {
@@ -313,10 +468,65 @@ export interface IntervalSample {
   /** Both endpoints eligible: visible and focused, and not covered by the
    *  boot cover or an arrival veil. */
   eligible: boolean;
+  /** The draw that produced the interval, so a GPU reading of that draw can
+   *  be paired with this verdict when it arrives. */
+  drawSeq?: number;
+  /** A GPU reading that finished since the last step: of this sample's draw,
+   *  or of an earlier one whose reading came in late. Admitted only if that
+   *  draw's interval counted. */
+  gpu?: GpuObservation | null;
+  /** The GPU clock's own main-thread work inside the interval — its fence,
+   *  its flushes and its poll tasks. An over-budget interval this work
+   *  explains was made late by the sensor, not by the pixels, and does not
+   *  count. Never part of the main-thread figures. */
+  sensorMs?: number;
 }
 
 /** Why a rung is being changed. */
-export type StepReason = 'down' | 'up' | 'revert' | 'floor latch' | 'ladder';
+export type StepReason = 'down' | 'up' | 'revert' | 'floor latch' | 'ladder' | 'restore';
+
+/** Why the clock moved a rung, for the readout. */
+export type ClockWhy =
+  | 'climb' | 'verify' | 'unverified' | 'panic' | 'delivery' | 'hand-back' | 'intervals'
+  | 'silent' | 'starved' | 'off' | 'reversal';
+
+/** The GPU clock's part of the rule, as `__moon.quality().clock` shows it. */
+export interface ClockState {
+  /** The clock is the rule above Medium right now: the tick is blind, no row
+   *  target, a rung above Medium exists, the controller is not held, and the
+   *  clock is not off. */
+  steering: boolean;
+  /** The current rung is above Medium because the clock earned it. */
+  earned: boolean;
+  /** Why the clock is off, or null. */
+  off: string | null;
+  generation: number;
+  /** Trusted readings of this generation inside the staleness horizon. */
+  counted: number;
+  /** Starved readings among the recent ones, or null with too few. */
+  starvedShare: number | null;
+  /** Over the trusted readings of this generation: diagnostic only. */
+  medianMs: number | null;
+  /** The safety statistic, over the same readings. */
+  p90Ms: number | null;
+  /** What a reading is held against: the budget. */
+  barMs: number;
+  /** The next rung's predicted p90, where there is a rung to predict and a
+   *  climb window to predict it from. */
+  predictedNextMs: number | null;
+  /** Every frame drawn over the delivery span, untrimmed, or null before the
+   *  span has been drawn. */
+  deliveredMs: number | null;
+  /** A verification standing: a probe's, or a reset's re-earning, with its
+   *  deadline once the first eligible frame after it has started it. */
+  verify: { kind: 'probe' | 'reset'; readings: number; deadlineMs: number | null } | null;
+  panicStreak: number;
+  /** Climbs whose sharper rung read markedly faster than the rung below. */
+  reversals: number;
+  accepted: number;
+  dropped: { unpaired: number; uncounted: number; stale: number; settling: number; notSteering: number };
+  last: { atMs: number; from: number; to: number; why: ClockWhy } | null;
+}
 
 /** A rung to apply. The caller applies it and calls onApplied; until it does,
  *  no further decision is made. */
@@ -391,6 +601,194 @@ export interface ControllerState {
   /** Counted intervals a decision needs at this budget. */
   downCounted: number;
   upCounted: number;
+  /** The GPU clock's part of the rule. */
+  clock: ClockState;
+}
+
+/**
+ * The GPU clock's readings, newest first, with the windows the rule reads.
+ * Allocation-light: the ring and its scratch are sized once.
+ */
+class ClockRing {
+  private readonly atMs: Float64Array;
+  private readonly readingMs: Float64Array;
+  private readonly busyMs: Float64Array;
+  private readonly starved: Uint8Array;
+  private readonly scratch: Float64Array;
+  private head = 0;
+  private count = 0;
+
+  constructor(readonly capacity: number) {
+    this.atMs = new Float64Array(capacity);
+    this.readingMs = new Float64Array(capacity);
+    this.busyMs = new Float64Array(capacity);
+    this.starved = new Uint8Array(capacity);
+    this.scratch = new Float64Array(capacity);
+  }
+
+  push(atMs: number, readingMs: number, busyMs: number, starved: boolean): void {
+    this.atMs[this.head] = atMs;
+    this.readingMs[this.head] = readingMs;
+    this.busyMs[this.head] = busyMs;
+    this.starved[this.head] = starved ? 1 : 0;
+    this.head = (this.head + 1) % this.capacity;
+    if (this.count < this.capacity) this.count++;
+  }
+
+  clear(): void {
+    this.head = 0;
+    this.count = 0;
+  }
+
+  private at(i: number): number {
+    return (this.head - 1 - i + this.capacity) % this.capacity;
+  }
+
+  /**
+   * The newest trusted readings no older than `notBeforeMs`, taken until
+   * there are at least `minCount` of them AND they span at least `minSpanMs`
+   * — a window as long as the longer of the two asks. Null where the evidence
+   * in reach cannot make one. `predict` maps each reading (and its busy part)
+   * to the quantity the statistic is taken over; the quantile is by nearest
+   * rank. The starved share is over every reading the window reached.
+   */
+  window(
+    minCount: number,
+    minSpanMs: number,
+    notBeforeMs: number,
+    quantile: number,
+    predict: ((readingMs: number, busyMs: number) => number) | null = null,
+  ): { value: number; medianMs: number; count: number; starvedShare: number } | null {
+    let n = 0;
+    let total = 0;
+    let starved = 0;
+    let newest = NaN;
+    let done = false;
+    for (let i = 0; i < this.count; i++) {
+      const k = this.at(i);
+      const at = this.atMs[k];
+      if (at < notBeforeMs) break;
+      if (Number.isNaN(newest)) newest = at;
+      total++;
+      if (this.starved[k] === 1) { starved++; continue; }
+      this.scratch[n++] = this.readingMs[k];
+      if (n >= minCount && newest - at >= minSpanMs) { done = true; break; }
+    }
+    if (!done) return null;
+    const medianMs = rank(this.scratch, n, 0.5);
+    if (predict !== null) {
+      // Refill with the predicted quantity, over exactly the same readings.
+      let m = 0;
+      for (let i = 0; m < n && i < this.count; i++) {
+        const k = this.at(i);
+        if (this.starved[k] === 1) continue;
+        this.scratch[m++] = predict(this.readingMs[k], this.busyMs[k]);
+      }
+    }
+    return { value: rank(this.scratch, n, quantile), medianMs, count: n, starvedShare: total === 0 ? 0 : starved / total };
+  }
+
+  /** The trusted readings no older than `notBeforeMs`, their mean with the
+   *  longest dropped, their median, and how many starved and capped readings
+   *  came with them. */
+  since(notBeforeMs: number): {
+    count: number;
+    trimmedMeanMs: number | null;
+    medianMs: number | null;
+    p90Ms: number | null;
+    starved: number;
+    capped: number;
+  } {
+    let n = 0;
+    let starved = 0;
+    let capped = 0;
+    for (let i = 0; i < this.count; i++) {
+      const k = this.at(i);
+      if (this.atMs[k] < notBeforeMs) break;
+      if (this.starved[k] === 1) { starved++; continue; }
+      if (!Number.isFinite(this.readingMs[k])) capped++;
+      this.scratch[n++] = this.readingMs[k];
+    }
+    if (n === 0) return { count: 0, trimmedMeanMs: null, medianMs: null, p90Ms: null, starved, capped };
+    const view = this.scratch.subarray(0, n);
+    view.sort();
+    let sum = 0;
+    for (let i = 0; i < n - 1; i++) sum += view[i];
+    const trimmedMeanMs = n === 1 ? view[0] : sum / (n - 1);
+    return {
+      count: n,
+      trimmedMeanMs,
+      medianMs: view[Math.ceil(0.5 * n) - 1],
+      p90Ms: view[Math.ceil(0.9 * n) - 1],
+      starved,
+      capped,
+    };
+  }
+
+  /** The starved share of the newest `size` readings no older than
+   *  `notBeforeMs`, or null with fewer than `min` of them. */
+  starvedShare(size: number, min: number, notBeforeMs: number): number | null {
+    let total = 0;
+    let starved = 0;
+    for (let i = 0; i < this.count && total < size; i++) {
+      const k = this.at(i);
+      if (this.atMs[k] < notBeforeMs) break;
+      total++;
+      if (this.starved[k] === 1) starved++;
+    }
+    return total < min ? null : starved / total;
+  }
+}
+
+/** Every eligible step's interval, for the delivery guard. */
+class DeliveryRing {
+  private readonly atMs: Float64Array;
+  private readonly ms: Float64Array;
+  private head = 0;
+  private count = 0;
+  private firstAtMs = NaN;
+
+  constructor(readonly capacity: number) {
+    this.atMs = new Float64Array(capacity);
+    this.ms = new Float64Array(capacity);
+  }
+
+  push(atMs: number, ms: number): void {
+    if (this.count === 0) this.firstAtMs = atMs - ms;
+    this.atMs[this.head] = atMs;
+    this.ms[this.head] = ms;
+    this.head = (this.head + 1) % this.capacity;
+    if (this.count < this.capacity) this.count++;
+  }
+
+  clear(): void {
+    this.head = 0;
+    this.count = 0;
+    this.firstAtMs = NaN;
+  }
+
+  /** The mean interval over the last `spanMs`, or null until that much has
+   *  been drawn. Untrimmed: every late frame counts. */
+  mean(nowMs: number, spanMs: number): number | null {
+    if (this.count === 0 || !(nowMs - this.firstAtMs >= spanMs)) return null;
+    let sum = 0;
+    let n = 0;
+    for (let i = 0; i < this.count; i++) {
+      const k = (this.head - 1 - i + this.capacity) % this.capacity;
+      if (this.atMs[k] <= nowMs - spanMs) break;
+      sum += this.ms[k];
+      n++;
+    }
+    return n === 0 ? null : sum / n;
+  }
+}
+
+/** The value at quantile `q` of the first `n` entries, by nearest rank. Sorts
+ *  them in place. */
+function rank(values: Float64Array, n: number, q: number): number {
+  const view = values.subarray(0, n);
+  view.sort();
+  return view[Math.min(n - 1, Math.max(0, Math.ceil(q * n) - 1))];
 }
 
 /**
@@ -542,6 +940,53 @@ export class ResolutionController {
   private pending: Decision | null = null;
   private idle = false;
 
+  /** Bumped by every rung change, event, budget and ladder: a GPU reading
+   *  tagged with an older one measured another configuration. */
+  private generationCount = 0;
+  /** The clock's readings, cleared with every generation and every duty
+   *  change, and when the clock's evidence started. */
+  private readonly clockRing = new ClockRing(CLOCK_RING_SIZE);
+  private clockSinceMs = 0;
+  /** Why the clock is off, or null while it may steer. */
+  private clockOffReason: string | null = null;
+  /** The current rung above Medium was reached by the clock, and is kept only
+   *  while the clock vouches for it. */
+  private clockEarned = false;
+  /** A clock climb decided and not yet applied, with the rung below's median
+   *  for the honesty rule. */
+  private pendingClimb: { belowMedianMs: number } | null = null;
+  /** A verification standing at a rung the clock earned. */
+  private clockVerify: {
+    kind: 'probe' | 'reset';
+    fromIndex: number;
+    belowMedianMs: number | null;
+    /** Readings count from frames drawn at or after this. */
+    startMs: number;
+    /** Set by the first eligible step after it opened, and never moved. */
+    deadlineMs: number | null;
+  } | null = null;
+  /** Trusted readings in a row over the budget. */
+  private panicStreak = 0;
+  /** Active, visible drawing since the clock last had a reading. */
+  private activeSinceReadingMs = 0;
+  /** When the clock last passed a verification at the rung it holds: the
+   *  steady-state silence rule runs from here, so the verification's eight
+   *  readings are never judged by the sixteen. */
+  private clockAcquiredAtMs: number | null = null;
+  /** Every eligible step, for the delivery guard. */
+  private readonly delivery = new DeliveryRing(DELIVERY_RING_SIZE);
+  /** The last probe's rung was reached by the clock: its failures outlive the
+   *  probation. */
+  private probationByClock = false;
+  private clockReversals = 0;
+  /** Recent frames' interval verdicts, for a late reading to find its own. */
+  private readonly verdictSeq = new Float64Array(VERDICT_RING_SIZE).fill(-1);
+  private readonly verdictCounted = new Uint8Array(VERDICT_RING_SIZE);
+  private verdictHead = 0;
+  private clockAccepted = 0;
+  private readonly clockDropped = { unpaired: 0, uncounted: 0, stale: 0, settling: 0, notSteering: 0 };
+  private clockLast: { atMs: number; from: number; to: number; why: ClockWhy } | null = null;
+
   constructor(ladder: RungLadder) {
     this.rungs = ladder.rungs.length > 0 ? ladder.rungs : [1];
     this.mediumIndex = clampIndex(ladder.mediumIndex, this.rungs.length);
@@ -568,6 +1013,7 @@ export class ResolutionController {
     this.clockMs = sample.nowMs;
     if (this.startedMs === null) this.startedMs = sample.nowMs;
     const settled = sample.nowMs >= this.settleUntilMs;
+    const sensorMs = sample.sensorMs ?? 0;
     const counted =
       !this.idle &&
       sample.eligible &&
@@ -575,28 +1021,59 @@ export class ResolutionController {
       sample.workedMs === 0 &&
       // The live budget on the left, the fixed ten milliseconds on the right:
       // one is what the frame owed, the other is what the app can explain.
-      (sample.intervalMs <= this.budgetMs || sample.mainThreadMs <= MAIN_THREAD_EXCLUDE_MS);
+      (sample.intervalMs <= this.budgetMs || sample.mainThreadMs <= MAIN_THREAD_EXCLUDE_MS) &&
+      // A late interval the GPU clock's own work explains was made late by
+      // the sensor, and fewer pixels would not have fixed it. Late means past
+      // the on-time tolerance the up bar allows: a 60 Hz engine delivers
+      // 16.6 to 16.8 ms around a 16.67 budget, and that jitter is not a frame
+      // anyone made late — excluding it would throw away every sampled
+      // frame's reading whose interval happened to land a hair over.
+      !(sensorMs > 0 && sample.intervalMs > UP_FACTOR * this.budgetMs && sample.intervalMs - sensorMs <= this.budgetMs);
     this.recordRate(counted);
     if (counted) {
       this.window.push(sample.nowMs, sample.intervalMs, sample.mainThreadSumMs ?? sample.mainThreadMs);
       this.lastCountedMs = sample.nowMs;
+    }
+    if (sample.drawSeq !== undefined) this.recordVerdict(sample.drawSeq, counted);
+    if (sample.gpu) this.admitGpu(sample.gpu);
+    this.recordDelivery(sample, settled);
+    // A verification's time starts at the first eligible frame after it opened
+    // — the settle inside it — so a veil or a hidden page cannot use it up.
+    if (this.clockVerify !== null && this.clockVerify.deadlineMs === null && sample.eligible && !this.idle) {
+      this.clockVerify.deadlineMs = sample.nowMs + CLOCK_VERIFY_MS;
     }
     if (this.idle || this.pending !== null) return null;
     if (this.ceiling !== null && sample.nowMs >= this.ceiling.untilMs) this.ceiling = null;
     if (this.latch !== null && sample.nowMs >= this.latch.untilMs) this.latch = null;
     if (this.probation !== null && sample.nowMs >= this.probation.untilMs) {
       // Held through the whole probation: the probe succeeded, so the wait
-      // and the rung's failure count start over.
+      // and the rung's failure count start over — except at a rung the clock
+      // earned, whose measured failures keep adding up for as long as the
+      // evidence is not reset, or a device that heats slowly would earn,
+      // throttle, recover and repeat for ever.
       this.probation = null;
       this.probeWait = PROBE_WAIT_MS;
-      this.lastFailedProbeRung = null;
-      this.ceilingFailures = 0;
+      if (!this.probationByClock) {
+        this.lastFailedProbeRung = null;
+        this.ceilingFailures = 0;
+      }
+      this.probationByClock = false;
     }
     if (!settled) return null;
+    // A rung the clock earned is judged by the clock first, and only on a
+    // frame that could count: hidden, covered and pinned stretches suspend it,
+    // and the resumption re-earns it.
+    if (this.clockHolds()) {
+      if (!sample.eligible) return null;
+      const held = this.clockHeldDecision(sample.nowMs);
+      if (held !== null) return held;
+    }
     if (this.verifyUntilMs !== null) {
       if (sample.nowMs < this.verifyUntilMs) return null;
       return this.finishVerification(sample.nowMs);
     }
+    // Nothing else is decided while the clock's verification stands.
+    if (this.clockVerify !== null) return null;
     if (this.index === 0) {
       const latched = this.floorDecision(sample.nowMs);
       if (latched !== null) return latched;
@@ -612,6 +1089,8 @@ export class ResolutionController {
   onApplied(nowMs: number, kind: 'up' | 'down' | 'restore'): void {
     const from = this.index;
     const pending = this.pending;
+    const climb = this.pendingClimb;
+    this.pendingClimb = null;
     this.pending = null;
     if (pending !== null) this.index = clampIndex(pending.to, this.rungs.length);
     this.clockMs = nowMs;
@@ -628,6 +1107,25 @@ export class ResolutionController {
       // A down, a revert, a floor latch or a ladder change: the rung the last
       // probe reached is no longer the rung, so there is nothing on probation.
       this.probation = null;
+    }
+    this.resetClockEvidence(nowMs);
+    if (kind === 'up' && climb !== null && this.index > this.mediumIndex) {
+      // A clock probe: the clock verifies it, and the rung is the clock's.
+      this.clockEarned = true;
+      this.probationByClock = true;
+      this.clockVerify = {
+        kind: 'probe',
+        fromIndex: from,
+        belowMedianMs: climb.belowMedianMs,
+        startMs: this.settleUntilMs,
+        deadlineMs: null,
+      };
+    } else {
+      if (kind !== 'up') this.probationByClock = false;
+      // A new rung is a new question: whatever verification stood was for
+      // the rung that was.
+      this.clockVerify = null;
+      this.reopenClockVerify();
     }
   }
 
@@ -681,6 +1179,9 @@ export class ResolutionController {
       this.latch = null;
       this.latchFailures = 0;
     }
+    this.pendingClimb = null;
+    this.resetClockEvidence(nowMs);
+    this.reopenClockVerify();
   }
 
   /**
@@ -693,28 +1194,32 @@ export class ResolutionController {
     this.clockMs = nowMs;
     this.window.clear();
     this.pending = null;
+    this.pendingClimb = null;
     this.verifyUntilMs = null;
     // Whatever drops the verification drops the probation with it: a down
     // after an arrival or a focus gain is a new question, not a probe failing.
     this.probation = null;
+    this.resetClockEvidence(nowMs);
     switch (event) {
       case 'pin':
         this.idle = true;
+        // Re-earned when the pin is lifted.
+        this.clockVerify = null;
         return;
       case 'unpin':
         this.idle = false;
         this.settleUntilMs = nowMs + REALLOC_SETTLE_MS;
         this.lastChangeMs = nowMs;
-        return;
+        break;
       case 'boot':
         this.settleUntilMs = nowMs + REALLOC_SETTLE_MS;
         this.lastChangeMs = nowMs;
         this.startedMs = nowMs;
         this.lastCountedMs = null;
-        return;
+        break;
       case 'resize':
         this.settleUntilMs = nowMs + REALLOC_SETTLE_MS;
-        return;
+        break;
       case 'arrival':
       case 'focus':
         // Neither ever steps by itself: the frames under a veil and the
@@ -722,8 +1227,10 @@ export class ResolutionController {
         // with the eligibility gate the rung cannot have moved while nobody
         // was looking.
         this.settleUntilMs = nowMs + REALLOC_SETTLE_MS;
-        return;
+        break;
     }
+    // A rung the clock earned is re-earned once the event has settled.
+    this.reopenClockVerify();
   }
 
   /**
@@ -759,6 +1266,9 @@ export class ResolutionController {
     this.clockMs = nowMs;
     this.settleUntilMs = nowMs + REALLOC_SETTLE_MS;
     this.lastChangeMs = nowMs;
+    this.pendingClimb = null;
+    this.resetClockEvidence(nowMs);
+    this.reopenClockVerify();
     if (Math.abs(this.rungs[this.index] - previousRatio) < 1e-9) return null;
     this.lastStep = { atMs: nowMs, from, to: this.index, reason: 'ladder' };
     return { to: this.index, reason: 'ladder' };
@@ -788,6 +1298,321 @@ export class ResolutionController {
       aboveAllowed: this.aboveAllowed,
       downCounted: this.downCounted,
       upCounted: this.upCounted,
+      clock: this.clockState(),
+    };
+  }
+
+  // --- The GPU clock ------------------------------------------------------
+
+  /** The generation a GPU reading must carry to be admitted. */
+  get generation(): number {
+    return this.generationCount;
+  }
+
+  /** What a clock reading is held against where the clock steers: the
+   *  budget. */
+  get clockBarMs(): number {
+    return this.budgetMs;
+  }
+
+  /** Why the clock is off, or null. */
+  get clockOff(): string | null {
+    return this.clockOffReason;
+  }
+
+  /**
+   * Whether a reading taken now would be read: the sensor samples only then,
+   * so it costs nothing where it could not help — a display with a finer tick,
+   * a row target, a held controller, a ladder with nothing above Medium, the
+   * not-pixel-bound latch, or a rung below Medium. At Medium a ceiling on the
+   * next rung stops the sampling too, since nothing could be probed; a rung
+   * the clock earned is watched whatever the rung above it holds, or the
+   * controller would make its own silence and restore Medium for it.
+   */
+  wantsClock(): boolean {
+    if (this.idle || this.aboveAllowed || this.clockOffReason !== null) return false;
+    if (this.mediumIndex >= this.rungs.length - 1) return false;
+    if (this.index > this.mediumIndex) return this.clockEarned;
+    if (this.index < this.mediumIndex || this.latch !== null) return false;
+    return this.ceiling === null || this.ceiling.rung > this.index + 1;
+  }
+
+  /**
+   * The clock is off — the sensor priced itself out, lost its context or was
+   * turned off — or back on (null). A rung the clock earned goes back to
+   * Medium on the next step: no clock is the rule as it was, for the rung as
+   * well as the climb.
+   */
+  setClockOff(reason: string | null): void {
+    this.clockOffReason = reason;
+    if (reason !== null) this.clockRing.clear();
+  }
+
+  /**
+   * The sensor's duty moved: readings taken at the old duty are dropped and the
+   * windows fill again from the new one. A rung the clock earned is re-earned
+   * from them, inside a verification already standing if there is one.
+   */
+  clearClockEvidence(nowMs: number): void {
+    this.clearClockRing(nowMs);
+    this.clockAcquiredAtMs = null;
+    this.reopenClockVerify();
+  }
+
+  private clearClockRing(nowMs: number): void {
+    this.clockRing.clear();
+    this.clockSinceMs = nowMs;
+    this.panicStreak = 0;
+    this.activeSinceReadingMs = 0;
+  }
+
+  private resetClockEvidence(nowMs: number): void {
+    this.generationCount++;
+    this.clearClockRing(nowMs);
+    this.delivery.clear();
+    this.clockAcquiredAtMs = null;
+  }
+
+  /** The rung is above Medium because the clock earned it, and the tick is
+   *  still blind: the clock's rules hold it. */
+  private clockHolds(): boolean {
+    return this.clockEarned && this.index > this.mediumIndex && !this.aboveAllowed;
+  }
+
+  /**
+   * After an evidence reset: a rung the clock earned must be earned again,
+   * from readings drawn after the settle. A verification already standing
+   * keeps its kind and its deadline — a second reset or a duty change never
+   * buys it more time. Anywhere else there is nothing the clock holds.
+   */
+  private reopenClockVerify(): void {
+    if (!this.clockHolds()) {
+      this.clockVerify = null;
+      this.clockEarned = false;
+      return;
+    }
+    const standing = this.clockVerify;
+    this.clockVerify = {
+      kind: standing?.kind ?? 'reset',
+      fromIndex: standing?.fromIndex ?? this.mediumIndex,
+      belowMedianMs: standing?.belowMedianMs ?? null,
+      startMs: this.settleUntilMs,
+      deadlineMs: standing?.deadlineMs ?? null,
+    };
+  }
+
+  private recordVerdict(drawSeq: number, counted: boolean): void {
+    this.verdictSeq[this.verdictHead] = drawSeq;
+    this.verdictCounted[this.verdictHead] = counted ? 1 : 0;
+    this.verdictHead = (this.verdictHead + 1) % VERDICT_RING_SIZE;
+  }
+
+  /** A GPU reading, admitted only with its own frame's counted interval. */
+  private admitGpu(obs: GpuObservation): void {
+    if (this.idle || this.aboveAllowed || this.clockOffReason !== null) {
+      this.clockDropped.notSteering++;
+      return;
+    }
+    if (obs.generation !== this.generationCount) {
+      this.clockDropped.stale++;
+      return;
+    }
+    if (obs.sampledAtMs < this.settleUntilMs || obs.sampledAtMs < this.clockSinceMs) {
+      this.clockDropped.settling++;
+      return;
+    }
+    let verdict = -1;
+    for (let i = 0; i < VERDICT_RING_SIZE; i++) {
+      if (this.verdictSeq[i] === obs.drawSeq) {
+        verdict = this.verdictCounted[i];
+        break;
+      }
+    }
+    if (verdict === -1) {
+      this.clockDropped.unpaired++;
+      return;
+    }
+    if (verdict === 0) {
+      this.clockDropped.uncounted++;
+      return;
+    }
+    this.clockRing.push(obs.sampledAtMs, obs.readingMs, obs.busyMs, obs.starved);
+    this.clockAccepted++;
+    this.activeSinceReadingMs = 0;
+    if (!obs.starved) this.panicStreak = obs.readingMs > this.budgetMs ? this.panicStreak + 1 : 0;
+  }
+
+  /** Every eligible step's interval, for the delivery guard, and the active
+   *  drawing time since the clock last had a reading. */
+  private recordDelivery(sample: IntervalSample, settled: boolean): void {
+    if (this.idle || !sample.eligible) return;
+    this.activeSinceReadingMs += sample.intervalMs;
+    if (settled) this.delivery.push(sample.nowMs, sample.intervalMs);
+  }
+
+  private noteClock(atMs: number, to: number, why: ClockWhy): void {
+    this.clockLast = { atMs, from: this.index, to, why };
+  }
+
+  /** A measured failure at a rung the clock earned: the probe's treatment
+   *  whether or not the probation still stands, so a device that heats slowly
+   *  cannot earn, throttle, recover and repeat without the escalation adding
+   *  up. `to` is one rung down, or Medium for the delivery guard. */
+  private clockFail(nowMs: number, to: number, why: ClockWhy): Decision {
+    this.noteClock(nowMs, to, why);
+    this.failProbe(nowMs);
+    return this.emit(to, 'revert');
+  }
+
+  /** Straight back to Medium with no ceiling and no longer wait: the clock
+   *  cannot vouch for the rung, which is not the rung failing. */
+  private clockRestore(nowMs: number, why: ClockWhy): Decision {
+    this.noteClock(nowMs, this.mediumIndex, why);
+    this.clockVerify = null;
+    return this.emit(this.mediumIndex, 'restore');
+  }
+
+  /**
+   * A rung the clock earned, judged by the clock on an eligible step: off,
+   * panic, the delivery guard, the standing verification, silence, then the
+   * hand-back window. Null means nothing to do here.
+   */
+  private clockHeldDecision(nowMs: number): Decision | null {
+    if (this.clockOffReason !== null) return this.clockRestore(nowMs, 'off');
+    const bar = this.budgetMs;
+    const verify = this.clockVerify;
+    if (this.panicStreak >= CLOCK_PANIC_COUNT) {
+      return this.clockFail(nowMs, verify?.kind === 'probe' ? verify.fromIndex : this.index - 1, 'panic');
+    }
+    // Every frame that was drawn, slow for whatever reason: the pixels may be
+    // kept only while the screen's rate really holds.
+    const delivered = this.delivery.mean(nowMs, CLOCK_DELIVERY_SPAN_MS);
+    if (delivered !== null && delivered > CLOCK_DELIVERY_GUARD * bar) {
+      return this.clockFail(nowMs, this.mediumIndex, 'delivery');
+    }
+    const quiet = this.activeSinceReadingMs > CLOCK_GAP_MS;
+    if (verify !== null) {
+      if (verify.deadlineMs === null) return null;
+      const got = this.clockRing.since(verify.startMs);
+      if (got.count >= CLOCK_VERIFY_COUNT) {
+        this.clockVerify = null;
+        const trimmed = got.trimmedMeanMs ?? Infinity;
+        if (trimmed > CLOCK_DOWN_SHARE * bar) {
+          if (verify.kind === 'reset') return this.clockRestore(nowMs, 'verify');
+          return this.clockFail(nowMs, verify.fromIndex, 'verify');
+        }
+        if (verify.kind === 'probe' && verify.belowMedianMs !== null && got.medianMs !== null
+          && isReversal(verify.belowMedianMs, got.medianMs)) {
+          // More pixels read as markedly less time. Once can be the scene
+          // changing; again and the fence is not timing this frame's work.
+          this.clockReversals++;
+          if (this.clockReversals >= REVERSAL_REPEATS) {
+            this.clockOffReason = `the clock read the sharper rung more than ${REVERSAL_MS} ms faster than the rung below, ${this.clockReversals} times`;
+            return this.clockRestore(nowMs, 'reversal');
+          }
+        }
+        this.clockAcquiredAtMs = nowMs;
+        return null;
+      }
+      const bad = got.starved + got.capped;
+      if (verify.kind === 'probe' && bad >= CLOCK_PROBE_BAD_MIN
+        && (bad / (got.count + got.starved)) > STARVED_SHARE_MAX) {
+        // Starved or capped readings repeating through the probe: the probe
+        // failing, not merely silent.
+        return this.clockFail(nowMs, verify.fromIndex, 'unverified');
+      }
+      if (nowMs < verify.deadlineMs && !quiet) return null;
+      this.clockVerify = null;
+      if (verify.kind === 'reset') return this.clockRestore(nowMs, 'unverified');
+      this.noteClock(nowMs, verify.fromIndex, 'unverified');
+      return this.emit(verify.fromIndex, 'revert');
+    }
+    if (quiet) return this.clockRestore(nowMs, 'silent');
+    if (this.clockAcquiredAtMs !== null && nowMs - this.clockAcquiredAtMs >= CLOCK_SILENCE_SPAN_MS
+      && this.clockRing.since(nowMs - CLOCK_SILENCE_SPAN_MS).count < CLOCK_DOWN_COUNT) {
+      return this.clockRestore(nowMs, 'silent');
+    }
+    const starved = this.clockRing.starvedShare(CLOCK_STARVED_WINDOW, CLOCK_STARVED_MIN, nowMs - STALENESS_MS);
+    if (starved !== null && starved > STARVED_SHARE_MAX) return this.clockRestore(nowMs, 'starved');
+    const w = this.clockRing.window(CLOCK_DOWN_COUNT, CLOCK_DOWN_SPAN_MS, nowMs - STALENESS_MS, 0.9);
+    if (w !== null && w.value > CLOCK_DOWN_SHARE * bar) return this.clockFail(nowMs, this.index - 1, 'hand-back');
+    return null;
+  }
+
+  /**
+   * A climb above Medium by the clock, one rung, where the tick is blind. It
+   * needs what an interval climb needs that still means something here, a
+   * delivered rate that really holds, and a clock window whose predicted p90
+   * at the next rung fits the share.
+   */
+  private clockUpDecision(nowMs: number, next: number): Decision | null {
+    if (this.clockOffReason !== null || this.latch !== null || this.clockVerify !== null) return null;
+    // A rung above Medium the clock did not earn is not the clock's to build on.
+    if (this.index > this.mediumIndex && !this.clockEarned) return null;
+    if (this.ceiling !== null && next >= this.ceiling.rung) return null;
+    if (nowMs - this.lastChangeMs < this.probeWait) return null;
+    // The frames are not already late: the counted intervals over a whole up
+    // window inside their up bar — a device capped from outside the app would
+    // otherwise climb on an idle-looking GPU while its frames were missing —
+    // and every frame drawn, untrimmed and unfiltered, at the screen's rate.
+    const stat = this.window.trimmedMean(this.upCounted, TRIM_COUNT, nowMs - STALENESS_MS);
+    if (stat === null || stat.count < this.upCounted) return null;
+    if (stat.meanMs > UP_FACTOR * this.budgetMs) return null;
+    const delivered = this.delivery.mean(nowMs, CLOCK_DELIVERY_SPAN_MS);
+    if (delivered === null || delivered > CLOCK_DELIVERY_UP * this.budgetMs) return null;
+    const starved = this.clockRing.starvedShare(CLOCK_STARVED_WINDOW, CLOCK_STARVED_MIN, nowMs - STALENESS_MS);
+    if (starved !== null && starved > STARVED_SHARE_MAX) return null;
+    const from = this.rungs[this.index];
+    const to = this.rungs[next];
+    const w = this.clockRing.window(
+      CLOCK_UP_COUNT, CLOCK_UP_SPAN_MS, nowMs - STALENESS_MS, 0.9,
+      (reading, busy) => predictReadingMs(busy, reading, from, to),
+    );
+    if (w === null || w.starvedShare > STARVED_SHARE_MAX) return null;
+    if (w.value > CLOCK_UP_SHARE * this.budgetMs) return null;
+    this.noteClock(nowMs, next, 'climb');
+    const decision = this.emit(next, 'up');
+    this.pendingClimb = { belowMedianMs: w.medianMs };
+    return decision;
+  }
+
+  private clockState(): ClockState {
+    const horizon = this.clockMs - STALENESS_MS;
+    const got = this.clockRing.since(horizon);
+    const next = this.index + 1;
+    let predictedNextMs: number | null = null;
+    if (next < this.rungs.length && next > this.mediumIndex) {
+      const from = this.rungs[this.index];
+      const to = this.rungs[next];
+      const p = this.clockRing.window(
+        CLOCK_UP_COUNT, CLOCK_UP_SPAN_MS, horizon, 0.9,
+        (reading, busy) => predictReadingMs(busy, reading, from, to),
+      );
+      predictedNextMs = p?.value ?? null;
+    }
+    const verify = this.clockVerify;
+    return {
+      steering: !this.idle && !this.aboveAllowed && this.mediumIndex < this.rungs.length - 1 && this.clockOffReason === null,
+      earned: this.clockHolds(),
+      off: this.clockOffReason,
+      generation: this.generationCount,
+      counted: got.count,
+      starvedShare: this.clockRing.starvedShare(CLOCK_STARVED_WINDOW, CLOCK_STARVED_MIN, horizon),
+      medianMs: got.medianMs,
+      p90Ms: got.p90Ms,
+      barMs: this.budgetMs,
+      predictedNextMs,
+      deliveredMs: this.delivery.mean(this.clockMs, CLOCK_DELIVERY_SPAN_MS),
+      verify: verify === null ? null : {
+        kind: verify.kind,
+        readings: this.clockRing.since(verify.startMs).count,
+        deadlineMs: verify.deadlineMs,
+      },
+      panicStreak: this.panicStreak,
+      reversals: this.clockReversals,
+      accepted: this.clockAccepted,
+      dropped: { ...this.clockDropped },
+      last: this.clockLast === null ? null : { ...this.clockLast },
     };
   }
 
@@ -803,6 +1628,7 @@ export class ResolutionController {
   }
 
   private emit(to: number, reason: StepReason): Decision {
+    this.pendingClimb = null;
     this.pending = { to: clampIndex(to, this.rungs.length), reason };
     return this.pending;
   }
@@ -857,10 +1683,18 @@ export class ResolutionController {
     if (nowMs - this.lastChangeMs < DOWN_SPACING_MS) return null;
     const stat = this.window.trimmedMean(this.downCounted, TRIM_COUNT, nowMs - STALENESS_MS);
     if (stat === null || stat.count < this.downCounted) return null;
+    // A rung the clock earned is held to a tighter bar than the tick's: a
+    // phone at 52–58 fps at a sharper rung is what the clock must not buy.
+    const earned = this.clockHolds();
     // A full window inside this rung's bar: it holds. Above Medium the bar is
     // the display's own tick, so a sharper rung that has lost the screen's
     // full rate is handed back — to Medium at most, never past it for that.
-    if (stat.meanMs <= DOWN_FACTOR * this.budgetAt(this.index)) return null;
+    const bar = earned ? CLOCK_INTERVAL_DOWN * this.budgetMs : DOWN_FACTOR * this.budgetAt(this.index);
+    if (stat.meanMs <= bar) return null;
+    // At a rung the clock earned this is a measured failure, inside the
+    // probation or out of it; and the floor's references, interval evidence
+    // about a slide from Medium, are not touched.
+    if (earned) return this.clockFail(nowMs, this.index - 1, 'intervals');
     // Handed back inside its probation: the probe that reached this rung has
     // failed, and the step is its revert rather than a slide.
     if (this.probation !== null && this.probation.rung === this.index && nowMs < this.probation.untilMs) {
@@ -903,10 +1737,10 @@ export class ResolutionController {
   private upDecision(nowMs: number): Decision | null {
     const next = this.index + 1;
     if (next >= this.rungs.length) return null;
-    // A rung above Medium is taken only where the display has a tick fine
-    // enough to measure it against (the header): with no such tick the climb
-    // would be blind, and Dynamic stops at Medium.
-    if (next > this.mediumIndex && !this.aboveAllowed) return null;
+    // A rung above Medium is taken by the intervals only where the display
+    // has a tick fine enough to measure it against (the header); where it has
+    // none, only the GPU clock can take one.
+    if (next > this.mediumIndex && !this.aboveAllowed) return this.clockUpDecision(nowMs, next);
     if (this.ceiling !== null && next >= this.ceiling.rung) return null;
     if (nowMs - this.lastChangeMs < this.probeWait) return null;
     const stat = this.window.trimmedMean(this.upCounted, TRIM_COUNT, nowMs - STALENESS_MS);

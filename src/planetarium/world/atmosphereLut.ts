@@ -340,6 +340,12 @@ export function takeBakeSliceSpendMs(): number {
   return spent;
 }
 
+/** The same figure without taking it: whether a bake slice has run since the
+ *  last take, for a reader that must not move the accounting. */
+export function peekBakeSliceSpendMs(): number {
+  return bakeSliceSpendMs;
+}
+
 /**
  * What one layer draw of each pass costs in ms: the measured figure where a
  * timer query returned one, and the pass's weight priced in ms where it did

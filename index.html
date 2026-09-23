@@ -2186,6 +2186,8 @@
     .interior-scale-mid { color: var(--t2); letter-spacing: 0.1em; text-transform: uppercase; font-size: 9px; text-align: center; }
     .interior-scale-note { display: flex; align-items: center; gap: 6px; margin-top: 5px; font-size: 11px; color: var(--t2); }
     .interior-scale-note .interior-swatch { margin-top: 0; }
+    /* The band's key under the layer list: a footnote to the rows, its swatch in their swatch column. */
+    .interior-band-note { margin-top: 10px; gap: 10px; }
     /* The depth ruler overlay. */
     .interior-ruler { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 17; overflow: visible; }
     .interior-ruler .ruler-seg { stroke: rgba(255,255,255,0.55); stroke-width: 1; }
@@ -5489,14 +5491,15 @@
               <div class="interior-scale-labels"><span id="interior-scale-min"></span><span class="interior-scale-mid">Temperature</span><span id="interior-scale-max"></span></div>
               <div class="interior-scale-note"><i class="interior-swatch hatched" aria-hidden="true"></i>Not known</div>
             </div>
-            <!-- The stripes for a boundary nobody has placed are drawn in both modes, so their key shows in both. -->
-            <div class="interior-scale-note interior-band-note" id="interior-band-note" style="display:none"><i class="interior-swatch banded" aria-hidden="true"></i>Boundary location uncertain</div>
             <!-- Layers too thin to see at this size, and the one-tap way to widen them. -->
             <div class="interior-thin-note" id="interior-thin-note" style="display:none"><span id="interior-thin-text"></span> <button type="button" class="interior-more" id="interior-thin-toggle">Enlarge</button></div>
             <!-- The Layers row: a heading on a desktop; on a phone the sheet's disclosure, which opens the sheet to the list. One shows per breakpoint. -->
             <div class="interior-legend-head interior-legend-title" id="interior-legend-title" role="heading" aria-level="2">Layers</div>
             <button type="button" class="interior-legend-head interior-legend-disclosure" id="interior-legend-head" aria-expanded="false">Layers</button>
             <div id="interior-legend" class="interior-legend" role="list"></div>
+            <!-- The key for the stripes where a boundary's location is uncertain: drawn in both modes, so shown in both,
+                 under the list they mark and only while a band is wide enough to see (InteriorMode.syncBandKey). -->
+            <div class="interior-scale-note interior-band-note" id="interior-band-note" style="display:none"><i class="interior-swatch banded" aria-hidden="true"></i>Boundary location uncertain</div>
             <div class="interior-coverage-note" id="interior-coverage-note" style="display:none"></div>
             <!-- Competing models, or a poorly constrained body's unresolved / illustrative choice: a data choice, so it sits under the layers. -->
             <div class="interior-models-kicker" id="interior-models-kicker" style="display:none"></div>
@@ -5530,9 +5533,9 @@
               <span class="obs-tgl" aria-hidden="true"></span>
             </label>
             <div class="interior-note" id="interior-readable-note" style="display:none"></div>
-            <!-- The cut is locked to the body: orbiting turns the body under it. This row makes it follow the camera instead; Reset view brings the camera and the cut back to where the tool opened. -->
+            <!-- The cut faces the camera: orbiting turns the body under a cut that stays put on screen. Off locks it to the body; Reset view brings the camera and the cut back to where the tool opened. -->
             <label class="obs-foot interior-foot">
-              <input type="checkbox" id="interior-follow-toggle">
+              <input type="checkbox" id="interior-follow-toggle" checked>
               <span class="obs-footlbl">Cut faces the camera</span>
               <span class="obs-tgl" aria-hidden="true"></span>
             </label>

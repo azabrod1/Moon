@@ -1239,13 +1239,14 @@ describe('a reading is admitted only with its own frame', () => {
     expect(late.controller.state().clock.dropped.unpaired).toBe(0);
   });
 
-  it('drops a reading whose frame did not count', () => {
+  it('drops a reading whose frame did not count, and says why the frame did not', () => {
     const rig = new ClockRig(new ResolutionController(FULL_LADDER));
     blindScreen(rig);
     rig.runClock(seconds(20), onTime, () => 7, { workedMs: 3 });
     const state = rig.controller.state();
     expect(state.clock.counted).toBe(0);
     expect(state.clock.dropped.uncounted).toBeGreaterThan(0);
+    expect(state.clock.uncountedBy.worked).toBe(state.clock.dropped.uncounted);
     expect(rig.applied).toEqual([]);
   });
 
@@ -1418,15 +1419,33 @@ describe('a rung the clock earned is kept only while the clock vouches for it', 
     expect(rig.controller.state().clock.deliveredMs!).toBeGreaterThan(CLOCK_DELIVERY_UP * BUDGET_MS);
   });
 
-  it('goes back to Medium, with no ceiling, when the readings stop', () => {
+  it('goes back to Medium, with no ceiling, when the readings stop — and waits longer before trying again', () => {
     const rig = earnedTop();
+    const wait = rig.controller.state().probeWaitMs;
     const from = rig.applied.length;
     rig.runClock(seconds(30), onTime, () => null);
     const after = rig.applied.slice(from);
     expect(after.map((a) => a.reason)).toEqual(['restore']);
     expect(rig.rung).toBe(MEDIUM);
     expect(rig.controller.state().ceiling).toBeNull();
-    expect(rig.controller.state().clock.last?.why).toBe('silent');
+    expect(rig.controller.state().clock.last?.why).toBe('gap');
+    expect(rig.controller.state().probeWaitMs).toBe(2 * wait);
+  });
+
+  it('a clock that keeps going quiet takes the picture up and down less and less often', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    // Readings at Medium; at the sharper rung they stop a few seconds in.
+    let since = 0;
+    rig.runClock(seconds(240), onTime, (rung) => {
+      if (rung <= MEDIUM) { since = 0; return 7; }
+      since++;
+      return since < seconds(4) / rig.duty ? 7 : null;
+    });
+    const ups = rig.applied.filter((a) => a.reason === 'up').map((a) => a.atMs);
+    const gaps = ups.slice(1).map((t, i) => t - ups[i]);
+    expect(ups.length).toBeLessThanOrEqual(7);
+    for (let i = 1; i < gaps.length; i++) expect(gaps[i]).toBeGreaterThanOrEqual(gaps[i - 1] - 1000);
   });
 
   it('goes back to Medium, with no ceiling, when the clock is lost', () => {
@@ -1635,7 +1654,7 @@ describe('silence, and the grace a reset gets', () => {
     const step = rig.applied.slice(from)[0];
     expect(step.reason).toBe('restore');
     expect(step.atMs - atMs).toBeLessThanOrEqual(CLOCK_GAP_MS + 2 * TICK);
-    expect(rig.controller.state().clock.last?.why).toBe('silent');
+    expect(rig.controller.state().clock.last?.why).toBe('gap');
   });
 
   it('too few readings in the last six seconds is silence, once the evidence is that old', () => {

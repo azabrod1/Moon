@@ -17,6 +17,7 @@ import {
   clockResolves,
   isReversal,
   predictReadingMs,
+  starvedGapLimitMs,
   type PolledSample,
 } from './gpuFrameClockPolicy';
 import type { FencePollSource } from './fencePoll';
@@ -105,9 +106,14 @@ describe('a starved reading', () => {
     expect(STARVED_GAP_MS).toBe(0.5);
   });
 
-  it('holds a millisecond clock to the same half millisecond: a gap that reads 1 is starved', () => {
-    expect(classifyReading(polled(8, { gapMs: 0 })).starved).toBe(false);
-    expect(classifyReading(polled(8, { gapMs: 1 })).starved).toBe(true);
+  it('asks a millisecond clock only for what it can resolve: a one-step gap passes, two steps are starved', () => {
+    expect(starvedGapLimitMs(null)).toBe(STARVED_GAP_MS);
+    expect(starvedGapLimitMs(0.1)).toBe(STARVED_GAP_MS);
+    expect(classifyReading(polled(8, { gapMs: 0 }), 1).starved).toBe(false);
+    expect(classifyReading(polled(8, { gapMs: 0.9999999999854481 }), 0.9999999999854481).starved).toBe(false);
+    expect(classifyReading(polled(8, { gapMs: 2 }), 1).starved).toBe(true);
+    // A clock of a tenth of a millisecond keeps the half-millisecond bar.
+    expect(classifyReading(polled(8, { gapMs: 0.6 }), 0.1).starved).toBe(true);
   });
 
   it('is one with no gap to judge at all', () => {

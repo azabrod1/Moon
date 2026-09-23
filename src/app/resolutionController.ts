@@ -488,7 +488,7 @@ export type StepReason = 'down' | 'up' | 'revert' | 'floor latch' | 'ladder' | '
 /** Why the clock moved a rung, for the readout. */
 export type ClockWhy =
   | 'climb' | 'verify' | 'unverified' | 'panic' | 'delivery' | 'hand-back' | 'intervals'
-  | 'silent' | 'starved' | 'off' | 'reversal';
+  | 'silent' | 'gap' | 'starved' | 'off' | 'reversal';
 
 /** The GPU clock's part of the rule, as `__moon.quality().clock` shows it. */
 export interface ClockState {
@@ -525,6 +525,8 @@ export interface ClockState {
   reversals: number;
   accepted: number;
   dropped: { unpaired: number; uncounted: number; stale: number; settling: number; notSteering: number };
+  /** Why the frames behind the uncounted readings did not count. */
+  uncountedBy: { ineligible: number; settling: number; worked: number; mainThread: number; sensor: number };
   last: { atMs: number; from: number; to: number; why: ClockWhy } | null;
 }
 
@@ -981,10 +983,11 @@ export class ResolutionController {
   private clockReversals = 0;
   /** Recent frames' interval verdicts, for a late reading to find its own. */
   private readonly verdictSeq = new Float64Array(VERDICT_RING_SIZE).fill(-1);
-  private readonly verdictCounted = new Uint8Array(VERDICT_RING_SIZE);
+  private readonly verdictBecause = new Uint8Array(VERDICT_RING_SIZE);
   private verdictHead = 0;
   private clockAccepted = 0;
   private readonly clockDropped = { unpaired: 0, uncounted: 0, stale: 0, settling: 0, notSteering: 0 };
+  private readonly clockUncountedBy = { ineligible: 0, settling: 0, worked: 0, mainThread: 0, sensor: 0 };
   private clockLast: { atMs: number; from: number; to: number; why: ClockWhy } | null = null;
 
   constructor(ladder: RungLadder) {
@@ -1030,11 +1033,18 @@ export class ResolutionController {
       // frame's reading whose interval happened to land a hair over.
       !(sensorMs > 0 && sample.intervalMs > UP_FACTOR * this.budgetMs && sample.intervalMs - sensorMs <= this.budgetMs);
     this.recordRate(counted);
+    // Why an interval did not count, kept beside the verdict for the readout.
+    const because = counted ? 0
+      : this.idle || !sample.eligible ? 1
+        : !settled ? 2
+          : sample.workedMs !== 0 ? 3
+            : !(sample.intervalMs <= this.budgetMs || sample.mainThreadMs <= MAIN_THREAD_EXCLUDE_MS) ? 4
+              : 5;
     if (counted) {
       this.window.push(sample.nowMs, sample.intervalMs, sample.mainThreadSumMs ?? sample.mainThreadMs);
       this.lastCountedMs = sample.nowMs;
     }
-    if (sample.drawSeq !== undefined) this.recordVerdict(sample.drawSeq, counted);
+    if (sample.drawSeq !== undefined) this.recordVerdict(sample.drawSeq, because);
     if (sample.gpu) this.admitGpu(sample.gpu);
     this.recordDelivery(sample, settled);
     // A verification's time starts at the first eligible frame after it opened
@@ -1405,9 +1415,10 @@ export class ResolutionController {
     };
   }
 
-  private recordVerdict(drawSeq: number, counted: boolean): void {
+  /** `because` is 0 for a counted interval, else why it did not count. */
+  private recordVerdict(drawSeq: number, because: number): void {
     this.verdictSeq[this.verdictHead] = drawSeq;
-    this.verdictCounted[this.verdictHead] = counted ? 1 : 0;
+    this.verdictBecause[this.verdictHead] = because;
     this.verdictHead = (this.verdictHead + 1) % VERDICT_RING_SIZE;
   }
 
@@ -1425,19 +1436,25 @@ export class ResolutionController {
       this.clockDropped.settling++;
       return;
     }
-    let verdict = -1;
+    let because = -1;
     for (let i = 0; i < VERDICT_RING_SIZE; i++) {
       if (this.verdictSeq[i] === obs.drawSeq) {
-        verdict = this.verdictCounted[i];
+        because = this.verdictBecause[i];
         break;
       }
     }
-    if (verdict === -1) {
+    if (because === -1) {
       this.clockDropped.unpaired++;
       return;
     }
-    if (verdict === 0) {
+    if (because !== 0) {
       this.clockDropped.uncounted++;
+      const by = this.clockUncountedBy;
+      if (because === 1) by.ineligible++;
+      else if (because === 2) by.settling++;
+      else if (because === 3) by.worked++;
+      else if (because === 4) by.mainThread++;
+      else by.sensor++;
       return;
     }
     this.clockRing.push(obs.sampledAtMs, obs.readingMs, obs.busyMs, obs.starved);
@@ -1468,11 +1485,17 @@ export class ResolutionController {
     return this.emit(to, 'revert');
   }
 
-  /** Straight back to Medium with no ceiling and no longer wait: the clock
-   *  cannot vouch for the rung, which is not the rung failing. */
+  /** Straight back to Medium with no ceiling: the clock cannot vouch for the
+   *  rung, which is not the rung failing. A lifecycle reset that was not
+   *  re-earned leaves the wait as it was; a clock that went quiet in steady
+   *  state doubles it, so a clock that keeps going quiet cannot take the
+   *  picture up and down every few seconds — each change is a visible one. */
   private clockRestore(nowMs: number, why: ClockWhy): Decision {
     this.noteClock(nowMs, this.mediumIndex, why);
     this.clockVerify = null;
+    if (why === 'silent' || why === 'gap' || why === 'starved') {
+      this.probeWait = Math.min(PROBE_WAIT_MAX_MS, this.probeWait * 2);
+    }
     return this.emit(this.mediumIndex, 'restore');
   }
 
@@ -1531,7 +1554,7 @@ export class ResolutionController {
       this.noteClock(nowMs, verify.fromIndex, 'unverified');
       return this.emit(verify.fromIndex, 'revert');
     }
-    if (quiet) return this.clockRestore(nowMs, 'silent');
+    if (quiet) return this.clockRestore(nowMs, 'gap');
     if (this.clockAcquiredAtMs !== null && nowMs - this.clockAcquiredAtMs >= CLOCK_SILENCE_SPAN_MS
       && this.clockRing.since(nowMs - CLOCK_SILENCE_SPAN_MS).count < CLOCK_DOWN_COUNT) {
       return this.clockRestore(nowMs, 'silent');
@@ -1616,6 +1639,7 @@ export class ResolutionController {
       reversals: this.clockReversals,
       accepted: this.clockAccepted,
       dropped: { ...this.clockDropped },
+      uncountedBy: { ...this.clockUncountedBy },
       last: this.clockLast === null ? null : { ...this.clockLast },
     };
   }

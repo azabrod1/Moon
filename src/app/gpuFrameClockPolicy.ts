@@ -20,13 +20,18 @@
  * stamps; a browser that coarsens it further has no clock to offer), the
  * stamps must be in order (callback, then submit, then signal), and the gap
  * before the poll that saw the signal — the reading's uncertainty, since the
- * fence signalled somewhere inside it — must be at most `STARVED_GAP_MS`. A
- * longer gap means the loop was not running when it mattered: the main thread
- * had other work and the reading may be late by the whole gap. Such a reading
- * is STARVED: it never enters a statistic, and the share of them is what says
- * the clock has gone quiet. On WebKit's millisecond grid a forty-microsecond
- * gap now and then reads a whole millisecond and is starved too; that costs a
- * few percent of the readings and is the conservative side. A fence that has
+ * fence signalled somewhere inside it — must be at most `STARVED_GAP_MS`, or
+ * one step of the clock's own grid where that is coarser. A longer gap means
+ * the loop was not running when it mattered: the main thread had other work
+ * and the reading may be late by the whole gap. Such a reading is STARVED: it
+ * never enters a statistic, and the share of them is what says the clock has
+ * gone quiet. The grid is the floor under the test because below it a gap
+ * cannot be read at all: on WebKit's millisecond clock a forty-microsecond gap
+ * reads 1 whenever a millisecond boundary falls inside it, and on this
+ * project's Mac, moving at Earth's shell, seven starved readings in nine were
+ * exactly that — a one-step gap — against two real gaps of 2 and 7 ms. A
+ * clock accepted at a millisecond is only asked for what it can resolve: a
+ * gap of one step passes, two steps are starved. A fence that has
  * not signalled one and a quarter budgets after the frame began is CAPPED: the
  * loop stops spinning, and the reading counts as over the bar (infinite),
  * because a frame that late is exactly the evidence a hand-back needs.
@@ -112,7 +117,7 @@ export const GRID_MAX_MS = 1;
 export const CAP_SHARE = 1.25;
 
 /** Samples each task source is tried for before one is kept. */
-export const SOURCE_TRIAL_SAMPLES = 4;
+export const SOURCE_TRIAL_SAMPLES = 8;
 
 /** The predictor's exponent on the ratio of the rungs' pixel ratios: 2 is the
  *  per-pixel bound. */
@@ -134,6 +139,13 @@ export const REVERSAL_MS = 2;
 
 /** Reversals in a session that turn the clock off. */
 export const REVERSAL_REPEATS = 2;
+
+/** The longest signal gap a trusted reading may have: `STARVED_GAP_MS`, or
+ *  one step of the clock's grid where that is coarser (with a little slack
+ *  for the float the step is read as). */
+export function starvedGapLimitMs(gridMs: number | null): number {
+  return gridMs !== null && gridMs > STARVED_GAP_MS ? gridMs * 1.001 : STARVED_GAP_MS;
+}
 
 /** How long the loop may spin for a frame, from the frame's callback start. */
 export function capMsFor(barMs: number): number {
@@ -172,14 +184,14 @@ export interface ClassifiedReading {
 }
 
 /** One subtraction, and the flags. */
-export function classifyReading(sample: PolledSample): ClassifiedReading {
+export function classifyReading(sample: PolledSample, gridMs: number | null = null): ClassifiedReading {
   const busyMs = sample.submittedAtMs - sample.callbackStartMs;
   const invalid = !(busyMs >= 0) || (sample.signalledAtMs !== null && sample.signalledAtMs < sample.submittedAtMs);
   if (sample.capped || sample.signalledAtMs === null) {
     return { readingMs: Infinity, busyMs: Math.max(0, busyMs), starved: false, capped: true, invalid };
   }
   const readingMs = sample.signalledAtMs - sample.callbackStartMs;
-  const starved = sample.signalGapMs === null || sample.signalGapMs > STARVED_GAP_MS;
+  const starved = sample.signalGapMs === null || sample.signalGapMs > starvedGapLimitMs(gridMs);
   return { readingMs, busyMs: Math.max(0, busyMs), starved, capped: false, invalid };
 }
 
@@ -323,7 +335,7 @@ export class GpuClockPolicy {
     if (sample.minStepMs !== null && sample.minStepMs > 0) {
       this.gridMs = this.gridMs === null ? sample.minStepMs : Math.min(this.gridMs, sample.minStepMs);
     }
-    const reading = classifyReading(sample);
+    const reading = classifyReading(sample, this.gridMs);
     this.sampled++;
     if (reading.invalid) this.invalidCount++;
     else if (reading.starved) this.starvedCount++;

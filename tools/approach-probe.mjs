@@ -254,13 +254,20 @@ try {
         if (extent > widest) { widest = extent; widestRow = y; }
       }
       const touchesSides = rowLeft[widestRow] === 0 || rowRight[widestRow] === width - 1;
-      // The widest row has to be a maximum INSIDE the frame — narrower rows on
-      // both sides of it — or the silhouette's widest part is off the top or
-      // bottom and this row is a chord, not the diameter.
-      const MARGIN = 8;
-      const extentAt = (y) => (y < minY || y > maxY ? -1 : rowRight[y] - rowLeft[y]);
-      const interiorMaximum = widestRow - MARGIN >= 0 && widestRow + MARGIN <= height - 1
-        && extentAt(widestRow - MARGIN) < widest && extentAt(widestRow + MARGIN) < widest;
+      // The widest row has to be a maximum INSIDE the frame: the component's
+      // top and bottom rows both strictly narrower than it. A silhouette whose
+      // widest part is off the top (or bottom) is widest AT that edge, and the
+      // row measured there is a chord, not the diameter. Integer extents are
+      // flat for dozens of rows around a big disc's centre, so no "narrower N
+      // rows away" test can say this; the edge rows can.
+      // A chord within sqrt(w/2) rows of a w-px disc's centre rounds to the
+      // same integer as the diameter, so a widest row that close to the frame
+      // edge could be either — a 1-px flip at the antialiased rim decided it
+      // once. Only a widest row farther inside than that is the diameter.
+      const extentAt = (y) => rowRight[y] - rowLeft[y];
+      const flatTopRows = Math.sqrt(widest / 2);
+      const interiorMaximum = widestRow - minY > flatTopRows && maxY - widestRow > flatTopRows
+        && extentAt(minY) < widest && extentAt(maxY) < widest;
       return {
         halfWidthPx: widest / 2,
         centre: { x: (rowLeft[widestRow] + rowRight[widestRow]) / 2, y: widestRow },

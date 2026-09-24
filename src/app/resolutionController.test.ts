@@ -37,7 +37,16 @@ import {
   type RungLadder,
   type StepReason,
 } from './resolutionController';
-import { CLOCK_DOWN_SHARE, CLOCK_EXPONENT, CLOCK_UP_SHARE, DUTY_VERIFY, STARVED_SHARE_MAX } from './gpuFrameClockPolicy';
+import {
+  CLOCK_DOWN_SHARE,
+  CLOCK_EXPONENT,
+  CLOCK_UP_SHARE,
+  DUTY_VERIFY,
+  REFUSAL_REST_MAX_MS,
+  REFUSAL_REST_MS,
+  REFUSAL_SUSTAIN_MS,
+  STARVED_SHARE_MAX,
+} from './gpuFrameClockPolicy';
 
 /** One vsync tick on a 60 Hz panel, as a delivered interval reads. */
 const TICK = 16.67;
@@ -1120,7 +1129,8 @@ describe('the GPU clock climbs where the tick is blind', () => {
   it('refuses at 12 ms: the next rung’s predicted p90 does not fit the share', () => {
     const rig = new ClockRig(new ResolutionController(FULL_LADDER));
     blindScreen(rig);
-    rig.runClock(seconds(60), onTime, () => 12);
+    // Inside the thirty seconds of refusals after which the sensor rests.
+    rig.runClock(seconds(35), onTime, () => 12);
     expect(rig.applied).toEqual([]);
     const state = rig.controller.state();
     expect(state.clock.predictedNextMs).not.toBeNull();
@@ -1162,6 +1172,69 @@ describe('the GPU clock climbs where the tick is blind', () => {
     expect(firstUp(sparse)).toBeGreaterThanOrEqual(firstUp(quick));
     expect(firstUp(sparse)).toBeGreaterThanOrEqual((CLOCK_UP_COUNT * 16 * TICK) - 1);
     expect(CLOCK_UP_SPAN_MS).toBe(6000);
+  });
+});
+
+describe('a sensor that can never help rests', () => {
+  it('stops sampling at Medium after half a minute of refusals, and retries rarely', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.runClock(seconds(60), onTime, () => 12);
+    expect(rig.controller.wantsClock()).toBe(false);
+    const rest = rig.controller.state().clock.rest;
+    expect(rest.untilMs).not.toBeNull();
+    expect(rest.rests).toBe(1);
+    expect(rest.nextMs).toBe(2 * REFUSAL_REST_MS);
+    const firstMinute = rig.delivered;
+    // An hour of a pose with no room: the sensor samples a sliver of it.
+    rig.runClock(seconds(60 * 60), onTime, () => 12);
+    expect(rig.applied).toEqual([]);
+    const state = rig.controller.state().clock;
+    expect(state.rest.nextMs).toBe(REFUSAL_REST_MAX_MS);
+    // Always sampling, an hour at one frame in four is 54,000 readings; a
+    // retry is one climb window, six seconds of them.
+    expect(rig.delivered - firstMinute).toBeLessThan(100 * state.rest.rests);
+    expect(rig.delivered - firstMinute).toBeLessThan(0.03 * 54_000);
+    expect(state.rest.rests).toBeLessThanOrEqual(2 + Math.ceil((60 * 60_000) / REFUSAL_REST_MAX_MS));
+  });
+
+  it('climbs on the retry when the room has come back', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    let reading = 12;
+    rig.runClock(seconds(60), onTime, () => reading);
+    expect(rig.controller.wantsClock()).toBe(false);
+    reading = 7;
+    rig.runClock(seconds(REFUSAL_REST_MS / 1000 + 30), onTime, () => reading);
+    expect(rig.applied[0]?.reason).toBe('up');
+    expect(rig.controller.state().clock.rest.rests).toBe(0);
+  });
+
+  it('starts over on a new budget, a new ladder or an arrival', () => {
+    for (const reset of [
+      (rig: ClockRig) => blindScreen(rig),
+      (rig: ClockRig) => rig.controller.setLadder(FULL_LADDER, rig.nowMs),
+      (rig: ClockRig) => rig.controller.notify('arrival', rig.nowMs),
+    ]) {
+      const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+      blindScreen(rig);
+      rig.runClock(seconds(REFUSAL_SUSTAIN_MS / 1000 + 20), onTime, () => 12);
+      expect(rig.controller.wantsClock()).toBe(false);
+      reset(rig);
+      expect(rig.controller.wantsClock()).toBe(true);
+      expect(rig.controller.state().clock.rest).toMatchObject({ untilMs: null, nextMs: REFUSAL_REST_MS, rests: 0 });
+    }
+  });
+
+  it('never rests a rung the clock earned: it is watched whatever the rung above predicts', () => {
+    // Room for one rung and not the next: the top is refused for ever while
+    // the rung below is held.
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.runClock(seconds(5 * 60), onTime, (rung) => (rung > MEDIUM ? 11.5 : 7));
+    expect(rig.rung).toBe(MEDIUM + 1);
+    expect(rig.controller.wantsClock()).toBe(true);
+    expect(rig.controller.state().clock.rest.rests).toBe(0);
   });
 });
 

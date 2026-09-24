@@ -13,6 +13,10 @@ import {
   GRID_TOLERANCE,
   GpuClockPolicy,
   PRICE_BLOCK_SAMPLES,
+  REFUSAL_REST_MAX_MS,
+  REFUSAL_REST_MS,
+  REFUSAL_SUSTAIN_MS,
+  RefusalRest,
   REVERSAL_MS,
   SOURCE_TRIAL_SAMPLES,
   STARVED_GAP_MS,
@@ -416,5 +420,63 @@ describe('reversals and the clock’s resolution', () => {
     expect(clockResolves(1.0999999940395355)).toBe(true);
     expect(clockResolves(GRID_MAX_MS * (1 + GRID_TOLERANCE) + 0.01)).toBe(false);
     expect(clockResolves(16.7)).toBe(false);
+  });
+});
+
+describe('the rest after a sustained refusal', () => {
+  /** Refusals every frame at 60 fps from `fromMs` for `ms`. */
+  const refuse = (rest: RefusalRest, fromMs: number, ms: number): number => {
+    let t = fromMs;
+    for (; t < fromMs + ms; t += 1000 / 60) if (!rest.resting(t)) rest.refused(t);
+    return t;
+  };
+
+  it('rests only after refusals have gone on for the sustain, with no fit between them', () => {
+    const rest = new RefusalRest();
+    let t = refuse(rest, 0, REFUSAL_SUSTAIN_MS - 100);
+    expect(rest.resting(t)).toBe(false);
+    rest.fits();
+    t = refuse(rest, t, REFUSAL_SUSTAIN_MS - 100);
+    expect(rest.resting(t)).toBe(false);
+    t = refuse(rest, t, 200);
+    expect(rest.resting(t)).toBe(true);
+    expect(rest.state().rests).toBe(1);
+  });
+
+  it('retries after each rest with one window, and rests again at once, twice as long, up to the most', () => {
+    const rest = new RefusalRest();
+    const t0 = refuse(rest, 0, REFUSAL_SUSTAIN_MS + 20);
+    const lengths: number[] = [];
+    let t = t0;
+    for (let i = 0; i < 6; i++) {
+      const until = rest.state().restUntilMs!;
+      lengths.push(until - t);
+      expect(rest.resting(until - 1)).toBe(true);
+      t = until;
+      expect(rest.resting(t)).toBe(false);
+      // The retry's first full window refuses.
+      rest.refused(t);
+    }
+    expect(Math.abs(lengths[0] - REFUSAL_REST_MS)).toBeLessThan(50);
+    expect(lengths.slice(1).map((ms) => Math.round(ms))).toEqual([2, 4, 8, 8, 8].map((k) => k * REFUSAL_REST_MS));
+    expect(REFUSAL_REST_MAX_MS).toBe(8 * REFUSAL_REST_MS);
+  });
+
+  it('starts over when a window fits, and on a reset', () => {
+    const rest = new RefusalRest();
+    let t = refuse(rest, 0, REFUSAL_SUSTAIN_MS + 20);
+    t = rest.state().restUntilMs!;
+    rest.refused(t);
+    expect(rest.state().nextRestMs).toBe(4 * REFUSAL_REST_MS);
+    t = rest.state().restUntilMs!;
+    rest.fits();
+    expect(rest.resting(t)).toBe(false);
+    expect(rest.state()).toEqual({ restUntilMs: null, nextRestMs: REFUSAL_REST_MS, rests: 0 });
+    // After a fit, a refusal is the start of a new run, not a retry.
+    rest.refused(t);
+    expect(rest.resting(t + 1)).toBe(false);
+    refuse(rest, t, REFUSAL_SUSTAIN_MS + 20);
+    rest.reset();
+    expect(rest.state()).toEqual({ restUntilMs: null, nextRestMs: REFUSAL_REST_MS, rests: 0 });
   });
 });

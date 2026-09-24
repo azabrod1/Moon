@@ -73,7 +73,22 @@
  * the wall price settles it at one frame in sixteen. Starvation is NEVER a
  * reason to back off — it measures the app's load, not the sensor's cost, and
  * the controller hears it as silence. The 5 % is an occupancy allowance, not
- * an energy measurement; a phone soak is what can validate it.
+ * an energy measurement; a phone soak is what can validate it. The CPU price
+ * is what the sensor's calls cost the main thread, whatever made them slow:
+ * an engine that blocks inside `flush()` while the GPU is behind charges that
+ * wait to the sensor, so a GPU-bound stretch at Medium can price the sensor
+ * up to one frame in sixteen and then off for the session. That is the
+ * conservative direction — without the clock the controller is what it was
+ * before there was one — but it is a cost the sensor may not have caused.
+ *
+ * **A sensor that can never help rests.** At Medium, a predictor that keeps
+ * refusing the climb — `REFUSAL_SUSTAIN_MS` of refusals from full windows
+ * with no fit between them — means the device has no room at this pose, and
+ * sampling on would flush every frame and poll one in sixteen for the whole
+ * session for nothing. So the sensor stops for `REFUSAL_REST_MS`, then
+ * retries: one full window, and a refusal there rests it again for twice as
+ * long, up to `REFUSAL_REST_MAX_MS`. A window that fits, a new budget or
+ * ladder, or an arrival somewhere else starts it over (`RefusalRest`).
  *
  * **The poll's task source is chosen by measurement**, never by a user-agent
  * string: the first samples alternate `window.postMessage` and a
@@ -92,6 +107,17 @@
  * fitting, a level of detail that changes or a bottleneck that moves can break
  * that model — which is why a rung is kept by what the verification MEASURES
  * at it and never by the prediction.
+ *
+ * **Where the frozen numbers were read conservatively.** The signal-gap bar
+ * is `STARVED_GAP_MS`, half a millisecond, but on a clock that only resolves
+ * a millisecond it is one step of the grid: a gap that clock cannot see
+ * below one step is admitted, and a reading it admits can be late by up to
+ * that step — never early, so it can only over-read the frame. And the gap
+ * of a fence that has already signalled when the loop first asks runs from
+ * the submit, across the rest of the callback and the browser's rendering
+ * update, so it is nearly always starved: the fastest frames, whose GPU work
+ * is done before the loop starts, read as starved rather than as fast, which
+ * can hold a very fast device at Medium — never climb one it should not.
  *
  * **Reversals.** A sharper rung that reads more than `REVERSAL_MS` LESS than
  * the rung below it, measured moments apart at the same pose, is suspicious —
@@ -238,6 +264,71 @@ export function predictReadingMs(
   const busy = Math.min(Math.max(0, busyMs), readingMs);
   const r = fromRatio > 0 ? toRatio / fromRatio : 1;
   return busy + (readingMs - busy) * Math.pow(r, exponent);
+}
+
+/** How long the predictor must go on refusing a climb from Medium, with no
+ *  window that fits in between, before the sensor rests. */
+export const REFUSAL_SUSTAIN_MS = 30_000;
+
+/** The first rest, and where its doubling stops. */
+export const REFUSAL_REST_MS = 60_000;
+export const REFUSAL_REST_MAX_MS = 480_000;
+
+/**
+ * When a sensor whose predictor keeps refusing should stop sampling, and
+ * when it should try again (the header). Told of every judgement the
+ * predictor makes from a full window at Medium; pure, with the time passed in.
+ */
+export class RefusalRest {
+  /** The first refusal of the run the next fit would end, or null. */
+  private refusingSinceMs: number | null = null;
+  /** When the last rest ends, or null before any. Once it has ended the
+   *  sensor is retrying: the next refusal rests it again at once. */
+  private restUntilMs: number | null = null;
+  private nextRestMs = REFUSAL_REST_MS;
+  /** Rests taken since the last start-over. */
+  rests = 0;
+
+  /** The predictor refused a climb from a full window. */
+  refused(nowMs: number): void {
+    if (this.restUntilMs !== null) {
+      if (nowMs >= this.restUntilMs) this.rest(nowMs);
+      return;
+    }
+    if (this.refusingSinceMs === null) this.refusingSinceMs = nowMs;
+    else if (nowMs - this.refusingSinceMs >= REFUSAL_SUSTAIN_MS) this.rest(nowMs);
+  }
+
+  /** A full window fitted: there is room, and the next refusals start a new
+   *  run from the first rest. */
+  fits(): void {
+    this.reset();
+  }
+
+  /** Whether the sensor should stay off now. */
+  resting(nowMs: number): boolean {
+    return this.restUntilMs !== null && nowMs < this.restUntilMs;
+  }
+
+  /** A new budget, a new ladder or a new pose: nothing learned here holds. */
+  reset(): void {
+    this.refusingSinceMs = null;
+    this.restUntilMs = null;
+    this.nextRestMs = REFUSAL_REST_MS;
+    this.rests = 0;
+  }
+
+  /** For the readout. */
+  state(): { restUntilMs: number | null; nextRestMs: number; rests: number } {
+    return { restUntilMs: this.restUntilMs, nextRestMs: this.nextRestMs, rests: this.rests };
+  }
+
+  private rest(nowMs: number): void {
+    this.restUntilMs = nowMs + this.nextRestMs;
+    this.nextRestMs = Math.min(REFUSAL_REST_MAX_MS, this.nextRestMs * 2);
+    this.refusingSinceMs = null;
+    this.rests++;
+  }
 }
 
 /** Whether the sharper rung read more than `REVERSAL_MS` less than the rung

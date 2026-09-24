@@ -275,6 +275,7 @@ import {
   CLOCK_UP_SHARE,
   DUTY_START,
   DUTY_VERIFY,
+  RefusalRest,
   REVERSAL_MS,
   REVERSAL_REPEATS,
   STARVED_SHARE_MAX,
@@ -584,6 +585,10 @@ export interface ClockState {
   /** Failures at rungs the clock earned since the budget or the ladder last
    *  changed: what its ceiling escalates on. */
   failures: number;
+  /** At Medium, the sensor's rest after the predictor kept refusing: until
+   *  when (null when not resting or never rested), the next rest's length and
+   *  how many were taken. */
+  rest: { untilMs: number | null; nextMs: number; rests: number };
   panicStreak: number;
   /** Climbs whose sharper rung read markedly faster than the rung below. */
   reversals: number;
@@ -1075,6 +1080,9 @@ export class ResolutionController {
    *  changed, whatever rung each was at: what the clock's ceiling escalates
    *  on. */
   private clockFailures = 0;
+  /** At Medium, whether the sensor is resting after the predictor kept
+   *  refusing the climb (app/gpuFrameClockPolicy.ts). */
+  private readonly refusal = new RefusalRest();
   /** Active, visible drawing since the clock last had a reading. */
   private activeSinceReadingMs = 0;
   /** When the clock last passed a verification at the rung it holds: the
@@ -1330,6 +1338,7 @@ export class ResolutionController {
     this.lastFailedProbeRung = null;
     this.unverifiedRung = null;
     this.clockFailures = 0;
+    this.refusal.reset();
     this.floorReference = null;
     this.stepReference = null;
     if (opts.cause === 'user') {
@@ -1381,6 +1390,10 @@ export class ResolutionController {
         this.settleUntilMs = nowMs + REALLOC_SETTLE_MS;
         break;
       case 'arrival':
+        // A new pose is a new question for a sensor resting on the old one.
+        this.refusal.reset();
+        this.settleUntilMs = nowMs + REALLOC_SETTLE_MS;
+        break;
       case 'focus':
         // Neither ever steps by itself: the frames under a veil and the
         // frames around a blur say nothing about what the scene costs, and
@@ -1424,6 +1437,7 @@ export class ResolutionController {
     this.lastFailedProbeRung = null;
     this.unverifiedRung = null;
     this.clockFailures = 0;
+    this.refusal.reset();
     this.floorReference = null;
     this.stepReference = null;
     this.clockMs = nowMs;
@@ -1496,7 +1510,8 @@ export class ResolutionController {
    * so it costs nothing where it could not help — a display with a finer tick,
    * a row target, a held controller, a ladder with nothing above Medium, the
    * not-pixel-bound latch, or a rung below Medium. At Medium a ceiling on the
-   * next rung stops the sampling too, since nothing could be probed; a rung
+   * next rung stops the sampling too, since nothing could be probed, and so
+   * does a rest after the predictor kept refusing the climb; a rung
    * the clock earned is watched whatever the rung above it holds, or the
    * controller would make its own silence and restore Medium for it.
    */
@@ -1505,6 +1520,7 @@ export class ResolutionController {
     if (this.mediumIndex >= this.rungs.length - 1) return false;
     if (this.index > this.mediumIndex) return this.clockEarned;
     if (this.index < this.mediumIndex || this.latch !== null) return false;
+    if (this.refusal.resting(this.clockMs)) return false;
     return this.ceiling === null || this.ceiling.rung > this.index + 1;
   }
 
@@ -1844,7 +1860,13 @@ export class ResolutionController {
       (reading, busy) => predictReadingMs(busy, reading, from, to),
     );
     if (w === null || w.starvedShare > STARVED_SHARE_MAX) return null;
-    if (w.value > CLOCK_UP_SHARE * this.budgetMs) return null;
+    if (w.value > CLOCK_UP_SHARE * this.budgetMs) {
+      // No room at this pose. Kept up for long enough at Medium, the sensor
+      // rests rather than sampling a session it cannot change.
+      if (this.index === this.mediumIndex) this.refusal.refused(nowMs);
+      return null;
+    }
+    this.refusal.fits();
     this.noteClock(nowMs, next, 'climb');
     const decision = this.emit(next, 'up');
     this.pendingClimb = { belowMedianMs: w.medianMs };
@@ -1887,6 +1909,10 @@ export class ResolutionController {
       gapMs: this.clockGap(verify !== null),
       unverifiedRung: this.unverifiedRung,
       failures: this.clockFailures,
+      rest: (() => {
+        const r = this.refusal.state();
+        return { untilMs: r.restUntilMs !== null && this.clockMs < r.restUntilMs ? r.restUntilMs : null, nextMs: r.nextRestMs, rests: r.rests };
+      })(),
       panicStreak: this.panicStreak,
       reversals: this.clockReversals,
       accepted: this.clockAccepted,

@@ -34,8 +34,9 @@
  * **When it samples.** Only where the controller will read the clock — a
  * display MEASURED to have no finer tick than the budget (a 60 Hz the frame
  * schedule merely assumed may be a 120 Hz panel), under Screen, at Dynamic, with a
- * rung above Medium to earn or one the clock already earned (the controller's
- * `wantsClock`) — and only on frames that could count: the planetarium,
+ * rung above Medium to earn or one the clock already earned, and not while
+ * a run of refusals at Medium has rested it (the controller's `wantsClock`)
+ * — and only on frames that could count: the planetarium,
  * visible, focused, uncovered, no veil, the map closed, no DEV profile, clock
  * or sweep, the context alive. One eligible frame in the duty is fenced, the
  * first CLEAN one once the count runs out, one fence in flight. While the
@@ -52,7 +53,9 @@
  * bookkeeping — per drawn frame, and the WALL time its poll campaigns keep the
  * main thread turning over, as a share of the elapsed time. Either over its
  * bar and the duty doubles, 4 to 8 to 16; still over at 16 the sensor is off
- * for the session. The CPU is kept out of the app's own busy figures, which is
+ * for the session. A flush the engine blocks in while the GPU is behind is
+ * charged to the sensor like the rest of its CPU, so a GPU-bound stretch can
+ * price it off: conservative, and said so in the policy. The CPU is kept out of the app's own busy figures, which is
  * what the controller's main-thread test reads, and each stretch of it comes
  * with the moment it began, so the caller can hand the controller, as the
  * interval's `sensorMs`, only the part that ran after the next frame was due:

@@ -1336,7 +1336,12 @@ describe('a rung the clock earned is kept only while the clock vouches for it', 
     expect(rig.rung).toBe(MEDIUM);
     expect(after.every((a) => a.to >= MEDIUM)).toBe(true);
     expect(after[0].reason).toBe('revert');
-    expect(rig.controller.state().ceiling?.rung).toBe(TOP);
+    // One rung back, then the rung below fails its own verification: two
+    // failures in the epoch, so the ceiling sits on the first rung above
+    // Medium.
+    expect(after.map((a) => a.to)).toEqual([TOP - 1, MEDIUM]);
+    expect(rig.controller.state().ceiling).toMatchObject({ rung: MEDIUM + 1, escalation: 2 });
+    expect(rig.controller.state().clock.failures).toBe(2);
   });
 
   it('reverts a probe whose verification reads 15.5 ms, and escalates the ceiling like any failed probe', () => {
@@ -1909,5 +1914,31 @@ describe('a clock rung’s failures add up across its probation', () => {
       ceilings.push(rig.controller.state().ceiling?.escalation ?? 0);
     }
     expect(ceilings).toEqual([1, 2, 3]);
+  });
+
+  it('a device that heats after two and a half minutes above Medium, on the full ladder, escalates to the session hold and stops', () => {
+    // Two rungs above Medium. Cool, every rung reads 7 ms; after 150 s above
+    // Medium the chip throttles and every rung above Medium reads 15.5 until
+    // the device spends time at Medium again.
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    let aboveSinceMs: number | null = null;
+    const read = (rung: number): number => {
+      if (rung <= MEDIUM) { aboveSinceMs = null; return 7; }
+      if (aboveSinceMs === null) aboveSinceMs = rig.nowMs;
+      return rig.nowMs - aboveSinceMs >= 150_000 ? 15.5 : 7;
+    };
+    rig.runClock(seconds(60 * 60), onTime, read);
+    const state = rig.controller.state();
+    // Before, failures alternated between the two rungs and each started its
+    // own count: sixty-five changes in the hour and never past the four-minute
+    // hold.
+    expect(state.ceiling).toMatchObject({ rung: MEDIUM + 1, escalation: CEILING_HOLD_MS.length });
+    expect(state.ceiling!.untilMs).toBe(Infinity);
+    expect(rig.rung).toBe(MEDIUM);
+    expect(rig.applied.length).toBeLessThanOrEqual(20);
+    // And the changes stop: nothing in the last half hour.
+    const last = rig.applied[rig.applied.length - 1];
+    expect(last.atMs).toBeLessThan(rig.nowMs - 30 * 60_000);
   });
 });

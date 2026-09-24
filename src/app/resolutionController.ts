@@ -232,11 +232,21 @@
  * `CLOCK_PANIC_COUNT` readings in a row over the budget; or the intervals'
  * down window over `CLOCK_INTERVAL_DOWN` of the budget, a tighter bar than
  * the tick's, because a phone at 52–58 fps at a sharper rung is the
- * regression this rule exists to prevent. Inside its probation each of those
- * is the probe failing. And the clock going quiet — no reading for six
- * samples' worth of frames at the sensor's duty (a second at the least), too
- * few readings in the staleness horizon, starved readings over their share,
- * or the sensor off —
+ * regression this rule exists to prevent — and straight to Medium when every
+ * frame drawn over `CLOCK_DELIVERY_SPAN_MS` averages slower than
+ * `CLOCK_DELIVERY_GUARD` of the budget. Each of those is a measured failure,
+ * inside the probation or out of it, and at a rung the clock earned the
+ * failures are counted per evidence epoch — since the budget or the ladder
+ * last changed — rather than per rung: with two rungs above Medium a heating
+ * device fails at one and then at the other, and a count per rung starts over
+ * at each. The first failure holds the failing rung as a ceiling for a
+ * minute; from the second the ceiling sits on the first rung above Medium,
+ * for four minutes, sixteen, then the session. The rung a hand-back lands on,
+ * if still above Medium, is verified as a probe is, so a failure there
+ * escalates too; only a lifecycle reset gets the plain restore. And the clock
+ * going quiet — no reading for six samples' worth of frames at the sensor's
+ * duty (a second at the least), too few readings in the staleness horizon,
+ * starved readings over their share, or the sensor off —
  * returns the rung to Medium with no ceiling: no clock is the rule as it was,
  * applied to the rung as well as to the climb. Once a climb's verification
  * has measured the sharper rung, a clock that read it LOWER than the rung
@@ -561,6 +571,9 @@ export interface ClockState {
   /** The rung whose last probe went unverified: a second in a row there holds
    *  it as a ceiling. */
   unverifiedRung: number | null;
+  /** Failures at rungs the clock earned since the budget or the ladder last
+   *  changed: what its ceiling escalates on. */
+  failures: number;
   panicStreak: number;
   /** Climbs whose sharper rung read markedly faster than the rung below. */
   reversals: number;
@@ -1016,8 +1029,9 @@ export class ResolutionController {
   /** A clock climb decided and not yet applied, with the rung below's median
    *  for the honesty rule. */
   private pendingClimb: { belowMedianMs: number } | null = null;
-  /** The decision pending is a measured failure at a rung the clock earned. */
-  private pendingClockFail = false;
+  /** The decision pending is a step down the clock made on its own evidence
+   *  — a measured failure, or a probe it could not verify. */
+  private pendingClockStep = false;
   /** A verification standing at a rung the clock earned. */
   private clockVerify: {
     kind: 'probe' | 'reset';
@@ -1036,6 +1050,10 @@ export class ResolutionController {
   /** The rung whose last clock probe went unverified, until a probe there
    *  passes or the budget or the ladder changes. */
   private unverifiedRung: number | null = null;
+  /** Failures at rungs the clock earned since the budget or the ladder last
+   *  changed, whatever rung each was at: what the clock's ceiling escalates
+   *  on. */
+  private clockFailures = 0;
   /** Active, visible drawing since the clock last had a reading. */
   private activeSinceReadingMs = 0;
   /** When the clock last passed a verification at the rung it holds: the
@@ -1167,9 +1185,9 @@ export class ResolutionController {
     const from = this.index;
     const pending = this.pending;
     const climb = this.pendingClimb;
-    const failed = this.pendingClockFail;
+    const clockStep = this.pendingClockStep;
     this.pendingClimb = null;
-    this.pendingClockFail = false;
+    this.pendingClockStep = false;
     this.pending = null;
     if (pending !== null) this.index = clampIndex(pending.to, this.rungs.length);
     this.clockMs = nowMs;
@@ -1195,7 +1213,7 @@ export class ResolutionController {
     // a measured hand-back to a rung still above Medium starts the span
     // again: the frames that failed have been charged once already, to the
     // rung that drew them.
-    this.resetClockEvidence(nowMs, !(failed && this.index > this.mediumIndex));
+    this.resetClockEvidence(nowMs, !(clockStep && this.index > this.mediumIndex));
     // Only a probe the clock made keeps its failures past its probation.
     this.probationByClock = false;
     if (kind === 'up' && climb !== null && this.index > this.mediumIndex) {
@@ -1206,6 +1224,19 @@ export class ResolutionController {
         kind: 'probe',
         fromIndex: from,
         belowMedianMs: climb.belowMedianMs,
+        startMs: this.settleUntilMs,
+        deadlineMs: null,
+      };
+    } else if (clockStep && this.clockHolds()) {
+      // The clock handed a rung back to one still above Medium on its own
+      // evidence. The rung it lands on is verified as a probe is — a measured
+      // failure there escalates, and readings that do not come are silence —
+      // because a heating device fails at the rung below next, and a reset's
+      // plain restore there would start the escalation over each time.
+      this.clockVerify = {
+        kind: 'probe',
+        fromIndex: Math.max(this.mediumIndex, this.index - 1),
+        belowMedianMs: null,
         startMs: this.settleUntilMs,
         deadlineMs: null,
       };
@@ -1263,6 +1294,7 @@ export class ResolutionController {
     this.ceilingFailures = 0;
     this.lastFailedProbeRung = null;
     this.unverifiedRung = null;
+    this.clockFailures = 0;
     this.floorReference = null;
     this.stepReference = null;
     if (opts.cause === 'user') {
@@ -1270,7 +1302,7 @@ export class ResolutionController {
       this.latchFailures = 0;
     }
     this.pendingClimb = null;
-    this.pendingClockFail = false;
+    this.pendingClockStep = false;
     this.resetClockEvidence(nowMs);
     this.reopenClockVerify();
   }
@@ -1286,7 +1318,7 @@ export class ResolutionController {
     this.window.clear();
     this.pending = null;
     this.pendingClimb = null;
-    this.pendingClockFail = false;
+    this.pendingClockStep = false;
     this.verifyUntilMs = null;
     // Whatever drops the verification drops the probation with it: a down
     // after an arrival or a focus gain is a new question, not a probe failing.
@@ -1356,13 +1388,14 @@ export class ResolutionController {
     this.ceilingFailures = 0;
     this.lastFailedProbeRung = null;
     this.unverifiedRung = null;
+    this.clockFailures = 0;
     this.floorReference = null;
     this.stepReference = null;
     this.clockMs = nowMs;
     this.settleUntilMs = nowMs + REALLOC_SETTLE_MS;
     this.lastChangeMs = nowMs;
     this.pendingClimb = null;
-    this.pendingClockFail = false;
+    this.pendingClockStep = false;
     this.resetClockEvidence(nowMs);
     this.reopenClockVerify();
     if (Math.abs(this.rungs[this.index] - previousRatio) < 1e-9) return null;
@@ -1601,7 +1634,7 @@ export class ResolutionController {
     this.noteClock(nowMs, to, why);
     this.failProbe(nowMs);
     const decision = this.emit(to, 'revert');
-    this.pendingClockFail = true;
+    this.pendingClockStep = true;
     return decision;
   }
 
@@ -1635,7 +1668,9 @@ export class ResolutionController {
       this.unverifiedRung = this.index;
       this.probeWait = Math.min(PROBE_WAIT_MAX_MS, this.probeWait * 2);
     }
-    return this.emit(to, 'revert');
+    const decision = this.emit(to, 'revert');
+    this.pendingClockStep = true;
+    return decision;
   }
 
   /** How long active drawing may go without a reading before the clock is
@@ -1784,6 +1819,7 @@ export class ResolutionController {
       duty: this.clockDuty,
       gapMs: this.clockGap(verify !== null),
       unverifiedRung: this.unverifiedRung,
+      failures: this.clockFailures,
       panicStreak: this.panicStreak,
       reversals: this.clockReversals,
       accepted: this.clockAccepted,
@@ -1806,7 +1842,7 @@ export class ResolutionController {
 
   private emit(to: number, reason: StepReason): Decision {
     this.pendingClimb = null;
-    this.pendingClockFail = false;
+    this.pendingClockStep = false;
     this.pending = { to: clampIndex(to, this.rungs.length), reason };
     return this.pending;
   }
@@ -1849,10 +1885,22 @@ export class ResolutionController {
    *  four to sixteen to the session; a different rung starts its own count. */
   private failProbe(nowMs: number): void {
     this.probeWait = Math.min(PROBE_WAIT_MAX_MS, this.probeWait * 2);
-    this.ceilingFailures = this.lastFailedProbeRung === this.index ? this.ceilingFailures + 1 : 0;
-    const hold = CEILING_HOLD_MS[Math.min(this.ceilingFailures, CEILING_HOLD_MS.length - 1)];
-    this.ceiling = { rung: this.index, untilMs: nowMs + hold, escalation: this.ceilingFailures + 1 };
-    this.lastFailedProbeRung = this.index;
+    if (this.clockHolds()) {
+      // At a rung the clock earned the count is the evidence epoch's, not the
+      // rung's: with two rungs above Medium a heating device fails at one,
+      // then at the other, and a count per rung would start over at each and
+      // never escalate. From the second failure the ceiling sits on the first
+      // rung above Medium, so no clock climb is taken at all while it holds.
+      const failures = this.clockFailures++;
+      const hold = CEILING_HOLD_MS[Math.min(failures, CEILING_HOLD_MS.length - 1)];
+      const rung = failures === 0 ? this.index : this.mediumIndex + 1;
+      this.ceiling = { rung, untilMs: nowMs + hold, escalation: failures + 1 };
+    } else {
+      this.ceilingFailures = this.lastFailedProbeRung === this.index ? this.ceilingFailures + 1 : 0;
+      const hold = CEILING_HOLD_MS[Math.min(this.ceilingFailures, CEILING_HOLD_MS.length - 1)];
+      this.ceiling = { rung: this.index, untilMs: nowMs + hold, escalation: this.ceilingFailures + 1 };
+      this.lastFailedProbeRung = this.index;
+    }
     this.probation = null;
     this.probationByClock = false;
   }

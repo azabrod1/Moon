@@ -36,7 +36,7 @@
 export type FencePollSource = 'window' | 'channel';
 
 /** One poll's clock readings either side of the status call. */
-export interface FencePollStamp {
+interface FencePollStamp {
   before: number;
   after: number;
 }
@@ -90,7 +90,7 @@ export function createTaskPump(source: FencePollSource): TaskPump {
   return pump;
 }
 
-export interface FencePollOptions {
+interface FencePollOptions {
   /** The task source, where no `pump` is handed in. */
   source?: FencePollSource;
   /** A pump to reuse; the loop takes its handler and leaves it alive. */
@@ -111,7 +111,7 @@ export interface FencePollOptions {
   onTask?: (execMs: number, entryMs: number) => void;
 }
 
-export interface FencePollResult {
+interface FencePollResult {
   /** The clock right after the status call that found the fence signalled,
    *  or null when the loop gave up. */
   signalledAtMs: number | null;

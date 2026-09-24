@@ -92,7 +92,8 @@
  *
  * **The poll's task source is chosen by measurement**, never by a user-agent
  * string: the first samples alternate `window.postMessage` and a
- * `MessageChannel`, and the one whose loop turned over faster is kept. (On
+ * `MessageChannel`, and the one whose loop turned over faster is kept — the
+ * other's listener or ports are let go (app/gpuFrameClock.ts). (On
  * this project's Mac, WebKit's window messages were twice as fast as its
  * channel, and Chromium's channel marginally faster and private.)
  *

@@ -252,9 +252,10 @@
  * starved readings over their share, or the sensor off —
  * returns the rung to Medium with no ceiling: no clock is the rule as it was,
  * applied to the rung as well as to the climb. Once a climb's verification
- * has measured the sharper rung, a clock that read it LOWER than the rung
- * below (by more than its grid) is not tracking the load, and is off for the
- * session. None of the clock's decisions touch the floor's references, which
+ * has measured the sharper rung, a clock that read it more than `REVERSAL_MS`
+ * LOWER than the rung below is suspect — a true reading can fall when the
+ * scene changes, so one proves nothing — and after `REVERSAL_REPEATS` of them
+ * in a session it is not tracking the load, and is off for the session. None of the clock's decisions touch the floor's references, which
  * are interval evidence.
  *
  * Not in this version: the slide below Medium by the clock; a bias
@@ -487,8 +488,6 @@ export interface GpuObservation {
   /** The poll that saw the signal came after a gap the clock cannot vouch
    *  for. Never enters a statistic. */
   starved: boolean;
-  /** performance.now()'s grid as the sensor has seen it. */
-  gridMs?: number | null;
 }
 
 /** One frame's evidence: the interval that ENDS at `nowMs`, and the previous
@@ -532,8 +531,10 @@ export interface IntervalSample {
    *  its flushes and its poll tasks — that ran after the next frame was due:
    *  the only part of it that can have held the next callback back. An
    *  over-budget interval this work explains was made late by the sensor, not
-   *  by the pixels, and does not count. Never part of the main-thread
-   *  figures. */
+   *  by the pixels, and does not count — which only an interval that is not
+   *  quantised to a display tick can show: under vsync a late frame is a whole
+   *  tick late, and the sensor's work would have to be that long to explain
+   *  it. Never part of the main-thread figures. */
   sensorMs?: number;
 }
 

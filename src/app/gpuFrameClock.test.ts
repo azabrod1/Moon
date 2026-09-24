@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createGpuFrameClock } from './gpuFrameClock';
-import { CPU_PER_FRAME_MAX_MS, DUTY_START, GRID_MIN_STEPS, PRICE_BLOCK_SAMPLES } from './gpuFrameClockPolicy';
+import { CPU_PER_FRAME_MAX_MS, DUTY_START, GRID_MIN_STEPS, PRICE_BLOCK_SAMPLES, SOURCE_TRIAL_SAMPLES } from './gpuFrameClockPolicy';
 import type { FencePollSource, TaskPump } from './fencePoll';
 
 const SIGNALED = 0x9119;
@@ -199,6 +199,20 @@ describe('the GPU frame clock', () => {
     expect(r.disabled[0]).toMatch(/ms of CPU a frame even at one frame in 16/);
     expect(r.sensor.state().costPerFrameMs!).toBeGreaterThan(CPU_PER_FRAME_MAX_MS);
     expect(r.pumps.every((p) => p.disposed)).toBe(true);
+  });
+
+  it('tries both task sources, keeps one and lets the other go', () => {
+    const r = rig({ gpuMs: 0.5 });
+    for (let i = 0; i < 2 * SOURCE_TRIAL_SAMPLES * DUTY_START + DUTY_START; i++) r.frame();
+    const kept = r.sensor.state().source;
+    expect(kept).not.toBeNull();
+    expect(r.pumps.map((p) => p.source).sort()).toEqual(['channel', 'window']);
+    for (const pump of r.pumps) expect(pump.disposed).toBe(pump.source !== kept);
+    // And the one kept goes on sampling.
+    const fences = r.counts.fences;
+    for (let i = 0; i < 2 * DUTY_START; i++) r.frame();
+    expect(r.counts.fences).toBe(fences + 2);
+    expect(r.pumps).toHaveLength(2);
   });
 
   it('turned off from outside, it stops its poll and lets its task sources go', () => {

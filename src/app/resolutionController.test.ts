@@ -1074,7 +1074,6 @@ class ClockRig extends Rig {
           readingMs: r.readingMs,
           busyMs: r.busyMs ?? 2,
           starved: r.starved ?? false,
-          gridMs: 1,
         },
       };
     }
@@ -1388,14 +1387,22 @@ describe('a reading is admitted only with its own frame', () => {
 });
 
 describe('the sensor’s own work is not the pixels’', () => {
-  it('excludes a late interval the sensor explains, and counts one it does not', () => {
+  it('excludes a late interval the sensor explains, and counts one it does not — on a stream no tick quantises', () => {
+    // Free-running 20 ms frames: 3.4 ms of the sensor's work after the frame
+    // was due explains the overrun, 1 ms does not.
     const explained = new Rig(new ResolutionController(SHORT_LADDER));
-    explained.run(TWO_DOWN_WINDOWS, () => 2 * TICK, { sensorMs: 2 * TICK - BUDGET_MS + 0.5 });
+    explained.run(TWO_DOWN_WINDOWS, () => 20, { sensorMs: 3.4 });
     expect(explained.controller.state().countedWindow).toBe(0);
     expect(explained.applied).toEqual([]);
     const not = new Rig(new ResolutionController(SHORT_LADDER));
-    not.run(TWO_DOWN_WINDOWS, () => 2 * TICK, { sensorMs: 1 });
+    not.run(TWO_DOWN_WINDOWS, () => 20, { sensorMs: 1 });
     expect(not.applied.map((a) => a.reason)).toContain('down');
+  });
+
+  it('never excuses a vsync-late frame for the sensor’s work: it would take a tick of it', () => {
+    const rig = new Rig(new ResolutionController(SHORT_LADDER));
+    rig.run(TWO_DOWN_WINDOWS, () => 2 * TICK, { sensorMs: 3 });
+    expect(rig.applied.map((a) => a.reason)).toContain('down');
   });
 
   it('never excludes an on-time frame for the sensor’s work: a hair over the budget is vsync jitter', () => {

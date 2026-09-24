@@ -60,7 +60,12 @@
  * with the moment it began, so the caller can hand the controller, as the
  * interval's `sensorMs`, only the part that ran after the next frame was due:
  * an interval the sensor really held back is excluded from the evidence about
- * pixels rather than charged to them. The rest of the loop runs in time the
+ * pixels rather than charged to them. That can only be seen where the
+ * intervals are not quantised to a display tick: on a vsync-locked display a
+ * frame the sensor made late misses a whole tick, which only a tick's worth
+ * of the sensor's work past the due time could explain, so there the
+ * exclusion never fires and such an interval counts against the pixels — the
+ * conservative direction. The rest of the loop runs in time the
  * main thread had spare between frames and delays nothing — on this project's
  * Mac in WebKit the callback after a sampled frame started no later than the
  * one after any other, at one sample in four and in sixteen, at every rung —
@@ -82,18 +87,17 @@ import {
 } from './gpuFrameClockPolicy';
 
 /** A finished, classified sample, tagged with the frame it measured. */
-export interface GpuFrameSample extends ClassifiedReading {
+interface GpuFrameSample extends ClassifiedReading {
   /** The draw the fence closed. */
   drawSeq: number;
   /** The controller's generation at the end of that draw. */
   generation: number;
   /** When that draw's callback started. */
   sampledAtMs: number;
-  gridMs: number | null;
 }
 
 /** One drawn frame, as the sensor needs to see it at the end of its draw. */
-export interface GpuFrameContext {
+interface GpuFrameContext {
   /** The draw's sequence number. */
   drawSeq: number;
   /** When the tick's animation callback started. */
@@ -114,7 +118,7 @@ export interface GpuFrameContext {
   generation: number;
 }
 
-export interface GpuFrameClockDeps {
+interface GpuFrameClockDeps {
   gl: WebGLRenderingContext | WebGL2RenderingContext;
   /** `?gpuclock=0`. */
   killed: boolean;
@@ -132,7 +136,7 @@ export interface GpuFrameClockDeps {
   createPump?: (source: FencePollSource) => TaskPump;
 }
 
-export interface GpuFrameClockState {
+interface GpuFrameClockState {
   /** Whether the sensor can run at all on this context. */
   available: boolean;
   /** Why it is not running, or null. */
@@ -170,7 +174,7 @@ export interface GpuFrameClockState {
 }
 
 /** One finished sample as the DEV record keeps it. */
-export interface GpuFrameSampleRecord {
+interface GpuFrameSampleRecord {
   atMs: number;
   drawSeq: number;
   readingMs: number;
@@ -186,13 +190,17 @@ export interface GpuFrameSampleRecord {
   duty: number;
 }
 
-export interface GpuFrameClock {
+interface GpuFrameClock {
   /** At the end of a drawn frame's draws. Flushes while active; fences the
    *  sampled frame. */
   afterDraw(frame: GpuFrameContext): void;
   /** The sensor may still be asked to run: false once killed, disabled, lost
    *  or without WebGL2. */
   readonly usable: boolean;
+  /** Whether a frame the controller does (or does not) want read would be
+   *  flushed or fenced at all — the DEV force and mute included — so the
+   *  caller can skip the frame's clock work entirely when not. */
+  activeFor(wanted: boolean): boolean;
   state(): GpuFrameClockState;
   /** Off for the session, with the reason. */
   disable(reason: string): void;
@@ -234,6 +242,18 @@ export function createGpuFrameClock(deps: GpuFrameClockDeps): GpuFrameClock {
 
   const running = (): boolean => unavailable === null && policy.disabled === null && !devOff;
 
+  /** Once the trial has kept one task source, the other — a window listener
+   *  or a channel's two ports — has no further use for the session. */
+  const releaseLoser = () => {
+    const kept = policy.source;
+    if (kept === null) return;
+    for (const key of Object.keys(pumps) as FencePollSource[]) {
+      if (key === kept) continue;
+      pumps[key]?.dispose();
+      delete pumps[key];
+    }
+  };
+
   const stopLoop = () => {
     cancelPoll?.();
     cancelPoll = null;
@@ -256,10 +276,10 @@ export function createGpuFrameClock(deps: GpuFrameClockDeps): GpuFrameClock {
     else turnOff(verdict.reason);
   };
 
+  const activeFor = (wanted: boolean): boolean => running() && (forced || (wanted && !muted));
+
   function afterDraw(frame: GpuFrameContext): void {
-    if (!running()) return;
-    const active = forced || (frame.wanted && !muted);
-    if (!active) return;
+    if (!activeFor(frame.wanted)) return;
     const t0 = performance.now();
     policy.noteFrame(frame.callbackStartMs, frame.verifying);
     const armed = frame.eligible && policy.armFrame(frame.clean, inFlight, frame.verifying);
@@ -334,9 +354,10 @@ export function createGpuFrameClock(deps: GpuFrameClockDeps): GpuFrameClock {
         // A duty change drops every reading taken at the old duty, this one
         // with it; a sensor that priced itself out delivers nothing more; and
         // a reading from a clock whose grid is not yet known cannot steer.
-        deps.onSample({ ...reading, drawSeq, generation, sampledAtMs: callbackStartMs, gridMs: policy.gridMs });
+        deps.onSample({ ...reading, drawSeq, generation, sampledAtMs: callbackStartMs });
       }
       onVerdict(verdict);
+      releaseLoser();
       const book = performance.now() - b0;
       policy.noteCpu(book, burst);
       deps.onWork(book, b0);
@@ -377,6 +398,7 @@ export function createGpuFrameClock(deps: GpuFrameClockDeps): GpuFrameClock {
   return {
     afterDraw,
     get usable() { return running(); },
+    activeFor,
     state,
     disable(reason: string) {
       if (unavailable !== null || policy.disabled !== null) return;

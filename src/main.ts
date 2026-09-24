@@ -1462,7 +1462,6 @@ const gpuFrameClock = createGpuFrameClock({
       readingMs: sample.readingMs,
       busyMs: sample.busyMs,
       starved: sample.starved,
-      gridMs: sample.gridMs,
     };
   },
   onWork: (ms, startedAtMs) => { sensorSinceStep += sensorWorkPastDue(ms, startedAtMs); },
@@ -1514,8 +1513,11 @@ function clockSuspendedNow(): boolean {
 /**
  * At the end of a drawn frame: the sensor flushes while the controller would
  * read it and fences the sampled frame. `wanted` is every condition under which
- * a reading could steer; `eligible` is whether this frame could count; `clean`
- * is whether its own tick did no sliced work and linked no program.
+ * a reading could steer, and is decided first: on a frame where it is false
+ * (and nothing from the bridge forces the sensor) no clock code runs at all —
+ * no peek at the frame's work, no program count, no timing of its own.
+ * `eligible` is whether this frame could count; `clean` is whether its own
+ * tick did no sliced work and linked no program.
  */
 function gpuClockAfterDraw(nowMs: number): void {
   sensorTickMs = 0;
@@ -1524,20 +1526,20 @@ function gpuClockAfterDraw(nowMs: number): void {
     gpuFrameClock.disable('the WebGL context was lost');
     return;
   }
-  const t0 = performance.now();
-  const measuring = import.meta.env.DEV && (gpuProfiler?.active === true || gpuClock?.active === true);
   // The controller's view of the tick is only as good as the schedule's: a
-  // display whose 60 Hz is still an assumption may be a 120 Hz panel.
+  // display whose 60 Hz is still an assumption may be a 120 Hz panel. Under
+  // the map or a DEV measurement no fence could be armed, so nothing is
+  // flushed either.
+  const suspended = clockSuspendedNow();
   const wanted = appMode === 'planetarium'
     && qualityLevel === 'dynamic'
     && !qualityIdle
-    && !measuring
+    && !suspended
     && frameCadence.tickMeasured
     && resolutionController.wantsClock();
-  const eligible = lastEligibleNow
-    && appMode === 'planetarium'
-    && !(planetariumMode?.isMapOpen() ?? true)
-    && !measuring;
+  if (!gpuFrameClock.activeFor(wanted)) return;
+  const t0 = performance.now();
+  const eligible = lastEligibleNow && appMode === 'planetarium' && !suspended;
   const clean = (planetariumMode?.peekFrameWork() ?? 1) === 0
     && (renderer.info.programs?.length ?? 0) === lastProgramCount;
   gpuFrameClock.afterDraw({
@@ -2850,7 +2852,6 @@ function installDevHooks() {
             readingMs: r.readingMs,
             busyMs: r.busyMs ?? 2,
             starved: r.starved ?? false,
-            gridMs: 1,
           },
         });
         if (decision !== null) applyQualityDecision(decision, nowMs);

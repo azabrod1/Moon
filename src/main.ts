@@ -1511,10 +1511,13 @@ function gpuClockAfterDraw(nowMs: number): void {
   }
   const t0 = performance.now();
   const measuring = import.meta.env.DEV && (gpuProfiler?.active === true || gpuClock?.active === true);
+  // The controller's view of the tick is only as good as the schedule's: a
+  // display whose 60 Hz is still an assumption may be a 120 Hz panel.
   const wanted = appMode === 'planetarium'
     && qualityLevel === 'dynamic'
     && !qualityIdle
     && !measuring
+    && frameCadence.tickMeasured
     && resolutionController.wantsClock();
   const eligible = lastEligibleNow
     && appMode === 'planetarium'

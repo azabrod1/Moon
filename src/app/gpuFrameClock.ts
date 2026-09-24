@@ -32,7 +32,8 @@
  * or budget change measured another configuration.
  *
  * **When it samples.** Only where the controller will read the clock — a
- * display with no finer tick than the budget, under Screen, at Dynamic, with a
+ * display MEASURED to have no finer tick than the budget (a 60 Hz the frame
+ * schedule merely assumed may be a 120 Hz panel), under Screen, at Dynamic, with a
  * rung above Medium to earn or one the clock already earned (the controller's
  * `wantsClock`) — and only on frames that could count: the planetarium,
  * visible, focused, uncovered, no veil, the map closed, no DEV profile, clock

@@ -163,6 +163,35 @@ describe('calibration', () => {
     expect(cadence.state().assumed).toBe(true);
   });
 
+  it('calls an assumed 60 Hz measured only once a live window has confirmed it', () => {
+    const cadence = cadenceFor('screen');
+    run(cadence, grid(60, 0.4), { covered: true });
+    run(cadence, grid(60, 0.1).map((t) => t + 1000), { covered: false });
+    expect(cadence.state().assumed).toBe(true);
+    expect(cadence.tickMeasured).toBe(false);
+    // A whole live window at 60: the assumption holds, and is now measured.
+    run(cadence, grid(60, (RAISE_WINDOW + 2) / 60).map((t) => t + 1200), { covered: false });
+    expect(cadence.tickMeasured).toBe(true);
+    expect(cadence.state().idleCadenceMs).toBeCloseTo(ASSUMED_CADENCE_MS, 6);
+  });
+
+  it('raises a 120 Hz panel booted warm on its first live window, and never calls its 60 Hz measured', () => {
+    const cadence = cadenceFor('screen');
+    run(cadence, grid(120, 0.2), { covered: true });
+    run(cadence, grid(120, 0.5).map((t) => t + 1000), { covered: false });
+    expect(cadence.state().assumed).toBe(true);
+    expect(cadence.tickMeasured).toBe(false);
+    run(cadence, grid(120, 1.5).map((t) => t + 1500), { covered: false });
+    expect(cadence.tickMeasured).toBe(true);
+    expect(cadence.state().idleCadenceMs).toBeCloseTo(1000 / 120, 1);
+  });
+
+  it('is measured at once where the cover was long enough, or a pin names the rate', () => {
+    expect(calibrated('screen', 60).tickMeasured).toBe(true);
+    expect(cadenceFor('screen', { pinnedCadenceMs: 1000 / 120 }).tickMeasured).toBe(true);
+    expect(cadenceFor('screen').tickMeasured).toBe(false);
+  });
+
   it('raises live on a confidently faster stream and never lowers on a slower one', () => {
     // A Low Power Mode boot: the cover delivers 30 callbacks a second.
     const cadence = cadenceFor('60');

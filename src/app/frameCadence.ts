@@ -180,6 +180,9 @@ export class FrameCadence {
   private observedMs: number | null = null;
   private calibrated = false;
   private assumed = false;
+  /** A whole live window has measured the stream since an assumed 60 Hz, and
+   *  did not raise it: the assumption is a measurement now. */
+  private assumedConfirmed = false;
 
   private ticks = 1;
   private periodMs = ASSUMED_CADENCE_MS;
@@ -335,6 +338,21 @@ export class FrameCadence {
     return this.ticks;
   }
 
+  /**
+   * Whether the display's tick is a measured fact rather than a guess:
+   * calibrated under the boot cover, pinned, or — where the cover was too
+   * short and 60 Hz was assumed — once one live window has measured the
+   * stream. Until then a 120 Hz panel reads as a 60 Hz one. The GPU frame
+   * clock (app/gpuFrameClock.ts) waits for it, because it samples only where
+   * the tick is blind: on this project's Mac, headless Chromium and Firefox at
+   * 120 Hz each fenced a couple of dozen frames in their first seconds — and,
+   * before its grid was judged on enough steps, one of those turned the clock
+   * off for the session.
+   */
+  get tickMeasured(): boolean {
+    return this.calibrated && (!this.assumed || this.assumedConfirmed);
+  }
+
   get budgetMs(): number {
     return this.budget;
   }
@@ -421,6 +439,7 @@ export class FrameCadence {
     const ms = (t - this.raiseStartT) / this.raiseIntervals;
     this.raiseStartT = t;
     this.raiseIntervals = 0;
+    this.assumedConfirmed = true;
     if (this.pinnedMs !== null) return;
     // Raise only. A window faster than the calibration is the display; a
     // slower one is load or a throttle, and is never taken.

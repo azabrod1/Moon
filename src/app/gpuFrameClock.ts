@@ -67,7 +67,6 @@ import { createTaskPump, pollFence, type FencePollSource, type TaskPump } from '
 import {
   GpuClockPolicy,
   capMsFor,
-  clockResolves,
   type ClassifiedReading,
   type PriceVerdict,
 } from './gpuFrameClockPolicy';
@@ -288,6 +287,7 @@ export function createGpuFrameClock(deps: GpuFrameClockDeps): GpuFrameClock {
         capped: result.capped,
         intervalMeanMs: result.intervalMeanMs,
         minStepMs: result.minStepMs,
+        gridSteps: result.gridSteps,
         campaignMs: result.campaignMs,
       });
       if (recordMax > 0 && recorded.length < recordMax) {
@@ -307,9 +307,12 @@ export function createGpuFrameClock(deps: GpuFrameClockDeps): GpuFrameClock {
           duty: policy.duty,
         });
       }
-      if (policy.gridMs !== null && !clockResolves(policy.gridMs)) {
-        turnOff(`the page's clock only resolves ${policy.gridMs} ms`);
-      } else if (verdict === null && !reading.invalid && clockResolves(policy.gridMs)) {
+      const grid = policy.gridVerdict();
+      if (grid === 'coarse') {
+        turnOff(policy.gridMs === null
+          ? 'the page\'s clock never moved inside a poll'
+          : `the page's clock only resolves ${Math.round(policy.gridMs * 1000) / 1000} ms`);
+      } else if (verdict === null && !reading.invalid && grid === 'fine') {
         // A duty change drops every reading taken at the old duty, this one
         // with it; a sensor that priced itself out delivers nothing more; and
         // a reading from a clock whose grid is not yet known cannot steer.

@@ -7,6 +7,9 @@ import {
   DUTY_MAX,
   DUTY_START,
   GRID_MAX_MS,
+  GRID_MIN_SAMPLES,
+  GRID_MIN_STEPS,
+  GRID_TOLERANCE,
   GpuClockPolicy,
   PRICE_BLOCK_SAMPLES,
   REVERSAL_MS,
@@ -52,6 +55,7 @@ function feed(
     source?: FencePollSource;
     gapMs?: number;
     minStepMs?: number | null;
+    gridSteps?: number;
   },
 ) {
   const frames = opts.frames ?? policy.duty;
@@ -65,6 +69,7 @@ function feed(
     source: opts.source ?? policy.nextSource(),
     intervalMeanMs: opts.gapMs ?? 0.04,
     minStepMs: opts.minStepMs === undefined ? 0.1 : opts.minStepMs,
+    gridSteps: opts.gridSteps,
     campaignMs: opts.campaignMs ?? 0,
   });
 }
@@ -281,6 +286,47 @@ describe('the clock’s grid', () => {
     feed(policy, { costMs: 0.5, minStepMs: 0.1 });
     expect(policy.gridMs).toBe(0.1);
   });
+
+  it('is not judged on one sample whose polls other work held apart', () => {
+    // Headless Chromium on the project's Mac turned the sensor off on its
+    // first sample: its polls were held more than a millisecond apart while
+    // the page was busy, on a clock whose grid is a tenth of that. One step
+    // is not the grid, and decides nothing either way.
+    const policy = new GpuClockPolicy();
+    feed(policy, { costMs: 0.1, minStepMs: 1.2999999940395355, gridSteps: 1, starved: true });
+    expect(policy.gridVerdict()).toBeNull();
+    feed(policy, { costMs: 0.1, minStepMs: 0.09999999403953552, gridSteps: 40 });
+    expect(policy.gridVerdict()).toBe('fine');
+  });
+
+  it('qualifies a millisecond clock read as the difference of two floats', () => {
+    const policy = new GpuClockPolicy();
+    feed(policy, { costMs: 0.5, minStepMs: 1.0999999940395355, gridSteps: 3 });
+    expect(policy.gridVerdict()).toBe('fine');
+    const webkit = new GpuClockPolicy();
+    feed(webkit, { costMs: 0.5, minStepMs: 0.9999999999854481, gridSteps: 3 });
+    expect(webkit.gridVerdict()).toBe('fine');
+  });
+
+  it('calls a clock too coarse only once enough steps never showed a millisecond', () => {
+    const policy = new GpuClockPolicy();
+    const per = 4;
+    for (let i = 0; i * per < GRID_MIN_STEPS - per; i++) {
+      feed(policy, { costMs: 0.5, minStepMs: 16.7, gridSteps: per });
+      expect(policy.gridVerdict()).toBeNull();
+    }
+    feed(policy, { costMs: 0.5, minStepMs: 16.7, gridSteps: per });
+    expect(policy.gridSteps).toBe(GRID_MIN_STEPS);
+    expect(policy.gridVerdict()).toBe('coarse');
+  });
+
+  it('calls a clock that never moved inside a poll too coarse after enough samples', () => {
+    const policy = new GpuClockPolicy();
+    for (let i = 0; i < GRID_MIN_SAMPLES - 1; i++) feed(policy, { costMs: 0.5, minStepMs: null });
+    expect(policy.gridVerdict()).toBeNull();
+    feed(policy, { costMs: 0.5, minStepMs: null });
+    expect(policy.gridVerdict()).toBe('coarse');
+  });
 });
 
 describe('the predictor', () => {
@@ -311,6 +357,8 @@ describe('reversals and the clock’s resolution', () => {
     expect(clockResolves(null)).toBe(false);
     expect(clockResolves(1)).toBe(true);
     expect(clockResolves(0.1)).toBe(true);
+    expect(clockResolves(1.0999999940395355)).toBe(true);
+    expect(clockResolves(GRID_MAX_MS * (1 + GRID_TOLERANCE) + 0.01)).toBe(false);
     expect(clockResolves(16.7)).toBe(false);
   });
 });

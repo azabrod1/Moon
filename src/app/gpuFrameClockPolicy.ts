@@ -17,7 +17,15 @@
  *
  * **Whether a reading may steer at all.** The clock it is read on must resolve
  * a millisecond or better (`performance.now()`'s grid, read off the loop's own
- * stamps; a browser that coarsens it further has no clock to offer), the
+ * stamps; a browser that coarsens it further has no clock to offer). Every
+ * non-zero step between two stamps is a whole number of grid steps, so the
+ * smallest over many of them is the grid — but over a few it can be a stretch
+ * in which other work held the loop: a first sample taken while the page was
+ * busy saw its polls 1.1 ms apart on a clock whose grid is a tenth of that. So
+ * the grid qualifies as soon as a step within `GRID_TOLERANCE` of a millisecond
+ * has been seen, and is judged too coarse only after `GRID_MIN_STEPS` steps
+ * (or `GRID_MIN_SAMPLES` samples with no step at all) never showed one; until
+ * one or the other, no reading steers. Then the
  * stamps must be in order (callback, then submit, then signal), and the gap
  * before the poll that saw the signal — the reading's uncertainty, since the
  * fence signalled somewhere inside it — must be at most `STARVED_GAP_MS`, or
@@ -113,6 +121,15 @@ export const STARVED_GAP_MS = 0.5;
 /** The coarsest `performance.now()` grid the clock will steer on. */
 export const GRID_MAX_MS = 1;
 
+/** The slack on that bar for a grid read as the difference of two floats. */
+export const GRID_TOLERANCE = 0.15;
+
+/** Non-zero clock steps seen before a grid that has not qualified is called
+ *  too coarse — and, for a clock whose steps never show inside a poll at all,
+ *  samples. */
+export const GRID_MIN_STEPS = 32;
+export const GRID_MIN_SAMPLES = 32;
+
 /** The loop gives up this many budgets after the frame's callback began. */
 export const CAP_SHARE = 1.25;
 
@@ -154,7 +171,7 @@ export function capMsFor(barMs: number): number {
 
 /** Whether a clock with this grid can steer at all. */
 export function clockResolves(gridMs: number | null): boolean {
-  return gridMs !== null && gridMs <= GRID_MAX_MS;
+  return gridMs !== null && gridMs <= GRID_MAX_MS * (1 + GRID_TOLERANCE);
 }
 
 /** What the poll loop found for one sampled frame. */
@@ -234,8 +251,10 @@ export class GpuClockPolicy {
   dutyPinned = false;
   /** Why the sensor turned itself off, or null while it runs. */
   disabled: string | null = null;
-  /** performance.now()'s grid as the loop's own stamps have shown it. */
+  /** performance.now()'s grid as the loop's own stamps have shown it, and
+   *  how many non-zero steps it was the smallest of. */
   gridMs: number | null = null;
+  gridSteps = 0;
   /** The task source kept, or null while both are on trial. */
   source: FencePollSource | null = null;
 
@@ -329,11 +348,14 @@ export class GpuClockPolicy {
       source: FencePollSource;
       intervalMeanMs: number | null;
       minStepMs: number | null;
+      /** The non-zero steps the smallest was taken over; one where left out. */
+      gridSteps?: number;
       campaignMs: number;
     },
   ): { reading: ClassifiedReading; verdict: PriceVerdict } {
     if (sample.minStepMs !== null && sample.minStepMs > 0) {
       this.gridMs = this.gridMs === null ? sample.minStepMs : Math.min(this.gridMs, sample.minStepMs);
+      this.gridSteps += Math.max(1, sample.gridSteps ?? 1);
     }
     const reading = classifyReading(sample, this.gridMs);
     this.sampled++;
@@ -353,6 +375,19 @@ export class GpuClockPolicy {
       this.totalCampaignMs += sample.campaignMs;
     }
     return { reading, verdict: this.price() };
+  }
+
+  /**
+   * What the stamps have shown of the clock so far: 'fine' once a step within
+   * the bar has been seen, 'coarse' once enough steps (or samples) never
+   * showed one, and null while the evidence is too thin to say — a reading
+   * steers only on 'fine'.
+   */
+  gridVerdict(): 'fine' | 'coarse' | null {
+    if (clockResolves(this.gridMs)) return 'fine';
+    if (this.gridSteps >= GRID_MIN_STEPS) return 'coarse';
+    if (this.gridMs === null && this.sampled >= GRID_MIN_SAMPLES) return 'coarse';
+    return null;
   }
 
   /** Turn the sensor off for the session. */

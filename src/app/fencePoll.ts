@@ -132,8 +132,13 @@ export interface FencePollResult {
   intervalMeanMs: number | null;
   intervalMaxMs: number | null;
   /** The smallest non-zero step the clock took inside the loop: its grid,
-   *  read off the loop's own stamps. */
+   *  read off the loop's own stamps. Every non-zero step is a whole number of
+   *  grid steps, so the smallest over enough of them IS the grid; over a few
+   *  it can be a stretch when other work held the loop, which is why
+   *  `gridSteps` comes with it. */
   minStepMs: number | null;
+  /** How many non-zero steps that smallest one was taken over. */
+  gridSteps: number;
   stamps: FencePollStamp[];
   signalledOnFirstPoll: boolean;
   capped: boolean;
@@ -169,6 +174,7 @@ export function pollFence(
   let intervalSum = 0;
   let intervalMax = 0;
   let minStep = Infinity;
+  let gridSteps = 0;
   // The previous poll's ask (none before the first, so the interval figures
   // are poll to poll), and the last moment the loop knew the fence unsignalled
   // — the submit before the first poll.
@@ -197,6 +203,7 @@ export function pollFence(
       intervalMeanMs: polls > 1 ? intervalSum / (polls - 1) : null,
       intervalMaxMs: polls > 1 ? intervalMax : null,
       minStepMs: Number.isFinite(minStep) ? minStep : null,
+      gridSteps,
       stamps,
       signalledOnFirstPoll: polls === 1 && signalledAtMs !== null,
       capped,
@@ -224,10 +231,16 @@ export function pollFence(
     polls += 1;
     const call = after - before;
     costMs += call;
-    if (call > 0 && call < minStep) minStep = call;
+    if (call > 0) {
+      gridSteps++;
+      if (call < minStep) minStep = call;
+    }
     if (prevAfter >= 0) {
       const dispatch = before - prevAfter;
-      if (dispatch > 0 && dispatch < minStep) minStep = dispatch;
+      if (dispatch > 0) {
+        gridSteps++;
+        if (dispatch < minStep) minStep = dispatch;
+      }
     }
     if (prevAsk >= 0) {
       const gap = before - prevAsk;

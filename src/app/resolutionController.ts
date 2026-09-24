@@ -194,8 +194,9 @@
  * frame that was eligible and settled but whose interval did not count (its
  * sliced work, its main thread, the sensor) keeps its reading out of every
  * statistic too, but not out of the failure evidence: a starved or capped
- * reading of it counts toward the starved share, a probe's failures and
- * silence, and a capped or over-bar one toward the panic streak — an engine
+ * reading of it counts toward the starved share and a probe's failures, and a
+ * capped or over-bar one toward the panic streak — none of them is silence,
+ * since each is the clock speaking — an engine
  * that blocks in submission under GPU backpressure makes exactly the frames
  * whose fences are capped the frames whose main thread is too busy to count.
  *
@@ -1654,18 +1655,21 @@ export class ResolutionController {
   }
 
   /** A reading of an eligible, settled frame whose interval did not count:
-   *  kept only where it is evidence of failure (above). */
+   *  kept only where it is evidence of failure (above). Such a reading is the
+   *  clock speaking, so it is not silence either — at a sparse duty the
+   *  silence gap would otherwise run out before four of them could make a
+   *  panic, and the rung would go back with no ceiling for what is a measured
+   *  failure. */
   private admitUncounted(obs: GpuObservation): void {
     if (obs.starved) {
       this.clockRing.push(obs.sampledAtMs, obs.readingMs, obs.busyMs, STARVED);
       this.activeSinceReadingMs = 0;
       return;
     }
-    if (!Number.isFinite(obs.readingMs)) {
-      this.clockRing.push(obs.sampledAtMs, obs.readingMs, obs.busyMs, EVIDENCE);
-      this.activeSinceReadingMs = 0;
-    }
-    if (obs.readingMs > this.budgetMs) this.panicStreak++;
+    if (!(obs.readingMs > this.budgetMs)) return;
+    if (!Number.isFinite(obs.readingMs)) this.clockRing.push(obs.sampledAtMs, obs.readingMs, obs.busyMs, EVIDENCE);
+    this.activeSinceReadingMs = 0;
+    this.panicStreak++;
   }
 
   /** Every eligible step's interval, for the delivery guard, and the active

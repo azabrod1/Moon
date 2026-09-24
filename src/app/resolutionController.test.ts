@@ -1851,6 +1851,20 @@ describe('a rung whose frames do not count still hears its failures', () => {
     expect(state.clock.uncountedBy.mainThread).toBeGreaterThan(0);
   });
 
+  it('hears them as the clock speaking, not as silence: at one frame in sixteen they hand the rung back as a panic', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.setDuty(16);
+    rig.runClock(seconds(60), onTime, () => 7);
+    expect(rig.rung).toBe(TOP);
+    rig.runClock(Math.ceil(PROBE_HOLD_MS / TICK), onTime, () => 7);
+    const from = rig.applied.length;
+    // Streaming frames, on time but not counted, each reading over the bar.
+    rig.runClock(seconds(4), onTime, () => 20, { workedMs: 2 });
+    expect(rig.applied[from]?.reason).toBe('revert');
+    expect(rig.controller.state().clock.last?.why).toBe('panic');
+  });
+
   it('keeps those readings out of the statistics: an over-bar reading from a frame that did not count moves no p90', () => {
     const rig = earnedTop();
     rig.runClock(Math.ceil(PROBE_HOLD_MS / TICK), onTime, () => 7);

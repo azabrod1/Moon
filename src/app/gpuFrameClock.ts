@@ -51,12 +51,18 @@
  * bookkeeping — per drawn frame, and the WALL time its poll campaigns keep the
  * main thread turning over, as a share of the elapsed time. Either over its
  * bar and the duty doubles, 4 to 8 to 16; still over at 16 the sensor is off
- * for the session. The CPU is also reported to the controller as the
- * interval's `sensorMs`, so an interval the sensor's own execution made late
- * is excluded from the evidence about pixels rather than charged to them; it
- * is kept out of the app's own busy figures, which is what the controller's
- * main-thread test reads. The campaign's wall time is never charged to a
- * frame — it is occupancy, not proven delay.
+ * for the session. The CPU is kept out of the app's own busy figures, which is
+ * what the controller's main-thread test reads, and each stretch of it comes
+ * with the moment it began, so the caller can hand the controller, as the
+ * interval's `sensorMs`, only the part that ran after the next frame was due:
+ * an interval the sensor really held back is excluded from the evidence about
+ * pixels rather than charged to them. The rest of the loop runs in time the
+ * main thread had spare between frames and delays nothing — on this project's
+ * Mac in WebKit the callback after a sampled frame started no later than the
+ * one after any other, at one sample in four and in sixteen, at every rung —
+ * so charging it would throw away readings of frames that were merely
+ * jittered by a millisecond. The campaign's wall time is never charged to a
+ * frame at all — it is occupancy, not proven delay.
  *
  * **Kill switch.** `?gpuclock=0` (any build) turns it off for the session:
  * no fence, no flush, and the controller exactly as it was before there was a
@@ -107,8 +113,9 @@ export interface GpuFrameClockDeps {
   killed: boolean;
   /** A finished sample. Called from the poll loop's task, between frames. */
   onSample: (sample: GpuFrameSample) => void;
-  /** CPU the sensor executed on the main thread, as it is spent. */
-  onWork: (ms: number) => void;
+  /** CPU the sensor executed on the main thread, as it is spent, with the
+   *  moment that stretch began. */
+  onWork: (ms: number, startedAtMs: number) => void;
   /** The duty moved: every reading taken at the old one is dropped. */
   onDuty?: (duty: number) => void;
   /** The sensor turned itself off for the session. */
@@ -255,7 +262,7 @@ export function createGpuFrameClock(deps: GpuFrameClockDeps): GpuFrameClock {
     const submittedAtMs = performance.now();
     const inTick = submittedAtMs - t0;
     policy.noteCpu(inTick);
-    deps.onWork(inTick);
+    deps.onWork(inTick, t0);
     if (!armed) return;
     if (sync === null) {
       turnOff('the context refused a sync object');
@@ -270,9 +277,9 @@ export function createGpuFrameClock(deps: GpuFrameClockDeps): GpuFrameClock {
       pump: pumpFor(source),
       capMs: capMsFor(frame.barMs),
       capFromMs: callbackStartMs,
-      onTask: (ms) => {
+      onTask: (ms, entryMs) => {
         policy.noteCpu(ms);
-        deps.onWork(ms);
+        deps.onWork(ms, entryMs);
       },
     }, (result) => {
       const b0 = performance.now();
@@ -321,7 +328,7 @@ export function createGpuFrameClock(deps: GpuFrameClockDeps): GpuFrameClock {
       onVerdict(verdict);
       const book = performance.now() - b0;
       policy.noteCpu(book);
-      deps.onWork(book);
+      deps.onWork(book, b0);
     });
   }
 

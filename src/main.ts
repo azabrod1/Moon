@@ -1439,8 +1439,9 @@ let lastEligibleNow = false;
 // controller steers a rung above Medium by a fence reading of the frame
 // instead (app/gpuFrameClock.ts). It samples only where the controller will
 // read it; a reading is handed to the NEXT step and admitted there only if the
-// interval of the frame it measured counted; and its own CPU is reported as the
-// interval's `sensorMs` and kept out of the tick's busy figures.
+// interval of the frame it measured counted; and its own CPU is kept out of the
+// tick's busy figures, the part of it that ran once the next frame was due
+// reported as the interval's `sensorMs`.
 
 /** A reading that finished since the last step, for that step to pair. */
 let gpuPending: GpuObservation | null = null;
@@ -1461,7 +1462,7 @@ const gpuFrameClock = createGpuFrameClock({
       gridMs: sample.gridMs,
     };
   },
-  onWork: (ms) => { sensorSinceStep += ms; },
+  onWork: (ms, startedAtMs) => { sensorSinceStep += sensorWorkPastDue(ms, startedAtMs); },
   onDuty: (duty) => {
     // Readings taken at the old duty are dropped, and a reading still out
     // with them.
@@ -1477,6 +1478,23 @@ const gpuFrameClock = createGpuFrameClock({
 });
 // No clock at all — `?gpuclock=0`, or no WebGL2 — is the rule as it was.
 if (!gpuFrameClock.usable) resolutionController.setClockOff(gpuFrameClock.state().reason ?? 'no clock');
+
+/**
+ * The part of a stretch of the sensor's own CPU that ran after the next frame
+ * was due — the current interval's start plus the budget. Only that part can
+ * have held the next callback back: the poll loop's tasks between frames run
+ * in time the main thread had spare, each a few microseconds long, and the
+ * browser runs its rendering update between any two of them, so a task that
+ * ran before the deadline delayed nothing. Counting it would call an interval
+ * the 1 ms clock merely read as 17 or 18 "made late by the sensor" and throw
+ * away its reading, which a sampled frame with a millisecond or two of polls
+ * behind it almost always could be.
+ */
+function sensorWorkPastDue(ms: number, startedAtMs: number): number {
+  const dueMs = lastFrameAtMs + resolutionController.clockBarMs;
+  const endMs = startedAtMs + ms;
+  return endMs <= dueMs ? 0 : Math.min(ms, endMs - dueMs);
+}
 
 /**
  * At the end of a drawn frame: the sensor flushes while the controller would

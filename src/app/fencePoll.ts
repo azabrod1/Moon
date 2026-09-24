@@ -106,9 +106,9 @@ export interface FencePollOptions {
   capPolls?: number;
   /** How many raw stamps to keep in the result (0 keeps none). */
   keepStamps?: number;
-  /** Each task's execution as it is spent, so a caller can charge it to the
-   *  frame whose span it landed in. */
-  onTask?: (execMs: number) => void;
+  /** Each task's execution as it is spent, with the moment it began, so a
+   *  caller can tell where in the frame's span it landed. */
+  onTask?: (execMs: number, entryMs: number) => void;
 }
 
 export interface FencePollResult {
@@ -216,7 +216,7 @@ export function pollFence(
     lastExit = out;
     const spent = out - entry;
     execMs += spent;
-    opts.onTask?.(spent);
+    opts.onTask?.(spent, entry);
   };
 
   const step = () => {

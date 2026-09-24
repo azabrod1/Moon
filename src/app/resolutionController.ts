@@ -476,9 +476,11 @@ export interface IntervalSample {
    *  draw's interval counted. */
   gpu?: GpuObservation | null;
   /** The GPU clock's own main-thread work inside the interval — its fence,
-   *  its flushes and its poll tasks. An over-budget interval this work
-   *  explains was made late by the sensor, not by the pixels, and does not
-   *  count. Never part of the main-thread figures. */
+   *  its flushes and its poll tasks — that ran after the next frame was due:
+   *  the only part of it that can have held the next callback back. An
+   *  over-budget interval this work explains was made late by the sensor, not
+   *  by the pixels, and does not count. Never part of the main-thread
+   *  figures. */
   sensorMs?: number;
 }
 

@@ -127,6 +127,9 @@ export interface GpuFrameClockDeps {
   onDuty?: (duty: number) => void;
   /** The sensor turned itself off for the session. */
   onDisabled?: (reason: string) => void;
+  /** Where the poll loop's tasks come from: the page's own task sources,
+   *  unless a test hands in a pump it runs by hand. */
+  createPump?: (source: FencePollSource) => TaskPump;
 }
 
 export interface GpuFrameClockState {
@@ -223,7 +226,7 @@ export function createGpuFrameClock(deps: GpuFrameClockDeps): GpuFrameClock {
   const pumpFor = (source: FencePollSource): TaskPump => {
     let pump = pumps[source];
     if (!pump) {
-      pump = createTaskPump(source);
+      pump = (deps.createPump ?? createTaskPump)(source);
       pumps[source] = pump;
     }
     return pump;

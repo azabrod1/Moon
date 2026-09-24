@@ -1140,13 +1140,31 @@ describe('the GPU clock climbs where the tick is blind', () => {
   it('predicts the next rung from the pre-submit part and the rest scaled by the ratio', () => {
     const rig = new ClockRig(new ResolutionController(FULL_LADDER));
     blindScreen(rig);
-    // Held at Medium with a ceiling on the rung above, so the state keeps
-    // reporting the prediction without the climb taking it.
-    rig.runClock(seconds(12), onTime, () => ({ readingMs: 10, busyMs: 3 }));
-    const predicted = rig.controller.state().clock;
-    const expected = 3 + 7 * Math.pow(2.5 / 2, CLOCK_EXPONENT);
-    if (rig.rung === MEDIUM) expect(predicted.predictedNextMs).toBeCloseTo(expected, 6);
-    else expect(rig.applied[0].reason).toBe('up');
+    // 12 ms with 3 before the submit predicts 3 + 9 × 1.25^1.5 = 15.6 at the
+    // next rung, outside the share: refused, so the state keeps reporting it.
+    rig.runClock(seconds(20), onTime, () => ({ readingMs: 12, busyMs: 3 }));
+    expect(rig.applied).toEqual([]);
+    const expected = 3 + 9 * Math.pow(2.5 / 2, CLOCK_EXPONENT);
+    expect(expected).toBeGreaterThan(CLOCK_UP_SHARE * BUDGET_MS);
+    expect(rig.controller.state().clock.predictedNextMs).toBeCloseTo(expected, 6);
+  });
+
+  it('pairs every reading with its own pre-submit time: equal readings, different busy parts, one climbs and one refuses', () => {
+    // 11 ms either way. With 5 of it before the submit only 6 grow with the
+    // pixels: 5 + 6 × 1.25^1.5 = 13.4, inside 0.85 × 16.67 = 14.2. With 1
+    // before it, 10 grow: 1 + 10 × 1.25^1.5 = 15.0, outside.
+    const factor = Math.pow(2.5 / 2, CLOCK_EXPONENT);
+    expect(5 + 6 * factor).toBeLessThan(CLOCK_UP_SHARE * BUDGET_MS);
+    expect(1 + 10 * factor).toBeGreaterThan(CLOCK_UP_SHARE * BUDGET_MS);
+    const cpuHeavy = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(cpuHeavy);
+    cpuHeavy.runClock(seconds(20), onTime, () => ({ readingMs: 11, busyMs: 5 }));
+    expect(cpuHeavy.applied[0]).toMatchObject({ reason: 'up', to: MEDIUM + 1 });
+    const gpuHeavy = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(gpuHeavy);
+    gpuHeavy.runClock(seconds(20), onTime, () => ({ readingMs: 11, busyMs: 1 }));
+    expect(gpuHeavy.applied).toEqual([]);
+    expect(gpuHeavy.controller.state().clock.predictedNextMs).toBeCloseTo(1 + 10 * factor, 6);
   });
 
   it('with no clock evidence is exactly the rule as it was: Medium and below', () => {

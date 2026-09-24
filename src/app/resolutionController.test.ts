@@ -1407,6 +1407,50 @@ describe('a rung the clock earned is kept only while the clock vouches for it', 
     expect(CLOCK_DELIVERY_GUARD).toBe(1.02);
   });
 
+  it('a delivery failure is the rung failing: the ceiling refuses the next climb for a minute, and a second failure holds it for four', () => {
+    // WebKit on the project's Mac at Earth's shell: a rung the clock earned,
+    // then one hitch of about 150 ms in six seconds of frames — enough to
+    // put the delivered mean past 1.02 × the budget.
+    const rig = new ClockRig(new ResolutionController(ONE_ABOVE));
+    blindScreen(rig);
+    const top = ONE_ABOVE.rungs.length - 1;
+    const medium = ONE_ABOVE.mediumIndex;
+    rig.runClock(seconds(40), onTime, () => 7);
+    expect(rig.rung).toBe(top);
+    rig.runClock(Math.ceil(PROBE_HOLD_MS / TICK), onTime, () => 7);
+    const hitch = (): void => {
+      rig.runClock(1, () => 150, () => 7);
+      rig.runClock(seconds(7), onTime, () => 7);
+    };
+    let from = rig.applied.length;
+    hitch();
+    const first = rig.applied[from];
+    expect(first?.to).toBe(medium);
+    expect(first?.reason).toBe('revert');
+    expect(rig.controller.state().clock.last?.why).toBe('delivery');
+    expect(rig.controller.state().ceiling).toMatchObject({ rung: top, escalation: 1 });
+    const firstAt = first.atMs;
+    // Clean frames and a clock at 7 ms for most of the minute: no climb.
+    rig.runClock(seconds((CEILING_HOLD_MS[0] - 3000) / 1000) - seconds(7), onTime, () => 7);
+    expect(rig.applied.length).toBe(from + 1);
+    expect(rig.rung).toBe(medium);
+    // Once the minute is out, the clock earns the rung again.
+    rig.runClock(seconds(40), onTime, () => 7);
+    const again = rig.applied[from + 1];
+    expect(again?.to).toBe(top);
+    expect(again.atMs - firstAt).toBeGreaterThanOrEqual(CEILING_HOLD_MS[0]);
+    // Past its probation, and the same hitch: the failures at a rung the clock
+    // earned add up, so the ceiling this time holds for four minutes.
+    rig.runClock(Math.ceil(PROBE_HOLD_MS / TICK), onTime, () => 7);
+    from = rig.applied.length;
+    hitch();
+    expect(rig.applied[from]?.to).toBe(medium);
+    expect(rig.controller.state().clock.last?.why).toBe('delivery');
+    const ceiling = rig.controller.state().ceiling;
+    expect(ceiling).toMatchObject({ rung: top, escalation: 2 });
+    expect(ceiling!.untilMs - rig.applied[from].atMs).toBe(CEILING_HOLD_MS[1]);
+  });
+
   it('never climbs while the delivered rate is short of the screen’s, even if every counted interval is clean', () => {
     const rig = new ClockRig(new ResolutionController(FULL_LADDER));
     blindScreen(rig);

@@ -213,11 +213,14 @@
  * A rung the clock earned is kept only while the clock vouches for it. Right
  * after the climb, and again after ANY evidence reset while it stands (a rung
  * change, an arrival, a resize, a focus gain, a pin lifted, a budget or a
- * ladder), `CLOCK_VERIFY_COUNT` fresh readings must arrive within
- * `CLOCK_VERIFY_MS` and pass — their mean with the longest dropped inside
+ * ladder, and the end of a stretch the clock could not sample — the System
+ * Map, a DEV measurement), `CLOCK_VERIFY_COUNT` fresh readings must arrive
+ * within `CLOCK_VERIFY_MS` and pass — their mean with the longest dropped inside
  * `CLOCK_DOWN_SHARE` of the budget. Through a verification the sensor
  * samples one frame in four whatever its priced duty, so the readings arrive
- * in about half a second at 60 fps. A probe that fails that is the probe
+ * in about half a second at 60 fps; its three seconds start at the first
+ * frame the clock can sample, and a stretch it cannot — a hidden page, a
+ * veil, the map — restarts them once when it ends. A probe that fails that is the probe
  * failing (a revert, the wait doubled, the ceiling's escalation), and so are
  * starved or capped readings repeating through it; a probe whose readings do
  * not arrive in time is silence rather than a measured failure — a revert
@@ -517,6 +520,13 @@ export interface IntervalSample {
    *  or of an earlier one whose reading came in late. Admitted only if that
    *  draw's interval counted. */
   gpu?: GpuObservation | null;
+  /** The GPU clock cannot sample this frame for a reason that is not the
+   *  frame's cost: the System Map is drawn instead of the scene, or a DEV
+   *  measurement holds the GPU. The clock's rules pause as they do for a
+   *  hidden page — no silence accrues, nothing is handed back or climbed by
+   *  the clock — and a rung it earned is re-earned when the stretch ends. The
+   *  interval still counts or not exactly as it would without this. */
+  clockSuspended?: boolean;
   /** The GPU clock's own main-thread work inside the interval — its fence,
    *  its flushes and its poll tasks — that ran after the next frame was due:
    *  the only part of it that can have held the next callback back. An
@@ -1039,9 +1049,20 @@ export class ResolutionController {
     belowMedianMs: number | null;
     /** Readings count from frames drawn at or after this. */
     startMs: number;
-    /** Set by the first eligible step after it opened, and never moved. */
+    /** Set by the first eligible step after it opened; moved at most once,
+     *  after a stretch the clock could not sample. */
     deadlineMs: number | null;
+    /** A stretch the clock could not sample fell after the deadline was set. */
+    interrupted: boolean;
+    /** The deadline has been restarted for one, and never will be again. */
+    restarted: boolean;
   } | null = null;
+  /** The last step was one the clock could not sample for a reason that is
+   *  not the frames' (the map, a DEV measurement). */
+  private clockSuspendedLast = false;
+  /** This step the clock can sample nothing: held, away, covered, or
+   *  suspended. */
+  private clockPausedNow = false;
   /** Trusted readings in a row over the budget. */
   private panicStreak = 0;
   /** The sensor's duty, which sets how long a gap between readings is
@@ -1131,12 +1152,18 @@ export class ResolutionController {
     }
     if (sample.drawSeq !== undefined) this.recordVerdict(sample.drawSeq, because);
     if (sample.gpu) this.admitGpu(sample.gpu);
-    this.recordDelivery(sample, settled);
-    // A verification's time starts at the first eligible frame after it opened
-    // — the settle inside it — so a veil or a hidden page cannot use it up.
-    if (this.clockVerify !== null && this.clockVerify.deadlineMs === null && sample.eligible && !this.idle) {
-      this.clockVerify.deadlineMs = sample.nowMs + CLOCK_VERIFY_MS;
+    const suspended = sample.clockSuspended === true;
+    this.recordDelivery(sample, settled, suspended);
+    // The end of a stretch the clock could not sample: what it measured before
+    // describes a scene it has not seen since, so its evidence starts again and
+    // a rung it earned is re-earned.
+    if (this.clockSuspendedLast && !suspended && !this.idle) {
+      this.resetClockEvidence(sample.nowMs);
+      this.reopenClockVerify();
     }
+    this.clockSuspendedLast = suspended;
+    this.clockPausedNow = this.idle || !sample.eligible || suspended;
+    this.timeClockVerify(sample.nowMs);
     if (this.idle || this.pending !== null) return null;
     if (this.ceiling !== null && sample.nowMs >= this.ceiling.untilMs) this.ceiling = null;
     if (this.latch !== null && sample.nowMs >= this.latch.untilMs) this.latch = null;
@@ -1157,11 +1184,15 @@ export class ResolutionController {
     if (!settled) return null;
     // A rung the clock earned is judged by the clock first, and only on a
     // frame that could count: hidden, covered and pinned stretches suspend it,
-    // and the resumption re-earns it.
+    // and the resumption re-earns it. Under the map or a DEV measurement the
+    // clock is paused the same way, but the intervals still count, so their
+    // own rules below go on.
     if (this.clockHolds()) {
       if (!sample.eligible) return null;
-      const held = this.clockHeldDecision(sample.nowMs);
-      if (held !== null) return held;
+      if (!suspended) {
+        const held = this.clockHeldDecision(sample.nowMs);
+        if (held !== null) return held;
+      }
     }
     if (this.verifyUntilMs !== null) {
       if (sample.nowMs < this.verifyUntilMs) return null;
@@ -1226,6 +1257,8 @@ export class ResolutionController {
         belowMedianMs: climb.belowMedianMs,
         startMs: this.settleUntilMs,
         deadlineMs: null,
+        interrupted: false,
+        restarted: false,
       };
     } else if (clockStep && this.clockHolds()) {
       // The clock handed a rung back to one still above Medium on its own
@@ -1239,6 +1272,8 @@ export class ResolutionController {
         belowMedianMs: null,
         startMs: this.settleUntilMs,
         deadlineMs: null,
+        interrupted: false,
+        restarted: false,
       };
     } else {
       // A new rung is a new question: whatever verification stood was for
@@ -1536,6 +1571,8 @@ export class ResolutionController {
       belowMedianMs: standing?.belowMedianMs ?? null,
       startMs: this.settleUntilMs,
       deadlineMs: standing?.deadlineMs ?? null,
+      interrupted: standing?.interrupted ?? false,
+      restarted: standing?.restarted ?? false,
     };
   }
 
@@ -1615,11 +1652,39 @@ export class ResolutionController {
   }
 
   /** Every eligible step's interval, for the delivery guard, and the active
-   *  drawing time since the clock last had a reading. */
-  private recordDelivery(sample: IntervalSample, settled: boolean): void {
-    if (this.idle || !sample.eligible) return;
+   *  drawing time since the clock last had a reading. A stretch the clock
+   *  cannot sample adds to neither: the map is not the scene's frames, and
+   *  a reading it never asked for is not silence. */
+  private recordDelivery(sample: IntervalSample, settled: boolean, suspended: boolean): void {
+    if (this.idle || !sample.eligible || suspended) return;
     this.activeSinceReadingMs += sample.intervalMs;
     if (settled) this.delivery.push(sample.nowMs, sample.intervalMs);
+  }
+
+  /**
+   * A verification's time starts at the first frame the clock can sample
+   * after it opened — the settle inside it — so a veil, a hidden page or the
+   * map cannot use it up before it has begun. And once it has begun, a
+   * stretch the clock could not sample restarts it, once, when the stretch
+   * ends: the evidence was dropped with it, and a verification that resumed
+   * with a few milliseconds left, or none, would restore the rung for want of
+   * readings nobody could take. A second such stretch does not restart it
+   * again, and neither does any reset or duty change.
+   */
+  private timeClockVerify(nowMs: number): void {
+    const verify = this.clockVerify;
+    if (verify === null) return;
+    if (this.clockPausedNow) {
+      if (verify.deadlineMs !== null) verify.interrupted = true;
+      return;
+    }
+    if (verify.deadlineMs === null) {
+      verify.deadlineMs = nowMs + CLOCK_VERIFY_MS;
+    } else if (verify.interrupted && !verify.restarted) {
+      verify.deadlineMs = nowMs + CLOCK_VERIFY_MS;
+      verify.restarted = true;
+    }
+    verify.interrupted = false;
   }
 
   private noteClock(atMs: number, to: number, why: ClockWhy): void {
@@ -1755,6 +1820,8 @@ export class ResolutionController {
    */
   private clockUpDecision(nowMs: number, next: number): Decision | null {
     if (this.clockOffReason !== null || this.latch !== null || this.clockVerify !== null) return null;
+    // Nothing is climbed that the clock could not go on to verify.
+    if (this.clockPausedNow) return null;
     // A rung above Medium the clock did not earn is not the clock's to build on.
     if (this.index > this.mediumIndex && !this.clockEarned) return null;
     if (this.ceiling !== null && next >= this.ceiling.rung) return null;

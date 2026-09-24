@@ -1896,6 +1896,89 @@ describe('silence, and the grace a reset gets', () => {
   });
 });
 
+describe('the map and a DEV measurement suspend the clock', () => {
+  it('under the map a rung the clock earned neither goes silent nor is handed back by the clock, and is re-earned when it closes', () => {
+    const rig = earnedTop();
+    rig.runClock(Math.ceil(PROBE_HOLD_MS / TICK), onTime, () => 7);
+    const from = rig.applied.length;
+    const wait = rig.controller.state().probeWaitMs;
+    // Ten seconds of the map: no readings, the intervals on time.
+    rig.runClock(seconds(10), onTime, () => null, { clockSuspended: true });
+    expect(rig.applied.slice(from)).toEqual([]);
+    expect(rig.controller.state().probeWaitMs).toBe(wait);
+    // The intervals went on counting.
+    expect(rig.controller.state().countedWindow).toBeGreaterThanOrEqual(DOWN_WINDOW_COUNTED);
+    // Closed: the rung is verified again from fresh readings, and kept.
+    rig.runClock(2, onTime, () => 7);
+    expect(rig.controller.state().clock.verify?.kind).toBe('reset');
+    rig.runClock(seconds(4), onTime, () => 7);
+    expect(rig.applied.slice(from)).toEqual([]);
+    expect(rig.controller.state().clock.verify).toBeNull();
+    expect(rig.rung).toBe(TOP);
+  });
+
+  it('and one the readings no longer vouch for after it goes back to Medium, with no ceiling', () => {
+    const rig = earnedTop();
+    rig.runClock(Math.ceil(PROBE_HOLD_MS / TICK), onTime, () => 7);
+    rig.runClock(seconds(10), onTime, () => null, { clockSuspended: true });
+    rig.runClock(seconds(4), onTime, () => 15.5);
+    expect(rig.rung).toBe(MEDIUM);
+    expect(rig.applied[rig.applied.length - 1].reason).toBe('restore');
+    expect(rig.controller.state().ceiling).toBeNull();
+  });
+
+  it('leaves the intervals’ own rule as it was: late frames under the map still hand the rung back', () => {
+    const rig = earnedTop();
+    rig.runClock(Math.ceil(PROBE_HOLD_MS / TICK), onTime, () => 7);
+    const from = rig.applied.length;
+    rig.runClock(seconds(2 * DOWN_WINDOW_S), oneInLate(5), () => null, { clockSuspended: true });
+    const step = rig.applied[from];
+    expect(step?.to).toBe(TOP - 1);
+    expect(rig.controller.state().clock.last?.why).toBe('intervals');
+  });
+
+  it('takes no clock climb while it lasts', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    // Enough readings at Medium for a climb, then the map opens before the
+    // interval window is full.
+    rig.runClock(seconds(8), onTime, () => 7);
+    rig.runClock(seconds(20), onTime, () => null, { clockSuspended: true });
+    expect(rig.applied).toEqual([]);
+  });
+});
+
+describe('a verification the page walked away from', () => {
+  it('restarts its deadline once when the page comes back, so the rung is re-earned rather than dropped', () => {
+    const rig = earnedTop();
+    const from = rig.applied.length;
+    rig.controller.notify('resize', rig.nowMs);
+    rig.runClock(seconds(0.5), onTime, () => null);
+    expect(rig.controller.state().clock.verify?.deadlineMs).not.toBeNull();
+    // Five seconds away: the deadline passes while nobody is looking.
+    rig.runClock(seconds(5), onTime, () => null, { eligible: false });
+    rig.controller.notify('focus', rig.nowMs);
+    rig.runClock(seconds(4), onTime, () => 7);
+    expect(rig.applied.slice(from)).toEqual([]);
+    expect(rig.rung).toBe(TOP);
+  });
+
+  it('but only once: a second walk-away with the readings still missing restores Medium', () => {
+    const rig = earnedTop();
+    rig.controller.notify('resize', rig.nowMs);
+    rig.runClock(seconds(0.5), onTime, () => null);
+    rig.runClock(seconds(5), onTime, () => null, { eligible: false });
+    rig.controller.notify('focus', rig.nowMs);
+    rig.runClock(seconds(0.5), onTime, () => null);
+    rig.runClock(seconds(5), onTime, () => null, { eligible: false });
+    rig.controller.notify('focus', rig.nowMs);
+    // Past the settle, the deadline long gone and not restarted again.
+    rig.runClock(seconds(0.5), onTime, () => 7);
+    expect(rig.rung).toBe(MEDIUM);
+    expect(rig.controller.state().clock.last?.why).toBe('unverified');
+  });
+});
+
 describe('a clock rung’s failures add up across its probation', () => {
   it('a device that heats slowly — earn, hold past the probation, fail, cool, repeat — escalates', () => {
     const rig = new ClockRig(new ResolutionController(ONE_ABOVE));

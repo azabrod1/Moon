@@ -1432,6 +1432,9 @@ let pageFocused = true;
 /** Whether this tick's frame could count, as the step at its top judged it:
  *  what the GPU frame clock arms on at the end of the draw. */
 let lastEligibleNow = false;
+/** Whether the previous draw was one the GPU clock could not sample for a
+ *  reason that is not the frame's cost. */
+let lastClockSuspended = false;
 
 // --- The GPU frame clock ----------------------------------------------------
 //
@@ -1494,6 +1497,18 @@ function sensorWorkPastDue(ms: number, startedAtMs: number): number {
   const dueMs = lastFrameAtMs + resolutionController.clockBarMs;
   const endMs = startedAtMs + ms;
   return endMs <= dueMs ? 0 : Math.min(ms, endMs - dueMs);
+}
+
+/**
+ * The GPU clock cannot sample this frame for a reason that is not the frame's
+ * cost: the System Map is drawn instead of the scene, or a DEV measurement
+ * (the GPU profile, the DEV clock) holds the GPU. The controller pauses the
+ * clock's rules for it as it does for a hidden page, and re-earns the rung
+ * after it; the frame's interval counts or not exactly as before.
+ */
+function clockSuspendedNow(): boolean {
+  if (import.meta.env.DEV && (gpuProfiler?.active === true || gpuClock?.active === true)) return true;
+  return appMode === 'planetarium' && (planetariumMode?.isMapOpen() ?? false);
 }
 
 /**
@@ -1611,6 +1626,10 @@ function stepQuality(nowMs: number): void {
   gpuPending = null;
   const sensorMs = sensorSinceStep;
   sensorSinceStep = 0;
+  // Either end of the interval under the map or a DEV measurement.
+  const suspendedNow = clockSuspendedNow();
+  const clockSuspended = suspendedNow || lastClockSuspended;
+  lastClockSuspended = suspendedNow;
   const decision = resolutionController.step({
     nowMs,
     intervalMs: nowMs - previousFrameAtMs,
@@ -1621,6 +1640,7 @@ function stepQuality(nowMs: number): void {
     drawSeq,
     gpu,
     sensorMs,
+    clockSuspended,
   });
   if (decision !== null) applyQualityDecision(decision, nowMs);
   // The controller turned the clock off itself (a repeated reversal): the

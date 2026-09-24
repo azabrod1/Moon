@@ -1634,6 +1634,48 @@ describe('a clock probe short of evidence', () => {
   });
 });
 
+describe('a rung whose frames do not count still hears its failures', () => {
+  it('an engine that blocks in submission: late, uncounted frames with capped fences at the sharper rung climb a few times and then stop', () => {
+    // At Medium the frames are on time and the clock reads 7 ms. At the
+    // sharper rung the GPU falls behind, the flush blocks, and every frame is
+    // a tick late with a 12 ms main thread — so no interval there counts —
+    // while every fence is capped.
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    while (rig.nowMs < 10 * 60_000) {
+      const sharp = rig.rung > MEDIUM;
+      rig.runClock(1, () => (sharp ? 2 * TICK : TICK), () => (sharp ? Infinity : 7), sharp ? { mainThreadMs: 12 } : {});
+    }
+    const ups = rig.applied.filter((a) => a.reason === 'up');
+    expect(ups.length).toBeGreaterThanOrEqual(1);
+    expect(ups.length).toBeLessThanOrEqual(3);
+    const state = rig.controller.state();
+    expect(state.ceiling).not.toBeNull();
+    expect(state.ceiling!.rung).toBe(MEDIUM + 1);
+    expect(rig.rung).toBe(MEDIUM);
+    // The readings were heard as failures, never as statistics.
+    expect(state.clock.dropped.uncounted).toBeGreaterThan(0);
+    expect(state.clock.uncountedBy.mainThread).toBeGreaterThan(0);
+  });
+
+  it('keeps those readings out of the statistics: an over-bar reading from a frame that did not count moves no p90', () => {
+    const rig = earnedTop();
+    rig.runClock(Math.ceil(PROBE_HOLD_MS / TICK), onTime, () => 7);
+    const before = rig.controller.state().clock.p90Ms;
+    // Three over-bar readings from frames that did not count: short of the
+    // panic, and invisible to the statistics.
+    let n = 0;
+    for (let k = 0; k < 40 && n < 3; k++) {
+      const before = rig.delivered;
+      rig.runClock(1, onTime, () => 20, { workedMs: 2 });
+      if (rig.delivered > before) n++;
+    }
+    expect(rig.controller.state().clock.p90Ms).toBe(before);
+    expect(rig.controller.state().clock.panicStreak).toBeGreaterThan(0);
+    expect(rig.rung).toBe(TOP);
+  });
+});
+
 describe('the clock’s evidence', () => {
   it('keeps starved readings out of the statistic, and a starved share over its bound blocks a climb', () => {
     const rig = new ClockRig(new ResolutionController(FULL_LADDER));

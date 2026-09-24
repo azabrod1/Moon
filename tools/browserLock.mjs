@@ -49,7 +49,20 @@ export async function takeBrowserLock(label = 'run') {
     }
   }
   writeFileSync(join(LOCK_DIR, 'pid'), String(process.pid));
-  const release = () => { try { rmSync(LOCK_DIR, { recursive: true, force: true }); } catch { /* gone */ } };
+  // Released once, and only while the lock is still ours: the returned
+  // function runs from a finally and the exit handler runs after it, and by
+  // then the next run waiting on the lock may have taken it — an
+  // unconditional remove here deleted THAT run's lock and let two GPU runs
+  // overlap, which is exactly what the lock exists to prevent.
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    try {
+      if (readFileSync(join(LOCK_DIR, 'pid'), 'utf8').trim() !== String(process.pid)) return;
+      rmSync(LOCK_DIR, { recursive: true, force: true });
+    } catch { /* gone */ }
+  };
   process.on('exit', release);
   for (const s of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(s, () => { release(); process.exit(130); });
   return release;

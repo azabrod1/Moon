@@ -6,6 +6,7 @@ import {
   CPU_PER_FRAME_MAX_MS,
   DUTY_MAX,
   DUTY_START,
+  DUTY_VERIFY,
   GRID_MAX_MS,
   GRID_MIN_SAMPLES,
   GRID_MIN_STEPS,
@@ -158,6 +159,23 @@ describe('the duty', () => {
     expect(policy.skippedArms).toBe(1);
     expect(policy.armFrame(true, false)).toBe(true);
   });
+
+  it('samples one frame in four through a verification, whatever the priced duty, and goes back after', () => {
+    const policy = new GpuClockPolicy();
+    policy.duty = DUTY_MAX;
+    // A steady arm leaves fifteen frames to count down; a verification that
+    // opens cuts the count to its own.
+    expect(policy.armFrame(true, false)).toBe(true);
+    const armed: number[] = [];
+    for (let i = 0; i < 16; i++) if (policy.armFrame(true, false, true)) armed.push(i);
+    expect(armed).toEqual([3, 7, 11, 15]);
+    expect(policy.dutyFor(true)).toBe(DUTY_VERIFY);
+    expect(policy.sampleInBurst).toBe(true);
+    const after: number[] = [];
+    for (let i = 0; i < 40; i++) if (policy.armFrame(true, false)) after.push(i);
+    expect(after).toEqual([3, 19, 35]);
+    expect(policy.sampleInBurst).toBe(false);
+  });
 });
 
 describe('self-pricing', () => {
@@ -230,6 +248,44 @@ describe('self-pricing', () => {
     for (let i = 0; i < 4 * PRICE_BLOCK_SAMPLES; i++) feed(policy, { costMs: 2, frames: 8 });
     expect(policy.duty).toBe(4);
     expect(policy.lastCpuPerFrameMs).toBeCloseTo(0.25, 6);
+  });
+
+  it('keeps a verification burst out of the price: it is not the steady rate the duty was priced at', () => {
+    // A sensor settled at one frame in sixteen on an 11 ms campaign, then a
+    // three-second verification at one in four — 16.5 % of the time polling
+    // for as long as it lasts.
+    const policy = new GpuClockPolicy();
+    for (let i = 0; i < 12 * PRICE_BLOCK_SAMPLES; i++) feed(policy, { costMs: 0.2, campaignMs: 11 });
+    expect(policy.duty).toBe(DUTY_MAX);
+    const campaigns = policy.totalCampaignMs;
+    let verdicts = 0;
+    for (let i = 0; i < 2 * PRICE_BLOCK_SAMPLES; i++) {
+      let arms = 0;
+      for (let f = 0; f < DUTY_VERIFY; f++) {
+        clockMs += 1000 / 60;
+        policy.noteFrame(clockMs, true);
+        if (policy.armFrame(true, false, true)) arms++;
+      }
+      expect(arms).toBe(1);
+      policy.noteCpu(0.2, policy.sampleInBurst);
+      const { verdict } = policy.recordSample({
+        ...polled(8),
+        source: policy.nextSource(),
+        intervalMeanMs: 0.04,
+        minStepMs: 0.1,
+        campaignMs: 11,
+      });
+      if (verdict !== null) verdicts++;
+    }
+    expect(verdicts).toBe(0);
+    expect(policy.disabled).toBeNull();
+    expect(policy.duty).toBe(DUTY_MAX);
+    // It is still the session's cost.
+    expect(policy.totalCampaignMs).toBeCloseTo(campaigns + 2 * PRICE_BLOCK_SAMPLES * 11, 6);
+    // And at a priced duty of four a verification is an ordinary sample.
+    const four = new GpuClockPolicy();
+    expect(four.armFrame(true, false, true)).toBe(true);
+    expect(four.sampleInBurst).toBe(false);
   });
 
   it('never backs off for starvation, which measures the app and not the sensor', () => {

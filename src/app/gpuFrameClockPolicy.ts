@@ -49,7 +49,13 @@
  * one (no sliced work, no program link in its tick) once the count runs out,
  * so a duty of 4 cannot fall into step with the alternating upload frames
  * near Earth and see nothing. One fence is in flight at a time; a frame that
- * found one still out is a skipped arm, counted.
+ * found one still out is a skipped arm, counted. While the controller is
+ * verifying a rung the clock earned, the sensor samples one frame in
+ * `DUTY_VERIFY` whatever its priced duty, and those samples and the frames
+ * they ran across are kept out of the pricing blocks (they reach the
+ * session's totals): the price is a steady-state rate, and a three-second
+ * burst at one frame in four costs what twelve seconds at one in sixteen do.
+ * No verification is skipped for the duty.
  *
  * **Two prices, per device, no chassis rule**, judged in blocks of
  * `PRICE_BLOCK_SAMPLES` samples. The first is CPU: everything the sensor
@@ -98,6 +104,12 @@ import type { FencePollSource } from './fencePoll';
 
 /** One eligible frame in this many is sampled at the start. */
 export const DUTY_START = 4;
+
+/** And through any verification of a rung the clock earned, whatever the
+ *  priced duty: eight readings then arrive in about half a second at 60 fps,
+ *  well inside the verification's three seconds, where one frame in sixteen
+ *  would need two of them with nothing dropped. */
+export const DUTY_VERIFY = 4;
 
 /** And the sparsest the duty goes before the sensor turns itself off. */
 export const DUTY_MAX = 16;
@@ -268,6 +280,8 @@ export class GpuClockPolicy {
   skippedArms = 0;
 
   private countdown = 0;
+  /** The sample in flight was armed inside a verification burst. */
+  private armedInBurst = false;
   /** The block being priced. */
   private blockCpuMs = 0;
   private blockCampaignMs = 0;
@@ -297,10 +311,13 @@ export class GpuClockPolicy {
   /**
    * An eligible drawn frame, at the end of its draw: fence it? The count runs
    * over eligible frames only; once it has run out, the first clean frame with
-   * no fence in flight is armed.
+   * no fence in flight is armed. `verifying` samples at `DUTY_VERIFY` for as
+   * long as it lasts.
    */
-  armFrame(clean: boolean, inFlight: boolean): boolean {
+  armFrame(clean: boolean, inFlight: boolean, verifying = false): boolean {
     if (this.disabled !== null) return false;
+    const duty = this.dutyFor(verifying);
+    if (this.countdown > duty - 1) this.countdown = duty - 1;
     if (this.countdown > 0) {
       this.countdown--;
       return false;
@@ -310,27 +327,47 @@ export class GpuClockPolicy {
       this.skippedArms++;
       return false;
     }
-    this.countdown = this.duty - 1;
+    this.countdown = duty - 1;
+    this.armedInBurst = this.inBurst(verifying);
     return true;
   }
 
+  /** The duty a frame is sampled at. */
+  dutyFor(verifying: boolean): number {
+    return verifying ? Math.min(this.duty, DUTY_VERIFY) : this.duty;
+  }
+
+  /** A verification is sampling faster than the priced duty: its work is kept
+   *  out of the pricing blocks. */
+  inBurst(verifying: boolean): boolean {
+    return verifying && this.duty > DUTY_VERIFY;
+  }
+
+  /** Whether the sample in flight was armed inside a burst: what its poll
+   *  tasks' CPU is charged as. */
+  get sampleInBurst(): boolean {
+    return this.armedInBurst;
+  }
+
   /** A drawn frame the sensor ran across, at the wall time it was drawn. */
-  noteFrame(nowMs: number): void {
-    this.blockFrames++;
+  noteFrame(nowMs: number, verifying = false): void {
+    const burst = this.inBurst(verifying);
+    if (!burst) this.blockFrames++;
     this.totalFrames++;
     if (this.lastFrameMs !== null) {
       const elapsed = Math.min(FRAME_ELAPSED_CAP_MS, Math.max(0, nowMs - this.lastFrameMs));
-      this.blockElapsedMs += elapsed;
+      if (!burst) this.blockElapsedMs += elapsed;
       this.totalElapsedMs += elapsed;
     }
     this.lastFrameMs = nowMs;
   }
 
   /** CPU the sensor executed, wherever it was spent: the fence and the flush
-   *  inside the tick, a poll task's handler, the bookkeeping after one. */
-  noteCpu(ms: number): void {
+   *  inside the tick, a poll task's handler, the bookkeeping after one.
+   *  `burst` keeps it out of the block being priced. */
+  noteCpu(ms: number, burst = false): void {
     if (!(ms > 0)) return;
-    this.blockCpuMs += ms;
+    if (!burst) this.blockCpuMs += ms;
     this.totalCpuMs += ms;
   }
 
@@ -369,12 +406,14 @@ export class GpuClockPolicy {
       if (this.recentCount < RECENT) this.recentCount++;
     }
     this.recordTrial(sample.source, sample.intervalMeanMs);
-    this.blockSamples++;
+    const burst = this.armedInBurst;
+    this.armedInBurst = false;
+    if (!burst) this.blockSamples++;
     if (sample.campaignMs > 0) {
-      this.blockCampaignMs += sample.campaignMs;
+      if (!burst) this.blockCampaignMs += sample.campaignMs;
       this.totalCampaignMs += sample.campaignMs;
     }
-    return { reading, verdict: this.price() };
+    return { reading, verdict: burst ? null : this.price() };
   }
 
   /**

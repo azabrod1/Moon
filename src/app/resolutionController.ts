@@ -215,11 +215,17 @@
  * change, an arrival, a resize, a focus gain, a pin lifted, a budget or a
  * ladder), `CLOCK_VERIFY_COUNT` fresh readings must arrive within
  * `CLOCK_VERIFY_MS` and pass — their mean with the longest dropped inside
- * `CLOCK_DOWN_SHARE` of the budget. A probe that fails that is the probe
+ * `CLOCK_DOWN_SHARE` of the budget. Through a verification the sensor
+ * samples one frame in four whatever its priced duty, so the readings arrive
+ * in about half a second at 60 fps. A probe that fails that is the probe
  * failing (a revert, the wait doubled, the ceiling's escalation), and so are
- * starved or capped readings repeating through it; a reset that is not
- * re-earned in time is a plain restore to Medium, with no ceiling and no
- * longer wait, because a lifecycle event is not the rung failing. After that
+ * starved or capped readings repeating through it; a probe whose readings do
+ * not arrive in time is silence rather than a measured failure — a revert
+ * with the wait doubled, and a second in a row at the same rung holds that
+ * rung as a ceiling, so a rung that can never be verified is not probed every
+ * ten seconds for the session. A reset that is not re-earned in time is a
+ * plain restore to Medium, with no ceiling and no longer wait, because a
+ * lifecycle event is not the rung failing. After that
  * the rung is handed back — one rung, never below Medium — by any of: the p90
  * of a window of at least `CLOCK_DOWN_COUNT` readings spanning
  * `CLOCK_DOWN_SPAN_MS` above `CLOCK_DOWN_SHARE` of the budget;
@@ -227,8 +233,10 @@
  * down window over `CLOCK_INTERVAL_DOWN` of the budget, a tighter bar than
  * the tick's, because a phone at 52–58 fps at a sharper rung is the
  * regression this rule exists to prevent. Inside its probation each of those
- * is the probe failing. And the clock going quiet — too few readings in the
- * staleness horizon, starved readings over their share, or the sensor off —
+ * is the probe failing. And the clock going quiet — no reading for six
+ * samples' worth of frames at the sensor's duty (a second at the least), too
+ * few readings in the staleness horizon, starved readings over their share,
+ * or the sensor off —
  * returns the rung to Medium with no ceiling: no clock is the rule as it was,
  * applied to the rung as well as to the climb. Once a climb's verification
  * has measured the sharper rung, a clock that read it LOWER than the rung
@@ -252,6 +260,8 @@
 import {
   CLOCK_DOWN_SHARE,
   CLOCK_UP_SHARE,
+  DUTY_START,
+  DUTY_VERIFY,
   REVERSAL_MS,
   REVERSAL_REPEATS,
   STARVED_SHARE_MAX,
@@ -402,8 +412,20 @@ export const CLOCK_PROBE_BAD_MIN = 2;
 export const CLOCK_STARVED_WINDOW = 16;
 export const CLOCK_STARVED_MIN = 8;
 
-/** Silence: this long of active, visible drawing with no admissible reading. */
-export const CLOCK_GAP_MS = 1000;
+/** Silence: active, visible drawing with no admissible reading for the
+ *  longer of this and `CLOCK_GAP_SAMPLES` samples' worth of frames at the
+ *  sensor's duty — a second, or 1.6 s at one frame in sixteen on a 60 Hz
+ *  tick, so a sparse duty is not called silent for the frames it was never
+ *  going to sample. Through a verification the sensor samples one frame in
+ *  four whatever its duty (app/gpuFrameClockPolicy.ts), and the gap is judged
+ *  at that duty. */
+export const CLOCK_GAP_MIN_MS = 1000;
+export const CLOCK_GAP_SAMPLES = 6;
+
+/** The gap that is silence at a duty and a tick. */
+export function clockGapMs(duty: number, tickMs: number): number {
+  return Math.max(CLOCK_GAP_MIN_MS, CLOCK_GAP_SAMPLES * duty * tickMs);
+}
 
 /** Silence, too: fewer than `CLOCK_DOWN_COUNT` trusted readings in the
  *  preceding span this long, once the clock's evidence is that old. */
@@ -532,6 +554,13 @@ export interface ClockState {
   /** A verification standing: a probe's, or a reset's re-earning, with its
    *  deadline once the first eligible frame after it has started it. */
   verify: { kind: 'probe' | 'reset'; readings: number; deadlineMs: number | null } | null;
+  /** The sensor's duty as it last told the controller, and the gap that is
+   *  silence right now. */
+  duty: number;
+  gapMs: number;
+  /** The rung whose last probe went unverified: a second in a row there holds
+   *  it as a ceiling. */
+  unverifiedRung: number | null;
   panicStreak: number;
   /** Climbs whose sharper rung read markedly faster than the rung below. */
   reversals: number;
@@ -1001,6 +1030,12 @@ export class ResolutionController {
   } | null = null;
   /** Trusted readings in a row over the budget. */
   private panicStreak = 0;
+  /** The sensor's duty, which sets how long a gap between readings is
+   *  silence. */
+  private clockDuty = DUTY_START;
+  /** The rung whose last clock probe went unverified, until a probe there
+   *  passes or the budget or the ladder changes. */
+  private unverifiedRung: number | null = null;
   /** Active, visible drawing since the clock last had a reading. */
   private activeSinceReadingMs = 0;
   /** When the clock last passed a verification at the rung it holds: the
@@ -1227,6 +1262,7 @@ export class ResolutionController {
     this.ceiling = null;
     this.ceilingFailures = 0;
     this.lastFailedProbeRung = null;
+    this.unverifiedRung = null;
     this.floorReference = null;
     this.stepReference = null;
     if (opts.cause === 'user') {
@@ -1319,6 +1355,7 @@ export class ResolutionController {
     this.ceiling = null;
     this.ceilingFailures = 0;
     this.lastFailedProbeRung = null;
+    this.unverifiedRung = null;
     this.floorReference = null;
     this.stepReference = null;
     this.clockMs = nowMs;
@@ -1379,6 +1416,13 @@ export class ResolutionController {
     return this.clockOffReason;
   }
 
+  /** A rung the clock earned is being verified: the sensor samples one frame
+   *  in four until it is done, whatever its priced duty, so eight readings
+   *  arrive well inside the deadline. */
+  get clockVerifying(): boolean {
+    return this.clockVerify !== null;
+  }
+
   /**
    * Whether a reading taken now would be read: the sensor samples only then,
    * so it costs nothing where it could not help — a display with a finer tick,
@@ -1410,9 +1454,11 @@ export class ResolutionController {
   /**
    * The sensor's duty moved: readings taken at the old duty are dropped and the
    * windows fill again from the new one. A rung the clock earned is re-earned
-   * from them, inside a verification already standing if there is one.
+   * from them, inside a verification already standing if there is one. The
+   * duty, where given, is what the silence gap is judged at from now on.
    */
-  clearClockEvidence(nowMs: number): void {
+  clearClockEvidence(nowMs: number, duty?: number): void {
+    if (duty !== undefined && Number.isFinite(duty) && duty >= 1) this.clockDuty = duty;
     this.clearClockRing(nowMs);
     this.clockAcquiredAtMs = null;
     this.reopenClockVerify();
@@ -1574,6 +1620,31 @@ export class ResolutionController {
   }
 
   /**
+   * A clock probe that could not be verified: the readings did not come. That
+   * is silence, not a measured failure, and takes silence's treatment — the
+   * wait doubles, so a rung whose readings never arrive is not probed every
+   * ten seconds for the rest of the session — and a second one in a row at
+   * the same rung holds that rung as a ceiling, as a failed probe would.
+   */
+  private clockUnverified(nowMs: number, to: number): Decision {
+    this.noteClock(nowMs, to, 'unverified');
+    if (this.unverifiedRung === this.index) {
+      this.unverifiedRung = null;
+      this.failProbe(nowMs);
+    } else {
+      this.unverifiedRung = this.index;
+      this.probeWait = Math.min(PROBE_WAIT_MAX_MS, this.probeWait * 2);
+    }
+    return this.emit(to, 'revert');
+  }
+
+  /** How long active drawing may go without a reading before the clock is
+   *  silent: at the one-in-four a verification samples at, or the duty. */
+  private clockGap(verifying: boolean): number {
+    return clockGapMs(verifying ? Math.min(this.clockDuty, DUTY_VERIFY) : this.clockDuty, this.budgetMs);
+  }
+
+  /**
    * A rung the clock earned, judged by the clock on an eligible step: off,
    * panic, the delivery guard, the standing verification, silence, then the
    * hand-back window. Null means nothing to do here.
@@ -1591,7 +1662,7 @@ export class ResolutionController {
     if (delivered !== null && delivered > CLOCK_DELIVERY_GUARD * bar) {
       return this.clockFail(nowMs, this.mediumIndex, 'delivery');
     }
-    const quiet = this.activeSinceReadingMs > CLOCK_GAP_MS;
+    const quiet = this.activeSinceReadingMs > this.clockGap(verify !== null);
     if (verify !== null) {
       if (verify.deadlineMs === null) return null;
       const got = this.clockRing.tally(verify.startMs);
@@ -1614,6 +1685,7 @@ export class ResolutionController {
           }
         }
         this.clockAcquiredAtMs = nowMs;
+        if (this.unverifiedRung === this.index) this.unverifiedRung = null;
         return null;
       }
       const bad = got.starved + got.capped;
@@ -1626,8 +1698,7 @@ export class ResolutionController {
       if (nowMs < verify.deadlineMs && !quiet) return null;
       this.clockVerify = null;
       if (verify.kind === 'reset') return this.clockRestore(nowMs, 'unverified');
-      this.noteClock(nowMs, verify.fromIndex, 'unverified');
-      return this.emit(verify.fromIndex, 'revert');
+      return this.clockUnverified(nowMs, verify.fromIndex);
     }
     if (quiet) return this.clockRestore(nowMs, 'gap');
     if (this.clockAcquiredAtMs !== null && nowMs - this.clockAcquiredAtMs >= CLOCK_SILENCE_SPAN_MS
@@ -1710,6 +1781,9 @@ export class ResolutionController {
         readings: this.clockRing.tally(verify.startMs).count,
         deadlineMs: verify.deadlineMs,
       },
+      duty: this.clockDuty,
+      gapMs: this.clockGap(verify !== null),
+      unverifiedRung: this.unverifiedRung,
       panicStreak: this.panicStreak,
       reversals: this.clockReversals,
       accepted: this.clockAccepted,

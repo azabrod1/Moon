@@ -97,6 +97,9 @@ export interface GpuFrameContext {
   callbackStartMs: number;
   /** The controller will read a reading right now. */
   wanted: boolean;
+  /** The controller is verifying a rung the clock earned: sample one frame in
+   *  four until it is done, whatever the priced duty. */
+  verifying: boolean;
   /** The frame could count: the planetarium, visible, focused, uncovered, no
    *  veil, the map closed, nothing measuring it. */
   eligible: boolean;
@@ -252,8 +255,8 @@ export function createGpuFrameClock(deps: GpuFrameClockDeps): GpuFrameClock {
     const active = forced || (frame.wanted && !muted);
     if (!active) return;
     const t0 = performance.now();
-    policy.noteFrame(frame.callbackStartMs);
-    const armed = frame.eligible && policy.armFrame(frame.clean, inFlight);
+    policy.noteFrame(frame.callbackStartMs, frame.verifying);
+    const armed = frame.eligible && policy.armFrame(frame.clean, inFlight, frame.verifying);
     let sync: WebGLSync | null = null;
     if (armed) sync = gl2.fenceSync(gl2.SYNC_GPU_COMMANDS_COMPLETE, 0);
     // Every frame while active, so the fenced frame is submitted at the same
@@ -262,7 +265,7 @@ export function createGpuFrameClock(deps: GpuFrameClockDeps): GpuFrameClock {
     if (armed || flushEvery) gl2.flush();
     const submittedAtMs = performance.now();
     const inTick = submittedAtMs - t0;
-    policy.noteCpu(inTick);
+    policy.noteCpu(inTick, policy.inBurst(frame.verifying));
     deps.onWork(inTick, t0);
     if (!armed) return;
     if (sync === null) {
@@ -274,12 +277,13 @@ export function createGpuFrameClock(deps: GpuFrameClockDeps): GpuFrameClock {
     const drawSeq = frame.drawSeq;
     const generation = frame.generation;
     const callbackStartMs = frame.callbackStartMs;
+    const burst = policy.sampleInBurst;
     cancelPoll = pollFence(gl2, sync, submittedAtMs, {
       pump: pumpFor(source),
       capMs: capMsFor(frame.barMs),
       capFromMs: callbackStartMs,
       onTask: (ms, entryMs) => {
-        policy.noteCpu(ms);
+        policy.noteCpu(ms, burst);
         deps.onWork(ms, entryMs);
       },
     }, (result) => {
@@ -328,7 +332,7 @@ export function createGpuFrameClock(deps: GpuFrameClockDeps): GpuFrameClock {
       }
       onVerdict(verdict);
       const book = performance.now() - b0;
-      policy.noteCpu(book);
+      policy.noteCpu(book, burst);
       deps.onWork(book, b0);
     });
   }

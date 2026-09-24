@@ -6,7 +6,7 @@ import {
   CLOCK_DELIVERY_SPAN_MS,
   CLOCK_DELIVERY_UP,
   CLOCK_DOWN_COUNT,
-  CLOCK_GAP_MS,
+  CLOCK_GAP_MIN_MS,
   CLOCK_INTERVAL_DOWN,
   CLOCK_SILENCE_SPAN_MS,
   CLOCK_PANIC_COUNT,
@@ -37,7 +37,7 @@ import {
   type RungLadder,
   type StepReason,
 } from './resolutionController';
-import { CLOCK_DOWN_SHARE, CLOCK_EXPONENT, CLOCK_UP_SHARE, STARVED_SHARE_MAX } from './gpuFrameClockPolicy';
+import { CLOCK_DOWN_SHARE, CLOCK_EXPONENT, CLOCK_UP_SHARE, DUTY_VERIFY, STARVED_SHARE_MAX } from './gpuFrameClockPolicy';
 
 /** One vsync tick on a 60 Hz panel, as a delivered interval reads. */
 const TICK = 16.67;
@@ -1046,11 +1046,15 @@ class ClockRig extends Rig {
       // This tick's draw, at the rung any decision just applied.
       this.drawSeq++;
       if (!this.force && !this.controller.wantsClock()) continue;
+      // Through a verification the sensor samples one frame in four whatever
+      // its duty.
+      const duty = this.controller.clockVerifying ? Math.min(this.duty, DUTY_VERIFY) : this.duty;
+      if (this.countdown > duty - 1) this.countdown = duty - 1;
       if (this.countdown > 0) { this.countdown--; continue; }
       if (this.inFlight !== null) continue;
       const read = clock(this.controller.rung, i);
       if (read === null) continue;
-      this.countdown = this.duty - 1;
+      this.countdown = duty - 1;
       const r = typeof read === 'number' ? { readingMs: read } : read;
       this.inFlight = {
         dueStep: this.steps + this.lag,
@@ -1070,6 +1074,13 @@ class ClockRig extends Rig {
   /** Drop whatever is out, the way a duty change does. */
   dropInFlight(): void {
     this.inFlight = null;
+  }
+
+  /** The sensor priced itself to a new duty and told the controller. */
+  setDuty(duty: number): void {
+    this.duty = duty;
+    this.dropInFlight();
+    this.controller.clearClockEvidence(this.nowMs, duty);
   }
 }
 
@@ -1610,10 +1621,89 @@ describe('a clock probe short of evidence', () => {
     expect(up).toBeDefined();
     expect(revert).toBeDefined();
     // A second of visible drawing with no reading is enough to call it.
-    expect(revert!.atMs - up!.atMs).toBeGreaterThanOrEqual(CLOCK_GAP_MS);
+    expect(revert!.atMs - up!.atMs).toBeGreaterThanOrEqual(CLOCK_GAP_MIN_MS);
     expect(revert!.atMs - up!.atMs).toBeLessThanOrEqual(CLOCK_VERIFY_MS + REALLOC_SETTLE_MS);
     expect(rig.controller.state().ceiling).toBeNull();
     expect(rig.controller.state().clock.last?.why).toBe('unverified');
+    // Silence's treatment: the next probe waits twice as long.
+    expect(rig.controller.state().probeWaitMs).toBe(2 * PROBE_WAIT_MS);
+    expect(rig.controller.state().clock.unverifiedRung).toBe(MEDIUM + 1);
+  });
+
+  it('with no admissible reading at the sharper rung for ten minutes, the climbs thin out and stop', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.runClock(seconds(10 * 60), onTime, (rung) => (rung > MEDIUM ? null : 7));
+    const ups = rig.applied.filter((a) => a.reason === 'up').map((a) => a.atMs);
+    // Before, a climb every eleven seconds: fifty-three in the ten minutes.
+    expect(ups.length).toBeGreaterThanOrEqual(2);
+    expect(ups.length).toBeLessThanOrEqual(6);
+    const firstHalf = ups.filter((t) => t < 5 * 60_000).length;
+    expect(ups.length - firstHalf).toBeLessThan(firstHalf);
+    // Every second unverified probe in a row held the rung as a ceiling, and
+    // the holds escalate.
+    expect(rig.applied[1].reason).toBe('revert');
+    const ceiling = rig.controller.state().ceiling;
+    expect(ceiling?.rung).toBe(MEDIUM + 1);
+    expect(ceiling!.escalation).toBeGreaterThanOrEqual(3);
+    expect(rig.applied.every((a) => a.to <= MEDIUM + 1)).toBe(true);
+  });
+
+  it('a probe that verifies clears the rung’s unverified mark', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    let quiet = true;
+    rig.runClock(seconds(14), onTime, (rung) => (rung > MEDIUM && quiet ? null : 7));
+    expect(rig.controller.state().clock.unverifiedRung).toBe(MEDIUM + 1);
+    quiet = false;
+    rig.runClock(seconds(40), onTime, (rung) => (rung > MEDIUM && quiet ? null : 7));
+    expect(rig.rung).toBe(TOP);
+    expect(rig.controller.state().clock.unverifiedRung).toBeNull();
+    expect(rig.controller.state().ceiling).toBeNull();
+  });
+});
+
+describe('a verification at a sparse duty', () => {
+  it('samples one frame in four while it stands, so a duty-16 sensor verifies inside its three seconds', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.setDuty(16);
+    expect(rig.controller.state().clock.gapMs).toBeCloseTo(6 * 16 * BUDGET_MS, 6);
+    const verified: number[] = [];
+    let verifyingSince: number | null = null;
+    for (let k = 0; k < seconds(5 * 60); k++) {
+      rig.runClock(1, onTime, () => 7);
+      const v = rig.controller.clockVerifying;
+      if (v && verifyingSince === null) verifyingSince = rig.nowMs;
+      if (!v && verifyingSince !== null) { verified.push(rig.nowMs - verifyingSince); verifyingSince = null; }
+    }
+    expect(rig.applied.map((a) => a.reason)).toEqual(['up', 'up']);
+    expect(rig.rung).toBe(TOP);
+    expect(verified).toHaveLength(2);
+    // Eight readings at one frame in four: about half a second after the
+    // settle, where one in sixteen would have needed more than two.
+    for (const ms of verified) expect(ms).toBeLessThan(REALLOC_SETTLE_MS + 1000);
+    // And at one in sixteen the steady state is not silent between readings.
+    expect(rig.controller.state().clock.last?.why).toBe('climb');
+  });
+
+  it('judges silence at the duty: a gap of a second is not silence at one frame in sixteen, six samples’ worth is', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.setDuty(16);
+    rig.runClock(seconds(60), onTime, () => 7);
+    expect(rig.rung).toBe(TOP);
+    rig.runClock(seconds(PROBE_HOLD_MS / 1000), onTime, () => 7);
+    const from = rig.applied.length;
+    const atMs = rig.nowMs;
+    // Readings stop: silence comes at six samples' worth of frames, not at a
+    // second.
+    rig.runClock(seconds(4), onTime, () => null);
+    const step = rig.applied.slice(from)[0];
+    expect(step?.reason).toBe('restore');
+    expect(rig.controller.state().clock.last?.why).toBe('gap');
+    expect(step.atMs - atMs).toBeGreaterThan(CLOCK_GAP_MIN_MS + 16 * TICK);
+    expect(step.atMs - atMs).toBeLessThanOrEqual(6 * 16 * TICK + 16 * TICK + 2 * TICK);
   });
 
   it('fails when the readings it did get were starved or capped', () => {
@@ -1739,7 +1829,7 @@ describe('silence, and the grace a reset gets', () => {
     rig.runClock(seconds(3), onTime, () => null);
     const step = rig.applied.slice(from)[0];
     expect(step.reason).toBe('restore');
-    expect(step.atMs - atMs).toBeLessThanOrEqual(CLOCK_GAP_MS + 2 * TICK);
+    expect(step.atMs - atMs).toBeLessThanOrEqual(CLOCK_GAP_MIN_MS + 2 * TICK);
     expect(rig.controller.state().clock.last?.why).toBe('gap');
   });
 

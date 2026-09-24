@@ -1465,9 +1465,9 @@ const gpuFrameClock = createGpuFrameClock({
   onWork: (ms, startedAtMs) => { sensorSinceStep += sensorWorkPastDue(ms, startedAtMs); },
   onDuty: (duty) => {
     // Readings taken at the old duty are dropped, and a reading still out
-    // with them.
+    // with them; the duty is what silence is judged at from now on.
     gpuPending = null;
-    resolutionController.clearClockEvidence(performance.now());
+    resolutionController.clearClockEvidence(performance.now(), duty);
     debugLog('GPU clock', { duty });
   },
   onDisabled: (reason) => {
@@ -1529,6 +1529,7 @@ function gpuClockAfterDraw(nowMs: number): void {
     drawSeq,
     callbackStartMs: nowMs,
     wanted,
+    verifying: resolutionController.clockVerifying,
     eligible,
     clean,
     barMs: resolutionController.clockBarMs,

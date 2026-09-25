@@ -33,11 +33,15 @@ import {
   CAM_REACQUIRE_SETTLE_ANGLE_DEG,
   CAM_REACQUIRE_SETTLE_RADIUS_FRAC,
   largestDiscAngles,
+  chaseIdealBoomAU,
+  intendedBoomAfterOrbitUpdate,
+  ORBIT_DOLLY_DEADBAND,
 } from './cruiseView';
 // cruiseView itself stays dependency-free (the up axis is passed in); the
 // test pins it against the REAL flight horizon the mode hands it.
 import { FLIGHT_UP_SCENE, flightDirectionFromAngles } from './flightFrame';
 import { DEG2RAD } from '../shared/math/angles';
+import { lensProximityFactor } from '../shared/math/lensProximity';
 
 const KM_PER_AU = 149_597_870.7;
 const KM = 1 / KM_PER_AU;
@@ -581,27 +585,28 @@ describe('reacquireCameraStep', () => {
 });
 
 describe('largestDiscAngles (what the lens proximity ramp reads)', () => {
-  const KM = 1 / 149_597_870.7;
   const angles = () => ({ effectiveRad: 0, effectiveIndex: -1, effectiveDistanceAU: 0, cameraRad: 0, cameraIndex: -1 });
   const shell = (x: number, y: number, z: number, surfaceRadiusAU: number, discRadiusAU: number, name: string) =>
     ({ x, y, z, surfaceRadiusAU, discRadiusAU, name });
   const deg = (rad: number) => (rad * 180) / Math.PI;
+  const length = (v: { x: number; y: number; z: number }) => Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+  const noBoom = { x: 0, y: 0, z: 0 };
 
   it('reads the DISC, never the envelope or the governed surface', () => {
     // Earth: the safety envelope carries the air shell (×1.02); the Sun's
     // governed surface is 1.2× its photosphere. Both must be ignored.
     const earthR = 6371 * KM;
     const earth = shell(0, 0, -2 * earthR, earthR * 1.02, earthR, 'Earth');
-    const out = largestDiscAngles({ x: 0, y: 0, z: 0 }, [earth], 1, angles());
+    const out = largestDiscAngles(noBoom, 0, [earth], 1, angles());
     expect(deg(out.effectiveRad)).toBeCloseTo(30, 6);
     expect(out.effectiveIndex).toBe(0);
     const sunR = 695_700 * KM;
     const sun = shell(0, 0, -1.2 * sunR, sunR * 1.2, sunR, 'Sun');
-    const atSun = largestDiscAngles({ x: 0, y: 0, z: 0 }, [sun], 1, angles());
+    const atSun = largestDiscAngles(noBoom, 0, [sun], 1, angles());
     expect(deg(atSun.effectiveRad)).toBeCloseTo(56.44, 1);
   });
 
-  it('holds still while the camera orbits the ship, and moves as the boom lengthens', () => {
+  it('holds still while the camera orbits the ship, and moves as the intended boom lengthens', () => {
     const earthR = 6371 * KM;
     const boom = 233 * KM;
     const earth = shell(0, 0, -(earthR + 1000 * KM), earthR * 1.02, earthR, 'Earth');
@@ -610,38 +615,170 @@ describe('largestDiscAngles (what the lens proximity ramp reads)', () => {
     const lift = 0.35;
     const back = Math.sqrt(1 - lift * lift);
     for (const [x, y, z] of [[0, 0, boom], [boom, 0, 0], [0, boom, 0], [-boom, 0, 0], [0, lift * boom, back * boom]]) {
-      const out = largestDiscAngles({ x, y, z }, [earth], 1, angles());
+      const out = largestDiscAngles({ x, y, z }, boom, [earth], 1, angles());
       readings.push(out.effectiveRad);
       cameraReadings.push(out.cameraRad);
-      // The camera is never farther than the ship's distance plus the boom.
+      // On a boom of its intended length the camera is never farther from
+      // the body than the ship's distance plus that length.
       expect(out.cameraRad).toBeGreaterThanOrEqual(out.effectiveRad - 1e-12);
     }
     for (const r of readings) expect(r).toBeCloseTo(readings[0], 12);
     expect(Math.max(...cameraReadings) - Math.min(...cameraReadings)).toBeGreaterThan(0.01);
-    const longer = largestDiscAngles({ x: 0, y: 0, z: 3 * boom }, [earth], 1, angles());
+    const longer = largestDiscAngles({ x: 0, y: 0, z: 3 * boom }, 3 * boom, [earth], 1, angles());
     expect(longer.effectiveRad).toBeLessThan(readings[0]);
   });
 
-  it('never exceeds the ship-only angle: a 1.8-radius pass bounds the camera at 33.7° too', () => {
-    const r = 243 * KM; // the smallest rendered moon the flyby search visits
-    const pass = shell(1.8 * r, 0, 0, r, r, 'moonlet');
-    const worst = largestDiscAngles({ x: -233 * KM, y: 77 * KM, z: 0 }, [pass], 1, angles());
-    expect(deg(worst.effectiveRad)).toBeLessThanOrEqual(33.75 + 1e-9);
-    const shipOnly = largestDiscAngles({ x: 0, y: 0, z: 0 }, [pass], 1, angles());
-    expect(worst.effectiveRad).toBeLessThan(shipOnly.effectiveRad);
+  it('holds still through a safety push: a half-turn drag at the Moon shortens the camera boom, never the driving angle', () => {
+    // Codex's counterexample against the ship-plus-ACTUAL-boom reading: the
+    // ship parked 200 km over a Moon-sized body, the camera dragged round it
+    // on the chase boom. Facing the body the camera sits inside the padded
+    // shell and escapeCameraPenetrations pushes it out radially, which
+    // shortens its distance to the ship — and a boom read from the camera
+    // then read a larger driving angle with the ship never moving. The
+    // intended boom is the rig's, so the driving angle holds to the bit
+    // while the camera's own angle, and its actual boom, move.
+    const moonR = 1737.4 * KM;
+    const forward = { x: 0, y: 0, z: -1 }; // nose on the body, ahead along −z
+    const up = { x: 0, y: 1, z: 0 };
+    const intendedBoom = chaseIdealBoomAU(forward, up);
+    expect(intendedBoom / KM).toBeCloseTo(232.8, 0);
+    const ideal = chaseIdealOffset(forward, up, { x: 0, y: 0, z: 0 });
+    const drag = (shipDistanceAU: number) => {
+      const moon = shell(0, 0, -shipDistanceAU, moonR, moonR, 'Moon');
+      const driving: number[] = [];
+      const cameraAngles: number[] = [];
+      const actualBooms: number[] = [];
+      const oldReadings: number[] = [];
+      for (let step = 0; step <= 720; step++) {
+        const azimuth = (step / 720) * 2 * Math.PI; // 0 = the head-on chase, π = facing the body
+        const posed = {
+          x: Math.sin(azimuth) * ideal.z + Math.cos(azimuth) * ideal.x,
+          y: ideal.y,
+          z: Math.cos(azimuth) * ideal.z - Math.sin(azimuth) * ideal.x,
+        };
+        const pushed = escapeCameraPenetrations(posed, [moon], 1, CAMERA_BODY_MARGIN_AU);
+        const cam = pushed ?? posed;
+        const out = largestDiscAngles(cam, intendedBoom, [moon], 1, angles());
+        driving.push(out.effectiveRad);
+        cameraAngles.push(out.cameraRad);
+        actualBooms.push(length(cam));
+        // What the camera's actual boom would have read.
+        oldReadings.push(largestDiscAngles(cam, length(cam), [moon], 1, angles()).effectiveRad);
+      }
+      return { driving, cameraAngles, actualBooms, oldReadings };
+    };
+    const span = (values: number[]) => Math.max(...values) - Math.min(...values);
+
+    // 200 km up: Codex's numbers, 53.2° → 57.1° and a factor 0.75 → 0.53 read
+    // from the camera; one number read from the rig.
+    const twoHundred = drag(moonR + 200 * KM);
+    for (const r of twoHundred.driving) expect(r).toBeCloseTo(twoHundred.driving[0], 12);
+    expect(deg(twoHundred.driving[0])).toBeCloseTo(53.19, 1);
+    expect(Math.min(...twoHundred.actualBooms) / KM).toBeLessThan(232.8 - 50); // the push happened
+    expect(deg(span(twoHundred.cameraAngles))).toBeGreaterThan(5); // and the camera did move
+    expect(deg(span(twoHundred.oldReadings))).toBeGreaterThan(2.5);
+    const oldFactors = twoHundred.oldReadings.map(lensProximityFactor);
+    expect(span(oldFactors)).toBeGreaterThan(0.15);
+    expect(span(twoHundred.driving.map(lensProximityFactor))).toBe(0);
+
+    // The Moon's own park (~78 km up, a driving angle of 58°): the camera's
+    // boom read the same drag as the lens going from 0.47 to nearly off.
+    const park = drag(moonR / Math.sin(58 * DEG2RAD) - intendedBoom);
+    for (const r of park.driving) expect(r).toBeCloseTo(park.driving[0], 12);
+    expect(deg(park.driving[0])).toBeCloseTo(58, 1);
+    expect(span(park.oldReadings.map(lensProximityFactor))).toBeGreaterThan(0.3);
+    expect(span(park.driving.map(lensProximityFactor))).toBe(0);
   });
 
-  it('picks the largest disc across the pool and reads empty or non-finite as none', () => {
+  it('never exceeds the ship-only angle: a 1.8-radius pass bounds the DRIVING angle at 33.7°, not the camera\'s own', () => {
+    const r = 243 * KM; // the smallest rendered moon the flyby search visits
+    const pass = shell(1.8 * r, 0, 0, r, r, 'moonlet');
+    const trailing = { x: -233 * KM, y: 77 * KM, z: 0 };
+    const worst = largestDiscAngles(trailing, length(trailing), [pass], 1, angles());
+    expect(deg(worst.effectiveRad)).toBeLessThanOrEqual(33.75 + 1e-9);
+    const shipOnly = largestDiscAngles(noBoom, 0, [pass], 1, angles());
+    expect(worst.effectiveRad).toBeLessThan(shipOnly.effectiveRad);
+    // The camera sits off the ship's line and can pass nearer the body than
+    // the ship does; ITS angle reads past 33.7° and drives nothing.
+    const swungIn = { x: 135.7 * KM, y: 77 * KM, z: 0 };
+    const seen = largestDiscAngles(swungIn, length(trailing), [pass], 1, angles());
+    expect(deg(seen.cameraRad)).toBeGreaterThan(45);
+    expect(deg(seen.effectiveRad)).toBeLessThanOrEqual(33.75 + 1e-9);
+  });
+
+  it('picks the largest disc across the pool and reads empty, non-finite or a bad boom as none', () => {
     const near = shell(0, 0, -3 * 1000 * KM, 1000 * KM, 1000 * KM, 'near');
     const big = shell(0, 5 * 6371 * KM, 0, 6371 * KM, 6371 * KM, 'big');
-    const out = largestDiscAngles({ x: 0, y: 0, z: 0 }, [near, big], 2, angles());
+    const out = largestDiscAngles(noBoom, 0, [near, big], 2, angles());
     expect(out.effectiveIndex).toBe(0);
-    const none = largestDiscAngles({ x: 0, y: 0, z: 0 }, [], 0, angles());
+    const none = largestDiscAngles(noBoom, 0, [], 0, angles());
     expect(none.effectiveRad).toBe(0);
     expect(none.effectiveIndex).toBe(-1);
     const broken = shell(Number.NaN, 0, 0, 1, 1, 'broken');
-    const skipped = largestDiscAngles({ x: 0, y: 0, z: 0 }, [broken], 1, angles());
+    const skipped = largestDiscAngles(noBoom, 0, [broken], 1, angles());
     expect(skipped.effectiveRad).toBe(0);
     expect(skipped.cameraRad).toBe(0);
+    // A boom that is not a length reads as no boom, never as a NaN angle.
+    for (const boom of [Number.NaN, -1, Number.POSITIVE_INFINITY]) {
+      const ship = largestDiscAngles(noBoom, boom, [near], 1, angles());
+      expect(deg(ship.effectiveRad)).toBeCloseTo(deg(Math.asin(1 / 3)), 9);
+    }
+  });
+});
+
+describe('chaseIdealBoomAU (the boom the rig intends)', () => {
+  it('is the chase ideal offset\'s length for any heading: 232.8 km level, shorter nose-up, longer nose-down', () => {
+    const up = { x: 0, y: 1, z: 0 };
+    expect(chaseIdealBoomAU({ x: 0, y: 0, z: -1 }, up) / KM).toBeCloseTo(CRUISE_CAM_DIST_AU * Math.hypot(1, CHASE_CAM_LIFT_FRAC) / KM, 9);
+    expect(chaseIdealBoomAU({ x: 0, y: 0, z: -1 }, up) / KM).toBeCloseTo(232.8, 0);
+    expect(chaseIdealBoomAU(up, up) / KM).toBeCloseTo(CRUISE_CAM_DIST_AU * (1 - CHASE_CAM_LIFT_FRAC) / KM, 9);
+    expect(chaseIdealBoomAU({ x: 0, y: -1, z: 0 }, up) / KM).toBeCloseTo(CRUISE_CAM_DIST_AU * (1 + CHASE_CAM_LIFT_FRAC) / KM, 9);
+    const scratch = new THREE.Vector3();
+    for (const [headingDeg, pitchDeg] of [[0, 0], [37, 12], [200, -60], [300, 85], [90, -88]]) {
+      const forward = flightDirectionFromAngles(headingDeg * DEG2RAD, pitchDeg * DEG2RAD, scratch).clone();
+      const offset = chaseIdealOffset(forward, FLIGHT_UP_SCENE, new THREE.Vector3());
+      expect(chaseIdealBoomAU(forward, FLIGHT_UP_SCENE)).toBeCloseTo(offset.length(), 15);
+    }
+  });
+});
+
+describe('intendedBoomAfterOrbitUpdate (the wheel enters the boom, a push never does)', () => {
+  const minAU = CRUISE_CONTROLS_MIN_DISTANCE_AU;
+  const maxAU = 5;
+  const boom = 232.8 * KM;
+
+  it('keeps the boom when an update leaves the radius alone, whatever radius a push left it at', () => {
+    // Last frame's safety push shortened the camera's radius to 132 km; this
+    // update rotated it and nothing else. The boom must not learn the push.
+    expect(intendedBoomAfterOrbitUpdate(boom, 132 * KM, 132 * KM, minAU, maxAU)).toBe(boom);
+  });
+
+  it('keeps the boom BIT-identical when only rounding moved the radius, and hears the smallest wheel event', () => {
+    // OrbitControls' spherical round trip returns a radius an ulp or two off
+    // the one it read; a drag is hundreds of such updates, and a boom that
+    // took each ratio walked, flipping the factor between adjacent doubles.
+    const radius = 132 * KM;
+    for (const ulps of [1, -1, 3, -7]) {
+      const nudged = radius * (1 + ulps * Number.EPSILON);
+      expect(Object.is(intendedBoomAfterOrbitUpdate(boom, radius, nudged, minAU, maxAU), boom)).toBe(true);
+    }
+    expect(intendedBoomAfterOrbitUpdate(boom, radius, radius * (1 + 0.5 * ORBIT_DOLLY_DEADBAND), minAU, maxAU)).toBe(boom);
+    // The finest wheel event three's controls produce: 0.95^(0.01) of the radius.
+    const finestWheel = Math.pow(0.95, 0.01);
+    expect(intendedBoomAfterOrbitUpdate(boom, radius, radius * finestWheel, minAU, maxAU)).toBeCloseTo(boom * finestWheel, 20);
+  });
+
+  it('scales the boom by exactly the update\'s dolly ratio, from a pushed radius as from the boom itself', () => {
+    expect(intendedBoomAfterOrbitUpdate(boom, 232.8 * KM, 279.36 * KM, minAU, maxAU) / KM).toBeCloseTo(279.36, 9);
+    expect(intendedBoomAfterOrbitUpdate(boom, 132 * KM, 158.4 * KM, minAU, maxAU) / KM).toBeCloseTo(279.36, 9);
+    expect(intendedBoomAfterOrbitUpdate(boom, 132 * KM, 66 * KM, minAU, maxAU) / KM).toBeCloseTo(116.4, 9);
+  });
+
+  it('clamps to the controls\' own distance range and ignores a radius it cannot read', () => {
+    expect(intendedBoomAfterOrbitUpdate(boom, 232.8 * KM, 1 * KM, minAU, maxAU)).toBe(minAU);
+    expect(intendedBoomAfterOrbitUpdate(boom, 232.8 * KM, 232.8 * KM * 1e9, minAU, maxAU)).toBe(maxAU);
+    expect(intendedBoomAfterOrbitUpdate(boom, 0, 100 * KM, minAU, maxAU)).toBe(boom);
+    expect(intendedBoomAfterOrbitUpdate(boom, 100 * KM, Number.NaN, minAU, maxAU)).toBe(boom);
+    expect(intendedBoomAfterOrbitUpdate(boom, 100 * KM, 0, minAU, maxAU)).toBe(boom);
   });
 });

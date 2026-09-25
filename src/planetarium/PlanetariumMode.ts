@@ -270,6 +270,9 @@ import {
   ORBIT_POLAR_MARGIN_RAD,
   cameraFollowGain,
   chaseIdealOffset,
+  chaseIdealBoomAU,
+  intendedBoomAfterOrbitUpdate,
+  CAM_REACQUIRE_RADIUS_TAU_S,
   largestDiscAngles,
   type LargestDiscAngles,
   reacquireCameraStep,
@@ -751,10 +754,27 @@ export class PlanetariumMode {
     /** The driving body's disc radius — the rendered surface, so a probe can
      *  see that the air shell or the Sun's governed surface never drove it. */
     discRadiusAU: 0,
+    /** The boom the driving angle was read with (intendedCameraRadiusAU), and
+     *  the camera's actual distance to the ship, so a probe can see a safety
+     *  push shorten the second while the first, and the angle, hold. */
+    boomAU: 0,
+    cameraBoomAU: 0,
+    camOwner: 'chase' as 'chase' | 'orbit' | 'reacquiring',
     body: null as string | null,
     devPose: false,
     applies: 0,
   };
+  /** The camera-to-ship distance the cruise rig MEANS to hold — what the lens
+   *  proximity ramp reads as the boom, never the distance a collision left
+   *  the camera at. Under the chase it follows the chase ideal's length with
+   *  the follow's own gain; under reacquisition it springs to it on the
+   *  radius τ, in step with the camera's own radius; under a drag orbit it
+   *  carries the wheel's dolly ratio from each OrbitControls update
+   *  (cruiseView.intendedBoomAfterOrbitUpdate — the one writer of the camera
+   *  there re-reads the camera every frame, so a safety push is sticky for
+   *  the gesture and must be kept out of the boom by construction); a cruise
+   *  reset seats it at the pose it seats the camera at. Level, 232.8 km. */
+  private intendedCameraRadiusAU = chaseIdealBoomAU({ x: 0, y: 0, z: -1 }, { x: 0, y: 1, z: 0 });
   private readonly lensRampAngles: LargestDiscAngles = {
     effectiveRad: 0, effectiveIndex: -1, effectiveDistanceAU: 0, cameraRad: 0, cameraIndex: -1,
   };
@@ -5357,7 +5377,15 @@ export class PlanetariumMode {
     if (this.camOwner === 'orbit') {
       // The user owns the camera: OrbitControls is the sole writer and its
       // damping coast finishes the gesture. Nothing follows or reverses it.
+      // The intended boom takes only what this update did to the radius —
+      // the wheel's dolly and the clamp — never the radius it started from,
+      // which a safety push may have shortened last frame.
+      const radiusBefore = this.camera.position.length();
       this.controls.update();
+      this.intendedCameraRadiusAU = intendedBoomAfterOrbitUpdate(
+        this.intendedCameraRadiusAU, radiusBefore, this.camera.position.length(),
+        this.controls.minDistance, this.controls.maxDistance,
+      );
       return;
     }
 
@@ -5369,11 +5397,17 @@ export class PlanetariumMode {
       // that back keeps the step and the escape from fighting, and lets a
       // re-grab promote straight to 'orbit'. OrbitControls stays idle here.
       const tau = this.advanceChaseFollowTau(dt);
-      const ideal = this.clampChaseIdealToShells(chaseIdealOffset(
+      const unclampedIdeal = chaseIdealOffset(
         this.player.writeForwardDirection(this.tmpForwardDir),
         FLIGHT_UP_SCENE,
         this.tmpChaseIdeal,
-      ));
+      );
+      // The intended boom springs to the UNCLAMPED ideal's length on the same
+      // radius τ the camera's own radius springs on, so the two converge
+      // together; the shell clamp below is collision avoidance, not intent.
+      this.intendedCameraRadiusAU +=
+        (unclampedIdeal.length() - this.intendedCameraRadiusAU) * cameraFollowGain(dt, CAM_REACQUIRE_RADIUS_TAU_S);
+      const ideal = this.clampChaseIdealToShells(unclampedIdeal);
       // No lookAt here: the aim stage is the frame's last aim writer and
       // aims at origin (plus any fading deflection) from the final position.
       const settled = reacquireCameraStep(this.camera.position, this.camera.position, ideal, dt, tau);
@@ -5405,11 +5439,17 @@ export class PlanetariumMode {
     // steering so a tap bends the pursuit curve instead of stepping it, and the
     // gain derives from dt so 60 Hz and 120 Hz converge alike.
     const forward = this.player.writeForwardDirection(this.tmpForwardDir);
-    const idealPos = this.clampChaseIdealToShells(
-      chaseIdealOffset(forward, FLIGHT_UP_SCENE, this.tmpChaseIdeal),
-    );
+    const unclampedIdeal = chaseIdealOffset(forward, FLIGHT_UP_SCENE, this.tmpChaseIdeal);
     const tau = this.advanceChaseFollowTau(dt);
-    this.camera.position.lerp(idealPos, cameraFollowGain(dt, tau));
+    const gain = cameraFollowGain(dt, tau);
+    // The intended boom follows the unclamped ideal's length with the same
+    // gain the camera follows the (clamped) ideal with: a pitch changes it
+    // with the ship's own motion, a shell clamp or a safety push never does,
+    // and the wheel's dolly the controls apply after this is a transient the
+    // follow undoes, which the boom ignores.
+    this.intendedCameraRadiusAU += (unclampedIdeal.length() - this.intendedCameraRadiusAU) * gain;
+    const idealPos = this.clampChaseIdealToShells(unclampedIdeal);
+    this.camera.position.lerp(idealPos, gain);
   }
 
   /** Keep the chase/reacquire target itself out of every padded body shell.
@@ -13657,6 +13697,8 @@ export class PlanetariumMode {
     this.cameraShellCount = 0;
     const forward = this.player.getForwardDirection();
     chaseIdealOffset(forward, FLIGHT_UP_SCENE, this.camera.position);
+    // The boom the lens ramp reads is seated with the camera.
+    this.intendedCameraRadiusAU = this.camera.position.length();
     this.controls.target.set(0, 0, 0);
   }
 
@@ -13992,10 +14034,11 @@ export class PlanetariumMode {
   /**
    * The lens proximity ramp (shared/math/lensProximity.ts): scale the
    * requested lens strength by the largest angular radius any body's rendered
-   * disc subtends from the ship's distance plus the chase boom's length
-   * (cruiseView.largestDiscAngles — the camera's own distance in the head-on
-   * chase, and a number that holds still while the camera orbits the ship, so
-   * a look-around never breathes the projection), so a body that fills the
+   * disc subtends from the ship's distance plus the boom the rig intends
+   * (cruiseView.largestDiscAngles with intendedCameraRadiusAU — the camera's
+   * own distance in the head-on chase, and a number that holds still while
+   * the camera orbits the ship or a body's padded shell pushes it, so a
+   * look-around never breathes the projection), so a body that fills the
    * view is drawn through a plain pinhole and everything farther out stays
    * exactly what it was. A pure function of the pose — no easing, no memory —
    * recomputed every frame it can run, and 1 wherever it cannot: landed and
@@ -14030,7 +14073,8 @@ export class PlanetariumMode {
     let body: string | null = null;
     if (this.lensRampEnabled && cruise && !devPose) {
       const angles = largestDiscAngles(
-        this.camera.position, this.cameraShellPool, this.cameraShellCount, this.lensRampAngles,
+        this.camera.position, this.intendedCameraRadiusAU,
+        this.cameraShellPool, this.cameraShellCount, this.lensRampAngles,
       );
       if (angles.effectiveIndex >= 0) {
         const shell = this.cameraShellPool[angles.effectiveIndex];
@@ -14046,6 +14090,9 @@ export class PlanetariumMode {
     state.angularRadiusDeg = effectiveDeg;
     state.cameraAngularRadiusDeg = cameraDeg;
     state.discRadiusAU = discRadiusAU;
+    state.boomAU = this.intendedCameraRadiusAU;
+    state.cameraBoomAU = this.camera.position.length();
+    state.camOwner = this.camOwner;
     state.body = body;
     state.devPose = devPose;
     if ((lens.proximityFactor ?? 1) !== factor) {
@@ -14071,6 +14118,8 @@ export class PlanetariumMode {
     state.angularRadiusDeg = 0;
     state.cameraAngularRadiusDeg = 0;
     state.discRadiusAU = 0;
+    state.boomAU = 0;
+    state.cameraBoomAU = 0;
     state.body = null;
     state.applied = lens.effectiveStrength ?? lens.strength;
     state.applies++;
@@ -15103,6 +15152,7 @@ export class PlanetariumMode {
   devLensRamp(): {
     enabled: boolean; factor: number; applied: number; angularRadiusDeg: number;
     cameraAngularRadiusDeg: number; discRadiusAU: number;
+    boomAU: number; cameraBoomAU: number; camOwner: 'chase' | 'orbit' | 'reacquiring';
     body: string | null; devPose: boolean; applies: number;
   } {
     return { ...this.lensRampState };

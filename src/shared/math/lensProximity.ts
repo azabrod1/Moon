@@ -21,21 +21,28 @@
  * the pose, with no easing over time, so a teleport lands at the right
  * strength on its first frame. Keyed on angular RADIUS rather than on where
  * the body sits in the frame, and read from the SHIP's distance plus the
- * chase boom's length rather than from the camera (cruiseView.ts,
- * largestDiscAngles): in this app looking around orbits the camera round the
- * ship on a ~233 km boom, and read from the camera the strength swung
- * 0.5 ↔ 0.2 on a plain drag over Earth. So neither turning the head nor
- * orbiting the chase camera changes the projection; the wheel, which
- * lengthens the boom, still brings the lens back.
+ * boom the chase rig INTENDS rather than from the camera (cruiseView.ts,
+ * largestDiscAngles; PlanetariumMode.intendedCameraRadiusAU): in this app
+ * looking around orbits the camera round the ship on a ~233 km boom, and read
+ * from the camera the strength swung 0.5 ↔ 0.2 on a plain drag over Earth.
+ * Read from the camera's actual distance to the ship it held on that drag
+ * but not on one that met a body's padded shell, where the safety pass
+ * pushes the camera out and shortens the boom — at the Moon's park that took
+ * the lens from 0.47 to off with the ship never moving. So neither turning
+ * the head, nor orbiting the chase camera, nor a collision moving it changes
+ * the projection; the wheel under a drag orbit, which scales the intended
+ * boom, still brings the lens back.
  *
  * Why 45°: every authored flyby closes to ARRIVAL_IMPACT_RADII = 1.8 rendered
  * radii, an angular radius of 33.7°, and on the receding leg the camera eases
  * back to the ship heading while the body is still that large and drifting
  * off-axis — the exact case the lens exists for. A ramp that started at 30°
  * would put an egg on every departure; 45° leaves an 11° margin. Because the
- * driving angle is read from the ship's distance plus the boom, the camera —
- * which sits off the ship's line and can pass nearer the body than the ship
- * does — never reads past that 33.7° either, and the colocated tests pin both.
+ * driving angle is read from the ship's distance plus the boom, it never
+ * reads past that 33.7° either — the bound is on the DRIVING angle: the
+ * camera sits off the ship's line and can pass nearer the body than the ship
+ * does, its own angle reaches 42.4° on Cordelia's pass, and it drives
+ * nothing; the colocated tests pin both.
  * What DOES ramp on a flyby is the parent: the departure from an inner moon
  * clears its giant's collision surface by 1.1×, and Uranus after Cordelia or
  * Jupiter after Metis fills the view to ~65° on the way out — a giant filling

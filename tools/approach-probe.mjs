@@ -36,9 +36,17 @@
 //     computing again after takeoff;
 //   - the driving disc not the rendered surface (Earth's 6,371 km, the Sun's
 //     photosphere) — the one regression the unit tests cannot see;
-//   - a look-around (real mouse drags) moving the driving angle or the applied
-//     strength: the ramp reads the ship's distance plus the boom, which
-//     orbiting the camera cannot change;
+//   - a look-around (real mouse drags, sampled while the pointer is down and
+//     after it lifts) moving the driving angle, the applied strength or the
+//     intended boom: the ramp reads the ship's distance plus the boom the rig
+//     intends, which neither orbiting the camera nor the safety pass pushing
+//     it out of a body's padded shell can change — at a mid-band pose that
+//     stays clear of the shell, and at a low one over Mercury where the drag
+//     reaches it (the camera's actual boom must shorten there, or the push
+//     never happened), with the rebuild counter still, which hears a factor
+//     change between two samples; drags that left the camera's own angle
+//     where it was prove nothing and fail;
+//   - a phase list that is not exactly the six phases;
 //   - a dev pose entered from a ramped frame with anything but full strength;
 //   - the FIRST landed render carrying a screen-authored material at the
 //     cruise strength (a render-time audit — the readout cannot tell the two
@@ -87,9 +95,15 @@ const PIXEL_LADDER = arg('pixel-ladder', '0.165,0.16,0.155,0.152,0.15,0.148,0.14
 const PIXEL_TOLERANCE = (expectedPx) => Math.max(2.5, expectedPx * 0.004);
 const KM_PER_AU = 149_597_870.7;
 // Which phases to fly (all by default); a partial run is exploratory and
-// never the regression battery, so --assert refuses it.
-const PHASES = new Set(arg('phases', '0,1,2,3,4,5').split(',').map(Number));
-if (assertMode && PHASES.size < 6) { console.error('--assert needs every phase; drop --assert for a partial run'); process.exit(2); }
+// never the regression battery, so --assert refuses it — by identity, not by
+// count: six unknown numbers would otherwise pass the guard and run nothing.
+const ALL_PHASES = [0, 1, 2, 3, 4, 5];
+const phaseWords = arg('phases', ALL_PHASES.join(',')).split(',').map((word) => word.trim());
+const unknownPhases = phaseWords.filter((word) => !ALL_PHASES.includes(Number(word)) || !/^\d+$/.test(word));
+if (unknownPhases.length) { console.error(`unknown phase(s) ${unknownPhases.join(',')}; the phases are ${ALL_PHASES.join(',')}`); process.exit(2); }
+const PHASES = new Set(phaseWords.map(Number));
+const missingPhases = ALL_PHASES.filter((phase) => !PHASES.has(phase));
+if (assertMode && missingPhases.length) { console.error(`--assert needs every phase (missing ${missingPhases.join(',')}); drop --assert for a partial run`); process.exit(2); }
 
 // --- the ramp, as shared/math/lensProximity.ts defines it ---------------------
 const DEG = Math.PI / 180;
@@ -519,30 +533,81 @@ try {
   // ---- 4. a look-around does not move the lens -------------------------------
   // Orbiting the chase camera round the ship (a drag) moves the camera by up
   // to the boom's length; the driving angle is read from the ship's distance
-  // plus the boom, so it must hold still while the camera's own angle moves.
-  console.log('[4] look-around: real mouse drags at a mid-band pose');
-  if (PHASES.has(4)) {
-    const midRung = LADDER.find((k) => k <= 0.15) ?? LADDER[LADDER.length - 3];
-    const start = await jump(stateBody, midRung);
-    console.log(`  k=${midRung}: driving alpha=${start.angularRadiusDeg.toFixed(3)}deg camera alpha=${start.cameraAngularRadiusDeg.toFixed(3)}deg applied=${start.applied.toFixed(4)}`);
-    check(start.angularRadiusDeg > LENS_PROXIMITY_FULL_DEG && start.angularRadiusDeg < LENS_PROXIMITY_OFF_DEG, `the look-around pose must sit inside the band (alpha ${start.angularRadiusDeg.toFixed(2)})`);
+  // plus the boom the rig INTENDS, so it must hold still while the camera's
+  // own angle moves — sampled DURING each drag as well as after it, so a
+  // transient that returned before the endpoint is heard too, and the drags
+  // must have moved the camera or the invariance was never exercised.
+  // Two poses: a mid-band one where the boom stays clear of the body, and a
+  // low one where the second drag carries the camera into the body's padded
+  // shell and the safety pass pushes it out radially — which shortens the
+  // camera's ACTUAL boom, and read from the camera would have moved the
+  // driving angle with the ship never moving (Codex's counterexample).
+  console.log('[4] look-around: real mouse drags, mid-band and through the safety shell');
+  async function dragOrbit(dx, dy) {
     const centreX = Math.floor(VIEWPORT_WIDTH / 2);
     const centreY = Math.floor(VIEWPORT_HEIGHT / 2);
-    let cameraMoved = 0;
-    for (const [dx, dy] of [[220, 0], [220, 0], [0, 140], [-220, 0]]) {
-      await page.mouse.move(centreX, centreY);
-      await page.mouse.down();
-      await page.mouse.move(centreX + dx, centreY + dy, { steps: 14 });
-      await page.mouse.up();
-      await drawn(3);
-      const now = await rampState();
-      cameraMoved = Math.max(cameraMoved, Math.abs(now.cameraAngularRadiusDeg - start.cameraAngularRadiusDeg));
-      console.log(`  drag (${dx},${dy}): driving alpha=${now.angularRadiusDeg.toFixed(3)}deg camera alpha=${now.cameraAngularRadiusDeg.toFixed(3)}deg applied=${now.applied.toFixed(4)} applies=${now.applies}`);
-      check(Math.abs(now.angularRadiusDeg - start.angularRadiusDeg) < 0.01, `a drag moved the driving angle ${start.angularRadiusDeg.toFixed(3)} -> ${now.angularRadiusDeg.toFixed(3)}`);
-      check(Math.abs(now.applied - start.applied) < 1e-4, `a drag moved the applied strength ${start.applied.toFixed(4)} -> ${now.applied.toFixed(4)}`);
-      samples.push({ phase: 'drag', dx, dy, ...now });
+    const during = [];
+    await page.mouse.move(centreX, centreY);
+    await page.mouse.down();
+    // Four legs with a draw and a reading between each: the lens is judged
+    // while the pointer is down, not only where it came to rest.
+    for (let leg = 1; leg <= 4; leg++) {
+      await page.mouse.move(centreX + (dx * leg) / 4, centreY + (dy * leg) / 4, { steps: 4 });
+      await drawn(1);
+      during.push(await rampState());
     }
-    if (cameraMoved < 0.05) console.log(`  note: the drags moved the camera's own angle by only ${cameraMoved.toFixed(3)}deg — did the drags orbit the camera?`);
+    await page.mouse.up();
+    await drawn(3);
+    const after = await rampState();
+    return { during, after };
+  }
+  async function lookAround(label, body, distanceMultiplier, drags, { expectPush }) {
+    const start = await jump(body, distanceMultiplier);
+    console.log(`  ${label}: ${body} k=${distanceMultiplier}: driving alpha=${start.angularRadiusDeg.toFixed(3)}deg camera alpha=${start.cameraAngularRadiusDeg.toFixed(3)}deg applied=${start.applied.toFixed(4)} boom=${(start.boomAU * KM_PER_AU).toFixed(1)}km camera boom=${(start.cameraBoomAU * KM_PER_AU).toFixed(1)}km`);
+    check(start.angularRadiusDeg > LENS_PROXIMITY_FULL_DEG && start.angularRadiusDeg < LENS_PROXIMITY_OFF_DEG, `${label}: the look-around pose must sit inside the band (alpha ${start.angularRadiusDeg.toFixed(2)})`);
+    check(Math.abs(start.boomAU - start.cameraBoomAU) * KM_PER_AU < 1, `${label}: at the parked chase the intended boom (${(start.boomAU * KM_PER_AU).toFixed(1)} km) must be the camera's (${(start.cameraBoomAU * KM_PER_AU).toFixed(1)} km)`);
+    let cameraMoved = 0;
+    let shortestCameraBoomAU = start.cameraBoomAU;
+    let orbitOwned = false;
+    for (const [dx, dy] of drags) {
+      const { during, after } = await dragOrbit(dx, dy);
+      for (const [index, now] of [...during, after].entries()) {
+        const where = index < during.length ? `leg ${index + 1}` : 'after';
+        cameraMoved = Math.max(cameraMoved, Math.abs(now.cameraAngularRadiusDeg - start.cameraAngularRadiusDeg));
+        shortestCameraBoomAU = Math.min(shortestCameraBoomAU, now.cameraBoomAU);
+        if (now.camOwner === 'orbit') orbitOwned = true;
+        check(Math.abs(now.angularRadiusDeg - start.angularRadiusDeg) < 0.01, `${label}: drag (${dx},${dy}) ${where} moved the driving angle ${start.angularRadiusDeg.toFixed(3)} -> ${now.angularRadiusDeg.toFixed(3)}`);
+        check(Math.abs(now.applied - start.applied) < 1e-4, `${label}: drag (${dx},${dy}) ${where} moved the applied strength ${start.applied.toFixed(4)} -> ${now.applied.toFixed(4)}`);
+        check(Math.abs(now.boomAU - start.boomAU) * KM_PER_AU < 0.01, `${label}: drag (${dx},${dy}) ${where} moved the intended boom ${(start.boomAU * KM_PER_AU).toFixed(2)} -> ${(now.boomAU * KM_PER_AU).toFixed(2)} km`);
+        // The rebuild counter hears a factor change between samples too: with
+        // no wheel the driving angle is meant to hold to the bit, so a drag
+        // asks for no projection rebuild at all.
+        check(now.applies === start.applies, `${label}: drag (${dx},${dy}) ${where} rebuilt the projection (applies ${start.applies} -> ${now.applies}) — the factor moved between samples`);
+        samples.push({ phase: 'drag', label, dx, dy, where, ...now });
+      }
+      console.log(`  drag (${dx},${dy}): driving alpha=${after.angularRadiusDeg.toFixed(3)}deg camera alpha=${after.cameraAngularRadiusDeg.toFixed(3)}deg applied=${after.applied.toFixed(4)} camera boom=${(after.cameraBoomAU * KM_PER_AU).toFixed(1)}km owner=${after.camOwner} applies=${after.applies}`);
+    }
+    check(orbitOwned, `${label}: no sample was taken under the user's ownership of the camera — did the drags reach the canvas?`);
+    check(cameraMoved > 1, `${label}: the drags moved the camera's own angle by only ${cameraMoved.toFixed(3)}deg — did the drags orbit the camera?`);
+    const shortenedKm = (start.cameraBoomAU - shortestCameraBoomAU) * KM_PER_AU;
+    if (expectPush) {
+      check(shortenedKm > 50, `${label}: the drag was meant to reach the body's padded shell, but the camera's boom shortened by only ${shortenedKm.toFixed(1)} km — the push never happened`);
+      console.log(`  the safety pass shortened the camera's boom by ${shortenedKm.toFixed(1)} km; the driving angle held at ${start.angularRadiusDeg.toFixed(3)}deg`);
+    } else {
+      check(shortenedKm < 1, `${label}: the mid-band drag met a shell (boom shortened ${shortenedKm.toFixed(1)} km); the pose is meant to stay clear of one`);
+    }
+    return { start, cameraMoved, shortenedKm };
+  }
+  if (PHASES.has(4)) {
+    const midRung = LADDER.find((k) => k <= 0.15) ?? LADDER[LADDER.length - 3];
+    await lookAround('mid-band', stateBody, midRung, [[220, 0], [220, 0], [0, 140], [-220, 0]], { expectPush: false });
+    // Mercury 160 km up: the ship 2,600 km from the centre, the driving angle
+    // 59.5°, and facing the body the camera would sit 2,367 km from the
+    // centre, inside the 2,508 km padded shell. Two 220 px drags at this
+    // height are ~176° of azimuth. (Earth is too large for the push to matter
+    // inside the band: the boom is 3.6 % of its radius, 9.5 % of Mercury's.)
+    const lowRung = Number(arg('push-rung', '0.1332'));
+    await lookAround('through the shell', 'Mercury', lowRung, [[220, 0], [220, 0], [0, 140], [-220, 0]], { expectPush: true });
   }
 
   // ---- 5. a dev pose after a ramped frame enters at full strength -------------

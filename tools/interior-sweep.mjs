@@ -1134,12 +1134,14 @@ async function toolsRowPickerCase(context, viewport) {
   await page.close();
 }
 
-/** The cut is locked to the body: an orbit turns the body under it and leaves its frame
- *  alone, and from behind the cut is hidden by the intact exterior; "Cut faces the camera"
- *  swings it round to the camera and off freezes it there; Reset view chooses it afresh from
- *  the entry pose, which is the frame the tool opened with. */
+/** The cut faces the camera by default: an orbit turns the body under a cut that stays at
+ *  the camera, so its frame moves with the camera and the disc centre is on a face from every
+ *  side, the back included; "Cut faces the camera" off locks it to the body — the frame
+ *  freezes where it is, an orbit leaves it alone, and from the far side the intact exterior
+ *  hides it and the ruler — and on again swings it round to the camera; Reset view returns
+ *  to the entry pose and chooses the cut afresh there, following as at entry. */
 async function bodyLockedCutCase(context, viewport) {
-  const tag = `${viewport.name}/lifecycle body-locked cut`;
+  const tag = `${viewport.name}/lifecycle cut follow and lock`;
   console.log(`\n== ${tag}`);
   const { page, errors } = await openTool(context, 'Earth');
   await ready(page);
@@ -1150,26 +1152,39 @@ async function bodyLockedCutCase(context, viewport) {
     await settle(page);
   };
   const rulerHidden = () => page.evaluate(() => document.getElementById('interior-ruler').style.display === 'none');
+  const centreSurface = async () => {
+    const centre = await discCentre(page, viewport);
+    const hit = await page.evaluate(([x, y]) => window.__moon.interiorHover(x, y), [centre.x, centre.y]);
+    return hit ? hit.surface : 'none';
+  };
   const atRest = await state(page);
-  check(atRest.cutFollow === false, `${tag}: the cut follows the camera by default`);
-  const centre = await discCentre(page, viewport);
-  const centreHit = await page.evaluate(([x, y]) => window.__moon.interiorHover(x, y), [centre.x, centre.y]);
-  check(centreHit && centreHit.surface === 'face', `${tag}: the disc centre is not on a face at rest (${JSON.stringify(centreHit)})`);
-  // An orbit of forty degrees: the body turns under the cut, and the frame does not move.
+  check(atRest.cutFollow === true, `${tag}: the cut does not follow the camera by default`);
+  check((await centreSurface()) === 'face', `${tag}: the disc centre is not on a face at rest`);
+  // An orbit of forty degrees: the cut comes with the camera, so its frame moves and the centre stays on a face.
   await orbit(12, 28);
   const orbited = await state(page);
-  check(maxDelta(axes(orbited), axes(atRest)) < 1e-9, `${tag}: an orbit moved the cut frame (by ${maxDelta(axes(orbited), axes(atRest))})`);
-  // From behind, the cut is behind the exterior: the centre of the disc is intact skin.
+  check(maxDelta(axes(orbited), axes(atRest)) > 0.1, `${tag}: an orbit did not carry the cut with the camera`);
+  check((await centreSurface()) === 'face', `${tag}: after an orbit the disc centre is not on a face`);
+  // Round the back too: a cut that faces the camera has no behind.
   await orbit(152, 16);
   const behind = await state(page);
-  check(maxDelta(axes(behind), axes(atRest)) < 1e-9, `${tag}: the orbit round the back moved the cut frame`);
-  const behindCentre = await discCentre(page, viewport);
-  const behindHit = await page.evaluate(([x, y]) => window.__moon.interiorHover(x, y), [behindCentre.x, behindCentre.y]);
-  check(behindHit && behindHit.surface === 'skin', `${tag}: from behind the disc centre is not intact skin (${JSON.stringify(behindHit)})`);
+  check(maxDelta(axes(behind), axes(orbited)) > 0.1, `${tag}: the orbit round the back did not carry the cut`);
+  check((await centreSurface()) === 'face', `${tag}: round the back the disc centre is not on a face`);
+  if (viewport.name === 'desktop') check(!(await rulerHidden()), `${tag}: the ruler is hidden with the cut facing the camera`);
+  // Locked: the cut freezes where it is, an orbit leaves it alone, and from the far side the exterior hides it.
+  check(await page.evaluate(() => window.__moon.interiorCutFollow(false)), `${tag}: interiorCutFollow(false) refused`);
+  await settle(page);
+  const locked = await state(page);
+  check(locked.cutFollow === false, `${tag}: cutFollow is not reported off`);
+  check(maxDelta(axes(locked), axes(behind)) < 1e-6, `${tag}: locking moved the cut (by ${maxDelta(axes(locked), axes(behind))})`);
+  await orbit(12, 28);
+  const lockedOrbited = await state(page);
+  check(maxDelta(axes(lockedOrbited), axes(locked)) < 1e-9, `${tag}: an orbit moved the locked cut (by ${maxDelta(axes(lockedOrbited), axes(locked))})`);
+  check((await centreSurface()) === 'skin', `${tag}: from the far side of a locked cut the disc centre is not intact skin`);
   if (viewport.name === 'desktop') check(await rulerHidden(), `${tag}: the ruler is still drawn with both faces turned away`);
-  // Following: the cut swings round to the camera and the frame is a new one. The swing
-  // runs on the tool's own ticks (CUT_SWING_S of them), and a software GPU ticks slowly,
-  // so the frame is read once it stops moving between draws rather than after a fixed wait.
+  // Following again: the cut swings round to the camera. The swing runs on the tool's own ticks
+  // (CUT_SWING_S of them), and a software GPU ticks slowly, so the frame is read once it stops
+  // moving between draws rather than after a fixed wait.
   check(await page.evaluate(() => window.__moon.interiorCutFollow(true)), `${tag}: interiorCutFollow(true) refused`);
   let following = await state(page);
   for (let draws = 0; draws < 40; draws++) {
@@ -1180,25 +1195,15 @@ async function bodyLockedCutCase(context, viewport) {
     if (draws > 0 && moved < 1e-9) break;
   }
   check(following.cutFollow === true, `${tag}: cutFollow is not reported on`);
-  check(maxDelta(axes(following), axes(atRest)) > 0.1, `${tag}: following, the cut did not swing round to the camera`);
-  const followingCentre = await discCentre(page, viewport);
-  const followingHit = await page.evaluate(([x, y]) => window.__moon.interiorHover(x, y), [followingCentre.x, followingCentre.y]);
-  check(followingHit && followingHit.surface === 'face', `${tag}: following, the disc centre is not on a face (${JSON.stringify(followingHit)})`);
+  check(maxDelta(axes(following), axes(locked)) > 0.1, `${tag}: following, the cut did not swing round to the camera`);
+  check((await centreSurface()) === 'face', `${tag}: following, the disc centre is not on a face`);
   if (viewport.name === 'desktop') check(!(await rulerHidden()), `${tag}: the ruler stayed hidden once the cut faced the camera`);
-  // Off again: frozen where it is, and the next orbit leaves it there.
-  await page.evaluate(() => window.__moon.interiorCutFollow(false));
-  await settle(page);
-  const frozen = await state(page);
-  check(maxDelta(axes(frozen), axes(following)) < 1e-6, `${tag}: turning following off moved the cut`);
-  await orbit(100, -10);
-  const frozenOrbited = await state(page);
-  check(maxDelta(axes(frozenOrbited), axes(frozen)) < 1e-9, `${tag}: an orbit moved the frozen cut`);
   // Reset view: the entry pose, and the frame the tool opened with.
   check(await page.evaluate(() => window.__moon.interiorResetView()), `${tag}: interiorResetView() refused`);
   await settle(page);
   const reset = await state(page);
   check(maxDelta(axes(reset), axes(atRest)) < 1e-6, `${tag}: Reset view did not restore the entry frame (by ${maxDelta(axes(reset), axes(atRest))})`);
-  check(reset.cutFollow === false && Math.abs(reset.openingAngleDeg - atRest.openingAngleDeg) < 0.01, `${tag}: Reset view changed the following or the opening`);
+  check(reset.cutFollow === true && Math.abs(reset.openingAngleDeg - atRest.openingAngleDeg) < 0.01, `${tag}: Reset view changed the following or the opening`);
   check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
   await page.close();
 }

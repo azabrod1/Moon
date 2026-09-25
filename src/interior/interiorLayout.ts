@@ -46,6 +46,40 @@ export interface StageRect {
 }
 
 /**
+ * The studio's lens: a long one. The cut's hinge is the camera's own up, so
+ * both its ends sit at the disc's centre depth, while the disc's edge — the
+ * tangent cone's touch, asin(R/D) — lies ahead of them, and near each end the
+ * faces' rims curve toward the eye and rise past it. At 40° the edge was 17°
+ * ahead of the ends at the fit, the rise a dozen pixels, and every cutaway
+ * read as two lobes with a crease at the top and the bottom. No lean cures
+ * that: one brought forward sends the other back. At 12° the edge is 5°
+ * ahead and the rise is a pixel and a bit (hingeEndRisePx), on a desktop
+ * stage and a phone's alike; textbook cutaways are drawn near orthographic
+ * for the same reason. The zoom is a ratio to the fit, so the range means
+ * the same on every stage.
+ */
+export const STUDIO_LENS = {
+  fovDeg: 12,
+  /** How much of the stage's shorter side the disc's diameter takes. */
+  fill: 0.9,
+  /** The camera's range as multiples of the fit distance: in to about twice the size, out to a third. */
+  minZoom: 0.48,
+  maxZoom: 2.8,
+} as const;
+
+/**
+ * How far a face's rim rises past the hinge's end on screen, in pixels, for a
+ * camera at `distance` body radii: the edge is ε = asin(R/D) ahead of the end,
+ * and a rim leaving the end at the angle α its face makes with the line of
+ * sight reaches about (1 − cos ε)·cos²α body radii past it. What the lens is
+ * chosen against.
+ */
+export function hingeEndRisePx(distance: number, projectedRadiusPx: number, faceAngleRad: number): number {
+  const epsilon = Math.asin(Math.min(1, 1 / distance));
+  return (1 - Math.cos(epsilon)) * Math.cos(faceAngleRad) ** 2 * projectedRadiusPx;
+}
+
+/**
  * Pixels the UI takes from each viewport edge, margins included: the header
  * strip at the top, the sheet at the bottom (phones), the side panel on the
  * right (desktop). 0 for none.

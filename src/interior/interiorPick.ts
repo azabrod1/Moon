@@ -136,7 +136,10 @@ export function pickInterior(
       const faceDistance = -origin.dot(basis.normal) / facing;
       if (faceDistance <= EPSILON || faceDistance >= bestDistance) continue;
       scratchPoint.copy(origin).addScaledVector(direction, faceDistance);
-      if (scratchPoint.dot(basis.radial) < 0) continue; // the other half of the disc
+      // The other half of the disc — with a tolerance, so the hinge line, where the two
+      // half-discs meet and a ray through the centre lands on a rounding hair either side
+      // of both, belongs to the faces rather than to neither.
+      if (scratchPoint.dot(basis.radial) < -EPSILON) continue;
       const hitRadius = scratchPoint.length();
       if (hitRadius > 1) continue; // past the rim: the plane runs on, the face does not
       bestDistance = faceDistance;

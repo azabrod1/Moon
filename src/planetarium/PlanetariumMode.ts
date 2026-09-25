@@ -160,7 +160,7 @@ import {
   type ReleaseCandidate,
 } from './world/gpuEnvelope';
 import {
-  AtmosphereLut, lastBakeSliceSample, takeBakeSliceSpendMs,
+  AtmosphereLut, lastBakeSliceSample, takeBakeSliceSpendMs, peekBakeSliceSpendMs,
   type AtmosphereBakeStats, type AtmosphereTables,
 } from './world/atmosphereLut';
 import { bindAtmosphereShellTables, restShellCrossfade, setAtmosphereShellGroundSegments, shellTierAlphas, stepShellCrossfade, type ShellCrossfade } from './world/atmosphereShell';
@@ -481,10 +481,18 @@ import { FRAME_RATES, type FrameRate, type FrameRateControl } from '../app/frame
 import {
   FRAME_RATE_NOTES, QUALITY_LEVEL_NOTES, graphicsSummary, offeredQualityLevels, qualityReadout,
 } from '../app/graphicsMenu';
+import {
+  fullscreenAvailable, isFullscreen, isFullscreenKey, onFullscreenChange, toggleFullscreen,
+} from '../app/fullscreen';
 import { setSegmentOffered, setSegmentValue, wireSegmented } from './ui/SegmentedControl';
 
 /** How long a context-restore re-warm may keep the late-link check muted. */
 const REWARM_MUTE_MAX_MS = 15_000;
+
+/** The fastest clock, in simulated seconds a second, under which the view
+ *  counts as still for comparing two GPU clock readings seconds apart: at a
+ *  minute a second Earth turns a quarter of a degree a second. */
+const STILL_VIEW_MAX_TIME_RATE = 60;
 
 type ScriptedTransfer = {
   elapsed: number;
@@ -8913,7 +8921,9 @@ export class PlanetariumMode {
     // only through its own on-screen buttons.
     if (this.resumePrompt.isVisible()) return;
 
-    // Escape always works — even while typing in the deck search
+    // Escape always works — even while typing in the deck search. In full
+    // screen it reaches this cascade only where app/fullscreen.ts could lock
+    // it (Chromium); Firefox and Safari spend the press on leaving full screen.
     if (e.key === 'Escape') {
       // One physical press, one rung. A held Esc auto-repeats about thirty
       // times a second while every rung below takes a beat to play out — the
@@ -9020,6 +9030,17 @@ export class PlanetariumMode {
         (document.getElementById('deck-search') as HTMLInputElement | null)?.focus();
         return;
       }
+      return;
+    }
+
+    // F goes full screen and back. It changes the window and nothing in the
+    // scene, so no mission, panel or landing holds it back; what stops it is
+    // what stops every key above — the resume prompt, the arrival veil, a
+    // focused field — and the deck, where an F is the first letter of a search.
+    if (isFullscreenKey(e) && fullscreenAvailable()) {
+      e.preventDefault();
+      // A held F repeats; one press is one change.
+      if (!e.repeat) this.flipFullscreen();
       return;
     }
 
@@ -10576,6 +10597,18 @@ export class PlanetariumMode {
       this.updateSpeedSlider();
     });
 
+    // Full screen (app/fullscreen.ts): the row is markup hidden until the
+    // browser says the page may go full screen. It reads the page rather than
+    // its own clicks, because F, a held Escape, the browser's controls and a
+    // tab switch all change it without passing through here.
+    if (fullscreenAvailable()) {
+      const fullscreenToggle = document.getElementById('settings-fullscreen-toggle');
+      fullscreenToggle?.closest<HTMLElement>('.settings-row')?.removeAttribute('hidden');
+      fullscreenToggle?.addEventListener('click', () => this.flipFullscreen());
+      onFullscreenChange(() => this.syncFullscreenRow());
+      this.syncFullscreenRow();
+    }
+
     // The ☰ panel's pages. The panel drives its own navigation (a tier row
     // opens the page it names, the back button returns); the mode is told when
     // it opens so it can re-read what it draws in there. Nothing in the panel
@@ -10885,6 +10918,19 @@ export class PlanetariumMode {
   }
 
   /**
+   * The body the ship rides ('' for none), for main.ts to name the view a GPU
+   * clock reading was taken of — or null while the view cannot be the same
+   * one from second to second: the ship under way, or the clock running
+   * faster than a minute a second. Two readings seconds apart are compared
+   * (app/resolutionController.ts) only under one name.
+   */
+  stillViewBody(): string | null {
+    if (this.player.speedAUPerS > 0) return null;
+    if (!this.timeState.paused && Math.abs(this.timeState.rate) > STILL_VIEW_MAX_TIME_RATE) return null;
+    return this.ride.dominantKey;
+  }
+
+  /**
    * Frame-sliced work done since this was last called, in milliseconds, and
    * zeroed: the texture warm pump (which is also where the sliced uploader
    * and every sector tile goes) and every atmosphere bake slice in the span.
@@ -10907,6 +10953,17 @@ export class PlanetariumMode {
     const ms = this.frameWorkMs + takeBakeSliceSpendMs();
     this.frameWorkMs = 0;
     return ms;
+  }
+
+  /**
+   * The frame-sliced work since the last take, without taking it. Read at the
+   * end of a draw by the GPU frame clock (app/gpuFrameClock.ts), which fences
+   * only a frame whose own tick did no sliced work — an upload's GPU cost
+   * would otherwise be timed as the pixels' — while the take at the next draw
+   * still charges the whole span to the interval it belongs to.
+   */
+  peekFrameWork(): number {
+    return this.frameWorkMs + peekBakeSliceSpendMs();
   }
 
   /** main.ts draws this over the world frame, after the composer has finished
@@ -19750,6 +19807,22 @@ export class PlanetariumMode {
               : 'Enable gyro steering',
       );
     }
+  }
+
+  /** The ☰ row and F. A refusal is said out loud: the row would otherwise sit
+   *  on Off with no word of why. */
+  private flipFullscreen(): void {
+    void toggleFullscreen().then((done) => {
+      if (!done) this.notification.show('The browser didn’t allow full screen');
+    });
+  }
+
+  /** Redraw the ☰ panel's Full screen row from the page itself. */
+  private syncFullscreenRow(): void {
+    const on = isFullscreen();
+    const label = document.getElementById('settings-fullscreen-label');
+    if (label) label.textContent = on ? 'On' : 'Off';
+    document.getElementById('settings-fullscreen-toggle')?.setAttribute('aria-pressed', String(on));
   }
 
   /**

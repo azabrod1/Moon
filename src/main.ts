@@ -35,14 +35,20 @@ import {
 } from './app/renderQuality';
 import {
   ResolutionController, ZERO_COUNTED_WARN_MS,
-  type Decision, type IntervalSample,
+  type Decision, type GpuObservation, type IntervalSample,
 } from './app/resolutionController';
+import { SYNC_REFUSED_REASON, createGpuFrameClock, parseGpuClockParam } from './app/gpuFrameClock';
+import { StillViewNamer } from './app/stillViewName';
 import { FrameCadence, parseRefreshParam } from './app/frameCadence';
 import {
   isScreenRate, requestedMsFor, resolveBootFrameRate, writeFrameRate,
   type FrameRate,
 } from './app/frameRateSetting';
 import { markPending, clearPending, pendingAtBoot, readQualityLevel, writeQualityLevel } from './app/qualitySetting';
+import {
+  RungMemoryMirror, clearRungMemory, readRungMemory, rungMemoryApplies, rungMemoryUrlBlock,
+  type RungMemoryConfig, type RungMemoryEntry, type RungMemoryFacts,
+} from './app/rungMemory';
 import {
   HIGH_PASS_UV_ANCHOR, allocationSceneRatio, applySubRect, parseAllocParam, patchUvScale, sceneRects,
   type SceneRects, type SubRectUniforms, type TargetSize,
@@ -53,10 +59,16 @@ import {
 import { BootRenderGate } from './app/bootRenderGate';
 import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn } from './app/perfSwitches';
 import { bloomHighPassMaterial, holdBloomSize, setBloomInternalDepth } from './app/bloomTargets';
-import { devGlintUniforms, setDevOceanRoughness } from './planetarium/world/surfaceShading';
+import {
+  devGlintUniforms,
+  setDevOceanRoughness,
+  setDevSurfaceHaze,
+  SURFACE_HAZE_CLEAR_VIEW,
+} from './planetarium/world/surfaceShading';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass, parseFusedParam } from './app/FusedOutputPass';
 import type { GpuProfiler, GpuProfileOptions } from './app/devGpuProfile';
+import type { GpuClock, GpuClockOptions } from './app/devGpuClock';
 import { ScreenCopy, canvasSampleCount, createScreenTarget, fitScreenTarget, screenTargetSamples } from './app/screenTarget';
 import { bitmapDecodePath } from './planetarium/world/textureBitmapLoader';
 import { BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
@@ -64,7 +76,7 @@ import {
   createLensPass, devSetLensPassOff, lensSubRectUniforms, makeLensUniforms, syncLensUniforms,
   updateLensPass, type LensParams, type LensUniforms,
 } from './app/LensPass';
-import { applyDesignFov, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
+import { applyDesignFov, displayFovDeg, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
 import { loadBrightStarCatalog } from './planetarium/world/starCatalogLoader';
 import { debugError, debugLog, debugWarn } from './shared/debug';
 import {
@@ -150,9 +162,13 @@ try {
 applyRenderProfile(renderer, appMode);
 renderer.toneMappingExposure = 1.0;
 document.body.appendChild(renderer.domElement);
+/** Set once the context is lost: the GPU frame clock's fences die with it. */
+let contextLost = false;
 renderer.domElement.addEventListener('webglcontextlost', (event) => {
   event.preventDefault();
+  contextLost = true;
   debugError('WebGL context lost');
+  rungMemoryContextLost();
 });
 renderer.domElement.addEventListener('webglcontextrestored', () => {
   debugLog('WebGL context restored');
@@ -491,6 +507,10 @@ function qualityReadout() {
     },
     window: {
       trimmedMeanMs: state.trimmedMeanMs,
+      // The eligible time the down window covers, and which rule has
+      // completed it — its count, or its span on a device far below the tick.
+      downSpanMs: state.downSpanMs,
+      downWindowBy: state.downWindowBy,
       countedRate: state.countedRate,
       counted: state.countedWindow,
       silentMs: state.silentMs,
@@ -501,6 +521,14 @@ function qualityReadout() {
     latch: state.latch,
     lastStep: state.lastStep,
     idle: state.idle,
+    // The GPU frame clock: the sensor (what it samples, discards and costs)
+    // and the rule's side of it (whether it steers, its windows, why a rung
+    // moved) — app/gpuFrameClock.ts, app/resolutionController.ts.
+    gpu: gpuFrameClock.state(),
+    clock: state.clock,
+    // The rung remembered from the last boot and the one this session would
+    // hand the next (app/rungMemory.ts).
+    memory: rungMemoryReadout(),
     bytes: qualityRenderTargetBytes(),
     reason: qualityBoundsLive.reason,
     // What the scene-sized targets are allocated at against what this rung
@@ -1380,6 +1408,7 @@ function applySceneResolution(why: string): void {
     sceneDraw: `${sceneRectsLive.draw.width}x${sceneRectsLive.draw.height}`,
     sceneAlloc: sceneTarget ? `${sceneTarget.width}x${sceneTarget.height}` : null,
     mb: Math.round(qualityRenderTargetBytes() / 1e5) / 10,
+    gpu: gpuClockLine(),
   });
 }
 
@@ -1417,6 +1446,402 @@ let arrivalVeilWasUp = false;
  *  well, and polling document.hasFocus() would exclude every frame of the
  *  session with no symptom but a Dynamic that never moves. */
 let pageFocused = true;
+/** Whether this tick's frame could count, as the step at its top judged it:
+ *  what the GPU frame clock arms on at the end of the draw. */
+let lastEligibleNow = false;
+/** Whether the previous draw was one the GPU clock could not sample for a
+ *  reason that is not the frame's cost. */
+let lastClockSuspended = false;
+
+// --- The GPU frame clock ----------------------------------------------------
+//
+// Where the display's tick cannot tell an 11 ms frame from a 16 ms one, the
+// controller steers a rung above Medium by a fence reading of the frame
+// instead (app/gpuFrameClock.ts). It samples only where the controller will
+// read it; a reading is handed to the NEXT step and admitted there only if the
+// interval of the frame it measured counted; and its own CPU is kept out of the
+// tick's busy figures, the part of it that ran once the next frame was due
+// reported as the interval's `sensorMs`.
+
+/** A reading that finished since the last step, for that step to pair. */
+let gpuPending: GpuObservation | null = null;
+/** The sensor's CPU since the last step, and inside the current tick. */
+let sensorSinceStep = 0;
+let sensorTickMs = 0;
+const gpuFrameClock = createGpuFrameClock({
+  gl: renderer.getContext(),
+  killed: parseGpuClockParam(location.search),
+  onSample: (sample) => {
+    gpuPending = {
+      drawSeq: sample.drawSeq,
+      generation: sample.generation,
+      sampledAtMs: sample.sampledAtMs,
+      readingMs: sample.readingMs,
+      busyMs: sample.busyMs,
+      starved: sample.starved,
+    };
+  },
+  onWork: (ms, startedAtMs) => { sensorSinceStep += sensorWorkPastDue(ms, startedAtMs); },
+  onDuty: (duty) => {
+    // Readings taken at the old duty are dropped, and a reading still out
+    // with them; the duty is what silence is judged at from now on.
+    gpuPending = null;
+    resolutionController.clearClockEvidence(performance.now(), duty);
+    debugLog('GPU clock', { duty });
+  },
+  onDisabled: (reason) => {
+    gpuPending = null;
+    // Before the controller hears of it, and only where the sensor turned
+    // itself off: a lost context is its own listener's to judge, and a
+    // controller that turned the clock off already knows why.
+    if (!contextLost && resolutionController.clockOff === null) rungMemorySensorOff(reason);
+    resolutionController.setClockOff(reason);
+    debugWarn('The GPU clock is off for this session', { reason });
+  },
+});
+// No clock at all — `?gpuclock=0`, or no WebGL2 — is the rule as it was.
+if (!gpuFrameClock.usable) resolutionController.setClockOff(gpuFrameClock.state().reason ?? 'no clock');
+
+/**
+ * The part of a stretch of the sensor's own CPU that ran after the next frame
+ * was due — the current interval's start plus the budget. Only that part can
+ * have held the next callback back: the poll loop's tasks between frames run
+ * in time the main thread had spare, each a few microseconds long, and the
+ * browser runs its rendering update between any two of them, so a task that
+ * ran before the deadline delayed nothing. Counting it would call an interval
+ * the 1 ms clock merely read as 17 or 18 "made late by the sensor" and throw
+ * away its reading, which a sampled frame with a millisecond or two of polls
+ * behind it almost always could be.
+ */
+function sensorWorkPastDue(ms: number, startedAtMs: number): number {
+  const dueMs = lastFrameAtMs + resolutionController.clockBarMs;
+  const endMs = startedAtMs + ms;
+  return endMs <= dueMs ? 0 : Math.min(ms, endMs - dueMs);
+}
+
+/**
+ * The GPU clock cannot sample this frame for a reason that is not the frame's
+ * cost: the System Map is drawn instead of the scene, or a DEV measurement
+ * (the GPU profile, the DEV clock) holds the GPU. The controller pauses the
+ * clock's rules for it as it does for a hidden page, and re-earns the rung
+ * after it; the frame's interval counts or not exactly as before.
+ */
+function clockSuspendedNow(): boolean {
+  if (import.meta.env.DEV && (gpuProfiler?.active === true || gpuClock?.active === true)) return true;
+  return appMode === 'planetarium' && (planetariumMode?.isMapOpen() ?? false);
+}
+
+/**
+ * At the end of a drawn frame: the sensor flushes while the controller would
+ * read it and fences the sampled frame. `wanted` is every condition under which
+ * a reading could steer, and is decided first: on a frame where it is false
+ * (and nothing from the bridge forces the sensor) no clock code runs at all —
+ * no peek at the frame's work, no program count, no timing of its own.
+ * `eligible` is whether this frame could count; `clean` is whether its own
+ * tick did no sliced work and linked no program.
+ */
+function gpuClockAfterDraw(nowMs: number): void {
+  sensorTickMs = 0;
+  if (!gpuFrameClock.usable) return;
+  if (contextLost) {
+    gpuFrameClock.disable('the WebGL context was lost');
+    return;
+  }
+  // The controller's view of the tick is only as good as the schedule's: a
+  // display whose 60 Hz is still an assumption may be a 120 Hz panel. Under
+  // the map or a DEV measurement no fence could be armed, so nothing is
+  // flushed either.
+  const suspended = clockSuspendedNow();
+  const wanted = appMode === 'planetarium'
+    && qualityLevel === 'dynamic'
+    && !qualityIdle
+    && !suspended
+    && frameCadence.tickMeasured
+    && resolutionController.wantsClock();
+  if (!gpuFrameClock.activeFor(wanted)) return;
+  const t0 = performance.now();
+  const eligible = lastEligibleNow && appMode === 'planetarium' && !suspended;
+  const clean = (planetariumMode?.peekFrameWork() ?? 1) === 0
+    && (renderer.info.programs?.length ?? 0) === lastProgramCount;
+  gpuFrameClock.afterDraw({
+    drawSeq,
+    callbackStartMs: nowMs,
+    wanted,
+    verifying: resolutionController.clockVerifying,
+    eligible,
+    clean,
+    barMs: resolutionController.clockBarMs,
+    generation: resolutionController.generation,
+  });
+  sensorTickMs = performance.now() - t0;
+}
+
+/**
+ * The view a frame showed, named for the GPU clock's comparisons across a rung
+ * change (app/stillViewName.ts): the body the ship rides, the camera's aim and
+ * the displayed field of view, and no name while the view cannot be still.
+ * Nothing is named on a frame where the clock could not use it — no sensor,
+ * or a controller the clock cannot steer — so no clock code runs there.
+ */
+const stillView = new StillViewNamer();
+function sceneKeyNow(): number | null {
+  if (!gpuFrameClock.usable || !resolutionController.clockCanSteer) {
+    stillView.forget();
+    return null;
+  }
+  const body = appMode === 'planetarium' ? planetariumMode?.stillViewBody() ?? null : null;
+  return stillView.name(body, camera.quaternion, displayFovDeg(camera));
+}
+
+/** The clock in a few characters for the `?debug=1` Quality line: the p90
+ *  against the bar, the trusted readings in reach and the duty, or why it is
+ *  off. */
+function gpuClockLine(): string {
+  const gpu = gpuFrameClock.state();
+  const clock = resolutionController.state().clock;
+  if (!gpuFrameClock.usable) return `off: ${gpu.reason ?? clock.off ?? 'unavailable'}`;
+  if (!clock.steering) return 'not steering';
+  const p90 = clock.p90Ms === null ? '–' : Number.isFinite(clock.p90Ms) ? clock.p90Ms.toFixed(1) : 'capped';
+  return `${p90}/${clock.barMs.toFixed(1)} n=${clock.counted} duty ${gpu.duty}`;
+}
+
+// --- The remembered rung ------------------------------------------------------
+//
+// Where only the GPU clock can take a rung above Medium, a boot is told the
+// rung the clock verified and held for a minute last time, and climbs straight
+// there once its own first readings at Medium say the room is there
+// (app/resolutionController.ts decides; app/rungMemory.ts keeps it). The entry
+// is read ONCE, at the first frame the sensor itself could be armed — the tick
+// measured, a live boot, the planetarium, Dynamic not pinned — because the
+// controller says the clock may steer from the moment it is built, before the
+// display's tick has been measured at all. A URL that changes what a pixel
+// costs, pins a ratio or fixes a level neither reads it nor writes it:
+// `?rungmemory=0` is the kill switch.
+
+/** Why this boot's URL keeps the memory out of it, or null. */
+const rungMemoryBlockedBy = rungMemoryUrlBlock(location.search);
+const rungMemory = new RungMemoryMirror();
+/** The entry was looked for, once a boot. */
+let rungMemoryLooked = false;
+/** The entry this boot was told, while it may still be climbed to. */
+let rungMemoryArmed: RungMemoryEntry | null = null;
+/** The entry this boot was told, for as long as its rung may still be on
+ *  trial: a resize is checked against it then too. */
+let rungMemoryTold: RungMemoryEntry | null = null;
+/** Why this boot was told nothing, or null. */
+let rungMemoryRefused: string | null = null;
+/** This boot climbed to the rung it was told. */
+let rungMemoryClimbed = false;
+let rungMemoryRendererName: string | null = null;
+
+/** The GPU as the entry names it: the unmasked renderer where the browser
+ *  gives it, else the context's own word. */
+function rungMemoryRenderer(): string {
+  if (rungMemoryRendererName !== null) return rungMemoryRendererName;
+  let name = deviceSignals.renderer;
+  if (name === null) {
+    try {
+      const gl = renderer.getContext();
+      const value = gl.getParameter(gl.RENDERER);
+      name = typeof value === 'string' ? value : '';
+    } catch {
+      name = '';
+    }
+  }
+  rungMemoryRendererName = name;
+  return name;
+}
+
+/** The device as an entry describes it: read only when one is checked or
+ *  written. */
+function rungMemoryConfig(): RungMemoryConfig {
+  const outputRatio = getTargetPixelRatio();
+  return {
+    tick: frameCadence.state().idleCadenceMs,
+    outputRatio,
+    pixels: window.innerWidth * window.innerHeight * outputRatio * outputRatio,
+    renderer: rungMemoryRenderer(),
+  };
+}
+
+function rungMemoryFacts(): RungMemoryFacts {
+  return {
+    ...rungMemoryConfig(),
+    nowMs: Date.now(),
+    ladder: qualityLadderLive.rungs,
+    mediumIndex: qualityLadderLive.mediumIndex,
+  };
+}
+
+/** Once a drawn frame: the one read, then the mirror, which does nothing unless
+ *  the controller's memory moved. */
+function rungMemoryStep(): void {
+  if (rungMemoryBlockedBy !== null) return;
+  if (!rungMemoryLooked) rungMemoryLook();
+  if (rungMemoryArmed !== null && resolutionController.seedOutcome === 'abandoned') {
+    // Used up by another change of rung, or by a new budget or ladder.
+    debugLog('Rung memory', { unused: rungMemoryArmed.ratio });
+    rungMemoryArmed = null;
+  }
+  const done = rungMemory.sync(resolutionController, rungMemoryConfig, Date.now());
+  if (done === null) return;
+  if (done === 'dropped') {
+    rungMemoryArmed = null;
+    debugLog('Rung memory', { dropped: 'the remembered rung failed before it had held a minute' });
+  } else if (done === 'passed') {
+    debugLog('Rung memory', { passed: 'the remembered rung held a minute' });
+  } else {
+    debugLog('Rung memory', { written: done.wrote });
+  }
+}
+
+/** The first frame the sensor could be armed: read the entry and tell the
+ *  controller, or say why not — deleting an entry that is wrong for every
+ *  boot and keeping one that is wrong only for this configuration. */
+function rungMemoryLook(): void {
+  if (!gpuFrameClock.usable || appMode !== 'planetarium' || qualityLevel !== 'dynamic' || qualityIdle) return;
+  if (bootRender.current !== 'live' || !frameCadence.tickMeasured || !resolutionController.clockCanSteer) return;
+  rungMemoryLooked = true;
+  const read = readRungMemory();
+  if (read.malformed) {
+    clearRungMemory();
+    rungMemoryRefused = 'unreadable';
+    debugLog('Rung memory', { refused: 'unreadable', deleted: true });
+    return;
+  }
+  const entry = read.entry;
+  if (entry === null) {
+    rungMemoryRefused = 'nothing saved';
+    return;
+  }
+  const verdict = rungMemoryApplies(entry, rungMemoryFacts());
+  if (!verdict.ok) {
+    if (verdict.discard) clearRungMemory();
+    rungMemoryRefused = verdict.why;
+    debugLog('Rung memory', { refused: verdict.why, ratio: entry.ratio, deleted: verdict.discard });
+    return;
+  }
+  const why = resolutionController.remember(entry.ratio);
+  if (why !== null) {
+    rungMemoryRefused = why;
+    debugLog('Rung memory', { refused: why, ratio: entry.ratio, deleted: false });
+    return;
+  }
+  rungMemoryArmed = entry;
+  rungMemoryTold = entry;
+  debugLog('Rung memory', { applied: entry.ratio, savedAgoH: Math.round((Date.now() - entry.at) / 36e5) });
+}
+
+/** The climb to the remembered rung is being applied: it goes on trial first,
+ *  so a boot that dies at that rung leaves the next one a reason to refuse it. */
+function rungMemorySeedApplied(): void {
+  if (rungMemoryArmed === null) return;
+  rungMemoryClimbed = true;
+  const marked = rungMemory.markTrial(rungMemoryArmed);
+  debugLog('Rung memory', { climbed: rungMemoryArmed.ratio, trial: marked ? 'marked' : 'could not be saved' });
+  rungMemoryArmed = null;
+}
+
+/** A resize before the remembered rung was used or while it is on trial: a
+ *  canvas that grew past what the entry was held at, or any other change of
+ *  configuration, cancels it or ends its trial for this boot, and keeps the
+ *  entry. */
+function rungMemoryRecheck(): void {
+  const told = rungMemoryTold;
+  const outcome = resolutionController.seedOutcome;
+  if (told === null || (outcome !== 'armed' && outcome !== 'applied')) return;
+  const verdict = rungMemoryApplies(told, rungMemoryFacts());
+  if (verdict.ok) return;
+  // Before the climb, it is cancelled; on trial, the trial ends with no
+  // verdict, so a failure at the larger canvas cannot delete an entry held at
+  // the smaller one.
+  resolutionController.forgetRemembered();
+  rungMemoryRefused = `after a resize: ${verdict.why}`;
+  debugLog('Rung memory', { [outcome === 'armed' ? 'refused' : 'trialEnded']: rungMemoryRefused, ratio: told.ratio, deleted: false });
+  rungMemoryArmed = null;
+  rungMemoryTold = null;
+}
+
+/** The WebGL context was lost (the listener where the renderer is made). */
+function rungMemoryContextLost(): void {
+  rungMemoryLostAtRung('the WebGL context was lost');
+}
+
+/** The GPU clock turned itself off for a reason of its own rather than the
+ *  controller's verdict. A sync object refused is the context's loss reaching
+ *  the sensor first, and is judged as one; its price, or its clock's grid, is
+ *  judged only while the remembered climb is still on trial. */
+function rungMemorySensorOff(reason: string): void {
+  if (reason === SYNC_REFUSED_REASON) {
+    rungMemoryLostAtRung('the context refused the GPU clock a sync object');
+  } else {
+    rungMemoryLostAtRung(`the GPU clock turned itself off (${reason})`, true);
+  }
+}
+
+function rungMemoryLostAtRung(what: string, onlyOnTrial = false): void {
+  if (rungMemoryBlockedBy !== null) return;
+  const visible = document.visibilityState === 'visible';
+  const done = onlyOnTrial ? rungMemory.sensorOff(resolutionController, visible) : rungMemory.lostAtRung(visible);
+  if (done === 'deleted') {
+    debugLog('Rung memory', { deleted: `${what} with the remembered rung on trial and the page visible` });
+  } else if (done === 'kept') {
+    debugLog('Rung memory', { kept: `${what} while the page was hidden` });
+  }
+}
+
+/** The DEV bridge fed the controller synthetic intervals or readings: what it
+ *  decides from them is about that stream's clock, not this device, so the
+ *  store is left alone for the rest of the session. */
+function rungMemoryStopForInjection(): void {
+  if (rungMemory.isStopped) return;
+  rungMemory.stop();
+  debugLog('Rung memory', { stopped: 'synthetic samples were injected; nothing is saved this session' });
+}
+
+/** Forget the stored rung: `__moon.forgetRung()`. */
+function rungMemoryForget(): void {
+  resolutionController.forgetRemembered();
+  rungMemory.forget(resolutionController);
+  rungMemoryArmed = null;
+  rungMemoryTold = null;
+}
+
+/** `__moon.quality().memory`. */
+function rungMemoryReadout() {
+  const state = resolutionController.state().memory;
+  return {
+    stored: readRungMemory().entry,
+    // Told a rung and still waiting to climb to it, or climbed to it.
+    applied: rungMemoryClimbed || state.seed === 'armed',
+    refused: rungMemoryBlockedBy ?? rungMemoryRefused,
+    // What the next boot will be told, as this session has it.
+    remembering: resolutionController.memory,
+    seed: state.seed,
+    rememberedRatio: state.rememberedRatio,
+    onTrial: rungMemory.onTrial,
+    // Nothing is saved for the rest of the session: an injection, or a lost
+    // context.
+    stopped: rungMemory.isStopped,
+  };
+}
+
+// A clean unload is not a crash: the trial flag goes, and nothing else. A
+// hidden page counts as one, because iOS Safari evicts a background tab with
+// no pagehide; shown again with the trial standing — a tab brought back, or a
+// page restored from the back-forward cache — the flag is marked again. A hung
+// page dispatches neither, so the flag it leaves is still there.
+if (rungMemoryBlockedBy === null) {
+  window.addEventListener('pagehide', () => rungMemory.hide(resolutionController, rungMemoryConfig, Date.now()));
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      rungMemory.hide(resolutionController, rungMemoryConfig, Date.now());
+    } else if (rungMemory.shown(resolutionController)) {
+      debugLog('Rung memory', { trial: 'marked again: the page is shown with the remembered rung on trial' });
+    }
+  });
+}
+
 /** The silence check runs on a countdown of DRAWS rather than every frame: at
  *  a 30 fps target that is every ten seconds. */
 let qualitySilenceCountdown = 0;
@@ -1463,13 +1888,30 @@ function stepQuality(nowMs: number): void {
   const veilUp = planetariumMode?.isArrivalVeilUp() ?? false;
   if (arrivalVeilWasUp && !veilUp) resolutionController.notify('arrival', nowMs);
   arrivalVeilWasUp = veilUp;
+  // A mode switch's own veil is a cover like the arrival's: the frames under
+  // it are the switch's — the planetarium restoring itself, or a tool being
+  // taken down — and would otherwise count on top of the evidence from before
+  // the tool until the switch's reset below drops it.
   const eligibleNow = appMode === 'planetarium'
     && document.visibilityState === 'visible'
     && pageFocused
     && bootRender.current === 'live'
-    && !veilUp;
+    && !veilUp
+    && !modeSwitchInFlight;
   const eligible = eligibleNow && lastFrameEligible;
   lastFrameEligible = eligibleNow;
+  lastEligibleNow = eligibleNow;
+  // The interval belongs to the previous draw, whose number `drawSeq` still
+  // is; a GPU reading that finished since the last step rides along to be
+  // paired with its own draw's verdict.
+  const gpu = gpuPending;
+  gpuPending = null;
+  const sensorMs = sensorSinceStep;
+  sensorSinceStep = 0;
+  // Either end of the interval under the map or a DEV measurement.
+  const suspendedNow = clockSuspendedNow();
+  const clockSuspended = suspendedNow || lastClockSuspended;
+  lastClockSuspended = suspendedNow;
   const decision = resolutionController.step({
     nowMs,
     intervalMs: nowMs - previousFrameAtMs,
@@ -1477,8 +1919,18 @@ function stepQuality(nowMs: number): void {
     mainThreadSumMs,
     workedMs,
     eligible,
+    drawSeq,
+    gpu,
+    sensorMs,
+    clockSuspended,
+    sceneKey: sceneKeyNow(),
   });
   if (decision !== null) applyQualityDecision(decision, nowMs);
+  rungMemoryStep();
+  // The controller turned the clock off itself (a repeated reversal): the
+  // sensor stops for the session with it.
+  const off = resolutionController.clockOff;
+  if (off !== null && gpuFrameClock.usable) gpuFrameClock.disable(off);
   if (--qualitySilenceCountdown <= 0) {
     qualitySilenceCountdown = QUALITY_SILENCE_CHECK_FRAMES;
     reportQualitySilence();
@@ -1490,7 +1942,9 @@ function stepQuality(nowMs: number): void {
 function applyQualityDecision(decision: Decision, nowMs: number): void {
   const kind = decision.reason === 'up' ? 'up' : decision.reason === 'down' ? 'down' : 'restore';
   resolutionController.onApplied(nowMs, kind);
-  applySceneResolution(`dynamic ${decision.reason}`);
+  // On trial before the sharper rung is drawn.
+  if (decision.seeded === true) rungMemorySeedApplied();
+  applySceneResolution(decision.seeded === true ? 'dynamic up (remembered)' : `dynamic ${decision.reason}`);
 }
 
 /** A counted rate stuck at zero is a defect — a gate that never opened —
@@ -1590,6 +2044,12 @@ let frameProbe: { start(): void; end(): void } | null = null;
 // The GPU profile (app/devGpuProfile.ts) brackets the world draw with its
 // spans while a run is on; loaded by the first `__moon.gpuProfile()` call.
 let gpuProfiler: GpuProfiler | null = null;
+// The GPU-clock measurement (app/devGpuClock.ts): can this engine time its
+// own frame finely enough to steer by? It fences, reads back or times the
+// same draws the profile brackets; loaded by the first `__moon.gpuClock()`
+// call. Deliberately NOT a frame-cap hold — whether its poll loop costs the
+// app frames is one of the things it measures.
+let gpuClock: GpuClock | null = null;
 
 /**
  * Pin the render resolution and re-run the app's own resize path, so the
@@ -1709,6 +2169,14 @@ function drawWorldFrame() {
   } else if (import.meta.env.DEV && gpuProfiler?.active) {
     // The same two draws as below, measured.
     gpuProfiler.frame(
+      () => renderScene(camera),
+      () => { if (appMode === 'planetarium') planetariumMode?.renderMiniChartFrame(); },
+    );
+  } else if (import.meta.env.DEV && gpuClock?.active) {
+    // The same two draws again, with a fence, a readback or a GPU timer
+    // closed around them — the frame's end is where a production clock would
+    // have to take its reading.
+    gpuClock.frame(
       () => renderScene(camera),
       () => { if (appMode === 'planetarium') planetariumMode?.renderMiniChartFrame(); },
     );
@@ -2406,8 +2874,11 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
     modeSwitchInFlight = false;
     // A tool owns the scene and its own composer, and the frames either side
     // of the switch are the switch's: the resolution measurement starts again
-    // from whichever mode this left the app in.
-    resolutionController.notify('resize', performance.now());
+    // from whichever mode this left the app in. Every switch passes through
+    // here once — each tool's exit is a switch to the planetarium, and a
+    // failed one's fallback is a switch of its own — so this is the one
+    // reset per switch, into a tool or back out of it.
+    resolutionController.notify('mode', performance.now());
   }
   // A failure after the current mode was taken down would leave a mode with
   // no UI and no exit; the planetarium is the one mode that always comes back.
@@ -2442,6 +2913,10 @@ function getAutoMode(): 'planetarium' | 'volumeCompare' | 'interior' {
 // Dev-only bridge for the headless screenshot harness: pose the camera and set
 // the clock from out of process. The call site is guarded by a DEV check, so a
 // production build dead-code-eliminates this entirely.
+/** Draw numbers for the DEV bridge's synthetic GPU readings: counting down
+ *  from -1, so they can never be mistaken for a real draw's. */
+let devInjectSeq = -1;
+
 function installDevHooks() {
   installSurfacePerfInputTracing();
   (window as any).__moon = {
@@ -2640,12 +3115,68 @@ function installDevHooks() {
      * the plumbing — a rung moving and the targets re-sizing — without faking
      * load, which no pin can do (a pin holds the rule idle by design).
      */
-    quality: (opts?: { inject?: IntervalSample[] } | null) => {
+    quality: (opts?: {
+      inject?: IntervalSample[];
+      injectGpu?: { readingMs: number; busyMs?: number; starved?: boolean; intervalMs?: number }[];
+    } | null) => {
+      if ((opts?.inject?.length ?? 0) + (opts?.injectGpu?.length ?? 0) > 0) rungMemoryStopForInjection();
       for (const sample of opts?.inject ?? []) {
         const decision = resolutionController.step(sample);
         if (decision !== null) applyQualityDecision(decision, sample.nowMs);
       }
+      // A GPU reading paired with a synthetic frame of its own, the way the
+      // sensor's are: the frame counts, and its reading is admitted with it.
+      // Call once a frame from a page's own rAF, with the sensor muted
+      // (`gpuFrameClock({ mute: true })`) so its real readings stay out.
+      for (const r of opts?.injectGpu ?? []) {
+        const nowMs = performance.now();
+        const intervalMs = r.intervalMs ?? resolutionController.clockBarMs;
+        const seq = devInjectSeq--;
+        const decision = resolutionController.step({
+          nowMs,
+          intervalMs,
+          mainThreadMs: 1,
+          workedMs: 0,
+          eligible: true,
+          drawSeq: seq,
+          gpu: {
+            drawSeq: seq,
+            generation: resolutionController.generation,
+            sampledAtMs: nowMs - intervalMs,
+            readingMs: r.readingMs,
+            busyMs: r.busyMs ?? 2,
+            starved: r.starved ?? false,
+          },
+        });
+        if (decision !== null) applyQualityDecision(decision, nowMs);
+      }
       return qualityReadout();
+    },
+    /**
+     * The GPU frame clock, live (app/gpuFrameClock.ts): `on` turns it off or
+     * back on for the controller too; `force` samples regardless of what the
+     * controller wants (the pixel gate's arm, under a capture pin); `mute`
+     * stops the sampling without telling the controller (the inject arm);
+     * `flushEvery` false flushes only the fenced frames (the flush A/B);
+     * `duty` pins one (the on/off smoothness arm); `record` keeps up to that
+     * many raw samples for `gpuFrameSamples()`. Returns the sensor's state.
+     */
+    gpuFrameClock: (opts?: { on?: boolean; force?: boolean; mute?: boolean; flushEvery?: boolean; duty?: number; record?: number }) => {
+      if (opts) {
+        gpuFrameClock.devSet(opts);
+        if (opts.on === false) resolutionController.setClockOff('turned off from the bridge');
+        if (opts.on === true && gpuFrameClock.usable) resolutionController.setClockOff(null);
+      }
+      return gpuFrameClock.state();
+    },
+    /** The samples the GPU frame clock kept since `gpuFrameClock({ record: n })`, taken. */
+    gpuFrameSamples: () => gpuFrameClock.devTakeSamples(),
+    /** Forget the rung Dynamic remembers from the last boot: the stored entry
+     *  goes, a remembered rung not yet climbed to is cancelled, and nothing is
+     *  written again until the clock holds a rung for a minute. */
+    forgetRung: () => {
+      rungMemoryForget();
+      return rungMemoryReadout();
     },
     /** Pick a level, exactly as the menu row does: saved, applied, reported. */
     setQuality: (level: QualityLevel) => {
@@ -2683,6 +3214,15 @@ function installDevHooks() {
       const roughness = setDevOceanRoughness(opts?.roughness);
       return { cap: devGlintUniforms.uGlintCap.value, keep: devGlintUniforms.uGlintKeep.value, roughness };
     },
+    // The grade on a surface's haze, live: how much of the air's haze a direct
+    // view shows (world/surfaceShading SURFACE_HAZE_CLEAR_VIEW; 1 is the
+    // physics, and the horizon carries the whole column whatever the number),
+    // on every body with tables from the next frame. Returns the override in
+    // force beside the authored numbers; a production build has no knob.
+    haze: (opts?: { clear?: number | null }) => ({
+      clear: setDevSurfaceHaze(opts?.clear),
+      authored: SURFACE_HAZE_CLEAR_VIEW,
+    }),
     /** A GPU profile of the world frame measured on this device, per pass and per object (app/devGpuProfile.ts). */
     gpuProfile: async (opts?: GpuProfileOptions) => {
       if (!gpuProfiler) {
@@ -2708,6 +3248,25 @@ function installDevHooks() {
       }
       const result = await gpuProfiler.run(opts);
       (window as any).__moon.gpuProfileResult = result;
+      return result;
+    },
+    /**
+     * Can this engine time its own frame's GPU cost finely enough for the
+     * resolution rule to steer by (app/devGpuClock.ts)? Cycles a fence poll,
+     * the profiler's readback and a GPU timer over the same frames at each
+     * output ratio it is given, and answers with the frames themselves.
+     */
+    gpuClock: async (opts?: GpuClockOptions) => {
+      if (!gpuClock) {
+        const { createGpuClock } = await import('./app/devGpuClock');
+        gpuClock = createGpuClock({
+          gl: renderer.getContext(),
+          pinRatio: devPinPixelRatio,
+          targets: () => devRenderTargets(),
+        });
+      }
+      const result = await gpuClock.run(opts);
+      (window as any).__moon.gpuClockResult = result;
       return result;
     },
     ladder: () => planetariumMode?.devLadderStats() ?? null,
@@ -3019,6 +3578,12 @@ function installDevHooks() {
       if (Number.isFinite(keep)) devGlintUniforms.uGlintKeep.value = keep;
       if (Number.isFinite(cap)) devGlintUniforms.uGlintCap.value = cap;
     }
+    // `?haze=0.35` shows that much of the air's haze in every direct view of a
+    // surface for the session: the __moon.haze knob, reachable from a phone's
+    // address bar, so two strengths are two links to compare. DEV only.
+    // An empty value is a mistyped link, not a request for zero.
+    const haze = new URLSearchParams(location.search).get('haze');
+    if (haze && Number.isFinite(Number(haze))) setDevSurfaceHaze(Number(haze));
   }
   debugLog('Dev hooks installed (window.__moon)');
 }
@@ -3141,10 +3706,13 @@ async function init() {
     if (exposurePin !== null) exposureCurrent = exposurePin;
     renderer.toneMappingExposure = exposureCurrent;
     let drew = false;
+    sensorTickMs = 0;
     if (willDraw && bootRender.shouldRender()) {
       drawWorldFrame();
       drawSeq++;
       drew = true;
+      // After the corner chart: the fence has to close every draw of the frame.
+      gpuClockAfterDraw(now);
       // Every draw resets the count, forced or due, so a cover, a veil or a
       // capture pin can never leave a schedule running ahead of the clock.
       frameCadence.drew(rafTimestamp);
@@ -3158,7 +3726,9 @@ async function init() {
     // hands the resolution controller as the span's main-thread time. A late
     // interval whose app ticks were small is a late frame the app cannot
     // explain by itself, which is the only case fewer pixels would fix.
-    loopBusyMs = performance.now() - now;
+    // The GPU clock's fence and flush are the sensor's, not the app's: they
+    // reach the controller as the interval's sensorMs instead.
+    loopBusyMs = performance.now() - now - sensorTickMs;
     if (loopBusyMs > busyMaxSinceDraw) busyMaxSinceDraw = loopBusyMs;
     busySumSinceDraw += loopBusyMs;
     if (import.meta.env.DEV && drew) recordDraw(rafTimestamp, now, loopBusyMs);
@@ -3280,6 +3850,7 @@ function syncViewport() {
   planetariumMode?.onResize();
   // The frames around a resize are the browser's, not the scene's.
   resolutionController.notify('resize', performance.now());
+  rungMemoryRecheck();
   debugLog('Resize', {
     width: w, height: h, pixelRatio: renderer.getPixelRatio(),
     sceneSamples: sceneTarget?.samples ?? 0, sceneRatio: getScenePixelRatio(),

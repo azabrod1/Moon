@@ -340,6 +340,12 @@ export function takeBakeSliceSpendMs(): number {
   return spent;
 }
 
+/** The same figure without taking it: whether a bake slice has run since the
+ *  last take, for a reader that must not move the accounting. */
+export function peekBakeSliceSpendMs(): number {
+  return bakeSliceSpendMs;
+}
+
 /**
  * What one layer draw of each pass costs in ms: the measured figure where a
  * timer query returned one, and the pass's weight priced in ms where it did
@@ -819,6 +825,20 @@ AerialSegment aerialForLight(AerialSegment seg, vec3 lightDir) {
   seg.muS = clampCosine(dot(seg.origin, lightDir) / seg.r);
   seg.nu = clampCosine(dot(seg.view, lightDir));
   return seg;
+}
+
+// How much of the segment's haze a surface shows: clearViewStrength where
+// the line of sight stands on the ground, one where it grazes it, so the
+// horizon always carries the whole column and meets the limb the shell draws.
+// A presentation grade on the surface alone (SURFACE_HAZE_CLEAR_VIEW in
+// world/surfaceShading); the shell never reads it. The angle is taken against
+// the radial normal at the segment's END, never a relief-perturbed material
+// normal: the ground, the deck above it and the additive lights on it must
+// agree about one column, and only the geometry is common to all three.
+float aerialHazeWeight(AerialSegment seg, float clearViewStrength) {
+  vec3 up = normalize(seg.origin + seg.view * seg.d);
+  float grazing = 1.0 - clamp(dot(up, -seg.view), 0.0, 1.0);
+  return mix(clearViewStrength, 1.0, grazing * grazing);
 }
 
 /** What survives the segment: the fraction of the surface's own light that

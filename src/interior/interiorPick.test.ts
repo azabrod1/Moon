@@ -29,6 +29,21 @@ describe('regionIndexAtRadius', () => {
 });
 
 describe('pickInterior', () => {
+  it('gives the hinge line to the faces: a ray straight through the centre at Cutaway lands on a face at radius 0', () => {
+    // Both half-discs end on the hinge, and a ray down the view axis meets it at the centre — on a
+    // rounding hair either side of both radials. Rejected by both, the hover at the disc centre
+    // showed nothing; the sweep's centre check found it once the camera sat eleven radii out.
+    const frame = computeCutFrame(new THREE.Vector3(3.3, 1.2, 10.5), new THREE.Vector3(0, 1, 0), new THREE.Vector3(), QUARTER_TURN, createCutFrame());
+    yawCutFrame(frame, THREE.MathUtils.degToRad(20));
+    const origin = new THREE.Vector3(3.3, 1.2, 10.5);
+    const direction = origin.clone().negate().normalize();
+    const hit = pickInterior(origin, direction, { frame, outerDisplay: THREE_REGIONS })!;
+    expect(hit).not.toBeNull();
+    expect(hit.surface).toBe('face');
+    expect(hit.radiusDisplay).toBeLessThan(1e-6);
+    expect(hit.regionIndex).toBe(0);
+  });
+
   it('misses a ray that passes the body', () => {
     const ray = rayDown(2);
     expect(pickInterior(ray.origin, ray.direction, layoutFor(HALF_TURN, THREE_REGIONS))).toBeNull();

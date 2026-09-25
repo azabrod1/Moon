@@ -315,6 +315,17 @@ describe('RideFrame', () => {
     frame(ride, ship, { ...ship }, DT, []);
     expect(ride.weightOf('Earth')).toBe(0);
     expect(ride.carriersSnapshot()).toEqual([]);
+    expect(ride.dominantKey).toBe('');
+  });
+
+  it('names the body the ship rides: the dominant carrier with any weight', () => {
+    const ride = new RideFrame();
+    const ship = { x: 1, y: 0, z: 0 };
+    const earth = { x: 1, y: 0, z: km(-10_000) };
+    const bodies = () => [{ key: 'Earth', kind: 'planet' as const, pos: earth, band: always, radius: km(6371) }];
+    expect(ride.dominantKey).toBe('');
+    frame(ride, ship, { ...ship }, DT, bodies());
+    expect(ride.dominantKey).toBe('Earth');
   });
 
   it('disabled (?ride=0) holds every weight at zero while the anchors keep tracking', () => {

@@ -152,6 +152,20 @@ describe('the root page', () => {
     expect(rootPage.indexOf('id="menu-build"'))
       .toBeGreaterThan(rootPage.lastIndexOf('class="settings-row"'));
   });
+
+  it('offers Full screen only once the browser has said it can work', () => {
+    // The row is un-hidden by the mode where document.fullscreenEnabled is
+    // true (app/fullscreen.ts). Shown from the markup, or with its hidden
+    // attribute beaten by the row's own display, it would be a control that
+    // does nothing on a device that cannot go full screen — which only that
+    // device would ever show.
+    const toggle = rootPage.indexOf('id="settings-fullscreen-toggle"');
+    const rowTag = rootPage.slice(rootPage.lastIndexOf('<div class="settings-row"', toggle), toggle);
+    expect(rowTag).toMatch(/^<div class="settings-row" hidden>/);
+    const rule = html.match(/\.settings-row\[hidden\] \{[^}]*\}/)?.[0] ?? '';
+    expect(rule).toContain('display: none');
+    expect(mode).toContain("closest<HTMLElement>('.settings-row')?.removeAttribute('hidden')");
+  });
 });
 
 describe('the ids the TypeScript reaches by name', () => {
@@ -207,10 +221,10 @@ describe('the panel\'s own rules', () => {
   });
 
   it('scrolls, so the last row is reachable on a small phone', () => {
-    // Eleven settings rows put the panel's bottom around 578 px by the CSS
-    // arithmetic, and the page itself cannot scroll (html, body are
-    // overflow: hidden), so without this the last row is simply unreachable
-    // at 320x568.
+    // The settings rows put the panel's bottom at 642 px in a 320x568 window
+    // (measured; 609 px where Full screen is not offered), and the page itself
+    // cannot scroll (html, body are overflow: hidden), so without this the
+    // last row is simply unreachable at 320x568.
     const panelCss = html.match(/#planetarium-menu-panel \{[\s\S]*?\n {4}\}/)?.[0] ?? '';
     expect(panelCss).toContain('overflow-y: auto');
     expect(panelCss).toContain('overscroll-behavior: contain');

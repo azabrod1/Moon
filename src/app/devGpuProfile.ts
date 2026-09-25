@@ -16,9 +16,12 @@
  *    queued before it. `gl.finish()` is NOT that wait: Chromium implements
  *    it as a flush, and WebKit sends it to its GPU process without waiting
  *    for a reply (measured: finish returned in the CPU's submit time, and
- *    the frame's whole GPU wait landed on the next readback). A fence cannot
- *    be polled either: WebGL forbids a sync object from signalling inside
- *    the task that created it. The wait itself costs a span floor — a pass
+ *    the frame's whole GPU wait landed on the next readback). A fence is no
+ *    use to a span either: both engines refresh a sync object's cached
+ *    status at most once per event-loop task, so a fence cannot signal
+ *    inside the task that created it and a per-pass span has nowhere to
+ *    wait (devGpuClock.ts is the measurement of what a fence polled from
+ *    LATER tasks can time). The wait itself costs a span floor — a pass
  *    that draws nothing reads it (0.3 ms on a Mac, 0.5 ms on an iPhone).
  *  - `EXT_disjoint_timer_query_webgl2` (Chromium, on request): GPU
  *    timestamps around each span. On Metal it is command-buffer granular
@@ -112,11 +115,24 @@ interface Clock {
   dispose: () => void;
 }
 
-function makeClock(gl: GpuProfileDeps['gl'], want: 'readback' | 'timer-query'): Clock {
-  const gl2 = gl as WebGL2RenderingContext;
-  // The private 1×1 target the readback wait reads from. Bound only inside
-  // sync(), with the scissor and colour mask lifted for the clear and put
-  // back — three's state cache never sees a change.
+/**
+ * The readback wait: a clear and a one-pixel `readPixels` from a private 1×1
+ * texture-backed framebuffer, which returns only once every command queued
+ * before it has completed. The target is bound only inside the wait, with the
+ * scissor and colour mask lifted for the clear and put back, so three's state
+ * cache never sees a change.
+ *
+ * The framebuffer is private and texture-backed on purpose: reading the
+ * canvas framebuffer on iOS goes through an IOSurface lock and a row-by-row
+ * copy that costs about 6 ms of CPU whatever the GPU is doing, which would be
+ * the reading rather than the frame.
+ *
+ * Shared with devGpuClock.ts so the two measurements wait in exactly the
+ * same way.
+ */
+export function createReadbackWait(
+  gl: WebGL2RenderingContext | WebGLRenderingContext,
+): { wait: () => void; dispose: () => void } {
   const fbo = gl.createFramebuffer();
   const tex = gl.createTexture();
   const prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
@@ -128,7 +144,7 @@ function makeClock(gl: GpuProfileDeps['gl'], want: 'readback' | 'timer-query'): 
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
   gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo0);
   const px = new Uint8Array(4);
-  const sync = () => {
+  const wait = () => {
     const prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
     const scissor = gl.isEnabled(gl.SCISSOR_TEST);
     const mask = gl.getParameter(gl.COLOR_WRITEMASK) as boolean[];
@@ -143,6 +159,12 @@ function makeClock(gl: GpuProfileDeps['gl'], want: 'readback' | 'timer-query'): 
     gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);
   };
   const dispose = () => { gl.deleteFramebuffer(fbo); gl.deleteTexture(tex); };
+  return { wait, dispose };
+}
+
+function makeClock(gl: GpuProfileDeps['gl'], want: 'readback' | 'timer-query'): Clock {
+  const gl2 = gl as WebGL2RenderingContext;
+  const { wait: sync, dispose } = createReadbackWait(gl);
   const ext = want === 'timer-query' && typeof gl2.createQuery === 'function'
     ? gl.getExtension('EXT_disjoint_timer_query_webgl2') as { TIME_ELAPSED_EXT: number; GPU_DISJOINT_EXT: number } | null
     : null;

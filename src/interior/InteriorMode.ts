@@ -84,6 +84,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { DEG2RAD } from '../shared/math/angles';
 import { isPhoneViewport } from '../shared/dom';
 import { debugLog, debugWarn } from '../shared/debug';
+import { handleFullscreenKey } from '../app/fullscreen';
 import { bodyDisplayName } from '../planetarium/surfaceView';
 import { InteriorScene, BODY_RADIUS, type PreparedSkin } from './InteriorScene';
 import { TAP_MAX_MS, TAP_MAX_PX, TapRecognizer, type PointerSample } from './interiorInteraction';
@@ -122,6 +123,7 @@ import {
   EMPHASIS_S,
   advanceCutTween,
   advanceEmphasis,
+  bandKeyShown,
   createCutTween,
   createEmphasisState,
   cutTweenSettled,
@@ -146,7 +148,7 @@ import {
   tooThinToSeeIndices,
   type ReadableRemap,
 } from './interiorGeometry';
-import { fitDistance, framingDistance, stageViewOffset, visibleStageRect, type StageRect } from './interiorLayout';
+import { STUDIO_LENS, fitDistance, framingDistance, stageViewOffset, visibleStageRect, type StageRect } from './interiorLayout';
 import { createPickHit, pickInterior, type PickHit, type PickLayout, type PickSurface } from './interiorPick';
 import { familyPhaseText, renderPage, type InteriorPanelPage } from './ui/InteriorPages';
 import { HoverCard, domHoverCardSurface, hoverCardKey, hoverDepthText } from './ui/hoverCard';
@@ -173,15 +175,13 @@ import { coverageTags } from './ui/coverageTag';
 import { PHASE_LABEL, incandescence, selfLitSwatchHex, swatchHex } from './data/artParams';
 
 const FRAMING = {
-  fovDeg: 40,
+  /** The lens and the fill are the studio's (interiorLayout.STUDIO_LENS: a long lens, so the hinge's ends sit on the disc's edge). */
+  fovDeg: STUDIO_LENS.fovDeg,
+  fill: STUDIO_LENS.fill,
   /** Start orbit: a gentle elevation and an azimuth a little off the key. */
   elevationDeg: 16,
   azimuthDeg: -28,
-  minDistance: 1.55,
-  maxDistance: 9,
   dampingFactor: 0.06,
-  /** How much of the stage's shorter side the disc's diameter takes. */
-  fill: 0.9,
   /** The stage keeps at least this much of the viewport's shorter side, so a
    *  reading-height sheet never shrinks the body to a coin behind it. */
   stageMinFraction: 0.5,
@@ -305,6 +305,9 @@ export interface InteriorDevState {
   readable: boolean;
   scaleBlend: number;
   projectedRadiusPx: number;
+  /** The fit distance for the stage as it is, and where the camera is, body radii: a zoom is their ratio. */
+  fitDistance: number;
+  cameraDistance: number;
   /** The projection offset the camera applies right now, px: the disc's centre
    *  is the viewport's centre less this. */
   viewOffset: { x: number; y: number };
@@ -397,7 +400,10 @@ export class InteriorMode {
   private readonly cutAnchor = createCutAnchor();
   private readonly cut = createCutTween(CUT_VIEW_ANGLE_DEG.cutaway);
   /** "Cut faces the camera": the frame follows the camera instead of the body. Session-only. */
-  private cutFollow = false;
+  /** Whether the cut follows the camera. On by default: the cut is a diagram, and a body-locked
+   *  cut seen from the side, below or behind shows a half section, a crease or nothing (the
+   *  lock is the View options row's other state, for those who want a cut in a solid). */
+  private cutFollow = true;
   /** The swing from a locked frame to the camera's when the option turns on: where it started and how far along it is (Infinity: none). */
   private readonly cutSwingFrom = createCutFrame();
   private cutSwingElapsedS = Infinity;
@@ -576,8 +582,7 @@ export class InteriorMode {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = FRAMING.dampingFactor;
     this.controls.enablePan = false;
-    this.controls.minDistance = FRAMING.minDistance;
-    this.controls.maxDistance = FRAMING.maxDistance;
+    // The range is a ratio to the fit (applyZoomRange), set whenever the fit is taken.
     this.controls.target.copy(ORIGIN);
 
     this.picker = new BodyPicker({
@@ -634,7 +639,9 @@ export class InteriorMode {
     this.openTimingsLogged = false;
     this.active = true;
     this.utcMs = utcMs;
-    this.camera.near = 0.05;
+    // A long lens keeps the camera at least a few radii out (STUDIO_LENS.minZoom of a fit
+    // that is ten or more), so the near plane can sit well clear of the body for depth precision.
+    this.camera.near = 0.5;
     this.camera.far = 300;
     this.camera.fov = FRAMING.fovDeg;
     this.camera.updateProjectionMatrix();
@@ -764,6 +771,7 @@ export class InteriorMode {
     this.advanceCut(dt);
     this.advanceScale(dt);
     this.interiorScene.advance(dt);
+    this.applyZoomRange(this.fitDistanceNow);
     this.controls.update();
     this.advanceViewShift(dt);
 
@@ -1067,8 +1075,20 @@ export class InteriorMode {
     this.interiorScene.applyRegions(looks);
     this.interiorScene.setTemperatureScale(this.temperatureRange);
     this.pickLayout.outerDisplay = looks.map((look) => look.outerDisplay);
-    // The disc's size moved, so the count of layers too thin to see may have too.
+    // The disc's size moved, so the count of layers too thin to see may have too, and
+    // whether any uncertain boundary's band is wide enough to see.
     this.syncThicknessNote();
+    this.syncBandKey();
+  }
+
+  /** The key for the uncertain-boundary stripes, at the foot of the layer
+   *  list: shown only while a band is drawn wide enough to see at the disc's
+   *  current size, so it never explains a mark the reader cannot find. */
+  private syncBandKey(): void {
+    const key = document.getElementById('interior-band-note');
+    if (!key) return;
+    const display = bandKeyShown(this.looks, this.projectedPx, READABLE_MIN_PX) ? '' : 'none';
+    if (key.style.display !== display) key.style.display = display;
   }
 
   // ---- the cut and the scale ----------------------------------------------
@@ -2072,16 +2092,8 @@ export class InteriorMode {
     const scale = document.getElementById('interior-scale');
     if (!scale) return;
     const range = this.temperatureRange;
-    // The band key line, wherever a boundary is drawn with a band: the stripes
-    // are drawn in both modes, so the key shows in both, outside the scale.
-    const bandNote = document.getElementById('interior-band-note');
-    if (bandNote) {
-      const banded = this.drawn.regionsInsideOut.some((region) => {
-        const kind = region.region?.boundary.knowledge.location?.kind;
-        return kind === 'interval' || kind === 'modelSpread';
-      });
-      bandNote.style.display = banded ? '' : 'none';
-    }
+    // The band's key is drawn in both modes and sits under the layer list, on its own rule.
+    this.syncBandKey();
     if (this.displayMode !== 'temperature' || !range) {
       scale.style.display = 'none';
       return;
@@ -2115,6 +2127,8 @@ export class InteriorMode {
    *  itself. The event is spent here, so the app behind hears no Escape. */
   private handleKeyDown = (event: KeyboardEvent) => {
     if (!this.active) return;
+    // F is full screen here as in the planetarium (app/fullscreen.ts).
+    if (handleFullscreenKey(event)) return;
     if (event.key !== 'Escape') return;
     event.preventDefault();
     // One physical press, one rung: a held Esc auto-repeats about thirty times
@@ -2199,6 +2213,7 @@ export class InteriorMode {
     // Posed at the fit for the stage as it is now; the offset follows from that pose.
     const fit = this.fitFor(this.stageRect());
     this.fitDistanceNow = fit;
+    this.applyZoomRange(fit);
     this.distanceTargetNow = 0;
     this.distanceSpan = 0;
     orbitPose(FRAMING.azimuthDeg, FRAMING.elevationDeg, fit, this.camera.position);
@@ -2228,7 +2243,21 @@ export class InteriorMode {
   /** The distance that fits the body — its rings included when they show — to the stage. */
   private fitFor(stage: StageRect): number {
     const fit = fitDistance(stage, window.innerHeight, this.camera.fov, this.interiorScene.boundRadius(), FRAMING.fill);
-    return Number.isFinite(fit) ? THREE.MathUtils.clamp(fit, FRAMING.minDistance, FRAMING.maxDistance) : FRAMING.maxDistance;
+    if (Number.isFinite(fit) && fit > 0) return fit;
+    // A stage with no size yet has no fit: the last one, else the distance at which a unit body fills the lens.
+    return this.fitDistanceNow > 0 ? this.fitDistanceNow : 1 / Math.sin(FRAMING.fill * (this.camera.fov / 2) * DEG2RAD);
+  }
+
+  /** The camera's range for a fit: STUDIO_LENS's zoom ratios, so it means the same on every
+   *  stage — widened to take in where the camera IS, so a framing glide toward a new fit (a
+   *  sheet snap shrinking the stage with the camera at the old range's end) is never clamped
+   *  mid-flight by the controls; the glide lands inside the range, which then closes on it.
+   *  Applied every tick before the controls update, since the fit and the glide both move. */
+  private applyZoomRange(fit: number): void {
+    if (!(fit > 0)) return;
+    const live = this.camera.position.distanceTo(this.controls.target);
+    this.controls.minDistance = Math.min(fit * STUDIO_LENS.minZoom, live);
+    this.controls.maxDistance = Math.max(fit * STUDIO_LENS.maxZoom, live);
   }
 
   /** The framing for the stage as it is now: the body fitted to it, keeping the
@@ -2245,8 +2274,9 @@ export class InteriorMode {
     // must land where the first was going — not stop the glide where it had
     // got to and remember the shortfall as the reader's zoom from then on.
     const settledDistance = this.distanceTargetNow > 0 ? this.distanceTargetNow : livePosition;
-    const distance = framingDistance(fit, this.fitDistanceNow, settledDistance, FRAMING.minDistance, FRAMING.maxDistance);
+    const distance = framingDistance(fit, this.fitDistanceNow, settledDistance, fit * STUDIO_LENS.minZoom, fit * STUDIO_LENS.maxZoom);
     this.fitDistanceNow = fit;
+    this.applyZoomRange(fit);
     this.distanceGlideWrote = 0;
     const immediate = atOnce || this.reducedMotion.matches || this.sheetDrag !== null;
     if (immediate) {
@@ -2595,6 +2625,8 @@ export class InteriorMode {
       readable: this.readable,
       scaleBlend: this.scaleBlend,
       projectedRadiusPx: this.projectedPx,
+      fitDistance: this.fitDistanceNow,
+      cameraDistance: this.camera.position.distanceTo(this.controls.target),
       viewOffset: { x: this.viewOffsetXPx, y: this.viewOffsetYPx },
       presentationSeconds: this.presentationSeconds,
       frozen: this.frozen,

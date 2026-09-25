@@ -254,12 +254,23 @@
  * duty (a second at the least), too few readings in the staleness horizon,
  * starved readings over their share, or the sensor off —
  * returns the rung to Medium with no ceiling: no clock is the rule as it was,
- * applied to the rung as well as to the climb. Once a climb's verification
- * has measured the sharper rung, a clock that read it more than `REVERSAL_MS`
- * LOWER than the rung below is suspect — a true reading can fall when the
- * scene changes, so one proves nothing — and after `REVERSAL_REPEATS` of them
- * in a session it is not tracking the load, and is off for the session. None of the clock's decisions touch the floor's references, which
- * are interval evidence.
+ * applied to the rung as well as to the climb.
+ *
+ * Once a climb's verification has measured the sharper rung, a clock that read
+ * it more than `REVERSAL_MS` LOWER than the rung below is suspect, and after
+ * `REVERSAL_REPEATS` of them in a session it is not tracking the load and is
+ * off for the session. But a true reading falls when the scene gets cheaper,
+ * so the two rungs are compared only where they can be shown to have been read
+ * in one still view: the caller names the view on every sample (`sceneKey` —
+ * in the app, the body the ship rides and the camera's aim to within two
+ * degrees, and no name at all while the ship is under way or the clock runs
+ * faster than a minute a second), and the comparison is made only when every
+ * reading of the rung below's window and every frame since came under one name
+ * with no sliced work in any of them and no evidence reset but the climb
+ * itself. Anything else skips the comparison and counts the skip: it proves
+ * nothing either way, and a flight that really did reach a cheaper scene must
+ * not take the clock away. None of the clock's decisions touch the floor's
+ * references, which are interval evidence.
  *
  * Not in this version: the slide below Medium by the clock; a bias
  * calibration; a timer query; the clock on a display with a finer tick or
@@ -530,6 +541,12 @@ export interface IntervalSample {
    *  the clock — and a rung it earned is re-earned when the stretch ends. The
    *  interval still counts or not exactly as it would without this. */
   clockSuspended?: boolean;
+  /** What the frame's view was of, as the caller can name it: a number that
+   *  stays the same while the view does, or null while it cannot be named —
+   *  the ship under way, a fast clock. Left out, no view is ever named. Two
+   *  clock readings seconds apart are compared for a reversal only under one
+   *  name (the header). */
+  sceneKey?: number | null;
   /** The GPU clock's own main-thread work inside the interval — its fence,
    *  its flushes and its poll tasks — that ran after the next frame was due:
    *  the only part of it that can have held the next callback back. An
@@ -594,8 +611,12 @@ export interface ClockState {
    *  how many were taken. */
   rest: { untilMs: number | null; nextMs: number; rests: number };
   panicStreak: number;
-  /** Climbs whose sharper rung read markedly faster than the rung below. */
+  /** Climbs whose sharper rung read markedly faster than the rung below in
+   *  the same still view. */
   reversals: number;
+  /** Climbs whose two rungs were compared for that, and those that could not
+   *  be, the view not shown to be the same. */
+  reversalChecks: { made: number; skipped: number };
   accepted: number;
   dropped: { unpaired: number; uncounted: number; stale: number; settling: number; notSteering: number };
   /** Why the frames behind the uncounted readings did not count. */
@@ -742,11 +763,12 @@ class ClockRing {
     notBeforeMs: number,
     quantile: number,
     predict: ((readingMs: number, busyMs: number) => number) | null = null,
-  ): { value: number; medianMs: number; count: number; starvedShare: number } | null {
+  ): { value: number; medianMs: number; count: number; starvedShare: number; oldestAtMs: number } | null {
     let n = 0;
     let total = 0;
     let starved = 0;
     let newest = NaN;
+    let oldest = NaN;
     let done = false;
     for (let i = 0; i < this.count; i++) {
       const k = this.at(i);
@@ -759,6 +781,7 @@ class ClockRing {
         continue;
       }
       this.scratch[n++] = this.readingMs[k];
+      oldest = at;
       if (n >= minCount && newest - at >= minSpanMs) { done = true; break; }
     }
     if (!done) return null;
@@ -772,7 +795,13 @@ class ClockRing {
         this.scratch[m++] = predict(this.readingMs[k], this.busyMs[k]);
       }
     }
-    return { value: rank(this.scratch, n, quantile), medianMs, count: n, starvedShare: total === 0 ? 0 : starved / total };
+    return {
+      value: rank(this.scratch, n, quantile),
+      medianMs,
+      count: n,
+      starvedShare: total === 0 ? 0 : starved / total,
+      oldestAtMs: oldest,
+    };
   }
 
   /** How the readings no older than `notBeforeMs` break down, without sorting
@@ -1046,8 +1075,9 @@ export class ResolutionController {
    *  while the clock vouches for it. */
   private clockEarned = false;
   /** A clock climb decided and not yet applied, with the rung below's median
-   *  for the honesty rule. */
-  private pendingClimb: { belowMedianMs: number } | null = null;
+   *  for the honesty rule — null where its window was not one still view —
+   *  and the still view it was taken in. */
+  private pendingClimb: { belowMedianMs: number | null; sceneStretch: number } | null = null;
   /** The decision pending is a step down the clock made on its own evidence
    *  — a measured failure, or a probe it could not verify. */
   private pendingClockStep = false;
@@ -1056,6 +1086,9 @@ export class ResolutionController {
     kind: 'probe' | 'reset';
     fromIndex: number;
     belowMedianMs: number | null;
+    /** For a climb's verification, the still view the rung below was read
+     *  in; null for any other verification, which compares nothing. */
+    sceneStretch: number | null;
     /** Readings count from frames drawn at or after this. */
     startMs: number;
     /** Set by the first eligible step after it opened; moved at most once,
@@ -1099,6 +1132,14 @@ export class ResolutionController {
    *  probation. */
   private probationByClock = false;
   private clockReversals = 0;
+  /** The stretch of frames that were one named, still view with no sliced
+   *  work and no evidence reset but a rung change: bumped whenever any of
+   *  that breaks, with when the current one began and the name it is under.
+   *  A reversal is judged only inside one stretch. */
+  private sceneStretch = 0;
+  private sceneStretchSinceMs = 0;
+  private sceneKeyLast: number | null = null;
+  private readonly reversalChecks = { made: 0, skipped: 0 };
   /** Recent frames' interval verdicts, for a late reading to find its own. */
   private readonly verdictSeq = new Float64Array(VERDICT_RING_SIZE).fill(-1);
   private readonly verdictBecause = new Uint8Array(VERDICT_RING_SIZE);
@@ -1164,12 +1205,14 @@ export class ResolutionController {
     }
     if (sample.drawSeq !== undefined) this.recordVerdict(sample.drawSeq, because);
     if (sample.gpu) this.admitGpu(sample.gpu);
+    this.noteScene(sample);
     const suspended = sample.clockSuspended === true;
     this.recordDelivery(sample, suspended);
     // The end of a stretch the clock could not sample: what it measured before
     // describes a scene it has not seen since, so its evidence starts again and
     // a rung it earned is re-earned.
     if (this.clockSuspendedLast && !suspended && !this.idle) {
+      this.breakScene(sample.nowMs);
       this.resetClockEvidence(sample.nowMs);
       this.reopenClockVerify();
     }
@@ -1267,6 +1310,7 @@ export class ResolutionController {
         kind: 'probe',
         fromIndex: from,
         belowMedianMs: climb.belowMedianMs,
+        sceneStretch: climb.sceneStretch,
         startMs: this.settleUntilMs,
         deadlineMs: null,
         interrupted: false,
@@ -1282,6 +1326,7 @@ export class ResolutionController {
         kind: 'probe',
         fromIndex: Math.max(this.mediumIndex, this.index - 1),
         belowMedianMs: null,
+        sceneStretch: null,
         startMs: this.settleUntilMs,
         deadlineMs: null,
         interrupted: false,
@@ -1351,6 +1396,7 @@ export class ResolutionController {
     }
     this.pendingClimb = null;
     this.pendingClockStep = false;
+    this.breakScene(nowMs);
     this.resetClockEvidence(nowMs);
     this.reopenClockVerify();
   }
@@ -1372,6 +1418,7 @@ export class ResolutionController {
     // after an arrival or a focus gain is a new question, not a probe failing.
     this.probation = null;
     this.probationByClock = false;
+    this.breakScene(nowMs);
     this.resetClockEvidence(nowMs);
     switch (event) {
       case 'pin':
@@ -1449,6 +1496,7 @@ export class ResolutionController {
     this.lastChangeMs = nowMs;
     this.pendingClimb = null;
     this.pendingClockStep = false;
+    this.breakScene(nowMs);
     this.resetClockEvidence(nowMs);
     this.reopenClockVerify();
     if (Math.abs(this.rungs[this.index] - previousRatio) < 1e-9) return null;
@@ -1589,6 +1637,7 @@ export class ResolutionController {
       kind: standing?.kind ?? 'reset',
       fromIndex: standing?.fromIndex ?? this.mediumIndex,
       belowMedianMs: standing?.belowMedianMs ?? null,
+      sceneStretch: standing?.sceneStretch ?? null,
       startMs: this.settleUntilMs,
       deadlineMs: standing?.deadlineMs ?? null,
       interrupted: standing?.interrupted ?? false,
@@ -1601,6 +1650,23 @@ export class ResolutionController {
     this.verdictSeq[this.verdictHead] = drawSeq;
     this.verdictBecause[this.verdictHead] = because;
     this.verdictHead = (this.verdictHead + 1) % VERDICT_RING_SIZE;
+  }
+
+  /** The view this step's interval was drawn in: a stretch of one named view
+   *  ends at a new name, at no name, and at any sliced work — an upload
+   *  changes what the frames draw, so readings either side of it are not
+   *  of one scene. */
+  private noteScene(sample: IntervalSample): void {
+    const key = sample.sceneKey ?? null;
+    if (key === null || key !== this.sceneKeyLast || sample.workedMs !== 0) this.breakScene(sample.nowMs);
+    this.sceneKeyLast = key;
+  }
+
+  /** A new stretch starts here: nothing read before it is compared with
+   *  anything read after. */
+  private breakScene(nowMs: number): void {
+    this.sceneStretch++;
+    this.sceneStretchSinceMs = nowMs;
   }
 
   /** A GPU reading, admitted only with its own frame's counted interval. */
@@ -1811,14 +1877,26 @@ export class ResolutionController {
           if (lifecycle) return this.clockRestore(nowMs, 'verify');
           return this.clockFail(nowMs, verify.fromIndex, 'verify');
         }
-        if (verify.kind === 'probe' && verify.belowMedianMs !== null && stats.medianMs !== null
-          && isReversal(verify.belowMedianMs, stats.medianMs)) {
-          // More pixels read as markedly less time. Once can be the scene
-          // changing; again and the fence is not timing this frame's work.
-          this.clockReversals++;
-          if (this.clockReversals >= REVERSAL_REPEATS) {
-            this.clockOffReason = `the clock read the sharper rung more than ${REVERSAL_MS} ms faster than the rung below, ${this.clockReversals} times`;
-            return this.clockRestore(nowMs, 'reversal');
+        if (verify.kind === 'probe' && verify.sceneStretch !== null && stats.medianMs !== null) {
+          // A climb, measured: the two rungs are compared only where they
+          // were read in one still view — the rung below's whole window and
+          // every frame since, under one name, with no sliced work and no
+          // reset but the climb. Anything else is a scene that may really
+          // have got cheaper, and the comparison is skipped.
+          if (verify.belowMedianMs === null || verify.sceneStretch !== this.sceneStretch) {
+            this.reversalChecks.skipped++;
+          } else {
+            this.reversalChecks.made++;
+            if (isReversal(verify.belowMedianMs, stats.medianMs)) {
+              // More pixels read as markedly less time in the same view.
+              // Once can still be noise; again and the fence is not timing
+              // this frame's work.
+              this.clockReversals++;
+              if (this.clockReversals >= REVERSAL_REPEATS) {
+                this.clockOffReason = `the clock read the sharper rung more than ${REVERSAL_MS} ms faster than the rung below in the same view, ${this.clockReversals} times`;
+                return this.clockRestore(nowMs, 'reversal');
+              }
+            }
           }
         }
         this.clockAcquiredAtMs = nowMs;
@@ -1890,7 +1968,11 @@ export class ResolutionController {
     this.refusal.fits();
     this.noteClock(nowMs, next, 'climb');
     const decision = this.emit(next, 'up');
-    this.pendingClimb = { belowMedianMs: w.medianMs };
+    // The rung below's median, for the honesty check once the sharper rung
+    // has been measured — only where every reading of the window was taken
+    // inside the current still view.
+    const still = this.sceneKeyLast !== null && w.oldestAtMs >= this.sceneStretchSinceMs;
+    this.pendingClimb = { belowMedianMs: still ? w.medianMs : null, sceneStretch: this.sceneStretch };
     return decision;
   }
 
@@ -1936,6 +2018,7 @@ export class ResolutionController {
       })(),
       panicStreak: this.panicStreak,
       reversals: this.clockReversals,
+      reversalChecks: { ...this.reversalChecks },
       accepted: this.clockAccepted,
       dropped: { ...this.clockDropped },
       uncountedBy: { ...this.clockUncountedBy },

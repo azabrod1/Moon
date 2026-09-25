@@ -121,10 +121,12 @@
  * can hold a very fast device at Medium — never climb one it should not.
  *
  * **Reversals.** A sharper rung that reads more than `REVERSAL_MS` LESS than
- * the rung below it, measured moments apart at the same pose, is suspicious —
- * but a true reading can fall when the scene changes, and a constant bogus
- * reading passes any monotonic test, so one reversal proves nothing. The
- * clock is off for the session only after `REVERSAL_REPEATS` of them.
+ * the rung below it, in the same still view, is suspicious — but a true
+ * reading can fall when the scene changes, and a constant bogus reading passes
+ * any monotonic test, so one reversal proves nothing. The clock is off for the
+ * session only after `REVERSAL_REPEATS` of them, and two rungs are compared at
+ * all only where they can be shown to be of one still view
+ * (app/resolutionController.ts says when that holds).
  */
 
 import type { FencePollSource } from './fencePoll';

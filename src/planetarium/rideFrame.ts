@@ -267,6 +267,13 @@ export class RideFrame {
   /** The largest eased weight this frame — zero means the ship rides nothing. */
   get weight(): number { return this.maxWeight; }
 
+  /** The dominant carrier with any weight — the body the ship rides — or ''
+   *  when it rides nothing. Allocates nothing: the key is the carrier's own. */
+  get dominantKey(): string {
+    for (const c of this.order) if (c.wEff > 0) return c.key;
+    return '';
+  }
+
   /** A body's eased weight, 0 when it is not a carrier. */
   weightOf(key: string): number { return this.carriers.get(key)?.wEff ?? 0; }
 

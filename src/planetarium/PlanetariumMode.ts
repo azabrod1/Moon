@@ -483,6 +483,11 @@ import { setSegmentOffered, setSegmentValue, wireSegmented } from './ui/Segmente
 /** How long a context-restore re-warm may keep the late-link check muted. */
 const REWARM_MUTE_MAX_MS = 15_000;
 
+/** The fastest clock, in simulated seconds a second, under which the view
+ *  counts as still for comparing two GPU clock readings seconds apart: at a
+ *  minute a second Earth turns a quarter of a degree a second. */
+const STILL_VIEW_MAX_TIME_RATE = 60;
+
 type ScriptedTransfer = {
   elapsed: number;
   duration: number;
@@ -10825,6 +10830,19 @@ export class PlanetariumMode {
    *  picture under a veil either. */
   isArrivalVeilUp(): boolean {
     return this.arrivalVeilUp();
+  }
+
+  /**
+   * The body the ship rides ('' for none), for main.ts to name the view a GPU
+   * clock reading was taken of — or null while the view cannot be the same
+   * one from second to second: the ship under way, or the clock running
+   * faster than a minute a second. Two readings seconds apart are compared
+   * (app/resolutionController.ts) only under one name.
+   */
+  stillViewBody(): string | null {
+    if (this.player.speedAUPerS > 0) return null;
+    if (!this.timeState.paused && Math.abs(this.timeState.rate) > STILL_VIEW_MAX_TIME_RATE) return null;
+    return this.ride.dominantKey;
   }
 
   /**

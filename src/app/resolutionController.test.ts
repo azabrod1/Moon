@@ -1972,24 +1972,73 @@ describe('the clock’s evidence', () => {
     expect(rig.controller.state().ceiling).toBeNull();
   });
 
-  it('takes one reversal as the scene moving, and turns itself off on the second', () => {
-    // Each sharper rung reads 2.5 ms FASTER than the one below it.
+  it('in one still view, takes one reversal as noise and turns itself off on the second', () => {
+    // Each sharper rung reads 2.5 ms FASTER than the one below it, and the
+    // view never changes.
     const read = (rung: number): number => 9.5 - 2.5 * (rung - MEDIUM);
+    const still = { sceneKey: 1 };
     const once = new ClockRig(new ResolutionController(FULL_LADDER));
     blindScreen(once);
-    once.runClock(seconds(15), onTime, read);
+    once.runClock(seconds(15), onTime, read, still);
     expect(once.rung).toBe(MEDIUM + 1);
     expect(once.controller.state().clock.reversals).toBe(1);
     expect(once.controller.state().clock.off).toBeNull();
-    once.runClock(seconds(20), onTime, read);
+    once.runClock(seconds(20), onTime, read, still);
     const state = once.controller.state();
     expect(state.clock.reversals).toBe(2);
-    expect(state.clock.off).toMatch(/faster than the rung below, 2 times/);
+    expect(state.clock.reversalChecks).toEqual({ made: 2, skipped: 0 });
+    expect(state.clock.off).toMatch(/faster than the rung below in the same view, 2 times/);
     expect(state.clock.last?.why).toBe('reversal');
     expect(once.rung).toBe(MEDIUM);
-    once.runClock(seconds(60), onTime, read);
+    once.runClock(seconds(60), onTime, read, still);
     expect(once.rung).toBe(MEDIUM);
     expect(once.controller.wantsClock()).toBe(false);
+  });
+
+  it('never compares two rungs read in different scenes: a flight that reaches a cheaper view keeps its clock', () => {
+    // The same readings — each sharper rung 2.5 ms faster than the one below —
+    // under four ways of the scene not being shown to be one scene.
+    const read = (rung: number): number => 9.5 - 2.5 * (rung - MEDIUM);
+    const scenes: [string, (rig: ClockRig) => Partial<IntervalSample>][] = [
+      // The camera turning: a new name every five seconds, so no six-second
+      // window at the rung below is inside one.
+      ['a view that keeps changing', (rig) => ({ sceneKey: Math.floor(rig.nowMs / 5000) })],
+      // One name, but tiles landing every second: the frames either side of
+      // an upload are not of the same scene.
+      ['sliced work in the window', (rig) => ({ sceneKey: 1, workedMs: Math.round(rig.nowMs) % 1000 < TICK ? 2 : 0 })],
+      // The ship under way: the view has no name at all.
+      ['a ship under way', () => ({ sceneKey: null })],
+      // A caller that names no view.
+      ['no name given', () => ({})],
+    ];
+    for (const [what, scene] of scenes) {
+      const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+      blindScreen(rig);
+      for (let k = 0; k < seconds(60); k++) rig.runClock(1, onTime, read, scene(rig));
+      const state = rig.controller.state();
+      expect(state.clock.reversals, what).toBe(0);
+      expect(state.clock.off, what).toBeNull();
+      expect(state.clock.reversalChecks.made, what).toBe(0);
+      expect(state.clock.reversalChecks.skipped, what).toBe(2);
+      expect(rig.rung, what).toBe(TOP);
+    }
+  });
+
+  it('never compares across an arrival between the climb and its verdict', () => {
+    const read = (rung: number): number => 9.5 - 2.5 * (rung - MEDIUM);
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    for (let k = 0; k < seconds(60); k++) {
+      const before = rig.applied.length;
+      rig.runClock(1, onTime, read, { sceneKey: 1 });
+      // Every climb is followed at once by an arrival somewhere else.
+      if (rig.applied.length > before && rig.applied[before].reason === 'up') rig.controller.notify('arrival', rig.nowMs);
+    }
+    const state = rig.controller.state();
+    expect(state.clock.reversals).toBe(0);
+    expect(state.clock.off).toBeNull();
+    expect(state.clock.reversalChecks.made).toBe(0);
+    expect(state.clock.reversalChecks.skipped).toBeGreaterThanOrEqual(1);
   });
 
   it('fails a probe once when the intervals and the clock fail on the same second', () => {

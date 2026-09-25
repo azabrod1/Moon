@@ -251,8 +251,9 @@
  * if still above Medium, is verified as a probe is, so a failure there
  * escalates too; only a lifecycle reset gets the plain restore. And the clock
  * going quiet — no reading for six samples' worth of frames at the sensor's
- * duty (a second at the least), too few readings in the staleness horizon,
- * starved readings over their share, or the sensor off —
+ * duty (a second at the least), fewer than half the readings its duty would
+ * take in the last six seconds (eight at the least), starved readings over
+ * their share, or the sensor off —
  * returns the rung to Medium with no ceiling: no clock is the rule as it was,
  * applied to the rung as well as to the climb.
  *
@@ -456,9 +457,25 @@ export function clockGapMs(duty: number, tickMs: number): number {
   return Math.max(CLOCK_GAP_MIN_MS, CLOCK_GAP_SAMPLES * duty * tickMs);
 }
 
-/** Silence, too: fewer than `CLOCK_DOWN_COUNT` trusted readings in the
- *  preceding span this long, once the clock's evidence is that old. */
+/** Silence, too, once the clock's evidence is this old: fewer trusted
+ *  readings in the preceding span this long than `clockSilenceCount` asks. */
 export const CLOCK_SILENCE_SPAN_MS = 6000;
+
+/** The share of the readings the sensor's duty would take in that span that
+ *  must have been trusted, and the fewest ever asked for. A fixed count
+ *  would not follow the duty: at one frame in sixteen on a 60 Hz tick only
+ *  about 22 samples are taken in six seconds, so sixteen of them would ask
+ *  71 % to be admissible, and at a pose where streaming keeps a share of
+ *  the sampled frames from counting the rung would be restored to Medium
+ *  every minute while readings kept arriving. */
+export const CLOCK_SILENCE_SHARE = 0.5;
+export const CLOCK_SILENCE_MIN_COUNT = 8;
+
+/** Trusted readings the silence span needs at a duty and a tick. */
+export function clockSilenceCount(duty: number, tickMs: number): number {
+  const expected = CLOCK_SILENCE_SPAN_MS / (Math.max(1, duty) * tickMs);
+  return Math.max(CLOCK_SILENCE_MIN_COUNT, Math.round(CLOCK_SILENCE_SHARE * expected));
+}
 
 /** Every frame drawn, untrimmed and unfiltered — streaming, main-thread and
  *  sensor overruns and the settle after a change included, only the page
@@ -600,6 +617,9 @@ export interface ClockState {
    *  silence right now. */
   duty: number;
   gapMs: number;
+  /** The trusted readings the last six seconds need, at that duty, before
+   *  the clock is silent. */
+  silenceCount: number;
   /** The rung whose last probe went unverified: a second in a row there holds
    *  it as a ceiling. */
   unverifiedRung: number | null;
@@ -1917,7 +1937,7 @@ export class ResolutionController {
     }
     if (quiet) return this.clockRestore(nowMs, 'gap');
     if (this.clockAcquiredAtMs !== null && nowMs - this.clockAcquiredAtMs >= CLOCK_SILENCE_SPAN_MS
-      && this.clockRing.tally(nowMs - CLOCK_SILENCE_SPAN_MS).count < CLOCK_DOWN_COUNT) {
+      && this.clockRing.tally(nowMs - CLOCK_SILENCE_SPAN_MS).count < clockSilenceCount(this.clockDuty, this.budgetMs)) {
       return this.clockRestore(nowMs, 'silent');
     }
     const starved = this.clockRing.starvedShare(CLOCK_STARVED_WINDOW, CLOCK_STARVED_MIN, nowMs - STALENESS_MS);
@@ -2010,6 +2030,7 @@ export class ResolutionController {
       },
       duty: this.clockDuty,
       gapMs: this.clockGap(verify !== null),
+      silenceCount: clockSilenceCount(this.clockDuty, this.budgetMs),
       unverifiedRung: this.unverifiedRung,
       failures: this.clockFailures,
       rest: (() => {

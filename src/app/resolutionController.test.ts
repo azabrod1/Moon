@@ -8,7 +8,9 @@ import {
   CLOCK_DOWN_COUNT,
   CLOCK_GAP_MIN_MS,
   CLOCK_INTERVAL_DOWN,
+  CLOCK_SILENCE_MIN_COUNT,
   CLOCK_SILENCE_SPAN_MS,
+  clockSilenceCount,
   CLOCK_PANIC_COUNT,
   CLOCK_UP_COUNT,
   CLOCK_UP_SPAN_MS,
@@ -1019,6 +1021,8 @@ class ClockRig extends Rig {
   /** Deliver readings even where the controller says it would not read them. */
   force = false;
   delivered = 0;
+  /** The last frame run was fenced. */
+  armedLast = false;
   private countdown = 0;
   private steps = 0;
   private inFlight: { dueStep: number; obs: GpuObservation } | null = null;
@@ -1054,6 +1058,7 @@ class ClockRig extends Rig {
       if (decision !== null) this.apply(decision);
       // This tick's draw, at the rung any decision just applied.
       this.drawSeq++;
+      this.armedLast = false;
       if (!this.force && !this.controller.wantsClock()) continue;
       // Through a verification the sensor samples one frame in four whatever
       // its duty.
@@ -1064,6 +1069,7 @@ class ClockRig extends Rig {
       const read = clock(this.controller.rung, i);
       if (read === null) continue;
       this.countdown = duty - 1;
+      this.armedLast = true;
       const r = typeof read === 'number' ? { readingMs: read } : read;
       this.inFlight = {
         dueStep: this.steps + this.lag,
@@ -2080,6 +2086,40 @@ describe('silence, and the grace a reset gets', () => {
     expect(rig.controller.state().clock.last?.why).toBe('silent');
     expect(CLOCK_SILENCE_SPAN_MS).toBe(6000);
   });
+
+  it('asks the last six seconds for half the readings the duty takes, and never fewer than eight', () => {
+    // One frame in four on a 60 Hz tick is 90 samples in six seconds; one in
+    // sixteen is about 22, where a fixed sixteen would ask 71 % of them.
+    expect(clockSilenceCount(4, BUDGET_MS)).toBe(45);
+    expect(clockSilenceCount(16, BUDGET_MS)).toBe(11);
+    expect(clockSilenceCount(64, BUDGET_MS)).toBe(CLOCK_SILENCE_MIN_COUNT);
+  });
+
+  for (const duty of [4, 16]) {
+    it(`at one frame in ${duty}, with 40 % of the samples from frames that did not count, is not silent while readings keep arriving`, () => {
+      const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+      blindScreen(rig);
+      if (duty !== 4) rig.setDuty(duty);
+      rig.runClock(seconds(90), onTime, () => 7);
+      expect(rig.rung).toBe(TOP);
+      expect(rig.controller.state().clock.silenceCount).toBe(clockSilenceCount(duty, BUDGET_MS));
+      const from = rig.applied.length;
+      const uncountedBefore = rig.controller.state().clock.dropped.uncounted;
+      // Two sampled frames in every five are followed by sliced work, so
+      // their intervals do not count and their readings are not admitted —
+      // at most two in a row, well inside the gap.
+      let sampled = 0;
+      let spoil = false;
+      for (let k = 0; k < seconds(3 * 60); k++) {
+        rig.runClock(1, onTime, () => 7, spoil ? { workedMs: 2 } : {});
+        spoil = rig.armedLast && sampled++ % 5 < 2;
+      }
+      expect(rig.applied.slice(from)).toEqual([]);
+      expect(rig.rung).toBe(TOP);
+      const dropped = rig.controller.state().clock.dropped.uncounted - uncountedBefore;
+      expect(dropped / sampled).toBeCloseTo(0.4, 1);
+    });
+  }
 
   it('starvation over its share of the last attempts is silence', () => {
     const rig = earnedTop();

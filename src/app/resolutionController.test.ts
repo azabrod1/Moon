@@ -1527,7 +1527,7 @@ describe('a rung the clock earned is kept only while the clock vouches for it', 
     expect(CLOCK_DELIVERY_GUARD).toBe(1.02);
   });
 
-  it('counts a frame drawn inside the settle after a climb: a 200 ms first frame at the sharper rung puts the six seconds over the guard', () => {
+  it('counts a frame drawn inside the settle after a climb: a 200 ms first frame there is one of the two stalls that hand the rung back', () => {
     const rig = new ClockRig(new ResolutionController(FULL_LADDER));
     blindScreen(rig);
     for (let k = 0; k < seconds(60) && !rig.applied.some((a) => a.reason === 'up'); k++) rig.runClock(1, onTime, () => 7);
@@ -1537,24 +1537,50 @@ describe('a rung the clock earned is kept only while the clock vouches for it', 
     // settle after the change, which keeps it out of the pixel evidence.
     rig.runClock(1, () => 200, () => 7);
     expect(rig.nowMs - up.atMs).toBeLessThan(REALLOC_SETTLE_MS);
-    // It is still a frame the screen showed late: about 17.2 ms a frame over
-    // the six seconds, over the guard's 17.00.
-    const delivered = rig.controller.state().clock.deliveredMs;
-    expect(delivered).not.toBeNull();
-    expect(delivered!).toBeGreaterThan(CLOCK_DELIVERY_GUARD * BUDGET_MS);
+    // On its own it is the one stall the guard forgives.
+    expect(rig.controller.state().clock.deliveredMs!).toBeLessThanOrEqual(CLOCK_DELIVERY_GUARD * BUDGET_MS);
+    // The next frame, past the settle, stalls too: 180 ms. Had the first been
+    // left out as a settle frame, this one alone would be forgiven; counted,
+    // the two put the six seconds at about 17.2 ms a frame with the longer
+    // left out, over the guard's 17.00.
+    rig.runClock(1, () => 180, () => 7);
+    expect(rig.nowMs - up.atMs).toBeGreaterThanOrEqual(REALLOC_SETTLE_MS);
     expect(CLOCK_DELIVERY_GUARD * BUDGET_MS).toBeCloseTo(17.0, 6);
-    // And the guard hands the rung back at the first frame after the settle.
-    rig.runClock(seconds(1), onTime, () => 7);
     const back = rig.applied.find((a) => a.atMs > up.atMs);
     expect(back).toMatchObject({ to: MEDIUM, reason: 'revert' });
-    expect(back!.atMs - up.atMs).toBeLessThanOrEqual(REALLOC_SETTLE_MS + 2 * TICK);
+    expect(back!.atMs - up.atMs).toBeLessThanOrEqual(REALLOC_SETTLE_MS + 200);
     expect(rig.controller.state().clock.last?.why).toBe('delivery');
+    expect(rig.controller.state().clock.deliveredMs!).toBeGreaterThan(CLOCK_DELIVERY_GUARD * BUDGET_MS);
+  });
+
+  it('forgives the one reallocation stall a climb makes under ?alloc=0, and not a second inside six seconds', () => {
+    // At a Mac window in WebKit a reallocation is 65 to 150 ms. One of 150 ms
+    // counted alone puts six seconds of frames at about 17.04 ms, over the
+    // guard, and the rung would go back for its own move.
+    const climbWithStalls = (stalls: number): ClockRig => {
+      const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+      blindScreen(rig);
+      for (let k = 0; k < seconds(60) && !rig.applied.some((a) => a.reason === 'up'); k++) rig.runClock(1, onTime, () => 7);
+      for (let i = 0; i < stalls; i++) {
+        rig.runClock(1, () => 150, () => 7);
+        rig.runClock(seconds(1), onTime, () => 7);
+      }
+      rig.runClock(seconds(8), onTime, () => 7);
+      return rig;
+    };
+    const one = climbWithStalls(1);
+    expect(one.applied.map((a) => a.reason)).toEqual(['up']);
+    expect(one.rung).toBe(MEDIUM + 1);
+    const two = climbWithStalls(2);
+    expect(two.applied.map((a) => a.reason)).toEqual(['up', 'revert']);
+    expect(two.rung).toBe(MEDIUM);
+    expect(two.controller.state().clock.last?.why).toBe('delivery');
   });
 
   it('a delivery failure is the rung failing: the ceiling refuses the next climb for a minute, and a second failure holds it for four', () => {
-    // WebKit on the project's Mac at Earth's shell: a rung the clock earned,
-    // then one hitch of about 150 ms in six seconds of frames — enough to
-    // put the delivered mean past 1.02 × the budget.
+    // A rung the clock earned, then two hitches of 180 ms a second apart in
+    // six seconds of frames: one would be forgiven, the second puts the
+    // delivered mean past 1.02 × the budget.
     const rig = new ClockRig(new ResolutionController(ONE_ABOVE));
     blindScreen(rig);
     const top = ONE_ABOVE.rungs.length - 1;
@@ -1563,7 +1589,9 @@ describe('a rung the clock earned is kept only while the clock vouches for it', 
     expect(rig.rung).toBe(top);
     rig.runClock(Math.ceil(PROBE_HOLD_MS / TICK), onTime, () => 7);
     const hitch = (): void => {
-      rig.runClock(1, () => 150, () => 7);
+      rig.runClock(1, () => 180, () => 7);
+      rig.runClock(seconds(1), onTime, () => 7);
+      rig.runClock(1, () => 180, () => 7);
       rig.runClock(seconds(7), onTime, () => 7);
     };
     let from = rig.applied.length;

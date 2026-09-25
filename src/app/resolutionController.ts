@@ -239,8 +239,9 @@
  * down window over `CLOCK_INTERVAL_DOWN` of the budget, a tighter bar than
  * the tick's, because a phone at 52–58 fps at a sharper rung is the
  * regression this rule exists to prevent — and straight to Medium when every
- * frame drawn over `CLOCK_DELIVERY_SPAN_MS` averages slower than
- * `CLOCK_DELIVERY_GUARD` of the budget. Each of those is a measured failure,
+ * frame drawn over `CLOCK_DELIVERY_SPAN_MS`, bar the single longest, averages
+ * slower than `CLOCK_DELIVERY_GUARD` of the budget: one stall is forgiven, a
+ * slow stretch is not. Each of those is a measured failure,
  * inside the probation or out of it, and at a rung the clock earned the
  * failures are counted per evidence epoch — since the budget or the ladder
  * last changed — rather than per rung: with two rungs above Medium a heating
@@ -477,16 +478,22 @@ export function clockSilenceCount(duty: number, tickMs: number): number {
   return Math.max(CLOCK_SILENCE_MIN_COUNT, Math.round(CLOCK_SILENCE_SHARE * expected));
 }
 
-/** Every frame drawn, untrimmed and unfiltered — streaming, main-thread and
- *  sensor overruns and the settle after a change included, only the page
- *  away, covered or pinned and the map left out — over this span: its mean must be within `CLOCK_DELIVERY_UP` of the budget
- *  for a clock climb, and a rung the clock earned goes back to Medium when it
- *  passes `CLOCK_DELIVERY_GUARD`. 58 fps is 17.24 ms, which a trimmed mean of
- *  counted intervals against 1.05 × the budget would let through; permission
- *  to KEEP extra pixels is not a question about what the pixels cost. A climb
- *  or a revert does not restart the span, so a sharper rung is judged from
- *  its first late frames and an excursion shorter than the span cannot
- *  escape it. */
+/** Every frame drawn, unfiltered — streaming, main-thread and sensor
+ *  overruns and the settle after a change included, only the page away,
+ *  covered or pinned and the map left out — over this span: its mean must be
+ *  within `CLOCK_DELIVERY_UP` of the budget for a clock climb, and a rung the
+ *  clock earned goes back to Medium when it passes `CLOCK_DELIVERY_GUARD`.
+ *  58 fps is 17.24 ms, which a trimmed mean of counted intervals against
+ *  1.05 × the budget would let through; permission to KEEP extra pixels is
+ *  not a question about what the pixels cost. The mean drops ONE interval,
+ *  the longest, and never more: one stall — a reallocation under `?alloc=0`,
+ *  a hitch of the browser's own — is forgiven, where a second inside the span,
+ *  or a stretch of late frames however short each is, is not. (One stall
+ *  counted alone moves six seconds of frames by its excess over 360: a
+ *  150 ms reallocation after a climb would put the mean at 17.04 ms and hand
+ *  the rung straight back for its own move.) A climb or a revert does not
+ *  restart the span, so a sharper rung is judged from its first late frames
+ *  and an excursion shorter than the span cannot escape it. */
 export const CLOCK_DELIVERY_SPAN_MS = 6000;
 export const CLOCK_DELIVERY_UP = 1.01;
 export const CLOCK_DELIVERY_GUARD = 1.02;
@@ -607,8 +614,8 @@ export interface ClockState {
   /** The next rung's predicted p90, where there is a rung to predict and a
    *  climb window to predict it from. */
   predictedNextMs: number | null;
-  /** Every frame drawn over the delivery span, untrimmed, or null before the
-   *  span has been drawn. */
+  /** Every frame drawn over the delivery span but the longest, or null before
+   *  the span has been drawn. */
   deliveredMs: number | null;
   /** A verification standing: a probe's, or a reset's re-earning, with its
    *  deadline once the first eligible frame after it has started it. */
@@ -909,19 +916,24 @@ class DeliveryRing {
     this.firstAtMs = NaN;
   }
 
-  /** The mean interval over the last `spanMs`, or null until that much has
-   *  been drawn. Untrimmed: every late frame counts. */
+  /** The mean interval over the last `spanMs` with the single longest left
+   *  out, or null until that much has been drawn. One interval and never a
+   *  class of them: every other late frame counts. */
   mean(nowMs: number, spanMs: number): number | null {
     if (this.count === 0 || !(nowMs - this.firstAtMs >= spanMs)) return null;
     let sum = 0;
     let n = 0;
+    let longest = 0;
     for (let i = 0; i < this.count; i++) {
       const k = (this.head - 1 - i + this.capacity) % this.capacity;
       if (this.atMs[k] <= nowMs - spanMs) break;
-      sum += this.ms[k];
+      const ms = this.ms[k];
+      sum += ms;
       n++;
+      if (ms > longest) longest = ms;
     }
-    return n === 0 ? null : sum / n;
+    if (n === 0) return null;
+    return n === 1 ? sum : (sum - longest) / (n - 1);
   }
 }
 
@@ -1964,7 +1976,8 @@ export class ResolutionController {
     // The frames are not already late: the counted intervals over a whole up
     // window inside their up bar — a device capped from outside the app would
     // otherwise climb on an idle-looking GPU while its frames were missing —
-    // and every frame drawn, untrimmed and unfiltered, at the screen's rate.
+    // and every frame drawn, unfiltered and bar the one longest, at the
+    // screen's rate.
     const stat = this.window.trimmedMean(this.upCounted, TRIM_COUNT, nowMs - STALENESS_MS);
     if (stat === null || stat.count < this.upCounted) return null;
     if (stat.meanMs > UP_FACTOR * this.budgetMs) return null;

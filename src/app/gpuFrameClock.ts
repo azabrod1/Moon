@@ -295,7 +295,7 @@ export function createGpuFrameClock(deps: GpuFrameClockDeps): GpuFrameClock {
     deps.onWork(inTick, t0);
     if (!armed) return;
     if (sync === null) {
-      turnOff('the context refused a sync object');
+      turnOff(SYNC_REFUSED_REASON);
       return;
     }
     inFlight = true;
@@ -436,6 +436,11 @@ export function createGpuFrameClock(deps: GpuFrameClockDeps): GpuFrameClock {
 }
 
 /** `?gpuclock=0` turns the sensor off in any build. */
+/** Why the sensor turned off when the context refused it a sync object —
+ *  which is how a lost context usually reaches it, before the page hears the
+ *  loss. */
+export const SYNC_REFUSED_REASON = 'the context refused a sync object';
+
 export function parseGpuClockParam(search: string): boolean {
   return new URLSearchParams(search).get('gpuclock') === '0';
 }

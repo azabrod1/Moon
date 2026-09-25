@@ -37,7 +37,7 @@ import {
   ResolutionController, ZERO_COUNTED_WARN_MS,
   type Decision, type GpuObservation, type IntervalSample,
 } from './app/resolutionController';
-import { createGpuFrameClock, parseGpuClockParam } from './app/gpuFrameClock';
+import { SYNC_REFUSED_REASON, createGpuFrameClock, parseGpuClockParam } from './app/gpuFrameClock';
 import { StillViewNamer } from './app/stillViewName';
 import { FrameCadence, parseRefreshParam } from './app/frameCadence';
 import {
@@ -1763,18 +1763,22 @@ function rungMemoryContextLost(): void {
   rungMemoryLostAtRung('the WebGL context was lost');
 }
 
-/** The GPU clock turned itself off for a reason of its own — its price, a
- *  sync object refused — rather than a lost context or the controller's own
- *  verdict: a rung too heavy to time does that before its readings can hand
- *  it back. */
+/** The GPU clock turned itself off for a reason of its own rather than the
+ *  controller's verdict. A sync object refused is the context's loss reaching
+ *  the sensor first, and is judged as one; its price, or its clock's grid, is
+ *  judged only while the remembered climb is still on trial. */
 function rungMemorySensorOff(reason: string): void {
-  rungMemoryLostAtRung(`the GPU clock turned itself off (${reason})`);
+  if (reason === SYNC_REFUSED_REASON) {
+    rungMemoryLostAtRung('the context refused the GPU clock a sync object');
+  } else {
+    rungMemoryLostAtRung(`the GPU clock turned itself off (${reason})`, true);
+  }
 }
 
-function rungMemoryLostAtRung(what: string): void {
+function rungMemoryLostAtRung(what: string, onlyOnTrial = false): void {
   if (rungMemoryBlockedBy !== null) return;
   const visible = document.visibilityState === 'visible';
-  const done = rungMemory.lostAtRung(visible);
+  const done = onlyOnTrial ? rungMemory.sensorOff(resolutionController, visible) : rungMemory.lostAtRung(visible);
   if (done === 'deleted') {
     debugLog('Rung memory', { deleted: `${what} with the remembered rung on trial and the page visible` });
   } else if (done === 'kept') {

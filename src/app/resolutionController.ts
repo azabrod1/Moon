@@ -288,7 +288,9 @@
  * failure counted and no longer wait, because a lifecycle event is not the
  * rung failing. The one exception is the delivery guard after a change of the
  * sensor's duty: that moved nothing on screen, the frames the guard reads are
- * the rung's own, and a slow stretch of them is a measured failure. After that
+ * the rung's own, and a slow stretch of them is a measured failure — until an
+ * event reset inside that re-check moves the scene, which makes it a reset
+ * like any other (the latest reset's cause decides). After that
  * the rung is handed back — one rung, never below Medium — by any of: the p90
  * of a window of at least `CLOCK_DOWN_COUNT` readings spanning
  * `CLOCK_DOWN_SPAN_MS` above `CLOCK_DOWN_SHARE` of the budget;
@@ -377,7 +379,8 @@
  * treatment and drops the memory too, and so does a panic or readings over
  * the bar in the re-check a change of the sensor's duty opens — its plain
  * restore stands for the rung, but its frames are the rung's own and a heavy
- * rung is what prices the duty up; a lifecycle restore, a pin, a level
+ * rung is what prices the duty up, until an arrival or any other event reset
+ * inside it moves the scene; a lifecycle restore, a pin, a level
  * change, a new budget or ladder, `forgetRemembered` (the canvas grew past
  * what the memory was held at), or any other move off the rung ends the
  * trial with no verdict ('abandoned') and the memory is kept. Where the tick
@@ -2170,6 +2173,13 @@ export class ResolutionController {
    * from readings drawn after the settle. A verification already standing
    * keeps its kind and its deadline — a second reset or a duty change never
    * buys it more time. Anywhere else there is nothing the clock holds.
+   *
+   * Whether the frames it reads are the rung's own is the LATEST reset's to
+   * say: a duty change moved nothing on screen, but an arrival, a tool, a
+   * focus gain, a resize or a pin lifted inside that re-check puts it at a
+   * scene the rung was never earned at, so the mark goes — and a slow stretch
+   * there, the delivery guard's included, is the plain restore every other
+   * reset gets rather than a measured failure.
    */
   private reopenClockVerify(byDuty = false): void {
     if (!this.clockHolds()) {
@@ -2184,7 +2194,7 @@ export class ResolutionController {
       belowMedianMs: standing?.belowMedianMs ?? null,
       sceneStretch: standing?.sceneStretch ?? null,
       belowGpuMs: standing?.belowGpuMs ?? null,
-      byDuty: standing?.byDuty ?? byDuty,
+      byDuty,
       startMs: this.settleUntilMs,
       deadlineMs: standing?.deadlineMs ?? null,
       interrupted: standing?.interrupted ?? false,

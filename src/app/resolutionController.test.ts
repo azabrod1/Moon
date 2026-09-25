@@ -3688,6 +3688,22 @@ describe('the trial after the check: a minute at the rung', () => {
     });
   }
 
+  for (const [what, reading, why] of [['over the bar', 15.5, 'verify'], ['a panic', 20, 'panic']] as const) {
+    it(`${what} after an arrival inside a duty change's re-check is at the arrival's pose: the plain restore, and the memory kept`, () => {
+      const rig = seededTop();
+      rig.runClock(seconds(20), onTime, () => 7);
+      rig.setDuty(8);
+      rig.runClock(5, onTime, () => 7);
+      rig.controller.notify('arrival', rig.nowMs);
+      rig.runClock(seconds(4), onTime, () => reading);
+      expect(rig.applied.map((a) => [a.reason, a.to])).toEqual([['up', TOP], ['restore', MEDIUM]]);
+      expect(rig.controller.state().clock.last?.why).toBe(why);
+      expect(rig.controller.state().ceiling).toBeNull();
+      expect(rig.controller.state().clock.failures).toBe(0);
+      expect(rig.controller.seedOutcome).toBe('abandoned');
+    });
+  }
+
   it('a failure after the minute is only the rung failing: the memory stands', () => {
     const rig = seededTop();
     rig.runClock(seconds(REMEMBER_HOLD_MS / 1000 + 2), onTime, () => 7);

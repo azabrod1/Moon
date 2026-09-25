@@ -471,16 +471,37 @@ describe('a page that stops drawing, and one whose context is lost', () => {
     expect(store.stored()).toEqual(entry());
   });
 
-  it('the GPU clock priced off at the rung takes the same path: the flag standing, the page visible, the entry goes', () => {
+  it('the GPU clock priced off while the remembered climb is on trial, page visible: the entry goes', () => {
     const { store, mirror, source } = onTrial();
     // The sensor's own verdict reaches the mirror before the controller
     // restores Medium for it.
-    expect(mirror.lostAtRung(true)).toBe('deleted');
+    expect(mirror.sensorOff(source, true)).toBe('deleted');
     expect(store.stored()).toBeNull();
     source.outcome('abandoned');
     mirror.sync(source, config, NOW + 10);
     mirror.hide(source, config, NOW + 11);
     expect(store.stored()).toBeNull();
+  });
+
+  it('the GPU clock priced off after the trial ended with no verdict — an arrival not re-earned, back at Medium — keeps the entry, flag and all', () => {
+    const { store, mirror, source } = onTrial();
+    source.outcome('abandoned');
+    mirror.sync(source, config, NOW + 20_000);
+    expect(store.stored()?.trial).toBe(true);
+    const sets = store.sets;
+    expect(mirror.sensorOff(source, true)).toBeNull();
+    expect(store.stored()).toEqual(entry({ trial: true }));
+    expect(store.sets).toBe(sets);
+    expect(mirror.isStopped).toBe(false);
+    // A lost context in the same stretch still deletes it: the flag stands.
+    expect(mirror.lostAtRung(true)).toBe('deleted');
+  });
+
+  it('the GPU clock priced off on trial with the page hidden keeps the entry', () => {
+    const { store, mirror, source } = onTrial();
+    mirror.hide(source, config, NOW + 2);
+    expect(mirror.sensorOff(source, false)).toBe('kept');
+    expect(store.stored()).toEqual(entry());
   });
 
   it('a loss with no trial flag standing touches nothing — none marked, or one cleared by a pass, a drop or a hide', () => {
@@ -521,6 +542,7 @@ describe('a page that stops drawing, and one whose context is lost', () => {
     mirror.hide(source, config, NOW + 7);
     mirror.shown(source);
     expect(mirror.lostAtRung(true)).toBeNull();
+    expect(mirror.sensorOff(source, true)).toBeNull();
     expect(store.sets).toBe(sets);
     expect(store.removes).toBe(0);
     expect(store.stored()?.trial).toBe(true);

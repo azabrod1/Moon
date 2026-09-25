@@ -36,16 +36,21 @@
 //     computing again after takeoff;
 //   - the driving disc not the rendered surface (Earth's 6,371 km, the Sun's
 //     photosphere) — the one regression the unit tests cannot see;
-//   - a look-around (real mouse drags, sampled while the pointer is down and
-//     after it lifts) moving the driving angle, the applied strength or the
-//     intended boom: the ramp reads the ship's distance plus the boom the rig
-//     intends, which neither orbiting the camera nor the safety pass pushing
-//     it out of a body's padded shell can change — at a mid-band pose that
-//     stays clear of the shell, and at a low one over Mercury where the drag
-//     reaches it (the camera's actual boom must shorten there, or the push
-//     never happened), with the rebuild counter still, which hears a factor
-//     change between two samples; drags that left the camera's own angle
-//     where it was prove nothing and fail;
+//   - a look-around (real mouse drags, sampled while the pointer is down,
+//     after it lifts, and once the damping coast has finished) moving the
+//     driving angle, the applied strength or the intended boom: the ramp
+//     reads the ship's distance plus the boom the rig intends, which neither
+//     orbiting the camera nor the safety pass pushing it out of a body's
+//     padded shell can change — at a mid-band pose that stays clear of the
+//     shell, at a low one over Mercury where the drag reaches it (the
+//     camera's actual boom must shorten there, or the push never happened),
+//     and at a lower one where the camera is first wheeled in to the
+//     controls' 89.6 km distance floor (a dolly the boom must hear, exactly)
+//     and the next drag's push then leaves it UNDER the floor, where every
+//     update's clamp lifts it back (the camera's boom must read under the
+//     floor there, or the clamp never acted) — with the rebuild counter
+//     still, which hears a factor change between two samples; drags that
+//     left the camera's own angle where it was prove nothing and fail;
 //   - a phase list that is not exactly the six phases;
 //   - a dev pose entered from a ramped frame with anything but full strength;
 //   - the FIRST landed render carrying a screen-authored material at the
@@ -537,12 +542,26 @@ try {
   // own angle moves — sampled DURING each drag as well as after it, so a
   // transient that returned before the endpoint is heard too, and the drags
   // must have moved the camera or the invariance was never exercised.
-  // Two poses: a mid-band one where the boom stays clear of the body, and a
+  // Three poses: a mid-band one where the boom stays clear of the body; a
   // low one where the second drag carries the camera into the body's padded
   // shell and the safety pass pushes it out radially — which shortens the
   // camera's ACTUAL boom, and read from the camera would have moved the
-  // driving angle with the ship never moving (Codex's counterexample).
-  console.log('[4] look-around: real mouse drags, mid-band and through the safety shell');
+  // driving angle with the ship never moving (Codex's second finding); and
+  // a lower one where the pushed camera sits under the controls' distance
+  // floor, so every update's clamp lifts it back to the floor and the push
+  // returns it, frame after frame through the damping coast — which a boom
+  // that took the lift for a dolly-out ran away on (Codex's third). Every
+  // pose is read again once the coast has finished: the runaway grew on
+  // the coast, not under the pointer. The floor is reached through the
+  // wheel, not by dragging the chase boom round until it faces the body:
+  // once a camera is on the shell, each frame's rotation moves it in and
+  // the push moves it back out along nearly the same line, so it slides
+  // toward the shell's nearest point at a small fraction of the drag's
+  // rate and climbs over the shell (a sticky-push simulation put it at
+  // 107 km after six drags, and the renderer read 192 km after two).
+  // Wheeled to the floor first, its FIRST contact with the shell is under
+  // the floor — and the wheel is itself the one input the boom must hear.
+  console.log('[4] look-around: real mouse drags, mid-band, through the safety shell and under the floor');
   async function dragOrbit(dx, dy) {
     const centreX = Math.floor(VIEWPORT_WIDTH / 2);
     const centreY = Math.floor(VIEWPORT_HEIGHT / 2);
@@ -561,42 +580,95 @@ try {
     const after = await rampState();
     return { during, after };
   }
-  async function lookAround(label, body, distanceMultiplier, drags, { expectPush }) {
-    const start = await jump(body, distanceMultiplier);
-    console.log(`  ${label}: ${body} k=${distanceMultiplier}: driving alpha=${start.angularRadiusDeg.toFixed(3)}deg camera alpha=${start.cameraAngularRadiusDeg.toFixed(3)}deg applied=${start.applied.toFixed(4)} boom=${(start.boomAU * KM_PER_AU).toFixed(1)}km camera boom=${(start.cameraBoomAU * KM_PER_AU).toFixed(1)}km`);
-    check(start.angularRadiusDeg > LENS_PROXIMITY_FULL_DEG && start.angularRadiusDeg < LENS_PROXIMITY_OFF_DEG, `${label}: the look-around pose must sit inside the band (alpha ${start.angularRadiusDeg.toFixed(2)})`);
-    check(Math.abs(start.boomAU - start.cameraBoomAU) * KM_PER_AU < 1, `${label}: at the parked chase the intended boom (${(start.boomAU * KM_PER_AU).toFixed(1)} km) must be the camera's (${(start.cameraBoomAU * KM_PER_AU).toFixed(1)} km)`);
+  const describe = (state) => `driving alpha=${state.angularRadiusDeg.toFixed(3)}deg camera alpha=${state.cameraAngularRadiusDeg.toFixed(3)}deg applied=${state.applied.toFixed(4)} boom=${(state.boomAU * KM_PER_AU).toFixed(1)}km camera boom=${(state.cameraBoomAU * KM_PER_AU).toFixed(1)}km floor=${(state.boomFloorAU * KM_PER_AU).toFixed(1)}km owner=${state.camOwner} applies=${state.applies}`;
+  async function lookAround(label, body, distanceMultiplier, drags, { expectPush, expectFloor = false }) {
+    const parked = await jump(body, distanceMultiplier);
+    console.log(`  ${label}: ${body} k=${distanceMultiplier}: ${describe(parked)}`);
+    check(parked.angularRadiusDeg > LENS_PROXIMITY_FULL_DEG && parked.angularRadiusDeg < LENS_PROXIMITY_OFF_DEG, `${label}: the look-around pose must sit inside the band (alpha ${parked.angularRadiusDeg.toFixed(2)})`);
+    check(Math.abs(parked.boomAU - parked.cameraBoomAU) * KM_PER_AU < 1, `${label}: at the parked chase the intended boom (${(parked.boomAU * KM_PER_AU).toFixed(1)} km) must be the camera's (${(parked.cameraBoomAU * KM_PER_AU).toFixed(1)} km)`);
+    check(parked.boomFloorAU > 0 && parked.boomFloorAU < parked.boomAU, `${label}: the controls' floor reads ${(parked.boomFloorAU * KM_PER_AU).toFixed(1)} km — it is meant to sit under the chase boom`);
+    let start = parked;
     let cameraMoved = 0;
-    let shortestCameraBoomAU = start.cameraBoomAU;
+    let shortestCameraBoomAU = parked.cameraBoomAU;
     let orbitOwned = false;
+    let underFloor = 0;
+    const holds = (now, where) => {
+      cameraMoved = Math.max(cameraMoved, Math.abs(now.cameraAngularRadiusDeg - start.cameraAngularRadiusDeg));
+      shortestCameraBoomAU = Math.min(shortestCameraBoomAU, now.cameraBoomAU);
+      if (now.camOwner === 'orbit') orbitOwned = true;
+      if (now.cameraBoomAU < now.boomFloorAU) underFloor++;
+      check(Math.abs(now.angularRadiusDeg - start.angularRadiusDeg) < 0.01, `${label}: ${where} moved the driving angle ${start.angularRadiusDeg.toFixed(3)} -> ${now.angularRadiusDeg.toFixed(3)}`);
+      check(Math.abs(now.applied - start.applied) < 1e-4, `${label}: ${where} moved the applied strength ${start.applied.toFixed(4)} -> ${now.applied.toFixed(4)}`);
+      check(Math.abs(now.boomAU - start.boomAU) * KM_PER_AU < 0.01, `${label}: ${where} moved the intended boom ${(start.boomAU * KM_PER_AU).toFixed(2)} -> ${(now.boomAU * KM_PER_AU).toFixed(2)} km`);
+      // The rebuild counter hears a factor change between samples too: with
+      // no wheel the driving angle is meant to hold to the bit, so a drag
+      // asks for no projection rebuild at all.
+      check(now.applies === start.applies, `${label}: ${where} rebuilt the projection (applies ${start.applies} -> ${now.applies}) — the factor moved between samples`);
+    };
+    if (expectFloor) {
+      // Ownership first: a wheel under the chase is a transient the follow
+      // undoes, under a drag orbit it is the user's dolly. One drag takes
+      // the camera a quarter turn on the chase boom, still clear of the
+      // shell, and must move nothing the other poses hold still.
+      const { during, after } = await dragOrbit(220, 0);
+      for (const [index, now] of [...during, after].entries()) {
+        holds(now, `the ownership drag ${index < during.length ? `leg ${index + 1}` : 'after'}`);
+        samples.push({ phase: 'drag', label, dx: 220, dy: 0, where: `ownership ${index < during.length ? `leg ${index + 1}` : 'after'}`, ...now });
+      }
+      // One wheel batch — a negative deltaY is the dolly IN — of 0.95^24 of
+      // the radius, through the floor, so the controls' clamp stops the
+      // camera exactly ON it; the boom, which hears a dolly-in the floor
+      // stopped as the move the camera made, must land on the floor with
+      // it. OrbitControls refuses a wheel while a drag is in progress, so
+      // this sits between drags.
+      await page.mouse.wheel(0, -2400);
+      await drawn(3);
+      start = await rampState();
+      console.log(`  after the wheel: ${describe(start)}`);
+      check(start.camOwner === 'orbit', `${label}: the wheel was meant to land under the user's ownership, not ${start.camOwner}`);
+      check(Math.abs(start.cameraBoomAU - start.boomFloorAU) * KM_PER_AU < 0.01, `${label}: the wheel was meant to take the camera to the ${(start.boomFloorAU * KM_PER_AU).toFixed(1)} km floor, but it sits at ${(start.cameraBoomAU * KM_PER_AU).toFixed(2)} km`);
+      check(Math.abs(start.boomAU - start.boomFloorAU) * KM_PER_AU < 0.01, `${label}: the intended boom did not hear the wheel's dolly-in to the floor: ${(start.boomAU * KM_PER_AU).toFixed(2)} km against the floor's ${(start.boomFloorAU * KM_PER_AU).toFixed(2)}`);
+      check(start.angularRadiusDeg > parked.angularRadiusDeg + 1 && start.angularRadiusDeg < LENS_PROXIMITY_OFF_DEG, `${label}: on the shorter boom the driving angle was meant to read larger and still inside the band, not ${start.angularRadiusDeg.toFixed(2)} after ${parked.angularRadiusDeg.toFixed(2)}`);
+      check(Math.abs(start.applied - lensProximityFactor(start.angularRadiusDeg)) < 1e-6, `${label}: after the wheel applied ${start.applied.toFixed(4)} is off the law's ${lensProximityFactor(start.angularRadiusDeg).toFixed(4)}`);
+      check(start.applies > parked.applies, `${label}: the wheel changed the driving angle but the projection was never rebuilt (applies ${parked.applies} -> ${start.applies})`);
+      shortestCameraBoomAU = start.cameraBoomAU;
+      cameraMoved = 0;
+    }
     for (const [dx, dy] of drags) {
       const { during, after } = await dragOrbit(dx, dy);
       for (const [index, now] of [...during, after].entries()) {
-        const where = index < during.length ? `leg ${index + 1}` : 'after';
-        cameraMoved = Math.max(cameraMoved, Math.abs(now.cameraAngularRadiusDeg - start.cameraAngularRadiusDeg));
-        shortestCameraBoomAU = Math.min(shortestCameraBoomAU, now.cameraBoomAU);
-        if (now.camOwner === 'orbit') orbitOwned = true;
-        check(Math.abs(now.angularRadiusDeg - start.angularRadiusDeg) < 0.01, `${label}: drag (${dx},${dy}) ${where} moved the driving angle ${start.angularRadiusDeg.toFixed(3)} -> ${now.angularRadiusDeg.toFixed(3)}`);
-        check(Math.abs(now.applied - start.applied) < 1e-4, `${label}: drag (${dx},${dy}) ${where} moved the applied strength ${start.applied.toFixed(4)} -> ${now.applied.toFixed(4)}`);
-        check(Math.abs(now.boomAU - start.boomAU) * KM_PER_AU < 0.01, `${label}: drag (${dx},${dy}) ${where} moved the intended boom ${(start.boomAU * KM_PER_AU).toFixed(2)} -> ${(now.boomAU * KM_PER_AU).toFixed(2)} km`);
-        // The rebuild counter hears a factor change between samples too: with
-        // no wheel the driving angle is meant to hold to the bit, so a drag
-        // asks for no projection rebuild at all.
-        check(now.applies === start.applies, `${label}: drag (${dx},${dy}) ${where} rebuilt the projection (applies ${start.applies} -> ${now.applies}) — the factor moved between samples`);
+        const where = `drag (${dx},${dy}) ${index < during.length ? `leg ${index + 1}` : 'after'}`;
+        holds(now, where);
         samples.push({ phase: 'drag', label, dx, dy, where, ...now });
       }
       console.log(`  drag (${dx},${dy}): driving alpha=${after.angularRadiusDeg.toFixed(3)}deg camera alpha=${after.cameraAngularRadiusDeg.toFixed(3)}deg applied=${after.applied.toFixed(4)} camera boom=${(after.cameraBoomAU * KM_PER_AU).toFixed(1)}km owner=${after.camOwner} applies=${after.applies}`);
     }
+    // The damping coast finishes under the user's ownership (nothing hands
+    // the camera back on release), and every frame of it facing the body is
+    // one more push and one more lift: wait it out and read again.
+    await page.waitForTimeout(800);
+    await drawn(2);
+    const settled = await rampState();
+    holds(settled, 'once the coast had finished');
+    samples.push({ phase: 'drag', label, dx: 0, dy: 0, where: 'settled', ...settled });
+    console.log(`  settled: driving alpha=${settled.angularRadiusDeg.toFixed(3)}deg camera alpha=${settled.cameraAngularRadiusDeg.toFixed(3)}deg applied=${settled.applied.toFixed(4)} camera boom=${(settled.cameraBoomAU * KM_PER_AU).toFixed(1)}km intended boom=${(settled.boomAU * KM_PER_AU).toFixed(1)}km owner=${settled.camOwner} applies=${settled.applies}`);
     check(orbitOwned, `${label}: no sample was taken under the user's ownership of the camera — did the drags reach the canvas?`);
     check(cameraMoved > 1, `${label}: the drags moved the camera's own angle by only ${cameraMoved.toFixed(3)}deg — did the drags orbit the camera?`);
     const shortenedKm = (start.cameraBoomAU - shortestCameraBoomAU) * KM_PER_AU;
-    if (expectPush) {
+    if (expectFloor) {
+      // The controls never leave the camera under their floor: a reading
+      // there is the safety pass's, after the update lifted it — the cycle.
+      check(underFloor > 0, `${label}: the drag was meant to leave the camera under the controls' ${(start.boomFloorAU * KM_PER_AU).toFixed(1)} km floor, but no sample read it there (shortest camera boom ${(shortestCameraBoomAU * KM_PER_AU).toFixed(2)} km) — the clamp never acted`);
+      console.log(`  ${underFloor} sample(s) read the camera under the ${(start.boomFloorAU * KM_PER_AU).toFixed(1)} km floor, the shortest at ${(shortestCameraBoomAU * KM_PER_AU).toFixed(2)} km; the intended boom held at ${(settled.boomAU * KM_PER_AU).toFixed(2)} km`);
+    } else if (expectPush) {
       check(shortenedKm > 50, `${label}: the drag was meant to reach the body's padded shell, but the camera's boom shortened by only ${shortenedKm.toFixed(1)} km — the push never happened`);
+      check(underFloor === 0, `${label}: ${underFloor} sample(s) read the camera under the controls' floor; this pose is meant to meet the shell above it`);
       console.log(`  the safety pass shortened the camera's boom by ${shortenedKm.toFixed(1)} km; the driving angle held at ${start.angularRadiusDeg.toFixed(3)}deg`);
     } else {
       check(shortenedKm < 1, `${label}: the mid-band drag met a shell (boom shortened ${shortenedKm.toFixed(1)} km); the pose is meant to stay clear of one`);
+      check(underFloor === 0, `${label}: ${underFloor} sample(s) read the camera under the controls' floor; this pose is meant to stay clear of the shell`);
     }
-    return { start, cameraMoved, shortenedKm };
+    return { parked, start, cameraMoved, shortenedKm, underFloor };
   }
   if (PHASES.has(4)) {
     const midRung = LADDER.find((k) => k <= 0.15) ?? LADDER[LADDER.length - 3];
@@ -608,6 +680,15 @@ try {
     // inside the band: the boom is 3.6 % of its radius, 9.5 % of Mercury's.)
     const lowRung = Number(arg('push-rung', '0.1332'));
     await lookAround('through the shell', 'Mercury', lowRung, [[220, 0], [220, 0], [0, 140], [-220, 0]], { expectPush: true });
+    // Mercury 98 km up (k = 0.13, Codex's pose): the padded shell passes
+    // 30 km under the ship, inside the controls' 89.6 km floor. The camera
+    // is wheeled in to the floor (inside lookAround, after an ownership
+    // drag), then dragged on round: on a floor-length boom it meets the
+    // shell about 112° round, and from there every pushed position is under
+    // the floor — OrbitControls' next update lifts it back with no wheel,
+    // the push returns it, every frame of the drag and its coast.
+    const floorRung = Number(arg('floor-rung', '0.13'));
+    await lookAround('under the floor', 'Mercury', floorRung, [[220, 0], [220, 0]], { expectPush: true, expectFloor: true });
   }
 
   // ---- 5. a dev pose after a ramped frame enters at full strength -------------

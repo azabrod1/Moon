@@ -458,17 +458,37 @@ export function chaseIdealBoomAU(
  * becomes the radius the next update starts from — the push is sticky for the
  * rest of the gesture, and reading the camera's distance before the safety
  * pass is no cleaner than reading it after. What one update() does to the
- * radius is only the wheel's dolly scale and the min/max clamp, so the ratio
- * of the radius the camera leaves the update with to the radius it entered
- * with is the user's zoom alone: apply that ratio to the intended boom and the
- * push never enters it. A ratio within ORBIT_DOLLY_DEADBAND of 1 is the
- * spherical round trip's rounding, not a dolly (the smallest wheel event
- * moves the scale by ~5e-4), and leaves the boom BIT-identical: multiplied
- * through every frame, that rounding walked the boom an ulp at a time and
- * flipped the factor between two adjacent doubles, a projection rebuild each
- * flip, on a drag with no wheel at all. A camera at the origin (no radius) or
- * a non-finite reading leaves the boom where it was; the clamp mirrors the
- * controls'.
+ * radius is `clamp(radius × scale, minDistance, maxDistance)` — the wheel's
+ * dolly and the controls' own distance clamp, nothing else — so the ratio of
+ * the radius the camera leaves the update with to the radius it entered with
+ * is the user's zoom alone, EXCEPT where the clamp acted. The clamp has a
+ * signature: a radius that entered the update outside [min, max] and left it
+ * ON the bound was clamped, that ratio is the clamp's and not the wheel's,
+ * and such an update leaves the boom alone. Under the floor is exactly where
+ * a safety push leaves the camera whenever a body's padded shell passes
+ * within the floor's 89.6 km of the ship (Mercury 98 km up: the shell 30 km
+ * under the ship): a drag that faces the body puts the boom through the
+ * shell, the push takes the camera out to the shell, 30 km from the ship,
+ * the next update's clamp lifts it back to the floor with no wheel at all,
+ * the push returns it — every frame the drag, and then its damping coast,
+ * faces the body. A boom that took each lift for a dolly-out tripled a
+ * frame: 230 km to thousands over one coast, the lens from 0.25 to full, the
+ * ship never moving (Codex's third finding). A wheel event the clamp
+ * swallowed — dollying in at the floor, or out from under it by less than
+ * it takes to clear it — moved nothing the eye can see and is not heard
+ * either; a dolly that carried the radius off the bound is heard exactly,
+ * and a dolly-in from above that the floor stopped is heard as the move the
+ * camera made. "On the bound" is read to ORBIT_DOLLY_DEADBAND of it: the
+ * spherical round trip returns a clamped radius an ulp or two off the floor.
+ * A ratio within ORBIT_DOLLY_DEADBAND of 1 is that same rounding, not a dolly
+ * (the smallest wheel event moves the scale by ~5e-4), and leaves the boom
+ * BIT-identical: multiplied through every frame, it walked the boom an ulp at
+ * a time and flipped the factor between two adjacent doubles, a projection
+ * rebuild each flip, on a drag with no wheel at all. The radius to measure is
+ * the one the controls scale, about their target — a pan moves the target
+ * inside the update, and the camera's distance to the origin would carry it.
+ * A camera at the target (no radius) or a non-finite reading leaves the boom
+ * where it was; the clamp on the boom mirrors the controls'.
  */
 export const ORBIT_DOLLY_DEADBAND = 1e-9;
 export function intendedBoomAfterOrbitUpdate(
@@ -479,6 +499,11 @@ export function intendedBoomAfterOrbitUpdate(
   maxDistanceAU: number,
 ): number {
   if (!(radiusBeforeAU > 0) || !Number.isFinite(radiusAfterAU) || !(radiusAfterAU > 0)) return intendedBoomAU;
+  // The controls' clamp: entered the update outside the range, left it on
+  // the bound. Never a dolly, whatever the wheel asked for underneath.
+  const onBound = (boundAU: number) => Math.abs(radiusAfterAU - boundAU) <= boundAU * ORBIT_DOLLY_DEADBAND;
+  if (radiusBeforeAU < minDistanceAU && onBound(minDistanceAU)) return intendedBoomAU;
+  if (radiusBeforeAU > maxDistanceAU && onBound(maxDistanceAU)) return intendedBoomAU;
   const ratio = radiusAfterAU / radiusBeforeAU;
   if (Math.abs(ratio - 1) < ORBIT_DOLLY_DEADBAND) return intendedBoomAU;
   const scaled = intendedBoomAU * ratio;

@@ -762,11 +762,14 @@ export class PlanetariumMode {
     /** The driving body's disc radius — the rendered surface, so a probe can
      *  see that the air shell or the Sun's governed surface never drove it. */
     discRadiusAU: 0,
-    /** The boom the driving angle was read with (intendedCameraRadiusAU), and
-     *  the camera's actual distance to the ship, so a probe can see a safety
-     *  push shorten the second while the first, and the angle, hold. */
+    /** The boom the driving angle was read with (intendedCameraRadiusAU), the
+     *  camera's actual distance to the ship, and the controls' distance
+     *  floor, so a probe can see a safety push shorten the second — to under
+     *  the third, where the controls' clamp lifts it back every frame —
+     *  while the first, and the angle, hold. */
     boomAU: 0,
     cameraBoomAU: 0,
+    boomFloorAU: 0,
     camOwner: 'chase' as 'chase' | 'orbit' | 'reacquiring',
     body: null as string | null,
     devPose: false,
@@ -780,8 +783,10 @@ export class PlanetariumMode {
    *  carries the wheel's dolly ratio from each OrbitControls update
    *  (cruiseView.intendedBoomAfterOrbitUpdate — the one writer of the camera
    *  there re-reads the camera every frame, so a safety push is sticky for
-   *  the gesture and must be kept out of the boom by construction); a cruise
-   *  reset seats it at the pose it seats the camera at. Level, 232.8 km. */
+   *  the gesture and must be kept out of the boom by construction — and so
+   *  must the controls' own clamp lifting a pushed camera back up to the
+   *  floor, which is the push again from the other side); a cruise reset
+   *  seats it at the pose it seats the camera at. Level, 232.8 km. */
   private intendedCameraRadiusAU = chaseIdealBoomAU({ x: 0, y: 0, z: -1 }, { x: 0, y: 1, z: 0 });
   private readonly lensRampAngles: LargestDiscAngles = {
     effectiveRad: 0, effectiveIndex: -1, effectiveDistanceAU: 0, cameraRad: 0, cameraIndex: -1,
@@ -5386,12 +5391,17 @@ export class PlanetariumMode {
       // The user owns the camera: OrbitControls is the sole writer and its
       // damping coast finishes the gesture. Nothing follows or reverses it.
       // The intended boom takes only what this update did to the radius —
-      // the wheel's dolly and the clamp — never the radius it started from,
-      // which a safety push may have shortened last frame.
-      const radiusBefore = this.camera.position.length();
+      // the wheel's dolly — never the radius it started from, which a safety
+      // push may have shortened last frame, and never the controls' distance
+      // clamp lifting a pushed camera back up to the floor, which is that
+      // push again from the other side (intendedBoomAfterOrbitUpdate tells
+      // the two apart). The radius is the one the controls scale: about
+      // their target, which is the ship here and which a pan moves inside
+      // the update.
+      const radiusBefore = this.camera.position.distanceTo(this.controls.target);
       this.controls.update();
       this.intendedCameraRadiusAU = intendedBoomAfterOrbitUpdate(
-        this.intendedCameraRadiusAU, radiusBefore, this.camera.position.length(),
+        this.intendedCameraRadiusAU, radiusBefore, this.camera.position.distanceTo(this.controls.target),
         this.controls.minDistance, this.controls.maxDistance,
       );
       return;
@@ -14149,6 +14159,7 @@ export class PlanetariumMode {
     state.discRadiusAU = discRadiusAU;
     state.boomAU = this.intendedCameraRadiusAU;
     state.cameraBoomAU = this.camera.position.length();
+    state.boomFloorAU = this.controls.minDistance;
     state.camOwner = this.camOwner;
     state.body = body;
     state.devPose = devPose;
@@ -14177,6 +14188,7 @@ export class PlanetariumMode {
     state.discRadiusAU = 0;
     state.boomAU = 0;
     state.cameraBoomAU = 0;
+    state.boomFloorAU = 0;
     state.body = null;
     state.applied = lens.effectiveStrength ?? lens.strength;
     state.applies++;
@@ -15209,7 +15221,7 @@ export class PlanetariumMode {
   devLensRamp(): {
     enabled: boolean; factor: number; applied: number; angularRadiusDeg: number;
     cameraAngularRadiusDeg: number; discRadiusAU: number;
-    boomAU: number; cameraBoomAU: number; camOwner: 'chase' | 'orbit' | 'reacquiring';
+    boomAU: number; cameraBoomAU: number; boomFloorAU: number; camOwner: 'chase' | 'orbit' | 'reacquiring';
     body: string | null; devPose: boolean; applies: number;
   } {
     return { ...this.lensRampState };

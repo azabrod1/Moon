@@ -690,6 +690,85 @@ describe('largestDiscAngles (what the lens proximity ramp reads)', () => {
     expect(span(park.driving.map(lensProximityFactor))).toBe(0);
   });
 
+  it('holds still under the floor: the safety push leaves the camera inside minDistance, the controls\' clamp lifts it back, every frame, and the boom never learns it', () => {
+    // Codex's third finding. Mercury, the ship 98 km up (a k = 0.13 postcard):
+    // the padded shell, R + 67.9 km, passes 30 km under the ship — inside the
+    // controls' 89.6 km floor. A drag that faces the body puts the chase boom
+    // through the shell; the safety pass pushes the camera out to it, 30 km
+    // from the ship; OrbitControls re-derives its spherical from that camera
+    // and its update lifts the radius to the floor with no wheel; the push
+    // returns it — every frame the drag, then its coast, faces the body. A
+    // boom that took each lift for a dolly-out tripled a frame.
+    const mercuryR = 2439.7 * KM;
+    const shipDistance = 8 * 0.13 * mercuryR;
+    const mercury = shell(0, 0, -shipDistance, mercuryR, mercuryR, 'Mercury');
+    const minAU = CRUISE_CONTROLS_MIN_DISTANCE_AU;
+    const maxAU = 5;
+    // The shell passes inside the floor: the condition this pose exists for.
+    expect((shipDistance - mercuryR - CAMERA_BODY_MARGIN_AU) / KM).toBeCloseTo(29.7, 0);
+    expect(shipDistance - mercuryR - CAMERA_BODY_MARGIN_AU).toBeLessThan(minAU);
+    const forward = { x: 0, y: 0, z: -1 };
+    const up = { x: 0, y: 1, z: 0 };
+    const ideal = chaseIdealOffset(forward, up, { x: 0, y: 0, z: 0 });
+    const chaseBoom = chaseIdealBoomAU(forward, up);
+    const chasePolar = Math.atan2(Math.hypot(ideal.x, ideal.z), ideal.y); // from up
+    const span = (values: number[]) => Math.max(...values) - Math.min(...values);
+    // The frame loop under 'orbit', as the mode runs it: the controls' update
+    // (the spherical from the live camera, the radius × 1 — no wheel — then
+    // the clamp, then the pose at the drag's azimuth and polar), the boom
+    // rule across that update, the safety pass, the lens.
+    const fly = (boomRule: (intended: number, radiusBefore: number, radiusAfter: number) => number) => {
+      let cam = { ...ideal };
+      let intended = chaseBoom;
+      let framesUnderFloor = 0;
+      const driving: number[] = [];
+      const cameraBooms: number[] = [];
+      for (let frame = 0; frame < 900; frame++) {
+        // 300 frames swinging round to face the body and dropping level with
+        // it, 300 held there (the coast), 300 swinging back.
+        const t = frame < 300 ? frame / 300 : frame < 600 ? 1 : 1 - (frame - 600) / 300;
+        const azimuth = Math.PI * t; // 0 = the chase, π = facing the body
+        const polar = chasePolar + (Math.PI / 2 - chasePolar) * t;
+        const radiusBefore = length(cam);
+        const radius = Math.min(Math.max(radiusBefore * 1, minAU), maxAU);
+        cam = {
+          x: radius * Math.sin(polar) * Math.sin(azimuth),
+          y: radius * Math.cos(polar),
+          z: radius * Math.sin(polar) * Math.cos(azimuth),
+        };
+        intended = boomRule(intended, radiusBefore, length(cam));
+        const pushed = escapeCameraPenetrations(cam, [mercury], 1, CAMERA_BODY_MARGIN_AU);
+        if (pushed) cam = pushed;
+        if (length(cam) < minAU) framesUnderFloor++;
+        cameraBooms.push(length(cam));
+        driving.push(largestDiscAngles(cam, intended, [mercury], 1, angles()).effectiveRad);
+      }
+      return { intended, framesUnderFloor, driving, cameraBooms };
+    };
+    const rig = fly((intended, before, after) => intendedBoomAfterOrbitUpdate(intended, before, after, minAU, maxAU));
+    // The condition was reached and held: the camera under the floor for the
+    // whole coast, 30 km from the ship.
+    expect(rig.framesUnderFloor).toBeGreaterThan(300);
+    expect(Math.min(...rig.cameraBooms) / KM).toBeLessThan(35);
+    expect(Object.is(rig.intended, chaseBoom)).toBe(true);
+    for (const r of rig.driving) expect(r).toBe(rig.driving[0]);
+    expect(deg(rig.driving[0])).toBeCloseTo(61.7, 0);
+    expect(span(rig.driving.map(lensProximityFactor))).toBe(0);
+    // The rule before this test — every ratio a dolly, the clamp's lift
+    // included — ran the boom to the ceiling and the lens to full, with the
+    // ship never moving.
+    const unfixed = fly((intended, before, after) => {
+      const ratio = after / before;
+      if (Math.abs(ratio - 1) < ORBIT_DOLLY_DEADBAND) return intended;
+      return Math.min(Math.max(intended * ratio, minAU), maxAU);
+    });
+    expect(unfixed.intended).toBe(maxAU);
+    const unfixedFactors = unfixed.driving.map(lensProximityFactor);
+    expect(unfixedFactors[0]).toBeCloseTo(lensProximityFactor(rig.driving[0]), 12);
+    expect(unfixedFactors[0]).toBeLessThan(0.3);
+    expect(Math.max(...unfixedFactors)).toBe(1);
+  });
+
   it('never exceeds the ship-only angle: a 1.8-radius pass bounds the DRIVING angle at 33.7°, not the camera\'s own', () => {
     const r = 243 * KM; // the smallest rendered moon the flyby search visits
     const pass = shell(1.8 * r, 0, 0, r, r, 'moonlet');
@@ -780,5 +859,51 @@ describe('intendedBoomAfterOrbitUpdate (the wheel enters the boom, a push never 
     expect(intendedBoomAfterOrbitUpdate(boom, 0, 100 * KM, minAU, maxAU)).toBe(boom);
     expect(intendedBoomAfterOrbitUpdate(boom, 100 * KM, Number.NaN, minAU, maxAU)).toBe(boom);
     expect(intendedBoomAfterOrbitUpdate(boom, 100 * KM, 0, minAU, maxAU)).toBe(boom);
+  });
+
+  it('never takes the controls\' distance clamp for a dolly: a radius that entered under the floor and left on it leaves the boom alone', () => {
+    // Codex's third finding: the ship 98 km over Mercury, the drag facing the
+    // body, the safety pass leaving the camera 30 km from the ship — under
+    // the 89.6 km floor — and OrbitControls' update() lifting it back to the
+    // floor with no wheel at all. Multiplied through, that lift tripled the
+    // boom every frame of the coast.
+    const pushed = 30 * KM;
+    expect(Object.is(intendedBoomAfterOrbitUpdate(boom, pushed, minAU, minAU, maxAU), boom)).toBe(true);
+    // The spherical round trip leaves the lifted radius an ulp or two off
+    // the floor, either side.
+    for (const ulps of [1, -1, 3, -7]) {
+      const lifted = minAU * (1 + ulps * Number.EPSILON);
+      expect(Object.is(intendedBoomAfterOrbitUpdate(boom, pushed, lifted, minAU, maxAU), boom)).toBe(true);
+    }
+    // The cycle itself — pushed to the shell, lifted to the floor — for 500
+    // frames leaves the boom BIT-identical.
+    let intended = boom;
+    for (let frame = 0; frame < 500; frame++) {
+      intended = intendedBoomAfterOrbitUpdate(intended, pushed, minAU * (1 + ((frame % 3) - 1) * Number.EPSILON), minAU, maxAU);
+    }
+    expect(Object.is(intended, boom)).toBe(true);
+    // A push that left the camera a rounding error under the floor: the lift
+    // is the clamp's too.
+    expect(Object.is(intendedBoomAfterOrbitUpdate(boom, minAU * (1 - Number.EPSILON), minAU, minAU, maxAU), boom)).toBe(true);
+    // The ceiling, symmetric.
+    expect(Object.is(intendedBoomAfterOrbitUpdate(boom, maxAU * 1.5, maxAU, minAU, maxAU), boom)).toBe(true);
+    expect(Object.is(intendedBoomAfterOrbitUpdate(boom, maxAU * 1.5, maxAU * (1 - Number.EPSILON), minAU, maxAU), boom)).toBe(true);
+  });
+
+  it('still hears the wheel across the floor: out from under it exactly, in onto it as the move the camera made, and not at all where the clamp swallowed it', () => {
+    const pushed = 60 * KM;
+    // A wheel-out that carried a pushed camera past the floor left the update
+    // OFF the bound: the ratio is the wheel's alone.
+    expect(intendedBoomAfterOrbitUpdate(boom, pushed, pushed * 1.6, minAU, maxAU) / KM).toBeCloseTo(232.8 * 1.6, 9);
+    // A wheel-in from above the floor that the clamp stopped AT the floor
+    // moved the camera to the floor: the boom takes that visible ratio.
+    expect(intendedBoomAfterOrbitUpdate(boom, 232.8 * KM, minAU, minAU, maxAU) / KM).toBeCloseTo(minAU / KM, 9);
+    // A wheel-in AT the floor moves nothing the eye can see, and nothing here.
+    expect(Object.is(intendedBoomAfterOrbitUpdate(boom, minAU, minAU, minAU, maxAU), boom)).toBe(true);
+    // A wheel-out from under the floor that did not clear it is the clamp's
+    // move, and is not heard: the camera is at the floor either way.
+    expect(Object.is(intendedBoomAfterOrbitUpdate(boom, pushed, minAU, minAU, maxAU), boom)).toBe(true);
+    // A wheel-out from the floor itself is heard exactly.
+    expect(intendedBoomAfterOrbitUpdate(boom, minAU, minAU * 1.05, minAU, maxAU) / KM).toBeCloseTo(232.8 * 1.05, 9);
   });
 });

@@ -17,6 +17,16 @@
  * the lens pass resamples it; projectToScreen applies the same forward map so
  * DOM overlays land on the warped pixels.
  *
+ * The strength need not be constant in flight. A body that fills the view has
+ * its limb far off-axis, where this map compresses hardest — a centred disc's
+ * drawn radius has a ceiling of 3.73 frame half-heights at the 60° design —
+ * so with `?lensramp=1` (off by default until its moving A/B is judged) the
+ * planetarium fades the request out as the largest rendered disc grows past a
+ * 45° angular radius and back in as it shrinks (lensProximity.ts; the
+ * `proximityFactor` on the camera's lens params, folded into
+ * `effectiveStrength` by applyDesignFov below, which is why every consumer
+ * reads THAT). Dev poses never ramp: the capture fleet pins pixels close in.
+ *
  * Pure math only — no three.js imports — so the shader interpolation sites
  * and the CPU seam share one definition.
  */
@@ -265,13 +275,18 @@ export function lensMaxFrameScale(designFovDeg: number, aspect: number, strength
  * actual render FOV to the overscan the lens warp needs (identity when the
  * lens is off). The ONE way any code should set the planetarium camera's
  * FOV — writing `camera.fov` directly under an active lens would change the
- * displayed framing.
+ * displayed framing. Also the one place the proximity ramp's factor meets
+ * the requested strength: the product goes through the wide-FOV cap into
+ * `effectiveStrength`, so a body filling the view and a design FOV the
+ * source cannot feed are read by every consumer through the same number.
  */
 export function applyDesignFov(
   camera: {
     fov: number;
     aspect: number;
-    userData: { lens?: { strength: number; designFovDeg: number; effectiveStrength?: number } };
+    userData: {
+      lens?: { strength: number; designFovDeg: number; effectiveStrength?: number; proximityFactor?: number };
+    };
     updateProjectionMatrix: () => void;
   },
   designFovDeg: number,
@@ -279,7 +294,8 @@ export function applyDesignFov(
   const lens = camera.userData.lens;
   if (lens) {
     lens.designFovDeg = designFovDeg;
-    lens.effectiveStrength = lensEffectiveStrength(designFovDeg, camera.aspect, lens.strength);
+    const requestedStrength = lens.strength * (lens.proximityFactor ?? 1);
+    lens.effectiveStrength = lensEffectiveStrength(designFovDeg, camera.aspect, requestedStrength);
     camera.fov = lensOverscanFovDeg(designFovDeg, camera.aspect, lens.effectiveStrength);
   } else {
     camera.fov = designFovDeg;

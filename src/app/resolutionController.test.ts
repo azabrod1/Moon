@@ -1737,6 +1737,50 @@ describe('a rung the clock earned is re-earned after every evidence reset', () =
   });
 });
 
+describe('a reset that is not re-earned is the plain restore, whatever fails it', () => {
+  const resets: [string, (rig: ClockRig) => void][] = [
+    ['an arrival', (rig) => rig.controller.notify('arrival', rig.nowMs)],
+    ['a resize', (rig) => rig.controller.notify('resize', rig.nowMs)],
+    ['a resize that brings a new ladder', (rig) => { rig.controller.setLadder(FULL_LADDER, rig.nowMs); }],
+  ];
+  const reads: [string, number][] = [
+    ['over the budget', 20],
+    ['capped', Infinity],
+  ];
+  for (const [event, reset] of resets) {
+    for (const [what, reading] of reads) {
+      it(`after ${event}, with readings ${what}: Medium once, no ceiling, no failure counted, no longer wait`, () => {
+        const rig = earnedTop();
+        const wait = rig.controller.state().probeWaitMs;
+        const from = rig.applied.length;
+        reset(rig);
+        expect(rig.controller.state().clock.verify?.kind).toBe('reset');
+        rig.runClock(seconds(4), onTime, () => reading);
+        const after = rig.applied.slice(from);
+        // Four readings over the bar make a panic before eight can make a
+        // verdict: the panic, too, is the lifecycle's restore.
+        expect(after.map((a) => [a.reason, a.to])).toEqual([['restore', MEDIUM]]);
+        const state = rig.controller.state();
+        expect(state.clock.last?.why).toBe('panic');
+        expect(state.ceiling).toBeNull();
+        expect(state.clock.failures).toBe(0);
+        expect(state.probeWaitMs).toBe(wait);
+      });
+    }
+  }
+
+  it('a probe’s verification keeps the measured treatment: the same readings after a climb escalate', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.runClock(seconds(20), onTime, (rung) => (rung > MEDIUM ? 20 : 7));
+    const state = rig.controller.state();
+    expect(rig.applied.find((a) => a.reason === 'revert')).toBeDefined();
+    expect(state.ceiling?.rung).toBe(MEDIUM + 1);
+    expect(state.clock.failures).toBe(1);
+    expect(state.probeWaitMs).toBe(2 * PROBE_WAIT_MS);
+  });
+});
+
 describe('a clock probe short of evidence', () => {
   it('reverts when fewer than eight readings arrive in three seconds, without a ceiling', () => {
     const rig = new ClockRig(new ResolutionController(FULL_LADDER));

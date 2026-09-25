@@ -227,9 +227,11 @@
  * not arrive in time is silence rather than a measured failure — a revert
  * with the wait doubled, and a second in a row at the same rung holds that
  * rung as a ceiling, so a rung that can never be verified is not probed every
- * ten seconds for the session. A reset that is not re-earned in time is a
- * plain restore to Medium, with no ceiling and no longer wait, because a
- * lifecycle event is not the rung failing. After that
+ * ten seconds for the session. A reset that is not re-earned — its
+ * readings too slow or too few, a panic, capped fences, the delivery guard
+ * while it stands — is a plain restore to Medium, with no ceiling, no
+ * failure counted and no longer wait, because a lifecycle event is not the
+ * rung failing. After that
  * the rung is handed back — one rung, never below Medium — by any of: the p90
  * of a window of at least `CLOCK_DOWN_COUNT` readings spanning
  * `CLOCK_DOWN_SPAN_MS` above `CLOCK_DOWN_SHARE` of the budget;
@@ -1778,13 +1780,23 @@ export class ResolutionController {
     if (this.clockOffReason !== null) return this.clockRestore(nowMs, 'off');
     const bar = this.budgetMs;
     const verify = this.clockVerify;
+    // While a lifecycle reset is being re-earned — an arrival, a resize, a
+    // focus gain, a pin lifted, a new budget or ladder, a duty change, the
+    // map closing — whatever fails it is the plain restore: Medium, no
+    // ceiling, no failure counted, no longer wait. The rung did not fail at
+    // the pose it was earned at; the question is only whether it can be
+    // vouched for at the new one, and a panic or a capped fence there answers
+    // no in the same way a slow verification does.
+    const lifecycle = verify !== null && verify.kind === 'reset';
     if (this.panicStreak >= CLOCK_PANIC_COUNT) {
+      if (lifecycle) return this.clockRestore(nowMs, 'panic');
       return this.clockFail(nowMs, verify?.kind === 'probe' ? verify.fromIndex : this.index - 1, 'panic');
     }
     // Every frame that was drawn, slow for whatever reason: the pixels may be
     // kept only while the screen's rate really holds.
     const delivered = this.delivery.mean(nowMs, CLOCK_DELIVERY_SPAN_MS);
     if (delivered !== null && delivered > CLOCK_DELIVERY_GUARD * bar) {
+      if (lifecycle) return this.clockRestore(nowMs, 'delivery');
       return this.clockFail(nowMs, this.mediumIndex, 'delivery');
     }
     const quiet = this.activeSinceReadingMs > this.clockGap(verify !== null);
@@ -1796,7 +1808,7 @@ export class ResolutionController {
         const stats = this.clockRing.stats(verify.startMs);
         const trimmed = stats.trimmedMeanMs ?? Infinity;
         if (trimmed > CLOCK_DOWN_SHARE * bar) {
-          if (verify.kind === 'reset') return this.clockRestore(nowMs, 'verify');
+          if (lifecycle) return this.clockRestore(nowMs, 'verify');
           return this.clockFail(nowMs, verify.fromIndex, 'verify');
         }
         if (verify.kind === 'probe' && verify.belowMedianMs !== null && stats.medianMs !== null
@@ -1822,7 +1834,7 @@ export class ResolutionController {
       }
       if (nowMs < verify.deadlineMs && !quiet) return null;
       this.clockVerify = null;
-      if (verify.kind === 'reset') return this.clockRestore(nowMs, 'unverified');
+      if (lifecycle) return this.clockRestore(nowMs, 'unverified');
       return this.clockUnverified(nowMs, verify.fromIndex);
     }
     if (quiet) return this.clockRestore(nowMs, 'gap');

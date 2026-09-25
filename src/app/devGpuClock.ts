@@ -50,6 +50,10 @@
  *    behind a preference that is off by default, so the arm reports itself
  *    absent rather than absent-and-silent. On Metal the timer is
  *    command-buffer granular and reads high — a third opinion, not a truth.
+ *    Where there is no timer (or no query to spare) the arm's frames are
+ *    still DRAWN, unmeasured: the arms are cycled frame by frame, and a slot
+ *    that drew nothing would take a third of the GPU load away from the arms
+ *    it is compared with.
  *
  * The load is the DEV output-ratio pin, the same one `?ratio=` writes, so one
  * run can walk a frame cost from well under the display's tick to well over
@@ -63,6 +67,12 @@
  * and reported per frame. And no reading is ever averaged on the way in — the
  * frames are kept and summarised by gpuClockStats.ts, because a fence reading
  * carries the scheduler's noise and is only meaningful as a distribution.
+ *
+ * A level's drawn rate counts every frame drawn while it was measured,
+ * including a slot given up because a fence was still out. An earlier
+ * version counted only the measured frames, so where a poll loop outlived
+ * the frame interval its drawn rate was the measurement rate — the phase-1
+ * report's drawn/s column reads that way at its heavy loads.
  */
 
 import {
@@ -76,7 +86,7 @@ import {
   type PollSummary,
 } from './gpuClockStats';
 import { createReadbackWait } from './devGpuProfile';
-import { pollFence } from './fencePoll';
+import { pollFence, type FencePollSource, type TaskPump } from './fencePoll';
 
 export type GpuClockName = 'fence' | 'fence-drained' | 'fence-start' | 'readback' | 'timer';
 
@@ -160,7 +170,9 @@ export interface GpuClockLevel {
   /** Every surface a frame is drawn into at this level, in device pixels. */
   targets: unknown;
   arms: Record<string, GpuClockArm>;
-  /** Frames drawn per second while the level was measured, poll loops included. */
+  /** Frames drawn per second while the level was measured, poll loops
+   *  included — every frame drawn, measured or given up for a fence still
+   *  out. */
   drawnRateHz: number | null;
   drawnIntervalMs: Summary | null;
   /** One fence frame's raw poll stamps, kept as the evidence behind the summaries. */
@@ -199,6 +211,9 @@ export interface GpuClockDeps {
   pinRatio: (ratio: number | null) => void;
   /** Every surface a frame is drawn into, so a reading carries the pixels it was taken at. */
   targets: () => unknown;
+  /** Where the fence loop's tasks come from: the page's own task sources,
+   *  unless a test hands in a pump it runs by hand. */
+  createPump?: (source: FencePollSource) => TaskPump;
 }
 
 export interface GpuClock {
@@ -263,6 +278,8 @@ export function createGpuClock(deps: GpuClockDeps): GpuClock {
   /** Fence loops still running, and the timer queries still to answer. */
   let outstandingPolls = 0;
   let cancelPoll: (() => void) | null = null;
+  /** A test's pump, kept for the run. */
+  let runPump: TaskPump | null = null;
   const pendingTimers: { record: GpuClockFrame; query: WebGLQuery }[] = [];
 
   function level(): GpuClockLevel { return levels[levelIndex]; }
@@ -329,7 +346,9 @@ export function createGpuClock(deps: GpuClockDeps): GpuClock {
     const submitted = submittedAt;
     // The shared loop (app/fencePoll.ts), with the measurement's own options:
     // its task source, its stride and its raw stamps.
+    if (deps.createPump && runPump === null) runPump = deps.createPump(opts.poll.source);
     cancelPoll = pollFence(gl2, sync, submitted, {
+      pump: runPump ?? undefined,
       source: opts.poll.source,
       stride: opts.poll.stride,
       capMs: opts.poll.capMs,
@@ -375,12 +394,16 @@ export function createGpuClock(deps: GpuClockDeps): GpuClock {
   }
 
   function drawTimer(record: GpuClockFrame, draw: () => void) {
-    if (!timerExt) {
+    const query = timerExt ? gl2.createQuery() : null;
+    if (!timerExt || !query) {
+      // No timer to read: the frame is drawn all the same, unmeasured, so the
+      // arms it is cycled with see the load they would see anywhere else.
+      const t0 = performance.now();
+      draw();
+      record.submitMs = performance.now() - t0;
       record.capped = true;
       return;
     }
-    const query = gl2.createQuery();
-    if (!query) { record.capped = true; return; }
     gl2.beginQuery(timerExt.TIME_ELAPSED_EXT, query);
     const t0 = performance.now();
     draw();
@@ -485,6 +508,8 @@ export function createGpuClock(deps: GpuClockDeps): GpuClock {
     pendingTimers.length = 0;
     readback?.dispose();
     readback = null;
+    runPump?.dispose();
+    runPump = null;
     deps.pinRatio(null);
     active = false;
     resolveRun = null;
@@ -538,7 +563,9 @@ export function createGpuClock(deps: GpuClockDeps): GpuClock {
         }
         return;
       }
-      // measure
+      // measure — every frame drawn here is stamped, measured or not, so the
+      // level's drawn rate is the rate the app drew at.
+      levelStamps[levelIndex].push(now);
       const clock = opts.clocks[measuredInLevel % opts.clocks.length];
       const fenceClock = clock !== 'readback' && clock !== 'timer';
       if (fenceClock && outstandingPolls > 0) {
@@ -552,7 +579,6 @@ export function createGpuClock(deps: GpuClockDeps): GpuClock {
         return;
       }
       const record = newFrameRecord(clock, interval);
-      levelStamps[levelIndex].push(now);
       if (clock === 'readback') drawReadback(record, draw);
       else if (clock === 'timer') drawTimer(record, draw);
       else drawFence(record, draw, clock === 'fence-start' ? 'start' : clock === 'fence-drained' ? 'drained' : 'end');
@@ -594,7 +620,7 @@ export function createGpuClock(deps: GpuClockDeps): GpuClock {
     timerExt = gl.getExtension('EXT_disjoint_timer_query_webgl2') as typeof timerExt;
     notes.length = 0;
     if (!timerExt && opts.clocks.includes('timer')) {
-      notes.push('EXT_disjoint_timer_query_webgl2 is absent on this engine: the timer arm has no readings (on WebKit it needs the WebGL Timer Queries feature flag).');
+      notes.push('EXT_disjoint_timer_query_webgl2 is absent on this engine: the timer arm\'s frames are drawn but not measured (on WebKit it needs the WebGL Timer Queries feature flag).');
     }
     readback = createReadbackWait(gl);
     levels = opts.ratios.map((ratio) => ({

@@ -448,8 +448,8 @@ export function clockGapMs(duty: number, tickMs: number): number {
 export const CLOCK_SILENCE_SPAN_MS = 6000;
 
 /** Every frame drawn, untrimmed and unfiltered — streaming, main-thread and
- *  sensor overruns included, only the page away, covered or pinned left out —
- *  over this span: its mean must be within `CLOCK_DELIVERY_UP` of the budget
+ *  sensor overruns and the settle after a change included, only the page
+ *  away, covered or pinned and the map left out — over this span: its mean must be within `CLOCK_DELIVERY_UP` of the budget
  *  for a clock climb, and a rung the clock earned goes back to Medium when it
  *  passes `CLOCK_DELIVERY_GUARD`. 58 fps is 17.24 ms, which a trimmed mean of
  *  counted intervals against 1.05 × the budget would let through; permission
@@ -1163,7 +1163,7 @@ export class ResolutionController {
     if (sample.drawSeq !== undefined) this.recordVerdict(sample.drawSeq, because);
     if (sample.gpu) this.admitGpu(sample.gpu);
     const suspended = sample.clockSuspended === true;
-    this.recordDelivery(sample, settled, suspended);
+    this.recordDelivery(sample, suspended);
     // The end of a stretch the clock could not sample: what it measured before
     // describes a scene it has not seen since, so its evidence starts again and
     // a rung it earned is re-earned.
@@ -1675,11 +1675,15 @@ export class ResolutionController {
   /** Every eligible step's interval, for the delivery guard, and the active
    *  drawing time since the clock last had a reading. A stretch the clock
    *  cannot sample adds to neither: the map is not the scene's frames, and
-   *  a reading it never asked for is not silence. */
-  private recordDelivery(sample: IntervalSample, settled: boolean, suspended: boolean): void {
+   *  a reading it never asked for is not silence. The settle after a change
+   *  is NOT left out of the guard: it keeps the pixel evidence from reading
+   *  a reallocation as the rung's cost, but a frame drawn late inside it was
+   *  still a frame the screen showed late, and a sharper rung whose first
+   *  frame stalls must answer for it. */
+  private recordDelivery(sample: IntervalSample, suspended: boolean): void {
     if (this.idle || !sample.eligible || suspended) return;
     this.activeSinceReadingMs += sample.intervalMs;
-    if (settled) this.delivery.push(sample.nowMs, sample.intervalMs);
+    this.delivery.push(sample.nowMs, sample.intervalMs);
   }
 
   /**

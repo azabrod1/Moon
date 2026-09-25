@@ -1521,6 +1521,30 @@ describe('a rung the clock earned is kept only while the clock vouches for it', 
     expect(CLOCK_DELIVERY_GUARD).toBe(1.02);
   });
 
+  it('counts a frame drawn inside the settle after a climb: a 200 ms first frame at the sharper rung puts the six seconds over the guard', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    for (let k = 0; k < seconds(60) && !rig.applied.some((a) => a.reason === 'up'); k++) rig.runClock(1, onTime, () => 7);
+    const up = rig.applied[rig.applied.length - 1];
+    expect(up).toMatchObject({ reason: 'up', to: MEDIUM + 1 });
+    // The sharper rung's first frame takes 200 ms, and lands inside the
+    // settle after the change, which keeps it out of the pixel evidence.
+    rig.runClock(1, () => 200, () => 7);
+    expect(rig.nowMs - up.atMs).toBeLessThan(REALLOC_SETTLE_MS);
+    // It is still a frame the screen showed late: about 17.2 ms a frame over
+    // the six seconds, over the guard's 17.00.
+    const delivered = rig.controller.state().clock.deliveredMs;
+    expect(delivered).not.toBeNull();
+    expect(delivered!).toBeGreaterThan(CLOCK_DELIVERY_GUARD * BUDGET_MS);
+    expect(CLOCK_DELIVERY_GUARD * BUDGET_MS).toBeCloseTo(17.0, 6);
+    // And the guard hands the rung back at the first frame after the settle.
+    rig.runClock(seconds(1), onTime, () => 7);
+    const back = rig.applied.find((a) => a.atMs > up.atMs);
+    expect(back).toMatchObject({ to: MEDIUM, reason: 'revert' });
+    expect(back!.atMs - up.atMs).toBeLessThanOrEqual(REALLOC_SETTLE_MS + 2 * TICK);
+    expect(rig.controller.state().clock.last?.why).toBe('delivery');
+  });
+
   it('a delivery failure is the rung failing: the ceiling refuses the next climb for a minute, and a second failure holds it for four', () => {
     // WebKit on the project's Mac at Earth's shell: a rung the clock earned,
     // then one hitch of about 150 ms in six seconds of frames — enough to
@@ -1846,9 +1870,12 @@ describe('a rung whose frames do not count still hears its failures', () => {
     expect(state.ceiling).not.toBeNull();
     expect(state.ceiling!.rung).toBe(MEDIUM + 1);
     expect(rig.rung).toBe(MEDIUM);
-    // The readings were heard as failures, never as statistics.
-    expect(state.clock.dropped.uncounted).toBeGreaterThan(0);
-    expect(state.clock.uncountedBy.mainThread).toBeGreaterThan(0);
+    // Heard at once, and as a measured failure: the late frames inside the
+    // settle reach the delivery guard, which hands the rung back at the first
+    // frame after it, before four capped readings could make a panic. (The
+    // capped readings of uncounted frames reaching the panic are the tests
+    // below.)
+    expect(state.clock.last?.why).toBe('delivery');
   });
 
   it('hears them as the clock speaking, not as silence: at one frame in sixteen they hand the rung back as a panic', () => {

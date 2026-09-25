@@ -7,6 +7,7 @@ import {
   sphereAngularRadius,
 } from './lensProximity';
 import { ARRIVAL_IMPACT_RADII, SUN_APPROACH_SURFACE_RADII } from '../../planetarium/arrivalLogic';
+import { LANDED_FRAME_RADII, landedMinDistanceAU, landedNearAU } from '../../planetarium/landedView';
 
 describe('lensProximityFactor', () => {
   it('is exactly 1 at and below the full knee, exactly 0 at and above the off knee', () => {
@@ -42,6 +43,25 @@ describe('lensProximityFactor', () => {
     expect(lensProximityFactor(closestApproach)).toBe(1);
     // With a margin, so a knee moved down toward it is heard.
     expect(LENS_PROXIMITY_FULL_DEG - closestApproach / DEG2RAD).toBeGreaterThan(10);
+  });
+
+  it('never enters the ramp in the landed orbit view: touchdown is not a lens change', () => {
+    // Landing re-frames the body from LANDED_FRAME_RADII (the camera ends up
+    // 1.5x that out), and the orbit camera may zoom no closer than
+    // landedMinDistanceAU. Both sit under the full knee, so the landed branch's
+    // forced 1 and the ramp's own law agree at every landed pose — the lens
+    // changes on entering the observatory, a deliberate change of activity,
+    // never on touching the ground. A knee lowered under 41.8° breaks this.
+    const earthRadiusAU = 6371 / 149_597_870.7;
+    const moonletRadiusAU = 11 / 149_597_870.7;
+    for (const radiusAU of [earthRadiusAU, moonletRadiusAU]) {
+      const framed = sphereAngularRadius(radiusAU, radiusAU * LANDED_FRAME_RADII * 1.5);
+      expect(lensProximityFactor(framed)).toBe(1);
+      const closest = sphereAngularRadius(radiusAU, landedMinDistanceAU(radiusAU, landedNearAU(radiusAU)));
+      expect(closest / DEG2RAD).toBeLessThan(LENS_PROXIMITY_FULL_DEG);
+      expect(lensProximityFactor(closest)).toBe(1);
+    }
+    expect(sphereAngularRadius(1, 1.5) / DEG2RAD).toBeCloseTo(41.81, 1);
   });
 
   it('blends the Sun at its governed park from the photosphere, not the governed surface', () => {

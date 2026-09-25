@@ -30,8 +30,16 @@
 //   - on the airless --pixels body, the ramp-on width off its prediction, or
 //     not wider than the ramp-off width above 30° (a pinhole draws a big disc
 //     larger than the lens does);
-//   - landed, a factor other than 1 (the surface gate), or the ramp not
-//     computing again after takeoff.
+//   - landed, a factor other than 1 on the FIRST drawn landed frame from a
+//     cruise factor below 1 (the landed update places every overlay before
+//     the frame is drawn, so the reset has to precede it), or the ramp not
+//     computing again after takeoff;
+//   - a run that did not actually exercise what it claims: a ladder that
+//     never reached the off knee or never sampled the band, fewer than three
+//     pixel samples with the ramp meaningfully active, a landing the app
+//     refused, or an uncaught page error. Without --assert those print as
+//     notes and the run is exploratory; with it they fail the run, so a
+//     regression that stops a path being exercised cannot report success.
 //
 // Prereq: npm run dev -- --port 5174
 //   node tools/approach-probe.mjs --assert
@@ -329,12 +337,15 @@ try {
   }
   const reachedOff = samples.some((s) => s.phase === 'ladder' && s.angularRadiusDeg >= LENS_PROXIMITY_OFF_DEG);
   const reachedBand = samples.some((s) => s.phase === 'ladder' && s.angularRadiusDeg > LENS_PROXIMITY_FULL_DEG && s.angularRadiusDeg < LENS_PROXIMITY_OFF_DEG);
+  const reachedFull = samples.some((s) => s.phase === 'ladder' && s.angularRadiusDeg <= LENS_PROXIMITY_FULL_DEG);
+  check(reachedFull, 'the ladder never sampled at full strength (at or under the full knee)');
   check(reachedBand, 'the ladder never sampled inside the ramp band');
-  if (!reachedOff) console.log('  note: the ladder did not reach the off knee (the chase camera trails the parked ship)');
+  check(reachedOff, 'the ladder never reached the off knee (alpha >= 70deg); lengthen the ladder toward the shell');
 
   // ---- 2. the drawn disc: the same pose with the ramp on and off -----------
   console.log(`[2] ${pixelBody}: the drawn disc, ramp on against ramp off at one pose`);
   let pixelSamplesJudged = 0;
+  let pixelSamplesActive = 0;
   for (const k of PIXEL_LADDER) {
     const on = await jump(pixelBody, k);
     const drawnOn = await measureDisc();
@@ -367,6 +378,7 @@ try {
     record.predictedOnPx = predictedOn;
     console.log(`  k=${String(k).padStart(6)}  alpha=${on.angularRadiusDeg.toFixed(2).padStart(6)}deg  tilt=${(tiltRad / DEG).toFixed(2)}deg  off(s=1)=${drawnOff.halfWidthPx.toFixed(1).padStart(6)} px  on(s=${on.applied.toFixed(3)})=${drawnOn.halfWidthPx.toFixed(1).padStart(6)} px  predicted=${predictedOn.toFixed(1).padStart(6)} px  delta=${delta >= 0 ? '+' : ''}${delta.toFixed(1)}`);
     pixelSamplesJudged++;
+    if (on.applied < 0.999) pixelSamplesActive++;
     check(Math.abs(delta) <= PIXEL_TOLERANCE(predictedOn),
       `${pixelBody} k=${k}: ramp-on width ${drawnOn.halfWidthPx.toFixed(1)} px vs predicted ${predictedOn.toFixed(1)} px at strength ${on.applied.toFixed(3)} (alpha ${on.angularRadiusDeg.toFixed(2)}deg, tilt ${(tiltRad / DEG).toFixed(2)}deg)`);
     if (predictedOn - drawnOff.halfWidthPx > 3 && on.angularRadiusDeg > 30) {
@@ -374,21 +386,30 @@ try {
     }
   }
   check(pixelSamplesJudged >= 3, `only ${pixelSamplesJudged} pixel sample(s) could be judged — widen the frame or move the pixel ladder`);
+  check(pixelSamplesActive >= 3, `only ${pixelSamplesActive} judged pixel sample(s) had the ramp meaningfully active (applied < 0.999) — a disc that the ramp did not change proves nothing about it`);
 
   // ---- 3. the surface gate, and the ramp after takeoff ----------------------
   console.log('[3] landed: the ramp reads 1; after takeoff it computes again');
   {
     const closeRung = LADDER[LADDER.length - 1];
     const before = await jump(stateBody, closeRung);
+    check(before.factor < 1, `the landing must start from a cruise factor below 1 (k=${closeRung} read ${before.factor})`);
     const landed = await page.evaluate((body) => window.__moon.land(body), stateBody);
+    check(landed === true, 'land() refused — the surface gate was not exercised');
     if (!landed) {
-      console.log('  land() refused here — surface gate not exercised');
       samples.push({ phase: 'landed', skipped: true });
     } else {
+      // The FIRST drawn landed frame: the landed update places every overlay
+      // through the lens before the frame is drawn, so the factor must already
+      // read 1 on that frame, not after the rig has settled.
+      await drawn(1);
+      const firstFrame = await rampState();
+      console.log(`  first drawn landed frame: factor=${firstFrame.factor} applied=${firstFrame.applied} (was ${before.factor.toFixed(4)} in cruise at k=${closeRung})`);
+      check(firstFrame.factor === 1 && firstFrame.applied === 1, `first landed frame: factor ${firstFrame.factor}, applied ${firstFrame.applied} (want 1, 1)`);
       await page.waitForTimeout(600);
       await drawn(3);
       const onGround = await rampState();
-      console.log(`  landed: factor=${onGround.factor} applied=${onGround.applied} (was ${before.factor.toFixed(4)} in cruise at k=${closeRung})`);
+      console.log(`  settled landed: factor=${onGround.factor} applied=${onGround.applied}`);
       check(onGround.factor === 1 && onGround.applied === 1, `landed: factor ${onGround.factor}, applied ${onGround.applied} (want 1, 1)`);
       const tookOff = await page.evaluate(() => window.__moon.takeoff());
       check(tookOff === true, 'takeoff() refused');
@@ -400,12 +421,12 @@ try {
       const after = await jump(stateBody, closeRung);
       console.log(`  jumped back in: factor=${after.factor.toFixed(4)} applied=${after.applied.toFixed(4)}`);
       check(after.factor < 1, 'the ramp did not engage on a close jump after takeoff');
-      samples.push({ phase: 'landed', before, onGround, airborne, after });
+      samples.push({ phase: 'landed', before, firstFrame, onGround, airborne, after });
     }
   }
 
+  check(pageErrors.length === 0, `${pageErrors.length} uncaught page error(s): ${pageErrors.slice(0, 3).join(' | ')}`);
   await writeFile(path.join(outDir, 'approach-probe.json'), JSON.stringify({ baseUrl, viewport: [VIEWPORT_WIDTH, VIEWPORT_HEIGHT], samples, failures, pageErrors }, null, 2));
-  if (pageErrors.length) console.log('page errors:', pageErrors.slice(0, 5));
 } finally {
   await browser.close();
   releaseLock();

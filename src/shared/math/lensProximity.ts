@@ -61,7 +61,7 @@ export const LENS_PROXIMITY_OFF_DEG = 70;
  */
 export function lensProximityFactor(largestAngularRadiusRad: number): number {
   const angularRadiusDeg = largestAngularRadiusRad * RAD2DEG;
-  if (!(angularRadiusDeg > LENS_PROXIMITY_FULL_DEG)) return 1;
+  if (!Number.isFinite(angularRadiusDeg) || !(angularRadiusDeg > LENS_PROXIMITY_FULL_DEG)) return 1;
   if (angularRadiusDeg >= LENS_PROXIMITY_OFF_DEG) return 0;
   return 1 - smoothstepEdges(LENS_PROXIMITY_FULL_DEG, LENS_PROXIMITY_OFF_DEG, angularRadiusDeg);
 }

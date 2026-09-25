@@ -4679,10 +4679,15 @@ export class PlanetariumMode {
       // driving exposure keeps adapting in updateSunShader, which runs in the
       // landed pipeline too so Observatory sun views stay protected).
       this.exposureTarget = 1;
-      this.updateLanded(dt, willDraw);
-      // Reads 1 while landed — a ship that landed from the park must not keep
-      // the pinhole it arrived with (updateLensProximity).
+      // The lens ramp reads 1 while landed, and it is established BEFORE the
+      // landed update: that pass runs every projecting consumer — the label
+      // pipeline, the moon dots, the shadow guides, the constellation labels —
+      // and a ship that landed from the park would otherwise spend its first
+      // landed frame with those placed through the pinhole it arrived with and
+      // its pixels drawn through the lens. enterLandedMode resets it at the
+      // transition as well; this is the per-frame guarantee (and the readout).
       this.updateLensProximity();
+      this.updateLanded(dt, willDraw);
       // End of the landed branch: positions are final, refresh the map if open.
       if (willDraw) {
         this.updateMapView();
@@ -14038,12 +14043,19 @@ export class PlanetariumMode {
   /** Full lens strength, now — for a discontinuity the per-frame ramp will
    *  not see (deactivation hands the camera to another mode). */
   private resetLensProximity(): void {
-    const lens = this.camera.userData.lens as { proximityFactor?: number } | undefined;
+    const lens = this.camera.userData.lens as
+      | { strength: number; effectiveStrength?: number; proximityFactor?: number }
+      | undefined;
     if (!lens || (lens.proximityFactor ?? 1) === 1) return;
     lens.proximityFactor = 1;
     this.setDisplayFov(displayFovDeg(this.camera));
-    this.lensRampState.factor = 1;
-    this.lensRampState.applies++;
+    // The readout is verification evidence: keep it describing the camera.
+    const state = this.lensRampState;
+    state.factor = 1;
+    state.angularRadiusDeg = 0;
+    state.body = null;
+    state.applied = lens.effectiveStrength ?? lens.strength;
+    state.applies++;
   }
 
   /** Camera safety + dynamic near plane, cruise only. Collisions move only
@@ -18220,6 +18232,10 @@ export class PlanetariumMode {
   }
 
   enterLandedMode(target: NonNullable<LandedTarget>) {
+    // The lens ramp is a cruise-frame quantity: landing establishes full
+    // strength here, at the transition, before the landed rig is posed — the
+    // per-frame landed branch keeps it there.
+    this.resetLensProximity();
     if (this.isMissionActive()) return;
     this.preLandSpeed = this.player.speedMultiplier;
     this.preLandAutopilot = this.autopilot;

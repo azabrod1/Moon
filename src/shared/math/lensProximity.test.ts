@@ -56,7 +56,11 @@ describe('lensProximityFactor', () => {
   });
 
   it('reads a non-finite or inside-the-sphere input safely', () => {
+    // Non-finite reads as far away — every sign of it; an infinite angular
+    // radius is nonsense, and the safe answer is the lens as it was.
     expect(lensProximityFactor(Number.NaN)).toBe(1);
+    expect(lensProximityFactor(Number.POSITIVE_INFINITY)).toBe(1);
+    expect(lensProximityFactor(Number.NEGATIVE_INFINITY)).toBe(1);
     expect(sphereAngularRadius(1, 0.5)).toBe(Math.PI / 2);
     expect(sphereAngularRadius(0, 5)).toBe(0);
     expect(sphereAngularRadius(1, 2) / DEG2RAD).toBeCloseTo(30, 9);

@@ -1007,21 +1007,38 @@ describe('a device far below the tick still steps down', () => {
     expect(away.applied).toEqual([]);
   });
 
-  it('gives the count rule’s own answer when the stretch away is shorter', () => {
-    // Three seconds of 30 fps, ten away, then healthy frames. The count alone
-    // steps here, on the sample that makes 360: 90 slow intervals and 270
-    // healthy ones, whose trimmed mean is still over the bar.
+  it('never reads across a tool: the return drops the window and the clock’s evidence, so nothing steps', () => {
+    // Three seconds of 30 fps at Medium, ten in Look inside, then a healthy
+    // return. Read across the tool, the 90 slow intervals and the first 270
+    // healthy ones would trim to a mean over the bar and step the picture down
+    // 4.5 s after the return, and back up about ten seconds after that.
     const slow = 2 * TICK;
     const trimmed = (90 * slow + (DOWN_WINDOW_COUNTED - 90) * TICK - TRIM_COUNT * slow) / (DOWN_WINDOW_COUNTED - TRIM_COUNT);
     expect(trimmed).toBeGreaterThan(DOWN_FACTOR * BUDGET_MS);
-    const rig = new Rig(new ResolutionController(SHORT_LADDER));
-    rig.run(90, () => slow);
-    rig.run(Math.round(10_000 / TICK), () => TICK, { eligible: false });
-    const resumedAt = rig.nowMs;
-    const step = untilStep(rig, 20_000, () => TICK);
-    expect(step?.reason).toBe('down');
-    expect(step?.windowBy).toBe('count');
-    expect(step?.atMs).toBeCloseTo(resumedAt + (DOWN_WINDOW_COUNTED - 90) * TICK, 6);
+    const trip = (event: boolean): ClockRig => {
+      const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+      blindScreen(rig);
+      // The clock reads a pose with no room above, so nothing climbs.
+      rig.runClock(90, () => slow, () => 13);
+      rig.runClock(Math.round(10_000 / TICK), onTime, () => 13, { eligible: false });
+      if (event) {
+        expect(rig.controller.state().clock.counted).toBeGreaterThan(0);
+        const generation = rig.controller.generation;
+        rig.controller.notify('mode', rig.nowMs);
+        const back = rig.controller.state();
+        expect(back.countedWindow).toBe(0);
+        expect(back.downSpanMs).toBeNull();
+        expect(rig.controller.generation).toBe(generation + 1);
+        expect(back.clock.counted).toBe(0);
+      }
+      rig.runClock(seconds(30), onTime, () => 13);
+      return rig;
+    };
+    const returned = trip(true);
+    expect(returned.applied).toEqual([]);
+    expect(returned.rung).toBe(MEDIUM);
+    // The event is what does it: the same frames with no event read across.
+    expect(trip(false).applied.map((a) => a.reason)).toContain('down');
   });
 
   it('never reads across a focus gain: a hidden tab resumed starts its window again', () => {
@@ -1065,6 +1082,80 @@ describe('a device far below the tick still steps down', () => {
     const short = new Rig(new ResolutionController(SHORT_LADDER));
     short.run(Math.round(3_000 / TICK), () => TICK);
     expect(short.controller.state().downWindowBy).toBeNull();
+  });
+});
+
+describe('a mode switch', () => {
+  const events = ['arrival', 'mode'] as const;
+
+  /** The same history played into two controllers, one told of an arrival
+   *  and the other of a mode switch at the same instant, then the same frames
+   *  after: what each reset left, what each then did, and where each ended. */
+  function mirrored(ladder: RungLadder, history: (rig: ClockRig) => void, after: (rig: ClockRig) => void) {
+    return events.map((event) => {
+      const rig = new ClockRig(new ResolutionController(ladder));
+      history(rig);
+      rig.controller.notify(event, rig.nowMs);
+      const reset = rig.controller.state();
+      const generation = rig.controller.generation;
+      after(rig);
+      return { reset, generation, applied: rig.applied, end: rig.controller.state() };
+    });
+  }
+
+  it('resets exactly what an arrival resets', () => {
+    const cases: [string, RungLadder, (rig: ClockRig) => void, (rig: ClockRig) => void, StepReason][] = [
+      // Half a thin window at Medium, then the rest of the slide.
+      ['mid-window at 15 fps', SHORT_LADDER,
+        (rig) => rig.run(Math.round(12_000 / (1000 / 15)), () => 1000 / 15),
+        (rig) => rig.run(Math.round(40_000 / (1000 / 15)), () => 1000 / 15), 'down'],
+      // A sensor resting at Medium after half a minute of refusals, then room.
+      ['a resting sensor', FULL_LADDER,
+        (rig) => { blindScreen(rig); rig.runClock(seconds(REFUSAL_SUSTAIN_MS / 1000 + 20), onTime, () => 13); },
+        (rig) => rig.runClock(seconds(30), onTime, () => 7), 'up'],
+      // A rung the clock earned, then re-earned.
+      ['a rung the clock earned', FULL_LADDER,
+        (rig) => { blindScreen(rig); rig.runClock(seconds(40), onTime, () => 7); },
+        (rig) => rig.runClock(seconds(5), onTime, () => 15.5), 'restore'],
+    ];
+    for (const [, ladder, history, after, reason] of cases) {
+      const [arrival, mode] = mirrored(ladder, history, after);
+      expect(mode.reset).toEqual(arrival.reset);
+      expect(mode.generation).toBe(arrival.generation);
+      expect(mode.applied).toEqual(arrival.applied);
+      expect(mode.end).toEqual(arrival.end);
+      // And the frames after it did something, so the comparison compared.
+      expect(mode.applied.map((a) => a.reason)).toContain(reason);
+    }
+  });
+
+  it('starts a resting sensor over, which a resize does not', () => {
+    const rest = (event: 'mode' | 'resize') => {
+      const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+      blindScreen(rig);
+      rig.runClock(seconds(REFUSAL_SUSTAIN_MS / 1000 + 20), onTime, () => 13);
+      expect(rig.controller.wantsClock()).toBe(false);
+      rig.controller.notify(event, rig.nowMs);
+      return { wants: rig.controller.wantsClock(), rest: rig.controller.state().clock.rest };
+    };
+    expect(rest('mode')).toMatchObject({ wants: true, rest: { untilMs: null, nextMs: REFUSAL_REST_MS, rests: 0 } });
+    expect(rest('resize').wants).toBe(false);
+  });
+
+  it('changes nothing on a 120 Hz display but the reset itself', () => {
+    // Where the tick is finer the intervals climb on their own; after either
+    // event the same frames take the same steps at the same instants.
+    const [arrival, mode] = events.map((event) => {
+      const rig = new Rig(new ResolutionController(FULL_LADDER));
+      fastScreen(rig);
+      rig.run(seconds(3), () => TICK_120);
+      rig.controller.notify(event, rig.nowMs);
+      rig.run(4000, () => TICK_120);
+      return rig;
+    });
+    expect(mode.applied).toEqual(arrival.applied);
+    expect(mode.applied.map((a) => a.reason)).toEqual(['up', 'up']);
+    expect(mode.controller.state()).toEqual(arrival.controller.state());
   });
 });
 

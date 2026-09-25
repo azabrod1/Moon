@@ -1635,11 +1635,16 @@ function stepQuality(nowMs: number): void {
   const veilUp = planetariumMode?.isArrivalVeilUp() ?? false;
   if (arrivalVeilWasUp && !veilUp) resolutionController.notify('arrival', nowMs);
   arrivalVeilWasUp = veilUp;
+  // A mode switch's own veil is a cover like the arrival's: the frames under
+  // it are the switch's — the planetarium restoring itself, or a tool being
+  // taken down — and would otherwise count on top of the evidence from before
+  // the tool until the switch's reset below drops it.
   const eligibleNow = appMode === 'planetarium'
     && document.visibilityState === 'visible'
     && pageFocused
     && bootRender.current === 'live'
-    && !veilUp;
+    && !veilUp
+    && !modeSwitchInFlight;
   const eligible = eligibleNow && lastFrameEligible;
   lastFrameEligible = eligibleNow;
   lastEligibleNow = eligibleNow;
@@ -2613,8 +2618,11 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
     modeSwitchInFlight = false;
     // A tool owns the scene and its own composer, and the frames either side
     // of the switch are the switch's: the resolution measurement starts again
-    // from whichever mode this left the app in.
-    resolutionController.notify('resize', performance.now());
+    // from whichever mode this left the app in. Every switch passes through
+    // here once — each tool's exit is a switch to the planetarium, and a
+    // failed one's fallback is a switch of its own — so this is the one
+    // reset per switch, into a tool or back out of it.
+    resolutionController.notify('mode', performance.now());
   }
   // A failure after the current mode was taken down would leave a mode with
   // no UI and no exit; the planetarium is the one mode that always comes back.

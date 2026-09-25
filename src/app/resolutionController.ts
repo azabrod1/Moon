@@ -90,13 +90,13 @@
  * and 5 fps now step at about 18 s and 1 fps never does (the horizon holds 21
  * of its intervals). The span is ELIGIBLE time, not wall time: a running total
  * of every interval both of whose endpoints were eligible, counted or
- * excluded, because a switch back from a tool raises no veil and calls no
- * reset, and a wall-clock span would read a stretch in another mode as
- * evidence. The floor judgement reads the same completeness, and so does the
- * down window at a rung the clock earned, whose tighter bar is unchanged and
- * which, at 20 counted intervals a second or more, completes exactly when it
- * did. The up path stays count-based: a thin stream that meets the up bar is a
- * fast device whose work is still landing, not a slow one. The limit of both
+ * excluded, so a stretch that was not (hidden with no focus event, covered,
+ * pinned) is never read as evidence, whatever event did or did not follow it.
+ * The floor judgement reads the same completeness, and so does the down window
+ * at a rung the clock earned, whose tighter bar is unchanged and which, at 20
+ * counted intervals a second or more, completes exactly when it did. The up
+ * path stays count-based: a thin stream that meets the up bar is a fast device
+ * whose work is still landing, not a slow one. The limit of both
  * rules: a phone whose main-thread ticks exceed ten milliseconds has every
  * over-budget interval excluded, counts nothing, and is reached by neither.
  *
@@ -198,7 +198,12 @@
  * rather than polling, because a page reached from a link that was never
  * clicked reports no focus while animating perfectly well, and polling it
  * would exclude every frame of the session with no symptom but a controller
- * that never moves.
+ * that never moves. A mode switch is the same kind of break: a tool draws
+ * another scene through another composer, so the frames under the switch's
+ * own veil do not count, and the switch ends with a `mode` event that drops
+ * the window, the clock's evidence and the still view the way an arrival does
+ * — or three seconds of slow frames before Look inside would join a healthy
+ * return and step the picture down and back up again.
  *
  * **The GPU clock, where the tick is blind.** On a display whose tick is not
  * finer than the budget and with no row target (`aboveAllowed` false — every
@@ -656,7 +661,7 @@ export interface IntervalSample {
    *  here, or a streaming flight would silence the controller. */
   workedMs: number;
   /** Both endpoints eligible: visible and focused, and not covered by the
-   *  boot cover or an arrival veil. */
+   *  boot cover, an arrival veil or a mode switch's own veil. */
   eligible: boolean;
   /** The draw that produced the interval, so a GPU reading of that draw can
    *  be paired with this verdict when it arrives. */
@@ -791,7 +796,7 @@ export interface Decision {
 }
 
 /** What made the controller change its mind, or step out of the way. */
-export type ControllerEvent = 'resize' | 'arrival' | 'focus' | 'boot' | 'pin' | 'unpin';
+export type ControllerEvent = 'resize' | 'arrival' | 'mode' | 'focus' | 'boot' | 'pin' | 'unpin';
 
 /** What a budget change invalidates. A change the USER made — the Frame rate
  *  row, the bridge — drops everything, because evidence at another budget is
@@ -1619,6 +1624,7 @@ export class ResolutionController {
     if (this.window.capacity < upCounted) this.window = new IntervalRing(upCounted);
     else this.window.clear();
     this.pending = null;
+    this.pendingWindowBy = null;
     this.verifyUntilMs = null;
     this.probation = null;
     this.probationByClock = false;
@@ -1652,6 +1658,7 @@ export class ResolutionController {
     this.clockMs = nowMs;
     this.window.clear();
     this.pending = null;
+    this.pendingWindowBy = null;
     this.pendingClimb = null;
     this.pendingClockStep = false;
     this.verifyUntilMs = null;
@@ -1685,6 +1692,14 @@ export class ResolutionController {
         break;
       case 'arrival':
         // A new pose is a new question for a sensor resting on the old one.
+        this.refusal.reset();
+        this.settleUntilMs = nowMs + REALLOC_SETTLE_MS;
+        break;
+      case 'mode':
+        // The composer switched — a tool opened or closed — and the frames
+        // before it were another scene's: nothing measured there, the
+        // sensor's rest included, says anything about the one on screen now.
+        // Exactly the reset an arrival makes.
         this.refusal.reset();
         this.settleUntilMs = nowMs + REALLOC_SETTLE_MS;
         break;
@@ -1727,6 +1742,7 @@ export class ResolutionController {
     this.index = nearest;
     this.window.clear();
     this.pending = null;
+    this.pendingWindowBy = null;
     this.verifyUntilMs = null;
     this.probation = null;
     this.probationByClock = false;

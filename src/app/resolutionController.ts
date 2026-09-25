@@ -221,12 +221,16 @@
  * work and no reset but the climb (the reversal check's own test, below). A
  * growth below 1 is thrown away as the scene getting cheaper. It is kept as an
  * exponent on the rungs' ratio, held between 0 and 2, so it carries from one
- * step of the ladder to another; the latest one learned wins, and a climb
- * predicted with it that then fails its verification drops it — the guess and
- * the tries on the rung's own reading come back. An arrival keeps it; a new
- * budget or ladder drops it. A ladder recomputed unchanged — every resize of
- * the window does that — is the same epoch: the growth and the failure count
- * below stand.
+ * step of the ladder to another; the latest one learned wins. A climb
+ * predicted with it that then fails its verification drops it when it was
+ * below the guess of 1.5 — the more hopeful of the two — and the guess and
+ * the tries on the rung's own reading come back; one at or above the guess is
+ * kept, as it was already the more cautious. Only that climb can drop it: any
+ * other move, or any verification passing, ends its trial. An arrival keeps
+ * it; a new budget or ladder drops it. A ladder recomputed unchanged — every
+ * resize of the window does that — is the same epoch: the growth, the
+ * failure count below, the rungs marked unverified or silent and a ceiling
+ * above Medium all stand.
  *
  * A rung the clock earned is kept only while the clock vouches for it. Right
  * after the climb, and again after ANY evidence reset while it stands (a rung
@@ -283,10 +287,10 @@
  * take in the last six seconds (never fewer than eight nor more than the
  * sixteen a hand-back reads), starved readings over their share, or the
  * sensor off — returns the rung to Medium with no ceiling: no clock is the
- * rule as it was, applied to the rung as well as to the climb. A second such
- * silence at the same rung in an epoch holds that rung as a ceiling, as a
- * second unverified probe does, or a pose whose clock goes quiet there and
- * nowhere else would climb and restore for the rest of the session.
+ * rule as it was, applied to the rung as well as to the climb. From the
+ * second such silence at the same rung in an epoch, every silence there holds
+ * a ceiling with the failures' escalation, or a pose whose clock goes quiet
+ * there and nowhere else would climb and restore for the rest of the session.
  *
  * Once a climb's verification has measured the sharper rung, a clock that read
  * it more than `REVERSAL_MS` LOWER than the rung below is suspect, and after
@@ -321,6 +325,7 @@
 import {
   CALIBRATION_SHARE,
   CLOCK_DOWN_SHARE,
+  CLOCK_EXPONENT,
   CLOCK_UP_SHARE,
   DUTY_START,
   DUTY_VERIFY,
@@ -667,6 +672,9 @@ export interface ClockState {
   /** The rung whose last probe went unverified: a second in a row there holds
    *  it as a ceiling. */
   unverifiedRung: number | null;
+  /** The rung a steady-state silence restored from this epoch: every silence
+   *  there after the first holds a ceiling. */
+  silentRung: number | null;
   /** Failures at rungs the clock earned since the budget or the ladder last
    *  changed: what its ceiling escalates on. */
   failures: number;
@@ -1172,7 +1180,9 @@ export class ResolutionController {
   private clockEarned = false;
   /** A clock climb decided and not yet applied, with the rung below's median
    *  for the honesty rule — null where its window was not one still view —
-   *  and the still view it was taken in. */
+   *  the still view it was taken in, the rung below's GPU part the growth is
+   *  learned against, and whether the climb was predicted with a learned
+   *  growth (which a failure of it may then drop). */
   private pendingClimb: { belowMedianMs: number | null; sceneStretch: number; belowGpuMs: number; byGrowth: boolean } | null = null;
   /** The decision pending is a step down the clock made on its own evidence
    *  — a measured failure, or a probe it could not verify. */
@@ -1254,8 +1264,8 @@ export class ResolutionController {
   /** The rung being verified was climbed on a learned growth: failing the
    *  verification drops the growth. */
   private growthOnTrial = false;
-  /** The rung a steady-state silence last restored from, this epoch: a
-   *  second there holds it as a ceiling. */
+  /** The rung a steady-state silence restored from, this epoch: every
+   *  silence there after the first is a failure with a ceiling. */
   private silentRung: number | null = null;
   /** Recent frames' interval verdicts, for a late reading to find its own. */
   private readonly verdictSeq = new Float64Array(VERDICT_RING_SIZE).fill(-1);
@@ -1419,8 +1429,11 @@ export class ResolutionController {
     this.resetClockEvidence(nowMs, !(clockStep && this.index > this.mediumIndex));
     // Only a probe the clock made keeps its failures past its probation.
     this.probationByClock = false;
+    // On trial is only the rung a climb just reached on the learned growth:
+    // any other move ends the trial, so only a climb that the growth itself
+    // predicted can take the growth down with it.
+    this.growthOnTrial = kind === 'up' && climb !== null && climb.byGrowth;
     if (kind === 'up' && climb !== null && this.index > this.mediumIndex) {
-      this.growthOnTrial = climb.byGrowth;
       // A clock probe: the clock verifies it, and the rung is the clock's.
       this.clockEarned = true;
       this.probationByClock = true;
@@ -1546,8 +1559,10 @@ export class ResolutionController {
     switch (event) {
       case 'pin':
         this.idle = true;
-        // Re-earned when the pin is lifted.
+        // Re-earned when the pin is lifted — as a reset, whose verdict says
+        // nothing about the growth that climbed here.
         this.clockVerify = null;
+        this.growthOnTrial = false;
         return;
       case 'unpin':
         this.idle = false;
@@ -1610,15 +1625,19 @@ export class ResolutionController {
     this.verifyUntilMs = null;
     this.probation = null;
     this.probationByClock = false;
-    this.ceiling = null;
+    // An unchanged ladder — every window resize recomputes it: the end of a
+    // drag, a phone turned, a keyboard shown — is the same epoch for the
+    // clock. The growth, the failure count, the rungs marked unverified or
+    // silent, and a ceiling above Medium on a blind tick (only the clock can
+    // set one there) are facts about this device at these rungs, and a resize
+    // must not buy the escalation back. Every other ceiling clears as before.
+    const clockCeiling = same && !this.aboveAllowed && this.ceiling !== null && this.ceiling.rung > this.mediumIndex;
+    if (!clockCeiling) this.ceiling = null;
     this.ceilingFailures = 0;
     this.lastFailedProbeRung = null;
-    this.unverifiedRung = null;
-    // An unchanged ladder — every window resize recomputes it — is the same
-    // epoch: the growth and the clock's failure count are facts about this
-    // device at these rungs, and a resize must not buy the escalation back.
     if (!same) {
       this.clockFailures = 0;
+      this.unverifiedRung = null;
       this.dropClockEpoch();
     }
     this.refusal.reset();
@@ -1735,6 +1754,9 @@ export class ResolutionController {
    */
   clearClockEvidence(nowMs: number, duty?: number): void {
     if (duty !== undefined && Number.isFinite(duty) && duty >= 1) this.clockDuty = duty;
+    // Readings either side of a duty change are not compared: the change is
+    // an evidence reset like any other.
+    this.breakScene(nowMs);
     this.clearClockRing(nowMs);
     this.clockAcquiredAtMs = null;
     this.reopenClockVerify(true);
@@ -1964,17 +1986,17 @@ export class ResolutionController {
 
   /**
    * A rung the clock earned went quiet in steady state: back to Medium with
-   * no ceiling, the wait doubled. A second time at the same rung in an epoch
-   * holds that rung as a ceiling, as a second unverified probe does, or a
-   * pose whose clock goes quiet at that rung and nowhere else would climb and
-   * restore for the rest of the session.
+   * no ceiling, the wait doubled. From the second time at the same rung in an
+   * epoch, every silence there is a failure with the ceiling's escalation, or
+   * a pose whose clock goes quiet at that rung and nowhere else would climb
+   * and restore for the rest of the session.
    */
   private clockSilent(nowMs: number, why: ClockWhy): Decision {
     if (this.silentRung !== this.index) {
       this.silentRung = this.index;
       return this.clockRestore(nowMs, why);
     }
-    this.silentRung = null;
+    // The mark stays: every silence there from now on escalates.
     this.noteClock(nowMs, this.mediumIndex, why);
     this.clockVerify = null;
     // The wait doubles once, with the ceiling.
@@ -2073,12 +2095,13 @@ export class ResolutionController {
             }
           }
         }
+        // Any verification that passes ends a growth's trial: the rung held.
+        this.growthOnTrial = false;
         if (verify.kind === 'probe' && verify.sceneStretch !== null) {
           // A climb, verified: how much its GPU part grew over the rung
           // below's is how this device's frames grow with pixels — learned
           // only where the two were read in one still view, and never from a
           // growth below 1, which is the scene getting cheaper.
-          this.growthOnTrial = false;
           const comparable = verify.belowMedianMs !== null && verify.sceneStretch === this.sceneStretch;
           const learned = comparable && verify.belowGpuMs !== null
             ? learnedExponent(verify.belowGpuMs, this.clockRing.gpuPartMedian(verify.startMs), this.rungs[verify.fromIndex], this.rungs[this.index])
@@ -2223,6 +2246,7 @@ export class ResolutionController {
       gapMs: this.clockGap(verify !== null),
       silenceCount: clockSilenceCount(this.clockDuty, this.budgetMs),
       unverifiedRung: this.unverifiedRung,
+      silentRung: this.silentRung,
       failures: this.clockFailures,
       rest: (() => {
         const r = this.refusal.state();
@@ -2308,12 +2332,16 @@ export class ResolutionController {
   private failProbe(nowMs: number): void {
     this.probeWait = Math.min(PROBE_WAIT_MAX_MS, this.probeWait * 2);
     if (this.growthOnTrial) {
-      // The rung was climbed on a learned growth and did not hold: the growth
-      // no longer describes this device here, and the guess comes back.
+      // The rung was climbed on a learned growth and did not hold. A growth
+      // below the guess was more hopeful than the guess, and the guess comes
+      // back; one at or above it was already at least as cautious, and going
+      // back to the guess would only climb sooner, so it is kept.
       this.growthOnTrial = false;
-      this.clockGrowthE = null;
-      this.clockGrowthMeasured = null;
-      this.growthChecks.dropped++;
+      if (this.clockGrowthE !== null && this.clockGrowthE < CLOCK_EXPONENT) {
+        this.clockGrowthE = null;
+        this.clockGrowthMeasured = null;
+        this.growthChecks.dropped++;
+      }
     }
     if (this.clockHolds()) {
       // At a rung the clock earned the count is the evidence epoch's, not the

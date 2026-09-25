@@ -28,6 +28,15 @@ describe('the still view’s name', () => {
     expect(namer.name('Moon', yaw(2.5), 55)).toBe(d);
   });
 
+  it('measures a zoom from where the name was given, so a drift in small steps is still a new name', () => {
+    const namer = new StillViewNamer();
+    const a = namer.name('Earth', yaw(0), 60);
+    // 1.5 % narrower: the same name.
+    expect(namer.name('Earth', yaw(0), 60 / 1.015)).toBe(a);
+    // Another 1.5 %: 3 % from where the name was given, a new one.
+    expect(namer.name('Earth', yaw(0), 60 / 1.015 / 1.015)).not.toBe(a);
+  });
+
   it('has no name while the view cannot be still, and a new one after', () => {
     const namer = new StillViewNamer();
     const a = namer.name('', yaw(0), 60);

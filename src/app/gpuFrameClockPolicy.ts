@@ -127,7 +127,10 @@
  * within `CALIBRATION_SHARE` of the bar — every other gate as for any climb,
  * and verified like any probe, so a device that was wrong about its room pays
  * the probe's failure for it. A rung that reads well under load is ready to
- * TRY the next; the growth, once learned, only lets a climb be taken sooner.
+ * TRY the next. Once a growth is learned the prediction alone decides, and
+ * it cuts both ways: a growth near 1 lets a climb be taken that the rung's
+ * own reading would not have tried, and one at or above the guess refuses
+ * climbs the rung's own reading would have tried.
  *
  * **The growth is learned only where it can be trusted.** When a climb's
  * verification passes, how much the sharper rung's GPU part (reading less
@@ -138,9 +141,10 @@
  * 1 is a scene that got cheaper, not a device: it is thrown away, never
  * rounded up. It is kept as an exponent, E = ln g / ln r held between 0 and
  * 2, so a growth measured on one step of the ladder carries to a step of
- * another size; the latest one learned wins, a climb predicted with it that
- * fails its verification drops it back to the guess, and a new budget or
- * ladder drops it too. An arrival keeps it: it is a fact about the device,
+ * another size; the latest one learned wins. A climb predicted with it that
+ * fails its verification drops it back to the guess when it was below the
+ * guess, the more hopeful of the two, and keeps it when it was at or above;
+ * a new budget or ladder drops it too. An arrival keeps it: it is a fact about the device,
  * and the verification and the ceilings still answer for every pose.
  *
  * **Where the frozen numbers were read conservatively.** The signal-gap bar
@@ -645,8 +649,6 @@ export class GpuClockPolicy {
     const gaps = this.trialGaps();
     this.source = gaps.channel !== null && (gaps.window === null || gaps.channel < gaps.window) ? 'channel' : 'window';
   }
-
-
 
   private price(): PriceVerdict {
     if (this.blockSamples < PRICE_BLOCK_SAMPLES) return null;

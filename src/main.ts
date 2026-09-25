@@ -168,6 +168,7 @@ renderer.domElement.addEventListener('webglcontextlost', (event) => {
   event.preventDefault();
   contextLost = true;
   debugError('WebGL context lost');
+  rungMemoryContextLost();
 });
 renderer.domElement.addEventListener('webglcontextrestored', () => {
   debugLog('WebGL context restored');
@@ -1616,6 +1617,9 @@ const rungMemory = new RungMemoryMirror();
 let rungMemoryLooked = false;
 /** The entry this boot was told, while it may still be climbed to. */
 let rungMemoryArmed: RungMemoryEntry | null = null;
+/** The entry this boot was told, for as long as its rung may still be on
+ *  trial: a resize is checked against it then too. */
+let rungMemoryTold: RungMemoryEntry | null = null;
 /** Why this boot was told nothing, or null. */
 let rungMemoryRefused: string | null = null;
 /** This boot climbed to the rung it was told. */
@@ -1716,6 +1720,7 @@ function rungMemoryLook(): void {
     return;
   }
   rungMemoryArmed = entry;
+  rungMemoryTold = entry;
   debugLog('Rung memory', { applied: entry.ratio, savedAgoH: Math.round((Date.now() - entry.at) / 36e5) });
 }
 
@@ -1729,17 +1734,45 @@ function rungMemorySeedApplied(): void {
   rungMemoryArmed = null;
 }
 
-/** A resize before the remembered rung was used: a canvas that grew past what
- *  the entry was held at, or any other change of configuration, cancels it
- *  for this boot and keeps the entry. */
+/** A resize before the remembered rung was used or while it is on trial: a
+ *  canvas that grew past what the entry was held at, or any other change of
+ *  configuration, cancels it or ends its trial for this boot, and keeps the
+ *  entry. */
 function rungMemoryRecheck(): void {
-  if (rungMemoryArmed === null || resolutionController.seedOutcome !== 'armed') return;
-  const verdict = rungMemoryApplies(rungMemoryArmed, rungMemoryFacts());
+  const told = rungMemoryTold;
+  const outcome = resolutionController.seedOutcome;
+  if (told === null || (outcome !== 'armed' && outcome !== 'applied')) return;
+  const verdict = rungMemoryApplies(told, rungMemoryFacts());
   if (verdict.ok) return;
+  // Before the climb, it is cancelled; on trial, the trial ends with no
+  // verdict, so a failure at the larger canvas cannot delete an entry held at
+  // the smaller one.
   resolutionController.forgetRemembered();
   rungMemoryRefused = `after a resize: ${verdict.why}`;
-  debugLog('Rung memory', { refused: rungMemoryRefused, ratio: rungMemoryArmed.ratio, deleted: false });
+  debugLog('Rung memory', { [outcome === 'armed' ? 'refused' : 'trialEnded']: rungMemoryRefused, ratio: told.ratio, deleted: false });
   rungMemoryArmed = null;
+  rungMemoryTold = null;
+}
+
+/** The WebGL context was lost (the listener where the renderer is made). */
+function rungMemoryContextLost(): void {
+  if (rungMemoryBlockedBy !== null) return;
+  const visible = document.visibilityState === 'visible';
+  const done = rungMemory.contextLost(resolutionController, visible);
+  if (done === 'deleted') {
+    debugLog('Rung memory', { deleted: 'the WebGL context was lost at the remembered rung, with the page visible' });
+  } else if (done === 'kept') {
+    debugLog('Rung memory', { kept: 'the WebGL context was lost while the page was hidden' });
+  }
+}
+
+/** The DEV bridge fed the controller synthetic intervals or readings: what it
+ *  decides from them is about that stream's clock, not this device, so the
+ *  store is left alone for the rest of the session. */
+function rungMemoryStopForInjection(): void {
+  if (rungMemory.isStopped) return;
+  rungMemory.stop();
+  debugLog('Rung memory', { stopped: 'synthetic samples were injected; nothing is saved this session' });
 }
 
 /** Forget the stored rung: `__moon.forgetRung()`. */
@@ -1747,6 +1780,7 @@ function rungMemoryForget(): void {
   resolutionController.forgetRemembered();
   rungMemory.forget(resolutionController);
   rungMemoryArmed = null;
+  rungMemoryTold = null;
 }
 
 /** `__moon.quality().memory`. */
@@ -1762,12 +1796,26 @@ function rungMemoryReadout() {
     seed: state.seed,
     rememberedRatio: state.rememberedRatio,
     onTrial: rungMemory.onTrial,
+    // Nothing is saved for the rest of the session: an injection, or a lost
+    // context.
+    stopped: rungMemory.isStopped,
   };
 }
 
-// A clean unload is not a crash: the trial flag goes, and nothing else.
+// A clean unload is not a crash: the trial flag goes, and nothing else. A
+// hidden page counts as one, because iOS Safari evicts a background tab with
+// no pagehide; shown again with the trial standing — a tab brought back, or a
+// page restored from the back-forward cache — the flag is marked again. A hung
+// page dispatches neither, so the flag it leaves is still there.
 if (rungMemoryBlockedBy === null) {
-  window.addEventListener('pagehide', () => rungMemory.pagehide(resolutionController, rungMemoryConfig, Date.now()));
+  window.addEventListener('pagehide', () => rungMemory.hide(resolutionController, rungMemoryConfig, Date.now()));
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      rungMemory.hide(resolutionController, rungMemoryConfig, Date.now());
+    } else if (rungMemory.shown(resolutionController)) {
+      debugLog('Rung memory', { trial: 'marked again: the page is shown with the remembered rung on trial' });
+    }
+  });
 }
 
 /** The silence check runs on a countdown of DRAWS rather than every frame: at
@@ -3041,6 +3089,7 @@ function installDevHooks() {
       inject?: IntervalSample[];
       injectGpu?: { readingMs: number; busyMs?: number; starved?: boolean; intervalMs?: number }[];
     } | null) => {
+      if ((opts?.inject?.length ?? 0) + (opts?.injectGpu?.length ?? 0) > 0) rungMemoryStopForInjection();
       for (const sample of opts?.inject ?? []) {
         const decision = resolutionController.step(sample);
         if (decision !== null) applyQualityDecision(decision, sample.nowMs);

@@ -286,7 +286,7 @@ describe('the mirror', () => {
     expect(mirror.onTrial).toBe(false);
     // A clean unload after it writes nothing back.
     const sets = store.sets;
-    mirror.pagehide(source, config, NOW + 9000);
+    mirror.hide(source, config, NOW + 9000);
     expect(store.sets).toBe(sets);
     expect(store.stored()).toBeNull();
   });
@@ -302,7 +302,7 @@ describe('the mirror', () => {
     source.outcome('abandoned');
     expect(mirror.sync(source, config, NOW + 5000)).toBeNull();
     expect(store.stored()?.trial).toBe(true);
-    mirror.pagehide(source, config, NOW + 9000);
+    mirror.hide(source, config, NOW + 9000);
     expect(store.stored()).toEqual(entry());
   });
 
@@ -316,7 +316,7 @@ describe('the mirror', () => {
     mirror.sync(source, config, NOW);
     // The hand-back, and the page goes before its next frame.
     source.outcome('dropped');
-    mirror.pagehide(source, config, NOW + 5000);
+    mirror.hide(source, config, NOW + 5000);
     expect(store.stored()).toBeNull();
   });
 
@@ -326,7 +326,7 @@ describe('the mirror', () => {
     const sets = store.sets;
     const mirror = new RungMemoryMirror(store);
     const source = new Source();
-    mirror.pagehide(source, config, NOW + 9000);
+    mirror.hide(source, config, NOW + 9000);
     expect(store.sets).toBe(sets);
   });
 
@@ -337,7 +337,7 @@ describe('the mirror', () => {
     source.hold(3);
     source.outcome('passed');
     expect(() => mirror.sync(source, config, NOW)).not.toThrow();
-    expect(() => mirror.pagehide(source, config, NOW)).not.toThrow();
+    expect(() => mirror.hide(source, config, NOW)).not.toThrow();
   });
 
   it('forget deletes the entry and writes nothing until the memory moves — then even a ratio written before', () => {
@@ -355,6 +355,130 @@ describe('the mirror', () => {
     source.hold(3);
     mirror.sync(source, config, NOW + 300);
     expect(store.stored()?.ratio).toBe(3);
+  });
+});
+
+describe('a page that stops drawing, and one whose context is lost', () => {
+  const config = (): RungMemoryConfig => CONFIG;
+
+  /** An entry stored, told this boot, climbed to and marked on trial. */
+  const onTrial = () => {
+    const store = new FakeStorage();
+    writeRungMemory(entry(), store);
+    const mirror = new RungMemoryMirror(store);
+    const source = new Source();
+    source.outcome('armed');
+    mirror.sync(source, config, NOW);
+    source.outcome('applied');
+    mirror.markTrial(entry());
+    mirror.sync(source, config, NOW + 1);
+    expect(store.stored()?.trial).toBe(true);
+    return { store, mirror, source };
+  };
+
+  it('a hidden page lifts the flag and a shown one marks it again while the trial stands', () => {
+    const { store, mirror, source } = onTrial();
+    mirror.hide(source, config, NOW + 2);
+    expect(store.stored()).toEqual(entry());
+    expect(mirror.onTrial).toBe(false);
+    expect(mirror.shown(source)).toBe(true);
+    expect(store.stored()).toEqual(entry({ trial: true }));
+    // Twice over, as a tab is switched away from and back to.
+    mirror.hide(source, config, NOW + 3);
+    expect(store.stored()?.trial).toBe(false);
+    expect(mirror.shown(source)).toBe(true);
+    expect(store.stored()?.trial).toBe(true);
+  });
+
+  it('a page restored from the back-forward cache after its pagehide is marked again too', () => {
+    const { store, mirror, source } = onTrial();
+    mirror.hide(source, config, NOW + 2);
+    expect(store.stored()?.trial).toBe(false);
+    expect(mirror.shown(source)).toBe(true);
+    expect(store.stored()?.trial).toBe(true);
+  });
+
+  it('a page shown once the trial is over is not marked', () => {
+    for (const end of ['passed', 'abandoned'] as const) {
+      const { store, mirror, source } = onTrial();
+      mirror.hide(source, config, NOW + 2);
+      source.outcome(end);
+      const sets = store.sets;
+      expect(mirror.shown(source)).toBe(false);
+      expect(store.sets).toBe(sets);
+      expect(store.stored()?.trial).toBe(false);
+    }
+  });
+
+  it('a page shown with no trial ever marked writes nothing', () => {
+    const store = new FakeStorage();
+    writeRungMemory(entry(), store);
+    const sets = store.sets;
+    const mirror = new RungMemoryMirror(store);
+    const source = new Source();
+    source.outcome('applied');
+    mirror.hide(source, config, NOW);
+    expect(mirror.shown(source)).toBe(false);
+    expect(store.sets).toBe(sets);
+  });
+
+  it('the context lost with the page visible and the trial standing deletes the entry, and nothing is written after', () => {
+    const { store, mirror, source } = onTrial();
+    expect(mirror.contextLost(source, true)).toBe('deleted');
+    expect(store.stored()).toBeNull();
+    const sets = store.sets;
+    // What follows on a dead canvas — the rung restored, a later hold, the
+    // tab hidden, shown and unloaded — writes nothing back.
+    source.outcome('abandoned');
+    source.hold(3);
+    mirror.sync(source, config, NOW + 10);
+    mirror.hide(source, config, NOW + 11);
+    mirror.shown(source);
+    mirror.hide(source, config, NOW + 12);
+    expect(store.sets).toBe(sets);
+    expect(store.stored()).toBeNull();
+    expect(mirror.isStopped).toBe(true);
+  });
+
+  it('the context lost with the page hidden keeps the entry: that is the system reclaiming a background tab', () => {
+    const { store, mirror, source } = onTrial();
+    mirror.hide(source, config, NOW + 2);
+    expect(mirror.contextLost(source, false)).toBe('kept');
+    expect(store.stored()).toEqual(entry());
+    expect(mirror.isStopped).toBe(false);
+  });
+
+  it('the context lost with no trial standing touches nothing', () => {
+    for (const outcome of [null, 'armed', 'passed', 'abandoned', 'dropped'] as const) {
+      const store = new FakeStorage();
+      writeRungMemory(entry(), store);
+      const sets = store.sets;
+      const mirror = new RungMemoryMirror(store);
+      const source = new Source();
+      if (outcome !== null) source.outcome(outcome);
+      expect(mirror.contextLost(source, true)).toBeNull();
+      expect(store.sets).toBe(sets);
+      expect(store.removes).toBe(0);
+    }
+  });
+
+  it('stopped — synthetic samples were injected — nothing is written or deleted again, but forget still deletes', () => {
+    const { store, mirror, source } = onTrial();
+    mirror.stop();
+    const sets = store.sets;
+    source.outcome('dropped');
+    mirror.sync(source, config, NOW + 5);
+    source.hold(2.5);
+    mirror.sync(source, config, NOW + 6);
+    mirror.markTrial(entry());
+    mirror.hide(source, config, NOW + 7);
+    mirror.shown(source);
+    expect(mirror.contextLost(source, true)).toBeNull();
+    expect(store.sets).toBe(sets);
+    expect(store.removes).toBe(0);
+    expect(store.stored()?.trial).toBe(true);
+    mirror.forget(source);
+    expect(store.stored()).toBeNull();
   });
 });
 

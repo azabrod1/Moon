@@ -3408,14 +3408,16 @@ describe('a remembered climb waits for this boot’s own evidence', () => {
 });
 
 describe('every way out of a remembered climb’s check is one treatment', () => {
-  const exits: [string, ClockWhy, (rig: SeedRig) => void][] = [
-    ['readings over the bar', 'verify', (rig) => rig.runClock(seconds(4), onTime, () => 15.5)],
-    ['capped fences — a panic', 'panic', (rig) => rig.runClock(seconds(4), onTime, () => Infinity)],
-    ['starved readings repeating', 'unverified', (rig) => rig.runClock(seconds(4), onTime, () => ({ readingMs: 7, starved: true }))],
-    ['readings that never come', 'unverified', (rig) => rig.runClock(seconds(4), onTime, () => null)],
-    ['the delivery guard', 'delivery', (rig) => rig.runClock(seconds(4), () => 2 * TICK, () => 7)],
-    ['the clock going off', 'off', (rig) => { rig.controller.setClockOff('lost'); rig.runClock(seconds(0.5), onTime, () => 7); }],
-    ['the interval second, after the clock’s check has passed', 'intervals', (rig) => {
+  // Measured failures drop the memory; readings that never came, or a clock
+  // that went off, measured nothing about the rung and keep it.
+  const exits: [string, ClockWhy, 'dropped' | 'abandoned', (rig: SeedRig) => void][] = [
+    ['readings over the bar', 'verify', 'dropped', (rig) => rig.runClock(seconds(4), onTime, () => 15.5)],
+    ['capped fences — a panic', 'panic', 'dropped', (rig) => rig.runClock(seconds(4), onTime, () => Infinity)],
+    ['starved readings repeating', 'unverified', 'dropped', (rig) => rig.runClock(seconds(4), onTime, () => ({ readingMs: 7, starved: true }))],
+    ['readings that never come', 'unverified', 'abandoned', (rig) => rig.runClock(seconds(4), onTime, () => null)],
+    ['the delivery guard', 'delivery', 'dropped', (rig) => rig.runClock(seconds(4), () => 2 * TICK, () => 7)],
+    ['the clock going off', 'off', 'abandoned', (rig) => { rig.controller.setClockOff('lost'); rig.runClock(seconds(0.5), onTime, () => 7); }],
+    ['the interval second, after the clock’s check has passed', 'intervals', 'dropped', (rig) => {
       runSeed(rig, 2, () => 7, () => rig.controller.state().clock.verify === null);
       expect(rig.controller.state().clock.verify).toBeNull();
       expect(rig.rung).toBe(TOP);
@@ -3424,8 +3426,8 @@ describe('every way out of a remembered climb’s check is one treatment', () =>
       rig.runClock(seconds(1.5), () => 2 * TICK, () => null, { clockSuspended: true });
     }],
   ];
-  for (const [what, why, exit] of exits) {
-    it(`${what}: back to Medium with no ceiling, no failure counted, the wait as it was, and the memory dropped`, () => {
+  for (const [what, why, outcome, exit] of exits) {
+    it(`${what}: back to Medium with no ceiling, no failure counted, the wait as it was, and the memory ${outcome === 'dropped' ? 'dropped' : 'kept'}`, () => {
       const rig = toldRung();
       runSeed(rig, 30, () => 7, () => rig.applied.length > 0);
       expect(rig.rung).toBe(TOP);
@@ -3438,8 +3440,100 @@ describe('every way out of a remembered climb’s check is one treatment', () =>
       expect(state.probeWaitMs).toBe(PROBE_WAIT_MS);
       expect(state.clock.unverifiedRung).toBeNull();
       expect(state.clock.silentRung).toBeNull();
-      expect(rig.controller.seedOutcome).toBe('dropped');
+      expect(rig.controller.seedOutcome).toBe(outcome);
       expect(rig.controller.memory).toBeNull();
+    });
+  }
+
+  /** Told the top, and climbed straight to it; the check has just begun. */
+  const climbed = (): SeedRig => {
+    const rig = toldRung();
+    runSeed(rig, 30, () => 7, () => rig.applied.length > 0);
+    expect(rig.rung).toBe(TOP);
+    expect(rig.controller.state().clock.verify).toMatchObject({ kind: 'probe', seeded: true });
+    return rig;
+  };
+  /** Healthy at the rung: back at Medium with no ceiling, the memory kept. */
+  const keptAtHealthyRung = (rig: SeedRig): void => {
+    expect(rig.applied.map((a) => [a.reason, a.to])).toEqual([['up', TOP], ['restore', MEDIUM]]);
+    expect(rig.controller.state().clock.last?.why).toBe('unverified');
+    expect(rig.controller.seedOutcome).toBe('abandoned');
+    expect(rig.controller.state().ceiling).toBeNull();
+    expect(rig.controller.state().clock.failures).toBe(0);
+    expect(rig.controller.state().probeWaitMs).toBe(PROBE_WAIT_MS);
+  };
+
+  it('a blur and a focus twice inside it, at a healthy 7 ms rung: the readings never came, and the memory is kept', () => {
+    const rig = climbed();
+    for (let n = 0; n < 2; n++) {
+      rig.runClock(seconds(0.5), onTime, () => null);
+      rig.runClock(seconds(5), onTime, () => null, { eligible: false });
+      rig.controller.notify('focus', rig.nowMs);
+    }
+    rig.runClock(seconds(1), onTime, () => 7);
+    keptAtHealthyRung(rig);
+  });
+
+  it('a tool opened and closed, then the tab hidden, inside it: the memory is kept', () => {
+    const rig = climbed();
+    rig.runClock(seconds(0.5), onTime, () => null);
+    // The tool: its frames are not the planetarium's and count for nothing,
+    // and its exit is a mode event.
+    rig.runClock(seconds(5), onTime, () => null, { eligible: false });
+    rig.controller.notify('mode', rig.nowMs);
+    rig.runClock(seconds(0.5), onTime, () => null);
+    // The tab hidden and shown.
+    rig.runClock(seconds(5), onTime, () => null, { eligible: false });
+    rig.controller.notify('focus', rig.nowMs);
+    rig.runClock(seconds(1), onTime, () => 7);
+    keptAtHealthyRung(rig);
+  });
+
+  it('sliced work on every frame through it — a streaming flight — at a 7 ms rung: nothing counts, and the memory is kept', () => {
+    const rig = climbed();
+    rig.runClock(seconds(4), onTime, () => 7, { workedMs: 2 });
+    keptAtHealthyRung(rig);
+  });
+
+  it('a capped share through it is still measured: the memory goes', () => {
+    const rig = climbed();
+    rig.runClock(seconds(4), onTime, (_r, i) => (i % 2 === 0 ? { readingMs: 7, starved: true } : Infinity), { workedMs: 2 });
+    expect(rig.applied.map((a) => a.reason)).toEqual(['up', 'restore']);
+    expect(rig.controller.seedOutcome).toBe('dropped');
+  });
+
+  for (const event of ['arrival', 'mode'] as const) {
+    it(`a${event === 'arrival' ? 'n' : ''} ${event} event inside it and inside the held minute behaves exactly as an arrival does`, () => {
+      const run = (e: 'arrival' | 'mode') => {
+        const rig = climbed();
+        const trace: unknown[] = [];
+        // Inside the check: the veil's frames, the event, readings that fit.
+        rig.runClock(20, onTime, () => null);
+        rig.runClock(seconds(3), onTime, () => null, { eligible: false });
+        rig.controller.notify(e, rig.nowMs);
+        trace.push(rig.controller.state().clock.verify);
+        rig.runClock(seconds(4), onTime, () => 7);
+        trace.push(rig.controller.seedOutcome, rig.rung, rig.controller.state().clock.verify);
+        // Inside the held minute: the event, then readings over the bar.
+        rig.runClock(seconds(20), onTime, () => 7);
+        rig.controller.notify(e, rig.nowMs);
+        trace.push(rig.controller.state().clock.verify?.kind ?? null);
+        rig.runClock(seconds(4), onTime, () => 15.5);
+        trace.push(rig.controller.seedOutcome, rig.applied.map((a) => [a.reason, a.to]), rig.controller.state().ceiling);
+        return trace;
+      };
+      const traced = run(event);
+      expect(traced).toEqual(run('arrival'));
+      // What an arrival does: the check keeps its kind and passes; in the
+      // held minute a reset re-earning fails as a lifecycle restore, and the
+      // memory is kept.
+      expect(traced[0]).toMatchObject({ kind: 'probe', seeded: true });
+      expect(traced[1]).toBe('applied');
+      expect(traced[2]).toBe(TOP);
+      expect(traced[4]).toBe('reset');
+      expect(traced[5]).toBe('abandoned');
+      expect(traced[6]).toEqual([['up', TOP], ['restore', MEDIUM]]);
+      expect(traced[7]).toBeNull();
     });
   }
 
@@ -3500,6 +3594,30 @@ describe('every way out of a remembered climb’s check is one treatment', () =>
       expect(rig.controller.seedOutcome).toBe('abandoned');
     });
   }
+
+  it('a budget or a new ladder that abandons it leaves no verification marked as the check', () => {
+    for (const cut of [(rig: SeedRig) => blindScreen(rig), (rig: SeedRig) => { rig.controller.setLadder({ rungs: [2 / 1.33, 2 / 1.15, 2, 2.5, 3.1], mediumIndex: 2 }, rig.nowMs); }]) {
+      const rig = climbed();
+      rig.runClock(10, onTime, () => 7);
+      cut(rig);
+      expect(rig.controller.seedOutcome).toBe('abandoned');
+      const verify = rig.controller.state().clock.verify;
+      expect(verify === null || verify.seeded === false).toBe(true);
+    }
+  });
+
+  it('forgetRemembered on trial — the canvas grew past what the memory was held at — ends it with no verdict, and a failure after is the rung’s alone', () => {
+    const rig = climbed();
+    rig.runClock(10, onTime, () => 7);
+    rig.controller.forgetRemembered();
+    expect(rig.controller.seedOutcome).toBe('abandoned');
+    expect(rig.controller.state().clock.verify).toMatchObject({ kind: 'probe', seeded: false });
+    rig.runClock(seconds(4), onTime, () => 15.5);
+    // The ordinary probe's failure: one rung back, a ceiling on the rung.
+    expect(rig.applied[1]).toMatchObject({ reason: 'revert', from: TOP });
+    expect(rig.controller.state().ceiling).not.toBeNull();
+    expect(rig.controller.seedOutcome).toBe('abandoned');
+  });
 
   it('an unchanged ladder — a resize — keeps the check standing', () => {
     const rig = toldRung();

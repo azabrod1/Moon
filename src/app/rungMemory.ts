@@ -39,17 +39,28 @@
  * that hangs or is killed there before the rung can fail by measurement. So
  * the entry is written with `trial: true` at the moment the remembered climb
  * is applied, and the flag is cleared when the rung has been held for the
- * controller's minute, or on a clean unload (`pagehide`). A measured failure
- * inside that minute deletes the entry. A boot that finds the flag still set
- * refuses and deletes the entry: the boot before it neither held the rung nor
- * unloaded cleanly. A trial that ends without a verdict — a pin, a level
- * change, a new budget, a lifecycle event the rung was not re-earned after —
- * leaves the flag for `pagehide` to clear.
+ * controller's minute, or whenever the page stops drawing cleanly — hidden
+ * (`visibilitychange`) or unloaded (`pagehide`) — and marked again when it is
+ * shown while the trial still stands, a restore from the back-forward cache
+ * included. Hidden counts because iOS Safari evicts a background tab without
+ * a `pagehide`; a page that hangs dispatches neither event, so the flag is
+ * still there for the next boot. A measured failure inside that minute
+ * deletes the entry, and so does the WebGL context lost while the page is
+ * visible and the trial stands — on WebKit a GPU hang usually arrives as
+ * exactly that, with the page alive on a dead canvas and a reload to follow;
+ * lost while hidden, it is the system reclaiming a background tab's GPU, and
+ * the entry is kept. A boot that finds the flag still set refuses and deletes
+ * the entry: the boot before it neither held the rung nor stopped cleanly. A
+ * trial that ends without a verdict — a pin, a level change, a new budget, a
+ * lifecycle event the rung was not re-earned after, readings that never came
+ * — leaves the flag for the next hide or unload to clear.
  *
  * **The mirror** is told once a frame and does nothing unless the controller's
  * `memoryVersion` moved; it compares with its own last write, never with
  * storage, and the first rung held in a session is written even when it equals
- * what is stored, so the entry's date follows the device.
+ * what is stored, so the entry's date follows the device. `stop` ends its
+ * writes for the session — a DEV harness that fed the controller synthetic
+ * time must not teach the next boot what that time said.
  *
  * `?rungmemory=0` turns it off. So does any URL switch that changes what a
  * pixel costs or holds the ratio for a measurement, and a `?quality=` word
@@ -273,6 +284,11 @@ export class RungMemoryMirror {
   private lastWritten: number | null = null;
   /** The entry as written with the trial flag, while the flag stands. */
   private trialEntry: RungMemoryEntry | null = null;
+  /** The entry the trial was marked with, kept while the flag is lifted for a
+   *  hidden page so it can be marked again when the page is shown. */
+  private trialBase: RungMemoryEntry | null = null;
+  /** Nothing is written for the rest of the session. */
+  private stopped = false;
   writes = 0;
 
   constructor(private readonly storage: RungMemoryStorage | null = null) {}
@@ -287,6 +303,7 @@ export class RungMemoryMirror {
    * is the entry's date. Returns what was done to the store.
    */
   sync(source: RungMemorySource, config: () => RungMemoryConfig, wallMs: number): RungMemorySync {
+    if (this.stopped) return null;
     const version = source.memoryVersion;
     if (version === this.seenVersion) return null;
     this.seenVersion = version;
@@ -298,6 +315,7 @@ export class RungMemoryMirror {
       // is wrong for this device as it is now.
       clearRungMemory(this.storage);
       this.trialEntry = null;
+      this.trialBase = null;
       this.lastWritten = null;
       return 'dropped';
     }
@@ -313,12 +331,16 @@ export class RungMemoryMirror {
       if (writeRungMemory(entry, this.storage)) this.writes++;
       this.lastWritten = memory.ratio;
       this.trialEntry = null;
+      if (outcome !== 'applied') this.trialBase = null;
       return { wrote: memory.ratio };
     }
-    if (newOutcome && outcome === 'passed' && this.trialEntry !== null) {
-      // Held for the minute: whatever else is stored stands, off trial.
-      this.clearTrial();
-      return 'passed';
+    if (newOutcome && outcome === 'passed') {
+      this.trialBase = null;
+      if (this.trialEntry !== null) {
+        // Held for the minute: whatever else is stored stands, off trial.
+        this.clearTrial();
+        return 'passed';
+      }
     }
     return null;
   }
@@ -327,20 +349,61 @@ export class RungMemoryMirror {
    *  cleanly, a boot that finds this refuses and deletes the entry. False where
    *  the store refused the write. */
   markTrial(entry: RungMemoryEntry): boolean {
+    if (this.stopped) return false;
     const onTrial = { ...entry, trial: true };
     this.trialEntry = onTrial;
+    this.trialBase = { ...entry, trial: false };
     const wrote = writeRungMemory(onTrial, this.storage);
     if (wrote) this.writes++;
     return wrote;
   }
 
-  /** A clean unload. Whatever the controller decided since the last frame is
-   *  written first — a remembered rung that failed just before the page went
-   *  away is still deleted, not saved off trial — and then the trial flag
-   *  goes, and nothing else changes. */
-  pagehide(source: RungMemorySource, config: () => RungMemoryConfig, wallMs: number): void {
+  /** The page stopped drawing cleanly — hidden, or unloaded. Whatever the
+   *  controller decided since the last frame is written first — a remembered
+   *  rung that failed just before is still deleted, not saved off trial — and
+   *  then the trial flag goes, and nothing else changes. */
+  hide(source: RungMemorySource, config: () => RungMemoryConfig, wallMs: number): void {
+    if (this.stopped) return;
     this.sync(source, config, wallMs);
     if (this.trialEntry !== null) this.clearTrial();
+  }
+
+  /** The page is shown again — from a hidden tab or the back-forward cache —
+   *  with the remembered rung still on trial: marked again. True where it was. */
+  shown(source: RungMemorySource): boolean {
+    if (this.stopped || this.trialEntry !== null || this.trialBase === null) return false;
+    if (source.seedOutcome !== 'applied') {
+      this.trialBase = null;
+      return false;
+    }
+    return this.markTrial(this.trialBase);
+  }
+
+  /**
+   * The WebGL context was lost. With the remembered rung on trial and the page
+   * visible that is how a GPU hang at the rung arrives, and the entry goes for
+   * good; lost while hidden it is the system reclaiming a background tab's
+   * GPU, and the entry stays. Null where no trial stood.
+   */
+  contextLost(source: RungMemorySource, visible: boolean): 'deleted' | 'kept' | null {
+    if (this.stopped || source.seedOutcome !== 'applied') return null;
+    if (!visible) return 'kept';
+    clearRungMemory(this.storage);
+    this.trialEntry = null;
+    this.trialBase = null;
+    this.lastWritten = null;
+    // Nothing this session draws on the lost context can vouch for anything.
+    this.stopped = true;
+    return 'deleted';
+  }
+
+  /** No writes for the rest of the session, a `forget` excepted. */
+  stop(): void {
+    this.stopped = true;
+  }
+
+  get isStopped(): boolean {
+    return this.stopped;
   }
 
   /** Delete the entry. Nothing is written again until the controller's memory
@@ -348,6 +411,7 @@ export class RungMemoryMirror {
   forget(source: RungMemorySource): void {
     clearRungMemory(this.storage);
     this.trialEntry = null;
+    this.trialBase = null;
     this.lastWritten = null;
     this.seenVersion = source.memoryVersion;
     this.seenOutcome = source.seedOutcome;

@@ -362,16 +362,21 @@
  * is verified exactly as a probe is — a `'probe'` verification marked
  * `seeded` — except that nothing is learned from it and nothing compared: a
  * step of several rungs says nothing about how one step grows. Every way out
- * of that check, the interval second included — readings over the bar,
- * capped or starved ones repeating, a panic, the delivery guard, silence, the
- * clock going off — is ONE treatment: back to Medium, where every such climb
- * starts, with no ceiling, no failure counted and the wait as it was, and
- * `seedOutcome` 'dropped', which tells the caller to delete the memory. Past
+ * of that check, the interval second included, is ONE treatment: back to
+ * Medium, where every such climb starts, with no ceiling, no failure counted
+ * and the wait as it was. A MEASURED failure — readings over the bar, capped
+ * or starved ones repeating, a panic, the delivery guard, the intervals — ends
+ * it 'dropped', which tells the caller to delete the memory; readings that did
+ * not come (a stretch away, a tool, sliced work on every frame) or a clock
+ * that went off measured nothing about the rung and end it 'abandoned', the
+ * memory kept — a real overload reads as capped fences, and a page that dies
+ * at the rung is the caller's trial mark to catch. Past
  * the check the rung is the clock's like any other, and it stays on trial
  * until it has been held for the minute ('passed'): a measured failure there
  * (a hand-back, a panic, the intervals, the delivery guard) takes the usual
  * treatment and drops the memory too; a lifecycle restore, a pin, a level
- * change, a new budget or ladder, or any other move off the rung ends the
+ * change, a new budget or ladder, `forgetRemembered` (the canvas grew past
+ * what the memory was held at), or any other move off the rung ends the
  * trial with no verdict ('abandoned') and the memory is kept. Where the tick
  * is finer, none of this runs: `remember` refuses and nothing is held.
  *
@@ -1991,12 +1996,16 @@ export class ResolutionController {
     return null;
   }
 
-  /** Cancel a remembered rung that has not been used: the configuration it
-   *  was remembered for is not this one any more. */
+  /** The configuration a remembered rung was held in is not this one any
+   *  more — the canvas grew past it, or the caller forgot it: an armed rung is
+   *  cancelled, and a trial standing ends with no verdict, so a failure at the
+   *  rung from here on is the rung's alone and says nothing about the memory. */
   forgetRemembered(): void {
-    if (this.rememberedIndex === null) return;
-    this.rememberedIndex = null;
-    this.setSeedOutcome('abandoned');
+    if (this.rememberedIndex !== null) {
+      this.rememberedIndex = null;
+      this.setSeedOutcome('abandoned');
+    }
+    if (this.seedRung !== null) this.endSeed('abandoned');
   }
 
   /** The last rung the clock earned and held for `REMEMBER_HOLD_MS` this
@@ -2024,6 +2033,8 @@ export class ResolutionController {
 
   private endSeed(outcome: 'passed' | 'dropped' | 'abandoned'): void {
     this.seedRung = null;
+    // A verification left standing is an ordinary probe's from here on.
+    if (this.clockVerify !== null) this.clockVerify.seeded = false;
     this.setSeedOutcome(outcome);
   }
 
@@ -2068,13 +2079,16 @@ export class ResolutionController {
 
   /** Every way out of a remembered climb's check: back to Medium, where every
    *  such climb starts, with no ceiling, no failure counted and the wait as it
-   *  was — and the memory dropped. */
-  private seedFail(nowMs: number, why: ClockWhy): Decision {
+   *  was. A MEASURED failure — readings over the bar, capped or starved ones
+   *  repeating, a panic, the delivery guard, the intervals — drops the memory;
+   *  readings that did not come, or a clock that went off, measured nothing
+   *  about the rung, and the memory is kept ('abandoned'). */
+  private seedFail(nowMs: number, why: ClockWhy, outcome: 'dropped' | 'abandoned' = 'dropped'): Decision {
     this.noteClock(nowMs, this.mediumIndex, why);
     this.clockVerify = null;
     this.verifyUntilMs = null;
     this.growthOnTrial = false;
-    this.endSeed('dropped');
+    this.endSeed(outcome);
     return this.emit(this.mediumIndex, 'restore');
   }
 
@@ -2112,7 +2126,6 @@ export class ResolutionController {
    *  all describe the old one. */
   private dropMemoryEpoch(): void {
     this.forgetRemembered();
-    if (this.seedRung !== null) this.endSeed('abandoned');
     if (this.heldMemory !== null) {
       this.heldMemory = null;
       this.memoryVersionCount++;
@@ -2337,7 +2350,9 @@ export class ResolutionController {
    *  state doubles it, so a clock that keeps going quiet cannot take the
    *  picture up and down every few seconds — each change is a visible one. */
   private clockRestore(nowMs: number, why: ClockWhy): Decision {
-    if (this.seedChecking()) return this.seedFail(nowMs, why);
+    // A restore is a clock that cannot vouch — off, or a lifecycle reset not
+    // re-earned — never the rung failing: the memory is kept.
+    if (this.seedChecking()) return this.seedFail(nowMs, why, 'abandoned');
     // Not the rung failing: a remembered rung's trial ends with no verdict.
     if (this.seedOnTrial()) this.endSeed('abandoned');
     this.noteClock(nowMs, this.mediumIndex, why);
@@ -2357,7 +2372,9 @@ export class ResolutionController {
    * and restore for the rest of the session.
    */
   private clockSilent(nowMs: number, why: ClockWhy): Decision {
-    if (this.seedChecking()) return this.seedFail(nowMs, why);
+    // Starved readings over their share are the clock failing to read the
+    // rung's frames; a gap or too few readings are only the clock not reading.
+    if (this.seedChecking()) return this.seedFail(nowMs, why, why === 'starved' ? 'dropped' : 'abandoned');
     if (this.silentRung !== this.index) {
       this.silentRung = this.index;
       return this.clockRestore(nowMs, why);
@@ -2378,7 +2395,9 @@ export class ResolutionController {
    * the same rung holds that rung as a ceiling, as a failed probe would.
    */
   private clockUnverified(nowMs: number, to: number): Decision {
-    if (this.seedChecking()) return this.seedFail(nowMs, 'unverified');
+    // Readings that did not come in time: a stretch away, a tool, sliced work
+    // on every frame — nothing measured about the rung.
+    if (this.seedChecking()) return this.seedFail(nowMs, 'unverified', 'abandoned');
     this.noteClock(nowMs, to, 'unverified');
     if (this.unverifiedRung === this.index) {
       this.unverifiedRung = null;

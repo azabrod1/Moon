@@ -16,9 +16,12 @@ import {
   CLOCK_UP_SPAN_MS,
   CLOCK_VERIFY_MS,
   DOWN_FACTOR,
+  DOWN_MIN_COUNT,
   DOWN_SPACING_MS,
+  DOWN_SPAN_FALLBACK_MS,
   DOWN_WINDOW_COUNTED,
   DOWN_WINDOW_S,
+  downWindowComplete,
   FLOOR_LATCH_MIN_GAIN,
   LATCH_HOLD_MS,
   MAIN_THREAD_SHARE,
@@ -34,6 +37,7 @@ import {
   VERIFY_MS,
   ZERO_COUNTED_WARN_MS,
   type Decision,
+  type DownWindowBy,
   type GpuObservation,
   type IntervalSample,
   type RungLadder,
@@ -796,6 +800,271 @@ describe('diagnosis', () => {
     expect(rig.applied.map((a) => a.reason)).toEqual(['down']);
     expect(rig.controller.state().floorReference).toBeCloseTo(2 * TICK, 1);
     expect(rig.controller.state().lastStep).toMatchObject({ from: 2, to: 1, reason: 'down' });
+  });
+});
+
+// ------------------------------------------------- a device far below the tick
+//
+// The count alone assumes counted intervals arrive near the budget's rate. A
+// device that counts fewer than 18 a second never holds 360 of them inside the
+// staleness horizon, so the down window is also complete once its intervals
+// span 18 s of eligible time and number at least 24.
+
+/** Plays a stream until the rig applies its next change, or `limitMs` of it
+ *  has been played, and returns that change with the rule that completed the
+ *  down window behind it. `i` counts frames across the whole call, so an
+ *  alternating pattern keeps its phase. */
+function untilStep(
+  rig: Rig,
+  limitMs: number,
+  interval: (rung: number, i: number) => number,
+  over: (i: number) => Partial<IntervalSample> = () => ({}),
+): (Applied & { windowBy: DownWindowBy | null }) | null {
+  const before = rig.applied.length;
+  const endMs = rig.nowMs + limitMs;
+  for (let i = 0; rig.nowMs < endMs; i++) {
+    rig.run(1, (rung) => interval(rung, i), over(i));
+    if (rig.applied.length > before) {
+      return { ...rig.applied[before], windowBy: rig.controller.state().lastStep?.windowBy ?? null };
+    }
+  }
+  return null;
+}
+
+/** The most counted intervals a steady stream at `intervalMs` can have inside
+ *  the staleness horizon: the newest, and every one back to the horizon. */
+const heldInHorizon = (intervalMs: number): number => Math.floor(STALENESS_MS / intervalMs) + 1;
+
+describe('downWindowComplete', () => {
+  it('is the count, or the span with enough intervals, and nothing else', () => {
+    expect(downWindowComplete(null, 360)).toBeNull();
+    // The count wins whatever the span, and at the count exactly.
+    expect(downWindowComplete({ count: 360, spanMs: 6000 }, 360)).toBe('count');
+    expect(downWindowComplete({ count: 360, spanMs: 19_000 }, 360)).toBe('count');
+    // The span, with the minimum behind it.
+    expect(downWindowComplete({ count: DOWN_MIN_COUNT, spanMs: DOWN_SPAN_FALLBACK_MS }, 360)).toBe('span');
+    expect(downWindowComplete({ count: 270, spanMs: 18_067 }, 360)).toBe('span');
+    // Either one short is no window.
+    expect(downWindowComplete({ count: DOWN_MIN_COUNT - 1, spanMs: 21_000 }, 360)).toBeNull();
+    expect(downWindowComplete({ count: 359, spanMs: DOWN_SPAN_FALLBACK_MS - 1 }, 360)).toBeNull();
+    // Three trimmed, twenty-one averaged.
+    expect(DOWN_MIN_COUNT - TRIM_COUNT).toBe(21);
+  });
+});
+
+describe('a device far below the tick still steps down', () => {
+  it('changes nothing at 20 counted intervals a second or more: the step comes on the count, when the count alone brought it', () => {
+    // The count rule's own answer, from its definition rather than from the
+    // new code: a steady stream steps on the sample that brings the window to
+    // DOWN_WINDOW_COUNTED intervals.
+    for (const ms of [2 * TICK, 25, 41, 50]) {
+      const rig = new Rig(new ResolutionController(SHORT_LADDER));
+      const step = untilStep(rig, 30_000, () => ms);
+      expect(step).not.toBeNull();
+      expect(step?.reason).toBe('down');
+      expect(step?.atMs).toBeCloseTo(DOWN_WINDOW_COUNTED * ms, 6);
+      expect(step?.windowBy).toBe('count');
+    }
+    // And the slowest of them is exactly where the span's rule begins.
+    expect(DOWN_WINDOW_COUNTED * 50).toBe(DOWN_SPAN_FALLBACK_MS);
+  });
+
+  it('steps 15, 20 and 10 fps down at about 18 s', () => {
+    for (const fps of [15, 20, 10]) {
+      const ms = 1000 / fps;
+      const rig = new Rig(new ResolutionController(SHORT_LADDER));
+      const step = untilStep(rig, 60_000, () => ms);
+      expect(step?.reason).toBe('down');
+      expect(step?.to).toBe(SHORT_LADDER.mediumIndex - 1);
+      expect(step?.atMs).toBeGreaterThan(DOWN_SPAN_FALLBACK_MS - 1);
+      expect(step?.atMs).toBeLessThan(DOWN_SPAN_FALLBACK_MS + ms);
+      // At 20 fps the count and the span close together, and the count is
+      // the rule it always was; below it only the span can.
+      expect(step?.windowBy).toBe(fps >= 20 ? 'count' : 'span');
+    }
+    // Which the count alone could never have done below 18 a second.
+    expect(heldInHorizon(1000 / 15)).toBeLessThan(DOWN_WINDOW_COUNTED);
+    expect(heldInHorizon(1000 / 10)).toBeLessThan(DOWN_WINDOW_COUNTED);
+  });
+
+  it('steps 30 fps with every other interval excluded at about 18 s', () => {
+    const ms = 1000 / 30;
+    const rig = new Rig(new ResolutionController(SHORT_LADDER));
+    // Sliced work on every other frame: those intervals do not count, but
+    // the time they take is eligible, so the window's span keeps pace with
+    // the wall clock while its count grows at 15 a second.
+    const worked = (i: number): Partial<IntervalSample> => ({ workedMs: i % 2 === 1 ? 4 : 0 });
+    const before = untilStep(rig, DOWN_SPAN_FALLBACK_MS - 200, () => ms, worked);
+    expect(before).toBeNull();
+    const state = rig.controller.state();
+    expect(state.countedWindow).toBeLessThan(DOWN_WINDOW_COUNTED);
+    expect(state.downSpanMs).toBeGreaterThan(DOWN_SPAN_FALLBACK_MS - 300);
+    expect(state.downWindowBy).toBeNull();
+    const step = untilStep(rig, 2_000, () => ms, worked);
+    expect(step?.reason).toBe('down');
+    expect(step?.atMs).toBeGreaterThan(DOWN_SPAN_FALLBACK_MS - 1);
+    expect(step?.atMs).toBeLessThan(DOWN_SPAN_FALLBACK_MS + 2 * ms);
+    expect(step?.windowBy).toBe('span');
+    // Half of 30 a second is 15, which the count alone never reaches.
+    expect(heldInHorizon(2 * ms)).toBeLessThan(DOWN_WINDOW_COUNTED);
+  });
+
+  it('steps 5 fps down', () => {
+    const rig = new Rig(new ResolutionController(SHORT_LADDER));
+    const step = untilStep(rig, 60_000, () => 200);
+    expect(step?.reason).toBe('down');
+    expect(step?.atMs).toBeGreaterThan(DOWN_SPAN_FALLBACK_MS - 1);
+    expect(step?.atMs).toBeLessThan(DOWN_SPAN_FALLBACK_MS + 200 + 1);
+    expect(step?.windowBy).toBe('span');
+  });
+
+  it('never assembles a window at 1 fps: the horizon holds fewer than the minimum', () => {
+    const rig = new Rig(new ResolutionController(SHORT_LADDER));
+    rig.run(120, () => 1000);
+    expect(rig.applied).toEqual([]);
+    const state = rig.controller.state();
+    // The span is there — twenty-one seconds of it — but not the intervals.
+    expect(state.countedWindow).toBe(heldInHorizon(1000));
+    expect(state.countedWindow).toBeLessThan(DOWN_MIN_COUNT);
+    expect(state.downSpanMs).toBeGreaterThan(DOWN_SPAN_FALLBACK_MS);
+    expect(state.downWindowBy).toBeNull();
+  });
+
+  it('puts the thinnest stream that steps where the horizon holds DOWN_MIN_COUNT intervals, and the minimum decides when only up to 24 in 18 s', () => {
+    // Derived from the rule by bisection on the interval, never transcribed,
+    // the way the 52 fps boundary is.
+    let steps = 500;
+    let never = 2000;
+    for (let k = 0; k < 24; k++) {
+      const ms = (steps + never) / 2;
+      const rig = new Rig(new ResolutionController(SHORT_LADDER));
+      rig.run(Math.ceil(120_000 / ms), () => ms);
+      if (rig.applied.some((a) => a.reason === 'down')) steps = ms;
+      else never = ms;
+    }
+    const boundaryMs = (steps + never) / 2;
+    // The newest interval and those back to the horizon come to the minimum.
+    expect(STALENESS_MS / boundaryMs + 1).toBeCloseTo(DOWN_MIN_COUNT, 2);
+    // About 1.15 counted intervals a second — what the constant's comment says.
+    expect(1000 / boundaryMs).toBeCloseTo(1.15, 2);
+    // And the pair either side of it behaves the way the boundary says.
+    const faster = new Rig(new ResolutionController(SHORT_LADDER));
+    faster.run(120, () => boundaryMs * 0.99);
+    expect(faster.applied.map((a) => a.reason)).toContain('down');
+    const slower = new Rig(new ResolutionController(SHORT_LADDER));
+    slower.run(120, () => boundaryMs * 1.01);
+    expect(slower.applied).toEqual([]);
+    // Between the boundary and 24 in 18 s the window waits for its 24th
+    // interval, so the step comes later than 18 s; from there up the span
+    // decides and the step comes at 18 s.
+    const binds = new Rig(new ResolutionController(SHORT_LADDER));
+    expect(untilStep(binds, 60_000, () => 800)?.atMs).toBeCloseTo(DOWN_MIN_COUNT * 800, 6);
+    const spans = new Rig(new ResolutionController(SHORT_LADDER));
+    const at = (DOWN_SPAN_FALLBACK_MS / 1000) / DOWN_MIN_COUNT;
+    expect(untilStep(spans, 60_000, () => at * 1000)?.atMs).toBeCloseTo(DOWN_SPAN_FALLBACK_MS, 6);
+  });
+
+  it('judges the floor at 15 fps: 44 % fewer pixels that changed nothing hand Medium back and latch', () => {
+    const rig = new Rig(new ResolutionController(SHORT_LADDER));
+    rig.run(Math.ceil(90_000 / (1000 / 15)), () => 1000 / 15);
+    expect(rig.applied.map((a) => a.reason)).toEqual(['down', 'down', 'floor latch']);
+    expect(rig.rung).toBe(SHORT_LADDER.mediumIndex);
+    const state = rig.controller.state();
+    expect(state.latch?.escalation).toBe(1);
+    expect(state.lastStep).toMatchObject({ reason: 'floor latch', windowBy: 'span' });
+    // Each window its own eighteen seconds: the slide and its judgement take
+    // three of them.
+    expect(rig.applied[2].atMs).toBeGreaterThan(3 * DOWN_SPAN_FALLBACK_MS);
+  });
+
+  it('keeps a floor that earned it at those rates', () => {
+    const rig = new Rig(new ResolutionController(SHORT_LADDER));
+    // 10 fps at Medium, 12.5 one rung down, 15 at the floor: over the bar at
+    // every rung, but each rung bought frames.
+    rig.run(1200, (rung) => (rung === 2 ? 100 : rung === 1 ? 80 : 1000 / 15));
+    expect(rig.applied.map((a) => a.reason)).toEqual(['down', 'down']);
+    expect(rig.rung).toBe(0);
+    expect(rig.controller.state().latch).toBeNull();
+  });
+
+  it('measures the span in eligible time, so a stretch nobody saw is never read as evidence', () => {
+    // A switch back from a tool raises no veil and calls no reset: the
+    // intervals before it are still in the window when the healthy ones
+    // arrive. A wall-clock span would call three seconds of 30 fps and sixteen
+    // away nineteen seconds of evidence, and step at the first frame back.
+    const slow = 2 * TICK;
+    const away = new Rig(new ResolutionController(SHORT_LADDER));
+    away.run(90, () => slow);
+    away.run(Math.round(16_000 / TICK), () => TICK, { eligible: false });
+    away.run(1, () => TICK);
+    const back = away.controller.state();
+    expect(away.nowMs).toBeGreaterThan(DOWN_SPAN_FALLBACK_MS);
+    expect(back.downSpanMs).toBeCloseTo(90 * slow + TICK, 6);
+    expect(back.downWindowBy).toBeNull();
+    // Healthy from there on: the slow three seconds go stale before a window
+    // could lean on them, and nothing steps — the answer the count alone gave.
+    away.run(30 * 60, () => TICK);
+    expect(away.applied).toEqual([]);
+  });
+
+  it('gives the count rule’s own answer when the stretch away is shorter', () => {
+    // Three seconds of 30 fps, ten away, then healthy frames. The count alone
+    // steps here, on the sample that makes 360: 90 slow intervals and 270
+    // healthy ones, whose trimmed mean is still over the bar.
+    const slow = 2 * TICK;
+    const trimmed = (90 * slow + (DOWN_WINDOW_COUNTED - 90) * TICK - TRIM_COUNT * slow) / (DOWN_WINDOW_COUNTED - TRIM_COUNT);
+    expect(trimmed).toBeGreaterThan(DOWN_FACTOR * BUDGET_MS);
+    const rig = new Rig(new ResolutionController(SHORT_LADDER));
+    rig.run(90, () => slow);
+    rig.run(Math.round(10_000 / TICK), () => TICK, { eligible: false });
+    const resumedAt = rig.nowMs;
+    const step = untilStep(rig, 20_000, () => TICK);
+    expect(step?.reason).toBe('down');
+    expect(step?.windowBy).toBe('count');
+    expect(step?.atMs).toBeCloseTo(resumedAt + (DOWN_WINDOW_COUNTED - 90) * TICK, 6);
+  });
+
+  it('never reads across a focus gain: a hidden tab resumed starts its window again', () => {
+    const ms = 1000 / 15;
+    const rig = new Rig(new ResolutionController(SHORT_LADDER));
+    rig.run(Math.round(15_000 / ms), () => ms);
+    expect(rig.applied).toEqual([]);
+    // Hidden for three seconds — the browser's throttle — and back, with the
+    // fifteen seconds from before still inside the horizon.
+    rig.run(3, () => 1000, { eligible: false });
+    rig.controller.notify('focus', rig.nowMs);
+    const resumed = rig.controller.state();
+    expect(resumed.countedWindow).toBe(0);
+    expect(resumed.downSpanMs).toBeNull();
+    expect(resumed.downWindowBy).toBeNull();
+    const resumedAt = rig.nowMs;
+    const step = untilStep(rig, 30_000, () => ms);
+    // A whole window of its own after the resume, never the fifteen seconds
+    // from before the tab was hidden joined to three more.
+    expect(step?.windowBy).toBe('span');
+    expect(step?.atMs).toBeGreaterThan(resumedAt + DOWN_SPAN_FALLBACK_MS);
+    expect(step?.atMs).toBeLessThan(resumedAt + REALLOC_SETTLE_MS + DOWN_SPAN_FALLBACK_MS + 2 * ms);
+  });
+
+  it('reports which rule completed the window: the span on a thin stream, the count on a full one', () => {
+    // On time, so nothing steps and the window stands to be read: three
+    // frames in four doing sliced work leave 15 counted a second.
+    const sparse = new Rig(new ResolutionController(SHORT_LADDER));
+    for (let i = 0; i < Math.round(19_000 / TICK); i++) sparse.run(1, () => TICK, { workedMs: i % 4 === 0 ? 0 : 3 });
+    const s = sparse.controller.state();
+    expect(sparse.applied).toEqual([]);
+    expect(s.countedWindow).toBeLessThan(DOWN_WINDOW_COUNTED);
+    expect(s.downSpanMs).toBeGreaterThan(DOWN_SPAN_FALLBACK_MS);
+    expect(s.downWindowBy).toBe('span');
+    // A full one reads its six seconds exactly: 360 intervals of 16.67 ms.
+    const full = new Rig(new ResolutionController(SHORT_LADDER));
+    full.run(DOWN_WINDOW_COUNTED + 60, () => TICK);
+    expect(full.controller.state().downWindowBy).toBe('count');
+    expect(full.controller.state().downSpanMs).toBeCloseTo(DOWN_WINDOW_COUNTED * TICK, 6);
+    // And a short one neither.
+    const short = new Rig(new ResolutionController(SHORT_LADDER));
+    short.run(Math.round(3_000 / TICK), () => TICK);
+    expect(short.controller.state().downWindowBy).toBeNull();
   });
 });
 

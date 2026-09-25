@@ -502,6 +502,10 @@ function qualityReadout() {
     },
     window: {
       trimmedMeanMs: state.trimmedMeanMs,
+      // The eligible time the down window covers, and which rule has
+      // completed it — its count, or its span on a device far below the tick.
+      downSpanMs: state.downSpanMs,
+      downWindowBy: state.downWindowBy,
       countedRate: state.countedRate,
       counted: state.countedWindow,
       silentMs: state.silentMs,

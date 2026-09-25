@@ -66,17 +66,43 @@
  * **Windows are authored in SECONDS and counted in intervals** — six seconds
  * for a down decision, ten for an up probe, converted at the budget (360 and
  * 600 at 60 fps, 180 and 300 at 30) with a staleness cap so a window can never
- * be assembled out of evidence from half a minute ago. At the longest window
- * and the lowest counted rate the span is 18.2 s against the 20 s horizon,
+ * be assembled out of evidence from half a minute ago. At the Screen default
+ * the budget is 16.67 ms and the down window 360 intervals on every display, a
+ * 120 Hz one included; only the 120 fps row makes it 720. At the longest
+ * window and a 55 % counted rate the span is 18.2 s against the 20 s horizon,
  * which is the margin the shorter windows had at 15 s. A streaming descent
  * over Earth does sliced work on many frames in a row; with a share-of-frames
  * gate the controller would go silent in both directions during exactly the
  * long hot flight the phone requirement is about, where with counted windows
  * the evidence merely accumulates more slowly.
  *
+ * **A down window is also complete by its span.** The count assumes counted
+ * intervals arrive near the budget's rate. A device delivering far below the
+ * tick (15 fps at Medium, or 30 fps with every other frame doing sliced work)
+ * counts fewer than 18 a second, never holds 360 inside the horizon, and so
+ * would never step down, though it is the device Dynamic exists for. So a down
+ * window is complete at its count OR once its counted intervals span
+ * `DOWN_SPAN_FALLBACK_MS` (18 s) and number at least `DOWN_MIN_COUNT` (24:
+ * three trimmed, twenty-one averaged), all inside the horizon. Eighteen
+ * seconds is where the count already ends at 20 counted intervals a second, so
+ * the two join without a jump and nothing changes at that rate or above:
+ * 30 fps still steps at 12 s and a hot phone at 41 ms at 14.8 s, where 15, 10
+ * and 5 fps now step at about 18 s and 1 fps never does (the horizon holds 21
+ * of its intervals). The span is ELIGIBLE time, not wall time: a running total
+ * of every interval both of whose endpoints were eligible, counted or
+ * excluded, because a switch back from a tool raises no veil and calls no
+ * reset, and a wall-clock span would read a stretch in another mode as
+ * evidence. The floor judgement reads the same completeness, and so does the
+ * down window at a rung the clock earned, whose tighter bar is unchanged and
+ * which, at 20 counted intervals a second or more, completes exactly when it
+ * did. The up path stays count-based: a thin stream that meets the up bar is a
+ * fast device whose work is still landing, not a slow one. The limit of both
+ * rules: a phone whose main-thread ticks exceed ten milliseconds has every
+ * over-budget interval excluded, counts nothing, and is reached by neither.
+ *
  * **A rung change drops the window outright**, because the evidence describes
- * the configuration it was measured in. So a second down-step needs its own
- * six seconds rather than firing two seconds later on the first step's
+ * the configuration it was measured in. So a second down-step needs a window
+ * of its own rather than firing two seconds later on the first step's
  * evidence, and medium to the floor is at least twelve seconds of sustained
  * trouble. `DOWN_SPACING_MS` is only the minimum between changes; at these
  * window lengths the evidence is what binds.
@@ -350,6 +376,30 @@ export const BUDGET_MS = 1000 / 60;
  *  two seconds of slow frames it saves. */
 export const DOWN_WINDOW_S = 6;
 
+/** A down window is also complete once its counted intervals span this much
+ *  ELIGIBLE time, however few they are (down to `DOWN_MIN_COUNT`). The count
+ *  alone assumes counted intervals arrive near the budget's rate, and a device
+ *  delivering far below the tick — 15 fps at Medium, or 30 fps with every
+ *  other frame doing sliced work — counts fewer than 18 a second, so it never
+ *  holds 360 of them inside the staleness horizon and never steps down, though
+ *  it is the device Dynamic exists for. Eighteen seconds is where the count
+ *  already ends at 20 counted intervals a second (360 of them), so the two
+ *  rules join without a jump and nothing changes at that rate or above. */
+export const DOWN_SPAN_FALLBACK_MS = 18_000;
+
+/** The fewest counted intervals a window completed by its span may hold:
+ *  three trimmed, twenty-one averaged. Inside the 20 s horizon that admits
+ *  a window down to about 1.15 counted intervals a second (the newest and
+ *  23 more in 20 s), and it decides WHEN only between that and 1.33 (24 in
+ *  18 s); nothing slower assembles. Below about 4 counted intervals a
+ *  second the fixed trim of three is a large share of a short window and
+ *  can read a reference 2–3 % low against a longer window at the floor —
+ *  the size of `FLOOR_LATCH_MIN_GAIN` — a skew the floor judgement lives
+ *  with rather than a reason to ask for more. And the limit of either rule:
+ *  a phone whose main-thread ticks exceed 10 ms has every over-budget
+ *  interval excluded, counts nothing, and is reached by neither. */
+export const DOWN_MIN_COUNT = 24;
+
 /** And behind an up probe: more evidence is asked for before taking pixels
  *  than before giving them back. */
 export const UP_WINDOW_S = 10;
@@ -357,6 +407,21 @@ export const UP_WINDOW_S = 10;
 /** Counted intervals in a window of `seconds` at `budgetMs`. */
 export function windowCounted(seconds: number, budgetMs: number): number {
   return Math.max(1, Math.round((seconds * 1000) / budgetMs));
+}
+
+/** Which rule completed a down window: its count, or its span. */
+export type DownWindowBy = 'count' | 'span';
+
+/** Whether a down window is complete, and by which rule: `count` once it holds
+ *  the `counted` intervals six seconds come to at the budget, `span` once its
+ *  intervals cover `DOWN_SPAN_FALLBACK_MS` of eligible time and number at
+ *  least `DOWN_MIN_COUNT`; null while it is neither. The stat is the window as
+ *  the ring assembled it, already cut at the staleness horizon. */
+export function downWindowComplete(stat: { count: number; spanMs: number } | null, counted: number): DownWindowBy | null {
+  if (stat === null) return null;
+  if (stat.count >= counted) return 'count';
+  if (stat.count >= DOWN_MIN_COUNT && stat.spanMs >= DOWN_SPAN_FALLBACK_MS) return 'span';
+  return null;
 }
 
 /** Counted intervals in a down decision's window at the default budget. */
@@ -627,6 +692,17 @@ export interface IntervalSample {
 /** Why a rung is being changed. */
 export type StepReason = 'down' | 'up' | 'revert' | 'floor latch' | 'ladder' | 'restore';
 
+/** A rung change the controller made, as the readout reports the last one.
+ *  `windowBy` is the rule that completed the down window the step was decided
+ *  on, and null for a step no down window decided. */
+export interface StepRecord {
+  atMs: number;
+  from: number;
+  to: number;
+  reason: StepReason;
+  windowBy: DownWindowBy | null;
+}
+
 /** Why the clock moved a rung, for the readout. */
 export type ClockWhy =
   | 'calibrate' | 'climb' | 'verify' | 'unverified' | 'panic' | 'delivery' | 'hand-back' | 'intervals'
@@ -743,6 +819,12 @@ export interface ControllerState {
   /** The down window's trimmed mean, or null while there is too little to
    *  trim. */
   trimmedMeanMs: number | null;
+  /** The eligible time the down window's intervals cover, or null while there
+   *  is too little to trim. */
+  downSpanMs: number | null;
+  /** Which rule has completed the down window — its count, or its span — or
+   *  null while neither has. */
+  downWindowBy: DownWindowBy | null;
   /** Counted intervals in reach right now: held, and not yet stale. */
   countedWindow: number;
   /** The share of recent intervals that counted. Zero for a long stretch is
@@ -763,7 +845,7 @@ export interface ControllerState {
    *  session. */
   latch: { untilMs: number; escalation: number } | null;
   /** The last change the controller asked for. */
-  lastStep: { atMs: number; from: number; to: number; reason: StepReason } | null;
+  lastStep: StepRecord | null;
   /** The mean that triggered the first step down from medium: what the floor
    *  has to beat. */
   floorReference: number | null;
@@ -1028,6 +1110,12 @@ class IntervalRing {
   /** The main-thread milliseconds SUMMED over each interval, carried beside
    *  it so the headroom gate can read a window rather than one frame. */
   private readonly busyMs: Float64Array;
+  /** The controller's running total of eligible time as each interval was
+   *  pushed, that interval included: every interval both of whose endpoints
+   *  were eligible adds to it, counted or not, and nothing else does. Two of
+   *  them apart are the eligible time between, so a window's span never reads
+   *  across a stretch that was hidden, pinned or in another mode. */
+  private readonly eligibleMs: Float64Array;
   private readonly top = new Float64Array(TRIM_COUNT);
   private head = 0;
   private count = 0;
@@ -1036,12 +1124,14 @@ class IntervalRing {
     this.atMs = new Float64Array(capacity);
     this.ms = new Float64Array(capacity);
     this.busyMs = new Float64Array(capacity);
+    this.eligibleMs = new Float64Array(capacity);
   }
 
-  push(atMs: number, ms: number, busyMs: number): void {
+  push(atMs: number, ms: number, busyMs: number, eligibleMs: number): void {
     this.atMs[this.head] = atMs;
     this.ms[this.head] = ms;
     this.busyMs[this.head] = busyMs;
+    this.eligibleMs[this.head] = eligibleMs;
     this.head = (this.head + 1) % this.capacity;
     if (this.count < this.capacity) this.count++;
   }
@@ -1053,16 +1143,20 @@ class IntervalRing {
 
   /** Mean of the newest `maxSize` intervals no older than `notBeforeMs`, with
    *  the longest `trim` of them dropped. `count` is how many were in reach,
-   *  so the caller can ask for a full window. */
-  trimmedMean(maxSize: number, trim: number, notBeforeMs: number): { meanMs: number; count: number } | null {
+   *  so the caller can ask for a full window, and `spanMs` the eligible time
+   *  they cover, from the start of the oldest to the end of the newest — 360
+   *  intervals of 16.67 ms read 6000 — so it can ask for a long one. */
+  trimmedMean(maxSize: number, trim: number, notBeforeMs: number): { meanMs: number; count: number; spanMs: number } | null {
     const drop = Math.min(trim, this.top.length);
     for (let i = 0; i < drop; i++) this.top[i] = -Infinity;
     let count = 0;
     let sum = 0;
+    let oldest = -1;
     for (let i = 0; i < this.count && count < maxSize; i++) {
       const at = (this.head - 1 - i + this.capacity) % this.capacity;
       if (this.atMs[at] < notBeforeMs) break;
       const value = this.ms[at];
+      oldest = at;
       count++;
       sum += value;
       for (let j = 0; j < drop; j++) {
@@ -1077,7 +1171,9 @@ class IntervalRing {
     if (count - dropped <= 0) return null;
     let sumTop = 0;
     for (let j = 0; j < dropped; j++) sumTop += this.top[j];
-    return { meanMs: (sum - sumTop) / (count - dropped), count };
+    const newest = (this.head - 1 + this.capacity) % this.capacity;
+    const spanMs = this.eligibleMs[newest] - this.eligibleMs[oldest] + this.ms[oldest];
+    return { meanMs: (sum - sumTop) / (count - dropped), count, spanMs };
   }
 
   /** How many of the newest `maxSize` intervals are no older than
@@ -1144,6 +1240,9 @@ export class ResolutionController {
   private clockMs = 0;
   private startedMs: number | null = null;
   private lastCountedMs: number | null = null;
+  /** Every eligible interval added up, counted or not, for the span of a down
+   *  window: a stretch hidden, pinned or in another mode adds nothing. */
+  private eligibleMs = 0;
 
   private settleUntilMs = 0;
   private lastChangeMs = 0;
@@ -1161,9 +1260,12 @@ export class ResolutionController {
   private latchFailures = 0;
   private floorReference: number | null = null;
   private stepReference: number | null = null;
-  private lastStep: { atMs: number; from: number; to: number; reason: StepReason } | null = null;
+  private lastStep: StepRecord | null = null;
 
   private pending: Decision | null = null;
+  /** The rule that completed the down window behind the pending decision, or
+   *  null for a decision no down window made. */
+  private pendingWindowBy: DownWindowBy | null = null;
   private idle = false;
 
   /** Bumped by every rung change, event, budget and ladder: a GPU reading
@@ -1326,8 +1428,9 @@ export class ResolutionController {
           : sample.workedMs !== 0 ? 3
             : !(sample.intervalMs <= this.budgetMs || sample.mainThreadMs <= MAIN_THREAD_EXCLUDE_MS) ? 4
               : 5;
+    if (!this.idle && sample.eligible) this.eligibleMs += sample.intervalMs;
     if (counted) {
-      this.window.push(sample.nowMs, sample.intervalMs, sample.mainThreadSumMs ?? sample.mainThreadMs);
+      this.window.push(sample.nowMs, sample.intervalMs, sample.mainThreadSumMs ?? sample.mainThreadMs, this.eligibleMs);
       this.lastCountedMs = sample.nowMs;
     }
     if (sample.drawSeq !== undefined) this.recordVerdict(sample.drawSeq, because);
@@ -1399,15 +1502,17 @@ export class ResolutionController {
     const pending = this.pending;
     const climb = this.pendingClimb;
     const clockStep = this.pendingClockStep;
+    const windowBy = pending !== null ? this.pendingWindowBy : null;
     this.pendingClimb = null;
     this.pendingClockStep = false;
+    this.pendingWindowBy = null;
     this.pending = null;
     if (pending !== null) this.index = clampIndex(pending.to, this.rungs.length);
     this.clockMs = nowMs;
     this.lastChangeMs = nowMs;
     this.settleUntilMs = nowMs + REALLOC_SETTLE_MS;
     this.window.clear();
-    this.lastStep = { atMs: nowMs, from, to: this.index, reason: pending?.reason ?? 'ladder' };
+    this.lastStep = { atMs: nowMs, from, to: this.index, reason: pending?.reason ?? 'ladder', windowBy };
     if (kind === 'up') {
       this.verifyUntilMs = this.settleUntilMs + VERIFY_MS;
       this.verifyFromIndex = from;
@@ -1652,7 +1757,7 @@ export class ResolutionController {
     this.resetClockEvidence(nowMs);
     this.reopenClockVerify();
     if (Math.abs(this.rungs[this.index] - previousRatio) < 1e-9) return null;
-    this.lastStep = { atMs: nowMs, from, to: this.index, reason: 'ladder' };
+    this.lastStep = { atMs: nowMs, from, to: this.index, reason: 'ladder', windowBy: null };
     return { to: this.index, reason: 'ladder' };
   }
 
@@ -1665,6 +1770,8 @@ export class ResolutionController {
       sceneRatio: this.rungs[this.index],
       idle: this.idle,
       trimmedMeanMs: stat?.meanMs ?? null,
+      downSpanMs: stat?.spanMs ?? null,
+      downWindowBy: downWindowComplete(stat, this.downCounted),
       countedWindow: this.window.fresh(this.upCounted, this.clockMs - STALENESS_MS),
       countedRate: this.rateCount === 0 ? 0 : this.rateCounted / this.rateCount,
       silentMs: Math.max(0, this.clockMs - since),
@@ -2283,8 +2390,16 @@ export class ResolutionController {
   private emit(to: number, reason: StepReason): Decision {
     this.pendingClimb = null;
     this.pendingClockStep = false;
+    this.pendingWindowBy = null;
     this.pending = { to: clampIndex(to, this.rungs.length), reason };
     return this.pending;
+  }
+
+  /** A decision the down window made, marked with the rule that completed
+   *  that window so the step it becomes can say so. */
+  private byWindow(decision: Decision, by: DownWindowBy): Decision {
+    this.pendingWindowBy = by;
+    return decision;
   }
 
   /** What a frame at this rung is held to: the display's own tick above
@@ -2367,7 +2482,8 @@ export class ResolutionController {
     if (this.index <= 0 || this.latch !== null) return null;
     if (nowMs - this.lastChangeMs < DOWN_SPACING_MS) return null;
     const stat = this.window.trimmedMean(this.downCounted, TRIM_COUNT, nowMs - STALENESS_MS);
-    if (stat === null || stat.count < this.downCounted) return null;
+    const by = downWindowComplete(stat, this.downCounted);
+    if (stat === null || by === null) return null;
     // A rung the clock earned is held to a tighter bar than the tick's: a
     // phone at 52–58 fps at a sharper rung is what the clock must not buy.
     const earned = this.clockHolds();
@@ -2379,12 +2495,12 @@ export class ResolutionController {
     // At a rung the clock earned this is a measured failure, inside the
     // probation or out of it; and the floor's references, interval evidence
     // about a slide from Medium, are not touched.
-    if (earned) return this.clockFail(nowMs, this.index - 1, 'intervals');
+    if (earned) return this.byWindow(this.clockFail(nowMs, this.index - 1, 'intervals'), by);
     // Handed back inside its probation: the probe that reached this rung has
     // failed, and the step is its revert rather than a slide.
     if (this.probation !== null && this.probation.rung === this.index && nowMs < this.probation.untilMs) {
       this.failProbe(nowMs);
-      return this.emit(this.index - 1, 'revert');
+      return this.byWindow(this.emit(this.index - 1, 'revert'), by);
     }
     // The mean at medium is what the floor will have to beat. Only a slide
     // that starts at medium can be judged that way; one that starts lower
@@ -2394,14 +2510,16 @@ export class ResolutionController {
     // And the rung above the floor as it last read, for a device that got
     // slower while the slide was under way.
     this.stepReference = stat.meanMs;
-    return this.emit(this.index - 1, 'down');
+    return this.byWindow(this.emit(this.index - 1, 'down'), by);
   }
 
   /** At the floor: did the pixels the slide gave up buy anything? */
   private floorDecision(nowMs: number): Decision | null {
     if (this.latch !== null || this.floorReference === null || this.index === this.mediumIndex) return null;
+    // The same window, complete by the same rule, as the step down it judges.
     const stat = this.window.trimmedMean(this.downCounted, TRIM_COUNT, nowMs - STALENESS_MS);
-    if (stat === null || stat.count < this.downCounted) return null;
+    const by = downWindowComplete(stat, this.downCounted);
+    if (stat === null || by === null) return null;
     // The floor is held to the slower of the two readings it can beat: Medium
     // as it read when the slide began, or the rung just above as it read last.
     // A chip that stepped down mid-slide leaves Medium's reading stale — a
@@ -2416,7 +2534,7 @@ export class ResolutionController {
     const hold = LATCH_HOLD_MS[Math.min(this.latchFailures, LATCH_HOLD_MS.length - 1)];
     this.latchFailures++;
     this.latch = { untilMs: nowMs + hold, escalation: this.latchFailures };
-    return this.emit(this.mediumIndex, 'floor latch');
+    return this.byWindow(this.emit(this.mediumIndex, 'floor latch'), by);
   }
 
   private upDecision(nowMs: number): Decision | null {

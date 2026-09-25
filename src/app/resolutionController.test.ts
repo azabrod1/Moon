@@ -3661,6 +3661,33 @@ describe('the trial after the check: a minute at the rung', () => {
     expect(rig.controller.seedOutcome).toBe('abandoned');
   });
 
+  // A change of the sensor's duty opens a re-check whose frames are the
+  // rung's own; an arrival opens one at a new pose. Readings over the bar
+  // (15.5 against 0.9 of the budget) and over the budget itself (a panic).
+  for (const [what, reading, why] of [['over the bar', 15.5, 'verify'], ['a panic', 20, 'panic']] as const) {
+    it(`${what} in the re-check a duty change opened inside the minute is measured: the plain restore, and the memory dropped`, () => {
+      const rig = seededTop();
+      rig.runClock(seconds(20), onTime, () => 7);
+      rig.setDuty(8);
+      expect(rig.controller.state().clock.verify?.kind).toBe('reset');
+      rig.runClock(seconds(4), onTime, () => reading);
+      expect(rig.applied.map((a) => [a.reason, a.to])).toEqual([['up', TOP], ['restore', MEDIUM]]);
+      expect(rig.controller.state().clock.last?.why).toBe(why);
+      expect(rig.controller.state().ceiling).toBeNull();
+      expect(rig.controller.seedOutcome).toBe('dropped');
+    });
+
+    it(`${what} in the re-check an arrival opened inside the minute is at a new pose: the memory is kept`, () => {
+      const rig = seededTop();
+      rig.runClock(seconds(20), onTime, () => 7);
+      rig.controller.notify('arrival', rig.nowMs);
+      rig.runClock(seconds(4), onTime, () => reading);
+      expect(rig.applied.map((a) => [a.reason, a.to])).toEqual([['up', TOP], ['restore', MEDIUM]]);
+      expect(rig.controller.state().clock.last?.why).toBe(why);
+      expect(rig.controller.seedOutcome).toBe('abandoned');
+    });
+  }
+
   it('a failure after the minute is only the rung failing: the memory stands', () => {
     const rig = seededTop();
     rig.runClock(seconds(REMEMBER_HOLD_MS / 1000 + 2), onTime, () => 7);

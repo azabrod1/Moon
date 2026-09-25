@@ -45,11 +45,12 @@
  * included. Hidden counts because iOS Safari evicts a background tab without
  * a `pagehide`; a page that hangs dispatches neither event, so the flag is
  * still there for the next boot. A measured failure inside that minute
- * deletes the entry, and so does the WebGL context lost while the page is
- * visible and the trial stands — on WebKit a GPU hang usually arrives as
- * exactly that, with the page alive on a dead canvas and a reload to follow;
- * lost while hidden, it is the system reclaiming a background tab's GPU, and
- * the entry is kept. A boot that finds the flag still set refuses and deletes
+ * deletes the entry, and so does the WebGL context lost, or the GPU clock
+ * pricing itself off, while the page is visible and the flag stands — on
+ * WebKit a GPU hang usually arrives as a context loss with the page alive on a
+ * dead canvas and a reload to follow, and a rung too heavy to time prices the
+ * sensor out before its readings can hand the rung back; lost while hidden,
+ * it is the system reclaiming a background tab's GPU, and the entry is kept. A boot that finds the flag still set refuses and deletes
  * the entry: the boot before it neither held the rung nor stopped cleanly. A
  * trial that ends without a verdict — a pin, a level change, a new budget, a
  * lifecycle event the rung was not re-earned after, readings that never came
@@ -380,14 +381,24 @@ export class RungMemoryMirror {
   }
 
   /**
-   * The WebGL context was lost. With the remembered rung on trial and the page
-   * visible that is how a GPU hang at the rung arrives, and the entry goes for
-   * good; lost while hidden it is the system reclaiming a background tab's
-   * GPU, and the entry stays. Null where no trial stood.
+   * The rung gave out in a way the controller cannot call a verdict on: the
+   * WebGL context was lost, or the GPU clock priced itself off. With the trial
+   * flag standing and the page visible that is how a GPU hang or a rung too
+   * heavy to time arrives, and the entry goes for good; while hidden it is the
+   * system reclaiming a background tab's GPU, and the entry stays. Null where
+   * no trial flag stands.
+   *
+   * Decided on the flag this mirror wrote, never on the controller's outcome:
+   * a hang stalls the frames for seconds before the context is declared lost,
+   * the first frame after the stall reads as silence, and the controller has
+   * already ended the trial with no verdict by the time the loss arrives —
+   * while the flag it leaves standing is exactly what says the rung was never
+   * cleared.
    */
-  contextLost(source: RungMemorySource, visible: boolean): 'deleted' | 'kept' | null {
-    if (this.stopped || source.seedOutcome !== 'applied') return null;
-    if (!visible) return 'kept';
+  lostAtRung(visible: boolean): 'deleted' | 'kept' | null {
+    if (this.stopped) return null;
+    if (!visible) return this.trialEntry !== null || this.trialBase !== null ? 'kept' : null;
+    if (this.trialEntry === null) return null;
     clearRungMemory(this.storage);
     this.trialEntry = null;
     this.trialBase = null;
@@ -397,7 +408,10 @@ export class RungMemoryMirror {
     return 'deleted';
   }
 
-  /** No writes for the rest of the session, a `forget` excepted. */
+  /** No writes for the rest of the session, a `forget` excepted. A trial flag
+   *  standing when it stops is not lifted by a hide or an unload either, so the
+   *  next boot deletes that entry — the DEV injection that stops it leaves the
+   *  memory in a state no real session reaches. */
   stop(): void {
     this.stopped = true;
   }

@@ -374,7 +374,10 @@
  * the check the rung is the clock's like any other, and it stays on trial
  * until it has been held for the minute ('passed'): a measured failure there
  * (a hand-back, a panic, the intervals, the delivery guard) takes the usual
- * treatment and drops the memory too; a lifecycle restore, a pin, a level
+ * treatment and drops the memory too, and so does a panic or readings over
+ * the bar in the re-check a change of the sensor's duty opens — its plain
+ * restore stands for the rung, but its frames are the rung's own and a heavy
+ * rung is what prices the duty up; a lifecycle restore, a pin, a level
  * change, a new budget or ladder, `forgetRemembered` (the canvas grew past
  * what the memory was held at), or any other move off the rung ends the
  * trial with no verdict ('abandoned') and the memory is kept. Where the tick
@@ -2349,12 +2352,16 @@ export class ResolutionController {
    *  re-earned leaves the wait as it was; a clock that went quiet in steady
    *  state doubles it, so a clock that keeps going quiet cannot take the
    *  picture up and down every few seconds — each change is a visible one. */
-  private clockRestore(nowMs: number, why: ClockWhy): Decision {
+  private clockRestore(nowMs: number, why: ClockWhy, rungsOwnFrames = false): Decision {
     // A restore is a clock that cannot vouch — off, or a lifecycle reset not
-    // re-earned — never the rung failing: the memory is kept.
-    if (this.seedChecking()) return this.seedFail(nowMs, why, 'abandoned');
-    // Not the rung failing: a remembered rung's trial ends with no verdict.
-    if (this.seedOnTrial()) this.endSeed('abandoned');
+    // re-earned — and not the rung failing, so a remembered rung on trial
+    // keeps its memory. Except a panic or readings over the bar in a re-check
+    // the sensor's duty opened (`rungsOwnFrames`): nothing on screen moved, the
+    // frames are the rung's own, and a heavy rung is exactly what prices the
+    // duty up — for the memory, that is a measured failure.
+    const memory = rungsOwnFrames && (why === 'panic' || why === 'verify') ? 'dropped' : 'abandoned';
+    if (this.seedChecking()) return this.seedFail(nowMs, why, memory);
+    if (this.seedOnTrial()) this.endSeed(memory);
     this.noteClock(nowMs, this.mediumIndex, why);
     this.clockVerify = null;
     this.growthOnTrial = false;
@@ -2435,7 +2442,7 @@ export class ResolutionController {
     // no in the same way a slow verification does.
     const lifecycle = verify !== null && verify.kind === 'reset';
     if (this.panicStreak >= CLOCK_PANIC_COUNT) {
-      if (lifecycle) return this.clockRestore(nowMs, 'panic');
+      if (lifecycle) return this.clockRestore(nowMs, 'panic', verify.byDuty);
       return this.clockFail(nowMs, verify?.kind === 'probe' ? verify.fromIndex : this.index - 1, 'panic');
     }
     // Every frame that was drawn, slow for whatever reason: the pixels may be
@@ -2456,7 +2463,7 @@ export class ResolutionController {
         const stats = this.clockRing.stats(verify.startMs);
         const trimmed = stats.trimmedMeanMs ?? Infinity;
         if (trimmed > CLOCK_DOWN_SHARE * bar) {
-          if (lifecycle) return this.clockRestore(nowMs, 'verify');
+          if (lifecycle) return this.clockRestore(nowMs, 'verify', verify.byDuty);
           return this.clockFail(nowMs, verify.fromIndex, 'verify');
         }
         if (verify.kind === 'probe' && verify.sceneStretch !== null && stats.medianMs !== null) {

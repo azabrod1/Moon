@@ -1487,6 +1487,10 @@ const gpuFrameClock = createGpuFrameClock({
   },
   onDisabled: (reason) => {
     gpuPending = null;
+    // Before the controller hears of it, and only where the sensor turned
+    // itself off: a lost context is its own listener's to judge, and a
+    // controller that turned the clock off already knows why.
+    if (!contextLost && resolutionController.clockOff === null) rungMemorySensorOff(reason);
     resolutionController.setClockOff(reason);
     debugWarn('The GPU clock is off for this session', { reason });
   },
@@ -1756,13 +1760,25 @@ function rungMemoryRecheck(): void {
 
 /** The WebGL context was lost (the listener where the renderer is made). */
 function rungMemoryContextLost(): void {
+  rungMemoryLostAtRung('the WebGL context was lost');
+}
+
+/** The GPU clock turned itself off for a reason of its own — its price, a
+ *  sync object refused — rather than a lost context or the controller's own
+ *  verdict: a rung too heavy to time does that before its readings can hand
+ *  it back. */
+function rungMemorySensorOff(reason: string): void {
+  rungMemoryLostAtRung(`the GPU clock turned itself off (${reason})`);
+}
+
+function rungMemoryLostAtRung(what: string): void {
   if (rungMemoryBlockedBy !== null) return;
   const visible = document.visibilityState === 'visible';
-  const done = rungMemory.contextLost(resolutionController, visible);
+  const done = rungMemory.lostAtRung(visible);
   if (done === 'deleted') {
-    debugLog('Rung memory', { deleted: 'the WebGL context was lost at the remembered rung, with the page visible' });
+    debugLog('Rung memory', { deleted: `${what} with the remembered rung on trial and the page visible` });
   } else if (done === 'kept') {
-    debugLog('Rung memory', { kept: 'the WebGL context was lost while the page was hidden' });
+    debugLog('Rung memory', { kept: `${what} while the page was hidden` });
   }
 }
 

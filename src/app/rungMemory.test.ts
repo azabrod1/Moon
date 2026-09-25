@@ -424,7 +424,7 @@ describe('a page that stops drawing, and one whose context is lost', () => {
 
   it('the context lost with the page visible and the trial standing deletes the entry, and nothing is written after', () => {
     const { store, mirror, source } = onTrial();
-    expect(mirror.contextLost(source, true)).toBe('deleted');
+    expect(mirror.lostAtRung(true)).toBe('deleted');
     expect(store.stored()).toBeNull();
     const sets = store.sets;
     // What follows on a dead canvas — the rung restored, a later hold, the
@@ -443,23 +443,70 @@ describe('a page that stops drawing, and one whose context is lost', () => {
   it('the context lost with the page hidden keeps the entry: that is the system reclaiming a background tab', () => {
     const { store, mirror, source } = onTrial();
     mirror.hide(source, config, NOW + 2);
-    expect(mirror.contextLost(source, false)).toBe('kept');
+    expect(mirror.lostAtRung(false)).toBe('kept');
     expect(store.stored()).toEqual(entry());
     expect(mirror.isStopped).toBe(false);
   });
 
-  it('the context lost with no trial standing touches nothing', () => {
+  it('a hang: the stall read as silence ended the trial with no verdict before the loss arrived — the standing flag still deletes the entry', () => {
+    // The controller ends the trial 'abandoned' on the first frame after the
+    // stall — 'unverified' inside the check, a gap in the held minute — and
+    // the loss is dispatched after that frame. Either way the flag stands.
+    for (const why of ['a gap', 'unverified']) {
+      const { store, mirror, source } = onTrial();
+      source.outcome('abandoned');
+      mirror.sync(source, config, NOW + 4000);
+      expect(store.stored()?.trial, why).toBe(true);
+      expect(mirror.lostAtRung(true), why).toBe('deleted');
+      expect(store.stored(), why).toBeNull();
+    }
+  });
+
+  it('the same stall and loss with the page hidden keeps the entry', () => {
+    const { store, mirror, source } = onTrial();
+    source.outcome('abandoned');
+    mirror.sync(source, config, NOW + 4000);
+    mirror.hide(source, config, NOW + 4001);
+    expect(mirror.lostAtRung(false)).toBe('kept');
+    expect(store.stored()).toEqual(entry());
+  });
+
+  it('the GPU clock priced off at the rung takes the same path: the flag standing, the page visible, the entry goes', () => {
+    const { store, mirror, source } = onTrial();
+    // The sensor's own verdict reaches the mirror before the controller
+    // restores Medium for it.
+    expect(mirror.lostAtRung(true)).toBe('deleted');
+    expect(store.stored()).toBeNull();
+    source.outcome('abandoned');
+    mirror.sync(source, config, NOW + 10);
+    mirror.hide(source, config, NOW + 11);
+    expect(store.stored()).toBeNull();
+  });
+
+  it('a loss with no trial flag standing touches nothing — none marked, or one cleared by a pass, a drop or a hide', () => {
     for (const outcome of [null, 'armed', 'passed', 'abandoned', 'dropped'] as const) {
       const store = new FakeStorage();
       writeRungMemory(entry(), store);
-      const sets = store.sets;
       const mirror = new RungMemoryMirror(store);
       const source = new Source();
       if (outcome !== null) source.outcome(outcome);
-      expect(mirror.contextLost(source, true)).toBeNull();
+      mirror.sync(source, config, NOW);
+      const sets = store.sets;
+      const removes = store.removes;
+      expect(mirror.lostAtRung(true)).toBeNull();
       expect(store.sets).toBe(sets);
-      expect(store.removes).toBe(0);
+      expect(store.removes).toBe(removes);
     }
+    const passed = onTrial();
+    passed.source.hold(3);
+    passed.source.outcome('passed');
+    passed.mirror.sync(passed.source, config, NOW + 61_000);
+    expect(passed.mirror.lostAtRung(true)).toBeNull();
+    expect(passed.store.stored()).toEqual(entry({ at: NOW + 61_000 }));
+    const hidden = onTrial();
+    hidden.mirror.hide(hidden.source, config, NOW + 2);
+    expect(hidden.mirror.lostAtRung(true)).toBeNull();
+    expect(hidden.store.stored()).toEqual(entry());
   });
 
   it('stopped — synthetic samples were injected — nothing is written or deleted again, but forget still deletes', () => {
@@ -473,7 +520,7 @@ describe('a page that stops drawing, and one whose context is lost', () => {
     mirror.markTrial(entry());
     mirror.hide(source, config, NOW + 7);
     mirror.shown(source);
-    expect(mirror.contextLost(source, true)).toBeNull();
+    expect(mirror.lostAtRung(true)).toBeNull();
     expect(store.sets).toBe(sets);
     expect(store.removes).toBe(0);
     expect(store.stored()?.trial).toBe(true);

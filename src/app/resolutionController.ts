@@ -340,6 +340,41 @@
  * not take the clock away. None of the clock's decisions touch the floor's
  * references, which are interval evidence.
  *
+ * **A rung the clock held is remembered for the next boot.** Earning each rung
+ * again climb by climb costs a boot half a minute or more, and a rung the clock
+ * verified and then held for `REMEMBER_HOLD_MS` — from the moment a
+ * verification there passed, restarted by every evidence reset — is a fact
+ * about the device. `memory` is the LAST such rung this epoch, not the
+ * highest: the next boot resumes the pose this session ended in. A new budget
+ * or ladder clears it; `memoryVersion` moves whenever it or `seedOutcome`
+ * does, so the caller (app/rungMemory.ts keeps it) reads nothing per frame.
+ * A boot that is told a rung through `remember` — once, only where the clock
+ * steers, and only at Medium — may climb straight to it: the FIRST climb
+ * from Medium, when every gate a clock climb needs holds except the
+ * prediction, AND Medium's own p90 on this boot is inside `CALIBRATION_SHARE`
+ * of the budget, is to the remembered rung, several rungs at once if it is
+ * several above (`why: 'remembered'`, the one multi-rung step the rule
+ * takes). The p90 is this boot's evidence that the room is there; a boot at a
+ * pose where Medium reads heavier keeps the rung armed and climbs as it would
+ * have. The remembered rung is used up by that climb, by any other change of
+ * rung, and by a new budget or ladder, so it never fires mid-session after a
+ * hand-back; one at or below the rung is used up with no decision. The climb
+ * is verified exactly as a probe is — a `'probe'` verification marked
+ * `seeded` — except that nothing is learned from it and nothing compared: a
+ * step of several rungs says nothing about how one step grows. Every way out
+ * of that check, the interval second included — readings over the bar,
+ * capped or starved ones repeating, a panic, the delivery guard, silence, the
+ * clock going off — is ONE treatment: back to Medium, where every such climb
+ * starts, with no ceiling, no failure counted and the wait as it was, and
+ * `seedOutcome` 'dropped', which tells the caller to delete the memory. Past
+ * the check the rung is the clock's like any other, and it stays on trial
+ * until it has been held for the minute ('passed'): a measured failure there
+ * (a hand-back, a panic, the intervals, the delivery guard) takes the usual
+ * treatment and drops the memory too; a lifecycle restore, a pin, a level
+ * change, a new budget or ladder, or any other move off the rung ends the
+ * trial with no verdict ('abandoned') and the memory is kept. Where the tick
+ * is finer, none of this runs: `remember` refuses and nothing is held.
+ *
  * Not in this version: the slide below Medium by the clock; a bias
  * calibration; a timer query; the clock on a display with a finer tick or
  * under a row target (a row's cadence can be quantised too — deferred, not
@@ -610,6 +645,11 @@ export const CLOCK_DELIVERY_SPAN_MS = 6000;
 export const CLOCK_DELIVERY_UP = 1.01;
 export const CLOCK_DELIVERY_GUARD = 1.02;
 
+/** How long a rung the clock earned has to hold, from the verification that
+ *  passed there and with no evidence reset since, before it is remembered for
+ *  the next boot; and how long a remembered rung stays on trial. */
+export const REMEMBER_HOLD_MS = 60_000;
+
 /** Readings the clock keeps. At most one reading a frame, and a 6 s window at
  *  60 fps and one frame in four is 90 of them. */
 const CLOCK_RING_SIZE = 256;
@@ -711,7 +751,14 @@ export interface StepRecord {
 /** Why the clock moved a rung, for the readout. */
 export type ClockWhy =
   | 'calibrate' | 'climb' | 'verify' | 'unverified' | 'panic' | 'delivery' | 'hand-back' | 'intervals'
-  | 'silent' | 'gap' | 'starved' | 'off' | 'reversal';
+  | 'silent' | 'gap' | 'starved' | 'off' | 'reversal' | 'remembered';
+
+/** What became of the rung a boot was told through `remember`: armed and not
+ *  yet used; climbed to; held for `REMEMBER_HOLD_MS`; failed by measurement
+ *  before that (the memory is to be deleted); or ended with no verdict — used
+ *  up without a climb, or its trial cut short by something that is not the
+ *  rung failing. */
+export type SeedOutcome = 'armed' | 'applied' | 'passed' | 'dropped' | 'abandoned';
 
 /** The GPU clock's part of the rule, as `__moon.quality().clock` shows it. */
 export interface ClockState {
@@ -742,7 +789,7 @@ export interface ClockState {
   deliveredMs: number | null;
   /** A verification standing: a probe's, or a reset's re-earning, with its
    *  deadline once the first eligible frame after it has started it. */
-  verify: { kind: 'probe' | 'reset'; readings: number; deadlineMs: number | null } | null;
+  verify: { kind: 'probe' | 'reset'; seeded: boolean; readings: number; deadlineMs: number | null } | null;
   /** The sensor's duty as it last told the controller, and the gap that is
    *  silence right now. */
   duty: number;
@@ -793,6 +840,9 @@ export interface Decision {
   /** The rung index in the ladder. */
   to: number;
   reason: StepReason;
+  /** The climb to a rung a previous boot held: the caller marks the memory on
+   *  trial before it applies it. */
+  seeded?: boolean;
 }
 
 /** What made the controller change its mind, or step out of the way. */
@@ -868,6 +918,10 @@ export interface ControllerState {
   upCounted: number;
   /** The GPU clock's part of the rule. */
   clock: ClockState;
+  /** The rung memory: the last rung the clock held for a minute this epoch
+   *  (what the next boot is to be told), the rung this boot was told and has
+   *  not used yet, and what became of it. */
+  memory: { heldRatio: number | null; rememberedRatio: number | null; seed: SeedOutcome | null };
 }
 
 /** What a reading in the clock's ring is. A TRUSTED reading enters the
@@ -1290,7 +1344,7 @@ export class ResolutionController {
    *  the still view it was taken in, the rung below's GPU part the growth is
    *  learned against, and whether the climb was predicted with a learned
    *  growth (which a failure of it may then drop). */
-  private pendingClimb: { belowMedianMs: number | null; sceneStretch: number; belowGpuMs: number; byGrowth: boolean } | null = null;
+  private pendingClimb: { belowMedianMs: number | null; sceneStretch: number; belowGpuMs: number; byGrowth: boolean; seeded?: boolean } | null = null;
   /** The decision pending is a step down the clock made on its own evidence
    *  — a measured failure, or a probe it could not verify. */
   private pendingClockStep = false;
@@ -1319,6 +1373,9 @@ export class ResolutionController {
     interrupted: boolean;
     /** The deadline has been restarted for one, and never will be again. */
     restarted: boolean;
+    /** The check of a climb to a remembered rung: every way out of it is the
+     *  one treatment the header gives it. */
+    seeded?: boolean;
   } | null = null;
   /** The last step was one the clock could not sample for a reason that is
    *  not the frames' (the map, a DEV measurement). */
@@ -1382,6 +1439,22 @@ export class ResolutionController {
   private readonly clockDropped = { unpaired: 0, uncounted: 0, stale: 0, settling: 0, notSteering: 0 };
   private readonly clockUncountedBy = { ineligible: 0, settling: 0, worked: 0, mainThread: 0, sensor: 0 };
   private clockLast: { atMs: number; from: number; to: number; why: ClockWhy } | null = null;
+
+  // --- The remembered rung (the header) --------------------------------------
+  /** The rung a previous boot held, armed for this boot's first climb from
+   *  Medium; null once used, or never given. */
+  private rememberedIndex: number | null = null;
+  /** `remember` armed a rung this boot: a second call is ignored. */
+  private rememberTaken = false;
+  /** The rung the remembered climb reached, while its trial stands, and
+   *  whether the clock has passed it there yet. */
+  private seedRung: number | null = null;
+  private seedClockChecked = false;
+  private seedOutcomeNow: SeedOutcome | null = null;
+  /** The last rung the clock earned and held for `REMEMBER_HOLD_MS` this
+   *  epoch. */
+  private heldMemory: { readonly ratio: number } | null = null;
+  private memoryVersionCount = 0;
 
   constructor(ladder: RungLadder) {
     this.rungs = ladder.rungs.length > 0 ? ladder.rungs : [1];
@@ -1551,13 +1624,16 @@ export class ResolutionController {
         kind: 'probe',
         fromIndex: from,
         belowMedianMs: climb.belowMedianMs,
-        sceneStretch: climb.sceneStretch,
-        belowGpuMs: climb.belowGpuMs,
+        // A climb of several rungs to a remembered one compares nothing and
+        // teaches nothing.
+        sceneStretch: climb.seeded === true ? null : climb.sceneStretch,
+        belowGpuMs: climb.seeded === true ? null : climb.belowGpuMs,
         byDuty: false,
         startMs: this.settleUntilMs,
         deadlineMs: null,
         interrupted: false,
         restarted: false,
+        seeded: climb.seeded === true,
       };
     } else if (clockStep && this.clockHolds()) {
       // The clock handed a rung back to one still above Medium on its own
@@ -1583,6 +1659,7 @@ export class ResolutionController {
       this.clockVerify = null;
       this.reopenClockVerify();
     }
+    this.seedOnApplied(kind === 'up' && climb !== null && climb.seeded === true);
   }
 
   /**
@@ -1675,6 +1752,8 @@ export class ResolutionController {
         // nothing about the growth that climbed here.
         this.clockVerify = null;
         this.growthOnTrial = false;
+        // Nor about a remembered rung on trial.
+        if (this.seedRung !== null) this.endSeed('abandoned');
         return;
       case 'unpin':
         this.idle = false;
@@ -1804,6 +1883,11 @@ export class ResolutionController {
       downCounted: this.downCounted,
       upCounted: this.upCounted,
       clock: this.clockState(),
+      memory: {
+        heldRatio: this.heldMemory?.ratio ?? null,
+        rememberedRatio: this.rememberedIndex === null ? null : this.rungs[this.rememberedIndex],
+        seed: this.seedOutcomeNow,
+      },
     };
   }
 
@@ -1885,6 +1969,156 @@ export class ResolutionController {
     this.reopenClockVerify(true);
   }
 
+  // --- The remembered rung (the header) --------------------------------------
+
+  /**
+   * The rung a previous boot verified and held on this device, for this boot's
+   * FIRST climb from Medium. Taken once a boot, only where the clock steers and
+   * only at Medium; returns null when it is armed, else why it was not.
+   */
+  remember(ratio: number): string | null {
+    if (this.rememberTaken) return 'a rung was already remembered this boot';
+    if (!this.clockCanSteer) return 'the clock does not steer here';
+    if (this.index !== this.mediumIndex) return 'not at Medium';
+    let at = -1;
+    for (let i = this.mediumIndex + 1; i < this.rungs.length; i++) {
+      if (Math.abs(this.rungs[i] - ratio) < 1e-6) at = i;
+    }
+    if (at < 0) return 'not a rung above Medium on this ladder';
+    this.rememberTaken = true;
+    this.rememberedIndex = at;
+    this.setSeedOutcome('armed');
+    return null;
+  }
+
+  /** Cancel a remembered rung that has not been used: the configuration it
+   *  was remembered for is not this one any more. */
+  forgetRemembered(): void {
+    if (this.rememberedIndex === null) return;
+    this.rememberedIndex = null;
+    this.setSeedOutcome('abandoned');
+  }
+
+  /** The last rung the clock earned and held for `REMEMBER_HOLD_MS` this
+   *  epoch — what the next boot is to be told — or null. */
+  get memory(): { readonly ratio: number } | null {
+    return this.heldMemory;
+  }
+
+  /** Moves whenever `memory` or `seedOutcome` does: the one number a caller
+   *  reads per frame. */
+  get memoryVersion(): number {
+    return this.memoryVersionCount;
+  }
+
+  /** What became of the rung this boot was told, or null if it was told none. */
+  get seedOutcome(): SeedOutcome | null {
+    return this.seedOutcomeNow;
+  }
+
+  private setSeedOutcome(outcome: SeedOutcome): void {
+    if (this.seedOutcomeNow === outcome) return;
+    this.seedOutcomeNow = outcome;
+    this.memoryVersionCount++;
+  }
+
+  private endSeed(outcome: 'passed' | 'dropped' | 'abandoned'): void {
+    this.seedRung = null;
+    this.setSeedOutcome(outcome);
+  }
+
+  /** A remembered climb's rung is on trial and is still the rung. */
+  private seedOnTrial(): boolean {
+    return this.seedRung !== null && this.index === this.seedRung;
+  }
+
+  /** Its check stands: the clock has not passed the rung yet, or the interval
+   *  second every climb opens has not ended. Kept as a flag rather than read
+   *  off the verification, which is let go before its verdict is acted on. */
+  private seedChecking(): boolean {
+    return this.seedOnTrial() && (!this.seedClockChecked || this.verifyUntilMs !== null);
+  }
+
+  /**
+   * The climb straight to the remembered rung, where the gates the caller has
+   * already passed — everything a clock climb needs but the prediction — hold,
+   * and Medium's own readings on this boot say the room is there. Null
+   * otherwise, and the rung stays armed.
+   */
+  private seedDecision(nowMs: number): Decision | null {
+    const target = this.rememberedIndex;
+    if (target === null || this.index !== this.mediumIndex) return null;
+    if (target <= this.index) {
+      // Nothing to climb to: used up, with no decision.
+      this.forgetRemembered();
+      return null;
+    }
+    if (this.ceiling !== null && target >= this.ceiling.rung) return null;
+    if (this.refusal.resting(nowMs)) return null;
+    const w = this.clockRing.window(CLOCK_UP_COUNT, CLOCK_UP_SPAN_MS, nowMs - STALENESS_MS, 0.9);
+    if (w === null || w.starvedShare > STARVED_SHARE_MAX) return null;
+    if (w.p90Ms > CALIBRATION_SHARE * this.budgetMs) return null;
+    this.refusal.fits();
+    this.noteClock(nowMs, target, 'remembered');
+    const decision = this.emit(target, 'up');
+    decision.seeded = true;
+    this.pendingClimb = { belowMedianMs: null, sceneStretch: this.sceneStretch, belowGpuMs: NaN, byGrowth: false, seeded: true };
+    return decision;
+  }
+
+  /** Every way out of a remembered climb's check: back to Medium, where every
+   *  such climb starts, with no ceiling, no failure counted and the wait as it
+   *  was — and the memory dropped. */
+  private seedFail(nowMs: number, why: ClockWhy): Decision {
+    this.noteClock(nowMs, this.mediumIndex, why);
+    this.clockVerify = null;
+    this.verifyUntilMs = null;
+    this.growthOnTrial = false;
+    this.endSeed('dropped');
+    return this.emit(this.mediumIndex, 'restore');
+  }
+
+  /** A rung was applied. The remembered rung is for the first climb from
+   *  Medium only, so any change uses it up; a remembered climb puts its rung on
+   *  trial, and any move off that rung while the trial stands ends it. */
+  private seedOnApplied(seeded: boolean): void {
+    if (this.rememberedIndex !== null) {
+      this.rememberedIndex = null;
+      if (!seeded) this.setSeedOutcome('abandoned');
+    }
+    if (seeded) {
+      this.seedRung = this.index;
+      this.seedClockChecked = false;
+      this.setSeedOutcome('applied');
+    } else if (this.seedRung !== null && this.index !== this.seedRung) {
+      this.endSeed('abandoned');
+    }
+  }
+
+  /** The rung the clock holds has been held for `REMEMBER_HOLD_MS` since a
+   *  verification there passed: it is the one to remember, and a remembered
+   *  rung on trial has passed. */
+  private noteHeld(nowMs: number): void {
+    if (this.clockAcquiredAtMs === null || nowMs - this.clockAcquiredAtMs < REMEMBER_HOLD_MS) return;
+    const ratio = this.rungs[this.index];
+    if (this.heldMemory === null || Math.abs(this.heldMemory.ratio - ratio) > 1e-9) {
+      this.heldMemory = { ratio };
+      this.memoryVersionCount++;
+    }
+    if (this.seedOnTrial()) this.endSeed('passed');
+  }
+
+  /** A new budget or ladder: the remembered rung, a trial and the rung held
+   *  all describe the old one. */
+  private dropMemoryEpoch(): void {
+    this.forgetRemembered();
+    if (this.seedRung !== null) this.endSeed('abandoned');
+    if (this.heldMemory !== null) {
+      this.heldMemory = null;
+      this.memoryVersionCount++;
+    }
+  }
+
   /** A new evidence epoch for the clock: nothing learned about how this
    *  device grows, and no steady-state silence counted against a rung. */
   private dropClockEpoch(): void {
@@ -1892,6 +2126,7 @@ export class ResolutionController {
     this.clockGrowthMeasured = null;
     this.growthOnTrial = false;
     this.silentRung = null;
+    this.dropMemoryEpoch();
   }
 
   private clearClockRing(nowMs: number): void {
@@ -1938,6 +2173,7 @@ export class ResolutionController {
       deadlineMs: standing?.deadlineMs ?? null,
       interrupted: standing?.interrupted ?? false,
       restarted: standing?.restarted ?? false,
+      seeded: standing?.seeded ?? false,
     };
   }
 
@@ -2085,6 +2321,9 @@ export class ResolutionController {
    *  cannot earn, throttle, recover and repeat without the escalation adding
    *  up. `to` is one rung down, or Medium for the delivery guard. */
   private clockFail(nowMs: number, to: number, why: ClockWhy): Decision {
+    if (this.seedChecking()) return this.seedFail(nowMs, why);
+    // A measured failure while a remembered rung is on trial: the memory goes.
+    if (this.seedOnTrial()) this.endSeed('dropped');
     this.noteClock(nowMs, to, why);
     this.failProbe(nowMs);
     const decision = this.emit(to, 'revert');
@@ -2098,6 +2337,9 @@ export class ResolutionController {
    *  state doubles it, so a clock that keeps going quiet cannot take the
    *  picture up and down every few seconds — each change is a visible one. */
   private clockRestore(nowMs: number, why: ClockWhy): Decision {
+    if (this.seedChecking()) return this.seedFail(nowMs, why);
+    // Not the rung failing: a remembered rung's trial ends with no verdict.
+    if (this.seedOnTrial()) this.endSeed('abandoned');
     this.noteClock(nowMs, this.mediumIndex, why);
     this.clockVerify = null;
     this.growthOnTrial = false;
@@ -2115,6 +2357,7 @@ export class ResolutionController {
    * and restore for the rest of the session.
    */
   private clockSilent(nowMs: number, why: ClockWhy): Decision {
+    if (this.seedChecking()) return this.seedFail(nowMs, why);
     if (this.silentRung !== this.index) {
       this.silentRung = this.index;
       return this.clockRestore(nowMs, why);
@@ -2135,6 +2378,7 @@ export class ResolutionController {
    * the same rung holds that rung as a ceiling, as a failed probe would.
    */
   private clockUnverified(nowMs: number, to: number): Decision {
+    if (this.seedChecking()) return this.seedFail(nowMs, 'unverified');
     this.noteClock(nowMs, to, 'unverified');
     if (this.unverifiedRung === this.index) {
       this.unverifiedRung = null;
@@ -2238,6 +2482,7 @@ export class ResolutionController {
           }
         }
         this.clockAcquiredAtMs = nowMs;
+        if (this.seedOnTrial()) this.seedClockChecked = true;
         if (this.unverifiedRung === this.index) this.unverifiedRung = null;
         return null;
       }
@@ -2265,6 +2510,7 @@ export class ResolutionController {
     if (starved !== null && starved > STARVED_SHARE_MAX) return this.clockSilent(nowMs, 'starved');
     const w = this.clockRing.window(CLOCK_DOWN_COUNT, CLOCK_DOWN_SPAN_MS, nowMs - STALENESS_MS, 0.9);
     if (w !== null && w.value > CLOCK_DOWN_SHARE * bar) return this.clockFail(nowMs, this.index - 1, 'hand-back');
+    this.noteHeld(nowMs);
     return null;
   }
 
@@ -2294,6 +2540,8 @@ export class ResolutionController {
     if (delivered === null || delivered > CLOCK_DELIVERY_UP * this.budgetMs) return null;
     const starved = this.clockRing.starvedShare(CLOCK_STARVED_WINDOW, CLOCK_STARVED_MIN, nowMs - STALENESS_MS);
     if (starved !== null && starved > STARVED_SHARE_MAX) return null;
+    const seeded = this.seedDecision(nowMs);
+    if (seeded !== null) return seeded;
     const growth = growthFor(this.clockGrowthE, this.rungs[this.index], this.rungs[next]);
     const horizon = nowMs - STALENESS_MS;
     const w = this.clockRing.window(
@@ -2362,6 +2610,7 @@ export class ResolutionController {
       deliveredMs: this.delivery.mean(this.clockMs, CLOCK_DELIVERY_SPAN_MS),
       verify: verify === null ? null : {
         kind: verify.kind,
+        seeded: verify.seeded === true,
         readings: this.clockRing.tally(verify.startMs).count,
         deadlineMs: verify.deadlineMs,
       },
@@ -2440,6 +2689,8 @@ export class ResolutionController {
     const stat = this.window.trimmedMean(this.upCounted, VERIFY_TRIM_COUNT, nowMs - STALENESS_MS);
     if (stat === null || stat.count < VERIFY_MIN_COUNTED) return null;
     if (stat.meanMs > this.verifyThresholdMs()) {
+      // The interval second a remembered climb opened is part of its check.
+      if (this.seedOnTrial()) return this.seedFail(nowMs, 'intervals');
       const clockRung = this.clockHolds();
       this.failProbe(nowMs);
       const decision = this.emit(this.verifyFromIndex, 'revert');

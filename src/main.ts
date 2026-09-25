@@ -46,6 +46,10 @@ import {
 } from './app/frameRateSetting';
 import { markPending, clearPending, pendingAtBoot, readQualityLevel, writeQualityLevel } from './app/qualitySetting';
 import {
+  RungMemoryMirror, clearRungMemory, readRungMemory, rungMemoryApplies, rungMemoryUrlBlock,
+  type RungMemoryConfig, type RungMemoryEntry, type RungMemoryFacts,
+} from './app/rungMemory';
+import {
   HIGH_PASS_UV_ANCHOR, allocationSceneRatio, applySubRect, parseAllocParam, patchUvScale, sceneRects,
   type SceneRects, type SubRectUniforms, type TargetSize,
 } from './app/sceneSubRect';
@@ -521,6 +525,9 @@ function qualityReadout() {
     // moved) — app/gpuFrameClock.ts, app/resolutionController.ts.
     gpu: gpuFrameClock.state(),
     clock: state.clock,
+    // The rung remembered from the last boot and the one this session would
+    // hand the next (app/rungMemory.ts).
+    memory: rungMemoryReadout(),
     bytes: qualityRenderTargetBytes(),
     reason: qualityBoundsLive.reason,
     // What the scene-sized targets are allocated at against what this rung
@@ -1589,6 +1596,180 @@ function gpuClockLine(): string {
   return `${p90}/${clock.barMs.toFixed(1)} n=${clock.counted} duty ${gpu.duty}`;
 }
 
+// --- The remembered rung ------------------------------------------------------
+//
+// Where only the GPU clock can take a rung above Medium, a boot is told the
+// rung the clock verified and held for a minute last time, and climbs straight
+// there once its own first readings at Medium say the room is there
+// (app/resolutionController.ts decides; app/rungMemory.ts keeps it). The entry
+// is read ONCE, at the first frame the sensor itself could be armed — the tick
+// measured, a live boot, the planetarium, Dynamic not pinned — because the
+// controller says the clock may steer from the moment it is built, before the
+// display's tick has been measured at all. A URL that changes what a pixel
+// costs, pins a ratio or fixes a level neither reads it nor writes it:
+// `?rungmemory=0` is the kill switch.
+
+/** Why this boot's URL keeps the memory out of it, or null. */
+const rungMemoryBlockedBy = rungMemoryUrlBlock(location.search);
+const rungMemory = new RungMemoryMirror();
+/** The entry was looked for, once a boot. */
+let rungMemoryLooked = false;
+/** The entry this boot was told, while it may still be climbed to. */
+let rungMemoryArmed: RungMemoryEntry | null = null;
+/** Why this boot was told nothing, or null. */
+let rungMemoryRefused: string | null = null;
+/** This boot climbed to the rung it was told. */
+let rungMemoryClimbed = false;
+let rungMemoryRendererName: string | null = null;
+
+/** The GPU as the entry names it: the unmasked renderer where the browser
+ *  gives it, else the context's own word. */
+function rungMemoryRenderer(): string {
+  if (rungMemoryRendererName !== null) return rungMemoryRendererName;
+  let name = deviceSignals.renderer;
+  if (name === null) {
+    try {
+      const gl = renderer.getContext();
+      const value = gl.getParameter(gl.RENDERER);
+      name = typeof value === 'string' ? value : '';
+    } catch {
+      name = '';
+    }
+  }
+  rungMemoryRendererName = name;
+  return name;
+}
+
+/** The device as an entry describes it: read only when one is checked or
+ *  written. */
+function rungMemoryConfig(): RungMemoryConfig {
+  const outputRatio = getTargetPixelRatio();
+  return {
+    tick: frameCadence.state().idleCadenceMs,
+    outputRatio,
+    pixels: window.innerWidth * window.innerHeight * outputRatio * outputRatio,
+    renderer: rungMemoryRenderer(),
+  };
+}
+
+function rungMemoryFacts(): RungMemoryFacts {
+  return {
+    ...rungMemoryConfig(),
+    nowMs: Date.now(),
+    ladder: qualityLadderLive.rungs,
+    mediumIndex: qualityLadderLive.mediumIndex,
+  };
+}
+
+/** Once a drawn frame: the one read, then the mirror, which does nothing unless
+ *  the controller's memory moved. */
+function rungMemoryStep(): void {
+  if (rungMemoryBlockedBy !== null) return;
+  if (!rungMemoryLooked) rungMemoryLook();
+  if (rungMemoryArmed !== null && resolutionController.seedOutcome === 'abandoned') {
+    // Used up by another change of rung, or by a new budget or ladder.
+    debugLog('Rung memory', { unused: rungMemoryArmed.ratio });
+    rungMemoryArmed = null;
+  }
+  const done = rungMemory.sync(resolutionController, rungMemoryConfig, Date.now());
+  if (done === null) return;
+  if (done === 'dropped') {
+    rungMemoryArmed = null;
+    debugLog('Rung memory', { dropped: 'the remembered rung failed before it had held a minute' });
+  } else if (done === 'passed') {
+    debugLog('Rung memory', { passed: 'the remembered rung held a minute' });
+  } else {
+    debugLog('Rung memory', { written: done.wrote });
+  }
+}
+
+/** The first frame the sensor could be armed: read the entry and tell the
+ *  controller, or say why not — deleting an entry that is wrong for every
+ *  boot and keeping one that is wrong only for this configuration. */
+function rungMemoryLook(): void {
+  if (!gpuFrameClock.usable || appMode !== 'planetarium' || qualityLevel !== 'dynamic' || qualityIdle) return;
+  if (bootRender.current !== 'live' || !frameCadence.tickMeasured || !resolutionController.clockCanSteer) return;
+  rungMemoryLooked = true;
+  const read = readRungMemory();
+  if (read.malformed) {
+    clearRungMemory();
+    rungMemoryRefused = 'unreadable';
+    debugLog('Rung memory', { refused: 'unreadable', deleted: true });
+    return;
+  }
+  const entry = read.entry;
+  if (entry === null) {
+    rungMemoryRefused = 'nothing saved';
+    return;
+  }
+  const verdict = rungMemoryApplies(entry, rungMemoryFacts());
+  if (!verdict.ok) {
+    if (verdict.discard) clearRungMemory();
+    rungMemoryRefused = verdict.why;
+    debugLog('Rung memory', { refused: verdict.why, ratio: entry.ratio, deleted: verdict.discard });
+    return;
+  }
+  const why = resolutionController.remember(entry.ratio);
+  if (why !== null) {
+    rungMemoryRefused = why;
+    debugLog('Rung memory', { refused: why, ratio: entry.ratio, deleted: false });
+    return;
+  }
+  rungMemoryArmed = entry;
+  debugLog('Rung memory', { applied: entry.ratio, savedAgoH: Math.round((Date.now() - entry.at) / 36e5) });
+}
+
+/** The climb to the remembered rung is being applied: it goes on trial first,
+ *  so a boot that dies at that rung leaves the next one a reason to refuse it. */
+function rungMemorySeedApplied(): void {
+  if (rungMemoryArmed === null) return;
+  rungMemoryClimbed = true;
+  const marked = rungMemory.markTrial(rungMemoryArmed);
+  debugLog('Rung memory', { climbed: rungMemoryArmed.ratio, trial: marked ? 'marked' : 'could not be saved' });
+  rungMemoryArmed = null;
+}
+
+/** A resize before the remembered rung was used: a canvas that grew past what
+ *  the entry was held at, or any other change of configuration, cancels it
+ *  for this boot and keeps the entry. */
+function rungMemoryRecheck(): void {
+  if (rungMemoryArmed === null || resolutionController.seedOutcome !== 'armed') return;
+  const verdict = rungMemoryApplies(rungMemoryArmed, rungMemoryFacts());
+  if (verdict.ok) return;
+  resolutionController.forgetRemembered();
+  rungMemoryRefused = `after a resize: ${verdict.why}`;
+  debugLog('Rung memory', { refused: rungMemoryRefused, ratio: rungMemoryArmed.ratio, deleted: false });
+  rungMemoryArmed = null;
+}
+
+/** Forget the stored rung: `__moon.forgetRung()`. */
+function rungMemoryForget(): void {
+  resolutionController.forgetRemembered();
+  rungMemory.forget(resolutionController);
+  rungMemoryArmed = null;
+}
+
+/** `__moon.quality().memory`. */
+function rungMemoryReadout() {
+  const state = resolutionController.state().memory;
+  return {
+    stored: readRungMemory().entry,
+    // Told a rung and still waiting to climb to it, or climbed to it.
+    applied: rungMemoryClimbed || state.seed === 'armed',
+    refused: rungMemoryBlockedBy ?? rungMemoryRefused,
+    // What the next boot will be told, as this session has it.
+    remembering: resolutionController.memory,
+    seed: state.seed,
+    rememberedRatio: state.rememberedRatio,
+    onTrial: rungMemory.onTrial,
+  };
+}
+
+// A clean unload is not a crash: the trial flag goes, and nothing else.
+if (rungMemoryBlockedBy === null) {
+  window.addEventListener('pagehide', () => rungMemory.pagehide(resolutionController, rungMemoryConfig, Date.now()));
+}
+
 /** The silence check runs on a countdown of DRAWS rather than every frame: at
  *  a 30 fps target that is every ten seconds. */
 let qualitySilenceCountdown = 0;
@@ -1673,6 +1854,7 @@ function stepQuality(nowMs: number): void {
     sceneKey: sceneKeyNow(),
   });
   if (decision !== null) applyQualityDecision(decision, nowMs);
+  rungMemoryStep();
   // The controller turned the clock off itself (a repeated reversal): the
   // sensor stops for the session with it.
   const off = resolutionController.clockOff;
@@ -1688,7 +1870,9 @@ function stepQuality(nowMs: number): void {
 function applyQualityDecision(decision: Decision, nowMs: number): void {
   const kind = decision.reason === 'up' ? 'up' : decision.reason === 'down' ? 'down' : 'restore';
   resolutionController.onApplied(nowMs, kind);
-  applySceneResolution(`dynamic ${decision.reason}`);
+  // On trial before the sharper rung is drawn.
+  if (decision.seeded === true) rungMemorySeedApplied();
+  applySceneResolution(decision.seeded === true ? 'dynamic up (remembered)' : `dynamic ${decision.reason}`);
 }
 
 /** A counted rate stuck at zero is a defect — a gate that never opened —
@@ -2908,6 +3092,13 @@ function installDevHooks() {
     },
     /** The samples the GPU frame clock kept since `gpuFrameClock({ record: n })`, taken. */
     gpuFrameSamples: () => gpuFrameClock.devTakeSamples(),
+    /** Forget the rung Dynamic remembers from the last boot: the stored entry
+     *  goes, a remembered rung not yet climbed to is cancelled, and nothing is
+     *  written again until the clock holds a rung for a minute. */
+    forgetRung: () => {
+      rungMemoryForget();
+      return rungMemoryReadout();
+    },
     /** Pick a level, exactly as the menu row does: saved, applied, reported. */
     setQuality: (level: QualityLevel) => {
       setQualityLevel(level);
@@ -3580,6 +3771,7 @@ function syncViewport() {
   planetariumMode?.onResize();
   // The frames around a resize are the browser's, not the scene's.
   resolutionController.notify('resize', performance.now());
+  rungMemoryRecheck();
   debugLog('Resize', {
     width: w, height: h, pixelRatio: renderer.getPixelRatio(),
     sceneSamples: sceneTarget?.samples ?? 0, sceneRatio: getScenePixelRatio(),

@@ -211,14 +211,22 @@
  * The p90 and not the median: under motion a median can read ample room
  * while nearly half the frames sit at the deadline. The prediction grows each
  * reading's GPU part by r^1.5 until the device has shown its own growth
- * (app/gpuFrameClockPolicy.ts): the first climb of an evidence epoch — since
- * the budget or the ladder last changed — may instead be tried on the rung's
- * own readings, their p90 inside `CALIBRATION_SHARE` of the budget with every
- * other gate the same, and once a climb has been verified, how much the
- * sharper rung's GPU part grew over the rung below's is what every later
- * climb in the epoch predicts with, held between 1 and r² — the latest
- * verified climb's, since each measures it afresh. An arrival keeps it; a new
- * budget or ladder drops it and opens the calibration again.
+ * (app/gpuFrameClockPolicy.ts), and while it has not, a climb the prediction
+ * refuses may be tried on the rung's own readings — their p90 inside
+ * `CALIBRATION_SHARE` of the budget, every other gate the same, verified and
+ * failed like any probe — so a rung that reads well under load is ready to
+ * try the next. The growth is learned when a climb's verification passes and
+ * only where the two rungs can be shown to be of one view: the rung below's
+ * whole window and every frame to the verdict under one name, with no sliced
+ * work and no reset but the climb (the reversal check's own test, below). A
+ * growth below 1 is thrown away as the scene getting cheaper. It is kept as an
+ * exponent on the rungs' ratio, held between 0 and 2, so it carries from one
+ * step of the ladder to another; the latest one learned wins, and a climb
+ * predicted with it that then fails its verification drops it — the guess and
+ * the tries on the rung's own reading come back. An arrival keeps it; a new
+ * budget or ladder drops it. A ladder recomputed unchanged — every resize of
+ * the window does that — is the same epoch: the growth and the failure count
+ * below stand.
  *
  * A rung the clock earned is kept only while the clock vouches for it. Right
  * after the climb, and again after ANY evidence reset while it stands (a rung
@@ -236,11 +244,16 @@
  * not arrive in time is silence rather than a measured failure — a revert
  * with the wait doubled, and a second in a row at the same rung holds that
  * rung as a ceiling, so a rung that can never be verified is not probed every
- * ten seconds for the session. A reset that is not re-earned — its
+ * ten seconds for the session. The starved or capped share through a probe is
+ * judged once there are `CLOCK_STARVED_MIN` attempts, as the steady-state
+ * share is: two starved readings among the first five are 40 % of a clock
+ * whose share is a steady quarter. A reset that is not re-earned — its
  * readings too slow or too few, a panic, capped fences, the delivery guard
  * while it stands — is a plain restore to Medium, with no ceiling, no
  * failure counted and no longer wait, because a lifecycle event is not the
- * rung failing. After that
+ * rung failing. The one exception is the delivery guard after a change of the
+ * sensor's duty: that moved nothing on screen, the frames the guard reads are
+ * the rung's own, and a slow stretch of them is a measured failure. After that
  * the rung is handed back — one rung, never below Medium — by any of: the p90
  * of a window of at least `CLOCK_DOWN_COUNT` readings spanning
  * `CLOCK_DOWN_SPAN_MS` above `CLOCK_DOWN_SHARE` of the budget;
@@ -250,7 +263,11 @@
  * regression this rule exists to prevent — and straight to Medium when every
  * frame drawn over `CLOCK_DELIVERY_SPAN_MS`, bar the single longest, averages
  * slower than `CLOCK_DELIVERY_GUARD` of the budget: one stall is forgiven, a
- * slow stretch is not. Each of those is a measured failure,
+ * slow stretch is not. The one left out is one interval with no cap on its
+ * size, so a single freeze of several seconds is forgiven whole; a second
+ * stall in the span is forgiven only while its excess fits the guard's 2 %
+ * slack, like any late frame — below about 135 ms at 60 Hz — and the climb's
+ * own 1.01 gate reads the same trimmed mean. Each of those is a measured failure,
  * inside the probation or out of it, and at a rung the clock earned the
  * failures are counted per evidence epoch — since the budget or the ladder
  * last changed — rather than per rung: with two rungs above Medium a heating
@@ -258,14 +275,18 @@
  * at each. The first failure holds the failing rung as a ceiling for a
  * minute; from the second the ceiling sits on the first rung above Medium,
  * for four minutes, sixteen, then the session. The rung a hand-back lands on,
- * if still above Medium, is verified as a probe is, so a failure there
+ * if still above Medium, is verified as a probe is — a revert the intervals'
+ * own verification second makes as well as the clock's — so a failure there
  * escalates too; only a lifecycle reset gets the plain restore. And the clock
  * going quiet — no reading for six samples' worth of frames at the sensor's
  * duty (a second at the least), fewer than half the readings its duty would
- * take in the last six seconds (eight at the least), starved readings over
- * their share, or the sensor off —
- * returns the rung to Medium with no ceiling: no clock is the rule as it was,
- * applied to the rung as well as to the climb.
+ * take in the last six seconds (never fewer than eight nor more than the
+ * sixteen a hand-back reads), starved readings over their share, or the
+ * sensor off — returns the rung to Medium with no ceiling: no clock is the
+ * rule as it was, applied to the rung as well as to the climb. A second such
+ * silence at the same rung in an epoch holds that rung as a ceiling, as a
+ * second unverified probe does, or a pose whose clock goes quiet there and
+ * nowhere else would climb and restore for the rest of the session.
  *
  * Once a climb's verification has measured the sharper rung, a clock that read
  * it more than `REVERSAL_MS` LOWER than the rung below is suspect, and after
@@ -273,9 +294,10 @@
  * off for the session. But a true reading falls when the scene gets cheaper,
  * so the two rungs are compared only where they can be shown to have been read
  * in one still view: the caller names the view on every sample (`sceneKey` —
- * in the app, the body the ship rides and the camera's aim to within two
- * degrees, and no name at all while the ship is under way or the clock runs
- * faster than a minute a second), and the comparison is made only when every
+ * in the app, app/stillViewName.ts: the body the ship rides, the camera's aim
+ * to within two degrees and the displayed field of view to within 2 %, and
+ * no name at all while the ship is under way or the clock runs faster than a
+ * minute a second), and the comparison is made only when every
  * reading of the rung below's window and every frame since came under one name
  * with no sliced work in any of them and no evidence reset but the climb
  * itself. Anything else skips the comparison and counts the skip: it proves
@@ -308,7 +330,7 @@ import {
   STARVED_SHARE_MAX,
   growthFor,
   isReversal,
-  learnedGrowth,
+  learnedExponent,
   predictWithGrowthMs,
 } from './gpuFrameClockPolicy';
 
@@ -484,10 +506,13 @@ export const CLOCK_SILENCE_SPAN_MS = 6000;
 export const CLOCK_SILENCE_SHARE = 0.5;
 export const CLOCK_SILENCE_MIN_COUNT = 8;
 
-/** Trusted readings the silence span needs at a duty and a tick. */
+/** Trusted readings the silence span needs at a duty and a tick: half the
+ *  samples the duty takes, between `CLOCK_SILENCE_MIN_COUNT` and the
+ *  hand-back window's `CLOCK_DOWN_COUNT` — a dense duty is not asked for more
+ *  than a hand-back reads. */
 export function clockSilenceCount(duty: number, tickMs: number): number {
   const expected = CLOCK_SILENCE_SPAN_MS / (Math.max(1, duty) * tickMs);
-  return Math.max(CLOCK_SILENCE_MIN_COUNT, Math.round(CLOCK_SILENCE_SHARE * expected));
+  return Math.min(CLOCK_DOWN_COUNT, Math.max(CLOCK_SILENCE_MIN_COUNT, Math.round(CLOCK_SILENCE_SHARE * expected)));
 }
 
 /** Every frame drawn, unfiltered — streaming, main-thread and sensor
@@ -656,11 +681,15 @@ export interface ClockState {
   /** Climbs whose two rungs were compared for that, and those that could not
    *  be, the view not shown to be the same. */
   reversalChecks: { made: number; skipped: number };
-  /** How much a sharper rung's GPU part grew over the rung below's, as this
-   *  epoch's verified climb measured it, or null before one has; and whether
-   *  the next climb may still be the epoch's calibration, tried on the rung's
-   *  own readings. */
-  learnedGrowth: number | null;
+  /** How this device's frames grow with pixels, as the rule knows it: the
+   *  last honest measurement as the ratio of the two rungs' GPU parts and as
+   *  the exponent it is kept as (null before one), the factor the next climb
+   *  predicts with — r to that exponent, or to the guessed 1.5 — and how many
+   *  verified climbs taught it, could not (a view that was not one still
+   *  view, or a growth below 1), and dropped it by failing. */
+  growth: { measured: number | null; exponent: number | null; nextFactor: number | null; learned: number; skipped: number; dropped: number };
+  /** No growth is held: a climb the prediction refuses may be tried on the
+   *  rung's own readings. */
   calibrationOpen: boolean;
   accepted: number;
   dropped: { unpaired: number; uncounted: number; stale: number; settling: number; notSteering: number };
@@ -1144,7 +1173,7 @@ export class ResolutionController {
   /** A clock climb decided and not yet applied, with the rung below's median
    *  for the honesty rule — null where its window was not one still view —
    *  and the still view it was taken in. */
-  private pendingClimb: { belowMedianMs: number | null; sceneStretch: number; belowGpuMs: number } | null = null;
+  private pendingClimb: { belowMedianMs: number | null; sceneStretch: number; belowGpuMs: number; byGrowth: boolean } | null = null;
   /** The decision pending is a step down the clock made on its own evidence
    *  — a measured failure, or a probe it could not verify. */
   private pendingClockStep = false;
@@ -1160,6 +1189,10 @@ export class ResolutionController {
      *  window, which the sharper rung's is set against to learn the growth;
      *  null for any other verification. */
     belowGpuMs: number | null;
+    /** A reset opened by the sensor's duty changing rather than by anything
+     *  that moved the scene: the frames the delivery guard reads are the
+     *  rung's own, so a slow stretch there is a measured failure. */
+    byDuty: boolean;
     /** Readings count from frames drawn at or after this. */
     startMs: number;
     /** Set by the first eligible step after it opened; moved at most once,
@@ -1211,12 +1244,19 @@ export class ResolutionController {
   private sceneStretchSinceMs = 0;
   private sceneKeyLast: number | null = null;
   private readonly reversalChecks = { made: 0, skipped: 0 };
-  /** How much the latest verified sharper rung's GPU part grew over the rung
-   *  below's, this evidence epoch — the budget and the ladder as they are —
-   *  or null before a climb has been verified in it. An arrival keeps it. */
-  private clockGrowth: number | null = null;
-  /** A clock climb has been taken this epoch: the calibration is spent. */
-  private epochClimbed = false;
+  /** The exponent the latest honestly verified climb measured — the budget
+   *  and the ladder as they are — with the ratio it came from, or null while
+   *  none is held and a climb may be tried on the rung's own readings. An
+   *  arrival keeps it. */
+  private clockGrowthE: number | null = null;
+  private clockGrowthMeasured: number | null = null;
+  private readonly growthChecks = { learned: 0, skipped: 0, dropped: 0 };
+  /** The rung being verified was climbed on a learned growth: failing the
+   *  verification drops the growth. */
+  private growthOnTrial = false;
+  /** The rung a steady-state silence last restored from, this epoch: a
+   *  second there holds it as a ceiling. */
+  private silentRung: number | null = null;
   /** Recent frames' interval verdicts, for a late reading to find its own. */
   private readonly verdictSeq = new Float64Array(VERDICT_RING_SIZE).fill(-1);
   private readonly verdictBecause = new Uint8Array(VERDICT_RING_SIZE);
@@ -1380,7 +1420,7 @@ export class ResolutionController {
     // Only a probe the clock made keeps its failures past its probation.
     this.probationByClock = false;
     if (kind === 'up' && climb !== null && this.index > this.mediumIndex) {
-      this.epochClimbed = true;
+      this.growthOnTrial = climb.byGrowth;
       // A clock probe: the clock verifies it, and the rung is the clock's.
       this.clockEarned = true;
       this.probationByClock = true;
@@ -1390,6 +1430,7 @@ export class ResolutionController {
         belowMedianMs: climb.belowMedianMs,
         sceneStretch: climb.sceneStretch,
         belowGpuMs: climb.belowGpuMs,
+        byDuty: false,
         startMs: this.settleUntilMs,
         deadlineMs: null,
         interrupted: false,
@@ -1407,6 +1448,7 @@ export class ResolutionController {
         belowMedianMs: null,
         sceneStretch: null,
         belowGpuMs: null,
+        byDuty: false,
         startMs: this.settleUntilMs,
         deadlineMs: null,
         interrupted: false,
@@ -1467,8 +1509,7 @@ export class ResolutionController {
     this.lastFailedProbeRung = null;
     this.unverifiedRung = null;
     this.clockFailures = 0;
-    this.clockGrowth = null;
-    this.epochClimbed = false;
+    this.dropClockEpoch();
     this.refusal.reset();
     this.floorReference = null;
     this.stepReference = null;
@@ -1553,6 +1594,10 @@ export class ResolutionController {
   setLadder(ladder: RungLadder, nowMs: number = this.clockMs): Decision | null {
     const from = this.index;
     const previousRatio = this.rungs[this.index];
+    const nextRungs = ladder.rungs.length > 0 ? ladder.rungs : [1];
+    const same = nextRungs.length === this.rungs.length
+      && clampIndex(ladder.mediumIndex, nextRungs.length) === this.mediumIndex
+      && nextRungs.every((r, i) => Math.abs(r - this.rungs[i]) < 1e-9);
     this.rungs = ladder.rungs.length > 0 ? ladder.rungs : [1];
     this.mediumIndex = clampIndex(ladder.mediumIndex, this.rungs.length);
     let nearest = 0;
@@ -1569,9 +1614,13 @@ export class ResolutionController {
     this.ceilingFailures = 0;
     this.lastFailedProbeRung = null;
     this.unverifiedRung = null;
-    this.clockFailures = 0;
-    this.clockGrowth = null;
-    this.epochClimbed = false;
+    // An unchanged ladder — every window resize recomputes it — is the same
+    // epoch: the growth and the clock's failure count are facts about this
+    // device at these rungs, and a resize must not buy the escalation back.
+    if (!same) {
+      this.clockFailures = 0;
+      this.dropClockEpoch();
+    }
     this.refusal.reset();
     this.floorReference = null;
     this.stepReference = null;
@@ -1641,6 +1690,13 @@ export class ResolutionController {
     return this.clockVerify !== null;
   }
 
+  /** Whether the clock could be the rule above Medium at all right now: the
+   *  tick blind, no row target, a rung above Medium, the controller not held
+   *  and the clock not off. Nowhere else is a frame's view worth naming. */
+  get clockCanSteer(): boolean {
+    return !this.idle && !this.aboveAllowed && this.mediumIndex < this.rungs.length - 1 && this.clockOffReason === null;
+  }
+
   /**
    * Whether a reading taken now would be read: the sensor samples only then,
    * so it costs nothing where it could not help — a display with a finer tick,
@@ -1681,7 +1737,16 @@ export class ResolutionController {
     if (duty !== undefined && Number.isFinite(duty) && duty >= 1) this.clockDuty = duty;
     this.clearClockRing(nowMs);
     this.clockAcquiredAtMs = null;
-    this.reopenClockVerify();
+    this.reopenClockVerify(true);
+  }
+
+  /** A new evidence epoch for the clock: nothing learned about how this
+   *  device grows, and no steady-state silence counted against a rung. */
+  private dropClockEpoch(): void {
+    this.clockGrowthE = null;
+    this.clockGrowthMeasured = null;
+    this.growthOnTrial = false;
+    this.silentRung = null;
   }
 
   private clearClockRing(nowMs: number): void {
@@ -1710,7 +1775,7 @@ export class ResolutionController {
    * keeps its kind and its deadline — a second reset or a duty change never
    * buys it more time. Anywhere else there is nothing the clock holds.
    */
-  private reopenClockVerify(): void {
+  private reopenClockVerify(byDuty = false): void {
     if (!this.clockHolds()) {
       this.clockVerify = null;
       this.clockEarned = false;
@@ -1723,6 +1788,7 @@ export class ResolutionController {
       belowMedianMs: standing?.belowMedianMs ?? null,
       sceneStretch: standing?.sceneStretch ?? null,
       belowGpuMs: standing?.belowGpuMs ?? null,
+      byDuty: standing?.byDuty ?? byDuty,
       startMs: this.settleUntilMs,
       deadlineMs: standing?.deadlineMs ?? null,
       interrupted: standing?.interrupted ?? false,
@@ -1889,9 +1955,30 @@ export class ResolutionController {
   private clockRestore(nowMs: number, why: ClockWhy): Decision {
     this.noteClock(nowMs, this.mediumIndex, why);
     this.clockVerify = null;
+    this.growthOnTrial = false;
     if (why === 'silent' || why === 'gap' || why === 'starved') {
       this.probeWait = Math.min(PROBE_WAIT_MAX_MS, this.probeWait * 2);
     }
+    return this.emit(this.mediumIndex, 'restore');
+  }
+
+  /**
+   * A rung the clock earned went quiet in steady state: back to Medium with
+   * no ceiling, the wait doubled. A second time at the same rung in an epoch
+   * holds that rung as a ceiling, as a second unverified probe does, or a
+   * pose whose clock goes quiet at that rung and nowhere else would climb and
+   * restore for the rest of the session.
+   */
+  private clockSilent(nowMs: number, why: ClockWhy): Decision {
+    if (this.silentRung !== this.index) {
+      this.silentRung = this.index;
+      return this.clockRestore(nowMs, why);
+    }
+    this.silentRung = null;
+    this.noteClock(nowMs, this.mediumIndex, why);
+    this.clockVerify = null;
+    // The wait doubles once, with the ceiling.
+    this.failProbe(nowMs);
     return this.emit(this.mediumIndex, 'restore');
   }
 
@@ -1947,7 +2034,9 @@ export class ResolutionController {
     // kept only while the screen's rate really holds.
     const delivered = this.delivery.mean(nowMs, CLOCK_DELIVERY_SPAN_MS);
     if (delivered !== null && delivered > CLOCK_DELIVERY_GUARD * bar) {
-      if (lifecycle) return this.clockRestore(nowMs, 'delivery');
+      // A duty change moved nothing on screen: the frames in the span are the
+      // rung's own, and a slow stretch of them is the rung failing.
+      if (lifecycle && !verify.byDuty) return this.clockRestore(nowMs, 'delivery');
       return this.clockFail(nowMs, this.mediumIndex, 'delivery');
     }
     const quiet = this.activeSinceReadingMs > this.clockGap(verify !== null);
@@ -1984,19 +2073,33 @@ export class ResolutionController {
             }
           }
         }
-        if (verify.kind === 'probe' && verify.belowGpuMs !== null) {
+        if (verify.kind === 'probe' && verify.sceneStretch !== null) {
           // A climb, verified: how much its GPU part grew over the rung
-          // below's is how this device's frames grow with pixels, for every
-          // later climb this epoch.
-          const growth = learnedGrowth(verify.belowGpuMs, this.clockRing.gpuPartMedian(verify.startMs));
-          if (growth !== null) this.clockGrowth = growth;
+          // below's is how this device's frames grow with pixels — learned
+          // only where the two were read in one still view, and never from a
+          // growth below 1, which is the scene getting cheaper.
+          this.growthOnTrial = false;
+          const comparable = verify.belowMedianMs !== null && verify.sceneStretch === this.sceneStretch;
+          const learned = comparable && verify.belowGpuMs !== null
+            ? learnedExponent(verify.belowGpuMs, this.clockRing.gpuPartMedian(verify.startMs), this.rungs[verify.fromIndex], this.rungs[this.index])
+            : null;
+          if (learned === null) {
+            this.growthChecks.skipped++;
+          } else {
+            this.clockGrowthE = learned.exponent;
+            this.clockGrowthMeasured = learned.growth;
+            this.growthChecks.learned++;
+          }
         }
         this.clockAcquiredAtMs = nowMs;
         if (this.unverifiedRung === this.index) this.unverifiedRung = null;
         return null;
       }
+      // Judged, like the steady-state share, only once there are enough
+      // attempts for a share to mean anything: two starved readings in the
+      // first five are 40 % of a clock whose share is a steady quarter.
       const bad = got.starved + got.capped;
-      if (verify.kind === 'probe' && bad >= CLOCK_PROBE_BAD_MIN
+      if (verify.kind === 'probe' && bad >= CLOCK_PROBE_BAD_MIN && got.attempts >= CLOCK_STARVED_MIN
         && (bad / got.attempts) > STARVED_SHARE_MAX) {
         // Starved or capped readings repeating through the probe: the probe
         // failing, not merely silent.
@@ -2007,13 +2110,13 @@ export class ResolutionController {
       if (lifecycle) return this.clockRestore(nowMs, 'unverified');
       return this.clockUnverified(nowMs, verify.fromIndex);
     }
-    if (quiet) return this.clockRestore(nowMs, 'gap');
+    if (quiet) return this.clockSilent(nowMs, 'gap');
     if (this.clockAcquiredAtMs !== null && nowMs - this.clockAcquiredAtMs >= CLOCK_SILENCE_SPAN_MS
       && this.clockRing.tally(nowMs - CLOCK_SILENCE_SPAN_MS).count < clockSilenceCount(this.clockDuty, this.budgetMs)) {
-      return this.clockRestore(nowMs, 'silent');
+      return this.clockSilent(nowMs, 'silent');
     }
     const starved = this.clockRing.starvedShare(CLOCK_STARVED_WINDOW, CLOCK_STARVED_MIN, nowMs - STALENESS_MS);
-    if (starved !== null && starved > STARVED_SHARE_MAX) return this.clockRestore(nowMs, 'starved');
+    if (starved !== null && starved > STARVED_SHARE_MAX) return this.clockSilent(nowMs, 'starved');
     const w = this.clockRing.window(CLOCK_DOWN_COUNT, CLOCK_DOWN_SPAN_MS, nowMs - STALENESS_MS, 0.9);
     if (w !== null && w.value > CLOCK_DOWN_SHARE * bar) return this.clockFail(nowMs, this.index - 1, 'hand-back');
     return null;
@@ -2045,7 +2148,7 @@ export class ResolutionController {
     if (delivered === null || delivered > CLOCK_DELIVERY_UP * this.budgetMs) return null;
     const starved = this.clockRing.starvedShare(CLOCK_STARVED_WINDOW, CLOCK_STARVED_MIN, nowMs - STALENESS_MS);
     if (starved !== null && starved > STARVED_SHARE_MAX) return null;
-    const growth = growthFor(this.clockGrowth, this.rungs[this.index], this.rungs[next]);
+    const growth = growthFor(this.clockGrowthE, this.rungs[this.index], this.rungs[next]);
     const horizon = nowMs - STALENESS_MS;
     const w = this.clockRing.window(
       CLOCK_UP_COUNT, CLOCK_UP_SPAN_MS, horizon, 0.9,
@@ -2053,10 +2156,10 @@ export class ResolutionController {
     );
     if (w === null || w.starvedShare > STARVED_SHARE_MAX) return null;
     const fits = w.value <= CLOCK_UP_SHARE * this.budgetMs;
-    // The epoch's first climb, where how this device's frames grow with
-    // pixels is not known yet: tried on the rung's own readings, and verified
-    // like any probe (app/gpuFrameClockPolicy.ts).
-    const calibrate = !fits && !this.epochClimbed && w.p90Ms <= CALIBRATION_SHARE * this.budgetMs;
+    // While how this device's frames grow with pixels is not known, a climb
+    // the guess refuses may be tried on the rung's own readings, and is
+    // verified like any probe (app/gpuFrameClockPolicy.ts).
+    const calibrate = !fits && this.clockGrowthE === null && w.p90Ms <= CALIBRATION_SHARE * this.budgetMs;
     if (!fits && !calibrate) {
       // No room at this pose. Kept up for long enough at Medium, the sensor
       // rests rather than sampling a session it cannot change.
@@ -2078,6 +2181,7 @@ export class ResolutionController {
       belowMedianMs: still ? w.medianMs : null,
       sceneStretch: this.sceneStretch,
       belowGpuMs: gpu?.value ?? NaN,
+      byGrowth: fits && this.clockGrowthE !== null,
     };
     return decision;
   }
@@ -2087,8 +2191,10 @@ export class ResolutionController {
     const got = this.clockRing.stats(horizon);
     const next = this.index + 1;
     let predictedNextMs: number | null = null;
+    let nextFactor: number | null = null;
     if (next < this.rungs.length && next > this.mediumIndex) {
-      const growth = growthFor(this.clockGrowth, this.rungs[this.index], this.rungs[next]);
+      const growth = growthFor(this.clockGrowthE, this.rungs[this.index], this.rungs[next]);
+      nextFactor = growth;
       const p = this.clockRing.window(
         CLOCK_UP_COUNT, CLOCK_UP_SPAN_MS, horizon, 0.9,
         (reading, busy) => predictWithGrowthMs(busy, reading, growth),
@@ -2097,7 +2203,7 @@ export class ResolutionController {
     }
     const verify = this.clockVerify;
     return {
-      steering: !this.idle && !this.aboveAllowed && this.mediumIndex < this.rungs.length - 1 && this.clockOffReason === null,
+      steering: this.clockCanSteer,
       earned: this.clockHolds(),
       off: this.clockOffReason,
       generation: this.generationCount,
@@ -2125,8 +2231,13 @@ export class ResolutionController {
       panicStreak: this.panicStreak,
       reversals: this.clockReversals,
       reversalChecks: { ...this.reversalChecks },
-      learnedGrowth: this.clockGrowth,
-      calibrationOpen: !this.epochClimbed,
+      growth: {
+        measured: this.clockGrowthMeasured,
+        exponent: this.clockGrowthE,
+        nextFactor,
+        ...this.growthChecks,
+      },
+      calibrationOpen: this.clockGrowthE === null,
       accepted: this.clockAccepted,
       dropped: { ...this.clockDropped },
       uncountedBy: { ...this.clockUncountedBy },
@@ -2174,8 +2285,14 @@ export class ResolutionController {
     const stat = this.window.trimmedMean(this.upCounted, VERIFY_TRIM_COUNT, nowMs - STALENESS_MS);
     if (stat === null || stat.count < VERIFY_MIN_COUNTED) return null;
     if (stat.meanMs > this.verifyThresholdMs()) {
+      const clockRung = this.clockHolds();
       this.failProbe(nowMs);
-      return this.emit(this.verifyFromIndex, 'revert');
+      const decision = this.emit(this.verifyFromIndex, 'revert');
+      // A clock probe the intervals failed: the rung it lands on, if still
+      // above Medium, is verified as a probe is, like any hand-back the clock
+      // makes on its own evidence.
+      if (clockRung) this.pendingClockStep = true;
+      return decision;
     }
     // Through the second: the probe stands, and is judged again by its
     // probation. Nothing is reset here — a rung that passes this second and
@@ -2190,6 +2307,14 @@ export class ResolutionController {
    *  four to sixteen to the session; a different rung starts its own count. */
   private failProbe(nowMs: number): void {
     this.probeWait = Math.min(PROBE_WAIT_MAX_MS, this.probeWait * 2);
+    if (this.growthOnTrial) {
+      // The rung was climbed on a learned growth and did not hold: the growth
+      // no longer describes this device here, and the guess comes back.
+      this.growthOnTrial = false;
+      this.clockGrowthE = null;
+      this.clockGrowthMeasured = null;
+      this.growthChecks.dropped++;
+    }
     if (this.clockHolds()) {
       // At a rung the clock earned the count is the evidence epoch's, not the
       // rung's: with two rungs above Medium a heating device fails at one,

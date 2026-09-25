@@ -38,6 +38,7 @@ import {
   type Decision, type GpuObservation, type IntervalSample,
 } from './app/resolutionController';
 import { createGpuFrameClock, parseGpuClockParam } from './app/gpuFrameClock';
+import { StillViewNamer } from './app/stillViewName';
 import { FrameCadence, parseRefreshParam } from './app/frameCadence';
 import {
   isScreenRate, requestedMsFor, resolveBootFrameRate, writeFrameRate,
@@ -71,7 +72,7 @@ import {
   createLensPass, devSetLensPassOff, lensSubRectUniforms, makeLensUniforms, syncLensUniforms,
   updateLensPass, type LensParams, type LensUniforms,
 } from './app/LensPass';
-import { applyDesignFov, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
+import { applyDesignFov, displayFovDeg, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
 import { loadBrightStarCatalog } from './planetarium/world/starCatalogLoader';
 import { debugError, debugLog, debugWarn } from './shared/debug';
 import {
@@ -1556,32 +1557,20 @@ function gpuClockAfterDraw(nowMs: number): void {
 }
 
 /**
- * The view a frame showed, named for the GPU clock's honesty check
- * (app/resolutionController.ts `IntervalSample.sceneKey`): a number that stays
- * the same while the ship rides the same body (or none) and the camera's aim
- * stays within two degrees of where the name was given, and null while the
- * view cannot be still — the ship under way, a clock faster than a minute a
- * second, another mode. Two readings of the scene are compared across a rung
- * change only under one name.
+ * The view a frame showed, named for the GPU clock's comparisons across a rung
+ * change (app/stillViewName.ts): the body the ship rides, the camera's aim and
+ * the displayed field of view, and no name while the view cannot be still.
+ * Nothing is named on a frame where the clock could not use it — no sensor,
+ * or a controller the clock cannot steer — so no clock code runs there.
  */
-let sceneSeq = 0;
-let sceneBody: string | null = null;
-const sceneAim = new THREE.Quaternion();
-/** Two degrees between two aims, as the dot of their quaternions: cos(1°). */
-const SCENE_AIM_DOT = Math.cos(Math.PI / 180);
+const stillView = new StillViewNamer();
 function sceneKeyNow(): number | null {
-  const body = appMode === 'planetarium' ? planetariumMode?.stillViewBody() ?? null : null;
-  if (body === null) {
-    sceneBody = null;
+  if (!gpuFrameClock.usable || !resolutionController.clockCanSteer) {
+    stillView.forget();
     return null;
   }
-  const aim = camera.quaternion;
-  if (body !== sceneBody || Math.abs(aim.dot(sceneAim)) < SCENE_AIM_DOT) {
-    sceneBody = body;
-    sceneAim.copy(aim);
-    sceneSeq++;
-  }
-  return sceneSeq;
+  const body = appMode === 'planetarium' ? planetariumMode?.stillViewBody() ?? null : null;
+  return stillView.name(body, camera.quaternion, displayFovDeg(camera));
 }
 
 /** The clock in a few characters for the `?debug=1` Quality line: the p90

@@ -109,29 +109,39 @@
  * the next rung as `busy + (reading − busy) × r^E` from its OWN pre-submit
  * time, r the ratio of the two rungs' pixel ratios (pixels grow as r²), and
  * the p90 of those predictions is what the rule compares. E = 2 would be the
- * per-pixel bound; a fixed per-frame cost makes the real growth slower. The
+ * per-pixel bound; a fixed per-frame cost makes the real growth slower, and
+ * until the device has shown its own E the guess is `CLOCK_EXPONENT`. The
  * prediction is conservative only while the fixed cost is non-negative and
  * the frame's work grows no faster than its area — a cache that stops
  * fitting, a level of detail that changes or a bottleneck that moves can break
  * that model — which is why a rung is kept by what the verification MEASURES
  * at it and never by the prediction.
  *
- * **The first climb of an evidence epoch is a calibration, and the growth is
- * then the device's own.** r^E is a guess about a device nobody has measured
- * yet, and on this project's Mac, moving at Earth's shell in WebKit, it was the
- * wrong one: Medium read 12 ms with 3 of them before the submit, the guess
- * put the next rung at 15.6 against a 14.2 bar and refused, and the next rung
- * really read 13. So where nothing is known yet — the first climb since the
- * budget or the ladder last changed — the climb may be tried on the rung's
- * own readings: their p90 within `CALIBRATION_SHARE` of the bar, every other
- * gate as for any climb, and verified like any probe, so a device that was
- * wrong about its room pays the probe's failure for it. Once a sharper rung
- * has been verified, how much its GPU part (reading less pre-submit time)
- * grew over the rung below's is the device's growth for the epoch, and every
- * later climb predicts with it in place of r^E — never below 1 (a sharper
- * picture is not cheaper) and never above r² (the per-pixel bound). An
- * arrival keeps it: it is a fact about the device, and the verification and
- * the ceilings still answer for every pose.
+ * **A climb is tried on the rung's own reading until the device has shown how
+ * its frames grow.** r^1.5 is a guess about a device nobody has measured, and
+ * on this project's Mac, moving at Earth's shell in WebKit, it was the wrong
+ * one: Medium read 12 ms with 3 of them before the submit, the guess put the
+ * next rung at 15.6 against a 14.2 bar and refused, and the next rung really
+ * read 13. So while no growth has been learned, a climb the prediction
+ * refuses may be tried anyway where the p90 of the rung's own readings is
+ * within `CALIBRATION_SHARE` of the bar — every other gate as for any climb,
+ * and verified like any probe, so a device that was wrong about its room pays
+ * the probe's failure for it. A rung that reads well under load is ready to
+ * TRY the next; the growth, once learned, only lets a climb be taken sooner.
+ *
+ * **The growth is learned only where it can be trusted.** When a climb's
+ * verification passes, how much the sharper rung's GPU part (reading less
+ * pre-submit time) grew over the rung below's is the device's growth — but
+ * only where the rung below's whole window and every frame to the verdict
+ * were one still view with no sliced work and no reset but the climb, the
+ * test the reversal check uses (app/resolutionController.ts). A growth below
+ * 1 is a scene that got cheaper, not a device: it is thrown away, never
+ * rounded up. It is kept as an exponent, E = ln g / ln r held between 0 and
+ * 2, so a growth measured on one step of the ladder carries to a step of
+ * another size; the latest one learned wins, a climb predicted with it that
+ * fails its verification drops it back to the guess, and a new budget or
+ * ladder drops it too. An arrival keeps it: it is a fact about the device,
+ * and the verification and the ceilings still answer for every pose.
  *
  * **Where the frozen numbers were read conservatively.** The signal-gap bar
  * is `STARVED_GAP_MS`, half a millisecond, but on a clock that only resolves
@@ -214,9 +224,9 @@ export const CLOCK_EXPONENT = 1.5;
  *  this share of the bar. */
 export const CLOCK_UP_SHARE = 0.85;
 
-/** The first climb of an evidence epoch may be tried where the p90 of the
- *  current rung's own readings fits this share of the bar: 12.5 ms at
- *  60 fps. */
+/** While no growth has been learned, a climb the prediction refuses may be
+ *  tried where the p90 of the current rung's own readings fits this share of
+ *  the bar: 12.5 ms at 60 fps. */
 export const CALIBRATION_SHARE = 0.75;
 
 /** A rung is handed back when its measured p90 passes this share of the bar;
@@ -288,40 +298,37 @@ export function classifyReading(sample: PolledSample, gridMs: number | null = nu
 }
 
 /** The next rung's reading, predicted from one reading of this rung: its own
- *  pre-submit part held, the rest scaled by the pixel ratio to the power
- *  `exponent`. */
-export function predictReadingMs(
-  busyMs: number,
-  readingMs: number,
-  fromRatio: number,
-  toRatio: number,
-  exponent: number = CLOCK_EXPONENT,
-): number {
-  const r = fromRatio > 0 ? toRatio / fromRatio : 1;
-  return predictWithGrowthMs(busyMs, readingMs, Math.pow(r, exponent));
-}
-
-/** The same, with the GPU part multiplied by `growth`. */
+ *  pre-submit part held, the rest multiplied by `growth` (`growthFor`). */
 export function predictWithGrowthMs(busyMs: number, readingMs: number, growth: number): number {
   if (!Number.isFinite(readingMs)) return Infinity;
   const busy = Math.min(Math.max(0, busyMs), readingMs);
   return busy + (readingMs - busy) * growth;
 }
 
-/** How much a verified sharper rung's GPU part grew over the rung below's,
- *  or null where the rung below had none to grow from. */
-export function learnedGrowth(belowGpuMs: number, aboveGpuMs: number): number | null {
-  if (!(belowGpuMs > 0) || !Number.isFinite(belowGpuMs) || !(aboveGpuMs >= 0)) return null;
-  return aboveGpuMs / belowGpuMs;
+/** The exponent a verified climb from `fromRatio` to `toRatio` measured, from
+ *  the two rungs' GPU parts, held between 0 and 2 — or null where it is no
+ *  measurement of the device: the rung below had no GPU part to grow from,
+ *  or the sharper rung's grew by less than nothing, which is the scene
+ *  getting cheaper. Also the raw ratio, for the readout. */
+export function learnedExponent(
+  belowGpuMs: number,
+  aboveGpuMs: number,
+  fromRatio: number,
+  toRatio: number,
+): { growth: number; exponent: number } | null {
+  if (!(belowGpuMs > 0) || !Number.isFinite(belowGpuMs) || !(aboveGpuMs >= 0) || !Number.isFinite(aboveGpuMs)) return null;
+  const growth = aboveGpuMs / belowGpuMs;
+  const r = fromRatio > 0 ? toRatio / fromRatio : 1;
+  if (growth < 1 || !(r > 1)) return null;
+  return { growth, exponent: Math.min(2, Math.max(0, Math.log(growth) / Math.log(r))) };
 }
 
-/** The growth a climb from `fromRatio` to `toRatio` predicts with: the
- *  device's own where it has been learned, held between 1 and the per-pixel
- *  r², else r^E. */
-export function growthFor(learned: number | null, fromRatio: number, toRatio: number, exponent: number = CLOCK_EXPONENT): number {
+/** The factor a climb from `fromRatio` to `toRatio` grows a reading's GPU
+ *  part by: r to the device's learned exponent, or to `CLOCK_EXPONENT` with
+ *  none learned. */
+export function growthFor(exponent: number | null, fromRatio: number, toRatio: number): number {
   const r = fromRatio > 0 ? toRatio / fromRatio : 1;
-  if (learned === null || !Number.isFinite(learned)) return Math.pow(r, exponent);
-  return Math.min(r * r, Math.max(1, learned));
+  return Math.pow(r, exponent === null || !Number.isFinite(exponent) ? CLOCK_EXPONENT : exponent);
 }
 
 /** How long the predictor must go on refusing a climb from Medium, with no
@@ -639,10 +646,7 @@ export class GpuClockPolicy {
     this.source = gaps.channel !== null && (gaps.window === null || gaps.channel < gaps.window) ? 'channel' : 'window';
   }
 
-  /** The trial's turns per source, for the readout and the tests. */
-  trialTurnsTaken(): Record<FencePollSource, number> {
-    return { ...this.trialTurns };
-  }
+
 
   private price(): PriceVerdict {
     if (this.blockSamples < PRICE_BLOCK_SAMPLES) return null;

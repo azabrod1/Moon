@@ -27,8 +27,7 @@ import {
   clockResolves,
   growthFor,
   isReversal,
-  learnedGrowth,
-  predictReadingMs,
+  learnedExponent,
   predictWithGrowthMs,
   starvedGapLimitMs,
   type PolledSample,
@@ -353,7 +352,8 @@ describe('the task source', () => {
     }
     // Strict turns from the first sample on.
     expect(tried.slice(0, 12)).toEqual(Array.from({ length: 12 }, (_, i) => (i % 2 === 0 ? 'window' : 'channel')));
-    expect(policy.trialTurnsTaken()).toEqual({ window: SOURCE_TRIAL_ATTEMPTS_MAX, channel: SOURCE_TRIAL_ATTEMPTS_MAX });
+    expect(tried.filter((t) => t === 'window')).toHaveLength(SOURCE_TRIAL_ATTEMPTS_MAX);
+    expect(tried.filter((t) => t === 'channel')).toHaveLength(SOURCE_TRIAL_ATTEMPTS_MAX);
     // The only source that measured anything is the one kept.
     expect(policy.trialGaps().window).toBeNull();
     expect(policy.source).toBe('channel');
@@ -434,39 +434,40 @@ describe('the clock’s grid', () => {
 
 describe('the predictor', () => {
   it('holds the pre-submit part and scales the rest by the ratio to the exponent', () => {
-    // 2 ms of building and 7 ms after it, one rung up (2 → 2.5).
-    const p = predictReadingMs(2, 9, 2, 2.5);
-    expect(p).toBeCloseTo(2 + 7 * Math.pow(1.25, CLOCK_EXPONENT), 9);
+    // 2 ms of building and 7 ms after it, one rung up (2 → 2.5), nothing
+    // learned: r^1.5.
+    const guess = growthFor(null, 2, 2.5);
+    expect(guess).toBeCloseTo(Math.pow(1.25, CLOCK_EXPONENT), 9);
+    expect(predictWithGrowthMs(2, 9, guess)).toBeCloseTo(2 + 7 * guess, 9);
     // The per-pixel bound is the exponent 2: the area.
-    expect(predictReadingMs(0, 8, 2, 2.5, 2)).toBeCloseTo(8 * 1.5625, 9);
+    expect(predictWithGrowthMs(0, 8, growthFor(2, 2, 2.5))).toBeCloseTo(8 * 1.5625, 9);
     // A capped reading predicts a capped reading.
-    expect(predictReadingMs(2, Infinity, 2, 2.5)).toBe(Infinity);
+    expect(predictWithGrowthMs(2, Infinity, guess)).toBe(Infinity);
     // Busy can never exceed the reading it is part of.
-    expect(predictReadingMs(12, 9, 2, 2.5)).toBeCloseTo(9, 9);
+    expect(predictWithGrowthMs(12, 9, guess)).toBeCloseTo(9, 9);
   });
 
-  it('predicts with the device’s own growth once one is learned, held between 1 and the per-pixel r²', () => {
-    // Nothing learned: r^E.
-    expect(growthFor(null, 2, 2.5)).toBeCloseTo(Math.pow(1.25, CLOCK_EXPONENT), 9);
-    // Learned: used as it is inside the bounds...
-    expect(growthFor(10 / 9, 2.5, 3)).toBeCloseTo(10 / 9, 9);
-    // ...never below 1, a sharper picture is not cheaper...
-    expect(growthFor(0.7, 2.5, 3)).toBe(1);
-    // ...and never above the area, r².
-    expect(growthFor(2, 2.5, 3)).toBeCloseTo(1.44, 9);
-    expect(predictWithGrowthMs(3, 13, 10 / 9)).toBeCloseTo(3 + 10 * (10 / 9), 9);
-    expect(predictWithGrowthMs(3, Infinity, 1.2)).toBe(Infinity);
+  it('learns the growth as an exponent, so one step of the ladder carries to another', () => {
+    // Measured on 2.5 → 3 (r = 1.2): the GPU part grew from 9 to 10.
+    const learned = learnedExponent(9, 10, 2.5, 3)!;
+    expect(learned.growth).toBeCloseTo(10 / 9, 9);
+    expect(learned.exponent).toBeCloseTo(Math.log(10 / 9) / Math.log(1.2), 9);
+    // Applied to Medium → 2.5 (r = 1.25) it is 1.25 to the same power, not
+    // the ratio measured on a smaller step.
+    expect(growthFor(learned.exponent, 2, 2.5)).toBeCloseTo(Math.pow(1.25, learned.exponent), 9);
+    // Held between 0 and 2: equal parts are 0, more than the area is 2.
+    expect(learnedExponent(9, 9, 2, 2.5)!.exponent).toBe(0);
+    expect(learnedExponent(5, 20, 2, 2.5)!.exponent).toBe(2);
   });
 
-  it('learns the growth as the ratio of the two rungs’ GPU parts, and nothing from a rung below with none', () => {
-    // This project's Mac in WebKit, moving at Earth's shell: 12 ms with 3
-    // before the submit at Medium, 13 with 3 at the next rung.
-    expect(learnedGrowth(12 - 3, 13 - 3)).toBeCloseTo(10 / 9, 9);
-    expect(learnedGrowth(0, 5)).toBeNull();
-    expect(learnedGrowth(Number.NaN, 5)).toBeNull();
+  it('learns nothing from a growth below 1, or from a rung below with no GPU part', () => {
+    // A sharper rung that read cheaper is a scene that got cheaper.
+    expect(learnedExponent(10, 7, 2, 2.5)).toBeNull();
+    expect(learnedExponent(0, 5, 2, 2.5)).toBeNull();
+    expect(learnedExponent(Number.NaN, 5, 2, 2.5)).toBeNull();
   });
 
-  it('tries the first climb of an epoch where the rung’s own p90 is inside three quarters of the bar', () => {
+  it('tries a climb on the rung’s own reading where its p90 is inside three quarters of the bar', () => {
     expect(CALIBRATION_SHARE * (1000 / 60)).toBeCloseTo(12.5, 9);
   });
 });

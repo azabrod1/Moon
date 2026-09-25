@@ -34,10 +34,12 @@ export interface LensParams {
    *  feed a full stereographic frame past ~80° corners. */
   effectiveStrength?: number;
   /** The proximity ramp's factor on `strength` (shared/math/lensProximity.ts),
-   *  written by the planetarium each frame from the largest disc in view;
-   *  absent or 1 leaves the requested strength alone. `effectiveStrength`
-   *  carries the product, so every reader of it follows the ramp without
-   *  knowing it exists. */
+   *  written by the planetarium when the ramp is on (`?lensramp=1`) and only
+   *  when it changes, from the largest rendered disc measured from the ship's
+   *  distance plus the chase boom — the disc need not be in view; absent or 1
+   *  leaves the requested strength alone. `effectiveStrength` carries the
+   *  product, so every reader of it follows the ramp without knowing it
+   *  exists. */
   proximityFactor?: number;
 }
 

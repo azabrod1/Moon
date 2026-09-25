@@ -7,7 +7,7 @@
  * large, centred disc is a circle under either projection — but the lens
  * compresses everything off-axis, harder the farther out, and a body that
  * fills the frame has its limb far off-axis. Measured against the renderer
- * (planning notes; tools/approach-probe.mjs): at the 60° design FOV a
+ * (tools/approach-probe.mjs): at the 60° design FOV a
  * centred disc's drawn radius under the lens has a hard ceiling of
  * 2 / (2·tan 15°) = 3.73 frame half-heights, so over Earth's last 6,371 km
  * the limb grows ×2.9 where a pinhole gives ×6.9 while the ground straight
@@ -16,21 +16,33 @@
  * a close approach: the picture inflates from the middle instead of growing.
  *
  * So the strength fades with the largest angular radius any body's RENDERED
- * SURFACE subtends from the camera — full at and below
- * LENS_PROXIMITY_FULL_DEG, gone at and above LENS_PROXIMITY_OFF_DEG, a Hermite
- * ease between. A pure function of the pose, with no easing over time, so a
- * teleport lands at the right strength on its first frame; keyed on angular
- * RADIUS rather than on where the body sits in the frame, so turning the
- * head never changes the projection.
+ * SURFACE subtends — full at and below LENS_PROXIMITY_FULL_DEG, gone at and
+ * above LENS_PROXIMITY_OFF_DEG, a Hermite ease between. A pure function of
+ * the pose, with no easing over time, so a teleport lands at the right
+ * strength on its first frame. Keyed on angular RADIUS rather than on where
+ * the body sits in the frame, and read from the SHIP's distance plus the
+ * chase boom's length rather than from the camera (cruiseView.ts,
+ * largestDiscAngles): in this app looking around orbits the camera round the
+ * ship on a ~233 km boom, and read from the camera the strength swung
+ * 0.5 ↔ 0.2 on a plain drag over Earth. So neither turning the head nor
+ * orbiting the chase camera changes the projection; the wheel, which
+ * lengthens the boom, still brings the lens back.
  *
  * Why 45°: every authored flyby closes to ARRIVAL_IMPACT_RADII = 1.8 rendered
  * radii, an angular radius of 33.7°, and on the receding leg the camera eases
  * back to the ship heading while the body is still that large and drifting
  * off-axis — the exact case the lens exists for. A ramp that started at 30°
- * would put an egg on every departure; 45° leaves an 11° margin, and the
- * colocated test pins the invariant. Why 70°: 409 km over Earth, a plain
- * pinhole well before the 198 km park. The 11 % size deficit the lens still
- * has at 45° (2,639 km over Earth) is the accepted trade.
+ * would put an egg on every departure; 45° leaves an 11° margin. Because the
+ * driving angle is read from the ship's distance plus the boom, the camera —
+ * which sits off the ship's line and can pass nearer the body than the ship
+ * does — never reads past that 33.7° either, and the colocated tests pin both.
+ * What DOES ramp on a flyby is the parent: the departure from an inner moon
+ * clears its giant's collision surface by 1.1×, and Uranus after Cordelia or
+ * Jupiter after Metis fills the view to ~65° on the way out — a giant filling
+ * the view is the case the ramp is for, and the recording should include one.
+ * Why 70°: 409 km over Earth, a plain pinhole well before the 198 km park. The
+ * 11 % size deficit the lens still has at 45° (2,639 km over Earth) is the
+ * accepted trade.
  *
  * The cost, accepted and stated: parked close and looking AWAY, the whole
  * scene is drawn pinhole, so a small disc near the frame edge (the Moon from
@@ -39,8 +51,10 @@
  * 1.55:1 at a 16:9 corner) lose what the lens gave them. A view-aware factor
  * would fix that and swim on every pan; it is not attempted.
  *
- * Pure math only — no three.js — so the ramp is unit-tested in isolation and
- * the probe that measures it predicts from the same two numbers.
+ * Off unless `?lensramp=1` asks for it: the moving A/B — an approach, a
+ * departure, a look-around while parked, three projection policies — has not
+ * been judged. Pure math only — no three.js — so the ramp is unit-tested in
+ * isolation and the probe that measures it predicts from the same two numbers.
  */
 
 import { RAD2DEG } from './angles';
@@ -70,7 +84,7 @@ export function lensProximityFactor(largestAngularRadiusRad: number): number {
  *  off its centre — the true silhouette, asin(r/d) — reading a full 90° from
  *  inside it and 0 for no sphere at all. */
 export function sphereAngularRadius(radiusAU: number, distanceAU: number): number {
-  if (!(radiusAU > 0)) return 0;
+  if (!(radiusAU > 0) || !Number.isFinite(distanceAU)) return 0;
   if (!(distanceAU > radiusAU)) return Math.PI / 2;
   return Math.asin(radiusAU / distanceAU);
 }

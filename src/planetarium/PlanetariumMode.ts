@@ -229,7 +229,7 @@ import {
   lensDisplayHalfTan,
   lensMaxFrameScale,
 } from '../shared/math/lensProjection';
-import { lensProximityFactor, sphereAngularRadius } from '../shared/math/lensProximity';
+import { lensProximityFactor } from '../shared/math/lensProximity';
 import { SUN_ATMOSPHERE_TINT_RGB, SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../shared/shaders/sun';
 import { landedFrameCamDistAU, landedMinDistanceAU, landedNearAU, LANDED_NEAR_AU } from './landedView';
 import {
@@ -270,6 +270,8 @@ import {
   ORBIT_POLAR_MARGIN_RAD,
   cameraFollowGain,
   chaseIdealOffset,
+  largestDiscAngles,
+  type LargestDiscAngles,
   reacquireCameraStep,
   planetEnvelopeRadiusAU,
   cruiseCameraNearAU,
@@ -742,10 +744,19 @@ export class PlanetariumMode {
     enabled: false,
     factor: 1,
     applied: 1,
+    /** The driving angle: the disc from the ship's distance plus the boom. */
     angularRadiusDeg: 0,
+    /** The same disc from the camera itself — the readout, never the driver. */
+    cameraAngularRadiusDeg: 0,
+    /** The driving body's disc radius — the rendered surface, so a probe can
+     *  see that the air shell or the Sun's governed surface never drove it. */
+    discRadiusAU: 0,
     body: null as string | null,
     devPose: false,
     applies: 0,
+  };
+  private readonly lensRampAngles: LargestDiscAngles = {
+    effectiveRad: 0, effectiveIndex: -1, effectiveDistanceAU: 0, cameraRad: 0, cameraIndex: -1,
   };
 
   // Hover/tap body reveal. `revealedBody` is the one body (planet, moon, or
@@ -13981,7 +13992,10 @@ export class PlanetariumMode {
   /**
    * The lens proximity ramp (shared/math/lensProximity.ts): scale the
    * requested lens strength by the largest angular radius any body's rendered
-   * disc subtends from the FINAL camera position, so a body that fills the
+   * disc subtends from the ship's distance plus the chase boom's length
+   * (cruiseView.largestDiscAngles — the camera's own distance in the head-on
+   * chase, and a number that holds still while the camera orbits the ship, so
+   * a look-around never breathes the projection), so a body that fills the
    * view is drawn through a plain pinhole and everything farther out stays
    * exactly what it was. A pure function of the pose — no easing, no memory —
    * recomputed every frame it can run, and 1 wherever it cannot: landed and
@@ -13998,7 +14012,7 @@ export class PlanetariumMode {
    * FOV writer, which folds it into `effectiveStrength` for every reader. No
    * deadband — one would leave 0.0015 parked as "off" and 0.9985 as "full".
    * That is hundreds of projection rebuilds across an approach, each a 4×4
-   * build and one Newton solve; `lensRampState.applies` counts them so a
+   * build and two Newton solves; `lensRampState.applies` counts them so a
    * measurement can say whether that ever matters.
    */
   private updateLensProximity(): void {
@@ -14010,26 +14024,28 @@ export class PlanetariumMode {
     const devPose = this.devFreeCamera;
     const cruise = this.landedOn === null && this.landedView !== 'surface';
     let factor = 1;
-    let angularRadius = 0;
+    let effectiveDeg = 0;
+    let cameraDeg = 0;
+    let discRadiusAU = 0;
     let body: string | null = null;
     if (this.lensRampEnabled && cruise && !devPose) {
-      const cam = this.camera.position;
-      for (let i = 0; i < this.cameraShellCount; i++) {
-        const shell = this.cameraShellPool[i];
-        const dx = shell.x - cam.x;
-        const dy = shell.y - cam.y;
-        const dz = shell.z - cam.z;
-        const angle = sphereAngularRadius(shell.discRadiusAU, Math.sqrt(dx * dx + dy * dy + dz * dz));
-        if (angle > angularRadius) {
-          angularRadius = angle;
-          body = shell.name;
-        }
+      const angles = largestDiscAngles(
+        this.camera.position, this.cameraShellPool, this.cameraShellCount, this.lensRampAngles,
+      );
+      if (angles.effectiveIndex >= 0) {
+        const shell = this.cameraShellPool[angles.effectiveIndex];
+        body = shell.name;
+        discRadiusAU = shell.discRadiusAU;
       }
-      factor = lensProximityFactor(angularRadius);
+      effectiveDeg = angles.effectiveRad * RAD2DEG;
+      cameraDeg = angles.cameraRad * RAD2DEG;
+      factor = lensProximityFactor(angles.effectiveRad);
     }
     state.enabled = this.lensRampEnabled;
     state.factor = factor;
-    state.angularRadiusDeg = angularRadius * RAD2DEG;
+    state.angularRadiusDeg = effectiveDeg;
+    state.cameraAngularRadiusDeg = cameraDeg;
+    state.discRadiusAU = discRadiusAU;
     state.body = body;
     state.devPose = devPose;
     if ((lens.proximityFactor ?? 1) !== factor) {
@@ -14053,9 +14069,21 @@ export class PlanetariumMode {
     const state = this.lensRampState;
     state.factor = 1;
     state.angularRadiusDeg = 0;
+    state.cameraAngularRadiusDeg = 0;
+    state.discRadiusAU = 0;
     state.body = null;
     state.applied = lens.effectiveStrength ?? lens.strength;
     state.applies++;
+  }
+
+  /** Every dev pose enters through here. The cruise camera pass a dev pose
+   *  bypasses is where the lens ramp runs, so a pose that solved its aim — an
+   *  output NDC, a fill — through the ramped strength the last cruise frame
+   *  left behind would be drawn a frame later at full strength, ~8 px off at
+   *  half-frame. Full strength first, then the pose. */
+  private enterDevPose(): void {
+    this.devFreeCamera = true;
+    this.resetLensProximity();
   }
 
   /** Camera safety + dynamic near plane, cruise only. Collisions move only
@@ -14884,7 +14912,7 @@ export class PlanetariumMode {
       }
     }
     if (!pos || r === 0) return false;
-    this.devFreeCamera = true;
+    this.enterDevPose();
     const dist = r * distMul;
     // Camera direction from the planet, rotated off the sun line by the phase
     // angle. The rotation axis is any vector perpendicular to the sun line.
@@ -14924,7 +14952,7 @@ export class PlanetariumMode {
    *  centre-weighted exposure metering); values ≳1 push it just off-screen. */
   devFrameSun(distanceAU = 1, fovDeg = 60, offNdcX = 0, offNdcY = 0): boolean {
     if (!this.solarSystem) return false;
-    this.devFreeCamera = true;
+    this.enterDevPose();
     // A fixed off-ecliptic direction keeps the pose reproducible and stops the
     // asteroid-belt band from slicing through the halo.
     const dir = new THREE.Vector3(0.62, 0.18, 0.76).normalize();
@@ -14962,7 +14990,7 @@ export class PlanetariumMode {
     this.showShip = true;
     this.player.group.visible = true;
     this.player.moving = false;
-    this.devFreeCamera = true;
+    this.enterDevPose();
 
     const forward = this.tmpSunView.set(1, 0, 0);
     const aim = flightAnglesFromSceneDirection(forward.x, forward.y, forward.z);
@@ -15012,7 +15040,7 @@ export class PlanetariumMode {
     fovDeg = 60,
     angularRadiusDeg = 6,
   ): boolean {
-    this.devFreeCamera = true;
+    this.enterDevPose();
     this.player.moving = false;
     const cam = this.camera as THREE.PerspectiveCamera;
     cam.position.set(0, 0, 0);
@@ -15074,6 +15102,7 @@ export class PlanetariumMode {
   /** Dev-only: the lens proximity ramp's state this frame (`__moon.lensRamp()`). */
   devLensRamp(): {
     enabled: boolean; factor: number; applied: number; angularRadiusDeg: number;
+    cameraAngularRadiusDeg: number; discRadiusAU: number;
     body: string | null; devPose: boolean; applies: number;
   } {
     return { ...this.lensRampState };
@@ -15561,7 +15590,7 @@ export class PlanetariumMode {
     const dir = new THREE.Vector3(to.x - from.x, to.y - from.y, to.z - from.z);
     if (dir.lengthSq() < 1e-12) return false;
     dir.normalize();
-    this.devFreeCamera = true;
+    this.enterDevPose();
     // A few radii out along the sightline: clear of the vantage body's own disc.
     this.player.posX = from.x + dir.x * fromR * 8;
     this.player.posY = from.y + dir.y * fromR * 8;
@@ -15618,7 +15647,7 @@ export class PlanetariumMode {
       const axis = new THREE.Vector3().crossVectors(sunward, spinUp).normalize();
       sunward.applyAxisAngle(axis, (phaseDeg * Math.PI) / 180).normalize();
     }
-    this.devFreeCamera = true;
+    this.enterDevPose();
     this.player.posX = body.x + sunward.x * d;
     this.player.posY = body.y + sunward.y * d;
     this.player.posZ = body.z + sunward.z * d;

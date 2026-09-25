@@ -32,6 +32,7 @@ import {
   CAM_REACQUIRE_RADIUS_TAU_S,
   CAM_REACQUIRE_SETTLE_ANGLE_DEG,
   CAM_REACQUIRE_SETTLE_RADIUS_FRAC,
+  largestDiscAngles,
 } from './cruiseView';
 // cruiseView itself stays dependency-free (the up axis is passed in); the
 // test pins it against the REAL flight horizon the mode hands it.
@@ -576,5 +577,71 @@ describe('reacquireCameraStep', () => {
       const lerp = cam.clone().lerp(ideal, cameraFollowGain(dt, tau));
       expect(spherical.distanceTo(lerp) / R).toBeLessThan(1e-4);
     }
+  });
+});
+
+describe('largestDiscAngles (what the lens proximity ramp reads)', () => {
+  const KM = 1 / 149_597_870.7;
+  const angles = () => ({ effectiveRad: 0, effectiveIndex: -1, effectiveDistanceAU: 0, cameraRad: 0, cameraIndex: -1 });
+  const shell = (x: number, y: number, z: number, surfaceRadiusAU: number, discRadiusAU: number, name: string) =>
+    ({ x, y, z, surfaceRadiusAU, discRadiusAU, name });
+  const deg = (rad: number) => (rad * 180) / Math.PI;
+
+  it('reads the DISC, never the envelope or the governed surface', () => {
+    // Earth: the safety envelope carries the air shell (×1.02); the Sun's
+    // governed surface is 1.2× its photosphere. Both must be ignored.
+    const earthR = 6371 * KM;
+    const earth = shell(0, 0, -2 * earthR, earthR * 1.02, earthR, 'Earth');
+    const out = largestDiscAngles({ x: 0, y: 0, z: 0 }, [earth], 1, angles());
+    expect(deg(out.effectiveRad)).toBeCloseTo(30, 6);
+    expect(out.effectiveIndex).toBe(0);
+    const sunR = 695_700 * KM;
+    const sun = shell(0, 0, -1.2 * sunR, sunR * 1.2, sunR, 'Sun');
+    const atSun = largestDiscAngles({ x: 0, y: 0, z: 0 }, [sun], 1, angles());
+    expect(deg(atSun.effectiveRad)).toBeCloseTo(56.44, 1);
+  });
+
+  it('holds still while the camera orbits the ship, and moves as the boom lengthens', () => {
+    const earthR = 6371 * KM;
+    const boom = 233 * KM;
+    const earth = shell(0, 0, -(earthR + 1000 * KM), earthR * 1.02, earthR, 'Earth');
+    const readings: number[] = [];
+    const cameraReadings: number[] = [];
+    const lift = 0.35;
+    const back = Math.sqrt(1 - lift * lift);
+    for (const [x, y, z] of [[0, 0, boom], [boom, 0, 0], [0, boom, 0], [-boom, 0, 0], [0, lift * boom, back * boom]]) {
+      const out = largestDiscAngles({ x, y, z }, [earth], 1, angles());
+      readings.push(out.effectiveRad);
+      cameraReadings.push(out.cameraRad);
+      // The camera is never farther than the ship's distance plus the boom.
+      expect(out.cameraRad).toBeGreaterThanOrEqual(out.effectiveRad - 1e-12);
+    }
+    for (const r of readings) expect(r).toBeCloseTo(readings[0], 12);
+    expect(Math.max(...cameraReadings) - Math.min(...cameraReadings)).toBeGreaterThan(0.01);
+    const longer = largestDiscAngles({ x: 0, y: 0, z: 3 * boom }, [earth], 1, angles());
+    expect(longer.effectiveRad).toBeLessThan(readings[0]);
+  });
+
+  it('never exceeds the ship-only angle: a 1.8-radius pass bounds the camera at 33.7° too', () => {
+    const r = 243 * KM; // the smallest rendered moon the flyby search visits
+    const pass = shell(1.8 * r, 0, 0, r, r, 'moonlet');
+    const worst = largestDiscAngles({ x: -233 * KM, y: 77 * KM, z: 0 }, [pass], 1, angles());
+    expect(deg(worst.effectiveRad)).toBeLessThanOrEqual(33.75 + 1e-9);
+    const shipOnly = largestDiscAngles({ x: 0, y: 0, z: 0 }, [pass], 1, angles());
+    expect(worst.effectiveRad).toBeLessThan(shipOnly.effectiveRad);
+  });
+
+  it('picks the largest disc across the pool and reads empty or non-finite as none', () => {
+    const near = shell(0, 0, -3 * 1000 * KM, 1000 * KM, 1000 * KM, 'near');
+    const big = shell(0, 5 * 6371 * KM, 0, 6371 * KM, 6371 * KM, 'big');
+    const out = largestDiscAngles({ x: 0, y: 0, z: 0 }, [near, big], 2, angles());
+    expect(out.effectiveIndex).toBe(0);
+    const none = largestDiscAngles({ x: 0, y: 0, z: 0 }, [], 0, angles());
+    expect(none.effectiveRad).toBe(0);
+    expect(none.effectiveIndex).toBe(-1);
+    const broken = shell(Number.NaN, 0, 0, 1, 1, 'broken');
+    const skipped = largestDiscAngles({ x: 0, y: 0, z: 0 }, [broken], 1, angles());
+    expect(skipped.effectiveRad).toBe(0);
+    expect(skipped.cameraRad).toBe(0);
   });
 });

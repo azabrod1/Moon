@@ -17,11 +17,12 @@
  * the lens pass resamples it; projectToScreen applies the same forward map so
  * DOM overlays land on the warped pixels.
  *
- * The strength is not constant in flight. A body that fills the view has its
- * limb far off-axis, where this map compresses hardest — a centred disc's
+ * The strength need not be constant in flight. A body that fills the view has
+ * its limb far off-axis, where this map compresses hardest — a centred disc's
  * drawn radius has a ceiling of 3.73 frame half-heights at the 60° design —
- * so the planetarium fades the request out as the largest rendered disc grows
- * past a 45° angular radius and back in as it shrinks (lensProximity.ts; the
+ * so with `?lensramp=1` (off by default until its moving A/B is judged) the
+ * planetarium fades the request out as the largest rendered disc grows past a
+ * 45° angular radius and back in as it shrinks (lensProximity.ts; the
  * `proximityFactor` on the camera's lens params, folded into
  * `effectiveStrength` by applyDesignFov below, which is why every consumer
  * reads THAT). Dev poses never ramp: the capture fleet pins pixels close in.

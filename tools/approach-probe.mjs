@@ -34,6 +34,15 @@
 //     cruise factor below 1 (the landed update places every overlay before
 //     the frame is drawn, so the reset has to precede it), or the ramp not
 //     computing again after takeoff;
+//   - the driving disc not the rendered surface (Earth's 6,371 km, the Sun's
+//     photosphere) — the one regression the unit tests cannot see;
+//   - a look-around (real mouse drags) moving the driving angle or the applied
+//     strength: the ramp reads the ship's distance plus the boom, which
+//     orbiting the camera cannot change;
+//   - a dev pose entered from a ramped frame with anything but full strength;
+//   - the FIRST landed render carrying a screen-authored material at the
+//     cruise strength (a render-time audit — the readout cannot tell the two
+//     orders apart);
 //   - a run that did not actually exercise what it claims: a ladder that
 //     never reached the off knee or never sampled the band, fewer than three
 //     pixel samples with the ramp meaningfully active, a landing the app
@@ -72,8 +81,15 @@ const LADDER = arg('ladder', '1,0.5,0.25,0.2,0.18,0.165,0.15,0.14,0.13,0.126')
 const PIXEL_LADDER = arg('pixel-ladder', '0.165,0.16,0.155,0.152,0.15,0.148,0.145,0.14')
   .split(',').map(Number);
 // Tolerance on the predicted ramp-on width: SwiftShader's edge on both
-// frames and the tilt solve's own rounding.
-const PIXEL_TOLERANCE = (expectedPx) => Math.max(3, expectedPx * 0.01);
+// frames and the tilt solve's own rounding. The runs that set it agreed to
+// 0.8 px; 0.4 % of a 900-px disc is 3.6 px, which a strength error of ~0.012
+// would exceed.
+const PIXEL_TOLERANCE = (expectedPx) => Math.max(2.5, expectedPx * 0.004);
+const KM_PER_AU = 149_597_870.7;
+// Which phases to fly (all by default); a partial run is exploratory and
+// never the regression battery, so --assert refuses it.
+const PHASES = new Set(arg('phases', '0,1,2,3,4,5').split(',').map(Number));
+if (assertMode && PHASES.size < 6) { console.error('--assert needs every phase; drop --assert for a partial run'); process.exit(2); }
 
 // --- the ramp, as shared/math/lensProximity.ts defines it ---------------------
 const DEG = Math.PI / 180;
@@ -167,6 +183,10 @@ try {
     const loading = document.getElementById('loading-screen');
     return !loading || loading.classList.contains('hidden');
   }, { timeout: 120000 }).catch(() => {});
+  const drawn = (frames = 2) => page.evaluate((n) => window.__moon.waitForDraw(n), frames);
+  const rampState = () => page.evaluate(() => window.__moon.lensRamp());
+  const setRamp = (on) => page.evaluate((v) => window.__moon.setLensRamp(v), on);
+
   await page.evaluate(() => {
     window.__moon.setChrome(false);
     window.__moon.setBloom(false);
@@ -176,10 +196,10 @@ try {
     window.__moon.setTimeMs(Date.parse('2026-06-14T00:00:00Z'));
     window.__moon.setTimeRate(0);
   });
+  // Phase 0 is what switches the ramp on; a partial run without it must still
+  // fly the ramp, or every later phase audits a lens that never moved.
+  if (!PHASES.has(0)) await setRamp(true);
 
-  const drawn = (frames = 2) => page.evaluate((n) => window.__moon.waitForDraw(n), frames);
-  const rampState = () => page.evaluate(() => window.__moon.lensRamp());
-  const setRamp = (on) => page.evaluate((v) => window.__moon.setLensRamp(v), on);
 
   // A real jump, settled: the veil lifted, frames drawn after it.
   async function jump(body, distanceMultiplier) {
@@ -288,7 +308,7 @@ try {
 
   // ---- 0. the default and the live switch ---------------------------------
   console.log('[0] default off, then the live switch');
-  {
+  if (PHASES.has(0)) {
     const closeRung = LADDER[Math.max(0, LADDER.length - 3)];
     const off = await jump(stateBody, closeRung);
     console.log(`  boot default at k=${closeRung}: enabled=${off.enabled} factor=${off.factor} applied=${off.applied} alpha=${off.angularRadiusDeg.toFixed(1)}deg`);
@@ -308,6 +328,7 @@ try {
 
   // ---- 1. the ladder: applied strength against the law ---------------------
   console.log(`[1] ${stateBody}: applied strength down the ladder`);
+  if (PHASES.has(1)) {
   let previousAlpha = -1;
   let previousApplied = 2;
   let previousApplies = null;
@@ -320,6 +341,13 @@ try {
     check(state.enabled === true, `k=${k}: ramp reported off`);
     check(Math.abs(state.factor - expected) < 1e-9, `k=${k}: factor ${state.factor} != law ${expected} at alpha ${state.angularRadiusDeg}`);
     check(Math.abs(state.applied - state.factor) < 1e-9, `k=${k}: applied ${state.applied} != factor ${state.factor} (requested strength should be 1)`);
+    // The camera is never farther from the body than the ship's distance
+    // plus the boom, so its own angle is at least the driving one.
+    check(state.cameraAngularRadiusDeg >= state.angularRadiusDeg - 1e-6, `k=${k}: camera angle ${state.cameraAngularRadiusDeg} under the driving angle ${state.angularRadiusDeg}`);
+    // What drove it is the rendered SURFACE — the catalog's equatorial
+    // 6,378 km — never the air shell (×1.02 would read 6,506 km). This is the
+    // pin the unit tests cannot be.
+    check(Math.abs(state.discRadiusAU * KM_PER_AU - 6378) < 20, `k=${k}: the driving disc radius is ${(state.discRadiusAU * KM_PER_AU).toFixed(0)} km, not Earth's 6,378 km surface`);
     if (state.angularRadiusDeg <= LENS_PROXIMITY_FULL_DEG) check(state.applied === 1, `k=${k}: alpha ${state.angularRadiusDeg.toFixed(2)} <= 45 but applied ${state.applied}`);
     if (state.angularRadiusDeg >= LENS_PROXIMITY_OFF_DEG) check(state.applied === 0, `k=${k}: alpha ${state.angularRadiusDeg.toFixed(2)} >= 70 but applied ${state.applied}`);
     if (previousAlpha >= 0) {
@@ -337,13 +365,24 @@ try {
   }
   const reachedOff = samples.some((s) => s.phase === 'ladder' && s.angularRadiusDeg >= LENS_PROXIMITY_OFF_DEG);
   const reachedBand = samples.some((s) => s.phase === 'ladder' && s.angularRadiusDeg > LENS_PROXIMITY_FULL_DEG && s.angularRadiusDeg < LENS_PROXIMITY_OFF_DEG);
+  // The Sun: its disc is the photosphere (~695,700 km), never the governed
+  // 1.2× surface (~834,800 km) the safety pool also carries.
+  {
+    const sun = await jump('Sun', 1);
+    samples.push({ phase: 'sun', ...sun });
+    console.log(`  Sun postcard: body=${sun.body} disc=${(sun.discRadiusAU * KM_PER_AU).toFixed(0)} km alpha=${sun.angularRadiusDeg.toFixed(2)}deg factor=${sun.factor.toFixed(4)}`);
+    check(sun.body === 'Sun', `at the Sun the driving body is ${sun.body}`);
+    check(Math.abs(sun.discRadiusAU * KM_PER_AU - 695_700) < 7_000, `the Sun's driving disc is ${(sun.discRadiusAU * KM_PER_AU).toFixed(0)} km — the photosphere is ~695,700 km, the governed surface 1.2× that`);
+  }
   const reachedFull = samples.some((s) => s.phase === 'ladder' && s.angularRadiusDeg <= LENS_PROXIMITY_FULL_DEG);
   check(reachedFull, 'the ladder never sampled at full strength (at or under the full knee)');
   check(reachedBand, 'the ladder never sampled inside the ramp band');
   check(reachedOff, 'the ladder never reached the off knee (alpha >= 70deg); lengthen the ladder toward the shell');
+  }
 
   // ---- 2. the drawn disc: the same pose with the ramp on and off -----------
   console.log(`[2] ${pixelBody}: the drawn disc, ramp on against ramp off at one pose`);
+  if (PHASES.has(2)) {
   let pixelSamplesJudged = 0;
   let pixelSamplesActive = 0;
   for (const k of PIXEL_LADDER) {
@@ -357,7 +396,9 @@ try {
     await page.screenshot({ path: path.join(outDir, `${pixelBody.toLowerCase()}-k${String(k).replace('.', 'p')}-off.png`) });
     await setRamp(true);
     await drawn(2);
-    const alphaRad = on.angularRadiusDeg * DEG;
+    // The silhouette is drawn from the camera, so the prediction reads the
+    // camera's own angle; the factor was driven by the ship-plus-boom one.
+    const alphaRad = on.cameraAngularRadiusDeg * DEG;
     const record = { phase: 'pixels', body: pixelBody, k, on, off, drawnOn, drawnOff };
     samples.push(record);
     const problem = drawnOn.error ?? drawnOff.error ?? (drawnOn.overflow || drawnOff.overflow ? 'disc overflows the frame' : null);
@@ -366,7 +407,7 @@ try {
     // The off state computes no angle (a kill switch does no work); the pose
     // is the same jump, and the ramp-on read after the flip back says so.
     const back = await rampState();
-    check(Math.abs(back.angularRadiusDeg - on.angularRadiusDeg) < 1e-6, `${pixelBody} k=${k}: the pose moved across the flip (${on.angularRadiusDeg} -> ${back.angularRadiusDeg})`);
+    check(Math.abs(back.cameraAngularRadiusDeg - on.cameraAngularRadiusDeg) < 1e-6, `${pixelBody} k=${k}: the pose moved across the flip (${on.cameraAngularRadiusDeg} -> ${back.cameraAngularRadiusDeg})`);
     if (problem) {
       console.log(`  k=${String(k).padStart(6)}  alpha=${on.angularRadiusDeg.toFixed(2)}deg  ${problem} — not judged`);
       continue;
@@ -376,9 +417,9 @@ try {
     const delta = drawnOn.halfWidthPx - predictedOn;
     record.tiltDeg = tiltRad / DEG;
     record.predictedOnPx = predictedOn;
-    console.log(`  k=${String(k).padStart(6)}  alpha=${on.angularRadiusDeg.toFixed(2).padStart(6)}deg  tilt=${(tiltRad / DEG).toFixed(2)}deg  off(s=1)=${drawnOff.halfWidthPx.toFixed(1).padStart(6)} px  on(s=${on.applied.toFixed(3)})=${drawnOn.halfWidthPx.toFixed(1).padStart(6)} px  predicted=${predictedOn.toFixed(1).padStart(6)} px  delta=${delta >= 0 ? '+' : ''}${delta.toFixed(1)}`);
+    console.log(`  k=${String(k).padStart(6)}  alpha(cam)=${on.cameraAngularRadiusDeg.toFixed(2).padStart(6)}deg  tilt=${(tiltRad / DEG).toFixed(2)}deg  off(s=1)=${drawnOff.halfWidthPx.toFixed(1).padStart(6)} px  on(s=${on.applied.toFixed(3)})=${drawnOn.halfWidthPx.toFixed(1).padStart(6)} px  predicted=${predictedOn.toFixed(1).padStart(6)} px  delta=${delta >= 0 ? '+' : ''}${delta.toFixed(1)}`);
     pixelSamplesJudged++;
-    if (on.applied < 0.999) pixelSamplesActive++;
+    if (on.applied < 0.95) pixelSamplesActive++;
     check(Math.abs(delta) <= PIXEL_TOLERANCE(predictedOn),
       `${pixelBody} k=${k}: ramp-on width ${drawnOn.halfWidthPx.toFixed(1)} px vs predicted ${predictedOn.toFixed(1)} px at strength ${on.applied.toFixed(3)} (alpha ${on.angularRadiusDeg.toFixed(2)}deg, tilt ${(tiltRad / DEG).toFixed(2)}deg)`);
     if (predictedOn - drawnOff.halfWidthPx > 3 && on.angularRadiusDeg > 30) {
@@ -386,14 +427,56 @@ try {
     }
   }
   check(pixelSamplesJudged >= 3, `only ${pixelSamplesJudged} pixel sample(s) could be judged — widen the frame or move the pixel ladder`);
-  check(pixelSamplesActive >= 3, `only ${pixelSamplesActive} judged pixel sample(s) had the ramp meaningfully active (applied < 0.999) — a disc that the ramp did not change proves nothing about it`);
+  check(pixelSamplesActive >= 3, `only ${pixelSamplesActive} judged pixel sample(s) had the ramp meaningfully active (applied < 0.95) — a disc the ramp barely changed proves nothing about it`);
+  }
 
   // ---- 3. the surface gate, and the ramp after takeoff ----------------------
   console.log('[3] landed: the ramp reads 1; after takeoff it computes again');
-  {
+  if (PHASES.has(3)) {
     const closeRung = LADDER[LADDER.length - 1];
     const before = await jump(stateBody, closeRung);
     check(before.factor < 1, `the landing must start from a cruise factor below 1 (k=${closeRung} read ${before.factor})`);
+    // The readout is written at the end of the landed update, so it reads 1
+    // whichever side of that update the reset ran on. What tells the two
+    // orders apart is the FIRST landed render: every screen-authored material
+    // (stars, moon dots, the Sun's glare and ghosts, the lines) carries a
+    // uLensStrength synced from effectiveStrength when its consumer ran, and
+    // a reset that ran after them leaves that render's materials at the
+    // cruise strength against a camera at 1. Wrap the renderer for one render.
+    // The landing applies a frame or so after land() returns, so the audit
+    // keeps the first few lens-camera renders and judges the first one drawn
+    // LANDED — the first whose camera reads full strength again, since the
+    // cruise frame it starts from is at the ramp's floor.
+    await page.evaluate(() => {
+      const renderer = window.__moonRenderer;
+      const original = renderer.render.bind(renderer);
+      window.__landedAudit = [];
+      renderer.render = (scene, camera) => {
+        if (window.__landedAudit.length < 6 && camera?.userData?.lens) {
+          const lens = camera.userData.lens;
+          const expected = lens.effectiveStrength ?? lens.strength;
+          const stale = [];
+          scene.traverse((object) => {
+            const uniforms = object.material?.uniforms;
+            if (!uniforms?.uLensStrength) return;
+            // Only what this render can draw: the object and every ancestor visible.
+            let shown = true;
+            for (let node = object; node; node = node.parent) if (node.visible === false) { shown = false; break; }
+            if (!shown) return;
+            const value = uniforms.uLensStrength.value;
+            if (Math.abs(value - expected) > 1e-6) {
+              const chain = [];
+              for (let node = object; node && chain.length < 4; node = node.parent) chain.push(node.name || node.type);
+              const range = object.geometry?.drawRange?.count;
+              stale.push(`${chain.join(' < ')} [${object.material.type}${range !== undefined ? `, drawRange ${range}` : ''}]: ${value.toFixed(4)} vs ${expected.toFixed(4)}`);
+            }
+          });
+          window.__landedAudit.push({ expected, stale });
+          if (window.__landedAudit.length >= 6) renderer.render = original;
+        }
+        return original(scene, camera);
+      };
+    });
     const landed = await page.evaluate((body) => window.__moon.land(body), stateBody);
     check(landed === true, 'land() refused — the surface gate was not exercised');
     if (!landed) {
@@ -402,10 +485,18 @@ try {
       // The FIRST drawn landed frame: the landed update places every overlay
       // through the lens before the frame is drawn, so the factor must already
       // read 1 on that frame, not after the rig has settled.
-      await drawn(1);
+      await drawn(6);
       const firstFrame = await rampState();
-      console.log(`  first drawn landed frame: factor=${firstFrame.factor} applied=${firstFrame.applied} (was ${before.factor.toFixed(4)} in cruise at k=${closeRung})`);
-      check(firstFrame.factor === 1 && firstFrame.applied === 1, `first landed frame: factor ${firstFrame.factor}, applied ${firstFrame.applied} (want 1, 1)`);
+      const renders = await page.evaluate(() => window.__landedAudit);
+      const landedIndex = renders.findIndex((r) => r.expected === 1);
+      const audit = landedIndex >= 0 ? renders[landedIndex] : null;
+      console.log(`  landed readout: factor=${firstFrame.factor} applied=${firstFrame.applied} (was ${before.factor.toFixed(4)} in cruise at k=${closeRung})`);
+      renders.forEach((r, i) => console.log(`  render ${i + 1}${i === landedIndex ? ' (first landed)' : ''}: camera ${r.expected.toFixed(4)}, stale ${r.stale.length}${r.stale.length ? '  ' + r.stale.slice(0, 3).join(' | ') : ''}`));
+      check(firstFrame.factor === 1 && firstFrame.applied === 1, `landed: factor ${firstFrame.factor}, applied ${firstFrame.applied} (want 1, 1)`);
+      check(audit !== null, 'no render after land() drew through full strength — the landing never applied within six renders');
+      if (audit) {
+        check(audit.stale.length === 0, `first landed render: ${audit.stale.length} material(s) still at the cruise strength — ${audit.stale.slice(0, 3).join(' | ')}`);
+      }
       await page.waitForTimeout(600);
       await drawn(3);
       const onGround = await rampState();
@@ -421,8 +512,55 @@ try {
       const after = await jump(stateBody, closeRung);
       console.log(`  jumped back in: factor=${after.factor.toFixed(4)} applied=${after.applied.toFixed(4)}`);
       check(after.factor < 1, 'the ramp did not engage on a close jump after takeoff');
-      samples.push({ phase: 'landed', before, firstFrame, onGround, airborne, after });
+      samples.push({ phase: 'landed', before, firstFrame, audit, onGround, airborne, after });
     }
+  }
+
+  // ---- 4. a look-around does not move the lens -------------------------------
+  // Orbiting the chase camera round the ship (a drag) moves the camera by up
+  // to the boom's length; the driving angle is read from the ship's distance
+  // plus the boom, so it must hold still while the camera's own angle moves.
+  console.log('[4] look-around: real mouse drags at a mid-band pose');
+  if (PHASES.has(4)) {
+    const midRung = LADDER.find((k) => k <= 0.15) ?? LADDER[LADDER.length - 3];
+    const start = await jump(stateBody, midRung);
+    console.log(`  k=${midRung}: driving alpha=${start.angularRadiusDeg.toFixed(3)}deg camera alpha=${start.cameraAngularRadiusDeg.toFixed(3)}deg applied=${start.applied.toFixed(4)}`);
+    check(start.angularRadiusDeg > LENS_PROXIMITY_FULL_DEG && start.angularRadiusDeg < LENS_PROXIMITY_OFF_DEG, `the look-around pose must sit inside the band (alpha ${start.angularRadiusDeg.toFixed(2)})`);
+    const centreX = Math.floor(VIEWPORT_WIDTH / 2);
+    const centreY = Math.floor(VIEWPORT_HEIGHT / 2);
+    let cameraMoved = 0;
+    for (const [dx, dy] of [[220, 0], [220, 0], [0, 140], [-220, 0]]) {
+      await page.mouse.move(centreX, centreY);
+      await page.mouse.down();
+      await page.mouse.move(centreX + dx, centreY + dy, { steps: 14 });
+      await page.mouse.up();
+      await drawn(3);
+      const now = await rampState();
+      cameraMoved = Math.max(cameraMoved, Math.abs(now.cameraAngularRadiusDeg - start.cameraAngularRadiusDeg));
+      console.log(`  drag (${dx},${dy}): driving alpha=${now.angularRadiusDeg.toFixed(3)}deg camera alpha=${now.cameraAngularRadiusDeg.toFixed(3)}deg applied=${now.applied.toFixed(4)} applies=${now.applies}`);
+      check(Math.abs(now.angularRadiusDeg - start.angularRadiusDeg) < 0.01, `a drag moved the driving angle ${start.angularRadiusDeg.toFixed(3)} -> ${now.angularRadiusDeg.toFixed(3)}`);
+      check(Math.abs(now.applied - start.applied) < 1e-4, `a drag moved the applied strength ${start.applied.toFixed(4)} -> ${now.applied.toFixed(4)}`);
+      samples.push({ phase: 'drag', dx, dy, ...now });
+    }
+    if (cameraMoved < 0.05) console.log(`  note: the drags moved the camera's own angle by only ${cameraMoved.toFixed(3)}deg — did the drags orbit the camera?`);
+  }
+
+  // ---- 5. a dev pose after a ramped frame enters at full strength -------------
+  // A dev pose bypasses the cruise pass the ramp runs in, and solves its aim
+  // through the strength in force when it is called: it has to enter at 1.
+  console.log('[5] dev pose after a ramped frame');
+  if (PHASES.has(5)) {
+    const ramped = await jump(stateBody, LADDER[LADDER.length - 1]);
+    check(ramped.applied < 0.5, `the dev-pose check must start from a ramped frame (applied ${ramped.applied})`);
+    // A pose whose design FOV the wide-FOV cap leaves alone (frame() sets the
+    // FOV from its fill: 1.1 radii at 0.6 asks 141°, where the cap itself
+    // forces strength 0 with no ramp at all). Six radii at 0.6 is 31.7°.
+    await page.evaluate(() => window.__moon.frame('Earth', 0.6, 0, 6));
+    await drawn(1);
+    const posed = await rampState();
+    console.log(`  frame('Earth', 0.6, 0, 6) after applied=${ramped.applied.toFixed(4)}: devPose=${posed.devPose} applied=${posed.applied} factor=${posed.factor}`);
+    check(posed.devPose === true && posed.applied === 1 && posed.factor === 1, `a dev pose entered with applied ${posed.applied}, factor ${posed.factor}, devPose ${posed.devPose}`);
+    samples.push({ phase: 'devPose', ramped, posed });
   }
 
   check(pageErrors.length === 0, `${pageErrors.length} uncaught page error(s): ${pageErrors.slice(0, 3).join(' | ')}`);

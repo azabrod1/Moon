@@ -242,6 +242,22 @@ describe('applyDesignFov / displayFovDeg / lensDisplayHalfTan', () => {
     applyDesignFov(camera, 60);
     expect(camera.userData.lens.effectiveStrength).toBe(1);
     expect(camera.fov).toBe(fullOverscan);
+    // Where the wide-FOV cap binds, the factor is folded in BEFORE the cap:
+    // the product is what the cap is applied to, so a request the cap would
+    // cut is cut, and one already under it passes through unchanged.
+    const wide = 120;
+    const cap = lensEffectiveStrength(wide, camera.aspect, 1);
+    expect(cap).toBeLessThan(1);
+    camera.userData.lens.proximityFactor = 1;
+    applyDesignFov(camera, wide);
+    expect(camera.userData.lens.effectiveStrength).toBeCloseTo(cap, 12);
+    camera.userData.lens.proximityFactor = cap / 2;
+    applyDesignFov(camera, wide);
+    expect(camera.userData.lens.effectiveStrength).toBeCloseTo(cap / 2, 12);
+    camera.userData.lens.proximityFactor = 0;
+    applyDesignFov(camera, wide);
+    expect(camera.userData.lens.effectiveStrength).toBe(0);
+    expect(camera.fov).toBe(wide);
   });
 
   it('display half-tangent reduces to tan(fov/2) at strength 0', () => {

@@ -83,6 +83,9 @@ describe('lensProximityFactor', () => {
     expect(lensProximityFactor(Number.NEGATIVE_INFINITY)).toBe(1);
     expect(sphereAngularRadius(1, 0.5)).toBe(Math.PI / 2);
     expect(sphereAngularRadius(0, 5)).toBe(0);
+    // A NaN distance is not "inside the sphere": it reads as no disc, never a pinhole.
+    expect(sphereAngularRadius(1, Number.NaN)).toBe(0);
+    expect(sphereAngularRadius(1, Number.POSITIVE_INFINITY)).toBe(0);
     expect(sphereAngularRadius(1, 2) / DEG2RAD).toBeCloseTo(30, 9);
   });
 });

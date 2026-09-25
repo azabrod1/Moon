@@ -1125,6 +1125,10 @@ function buildComposer(
     lensPass.renderToScreen = true;
     if (canvasSampled) ensureDirectLensTexture();
     else ensureScreenTarget();
+    // The lens proximity ramp at zero disables this pass and the frame goes
+    // through the screen copy instead (renderScene): link its program here,
+    // under the cover, not on the first frame of an approach that needs it.
+    ensureScreenCopy().warm(renderer);
     applyDesignFov(planetariumCamera, planetariumLens.designFovDeg);
     return;
   }

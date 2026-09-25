@@ -33,6 +33,7 @@
  */
 import { KM_PER_AU } from '../astronomy/constants';
 import { DEG2RAD } from '../shared/math/angles';
+import { sphereAngularRadius } from '../shared/math/lensProximity';
 
 export const SHIP_RIG_SCALE = 1 / 64;
 
@@ -418,6 +419,82 @@ export function reacquireCameraStep(
       ? Math.abs(rNew - rIdeal) < 1e-12
       : Math.abs(rNew - rIdeal) <= CAM_REACQUIRE_SETTLE_RADIUS_FRAC * rIdeal;
   return cosOut >= COS_REACQUIRE_SETTLE_ANGLE && radiusSettled;
+}
+
+/** What the lens proximity ramp reads for one frame (shared/math/lensProximity.ts). */
+export interface LargestDiscAngles {
+  /** The DRIVING angle: the largest angular radius any pooled body's disc
+   *  subtends from the ship's distance plus the chase boom's length. */
+  effectiveRad: number;
+  effectiveIndex: number;
+  /** That body's ship distance plus the boom, the distance the angle was read at. */
+  effectiveDistanceAU: number;
+  /** The true angle from the camera itself, for the readout and the probe's
+   *  silhouette prediction — never the driver. */
+  cameraRad: number;
+  cameraIndex: number;
+}
+
+/**
+ * The largest angular radius any pooled body's DISC subtends — `discRadiusAU`,
+ * the rendered surface, never the safety envelope or the Sun's governed
+ * surface — measured two ways at once.
+ *
+ * The driving one is read from the SHIP's distance plus the chase boom's
+ * length: the camera's own distance in the head-on chase, and a number that
+ * does not move when the camera orbits the ship — a look-around, a steer —
+ * because the boom keeps its length. Read from the camera itself the strength
+ * swung 0.5 ↔ 0.2 on a plain horizontal drag 1,000 km over Earth (the boom is
+ * ~233 km, a large slice of the ramp band for anything smaller than Venus),
+ * which is the projection of the whole frame breathing under the mouse. The
+ * price is that with the camera swung to the side of the ship the driving
+ * angle reads under the camera's true angle (the Moon's park: 58° against up
+ * to 73°); a stable strength there is worth more than an exact one. The wheel
+ * still brings the lens back, because it lengthens the boom. And by the
+ * triangle inequality the camera is never farther from a body than the ship's
+ * distance plus the boom, so the driving angle never exceeds the ship's own —
+ * a flyby's 1.8-radius pass bounds it at 33.7° for the camera too.
+ *
+ * The ship sits at the scene origin under floating origin, so a shell's own
+ * length is the ship's distance and the camera's is the boom. A non-finite
+ * distance reads as no disc; an empty pool reads 0 with index −1.
+ */
+export function largestDiscAngles(
+  cam: { x: number; y: number; z: number },
+  shells: readonly CameraBodyShell[],
+  count: number,
+  out: LargestDiscAngles,
+): LargestDiscAngles {
+  const boom = Math.sqrt(cam.x * cam.x + cam.y * cam.y + cam.z * cam.z);
+  let effectiveRad = 0;
+  let effectiveIndex = -1;
+  let effectiveDistanceAU = 0;
+  let cameraRad = 0;
+  let cameraIndex = -1;
+  for (let i = 0; i < count; i++) {
+    const s = shells[i];
+    const shipDistance = Math.sqrt(s.x * s.x + s.y * s.y + s.z * s.z);
+    const effective = sphereAngularRadius(s.discRadiusAU, shipDistance + boom);
+    if (effective > effectiveRad) {
+      effectiveRad = effective;
+      effectiveIndex = i;
+      effectiveDistanceAU = shipDistance + boom;
+    }
+    const dx = s.x - cam.x;
+    const dy = s.y - cam.y;
+    const dz = s.z - cam.z;
+    const fromCamera = sphereAngularRadius(s.discRadiusAU, Math.sqrt(dx * dx + dy * dy + dz * dz));
+    if (fromCamera > cameraRad) {
+      cameraRad = fromCamera;
+      cameraIndex = i;
+    }
+  }
+  out.effectiveRad = effectiveRad;
+  out.effectiveIndex = effectiveIndex;
+  out.effectiveDistanceAU = effectiveDistanceAU;
+  out.cameraRad = cameraRad;
+  out.cameraIndex = cameraIndex;
+  return out;
 }
 
 /** Distance from the camera to the nearest body SURFACE (no margin) over the

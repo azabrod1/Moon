@@ -40,6 +40,7 @@ import {
   type StepReason,
 } from './resolutionController';
 import {
+  CALIBRATION_SHARE,
   CLOCK_DOWN_SHARE,
   CLOCK_EXPONENT,
   CLOCK_UP_SHARE,
@@ -1131,11 +1132,11 @@ describe('the GPU clock climbs where the tick is blind', () => {
     expect(state.clock.last?.why).toBe('climb');
   });
 
-  it('refuses at 12 ms: the next rung’s predicted p90 does not fit the share', () => {
+  it('refuses at 13 ms: the next rung’s predicted p90 does not fit the share, and the rung’s own is past the calibration’s', () => {
     const rig = new ClockRig(new ResolutionController(FULL_LADDER));
     blindScreen(rig);
     // Inside the thirty seconds of refusals after which the sensor rests.
-    rig.runClock(seconds(35), onTime, () => 12);
+    rig.runClock(seconds(35), onTime, () => 13);
     expect(rig.applied).toEqual([]);
     const state = rig.controller.state();
     expect(state.clock.predictedNextMs).not.toBeNull();
@@ -1145,31 +1146,34 @@ describe('the GPU clock climbs where the tick is blind', () => {
   it('predicts the next rung from the pre-submit part and the rest scaled by the ratio', () => {
     const rig = new ClockRig(new ResolutionController(FULL_LADDER));
     blindScreen(rig);
-    // 12 ms with 3 before the submit predicts 3 + 9 × 1.25^1.5 = 15.6 at the
-    // next rung, outside the share: refused, so the state keeps reporting it.
-    rig.runClock(seconds(20), onTime, () => ({ readingMs: 12, busyMs: 3 }));
+    // 13 ms with 3 before the submit predicts 3 + 10 × 1.25^1.5 = 17.0 at
+    // the next rung, outside the share, and 13 is past the calibration's
+    // 12.5: refused, so the state keeps reporting it.
+    rig.runClock(seconds(20), onTime, () => ({ readingMs: 13, busyMs: 3 }));
     expect(rig.applied).toEqual([]);
-    const expected = 3 + 9 * Math.pow(2.5 / 2, CLOCK_EXPONENT);
+    const expected = 3 + 10 * Math.pow(2.5 / 2, CLOCK_EXPONENT);
     expect(expected).toBeGreaterThan(CLOCK_UP_SHARE * BUDGET_MS);
     expect(rig.controller.state().clock.predictedNextMs).toBeCloseTo(expected, 6);
   });
 
   it('pairs every reading with its own pre-submit time: equal readings, different busy parts, one climbs and one refuses', () => {
-    // 11 ms either way. With 5 of it before the submit only 6 grow with the
-    // pixels: 5 + 6 × 1.25^1.5 = 13.4, inside 0.85 × 16.67 = 14.2. With 1
-    // before it, 10 grow: 1 + 10 × 1.25^1.5 = 15.0, outside.
+    // 13 ms either way, past the calibration's 12.5, so only the prediction
+    // can climb. With 11 of it before the submit only 2 grow with the
+    // pixels: 11 + 2 × 1.25^1.5 = 13.8, inside 0.85 × 16.67 = 14.2. With 1
+    // before it, 12 grow: 1 + 12 × 1.25^1.5 = 17.8, outside.
     const factor = Math.pow(2.5 / 2, CLOCK_EXPONENT);
-    expect(5 + 6 * factor).toBeLessThan(CLOCK_UP_SHARE * BUDGET_MS);
-    expect(1 + 10 * factor).toBeGreaterThan(CLOCK_UP_SHARE * BUDGET_MS);
+    expect(11 + 2 * factor).toBeLessThan(CLOCK_UP_SHARE * BUDGET_MS);
+    expect(1 + 12 * factor).toBeGreaterThan(CLOCK_UP_SHARE * BUDGET_MS);
     const cpuHeavy = new ClockRig(new ResolutionController(FULL_LADDER));
     blindScreen(cpuHeavy);
-    cpuHeavy.runClock(seconds(20), onTime, () => ({ readingMs: 11, busyMs: 5 }));
+    cpuHeavy.runClock(seconds(20), onTime, () => ({ readingMs: 13, busyMs: 11 }));
     expect(cpuHeavy.applied[0]).toMatchObject({ reason: 'up', to: MEDIUM + 1 });
+    expect(cpuHeavy.controller.state().clock.last?.why).toBe('climb');
     const gpuHeavy = new ClockRig(new ResolutionController(FULL_LADDER));
     blindScreen(gpuHeavy);
-    gpuHeavy.runClock(seconds(20), onTime, () => ({ readingMs: 11, busyMs: 1 }));
+    gpuHeavy.runClock(seconds(20), onTime, () => ({ readingMs: 13, busyMs: 1 }));
     expect(gpuHeavy.applied).toEqual([]);
-    expect(gpuHeavy.controller.state().clock.predictedNextMs).toBeCloseTo(1 + 10 * factor, 6);
+    expect(gpuHeavy.controller.state().clock.predictedNextMs).toBeCloseTo(1 + 12 * factor, 6);
   });
 
   it('with no clock evidence is exactly the rule as it was: Medium and below', () => {
@@ -1198,11 +1202,115 @@ describe('the GPU clock climbs where the tick is blind', () => {
   });
 });
 
+describe('the first climb of an epoch is tried on the rung’s own readings, and the growth is learned from it', () => {
+  /** This project's Mac, moving at Earth's shell in WebKit: Medium reads
+   *  12 ms with 3 before the submit, the next rung 13, the top 14. */
+  const macAtEarth = (rung: number): ClockRead => ({ readingMs: 12 + (rung - MEDIUM), busyMs: 3 });
+
+  it('climbs on 12 ms where r^1.5 refused, holds at 13, and the growth it learns carries the next climb', () => {
+    // The guess refuses: 3 + 9 × 1.25^1.5 = 15.6 against 0.85 × 16.67.
+    expect(3 + 9 * Math.pow(2.5 / 2, CLOCK_EXPONENT)).toBeGreaterThan(CLOCK_UP_SHARE * BUDGET_MS);
+    // The rung's own p90 fits the calibration's 0.75 × 16.67 = 12.5.
+    expect(12).toBeLessThanOrEqual(CALIBRATION_SHARE * BUDGET_MS);
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    for (let k = 0; k < seconds(60) && rig.applied.length === 0; k++) rig.runClock(1, onTime, macAtEarth);
+    expect(rig.applied[0]).toMatchObject({ reason: 'up', to: MEDIUM + 1 });
+    expect(rig.controller.state().clock.last?.why).toBe('calibrate');
+    expect(rig.controller.state().clock.calibrationOpen).toBe(false);
+    // 13 holds through its verification: GPU parts 10 over 9, and
+    // 3 + 10 × 10/9 = 14.1 fits the share at the next rung, where r^1.5 would
+    // have put it at 16.1.
+    rig.runClock(seconds(3), onTime, macAtEarth);
+    expect(rig.controller.state().clock.verify).toBeNull();
+    expect(rig.controller.state().clock.learnedGrowth).toBeCloseTo(10 / 9, 6);
+    // Once the rung has a climb window of its own, before the intervals'
+    // ten seconds allow the climb.
+    rig.runClock(seconds(5), onTime, macAtEarth);
+    expect(rig.applied).toHaveLength(1);
+    expect(rig.controller.state().clock.predictedNextMs).toBeCloseTo(3 + 10 * (10 / 9), 6);
+    expect(3 + 10 * Math.pow(3 / 2.5, CLOCK_EXPONENT)).toBeGreaterThan(CLOCK_UP_SHARE * BUDGET_MS);
+    rig.runClock(seconds(60), onTime, macAtEarth);
+    const state = rig.controller.state();
+    expect(rig.applied.map((a) => a.reason)).toEqual(['up', 'up']);
+    expect(rig.rung).toBe(TOP);
+    expect(state.clock.last?.why).toBe('climb');
+    expect(state.ceiling).toBeNull();
+    // The top's own verification measured the growth again: 11 over 10.
+    expect(state.clock.learnedGrowth).toBeCloseTo(1.1, 6);
+  });
+
+  it('never tries on a device reading 13 at Medium', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.runClock(seconds(5 * 60), onTime, () => ({ readingMs: 13, busyMs: 3 }));
+    expect(rig.applied).toEqual([]);
+    expect(rig.controller.state().clock.calibrationOpen).toBe(true);
+  });
+
+  it('reverts a calibration whose sharper rung reads 17 inside its verification, holds a ceiling, and does not try again', () => {
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    const read = (rung: number): ClockRead => ({ readingMs: rung > MEDIUM ? 17 : 12, busyMs: 3 });
+    for (let k = 0; k < seconds(60) && rig.applied.length === 0; k++) rig.runClock(1, onTime, read);
+    const up = rig.applied[0];
+    expect(up).toMatchObject({ reason: 'up', to: MEDIUM + 1 });
+    rig.runClock(seconds(5), onTime, read);
+    const revert = rig.applied[1];
+    expect(revert).toMatchObject({ reason: 'revert', to: MEDIUM });
+    expect(revert.atMs - up.atMs).toBeLessThanOrEqual(REALLOC_SETTLE_MS + CLOCK_VERIFY_MS);
+    expect(rig.controller.state().ceiling).toMatchObject({ rung: MEDIUM + 1, escalation: 1 });
+    expect(rig.controller.state().clock.learnedGrowth).toBeNull();
+    // Through the ceiling's minute and well past it: the calibration is
+    // spent, and r^1.5 still refuses 12 ms.
+    rig.runClock(seconds(CEILING_HOLD_MS[0] / 1000 + 120), onTime, read);
+    expect(rig.applied.filter((a) => a.reason === 'up')).toHaveLength(1);
+    expect(rig.rung).toBe(MEDIUM);
+  });
+
+  it('keeps the growth across an arrival, and drops it with a new ladder or budget, which open the calibration again', () => {
+    const earned = (): ClockRig => {
+      const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+      blindScreen(rig);
+      rig.runClock(seconds(60), onTime, macAtEarth);
+      expect(rig.controller.state().clock.learnedGrowth).not.toBeNull();
+      return rig;
+    };
+    const arrival = earned();
+    arrival.controller.notify('arrival', arrival.nowMs);
+    expect(arrival.controller.state().clock.learnedGrowth).toBeCloseTo(1.1, 6);
+    expect(arrival.controller.state().clock.calibrationOpen).toBe(false);
+    for (const reset of [
+      (rig: ClockRig) => { rig.controller.setLadder(FULL_LADDER, rig.nowMs); },
+      (rig: ClockRig) => blindScreen(rig),
+    ]) {
+      const rig = earned();
+      reset(rig);
+      expect(rig.controller.state().clock.learnedGrowth).toBeNull();
+      expect(rig.controller.state().clock.calibrationOpen).toBe(true);
+    }
+  });
+
+  it('takes the calibration only once in an epoch: after a climb by the prediction, a rung that reads 12 is judged by the growth', () => {
+    // Medium reads 7, so the first climb is the prediction's; the rung above
+    // then reads 12, a growth of 10 over 5 held to 1.2² at the next step:
+    // 2 + 10 × 1.44 = 16.4, refused, and no calibration is left to try it.
+    const rig = new ClockRig(new ResolutionController(FULL_LADDER));
+    blindScreen(rig);
+    rig.runClock(seconds(3 * 60), onTime, (rung) => (rung > MEDIUM ? 12 : 7));
+    expect(rig.applied.map((a) => a.reason)).toEqual(['up']);
+    expect(rig.rung).toBe(MEDIUM + 1);
+    const state = rig.controller.state();
+    expect(state.clock.learnedGrowth).toBeCloseTo(2, 6);
+    expect(state.clock.predictedNextMs).toBeCloseTo(2 + 10 * 1.2 * 1.2, 6);
+  });
+});
+
 describe('a sensor that can never help rests', () => {
   it('stops sampling at Medium after half a minute of refusals, and retries rarely', () => {
     const rig = new ClockRig(new ResolutionController(FULL_LADDER));
     blindScreen(rig);
-    rig.runClock(seconds(60), onTime, () => 12);
+    rig.runClock(seconds(60), onTime, () => 13);
     expect(rig.controller.wantsClock()).toBe(false);
     const rest = rig.controller.state().clock.rest;
     expect(rest.untilMs).not.toBeNull();
@@ -1210,7 +1318,7 @@ describe('a sensor that can never help rests', () => {
     expect(rest.nextMs).toBe(2 * REFUSAL_REST_MS);
     const firstMinute = rig.delivered;
     // An hour of a pose with no room: the sensor samples a sliver of it.
-    rig.runClock(seconds(60 * 60), onTime, () => 12);
+    rig.runClock(seconds(60 * 60), onTime, () => 13);
     expect(rig.applied).toEqual([]);
     const state = rig.controller.state().clock;
     expect(state.rest.nextMs).toBe(REFUSAL_REST_MAX_MS);
@@ -1224,7 +1332,7 @@ describe('a sensor that can never help rests', () => {
   it('climbs on the retry when the room has come back', () => {
     const rig = new ClockRig(new ResolutionController(FULL_LADDER));
     blindScreen(rig);
-    let reading = 12;
+    let reading = 13;
     rig.runClock(seconds(60), onTime, () => reading);
     expect(rig.controller.wantsClock()).toBe(false);
     reading = 7;
@@ -1241,7 +1349,7 @@ describe('a sensor that can never help rests', () => {
     ]) {
       const rig = new ClockRig(new ResolutionController(FULL_LADDER));
       blindScreen(rig);
-      rig.runClock(seconds(REFUSAL_SUSTAIN_MS / 1000 + 20), onTime, () => 12);
+      rig.runClock(seconds(REFUSAL_SUSTAIN_MS / 1000 + 20), onTime, () => 13);
       expect(rig.controller.wantsClock()).toBe(false);
       reset(rig);
       expect(rig.controller.wantsClock()).toBe(true);

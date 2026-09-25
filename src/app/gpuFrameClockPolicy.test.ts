@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CALIBRATION_SHARE,
   CAMPAIGN_SHARE_MAX,
   CAP_SHARE,
   CLOCK_EXPONENT,
@@ -24,8 +25,11 @@ import {
   capMsFor,
   classifyReading,
   clockResolves,
+  growthFor,
   isReversal,
+  learnedGrowth,
   predictReadingMs,
+  predictWithGrowthMs,
   starvedGapLimitMs,
   type PolledSample,
 } from './gpuFrameClockPolicy';
@@ -439,6 +443,31 @@ describe('the predictor', () => {
     expect(predictReadingMs(2, Infinity, 2, 2.5)).toBe(Infinity);
     // Busy can never exceed the reading it is part of.
     expect(predictReadingMs(12, 9, 2, 2.5)).toBeCloseTo(9, 9);
+  });
+
+  it('predicts with the device’s own growth once one is learned, held between 1 and the per-pixel r²', () => {
+    // Nothing learned: r^E.
+    expect(growthFor(null, 2, 2.5)).toBeCloseTo(Math.pow(1.25, CLOCK_EXPONENT), 9);
+    // Learned: used as it is inside the bounds...
+    expect(growthFor(10 / 9, 2.5, 3)).toBeCloseTo(10 / 9, 9);
+    // ...never below 1, a sharper picture is not cheaper...
+    expect(growthFor(0.7, 2.5, 3)).toBe(1);
+    // ...and never above the area, r².
+    expect(growthFor(2, 2.5, 3)).toBeCloseTo(1.44, 9);
+    expect(predictWithGrowthMs(3, 13, 10 / 9)).toBeCloseTo(3 + 10 * (10 / 9), 9);
+    expect(predictWithGrowthMs(3, Infinity, 1.2)).toBe(Infinity);
+  });
+
+  it('learns the growth as the ratio of the two rungs’ GPU parts, and nothing from a rung below with none', () => {
+    // This project's Mac in WebKit, moving at Earth's shell: 12 ms with 3
+    // before the submit at Medium, 13 with 3 at the next rung.
+    expect(learnedGrowth(12 - 3, 13 - 3)).toBeCloseTo(10 / 9, 9);
+    expect(learnedGrowth(0, 5)).toBeNull();
+    expect(learnedGrowth(Number.NaN, 5)).toBeNull();
+  });
+
+  it('tries the first climb of an epoch where the rung’s own p90 is inside three quarters of the bar', () => {
+    expect(CALIBRATION_SHARE * (1000 / 60)).toBeCloseTo(12.5, 9);
   });
 });
 

@@ -206,10 +206,19 @@
  * already late: a device capped from outside the app would otherwise climb
  * on an idle-looking GPU), no not-pixel-bound latch — plus a clock window of
  * at least `CLOCK_UP_COUNT` trusted readings spanning `CLOCK_UP_SPAN_MS`, a
- * starved share within bounds, and the p90 of the next rung's predicted
- * readings (app/gpuFrameClockPolicy.ts `predictReadingMs`) inside
- * `CLOCK_UP_SHARE` of the budget. The p90 and not the median: under motion a
- * median can read ample room while nearly half the frames sit at the deadline.
+ * starved share within bounds, a delivered rate that holds, and the p90 of
+ * the next rung's predicted readings inside `CLOCK_UP_SHARE` of the budget.
+ * The p90 and not the median: under motion a median can read ample room
+ * while nearly half the frames sit at the deadline. The prediction grows each
+ * reading's GPU part by r^1.5 until the device has shown its own growth
+ * (app/gpuFrameClockPolicy.ts): the first climb of an evidence epoch — since
+ * the budget or the ladder last changed — may instead be tried on the rung's
+ * own readings, their p90 inside `CALIBRATION_SHARE` of the budget with every
+ * other gate the same, and once a climb has been verified, how much the
+ * sharper rung's GPU part grew over the rung below's is what every later
+ * climb in the epoch predicts with, held between 1 and r² — the latest
+ * verified climb's, since each measures it afresh. An arrival keeps it; a new
+ * budget or ladder drops it and opens the calibration again.
  *
  * A rung the clock earned is kept only while the clock vouches for it. Right
  * after the climb, and again after ANY evidence reset while it stands (a rung
@@ -288,6 +297,7 @@
  */
 
 import {
+  CALIBRATION_SHARE,
   CLOCK_DOWN_SHARE,
   CLOCK_UP_SHARE,
   DUTY_START,
@@ -296,8 +306,10 @@ import {
   REVERSAL_MS,
   REVERSAL_REPEATS,
   STARVED_SHARE_MAX,
+  growthFor,
   isReversal,
-  predictReadingMs,
+  learnedGrowth,
+  predictWithGrowthMs,
 } from './gpuFrameClockPolicy';
 
 /** The budget every display is held to unless the Frame rate row moves it:
@@ -587,7 +599,7 @@ export type StepReason = 'down' | 'up' | 'revert' | 'floor latch' | 'ladder' | '
 
 /** Why the clock moved a rung, for the readout. */
 export type ClockWhy =
-  | 'climb' | 'verify' | 'unverified' | 'panic' | 'delivery' | 'hand-back' | 'intervals'
+  | 'calibrate' | 'climb' | 'verify' | 'unverified' | 'panic' | 'delivery' | 'hand-back' | 'intervals'
   | 'silent' | 'gap' | 'starved' | 'off' | 'reversal';
 
 /** The GPU clock's part of the rule, as `__moon.quality().clock` shows it. */
@@ -644,6 +656,12 @@ export interface ClockState {
   /** Climbs whose two rungs were compared for that, and those that could not
    *  be, the view not shown to be the same. */
   reversalChecks: { made: number; skipped: number };
+  /** How much a sharper rung's GPU part grew over the rung below's, as this
+   *  epoch's verified climb measured it, or null before one has; and whether
+   *  the next climb may still be the epoch's calibration, tried on the rung's
+   *  own readings. */
+  learnedGrowth: number | null;
+  calibrationOpen: boolean;
   accepted: number;
   dropped: { unpaired: number; uncounted: number; stale: number; settling: number; notSteering: number };
   /** Why the frames behind the uncounted readings did not count. */
@@ -790,7 +808,7 @@ class ClockRing {
     notBeforeMs: number,
     quantile: number,
     predict: ((readingMs: number, busyMs: number) => number) | null = null,
-  ): { value: number; medianMs: number; count: number; starvedShare: number; oldestAtMs: number } | null {
+  ): { value: number; medianMs: number; p90Ms: number; count: number; starvedShare: number; oldestAtMs: number } | null {
     let n = 0;
     let total = 0;
     let starved = 0;
@@ -813,6 +831,8 @@ class ClockRing {
     }
     if (!done) return null;
     const medianMs = rank(this.scratch, n, 0.5);
+    // Sorted by the rank above: the raw p90 is read off the same order.
+    const p90Ms = this.scratch[Math.min(n - 1, Math.max(0, Math.ceil(0.9 * n) - 1))];
     if (predict !== null) {
       // Refill with the predicted quantity, over exactly the same readings.
       let m = 0;
@@ -825,6 +845,7 @@ class ClockRing {
     return {
       value: rank(this.scratch, n, quantile),
       medianMs,
+      p90Ms,
       count: n,
       starvedShare: total === 0 ? 0 : starved / total,
       oldestAtMs: oldest,
@@ -872,6 +893,20 @@ class ClockRing {
       medianMs: view[Math.ceil(0.5 * n) - 1],
       p90Ms: view[Math.ceil(0.9 * n) - 1],
     };
+  }
+
+  /** The median GPU part — reading less pre-submit time — of the trusted
+   *  readings no older than `notBeforeMs`, or NaN with none. */
+  gpuPartMedian(notBeforeMs: number): number {
+    let n = 0;
+    for (let i = 0; i < this.count; i++) {
+      const k = this.at(i);
+      if (this.atMs[k] < notBeforeMs) break;
+      if (this.kind[k] !== TRUSTED) continue;
+      const reading = this.readingMs[k];
+      this.scratch[n++] = reading - Math.min(Math.max(0, this.busyMs[k]), reading);
+    }
+    return n === 0 ? NaN : rank(this.scratch, n, 0.5);
   }
 
   /** The starved share of the newest `size` readings no older than
@@ -1109,7 +1144,7 @@ export class ResolutionController {
   /** A clock climb decided and not yet applied, with the rung below's median
    *  for the honesty rule — null where its window was not one still view —
    *  and the still view it was taken in. */
-  private pendingClimb: { belowMedianMs: number | null; sceneStretch: number } | null = null;
+  private pendingClimb: { belowMedianMs: number | null; sceneStretch: number; belowGpuMs: number } | null = null;
   /** The decision pending is a step down the clock made on its own evidence
    *  — a measured failure, or a probe it could not verify. */
   private pendingClockStep = false;
@@ -1121,6 +1156,10 @@ export class ResolutionController {
     /** For a climb's verification, the still view the rung below was read
      *  in; null for any other verification, which compares nothing. */
     sceneStretch: number | null;
+    /** For a climb's verification, the median GPU part of the rung below's
+     *  window, which the sharper rung's is set against to learn the growth;
+     *  null for any other verification. */
+    belowGpuMs: number | null;
     /** Readings count from frames drawn at or after this. */
     startMs: number;
     /** Set by the first eligible step after it opened; moved at most once,
@@ -1172,6 +1211,12 @@ export class ResolutionController {
   private sceneStretchSinceMs = 0;
   private sceneKeyLast: number | null = null;
   private readonly reversalChecks = { made: 0, skipped: 0 };
+  /** How much the latest verified sharper rung's GPU part grew over the rung
+   *  below's, this evidence epoch — the budget and the ladder as they are —
+   *  or null before a climb has been verified in it. An arrival keeps it. */
+  private clockGrowth: number | null = null;
+  /** A clock climb has been taken this epoch: the calibration is spent. */
+  private epochClimbed = false;
   /** Recent frames' interval verdicts, for a late reading to find its own. */
   private readonly verdictSeq = new Float64Array(VERDICT_RING_SIZE).fill(-1);
   private readonly verdictBecause = new Uint8Array(VERDICT_RING_SIZE);
@@ -1335,6 +1380,7 @@ export class ResolutionController {
     // Only a probe the clock made keeps its failures past its probation.
     this.probationByClock = false;
     if (kind === 'up' && climb !== null && this.index > this.mediumIndex) {
+      this.epochClimbed = true;
       // A clock probe: the clock verifies it, and the rung is the clock's.
       this.clockEarned = true;
       this.probationByClock = true;
@@ -1343,6 +1389,7 @@ export class ResolutionController {
         fromIndex: from,
         belowMedianMs: climb.belowMedianMs,
         sceneStretch: climb.sceneStretch,
+        belowGpuMs: climb.belowGpuMs,
         startMs: this.settleUntilMs,
         deadlineMs: null,
         interrupted: false,
@@ -1359,6 +1406,7 @@ export class ResolutionController {
         fromIndex: Math.max(this.mediumIndex, this.index - 1),
         belowMedianMs: null,
         sceneStretch: null,
+        belowGpuMs: null,
         startMs: this.settleUntilMs,
         deadlineMs: null,
         interrupted: false,
@@ -1419,6 +1467,8 @@ export class ResolutionController {
     this.lastFailedProbeRung = null;
     this.unverifiedRung = null;
     this.clockFailures = 0;
+    this.clockGrowth = null;
+    this.epochClimbed = false;
     this.refusal.reset();
     this.floorReference = null;
     this.stepReference = null;
@@ -1520,6 +1570,8 @@ export class ResolutionController {
     this.lastFailedProbeRung = null;
     this.unverifiedRung = null;
     this.clockFailures = 0;
+    this.clockGrowth = null;
+    this.epochClimbed = false;
     this.refusal.reset();
     this.floorReference = null;
     this.stepReference = null;
@@ -1670,6 +1722,7 @@ export class ResolutionController {
       fromIndex: standing?.fromIndex ?? this.mediumIndex,
       belowMedianMs: standing?.belowMedianMs ?? null,
       sceneStretch: standing?.sceneStretch ?? null,
+      belowGpuMs: standing?.belowGpuMs ?? null,
       startMs: this.settleUntilMs,
       deadlineMs: standing?.deadlineMs ?? null,
       interrupted: standing?.interrupted ?? false,
@@ -1931,6 +1984,13 @@ export class ResolutionController {
             }
           }
         }
+        if (verify.kind === 'probe' && verify.belowGpuMs !== null) {
+          // A climb, verified: how much its GPU part grew over the rung
+          // below's is how this device's frames grow with pixels, for every
+          // later climb this epoch.
+          const growth = learnedGrowth(verify.belowGpuMs, this.clockRing.gpuPartMedian(verify.startMs));
+          if (growth !== null) this.clockGrowth = growth;
+        }
         this.clockAcquiredAtMs = nowMs;
         if (this.unverifiedRung === this.index) this.unverifiedRung = null;
         return null;
@@ -1985,27 +2045,40 @@ export class ResolutionController {
     if (delivered === null || delivered > CLOCK_DELIVERY_UP * this.budgetMs) return null;
     const starved = this.clockRing.starvedShare(CLOCK_STARVED_WINDOW, CLOCK_STARVED_MIN, nowMs - STALENESS_MS);
     if (starved !== null && starved > STARVED_SHARE_MAX) return null;
-    const from = this.rungs[this.index];
-    const to = this.rungs[next];
+    const growth = growthFor(this.clockGrowth, this.rungs[this.index], this.rungs[next]);
+    const horizon = nowMs - STALENESS_MS;
     const w = this.clockRing.window(
-      CLOCK_UP_COUNT, CLOCK_UP_SPAN_MS, nowMs - STALENESS_MS, 0.9,
-      (reading, busy) => predictReadingMs(busy, reading, from, to),
+      CLOCK_UP_COUNT, CLOCK_UP_SPAN_MS, horizon, 0.9,
+      (reading, busy) => predictWithGrowthMs(busy, reading, growth),
     );
     if (w === null || w.starvedShare > STARVED_SHARE_MAX) return null;
-    if (w.value > CLOCK_UP_SHARE * this.budgetMs) {
+    const fits = w.value <= CLOCK_UP_SHARE * this.budgetMs;
+    // The epoch's first climb, where how this device's frames grow with
+    // pixels is not known yet: tried on the rung's own readings, and verified
+    // like any probe (app/gpuFrameClockPolicy.ts).
+    const calibrate = !fits && !this.epochClimbed && w.p90Ms <= CALIBRATION_SHARE * this.budgetMs;
+    if (!fits && !calibrate) {
       // No room at this pose. Kept up for long enough at Medium, the sensor
       // rests rather than sampling a session it cannot change.
       if (this.index === this.mediumIndex) this.refusal.refused(nowMs);
       return null;
     }
     this.refusal.fits();
-    this.noteClock(nowMs, next, 'climb');
+    this.noteClock(nowMs, next, calibrate ? 'calibrate' : 'climb');
     const decision = this.emit(next, 'up');
     // The rung below's median, for the honesty check once the sharper rung
     // has been measured — only where every reading of the window was taken
-    // inside the current still view.
+    // inside the current still view — and its GPU part, for the growth.
     const still = this.sceneKeyLast !== null && w.oldestAtMs >= this.sceneStretchSinceMs;
-    this.pendingClimb = { belowMedianMs: still ? w.medianMs : null, sceneStretch: this.sceneStretch };
+    const gpu = this.clockRing.window(
+      CLOCK_UP_COUNT, CLOCK_UP_SPAN_MS, horizon, 0.5,
+      (reading, busy) => reading - Math.min(Math.max(0, busy), reading),
+    );
+    this.pendingClimb = {
+      belowMedianMs: still ? w.medianMs : null,
+      sceneStretch: this.sceneStretch,
+      belowGpuMs: gpu?.value ?? NaN,
+    };
     return decision;
   }
 
@@ -2015,11 +2088,10 @@ export class ResolutionController {
     const next = this.index + 1;
     let predictedNextMs: number | null = null;
     if (next < this.rungs.length && next > this.mediumIndex) {
-      const from = this.rungs[this.index];
-      const to = this.rungs[next];
+      const growth = growthFor(this.clockGrowth, this.rungs[this.index], this.rungs[next]);
       const p = this.clockRing.window(
         CLOCK_UP_COUNT, CLOCK_UP_SPAN_MS, horizon, 0.9,
-        (reading, busy) => predictReadingMs(busy, reading, from, to),
+        (reading, busy) => predictWithGrowthMs(busy, reading, growth),
       );
       predictedNextMs = p?.value ?? null;
     }
@@ -2053,6 +2125,8 @@ export class ResolutionController {
       panicStreak: this.panicStreak,
       reversals: this.clockReversals,
       reversalChecks: { ...this.reversalChecks },
+      learnedGrowth: this.clockGrowth,
+      calibrationOpen: !this.epochClimbed,
       accepted: this.clockAccepted,
       dropped: { ...this.clockDropped },
       uncountedBy: { ...this.clockUncountedBy },

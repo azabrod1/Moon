@@ -116,6 +116,23 @@
  * that model — which is why a rung is kept by what the verification MEASURES
  * at it and never by the prediction.
  *
+ * **The first climb of an evidence epoch is a calibration, and the growth is
+ * then the device's own.** r^E is a guess about a device nobody has measured
+ * yet, and on this project's Mac, moving at Earth's shell in WebKit, it was the
+ * wrong one: Medium read 12 ms with 3 of them before the submit, the guess
+ * put the next rung at 15.6 against a 14.2 bar and refused, and the next rung
+ * really read 13. So where nothing is known yet — the first climb since the
+ * budget or the ladder last changed — the climb may be tried on the rung's
+ * own readings: their p90 within `CALIBRATION_SHARE` of the bar, every other
+ * gate as for any climb, and verified like any probe, so a device that was
+ * wrong about its room pays the probe's failure for it. Once a sharper rung
+ * has been verified, how much its GPU part (reading less pre-submit time)
+ * grew over the rung below's is the device's growth for the epoch, and every
+ * later climb predicts with it in place of r^E — never below 1 (a sharper
+ * picture is not cheaper) and never above r² (the per-pixel bound). An
+ * arrival keeps it: it is a fact about the device, and the verification and
+ * the ceilings still answer for every pose.
+ *
  * **Where the frozen numbers were read conservatively.** The signal-gap bar
  * is `STARVED_GAP_MS`, half a millisecond, but on a clock that only resolves
  * a millisecond it is one step of the grid: a gap that clock cannot see
@@ -197,6 +214,11 @@ export const CLOCK_EXPONENT = 1.5;
  *  this share of the bar. */
 export const CLOCK_UP_SHARE = 0.85;
 
+/** The first climb of an evidence epoch may be tried where the p90 of the
+ *  current rung's own readings fits this share of the bar: 12.5 ms at
+ *  60 fps. */
+export const CALIBRATION_SHARE = 0.75;
+
 /** A rung is handed back when its measured p90 passes this share of the bar;
  *  the band between the two shares is the hysteresis. */
 export const CLOCK_DOWN_SHARE = 0.9;
@@ -275,10 +297,31 @@ export function predictReadingMs(
   toRatio: number,
   exponent: number = CLOCK_EXPONENT,
 ): number {
+  const r = fromRatio > 0 ? toRatio / fromRatio : 1;
+  return predictWithGrowthMs(busyMs, readingMs, Math.pow(r, exponent));
+}
+
+/** The same, with the GPU part multiplied by `growth`. */
+export function predictWithGrowthMs(busyMs: number, readingMs: number, growth: number): number {
   if (!Number.isFinite(readingMs)) return Infinity;
   const busy = Math.min(Math.max(0, busyMs), readingMs);
+  return busy + (readingMs - busy) * growth;
+}
+
+/** How much a verified sharper rung's GPU part grew over the rung below's,
+ *  or null where the rung below had none to grow from. */
+export function learnedGrowth(belowGpuMs: number, aboveGpuMs: number): number | null {
+  if (!(belowGpuMs > 0) || !Number.isFinite(belowGpuMs) || !(aboveGpuMs >= 0)) return null;
+  return aboveGpuMs / belowGpuMs;
+}
+
+/** The growth a climb from `fromRatio` to `toRatio` predicts with: the
+ *  device's own where it has been learned, held between 1 and the per-pixel
+ *  r², else r^E. */
+export function growthFor(learned: number | null, fromRatio: number, toRatio: number, exponent: number = CLOCK_EXPONENT): number {
   const r = fromRatio > 0 ? toRatio / fromRatio : 1;
-  return busy + (readingMs - busy) * Math.pow(r, exponent);
+  if (learned === null || !Number.isFinite(learned)) return Math.pow(r, exponent);
+  return Math.min(r * r, Math.max(1, learned));
 }
 
 /** How long the predictor must go on refusing a climb from Medium, with no

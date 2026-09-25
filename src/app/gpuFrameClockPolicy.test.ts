@@ -18,6 +18,7 @@ import {
   REFUSAL_SUSTAIN_MS,
   RefusalRest,
   REVERSAL_MS,
+  SOURCE_TRIAL_ATTEMPTS_MAX,
   SOURCE_TRIAL_SAMPLES,
   STARVED_GAP_MS,
   capMsFor,
@@ -58,7 +59,9 @@ function feed(
     frames?: number;
     starved?: boolean;
     source?: FencePollSource;
-    gapMs?: number;
+    /** The poll's measured mean gap; null for a loop that saw the signal on
+     *  its first or second ask and had none to measure. */
+    gapMs?: number | null;
     minStepMs?: number | null;
     gridSteps?: number;
   },
@@ -72,7 +75,7 @@ function feed(
   return policy.recordSample({
     ...polled(8, { gapMs: opts.starved ? 3 : 0.04 }),
     source: opts.source ?? policy.nextSource(),
-    intervalMeanMs: opts.gapMs ?? 0.04,
+    intervalMeanMs: opts.gapMs === undefined ? 0.04 : opts.gapMs,
     minStepMs: opts.minStepMs === undefined ? 0.1 : opts.minStepMs,
     gridSteps: opts.gridSteps,
     campaignMs: opts.campaignMs ?? 0,
@@ -332,6 +335,42 @@ describe('the task source', () => {
       feed(other, { costMs: 0.5, source, gapMs: quick[source] });
     }
     expect(other.source).toBe('channel');
+  });
+
+  it('takes turns whatever a sample measured: a fence signalled at the first ask never pins the trial to one source', () => {
+    // Every window sample signals before the loop can measure a gap; every
+    // channel sample measures one.
+    const policy = new GpuClockPolicy();
+    const tried: FencePollSource[] = [];
+    for (let i = 0; i < 2 * SOURCE_TRIAL_ATTEMPTS_MAX && policy.source === null; i++) {
+      const source = policy.nextSource();
+      tried.push(source);
+      feed(policy, { costMs: 0.5, source, gapMs: source === 'window' ? null : 0.05 });
+    }
+    // Strict turns from the first sample on.
+    expect(tried.slice(0, 12)).toEqual(Array.from({ length: 12 }, (_, i) => (i % 2 === 0 ? 'window' : 'channel')));
+    expect(policy.trialTurnsTaken()).toEqual({ window: SOURCE_TRIAL_ATTEMPTS_MAX, channel: SOURCE_TRIAL_ATTEMPTS_MAX });
+    // The only source that measured anything is the one kept.
+    expect(policy.trialGaps().window).toBeNull();
+    expect(policy.source).toBe('channel');
+  });
+
+  it('ends a trial in which nothing measured a gap, on the window source, after its turns', () => {
+    const policy = new GpuClockPolicy();
+    const tried: FencePollSource[] = [];
+    for (let i = 0; i < 2 * SOURCE_TRIAL_ATTEMPTS_MAX + 4; i++) {
+      const source = policy.nextSource();
+      tried.push(source);
+      feed(policy, { costMs: 0.5, source, gapMs: null });
+    }
+    expect(tried.filter((s) => s === 'channel').length).toBe(SOURCE_TRIAL_ATTEMPTS_MAX);
+    expect(policy.source).toBe('window');
+  });
+
+  it('a first sample with no gap still hands the next turn to the other source', () => {
+    const policy = new GpuClockPolicy();
+    feed(policy, { costMs: 0.5, source: policy.nextSource(), gapMs: null });
+    expect(policy.nextSource()).toBe('channel');
   });
 });
 

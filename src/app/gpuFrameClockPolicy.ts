@@ -93,9 +93,16 @@
  * **The poll's task source is chosen by measurement**, never by a user-agent
  * string: the first samples alternate `window.postMessage` and a
  * `MessageChannel`, and the one whose loop turned over faster is kept — the
- * other's listener or ports are let go (app/gpuFrameClock.ts). (On
- * this project's Mac, WebKit's window messages were twice as fast as its
- * channel, and Chromium's channel marginally faster and private.)
+ * other's listener or ports are let go (app/gpuFrameClock.ts). The two take
+ * turns whatever a sample measured: one whose fence had signalled by the
+ * loop's first or second ask has no gap to measure, and a turn that waited
+ * for a measurement would try the same source for ever on a device where
+ * that is the rule. The measurements are kept apart from the turns: the
+ * trial ends once each source has `SOURCE_TRIAL_SAMPLES` of them, or after
+ * `SOURCE_TRIAL_ATTEMPTS_MAX` turns each, on what there is — the faster where
+ * both measured, the one that did where only one did, `window` where neither
+ * did. (On this project's Mac, WebKit's window messages were twice as fast as
+ * its channel, and Chromium's channel marginally faster and private.)
  *
  * **The predictor**, a filter on probes and nothing more: a reading is busy +
  * GPU, and only the GPU part grows with pixels, so each reading is carried to
@@ -174,8 +181,13 @@ export const GRID_MIN_SAMPLES = 32;
 /** The loop gives up this many budgets after the frame's callback began. */
 export const CAP_SHARE = 1.25;
 
-/** Samples each task source is tried for before one is kept. */
+/** Measured poll gaps each task source needs before one is kept. */
 export const SOURCE_TRIAL_SAMPLES = 8;
+
+/** Samples each source is tried for at most: a loop whose fence has already
+ *  signalled when it first asks has no gap to measure, and on a fast device
+ *  most may be like that, so the trial ends here on whatever it measured. */
+export const SOURCE_TRIAL_ATTEMPTS_MAX = 4 * SOURCE_TRIAL_SAMPLES;
 
 /** The predictor's exponent on the ratio of the rungs' pixel ratios: 2 is the
  *  per-pixel bound. */
@@ -394,7 +406,9 @@ export class GpuClockPolicy {
   totalFrames = 0;
   totalElapsedMs = 0;
 
+  /** The trial's measured poll gaps, and its turns, per source. */
   private readonly trial: Record<FencePollSource, number[]> = { window: [], channel: [] };
+  private readonly trialTurns: Record<FencePollSource, number> = { window: 0, channel: 0 };
   private nextTrial: FencePollSource = 'window';
 
   private readonly recent = new Float64Array(RECENT);
@@ -569,14 +583,22 @@ export class GpuClockPolicy {
 
   private recordTrial(source: FencePollSource, intervalMeanMs: number | null): void {
     if (this.source !== null) return;
-    // A loop that saw the signal on its first or second poll has no gap to
-    // measure; the other source goes next either way.
+    // The turns alternate whatever the sample measured: a loop that saw the
+    // signal on its first or second poll has no gap, and the other source
+    // goes next all the same.
+    this.trialTurns[source]++;
     if (intervalMeanMs !== null && Number.isFinite(intervalMeanMs)) this.trial[source].push(intervalMeanMs);
-    this.nextTrial = this.trial.window.length <= this.trial.channel.length ? 'window' : 'channel';
-    if (this.trial.window.length >= SOURCE_TRIAL_SAMPLES && this.trial.channel.length >= SOURCE_TRIAL_SAMPLES) {
-      const gaps = this.trialGaps();
-      this.source = (gaps.channel ?? Infinity) < (gaps.window ?? Infinity) ? 'channel' : 'window';
-    }
+    this.nextTrial = this.trialTurns.window <= this.trialTurns.channel ? 'window' : 'channel';
+    const measured = this.trial.window.length >= SOURCE_TRIAL_SAMPLES && this.trial.channel.length >= SOURCE_TRIAL_SAMPLES;
+    const spent = this.trialTurns.window >= SOURCE_TRIAL_ATTEMPTS_MAX && this.trialTurns.channel >= SOURCE_TRIAL_ATTEMPTS_MAX;
+    if (!measured && !spent) return;
+    const gaps = this.trialGaps();
+    this.source = gaps.channel !== null && (gaps.window === null || gaps.channel < gaps.window) ? 'channel' : 'window';
+  }
+
+  /** The trial's turns per source, for the readout and the tests. */
+  trialTurnsTaken(): Record<FencePollSource, number> {
+    return { ...this.trialTurns };
   }
 
   private price(): PriceVerdict {

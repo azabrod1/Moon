@@ -309,7 +309,7 @@ import {
 } from './world/surfaceDensity';
 import { applyLensShaderUniforms, type LensShaderUniforms } from '../shared/three/lensShader';
 import { setPointEnergyPixelRatio } from '../shared/three/pointEnergy';
-import { isPhoneViewport, setText } from '../shared/dom';
+import { isPhoneViewport, safeAreaInsets, setText, type SafeAreaInsets } from '../shared/dom';
 import { Constellations } from './Constellations';
 import { snapConstellations } from './data/constellationGeometry';
 import { getMoonsByPlanet, MOONS, type MoonData } from './planets/moonData';
@@ -1791,6 +1791,11 @@ export class PlanetariumMode {
   private miniRectCanvasH = -1;
   private miniRectSizeScale = -1;
   private miniRectPixelRatio = -1;
+  private miniRectInsetTop = -1;
+  private miniRectInsetLeft = -1;
+  /** The safe-area insets the chrome keeps out of (shared/dom), read on a
+   *  resize and on first use: a computed-style read, never per frame. */
+  private safeInsets: SafeAreaInsets | null = null;
   /** Scratch for getDrawingBufferSize — read only on rect rebuilds. */
   private miniBufferSize = new THREE.Vector2();
   /** Scratch the ship's course is written into for the chart, both charts. The
@@ -4524,10 +4529,21 @@ export class PlanetariumMode {
     if (this.solarSystem) setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, sceneRatio, outputRatio);
   }
 
+  /** The safe-area insets as last read, read now if never: the corner chart
+   *  places itself from them (map/miniChart.ts), the way the CSS chrome does
+   *  with env(). */
+  private safeAreaInsetsNow(): SafeAreaInsets {
+    if (!this.safeInsets) this.safeInsets = safeAreaInsets();
+    return this.safeInsets;
+  }
+
   /** Called by main.ts after it reapplies the render resolution on a window
    *  resize (which may reclamp the renderer's pixel ratio). The scene ratio
    *  can have moved with it, so the point sizes are retuned here too. */
   onResize(): void {
+    // The bars can change with the viewport: a rotation swaps a notch's side,
+    // and the page's own full screen puts the status bar over the page.
+    this.safeInsets = safeAreaInsets();
     this.onScenePixelRatioChanged();
     // A resize can carry the layout across the breakpoint, and the phone
     // invariant — the expanded sheet and the body card are never up together —
@@ -10753,16 +10769,20 @@ export class PlanetariumMode {
     const canvasW = Math.max(el.clientWidth, 1);
     const canvasH = Math.max(el.clientHeight, 1);
     const pixelRatio = this.renderer.getPixelRatio();
+    const insets = this.safeAreaInsetsNow();
     if (miniRectStale(
       this.miniRectCanvasW, this.miniRectCanvasH, this.miniRectSizeScale,
       canvasW, canvasH, this.miniSizeScale,
-    ) || this.miniRectPixelRatio !== pixelRatio) {
+    ) || this.miniRectPixelRatio !== pixelRatio
+      || this.miniRectInsetTop !== insets.top || this.miniRectInsetLeft !== insets.left) {
       this.miniRectCanvasW = canvasW;
       this.miniRectCanvasH = canvasH;
       this.miniRectSizeScale = this.miniSizeScale;
       this.miniRectPixelRatio = pixelRatio;
+      this.miniRectInsetTop = insets.top;
+      this.miniRectInsetLeft = insets.left;
       this.miniSizeRangeCache = miniSizeRange(canvasW, canvasH);
-      this.miniRect = miniChartRect(canvasW, canvasH, this.miniSizeScale);
+      this.miniRect = miniChartRect(canvasW, canvasH, this.miniSizeScale, insets);
       this.miniPresentation = miniPresentationScale(this.miniRect.width, this.miniSizeRangeCache.defaultWidthPx);
       writeMiniKeepOut(this.miniRect, this.miniKeepOut);
       // The REAL buffer dims, not css·ratio: the renderer floors that product
@@ -10990,7 +11010,7 @@ export class PlanetariumMode {
     const el = this.renderer.domElement;
     const canvasW = Math.max(el.clientWidth, 1);
     const canvasH = Math.max(el.clientHeight, 1);
-    const ceiling = miniChartRect(canvasW, canvasH, MINI_SIZE_MAX_SCALE);
+    const ceiling = miniChartRect(canvasW, canvasH, MINI_SIZE_MAX_SCALE, this.safeAreaInsetsNow());
     this.renderer.getDrawingBufferSize(this.miniBufferSize);
     const draw = miniDrawRect(
       ceiling, canvasW, canvasH, this.miniBufferSize.x, this.miniBufferSize.y, this.renderer.getPixelRatio(),

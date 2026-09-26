@@ -41,6 +41,16 @@ import {
 } from './mapBodySize';
 import { MOBILE_BREAKPOINT_PX } from '../../shared/dom';
 
+/** The safe-area insets at the chart's corner, CSS px: how far the top and
+ *  the left edge of the screen are from where chrome may sit. Zero on a
+ *  screen with no bar there. */
+export interface MiniChartInsets {
+  top: number;
+  left: number;
+}
+
+export const NO_MINI_INSETS: Readonly<MiniChartInsets> = Object.freeze({ top: 0, left: 0 });
+
 /** A rectangle in CSS px, measured from the canvas's top-left. */
 export interface MiniChartRect {
   left: number;
@@ -60,7 +70,11 @@ const MINI_ASPECT_H = 0.75;
  * Top-left inset. The side inset tightens with the screen; the top does not —
  * the action cluster's bottom edge sits at the same y at every width, and at
  * 320 px the cluster reaches far enough left to overlap the chart's corner.
- * One inset below it clears the wordmark too.
+ * One inset below it clears the wordmark too. Both are measured from the
+ * safe area, not the canvas's edge: the page covers the whole screen
+ * (index.html, viewport-fit=cover), so under a status bar or beside a notch
+ * the cluster and the wordmark sit further in by the bar, and the chart
+ * follows them by the same `MiniChartInsets` (shared/dom safeAreaInsets).
  */
 const MINI_INSET_Y = 56;
 const MINI_WIDE_INSET_X = 14;
@@ -354,12 +368,18 @@ export function miniChartRect(
   canvasWidthPx: number,
   canvasHeightPx: number,
   sizeScale: number = MINI_SIZE_DEFAULT_SCALE,
+  insets: MiniChartInsets = NO_MINI_INSETS,
 ): MiniChartRect {
   const cw = Math.max(canvasWidthPx, 1);
   const ch = Math.max(canvasHeightPx, 1);
   const width = miniWidthForScale(miniSizeRange(cw, ch), sizeScale);
   const height = Math.round(width * MINI_ASPECT_H);
-  return { left: miniBand(cw).leftPx, top: MINI_INSET_Y, width, height };
+  return {
+    left: miniBand(cw).leftPx + Math.max(0, insets.left),
+    top: MINI_INSET_Y + Math.max(0, insets.top),
+    width,
+    height,
+  };
 }
 
 /**

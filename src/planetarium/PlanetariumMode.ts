@@ -316,7 +316,7 @@ import {
 } from './world/surfaceDensity';
 import { applyLensShaderUniforms, type LensShaderUniforms } from '../shared/three/lensShader';
 import { setPointEnergyPixelRatio } from '../shared/three/pointEnergy';
-import { isPhoneViewport, safeAreaInsets, setText, type SafeAreaInsets } from '../shared/dom';
+import { isPhoneViewport, onSafeAreaChange, safeAreaInsets, setText, type SafeAreaInsets } from '../shared/dom';
 import { Constellations } from './Constellations';
 import { snapConstellations } from './data/constellationGeometry';
 import { getMoonsByPlanet, MOONS, type MoonData } from './planets/moonData';
@@ -2455,6 +2455,11 @@ export class PlanetariumMode {
     this.scene = scene;
     this.camera = camera;
     this.renderer = renderer;
+    // The bars the chrome keeps out of can change while the viewport's size
+    // stands still — a status bar hiding, a notch changing sides — and a
+    // resize would never carry that: the corner chart re-places itself from
+    // the new insets on its next rect check (shared/dom onSafeAreaChange).
+    onSafeAreaChange((insets) => { this.safeInsets = insets; });
     this.useBloom = useBloom;
     this.rendersThroughComposer = rendersThroughComposer;
     this.scenePixelRatio = scenePixelRatio;

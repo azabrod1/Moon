@@ -38,8 +38,11 @@
 //                both sides on its side) the canvas and the overlay stay on
 //                the whole viewport while the action cluster, the bottom bar,
 //                the wordmark and the corner chart move in by the bars, at
-//                boot and again through a rotation; captured with the insets
-//                on. Read on `?debug=1` with `__moon.viewport()`.
+//                boot, again when the bars change with the viewport standing
+//                still (no resize event: the chart follows through
+//                shared/dom onSafeAreaChange, not the resize path), and
+//                again through a rotation; captured with the insets on. Read
+//                on `?debug=1` with `__moon.viewport()`.
 //
 // What no Playwright run can show: its Chromium takes a page full screen
 // without resizing the window, and its key presses reach the page without
@@ -429,6 +432,15 @@ try {
       await checkInsets(page, label, viewport, insets);
       await page.screenshot({ path: `${OUT}/safearea-${label}.png` });
       if (label === 'phone') {
+        // The bars change with the viewport standing still: a taller status
+        // bar (a Dynamic Island's 59 pt for the 47 above), the same
+        // 390×844. No resize event; only the probes' observer can carry it.
+        const TALLER = { top: 59, right: 0, bottom: 34, left: 0 };
+        await page.evaluate(() => { window.__resizeEvents = 0; window.addEventListener('resize', () => { window.__resizeEvents++; }); });
+        await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: TALLER });
+        await settle(page, 600);
+        const still = await checkInsets(page, 'phone, bars changed', viewport, TALLER);
+        check(still.resizes === 0, 'safearea phone, bars changed: no resize event carried it', still.resizes);
         // Turned on its side: the notch moves to the sides, the home indicator
         // shrinks, and the chrome follows through the resize.
         await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: ON_ITS_SIDE });

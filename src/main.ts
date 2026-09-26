@@ -83,6 +83,7 @@ import { applyDesignFov, displayFovDeg, LENS_DEFAULT_STRENGTH } from './shared/m
 import { loadBrightStarCatalog } from './planetarium/world/starCatalogLoader';
 import { debugError, debugLog, debugWarn } from './shared/debug';
 import { safeAreaInsets } from './shared/dom';
+import { onFullscreenChange } from './app/fullscreen';
 import { resolveViewportSize, setViewportSize, viewportDrifted, viewportSize, type ViewportSize } from './app/viewportSize';
 import {
   clearSurfacePerf,
@@ -3986,6 +3987,12 @@ let viewportCheckCountdown = 0;
 const armViewportCheck = () => { viewportCheckDirty = true; };
 window.addEventListener('orientationchange', armViewportCheck);
 window.visualViewport?.addEventListener('resize', armViewportCheck);
+// A full-screen change is a viewport transition too, and WebKit dispatches
+// fullscreenchange BEFORE the resize event, with the viewport already at its
+// new values: the canvas observer above and the safe-area probes (shared/dom
+// onSafeAreaChange) follow the box and the bars on their own, and this pulls
+// the poll forward for whatever neither announces.
+onFullscreenChange(armViewportCheck);
 document.addEventListener('visibilitychange', () => {
   armViewportCheck();
   // Coming back: the frames either side of the gap are the browser's throttle

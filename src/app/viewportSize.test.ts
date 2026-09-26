@@ -140,25 +140,32 @@ describe('the page covers the screen (index.html)', () => {
     it(`${selector} keeps out of the safe area on its ${edges.join('/')}`, () => {
       const rules = rulesOf(selector);
       expect(rules.length, 'rule found').toBeGreaterThan(0);
-      let anchoredSomewhere = false;
+      // The wordmark bar anchors with padding rather than an offset: its
+      // `top: 0; left: 0; right: 0` is the bar's, the inset is the padding's.
+      if (selector === '#top-bar') {
+        for (const edge of edges) {
+          expect(rules.some((rule) => new RegExp(`padding:[^;]*env\\(safe-area-inset-${edge}`).test(rule)), edge).toBe(true);
+        }
+        return;
+      }
+      // Every edge the selector is said to anchor to has to be SEEN with the
+      // inset in some rule of its — the base rule or a media override — and
+      // every offset seen on such an edge has to carry it.
+      const seen = new Set<string>();
       for (const rule of rules) {
         for (const edge of edges) {
           const declaration = rule.match(new RegExp(`(?:^|[\\s;])${edge}\\s*:\\s*([^;]+);`));
           if (!declaration) continue;
           const value = declaration[1].trim();
-          // `top: 0` on the wordmark bar is its padding's job; `auto` and a
-          // percentage are not an offset from the edge.
+          // `auto` and a percentage are not an offset from the edge, and `0`
+          // is a sheet docked AT the edge, which pads under the bar instead
+          // of moving (the observatory and compare sheets on a phone).
           if (value === 'auto' || value === '0' || value.endsWith('%')) continue;
-          anchoredSomewhere = true;
           expect(value, `${selector} ${edge}: ${value}`).toContain(`env(safe-area-inset-${edge}`);
+          seen.add(edge);
         }
       }
-      // The wordmark bar anchors with padding rather than an offset.
-      if (selector === '#top-bar') {
-        expect(rules.some((rule) => /padding:[^;]*env\(safe-area-inset-top/.test(rule))).toBe(true);
-        return;
-      }
-      expect(anchoredSomewhere, `${selector} anchors to ${edges.join('/')}`).toBe(true);
+      expect([...seen].sort(), `${selector} anchors to ${edges.join('/')}`).toEqual([...edges].sort());
     });
   }
 

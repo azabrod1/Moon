@@ -230,9 +230,13 @@ describe('the panel\'s own rules', () => {
     expect(panelCss).toContain('overscroll-behavior: contain');
     expect(panelCss).toContain('touch-action: pan-y');
     // The dvh line with a vh fallback before it: an engine without dvh would
-    // drop the whole declaration and restore the unreachable row.
-    expect(panelCss).toContain('max-height: calc(100vh - 68px)');
-    expect(panelCss.indexOf('max-height: calc(100vh - 68px)'))
-      .toBeLessThan(panelCss.indexOf('max-height: calc(100dvh - 68px)'));
+    // drop the whole declaration and restore the unreachable row. Both take
+    // the top safe-area inset off, since the panel's top moved down by it
+    // (the page covers the screen: viewport-fit=cover).
+    const vhLine = 'max-height: calc(100vh - 68px - env(safe-area-inset-top, 0px))';
+    const dvhLine = 'max-height: calc(100dvh - 68px - env(safe-area-inset-top, 0px))';
+    expect(panelCss).toContain(vhLine);
+    expect(panelCss).toContain(dvhLine);
+    expect(panelCss.indexOf(vhLine)).toBeLessThan(panelCss.indexOf(dvhLine));
   });
 });

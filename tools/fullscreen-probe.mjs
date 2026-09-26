@@ -23,6 +23,23 @@
 //   phone        at 390×844 on a touch canvas the row is there without its key
 //                chip, a tap enters, and the panel still fits the screen;
 //                captured Off and On.
+//   box          the canvas is the fixed-position rect (index.html
+//                canvas.scene-canvas) and the renderer follows the canvas's
+//                OWN box (app/viewportSize.ts): its rect is the viewport and
+//                the drawing buffer its size, and a change to that box alone —
+//                a style that halves it, with no resize event at all, which is
+//                what an iPad's full-screen transition amounted to — re-sizes
+//                the renderer and the cameras, and the box's return restores
+//                them; at a desktop window and at 390×844.
+//   safearea     the page covers the screen (viewport-fit=cover) and the
+//                chrome keeps out of the bars: with the safe-area insets
+//                emulated through CDP (Emulation.setSafeAreaInsetsOverride —
+//                a phone's status bar and home indicator upright, a notch on
+//                both sides on its side) the canvas and the overlay stay on
+//                the whole viewport while the action cluster, the bottom bar,
+//                the wordmark and the corner chart move in by the bars, at
+//                boot and again through a rotation; captured with the insets
+//                on. Read on `?debug=1` with `__moon.viewport()`.
 //
 // What no Playwright run can show: its Chromium takes a page full screen
 // without resizing the window, and its key presses reach the page without
@@ -39,7 +56,7 @@ import { takeBrowserLock } from './browserLock.mjs';
 const arg = (k, d) => { const m = process.argv.find((a) => a.startsWith(`--${k}=`)); return m ? m.slice(k.length + 3) : d; };
 const URL = arg('url', 'http://localhost:5174');
 const LABEL = arg('label', 'fullscreen');
-const SCENARIOS = new Set(arg('scenario', 'desktop,tools,unavailable,phone').split(','));
+const SCENARIOS = new Set(arg('scenario', 'desktop,tools,unavailable,phone,box,safearea').split(','));
 const SOFTWARE = process.argv.includes('--software');
 const OUT = `/tmp/moon-shots/${LABEL}`;
 mkdirSync(OUT, { recursive: true });
@@ -306,6 +323,122 @@ try {
     });
     check(panel.bottom <= PHONE.h, 'phone: the panel still fits the screen', panel);
     await context.close();
+  }
+
+  /** The viewport as the app sees it beside the rects the chrome lands on. */
+  const geometry = (page) => page.evaluate(() => {
+    const rect = (selector) => {
+      const el = document.querySelector(selector);
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom), width: Math.round(r.width), height: Math.round(r.height) };
+    };
+    return {
+      viewport: window.__moon.viewport(),
+      canvasPosition: getComputedStyle(document.querySelector('canvas.scene-canvas')).position,
+      overlay: rect('#ui-overlay'),
+      actions: rect('#planetarium-actions'),
+      bar: rect('#planetarium-bottom-bar'),
+      wordmark: rect('#top-bar h1'),
+      chart: rect('#mini-chart'),
+      resizes: window.__resizeEvents ?? null,
+    };
+  });
+  const sameBox = (a, b) => a && b && a.width === b.width && a.height === b.height;
+  /** The drawing buffer the renderer sizes for a box: floor(css × ratio) on each axis, as three does. */
+  const bufferFor = (box, ratio) => ({ width: Math.floor(box.width * ratio), height: Math.floor(box.height * ratio) });
+
+  // ── box ─────────────────────────────────────────────────────────────────
+  if (SCENARIOS.has('box')) {
+    console.log('[box]');
+    for (const [label, viewport, touch] of [['desktop', DESKTOP, false], ['phone', PHONE, true]]) {
+      const context = await fresh(viewport, { touch });
+      const page = await boot(context);
+      let g = await geometry(page);
+      check(g.canvasPosition === 'fixed', `box ${label}: the canvas is position: fixed`, g.canvasPosition);
+      check(g.viewport.canvas.left === 0 && g.viewport.canvas.top === 0
+        && g.viewport.canvas.width === viewport.w && g.viewport.canvas.height === viewport.h,
+      `box ${label}: the canvas's rect is the viewport`, g.viewport.canvas);
+      check(sameBox(g.viewport.applied, g.viewport.canvas) && sameBox(g.viewport.drawingBuffer, bufferFor(g.viewport.canvas, g.viewport.pixelRatio)),
+        `box ${label}: the renderer and its drawing buffer are sized to the canvas's box`, g.viewport);
+      check(g.overlay.width === viewport.w && g.overlay.height === viewport.h, `box ${label}: the overlay is the whole viewport`, g.overlay);
+      // The box alone moves: no resize event, no viewport change.
+      await page.evaluate(() => { window.__resizeEvents = 0; window.addEventListener('resize', () => { window.__resizeEvents++; }); });
+      await page.addStyleTag({ content: 'canvas.scene-canvas { height: 50% !important; }' });
+      await settle(page, 300);
+      g = await geometry(page);
+      const half = Math.round(viewport.h / 2);
+      check(g.viewport.canvas.height === half && g.viewport.applied.height === half
+        && g.viewport.drawingBuffer.height === bufferFor(g.viewport.canvas, g.viewport.pixelRatio).height,
+      `box ${label}: a box halved by style alone re-sizes the renderer, with no resize event`, { viewport: g.viewport, resizes: g.resizes });
+      check(g.resizes === 0, `box ${label}: no resize event was fired for it`, g.resizes);
+      await page.evaluate(() => { for (const style of document.querySelectorAll('style')) if (style.textContent.includes('canvas.scene-canvas { height: 50% !important; }')) style.remove(); });
+      await settle(page, 300);
+      g = await geometry(page);
+      check(g.viewport.canvas.height === viewport.h && g.viewport.applied.height === viewport.h
+        && sameBox(g.viewport.drawingBuffer, bufferFor(g.viewport.canvas, g.viewport.pixelRatio)),
+      `box ${label}: the box's return restores the renderer`, g.viewport);
+      await context.close();
+    }
+  }
+
+  // ── safearea ────────────────────────────────────────────────────────────
+  if (SCENARIOS.has('safearea')) {
+    console.log('[safearea]');
+    const UPRIGHT = { top: 47, right: 0, bottom: 34, left: 0 };
+    const ON_ITS_SIDE = { top: 0, right: 47, bottom: 21, left: 47 };
+    const LANDSCAPE = { w: PHONE.h, h: PHONE.w };
+    /** The chrome against the bars: every offset carries the inset, the canvas none of it. */
+    const checkInsets = async (page, label, viewport, insets) => {
+      const g = await geometry(page);
+      const read = g.viewport.safeArea;
+      check(read.top === insets.top && read.right === insets.right && read.bottom === insets.bottom && read.left === insets.left,
+        `safearea ${label}: the app reads the bars the browser laid it out under`, read);
+      check(g.viewport.canvas.left === 0 && g.viewport.canvas.top === 0 && g.viewport.canvas.width === viewport.w && g.viewport.canvas.height === viewport.h,
+        `safearea ${label}: the canvas covers the whole screen, bars included`, g.viewport.canvas);
+      check(g.overlay.left === 0 && g.overlay.top === 0 && g.overlay.width === viewport.w && g.overlay.height === viewport.h,
+        `safearea ${label}: the overlay is not inset (projected labels sit on it)`, g.overlay);
+      check(g.actions.top === 14 + insets.top && g.actions.right === viewport.w - 14 - insets.right,
+        `safearea ${label}: the action cluster keeps out of the top and right bars`, g.actions);
+      const barLift = viewport.w <= 640 ? 8 : 12;
+      check(g.bar.bottom === viewport.h - barLift - insets.bottom, `safearea ${label}: the bottom bar keeps out of the bottom bar`, g.bar);
+      const wordmarkLeft = viewport.w <= 640 ? 10 : 16;
+      check(g.wordmark.left === wordmarkLeft + insets.left, `safearea ${label}: the wordmark keeps out of the left bar`, g.wordmark);
+      check(g.chart && g.chart.top === 56 + insets.top && g.chart.left === (viewport.w <= 380 ? 8 : viewport.w <= 640 ? 10 : 14) + insets.left,
+        `safearea ${label}: the corner chart keeps out of the top and left bars`, g.chart);
+      return g;
+    };
+    for (const [label, viewport, touch, insets] of [
+      ['phone', PHONE, true, UPRIGHT], ['landscape', LANDSCAPE, true, ON_ITS_SIDE], ['desktop', DESKTOP, false, ON_ITS_SIDE],
+    ]) {
+      const context = await fresh(viewport, { touch });
+      // The bars are there from the first layout, as on a phone that boots on its side.
+      const page = await context.newPage();
+      page.on('pageerror', (e) => { console.log('[pageerror]', e.message); failures.push(`pageerror: ${e.message}`); });
+      const cdp = await context.newCDPSession(page);
+      await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets });
+      await page.goto(`${URL}/?auto=planetarium`, { waitUntil: 'domcontentloaded' });
+      await page.waitForFunction(() => window.__moon?.ready?.(), null, { timeout: 180_000 });
+      await page.waitForFunction(() => {
+        const s = document.getElementById('loading-screen');
+        return !s || s.classList.contains('hidden') || getComputedStyle(s).display === 'none';
+      }, null, { timeout: 180_000 });
+      await sleep(1500);
+      await page.evaluate(() => window.__moon.setMiniChart(true));
+      await settle(page, 600);
+      await checkInsets(page, label, viewport, insets);
+      await page.screenshot({ path: `${OUT}/safearea-${label}.png` });
+      if (label === 'phone') {
+        // Turned on its side: the notch moves to the sides, the home indicator
+        // shrinks, and the chrome follows through the resize.
+        await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: ON_ITS_SIDE });
+        await page.setViewportSize({ width: LANDSCAPE.w, height: LANDSCAPE.h });
+        await settle(page, 800);
+        await checkInsets(page, 'phone turned', LANDSCAPE, ON_ITS_SIDE);
+        await page.screenshot({ path: `${OUT}/safearea-phone-turned.png` });
+      }
+      await context.close();
+    }
   }
 } finally {
   await browser.close();

@@ -41,7 +41,7 @@ import { CLOUD_NORMAL_SCALE, cloudShellScale } from './world/cloudDeck';
 import { CLOUD_DECK_DEPTH_BIAS_UNITS } from './world/shellDepthBias';
 import { applyTextureDefaults, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
 import {
-  augmentSurfaceMaterial, setSurfaceCraterShare, setSurfaceWaterGloss,
+  augmentSurfaceMaterial, seatSurfaceAirRadius, setSurfaceCraterShare, setSurfaceWaterGloss,
   type SurfaceArchetype, type SurfaceShadingFx,
 } from './world/surfaceShading';
 import { createAtmosphereShellMaterial } from './world/atmosphereShell';
@@ -903,6 +903,11 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   const fx = augmentSurfaceMaterial(
     mat, planetArchetype(planet), ringShadow, sunTan, undefined, undefined, planet.name,
   );
+  // The radius the cloud deck's detail bump multiplies by, seated now: the
+  // air's own binding restates it once the tables land, and a device whose
+  // bake is unavailable never gets there (seatSurfaceAirRadius says what the
+  // default of 1 did to the clouds).
+  seatSurfaceAirRadius(fx.air, planet.radiusAU);
   setSurfaceCraterShare(mat, synthCraterShare(planet.name, planetArchetype(planet)));
   // Higher colour tiers on close approach, for the keys that have them (see
   // TEXTURE_UPGRADE_TIERS). The boot map above is the floor; updateBodyLOD

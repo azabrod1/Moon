@@ -2073,10 +2073,28 @@ export function createSurfaceAirFx(): SurfaceAirFx {
 }
 
 /**
+ * Seat a body's surface radius on its air uniforms the moment they exist —
+ * world AU, the units the vertex stage hands over. bindSurfaceAir states it
+ * again when the tables bind, and until this existed that was the ONLY
+ * writer: every air lookup is gated on the density, so the default of 1 cost
+ * nothing there. The cloud deck's detail bump is not gated. It turns the
+ * relief's fraction of the radius back into kilometres by multiplying with
+ * this uniform wherever the deck is magnified, and read the default as a
+ * radius of one AU: 70,000 km of relief where 3 were authored, normals
+ * pointing anywhere, clouds drawn black — on every device whose atmosphere
+ * bake is unavailable (a software renderer, a slow device), and in the
+ * moments before the bake lands on the rest.
+ */
+export function seatSurfaceAirRadius(air: SurfaceAirFx, planetRadius: number): void {
+  air.uPlanetRadius.value = planetRadius;
+}
+
+/**
  * Point a body's surfaces at its finished tables and switch the air on.
  * `planetRadius` is the surface radius in the same units the vertex stage hands
  * over (world AU), because that is what the lookup divides by to reach the
- * radius units the tables are baked in.
+ * radius units the tables are baked in; seatSurfaceAirRadius seated the same
+ * number when the body was built, for the reader that never waits for tables.
  */
 export function bindSurfaceAir(
   air: SurfaceAirFx,

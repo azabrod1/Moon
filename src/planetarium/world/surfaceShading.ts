@@ -109,6 +109,7 @@ import {
 } from './atmosphereLut';
 import { AIRLIGHT_SCALE } from './atmosphereModel';
 import { perfSwitchOn, perfSwitchUniform } from '../../app/perfSwitches';
+import { COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_WIND_MAX_MS, seaWindTexture } from './seaWind';
 import { EARTH_NIGHT_COLD_CUT, EARTH_NIGHT_WARM_GLSL } from '../../shared/shaders/atmosphere';
 import {
   CLOUD_ALBEDO,
@@ -380,17 +381,18 @@ const SYNTH_RELIEF_GAIN: Record<SurfaceArchetype, number> = {
 // Earth's roughness map is a water mask graded into two roughnesses (the pair
 // tools/gen-tiles.mjs writes it with), area-averaged so a coast is a fractional
 // value between them rather than a stair. What it authors for open water is a
-// GGX lobe wide enough to be a physically fair wind-roughened sea — and a lobe
-// that wide integrates the Sun into a broad dim sheen with no core at all,
-// which is what an orbital frame of the glint read as: a flat grey-white wash
-// over most of the visible ocean, dimmer than the sunlit land beside it.
+// GGX lobe about as wide as a 7 m/s sea's, the mean wind over the ocean.
 //
-// A real sea is not one lobe. Its slope distribution has a near-specular core
-// from the calm between the waves and long wind-driven wings, and a photograph
-// shows the core clipped to white with a glitter tail running toward the Sun.
-// One GGX lobe can only be authored at one of those widths, so it is authored
-// at the CORE's: GGX's own tails are heavy enough (they fall as the inverse
-// fourth power of the slope angle) to carry the glitter that reaches out of it.
+// A glint is a picture of the wind, and no one width draws one. At that width
+// the whole sea is a grey-white wash, dimmer than the sunlit land beside it;
+// at a calm width it is a white bead on a glossy globe; and at any width every
+// contour is a circle the sphere's own geometry draws, because nothing but the
+// normal varies. A real ocean holds a glassy patch that clips to white beside a
+// trade-wind sea that reads as a silvery sheen the size of a continent. So the
+// width is read per fragment from a map of the wind over the sea
+// (world/seaWind.ts) through Cox-Munk's slope law, and the constant below is
+// the one width the sea falls back to with the map switched off (`?seawind=0`,
+// or a DEV override), kept where it was so the switch is an A/B.
 //
 // The remap happens where the map is read rather than in the map, so the globe
 // and the streamed sectors cut from the same source move together — a sector
@@ -404,60 +406,69 @@ export const ROUGHNESS_MAP_LAND = 0.92;
 export const ROUGHNESS_MAP_WATER = 0.45;
 
 /**
- * What open water is drawn at instead: a GGX alpha of 0.0144 (three squares
- * the roughness), a far smaller solid angle than the shipped value spreads the
- * Sun over, so the reflection is a core that clips to white rather than a
- * wash that never got past mid-grey.
+ * The one width the whole sea is drawn at when the wind map is off: a GGX
+ * alpha of 0.0144 (three squares the roughness), calmer than any real sea, so
+ * the reflection is a core that clips to white. It is the picture before the
+ * map — `?seawind=0` and the DEV `?glint=` override draw it — and it stays at
+ * the value it had so that switch compares against what shipped and not
+ * against a third width.
  *
- * It was 0.2 (alpha 0.04). From a whole-disc distance that patch, with the
- * bloom spread around its clipped core, read as too strong; one radius out it
- * washed the top third of the frame milky and took the clouds' contrast with
- * it. A sheet of six widths from 0.2 down to 0.08, captured from one page
- * load, had the glow and the patch shrinking together: the width is the one
- * number that moves both. A lower cap turns the core into a flat grey coin,
- * because the tone mapper draws a value of one as light grey, and a lower
- * keep with the core held white leaves the frame as it was. 0.12 halves the
- * patch and keeps blue sea around it close in.
- *
- * Not much lower: the lobe's tails fall with the square of alpha, and by 0.08
- * the sea begins to read as a mirror with a point on it.
+ * How it was chosen, for the record: it was 0.2 (alpha 0.04), and from a
+ * whole-disc distance that patch, with the bloom spread around its clipped
+ * core, read as too strong. A sheet of six widths from 0.2 down to 0.08 had
+ * the glow and the patch shrinking together, because with one lobe the width
+ * is the one number that moves both — which is the reason there is a map now.
  */
 export const OCEAN_ROUGHNESS = 0.12;
 /**
- * Where the Sun's image lands on the sea the mirror lobe runs far past white.
- * The tone-mapper clips that to a white patch, which a camera does too, but
- * the bloom pass would then smear the excess over the coast and the clouds
- * beside it, and land is no mirror: the excess above this cap, in units of
- * white, is taken out of the reflected light before anything downstream sees
- * it. The patch keeps its size and its clipped core; only the halo goes.
+ * The sea's reflectance, as water rather than as three's generic dielectric.
+ * three's Schlick curve starts at 4 % head-on and reaches a perfect mirror at
+ * grazing; seawater's starts at 2 % (an index of 1.33) and reaches the same
+ * place. The shader rescales three's mirror term per fragment by the ratio of
+ * the two curves at that fragment's half vector: a half where the glint is,
+ * one along the limb and the terminator, where a flat half used to darken the
+ * sheen a real sea is brightest.
  */
-export const OCEAN_GLINT_CAP = 2.50;
-
-/** A flat scale on the ocean's WHOLE mirror lobe. three draws a dielectric at
- *  4 % reflectance head-on, climbing to a perfect mirror at grazing angles;
- *  sea water starts at 2 % and climbs to the same place. So a half is exact
- *  where the glint is — its core is near head-on — and too dark along the
- *  limb and the terminator, where the real sea is nearest a mirror and this
- *  halves that sheen with everything else. Getting both ends right means the
- *  two Fresnel curves per fragment, or handing the sea an ior of 1.33. */
-export const OCEAN_SPECULAR_KEEP = 0.5;
+export const SEA_WATER_IOR = 1.33;
+export const SEA_WATER_F0 = ((SEA_WATER_IOR - 1) / (SEA_WATER_IOR + 1)) ** 2;
 
 /**
- * The cap and the keep as the shader reads them. In a development build they
+ * Where the Sun's image lands on glassy water the mirror term runs past white.
+ * The tone mapper clips that to a white patch, which a camera does too, but
+ * the bloom pass would then smear the excess over the coast and the clouds
+ * beside it, and land is no mirror: the water's reflection is held to this
+ * cap, in units of white, before anything downstream sees it.
+ *
+ * In units of the WATER's reflection — the ratio above is applied first — so
+ * this is what reaches the tone curve and the bright pass. 1.25 is what the
+ * core reached before (a cap of 2.5 on three's term, then a flat half), so the
+ * clipped core is as bright as it was: 0.92 in sRGB through the ACES curve,
+ * white beside a sea at 0.22 and a sheen at 0.5. Higher is a hair whiter and
+ * hands the bright pass more: with the bloom knee (app/bloomConfig.ts) a
+ * pixel here feeds the blur its excess over the threshold, a few hundredths at
+ * 1.25 and a third of a unit at 1.5. Over a 7 m/s sea the term peaks near
+ * 0.15 and the cap never engages; it holds only the glassy patches.
+ */
+export const OCEAN_GLINT_CAP = 1.25;
+
+/**
+ * The cap and a scale as the shader reads them. In a development build they
  * are uniforms, so the glint can be tuned live at a pose (`__moon.glint`) and
- * a sheet of candidates captured from one page load; a production build
- * compiles the constants above as literals and carries no uniform, and the
- * fold test pins that the two texts are the same text.
+ * a sheet of candidates captured from one page load: the cap, and a flat scale
+ * on the sea's whole mirror term that defaults to one now that the Fresnel is
+ * water's own, kept as an A/B knob. A production build compiles the cap as a
+ * literal and carries neither uniform nor the scale, and the fold test pins
+ * that the two texts are the same text.
  */
 export const devGlintUniforms: {
   uGlintCap: { value: number };
   uGlintKeep: { value: number };
 } = {
   uGlintCap: { value: OCEAN_GLINT_CAP },
-  uGlintKeep: { value: OCEAN_SPECULAR_KEEP },
+  uGlintKeep: { value: 1 },
 };
 const GLINT_CAP_GLSL = import.meta.env.DEV ? 'uGlintCap' : OCEAN_GLINT_CAP.toFixed(2);
-const GLINT_KEEP_GLSL = import.meta.env.DEV ? 'uGlintKeep' : OCEAN_SPECULAR_KEEP.toFixed(4);
+const GLINT_KEEP_GLSL = import.meta.env.DEV ? ' * uGlintKeep' : '';
 
 /** The cloud deck's colour map, and the drift its own frame carries on top of
  *  the body's. Shared by every augmented surface so the ocean's mirror term can
@@ -525,12 +536,35 @@ function roughnessChunk(): string {
     : SURFACE_ROUGHNESSMAP_FRAGMENT;
 }
 
-/** The GLSL half of `waterGlossRoughness`, behind the uniform that is zero on
- *  every surface but a globe whose roughness map really is a water mask. */
+/**
+ * The GLSL half of `waterGlossRoughness`, behind the uniform that is zero on
+ * every surface but a globe whose roughness map really is a water mask — and,
+ * with the wind map on, the sea's own width under this fragment: the wind read
+ * from the map in the body frame (world/seaWind.ts) and turned into a GGX
+ * roughness through Cox-Munk's slope law, `windRoughness` in GLSL. The read
+ * takes explicit gradients, as the cloud shadow's does, because the UV jumps a
+ * whole turn at the date line and an implicit derivative across it would pick
+ * the coarsest mip down one column of sea; they are taken in the uniform
+ * branch, outside the per-fragment gate that spares pure land the fetch.
+ */
 const WATER_GLOSS_GLSL = /* glsl */ `
 if (GROUND_ON(uWaterGloss > 0.0)) {
+  float waterGain = uWaterGloss;
+  if (uSeaWindOn > 0.5) {
+    vec3 seaDir = normalize(vObjPos);
+    vec2 seaUv = sphereEquirectUv(seaDir);
+    vec2 seaDx = sphereEquirectUvGrad(seaDir, dFdx(seaDir));
+    vec2 seaDy = sphereEquirectUvGrad(seaDir, dFdy(seaDir));
+    if (roughnessFactor < ${(ROUGHNESS_MAP_LAND - 0.005).toFixed(6)}) {
+      float seaWindMs = textureGrad(uSeaWindMap, seaUv, seaDx, seaDy).r * ${SEA_WIND_MAX_MS.toFixed(1)};
+      float seaRoughness = sqrt(sqrt(${COX_MUNK_SLOPE_CALM.toFixed(5)}
+          + ${COX_MUNK_SLOPE_PER_MS.toFixed(5)} * seaWindMs));
+      waterGain = (${ROUGHNESS_MAP_LAND.toFixed(6)} - seaRoughness)
+          / ${(ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER).toFixed(6)};
+    }
+  }
   roughnessFactor = max(${ROUGHNESS_MAP_LAND.toFixed(6)}
-      - (${ROUGHNESS_MAP_LAND.toFixed(6)} - roughnessFactor) * uWaterGloss, 0.02);
+      - (${ROUGHNESS_MAP_LAND.toFixed(6)} - roughnessFactor) * waterGain, 0.02);
 }`;
 
 // Analytic stand-in for Saturn's ring opacity across the annulus (t: 0 inner …
@@ -1421,6 +1455,8 @@ uniform float uAirBlend;
 uniform float uSurfaceHaze;
 uniform float uAirLookupRadius;
 uniform float uWaterGloss;
+uniform sampler2D uSeaWindMap;
+uniform float uSeaWindOn;
 uniform sampler2D uCloudShadowMap;
 uniform float uCloudShadowSpin;
 uniform float uCloudDeck;
@@ -1581,9 +1617,23 @@ ${SURFACE_DETAIL_BODY}
 ${CLOUD_CLEAR_RETURN}`;
 
 const SURFACE_FRAGMENT_BODY = /* glsl */ `{
+  // The sea's mirror term as water rather than as three's generic dielectric
+  // (SEA_WATER_F0): three's term is rescaled by the ratio of the two Schlick
+  // curves at this fragment's half vector, with three's own exp2 approximation
+  // of the fifth power so the division takes out exactly what was put in.
+  // Then the cap, on the water's own reflection and in units of white
+  // (OCEAN_GLINT_CAP). What is left is what the cloud mask below can cut.
+  vec3 seaGlint = vec3(0.0);
   if (GROUND_ON(uWaterGloss > 0.0)) {
-    vec3 glint = reflectedLight.directSpecular;
-    outgoingLight -= glint - min(glint, vec3(${GLINT_CAP_GLSL}));
+    vec3 glintRaw = reflectedLight.directSpecular;
+    vec3 seaViewDir = normalize(vViewPosition);
+    vec3 seaHalfDir = normalize(normalize(vSunViewDir) + seaViewDir);
+    float seaDotVH = clamp(dot(seaViewDir, seaHalfDir), 0.0, 1.0);
+    float seaFresnelTail = exp2((-5.55473 * seaDotVH - 6.98316) * seaDotVH);
+    float seaFresnel = (${SEA_WATER_F0.toFixed(5)} * (1.0 - seaFresnelTail) + seaFresnelTail)
+        / (0.04 * (1.0 - seaFresnelTail) + seaFresnelTail);
+    seaGlint = min(glintRaw * (seaFresnel${GLINT_KEEP_GLSL}), vec3(${GLINT_CAP_GLSL}));
+    outgoingLight -= glintRaw - seaGlint;
   }
   // The deck's alpha, worked out with its colour above where the lights could
   // still see both. A deck at a flat opacity dims clear sky by that fraction
@@ -1617,26 +1667,23 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
     vec2 deckUv = sphereEquirectUv(deckDir);
     vec2 deckDx = sphereEquirectUvGrad(deckDir, dFdx(deckDir));
     vec2 deckDy = sphereEquirectUvGrad(deckDir, dFdy(deckDir));
-    // The glint this mask exists to cut: the CAPPED term, because the cap
-    // above already took the rest off, and cutting the uncapped one here would
-    // drive the light below zero under cloud, which the bloom then paints as a
+    // The glint this mask exists to cut: the water's own term above, already
+    // rescaled and capped, because cutting three's raw term here would drive
+    // the light below zero under cloud, which the bloom then paints as a
     // yellow core in a blue ring.
-    vec3 glintCapped = min(reflectedLight.directSpecular, vec3(${GLINT_CAP_GLSL}));
     // Wherever the Sun is below this fragment's horizon three's own N·L
-    // saturates to zero and the capped glint is exactly zero in every channel:
-    // the subtraction below is then a subtraction of nothing whatever the
-    // mask says, and the whole cloud-map read is spent on it. Gated on the
-    // term itself rather than on "night side", because it is the perturbed
-    // normal that decides whether there is a highlight, and uWaterGloss is a
+    // saturates to zero and the term is exactly zero in every channel: the
+    // subtraction below is then a subtraction of nothing whatever the mask
+    // says, and the whole cloud-map read is spent on it. Gated on the term
+    // itself rather than on "night side", because it is the perturbed normal
+    // that decides whether there is a highlight, and uWaterGloss is a
     // material-wide enable rather than a per-fragment test for sea.
     if (${import.meta.env.DEV
-      ? 'uPerfGlintGate < 0.5 || any(greaterThan(glintCapped, vec3(0.0)))'
-      : 'any(greaterThan(glintCapped, vec3(0.0)))'}) {
+      ? 'uPerfGlintGate < 0.5 || any(greaterThan(seaGlint, vec3(0.0)))'
+      : 'any(greaterThan(seaGlint, vec3(0.0)))'}) {
       float deckLum = dot(textureGrad(uCloudShadowMap, deckUv, deckDx, deckDy).rgb,
           vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')}));
-      float glintKeep = (1.0 - cloudCoverage(deckLum))
-          * ${GLINT_KEEP_GLSL};
-      outgoingLight -= glintCapped * (1.0 - glintKeep);
+      outgoingLight -= seaGlint * cloudCoverage(deckLum);
     }
   }
   // The sine of the Sun's elevation at this fragment, off the perturbed normal:
@@ -1879,6 +1926,9 @@ export function setSurfaceWaterGloss(mat: THREE.Material, on: boolean): void {
   const args = augmentArgs.get(mat);
   if (!args) return;
   args.uWaterGloss.value = on ? waterGlossGain() : 0;
+  // The first sea that really is one brings the wind map in. Every program
+  // already carries the binding, on the stand-in, so this is a value.
+  if (on) installSeaWind();
   if (import.meta.env.DEV) {
     if (on && !glossyMaterials.has(mat)) {
       glossyMaterials.add(mat);
@@ -1889,30 +1939,77 @@ export function setSurfaceWaterGloss(mat: THREE.Material, on: boolean): void {
   }
 }
 
-/** The gain a water mask is read through: OCEAN_ROUGHNESS's, or in a
- *  development build whatever `setDevOceanRoughness` last asked for. */
+/**
+ * The wind map's uniforms (world/seaWind.ts), shared by every augmented
+ * material the way the cloud deck's are: the map, and whether the sea reads it
+ * (1) or is drawn at the one width uWaterGloss authors (0). Bound to the 1x1
+ * stand-in until a sea is confirmed; `?seawind=0` and a DEV roughness override
+ * hold it at 0.
+ */
+export const seaWindUniforms: {
+  uSeaWindMap: { value: THREE.Texture | null };
+  uSeaWindOn: { value: number };
+} = {
+  uSeaWindMap: { value: null },
+  uSeaWindOn: { value: 0 },
+};
+let seaWindEnabled = true;
+let seaWindBound = false;
+
+/** `?seawind=0`: the whole sea at OCEAN_ROUGHNESS, as before the wind map. */
+export function setSeaWindEnabled(on: boolean): void {
+  seaWindEnabled = on;
+  applySeaWindOn();
+}
+
+/** Whether the sea is reading the wind map right now. */
+export function seaWindOn(): boolean {
+  return seaWindUniforms.uSeaWindOn.value > 0;
+}
+
+function installSeaWind(): void {
+  if (!seaWindEnabled) return;
+  if (!seaWindBound) {
+    seaWindUniforms.uSeaWindMap.value = seaWindTexture();
+    seaWindBound = true;
+  }
+  applySeaWindOn();
+}
+
+/** The map is read only with the switch on, the map bound, and no DEV override
+ *  forcing one width on the whole sea. */
+function applySeaWindOn(): void {
+  seaWindUniforms.uSeaWindOn.value =
+    seaWindEnabled && seaWindBound && devOceanRoughnessOverride === null ? 1 : 0;
+}
+
+/** The gain a water mask is read through with the map off: OCEAN_ROUGHNESS's,
+ *  or in a development build whatever `setDevOceanRoughness` last asked for. */
 function waterGlossGain(): number {
-  return import.meta.env.DEV
-    ? (ROUGHNESS_MAP_LAND - devOceanRoughness) / (ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER)
+  return import.meta.env.DEV && devOceanRoughnessOverride !== null
+    ? (ROUGHNESS_MAP_LAND - devOceanRoughnessOverride) / (ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER)
     : WATER_GLOSS_GAIN;
 }
-let devOceanRoughness = OCEAN_ROUGHNESS;
+let devOceanRoughnessOverride: number | null = null;
 /** Every material currently reading its map as a water mask, so a live
  *  roughness change reaches the sea already on screen and not only the next
  *  sector to arrive. Development builds only; a disposed material leaves. */
 const glossyMaterials = new Set<THREE.Material>();
 
-/** Draw open water at this GGX roughness from now on, on every sea already
- *  drawn and every one still to come (`__moon.glint`). Development only. */
-export function setDevOceanRoughness(roughness?: number): number {
-  if (!import.meta.env.DEV) return OCEAN_ROUGHNESS;
-  if (roughness === undefined) return devOceanRoughness;
-  devOceanRoughness = roughness;
+/** Draw the whole sea at this one GGX roughness from now on, the wind map set
+ *  aside, on every sea already drawn and every one still to come
+ *  (`__moon.glint`); null hands the sea back to the map. Returns the override
+ *  in force, null for the map. Development only. */
+export function setDevOceanRoughness(roughness?: number | null): number | null {
+  if (!import.meta.env.DEV) return null;
+  if (roughness === undefined) return devOceanRoughnessOverride;
+  devOceanRoughnessOverride = roughness;
   for (const mat of glossyMaterials) {
     const args = augmentArgs.get(mat);
     if (args && args.uWaterGloss.value > 0) args.uWaterGloss.value = waterGlossGain();
   }
-  return devOceanRoughness;
+  applySeaWindOn();
+  return devOceanRoughnessOverride;
 }
 
 /**
@@ -2264,6 +2361,13 @@ export function augmentSurfaceMaterial(
     }
     shader.uniforms.uCloudShadowMap = cloudShadowUniforms.uCloudShadowMap;
     shader.uniforms.uCloudShadowSpin = cloudShadowUniforms.uCloudShadowSpin;
+    // The wind map the same way: the stand-in until a sea is confirmed, and
+    // one shared uniform so the globe and every streamed sector read one sea.
+    if (!seaWindUniforms.uSeaWindMap.value) {
+      seaWindUniforms.uSeaWindMap.value = surfaceAirDummies().map2D;
+    }
+    shader.uniforms.uSeaWindMap = seaWindUniforms.uSeaWindMap;
+    shader.uniforms.uSeaWindOn = seaWindUniforms.uSeaWindOn;
     shader.uniforms.uCloudDeck = uCloudDeck;
     shader.uniforms.uCloudDetail = uCloudDetail;
     shader.uniforms.uCloudAlbedo = uCloudAlbedo;

@@ -1059,11 +1059,11 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     earthMat.bumpMap = bumpTex;
     earthMat.bumpScale = planet.radiusAU * 0.02;
     // Ocean glint: the map drives roughness (ocean glossy, land/ice matte), so a
-    // tight solar specular reads as the blue-marble sun glint on the seas. Water
-    // is a dielectric — keep metalness 0; the gloss alone makes the highlight.
-    // The map's own water value is widened into a flat sheen with no core, so
-    // the shading seam narrows it (world/surfaceShading's OCEAN_ROUGHNESS) —
-    // but only once the map really is a water mask.
+    // solar specular reads as the sun glint on the seas. Water is a dielectric —
+    // keep metalness 0; the gloss alone makes the highlight, and the shading
+    // seam draws it as seawater rather than three's 4 % dielectric. The width
+    // open water is drawn at is the wind's over it (world/seaWind.ts), read
+    // through the shading seam — but only once the map really is a water mask.
     earthMat.roughnessMap = roughTex;
     earthMat.roughness = 1.0;
     earthMat.metalness = 0.0;

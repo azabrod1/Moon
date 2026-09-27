@@ -36,7 +36,7 @@ import {
   bindSurfaceAir,
   clearSurfaceAir,
   createSurfaceAirFx,
-  type SurfaceArchetype, OCEAN_GLINT_CAP, OCEAN_SPECULAR_KEEP,
+  type SurfaceArchetype, OCEAN_GLINT_CAP,
 } from './surfaceShading';
 import { createEarthNightShellMaterial } from './earthNightMaterial';
 
@@ -97,8 +97,8 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '6a91ae319327dd945782ad43867e65244d49ca9e652c323314a54bf41ecab92a';
-const PROD_FRAGMENT_HASH = '97ef7a4c6b452b6e71d5428c469b441193c4f79b3b0312ceaabd4220e62f3412';
+const DEV_FRAGMENT_HASH = 'd85d2e3de46259dde19b0989fe2b3e33159db7cef6c979193c50cb8d241d75d9';
+const PROD_FRAGMENT_HASH = '9ea86b872a4c6a06311d329096b3f611d4225680e99620dc7686a74514135db7';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 
 describe('the injected surface shader', () => {
@@ -176,9 +176,10 @@ describe('the injected surface shader', () => {
       .replace('\t} // cloud relief probe\n', '')
       .replace('uProbeCloudDetail > 0.5 ? 0.0 : ', '')
       .replace(' && (uProbeCloudAir < 0.5 || DECK_OFF)', '')
-      // The glint's tuning uniforms read as the constants they default to.
+      // The glint's tuning uniforms: the cap reads as the constant it defaults
+      // to, and the scale, a DEV A/B knob at one, is not in the text at all.
       .replace(/uGlintCap/g, OCEAN_GLINT_CAP.toFixed(2))
-      .replace(/uGlintKeep/g, OCEAN_SPECULAR_KEEP.toFixed(4));
+      .replace(/ \* uGlintKeep/g, '');
     expect(folded).not.toMatch(/uPerf|uProbe|uGlint/);
     expect(hash(import.meta.env.DEV ? folded : shader.fragmentShader)).toBe(PROD_FRAGMENT_HASH);
     const night = import.meta.env.DEV

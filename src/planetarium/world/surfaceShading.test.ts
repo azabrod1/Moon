@@ -22,7 +22,13 @@ import {
   SURFACE_AIR_FADE_S,
   OCEAN_GLINT_CAP,
   RING_SHADOW_OPACITY_GLSL,
+  SEA_WATER_F0,
+  seaWindOn,
+  seaWindUniforms,
+  setDevOceanRoughness,
+  setSeaWindEnabled,
 } from './surfaceShading';
+import { COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_WIND_MAX_MS, seaWindTexture } from './seaWind';
 import { surfaceDetailFieldMean, surfaceDetailHeightSpan } from './surfaceDetailNoise';
 import { atmosphereParams } from './atmosphereModel';
 import { earthNightFragmentShader } from '../../shared/shaders/atmosphere';
@@ -732,10 +738,10 @@ describe('the haze fade and the glint cap', () => {
     // the mirror term. The shadow must cut from what the cap left, or under
     // cloud the light goes negative and bloom paints a coloured core.
     const frag = fragmentOf('airless');
-    expect(frag).toContain(`vec3 glintCapped = min(reflectedLight.directSpecular, vec3(${
-      import.meta.env.DEV ? 'uGlintCap' : '2.50'}));`);
-    expect(frag).toContain('outgoingLight -= glintCapped * (1.0 - glintKeep);');
-    expect(frag).not.toMatch(/reflectedLight\.directSpecular \* \(1\.0 - glintKeep\)/);
+    expect(frag).toContain(`seaGlint = min(glintRaw * (seaFresnel${import.meta.env.DEV ? ' * uGlintKeep' : ''}), vec3(${
+      import.meta.env.DEV ? 'uGlintCap' : '1.25'}));`);
+    expect(frag).toContain('outgoingLight -= seaGlint * cloudCoverage(deckLum);');
+    expect(frag).not.toMatch(/reflectedLight\.directSpecular \* cloudCoverage/);
   });
 
   it('fades a body\'s haze in over a moment when its tables first bind, and only then', () => {
@@ -776,8 +782,91 @@ describe('the haze fade and the glint cap', () => {
     expect(text).toContain('float airWeight = uAirBlend * aerialHazeWeight(seg, uSurfaceHaze);');
     expect(text).toContain('outgoingLight = mix(outgoingLight, outgoingLight * airT + airS, airWeight);');
     expect(OCEAN_GLINT_CAP).toBeGreaterThan(1);
-    expect(text).toContain(`outgoingLight -= glint - min(glint, vec3(${
+    expect(text).toContain(`seaGlint = min(glintRaw * (seaFresnel${import.meta.env.DEV ? ' * uGlintKeep' : ''}), vec3(${
       import.meta.env.DEV ? 'uGlintCap' : OCEAN_GLINT_CAP.toFixed(2)}));`);
+    expect(text).toContain('outgoingLight -= glintRaw - seaGlint;');
+    // The cloud mask cuts the water's own term, never three's raw one.
+    expect(text).toContain('outgoingLight -= seaGlint * cloudCoverage(deckLum);');
+  });
+});
+
+describe('the sea', () => {
+  /** The injected fragment text through a stub that carries every chunk the
+   *  sea touches: the roughness remap and the body. */
+  function seaFragment(): string {
+    const mat = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(mat, 'earth', undefined, 0, undefined, undefined, 'Earth');
+    const shader = {
+      uniforms: {} as Record<string, unknown>,
+      vertexShader: '#include <common>\n#include <begin_vertex>\n',
+      fragmentShader: '#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>\n'
+        + '#include <normal_fragment_maps>\n#include <opaque_fragment>\n',
+    };
+    (mat.onBeforeCompile as (s: typeof shader, r: unknown) => void)(shader, null);
+    return shader.fragmentShader;
+  }
+
+  it('is drawn as seawater: three\'s mirror term rescaled by the ratio of the two Schlick curves', () => {
+    const text = seaFragment();
+    expect(SEA_WATER_F0).toBeCloseTo(0.02006, 5);
+    expect(text).toContain(`float seaFresnel = (${SEA_WATER_F0.toFixed(5)} * (1.0 - seaFresnelTail) + seaFresnelTail)`);
+    expect(text).toContain('/ (0.04 * (1.0 - seaFresnelTail) + seaFresnelTail);');
+    // three's own spelling of the Schlick tail, so the division takes out
+    // exactly what three put in.
+    expect(text).toContain('float seaFresnelTail = exp2((-5.55473 * seaDotVH - 6.98316) * seaDotVH);');
+    const ratio = (dotVH: number): number => {
+      const tail = Math.pow(2, (-5.55473 * dotVH - 6.98316) * dotVH);
+      return (SEA_WATER_F0 * (1 - tail) + tail) / (0.04 * (1 - tail) + tail);
+    };
+    // A half where the glint is, the whole of it at grazing, and no dip between.
+    expect(ratio(1)).toBeCloseTo(SEA_WATER_F0 / 0.04, 2);
+    expect(ratio(0)).toBeCloseTo(1, 6);
+    expect(ratio(0.5)).toBeGreaterThan(ratio(1));
+    expect(ratio(0.5)).toBeLessThan(1);
+  });
+
+  it('reads its width from the wind map through Cox-Munk\'s slope law, the numbers world/seaWind.ts holds', () => {
+    const text = seaFragment();
+    expect(text).toContain('uniform sampler2D uSeaWindMap;');
+    expect(text).toContain('uniform float uSeaWindOn;');
+    expect(text).toContain(`textureGrad(uSeaWindMap, seaUv, seaDx, seaDy).r * ${SEA_WIND_MAX_MS.toFixed(1)};`);
+    expect(text).toContain(`float seaRoughness = sqrt(sqrt(${COX_MUNK_SLOPE_CALM.toFixed(5)}\n`
+      + `          + ${COX_MUNK_SLOPE_PER_MS.toFixed(5)} * seaWindMs));`);
+    // The gradients are taken in the uniform branch, before the per-fragment
+    // gate that spares pure land the fetch: a derivative inside a branch the
+    // fragments of one draw take both sides of is undefined.
+    const gradients = text.indexOf('vec2 seaDy = sphereEquirectUvGrad(seaDir, dFdy(seaDir));');
+    const gate = text.indexOf(`if (roughnessFactor < ${(ROUGHNESS_MAP_LAND - 0.005).toFixed(6)}) {`);
+    expect(gradients).toBeGreaterThan(0);
+    expect(gate).toBeGreaterThan(gradients);
+    // With the map off the remap is the one-width gain, as it was.
+    expect(text).toContain('float waterGain = uWaterGloss;');
+  });
+
+  it('binds the map on one shared uniform once a sea is confirmed, and the switch and the override hold it off', () => {
+    const mat = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(mat, 'earth');
+    const shader = mockShader();
+    (mat.onBeforeCompile as (s: typeof shader, r: unknown) => void)(shader, null);
+    expect(shader.uniforms.uSeaWindMap).toBe(seaWindUniforms.uSeaWindMap);
+    expect(shader.uniforms.uSeaWindOn).toBe(seaWindUniforms.uSeaWindOn);
+    setSurfaceWaterGloss(mat, true);
+    expect(seaWindUniforms.uSeaWindMap.value).toBe(seaWindTexture());
+    expect(seaWindOn()).toBe(true);
+    setSeaWindEnabled(false);
+    expect(seaWindOn()).toBe(false);
+    expect(seaWindUniforms.uSeaWindMap.value).toBe(seaWindTexture());
+    setSeaWindEnabled(true);
+    expect(seaWindOn()).toBe(true);
+    // A DEV override draws the whole sea at one width; null hands it back.
+    expect(setDevOceanRoughness(0.2)).toBe(0.2);
+    expect(seaWindOn()).toBe(false);
+    expect(setDevOceanRoughness()).toBe(0.2);
+    expect(setDevOceanRoughness(null)).toBe(null);
+    expect(seaWindOn()).toBe(true);
+    // A sea switched off leaves the map bound for the next one.
+    setSurfaceWaterGloss(mat, false);
+    expect(seaWindUniforms.uSeaWindMap.value).toBe(seaWindTexture());
   });
 });
 
@@ -807,7 +896,7 @@ describe('the GPU-efficiency switches', () => {
     const frag = fragmentOf('cloud');
     expect(frag).toContain('if (uPerfCloudTaps < 0.5 || cloudDetailW > 0.0) detail = textureGrad(uCloudDetail, detailUv, duvX, duvY);');
     expect(frag).toContain('if (uPerfCloudClear > 0.5 && DECK_ON && cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }');
-    expect(frag).toContain('if (uPerfGlintGate < 0.5 || any(greaterThan(glintCapped, vec3(0.0)))) {');
+    expect(frag).toContain('if (uPerfGlintGate < 0.5 || any(greaterThan(seaGlint, vec3(0.0)))) {');
     expect(earthNightFragmentShader)
       .toContain('if (uPerfNightEarly > 0.5) { if (nightMix == 0.0) { gl_FragColor = vec4(0.0); return; } }');
     // Each uniform declared once, where the shader reads it.

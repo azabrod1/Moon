@@ -58,15 +58,20 @@ import {
 } from './planetarium/world/gpuEnvelope';
 import { BootRenderGate } from './app/bootRenderGate';
 import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn } from './app/perfSwitches';
-import { bloomHighPassMaterial, holdBloomSize, setBloomInternalDepth } from './app/bloomTargets';
+import {
+  bloomHighPassMaterial, holdBloomSize, installBloomKnee, parseBloomKneeParam, setBloomInternalDepth,
+} from './app/bloomTargets';
 import {
   devGlintUniforms,
   setDevOceanRoughness,
   setDevSurfaceHaze,
   SURFACE_HAZE_CLEAR_VIEW,
+  seaWindOn,
+  setSeaWindEnabled,
 } from './planetarium/world/surfaceShading';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass, parseFusedParam } from './app/FusedOutputPass';
+import { parseSeaWindParam } from './planetarium/world/seaWind';
 import type { GpuProfiler, GpuProfileOptions } from './app/devGpuProfile';
 import type { GpuClock, GpuClockOptions } from './app/devGpuClock';
 import { ScreenCopy, canvasSampleCount, createScreenTarget, fitScreenTarget, screenTargetSamples } from './app/screenTarget';
@@ -275,6 +280,12 @@ const fixedSceneAllocation = parseAllocParam(location.search);
  * harmless and is the param winning.
  */
 const fusedFinalParam = parseFusedParam(location.search);
+// `?bloomknee=0`: three's whole-pixel step back in the planetarium's bright
+// pass (app/bloomConfig.ts BLOOM_KNEE), the A/B for the ocean glint's halo.
+const bloomKneeParam = parseBloomKneeParam(location.search);
+// `?seawind=0`: the whole sea at one roughness again (world/seaWind.ts), the
+// A/B for the ocean glint's shape. Read before any sea is confirmed.
+setSeaWindEnabled(parseSeaWindParam(location.search));
 function fusedFinalOn(): boolean {
   return fusedFinalParam && (import.meta.env.DEV ? perfSwitchOn('fused-final') : true);
 }
@@ -1079,7 +1090,7 @@ let composerBuiltFor: { cam: THREE.Camera; bloom: object; enabled: boolean; lens
 
 function buildComposer(
   cam: THREE.Camera,
-  bloom: { strength: number; threshold: number },
+  bloom: { strength: number; threshold: number; knee?: number },
   enabled = useBloom,
 ) {
   const built = composerBuiltFor;
@@ -1258,6 +1269,14 @@ function buildComposer(
     bloomSubRect = composerLens
       ? (bloomPass as BloomChainPass).installLensWarp(composerLens)
       : patchUvScale(bloomHighPassMaterial(bloomPass), HIGH_PASS_UV_ANCHOR);
+    // The planetarium's bright pass hands the blur the excess above the
+    // threshold rather than the whole pixel (app/bloomConfig.ts BLOOM_KNEE);
+    // the other modes' objects carry no knee and keep three's step, which
+    // their cutoffs were authored against. Both chains: the fused pass and
+    // `?fused=0`'s UnrealBloomPass render through this one material.
+    if (bloom.knee !== undefined && bloomKneeParam) {
+      installBloomKnee(bloomHighPassMaterial(bloomPass), bloom.knee);
+    }
     // Before the pass joins the chain: addPass sizes it too.
     sizeBloomChain = holdBloomSize(bloomPass);
     composer.addPass(bloomPass);
@@ -3195,14 +3214,22 @@ function installDevHooks() {
       };
       requestAnimationFrame(poll);
     }),
-    // The ocean glint's two authored numbers, live: the cap on the peak above
-    // white that the bloom sees, and the flat keep on the mirror term. Returns
-    // the current pair; a production build has neither knob.
-    glint: (opts?: { cap?: number; keep?: number; roughness?: number }) => {
+    // The ocean glint's knobs, live: the cap on the water's reflection in
+    // units of white, a flat scale on the sea's whole mirror term (one: the
+    // Fresnel is water's own now, the knob is an A/B), and a roughness that
+    // draws the WHOLE sea at one width with the wind map set aside — null
+    // hands the sea back to the map. Returns the three and whether the map is
+    // being read; a production build has none of the knobs.
+    glint: (opts?: { cap?: number; keep?: number; roughness?: number | null }) => {
       if (opts?.cap !== undefined) devGlintUniforms.uGlintCap.value = opts.cap;
       if (opts?.keep !== undefined) devGlintUniforms.uGlintKeep.value = opts.keep;
       const roughness = setDevOceanRoughness(opts?.roughness);
-      return { cap: devGlintUniforms.uGlintCap.value, keep: devGlintUniforms.uGlintKeep.value, roughness };
+      return {
+        cap: devGlintUniforms.uGlintCap.value,
+        keep: devGlintUniforms.uGlintKeep.value,
+        roughness,
+        seaWind: seaWindOn(),
+      };
     },
     // The grade on a surface's haze, live: how much of the air's haze a direct
     // view shows (world/surfaceShading SURFACE_HAZE_CLEAR_VIEW; 1 is the
@@ -3557,9 +3584,10 @@ function installDevHooks() {
   // as a property chain so the perf sweep's own `perfArm` can be added later
   // without either set of keys erasing the other.
   installPerfSwitchBridge();
-  // `?glint=0.12` draws open water at that GGX roughness for the session, and
-  // `?glint=0.12,0.4,3` sets the mirror term's keep and cap with it: the same
-  // knobs as __moon.glint, reachable from a phone's address bar. DEV only.
+  // `?glint=0.12` draws the whole sea at that GGX roughness for the session,
+  // the wind map set aside, and `?glint=0.12,1,1.25` sets the mirror term's
+  // scale and cap with it: the same knobs as __moon.glint, reachable from a
+  // phone's address bar. DEV only.
   if (import.meta.env.DEV) {
     const glint = new URLSearchParams(location.search).get('glint');
     if (glint) {

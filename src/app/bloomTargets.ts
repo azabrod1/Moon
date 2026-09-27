@@ -119,3 +119,48 @@ export function setBloomInternalDepth(pass: UnrealBloomPass | null, depth: boole
     material.depthWrite = depth ? built.write : false;
   }
 }
+
+/** The line of three's high pass that hands a pixel over the threshold to the
+ *  blur whole (LuminosityHighPassShader). */
+export const HIGH_PASS_STEP_ANCHOR = 'gl_FragColor = mix( outputColor, texel, alpha );';
+
+/** The knee's uniform, declared beside the threshold's. */
+const HIGH_PASS_KNEE_DECLARATION = 'uniform float smoothWidth;';
+
+/** The excess above the threshold, eased in over the knee, as the share of the
+ *  pixel the blur takes: app/bloomConfig.ts `bloomExcess`, in GLSL, over the
+ *  pixel's own luminance so its hue survives. The step's `alpha` is left where
+ *  three wrote it and no longer read. */
+export const HIGH_PASS_KNEE_GLSL = `float bloomOver = max( v - luminosityThreshold, 0.0 );
+			float bloomExcess = bloomOver < uBloomKnee
+				? bloomOver * bloomOver / ( 2.0 * uBloomKnee )
+				: bloomOver - 0.5 * uBloomKnee;
+			gl_FragColor = vec4( texel.rgb * ( bloomExcess / max( v, 1e-4 ) ), texel.a );`;
+
+/**
+ * Make the bright pass hand the blur the excess above the threshold rather
+ * than the whole pixel (app/bloomConfig.ts BLOOM_KNEE): a text edit on three's
+ * own high-pass material, at the one line that decides what passes, and a
+ * uniform for the knee. Applied once per pass, before its first render; the
+ * sub-rectangle and lens patches (app/sceneSubRect.ts) edit a different line
+ * of the same text, so the order between them does not matter. Throws rather
+ * than patching nothing if the installed three no longer carries the line.
+ */
+export function installBloomKnee(material: THREE.ShaderMaterial, knee: number): void {
+  const text = material.fragmentShader;
+  if (!text.includes(HIGH_PASS_STEP_ANCHOR) || !text.includes(HIGH_PASS_KNEE_DECLARATION)) {
+    throw new Error(`installBloomKnee: the installed three no longer carries ${JSON.stringify(HIGH_PASS_STEP_ANCHOR)}`);
+  }
+  material.fragmentShader = text
+    .replace(HIGH_PASS_KNEE_DECLARATION, `${HIGH_PASS_KNEE_DECLARATION}\n\t\tuniform float uBloomKnee;`)
+    .replace(HIGH_PASS_STEP_ANCHOR, HIGH_PASS_KNEE_GLSL);
+  // A knee of zero would divide by it; the smallest one is the pure excess.
+  (material.uniforms as Record<string, THREE.IUniform>).uBloomKnee = { value: Math.max(knee, 1e-4) };
+  material.needsUpdate = true;
+}
+
+/** The `?bloomknee=0` kill switch, on any build: three's step back in the
+ *  planetarium's bright pass, in the house style of `?fused=0` and `?ride=0`. */
+export function parseBloomKneeParam(search: string): boolean {
+  return new URLSearchParams(search).get('bloomknee') !== '0';
+}

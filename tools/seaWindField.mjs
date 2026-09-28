@@ -233,6 +233,10 @@ export const DEFAULTS = Object.freeze({
   /** Inside a region the sea drops to this fraction of its wind, floored by
    *  the slick texture at 0.3 to 1.2 m/s. */
   regionWindScale: 0.18,
+  /** How deep the gusts inside a region cut: at 1 a gust lane is the open
+   *  wind with no glassy share, at 0.5 it is half way between the region's
+   *  calm and the open wind, at 0 a region is calm throughout. */
+  regionGust: 1,
   /** The glassy lobe the calm weight is measured against: Cox-Munk at this
    *  wind. A weight of one is a sea this calm; a lane textured between 0.3
    *  and 2 m/s becomes a weight between one and about a half. */
@@ -333,14 +337,16 @@ function fieldAtPoint(params, latTerms, lonDeg, latDeg) {
   const laneWindMs = 0.3 + 1.7 * slickUnit;
   const regionSeaMs = Math.max(blown * params.regionWindScale, 0.3 + 0.9 * slickUnit);
   // Outside a region a lane is calm in a windy sea; inside one the sea is
-  // calm and the lane mask inverts into gusts of the open wind.
+  // calm and the lane mask inverts into gusts of the open wind, cut as deep
+  // as `regionGust` says.
+  const gustWeight = laneWeight * params.regionGust;
   const openWindMs = blown * (1 - laneWeight) + laneWindMs * laneWeight;
-  const regionWindMs = regionSeaMs * (1 - laneWeight) + blown * laneWeight;
+  const regionWindMs = regionSeaMs * (1 - gustWeight) + blown * gustWeight;
   const windMs = clamp(openWindMs * (1 - regionWeight) + regionWindMs * regionWeight, 0.1, SEA_WIND_MAX_MS);
   const laneCalm = calmWeightForWind(laneWindMs, blown, params.calmReferenceWindMs);
   const regionCalm = calmWeightForWind(regionSeaMs, blown, params.calmReferenceWindMs);
   const calmWeight = clamp(
-    (1 - regionWeight) * laneWeight * laneCalm + regionWeight * (1 - laneWeight) * regionCalm,
+    (1 - regionWeight) * laneWeight * laneCalm + regionWeight * (1 - gustWeight) * regionCalm,
     0, 1,
   );
   return { windMs, calmWeight, windyMs: blown };

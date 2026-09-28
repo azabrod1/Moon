@@ -43,6 +43,7 @@ export interface SeaWindFieldParams {
   regionEdge: number;
   /** Inside a region the sea drops to this fraction of its wind. */
   regionWindScale: number;
+  regionGust: number;
   /** The glassy lobe the calm weight is measured against, as a wind. */
   calmReferenceWindMs: number;
   /** The n x n box of points a texel averages. */

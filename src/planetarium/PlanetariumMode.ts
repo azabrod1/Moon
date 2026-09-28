@@ -16442,6 +16442,7 @@ export class PlanetariumMode {
         angularDiameterDeg: angularDiameterDeg(this.surfaceTargetRadiusAU(target), distAU),
         distanceKm: distAU * KM_PER_AU,
         tintCss: this.bodyTintCss(subject),
+        moonTintCss: this.bodyTintCss('Moon'),
       };
     }
     if (this.landedOn.type === 'moon') {

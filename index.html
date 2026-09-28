@@ -1001,6 +1001,14 @@
     .obs-hero-text h1 { font-size: 22px; font-weight: 300; letter-spacing: 0.005em; color: var(--obs-t1); line-height: 1.1; margin: 0; }
     .obs-hero-text p { font-size: 11px; color: var(--obs-t2); margin: 4px 0 0; }
     .obs-num { font-family: var(--obs-mono); font-size: 10px; color: var(--obs-t2); }
+    /* "From Earth" row (standing on the Moon): on the hero's grid, the small
+       glyph centred under the big one and the words on the headline's edge,
+       so it reads as a second, lesser body beside the hero's. */
+    .obs-from-earth { display: flex; align-items: center; gap: 14px; margin: 10px 0 2px; padding: 0 2px; font-size: 11px; color: var(--obs-t2); }
+    .obs-from-earth-cell { width: 40px; flex: none; display: flex; justify-content: center; }
+    .obs-from-earth-glyph { width: 14px; height: 14px; filter: drop-shadow(0 0 5px rgba(220, 230, 255, 0.16)); }
+    /* The ghost rim's 1-unit stroke would vanish at 14px. */
+    .obs-from-earth-glyph .obs-glyph-disc { stroke-width: 2.6; }
     /* "Happening now" reads ember — the one warm signal in a cool panel. */
     .obs-nowbar {
       display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 7px 10px;
@@ -4745,6 +4753,23 @@
             <p id="observatory-phase-meta">--</p>
             <p><span class="obs-num" id="observatory-phase-data"></span></p>
           </div>
+        </div>
+        <!-- Standing on the Moon: the Moon's own phase as Earth sees it. A
+             quiet line in the hero's grid, its small glyph under the big one. -->
+        <div class="obs-from-earth" id="observatory-from-earth" style="display:none">
+          <span class="obs-from-earth-cell">
+            <svg class="obs-from-earth-glyph" viewBox="0 0 40 40" aria-hidden="true">
+              <defs>
+                <radialGradient id="observatory-from-earth-grad" gradientUnits="userSpaceOnUse" cx="26.5" cy="20" r="26">
+                  <stop offset="0" stop-color="rgb(220, 223, 227)"></stop>
+                  <stop offset="1" stop-color="rgb(128, 131, 140)"></stop>
+                </radialGradient>
+              </defs>
+              <path id="observatory-from-earth-lit" d="" fill="url(#observatory-from-earth-grad)"></path>
+              <circle class="obs-glyph-disc" cx="20" cy="20" r="19"></circle>
+            </svg>
+          </span>
+          <span id="observatory-from-earth-text"></span>
         </div>
         <div class="obs-nowbar" id="observatory-nowbar">
           <span class="obs-dot"></span>

@@ -19,6 +19,7 @@ import {
   bindSurfaceAir,
   clearSurfaceAir,
   createSurfaceAirFx,
+  seatSurfaceAirRadius,
   SURFACE_AIR_FADE_S,
   OCEAN_GLINT_CAP,
   RING_SHADOW_OPACITY_GLSL,
@@ -766,6 +767,42 @@ describe('the haze fade and the glint cap', () => {
     bindSurfaceAir(air, tables, 1, 1);
     settleSurfaceAir(air);
     expect(air.uAirBlend.value).toBe(1);
+  });
+
+  it('seats the body radius on the air the moment it exists, so the deck\'s bump reads it before any tables bind', () => {
+    // The air lookups are gated on the density and never read the radius
+    // while the air is off; the cloud deck's detail bump is not gated. At the
+    // default of 1 its 3 km of relief came out as 70,000 km, and clouds drew
+    // black on every device whose atmosphere bake was unavailable.
+    const radiusAU = 4.26e-5;
+    const air = createSurfaceAirFx();
+    expect(air.uPlanetRadius.value).toBe(1);
+    seatSurfaceAirRadius(air, radiusAU);
+    expect(air.uPlanetRadius.value).toBe(radiusAU);
+    // The off-air paths leave it alone, and a bind states the same number.
+    clearSurfaceAir(air);
+    expect(air.uPlanetRadius.value).toBe(radiusAU);
+    const tables = {
+      transmittance: air.uTransmittance.value,
+      scattering: air.uScattering.value,
+      irradiance: air.uIrradiance.value,
+      params: atmosphereParams('Earth'),
+    } as Parameters<typeof bindSurfaceAir>[1];
+    bindSurfaceAir(air, tables, radiusAU, 1);
+    expect(air.uPlanetRadius.value).toBe(radiusAU);
+    expect(air.uAirDensity.value).toBe(1);
+    // The deck shares the globe's fx, and its program binds that very object:
+    // what the globe seats is what the deck's bump multiplies by.
+    const globe = new THREE.MeshStandardMaterial();
+    const fx = augmentSurfaceMaterial(globe, 'earth');
+    seatSurfaceAirRadius(fx.air, radiusAU);
+    const deck = new THREE.MeshStandardMaterial({ transparent: true });
+    augmentSurfaceMaterial(deck, 'cloud', undefined, undefined, fx);
+    const shader = mockShader();
+    (deck.onBeforeCompile as (s: typeof shader, r: unknown) => void)(shader, null);
+    expect(shader.uniforms.uPlanetRadius).toBe(fx.air.uPlanetRadius);
+    expect((shader.uniforms.uPlanetRadius as { value: number }).value).toBe(radiusAU);
+    expect((shader.uniforms.uCloudDeck as { value: number }).value).toBe(1);
   });
 
   it('is drawn as the twin fades it, and the sea hands bloom no more than the cap', () => {

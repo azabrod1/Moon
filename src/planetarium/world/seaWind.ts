@@ -209,28 +209,124 @@ export function buildSeaWindMap(width = SEA_WIND_MAP_WIDTH, height = SEA_WIND_MA
 }
 
 let texture: THREE.DataTexture | null = null;
+let mapSource = 'built-in';
+let mipsEnabled = true;
+
+/** `?seawindmips=0` (DEV only): the map with no mip chain, sampled at its full
+ *  resolution from any distance — the A/B for whether the chain is eating the
+ *  map's fine structure. */
+export function setSeaWindMips(on: boolean): void {
+  mipsEnabled = on;
+}
+
+/**
+ * A map as a texture: one channel, repeat-wrapped around the date line and
+ * clamped at the poles, mip-chained because the sea is looked at from a
+ * whole-disc distance where a texel is well under a pixel. Row 0 is the south.
+ */
+function seaWindTextureFrom(data: Uint8Array, width: number, height: number): THREE.DataTexture {
+  const tex = new THREE.DataTexture(data, width, height, THREE.RedFormat, THREE.UnsignedByteType);
+  // Data, not colour: an sRGB decode would bend the wind.
+  applyTextureDefaults(tex, 'data');
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = mipsEnabled ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
+  tex.generateMipmaps = mipsEnabled;
+  // One byte a texel: a row of a map from a file need not be four bytes' multiple.
+  tex.unpackAlignment = 1;
+  tex.needsUpdate = true;
+  return tex;
+}
 
 /**
  * The map as a texture, built once per session and bound by every augmented
  * material through one shared uniform (world/surfaceShading's
- * seaWindUniforms). One channel, repeat-wrapped around the date line and
- * clamped at the poles, mip-chained because the sea is looked at from a
- * whole-disc distance where a texel is well under a pixel.
+ * seaWindUniforms); in a development build `setSeaWindMapOverride` may have
+ * put a map from a file in its place.
  */
 export function seaWindTexture(): THREE.DataTexture {
   if (!texture) {
     const map = buildSeaWindMap();
-    const tex = new THREE.DataTexture(map.data, map.width, map.height, THREE.RedFormat, THREE.UnsignedByteType);
-    // Data, not colour: an sRGB decode would bend the wind.
-    applyTextureDefaults(tex, 'data');
-    tex.wrapS = THREE.RepeatWrapping;
-    tex.wrapT = THREE.ClampToEdgeWrapping;
-    tex.magFilter = THREE.LinearFilter;
-    tex.minFilter = THREE.LinearMipmapLinearFilter;
-    tex.generateMipmaps = true;
-    tex.needsUpdate = true;
-    texture = tex;
+    texture = seaWindTextureFrom(map.data, map.width, map.height);
   }
+  return texture;
+}
+
+/** Which map the sea reads: 'built-in', or the `?seawindmap=` file's URL. */
+export function seaWindMapSource(): string {
+  return mapSource;
+}
+
+/** `?seawindmap=<url>` (DEV only): the sea's wind map from a file instead of
+ *  the built-in field, so a field baked elsewhere — a real wind day, a
+ *  candidate from the offline simulator — is judged in the app under its own
+ *  clouds and air. */
+export function parseSeaWindMapParam(search: string): string | null {
+  return new URLSearchParams(search).get('seawindmap') || null;
+}
+
+/** A raw map is one byte a texel with the width twice the height, so its size
+ *  says its shape (2048x1024, 1440x720, 1024x512), or it has no shape. */
+export function seaWindMapDimensions(byteLength: number): { width: number; height: number } | null {
+  const width = Math.round(Math.sqrt(byteLength * 2));
+  const height = width / 2;
+  return Number.isInteger(height) && height >= 1 && width * height === byteLength ? { width, height } : null;
+}
+
+export interface SeaWindMapBytes {
+  data: Uint8Array;
+  width: number;
+  height: number;
+}
+
+/**
+ * Fetch a map for the override. A raw file (anything that is not an image) is
+ * wind / SEA_WIND_MAX_MS a byte, row 0 the south. An image (.png, .webp, .jpg)
+ * is read north-up from its red channel — a picture's first row is its top —
+ * and flipped into the map's layout. Development only.
+ */
+export async function loadSeaWindMap(url: string): Promise<SeaWindMapBytes> {
+  if (/\.(png|webp|jpe?g)(\?.*)?$/i.test(url)) {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error(`sea wind map: ${url} did not load as an image`));
+      img.src = url;
+    });
+    const width = image.naturalWidth;
+    const height = image.naturalHeight;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) throw new Error('sea wind map: no 2d context to read the image through');
+    context.drawImage(image, 0, 0);
+    const rgba = context.getImageData(0, 0, width, height).data;
+    const data = new Uint8Array(width * height);
+    for (let row = 0; row < height; row++) {
+      for (let column = 0; column < width; column++) {
+        data[(height - 1 - row) * width + column] = rgba[(row * width + column) * 4];
+      }
+    }
+    return { data, width, height };
+  }
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`sea wind map: ${url} answered ${response.status}`);
+  const data = new Uint8Array(await response.arrayBuffer());
+  const shape = seaWindMapDimensions(data.byteLength);
+  if (!shape) throw new Error(`sea wind map: ${url} is ${data.byteLength} bytes, not a width x width/2 byte map`);
+  return { data, ...shape };
+}
+
+/** Put a map from a file in the built-in one's place (DEV): the next
+ *  `seaWindTexture()` answers with it, and the caller rebinds every sea already
+ *  reading the old one (world/surfaceShading rebindSeaWindMap). */
+export function setSeaWindMapOverride(map: SeaWindMapBytes, source: string): THREE.DataTexture {
+  const previous = texture;
+  texture = seaWindTextureFrom(map.data, map.width, map.height);
+  mapSource = source;
+  previous?.dispose();
   return texture;
 }
 

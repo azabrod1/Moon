@@ -1976,6 +1976,13 @@ function installSeaWind(): void {
   applySeaWindOn();
 }
 
+/** A replacement map (DEV `?seawindmap=`, world/seaWind.ts): every sea already
+ *  reading the map reads the new one from the next frame; a sea not yet
+ *  confirmed binds it when it is. */
+export function rebindSeaWindMap(tex: THREE.Texture): void {
+  if (seaWindBound) seaWindUniforms.uSeaWindMap.value = tex;
+}
+
 /** The map is read only with the switch on, the map bound, and no DEV override
  *  forcing one width on the whole sea. */
 function applySeaWindOn(): void {

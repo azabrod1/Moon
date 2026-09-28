@@ -66,12 +66,15 @@ import {
   setDevOceanRoughness,
   setDevSurfaceHaze,
   SURFACE_HAZE_CLEAR_VIEW,
+  rebindSeaWindMap,
   seaWindOn,
   setSeaWindEnabled,
 } from './planetarium/world/surfaceShading';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass, parseFusedParam } from './app/FusedOutputPass';
-import { parseSeaWindParam } from './planetarium/world/seaWind';
+import {
+  loadSeaWindMap, parseSeaWindMapParam, parseSeaWindParam, seaWindMapSource, setSeaWindMapOverride, setSeaWindMips,
+} from './planetarium/world/seaWind';
 import type { GpuProfiler, GpuProfileOptions } from './app/devGpuProfile';
 import type { GpuClock, GpuClockOptions } from './app/devGpuClock';
 import { ScreenCopy, canvasSampleCount, createScreenTarget, fitScreenTarget, screenTargetSamples } from './app/screenTarget';
@@ -286,6 +289,21 @@ const bloomKneeParam = parseBloomKneeParam(location.search);
 // `?seawind=0`: the whole sea at one roughness again (world/seaWind.ts), the
 // A/B for the ocean glint's shape. Read before any sea is confirmed.
 setSeaWindEnabled(parseSeaWindParam(location.search));
+// `?seawindmap=<url>` (DEV only): the sea's wind map from a file — a raw byte
+// map or an image — so a field baked elsewhere is judged in the app. Fetched
+// beside the boot; the sea reads it from the frame it lands.
+if (import.meta.env.DEV) {
+  if (new URLSearchParams(location.search).get('seawindmips') === '0') setSeaWindMips(false);
+  const seaWindMapUrl = parseSeaWindMapParam(location.search);
+  if (seaWindMapUrl) {
+    loadSeaWindMap(seaWindMapUrl)
+      .then((map) => {
+        rebindSeaWindMap(setSeaWindMapOverride(map, seaWindMapUrl));
+        debugLog(`sea wind map: ${seaWindMapUrl} (${map.width}x${map.height})`);
+      })
+      .catch((error: unknown) => debugWarn(String(error)));
+  }
+}
 function fusedFinalOn(): boolean {
   return fusedFinalParam && (import.meta.env.DEV ? perfSwitchOn('fused-final') : true);
 }
@@ -3229,6 +3247,7 @@ function installDevHooks() {
         keep: devGlintUniforms.uGlintKeep.value,
         roughness,
         seaWind: seaWindOn(),
+        map: seaWindMapSource(),
       };
     },
     // The grade on a surface's haze, live: how much of the air's haze a direct

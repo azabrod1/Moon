@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import {
   CALM_PATCH_WIND_MS, COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_WIND_MAP_HEIGHT, SEA_WIND_MAP_WIDTH,
   SEA_WIND_MAX_MS, WIND_BROAD_SPREAD, WIND_FINE_SPREAD, ZONAL_WIND_MS, buildSeaWindMap, mapNoise, parseSeaWindParam,
-  seaWindAt, seaWindTexture, windRoughness, zonalWindMs,
+  parseSeaWindMapParam, seaWindAt, seaWindMapDimensions, seaWindTexture, windRoughness, zonalWindMs,
 } from './seaWind';
 import { ROUGHNESS_MAP_WATER } from './surfaceShading';
 
@@ -153,5 +153,19 @@ describe('parseSeaWindParam', () => {
     expect(parseSeaWindParam('?seawind=1')).toBe(true);
     expect(parseSeaWindParam('?glint=0.2')).toBe(true);
     expect(parseSeaWindParam('?seawind=0')).toBe(false);
+  });
+});
+
+describe('the map from a file', () => {
+  it('is named by the link, and a raw map\'s shape is read off its size', () => {
+    expect(parseSeaWindMapParam('')).toBeNull();
+    expect(parseSeaWindMapParam('?seawindmap=')).toBeNull();
+    expect(parseSeaWindMapParam('?seawind=0&seawindmap=/planning/field.r8')).toBe('/planning/field.r8');
+    expect(seaWindMapDimensions(2048 * 1024)).toEqual({ width: 2048, height: 1024 });
+    expect(seaWindMapDimensions(1440 * 720)).toEqual({ width: 1440, height: 720 });
+    expect(seaWindMapDimensions(1024 * 512)).toEqual({ width: 1024, height: 512 });
+    expect(seaWindMapDimensions(1000)).toBeNull();
+    expect(seaWindMapDimensions(2048 * 1024 + 1)).toBeNull();
+    expect(seaWindMapDimensions(0)).toBeNull();
   });
 });

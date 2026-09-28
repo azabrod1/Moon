@@ -8,14 +8,22 @@
  * clock control, which on a touch screen is the one large resume target
  * outside the bar. Visibility (not display) carries the fade, and a hidden
  * badge leaves the tab order with it.
+ *
+ * Beside it sits its spoken twin, an off-screen live region: a screen reader
+ * hears "Paused" or "Resumed" when a control changes the clock, which Space,
+ * a rail tap, the surface strip and the badge itself cannot say natively
+ * (the panel's radios can, and stay quiet here). The owner decides what is
+ * spoken; a modal's own freeze is not a control and says nothing.
  */
 export class PauseBadge {
   private readonly el: HTMLElement | null;
+  private readonly liveEl: HTMLElement | null;
   private visible = false;
   private readonly onActivate: () => void;
 
   constructor(onResume: () => void) {
     this.el = document.getElementById('planetarium-pause-badge');
+    this.liveEl = document.getElementById('planetarium-pause-live');
     this.onActivate = onResume;
     this.el?.addEventListener('click', this.onActivate);
   }
@@ -24,6 +32,12 @@ export class PauseBadge {
     if (!this.el || visible === this.visible) return;
     this.visible = visible;
     this.el.classList.toggle('visible', visible);
+  }
+
+  /** Say it for a screen reader. Written even when the text repeats: a fresh
+   *  text node is a mutation, which is what a live region reads. */
+  announce(text: string): void {
+    if (this.liveEl) this.liveEl.textContent = text;
   }
 
   dispose(): void {

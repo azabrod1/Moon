@@ -2733,7 +2733,7 @@ export class PlanetariumMode {
   // Shared clock handlers — the time rail, its panel, the keyboard, and the
   // surface transport strip drive the same state through these (one clock,
   // one idiom).
-  private setTimePausedFromControl(paused: boolean) {
+  private setTimePausedFromControl(paused: boolean, opts?: { quiet?: boolean }) {
     // A resume arriving moments after the clock froze is usually the second
     // half of a double-click, or a Pause-intent click chasing the silent
     // step-down detent. Re-assert the freeze in that window. An explicit
@@ -2743,9 +2743,15 @@ export class PlanetariumMode {
       this.updateTimeUI({ flash: true });
       return;
     }
+    const changed = this.timeState.paused !== paused;
     this.timeState.paused = paused;
     if (paused) this.pauseGuardUntilMs = performance.now() + 350;
     this.updateTimeUI({ flash: true });
+    // Said for a screen reader: Space, a rail tap, the surface strip and the
+    // badge have no native announcement of their own. A control with one (the
+    // panel's Pause radio) passes `quiet`, and a modal's own freeze never
+    // comes through here, so the menu and Help say nothing.
+    if (changed && !opts?.quiet) this.pauseBadge.announce(paused ? 'Paused' : 'Resumed');
   }
 
   private timeTogglePause() {
@@ -10423,7 +10429,8 @@ export class PlanetariumMode {
     // Rail taps and Space stay toggles — those gestures carry no promise.
     document.getElementById('planetarium-time-pause')?.addEventListener('click', () => {
       if (this.timeControlsLocked()) return;
-      this.setTimePausedFromControl(true);
+      // A radio announces its own selection; the spoken twin stays quiet.
+      this.setTimePausedFromControl(true, { quiet: true });
     });
     document.getElementById('planetarium-time-play')?.addEventListener('click', () => {
       if (this.timeControlsLocked()) return;

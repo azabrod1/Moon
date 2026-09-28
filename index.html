@@ -1556,6 +1556,12 @@
     @media (hover: none) { #planetarium-pause-badge .kbd { display: none; } }
     @media (max-width: 640px) { #planetarium-pause-badge { top: 60px; } }
     @media (prefers-reduced-motion: reduce) { #planetarium-pause-badge { transition: none; } }
+    /* Its spoken twin: off-screen, never display:none, or it would not be
+       read when a control pauses or resumes the clock. */
+    #planetarium-pause-live {
+      position: absolute; width: 1px; height: 1px; overflow: hidden;
+      clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+    }
 
     /* Notification */
     #planetarium-notification {
@@ -5432,6 +5438,9 @@
       <button type="button" id="planetarium-pause-badge" class="pn pn-high" aria-label="Paused. Resume">
         <span class="pb-dot" aria-hidden="true"></span><span>Paused</span><kbd class="kbd">Space</kbd>
       </button>
+      <!-- The badge's spoken twin: "Paused" / "Resumed" for a screen reader
+           when a control changes the clock (ui/PauseBadge.ts announce). -->
+      <span id="planetarium-pause-live" aria-live="polite" aria-atomic="true"></span>
       <div id="planetarium-loading-msg" style="position:absolute;bottom:50%;left:50%;transform:translate(-50%,50%);font-size:13px;color:var(--text-dim);letter-spacing:2px;display:none;"></div>
     </div>
 

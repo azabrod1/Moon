@@ -179,6 +179,7 @@ describe('the LUT shell material', () => {
       uPlanetshineDir: { value: new THREE.Vector3() },
       uPlanetshineIntensity: { value: 0 },
       uSilhouette: { value: 0 },
+      uNightLift: { value: 0 },
       air: createSurfaceAirFx(),
     };
     const mat = createAtmosphereShellMaterial({

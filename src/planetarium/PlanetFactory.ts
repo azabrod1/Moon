@@ -41,7 +41,7 @@ import { CLOUD_NORMAL_SCALE, cloudShellScale } from './world/cloudDeck';
 import { CLOUD_DECK_DEPTH_BIAS_UNITS } from './world/shellDepthBias';
 import { applyTextureDefaults, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
 import {
-  augmentSurfaceMaterial, setSurfaceCraterShare, setSurfaceWaterGloss,
+  augmentSurfaceMaterial, nightLiftUniform, setSurfaceCraterShare, setSurfaceWaterGloss,
   type SurfaceArchetype, type SurfaceShadingFx,
 } from './world/surfaceShading';
 import { createAtmosphereShellMaterial } from './world/atmosphereShell';
@@ -903,6 +903,11 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   const fx = augmentSurfaceMaterial(
     mat, planetArchetype(planet), ringShadow, sunTan, undefined, undefined, planet.name,
   );
+  // The reader's Night sides lift reaches the planetarium's own bodies through
+  // this one shared object, and nothing else can point at it. Before any
+  // compile, because the slot is bound at compile time; the cloud deck and the
+  // streamed sectors share this fx, so they follow the globe.
+  fx.uNightLift = nightLiftUniform;
   setSurfaceCraterShare(mat, synthCraterShare(planet.name, planetArchetype(planet)));
   // Higher colour tiers on close approach, for the keys that have them (see
   // TEXTURE_UPGRADE_TIERS). The boot map above is the floor; updateBodyLOD
@@ -1675,6 +1680,9 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     const fx = augmentSurfaceMaterial(
       mat, archetype, undefined, 0, undefined, undefined, moonData.name,
     );
+    // The Night sides lift, as on the planets: the shared object, before the
+    // first compile.
+    fx.uNightLift = nightLiftUniform;
     setSurfaceCraterShare(mat, synthCraterShare(moonData.name, archetype));
 
     // Real elevation-derived normal map (linear), where one exists. The flag

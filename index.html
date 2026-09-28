@@ -4667,6 +4667,11 @@
             <span class="menu-tier-value">Dynamic</span>
             <span class="menu-tier-chevron" aria-hidden="true">&rsaquo;</span>
           </button>
+          <button type="button" class="pk-row menu-tier" data-open="display">
+            <b>Display</b>
+            <span class="menu-tier-value">Real nights</span>
+            <span class="menu-tier-chevron" aria-hidden="true">&rsaquo;</span>
+          </button>
           <!-- Hidden until the browser says the page may go full screen
                (app/fullscreen.ts): a row that could only fail is not offered. -->
           <div class="settings-row" hidden>
@@ -4779,6 +4784,23 @@
               <button type="button" class="menu-seg-btn" role="radio" aria-checked="false" data-value="120" id="settings-fps-120">120 fps</button>
             </div>
             <div class="menu-note" id="settings-fps-note"></div>
+          </div>
+        </div>
+
+        <!-- Display: how the picture looks, as opposed to how much it costs. -->
+        <div class="menu-page" data-page="display" id="menu-page-display" hidden>
+          <div class="menu-head">
+            <button type="button" class="menu-back" aria-label="Back"><span aria-hidden="true">&lsaquo;</span></button>
+            <h3>Display</h3>
+          </div>
+          <div class="menu-field">
+            <div class="menu-field-label">Night sides</div>
+            <div class="menu-seg" role="radiogroup" aria-label="Night sides"
+                 aria-describedby="settings-night-sides-note" id="settings-night-sides-seg">
+              <button type="button" class="menu-seg-btn" role="radio" aria-checked="true" data-value="real" id="settings-night-sides-real">Real</button>
+              <button type="button" class="menu-seg-btn" role="radio" aria-checked="false" data-value="brightened" id="settings-night-sides-brightened">Brightened</button>
+            </div>
+            <div class="menu-note" id="settings-night-sides-note"></div>
           </div>
         </div>
       </div>

@@ -475,6 +475,9 @@ import type { ToolRequest } from './toolRequest';
 import { type QualityControl, type QualityLevel } from '../app/renderQuality';
 import { FRAME_RATES, type FrameRate, type FrameRateControl } from '../app/frameRateSetting';
 import {
+  NIGHT_SIDES, NIGHT_SIDES_NOTES, nightSidesSummary, type NightSides, type NightSidesControl,
+} from '../app/nightSidesSetting';
+import {
   FRAME_RATE_NOTES, QUALITY_LEVEL_NOTES, graphicsSummary, offeredQualityLevels, qualityReadout,
 } from '../app/graphicsMenu';
 import {
@@ -2326,6 +2329,9 @@ export class PlanetariumMode {
    *  All this mode does is draw the ☰ panel's row and cycle it. */
   private readonly quality: QualityControl;
   private readonly frameRate: FrameRateControl;
+  /** The Display page's Night sides row, owned by the entry point (it applies
+   *  the value before this mode exists and saves it on its own key). */
+  private readonly nightSides: NightSidesControl;
   // Dev tripwire for the warm-up: program count right after it, compared a
   // couple of frames later — the first live frames must not compile anything
   // it missed (that stall is the very thing it exists to prevent).
@@ -2380,6 +2386,8 @@ export class PlanetariumMode {
     quality: QualityControl,
     // The Frame rate row beside it, for the same reason.
     frameRate: FrameRateControl,
+    // And the Display page's Night sides row.
+    nightSides: NightSidesControl,
   ) {
     this.scene = scene;
     this.camera = camera;
@@ -2390,6 +2398,7 @@ export class PlanetariumMode {
     this.tilePixelRatio = tilePixelRatio;
     this.quality = quality;
     this.frameRate = frameRate;
+    this.nightSides = nightSides;
     // Read the device once, before any body loads, so anisotropy and tier
     // limits apply to the very first textures created and every later
     // decision spends the same numbers. The signals and the profile are this
@@ -10556,8 +10565,8 @@ export class PlanetariumMode {
     // is kept up to date while it is closed — a level from the URL or the DEV
     // bridge is read on the next open.
     this.menuPanel.wire({
-      onShow: () => this.syncGraphicsPage(),
-      onPageOpen: () => this.syncGraphicsPage(),
+      onShow: () => { this.syncGraphicsPage(); this.syncDisplayPage(); },
+      onPageOpen: () => { this.syncGraphicsPage(); this.syncDisplayPage(); },
     });
 
     // Graphics quality and Frame rate: a segment each, on the Graphics page.
@@ -10571,6 +10580,11 @@ export class PlanetariumMode {
     wireSegmented(document.getElementById('settings-fps-seg'), (value) => {
       this.frameRate.set(value as FrameRate);
       this.syncGraphicsPage();
+    });
+    // Night sides, on the Display page: both values are offered everywhere.
+    wireSegmented(document.getElementById('settings-night-sides-seg'), (value) => {
+      this.nightSides.set(value as NightSides);
+      this.syncDisplayPage();
     });
 
     // Full-screen mobile flight zone
@@ -19671,6 +19685,18 @@ export class PlanetariumMode {
       this.renderQualityLadder(readout);
     }
     this.menuPanel.setTierValue('graphics', graphicsSummary(level, sceneRatio, bounds));
+  }
+
+  /** The Display page and the root row that opens it. Read on every open, like
+   *  the Graphics page: a value from the URL or the DEV bridge shows up there
+   *  the next time the panel is looked at. */
+  private syncDisplayPage() {
+    const mode = this.nightSides.mode();
+    const seg = document.getElementById('settings-night-sides-seg');
+    setSegmentOffered(seg, NIGHT_SIDES);
+    setSegmentValue(seg, mode);
+    setText('settings-night-sides-note', NIGHT_SIDES_NOTES[mode]);
+    this.menuPanel.setTierValue('display', nightSidesSummary(mode));
   }
 
   /** The rung ladder under "Now rendering": a pip per rung with the one being

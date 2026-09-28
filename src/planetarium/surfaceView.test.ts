@@ -36,6 +36,8 @@ import {
   surfaceEventExpectation,
   surfaceEventNarrative,
   surfaceEventPhrase,
+  SURFACE_LOOK_COS_FLOOR,
+  surfaceLookRotation,
   surfaceTargetKey,
   targetBelowLimb,
   transportTrackingUp,
@@ -889,5 +891,109 @@ describe('anchored solar-eclipse observer — the Sun and the limb', () => {
       from = event.endUtcMs + 3_600_000;
     }
     expect(hiddenMidTransit).toBe(true);
+  });
+});
+
+describe('surfaceLookRotation — the sky follows the finger at any roll', () => {
+  const zenith = new THREE.Vector3(0, 1, 0);
+
+  // A camera looking at (elevation, azimuth), rolled about its view axis from
+  // level; returned as the quaternion the mode's camera would hold.
+  const poseCamera = (elevationDeg: number, azimuthDeg: number, rollDeg: number) => {
+    const el = elevationDeg * DEG2RAD;
+    const az = azimuthDeg * DEG2RAD;
+    const forward = new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
+    const up = zenith.clone().addScaledVector(forward, -forward.dot(zenith)).normalize()
+      .applyAxisAngle(forward, rollDeg * DEG2RAD);
+    const right = forward.clone().cross(up).normalize();
+    return new THREE.Quaternion().setFromRotationMatrix(
+      new THREE.Matrix4().makeBasis(right, up, forward.clone().negate()),
+    );
+  };
+  const axis = (q: THREE.Quaternion, x: number, y: number, z: number) =>
+    new THREE.Vector3(x, y, z).applyQuaternion(q);
+
+  // The mode's drag step (applySurfaceLook): yaw about the zenith, then pitch
+  // about the horizontal axis across the view, clamped short of the pole.
+  const drag = (q: THREE.Quaternion, rightRad: number, downRad: number) => {
+    const look = surfaceLookRotation(
+      axis(q, 0, 0, -1), axis(q, 0, 1, 0), axis(q, 1, 0, 0), zenith, rightRad, downRad,
+      { yawRad: 0, pitchRad: 0 },
+    );
+    const out = q.clone().premultiply(new THREE.Quaternion().setFromAxisAngle(zenith, look.yawRad));
+    const forward = axis(out, 0, 0, -1);
+    const elevation = Math.asin(forward.dot(zenith));
+    const target = THREE.MathUtils.clamp(elevation + look.pitchRad, -89 * DEG2RAD, 89 * DEG2RAD);
+    const horizontal = forward.clone().cross(zenith).normalize();
+    return out.premultiply(new THREE.Quaternion().setFromAxisAngle(horizontal, target - elevation));
+  };
+  // Where the sky that was under the middle of the screen sits after the
+  // drag, in radians (screen right, screen down).
+  const oldCentreOnScreen = (before: THREE.Quaternion, after: THREE.Quaternion) => {
+    const sky = axis(before, 0, 0, -1);
+    const f = axis(after, 0, 0, -1);
+    return {
+      right: Math.atan2(sky.dot(axis(after, 1, 0, 0)), sky.dot(f)),
+      down: -Math.atan2(sky.dot(axis(after, 0, 1, 0)), sky.dot(f)),
+    };
+  };
+
+  // One pointer move's worth of sky: 5 px of a 1000 px-tall frame at 10°.
+  const step = 0.05 * DEG2RAD;
+  // The solve is first order in the step; the yaw's small circle about the
+  // zenith leaves a residual near step²·tan(elevation)/2, well inside 1%.
+  const expectFollows = (moved: { right: number; down: number }, rightRad: number, downRad: number) => {
+    expect(Math.abs(moved.right - rightRad)).toBeLessThan(0.01 * step);
+    expect(Math.abs(moved.down - downRad)).toBeLessThan(0.01 * step);
+  };
+  const poses: Array<[elevationDeg: number, rollDeg: number]> = [
+    [0, 0], [30, 0], [68, 0], [68, 37], [68, 90], [74, 180], [40, 250], [78, -120],
+  ];
+
+  it.each(poses)('at %s° up, rolled %s°: a drag moves the sky with it', (elevationDeg, rollDeg) => {
+    const before = poseCamera(elevationDeg, 35, rollDeg);
+    for (const [rightRad, downRad] of [[step, 0], [0, step], [-step, 0.6 * step]]) {
+      expectFollows(oldCentreOnScreen(before, drag(before, rightRad, downRad)), rightRad, downRad);
+    }
+  });
+
+  it('upside down against the horizon — a southern eclipse spot — the sky no longer runs backwards', () => {
+    // The 2027-02-06 view: the Sun culminates north of a spot near 31°S, so
+    // a north-up camera has the zenith below the Sun. Yawing by the finger's
+    // pixels there moved the sky against the finger.
+    const before = poseCamera(74, 200, 180);
+    expectFollows(oldCentreOnScreen(before, drag(before, step, 0)), step, 0);
+  });
+
+  it('level and upright, it is the old mapping with the cos(elevation) lever taken out', () => {
+    const q = poseCamera(68, 10, 0);
+    const look = surfaceLookRotation(
+      axis(q, 0, 0, -1), axis(q, 0, 1, 0), axis(q, 1, 0, 0), zenith, step, step,
+      { yawRad: 0, pitchRad: 0 },
+    );
+    expect(look.pitchRad).toBeCloseTo(step, 12);
+    expect(look.yawRad).toBeCloseTo(step / Math.cos(68 * DEG2RAD), 12);
+  });
+
+  it('near the zenith the yaw gain stops at 1/cos 80°: the sky lags rather than whirls', () => {
+    const before = poseCamera(85, 0, 0);
+    const lag = Math.cos(85 * DEG2RAD) / SURFACE_LOOK_COS_FLOOR;
+    expectFollows(oldCentreOnScreen(before, drag(before, step, 0)), step * lag, 0);
+    // The pitch is untouched by the cap.
+    expectFollows(oldCentreOnScreen(before, drag(before, 0, -step)), 0, -step);
+  });
+
+  it('never rolls the view against the horizon', () => {
+    // Yaw about the zenith and pitch about a horizontal axis both keep the
+    // camera's tilt from level: the drag moves the view, never twists it.
+    const tiltFromLevel = (q: THREE.Quaternion) => {
+      const f = axis(q, 0, 0, -1);
+      const levelUp = zenith.clone().addScaledVector(f, -f.dot(zenith)).normalize();
+      return Math.atan2(axis(q, 0, 1, 0).cross(levelUp).dot(f), axis(q, 0, 1, 0).dot(levelUp));
+    };
+    let q = poseCamera(50, 0, 23);
+    const tilt0 = tiltFromLevel(q);
+    for (let i = 0; i < 40; i++) q = drag(q, 0.03 * Math.cos(i), 0.02 * Math.sin(i * 1.7));
+    expect(tiltFromLevel(q)).toBeCloseTo(tilt0, 9);
   });
 });

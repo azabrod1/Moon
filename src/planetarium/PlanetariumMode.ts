@@ -213,11 +213,13 @@ import {
   surfaceAltitudeAU,
   surfaceEventExpectation,
   surfaceEventNarrative,
+  surfaceLookRotation,
   surfaceTargetKey,
   targetBelowLimb,
   transportTrackingUp,
   type SurfaceEntryContext,
   type SurfaceLandedInfo,
+  type SurfaceLookRotation,
   type SurfaceMarkerKind,
   type SurfaceTarget,
   type SurfaceTargetChoice,
@@ -1717,7 +1719,9 @@ export class PlanetariumMode {
   private tmpSurfaceAxis = new THREE.Vector3();
   private tmpSurfaceZenith = new THREE.Vector3();
   private tmpSurfaceRight = new THREE.Vector3();
+  private tmpSurfaceUp = new THREE.Vector3();
   private tmpSurfaceQuat = new THREE.Quaternion();
+  private surfaceLookScratch: SurfaceLookRotation = { yawRad: 0, pitchRad: 0 };
   // Tracking-camera up, parallel-transported frame to frame (see
   // updateSurfaceCamera). Persistent state, not a scratch vector.
   private surfaceUpTangent = new THREE.Vector3(0, 1, 0);
@@ -17442,23 +17446,37 @@ export class PlanetariumMode {
     const radPerPx =
       (displayFovDeg(this.camera) * DEG2RAD) / Math.max(this.renderer.domElement.clientHeight, 1);
     const zenith = this.tmpSurfaceZenith.copy(this.camera.position).normalize();
-    // Yaw about the local zenith keeps panning level with the horizon.
-    this.camera.quaternion.premultiply(
-      this.tmpSurfaceQuat.setFromAxisAngle(zenith, dxPx * radPerPx),
-    );
-    // Pitch about the camera's right axis, clamped short of zenith/nadir so
-    // the view can never flip over the pole.
     const forward = this.camera.getWorldDirection(this.tmpSurfaceAxis);
+    // The level pan that moves the sky with the finger at this pose — the
+    // camera's roll decides how the finger's axes map onto yaw and pitch.
+    const look = surfaceLookRotation(
+      forward,
+      this.tmpSurfaceUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion),
+      this.tmpSurfaceRight.set(1, 0, 0).applyQuaternion(this.camera.quaternion),
+      zenith,
+      dxPx * radPerPx,
+      dyPx * radPerPx,
+      this.surfaceLookScratch,
+    );
+    // Yaw about the local zenith keeps panning level with the horizon.
+    this.camera.quaternion.premultiply(this.tmpSurfaceQuat.setFromAxisAngle(zenith, look.yawRad));
+    // Pitch about the horizontal axis across the view (the yaw left the
+    // elevation alone), clamped short of zenith/nadir so the view can never
+    // flip over the pole. Looking dead along the zenith there is no such
+    // axis, and the camera's own right stands in.
+    this.camera.getWorldDirection(forward);
     const elevation = Math.asin(THREE.MathUtils.clamp(forward.dot(zenith), -1, 1));
     const maxElevation = 89 * DEG2RAD;
     const targetElevation = THREE.MathUtils.clamp(
-      elevation + dyPx * radPerPx,
+      elevation + look.pitchRad,
       -maxElevation,
       maxElevation,
     );
-    const right = this.tmpSurfaceRight.set(1, 0, 0).applyQuaternion(this.camera.quaternion);
+    const horizontal = this.tmpSurfaceRight.crossVectors(forward, zenith);
+    if (horizontal.lengthSq() > 1e-18) horizontal.normalize();
+    else horizontal.set(1, 0, 0).applyQuaternion(this.camera.quaternion);
     this.camera.quaternion.premultiply(
-      this.tmpSurfaceQuat.setFromAxisAngle(right, targetElevation - elevation),
+      this.tmpSurfaceQuat.setFromAxisAngle(horizontal, targetElevation - elevation),
     );
   }
 

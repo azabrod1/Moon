@@ -398,6 +398,74 @@ export function transportTrackingUp(up: THREE.Vector3, forward: THREE.Vector3): 
   return up.normalize();
 }
 
+/** Where the drag's yaw gain stops growing: the cosine of an 80° elevation. */
+export const SURFACE_LOOK_COS_FLOOR = Math.cos(80 * DEG2RAD);
+
+/** One drag step of the surface look: the two level-pan rotations. */
+export interface SurfaceLookRotation {
+  /** About the local zenith. */
+  yawRad: number;
+  /** About the horizontal axis across the view; positive raises the view. */
+  pitchRad: number;
+}
+
+const tmpDrag = new THREE.Vector3();
+const tmpAzimuthal = new THREE.Vector3();
+const tmpUpTheSky = new THREE.Vector3();
+
+/**
+ * Drag look-around as a level pan — yaw about the local zenith, pitch about
+ * the horizontal axis across the view — sized so the sky at the middle of the
+ * screen follows the finger in direction and in distance, whatever the
+ * camera's roll. The tracking camera's up is carried over from the orbit view,
+ * not levelled to the ground, so the zenith can project anywhere around the
+ * frame: feeding the finger's pixels straight into the yaw moved the sky
+ * sideways at cos(elevation) of the finger's speed (0.37 at the default 68°),
+ * slanted by the roll, and backwards wherever the zenith sat below the target
+ * — the Sun culminating north of a southern eclipse spot, Uranus from its
+ * moons.
+ *
+ * `rightRad` and `downRad` are the finger's motion in radians of sky (screen
+ * right, screen down); the basis vectors are the camera's in world space. A
+ * yaw ψ swings the view by ψ·(z × f) and a pitch θ by θ·B, B the unit
+ * up-the-sky direction at f; the sky moves the opposite way, and the two
+ * directions are orthogonal, so each rotation is one projection of the drag.
+ * The yaw's lever |z × f| is cos(elevation) and vanishes at the zenith, so its
+ * gain is capped at 1/cos 80°: steeper than that the sky lags the finger
+ * rather than whirling about a zenith inside the frame.
+ */
+export function surfaceLookRotation(
+  forward: THREE.Vector3,
+  cameraUp: THREE.Vector3,
+  cameraRight: THREE.Vector3,
+  zenith: THREE.Vector3,
+  rightRad: number,
+  downRad: number,
+  out: SurfaceLookRotation,
+): SurfaceLookRotation {
+  // The motion the sky under the middle of the screen must make, as a
+  // tangent at the view direction (screen down is camera −up).
+  const drag = tmpDrag.copy(cameraRight).multiplyScalar(rightRad).addScaledVector(cameraUp, -downRad);
+  const azimuthal = tmpAzimuthal.crossVectors(zenith, forward);
+  const cosElevation = azimuthal.length();
+  if (cosElevation < 1e-9) {
+    // Straight up or down there is no azimuth to pan along: the pitch alone,
+    // about whatever axis the caller falls back to. The ±89° drag clamp keeps
+    // this out of reach; it is here to keep the function total.
+    out.yawRad = 0;
+    out.pitchRad = downRad;
+    return out;
+  }
+  const upTheSky = tmpUpTheSky
+    .copy(zenith)
+    .addScaledVector(forward, -forward.dot(zenith))
+    .divideScalar(cosElevation);
+  out.pitchRad = -drag.dot(upTheSky);
+  out.yawRad =
+    -drag.dot(azimuthal) / (cosElevation * Math.max(cosElevation, SURFACE_LOOK_COS_FLOOR));
+  return out;
+}
+
 export const SURFACE_FOV_MIN_DEG = 1.5;
 export const SURFACE_FOV_MAX_DEG = 45;
 export const SURFACE_FOV_DEFAULT_DEG = 10;

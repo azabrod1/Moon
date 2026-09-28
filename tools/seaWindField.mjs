@@ -224,19 +224,23 @@ export const DEFAULTS = Object.freeze({
   grainCell: 1.2,
   grainOctaves: 1,
   /** The lanes: their cells and octaves, and the width of their edge in noise
-   *  units; the regions the same. */
+   *  units (0.04 stamped every lane with the same hard outline; 0.12 grades
+   *  it); the regions the same. */
   laneCell: 1.5,
   laneOctaves: 4,
-  laneEdge: 0.04,
+  laneEdge: 0.12,
   regionCell: 6,
   regionEdge: 0.025,
   /** Inside a region the sea drops to this fraction of its wind, floored by
    *  the slick texture at 0.3 to 1.2 m/s. */
   regionWindScale: 0.18,
   /** How deep the gusts inside a region cut: at 1 a gust lane is the open
-   *  wind with no glassy share, at 0.5 it is half way between the region's
-   *  calm and the open wind, at 0 a region is calm throughout. */
-  regionGust: 1,
+   *  wind with no glassy share, which at the specular point read as flat
+   *  dark ovals of one size and one tilt, five times darker than the calm
+   *  around them; at 0.5 it is half way between the region's calm and the
+   *  open wind, a grey shading of the core; at 0 a region is calm
+   *  throughout, a bald bright blob. */
+  regionGust: 0.5,
   /** The glassy lobe the calm weight is measured against: Cox-Munk at this
    *  wind. A weight of one is a sea this calm; a lane textured between 0.3
    *  and 2 m/s becomes a weight between one and about a half. */
@@ -340,15 +344,18 @@ function fieldAtPoint(params, latTerms, lonDeg, latDeg) {
   // calm and the lane mask inverts into gusts of the open wind, cut as deep
   // as `regionGust` says.
   const gustWeight = laneWeight * params.regionGust;
-  const openWindMs = blown * (1 - laneWeight) + laneWindMs * laneWeight;
-  const regionWindMs = regionSeaMs * (1 - gustWeight) + blown * gustWeight;
-  const windMs = clamp(openWindMs * (1 - regionWeight) + regionWindMs * regionWeight, 0.1, SEA_WIND_MAX_MS);
   const laneCalm = calmWeightForWind(laneWindMs, blown, params.calmReferenceWindMs);
   const regionCalm = calmWeightForWind(regionSeaMs, blown, params.calmReferenceWindMs);
   const calmWeight = clamp(
     (1 - regionWeight) * laneWeight * laneCalm + regionWeight * (1 - gustWeight) * regionCalm,
     0, 1,
   );
+  // The single-wind design is the wind whose lobe peaks where the mixture
+  // does. A lane's graded edge and a half-depth gust interpolate in the
+  // peak, which goes as the reciprocal of the slope variance, so a design
+  // interpolated in the wind would sit under the mixture by its convexity.
+  const peak = calmWeight / meanSquareSlope(params.calmReferenceWindMs) + (1 - calmWeight) / meanSquareSlope(blown);
+  const windMs = clamp((1 / peak - COX_MUNK_SLOPE_CALM) / COX_MUNK_SLOPE_PER_MS, 0.1, SEA_WIND_MAX_MS);
   return { windMs, calmWeight, windyMs: blown };
 }
 

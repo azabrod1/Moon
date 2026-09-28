@@ -187,13 +187,16 @@ describe('the generator (tools/seaWindField.mjs)', () => {
       expect(roundTwiceBack.windMs).toBeCloseTo(here.windMs, 9);
     }
     // And the slope across the date line is a slope, not a crease: the
-    // one-sided differences at the seam agree as they do inland.
-    const step = 0.01;
+    // one-sided differences at the seam disagree by the field's own
+    // curvature, which halves with the step, where a crease would hold.
+    const mismatch = (lat: number, step: number): number => Math.abs(
+      ((field(180, lat).windMs - field(180 - step, lat).windMs)
+        - (field(180 + step, lat).windMs - field(180, lat).windMs)) / step,
+    );
     for (const lat of [-45, -20, -2, 0, 2, 10, 20, 45]) {
-      const fromWest = (field(180, lat).windMs - field(180 - step, lat).windMs) / step;
-      const fromEast = (field(180 + step, lat).windMs - field(180, lat).windMs) / step;
-      const inland = Math.abs((field(37 + step, lat).windMs - field(37 - step, lat).windMs) / (2 * step));
-      expect(Math.abs(fromWest - fromEast)).toBeLessThan(Math.max(inland, 1) * 0.5);
+      const coarse = mismatch(lat, 0.01);
+      const fine = mismatch(lat, 0.0025);
+      expect(fine).toBeLessThan(coarse * 0.3 + 1e-6);
     }
   });
 
@@ -221,8 +224,8 @@ describe('the generator (tools/seaWindField.mjs)', () => {
     // Move these only with `npm run gen:seawind` and the shipped hashes below.
     const pins: Array<[number, number, number, number, number]> = [
       [-160, -12, 3.305083, 0, 3.305083],
-      [30, 0, 2.527322, 0.222974, 3.173800],
-      [120, 25, 1.024544, 0.674990, 5.691913],
+      [30, 0, 1.826511, 0.257330, 3.173800],
+      [120, 25, 1.098598, 0.635078, 5.691913],
       [-45, -40, 7.210969, 0, 7.210969],
       [0, 60, 12.334111, 0, 12.334111],
       [90, -55, 9.641751, 0, 9.641751],
@@ -327,16 +330,17 @@ describe('the generator (tools/seaWindField.mjs)', () => {
   });
 
   it('ships the pair the generator bakes, under the names the boot loads and warms', () => {
-    // The hashes move only with `npm run gen:seawind`; a re-bake with a new
-    // look ships under a new pathname (textureLadder.ts).
+    // The hashes move only with `npm run gen:seawind`. A re-bake keeps the
+    // pathname: the worker keys the file by its content, and the `.v1` is
+    // for a break in what the bytes MEAN, not a new look.
     expect(PLANET_TEXTURE_FILES.earthSeaCalm).toBe('earth-seawind-calm.v1.webp');
     expect(PLANET_TEXTURE_FILES.earthSeaWindy).toBe('earth-seawind-windy.v1.webp');
     const hashOf = (file: string): string =>
       createHash('sha256').update(readFileSync(`public/textures/${file}`)).digest('hex');
     expect(hashOf(PLANET_TEXTURE_FILES.earthSeaCalm))
-      .toBe('4c7cbf89ae94330d7b50a689ff4ad50e981db348ecaa801d10ca764c18701bbc');
+      .toBe('8939a5d90e1463c903bba8b52705a2ad0ff3845ce6907b866168df187685102b');
     expect(hashOf(PLANET_TEXTURE_FILES.earthSeaWindy))
-      .toBe('c43217640e33bb08d56b84051d1a79d236aaf93f9d497f4e9fbcf798ff93f3ca');
+      .toBe('cf899f3a8737e30dc2e8c2f10902fe03a9aba8af22dd21d6604023f261f8333a');
     // Lossless webp, the container the loader decodes as a picture: RIFF,
     // WEBP, VP8L.
     const calmBytes = readFileSync(`public/textures/${PLANET_TEXTURE_FILES.earthSeaCalm}`);
@@ -347,5 +351,7 @@ describe('the generator (tools/seaWindField.mjs)', () => {
     expect(DEFAULTS.supersample).toBe(2);
     expect(DEFAULTS.windyDownsample).toBe(2);
     expect(DEFAULTS.grain).toBe(0);
+    expect(DEFAULTS.regionGust).toBe(0.5);
+    expect(DEFAULTS.laneEdge).toBe(0.12);
   });
 });

@@ -180,6 +180,29 @@ export class ScreenCopy {
     m.uniforms.tDiffuse.value = null;
   }
 
+  /** Link the copy's program now, off-screen, so the first frame that needs
+   *  it does not link it then: on a no-float device the lens proximity ramp
+   *  reaching zero disables the lens pass and routes the frame through this
+   *  copy — mid-approach. One draw of a 1×1 texture into a 1×1 target, both
+   *  freed; nothing visible changes. */
+  warm(renderer: THREE.WebGLRenderer): void {
+    // three keys a program on what it draws to — the canvas encodes the
+    // output colour space, a render target does not — so the copy has to be
+    // compiled against the canvas itself, and compile links without drawing.
+    const previous = renderer.getRenderTarget();
+    renderer.setRenderTarget(null);
+    const texture = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+    texture.needsUpdate = true;
+    this.material.uniforms.tDiffuse.value = texture;
+    const scene = new THREE.Scene();
+    const geometry = new THREE.PlaneGeometry(2, 2);
+    scene.add(new THREE.Mesh(geometry, this.material));
+    renderer.compile(scene, new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1));
+    this.material.uniforms.tDiffuse.value = null;
+    geometry.dispose();
+    texture.dispose();
+    renderer.setRenderTarget(previous);
+  }
   dispose(): void {
     this.quad.dispose();
     this.material.dispose();

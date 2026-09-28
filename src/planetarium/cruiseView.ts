@@ -33,6 +33,7 @@
  */
 import { KM_PER_AU } from '../astronomy/constants';
 import { DEG2RAD } from '../shared/math/angles';
+import { sphereAngularRadius } from '../shared/math/lensProximity';
 
 export const SHIP_RIG_SCALE = 1 / 64;
 
@@ -169,12 +170,19 @@ export function ringAnnulusDistanceAU(
 
 /** One governed body as the camera-safety pass sees it: center position (in
  *  the camera's own frame) and the body's outermost rendered surface radius
- *  (envelope for planets, rendered mesh for moons) — margin NOT included. */
+ *  (envelope for planets, rendered mesh for moons, the governed surface for
+ *  the Sun) — margin NOT included. Beside it, for the lens proximity ramp,
+ *  the radius of the DISC the eye reads — the rendered surface with no air
+ *  shell, the Sun's photosphere — and the body's name for the readout: the
+ *  ramp keyed on the envelope would read the Sun's park as 90° and switch
+ *  the lens fully off. */
 export interface CameraBodyShell {
   x: number;
   y: number;
   z: number;
   surfaceRadiusAU: number;
+  discRadiusAU: number;
+  name: string;
 }
 
 /**
@@ -411,6 +419,167 @@ export function reacquireCameraStep(
       ? Math.abs(rNew - rIdeal) < 1e-12
       : Math.abs(rNew - rIdeal) <= CAM_REACQUIRE_SETTLE_RADIUS_FRAC * rIdeal;
   return cosOut >= COS_REACQUIRE_SETTLE_ANGLE && radiusSettled;
+}
+
+/** What the lens proximity ramp reads for one frame (shared/math/lensProximity.ts). */
+export interface LargestDiscAngles {
+  /** The DRIVING angle: the largest angular radius any pooled body's disc
+   *  subtends from the ship's distance plus the boom the rig INTENDS. */
+  effectiveRad: number;
+  effectiveIndex: number;
+  /** That body's ship distance plus the intended boom, the distance the angle was read at. */
+  effectiveDistanceAU: number;
+  /** The true angle from the camera itself, for the readout and the probe's
+   *  silhouette prediction — never the driver. */
+  cameraRad: number;
+  cameraIndex: number;
+}
+
+/** The length of the chase boom the rig intends for a heading: |chaseIdealOffset|.
+ *  It depends on the pitch, because the lift is along the flight horizon's up
+ *  and the trail along the ship's forward — 232.8 km level, 143 km nose-up,
+ *  297 km nose-down — so it is a property of the ship's pose, never of where
+ *  a collision left the camera. */
+export function chaseIdealBoomAU(
+  forward: { x: number; y: number; z: number },
+  up: { x: number; y: number; z: number },
+): number {
+  const lift = CRUISE_CAM_DIST_AU * CHASE_CAM_LIFT_FRAC;
+  const x = -forward.x * CRUISE_CAM_DIST_AU + up.x * lift;
+  const y = -forward.y * CRUISE_CAM_DIST_AU + up.y * lift;
+  const z = -forward.z * CRUISE_CAM_DIST_AU + up.z * lift;
+  return Math.sqrt(x * x + y * y + z * z);
+}
+
+/**
+ * One frame of the intended boom under a drag orbit. OrbitControls owns the
+ * camera there and re-derives its spherical from the live camera on every
+ * update(), so a safety push (updateCruiseCameraSafety, AFTER the update)
+ * becomes the radius the next update starts from — the push is sticky for the
+ * rest of the gesture, and reading the camera's distance before the safety
+ * pass is no cleaner than reading it after. What one update() does to the
+ * radius is `clamp(radius × scale, minDistance, maxDistance)` — the wheel's
+ * dolly and the controls' own distance clamp, nothing else — so the ratio of
+ * the radius the camera leaves the update with to the radius it entered with
+ * is the user's zoom alone, EXCEPT where the clamp acted. The clamp has a
+ * signature: a radius that entered the update outside [min, max] and left it
+ * ON the bound was clamped, that ratio is the clamp's and not the wheel's,
+ * and such an update leaves the boom alone. Under the floor is exactly where
+ * a safety push leaves the camera whenever a body's padded shell passes
+ * within the floor's 89.6 km of the ship (Mercury 98 km up: the shell 30 km
+ * under the ship): a drag that faces the body puts the boom through the
+ * shell, the push takes the camera out to the shell, 30 km from the ship,
+ * the next update's clamp lifts it back to the floor with no wheel at all,
+ * the push returns it — every frame the drag, and then its damping coast,
+ * faces the body. A boom that took each lift for a dolly-out tripled a
+ * frame: 230 km to thousands over one coast, the lens from 0.25 to full, the
+ * ship never moving (Codex's third finding). A wheel event the clamp
+ * swallowed — dollying in at the floor, or out from under it by less than
+ * it takes to clear it — moved nothing the eye can see and is not heard
+ * either; a dolly that carried the radius off the bound is heard exactly,
+ * and a dolly-in from above that the floor stopped is heard as the move the
+ * camera made. "On the bound" is read to ORBIT_DOLLY_DEADBAND of it: the
+ * spherical round trip returns a clamped radius an ulp or two off the floor.
+ * A ratio within ORBIT_DOLLY_DEADBAND of 1 is that same rounding, not a dolly
+ * (the smallest wheel event moves the scale by ~5e-4), and leaves the boom
+ * BIT-identical: multiplied through every frame, it walked the boom an ulp at
+ * a time and flipped the factor between two adjacent doubles, a projection
+ * rebuild each flip, on a drag with no wheel at all. The radius to measure is
+ * the one the controls scale, about their target — a pan moves the target
+ * inside the update, and the camera's distance to the origin would carry it.
+ * A camera at the target (no radius) or a non-finite reading leaves the boom
+ * where it was; the clamp on the boom mirrors the controls'.
+ */
+export const ORBIT_DOLLY_DEADBAND = 1e-9;
+export function intendedBoomAfterOrbitUpdate(
+  intendedBoomAU: number,
+  radiusBeforeAU: number,
+  radiusAfterAU: number,
+  minDistanceAU: number,
+  maxDistanceAU: number,
+): number {
+  if (!(radiusBeforeAU > 0) || !Number.isFinite(radiusAfterAU) || !(radiusAfterAU > 0)) return intendedBoomAU;
+  // The controls' clamp: entered the update outside the range, left it on
+  // the bound. Never a dolly, whatever the wheel asked for underneath.
+  const onBound = (boundAU: number) => Math.abs(radiusAfterAU - boundAU) <= boundAU * ORBIT_DOLLY_DEADBAND;
+  if (radiusBeforeAU < minDistanceAU && onBound(minDistanceAU)) return intendedBoomAU;
+  if (radiusBeforeAU > maxDistanceAU && onBound(maxDistanceAU)) return intendedBoomAU;
+  const ratio = radiusAfterAU / radiusBeforeAU;
+  if (Math.abs(ratio - 1) < ORBIT_DOLLY_DEADBAND) return intendedBoomAU;
+  const scaled = intendedBoomAU * ratio;
+  return Math.min(Math.max(scaled, minDistanceAU), maxDistanceAU);
+}
+
+/**
+ * The largest angular radius any pooled body's DISC subtends — `discRadiusAU`,
+ * the rendered surface, never the safety envelope or the Sun's governed
+ * surface — measured two ways at once.
+ *
+ * The driving one is read from the SHIP's distance plus `intendedBoomAU`, the
+ * boom the rig means to hold (PlanetariumMode.intendedCameraRadiusAU): the
+ * chase ideal's length under the chase and its reacquisition, the wheel's
+ * dolly under a drag orbit — and never the distance a collision left the
+ * camera at. Read from the camera itself the strength swung 0.5 ↔ 0.2 on a
+ * plain horizontal drag 1,000 km over Earth (the boom is ~233 km, a large
+ * slice of the ramp band for anything smaller than Venus), which is the
+ * projection of the whole frame breathing under the mouse. Read from the
+ * camera's ACTUAL distance to the ship it held on that drag, but not on one
+ * that reached a body's padded shell: the safety pass pushes the camera out
+ * radially, which shortens the boom, and at the Moon's park a half-turn drag
+ * took the factor from 0.47 to 0 that way with the ship never moving. The
+ * price of the intended boom is that with the camera swung to the side of
+ * the ship, or pushed, the driving angle reads under the camera's true angle
+ * (the Moon's park: 58° against up to 73°); a stable strength there is worth
+ * more than an exact one. The wheel still brings the lens back under a drag
+ * orbit, because it scales the intended boom; under the chase a wheel is a
+ * transient the follow undoes within a second, and the intended boom ignores
+ * it. And by the triangle inequality the driving distance is never less than
+ * the ship's own, so the DRIVING angle never exceeds the ship's angle — a
+ * flyby's 1.8-radius pass bounds it at 33.7°. The camera's own angle is not
+ * so bounded: it sits off the ship's line and reads 42.4° on Cordelia's pass,
+ * and it drives nothing.
+ *
+ * The ship sits at the scene origin under floating origin, so a shell's own
+ * length is the ship's distance. A non-finite distance reads as no disc; an
+ * empty pool reads 0 with index −1; a non-finite or negative boom reads as none.
+ */
+export function largestDiscAngles(
+  cam: { x: number; y: number; z: number },
+  intendedBoomAU: number,
+  shells: readonly CameraBodyShell[],
+  count: number,
+  out: LargestDiscAngles,
+): LargestDiscAngles {
+  const boom = Number.isFinite(intendedBoomAU) && intendedBoomAU > 0 ? intendedBoomAU : 0;
+  let effectiveRad = 0;
+  let effectiveIndex = -1;
+  let effectiveDistanceAU = 0;
+  let cameraRad = 0;
+  let cameraIndex = -1;
+  for (let i = 0; i < count; i++) {
+    const s = shells[i];
+    const shipDistance = Math.sqrt(s.x * s.x + s.y * s.y + s.z * s.z);
+    const effective = sphereAngularRadius(s.discRadiusAU, shipDistance + boom);
+    if (effective > effectiveRad) {
+      effectiveRad = effective;
+      effectiveIndex = i;
+      effectiveDistanceAU = shipDistance + boom;
+    }
+    const dx = s.x - cam.x;
+    const dy = s.y - cam.y;
+    const dz = s.z - cam.z;
+    const fromCamera = sphereAngularRadius(s.discRadiusAU, Math.sqrt(dx * dx + dy * dy + dz * dz));
+    if (fromCamera > cameraRad) {
+      cameraRad = fromCamera;
+      cameraIndex = i;
+    }
+  }
+  out.effectiveRad = effectiveRad;
+  out.effectiveIndex = effectiveIndex;
+  out.effectiveDistanceAU = effectiveDistanceAU;
+  out.cameraRad = cameraRad;
+  out.cameraIndex = cameraIndex;
+  return out;
 }
 
 /** Distance from the camera to the nearest body SURFACE (no margin) over the

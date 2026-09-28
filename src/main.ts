@@ -3317,6 +3317,9 @@ function installDevHooks() {
       return result;
     },
     ladder: () => planetariumMode?.devLadderStats() ?? null,
+    // The KTX2 transcoder: transcodes in flight, whether its loader and
+    // workers are alive, and how many were let go after sitting idle.
+    ktx2: () => planetariumMode?.devKtx2() ?? null,
     // Pixels per texel of the map each close body is really drawing. Reports
     // with the sector streamer off (?sectors=0), which is what a close-range
     // A/B is run under.

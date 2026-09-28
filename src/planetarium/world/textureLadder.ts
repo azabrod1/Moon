@@ -1540,9 +1540,10 @@ export function releaseUpgradeSource(tex: THREE.Texture): void {
  * array the transcoder's reply carries, so the reply and the texture never
  * disagree about what is left. The reply's message event also keeps the
  * transferred buffers alive by itself until its worker takes another task or
- * the pool is disposed, so the dropped levels of the last rung each worker
- * transcoded leave only then. Nothing reads the levels after the upload
- * except a restore, which wants the tail.
+ * the pool is disposed — which the KTX2 loader's keeper does once the
+ * transcoder has sat idle (world/ktx2Idle), and that is when the dropped
+ * levels of the last rung each worker transcoded finally leave. Nothing reads
+ * the levels after the upload except a restore, which wants the tail.
  *
  * Only a flat 2D chain whose base is wider than the stand-in, with a level at
  * or under it to keep: an array or cube texture lays its levels out per layer

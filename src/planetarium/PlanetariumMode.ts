@@ -143,6 +143,7 @@ import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
 import { captureDeviceCaps, resolveTextureUrl, type TextureTier } from './world/texturePolicy';
 import { retainedSourceBytes, textureGpuBytes } from './world/textureBytes';
+import { IdleLoaderKeeper, type IdleLoaderState } from './world/ktx2Idle';
 import { advanceSpinLatch, sectorSuspendFor, type SectorSpinLatch } from './world/sectorSpinGate';
 import { FrameIntervalTracker } from './world/frameInterval';
 import { planLadderPressure } from './world/ladderPressure';
@@ -2486,32 +2487,38 @@ export class PlanetariumMode {
     });
     // The compressed tiers' loader (see PlanetFactory's TIER_FILE_OVERRIDES),
     // bound lazily: the KTX2 machinery — loader chunk, transcoder worker, wasm —
-    // loads only if a session actually earns a rung above its boot map. Fail-open
-    // at every step: a failed import or load lands in the ladder's own onError,
-    // whose cooldown and one-rung-short worst case are the same as any network
-    // failure on a rung.
+    // loads only if a session actually earns a rung above its boot map, and
+    // is let go again once it has sat idle (world/ktx2Idle: its workers keep
+    // the memory of the largest container they transcoded). Fail-open at
+    // every step: a failed import or load lands in the ladder's own onError,
+    // whose cooldown and one-rung-short worst case are the same as any
+    // network failure on a rung.
     bindKtx2TierLoader((url, onLoad, onError) => {
-      this.ktx2Loader ??= import('three/examples/jsm/loaders/KTX2Loader.js').then(({ KTX2Loader }) =>
-        new KTX2Loader()
-          .setTranscoderPath(import.meta.env.BASE_URL + 'basis/')
-          .detectSupport(renderer),
-      );
+      // Held from the ask until the loader settles it, so the transcoder is
+      // never let go under a load in flight.
+      const lease = this.ktx2Loader.acquire();
       // One rejection handler for both halves: a loader that could not be
       // made, or a synchronous throw from load() itself (the loader's own
       // guard), has to reach the ladder's onError like any other failure,
       // not become an unhandled rejection that leaves the handle waiting on
       // an attempt forever. (A failure inside onLoad is the loader's to
-      // route: KTX2Loader.parse already chains onLoad to onError.)
-      this.ktx2Loader
+      // route: KTX2Loader.parse already chains onLoad to onError, which is
+      // why the lease's release is idempotent.)
+      const failed = (err: unknown): void => {
+        lease.release();
+        onError(err);
+      };
+      lease.loader
         // Stamp the file the texture came from, exactly as the bitmap loader
         // does: a KTX2 texture carries no name and no image src, so without
         // this every compressed rung is an anonymous upload in the timing
         // traces and no hitch can be pinned to the map that caused it.
         .then((loader) => loader.load(url, (tex) => {
+          lease.release();
           tex.userData.sourceUrl = url;
           onLoad(tex);
-        }, undefined, onError))
-        .catch((err) => onError(err));
+        }, undefined, failed))
+        .catch(failed);
     }, ktx2TranscodesCompressed(renderer));
     // What the ladder may spend. Every rung passes it before it is fetched
     // and again as a decoded texture before it is applied.
@@ -4223,12 +4230,16 @@ export class PlanetariumMode {
     const stats = this.sectors?.stats() ?? null;
     const globalBytes = this.liveGlobalMapBytes();
     const envelope = this.memory.figures();
+    const transcoder = this.ktx2Loader.state();
     // Whatever the line below prints, so a figure cannot move without the
     // line being reprinted.
-    const figures = stats
-      ? [globalBytes, stats.budgetedBytes, stats.reserved,
-        envelope.sectorBudget, envelope.floorBytes, envelope.envelopeBytes]
-      : [globalBytes, envelope.floorBytes, envelope.envelopeBytes];
+    const figures = [
+      ...(stats
+        ? [globalBytes, stats.budgetedBytes, stats.reserved,
+          envelope.sectorBudget, envelope.floorBytes, envelope.envelopeBytes]
+        : [globalBytes, envelope.floorBytes, envelope.envelopeBytes]),
+      transcoder.alive ? 1 : 0, transcoder.disposedCount,
+    ];
     const previous = this.memoryDebugLast;
     const moved = !previous || previous.length !== figures.length ||
       figures.some((f, i) => Math.abs(f - previous[i]) > PlanetariumMode.MEMORY_DEBUG_MOVE * Math.max(1, previous[i]));
@@ -4263,6 +4274,12 @@ export class PlanetariumMode {
         : { tiles: 'off' }),
       floorMiB: mib(envelope.floorBytes),
       envelopeMiB: mib(envelope.envelopeBytes),
+      // The compressed rungs' transcoder: its workers keep the memory of the
+      // largest container they transcoded, which no GPU figure above counts,
+      // so whether they are alive is said here. "idle-freed N" is how many
+      // times this session they were let go after sitting idle.
+      ktx2: `${transcoder.alive ? 'alive' : 'none'} inFlight=${transcoder.inFlight}`
+        + ` idle-freed ${transcoder.disposedCount}`,
     });
   }
 
@@ -4307,6 +4324,13 @@ export class PlanetariumMode {
   /** Dev bridge: what the streamer holds right now. */
   devSectorStats(): SectorStats | null {
     return this.sectors?.stats() ?? null;
+  }
+
+  /** Dev bridge: the KTX2 transcoder's lifetime — transcodes in flight,
+   *  whether a loader (and its workers) is alive, and how many have been let
+   *  go after sitting idle. */
+  devKtx2(): IdleLoaderState {
+    return this.ktx2Loader.state();
   }
 
   /** Dev bridge: what the colour ladder holds, rung by rung, against the
@@ -18045,9 +18069,15 @@ export class PlanetariumMode {
    *  arrival; pruned as goals disarm themselves. */
   private arrivalWarmUps: TextureUpgrade[] = [];
 
-  /** Lazily imported KTX2 loader behind the compressed-tier binding — null
-   *  until the first .ktx2 tier fetch of the session. */
-  private ktx2Loader: Promise<KTX2Loader> | null = null;
+  /** The KTX2 loader behind the compressed-tier binding: imported and made
+   *  on the first .ktx2 tier fetch of the session, disposed once it has sat
+   *  idle and made afresh by the next one. */
+  private readonly ktx2Loader = new IdleLoaderKeeper<KTX2Loader>(() =>
+    import('three/examples/jsm/loaders/KTX2Loader.js').then(({ KTX2Loader }) =>
+      new KTX2Loader()
+        .setTranscoderPath(import.meta.env.BASE_URL + 'basis/')
+        .detectSupport(this.renderer),
+    ));
 
   /** Queue a system's arrived moon photo/normal maps for warm upload. Photos
    * only — a GPU-painted procedural map is render-target-backed (already

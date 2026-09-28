@@ -41,7 +41,7 @@ import { CLOUD_NORMAL_SCALE, cloudShellScale } from './world/cloudDeck';
 import { CLOUD_DECK_DEPTH_BIAS_UNITS } from './world/shellDepthBias';
 import { applyTextureDefaults, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
 import {
-  augmentSurfaceMaterial, seatSurfaceAirRadius, setSurfaceCraterShare, setSurfaceWaterGloss,
+  augmentSurfaceMaterial, nightLiftUniform, seatSurfaceAirRadius, setSurfaceCraterShare, setSurfaceWaterGloss,
   type SurfaceArchetype, type SurfaceShadingFx,
 } from './world/surfaceShading';
 import { createAtmosphereShellMaterial } from './world/atmosphereShell';
@@ -903,6 +903,11 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   const fx = augmentSurfaceMaterial(
     mat, planetArchetype(planet), ringShadow, sunTan, undefined, undefined, planet.name,
   );
+  // The reader's Night sides lift reaches the planetarium's own bodies through
+  // this one shared object, and nothing else can point at it. Before any
+  // compile, because the slot is bound at compile time; the cloud deck and the
+  // streamed sectors share this fx, so they follow the globe.
+  fx.uNightLift = nightLiftUniform;
   // The radius the cloud deck's detail bump multiplies by, seated now: the
   // air's own binding restates it once the tables land, and a device whose
   // bake is unavailable never gets there (seatSurfaceAirRadius says what the
@@ -1674,12 +1679,13 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
       // as far as ice should go. Neither is metallic.
       roughness: archetype === 'icy' ? 0.85 : 0.9,
       metalness: 0,
-      emissive: new THREE.Color(moonData.color),
-      emissiveIntensity: 0.03,
     });
     const fx = augmentSurfaceMaterial(
       mat, archetype, undefined, 0, undefined, undefined, moonData.name,
     );
+    // The Night sides lift, as on the planets: the shared object, before the
+    // first compile.
+    fx.uNightLift = nightLiftUniform;
     setSurfaceCraterShare(mat, synthCraterShare(moonData.name, archetype));
 
     // Real elevation-derived normal map (linear), where one exists. The flag

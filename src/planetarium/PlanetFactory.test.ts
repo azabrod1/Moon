@@ -8,6 +8,7 @@ import {
   connectLateDetailMap,
   createLateTextureSlot,
   createMoonMeshes,
+  createPlanetMesh,
   FALLBACK_AFTER_FAILURES,
   loadTexture,
   lodMeasurementRelevant,
@@ -81,10 +82,14 @@ import { ladderCeilingBytes, UNMEASURED_DESKTOP_PROFILE, UNMEASURED_TOUCH_PROFIL
 import { SECTOR_SETS, sectorSetGpuBytes } from './world/sectorStreamer';
 import {
   AIR_LOOKUP_RADIUS,
+  applyNightLift,
   augmentSurfaceMaterial,
   bindSurfaceAir,
   createSurfaceAirFx,
+  NIGHT_LIFT_STRENGTH,
+  nightLiftUniform,
 } from './world/surfaceShading';
+import { PLANETS } from './planets/planetData';
 import {
   createEarthNightSectorMaterial,
   createEarthNightShellMaterial,
@@ -3035,5 +3040,73 @@ describe('how much cratering a body wears', () => {
       expect(synthCraterShare('Jupiter', archetype)).toBe(0);
     }
     expect(synthCraterShare('Mars', 'rocky')).toBe(1);
+  });
+});
+
+describe('the Night sides lift', () => {
+  // Brightened reaches the planetarium's own bodies and nothing else. The
+  // uniform is ONE object that PlanetFactory points its bodies at; every other
+  // surface the augment builds (Look inside, How many fit?, the warm-up probes)
+  // keeps a zero of its own, so no mode switch and no DEV pin can lift a tool.
+  beforeEach(() => {
+    loaderState.loads.length = 0;
+  });
+  afterEach(() => {
+    applyNightLift('real');
+  });
+
+  function boundUniforms(mat: THREE.Material): Record<string, { value: unknown }> {
+    const shader = {
+      uniforms: {} as Record<string, { value: unknown }>,
+      vertexShader: '#include <common>\n#include <begin_vertex>\n',
+      fragmentShader: '#include <common>\n#include <opaque_fragment>\n',
+    };
+    (mat.onBeforeCompile as (s: typeof shader) => void)(shader);
+    return shader.uniforms;
+  }
+
+  it('gives a fresh surface a zero of its own, which the setting never moves', () => {
+    const fx = augmentSurfaceMaterial(new THREE.MeshStandardMaterial(), 'rocky');
+    expect(fx.uNightLift).not.toBe(nightLiftUniform);
+    expect(fx.uNightLift.value).toBe(0);
+    applyNightLift('brightened');
+    expect(nightLiftUniform.value).toBe(NIGHT_LIFT_STRENGTH);
+    expect(fx.uNightLift.value).toBe(0);
+  });
+
+  it('is zero at Real and the tuned strength at Brightened', () => {
+    applyNightLift('brightened');
+    expect(nightLiftUniform.value).toBe(NIGHT_LIFT_STRENGTH);
+    expect(NIGHT_LIFT_STRENGTH).toBeGreaterThan(0);
+    applyNightLift('real');
+    expect(nightLiftUniform.value).toBe(0);
+  });
+
+  it('reaches every moon through the shared object, bound before the first compile', () => {
+    const moons = createMoonMeshes('Jupiter');
+    expect(moons.length).toBeGreaterThan(0);
+    for (const m of moons) {
+      expect(m.fx?.uNightLift, m.data.name).toBe(nightLiftUniform);
+      expect(boundUniforms(m.mesh.material as THREE.Material).uNightLift, m.data.name).toBe(nightLiftUniform);
+    }
+  });
+
+  it('reaches a planet and its cloud deck through the same object', async () => {
+    const earth = PLANETS.find((p) => p.name === 'Earth')!;
+    const pending = createPlanetMesh(earth);
+    // Answer every fetch the factory makes, as it makes them.
+    let answered = 0;
+    for (let i = 0; i < 20; i++) {
+      await Promise.resolve();
+      while (answered < loaderState.loads.length) {
+        loaderState.loads[answered].onLoad(fakeTexture(`load ${answered}`));
+        answered += 1;
+      }
+    }
+    const planet = await pending;
+    expect(planet.fx?.uNightLift).toBe(nightLiftUniform);
+    expect(boundUniforms(planet.mesh.material as THREE.Material).uNightLift).toBe(nightLiftUniform);
+    expect(planet.cloudsMesh).toBeTruthy();
+    expect(boundUniforms(planet.cloudsMesh!.material as THREE.Material).uNightLift).toBe(nightLiftUniform);
   });
 });

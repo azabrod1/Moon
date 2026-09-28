@@ -1674,8 +1674,6 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
       // as far as ice should go. Neither is metallic.
       roughness: archetype === 'icy' ? 0.85 : 0.9,
       metalness: 0,
-      emissive: new THREE.Color(moonData.color),
-      emissiveIntensity: 0.03,
     });
     const fx = augmentSurfaceMaterial(
       mat, archetype, undefined, 0, undefined, undefined, moonData.name,

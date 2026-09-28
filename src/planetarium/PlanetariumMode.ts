@@ -6565,7 +6565,6 @@ export class PlanetariumMode {
     } else {
       material.color.setScalar(Math.max(fraction, 0.03));
     }
-    material.emissiveIntensity = 0.03 * Math.max(fraction, 0.03);
   }
 
   /** Re-pose the landed system's shadow guides + transit spots for this frame. */

@@ -511,12 +511,19 @@ export function resetCloudShadowUniforms(): void {
 /**
  * Night sides: Brightened's strength, as a fraction of each fragment's own
  * albedo on the night half. Neutral — no starlight tint — so a red body reads
- * red and a crater field reads as craters; one number for every body, so the
- * icy moons, whose albedo is highest, are the brightest night sides and set
- * the ceiling. Picked from captures of the dark and the icy bodies at a pinned
- * exposure.
+ * red and a crater field reads as craters; one number for every body.
+ *
+ * 0.045 is the lowest strength at which the darkest ground shows: Mercury's
+ * and Mars's night discs come to about 10/255 at exposure 1, where 0.03 leaves
+ * them at 5 or 6, barely off black. The lift is a fraction of albedo and not
+ * of sunlight, so it does not fall off with distance from the Sun the way the
+ * day side does: the farther and brighter a body, the closer its lifted night
+ * comes to its own day. At this strength Enceladus's night disc carries about
+ * a sixth of its day half's light, where the Moon's carries a twentieth. A
+ * body with planetshine (Europa, Tethys) is already that bright at night
+ * without any lift.
  */
-export const NIGHT_LIFT_STRENGTH = 0.03;
+export const NIGHT_LIFT_STRENGTH = 0.045;
 
 /**
  * The one uniform object every planetarium body's night lift reads — the

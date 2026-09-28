@@ -31,12 +31,19 @@
 //      never moves a pixel that far — it thins cloud edges by at most 45 % —
 //      where a cloud lit black drops by 150 or more. On a software renderer
 //      the bug darkened 3.0 % of the pinhole frame and 1.3 % of the zoomed
-//      centre that way; the fix 0.000 % of both.
+//      centre that way; the fix 0.000 % of both. The pair is a per-pixel
+//      comparison, so both shots must hold the same maps: the surface is
+//      settled first (no tile loading, the colour ladder quiet for two reads)
+//      and a pair whose maps changed between its shots — an 8k rung landing
+//      seconds after the jump on a slow renderer, which moved 0.4 % of the
+//      frame past the bar with the clouds white — is settled again and
+//      retaken, twice at most.
 //
 // With --assert the run fails on: a refused jump or tier override; air that
 // bound anyway; a deck radius off the body's by more than 1e-9 relative;
-// more than 0.3 % of a region darkened past 60; a reference with almost no
-// cloud in it (a pose that tests nothing); or an uncaught page error.
+// more than 0.3 % of a region darkened past 60; a pair whose maps still
+// differ after the retakes; a reference with almost no cloud in it (a pose
+// that tests nothing); or an uncaught page error.
 //
 // Prereq: npm run dev -- --port 5174
 //   node tools/cloud-magnify-probe.mjs --assert
@@ -102,6 +109,33 @@ try {
     return !loading || loading.classList.contains('hidden');
   }, { timeout: 180000 }).catch(() => {});
   const drawn = (frames = 2) => page.evaluate((n) => window.__moon.waitForDraw(n), frames);
+
+  // What could differ between the two shots of a pair besides the term: the
+  // sector tiles and the globe maps' tiers. Read with every shot, settled
+  // before a pair.
+  const surfaceState = () => page.evaluate(() => {
+    const stats = window.__moon.sectors();
+    const own = stats?.bodies?.Earth;
+    const rungs = (window.__moon.ladder()?.rungs ?? [])
+      .filter((entry) => entry.key.toLowerCase().includes('earth'))
+      .map((entry) => `${entry.key}:${entry.tier}`).sort();
+    return { loading: stats?.loading ?? null, resident: own ? [...own.resident].sort() : [], tiers: rungs.join(' ') };
+  });
+  const surfaceKey = (state) => JSON.stringify([state.resident, state.tiers]);
+  async function settleSurface(limitMs) {
+    const started = Date.now();
+    let previous = null;
+    let stableReads = 0;
+    while (Date.now() - started < limitMs) {
+      const now = await surfaceState();
+      const key = surfaceKey(now);
+      stableReads = previous === key && now.loading === 0 ? stableReads + 1 : 0;
+      if (stableReads >= 2) return now;
+      previous = key;
+      await page.waitForTimeout(400);
+    }
+    return surfaceState();
+  }
 
   // The condition: every surface's air held off, whatever this device bakes.
   const tier = await page.evaluate((clock) => {
@@ -217,18 +251,31 @@ try {
     await drawn(3);
     await page.waitForTimeout(300);
     await drawn(1);
-    const onShot = await capture(`${label}-detail-on`);
-    check((await detail(true)) === true, `${label}: the cloud-probe-detail switch refused`);
-    await drawn(3);
-    const offShot = await capture(`${label}-detail-off`);
-    await detail(false);
-    await drawn(2);
+    let onShot = null;
+    let offShot = null;
+    let before = null;
+    let after = null;
+    let retakes = 0;
+    for (; retakes < 3; retakes++) {
+      before = await settleSurface(20000);
+      onShot = await capture(`${label}-detail-on`);
+      check((await detail(true)) === true, `${label}: the cloud-probe-detail switch refused`);
+      await drawn(3);
+      offShot = await capture(`${label}-detail-off`);
+      after = await surfaceState();
+      await detail(false);
+      await drawn(2);
+      if (surfaceKey(before) === surfaceKey(after)) break;
+    }
+    const sameSurface = surfaceKey(before) === surfaceKey(after);
+    if (!sameSurface) retakes -= 1;
     if (teardown) { await page.evaluate(teardown); await drawn(2); }
     const measured = await compare(onShot, offShot, crop);
-    console.log(`  ${label}: cloud ${(measured.cloudOff * 100).toFixed(2)}% of the region with the term off, ${(measured.cloudOn * 100).toFixed(2)}% with it on; darkened past ${DARKENING_STEP}: ${(measured.darkened * 100).toFixed(3)}%`);
-    check(measured.darkened <= DARKENED_LIMIT, `${label}: ${(measured.darkened * 100).toFixed(2)}% of the region lost more than ${DARKENING_STEP} of luminance under the detail term — clouds drawn dark`);
+    console.log(`  ${label}: cloud ${(measured.cloudOff * 100).toFixed(2)}% of the region with the term off, ${(measured.cloudOn * 100).toFixed(2)}% with it on; darkened past ${DARKENING_STEP}: ${(measured.darkened * 100).toFixed(3)}%${retakes ? ` (retaken ×${retakes})` : ''}`);
+    check(sameSurface, `${label}: the maps changed between the two shots after ${retakes} retake(s) (${before.tiers} | ${after.tiers}; ${before.resident.length}/${after.resident.length} tiles), so the pair cannot be compared`);
+    if (sameSurface) check(measured.darkened <= DARKENED_LIMIT, `${label}: ${(measured.darkened * 100).toFixed(2)}% of the region lost more than ${DARKENING_STEP} of luminance under the detail term — clouds drawn dark`);
     check(measured.cloudOff > 0.005, `${label}: the reference shows almost no cloud (${(measured.cloudOff * 100).toFixed(2)}%) — the pose is not testing clouds`);
-    report.poses.push({ label, crop, ...measured, on: onShot.file, off: offShot.file });
+    report.poses.push({ label, crop, ...measured, retakes, sameSurface, surface: after, on: onShot.file, off: offShot.file });
   }
   console.log('[2] magnified clouds, the detail term on against off');
   await pose('pinhole-60deg', () => window.__moon.setLens(0), [0, 0, VIEWPORT_WIDTH, VIEWPORT_HEIGHT], () => window.__moon.setLens());

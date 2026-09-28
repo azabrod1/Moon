@@ -37,6 +37,7 @@ import {
   surfaceEventNarrative,
   surfaceEventPhrase,
   surfaceTargetKey,
+  targetBelowLimb,
   transportTrackingUp,
   type SurfaceEventInfo,
   type SurfaceLandedInfo,
@@ -787,4 +788,106 @@ describe('anchored solar-eclipse pass — totality regressions', () => {
       expect(seps[seps.length - 1]).toBeGreaterThan(0.5);
     },
   );
+});
+
+describe('targetBelowLimb — a look up is never a look through the ground', () => {
+  const R = 1;
+  const shell = R + surfaceAltitudeAU(R);
+  const eye = new THREE.Vector3(0, shell, 0);
+  // Direction at `elevationDeg` above the eye's local horizontal, far away.
+  const far = (elevationDeg: number, distance = 1e6) =>
+    new THREE.Vector3(Math.cos(elevationDeg * DEG2RAD), Math.sin(elevationDeg * DEG2RAD), 0)
+      .multiplyScalar(distance)
+      .add(eye);
+  const dipDeg = Math.acos(R / shell) * RAD2DEG;
+
+  it('overhead and on the horizon are sky; straight down is ground', () => {
+    expect(targetBelowLimb(eye, far(90), R)).toBe(false);
+    expect(targetBelowLimb(eye, far(0), R)).toBe(false);
+    expect(targetBelowLimb(eye, far(-90), R)).toBe(true);
+  });
+
+  it('the limb, not the horizon, is the line: the eye above the ground sees past level', () => {
+    expect(targetBelowLimb(eye, far(-dipDeg + 0.1), R)).toBe(false);
+    expect(targetBelowLimb(eye, far(-dipDeg - 0.1), R)).toBe(true);
+  });
+
+  it('a target nearer than the ground behind it is still in view', () => {
+    // Below the limb's line, but short of where that line meets the sphere.
+    const near = eye.clone().add(new THREE.Vector3(0.001, -0.001, 0));
+    expect(targetBelowLimb(eye, near, R)).toBe(false);
+  });
+});
+
+describe('anchored solar-eclipse observer — the Sun and the limb', () => {
+  const earth = PLANETARIUM_BODIES.find(b => b.name === 'Earth')!;
+  const spec = { kind: 'shadow-transit' as const, parentPlanet: 'Earth', moonName: 'Moon' };
+
+  // The mode's pin, exactly as ensureSurfaceSpotAnchor derives it.
+  const anchorAt = (body: typeof earth, moonName: string, peakMs: number) => {
+    const offset = computeMoonOffsetEquatorialAU(moonName, body.name, peakMs, new THREE.Vector3());
+    const axis = computeBodyPositionAU(body, peakMs).add(offset).normalize();
+    return computeSpotAnchorLocal(
+      offset, axis, body.radiusAU, computeBodyState(body, peakMs).orientationQuaternion, new THREE.Vector3(),
+    );
+  };
+  // Body-centered eye and Sun at an instant, as updateSurfaceCamera sees them.
+  const sunBelowLimb = (body: typeof earth, anchor: THREE.Vector3, utcMs: number) => {
+    const eye = computeAnchoredSpotVantage(
+      body.radiusAU, anchor, computeBodyState(body, utcMs).orientationQuaternion, new THREE.Vector3(),
+    );
+    const sun = computeBodyPositionAU(body, utcMs).multiplyScalar(-1);
+    return targetBelowLimb(eye, sun, body.radiusAU);
+  };
+
+  it('rewound nine hours from the 2027-02-06 annular, the pinned ground has the Sun under the limb', () => {
+    // The reported frame: 07:03:39 UTC, the clock rewound from the jump. The
+    // view kept tracking the Sun from the peak's ground point and looked
+    // through Earth at it — the limb's clouds drawn edge-on as streaks.
+    const event = findShadowEvent(spec, Date.parse('2027-01-25T00:00:00Z'), 1)!;
+    expect(Math.abs(event.peakUtcMs - Date.parse('2027-02-06T16:00:48Z'))).toBeLessThan(10 * 60_000);
+    const anchor = anchorAt(earth, 'Moon', event.peakUtcMs);
+    expect(sunBelowLimb(earth, anchor, event.peakUtcMs)).toBe(false);
+    expect(sunBelowLimb(earth, anchor, Date.parse('2027-02-06T07:03:39Z'))).toBe(true);
+  });
+
+  it("inside an Earth eclipse's own contacts the pinned ground always keeps the Sun up", () => {
+    // Why the anchor may stand for the whole event: 2000–2100 never gets
+    // closer than 3.6° above the limb (the 2025-09-21 partial). A sample.
+    let from = Date.parse('2024-01-01T00:00:00Z');
+    for (let n = 0; n < 12; n++) {
+      const event = findShadowEvent(spec, from, 1)!;
+      const anchor = anchorAt(earth, 'Moon', event.peakUtcMs);
+      for (let t = event.startUtcMs; t <= event.endUtcMs; t += 10 * 60_000) {
+        expect(sunBelowLimb(earth, anchor, t)).toBe(false);
+      }
+      from = event.endUtcMs + 86_400_000;
+    }
+  });
+
+  it("but a grazing partial's padding hour can put it under, so the window alone is not enough", () => {
+    // The 2025-09-21 partial: the deepest-cover point has the Sun on the
+    // horizon at peak, and the hour before first contact is still narrated.
+    const event = findShadowEvent(spec, Date.parse('2025-09-01T00:00:00Z'), 1)!;
+    expect(Math.abs(event.peakUtcMs - Date.parse('2025-09-21T19:41:00Z'))).toBeLessThan(10 * 60_000);
+    const anchor = anchorAt(earth, 'Moon', event.peakUtcMs);
+    expect(sunBelowLimb(earth, anchor, event.startUtcMs - 60 * 60_000)).toBe(true);
+  });
+
+  it("and Titan's shadow outlasts enough of Saturn's day to do it mid-transit", () => {
+    const saturn = PLANETARIUM_BODIES.find(b => b.name === 'Saturn')!;
+    const titanSpec = { kind: 'shadow-transit' as const, parentPlanet: 'Saturn', moonName: 'Titan' };
+    let from = Date.parse('2024-01-01T00:00:00Z');
+    let hiddenMidTransit = false;
+    for (let n = 0; n < 12 && !hiddenMidTransit; n++) {
+      const event = findShadowEvent(titanSpec, from, 1);
+      if (!event) break;
+      const anchor = anchorAt(saturn, 'Titan', event.peakUtcMs);
+      for (let t = event.startUtcMs; t <= event.endUtcMs; t += 10 * 60_000) {
+        if (sunBelowLimb(saturn, anchor, t)) hiddenMidTransit = true;
+      }
+      from = event.endUtcMs + 3_600_000;
+    }
+    expect(hiddenMidTransit).toBe(true);
+  });
 });

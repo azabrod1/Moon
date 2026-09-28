@@ -7,7 +7,11 @@
  * own seams and passes plain vectors in. Unit-tested in surfaceView.test.ts.
  */
 import * as THREE from 'three';
-import { shadowAxisSurfacePoint, type ShadowClassification } from '../astronomy/shadows';
+import {
+  shadowAxisSphereHitAU,
+  shadowAxisSurfacePoint,
+  type ShadowClassification,
+} from '../astronomy/shadows';
 import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
 
 /** What the surface view points at (resolved to scene positions by the owner). */
@@ -343,6 +347,31 @@ export function computeAnchoredSpotVantage(
     .applyQuaternion(bodyOrientation)
     .normalize()
     .multiplyScalar(bodyRadiusAU + surfaceAltitudeAU(bodyRadiusAU));
+}
+
+const tmpSightline = new THREE.Vector3();
+
+/**
+ * Whether the landed body's limb hides a target from the eye: the sightline
+ * from `eyeAU` to `targetAU` (body-centered AU) meets the body's sphere before
+ * it reaches the target — the same near hit the shadow axis takes, cast along
+ * the sightline. The default vantage can never do this, holding its target
+ * high by construction; the stand-still eclipse observer can, because it turns
+ * with the ground. Nine hours before the 2027-02-06 annular the pinned spot has
+ * the Sun 22° below its horizon, under a limb that dips 19° from the camera's
+ * shell; a long transit of a fast-spinning giant (Titan's shadow on Saturn)
+ * does it without the clock ever leaving the event.
+ */
+export function targetBelowLimb(
+  eyeAU: THREE.Vector3,
+  targetAU: THREE.Vector3,
+  bodyRadiusAU: number,
+): boolean {
+  const sightline = tmpSightline.copy(targetAU).sub(eyeAU);
+  const distanceAU = sightline.length();
+  if (distanceAU === 0) return false;
+  const hitAU = shadowAxisSphereHitAU(eyeAU, sightline.divideScalar(distanceAU), bodyRadiusAU);
+  return hitAU !== null && hitAU < distanceAU;
 }
 
 /**

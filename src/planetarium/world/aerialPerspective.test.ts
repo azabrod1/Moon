@@ -98,8 +98,8 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = 'dcc6d4bd413a2b3e39b3eeae006054783014b6b6d3d7f9b6c1f7cb7e805eac72';
-const PROD_FRAGMENT_HASH = '6551f993f5415caa67c050ba6b845edde960e97767b4d71eb83ff71b94b8c320';
+const DEV_FRAGMENT_HASH = '337da66fe8593a28e4a14da6ac3aeb130631676be3577e470e4e0f297815a05e';
+const PROD_FRAGMENT_HASH = '046cc060e212f9e3a89c3166b8eacf30dbb15f24fc9a320075054ef74d48c7f2';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 
 describe('the injected surface shader', () => {

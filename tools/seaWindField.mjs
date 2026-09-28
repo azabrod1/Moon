@@ -1,6 +1,7 @@
-// The wind over the sea, as the two-channel map Earth's ocean reads its glint
+// The wind over the sea, as the pair of maps Earth's ocean reads its glint
 // from (src/planetarium/world/seaWind.ts), generated here and baked by
-// tools/gen-seawind.mjs into public/textures/earth-seawind.v1.webp.
+// tools/gen-seawind.mjs into public/textures/earth-seawind-calm.v1.webp and
+// earth-seawind-windy.v1.webp.
 //
 // A glint is a picture of the wind. Where the wind field varies faster than
 // the mirror lobe is wide (about 20 degrees of facet tilt at trade winds), the

@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import {
   COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_CALM_LOBE_ROUGHNESS, SEA_CALM_LOBE_WIND_MS, SEA_WIND_MAX_MS,
+  disposeRetiredSeaWindMaps,
   installSeaWindMap, meanSquareSlope, parseSeaWindMapParam, parseSeaWindParam, seaWindBytesFromRgba,
   seaWindBytesFromWindMap, seaWindMapDimensions, seaWindMapSource, seaWindTextureFrom, seaWindTextures,
   seaWindTexturesFrom, setSeaWindMips, slopeRoughness, windRoughness,
@@ -131,11 +132,18 @@ describe('the textures', () => {
     expect(seaWindMapSource()).toBe('shipped');
     expect(seaWindTextures().calm).toBe(first.calm);
     expect(seaWindTextures().windy).toBe(first.windy);
-    // A replacement of one kind disposes the one it replaces.
+    // A replacement of one kind retires the one it replaces, disposed once
+    // the sea has been rebound to the new one (rebindSeaWindMaps calls this):
+    // disposed while still bound, three would re-upload it from a bitmap its
+    // dispose listener had closed.
     let disposed = 0;
     first.calm.addEventListener('dispose', () => { disposed++; });
     const second = seaWindTextureFrom(new Uint8Array(2), 2, 1);
     expect(installSeaWindMap('calm', second, 'shipped')).toBe(second);
+    expect(disposed).toBe(0);
+    disposeRetiredSeaWindMaps();
+    expect(disposed).toBe(1);
+    disposeRetiredSeaWindMaps();
     expect(disposed).toBe(1);
     expect(seaWindTextures().calm).toBe(second);
     // Asking for a map from a file refuses the shipped pair from then on,
@@ -269,7 +277,14 @@ describe('the generator (tools/seaWindField.mjs)', () => {
     expect(calm).toHaveLength(256 * 128 * 3);
     expect(calm[0]).toBe(calm[1]);
     expect(calm[1]).toBe(calm[2]);
-    expect(encodeWindyGrey(small)).toHaveLength(128 * 64 * 3);
+    const windy = encodeWindyGrey(small);
+    expect(windy).toHaveLength(128 * 64 * 3);
+    // Both grey pictures are north-up too: their first row is the field's
+    // last, which a hash pin moved on a re-bake could not tell from a map
+    // upside down.
+    expect(calm[0]).toBe(Math.round(Math.min(1, Math.max(0, small.calmWeight[127 * 256])) * 255));
+    expect(windy[0]).toBe(Math.round(Math.min(1, Math.max(0, small.windyMs[63 * 128] / SEA_WIND_MAX_MS)) * 255));
+    expect(calm[calm.length - 3]).toBe(Math.round(Math.min(1, Math.max(0, small.calmWeight[255])) * 255));
     const both = encodeSeaWindRgb(small);
     expect(both).toHaveLength(256 * 128 * 3);
     // The picture's top row is the map's last row, the north.

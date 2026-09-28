@@ -110,7 +110,7 @@ import {
 import { AIRLIGHT_SCALE } from './atmosphereModel';
 import { perfSwitchOn, perfSwitchUniform } from '../../app/perfSwitches';
 import {
-  COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_CALM_LOBE_ROUGHNESS, SEA_WIND_MAX_MS, seaWindTextures,
+  COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_CALM_LOBE_ROUGHNESS, SEA_WIND_MAX_MS, disposeRetiredSeaWindMaps, seaWindTextures,
 } from './seaWind';
 import { EARTH_NIGHT_COLD_CUT, EARTH_NIGHT_WARM_GLSL } from '../../shared/shaders/atmosphere';
 import {
@@ -559,8 +559,11 @@ function roughnessChunk(): string {
  */
 const WATER_GLOSS_GLSL = /* glsl */ `
 float seaCalmWeight = 0.0;
+float seaWater = 0.0;
 if (GROUND_ON(uWaterGloss > 0.0)) {
   float waterGain = uWaterGloss;
+  seaWater = clamp((${ROUGHNESS_MAP_LAND.toFixed(6)} - roughnessFactor)
+      / ${(ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER).toFixed(6)}, 0.0, 1.0);
   if (uSeaWindOn > 0.5) {
     vec3 seaDir = normalize(vObjPos);
     vec2 seaUv = sphereEquirectUv(seaDir);
@@ -572,9 +575,7 @@ if (GROUND_ON(uWaterGloss > 0.0)) {
           + ${COX_MUNK_SLOPE_PER_MS.toFixed(5)} * seaWindMs));
       waterGain = (${ROUGHNESS_MAP_LAND.toFixed(6)} - seaRoughness)
           / ${(ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER).toFixed(6)};
-      seaCalmWeight = textureGrad(uSeaCalmMap, seaUv, seaDx, seaDy).r
-          * clamp((${ROUGHNESS_MAP_LAND.toFixed(6)} - roughnessFactor)
-              / ${(ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER).toFixed(6)}, 0.0, 1.0);
+      seaCalmWeight = textureGrad(uSeaCalmMap, seaUv, seaDx, seaDy).r * seaWater;
     }
   }
   roughnessFactor = max(${ROUGHNESS_MAP_LAND.toFixed(6)}
@@ -1661,7 +1662,10 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // floor included, and the calm lobe the same geometry term, so a small
   // disc's normal spread widens both. Then the cap, on the water's own
   // reflection and in units of white (OCEAN_GLINT_CAP). What is left is what
-  // the cloud mask below can cut.
+  // the cloud mask below can cut. Both the Fresnel and the lobe are the
+  // water's, so both fade with the water fraction the roughness map reads:
+  // the gate is the material's, and the land under it keeps three's own
+  // dielectric term and lobe, as it had before the sea was given its own.
   vec3 seaGlint = vec3(0.0);
   if (GROUND_ON(uWaterGloss > 0.0)) {
     vec3 glintRaw = reflectedLight.directSpecular;
@@ -1669,15 +1673,19 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
     vec3 seaHalfDir = normalize(normalize(vSunViewDir) + seaViewDir);
     float seaDotVH = clamp(dot(seaViewDir, seaHalfDir), 0.0, 1.0);
     float seaFresnelTail = exp2((-5.55473 * seaDotVH - 6.98316) * seaDotVH);
-    float seaFresnel = (${SEA_WATER_F0.toFixed(5)} * (1.0 - seaFresnelTail) + seaFresnelTail)
-        / (0.04 * (1.0 - seaFresnelTail) + seaFresnelTail);
+    float seaFresnel = mix(1.0,
+        (${SEA_WATER_F0.toFixed(5)} * (1.0 - seaFresnelTail) + seaFresnelTail)
+            / (0.04 * (1.0 - seaFresnelTail) + seaFresnelTail),
+        seaWater);
     float seaLobe = 1.0;
     if (uSeaWindOn > 0.5) {
       float seaDotNH = saturate(dot(normal, seaHalfDir));
       float seaAlphaWindy = pow2(material.roughness);
       float seaAlphaCalm = pow2(min(${GLINT_CALM_GLSL} + geometryRoughness, 1.0));
-      seaLobe = mix(seaBeckmann(seaAlphaWindy, seaDotNH), seaBeckmann(seaAlphaCalm, seaDotNH), seaCalmWeight)
-          / D_GGX(seaAlphaWindy, seaDotNH);
+      seaLobe = mix(1.0,
+          mix(seaBeckmann(seaAlphaWindy, seaDotNH), seaBeckmann(seaAlphaCalm, seaDotNH), seaCalmWeight)
+              / D_GGX(seaAlphaWindy, seaDotNH),
+          seaWater);
     }
     seaGlint = min(glintRaw * (seaFresnel * seaLobe${GLINT_KEEP_GLSL}), vec3(${GLINT_CAP_GLSL}));
     outgoingLight -= glintRaw - seaGlint;
@@ -2034,6 +2042,7 @@ export function rebindSeaWindMaps(): void {
     seaWindBound = true;
   }
   applySeaWindOn();
+  disposeRetiredSeaWindMaps();
 }
 
 /** The map is read only with the switch on, the map bound, and no DEV override

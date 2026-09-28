@@ -230,16 +230,25 @@ export function seaWindMapSource(): string {
  * file. Returns the texture now installed, or null when it was refused — a
  * shipped arrival after a DEV override was asked for, whichever of the two
  * lands first, so a sheet captured through `?seawindmap=` never shows the
- * shipped maps. The previous map of the kind is disposed; a refused one is
- * the caller's.
+ * shipped maps. The previous map of the kind is retired, to be disposed once
+ * the sea is rebound to its successor; a refused one is the caller's.
  */
 export function installSeaWindMap(kind: SeaWindMapKind, tex: THREE.Texture, source: string): THREE.Texture | null {
   if (source === 'shipped' && overrideRequested) return null;
   const previous = installed[kind];
   installed[kind] = tex;
   mapSource = source;
-  if (previous && previous !== tex) previous.dispose();
+  if (previous && previous !== tex) retired.push(previous);
   return tex;
+}
+
+/** The maps an install replaced, disposed once the sea's uniforms point at
+ *  their successors (`rebindSeaWindMaps` calls this after binding): a map
+ *  disposed while still bound would be re-uploaded from a bitmap its dispose
+ *  listener has closed. */
+const retired: THREE.Texture[] = [];
+export function disposeRetiredSeaWindMaps(): void {
+  for (const tex of retired.splice(0)) tex.dispose();
 }
 
 /** `?seawindmap=<url>` (DEV only): the sea's maps from a file instead of the

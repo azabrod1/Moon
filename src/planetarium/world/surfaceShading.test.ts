@@ -813,8 +813,14 @@ describe('the sea', () => {
   it('is drawn as seawater: three\'s mirror term rescaled by the ratio of the two Schlick curves', () => {
     const text = seaFragment();
     expect(SEA_WATER_F0).toBeCloseTo(0.02006, 5);
-    expect(text).toContain(`float seaFresnel = (${SEA_WATER_F0.toFixed(5)} * (1.0 - seaFresnelTail) + seaFresnelTail)`);
-    expect(text).toContain('/ (0.04 * (1.0 - seaFresnelTail) + seaFresnelTail);');
+    // The ratio fades with the water fraction the roughness map reads, so
+    // the land under the same material gate keeps three's dielectric term.
+    expect(text).toContain('float seaFresnel = mix(1.0,\n'
+      + `        (${SEA_WATER_F0.toFixed(5)} * (1.0 - seaFresnelTail) + seaFresnelTail)\n`
+      + '            / (0.04 * (1.0 - seaFresnelTail) + seaFresnelTail),\n'
+      + '        seaWater);');
+    expect(text).toContain(`seaWater = clamp((${ROUGHNESS_MAP_LAND.toFixed(6)} - roughnessFactor)\n`
+      + `      / ${(ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER).toFixed(6)}, 0.0, 1.0);`);
     // three's own spelling of the Schlick tail, so the division takes out
     // exactly what three put in.
     expect(text).toContain('float seaFresnelTail = exp2((-5.55473 * seaDotVH - 6.98316) * seaDotVH);');
@@ -839,9 +845,7 @@ describe('the sea', () => {
       + `          + ${COX_MUNK_SLOPE_PER_MS.toFixed(5)} * seaWindMs));`);
     // The calm weight beside it, scaled by the texel's water fraction so a
     // coast's land half takes none of its lane.
-    expect(text).toContain('seaCalmWeight = textureGrad(uSeaCalmMap, seaUv, seaDx, seaDy).r\n'
-      + `          * clamp((${ROUGHNESS_MAP_LAND.toFixed(6)} - roughnessFactor)\n`
-      + `              / ${(ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER).toFixed(6)}, 0.0, 1.0);`);
+    expect(text).toContain('seaCalmWeight = textureGrad(uSeaCalmMap, seaUv, seaDx, seaDy).r * seaWater;');
     // The gradients are taken in the uniform branch, before the per-fragment
     // gate that spares pure land the fetches: a derivative inside a branch the
     // fragments of one draw take both sides of is undefined.
@@ -870,8 +874,12 @@ describe('the sea', () => {
     expect(text).toContain('float seaAlphaWindy = pow2(material.roughness);');
     expect(text).toContain(`float seaAlphaCalm = pow2(min(${
       import.meta.env.DEV ? 'uGlintCalm' : SEA_CALM_LOBE_ROUGHNESS.toFixed(5)} + geometryRoughness, 1.0));`);
-    expect(text).toContain('seaLobe = mix(seaBeckmann(seaAlphaWindy, seaDotNH), seaBeckmann(seaAlphaCalm, seaDotNH), seaCalmWeight)\n'
-      + '          / D_GGX(seaAlphaWindy, seaDotNH);');
+    // The swap, like the Fresnel, fades with the water fraction: land keeps
+    // three's lobe.
+    expect(text).toContain('seaLobe = mix(1.0,\n'
+      + '          mix(seaBeckmann(seaAlphaWindy, seaDotNH), seaBeckmann(seaAlphaCalm, seaDotNH), seaCalmWeight)\n'
+      + '              / D_GGX(seaAlphaWindy, seaDotNH),\n'
+      + '          seaWater);');
     // The two lobes share their peak: at the half vector on the normal, both
     // read 1 / (pi alpha²), so the swap moves the tail and not the centre.
     const beckmann = (alpha: number, dotNH: number): number => {

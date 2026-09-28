@@ -5,7 +5,8 @@
  * the landed body's surface it should stand — the solar-eclipse view stands
  * on its event's pinned ground only while that event is in the sky and the
  * ground can see the Sun, never looking through the body at it — and how a
- * drag turns it. No scene or DOM access — the PlanetariumMode adapter gathers
+ * drag turns it (a level pan; `?lookdrag=eyepiece` turns it in its own frame
+ * instead). No scene or DOM access — the PlanetariumMode adapter gathers
  * fresh scene positions from the renderer's own seams and passes plain
  * vectors in. Unit-tested in surfaceView.test.ts.
  */
@@ -580,6 +581,32 @@ export function applySurfaceLookDrag(
   return quaternion.premultiply(
     tmpLookTurn.setFromAxisAngle(horizontal, targetElevation - elevation),
   );
+}
+
+const CAMERA_RIGHT = new THREE.Vector3(1, 0, 0);
+const CAMERA_UP = new THREE.Vector3(0, 1, 0);
+
+/**
+ * The eyepiece drag, the A/B behind `?lookdrag=eyepiece`: the camera turns
+ * about its own up and right axes, the way a hand swings a telescope, so the
+ * sky follows the finger across the whole frame and the frame never twists —
+ * where the level pan above turns it by tan(elevation) of what it pans, 21°
+ * for a full-width drag at the 2027-02-06 eclipse spot. What it gives up is
+ * that pan's horizon: a long sideways sweep runs along a great circle and
+ * sinks toward the horizon instead of circling at one height, drags that go
+ * round in circles roll the view against the ground, and the zenith is no
+ * stop — the view passes over it, and nothing flips, because nothing here is
+ * held level to begin with.
+ */
+export function applySurfaceEyepieceDrag(
+  quaternion: THREE.Quaternion,
+  rightRad: number,
+  downRad: number,
+): THREE.Quaternion {
+  // Turning the view left carries the sky right, and pitching it up carries
+  // the sky down: both are turns in the camera's own frame, so post-multiplied.
+  quaternion.multiply(tmpLookTurn.setFromAxisAngle(CAMERA_UP, rightRad));
+  return quaternion.multiply(tmpLookTurn.setFromAxisAngle(CAMERA_RIGHT, downRad));
 }
 
 export const SURFACE_FOV_MIN_DEG = 1.5;

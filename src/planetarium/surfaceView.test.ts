@@ -5,12 +5,13 @@
  * sub-occluder), the altitude clamp, and the entry-FOV-fits-the-disc rule;
  * the eclipse pin's policy (it belongs to its event, and never stands where
  * the ground hides the Sun), and the drag step the mode applies (the sky
- * follows the finger at any roll).
+ * follows the finger at any roll), with its `?lookdrag=eyepiece` A/B.
  */
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import {
   angularDiameterDeg,
+  applySurfaceEyepieceDrag,
   applySurfaceLookDrag,
   bodyDisplayName,
   clampSurfaceFovDeg,
@@ -1039,6 +1040,58 @@ describe('surfaceLookRotation — the sky follows the finger at any roll', () =>
     expect([after.x, after.y, after.z, after.w].every(Number.isFinite)).toBe(true);
     expect(after.length()).toBeCloseTo(1, 12);
     expect(Math.asin(axis(after, 0, 0, -1).dot(zenith)) * RAD2DEG).toBeLessThanOrEqual(89 + 1e-9);
+  });
+
+  // The ?lookdrag=eyepiece A/B: the camera turns in its own frame.
+  const eyepiece = (q: THREE.Quaternion, rightRad: number, downRad: number) =>
+    applySurfaceEyepieceDrag(q.clone(), rightRad, downRad);
+  // How far the frame turned about its middle: a sky point just above the old
+  // centre, read around where that centre now sits.
+  const twistDeg = (before: THREE.Quaternion, after: THREE.Quaternion) => {
+    const onScreen = (sky: THREE.Vector3) => {
+      const f = axis(after, 0, 0, -1);
+      return {
+        right: Math.atan2(sky.dot(axis(after, 1, 0, 0)), sky.dot(f)),
+        down: -Math.atan2(sky.dot(axis(after, 0, 1, 0)), sky.dot(f)),
+      };
+    };
+    const centre = onScreen(axis(before, 0, 0, -1));
+    const above = onScreen(axis(before, 0, 0, -1).addScaledVector(axis(before, 0, 1, 0), 0.01).normalize());
+    return Math.atan2(above.right - centre.right, -(above.down - centre.down)) * RAD2DEG;
+  };
+
+  it.each(poses)('eyepiece A/B at %s° up, rolled %s°: the sky follows the finger too', (elevationDeg, rollDeg) => {
+    const before = poseCamera(elevationDeg, 35, rollDeg);
+    for (const [rightRad, downRad] of [[step, 0], [0, step], [-step, 0.6 * step]]) {
+      expectFollows(oldCentreOnScreen(before, eyepiece(before, rightRad, downRad)), rightRad, downRad);
+    }
+  });
+
+  it('the eyepiece A/B never twists the frame, where the level pan turns it by tan(elevation)', () => {
+    // The 2027-02-06 eclipse pose, and a full-width drag at its 4.3° field.
+    const before = poseCamera(74, 200, 180);
+    const sweep = 6 * DEG2RAD;
+    let level = before.clone();
+    let eye = before.clone();
+    for (let i = 0; i < 60; i++) {
+      level = drag(level, sweep / 60, 0);
+      eye = eyepiece(eye, sweep / 60, 0);
+    }
+    // tan 74° ≈ 3.5 of the pan: about 21°.
+    expect(Math.abs(twistDeg(before, level))).toBeGreaterThan(18);
+    expect(Math.abs(twistDeg(before, eye))).toBeLessThan(0.01);
+  });
+
+  it('the eyepiece A/B passes over the zenith without flipping', () => {
+    const start = poseCamera(80, 0, 0);
+    let q = start.clone();
+    for (let i = 0; i < 40; i++) q = eyepiece(q, 0, 0.5 * DEG2RAD);
+    // Twenty degrees of pitch from 80° up: over the top and ten degrees down
+    // the other side, with the pose intact.
+    const turned = Math.acos(THREE.MathUtils.clamp(axis(q, 0, 0, -1).dot(axis(start, 0, 0, -1)), -1, 1));
+    expect(turned * RAD2DEG).toBeCloseTo(20, 6);
+    expect(Math.asin(axis(q, 0, 0, -1).dot(zenith)) * RAD2DEG).toBeCloseTo(80, 6);
+    expect(q.length()).toBeCloseTo(1, 12);
   });
 
   it('never rolls the view against the horizon', () => {

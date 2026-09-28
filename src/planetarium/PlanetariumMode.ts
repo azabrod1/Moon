@@ -198,6 +198,7 @@ import { GyroSteering } from './input/GyroSteering';
 import { SurfaceLook } from './input/SurfaceLook';
 import {
   angularDiameterDeg,
+  applySurfaceEyepieceDrag,
   applySurfaceLookDrag,
   bodyDisplayName,
   clampSurfaceFovDeg,
@@ -1710,6 +1711,12 @@ export class PlanetariumMode {
   private surfaceFovDeg = SURFACE_FOV_DEFAULT_DEG;
   private surfaceTracking = true;
   private surfaceLook: SurfaceLook;
+  /** `?lookdrag=eyepiece`: the look-up view drags in the camera's own frame
+   *  (applySurfaceEyepieceDrag) — no twist, and no level horizon — instead of
+   *  the level pan (applySurfaceLookDrag). Read once: the A/B for how a drag
+   *  should feel. */
+  private readonly surfaceEyepieceDrag =
+    new URLSearchParams(location.search).get('lookdrag') === 'eyepiece';
   private preSurfaceCameraPos = new THREE.Vector3();
   private preSurfaceAutoRotate = false;
   // Entry/exit/re-point FOV ease. fromPos is set on entry only (the camera
@@ -16101,6 +16108,9 @@ export class PlanetariumMode {
       view: this.landedView,
       fov: displayFov,
       surfaceFovDeg: this.surfaceFovDeg,
+      // Which drag the look-up view answers with: the level pan, or the
+      // camera-frame A/B behind ?lookdrag=eyepiece.
+      lookDrag: this.surfaceEyepieceDrag ? 'eyepiece' : 'level',
       camLenAU: camLen,
       subjectName,
       subjectAngularDeg,
@@ -17495,6 +17505,10 @@ export class PlanetariumMode {
     // A full-viewport-height drag pans one FOV — "grab the sky".
     const radPerPx =
       (displayFovDeg(this.camera) * DEG2RAD) / Math.max(this.renderer.domElement.clientHeight, 1);
+    if (this.surfaceEyepieceDrag) {
+      applySurfaceEyepieceDrag(this.camera.quaternion, dxPx * radPerPx, dyPx * radPerPx);
+      return;
+    }
     const zenith = this.tmpSurfaceZenith.copy(this.camera.position).normalize();
     // A level pan — yaw about the local zenith, pitch about the horizon —
     // solved so the sky follows the finger whatever the camera's roll.

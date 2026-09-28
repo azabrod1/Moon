@@ -2,7 +2,9 @@
  * Observatory panel for the Planetarium's landed mode — cool-glass instrument
  * styling (accent reserved for happening-now warmth). "From ⟨body⟩ ▾" vantage
  * header (click = change vantage) with swap chip, phase hero (SVG glyph +
- * angular-diameter data line; Quiet-sky card on moonless grounds), live
+ * angular-diameter data line, every headline naming its body; on the Moon a
+ * "From Earth" row under it with the Moon's own phase; Quiet-sky card on
+ * moonless grounds), live
  * now-bar, the sky window that is the door to the surface view (with its
  * watch row and one-time coach mark), Earth's prev/next finder rows with
  * next-date metas, and the per-system upcoming-events list with
@@ -36,6 +38,9 @@ export type ObservatorySubjectInfo =
       distanceKm: number;
       /** Subject's catalog tint — the phase glyph is painted in it. */
       tintCss: string;
+      /** The Moon's own catalog tint. Standing on the Moon, the "From Earth"
+       *  row under the hero paints its small glyph in it. */
+      moonTintCss: string;
     }
   | {
       kind: 'moon-phase';
@@ -302,17 +307,32 @@ export interface ObservatoryEventRow {
   speck: boolean;
 }
 
-// The phase of Earth seen from the Moon is the complement of the Moon's phase.
-const EARTH_PHASE_NAME: Record<string, string> = {
-  'New Moon': 'Full Earth',
+// The phase of Earth seen from the Moon is the complement of the Moon's
+// phase. Keyed on the bare phase ('New', not 'New Moon'): every headline
+// appends its own body, so "Waxing Crescent" can never be read as the Moon's
+// while the reader stands on it.
+const COMPLEMENT_PHASE: Record<string, string> = {
+  New: 'Full',
   'Waxing Crescent': 'Waning Gibbous',
   'First Quarter': 'Last Quarter',
   'Waxing Gibbous': 'Waning Crescent',
-  'Full Moon': 'New Earth',
+  Full: 'New',
   'Waning Gibbous': 'Waxing Crescent',
   'Last Quarter': 'First Quarter',
   'Waning Crescent': 'Waxing Gibbous',
 };
+
+/** The ephemeris names the Moon's phase with the body at the ends only
+ *  ('New Moon', 'Full Moon'); strip it so every phase is a bare word. */
+function barePhase(moonPhaseName: string): string {
+  return moonPhaseName.replace(/ Moon$/, '');
+}
+
+/** Last Quarter is a waning phase too — matching 'Waning' alone would mirror
+ *  the glyph for that whole bucket. */
+function isWaningPhase(bare: string): boolean {
+  return bare.startsWith('Waning') || bare === 'Last Quarter';
+}
 
 /** Where the bottom sheet is parked (≤640px): 'peek' tracks the floor of the
  * drag range (the summary through the now-bar), 'full' tracks the content
@@ -415,37 +435,53 @@ export function formatCountdown(nowUtcMs: number, event: ShadowEvent): string {
   return `in ${((event.peakUtcMs - nowUtcMs) / (365.25 * 86_400_000)).toFixed(1)} years`;
 }
 
+/** A phase for the glyph: how much is lit and which side the light is on. */
+export interface PhaseGlyphInput {
+  litFraction: number;
+  lightOnRight: boolean;
+  tint: string;
+}
+
 /**
  * Phase headline/meta/glyph inputs for a subject — shared by the panel hero
  * and the surface HUD's no-event fallback. Null for events-only and
  * companionless subjects (the latter's hero is the static Quiet-sky card).
+ *
+ * Every headline names its body ("Waxing Crescent Earth", "Crescent
+ * Jupiter"): a bare "Waxing Crescent" over the Moon's own ground reads as the
+ * Moon's phase. `fromEarth` is the Moon as Earth sees it, set only while
+ * standing on the Moon — the phase people still mean by "the phase". The
+ * panel shows it as a quiet row under the hero; the surface HUD does not,
+ * because it narrates the sky overhead and the Moon is under your feet.
  */
 export function observatoryPhaseText(
   utcMs: number,
   info: ObservatorySubjectInfo,
-): {
+): (PhaseGlyphInput & {
   headline: string;
   meta: string;
-  litFraction: number;
-  lightOnRight: boolean;
-  tint: string;
-} | null {
+  fromEarth: (PhaseGlyphInput & { text: string }) | null;
+}) | null {
   if (info.kind === 'earth') {
     const state = computeOrbitalState(new Date(utcMs));
-    const illumination = info.subject === 'Earth' ? 1 - state.illumination : state.illumination;
-    const phaseName =
-      info.subject === 'Earth'
-        ? EARTH_PHASE_NAME[state.phaseName] ?? state.phaseName
-        : state.phaseName;
-    // Last Quarter is a waning phase too — name-matching 'Waning' alone would
-    // mirror the glyph for that whole bucket.
-    const waning = phaseName.includes('Waning') || phaseName === 'Last Quarter';
+    const moonPhase = barePhase(state.phaseName);
+    const onMoon = info.subject === 'Earth';
+    const phase = onMoon ? COMPLEMENT_PHASE[moonPhase] ?? moonPhase : moonPhase;
+    const illumination = onMoon ? 1 - state.illumination : state.illumination;
     return {
-      headline: phaseName,
-      meta: `${info.subject === 'Earth' ? 'Earth' : 'The Moon'} · ${Math.round(illumination * 100)}% lit`,
+      headline: `${phase} ${info.subject}`,
+      meta: `${onMoon ? 'Earth' : 'The Moon'} · ${Math.round(illumination * 100)}% lit`,
       litFraction: illumination,
-      lightOnRight: !waning,
+      lightOnRight: !isWaningPhase(phase),
       tint: info.tintCss,
+      fromEarth: onMoon
+        ? {
+            text: `From Earth · ${moonPhase} Moon · ${Math.round(state.illumination * 100)}% lit`,
+            litFraction: state.illumination,
+            lightOnRight: !isWaningPhase(moonPhase),
+            tint: info.moonTintCss,
+          }
+        : null,
     };
   }
   if (info.kind === 'moon-phase') {
@@ -455,6 +491,7 @@ export function observatoryPhaseText(
       litFraction: info.illumination,
       lightOnRight: info.waxing,
       tint: info.tintCss,
+      fromEarth: null,
     };
   }
   return null;
@@ -503,6 +540,15 @@ export function phaseGlyphPaint(tintCss: string): { bright: string; limb: string
   };
 }
 
+/** Write a phase glyph's two gradient stops from a catalog tint. */
+function paintGlyphGradient(grad: SVGRadialGradientElement | null, tintCss: string): void {
+  const stops = grad?.querySelectorAll('stop');
+  if (stops?.length !== 2) return;
+  const paint = phaseGlyphPaint(tintCss);
+  stops[0].setAttribute('stop-color', paint.bright);
+  stops[1].setAttribute('stop-color', paint.limb);
+}
+
 export class ObservatoryPanel {
   private panelEl: HTMLElement | null = null;
   private earthRowsEl: HTMLElement | null = null;
@@ -512,6 +558,11 @@ export class ObservatoryPanel {
   private windowGradEl: SVGRadialGradientElement | null = null;
   /** Last tint written into the gradient stops — changes on vantage swaps. */
   private appliedPhaseTint: string | null = null;
+  // The "From Earth" row under the hero (standing on the Moon only).
+  private fromEarthEl: HTMLElement | null = null;
+  private fromEarthLitEl: SVGPathElement | null = null;
+  private fromEarthGradEl: SVGRadialGradientElement | null = null;
+  private appliedFromEarthTint: string | null = null;
   private nowBarEl: HTMLElement | null = null;
   private swapEl: HTMLElement | null = null;
   private finderAffixEls: HTMLElement[] = [];
@@ -591,6 +642,11 @@ export class ObservatoryPanel {
     ) as SVGRadialGradientElement | null;
     this.windowGradEl = document.getElementById(
       'observatory-window-grad',
+    ) as SVGRadialGradientElement | null;
+    this.fromEarthEl = document.getElementById('observatory-from-earth');
+    this.fromEarthLitEl = document.getElementById('observatory-from-earth-lit') as SVGPathElement | null;
+    this.fromEarthGradEl = document.getElementById(
+      'observatory-from-earth-grad',
     ) as SVGRadialGradientElement | null;
     this.nowBarEl = document.getElementById('observatory-nowbar');
     this.swapEl = document.getElementById('observatory-swap');
@@ -1170,6 +1226,7 @@ export class ObservatoryPanel {
       setText('observatory-phase-data', formatDiscDataLine(info.angularDiameterDeg, info.distanceKm));
       this.setGlyph(phase);
     }
+    this.renderFromEarth(phase?.fromEarth ?? null);
 
     setText('observatory-now', formatObservatoryClock(utcMs));
     // The verb only ever replaces the uninformative "realtime" — the rate
@@ -1253,8 +1310,31 @@ export class ObservatoryPanel {
     this.windowEl.classList.add('flash');
   }
 
+  /** The quiet row under the hero: the Moon as Earth sees it, shown only
+   *  while standing on the Moon. Its own glyph and gradient, because it paints
+   *  a different body from the hero's. */
+  private renderFromEarth(row: (PhaseGlyphInput & { text: string }) | null): void {
+    const el = this.fromEarthEl;
+    if (!el) return;
+    const show = row ? '' : 'none';
+    if (el.style.display !== show) {
+      // A vantage swap adds or drops a line above the now-bar, and the
+      // sheet's peek floor is measured below it.
+      el.style.display = show;
+      this.updateSheetInset();
+    }
+    if (!row) return;
+    setText('observatory-from-earth-text', row.text);
+    this.fromEarthLitEl?.setAttribute('d', phaseGlyphLitPath(row.litFraction, row.lightOnRight));
+    this.fromEarthGradEl?.setAttribute('cx', row.lightOnRight ? '26.5' : '13.5');
+    if (row.tint !== this.appliedFromEarthTint) {
+      this.appliedFromEarthTint = row.tint;
+      paintGlyphGradient(this.fromEarthGradEl, row.tint);
+    }
+  }
+
   /** Hero terminator + the shared gradient paint (hero and window discs). */
-  private setGlyph(phase: { litFraction: number; lightOnRight: boolean; tint: string }): void {
+  private setGlyph(phase: PhaseGlyphInput): void {
     this.glyphLitEl?.setAttribute('d', phaseGlyphLitPath(phase.litFraction, phase.lightOnRight));
     // The gradient's bright pole sits on the side the light comes from.
     const cx = phase.lightOnRight ? '26.5' : '13.5';
@@ -1262,14 +1342,8 @@ export class ObservatoryPanel {
     this.windowGradEl?.setAttribute('cx', cx);
     if (phase.tint !== this.appliedPhaseTint) {
       this.appliedPhaseTint = phase.tint;
-      const paint = phaseGlyphPaint(phase.tint);
-      for (const grad of [this.glyphGradEl, this.windowGradEl]) {
-        const stops = grad?.querySelectorAll('stop');
-        if (stops?.length === 2) {
-          stops[0].setAttribute('stop-color', paint.bright);
-          stops[1].setAttribute('stop-color', paint.limb);
-        }
-      }
+      paintGlyphGradient(this.glyphGradEl, phase.tint);
+      paintGlyphGradient(this.windowGradEl, phase.tint);
     }
   }
 

@@ -98,6 +98,7 @@ describe('observatoryPhaseText subject kinds', () => {
       angularDiameterDeg: 0.5,
       distanceKm: 384_400,
       tintCss: '#aaaaaa',
+      moonTintCss: '#aaaaaa',
     });
     expect(moon).not.toBeNull();
     expect(moon!.tint).toBe('#aaaaaa');
@@ -112,6 +113,85 @@ describe('observatoryPhaseText subject kinds', () => {
       tintCss: '#9a4a2a',
     });
     expect(mars!.tint).toBe('#9a4a2a');
+    expect(mars!.fromEarth).toBeNull();
+  });
+});
+
+// The Earth–Moon pair: every headline names its body, and standing on the
+// Moon the hero carries the Moon's own phase as Earth sees it. The pinned
+// instant is the one a reader took "Waxing Crescent · 3% lit" to be the
+// Moon's phase at (full Moon was 2026-09-26 16:49 UTC).
+describe('observatoryPhaseText, the Earth–Moon pair', () => {
+  const REPORT = Date.UTC(2026, 8, 28, 7, 43, 29);
+  const EARTH_TINT = '#6b93d6';
+  const MOON_TINT = '#c8c8c8';
+  const fromMoon = {
+    kind: 'earth' as const,
+    subject: 'Earth' as const,
+    angularDiameterDeg: 2,
+    distanceKm: 373_879,
+    tintCss: EARTH_TINT,
+    moonTintCss: MOON_TINT,
+  };
+  const fromEarth = { ...fromMoon, subject: 'Moon' as const, angularDiameterDeg: 0.53, tintCss: MOON_TINT };
+
+  it('names Earth in the headline and adds the Moon as Earth sees it', () => {
+    const p = observatoryPhaseText(REPORT, fromMoon)!;
+    expect(p.headline).toBe('Waxing Crescent Earth');
+    expect(p.meta).toBe('Earth · 3% lit');
+    expect(p.tint).toBe(EARTH_TINT);
+    expect(p.fromEarth).not.toBeNull();
+    expect(p.fromEarth!.text).toBe('From Earth · Waning Gibbous Moon · 97% lit');
+    expect(p.fromEarth!.tint).toBe(MOON_TINT);
+    // Waning: the lit limb is on the left, as Earth's northern sky shows it.
+    expect(p.fromEarth!.lightOnRight).toBe(false);
+    // The two discs are complements, and the row's glyph is the Moon's.
+    expect(p.litFraction + p.fromEarth!.litFraction).toBeCloseTo(1, 12);
+    expect(p.fromEarth!.litFraction).toBeGreaterThan(0.96);
+  });
+
+  it('standing on Earth: the Moon is the hero, named, with no extra row', () => {
+    const p = observatoryPhaseText(REPORT, fromEarth)!;
+    expect(p.headline).toBe('Waning Gibbous Moon');
+    expect(p.meta).toBe('The Moon · 97% lit');
+    expect(p.fromEarth).toBeNull();
+  });
+
+  it('every headline across a lunation ends in its body, and the row agrees with the reverse vantage', () => {
+    const bareEarth = new Set<string>();
+    for (let h = 0; h < 30 * 24; h += 6) {
+      const t = REPORT + h * 3_600_000;
+      const onMoon = observatoryPhaseText(t, fromMoon)!;
+      const onEarth = observatoryPhaseText(t, fromEarth)!;
+      expect(onMoon.headline).toMatch(/ Earth$/);
+      expect(onEarth.headline).toMatch(/ Moon$/);
+      // Never "Full Moon Moon": the ends of the ephemeris' names carry it once.
+      expect(onEarth.headline).not.toMatch(/Moon Moon/);
+      // The row is the reverse vantage's hero, word for word.
+      const pct = onEarth.meta.replace('The Moon · ', '');
+      expect(onMoon.fromEarth!.text).toBe(`From Earth · ${onEarth.headline} · ${pct}`);
+      bareEarth.add(onMoon.headline.replace(/ Earth$/, ''));
+    }
+    expect([...bareEarth].sort()).toEqual([
+      'First Quarter', 'Full', 'Last Quarter', 'New',
+      'Waning Crescent', 'Waning Gibbous', 'Waxing Crescent', 'Waxing Gibbous',
+    ]);
+  });
+
+  it('a Last Quarter Earth is a waning disc — its glyph lit on the left', () => {
+    // Earth reads Last Quarter while the Moon reads First Quarter; scan the
+    // week around 2026-10-18 hour by hour for it.
+    let found = false;
+    for (let h = 0; h < 7 * 24; h++) {
+      const t = Date.UTC(2026, 9, 15) + h * 3_600_000;
+      const p = observatoryPhaseText(t, fromMoon)!;
+      if (p.headline !== 'Last Quarter Earth') continue;
+      found = true;
+      expect(p.lightOnRight).toBe(false);
+      expect(p.fromEarth!.text).toMatch(/^From Earth · First Quarter Moon · /);
+      expect(p.fromEarth!.lightOnRight).toBe(true);
+    }
+    expect(found).toBe(true);
   });
 });
 

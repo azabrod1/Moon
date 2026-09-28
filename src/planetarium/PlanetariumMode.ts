@@ -198,9 +198,9 @@ import { GyroSteering } from './input/GyroSteering';
 import { SurfaceLook } from './input/SurfaceLook';
 import {
   angularDiameterDeg,
+  applySurfaceLookDrag,
   bodyDisplayName,
   clampSurfaceFovDeg,
-  computeAnchoredSpotVantage,
   computeSpotAnchorLocal,
   computeSubTargetVantage,
   entryFovDeg,
@@ -212,19 +212,20 @@ import {
   projectedDiscPx,
   resolveMarkerKind,
   selectSurfaceTarget,
+  spotAnchorFor,
+  standAtSpotAnchor,
   SURFACE_FOV_DEFAULT_DEG,
   SURFACE_FOV_MIN_DEG,
+  SURFACE_SPOT_SUN_DOWN,
   SURFACE_TARGET_ELEVATION_DEG,
   surfaceAltitudeAU,
   surfaceEventExpectation,
   surfaceEventNarrative,
-  surfaceLookRotation,
   surfaceTargetKey,
-  targetBelowLimb,
   transportTrackingUp,
+  type SpotAnchor,
   type SurfaceEntryContext,
   type SurfaceLandedInfo,
-  type SurfaceLookRotation,
   type SurfaceMarkerKind,
   type SurfaceTarget,
   type SurfaceTargetChoice,
@@ -1723,10 +1724,6 @@ export class PlanetariumMode {
   private tmpSurfaceVantage = new THREE.Vector3();
   private tmpSurfaceAxis = new THREE.Vector3();
   private tmpSurfaceZenith = new THREE.Vector3();
-  private tmpSurfaceRight = new THREE.Vector3();
-  private tmpSurfaceUp = new THREE.Vector3();
-  private tmpSurfaceQuat = new THREE.Quaternion();
-  private surfaceLookScratch: SurfaceLookRotation = { yawRad: 0, pitchRad: 0 };
   // Tracking-camera up, parallel-transported frame to frame (see
   // updateSurfaceCamera). Persistent state, not a scratch vector.
   private surfaceUpTangent = new THREE.Vector3(0, 1, 0);
@@ -1738,13 +1735,16 @@ export class PlanetariumMode {
   // Solar-eclipse standing point, pinned at the event's peak in the landed
   // planet's rotating frame (computeSpotAnchorLocal) so the observer stays on
   // real ground while the eclipse sweeps over. Keyed to the event it was
-  // pinned for — it stands only while that event is the sky's story (see
-  // ensureSurfaceSpotAnchor). Pinned lazily on the first spot frame, cleared
-  // on every surface entry/re-point/exit.
-  private surfaceSpotAnchor: { peakUtcMs: number; local: THREE.Vector3 } | null = null;
-  // Whether this frame's camera stands at the anchor (the default vantage
-  // otherwise) — diagnostics only, read by devEclipseDebug.
-  private surfaceSpotPosed = false;
+  // pinned for, and stood on only while that event is the sky's story
+  // (spotAnchorFor). Pinned lazily on the first spot frame, kept while the
+  // clock wanders out of the window and back, cleared on every surface
+  // entry/re-point/exit.
+  private surfaceSpotAnchor: SpotAnchor | null = null;
+  // Whether the last surface frame stood on that pin (false: the default
+  // vantage held it). Null until a frame of this entry has decided — the HUD
+  // reads it, and a flip of it is a cut the Sun's optics must not mistake for
+  // a limb clearing.
+  private surfaceSpotPosed: boolean | null = null;
   // Marker over the tracked target — sticky across the hysteresis band.
   private surfaceMarkerKind: SurfaceMarkerKind = 'brackets';
   // Observatory-panel rect, cached per viewport size for the chevron clamp
@@ -15443,10 +15443,14 @@ export class PlanetariumMode {
       : null;
     return {
       utc: new Date(t).toISOString(),
+      // A pin is cached. It outlives the event's window (the clock may come
+      // back), so it is not necessarily the ground the camera stands on:
+      // spotPosed says that, and the anchor rows below measure against the
+      // cached pin either way.
       hasAnchor: !!this.surfaceSpotAnchor,
-      // The camera stands at the anchor this frame; false while the default
-      // vantage holds the frame (outside the event's window, or the Sun under
-      // the pinned ground's limb).
+      // The last surface frame stood on the pin; false while the default
+      // vantage held it (outside the event's window, or the Sun under the
+      // pinned ground's limb), null before a frame of this entry decided.
       spotPosed: this.surfaceSpotPosed,
       quatDot: Math.abs(stateQ.dot(parentPlanet.group.quaternion)),
       anchorVsLiveSpotKm: anchorWorld ? anchorWorld.distanceTo(liveSpot) * KM : null,
@@ -16606,6 +16610,19 @@ export class PlanetariumMode {
     return landed ? surfaceEventNarrative(landed, spec) : '';
   }
 
+  /** The eclipse view is watching this event, and its last frame could not
+   *  stand on the event's ground because the Sun was under the limb there
+   *  (standAtSpotAnchor) — the default vantage is showing an uneclipsed Sun. */
+  private surfaceSpotSunDown(event: ShadowEvent): boolean {
+    const target = this.surfaceTarget;
+    return (
+      this.surfaceSpotPosed === false &&
+      target.kind === 'sun-from-spot' &&
+      event.spec.kind === 'shadow-transit' &&
+      event.spec.moonName === target.occluderMoonName
+    );
+  }
+
   /** True when the surface view is pointed at the phase hero's own subject —
    *  the body the no-event headline is describing. */
   private isPhaseSubjectTracked(info: ObservatorySubjectInfo): boolean {
@@ -16630,8 +16647,10 @@ export class PlanetariumMode {
       headline = PlanetariumMode.shadowEventLabel(event.spec);
       subText = this.surfaceNarrative(event.spec);
       // "What you'll see": without it, an honest penumbral
-      // dimming reads as nothing-happened while you watch.
-      const hint = this.eventExpectation(event);
+      // dimming reads as nothing-happened while you watch. While the eclipse
+      // view's ground has the Sun under its limb the frame shows no eclipse at
+      // all, and saying why beats promising one.
+      const hint = this.surfaceSpotSunDown(event) ? SURFACE_SPOT_SUN_DOWN : this.eventExpectation(event);
       if (hint) subText += ` — ${hint}`;
       // Warm countdown — always relative to the engine's peak/contacts.
       subWarm = eventCountdownText(now, event);
@@ -16691,7 +16710,15 @@ export class PlanetariumMode {
               .distanceTo(this.camera.position),
           );
           discNote += ` · ${occluder.data.name} ∅ ${fmtDeg(moonDeg)}°`;
-          if (event && now >= event.startUtcMs && now <= event.endUtcMs) discNote += ' · transiting';
+          // Not over a Sun seen from the default vantage: nothing crosses it there.
+          if (
+            event &&
+            now >= event.startUtcMs &&
+            now <= event.endUtcMs &&
+            !this.surfaceSpotSunDown(event)
+          ) {
+            discNote += ' · transiting';
+          }
         }
       }
     }
@@ -17275,6 +17302,7 @@ export class PlanetariumMode {
     // Fresh standing point per entry/re-point: an event jump routes here, so
     // the next spot frame re-pins from the (possibly new) event's peak.
     this.surfaceSpotAnchor = null;
+    this.surfaceSpotPosed = null;
     // No explicit context: entries derived while an event is live frame the
     // event; plain "Look up" frames the companion subject.
     const context = entryContext ?? (target === undefined && liveEvent ? 'event' : 'companion');
@@ -17394,6 +17422,7 @@ export class PlanetariumMode {
     if (this.starfield) setStarfieldGain(this.starfield, 1);
     this.surfaceFovAnim = null;
     this.surfaceSpotAnchor = null;
+    this.surfaceSpotPosed = null;
     this.surfaceLook.detach();
     // Back to the landed orbit view, which is world-up (OrbitControls' cached
     // orbit axis is already world-up from the landing). The cruise basis is
@@ -17441,38 +17470,9 @@ export class PlanetariumMode {
     const radPerPx =
       (displayFovDeg(this.camera) * DEG2RAD) / Math.max(this.renderer.domElement.clientHeight, 1);
     const zenith = this.tmpSurfaceZenith.copy(this.camera.position).normalize();
-    const forward = this.camera.getWorldDirection(this.tmpSurfaceAxis);
-    // The level pan that moves the sky with the finger at this pose — the
-    // camera's roll decides how the finger's axes map onto yaw and pitch.
-    const look = surfaceLookRotation(
-      forward,
-      this.tmpSurfaceUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion),
-      this.tmpSurfaceRight.set(1, 0, 0).applyQuaternion(this.camera.quaternion),
-      zenith,
-      dxPx * radPerPx,
-      dyPx * radPerPx,
-      this.surfaceLookScratch,
-    );
-    // Yaw about the local zenith keeps panning level with the horizon.
-    this.camera.quaternion.premultiply(this.tmpSurfaceQuat.setFromAxisAngle(zenith, look.yawRad));
-    // Pitch about the horizontal axis across the view (the yaw left the
-    // elevation alone), clamped short of zenith/nadir so the view can never
-    // flip over the pole. Looking dead along the zenith there is no such
-    // axis, and the camera's own right stands in.
-    this.camera.getWorldDirection(forward);
-    const elevation = Math.asin(THREE.MathUtils.clamp(forward.dot(zenith), -1, 1));
-    const maxElevation = 89 * DEG2RAD;
-    const targetElevation = THREE.MathUtils.clamp(
-      elevation + look.pitchRad,
-      -maxElevation,
-      maxElevation,
-    );
-    const horizontal = this.tmpSurfaceRight.crossVectors(forward, zenith);
-    if (horizontal.lengthSq() > 1e-18) horizontal.normalize();
-    else horizontal.set(1, 0, 0).applyQuaternion(this.camera.quaternion);
-    this.camera.quaternion.premultiply(
-      this.tmpSurfaceQuat.setFromAxisAngle(horizontal, targetElevation - elevation),
-    );
+    // A level pan — yaw about the local zenith, pitch about the horizon —
+    // solved so the sky follows the finger whatever the camera's roll.
+    applySurfaceLookDrag(this.camera.quaternion, zenith, dxPx * radPerPx, dyPx * radPerPx);
   }
 
   /** Wheel/pinch zoom: multiplicative FOV change, clamped to [1.5°, 45°]. */
@@ -17487,54 +17487,30 @@ export class PlanetariumMode {
   }
 
   /**
-   * The stand-still eclipse anchor of the event the sky is showing, pinned
-   * lazily from that event's peak geometry through the same astronomy seams
-   * the shadow engine and the renderer share (allocations are pin-time only).
-   *
-   * Null unless the relevant event is this occluder's shadow on the ground
-   * underfoot, so the anchor lives exactly as long as the HUD narrates its
-   * event. Held past that, the pinned ground just turned with the planet —
-   * rewound nine hours from the 2027-02-06 annular it put the Sun under the
-   * limb and the view looked through Earth at it — and a pin made with no
-   * event in reach landed on the axis's closest approach, which with no
-   * shadow contact is the terminator. Keyed to the peak, so the anchor of one
-   * event never answers for another (a chart warp can change the event under
-   * an open view).
+   * Pin the stand-still eclipse anchor at an event's peak, through the same
+   * astronomy seams the shadow engine and the renderer share — spotAnchorFor
+   * calls it only when the event in the sky needs a fresh pin, so its
+   * allocations are pin-time only. Built once as a field: the policy asks for
+   * it every spot frame, and a closure made per frame would allocate there.
+   * The pin is keyed to its peak as defence in depth: every path that changes
+   * the sky's event today leaves the view or re-enters it, clearing the pin.
    */
-  private ensureSurfaceSpotAnchor(occluderMoonName: string): THREE.Vector3 | null {
+  private readonly pinSurfaceSpotAnchor = (peakUtcMs: number): THREE.Vector3 | null => {
     const landed = this.landedOn;
-    if (landed?.type !== 'planet') return null;
-    const event = this.relevantObservatoryEvent();
-    if (
-      !event ||
-      event.spec.kind !== 'shadow-transit' ||
-      event.spec.parentPlanet !== landed.name ||
-      event.spec.moonName !== occluderMoonName
-    ) {
-      return null;
-    }
-    if (this.surfaceSpotAnchor?.peakUtcMs === event.peakUtcMs) return this.surfaceSpotAnchor.local;
+    if (landed?.type !== 'planet' || this.surfaceTarget.kind !== 'sun-from-spot') return null;
+    const occluderMoonName = this.surfaceTarget.occluderMoonName;
     const body = PLANETARIUM_BODIES.find(b => b.name === landed.name);
     if (!body) return null;
-    const offset = computeMoonOffsetEquatorialAU(
-      occluderMoonName,
-      landed.name,
-      event.peakUtcMs,
+    const offset = computeMoonOffsetEquatorialAU(occluderMoonName, landed.name, peakUtcMs, new THREE.Vector3());
+    const axis = computeBodyPositionAU(body, peakUtcMs).add(offset).normalize();
+    return computeSpotAnchorLocal(
+      offset,
+      axis,
+      body.radiusAU,
+      computeBodyState(body, peakUtcMs).orientationQuaternion,
       new THREE.Vector3(),
     );
-    const axis = computeBodyPositionAU(body, event.peakUtcMs).add(offset).normalize();
-    this.surfaceSpotAnchor = {
-      peakUtcMs: event.peakUtcMs,
-      local: computeSpotAnchorLocal(
-        offset,
-        axis,
-        body.radiusAU,
-        computeBodyState(body, event.peakUtcMs).orientationQuaternion,
-        new THREE.Vector3(),
-      ),
-    };
-    return this.surfaceSpotAnchor.local;
-  }
+  };
 
   /**
    * Per-frame surface camera: re-pin the vantage (sub-target point, or the
@@ -17545,6 +17521,8 @@ export class PlanetariumMode {
   private updateSurfaceCamera(dt: number, willDraw = true) {
     const targetPos = this.resolveSurfaceTargetScenePos(this.surfaceTarget, this.tmpSurfaceTargetPos);
     if (!targetPos) {
+      // No frame stood anywhere, so no word on the pin either.
+      this.surfaceSpotPosed = null;
       // Unresolvable target must not stall a pending exit ease forever.
       if (this.surfaceFovAnim?.finalizeExit) this.finalizeSurfaceExit();
       return;
@@ -17560,23 +17538,29 @@ export class PlanetariumMode {
       // the planet's rotating frame. Re-deriving the point from the live
       // shadow geometry every frame chased maximum cover instead — three
       // Sun–occluder alignments per event where a real observer sees one
-      // clean pass. Outside the event's window there is no anchor, and the
-      // Sun is shown from the default vantage every other target uses.
+      // clean pass. Outside the event's window there is no pin to stand on,
+      // and inside it the pinned ground can have turned the Sun under its
+      // limb: either way the Sun is shown from the default vantage every
+      // other target uses.
+      const anchor = spotAnchorFor(
+        this.surfaceSpotAnchor,
+        this.landedOn,
+        target.occluderMoonName,
+        this.relevantObservatoryEvent(),
+        this.pinSurfaceSpotAnchor,
+      );
+      if (anchor) this.surfaceSpotAnchor = anchor;
       const parentPlanet = this.planetMeshByName.get(this.landedOn.name);
-      const anchor = this.ensureSurfaceSpotAnchor(target.occluderMoonName);
-      if (anchor && parentPlanet) {
-        computeAnchoredSpotVantage(radiusAU, anchor, parentPlanet.group.quaternion, vantage);
-        // The pinned ground turns with the planet, and can carry the Sun under
-        // the limb while the event is still narrated. Earth's eclipses never
-        // do inside their own contacts (every one of 2000–2100 keeps it 3.6°
-        // or more above), but a grazing partial, whose deepest point has the
-        // Sun on the horizon at peak, can in its padding hour; so can
-        // Callisto's transits of a ten-hour Jupiter, and Titan's or Iapetus's
-        // shadow outlasts enough of Saturn's day to do it mid-transit. A look
-        // up is never a look through the ground: the default vantage holds
-        // the frame until the pinned ground has the Sun back in its sky.
-        spotPosed = !targetBelowLimb(vantage, targetPos, radiusAU);
-      }
+      spotPosed =
+        parentPlanet !== undefined &&
+        standAtSpotAnchor(anchor, radiusAU, parentPlanet.group.quaternion, targetPos, vantage);
+    }
+    // Swapping one ground for the other is a camera cut: the Sun's exposed
+    // fraction can step within a frame (from half a disc on the pinned
+    // ground's limb to the whole disc high over the default vantage), which
+    // the emergence flash would otherwise take for a limb clearing.
+    if (this.surfaceSpotPosed !== null && spotPosed !== this.surfaceSpotPosed) {
+      this.noteSunViewDiscontinuity();
     }
     this.surfaceSpotPosed = spotPosed;
     if (!spotPosed) {
@@ -17733,13 +17717,15 @@ export class PlanetariumMode {
       // style writes would force reflow). Desktop docks it right (clamp the
       // right inset); ≤640px it's a bottom sheet (grow the bottom inset).
       let insetRight = insetX;
-      let sheetBottom = insetBottom;
-      // Keep clear of the bottom band the HUD measures for its own cluster:
-      // on a phone the headline stack and FOV cluster stand far taller than
-      // the fixed inset, and a target below the frame put the chevron over
-      // the headline. 15 px is the chevron's half height, 8 a gap.
+      let bottomInset = insetBottom;
+      // Keep clear of the bottom band the HUD measures for its own cluster —
+      // headline stack, FOV cluster, transport strip. On a phone it stands far
+      // taller than the fixed inset, and a target below the frame put the
+      // chevron over the headline; on a desktop the band still reaches past
+      // it, so the lowest chevron rises there too, clear of the FOV readout.
+      // 15 px is the chevron's half height, 8 a gap.
       const bandTopPx = this.observatoryHud.bottomBandTopPx();
-      if (Number.isFinite(bandTopPx)) sheetBottom = Math.max(sheetBottom, h - bandTopPx + 23);
+      if (Number.isFinite(bandTopPx)) bottomInset = Math.max(bottomInset, h - bandTopPx + 23);
       if (this.observatoryPanel.isOpen()) {
         if (!this.panelRectCache || this.panelRectCache.w !== w || this.panelRectCache.h !== h) {
           const rect = document.getElementById('observatory-panel')?.getBoundingClientRect();
@@ -17752,11 +17738,11 @@ export class PlanetariumMode {
             Math.max(insetX, w - insetX - 44),
           );
         } else if (cache.top > h * 0.4) {
-          sheetBottom = Math.max(sheetBottom, h - cache.top + 12);
+          bottomInset = Math.max(bottomInset, h - cache.top + 12);
         }
       }
       const ex = THREE.MathUtils.clamp(w / 2 + dx * (w + h), insetX, Math.max(insetX + 1, w - insetRight));
-      const ey = THREE.MathUtils.clamp(h / 2 + dy * (w + h), insetTop, Math.max(insetTop + 1, h - sheetBottom));
+      const ey = THREE.MathUtils.clamp(h / 2 + dy * (w + h), insetTop, Math.max(insetTop + 1, h - bottomInset));
       this.observatoryHud.updateMarker({
         mode: 'chevron',
         xPx: ex,

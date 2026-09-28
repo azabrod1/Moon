@@ -6,7 +6,8 @@
  * jumped to, and a plain search would re-find that event forever.
  *
  * The same park point sets the other question here: which event, of the ones
- * already found, the sky is showing at this instant. Unit-tested in
+ * already found, the sky is showing at this instant — and, for the surface
+ * HUD, how its countdown reads against that event's contacts. Unit-tested in
  * observatoryTime.test.ts.
  */
 

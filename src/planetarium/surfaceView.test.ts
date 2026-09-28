@@ -2,16 +2,19 @@
  * Pins the Observatory surface view's observer-circumstances table and its
  * vantage/FOV geometry: every landed×kind×involvement combination, the
  * shadow-spot vantage's degradation chain (hit → nearest-to-axis →
- * sub-occluder), the altitude clamp, and the entry-FOV-fits-the-disc rule.
+ * sub-occluder), the altitude clamp, and the entry-FOV-fits-the-disc rule;
+ * the eclipse pin's policy (it belongs to its event, and never stands where
+ * the ground hides the Sun), and the drag step the mode applies (the sky
+ * follows the finger at any roll).
  */
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import {
   angularDiameterDeg,
+  applySurfaceLookDrag,
   bodyDisplayName,
   clampSurfaceFovDeg,
   computeAnchoredSpotVantage,
-  computeShadowSpotVantage,
   computeSpotAnchorLocal,
   computeSubTargetVantage,
   entryFovDeg,
@@ -27,6 +30,8 @@ import {
   resolveGuideVisibility,
   resolveMarkerKind,
   selectSurfaceTarget,
+  spotAnchorFor,
+  standAtSpotAnchor,
   SURFACE_FOV_DEFAULT_DEG,
   SURFACE_MIN_ALTITUDE_AU,
   SURFACE_TARGET_ELEVATION_DEG,
@@ -391,11 +396,13 @@ describe('surface vantage geometry', () => {
       expect(surface.length()).toBeCloseTo(R, 12);
       expect(surface.x).toBeCloseTo(0.5, 12);
       expect(surface.z).toBeCloseTo(Math.sqrt(1 - 0.25), 12);
-      // The vantage sits at the camera's flying shell and ON the shadow axis
-      // (zero perpendicular distance to the axis line) — lifting the ground
-      // hit radially instead put the observer beside the umbral line and a
-      // slanted-axis eclipse never reached totality.
-      const vantage = computeShadowSpotVantage(R, offset, axis, new THREE.Vector3());
+      // The pinned vantage sits at the camera's flying shell and ON the shadow
+      // axis (zero perpendicular distance to the axis line) — lifting the
+      // ground hit radially instead put the observer beside the umbral line
+      // and a slanted-axis eclipse never reached totality.
+      const q = new THREE.Quaternion();
+      const anchor = computeSpotAnchorLocal(offset, axis, R, q, new THREE.Vector3());
+      const vantage = computeAnchoredSpotVantage(R, anchor, q, new THREE.Vector3());
       expect(vantage.length()).toBeCloseTo(R + surfaceAltitudeAU(R), 12);
       const fromOccluder = vantage.clone().sub(offset);
       const axialDistToAxis = fromOccluder.clone().addScaledVector(axis, -fromOccluder.dot(axis));
@@ -436,11 +443,11 @@ describe('surface vantage geometry', () => {
     const offset = new THREE.Vector3(0.5, 0, 2);
     const axis = new THREE.Vector3(0, 0, -1);
 
-    it('round-trips to the live spot vantage at the pin orientation', () => {
+    it('round-trips to the live shadow spot at the camera shell at the pin orientation', () => {
       const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.83);
       const anchor = computeSpotAnchorLocal(offset, axis, R, q, new THREE.Vector3());
       const vantage = computeAnchoredSpotVantage(R, anchor, q, new THREE.Vector3());
-      const live = computeShadowSpotVantage(R, offset, axis, new THREE.Vector3());
+      const live = shadowAxisSurfacePoint(offset, axis, R + surfaceAltitudeAU(R), new THREE.Vector3());
       expect(vantage.distanceTo(live)).toBeLessThan(1e-12);
     });
 
@@ -825,21 +832,23 @@ describe('anchored solar-eclipse observer — the Sun and the limb', () => {
   const earth = PLANETARIUM_BODIES.find(b => b.name === 'Earth')!;
   const spec = { kind: 'shadow-transit' as const, parentPlanet: 'Earth', moonName: 'Moon' };
 
-  // The mode's pin, exactly as ensureSurfaceSpotAnchor derives it.
+  // The mode's pin, exactly as its pinSurfaceSpotAnchor derives it.
   const anchorAt = (body: typeof earth, moonName: string, peakMs: number) => {
     const offset = computeMoonOffsetEquatorialAU(moonName, body.name, peakMs, new THREE.Vector3());
     const axis = computeBodyPositionAU(body, peakMs).add(offset).normalize();
-    return computeSpotAnchorLocal(
-      offset, axis, body.radiusAU, computeBodyState(body, peakMs).orientationQuaternion, new THREE.Vector3(),
-    );
+    return {
+      peakUtcMs: peakMs,
+      local: computeSpotAnchorLocal(
+        offset, axis, body.radiusAU, computeBodyState(body, peakMs).orientationQuaternion, new THREE.Vector3(),
+      ),
+    };
   };
-  // Body-centered eye and Sun at an instant, as updateSurfaceCamera sees them.
-  const sunBelowLimb = (body: typeof earth, anchor: THREE.Vector3, utcMs: number) => {
-    const eye = computeAnchoredSpotVantage(
-      body.radiusAU, anchor, computeBodyState(body, utcMs).orientationQuaternion, new THREE.Vector3(),
-    );
+  // Whether the frame may stand on the pin, through the function
+  // updateSurfaceCamera calls, with the body-centered Sun it resolves.
+  const sunBelowLimb = (body: typeof earth, anchor: ReturnType<typeof anchorAt>, utcMs: number) => {
     const sun = computeBodyPositionAU(body, utcMs).multiplyScalar(-1);
-    return targetBelowLimb(eye, sun, body.radiusAU);
+    const orientation = computeBodyState(body, utcMs).orientationQuaternion;
+    return !standAtSpotAnchor(anchor, body.radiusAU, orientation, sun, new THREE.Vector3());
   };
 
   it('rewound nine hours from the 2027-02-06 annular, the pinned ground has the Sun under the limb', () => {
@@ -894,6 +903,50 @@ describe('anchored solar-eclipse observer — the Sun and the limb', () => {
   });
 });
 
+describe('spotAnchorFor — the eclipse pin belongs to its event', () => {
+  const transit = (peakUtcMs: number, moonName = 'Moon', parentPlanet = 'Earth') => ({
+    peakUtcMs,
+    spec: { kind: 'shadow-transit' as const, parentPlanet, moonName },
+  });
+  const cached = { peakUtcMs: 1_000, local: new THREE.Vector3(1, 0, 0) };
+  const pins: number[] = [];
+  const pin = (peakUtcMs: number) => {
+    pins.push(peakUtcMs);
+    return new THREE.Vector3(0, 1, 0);
+  };
+
+  it('stands on nothing once the event has left the sky, however fresh the cache', () => {
+    // The reported frame: the clock rewound out of the event's window, and
+    // the pin the view kept had turned the Sun under Earth's limb.
+    pins.length = 0;
+    expect(spotAnchorFor(cached, onEarth, 'Moon', null, pin)).toBeNull();
+    expect(pins).toEqual([]);
+  });
+
+  it('reuses the pin made for the event in the sky, and pins afresh for another', () => {
+    pins.length = 0;
+    expect(spotAnchorFor(cached, onEarth, 'Moon', transit(1_000), pin)).toBe(cached);
+    expect(pins).toEqual([]);
+    const fresh = spotAnchorFor(cached, onEarth, 'Moon', transit(2_000), pin);
+    expect(fresh?.peakUtcMs).toBe(2_000);
+    expect(pins).toEqual([2_000]);
+  });
+
+  it('only this occluder\'s shadow on the ground underfoot owns a pin', () => {
+    pins.length = 0;
+    const lunar = { peakUtcMs: 1_000, spec: { kind: 'eclipse' as const, parentPlanet: 'Earth', moonName: 'Moon' } };
+    expect(spotAnchorFor(cached, onEarth, 'Moon', lunar, pin)).toBeNull();
+    expect(spotAnchorFor(cached, onEarth, 'Moon', transit(1_000, 'Io', 'Jupiter'), pin)).toBeNull();
+    expect(spotAnchorFor(cached, onJupiter, 'Io', transit(1_000, 'Europa', 'Jupiter'), pin)).toBeNull();
+    expect(spotAnchorFor(null, onMoon, 'Moon', transit(1_000), pin)).toBeNull();
+    expect(pins).toEqual([]);
+  });
+
+  it('a pin that cannot be made stands on nothing', () => {
+    expect(spotAnchorFor(null, onEarth, 'Moon', transit(3_000), () => null)).toBeNull();
+  });
+});
+
 describe('surfaceLookRotation — the sky follows the finger at any roll', () => {
   const zenith = new THREE.Vector3(0, 1, 0);
 
@@ -913,20 +966,9 @@ describe('surfaceLookRotation — the sky follows the finger at any roll', () =>
   const axis = (q: THREE.Quaternion, x: number, y: number, z: number) =>
     new THREE.Vector3(x, y, z).applyQuaternion(q);
 
-  // The mode's drag step (applySurfaceLook): yaw about the zenith, then pitch
-  // about the horizontal axis across the view, clamped short of the pole.
-  const drag = (q: THREE.Quaternion, rightRad: number, downRad: number) => {
-    const look = surfaceLookRotation(
-      axis(q, 0, 0, -1), axis(q, 0, 1, 0), axis(q, 1, 0, 0), zenith, rightRad, downRad,
-      { yawRad: 0, pitchRad: 0 },
-    );
-    const out = q.clone().premultiply(new THREE.Quaternion().setFromAxisAngle(zenith, look.yawRad));
-    const forward = axis(out, 0, 0, -1);
-    const elevation = Math.asin(forward.dot(zenith));
-    const target = THREE.MathUtils.clamp(elevation + look.pitchRad, -89 * DEG2RAD, 89 * DEG2RAD);
-    const horizontal = forward.clone().cross(zenith).normalize();
-    return out.premultiply(new THREE.Quaternion().setFromAxisAngle(horizontal, target - elevation));
-  };
+  // The drag step the mode applies (applySurfaceLook), on a copy of the pose.
+  const drag = (q: THREE.Quaternion, rightRad: number, downRad: number) =>
+    applySurfaceLookDrag(q.clone(), zenith, rightRad, downRad);
   // Where the sky that was under the middle of the screen sits after the
   // drag, in radians (screen right, screen down).
   const oldCentreOnScreen = (before: THREE.Quaternion, after: THREE.Quaternion) => {
@@ -981,6 +1023,22 @@ describe('surfaceLookRotation — the sky follows the finger at any roll', () =>
     expectFollows(oldCentreOnScreen(before, drag(before, step, 0)), step * lag, 0);
     // The pitch is untouched by the cap.
     expectFollows(oldCentreOnScreen(before, drag(before, 0, -step)), 0, -step);
+  });
+
+  it('stops short of the zenith however far the finger goes, and never flips over it', () => {
+    const q = poseCamera(80, 10, 30);
+    for (let i = 0; i < 6; i++) q.copy(drag(q, 0, 10 * DEG2RAD));
+    const elevation = Math.asin(axis(q, 0, 0, -1).dot(zenith)) * RAD2DEG;
+    expect(elevation).toBeCloseTo(89, 9);
+  });
+
+  it('looking dead along the zenith, a drag still leaves a valid pose', () => {
+    // No azimuth to pan along there: the pitch alone, about the camera's right.
+    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, -1), zenith);
+    const after = drag(q, step, step);
+    expect([after.x, after.y, after.z, after.w].every(Number.isFinite)).toBe(true);
+    expect(after.length()).toBeCloseTo(1, 12);
+    expect(Math.asin(axis(after, 0, 0, -1).dot(zenith)) * RAD2DEG).toBeLessThanOrEqual(89 + 1e-9);
   });
 
   it('never rolls the view against the horizon', () => {

@@ -1,10 +1,13 @@
 /**
  * Pure target-selection + vantage math for the Observatory's surface view:
  * given where the player is landed and which shadow event (if any) they
- * jumped to, decide what the narrow-FOV camera should look at and where on
- * the landed body's surface it should stand. No scene or DOM access — the
- * PlanetariumMode adapter gathers fresh scene positions from the renderer's
- * own seams and passes plain vectors in. Unit-tested in surfaceView.test.ts.
+ * jumped to, decide what the narrow-FOV camera should look at, where on
+ * the landed body's surface it should stand — the solar-eclipse view stands
+ * on its event's pinned ground only while that event is in the sky and the
+ * ground can see the Sun, never looking through the body at it — and how a
+ * drag turns it. No scene or DOM access — the PlanetariumMode adapter gathers
+ * fresh scene positions from the renderer's own seams and passes plain
+ * vectors in. Unit-tested in surfaceView.test.ts.
  */
 import * as THREE from 'three';
 import {
@@ -17,7 +20,9 @@ import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
 /** What the surface view points at (resolved to scene positions by the owner). */
 export type SurfaceTarget =
   | { kind: 'sun' }
-  /** Solar-eclipse view: look at the Sun while standing where the occluder's shadow falls. */
+  /** Solar-eclipse view: look at the Sun while standing where the occluder's
+   *  shadow falls — while the event is in the sky and that ground can see the
+   *  Sun (spotAnchorFor, standAtSpotAnchor); from the default vantage otherwise. */
   | { kind: 'sun-from-spot'; occluderMoonName: string }
   | { kind: 'moon'; moonName: string }
   | { kind: 'parent' };
@@ -139,6 +144,14 @@ export function bodyDisplayName(name: string): string {
   if (name === 'Sun') return 'the Sun';
   return name;
 }
+
+/**
+ * The hint the solar-eclipse view gives in place of "what you'll see" while
+ * the ground it stands on for the event has the Sun under its limb, and the
+ * frame shows the Sun, uneclipsed, from the default vantage instead
+ * (standAtSpotAnchor).
+ */
+export const SURFACE_SPOT_SUN_DOWN = "the Sun is below the horizon in the shadow's path";
 
 /**
  * "What you'll see" hint for an event, from this observer: a penumbral
@@ -278,34 +291,6 @@ export function computeSubTargetVantage(
   return out.normalize().multiplyScalar(bodyRadiusAU + surfaceAltitudeAU(bodyRadiusAU));
 }
 
-/**
- * Solar-eclipse vantage: stand where the occluder's shadow falls on the
- * landed body — the axis/sphere hit for central events, the deepest-cover
- * surface point when the umbral axis misses the disc (partial events), the
- * sub-occluder point when there's no shadow contact at all (scrubbing before
- * or after the event). `occluderOffsetAU` is the occluding moon's position
- * relative to the landed body; `shadowAxis` its unit anti-sunward axis.
- */
-export function computeShadowSpotVantage(
-  bodyRadiusAU: number,
-  occluderOffsetAU: THREE.Vector3,
-  shadowAxis: THREE.Vector3,
-  out: THREE.Vector3,
-): THREE.Vector3 {
-  // Intersect at the camera's flying shell, not the ground: the surface camera
-  // hovers well above the terrain (hundreds of km on Earth), and lifting the
-  // ground-level axis point radially displaced it off the umbral line by
-  // altitude x sin(axis incidence) — on a slanted-axis eclipse that is
-  // hundreds of km, a Moon that never fully covers the Sun. The axis pierced
-  // at the shell IS the point the camera occupies, so peak alignment is exact.
-  return shadowAxisSurfacePoint(
-    occluderOffsetAU,
-    shadowAxis,
-    bodyRadiusAU + surfaceAltitudeAU(bodyRadiusAU),
-    out,
-  );
-}
-
 const tmpInvOrientation = new THREE.Quaternion();
 
 /**
@@ -316,6 +301,12 @@ const tmpInvOrientation = new THREE.Quaternion();
  * the point of maximum cover: the occluder raced onto the Sun, backed off,
  * covered it again at the true peak, and re-aligned once more on the way
  * out — three alignments where a fixed observer sees one clean pass.
+ *
+ * The spot is shadowAxisSurfacePoint's: the axis/sphere hit for a central
+ * event, the deepest-cover point when the umbral axis misses the disc (a
+ * partial event, whose deepest point has the Sun on the horizon). `shadowAxis`
+ * is the occluder's unit anti-sunward axis, `occluderOffsetAU` its position
+ * from the landed body.
  */
 export function computeSpotAnchorLocal(
   occluderOffsetAU: THREE.Vector3,
@@ -324,8 +315,12 @@ export function computeSpotAnchorLocal(
   bodyOrientation: THREE.Quaternion,
   out: THREE.Vector3,
 ): THREE.Vector3 {
-  // Pin the axis hit at the camera's flying shell (see computeShadowSpotVantage)
-  // so the anchored observer stands on the umbral line, not beside it.
+  // Intersect at the camera's flying shell, not the ground: the surface camera
+  // hovers well above the terrain (hundreds of km on Earth), and lifting the
+  // ground-level axis point radially displaced it off the umbral line by
+  // altitude x sin(axis incidence) — on a slanted-axis eclipse that is
+  // hundreds of km, a Moon that never fully covers the Sun. The axis pierced
+  // at the shell IS the point the camera occupies, so peak alignment is exact.
   shadowAxisSurfacePoint(
     occluderOffsetAU,
     shadowAxis,
@@ -357,10 +352,10 @@ const tmpSightline = new THREE.Vector3();
  * it reaches the target — the same near hit the shadow axis takes, cast along
  * the sightline. The default vantage can never do this, holding its target
  * high by construction; the stand-still eclipse observer can, because it turns
- * with the ground. Nine hours before the 2027-02-06 annular the pinned spot has
- * the Sun 22° below its horizon, under a limb that dips 19° from the camera's
- * shell; a long transit of a fast-spinning giant (Titan's shadow on Saturn)
- * does it without the clock ever leaving the event.
+ * with the ground. At 07:03:39 UTC, nine hours before the 2027-02-06 annular,
+ * the pinned spot has the Sun 21° below its horizon, under a limb that dips 19°
+ * from the camera's shell; a long transit of a fast-spinning giant (Titan's
+ * shadow on Saturn) does it without the clock ever leaving the event.
  */
 export function targetBelowLimb(
   eyeAU: THREE.Vector3,
@@ -372,6 +367,65 @@ export function targetBelowLimb(
   if (distanceAU === 0) return false;
   const hitAU = shadowAxisSphereHitAU(eyeAU, sightline.divideScalar(distanceAU), bodyRadiusAU);
   return hitAU !== null && hitAU < distanceAU;
+}
+
+/** A pin of the stand-still eclipse observer: the peak it was made for, and
+ *  the shadow-spot direction in the landed body's rotating frame there. */
+export interface SpotAnchor {
+  peakUtcMs: number;
+  local: THREE.Vector3;
+}
+
+/**
+ * The pin the solar-eclipse view may stand on this frame. It belongs to its
+ * event: none unless the event in the sky — the one the HUD narrates, null once
+ * the clock has left its window — is this occluder's shadow on the ground
+ * underfoot; the cached pin when it was made for that event's peak; otherwise a
+ * fresh one (`pin` is called only then). Kept past its event, the pinned ground
+ * just turned with the planet: rewound nine hours from the 2027-02-06 annular it
+ * had the Sun under the limb, and the view looked through Earth at it.
+ */
+export function spotAnchorFor(
+  cached: SpotAnchor | null,
+  landed: SurfaceLandedInfo,
+  occluderMoonName: string,
+  event: { peakUtcMs: number; spec: SurfaceEventInfo } | null,
+  pin: (peakUtcMs: number) => THREE.Vector3 | null,
+): SpotAnchor | null {
+  if (
+    !event ||
+    landed.type !== 'planet' ||
+    event.spec.kind !== 'shadow-transit' ||
+    event.spec.parentPlanet !== landed.name ||
+    event.spec.moonName !== occluderMoonName
+  ) {
+    return null;
+  }
+  if (cached?.peakUtcMs === event.peakUtcMs) return cached;
+  const local = pin(event.peakUtcMs);
+  return local ? { peakUtcMs: event.peakUtcMs, local } : null;
+}
+
+/**
+ * Stand on a pinned eclipse spot if that ground can see the target: writes the
+ * anchored vantage to `out` and returns whether the frame should use it. A look
+ * up is never a look through the ground, so a pin whose Sun is under the limb
+ * hands the frame to the default vantage until the ground turns it back up —
+ * never inside an Earth eclipse's own contacts (every one of 2000–2100 keeps
+ * it 3.6° or more above), but in a grazing partial's padding hour, in
+ * Callisto's transits of Jupiter, and mid-transit for Titan or Iapetus on
+ * Saturn, whose shadows outlast a good part of its day.
+ */
+export function standAtSpotAnchor(
+  anchor: SpotAnchor | null,
+  bodyRadiusAU: number,
+  bodyOrientation: THREE.Quaternion,
+  targetAU: THREE.Vector3,
+  out: THREE.Vector3,
+): boolean {
+  if (!anchor) return false;
+  computeAnchoredSpotVantage(bodyRadiusAU, anchor.local, bodyOrientation, out);
+  return !targetBelowLimb(out, targetAU, bodyRadiusAU);
 }
 
 /**
@@ -398,8 +452,12 @@ export function transportTrackingUp(up: THREE.Vector3, forward: THREE.Vector3): 
   return up.normalize();
 }
 
-/** Where the drag's yaw gain stops growing: the cosine of an 80° elevation. */
+/** Where the drag's yaw gain stops growing: the cosine of an 80° elevation,
+ *  toward the zenith or the nadir. */
 export const SURFACE_LOOK_COS_FLOOR = Math.cos(80 * DEG2RAD);
+
+/** How close to the zenith or the nadir a drag may pitch the view. */
+export const SURFACE_LOOK_MAX_ELEVATION_DEG = 89;
 
 /** One drag step of the surface look: the two level-pan rotations. */
 export interface SurfaceLookRotation {
@@ -430,9 +488,15 @@ const tmpUpTheSky = new THREE.Vector3();
  * yaw ψ swings the view by ψ·(z × f) and a pitch θ by θ·B, B the unit
  * up-the-sky direction at f; the sky moves the opposite way, and the two
  * directions are orthogonal, so each rotation is one projection of the drag.
- * The yaw's lever |z × f| is cos(elevation) and vanishes at the zenith, so its
- * gain is capped at 1/cos 80°: steeper than that the sky lags the finger
- * rather than whirling about a zenith inside the frame.
+ *
+ * A yaw about the zenith is a pan of ψ·cos(elevation) and a turn of the whole
+ * frame about its middle of ψ·sin(elevation): keeping the horizon level while
+ * looking up twists the field by tan(elevation) of what it pans, 2.5× at 68°,
+ * as an alt-azimuth telescope does. That ratio is the model's, and was the
+ * same when the pan lagged the finger; following the finger makes both
+ * larger per pixel. The yaw's lever |z × f| is cos(elevation) and vanishes at
+ * the zenith and the nadir, so its gain is capped at 1/cos 80°: steeper than
+ * that the sky lags the finger, which bounds the twist rather than removing it.
  */
 export function surfaceLookRotation(
   forward: THREE.Vector3,
@@ -450,8 +514,9 @@ export function surfaceLookRotation(
   const cosElevation = azimuthal.length();
   if (cosElevation < 1e-9) {
     // Straight up or down there is no azimuth to pan along: the pitch alone,
-    // about whatever axis the caller falls back to. The ±89° drag clamp keeps
-    // this out of reach; it is here to keep the function total.
+    // about whatever axis the caller falls back to. Only a view within a
+    // nanoradian of the zenith lands here — tracking can hold one past the
+    // drag clamp, not that close — and it keeps the function total.
     out.yawRad = 0;
     out.pitchRad = downRad;
     return out;
@@ -464,6 +529,57 @@ export function surfaceLookRotation(
   out.yawRad =
     -drag.dot(azimuthal) / (cosElevation * Math.max(cosElevation, SURFACE_LOOK_COS_FLOOR));
   return out;
+}
+
+const tmpLookForward = new THREE.Vector3();
+const tmpLookUp = new THREE.Vector3();
+const tmpLookRight = new THREE.Vector3();
+const tmpLookAxis = new THREE.Vector3();
+const tmpLookTurn = new THREE.Quaternion();
+const lookRotation: SurfaceLookRotation = { yawRad: 0, pitchRad: 0 };
+
+/**
+ * One drag step applied to a camera's orientation, in place: the level pan
+ * surfaceLookRotation solves — the yaw about the zenith, then the pitch about
+ * the horizontal axis across the view the yaw left, which is exactly the
+ * elevation's change and so is clamped short of the zenith and the nadir, and
+ * the view can never flip over the pole. Looking dead along the zenith there is
+ * no horizontal axis, and the camera's own right stands in. For a camera with
+ * no parent — the surface camera has none — its quaternion is its world pose.
+ */
+export function applySurfaceLookDrag(
+  quaternion: THREE.Quaternion,
+  zenith: THREE.Vector3,
+  rightRad: number,
+  downRad: number,
+): THREE.Quaternion {
+  const forward = tmpLookForward.set(0, 0, -1).applyQuaternion(quaternion);
+  const look = surfaceLookRotation(
+    forward,
+    tmpLookUp.set(0, 1, 0).applyQuaternion(quaternion),
+    tmpLookRight.set(1, 0, 0).applyQuaternion(quaternion),
+    zenith,
+    rightRad,
+    downRad,
+    lookRotation,
+  );
+  quaternion.premultiply(tmpLookTurn.setFromAxisAngle(zenith, look.yawRad));
+  forward.set(0, 0, -1).applyQuaternion(quaternion);
+  // |f × z| is cos(elevation) and f · z its sine: atan2 of the pair holds its
+  // precision at the zenith, where an asin of the dot loses half its digits.
+  const horizontal = tmpLookAxis.crossVectors(forward, zenith);
+  const elevation = Math.atan2(forward.dot(zenith), horizontal.length());
+  const maxElevation = SURFACE_LOOK_MAX_ELEVATION_DEG * DEG2RAD;
+  const targetElevation = THREE.MathUtils.clamp(
+    elevation + look.pitchRad,
+    -maxElevation,
+    maxElevation,
+  );
+  if (horizontal.lengthSq() > 1e-18) horizontal.normalize();
+  else horizontal.set(1, 0, 0).applyQuaternion(quaternion);
+  return quaternion.premultiply(
+    tmpLookTurn.setFromAxisAngle(horizontal, targetElevation - elevation),
+  );
 }
 
 export const SURFACE_FOV_MIN_DEG = 1.5;

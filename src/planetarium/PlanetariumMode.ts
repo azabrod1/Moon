@@ -1216,6 +1216,9 @@ export class PlanetariumMode {
   /** `?nightexposure=0`: the rule off in any build. Every slot then stays at
    *  1, the pass never runs, and the picture is today's. */
   private nightExposureOff = parseNightExposureParam(location.search).off;
+  /** Whether the rule stood down on the latest pass — the switch above, or
+   *  Night sides: Brightened — so the pass can tell the frame it changes. */
+  private nightExposureStoodDown = this.nightExposureOff;
   /** Set by noteSunViewDiscontinuity(), consumed by the next exposure pass:
    *  every body takes its target outright, because frames keep running
    *  through a jump and no gap in wall time would tell the meter the sky is a
@@ -6377,7 +6380,14 @@ export class PlanetariumMode {
    * chase camera in cruise can stand far from the ship.
    */
   private syncNightExposures(): void {
-    if (this.nightExposureOff || !this.solarSystem) return;
+    if (!this.solarSystem) return;
+    const off = this.nightExposureStandsDown();
+    if (off !== this.nightExposureStoodDown) {
+      this.nightExposureStoodDown = off;
+      this.nightExposureSnapPending = true;
+      if (off) this.resetNightExposureSlots();
+    }
+    if (off) return;
     const nowMs = performance.now();
     const snap = this.nightExposureSnapPending;
     this.nightExposureSnapPending = false;
@@ -6444,13 +6454,17 @@ export class PlanetariumMode {
     );
   }
 
-  /** Switch the night-side exposure rule off or on. Off puts every body's slot
-   *  back to 1 at once; either way the next pass takes its targets outright. */
-  setNightExposureOff(off: boolean): void {
-    if (off === this.nightExposureOff) return;
-    this.nightExposureOff = off;
-    this.nightExposureSnapPending = true;
-    if (!off || !this.solarSystem) return;
+  /** Whether the rule stands down this frame. Night sides: Brightened is the
+   *  reader asking to see the dark side, so no camera rule takes it away:
+   *  while it is on every slot stays at 1, the long exposure the lift joins,
+   *  and back at Real the meter takes its targets outright. */
+  private nightExposureStandsDown(): boolean {
+    return this.nightExposureOff || this.nightSides.mode() === 'brightened';
+  }
+
+  /** Every body's slot back to 1, the picture as it was. */
+  private resetNightExposureSlots(): void {
+    if (!this.solarSystem) return;
     for (const planet of this.solarSystem.planets) {
       if (planet.fx?.air.uNightExposure) planet.fx.air.uNightExposure.value = 1;
       for (const m of this.planetMoons.get(planet.data.name) ?? []) {
@@ -6459,12 +6473,23 @@ export class PlanetariumMode {
     }
   }
 
+  /** Switch the night-side exposure rule off or on. Off puts every body's slot
+   *  back to 1 at once; either way the next pass takes its targets outright. */
+  setNightExposureOff(off: boolean): void {
+    if (off === this.nightExposureOff) return;
+    this.nightExposureOff = off;
+    this.nightExposureSnapPending = true;
+    if (off) this.resetNightExposureSlots();
+  }
+
   /** DEV (`__moon.nightExposure`): move the curve's ends and the pace (null
    *  puts a knob's authored value back), switch the rule off or on, and read
    *  back every body metered this frame — its lit fraction, the ramp position
    *  that asks for, the eased position and the factor written — so a capture
    *  asserts the number instead of guessing it. A knob change snaps on the
-   *  next pass, so the readback a frame later is the new curve's. */
+   *  next pass, so the readback a frame later is the new curve's. `off` is
+   *  whether the rule stands down, which Night sides: Brightened does too, and
+   *  then no body is metered. */
   devNightExposure(opts?: NightExposureOverride & { off?: boolean }): {
     off: boolean;
     full: number;
@@ -6478,15 +6503,16 @@ export class PlanetariumMode {
     }
     if (opts?.off !== undefined) this.setNightExposureOff(opts.off);
     const params = nightExposureParams();
+    const off = this.nightExposureStandsDown();
     const bodies: Record<string, { lit: number; target: number; ramp: number; applied: number }> = {};
-    if (!this.nightExposureOff) {
+    if (!off) {
       for (const [name, s] of this.nightExposureStates) {
         if (s.stampMs !== this.nightExposurePassMs) continue;
         bodies[name] = { lit: s.lit, target: s.target, ramp: s.ramp, applied: s.applied };
       }
     }
     return {
-      off: this.nightExposureOff,
+      off,
       full: params.fullLit,
       none: params.noneLit,
       rate: params.maxRatePerSec,

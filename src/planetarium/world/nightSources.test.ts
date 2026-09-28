@@ -624,7 +624,8 @@ describe('the camera’s exposure', () => {
         + '      : 0.0;',
     );
     // One declaration and the four weights: nothing else in the injection —
-    // the Sun's light, its twilight in-scatter, the eclipse trace — reads it.
+    // the Sun's light, its twilight in-scatter, the eclipse trace, the
+    // reader's lift — reads it.
     expect(surface.match(/uNightExposure/g)).toHaveLength(5);
     expect(surface.match(/uniform float uNightExposure;/g)).toHaveLength(1);
     // The shell: the declaration and its two non-solar consumers. The line

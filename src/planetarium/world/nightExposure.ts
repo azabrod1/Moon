@@ -28,8 +28,13 @@
  * answer is a linear stand-in for the cap's overlap with the lit hemisphere
  * that is exact at both ends — all of the cap lit, none of it. It does not
  * look where the camera points: low over the terminator, looking only at the
- * night half, the day half still counts. A screen-aware meter is the better
- * camera and a larger change; the cap is the honest first one.
+ * night half, the day half still counts. So does sunlit ground past the
+ * horizon: the surface view stands 374 km over Earth, where the cap reaches
+ * 19° of arc in every direction, so there the long exposure starts to go with
+ * the Sun still 15° below the horizon under the camera and is gone by 6°. A
+ * screen-aware meter, counting only the lit ground actually on screen, is the
+ * better camera and a larger change, and the next one; the cap is the honest
+ * first one.
  *
  * The curve from lit fraction to exposure is a ramp between two lit fractions,
  * NIGHT_EXPOSURE_FULL_LIT and NIGHT_EXPOSURE_NONE_LIT, eased in wall time and
@@ -61,10 +66,15 @@ export const NIGHT_EXPOSURE_NONE_LIT = 0.35;
 /** The power the eased ramp is shaped by: the factor is (1 − t)^this. */
 export const NIGHT_EXPOSURE_FALLOFF = 3;
 /** The sine of the visible cap's angular radius is never taken below this.
- *  Standing on the ground the cap collapses to a point and the lit fraction
- *  would be a step at the terminator; held here the ramp is ±2.9 degrees of
- *  the Sun's elevation wide — the width of the twilight ramps the night sources
- *  themselves fade on — so a sunrise at time warp is a ramp, not a cut. */
+ *  As a camera comes down onto the ground the cap collapses to a point and the
+ *  lit fraction would be a step at the terminator; held here the ramp is ±2.9
+ *  degrees of the Sun's elevation wide — the width of the twilight ramps the
+ *  night sources themselves fade on — so a sunrise at time warp is a ramp, not
+ *  a cut. It binds only within an eight-hundredth of a radius of the ground
+ *  (about 8 km over Earth), so only where a camera really reaches the surface:
+ *  the surface view stands 2 % of the body's radius up and never under 374 km,
+ *  where the cap is at least 11° of arc and on Earth 19°, and its sunrise is
+ *  that much wider a ramp on its own. */
 export const NIGHT_EXPOSURE_MIN_SIN_CAP = 0.05;
 /** A full swing of the ramp in half a second, a camera's auto-exposure pace;
  *  a body not advanced for half a second takes its target directly. */

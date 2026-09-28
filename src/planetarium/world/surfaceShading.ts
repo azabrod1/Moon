@@ -58,7 +58,8 @@
  * deep night the table's clamp holds it at about the authored floor, so the
  * factor is right there; it also takes the first degrees of real twilight down
  * with it. The deck's city glow does not take it — the cities are the app's own
- * look of Earth at night, and they stay — and nothing solar reads it.
+ * look of Earth at night, and they stay — nor does the reader's lift, which
+ * stands the rule down altogether while it is on, and nothing solar reads it.
  *
  * What a night fragment costs, in dependent table fetches: 6 by day (two for
  * the transmittance in front of it, four for that air's in-scatter), 7 past the

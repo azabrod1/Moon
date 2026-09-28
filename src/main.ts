@@ -44,6 +44,7 @@ import {
   isScreenRate, requestedMsFor, resolveBootFrameRate, writeFrameRate,
   type FrameRate,
 } from './app/frameRateSetting';
+import { resolveBootNightSides, writeNightSides, type NightSides } from './app/nightSidesSetting';
 import { markPending, clearPending, pendingAtBoot, readQualityLevel, writeQualityLevel } from './app/qualitySetting';
 import {
   RungMemoryMirror, clearRungMemory, readRungMemory, rungMemoryApplies, rungMemoryUrlBlock,
@@ -60,7 +61,9 @@ import { BootRenderGate } from './app/bootRenderGate';
 import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn } from './app/perfSwitches';
 import { bloomHighPassMaterial, holdBloomSize, setBloomInternalDepth } from './app/bloomTargets';
 import {
+  applyNightLift,
   devGlintUniforms,
+  nightLiftUniform,
   setDevOceanRoughness,
   setDevSurfaceHaze,
   SURFACE_HAZE_CLEAR_VIEW,
@@ -577,6 +580,32 @@ refreshQualityPin();
 /** The row's value this session: the URL's word, else the saved one, else
  *  Screen. */
 let frameRate: FrameRate = resolveBootFrameRate(location.search);
+
+// ================================================================
+// Night sides
+// ================================================================
+// The ☰ Display page's one control (app/nightSidesSetting.ts): Real, the
+// physics and the default, or Brightened, the reader's lift on every night
+// side. One uniform shared by the planetarium's own bodies
+// (world/surfaceShading `nightLiftUniform`), so it is applied once here and
+// never by a mode switch — the tools build their surfaces with a zero of their
+// own and cannot be reached by it.
+
+/** The row's value this session: the URL's word, else the saved one, else
+ *  Real. */
+let nightSides: NightSides = resolveBootNightSides(location.search);
+applyNightLift(nightSides);
+debugLog('Night sides', { mode: nightSides, lift: nightLiftUniform.value });
+
+/** The Night sides row, changed: saved on its own key — never in the journey
+ *  save, so New Journey and a restore leave it alone — and applied from the
+ *  next frame. Applied even when the value is unchanged, so a pick puts back
+ *  whatever a DEV tuning pin left in the uniform. */
+function setNightSides(mode: NightSides): void {
+  nightSides = mode;
+  writeNightSides(mode);
+  applyNightLift(mode);
+}
 /** True where this boot's URL named a frame rate. A capture pin then leaves
  *  the cap alone: a run under `?fps=` is a run ABOUT the pacing, and it waits
  *  on a draw (`__moon.waitForDraw`) instead of on two callbacks. */
@@ -2646,6 +2675,8 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
             set: setFrameRate,
             requestDraw: () => { forcedDrawRequest = true; },
           },
+          // The Display page's Night sides row.
+          { mode: () => nightSides, set: setNightSides },
         );
         // Every tool entry arrives here ("How many fit?", Look inside): the
         // mode closes its own entry surfaces and snapshots the journey, then
@@ -3187,6 +3218,22 @@ function installDevHooks() {
     setFps: (rate: FrameRate) => {
       setFrameRate(rate);
       return qualityReadout().fps;
+    },
+    /** The Night sides value and the lift the planetarium's bodies are drawn
+     *  with right now (which a `nightLift` pin may have moved off the value). */
+    nightSides: () => ({ mode: nightSides, lift: nightLiftUniform.value }),
+    /** Pick Real or Brightened, exactly as the Display page's row does. */
+    setNightSides: (mode: NightSides) => {
+      setNightSides(mode);
+      return { mode: nightSides, lift: nightLiftUniform.value };
+    },
+    /** The night lift's strength, live, for a tuning sheet out of one page
+     *  load: a fraction of albedo on every planetarium body's night half (0 is
+     *  Real). It reaches no tool's surface, and the next pick of the row puts
+     *  the setting's own value back. */
+    nightLift: (strength: number) => {
+      nightLiftUniform.value = Math.max(0, strength);
+      return { mode: nightSides, lift: nightLiftUniform.value };
     },
     /** The last n draws: `{ drawSeq, tickSeq, t, nowMs, busyMs }`, oldest
      *  first. What the pacing gate reads — the intervals between draws, not

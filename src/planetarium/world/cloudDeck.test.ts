@@ -473,6 +473,7 @@ describe('the deck lit from below', () => {
       uPlanetshineDir: { value: new THREE.Vector3() },
       uPlanetshineIntensity: { value: 0 },
       uSilhouette: { value: 0 },
+      uNightLift: { value: 0 },
       air,
     });
     const shader = mockShader();

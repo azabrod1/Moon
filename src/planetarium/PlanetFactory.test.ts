@@ -1201,6 +1201,8 @@ describe('wireEarthLateDetail', () => {
       clouds: createLateTextureSlot(),
       bump: createLateTextureSlot(),
       roughness: createLateTextureSlot(),
+      seaCalm: createLateTextureSlot(),
+      seaWindy: createLateTextureSlot(),
     };
   }
 
@@ -1542,7 +1544,10 @@ describe('Earth\'s night lights on the colour ladder', () => {
   function nightMaterial(boot: THREE.Texture | null): THREE.ShaderMaterial {
     const mat = new THREE.ShaderMaterial({ uniforms: { nightTexture: { value: boot } } });
     wireEarthLateDetail(
-      { night: createLateTextureSlot(), clouds: createLateTextureSlot(), bump: createLateTextureSlot(), roughness: createLateTextureSlot() },
+      {
+        night: createLateTextureSlot(), clouds: createLateTextureSlot(), bump: createLateTextureSlot(),
+        roughness: createLateTextureSlot(), seaCalm: createLateTextureSlot(), seaWindy: createLateTextureSlot(),
+      },
       mat, new THREE.MeshStandardMaterial(), new THREE.MeshStandardMaterial(),
     );
     return mat;

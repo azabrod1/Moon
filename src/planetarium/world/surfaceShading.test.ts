@@ -23,12 +23,16 @@ import {
   OCEAN_GLINT_CAP,
   RING_SHADOW_OPACITY_GLSL,
   SEA_WATER_F0,
+  rebindSeaWindMaps,
   seaWindOn,
   seaWindUniforms,
   setDevOceanRoughness,
   setSeaWindEnabled,
 } from './surfaceShading';
-import { COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_WIND_MAX_MS, seaWindTexture } from './seaWind';
+import {
+  COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_CALM_LOBE_ROUGHNESS, SEA_WIND_MAX_MS, installSeaWindMap,
+  seaWindTexturesFrom,
+} from './seaWind';
 import { surfaceDetailFieldMean, surfaceDetailHeightSpan } from './surfaceDetailNoise';
 import { atmosphereParams } from './atmosphereModel';
 import { earthNightFragmentShader } from '../../shared/shaders/atmosphere';
@@ -738,7 +742,7 @@ describe('the haze fade and the glint cap', () => {
     // the mirror term. The shadow must cut from what the cap left, or under
     // cloud the light goes negative and bloom paints a coloured core.
     const frag = fragmentOf('airless');
-    expect(frag).toContain(`seaGlint = min(glintRaw * (seaFresnel${import.meta.env.DEV ? ' * uGlintKeep' : ''}), vec3(${
+    expect(frag).toContain(`seaGlint = min(glintRaw * (seaFresnel * seaLobe${import.meta.env.DEV ? ' * uGlintKeep' : ''}), vec3(${
       import.meta.env.DEV ? 'uGlintCap' : '1.25'}));`);
     expect(frag).toContain('outgoingLight -= seaGlint * cloudCoverage(deckLum);');
     expect(frag).not.toMatch(/reflectedLight\.directSpecular \* cloudCoverage/);
@@ -782,7 +786,7 @@ describe('the haze fade and the glint cap', () => {
     expect(text).toContain('float airWeight = uAirBlend * aerialHazeWeight(seg, uSurfaceHaze);');
     expect(text).toContain('outgoingLight = mix(outgoingLight, outgoingLight * airT + airS, airWeight);');
     expect(OCEAN_GLINT_CAP).toBeGreaterThan(1);
-    expect(text).toContain(`seaGlint = min(glintRaw * (seaFresnel${import.meta.env.DEV ? ' * uGlintKeep' : ''}), vec3(${
+    expect(text).toContain(`seaGlint = min(glintRaw * (seaFresnel * seaLobe${import.meta.env.DEV ? ' * uGlintKeep' : ''}), vec3(${
       import.meta.env.DEV ? 'uGlintCap' : OCEAN_GLINT_CAP.toFixed(2)}));`);
     expect(text).toContain('outgoingLight -= glintRaw - seaGlint;');
     // The cloud mask cuts the water's own term, never three's raw one.
@@ -825,22 +829,68 @@ describe('the sea', () => {
     expect(ratio(0.5)).toBeLessThan(1);
   });
 
-  it('reads its width from the wind map through Cox-Munk\'s slope law, the numbers world/seaWind.ts holds', () => {
+  it('reads its windy width from the wind map through Cox-Munk\'s slope law, the numbers world/seaWind.ts holds', () => {
     const text = seaFragment();
+    expect(text).toContain('uniform sampler2D uSeaCalmMap;');
     expect(text).toContain('uniform sampler2D uSeaWindMap;');
     expect(text).toContain('uniform float uSeaWindOn;');
     expect(text).toContain(`textureGrad(uSeaWindMap, seaUv, seaDx, seaDy).r * ${SEA_WIND_MAX_MS.toFixed(1)};`);
     expect(text).toContain(`float seaRoughness = sqrt(sqrt(${COX_MUNK_SLOPE_CALM.toFixed(5)}\n`
       + `          + ${COX_MUNK_SLOPE_PER_MS.toFixed(5)} * seaWindMs));`);
+    // The calm weight beside it, scaled by the texel's water fraction so a
+    // coast's land half takes none of its lane.
+    expect(text).toContain('seaCalmWeight = textureGrad(uSeaCalmMap, seaUv, seaDx, seaDy).r\n'
+      + `          * clamp((${ROUGHNESS_MAP_LAND.toFixed(6)} - roughnessFactor)\n`
+      + `              / ${(ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER).toFixed(6)}, 0.0, 1.0);`);
     // The gradients are taken in the uniform branch, before the per-fragment
-    // gate that spares pure land the fetch: a derivative inside a branch the
+    // gate that spares pure land the fetches: a derivative inside a branch the
     // fragments of one draw take both sides of is undefined.
     const gradients = text.indexOf('vec2 seaDy = sphereEquirectUvGrad(seaDir, dFdy(seaDir));');
     const gate = text.indexOf(`if (roughnessFactor < ${(ROUGHNESS_MAP_LAND - 0.005).toFixed(6)}) {`);
     expect(gradients).toBeGreaterThan(0);
     expect(gate).toBeGreaterThan(gradients);
-    // With the map off the remap is the one-width gain, as it was.
+    // With the maps off the remap is the one-width gain, as it was, and the
+    // calm weight is nothing.
     expect(text).toContain('float waterGain = uWaterGloss;');
+    expect(text).toContain('float seaCalmWeight = 0.0;');
+  });
+
+  it('draws the mixture of two Beckmann lobes in place of three\'s GGX, at three\'s own alpha, only with the maps on', () => {
+    const text = seaFragment();
+    // Beckmann with alpha squared as the mean-square slope is the Gaussian
+    // slope law itself; the cosine floored so a facet turned away is nothing.
+    expect(text).toContain('float seaBeckmann(float alpha, float dotNH) {\n'
+      + '  float cos2 = max(dotNH * dotNH, 1e-6);\n'
+      + '  float alpha2 = alpha * alpha;\n'
+      + '  return exp((cos2 - 1.0) / (cos2 * alpha2)) / (PI * alpha2 * cos2 * cos2);\n}');
+    // The swap: three's D at the same half vector divided out, the mixture
+    // put in, under the maps' uniform so `?seawind=0` is three's lobe again.
+    expect(text).toContain('float seaLobe = 1.0;\n    if (uSeaWindOn > 0.5) {');
+    expect(text).toContain('float seaDotNH = saturate(dot(normal, seaHalfDir));');
+    expect(text).toContain('float seaAlphaWindy = pow2(material.roughness);');
+    expect(text).toContain(`float seaAlphaCalm = pow2(min(${
+      import.meta.env.DEV ? 'uGlintCalm' : SEA_CALM_LOBE_ROUGHNESS.toFixed(5)} + geometryRoughness, 1.0));`);
+    expect(text).toContain('seaLobe = mix(seaBeckmann(seaAlphaWindy, seaDotNH), seaBeckmann(seaAlphaCalm, seaDotNH), seaCalmWeight)\n'
+      + '          / D_GGX(seaAlphaWindy, seaDotNH);');
+    // The two lobes share their peak: at the half vector on the normal, both
+    // read 1 / (pi alpha²), so the swap moves the tail and not the centre.
+    const beckmann = (alpha: number, dotNH: number): number => {
+      const cos2 = Math.max(dotNH * dotNH, 1e-6);
+      return Math.exp((cos2 - 1) / (cos2 * alpha * alpha)) / (Math.PI * alpha * alpha * cos2 * cos2);
+    };
+    const ggx = (alpha: number, dotNH: number): number => {
+      const a2 = alpha * alpha;
+      const denom = dotNH * dotNH * (a2 - 1) + 1;
+      return a2 / (Math.PI * denom * denom);
+    };
+    const alpha = Math.pow(0.003 + 0.00512 * 7, 0.5);
+    expect(beckmann(alpha, 1)).toBeCloseTo(ggx(alpha, 1), 9);
+    // And in the tail Beckmann is the narrower of the two: at three sigma of
+    // facet tilt GGX is eighty times brighter, which was the haze.
+    const threeSigma = Math.cos(Math.atan(3 * alpha));
+    expect(ggx(alpha, threeSigma) / beckmann(alpha, threeSigma)).toBeGreaterThan(50);
+    expect(beckmann(alpha, 0)).toBe(0);
+    expect(Number.isFinite(beckmann(alpha, 0.001))).toBe(true);
   });
 
   it('binds the map on one shared uniform once a sea is confirmed, and the switch and the override hold it off', () => {
@@ -848,14 +898,29 @@ describe('the sea', () => {
     augmentSurfaceMaterial(mat, 'earth');
     const shader = mockShader();
     (mat.onBeforeCompile as (s: typeof shader, r: unknown) => void)(shader, null);
+    expect(shader.uniforms.uSeaCalmMap).toBe(seaWindUniforms.uSeaCalmMap);
     expect(shader.uniforms.uSeaWindMap).toBe(seaWindUniforms.uSeaWindMap);
     expect(shader.uniforms.uSeaWindOn).toBe(seaWindUniforms.uSeaWindOn);
+    // A sea confirmed before the maps land reads the one width, on the
+    // stand-in; the maps landing (PlanetFactory's install, here by hand) bind
+    // both and turn it on — but only once BOTH are here.
     setSurfaceWaterGloss(mat, true);
-    expect(seaWindUniforms.uSeaWindMap.value).toBe(seaWindTexture());
+    expect(seaWindOn()).toBe(false);
+    const maps = seaWindTexturesFrom({
+      calm: new Uint8Array([255, 0, 0, 0]), width: 2, height: 1,
+      windy: new Uint8Array([100, 100]), windyWidth: 2, windyHeight: 1,
+    });
+    expect(installSeaWindMap('calm', maps.calm, 'test')).toBe(maps.calm);
+    rebindSeaWindMaps();
+    expect(seaWindOn()).toBe(false);
+    expect(installSeaWindMap('windy', maps.windy, 'test')).toBe(maps.windy);
+    rebindSeaWindMaps();
+    expect(seaWindUniforms.uSeaCalmMap.value).toBe(maps.calm);
+    expect(seaWindUniforms.uSeaWindMap.value).toBe(maps.windy);
     expect(seaWindOn()).toBe(true);
     setSeaWindEnabled(false);
     expect(seaWindOn()).toBe(false);
-    expect(seaWindUniforms.uSeaWindMap.value).toBe(seaWindTexture());
+    expect(seaWindUniforms.uSeaWindMap.value).toBe(maps.windy);
     setSeaWindEnabled(true);
     expect(seaWindOn()).toBe(true);
     // A DEV override draws the whole sea at one width; null hands it back.
@@ -864,9 +929,19 @@ describe('the sea', () => {
     expect(setDevOceanRoughness()).toBe(0.2);
     expect(setDevOceanRoughness(null)).toBe(null);
     expect(seaWindOn()).toBe(true);
-    // A sea switched off leaves the map bound for the next one.
+    // A sea switched off leaves the maps bound for the next one.
     setSurfaceWaterGloss(mat, false);
-    expect(seaWindUniforms.uSeaWindMap.value).toBe(seaWindTexture());
+    expect(seaWindUniforms.uSeaCalmMap.value).toBe(maps.calm);
+    // A replacement map of one kind is read from the next frame, the old one
+    // let go.
+    const replacement = seaWindTexturesFrom({
+      calm: new Uint8Array([0, 0]), width: 2, height: 1,
+      windy: new Uint8Array([50, 50]), windyWidth: 2, windyHeight: 1,
+    });
+    expect(installSeaWindMap('calm', replacement.calm, 'test')).toBe(replacement.calm);
+    rebindSeaWindMaps();
+    expect(seaWindUniforms.uSeaCalmMap.value).toBe(replacement.calm);
+    expect(seaWindUniforms.uSeaWindMap.value).toBe(maps.windy);
   });
 });
 
@@ -885,6 +960,31 @@ describe('the GPU-efficiency switches', () => {
     (mat.onBeforeCompile as (s: typeof shader, r: unknown) => void)(shader, null);
     return shader.fragmentShader;
   }
+
+  it('binds every uniform the injected text declares, so a knob is never a declaration the driver reads as zero', () => {
+    // The stub's fragment text carries the injected declarations alone
+    // (three's includes are left as includes), so every `uniform` in it is
+    // ours, and every one must have landed in shader.uniforms: a uniform
+    // declared and read but never bound is silently zero, which is how the
+    // calm lobe once collapsed to nothing in a development build while the
+    // production literal, and every text test, stayed right.
+    for (const archetype of ['earth', 'cloud'] as const) {
+      const mat = new THREE.MeshStandardMaterial();
+      augmentSurfaceMaterial(mat, archetype, undefined, 0, undefined, undefined, 'Earth');
+      const shader = {
+        uniforms: {} as Record<string, unknown>,
+        vertexShader: '#include <common>\n#include <begin_vertex>\n',
+        fragmentShader: '#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>\n'
+          + '#include <normal_fragment_maps>\n#include <opaque_fragment>\n',
+      };
+      (mat.onBeforeCompile as (s: typeof shader, r: unknown) => void)(shader, null);
+      const declared = [...(shader.vertexShader + shader.fragmentShader).matchAll(/uniform\s+\w+\s+(\w+)\s*;/g)]
+        .map((match) => match[1]);
+      expect(declared.length).toBeGreaterThan(20);
+      const unbound = [...new Set(declared)].filter((name) => !(name in shader.uniforms));
+      expect(unbound, `${archetype}: declared but never bound`).toEqual([]);
+    }
+  });
 
   it('guards each cheap path with a prefix the production fold deletes', () => {
     // This is the DEVELOPMENT text, both readings of every change behind its

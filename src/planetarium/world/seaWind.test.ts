@@ -1,21 +1,35 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import {
-  CALM_PATCH_WIND_MS, COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_WIND_MAP_HEIGHT, SEA_WIND_MAP_WIDTH,
-  SEA_WIND_MAX_MS, WIND_BROAD_SPREAD, WIND_FINE_SPREAD, ZONAL_WIND_MS, buildSeaWindMap, mapNoise, parseSeaWindParam,
-  parseSeaWindMapParam, seaWindAt, seaWindMapDimensions, seaWindTexture, windRoughness, zonalWindMs,
+  COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_CALM_LOBE_ROUGHNESS, SEA_CALM_LOBE_WIND_MS, SEA_WIND_MAX_MS,
+  installSeaWindMap, meanSquareSlope, parseSeaWindMapParam, parseSeaWindParam, seaWindBytesFromRgba,
+  seaWindBytesFromWindMap, seaWindMapDimensions, seaWindMapSource, seaWindTextureFrom, seaWindTextures,
+  seaWindTexturesFrom, setSeaWindMips, slopeRoughness, windRoughness,
 } from './seaWind';
-import { ROUGHNESS_MAP_WATER } from './surfaceShading';
+import { ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER } from './surfaceShading';
+import { PLANET_TEXTURE_FILES } from './textureLadder';
+import {
+  COX_MUNK_SLOPE_CALM as GENERATOR_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS as GENERATOR_SLOPE_PER_MS,
+  SEA_WIND_MAX_MS as GENERATOR_WIND_MAX_MS, DEFAULTS, bandStatistics, buildField, calmWeightForWind,
+  encodeCalmGrey, encodeSeaWindRgb, encodeWindyGrey, meanSquareSlope as generatorMeanSquareSlope, pointEvaluator,
+} from '../../../tools/seaWindField.mjs';
 
 describe('windRoughness', () => {
-  it('is Cox-Munk\'s slope law as a GGX roughness, and lands the map\'s own water value at the mean sea', () => {
+  it('is Cox-Munk\'s slope law as the roughness three squares into alpha, and lands the map\'s own water value at the mean sea', () => {
     expect(windRoughness(0)).toBeCloseTo(Math.pow(COX_MUNK_SLOPE_CALM, 0.25), 12);
+    expect(meanSquareSlope(7)).toBeCloseTo(COX_MUNK_SLOPE_CALM + 7 * COX_MUNK_SLOPE_PER_MS, 12);
     // The roughness map grades open water at 0.45; that is a 7 m/s sea here,
     // which is about the mean wind over the ocean.
     expect(windRoughness(7.4)).toBeCloseTo(ROUGHNESS_MAP_WATER, 2);
+    // Alpha squared is the mean-square slope: with the Beckmann lobe the
+    // shader draws, the law is exact.
+    expect(Math.pow(windRoughness(5), 4)).toBeCloseTo(meanSquareSlope(5), 12);
+    expect(slopeRoughness(meanSquareSlope(5))).toBeCloseTo(windRoughness(5), 12);
     // A glassy patch is drawn narrow, a gale wide, and nothing in between goes
     // the other way.
-    expect(windRoughness(CALM_PATCH_WIND_MS)).toBeLessThan(0.27);
+    expect(windRoughness(SEA_CALM_LOBE_WIND_MS)).toBeLessThan(0.3);
     expect(windRoughness(SEA_WIND_MAX_MS)).toBeGreaterThan(0.5);
     let last = 0;
     for (let wind = 0; wind <= SEA_WIND_MAX_MS; wind += 0.25) {
@@ -25,125 +39,120 @@ describe('windRoughness', () => {
     // A negative wind is no wind.
     expect(windRoughness(-3)).toBe(windRoughness(0));
     expect(COX_MUNK_SLOPE_PER_MS).toBe(0.00512);
+    expect(ROUGHNESS_MAP_LAND).toBeGreaterThan(windRoughness(SEA_WIND_MAX_MS));
+  });
+
+  it('holds the calm lobe where the generator measured the calm weight', () => {
+    // A weight of one means "this calm": the shader's lobe and the bake's
+    // reference are one number, or a weight would draw a sea the design did
+    // not put there.
+    expect(SEA_CALM_LOBE_WIND_MS).toBe(DEFAULTS.calmReferenceWindMs);
+    expect(SEA_CALM_LOBE_ROUGHNESS).toBeCloseTo(windRoughness(SEA_CALM_LOBE_WIND_MS), 12);
+    expect(Math.pow(SEA_CALM_LOBE_ROUGHNESS, 4)).toBeCloseTo(0.00607, 5);
+    // And the slope law is one law in the three places that carry it.
+    expect(GENERATOR_SLOPE_CALM).toBe(COX_MUNK_SLOPE_CALM);
+    expect(GENERATOR_SLOPE_PER_MS).toBe(COX_MUNK_SLOPE_PER_MS);
+    expect(GENERATOR_WIND_MAX_MS).toBe(SEA_WIND_MAX_MS);
+    expect(generatorMeanSquareSlope(3)).toBeCloseTo(meanSquareSlope(3), 12);
   });
 });
 
-describe('zonalWindMs', () => {
-  it('is calm at the equator, light in the subtropics and strongest over the Southern Ocean', () => {
-    expect(zonalWindMs(0)).toBeLessThan(zonalWindMs(15));
-    expect(zonalWindMs(30)).toBeLessThan(zonalWindMs(15));
-    expect(zonalWindMs(-55)).toBeGreaterThan(zonalWindMs(50));
-    for (const [latitude, wind] of ZONAL_WIND_MS) expect(zonalWindMs(latitude)).toBeCloseTo(wind, 12);
-    // Between rows it interpolates, and beyond the poles it clamps.
-    expect(zonalWindMs(1.5)).toBeCloseTo((zonalWindMs(0) + zonalWindMs(3)) / 2, 12);
-    expect(zonalWindMs(120)).toBe(zonalWindMs(90));
-    expect(zonalWindMs(-120)).toBe(zonalWindMs(-90));
+describe('the bytes of the maps', () => {
+  it('reads a picture of both maps north-up into row 0 south, red the calm weight and green the windy speed', () => {
+    // A 2x2 picture: the top row is the north.
+    const rgba = new Uint8Array([
+      10, 20, 0, 255, 11, 21, 0, 255, // picture row 0 (north)
+      30, 40, 0, 255, 31, 41, 0, 255, // picture row 1 (south)
+    ]);
+    const map = seaWindBytesFromRgba(rgba, 2, 2);
+    expect(map.width).toBe(2);
+    expect(map.height).toBe(2);
+    expect(map.windyWidth).toBe(2);
+    expect(Array.from(map.calm)).toEqual([30, 31, 10, 11]);
+    expect(Array.from(map.windy)).toEqual([40, 41, 20, 21]);
+  });
+
+  it('turns a raw map of one wind a texel into the mixture: calmer than the lobe is all calm, the rest is the windy lobe at its wind', () => {
+    const calmByte = Math.round((SEA_CALM_LOBE_WIND_MS / SEA_WIND_MAX_MS) * 255);
+    const map = seaWindBytesFromWindMap(new Uint8Array([0, calmByte - 1, calmByte, 112, 255]), 5, 1);
+    expect(Array.from(map.calm)).toEqual([255, 255, 0, 0, 0]);
+    expect(Array.from(map.windy)).toEqual([calmByte, calmByte, calmByte, 112, 255]);
+    expect(map.windyWidth).toBe(5);
+    expect(map.windyHeight).toBe(1);
+  });
+
+  it('reads a raw map\'s shape off its size', () => {
+    expect(seaWindMapDimensions(2048 * 1024)).toEqual({ width: 2048, height: 1024 });
+    expect(seaWindMapDimensions(1440 * 720)).toEqual({ width: 1440, height: 720 });
+    expect(seaWindMapDimensions(1024 * 512)).toEqual({ width: 1024, height: 512 });
+    expect(seaWindMapDimensions(1000)).toBeNull();
+    expect(seaWindMapDimensions(2048 * 1024 + 1)).toBeNull();
+    expect(seaWindMapDimensions(0)).toBeNull();
   });
 });
 
-describe('mapNoise', () => {
-  it('is periodic in longitude, bounded, and the same noise every time', () => {
-    for (const [v, cells, seed] of [[0.3, 9, 1], [0.62, 30, 2], [0.5, 144, 3]] as const) {
-      expect(mapNoise(0, v, cells, seed)).toBeCloseTo(mapNoise(1, v, cells, seed), 12);
-      expect(mapNoise(0.25, v, cells, seed)).toBeCloseTo(mapNoise(1.25, v, cells, seed), 12);
-    }
-    let low = 1;
-    let high = 0;
-    for (let i = 0; i < 2000; i++) {
-      const value = mapNoise((i * 0.618) % 1, (i * 0.382) % 1, 30, 2);
-      low = Math.min(low, value);
-      high = Math.max(high, value);
-    }
-    expect(low).toBeGreaterThanOrEqual(0);
-    expect(high).toBeLessThan(1);
-    expect(high - low).toBeGreaterThan(0.5);
-    expect(mapNoise(0.1, 0.2, 9, 1)).toBe(mapNoise(0.1, 0.2, 9, 1));
-    expect(mapNoise(0.1, 0.2, 9, 1)).not.toBe(mapNoise(0.1, 0.2, 9, 2));
-  });
-});
-
-describe('buildSeaWindMap', () => {
-  const map = buildSeaWindMap();
-
-  it('is the map size, a byte a texel, the same map twice', () => {
-    expect(map.width).toBe(SEA_WIND_MAP_WIDTH);
-    expect(map.height).toBe(SEA_WIND_MAP_HEIGHT);
-    expect(map.data).toHaveLength(SEA_WIND_MAP_WIDTH * SEA_WIND_MAP_HEIGHT);
-    const again = buildSeaWindMap();
-    expect(Buffer.compare(Buffer.from(map.data), Buffer.from(again.data))).toBe(0);
-  });
-
-  it('blows at about the mean wind over the ocean, with a few glassy patches and none in the Southern Ocean', () => {
-    expect(map.meanWindMs).toBeGreaterThan(6);
-    expect(map.meanWindMs).toBeLessThan(9);
-    expect(map.calmFraction).toBeGreaterThan(0.003);
-    expect(map.calmFraction).toBeLessThan(0.05);
-    // The Southern Ocean rows: 45°S to 65°S, the map's lower quarter.
-    let calmSouth = 0;
-    for (let row = Math.floor(map.height * (25 / 180)); row < Math.floor(map.height * (45 / 180)); row++) {
-      for (let column = 0; column < map.width; column++) {
-        if (map.data[row * map.width + column] < (1 / SEA_WIND_MAX_MS) * 255) calmSouth++;
-      }
-    }
-    expect(calmSouth).toBe(0);
-    // The equatorial band has the most.
-    let calmEquator = 0;
-    let equatorTexels = 0;
-    for (let row = Math.floor(map.height * (80 / 180)); row < Math.floor(map.height * (100 / 180)); row++) {
-      for (let column = 0; column < map.width; column++) {
-        equatorTexels++;
-        if (map.data[row * map.width + column] < (1 / SEA_WIND_MAX_MS) * 255) calmEquator++;
-      }
-    }
-    expect(calmEquator / equatorTexels).toBeGreaterThan(map.calmFraction);
-  });
-
-  it('wraps at the date line: the first and last columns are neighbours', () => {
-    let seam = 0;
-    let inland = 0;
-    for (let row = 0; row < map.height; row++) {
-      const first = map.data[row * map.width];
-      const last = map.data[row * map.width + map.width - 1];
-      const mid = map.data[row * map.width + 500];
-      const midNext = map.data[row * map.width + 501];
-      seam += Math.abs(first - last);
-      inland += Math.abs(mid - midNext);
-    }
-    expect(seam).toBeLessThan(inland * 3 + map.height);
-  });
-
-  it('is the south pole on row 0, which is how three uploads it', () => {
-    // The Southern Ocean is the windier of the two 55° rows, so a row mean
-    // tells the map's ends apart: 55°S lies in the lower quarter.
-    const rowMean = (row: number): number => {
-      let sum = 0;
-      for (let column = 0; column < map.width; column++) sum += map.data[row * map.width + column];
-      return (sum / map.width / 255) * SEA_WIND_MAX_MS;
-    };
-    const south55 = rowMean(Math.round(map.height * (35 / 180)));
-    const north55 = rowMean(Math.round(map.height * (145 / 180)));
-    expect(south55).toBeGreaterThan(north55);
-    // A row crosses nine broad noise cells, so its mean sits within a tenth
-    // of the zonal value rather than on it.
-    expect(Math.abs(south55 - zonalWindMs(-55)) / zonalWindMs(-55)).toBeLessThan(0.1);
-    expect(Math.abs(north55 - zonalWindMs(55)) / zonalWindMs(55)).toBeLessThan(0.1);
-    // And a single texel carries the structure on top of the zonal mean.
-    expect(Math.abs(seaWindAt(0.5, 0.001) - zonalWindMs(-89.8)))
-      .toBeLessThan(zonalWindMs(-89.8) * (WIND_BROAD_SPREAD + WIND_FINE_SPREAD) + 1e-9);
-  });
-});
-
-describe('seaWindTexture', () => {
-  it('is one channel, wrapped around the date line, clamped at the poles, built once', () => {
-    const tex = seaWindTexture();
+describe('the textures', () => {
+  it('are one channel, wrapped around the date line, clamped at the poles, mip-chained, and read as data', () => {
+    const tex = seaWindTextureFrom(new Uint8Array([1, 2, 3, 4]), 4, 1);
     expect(tex.format).toBe(THREE.RedFormat);
     expect(tex.type).toBe(THREE.UnsignedByteType);
     expect(tex.wrapS).toBe(THREE.RepeatWrapping);
     expect(tex.wrapT).toBe(THREE.ClampToEdgeWrapping);
     expect(tex.generateMipmaps).toBe(true);
+    expect(tex.minFilter).toBe(THREE.LinearMipmapLinearFilter);
     expect(tex.colorSpace).toBe(THREE.NoColorSpace);
-    expect(tex.image.width).toBe(SEA_WIND_MAP_WIDTH);
-    expect(seaWindTexture()).toBe(tex);
+    expect(tex.unpackAlignment).toBe(1);
+    expect(tex.image.width).toBe(4);
+    // The DEV mip switch: the next texture built samples its full resolution
+    // from any distance.
+    setSeaWindMips(false);
+    const flat = seaWindTextureFrom(new Uint8Array([1, 2]), 2, 1);
+    expect(flat.generateMipmaps).toBe(false);
+    expect(flat.minFilter).toBe(THREE.LinearFilter);
+    setSeaWindMips(true);
+    // A pair from bytes keeps each map's own size.
+    const pair = seaWindTexturesFrom({
+      calm: new Uint8Array(8), width: 4, height: 2, windy: new Uint8Array(2), windyWidth: 2, windyHeight: 1,
+    });
+    expect(pair.calm.image.width).toBe(4);
+    expect(pair.windy.image.width).toBe(2);
+    expect(pair.windy.generateMipmaps).toBe(true);
+  });
+
+  it('are installed one at a time, the sea reading them once both are here, and an override refuses the shipped pair', () => {
+    expect(seaWindTextures().calm).toBeNull();
+    expect(seaWindMapSource()).toBe('none');
+    const first = seaWindTexturesFrom({
+      calm: new Uint8Array(2), width: 2, height: 1, windy: new Uint8Array(2), windyWidth: 2, windyHeight: 1,
+    });
+    expect(installSeaWindMap('calm', first.calm, 'shipped')).toBe(first.calm);
+    expect(seaWindMapSource()).toBe('none');
+    expect(installSeaWindMap('windy', first.windy, 'shipped')).toBe(first.windy);
+    expect(seaWindMapSource()).toBe('shipped');
+    expect(seaWindTextures().calm).toBe(first.calm);
+    expect(seaWindTextures().windy).toBe(first.windy);
+    // A replacement of one kind disposes the one it replaces.
+    let disposed = 0;
+    first.calm.addEventListener('dispose', () => { disposed++; });
+    const second = seaWindTextureFrom(new Uint8Array(2), 2, 1);
+    expect(installSeaWindMap('calm', second, 'shipped')).toBe(second);
+    expect(disposed).toBe(1);
+    expect(seaWindTextures().calm).toBe(second);
+    // Asking for a map from a file refuses the shipped pair from then on,
+    // whichever lands first — a sheet captured through the override never
+    // shows the shipped maps under it.
+    expect(parseSeaWindMapParam('')).toBeNull();
+    expect(parseSeaWindMapParam('?seawindmap=')).toBeNull();
+    expect(parseSeaWindMapParam('?seawind=0&seawindmap=/planning/field.png')).toBe('/planning/field.png');
+    const late = seaWindTextureFrom(new Uint8Array(2), 2, 1);
+    expect(installSeaWindMap('calm', late, 'shipped')).toBeNull();
+    expect(seaWindTextures().calm).toBe(second);
+    const override = seaWindTexturesFrom({
+      calm: new Uint8Array(2), width: 2, height: 1, windy: new Uint8Array(2), windyWidth: 2, windyHeight: 1,
+    });
+    expect(installSeaWindMap('calm', override.calm, '/planning/field.png')).toBe(override.calm);
+    expect(installSeaWindMap('windy', override.windy, '/planning/field.png')).toBe(override.windy);
+    expect(seaWindMapSource()).toBe('/planning/field.png');
   });
 });
 
@@ -156,16 +165,187 @@ describe('parseSeaWindParam', () => {
   });
 });
 
-describe('the map from a file', () => {
-  it('is named by the link, and a raw map\'s shape is read off its size', () => {
-    expect(parseSeaWindMapParam('')).toBeNull();
-    expect(parseSeaWindMapParam('?seawindmap=')).toBeNull();
-    expect(parseSeaWindMapParam('?seawind=0&seawindmap=/planning/field.r8')).toBe('/planning/field.r8');
-    expect(seaWindMapDimensions(2048 * 1024)).toEqual({ width: 2048, height: 1024 });
-    expect(seaWindMapDimensions(1440 * 720)).toEqual({ width: 1440, height: 720 });
-    expect(seaWindMapDimensions(1024 * 512)).toEqual({ width: 1024, height: 512 });
-    expect(seaWindMapDimensions(1000)).toBeNull();
-    expect(seaWindMapDimensions(2048 * 1024 + 1)).toBeNull();
-    expect(seaWindMapDimensions(0)).toBeNull();
+describe('the generator (tools/seaWindField.mjs)', () => {
+  const field = pointEvaluator();
+
+  it('is exactly periodic in longitude, at every point, the equatorial blend band included', () => {
+    let state = 777;
+    const random = (): number => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state / 4294967296;
+    };
+    for (let sample = 0; sample < 600; sample++) {
+      // A third of the samples inside the band where the two tilts blend.
+      const lat = sample < 200 ? random() * 8 - 4 : random() * 140 - 70;
+      const lon = random() * 360 - 180;
+      const here = field(lon, lat);
+      const roundOnce = field(lon + 360, lat);
+      const roundTwiceBack = field(lon - 720, lat);
+      expect(roundOnce.windMs).toBeCloseTo(here.windMs, 9);
+      expect(roundOnce.calmWeight).toBeCloseTo(here.calmWeight, 9);
+      expect(roundOnce.windyMs).toBeCloseTo(here.windyMs, 9);
+      expect(roundTwiceBack.windMs).toBeCloseTo(here.windMs, 9);
+    }
+    // And the slope across the date line is a slope, not a crease: the
+    // one-sided differences at the seam agree as they do inland.
+    const step = 0.01;
+    for (const lat of [-45, -20, -2, 0, 2, 10, 20, 45]) {
+      const fromWest = (field(180, lat).windMs - field(180 - step, lat).windMs) / step;
+      const fromEast = (field(180 + step, lat).windMs - field(180, lat).windMs) / step;
+      const inland = Math.abs((field(37 + step, lat).windMs - field(37 - step, lat).windMs) / (2 * step));
+      expect(Math.abs(fromWest - fromEast)).toBeLessThan(Math.max(inland, 1) * 0.5);
+    }
+  });
+
+  it('converts a calm sea into the weight that keeps the glint\'s peak, one for calmer than the lobe and zero at the wind', () => {
+    expect(calmWeightForWind(0.3, 7, 0.6)).toBe(1);
+    expect(calmWeightForWind(0.6, 7, 0.6)).toBeCloseTo(1, 12);
+    expect(calmWeightForWind(7, 7, 0.6)).toBe(0);
+    expect(calmWeightForWind(2, 2, 0.6)).toBe(0);
+    const weight = calmWeightForWind(1.5, 7, 0.6);
+    expect(weight).toBeGreaterThan(0.4);
+    expect(weight).toBeLessThan(0.6);
+    // The peak identity: the mixture's brightness at the centre of the glint
+    // is the single lobe's, since a lobe's peak goes as 1 / mss.
+    const peak = (wind: number): number => 1 / generatorMeanSquareSlope(wind);
+    expect(weight * peak(0.6) + (1 - weight) * peak(7)).toBeCloseTo(peak(1.5), 9);
+    let last = 1;
+    for (let wind = 0.6; wind <= 7; wind += 0.2) {
+      const next = calmWeightForWind(wind, 7, 0.6);
+      expect(next).toBeLessThanOrEqual(last + 1e-12);
+      last = next;
+    }
+  });
+
+  it('is the field it was: a few points pinned, so a drift in the arithmetic is a deliberate re-bake', () => {
+    // Move these only with `npm run gen:seawind` and the shipped hashes below.
+    const pins: Array<[number, number, number, number, number]> = [
+      [-160, -12, 3.305083, 0, 3.305083],
+      [30, 0, 2.527322, 0.222974, 3.173800],
+      [120, 25, 1.024544, 0.674990, 5.691913],
+      [-45, -40, 7.210969, 0, 7.210969],
+      [0, 60, 12.334111, 0, 12.334111],
+      [90, -55, 9.641751, 0, 9.641751],
+    ];
+    for (const [lon, lat, wind, calm, windy] of pins) {
+      const point = field(lon, lat);
+      expect(point.windMs).toBeCloseTo(wind, 5);
+      expect(point.calmWeight).toBeCloseTo(calm, 5);
+      expect(point.windyMs).toBeCloseTo(windy, 5);
+    }
+  });
+
+  it('blows at the climatology by band, calmest and most often glassy in the tropics, and never glassy in the Southern Ocean', () => {
+    // A small bake, one point a texel: the statistics are the design's.
+    const small = buildField(256, 128, { supersample: 1 });
+    expect(small.calmWeight).toHaveLength(256 * 128);
+    expect(small.windyWidth).toBe(128);
+    expect(small.windyMs).toHaveLength(128 * 64);
+    const tropics = bandStatistics(small, 0, 15);
+    const trades = bandStatistics(small, 15, 30);
+    const westerlies = bandStatistics(small, 30, 45);
+    const roaring = bandStatistics(small, 45, 60);
+    expect(tropics.meanWindMs).toBeGreaterThan(3.5);
+    expect(tropics.meanWindMs).toBeLessThan(5);
+    expect(tropics.meanWindMs).toBeLessThan(trades.meanWindMs);
+    expect(trades.meanWindMs).toBeLessThan(westerlies.meanWindMs);
+    expect(westerlies.meanWindMs).toBeLessThan(roaring.meanWindMs);
+    expect(roaring.meanWindMs).toBeGreaterThan(9);
+    expect(tropics.meanCalmWeight).toBeGreaterThan(trades.meanCalmWeight);
+    expect(trades.meanCalmWeight).toBeGreaterThan(westerlies.meanCalmWeight);
+    expect(westerlies.meanCalmWeight).toBeGreaterThan(roaring.meanCalmWeight);
+    expect(roaring.meanCalmWeight).toBeLessThan(0.03);
+    expect(tropics.under2Fraction).toBeGreaterThan(0.15);
+    expect(tropics.under2Fraction).toBeLessThan(0.35);
+    // The windy map is the open sea: never a lane's wind.
+    let windyMin = Infinity;
+    for (const wind of small.windyMs) windyMin = Math.min(windyMin, wind);
+    expect(windyMin).toBeGreaterThan(0.09);
+    // Every byte of the encodings is a texel: grey, north-up, three a texel.
+    const calm = encodeCalmGrey(small);
+    expect(calm).toHaveLength(256 * 128 * 3);
+    expect(calm[0]).toBe(calm[1]);
+    expect(calm[1]).toBe(calm[2]);
+    expect(encodeWindyGrey(small)).toHaveLength(128 * 64 * 3);
+    const both = encodeSeaWindRgb(small);
+    expect(both).toHaveLength(256 * 128 * 3);
+    // The picture's top row is the map's last row, the north.
+    expect(both[0]).toBe(Math.round(Math.min(1, Math.max(0, small.calmWeight[127 * 256])) * 255));
+    expect(both[2]).toBe(0);
+  });
+
+  it('mixes exactly where it matters: a block\'s mixture keeps the glint\'s peak, which a block\'s mean wind loses', () => {
+    // The reason for two maps. Over 2-degree blocks of 16x16 points at the
+    // shipped texel scale, the brightness at the centre of the glint from
+    // the block-averaged calm weight and windy speed against the mean over
+    // the points of the single-wind design, beside the same from the mean
+    // wind alone. A lobe's brightness at a facet tilt goes as
+    // exp(-tan²/mss) / mss; the common factors cancel in a ratio.
+    const lobe = (mss: number, tiltDeg: number): number => {
+      const tan = Math.tan((tiltDeg * Math.PI) / 180);
+      return Math.exp((-tan * tan) / mss) / mss;
+    };
+    const referenceMss = generatorMeanSquareSlope(DEFAULTS.calmReferenceWindMs);
+    let state = 99;
+    const random = (): number => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state / 4294967296;
+    };
+    const errors: Record<number, { mixture: number[]; averaged: number[] }> = { 0: { mixture: [], averaged: [] }, 5: { mixture: [], averaged: [] }, 10: { mixture: [], averaged: [] } };
+    let blocks = 0;
+    while (blocks < 60) {
+      const lon0 = random() * 360 - 180;
+      const lat0 = random() * 50 - 25;
+      const points = [];
+      for (let row = 0; row < 16; row++) {
+        for (let column = 0; column < 16; column++) points.push(field(lon0 + (column + 0.5) / 8, lat0 + (row + 0.5) / 8));
+      }
+      const calmMean = points.reduce((sum, point) => sum + point.calmWeight, 0) / points.length;
+      if (calmMean < 0.05) continue; // a block with no calm in it mixes nothing
+      blocks++;
+      const windyWeight = points.reduce((sum, point) => sum + 1 - point.calmWeight, 0);
+      const windyMean = points.reduce((sum, point) => sum + (1 - point.calmWeight) * point.windyMs, 0) / Math.max(windyWeight, 1e-9);
+      const windMean = points.reduce((sum, point) => sum + point.windMs, 0) / points.length;
+      for (const tilt of [0, 5, 10]) {
+        const reference = points.reduce((sum, point) => sum + lobe(generatorMeanSquareSlope(point.windMs), tilt), 0) / points.length;
+        const mixture = calmMean * lobe(referenceMss, tilt) + (1 - calmMean) * lobe(generatorMeanSquareSlope(windyMean), tilt);
+        const averaged = lobe(generatorMeanSquareSlope(windMean), tilt);
+        errors[tilt].mixture.push(Math.abs(mixture / reference - 1));
+        errors[tilt].averaged.push(Math.abs(averaged / reference - 1));
+      }
+    }
+    const mean = (values: number[]): number => values.reduce((sum, value) => sum + value, 0) / values.length;
+    // At the centre the mixture is within a few percent and the mean wind a
+    // fifth low, which is the dim wash the first map drew.
+    expect(mean(errors[0].mixture)).toBeLessThan(0.08);
+    expect(mean(errors[0].averaged)).toBeGreaterThan(0.15);
+    expect(mean(errors[0].averaged)).toBeGreaterThan(mean(errors[0].mixture) * 3);
+    // Off the centre both are approximations of the same order; the
+    // mixture's is bounded.
+    expect(mean(errors[5].mixture)).toBeLessThan(0.12);
+    expect(mean(errors[10].mixture)).toBeLessThan(0.12);
+  });
+
+  it('ships the pair the generator bakes, under the names the boot loads and warms', () => {
+    // The hashes move only with `npm run gen:seawind`; a re-bake with a new
+    // look ships under a new pathname (textureLadder.ts).
+    expect(PLANET_TEXTURE_FILES.earthSeaCalm).toBe('earth-seawind-calm.v1.webp');
+    expect(PLANET_TEXTURE_FILES.earthSeaWindy).toBe('earth-seawind-windy.v1.webp');
+    const hashOf = (file: string): string =>
+      createHash('sha256').update(readFileSync(`public/textures/${file}`)).digest('hex');
+    expect(hashOf(PLANET_TEXTURE_FILES.earthSeaCalm))
+      .toBe('4c7cbf89ae94330d7b50a689ff4ad50e981db348ecaa801d10ca764c18701bbc');
+    expect(hashOf(PLANET_TEXTURE_FILES.earthSeaWindy))
+      .toBe('c43217640e33bb08d56b84051d1a79d236aaf93f9d497f4e9fbcf798ff93f3ca');
+    // Lossless webp, the container the loader decodes as a picture: RIFF,
+    // WEBP, VP8L.
+    const calmBytes = readFileSync(`public/textures/${PLANET_TEXTURE_FILES.earthSeaCalm}`);
+    expect(calmBytes.toString('ascii', 0, 4)).toBe('RIFF');
+    expect(calmBytes.toString('ascii', 8, 12)).toBe('WEBP');
+    expect(calmBytes.toString('ascii', 12, 16)).toBe('VP8L');
+    // And the shipped DEFAULTS are what those hashes were baked from.
+    expect(DEFAULTS.supersample).toBe(2);
+    expect(DEFAULTS.windyDownsample).toBe(2);
+    expect(DEFAULTS.grain).toBe(0);
   });
 });

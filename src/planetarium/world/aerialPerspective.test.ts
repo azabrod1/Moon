@@ -38,6 +38,7 @@ import {
   createSurfaceAirFx,
   type SurfaceArchetype, OCEAN_GLINT_CAP,
 } from './surfaceShading';
+import { SEA_CALM_LOBE_ROUGHNESS } from './seaWind';
 import { createEarthNightShellMaterial } from './earthNightMaterial';
 
 /**
@@ -97,8 +98,8 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = 'd85d2e3de46259dde19b0989fe2b3e33159db7cef6c979193c50cb8d241d75d9';
-const PROD_FRAGMENT_HASH = '9ea86b872a4c6a06311d329096b3f611d4225680e99620dc7686a74514135db7';
+const DEV_FRAGMENT_HASH = 'dcc6d4bd413a2b3e39b3eeae006054783014b6b6d3d7f9b6c1f7cb7e805eac72';
+const PROD_FRAGMENT_HASH = '6551f993f5415caa67c050ba6b845edde960e97767b4d71eb83ff71b94b8c320';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 
 describe('the injected surface shader', () => {
@@ -165,7 +166,7 @@ describe('the injected surface shader', () => {
       .replace('uniform float uPerfCloudTaps;\nuniform float uPerfCloudClear;\nuniform float uPerfGlintGate;'
         + '\nuniform float uProbeCloudSmooth;\nuniform float uProbeCloudDetail;'
         + '\nuniform float uProbeCloudRelief;\nuniform float uProbeCloudAir;'
-        + '\nuniform float uGlintCap;\nuniform float uGlintKeep;', '')
+        + '\nuniform float uGlintCap;\nuniform float uGlintKeep;\nuniform float uGlintCalm;', '')
       .replace(/uPerfCloudTaps < 0\.5 \|\| /g, '')
       .replace(/uPerfCloudClear > 0\.5 && /g, '')
       .replace(/uPerfGlintGate < 0\.5 \|\| /g, '')
@@ -176,9 +177,11 @@ describe('the injected surface shader', () => {
       .replace('\t} // cloud relief probe\n', '')
       .replace('uProbeCloudDetail > 0.5 ? 0.0 : ', '')
       .replace(' && (uProbeCloudAir < 0.5 || DECK_OFF)', '')
-      // The glint's tuning uniforms: the cap reads as the constant it defaults
-      // to, and the scale, a DEV A/B knob at one, is not in the text at all.
+      // The glint's tuning uniforms: the cap and the calm lobe read as the
+      // constants they default to, and the scale, a DEV A/B knob at one, is
+      // not in the text at all.
       .replace(/uGlintCap/g, OCEAN_GLINT_CAP.toFixed(2))
+      .replace(/uGlintCalm/g, SEA_CALM_LOBE_ROUGHNESS.toFixed(5))
       .replace(/ \* uGlintKeep/g, '');
     expect(folded).not.toMatch(/uPerf|uProbe|uGlint/);
     expect(hash(import.meta.env.DEV ? folded : shader.fragmentShader)).toBe(PROD_FRAGMENT_HASH);

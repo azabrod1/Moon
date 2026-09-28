@@ -109,7 +109,9 @@ import {
 } from './atmosphereLut';
 import { AIRLIGHT_SCALE } from './atmosphereModel';
 import { perfSwitchOn, perfSwitchUniform } from '../../app/perfSwitches';
-import { COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_WIND_MAX_MS, seaWindTexture } from './seaWind';
+import {
+  COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_CALM_LOBE_ROUGHNESS, SEA_WIND_MAX_MS, seaWindTextures,
+} from './seaWind';
 import { EARTH_NIGHT_COLD_CUT, EARTH_NIGHT_WARM_GLSL } from '../../shared/shaders/atmosphere';
 import {
   CLOUD_ALBEDO,
@@ -452,23 +454,28 @@ export const SEA_WATER_F0 = ((SEA_WATER_IOR - 1) / (SEA_WATER_IOR + 1)) ** 2;
 export const OCEAN_GLINT_CAP = 1.25;
 
 /**
- * The cap and a scale as the shader reads them. In a development build they
- * are uniforms, so the glint can be tuned live at a pose (`__moon.glint`) and
- * a sheet of candidates captured from one page load: the cap, and a flat scale
- * on the sea's whole mirror term that defaults to one now that the Fresnel is
- * water's own, kept as an A/B knob. A production build compiles the cap as a
- * literal and carries neither uniform nor the scale, and the fold test pins
- * that the two texts are the same text.
+ * The cap, a scale and the calm lobe as the shader reads them. In a
+ * development build they are uniforms, so the glint can be tuned live at a
+ * pose (`__moon.glint`) and a sheet of candidates captured from one page load:
+ * the cap; a flat scale on the sea's whole mirror term that defaults to one
+ * now that the Fresnel is water's own, kept as an A/B knob; and the calm
+ * lobe's roughness (world/seaWind SEA_CALM_LOBE_ROUGHNESS), the width of the
+ * glassy share of every sea. A production build compiles the cap and the lobe
+ * as literals and carries neither uniform nor the scale, and the fold test
+ * pins that the two texts are the same text.
  */
 export const devGlintUniforms: {
   uGlintCap: { value: number };
   uGlintKeep: { value: number };
+  uGlintCalm: { value: number };
 } = {
   uGlintCap: { value: OCEAN_GLINT_CAP },
   uGlintKeep: { value: 1 },
+  uGlintCalm: { value: SEA_CALM_LOBE_ROUGHNESS },
 };
 const GLINT_CAP_GLSL = import.meta.env.DEV ? 'uGlintCap' : OCEAN_GLINT_CAP.toFixed(2);
 const GLINT_KEEP_GLSL = import.meta.env.DEV ? ' * uGlintKeep' : '';
+const GLINT_CALM_GLSL = import.meta.env.DEV ? 'uGlintCalm' : SEA_CALM_LOBE_ROUGHNESS.toFixed(5);
 
 /** The cloud deck's colour map, and the drift its own frame carries on top of
  *  the body's. Shared by every augmented surface so the ocean's mirror term can
@@ -539,15 +546,19 @@ function roughnessChunk(): string {
 /**
  * The GLSL half of `waterGlossRoughness`, behind the uniform that is zero on
  * every surface but a globe whose roughness map really is a water mask — and,
- * with the wind map on, the sea's own width under this fragment: the wind read
- * from the map in the body frame (world/seaWind.ts) and turned into a GGX
- * roughness through Cox-Munk's slope law, `windRoughness` in GLSL. The read
- * takes explicit gradients, as the cloud shadow's does, because the UV jumps a
- * whole turn at the date line and an implicit derivative across it would pick
- * the coarsest mip down one column of sea; they are taken in the uniform
- * branch, outside the per-fragment gate that spares pure land the fetch.
+ * with the wind maps on, the sea's own lobe under this fragment: the pair
+ * read in the body frame (world/seaWind.ts), the windy speed turned into the
+ * roughness three lights the windy lobe at through Cox-Munk's slope law
+ * (`windRoughness` in GLSL), and the calm weight kept for the body below,
+ * scaled by the texel's water fraction so a coast's land half takes none of
+ * its lane. The reads take explicit gradients, as the cloud shadow's does,
+ * because the UV jumps a whole turn at the date line and an implicit
+ * derivative across it would pick the coarsest mip down one column of sea;
+ * they are taken in the uniform branch, outside the per-fragment gate that
+ * spares pure land the fetches.
  */
 const WATER_GLOSS_GLSL = /* glsl */ `
+float seaCalmWeight = 0.0;
 if (GROUND_ON(uWaterGloss > 0.0)) {
   float waterGain = uWaterGloss;
   if (uSeaWindOn > 0.5) {
@@ -561,6 +572,9 @@ if (GROUND_ON(uWaterGloss > 0.0)) {
           + ${COX_MUNK_SLOPE_PER_MS.toFixed(5)} * seaWindMs));
       waterGain = (${ROUGHNESS_MAP_LAND.toFixed(6)} - seaRoughness)
           / ${(ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER).toFixed(6)};
+      seaCalmWeight = textureGrad(uSeaCalmMap, seaUv, seaDx, seaDy).r
+          * clamp((${ROUGHNESS_MAP_LAND.toFixed(6)} - roughnessFactor)
+              / ${(ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER).toFixed(6)}, 0.0, 1.0);
     }
   }
   roughnessFactor = max(${ROUGHNESS_MAP_LAND.toFixed(6)}
@@ -1307,7 +1321,8 @@ uniform float uProbeCloudAir;`;
 
 /** The glint's tuning uniforms (devGlintUniforms), development builds only. */
 const DEV_TUNING_DECLS = /* glsl */ `uniform float uGlintCap;
-uniform float uGlintKeep;`;
+uniform float uGlintKeep;
+uniform float uGlintCalm;`;
 
 /**
  * The cloud deck's cost probes (app/perfSwitches.ts, `cloud-probe-*`): each
@@ -1431,6 +1446,21 @@ const SURFACE_ARCHETYPE_MACROS = /* glsl */ `
 #define GROUND_ON(x) (x)
 #endif`;
 
+/**
+ * The Gaussian slope law as a microfacet lobe: Beckmann, alpha squared the
+ * mean-square slope. Cox-Munk's sea is this lobe exactly, which is why the
+ * body swaps it in for three's GGX — whose tail at three sigma of facet tilt
+ * is eighty times heavier, and was the haze round the sheen — wherever the
+ * wind map is on. The cosine is floored so a facet turned away is a lobe of
+ * nothing rather than a division by nothing.
+ */
+const SEA_LOBE_GLSL = /* glsl */ `
+float seaBeckmann(float alpha, float dotNH) {
+  float cos2 = max(dotNH * dotNH, 1e-6);
+  float alpha2 = alpha * alpha;
+  return exp((cos2 - 1.0) / (cos2 * alpha2)) / (PI * alpha2 * cos2 * cos2);
+}`;
+
 const SURFACE_FRAGMENT_DECLS = /* glsl */ `
 ${SURFACE_ARCHETYPE_MACROS}
 uniform vec3 uNightColor;
@@ -1455,6 +1485,7 @@ uniform float uAirBlend;
 uniform float uSurfaceHaze;
 uniform float uAirLookupRadius;
 uniform float uWaterGloss;
+uniform sampler2D uSeaCalmMap;
 uniform sampler2D uSeaWindMap;
 uniform float uSeaWindOn;
 uniform sampler2D uCloudShadowMap;
@@ -1480,7 +1511,7 @@ varying vec3 vObjPos;
 varying vec3 vPlanetshineViewDir;
 varying vec3 vAirCam;
 varying vec3 vAirFrag;
-${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}${CLOUD_DETAIL_GLSL}${SPHERE_EQUIRECT_UV_GLSL}${SMOOTH_TEXEL_GLSL}${SURFACE_DETAIL_GLSL}`;
+${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}${CLOUD_DETAIL_GLSL}${SPHERE_EQUIRECT_UV_GLSL}${SMOOTH_TEXEL_GLSL}${SURFACE_DETAIL_GLSL}${SEA_LOBE_GLSL}`;
 
 /**
  * three's <normal_fragment_maps>, with the tangent-space branch taken over.
@@ -1621,8 +1652,16 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // (SEA_WATER_F0): three's term is rescaled by the ratio of the two Schlick
   // curves at this fragment's half vector, with three's own exp2 approximation
   // of the fifth power so the division takes out exactly what was put in.
-  // Then the cap, on the water's own reflection and in units of white
-  // (OCEAN_GLINT_CAP). What is left is what the cloud mask below can cut.
+  // Then, with the wind map on, the lobe: three's GGX is divided out at the
+  // same half vector and the map's mixture of two Beckmann lobes put in its
+  // place — the glassy share of this sea at the calm lobe, the rest at its
+  // wind's — because Beckmann with alpha squared as the mean-square slope IS
+  // Cox-Munk's Gaussian slope law, and GGX's heavy tail spread the sheen into
+  // haze. The windy lobe takes three's own alpha, its geometry roughness and
+  // floor included, and the calm lobe the same geometry term, so a small
+  // disc's normal spread widens both. Then the cap, on the water's own
+  // reflection and in units of white (OCEAN_GLINT_CAP). What is left is what
+  // the cloud mask below can cut.
   vec3 seaGlint = vec3(0.0);
   if (GROUND_ON(uWaterGloss > 0.0)) {
     vec3 glintRaw = reflectedLight.directSpecular;
@@ -1632,7 +1671,15 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
     float seaFresnelTail = exp2((-5.55473 * seaDotVH - 6.98316) * seaDotVH);
     float seaFresnel = (${SEA_WATER_F0.toFixed(5)} * (1.0 - seaFresnelTail) + seaFresnelTail)
         / (0.04 * (1.0 - seaFresnelTail) + seaFresnelTail);
-    seaGlint = min(glintRaw * (seaFresnel${GLINT_KEEP_GLSL}), vec3(${GLINT_CAP_GLSL}));
+    float seaLobe = 1.0;
+    if (uSeaWindOn > 0.5) {
+      float seaDotNH = saturate(dot(normal, seaHalfDir));
+      float seaAlphaWindy = pow2(material.roughness);
+      float seaAlphaCalm = pow2(min(${GLINT_CALM_GLSL} + geometryRoughness, 1.0));
+      seaLobe = mix(seaBeckmann(seaAlphaWindy, seaDotNH), seaBeckmann(seaAlphaCalm, seaDotNH), seaCalmWeight)
+          / D_GGX(seaAlphaWindy, seaDotNH);
+    }
+    seaGlint = min(glintRaw * (seaFresnel * seaLobe${GLINT_KEEP_GLSL}), vec3(${GLINT_CAP_GLSL}));
     outgoingLight -= glintRaw - seaGlint;
   }
   // The deck's alpha, worked out with its colour above where the lights could
@@ -1940,16 +1987,18 @@ export function setSurfaceWaterGloss(mat: THREE.Material, on: boolean): void {
 }
 
 /**
- * The wind map's uniforms (world/seaWind.ts), shared by every augmented
- * material the way the cloud deck's are: the map, and whether the sea reads it
- * (1) or is drawn at the one width uWaterGloss authors (0). Bound to the 1x1
- * stand-in until a sea is confirmed; `?seawind=0` and a DEV roughness override
- * hold it at 0.
+ * The wind maps' uniforms (world/seaWind.ts), shared by every augmented
+ * material the way the cloud deck's are: the calm map, the windy map, and
+ * whether the sea reads them (1) or is drawn at the one width uWaterGloss
+ * authors (0). Bound to the 1x1 stand-in until both maps have landed and a
+ * sea is confirmed; `?seawind=0` and a DEV roughness override hold it at 0.
  */
 export const seaWindUniforms: {
+  uSeaCalmMap: { value: THREE.Texture | null };
   uSeaWindMap: { value: THREE.Texture | null };
   uSeaWindOn: { value: number };
 } = {
+  uSeaCalmMap: { value: null },
   uSeaWindMap: { value: null },
   uSeaWindOn: { value: 0 },
 };
@@ -1967,20 +2016,24 @@ export function seaWindOn(): boolean {
   return seaWindUniforms.uSeaWindOn.value > 0;
 }
 
+/** A sea confirmed: bind the maps if both have landed (world/seaWind.ts); if
+ *  not, the sea reads the one width until `rebindSeaWindMaps` brings them. */
 function installSeaWind(): void {
-  if (!seaWindEnabled) return;
-  if (!seaWindBound) {
-    seaWindUniforms.uSeaWindMap.value = seaWindTexture();
+  rebindSeaWindMaps();
+}
+
+/** A map landed — a shipped one, or a DEV `?seawindmap=` replacement
+ *  (world/seaWind.ts installSeaWindMap): once both are installed every sea
+ *  already drawn reads them from the next frame, and one not yet confirmed
+ *  finds them bound when it is. */
+export function rebindSeaWindMaps(): void {
+  const maps = seaWindTextures();
+  if (maps.calm && maps.windy) {
+    seaWindUniforms.uSeaCalmMap.value = maps.calm;
+    seaWindUniforms.uSeaWindMap.value = maps.windy;
     seaWindBound = true;
   }
   applySeaWindOn();
-}
-
-/** A replacement map (DEV `?seawindmap=`, world/seaWind.ts): every sea already
- *  reading the map reads the new one from the next frame; a sea not yet
- *  confirmed binds it when it is. */
-export function rebindSeaWindMap(tex: THREE.Texture): void {
-  if (seaWindBound) seaWindUniforms.uSeaWindMap.value = tex;
 }
 
 /** The map is read only with the switch on, the map bound, and no DEV override
@@ -2368,11 +2421,16 @@ export function augmentSurfaceMaterial(
     }
     shader.uniforms.uCloudShadowMap = cloudShadowUniforms.uCloudShadowMap;
     shader.uniforms.uCloudShadowSpin = cloudShadowUniforms.uCloudShadowSpin;
-    // The wind map the same way: the stand-in until a sea is confirmed, and
-    // one shared uniform so the globe and every streamed sector read one sea.
+    // The wind maps the same way: the stand-in until both have landed and a
+    // sea is confirmed, and shared uniforms so the globe and every streamed
+    // sector read one sea.
+    if (!seaWindUniforms.uSeaCalmMap.value) {
+      seaWindUniforms.uSeaCalmMap.value = surfaceAirDummies().map2D;
+    }
     if (!seaWindUniforms.uSeaWindMap.value) {
       seaWindUniforms.uSeaWindMap.value = surfaceAirDummies().map2D;
     }
+    shader.uniforms.uSeaCalmMap = seaWindUniforms.uSeaCalmMap;
     shader.uniforms.uSeaWindMap = seaWindUniforms.uSeaWindMap;
     shader.uniforms.uSeaWindOn = seaWindUniforms.uSeaWindOn;
     shader.uniforms.uCloudDeck = uCloudDeck;
@@ -2394,6 +2452,7 @@ export function augmentSurfaceMaterial(
       shader.uniforms.uProbeCloudAir = perfSwitchUniform('cloud-probe-air');
       shader.uniforms.uGlintCap = devGlintUniforms.uGlintCap;
       shader.uniforms.uGlintKeep = devGlintUniforms.uGlintKeep;
+      shader.uniforms.uGlintCalm = devGlintUniforms.uGlintCalm;
     }
     shader.uniforms.uFrameSpin = uFrameSpin;
     shader.uniforms.uSynthDetail = uSynthDetail;

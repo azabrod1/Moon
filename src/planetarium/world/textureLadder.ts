@@ -85,6 +85,12 @@ export const PLANET_TEXTURE_FILES: Record<string, string> = {
   earthCloudsNormal: 'earth-clouds-normal.webp',
   earthBump: 'earth-bump.webp',
   earthRoughness: 'earth-roughness.v2.webp',
+  // The sea's wind as the pair of maps world/seaWind.ts reads the glint's lobe
+  // from: the calm weight at 2048x1024 and the windy speed at 1024x512, both
+  // grey. Baked by `npm run gen:seawind`; a re-bake with a new look ships
+  // under a new pathname, as the `.v2` maps above do.
+  earthSeaCalm: 'earth-seawind-calm.v1.webp',
+  earthSeaWindy: 'earth-seawind-windy.v1.webp',
   mars: 'mars.v2.webp',
   marsNormal: 'mars-normal.v2.webp',
   jupiter: 'jupiter.webp',

@@ -1543,7 +1543,7 @@
        cluster (28). */
     #planetarium-pause-badge {
       position: absolute;
-      top: 14px;
+      top: calc(14px + env(safe-area-inset-top, 0px));
       left: 50%;
       transform: translate(-50%, -6px);
       display: flex;
@@ -1581,7 +1581,7 @@
     }
     #planetarium-pause-badge .kbd { text-transform: none; letter-spacing: 0; }
     @media (hover: none) { #planetarium-pause-badge .kbd { display: none; } }
-    @media (max-width: 640px) { #planetarium-pause-badge { top: 60px; } }
+    @media (max-width: 640px) { #planetarium-pause-badge { top: calc(60px + env(safe-area-inset-top, 0px)); } }
     @media (prefers-reduced-motion: reduce) { #planetarium-pause-badge { transition: none; } }
     /* Its spoken twin: off-screen, never display:none, or it would not be
        read when a control pauses or resumes the clock. */

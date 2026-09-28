@@ -112,6 +112,7 @@ describe('the page covers the screen (index.html)', () => {
     '#planetarium-btn-land': ['bottom'],
     '#planetarium-menu-panel': ['top', 'right'],
     '#planetarium-notification': ['top'],
+    '#planetarium-pause-badge': ['top'],
     '#planetarium-keys-hint': ['bottom'],
     '#stats-popover': ['right', 'bottom'],
     '#observatory-panel': ['top', 'right'],

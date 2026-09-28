@@ -31,7 +31,7 @@ export class PlanetariumBottomBar {
     this.timeClock?.addEventListener('click', () => this.setTime(!this.isTimeOpen()));
     this.timeClock?.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
-        // Stop here or the window-level handler sees Space too (ship thrust).
+        // Stop here or the window-level handler sees Space too (the pause).
         e.preventDefault();
         e.stopPropagation();
         this.setTime(!this.isTimeOpen());

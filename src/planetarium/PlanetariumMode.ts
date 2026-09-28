@@ -378,6 +378,8 @@ import {
   type HistoricMilestone,
 } from './missions/historicJourneys';
 import { BodyPicker } from './ui/BodyPicker';
+import { PauseBadge } from './ui/PauseBadge';
+import { pauseBadgeVisible } from './ui/pauseBadgeLogic';
 import { PlanetariumBottomBar } from './ui/PlanetariumBottomBar';
 import { PlanetariumHelpModal } from './ui/PlanetariumHelpModal';
 import { PlanetariumMenuPanel } from './ui/PlanetariumMenuPanel';
@@ -1371,6 +1373,7 @@ export class PlanetariumMode {
   // Orbit crossing notifications
   private lastCrossedOrbit: string | null = null;
   private notification = new PlanetariumNotification();
+  private pauseBadge = new PauseBadge(() => this.resumeFromBadge());
   private uiWired = false;
 
   // Autopilot: auto-steer toward target. Off until the user engages it.
@@ -2247,8 +2250,10 @@ export class PlanetariumMode {
     this.resumeTimeAfterHelp = !this.timeState.paused;
     this.player.moving = false;
     this.timeState.paused = true;
-    this.updateTimeUI();
+    // Shown before the time UI refreshes: the Paused badge asks whether Help
+    // is open and stays down under it, so the sheet must already be up.
     this.helpModal.show();
+    this.updateTimeUI();
   }
 
   /** Close the help. It counts as seen only when the user closed it: a
@@ -2742,7 +2747,7 @@ export class PlanetariumMode {
   // Shared clock handlers — the time rail, its panel, the keyboard, and the
   // surface transport strip drive the same state through these (one clock,
   // one idiom).
-  private setTimePausedFromControl(paused: boolean) {
+  private setTimePausedFromControl(paused: boolean, opts?: { quiet?: boolean }) {
     // A resume arriving moments after the clock froze is usually the second
     // half of a double-click, or a Pause-intent click chasing the silent
     // step-down detent. Re-assert the freeze in that window. An explicit
@@ -2752,13 +2757,30 @@ export class PlanetariumMode {
       this.updateTimeUI({ flash: true });
       return;
     }
+    const changed = this.timeState.paused !== paused;
     this.timeState.paused = paused;
     if (paused) this.pauseGuardUntilMs = performance.now() + 350;
     this.updateTimeUI({ flash: true });
+    // Said for a screen reader: Space, a rail tap, the surface strip and the
+    // badge have no native announcement of their own. A control with one (the
+    // panel's Pause radio) passes `quiet`, and a modal's own freeze never
+    // comes through here, so the menu and Help say nothing.
+    if (changed && !opts?.quiet) this.pauseBadge.announce(paused ? 'Paused' : 'Resumed');
   }
 
   private timeTogglePause() {
     this.setTimePausedFromControl(!this.timeState.paused);
+  }
+
+  /** The Paused badge's own activation. With the ☰ menu open the badge is
+   *  saying what the menu did, so the tap closes the menu, which puts back
+   *  the clock and the ship the menu found; otherwise it resumes through the
+   *  same guarded control the rail and the surface strip use. Help hides the
+   *  badge, so its lock never meets a badge to press. */
+  private resumeFromBadge() {
+    if (this.menuPanel.isOpen()) { this.closeMenuPanel(); return; }
+    if (this.timeControlsLocked()) return;
+    this.setTimePausedFromControl(false);
   }
 
   private timeJumpToNow() {
@@ -8840,7 +8862,7 @@ export class PlanetariumMode {
   private handleKeyDown(e: KeyboardEvent) {
     if (!this.active) return;
     // The rail/clock widgets preventDefault the keys they handle — a handled
-    // key must not also steer the ship or toggle thrust here.
+    // key must not also steer the ship or pause the clock a second time here.
     if (e.defaultPrevented) return;
 
     // The saved-journey resume prompt is a full-screen modal that owns the
@@ -8924,9 +8946,10 @@ export class PlanetariumMode {
     // veil element blocks pointers by construction, but the keyboard lands
     // here — T would open the deck invisibly UNDER the cover (deck z-index
     // sits below the veil's), O would override the arrival's own land-open
-    // decision, Space would silently invert an arrival's authored park/glide
-    // state, and the time keys would warp the clock in the middle of the
-    // ceremony. Swallow them all; the ceremony ends with every verb live.
+    // decision, Space would stop the clock under the cover with the arrival's
+    // authored park/glide half played, and the time keys would warp the clock
+    // in the middle of the ceremony. Swallow them all; the ceremony ends with
+    // every verb live.
     if (this.arrivalVeilUp()) return;
 
     // A second Enter while the map camera dives skips the ease and blacks out.
@@ -9033,8 +9056,9 @@ export class PlanetariumMode {
     const spaceOnControl = this.isSpaceOnControl(e);
 
     // Suppress flight keys while landed — except Space, which pauses the
-    // clock there (the time rail is the one live throttle on the ground;
-    // in cruise Space keeps its ship-thrust meaning below).
+    // clock there as everywhere (the time rail is the one live throttle on
+    // the ground); the surface strip re-renders at once so its Pause/Resume
+    // label keeps the promise it makes.
     if (this.landedOn) {
       if (e.key === ' ' && !spaceOnControl && !this.isMissionActive() && !this.isHelpOpen()
         && !this.menuPanel.isOpen()) {
@@ -9051,18 +9075,19 @@ export class PlanetariumMode {
     // phantom thrust the instant processInput reads the set again.
     if (!this.isMapOpen()) this.keys.add(e.key.toLowerCase());
 
-    // Space toggles pause
+    // Space pauses everything: the clock stops and the ship is held with the
+    // world (player.held follows the paused clock every frame), the same
+    // freeze the ☰ menu lays over the scene while it is open — one meaning
+    // in cruise, over the map and on the ground, and the Paused badge is its
+    // word on screen. The throttle state survives the pause untouched, so
+    // resume continues exactly as left; a standstill with the clock running
+    // is S or the − button, which cut the throttle to exactly zero. The menu
+    // and Help hold the clock for themselves (timeControlsLocked), and key
+    // auto-repeat must not re-fire the toggle while the key is held.
     if (e.key === ' ' && !spaceOnControl) {
       e.preventDefault();
-      // Over the map, Space pauses the clock (the map is a clock instrument);
-      // ordinary cruise keeps Space on ship thrust. Key auto-repeat must not
-      // re-fire either toggle while the key is held.
-      if (e.repeat) return;
-      if (this.isMapOpen()) this.timeTogglePause();
-      // A paused clock holds the ship; a thrust toggle banked invisibly
-      // under the freeze would fire as surprise thrust (or a mystery park)
-      // on unpause — Space goes inert instead of latching.
-      else if (!this.timeState.paused) this.player.moving = !this.player.moving;
+      if (e.repeat || this.timeControlsLocked()) return;
+      this.timeTogglePause();
     }
   }
 
@@ -10418,7 +10443,8 @@ export class PlanetariumMode {
     // Rail taps and Space stay toggles — those gestures carry no promise.
     document.getElementById('planetarium-time-pause')?.addEventListener('click', () => {
       if (this.timeControlsLocked()) return;
-      this.setTimePausedFromControl(true);
+      // A radio announces its own selection; the spoken twin stays quiet.
+      this.setTimePausedFromControl(true, { quiet: true });
     });
     document.getElementById('planetarium-time-play')?.addEventListener('click', () => {
       if (this.timeControlsLocked()) return;
@@ -19557,6 +19583,16 @@ export class PlanetariumMode {
     // promise on every clock write (event jumps and menu/help restores can
     // otherwise leave it stale until the next 8 Hz HUD pass).
     this.observatoryHud.syncPaused(this.timeState.paused);
+    // The Paused badge follows the same write: the one on-screen word for
+    // the freeze outside surface view (pauseBadgeLogic.ts says where it
+    // stays down), refreshed here and on the 8 Hz pass for the modal seams.
+    this.pauseBadge.render(pauseBadgeVisible({
+      paused: this.timeState.paused,
+      surfaceView: this.landedView === 'surface',
+      helpOpen: this.isHelpOpen(),
+      missionActive: this.isMissionActive(),
+      tutorialActive: this.tutorial !== null,
+    }));
   }
 
   /** Redraw the ☰ panel's gyro toggle. Driven by GyroSteering's onChange (and

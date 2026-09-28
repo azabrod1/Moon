@@ -412,7 +412,7 @@ export class PlanetariumTimePanel {
       else if (e.key === 'n' || e.key === 'N') this.callbacks.onNow();
       else return;
       // Handled here — without this the window-level handler would also see
-      // the key and Space would double as the ship's thrust toggle.
+      // the key and pause the clock a second time on Space.
       e.preventDefault();
       e.stopPropagation();
     });

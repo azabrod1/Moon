@@ -97,7 +97,12 @@ import { ShadowVisuals, createShadowVisualsWarmupProbes, type GuideSlotInput } f
 import { createShaderWarmupProbes, type WarmupProbes } from './world/shaderWarmupProbes';
 import { warmUpSceneShaders, type ProgramResolveTiming } from './world/shaderWarmup';
 import { selectMoonShadowCasters, umbraReachesSurface } from './world/moonShadowCasters';
-import { OBSERVATORY_JUMP_LEAD_MS, resolveLiveEvent, stepperSearchFromUtcMs } from './observatoryTime';
+import {
+  eventCountdownText,
+  OBSERVATORY_JUMP_LEAD_MS,
+  resolveLiveEvent,
+  stepperSearchFromUtcMs,
+} from './observatoryTime';
 import { resolveShowVantage } from './observatoryJump';
 import { surfacePerfBeginSpan, surfacePerfEndSpan } from './surfacePerf';
 import { findEvent, type EventType } from '../astronomy/ephemeris';
@@ -16598,20 +16603,6 @@ export class PlanetariumMode {
     return landed ? surfaceEventNarrative(landed, spec) : '';
   }
 
-  /** Warm countdown for the HUD subline — always relative to the engine's peak/contacts. */
-  private static peakCountdown(nowUtcMs: number, event: ShadowEvent): string | null {
-    const fmt = (ms: number) => {
-      const minutes = Math.max(1, Math.round(ms / 60_000));
-      if (minutes < 60) return `${minutes}m`;
-      const hours = Math.floor(minutes / 60);
-      return `${hours}h ${minutes % 60}m`;
-    };
-    if (nowUtcMs < event.startUtcMs) return `starts in ${fmt(event.startUtcMs - nowUtcMs)}`;
-    if (nowUtcMs < event.peakUtcMs) return `peak in ${fmt(event.peakUtcMs - nowUtcMs)}`;
-    if (nowUtcMs <= event.endUtcMs) return `ends in ${fmt(event.endUtcMs - nowUtcMs)}`;
-    return null;
-  }
-
   /** True when the surface view is pointed at the phase hero's own subject —
    *  the body the no-event headline is describing. */
   private isPhaseSubjectTracked(info: ObservatorySubjectInfo): boolean {
@@ -16639,7 +16630,8 @@ export class PlanetariumMode {
       // dimming reads as nothing-happened while you watch.
       const hint = this.eventExpectation(event);
       if (hint) subText += ` — ${hint}`;
-      subWarm = PlanetariumMode.peakCountdown(now, event);
+      // Warm countdown — always relative to the engine's peak/contacts.
+      subWarm = eventCountdownText(now, event);
     } else {
       const subject = this.buildObservatorySubject();
       const phase = subject ? observatoryPhaseText(now, subject) : null;

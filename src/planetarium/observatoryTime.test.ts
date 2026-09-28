@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  eventCountdownText,
   OBSERVATORY_JUMP_LEAD_MS,
   OBSERVATORY_STEP_MARGIN_MS,
   resolveLiveEvent,
@@ -179,5 +180,28 @@ describe('resolveLiveEvent', () => {
     const later = span(1_001 * HOUR, 1_003 * HOUR, 1_005 * HOUR);
     expect(resolveLiveEvent(1_002 * HOUR, 'Earth', [later, eclipse], null)).toBe(eclipse);
     expect(resolveLiveEvent(1_002 * HOUR, 'Earth', [eclipse, later], null)).toBe(eclipse);
+  });
+});
+
+describe('eventCountdownText — the surface HUD’s warm countdown', () => {
+  it('walks the contacts: starts in, peak in, ends in', () => {
+    expect(eventCountdownText(long.startUtcMs - 45 * MIN, long)).toBe('starts in 45m');
+    expect(eventCountdownText(long.startUtcMs, long)).toBe('peak in 2h 0m');
+    expect(eventCountdownText(long.peakUtcMs - 3 * MIN, long)).toBe('peak in 3m');
+    expect(eventCountdownText(long.peakUtcMs, long)).toBe('ends in 2h 0m');
+    expect(eventCountdownText(long.endUtcMs, long)).toBe('ends in 1m');
+  });
+
+  it('says how long ago an event ended through the hour the HUD still narrates it', () => {
+    // The post-contact hour used to read null: the present-tense narrative
+    // ("The Moon is crossing the Sun") was the only word on an event that
+    // was over.
+    expect(eventCountdownText(long.endUtcMs + 20 * MIN, long)).toBe('ended 20m ago');
+    expect(eventCountdownText(long.endUtcMs + 75 * MIN, long)).toBe('ended 1h 15m ago');
+  });
+
+  it('never prints a zero: under a minute rounds up to 1m', () => {
+    expect(eventCountdownText(short.startUtcMs - 10_000, short)).toBe('starts in 1m');
+    expect(eventCountdownText(short.endUtcMs + 10_000, short)).toBe('ended 1m ago');
   });
 });

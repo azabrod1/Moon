@@ -17731,6 +17731,12 @@ export class PlanetariumMode {
       // right inset); ≤640px it's a bottom sheet (grow the bottom inset).
       let insetRight = insetX;
       let sheetBottom = insetBottom;
+      // Keep clear of the bottom band the HUD measures for its own cluster:
+      // on a phone the headline stack and FOV cluster stand far taller than
+      // the fixed inset, and a target below the frame put the chevron over
+      // the headline. 15 px is the chevron's half height, 8 a gap.
+      const bandTopPx = this.observatoryHud.bottomBandTopPx();
+      if (Number.isFinite(bandTopPx)) sheetBottom = Math.max(sheetBottom, h - bandTopPx + 23);
       if (this.observatoryPanel.isOpen()) {
         if (!this.panelRectCache || this.panelRectCache.w !== w || this.panelRectCache.h !== h) {
           const rect = document.getElementById('observatory-panel')?.getBoundingClientRect();
@@ -17743,7 +17749,7 @@ export class PlanetariumMode {
             Math.max(insetX, w - insetX - 44),
           );
         } else if (cache.top > h * 0.4) {
-          sheetBottom = Math.max(insetBottom, h - cache.top + 12);
+          sheetBottom = Math.max(sheetBottom, h - cache.top + 12);
         }
       }
       const ex = THREE.MathUtils.clamp(w / 2 + dx * (w + h), insetX, Math.max(insetX + 1, w - insetRight));

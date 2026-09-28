@@ -499,9 +499,10 @@ export function appliedTierGpuBytes(up: TextureUpgrade): number {
  * ImageBitmap so three can re-upload it after a context loss — 33 MiB for a
  * 4K map, 134 for an 8K one, none of it visible in a texture-memory figure —
  * so the ladder closes that source once the upload is paid (see
- * releaseUpgradeSource) and this reads 0 for it from then on. What is still
- * held is counted, because the envelope is one device's memory rather than
- * one subsystem's.
+ * releaseUpgradeSource) and this reads 0 for it from then on. A compressed
+ * rung keeps its transcoded mip chain the same way, and once trimmed reads
+ * the small tail it keeps. What is still held is counted, because the
+ * envelope is one device's memory rather than one subsystem's.
  */
 export function appliedTierHeldBytes(up: TextureUpgrade): number {
   // A swap whose map has decoded but not yet been assigned holds both at
@@ -1450,7 +1451,9 @@ export function cancelTierRelease(up: TextureUpgrade): void {
  *  back is a boot-map-class globe rather than a smear. 2 MiB per rung
  *  (1024x512 RGBA) against the 33 MiB of a 4K decode and the 134 of an 8K —
  *  the accepted price of that second, and small enough that the ladder's
- *  whole set of stand-ins is a rounding error against the envelope. */
+ *  whole set of stand-ins is a rounding error against the envelope. A
+ *  compressed rung keeps its own mip levels from this width down, which is
+ *  under 0.7 MiB at a byte a texel. */
 export const RESTORE_STANDIN_WIDTH = 1024;
 
 /**
@@ -1471,8 +1474,17 @@ export const RESTORE_STANDIN_WIDTH = 1024;
  * the original image — and the ledger goes on counting it, because the claim
  * this function exists to make is an accounting one and a resize nobody
  * checked is not evidence.
+ *
+ * A compressed rung (a KTX2 container) is the same case in another shape: its
+ * transcoded mip chain stays in `mipmaps` after the upload, a second full copy
+ * of what the GPU holds (42.7 MiB behind an 8K rung). Its stand-in is the tail
+ * of that chain, which needs no resize at all — see releaseCompressedSource.
  */
 export function releaseUpgradeSource(tex: THREE.Texture): void {
+  if ((tex as THREE.CompressedTexture).isCompressedTexture) {
+    releaseCompressedSource(tex as THREE.CompressedTexture);
+    return;
+  }
   const img = tex.image as (ImageBitmap & { close?: () => void }) | undefined;
   if (!img || typeof img.close !== 'function' || !(img.width > RESTORE_STANDIN_WIDTH)) return;
   if (typeof createImageBitmap !== 'function') return;
@@ -1511,6 +1523,53 @@ export function releaseUpgradeSource(tex: THREE.Texture): void {
     },
     () => { tex.removeEventListener('dispose', onDispose); },
   );
+}
+
+/**
+ * Drop a compressed rung's mip levels wider than the stand-in once its upload
+ * is paid, keeping the tail of the chain from RESTORE_STANDIN_WIDTH down.
+ *
+ * The tail is a complete mip chain of its own, so after a lost context three
+ * re-uploads it exactly as it uploads any container — storage sized from the
+ * first level, one level per entry — and the globe draws a boot-map-class map
+ * until the restore queue fetches the real one back over it. That queue is
+ * keyed on `sourceReleased`, the same mark a closed bitmap carries, so a
+ * compressed rung is fetched back exactly as a webp rung is.
+ *
+ * Trimmed in place, not replaced: three builds the texture around the very
+ * array the transcoder's reply carries, so the reply and the texture never
+ * disagree about what is left. The reply's message event also keeps the
+ * transferred buffers alive by itself until its worker takes another task or
+ * the pool is disposed, so the dropped levels of the last rung each worker
+ * transcoded leave only then. Nothing reads the levels after the upload
+ * except a restore, which wants the tail.
+ *
+ * Only a flat 2D chain whose base is wider than the stand-in, with a level at
+ * or under it to keep: an array or cube texture lays its levels out per layer
+ * or face, and a chain with nothing small enough in it would have to be
+ * resampled, which a compressed format cannot be here. Those keep everything,
+ * and the ledger goes on counting it.
+ */
+function releaseCompressedSource(tex: THREE.CompressedTexture): void {
+  const shaped = tex as THREE.CompressedTexture & {
+    isCompressedArrayTexture?: boolean;
+    isCompressedCubeTexture?: boolean;
+  };
+  if (shaped.isCompressedArrayTexture || shaped.isCompressedCubeTexture) return;
+  const levels = tex.mipmaps;
+  if (!Array.isArray(levels) || levels.length < 2) return;
+  const keepFrom = levels.findIndex((level) => !!level && level.width <= RESTORE_STANDIN_WIDTH);
+  // 0: already stand-in sized, nothing to gain. -1: nothing small enough.
+  if (keepFrom <= 0) return;
+  // What it holds on the GPU stops being readable from the levels the moment
+  // the large ones go; stash the figure first.
+  tex.userData.gpuBytes = textureGpuBytes(tex);
+  levels.splice(0, keepFrom);
+  // The image a compressed texture carries is only its size, and the size
+  // three would allocate on a restore is the first level's; the two agree.
+  // Neither assignment touches the source version: no re-upload.
+  tex.image = { width: levels[0].width, height: levels[0].height };
+  tex.userData.sourceReleased = true;
 }
 
 // --- Arrival warm goals ------------------------------------------------------

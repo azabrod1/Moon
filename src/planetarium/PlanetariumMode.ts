@@ -4339,8 +4339,9 @@ export class PlanetariumMode {
         compressed: (drawn as THREE.CompressedTexture | null | undefined)?.isCompressedTexture === true,
         // What the decoded image behind the map still holds. A rung closes
         // its source once the upload is paid, leaving a thumbnail to
-        // re-upload from after a context loss — so this reads 0 and the
-        // width reads small on a rung that has been through the warm pump.
+        // re-upload from after a context loss — so this reads 0 for a webp
+        // rung and the small tail of its chain for a compressed one, and the
+        // width reads small, on a rung that has been through the warm pump.
         retained: retainedSourceBytes(drawn),
         sourceWidth: img && typeof img.width === 'number' ? img.width : 0,
         releasing: up.release?.toTier ?? null,

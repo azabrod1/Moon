@@ -112,12 +112,23 @@ export function textureGpuBytes(tex: THREE.Texture | null | undefined, nominalWi
  *  retain one — a bitmap, and the raw RGBA buffer a sector tile is decoded
  *  into so the driver has no source to convert — and they cost the same four
  *  bytes a texel until the upload is paid and the source is freed, so both are
- *  counted. A compressed texture's mip data is what `textureGpuBytes` already
- *  measures, and counting it twice would make one honest measurement look
- *  like two. */
+ *  counted.
+ *
+ *  A compressed texture is a third: its transcoded mip levels stay in
+ *  `mipmaps` after the upload, a CPU copy of the blocks beside the GPU's own
+ *  and the same size as it. `textureGpuBytes` reads that chain because it is
+ *  the one place the GPU figure can be counted from, not because it is the
+ *  GPU's memory. So whatever levels are still there are counted here too —
+ *  the whole chain until the ladder trims it once the upload is paid, then the
+ *  small tail it keeps to re-upload from after a lost context. */
 export function retainedSourceBytes(tex: THREE.Texture | null | undefined): number {
-  const map = tex as (THREE.Texture & { isCompressedTexture?: boolean }) | null | undefined;
-  if (!map || map.isCompressedTexture) return 0;
+  const map = tex as MeasurableTexture | null | undefined;
+  if (!map) return 0;
+  if (map.isCompressedTexture) {
+    let bytes = 0;
+    for (const level of map.mipmaps ?? []) bytes += level?.data?.byteLength ?? 0;
+    return bytes;
+  }
   // A rung whose source has been closed keeps a small stand-in to re-upload
   // from after a context loss — 2 MiB against the 33 MiB it replaced, and a
   // couple of rungs' worth across the whole scene. Freeing a tile's byte

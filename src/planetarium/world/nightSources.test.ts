@@ -503,7 +503,8 @@ describe('the night ground', () => {
     // models of the same thing; a swap lets the tier WITH the tables come out
     // darker than the tier without them, which inverts the direction of every
     // other tier difference in the app.
-    expect(surface).toContain('outgoingLight += max(nightAmbient, nightFloor);');
+    expect(surface).toContain('vec3 nightLow = max(nightAmbient, nightFloor);');
+    expect(surface).toContain('outgoingLight += nightLow;');
     expect(surface).toContain(
       `* (uNightStrength * (1.0 - dayFactor) * nightKeep * ${NIGHT_FLOOR_FRACTION.toFixed(6)});`,
     );
@@ -517,6 +518,32 @@ describe('the night ground', () => {
     // The ambient is a night term: by day the ground is lit by the point light
     // and nothing here touches it.
     expect(surface).toContain('float airNight = uAirDensity > 0.0');
+  });
+
+  it('lets the reader\u2019s lift join the same max(), and only when it is on', () => {
+    // Night sides: Brightened. A third model of "some light on the dark half",
+    // combined with the floor and the sky's ambient by max() and never added to
+    // them; behind a uniform branch, so at Real the pixel is the one the two
+    // terms above made and nothing else.
+    const surface = surfaceFragment();
+    const block = surface.slice(
+      surface.indexOf('vec3 nightLow = max(nightAmbient, nightFloor);'),
+      surface.indexOf('outgoingLight += nightLow;'),
+    );
+    expect(block).toContain('if (uNightLift > 0.0) {');
+    expect(block).toContain(
+      'nightLow = max(nightLow, diffuseColor.rgb * (uNightLift * (1.0 - dayFactor) * nightKeep));',
+    );
+    // Night-weighted like the floor, and killed with it while the body
+    // silhouettes the Sun: the lift multiplies both.
+    expect(block).toMatch(/uNightLift \* \(1\.0 - dayFactor\) \* nightKeep/);
+    // Albedo times a neutral strength: no starlight tint, so a red body reads
+    // red and a crater reads as a crater.
+    expect(block).not.toContain('uNightColor');
+    // Declared in every build, beside the fill it joins.
+    expect(surface).toContain('uniform float uNightStrength;\nuniform float uNightLift;');
+    // And never added straight to the light.
+    expect(surface).not.toMatch(/outgoingLight \+= [^;]*uNightLift/);
   });
 
   it('is the same fill it always was wherever there is no air', () => {

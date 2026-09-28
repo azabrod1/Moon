@@ -25,6 +25,17 @@
  * air off the table's term is zero and the floor is the whole night side, which
  * is what it always was on an airless body and on a device with no tier.
  *
+ * The reader can add a third model to that max(): Night sides, Brightened
+ * (app/nightSidesSetting, the ☰ Display page), lifts a night side to a dimmed
+ * copy of its own surface — albedo times one neutral strength, night-weighted
+ * like the floor and killed with it in a silhouette — so the ground on the dark
+ * half shows. It is never added to the floor or the sky's ambient, and at Real
+ * it sits behind a uniform branch that is not taken, so the pixel is what it
+ * was. Only the planetarium's own bodies can see it: PlanetFactory points their
+ * slot at one shared uniform (`nightLiftUniform`), and every other surface this
+ * augment builds — Look inside, How many fit?, the shader warm-up probes —
+ * keeps a zero of its own.
+ *
  * The Moon is the sixth, and it is weighted by its OWN elevation rather than by
  * the Sun's: `moonUpWeight` times `sunDownWeight`, a one-sided ramp at full
  * strength from the terminator down and fading only as the Sun climbs above it.
@@ -109,6 +120,7 @@ import {
 } from './atmosphereLut';
 import { AIRLIGHT_SCALE } from './atmosphereModel';
 import { perfSwitchOn, perfSwitchUniform } from '../../app/perfSwitches';
+import type { NightSides } from '../../app/nightSidesSetting';
 import { EARTH_NIGHT_COLD_CUT, EARTH_NIGHT_WARM_GLSL } from '../../shared/shaders/atmosphere';
 import {
   CLOUD_ALBEDO,
@@ -145,9 +157,15 @@ import { PLANETS } from '../planets/planetData';
  *  other surface does
  *  — the sky's ambient and the Moon — which is what makes moonlit cloud tops
  *  read silver. What it does NOT carry is an authored starlight fill of its own
- *  (`NIGHT_FILL.cloud` is zero): the globe beneath it already has one, and the
- *  deck's blend is not premultiplied, so the table terms compose exactly once
- *  where a second authored floor would be a second lift. */
+ *  (`NIGHT_FILL.cloud` is zero): the globe beneath it already has one, and that
+ *  floor is too faint to draw anything under the tone curve's toe.
+ *
+ *  The reader's night lift (Night sides: Brightened) is bright enough to see,
+ *  and the deck DOES carry it: left unlit over a lifted globe, cloud would lay
+ *  black shapes across the night side the reader asked to see. Nothing is lit
+ *  twice, because the deck's blend is a straight source-alpha one, not
+ *  premultiplied: every night term — the table's and the lift — composes as
+ *  a·term(cloud) + (1−a)·term(ground), each layer once, in its own colours. */
 export type SurfaceArchetype = 'airless' | 'rocky' | 'gas' | 'icy' | 'earth' | 'cloud';
 
 /** Ring annulus that shadows this body's surface (object-space radii, AU). */
@@ -188,6 +206,13 @@ export interface SurfaceShadingFx {
    *  black in any real exposure — the camera belongs to the ring or corona
    *  behind it, and the visibility lifts would read as fog on the silhouette. */
   uSilhouette: { value: number };
+  /** The reader's night lift (Night sides: Brightened), as a fraction of
+   *  albedo. A fresh set gets a zero of its own; PlanetFactory points the
+   *  planetarium's bodies at `nightLiftUniform` instead, so the setting reaches
+   *  them and nothing else — a tool's surface cannot be lifted by construction.
+   *  Bound at compile time like every other slot here, so the pointing has to
+   *  happen before the material's first compile. */
+  uNightLift: { value: number };
   /** This body's air. Shared by every material that draws its surface. */
   air: SurfaceAirFx;
 }
@@ -226,10 +251,12 @@ export const NIGHT_FILL: Record<SurfaceArchetype, NightFill> = {
   icy:     { color: 0x28384f, strength: 0.07, termWidth: 0.12 },
   earth:   { color: 0x1c2c44, strength: 0.05, termWidth: 0.16 },
   // No fill of its own: the deck is translucent and the globe's fill shows
-  // through it, so a second one would double the night side's floor. Its share
-  // of the table's own night terms it does draw, and that is what silvers a
-  // moonlit cloud top. The terminator width is the globe's, because the same
-  // rolloff gates the eclipse spot on both and the two have to move together.
+  // through it. Its share of the table's own night terms it does draw, and that
+  // is what silvers a moonlit cloud top; the reader's night lift it draws too
+  // (see SurfaceArchetype), because unlike this fill that lift is bright enough
+  // to see and an unlit deck would black out the ground it lifts. The
+  // terminator width is the globe's, because the same rolloff gates the eclipse
+  // spot on both and the two have to move together.
   cloud:   { color: 0x000000, strength: 0.0, termWidth: 0.16 },
 };
 
@@ -479,6 +506,38 @@ export const cloudShadowUniforms: {
 export function resetCloudShadowUniforms(): void {
   cloudShadowUniforms.uCloudShadowMap.value = null;
   cloudShadowUniforms.uCloudShadowSpin.value = 0;
+}
+
+/**
+ * Night sides: Brightened's strength, as a fraction of each fragment's own
+ * albedo on the night half. Neutral — no starlight tint — so a red body reads
+ * red and a crater field reads as craters; one number for every body.
+ *
+ * 0.045 is the lowest strength at which the darkest ground shows: Mercury's
+ * and Mars's night discs come to about 10/255 at exposure 1, where 0.03 leaves
+ * them at 5 or 6, barely off black. The lift is a fraction of albedo and not
+ * of sunlight, so it does not fall off with distance from the Sun the way the
+ * day side does: the farther and brighter a body, the closer its lifted night
+ * comes to its own day. At this strength Enceladus's night disc carries about
+ * a sixth of its day half's light, where the Moon's carries a twentieth. A
+ * body with planetshine (Europa, Tethys) is already that bright at night
+ * without any lift.
+ */
+export const NIGHT_LIFT_STRENGTH = 0.045;
+
+/**
+ * The one uniform object every planetarium body's night lift reads — the
+ * globes, their streamed sectors and the cloud deck (all of which share their
+ * body's fx) and the moons. Zero is Real: the shader's branch is not taken and
+ * the frame is what it was. The entry point writes it through
+ * `applyNightLift`; the DEV bridge's `nightLift` pin writes it directly.
+ */
+export const nightLiftUniform: { value: number } = { value: 0 };
+
+/** Apply the reader's Night sides choice to every planetarium body, from the
+ *  next frame. Nothing recompiles: the value is a uniform. */
+export function applyNightLift(mode: NightSides): void {
+  nightLiftUniform.value = mode === 'brightened' ? NIGHT_LIFT_STRENGTH : 0;
 }
 
 /** The factor the map's distance BELOW land is multiplied by to land open
@@ -1401,6 +1460,7 @@ const SURFACE_FRAGMENT_DECLS = /* glsl */ `
 ${SURFACE_ARCHETYPE_MACROS}
 uniform vec3 uNightColor;
 uniform float uNightStrength;
+uniform float uNightLift;
 uniform float uTermWidth;
 uniform vec3 uSunDirLocal;
 uniform float uRingInner;
@@ -1696,7 +1756,17 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
         * (getIrradiance(uIrradiance, rFrag, muSSun) * uAirlightScale * uSolarIrradiance)
         * airNight;
   }
-  outgoingLight += max(nightAmbient, nightFloor);
+  // The reader's lift (Night sides: Brightened) joins the same max() only when
+  // it is on: a dimmed copy of the surface in its own colours, albedo times a
+  // neutral strength, night-weighted like the floor and killed with it in a
+  // silhouette. Three models of "some light on the dark half", never added to
+  // each other; at Real the branch is not taken and the pixel is byte for byte
+  // what it was.
+  vec3 nightLow = max(nightAmbient, nightFloor);
+  if (uNightLift > 0.0) {
+    nightLow = max(nightLow, diffuseColor.rgb * (uNightLift * (1.0 - dayFactor) * nightKeep));
+  }
+  outgoingLight += nightLow;
   // Planetshine: parent-lit glow on the night side. Albedo-multiplicative,
   // so the eclipse color-dim carries through it automatically.
   if (GROUND_ON(uPlanetshineIntensity > 0.0)) {
@@ -2073,10 +2143,28 @@ export function createSurfaceAirFx(): SurfaceAirFx {
 }
 
 /**
+ * Seat a body's surface radius on its air uniforms the moment they exist —
+ * world AU, the units the vertex stage hands over. bindSurfaceAir states it
+ * again when the tables bind, and until this existed that was the ONLY
+ * writer: every air lookup is gated on the density, so the default of 1 cost
+ * nothing there. The cloud deck's detail bump is not gated. It turns the
+ * relief's fraction of the radius back into kilometres by multiplying with
+ * this uniform wherever the deck is magnified, and read the default as a
+ * radius of one AU: 70,000 km of relief where 3 were authored, normals
+ * pointing anywhere, clouds drawn black — on every device whose atmosphere
+ * bake is unavailable (a software renderer, a slow device), and in the
+ * moments before the bake lands on the rest.
+ */
+export function seatSurfaceAirRadius(air: SurfaceAirFx, planetRadius: number): void {
+  air.uPlanetRadius.value = planetRadius;
+}
+
+/**
  * Point a body's surfaces at its finished tables and switch the air on.
  * `planetRadius` is the surface radius in the same units the vertex stage hands
  * over (world AU), because that is what the lookup divides by to reach the
- * radius units the tables are baked in.
+ * radius units the tables are baked in; seatSurfaceAirRadius seated the same
+ * number when the body was built, for the reader that never waits for tables.
  */
 export function bindSurfaceAir(
   air: SurfaceAirFx,
@@ -2165,6 +2253,7 @@ export function augmentSurfaceMaterial(
     uPlanetshineDir: { value: new THREE.Vector3(1, 0, 0) },
     uPlanetshineIntensity: { value: 0 },
     uSilhouette: { value: 0 },
+    uNightLift: { value: 0 },
     air: createSurfaceAirFx(),
   };
   const uFrameSpin = sharedSpin ?? { value: 0 };
@@ -2244,6 +2333,7 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uMoonShadowCount = fx.uMoonShadowCount;
     shader.uniforms.uNightColor = uNightColor;
     shader.uniforms.uNightStrength = uNightStrength;
+    shader.uniforms.uNightLift = fx.uNightLift;
     shader.uniforms.uTermWidth = uTermWidth;
     shader.uniforms.uRingInner = uRingInner;
     shader.uniforms.uRingOuter = uRingOuter;

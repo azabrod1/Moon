@@ -5,6 +5,7 @@ import panel from './ui/PlanetariumMenuPanel.ts?raw';
 import segmented from './ui/SegmentedControl.ts?raw';
 import { QUALITY_LEVELS } from '../app/renderQuality';
 import { FRAME_RATES } from '../app/frameRateSetting';
+import { NIGHT_SIDES, nightSidesSummary, DEFAULT_NIGHT_SIDES } from '../app/nightSidesSetting';
 
 // The ☰ panel is vanilla HTML and the TypeScript reaches it by id, so nothing
 // but a running app connects the two: a row renamed in the HTML leaves a
@@ -34,7 +35,15 @@ const rootPage = panelMarkup.slice(
   panelMarkup.indexOf('data-page="root"'),
   panelMarkup.indexOf('data-page="graphics"'),
 );
-const graphicsPage = panelMarkup.slice(panelMarkup.indexOf('data-page="graphics"'));
+// Each sub-page runs to the start of the next one, so an id is counted on the
+// page that really holds it.
+const graphicsPage = panelMarkup.slice(
+  panelMarkup.indexOf('data-page="graphics"'),
+  panelMarkup.indexOf('data-page="display"'),
+);
+const displayPage = panelMarkup.slice(panelMarkup.indexOf('data-page="display"'));
+/** Every id the TypeScript asks a page for, by getElementById or setText. */
+const pageRead = idsIn(ts, /(?:getElementById|setText)\('(settings-[a-z0-9-]+|menu-page-[a-z0-9-]+)'/g);
 
 const declared = idsIn(html, /id="(settings-[a-z-]+-(?:toggle|label))"/g);
 const read = idsIn(ts, /'(settings-[a-z-]+-(?:toggle|label))'/g);
@@ -65,7 +74,6 @@ describe('the Graphics page', () => {
   // level and rate lists instead.
   const pageIds = [...idsIn(graphicsPage, /id="([a-z0-9-]+)"/g)]
     .filter((id) => id !== 'menu-page-graphics');
-  const pageRead = idsIn(ts, /(?:getElementById|setText)\('(settings-[a-z0-9-]+|menu-page-[a-z0-9-]+)'/g);
   const segmentIds = new Set([
     ...QUALITY_LEVELS.map((level) => `settings-quality-${level}`),
     ...FRAME_RATES.map((rate) => `settings-fps-${rate}`),
@@ -92,9 +100,10 @@ describe('the Graphics page', () => {
     for (const rate of FRAME_RATES) expect(graphicsPage).toContain(`data-value="${rate}"`);
   });
 
-  it('holds both controls as radiogroups of checkable radios', () => {
+  it('holds every control in the panel as a radiogroup of checkable radios', () => {
+    // Quality and Frame rate here, Night sides on the Display page.
     const groups = [...panelMarkup.matchAll(/role="radiogroup"[\s\S]*?<\/div>/g)].map((m) => m[0]);
-    expect(groups).toHaveLength(2);
+    expect(groups).toHaveLength(3);
     for (const group of groups) {
       const radios = [...group.matchAll(/role="radio"/g)];
       expect(radios.length).toBeGreaterThanOrEqual(2);
@@ -119,6 +128,58 @@ describe('the Graphics page', () => {
   });
 });
 
+describe('the Display page', () => {
+  const pageIds = [...idsIn(displayPage, /id="([a-z0-9-]+)"/g)]
+    .filter((id) => id !== 'menu-page-display');
+  // The segments are read by their data-value, like the Graphics page's, so
+  // their ids are pinned against the setting's own list instead.
+  const segmentIds = new Set(NIGHT_SIDES.map((mode) => `settings-night-sides-${mode}`));
+
+  it('lives inside the panel, behind a tier row that names it', () => {
+    expect(panelMarkup).toContain('class="menu-page" data-page="display" id="menu-page-display" hidden');
+    expect(rootPage).toContain('data-open="display"');
+    expect(displayPage).toContain('class="menu-back"');
+    expect(displayPage).toContain('<h3>Display</h3>');
+    // Inside the panel's own element: the panel finds its pages by querying
+    // itself, so a page outside it is never shown.
+    const panelEnd = html.indexOf('<!-- Observatory panel:');
+    expect(html.indexOf('data-page="display"')).toBeLessThan(panelEnd);
+    expect(html.indexOf('data-page="display"')).toBeGreaterThan(html.indexOf('<div id="planetarium-menu-panel"'));
+  });
+
+  it('declares every id the TypeScript writes into it', () => {
+    for (const id of ['settings-night-sides-seg', 'settings-night-sides-note']) {
+      expect(pageRead.has(id), id).toBe(true);
+      expect(displayPage, id).toContain(`id="${id}"`);
+    }
+  });
+
+  it('carries nothing the TypeScript never reads', () => {
+    expect(pageIds.filter((id) => !pageRead.has(id) && !segmentIds.has(id))).toEqual([]);
+  });
+
+  it('gives Real and Brightened a segment each, both always offered', () => {
+    for (const id of segmentIds) expect(displayPage, id).toContain(`id="${id}"`);
+    for (const mode of NIGHT_SIDES) expect(displayPage).toContain(`data-value="${mode}"`);
+    // The markup's own checked segment is the default, so the page reads right
+    // even before the mode's first sync.
+    expect(displayPage).toContain(`aria-checked="true" data-value="${DEFAULT_NIGHT_SIDES}"`);
+    expect(displayPage).not.toMatch(/menu-seg-btn[^>]*\shidden/);
+  });
+
+  it('describes the group by the note under it', () => {
+    expect(displayPage).toContain('aria-describedby="settings-night-sides-note"');
+    expect(displayPage).toContain('role="radiogroup" aria-label="Night sides"');
+  });
+
+  it('carries its value on the root row, the default in the markup', () => {
+    const row = rootPage.slice(rootPage.indexOf('data-open="display"'));
+    const value = row.match(/<span class="menu-tier-value">([^<]*)<\/span>/)?.[1];
+    expect(value).toBe(nightSidesSummary(DEFAULT_NIGHT_SIDES));
+    expect(mode).toContain("setTierValue('display', nightSidesSummary(mode))");
+  });
+});
+
 describe('the root page', () => {
   it('puts the Graphics tier between the actions and the toggles', () => {
     const lastAction = rootPage.indexOf('id="planetarium-btn-map"');
@@ -130,6 +191,16 @@ describe('the root page', () => {
     expect(tier).toBeGreaterThan(lastAction);
     expect(ship).toBeGreaterThan(tier);
     expect(build).toBeGreaterThan(throttle);
+  });
+
+  it('puts the Display tier straight after Graphics, before the toggles', () => {
+    const graphics = rootPage.indexOf('data-open="graphics"');
+    const display = rootPage.indexOf('data-open="display"');
+    const ship = rootPage.indexOf('id="settings-ship-toggle"');
+    expect(display).toBeGreaterThan(graphics);
+    expect(ship).toBeGreaterThan(display);
+    // Nothing between the two tier rows but the end of the first.
+    expect(rootPage.slice(graphics, display)).not.toMatch(/settings-row|menu-divider|menu-action/);
   });
 
   it('leaves the Tools row to the cluster button alone', () => {

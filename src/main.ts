@@ -44,6 +44,7 @@ import {
   isScreenRate, requestedMsFor, resolveBootFrameRate, writeFrameRate,
   type FrameRate,
 } from './app/frameRateSetting';
+import { resolveBootNightSides, writeNightSides, type NightSides } from './app/nightSidesSetting';
 import { markPending, clearPending, pendingAtBoot, readQualityLevel, writeQualityLevel } from './app/qualitySetting';
 import {
   RungMemoryMirror, clearRungMemory, readRungMemory, rungMemoryApplies, rungMemoryUrlBlock,
@@ -60,7 +61,9 @@ import { BootRenderGate } from './app/bootRenderGate';
 import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn } from './app/perfSwitches';
 import { bloomHighPassMaterial, holdBloomSize, setBloomInternalDepth } from './app/bloomTargets';
 import {
+  applyNightLift,
   devGlintUniforms,
+  nightLiftUniform,
   setDevOceanRoughness,
   setDevSurfaceHaze,
   SURFACE_HAZE_CLEAR_VIEW,
@@ -577,6 +580,32 @@ refreshQualityPin();
 /** The row's value this session: the URL's word, else the saved one, else
  *  Screen. */
 let frameRate: FrameRate = resolveBootFrameRate(location.search);
+
+// ================================================================
+// Night sides
+// ================================================================
+// The ☰ Display page's one control (app/nightSidesSetting.ts): Real, the
+// physics and the default, or Brightened, the reader's lift on every night
+// side. One uniform shared by the planetarium's own bodies
+// (world/surfaceShading `nightLiftUniform`), so it is applied once here and
+// never by a mode switch — the tools build their surfaces with a zero of their
+// own and cannot be reached by it.
+
+/** The row's value this session: the URL's word, else the saved one, else
+ *  Real. */
+let nightSides: NightSides = resolveBootNightSides(location.search);
+applyNightLift(nightSides);
+debugLog('Night sides', { mode: nightSides, lift: nightLiftUniform.value });
+
+/** The Night sides row, changed: saved on its own key — never in the journey
+ *  save, so New Journey and a restore leave it alone — and applied from the
+ *  next frame. Applied even when the value is unchanged, so a pick puts back
+ *  whatever a DEV tuning pin left in the uniform. */
+function setNightSides(mode: NightSides): void {
+  nightSides = mode;
+  writeNightSides(mode);
+  applyNightLift(mode);
+}
 /** True where this boot's URL named a frame rate. A capture pin then leaves
  *  the cap alone: a run under `?fps=` is a run ABOUT the pacing, and it waits
  *  on a draw (`__moon.waitForDraw`) instead of on two callbacks. */
@@ -1153,6 +1182,10 @@ function buildComposer(
     lensPass.renderToScreen = true;
     if (canvasSampled) ensureDirectLensTexture();
     else ensureScreenTarget();
+    // The lens proximity ramp at zero disables this pass and the frame goes
+    // through the screen copy instead (renderScene): link its program here,
+    // under the cover, not on the first frame of an approach that needs it.
+    ensureScreenCopy().warm(renderer);
     applyDesignFov(planetariumCamera, planetariumLens.designFovDeg);
     return;
   }
@@ -2642,6 +2675,8 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
             set: setFrameRate,
             requestDraw: () => { forcedDrawRequest = true; },
           },
+          // The Display page's Night sides row.
+          { mode: () => nightSides, set: setNightSides },
         );
         // Every tool entry arrives here ("How many fit?", Look inside): the
         // mode closes its own entry surfaces and snapshots the journey, then
@@ -3059,10 +3094,16 @@ function installDevHooks() {
     pilotTo: (name: string) => planetariumMode?.devPilotTo(name) ?? false,
     /** What the ship rides right now (rideFrame.ts): weight, km/s, carriers. */
     rideState: () => planetariumMode?.devRideState() ?? null,
+    /** The lens proximity ramp this frame (shared/math/lensProximity.ts): its factor, the strength the shaders read, the disc that drove it, and whether a dev pose skipped it. */
+    lensRamp: () => planetariumMode?.devLensRamp() ?? null,
+    /** Switch the lens proximity ramp on or off live, as `?lensramp=1` does at boot. */
+    setLensRamp: (enabled: boolean) => planetariumMode?.devSetLensRamp(enabled) ?? false,
     travelTo: (name: string) => planetariumMode?.devTravelTo(name) ?? false,
     arrivalPose: () => planetariumMode?.devArrivalPose() ?? null,
     governorOwner: () => planetariumMode?.devGovernorOwner() ?? null,
     land: (name: string) => planetariumMode?.devLand(name) ?? false,
+    /** Lift off from a landed body the way the deck's own row does; false when not landed. */
+    takeoff: () => planetariumMode?.devTakeoff() ?? false,
     observe: (name: string) => planetariumMode?.devObserve(name) ?? false,
     device: () => planetariumMode?.devDeviceProfile() ?? null,
     sectors: () => planetariumMode?.devSectorStats() ?? null,
@@ -3178,6 +3219,22 @@ function installDevHooks() {
       setFrameRate(rate);
       return qualityReadout().fps;
     },
+    /** The Night sides value and the lift the planetarium's bodies are drawn
+     *  with right now (which a `nightLift` pin may have moved off the value). */
+    nightSides: () => ({ mode: nightSides, lift: nightLiftUniform.value }),
+    /** Pick Real or Brightened, exactly as the Display page's row does. */
+    setNightSides: (mode: NightSides) => {
+      setNightSides(mode);
+      return { mode: nightSides, lift: nightLiftUniform.value };
+    },
+    /** The night lift's strength, live, for a tuning sheet out of one page
+     *  load: a fraction of albedo on every planetarium body's night half (0 is
+     *  Real). It reaches no tool's surface, and the next pick of the row puts
+     *  the setting's own value back. */
+    nightLift: (strength: number) => {
+      nightLiftUniform.value = Math.max(0, strength);
+      return { mode: nightSides, lift: nightLiftUniform.value };
+    },
     /** The last n draws: `{ drawSeq, tickSeq, t, nowMs, busyMs }`, oldest
      *  first. What the pacing gate reads — the intervals between draws, not
      *  between callbacks, and which callback each one landed on. */
@@ -3260,6 +3317,9 @@ function installDevHooks() {
       return result;
     },
     ladder: () => planetariumMode?.devLadderStats() ?? null,
+    // The KTX2 transcoder: transcodes in flight, whether its loader and
+    // workers are alive, and how many were let go after sitting idle.
+    ktx2: () => planetariumMode?.devKtx2() ?? null,
     // Pixels per texel of the map each close body is really drawing. Reports
     // with the sector streamer off (?sectors=0), which is what a close-range
     // A/B is run under.

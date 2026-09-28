@@ -8,6 +8,7 @@ import {
   connectLateDetailMap,
   createLateTextureSlot,
   createMoonMeshes,
+  createPlanetMesh,
   FALLBACK_AFTER_FAILURES,
   loadTexture,
   lodMeasurementRelevant,
@@ -81,10 +82,14 @@ import { ladderCeilingBytes, UNMEASURED_DESKTOP_PROFILE, UNMEASURED_TOUCH_PROFIL
 import { SECTOR_SETS, sectorSetGpuBytes } from './world/sectorStreamer';
 import {
   AIR_LOOKUP_RADIUS,
+  applyNightLift,
   augmentSurfaceMaterial,
   bindSurfaceAir,
   createSurfaceAirFx,
+  NIGHT_LIFT_STRENGTH,
+  nightLiftUniform,
 } from './world/surfaceShading';
+import { PLANETS } from './planets/planetData';
 import {
   createEarthNightSectorMaterial,
   createEarthNightShellMaterial,
@@ -2912,6 +2917,163 @@ describe('closing a rung\'s decoded source once its upload is paid', () => {
   });
 });
 
+describe('trimming a compressed rung\'s mip chain once its upload is paid', () => {
+  type Level = { width: number; height: number; data: Uint8Array };
+  const levelsOf = (tex: THREE.Texture) => (tex as THREE.CompressedTexture).mipmaps as unknown as Level[];
+  const bytesOf = (levels: readonly Level[]) => levels.reduce((n, l) => n + l.data.byteLength, 0);
+  /** An 8K container as the KTX2 loader hands it over: a byte a texel, its
+   *  own baked chain. */
+  function container(width = 8192): THREE.CompressedTexture {
+    const levels: Level[] = [];
+    for (let w = width, h = width / 2; w >= 4; w >>= 1, h = Math.max(1, h >> 1)) {
+      levels.push({ width: w, height: h, data: new Uint8Array(w * h) });
+    }
+    return new THREE.CompressedTexture(levels as unknown as ImageData[], width, width / 2);
+  }
+
+  let pending: Array<{ url: string; onLoad: (tex: THREE.Texture) => void }>;
+  beforeEach(() => {
+    pending = [];
+    bindKtx2TierLoader((url, onLoad) => { pending.push({ url, onLoad }); }, true);
+  });
+  afterEach(() => bindKtx2TierLoader(null));
+
+  it('keeps the chain from the stand-in width down, and the GPU figure it had', () => {
+    const tex = container();
+    const chain = levelsOf(tex);
+    const gpu = textureGpuBytes(tex);
+    const tail = chain.filter((l) => l.width <= RESTORE_STANDIN_WIDTH);
+    releaseUpgradeSource(tex);
+    // Trimmed in place: three built the texture around the transcoder's own
+    // array, and the two must not disagree about what is left.
+    expect(levelsOf(tex)).toBe(chain);
+    expect(chain).toEqual(tail);
+    expect(chain[0].width).toBe(RESTORE_STANDIN_WIDTH);
+    expect(tex.image).toEqual({ width: RESTORE_STANDIN_WIDTH, height: RESTORE_STANDIN_WIDTH / 2 });
+    expect(tex.userData.sourceReleased).toBe(true);
+    // The GPU still holds the whole 8K chain; the ledger goes on saying so.
+    expect(tex.userData.gpuBytes).toBe(gpu);
+    expect(textureGpuBytes(tex)).toBe(gpu);
+    // What the device still holds in RAM is the tail, read off the levels.
+    expect(retainedSourceBytes(tex)).toBe(bytesOf(tail));
+    expect(retainedSourceBytes(tex)).toBeLessThan(0.7 * 1024 * 1024);
+  });
+
+  it('does not bump the texture\'s version: nothing is re-uploaded', () => {
+    const tex = container();
+    tex.needsUpdate = true; // as the loader leaves it
+    const version = tex.version;
+    releaseUpgradeSource(tex);
+    expect(tex.version).toBe(version);
+  });
+
+  it('leaves alone a chain it cannot trim', () => {
+    // Already stand-in sized: nothing to gain.
+    const small = container(RESTORE_STANDIN_WIDTH);
+    const smallLevels = levelsOf(small).length;
+    releaseUpgradeSource(small);
+    expect(levelsOf(small)).toHaveLength(smallLevels);
+    expect(small.userData.sourceReleased).toBeUndefined();
+    // One level, nothing small enough to keep, and no resampling to be had.
+    const single = new THREE.CompressedTexture(
+      [{ width: 8192, height: 4096, data: new Uint8Array(16) }] as unknown as ImageData[], 8192, 4096,
+    );
+    releaseUpgradeSource(single);
+    expect(levelsOf(single)).toHaveLength(1);
+    expect(single.userData.sourceReleased).toBeUndefined();
+    expect(single.userData.gpuBytes).toBeUndefined();
+    // An array texture lays its levels out per layer.
+    const layered = new THREE.CompressedArrayTexture(
+      levelsOf(container()) as unknown as ImageData[], 8192, 4096, 2, THREE.RGBA_ASTC_4x4_Format,
+    );
+    const layeredLevels = layered.mipmaps.length;
+    releaseUpgradeSource(layered);
+    expect(layered.mipmaps).toHaveLength(layeredLevels);
+    expect(layered.userData.sourceReleased).toBeUndefined();
+  });
+
+  it('is a no-op the second time', () => {
+    const tex = container();
+    releaseUpgradeSource(tex);
+    const after = [...levelsOf(tex)];
+    const gpu = tex.userData.gpuBytes;
+    releaseUpgradeSource(tex);
+    expect(levelsOf(tex)).toEqual(after);
+    expect(tex.userData.gpuBytes).toBe(gpu);
+  });
+
+  it('trims a rung the ladder applied once its upload was paid', async () => {
+    const up = ladderHandle('moon');
+    up.appliedTier = '4k';
+    up.material.map = mapTexture(4096);
+    up.material.userData.colorTierRank = TIER_RANK['4k'];
+    upgradeTextureOnApproach(up, '8k', 0);
+    expect(pending[0].url).toMatch(/textures\/8k\/moon\.ktx2$/);
+    const tex = container();
+    const gpu = textureGpuBytes(tex);
+    pending[0].onLoad(tex);
+    await settleRungUpload();
+    expect(materialColorMap(up.material)).toBe(tex);
+    expect(up.appliedTier).toBe('8k');
+    expect(tex.userData.sourceReleased).toBe(true);
+    expect(levelsOf(tex)[0].width).toBe(RESTORE_STANDIN_WIDTH);
+    // The ledger: the GPU chain it holds plus the tail still in RAM.
+    expect(appliedTierHeldBytes(up)).toBe(gpu + retainedSourceBytes(tex));
+  });
+
+  it('trims nothing when the upload was not paid', async () => {
+    // An upload that threw leaves three to pay it on the render path, from
+    // the chain — so the chain has to still be there when it does.
+    bindTextureWarmer(() => { throw new Error('context lost'); });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const up = ladderHandle('moon');
+      up.appliedTier = '4k';
+      upgradeTextureOnApproach(up, '8k', 0);
+      const tex = container();
+      const levels = levelsOf(tex).length;
+      pending[0].onLoad(tex);
+      await settleRungUpload();
+      expect(materialColorMap(up.material)).toBe(tex);
+      expect(levelsOf(tex)).toHaveLength(levels);
+      expect(levelsOf(tex)[0].width).toBe(8192);
+      expect(tex.userData.sourceReleased).toBeUndefined();
+      expect(tex.userData.gpuBytes).toBeUndefined();
+      // Both copies are held, and the ledger counts the GPU's alone: an
+      // untrimmed chain is never counted (textureBytes), so nothing the
+      // ladder admits or the tiles may spend moves on a device where the
+      // warm pump fails.
+      expect(appliedTierHeldBytes(up)).toBe(textureGpuBytes(tex));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('is fetched back after a lost context, exactly as a webp rung is', async () => {
+    const up = ladderHandle('moon');
+    up.appliedTier = '4k';
+    upgradeTextureOnApproach(up, '8k', 0);
+    const tex = container();
+    pending[0].onLoad(tex);
+    await settleRungUpload();
+    const queue = buildRestoreQueue([{ up, tex: materialColorMap(up.material), distance: 0 }]);
+    expect(queue).toEqual([{ up, tex }]);
+    expect(takeRestoreRefetch(queue)).toEqual({ up, restore: true });
+    // The re-fetch asks the same loader for the same container, at the tier
+    // the body already had, and swaps the full chain in over the tail.
+    expect(startTierRelease(up, 0, { restore: true })).toBe(true);
+    expect(pending).toHaveLength(2);
+    expect(pending[1].url).toBe(pending[0].url);
+    const back = container();
+    pending[1].onLoad(back);
+    await settleRungUpload();
+    expect(materialColorMap(up.material)).toBe(back);
+    expect(up.appliedTier).toBe('8k');
+    // Paid again, so trimmed again.
+    expect(back.userData.sourceReleased).toBe(true);
+  });
+});
+
 describe('a colour-rung swap and the body\'s air', () => {
   // The 8K rungs ship as KTX2 containers now, and a swap goes through
   // materialColorMap: `map` is replaced on a standard material and
@@ -3035,5 +3197,73 @@ describe('how much cratering a body wears', () => {
       expect(synthCraterShare('Jupiter', archetype)).toBe(0);
     }
     expect(synthCraterShare('Mars', 'rocky')).toBe(1);
+  });
+});
+
+describe('the Night sides lift', () => {
+  // Brightened reaches the planetarium's own bodies and nothing else. The
+  // uniform is ONE object that PlanetFactory points its bodies at; every other
+  // surface the augment builds (Look inside, How many fit?, the warm-up probes)
+  // keeps a zero of its own, so no mode switch and no DEV pin can lift a tool.
+  beforeEach(() => {
+    loaderState.loads.length = 0;
+  });
+  afterEach(() => {
+    applyNightLift('real');
+  });
+
+  function boundUniforms(mat: THREE.Material): Record<string, { value: unknown }> {
+    const shader = {
+      uniforms: {} as Record<string, { value: unknown }>,
+      vertexShader: '#include <common>\n#include <begin_vertex>\n',
+      fragmentShader: '#include <common>\n#include <opaque_fragment>\n',
+    };
+    (mat.onBeforeCompile as (s: typeof shader) => void)(shader);
+    return shader.uniforms;
+  }
+
+  it('gives a fresh surface a zero of its own, which the setting never moves', () => {
+    const fx = augmentSurfaceMaterial(new THREE.MeshStandardMaterial(), 'rocky');
+    expect(fx.uNightLift).not.toBe(nightLiftUniform);
+    expect(fx.uNightLift.value).toBe(0);
+    applyNightLift('brightened');
+    expect(nightLiftUniform.value).toBe(NIGHT_LIFT_STRENGTH);
+    expect(fx.uNightLift.value).toBe(0);
+  });
+
+  it('is zero at Real and the tuned strength at Brightened', () => {
+    applyNightLift('brightened');
+    expect(nightLiftUniform.value).toBe(NIGHT_LIFT_STRENGTH);
+    expect(NIGHT_LIFT_STRENGTH).toBeGreaterThan(0);
+    applyNightLift('real');
+    expect(nightLiftUniform.value).toBe(0);
+  });
+
+  it('reaches every moon through the shared object, bound before the first compile', () => {
+    const moons = createMoonMeshes('Jupiter');
+    expect(moons.length).toBeGreaterThan(0);
+    for (const m of moons) {
+      expect(m.fx?.uNightLift, m.data.name).toBe(nightLiftUniform);
+      expect(boundUniforms(m.mesh.material as THREE.Material).uNightLift, m.data.name).toBe(nightLiftUniform);
+    }
+  });
+
+  it('reaches a planet and its cloud deck through the same object', async () => {
+    const earth = PLANETS.find((p) => p.name === 'Earth')!;
+    const pending = createPlanetMesh(earth);
+    // Answer every fetch the factory makes, as it makes them.
+    let answered = 0;
+    for (let i = 0; i < 20; i++) {
+      await Promise.resolve();
+      while (answered < loaderState.loads.length) {
+        loaderState.loads[answered].onLoad(fakeTexture(`load ${answered}`));
+        answered += 1;
+      }
+    }
+    const planet = await pending;
+    expect(planet.fx?.uNightLift).toBe(nightLiftUniform);
+    expect(boundUniforms(planet.mesh.material as THREE.Material).uNightLift).toBe(nightLiftUniform);
+    expect(planet.cloudsMesh).toBeTruthy();
+    expect(boundUniforms(planet.cloudsMesh!.material as THREE.Material).uNightLift).toBe(nightLiftUniform);
   });
 });

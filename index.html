@@ -1503,6 +1503,60 @@
       color-scheme: dark;
     }
 
+    /* ── Paused badge ────────────────────────────────────────────────────
+       The one on-screen word for the freeze Space (or the ☰ menu) lays over
+       the scene: the clock stopped and the ship held with it. Top centre on
+       the top row; under it at the phone breakpoint, where the wordmark and
+       the action cluster fill the row — and above the toast's slot at 88px
+       either way. The hollow dot is the paused idiom the rail thumb and the
+       surface strip share. A button: tapping it resumes. The key chip is for
+       a keyboard, so it hides where nothing hovers, where the badge itself is
+       the resume. Visibility rather than display, so the fade plays and a
+       hidden badge leaves the tab order; under the toast (25) and the action
+       cluster (28). */
+    #planetarium-pause-badge {
+      position: absolute;
+      top: 14px;
+      left: 50%;
+      transform: translate(-50%, -6px);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 28px;
+      padding: 0 12px 0 11px;
+      border-radius: 999px;
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      line-height: 1;
+      color: var(--t1);
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 0.18s ease, transform 0.18s ease, visibility 0s linear 0.18s;
+      z-index: 24;
+    }
+    #planetarium-pause-badge.visible {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+      transform: translate(-50%, 0);
+      transition-delay: 0s;
+    }
+    #planetarium-pause-badge:hover { border-color: rgba(var(--accent-rgb), 0.35); }
+    #planetarium-pause-badge:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.75); outline-offset: 2px; }
+    #planetarium-pause-badge .pb-dot {
+      width: 6px; height: 6px; border-radius: 50%; flex: none;
+      box-shadow: inset 0 0 0 1px var(--t2);
+    }
+    #planetarium-pause-badge .kbd { text-transform: none; letter-spacing: 0; }
+    @media (hover: none) { #planetarium-pause-badge .kbd { display: none; } }
+    @media (max-width: 640px) { #planetarium-pause-badge { top: 60px; } }
+    @media (prefers-reduced-motion: reduce) { #planetarium-pause-badge { transition: none; } }
+
     /* Notification */
     #planetarium-notification {
       position: fixed;
@@ -4933,7 +4987,7 @@
             </section>
             <section class="help-section">
               <h4>Watch the orbits run</h4>
-              <p>Click the date on the bottom bar. Speed time up and you can actually watch planets trace their orbits and moons circle their hosts. Pause, reverse, or jump to any UTC moment.</p>
+              <p>Click the date on the bottom bar. Speed time up and you can actually watch planets trace their orbits and moons circle their hosts. Pause, reverse, or jump to any UTC moment. <kbd>Space</kbd> pauses everything at once &mdash; the clock and the ship &mdash; and a second press resumes.</p>
             </section>
             <section class="help-section">
               <h4>The whole system at once (<kbd>M</kbd>)</h4>
@@ -5342,7 +5396,7 @@
       </div>
 
       <div id="planetarium-keys-hint">
-        <kbd>A</kbd><kbd>D</kbd> yaw &nbsp; <kbd>↑</kbd><kbd>↓</kbd> pitch &nbsp; <kbd>W</kbd><kbd>S</kbd> thrust &nbsp; <kbd>O</kbd> observatory &nbsp; <kbd>T</kbd> teleport &nbsp; <kbd>P</kbd> autopilot &nbsp; <kbd>M</kbd> map &nbsp; <kbd>,</kbd><kbd>.</kbd> time &nbsp; <kbd>N</kbd> now
+        <kbd>A</kbd><kbd>D</kbd> yaw &nbsp; <kbd>↑</kbd><kbd>↓</kbd> pitch &nbsp; <kbd>W</kbd><kbd>S</kbd> thrust &nbsp; <kbd>O</kbd> observatory &nbsp; <kbd>T</kbd> teleport &nbsp; <kbd>P</kbd> autopilot &nbsp; <kbd>M</kbd> map &nbsp; <kbd>,</kbd><kbd>.</kbd> time &nbsp; <kbd>N</kbd> now &nbsp; <kbd>Space</kbd> pause
       </div>
 
       <!-- Touch flight zone (mobile only) -->
@@ -5371,6 +5425,13 @@
       </div>
 
       <div id="planetarium-notification"></div>
+      <!-- Paused badge: the word for the freeze Space (or the ☰ menu) lays
+           over the scene. A button — tapping it resumes; the key chip is for
+           a keyboard and hides on a touch screen. Shown by the TS through
+           .visible (ui/PauseBadge.ts; when, ui/pauseBadgeLogic.ts). -->
+      <button type="button" id="planetarium-pause-badge" class="pn pn-high" aria-label="Paused. Resume">
+        <span class="pb-dot" aria-hidden="true"></span><span>Paused</span><kbd class="kbd">Space</kbd>
+      </button>
       <div id="planetarium-loading-msg" style="position:absolute;bottom:50%;left:50%;transform:translate(-50%,50%);font-size:13px;color:var(--text-dim);letter-spacing:2px;display:none;"></div>
     </div>
 

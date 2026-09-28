@@ -3039,8 +3039,11 @@ describe('trimming a compressed rung\'s mip chain once its upload is paid', () =
       expect(levelsOf(tex)[0].width).toBe(8192);
       expect(tex.userData.sourceReleased).toBeUndefined();
       expect(tex.userData.gpuBytes).toBeUndefined();
-      // Both copies are held, and both are counted.
-      expect(appliedTierHeldBytes(up)).toBe(2 * textureGpuBytes(tex));
+      // Both copies are held, and the ledger counts the GPU's alone: an
+      // untrimmed chain is never counted (textureBytes), so nothing the
+      // ladder admits or the tiles may spend moves on a device where the
+      // warm pump fails.
+      expect(appliedTierHeldBytes(up)).toBe(textureGpuBytes(tex));
     } finally {
       warn.mockRestore();
     }

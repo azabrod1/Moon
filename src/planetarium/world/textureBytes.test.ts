@@ -181,12 +181,15 @@ describe('what a decoded source still holds in RAM', () => {
       .toBe(0);
   });
 
-  it('counts a compressed container\'s mip levels, which stay in RAM beside the GPU copy', () => {
-    // The transcoded chain is not the GPU's memory: three uploads from it and
-    // keeps it, so until something trims it the device holds the blocks twice.
+  it('counts nothing for a compressed container until the ladder has trimmed it', () => {
+    // The transcoded chain is a second copy of the blocks until the trim, but
+    // it is not counted before then: the trim lands the moment the rung is
+    // applied, and a figure that doubled a rung between decode and apply
+    // would change what a small-envelope device admits — today's accounting
+    // never counted it, and every device's admission stays what it was.
     const tex = compressedTexture(8192, 4096);
-    expect(retainedSourceBytes(tex)).toBe(containerBytes(tex));
-    expect(retainedSourceBytes(tex)).toBe(textureGpuBytes(tex));
+    expect(retainedSourceBytes(tex)).toBe(0);
+    expect(textureGpuBytes(tex)).toBe(containerBytes(tex));
   });
 
   it('counts only the levels a trimmed container still holds, whatever it is marked', () => {

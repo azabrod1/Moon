@@ -118,13 +118,20 @@ export function textureGpuBytes(tex: THREE.Texture | null | undefined, nominalWi
  *  `mipmaps` after the upload, a CPU copy of the blocks beside the GPU's own
  *  and the same size as it. `textureGpuBytes` reads that chain because it is
  *  the one place the GPU figure can be counted from, not because it is the
- *  GPU's memory. So whatever levels are still there are counted here too —
- *  the whole chain until the ladder trims it once the upload is paid, then the
- *  small tail it keeps to re-upload from after a lost context. */
+ *  GPU's memory. What is counted here is the tail the ladder keeps once it
+ *  has trimmed the chain (marked `sourceReleased`, the same mark a closed
+ *  bitmap carries): under a megabyte, and really held. The whole chain
+ *  BEFORE the trim is deliberately not: it is gone the moment the rung is
+ *  applied, and a figure that doubled a rung between its decode and its
+ *  apply would move what the ladder admits and what the tiles may spend on
+ *  a device with a small envelope — a phone nobody has measured this on —
+ *  when today's accounting, which never counted it, admits exactly what
+ *  the device then holds with room to spare. */
 export function retainedSourceBytes(tex: THREE.Texture | null | undefined): number {
   const map = tex as MeasurableTexture | null | undefined;
   if (!map) return 0;
   if (map.isCompressedTexture) {
+    if (map.userData?.sourceReleased !== true) return 0;
     let bytes = 0;
     for (const level of map.mipmaps ?? []) bytes += level?.data?.byteLength ?? 0;
     return bytes;

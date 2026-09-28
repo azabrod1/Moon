@@ -68,6 +68,7 @@ import {
   setDevSurfaceHaze,
   SURFACE_HAZE_CLEAR_VIEW,
 } from './planetarium/world/surfaceShading';
+import { parseNightExposureParam, setDevNightExposure, type NightExposureOverride } from './planetarium/world/nightExposure';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass, parseFusedParam } from './app/FusedOutputPass';
 import type { GpuProfiler, GpuProfileOptions } from './app/devGpuProfile';
@@ -3298,6 +3299,14 @@ function installDevHooks() {
       clear: setDevSurfaceHaze(opts?.clear),
       authored: SURFACE_HAZE_CLEAR_VIEW,
     }),
+    // The night side's exposure, live (world/nightExposure): the lit fractions
+    // of the visible cap the long exposure holds at (`full`) and is gone by
+    // (`none`), the ramp's pace per second (`rate`), null putting a knob's
+    // authored value back, and `off` for the rule itself. Returns the curve in
+    // force and every body metered this frame — lit fraction, the ramp
+    // position it asks for, the eased one, and the factor written.
+    nightExposure: (opts?: NightExposureOverride & { off?: boolean }) =>
+      planetariumMode?.devNightExposure(opts) ?? null,
     /** A GPU profile of the world frame measured on this device, per pass and per object (app/devGpuProfile.ts). */
     gpuProfile: async (opts?: GpuProfileOptions) => {
       if (!gpuProfiler) {
@@ -3662,6 +3671,14 @@ function installDevHooks() {
     // An empty value is a mistyped link, not a request for zero.
     const haze = new URLSearchParams(location.search).get('haze');
     if (haze && Number.isFinite(Number(haze))) setDevSurfaceHaze(Number(haze));
+    // `?nightexposure=0.1,0.35` sets the night side's exposure curve for the
+    // session, and a third number its pace: the __moon.nightExposure knobs as a
+    // link, so two curves are two links. `?nightexposure=0` is read by the
+    // mode itself, in any build.
+    const nightExposure = parseNightExposureParam(location.search);
+    if (nightExposure.full !== undefined) {
+      setDevNightExposure({ full: nightExposure.full, none: nightExposure.none, rate: nightExposure.rate });
+    }
   }
   debugLog('Dev hooks installed (window.__moon)');
 }

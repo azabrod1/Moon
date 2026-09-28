@@ -184,6 +184,16 @@ import { releaseBootWarmResponses, warmBitmapUploadProbe } from './world/texture
 import { warmTilePixelWorker } from './world/tilePixels';
 import { planetshineIntensity } from './world/planetshine';
 import {
+  advanceNightExposure,
+  makeNightExposureState,
+  nightExposureParams,
+  parseNightExposureParam,
+  setDevNightExposure,
+  visibleCapLitFraction,
+  type NightExposureOverride,
+  type NightExposureState,
+} from './world/nightExposure';
+import {
   advanceSilhouetteOwners,
   makeSilhouetteOwners,
   smoothShadeFraction,
@@ -1200,6 +1210,22 @@ export class PlanetariumMode {
    *  silhouette advance snaps both slots to target so a teleport never shows a
    *  fading ghost of the previous scene's dark disc. */
   private sunSilhouetteSnapPending = true;
+  /** Each body's night-side exposure meter (world/nightExposure), keyed by
+   *  body name and made once per body. */
+  private readonly nightExposureStates = new Map<string, NightExposureState>();
+  /** `?nightexposure=0`: the rule off in any build. Every slot then stays at
+   *  1, the pass never runs, and the picture is today's. */
+  private nightExposureOff = parseNightExposureParam(location.search).off;
+  /** Set by noteSunViewDiscontinuity(), consumed by the next exposure pass:
+   *  every body takes its target outright, because frames keep running
+   *  through a jump and no gap in wall time would tell the meter the sky is a
+   *  different one. */
+  private nightExposureSnapPending = true;
+  /** The wall clock of the latest exposure pass: a body whose meter carries
+   *  this stamp was metered this frame (the readback's filter). */
+  private nightExposurePassMs = -1;
+  /** The camera's heliocentric point for the pass in flight, in AU. */
+  private readonly tmpNightExposureCamera = new THREE.Vector3();
   /** The size gate applied to the current dominant occluder this frame (1 for
    *  eclipse-scale, 0 for a horizon-filling body) — readback only. */
   private sunSilhouetteGate = 1;
@@ -5074,6 +5100,8 @@ export class PlanetariumMode {
     if (this.autopilotTarget && !this.player.held) {
       this.checkAutopilotArrival();
     }
+    // Past every camera writer this frame, beside the Sun's own metering.
+    this.syncNightExposures();
     this.updateSunShader(dt);
     this.updateOrbitLineVisibility();
 
@@ -6333,6 +6361,137 @@ export class PlanetariumMode {
       : null;
     this.moonlightSource.set(planetName, found);
     return found;
+  }
+
+  /**
+   * The camera's exposure for every body's night side (world/nightExposure):
+   * how much of the cap the camera can see is sunlit, eased in wall time into
+   * the one number the night terms of that body's surfaces and air are
+   * multiplied by. Once a frame, after every camera writer — the cruise
+   * safety, the aim stage, the surface re-pin — because a snap at a jump reads
+   * this frame's camera and no other. Planets always; a moon only while it is
+   * drawn, at the size it is drawn (small moons are drawn larger than life).
+   *
+   * The camera is the player's point plus the camera's own offset from it: the
+   * scene's origin is the player, landed that is the body's centre, and the
+   * chase camera in cruise can stand far from the ship.
+   */
+  private syncNightExposures(): void {
+    if (this.nightExposureOff || !this.solarSystem) return;
+    const nowMs = performance.now();
+    const snap = this.nightExposureSnapPending;
+    this.nightExposureSnapPending = false;
+    this.nightExposurePassMs = nowMs;
+    this.tmpNightExposureCamera.set(this.player.posX, this.player.posY, this.player.posZ)
+      .add(this.camera.position);
+    for (const planet of this.solarSystem.planets) {
+      const wp = planet.worldPosAU;
+      if (!wp) continue;
+      if (planet.fx) {
+        this.syncNightExposure(planet.fx, planet.data.name, wp.x, wp.y, wp.z, planet.data.radiusAU, nowMs, snap);
+      }
+      const moons = this.planetMoons.get(planet.data.name);
+      if (!moons) continue;
+      for (const m of moons) {
+        if (!m.fx || !m.mesh.visible) continue;
+        // The mesh sits at its offset from the parent inside a system group
+        // placed where the parent is, so this is the moon's heliocentric point.
+        const o = m.mesh.position;
+        this.syncNightExposure(
+          m.fx, m.data.name, wp.x + o.x, wp.y + o.y, wp.z + o.z,
+          m.data.radiusAU * m.mesh.scale.x, nowMs, snap,
+        );
+      }
+    }
+  }
+
+  /** One body's meter, written into its air block's slot. Anything that is not
+   *  a finite reading — a camera at the centre, a body at the Sun — writes 1,
+   *  the picture as it was, and leaves the meter where it stood. */
+  private syncNightExposure(
+    fx: SurfaceShadingFx,
+    name: string,
+    bx: number,
+    by: number,
+    bz: number,
+    radiusAU: number,
+    nowMs: number,
+    snap: boolean,
+  ): void {
+    const slot = fx.air.uNightExposure;
+    if (!slot) return;
+    const cam = this.tmpNightExposureCamera;
+    const vx = cam.x - bx;
+    const vy = cam.y - by;
+    const vz = cam.z - bz;
+    const d = Math.sqrt(vx * vx + vy * vy + vz * vz);
+    const sunD = Math.sqrt(bx * bx + by * by + bz * bz);
+    // The phase angle at the body, between the camera and the Sun; the Sun is
+    // the origin, so body->Sun is minus the body's position.
+    const cosPhase = -(vx * bx + vy * by + vz * bz) / (d * sunD);
+    const rOverD = radiusAU / d;
+    if (!(d > 0) || !(sunD > 0) || !Number.isFinite(cosPhase) || !Number.isFinite(rOverD)) {
+      slot.value = 1;
+      return;
+    }
+    let state = this.nightExposureStates.get(name);
+    if (!state) {
+      state = makeNightExposureState();
+      this.nightExposureStates.set(name, state);
+    }
+    slot.value = advanceNightExposure(
+      state, visibleCapLitFraction(cosPhase, rOverD), nowMs, snap, nightExposureParams(),
+    );
+  }
+
+  /** Switch the night-side exposure rule off or on. Off puts every body's slot
+   *  back to 1 at once; either way the next pass takes its targets outright. */
+  setNightExposureOff(off: boolean): void {
+    if (off === this.nightExposureOff) return;
+    this.nightExposureOff = off;
+    this.nightExposureSnapPending = true;
+    if (!off || !this.solarSystem) return;
+    for (const planet of this.solarSystem.planets) {
+      if (planet.fx?.air.uNightExposure) planet.fx.air.uNightExposure.value = 1;
+      for (const m of this.planetMoons.get(planet.data.name) ?? []) {
+        if (m.fx?.air.uNightExposure) m.fx.air.uNightExposure.value = 1;
+      }
+    }
+  }
+
+  /** DEV (`__moon.nightExposure`): move the curve's ends and the pace (null
+   *  puts a knob's authored value back), switch the rule off or on, and read
+   *  back every body metered this frame — its lit fraction, the ramp position
+   *  that asks for, the eased position and the factor written — so a capture
+   *  asserts the number instead of guessing it. A knob change snaps on the
+   *  next pass, so the readback a frame later is the new curve's. */
+  devNightExposure(opts?: NightExposureOverride & { off?: boolean }): {
+    off: boolean;
+    full: number;
+    none: number;
+    rate: number;
+    bodies: Record<string, { lit: number; target: number; ramp: number; applied: number }>;
+  } {
+    if (opts && (opts.full !== undefined || opts.none !== undefined || opts.rate !== undefined)) {
+      setDevNightExposure({ full: opts.full, none: opts.none, rate: opts.rate });
+      this.nightExposureSnapPending = true;
+    }
+    if (opts?.off !== undefined) this.setNightExposureOff(opts.off);
+    const params = nightExposureParams();
+    const bodies: Record<string, { lit: number; target: number; ramp: number; applied: number }> = {};
+    if (!this.nightExposureOff) {
+      for (const [name, s] of this.nightExposureStates) {
+        if (s.stampMs !== this.nightExposurePassMs) continue;
+        bodies[name] = { lit: s.lit, target: s.target, ramp: s.ramp, applied: s.applied };
+      }
+    }
+    return {
+      off: this.nightExposureOff,
+      full: params.fullLit,
+      none: params.noneLit,
+      rate: params.maxRatePerSec,
+      bodies,
+    };
   }
 
   private updatePlanetScaling() {
@@ -7740,6 +7899,9 @@ export class PlanetariumMode {
   private noteSunViewDiscontinuity(): void {
     this.sunFlashResetPending = true;
     this.sunSilhouetteSnapPending = true;
+    // The night-side exposure too: a meter still easing out of the sky just
+    // left would show that sky's exposure on this one for half a second.
+    this.nightExposureSnapPending = true;
     // Drop the cross-frame dominant-occluder incumbent: after a scene jump the
     // previous frame's occluder is a different sky, so its ownership hysteresis
     // must not out-vote the new scene's true dominant occluder through the 15%
@@ -19310,6 +19472,8 @@ export class PlanetariumMode {
     // Camera.updateMatrixWorld also refreshes matrixWorldInverse, which the
     // NDC projection reads directly.
     this.camera.updateMatrixWorld();
+    // After the surface re-pin for the same reason as the Sun's metering.
+    this.syncNightExposures();
     this.updateSunShader(dt);
     if (!mapOpen && willDraw) {
       // Landed reticle + orbit-detail foci are world-anchored HTML; the map

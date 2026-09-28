@@ -44,6 +44,22 @@
  * through a minimum there, the Sun's light gone and the Moon's half arrived,
  * with a gibbous Moon standing right over it.
  *
+ * The fifth and sixth terms are drawn as a long exposure (world/nightSources),
+ * and a camera only takes one while there is no daylight in view. So each of
+ * them — the starlight floor, the sky's ambient, planetshine, and the Moon's
+ * beam, its skylight and its column in the haze — is multiplied by
+ * `uNightExposure`, one number per body per frame in the shared air block that
+ * the mode meters from how much of the visible cap is sunlit
+ * (world/nightExposure): 1 with no daylight in view, which is the picture as it
+ * was, and 0 once enough of the cap is lit. It goes on each weight and never on
+ * `nightKeep`, so it composes with the silhouette instead of standing in for
+ * it. The sky's ambient is not a non-solar source — it is the Sun's own
+ * skylight at the day scale, the irradiance table with no night gain — and in
+ * deep night the table's clamp holds it at about the authored floor, so the
+ * factor is right there; it also takes the first degrees of real twilight down
+ * with it. The deck's city glow does not take it — the cities are the app's own
+ * look of Earth at night, and they stay — and nothing solar reads it.
+ *
  * What a night fragment costs, in dependent table fetches: 6 by day (two for
  * the transmittance in front of it, four for that air's in-scatter), 7 past the
  * terminator with no Moon up (the sky's own irradiance), and 13 with one (its
@@ -1476,6 +1492,7 @@ uniform float uLimbDarkening;
 uniform vec3 uSunDirWorld;
 uniform vec3 uMoonDirWorld;
 uniform vec3 uMoonIrradiance;
+uniform float uNightExposure;
 uniform float uAirDensity;
 uniform float uAirBlend;
 uniform float uSurfaceHaze;
@@ -1716,7 +1733,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // ambient on the ground fade along one line rather than two. Zero where there
   // is no air, which is where the authored floor below is the whole night side.
   float airNight = uAirDensity > 0.0
-      ? nightWeight(clampCosine(dot(up, normalize(uSunDirWorld)))) * nightKeep
+      ? nightWeight(clampCosine(dot(up, normalize(uSunDirWorld)))) * nightKeep * uNightExposure
       : 0.0;
   // The Moon's weight is the Moon's own, not the Sun's. It lights this fragment
   // whenever it stands above the fragment's horizon, and it arrives on a
@@ -1732,7 +1749,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
       : 0.0;
   float moonNight = uAirDensity > 0.0
       ? moonUpWeight(clampCosine(dot(up, normalize(uMoonDirWorld))))
-          * sunDownWeight(sunElevSin, uTermWidth) * nightKeep
+          * sunDownWeight(sunElevSin, uTermWidth) * nightKeep * uNightExposure
       : 0.0;
   // The authored starlight floor, and the sky's own ambient that stands in for
   // it where the tables are bound. They are combined with max() rather than
@@ -1741,7 +1758,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // out darker than the tier without them. With the air off the ambient is
   // exactly zero and the floor is the whole night side, unchanged.
   vec3 nightFloor = diffuseColor.rgb * uNightColor
-      * (uNightStrength * (1.0 - dayFactor) * nightKeep * ${NIGHT_FLOOR_FRACTION.toFixed(6)});
+      * (uNightStrength * (1.0 - dayFactor) * nightKeep * uNightExposure * ${NIGHT_FLOOR_FRACTION.toFixed(6)});
   vec3 nightAmbient = vec3(0.0);
   if (airNight > 0.0) {
     // The irradiance table is the light a horizontal surface receives from the
@@ -1771,7 +1788,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // so the eclipse color-dim carries through it automatically.
   if (GROUND_ON(uPlanetshineIntensity > 0.0)) {
     float pl = max(dot(normalize(normal), normalize(vPlanetshineViewDir)), 0.0);
-    outgoingLight += diffuseColor.rgb * uPlanetshineColor * (uPlanetshineIntensity * pl * (1.0 - dayFactor) * nightKeep);
+    outgoingLight += diffuseColor.rgb * uPlanetshineColor * (uPlanetshineIntensity * pl * (1.0 - dayFactor) * nightKeep * uNightExposure);
   }
   // The Moon: its beam through the air above this fragment, and the same
   // irradiance table read with the Moon as the source — which sky it is depends
@@ -2129,6 +2146,11 @@ export function createSurfaceAirFx(): SurfaceAirFx {
     // around it — and because the mode writes it once per body per frame.
     uMoonDirWorld: { value: new THREE.Vector3(0, 0, 1) },
     uMoonIrradiance: { value: new THREE.Vector3() },
+    // The camera's exposure for the night side (world/nightExposure): 1, the
+    // long exposure, until the mode meters daylight in view. Here for the same
+    // reason as the Moon — the globe, its sectors, the deck and the shell take
+    // one exposure. A block nothing meters, a studio's or a tool's, stays at 1.
+    uNightExposure: { value: 1 },
     // The body's night map, for the same reason: the night-lights shell draws
     // it and the cloud deck glows cities through itself from it, and a second
     // uniform would leave the deck lighting the boot map for the session after

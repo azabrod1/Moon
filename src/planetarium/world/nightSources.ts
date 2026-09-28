@@ -14,6 +14,11 @@
  * the same way and for the same reason — a long exposure of it is cool, the
  * spectrum that produced it is warm — and MOONLIGHT_TINT carries both numbers.
  *
+ * The long exposure holds only while the frame has no daylight in it. With a
+ * body's sunlit side in view a camera exposes for that instead, and
+ * world/nightExposure takes every source here down with it, per body, on the
+ * ground and in the air alike.
+ *
  * One weight for the sources the daylight sky drowns. Airglow and the sky's
  * own ambient fade out through `nightWeight`, which reads the SAME geometric
  * quantity the airlight does — the Sun's elevation at the ray's lowest point on

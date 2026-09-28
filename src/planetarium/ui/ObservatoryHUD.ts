@@ -30,7 +30,7 @@ export interface SurfaceHudState {
   showLookatChip: boolean;
   /** Mono disc annotation under the brackets; null hides it. */
   discNote: string | null;
-  /** Swap chip label ("Stand on the Moon"), or null to hide. */
+  /** Swap chip label ("Switch to the Moon"), or null to hide. */
   swapLabel: string | null;
   /** Clock paused — the transport strip's pause button flips to "Resume". */
   paused: boolean;

@@ -16033,7 +16033,7 @@ export class PlanetariumMode {
     return true;
   }
 
-  /** Headless support: trigger the Observatory vantage swap ("Stand on …"). */
+  /** Headless support: trigger the Observatory vantage swap ("Switch to …"). */
   devSwapVantage(): boolean {
     if (!this.landedOn || !this.swapCompanionTarget()) return false;
     this.swapLandedVantage();
@@ -16381,10 +16381,12 @@ export class PlanetariumMode {
     const live = this.liveShadowEventNow();
     const extras: ObservatoryRenderExtras = {
       vantageName: `From ${bodyDisplayName(this.landedOn.name)}`,
-      // A verb, not a place: the bare name read as a link to the Moon.
+      // A verb, not a place: the bare name read as a link to the Moon. "Switch
+      // to", not "Stand on": the swap re-lands in place, and from the orbit
+      // view the reader is hovering over the body, not standing on it.
       swapName: (() => {
         const companion = this.swapCompanionTarget();
-        return companion ? `Stand on ${bodyDisplayName(companion.name)}` : null;
+        return companion ? `Switch to ${bodyDisplayName(companion.name)}` : null;
       })(),
       nowTag: this.observatoryNowTag(),
       // The tag's other job is the rate label — worth replacing only where
@@ -16468,6 +16470,7 @@ export class PlanetariumMode {
         angularDiameterDeg: angularDiameterDeg(this.surfaceTargetRadiusAU(target), distAU),
         distanceKm: distAU * KM_PER_AU,
         tintCss: this.bodyTintCss(subject),
+        moonTintCss: this.bodyTintCss('Moon'),
       };
     }
     if (this.landedOn.type === 'moon') {
@@ -16730,7 +16733,7 @@ export class PlanetariumMode {
       targetName: this.surfaceTargetDisplayName(this.surfaceTarget).replace(/^the /, ''),
       showLookatChip: this.surfaceTargetChoiceCount() >= 2,
       discNote,
-      swapLabel: companion ? `Stand on ${bodyDisplayName(companion.name)}` : null,
+      swapLabel: companion ? `Switch to ${bodyDisplayName(companion.name)}` : null,
     };
     this.observatoryHud.render(state);
   }

@@ -50,16 +50,18 @@
  * beam, its skylight and its column in the haze — is multiplied by
  * `uNightExposure`, one number per body per frame in the shared air block that
  * the mode meters from how much of the visible cap is sunlit
- * (world/nightExposure): 1 with no daylight in view, which is the picture as it
- * was, and 0 once enough of the cap is lit. It goes on each weight and never on
- * `nightKeep`, so it composes with the silhouette instead of standing in for
- * it. The sky's ambient is not a non-solar source — it is the Sun's own
- * skylight at the day scale, the irradiance table with no night gain — and in
- * deep night the table's clamp holds it at about the authored floor, so the
- * factor is right there; it also takes the first degrees of real twilight down
- * with it. The deck's city glow does not take it — the cities are the app's own
- * look of Earth at night, and they stay — nor does the reader's lift, which
- * stands the rule down altogether while it is on, and nothing solar reads it.
+ * (world/nightExposure): a quarter with no daylight in view — the long exposure,
+ * held two stops under the level it was authored at — and 0 once enough of the
+ * cap is lit; 1, the picture as it was, only with the rule off or stood down.
+ * It goes on each weight and never on `nightKeep`, so it composes with the
+ * silhouette instead of standing in for it. The sky's ambient is not a
+ * non-solar source — it is the Sun's own skylight at the day scale, the
+ * irradiance table with no night gain — and in deep night the table's clamp
+ * holds it at about the authored floor, so the factor is right there; it also
+ * takes the first degrees of real twilight down with it. The deck's city glow
+ * does not take it — the cities are the app's own look of Earth at night, and
+ * they stay — nor does the reader's lift, which stands the rule down altogether
+ * while it is on, and nothing solar reads it.
  *
  * What a night fragment costs, in dependent table fetches: 6 by day (two for
  * the transmittance in front of it, four for that air's in-scatter), 7 past the
@@ -2148,7 +2150,7 @@ export function createSurfaceAirFx(): SurfaceAirFx {
     uMoonDirWorld: { value: new THREE.Vector3(0, 0, 1) },
     uMoonIrradiance: { value: new THREE.Vector3() },
     // The camera's exposure for the night side (world/nightExposure): 1, the
-    // long exposure, until the mode meters daylight in view. Here for the same
+    // authored level, until the mode meters the body. Here for the same
     // reason as the Moon — the globe, its sectors, the deck and the shell take
     // one exposure. A block nothing meters, a studio's or a tool's, stays at 1.
     uNightExposure: { value: 1 },

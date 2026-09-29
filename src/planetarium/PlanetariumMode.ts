@@ -1214,7 +1214,7 @@ export class PlanetariumMode {
    *  body name and made once per body. */
   private readonly nightExposureStates = new Map<string, NightExposureState>();
   /** `?nightexposure=0`: the rule off in any build. Every slot then stays at
-   *  1, the pass never runs, and the picture is today's. */
+   *  1, the pass never runs, and the picture is the one before the rule. */
   private nightExposureOff = parseNightExposureParam(location.search).off;
   /** Whether the rule stood down on the latest pass — the switch above, or
    *  Night sides: Brightened — so the pass can tell the frame it changes. */
@@ -6456,8 +6456,9 @@ export class PlanetariumMode {
 
   /** Whether the rule stands down this frame. Night sides: Brightened is the
    *  reader asking to see the dark side, so no camera rule takes it away:
-   *  while it is on every slot stays at 1, the long exposure the lift joins,
-   *  and back at Real the meter takes its targets outright. */
+   *  while it is on every slot stays at 1, the authored long exposure the
+   *  lift was made beside, and back at Real the meter takes its targets
+   *  outright. */
   private nightExposureStandsDown(): boolean {
     return this.nightExposureOff || this.nightSides.mode() === 'brightened';
   }
@@ -6482,23 +6483,32 @@ export class PlanetariumMode {
     if (off) this.resetNightExposureSlots();
   }
 
-  /** DEV (`__moon.nightExposure`): move the curve's ends and the pace (null
-   *  puts a knob's authored value back), switch the rule off or on, and read
-   *  back every body metered this frame — its lit fraction, the ramp position
-   *  that asks for, the eased position and the factor written — so a capture
-   *  asserts the number instead of guessing it. A knob change snaps on the
-   *  next pass, so the readback a frame later is the new curve's. `off` is
-   *  whether the rule stands down, which Night sides: Brightened does too, and
-   *  then no body is metered. */
+  /** DEV (`__moon.nightExposure`): move the curve's ends, the ramp's two
+   *  speeds and the ceiling (null puts a knob's authored value back), switch
+   *  the rule off or on, and read back every body metered this frame — its lit
+   *  fraction, the ramp position that asks for, the eased position and the
+   *  factor written — so a capture asserts the number instead of guessing it.
+   *  A knob change snaps on the next pass, so the readback a frame later is
+   *  the new curve's. `off` is whether the rule stands down, which Night
+   *  sides: Brightened does too, and then no body is metered. */
   devNightExposure(opts?: NightExposureOverride & { off?: boolean }): {
     off: boolean;
     full: number;
     none: number;
-    rate: number;
+    rateToDay: number;
+    rateToNight: number;
+    ceiling: number;
     bodies: Record<string, { lit: number; target: number; ramp: number; applied: number }>;
   } {
-    if (opts && (opts.full !== undefined || opts.none !== undefined || opts.rate !== undefined)) {
-      setDevNightExposure({ full: opts.full, none: opts.none, rate: opts.rate });
+    if (opts && (opts.full !== undefined || opts.none !== undefined || opts.rateToDay !== undefined
+      || opts.rateToNight !== undefined || opts.ceiling !== undefined)) {
+      setDevNightExposure({
+        full: opts.full,
+        none: opts.none,
+        rateToDay: opts.rateToDay,
+        rateToNight: opts.rateToNight,
+        ceiling: opts.ceiling,
+      });
       this.nightExposureSnapPending = true;
     }
     if (opts?.off !== undefined) this.setNightExposureOff(opts.off);
@@ -6515,7 +6525,9 @@ export class PlanetariumMode {
       off,
       full: params.fullLit,
       none: params.noneLit,
-      rate: params.maxRatePerSec,
+      rateToDay: params.rateToDay,
+      rateToNight: params.rateToNight,
+      ceiling: params.ceiling,
       bodies,
     };
   }

@@ -1,6 +1,6 @@
 /**
  * The night side's long exposure, granted only while there is (almost) no
- * daylight in view.
+ * daylight in view, and never at the full level it was authored at.
  *
  * One frame carries two exposures. The sunlit side of a body is drawn
  * physically, at the renderer's one exposure; the night side is drawn as a long
@@ -17,9 +17,18 @@
  * So the long exposure is conditional, the way a camera's metering is. With
  * daylight in view the camera exposes for it and the night side's own light
  * sinks toward black; parked over the night side, it comes back. What this file
- * produces is one number per body per frame, in [0, 1], that the night terms
- * are multiplied by: 1 is the long exposure (the picture as it was), 0 the day
- * exposure (the night side's non-solar light gone). Nothing solar reads it.
+ * produces is one number per body per frame that the night terms are
+ * multiplied by: NIGHT_EXPOSURE_CEILING with no daylight in view, which is the
+ * long exposure, and 0 the day exposure (the night side's non-solar light
+ * gone). 1 is the level the gain was authored at, which a slot holds only with
+ * the rule off. Nothing solar reads it.
+ *
+ * The ceiling is a decision made on pictures, not a measurement: a night side
+ * is never as bright as the authored long exposure drew it. It holds two stops
+ * under that, a quarter, and the gain itself stays authored, so
+ * `?nightexposure=0` keeps the old level by construction — every slot at 1 —
+ * and so does Night sides: Brightened, which stands this rule down so the
+ * reader's lift joins the level it was made beside.
  *
  * The meter reads the VISIBLE CAP, not the screen: the part of the sphere the
  * camera can see, from wherever it stands, and how much of that is sunlit.
@@ -39,23 +48,29 @@
  * The curve from lit fraction to exposure is a ramp between two lit fractions,
  * NIGHT_EXPOSURE_FULL_LIT and NIGHT_EXPOSURE_NONE_LIT, eased in wall time and
  * then shaped. The eased quantity is the ramp's position (0 = long exposure,
- * 1 = day exposure), moved at a camera's auto-exposure pace so a flick is a
- * half-second swing rather than a cut, and snapped at a scene discontinuity so
- * a jump never ramps from the sky it left. The factor written is that position
- * through a cube, (1 − t)³: exactly 1 and exactly 0 at the ends, and between
- * them a fade that spends its stops evenly — at the ramp's midpoint it is three
- * stops down, where a straight line would still be one stop down and fall off
- * a cliff at the end.
+ * 1 = day exposure), and it moves at two speeds, the way eyes do. Toward the
+ * day it is quick, a full swing in about a second: daylight coming into view
+ * is itself the change the eye follows, the night side's light has gone with
+ * it before it can read as a second one, and a moonlit night side never
+ * lingers beside the sunlit disc. Toward the night it is slow, a full swing in
+ * about ten seconds, the way eyes adapt to the dark: too slow to be seen
+ * moving, so the night side is simply brighter once the eye has settled rather
+ * than seen brightening. A scene discontinuity snaps either way, so a jump
+ * never ramps from the sky it left. The factor written is the ceiling times
+ * that position through a cube, ceiling × (1 − t)³: exactly the ceiling and
+ * exactly 0 at the ends, and between them a fade that spends its stops evenly
+ * — at the ramp's midpoint it is three stops under the ceiling, where a
+ * straight line would still be one stop under and fall off a cliff at the end.
  *
  * The two ends are a starting guess, not a measurement. The physical curve —
  * exposure in proportion to 1/lit — reaches the day exposure with a few percent
  * of the cap lit, which puts a black night side behind every crescent; whether
- * a crescent keeps its earthshine is a decision made on pictures, so the ends
- * are knobs (`__moon.nightExposure`, and `?nightexposure=<full>,<none>` in a
+ * a crescent keeps its earthshine is a decision made on pictures, so the ends,
+ * the two speeds and the ceiling are knobs (`__moon.nightExposure`, and
+ * `?nightexposure=<full>,<none>[,<rateToDay>[,<rateToNight>[,<ceiling>]]]` in a
  * development build) and `?nightexposure=0` switches the rule off in any
- * build, which is today's picture exactly.
+ * build, which is the picture before the rule, authored level and all.
  */
-import { smoothShadeFraction, type ShadeSmoothingParams } from './shadeSmoothing';
 
 /** Up to this fraction of the visible cap sunlit, the long exposure stands in
  *  full. */
@@ -63,7 +78,7 @@ export const NIGHT_EXPOSURE_FULL_LIT = 0.10;
 /** From this fraction of the visible cap sunlit, the camera exposes for the
  *  day and the night side's non-solar light is gone. */
 export const NIGHT_EXPOSURE_NONE_LIT = 0.35;
-/** The power the eased ramp is shaped by: the factor is (1 − t)^this. */
+/** The power the eased ramp is shaped by: the factor is ceiling × (1 − t)^this. */
 export const NIGHT_EXPOSURE_FALLOFF = 3;
 /** The sine of the visible cap's angular radius is never taken below this.
  *  As a camera comes down onto the ground the cap collapses to a point and the
@@ -76,26 +91,47 @@ export const NIGHT_EXPOSURE_FALLOFF = 3;
  *  where the cap is at least 11° of arc and on Earth 19°, and its sunrise is
  *  that much wider a ramp on its own. */
 export const NIGHT_EXPOSURE_MIN_SIN_CAP = 0.05;
-/** A full swing of the ramp in half a second, a camera's auto-exposure pace;
- *  a body not advanced for half a second takes its target directly. */
-export const NIGHT_EXPOSURE_SMOOTHING: Readonly<ShadeSmoothingParams> = {
-  maxRatePerSec: 2,
-  snapGapMs: 500,
-};
+/** Toward the day exposure, in ramp positions a second: a full swing in about a
+ *  second, the pace eyes stop down at for light, so the night side's light
+ *  leaves as daylight comes into view and never lingers beside the sunlit
+ *  disc. */
+export const NIGHT_EXPOSURE_RATE_TO_DAY = 1;
+/** Toward the long exposure, in ramp positions a second: a full swing in about
+ *  ten seconds, the way eyes adapt to the dark — too slow to be seen moving. */
+export const NIGHT_EXPOSURE_RATE_TO_NIGHT = 0.1;
+/** A body not advanced for this long, in ms, takes its target outright: a
+ *  hidden tab, a stalled frame or a moon that has just come into view never
+ *  ramps from a sky it has not been looking at. */
+export const NIGHT_EXPOSURE_SNAP_GAP_MS = 500;
+/** The long exposure's own level, as a fraction of the level its gain was
+ *  authored at: two stops under it, so a night view is never as bright as the
+ *  picture was. The rule off keeps the authored level — every slot at 1. */
+export const NIGHT_EXPOSURE_CEILING = 0.25;
 
-/** The curve and its pace. Also the limiter's own parameters, so one object is
- *  handed to the limiter without a second one being made per frame. */
-export interface NightExposureParams extends ShadeSmoothingParams {
+/** The curve, its two speeds and its ceiling. */
+export interface NightExposureParams {
   /** Lit fraction at and below which the long exposure stands in full. */
   fullLit: number;
   /** Lit fraction at and above which the day exposure stands. */
   noneLit: number;
+  /** Ramp positions a second toward the day exposure (a larger position). */
+  rateToDay: number;
+  /** Ramp positions a second toward the long exposure (a smaller position). */
+  rateToNight: number;
+  /** A body not advanced for longer than this, in ms, takes its target
+   *  outright. */
+  snapGapMs: number;
+  /** The factor at the long exposure, as a fraction of the authored level. */
+  ceiling: number;
 }
 
 export const NIGHT_EXPOSURE: Readonly<NightExposureParams> = {
   fullLit: NIGHT_EXPOSURE_FULL_LIT,
   noneLit: NIGHT_EXPOSURE_NONE_LIT,
-  ...NIGHT_EXPOSURE_SMOOTHING,
+  rateToDay: NIGHT_EXPOSURE_RATE_TO_DAY,
+  rateToNight: NIGHT_EXPOSURE_RATE_TO_NIGHT,
+  snapGapMs: NIGHT_EXPOSURE_SNAP_GAP_MS,
+  ceiling: NIGHT_EXPOSURE_CEILING,
 };
 
 /**
@@ -128,11 +164,12 @@ export function nightExposureRamp(lit: number, params: NightExposureParams = NIG
   return x * x * (3 - 2 * x);
 }
 
-/** The factor the night terms are multiplied by at a ramp position: exactly 1
- *  at 0, exactly 0 at 1, and a fade that spends its stops evenly between. */
-export function nightExposureFactor(ramp: number): number {
+/** The factor the night terms are multiplied by at a ramp position: exactly
+ *  the ceiling at 0, exactly 0 at 1, and a fade that spends its stops evenly
+ *  between. */
+export function nightExposureFactor(ramp: number, params: NightExposureParams = NIGHT_EXPOSURE): number {
   const keep = 1 - Math.min(1, Math.max(0, ramp));
-  return keep ** NIGHT_EXPOSURE_FALLOFF;
+  return params.ceiling * keep ** NIGHT_EXPOSURE_FALLOFF;
 }
 
 /** One body's meter, kept across frames. Made once per body and written in
@@ -148,7 +185,9 @@ export interface NightExposureState {
   target: number;
   /** The eased ramp position. */
   ramp: number;
-  /** The factor written to the body's slot: the eased ramp, shaped. */
+  /** The factor written to the body's slot: the eased ramp, shaped. Before
+   *  the first advance it is the slot's own starting value, the authored
+   *  level. */
   applied: number;
 }
 
@@ -158,9 +197,11 @@ export function makeNightExposureState(): NightExposureState {
 
 /**
  * Advance one body's meter a frame: read the ramp position the lit fraction
- * asks for, move the eased position toward it at the limiter's pace — or take
- * it outright on the first advance, after a gap, or when `snap` says the scene
- * just jumped — and shape it into the factor. Returns the factor.
+ * asks for, move the eased position toward it — at `rateToDay` toward a larger
+ * position, at `rateToNight` toward a smaller one — or take it outright on the
+ * first advance, after a gap longer than `snapGapMs` or a clock that did not
+ * move forward, or when `snap` says the scene just jumped; then shape it into
+ * the factor. Returns the factor.
  */
 export function advanceNightExposure(
   state: NightExposureState,
@@ -170,33 +211,43 @@ export function advanceNightExposure(
   params: NightExposureParams = NIGHT_EXPOSURE,
 ): number {
   const target = nightExposureRamp(lit, params);
-  state.ramp = state.seeded && !snap
-    ? smoothShadeFraction(target, state.ramp, nowMs - state.stampMs, params)
-    : target;
+  const dtMs = nowMs - state.stampMs;
+  if (!state.seeded || snap || !(dtMs > 0) || dtMs > params.snapGapMs) {
+    state.ramp = target;
+  } else {
+    const up = (params.rateToDay * dtMs) / 1000;
+    const down = (params.rateToNight * dtMs) / 1000;
+    const delta = target - state.ramp;
+    state.ramp = delta > up ? state.ramp + up : delta < -down ? state.ramp - down : target;
+  }
   state.seeded = true;
   state.stampMs = nowMs;
   state.lit = lit;
   state.target = target;
-  state.applied = nightExposureFactor(state.ramp);
+  state.applied = nightExposureFactor(state.ramp, params);
   return state.applied;
 }
 
-/** A development build's hand on the curve and the pace. */
+/** A development build's hand on the curve, the two speeds and the ceiling. */
 export interface NightExposureOverride {
   full?: number | null;
   none?: number | null;
-  rate?: number | null;
+  rateToDay?: number | null;
+  rateToNight?: number | null;
+  ceiling?: number | null;
 }
 
 let devParams: NightExposureParams | null = null;
 
 /**
- * Set the curve's ends and the ramp's pace from now on (`__moon.nightExposure`,
- * `?nightexposure=<full>,<none>[,<rate>]`). Each knob left out keeps the value
- * in force; null puts that knob's authored value back, and a null override
- * puts them all back. Ends are held to 0..1 and a pace must be a positive
- * number, or that knob is ignored. Reads back the parameters in force.
- * Development builds only: a production build always reads the authored ones.
+ * Set the curve's ends, the ramp's two speeds and the ceiling from now on
+ * (`__moon.nightExposure`,
+ * `?nightexposure=<full>,<none>[,<rateToDay>[,<rateToNight>[,<ceiling>]]]`).
+ * Each knob left out keeps the value in force; null puts that knob's authored
+ * value back, and a null override puts them all back. Ends and the ceiling are
+ * held to 0..1 and a speed must be a positive number, or that knob is ignored.
+ * Reads back the parameters in force. Development builds only: a production
+ * build always reads the authored ones.
  */
 export function setDevNightExposure(opts: NightExposureOverride | null): Readonly<NightExposureParams> {
   if (!import.meta.env.DEV) return NIGHT_EXPOSURE;
@@ -210,13 +261,21 @@ export function setDevNightExposure(opts: NightExposureOverride | null): Readonl
   else if (opts.full !== undefined && Number.isFinite(opts.full)) next.fullLit = unit(opts.full);
   if (opts.none === null) next.noneLit = NIGHT_EXPOSURE.noneLit;
   else if (opts.none !== undefined && Number.isFinite(opts.none)) next.noneLit = unit(opts.none);
-  if (opts.rate === null) next.maxRatePerSec = NIGHT_EXPOSURE.maxRatePerSec;
-  else if (opts.rate !== undefined && Number.isFinite(opts.rate) && opts.rate > 0) {
-    next.maxRatePerSec = opts.rate;
+  if (opts.rateToDay === null) next.rateToDay = NIGHT_EXPOSURE.rateToDay;
+  else if (opts.rateToDay !== undefined && Number.isFinite(opts.rateToDay) && opts.rateToDay > 0) {
+    next.rateToDay = opts.rateToDay;
   }
+  if (opts.rateToNight === null) next.rateToNight = NIGHT_EXPOSURE.rateToNight;
+  else if (opts.rateToNight !== undefined && Number.isFinite(opts.rateToNight) && opts.rateToNight > 0) {
+    next.rateToNight = opts.rateToNight;
+  }
+  if (opts.ceiling === null) next.ceiling = NIGHT_EXPOSURE.ceiling;
+  else if (opts.ceiling !== undefined && Number.isFinite(opts.ceiling)) next.ceiling = unit(opts.ceiling);
   const authored = next.fullLit === NIGHT_EXPOSURE.fullLit
     && next.noneLit === NIGHT_EXPOSURE.noneLit
-    && next.maxRatePerSec === NIGHT_EXPOSURE.maxRatePerSec;
+    && next.rateToDay === NIGHT_EXPOSURE.rateToDay
+    && next.rateToNight === NIGHT_EXPOSURE.rateToNight
+    && next.ceiling === NIGHT_EXPOSURE.ceiling;
   devParams = authored ? null : next;
   return devParams ?? NIGHT_EXPOSURE;
 }
@@ -233,14 +292,18 @@ export interface NightExposureParam {
   off: boolean;
   full?: number;
   none?: number;
-  rate?: number;
+  rateToDay?: number;
+  rateToNight?: number;
+  ceiling?: number;
 }
 
 /**
  * Read `?nightexposure=` from a query string. `0` switches the rule off in any
- * build — every slot stays at 1 and the picture is today's. In a development
- * build `<full>,<none>` and `<full>,<none>,<rate>` set the curve for the
- * session, so two curves are two links. Anything else asks for nothing.
+ * build — every slot stays at 1 and the picture is the one before the rule. In
+ * a development build `<full>,<none>[,<rateToDay>[,<rateToNight>[,<ceiling>]]]`
+ * sets the curve for the session, so two curves are two links: two to five
+ * numbers, every one finite and each speed positive (the setter holds the ends
+ * and the ceiling to 0..1). Anything else asks for nothing.
  */
 export function parseNightExposureParam(search: string, dev: boolean = import.meta.env.DEV): NightExposureParam {
   const raw = new URLSearchParams(search).get('nightexposure');
@@ -249,9 +312,15 @@ export function parseNightExposureParam(search: string, dev: boolean = import.me
   if (value === '0') return { off: true };
   if (!dev) return { off: false };
   const parts = value.split(',');
-  if (parts.length < 2 || parts.length > 3 || parts.some((p) => p.trim() === '')) return { off: false };
-  const [full, none, rate] = parts.map(Number);
-  if (!Number.isFinite(full) || !Number.isFinite(none)) return { off: false };
-  if (parts.length === 3 && !(Number.isFinite(rate) && rate > 0)) return { off: false };
-  return parts.length === 3 ? { off: false, full, none, rate } : { off: false, full, none };
+  if (parts.length < 2 || parts.length > 5 || parts.some((p) => p.trim() === '')) return { off: false };
+  const n = parts.map(Number);
+  if (!n.every(Number.isFinite)) return { off: false };
+  const [full, none, rateToDay, rateToNight, ceiling] = n;
+  if (n.length >= 3 && !(rateToDay > 0)) return { off: false };
+  if (n.length >= 4 && !(rateToNight > 0)) return { off: false };
+  const out: NightExposureParam = { off: false, full, none };
+  if (n.length >= 3) out.rateToDay = rateToDay;
+  if (n.length >= 4) out.rateToNight = rateToNight;
+  if (n.length >= 5) out.ceiling = ceiling;
+  return out;
 }

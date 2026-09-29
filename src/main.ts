@@ -3301,10 +3301,13 @@ function installDevHooks() {
     }),
     // The night side's exposure, live (world/nightExposure): the lit fractions
     // of the visible cap the long exposure holds at (`full`) and is gone by
-    // (`none`), the ramp's pace per second (`rate`), null putting a knob's
-    // authored value back, and `off` for the rule itself. Returns the curve in
-    // force and every body metered this frame — lit fraction, the ramp
-    // position it asks for, the eased one, and the factor written.
+    // (`none`), the ramp's two speeds in positions per second — toward the
+    // day exposure (`rateToDay`) and back toward the long one (`rateToNight`)
+    // — and the long exposure's level as a fraction of the authored one
+    // (`ceiling`), null putting a knob's authored value back, and `off` for
+    // the rule itself. Returns the curve in force and every body metered this
+    // frame — lit fraction, the ramp position it asks for, the eased one, and
+    // the factor written.
     nightExposure: (opts?: NightExposureOverride & { off?: boolean }) =>
       planetariumMode?.devNightExposure(opts) ?? null,
     /** A GPU profile of the world frame measured on this device, per pass and per object (app/devGpuProfile.ts). */
@@ -3672,12 +3675,20 @@ function installDevHooks() {
     const haze = new URLSearchParams(location.search).get('haze');
     if (haze && Number.isFinite(Number(haze))) setDevSurfaceHaze(Number(haze));
     // `?nightexposure=0.1,0.35` sets the night side's exposure curve for the
-    // session, and a third number its pace: the __moon.nightExposure knobs as a
-    // link, so two curves are two links. `?nightexposure=0` is read by the
-    // mode itself, in any build.
+    // session, a third and a fourth number its speeds toward the day and back
+    // toward the night, and a fifth its ceiling
+    // (`<full>,<none>[,<rateToDay>[,<rateToNight>[,<ceiling>]]]`): the
+    // __moon.nightExposure knobs as a link, so two curves are two links.
+    // `?nightexposure=0` is read by the mode itself, in any build.
     const nightExposure = parseNightExposureParam(location.search);
     if (nightExposure.full !== undefined) {
-      setDevNightExposure({ full: nightExposure.full, none: nightExposure.none, rate: nightExposure.rate });
+      setDevNightExposure({
+        full: nightExposure.full,
+        none: nightExposure.none,
+        rateToDay: nightExposure.rateToDay,
+        rateToNight: nightExposure.rateToNight,
+        ceiling: nightExposure.ceiling,
+      });
     }
   }
   debugLog('Dev hooks installed (window.__moon)');

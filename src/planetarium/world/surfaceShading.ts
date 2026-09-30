@@ -575,7 +575,7 @@ if (GROUND_ON(uWaterGloss > 0.0)) {
           + ${COX_MUNK_SLOPE_PER_MS.toFixed(5)} * seaWindMs));
       waterGain = (${ROUGHNESS_MAP_LAND.toFixed(6)} - seaRoughness)
           / ${(ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER).toFixed(6)};
-      seaCalmWeight = textureGrad(uSeaCalmMap, seaUv, seaDx, seaDy).r * seaWater;
+      seaCalmWeight = textureGrad(uSeaCalmMap, seaUv, seaDx, seaDy).r;
     }
   }
   roughnessFactor = max(${ROUGHNESS_MAP_LAND.toFixed(6)}
@@ -1660,7 +1660,10 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // Cox-Munk's Gaussian slope law, and GGX's heavy tail spread the sheen into
   // haze. The windy lobe takes three's own alpha, its geometry roughness and
   // floor included, and the calm lobe the same geometry term, so a small
-  // disc's normal spread widens both. Then the cap, on the water's own
+  // disc's normal spread widens both. Each lobe carries its own Smith
+  // visibility: three's term was the windy alpha's, and left in place it
+  // dimmed a glassy sea by a quarter at a grazing Sun and eye, where the
+  // calm lobe's own shadowing is less. Then the cap, on the water's own
   // reflection and in units of white (OCEAN_GLINT_CAP). What is left is what
   // the cloud mask below can cut. Both the Fresnel and the lobe are the
   // water's, so both fade with the water fraction the roughness map reads:
@@ -1680,11 +1683,15 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
     float seaLobe = 1.0;
     if (uSeaWindOn > 0.5) {
       float seaDotNH = saturate(dot(normal, seaHalfDir));
+      float seaDotNL = saturate(dot(normal, normalize(vSunViewDir)));
+      float seaDotNV = saturate(dot(normal, seaViewDir));
       float seaAlphaWindy = pow2(material.roughness);
       float seaAlphaCalm = pow2(min(${GLINT_CALM_GLSL} + geometryRoughness, 1.0));
+      float seaVisWindy = V_GGX_SmithCorrelated(seaAlphaWindy, seaDotNL, seaDotNV);
+      float seaVisCalm = V_GGX_SmithCorrelated(seaAlphaCalm, seaDotNL, seaDotNV);
       seaLobe = mix(1.0,
-          mix(seaBeckmann(seaAlphaWindy, seaDotNH), seaBeckmann(seaAlphaCalm, seaDotNH), seaCalmWeight)
-              / D_GGX(seaAlphaWindy, seaDotNH),
+          mix(seaVisWindy * seaBeckmann(seaAlphaWindy, seaDotNH), seaVisCalm * seaBeckmann(seaAlphaCalm, seaDotNH), seaCalmWeight)
+              / (seaVisWindy * D_GGX(seaAlphaWindy, seaDotNH)),
           seaWater);
     }
     seaGlint = min(glintRaw * (seaFresnel * seaLobe${GLINT_KEEP_GLSL}), vec3(${GLINT_CAP_GLSL}));

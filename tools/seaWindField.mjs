@@ -314,14 +314,35 @@ export function calmWeightForWind(windMs, windyMs, referenceWindMs) {
  *  stands in for; `calmWeight` and `windyMs` are what the map stores. */
 function fieldAtPoint(params, latTerms, lonDeg, latDeg) {
   const { northWeight } = latTerms;
+  // The lanes and the regions are masks with soft edges, thresholded at the
+  // quantiles of ONE orientation's noise. Across the equator the two tilts
+  // blend, and a blend of two noises has less spread than either, so the
+  // masks are taken per orientation and it is the masks that blend: the
+  // share then comes out at the table's, where a mask of the blended noise
+  // under-delivered it by about a sixth in the band.
+  const masks = (terms) => ({
+    lane: latTerms.laneFraction > 0
+      ? smoothstep(latTerms.laneLevel - params.laneEdge, latTerms.laneLevel + params.laneEdge, terms.lane)
+      : 0,
+    region: latTerms.regionFraction > 0
+      ? smoothstep(latTerms.regionLevel - params.regionEdge, latTerms.regionLevel + params.regionEdge, terms.region)
+      : 0,
+  });
   let terms;
-  if (northWeight >= 1) terms = noiseTerms(params, lonDeg, latDeg, params.tilt);
-  else if (northWeight <= 0) terms = noiseTerms(params, lonDeg, latDeg, -params.tilt);
-  else {
+  let laneWeight;
+  let regionWeight;
+  if (northWeight >= 1 || northWeight <= 0) {
+    terms = noiseTerms(params, lonDeg, latDeg, northWeight >= 1 ? params.tilt : -params.tilt);
+    ({ lane: laneWeight, region: regionWeight } = masks(terms));
+  } else {
     const north = noiseTerms(params, lonDeg, latDeg, params.tilt);
     const south = noiseTerms(params, lonDeg, latDeg, -params.tilt);
     terms = {};
     for (const key of Object.keys(north)) terms[key] = north[key] * northWeight + south[key] * (1 - northWeight);
+    const northMasks = masks(north);
+    const southMasks = masks(south);
+    laneWeight = northMasks.lane * northWeight + southMasks.lane * (1 - northWeight);
+    regionWeight = northMasks.region * northWeight + southMasks.region * (1 - northWeight);
   }
   // The open sea: the climatology with its broad structure and grain.
   const blown = clamp(
@@ -330,14 +351,7 @@ function fieldAtPoint(params, latTerms, lonDeg, latDeg) {
       * (1 + params.grain * clamp(terms.grain, -2, 2)),
     0.1, SEA_WIND_MAX_MS,
   );
-  // The lanes and the regions: masks with soft edges, and a slick texture
-  // that grades the calm inside them.
-  const laneWeight = latTerms.laneFraction > 0
-    ? smoothstep(latTerms.laneLevel - params.laneEdge, latTerms.laneLevel + params.laneEdge, terms.lane)
-    : 0;
-  const regionWeight = latTerms.regionFraction > 0
-    ? smoothstep(latTerms.regionLevel - params.regionEdge, latTerms.regionLevel + params.regionEdge, terms.region)
-    : 0;
+  // A slick texture grades the calm inside the lanes and the regions.
   const slickUnit = clamp(0.5 + terms.slick, 0, 1);
   const laneWindMs = 0.3 + 1.7 * slickUnit;
   const regionSeaMs = Math.max(blown * params.regionWindScale, 0.3 + 0.9 * slickUnit);

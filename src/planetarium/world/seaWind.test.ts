@@ -232,7 +232,7 @@ describe('the generator (tools/seaWindField.mjs)', () => {
     // Move these only with `npm run gen:seawind` and the shipped hashes below.
     const pins: Array<[number, number, number, number, number]> = [
       [-160, -12, 3.305083, 0, 3.305083],
-      [30, 0, 1.826511, 0.257330, 3.173800],
+      [30, 0, 1.331001, 0.442952, 3.173800],
       [120, 25, 1.098598, 0.635078, 5.691913],
       [-45, -40, 7.210969, 0, 7.210969],
       [0, 60, 12.334111, 0, 12.334111],
@@ -243,6 +243,24 @@ describe('the generator (tools/seaWindField.mjs)', () => {
       expect(point.windMs).toBeCloseTo(wind, 5);
       expect(point.calmWeight).toBeCloseTo(calm, 5);
       expect(point.windyMs).toBeCloseTo(windy, 5);
+    }
+  });
+
+  it('keeps the calm share across the equator, where the two tilts blend', () => {
+    // A blend of two noises has less spread than either, so a mask of the
+    // blended noise under-delivered the table's share by a sixth in the band;
+    // the masks are blended instead. The control is one orientation with no
+    // blend at all (tilt 0), on the same 7200 points of the equator.
+    const blended = pointEvaluator();
+    const control = pointEvaluator({ tilt: 0 });
+    const meanCalm = (field: (lon: number, lat: number) => { calmWeight: number }, lat: number): number => {
+      let sum = 0;
+      for (let i = 0; i < 7200; i++) sum += field(-180 + (360 * i) / 7200, lat).calmWeight;
+      return sum / 7200;
+    };
+    for (const lat of [0, 2]) {
+      expect(meanCalm(blended, lat)).toBeGreaterThan(meanCalm(control, lat) * 0.9);
+      expect(meanCalm(blended, lat)).toBeLessThan(meanCalm(control, lat) * 1.3);
     }
   });
 
@@ -353,9 +371,9 @@ describe('the generator (tools/seaWindField.mjs)', () => {
     const hashOf = (file: string): string =>
       createHash('sha256').update(readFileSync(`public/textures/${file}`)).digest('hex');
     expect(hashOf(PLANET_TEXTURE_FILES.earthSeaCalm))
-      .toBe('8939a5d90e1463c903bba8b52705a2ad0ff3845ce6907b866168df187685102b');
+      .toBe('a0f814051033fc5c6829d359465b2cb839e20282debb999babb791c2482a8e61');
     expect(hashOf(PLANET_TEXTURE_FILES.earthSeaWindy))
-      .toBe('cf899f3a8737e30dc2e8c2f10902fe03a9aba8af22dd21d6604023f261f8333a');
+      .toBe('383f23550b9992f0e7b1c8a9d7cee2b9dc78be743e8e1b56bc49f940c5a6dd20');
     // Lossless webp, the container the loader decodes as a picture: RIFF,
     // WEBP, VP8L.
     const calmBytes = readFileSync(`public/textures/${PLANET_TEXTURE_FILES.earthSeaCalm}`);

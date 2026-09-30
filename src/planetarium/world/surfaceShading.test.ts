@@ -845,7 +845,10 @@ describe('the sea', () => {
       + `          + ${COX_MUNK_SLOPE_PER_MS.toFixed(5)} * seaWindMs));`);
     // The calm weight beside it, scaled by the texel's water fraction so a
     // coast's land half takes none of its lane.
-    expect(text).toContain('seaCalmWeight = textureGrad(uSeaCalmMap, seaUv, seaDx, seaDy).r * seaWater;');
+    // The calm weight is the map's: the water fraction scales the whole lobe
+    // once, below, so a half-water texel keeps half its calm share rather
+    // than a quarter.
+    expect(text).toContain('seaCalmWeight = textureGrad(uSeaCalmMap, seaUv, seaDx, seaDy).r;');
     // The gradients are taken in the uniform branch, before the per-fragment
     // gate that spares pure land the fetches: a derivative inside a branch the
     // fragments of one draw take both sides of is undefined.
@@ -876,9 +879,14 @@ describe('the sea', () => {
       import.meta.env.DEV ? 'uGlintCalm' : SEA_CALM_LOBE_ROUGHNESS.toFixed(5)} + geometryRoughness, 1.0));`);
     // The swap, like the Fresnel, fades with the water fraction: land keeps
     // three's lobe.
+    // Each lobe carries its own Smith visibility, three's own function at
+    // its own alpha, and the division takes out the windy one three put in
+    // with its distribution.
+    expect(text).toContain('float seaVisWindy = V_GGX_SmithCorrelated(seaAlphaWindy, seaDotNL, seaDotNV);');
+    expect(text).toContain('float seaVisCalm = V_GGX_SmithCorrelated(seaAlphaCalm, seaDotNL, seaDotNV);');
     expect(text).toContain('seaLobe = mix(1.0,\n'
-      + '          mix(seaBeckmann(seaAlphaWindy, seaDotNH), seaBeckmann(seaAlphaCalm, seaDotNH), seaCalmWeight)\n'
-      + '              / D_GGX(seaAlphaWindy, seaDotNH),\n'
+      + '          mix(seaVisWindy * seaBeckmann(seaAlphaWindy, seaDotNH), seaVisCalm * seaBeckmann(seaAlphaCalm, seaDotNH), seaCalmWeight)\n'
+      + '              / (seaVisWindy * D_GGX(seaAlphaWindy, seaDotNH)),\n'
       + '          seaWater);');
     // The two lobes share their peak: at the half vector on the normal, both
     // read 1 / (pi alpha²), so the swap moves the tail and not the centre.

@@ -324,6 +324,9 @@ uniform float uExtent;
 uniform float uVisibleFraction;
 uniform float uShipSunVisibility;
 uniform float uGlareStrength;
+// A scale on the camera's cross, the starburst and the sensor streak: 1 as
+// authored, the DEV look-round knob (__moon.sunSpikes).
+uniform float uSpikeScale;
 uniform float uPointLike;
 uniform float uCameraFx;
 uniform float uEclipseLike;
@@ -496,14 +499,14 @@ void main() {
   // the reference stills show long thin diffraction spikes WITH a visible disc.
   // Carry a fraction of them through the mid-range on the camera-fx term.
   float starburst = (horizontal + vertical + diagonal)
-    * max(uPointLike, uCameraFx * uSpikeSustain) * visibleEnergy * shipDirectEnergy * 0.30;
+    * max(uPointLike, uCameraFx * uSpikeSustain) * visibleEnergy * shipDirectEnergy * 0.30 * uSpikeScale;
   glare += starburst;
 
   // A short, low-energy sensor streak bridges the scale range where the disc
   // is resolved but still overwhelmingly bright. It fades away for close-up
   // photosphere study and yields to the sharper starburst in the outer system.
   float sensorLine = exp(-abs(pLightB.y) / sensorWidth)
-    * exp(-abs(pLightB.x) * 1.55);
+    * exp(-abs(pLightB.x) * 1.55) * uSpikeScale;
   float sensorStreak = sensorLine * uCameraFx * (1.0 - uPointLike * 0.72)
     * visibleEnergy * shipDirectEnergy * 0.055;
   glare += sensorStreak;

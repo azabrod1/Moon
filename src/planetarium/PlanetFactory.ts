@@ -1234,6 +1234,7 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       // direct camera-optics light whose source rays the nearby hull blocks.
       uShipSunVisibility: { value: 1 },
       uGlareStrength: { value: useBloom ? 1.05 : 1.35 },
+      uSpikeScale: { value: 1 },
       uPointLike: { value: 0 },
       uCameraFx: { value: 0 },
       uEclipseLike: { value: 0 },

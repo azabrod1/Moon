@@ -2994,6 +2994,8 @@ function installDevHooks() {
     probeLimbMarker: (screenX: number, screenY: number, depthAU: number) =>
       planetariumMode?.devProbeLimbMarker(screenX, screenY, depthAU) ?? null,
     sunAppearance: () => planetariumMode?.devSunAppearance() ?? null,
+    /** A scale on the Sun's cross — the starburst, the sensor streak and the wide arms — 1 as authored, 0 none; from the next frame. */
+    sunSpikes: (scale: number) => planetariumMode?.devSetSunArmScale(scale) ?? null,
     setShipSunOcclusion: (enabled: boolean) =>
       planetariumMode?.devSetShipSunOcclusion(enabled) ?? false,
     sunGlareMask: () => planetariumMode?.devSunGlareMask() ?? null,

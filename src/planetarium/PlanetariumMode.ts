@@ -7964,7 +7964,7 @@ export class PlanetariumMode {
       // rather than growing with brightness. This stops them reading as
       // ruler-straight exaggerated lines exactly where the Sun is closest.
       const armGate = 1 - THREE.MathUtils.smoothstep(solarRadiusPx, 2, 8);
-      veilArmCoeff = 0.28 * armGate;
+      veilArmCoeff = 0.28 * armGate * this.devSunArmScale;
 
       // Size the billboard from where the wash and arms fall below the visibility
       // floor rather than from an authored amount. This upper bound (full Sun,
@@ -15347,6 +15347,18 @@ export class PlanetariumMode {
   }
 
   /** Headless-QA readback for transient Sun optics and atmospheric grazing. */
+  /** DEV: a scale on the camera's cross — the core glare's starburst and
+   *  sensor streak (uSpikeScale) and the wide veil's diffraction arms (the
+   *  authored 0.28) together — so a look round of it comes out of one page
+   *  load. */
+  private devSunArmScale = 1;
+  devSetSunArmScale(scale: number): number {
+    this.devSunArmScale = Number.isFinite(scale) ? Math.max(scale, 0) : 1;
+    const glareMat = this.solarSystem?.sun.userData.sunGlareMaterial as THREE.ShaderMaterial | undefined;
+    if (glareMat) glareMat.uniforms.uSpikeScale.value = this.devSunArmScale;
+    return this.devSunArmScale;
+  }
+
   devSunAppearance(): unknown {
     const sunMat = this.solarSystem?.sun.userData.sunMaterial as THREE.ShaderMaterial | undefined;
     const glareMat = this.solarSystem?.sun.userData.sunGlareMaterial as THREE.ShaderMaterial | undefined;
@@ -15361,6 +15373,8 @@ export class PlanetariumMode {
       emergenceFlash: this.sunEmergenceFlash,
       atmosphereMix: this.sunAtmosphereMix,
       atmosphereColor: `#${this.sunAtmosphereColor.getHexString()}`,
+      armCoeff: glareMat ? (glareMat.uniforms.uArmCoeff.value as number) : 0,
+      armScale: this.devSunArmScale,
       occluderShade: glareMat ? (glareMat.uniforms.uOccluderShade.value as number) : 0,
       occluderRadii: glareMat ? (glareMat.uniforms.uOccluderRadii.value as number) : 0,
       occluderOffsetSr: offset ? [offset.x, offset.y] : [0, 0],

@@ -1808,7 +1808,6 @@ export class PlanetariumMode {
   private readonly surfaceEyepieceDrag =
     new URLSearchParams(location.search).get('lookdrag') === 'eyepiece';
   private preSurfaceCameraPos = new THREE.Vector3();
-  private preSurfaceAutoRotate = false;
   // Entry/exit/re-point FOV ease. fromPos is set on entry only (the camera
   // glides from its orbit position down to the vantage); finalizeExit runs
   // the orbit-view restore when the ease completes.
@@ -14086,9 +14085,9 @@ export class PlanetariumMode {
    *
    * OrbitControls caches its orbit axis from `object.up` at construction
    * (`_quat`/`_quatInverse`, verified against three r0.183.2), so writing
-   * `camera.up` alone would leave drags — and landed autoRotate — precessing
-   * about the old axis. The cached axis is therefore resynced on EVERY call,
-   * even when the requested up is already in place: the dev framing rigs pose
+   * `camera.up` alone would leave drags precessing about the old axis. The
+   * cached axis is therefore resynced on EVERY call, even when the requested
+   * up is already in place: the dev framing rigs pose
    * the camera themselves and write `camera.up` directly without touching the
    * controls, so "already correct" up is no proof the cache agrees. Two
    * quaternion ops, and this only runs at mode transitions. A rename on a
@@ -17655,8 +17654,7 @@ export class PlanetariumMode {
    * next to the landed body — which stays at scene origin: the involved moon
    * when watching from the planet, the parent when watching your own event
    * from that moon, the sibling moon when watching another moon's event. A
-   * side nudge keeps the landed body's limb from occluding the companion;
-   * auto-rotate is stopped so the framed event doesn't drift.
+   * side nudge keeps the landed body's limb from occluding the companion.
    */
   private frameObservatoryEvent(spec?: ShadowEventSpec) {
     // Moonless systems bail on the moonMesh lookup below — no companion to frame.
@@ -17699,7 +17697,6 @@ export class PlanetariumMode {
       .multiplyScalar(moonSide ? camDist : -camDist)
       .addScaledVector(side, camDist / 5);
     this.camera.lookAt(0, 0, 0);
-    this.controls.autoRotate = false;
   }
 
   // ================================================================
@@ -17897,7 +17894,6 @@ export class PlanetariumMode {
     // must not carry ellipse axes/sectors across it.
     this.syncOrbitDetailsVisibility();
     this.preSurfaceCameraPos.copy(this.camera.position);
-    this.preSurfaceAutoRotate = this.controls.autoRotate;
     this.controls.enabled = false;
     this.surfaceLook.attach();
     this.setSurfaceLabelContainersHidden(true);
@@ -17972,7 +17968,6 @@ export class PlanetariumMode {
     document.body.classList.remove('surface-view-active');
     if (this.landedOn) {
       this.controls.enabled = true;
-      this.controls.autoRotate = this.preSurfaceAutoRotate;
       this.camera.position.copy(this.preSurfaceCameraPos);
       this.camera.lookAt(0, 0, 0);
       this.controls.target.set(0, 0, 0);
@@ -18851,18 +18846,20 @@ export class PlanetariumMode {
     // planet or moon — exactly at scene origin.
     const renderedRadiusAU = this.getLandedBodyRenderedRadiusAU();
 
+    // The landed camera never circles the body on its own: it moves only for
+    // the reader's drag, wheel or pinch, or for a scripted framing (an event
+    // jump, a vantage swap, the surface view's exit). The body still turns
+    // under it with the clock.
     this.controls.enabled = true;
     this.controls.target.set(0, 0, 0);
     this.controls.minDistance = landedMinDistanceAU(renderedRadiusAU, this.camera.near);
     this.controls.maxDistance = this.landedMaxDistanceAU(trueRadiusAU);
-    this.controls.autoRotate = true;
-    this.controls.autoRotateSpeed = 0.5;
     // The cruise pipeline is dead while landed, so this only matters for the
     // takeoff reset that reads it — a landed drag may later set 'orbit'
     // harmlessly.
     this.camOwner = 'chase';
-    // Landed framing is world-up: the orbit view, its autoRotate precession
-    // and the lit-side opening pose are all authored against celestial north.
+    // Landed framing is world-up: the orbit view's drags and the lit-side
+    // opening pose are both authored against celestial north.
     // Must precede the framing lookAt below (it reads camera.up).
     this.setCameraFrameUp(PlanetariumMode.SCENE_NORTH);
 
@@ -18979,7 +18976,6 @@ export class PlanetariumMode {
       // camera position becomes the exit restore point for the *new* body (the
       // old one was scaled to the previous body's radius).
       this.preSurfaceCameraPos.copy(this.camera.position);
-      this.preSurfaceAutoRotate = this.controls.autoRotate;
       this.controls.enabled = false;
     }
     return wasSurface;
@@ -19369,7 +19365,6 @@ export class PlanetariumMode {
 
     // Reset OrbitControls — disable on touch devices during flight
     this.controls.enabled = !this.isTouchDevice;
-    this.controls.autoRotate = false;
     this.controls.minDistance = CRUISE_CONTROLS_MIN_DISTANCE_AU;
     this.controls.maxDistance = 5;
     this.resetCruiseCamera();

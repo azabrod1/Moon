@@ -7912,7 +7912,6 @@ export class PlanetariumMode {
       if (glareMat) {
         glareMat.uniforms.uViewportHeight.value = viewportHeight;
         glareMat.uniforms.uPointLike.value = 1 - THREE.MathUtils.smoothstep(solarRadiusPx, 2, 10);
-        glareMat.uniforms.uCameraFx.value = opticalFx;
       }
 
       // One amplitude driver for the wide veil. The ISS reference stills are at
@@ -7958,13 +7957,12 @@ export class PlanetariumMode {
       );
       const veilReachGeom = veilAmplitudeResponse * hugeFade;
       const veilStrength = glareMat ? glareMat.uniforms.uVeilStrength.value : 1.4;
-      // The diffraction arms are a point-source camera artifact, so they fade as
-      // the photosphere resolves into a disc — about three-quarters strength at
-      // Earth's ~3.8 px solar radius, gone past ~8 px (Mercury sits near 10) —
-      // rather than growing with brightness. This stops them reading as
-      // ruler-straight exaggerated lines exactly where the Sun is closest.
-      const armGate = 1 - THREE.MathUtils.smoothstep(solarRadiusPx, 2, 8);
-      veilArmCoeff = 0.28 * armGate * this.devSunArmScale;
+      // The diffraction arms are a camera's signature, and the Sun here is an
+      // eye's from a window: a searing point in a soft glare. The coefficient
+      // is zero (it was 0.28, faded out as the disc resolved); the arm terms
+      // stay in the shader and the glare mask, which mirror each other, so a
+      // look round needs only this number.
+      veilArmCoeff = 0;
 
       // Size the billboard from where the wash and arms fall below the visibility
       // floor rather than from an authored amount. This upper bound (full Sun,
@@ -15347,18 +15345,6 @@ export class PlanetariumMode {
   }
 
   /** Headless-QA readback for transient Sun optics and atmospheric grazing. */
-  /** DEV: a scale on the camera's cross — the core glare's starburst and
-   *  sensor streak (uSpikeScale) and the wide veil's diffraction arms (the
-   *  authored 0.28) together — so a look round of it comes out of one page
-   *  load. */
-  private devSunArmScale = 1;
-  devSetSunArmScale(scale: number): number {
-    this.devSunArmScale = Number.isFinite(scale) ? Math.max(scale, 0) : 1;
-    const glareMat = this.solarSystem?.sun.userData.sunGlareMaterial as THREE.ShaderMaterial | undefined;
-    if (glareMat) glareMat.uniforms.uSpikeScale.value = this.devSunArmScale;
-    return this.devSunArmScale;
-  }
-
   devSunAppearance(): unknown {
     const sunMat = this.solarSystem?.sun.userData.sunMaterial as THREE.ShaderMaterial | undefined;
     const glareMat = this.solarSystem?.sun.userData.sunGlareMaterial as THREE.ShaderMaterial | undefined;
@@ -15374,7 +15360,6 @@ export class PlanetariumMode {
       atmosphereMix: this.sunAtmosphereMix,
       atmosphereColor: `#${this.sunAtmosphereColor.getHexString()}`,
       armCoeff: glareMat ? (glareMat.uniforms.uArmCoeff.value as number) : 0,
-      armScale: this.devSunArmScale,
       occluderShade: glareMat ? (glareMat.uniforms.uOccluderShade.value as number) : 0,
       occluderRadii: glareMat ? (glareMat.uniforms.uOccluderRadii.value as number) : 0,
       occluderOffsetSr: offset ? [offset.x, offset.y] : [0, 0],

@@ -1234,9 +1234,7 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       // direct camera-optics light whose source rays the nearby hull blocks.
       uShipSunVisibility: { value: 1 },
       uGlareStrength: { value: useBloom ? 1.05 : 1.35 },
-      uSpikeScale: { value: 1 },
       uPointLike: { value: 0 },
-      uCameraFx: { value: 0 },
       uEclipseLike: { value: 0 },
       uOccluderRadii: { value: 1 },
       uOccluderShade: { value: 0 },
@@ -1270,12 +1268,10 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       uVeilWarmth: { value: 0.12 },
       uVeilAmt: { value: 0 },
       uVeilHalfPx: { value: 0 },
-      // Fraction of the fading starburst kept alive once the disc is resolved,
-      // so a mid-range Sun still throws modest diffraction spikes.
-      uSpikeSustain: { value: 0.45 },
       // Veil diffraction-arm decay lengths (CSS px) and coefficient, driven
-      // per frame so the arms shrink with the veil's reach and fade as the disc
-      // resolves. The controller sizes the billboard to the same decay lengths.
+      // per frame. The controller hands a coefficient of zero (the cross is a
+      // camera's signature; the Sun here is an eye's) and sizes the billboard
+      // to the same decay lengths.
       uArmDecayPx: { value: 0 },
       uArmDecayYPx: { value: 0 },
       uArmCoeff: { value: 0 },

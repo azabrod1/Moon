@@ -69,6 +69,8 @@ import {
   setDevSurfaceHaze,
   SURFACE_HAZE_CLEAR_VIEW,
 } from './planetarium/world/surfaceShading';
+import { cloudFieldRequested } from './planetarium/world/cloudField';
+import type { CloudFieldRequest } from './planetarium/world/cloudFieldPool';
 import { parseNightExposureParam, setDevNightExposure, type NightExposureOverride } from './planetarium/world/nightExposure';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass, parseFusedParam } from './app/FusedOutputPass';
@@ -200,6 +202,12 @@ if (import.meta.env.DEV) {
     } catch (err) {
       debugWarn('Shader salt could not be installed', err);
     }
+  }
+  // The cloud field's vertical slice (world/cloudFieldPool): `?cloudtiles=1`
+  // allocates its page pool here, under the boot cover, empty. The module is
+  // loaded on demand, so neither the pool nor its worker is in any build.
+  if (cloudFieldRequested()) {
+    void import('./planetarium/world/cloudFieldPool').then((m) => m.installCloudFieldPool(renderer));
   }
 }
 
@@ -3309,6 +3317,14 @@ function installDevHooks() {
     // take the shadow and how many compile it now.
     cloudShadow: (opts?: { on?: boolean; depth?: number; air?: number; penumbra?: boolean | number }) =>
       devCloudShadow(opts),
+    // The cloud deck's 1.2 km field, the vertical slice (world/cloudFieldPool;
+    // boot with ?cloudtiles=1): `pages` loads named pages (`col_row`, row 0 the
+    // northernmost), `fade` sets a page's fade, `evict` drops pages, `diag`
+    // paints the layers (1 flat, 2 tinted), `perFrame` is levels uploaded a
+    // frame, `wait` resolves once the loads settle. Returns the pool's layers,
+    // its allocated bytes, the page table and the deck's linked samplers.
+    cloudField: async (req?: CloudFieldRequest) =>
+      (await import('./planetarium/world/cloudFieldPool')).devCloudField(renderer, scene, req),
     // The night side's exposure, live (world/nightExposure): the lit fractions
     // of the visible cap the long exposure holds at (`full`) and is gone by
     // (`none`), the ramp's two speeds in positions per second — toward the

@@ -355,7 +355,8 @@ describe('the deck\'s detail term', () => {
     // gets a wrong mip and a wrong slope wherever the quad straddles the fade.
     // The deck never compiles the ground's cloud shadow (CLOUD_SHADOW), so the
     // text read here is that define's off arm, as the deck's driver reads it.
-    const glsl = resolveDefine(compiled('cloud').shader.fragmentShader, 'CLOUD_SHADOW', false);
+    const glsl = resolveDefine(resolveDefine(compiled('cloud').shader.fragmentShader, 'CLOUD_SHADOW', false),
+      'CLOUD_LIGHT', false);
     const block = glsl.slice(glsl.indexOf('float cloudAlpha = 1.0;'), glsl.indexOf('vec4 detail = vec4(0.0);'));
     // The deck's own block only — the injection point carries other terms
     // after it, and each answers for its own derivatives.

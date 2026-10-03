@@ -43,8 +43,8 @@ import { enableCloudField } from './world/cloudFieldSlots';
 import { CLOUD_DECK_DEPTH_BIAS_UNITS } from './world/shellDepthBias';
 import { applyTextureDefaults, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
 import {
-  augmentSurfaceMaterial, nightLiftUniform, seatSurfaceAirRadius, setGroundUnderCloudDeck, setSurfaceCraterShare,
-  setSurfaceWaterGloss,
+  augmentSurfaceMaterial, nightLiftUniform, seatSurfaceAirRadius, setGroundUnderCloudDeck,
+  setPlanetariumCloudDeck, setSurfaceCraterShare, setSurfaceWaterGloss,
   type SurfaceArchetype, type SurfaceShadingFx,
 } from './world/surfaceShading';
 import { createAtmosphereShellMaterial } from './world/atmosphereShell';
@@ -1051,6 +1051,9 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     // CLOUD_SHADOW switch in world/surfaceShading): the globe here, and every
     // sector later cut from it through the fx they share.
     setGroundUnderCloudDeck(mat);
+    // ...and the deck itself can be lit as a cloud (off by default, the
+    // CLOUD_LIGHT switch): this deck, never a tool's.
+    setPlanetariumCloudDeck(cloudMat);
     // The cloud deck is its own colour map on its own shell, so it carries its
     // own handle: the globe and the clouds sharpen independently.
     const cloudsUpgrade = makeTextureUpgrade('earthClouds', cloudMat);

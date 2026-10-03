@@ -25,7 +25,17 @@ import {
   OCEAN_SPECULAR_KEEP,
   RING_SHADOW_OPACITY_GLSL,
   CLOUD_SHADOW_AIR,
+  CLOUD_SHADOW_AIR_GRAZE,
   CLOUD_SHADOW_DEPTH,
+  CLOUD_SHADOW_GAMMA,
+  CLOUD_SHADOW_HORIZON_SIN,
+  CLOUD_SHADOW_SKY_FILL,
+  CLOUD_LIGHT_SKY,
+  CLOUD_LIGHT_WRAP,
+  cloudLightOn,
+  cloudLightShared,
+  setPlanetariumCloudDeck,
+  surfaceCloudLightCompiled,
   cloudShadowShared,
   cloudShadowsOn,
   setGroundUnderCloudDeck,
@@ -34,6 +44,7 @@ import {
 import { createSectorMaterial } from './sectorMaterial';
 import { CLOUD_TOP_KM, cloudCoverageAlpha } from './cloudDeck';
 import { resolveDefine } from '../testing/glslDefine';
+import { NIGHT_WEIGHT_ZERO_SIN } from './nightSources';
 import { PLANETS } from '../planets/planetData';
 import { surfaceDetailFieldMean, surfaceDetailHeightSpan } from './surfaceDetailNoise';
 import { atmosphereParams } from './atmosphereModel';
@@ -998,18 +1009,49 @@ describe('cloud shadows on the ground (CLOUD_SHADOW, off by default)', () => {
   it('cuts the Sun\'s diffuse after the sea\'s block and the air\'s glow before the Moon\'s, and nothing else', () => {
     const { globe } = earthWithDeck();
     const on = resolveDefine(fragmentOf(globe), 'CLOUD_SHADOW', true);
-    const diffuse = on.indexOf('outgoingLight -= reflectedLight.directDiffuse * ((1.0 - cloudSunKeep) * ');
+    // The ground and the air take the cloud's SHADE, the beam's loss through
+    // the shade curve; the glint takes the beam itself.
+    const gamma = import.meta.env.DEV ? 'uCloudShadowGamma' : CLOUD_SHADOW_GAMMA.toFixed(4);
+    expect(on).toContain(`float cloudShade = pow(1.0 - cloudSunKeep, ${gamma}) * cloudShadeHorizon;`);
+    // ...faded to nothing where the Sun meets the ground's horizon, so the air
+    // the shade is taken from carries no line along the terminator.
+    expect(on).toContain(`cloudShadeHorizon = smoothstep(0.0, ${CLOUD_SHADOW_HORIZON_SIN.toFixed(6)}, shadowMu);`);
+    expect(CLOUD_SHADOW_HORIZON_SIN).toBe(NIGHT_WEIGHT_ZERO_SIN);
+    const diffuse = on.indexOf('outgoingLight -= reflectedLight.directDiffuse * (cloudShade * ');
     expect(diffuse).toBeGreaterThan(on.indexOf('outgoingLight -= glintCapped'));
     expect(diffuse).toBeLessThan(on.indexOf('float sunElevSin = dot('));
     // Before the eclipse factor, which multiplies both, and every night term.
     expect(diffuse).toBeLessThan(on.indexOf('outgoingLight *= sunVisible;'));
     expect(diffuse).toBeLessThan(on.indexOf('outgoingLight += nightLow;'));
-    const air = on.indexOf('airS *= 1.0 - (1.0 - cloudSunKeep) * ');
+    const air = on.indexOf('airS *= 1.0 - cloudShade * ');
     expect(air).toBeGreaterThan(on.indexOf('vec3 airS = aerialInscatter(uScattering, seg, airT)'));
     expect(air).toBeLessThan(on.indexOf('airS += aerialInscatter('));
     // The transmittance is the air's and is not touched.
     expect(on).not.toMatch(/airT \*=|airT = .*cloudSunKeep/);
-    expect(on.match(/cloudSunKeep\) \*/g)).toHaveLength(2);
+    // Three readers: the diffuse cut, the sky's fill, the air's take.
+    expect(on.match(/cloudShade \*/g)).toHaveLength(3);
+    expect(on).toContain('outgoingLight -= glintCapped * (1.0 - cloudSunKeep * ');
+    // The air's share fades as the view grazes, on the geometric normal and
+    // the line of sight, never the perturbed normal.
+    expect(on).toContain(`smoothstep(${CLOUD_SHADOW_AIR_GRAZE[0].toFixed(6)}, ${CLOUD_SHADOW_AIR_GRAZE[1].toFixed(6)}, `
+      + 'dot(up, normalize(vAirCam - vAirFrag)));');
+    expect(on.indexOf('vec3 up = normalize(vAirFrag);')).toBeLessThan(air);
+  });
+
+  it('shades thin cloud little and solid cloud fully, and the haze not at all where the view grazes', () => {
+    // The shade curve, as the shader applies it: a half-covered texel shades
+    // a quarter as much as a solid bank; clear sky not at all.
+    const shade = (keep: number) => (1 - keep) ** CLOUD_SHADOW_GAMMA;
+    expect(CLOUD_SHADOW_GAMMA).toBe(2);
+    expect(shade(1)).toBe(0);
+    expect(shade(0)).toBe(1);
+    expect(shade(0.5)).toBeCloseTo(0.25, 12);
+    // The grazing fade: full from 60° off the vertical, gone by 84°.
+    const [lo, hi] = CLOUD_SHADOW_AIR_GRAZE;
+    expect(Math.acos(hi) * 180 / Math.PI).toBeCloseTo(60, 6);
+    expect(Math.acos(lo) * 180 / Math.PI).toBeGreaterThan(84);
+    expect(Math.acos(lo) * 180 / Math.PI).toBeLessThan(85);
+    expect(cloudShadowShared.uCloudShadowGamma.value).toBe(CLOUD_SHADOW_GAMMA);
   });
 
   it('states its numbers once: the drawn shell, the two shares, the penumbra', () => {
@@ -1037,5 +1079,102 @@ describe('cloud shadows on the ground (CLOUD_SHADOW, off by default)', () => {
     // lands, and what a hidden deck may be pointed at, is black: no coverage,
     // the whole beam kept, no shadow.
     expect(cloudCoverageAlpha(0)).toBe(0);
+  });
+});
+
+describe('the cloud deck lit as a cloud (CLOUD_LIGHT, off by default)', () => {
+  function fragmentOf(mat: THREE.Material): string {
+    const shader = {
+      uniforms: {} as Record<string, unknown>,
+      vertexShader: '#include <common>\n#include <begin_vertex>\n',
+      fragmentShader: '#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>\n'
+        + '#include <normal_fragment_maps>\n#include <opaque_fragment>\n',
+    };
+    (mat.onBeforeCompile as (s: typeof shader, r: unknown) => void)(shader, null);
+    return shader.fragmentShader;
+  }
+  function earthWithDeck() {
+    const globe = new THREE.MeshStandardMaterial();
+    const fx = augmentSurfaceMaterial(globe, 'earth', undefined, 0.00465, undefined, undefined, 'Earth');
+    const deck = new THREE.MeshStandardMaterial({ transparent: true });
+    augmentSurfaceMaterial(deck, 'cloud', undefined, 0.00465, fx);
+    setGroundUnderCloudDeck(globe);
+    setPlanetariumCloudDeck(deck);
+    setPlanetariumCloudDeck(globe);
+    return { globe, deck };
+  }
+
+  it('is off unless asked for, and compiles into the planetarium\'s deck alone', () => {
+    expect(cloudLightOn()).toBe(false);
+    const { globe, deck } = earthWithDeck();
+    expect(surfaceCloudLightCompiled(deck)).toBe(false);
+    // A tool's deck (Look inside builds its own) is never registered.
+    const studioDeck = new THREE.MeshStandardMaterial({ transparent: true });
+    augmentSurfaceMaterial(studioDeck, 'cloud');
+    if (!import.meta.env.DEV) return;
+    setPerfSwitch('cloud-light', true);
+    try {
+      expect(surfaceCloudLightCompiled(deck)).toBe(true);
+      expect(surfaceCloudLightCompiled(globe)).toBe(false);
+      expect(surfaceCloudLightCompiled(studioDeck)).toBe(false);
+      // And it is not the shadow's switch: the ground under it is untouched.
+      expect(surfaceCloudShadowCompiled(globe)).toBe(false);
+    } finally {
+      setPerfSwitch('cloud-light', false);
+    }
+    expect(surfaceCloudLightCompiled(deck)).toBe(false);
+  });
+
+  it('mixes the Sun\'s diffuse toward the shell\'s own normal through three\'s own lights, and adds the sky by day', () => {
+    const { deck } = earthWithDeck();
+    const on = resolveDefine(fragmentOf(deck), 'CLOUD_LIGHT', true);
+    const block = on.slice(on.indexOf('vec3 cloudGeoIrradiance = vec3(0.0);'), on.indexOf('float sunElevSin = dot('));
+    expect(block.length).toBeGreaterThan(0);
+    // Every point and directional light the program was built with, read as
+    // three reads them, on the unperturbed normal.
+    expect(block).toContain('for ( int i = 0; i < NUM_POINT_LIGHTS; i ++ ) {');
+    expect(block).toContain('getPointLightInfo( pointLights[ i ], geometryPosition, cloudLight );');
+    expect(block).toContain('for ( int i = 0; i < NUM_DIR_LIGHTS; i ++ ) {');
+    expect(block.match(/saturate\( dot\( nonPerturbedNormal, cloudLight\.direction \) \)/g)).toHaveLength(2);
+    expect(block).not.toMatch(/pointLights\[ ?0 ?\]/);
+    const wrap = import.meta.env.DEV ? 'uCloudLightWrap' : CLOUD_LIGHT_WRAP.toFixed(4);
+    const sky = import.meta.env.DEV ? 'uCloudLightSky' : CLOUD_LIGHT_SKY.toFixed(4);
+    expect(block).toContain(`outgoingLight += ${wrap}\n`
+      + '        * (cloudGeoIrradiance * BRDF_Lambert( material.diffuseContribution ) - reflectedLight.directDiffuse);');
+    // The sky by day, only with tables, joined to the night ambient along the
+    // night weight's complement.
+    expect(block).toContain('if (uAirDensity > 0.0) {');
+    expect(block).toContain(`* (${sky} * (1.0 - nightWeight(skyMuS)));`);
+    expect(block).toContain('getIrradiance(uIrradiance, skyR, skyMuS) * uAirlightScale * uSolarIrradiance');
+    // Light only: nothing here touches the alpha, which is the deck's coverage.
+    expect(block).not.toMatch(/\.a\s*[*+-]?=|gl_FragColor/);
+    // No derivative: the block sits past the deck's clear-sky return.
+    expect(block).not.toMatch(/dFd[xy]\(|fwidth\(/);
+    expect(on.indexOf('vec3 cloudGeoIrradiance')).toBeGreaterThan(on.indexOf('cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }'));
+    // Before the eclipse factor, so a moon's umbra dims it too, and the air.
+    expect(on.indexOf('vec3 cloudGeoIrradiance')).toBeLessThan(on.indexOf('outgoingLight *= sunVisible;'));
+  });
+
+  it('states its numbers once', () => {
+    expect(CLOUD_LIGHT_WRAP).toBe(0.4);
+    expect(CLOUD_LIGHT_SKY).toBe(1.0);
+    expect(cloudLightShared.uCloudLightWrap.value).toBe(CLOUD_LIGHT_WRAP);
+    expect(cloudLightShared.uCloudLightSky.value).toBe(CLOUD_LIGHT_SKY);
+    expect(cloudShadowShared.uCloudShadowSkyFill.value).toBe(CLOUD_SHADOW_SKY_FILL);
+  });
+
+  it('fills the ground under a shade with the sky\'s own light, only with tables, joined to the night ambient', () => {
+    const { globe } = earthWithDeck();
+    const on = resolveDefine(fragmentOf(globe), 'CLOUD_SHADOW', true);
+    const fill = import.meta.env.DEV ? 'uCloudShadowSkyFill' : CLOUD_SHADOW_SKY_FILL.toFixed(4);
+    expect(on).toContain(`if (${import.meta.env.DEV ? 'uCloudShadowSkyFill > 0.0 && ' : ''}uAirDensity > 0.0) {`);
+    expect(on).toContain(`* (cloudShade * ${fill} * (1.0 - nightWeight(fillMuS)));`);
+    // After the diffuse cut that makes the shade, before the eclipse factor.
+    const at = on.indexOf('float fillMuS');
+    expect(at).toBeGreaterThan(on.indexOf('float cloudShade = pow('));
+    expect(at).toBeLessThan(on.indexOf('outgoingLight *= sunVisible;'));
+    expect(CLOUD_SHADOW_SKY_FILL).toBe(1);
+    // Not on the deck, which never compiles the shadow.
+    expect(resolveDefine(fragmentOf(globe), 'CLOUD_SHADOW', false)).not.toContain('fillMuS');
   });
 });

@@ -1876,8 +1876,9 @@ ${import.meta.env.DEV ? 'uniform float uCloudShadowDepth;\nuniform float uCloudS
 
 /**
  * The cloud deck's 1.2 km field (world/cloudField), compiled only with
- * CLOUD_FIELD, which only the planetarium's deck carries and only in a session
- * that has the field (world/cloudFieldSlots). Every line is a whole line inside
+ * CLOUD_FIELD, which only the planetarium's deck (and the warm-up probe that
+ * stands in for it) carries, and only in a session that has the field
+ * (world/cloudFieldSlots). Every line is a whole line inside
  * its conditional, so a program without the define is, after the
  * preprocessor, the program it was but for the blank line each chunk opens
  * with; a development build adds the field's diagnostics inside the same
@@ -3059,8 +3060,9 @@ export function augmentSurfaceMaterial(
       shader.uniforms.uCloudShadowSkyFill = cloudShadowShared.uCloudShadowSkyFill;
     }
     for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];
-    // The cloud field's slots (world/cloudFieldSlots), on the one material that
-    // compiles it: the planetarium's deck, in a session that has the field.
+    // The cloud field's slots (world/cloudFieldSlots), on the materials that
+    // compile it: the planetarium's deck and its warm-up probe, in a session
+    // that has the field.
     if (mat.defines?.CLOUD_FIELD !== undefined) {
       const field = cloudFieldUniforms();
       shader.uniforms.uCloudPages = field.uCloudPages;

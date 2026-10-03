@@ -11,7 +11,11 @@ import {
   CLOUD_PAGE_GUTTER,
   CLOUD_PAGE_LEVELS,
   CLOUD_PAGE_SIZE,
+  CLOUD_FIELD_SAFETY_TEXELS,
+  CLOUD_TABLE_CLEAR,
+  CLOUD_TABLE_SEE_PARENT,
   cloudFieldGlsl,
+  cloudTableCode,
   cloudFieldGuard,
   cloudFieldPoolBytes,
   cloudFieldRequested,
@@ -286,6 +290,37 @@ describe('the field\'s GLSL', () => {
     // Every page read is explicit: texelFetch, textureGrad or textureLod.
     expect(glsl).not.toMatch(/\btexture\(|texture2D\(/);
     expect(glsl.match(/textureGrad\(uCloudPages/g)).toHaveLength(1);
+  });
+
+  it('tests the reserved table codes before it forms a layer, and draws the base for both', () => {
+    // 254 (see the parent level) and 255 (known clear) are not layers 253 and
+    // 254: the code test comes first, and both return the base's weight of 0.
+    const codeTest = glsl.indexOf('if (code == 0 || code >= 254) return vec2(0.0);');
+    const layerFormed = glsl.indexOf('layer = float(code - 1);');
+    expect(codeTest).toBeGreaterThan(-1);
+    expect(layerFormed).toBeGreaterThan(codeTest);
+    expect(glsl).not.toContain('entry.r * 255.0 + 0.5) - 1.0');
+    // A neighbour holding a reserved code meets its edges at a fade of 0.
+    expect(glsl).toContain('return code > 0 && code < 254 ? e.g : 0.0;');
+    expect(cloudTableCode(0)).toEqual({ kind: 'absent' });
+    expect(cloudTableCode(1)).toEqual({ kind: 'layer', layer: 0 });
+    expect(cloudTableCode(253)).toEqual({ kind: 'layer', layer: 252 });
+    expect(cloudTableCode(CLOUD_TABLE_SEE_PARENT)).toEqual({ kind: 'parent' });
+    expect(cloudTableCode(CLOUD_TABLE_CLEAR)).toEqual({ kind: 'clear' });
+  });
+
+  it('takes the true major axis, scaled into tile-ratio pixels, with the safety term on the real one', () => {
+    expect(glsl).toContain('uniform float uCloudFieldPixelScale;');
+    expect(glsl).toContain('float spread = sqrt(max(0.25 * (aa - bb) * (aa - bb) + ab * ab, 0.0));');
+    expect(glsl).toContain('return majorScene * uCloudFieldPixelScale;');
+    expect(glsl).toContain(`smoothstep(${CLOUD_FIELD_SAFETY_TEXELS[0].toFixed(6)}, ${CLOUD_FIELD_SAFETY_TEXELS[1].toFixed(6)}, majorScene)`);
+    // The column-norm reading is gone.
+    expect(glsl).not.toContain('max(length(lDx), length(lDy))');
+  });
+
+  it('skips the filtered fetch where the smooth filter has the whole weight', () => {
+    expect(glsl).toContain('if (smoothW < 1.0) fine = textureGrad(uCloudPages, vec3(local, layer), lDx, lDy).rg;');
+    expect(glsl).toContain('fine = smoothW >= 1.0 ? smoothed : mix(fine, smoothed, smoothW);');
   });
 
   it('reads two-component gradients for the array, the layer being no axis', () => {

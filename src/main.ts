@@ -64,6 +64,8 @@ import {
 } from './app/bloomTargets';
 import {
   applyNightLift,
+  devCloudLight,
+  devCloudShadow,
   devGlintUniforms,
   nightLiftUniform,
   setDevOceanRoughness,
@@ -3510,6 +3512,24 @@ function installDevHooks() {
       clear: setDevSurfaceHaze(opts?.clear),
       authored: SURFACE_HAZE_CLEAR_VIEW,
     }),
+    // Cloud shadows on the ground under Earth's deck (world/surfaceShading,
+    // off by default): `on` moves the switch and relinks the globe and its
+    // sectors; `depth` (the share of the Sun's diffuse a full cloud takes),
+    // `air` (the share of the air's glow under it), `penumbra` (the solar
+    // disc's soft edge, true/false or a scale) and `gamma` (the shade curve:
+    // the ground takes (1 - beam)^gamma) are uniforms from the next frame.
+    // Returns the values in force, with how many ground materials can take
+    // the shadow and how many compile it now.
+    cloudShadow: (opts?: { on?: boolean; depth?: number; air?: number; penumbra?: boolean | number; gamma?: number }) =>
+      devCloudShadow(opts),
+    // The cloud deck lit as a cloud (world/surfaceShading, off by default):
+    // `on` moves the switch and relinks the deck; `wrap` (the share of its
+    // direct diffuse taken on the shell's own normal), `sky` (the sky's
+    // irradiance on it, as a multiple of the table's) and `groundFill` (the
+    // sky's irradiance on the ground in proportion to a cloud's shade, read
+    // only where the shadows are compiled) are uniforms from the next frame.
+    cloudLight: (opts?: { on?: boolean; wrap?: number; sky?: number; groundFill?: number }) =>
+      devCloudLight(opts),
     // The night side's exposure, live (world/nightExposure): the lit fractions
     // of the visible cap the long exposure holds at (`full`) and is gone by
     // (`none`), the ramp's two speeds in positions per second — toward the

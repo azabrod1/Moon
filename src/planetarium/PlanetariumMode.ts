@@ -20193,6 +20193,9 @@ export class PlanetariumMode {
         // clouds at a longitude of its own.
         const cloudArgs = surfaceShadingArgsOf(planet.cloudsMesh.material as THREE.Material);
         if (cloudArgs) cloudArgs.uFrameSpin.value = cloudDrift;
+        // The ground's cloud shadows, when compiled, only while the deck that
+        // casts them is drawn: the range gate and the DEV role switch hide it.
+        if (planet.fx) planet.fx.uCloudAbove.value = planet.cloudsMesh.visible ? 1 : 0;
         // The same drift, and whichever rung the deck is currently wearing, for
         // the ocean's glint under it: the globe and its sectors read the deck's
         // map to cut the Sun's beam where cloud stands over the sea, and the map

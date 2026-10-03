@@ -442,6 +442,14 @@ const EXPECTED_SWITCHES: Record<string, { off: string; on: string; needsReload?:
   'cloud-probe-detail': { off: 'Deck detail term back', on: 'Deck detail term off', exact: false },
   'cloud-probe-relief': { off: 'Deck relief map back', on: 'Deck relief map off', exact: false },
   'cloud-probe-air': { off: 'Deck air back', on: 'Deck air off', exact: false },
+  // The visual keys: a fix that changes the picture on purpose, whose OFF arm
+  // is only the control a capture of it is held against. Priced like any row,
+  // never exact, never in the combined row.
+  'cloud-noise-frame': { off: 'Cloud noise anchored to the sky again', on: 'Cloud noise anchored to the sheet', exact: false },
+  // A feature that is off until it has been judged: a compile-time define, so
+  // a flip relinks the ground's program and the sweep never holds it.
+  'cloud-shadow': { off: 'Cloud shadows off', on: 'Cloud shadows on', needsReload: true, exact: false },
+  'cloud-light': { off: 'Cloud light off', on: 'Cloud light on', needsReload: true, exact: false },
 };
 
 /**

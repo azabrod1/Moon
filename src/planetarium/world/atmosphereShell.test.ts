@@ -180,6 +180,7 @@ describe('the LUT shell material', () => {
       uPlanetshineIntensity: { value: 0 },
       uSilhouette: { value: 0 },
       uNightLift: { value: 0 },
+      uCloudAbove: { value: 0 },
       air: createSurfaceAirFx(),
     };
     const mat = createAtmosphereShellMaterial({

@@ -86,17 +86,22 @@ const settle = Number(arg('settle', look ? '7000' : '2500'));
 const bootTimeout = Number(arg('boot', '240000'));
 const useGpu = !flag('software');
 
-// The app's own numbers (PlanetFactory, world/seaWind, world/surfaceShading),
-// stated here so the reference is independent of the module graph.
-const SUN_LIGHT_INTENSITY = 3;
+// The app's own numbers (world/seaWind, world/surfaceShading), stated here so
+// the reference is independent of the module graph. The Sun's light and the
+// sea's cap, knee and cap are READ from the running app at boot (the DEV
+// bridge's sunLight() and glint()), because they moved once already — the
+// cream Sun at 3 became a neutral one at the 1.4 baseline — and a reference
+// carrying the old numbers would have graded the app against a Sun it no
+// longer has. These are the fallbacks if the bridge has no answer.
+let SUN_LIGHT_INTENSITY = 3.8616;
 const SUN_LIGHT_DECAY = 0.3;
-const SUN_LIGHT_COLOR = 0xfff5e0;
+let SUN_LIGHT_COLOR = 0xffffff;
 const COX_MUNK_SLOPE_CALM = 0.003;
 const COX_MUNK_SLOPE_PER_MS = 0.00512;
 const SEA_WIND_MAX_MS = 16;
 const SEA_WATER_IOR = 1.33;
 const SEA_WATER_F0 = ((SEA_WATER_IOR - 1) / (SEA_WATER_IOR + 1)) ** 2;
-const OCEAN_GLINT_CAP = 1.25;
+let OCEAN_GLINT_CAP = 1.75;
 const LIMB_DARKENING_EARTH = 0.3;
 const AU_KM = 149_597_870.7;
 const LUMA = [0.2126, 0.7152, 0.0722];
@@ -344,6 +349,15 @@ try {
   const glintState = await page.evaluate(() => window.__moon.glint());
   chain.seaBeam = glintState.seaBeam !== false;
   chain.sunPath = glintState.sunPath !== false;
+  // The Sun and the sea's cap as the app has them tonight, so the reference
+  // grades the app against its own light and not a remembered one.
+  const sunState = await page.evaluate(() => (typeof window.__moon.sunLight === 'function' ? window.__moon.sunLight() : null));
+  if (sunState && Number.isFinite(sunState.intensity)) {
+    SUN_LIGHT_INTENSITY = sunState.intensity;
+    SUN_LIGHT_COLOR = parseInt(String(sunState.color).replace('#', ''), 16);
+  }
+  if (Number.isFinite(glintState.cap)) OCEAN_GLINT_CAP = glintState.cap;
+  console.log(`[glint-probe] the app's Sun: ${sunState ? `${sunState.color} at ${sunState.intensity.toFixed(4)} (luminance ${sunState.luminance.toFixed(4)})` : 'unread, using the fallbacks'}; glint cap ${OCEAN_GLINT_CAP}`);
   console.log(`[glint-probe] sea maps: ${glintState.map}; ground air: ${airOn ? 'on' : 'NOT on (tables never landed)'}; chain: ${chain.seaBeam ? 'beam' : 'old'}, Sun path ${chain.sunPath ? 'on' : 'off'}`);
   report.seaMaps = glintState.map;
   report.airTables = airOn;

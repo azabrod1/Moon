@@ -77,6 +77,8 @@ import {
   beamUniforms, parseSeaBeamParam, parseSunPathParam, setSeaBeamEnabled, setSunPathEnabled,
   surfaceShadingArgsOf,
 } from './planetarium/world/surfaceShading';
+import { cloudFieldRequested } from './planetarium/world/cloudField';
+import type { CloudFieldRequest } from './planetarium/world/cloudFieldPool';
 import { SUN_LIGHT_COLOR, SUN_LIGHT_INTENSITY } from './planetarium/PlanetFactory';
 import { AIRLIGHT_SCALE } from './planetarium/world/atmosphereModel';
 import { parseNightExposureParam, setDevNightExposure, type NightExposureOverride } from './planetarium/world/nightExposure';
@@ -215,6 +217,12 @@ if (import.meta.env.DEV) {
     } catch (err) {
       debugWarn('Shader salt could not be installed', err);
     }
+  }
+  // The cloud field's vertical slice (world/cloudFieldPool): `?cloudtiles=1`
+  // allocates its page pool here, under the boot cover, empty. The module is
+  // loaded on demand, so neither the pool nor its worker is in any build.
+  if (cloudFieldRequested()) {
+    void import('./planetarium/world/cloudFieldPool').then((m) => m.installCloudFieldPool(renderer));
   }
 }
 
@@ -3577,6 +3585,14 @@ function installDevHooks() {
     // the shadow and how many compile it now.
     cloudShadow: (opts?: { on?: boolean; depth?: number; air?: number; penumbra?: boolean | number; gamma?: number }) =>
       devCloudShadow(opts),
+    // The cloud deck's 1.2 km field, the vertical slice (world/cloudFieldPool;
+    // boot with ?cloudtiles=1): `pages` loads named pages (`col_row`, row 0 the
+    // northernmost), `fade` sets a page's fade, `evict` drops pages, `diag`
+    // paints the layers (1 flat, 2 tinted), `perFrame` is levels uploaded a
+    // frame, `wait` resolves once the loads settle. Returns the pool's layers,
+    // its allocated bytes, the page table and the deck's linked samplers.
+    cloudField: async (req?: CloudFieldRequest) =>
+      (await import('./planetarium/world/cloudFieldPool')).devCloudField(renderer, scene, req),
     // The cloud deck lit as a cloud (world/surfaceShading, off by default):
     // `on` moves the switch and relinks the deck; `wrap` (the share of its
     // direct diffuse taken on the shell's own normal), `sky` (the sky's

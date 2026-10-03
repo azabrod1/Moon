@@ -1090,7 +1090,12 @@ describe('the GPU-efficiency switches', () => {
           + '#include <normal_fragment_maps>\n#include <opaque_fragment>\n',
       };
       (mat.onBeforeCompile as (s: typeof shader, r: unknown) => void)(shader, null);
-      const declared = [...(shader.vertexShader + shader.fragmentShader).matchAll(/uniform\s+\w+\s+(\w+)\s*;/g)]
+      // The text the driver compiles for a default material: the cloud
+      // defines off, so a knob declared only under one of them (bound only
+      // where the define is on) is not read as a declaration here.
+      const compiled = ['CLOUD_FIELD', 'CLOUD_SHADOW', 'CLOUD_LIGHT']
+        .reduce((text, name) => resolveDefine(text, name, false), shader.vertexShader + shader.fragmentShader);
+      const declared = [...compiled.matchAll(/uniform\s+\w+\s+(\w+)\s*;/g)]
         .map((match) => match[1]);
       expect(declared.length).toBeGreaterThan(20);
       const unbound = [...new Set(declared)].filter((name) => !(name in shader.uniforms));

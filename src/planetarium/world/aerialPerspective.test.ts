@@ -105,13 +105,17 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '9d97ee0131a98b52f1e64dafc2fb6de1d8eb687b955d953b92fa5df53e44d897';
-const PROD_FRAGMENT_HASH = '47544a6bdbde22b34e953efaa53d1c6ad1a121427560100d86a665bc6f29debc';
+const DEV_FRAGMENT_HASH = 'e7f753ecc0c7dd60fca0881f4e1c6a4e7426fe03827512db87c21d2d8c1c9c87';
+/** The development text with the cloud field's define OFF (world/cloudField,
+ *  DEV only), resolved as the preprocessor resolves it: the development text
+ *  from before the field existed. A production build carries none of it. */
+const FIELD_OFF_DEV_FRAGMENT_HASH = '1909d8ec5d92a6c6ef0281309bd7f81b944bbbf51fec2ed883db6e6b7b4e6e05';
+const PROD_FRAGMENT_HASH = '79aeba487be04cf8efbd80116b645f0fbf3914a497cbdf21553cc5eae7dd8b65';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 /** The same two texts with the cloud shadow's define OFF, resolved as the
  *  preprocessor resolves it: the texts from before the switch existed. */
-const OFF_DEV_FRAGMENT_HASH = '655a470c89a9bdf8553168fa049c09e5a07cda23f1664dd29b443c21e6ec86af';
-const OFF_PROD_FRAGMENT_HASH = 'c5449051d6166187b9cfa91889dbd983fa0838475fe2462dbc7f97a0e2935d70';
+const OFF_DEV_FRAGMENT_HASH = '4cdcd7551eb809ad3369c9ce66a68655e1520a76491bf82aa70528972f15bdc4';
+const OFF_PROD_FRAGMENT_HASH = 'da02e861036df775ef39e8b197fc14d9ad9cd13af5f58fb212beb18559437538';
 
 describe('the injected surface shader', () => {
   it('is one text for every body and both tiers', () => {
@@ -171,12 +175,34 @@ describe('the injected surface shader', () => {
     // same text — the zero-pixel claim by construction, which the pixel gate
     // then checks.
     const shader = compile(augmented('earth'));
-    const off = resolveDefine(resolveDefine(shader.fragmentShader, 'CLOUD_SHADOW', false), 'CLOUD_LIGHT', false);
-    expect(off).not.toMatch(/CLOUD_SHADOW|CLOUD_LIGHT/);
+    // The cloud field's define is resolved off too: it is development text on
+    // the deck alone, off by default (world/cloudField).
+    const off = resolveDefine(resolveDefine(resolveDefine(shader.fragmentShader, 'CLOUD_FIELD', false),
+      'CLOUD_SHADOW', false), 'CLOUD_LIGHT', false);
+    expect(off).not.toMatch(/CLOUD_SHADOW|CLOUD_LIGHT|CLOUD_FIELD/);
     expect(compile(augmented('cloud')).fragmentShader).toBe(shader.fragmentShader);
     expect(hash(off)).toBe(import.meta.env.DEV ? OFF_DEV_FRAGMENT_HASH : OFF_PROD_FRAGMENT_HASH);
     // And the vertex stage never had any of it.
     expect(shader.vertexShader).not.toContain('CLOUD_SHADOW');
+  });
+
+  it('is the text it was with the cloud field\'s define off, after the preprocessor', () => {
+    // CLOUD_FIELD (world/cloudField, the 1.2 km field's vertical slice) is a
+    // compile-time define on the deck alone, on the dev server alone, off by
+    // default. Every line it adds is a whole line inside its own conditional,
+    // so with it off a development program is the development program from
+    // before the field existed, character for character; a production build
+    // carries none of the text at all.
+    for (const archetype of ['earth', 'cloud'] as SurfaceArchetype[]) {
+      const shader = compile(augmented(archetype));
+      const off = resolveDefine(shader.fragmentShader, 'CLOUD_FIELD', false);
+      expect(off).not.toMatch(/CLOUD_FIELD|cloudField|uCloudPage/);
+      expect(hash(off), archetype).toBe(import.meta.env.DEV ? FIELD_OFF_DEV_FRAGMENT_HASH : PROD_FRAGMENT_HASH);
+      if (!import.meta.env.DEV) expect(shader.fragmentShader).toBe(off);
+      expect(shader.vertexShader).not.toContain('CLOUD_FIELD');
+    }
+    // ...and no material carries the define unless the dev switch asked for it.
+    expect(augmented('cloud').defines?.CLOUD_FIELD).toBeUndefined();
   });
 
   it('folds to the production text by deleting the switch guards, and nothing else', () => {
@@ -190,7 +216,9 @@ describe('the injected surface shader', () => {
     // A guard written in any other shape, or a cheap path that is not its
     // switch-ON reading, moves one of the two hashes and not the other.
     const shader = compile(augmented('earth'));
-    const folded = shader.fragmentShader
+    // The cloud field is development-only text with no production reading:
+    // the shipped text is the text with its define resolved off.
+    const folded = resolveDefine(shader.fragmentShader, 'CLOUD_FIELD', false)
       .replace('uniform float uPerfCloudTaps;\nuniform float uPerfCloudClear;\nuniform float uPerfGlintGate;'
         + '\nuniform float uPerfCloudNoiseFrame;'
         + '\nuniform float uProbeCloudSmooth;\nuniform float uProbeCloudDetail;'

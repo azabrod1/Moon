@@ -164,6 +164,8 @@ import {
   CLOUD_DETAIL_UV_PER_RADIAN,
   cloudDetailTexture,
 } from './cloudDetailNoise';
+import { CLOUD_FIELD_MIX_GLSL, cloudFieldGlsl } from './cloudField';
+import { cloudFieldUniforms } from './cloudFieldSlots';
 import { MOON_UP_GLSL, NIGHT_WEIGHT_GLSL, NIGHT_WEIGHT_ZERO_SIN, SUN_DOWN_GLSL } from './nightSources';
 import { gpuSeed } from './proceduralMoon';
 import { SURFACE_TEXEL_FADE } from './surfaceDensity';
@@ -1947,7 +1949,8 @@ float seaBeckmannG1(float cosTheta, float alpha) {
 }
 float seaBeckmannVis(float alpha, float dotNL, float dotNV) {
   return seaBeckmannG1(dotNL, alpha) * seaBeckmannG1(dotNV, alpha) / max(4.0 * dotNL * dotNV, 1e-6);
-}`;
+}
+`;
 
 /**
  * Cloud shadows' declarations, compiled only with CLOUD_SHADOW (see the switch
@@ -1960,6 +1963,19 @@ uniform float uCloudAbove;
 uniform float uCloudHeightOverRadius;
 ${import.meta.env.DEV ? 'uniform float uCloudShadowDepth;\nuniform float uCloudShadowAir;\nuniform float uCloudShadowPenumbra;\nuniform float uCloudShadowGamma;\nuniform float uCloudShadowSkyFill;\n' : ''}#endif
 `;
+
+/**
+ * The cloud deck's 1.2 km field (world/cloudField: the vertical slice), compiled
+ * only with CLOUD_FIELD, which only the deck's material carries and only on the
+ * development server with `?cloudtiles=1`. A production build has none of the
+ * text; a development program without the define is, after the preprocessor,
+ * the program it was — every line is a whole line inside its conditional
+ * (aerialPerspective.test.ts pins both).
+ */
+const CLOUD_FIELD_DECLS = import.meta.env.DEV ? cloudFieldGlsl(SMOOTH_TEXEL_FADE) : '';
+const CLOUD_FIELD_MIX = import.meta.env.DEV
+  ? CLOUD_FIELD_MIX_GLSL(`vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')})`)
+  : '';
 
 /** The cloud light's knobs, declared only in a development build and only in a
  *  program compiled with CLOUD_LIGHT; a production build reads constants. */
@@ -2022,7 +2038,7 @@ varying vec3 vObjPos;
 varying vec3 vPlanetshineViewDir;
 varying vec3 vAirCam;
 varying vec3 vAirFrag;
-${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}${CLOUD_DETAIL_GLSL}${SPHERE_EQUIRECT_UV_GLSL}${SMOOTH_TEXEL_GLSL}${SURFACE_DETAIL_GLSL}${SEA_LOBE_GLSL}`;
+${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}${CLOUD_DETAIL_GLSL}${SPHERE_EQUIRECT_UV_GLSL}${SMOOTH_TEXEL_GLSL}${SURFACE_DETAIL_GLSL}${SEA_LOBE_GLSL}${CLOUD_FIELD_DECLS}`;
 
 /**
  * three's <normal_fragment_maps>, with the tangent-space branch taken over.
@@ -2147,7 +2163,7 @@ ${NOISE_FRAME_OFF_ARM}  float cosLat = max(sqrt(dir.x * dir.x + dir.z * dir.z), 
   diffuseColor.rgb = min(
       diffuseColor.rgb * pow(uCloudAlbedo / max(cloudLum, 0.001), ${CLOUD_ALBEDO_BLEND.toFixed(6)}),
       vec3(1.0));
-  if (cloudDetailW > 0.0) {
+${CLOUD_FIELD_MIX}  if (cloudDetailW > 0.0) {
     // The packed gradient back into a real slope: field per tile of uv, times
     // the height that field's range stands for. The height is stated against
     // the body's own radius, so it is kilometres of cloud top and not a number
@@ -3374,6 +3390,14 @@ export function augmentSurfaceMaterial(
       shader.uniforms.uCloudShadowSkyFill = cloudShadowShared.uCloudShadowSkyFill;
     }
     for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];
+    // The cloud field's slots (world/cloudFieldSlots), on the one material that
+    // compiles it: the deck, on the dev server with ?cloudtiles=1.
+    if (import.meta.env.DEV && mat.defines?.CLOUD_FIELD !== undefined) {
+      const field = cloudFieldUniforms();
+      shader.uniforms.uCloudPages = field.uCloudPages;
+      shader.uniforms.uCloudPageTable = field.uCloudPageTable;
+      shader.uniforms.uCloudFieldDiag = field.uCloudFieldDiag;
+    }
 
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>${SURFACE_VERTEX_DECLS}`)

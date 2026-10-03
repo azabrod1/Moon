@@ -265,9 +265,11 @@ describe('the field\'s GLSL', () => {
 
   it('is all inside its define, so a program without it is the program it was', () => {
     for (const text of [glsl, mix]) {
-      expect(text.startsWith('#ifdef CLOUD_FIELD\n')).toBe(true);
+      // Its own newline first, so the directive starts a line wherever the
+      // chunk is spliced; off, it leaves that one blank line behind.
+      expect(text.startsWith('\n#ifdef CLOUD_FIELD\n')).toBe(true);
       expect(text.endsWith('#endif\n')).toBe(true);
-      expect(resolveDefine(`a\n${text}b`, 'CLOUD_FIELD', false)).toBe('a\nb');
+      expect(resolveDefine(`a}${text}b`, 'CLOUD_FIELD', false)).toBe('a}\nb');
     }
   });
 

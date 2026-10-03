@@ -13,6 +13,7 @@ npm run gen:maps   # Regenerate derived texture maps (runs in headless Chromium)
 npm run gen:ktx2   # Regenerate the GPU-compressed colour rungs — 23 jobs, 9 UASTC (planets + Earth) and 14 ETC1S (the photo moons); run BY NAME, not --all (bundled basisu; a shipped webp, sharp, or a gen:moonmaps intermediate per job)
 npm run gen:tiles -- <job|--all> [--verify | --grey]   # Re-cut sector tile sets + rewrite sectorSets.generated.ts (needs `npm i --no-save sharp@0.35.4`); --grey only checks the one-channel mask sets are grey texel for texel
 npm run publish:tiles -- --root=<tiles root> --repo=<tiles repo checkout>  # Copy verified sets into the tiles repo (never pushes)
+npm run gen:cloudmaster [-- --dry-run | --pictures-only]   # Assemble NASA's 21600 cloud hemispheres into the 43200x21600 cloud master (.moon-data-cache/levels/earth-clouds.v2.43200x21600.r8 + .json report) with NASA's infrared polar layer and the shipped sheet's grade, plus a page of side-by-side pictures (needs `npm i --no-save sharp@0.35.4`; cuts no tiles or rungs)
 ```
 
 **Run `npm run build` and `npm test` after every change.** There is no linter; the strict tsconfig (`noUnusedLocals`/`noUnusedParameters`) is what catches refactor leftovers. CI runs the same then deploys Pages on push to `main`. `planning/` is gitignored local scratch — never commit it; stage by explicit path, never `git add -A`.

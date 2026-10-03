@@ -283,6 +283,27 @@ describe('a page arriving', () => {
     expect(w.residency.uploadStep(500)).toBe(true);
     expect(w.residency.uploadWaitMs(600)).toBe(100);
   });
+
+  it('says whether a step would run, so the caller gives the frame\'s turn only to one that will', async () => {
+    const w = new World(6);
+    expect(w.residency.uploadReady()).toBe(false);
+    w.demand.set(7, 1);
+    w.step(0);
+    expect(w.residency.uploadReady()).toBe(false); // still loading
+    await w.resolve(7);
+    w.step(16, { upload: false });
+    expect(w.residency.uploadReady()).toBe(true);
+    expect(w.residency.uploadStep(16)).toBe(true);
+    // One step a frame: the next waits for the next update.
+    expect(w.residency.uploadReady()).toBe(false);
+    w.step(32, { upload: false });
+    expect(w.residency.uploadReady()).toBe(true);
+    // Never under the veil.
+    w.frame.veil = true;
+    w.step(48, { upload: false });
+    expect(w.residency.uploadReady()).toBe(false);
+    expect(w.residency.uploadStep(48)).toBe(false);
+  });
 });
 
 describe('eviction', () => {
@@ -585,6 +606,24 @@ describe('suspends', () => {
     w.residency.contextRestored();
     w.step(t + 2016);
     expect(w.loads.length).toBe(3);
+  });
+
+  it('clears every entry and layer on demand and goes straight on streaming, its wants still known', async () => {
+    const w = new World(2);
+    w.demand.set(1, 2);
+    const t = await makeResident(w, 1, 0);
+    expect(w.residency.isWanted(1)).toBe(true);
+    expect(w.residency.isWanted(2)).toBe(false);
+    w.demand.set(2, 1);
+    w.step(t);
+    w.residency.clear();
+    expect(w.loads.at(-1)!.signal.aborted).toBe(true);
+    expect(w.resident()).toEqual([]);
+    expect(w.residency.stats()).toMatchObject({ resident: 0, freeLayers: 2, pipe: 'idle' });
+    expect(w.residency.isWanted(2)).toBe(true);
+    // Not a lost context: the next frame admits again.
+    w.step(t + 16);
+    expect(w.residency.stats().pipe).toBe('loading');
   });
 });
 

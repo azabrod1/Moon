@@ -317,6 +317,12 @@ export class CloudFieldResidency<D> {
     return true;
   }
 
+  /** Whether `uploadStep` would run a step now: the caller asks before it
+   *  gives this frame's upload turn to the field. */
+  uploadReady(): boolean {
+    return !this.stepTaken && !this.uploadsHeld && this.stage === 'uploading';
+  }
+
   /** How long the pipe's next upload step has been ready, in ms; 0 when there
    *  is none. The caller's rule for a step that waits too long reads it. */
   uploadWaitMs(nowMs: number): number {
@@ -342,12 +348,17 @@ export class CloudFieldResidency<D> {
     this.clearPipe();
   }
 
-  /** The context is gone, and every layer with it: every entry cleared, every
-   *  layer free, the pipe dropped. Demand and cooldowns stay; nothing is
-   *  admitted or uploaded until `contextRestored`. */
+  /** The context is gone, and every layer with it: everything cleared
+   *  (`clear`), and nothing admitted or uploaded until `contextRestored`. */
   contextLost(): void {
     this.lost = true;
     this.uploadsHeld = true;
+    this.clear();
+  }
+
+  /** Every entry cleared and every layer free, the pipe dropped; demand and
+   *  cooldowns stay. A lost context, or the pool handed to someone else. */
+  clear(): void {
     this.cancelInFlight();
     for (let l = 0; l < this.pageIn.length; l++) this.pageIn[l] = LAYER_FREE;
     for (let p = 0; p < PAGES; p++) {
@@ -362,6 +373,11 @@ export class CloudFieldResidency<D> {
   /** The pool is allocated again, empty: pages stream back in from demand. */
   contextRestored(): void {
     this.lost = false;
+  }
+
+  /** Whether a page was wanted at the last update. */
+  isWanted(p: number): boolean {
+    return this.wanted[p] === 1;
   }
 
   /** The numbers now (`wanted` and `updateMicros` as of the last update), in

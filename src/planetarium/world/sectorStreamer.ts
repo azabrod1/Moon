@@ -1531,6 +1531,22 @@ export class SectorStreamer {
     return this.fetchCount() + fetches <= this.fetchPool;
   }
 
+  /**
+   * Whether every load slot is taken: the in-flight cap of sector loads is
+   * running. For a loader that yields the network to the sectors (the cloud
+   * field's pages), asked after this frame's reconcile — which starts every
+   * candidate a free slot allows, so with a slot still free no sector is
+   * waiting on the network, and one held back for memory is one no slot
+   * would start. Read-only, and allocates nothing of its own.
+   */
+  loadSlotsFull(): boolean {
+    let n = 0;
+    for (const body of this.bodies.values()) {
+      for (const s of body.slots) if (s.loading && ++n >= this.inflightCap) return true;
+    }
+    return false;
+  }
+
   /** Drop everything (an arrival, context loss, mode teardown); bodies stay
    *  registered and stream back in on later frames — from the service-worker
    *  cache when they were resident before. */

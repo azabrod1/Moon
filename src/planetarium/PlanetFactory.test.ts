@@ -63,6 +63,7 @@ import {
   type TierAdmission,
   makeTextureUpgrade,
   materialColorMap,
+  materialColorWidth,
   needsUpgradeCover,
   resolveUpgradeTier,
   setUpgradeTextureLoader,
@@ -805,6 +806,21 @@ describe('colour-tier ranking', () => {
     expect(initialColorTierRank({ userData: { proceduralFallback: true } })).toBe(0);
     expect(initialColorTierRank({ userData: {} })).toBe(2);
     expect(initialColorTierRank({})).toBe(2);
+  });
+
+  it('reads the width a material draws from its applied tier, not its trimmed image', () => {
+    const mat = new THREE.MeshStandardMaterial();
+    const tex = new THREE.Texture();
+    tex.image = { width: 1024, height: 512 }; // the stand-in left after the upload
+    mat.map = tex;
+    mat.userData.colorTierRank = TIER_RANK['8k'];
+    expect(materialColorWidth(mat)).toBe(8192);
+    mat.userData.colorTierRank = TIER_RANK['4k'];
+    expect(materialColorWidth(mat)).toBe(4096);
+    // No tier applied (the procedural floor, a hand-built material): its image.
+    mat.userData.colorTierRank = 0;
+    expect(materialColorWidth(mat)).toBe(1024);
+    expect(materialColorWidth(new THREE.MeshStandardMaterial())).toBe(0);
   });
 
   it('keeps a real construction map safe from a late duplicate', () => {

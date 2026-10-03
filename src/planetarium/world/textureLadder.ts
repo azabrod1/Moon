@@ -867,6 +867,25 @@ export function materialColorMap(mat: THREE.Material): THREE.Texture | null {
   return (mat as THREE.MeshStandardMaterial).map ?? null;
 }
 
+// Read once: the per-frame width lookup below allocates nothing.
+const RANKED_TIERS = Object.keys(TIER_RANK) as TextureTier[];
+
+/**
+ * The width of the colour map a material DRAWS: its tier's (the rank the
+ * ladder last applied), never its image's — once a rung's upload is paid the
+ * ladder trims the image to a stand-in a fraction of the size, so the image
+ * says what a restore would re-upload, not what is on the GPU. A material no
+ * tier was applied to reads its image; 0 with neither.
+ */
+export function materialColorWidth(mat: THREE.Material): number {
+  const rank = mat.userData.colorTierRank as number | undefined;
+  for (let i = 0; i < RANKED_TIERS.length; i++) {
+    if (TIER_RANK[RANKED_TIERS[i]] === rank) return TIER_MAP_WIDTH[RANKED_TIERS[i]];
+  }
+  const img = materialColorMap(mat)?.image as { width?: number } | null | undefined;
+  return typeof img?.width === 'number' ? img.width : 0;
+}
+
 function setMaterialColorMap(mat: THREE.Material, tex: THREE.Texture): void {
   // Every colour-map swap the ladder makes passes here, so this is where the
   // frame trace learns a rung landed on this frame.

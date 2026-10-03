@@ -39,7 +39,7 @@ import {
 import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasurementRelevant, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
 import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
-import { advanceSurfaceAir, bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, setSurfaceSynthesis, settleSurfaceAir, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { advanceSurfaceAir, bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, holdSeaCloudCut, setSurfaceSynthesis, settleSurfaceAir, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
 import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, textureWarmQueueDepth, warmBudgetMs } from './world/textureWarmer';
 import { beginSlicedUpload, stepSlicedUpload } from './world/slicedUpload';
@@ -102,6 +102,7 @@ import { resolveShowVantage } from './observatoryJump';
 import { surfacePerfBeginSpan, surfacePerfEndSpan } from './surfacePerf';
 import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU, SUN_RADIUS_AU } from '../astronomy/constants';
+import { horizonDip, mirrorPointOnSphere } from './horizonPose';
 import {
   createPlanetariumStarfield,
   setStarfieldGain,
@@ -687,6 +688,38 @@ function logShaderResolve(
 function loadScreenHidden(): boolean {
   const el = document.getElementById('loading-screen');
   return !el || el.classList.contains('hidden');
+}
+
+/**
+ * What devHorizonView posed, in the camera's own frame (the camera at the
+ * scene origin), so a probe can run the same geometry on the CPU: the body's
+ * centre and the Sun as scene vectors, the stand point's vertical, the aim, the
+ * Sun's azimuth on the horizon, the horizon's dip, and the mirror point — the
+ * place on the sphere whose normal bisects the Sun and the camera, where the
+ * glint is brightest — or null when the Sun is below that horizon.
+ */
+export interface HorizonViewPose {
+  body: string;
+  altitudeKm: number;
+  sunElevDeg: number;
+  bearingDeg: number;
+  azimuthDeg: number;
+  depressionDeg: number;
+  fovDeg: number;
+  horizonDipDeg: number;
+  radiusAU: number;
+  mirror: {
+    groundAngleDeg: number;
+    depressionDeg: number;
+    sunElevDeg: number;
+    slantKm: number;
+  } | null;
+  bodyScene: [number, number, number];
+  sunScene: [number, number, number];
+  up: [number, number, number];
+  aim: [number, number, number];
+  sunAzimuth: [number, number, number];
+  groundHitKm: number | null;
 }
 
 export class PlanetariumMode {
@@ -15046,6 +15079,11 @@ export class PlanetariumMode {
   devSetRoleHidden(role: 'atmosphere' | 'clouds' | 'nightLights', hidden: boolean): void {
     this.devHiddenRoles ??= { atmosphere: false, clouds: false, nightLights: false };
     this.devHiddenRoles[role] = hidden;
+    // The sea's glint is cut under the deck's clouds through a read of the
+    // deck's own map: hiding the clouds hides that cut with them, so a hidden
+    // deck is a clear sky and not a sky whose shadows stayed behind. The
+    // per-frame write that feeds the map skips while the role is hidden.
+    if (role === 'clouds' && hidden) holdSeaCloudCut();
     if (role !== 'atmosphere' || !this.solarSystem) return;
     for (const planet of this.solarSystem.planets) {
       if (planet.atmosphere) planet.atmosphere.visible = !hidden;
@@ -15578,6 +15616,132 @@ export class PlanetariumMode {
     // Auto-exposure settles on its own from the smoothed target (same as the
     // sibling dev pose helpers) — no manual snap flag exists on this path.
     return true;
+  }
+
+  /**
+   * Headless-QA pose for the view an astronaut has of the sea: stand
+   * `altitudeKm` above the point on the body where the Sun stands
+   * `sunElevDeg` above the horizon, and look along the Sun's azimuth (turned
+   * by `azimuthDeg`) at `depressionDeg` below the local horizontal. Left
+   * unset, the depression is the one that puts the Sun's MIRROR POINT — the
+   * place on the sphere whose normal bisects the Sun and the camera, the
+   * heart of the glint — at the centre of the frame; 90 is straight down,
+   * which from 35 786 km is the geostationary view. `bearingDeg` is which
+   * way from the subsolar point the stand point lies: 0 east of it (the Sun
+   * in the west, an evening), 180 west of it (a sunrise), 90 north. The
+   * frame's up is the local vertical, so the horizon sits level; looking
+   * straight down, up is the Sun's azimuth. Hides the ship and the chrome
+   * like devLimbView. Returns the geometry it posed, so a probe can run the
+   * same equations on the CPU, or null for an unknown body. Dev bridge only.
+   */
+  devHorizonView(name: string, opts: {
+    altitudeKm?: number;
+    sunElevDeg?: number;
+    bearingDeg?: number;
+    azimuthDeg?: number;
+    depressionDeg?: number | null;
+    fovDeg?: number;
+  } = {}): HorizonViewPose | null {
+    if (!this.solarSystem) return null;
+    const bodyPos = this.planetWorldPositions.get(name);
+    const r = this.solarSystem.planets.find((p) => p.data.name === name)?.data.radiusAU;
+    if (!bodyPos || !r) return null;
+    const altitudeKm = opts.altitudeKm ?? 400;
+    const sunElevDeg = opts.sunElevDeg ?? 10;
+    const bearingDeg = opts.bearingDeg ?? 180;
+    const azimuthDeg = opts.azimuthDeg ?? 0;
+    const fovDeg = opts.fovDeg ?? 40;
+    const h = altitudeKm / KM_PER_AU;
+    if (!(h > 0)) return null;
+    const body = new THREE.Vector3(bodyPos.x, bodyPos.y, bodyPos.z);
+    // The Sun sits at the heliocentric origin of these coordinates, so the
+    // subsolar point lies toward it from the body's centre.
+    const subsolar = body.clone().negate().normalize();
+    // East at the subsolar point: the spin is about celestial north to within
+    // the body's obliquity, which is enough to say which way morning lies.
+    const east = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), subsolar);
+    if (east.lengthSq() < 1e-8) east.crossVectors(new THREE.Vector3(1, 0, 0), subsolar);
+    east.normalize();
+    const north = new THREE.Vector3().crossVectors(subsolar, east).normalize();
+    const bearing = THREE.MathUtils.degToRad(bearingDeg);
+    const toward = east.clone().multiplyScalar(Math.cos(bearing)).addScaledVector(north, Math.sin(bearing));
+    // The stand point: its vertical is the subsolar direction swung by the
+    // Sun's zenith angle along that bearing, so the Sun stands sunElevDeg
+    // above its horizon exactly.
+    const zenith = THREE.MathUtils.degToRad(90 - sunElevDeg);
+    const up = subsolar.clone().multiplyScalar(Math.cos(zenith)).addScaledVector(toward, Math.sin(zenith)).normalize();
+    const camera = body.clone().addScaledVector(up, r + h);
+    // The Sun's azimuth on the stand point's horizon, from the Sun's real
+    // (finite) direction at the camera.
+    const sunAtCamera = camera.clone().negate().normalize();
+    const sunAzimuth = sunAtCamera.clone().addScaledVector(up, -sunAtCamera.dot(up));
+    if (sunAzimuth.lengthSq() < 1e-10) sunAzimuth.copy(toward); else sunAzimuth.normalize();
+    const aimAzimuth = sunAzimuth.clone().applyAxisAngle(up, THREE.MathUtils.degToRad(azimuthDeg)).normalize();
+    const horizonDipDeg = THREE.MathUtils.radToDeg(horizonDip(r, h));
+    // The mirror point, in the plane of the Sun and the vertical: the heart
+    // of the glint, or none when the Sun is below the horizon seen from there.
+    const found = mirrorPointOnSphere(body, r, camera, up, sunAzimuth, new THREE.Vector3(0, 0, 0));
+    const mirror: HorizonViewPose['mirror'] = found
+      ? {
+          groundAngleDeg: THREE.MathUtils.radToDeg(found.groundAngle),
+          depressionDeg: THREE.MathUtils.radToDeg(found.depression),
+          sunElevDeg: THREE.MathUtils.radToDeg(found.sunElevation),
+          slantKm: found.slant * KM_PER_AU,
+        }
+      : null;
+    const depressionDeg = opts.depressionDeg ?? mirror?.depressionDeg ?? horizonDipDeg;
+    const depression = THREE.MathUtils.degToRad(depressionDeg);
+    const aim = aimAzimuth.clone().multiplyScalar(Math.cos(depression)).addScaledVector(up, -Math.sin(depression)).normalize();
+    this.devFreeCamera = true;
+    this.player.posX = camera.x;
+    this.player.posY = camera.y;
+    this.player.posZ = camera.z;
+    this.player.headTowardPoint(camera.x + aim.x, camera.y + aim.y, camera.z + aim.z);
+    this.player.moving = false;
+    const cam = this.camera as THREE.PerspectiveCamera;
+    cam.position.set(0, 0, 0);
+    // applyDesignFov (via setDisplayFov) is the only legal camera.fov writer
+    // under the lens contract; a raw `cam.fov = fovDeg` desyncs the overscan.
+    this.setDisplayFov(fovDeg);
+    // Up is the local vertical, so the horizon is level in the frame; looking
+    // straight down there is no horizon, and the Sun's azimuth points up.
+    cam.up.copy(Math.abs(aim.dot(up)) < 0.999 ? up : aimAzimuth);
+    cam.lookAt(aim);
+    cam.updateMatrixWorld(true);
+    // The orbit target: where the aim meets the ground, else a point along it
+    // as far as the horizon.
+    const cameraFromCentre = camera.clone().sub(body);
+    const b = aim.dot(cameraFromCentre);
+    const c = cameraFromCentre.lengthSq() - r * r;
+    const disc = b * b - c;
+    const hit = disc >= 0 ? -b - Math.sqrt(disc) : -1;
+    const targetDist = hit > 0 ? hit : Math.sqrt(Math.max((r + h) * (r + h) - r * r, 0));
+    this.controls.target.copy(aim).multiplyScalar(targetDist);
+    this.showShip = false;
+    this.player.group.visible = false;
+    for (const id of ['planetarium-ui', 'top-bar']) {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    }
+    return {
+      body: name,
+      altitudeKm,
+      sunElevDeg,
+      bearingDeg,
+      azimuthDeg,
+      depressionDeg,
+      fovDeg,
+      horizonDipDeg,
+      radiusAU: r,
+      mirror,
+      // Scene coordinates: the camera at the origin, the Sun at -camera.
+      bodyScene: [body.x - camera.x, body.y - camera.y, body.z - camera.z],
+      sunScene: [-camera.x, -camera.y, -camera.z],
+      up: [up.x, up.y, up.z],
+      aim: [aim.x, aim.y, aim.z],
+      sunAzimuth: [sunAzimuth.x, sunAzimuth.y, sunAzimuth.z],
+      groundHitKm: hit > 0 ? hit * KM_PER_AU : null,
+    };
   }
 
   /** Peek the coverage meter for the dev bridge — telemetry only (the adapted
@@ -19484,7 +19648,7 @@ export class PlanetariumMode {
         if (body.name === 'Earth') {
           cloudShadowUniforms.uCloudShadowSpin.value = cloudDrift;
           const deckMap = (planet.cloudsMesh.material as THREE.MeshStandardMaterial).map;
-          if (deckMap) cloudShadowUniforms.uCloudShadowMap.value = deckMap;
+          if (deckMap && !this.devHiddenRoles?.clouds) cloudShadowUniforms.uCloudShadowMap.value = deckMap;
         }
       }
       const localSunDir = this.tmpLocalSunDir

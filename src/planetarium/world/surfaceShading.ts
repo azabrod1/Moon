@@ -2089,6 +2089,16 @@ export function setDevOceanRoughness(roughness?: number | null): number | null {
 }
 
 /**
+ * Point the sea's cloud cut at a black deck: no cloud over any sea, so the
+ * glint reads as under a clear sky, until the deck's own map is written again
+ * (PlanetariumMode writes it every frame the clouds are shown, and skips the
+ * write while they are hidden). The clear-sky arm of a glint measurement.
+ */
+export function holdSeaCloudCut(): void {
+  cloudShadowUniforms.uCloudShadowMap.value = surfaceAirDummies().map2D;
+}
+
+/**
  * Where a body reads the tiling detail field. The field is periodic, so an
  * offset is free and cannot break the wrap; two coprime moduli keep names that
  * hash close together from landing on one line of the tile.

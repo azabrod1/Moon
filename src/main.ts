@@ -86,6 +86,7 @@ import {
   updateLensPass, type LensParams, type LensUniforms,
 } from './app/LensPass';
 import { applyDesignFov, displayFovDeg, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
+import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { loadBrightStarCatalog } from './planetarium/world/starCatalogLoader';
 import { debugError, debugLog, debugWarn } from './shared/debug';
 import {
@@ -2955,6 +2956,94 @@ function getAutoMode(): 'planetarium' | 'volumeCompare' | 'interior' {
  *  from -1, so they can never be mistaken for a real draw's. */
 let devInjectSeq = -1;
 
+/**
+ * The scene target's linear HDR pixels, read back as float RGBA: the frame
+ * BEFORE the lens warp, the bloom, the exposure and the tone curve, in the
+ * scene's own units (a white Lambert disc under the Sun reads
+ * SUN_LIGHT_INTENSITY / pi times the Sun's colour). A glint probe measures
+ * radiance here, where nothing has clipped it yet, and compares it with the
+ * same equations run on the CPU. The multisampled target cannot be read
+ * directly, so its resolved texture is copied through a full-screen quad into
+ * a float target of the drawn size (the sub-rectangle under Dynamic), which
+ * is then read with three's own readback. The pixels come back as the float
+ * bytes in base64, row 0 at the BOTTOM (GL's origin), with the camera's
+ * matrices of this frame so a ray can be cast through any pixel. DEV only.
+ */
+let devSceneReadTarget: THREE.WebGLRenderTarget | null = null;
+let devSceneReadQuad: FullScreenQuad | null = null;
+function devReadScene(opts: { x?: number; y?: number; w?: number; h?: number } = {}): unknown {
+  if (!import.meta.env.DEV || !sceneTarget) return null;
+  const cam = planetariumCamera;
+  const draw = sceneTargetSize(window.innerWidth, window.innerHeight, scenePixelRatioFor(cam, getTargetPixelRatio()));
+  const width = Math.min(draw.width, sceneTarget.width);
+  const height = Math.min(draw.height, sceneTarget.height);
+  if (!devSceneReadTarget || devSceneReadTarget.width !== width || devSceneReadTarget.height !== height) {
+    devSceneReadTarget?.dispose();
+    devSceneReadTarget = new THREE.WebGLRenderTarget(width, height, {
+      type: THREE.FloatType,
+      format: THREE.RGBAFormat,
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      depthBuffer: false,
+      stencilBuffer: false,
+      generateMipmaps: false,
+      colorSpace: THREE.LinearSRGBColorSpace,
+    });
+  }
+  devSceneReadQuad ??= new FullScreenQuad(new THREE.ShaderMaterial({
+    uniforms: { tDiffuse: { value: null }, uScale: { value: new THREE.Vector2(1, 1) } },
+    vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+    // A plain copy: no tone mapping chunk, no colour-space conversion.
+    fragmentShader: 'uniform sampler2D tDiffuse; uniform vec2 uScale; varying vec2 vUv;'
+      + ' void main() { gl_FragColor = texture2D(tDiffuse, vUv * uScale); }',
+    depthTest: false,
+    depthWrite: false,
+  }));
+  const material = devSceneReadQuad.material as THREE.ShaderMaterial;
+  material.uniforms.tDiffuse.value = sceneTarget.texture;
+  // The drawn sub-rectangle sits at the target's origin: its texture
+  // coordinates run from 0 to drawn over allocated.
+  (material.uniforms.uScale.value as THREE.Vector2).set(width / sceneTarget.width, height / sceneTarget.height);
+  const previous = renderer.getRenderTarget();
+  renderer.setRenderTarget(devSceneReadTarget);
+  devSceneReadQuad.render(renderer);
+  renderer.setRenderTarget(previous);
+  const x = Math.max(0, Math.floor(opts.x ?? 0));
+  const y = Math.max(0, Math.floor(opts.y ?? 0));
+  const w = Math.min(width - x, Math.floor(opts.w ?? width));
+  const h = Math.min(height - y, Math.floor(opts.h ?? height));
+  if (w <= 0 || h <= 0) return null;
+  const pixels = new Float32Array(w * h * 4);
+  renderer.readRenderTargetPixels(devSceneReadTarget, x, y, w, h, pixels);
+  const bytes = new Uint8Array(pixels.buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + 0x8000)));
+  }
+  return {
+    width,
+    height,
+    x,
+    y,
+    w,
+    h,
+    format: 'rgba32f little-endian, row 0 at the bottom, base64',
+    data: btoa(binary),
+    exposure: exposureCurrent,
+    toneMapping: renderer.toneMapping,
+    camera: {
+      matrixWorld: cam.matrixWorld.toArray(),
+      projectionMatrixInverse: cam.projectionMatrixInverse.toArray(),
+      fov: cam.fov,
+      displayFovDeg: displayFovDeg(cam),
+      aspect: cam.aspect,
+      near: cam.near,
+      far: cam.far,
+    },
+    sceneTarget: { width: sceneTarget.width, height: sceneTarget.height, samples: sceneTarget.samples },
+  };
+}
+
 function installDevHooks() {
   installSurfacePerfInputTracing();
   (window as any).__moon = {
@@ -2976,6 +3065,22 @@ function installDevHooks() {
     // ground toward the horizon.
     limbView: (name: string, kRadii?: number, fovDeg?: number, phaseDeg?: number, aimFrac?: number) =>
       planetariumMode?.devLimbView(name, kRadii, fovDeg, phaseDeg, aimFrac) ?? false,
+    // The astronaut's view of the sea: stand at an altitude over the point
+    // where the Sun has a given elevation and look along the Sun's azimuth,
+    // by default at the mirror point (devHorizonView: the ISS beam geometry,
+    // and straight down from 35 786 km the geostationary one). Returns the
+    // geometry posed, for a probe that runs the same equations on the CPU.
+    horizonView: (name: string, opts?: {
+      altitudeKm?: number; sunElevDeg?: number; bearingDeg?: number;
+      azimuthDeg?: number; depressionDeg?: number | null; fovDeg?: number;
+    }) => planetariumMode?.devHorizonView(name, opts) ?? null,
+    // A layer off for a capture: the atmosphere shells, the cloud deck (with
+    // the sea's cut under it), or the night lights.
+    setRoleHidden: (role: 'atmosphere' | 'clouds' | 'nightLights', hidden: boolean) =>
+      planetariumMode?.devSetRoleHidden(role, hidden),
+    // The scene target's linear HDR pixels of the last frame, before the
+    // lens, the bloom, the exposure and the tone curve (devReadScene).
+    readScene: (opts?: { x?: number; y?: number; w?: number; h?: number }) => devReadScene(opts),
     frameSun: (distanceAU?: number, fovDeg?: number, offNdcX?: number, offNdcY?: number) =>
       planetariumMode?.devFrameSun(distanceAU, fovDeg, offNdcX, offNdcY) ?? false,
     frameSunBehindShip: (

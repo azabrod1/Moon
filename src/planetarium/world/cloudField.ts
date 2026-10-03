@@ -142,11 +142,22 @@ const smoothstep = (edge0: number, edge1: number, x: number): number => {
 /** three's SphereGeometry UV for a unit direction in the sphere's own frame:
  *  the deck's map UV, which the pages are cut against. The same formula as
  *  `sphereEquirectUv` in cloudDeck.ts, repeated so this module stays free of
- *  everything but arithmetic. */
-function equirectUv(d: Vec3): [number, number] {
-  const u = Math.atan2(d[2], -d[0]) / (2 * Math.PI);
-  return [u - Math.floor(u), 0.5 + Math.asin(Math.min(1, Math.max(-1, d[1]))) / Math.PI];
+ *  everything but arithmetic. In two scalar halves, so a per-frame loop can
+ *  find a page without building a tuple. */
+function equirectU(x: number, z: number): number {
+  const u = Math.atan2(z, -x) / (2 * Math.PI);
+  return u - Math.floor(u);
 }
+function equirectV(y: number): number {
+  return 0.5 + Math.asin(Math.min(1, Math.max(-1, y))) / Math.PI;
+}
+
+/** A map uv's position on the grid, in pages: x from the date line, y from
+ *  the SOUTH pole, v held just inside the grid at the poles. */
+const gridX = (u: number): number => u * CLOUD_FIELD_GRID[0];
+const gridY = (v: number): number => Math.min(Math.max(v, 0), 0.9999999) * CLOUD_FIELD_GRID[1];
+/** The cell a grid position falls in, the last one held on the grid. */
+const cellOf = (g: number, cells: number): number => Math.min(Math.floor(g), cells - 1);
 
 /** Where a deck-frame direction lands in the field. */
 export interface CloudPageAddress {
@@ -164,11 +175,10 @@ export interface CloudPageAddress {
 /** The page under a direction in the deck's own frame, and where on it.
  *  Mirrored exactly by the head of `cloudFieldFine` in CLOUD_FIELD_GLSL. */
 export function cloudPageAddress(dir: Vec3): CloudPageAddress {
-  const [u, v] = equirectUv(dir);
-  const gx = u * CLOUD_FIELD_GRID[0];
-  const gy = Math.min(Math.max(v, 0), 0.9999999) * CLOUD_FIELD_GRID[1];
-  const cx = Math.min(Math.floor(gx), CLOUD_FIELD_GRID[0] - 1);
-  const cy = Math.min(Math.floor(gy), CLOUD_FIELD_GRID[1] - 1);
+  const gx = gridX(equirectU(dir[0], dir[2]));
+  const gy = gridY(equirectV(dir[1]));
+  const cx = cellOf(gx, CLOUD_FIELD_GRID[0]);
+  const cy = cellOf(gy, CLOUD_FIELD_GRID[1]);
   const s: [number, number] = [gx - cx, gy - cy];
   return {
     col: cx,
@@ -179,6 +189,14 @@ export function cloudPageAddress(dir: Vec3): CloudPageAddress {
       (CLOUD_PAGE_GUTTER + s[1] * CLOUD_PAGE_CONTENT) / CLOUD_PAGE_SIZE,
     ],
   };
+}
+
+/** The table cell under a deck-frame direction as one index, `row * 16 +
+ *  col` — the cell `cloudPageAddress` names, found without allocating, for
+ *  the residency's per-frame measure. */
+export function cloudPageIndexOf(x: number, y: number, z: number): number {
+  const cy = cellOf(gridY(equirectV(y)), CLOUD_FIELD_GRID[1]);
+  return (CLOUD_FIELD_GRID[1] - 1 - cy) * CLOUD_FIELD_GRID[0] + cellOf(gridX(equirectU(x, z)), CLOUD_FIELD_GRID[0]);
 }
 
 /** The page across the nearer x edge, the nearer y edge and the corner

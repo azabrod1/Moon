@@ -7,10 +7,12 @@ import {
   CLOUD_FIELD_SAFETY_TEXELS,
   cloudFieldGuardWeight,
   cloudFieldMajor,
+  cloudPageIndexOf,
 } from './cloudField';
 import {
   CLOUD_FIELD_KEEP_GRID,
   CLOUD_FIELD_KEEP_RAYS,
+  CloudFieldMeasure,
   cloudPageKeepTexelsAll,
   fieldDisplayed,
   fieldPagePoint,
@@ -125,85 +127,191 @@ function smooth(a: number, b: number, x: number): number {
   return t * t * (3 - 2 * t);
 }
 
+/** One pose of the release-safety battery: a camera from low orbit to well
+ *  past the Moon's distance in deck radii (log-uniform), aimed at a point of
+ *  the visible cap so the limb and the frame's edge cut pages as often as
+ *  not, at a random lens, frame, tile ratio and rung. */
+function randomPose(r: () => number): { cam: FieldCamera; scale: number; dist: number } {
+  const dist = Math.exp(Math.log(1.03) + r() * (Math.log(16) - Math.log(1.03)));
+  const pos = randomUnit(r).map((v) => v * dist) as V;
+  let target: V;
+  for (;;) {
+    const d = randomUnit(r);
+    if (d[0] * pos[0] + d[1] * pos[1] + d[2] * pos[2] > 1) { target = d; break; }
+  }
+  const designFov = 25 + r() * 50;
+  const aspect = [0.46, 0.75, 1.33, 1.6, 1.78][Math.floor(r() * 5)];
+  const strength = [0, 0.5, 1][Math.floor(r() * 3)];
+  const cssH = [600, 844, 1000][Math.floor(r() * 3)];
+  const tileRatio = [1, 2, 3][Math.floor(r() * 3)];
+  const scale = CLOUD_FIELD_LOWEST_RUNG + r() * (1.5 - CLOUD_FIELD_LOWEST_RUNG);
+  const cam = lookAt(pos, target, r() * 2 * Math.PI, designFov, aspect, strength, cssH * tileRatio);
+  return { cam, scale, dist };
+}
+
+const env = (k: string) => (typeof process !== 'undefined' ? process.env[k] : undefined);
+
+/**
+ * The release rule's promise, checked for one way of measuring: a page whose
+ * keep number is past `release` has a guard of zero at every point of it the
+ * frame shows (a 25 x 25 grid on the page), at the pose's rung, so a release
+ * can never pop a page that is still drawn.
+ */
+function releaseSafety(poses: number, seed: number, keepsOf: (cam: FieldCamera) => Float64Array, release: number) {
+  const r = rng(seed);
+  const dense = 25;
+  let checkedPages = 0;
+  let checkedPoints = 0;
+  let worstWeight = 0;
+  let lowestT = Number.POSITIVE_INFINITY;
+  const failures: string[] = [];
+  for (let pose = 0; pose < poses; pose++) {
+    const { cam, scale, dist } = randomPose(r);
+    const keeps = keepsOf(cam);
+    for (let row = 0; row < CLOUD_FIELD_GRID[1]; row++) {
+      for (let col = 0; col < CLOUD_FIELD_GRID[0]; col++) {
+        const keep = keeps[row * CLOUD_FIELD_GRID[0] + col];
+        if (!(keep > release)) continue;
+        let pageChecked = false;
+        for (let j = 0; j < dense; j++) {
+          for (let i = 0; i < dense; i++) {
+            const d = fieldPagePoint(col, row, i / (dense - 1), j / (dense - 1));
+            const p = fieldProjectPx(cam, d);
+            if (!p || !fieldDisplayed(cam, p.ndcX, p.ndcY)) continue;
+            const tOut = fieldTexelMajorAt(cam, d);
+            if (tOut === null) continue;
+            // The shader reads the same footprint in scene pixels and scales it.
+            const w = cloudFieldGuardWeight(tOut / scale, scale);
+            checkedPoints += 1;
+            pageChecked = true;
+            lowestT = Math.min(lowestT, tOut);
+            if (w > worstWeight) worstWeight = w;
+            if (w > 0 && failures.length < 5) {
+              failures.push(`pose ${pose} page ${col}_${row}: keep ${keep.toFixed(2)}, point T ${tOut.toFixed(2)}, w ${w.toFixed(3)}, dist ${dist.toFixed(2)}`);
+            }
+          }
+        }
+        if (pageChecked) checkedPages += 1;
+      }
+    }
+  }
+  return { checkedPages, checkedPoints, worstWeight, lowestT, failures };
+}
+
 describe('a released page', () => {
+  // Deeper or harsher runs from the shell, never in CI: CLOUD_FIELD_POSES and
+  // CLOUD_FIELD_SEED; and, on the reference, the control arm
+  // CLOUD_FIELD_KEEP_N / CLOUD_FIELD_KEEP_MARGIN / CLOUD_FIELD_RELEASE,
+  // CLOUD_FIELD_KEEP_RAYS=0 (a coarser grid, no margin, no rays through the
+  // frame, or a release at the guard's own zero must fail, which is how the
+  // test is known to see).
+  const poses = Number(env('CLOUD_FIELD_POSES') ?? 160);
+  const seed = Number(env('CLOUD_FIELD_SEED') ?? 20261003);
+  const timeout = Math.max(120_000, poses * 500);
+
+  function expectSafe(run: ReturnType<typeof releaseSafety>, label: string): void {
+    // The bar: zero weight at every in-frame point of every released page.
+    expect(run.failures).toEqual([]);
+    expect(run.worstWeight).toBe(0);
+    // ...and the run actually exercised it.
+    expect(run.checkedPages).toBeGreaterThan(poses);
+    expect(run.checkedPoints).toBeGreaterThan(poses * 100);
+    expect(run.lowestT).toBeGreaterThanOrEqual(CLOUD_FIELD_GUARD_TEXELS[1]);
+    console.log(`release safety (${label}): ${poses} poses, ${run.checkedPages} released pages in frame, ${run.checkedPoints} points, lowest in-frame T ${run.lowestT.toFixed(2)}`);
+  }
+
   it('draws with no weight anywhere it is in frame, over random poses, rungs and lenses', () => {
-    // The release rule's promise: a page the residency lets go at T > 12 has a
-    // guard of zero at every point of it the frame shows, at any scene ratio
-    // from the bottom of the ladder to its top and any lens strength, so a
-    // release can never pop a page that is still drawn.
-    // Deeper or harsher runs from the shell, never in CI: CLOUD_FIELD_POSES,
-    // and the control arm CLOUD_FIELD_KEEP_N / CLOUD_FIELD_KEEP_MARGIN /
-    // CLOUD_FIELD_RELEASE, CLOUD_FIELD_KEEP_RAYS=0 (a coarser grid, no margin,
-    // no rays through the frame, or a release at the
-    // guard's own zero must fail, which is how the test is known to see).
-    const env = (k: string) => (typeof process !== 'undefined' ? process.env[k] : undefined);
-    const r = rng(Number(env('CLOUD_FIELD_SEED') ?? 20261003));
-    const poses = Number(env('CLOUD_FIELD_POSES') ?? 160);
     const keepN = Number(env('CLOUD_FIELD_KEEP_N') ?? CLOUD_FIELD_KEEP_GRID);
     const keepMargin = env('CLOUD_FIELD_KEEP_MARGIN') !== undefined ? Number(env('CLOUD_FIELD_KEEP_MARGIN')) : undefined;
     const release = Number(env('CLOUD_FIELD_RELEASE') ?? CLOUD_FIELD_RELEASE_TEXELS);
     const raysEnv = env('CLOUD_FIELD_KEEP_RAYS');
     const keepRays: [number, number] = raysEnv === undefined ? [...CLOUD_FIELD_KEEP_RAYS] as [number, number]
       : raysEnv === '0' ? [0, 0] : raysEnv.split(',').map(Number) as [number, number];
-    const dense = 25;
-    let checkedPages = 0;
-    let checkedPoints = 0;
-    let worstWeight = 0;
-    let lowestT = Number.POSITIVE_INFINITY;
-    const failures: string[] = [];
-    for (let pose = 0; pose < poses; pose++) {
-      // From low orbit to well past the Moon's distance in deck radii, log-uniform.
-      const dist = Math.exp(Math.log(1.03) + r() * (Math.log(16) - Math.log(1.03)));
-      const pos = randomUnit(r).map((v) => v * dist) as V;
-      // Aim at a point of the visible cap, so the limb and the frame edge cut
-      // pages as often as not.
-      let target: V;
-      for (;;) {
-        const d = randomUnit(r);
-        if (d[0] * pos[0] + d[1] * pos[1] + d[2] * pos[2] > 1) { target = d; break; }
-      }
-      const designFov = 25 + r() * 50;
-      const aspect = [0.46, 0.75, 1.33, 1.6, 1.78][Math.floor(r() * 5)];
-      const strength = [0, 0.5, 1][Math.floor(r() * 3)];
-      const cssH = [600, 844, 1000][Math.floor(r() * 3)];
-      const tileRatio = [1, 2, 3][Math.floor(r() * 3)];
-      const scale = CLOUD_FIELD_LOWEST_RUNG + r() * (1.5 - CLOUD_FIELD_LOWEST_RUNG);
-      const cam = lookAt(pos, target, r() * 2 * Math.PI, designFov, aspect, strength, cssH * tileRatio);
-      const keeps = cloudPageKeepTexelsAll(cam, keepN, keepMargin, keepRays);
-      for (let row = 0; row < CLOUD_FIELD_GRID[1]; row++) {
-        for (let col = 0; col < CLOUD_FIELD_GRID[0]; col++) {
-          const keep = keeps[row * CLOUD_FIELD_GRID[0] + col];
-          if (!(keep > release)) continue;
-          let pageChecked = false;
-          for (let j = 0; j < dense; j++) {
-            for (let i = 0; i < dense; i++) {
-              const d = fieldPagePoint(col, row, i / (dense - 1), j / (dense - 1));
-              const p = fieldProjectPx(cam, d);
-              if (!p || !fieldDisplayed(cam, p.ndcX, p.ndcY)) continue;
-              const tOut = fieldTexelMajorAt(cam, d);
-              if (tOut === null) continue;
-              // The shader reads the same footprint in scene pixels and scales it.
-              const w = cloudFieldGuardWeight(tOut / scale, scale);
-              checkedPoints += 1;
-              pageChecked = true;
-              lowestT = Math.min(lowestT, tOut);
-              if (w > worstWeight) worstWeight = w;
-              if (w > 0 && failures.length < 5) {
-                failures.push(`pose ${pose} page ${col}_${row}: keep ${keep.toFixed(2)}, point T ${tOut.toFixed(2)}, w ${w.toFixed(3)}, dist ${dist.toFixed(2)}`);
-              }
-            }
-          }
-          if (pageChecked) checkedPages += 1;
+    expectSafe(releaseSafety(poses, seed, (cam) => cloudPageKeepTexelsAll(cam, keepN, keepMargin, keepRays), release), 'reference');
+  }, timeout);
+
+  it('...and so does every page the per-frame measure releases', () => {
+    const measure = new CloudFieldMeasure();
+    const sun: V = [1, 0, 0];
+    expectSafe(releaseSafety(poses, seed, (cam) => { measure.measure(cam, sun); return measure.keepTexels; },
+      CLOUD_FIELD_RELEASE_TEXELS), 'per-frame');
+  }, timeout);
+});
+
+describe('the per-frame measure', () => {
+  it('reads the reference\'s number for every page, within a part in a million', () => {
+    // The same points read the same way, with the footprint in closed form
+    // where the reference differences neighbouring rays. At or under the
+    // release line the two must agree; past it the measure may answer with a
+    // floor instead of reading the page, and the reference must read past it
+    // too, so the floor never undercuts a point.
+    const r = rng(Number(env('CLOUD_FIELD_SEED') ?? 20261003) + 1);
+    const measure = new CloudFieldMeasure();
+    let compared = 0;
+    let pastRelease = 0;
+    let marginOnly = 0;
+    let worst = 0;
+    let worstAt = '';
+    const mismatched: string[] = [];
+    for (let pose = 0; pose < 120; pose++) {
+      const { cam } = randomPose(r);
+      const ref = cloudPageKeepTexelsAll(cam);
+      measure.measure(cam, [0, 1, 0]);
+      for (let p = 0; p < ref.length; p++) {
+        const a = ref[p];
+        const b = measure.keepTexels[p];
+        // The displayed points are some of the widened frame's.
+        if (!(measure.wantTexels[p] >= b) && mismatched.length < 5) {
+          mismatched.push(`pose ${pose} page ${p}: wanted at ${measure.wantTexels[p]}, kept at ${b}`);
         }
+        if (Number.isFinite(b) && !Number.isFinite(measure.wantTexels[p])) marginOnly += 1;
+        if (!Number.isFinite(a) && !Number.isFinite(b)) continue;
+        if (b > CLOUD_FIELD_RELEASE_TEXELS) {
+          pastRelease += 1;
+          if (!(a > CLOUD_FIELD_RELEASE_TEXELS) && mismatched.length < 5) {
+            mismatched.push(`pose ${pose} page ${p}: reference ${a}, per-frame ${b} past the release line`);
+          }
+          continue;
+        }
+        if (!Number.isFinite(a)) {
+          if (mismatched.length < 5) mismatched.push(`pose ${pose} page ${p}: reference ${a}, per-frame ${b}`);
+          continue;
+        }
+        compared += 1;
+        const rel = Math.abs(b - a) / a;
+        if (rel > worst) { worst = rel; worstAt = `pose ${pose} page ${p}: reference ${a}, per-frame ${b}`; }
       }
     }
-    // The bar: zero weight at every in-frame point of every released page.
-    expect(failures).toEqual([]);
-    expect(worstWeight).toBe(0);
-    // ...and the run actually exercised it.
-    expect(checkedPages).toBeGreaterThan(poses);
-    expect(checkedPoints).toBeGreaterThan(poses * 100);
-    expect(lowestT).toBeGreaterThanOrEqual(CLOUD_FIELD_GUARD_TEXELS[1]);
-    console.log(`release safety: ${poses} poses, ${checkedPages} released pages in frame, ${checkedPoints} points, lowest in-frame T ${lowestT.toFixed(2)}`);
-  }, Math.max(120_000, Number(process.env.CLOUD_FIELD_POSES ?? 0) * 500));
+    expect(mismatched).toEqual([]);
+    expect(compared).toBeGreaterThan(500);
+    expect(marginOnly).toBeGreaterThan(0);
+    expect(worst, worstAt).toBeLessThan(1e-6);
+    console.log(`per-frame against reference: ${compared} pages compared at or under the release line, worst relative difference ${worst.toExponential(2)}; ${pastRelease} past it in both; ${marginOnly} only in the margin`);
+  });
+
+  it('says how central and how lit each page\'s best point is', () => {
+    // Straight down from 2 radii over a page's middle: that page holds the
+    // frame's centre, and a Sun overhead lights it fully.
+    const mid = fieldPagePoint(8, 3, 0.5, 0.5);
+    const cam = lookAt(mid.map((v) => v * 2) as V, mid, 0, 40, 1.6, 1, 1600);
+    const m = new CloudFieldMeasure();
+    m.measure(cam, mid);
+    const nadir = cloudPageIndexOf(mid[0], mid[1], mid[2]);
+    expect(nadir).toBe(3 * CLOUD_FIELD_GRID[0] + 8);
+    expect(m.centrality[nadir]).toBeGreaterThan(0.95);
+    expect(m.sunDot[nadir]).toBeCloseTo(1, 6);
+    // A page on the far side reads nothing.
+    const far = cloudPageIndexOf(-mid[0], -mid[1], -mid[2]);
+    expect(m.keepTexels[far]).toBe(Number.POSITIVE_INFINITY);
+    expect(m.wantTexels[far]).toBe(Number.POSITIVE_INFINITY);
+    expect(m.centrality[far]).toBe(0);
+    expect(m.sunDot[far]).toBe(Number.NEGATIVE_INFINITY);
+    // With the Sun behind the globe, even the page's most lit point in frame
+    // is on the night side.
+    m.measure(cam, mid.map((v) => -v) as V);
+    expect(m.sunDot[nadir]).toBeLessThan(-0.8);
+    // A camera inside the deck sees no front face.
+    m.measure(lookAt([0.5, 0, 0], [1, 0, 0], 0, 40, 1.6, 1, 1600), mid);
+    expect(m.keepTexels.every((t) => t === Number.POSITIVE_INFINITY)).toBe(true);
+  });
 });

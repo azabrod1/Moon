@@ -20,6 +20,7 @@ import {
   cloudFieldPoolBytes,
   cloudPageAddress,
   cloudPageEdgeWeight,
+  cloudPageIndexOf,
   cloudPageKey,
   cloudPageNeighbours,
   packCloudPage,
@@ -75,6 +76,20 @@ describe('a direction\'s page', () => {
     expect(cloudPageAddress(dirAt(-117.8, -22.6))).toMatchObject({ col: 2, row: 5 });
     // Italy, northern hemisphere east of Greenwich.
     expect(cloudPageAddress(dirAt(12.5, 42))).toMatchObject({ col: 8, row: 2 });
+  });
+
+  it('is the same cell, as one index, when the measure asks without allocating', () => {
+    const cases: Array<[number, number, number]> = [[0, 1, 0], [0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]];
+    for (const lon of [-180, -179.999, -135, -112.5, 0, 22.5, 179.999, 180]) {
+      for (const lat of [-90, -67.5, -22.5, -1e-9, 0, 1e-9, 22.5, 45, 89.99, 90]) cases.push(dirAt(lon, lat));
+    }
+    let seed = 7;
+    const r = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    for (let n = 0; n < 2000; n++) cases.push(dirAt(r() * 360 - 180, Math.asin(r() * 2 - 1) * 180 / Math.PI));
+    for (const d of cases) {
+      const a = cloudPageAddress(d);
+      expect(cloudPageIndexOf(d[0], d[1], d[2])).toBe(a.row * CLOUD_FIELD_GRID[0] + a.col);
+    }
   });
 
   it('wraps at the date line: just west of it is the last column, just east the first', () => {

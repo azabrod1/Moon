@@ -72,6 +72,7 @@ import {
   rebindSeaWindMaps,
   seaWindOn,
   setSeaWindEnabled,
+  beamUniforms, parseSeaBeamParam, parseSunPathParam, setSeaBeamEnabled, setSunPathEnabled,
 } from './planetarium/world/surfaceShading';
 import { parseNightExposureParam, setDevNightExposure, type NightExposureOverride } from './planetarium/world/nightExposure';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
@@ -84,7 +85,7 @@ import type { GpuProfiler, GpuProfileOptions } from './app/devGpuProfile';
 import type { GpuClock, GpuClockOptions } from './app/devGpuClock';
 import { ScreenCopy, canvasSampleCount, createScreenTarget, fitScreenTarget, screenTargetSamples } from './app/screenTarget';
 import { bitmapDecodePath } from './planetarium/world/textureBitmapLoader';
-import { BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
+import { BLOOM_RADIUS, BLOOM_THRESHOLD, PLANETARIUM_BLOOM } from './app/bloomConfig';
 import {
   createLensPass, devSetLensPassOff, lensSubRectUniforms, makeLensUniforms, syncLensUniforms,
   updateLensPass, type LensParams, type LensUniforms,
@@ -302,6 +303,11 @@ const bloomKneeParam = parseBloomKneeParam(location.search);
 // `?seawind=0`: the whole sea at one roughness again (world/seaWind.ts), the
 // A/B for the ocean glint's shape. Read before any sea is confirmed.
 setSeaWindEnabled(parseSeaWindParam(location.search));
+// `?sunpath=0`: the Sun's light unattenuated by its path through the air
+// again; `?seabeam=0`: the sea's old chain with its cap before the air
+// (world/surfaceShading beamUniforms). Each is the picture as it was.
+setSunPathEnabled(parseSunPathParam(location.search));
+setSeaBeamEnabled(parseSeaBeamParam(location.search));
 // `?seawindmap=<url>` (DEV only): the sea's wind maps from a file — a picture
 // carrying both, or a raw byte map of one wind — so a field baked elsewhere
 // is judged in the app. Fetched beside the boot; the sea reads it from the
@@ -3239,6 +3245,19 @@ function installDevHooks() {
       };
     },
     setBloom: (on: boolean) => setPlanetariumBloom(on),
+    // DEV: the planetarium bright pass's threshold, live (app/bloomConfig
+    // PLANETARIUM_BLOOM), rebuilt into the composer, so an A/B of what sits
+    // between the stars and the Sun — the sea's beam — comes out of one page
+    // load. No argument reads it; null restores the authored number.
+    bloomThreshold: (value?: number | null) => {
+      if (value !== undefined && appMode === 'planetarium') {
+        PLANETARIUM_BLOOM.threshold = value === null ? BLOOM_THRESHOLD : value;
+        // A fresh object: buildComposer keeps the chain it built for the same
+        // bloom object, and a number changed inside it is not a new object.
+        buildComposer(planetariumCamera, { ...PLANETARIUM_BLOOM }, planetariumBloomEnabled());
+      }
+      return PLANETARIUM_BLOOM.threshold;
+    },
     bloomActive: () => planetariumBloomEnabled(),
     // Lens-correction A/B: pass a strength (0 = rectilinear), no args restores
     // the default. Returns the strength the pass is actually running at, which
@@ -3438,9 +3457,18 @@ function installDevHooks() {
     // set aside; null hands the sea back to the maps. Returns them all,
     // the calm lobe as its mss, and whether the maps are being read; a
     // production build has none of the knobs.
-    glint: (opts?: { cap?: number; keep?: number; calm?: number; calmMss?: number; roughness?: number | null }) => {
+    glint: (opts?: {
+      cap?: number; keep?: number; calm?: number; calmMss?: number; roughness?: number | null;
+      beamKnee?: number; beamCap?: number; sunPath?: boolean; seaBeam?: boolean;
+    }) => {
       if (opts?.cap !== undefined) devGlintUniforms.uGlintCap.value = opts.cap;
       if (opts?.keep !== undefined) devGlintUniforms.uGlintKeep.value = opts.keep;
+      // The beam chain's shoulder (knee and cap, scene units) and the two
+      // switches, live, so a probe reads each term's share from one page load.
+      if (opts?.beamKnee !== undefined) devGlintUniforms.uBeamKnee.value = opts.beamKnee;
+      if (opts?.beamCap !== undefined) devGlintUniforms.uBeamCap.value = opts.beamCap;
+      if (opts?.sunPath !== undefined) setSunPathEnabled(opts.sunPath);
+      if (opts?.seaBeam !== undefined) setSeaBeamEnabled(opts.seaBeam);
       if (opts?.calm !== undefined) devGlintUniforms.uGlintCalm.value = slopeRoughness(meanSquareSlope(opts.calm));
       if (opts?.calmMss !== undefined) devGlintUniforms.uGlintCalm.value = slopeRoughness(opts.calmMss);
       const roughness = setDevOceanRoughness(opts?.roughness);
@@ -3457,6 +3485,10 @@ function installDevHooks() {
         cap: devGlintUniforms.uGlintCap.value,
         keep: devGlintUniforms.uGlintKeep.value,
         calmMss: Math.pow(devGlintUniforms.uGlintCalm.value, 4),
+        beamKnee: devGlintUniforms.uBeamKnee.value,
+        beamCap: devGlintUniforms.uBeamCap.value,
+        sunPath: beamUniforms.uSunPath.value > 0,
+        seaBeam: beamUniforms.uSeaBeam.value > 0,
         roughness,
         seaWind: seaWindOn(),
         map: seaWindMapSource(),

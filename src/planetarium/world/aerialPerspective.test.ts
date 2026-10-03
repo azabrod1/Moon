@@ -36,7 +36,7 @@ import {
   bindSurfaceAir,
   clearSurfaceAir,
   createSurfaceAirFx,
-  type SurfaceArchetype, OCEAN_GLINT_CAP,
+  type SurfaceArchetype, OCEAN_BEAM_CAP, OCEAN_BEAM_KNEE, OCEAN_GLINT_CAP,
 } from './surfaceShading';
 import { SEA_CALM_LOBE_ROUGHNESS } from './seaWind';
 import { createEarthNightShellMaterial } from './earthNightMaterial';
@@ -98,8 +98,8 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = 'c2a958ddabb459ad85d5698ff430480a70c399881992144204a8c614d50a862e';
-const PROD_FRAGMENT_HASH = '53d21c24a4c4126816f085cac2934e82884cb83fc97799573f747590671d19cb';
+const DEV_FRAGMENT_HASH = '436c01803f992708e77fb488e0dbc4e482c07c755b26ce5f641a7c1c060f2fde';
+const PROD_FRAGMENT_HASH = '53c694fdc7b03917ea41335f14c88cf5346c8d1abbed70d6ce23c1172a1dc8d1';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 
 describe('the injected surface shader', () => {
@@ -166,7 +166,8 @@ describe('the injected surface shader', () => {
       .replace('uniform float uPerfCloudTaps;\nuniform float uPerfCloudClear;\nuniform float uPerfGlintGate;'
         + '\nuniform float uProbeCloudSmooth;\nuniform float uProbeCloudDetail;'
         + '\nuniform float uProbeCloudRelief;\nuniform float uProbeCloudAir;'
-        + '\nuniform float uGlintCap;\nuniform float uGlintKeep;\nuniform float uGlintCalm;', '')
+        + '\nuniform float uGlintCap;\nuniform float uGlintKeep;\nuniform float uGlintCalm;'
+        + '\nuniform float uBeamKnee;\nuniform float uBeamCap;', '')
       .replace(/uPerfCloudTaps < 0\.5 \|\| /g, '')
       .replace(/uPerfCloudClear > 0\.5 && /g, '')
       .replace(/uPerfGlintGate < 0\.5 \|\| /g, '')
@@ -182,6 +183,9 @@ describe('the injected surface shader', () => {
       // not in the text at all.
       .replace(/uGlintCap/g, OCEAN_GLINT_CAP.toFixed(2))
       .replace(/uGlintCalm/g, SEA_CALM_LOBE_ROUGHNESS.toFixed(5))
+      // The beam's shoulder reads as its two constants.
+      .replace(/uBeamKnee/g, OCEAN_BEAM_KNEE.toFixed(2))
+      .replace(/uBeamCap/g, OCEAN_BEAM_CAP.toFixed(2))
       .replace(/ \* uGlintKeep/g, '');
     expect(folded).not.toMatch(/uPerf|uProbe|uGlint/);
     expect(hash(import.meta.env.DEV ? folded : shader.fragmentShader)).toBe(PROD_FRAGMENT_HASH);

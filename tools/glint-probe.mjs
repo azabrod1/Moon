@@ -31,6 +31,15 @@
 // compensation on the specular term is left out of both: at water's F0 it is
 // under a ten-thousandth of the single-scatter term.
 //
+// The chain in force is read off `__moon.glint()` (seaBeam, sunPath): the
+// "expected" column takes Beckmann's Smith under the beam chain and GGX's
+// under the old one, the limb-darkening factor is applied to it only under
+// the old chain, and a fourth pair of readings with the Sun's path switched
+// off (`__moon.glint({sunPath: false})`) measures the Sun-path factor the
+// reference cannot compute without the atmosphere tables, which is then
+// folded into the expected value. So "app-air-off / expected" reads 1 under
+// either chain when the shader matches its own equations and no cap engaged.
+//
 // Per pose: the peak (scene units, and in whites — a white Lambert disc under
 // the Sun), the profile along the principal line (the frame's centre column:
 // from the nadir side up to the horizon, with the Sun's azimuth straight
@@ -210,7 +219,20 @@ function referenceAt(pose, camera, i, j, w, h) {
   const gl = NdotV * Math.sqrt(mss + (1 - mss) * NdotL * NdotL);
   const vGgx = 0.5 / Math.max(gv + gl, 1e-6);
   const common = NdotL * F * D;
-  return { ref: scale(E, common * vBeck), app: scale(E, common * vGgx), ...geometry };
+  return { ref: scale(E, common * vBeck), app: scale(E, common * (chain.seaBeam ? vBeck : vGgx)), ...geometry };
+}
+
+/** The beam chain's shoulder (world/surfaceShading OCEAN_BEAM_KNEE/CAP) and
+ *  its inverse: what a drawn value was before the shoulder held it. The
+ *  shoulder is per channel and invertible below the cap; a channel at the
+ *  cap itself has no finite preimage and is reported at the cap. */
+function unshoulder(y, knee, cap) {
+  const range = cap - knee;
+  return y.map((v) => {
+    if (v <= knee) return v;
+    const t = 1 - (v - knee) / range;
+    return t <= 1e-6 ? cap + range * 13.8 : knee - range * Math.log(t);
+  });
 }
 
 /** Half-maximum extent of a 1-D profile about its peak, in index units. */
@@ -248,6 +270,10 @@ async function readScene(page) {
   }
   return { width, height, data, exposure: head.exposure, camera: head.camera, toneMapping: head.toneMapping };
 }
+
+// The chain in force, read once the page is up: which Smith term the app's
+// own equations carry, and whether the limb darkening touches the glint.
+const chain = { seaBeam: true, sunPath: true };
 
 const waitFrames = (page, n = 3) => page.evaluate((k) => new Promise((resolve) => {
   const step = (left) => (left <= 0 ? resolve() : requestAnimationFrame(() => step(left - 1)));
@@ -316,9 +342,12 @@ try {
   const airOn = await page.waitForFunction(() => window.__moon.atmoNight?.('Earth')?.airOn === true, null, { timeout: 60000 })
     .then(() => true).catch(() => false);
   const glintState = await page.evaluate(() => window.__moon.glint());
-  console.log(`[glint-probe] sea maps: ${glintState.map}; ground air: ${airOn ? 'on' : 'NOT on (tables never landed)'}`);
+  chain.seaBeam = glintState.seaBeam !== false;
+  chain.sunPath = glintState.sunPath !== false;
+  console.log(`[glint-probe] sea maps: ${glintState.map}; ground air: ${airOn ? 'on' : 'NOT on (tables never landed)'}; chain: ${chain.seaBeam ? 'beam' : 'old'}, Sun path ${chain.sunPath ? 'on' : 'off'}`);
   report.seaMaps = glintState.map;
   report.airTables = airOn;
+  report.chain = { ...chain, beamKnee: glintState.beamKnee ?? null, beamCap: glintState.beamCap ?? null };
   if (!look) {
     await page.evaluate(() => window.__moon.setRoleHidden('clouds', true));
     await page.evaluate((e) => window.__moon.pinCapture({ near: 1e-7, exposure: e, pixelRatio: 1 }), exposure);
@@ -350,6 +379,17 @@ try {
     const onFull = await capture(1);
     await page.screenshot({ path: png });
     const onBase = await capture(0);
+    // The Sun's path, with the air still on (the term reads the tables, which
+    // the analytic tier unbinds): the glint without it over the glint with it
+    // is the factor the reference cannot compute without those tables.
+    let pathFull = null;
+    let pathBase = null;
+    if (chain.sunPath) {
+      await page.evaluate(() => window.__moon.glint({ sunPath: false }));
+      pathFull = await capture(1);
+      pathBase = await capture(0);
+      await page.evaluate(() => window.__moon.glint({ sunPath: true }));
+    }
     await page.evaluate(() => window.__moon.atmoTier('analytic'));
     await page.waitForFunction(() => window.__moon.atmoNight?.('Earth')?.airOn === false, null, { timeout: 20000 }).catch(() => {});
     await waitFrames(page, 3);
@@ -360,17 +400,29 @@ try {
 
     const { width, height, camera } = onFull;
     const ic = Math.floor(width / 2);
+    const knee = report.chain?.beamKnee ?? 0;
+    const cap = report.chain?.beamCap ?? 1;
     const px = (frame, i, j) => { const k = (j * width + i) * 4; return [frame.data[k], frame.data[k + 1], frame.data[k + 2]]; };
     const diff = (a, b, i, j) => { const x = px(a, i, j); const y = px(b, i, j); return [x[0] - y[0], x[1] - y[1], x[2] - y[2]]; };
     // The column profile, bottom row first (the nadir side) up to the sky.
     const column = [];
     for (let j = 0; j < height; j++) {
       const r = referenceAt(pose, camera, ic, j, width, height);
-      const on = diff(onFull, onBase, ic, j);
-      const off = diff(offFull, offBase, ic, j);
+      const onDrawn = diff(onFull, onBase, ic, j);
+      const offDrawn = diff(offFull, offBase, ic, j);
+      const pathDrawn = pathFull ? diff(pathFull, pathBase, ic, j) : onDrawn;
+      // Under the beam chain the shoulder sits last, on every reading: undo
+      // it, so each number below is the term as the chain carried it.
+      const un = (v) => (chain.seaBeam ? unshoulder(v, knee, cap) : v);
+      const on = un(onDrawn);
+      const off = un(offDrawn);
+      const noPath = un(pathDrawn);
+      const sunPathFactor = lum(noPath) > 1e-6 ? lum(on) / lum(noPath) : 1;
+      const limbOnGlint = r ? (chain.seaBeam ? 1 : r.limb) : 1;
       column.push({
-        j, ground: r, appOn: lum(on), appOff: lum(off), appOnRgb: on, appOffRgb: off,
+        j, ground: r, appOn: lum(on), appOff: lum(off), appDrawn: lum(onDrawn), appOnRgb: on, appOffRgb: off,
         ref: r ? lum(r.ref) : 0, appExpected: r ? lum(r.app) : 0,
+        sunPathFactor, limbOnGlint,
         total: lum(px(onFull, ic, j)),
       });
     }
@@ -433,9 +485,10 @@ try {
       limbFrame[k] = r ? r.limb : 1;
       if (refFrame[k] > refPeak) refPeak = refFrame[k];
     }
-    let windowCount = 0; let clipped = 0; let capped = 0;
+    let windowCount = 0; let clipped = 0; let capped = 0; let shouldered = 0; let sumDrawn = 0;
     let sumApp = 0; let sumAppOff = 0; let sumRef = 0; let sumAppExp = 0; let sumAppExpLimb = 0;
-    let airNum = 0; let airDen = 0;
+    let airNum = 0; let airDen = 0; let pathNum = 0; let pathDen = 0;
+    const beamCap = report.chain?.beamCap ?? OCEAN_GLINT_CAP;
     for (let j = 0; j < height; j++) for (let i = 0; i < width; i++) {
       const k = j * width + i;
       if (refFrame[k] < refPeak / 20) continue;
@@ -443,26 +496,48 @@ try {
       const total = px(onFull, i, j);
       const out = acesFilmic(total, onFull.exposure);
       if (Math.max(out[0], out[1], out[2]) >= 0.95) clipped++;
-      const off = diff(offFull, offBase, i, j);
-      const rawCapped = off.map((c) => c / Math.max(limbFrame[k], 1e-3));
-      if (Math.max(rawCapped[0], rawCapped[1], rawCapped[2]) >= OCEAN_GLINT_CAP - 0.002) capped++;
-      const on = diff(onFull, onBase, i, j);
+      const offDrawn = diff(offFull, offBase, i, j);
+      const onDrawn = diff(onFull, onBase, i, j);
+      const pathDrawn = pathFull ? diff(pathFull, pathBase, i, j) : onDrawn;
+      const un = (v) => (chain.seaBeam ? unshoulder(v, knee, cap) : v);
+      const on = un(onDrawn);
+      const off = un(offDrawn);
+      const noPath = un(pathDrawn);
+      if (chain.seaBeam) {
+        // The shoulder engaged: a drawn channel over the knee.
+        if (Math.max(onDrawn[0], onDrawn[1], onDrawn[2]) > knee) shouldered++;
+        if (Math.max(onDrawn[0], onDrawn[1], onDrawn[2]) >= beamCap * 0.97) capped++;
+      } else {
+        const rawCapped = off.map((c) => c / Math.max(limbFrame[k], 1e-3));
+        if (Math.max(rawCapped[0], rawCapped[1], rawCapped[2]) >= OCEAN_GLINT_CAP - 0.002) capped++;
+      }
+      const limbOnGlint = chain.seaBeam ? 1 : limbFrame[k];
       sumApp += lum(on); sumAppOff += lum(off); sumRef += refFrame[k]; sumAppExp += appExpFrame[k];
-      sumAppExpLimb += appExpFrame[k] * limbFrame[k];
-      airNum += lum(on); airDen += lum(off);
+      sumDrawn += lum(onDrawn);
+      // The expected value carries the measured Sun-path factor and, under
+      // the old chain, the limb darkening. The air-off reading carries no Sun
+      // path (the term reads the tables the analytic tier unbinds).
+      sumAppExpLimb += appExpFrame[k] * limbOnGlint;
+      airNum += lum(on); airDen += lum(off * (lum(noPath) > 1e-6 ? lum(on) / lum(noPath) : 1));
+      pathNum += lum(on); pathDen += lum(noPath);
     }
     const peakApp = alongApp?.peak ?? 0;
     const peakRow = alongApp?.peakRow ?? 0;
     const peakRef = column[peakRow]?.ref ?? 0;
     const peakAppExp = column[peakRow]?.appExpected ?? 0;
-    const peakLimb = column[peakRow]?.ground?.limb ?? 1;
+    const peakLimb = column[peakRow]?.limbOnGlint ?? 1;
+    const peakPath = column[peakRow]?.sunPathFactor ?? 1;
     const peakOff = column[peakRow]?.appOff ?? 0;
     const summary = {
       key: depKey, pose, png, mirrorPixel, frame: { width, height, exposure: onFull.exposure, toneMapping: onFull.toneMapping },
       peak: {
         appScene: peakApp, appWhites: peakApp / whiteLum, appOffScene: peakOff,
         refScene: peakRef, refWhites: peakRef / whiteLum, appExpectedScene: peakAppExp,
-        limbFactorThere: peakLimb, airFactorThere: peakOff > 0 ? peakApp / peakOff : null,
+        drawnScene: column[peakRow]?.appDrawn ?? 0, drawnWhites: (column[peakRow]?.appDrawn ?? 0) / whiteLum,
+        limbFactorThere: peakLimb, sunPathFactorThere: peakPath,
+        // The air's own share: the on reading over the off one, the Sun's path
+        // taken out of the on reading since the off one never carried it.
+        airFactorThere: peakOff > 0 ? peakApp / (peakOff * peakPath) : null,
         appOverRef: peakRef > 0 ? peakApp / peakRef : null,
         appOffOverExpected: peakAppExp > 0 ? peakOff / (peakAppExp * peakLimb) : null,
         refPeakAnywhere: refPeak, refPeakAnywhereWhites: refPeak / whiteLum,
@@ -474,8 +549,11 @@ try {
         capFraction: windowCount ? capped / windowCount : null,
         energyAppOverRef: sumRef > 0 ? sumApp / sumRef : null,
         energyAppOffOverExpectedLimb: sumAppExpLimb > 0 ? sumAppOff / sumAppExpLimb : null,
+        shoulderFraction: windowCount && chain.seaBeam ? shouldered / windowCount : null,
+        energyDrawnOverCarried: sumApp > 0 ? sumDrawn / sumApp : null,
         energyAppOffOverExpected: sumAppExp > 0 ? sumAppOff / sumAppExp : null,
         airTransmittanceOnGlint: airDen > 0 ? airNum / airDen : null,
+        sunPathOnGlint: pathDen > 0 ? pathNum / pathDen : null,
       },
       // The column at every twentieth row: view angle, ground angle, the four numbers.
       profile: column.filter((c, idx) => idx % Math.max(1, Math.floor(height / 40)) === 0 || idx === peakRow).map((c) => ({
@@ -485,7 +563,8 @@ try {
         mu: c.ground ? +c.ground.NdotV.toFixed(3) : null,
         sunElevDeg: c.ground ? +((Math.asin(c.ground.NdotL) * 180) / Math.PI).toFixed(2) : null,
         appOn: +c.appOn.toFixed(4), appOff: +c.appOff.toFixed(4), ref: +c.ref.toFixed(4), appExpected: +c.appExpected.toFixed(4),
-        limb: c.ground ? +c.ground.limb.toFixed(3) : null,
+        limb: c.ground ? +c.limbOnGlint.toFixed(3) : null,
+        sunPath: +c.sunPathFactor.toFixed(3),
         total: +c.total.toFixed(4),
       })),
     };
@@ -504,23 +583,23 @@ try {
 
 await writeFile(path.join(outDir, 'report.json'), JSON.stringify(report, null, 2));
 const lines = [];
-lines.push(`glint-probe ${label}: ${look ? 'look arm' : `wind ${windAsDrawn.toFixed(2)} m/s (mss ${mss.toFixed(5)})`}, ${altitudeKm} km up, Sun ${sunElevDeg}° high at the stand point, bearing ${bearingDeg}°, azimuth ${azimuthDeg}°, fov ${fovDeg}°, exposure ${exposure}, ${timeIso}`);
+lines.push(`glint-probe ${label}: ${look ? 'look arm' : `wind ${windAsDrawn.toFixed(2)} m/s (mss ${mss.toFixed(5)})`}, chain ${report.chain?.seaBeam ? 'beam' : 'old'} (Sun path ${report.chain?.sunPath ? 'on' : 'off'}), ${altitudeKm} km up, Sun ${sunElevDeg}° high at the stand point, bearing ${bearingDeg}°, azimuth ${azimuthDeg}°, fov ${fovDeg}°, exposure ${exposure}, ${timeIso}`);
 lines.push(`one white (a Lambert disc under the Sun) = ${whiteLum.toFixed(4)} scene units; sea maps: ${report.seaMaps}; air tables: ${report.airTables}`);
 for (const p of report.poses) {
   lines.push('');
   lines.push(`pose ${p.key}: depression ${p.pose.depressionDeg.toFixed(2)}°, horizon dip ${p.pose.horizonDipDeg.toFixed(2)}°, mirror ${p.pose.mirror ? `${p.pose.mirror.groundAngleDeg.toFixed(2)}° along the ground, depression ${p.pose.mirror.depressionDeg.toFixed(2)}°, Sun ${p.pose.mirror.sunElevDeg.toFixed(2)}° high there, ${p.pose.mirror.slantKm.toFixed(0)} km away` : 'none'}${p.mirrorPixel ? `, in frame at (${p.mirrorPixel.x.toFixed(0)}, ${p.mirrorPixel.y.toFixed(0)} from the bottom)` : ''}`);
   if (look) continue;
   const k = p.peak;
-  lines.push(`  peak on the centre column: app ${k.appScene.toFixed(4)} (${k.appWhites.toFixed(2)} whites) | reference ${k.refScene.toFixed(4)} (${k.refWhites.toFixed(2)} whites) | app/ref ${k.appOverRef?.toFixed(3)}`);
-  lines.push(`    attributed there: limb darkening x${k.limbFactorThere.toFixed(3)}, air x${k.airFactorThere?.toFixed(3)}, app-air-off / (chain's expected x limb) ${k.appOffOverExpected?.toFixed(3)} (1 = the cap did not engage and the shader matches its own equations)`);
+  lines.push(`  peak on the centre column: app ${k.appScene.toFixed(4)} (${k.appWhites.toFixed(2)} whites) as carried to the camera${report.chain?.seaBeam ? `, drawn ${k.drawnScene.toFixed(4)} (${k.drawnWhites.toFixed(2)} whites) after the shoulder` : ''} | reference ${k.refScene.toFixed(4)} (${k.refWhites.toFixed(2)} whites) | app/ref ${k.appOverRef?.toFixed(3)}`);
+  lines.push(`    attributed there: limb darkening on the glint x${k.limbFactorThere.toFixed(3)}, Sun's path x${k.sunPathFactorThere.toFixed(3)}, air on the camera leg x${k.airFactorThere?.toFixed(3)}, app-air-off / (chain's expected x limb) ${k.appOffOverExpected?.toFixed(3)} (1 = the shader matches its own equations)`);
   lines.push(`  reference peak anywhere in frame: ${k.refPeakAnywhere.toFixed(4)} (${k.refPeakAnywhereWhites.toFixed(2)} whites)`);
   lines.push(`  beam half-max along the column: app ${p.along.app?.halfMaxViewDeg?.toFixed(2)}° of view (${p.along.app?.halfMaxGroundKm?.toFixed(0)} km of ground${p.along.app?.reachedTheSky ? ', reaches the horizon' : ''}) | reference ${p.along.ref?.halfMaxViewDeg?.toFixed(2)}° (${p.along.ref?.halfMaxGroundKm?.toFixed(0)} km${p.along.ref?.reachedTheSky ? ', reaches the horizon' : ''})`);
   lines.push(`  beam half-max across: app ${p.across.app?.halfMaxViewDeg?.toFixed(2)}° | reference ${p.across.ref?.halfMaxViewDeg?.toFixed(2)}°`);
   const w = p.window;
-  lines.push(`  beam window (${w.pixels} px where the reference is over a twentieth of its peak): clip ${(w.clipFraction * 100).toFixed(1)}% at >= 0.95 white through the tone curve, cap ${(w.capFraction * 100).toFixed(1)}% held at ${OCEAN_GLINT_CAP}, energy app/ref ${w.energyAppOverRef?.toFixed(3)}, air-off app / (expected x limb) ${w.energyAppOffOverExpectedLimb?.toFixed(3)}, air transmittance on the glint ${w.airTransmittanceOnGlint?.toFixed(3)}`);
-  lines.push('  profile (centre column, bottom to top): view°  ground°  mu  sun°   app(on)  app(off)  ref  expected  limb  total');
+  lines.push(`  beam window (${w.pixels} px where the reference is over a twentieth of its peak): clip ${(w.clipFraction * 100).toFixed(1)}% at >= 0.95 white through the tone curve, ${report.chain?.seaBeam ? `shoulder engaged on ${(w.shoulderFraction * 100).toFixed(1)}% (over the knee ${report.chain.beamKnee}), ${(w.capFraction * 100).toFixed(1)}% within 3% of the cap ${report.chain.beamCap}, drawn/carried energy ${w.energyDrawnOverCarried?.toFixed(3)}` : `cap ${(w.capFraction * 100).toFixed(1)}% held at ${OCEAN_GLINT_CAP}`}, energy app/ref ${w.energyAppOverRef?.toFixed(3)}, air-off app / (expected x limb) ${w.energyAppOffOverExpectedLimb?.toFixed(3)}, Sun's path on the glint ${w.sunPathOnGlint?.toFixed(3)}, air on the camera leg ${w.airTransmittanceOnGlint?.toFixed(3)}`);
+  lines.push('  profile (centre column, bottom to top): view°  ground°  mu  sun°   app(on)  app(off)  ref  expected  limb  path  total');
   for (const r of p.profile) {
-    lines.push(`    ${String(r.viewDeg ?? 'sky').padStart(7)} ${String(r.groundDeg ?? '').padStart(7)} ${String(r.mu ?? '').padStart(6)} ${String(r.sunElevDeg ?? '').padStart(6)}  ${r.appOn.toFixed(4)}  ${r.appOff.toFixed(4)}  ${r.ref.toFixed(4)}  ${r.appExpected.toFixed(4)}  ${r.limb ?? ''}  ${r.total.toFixed(4)}`);
+    lines.push(`    ${String(r.viewDeg ?? 'sky').padStart(7)} ${String(r.groundDeg ?? '').padStart(7)} ${String(r.mu ?? '').padStart(6)} ${String(r.sunElevDeg ?? '').padStart(6)}  ${r.appOn.toFixed(4)}  ${r.appOff.toFixed(4)}  ${r.ref.toFixed(4)}  ${r.appExpected.toFixed(4)}  ${r.limb ?? ''}  ${r.sunPath}  ${r.total.toFixed(4)}`);
   }
 }
 await writeFile(path.join(outDir, 'report.txt'), lines.join('\n') + '\n');

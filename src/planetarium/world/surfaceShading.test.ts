@@ -743,8 +743,23 @@ describe('the haze fade and the glint cap', () => {
     // the mirror term. The shadow must cut from what the cap left, or under
     // cloud the light goes negative and bloom paints a coloured core.
     const frag = fragmentOf('airless');
-    expect(frag).toContain(`seaGlint = min(glintRaw * (seaFresnel * seaLobe${import.meta.env.DEV ? ' * uGlintKeep' : ''}), vec3(${
+    expect(frag).toContain(`vec3 seaGlintFull = glintRaw * (seaFresnel * seaLobe${import.meta.env.DEV ? ' * uGlintKeep' : ''});`);
+    // Two chains: the old cap before the air, the beam's shoulder after it.
+    expect(frag).toContain(`seaGlint = uSeaBeam > 0.5 ? seaGlintFull : min(seaGlintFull, vec3(${
       import.meta.env.DEV ? 'uGlintCap' : '1.25'}));`);
+    expect(frag).toContain(`vec3 beamKnee = vec3(${import.meta.env.DEV ? 'uBeamKnee' : '0.85'});`);
+    expect(frag).toContain(`vec3 beamRange = vec3(${import.meta.env.DEV ? 'uBeamCap' : '1.05'}) - beamKnee;`);
+    // The mirror term stays live through everything that scales the light, so
+    // the shoulder after the air shapes the share that reached the camera.
+    expect(frag).toContain('seaGlint *= cloudSunKeep;');
+    expect(frag).toContain('seaGlint *= sunVisible;');
+    expect(frag).toContain('vec3 limbHeld = seaGlint * uSeaBeam;');
+    expect(frag).toContain('seaGlint = mix(seaGlint, seaGlint * airT, airWeight);');
+    expect(frag).toContain('outgoingLight -= seaGlint - beamHeld;');
+    // The Sun's own path, on the direct terms of every surface, before the sea
+    // reads its mirror term, and normalised to the zenith.
+    expect(frag.indexOf('reflectedLight.directSpecular *= sunPath;')).toBeLessThan(frag.indexOf('vec3 glintRaw = reflectedLight.directSpecular;'));
+    expect(frag).toContain('/ max(getTransmittanceToSun(uTransmittance, sunPathR, 1.0), vec3(1e-4));');
     expect(frag).toContain('outgoingLight -= seaGlint * (1.0 - cloudSunKeep);');
     expect(frag).not.toMatch(/reflectedLight\.directSpecular \* cloudCoverage/);
     // The beam's share through the deck is one value, read from the map once
@@ -834,7 +849,8 @@ describe('the haze fade and the glint cap', () => {
     expect(text).toContain('float airWeight = uAirBlend * aerialHazeWeight(seg, uSurfaceHaze);');
     expect(text).toContain('outgoingLight = mix(outgoingLight, outgoingLight * airT + airS, airWeight);');
     expect(OCEAN_GLINT_CAP).toBeGreaterThan(1);
-    expect(text).toContain(`seaGlint = min(glintRaw * (seaFresnel * seaLobe${import.meta.env.DEV ? ' * uGlintKeep' : ''}), vec3(${
+    expect(text).toContain(`vec3 seaGlintFull = glintRaw * (seaFresnel * seaLobe${import.meta.env.DEV ? ' * uGlintKeep' : ''});`);
+    expect(text).toContain(`seaGlint = uSeaBeam > 0.5 ? seaGlintFull : min(seaGlintFull, vec3(${
       import.meta.env.DEV ? 'uGlintCap' : OCEAN_GLINT_CAP.toFixed(2)}));`);
     expect(text).toContain('outgoingLight -= glintRaw - seaGlint;');
     // The cloud mask cuts the water's own term, never three's raw one.
@@ -932,8 +948,12 @@ describe('the sea', () => {
     // with its distribution.
     expect(text).toContain('float seaVisWindy = V_GGX_SmithCorrelated(seaAlphaWindy, seaDotNL, seaDotNV);');
     expect(text).toContain('float seaVisCalm = V_GGX_SmithCorrelated(seaAlphaCalm, seaDotNL, seaDotNV);');
+    // The beam chain's Beckmann Smith on each lobe, three's GGX one on the old
+    // chain; the denominator is three's either way.
+    expect(text).toContain('float seaBeamVisWindy = uSeaBeam > 0.5 ? seaBeckmannVis(seaAlphaWindy, seaDotNL, seaDotNV) : seaVisWindy;');
+    expect(text).toContain('float seaBeamVisCalm = uSeaBeam > 0.5 ? seaBeckmannVis(seaAlphaCalm, seaDotNL, seaDotNV) : seaVisCalm;');
     expect(text).toContain('seaLobe = mix(1.0,\n'
-      + '          mix(seaVisWindy * seaBeckmann(seaAlphaWindy, seaDotNH), seaVisCalm * seaBeckmann(seaAlphaCalm, seaDotNH), seaCalmWeight)\n'
+      + '          mix(seaBeamVisWindy * seaBeckmann(seaAlphaWindy, seaDotNH), seaBeamVisCalm * seaBeckmann(seaAlphaCalm, seaDotNH), seaCalmWeight)\n'
       + '              / (seaVisWindy * D_GGX(seaAlphaWindy, seaDotNH)),\n'
       + '          seaWater);');
     // The two lobes share their peak: at the half vector on the normal, both

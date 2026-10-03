@@ -500,6 +500,29 @@ export const SEA_WATER_F0 = ((SEA_WATER_IOR - 1) / (SEA_WATER_IOR + 1)) ** 2;
 export const OCEAN_GLINT_CAP = 1.25;
 
 /**
+ * The beam chain's cap, on what REACHES THE CAMERA (SURFACE_FRAGMENT_BODY,
+ * after the air): a shoulder, linear up to the knee and an exponential
+ * approach to the cap above it, continuous in value and slope at the knee,
+ * per channel, in scene units (a white Lambert disc under the Sun reads
+ * SUN_LIGHT_INTENSITY / pi, about 0.88). OCEAN_GLINT_CAP flattened the beam's
+ * top into a plateau before the air and the limb darkening then sloped it
+ * down toward the horizon, which is backwards for a mirror; this holds a core
+ * past white just past it, where the tone curve is already rolling off (an
+ * ACES input of 1.3 lands at 0.8 of its white, 2.6 at 0.9), and leaves the
+ * bright pass a bounded excess. Behind `?seabeam=0`, which keeps the old cap.
+ *
+ * The shipped numbers hold the beam UNDER the bloom: the planetarium's bright
+ * pass (app/bloomConfig, threshold 1.0) is the Sun's, and a sea that reaches
+ * 2 whites at the camera is blurred by it at the Sun's radius into a halo
+ * over the limb and out into space, which no photograph of a glint shows.
+ * The physics puts the beam's core at 2 to 5 whites and the DEV knobs
+ * (`__moon.glint({beamKnee, beamCap})`) reach it; letting it stand there
+ * needs a bright pass that can tell the sea from the Sun, which is open.
+ */
+export const OCEAN_BEAM_KNEE = 0.85;
+export const OCEAN_BEAM_CAP = 1.05;
+
+/**
  * The cap, a scale and the calm lobe as the shader reads them. In a
  * development build they are uniforms, so the glint can be tuned live at a
  * pose (`__moon.glint`) and a sheet of candidates captured from one page load:
@@ -514,12 +537,18 @@ export const devGlintUniforms: {
   uGlintCap: { value: number };
   uGlintKeep: { value: number };
   uGlintCalm: { value: number };
+  uBeamKnee: { value: number };
+  uBeamCap: { value: number };
 } = {
   uGlintCap: { value: OCEAN_GLINT_CAP },
   uGlintKeep: { value: 1 },
   uGlintCalm: { value: SEA_CALM_LOBE_ROUGHNESS },
+  uBeamKnee: { value: OCEAN_BEAM_KNEE },
+  uBeamCap: { value: OCEAN_BEAM_CAP },
 };
 const GLINT_CAP_GLSL = import.meta.env.DEV ? 'uGlintCap' : OCEAN_GLINT_CAP.toFixed(2);
+const BEAM_KNEE_GLSL = import.meta.env.DEV ? 'uBeamKnee' : OCEAN_BEAM_KNEE.toFixed(2);
+const BEAM_CAP_GLSL = import.meta.env.DEV ? 'uBeamCap' : OCEAN_BEAM_CAP.toFixed(2);
 const GLINT_KEEP_GLSL = import.meta.env.DEV ? ' * uGlintKeep' : '';
 const GLINT_CALM_GLSL = import.meta.env.DEV ? 'uGlintCalm' : SEA_CALM_LOBE_ROUGHNESS.toFixed(5);
 
@@ -1401,7 +1430,9 @@ uniform float uProbeCloudAir;`;
 /** The glint's tuning uniforms (devGlintUniforms), development builds only. */
 const DEV_TUNING_DECLS = /* glsl */ `uniform float uGlintCap;
 uniform float uGlintKeep;
-uniform float uGlintCalm;`;
+uniform float uGlintCalm;
+uniform float uBeamKnee;
+uniform float uBeamCap;`;
 
 /**
  * The cloud deck's cost probes (app/perfSwitches.ts, `cloud-probe-*`): each
@@ -1538,6 +1569,18 @@ float seaBeckmann(float alpha, float dotNH) {
   float cos2 = max(dotNH * dotNH, 1e-6);
   float alpha2 = alpha * alpha;
   return exp((cos2 - 1.0) / (cos2 * alpha2)) / (PI * alpha2 * cos2 * cos2);
+}
+// Beckmann's own Smith shadowing, Walter's rational fit of its G1 in
+// a = 1 / (alpha tan theta), as the visibility term V = G1(l) G1(v) / (4 n.l n.v)
+// that multiplies the lobe. three's correlated GGX Smith on this lobe read
+// about a third too dark at a grazing Sun and eye, which is where the beam is.
+float seaBeckmannG1(float cosTheta, float alpha) {
+  float sinTheta = sqrt(max(1.0 - cosTheta * cosTheta, 0.0));
+  float a = cosTheta / max(alpha * sinTheta, 1e-6);
+  return a >= 1.6 ? 1.0 : (3.535 * a + 2.181 * a * a) / (1.0 + 2.276 * a + 2.577 * a * a);
+}
+float seaBeckmannVis(float alpha, float dotNL, float dotNV) {
+  return seaBeckmannG1(dotNL, alpha) * seaBeckmannG1(dotNV, alpha) / max(4.0 * dotNL * dotNV, 1e-6);
 }`;
 
 const SURFACE_FRAGMENT_DECLS = /* glsl */ `
@@ -1569,6 +1612,8 @@ uniform float uWaterGloss;
 uniform sampler2D uSeaCalmMap;
 uniform sampler2D uSeaWindMap;
 uniform float uSeaWindOn;
+uniform float uSunPath;
+uniform float uSeaBeam;
 uniform sampler2D uCloudShadowMap;
 uniform float uCloudShadowSpin;
 uniform float uCloudDeck;
@@ -1729,6 +1774,29 @@ ${SURFACE_DETAIL_BODY}
 ${CLOUD_CLEAR_RETURN}`;
 
 const SURFACE_FRAGMENT_BODY = /* glsl */ `{
+  // The Sun's own path through this body's air to the fragment. three's point
+  // light reaches every surface at its full strength, but a Sun ten degrees up
+  // has come through several times the zenith's column, and what reaches the
+  // ground is dimmer and redder: the gold on a low-Sun sea, a cloud top and a
+  // coast is that path. The table's transmittance toward the Sun at this
+  // fragment's radius and Sun angle, divided by the same table at the zenith,
+  // so the subsolar picture stays the one that was graded and only the low Sun
+  // moves; on the direct terms alone — the diffuse and the mirror — because
+  // the sky's light is the air's own and comes in through the irradiance
+  // table where that is read. Faded in with the air's own blend, so the
+  // tables' arrival does not step the terminator; skipped where the Sun is
+  // under the fragment's horizon, where three's direct terms are zero
+  // already. The deck takes it at its own altitude. Any build: ?sunpath=0.
+  if (uAirDensity > 0.0 && uSunPath > 0.5 && dot(normal, normalize(vSunViewDir)) > 0.0) {
+    float sunPathR = clampRadius(length(vAirFrag) / uPlanetRadius);
+    float sunPathMu = clampCosine(dot(normalize(vAirFrag), normalize(uSunDirWorld)));
+    vec3 sunPath = getTransmittanceToSun(uTransmittance, sunPathR, sunPathMu)
+        / max(getTransmittanceToSun(uTransmittance, sunPathR, 1.0), vec3(1e-4));
+    sunPath = mix(vec3(1.0), min(sunPath, vec3(1.0)), uAirBlend);
+    outgoingLight -= (reflectedLight.directDiffuse + reflectedLight.directSpecular) * (1.0 - sunPath);
+    reflectedLight.directDiffuse *= sunPath;
+    reflectedLight.directSpecular *= sunPath;
+  }
   // The sea's mirror term as water rather than as three's generic dielectric
   // (SEA_WATER_F0): three's term is rescaled by the ratio of the two Schlick
   // curves at this fragment's half vector, with three's own exp2 approximation
@@ -1769,12 +1837,23 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
       float seaAlphaCalm = pow2(min(${GLINT_CALM_GLSL} + geometryRoughness, 1.0));
       float seaVisWindy = V_GGX_SmithCorrelated(seaAlphaWindy, seaDotNL, seaDotNV);
       float seaVisCalm = V_GGX_SmithCorrelated(seaAlphaCalm, seaDotNL, seaDotNV);
+      // The beam chain shadows each Beckmann lobe with Beckmann's own Smith
+      // term; the old chain kept three's GGX one. The denominator stays
+      // three's whichever chain, since that is what is being divided out.
+      float seaBeamVisWindy = uSeaBeam > 0.5 ? seaBeckmannVis(seaAlphaWindy, seaDotNL, seaDotNV) : seaVisWindy;
+      float seaBeamVisCalm = uSeaBeam > 0.5 ? seaBeckmannVis(seaAlphaCalm, seaDotNL, seaDotNV) : seaVisCalm;
       seaLobe = mix(1.0,
-          mix(seaVisWindy * seaBeckmann(seaAlphaWindy, seaDotNH), seaVisCalm * seaBeckmann(seaAlphaCalm, seaDotNH), seaCalmWeight)
+          mix(seaBeamVisWindy * seaBeckmann(seaAlphaWindy, seaDotNH), seaBeamVisCalm * seaBeckmann(seaAlphaCalm, seaDotNH), seaCalmWeight)
               / (seaVisWindy * D_GGX(seaAlphaWindy, seaDotNH)),
           seaWater);
     }
-    seaGlint = min(glintRaw * (seaFresnel * seaLobe${GLINT_KEEP_GLSL}), vec3(${GLINT_CAP_GLSL}));
+    vec3 seaGlintFull = glintRaw * (seaFresnel * seaLobe${GLINT_KEEP_GLSL});
+    // The old chain caps the term here, before the air and the limb darkening
+    // (OCEAN_GLINT_CAP). The beam chain carries the whole of it to the camera
+    // and shapes it there, after the air (OCEAN_BEAM_KNEE, OCEAN_BEAM_CAP):
+    // seaGlint stays the mirror term as it CURRENTLY sits inside
+    // outgoingLight, scaled below by everything that scales the light.
+    seaGlint = uSeaBeam > 0.5 ? seaGlintFull : min(seaGlintFull, vec3(${GLINT_CAP_GLSL}));
     outgoingLight -= glintRaw - seaGlint;
   }
   // The deck's alpha, worked out with its colour above where the lights could
@@ -1842,6 +1921,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
       // ANGLE compiles the same arithmetic in a second branch to a frame one
       // bit off at a lit pixel.
       outgoingLight -= seaGlint * (1.0 - cloudSunKeep);
+      seaGlint *= cloudSunKeep;
     }
   }
   // The sine of the Sun's elevation at this fragment, off the perturbed normal:
@@ -1965,12 +2045,17 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
     sunVisible *= 1.0 - occ * dayFactor;
   }
   outgoingLight *= sunVisible;
+  seaGlint *= sunVisible;
   // Limb darkening: the disc dims toward its edge as the view ray grazes the
   // surface. mu = cos of the view angle — 1 at disc centre, 0 at the limb.
-  // Applied last so it shades every lit term equally; 0 disables it.
+  // Applied last so it shades every lit term equally; 0 disables it. The beam
+  // chain holds the water's mirror term out of it: a mirror does not darken
+  // toward the limb, it brightens, and the air below is the real limb. Off,
+  // the held share is exactly zero and the product is the one it was.
   if (GROUND_ON(uLimbDarkening > 0.0)) {
     float mu = max(dot(normalize(normal), normalize(vViewPosition)), 0.0);
-    outgoingLight *= 1.0 - uLimbDarkening * (1.0 - mu);
+    vec3 limbHeld = seaGlint * uSeaBeam;
+    outgoingLight = (outgoingLight - limbHeld) * (1.0 - uLimbDarkening * (1.0 - mu)) + limbHeld;
   }
   // Lit from below: the city lights on the ground under this deck fragment,
   // shining up into it. Added after the eclipse factor and the limb term
@@ -2026,7 +2111,22 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
       // it fades in over a moment instead.
       float airWeight = uAirBlend * aerialHazeWeight(seg, uSurfaceHaze);
       outgoingLight = mix(outgoingLight, outgoingLight * airT + airS, airWeight);
+      seaGlint = mix(seaGlint, seaGlint * airT, airWeight);
     }
+  }
+  // The beam's cap, on what REACHES THE CAMERA: everything above scaled the
+  // mirror term along with the light, so seaGlint is now its share of this
+  // pixel. A shoulder — the term itself up to the knee, then an exponential
+  // approach to the cap, continuous in value and slope at the knee, per
+  // channel — so a core past white is held just past it instead of flattened
+  // to a plateau, and the bright pass is handed a bounded excess. The old
+  // chain capped before the air and skips this.
+  if (uSeaBeam > 0.5 && any(greaterThan(seaGlint, vec3(0.0)))) {
+    vec3 beamKnee = vec3(${BEAM_KNEE_GLSL});
+    vec3 beamRange = vec3(${BEAM_CAP_GLSL}) - beamKnee;
+    vec3 beamOver = max(seaGlint - beamKnee, vec3(0.0));
+    vec3 beamHeld = min(seaGlint, beamKnee) + beamRange * (1.0 - exp(-beamOver / beamRange));
+    outgoingLight -= seaGlint - beamHeld;
   }
 }`;
 
@@ -2114,6 +2214,38 @@ export function setSurfaceWaterGloss(mat: THREE.Material, on: boolean): void {
  * authors (0). Bound to the 1x1 stand-in until both maps have landed and a
  * sea is confirmed; `?seawind=0` and a DEV roughness override hold it at 0.
  */
+/**
+ * The energy chain's two switches, any build, one uniform object every
+ * surface binds. `uSunPath` (`?sunpath=0`): the Sun's own path through the
+ * body's air on every surface's direct terms, so a low Sun lights the ground,
+ * the sea and the cloud deck dimmer and redder, normalised to the zenith so
+ * the subsolar picture is the one that was graded. `uSeaBeam` (`?seabeam=0`):
+ * the sea's beam chain — Beckmann's own shadowing on the sea's Beckmann lobes,
+ * the mirror term held out of the limb darkening, and its cap moved after the
+ * air as a shoulder on what reaches the camera — against the chain as it was,
+ * with the cap before the air. Off, each leaves the shader taking the old
+ * expressions, so either kill switch is the picture as it was.
+ */
+export const beamUniforms: { uSunPath: { value: number }; uSeaBeam: { value: number } } = {
+  uSunPath: { value: 1 },
+  uSeaBeam: { value: 1 },
+};
+export function setSunPathEnabled(on: boolean): void {
+  beamUniforms.uSunPath.value = on ? 1 : 0;
+}
+export function setSeaBeamEnabled(on: boolean): void {
+  beamUniforms.uSeaBeam.value = on ? 1 : 0;
+}
+/** `?sunpath=0`, any build: the Sun's light unattenuated by its path through
+ *  the air again, in the house style of `?seawind=0`. */
+export function parseSunPathParam(search: string): boolean {
+  return new URLSearchParams(search).get('sunpath') !== '0';
+}
+/** `?seabeam=0`, any build: the sea's old chain, its cap before the air. */
+export function parseSeaBeamParam(search: string): boolean {
+  return new URLSearchParams(search).get('seabeam') !== '0';
+}
+
 export const seaWindUniforms: {
   uSeaCalmMap: { value: THREE.Texture | null };
   uSeaWindMap: { value: THREE.Texture | null };
@@ -2590,6 +2722,8 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uSeaCalmMap = seaWindUniforms.uSeaCalmMap;
     shader.uniforms.uSeaWindMap = seaWindUniforms.uSeaWindMap;
     shader.uniforms.uSeaWindOn = seaWindUniforms.uSeaWindOn;
+    shader.uniforms.uSunPath = beamUniforms.uSunPath;
+    shader.uniforms.uSeaBeam = beamUniforms.uSeaBeam;
     shader.uniforms.uCloudDeck = uCloudDeck;
     shader.uniforms.uCloudDetail = uCloudDetail;
     shader.uniforms.uCloudAlbedo = uCloudAlbedo;
@@ -2610,6 +2744,8 @@ export function augmentSurfaceMaterial(
       shader.uniforms.uGlintCap = devGlintUniforms.uGlintCap;
       shader.uniforms.uGlintKeep = devGlintUniforms.uGlintKeep;
       shader.uniforms.uGlintCalm = devGlintUniforms.uGlintCalm;
+      shader.uniforms.uBeamKnee = devGlintUniforms.uBeamKnee;
+      shader.uniforms.uBeamCap = devGlintUniforms.uBeamCap;
     }
     shader.uniforms.uFrameSpin = uFrameSpin;
     shader.uniforms.uSynthDetail = uSynthDetail;

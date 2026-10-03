@@ -367,7 +367,19 @@ export function createAtmosphereShellMaterial(
     transparent: true,
     side: THREE.BackSide,
     depthWrite: false,
-    blending: THREE.AdditiveBlending,
+    // Additive on the colour, exactly as three's AdditiveBlending blends it
+    // (source alpha, one), and NOTHING on the alpha: the ground under this
+    // shell carries a flag for the bloom in the scene target's alpha
+    // (world/surfaceShading SEA_BLOOM_FLAG_GLSL), and three's additive mode
+    // would add this fragment's alpha of 1 over it on every pixel of the disc.
+    // The shell's own alpha was never read by anything.
+    blending: THREE.CustomBlending,
+    blendEquation: THREE.AddEquation,
+    blendSrc: THREE.SrcAlphaFactor,
+    blendDst: THREE.OneFactor,
+    blendEquationAlpha: THREE.AddEquation,
+    blendSrcAlpha: THREE.ZeroFactor,
+    blendDstAlpha: THREE.OneFactor,
   });
   material.userData.atmosphereDummyTables = [dummies.map2D, dummies.map3D];
   return material;

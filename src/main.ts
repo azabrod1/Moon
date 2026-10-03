@@ -59,28 +59,47 @@ import {
 } from './planetarium/world/gpuEnvelope';
 import { BootRenderGate } from './app/bootRenderGate';
 import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn } from './app/perfSwitches';
-import { bloomHighPassMaterial, holdBloomSize, setBloomInternalDepth } from './app/bloomTargets';
+import {
+  bloomHighPassMaterial, holdBloomSize, installBloomKnee, installSeaBloomShare, parseBloomKneeParam, setBloomInternalDepth,
+} from './app/bloomTargets';
 import {
   applyNightLift,
+  devCloudLight,
+  devCloudShadow,
   devGlintUniforms,
   nightLiftUniform,
   setDevOceanRoughness,
   setDevSurfaceHaze,
   SURFACE_HAZE_CLEAR_VIEW,
+  rebindSeaWindMaps,
+  seaWindOn,
+  setSeaWindEnabled,
+  parseSeaBeamParam, parseSunPathParam, seaBeamOn, setSeaBeamEnabled, setSunPathEnabled, sunPathOn,
+  surfaceShadingArgsOf,
 } from './planetarium/world/surfaceShading';
+import { cloudFieldRequested } from './planetarium/world/cloudField';
+import type { CloudFieldRequest } from './planetarium/world/cloudFieldPool';
+import { SUN_LIGHT_COLOR, SUN_LIGHT_INTENSITY } from './planetarium/PlanetFactory';
+import { AIRLIGHT_SCALE } from './planetarium/world/atmosphereModel';
+import { devAlbedoGrade } from './planetarium/world/albedoGrade';
 import { parseNightExposureParam, setDevNightExposure, type NightExposureOverride } from './planetarium/world/nightExposure';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass, parseFusedParam } from './app/FusedOutputPass';
+import {
+  installSeaWindMap, loadSeaWindMap, meanSquareSlope, parseSeaWindMapParam, parseSeaWindParam, seaWindMapSource,
+  seaWindTextures, seaWindTexturesFrom, setSeaWindMips, slopeRoughness,
+} from './planetarium/world/seaWind';
 import type { GpuProfiler, GpuProfileOptions } from './app/devGpuProfile';
 import type { GpuClock, GpuClockOptions } from './app/devGpuClock';
 import { ScreenCopy, canvasSampleCount, createScreenTarget, fitScreenTarget, screenTargetSamples } from './app/screenTarget';
 import { bitmapDecodePath } from './planetarium/world/textureBitmapLoader';
-import { BLOOM_RADIUS, PLANETARIUM_BLOOM } from './app/bloomConfig';
+import { BLOOM_RADIUS, BLOOM_THRESHOLD, PLANETARIUM_BLOOM } from './app/bloomConfig';
 import {
   createLensPass, devSetLensPassOff, lensSubRectUniforms, makeLensUniforms, syncLensUniforms,
   updateLensPass, type LensParams, type LensUniforms,
 } from './app/LensPass';
 import { applyDesignFov, displayFovDeg, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
+import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { loadBrightStarCatalog } from './planetarium/world/starCatalogLoader';
 import { debugError, debugLog, debugWarn } from './shared/debug';
 import { safeAreaInsets } from './shared/dom';
@@ -200,6 +219,12 @@ if (import.meta.env.DEV) {
       debugWarn('Shader salt could not be installed', err);
     }
   }
+  // The cloud field's vertical slice (world/cloudFieldPool): `?cloudtiles=1`
+  // allocates its page pool here, under the boot cover, empty. The module is
+  // loaded on demand, so neither the pool nor its worker is in any build.
+  if (cloudFieldRequested()) {
+    void import('./planetarium/world/cloudFieldPool').then((m) => m.installCloudFieldPool(renderer));
+  }
 }
 
 // Enable bloom on any device whose GPU supports float framebuffers. `?nofloat=1`
@@ -286,6 +311,37 @@ const fixedSceneAllocation = parseAllocParam(location.search);
  * harmless and is the param winning.
  */
 const fusedFinalParam = parseFusedParam(location.search);
+// `?bloomknee=0`: three's whole-pixel step back in the planetarium's bright
+// pass (app/bloomConfig.ts BLOOM_KNEE), the A/B for the ocean glint's halo.
+const bloomKneeParam = parseBloomKneeParam(location.search);
+// `?seawind=0`: the whole sea at one roughness again (world/seaWind.ts), the
+// A/B for the ocean glint's shape. Read before any sea is confirmed.
+setSeaWindEnabled(parseSeaWindParam(location.search));
+// `?sunpath=0`: the Sun's light unattenuated by its path through the air
+// again; `?seabeam=0`: the sea's old chain with its cap before the air
+// (world/surfaceShading, the SUN_PATH and SEA_BEAM defines, set here before
+// any surface is augmented). Each is the picture as it was.
+setSunPathEnabled(parseSunPathParam(location.search));
+setSeaBeamEnabled(parseSeaBeamParam(location.search));
+// `?seawindmap=<url>` (DEV only): the sea's wind maps from a file — a picture
+// carrying both, or a raw byte map of one wind — so a field baked elsewhere
+// is judged in the app. Fetched beside the boot; the sea reads it from the
+// frame it lands, and the shipped pair is refused from here on.
+if (import.meta.env.DEV) {
+  if (new URLSearchParams(location.search).get('seawindmips') === '0') setSeaWindMips(false);
+  const seaWindMapUrl = parseSeaWindMapParam(location.search);
+  if (seaWindMapUrl) {
+    loadSeaWindMap(seaWindMapUrl)
+      .then((map) => {
+        const maps = seaWindTexturesFrom(map);
+        installSeaWindMap('calm', maps.calm, seaWindMapUrl);
+        installSeaWindMap('windy', maps.windy, seaWindMapUrl);
+        rebindSeaWindMaps();
+        debugLog(`sea wind map: ${seaWindMapUrl} (${map.width}x${map.height})`);
+      })
+      .catch((error: unknown) => debugWarn(String(error)));
+  }
+}
 function fusedFinalOn(): boolean {
   return fusedFinalParam && (import.meta.env.DEV ? perfSwitchOn('fused-final') : true);
 }
@@ -1125,7 +1181,7 @@ let composerBuiltFor: { cam: THREE.Camera; bloom: object; enabled: boolean; lens
 
 function buildComposer(
   cam: THREE.Camera,
-  bloom: { strength: number; threshold: number },
+  bloom: { strength: number; threshold: number; knee?: number },
   enabled = useBloom,
 ) {
   const built = composerBuiltFor;
@@ -1308,6 +1364,18 @@ function buildComposer(
     bloomSubRect = composerLens
       ? (bloomPass as BloomChainPass).installLensWarp(composerLens)
       : patchUvScale(bloomHighPassMaterial(bloomPass), HIGH_PASS_UV_ANCHOR);
+    // The planetarium's bright pass hands the blur the excess above the
+    // threshold rather than the whole pixel (app/bloomConfig.ts BLOOM_KNEE);
+    // the other modes' objects carry no knee and keep three's step, which
+    // their cutoffs were authored against. Both chains: the fused pass and
+    // `?fused=0`'s UnrealBloomPass render through this one material.
+    if (bloom.knee !== undefined && bloomKneeParam) {
+      installBloomKnee(bloomHighPassMaterial(bloomPass), bloom.knee);
+    }
+    // The sea's share of the blur (app/bloomTargets SEA_BLOOM_SHARE_GLSL): the
+    // knee's text carries it; the step arm gets it here, so `?bloomknee=0`
+    // still keeps the sea out of the Sun's glow.
+    if (bloom.knee !== undefined) installSeaBloomShare(bloomHighPassMaterial(bloomPass));
     // Before the pass joins the chain: addPass sizes it too.
     sizeBloomChain = holdBloomSize(bloomPass);
     composer.addPass(bloomPass);
@@ -2965,8 +3033,149 @@ function getAutoMode(): 'planetarium' | 'volumeCompare' | 'interior' {
  *  from -1, so they can never be mistaken for a real draw's. */
 let devInjectSeq = -1;
 
+/**
+ * The scene target's linear HDR pixels, read back as float RGBA: the frame
+ * BEFORE the lens warp, the bloom, the exposure and the tone curve, in the
+ * scene's own units (a white Lambert disc under the Sun reads
+ * SUN_LIGHT_INTENSITY / pi times the Sun's colour). A glint probe measures
+ * radiance here, where nothing has clipped it yet, and compares it with the
+ * same equations run on the CPU. The multisampled target cannot be read
+ * directly, so its resolved texture is copied through a full-screen quad into
+ * a float target of the drawn size (the sub-rectangle under Dynamic), which
+ * is then read with three's own readback. The pixels come back as the float
+ * bytes in base64, row 0 at the BOTTOM (GL's origin), with the camera's
+ * matrices of this frame so a ray can be cast through any pixel. DEV only.
+ */
+let devSceneReadTarget: THREE.WebGLRenderTarget | null = null;
+let devSceneReadQuad: FullScreenQuad | null = null;
+function devReadScene(opts: { x?: number; y?: number; w?: number; h?: number } = {}): unknown {
+  if (!import.meta.env.DEV || !sceneTarget) return null;
+  const cam = planetariumCamera;
+  const draw = sceneTargetSize(window.innerWidth, window.innerHeight, scenePixelRatioFor(cam, getTargetPixelRatio()));
+  const width = Math.min(draw.width, sceneTarget.width);
+  const height = Math.min(draw.height, sceneTarget.height);
+  if (!devSceneReadTarget || devSceneReadTarget.width !== width || devSceneReadTarget.height !== height) {
+    devSceneReadTarget?.dispose();
+    devSceneReadTarget = new THREE.WebGLRenderTarget(width, height, {
+      type: THREE.FloatType,
+      format: THREE.RGBAFormat,
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      depthBuffer: false,
+      stencilBuffer: false,
+      generateMipmaps: false,
+      colorSpace: THREE.LinearSRGBColorSpace,
+    });
+  }
+  devSceneReadQuad ??= new FullScreenQuad(new THREE.ShaderMaterial({
+    uniforms: { tDiffuse: { value: null }, uScale: { value: new THREE.Vector2(1, 1) } },
+    vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+    // A plain copy: no tone mapping chunk, no colour-space conversion.
+    fragmentShader: 'uniform sampler2D tDiffuse; uniform vec2 uScale; varying vec2 vUv;'
+      + ' void main() { gl_FragColor = texture2D(tDiffuse, vUv * uScale); }',
+    depthTest: false,
+    depthWrite: false,
+  }));
+  const material = devSceneReadQuad.material as THREE.ShaderMaterial;
+  material.uniforms.tDiffuse.value = sceneTarget.texture;
+  // The drawn sub-rectangle sits at the target's origin: its texture
+  // coordinates run from 0 to drawn over allocated.
+  (material.uniforms.uScale.value as THREE.Vector2).set(width / sceneTarget.width, height / sceneTarget.height);
+  const previous = renderer.getRenderTarget();
+  renderer.setRenderTarget(devSceneReadTarget);
+  devSceneReadQuad.render(renderer);
+  renderer.setRenderTarget(previous);
+  const x = Math.max(0, Math.floor(opts.x ?? 0));
+  const y = Math.max(0, Math.floor(opts.y ?? 0));
+  const w = Math.min(width - x, Math.floor(opts.w ?? width));
+  const h = Math.min(height - y, Math.floor(opts.h ?? height));
+  if (w <= 0 || h <= 0) return null;
+  const pixels = new Float32Array(w * h * 4);
+  renderer.readRenderTargetPixels(devSceneReadTarget, x, y, w, h, pixels);
+  const bytes = new Uint8Array(pixels.buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + 0x8000)));
+  }
+  return {
+    width,
+    height,
+    x,
+    y,
+    w,
+    h,
+    format: 'rgba32f little-endian, row 0 at the bottom, base64',
+    data: btoa(binary),
+    exposure: exposureCurrent,
+    toneMapping: renderer.toneMapping,
+    camera: {
+      matrixWorld: cam.matrixWorld.toArray(),
+      projectionMatrixInverse: cam.projectionMatrixInverse.toArray(),
+      fov: cam.fov,
+      displayFovDeg: displayFovDeg(cam),
+      aspect: cam.aspect,
+      near: cam.near,
+      far: cam.far,
+    },
+    sceneTarget: { width: sceneTarget.width, height: sceneTarget.height, samples: sceneTarget.samples },
+  };
+}
+
 function installDevHooks() {
   installSurfacePerfInputTracing();
+  /**
+   * The planetarium Sun's light, for a look experiment (`__moon.sunLight`).
+   * The Sun's PointLight is the only light the planetarium's surfaces see, but
+   * the air does not read it: its tables are baked at unit white irradiance
+   * and bridged back to the scene's Sun by AIRLIGHT_SCALE, the authored
+   * colour times the authored intensity (planetarium/sunLight: neutral, at
+   * the baseline), held per body as `uAirlightScale`.
+   * So the knob writes both — the light, and every air bridge in the scene in
+   * the same ratio — or the ground would be lit by one Sun under a sky lit by
+   * another. Development builds only; nothing calls it but the bridge.
+   */
+  const devSunLightState = { color: SUN_LIGHT_COLOR, intensity: SUN_LIGHT_INTENSITY };
+  const devSunLight = (opts?: { color?: number | null; intensity?: number | null }) => {
+    let light: THREE.PointLight | null = null;
+    const bridges = new Set<THREE.Vector3>();
+    scene.traverse((o) => {
+      if ((o as THREE.PointLight).isPointLight && !light) light = o as THREE.PointLight;
+      const mats = (o as THREE.Mesh).material;
+      for (const m of Array.isArray(mats) ? mats : mats ? [mats] : []) {
+        const fromFx = surfaceShadingArgsOf(m)?.fx.air.uAirlightScale?.value as THREE.Vector3 | undefined;
+        if (fromFx?.isVector3) bridges.add(fromFx);
+        const fromUniforms = (m as THREE.ShaderMaterial).uniforms?.uAirlightScale?.value as THREE.Vector3 | undefined;
+        if (fromUniforms?.isVector3) bridges.add(fromUniforms);
+      }
+    });
+    if (!light) return null;
+    const sun = light as THREE.PointLight;
+    if (opts?.color !== undefined) devSunLightState.color = opts.color ?? SUN_LIGHT_COLOR;
+    if (opts?.intensity !== undefined) devSunLightState.intensity = opts.intensity ?? SUN_LIGHT_INTENSITY;
+    sun.color.setHex(devSunLightState.color);
+    sun.intensity = devSunLightState.intensity;
+    // The air bridge in the light's own ratio to the authored one, per channel.
+    const authored = new THREE.Color(SUN_LIGHT_COLOR);
+    const ratio = (c: number, a: number) => (c * devSunLightState.intensity) / (a * SUN_LIGHT_INTENSITY);
+    const air = [
+      AIRLIGHT_SCALE[0] * ratio(sun.color.r, authored.r),
+      AIRLIGHT_SCALE[1] * ratio(sun.color.g, authored.g),
+      AIRLIGHT_SCALE[2] * ratio(sun.color.b, authored.b),
+    ];
+    for (const v of bridges) v.set(air[0], air[1], air[2]);
+    const lin = [sun.color.r, sun.color.g, sun.color.b];
+    return {
+      color: `#${devSunLightState.color.toString(16).padStart(6, '0')}`,
+      colorLinear: lin,
+      intensity: sun.intensity,
+      // Rec.709 luminance of the light as the surfaces receive it.
+      luminance: (0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]) * sun.intensity,
+      airlightScale: air,
+      airBridges: bridges.size,
+      authored: { color: `#${SUN_LIGHT_COLOR.toString(16).padStart(6, '0')}`, intensity: SUN_LIGHT_INTENSITY },
+    };
+  };
+
   (window as any).__moon = {
     ready: () => plmActivated,
     bodies: () => planetariumMode?.devListBodies() ?? [],
@@ -2986,6 +3195,22 @@ function installDevHooks() {
     // ground toward the horizon.
     limbView: (name: string, kRadii?: number, fovDeg?: number, phaseDeg?: number, aimFrac?: number) =>
       planetariumMode?.devLimbView(name, kRadii, fovDeg, phaseDeg, aimFrac) ?? false,
+    // The astronaut's view of the sea: stand at an altitude over the point
+    // where the Sun has a given elevation and look along the Sun's azimuth,
+    // by default at the mirror point (devHorizonView: the ISS beam geometry,
+    // and straight down from 35 786 km the geostationary one). Returns the
+    // geometry posed, for a probe that runs the same equations on the CPU.
+    horizonView: (name: string, opts?: {
+      altitudeKm?: number; sunElevDeg?: number; bearingDeg?: number;
+      azimuthDeg?: number; depressionDeg?: number | null; fovDeg?: number;
+    }) => planetariumMode?.devHorizonView(name, opts) ?? null,
+    // A layer off for a capture: the atmosphere shells, the cloud deck (with
+    // the sea's cut under it), or the night lights.
+    setRoleHidden: (role: 'atmosphere' | 'clouds' | 'nightLights', hidden: boolean) =>
+      planetariumMode?.devSetRoleHidden(role, hidden),
+    // The scene target's linear HDR pixels of the last frame, before the
+    // lens, the bloom, the exposure and the tone curve (devReadScene).
+    readScene: (opts?: { x?: number; y?: number; w?: number; h?: number }) => devReadScene(opts),
     frameSun: (distanceAU?: number, fovDeg?: number, offNdcX?: number, offNdcY?: number) =>
       planetariumMode?.devFrameSun(distanceAU, fovDeg, offNdcX, offNdcY) ?? false,
     frameSunBehindShip: (
@@ -3092,6 +3317,19 @@ function installDevHooks() {
       };
     },
     setBloom: (on: boolean) => setPlanetariumBloom(on),
+    // DEV: the planetarium bright pass's threshold, live (app/bloomConfig
+    // PLANETARIUM_BLOOM), rebuilt into the composer, so an A/B of what sits
+    // between the stars and the Sun — the sea's beam — comes out of one page
+    // load. No argument reads it; null restores the authored number.
+    bloomThreshold: (value?: number | null) => {
+      if (value !== undefined && appMode === 'planetarium') {
+        PLANETARIUM_BLOOM.threshold = value === null ? BLOOM_THRESHOLD : value;
+        // A fresh object: buildComposer keeps the chain it built for the same
+        // bloom object, and a number changed inside it is not a new object.
+        buildComposer(planetariumCamera, { ...PLANETARIUM_BLOOM }, planetariumBloomEnabled());
+      }
+      return PLANETARIUM_BLOOM.threshold;
+    },
     bloomActive: () => planetariumBloomEnabled(),
     // Lens-correction A/B: pass a strength (0 = rectilinear), no args restores
     // the default. Returns the strength the pass is actually running at, which
@@ -3281,14 +3519,55 @@ function installDevHooks() {
       };
       requestAnimationFrame(poll);
     }),
-    // The ocean glint's two authored numbers, live: the cap on the peak above
-    // white that the bloom sees, and the flat keep on the mirror term. Returns
-    // the current pair; a production build has neither knob.
-    glint: (opts?: { cap?: number; keep?: number; roughness?: number }) => {
+    // The ocean glint's knobs, live: the cap on the water's reflection in
+    // units of white, a flat scale on the sea's whole mirror term (one: the
+    // Fresnel is water's own now, the knob is an A/B), the calm lobe — the
+    // width of every sea's glassy share, as a wind in m/s through Cox-Munk's
+    // law (`calm`) or as a mean-square slope outright (`calmMss`, which is
+    // how a sea glassier than the law's zero-wind floor is asked for) — and
+    // a roughness that draws the WHOLE sea at one width with the wind maps
+    // set aside; null hands the sea back to the maps. Returns them all,
+    // the calm lobe as its mss, and whether the maps are being read; a
+    // production build has none of the knobs.
+    glint: (opts?: {
+      cap?: number; keep?: number; calm?: number; calmMss?: number; roughness?: number | null;
+      beamKnee?: number; beamCap?: number; sunPath?: boolean; seaBeam?: boolean;
+    }) => {
       if (opts?.cap !== undefined) devGlintUniforms.uGlintCap.value = opts.cap;
       if (opts?.keep !== undefined) devGlintUniforms.uGlintKeep.value = opts.keep;
+      // The beam chain's shoulder (knee and cap, scene units) and the two
+      // switches, live, so a probe reads each term's share from one page load.
+      if (opts?.beamKnee !== undefined) devGlintUniforms.uBeamKnee.value = opts.beamKnee;
+      if (opts?.beamCap !== undefined) devGlintUniforms.uBeamCap.value = opts.beamCap;
+      if (opts?.sunPath !== undefined) setSunPathEnabled(opts.sunPath);
+      if (opts?.seaBeam !== undefined) setSeaBeamEnabled(opts.seaBeam);
+      if (opts?.calm !== undefined) devGlintUniforms.uGlintCalm.value = slopeRoughness(meanSquareSlope(opts.calm));
+      if (opts?.calmMss !== undefined) devGlintUniforms.uGlintCalm.value = slopeRoughness(opts.calmMss);
       const roughness = setDevOceanRoughness(opts?.roughness);
-      return { cap: devGlintUniforms.uGlintCap.value, keep: devGlintUniforms.uGlintKeep.value, roughness };
+      const describe = (tex: THREE.Texture | null) => (tex
+        ? {
+            width: (tex.image as { width?: number } | undefined)?.width ?? 0,
+            height: (tex.image as { height?: number } | undefined)?.height ?? 0,
+            format: tex.format,
+            mips: tex.generateMipmaps,
+            version: tex.version,
+          }
+        : null);
+      return {
+        cap: devGlintUniforms.uGlintCap.value,
+        keep: devGlintUniforms.uGlintKeep.value,
+        calmMss: Math.pow(devGlintUniforms.uGlintCalm.value, 4),
+        beamKnee: devGlintUniforms.uBeamKnee.value,
+        beamCap: devGlintUniforms.uBeamCap.value,
+        sunPath: sunPathOn(),
+        seaBeam: seaBeamOn(),
+        roughness,
+        seaWind: seaWindOn(),
+        map: seaWindMapSource(),
+        // Each map as installed: its size, format (1028 is three's RedFormat)
+        // and upload version, so a harness log says what the sea is reading.
+        maps: { calm: describe(seaWindTextures().calm), windy: describe(seaWindTextures().windy) },
+      };
     },
     // The grade on a surface's haze, live: how much of the air's haze a direct
     // view shows (world/surfaceShading SURFACE_HAZE_CLEAR_VIEW; 1 is the
@@ -3299,6 +3578,51 @@ function installDevHooks() {
       clear: setDevSurfaceHaze(opts?.clear),
       authored: SURFACE_HAZE_CLEAR_VIEW,
     }),
+    // Cloud shadows on the ground under Earth's deck (world/surfaceShading,
+    // off by default): `on` moves the switch and relinks the globe and its
+    // sectors; `depth` (the share of the Sun's diffuse a full cloud takes),
+    // `air` (the share of the air's glow under it), `penumbra` (the solar
+    // disc's soft edge, true/false or a scale) and `gamma` (the shade curve:
+    // the ground takes (1 - beam)^gamma) are uniforms from the next frame.
+    // Returns the values in force, with how many ground materials can take
+    // the shadow and how many compile it now.
+    cloudShadow: (opts?: { on?: boolean; depth?: number; air?: number; penumbra?: boolean | number; gamma?: number }) =>
+      devCloudShadow(opts),
+    // The cloud deck's 1.2 km field, the vertical slice (world/cloudFieldPool;
+    // boot with ?cloudtiles=1): `pages` loads named pages (`col_row`, row 0 the
+    // northernmost), `fade` sets a page's fade, `evict` drops pages, `diag`
+    // paints the layers (1 flat, 2 tinted), `perFrame` is levels uploaded a
+    // frame, `wait` resolves once the loads settle. Returns the pool's layers,
+    // its allocated bytes, the page table and the deck's linked samplers.
+    cloudField: async (req?: CloudFieldRequest) =>
+      (await import('./planetarium/world/cloudFieldPool')).devCloudField(renderer, scene, req),
+    // The guard's input as the deck drew it (`cloudField({ diag: 3 })`) at
+    // points of the displayed frame (output NDC, or 'limb'), beside the
+    // residency's number for the same deck point.
+    cloudFieldProbe: async (points: Array<[number, number] | 'limb'>) =>
+      (await import('./planetarium/world/cloudFieldPool')).devCloudFieldProbe({
+        renderer, scene, camera: planetariumCamera, sceneTarget,
+        drawSize: sceneRectsLive.draw, sceneRatio: getScenePixelRatio(), tileRatio: getTilePixelRatio(),
+      }, points),
+    // The cloud deck lit as a cloud (world/surfaceShading, off by default):
+    // `on` moves the switch and relinks the deck; `wrap` (the share of its
+    // direct diffuse taken on the shell's own normal), `sky` (the sky's
+    // irradiance on it, as a multiple of the table's) and `groundFill` (the
+    // sky's irradiance on the ground in proportion to a cloud's shade, the
+    // shadows' CLOUD_SHADOW_SKY_FILL, read only where they are compiled) are
+    // uniforms from the next frame.
+    cloudLight: (opts?: { on?: boolean; wrap?: number; sky?: number; groundFill?: number }) =>
+      devCloudLight(opts),
+    // The planetarium Sun's light, live, for a look experiment: `color` (an
+    // sRGB hex, as THREE.Color reads one) and `intensity` written into the
+    // Sun's PointLight, with every air bridge in the scene moved in the same
+    // ratio so the sky is lit by the same Sun as the ground; null puts the
+    // authored value back. Returns the values in force, with the light's
+    // luminance as the surfaces receive it. Exposure is pinCapture's.
+    sunLight: (opts?: { color?: number | null; intensity?: number | null }) => devSunLight(opts),
+    // A body's albedo grade live (world/albedoGrade): a linear RGB over its
+    // map, null for the authored one; every material of the body follows.
+    albedoGrade: (name: string, rgb?: [number, number, number] | null) => devAlbedoGrade(name, rgb),
     // The night side's exposure, live (world/nightExposure): the lit fractions
     // of the visible cap the long exposure holds at (`full`) and is gone by
     // (`none`), the ramp's two speeds in positions per second — toward the
@@ -3657,16 +3981,20 @@ function installDevHooks() {
   // as a property chain so the perf sweep's own `perfArm` can be added later
   // without either set of keys erasing the other.
   installPerfSwitchBridge();
-  // `?glint=0.12` draws open water at that GGX roughness for the session, and
-  // `?glint=0.12,0.4,3` sets the mirror term's keep and cap with it: the same
-  // knobs as __moon.glint, reachable from a phone's address bar. DEV only.
+  // `?glint=0.12` draws the whole sea at that roughness for the session, the
+  // wind maps set aside, and `?glint=0.12,1,1.25,0.6` sets the mirror term's
+  // scale, the cap and the calm lobe's wind with it — an empty field leaves
+  // that knob alone, so `?glint=,,,0.3` moves the calm lobe under the maps:
+  // the same knobs as __moon.glint, reachable from a phone's address bar.
+  // DEV only.
   if (import.meta.env.DEV) {
     const glint = new URLSearchParams(location.search).get('glint');
     if (glint) {
-      const [rough, keep, cap] = glint.split(',').map(Number);
+      const [rough, keep, cap, calm] = glint.split(',').map((field) => (field === '' ? NaN : Number(field)));
       if (Number.isFinite(rough)) setDevOceanRoughness(rough);
       if (Number.isFinite(keep)) devGlintUniforms.uGlintKeep.value = keep;
       if (Number.isFinite(cap)) devGlintUniforms.uGlintCap.value = cap;
+      if (Number.isFinite(calm)) devGlintUniforms.uGlintCalm.value = slopeRoughness(meanSquareSlope(calm));
     }
     // `?haze=0.35` shows that much of the air's haze in every direct view of a
     // surface for the session: the __moon.haze knob, reachable from a phone's

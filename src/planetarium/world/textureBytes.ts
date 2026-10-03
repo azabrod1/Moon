@@ -16,7 +16,8 @@
  *   counted they are, and one byte a texel is the estimate for the rest. A map
  *   stored as one channel (world/texturePolicy's 'mask' kind: the height map
  *   and the water mask) is also one byte a texel, and its texel really is one
- *   byte rather than an estimate.
+ *   byte rather than an estimate; a two-channel one (the cloud field's RG8
+ *   pages) is two, and an array texture is priced per layer.
  * - A mip chain adds a third. A texture that will not be mipped does not pay
  *   it, which is why `textureGpuBytes` asks the texture rather than assuming.
  * - A figure stashed on the texture (`userData.gpuBytes`) wins over anything
@@ -24,7 +25,7 @@
  *   and what is on the GPU has not changed just because the image behind it
  *   is gone.
  */
-import { RedFormat } from 'three';
+import { RedFormat, RGFormat } from 'three';
 import type * as THREE from 'three';
 
 /** A mip chain is every halving of the base image, which sums to a third of it
@@ -63,13 +64,16 @@ export function layoutGpuBytes(
  *  nothing about compressed containers or a stashed figure. */
 type MeasurableTexture = THREE.Texture & {
   isCompressedTexture?: boolean;
+  isDataArrayTexture?: boolean;
   mipmaps?: Array<{ data?: { byteLength?: number } } | null>;
 };
 
 /** Bytes one texel of this texture holds: one for a map stored as a single
- *  channel, four for everything else. */
+ *  channel, two for a two-channel one (the cloud field's RG8 pages), four for
+ *  everything else. */
 export function textureBytesPerTexel(tex: { format?: number } | null | undefined): number {
-  return tex?.format === RedFormat ? 1 : 4;
+  if (tex?.format === RedFormat) return 1;
+  return tex?.format === RGFormat ? 2 : 4;
 }
 
 /**
@@ -98,12 +102,15 @@ export function textureGpuBytes(tex: THREE.Texture | null | undefined, nominalWi
     for (const level of map.mipmaps ?? []) bytes += level?.data?.byteLength ?? 0;
     if (bytes > 0) return bytes;
   }
-  const img = map.image as { width?: unknown; height?: unknown } | undefined;
+  const img = map.image as { width?: unknown; height?: unknown; depth?: unknown } | undefined;
   const w = img && typeof img.width === 'number' ? img.width : 0;
   const h = img && typeof img.height === 'number' ? img.height : 0;
   if (w > 0 && h > 0) {
     const mipped = map.generateMipmaps !== false || (map.mipmaps?.length ?? 0) > 1;
-    return imageGpuBytes(w, h, compressed, mipped, textureBytesPerTexel(map));
+    // An array's layers are each a full image with its own chain; a 3D
+    // texture's depth halves with its levels and is not priced here.
+    const layers = map.isDataArrayTexture && img && typeof img.depth === 'number' ? img.depth : 1;
+    return imageGpuBytes(w, h, compressed, mipped, textureBytesPerTexel(map)) * layers;
   }
   return equirectMapGpuBytes(nominalWidth, compressed);
 }

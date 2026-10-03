@@ -301,7 +301,7 @@ void main() {
   centreView.xy += position.xy * sizeBoost;
   // Two channels the fragment needs. vExtentScale is how much the veil grew the
   // quad past its physical/min size (1.0 when the veil is idle): the fragment
-  // rebases the physical PSF by it so growth can't stretch the core/starburst.
+  // rebases the physical PSF by it so growth can't stretch the core.
   // vHalfSizePx is the quad's true on-screen half-size in CSS pixels (the
   // same unit as uViewportHeight), making the veil a pure screen-space
   // function immune to that same growth.
@@ -325,13 +325,12 @@ uniform float uVisibleFraction;
 uniform float uShipSunVisibility;
 uniform float uGlareStrength;
 uniform float uPointLike;
-uniform float uCameraFx;
 uniform float uEclipseLike;
 uniform float uOccluderRadii;
 uniform float uOccluderShade;
 uniform vec2 uOccluderOffsetSr;
 // The visible-crescent centroid, in the same solar-radii camera-basis
-// frame as uOccluderOffsetSr. The physical PSF, starburst, veil and arms emanate
+// frame as uOccluderOffsetSr. The physical PSF, veil and arms emanate
 // from here instead of the Sun's centre, so a partial eclipse reads as light
 // wrapping past the occluding limb. Signed AWAY from the occluder (the exposed
 // side). Zero when un-occluded or concentric — then pLight === pSun byte-for-byte.
@@ -369,7 +368,6 @@ uniform vec3 uAtmosphereColor;
 uniform float uVeilStrength;
 uniform float uVeilWarmth;
 uniform float uVeilAmt;
-uniform float uSpikeSustain;
 uniform float uViewportHeight;
 uniform float uArmDecayPx;
 uniform float uArmDecayYPx;
@@ -417,13 +415,13 @@ void main() {
   float planeRadius = length(p);
   // The veiling glare below can enlarge this billboard far past the physical
   // glare quad. Re-express every physical PSF term in the pre-veil ("base")
-  // quad frame so that growth can never stretch the core/aureole/starburst:
+  // quad frame so that growth can never stretch the core/aureole:
   // vExtentScale is 1.0 whenever the veil is idle, so this is a no-op then.
   vec2 pB = p * vExtentScale;
   float baseRadius = planeRadius * vExtentScale;
   // Two coordinate frames. pSun (p / pB above) keeps the corona and the occluder
   // silhouette carve anchored to the disc. pLight is pSun shifted to the
-  // exposed-crescent centroid; the physical PSF core, starburst, veil wash and
+  // exposed-crescent centroid; the physical PSF core, veil wash and
   // diffraction arms are drawn from it, so their light hangs on the lit sliver
   // instead of the Sun's centre. uGlareCentroidSr is in solar radii (pB * uExtent
   // units), so divide by uExtent for the base frame and by uExtent * vExtentScale
@@ -431,19 +429,10 @@ void main() {
   // byte-identical to an un-occluded frame.
   vec2 centroidP = uGlareCentroidSr / max(uExtent * vExtentScale, 1e-6);
   vec2 pLight = p - centroidP;
-  vec2 pLightB = pLight * vExtentScale;
   float lightPlaneRadius = length(pLight);
   float lightBaseRadius = lightPlaneRadius * vExtentScale;
   float lightSolarRadii = lightBaseRadius * uExtent;
   float lightOutside = max(lightSolarRadii - 1.0, 0.0);
-  // All derivatives are taken before the discard: fwidth after a neighbouring
-  // lane discards is formally undefined. Reading the base frame keeps the spike
-  // widths a constant pixel size no matter how much the veil grew the quad.
-  float widthX = max(fwidth(pB.y) * 1.35, 0.010);
-  float widthY = max(fwidth(pB.x) * 1.35, 0.010);
-  float diagonalWidthA = max(fwidth(pB.x - pB.y) * 1.25, 0.014);
-  float diagonalWidthB = max(fwidth(pB.x + pB.y) * 1.25, 0.014);
-  float sensorWidth = max(fwidth(pB.y) * 1.15, 0.007);
   // Solar radii per output pixel, for terms that must stay resolvable on a
   // tiny on-screen Sun. Taken here because derivatives after the discard
   // below are undefined.
@@ -483,30 +472,10 @@ void main() {
   float glare = (core + aureole + tail) * visibleEnergy * shipDirectEnergy
     * uGlareStrength * uExposureScale;
 
-  // Once the solar disc becomes only a few pixels wide, a restrained optical
-  // starburst keeps it distinct from the starfield. Derivative-scaled widths
-  // stay stable from high-DPI desktop captures down to the mobile fallback.
-  float horizontal = exp(-abs(pLightB.y) / widthX) * exp(-abs(pLightB.x) * 1.70);
-  float vertical = exp(-abs(pLightB.x) / widthY) * exp(-abs(pLightB.y) * 2.75) * 0.52;
-  float diagonal = (
-    exp(-abs(pLightB.x - pLightB.y) / diagonalWidthA)
-    + exp(-abs(pLightB.x + pLightB.y) / diagonalWidthB)
-  ) * exp(-lightBaseRadius * 3.4) * 0.10;
-  // uPointLike alone kills the spikes once the disc resolves past ~10 px, but
-  // the reference stills show long thin diffraction spikes WITH a visible disc.
-  // Carry a fraction of them through the mid-range on the camera-fx term.
-  float starburst = (horizontal + vertical + diagonal)
-    * max(uPointLike, uCameraFx * uSpikeSustain) * visibleEnergy * shipDirectEnergy * 0.30;
-  glare += starburst;
-
-  // A short, low-energy sensor streak bridges the scale range where the disc
-  // is resolved but still overwhelmingly bright. It fades away for close-up
-  // photosphere study and yields to the sharper starburst in the outer system.
-  float sensorLine = exp(-abs(pLightB.y) / sensorWidth)
-    * exp(-abs(pLightB.x) * 1.55);
-  float sensorStreak = sensorLine * uCameraFx * (1.0 - uPointLike * 0.72)
-    * visibleEnergy * shipDirectEnergy * 0.055;
-  glare += sensorStreak;
+  // No starburst and no sensor streak: a four-armed cross is an aperture's
+  // signature, and the app is what an eye sees from a window, a searing point
+  // in a soft glare. (The wide veil below still carries arm terms, which the
+  // controller hands a coefficient of zero for the same reason.)
 
   // The occluder's own disc in the base frame: the bead cut just below and the
   // silhouette wash carve further down both measure against it.
@@ -593,17 +562,13 @@ void main() {
   // constants the controller's support solver inverts.
   float dNorm = dHat / ${SUN_VEIL_SCALE_H};
   float veilShape = 1.0 / pow(1.0 + dNorm * dNorm, ${SUN_VEIL_BETA});
-  // Long thin diffraction arms, also in true pixels: the base-quad starburst
-  // can never exceed the physical footprint (~40 px at 1 AU), while reference
-  // stills show spikes spanning hundreds. Gaussian cross-section a couple of
-  // pixels wide; the horizontal pair reaches farther than the vertical, like
-  // an aperture's dominant axis. The decay lengths and coefficient arrive from
-  // the controller already scaled by the veil's reach and faded as the disc
-  // resolves, so the arms collapse with distance in step with the quad the
-  // controller sized: long at 1 AU, a short stub in the outer system. The
-  // diagonal pair the veil used to carry is gone — the base-quad starburst
-  // already draws the small diagonals that are the camera's signature at point
-  // scale.
+  // Long thin diffraction arms, in true pixels: Gaussian cross-section a
+  // couple of pixels wide, the horizontal pair reaching farther than the
+  // vertical, like an aperture's dominant axis. The decay lengths and the
+  // coefficient arrive from the controller, which hands a coefficient of
+  // zero: the cross is a camera's signature and the Sun here is an eye's. The
+  // terms stay so the glare mask's contract (sunGlareMask.ts, which mirrors
+  // them) and a look round through the coefficient need no shader change.
   vec2 pxOff = pLight * vHalfSizePx;
   float armAcross = pxOff.y / 1.7;
   float armAcrossV = pxOff.x / 1.7;

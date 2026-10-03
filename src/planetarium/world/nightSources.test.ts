@@ -45,6 +45,7 @@ import { BLOOM_THRESHOLD } from '../../app/bloomConfig';
 import { EARTH_NIGHT_MIX_SCALE, EARTH_NIGHT_WARM } from '../../shared/shaders/atmosphere';
 import { CLOUD_CITY_GLOW } from './cloudDeck';
 import { PLANETS } from '../planets/planetData';
+import { SUN_LIGHT_AUTHORED_HUE } from '../sunLight';
 
 /**
  * The night side's sources: the shared weight that fades all of them, the
@@ -420,12 +421,12 @@ describe('moonlight', () => {
     const luminance = (c: readonly number[]): number =>
       0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
     expect(luminance(MOONLIGHT_TINT)).toBeCloseTo(1, 12);
-    // ...and it is the authored triple and nothing else: the same ratios, one
-    // divisor apart.
+    // ...and it is the authored triple in the hue it was judged under (the
+    // cream the Sun was authored in, now carried here since the light is
+    // neutral) and nothing else: the same ratios, one divisor apart.
+    const judged = MOONLIGHT_TINT_AUTHORED.map((v, c) => v * SUN_LIGHT_AUTHORED_HUE[c]);
     for (let c = 0; c < 3; c++) {
-      expect(MOONLIGHT_TINT[c]).toBeCloseTo(
-        MOONLIGHT_TINT_AUTHORED[c] / luminance(MOONLIGHT_TINT_AUTHORED), 12,
-      );
+      expect(MOONLIGHT_TINT[c]).toBeCloseTo(judged[c] / luminance(judged), 12);
     }
     // Cool: blue over green over red, which is the direction of the choice.
     expect(MOONLIGHT_TINT[2]).toBeGreaterThan(MOONLIGHT_TINT[1]);

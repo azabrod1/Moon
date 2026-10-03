@@ -33,3 +33,14 @@ describe('the efficiency-switch registry', () => {
     expect(setPerfSwitch('not-a-switch', true)).toBe(false);
   });
 });
+
+describe('the visual keys', () => {
+  it('ship on, so a production build compiles the fixed picture alone', () => {
+    for (const key of ['cloud-noise-frame']) {
+      const entry = PERF_SWITCHES.find((s) => s.key === key);
+      expect(entry, key).toBeDefined();
+      expect(entry!.on).toBe(true);
+      expect(entry!.needsReload ?? false).toBe(false);
+    }
+  });
+});

@@ -46,6 +46,27 @@
  * it. They are off by default, never exact, never in the combined row, and a
  * production build carries neither reading of them.
  *
+ * The VISUAL keys — `cloud-noise-frame` — are not efficiency changes either.
+ * They ship on and they change the picture on purpose: each one is a fix
+ * whose OFF arm is the picture as it was, kept as the control a capture of the
+ * fix is held against. A visual key is a control arm, not a saving: never
+ * exact, never in the combined row, never in the Phone preset, and a
+ * production build compiles its ON reading alone.
+ *
+ * `cloud-shadow` is a FEATURE key, off by default: cloud shadows on the ground,
+ * the sea and the air under Earth's deck (world/surfaceShading), a change to
+ * the picture that is judged by eye before it is ever on. It is a compile-time
+ * define on the ground materials, so flipping it relinks them — live, through
+ * `__moon.cloudShadow({on})` or this registry — and the sweep treats it like
+ * `cloud-program`, never holding it inside a measured window. Any build reaches
+ * it with `?cloudshadows=1` at boot; this key is the DEV spelling, which the
+ * URL arms.
+ *
+ * `cloud-light` is the same kind of key: the cloud deck lit as a cloud (the
+ * light scattered inside it and the sky's own, world/surfaceShading), a
+ * compile-time define on the planetarium's deck alone, off by default until
+ * the look has been judged; `?cloudlight=1` reaches it in any build.
+ *
  * There is deliberately no key for the render resolution. The graphics-quality
  * levels are its A/B (`?quality=medium` is the picture as it was, and
  * `?upscale=<ratio>` pins any scene ratio for a measurement), and a key here
@@ -65,6 +86,9 @@ export type PerfSwitchKey =
   | 'depth-discard'
   | 'fused-final'
   | 'cloud-program'
+  | 'cloud-noise-frame'
+  | 'cloud-shadow'
+  | 'cloud-light'
   | 'cloud-probe-smooth'
   | 'cloud-probe-detail'
   | 'cloud-probe-relief'
@@ -97,6 +121,9 @@ export const PERF_SWITCHES: ReadonlyArray<{
   { key: 'depth-discard', label: 'Scene depth/stencil discard', on: true },
   { key: 'fused-final', label: 'Lens, glow and tone map as one pass', on: true, needsReload: true },
   { key: 'cloud-program', label: 'Cloud deck program of its own', on: true, needsReload: true },
+  { key: 'cloud-noise-frame', label: 'Cloud noise anchored to the sheet', on: true },
+  { key: 'cloud-shadow', label: 'Cloud shadows on the ground', on: false, needsReload: true },
+  { key: 'cloud-light', label: 'Cloud deck lit as a cloud', on: false, needsReload: true },
   { key: 'cloud-probe-smooth', label: 'Cloud deck probe: smooth filter off', on: false },
   { key: 'cloud-probe-detail', label: 'Cloud deck probe: detail term off', on: false },
   { key: 'cloud-probe-relief', label: 'Cloud deck probe: relief map off', on: false },
@@ -116,6 +143,9 @@ const DEFAULT_ON: Record<PerfSwitchKey, boolean> = {
   'depth-discard': true,
   'fused-final': true,
   'cloud-program': true,
+  'cloud-noise-frame': true,
+  'cloud-shadow': false,
+  'cloud-light': false,
   'cloud-probe-smooth': false,
   'cloud-probe-detail': false,
   'cloud-probe-relief': false,

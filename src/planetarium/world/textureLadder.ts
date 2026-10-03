@@ -45,6 +45,7 @@ import { applyTextureDefaults, clampTier, deviceTextureProfile, resolveTextureUr
 import { queueTextureWarm } from './textureWarmer';
 import { loadStreamedTexture, type TextureLoad } from './textureBitmapLoader';
 import { equirectMapGpuBytes, retainedSourceBytes, textureGpuBytes } from './textureBytes';
+import { restoreAlbedoGrade } from './albedoGrade';
 
 // A colour-tier fetch goes through this indirection so the completion,
 // staleness and failure paths that decide what reaches the GPU can be
@@ -85,6 +86,12 @@ export const PLANET_TEXTURE_FILES: Record<string, string> = {
   earthCloudsNormal: 'earth-clouds-normal.webp',
   earthBump: 'earth-bump.webp',
   earthRoughness: 'earth-roughness.v2.webp',
+  // The sea's wind as the pair of maps world/seaWind.ts reads the glint's lobe
+  // from: the calm weight at 2048x1024 and the windy speed at 1024x512, both
+  // grey. Baked by `npm run gen:seawind`; a re-bake with a new look ships
+  // under a new pathname, as the `.v2` maps above do.
+  earthSeaCalm: 'earth-seawind-calm.v1.webp',
+  earthSeaWindy: 'earth-seawind-windy.v1.webp',
   mars: 'mars.v2.webp',
   marsNormal: 'mars-normal.v2.webp',
   jupiter: 'jupiter.webp',
@@ -883,7 +890,9 @@ function setMaterialColorMap(mat: THREE.Material, tex: THREE.Texture): void {
   // texture as bumpMap; move the alias onto the upgraded map so the dispose
   // by the caller can't leave bumpMap pointing at freed GPU memory.
   if (std.bumpMap === prev) std.bumpMap = tex;
-  std.color.setRGB(1, 1, 1);
+  // The placeholder tint goes with the first real map; the body's albedo
+  // grade, if it has one, stays through every rung.
+  restoreAlbedoGrade(std);
 }
 
 export function applyColorTierTexture(mat: THREE.Material, tex: THREE.Texture, rank: number): boolean {

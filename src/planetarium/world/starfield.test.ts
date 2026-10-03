@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BLOOM_THRESHOLD } from '../../app/bloomConfig';
+import { STAR_LUMINANCE_CEILING } from '../../app/bloomConfig';
 import * as THREE from 'three';
 import { loadBrightStarCatalogFromDisk } from '../data/brightStarsTestCatalog';
 import { createPlanetariumStarfield, starfieldFaintLimitMag, starRenderColor } from './starfield';
@@ -46,10 +46,12 @@ describe('starfield bloom-threshold invariant', () => {
       }
     }
 
-    // The invariant: no star reaches the bloom high-pass, so none survives as a
-    // star-shaped glint near the Sun. Failure message names the offender.
+    // The invariant: no star reaches the stars' ceiling, which the bloom's
+    // high pass sits at or above (it rides the Sun's baseline), so none
+    // survives as a star-shaped glint near the Sun. Failure message names the
+    // offender.
     expect(maxLuma, `brightest star: ${brightest} (luma ${maxLuma.toFixed(4)})`).toBeLessThan(
-      BLOOM_THRESHOLD,
+      STAR_LUMINANCE_CEILING,
     );
     // Yet the field genuinely rides near the cutoff — the threshold move earns
     // its keep. If a brightness retune drops this floor, the guard is going slack.

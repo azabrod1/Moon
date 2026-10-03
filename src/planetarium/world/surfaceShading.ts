@@ -25,6 +25,17 @@
  * air off the table's term is zero and the floor is the whole night side, which
  * is what it always was on an airless body and on a device with no tier.
  *
+ * The reader can add a third model to that max(): Night sides, Brightened
+ * (app/nightSidesSetting, the ☰ Display page), lifts a night side to a dimmed
+ * copy of its own surface — albedo times one neutral strength, night-weighted
+ * like the floor and killed with it in a silhouette — so the ground on the dark
+ * half shows. It is never added to the floor or the sky's ambient, and at Real
+ * it sits behind a uniform branch that is not taken, so the pixel is what it
+ * was. Only the planetarium's own bodies can see it: PlanetFactory points their
+ * slot at one shared uniform (`nightLiftUniform`), and every other surface this
+ * augment builds — Look inside, How many fit?, the shader warm-up probes —
+ * keeps a zero of its own.
+ *
  * The Moon is the sixth, and it is weighted by its OWN elevation rather than by
  * the Sun's: `moonUpWeight` times `sunDownWeight`, a one-sided ramp at full
  * strength from the terminator down and fading only as the Sun climbs above it.
@@ -32,6 +43,25 @@
  * terminator, the day factor's complement included — and the ground runs
  * through a minimum there, the Sun's light gone and the Moon's half arrived,
  * with a gibbous Moon standing right over it.
+ *
+ * The fifth and sixth terms are drawn as a long exposure (world/nightSources),
+ * and a camera only takes one while there is no daylight in view. So each of
+ * them — the starlight floor, the sky's ambient, planetshine, and the Moon's
+ * beam, its skylight and its column in the haze — is multiplied by
+ * `uNightExposure`, one number per body per frame in the shared air block that
+ * the mode meters from how much of the visible cap is sunlit
+ * (world/nightExposure): a quarter with no daylight in view — the long exposure,
+ * held two stops under the level it was authored at — and 0 once enough of the
+ * cap is lit; 1, the picture as it was, only with the rule off or stood down.
+ * It goes on each weight and never on `nightKeep`, so it composes with the
+ * silhouette instead of standing in for it. The sky's ambient is not a
+ * non-solar source — it is the Sun's own skylight at the day scale, the
+ * irradiance table with no night gain — and in deep night the table's clamp
+ * holds it at about the authored floor, so the factor is right there; it also
+ * takes the first degrees of real twilight down with it. The deck's city glow
+ * does not take it — the cities are the app's own look of Earth at night, and
+ * they stay — nor does the reader's lift, which stands the rule down altogether
+ * while it is on, and nothing solar reads it.
  *
  * What a night fragment costs, in dependent table fetches: 6 by day (two for
  * the transmittance in front of it, four for that air's in-scatter), 7 past the
@@ -112,6 +142,7 @@ import { perfSwitchOn, perfSwitchUniform } from '../../app/perfSwitches';
 import {
   COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_CALM_LOBE_ROUGHNESS, SEA_WIND_MAX_MS, disposeRetiredSeaWindMaps, seaWindTextures,
 } from './seaWind';
+import type { NightSides } from '../../app/nightSidesSetting';
 import { EARTH_NIGHT_COLD_CUT, EARTH_NIGHT_WARM_GLSL } from '../../shared/shaders/atmosphere';
 import {
   CLOUD_ALBEDO,
@@ -148,9 +179,15 @@ import { PLANETS } from '../planets/planetData';
  *  other surface does
  *  — the sky's ambient and the Moon — which is what makes moonlit cloud tops
  *  read silver. What it does NOT carry is an authored starlight fill of its own
- *  (`NIGHT_FILL.cloud` is zero): the globe beneath it already has one, and the
- *  deck's blend is not premultiplied, so the table terms compose exactly once
- *  where a second authored floor would be a second lift. */
+ *  (`NIGHT_FILL.cloud` is zero): the globe beneath it already has one, and that
+ *  floor is too faint to draw anything under the tone curve's toe.
+ *
+ *  The reader's night lift (Night sides: Brightened) is bright enough to see,
+ *  and the deck DOES carry it: left unlit over a lifted globe, cloud would lay
+ *  black shapes across the night side the reader asked to see. Nothing is lit
+ *  twice, because the deck's blend is a straight source-alpha one, not
+ *  premultiplied: every night term — the table's and the lift — composes as
+ *  a·term(cloud) + (1−a)·term(ground), each layer once, in its own colours. */
 export type SurfaceArchetype = 'airless' | 'rocky' | 'gas' | 'icy' | 'earth' | 'cloud';
 
 /** Ring annulus that shadows this body's surface (object-space radii, AU). */
@@ -191,6 +228,13 @@ export interface SurfaceShadingFx {
    *  black in any real exposure — the camera belongs to the ring or corona
    *  behind it, and the visibility lifts would read as fog on the silhouette. */
   uSilhouette: { value: number };
+  /** The reader's night lift (Night sides: Brightened), as a fraction of
+   *  albedo. A fresh set gets a zero of its own; PlanetFactory points the
+   *  planetarium's bodies at `nightLiftUniform` instead, so the setting reaches
+   *  them and nothing else — a tool's surface cannot be lifted by construction.
+   *  Bound at compile time like every other slot here, so the pointing has to
+   *  happen before the material's first compile. */
+  uNightLift: { value: number };
   /** This body's air. Shared by every material that draws its surface. */
   air: SurfaceAirFx;
 }
@@ -229,10 +273,12 @@ export const NIGHT_FILL: Record<SurfaceArchetype, NightFill> = {
   icy:     { color: 0x28384f, strength: 0.07, termWidth: 0.12 },
   earth:   { color: 0x1c2c44, strength: 0.05, termWidth: 0.16 },
   // No fill of its own: the deck is translucent and the globe's fill shows
-  // through it, so a second one would double the night side's floor. Its share
-  // of the table's own night terms it does draw, and that is what silvers a
-  // moonlit cloud top. The terminator width is the globe's, because the same
-  // rolloff gates the eclipse spot on both and the two have to move together.
+  // through it. Its share of the table's own night terms it does draw, and that
+  // is what silvers a moonlit cloud top; the reader's night lift it draws too
+  // (see SurfaceArchetype), because unlike this fill that lift is bright enough
+  // to see and an unlit deck would black out the ground it lifts. The
+  // terminator width is the globe's, because the same rolloff gates the eclipse
+  // spot on both and the two have to move together.
   cloud:   { color: 0x000000, strength: 0.0, termWidth: 0.16 },
 };
 
@@ -497,6 +543,38 @@ export const cloudShadowUniforms: {
 export function resetCloudShadowUniforms(): void {
   cloudShadowUniforms.uCloudShadowMap.value = null;
   cloudShadowUniforms.uCloudShadowSpin.value = 0;
+}
+
+/**
+ * Night sides: Brightened's strength, as a fraction of each fragment's own
+ * albedo on the night half. Neutral — no starlight tint — so a red body reads
+ * red and a crater field reads as craters; one number for every body.
+ *
+ * 0.045 is the lowest strength at which the darkest ground shows: Mercury's
+ * and Mars's night discs come to about 10/255 at exposure 1, where 0.03 leaves
+ * them at 5 or 6, barely off black. The lift is a fraction of albedo and not
+ * of sunlight, so it does not fall off with distance from the Sun the way the
+ * day side does: the farther and brighter a body, the closer its lifted night
+ * comes to its own day. At this strength Enceladus's night disc carries about
+ * a sixth of its day half's light, where the Moon's carries a twentieth. A
+ * body with planetshine (Europa, Tethys) is already that bright at night
+ * without any lift.
+ */
+export const NIGHT_LIFT_STRENGTH = 0.045;
+
+/**
+ * The one uniform object every planetarium body's night lift reads — the
+ * globes, their streamed sectors and the cloud deck (all of which share their
+ * body's fx) and the moons. Zero is Real: the shader's branch is not taken and
+ * the frame is what it was. The entry point writes it through
+ * `applyNightLift`; the DEV bridge's `nightLift` pin writes it directly.
+ */
+export const nightLiftUniform: { value: number } = { value: 0 };
+
+/** Apply the reader's Night sides choice to every planetarium body, from the
+ *  next frame. Nothing recompiles: the value is a uniform. */
+export function applyNightLift(mode: NightSides): void {
+  nightLiftUniform.value = mode === 'brightened' ? NIGHT_LIFT_STRENGTH : 0;
 }
 
 /** The factor the map's distance BELOW land is multiplied by to land open
@@ -1466,6 +1544,7 @@ const SURFACE_FRAGMENT_DECLS = /* glsl */ `
 ${SURFACE_ARCHETYPE_MACROS}
 uniform vec3 uNightColor;
 uniform float uNightStrength;
+uniform float uNightLift;
 uniform float uTermWidth;
 uniform vec3 uSunDirLocal;
 uniform float uRingInner;
@@ -1481,6 +1560,7 @@ uniform float uLimbDarkening;
 uniform vec3 uSunDirWorld;
 uniform vec3 uMoonDirWorld;
 uniform vec3 uMoonIrradiance;
+uniform float uNightExposure;
 uniform float uAirDensity;
 uniform float uAirBlend;
 uniform float uSurfaceHaze;
@@ -1704,14 +1784,18 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // surface, so the terms below that scale by it are the deck's alone without a
   // second branch.
   diffuseColor.a *= cloudAlpha;
-  // What the Sun's beam went through to reach this sea. The deck blends what
-  // leaves this fragment by (1 - coverage) on the way UP; the beam is cut by the
-  // same coverage on the way DOWN, and only the mirror term notices — ground
-  // under cloud is still lit by what the cloud scattered, a specular highlight
-  // is not, and a full-strength glint reading through a cirrus sheet is what an
-  // orbital frame of it cannot do. Gated on the water gloss, which is nonzero
-  // only where a real water mask says there is sea: one uniform branch, and no
-  // fetch at all, on every other surface in the app.
+  // The share of the Sun's direct beam that reaches this fragment through the
+  // cloud deck above it: 1 in clear air, and 1 on every surface that reads no
+  // deck. The deck blends what leaves this fragment by (1 - coverage) on the
+  // way UP; the beam is cut by the same coverage on the way DOWN. Anything
+  // else that scales the Sun's direct light under cloud reads this one value,
+  // so a cloud and what it shades cannot disagree about where the cloud is.
+  // Read only under the water gloss, which is nonzero only where a real water
+  // mask says there is sea: one uniform branch, and no fetch at all, on every
+  // other surface in the app. It is also left at 1 wherever cloudTapWanted
+  // below skips the read, so a reader of it must have nothing to scale
+  // wherever the Sun's mirror term is zero, or widen that condition.
+  float cloudSunKeep = 1.0;
   if (GROUND_ON(uWaterGloss > 0.0)) {
     float deckC = cos(uCloudShadowSpin);
     float deckS = sin(uCloudShadowSpin);
@@ -1729,23 +1813,35 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
     vec2 deckUv = sphereEquirectUv(deckDir);
     vec2 deckDx = sphereEquirectUvGrad(deckDir, dFdx(deckDir));
     vec2 deckDy = sphereEquirectUvGrad(deckDir, dFdy(deckDir));
-    // The glint this mask exists to cut: the water's own term above, already
-    // rescaled and capped, because cutting three's raw term here would drive
-    // the light below zero under cloud, which the bloom then paints as a
-    // yellow core in a blue ring.
-    // Wherever the Sun is below this fragment's horizon three's own N·L
-    // saturates to zero and the term is exactly zero in every channel: the
-    // subtraction below is then a subtraction of nothing whatever the mask
-    // says, and the whole cloud-map read is spent on it. Gated on the term
-    // itself rather than on "night side", because it is the perturbed normal
-    // that decides whether there is a highlight, and uWaterGloss is a
-    // material-wide enable rather than a per-fragment test for sea.
-    if (${import.meta.env.DEV
+    // The one condition under which the cloud map is read for this fragment:
+    // a term that needs cloudSunKeep somewhere new widens the read here rather
+    // than fetching the map again. Wherever the Sun is below this fragment's
+    // horizon three's own N·L saturates to zero and the water's mirror term
+    // above is exactly zero in every channel: the one reader of the value in
+    // such a fragment is the sea's cut below, which is then a subtraction of
+    // nothing whatever the deck says, and the whole cloud-map read would be
+    // spent on it. Tested on the term itself rather than on "night side",
+    // because it is the perturbed normal that decides whether there is a
+    // highlight, and uWaterGloss is a material-wide enable rather than a
+    // per-fragment test for sea.
+    bool cloudTapWanted = ${import.meta.env.DEV
       ? 'uPerfGlintGate < 0.5 || any(greaterThan(seaGlint, vec3(0.0)))'
-      : 'any(greaterThan(seaGlint, vec3(0.0)))'}) {
+      : 'any(greaterThan(seaGlint, vec3(0.0)))'};
+    if (cloudTapWanted) {
       float deckLum = dot(textureGrad(uCloudShadowMap, deckUv, deckDx, deckDy).rgb,
           vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')}));
-      outgoingLight -= seaGlint * cloudCoverage(deckLum);
+      cloudSunKeep = 1.0 - cloudCoverage(deckLum);
+      // The sea's glint, cut by what the Sun's beam went through to reach it:
+      // the water's own term above, already rescaled and capped, because
+      // cutting three's raw term here would drive the light below zero under
+      // cloud, which the bloom then paints as a yellow core in a blue ring.
+      // Only the mirror term notices — ground under cloud is still lit by what
+      // the cloud scattered, a specular highlight is not, and a full-strength
+      // glint reading through a cirrus sheet is what an orbital frame of it
+      // cannot do. Directly after the read, in the same branch: Metal under
+      // ANGLE compiles the same arithmetic in a second branch to a frame one
+      // bit off at a lit pixel.
+      outgoingLight -= seaGlint * (1.0 - cloudSunKeep);
     }
   }
   // The sine of the Sun's elevation at this fragment, off the perturbed normal:
@@ -1765,7 +1861,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // ambient on the ground fade along one line rather than two. Zero where there
   // is no air, which is where the authored floor below is the whole night side.
   float airNight = uAirDensity > 0.0
-      ? nightWeight(clampCosine(dot(up, normalize(uSunDirWorld)))) * nightKeep
+      ? nightWeight(clampCosine(dot(up, normalize(uSunDirWorld)))) * nightKeep * uNightExposure
       : 0.0;
   // The Moon's weight is the Moon's own, not the Sun's. It lights this fragment
   // whenever it stands above the fragment's horizon, and it arrives on a
@@ -1781,7 +1877,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
       : 0.0;
   float moonNight = uAirDensity > 0.0
       ? moonUpWeight(clampCosine(dot(up, normalize(uMoonDirWorld))))
-          * sunDownWeight(sunElevSin, uTermWidth) * nightKeep
+          * sunDownWeight(sunElevSin, uTermWidth) * nightKeep * uNightExposure
       : 0.0;
   // The authored starlight floor, and the sky's own ambient that stands in for
   // it where the tables are bound. They are combined with max() rather than
@@ -1790,7 +1886,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // out darker than the tier without them. With the air off the ambient is
   // exactly zero and the floor is the whole night side, unchanged.
   vec3 nightFloor = diffuseColor.rgb * uNightColor
-      * (uNightStrength * (1.0 - dayFactor) * nightKeep * ${NIGHT_FLOOR_FRACTION.toFixed(6)});
+      * (uNightStrength * (1.0 - dayFactor) * nightKeep * uNightExposure * ${NIGHT_FLOOR_FRACTION.toFixed(6)});
   vec3 nightAmbient = vec3(0.0);
   if (airNight > 0.0) {
     // The irradiance table is the light a horizontal surface receives from the
@@ -1805,12 +1901,22 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
         * (getIrradiance(uIrradiance, rFrag, muSSun) * uAirlightScale * uSolarIrradiance)
         * airNight;
   }
-  outgoingLight += max(nightAmbient, nightFloor);
+  // The reader's lift (Night sides: Brightened) joins the same max() only when
+  // it is on: a dimmed copy of the surface in its own colours, albedo times a
+  // neutral strength, night-weighted like the floor and killed with it in a
+  // silhouette. Three models of "some light on the dark half", never added to
+  // each other; at Real the branch is not taken and the pixel is byte for byte
+  // what it was.
+  vec3 nightLow = max(nightAmbient, nightFloor);
+  if (uNightLift > 0.0) {
+    nightLow = max(nightLow, diffuseColor.rgb * (uNightLift * (1.0 - dayFactor) * nightKeep));
+  }
+  outgoingLight += nightLow;
   // Planetshine: parent-lit glow on the night side. Albedo-multiplicative,
   // so the eclipse color-dim carries through it automatically.
   if (GROUND_ON(uPlanetshineIntensity > 0.0)) {
     float pl = max(dot(normalize(normal), normalize(vPlanetshineViewDir)), 0.0);
-    outgoingLight += diffuseColor.rgb * uPlanetshineColor * (uPlanetshineIntensity * pl * (1.0 - dayFactor) * nightKeep);
+    outgoingLight += diffuseColor.rgb * uPlanetshineColor * (uPlanetshineIntensity * pl * (1.0 - dayFactor) * nightKeep * uNightExposure);
   }
   // The Moon: its beam through the air above this fragment, and the same
   // irradiance table read with the Moon as the source — which sky it is depends
@@ -2242,6 +2348,11 @@ export function createSurfaceAirFx(): SurfaceAirFx {
     // around it — and because the mode writes it once per body per frame.
     uMoonDirWorld: { value: new THREE.Vector3(0, 0, 1) },
     uMoonIrradiance: { value: new THREE.Vector3() },
+    // The camera's exposure for the night side (world/nightExposure): 1, the
+    // authored level, until the mode meters the body. Here for the same
+    // reason as the Moon — the globe, its sectors, the deck and the shell take
+    // one exposure. A block nothing meters, a studio's or a tool's, stays at 1.
+    uNightExposure: { value: 1 },
     // The body's night map, for the same reason: the night-lights shell draws
     // it and the cloud deck glows cities through itself from it, and a second
     // uniform would leave the deck lighting the boot map for the session after
@@ -2256,10 +2367,28 @@ export function createSurfaceAirFx(): SurfaceAirFx {
 }
 
 /**
+ * Seat a body's surface radius on its air uniforms the moment they exist —
+ * world AU, the units the vertex stage hands over. bindSurfaceAir states it
+ * again when the tables bind, and until this existed that was the ONLY
+ * writer: every air lookup is gated on the density, so the default of 1 cost
+ * nothing there. The cloud deck's detail bump is not gated. It turns the
+ * relief's fraction of the radius back into kilometres by multiplying with
+ * this uniform wherever the deck is magnified, and read the default as a
+ * radius of one AU: 70,000 km of relief where 3 were authored, normals
+ * pointing anywhere, clouds drawn black — on every device whose atmosphere
+ * bake is unavailable (a software renderer, a slow device), and in the
+ * moments before the bake lands on the rest.
+ */
+export function seatSurfaceAirRadius(air: SurfaceAirFx, planetRadius: number): void {
+  air.uPlanetRadius.value = planetRadius;
+}
+
+/**
  * Point a body's surfaces at its finished tables and switch the air on.
  * `planetRadius` is the surface radius in the same units the vertex stage hands
  * over (world AU), because that is what the lookup divides by to reach the
- * radius units the tables are baked in.
+ * radius units the tables are baked in; seatSurfaceAirRadius seated the same
+ * number when the body was built, for the reader that never waits for tables.
  */
 export function bindSurfaceAir(
   air: SurfaceAirFx,
@@ -2348,6 +2477,7 @@ export function augmentSurfaceMaterial(
     uPlanetshineDir: { value: new THREE.Vector3(1, 0, 0) },
     uPlanetshineIntensity: { value: 0 },
     uSilhouette: { value: 0 },
+    uNightLift: { value: 0 },
     air: createSurfaceAirFx(),
   };
   const uFrameSpin = sharedSpin ?? { value: 0 };
@@ -2427,6 +2557,7 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uMoonShadowCount = fx.uMoonShadowCount;
     shader.uniforms.uNightColor = uNightColor;
     shader.uniforms.uNightStrength = uNightStrength;
+    shader.uniforms.uNightLift = fx.uNightLift;
     shader.uniforms.uTermWidth = uTermWidth;
     shader.uniforms.uRingInner = uRingInner;
     shader.uniforms.uRingOuter = uRingOuter;

@@ -30,7 +30,7 @@ export interface SurfaceHudState {
   showLookatChip: boolean;
   /** Mono disc annotation under the brackets; null hides it. */
   discNote: string | null;
-  /** Swap chip label ("Stand on the Moon"), or null to hide. */
+  /** Swap chip label ("Switch to the Moon"), or null to hide. */
   swapLabel: string | null;
   /** Clock paused — the transport strip's pause button flips to "Resume". */
   paused: boolean;
@@ -144,7 +144,10 @@ export class ObservatoryHUD {
    * delayed Pause click can never turn into a resume when it is finally read. */
   private paused = false;
   private lastPauseActivationTimestampMs: number | null = null;
-  // Lowest anchor Y the marker cluster may take (see render's band measure).
+  // Top edge of the bottom band (headline stack, FOV cluster, transport
+  // strip), and the lowest anchor Y the marker cluster may take above it —
+  // both from render's band measure.
+  private bandTopY = Infinity;
   private clusterMaxY = Infinity;
   private lastMarkerCss = '';
   private wired = false;
@@ -284,6 +287,13 @@ export class ObservatoryHUD {
     }
   }
 
+  /** Top edge of the bottom band as last measured (Infinity before the first
+   *  render) — the owner's chevron clamp keeps above it the way the anchored
+   *  cluster does. */
+  bottomBandTopPx(): number {
+    return this.bandTopY;
+  }
+
   private anchorCluster(xPx: number, belowYPx: number): void {
     if (!this.discNoteEl || !this.trackPillEl) return;
     // At wide FOV the bracket bottom dives into the HUD's bottom band —
@@ -305,8 +315,8 @@ export class ObservatoryHUD {
     // pill height) plus a hairline of clearance.
     const top = (el: HTMLElement | null) =>
       el ? el.getBoundingClientRect().top : Infinity;
-    this.clusterMaxY =
-      Math.min(top(this.blEl), top(this.brEl), top(this.timebarEl)) - 62;
+    this.bandTopY = Math.min(top(this.blEl), top(this.brEl), top(this.timebarEl));
+    this.clusterMaxY = this.bandTopY - 62;
     setText('surface-eyebrow', state.eyebrow);
     setText('surface-headline', state.headline);
     if (this.subEl) {

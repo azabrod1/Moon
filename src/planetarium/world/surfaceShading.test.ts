@@ -19,6 +19,7 @@ import {
   bindSurfaceAir,
   clearSurfaceAir,
   createSurfaceAirFx,
+  seatSurfaceAirRadius,
   SURFACE_AIR_FADE_S,
   OCEAN_GLINT_CAP,
   RING_SHADOW_OPACITY_GLSL,
@@ -744,8 +745,19 @@ describe('the haze fade and the glint cap', () => {
     const frag = fragmentOf('airless');
     expect(frag).toContain(`seaGlint = min(glintRaw * (seaFresnel * seaLobe${import.meta.env.DEV ? ' * uGlintKeep' : ''}), vec3(${
       import.meta.env.DEV ? 'uGlintCap' : '1.25'}));`);
-    expect(frag).toContain('outgoingLight -= seaGlint * cloudCoverage(deckLum);');
+    expect(frag).toContain('outgoingLight -= seaGlint * (1.0 - cloudSunKeep);');
     expect(frag).not.toMatch(/reflectedLight\.directSpecular \* cloudCoverage/);
+    // The beam's share through the deck is one value, read from the map once
+    // and only under the one named condition; the sea's cut fetches nothing.
+    expect(frag).toContain('float cloudSunKeep = 1.0;');
+    expect(frag).toContain('if (cloudTapWanted) {');
+    expect(frag).toContain('cloudSunKeep = 1.0 - cloudCoverage(deckLum);');
+    expect(frag.split('textureGrad(uCloudShadowMap').length - 1).toBe(1);
+    // The cut follows the read inside the same branch. Moved to a second
+    // branch on the same uniform it is the same arithmetic, but Metal under
+    // ANGLE compiled that shape to a frame one bit off at a lit fragment.
+    expect(frag).toMatch(
+      /cloudSunKeep = 1\.0 - cloudCoverage\(deckLum\);\n(?: {6}\/\/[^\n]*\n)* {6}outgoingLight -= seaGlint \* \(1\.0 - cloudSunKeep\);/);
   });
 
   it('fades a body\'s haze in over a moment when its tables first bind, and only then', () => {
@@ -778,6 +790,42 @@ describe('the haze fade and the glint cap', () => {
     expect(air.uAirBlend.value).toBe(1);
   });
 
+  it('seats the body radius on the air the moment it exists, so the deck\'s bump reads it before any tables bind', () => {
+    // The air lookups are gated on the density and never read the radius
+    // while the air is off; the cloud deck's detail bump is not gated. At the
+    // default of 1 its 3 km of relief came out as 70,000 km, and clouds drew
+    // black on every device whose atmosphere bake was unavailable.
+    const radiusAU = 4.26e-5;
+    const air = createSurfaceAirFx();
+    expect(air.uPlanetRadius.value).toBe(1);
+    seatSurfaceAirRadius(air, radiusAU);
+    expect(air.uPlanetRadius.value).toBe(radiusAU);
+    // The off-air paths leave it alone, and a bind states the same number.
+    clearSurfaceAir(air);
+    expect(air.uPlanetRadius.value).toBe(radiusAU);
+    const tables = {
+      transmittance: air.uTransmittance.value,
+      scattering: air.uScattering.value,
+      irradiance: air.uIrradiance.value,
+      params: atmosphereParams('Earth'),
+    } as Parameters<typeof bindSurfaceAir>[1];
+    bindSurfaceAir(air, tables, radiusAU, 1);
+    expect(air.uPlanetRadius.value).toBe(radiusAU);
+    expect(air.uAirDensity.value).toBe(1);
+    // The deck shares the globe's fx, and its program binds that very object:
+    // what the globe seats is what the deck's bump multiplies by.
+    const globe = new THREE.MeshStandardMaterial();
+    const fx = augmentSurfaceMaterial(globe, 'earth');
+    seatSurfaceAirRadius(fx.air, radiusAU);
+    const deck = new THREE.MeshStandardMaterial({ transparent: true });
+    augmentSurfaceMaterial(deck, 'cloud', undefined, undefined, fx);
+    const shader = mockShader();
+    (deck.onBeforeCompile as (s: typeof shader, r: unknown) => void)(shader, null);
+    expect(shader.uniforms.uPlanetRadius).toBe(fx.air.uPlanetRadius);
+    expect((shader.uniforms.uPlanetRadius as { value: number }).value).toBe(radiusAU);
+    expect((shader.uniforms.uCloudDeck as { value: number }).value).toBe(1);
+  });
+
   it('is drawn as the twin fades it, and the sea hands bloom no more than the cap', () => {
     const text = fragmentOf('airless');
     expect(text).toContain('uniform float uAirBlend;');
@@ -790,7 +838,7 @@ describe('the haze fade and the glint cap', () => {
       import.meta.env.DEV ? 'uGlintCap' : OCEAN_GLINT_CAP.toFixed(2)}));`);
     expect(text).toContain('outgoingLight -= glintRaw - seaGlint;');
     // The cloud mask cuts the water's own term, never three's raw one.
-    expect(text).toContain('outgoingLight -= seaGlint * cloudCoverage(deckLum);');
+    expect(text).toContain('outgoingLight -= seaGlint * (1.0 - cloudSunKeep);');
   });
 });
 
@@ -1012,7 +1060,7 @@ describe('the GPU-efficiency switches', () => {
     const frag = fragmentOf('cloud');
     expect(frag).toContain('if (uPerfCloudTaps < 0.5 || cloudDetailW > 0.0) detail = textureGrad(uCloudDetail, detailUv, duvX, duvY);');
     expect(frag).toContain('if (uPerfCloudClear > 0.5 && DECK_ON && cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }');
-    expect(frag).toContain('if (uPerfGlintGate < 0.5 || any(greaterThan(seaGlint, vec3(0.0)))) {');
+    expect(frag).toContain('bool cloudTapWanted = uPerfGlintGate < 0.5 || any(greaterThan(seaGlint, vec3(0.0)));');
     expect(earthNightFragmentShader)
       .toContain('if (uPerfNightEarly > 0.5) { if (nightMix == 0.0) { gl_FragColor = vec4(0.0); return; } }');
     // Each uniform declared once, where the shader reads it.

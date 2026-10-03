@@ -25,6 +25,14 @@
 //   node tools/atmo-shell-qa.mjs --out=tools/goldens/atmosphere
 //   node tools/atmo-shell-qa.mjs --out=/tmp/moon-shots/atmo2 --w=1600 --h=900 --hero
 //   node tools/atmo-shell-qa.mjs --poses=eclipse-2.5r          # one pose, re-checked
+//   node tools/atmo-shell-qa.mjs --extra=                      # the rule ON: not the goldens' setting
+//
+// `--extra=<query>` goes on every URL the tool boots, both tiers and the ghost
+// alike, the way pixel-gate's does, and its default is `&nightexposure=0`: the
+// goldens are captured with the night-side exposure rule off, because the rule
+// meters a pose by how much sunlit ground it holds and the half-lit terminator
+// poses would otherwise capture a day exposure instead of the shader's own
+// night terms. An empty `--extra=` captures with the rule on.
 //
 // Writes <pose>.<tier>.png plus <pose>.<tier>.json — 20 sampled radiances on a
 // fixed grid and a 41-point scan across the limb, which is the part a test can
@@ -50,6 +58,9 @@ function arg(name, def) {
 const flag = (name) => process.argv.includes(`--${name}`);
 
 const url = arg('url', 'http://localhost:5640');
+// Appended to every URL booted. The default is the goldens' own setting; an
+// empty `--extra=` captures with the rule on.
+const extraQuery = arg('extra', '&nightexposure=0');
 const outDir = arg('out', 'tools/goldens/atmosphere');
 const W = Number(arg('w', '512'));
 const H = Number(arg('h', '512'));
@@ -354,7 +365,7 @@ const summary = [];
 try {
   for (const tier of only) {
     const { context, page, errors } = await newSession();
-    await page.goto(`${url}${TIER_URLS[tier]}`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${url}${TIER_URLS[tier]}${extraQuery}`, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => !!(window.__moon && window.__moon.ready && window.__moon.ready()), { timeout: 60000 });
     await page.waitForFunction(() => {
       const ls = document.getElementById('loading-screen');
@@ -442,7 +453,7 @@ try {
   // to the analytic tier in code — captured so that pin cannot rot unnoticed.
   if (!hero) {
     const { context, page, errors } = await newSession();
-    await page.goto(`${url}/?auto=volumeCompare`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${url}/?auto=volumeCompare${extraQuery}`, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => !!window.__moon, { timeout: 60000 });
     await page.waitForTimeout(6000);
     await capture(page, path.join(outDir, 'volume-compare.analytic'), {

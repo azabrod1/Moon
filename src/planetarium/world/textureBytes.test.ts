@@ -181,9 +181,29 @@ describe('what a decoded source still holds in RAM', () => {
       .toBe(0);
   });
 
-  it('counts nothing for a compressed container, whose blocks are already measured', () => {
-    const tex = compressedTexture(1024, 512);
+  it('counts nothing for a compressed container until the ladder has trimmed it', () => {
+    // The transcoded chain is a second copy of the blocks until the trim, but
+    // it is not counted before then: the trim lands the moment the rung is
+    // applied, and a figure that doubled a rung between decode and apply
+    // would change what a small-envelope device admits — today's accounting
+    // never counted it, and every device's admission stays what it was.
+    const tex = compressedTexture(8192, 4096);
     expect(retainedSourceBytes(tex)).toBe(0);
+    expect(textureGpuBytes(tex)).toBe(containerBytes(tex));
+  });
+
+  it('counts only the levels a trimmed container still holds, whatever it is marked', () => {
+    // The ladder keeps the tail of a rung's chain to re-upload from after a
+    // lost context and marks the texture released; what is left is still
+    // held, and is small enough to be read rather than waved away.
+    const tex = compressedTexture(8192, 4096);
+    tex.userData.gpuBytes = textureGpuBytes(tex);
+    tex.mipmaps.splice(0, 3); // 8192, 4096 and 2048 wide gone; 1024 down kept
+    tex.userData.sourceReleased = true;
+    expect(retainedSourceBytes(tex)).toBe(containerBytes(tex));
+    expect(retainedSourceBytes(tex)).toBeLessThan(0.7 * MiB);
+    // And the GPU figure is the one stashed before the trim, not the tail's.
+    expect(textureGpuBytes(tex)).toBe(containerBytes(compressedTexture(8192, 4096)));
   });
 
   it('counts nothing for no texture at all', () => {

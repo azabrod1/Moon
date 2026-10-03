@@ -2,7 +2,15 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <!-- viewport-fit=cover: the page owns the whole screen, under the status bar,
+       the home indicator and a notch. Without it WebKit lays the page out inside
+       the safe area — on an iPad in the page's own full screen that left black
+       bands top and bottom where the canvas could not reach — and every
+       env(safe-area-inset-*) reads 0. With it the canvas runs edge to edge and
+       the edge-anchored chrome keeps out of the bars by those same env() values
+       (the rule is in CLAUDE.md; shared/dom safeAreaInsets reads them for chrome
+       placed by a script). -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>Planetarium: Explore Space</title>
   <!-- ?v=3 busts the browser's favicon cache, which ignores page reloads —
        bump it whenever the icon art changes. -->
@@ -39,6 +47,17 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; background: #000; touch-action: none; -webkit-user-select: none; user-select: none; }
     canvas { display: block; }
+    /* The WebGL canvas is the fixed-position rect: the rect the UI overlay, the
+       label layers and the reticles are anchored to (all of them are
+       `position: fixed` at the origin), sized by CSS so the renderer can follow
+       its box (main.ts syncViewport, app/viewportSize.ts). As an in-flow block
+       it sat 32 pt below that rect on an iPad Pro in full screen (measured off
+       a screenshot: WebKit lays a page without viewport-fit=cover out inside
+       the safe area, and the document sat lower still), so the stars stopped
+       short of the top and the bottom of the screen while the interface did
+       not. z-index 0 is the floor of the positioned stack:
+       every overlay carries a z-index of its own above it. */
+    canvas.scene-canvas { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; }
 
     :root {
       /* Obsidian palette — one black-forward theme, a 16/10/7 radius scale, Geist type. */
@@ -134,7 +153,7 @@
       top: 0; left: 0; right: 0;
       display: flex;
       align-items: center;
-      padding: 12px 16px;
+      padding: calc(12px + env(safe-area-inset-top, 0px)) calc(16px + env(safe-area-inset-right, 0px)) 12px calc(16px + env(safe-area-inset-left, 0px));
       pointer-events: auto;
       z-index: 20;
       gap: 16px;
@@ -158,11 +177,11 @@
     /* Unified bottom bar */
     #planetarium-bottom-bar {
       position: absolute;
-      bottom: 12px;
+      bottom: calc(12px + env(safe-area-inset-bottom, 0px));
       left: 50%;
       transform: translateX(-50%);
       width: auto;
-      max-width: calc(100vw - 16px);
+      max-width: calc(100vw - 16px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
       pointer-events: auto;
       z-index: 18;
       font-size: 11px;
@@ -336,7 +355,7 @@
        not a teleport. Lives outside the bar (the bar's translateX would
        re-anchor a position:fixed child). */
     #stats-popover {
-      position: fixed; right: 14px; bottom: 72px; left: auto; top: auto;
+      position: fixed; right: calc(14px + env(safe-area-inset-right, 0px)); bottom: calc(72px + env(safe-area-inset-bottom, 0px)); left: auto; top: auto;
       width: 226px; z-index: 22; pointer-events: none;
       padding: 12px 14px;
       opacity: 0; transform: translateX(14px);
@@ -610,8 +629,8 @@
     /* Top-right planetarium actions */
     #planetarium-actions {
       position: absolute;
-      top: 14px;
-      right: 14px;
+      top: calc(14px + env(safe-area-inset-top, 0px));
+      right: calc(14px + env(safe-area-inset-right, 0px));
       display: flex;
       align-items: center;
       gap: 7px;
@@ -724,8 +743,8 @@
     #planetarium-menu-panel {
       display: none;
       position: absolute;
-      top: 56px;
-      right: max(12px, env(safe-area-inset-right, 0px));
+      top: calc(56px + env(safe-area-inset-top, 0px));
+      right: calc(12px + env(safe-area-inset-right, 0px));
       width: min(304px, calc(100vw - 24px));
       border-radius: var(--r-l);
       padding: 8px 8px calc(8px + env(safe-area-inset-bottom, 0px));
@@ -737,8 +756,8 @@
          otherwise drop the whole declaration; touch-action because the body
          sets none, and overscroll-behavior so a flick at the end of the list
          does not pull the page behind it. */
-      max-height: calc(100vh - 68px);
-      max-height: calc(100dvh - 68px);
+      max-height: calc(100vh - 68px - env(safe-area-inset-top, 0px));
+      max-height: calc(100dvh - 68px - env(safe-area-inset-top, 0px));
       overflow-y: auto;
       /* A page sliding out is never a reason to scroll sideways. */
       overflow-x: hidden;
@@ -939,10 +958,10 @@
     #observatory-panel {
       display: none;
       position: absolute;
-      top: 56px;
-      right: 12px;
+      top: calc(56px + env(safe-area-inset-top, 0px));
+      right: calc(12px + env(safe-area-inset-right, 0px));
       width: min(334px, calc(100vw - 24px));
-      max-height: calc(100vh - 120px);
+      max-height: calc(100vh - 120px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
       overflow-y: auto;
       border-radius: var(--r-l);
       padding: 14px 16px 12px;
@@ -972,12 +991,12 @@
     .obs-from:hover { color: var(--accent); }
     .obs-from:hover svg { color: var(--accent); }
     .obs-swap {
-      display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--obs-t2);
-      padding: 4px 10px; border-radius: 999px; background: rgba(255, 255, 255, 0.05);
+      display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--obs-t2);
+      padding: 6px 12px; border-radius: 999px; background: rgba(255, 255, 255, 0.05);
       border: 1px solid var(--obs-hairline-dim); cursor: pointer; white-space: nowrap; font-family: var(--font);
     }
     .obs-swap:hover { background: var(--obs-accent-soft); color: var(--obs-t1); border-color: rgba(var(--accent-rgb), 0.3); }
-    .obs-swap i { font-style: normal; font-size: 11px; color: var(--obs-accent); }
+    .obs-swap i { font-style: normal; font-size: 12px; color: var(--obs-accent); }
     .obs-hero { display: flex; align-items: center; gap: 14px; margin: 16px 0 4px; padding: 0 2px; }
     .obs-glyph { width: 40px; height: 40px; flex: none; filter: drop-shadow(0 0 8px rgba(220, 230, 255, 0.14)); }
     /* The lit path is what draws a phase, so the dark side is only the disc
@@ -1001,6 +1020,14 @@
     .obs-hero-text h1 { font-size: 22px; font-weight: 300; letter-spacing: 0.005em; color: var(--obs-t1); line-height: 1.1; margin: 0; }
     .obs-hero-text p { font-size: 11px; color: var(--obs-t2); margin: 4px 0 0; }
     .obs-num { font-family: var(--obs-mono); font-size: 10px; color: var(--obs-t2); }
+    /* "From Earth" row (standing on the Moon): on the hero's grid, the small
+       glyph centred under the big one and the words on the headline's edge,
+       so it reads as a second, lesser body beside the hero's. */
+    .obs-from-earth { display: flex; align-items: center; gap: 14px; margin: 10px 0 2px; padding: 0 2px; font-size: 11px; color: var(--obs-t2); }
+    .obs-from-earth-cell { width: 40px; flex: none; display: flex; justify-content: center; }
+    .obs-from-earth-glyph { width: 14px; height: 14px; filter: drop-shadow(0 0 5px rgba(220, 230, 255, 0.16)); }
+    /* The ghost rim's 1-unit stroke would vanish at 14px. */
+    .obs-from-earth-glyph .obs-glyph-disc { stroke-width: 2.6; }
     /* "Happening now" reads ember — the one warm signal in a cool panel. */
     .obs-nowbar {
       display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 7px 10px;
@@ -1328,7 +1355,7 @@
     }
     .shud-trackpill:hover { color: var(--obs-t1); border-color: rgba(var(--accent-rgb), 0.3); }
     .shud-trackpill i { font-style: normal; color: var(--obs-accent); font-size: 12px; letter-spacing: 0; }
-    .shud-tr { position: absolute; top: 14px; right: 16px; display: flex; gap: 8px; }
+    .shud-tr { position: absolute; top: calc(14px + env(safe-area-inset-top, 0px)); right: calc(16px + env(safe-area-inset-right, 0px)); display: flex; gap: 8px; }
     .shud-chip {
       display: flex; align-items: center; gap: 7px; padding: 8px 15px; border-radius: 999px;
       background: var(--obs-glass); border: 1px solid var(--obs-hairline-dim); backdrop-filter: blur(8px);
@@ -1338,13 +1365,13 @@
     .shud-chip:hover { color: var(--obs-t1); border-color: rgba(var(--accent-rgb), 0.35); }
     .shud-chip i { font-style: normal; color: var(--obs-accent); }
     /* The Earth↔Moon action is intentionally a fixed hit target. Its label
-       alternates between "Stand on Earth" and the wider "Stand on the Moon";
+       alternates between "Switch to Earth" and the wider "Switch to the Moon";
        if the pill follows the text width, a rapid second click can land just
        outside the newly shrunken button before the pointer has moved. */
     #surface-swap { min-width: 160px; justify-content: center; box-sizing: border-box; }
     /* Moon names run long (Epimetheus) — cap the chip label, never the row. */
     #surface-lookat span { max-width: 14ch; overflow: hidden; text-overflow: ellipsis; }
-    .shud-bl { position: absolute; left: 24px; bottom: 86px; max-width: 46vw; }
+    .shud-bl { position: absolute; left: calc(24px + env(safe-area-inset-left, 0px)); bottom: calc(86px + env(safe-area-inset-bottom, 0px)); max-width: 46vw; }
     .shud-eyebrow {
       font-size: 10px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase;
       color: var(--obs-t3); display: flex; align-items: center; gap: 8px;
@@ -1362,7 +1389,7 @@
        transport. */
     .shud-timebar {
       position: absolute; left: 50%; transform: translateX(-50%);
-      bottom: calc(var(--sheet-inset, 0px) + 14px);
+      bottom: calc(var(--sheet-inset, 0px) + 14px + env(safe-area-inset-bottom, 0px));
       display: flex; align-items: center; gap: 10px;
       padding: 7px 12px; border-radius: 11px; white-space: nowrap;
       background: rgba(10, 14, 26, 0.6); border: 1px solid rgba(140, 160, 200, 0.18);
@@ -1382,7 +1409,7 @@
     /* Paused clock (incl. the silent park when stepping down through 1×):
        hollow the dot, same idiom as the bottom bar's paused rail thumb. */
     .shud-timebar.paused .shud-dot { background: transparent; box-shadow: inset 0 0 0 1px var(--obs-t3); }
-    .shud-br { position: absolute; right: 24px; bottom: 86px; text-align: right; }
+    .shud-br { position: absolute; right: calc(24px + env(safe-area-inset-right, 0px)); bottom: calc(86px + env(safe-area-inset-bottom, 0px)); text-align: right; }
     .shud-fov { margin-top: 6px; font-size: 26px; font-weight: 200; color: var(--obs-t1); font-variant-numeric: tabular-nums; }
     .shud-fovscale { position: relative; width: 150px; height: 2px; margin: 12px 0 0 auto; background: rgba(255, 255, 255, 0.10); border-radius: 1px; }
     .shud-fovmark {
@@ -1397,8 +1424,8 @@
       .shud-bl h1 { font-size: 24px; }
       /* The HUD corners join the one bottom-inset exclusion zone: a jump
          parks the sheet at peek, and the narrative must not sit under it. */
-      .shud-bl { bottom: calc(var(--sheet-inset, 0px) + 120px); max-width: 60vw; }
-      .shud-br { bottom: calc(var(--sheet-inset, 0px) + 120px); }
+      .shud-bl { bottom: calc(var(--sheet-inset, 0px) + 120px + env(safe-area-inset-bottom, 0px)); max-width: 60vw; }
+      .shud-br { bottom: calc(var(--sheet-inset, 0px) + 120px + env(safe-area-inset-bottom, 0px)); }
     }
     /* Surface view active: cinema — the top-right chrome yields to HUD chips,
        the top bar fades and stops catching pointer events (it spans the full
@@ -1503,10 +1530,70 @@
       color-scheme: dark;
     }
 
+    /* ── Paused badge ────────────────────────────────────────────────────
+       The one on-screen word for the freeze Space (or the ☰ menu) lays over
+       the scene: the clock stopped and the ship held with it. Top centre on
+       the top row; under it at the phone breakpoint, where the wordmark and
+       the action cluster fill the row — and above the toast's slot at 88px
+       either way. The hollow dot is the paused idiom the rail thumb and the
+       surface strip share. A button: tapping it resumes. The key chip is for
+       a keyboard, so it hides where nothing hovers, where the badge itself is
+       the resume. Visibility rather than display, so the fade plays and a
+       hidden badge leaves the tab order; under the toast (25) and the action
+       cluster (28). */
+    #planetarium-pause-badge {
+      position: absolute;
+      top: calc(14px + env(safe-area-inset-top, 0px));
+      left: 50%;
+      transform: translate(-50%, -6px);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 28px;
+      padding: 0 12px 0 11px;
+      border-radius: 999px;
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      line-height: 1;
+      color: var(--t1);
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 0.18s ease, transform 0.18s ease, visibility 0s linear 0.18s;
+      z-index: 24;
+    }
+    #planetarium-pause-badge.visible {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+      transform: translate(-50%, 0);
+      transition-delay: 0s;
+    }
+    #planetarium-pause-badge:hover { border-color: rgba(var(--accent-rgb), 0.35); }
+    #planetarium-pause-badge:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.75); outline-offset: 2px; }
+    #planetarium-pause-badge .pb-dot {
+      width: 6px; height: 6px; border-radius: 50%; flex: none;
+      box-shadow: inset 0 0 0 1px var(--t2);
+    }
+    #planetarium-pause-badge .kbd { text-transform: none; letter-spacing: 0; }
+    @media (hover: none) { #planetarium-pause-badge .kbd { display: none; } }
+    @media (max-width: 640px) { #planetarium-pause-badge { top: calc(60px + env(safe-area-inset-top, 0px)); } }
+    @media (prefers-reduced-motion: reduce) { #planetarium-pause-badge { transition: none; } }
+    /* Its spoken twin: off-screen, never display:none, or it would not be
+       read when a control pauses or resumes the clock. */
+    #planetarium-pause-live {
+      position: absolute; width: 1px; height: 1px; overflow: hidden;
+      clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+    }
+
     /* Notification */
     #planetarium-notification {
       position: fixed;
-      top: 88px;
+      top: calc(88px + env(safe-area-inset-top, 0px));
       left: 50%;
       transform: translateX(-50%) translateY(-10px);
       background: var(--panel-bg);
@@ -1538,8 +1625,8 @@
     #historic-panel {
       display: none;
       position: absolute;
-      top: 88px;
-      left: 12px;
+      top: calc(88px + env(safe-area-inset-top, 0px));
+      left: calc(12px + env(safe-area-inset-left, 0px));
       max-width: 310px;
       background: var(--panel-bg);
       backdrop-filter: blur(12px);
@@ -1555,8 +1642,8 @@
     #historic-reopen {
       display: none;
       position: absolute;
-      top: 88px;
-      left: 12px;
+      top: calc(88px + env(safe-area-inset-top, 0px));
+      left: calc(12px + env(safe-area-inset-left, 0px));
       max-width: min(310px, calc(100vw - 24px));
       border: 1px solid var(--panel-border);
       border-radius: 999px;
@@ -1588,8 +1675,8 @@
        the time-lapse and eclipse cards narrate from inside surface view. */
     #tutorial-card {
       position: absolute;
-      top: 88px;
-      left: 12px;
+      top: calc(88px + env(safe-area-inset-top, 0px));
+      left: calc(12px + env(safe-area-inset-left, 0px));
       width: 336px; /* fits ‹ Back + Skip + the longest Next label on one row */
       max-width: calc(100vw - 24px);
       padding: 14px 16px;
@@ -2008,7 +2095,7 @@
     #planetarium-keys-hint {
       display: none;
       position: absolute;
-      bottom: 62px;
+      bottom: calc(62px + env(safe-area-inset-bottom, 0px));
       left: 50%;
       transform: translateX(-50%);
       font-size: 10px;
@@ -2076,7 +2163,7 @@
     /* Same anchoring as #volume-compare-ui: children opt into pointer events. */
     #interior-ui { display: none; }
     /* The strip along the top: Back on the left, the body's name (the one selector) beside it, View options on the right. */
-    .interior-top { position: absolute; top: 14px; left: 14px; right: 14px; z-index: 20; display: flex; align-items: center; gap: 8px; pointer-events: none; }
+    .interior-top { position: absolute; top: calc(14px + env(safe-area-inset-top, 0px)); left: calc(14px + env(safe-area-inset-left, 0px)); right: calc(14px + env(safe-area-inset-right, 0px)); z-index: 20; display: flex; align-items: center; gap: 8px; pointer-events: none; }
     .interior-top > * { pointer-events: auto; }
     #interior-leave { position: static; flex: none; background: rgba(6, 8, 12, 0.72); border-color: rgba(255, 255, 255, 0.18); color: var(--t1); }
     #interior-leave:hover { background: rgba(20, 24, 32, 0.82); border-color: rgba(255, 255, 255, 0.28); color: var(--t1); }
@@ -2099,9 +2186,9 @@
     .pk-tags { display: inline-flex; gap: 4px; flex: none; }
     /* The panel: the right column on a desktop, the sheet on a phone. One scroll owner, its pages one at a time. */
     #interior-panel {
-      position: absolute; top: 64px; right: 16px; z-index: 18;
+      position: absolute; top: calc(64px + env(safe-area-inset-top, 0px)); right: calc(16px + env(safe-area-inset-right, 0px)); z-index: 18;
       width: min(340px, calc(100vw - 32px)); padding: 0; pointer-events: auto;
-      max-height: calc(100vh - 80px); display: flex; flex-direction: column; overflow: hidden;
+      max-height: calc(100vh - 80px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)); display: flex; flex-direction: column; overflow: hidden;
     }
     .interior-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 14px 18px 16px; scrollbar-width: thin; }
     /* A fade at the bottom says there is more: deep enough that a line half out of view reads as
@@ -2296,9 +2383,9 @@
     @media (max-width: 640px) {
       /* The sheet's height is the reader's: the drag writes --sheet-h, and only a
          snap eases it, so the sheet follows a finger exactly while it is down. */
-      #interior-panel { top: auto; bottom: 12px; left: 12px; right: 12px; width: auto; height: var(--sheet-h, 30vh); max-height: 85vh; }
+      #interior-panel { top: auto; bottom: calc(12px + env(safe-area-inset-bottom, 0px)); left: calc(12px + env(safe-area-inset-left, 0px)); right: calc(12px + env(safe-area-inset-right, 0px)); width: auto; height: var(--sheet-h, 30vh); max-height: 85vh; }
       #interior-panel.snapping { transition: height 260ms var(--ease); }
-      .interior-top { top: 10px; left: 10px; right: 10px; gap: 6px; }
+      .interior-top { top: calc(10px + env(safe-area-inset-top, 0px)); left: calc(10px + env(safe-area-inset-left, 0px)); right: calc(10px + env(safe-area-inset-right, 0px)); gap: 6px; }
       /* Phone targets: the house 44 px, as the rows and the page buttons below already get. */
       .interior-body-btn { font-size: 14px; padding: 0 10px; min-height: 44px; }
       .interior-options-btn { padding: 0 10px; min-height: 44px; }
@@ -2309,7 +2396,9 @@
       }
       .interior-grip:active { cursor: grabbing; }
       .interior-grip span { display: block; width: 38px; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.3); }
-      .interior-scroll { padding: 0 14px calc(8px + env(safe-area-inset-bottom, 0px)); }
+      /* The sheet floats above the home indicator by the bar (its bottom
+         offset above), so its rows need no padding under it. */
+      .interior-scroll { padding: 0 14px 8px; }
       .interior-view { min-height: 44px; }
       .interior-scale-seg .interior-view { min-height: 44px; }
       /* The thin-layers note is a row with its link a full-height target; "more" grows its hit area around its text. */
@@ -2344,8 +2433,8 @@
        brighter border and text (blur, dimensions, and hover feedback kept). */
     #compare-leave {
       position: absolute;
-      top: 14px;
-      left: 14px;
+      top: calc(14px + env(safe-area-inset-top, 0px));
+      left: calc(14px + env(safe-area-inset-left, 0px));
       z-index: 20;
       pointer-events: auto;
       background: rgba(6, 8, 12, 0.72);
@@ -2362,8 +2451,8 @@
        and unobtrusive — the glass scene is the product. */
     #compare-panel {
       position: absolute;
-      top: 16px;
-      right: 16px;
+      top: calc(16px + env(safe-area-inset-top, 0px));
+      right: calc(16px + env(safe-area-inset-right, 0px));
       z-index: 18;
       width: min(272px, calc(100vw - 32px));
       padding: 16px 18px;
@@ -2569,7 +2658,7 @@
     #compare-endcard { display: none; position: fixed; inset: 0; z-index: 42; align-items: center; justify-content: flex-start; pointer-events: none; }
     #compare-endcard.visible { display: flex; }
     .compare-endcard-card {
-      position: relative; margin-left: 24px; width: min(380px, calc(100vw - 48px)); max-height: min(84vh, 640px);
+      position: relative; margin-left: calc(24px + env(safe-area-inset-left, 0px)); width: min(380px, calc(100vw - 48px)); max-height: min(84vh, 640px);
       overflow-y: auto; padding: 24px 26px; text-align: left; pointer-events: auto;
     }
     .compare-endcard-close { position: absolute; top: 12px; right: 12px; background: none; border: none; color: var(--t3); cursor: pointer; padding: 2px; }
@@ -2638,12 +2727,12 @@
       #compare-reset { font-size: 0; padding: 2px 6px; }
       #compare-reset::before { content: '\21BA'; font-size: 16px; line-height: 1; }
       /* The loading chip is a scene overlay, not a bar row. */
-      #compare-loading { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); margin: 0; }
+      #compare-loading { position: fixed; top: calc(12px + env(safe-area-inset-top, 0px)); left: 50%; transform: translateX(-50%); margin: 0; }
       /* End card becomes a bottom sheet — vessel visible in the band above. */
       #compare-endcard { align-items: flex-end; justify-content: center; }
       .compare-endcard-card {
         margin-left: 0; width: 100%; max-width: 100%; max-height: 55vh;
-        padding: 20px; border-radius: var(--r-l) var(--r-l) 0 0;
+        padding: 20px 20px calc(20px + env(safe-area-inset-bottom, 0px)); border-radius: var(--r-l) var(--r-l) 0 0;
       }
       .compare-endcard-headline { font-size: 19px; }
       .compare-preview-label.on { display: block; }
@@ -3029,7 +3118,7 @@
     /* ≤640px: the deck becomes a bottom sheet with a grab handle */
     @media (max-width: 640px) {
       #deck {
-        top: auto; left: 8px; right: 8px; bottom: 8px; transform: none;
+        top: auto; left: calc(8px + env(safe-area-inset-left, 0px)); right: calc(8px + env(safe-area-inset-right, 0px)); bottom: calc(8px + env(safe-area-inset-bottom, 0px)); transform: none;
         width: auto; max-width: none; max-height: min(62vh, 540px);
         border-bottom-left-radius: var(--r-l); border-bottom-right-radius: var(--r-l);
       }
@@ -3117,8 +3206,8 @@
     #tools-menu.visible { display: block; }
     .tools-card {
       position: absolute;
-      top: 56px;
-      right: 14px;
+      top: calc(56px + env(safe-area-inset-top, 0px));
+      right: calc(14px + env(safe-area-inset-right, 0px));
       width: min(244px, calc(100vw - 28px));
       border-radius: var(--r-l);
       overflow: hidden;
@@ -3209,8 +3298,8 @@
     }
     .map-close {
       position: absolute;
-      top: 14px;
-      left: 14px;
+      top: calc(14px + env(safe-area-inset-top, 0px));
+      left: calc(14px + env(safe-area-inset-left, 0px));
       width: 38px;
       height: 38px;
       display: inline-flex;
@@ -3251,8 +3340,8 @@
        because the layer's own `#system-map-ui > *` rule turns them on. */
     .smx {
       position: absolute;
-      right: 14px;
-      bottom: 62px;
+      right: calc(14px + env(safe-area-inset-right, 0px));
+      bottom: calc(62px + env(safe-area-inset-bottom, 0px));
       display: flex;
       align-items: flex-end;
       gap: 8px;
@@ -3659,7 +3748,7 @@
     #system-map-ui .map-zoom-hint {
       position: absolute;
       left: 50%;
-      bottom: 68px;
+      bottom: calc(68px + env(safe-area-inset-bottom, 0px));
       transform: translateX(-50%);
       max-width: calc(100vw - 24px);
       font-family: var(--font-ui);
@@ -3680,14 +3769,14 @@
        There is room for it in the band between the world bar and the panel's
        bottom edge, so it drops into that band rather than being cut short. */
     @media (min-width: 641px) and (max-width: 820px) {
-      #system-map-ui .map-zoom-hint { bottom: 56px; }
+      #system-map-ui .map-zoom-hint { bottom: calc(56px + env(safe-area-inset-bottom, 0px)); }
     }
     @media (max-width: 640px) {
       /* The band between the bar and the sheet is 27 px on a phone
          against 42 on a desktop, and the line has to sit clear of both — the
          mode re-docks the block above the strip, this is the floor it starts
          from. */
-      #system-map-ui .map-zoom-hint { bottom: 64px; font-size: 10px; }
+      #system-map-ui .map-zoom-hint { bottom: calc(64px + env(safe-area-inset-bottom, 0px)); font-size: 10px; }
     }
     /* The teleport offer, pinned to the point it names: the mode reprojects
        that point every frame and writes the transform, so the anchor is the
@@ -3932,7 +4021,7 @@
          row and the open panel takes all of it. Collapsed, the panel is the
          same 46px glyph chip as on a desktop, right-docked beside the help
          chip — a two-chip dock, and the whole chip reopens. */
-      .smx { left: 10px; right: 10px; bottom: 66px; justify-content: flex-end; max-width: none; }
+      .smx { left: calc(10px + env(safe-area-inset-left, 0px)); right: calc(10px + env(safe-area-inset-right, 0px)); bottom: calc(66px + env(safe-area-inset-bottom, 0px)); justify-content: flex-end; max-width: none; }
       .map-panel { flex: 0 1 auto; width: 100%; padding-top: 6px; }
       .map-panel.collapsed { flex: none; width: 46px; padding: 10px; }
       .map-panel-grip {
@@ -4009,7 +4098,7 @@
        over the labels, with the rest of the controls. */
     #system-map-ui .map-hover-meta {
       position: absolute;
-      top: 62px;
+      top: calc(62px + env(safe-area-inset-top, 0px));
       left: 50%;
       transform: translateX(-50%);
       display: none;
@@ -4037,8 +4126,8 @@
        count the padding in it. */
     .map-card {
       position: absolute;
-      left: 14px;
-      bottom: 96px;
+      left: calc(14px + env(safe-area-inset-left, 0px));
+      bottom: calc(96px + env(safe-area-inset-bottom, 0px));
       width: 264px;
       max-width: calc(100vw - 28px);
       box-sizing: border-box;
@@ -4195,7 +4284,7 @@
        scrolls, wearing the fade that already says there is more below. */
     @media (max-width: 640px) {
       .map-card {
-        left: 12px; right: 12px; width: auto; max-width: none;
+        left: calc(12px + env(safe-area-inset-left, 0px)); right: calc(12px + env(safe-area-inset-right, 0px)); width: auto; max-width: none;
         gap: 9px; padding: 11px 12px;
       }
       .map-card-dot { width: 12px; height: 12px; }
@@ -4256,7 +4345,7 @@
       font-size: 12px;
       pointer-events: auto;
       min-height: 36px;
-      bottom: 68px;
+      bottom: calc(68px + env(safe-area-inset-bottom, 0px));
       border-color: rgba(var(--accent-rgb), 0.25);
     }
 
@@ -4265,11 +4354,11 @@
     /* ============================================= */
 
     @media (max-width: 640px) {
-      #top-bar { padding: 8px 10px; gap: 10px; }
+      #top-bar { padding: calc(8px + env(safe-area-inset-top, 0px)) calc(10px + env(safe-area-inset-right, 0px)) 8px calc(10px + env(safe-area-inset-left, 0px)); gap: 10px; }
       #top-bar h1 { font-size: 14px; letter-spacing: 2px; }
 
-      #planetarium-bottom-bar { bottom: 8px; max-width: calc(100vw - 12px); }
-      #planetarium-btn-land { bottom: 100px; }
+      #planetarium-bottom-bar { bottom: calc(8px + env(safe-area-inset-bottom, 0px)); max-width: calc(100vw - 12px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)); }
+      #planetarium-btn-land { bottom: calc(100px + env(safe-area-inset-bottom, 0px)); }
       /* Horizontal inset so the end sections (the rail on the left, the Stats
          chip on the right) clear the bar's rounded wall — 2px left the chip
          all but touching the border. */
@@ -4304,29 +4393,30 @@
 
       #historic-panel {
         top: auto;
-        left: 8px;
-        right: 8px;
-        bottom: 8px;
+        left: calc(8px + env(safe-area-inset-left, 0px));
+        right: calc(8px + env(safe-area-inset-right, 0px));
+        /* A floating card: it moves up by the bar rather than padding under it. */
+        bottom: calc(8px + env(safe-area-inset-bottom, 0px));
         max-width: none;
         max-height: min(31vh, 260px);
         overflow-y: auto;
-        padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
+        padding: 10px;
         border-radius: 12px;
       }
       #historic-reopen {
         top: auto;
-        left: 8px;
-        right: 8px;
-        bottom: 8px;
+        left: calc(8px + env(safe-area-inset-left, 0px));
+        right: calc(8px + env(safe-area-inset-right, 0px));
+        bottom: calc(8px + env(safe-area-inset-bottom, 0px));
         max-width: none;
         padding: 10px 14px;
         border-radius: 12px;
       }
       /* Top-docked, full width — the bottom band is the deck sheet's turf. */
       #tutorial-card {
-        top: 60px;
-        left: 8px;
-        right: 8px;
+        top: calc(60px + env(safe-area-inset-top, 0px));
+        left: calc(8px + env(safe-area-inset-left, 0px));
+        right: calc(8px + env(safe-area-inset-right, 0px));
         width: auto;
         max-width: none;
       }
@@ -4382,7 +4472,7 @@
          with the body name, so cap it and let long names ellipsize. */
       .act-leave .act-lbl { max-width: 31vw; overflow: hidden; text-overflow: ellipsis; }
       /* Lift the Stats card clear of the taller mobile bar. */
-      #stats-popover { bottom: 104px; right: 10px; }
+      #stats-popover { bottom: calc(104px + env(safe-area-inset-bottom, 0px)); right: calc(10px + env(safe-area-inset-right, 0px)); }
     }
 
     @media (max-width: 330px) {
@@ -4414,6 +4504,9 @@
         width: 100%; max-width: none;
         max-height: min(55vh, calc(100vh - 220px));
         border-radius: 18px 18px 0 0;
+        /* Docked to the screen's edge: the sheet runs under the home indicator
+           and its rows stop above it. */
+        padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
       }
       /* The header is the drag handle — sticky, so the dismiss gesture
          survives scrolling the list, with the grab pill drawn inside it
@@ -4448,7 +4541,7 @@
       }
       /* Four chips can't fit one row at 390px — give the cluster a left
          edge and let it wrap, keeping chips ranked from the right. */
-      .shud-tr { left: 16px; flex-wrap: wrap; justify-content: flex-end; }
+      .shud-tr { left: calc(16px + env(safe-area-inset-left, 0px)); flex-wrap: wrap; justify-content: flex-end; }
     }
     @media (hover: none) {
       .obs-close { padding: 8px 12px; margin: -8px -8px -8px 0; }
@@ -4462,7 +4555,7 @@
   <div id="loading-screen">
     <h1>Moon</h1>
     <p id="loading-msg">Loading celestial bodies...</p>
-    <div id="debug-log" style="position:absolute;bottom:8px;left:8px;right:8px;max-height:30vh;overflow-y:auto;font-family:monospace;font-size:10px;color:#ff6060;background:rgba(0,0,0,0.8);padding:8px;border-radius:6px;display:none;white-space:pre-wrap;word-break:break-all;"></div>
+    <div id="debug-log" style="position:absolute;bottom:calc(8px + env(safe-area-inset-bottom, 0px));left:calc(8px + env(safe-area-inset-left, 0px));right:calc(8px + env(safe-area-inset-right, 0px));max-height:30vh;overflow-y:auto;font-family:monospace;font-size:10px;color:#ff6060;background:rgba(0,0,0,0.8);padding:8px;border-radius:6px;display:none;white-space:pre-wrap;word-break:break-all;"></div>
   </div>
 
   <script>
@@ -4599,6 +4692,11 @@
             <span class="menu-tier-value">Dynamic</span>
             <span class="menu-tier-chevron" aria-hidden="true">&rsaquo;</span>
           </button>
+          <button type="button" class="pk-row menu-tier" data-open="display">
+            <b>Display</b>
+            <span class="menu-tier-value">Real nights</span>
+            <span class="menu-tier-chevron" aria-hidden="true">&rsaquo;</span>
+          </button>
           <!-- Hidden until the browser says the page may go full screen
                (app/fullscreen.ts): a row that could only fail is not offered. -->
           <div class="settings-row" hidden>
@@ -4713,6 +4811,23 @@
             <div class="menu-note" id="settings-fps-note"></div>
           </div>
         </div>
+
+        <!-- Display: how the picture looks, as opposed to how much it costs. -->
+        <div class="menu-page" data-page="display" id="menu-page-display" hidden>
+          <div class="menu-head">
+            <button type="button" class="menu-back" aria-label="Back"><span aria-hidden="true">&lsaquo;</span></button>
+            <h3>Display</h3>
+          </div>
+          <div class="menu-field">
+            <div class="menu-field-label">Night sides</div>
+            <div class="menu-seg" role="radiogroup" aria-label="Night sides"
+                 aria-describedby="settings-night-sides-note" id="settings-night-sides-seg">
+              <button type="button" class="menu-seg-btn" role="radio" aria-checked="true" data-value="real" id="settings-night-sides-real">Real</button>
+              <button type="button" class="menu-seg-btn" role="radio" aria-checked="false" data-value="brightened" id="settings-night-sides-brightened">Brightened</button>
+            </div>
+            <div class="menu-note" id="settings-night-sides-note"></div>
+          </div>
+        </div>
       </div>
 
       <!-- Observatory panel: vantage + phase hero + surface-view entry + event jumps -->
@@ -4745,6 +4860,23 @@
             <p id="observatory-phase-meta">--</p>
             <p><span class="obs-num" id="observatory-phase-data"></span></p>
           </div>
+        </div>
+        <!-- Standing on the Moon: the Moon's own phase as Earth sees it. A
+             quiet line in the hero's grid, its small glyph under the big one. -->
+        <div class="obs-from-earth" id="observatory-from-earth" style="display:none">
+          <span class="obs-from-earth-cell">
+            <svg class="obs-from-earth-glyph" viewBox="0 0 40 40" aria-hidden="true">
+              <defs>
+                <radialGradient id="observatory-from-earth-grad" gradientUnits="userSpaceOnUse" cx="26.5" cy="20" r="26">
+                  <stop offset="0" stop-color="rgb(220, 223, 227)"></stop>
+                  <stop offset="1" stop-color="rgb(128, 131, 140)"></stop>
+                </radialGradient>
+              </defs>
+              <path id="observatory-from-earth-lit" d="" fill="url(#observatory-from-earth-grad)"></path>
+              <circle class="obs-glyph-disc" cx="20" cy="20" r="19"></circle>
+            </svg>
+          </span>
+          <span id="observatory-from-earth-text"></span>
         </div>
         <div class="obs-nowbar" id="observatory-nowbar">
           <span class="obs-dot"></span>
@@ -4933,7 +5065,7 @@
             </section>
             <section class="help-section">
               <h4>Watch the orbits run</h4>
-              <p>Click the date on the bottom bar. Speed time up and you can actually watch planets trace their orbits and moons circle their hosts. Pause, reverse, or jump to any UTC moment.</p>
+              <p>Click the date on the bottom bar. Speed time up and you can actually watch planets trace their orbits and moons circle their hosts. Pause, reverse, or jump to any UTC moment. <kbd>Space</kbd> pauses everything at once &mdash; the clock and the ship &mdash; and a second press resumes.</p>
             </section>
             <section class="help-section">
               <h4>The whole system at once (<kbd>M</kbd>)</h4>
@@ -5342,7 +5474,7 @@
       </div>
 
       <div id="planetarium-keys-hint">
-        <kbd>A</kbd><kbd>D</kbd> yaw &nbsp; <kbd>↑</kbd><kbd>↓</kbd> pitch &nbsp; <kbd>W</kbd><kbd>S</kbd> thrust &nbsp; <kbd>O</kbd> observatory &nbsp; <kbd>T</kbd> teleport &nbsp; <kbd>P</kbd> autopilot &nbsp; <kbd>M</kbd> map &nbsp; <kbd>,</kbd><kbd>.</kbd> time &nbsp; <kbd>N</kbd> now
+        <kbd>A</kbd><kbd>D</kbd> yaw &nbsp; <kbd>↑</kbd><kbd>↓</kbd> pitch &nbsp; <kbd>W</kbd><kbd>S</kbd> thrust &nbsp; <kbd>O</kbd> observatory &nbsp; <kbd>T</kbd> teleport &nbsp; <kbd>P</kbd> autopilot &nbsp; <kbd>M</kbd> map &nbsp; <kbd>,</kbd><kbd>.</kbd> time &nbsp; <kbd>N</kbd> now &nbsp; <kbd>Space</kbd> pause
       </div>
 
       <!-- Touch flight zone (mobile only) -->
@@ -5371,6 +5503,16 @@
       </div>
 
       <div id="planetarium-notification"></div>
+      <!-- Paused badge: the word for the freeze Space (or the ☰ menu) lays
+           over the scene. A button — tapping it resumes; the key chip is for
+           a keyboard and hides on a touch screen. Shown by the TS through
+           .visible (ui/PauseBadge.ts; when, ui/pauseBadgeLogic.ts). -->
+      <button type="button" id="planetarium-pause-badge" class="pn pn-high" aria-label="Paused. Resume">
+        <span class="pb-dot" aria-hidden="true"></span><span>Paused</span><kbd class="kbd">Space</kbd>
+      </button>
+      <!-- The badge's spoken twin: "Paused" / "Resumed" for a screen reader
+           when a control changes the clock (ui/PauseBadge.ts announce). -->
+      <span id="planetarium-pause-live" aria-live="polite" aria-atomic="true"></span>
       <div id="planetarium-loading-msg" style="position:absolute;bottom:50%;left:50%;transform:translate(-50%,50%);font-size:13px;color:var(--text-dim);letter-spacing:2px;display:none;"></div>
     </div>
 

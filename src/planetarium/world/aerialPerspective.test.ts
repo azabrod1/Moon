@@ -107,7 +107,7 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '0edb63a746065bfbe2ac49ac15673703a790605fb30cc7f717891d6c53759159';
+const DEV_FRAGMENT_HASH = '3fbebbf19058fd3c92a47b1a0b99457caca7cf8b36f4c6effd3fc8badc461362';
 /** The development text with the cloud field's define OFF (world/cloudField,
  *  DEV only), resolved as the preprocessor resolves it: the development text
  *  from before the field existed. A production build carries none of it. */
@@ -215,6 +215,29 @@ describe('the injected surface shader', () => {
     }
   });
 
+  it('compiles the deck\'s block out of a ground that carries the cloud field', () => {
+    // A ground with CLOUD_FIELD (and never CLOUD_DECK) knows it is not the
+    // deck: DECK_ON is a constant false there, so the deck's block — its detail
+    // tap on uCloudDetail, an active sampler on every ground otherwise — is
+    // dead code the compiler drops. Development builds only, with the field.
+    const text = compile(augmented('earth')).fragmentShader;
+    if (!import.meta.env.DEV) {
+      expect(text).not.toContain('CLOUD_FIELD');
+      return;
+    }
+    const ground = resolveDefine(text, 'CLOUD_FIELD', true);
+    const macros = ground.slice(ground.indexOf('#ifdef CLOUD_DECK'), ground.indexOf('uniform vec3 uNightColor;'));
+    expect(macros).toContain('#else\n#define DECK_ON false\n#define DECK_OFF true\n#define GROUND_ON(x) (x)\n#endif');
+    expect(macros).not.toContain('uCloudDeck > 0.0');
+    // The tap sits under that condition.
+    const block = ground.slice(ground.indexOf('if (DECK_ON) {'), ground.indexOf('textureGrad(uCloudDetail'));
+    expect(block.length).toBeGreaterThan(0);
+    expect(ground.indexOf('if (DECK_ON) {')).toBeLessThan(ground.indexOf('textureGrad(uCloudDetail'));
+    // ...while the deck itself, with CLOUD_DECK, still reads it.
+    const deck = resolveDefine(text, 'CLOUD_FIELD', true);
+    expect(deck).toContain('#ifdef CLOUD_DECK\n#define DECK_ON true');
+  });
+
   it('is the text it was with the cloud field\'s define off, after the preprocessor', () => {
     // CLOUD_FIELD (world/cloudField, the 1.2 km field's vertical slice) is a
     // compile-time define on the deck alone, on the dev server alone, off by
@@ -254,9 +277,11 @@ describe('the injected surface shader', () => {
     } else {
       expect([CLOUD_FIELD_DECLS, CLOUD_FIELD_MIX]).toEqual(['', '']);
     }
-    const folded = shader.fragmentShader
+    // The archetype macros' own CLOUD_FIELD arm opens with no blank line, so
+    // it resolves away exactly.
+    const folded = resolveDefine(shader.fragmentShader
       .replace(CLOUD_FIELD_DECLS, '')
-      .replace(CLOUD_FIELD_MIX, '')
+      .replace(CLOUD_FIELD_MIX, ''), 'CLOUD_FIELD', false)
       .replace('uniform float uPerfCloudTaps;\nuniform float uPerfCloudClear;\nuniform float uPerfGlintGate;'
         + '\nuniform float uPerfCloudNoiseFrame;'
         + '\nuniform float uProbeCloudSmooth;\nuniform float uProbeCloudDetail;'

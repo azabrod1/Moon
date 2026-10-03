@@ -185,7 +185,9 @@ describe('the deck\'s alpha in the surface augmentation', () => {
         ? { ...first.mat.defines, CLOUD_DECK: '' }
         : first.mat.defines);
     }
-    const glsl = first.shader.fragmentShader;
+    // Read as a program without the cloud field compiles it (a ground with the
+    // field takes DECK_ON as a constant false; world/surfaceShading).
+    const glsl = resolveDefine(first.shader.fragmentShader, 'CLOUD_FIELD', false);
     expect(glsl).toContain('#ifdef CLOUD_DECK\n#define DECK_ON true\n#define DECK_OFF false\n#define GROUND_ON(x) false\n#else\n#define DECK_ON (uCloudDeck > 0.0)\n#define DECK_OFF (uCloudDeck == 0.0)\n#define GROUND_ON(x) (x)\n#endif');
     // ...and no other spelling of the deck's condition survives outside them.
     expect(glsl.split('uCloudDeck > 0.0')).toHaveLength(2);

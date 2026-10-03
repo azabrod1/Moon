@@ -1897,6 +1897,21 @@ const SURFACE_MAP_FRAGMENT = /* glsl */ `
 `;
 
 /**
+ * A ground compiled with the cloud field (CLOUD_FIELD without CLOUD_DECK: the
+ * ground reads the field in its shadow lookup) knows at compile time that it
+ * is not the deck, so DECK_ON is a constant false there and the deck's own
+ * block — its detail tap on `uCloudDetail` above all, an active sampler on
+ * every ground today only because DECK_ON is a uniform test — is compiled out.
+ * One sampler unit back on the program that spends the most. Whole lines inside
+ * their own conditional, so a program without CLOUD_FIELD is the text it was;
+ * development builds only, with the rest of the field.
+ */
+const GROUND_FIELD_ARCHETYPE_OPEN = import.meta.env.DEV
+  ? '#ifdef CLOUD_FIELD\n#define DECK_ON false\n#define DECK_OFF true\n#else\n'
+  : '';
+const GROUND_FIELD_ARCHETYPE_CLOSE = import.meta.env.DEV ? '#endif\n' : '';
+
+/**
  * The cloud deck's archetype, decided when its program compiles.
  *
  * Every surface takes one injected text, and a body's class is a set of
@@ -1919,9 +1934,9 @@ const SURFACE_ARCHETYPE_MACROS = /* glsl */ `
 #define DECK_OFF false
 #define GROUND_ON(x) false
 #else
-#define DECK_ON (uCloudDeck > 0.0)
+${GROUND_FIELD_ARCHETYPE_OPEN}#define DECK_ON (uCloudDeck > 0.0)
 #define DECK_OFF (uCloudDeck == 0.0)
-#define GROUND_ON(x) (x)
+${GROUND_FIELD_ARCHETYPE_CLOSE}#define GROUND_ON(x) (x)
 #endif`;
 
 /**
@@ -3415,6 +3430,7 @@ export function augmentSurfaceMaterial(
       shader.uniforms.uCloudPages = field.uCloudPages;
       shader.uniforms.uCloudPageTable = field.uCloudPageTable;
       shader.uniforms.uCloudFieldDiag = field.uCloudFieldDiag;
+      shader.uniforms.uCloudFieldPixelScale = field.uCloudFieldPixelScale;
     }
 
     shader.vertexShader = shader.vertexShader

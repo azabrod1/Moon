@@ -40,6 +40,7 @@ import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasur
 import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { advanceSurfaceAir, bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, holdSeaCloudCut, setSurfaceSynthesis, settleSurfaceAir, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { setCloudFieldPixelRatios } from './world/cloudFieldSlots';
 import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
 import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, textureWarmQueueDepth, warmBudgetMs } from './world/textureWarmer';
 import { beginSlicedUpload, stepSlicedUpload } from './world/slicedUpload';
@@ -2546,6 +2547,7 @@ export class PlanetariumMode {
     this.rendersThroughComposer = rendersThroughComposer;
     this.scenePixelRatio = scenePixelRatio;
     this.tilePixelRatio = tilePixelRatio;
+    if (import.meta.env.DEV) setCloudFieldPixelRatios(scenePixelRatio(), tilePixelRatio());
     this.quality = quality;
     this.frameRate = frameRate;
     this.nightSides = nightSides;
@@ -4729,6 +4731,10 @@ export class PlanetariumMode {
     if (this.starfield) setStarfieldPixelRatio(this.starfield, sceneRatio, outputRatio);
     if (this.moonDots) this.moonDots.setPixelRatio(sceneRatio, outputRatio);
     if (this.solarSystem) setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, sceneRatio, outputRatio);
+    // The cloud field's guard is measured in the scene target's own pixels and
+    // judged in the tile ratio's (world/cloudField): one uniform, the ratio of
+    // the two, so a rung step moves no fragment's weight.
+    if (import.meta.env.DEV) setCloudFieldPixelRatios(sceneRatio, this.tilePixelRatio());
   }
 
   /** The safe-area insets as last read, read now if never: the corner chart

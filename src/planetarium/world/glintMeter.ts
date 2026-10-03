@@ -373,10 +373,11 @@ export function scanBeam(
     const cd = Math.cos(delta), sdl = Math.sin(delta);
     return angleBetweenFrom(cam, px, py, pz, cd * px + sdl * dirX, cd * py + sdl * dirY, cd * pz + sdl * dirZ);
   };
-  // Along the line, away from the Sun (toward the sub-camera point): the
-  // tangent of the circle at the peak in the e1/e2 plane, pointing to lower φ.
+  // Along the line the beam is asymmetric: it falls slowly toward the camera
+  // and fast toward the horizon, so both sides are read and averaged. The
+  // tangent of the circle at the peak in the e1/e2 plane points to higher φ.
   const tx = -s * e1x + c * e2x, ty = -s * e1y + c * e2y, tz = -s * e1z + c * e2z;
-  o.halfWidthAlongDeg = halfWidthFrom(-tx, -ty, -tz);
+  o.halfWidthAlongDeg = 0.5 * (halfWidthFrom(-tx, -ty, -tz) + halfWidthFrom(tx, ty, tz));
   // Across: the plane's normal.
   const ax = e1y * e2z - e1z * e2y, ay = e1z * e2x - e1x * e2z, az = e1x * e2y - e1y * e2x;
   o.halfWidthAcrossDeg = halfWidthFrom(ax, ay, az);

@@ -783,6 +783,9 @@ describe('the haze fade and the glint cap', () => {
     // The Sun's own path, on the direct terms of every surface, before the sea
     // reads its mirror term, and normalised to the zenith.
     expect(frag.indexOf('reflectedLight.directSpecular *= sunPath;')).toBeLessThan(frag.indexOf('vec3 glintRaw = reflectedLight.directSpecular;'));
+    // Body scope, so a later term that reads the Sun's irradiance for itself
+    // (the deck's cloud light) can take the same factor.
+    expect(frag).toContain('vec3 sunPath = vec3(1.0);\n  if (uAirDensity > 0.0 && uSunPath > 0.5');
     expect(frag).toContain('/ max(getTransmittanceToSun(uTransmittance, sunPathR, 1.0), vec3(1e-4));');
     expect(frag).toContain('outgoingLight -= seaGlint * (1.0 - cloudSunKeep);');
     expect(frag).not.toMatch(/reflectedLight\.directSpecular \* cloudCoverage/);

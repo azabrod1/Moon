@@ -2366,10 +2366,14 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // tables' arrival does not step the terminator; skipped where the Sun is
   // under the fragment's horizon, where three's direct terms are zero
   // already. The deck takes it at its own altitude. Any build: ?sunpath=0.
+  // Body scope, one everywhere the branch is not taken, so any later term
+  // that reads the Sun's irradiance for itself (the deck's light on its
+  // geometric normal) multiplies by the same factor the direct terms took.
+  vec3 sunPath = vec3(1.0);
   if (uAirDensity > 0.0 && uSunPath > 0.5 && dot(normal, normalize(vSunViewDir)) > 0.0) {
     float sunPathR = clampRadius(length(vAirFrag) / uPlanetRadius);
     float sunPathMu = clampCosine(dot(normalize(vAirFrag), normalize(uSunDirWorld)));
-    vec3 sunPath = getTransmittanceToSun(uTransmittance, sunPathR, sunPathMu)
+    sunPath = getTransmittanceToSun(uTransmittance, sunPathR, sunPathMu)
         / max(getTransmittanceToSun(uTransmittance, sunPathR, 1.0), vec3(1e-4));
     sunPath = mix(vec3(1.0), min(sunPath, vec3(1.0)), uAirBlend);
     outgoingLight -= (reflectedLight.directDiffuse + reflectedLight.directSpecular) * (1.0 - sunPath);

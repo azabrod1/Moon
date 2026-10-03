@@ -79,6 +79,7 @@ import { equirectMapGpuBytes, retainedSourceBytes, textureGpuBytes } from './wor
 import { retryDelayMs, urlSpread } from './world/textureRetryPolicy';
 import { TIER_MAP_WIDTH, type TextureTier } from './world/texturePolicy';
 import { ladderCeilingBytes, UNMEASURED_DESKTOP_PROFILE, UNMEASURED_TOUCH_PROFILE } from './world/gpuEnvelope';
+import { cloudFieldPoolBytes } from './world/cloudField';
 import { SECTOR_SETS, sectorSetGpuBytes } from './world/sectorStreamer';
 import {
   AIR_LOOKUP_RADIUS,
@@ -1665,8 +1666,11 @@ describe('the ladder against the sector memory envelope', () => {
     const worst = ladderWorstCaseBytes(false, false);
     // One 4K webp fewer than before: Mercury's rungs are containers now.
     expect(mib(worst)).toBeCloseTo(554.7, 1);
+    // ...with the cloud field's pool held out of the envelope too, as a session
+    // that asked for the field holds it.
     expect(worst).toBeLessThanOrEqual(
-      ladderCeilingBytes(UNMEASURED_DESKTOP_PROFILE, UNMEASURED_DESKTOP_PROFILE.sectorFloorBytes),
+      ladderCeilingBytes(UNMEASURED_DESKTOP_PROFILE, UNMEASURED_DESKTOP_PROFILE.sectorFloorBytes,
+        cloudFieldPoolBytes(UNMEASURED_DESKTOP_PROFILE.cloudFieldLayers)),
     );
     const worstBudget = UNMEASURED_DESKTOP_PROFILE.envelopeBytes - worst;
     // Without a transcoder Mercury has no rung at all (both of its rungs are
@@ -1701,7 +1705,8 @@ describe('the ladder against the sector memory envelope', () => {
     // has toured. The line moved up 2.7 MiB when the height and water crops
     // went to one byte a texel: a sector set holds less, so its floor reserves
     // less and the maps are left more.
-    const ceiling = ladderCeilingBytes(UNMEASURED_TOUCH_PROFILE, UNMEASURED_TOUCH_PROFILE.sectorFloorBytes);
+    const ceiling = ladderCeilingBytes(UNMEASURED_TOUCH_PROFILE, UNMEASURED_TOUCH_PROFILE.sectorFloorBytes,
+      cloudFieldPoolBytes(UNMEASURED_TOUCH_PROFILE.cloudFieldLayers));
     expect(mib(ceiling)).toBeCloseTo(276.4, 1);
     expect(UNMEASURED_TOUCH_PROFILE.envelopeBytes - ceiling)
       .toBeGreaterThanOrEqual(2 * sectorSetGpuBytes(SECTOR_SETS.Earth));

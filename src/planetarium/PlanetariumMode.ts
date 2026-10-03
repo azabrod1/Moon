@@ -4058,7 +4058,7 @@ export class PlanetariumMode {
     if (!plan.releaseDue || this.releasing) return;
     const victim = planRelease(candidates, {
       ladderBytes,
-      envelopeBytes: this.memory.envelopeBytes,
+      envelopeBytes: this.memory.availableBytes(),
     });
     const up = victim ? victims.get(victim.id) : undefined;
     if (!victim || !up) return;
@@ -4362,6 +4362,7 @@ export class PlanetariumMode {
     releaseTexelPx: number;
     cacheOnlyWarm: boolean;
     tierCaps: Record<string, string>;
+    cloudFieldLayers: number;
   } {
     const p = this.deviceProfile;
     return {
@@ -4379,6 +4380,7 @@ export class PlanetariumMode {
       releaseTexelPx: p.releaseTexelPx,
       cacheOnlyWarm: p.cacheOnlyWarm,
       tierCaps: { ...p.tierCaps } as Record<string, string>,
+      cloudFieldLayers: p.cloudFieldLayers,
     };
   }
 
@@ -4402,6 +4404,8 @@ export class PlanetariumMode {
     ceilingBytes: number;
     floorBytes: number;
     envelopeBytes: number;
+    fixedBytes: number;
+    availableBytes: number;
     releasing: string | null;
     restoreQueued: number;
     rungs: LadderRungReadout[];
@@ -4437,7 +4441,12 @@ export class PlanetariumMode {
       heldBytes: this.liveGlobalMapBytes(),
       ceilingBytes: this.memory.ladderCeiling(),
       floorBytes: this.memory.floorBytes,
+      // The device's row, what is held whole out of it for the session (the
+      // cloud field's pool), and what that leaves the maps and the tiles: the
+      // figure the shared-envelope arithmetic is checked against.
       envelopeBytes: this.memory.envelopeBytes,
+      fixedBytes: this.memory.fixedBytes,
+      availableBytes: this.memory.availableBytes(),
       releasing: this.releasing?.key ?? null,
       // Rungs still waiting to fetch back the map a lost context took. Above
       // zero only between a restore and the last re-fetch landing; a figure

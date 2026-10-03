@@ -141,6 +141,11 @@ export interface DeviceProfile extends SectorStreamerLimits {
    *  fill-rate caps below. Keyed by upgrade key; absent means the ladder's
    *  own top, admitted or refused by the memory arithmetic alone. */
   tierCaps: Readonly<Partial<Record<string, TextureTier>>>;
+  /** Pages of Earth's 1.2 km cloud field (world/cloudFieldPool) the device
+   *  holds, each a 10.67 MiB layer of one texture array allocated whole at
+   *  boot and reserved in the envelope for the session. Zero is no field at
+   *  all, whatever `?cloudtiles=1` asks. */
+  cloudFieldLayers: number;
 }
 
 const MiB = 1024 * 1024;
@@ -212,6 +217,9 @@ export const UNMEASURED_TOUCH_PROFILE: DeviceProfile = {
   releaseTexelPx: 0.8,
   cacheOnlyWarm: true,
   tierCaps: fillRateTierCaps('phone'),
+  // No cloud field: nothing on these platforms has been measured, and the
+  // pool alone would be a fifth of the envelope.
+  cloudFieldLayers: 0,
 };
 
 /**
@@ -256,6 +264,9 @@ export const UNMEASURED_DESKTOP_PROFILE: DeviceProfile = {
   releaseTexelPx: 0.65,
   cacheOnlyWarm: false,
   tierCaps: fillRateTierCaps('desktop'),
+  // 128 MiB: a straight-down view at 3,000 km over a 1600 x 1000 frame at
+  // ratio 2 holds 10 pages at full weight, with two to spare.
+  cloudFieldLayers: 12,
 };
 
 /**
@@ -298,6 +309,9 @@ export const APPLE_PHONE_PROFILE: DeviceProfile = {
   releaseTexelPx: 0.65,
   cacheOnlyWarm: false,
   tierCaps: fillRateTierCaps('phone'),
+  // 64 MiB: a portrait frame holds 5 pages at full weight at 6,000 km, its
+  // most; the phone gate may move this.
+  cloudFieldLayers: 6,
 };
 
 /**
@@ -329,6 +343,8 @@ export const APPLE_TABLET_PROFILE: DeviceProfile = {
   releaseTexelPx: 0.65,
   cacheOnlyWarm: false,
   tierCaps: fillRateTierCaps('tablet'),
+  // 85 MiB: between the phone's frame and the desktop's.
+  cloudFieldLayers: 8,
 };
 
 /**
@@ -353,25 +369,28 @@ export const LIMITED_PROFILE: DeviceProfile = {
   releaseTexelPx: 0.8,
   cacheOnlyWarm: true,
   tierCaps: fillRateTierCaps('limited'),
+  // No cloud field: the pool would not fit beside the floor.
+  cloudFieldLayers: 0,
 };
 
 /**
  * What a device may spend, by platform family and class. The whole of the
  * device-to-numbers mapping is these twelve cells.
  *
- * | family / class | envelope | tiles | floor | res | flight | fetch | want / rel | boot warm |
- * |---|---|---|---|---|---|---|---|---|
- * | apple / phone   |1024 | 512 | 3 sets | 16 | 2 | 6 | 1.0 / 0.65 | full   |
- * | apple / tablet  |1536 | 512 | 3 sets | 16 | 2 | 6 | 1.0 / 0.65 | full   |
- * | android/ phone  | 320 | 144 | 2 sets |  8 | 1 | 3 | 1.25 / 0.8 | cached |
- * | android/ tablet | 320 | 144 | 2 sets |  8 | 1 | 3 | 1.25 / 0.8 | cached |
- * | other  / phone  | 320 | 144 | 2 sets |  8 | 1 | 3 | 1.25 / 0.8 | cached |
- * | other  / tablet | 320 | 144 | 2 sets |  8 | 1 | 3 | 1.25 / 0.8 | cached |
- * | any    / desktop|1024 | 512 | 3 sets | 16 | 2 | 6 | 1.0 / 0.65 | full   |
- * | any    / limited| 192 |  46 | 1 set  |  4 | 1 | 2 | 1.25 / 0.8 | cached |
+ * | family / class | envelope | tiles | floor | res | flight | fetch | want / rel | boot warm | cloud pages |
+ * |---|---|---|---|---|---|---|---|---|---|
+ * | apple / phone   |1024 | 512 | 3 sets | 16 | 2 | 6 | 1.0 / 0.65 | full   |  6 |
+ * | apple / tablet  |1536 | 512 | 3 sets | 16 | 2 | 6 | 1.0 / 0.65 | full   |  8 |
+ * | android/ phone  | 320 | 144 | 2 sets |  8 | 1 | 3 | 1.25 / 0.8 | cached |  0 |
+ * | android/ tablet | 320 | 144 | 2 sets |  8 | 1 | 3 | 1.25 / 0.8 | cached |  0 |
+ * | other  / phone  | 320 | 144 | 2 sets |  8 | 1 | 3 | 1.25 / 0.8 | cached |  0 |
+ * | other  / tablet | 320 | 144 | 2 sets |  8 | 1 | 3 | 1.25 / 0.8 | cached |  0 |
+ * | any    / desktop|1024 | 512 | 3 sets | 16 | 2 | 6 | 1.0 / 0.65 | full   | 12 |
+ * | any    / limited| 192 |  46 | 1 set  |  4 | 1 | 2 | 1.25 / 0.8 | cached |  0 |
  *
  * MiB, except the floors, which are whole Earth sector sets because a
- * fraction of a set admits no tile.
+ * fraction of a set admits no tile, and the cloud pages, which are layers of
+ * the field's pool at 10.67 MiB each, inside the envelope.
  *
  * The two apple rows carry their measurements in their own comments, and the
  * desktop row carries the phone's because a desktop is not asked to hold less
@@ -451,31 +470,39 @@ export function devEnvelopeOverride(profile: DeviceProfile): DeviceProfile {
 // arithmetic is the part with the edge cases — a floor over the ceiling, a
 // ladder over the envelope — and it is easier to state as a table than
 // through an object's history.
+//
+// `fixedBytes` is what the envelope holds for the session before either
+// manager spends anything — the cloud field's pool, allocated whole at boot —
+// and it comes off the top of both answers: the maps and the tiles share what
+// is left.
 
 /** What the tiles may hold right now: their own ceiling, or whatever the
- *  envelope leaves over the globe maps, whichever is less — but never below
- *  the floor, which the globe maps are not allowed to take. `liveFloorBytes`
- *  is the floor this session actually owes: zero where no body can want a
- *  tile, so a session with tiles switched off is not asked to reserve
- *  memory for them. */
+ *  envelope leaves over the fixed reservations and the globe maps, whichever
+ *  is less — but never below the floor, which neither is allowed to take.
+ *  `liveFloorBytes` is the floor this session actually owes: zero where no
+ *  body can want a tile, so a session with tiles switched off is not asked to
+ *  reserve memory for them. */
 export function sectorBudgetBytes(
   limits: Pick<SectorStreamerLimits, 'envelopeBytes' | 'ceilingBytes'>,
   ladderBytes: number,
   liveFloorBytes: number,
+  fixedBytes: number,
 ): number {
-  const free = limits.envelopeBytes - Math.max(0, ladderBytes);
+  const free = limits.envelopeBytes - Math.max(0, fixedBytes) - Math.max(0, ladderBytes);
   const floor = Math.min(Math.max(0, liveFloorBytes), limits.ceilingBytes);
   return Math.max(0, Math.min(limits.ceilingBytes, Math.max(floor, free)));
 }
 
-/** The most the globe maps may hold: the envelope less the tiles' floor. The
- *  admission test every ladder rung passes before it is fetched and again
- *  before it is applied. */
+/** The most the globe maps may hold: the envelope less the fixed
+ *  reservations and the tiles' floor. The admission test every ladder rung
+ *  passes before it is fetched and again before it is applied. */
 export function ladderCeilingBytes(
   limits: Pick<SectorStreamerLimits, 'envelopeBytes' | 'ceilingBytes'>,
   liveFloorBytes: number,
+  fixedBytes: number,
 ): number {
-  return Math.max(0, limits.envelopeBytes - Math.min(Math.max(0, liveFloorBytes), limits.ceilingBytes));
+  return Math.max(0, limits.envelopeBytes - Math.max(0, fixedBytes)
+    - Math.min(Math.max(0, liveFloorBytes), limits.ceilingBytes));
 }
 
 /**
@@ -484,6 +511,8 @@ export function ladderCeilingBytes(
  * Two managers share this device's GPU memory — the sector streamer's per-slot
  * ledger and the globe ladder's per-material one — and they meet at exactly
  * two live numbers: what the ladder is holding, and what the tiles are owed.
+ * A third, fixed for the session, comes off the top before either: what is
+ * reserved whole at boot (the cloud field's pool).
  * Holding those in one place is what lets either side ask "what may I spend"
  * without knowing how the other is wired, and gives the debug line and the
  * tests a single object instead of a figure assembled at each call site.
@@ -501,6 +530,14 @@ export function ladderCeilingBytes(
  *                streamer on this envelope would overwrite the first's floor
  *                instead of adding to it, and either one's dispose() would
  *                zero what the other is owed.
+ *   fixedBytes   the allocations held whole for the session, pushed by the
+ *                planetarium mode when the cloud field's pool is allocated
+ *                (and cleared if a context restore cannot allocate it again).
+ *                The allocation, not what is resident in it: a page evicted
+ *                frees nothing, the array's storage stays. Every reader of
+ *                "how much is there" reads `availableBytes()`, the envelope
+ *                less this; `envelopeBytes` stays the row's own figure, which
+ *                the streamer checks its limits against.
  *
  * Neither side can spend the other's floor, and neither allocator's admission
  * rules live here.
@@ -512,6 +549,7 @@ export class MemoryEnvelope {
   readonly ceilingBytes: number;
   private ladder = 0;
   private floor = 0;
+  private fixed = 0;
 
   constructor(limits: Pick<SectorStreamerLimits, 'envelopeBytes' | 'ceilingBytes'>) {
     this.envelopeBytes = limits.envelopeBytes;
@@ -528,6 +566,17 @@ export class MemoryEnvelope {
     return this.floor;
   }
 
+  /** The bytes held whole for the session before either manager spends. */
+  get fixedBytes(): number {
+    return this.fixed;
+  }
+
+  /** What the globe maps and the tiles may hold between them: the envelope
+   *  less the fixed reservations. */
+  availableBytes(): number {
+    return Math.max(0, this.envelopeBytes - this.fixed);
+  }
+
   setLadderBytes(bytes: number): void {
     this.ladder = Math.max(0, bytes);
   }
@@ -536,14 +585,18 @@ export class MemoryEnvelope {
     this.floor = Math.max(0, bytes);
   }
 
+  setFixedBytes(bytes: number): void {
+    this.fixed = Math.max(0, bytes);
+  }
+
   /** What the tiles may hold right now. */
   sectorBudget(): number {
-    return sectorBudgetBytes(this, this.ladder, this.floor);
+    return sectorBudgetBytes(this, this.ladder, this.floor, this.fixed);
   }
 
   /** The most the globe maps may hold right now. */
   ladderCeiling(): number {
-    return ladderCeilingBytes(this, this.floor);
+    return ladderCeilingBytes(this, this.floor, this.fixed);
   }
 
   /** The whole envelope in one line, for the `?debug=1` readout: on a phone
@@ -553,6 +606,8 @@ export class MemoryEnvelope {
     ceilingBytes: number;
     ladderBytes: number;
     floorBytes: number;
+    fixedBytes: number;
+    availableBytes: number;
     sectorBudget: number;
     ladderCeiling: number;
   } {
@@ -561,6 +616,8 @@ export class MemoryEnvelope {
       ceilingBytes: this.ceilingBytes,
       ladderBytes: this.ladder,
       floorBytes: this.floor,
+      fixedBytes: this.fixed,
+      availableBytes: this.availableBytes(),
       sectorBudget: this.sectorBudget(),
       ladderCeiling: this.ladderCeiling(),
     };

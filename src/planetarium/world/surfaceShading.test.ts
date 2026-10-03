@@ -24,7 +24,17 @@ import {
   OCEAN_GLINT_CAP,
   OCEAN_SPECULAR_KEEP,
   RING_SHADOW_OPACITY_GLSL,
+  CLOUD_SHADOW_AIR,
+  CLOUD_SHADOW_DEPTH,
+  cloudShadowShared,
+  cloudShadowsOn,
+  setGroundUnderCloudDeck,
+  surfaceCloudShadowCompiled,
 } from './surfaceShading';
+import { createSectorMaterial } from './sectorMaterial';
+import { CLOUD_TOP_KM, cloudCoverageAlpha } from './cloudDeck';
+import { resolveDefine } from '../testing/glslDefine';
+import { PLANETS } from '../planets/planetData';
 import { surfaceDetailFieldMean, surfaceDetailHeightSpan } from './surfaceDetailNoise';
 import { atmosphereParams } from './atmosphereModel';
 import { earthNightFragmentShader } from '../../shared/shaders/atmosphere';
@@ -732,8 +742,9 @@ describe('the haze fade and the glint cap', () => {
   it('cuts the cloud-shadowed glint from the capped term, never below zero', () => {
     // The two terms meet in one body: the cap first, then the deck's shadow on
     // the mirror term. The shadow must cut from what the cap left, or under
-    // cloud the light goes negative and bloom paints a coloured core.
-    const frag = fragmentOf('airless');
+    // cloud the light goes negative and bloom paints a coloured core. Read with
+    // the cloud shadow's define off, the arm every surface compiles by default.
+    const frag = resolveDefine(fragmentOf('airless'), 'CLOUD_SHADOW', false);
     expect(frag).toContain(`vec3 glintCapped = min(reflectedLight.directSpecular, vec3(${
       import.meta.env.DEV ? 'uGlintCap' : '2.50'}));`);
     expect(frag).toContain(`outgoingLight -= glintCapped * (1.0 - cloudSunKeep * ${
@@ -882,5 +893,149 @@ describe('the GPU-efficiency switches', () => {
     } finally {
       setPerfSwitch('r8-maps', true);
     }
+  });
+});
+
+describe('cloud shadows on the ground (CLOUD_SHADOW, off by default)', () => {
+  /** The whole injected fragment text a ground material compiles. */
+  function fragmentOf(mat: THREE.Material): string {
+    const shader = {
+      uniforms: {} as Record<string, unknown>,
+      vertexShader: '#include <common>\n#include <begin_vertex>\n',
+      fragmentShader: '#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>\n'
+        + '#include <normal_fragment_maps>\n#include <opaque_fragment>\n',
+    };
+    (mat.onBeforeCompile as (s: typeof shader, r: unknown) => void)(shader, null);
+    return shader.fragmentShader;
+  }
+  /** Earth's globe, its deck on the same fx, and the call that says the deck is there. */
+  function earthWithDeck() {
+    const globe = new THREE.MeshStandardMaterial();
+    const fx = augmentSurfaceMaterial(globe, 'earth', undefined, 0.00465, undefined, undefined, 'Earth');
+    const deck = new THREE.MeshStandardMaterial({ transparent: true });
+    augmentSurfaceMaterial(deck, 'cloud', undefined, 0.00465, fx);
+    setGroundUnderCloudDeck(globe);
+    setGroundUnderCloudDeck(deck);
+    return { globe, deck, fx };
+  }
+
+  it('is off unless asked for', () => {
+    expect(cloudShadowsOn()).toBe(false);
+    const { globe, deck, fx } = earthWithDeck();
+    expect(surfaceCloudShadowCompiled(globe)).toBe(false);
+    expect(surfaceCloudShadowCompiled(deck)).toBe(false);
+    // The per-frame gate starts closed on every fresh set; the mode opens it
+    // for Earth while the deck is drawn.
+    expect(fx.uCloudAbove.value).toBe(0);
+  });
+
+  // The switch moves through the DEV key; a production build reads
+  // `?cloudshadows=1` once at boot and has no key to move.
+  it.runIf(import.meta.env.DEV)('compiles on Earth\'s ground and its sectors only, and moves with the switch', () => {
+    const { globe, deck } = earthWithDeck();
+    const sector = createSectorMaterial(globe, { map: new THREE.Texture() });
+    // A tool's Earth (Look inside builds its own skin and deck on a fx of its
+    // own) and another body: never receivers.
+    const studio = new THREE.MeshStandardMaterial();
+    const studioFx = augmentSurfaceMaterial(studio, 'earth');
+    augmentSurfaceMaterial(new THREE.MeshStandardMaterial({ transparent: true }), 'cloud', undefined, 0, studioFx);
+    const mars = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(mars, 'rocky', undefined, 0, undefined, undefined, 'Mars');
+    const v0 = globe.version;
+    setPerfSwitch('cloud-shadow', true);
+    try {
+      expect(cloudShadowsOn()).toBe(true);
+      expect(surfaceCloudShadowCompiled(globe)).toBe(true);
+      // The define is part of three's program key: the next draw relinks.
+      expect(globe.version).toBeGreaterThan(v0);
+      expect(surfaceCloudShadowCompiled(sector)).toBe(true);
+      // A sector cut while the switch is on takes it at birth, and a globe and
+      // its sectors carry one set of defines, so they share one program.
+      const late = createSectorMaterial(globe, { map: new THREE.Texture() });
+      expect(surfaceCloudShadowCompiled(late)).toBe(true);
+      expect(late.defines).toEqual(globe.defines);
+      expect(sector.defines).toEqual(globe.defines);
+      // Never the deck, never a tool, never another body.
+      expect(surfaceCloudShadowCompiled(deck)).toBe(false);
+      expect(surfaceCloudShadowCompiled(studio)).toBe(false);
+      expect(surfaceCloudShadowCompiled(mars)).toBe(false);
+    } finally {
+      setPerfSwitch('cloud-shadow', false);
+    }
+    expect(surfaceCloudShadowCompiled(globe)).toBe(false);
+    expect(surfaceCloudShadowCompiled(sector)).toBe(false);
+  });
+
+  it('reads the beam once, where the Sun\'s ray to the ground crosses the DRAWN deck, its derivatives taken before the gate', () => {
+    const { globe } = earthWithDeck();
+    const on = resolveDefine(fragmentOf(globe), 'CLOUD_SHADOW', true);
+    // One read of the deck's map, and it is this one: the straight-down read
+    // under the sea alone is the off arm's.
+    expect(on.split('textureGrad(uCloudShadowMap').length - 1).toBe(1);
+    expect(on).not.toContain('float deckC = cos(uCloudShadowSpin);');
+    expect(on).toContain('vec3 shadowN = normalize(vObjPos);');
+    expect(on).toContain('vec3 shadowL = normalize(uSunDirLocal);');
+    expect(on).toContain(
+      'vec3 shadowDir = bodyToDeck(cloudRayDirection(shadowN, shadowL, uCloudHeightOverRadius), uCloudShadowSpin);');
+    const readAt = on.indexOf('if (GROUND_ON(uCloudAbove > 0.0)) {');
+    const read = on.slice(readAt, on.indexOf('if (GROUND_ON(uWaterGloss > 0.0)) {', readAt));
+    expect(read.length).toBeGreaterThan(0);
+    const gate = read.indexOf('if (cloudTapWanted) {');
+    expect(read).toContain('bool cloudTapWanted = shadowMu > 0.0;');
+    // Both derivatives of the displaced direction, above the gate...
+    expect(read.slice(0, gate).match(/dFd[xy]\(/g)).toEqual(['dFdx(', 'dFdy(']);
+    expect(read).toContain('vec3 shadowDx = dFdx(shadowDir);');
+    // ...and nothing below it that needs one: explicit gradients and the
+    // smooth filter's explicit-level taps only.
+    expect(read.slice(gate)).not.toMatch(/dFd[xy]\(|fwidth\(|texture2D\(|[^a-zA-Z]texture\(/);
+    expect(read.slice(gate)).toContain('textureBSpline(uCloudShadowMap, shadowUv, shadowTexels)');
+    // The specular is the glint's business alone, cut once by the same value.
+    expect(read).not.toContain('directSpecular');
+    expect(on).toContain('outgoingLight -= glintCapped * (1.0 - cloudSunKeep * ');
+    expect(on).not.toMatch(/reflectedLight\.directSpecular \* \(1\.0 - cloudSunKeep/);
+  });
+
+  it('cuts the Sun\'s diffuse after the sea\'s block and the air\'s glow before the Moon\'s, and nothing else', () => {
+    const { globe } = earthWithDeck();
+    const on = resolveDefine(fragmentOf(globe), 'CLOUD_SHADOW', true);
+    const diffuse = on.indexOf('outgoingLight -= reflectedLight.directDiffuse * ((1.0 - cloudSunKeep) * ');
+    expect(diffuse).toBeGreaterThan(on.indexOf('outgoingLight -= glintCapped'));
+    expect(diffuse).toBeLessThan(on.indexOf('float sunElevSin = dot('));
+    // Before the eclipse factor, which multiplies both, and every night term.
+    expect(diffuse).toBeLessThan(on.indexOf('outgoingLight *= sunVisible;'));
+    expect(diffuse).toBeLessThan(on.indexOf('outgoingLight += nightLow;'));
+    const air = on.indexOf('airS *= 1.0 - (1.0 - cloudSunKeep) * ');
+    expect(air).toBeGreaterThan(on.indexOf('vec3 airS = aerialInscatter(uScattering, seg, airT)'));
+    expect(air).toBeLessThan(on.indexOf('airS += aerialInscatter('));
+    // The transmittance is the air's and is not touched.
+    expect(on).not.toMatch(/airT \*=|airT = .*cloudSunKeep/);
+    expect(on.match(/cloudSunKeep\) \*/g)).toHaveLength(2);
+  });
+
+  it('states its numbers once: the drawn shell, the two shares, the penumbra', () => {
+    const earthKm = PLANETS.find((p) => p.name === 'Earth')!.radiusKm;
+    expect(cloudShadowShared.uCloudHeightOverRadius.value).toBeCloseTo(CLOUD_TOP_KM / earthKm, 15);
+    expect(cloudShadowShared.uCloudShadowDepth.value).toBe(CLOUD_SHADOW_DEPTH);
+    expect(cloudShadowShared.uCloudShadowAir.value).toBe(CLOUD_SHADOW_AIR);
+    expect(cloudShadowShared.uCloudShadowPenumbra.value).toBe(1);
+    expect(CLOUD_SHADOW_DEPTH).toBe(0.7);
+    expect(CLOUD_SHADOW_AIR).toBe(0.6);
+    // The penumbra's footprint on the deck, h·Δθ/sin²e: 3 km with the Sun 10°
+    // up for a 10 km shell and a half-degree Sun, held from 5.7° down.
+    const { globe } = earthWithDeck();
+    const on = resolveDefine(fragmentOf(globe), 'CLOUD_SHADOW', true);
+    expect(on).toContain('uCloudHeightOverRadius * (2.0 * uSunTan)\n        / max(shadowMu * shadowMu, 0.01);');
+    const dTheta = 2 * 0.00465;
+    const kmAt = (deg: number) => CLOUD_TOP_KM * dTheta / Math.max(Math.sin(deg * Math.PI / 180) ** 2, 0.01);
+    expect(kmAt(10)).toBeGreaterThan(3.0);
+    expect(kmAt(10)).toBeLessThan(3.2);
+    expect(kmAt(3)).toBeCloseTo(kmAt(5.74), 1);
+  });
+
+  it('takes nothing from a black map, which is what hidden clouds bind', () => {
+    // The 1x1 stand-in every augmented material binds before the deck's map
+    // lands, and what a hidden deck may be pointed at, is black: no coverage,
+    // the whole beam kept, no shadow.
+    expect(cloudCoverageAlpha(0)).toBe(0);
   });
 });

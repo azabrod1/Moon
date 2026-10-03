@@ -138,7 +138,7 @@ import {
   type AtmosphereTables,
 } from './atmosphereLut';
 import { AIRLIGHT_SCALE } from './atmosphereModel';
-import { perfSwitchOn, perfSwitchUniform } from '../../app/perfSwitches';
+import { onPerfSwitch, perfSwitchOn, perfSwitchUniform, setPerfSwitch } from '../../app/perfSwitches';
 import type { NightSides } from '../../app/nightSidesSetting';
 import { EARTH_NIGHT_COLD_CUT, EARTH_NIGHT_WARM_GLSL } from '../../shared/shaders/atmosphere';
 import {
@@ -150,6 +150,7 @@ import {
   CLOUD_DETAIL_GLSL,
   CLOUD_DETAIL_RELIEF_KM,
   CLOUD_FRAME_GLSL,
+  CLOUD_TOP_KM,
   cloudShellScale,
   LUMINANCE_WEIGHTS,
   SPHERE_EQUIRECT_UV_GLSL,
@@ -233,6 +234,12 @@ export interface SurfaceShadingFx {
    *  Bound at compile time like every other slot here, so the pointing has to
    *  happen before the material's first compile. */
   uNightLift: { value: number };
+  /** 1 while a cloud deck is drawn over this body's ground, written each frame
+   *  by the mode beside the deck's drift; 0 on every other body and on every
+   *  surface a tool or a warm-up probe builds, whose fx is its own. What the
+   *  ground's cloud shadows (CLOUD_SHADOW) are gated on per frame, so a deck
+   *  the range gate or a role switch has hidden leaves no shadow behind. */
+  uCloudAbove: { value: number };
   /** This body's air. Shared by every material that draws its surface. */
   air: SurfaceAirFx;
 }
@@ -526,6 +533,167 @@ export const cloudShadowUniforms: {
 export function resetCloudShadowUniforms(): void {
   cloudShadowUniforms.uCloudShadowMap.value = null;
   cloudShadowUniforms.uCloudShadowSpin.value = 0;
+}
+
+// --- Cloud shadows on the ground, the sea and the air (off by default) -------
+//
+// With the switch on, the share of the Sun's beam a ground fragment receives
+// through the deck (`cloudSunKeep`) is read where the ray from that fragment
+// toward the Sun pierces the shell the deck is DRAWN on, in the deck's own
+// frame (world/cloudDeck: cloudRayDirection, bodyToDeck), instead of straight
+// down under the sea's glint alone. One height, the drawn one: a shadow traced
+// from any other lies beside its cloud by the difference times the tangent of
+// the view angle, which at 400 km and 60° off nadir is a second copy of the
+// pattern, not a shadow. Its three readers are the Sun's direct diffuse
+// (CLOUD_SHADOW_DEPTH), the sea's glint (the cut that was already there), and
+// the air the camera looks through down to that ground (CLOUD_SHADOW_AIR).
+//
+// The switch is a compile-time define, CLOUD_SHADOW, on the ground materials of
+// a body that has a deck — Earth's globe and every sector cut from it — and
+// nowhere else: not the deck, not another body, not a tool's surface and not a
+// warm-up probe. A define rather than a uniform branch because with it off the
+// program is the text it was, after the preprocessor, character for character:
+// moving the sea's cut into a second branch on one uniform, with the same
+// arithmetic, was measured changing one bit at one pixel on Metal under ANGLE.
+// Being part of three's program key, it relinks the program when it moves.
+
+/** The share of the Sun's direct light a cloud takes from the ground in its
+ *  shadow, at full coverage. The rest is what the cloud scatters down through
+ *  itself and the skylight around it, neither of which the ground is lit by
+ *  in this renderer by day — so 0.7 is an authored stand-in for both, not a
+ *  measurement of either. Scaled by the coverage the deck draws there, so a
+ *  thin veil takes a little and a solid bank takes all of this. */
+export const CLOUD_SHADOW_DEPTH = 0.7;
+/** The share of the air's own glow between the camera and a shaded ground
+ *  point that the shadow takes with it, at full coverage: about seven tenths of
+ *  the air's mass lies below the 10 km the deck is drawn at, and the column
+ *  under a cloud is in its shadow. Only the Sun's in-scatter; the air's
+ *  transmittance is the air's and is not touched. Over a dark sea this is most
+ *  of what a cloud's shadow is. */
+export const CLOUD_SHADOW_AIR = 0.6;
+
+/** `?cloudshadows=1`, read once at boot in any build. */
+const cloudShadowsByUrl = typeof location !== 'undefined'
+  && new URLSearchParams(location.search).get('cloudshadows') === '1';
+// In a development build the switch is the `cloud-shadow` key
+// (app/perfSwitches), so `__moon.perfArm` and the bridge's own knob move it
+// live; the URL arms the key so the two readings never disagree.
+if (import.meta.env.DEV && cloudShadowsByUrl) setPerfSwitch('cloud-shadow', true);
+
+/** Whether the ground under a deck compiles its cloud shadows. */
+export function cloudShadowsOn(): boolean {
+  return import.meta.env.DEV ? perfSwitchOn('cloud-shadow') : cloudShadowsByUrl;
+}
+
+/**
+ * The shell's height and, in a development build, the three knobs
+ * (`__moon.cloudShadow`), shared by every material that compiles the shadow.
+ * The height is the drawn deck's own (CLOUD_TOP_KM over Earth's radius): the
+ * only body with a deck is Earth, as for the deck's own air lookup. A
+ * production build compiles the depth, the air share and the penumbra as the
+ * constants above and carries no uniform for them; the fold test pins that the
+ * two texts are the same text.
+ */
+export const cloudShadowShared: {
+  uCloudHeightOverRadius: { value: number };
+  uCloudShadowDepth: { value: number };
+  uCloudShadowAir: { value: number };
+  uCloudShadowPenumbra: { value: number };
+} = {
+  uCloudHeightOverRadius: { value: CLOUD_TOP_KM / EARTH_RADIUS_KM },
+  uCloudShadowDepth: { value: CLOUD_SHADOW_DEPTH },
+  uCloudShadowAir: { value: CLOUD_SHADOW_AIR },
+  uCloudShadowPenumbra: { value: 1 },
+};
+const CLOUD_SHADOW_DEPTH_GLSL = import.meta.env.DEV ? 'uCloudShadowDepth' : CLOUD_SHADOW_DEPTH.toFixed(4);
+const CLOUD_SHADOW_AIR_GLSL = import.meta.env.DEV ? 'uCloudShadowAir' : CLOUD_SHADOW_AIR.toFixed(4);
+const CLOUD_SHADOW_PENUMBRA_GUARD = import.meta.env.DEV ? 'uCloudShadowPenumbra * ' : '';
+
+/** The fx of every body whose ground a deck stands over: a ground material
+ *  augmented with one of these — the globe, then each sector re-augmented from
+ *  it — is a receiver. Keyed on the fx because a sector shares its globe's. */
+const groundsUnderDeck = new WeakSet<SurfaceShadingFx>();
+/** Every live receiver, so the switch can reach the materials already drawn. */
+const cloudShadowReceivers = new Set<THREE.Material>();
+
+/** Say a deck stands over this ground material's body. Called once, by whoever
+ *  builds the deck, with the body's globe; the sectors later cut from that
+ *  globe follow on their own. The deck itself, and any material of a body
+ *  without this call — another planet, a tool's surface, a warm-up probe —
+ *  never compiles the shadow. */
+export function setGroundUnderCloudDeck(mat: THREE.Material): void {
+  const args = augmentArgs.get(mat);
+  if (!args || args.archetype === 'cloud') return;
+  groundsUnderDeck.add(args.fx);
+  receiveCloudShadow(mat);
+}
+
+/** Whether this material compiles the cloud shadow right now. */
+export function surfaceCloudShadowCompiled(mat: THREE.Material): boolean {
+  return mat.defines?.CLOUD_SHADOW !== undefined;
+}
+
+function receiveCloudShadow(mat: THREE.Material): void {
+  if (!cloudShadowReceivers.has(mat)) {
+    cloudShadowReceivers.add(mat);
+    mat.addEventListener('dispose', () => cloudShadowReceivers.delete(mat));
+  }
+  applyCloudShadowDefine(mat, cloudShadowsOn());
+}
+
+function applyCloudShadowDefine(mat: THREE.Material, on: boolean): void {
+  const defines = (mat.defines ??= {});
+  if ((defines.CLOUD_SHADOW !== undefined) === on) return;
+  if (on) defines.CLOUD_SHADOW = '';
+  else delete defines.CLOUD_SHADOW;
+  // The define is part of three's program key: the next draw links (or finds)
+  // the program with the other text.
+  mat.needsUpdate = true;
+}
+
+if (import.meta.env.DEV) {
+  onPerfSwitch('cloud-shadow', (on) => {
+    for (const mat of cloudShadowReceivers) applyCloudShadowDefine(mat, on);
+  });
+}
+
+/** The shadow's knobs, live (`__moon.cloudShadow`): `on` moves the switch and
+ *  relinks the receivers, the rest are uniforms from the next frame. Returns
+ *  the values in force. Development builds only. */
+export function devCloudShadow(opts?: {
+  on?: boolean;
+  depth?: number;
+  air?: number;
+  penumbra?: boolean | number;
+}): {
+  on: boolean;
+  depth: number;
+  air: number;
+  penumbra: number;
+  heightOverRadius: number;
+  receivers: number;
+  compiled: number;
+} | null {
+  if (!import.meta.env.DEV) return null;
+  if (opts?.on !== undefined) setPerfSwitch('cloud-shadow', opts.on);
+  if (opts?.depth !== undefined && Number.isFinite(opts.depth)) cloudShadowShared.uCloudShadowDepth.value = opts.depth;
+  if (opts?.air !== undefined && Number.isFinite(opts.air)) cloudShadowShared.uCloudShadowAir.value = opts.air;
+  if (opts?.penumbra !== undefined) {
+    cloudShadowShared.uCloudShadowPenumbra.value = typeof opts.penumbra === 'boolean'
+      ? (opts.penumbra ? 1 : 0)
+      : opts.penumbra;
+  }
+  let compiled = 0;
+  for (const mat of cloudShadowReceivers) if (surfaceCloudShadowCompiled(mat)) compiled++;
+  return {
+    on: cloudShadowsOn(),
+    depth: cloudShadowShared.uCloudShadowDepth.value,
+    air: cloudShadowShared.uCloudShadowAir.value,
+    penumbra: cloudShadowShared.uCloudShadowPenumbra.value,
+    heightOverRadius: cloudShadowShared.uCloudHeightOverRadius.value,
+    receivers: cloudShadowReceivers.size,
+    compiled,
+  };
 }
 
 /**
@@ -1494,6 +1662,18 @@ const SURFACE_ARCHETYPE_MACROS = /* glsl */ `
 #define GROUND_ON(x) (x)
 #endif`;
 
+/**
+ * Cloud shadows' declarations, compiled only with CLOUD_SHADOW (see the switch
+ * beside `cloudShadowUniforms`). Every line of this and of the three blocks
+ * below is a whole line inside its own conditional, so with the define off
+ * the preprocessor leaves the text it was.
+ */
+const CLOUD_SHADOW_DECLS = /* glsl */ `#ifdef CLOUD_SHADOW
+uniform float uCloudAbove;
+uniform float uCloudHeightOverRadius;
+${import.meta.env.DEV ? 'uniform float uCloudShadowDepth;\nuniform float uCloudShadowAir;\nuniform float uCloudShadowPenumbra;\n' : ''}#endif
+`;
+
 const SURFACE_FRAGMENT_DECLS = /* glsl */ `
 ${SURFACE_ARCHETYPE_MACROS}
 uniform vec3 uNightColor;
@@ -1530,7 +1710,7 @@ uniform float uCloudDetailRelief;
 uniform sampler2D uNightLights;
 uniform float uCloudCityGlow;
 uniform float uFrameSpin;
-${CLOUD_FRAME_GLSL}uniform float uPlanetRadius;
+${CLOUD_FRAME_GLSL}${CLOUD_SHADOW_DECLS}uniform float uPlanetRadius;
 uniform float uSolarIrradiance;
 uniform vec3 uAirlightScale;
 uniform sampler2D uTransmittance;
@@ -1689,6 +1869,94 @@ ${NOISE_FRAME_OFF_ARM}  float cosLat = max(sqrt(dir.x * dir.x + dir.z * dir.z), 
 ${SURFACE_DETAIL_BODY}
 ${CLOUD_CLEAR_RETURN}`;
 
+/**
+ * Where the Sun's beam to this ground point crosses the deck, and how much of
+ * it gets through: `cloudSunKeep`, read once, for its three readers below.
+ *
+ * Everything the lookup needs from the screen is taken first, inside a branch
+ * on a uniform that the whole draw takes the same way, and before the
+ * per-fragment gate: the gate splits quads at the terminator, and a derivative
+ * under it is undefined. The derivatives are of the DISPLACED direction, not
+ * the ground's: near the terminator the pierce point moves across the deck
+ * faster than the ground point under it moves across the ground, so the
+ * ground's own footprint would pick too sharp a mip there.
+ *
+ * The gate is the Sun above this fragment's own geometric horizon. Below it
+ * there is no direct light to shade, and the ray goes into the ground before it
+ * reaches any cloud, so the shell it meets on the far side is no shadow.
+ *
+ * The lookup is the deck's own: the deck draws its map through the smooth
+ * magnification filter (SMOOTH_TEXEL_GLSL), because bilinear under the
+ * coverage curve draws the texel grid, and a shadow drawn without it would be
+ * a square-edged copy of a round cloud. The weight is taken from the explicit
+ * gradients here — the coordinate wraps at the date line, and the read sits
+ * under the gate — where the deck takes it from its own UV.
+ *
+ * The penumbra: the solar disc is half a degree wide, so a cloud's edge throws
+ * a soft edge on the ground h·Δθ/sin²e long along the shadow, which is the
+ * same footprint on the deck seen from the ground point — 3 km with the Sun 10°
+ * up. Each screen step on the deck is widened to at least that, and the mip
+ * chain does the blur. The width stops growing below 5.7° (9 km), where the
+ * true one runs on toward the 357 km of the horizon itself. Isotropic: across
+ * the shadow the true width is sin e of that, and a first look is wanted
+ * before the shape is.
+ */
+const CLOUD_SHADOW_READ = /* glsl */ `#ifdef CLOUD_SHADOW
+  // With cloud shadows compiled in, the beam's share is read HERE, for the
+  // ground, the sea and the air alike, where the Sun's ray to this point
+  // crosses the deck as it is drawn; the straight-down read under the sea's
+  // gloss is compiled out below, and the sea's cut reads this value instead.
+  if (GROUND_ON(uCloudAbove > 0.0)) {
+    vec3 shadowN = normalize(vObjPos);
+    vec3 shadowL = normalize(uSunDirLocal);
+    float shadowMu = dot(shadowN, shadowL);
+    vec3 shadowDir = bodyToDeck(cloudRayDirection(shadowN, shadowL, uCloudHeightOverRadius), uCloudShadowSpin);
+    vec3 shadowDx = dFdx(shadowDir);
+    vec3 shadowDy = dFdy(shadowDir);
+    float shadowPenumbra = ${CLOUD_SHADOW_PENUMBRA_GUARD}uCloudHeightOverRadius * (2.0 * uSunTan)
+        / max(shadowMu * shadowMu, 0.01);
+    shadowDx *= max(1.0, shadowPenumbra / max(length(shadowDx), 1e-12));
+    shadowDy *= max(1.0, shadowPenumbra / max(length(shadowDy), 1e-12));
+    vec2 shadowUv = sphereEquirectUv(shadowDir);
+    vec2 shadowUvDx = sphereEquirectUvGrad(shadowDir, shadowDx);
+    vec2 shadowUvDy = sphereEquirectUvGrad(shadowDir, shadowDy);
+    bool cloudTapWanted = shadowMu > 0.0;
+    if (cloudTapWanted) {
+      vec4 shadowTexel = textureGrad(uCloudShadowMap, shadowUv, shadowUvDx, shadowUvDy);
+      vec2 shadowTexels = vec2(textureSize(uCloudShadowMap, 0));
+      float shadowPerPixel = max((abs(shadowUvDx.x) + abs(shadowUvDy.x)) * shadowTexels.x,
+                                 (abs(shadowUvDx.y) + abs(shadowUvDy.y)) * shadowTexels.y);
+      float shadowSmoothW = 1.0 - smoothstep(${SMOOTH_TEXEL_FADE[0].toFixed(6)}, ${SMOOTH_TEXEL_FADE[1].toFixed(6)}, shadowPerPixel);
+      if (shadowSmoothW > 0.0) {
+        shadowTexel = mix(shadowTexel, textureBSpline(uCloudShadowMap, shadowUv, shadowTexels), shadowSmoothW);
+      }
+      cloudSunKeep = 1.0 - cloudCoverage(dot(shadowTexel.rgb,
+          vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')})));
+    }
+  }
+#endif
+`;
+
+/**
+ * The first reader: the Sun's diffuse light on the ground, cut by the share
+ * the cloud took. three adds `reflectedLight.directDiffuse` into
+ * `outgoingLight` as it stands — no occlusion map, transmission, sheen or
+ * clearcoat reaches it on these materials — so this removes exactly that much
+ * of the Sun. After the sea's own block, which cuts only the mirror term, and
+ * before the eclipse factor, which multiplies both.
+ */
+const CLOUD_SHADOW_DIFFUSE = /* glsl */ `#ifdef CLOUD_SHADOW
+  outgoingLight -= reflectedLight.directDiffuse * ((1.0 - cloudSunKeep) * ${CLOUD_SHADOW_DEPTH_GLSL});
+#endif
+`;
+
+/** The third reader: the Sun's glow in the air between the camera and this
+ *  ground point, the share of that column under the cloud taken with it. */
+const CLOUD_SHADOW_AIR_SCALE = /* glsl */ `#ifdef CLOUD_SHADOW
+      airS *= 1.0 - (1.0 - cloudSunKeep) * ${CLOUD_SHADOW_AIR_GLSL};
+#endif
+`;
+
 const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   if (GROUND_ON(uWaterGloss > 0.0)) {
     vec3 glint = reflectedLight.directSpecular;
@@ -1713,7 +1981,8 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // below skips the read, so a reader of it must have nothing to scale
   // wherever the Sun's mirror term is zero, or widen that condition.
   float cloudSunKeep = 1.0;
-  if (GROUND_ON(uWaterGloss > 0.0)) {
+${CLOUD_SHADOW_READ}  if (GROUND_ON(uWaterGloss > 0.0)) {
+#ifndef CLOUD_SHADOW
     float deckC = cos(uCloudShadowSpin);
     float deckS = sin(uCloudShadowSpin);
     // The deck's own object frame, which is the body frame turned back by the
@@ -1750,6 +2019,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
           vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')}));
       cloudSunKeep = 1.0 - cloudCoverage(deckLum);
     }
+#endif
     // The sea's glint, cut by what the Sun's beam went through to reach it,
     // and fetching nothing of its own. Only the mirror term notices — ground
     // under cloud is still lit by what the cloud scattered, a specular
@@ -1766,7 +2036,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
     vec3 glintCapped = min(reflectedLight.directSpecular, vec3(${GLINT_CAP_GLSL}));
     outgoingLight -= glintCapped * (1.0 - cloudSunKeep * ${GLINT_KEEP_GLSL});
   }
-  // The sine of the Sun's elevation at this fragment, off the perturbed normal:
+${CLOUD_SHADOW_DIFFUSE}  // The sine of the Sun's elevation at this fragment, off the perturbed normal:
   // the Sun's own Lambert term, which is what the day factor and the Moon's
   // weight below both read so the two describe one crossing.
   float sunElevSin = dot(normalize(normal), normalize(vSunViewDir));
@@ -1934,7 +2204,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
       vec3 airT = aerialTransmittance(uTransmittance, seg);
       vec3 airS = aerialInscatter(uScattering, seg, airT)
           * uAirlightScale * (uSolarIrradiance * sunVisible);
-      // The Moon lights the same column. One traversal, one transmittance: only
+${CLOUD_SHADOW_AIR_SCALE}      // The Moon lights the same column. One traversal, one transmittance: only
       // the two angles that involve the source change, so the second source is
       // a second pair of lookups and nothing else. Behind the Moon's own weight
       // and behind a uniform branch, so a day fragment, a new Moon and a body
@@ -2326,6 +2596,7 @@ export function augmentSurfaceMaterial(
     uPlanetshineIntensity: { value: 0 },
     uSilhouette: { value: 0 },
     uNightLift: { value: 0 },
+    uCloudAbove: { value: 0 },
     air: createSurfaceAirFx(),
   };
   const uFrameSpin = sharedSpin ?? { value: 0 };
@@ -2456,6 +2727,14 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uSynthSeed = uSynthSeed;
     shader.uniforms.uSynthMid = uSynthMid;
     shader.uniforms.uSynthCraterShare = uSynthCraterShare;
+    // Cloud shadows' slots: read only by a program compiled with CLOUD_SHADOW.
+    shader.uniforms.uCloudAbove = fx.uCloudAbove;
+    shader.uniforms.uCloudHeightOverRadius = cloudShadowShared.uCloudHeightOverRadius;
+    if (import.meta.env.DEV) {
+      shader.uniforms.uCloudShadowDepth = cloudShadowShared.uCloudShadowDepth;
+      shader.uniforms.uCloudShadowAir = cloudShadowShared.uCloudShadowAir;
+      shader.uniforms.uCloudShadowPenumbra = cloudShadowShared.uCloudShadowPenumbra;
+    }
     for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];
 
     shader.vertexShader = shader.vertexShader
@@ -2482,6 +2761,9 @@ export function augmentSurfaceMaterial(
     ...atmosphereTableDefines(atmosphereSessionSizes()),
     ...(deckProgram ? { CLOUD_DECK: '' } : {}),
   };
+  // A sector re-augmented from a globe a deck stands over shares that globe's
+  // fx, and takes the cloud shadow's define with it (setGroundUnderCloudDeck).
+  if (archetype !== 'cloud' && groundsUnderDeck.has(fx)) receiveCloudShadow(mat);
   mat.needsUpdate = true;
   return fx;
 }

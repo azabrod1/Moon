@@ -49,6 +49,7 @@ import { PLANETS } from '../planets/planetData';
 
 const EARTH_RADIUS_KM = PLANETS.find((p) => p.name === 'Earth')!.radiusKm;
 import { mapTexture } from '../testing/upgradeHarness';
+import { resolveDefine } from '../testing/glslDefine';
 
 /** The subset of three's onBeforeCompile shader object the augmentation writes. */
 function mockShader() {
@@ -352,7 +353,9 @@ describe('the deck\'s detail term', () => {
     // A derivative under a per-fragment condition is undefined, and the fade is
     // exactly such a condition: on a driver that takes the licence, the deck
     // gets a wrong mip and a wrong slope wherever the quad straddles the fade.
-    const glsl = compiled('cloud').shader.fragmentShader;
+    // The deck never compiles the ground's cloud shadow (CLOUD_SHADOW), so the
+    // text read here is that define's off arm, as the deck's driver reads it.
+    const glsl = resolveDefine(compiled('cloud').shader.fragmentShader, 'CLOUD_SHADOW', false);
     const block = glsl.slice(glsl.indexOf('float cloudAlpha = 1.0;'), glsl.indexOf('vec4 detail = vec4(0.0);'));
     // The deck's own block only — the injection point carries other terms
     // after it, and each answers for its own derivatives.
@@ -519,6 +522,7 @@ describe('the deck lit from below', () => {
       uPlanetshineIntensity: { value: 0 },
       uSilhouette: { value: 0 },
       uNightLift: { value: 0 },
+      uCloudAbove: { value: 0 },
       air,
     });
     const shader = mockShader();

@@ -446,6 +446,9 @@ const EXPECTED_SWITCHES: Record<string, { off: string; on: string; needsReload?:
   // is only the control a capture of it is held against. Priced like any row,
   // never exact, never in the combined row.
   'cloud-noise-frame': { off: 'Cloud noise anchored to the sky again', on: 'Cloud noise anchored to the sheet', exact: false },
+  // A feature that is off until it has been judged: a compile-time define, so
+  // a flip relinks the ground's program and the sweep never holds it.
+  'cloud-shadow': { off: 'Cloud shadows off', on: 'Cloud shadows on', needsReload: true, exact: false },
 };
 
 /**

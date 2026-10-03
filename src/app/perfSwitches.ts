@@ -53,6 +53,15 @@
  * exact, never in the combined row, never in the Phone preset, and a
  * production build compiles its ON reading alone.
  *
+ * `cloud-shadow` is a FEATURE key, off by default: cloud shadows on the ground,
+ * the sea and the air under Earth's deck (world/surfaceShading), a change to
+ * the picture that is judged by eye before it is ever on. It is a compile-time
+ * define on the ground materials, so flipping it relinks them — live, through
+ * `__moon.cloudShadow({on})` or this registry — and the sweep treats it like
+ * `cloud-program`, never holding it inside a measured window. Any build reaches
+ * it with `?cloudshadows=1` at boot; this key is the DEV spelling, which the
+ * URL arms.
+ *
  * There is deliberately no key for the render resolution. The graphics-quality
  * levels are its A/B (`?quality=medium` is the picture as it was, and
  * `?upscale=<ratio>` pins any scene ratio for a measurement), and a key here
@@ -73,6 +82,7 @@ export type PerfSwitchKey =
   | 'fused-final'
   | 'cloud-program'
   | 'cloud-noise-frame'
+  | 'cloud-shadow'
   | 'cloud-probe-smooth'
   | 'cloud-probe-detail'
   | 'cloud-probe-relief'
@@ -106,6 +116,7 @@ export const PERF_SWITCHES: ReadonlyArray<{
   { key: 'fused-final', label: 'Lens, glow and tone map as one pass', on: true, needsReload: true },
   { key: 'cloud-program', label: 'Cloud deck program of its own', on: true, needsReload: true },
   { key: 'cloud-noise-frame', label: 'Cloud noise anchored to the sheet', on: true },
+  { key: 'cloud-shadow', label: 'Cloud shadows on the ground', on: false, needsReload: true },
   { key: 'cloud-probe-smooth', label: 'Cloud deck probe: smooth filter off', on: false },
   { key: 'cloud-probe-detail', label: 'Cloud deck probe: detail term off', on: false },
   { key: 'cloud-probe-relief', label: 'Cloud deck probe: relief map off', on: false },
@@ -126,6 +137,7 @@ const DEFAULT_ON: Record<PerfSwitchKey, boolean> = {
   'fused-final': true,
   'cloud-program': true,
   'cloud-noise-frame': true,
+  'cloud-shadow': false,
   'cloud-probe-smooth': false,
   'cloud-probe-detail': false,
   'cloud-probe-relief': false,

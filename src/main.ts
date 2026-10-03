@@ -62,6 +62,7 @@ import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn } from './app/perfS
 import { bloomHighPassMaterial, holdBloomSize, setBloomInternalDepth } from './app/bloomTargets';
 import {
   applyNightLift,
+  devCloudShadow,
   devGlintUniforms,
   nightLiftUniform,
   setDevOceanRoughness,
@@ -3299,6 +3300,15 @@ function installDevHooks() {
       clear: setDevSurfaceHaze(opts?.clear),
       authored: SURFACE_HAZE_CLEAR_VIEW,
     }),
+    // Cloud shadows on the ground under Earth's deck (world/surfaceShading,
+    // off by default): `on` moves the switch and relinks the globe and its
+    // sectors; `depth` (the share of the Sun's diffuse a full cloud takes),
+    // `air` (the share of the air's glow under it) and `penumbra` (the solar
+    // disc's soft edge, true/false or a scale) are uniforms from the next
+    // frame. Returns the values in force, with how many ground materials can
+    // take the shadow and how many compile it now.
+    cloudShadow: (opts?: { on?: boolean; depth?: number; air?: number; penumbra?: boolean | number }) =>
+      devCloudShadow(opts),
     // The night side's exposure, live (world/nightExposure): the lit fractions
     // of the visible cap the long exposure holds at (`full`) and is gone by
     // (`none`), the ramp's two speeds in positions per second — toward the

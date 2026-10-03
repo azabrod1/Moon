@@ -74,7 +74,7 @@ import {
   rebindSeaWindMaps,
   seaWindOn,
   setSeaWindEnabled,
-  beamUniforms, parseSeaBeamParam, parseSunPathParam, setSeaBeamEnabled, setSunPathEnabled,
+  parseSeaBeamParam, parseSunPathParam, seaBeamOn, setSeaBeamEnabled, setSunPathEnabled, sunPathOn,
   surfaceShadingArgsOf,
 } from './planetarium/world/surfaceShading';
 import { cloudFieldRequested } from './planetarium/world/cloudField';
@@ -318,7 +318,8 @@ const bloomKneeParam = parseBloomKneeParam(location.search);
 setSeaWindEnabled(parseSeaWindParam(location.search));
 // `?sunpath=0`: the Sun's light unattenuated by its path through the air
 // again; `?seabeam=0`: the sea's old chain with its cap before the air
-// (world/surfaceShading beamUniforms). Each is the picture as it was.
+// (world/surfaceShading, the SUN_PATH and SEA_BEAM defines, set here before
+// any surface is augmented). Each is the picture as it was.
 setSunPathEnabled(parseSunPathParam(location.search));
 setSeaBeamEnabled(parseSeaBeamParam(location.search));
 // `?seawindmap=<url>` (DEV only): the sea's wind maps from a file — a picture
@@ -3556,8 +3557,8 @@ function installDevHooks() {
         calmMss: Math.pow(devGlintUniforms.uGlintCalm.value, 4),
         beamKnee: devGlintUniforms.uBeamKnee.value,
         beamCap: devGlintUniforms.uBeamCap.value,
-        sunPath: beamUniforms.uSunPath.value > 0,
-        seaBeam: beamUniforms.uSeaBeam.value > 0,
+        sunPath: sunPathOn(),
+        seaBeam: seaBeamOn(),
         roughness,
         seaWind: seaWindOn(),
         map: seaWindMapSource(),

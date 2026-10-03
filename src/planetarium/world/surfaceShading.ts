@@ -748,7 +748,7 @@ function receiveCloudShadow(mat: THREE.Material): void {
 }
 
 /** Set or clear one of the cloud switches' defines on a material. */
-function applySwitchDefine(mat: THREE.Material, name: 'CLOUD_SHADOW' | 'CLOUD_LIGHT', on: boolean): void {
+function applySwitchDefine(mat: THREE.Material, name: 'CLOUD_SHADOW' | 'CLOUD_LIGHT' | 'SUN_PATH' | 'SEA_BEAM', on: boolean): void {
   const defines = (mat.defines ??= {});
   if ((defines[name] !== undefined) === on) return;
   if (on) defines[name] = '';
@@ -2035,8 +2035,6 @@ uniform float uWaterGloss;
 uniform sampler2D uSeaCalmMap;
 uniform sampler2D uSeaWindMap;
 uniform float uSeaWindOn;
-uniform float uSunPath;
-uniform float uSeaBeam;
 uniform sampler2D uCloudShadowMap;
 uniform float uCloudShadowSpin;
 uniform float uCloudDeck;
@@ -2223,7 +2221,9 @@ ${CLOUD_CLEAR_RETURN}`;
  * cap before the air kept the sea under the bloom's threshold anyway.
  */
 const SEA_BLOOM_FLAG_GLSL = /* glsl */ `
-  if (GROUND_ON(uWaterGloss > 0.0 && uSeaBeam > 0.5)) gl_FragColor.a = 1.0 - 2.0 * seaWater;`;
+#ifdef SEA_BEAM
+  if (GROUND_ON(uWaterGloss > 0.0)) gl_FragColor.a = 1.0 - 2.0 * seaWater;
+#endif`;
 
 /**
  * Where the Sun's beam to this ground point crosses the deck, and how much of
@@ -2437,7 +2437,8 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // that reads the Sun's irradiance for itself (the deck's light on its
   // geometric normal) multiplies by the same factor the direct terms took.
   vec3 sunPath = vec3(1.0);
-  if (uAirDensity > 0.0 && uSunPath > 0.5 && dot(normal, normalize(vSunViewDir)) > 0.0) {
+#ifdef SUN_PATH
+  if (uAirDensity > 0.0 && dot(normal, normalize(vSunViewDir)) > 0.0) {
     float sunPathR = clampRadius(length(vAirFrag) / uPlanetRadius);
     float sunPathMu = clampCosine(dot(normalize(vAirFrag), normalize(uSunDirWorld)));
     sunPath = getTransmittanceToSun(uTransmittance, sunPathR, sunPathMu)
@@ -2447,6 +2448,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
     reflectedLight.directDiffuse *= sunPath;
     reflectedLight.directSpecular *= sunPath;
   }
+#endif
   // The sea's mirror term as water rather than as three's generic dielectric
   // (SEA_WATER_F0): three's term is rescaled by the ratio of the two Schlick
   // curves at this fragment's half vector, with three's own exp2 approximation
@@ -2490,8 +2492,13 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
       // The beam chain shadows each Beckmann lobe with Beckmann's own Smith
       // term; the old chain kept three's GGX one. The denominator stays
       // three's whichever chain, since that is what is being divided out.
-      float seaBeamVisWindy = uSeaBeam > 0.5 ? seaBeckmannVis(seaAlphaWindy, seaDotNL, seaDotNV) : seaVisWindy;
-      float seaBeamVisCalm = uSeaBeam > 0.5 ? seaBeckmannVis(seaAlphaCalm, seaDotNL, seaDotNV) : seaVisCalm;
+#ifdef SEA_BEAM
+      float seaBeamVisWindy = seaBeckmannVis(seaAlphaWindy, seaDotNL, seaDotNV);
+      float seaBeamVisCalm = seaBeckmannVis(seaAlphaCalm, seaDotNL, seaDotNV);
+#else
+      float seaBeamVisWindy = seaVisWindy;
+      float seaBeamVisCalm = seaVisCalm;
+#endif
       seaLobe = mix(1.0,
           mix(seaBeamVisWindy * seaBeckmann(seaAlphaWindy, seaDotNH), seaBeamVisCalm * seaBeckmann(seaAlphaCalm, seaDotNH), seaCalmWeight)
               / (seaVisWindy * D_GGX(seaAlphaWindy, seaDotNH)),
@@ -2503,7 +2510,11 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
     // and shapes it there, after the air (OCEAN_BEAM_KNEE, OCEAN_BEAM_CAP):
     // seaGlint stays the mirror term as it CURRENTLY sits inside
     // outgoingLight, scaled below by everything that scales the light.
-    seaGlint = uSeaBeam > 0.5 ? seaGlintFull : min(seaGlintFull, vec3(${GLINT_CAP_GLSL}));
+#ifdef SEA_BEAM
+    seaGlint = seaGlintFull;
+#else
+    seaGlint = min(seaGlintFull, vec3(${GLINT_CAP_GLSL}));
+#endif
     outgoingLight -= glintRaw - seaGlint;
   }
   // The deck's alpha, worked out with its colour above where the lights could
@@ -2706,7 +2717,11 @@ ${CLOUD_SHADOW_DIFFUSE}${CLOUD_SHADOW_FILL}${CLOUD_LIGHT_DECK}  // The sine of t
   // the held share is exactly zero and the product is the one it was.
   if (GROUND_ON(uLimbDarkening > 0.0)) {
     float mu = max(dot(normalize(normal), normalize(vViewPosition)), 0.0);
-    vec3 limbHeld = seaGlint * uSeaBeam;
+#ifdef SEA_BEAM
+    vec3 limbHeld = seaGlint;
+#else
+    vec3 limbHeld = vec3(0.0);
+#endif
     outgoingLight = (outgoingLight - limbHeld) * (1.0 - uLimbDarkening * (1.0 - mu)) + limbHeld;
   }
   // Lit from below: the city lights on the ground under this deck fragment,
@@ -2771,15 +2786,19 @@ ${CLOUD_SHADOW_AIR_SCALE}      // The Moon lights the same column. One traversal
   // pixel. A shoulder — the term itself up to the knee, then an exponential
   // approach to the cap, continuous in value and slope at the knee, per
   // channel — so a core past white is held just past it instead of flattened
-  // to a plateau, and the bright pass is handed a bounded excess. The old
-  // chain capped before the air and skips this.
-  if (uSeaBeam > 0.5 && any(greaterThan(seaGlint, vec3(0.0)))) {
+  // to a plateau, and the bright pass is handed a bounded excess. Entered only
+  // past the knee, where the held value differs from the term; below it the
+  // two are equal and the exponential would be paid for nothing on nearly
+  // every sea pixel. The old chain capped before the air and has no shoulder.
+#ifdef SEA_BEAM
+  if (any(greaterThan(seaGlint, vec3(${BEAM_KNEE_GLSL})))) {
     vec3 beamKnee = vec3(${BEAM_KNEE_GLSL});
     vec3 beamRange = vec3(${BEAM_CAP_GLSL}) - beamKnee;
     vec3 beamOver = max(seaGlint - beamKnee, vec3(0.0));
     vec3 beamHeld = min(seaGlint, beamKnee) + beamRange * (1.0 - exp(-beamOver / beamRange));
     outgoingLight -= seaGlint - beamHeld;
   }
+#endif
 }`;
 
 /** What a material was augmented with, kept beside it so a dependent
@@ -2867,26 +2886,52 @@ export function setSurfaceWaterGloss(mat: THREE.Material, on: boolean): void {
  * sea is confirmed; `?seawind=0` and a DEV roughness override hold it at 0.
  */
 /**
- * The energy chain's two switches, any build, one uniform object every
- * surface binds. `uSunPath` (`?sunpath=0`): the Sun's own path through the
- * body's air on every surface's direct terms, so a low Sun lights the ground,
- * the sea and the cloud deck dimmer and redder, normalised to the zenith so
- * the subsolar picture is the one that was graded. `uSeaBeam` (`?seabeam=0`):
- * the sea's beam chain — Beckmann's own shadowing on the sea's Beckmann lobes,
- * the mirror term held out of the limb darkening, and its cap moved after the
- * air as a shoulder on what reaches the camera — against the chain as it was,
- * with the cap before the air. Off, each leaves the shader taking the old
- * expressions, so either kill switch is the picture as it was.
+ * The energy chain's two switches, any build, each a compile-time define on
+ * EVERY augmented surface — the globes, their sectors, the decks, the moons, a
+ * tool's surface and a warm-up probe alike, so the program a probe warms is the
+ * program the body draws with. `SUN_PATH` (`?sunpath=0`): the Sun's own path
+ * through the body's air on every surface's direct terms, so a low Sun lights
+ * the ground, the sea and the cloud deck dimmer and redder, normalised to the
+ * zenith so the subsolar picture is the one that was graded. `SEA_BEAM`
+ * (`?seabeam=0`): the sea's beam chain — Beckmann's own shadowing on the sea's
+ * Beckmann lobes, the mirror term held out of the limb darkening, its cap moved
+ * after the air as a shoulder on what reaches the camera, and the sea's flag
+ * for the bloom in the alpha — against the chain as it was, with the cap
+ * before the air. Defines rather than uniforms because a uniform select
+ * compiles both chains into one program and the ground pays for the beam's
+ * terms whether or not it uses them (a fifth of a millisecond on its draw at
+ * Earth's shell on an M5 Max); with the define off the preprocessor leaves the
+ * old expressions and nothing else, so either kill switch is the program it
+ * was. Set at boot from the URL before any surface is augmented; a flip later
+ * (the DEV knob) relinks every live surface through three's program key.
  */
-export const beamUniforms: { uSunPath: { value: number }; uSeaBeam: { value: number } } = {
-  uSunPath: { value: 1 },
-  uSeaBeam: { value: 1 },
-};
+let sunPathEnabled = true;
+let seaBeamEnabled = true;
+/** Every live augmented surface, so a flip can reach the materials already drawn. */
+const beamReceivers = new Set<THREE.Material>();
+function receiveBeamSwitches(mat: THREE.Material): void {
+  if (!beamReceivers.has(mat)) {
+    beamReceivers.add(mat);
+    mat.addEventListener('dispose', () => beamReceivers.delete(mat));
+  }
+  applySwitchDefine(mat, 'SUN_PATH', sunPathEnabled);
+  applySwitchDefine(mat, 'SEA_BEAM', seaBeamEnabled);
+}
 export function setSunPathEnabled(on: boolean): void {
-  beamUniforms.uSunPath.value = on ? 1 : 0;
+  sunPathEnabled = on;
+  for (const mat of beamReceivers) applySwitchDefine(mat, 'SUN_PATH', on);
 }
 export function setSeaBeamEnabled(on: boolean): void {
-  beamUniforms.uSeaBeam.value = on ? 1 : 0;
+  seaBeamEnabled = on;
+  for (const mat of beamReceivers) applySwitchDefine(mat, 'SEA_BEAM', on);
+}
+/** Whether every surface compiles the Sun's path right now. */
+export function sunPathOn(): boolean {
+  return sunPathEnabled;
+}
+/** Whether every surface compiles the sea's beam chain right now. */
+export function seaBeamOn(): boolean {
+  return seaBeamEnabled;
 }
 /** `?sunpath=0`, any build: the Sun's light unattenuated by its path through
  *  the air again, in the house style of `?seawind=0`. */
@@ -3287,6 +3332,7 @@ export function augmentSurfaceMaterial(
     uSynthEnvelope, uSynthRelief, uSynthBumpFade, uSynthCraterShare,
     relief: 'none', synthReliefGain, seedName,
   });
+  receiveBeamSwitches(mat);
   const uNightColor = { value: new THREE.Color(night.color) };
   const uNightStrength = { value: night.strength };
   const uTermWidth = { value: night.termWidth };
@@ -3375,8 +3421,6 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uSeaCalmMap = seaWindUniforms.uSeaCalmMap;
     shader.uniforms.uSeaWindMap = seaWindUniforms.uSeaWindMap;
     shader.uniforms.uSeaWindOn = seaWindUniforms.uSeaWindOn;
-    shader.uniforms.uSunPath = beamUniforms.uSunPath;
-    shader.uniforms.uSeaBeam = beamUniforms.uSeaBeam;
     shader.uniforms.uCloudDeck = uCloudDeck;
     shader.uniforms.uCloudDetail = uCloudDetail;
     shader.uniforms.uCloudAlbedo = uCloudAlbedo;

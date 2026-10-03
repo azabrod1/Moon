@@ -45,6 +45,8 @@ import {
   cloudShadowsOn,
   setGroundUnderCloudDeck,
   surfaceCloudShadowCompiled,
+  seaBeamOn,
+  setSeaBeamEnabled,
 } from './surfaceShading';
 import {
   COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_CALM_LOBE_ROUGHNESS, SEA_WIND_MAX_MS, installSeaWindMap,
@@ -765,6 +767,38 @@ describe('the haze fade and the glint cap', () => {
     return shader.fragmentShader;
   }
 
+  it('compiles none of the beam with the two energy-chain switches off', () => {
+    // SUN_PATH and SEA_BEAM are compile-time defines on every augmented
+    // surface, on by default. A uniform select would compile both chains into
+    // one program and the ground would pay for the beam's terms whether or
+    // not it used them; with the defines off the preprocessor leaves the old
+    // expressions and nothing else, so either kill switch is the program it
+    // was.
+    const mat = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(mat, 'earth', undefined, 0, undefined, undefined, 'Earth');
+    expect(mat.defines?.SUN_PATH).toBe('');
+    expect(mat.defines?.SEA_BEAM).toBe('');
+    const text = resolveDefine(resolveDefine(fragmentOf('earth'), 'SEA_BEAM', false), 'SUN_PATH', false);
+    expect(text).not.toMatch(/SEA_BEAM|SUN_PATH|uSeaBeam|uSunPath/);
+    expect(text).not.toContain('seaBeckmannVis(seaAlpha');
+    expect(text).not.toContain('sunPathR');
+    expect(text).not.toContain('beamHeld');
+    expect(text).not.toContain('gl_FragColor.a = 1.0 - 2.0 * seaWater;');
+    expect(text).toContain('vec3 sunPath = vec3(1.0);');
+    expect(text).toContain('float seaBeamVisWindy = seaVisWindy;');
+    expect(text).toContain('vec3 limbHeld = vec3(0.0);');
+    expect(text).toContain(`seaGlint = min(seaGlintFull, vec3(${import.meta.env.DEV ? 'uGlintCap' : OCEAN_GLINT_CAP.toFixed(2)}));`);
+    // A flip relinks: the define leaves the material, and needsUpdate (which
+    // three counts in `version`) sends the program key with it.
+    const version = mat.version;
+    setSeaBeamEnabled(false);
+    expect(mat.defines?.SEA_BEAM).toBeUndefined();
+    expect(mat.version).toBeGreaterThan(version);
+    setSeaBeamEnabled(true);
+    expect(mat.defines?.SEA_BEAM).toBe('');
+    expect(seaBeamOn()).toBe(true);
+  });
+
   it('cuts the cloud-shadowed glint from the capped term, never below zero', () => {
     // The two terms meet in one body: the cap first, then the deck's shadow on
     // the mirror term. The shadow must cut from what the cap left, or under
@@ -772,27 +806,28 @@ describe('the haze fade and the glint cap', () => {
     // the cloud shadow's define off, the arm every surface compiles by default.
     const frag = resolveDefine(fragmentOf('airless'), 'CLOUD_SHADOW', false);
     expect(frag).toContain(`vec3 seaGlintFull = glintRaw * (seaFresnel * seaLobe${import.meta.env.DEV ? ' * uGlintKeep' : ''});`);
-    // Two chains: the old cap before the air, the beam's shoulder after it.
-    expect(frag).toContain(`seaGlint = uSeaBeam > 0.5 ? seaGlintFull : min(seaGlintFull, vec3(${
-      import.meta.env.DEV ? 'uGlintCap' : '1.25'}));`);
+    // Two chains, one compiled: the old cap before the air, the beam's
+    // shoulder after it, selected by the SEA_BEAM define.
+    expect(frag).toContain(`#ifdef SEA_BEAM\n    seaGlint = seaGlintFull;\n#else\n    seaGlint = min(seaGlintFull, vec3(${
+      import.meta.env.DEV ? 'uGlintCap' : '1.25'}));\n#endif`);
     expect(frag).toContain(`vec3 beamKnee = vec3(${import.meta.env.DEV ? 'uBeamKnee' : '3.50'});`);
     expect(frag).toContain(`vec3 beamRange = vec3(${import.meta.env.DEV ? 'uBeamCap' : '7.00'}) - beamKnee;`);
     // The mirror term stays live through everything that scales the light, so
     // the shoulder after the air shapes the share that reached the camera.
     expect(frag).toContain('seaGlint *= cloudSunKeep;');
     expect(frag).toContain('seaGlint *= sunVisible;');
-    expect(frag).toContain('vec3 limbHeld = seaGlint * uSeaBeam;');
+    expect(frag).toContain('#ifdef SEA_BEAM\n    vec3 limbHeld = seaGlint;\n#else\n    vec3 limbHeld = vec3(0.0);\n#endif');
     expect(frag).toContain('seaGlint = mix(seaGlint, seaGlint * airT, airWeight);');
     expect(frag).toContain('outgoingLight -= seaGlint - beamHeld;');
     // The sea's flag for the bloom: after three's opaque write, the ground
     // only, water negative, so the bright pass hands the blur none of it.
-    expect(frag).toContain('#include <opaque_fragment>\n  if (GROUND_ON(uWaterGloss > 0.0 && uSeaBeam > 0.5)) gl_FragColor.a = 1.0 - 2.0 * seaWater;');
+    expect(frag).toContain('#include <opaque_fragment>\n#ifdef SEA_BEAM\n  if (GROUND_ON(uWaterGloss > 0.0)) gl_FragColor.a = 1.0 - 2.0 * seaWater;\n#endif');
     // The Sun's own path, on the direct terms of every surface, before the sea
     // reads its mirror term, and normalised to the zenith.
     expect(frag.indexOf('reflectedLight.directSpecular *= sunPath;')).toBeLessThan(frag.indexOf('vec3 glintRaw = reflectedLight.directSpecular;'));
     // Body scope, so a later term that reads the Sun's irradiance for itself
     // (the deck's cloud light) can take the same factor.
-    expect(frag).toContain('vec3 sunPath = vec3(1.0);\n  if (uAirDensity > 0.0 && uSunPath > 0.5');
+    expect(frag).toContain('vec3 sunPath = vec3(1.0);\n#ifdef SUN_PATH\n  if (uAirDensity > 0.0 && dot(normal, normalize(vSunViewDir)) > 0.0) {');
     expect(frag).toContain('/ max(getTransmittanceToSun(uTransmittance, sunPathR, 1.0), vec3(1e-4));');
     expect(frag).toContain('outgoingLight -= seaGlint * (1.0 - cloudSunKeep);');
     expect(frag).not.toMatch(/reflectedLight\.directSpecular \* cloudCoverage/);
@@ -884,8 +919,8 @@ describe('the haze fade and the glint cap', () => {
     expect(text).toContain('outgoingLight = mix(outgoingLight, outgoingLight * airT + airS, airWeight);');
     expect(OCEAN_GLINT_CAP).toBeGreaterThan(1);
     expect(text).toContain(`vec3 seaGlintFull = glintRaw * (seaFresnel * seaLobe${import.meta.env.DEV ? ' * uGlintKeep' : ''});`);
-    expect(text).toContain(`seaGlint = uSeaBeam > 0.5 ? seaGlintFull : min(seaGlintFull, vec3(${
-      import.meta.env.DEV ? 'uGlintCap' : OCEAN_GLINT_CAP.toFixed(2)}));`);
+    expect(text).toContain(`#else\n    seaGlint = min(seaGlintFull, vec3(${
+      import.meta.env.DEV ? 'uGlintCap' : OCEAN_GLINT_CAP.toFixed(2)}));\n#endif`);
     expect(text).toContain('outgoingLight -= glintRaw - seaGlint;');
     // The cloud mask cuts the water's own term, never three's raw one.
     expect(text).toContain('outgoingLight -= seaGlint * (1.0 - cloudSunKeep);');
@@ -983,9 +1018,10 @@ describe('the sea', () => {
     expect(text).toContain('float seaVisWindy = V_GGX_SmithCorrelated(seaAlphaWindy, seaDotNL, seaDotNV);');
     expect(text).toContain('float seaVisCalm = V_GGX_SmithCorrelated(seaAlphaCalm, seaDotNL, seaDotNV);');
     // The beam chain's Beckmann Smith on each lobe, three's GGX one on the old
-    // chain; the denominator is three's either way.
-    expect(text).toContain('float seaBeamVisWindy = uSeaBeam > 0.5 ? seaBeckmannVis(seaAlphaWindy, seaDotNL, seaDotNV) : seaVisWindy;');
-    expect(text).toContain('float seaBeamVisCalm = uSeaBeam > 0.5 ? seaBeckmannVis(seaAlphaCalm, seaDotNL, seaDotNV) : seaVisCalm;');
+    // chain, one of the two compiled; the denominator is three's either way.
+    expect(text).toContain('#ifdef SEA_BEAM\n      float seaBeamVisWindy = seaBeckmannVis(seaAlphaWindy, seaDotNL, seaDotNV);\n'
+      + '      float seaBeamVisCalm = seaBeckmannVis(seaAlphaCalm, seaDotNL, seaDotNV);\n#else\n'
+      + '      float seaBeamVisWindy = seaVisWindy;\n      float seaBeamVisCalm = seaVisCalm;\n#endif');
     expect(text).toContain('seaLobe = mix(1.0,\n'
       + '          mix(seaBeamVisWindy * seaBeckmann(seaAlphaWindy, seaDotNH), seaBeamVisCalm * seaBeckmann(seaAlphaCalm, seaDotNH), seaCalmWeight)\n'
       + '              / (seaVisWindy * D_GGX(seaAlphaWindy, seaDotNH)),\n'

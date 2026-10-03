@@ -107,17 +107,17 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '3fbebbf19058fd3c92a47b1a0b99457caca7cf8b36f4c6effd3fc8badc461362';
+const DEV_FRAGMENT_HASH = 'f36ebb9574f94cf1b6a430d9a3286b4f556c402c7cd91996af719d32526c43bf';
 /** The development text with the cloud field's define OFF (world/cloudField,
  *  DEV only), resolved as the preprocessor resolves it: the development text
  *  from before the field existed. A production build carries none of it. */
-const FIELD_OFF_DEV_FRAGMENT_HASH = 'ae81f863a5f6bbbf840e3d0e790ab7ad4400d718a69c7dac5894c5ff4e171826';
-const PROD_FRAGMENT_HASH = '2f612c1b3379485b849ffd0c75903d6a497759a6f4637789720e686f7229bb9f';
+const FIELD_OFF_DEV_FRAGMENT_HASH = '2e5d75090828868208856dfcba2fff278650ea9e12ea9911e98fcd281622d6f5';
+const PROD_FRAGMENT_HASH = 'ea1049746de935693c61d84339c98df14ba303bb24cc043c02417f9480dce2d3';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 /** The same two texts with the cloud shadow's define OFF, resolved as the
  *  preprocessor resolves it: the texts from before the switch existed. */
-const OFF_DEV_FRAGMENT_HASH = 'b5aa7d5063f86a1de670528c18909da0b3e2716dc5de8102084d9cc9a9a27d67';
-const OFF_PROD_FRAGMENT_HASH = '11d058eaf92fbce4161bb09477084ff4f31d7f1f0d59ae85c7be4e61745d2ef7';
+const OFF_DEV_FRAGMENT_HASH = 'ec3235fb1212ce8dc5f517f7edd8089e3477d63516b396e3187b5b3bde20a340';
+const OFF_PROD_FRAGMENT_HASH = '7d793924a0d980cca3c16bf9fcbfafc719c6604bbfe406cbdadae666bc1a9cff';
 
 describe('the injected surface shader', () => {
   it('is one text for every body and both tiers', () => {

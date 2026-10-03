@@ -229,9 +229,11 @@ function checkSharedEnvelope(r, where, s, l) {
 }
 
 /** The cloud field's pool is in the envelope exactly once: the fixed bytes
- *  are the pool's own allocation where the session asked for the field and
- *  the row gives it layers, and nothing at all otherwise — a row with no
- *  layers takes no pool whatever the URL asked. */
+ *  are the pool's own allocation as the ledger counts textures
+ *  (textureGpuBytes, within a few bytes of the exact twelve-level sum) where
+ *  the session asked for the field and the row gives it layers, and nothing
+ *  at all otherwise — a row with no layers takes no pool whatever the URL
+ *  asked. */
 async function checkFieldReservation(r, where, page) {
   const got = await page.evaluate(async () => ({
     l: window.__moon.ladder(), dev: window.__moon.device(),
@@ -241,13 +243,23 @@ async function checkFieldReservation(r, where, page) {
   const pool = got.field?.pool ?? null;
   const want = layers * CLOUD_LAYER_BYTES;
   r.say(`  cloud field: ${FIELD_ASKED ? 'asked' : 'not asked'}, row gives ${got.dev.cloudFieldLayers} layers;`
-    + ` pool ${pool ? `${pool.layers} layers ${mib(pool.poolBytes)} MiB` : 'none'},`
+    + ` pool ${pool ? `${pool.layers} layers ${pool.poolBytes} B (exact ${pool.poolBytesExact})` : 'none'},`
     + ` fixed ${mib(got.l.fixedBytes)} MiB, available ${mib(got.l.availableBytes)} of ${mib(got.l.envelopeBytes)} MiB`);
-  if (got.l.fixedBytes !== want) r.fail(`${where}: fixed ${got.l.fixedBytes} B, wanted ${want} B (${layers} layers)`);
-  if (layers > 0 && (!pool || pool.poolBytes !== got.l.fixedBytes || pool.layers !== layers)) {
-    r.fail(`${where}: the envelope reserves ${got.l.fixedBytes} B but the pool holds ${pool ? pool.poolBytes : 'nothing'}`);
+  if (layers === 0) {
+    if (got.l.fixedBytes !== 0) r.fail(`${where}: fixed ${got.l.fixedBytes} B where no pool is owed`);
+    if (pool) r.fail(`${where}: a pool of ${pool.layers} layers where the row gives none`);
+    return;
   }
-  if (layers === 0 && pool) r.fail(`${where}: a pool of ${pool.layers} layers where the row gives none`);
+  if (!pool || pool.layers !== layers) {
+    r.fail(`${where}: ${pool ? `a pool of ${pool.layers}` : 'no pool'} where the row gives ${layers} layers`);
+    return;
+  }
+  if (got.l.fixedBytes !== pool.poolBytes) {
+    r.fail(`${where}: the envelope reserves ${got.l.fixedBytes} B but the pool holds ${pool.poolBytes} B`);
+  }
+  if (pool.poolBytesExact !== want || Math.abs(pool.poolBytes - want) > 1024) {
+    r.fail(`${where}: the pool counts ${pool.poolBytes} B (exact ${pool.poolBytesExact}) for ${layers} layers of ${CLOUD_LAYER_BYTES} B`);
+  }
 }
 
 /** What one scenario reports: its own lines, and the assertions it broke. */

@@ -44,6 +44,13 @@
 // that reported a failure and returned would publish the name of a set that
 // failed it. See the Gates section.
 //
+// One job is not a picture: `clouds` cuts Earth's cloud field, two DATA maps
+// per level (opacity and premultiplied brightness, each a set of grey
+// lossless tiles, tiers `<level>-a` and `<level>-p` under the master's stem)
+// from the cloud master tools/gen-cloudmaster.mjs assembles, into a staging
+// root the app's table does not name yet. Its level, its gate and why its
+// pages are lossless are in the cloud field section below.
+//
 // Prereq (not a package.json dependency — this runs once per asset drop):
 //   npm i --no-save sharp@0.35.4
 // Usage:
@@ -53,6 +60,8 @@
 //   node tools/gen-tiles.mjs earth --verify     # reassemble + gate only
 //   node tools/gen-tiles.mjs earth --grey       # the mask sets only: every texel r = g = b
 //   node tools/gen-tiles.mjs --index            # re-hash the sets on disk only
+//   node tools/gen-tiles.mjs clouds --cache=<main checkout>/.moon-data-cache --root=<staging root>
+//                                               # the cloud field (needs the cloud master)
 //   --cache=<dir>  source cache (default .moon-data-cache)
 //   --root=<dir>   tiles root (default public/textures/tiles). A level too
 //                  big to ship inside the app is cut into a staging root —
@@ -526,13 +535,21 @@ async function readAt(fd, position, length) {
  * whole equirect would be 1.6 GB. Columns wrap across the ±180° seam, rows
  * clamp at the poles (the row source does that), so every tile's gutter is
  * the surface that actually adjoins it.
+ *
+ * `plane`, when given, cuts ONE channel of a multi-channel row source into a
+ * set of one-channel (grey) tiles: the cloud field's level holds opacity and
+ * premultiplied brightness interleaved, and each is a set of its own, with
+ * its own tier and its own encoder options, cut from the same read.
  */
-async function cutGrid(rows, grid, content, key, tier, webpOpts, spanU = 1) {
+async function cutGrid(rows, grid, content, key, tier, webpOpts, spanU = 1, plane = null) {
   const { width, height } = gridSize(grid, content);
   if (rows.width !== width || rows.height !== height) {
     throw new Error(`${key}/${tier}: rows are ${rows.width}x${rows.height}, not ${grid.cols}x${grid.rows} sectors of ${content}`);
   }
   const ch = rows.channels;
+  if (plane !== null && !(plane >= 0 && plane < ch)) {
+    throw new Error(`${key}/${tier}: channel ${plane} asked of a ${ch}-channel level`);
+  }
   const lead = ((spanU - 1) / 2) * content; // px of neighbour before the sector's own edge
   const gx = spanU * GUTTER; // horizontal gutter scales with the span: equal gutter FRACTION on both axes
   const tileW = spanU * (content + 2 * GUTTER);
@@ -564,8 +581,15 @@ async function cutGrid(rows, grid, content, key, tier, webpOpts, spanU = 1) {
           x = (x + run) % width;
         }
       }
+      let pixels = tile;
+      let channels = ch;
+      if (plane !== null) {
+        pixels = Buffer.allocUnsafe(tileW * tileH);
+        for (let i = 0; i < pixels.length; i++) pixels[i] = tile[i * ch + plane];
+        channels = 1;
+      }
       const out = path.join(staging, `${c}_${r}.webp`);
-      await sharp(tile, { raw: { width: tileW, height: tileH, channels: ch }, limitInputPixels: false })
+      await sharp(pixels, { raw: { width: tileW, height: tileH, channels }, limitInputPixels: false })
         .webp(webpOpts).toFile(out);
       total += (await stat(out)).size;
     }
@@ -838,8 +862,15 @@ async function indexSets() {
     sets[set.id] = { setHash8: set.setHash, ...set.layout };
   }
   await writeFile(SETS_JSON, `${JSON.stringify(sets, null, 2)}\n`);
-  await writeFile(GENERATED_TS, generatedSource(sets));
-  console.log(`  indexed ${Object.keys(sets).length} sets -> ${path.relative(process.cwd(), SETS_JSON)}`);
+  // The root's table names every set on disk (it is what publish-tiles
+  // publishes); the app's names only the sets of jobs the app reads, so a set
+  // staged ahead of its reader (a job's `appTable: false`) can be cut, hashed
+  // and published without the app's table or its tests changing under it.
+  const staged = new Set(Object.values(JOBS).filter((j) => j.appTable === false).map((j) => j.key));
+  const app = Object.fromEntries(Object.entries(sets).filter(([id]) => !staged.has(id.split('/')[0])));
+  await writeFile(GENERATED_TS, generatedSource(app));
+  const held = Object.keys(sets).length - Object.keys(app).length;
+  console.log(`  indexed ${Object.keys(sets).length} sets -> ${path.relative(process.cwd(), SETS_JSON)}${held ? ` (${held} staged, not in the app's table)` : ''}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1251,6 +1282,259 @@ async function buildMosaicLevelRaw(mosaic, grid, content, outFile, grade, mask) 
 }
 
 // ---------------------------------------------------------------------------
+// The cloud field: a level of two DATA maps cut from the cloud master
+// ---------------------------------------------------------------------------
+//
+// Earth's cloud deck draws a 1.2 km field from pages inside its own draw
+// (src/planetarium/world/cloudField.ts), and a page is not a picture of the
+// cloud map but two maps of what the deck does with it, chosen by the
+// encoding study (planning/cloud-detail/encoding): A, the deck's authored
+// opacity, smoothstep(0.06, 0.75, s) of the master's stored value s, and P =
+// A·C, the brightness the deck's albedo rule draws s at (C = min(L·(0.85 /
+// max(L, 0.001))^0.8, 1), L = s^2.2), premultiplied by that opacity. Both are
+// computed per MASTER texel and area-averaged from there as plain numbers, so
+// every level and every mip of one is the mean opacity and the mean
+// premultiplied brightness of its footprint, which is what a blend of those
+// texels on screen is. The curve's numbers are the app's
+// (src/planetarium/world/cloudDeck.ts: CLOUD_COVERAGE_LOW/HIGH, STORED_GAMMA,
+// CLOUD_ALBEDO, CLOUD_ALBEDO_BLEND), restated here because this tool cannot
+// import TypeScript; a change there is a re-cut here under a new rawToken.
+//
+// The master is tools/gen-cloudmaster.mjs' (43200x21600, one byte a texel,
+// row 0 = +90, column 0 = -180), and its report carries the sky's mean
+// opacity over the globe in exactly this reading (alpha.masterNative.stored),
+// which the level is held to: an area average keeps a mean, so a level that
+// misses it is not the master's sky.
+
+const FIELD_COVERAGE = { low: 0.06, high: 0.75, gamma: 2.2, albedo: 0.85, albedoBlend: 0.8 };
+
+/** A and P per master byte value, as the encoding study defined them. */
+function cloudFieldLuts() {
+  const { low, high, gamma, albedo, albedoBlend } = FIELD_COVERAGE;
+  const a = new Float64Array(256);
+  const p = new Float64Array(256);
+  for (let b = 0; b < 256; b++) {
+    const s = b / 255;
+    const t = Math.min(1, Math.max(0, (s - low) / (high - low)));
+    a[b] = t * t * (3 - 2 * t);
+    const L = Math.pow(s, gamma);
+    p[b] = a[b] * Math.min(L * Math.pow(albedo / Math.max(L, 0.001), albedoBlend), 1);
+  }
+  return { a, p };
+}
+
+/** A byte of a 0..1 data value, rounded to the nearest code. Exact zero stays
+ *  zero: clear sky is a sum of zeros. */
+const dataByte = (x) => (x <= 0 ? 0 : x >= 1 ? 255 : Math.round(x * 255));
+
+/**
+ * The level's (A, P) raster, interleaved two bytes a texel, written to disk
+ * one row at a time. An exact area average of the master: each master texel
+ * lands in at most two level cells per axis with its overlap as the weight
+ * (the level is 0.75 of the master across, so no cell is ever a whole number
+ * of master texels), streamed a master row at a time with two level rows in
+ * flight, so nothing global is held. Returns the cos(latitude)-weighted mean
+ * of A over the written bytes.
+ */
+async function buildCloudFieldLevel(masterPath, mw, mh, width, height, outFile) {
+  const r = mw / width;
+  if (Math.abs(mh / height - r) > 1e-12) throw new Error(`${outFile}: ${width}x${height} is not the master's ${mw}x${mh} aspect`);
+  if (r < 1) throw new Error(`${outFile}: a level finer than the master is not an area average`);
+  const { a: lutA, p: lutP } = cloudFieldLuts();
+  const col = new Int32Array(mw);
+  const colW = new Float64Array(mw);
+  for (let x = 0; x < mw; x++) {
+    const j = Math.floor(x / r);
+    col[x] = j;
+    colW[x] = Math.min(x + 1, (j + 1) * r) - x;
+  }
+  const hA = new Float64Array(width + 1);
+  const hP = new Float64Array(width + 1);
+  // Two level rows in flight: the one a master row ends in and the next.
+  let accRow = 0;
+  let acc = [new Float64Array(width * 2), new Float64Array(width * 2)];
+  const k = 1 / (r * r);
+  const out = await open(`${outFile}.part`, 'w');
+  const master = await open(masterPath, 'r');
+  const BAND = 512;
+  const band = Buffer.allocUnsafe(mw * BAND);
+  const line = Buffer.allocUnsafe(width * 2);
+  let sumW = 0;
+  let sumA = 0;
+  const t0 = Date.now();
+  const flush = async (row, sums) => {
+    for (let j = 0; j < width; j++) {
+      line[2 * j] = dataByte(sums[2 * j] * k);
+      line[2 * j + 1] = dataByte(sums[2 * j + 1] * k);
+    }
+    await out.write(line, 0, line.length, row * width * 2);
+    const w = Math.cos(((90 - (180 * (row + 0.5)) / height) * Math.PI) / 180);
+    let s = 0;
+    for (let j = 0; j < width; j++) s += line[2 * j];
+    sumA += (w * s) / 255;
+    sumW += w * width;
+  };
+  try {
+    for (let y0 = 0; y0 < mh; y0 += BAND) {
+      const rows = Math.min(BAND, mh - y0);
+      await master.read(band, 0, rows * mw, y0 * mw);
+      for (let dy = 0; dy < rows; dy++) {
+        const y = y0 + dy;
+        hA.fill(0);
+        hP.fill(0);
+        const o = dy * mw;
+        for (let x = 0; x < mw; x++) {
+          const v = band[o + x];
+          const av = lutA[v];
+          if (av === 0) continue; // clear sky: no opacity and no brightness
+          const pv = lutP[v];
+          const j = col[x];
+          const w = colW[x];
+          hA[j] += av * w;
+          hP[j] += pv * w;
+          if (w < 1) { hA[j + 1] += av * (1 - w); hP[j + 1] += pv * (1 - w); }
+        }
+        const i = Math.floor(y / r);
+        if (i !== accRow) {
+          // Level row accRow ended with the previous master row.
+          await flush(accRow, acc[0]);
+          acc = [acc[1], acc[0].fill(0)];
+          accRow++;
+          if (i !== accRow) throw new Error(`level row ${accRow} skipped at master row ${y}`);
+        }
+        const b = Math.min(y + 1, (i + 1) * r) - y;
+        const land = (sums, wt) => {
+          for (let j = 0; j < width; j++) { sums[2 * j] += hA[j] * wt; sums[2 * j + 1] += hP[j] * wt; }
+        };
+        land(acc[0], b);
+        if (b < 1) land(acc[1], 1 - b);
+      }
+      process.stdout.write(`  field level ${width}x${height}: master rows ${y0 + rows}/${mh} (${((Date.now() - t0) / 1000).toFixed(0)} s)\r`);
+    }
+    await flush(accRow, acc[0]);
+    if (accRow !== height - 1) throw new Error(`${outFile}: wrote ${accRow + 1} rows of ${height}`);
+  } finally {
+    await master.close();
+    await out.close();
+  }
+  await rename(`${outFile}.part`, outFile);
+  console.log(`  field level -> ${path.relative(process.cwd(), outFile)} (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
+  return sumA / sumW;
+}
+
+/** The cloud master and its report, checked against each other. */
+async function cloudMaster(job) {
+  const file = job.field.master();
+  const report = JSON.parse(await readFile(file.replace(/\.r8$/, '.json'), 'utf8'));
+  const { width, height, sha256 } = report.output;
+  const size = (await stat(file)).size;
+  if (size !== width * height) throw new Error(`${file}: ${size} bytes is not the report's ${width}x${height}`);
+  const digest = await fileDigest(file);
+  if (digest !== sha256) {
+    throw new Error(`${file}: sha256 ${digest} is not its report's ${sha256} — the master changed under its report; re-run gen-cloudmaster`);
+  }
+  return { file, width, height, sha256, meanAlpha: report.alpha.masterNative.stored.meanAlpha };
+}
+
+/** The tolerance on a level's mean opacity against the master's: the area
+ *  average keeps the mean exactly, so what is left is the rounding to bytes
+ *  (unbiased, a few millionths over a globe) and the cos weights' grid. */
+const FIELD_MEAN_TOLERANCE = 0.0005;
+
+/** A field level as a two-channel row source, built from the master once and
+ *  cached under a name that states the master's digest and the transform. */
+export async function cloudFieldRows(job, level) {
+  const master = await cloudMaster(job);
+  const { width, height } = gridSize(level.grid, CONTENT);
+  const stem = [job.key, level.tier, `${width}x${height}`, job.rawToken, master.sha256.slice(0, 8)].join('.');
+  const out = cache('levels', `${stem}.ap`);
+  await mkdir(path.dirname(out), { recursive: true });
+  if ((await exists(out)) && (await stat(out)).size === width * height * 2) {
+    console.log(`  field level already in the cache: ${path.relative(process.cwd(), out)}`);
+  } else {
+    const mean = await buildCloudFieldLevel(master.file, master.width, master.height, width, height, out);
+    const off = Math.abs(mean - master.meanAlpha);
+    console.log(`  field level mean opacity ${mean.toFixed(6)} against the master's ${master.meanAlpha.toFixed(6)} (|Δ| ${off.toExponential(2)})`);
+    if (off > FIELD_MEAN_TOLERANCE) {
+      await rm(out, { force: true });
+      throw new Error(`${job.key}/${level.tier}: the level's mean opacity ${mean.toFixed(5)} is not the master's ${master.meanAlpha.toFixed(5)} — the area average lost the sky`);
+    }
+  }
+  return fileRowSource(out, width, height, 2);
+}
+
+/** The tier a field set lives in: the level's tier and the map's suffix
+ *  (`32k-a`, `32k-p`), so both maps share the master's stem as their key and
+ *  `<key>/<tier>` names one map of one level. */
+const fieldTier = (level, set) => `${level.tier}-${set.suffix}`;
+
+/**
+ * Both sets of a field level decoded and held to the level they were cut
+ * from, at every texel of every page, gutter included (so a gutter that is
+ * not its neighbour's content fails here like any other texel). The bars are
+ * the field's, whatever the encoding:
+ *  - opacity: no texel of exactly clear sky decodes as cloud the shader would
+ *    draw (any code at all, or at or above the job's `deadZone` if the shader
+ *    reads codes under it as clear), and no texel moves by more than one code;
+ *  - brightness: the colour the deck draws, P / A, moves by no more than two
+ *    codes at any texel more than a tenth opaque (below that the colour is a
+ *    small share of a faint cloud).
+ * A lossless set is exact and passes by construction; the gate is what proves
+ * the decode, and what would hold a lossy one to its budget.
+ */
+async function cloudFieldGate(job, level, rows) {
+  const { grid } = level;
+  const tileW = CONTENT + 2 * GUTTER;
+  const width = rows.width;
+  const sets = Object.fromEntries(await Promise.all(job.field.sets.map(async (set) => [set.suffix, { ...set, dir: await setDir(job.key, fieldTier(level, set)) }])));
+  const { a: setA, p: setP } = sets;
+  const deadZone = job.field.deadZone ?? 1;
+  let clearTurned = 0;
+  let worstA = 0;
+  let worstColour = 0;
+  let worstAt = '';
+  let texels = 0;
+  const decode = async (set, c, r) => {
+    const { data, info } = await sharp(path.join(set.dir, `${c}_${r}.webp`)).raw().toBuffer({ resolveWithObject: true });
+    if (info.width !== tileW || info.height !== tileW) throw new Error(`${set.dir}/${c}_${r}: ${info.width}x${info.height}`);
+    return { data, stride: info.channels };
+  };
+  for (let r = 0; r < grid.rows; r++) {
+    const band = await rows.read(r * CONTENT - GUTTER, tileW);
+    for (let c = 0; c < grid.cols; c++) {
+      const dA = await decode(setA, c, r);
+      const dP = await decode(setP, c, r);
+      const x0 = c * CONTENT - GUTTER;
+      for (let y = 0; y < tileW; y++) {
+        for (let x = 0; x < tileW; x++) {
+          const gx = (((x0 + x) % width) + width) % width;
+          const src = (y * width + gx) * 2;
+          const t = y * tileW + x;
+          const a = band[src + setA.channel];
+          const aDec = dA.data[t * dA.stride];
+          if (a === 0 && aDec >= deadZone) clearTurned++;
+          const e = Math.abs(aDec - a);
+          if (e > worstA) { worstA = e; worstAt = `${c}_${r} (${x}, ${y})`; }
+          if (a > 25.5) {
+            const p = band[src + setP.channel];
+            const pDec = dP.data[t * dP.stride];
+            const dC = Math.abs(pDec / aDec - p / a) * 255;
+            if (dC > worstColour) worstColour = dC;
+          }
+        }
+      }
+      texels += tileW * tileW;
+    }
+    process.stdout.write(`  field gate ${job.key}/${level.tier} row ${r + 1}/${grid.rows}\r`);
+  }
+  const ok = clearTurned === 0 && worstA <= 1 && worstColour <= 2;
+  console.log(`  field gate ${job.key}/${level.tier}-{a,p}: ${(texels / 1e6).toFixed(0)} Mtexel a set; clear turned cloudy ${clearTurned}, worst opacity ${worstA} codes (${worstAt || 'none'}), worst colour ${worstColour.toFixed(2)} codes -> ${ok ? 'PASS' : 'FAIL'}`);
+  if (!ok) {
+    throw new Error(`${job.key}/${level.tier}: the pages do not decode to the level within the field's bars (clear turned ${clearTurned}, opacity ${worstA}, colour ${worstColour.toFixed(2)})`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Jobs
 // ---------------------------------------------------------------------------
 
@@ -1388,6 +1672,48 @@ export const JOBS = {
   mercury: { flat: { src: () => cache('sss_8k_mercury.jpg'), out: path.join(TEX, '4k', 'mercury.webp') } },
   venus: { flat: { src: () => cache('sss_4k_venus_atmosphere.jpg'), out: path.join(TEX, '4k', 'venus.webp') } },
   saturn: { flat: { src: () => cache('sss_8k_saturn.jpg'), out: path.join(TEX, '4k', 'saturn.webp') } },
+  // Earth's cloud field (the section above): NASA's 0.93 km cloud master as
+  // two sets of grey pages per level under the master's stem, opacity in
+  // `<tier>-a` and premultiplied brightness in `<tier>-p` (a page is the same
+  // cell in both), each an ordinary set of `<c>_<r>.webp` tiles. Cut into a
+  // staging root (`--root=`), never public/; the app's table does not name
+  // them (`appTable: false`) until the deck reads them from there.
+  clouds: {
+    key: 'earth-clouds.v2',
+    appTable: false,
+    // States the transform baked into the cached level (the curve, the albedo
+    // rule, the area average); the master's own digest is added to the name.
+    rawToken: 'ap-v1',
+    field: {
+      master: () => cache('levels', 'earth-clouds.v2.43200x21600.r8'),
+      // Both lossless, measured on every page of both levels
+      // (planning/cloud-detail/encoding/set-study*). The brightness bar (no
+      // colour P / A moved by more than two codes over a tenth opaque) is
+      // held by nothing lossy or near-lossless: one code of P is ten of
+      // colour at A = 0.1. The opacity bar (no clear texel turned cloudy, no
+      // code moved by more than one) is held only by lossless, unless the
+      // deck reads opacity codes under 2 as clear: then near-lossless 80
+      // holds it too, for 16 % fewer opacity bytes (`deadZone: 2` here and
+      // `nearLossless: true, quality: 80` on the `a` set, once the shader
+      // has that dead zone). No lossy quality holds it, q100 included.
+      sets: [
+        { suffix: 'a', channel: 0, webp: DATA_WEBP },
+        { suffix: 'p', channel: 1, webp: DATA_WEBP },
+      ],
+    },
+    // 16k: the level a page can arrive at far enough out that the base sheet
+    // under it already agrees, at a quarter of the bytes and pool layers per
+    // area, with 32k sharpening over it data to data. Measured through the
+    // development slice (planning/cloud-detail/handover, 1600x1000 at one
+    // device pixel a CSS pixel, 50 degrees, straight down over the Pacific
+    // trades): the phone's 4K base against the field differs by 11 % of the
+    // frame's brightness at 400 km and by 0.15 % at 7000 km, and 16k against
+    // 32k by 0.1-0.35 % at every height.
+    levels: [
+      { tier: '16k', grid: GRID_16K },
+      { tier: '32k', grid: doubled(GRID_16K, 1) },
+    ],
+  },
 };
 
 /** The equirect one level is cut from, as a row source. Level 0's fits in
@@ -1468,6 +1794,24 @@ async function main() {
       // on; a minute of decoding, against the hour a whole --verify is.
       for (const g of job.grey ?? []) await greyGate(g);
       if (!(job.grey ?? []).length) console.log('  no mask sets in this job');
+    } else if (job.field && !flag('crops')) {
+      // A field set is cut from its own level and held to it texel for texel;
+      // the colour gates (a reassembly against a boot map, the seams in RGB,
+      // a child level against its parent picture) do not apply to data.
+      for (const level of levelsOf(job)) {
+        console.log(`-- ${level.tier} (${level.grid.cols}x${level.grid.rows})`);
+        const rows = await cloudFieldRows(job, level);
+        try {
+          if (!flag('verify')) {
+            for (const set of job.field.sets) {
+              await cutGrid(rows, level.grid, CONTENT, job.key, fieldTier(level, set), set.webp, 1, set.channel);
+            }
+          }
+          await cloudFieldGate(job, level, rows);
+        } finally {
+          await rows.close();
+        }
+      }
     } else if (flag('verify')) {
       // Check only: a flat job has no tile set to verify, and must not be
       // re-encoded by a verification run.

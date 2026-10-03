@@ -25,7 +25,10 @@ import {
   OCEAN_SPECULAR_KEEP,
   RING_SHADOW_OPACITY_GLSL,
   CLOUD_SHADOW_AIR,
+  CLOUD_SHADOW_AIR_GRAZE,
   CLOUD_SHADOW_DEPTH,
+  CLOUD_SHADOW_GAMMA,
+  CLOUD_SHADOW_HORIZON_SIN,
   cloudShadowShared,
   cloudShadowsOn,
   setGroundUnderCloudDeck,
@@ -34,6 +37,7 @@ import {
 import { createSectorMaterial } from './sectorMaterial';
 import { CLOUD_TOP_KM, cloudCoverageAlpha } from './cloudDeck';
 import { resolveDefine } from '../testing/glslDefine';
+import { NIGHT_WEIGHT_ZERO_SIN } from './nightSources';
 import { PLANETS } from '../planets/planetData';
 import { surfaceDetailFieldMean, surfaceDetailHeightSpan } from './surfaceDetailNoise';
 import { atmosphereParams } from './atmosphereModel';
@@ -998,18 +1002,48 @@ describe('cloud shadows on the ground (CLOUD_SHADOW, off by default)', () => {
   it('cuts the Sun\'s diffuse after the sea\'s block and the air\'s glow before the Moon\'s, and nothing else', () => {
     const { globe } = earthWithDeck();
     const on = resolveDefine(fragmentOf(globe), 'CLOUD_SHADOW', true);
-    const diffuse = on.indexOf('outgoingLight -= reflectedLight.directDiffuse * ((1.0 - cloudSunKeep) * ');
+    // The ground and the air take the cloud's SHADE, the beam's loss through
+    // the shade curve; the glint takes the beam itself.
+    const gamma = import.meta.env.DEV ? 'uCloudShadowGamma' : CLOUD_SHADOW_GAMMA.toFixed(4);
+    expect(on).toContain(`float cloudShade = pow(1.0 - cloudSunKeep, ${gamma}) * cloudShadeHorizon;`);
+    // ...faded to nothing where the Sun meets the ground's horizon, so the air
+    // the shade is taken from carries no line along the terminator.
+    expect(on).toContain(`cloudShadeHorizon = smoothstep(0.0, ${CLOUD_SHADOW_HORIZON_SIN.toFixed(6)}, shadowMu);`);
+    expect(CLOUD_SHADOW_HORIZON_SIN).toBe(NIGHT_WEIGHT_ZERO_SIN);
+    const diffuse = on.indexOf('outgoingLight -= reflectedLight.directDiffuse * (cloudShade * ');
     expect(diffuse).toBeGreaterThan(on.indexOf('outgoingLight -= glintCapped'));
     expect(diffuse).toBeLessThan(on.indexOf('float sunElevSin = dot('));
     // Before the eclipse factor, which multiplies both, and every night term.
     expect(diffuse).toBeLessThan(on.indexOf('outgoingLight *= sunVisible;'));
     expect(diffuse).toBeLessThan(on.indexOf('outgoingLight += nightLow;'));
-    const air = on.indexOf('airS *= 1.0 - (1.0 - cloudSunKeep) * ');
+    const air = on.indexOf('airS *= 1.0 - cloudShade * ');
     expect(air).toBeGreaterThan(on.indexOf('vec3 airS = aerialInscatter(uScattering, seg, airT)'));
     expect(air).toBeLessThan(on.indexOf('airS += aerialInscatter('));
     // The transmittance is the air's and is not touched.
     expect(on).not.toMatch(/airT \*=|airT = .*cloudSunKeep/);
-    expect(on.match(/cloudSunKeep\) \*/g)).toHaveLength(2);
+    expect(on.match(/cloudShade \*/g)).toHaveLength(2);
+    expect(on).toContain('outgoingLight -= glintCapped * (1.0 - cloudSunKeep * ');
+    // The air's share fades as the view grazes, on the geometric normal and
+    // the line of sight, never the perturbed normal.
+    expect(on).toContain(`smoothstep(${CLOUD_SHADOW_AIR_GRAZE[0].toFixed(6)}, ${CLOUD_SHADOW_AIR_GRAZE[1].toFixed(6)}, `
+      + 'dot(up, normalize(vAirCam - vAirFrag)));');
+    expect(on.indexOf('vec3 up = normalize(vAirFrag);')).toBeLessThan(air);
+  });
+
+  it('shades thin cloud little and solid cloud fully, and the haze not at all where the view grazes', () => {
+    // The shade curve, as the shader applies it: a half-covered texel shades
+    // a quarter as much as a solid bank; clear sky not at all.
+    const shade = (keep: number) => (1 - keep) ** CLOUD_SHADOW_GAMMA;
+    expect(CLOUD_SHADOW_GAMMA).toBe(2);
+    expect(shade(1)).toBe(0);
+    expect(shade(0)).toBe(1);
+    expect(shade(0.5)).toBeCloseTo(0.25, 12);
+    // The grazing fade: full from 60° off the vertical, gone by 84°.
+    const [lo, hi] = CLOUD_SHADOW_AIR_GRAZE;
+    expect(Math.acos(hi) * 180 / Math.PI).toBeCloseTo(60, 6);
+    expect(Math.acos(lo) * 180 / Math.PI).toBeGreaterThan(84);
+    expect(Math.acos(lo) * 180 / Math.PI).toBeLessThan(85);
+    expect(cloudShadowShared.uCloudShadowGamma.value).toBe(CLOUD_SHADOW_GAMMA);
   });
 
   it('states its numbers once: the drawn shell, the two shares, the penumbra', () => {

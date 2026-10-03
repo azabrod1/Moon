@@ -32,6 +32,7 @@ import {
   AIR_LOOKUP_RADIUS,
   CLOUD_SHADOW_AIR,
   CLOUD_SHADOW_DEPTH,
+  CLOUD_SHADOW_GAMMA,
   NIGHT_LIGHTS_AIR_LOOKUP_RADIUS,
   SURFACE_HAZE_CLEAR_VIEW,
   augmentSurfaceMaterial,
@@ -100,8 +101,8 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '0b5d69af0d7a10274c57baa057b2e30b6f904a27cdcfb14d26233b51707b440d';
-const PROD_FRAGMENT_HASH = 'f6b4aa3b5b4732d0d59740e8c8ac7c08beb77ee1b2bb7e308f91ee00827ff130';
+const DEV_FRAGMENT_HASH = '77d44324b89765f83dc6c6bca8eabdd5f35d69b2d531c7befbe9413c436f8fac';
+const PROD_FRAGMENT_HASH = '23af3e82b2367a5ed4ba649407b4d2fe93a29f48edcf905fa59b4e54ae45e802';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 /** The same two texts with the cloud shadow's define OFF, resolved as the
  *  preprocessor resolves it: the texts from before the switch existed. */
@@ -190,10 +191,12 @@ describe('the injected surface shader', () => {
         + '\nuniform float uGlintCap;\nuniform float uGlintKeep;', '')
       // The cloud shadow's knobs read as the constants they default to, and
       // the penumbra's as no factor at all.
-      .replace('uniform float uCloudShadowDepth;\nuniform float uCloudShadowAir;\nuniform float uCloudShadowPenumbra;\n', '')
+      .replace('uniform float uCloudShadowDepth;\nuniform float uCloudShadowAir;\nuniform float uCloudShadowPenumbra;\n'
+        + 'uniform float uCloudShadowGamma;\n', '')
       .replace(/uCloudShadowPenumbra \* /g, '')
       .replace(/uCloudShadowDepth/g, CLOUD_SHADOW_DEPTH.toFixed(4))
       .replace(/uCloudShadowAir/g, CLOUD_SHADOW_AIR.toFixed(4))
+      .replace(/uCloudShadowGamma/g, CLOUD_SHADOW_GAMMA.toFixed(4))
       .replace(/uPerfCloudTaps < 0\.5 \|\| /g, '')
       .replace(/uPerfCloudClear > 0\.5 && /g, '')
       .replace(/uPerfGlintGate < 0\.5 \|\| /g, '')
@@ -211,7 +214,7 @@ describe('the injected surface shader', () => {
       // The glint's tuning uniforms read as the constants they default to.
       .replace(/uGlintCap/g, OCEAN_GLINT_CAP.toFixed(2))
       .replace(/uGlintKeep/g, OCEAN_SPECULAR_KEEP.toFixed(4));
-    expect(folded).not.toMatch(/uPerf|uProbe|uGlint|uCloudShadow(Depth|Air|Penumbra)/);
+    expect(folded).not.toMatch(/uPerf|uProbe|uGlint|uCloudShadow(Depth|Air|Penumbra|Gamma)/);
     expect(hash(import.meta.env.DEV ? folded : shader.fragmentShader)).toBe(PROD_FRAGMENT_HASH);
     const night = import.meta.env.DEV
       ? earthNightFragmentShader

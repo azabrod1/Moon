@@ -161,7 +161,7 @@ import {
   CLOUD_DETAIL_UV_PER_RADIAN,
   cloudDetailTexture,
 } from './cloudDetailNoise';
-import { MOON_UP_GLSL, NIGHT_WEIGHT_GLSL, SUN_DOWN_GLSL } from './nightSources';
+import { MOON_UP_GLSL, NIGHT_WEIGHT_GLSL, NIGHT_WEIGHT_ZERO_SIN, SUN_DOWN_GLSL } from './nightSources';
 import { gpuSeed } from './proceduralMoon';
 import { SURFACE_TEXEL_FADE } from './surfaceDensity';
 import {
@@ -572,6 +572,40 @@ export const CLOUD_SHADOW_DEPTH = 0.7;
  *  of what a cloud's shadow is. */
 export const CLOUD_SHADOW_AIR = 0.6;
 
+/**
+ * How the cloud's coverage turns into shade on the ground: the ground and the
+ * air under it take `(1 - cloudSunKeep)^gamma` of the share above, never the
+ * beam's own loss. A thin veil scatters most of the Sun's light it intercepts
+ * on down to the ground — forward, the way a thin cloud does — so the ground
+ * under it dims far less than the direct beam does; only thick cloud takes
+ * most of the light away. At 2, a half-covered texel shades the ground a
+ * quarter as much as a solid bank does. The beam's own share, `cloudSunKeep`,
+ * is unchanged, because the sea's glint IS the direct beam and reads it as is.
+ */
+export const CLOUD_SHADOW_GAMMA = 2.0;
+
+/**
+ * Where the shadow on the air fades out as the view grazes the ground, as the
+ * cosine between the ground's geometric normal and the line of sight: the full
+ * shadow from a half (60° off the vertical) up, none by a tenth (84°). A
+ * grazing ray's air below the cloud tops runs hundreds of kilometres from the
+ * ground point it ends at, and the cloud read at that one point says nothing
+ * about the whole of it: applied there, the limb's haze band went patchy
+ * wherever cloud happened to lie under its last few pixels.
+ */
+export const CLOUD_SHADOW_AIR_GRAZE: readonly [number, number] = [0.10, 0.50];
+
+/**
+ * The sine of the Sun's height at the ground under which the shade fades out,
+ * reaching nothing where the Sun meets that ground's horizon: 2.9°, the same
+ * height every night source is gone by (world/nightSources). Below the horizon
+ * the ray enters the ground before any cloud and there is no shade to read,
+ * and the Sun's own light on the ground is already near zero above it — but
+ * the air's glow is not, and a shade that held its full value to the horizon
+ * and stopped there drew a line along the terminator through the haze.
+ */
+export const CLOUD_SHADOW_HORIZON_SIN = NIGHT_WEIGHT_ZERO_SIN;
+
 /** `?cloudshadows=1`, read once at boot in any build. */
 const cloudShadowsByUrl = typeof location !== 'undefined'
   && new URLSearchParams(location.search).get('cloudshadows') === '1';
@@ -599,14 +633,17 @@ export const cloudShadowShared: {
   uCloudShadowDepth: { value: number };
   uCloudShadowAir: { value: number };
   uCloudShadowPenumbra: { value: number };
+  uCloudShadowGamma: { value: number };
 } = {
   uCloudHeightOverRadius: { value: CLOUD_TOP_KM / EARTH_RADIUS_KM },
   uCloudShadowDepth: { value: CLOUD_SHADOW_DEPTH },
   uCloudShadowAir: { value: CLOUD_SHADOW_AIR },
   uCloudShadowPenumbra: { value: 1 },
+  uCloudShadowGamma: { value: CLOUD_SHADOW_GAMMA },
 };
 const CLOUD_SHADOW_DEPTH_GLSL = import.meta.env.DEV ? 'uCloudShadowDepth' : CLOUD_SHADOW_DEPTH.toFixed(4);
 const CLOUD_SHADOW_AIR_GLSL = import.meta.env.DEV ? 'uCloudShadowAir' : CLOUD_SHADOW_AIR.toFixed(4);
+const CLOUD_SHADOW_GAMMA_GLSL = import.meta.env.DEV ? 'uCloudShadowGamma' : CLOUD_SHADOW_GAMMA.toFixed(4);
 const CLOUD_SHADOW_PENUMBRA_GUARD = import.meta.env.DEV ? 'uCloudShadowPenumbra * ' : '';
 
 /** The fx of every body whose ground a deck stands over: a ground material
@@ -665,11 +702,13 @@ export function devCloudShadow(opts?: {
   depth?: number;
   air?: number;
   penumbra?: boolean | number;
+  gamma?: number;
 }): {
   on: boolean;
   depth: number;
   air: number;
   penumbra: number;
+  gamma: number;
   heightOverRadius: number;
   receivers: number;
   compiled: number;
@@ -683,6 +722,9 @@ export function devCloudShadow(opts?: {
       ? (opts.penumbra ? 1 : 0)
       : opts.penumbra;
   }
+  if (opts?.gamma !== undefined && Number.isFinite(opts.gamma) && opts.gamma > 0) {
+    cloudShadowShared.uCloudShadowGamma.value = opts.gamma;
+  }
   let compiled = 0;
   for (const mat of cloudShadowReceivers) if (surfaceCloudShadowCompiled(mat)) compiled++;
   return {
@@ -690,6 +732,7 @@ export function devCloudShadow(opts?: {
     depth: cloudShadowShared.uCloudShadowDepth.value,
     air: cloudShadowShared.uCloudShadowAir.value,
     penumbra: cloudShadowShared.uCloudShadowPenumbra.value,
+    gamma: cloudShadowShared.uCloudShadowGamma.value,
     heightOverRadius: cloudShadowShared.uCloudHeightOverRadius.value,
     receivers: cloudShadowReceivers.size,
     compiled,
@@ -1671,7 +1714,7 @@ const SURFACE_ARCHETYPE_MACROS = /* glsl */ `
 const CLOUD_SHADOW_DECLS = /* glsl */ `#ifdef CLOUD_SHADOW
 uniform float uCloudAbove;
 uniform float uCloudHeightOverRadius;
-${import.meta.env.DEV ? 'uniform float uCloudShadowDepth;\nuniform float uCloudShadowAir;\nuniform float uCloudShadowPenumbra;\n' : ''}#endif
+${import.meta.env.DEV ? 'uniform float uCloudShadowDepth;\nuniform float uCloudShadowAir;\nuniform float uCloudShadowPenumbra;\nuniform float uCloudShadowGamma;\n' : ''}#endif
 `;
 
 const SURFACE_FRAGMENT_DECLS = /* glsl */ `
@@ -1906,6 +1949,10 @@ const CLOUD_SHADOW_READ = /* glsl */ `#ifdef CLOUD_SHADOW
   // ground, the sea and the air alike, where the Sun's ray to this point
   // crosses the deck as it is drawn; the straight-down read under the sea's
   // gloss is compiled out below, and the sea's cut reads this value instead.
+  // The shade's fade toward the horizon (CLOUD_SHADOW_HORIZON_SIN) rides
+  // beside it: the beam is the beam, and only what the ground and the air
+  // take from it fades.
+  float cloudShadeHorizon = 0.0;
   if (GROUND_ON(uCloudAbove > 0.0)) {
     vec3 shadowN = normalize(vObjPos);
     vec3 shadowL = normalize(uSunDirLocal);
@@ -1921,6 +1968,7 @@ const CLOUD_SHADOW_READ = /* glsl */ `#ifdef CLOUD_SHADOW
     vec2 shadowUvDx = sphereEquirectUvGrad(shadowDir, shadowDx);
     vec2 shadowUvDy = sphereEquirectUvGrad(shadowDir, shadowDy);
     bool cloudTapWanted = shadowMu > 0.0;
+    cloudShadeHorizon = smoothstep(0.0, ${CLOUD_SHADOW_HORIZON_SIN.toFixed(6)}, shadowMu);
     if (cloudTapWanted) {
       vec4 shadowTexel = textureGrad(uCloudShadowMap, shadowUv, shadowUvDx, shadowUvDy);
       vec2 shadowTexels = vec2(textureSize(uCloudShadowMap, 0));
@@ -1938,22 +1986,28 @@ const CLOUD_SHADOW_READ = /* glsl */ `#ifdef CLOUD_SHADOW
 `;
 
 /**
- * The first reader: the Sun's diffuse light on the ground, cut by the share
- * the cloud took. three adds `reflectedLight.directDiffuse` into
- * `outgoingLight` as it stands — no occlusion map, transmission, sheen or
- * clearcoat reaches it on these materials — so this removes exactly that much
- * of the Sun. After the sea's own block, which cuts only the mirror term, and
+ * The first reader: the Sun's diffuse light on the ground, cut by the cloud's
+ * SHADE — the beam's loss through the shade curve (CLOUD_SHADOW_GAMMA), since
+ * the light a thin veil scatters out of the beam mostly still reaches the
+ * ground. three adds `reflectedLight.directDiffuse` into `outgoingLight` as it
+ * stands — no occlusion map, transmission, sheen or clearcoat reaches it on
+ * these materials — so this removes exactly that much of the Sun. After the
+ * sea's own block, which cuts only the mirror term by the beam itself, and
  * before the eclipse factor, which multiplies both.
  */
 const CLOUD_SHADOW_DIFFUSE = /* glsl */ `#ifdef CLOUD_SHADOW
-  outgoingLight -= reflectedLight.directDiffuse * ((1.0 - cloudSunKeep) * ${CLOUD_SHADOW_DEPTH_GLSL});
+  float cloudShade = pow(1.0 - cloudSunKeep, ${CLOUD_SHADOW_GAMMA_GLSL}) * cloudShadeHorizon;
+  outgoingLight -= reflectedLight.directDiffuse * (cloudShade * ${CLOUD_SHADOW_DEPTH_GLSL});
 #endif
 `;
 
 /** The third reader: the Sun's glow in the air between the camera and this
- *  ground point, the share of that column under the cloud taken with it. */
+ *  ground point, the share of that column under the cloud taken with it — and
+ *  less of it as the view grazes, measured on the ground's geometric normal
+ *  (never the perturbed one) against the line of sight (CLOUD_SHADOW_AIR_GRAZE). */
 const CLOUD_SHADOW_AIR_SCALE = /* glsl */ `#ifdef CLOUD_SHADOW
-      airS *= 1.0 - (1.0 - cloudSunKeep) * ${CLOUD_SHADOW_AIR_GLSL};
+      airS *= 1.0 - cloudShade * ${CLOUD_SHADOW_AIR_GLSL}
+          * smoothstep(${CLOUD_SHADOW_AIR_GRAZE[0].toFixed(6)}, ${CLOUD_SHADOW_AIR_GRAZE[1].toFixed(6)}, dot(up, normalize(vAirCam - vAirFrag)));
 #endif
 `;
 
@@ -2734,6 +2788,7 @@ export function augmentSurfaceMaterial(
       shader.uniforms.uCloudShadowDepth = cloudShadowShared.uCloudShadowDepth;
       shader.uniforms.uCloudShadowAir = cloudShadowShared.uCloudShadowAir;
       shader.uniforms.uCloudShadowPenumbra = cloudShadowShared.uCloudShadowPenumbra;
+      shader.uniforms.uCloudShadowGamma = cloudShadowShared.uCloudShadowGamma;
     }
     for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];
 

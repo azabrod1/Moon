@@ -3382,6 +3382,14 @@ function installDevHooks() {
     // its allocated bytes, the page table and the deck's linked samplers.
     cloudField: async (req?: CloudFieldRequest) =>
       (await import('./planetarium/world/cloudFieldPool')).devCloudField(renderer, scene, req),
+    // The guard's input as the deck drew it (`cloudField({ diag: 3 })`) at
+    // points of the displayed frame (output NDC, or 'limb'), beside the
+    // residency's number for the same deck point.
+    cloudFieldProbe: async (points: Array<[number, number] | 'limb'>) =>
+      (await import('./planetarium/world/cloudFieldPool')).devCloudFieldProbe({
+        renderer, scene, camera: planetariumCamera, sceneTarget,
+        drawSize: sceneRectsLive.draw, sceneRatio: getScenePixelRatio(), tileRatio: getTilePixelRatio(),
+      }, points),
     // The cloud deck lit as a cloud (world/surfaceShading, off by default):
     // `on` moves the switch and relinks the deck; `wrap` (the share of its
     // direct diffuse taken on the shell's own normal), `sky` (the sky's

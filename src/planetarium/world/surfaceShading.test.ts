@@ -317,10 +317,16 @@ describe('the close-range detail term', () => {
     expect(fragment('gas', 'Jupiter')).toBe(fragment('airless', 'Rhea'));
     // The one block of defines is the deck's archetype macros, which read the
     // uniform everywhere but on the deck's own program (cloudDeck.test pins
-    // the block itself); nothing else in the text is a define.
+    // the block itself); nothing else in the text is a define. The block may
+    // nest one conditional of its own (a ground compiled with the cloud field
+    // knows it is not the deck), so it ends at the #endif after its last line.
     const text = fragment('airless');
-    const macros = text.slice(text.indexOf('#ifdef CLOUD_DECK'), text.indexOf('#endif') + '#endif'.length);
-    expect(macros).toContain('#define GROUND_ON(x) (x)');
+    const groundOn = '#define GROUND_ON(x) (x)';
+    const macros = text.slice(
+      text.indexOf('#ifdef CLOUD_DECK'),
+      text.indexOf('#endif', text.indexOf(groundOn)) + '#endif'.length,
+    );
+    expect(macros).toContain(groundOn);
     expect(text.replace(macros, '')).not.toContain('#define');
   });
 

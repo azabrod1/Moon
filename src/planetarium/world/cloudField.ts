@@ -65,17 +65,62 @@ export const CLOUD_FIELD_LEVEL_WIDTH = CLOUD_FIELD_GRID[0] * CLOUD_PAGE_CONTENT;
 export const CLOUD_FIELD_EDGE_BAND = 1 / 32;
 
 /**
- * The footprint, in a page's own texels along the screen's longer axis, over
- * which the field hands back to the base: full weight to 4 texels a pixel
- * (LOD 2), none from 8 (LOD 3). The gutter is 8 texels, and a filter footprint
- * — however the hardware splits it between anisotropic taps and a coarser
- * level — reaches about half the major axis either side of its centre, plus a
- * bilinear texel; past 8 that would read beyond the gutter into texels that
- * belong to no neighbour. Measured on the MAJOR axis so the guard holds with
- * anisotropy on: an anisotropic footprint keeps a fine level and spreads its
- * taps along that axis instead.
+ * The footprint, in a page's own texels per pixel along the footprint's MAJOR
+ * axis, over which the field hands back to the base: full weight to 4 (LOD 2),
+ * none from 8 (LOD 3). The major axis is the true largest singular value of
+ * the screen-to-texel Jacobian (`cloudFieldMajor`), not the larger of its two
+ * columns, which reads up to √2 short for a diagonal footprint.
+ *
+ * The PIXELS are the tile ratio's (the output ratio; the scene's own at the
+ * fixed High level), on the scene target's unwarped grid: the shader's
+ * derivatives are the scene target's, and one uniform, scene ratio over tile
+ * ratio (`uCloudFieldPixelScale`), turns them into these. So a Dynamic rung
+ * step changes no fragment's weight, and the residency, which measures pages
+ * on the same grid at the tile ratio, agrees with the shader about every
+ * point (`cloudFieldMeasure.ts`).
  */
 export const CLOUD_FIELD_GUARD_TEXELS: readonly [number, number] = [4, 8];
+
+/**
+ * The safety term, in REAL page texels per scene pixel: what the filter actually
+ * spans, whatever the rung. The gutter is 8 texels. A trilinear read at a
+ * position x texels inside the layer's edge leaves the layer (clamps) once its
+ * coarser level's texel is wider than 2x, so an isotropic footprint is safe at
+ * the content edge (x = 8) up to 16 texels a pixel (LOD 4). An anisotropic one
+ * is not: with N taps spread over (1 - 1/N) of the major axis and the level
+ * chosen from major / N, the outermost tap of a 3-tap footprint sits at
+ * 8 - major/3 while the level needs 2^floor(log2(major/3)), and the first read
+ * past the edge comes at a major of 12. So the term reaches zero at 12, and it
+ * starts at 8 / 0.75 — the main guard's own zero at the bottom of the rung
+ * ladder (Low draws at 0.75 of the output ratio) — so it never moves a
+ * fragment's weight on a normal rung, and bites only under a `?upscale=` pin
+ * or anything else that draws the scene coarser than Low.
+ */
+export const CLOUD_FIELD_SAFETY_TEXELS: readonly [number, number] = [8 / 0.75, 12];
+
+/** The scene ratio over the tile ratio at the bottom of the rung ladder. */
+export const CLOUD_FIELD_LOWEST_RUNG = 0.75;
+
+/** Page texels per tile-ratio pixel on the major axis past which the residency
+ *  releases a page: half again the guard's zero, so a released page's weight
+ *  is zero everywhere it is in frame (`cloudFieldMeasure.test.ts` proves it). */
+export const CLOUD_FIELD_RELEASE_TEXELS = 12;
+
+/** Table codes reserved in the R channel, tested before `layer = R - 1`:
+ *  254 "see the parent level" and 255 "known clear". Both draw the base. */
+export const CLOUD_TABLE_SEE_PARENT = 254;
+export const CLOUD_TABLE_CLEAR = 255;
+
+/** What a table R byte means: absent (0), a layer, or one of the reserved
+ *  codes. Mirrored by the code test in CLOUD_FIELD_GLSL, which runs before the
+ *  layer is computed. */
+export function cloudTableCode(r: number): { kind: 'absent' } | { kind: 'layer'; layer: number }
+  | { kind: 'parent' } | { kind: 'clear' } {
+  if (r === 0) return { kind: 'absent' };
+  if (r === CLOUD_TABLE_SEE_PARENT) return { kind: 'parent' };
+  if (r === CLOUD_TABLE_CLEAR) return { kind: 'clear' };
+  return { kind: 'layer', layer: r - 1 };
+}
 
 /** The array's anisotropy: trilinear with a modest anisotropic boost. */
 export const CLOUD_FIELD_ANISOTROPY = 4;
@@ -170,9 +215,36 @@ export function cloudPageEdgeWeight(
 }
 
 /** The guard: how much of the fine field a footprint of this many page texels
- *  a pixel (along its major axis) may take. Mirrored by `guard` in the GLSL. */
+ *  a TILE-ratio pixel (along its major axis) may take. */
 export function cloudFieldGuard(majorTexelsPerPixel: number): number {
   return 1 - smoothstep(CLOUD_FIELD_GUARD_TEXELS[0], CLOUD_FIELD_GUARD_TEXELS[1], majorTexelsPerPixel);
+}
+
+/**
+ * The largest singular value of the 2x2 matrix whose columns are `a` and `b`:
+ * the footprint's major axis. Closed form from the eigenvalues of the Gram
+ * matrix, the same one `projectedStepScale` uses, stable when a column
+ * collapses. Mirrored by the shader's `major`.
+ */
+export function cloudFieldMajor(a: readonly [number, number], b: readonly [number, number]): number {
+  const aa = a[0] * a[0] + a[1] * a[1];
+  const bb = b[0] * b[0] + b[1] * b[1];
+  const ab = a[0] * b[0] + a[1] * b[1];
+  const mean = (aa + bb) * 0.5;
+  const spread = Math.sqrt(Math.max(((aa - bb) * 0.5) ** 2 + ab * ab, 0));
+  return Math.sqrt(Math.max(mean + spread, 0));
+}
+
+/**
+ * The shader's whole guard, twinned: `majorScene` page texels per SCENE pixel
+ * on the major axis, `pixelScale` the scene ratio over the tile ratio. The
+ * main term reads tile-ratio pixels; the safety term reads the real footprint.
+ * Mirrored exactly by `guard` in CLOUD_FIELD_GLSL.
+ */
+export function cloudFieldGuardWeight(majorScene: number, pixelScale: number): number {
+  const main = cloudFieldGuard(majorScene * pixelScale);
+  const safety = 1 - smoothstep(CLOUD_FIELD_SAFETY_TEXELS[0], CLOUD_FIELD_SAFETY_TEXELS[1], majorScene);
+  return main * safety;
 }
 
 /** The table cell's name, which is also the page files' stem. */
@@ -282,6 +354,7 @@ export const cloudFieldGlsl = (smoothFade: readonly [number, number]): string =>
 uniform highp sampler2DArray uCloudPages;
 uniform highp sampler2D uCloudPageTable;
 uniform float uCloudFieldDiag;
+uniform float uCloudFieldPixelScale;
 // The deck's smooth magnification filter (textureBSpline) on one layer of an
 // array: the same cubic B-spline folded into four bilinear taps at level zero.
 vec4 textureBSplineLayer(highp sampler2DArray tex, vec2 uv, float layer, vec2 texels) {
@@ -309,7 +382,26 @@ float cloudPageFade(ivec2 cell) {
   if (cell.y < 0 || cell.y >= ${GY}) return 0.0;
   cell.x = cell.x < 0 ? cell.x + ${GX} : (cell.x >= ${GX} ? cell.x - ${GX} : cell.x);
   vec2 e = texelFetch(uCloudPageTable, cell, 0).rg;
-  return e.r > 0.0 ? e.g : 0.0;
+  int code = int(floor(e.r * 255.0 + 0.5));
+  return code > 0 && code < ${CLOUD_TABLE_SEE_PARENT} ? e.g : 0.0;
+}
+// The guard's input: page texels a pixel on the footprint's major axis, the
+// true largest singular value of [lDx lDy] (the Gram closed form), in REAL
+// scene pixels (majorScene) and in tile-ratio pixels (the return value).
+float cloudFieldMajor(vec2 lDx, vec2 lDy, out float majorScene) {
+  float aa = dot(lDx, lDx);
+  float bb = dot(lDy, lDy);
+  float ab = dot(lDx, lDy);
+  float mean = 0.5 * (aa + bb);
+  float spread = sqrt(max(0.25 * (aa - bb) * (aa - bb) + ab * ab, 0.0));
+  majorScene = sqrt(max(mean + spread, 0.0)) * ${CLOUD_PAGE_SIZE}.0;
+  return majorScene * uCloudFieldPixelScale;
+}
+// The guard: the main hand-over in tile-ratio pixels, and the safety term on
+// the real footprint, which only a scene drawn coarser than the Low rung reaches.
+float cloudFieldGuard(float major, float majorScene) {
+  return (1.0 - smoothstep(${f6(CLOUD_FIELD_GUARD_TEXELS[0])}, ${f6(CLOUD_FIELD_GUARD_TEXELS[1])}, major))
+      * (1.0 - smoothstep(${f6(CLOUD_FIELD_SAFETY_TEXELS[0])}, ${f6(CLOUD_FIELD_SAFETY_TEXELS[1])}, majorScene));
 }
 // The fine field's (A, P) at a deck-frame direction, and the weight w it may
 // take there (0 where no page is resident). dDirX and dDirY are the
@@ -323,14 +415,17 @@ vec2 cloudFieldFine(vec3 deckDir, vec3 dDirX, vec3 dDirY, out float w, out float
   vec2 s = g - cellF;
   ivec2 cell = ivec2(int(cellF.x), ${GY - 1} - int(cellF.y));
   vec2 entry = texelFetch(uCloudPageTable, cell, 0).rg;
-  if (entry.r == 0.0) return vec2(0.0);
+  // The reserved codes first, before any layer is formed from R: 254 (see the
+  // parent level) and 255 (known clear) draw the base, as an absent page does.
+  int code = int(floor(entry.r * 255.0 + 0.5));
+  if (code == 0 || code >= ${CLOUD_TABLE_SEE_PARENT}) return vec2(0.0);
   // The page's texture coordinate per screen pixel: the map's, times the grid
   // and the content's share of the layer.
   vec2 k = vec2(${GX}.0, ${GY}.0) * ${PAGE_SCALE};
   vec2 lDx = sphereEquirectUvGrad(deckDir, dDirX) * k;
   vec2 lDy = sphereEquirectUvGrad(deckDir, dDirY) * k;
-  float major = max(length(lDx), length(lDy)) * ${CLOUD_PAGE_SIZE}.0;
-  float guard = 1.0 - smoothstep(${f6(CLOUD_FIELD_GUARD_TEXELS[0])}, ${f6(CLOUD_FIELD_GUARD_TEXELS[1])}, major);
+  float majorScene;
+  float guard = cloudFieldGuard(cloudFieldMajor(lDx, lDy, majorScene), majorScene);
   if (guard <= 0.0) return vec2(0.0);
   float f0 = entry.g;
   vec2 edge = min(s, 1.0 - s);
@@ -348,15 +443,29 @@ vec2 cloudFieldFine(vec3 deckDir, vec3 dDirX, vec3 dDirY, out float w, out float
   }
   w = wb * guard;
   if (w <= 0.0) return vec2(0.0);
-  layer = floor(entry.r * 255.0 + 0.5) - 1.0;
+  layer = float(code - 1);
   vec2 local = (${CLOUD_PAGE_GUTTER}.0 + s * ${CLOUD_PAGE_CONTENT}.0) / ${CLOUD_PAGE_SIZE}.0;
-  vec2 fine = textureGrad(uCloudPages, vec3(local, layer), lDx, lDy).rg;
   float perPixel = max(abs(lDx.x) + abs(lDy.x), abs(lDx.y) + abs(lDy.y)) * ${CLOUD_PAGE_SIZE}.0;
   float smoothW = 1.0 - smoothstep(${f6(smoothFade[0])}, ${f6(smoothFade[1])}, perPixel);
+  // Fully magnified, the mix below returns the B-spline alone: the filtered
+  // fetch would be read and thrown away, so it is not taken.
+  vec2 fine = vec2(0.0);
+  if (smoothW < 1.0) fine = textureGrad(uCloudPages, vec3(local, layer), lDx, lDy).rg;
   if (smoothW > 0.0) {
-    fine = mix(fine, textureBSplineLayer(uCloudPages, local, layer, vec2(${CLOUD_PAGE_SIZE}.0)).rg, smoothW);
+    vec2 smoothed = textureBSplineLayer(uCloudPages, local, layer, vec2(${CLOUD_PAGE_SIZE}.0)).rg;
+    fine = smoothW >= 1.0 ? smoothed : mix(fine, smoothed, smoothW);
   }
   return fine;
+}
+// The guard's input at a deck-frame direction, for the diagnostic that paints
+// it: (major in tile-ratio pixels, major in scene pixels, the guard's weight).
+vec3 cloudFieldGuardInput(vec3 deckDir, vec3 dDirX, vec3 dDirY) {
+  vec2 k = vec2(${GX}.0, ${GY}.0) * ${PAGE_SCALE};
+  vec2 lDx = sphereEquirectUvGrad(deckDir, dDirX) * k;
+  vec2 lDy = sphereEquirectUvGrad(deckDir, dDirY) * k;
+  float majorScene;
+  float major = cloudFieldMajor(lDx, lDy, majorScene);
+  return vec3(major, majorScene, cloudFieldGuard(major, majorScene));
 }
 // The diagnostic's colour for a layer: six hues, one per layer of the slice.
 vec3 cloudFieldDiagColour(float layer) {
@@ -385,6 +494,13 @@ export const CLOUD_FIELD_MIX_GLSL = (luminance: string): string => /* glsl */ `
 #ifdef CLOUD_FIELD
   float cloudFieldW = 0.0;
   float cloudFieldLayer = -1.0;
+  if (uCloudFieldDiag > 2.5) {
+    // The guard's input, written to the scene target as it stands, unlit, for
+    // a readback (DEV): R the major in tile-ratio pixels, G in scene pixels,
+    // B the guard's weight.
+    gl_FragColor = vec4(cloudFieldGuardInput(dir, ddx, ddy), 1.0);
+    return;
+  }
   vec2 cloudFieldAP = cloudFieldFine(dir, ddx, ddy, cloudFieldW, cloudFieldLayer);
   if (cloudFieldW > 0.0) {
     float cloudC0 = dot(diffuseColor.rgb, ${luminance});

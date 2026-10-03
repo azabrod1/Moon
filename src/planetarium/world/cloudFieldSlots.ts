@@ -15,9 +15,16 @@ export interface CloudFieldUniforms {
   uCloudPages: { value: THREE.DataArrayTexture };
   uCloudPageTable: { value: THREE.DataTexture };
   uCloudFieldDiag: { value: number };
+  /** The scene ratio over the tile ratio: what turns the shader's scene-pixel
+   *  derivatives into the tile-ratio pixels the guard and the residency both
+   *  measure in (world/cloudField `CLOUD_FIELD_GUARD_TEXELS`). */
+  uCloudFieldPixelScale: { value: number };
 }
 
 let uniforms: CloudFieldUniforms | null = null;
+/** The last scene-over-tile ratio the mode reported, kept so slots created
+ *  after it (the deck compiles after boot) start from it. */
+let pixelScale = 1;
 
 /** The slots, created on first use with a 1×1×1 stand-in array and an empty
  *  table, so a program can compile and draw before the pool exists. */
@@ -36,7 +43,12 @@ export function cloudFieldUniforms(): CloudFieldUniforms {
     table.flipY = false;
     table.unpackAlignment = 1;
     table.needsUpdate = true;
-    uniforms = { uCloudPages: { value: standIn }, uCloudPageTable: { value: table }, uCloudFieldDiag: { value: 0 } };
+    uniforms = {
+      uCloudPages: { value: standIn },
+      uCloudPageTable: { value: table },
+      uCloudFieldDiag: { value: 0 },
+      uCloudFieldPixelScale: { value: pixelScale },
+    };
   }
   return uniforms;
 }
@@ -56,4 +68,15 @@ export function enableCloudField(mat: THREE.Material): void {
   m.defines = { ...(m.defines ?? {}), CLOUD_FIELD: '' };
   fieldMaterials.add(mat);
   mat.needsUpdate = true;
+}
+
+/**
+ * Tell the field the scene's pixel ratio and the tile ratio (PlanetariumMode's
+ * scene-ratio hook, which every rung, level and pin change already runs). A
+ * Dynamic rung step moves the scene ratio alone, so the guard's pixels stay
+ * the tile ratio's and no fragment's weight moves with it.
+ */
+export function setCloudFieldPixelRatios(sceneRatio: number, tileRatio: number): void {
+  pixelScale = sceneRatio > 0 && tileRatio > 0 ? sceneRatio / tileRatio : 1;
+  if (uniforms) uniforms.uCloudFieldPixelScale.value = pixelScale;
 }

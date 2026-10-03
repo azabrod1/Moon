@@ -2346,12 +2346,12 @@ const CLOUD_SHADOW_FILL = /* glsl */ `
  * interpolated radial one). The lights are read the way three's
  * lights_fragment_begin reads them, every point and directional light the
  * program was built with, so no light is assumed to be the Sun by its index.
- * MERGE NOTE: wherever `reflectedLight.directDiffuse` is scaled before this
- * point by the Sun's path through the air (another branch's body-scope
- * `vec3 sunPath`, set at the top of the surface body and applied to the
- * direct diffuse there), `cloudGeoIrradiance` must be multiplied by that same
- * `sunPath`, exactly as the perturbed-normal term it is mixed with already has
- * been, or the wrap hands back the light the path took away.
+ * `reflectedLight.directDiffuse` was scaled before this point by the Sun's
+ * path through the air (the body-scope `vec3 sunPath`, set at the top of the
+ * surface body and applied to the direct terms there), so `cloudGeoIrradiance`
+ * is multiplied by that same `sunPath`, exactly as the perturbed-normal term
+ * it is mixed with already has been, or the wrap hands back the light the
+ * path took away.
  *
  * Second, the sky: the irradiance table's own skylight at the deck's radius and
  * the Sun's height there, by albedo over pi as three's diffuse BRDF and the
@@ -2386,6 +2386,11 @@ const CLOUD_LIGHT_DECK = /* glsl */ `
     }
     #pragma unroll_loop_end
 #endif
+    // The Sun's path through the air took its share of the direct diffuse at
+    // the top of the body; the geometric term is the same Sun through the same
+    // air, so it takes the same share, or the wrap would hand a low-Sun cloud
+    // top back the unattenuated, unreddened light the path took away.
+    cloudGeoIrradiance *= sunPath;
     outgoingLight += ${CLOUD_LIGHT_WRAP_GLSL}
         * (cloudGeoIrradiance * BRDF_Lambert( material.diffuseContribution ) - reflectedLight.directDiffuse);
     if (uAirDensity > 0.0) {

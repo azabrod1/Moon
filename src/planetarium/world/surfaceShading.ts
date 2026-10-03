@@ -675,14 +675,15 @@ function receiveCloudShadow(mat: THREE.Material): void {
     cloudShadowReceivers.add(mat);
     mat.addEventListener('dispose', () => cloudShadowReceivers.delete(mat));
   }
-  applyCloudShadowDefine(mat, cloudShadowsOn());
+  applySwitchDefine(mat, 'CLOUD_SHADOW', cloudShadowsOn());
 }
 
-function applyCloudShadowDefine(mat: THREE.Material, on: boolean): void {
+/** Set or clear one of the cloud switches' defines on a material. */
+function applySwitchDefine(mat: THREE.Material, name: 'CLOUD_SHADOW' | 'CLOUD_LIGHT', on: boolean): void {
   const defines = (mat.defines ??= {});
-  if ((defines.CLOUD_SHADOW !== undefined) === on) return;
-  if (on) defines.CLOUD_SHADOW = '';
-  else delete defines.CLOUD_SHADOW;
+  if ((defines[name] !== undefined) === on) return;
+  if (on) defines[name] = '';
+  else delete defines[name];
   // The define is part of three's program key: the next draw links (or finds)
   // the program with the other text.
   mat.needsUpdate = true;
@@ -690,7 +691,7 @@ function applyCloudShadowDefine(mat: THREE.Material, on: boolean): void {
 
 if (import.meta.env.DEV) {
   onPerfSwitch('cloud-shadow', (on) => {
-    for (const mat of cloudShadowReceivers) applyCloudShadowDefine(mat, on);
+    for (const mat of cloudShadowReceivers) applySwitchDefine(mat, 'CLOUD_SHADOW', on);
   });
 }
 
@@ -735,6 +736,124 @@ export function devCloudShadow(opts?: {
     gamma: cloudShadowShared.uCloudShadowGamma.value,
     heightOverRadius: cloudShadowShared.uCloudHeightOverRadius.value,
     receivers: cloudShadowReceivers.size,
+    compiled,
+  };
+}
+
+// --- The deck lit as a cloud (off by default) ---------------------------------
+//
+// By day the deck is lit by the Sun's direct light on its perturbed normal and
+// by nothing else: three has no other light in the planetarium and the sky's
+// own ambient is a night term. So a facet of the relief tilted away from a low
+// Sun draws pure black — darker than the sea under it — and a shaded flank has
+// no colour at all. A real cloud's shaded side is lit from inside, by light
+// scattered through the cloud, and from outside, by the sky. CLOUD_LIGHT, a
+// compile-time define on the planetarium's own deck and nowhere else (not the
+// ground, not a tool's deck, not a warm-up probe), adds those two in
+// `outgoingLight` alone. The deck's alpha is its coverage and nothing here
+// writes it: a light term changes how bright the cloud is, never how much of
+// the pixel it owns.
+
+/**
+ * How much of the deck's direct diffuse is taken on its geometric normal (the
+ * shell's own radial one) instead of the relief's perturbed normal: the light
+ * scattered inside a cloud reaches its far flanks, so the relief shades a
+ * cloud's sides but cannot put a side in the dark. 0 is today's deck; 1 would
+ * light the deck as a smooth sphere and flatten the relief out. A mix, so a
+ * cloud top in full Sun keeps its brightness.
+ */
+export const CLOUD_LIGHT_WRAP = 0.4;
+/**
+ * How much of the sky's own irradiance lights the deck by day, as a multiple
+ * of the table's (the same irradiance table the night side's ambient reads,
+ * at the deck's own radius and the Sun's height there). It joins the night
+ * ambient along one ramp, the night weight's complement, so the two hand over
+ * where every night source does and the sum is the table's irradiance on both
+ * sides of the terminator. Only where a body's air tables are bound: with no
+ * tables there is no sky to read and the deck has none, as before.
+ */
+export const CLOUD_LIGHT_SKY = 1.0;
+
+/** `?cloudlight=1`, read once at boot in any build. */
+const cloudLightByUrl = typeof location !== 'undefined'
+  && new URLSearchParams(location.search).get('cloudlight') === '1';
+if (import.meta.env.DEV && cloudLightByUrl) setPerfSwitch('cloud-light', true);
+
+/** Whether the planetarium's deck compiles its cloud light. */
+export function cloudLightOn(): boolean {
+  return import.meta.env.DEV ? perfSwitchOn('cloud-light') : cloudLightByUrl;
+}
+
+/**
+ * The cloud light's knobs (`__moon.cloudLight`), and the ground's fill under a
+ * shadow (`groundFill`, read by CLOUD_SHADOW's block on the ground). A
+ * production build compiles the wrap and the sky as the constants above and
+ * carries none of these uniforms, nor the ground fill, which is a knob for a
+ * sheet at zero by default.
+ */
+export const cloudLightShared: {
+  uCloudLightWrap: { value: number };
+  uCloudLightSky: { value: number };
+  uCloudGroundFill: { value: number };
+} = {
+  uCloudLightWrap: { value: CLOUD_LIGHT_WRAP },
+  uCloudLightSky: { value: CLOUD_LIGHT_SKY },
+  uCloudGroundFill: { value: 0 },
+};
+const CLOUD_LIGHT_WRAP_GLSL = import.meta.env.DEV ? 'uCloudLightWrap' : CLOUD_LIGHT_WRAP.toFixed(4);
+const CLOUD_LIGHT_SKY_GLSL = import.meta.env.DEV ? 'uCloudLightSky' : CLOUD_LIGHT_SKY.toFixed(4);
+
+/** The planetarium's deck, registered by whoever builds it. */
+const cloudLightReceivers = new Set<THREE.Material>();
+
+/** Say this material is the planetarium's own cloud deck, the one surface the
+ *  cloud light (CLOUD_LIGHT) compiles into. Any other deck — Look inside's, a
+ *  warm-up probe's — is never registered and never compiles it. */
+export function setPlanetariumCloudDeck(mat: THREE.Material): void {
+  const args = augmentArgs.get(mat);
+  if (!args || args.archetype !== 'cloud') return;
+  if (!cloudLightReceivers.has(mat)) {
+    cloudLightReceivers.add(mat);
+    mat.addEventListener('dispose', () => cloudLightReceivers.delete(mat));
+  }
+  applySwitchDefine(mat, 'CLOUD_LIGHT', cloudLightOn());
+}
+
+/** Whether this material compiles the cloud light right now. */
+export function surfaceCloudLightCompiled(mat: THREE.Material): boolean {
+  return mat.defines?.CLOUD_LIGHT !== undefined;
+}
+
+if (import.meta.env.DEV) {
+  onPerfSwitch('cloud-light', (on) => {
+    for (const mat of cloudLightReceivers) applySwitchDefine(mat, 'CLOUD_LIGHT', on);
+  });
+}
+
+/** The cloud light's knobs, live (`__moon.cloudLight`): `on` moves the switch
+ *  and relinks the deck, the rest are uniforms from the next frame. Returns
+ *  the values in force. Development builds only. */
+export function devCloudLight(opts?: {
+  on?: boolean;
+  wrap?: number;
+  sky?: number;
+  groundFill?: number;
+}): { on: boolean; wrap: number; sky: number; groundFill: number; receivers: number; compiled: number } | null {
+  if (!import.meta.env.DEV) return null;
+  if (opts?.on !== undefined) setPerfSwitch('cloud-light', opts.on);
+  if (opts?.wrap !== undefined && Number.isFinite(opts.wrap)) cloudLightShared.uCloudLightWrap.value = opts.wrap;
+  if (opts?.sky !== undefined && Number.isFinite(opts.sky)) cloudLightShared.uCloudLightSky.value = opts.sky;
+  if (opts?.groundFill !== undefined && Number.isFinite(opts.groundFill)) {
+    cloudLightShared.uCloudGroundFill.value = opts.groundFill;
+  }
+  let compiled = 0;
+  for (const mat of cloudLightReceivers) if (surfaceCloudLightCompiled(mat)) compiled++;
+  return {
+    on: cloudLightOn(),
+    wrap: cloudLightShared.uCloudLightWrap.value,
+    sky: cloudLightShared.uCloudLightSky.value,
+    groundFill: cloudLightShared.uCloudGroundFill.value,
+    receivers: cloudLightReceivers.size,
     compiled,
   };
 }
@@ -1714,8 +1833,14 @@ const SURFACE_ARCHETYPE_MACROS = /* glsl */ `
 const CLOUD_SHADOW_DECLS = /* glsl */ `#ifdef CLOUD_SHADOW
 uniform float uCloudAbove;
 uniform float uCloudHeightOverRadius;
-${import.meta.env.DEV ? 'uniform float uCloudShadowDepth;\nuniform float uCloudShadowAir;\nuniform float uCloudShadowPenumbra;\nuniform float uCloudShadowGamma;\n' : ''}#endif
+${import.meta.env.DEV ? 'uniform float uCloudShadowDepth;\nuniform float uCloudShadowAir;\nuniform float uCloudShadowPenumbra;\nuniform float uCloudShadowGamma;\nuniform float uCloudGroundFill;\n' : ''}#endif
 `;
+
+/** The cloud light's knobs, declared only in a development build and only in a
+ *  program compiled with CLOUD_LIGHT; a production build reads constants. */
+const CLOUD_LIGHT_DECLS = import.meta.env.DEV
+  ? '#ifdef CLOUD_LIGHT\nuniform float uCloudLightWrap;\nuniform float uCloudLightSky;\n#endif\n'
+  : '';
 
 const SURFACE_FRAGMENT_DECLS = /* glsl */ `
 ${SURFACE_ARCHETYPE_MACROS}
@@ -1753,7 +1878,7 @@ uniform float uCloudDetailRelief;
 uniform sampler2D uNightLights;
 uniform float uCloudCityGlow;
 uniform float uFrameSpin;
-${CLOUD_FRAME_GLSL}${CLOUD_SHADOW_DECLS}uniform float uPlanetRadius;
+${CLOUD_FRAME_GLSL}${CLOUD_SHADOW_DECLS}${CLOUD_LIGHT_DECLS}uniform float uPlanetRadius;
 uniform float uSolarIrradiance;
 uniform vec3 uAirlightScale;
 uniform sampler2D uTransmittance;
@@ -2011,6 +2136,88 @@ const CLOUD_SHADOW_AIR_SCALE = /* glsl */ `#ifdef CLOUD_SHADOW
 #endif
 `;
 
+/**
+ * The ground's fill under a cloud's shade, a development knob for a sheet
+ * (`__moon.cloudLight({groundFill})`, 0 by default): the sky's own irradiance
+ * added in proportion to the shade, so a shadow reads blue-grey rather than as
+ * a darker copy of the ground. A production build has none of it.
+ */
+const CLOUD_GROUND_FILL_DEV = import.meta.env.DEV ? /* glsl */ `#ifdef CLOUD_SHADOW
+  if (uCloudGroundFill > 0.0 && uAirDensity > 0.0) {
+    vec3 fillUp = normalize(vAirFrag);
+    float fillMuS = clampCosine(dot(fillUp, normalize(uSunDirWorld)));
+    outgoingLight += diffuseColor.rgb * RECIPROCAL_PI
+        * (getIrradiance(uIrradiance, clampRadius(length(vAirFrag) / uPlanetRadius), fillMuS)
+            * uAirlightScale * uSolarIrradiance)
+        * (cloudShade * uCloudGroundFill);
+  }
+#endif
+` : '';
+
+/**
+ * The deck lit as a cloud (CLOUD_LIGHT, the planetarium's deck only), both
+ * terms into `outgoingLight` and nothing else — never the alpha, which is the
+ * deck's coverage.
+ *
+ * First, the light scattered inside the cloud: the deck's direct diffuse
+ * becomes a mix of the Lambert term on the relief's perturbed normal — three's
+ * own `reflectedLight.directDiffuse` — and the same lights through the same
+ * BRDF on the shell's geometric normal (`nonPerturbedNormal`, the sphere's own
+ * interpolated radial one). The lights are read the way three's
+ * lights_fragment_begin reads them, every point and directional light the
+ * program was built with, so no light is assumed to be the Sun by its index.
+ * MERGE NOTE: wherever `reflectedLight.directDiffuse` is scaled before this
+ * point by the Sun's path through the air (another branch's body-scope
+ * `vec3 sunPath`, set at the top of the surface body and applied to the
+ * direct diffuse there), `cloudGeoIrradiance` must be multiplied by that same
+ * `sunPath`, exactly as the perturbed-normal term it is mixed with already has
+ * been, or the wrap hands back the light the path took away.
+ *
+ * Second, the sky: the irradiance table's own skylight at the deck's radius and
+ * the Sun's height there, by albedo over pi as three's diffuse BRDF and the
+ * night side's ambient both take it, weighted by the night weight's
+ * complement so it hands over to that ambient along the same ramp and the two
+ * sum to the table's irradiance through the terminator. Only where the body's
+ * air tables are bound; on the tier without them the deck has no sky light.
+ *
+ * Placed after three's lighting and before the eclipse factor, the limb and
+ * the air, so a moon's umbra dims both terms and the air sees them as light
+ * leaving the deck. No derivative and no mipped fetch: it sits past the deck's
+ * clear-sky return, where the lanes are divergent.
+ */
+const CLOUD_LIGHT_DECK = /* glsl */ `#ifdef CLOUD_LIGHT
+  if (DECK_ON) {
+    vec3 cloudGeoIrradiance = vec3(0.0);
+    IncidentLight cloudLight;
+#if NUM_POINT_LIGHTS > 0
+    #pragma unroll_loop_start
+    for ( int i = 0; i < NUM_POINT_LIGHTS; i ++ ) {
+      getPointLightInfo( pointLights[ i ], geometryPosition, cloudLight );
+      cloudGeoIrradiance += saturate( dot( nonPerturbedNormal, cloudLight.direction ) ) * cloudLight.color;
+    }
+    #pragma unroll_loop_end
+#endif
+#if NUM_DIR_LIGHTS > 0
+    #pragma unroll_loop_start
+    for ( int i = 0; i < NUM_DIR_LIGHTS; i ++ ) {
+      getDirectionalLightInfo( directionalLights[ i ], cloudLight );
+      cloudGeoIrradiance += saturate( dot( nonPerturbedNormal, cloudLight.direction ) ) * cloudLight.color;
+    }
+    #pragma unroll_loop_end
+#endif
+    outgoingLight += ${CLOUD_LIGHT_WRAP_GLSL}
+        * (cloudGeoIrradiance * BRDF_Lambert( material.diffuseContribution ) - reflectedLight.directDiffuse);
+    if (uAirDensity > 0.0) {
+      float skyMuS = clampCosine(dot(normalize(vAirFrag), normalize(uSunDirWorld)));
+      float skyR = clampRadius(uAirLookupRadius > 0.0 ? uAirLookupRadius : length(vAirFrag) / uPlanetRadius);
+      outgoingLight += diffuseColor.rgb * RECIPROCAL_PI
+          * (getIrradiance(uIrradiance, skyR, skyMuS) * uAirlightScale * uSolarIrradiance)
+          * (${CLOUD_LIGHT_SKY_GLSL} * (1.0 - nightWeight(skyMuS)));
+    }
+  }
+#endif
+`;
+
 const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   if (GROUND_ON(uWaterGloss > 0.0)) {
     vec3 glint = reflectedLight.directSpecular;
@@ -2090,7 +2297,7 @@ ${CLOUD_SHADOW_READ}  if (GROUND_ON(uWaterGloss > 0.0)) {
     vec3 glintCapped = min(reflectedLight.directSpecular, vec3(${GLINT_CAP_GLSL}));
     outgoingLight -= glintCapped * (1.0 - cloudSunKeep * ${GLINT_KEEP_GLSL});
   }
-${CLOUD_SHADOW_DIFFUSE}  // The sine of the Sun's elevation at this fragment, off the perturbed normal:
+${CLOUD_SHADOW_DIFFUSE}${CLOUD_GROUND_FILL_DEV}${CLOUD_LIGHT_DECK}  // The sine of the Sun's elevation at this fragment, off the perturbed normal:
   // the Sun's own Lambert term, which is what the day factor and the Moon's
   // weight below both read so the two describe one crossing.
   float sunElevSin = dot(normalize(normal), normalize(vSunViewDir));
@@ -2789,6 +2996,9 @@ export function augmentSurfaceMaterial(
       shader.uniforms.uCloudShadowAir = cloudShadowShared.uCloudShadowAir;
       shader.uniforms.uCloudShadowPenumbra = cloudShadowShared.uCloudShadowPenumbra;
       shader.uniforms.uCloudShadowGamma = cloudShadowShared.uCloudShadowGamma;
+      shader.uniforms.uCloudLightWrap = cloudLightShared.uCloudLightWrap;
+      shader.uniforms.uCloudLightSky = cloudLightShared.uCloudLightSky;
+      shader.uniforms.uCloudGroundFill = cloudLightShared.uCloudGroundFill;
     }
     for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];
 

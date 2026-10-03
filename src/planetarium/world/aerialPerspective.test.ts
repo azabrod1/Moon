@@ -33,6 +33,8 @@ import {
   CLOUD_SHADOW_AIR,
   CLOUD_SHADOW_DEPTH,
   CLOUD_SHADOW_GAMMA,
+  CLOUD_LIGHT_SKY,
+  CLOUD_LIGHT_WRAP,
   NIGHT_LIGHTS_AIR_LOOKUP_RADIUS,
   SURFACE_HAZE_CLEAR_VIEW,
   augmentSurfaceMaterial,
@@ -101,8 +103,8 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '77d44324b89765f83dc6c6bca8eabdd5f35d69b2d531c7befbe9413c436f8fac';
-const PROD_FRAGMENT_HASH = '23af3e82b2367a5ed4ba649407b4d2fe93a29f48edcf905fa59b4e54ae45e802';
+const DEV_FRAGMENT_HASH = 'fb613d701f48f5b6640c0b3d93bc99a2b61f050fec41eca1ce4489366edf4ba5';
+const PROD_FRAGMENT_HASH = 'f00703fc58d4e29df0acd3a5d577a1b5af2aebf41723305a941fdc7b372e810b';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 /** The same two texts with the cloud shadow's define OFF, resolved as the
  *  preprocessor resolves it: the texts from before the switch existed. */
@@ -158,15 +160,18 @@ describe('the injected surface shader', () => {
       .toBe(import.meta.env.DEV ? DEV_FRAGMENT_HASH : PROD_FRAGMENT_HASH);
   });
 
-  it('is the text it was with the cloud shadow\'s define off, after the preprocessor', () => {
-    // CLOUD_SHADOW (world/surfaceShading) is a compile-time define, off by
-    // default, and every line it adds is a whole line inside its own
-    // conditional. So with it off the program the driver compiles is the
-    // program from before the switch existed, character for character — the
-    // zero-pixel claim by construction, which the pixel gate then checks.
+  it('is the text it was with the cloud shadow\'s and the cloud light\'s defines off, after the preprocessor', () => {
+    // CLOUD_SHADOW and CLOUD_LIGHT (world/surfaceShading) are compile-time
+    // defines, off by default, and every line either adds is a whole line
+    // inside its own conditional. So with both off the program the driver
+    // compiles is the program from before the switches existed, character for
+    // character — the ground's and the deck's alike, since the deck takes the
+    // same text — the zero-pixel claim by construction, which the pixel gate
+    // then checks.
     const shader = compile(augmented('earth'));
-    const off = resolveDefine(shader.fragmentShader, 'CLOUD_SHADOW', false);
-    expect(off).not.toContain('CLOUD_SHADOW');
+    const off = resolveDefine(resolveDefine(shader.fragmentShader, 'CLOUD_SHADOW', false), 'CLOUD_LIGHT', false);
+    expect(off).not.toMatch(/CLOUD_SHADOW|CLOUD_LIGHT/);
+    expect(compile(augmented('cloud')).fragmentShader).toBe(shader.fragmentShader);
     expect(hash(off)).toBe(import.meta.env.DEV ? OFF_DEV_FRAGMENT_HASH : OFF_PROD_FRAGMENT_HASH);
     // And the vertex stage never had any of it.
     expect(shader.vertexShader).not.toContain('CLOUD_SHADOW');
@@ -183,6 +188,13 @@ describe('the injected surface shader', () => {
     // A guard written in any other shape, or a cheap path that is not its
     // switch-ON reading, moves one of the two hashes and not the other.
     const shader = compile(augmented('earth'));
+    const fillAt = shader.fragmentShader.indexOf('  if (uCloudGroundFill > 0.0 && uAirDensity > 0.0) {');
+    const groundFillBlock = import.meta.env.DEV
+      ? shader.fragmentShader.slice(
+        shader.fragmentShader.lastIndexOf('#ifdef CLOUD_SHADOW\n', fillAt),
+        shader.fragmentShader.indexOf('#endif\n', fillAt) + '#endif\n'.length)
+      : 'no ground fill in a production build';
+    if (import.meta.env.DEV) expect(fillAt).toBeGreaterThan(0);
     const folded = shader.fragmentShader
       .replace('uniform float uPerfCloudTaps;\nuniform float uPerfCloudClear;\nuniform float uPerfGlintGate;'
         + '\nuniform float uPerfCloudNoiseFrame;'
@@ -192,7 +204,13 @@ describe('the injected surface shader', () => {
       // The cloud shadow's knobs read as the constants they default to, and
       // the penumbra's as no factor at all.
       .replace('uniform float uCloudShadowDepth;\nuniform float uCloudShadowAir;\nuniform float uCloudShadowPenumbra;\n'
-        + 'uniform float uCloudShadowGamma;\n', '')
+        + 'uniform float uCloudShadowGamma;\nuniform float uCloudGroundFill;\n', '')
+      // The cloud light's knobs are constants there, and the ground's fill
+      // under a shade, a knob for a sheet at zero, is not in it at all.
+      .replace('#ifdef CLOUD_LIGHT\nuniform float uCloudLightWrap;\nuniform float uCloudLightSky;\n#endif\n', '')
+      .replace(groundFillBlock, '')
+      .replace(/uCloudLightWrap/g, CLOUD_LIGHT_WRAP.toFixed(4))
+      .replace(/uCloudLightSky/g, CLOUD_LIGHT_SKY.toFixed(4))
       .replace(/uCloudShadowPenumbra \* /g, '')
       .replace(/uCloudShadowDepth/g, CLOUD_SHADOW_DEPTH.toFixed(4))
       .replace(/uCloudShadowAir/g, CLOUD_SHADOW_AIR.toFixed(4))
@@ -214,7 +232,7 @@ describe('the injected surface shader', () => {
       // The glint's tuning uniforms read as the constants they default to.
       .replace(/uGlintCap/g, OCEAN_GLINT_CAP.toFixed(2))
       .replace(/uGlintKeep/g, OCEAN_SPECULAR_KEEP.toFixed(4));
-    expect(folded).not.toMatch(/uPerf|uProbe|uGlint|uCloudShadow(Depth|Air|Penumbra|Gamma)/);
+    expect(folded).not.toMatch(/uPerf|uProbe|uGlint|uCloudShadow(Depth|Air|Penumbra|Gamma)|uCloudLight|uCloudGroundFill/);
     expect(hash(import.meta.env.DEV ? folded : shader.fragmentShader)).toBe(PROD_FRAGMENT_HASH);
     const night = import.meta.env.DEV
       ? earthNightFragmentShader

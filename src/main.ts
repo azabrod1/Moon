@@ -62,6 +62,7 @@ import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn } from './app/perfS
 import { bloomHighPassMaterial, holdBloomSize, setBloomInternalDepth } from './app/bloomTargets';
 import {
   applyNightLift,
+  devCloudLight,
   devCloudShadow,
   devGlintUniforms,
   nightLiftUniform,
@@ -3310,6 +3311,14 @@ function installDevHooks() {
     // the shadow and how many compile it now.
     cloudShadow: (opts?: { on?: boolean; depth?: number; air?: number; penumbra?: boolean | number; gamma?: number }) =>
       devCloudShadow(opts),
+    // The cloud deck lit as a cloud (world/surfaceShading, off by default):
+    // `on` moves the switch and relinks the deck; `wrap` (the share of its
+    // direct diffuse taken on the shell's own normal), `sky` (the sky's
+    // irradiance on it, as a multiple of the table's) and `groundFill` (the
+    // sky's irradiance on the ground in proportion to a cloud's shade, read
+    // only where the shadows are compiled) are uniforms from the next frame.
+    cloudLight: (opts?: { on?: boolean; wrap?: number; sky?: number; groundFill?: number }) =>
+      devCloudLight(opts),
     // The night side's exposure, live (world/nightExposure): the lit fractions
     // of the visible cap the long exposure holds at (`full`) and is gone by
     // (`none`), the ramp's two speeds in positions per second — toward the

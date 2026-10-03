@@ -449,6 +449,7 @@ const EXPECTED_SWITCHES: Record<string, { off: string; on: string; needsReload?:
   // A feature that is off until it has been judged: a compile-time define, so
   // a flip relinks the ground's program and the sweep never holds it.
   'cloud-shadow': { off: 'Cloud shadows off', on: 'Cloud shadows on', needsReload: true, exact: false },
+  'cloud-light': { off: 'Cloud light off', on: 'Cloud light on', needsReload: true, exact: false },
 };
 
 /**

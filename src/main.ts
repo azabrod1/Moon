@@ -60,7 +60,7 @@ import {
 import { BootRenderGate } from './app/bootRenderGate';
 import { installPerfSwitchBridge, onPerfSwitch, perfSwitchOn } from './app/perfSwitches';
 import {
-  bloomHighPassMaterial, holdBloomSize, installBloomKnee, parseBloomKneeParam, setBloomInternalDepth,
+  bloomHighPassMaterial, holdBloomSize, installBloomKnee, installSeaBloomShare, parseBloomKneeParam, setBloomInternalDepth,
 } from './app/bloomTargets';
 import {
   applyNightLift,
@@ -1357,6 +1357,10 @@ function buildComposer(
     if (bloom.knee !== undefined && bloomKneeParam) {
       installBloomKnee(bloomHighPassMaterial(bloomPass), bloom.knee);
     }
+    // The sea's share of the blur (app/bloomTargets SEA_BLOOM_SHARE_GLSL): the
+    // knee's text carries it; the step arm gets it here, so `?bloomknee=0`
+    // still keeps the sea out of the Sun's glow.
+    if (bloom.knee !== undefined) installSeaBloomShare(bloomHighPassMaterial(bloomPass));
     // Before the pass joins the chain: addPass sizes it too.
     sizeBloomChain = holdBloomSize(bloomPass);
     composer.addPass(bloomPass);

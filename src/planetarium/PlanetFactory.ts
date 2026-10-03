@@ -607,7 +607,18 @@ export function createAtmosphereMaterial(
     transparent: true,
     side: THREE.BackSide,
     depthWrite: false,
-    blending: THREE.AdditiveBlending,
+    // Additive on the colour as three's AdditiveBlending has it, nothing on
+    // the alpha: the ground under the shell carries the sea's flag for the
+    // bloom in the scene target's alpha (world/surfaceShading
+    // SEA_BLOOM_FLAG_GLSL), which an added alpha of 1 would erase across the
+    // disc. The same contract as the table tier's shell (world/atmosphereShell).
+    blending: THREE.CustomBlending,
+    blendEquation: THREE.AddEquation,
+    blendSrc: THREE.SrcAlphaFactor,
+    blendDst: THREE.OneFactor,
+    blendEquationAlpha: THREE.AddEquation,
+    blendSrcAlpha: THREE.ZeroFactor,
+    blendDstAlpha: THREE.OneFactor,
   });
 }
 

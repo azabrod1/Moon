@@ -3,7 +3,8 @@ import * as THREE from 'three';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { LuminosityHighPassShader } from 'three/addons/shaders/LuminosityHighPassShader.js';
 import {
-  HIGH_PASS_KNEE_GLSL, HIGH_PASS_STEP_ANCHOR, bloomHighPassMaterial, holdBloomSize, installBloomKnee,
+  HIGH_PASS_KNEE_GLSL, HIGH_PASS_STEP_ANCHOR, HIGH_PASS_STEP_SHARE_GLSL, SEA_BLOOM_SHARE_GLSL, bloomHighPassMaterial, holdBloomSize, installBloomKnee,
+  installSeaBloomShare,
   parseBloomKneeParam,
 } from './bloomTargets';
 import { BLOOM_KNEE, BLOOM_THRESHOLD, bloomExcess } from './bloomConfig';
@@ -61,6 +62,23 @@ describe('holdBloomSize', () => {
   });
 });
 
+describe('installSeaBloomShare', () => {
+  it('puts the share on three\'s step when the knee is off, and leaves a knee-patched material alone', () => {
+    const pass = new UnrealBloomPass(new THREE.Vector2(64, 64), 1, 0.4, 1);
+    const material = bloomHighPassMaterial(pass);
+    installSeaBloomShare(material);
+    expect(material.fragmentShader).not.toContain(HIGH_PASS_STEP_ANCHOR);
+    expect(material.fragmentShader).toContain(HIGH_PASS_STEP_SHARE_GLSL);
+    expect(material.fragmentShader.split(SEA_BLOOM_SHARE_GLSL).length - 1).toBe(1);
+    const kneed = bloomHighPassMaterial(new UnrealBloomPass(new THREE.Vector2(64, 64), 1, 0.4, 1));
+    installBloomKnee(kneed, 0.25);
+    const before = kneed.fragmentShader;
+    installSeaBloomShare(kneed);
+    expect(kneed.fragmentShader).toBe(before);
+    expect(kneed.fragmentShader.split(SEA_BLOOM_SHARE_GLSL).length - 1).toBe(1);
+  });
+});
+
 describe('installBloomKnee', () => {
   const highPass = (): THREE.ShaderMaterial => new THREE.ShaderMaterial({
     uniforms: THREE.UniformsUtils.clone(LuminosityHighPassShader.uniforms),
@@ -102,7 +120,11 @@ describe('installBloomKnee', () => {
     expect(HIGH_PASS_KNEE_GLSL).toContain('max( v - luminosityThreshold, 0.0 )');
     expect(HIGH_PASS_KNEE_GLSL).toContain('bloomOver * bloomOver / ( 2.0 * uBloomKnee )');
     expect(HIGH_PASS_KNEE_GLSL).toContain('bloomOver - 0.5 * uBloomKnee');
-    expect(HIGH_PASS_KNEE_GLSL).toContain('bloomExcess / max( v, 1e-4 )');
+    expect(HIGH_PASS_KNEE_GLSL).toContain('bloomShare * bloomExcess / max( v, 1e-4 )');
+    // The sea's share: a negative alpha is water, which hands the blur nothing;
+    // everything at zero or more passes whole, so the Sun's glow is untouched.
+    expect(HIGH_PASS_KNEE_GLSL).toContain(SEA_BLOOM_SHARE_GLSL);
+    expect(SEA_BLOOM_SHARE_GLSL).toBe('float bloomShare = 1.0 - clamp( -texel.a, 0.0, 1.0 );');
   });
 });
 

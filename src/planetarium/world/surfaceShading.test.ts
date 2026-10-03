@@ -747,8 +747,8 @@ describe('the haze fade and the glint cap', () => {
     // Two chains: the old cap before the air, the beam's shoulder after it.
     expect(frag).toContain(`seaGlint = uSeaBeam > 0.5 ? seaGlintFull : min(seaGlintFull, vec3(${
       import.meta.env.DEV ? 'uGlintCap' : '1.25'}));`);
-    expect(frag).toContain(`vec3 beamKnee = vec3(${import.meta.env.DEV ? 'uBeamKnee' : '0.85'});`);
-    expect(frag).toContain(`vec3 beamRange = vec3(${import.meta.env.DEV ? 'uBeamCap' : '1.05'}) - beamKnee;`);
+    expect(frag).toContain(`vec3 beamKnee = vec3(${import.meta.env.DEV ? 'uBeamKnee' : '3.50'});`);
+    expect(frag).toContain(`vec3 beamRange = vec3(${import.meta.env.DEV ? 'uBeamCap' : '7.00'}) - beamKnee;`);
     // The mirror term stays live through everything that scales the light, so
     // the shoulder after the air shapes the share that reached the camera.
     expect(frag).toContain('seaGlint *= cloudSunKeep;');
@@ -756,6 +756,9 @@ describe('the haze fade and the glint cap', () => {
     expect(frag).toContain('vec3 limbHeld = seaGlint * uSeaBeam;');
     expect(frag).toContain('seaGlint = mix(seaGlint, seaGlint * airT, airWeight);');
     expect(frag).toContain('outgoingLight -= seaGlint - beamHeld;');
+    // The sea's flag for the bloom: after three's opaque write, the ground
+    // only, water negative, so the bright pass hands the blur none of it.
+    expect(frag).toContain('#include <opaque_fragment>\n  if (GROUND_ON(uWaterGloss > 0.0 && uSeaBeam > 0.5)) gl_FragColor.a = 1.0 - 2.0 * seaWater;');
     // The Sun's own path, on the direct terms of every surface, before the sea
     // reads its mirror term, and normalised to the zenith.
     expect(frag.indexOf('reflectedLight.directSpecular *= sunPath;')).toBeLessThan(frag.indexOf('vec3 glintRaw = reflectedLight.directSpecular;'));

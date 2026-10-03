@@ -511,16 +511,18 @@ export const OCEAN_GLINT_CAP = 1.25;
  * ACES input of 1.3 lands at 0.8 of its white, 2.6 at 0.9), and leaves the
  * bright pass a bounded excess. Behind `?seabeam=0`, which keeps the old cap.
  *
- * The shipped numbers hold the beam UNDER the bloom: the planetarium's bright
- * pass (app/bloomConfig, threshold 1.0) is the Sun's, and a sea that reaches
- * 2 whites at the camera is blurred by it at the Sun's radius into a halo
- * over the limb and out into space, which no photograph of a glint shows.
- * The physics puts the beam's core at 2 to 5 whites and the DEV knobs
- * (`__moon.glint({beamKnee, beamCap})`) reach it; letting it stand there
- * needs a bright pass that can tell the sea from the Sun, which is open.
+ * The shipped numbers keep the physical range: the beam's core reaches 5 to
+ * 6 whites at a low Sun and the shoulder only begins at 4, as a guard on the
+ * resample and the half-float target rather than a grade, because the tone
+ * curve compresses rather than clips and a capped beam goes grey the moment
+ * the frame is exposed for it, where an uncapped one stays bright over dark
+ * water. What makes that range safe is the sea's flag for the bloom
+ * (SEA_BLOOM_FLAG_GLSL): without it the Sun's glow blurred the beam into a
+ * halo over the limb and into space, and the only honest cap was under 1.1.
+ * The DEV knobs (`__moon.glint({beamKnee, beamCap})`) move both live.
  */
-export const OCEAN_BEAM_KNEE = 0.85;
-export const OCEAN_BEAM_CAP = 1.05;
+export const OCEAN_BEAM_KNEE = 3.5;
+export const OCEAN_BEAM_CAP = 7.0;
 
 /**
  * The cap, a scale and the calm lobe as the shader reads them. In a
@@ -1773,6 +1775,25 @@ if (DECK_ON) {
 ${SURFACE_DETAIL_BODY}
 ${CLOUD_CLEAR_RETURN}`;
 
+/**
+ * The sea's flag for the bloom, in the alpha the opaque ground otherwise
+ * writes as 1 (three's <opaque_fragment>): under the beam chain, water writes
+ * 1 - 2 x its water fraction instead, so open sea reads -1, land 1 and a
+ * coast in between, and the planetarium's bright pass (app/bloomTargets
+ * SEA_BLOOM_SHARE_GLSL) hands the blur none of a negative pixel. That is what
+ * lets the beam carry its physical radiance — several whites at a low Sun —
+ * without the Sun's glow, blurred at the Sun's radius, painting it as a halo
+ * over the limb and into space; the Sun and every other pixel keep an alpha
+ * of zero or more and their glow bit for bit. Only the ground: the deck's
+ * alpha IS its coverage, and its blend over the sea pulls the flag back
+ * toward 1 in proportion, which is the continuous control it should be. The
+ * canvas is opaque and every finishing pass writes its own alpha, so the flag
+ * reaches the bright pass and nothing else. Off with `?seabeam=0`, where the
+ * cap before the air kept the sea under the bloom's threshold anyway.
+ */
+const SEA_BLOOM_FLAG_GLSL = /* glsl */ `
+  if (GROUND_ON(uWaterGloss > 0.0 && uSeaBeam > 0.5)) gl_FragColor.a = 1.0 - 2.0 * seaWater;`;
+
 const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // The Sun's own path through this body's air to the fragment. three's point
   // light reaches every surface at its full strength, but a Sun ten degrees up
@@ -2767,7 +2788,7 @@ export function augmentSurfaceMaterial(
       .replace('#include <map_fragment>', SURFACE_MAP_FRAGMENT)
       .replace('#include <roughnessmap_fragment>', `${roughnessChunk()}${WATER_GLOSS_GLSL}`)
       .replace('#include <normal_fragment_maps>', `${SURFACE_NORMAL_MAPS}${SURFACE_NORMAL_BODY}`)
-      .replace('#include <opaque_fragment>', `${SURFACE_FRAGMENT_BODY}\n#include <opaque_fragment>`);
+      .replace('#include <opaque_fragment>', `${SURFACE_FRAGMENT_BODY}\n#include <opaque_fragment>${SEA_BLOOM_FLAG_GLSL}`);
   };
   // The table dimensions are #defines, and a define is part of three's program
   // cache key — so every augmented material carries the same set, whether or

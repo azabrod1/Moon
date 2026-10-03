@@ -34,6 +34,7 @@ import {
   CLOUD_SHADOW_DEPTH,
   CLOUD_SHADOW_GAMMA,
   CLOUD_SHADOW_HORIZON_SIN,
+  CLOUD_SHADOW_SKY_FILL,
   CLOUD_LIGHT_SKY,
   CLOUD_LIGHT_WRAP,
   cloudLightOn,
@@ -1256,8 +1257,8 @@ describe('cloud shadows on the ground (CLOUD_SHADOW, off by default)', () => {
     expect(air).toBeLessThan(on.indexOf('airS += aerialInscatter('));
     // The transmittance is the air's and is not touched.
     expect(on).not.toMatch(/airT \*=|airT = .*cloudSunKeep/);
-    // Two readers, and in a development build the ground's fill knob a third.
-    expect(on.match(/cloudShade \*/g)).toHaveLength(import.meta.env.DEV ? 3 : 2);
+    // Three readers: the diffuse cut, the sky's fill, the air's take.
+    expect(on.match(/cloudShade \*/g)).toHaveLength(3);
     expect(on).toContain('outgoingLight -= seaGlint * (1.0 - cloudSunKeep);');
     // The air's share fades as the view grazes, on the geometric normal and
     // the line of sight, never the perturbed normal.
@@ -1388,17 +1389,21 @@ describe('the cloud deck lit as a cloud (CLOUD_LIGHT, off by default)', () => {
     expect(CLOUD_LIGHT_SKY).toBe(1.0);
     expect(cloudLightShared.uCloudLightWrap.value).toBe(CLOUD_LIGHT_WRAP);
     expect(cloudLightShared.uCloudLightSky.value).toBe(CLOUD_LIGHT_SKY);
-    expect(cloudLightShared.uCloudGroundFill.value).toBe(0);
+    expect(cloudShadowShared.uCloudShadowSkyFill.value).toBe(CLOUD_SHADOW_SKY_FILL);
   });
 
-  it('fills the ground under a shade from the sky only as a development knob', () => {
+  it('fills the ground under a shade with the sky\'s own light, only with tables, joined to the night ambient', () => {
     const { globe } = earthWithDeck();
     const on = resolveDefine(fragmentOf(globe), 'CLOUD_SHADOW', true);
-    if (import.meta.env.DEV) {
-      expect(on).toContain('if (uCloudGroundFill > 0.0 && uAirDensity > 0.0) {');
-      expect(on).toContain('* (cloudShade * uCloudGroundFill);');
-    } else {
-      expect(on).not.toContain('uCloudGroundFill');
-    }
+    const fill = import.meta.env.DEV ? 'uCloudShadowSkyFill' : CLOUD_SHADOW_SKY_FILL.toFixed(4);
+    expect(on).toContain(`if (${import.meta.env.DEV ? 'uCloudShadowSkyFill > 0.0 && ' : ''}uAirDensity > 0.0) {`);
+    expect(on).toContain(`* (cloudShade * ${fill} * (1.0 - nightWeight(fillMuS)));`);
+    // After the diffuse cut that makes the shade, before the eclipse factor.
+    const at = on.indexOf('float fillMuS');
+    expect(at).toBeGreaterThan(on.indexOf('float cloudShade = pow('));
+    expect(at).toBeLessThan(on.indexOf('outgoingLight *= sunVisible;'));
+    expect(CLOUD_SHADOW_SKY_FILL).toBe(1);
+    // Not on the deck, which never compiles the shadow.
+    expect(resolveDefine(fragmentOf(globe), 'CLOUD_SHADOW', false)).not.toContain('fillMuS');
   });
 });

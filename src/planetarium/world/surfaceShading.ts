@@ -655,6 +655,18 @@ export const CLOUD_SHADOW_AIR_GRAZE: readonly [number, number] = [0.10, 0.50];
  */
 export const CLOUD_SHADOW_HORIZON_SIN = NIGHT_WEIGHT_ZERO_SIN;
 
+/**
+ * The sky's own light on ground in a cloud's shade, as a multiple of the
+ * irradiance table's skylight, in proportion to the shade. By day the ground in
+ * this renderer is lit by the Sun alone — its map is surface reflectance and
+ * the clear-sky look is authored against that — so a shadow that takes the
+ * Sun away leaves the ground with nothing: over a low-Sun sea, near black.
+ * What a shadowed ground really keeps is the sky above it, and that is blue,
+ * so with this the shadow reads blue-grey rather than as a darker copy of the
+ * ground. 1 is the table's own skylight at the shade's full strength.
+ */
+export const CLOUD_SHADOW_SKY_FILL = 1.0;
+
 /** `?cloudshadows=1`, read once at boot in any build. */
 const cloudShadowsByUrl = typeof location !== 'undefined'
   && new URLSearchParams(location.search).get('cloudshadows') === '1';
@@ -683,16 +695,22 @@ export const cloudShadowShared: {
   uCloudShadowAir: { value: number };
   uCloudShadowPenumbra: { value: number };
   uCloudShadowGamma: { value: number };
+  uCloudShadowSkyFill: { value: number };
 } = {
   uCloudHeightOverRadius: { value: CLOUD_TOP_KM / EARTH_RADIUS_KM },
   uCloudShadowDepth: { value: CLOUD_SHADOW_DEPTH },
   uCloudShadowAir: { value: CLOUD_SHADOW_AIR },
   uCloudShadowPenumbra: { value: 1 },
   uCloudShadowGamma: { value: CLOUD_SHADOW_GAMMA },
+  uCloudShadowSkyFill: { value: CLOUD_SHADOW_SKY_FILL },
 };
 const CLOUD_SHADOW_DEPTH_GLSL = import.meta.env.DEV ? 'uCloudShadowDepth' : CLOUD_SHADOW_DEPTH.toFixed(4);
 const CLOUD_SHADOW_AIR_GLSL = import.meta.env.DEV ? 'uCloudShadowAir' : CLOUD_SHADOW_AIR.toFixed(4);
 const CLOUD_SHADOW_GAMMA_GLSL = import.meta.env.DEV ? 'uCloudShadowGamma' : CLOUD_SHADOW_GAMMA.toFixed(4);
+const CLOUD_SHADOW_SKY_FILL_GLSL = import.meta.env.DEV ? 'uCloudShadowSkyFill' : CLOUD_SHADOW_SKY_FILL.toFixed(4);
+// In a development build a fill knobbed to zero skips the table fetch; a
+// production build reads the constant and the plain condition.
+const CLOUD_SHADOW_SKY_FILL_GUARD = import.meta.env.DEV ? 'uCloudShadowSkyFill > 0.0 && ' : '';
 const CLOUD_SHADOW_PENUMBRA_GUARD = import.meta.env.DEV ? 'uCloudShadowPenumbra * ' : '';
 
 /** The fx of every body whose ground a deck stands over: a ground material
@@ -834,20 +852,17 @@ export function cloudLightOn(): boolean {
 }
 
 /**
- * The cloud light's knobs (`__moon.cloudLight`), and the ground's fill under a
- * shadow (`groundFill`, read by CLOUD_SHADOW's block on the ground). A
- * production build compiles the wrap and the sky as the constants above and
- * carries none of these uniforms, nor the ground fill, which is a knob for a
- * sheet at zero by default.
+ * The cloud light's knobs (`__moon.cloudLight`). A production build compiles
+ * the wrap and the sky as the constants above and carries neither uniform.
+ * The same bridge entry also moves the ground's sky fill under a shadow
+ * (`groundFill`), which is CLOUD_SHADOW's term and lives in its uniforms.
  */
 export const cloudLightShared: {
   uCloudLightWrap: { value: number };
   uCloudLightSky: { value: number };
-  uCloudGroundFill: { value: number };
 } = {
   uCloudLightWrap: { value: CLOUD_LIGHT_WRAP },
   uCloudLightSky: { value: CLOUD_LIGHT_SKY },
-  uCloudGroundFill: { value: 0 },
 };
 const CLOUD_LIGHT_WRAP_GLSL = import.meta.env.DEV ? 'uCloudLightWrap' : CLOUD_LIGHT_WRAP.toFixed(4);
 const CLOUD_LIGHT_SKY_GLSL = import.meta.env.DEV ? 'uCloudLightSky' : CLOUD_LIGHT_SKY.toFixed(4);
@@ -893,7 +908,7 @@ export function devCloudLight(opts?: {
   if (opts?.wrap !== undefined && Number.isFinite(opts.wrap)) cloudLightShared.uCloudLightWrap.value = opts.wrap;
   if (opts?.sky !== undefined && Number.isFinite(opts.sky)) cloudLightShared.uCloudLightSky.value = opts.sky;
   if (opts?.groundFill !== undefined && Number.isFinite(opts.groundFill)) {
-    cloudLightShared.uCloudGroundFill.value = opts.groundFill;
+    cloudShadowShared.uCloudShadowSkyFill.value = opts.groundFill;
   }
   let compiled = 0;
   for (const mat of cloudLightReceivers) if (surfaceCloudLightCompiled(mat)) compiled++;
@@ -901,7 +916,7 @@ export function devCloudLight(opts?: {
     on: cloudLightOn(),
     wrap: cloudLightShared.uCloudLightWrap.value,
     sky: cloudLightShared.uCloudLightSky.value,
-    groundFill: cloudLightShared.uCloudGroundFill.value,
+    groundFill: cloudShadowShared.uCloudShadowSkyFill.value,
     receivers: cloudLightReceivers.size,
     compiled,
   };
@@ -1943,7 +1958,7 @@ float seaBeckmannVis(float alpha, float dotNL, float dotNV) {
 const CLOUD_SHADOW_DECLS = /* glsl */ `#ifdef CLOUD_SHADOW
 uniform float uCloudAbove;
 uniform float uCloudHeightOverRadius;
-${import.meta.env.DEV ? 'uniform float uCloudShadowDepth;\nuniform float uCloudShadowAir;\nuniform float uCloudShadowPenumbra;\nuniform float uCloudShadowGamma;\nuniform float uCloudGroundFill;\n' : ''}#endif
+${import.meta.env.DEV ? 'uniform float uCloudShadowDepth;\nuniform float uCloudShadowAir;\nuniform float uCloudShadowPenumbra;\nuniform float uCloudShadowGamma;\nuniform float uCloudShadowSkyFill;\n' : ''}#endif
 `;
 
 /** The cloud light's knobs, declared only in a development build and only in a
@@ -2271,22 +2286,25 @@ const CLOUD_SHADOW_AIR_SCALE = /* glsl */ `#ifdef CLOUD_SHADOW
 `;
 
 /**
- * The ground's fill under a cloud's shade, a development knob for a sheet
- * (`__moon.cloudLight({groundFill})`, 0 by default): the sky's own irradiance
- * added in proportion to the shade, so a shadow reads blue-grey rather than as
- * a darker copy of the ground. A production build has none of it.
+ * The second reader of the shade on the ground: the sky's own light, added in
+ * proportion to it (CLOUD_SHADOW_SKY_FILL) — the irradiance table's skylight
+ * at the ground's radius and the Sun's height there, by albedo over pi as the
+ * night side's ambient takes it, so a shadow keeps the blue a real one keeps.
+ * The night weight's complement hands it over to that ambient where every
+ * night source hands over, and the shade's own fade at the horizon already
+ * takes it to nothing where the Sun meets the ground's horizon. Only where the
+ * body's air tables are bound: with no tables there is no sky to read.
  */
-const CLOUD_GROUND_FILL_DEV = import.meta.env.DEV ? /* glsl */ `#ifdef CLOUD_SHADOW
-  if (uCloudGroundFill > 0.0 && uAirDensity > 0.0) {
-    vec3 fillUp = normalize(vAirFrag);
-    float fillMuS = clampCosine(dot(fillUp, normalize(uSunDirWorld)));
+const CLOUD_SHADOW_FILL = /* glsl */ `#ifdef CLOUD_SHADOW
+  if (${CLOUD_SHADOW_SKY_FILL_GUARD}uAirDensity > 0.0) {
+    float fillMuS = clampCosine(dot(normalize(vAirFrag), normalize(uSunDirWorld)));
     outgoingLight += diffuseColor.rgb * RECIPROCAL_PI
         * (getIrradiance(uIrradiance, clampRadius(length(vAirFrag) / uPlanetRadius), fillMuS)
             * uAirlightScale * uSolarIrradiance)
-        * (cloudShade * uCloudGroundFill);
+        * (cloudShade * ${CLOUD_SHADOW_SKY_FILL_GLSL} * (1.0 - nightWeight(fillMuS)));
   }
 #endif
-` : '';
+`;
 
 /**
  * The deck lit as a cloud (CLOUD_LIGHT, the planetarium's deck only), both
@@ -2509,7 +2527,7 @@ ${CLOUD_SHADOW_READ}  if (GROUND_ON(uWaterGloss > 0.0)) {
     outgoingLight -= seaGlint * (1.0 - cloudSunKeep);
     seaGlint *= cloudSunKeep;
   }
-${CLOUD_SHADOW_DIFFUSE}${CLOUD_GROUND_FILL_DEV}${CLOUD_LIGHT_DECK}  // The sine of the Sun's elevation at this fragment, off the perturbed normal:
+${CLOUD_SHADOW_DIFFUSE}${CLOUD_SHADOW_FILL}${CLOUD_LIGHT_DECK}  // The sine of the Sun's elevation at this fragment, off the perturbed normal:
   // the Sun's own Lambert term, which is what the day factor and the Moon's
   // weight below both read so the two describe one crossing.
   float sunElevSin = dot(normalize(normal), normalize(vSunViewDir));
@@ -3353,7 +3371,7 @@ export function augmentSurfaceMaterial(
       shader.uniforms.uCloudShadowGamma = cloudShadowShared.uCloudShadowGamma;
       shader.uniforms.uCloudLightWrap = cloudLightShared.uCloudLightWrap;
       shader.uniforms.uCloudLightSky = cloudLightShared.uCloudLightSky;
-      shader.uniforms.uCloudGroundFill = cloudLightShared.uCloudGroundFill;
+      shader.uniforms.uCloudShadowSkyFill = cloudShadowShared.uCloudShadowSkyFill;
     }
     for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];
 

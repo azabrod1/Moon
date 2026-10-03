@@ -33,6 +33,7 @@ import {
   CLOUD_SHADOW_AIR,
   CLOUD_SHADOW_DEPTH,
   CLOUD_SHADOW_GAMMA,
+  CLOUD_SHADOW_SKY_FILL,
   CLOUD_LIGHT_SKY,
   CLOUD_LIGHT_WRAP,
   NIGHT_LIGHTS_AIR_LOOKUP_RADIUS,
@@ -104,8 +105,8 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '06aca339b33416e80ee26e072574216ce71074677b523a5f2afa8b7674990c3f';
-const PROD_FRAGMENT_HASH = 'cc12885b07ed9a0fb9f047548342304c18da6cc5a56911a11a03cd5107a1404b';
+const DEV_FRAGMENT_HASH = '9d97ee0131a98b52f1e64dafc2fb6de1d8eb687b955d953b92fa5df53e44d897';
+const PROD_FRAGMENT_HASH = '47544a6bdbde22b34e953efaa53d1c6ad1a121427560100d86a665bc6f29debc';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 /** The same two texts with the cloud shadow's define OFF, resolved as the
  *  preprocessor resolves it: the texts from before the switch existed. */
@@ -189,13 +190,6 @@ describe('the injected surface shader', () => {
     // A guard written in any other shape, or a cheap path that is not its
     // switch-ON reading, moves one of the two hashes and not the other.
     const shader = compile(augmented('earth'));
-    const fillAt = shader.fragmentShader.indexOf('  if (uCloudGroundFill > 0.0 && uAirDensity > 0.0) {');
-    const groundFillBlock = import.meta.env.DEV
-      ? shader.fragmentShader.slice(
-        shader.fragmentShader.lastIndexOf('#ifdef CLOUD_SHADOW\n', fillAt),
-        shader.fragmentShader.indexOf('#endif\n', fillAt) + '#endif\n'.length)
-      : 'no ground fill in a production build';
-    if (import.meta.env.DEV) expect(fillAt).toBeGreaterThan(0);
     const folded = shader.fragmentShader
       .replace('uniform float uPerfCloudTaps;\nuniform float uPerfCloudClear;\nuniform float uPerfGlintGate;'
         + '\nuniform float uPerfCloudNoiseFrame;'
@@ -206,11 +200,12 @@ describe('the injected surface shader', () => {
       // The cloud shadow's knobs read as the constants they default to, and
       // the penumbra's as no factor at all.
       .replace('uniform float uCloudShadowDepth;\nuniform float uCloudShadowAir;\nuniform float uCloudShadowPenumbra;\n'
-        + 'uniform float uCloudShadowGamma;\nuniform float uCloudGroundFill;\n', '')
-      // The cloud light's knobs are constants there, and the ground's fill
-      // under a shade, a knob for a sheet at zero, is not in it at all.
+        + 'uniform float uCloudShadowGamma;\nuniform float uCloudShadowSkyFill;\n', '')
+      // The cloud light's knobs are constants there, and so is the ground's
+      // sky fill under a shade, with its knob's zero test gone.
       .replace('#ifdef CLOUD_LIGHT\nuniform float uCloudLightWrap;\nuniform float uCloudLightSky;\n#endif\n', '')
-      .replace(groundFillBlock, '')
+      .replace('uCloudShadowSkyFill > 0.0 && ', '')
+      .replace(/uCloudShadowSkyFill/g, CLOUD_SHADOW_SKY_FILL.toFixed(4))
       .replace(/uCloudLightWrap/g, CLOUD_LIGHT_WRAP.toFixed(4))
       .replace(/uCloudLightSky/g, CLOUD_LIGHT_SKY.toFixed(4))
       .replace(/uCloudShadowPenumbra \* /g, '')
@@ -240,7 +235,7 @@ describe('the injected surface shader', () => {
       .replace(/uBeamKnee/g, OCEAN_BEAM_KNEE.toFixed(2))
       .replace(/uBeamCap/g, OCEAN_BEAM_CAP.toFixed(2))
       .replace(/ \* uGlintKeep/g, '');
-    expect(folded).not.toMatch(/uPerf|uProbe|uGlint|uCloudShadow(Depth|Air|Penumbra|Gamma)|uCloudLight|uCloudGroundFill/);
+    expect(folded).not.toMatch(/uPerf|uProbe|uGlint|uCloudShadow(Depth|Air|Penumbra|Gamma)|uCloudLight|uCloudShadowSkyFill|uCloudGroundFill/);
     expect(hash(import.meta.env.DEV ? folded : shader.fragmentShader)).toBe(PROD_FRAGMENT_HASH);
     const night = import.meta.env.DEV
       ? earthNightFragmentShader

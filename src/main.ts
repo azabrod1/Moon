@@ -75,7 +75,10 @@ import {
   seaWindOn,
   setSeaWindEnabled,
   beamUniforms, parseSeaBeamParam, parseSunPathParam, setSeaBeamEnabled, setSunPathEnabled,
+  surfaceShadingArgsOf,
 } from './planetarium/world/surfaceShading';
+import { SUN_LIGHT_COLOR, SUN_LIGHT_INTENSITY } from './planetarium/PlanetFactory';
+import { AIRLIGHT_SCALE } from './planetarium/world/atmosphereModel';
 import { parseNightExposureParam, setDevNightExposure, type NightExposureOverride } from './planetarium/world/nightExposure';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass, parseFusedParam } from './app/FusedOutputPass';
@@ -3110,6 +3113,58 @@ function devReadScene(opts: { x?: number; y?: number; w?: number; h?: number } =
 
 function installDevHooks() {
   installSurfacePerfInputTracing();
+  /**
+   * The planetarium Sun's light, for a look experiment (`__moon.sunLight`).
+   * The Sun's PointLight is the only light the planetarium's surfaces see, but
+   * the air does not read it: its tables are baked at unit white irradiance
+   * and bridged back to the scene's Sun by AIRLIGHT_SCALE, the authored
+   * colour times the authored intensity, held per body as `uAirlightScale`.
+   * So the knob writes both — the light, and every air bridge in the scene in
+   * the same ratio — or the ground would be lit by one Sun under a sky lit by
+   * another. Development builds only; nothing calls it but the bridge.
+   */
+  const devSunLightState = { color: SUN_LIGHT_COLOR, intensity: SUN_LIGHT_INTENSITY };
+  const devSunLight = (opts?: { color?: number | null; intensity?: number | null }) => {
+    let light: THREE.PointLight | null = null;
+    const bridges = new Set<THREE.Vector3>();
+    scene.traverse((o) => {
+      if ((o as THREE.PointLight).isPointLight && !light) light = o as THREE.PointLight;
+      const mats = (o as THREE.Mesh).material;
+      for (const m of Array.isArray(mats) ? mats : mats ? [mats] : []) {
+        const fromFx = surfaceShadingArgsOf(m)?.fx.air.uAirlightScale?.value as THREE.Vector3 | undefined;
+        if (fromFx?.isVector3) bridges.add(fromFx);
+        const fromUniforms = (m as THREE.ShaderMaterial).uniforms?.uAirlightScale?.value as THREE.Vector3 | undefined;
+        if (fromUniforms?.isVector3) bridges.add(fromUniforms);
+      }
+    });
+    if (!light) return null;
+    const sun = light as THREE.PointLight;
+    if (opts?.color !== undefined) devSunLightState.color = opts.color ?? SUN_LIGHT_COLOR;
+    if (opts?.intensity !== undefined) devSunLightState.intensity = opts.intensity ?? SUN_LIGHT_INTENSITY;
+    sun.color.setHex(devSunLightState.color);
+    sun.intensity = devSunLightState.intensity;
+    // The air bridge in the light's own ratio to the authored one, per channel.
+    const authored = new THREE.Color(SUN_LIGHT_COLOR);
+    const ratio = (c: number, a: number) => (c * devSunLightState.intensity) / (a * SUN_LIGHT_INTENSITY);
+    const air = [
+      AIRLIGHT_SCALE[0] * ratio(sun.color.r, authored.r),
+      AIRLIGHT_SCALE[1] * ratio(sun.color.g, authored.g),
+      AIRLIGHT_SCALE[2] * ratio(sun.color.b, authored.b),
+    ];
+    for (const v of bridges) v.set(air[0], air[1], air[2]);
+    const lin = [sun.color.r, sun.color.g, sun.color.b];
+    return {
+      color: `#${devSunLightState.color.toString(16).padStart(6, '0')}`,
+      colorLinear: lin,
+      intensity: sun.intensity,
+      // Rec.709 luminance of the light as the surfaces receive it.
+      luminance: (0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]) * sun.intensity,
+      airlightScale: air,
+      airBridges: bridges.size,
+      authored: { color: `#${SUN_LIGHT_COLOR.toString(16).padStart(6, '0')}`, intensity: SUN_LIGHT_INTENSITY },
+    };
+  };
+
   (window as any).__moon = {
     ready: () => plmActivated,
     bodies: () => planetariumMode?.devListBodies() ?? [],
@@ -3526,10 +3581,18 @@ function installDevHooks() {
     // `on` moves the switch and relinks the deck; `wrap` (the share of its
     // direct diffuse taken on the shell's own normal), `sky` (the sky's
     // irradiance on it, as a multiple of the table's) and `groundFill` (the
-    // sky's irradiance on the ground in proportion to a cloud's shade, read
-    // only where the shadows are compiled) are uniforms from the next frame.
+    // sky's irradiance on the ground in proportion to a cloud's shade, the
+    // shadows' CLOUD_SHADOW_SKY_FILL, read only where they are compiled) are
+    // uniforms from the next frame.
     cloudLight: (opts?: { on?: boolean; wrap?: number; sky?: number; groundFill?: number }) =>
       devCloudLight(opts),
+    // The planetarium Sun's light, live, for a look experiment: `color` (an
+    // sRGB hex, as THREE.Color reads one) and `intensity` written into the
+    // Sun's PointLight, with every air bridge in the scene moved in the same
+    // ratio so the sky is lit by the same Sun as the ground; null puts the
+    // authored value back. Returns the values in force, with the light's
+    // luminance as the surfaces receive it. Exposure is pinCapture's.
+    sunLight: (opts?: { color?: number | null; intensity?: number | null }) => devSunLight(opts),
     // The night side's exposure, live (world/nightExposure): the lit fractions
     // of the visible cap the long exposure holds at (`full`) and is gone by
     // (`none`), the ramp's two speeds in positions per second — toward the

@@ -74,9 +74,14 @@ try {
   const key = (r) => `${r.surface} ${r.tables} ${r.waterMask ? 'water' : 'dry'} [${r.defines.join(' ')}]`;
   console.log(`# sampler census @ ${baseUrl}${extra ? ` (${extra})` : ''}`);
   console.log(`  fragment texture units ${census.maxUnits}, sea-wind slot ${census.seaWindSlot}`);
+  // A ground compiled with the field declares its two samplers before it
+  // reads them: what it will spend counts them.
+  const spentBy = (r) => new Set([...r.samplers, ...(r.defines.includes('CLOUD_FIELD') ? FIELD_SAMPLERS : [])]).size;
   for (const r of census.rows) {
-    const room = r.surface === 'ground' && r.waterMask ? `, +${census.seaWindSlot} sea wind = ${r.samplers.length + census.seaWindSlot}` : '';
-    console.log(`  ${key(r).padEnd(52)} ${String(r.samplers.length).padStart(2)}${room}  ${r.samplers.join(' ')}`);
+    const spent = spentBy(r);
+    const later = spent > r.samplers.length ? ` (${spent} reading the field)` : '';
+    const room = r.surface === 'ground' && r.waterMask ? `, +${census.seaWindSlot} sea wind = ${spent + census.seaWindSlot}` : '';
+    console.log(`  ${key(r).padEnd(52)} ${String(r.samplers.length).padStart(2)}${later}${room}  ${r.samplers.join(' ')}`);
   }
 
   const find = (surface, defines, tables, waterMask) => census.rows.find((r) => r.surface === surface
@@ -86,8 +91,7 @@ try {
   for (const r of census.rows) {
     const n = r.samplers.length;
     const field = r.defines.includes('CLOUD_FIELD');
-    // What the program will hold once everything it declares is read.
-    const spent = new Set([...r.samplers, ...(field ? FIELD_SAMPLERS : [])]).size;
+    const spent = spentBy(r);
     if (n === 0) fail(`${key(r)}: no linked program`);
     if (spent > census.maxUnits) fail(`${key(r)}: ${spent} samplers, over the ${census.maxUnits} units`);
     if (r.surface === 'ground' && r.waterMask && spent + census.seaWindSlot > census.maxUnits) {

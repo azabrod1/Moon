@@ -22,6 +22,7 @@ import {
   seatSurfaceAirRadius,
   SURFACE_AIR_FADE_S,
   OCEAN_GLINT_CAP,
+  OCEAN_SPECULAR_KEEP,
   RING_SHADOW_OPACITY_GLSL,
 } from './surfaceShading';
 import { surfaceDetailFieldMean, surfaceDetailHeightSpan } from './surfaceDetailNoise';
@@ -735,8 +736,20 @@ describe('the haze fade and the glint cap', () => {
     const frag = fragmentOf('airless');
     expect(frag).toContain(`vec3 glintCapped = min(reflectedLight.directSpecular, vec3(${
       import.meta.env.DEV ? 'uGlintCap' : '2.50'}));`);
-    expect(frag).toContain('outgoingLight -= glintCapped * (1.0 - glintKeep);');
-    expect(frag).not.toMatch(/reflectedLight\.directSpecular \* \(1\.0 - glintKeep\)/);
+    expect(frag).toContain(`outgoingLight -= glintCapped * (1.0 - cloudSunKeep * ${
+      import.meta.env.DEV ? 'uGlintKeep' : OCEAN_SPECULAR_KEEP.toFixed(4)});`);
+    expect(frag).not.toMatch(/reflectedLight\.directSpecular \* \(1\.0 - cloudSunKeep/);
+    // The beam's share through the deck is one value, read from the map once
+    // and only under the one named condition; the sea's cut fetches nothing.
+    expect(frag).toContain('float cloudSunKeep = 1.0;');
+    expect(frag).toContain('if (cloudTapWanted) {');
+    expect(frag).toContain('cloudSunKeep = 1.0 - cloudCoverage(deckLum);');
+    expect(frag.split('textureGrad(uCloudShadowMap').length - 1).toBe(1);
+    // The cut follows the read inside the same branch. Moved to a second
+    // branch on the same uniform it is the same arithmetic, but Metal under
+    // ANGLE compiled that shape to a frame one bit off at a lit fragment.
+    expect(frag).toMatch(
+      /cloudSunKeep = 1\.0 - cloudCoverage\(deckLum\);\n {4}\}\n(?: {4}\/\/[^\n]*\n)* {4}vec3 glintCapped = min\(/);
   });
 
   it('fades a body\'s haze in over a moment when its tables first bind, and only then', () => {
@@ -844,7 +857,7 @@ describe('the GPU-efficiency switches', () => {
     const frag = fragmentOf('cloud');
     expect(frag).toContain('if (uPerfCloudTaps < 0.5 || cloudDetailW > 0.0) detail = textureGrad(uCloudDetail, detailUv, duvX, duvY);');
     expect(frag).toContain('if (uPerfCloudClear > 0.5 && DECK_ON && cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }');
-    expect(frag).toContain('if (uPerfGlintGate < 0.5 || any(greaterThan(glintCapped, vec3(0.0)))) {');
+    expect(frag).toContain('bool cloudTapWanted = uPerfGlintGate < 0.5 || any(greaterThan(reflectedLight.directSpecular, vec3(0.0)));');
     expect(earthNightFragmentShader)
       .toContain('if (uPerfNightEarly > 0.5) { if (nightMix == 0.0) { gl_FragColor = vec4(0.0); return; } }');
     // Each uniform declared once, where the shader reads it.

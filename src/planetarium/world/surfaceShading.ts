@@ -1672,14 +1672,18 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // surface, so the terms below that scale by it are the deck's alone without a
   // second branch.
   diffuseColor.a *= cloudAlpha;
-  // What the Sun's beam went through to reach this sea. The deck blends what
-  // leaves this fragment by (1 - coverage) on the way UP; the beam is cut by the
-  // same coverage on the way DOWN, and only the mirror term notices — ground
-  // under cloud is still lit by what the cloud scattered, a specular highlight
-  // is not, and a full-strength glint reading through a cirrus sheet is what an
-  // orbital frame of it cannot do. Gated on the water gloss, which is nonzero
-  // only where a real water mask says there is sea: one uniform branch, and no
-  // fetch at all, on every other surface in the app.
+  // The share of the Sun's direct beam that reaches this fragment through the
+  // cloud deck above it: 1 in clear air, and 1 on every surface that reads no
+  // deck. The deck blends what leaves this fragment by (1 - coverage) on the
+  // way UP; the beam is cut by the same coverage on the way DOWN. Anything
+  // else that scales the Sun's direct light under cloud reads this one value,
+  // so a cloud and what it shades cannot disagree about where the cloud is.
+  // Read only under the water gloss, which is nonzero only where a real water
+  // mask says there is sea: one uniform branch, and no fetch at all, on every
+  // other surface in the app. It is also left at 1 wherever cloudTapWanted
+  // below skips the read, so a reader of it must have nothing to scale
+  // wherever the Sun's mirror term is zero, or widen that condition.
+  float cloudSunKeep = 1.0;
   if (GROUND_ON(uWaterGloss > 0.0)) {
     float deckC = cos(uCloudShadowSpin);
     float deckS = sin(uCloudShadowSpin);
@@ -1697,27 +1701,41 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
     vec2 deckUv = sphereEquirectUv(deckDir);
     vec2 deckDx = sphereEquirectUvGrad(deckDir, dFdx(deckDir));
     vec2 deckDy = sphereEquirectUvGrad(deckDir, dFdy(deckDir));
-    // The glint this mask exists to cut: the CAPPED term, because the cap
-    // above already took the rest off, and cutting the uncapped one here would
-    // drive the light below zero under cloud, which the bloom then paints as a
-    // yellow core in a blue ring.
-    vec3 glintCapped = min(reflectedLight.directSpecular, vec3(${GLINT_CAP_GLSL}));
-    // Wherever the Sun is below this fragment's horizon three's own N·L
-    // saturates to zero and the capped glint is exactly zero in every channel:
-    // the subtraction below is then a subtraction of nothing whatever the
-    // mask says, and the whole cloud-map read is spent on it. Gated on the
+    // The one condition under which the cloud map is read for this fragment:
+    // a term that needs cloudSunKeep somewhere new widens the read here rather
+    // than fetching the map again. Wherever the Sun is below this fragment's
+    // horizon three's own N·L saturates to zero and the mirror term is exactly
+    // zero in every channel: the one reader of the value in such a fragment is
+    // the sea's cut below, which is then a subtraction of nothing whatever the
+    // deck says, and the whole cloud-map read would be spent on it. Tested on
+    // the uncapped term, which is the same test: the cap is a positive
+    // constant, so min(x, cap) is above zero exactly where x is. Tested on the
     // term itself rather than on "night side", because it is the perturbed
     // normal that decides whether there is a highlight, and uWaterGloss is a
     // material-wide enable rather than a per-fragment test for sea.
-    if (${import.meta.env.DEV
-      ? 'uPerfGlintGate < 0.5 || any(greaterThan(glintCapped, vec3(0.0)))'
-      : 'any(greaterThan(glintCapped, vec3(0.0)))'}) {
+    bool cloudTapWanted = ${import.meta.env.DEV
+      ? 'uPerfGlintGate < 0.5 || any(greaterThan(reflectedLight.directSpecular, vec3(0.0)))'
+      : 'any(greaterThan(reflectedLight.directSpecular, vec3(0.0)))'};
+    if (cloudTapWanted) {
       float deckLum = dot(textureGrad(uCloudShadowMap, deckUv, deckDx, deckDy).rgb,
           vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')}));
-      float glintKeep = (1.0 - cloudCoverage(deckLum))
-          * ${GLINT_KEEP_GLSL};
-      outgoingLight -= glintCapped * (1.0 - glintKeep);
+      cloudSunKeep = 1.0 - cloudCoverage(deckLum);
     }
+    // The sea's glint, cut by what the Sun's beam went through to reach it,
+    // and fetching nothing of its own. Only the mirror term notices — ground
+    // under cloud is still lit by what the cloud scattered, a specular
+    // highlight is not, and a full-strength glint reading through a cirrus
+    // sheet is what an orbital frame of it cannot do. The CAPPED term, because
+    // the cap above already took the rest off, and cutting the uncapped one
+    // here would drive the light below zero under cloud, which the bloom then
+    // paints as a yellow core in a blue ring. Where cloudTapWanted skipped the
+    // deck the capped glint is exactly zero in every channel, so this
+    // subtracts zero and leaves the light as it was. It stays inside this
+    // branch: moved to a second branch on the same uniform it is the same
+    // arithmetic, but Metal under ANGLE compiles that shape to a frame one
+    // bit off at a lit fragment, where this one is the old frame bit for bit.
+    vec3 glintCapped = min(reflectedLight.directSpecular, vec3(${GLINT_CAP_GLSL}));
+    outgoingLight -= glintCapped * (1.0 - cloudSunKeep * ${GLINT_KEEP_GLSL});
   }
   // The sine of the Sun's elevation at this fragment, off the perturbed normal:
   // the Sun's own Lambert term, which is what the day factor and the Moon's

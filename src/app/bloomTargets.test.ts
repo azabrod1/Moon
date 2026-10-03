@@ -134,15 +134,15 @@ describe('bloomExcess', () => {
 
   it('hands over nothing at or under the threshold, which keeps the stars out', () => {
     expect(bloomExcess(0, threshold, knee)).toBe(0);
-    expect(bloomExcess(0.999, threshold, knee)).toBe(0);
+    expect(bloomExcess(threshold - 0.001, threshold, knee)).toBe(0);
     expect(bloomExcess(threshold, threshold, knee)).toBe(0);
   });
 
   it('hands over a few hundredths of a pixel just over the line, and all but one unit of the Sun', () => {
     // The ocean glint's core after the keep and the air: about a tenth over.
-    expect(bloomExcess(1.1, threshold, knee)).toBeCloseTo(0.02, 3);
+    expect(bloomExcess(threshold + 0.1, threshold, knee)).toBeCloseTo(0.02, 3);
     // three's step handed the same pixel over whole.
-    expect(bloomExcess(1.1, threshold, knee) / 1.1).toBeLessThan(0.02);
+    expect(bloomExcess(threshold + 0.1, threshold, knee) / (threshold + 0.1)).toBeLessThan(0.02);
     // The photosphere sits far over the line and loses only the threshold
     // and half the knee.
     expect(bloomExcess(50, threshold, knee)).toBeCloseTo(50 - threshold - knee / 2, 9);
@@ -167,7 +167,7 @@ describe('bloomExcess', () => {
       expect(now).toBeGreaterThanOrEqual(last);
       last = now;
     }
-    expect(bloomExcess(1.5, threshold, 0)).toBe(0.5);
+    expect(bloomExcess(threshold + 0.5, threshold, 0)).toBeCloseTo(0.5, 12);
   });
 });
 

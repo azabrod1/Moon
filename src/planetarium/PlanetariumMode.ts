@@ -109,6 +109,7 @@ import { surfacePerfBeginSpan, surfacePerfEndSpan } from './surfacePerf';
 import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU, SUN_RADIUS_AU } from '../astronomy/constants';
 import { horizonDip, mirrorPointOnSphere } from './horizonPose';
+import { SUN_LIGHT_BASELINE } from './sunLight';
 import {
   createPlanetariumStarfield,
   setStarfieldGain,
@@ -6942,10 +6943,12 @@ export class PlanetariumMode {
    *  hold. */
   private static readonly BLOOD_MOON_FLOOR_R = 0.3;
 
-  /** Lift faint physical planetshine to a visible night-side glow. */
-  private static readonly PLANETSHINE_GAIN = 500;
+  /** Lift faint physical planetshine to a visible night-side glow. The Sun's
+   *  light reflected twice, so it rides the Sun's baseline (sunLight), or a
+   *  brighter Sun would leave the earthshine crescent behind the day side. */
+  private static readonly PLANETSHINE_GAIN = 500 * SUN_LIGHT_BASELINE;
   /** Cap well below daylight; large/near parents (Jupiter) sit at the cap. */
-  private static readonly PLANETSHINE_MAX = 0.12;
+  private static readonly PLANETSHINE_MAX = 0.12 * SUN_LIGHT_BASELINE;
   /** A representative parent bond albedo (Earth ~0.3, gas giants ~0.5). */
   private static readonly PLANETSHINE_PARENT_ALBEDO = 0.4;
 

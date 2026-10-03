@@ -147,12 +147,13 @@ describe('solar irradiance scale', () => {
     expect(AIRLIGHT_SCALE[0]).toBeCloseTo(lit.r, 12);
     expect(AIRLIGHT_SCALE[1]).toBeCloseTo(lit.g, 12);
     expect(AIRLIGHT_SCALE[2]).toBeCloseTo(lit.b, 12);
-    // Red is the intensity outright (the light's red is full scale), and the
-    // warm cast is real: a scalar scale would put +9.5% green and +34% blue
-    // into the air relative to the ground it hazes.
+    // The light is neutral, so each channel is the intensity outright; the
+    // bridge is still per channel, so a tinted light would reach the air in
+    // its own colour (the cream this replaced put +9.5% green and +34% blue
+    // into air scaled by a single number).
     expect(AIRLIGHT_SCALE[0]).toBe(SUN_LIGHT_INTENSITY);
-    expect(AIRLIGHT_SCALE[0] / AIRLIGHT_SCALE[1]).toBeCloseTo(1.095, 3);
-    expect(AIRLIGHT_SCALE[0] / AIRLIGHT_SCALE[2]).toBeCloseTo(1.342, 3);
+    expect(AIRLIGHT_SCALE[1]).toBe(SUN_LIGHT_INTENSITY);
+    expect(AIRLIGHT_SCALE[2]).toBe(SUN_LIGHT_INTENSITY);
   });
 
   it('reaches the shader as a vec3, applied to the sky radiance', () => {

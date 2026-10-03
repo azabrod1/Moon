@@ -21,6 +21,8 @@ import {
   createSurfaceAirFx,
   seatSurfaceAirRadius,
   SURFACE_AIR_FADE_S,
+  OCEAN_BEAM_CAP,
+  OCEAN_BEAM_KNEE,
   OCEAN_GLINT_CAP,
   RING_SHADOW_OPACITY_GLSL,
   SEA_WATER_F0,
@@ -809,9 +811,9 @@ describe('the haze fade and the glint cap', () => {
     // Two chains, one compiled: the old cap before the air, the beam's
     // shoulder after it, selected by the SEA_BEAM define.
     expect(frag).toContain(`#ifdef SEA_BEAM\n    seaGlint = seaGlintFull;\n#else\n    seaGlint = min(seaGlintFull, vec3(${
-      import.meta.env.DEV ? 'uGlintCap' : '1.25'}));\n#endif`);
-    expect(frag).toContain(`vec3 beamKnee = vec3(${import.meta.env.DEV ? 'uBeamKnee' : '3.50'});`);
-    expect(frag).toContain(`vec3 beamRange = vec3(${import.meta.env.DEV ? 'uBeamCap' : '7.00'}) - beamKnee;`);
+      import.meta.env.DEV ? 'uGlintCap' : OCEAN_GLINT_CAP.toFixed(2)}));\n#endif`);
+    expect(frag).toContain(`vec3 beamKnee = vec3(${import.meta.env.DEV ? 'uBeamKnee' : OCEAN_BEAM_KNEE.toFixed(2)});`);
+    expect(frag).toContain(`vec3 beamRange = vec3(${import.meta.env.DEV ? 'uBeamCap' : OCEAN_BEAM_CAP.toFixed(2)}) - beamKnee;`);
     // The mirror term stays live through everything that scales the light, so
     // the shoulder after the air shapes the share that reached the camera.
     expect(frag).toContain('seaGlint *= cloudSunKeep;');

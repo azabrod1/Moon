@@ -3,17 +3,29 @@
  * star-luminance invariant test share one source of truth.
  */
 
+import { SUN_LIGHT_BASELINE } from '../planetarium/sunLight';
+
 /** UnrealBloom mip blur radius — shared by every mode's composer. */
 export const BLOOM_RADIUS = 0.4;
 
 /**
- * Planetarium bloom high-pass cutoff (Rec.709 luminance). Set at exactly 1.0 so
- * the brightest catalog star (luminance below 1.0) contributes nothing to the
- * bloom pass: near the Sun, stars must not survive as star-shaped glints. The
- * Sun's corona and halo sit far above 1.0 and bloom on purpose. Moon Flight and
- * Volume Compare keep their own lower cutoffs authored at their own call sites.
+ * The ceiling the starfield is held under (Rec.709 luminance): the brightest
+ * catalog star stays below it, so near the Sun no star survives the bright
+ * pass as a star-shaped glint. The stars' own number, which the Sun's
+ * baseline never moves.
  */
-export const BLOOM_THRESHOLD = 1.0;
+export const STAR_LUMINANCE_CEILING = 1.0;
+
+/**
+ * Planetarium bloom high-pass cutoff (Rec.709 luminance): the stars' ceiling
+ * times the Sun's baseline (planetarium/sunLight SUN_LIGHT_BASELINE), so the
+ * sunlit white (3/pi of the light) sits under the line by the margin it was
+ * graded with, and the stars, which keep their authored radiance under the
+ * brighter Sun, sit further under it. The Sun's corona and halo sit far above
+ * it and bloom on purpose. Moon Flight and Volume Compare keep their own lower
+ * cutoffs authored at their own call sites.
+ */
+export const BLOOM_THRESHOLD = STAR_LUMINANCE_CEILING * SUN_LIGHT_BASELINE;
 
 /**
  * How much of a pixel the planetarium's bright pass hands the blur.

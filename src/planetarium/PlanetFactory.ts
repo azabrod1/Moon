@@ -180,20 +180,12 @@ export interface AtmosphereConfig {
   scale: number;
 }
 
-/** The Sun's point light, as the scene actually lights bodies. The decay is
- *  0.3, not the physical 2: at inverse-square the outer planets would be
- *  unreadable, so the falloff is authored. Exported because anything that has
- *  to agree photometrically with the lit ground — a scattering table baked at
- *  unit irradiance, say — must use THIS law rather than a physical one, and a
- *  test holds the two together. */
-export const SUN_LIGHT_INTENSITY = 3;
-export const SUN_LIGHT_DECAY = 0.3;
-/** The light's colour, sRGB. Exported for the same reason: a scattering table
- *  baked at WHITE unit irradiance has to be scaled back by this colour as well
- *  as by the intensity, or the air is lit by a different Sun from the ground
- *  under it — and on a limb whose whole point is its blue, the excess lands in
- *  the one channel nobody would think to doubt. */
-export const SUN_LIGHT_COLOR = 0xfff5e0;
+/** The Sun's light (colour, intensity, decay) lives in planetarium/sunLight,
+ *  beside the baseline every scene-unit threshold rides on; re-exported here
+ *  for the readers that always took it from the factory. */
+export { SUN_LIGHT_COLOR, SUN_LIGHT_DECAY, SUN_LIGHT_INTENSITY } from './sunLight';
+import { SUN_LIGHT_COLOR, SUN_LIGHT_DECAY, SUN_LIGHT_INTENSITY } from './sunLight';
+import { applyAlbedoGrade, restoreAlbedoGrade } from './world/albedoGrade';
 
 // Exported so the volume-compare mode's ghost shell reads the same tuning —
 // a hand-kept copy would drift the moment these numbers get touched.
@@ -1688,7 +1680,9 @@ export function paintMoonTextures(moon: MoonMesh): void {
     colorTex.dispose();
   } else {
     mat.map = colorTex;
-    mat.color.setRGB(1, 1, 1);
+    // The placeholder tint goes; the body's albedo grade (its own colour
+    // over a map authored brighter than its albedo) stays.
+    restoreAlbedoGrade(mat);
   }
   mat.needsUpdate = true;
   moon.painted = true;
@@ -1744,6 +1738,9 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     const fx = augmentSurfaceMaterial(
       mat, archetype, undefined, 0, undefined, undefined, moonData.name,
     );
+    // The body's albedo grade is recorded now and applied once the real map
+    // replaces the placeholder tint (restoreAlbedoGrade at the paint).
+    applyAlbedoGrade(mat, moonData.name, false);
     // The Night sides lift, as on the planets: the shared object, before the
     // first compile.
     fx.uNightLift = nightLiftUniform;

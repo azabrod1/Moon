@@ -18,6 +18,7 @@
  * can never leave it sampling a freed texture.
  */
 import * as THREE from 'three';
+import { inheritAlbedoGrade } from './albedoGrade';
 import {
   augmentSurfaceMaterial, setSurfaceCraterShare, setSurfaceSynthesis, setSurfaceWaterGloss,
   surfaceCraterShare, surfaceReliefKind, surfaceShadingArgsOf, surfaceSynthesisEnvelope,
@@ -73,6 +74,9 @@ export function createSectorMaterial(
   if ((base.userData as { hasRealNormal?: boolean } | undefined)?.hasRealNormal === true) {
     mat.userData.hasRealNormal = true;
   }
+  // The globe's albedo grade (its colour over the shared map) is the sector's
+  // too, or a tile would land a brighter rectangle on a graded body.
+  inheritAlbedoGrade(base, mat);
   const args = surfaceShadingArgsOf(base);
   // The same fx objects, so the sector's eclipse spot, its planetshine and the
   // air in front of it are the globe's own values and not a second set; and the

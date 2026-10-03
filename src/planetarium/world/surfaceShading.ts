@@ -138,6 +138,7 @@ import {
   type AtmosphereTables,
 } from './atmosphereLut';
 import { AIRLIGHT_SCALE } from './atmosphereModel';
+import { SUN_LIGHT_BASELINE } from '../sunLight';
 import { onPerfSwitch, perfSwitchOn, perfSwitchUniform, setPerfSwitch } from '../../app/perfSwitches';
 import {
   COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_CALM_LOBE_ROUGHNESS, SEA_WIND_MAX_MS, disposeRetiredSeaWindMaps, seaWindTextures,
@@ -505,9 +506,12 @@ export const SEA_WATER_F0 = ((SEA_WATER_IOR - 1) / (SEA_WATER_IOR + 1)) ** 2;
  * hands the bright pass more: with the bloom knee (app/bloomConfig.ts) a
  * pixel here feeds the blur its excess over the threshold, a few hundredths at
  * 1.25 and a third of a unit at 1.5. Over a 7 m/s sea the term peaks near
- * 0.15 and the cap never engages; it holds only the glassy patches.
+ * 0.15 and the cap never engages; it holds only the glassy patches. In scene
+ * units at baseline 1; it rides SUN_LIGHT_BASELINE with the light, as the
+ * bloom's line and the beam's knee and cap do, so it is the same number of
+ * whites whatever the baseline.
  */
-export const OCEAN_GLINT_CAP = 1.25;
+export const OCEAN_GLINT_CAP = 1.25 * SUN_LIGHT_BASELINE;
 
 /**
  * The beam chain's cap, on what REACHES THE CAMERA (SURFACE_FRAGMENT_BODY,
@@ -531,8 +535,8 @@ export const OCEAN_GLINT_CAP = 1.25;
  * halo over the limb and into space, and the only honest cap was under 1.1.
  * The DEV knobs (`__moon.glint({beamKnee, beamCap})`) move both live.
  */
-export const OCEAN_BEAM_KNEE = 3.5;
-export const OCEAN_BEAM_CAP = 7.0;
+export const OCEAN_BEAM_KNEE = 3.5 * SUN_LIGHT_BASELINE;
+export const OCEAN_BEAM_CAP = 7.0 * SUN_LIGHT_BASELINE;
 
 /**
  * The cap, a scale and the calm lobe as the shader reads them. In a

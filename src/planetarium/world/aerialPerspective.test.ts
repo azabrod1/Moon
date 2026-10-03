@@ -112,12 +112,12 @@ const DEV_FRAGMENT_HASH = 'f36ebb9574f94cf1b6a430d9a3286b4f556c402c7cd91996af719
  *  DEV only), resolved as the preprocessor resolves it: the development text
  *  from before the field existed. A production build carries none of it. */
 const FIELD_OFF_DEV_FRAGMENT_HASH = '2e5d75090828868208856dfcba2fff278650ea9e12ea9911e98fcd281622d6f5';
-const PROD_FRAGMENT_HASH = 'ea1049746de935693c61d84339c98df14ba303bb24cc043c02417f9480dce2d3';
+const PROD_FRAGMENT_HASH = '0a67d5fd1325957304982d6035954a12279dd2964ae205582f72f776781a2682';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 /** The same two texts with the cloud shadow's define OFF, resolved as the
  *  preprocessor resolves it: the texts from before the switch existed. */
 const OFF_DEV_FRAGMENT_HASH = 'ec3235fb1212ce8dc5f517f7edd8089e3477d63516b396e3187b5b3bde20a340';
-const OFF_PROD_FRAGMENT_HASH = '7d793924a0d980cca3c16bf9fcbfafc719c6604bbfe406cbdadae666bc1a9cff';
+const OFF_PROD_FRAGMENT_HASH = '90e149d1fd8f871f6a2f3555669e146867c844d4e6f46758f246d174679f9fff';
 
 describe('the injected surface shader', () => {
   it('is one text for every body and both tiers', () => {

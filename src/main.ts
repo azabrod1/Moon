@@ -81,6 +81,7 @@ import { cloudFieldRequested } from './planetarium/world/cloudField';
 import type { CloudFieldRequest } from './planetarium/world/cloudFieldPool';
 import { SUN_LIGHT_COLOR, SUN_LIGHT_INTENSITY } from './planetarium/PlanetFactory';
 import { AIRLIGHT_SCALE } from './planetarium/world/atmosphereModel';
+import { devAlbedoGrade } from './planetarium/world/albedoGrade';
 import { parseNightExposureParam, setDevNightExposure, type NightExposureOverride } from './planetarium/world/nightExposure';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass, parseFusedParam } from './app/FusedOutputPass';
@@ -3127,7 +3128,8 @@ function installDevHooks() {
    * The Sun's PointLight is the only light the planetarium's surfaces see, but
    * the air does not read it: its tables are baked at unit white irradiance
    * and bridged back to the scene's Sun by AIRLIGHT_SCALE, the authored
-   * colour times the authored intensity, held per body as `uAirlightScale`.
+   * colour times the authored intensity (planetarium/sunLight: neutral, at
+   * the baseline), held per body as `uAirlightScale`.
    * So the knob writes both — the light, and every air bridge in the scene in
    * the same ratio — or the ground would be lit by one Sun under a sky lit by
    * another. Development builds only; nothing calls it but the bridge.
@@ -3618,6 +3620,9 @@ function installDevHooks() {
     // authored value back. Returns the values in force, with the light's
     // luminance as the surfaces receive it. Exposure is pinCapture's.
     sunLight: (opts?: { color?: number | null; intensity?: number | null }) => devSunLight(opts),
+    // A body's albedo grade live (world/albedoGrade): a linear RGB over its
+    // map, null for the authored one; every material of the body follows.
+    albedoGrade: (name: string, rgb?: [number, number, number] | null) => devAlbedoGrade(name, rgb),
     // The night side's exposure, live (world/nightExposure): the lit fractions
     // of the visible cap the long exposure holds at (`full`) and is gone by
     // (`none`), the ramp's two speeds in positions per second — toward the

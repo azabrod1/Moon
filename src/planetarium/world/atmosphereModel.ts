@@ -46,6 +46,7 @@
  */
 import { KM_PER_AU } from '../../astronomy/constants';
 import { PLANETS } from '../planets/planetData';
+import { SUN_LIGHT_INTENSITY, SUN_LIGHT_LINEAR } from '../sunLight';
 
 export type RGB = readonly [number, number, number];
 
@@ -248,18 +249,23 @@ export function bodySolarIrradianceScale(name: string): number {
  * The global multiplier between baked radiance (solar irradiance 1.0, WHITE)
  * and the renderer's display-referred frame. It is the SCENE's solar
  * irradiance at Earth, per channel: the globe is lit by a point light of
- * intensity 3 and colour 0xfff5e0, and three's Lambert term makes
- * `intensity * color` the perpendicular irradiance the ground reflects
- * (radiance = intensity * color * cos * albedo / pi). So air baked at an
- * irradiance of 1 next to it would sit three stops of exposure below the disc
- * it hazes — and, scaled by a single number, would be lit by a WHITE Sun while
- * the ground under it is lit by a warm one: +9.5% green and +34% blue on a limb
- * whose whole reading is its blue. The three values are the light's intensity
- * times its colour decoded to the linear working space; the distance law is the
- * other half of the same bridge (SOLAR_DISTANCE_DECAY). A test holds all three
- * against the light's own constants, for the same reason it holds the decay.
+ * SUN_LIGHT_INTENSITY in SUN_LIGHT_COLOR (planetarium/sunLight), and three's
+ * Lambert term makes `intensity * color` the perpendicular irradiance the
+ * ground reflects (radiance = intensity * color * cos * albedo / pi). So air
+ * baked at an irradiance of 1 next to it would sit stops of exposure below the
+ * disc it hazes, and air scaled by a number other than the light's own colour
+ * would be lit by a different Sun from the ground under it: with the cream
+ * light this replaced, a scalar put +9.5% green and +34% blue on a limb whose
+ * whole reading is its blue. The three values are DERIVED from the light's
+ * constants, per channel, so the light and the air cannot drift apart; the
+ * distance law is the other half of the same bridge (SOLAR_DISTANCE_DECAY),
+ * and a test holds it against the light's decay.
  */
-export const AIRLIGHT_SCALE: RGB = [3.0, 2.739295955374419, 2.2362126286050854];
+export const AIRLIGHT_SCALE: RGB = [
+  SUN_LIGHT_LINEAR[0] * SUN_LIGHT_INTENSITY,
+  SUN_LIGHT_LINEAR[1] * SUN_LIGHT_INTENSITY,
+  SUN_LIGHT_LINEAR[2] * SUN_LIGHT_INTENSITY,
+];
 
 /** Angular radius of the Sun as seen from Earth, radians — softens the
  *  transmittance-to-Sun terminator so the ground does not switch on in one

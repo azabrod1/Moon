@@ -47,6 +47,7 @@
  */
 import { PLANETS } from '../planets/planetData';
 import { AIRLIGHT_SCALE, type RGB } from './atmosphereModel';
+import { SUN_LIGHT_AUTHORED_HUE } from '../sunLight';
 
 export type Vec3 = readonly [number, number, number];
 
@@ -418,13 +419,23 @@ export const MOONLIGHT_TINT_AUTHORED: RGB = [0.8, 0.92, 1.15];
  * (The physical spectrum's own luminance is 0.986, so the swap is a change of
  * hue and not of level.)
  *
+ * The authored triple was judged under the cream Sun the bridge then carried
+ * (AIRLIGHT_SCALE multiplies it per channel), so the moonlight that was
+ * actually drawn was the triple times that cream. The Sun is neutral now, and
+ * the tint carries the cream itself (SUN_LIGHT_AUTHORED_HUE) so the moonlit
+ * picture keeps the colour it was judged in.
+ *
  * Applied once, in `moonIrradiance`, which is the single factor every
  * moon-sourced term is built from: the beam on the ground, the sky's own
  * irradiance on it, the air's in-scatter, and the cloud deck lit by all three.
  * Tinting any one of them on its own is how a moonlit cloud ends up a different
  * colour from the moonlit air around it.
  */
-export const MOONLIGHT_TINT: RGB = unitLuminance(MOONLIGHT_TINT_AUTHORED);
+export const MOONLIGHT_TINT: RGB = unitLuminance([
+  MOONLIGHT_TINT_AUTHORED[0] * SUN_LIGHT_AUTHORED_HUE[0],
+  MOONLIGHT_TINT_AUTHORED[1] * SUN_LIGHT_AUTHORED_HUE[1],
+  MOONLIGHT_TINT_AUTHORED[2] * SUN_LIGHT_AUTHORED_HUE[2],
+]);
 
 const DEG = Math.PI / 180;
 

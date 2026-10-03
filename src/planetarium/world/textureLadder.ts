@@ -45,6 +45,7 @@ import { applyTextureDefaults, clampTier, deviceTextureProfile, resolveTextureUr
 import { queueTextureWarm } from './textureWarmer';
 import { loadStreamedTexture, type TextureLoad } from './textureBitmapLoader';
 import { equirectMapGpuBytes, retainedSourceBytes, textureGpuBytes } from './textureBytes';
+import { restoreAlbedoGrade } from './albedoGrade';
 
 // A colour-tier fetch goes through this indirection so the completion,
 // staleness and failure paths that decide what reaches the GPU can be
@@ -889,7 +890,9 @@ function setMaterialColorMap(mat: THREE.Material, tex: THREE.Texture): void {
   // texture as bumpMap; move the alias onto the upgraded map so the dispose
   // by the caller can't leave bumpMap pointing at freed GPU memory.
   if (std.bumpMap === prev) std.bumpMap = tex;
-  std.color.setRGB(1, 1, 1);
+  // The placeholder tint goes with the first real map; the body's albedo
+  // grade, if it has one, stays through every rung.
+  restoreAlbedoGrade(std);
 }
 
 export function applyColorTierTexture(mat: THREE.Material, tex: THREE.Texture, rank: number): boolean {

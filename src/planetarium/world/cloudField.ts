@@ -5,14 +5,16 @@
  * direction lands on a page, how much of the page a fragment may take, how a
  * page's mips are built — with a TypeScript twin of every rule the shader
  * applies, so the tests can pin the addressing without a GPU. The pool that
- * holds the pages and the bridge that drives them are `cloudFieldPool.ts`.
+ * holds the pages is `cloudFieldPool.ts`, the residency that decides which
+ * pages it holds `cloudFieldResidency.ts`, and the session that drives the
+ * two from the live frame `cloudFieldSession.ts`.
  *
  * OFF BY DEFAULT. The shader half is a compile-time define, CLOUD_FIELD, set
  * only on the planetarium's deck and only when `?cloudtiles=1` asked for it at
  * boot (any build) and the device's profile gives the pool layers; a program
  * without the define is the program it was, after the preprocessor, but for
- * the one blank line each of the two chunks below opens with. No residency
- * yet: pages are made resident by hand, through the development bridge.
+ * the one blank line each of the two chunks below opens with. With it, pages
+ * arrive by themselves as the camera moves, and fade in over the sheet.
  *
  * THE REPRESENTATION is two channels per texel, `(A, P)` — the encoding study
  * (planning/cloud-detail/encoding) chose it: A is the deck's authored opacity,
@@ -289,25 +291,25 @@ export function parseCloudPageKey(key: string): [number, number] | null {
 }
 
 /**
- * The page's two grey channels as one RG8 layer in GL order. The files are
- * north-up — row 0 is the page's northern edge, as any image is — and a
- * texture's row 0 is t = 0, the SOUTHERN edge in the deck's UV, so the rows
- * are reversed here. `stride` is the bytes a source texel takes (4 for RGBA
- * read back off a canvas, whose grey has R = G = B; 1 for a raw channel).
+ * A band of one of the page's two grey files into its channel of the page's
+ * RG8 layer (`out`, size² × 2), in GL order: channel 0 the opacity A, 1 the
+ * premultiplied brightness P. `src` holds the file's rows `y0` to `y0 + rows`
+ * top-down. The files are north-up — row 0 is the page's northern edge, as
+ * any image is — and a texture's row 0 is t = 0, the SOUTHERN edge in the
+ * deck's UV, so a file row y lands on layer row size − 1 − y. `stride` is the
+ * bytes a source texel takes (4 for RGBA read back off a canvas, whose grey
+ * has R = G = B; 1 for a raw channel). A band at a time, so a decoder never
+ * has to hold a whole file's RGBA readback, four times the channel it wants.
  */
-export function packCloudPage(
-  a: Uint8Array | Uint8ClampedArray, p: Uint8Array | Uint8ClampedArray, size: number, stride = 1,
-): Uint8Array {
-  const out = new Uint8Array(size * size * 2);
-  for (let y = 0; y < size; y++) {
-    const src = (size - 1 - y) * size * stride;
-    const dst = y * size * 2;
-    for (let x = 0; x < size; x++) {
-      out[dst + 2 * x] = a[src + x * stride];
-      out[dst + 2 * x + 1] = p[src + x * stride];
-    }
+export function packCloudPlaneRows(
+  out: Uint8Array, src: Uint8Array | Uint8ClampedArray, size: number, channel: 0 | 1, y0: number, rows: number,
+  stride = 1,
+): void {
+  for (let y = 0; y < rows; y++) {
+    const from = y * size * stride;
+    const to = (size - 1 - (y0 + y)) * size * 2 + channel;
+    for (let x = 0; x < size; x++) out[to + 2 * x] = src[from + x * stride];
   }
-  return out;
 }
 
 /**

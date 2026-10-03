@@ -41,7 +41,8 @@ import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arriv
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { advanceSurfaceAir, bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, setSurfaceSynthesis, settleSurfaceAir, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { cloudFieldRequested, setCloudFieldOn, setCloudFieldPixelRatios } from './world/cloudFieldSlots';
-import type { CloudFieldAllocation, CloudFieldPool } from './world/cloudFieldPool';
+import type { CloudFieldAllocation } from './world/cloudFieldPool';
+import type { CloudFieldSession } from './world/cloudFieldSession';
 import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
 import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, textureWarmQueueDepth, warmBudgetMs } from './world/textureWarmer';
 import { beginSlicedUpload, stepSlicedUpload } from './world/slicedUpload';
@@ -1288,9 +1289,11 @@ export class PlanetariumMode {
    *  the `?debug=1` memory line read it rather than reassembling the figure
    *  from a profile and a floor at each site. */
   private readonly memory: MemoryEnvelope;
-  /** Earth's cloud field pool (world/cloudFieldPool), in a session that has
-   *  the field; null otherwise, and again if a restore could not allocate it. */
-  private cloudField: CloudFieldPool | null = null;
+  /** Earth's cloud field — its pool and the residency that fills it
+   *  (world/cloudFieldSession) — in a session that has the field; null
+   *  otherwise, and again if a restore could not allocate it. Every per-frame
+   *  site pays one null test while it is null. */
+  private cloudField: CloudFieldSession | null = null;
   /** The pool's allocation at boot, awaited before the solar system is built
    *  so the deck compiles the field's define the first time it compiles at
    *  all; null in a session that did not ask for the field. */
@@ -2640,8 +2643,9 @@ export class PlanetariumMode {
       // stale dot can't outlive the mesh it belonged to.
       this.moonDots?.clear();
       // The cloud field's layers went with the context: its table is cleared,
-      // so the deck draws its base sheet until pages are back.
-      this.cloudField?.onContextLost();
+      // so the deck draws its base sheet until pages are back, and nothing is
+      // admitted or uploaded until the pool is allocated again.
+      this.cloudField?.contextLost();
     });
     glCanvas.addEventListener('webglcontextrestored', () => {
       this.moonTexturer.onContextRestored();
@@ -3974,7 +3978,7 @@ export class PlanetariumMode {
    * — and what the streamer is owed regardless (its byte budget, its load
    * deadlines) is what `maintain` covers on those frames.
    */
-  private updateMemoryPasses(mapOpen: boolean): void {
+  private updateMemoryPasses(mapOpen: boolean, willDraw: boolean): void {
     this.updateLadderPressure(performance.now());
     if (!mapOpen) {
       this.updateBodyLOD();
@@ -3983,6 +3987,32 @@ export class PlanetariumMode {
     } else {
       this.maintainSectorStreaming();
     }
+    if (this.cloudField) this.updateCloudField(this.cloudField, mapOpen, willDraw);
+  }
+
+  /**
+   * Earth's cloud field's frame (world/cloudFieldSession): after the sectors
+   * have reconciled, so a page can only start behind them, and on chart
+   * frames too, which it keeps but admits nothing on. The deck's frame values
+   * are the ones the sectors measure with (`updateSectorFrameValues`, which
+   * runs whether or not a streamer exists): the canvas's CSS height at the
+   * tile ratio is the scene target's height on the grid the field's guard is
+   * held to.
+   */
+  private updateCloudField(field: CloudFieldSession, chart: boolean, willDraw: boolean): void {
+    let deck: THREE.Mesh | null = null;
+    for (const planet of this.solarSystem!.planets) {
+      if (planet.data.name === 'Earth') {
+        deck = planet.cloudsMesh ?? null;
+        break;
+      }
+    }
+    field.frame(
+      deck, this.camera, this.solarSystem!.sun, performance.now(),
+      this.sectorFrameCanvasH * this.sectorFrameDpr,
+      this.landedView === 'surface' && this.landedOn?.name === 'Earth',
+      chart, this.arrivalVeilUp(), willDraw,
+    );
   }
 
   /**
@@ -4303,10 +4333,12 @@ export class PlanetariumMode {
   }
 
   /**
-   * Allocate Earth's cloud field pool at boot (world/cloudFieldPool), for a
-   * session that asked for the field. The device's profile says how many
-   * pages it holds, and zero is no field whatever the URL asked. The pool's
-   * bytes are reserved in the envelope from the moment it exists. A GL error
+   * Allocate Earth's cloud field at boot (world/cloudFieldSession: the pool
+   * and the residency that fills it), for a session that asked for the field.
+   * The device's profile says how many pages it holds, and zero is no field
+   * whatever the URL asked. The pool's bytes are reserved in the envelope from
+   * the moment it exists; no page is fetched and no worker started until the
+   * residency first wants one. A GL error
    * on the allocation turns the field off for the session instead: an array
    * that did not allocate samples as zero, and every page the table called
    * resident would draw as clear sky. Never throws into the activation that
@@ -4319,13 +4351,18 @@ export class PlanetariumMode {
       return;
     }
     try {
-      const { CloudFieldPool } = await import('./world/cloudFieldPool');
-      const { pool, report } = CloudFieldPool.allocate(this.renderer, layers);
-      if (!pool) {
+      const { CloudFieldSession } = await import('./world/cloudFieldSession');
+      // Sectors first: a page starts only while a sector load slot is free.
+      const sectorsBusy = () => this.sectors?.loadSlotsFull() ?? false;
+      const { session, report } = CloudFieldSession.allocate(
+        this.renderer, layers, this.deviceProfile.wantTexelPx, sectorsBusy,
+      );
+      if (!session) {
         this.cloudFieldOff(report, 'at boot');
         return;
       }
-      this.cloudField = pool;
+      this.cloudField = session;
+      const pool = session.pool;
       this.memory.setFixedBytes(pool.bytes());
       setCloudFieldOn(true);
       debugLog('Cloud field pool', {
@@ -4353,13 +4390,13 @@ export class PlanetariumMode {
    *  boot. Every program relinks after a restore anyway, so a pool that
    *  cannot be had again takes the field off here at no further cost. */
   private restoreCloudField(): void {
-    const report = this.cloudField?.onContextRestored();
+    const report = this.cloudField?.contextRestored();
     if (report && report.glError !== 0) this.cloudFieldOff(report, 'after a context restore');
   }
 
-  /** The session's cloud field pool, or null where the field is off: the
-   *  development bridge's way in, and the residency's. */
-  cloudFieldPool(): CloudFieldPool | null {
+  /** The session's cloud field, or null where the field is off: the
+   *  development bridge's way in. */
+  cloudFieldSession(): CloudFieldSession | null {
     return this.cloudField;
   }
 
@@ -4386,7 +4423,8 @@ export class PlanetariumMode {
     const globalBytes = this.liveGlobalMapBytes();
     const envelope = this.memory.figures();
     const transcoder = this.ktx2Loader.state();
-    const field = this.cloudField;
+    const fieldLayers = this.cloudField?.pool.layerCount ?? 0;
+    const field = this.cloudField?.stats() ?? null;
     // Whatever the line below prints, so a figure cannot move without the
     // line being reprinted.
     const figures = [
@@ -4395,7 +4433,7 @@ export class PlanetariumMode {
           envelope.sectorBudget, envelope.floorBytes, envelope.envelopeBytes]
         : [globalBytes, envelope.floorBytes, envelope.envelopeBytes]),
       transcoder.alive ? 1 : 0, transcoder.disposedCount,
-      ...(field ? [envelope.fixedBytes, field.layersUsed()] : []),
+      ...(field ? [envelope.fixedBytes, field.resident, field.pipe === 'idle' ? 0 : 1, field.failed] : []),
     ];
     const previous = this.memoryDebugLast;
     const moved = !previous || previous.length !== figures.length ||
@@ -4432,10 +4470,16 @@ export class PlanetariumMode {
       floorMiB: mib(envelope.floorBytes),
       envelopeMiB: mib(envelope.envelopeBytes),
       // Earth's cloud field pool, held whole for the session and taken off
-      // the envelope before the maps and the tiles share it; absent where the
+      // the envelope before the maps and the tiles share it, and the pages in
+      // it: resident of the layers, the one loading (fetched, decoded or
+      // going up), and those cooling down after a failure. Absent where the
       // session has no field.
       ...(field
-        ? { cloudPoolMiB: mib(envelope.fixedBytes), cloudLayers: `${field.layersUsed()}/${field.layerCount}` }
+        ? {
+          cloudPoolMiB: mib(envelope.fixedBytes),
+          cloudPages: `resident ${field.resident}/${fieldLayers}`
+            + ` loading ${field.pipe === 'idle' ? 0 : 1} failed ${field.failed}`,
+        }
         : {}),
       // The compressed rungs' transcoder: its workers keep the memory of the
       // largest container they transcoded, which no GPU figure above counts,
@@ -4628,6 +4672,10 @@ export class PlanetariumMode {
     // service-worker cache on the next activation.
     this.sectors?.dropAll();
     this.sectorSpin.clear();
+    // Only this mode pumps uploads, so the cloud field's page in flight is
+    // given up; its resident pages cost nothing more held and are kept for
+    // the return (its pool is allocated whatever it holds).
+    this.cloudField?.cancelInFlight();
     // Nothing is being drawn, so nothing has a drawn density; the next
     // activation measures from scratch rather than reporting the last frame of
     // the previous session. The materials are put back at rest with it — a
@@ -4942,7 +4990,11 @@ export class PlanetariumMode {
     // own cost (frameWork), and two clock reads a frame is what that costs.
     const queued = import.meta.env.DEV ? textureWarmQueueDepth() : 0;
     const warmStartedAt = performance.now();
-    pumpTextureWarmQueue(warmBudget, this.frameIntervalMs);
+    // Earth's cloud field uploads its pages beside the queue, last in line:
+    // on a frame it takes, the pump sits out (CloudFieldSession.uploadTurn).
+    if (!this.cloudField?.uploadTurn(warmStartedAt, warmBudget, this.frameIntervalMs)) {
+      pumpTextureWarmQueue(warmBudget, this.frameIntervalMs);
+    }
     const warmSpentMs = performance.now() - warmStartedAt;
     this.frameWorkMs += warmSpentMs;
     if (import.meta.env.DEV && this.devWarmSpend) {
@@ -5154,7 +5206,7 @@ export class PlanetariumMode {
     // the screen, and a phone that fetched half as often would look worse for
     // longer.
     const mapOpen = this.isMapOpen();
-    this.updateMemoryPasses(mapOpen);
+    this.updateMemoryPasses(mapOpen, willDraw);
     this.reportMemoryDebug(performance.now());
 
     // The HTML label/marker projections below read camera.matrixWorldInverse,
@@ -18683,6 +18735,9 @@ export class PlanetariumMode {
     // its dispose hook), and the destination's own sectors stream back in a
     // beat after the reveal — from the cache, for a body seen before.
     this.sectors?.dropAll();
+    // The cloud field's page in flight goes too; its resident pages are whole
+    // and stay, and nothing new is admitted or uploaded under the veil.
+    this.cloudField?.cancelInFlight();
     this.arrivalUpgradeBatch = [];
     const moons = systemName ? this.planetMoons.get(systemName) : undefined;
     const needsPaint = !!moons && moons.some((m) => !m.painted);
@@ -19575,7 +19630,7 @@ export class PlanetariumMode {
     // should fetch for it.
     // World-presentation passes are gated while the map owns the frame.
     const mapOpen = this.isMapOpen();
-    this.updateMemoryPasses(mapOpen);
+    this.updateMemoryPasses(mapOpen, willDraw);
     // Shadow spots/guides live in the world scene, which the map never draws —
     // same gate as the cruise branch, and they rebuild on the first frame back.
     if (!mapOpen && willDraw) this.updateShadowVisuals();

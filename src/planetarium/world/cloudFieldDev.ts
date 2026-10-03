@@ -1,38 +1,181 @@
 /**
  * The cloud field's development bridge (`__moon.cloudField`,
- * `__moon.cloudFieldProbe`): pages loaded, faded and evicted by hand, the
- * shader's diagnostics, and the guard's input read back against the
- * residency's number for the same deck point. DEVELOPMENT ONLY: imported by
- * main's DEV bridge and nothing else, so no production build carries it. The
- * pool it drives is the session's (world/cloudFieldPool), reached through the
- * planetarium mode that owns it.
+ * `__moon.cloudFieldProbe`): the residency's state, the pool taken from it
+ * so pages can be loaded, faded and evicted by hand, the shader's
+ * diagnostics, and the guard's input read back against the residency's
+ * number for the same deck point. DEVELOPMENT ONLY: imported by main's DEV
+ * bridge and nothing else, so no production build carries it. The session it
+ * drives (world/cloudFieldSession) is the one the planetarium mode owns.
+ *
+ * BY HAND. `auto: false` takes the pool from the residency (its entries and
+ * layers cleared, its loads cancelled) and every hand request then goes
+ * through the pool's own load, upload and table write: a requested page is
+ * fetched and decoded as the residency's are, takes the first free layer,
+ * goes up whole the moment it is decoded — both steps, outside the frame's
+ * upload turn, which a hand-run capture has no use for — and is written to
+ * the table at its fade. `auto: true` gives the pool back, the hand pages
+ * dropped and the table cleared. A hand request while the residency owns the
+ * pool is refused, loudly, rather than fought over.
  */
 import * as THREE from 'three';
-import type { CloudFieldPool } from './cloudFieldPool';
+import type { CloudFieldSession } from './cloudFieldSession';
+import type { CloudPage } from './cloudFieldPool';
 import { cloudFieldDiagUniform } from './cloudFieldSlots';
 import { fieldTexelMajorAt, fieldUnproject, type FieldCamera } from './cloudFieldMeasure';
+import { CLOUD_FIELD_GRID, cloudPageKey, parseCloudPageKey } from './cloudField';
 import { lensUnwarpNdc } from '../../shared/math/lensProjection';
 import { linkedSamplers } from './samplerCensus';
 
 export interface CloudFieldRequest {
-  /** Pages to make resident, by key (`col_row`, row 0 the northernmost). */
+  /** false takes the pool from the residency for the hand requests below;
+   *  true gives it back. */
+  auto?: boolean;
+  /** Pages to make resident by hand, by key (`col_row`, row 0 the
+   *  northernmost). */
   pages?: string | string[];
-  /** Fades to set, 0..1, by key; a page not yet resident takes it on arrival. */
+  /** Fades to set by hand, 0..1, by key; a page not yet resident takes it on
+   *  arrival (1 otherwise). */
   fade?: Record<string, number>;
-  /** Pages to evict. */
+  /** Hand pages to evict. */
   evict?: string | string[] | 'all';
   /** The diagnostic: 0 off, 1 flat colour per layer, 2 tint by layer, 3 the
    *  guard's input written unlit to the scene target (read with `probe`). */
   diag?: number;
-  /** Write a raw R code into a resident page's table entry: 254 and 255 are
-   *  the reserved codes, which must draw the base. */
+  /** Write a raw R code into a hand page's table entry: 254 and 255 are the
+   *  reserved codes, which must draw the base. */
   code?: Record<string, number>;
-  /** Levels uploaded per animation frame (1..12). */
-  perFrame?: number;
-  /** Resolve once every requested page is resident or failed. */
+  /** Resolve once every hand page is resident or failed. */
   wait?: boolean;
-  /** Return the state (always returned; kept for the brief's spelling). */
+  /** Return the state (always returned; kept for the older spelling). */
   state?: boolean;
+}
+
+interface HandPage {
+  layer: number;
+  fade: number;
+  state: 'loading' | 'resident' | 'failed';
+  abort: AbortController;
+  error?: string;
+}
+
+/** The pages loaded by hand while the residency is off, by page index. */
+class HandPages {
+  readonly pages = new Map<number, HandPage>();
+  private readonly layers: Array<number | null>;
+  private settleWaiters: Array<() => void> = [];
+  private losses: number;
+
+  constructor(private readonly session: CloudFieldSession) {
+    this.layers = Array.from({ length: session.pool.layerCount }, () => null);
+    this.losses = session.pool.contextLosses;
+  }
+
+  /** A lost context took every layer: forget what was in them. */
+  private sync(): void {
+    if (this.session.pool.contextLosses === this.losses) return;
+    this.losses = this.session.pool.contextLosses;
+    for (const rec of this.pages.values()) rec.abort.abort();
+    this.pages.clear();
+    this.layers.fill(null);
+    this.settle();
+  }
+
+  request(page: number, fade: number | undefined): void {
+    this.sync();
+    const existing = this.pages.get(page);
+    if (existing && existing.state !== 'failed') return;
+    const layer = existing ? existing.layer : this.layers.indexOf(null);
+    if (layer < 0) throw new Error(`cloudField: the pool's ${this.layers.length} layers are full; evict one first`);
+    this.layers[layer] = page;
+    const rec: HandPage = { layer, fade: fade ?? existing?.fade ?? 1, state: 'loading', abort: new AbortController() };
+    this.pages.set(page, rec);
+    const pool = this.session.pool;
+    pool.load(page, rec.abort.signal).then(
+      (decoded: CloudPage) => {
+        if (this.pages.get(page) !== rec) return;
+        pool.upload(decoded, layer, 0);
+        pool.upload(decoded, layer, 1);
+        rec.state = 'resident';
+        this.write(page, rec);
+        this.settle();
+      },
+      (err: unknown) => {
+        if (this.pages.get(page) !== rec) return;
+        rec.state = 'failed';
+        rec.error = err instanceof Error ? err.message : String(err);
+        this.settle();
+      },
+    );
+  }
+
+  evict(page: number): void {
+    this.sync();
+    const rec = this.pages.get(page);
+    if (!rec) return;
+    // The entry first: no draw after this may sample the layer.
+    this.session.pool.writeEntry(page, 0, 0);
+    rec.abort.abort();
+    this.pages.delete(page);
+    this.layers[rec.layer] = null;
+    this.settle();
+  }
+
+  evictAll(): void {
+    for (const page of [...this.pages.keys()]) this.evict(page);
+  }
+
+  setFade(page: number, fade: number): void {
+    const rec = this.pages.get(page);
+    if (!rec) return;
+    rec.fade = fade;
+    if (rec.state === 'resident') this.write(page, rec);
+  }
+
+  setCode(page: number, code: number): void {
+    const rec = this.pages.get(page);
+    if (!rec || rec.state !== 'resident') return;
+    this.session.pool.writeEntry(page, Math.max(0, Math.min(255, Math.round(code))), Math.round(rec.fade * 255));
+  }
+
+  private write(page: number, rec: HandPage): void {
+    this.session.pool.writeEntry(page, rec.layer + 1, Math.round(Math.min(1, Math.max(0, rec.fade)) * 255));
+  }
+
+  private busy(): boolean {
+    for (const rec of this.pages.values()) if (rec.state === 'loading') return true;
+    return false;
+  }
+
+  private settle(): void {
+    if (this.busy()) return;
+    const waiters = this.settleWaiters;
+    this.settleWaiters = [];
+    for (const w of waiters) w();
+  }
+
+  whenSettled(): Promise<void> {
+    if (!this.busy()) return Promise.resolve();
+    return new Promise((resolve) => this.settleWaiters.push(resolve));
+  }
+
+  state(): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    for (const [page, rec] of this.pages) {
+      const col = page % CLOUD_FIELD_GRID[0];
+      out[cloudPageKey(col, (page - col) / CLOUD_FIELD_GRID[0])] = {
+        layer: rec.layer, fade: rec.fade, state: rec.state, error: rec.error,
+      };
+    }
+    return out;
+  }
+}
+
+let hand: HandPages | null = null;
+
+function pageOf(key: string): number {
+  const cell = parseCloudPageKey(key);
+  if (!cell) throw new Error(`cloudField: no page ${key}`);
+  return cell[1] * CLOUD_FIELD_GRID[0] + cell[0];
 }
 
 /** The planetarium deck's material, found by its mesh's name (PlanetFactory
@@ -42,22 +185,36 @@ function deckMaterial(scene: THREE.Object3D | null): THREE.Material | null {
   return mesh ? mesh.material as THREE.Material : null;
 }
 
-/** `__moon.cloudField(request)`: load, fade and evict pages by hand, and the
- *  state of the pool, its table and the deck's linked program. */
+/** `__moon.cloudField(request)`: the residency's state, the pool by hand, and
+ *  the deck's linked program. */
 export async function devCloudField(
-  renderer: THREE.WebGLRenderer, scene: THREE.Object3D | null, pool: CloudFieldPool | null,
+  renderer: THREE.WebGLRenderer, scene: THREE.Object3D | null, session: CloudFieldSession | null,
   req: CloudFieldRequest = {},
 ): Promise<Record<string, unknown>> {
   const list = (v: string | string[] | undefined): string[] => (v == null ? [] : Array.isArray(v) ? v : [v]);
-  if (pool) {
-    if (req.perFrame != null) pool.setPerFrame(req.perFrame);
-    if (req.evict === 'all') for (const k of pool.state().layerOf as (string | null)[]) { if (k) pool.evict(k); }
-    else for (const k of list(req.evict as string | string[] | undefined)) pool.evict(k);
-    for (const k of list(req.pages)) pool.request(k);
-    for (const [k, f] of Object.entries(req.fade ?? {})) pool.setFade(k, f);
-    for (const [k, c] of Object.entries(req.code ?? {})) pool.setCode(k, c);
-    if (req.wait) await pool.whenSettled();
-  } else if (req.pages || req.evict || req.fade) {
+  const byHand = req.pages != null || req.evict != null || req.fade != null || req.code != null;
+  if (session) {
+    if (req.auto === false && session.isAuto) {
+      session.setAuto(false);
+      hand = new HandPages(session);
+    }
+    if (byHand && session.isAuto) {
+      throw new Error('cloudField: the residency owns the pool; call cloudField({ auto: false }) first');
+    }
+    if (hand && !session.isAuto) {
+      if (req.evict === 'all') hand.evictAll();
+      else for (const k of list(req.evict as string | string[] | undefined)) hand.evict(pageOf(k));
+      for (const k of list(req.pages)) hand.request(pageOf(k), req.fade?.[k]);
+      for (const [k, f] of Object.entries(req.fade ?? {})) hand.setFade(pageOf(k), f);
+      for (const [k, c] of Object.entries(req.code ?? {})) hand.setCode(pageOf(k), c);
+      if (req.wait) await hand.whenSettled();
+    }
+    if (req.auto === true && !session.isAuto) {
+      hand?.evictAll();
+      hand = null;
+      session.setAuto(true);
+    }
+  } else if (byHand || req.auto != null) {
     throw new Error('cloudField: no pool — boot with ?cloudtiles=1 on a device whose profile gives it layers');
   }
   if (req.diag != null) cloudFieldDiagUniform.value = req.diag;
@@ -67,7 +224,9 @@ export async function devCloudField(
     defineOn: defines.CLOUD_FIELD !== undefined,
     diag: cloudFieldDiagUniform.value,
     deckProgram: mat ? linkedSamplers(renderer, mat) : null,
-    pool: pool ? pool.state() : null,
+    pool: session ? session.pool.state() : null,
+    residency: session ? session.devState() : null,
+    hand: hand ? hand.state() : null,
   };
 }
 

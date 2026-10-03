@@ -23,7 +23,7 @@ import {
   cloudPageIndexOf,
   cloudPageKey,
   cloudPageNeighbours,
-  packCloudPage,
+  packCloudPlaneRows,
   parseCloudPageKey,
 } from './cloudField';
 import { cloudFieldAsked, cloudFieldRequested } from './cloudFieldSlots';
@@ -211,13 +211,35 @@ describe('the hand-over to the base', () => {
 describe('a page\'s layer', () => {
   it('interleaves A and P and puts the file\'s last row first', () => {
     // 2×2: file rows (north-up) are [a0 a1] / [a2 a3].
-    const a = Uint8Array.from([10, 11, 12, 13]);
-    const p = Uint8Array.from([20, 21, 22, 23]);
-    expect([...packCloudPage(a, p, 2)]).toEqual([12, 22, 13, 23, 10, 20, 11, 21]);
+    const out = new Uint8Array(8);
+    packCloudPlaneRows(out, Uint8Array.from([10, 11, 12, 13]), 2, 0, 0, 2);
+    packCloudPlaneRows(out, Uint8Array.from([20, 21, 22, 23]), 2, 1, 0, 2);
+    expect([...out]).toEqual([12, 22, 13, 23, 10, 20, 11, 21]);
     // RGBA readback: the grey is in every colour channel; only R is read.
     const rgba = (g: number[]) => Uint8Array.from(g.flatMap((v) => [v, v, v, 255]));
-    expect([...packCloudPage(rgba([10, 11, 12, 13]), rgba([20, 21, 22, 23]), 2, 4)])
-      .toEqual([12, 22, 13, 23, 10, 20, 11, 21]);
+    const fromRgba = new Uint8Array(8);
+    packCloudPlaneRows(fromRgba, rgba([10, 11, 12, 13]), 2, 0, 0, 2, 4);
+    packCloudPlaneRows(fromRgba, rgba([20, 21, 22, 23]), 2, 1, 0, 2, 4);
+    expect([...fromRgba]).toEqual([12, 22, 13, 23, 10, 20, 11, 21]);
+  });
+
+  it('lands the same layer whether a file comes in whole or a band at a time', () => {
+    const size = 8;
+    const a = Uint8Array.from({ length: size * size }, (_, i) => (i * 7) & 255);
+    const p = Uint8Array.from({ length: size * size }, (_, i) => (i * 13 + 5) & 255);
+    const whole = new Uint8Array(size * size * 2);
+    packCloudPlaneRows(whole, a, size, 0, 0, size);
+    packCloudPlaneRows(whole, p, size, 1, 0, size);
+    const banded = new Uint8Array(size * size * 2);
+    for (let y0 = 0; y0 < size; y0 += 3) {
+      const rows = Math.min(3, size - y0);
+      packCloudPlaneRows(banded, a.subarray(y0 * size, (y0 + rows) * size), size, 0, y0, rows);
+      packCloudPlaneRows(banded, p.subarray(y0 * size, (y0 + rows) * size), size, 1, y0, rows);
+    }
+    expect([...banded]).toEqual([...whole]);
+    // The file's first row is the layer's last.
+    expect(whole[(size - 1) * size * 2]).toBe(a[0]);
+    expect(whole[(size - 1) * size * 2 + 1]).toBe(p[0]);
   });
 
   it('builds its mips as data: 2×2 means per channel, rounded half up', () => {

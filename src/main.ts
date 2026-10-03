@@ -3368,14 +3368,17 @@ function installDevHooks() {
     cloudShadow: (opts?: { on?: boolean; depth?: number; air?: number; penumbra?: boolean | number; gamma?: number }) =>
       devCloudShadow(opts),
     // The cloud deck's 1.2 km field (world/cloudFieldDev; boot with
-    // ?cloudtiles=1): `pages` loads named pages (`col_row`, row 0 the
-    // northernmost), `fade` sets a page's fade, `evict` drops pages, `diag`
-    // paints the layers (1 flat, 2 tinted), `perFrame` is levels uploaded a
-    // frame, `wait` resolves once the loads settle. Returns the pool's layers,
-    // its allocated bytes, the page table and the deck's linked samplers.
+    // ?cloudtiles=1), which streams its pages by itself: `auto: false` takes
+    // the pool from the residency for hand requests — `pages` loads named
+    // pages (`col_row`, row 0 the northernmost), `fade` sets a page's fade,
+    // `evict` drops pages, `wait` resolves once the loads settle — and
+    // `auto: true` gives it back; `diag` paints the layers (1 flat, 2 tinted).
+    // Returns the pool's layers, its allocated bytes and page table, the
+    // residency's numbers with the pages it wants, and the deck's linked
+    // samplers.
     cloudField: async (req?: CloudFieldRequest) =>
       (await import('./planetarium/world/cloudFieldDev')).devCloudField(
-        renderer, scene, planetariumMode?.cloudFieldPool() ?? null, req),
+        renderer, scene, planetariumMode?.cloudFieldSession() ?? null, req),
     // The texture units Earth's ground and cloud deck programs hold, on a real
     // link, for every switch define that adds or removes one
     // (world/samplerCensus; tools/sampler-census.mjs asserts it).

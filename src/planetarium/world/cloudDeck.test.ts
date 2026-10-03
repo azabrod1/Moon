@@ -14,9 +14,12 @@ import {
   CLOUD_DETAIL_FADE_START,
   CLOUD_DETAIL_GLSL,
   CLOUD_EDGE_BAND,
+  CLOUD_FRAME_GLSL,
   CLOUD_NORMAL_SCALE,
   CLOUD_TOP_KM,
+  bodyToDeck,
   cloudCoverageAlpha,
+  cloudRayDirection,
   cloudShellScale,
   cloudDetailFade,
   cloudEdgeBand,
@@ -357,8 +360,12 @@ describe('the deck\'s detail term', () => {
       glsl.indexOf('if (cloudDetailW > 0.0) {'),
       glsl.indexOf('normal = normalize(nrm - surfGrad * cloudDetailW);'),
     );
-    // Four for the deck's own geometry and two for the ground's frame under it.
-    expect(block.match(/dFd[xy]\(/g)).toHaveLength(6);
+    // Two for the deck's geometry in view space and two for its direction in
+    // the body frame, which both the ground's night map and the detail's own
+    // sheet are read from. A development build carries two more: the world
+    // frame the detail was read in before, the control arm, behind a uniform
+    // the whole draw takes the same way.
+    expect(block.match(/dFd[xy]\(/g)).toHaveLength(import.meta.env.DEV ? 6 : 4);
     expect(inner).not.toMatch(/dFd[xy]\(/);
     // Past the detail block the shared surface body has one derivative site of
     // its own, the sea's lookup into the deck map, and it sits under a compare
@@ -373,7 +380,9 @@ describe('the deck\'s detail term', () => {
     // and the sea's uniform compare there is no derivative and no fwidth: the
     // lanes it leaves divergent never reach one.
     const ret = glsl.indexOf('cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }');
-    expect(ret).toBeGreaterThan(glsl.indexOf('cloudNightDy = sphereEquirectUvGrad(objDir, dFdy(objDir));'));
+    const lastDerivative = glsl.indexOf('cloudNightDy = sphereEquirectUvGrad(objDir, objDy);');
+    expect(lastDerivative).toBeGreaterThan(-1);
+    expect(ret).toBeGreaterThan(lastDerivative);
     expect(ret).toBeLessThan(glsl.indexOf('diffuseColor.a *= cloudAlpha;'));
     expect(glsl.slice(ret, glsl.indexOf('if (GROUND_ON(uWaterGloss > 0.0)) {'))).not.toMatch(/dFd[xy]\(|fwidth\(/);
     // The relief's plain tap is taken once, in uniform flow, as three's chunk
@@ -386,6 +395,42 @@ describe('the deck\'s detail term', () => {
     expect(glsl).not.toMatch(/SmoothW < 1\.0/);
     expect(glsl).not.toContain('textureGrad( map,');
     expect(glsl).not.toContain('textureGrad( normalMap,');
+  });
+
+  it('reads the detail on the deck\'s own sheet, so it turns and drifts with the cloud', () => {
+    // The shader has the fragment in the BODY frame (vObjPos) and the drift
+    // the deck's mesh carries (uFrameSpin, its rotation.y); the detail is read
+    // at the mesh's own direction, which is the body frame turned back by it.
+    // Read in the world's axes it stood still in the sky while the planet
+    // turned; turned the wrong way it slides across the cloud at twice the
+    // drift.
+    const glsl = compiled('cloud').shader.fragmentShader;
+    expect(glsl).toContain('vec3 dir = bodyToDeck(objDir, uFrameSpin);');
+    expect(glsl).toContain('vec3 ddx = bodyToDeck(objDx, uFrameSpin);');
+    expect(glsl).toContain('vec3 ddy = bodyToDeck(objDy, uFrameSpin);');
+    expect(glsl).toContain('uniform float uFrameSpin;');
+    // Nothing on the detail's path still reads the world's axes, outside the
+    // development build's control arm.
+    const detail = glsl.slice(glsl.indexOf('vec3 dir = bodyToDeck'), glsl.indexOf('vec4 detail = vec4(0.0);'));
+    const arm = import.meta.env.DEV
+      ? detail.slice(detail.indexOf('if (uPerfCloudNoiseFrame < 0.5) {'), detail.indexOf('float cosLat'))
+      : '';
+    expect(detail.replace(arm, '')).not.toContain('vAirFrag');
+    // The vertex stage's own construction of vObjPos from the mesh position —
+    // three's rotation about y by the drift — undone by bodyToDeck exactly.
+    let worst = 0;
+    for (let i = 0; i < 200; i++) {
+      const p = new THREE.Vector3(Math.sin(i * 1.7), Math.cos(i * 0.9) * 0.9, Math.sin(i * 2.3 + 1)).normalize();
+      const spin = (i * 0.731) % (2 * Math.PI);
+      const body = p.clone().applyEuler(new THREE.Euler(0, spin, 0));
+      const c = Math.cos(spin);
+      const sn = Math.sin(spin);
+      // The vertex stage's formula is that rotation, written out.
+      expect(body.distanceTo(new THREE.Vector3(p.x * c + p.z * sn, p.y, p.z * c - p.x * sn))).toBeLessThan(1e-12);
+      const back = bodyToDeck([body.x, body.y, body.z], spin);
+      worst = Math.max(worst, Math.hypot(back[0] - p.x, back[1] - p.y, back[2] - p.z));
+    }
+    expect(worst).toBeLessThan(1e-12);
   });
 
   it('perturbs the normal upstream of the lights, not after them', () => {
@@ -539,5 +584,71 @@ describe('the deck\'s altitude', () => {
 
   it('clears Earth\'s night-lights shell, which the deck is drawn over', () => {
     expect(cloudShellScale(EARTH_RADIUS_KM)).toBeGreaterThan(1.001);
+  });
+});
+
+describe('the deck\'s frames', () => {
+  it('turns into the deck frame the way the sea has always turned into it', () => {
+    // The sea's lookup into the deck map (world/surfaceShading) writes the
+    // turn out by hand; bodyToDeck is the same turn, so the two read one map
+    // at one place.
+    const glsl = compiled('earth').shader.fragmentShader;
+    expect(glsl).toContain('vec3 deckDir = normalize(vec3(vObjPos.x * deckC - vObjPos.z * deckS,\n'
+      + '                                  vObjPos.y,\n'
+      + '                                  vObjPos.z * deckC + vObjPos.x * deckS));');
+    expect(CLOUD_FRAME_GLSL).toContain('return vec3(c * p.x - s * p.z, p.y, s * p.x + c * p.z);');
+    const p = [0.3, -0.5, 0.8] as const;
+    const spin = 1.234;
+    const [x, y, z] = bodyToDeck(p, spin);
+    expect(x).toBeCloseTo(p[0] * Math.cos(spin) - p[2] * Math.sin(spin), 15);
+    expect(y).toBe(p[1]);
+    expect(z).toBeCloseTo(p[2] * Math.cos(spin) + p[0] * Math.sin(spin), 15);
+  });
+
+  it('pierces the drawn shell where the exact quadratic does, at every Sun height', () => {
+    // The ray n + tL meets the shell at 1 + h/R where t² + 2μt − k = 0. The
+    // twin writes the root without the cancellation; the test takes it the
+    // plain way in double precision, which has bits to spare.
+    const R = EARTH_RADIUS_KM;
+    const h = CLOUD_TOP_KM;
+    expect(h).toBe(10);
+    const hOverR = h / R;
+    const k = hOverR * (2 + hOverR);
+    const n = [0, 1, 0] as const;
+    for (const mu of [1, 0.77, 0.17, 0.05, 0]) {
+      // The Sun at this height, off toward +x.
+      const L = [Math.sqrt(1 - mu * mu), mu, 0] as const;
+      const tExact = -mu + Math.sqrt(mu * mu + k);
+      const q = [n[0] + tExact * L[0], n[1] + tExact * L[1], n[2] + tExact * L[2]];
+      expect(Math.hypot(q[0], q[1], q[2])).toBeCloseTo(1 + hOverR, 12);
+      const len = Math.hypot(q[0], q[1], q[2]);
+      const d = cloudRayDirection(n, L, hOverR);
+      expect(Math.hypot(d[0], d[1], d[2])).toBeCloseTo(1, 14);
+      for (let i = 0; i < 3; i++) expect(d[i]).toBeCloseTo(q[i] / len, 13);
+      // The ground's distance along the ray, in km: the cloud a shadow comes
+      // from is this far off toward the Sun.
+      if (mu === 0) expect(tExact * R).toBeCloseTo(Math.sqrt(2 * R * h + h * h), 6);
+      if (mu === 1) expect(tExact * R).toBeCloseTo(h, 6);
+    }
+    // At the horizon the ray reaches the shell 357 km off, not at infinity.
+    expect(Math.sqrt(k) * R).toBeGreaterThan(356);
+    expect(Math.sqrt(k) * R).toBeLessThan(358);
+  });
+
+  it('keeps its bits with the Sun high, where the plain root cancels', () => {
+    // In single precision −μ + √(μ² + k) at μ = 1 is 1 − 1.0016 rounded:
+    // a few ulps of 1 carrying all of a 10 km answer. The rationalised form
+    // keeps the full precision; Math.fround stands in for the GPU's float.
+    const f = Math.fround;
+    const hOverR = f(CLOUD_TOP_KM / EARTH_RADIUS_KM);
+    const k = f(hOverR * f(2 + hOverR));
+    const mu = f(0.999);
+    const root = f(Math.sqrt(f(f(mu * mu) + k)));
+    const plain = f(root - mu);
+    const rational = f(k / f(root + mu));
+    const exact = -0.999 + Math.sqrt(0.999 * 0.999 + (CLOUD_TOP_KM / EARTH_RADIUS_KM) * (2 + CLOUD_TOP_KM / EARTH_RADIUS_KM));
+    expect(Math.abs(rational - exact) / exact).toBeLessThan(1e-6);
+    expect(Math.abs(plain - exact) / exact).toBeGreaterThan(Math.abs(rational - exact) / exact);
+    expect(CLOUD_FRAME_GLSL).toContain('float t = mu >= 0.0 ? k / (root + mu) : root - mu;');
   });
 });

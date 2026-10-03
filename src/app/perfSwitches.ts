@@ -46,6 +46,13 @@
  * it. They are off by default, never exact, never in the combined row, and a
  * production build carries neither reading of them.
  *
+ * The VISUAL keys — `cloud-noise-frame` — are not efficiency changes either.
+ * They ship on and they change the picture on purpose: each one is a fix
+ * whose OFF arm is the picture as it was, kept as the control a capture of the
+ * fix is held against. A visual key is a control arm, not a saving: never
+ * exact, never in the combined row, never in the Phone preset, and a
+ * production build compiles its ON reading alone.
+ *
  * There is deliberately no key for the render resolution. The graphics-quality
  * levels are its A/B (`?quality=medium` is the picture as it was, and
  * `?upscale=<ratio>` pins any scene ratio for a measurement), and a key here
@@ -65,6 +72,7 @@ export type PerfSwitchKey =
   | 'depth-discard'
   | 'fused-final'
   | 'cloud-program'
+  | 'cloud-noise-frame'
   | 'cloud-probe-smooth'
   | 'cloud-probe-detail'
   | 'cloud-probe-relief'
@@ -97,6 +105,7 @@ export const PERF_SWITCHES: ReadonlyArray<{
   { key: 'depth-discard', label: 'Scene depth/stencil discard', on: true },
   { key: 'fused-final', label: 'Lens, glow and tone map as one pass', on: true, needsReload: true },
   { key: 'cloud-program', label: 'Cloud deck program of its own', on: true, needsReload: true },
+  { key: 'cloud-noise-frame', label: 'Cloud noise anchored to the sheet', on: true },
   { key: 'cloud-probe-smooth', label: 'Cloud deck probe: smooth filter off', on: false },
   { key: 'cloud-probe-detail', label: 'Cloud deck probe: detail term off', on: false },
   { key: 'cloud-probe-relief', label: 'Cloud deck probe: relief map off', on: false },
@@ -116,6 +125,7 @@ const DEFAULT_ON: Record<PerfSwitchKey, boolean> = {
   'depth-discard': true,
   'fused-final': true,
   'cloud-program': true,
+  'cloud-noise-frame': true,
   'cloud-probe-smooth': false,
   'cloud-probe-detail': false,
   'cloud-probe-relief': false,

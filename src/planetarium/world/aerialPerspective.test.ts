@@ -97,8 +97,8 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '52b6333b668e3f14fb5ae009496b329d25161ec0d2411003cc084d34fb67cd09';
-const PROD_FRAGMENT_HASH = '3a71fc1ad0f52aad79e08bfeb112395ef0df8410c524cac862c2914f2229bbee';
+const DEV_FRAGMENT_HASH = 'ee7b01605970c869bb17ed44a1df9b37a0bd956bc1e4457a116145a1d28b1b60';
+const PROD_FRAGMENT_HASH = 'c1158d418aadb47e4dcaee27c97f75210911b5b7309483ba0f898a6bb8d6ae85';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 
 describe('the injected surface shader', () => {
@@ -163,12 +163,17 @@ describe('the injected surface shader', () => {
     const shader = compile(augmented('earth'));
     const folded = shader.fragmentShader
       .replace('uniform float uPerfCloudTaps;\nuniform float uPerfCloudClear;\nuniform float uPerfGlintGate;'
+        + '\nuniform float uPerfCloudNoiseFrame;'
         + '\nuniform float uProbeCloudSmooth;\nuniform float uProbeCloudDetail;'
         + '\nuniform float uProbeCloudRelief;\nuniform float uProbeCloudAir;'
         + '\nuniform float uGlintCap;\nuniform float uGlintKeep;', '')
       .replace(/uPerfCloudTaps < 0\.5 \|\| /g, '')
       .replace(/uPerfCloudClear > 0\.5 && /g, '')
       .replace(/uPerfGlintGate < 0\.5 \|\| /g, '')
+      // The detail's old world frame is a control arm with no cheap reading:
+      // the production text is the text without it.
+      .replace('  if (uPerfCloudNoiseFrame < 0.5) {\n    dir = normalize(vAirFrag);\n    ddx = dFdx(dir);\n'
+        + '    ddy = dFdy(dir);\n  }\n', '')
       // The deck's cost probes have no cheap reading at all: the production
       // text is the text without them.
       .replace(/uProbeCloudSmooth < 0\.5 && /g, '')

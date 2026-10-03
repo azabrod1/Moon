@@ -149,6 +149,7 @@ import {
   CLOUD_DETAIL_ERODE,
   CLOUD_DETAIL_GLSL,
   CLOUD_DETAIL_RELIEF_KM,
+  CLOUD_FRAME_GLSL,
   cloudShellScale,
   LUMINANCE_WEIGHTS,
   SPHERE_EQUIRECT_UV_GLSL,
@@ -1344,6 +1345,7 @@ if (GROUND_ON(uSynthEnvelope > 0.0)) {
 const PERF_SWITCH_DECLS = /* glsl */ `uniform float uPerfCloudTaps;
 uniform float uPerfCloudClear;
 uniform float uPerfGlintGate;
+uniform float uPerfCloudNoiseFrame;
 uniform float uProbeCloudSmooth;
 uniform float uProbeCloudDetail;
 uniform float uProbeCloudRelief;
@@ -1370,6 +1372,23 @@ const DETAIL_PROBE_GUARD = import.meta.env.DEV ? 'uProbeCloudDetail > 0.5 ? 0.0 
 const RELIEF_PROBE_OPEN = import.meta.env.DEV ? '\tif (uProbeCloudRelief < 0.5 || DECK_OFF) {\n' : '';
 const RELIEF_PROBE_CLOSE = import.meta.env.DEV ? '\t} // cloud relief probe\n' : '';
 const AIR_PROBE_GUARD = import.meta.env.DEV ? ' && (uProbeCloudAir < 0.5 || DECK_OFF)' : '';
+
+/**
+ * The deck detail's frame before it was the sheet's own: the world's axes,
+ * where the detail stood still in the sky while the cloud turned under it.
+ * Development builds only, behind `cloud-noise-frame` (app/perfSwitches.ts) —
+ * the control arm, the picture as it was — and a production build has neither
+ * the uniform nor these lines. Everything it swaps is a value the block above
+ * has already set, and the two derivatives it takes are inside a branch on a
+ * uniform, which the whole draw takes the same way.
+ */
+const NOISE_FRAME_OFF_ARM = import.meta.env.DEV
+  ? '  if (uPerfCloudNoiseFrame < 0.5) {\n'
+    + '    dir = normalize(vAirFrag);\n'
+    + '    ddx = dFdx(dir);\n'
+    + '    ddy = dFdy(dir);\n'
+    + '  }\n'
+  : '';
 
 /** The switch a dead cloud tap is removed behind, as the condition that still
  *  takes the tap. Off, the fetch happens exactly where it happened before the
@@ -1510,7 +1529,8 @@ uniform float uCloudDetailErode;
 uniform float uCloudDetailRelief;
 uniform sampler2D uNightLights;
 uniform float uCloudCityGlow;
-uniform float uPlanetRadius;
+uniform float uFrameSpin;
+${CLOUD_FRAME_GLSL}uniform float uPlanetRadius;
 uniform float uSolarIrradiance;
 uniform vec3 uAirlightScale;
 uniform sampler2D uTransmittance;
@@ -1583,25 +1603,34 @@ vec2 cloudNightUv = vec2(0.0);
 vec2 cloudNightDx = vec2(0.0);
 vec2 cloudNightDy = vec2(0.0);
 if (DECK_ON) {
-  // Where this fragment is on the deck, as longitude and latitude. Every
-  // derivative the block needs is taken HERE, inside the one branch that is
-  // uniform across the draw: a derivative under a per-fragment condition is
-  // undefined, and the fade below is exactly such a condition.
-  vec3 dir = normalize(vAirFrag);
-  vec3 ddx = dFdx(dir);
-  vec3 ddy = dFdy(dir);
+  // Where this fragment is, in the body's own frame. Every derivative the
+  // block needs is taken HERE, inside the one branch that is uniform across
+  // the draw: a derivative under a per-fragment condition is undefined, and
+  // the fade below is exactly such a condition.
+  vec3 objDir = normalize(vObjPos);
+  vec3 objDx = dFdx(objDir);
+  vec3 objDy = dFdy(objDir);
   vec3 sx = dFdx(-vViewPosition);
   vec3 sy = dFdy(-vViewPosition);
-  // Where this fragment stands over the GROUND, in the body's own frame — the
-  // frame the night map is painted in. The deck drifts on top of the body's
-  // spin, so its own UV is that drift out of register with the cities under it.
-  // The derivatives come with it: the lookup happens under a per-fragment
-  // condition further down, where an implicit one is undefined.
-  vec3 objDir = normalize(vObjPos);
+  // Where this fragment stands over the GROUND — the frame the night map is
+  // painted in. The deck drifts on top of the body's spin, so its own UV is
+  // that drift out of register with the cities under it. The derivatives come
+  // with it: the lookup happens under a per-fragment condition further down,
+  // where an implicit one is undefined.
   cloudNightUv = sphereEquirectUv(objDir);
-  cloudNightDx = sphereEquirectUvGrad(objDir, dFdx(objDir));
-  cloudNightDy = sphereEquirectUvGrad(objDir, dFdy(objDir));
-  float cosLat = max(sqrt(dir.x * dir.x + dir.z * dir.z), 1e-4);
+  cloudNightDx = sphereEquirectUvGrad(objDir, objDx);
+  cloudNightDy = sphereEquirectUvGrad(objDir, objDy);
+  // Where it is on the deck's OWN sheet, which is where the detail belongs:
+  // the body frame turned back by the drift the deck's mesh carries, the frame
+  // the cloud map is painted in. Read off anything else — the world's axes,
+  // say — the detail stands still in the sky while the cloud under it turns
+  // with the planet and drifts on top of that, and every carved edge crawls.
+  // The turn is linear, so it carries the derivatives exactly as it carries
+  // the direction.
+  vec3 dir = bodyToDeck(objDir, uFrameSpin);
+  vec3 ddx = bodyToDeck(objDx, uFrameSpin);
+  vec3 ddy = bodyToDeck(objDy, uFrameSpin);
+${NOISE_FRAME_OFF_ARM}  float cosLat = max(sqrt(dir.x * dir.x + dir.z * dir.z), 1e-4);
   // The angles' screen derivatives, taken analytically from the direction's.
   // atan() has a branch cut at the antimeridian, and reading its derivative
   // through dFdx would put one pixel of enormous gradient down that line — the
@@ -2410,6 +2439,7 @@ export function augmentSurfaceMaterial(
       shader.uniforms.uPerfCloudTaps = perfSwitchUniform('cloud-taps');
       shader.uniforms.uPerfCloudClear = perfSwitchUniform('cloud-clear');
       shader.uniforms.uPerfGlintGate = perfSwitchUniform('glint-gate');
+      shader.uniforms.uPerfCloudNoiseFrame = perfSwitchUniform('cloud-noise-frame');
       shader.uniforms.uProbeCloudSmooth = perfSwitchUniform('cloud-probe-smooth');
       shader.uniforms.uProbeCloudDetail = perfSwitchUniform('cloud-probe-detail');
       shader.uniforms.uProbeCloudRelief = perfSwitchUniform('cloud-probe-relief');

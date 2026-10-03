@@ -277,7 +277,8 @@ const PAGE_SCALE = f6(CLOUD_PAGE_CONTENT / CLOUD_PAGE_SIZE);
  * texelFetch, the page with explicit gradients, the smooth filter's taps at
  * level zero — so the whole function may sit under a per-fragment condition.
  */
-export const cloudFieldGlsl = (smoothFade: readonly [number, number]): string => /* glsl */ `#ifdef CLOUD_FIELD
+export const cloudFieldGlsl = (smoothFade: readonly [number, number]): string => /* glsl */ `
+#ifdef CLOUD_FIELD
 uniform highp sampler2DArray uCloudPages;
 uniform highp sampler2D uCloudPageTable;
 uniform float uCloudFieldDiag;
@@ -380,7 +381,8 @@ vec3 cloudFieldDiagColour(float layer) {
  * (where the pages sit, and how their weights meet); 2 tints the field by its
  * layer's colour (whether the cloud runs on across a page's edge).
  */
-export const CLOUD_FIELD_MIX_GLSL = (luminance: string): string => /* glsl */ `#ifdef CLOUD_FIELD
+export const CLOUD_FIELD_MIX_GLSL = (luminance: string): string => /* glsl */ `
+#ifdef CLOUD_FIELD
   float cloudFieldW = 0.0;
   float cloudFieldLayer = -1.0;
   vec2 cloudFieldAP = cloudFieldFine(dir, ddx, ddy, cloudFieldW, cloudFieldLayer);

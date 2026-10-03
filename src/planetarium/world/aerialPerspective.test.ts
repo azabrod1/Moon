@@ -30,6 +30,8 @@ import { KM_PER_AU } from '../../astronomy/constants';
 import { CASTER_PERIGEE_MARGIN } from './moonShadowCasters';
 import {
   AIR_LOOKUP_RADIUS,
+  CLOUD_FIELD_DECLS,
+  CLOUD_FIELD_MIX,
   CLOUD_SHADOW_AIR,
   CLOUD_SHADOW_DEPTH,
   CLOUD_SHADOW_GAMMA,
@@ -104,17 +106,17 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '90aec27eef29a89a6ec5c725f1056dc831032a6d772faa008b1fd7a206078e05';
+const DEV_FRAGMENT_HASH = '31ec0ab64f1eed76b3e197149a48d94f01998c445df8a899b681dc3c581c0f5d';
 /** The development text with the cloud field's define OFF (world/cloudField,
  *  DEV only), resolved as the preprocessor resolves it: the development text
  *  from before the field existed. A production build carries none of it. */
-const FIELD_OFF_DEV_FRAGMENT_HASH = '1825805e93cb3ae34df1cc1c9e0166e4f7d4273ee7571c3aca18488a7721674f';
-const PROD_FRAGMENT_HASH = 'fb36daefce40baf429c6564f26b5082c7c807454a468d5cbca6aa079fa096669';
+const FIELD_OFF_DEV_FRAGMENT_HASH = '894707cf7a6714c1ce4d2dcb1e829c3e2f49a767a765b2c924676de088b59058';
+const PROD_FRAGMENT_HASH = 'cdad27aaf1145418f8b4abf4f8f5b26e7e08408c22f5b3a19a60ffe264918bb8';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 /** The same two texts with the cloud shadow's define OFF, resolved as the
  *  preprocessor resolves it: the texts from before the switch existed. */
-const OFF_DEV_FRAGMENT_HASH = 'ee7b01605970c869bb17ed44a1df9b37a0bd956bc1e4457a116145a1d28b1b60';
-const OFF_PROD_FRAGMENT_HASH = 'c1158d418aadb47e4dcaee27c97f75210911b5b7309483ba0f898a6bb8d6ae85';
+const OFF_DEV_FRAGMENT_HASH = '80cc915bb61be519479fd1648fb34ec2c3aa547c810374f8e6432c9dd57f333d';
+const OFF_PROD_FRAGMENT_HASH = 'd6c234b3b4c5d8971279e356c10046928d45ebc21e155af5a1eed0873b70dfcb';
 
 describe('the injected surface shader', () => {
   it('is one text for every body and both tiers', () => {
@@ -185,6 +187,33 @@ describe('the injected surface shader', () => {
     expect(shader.vertexShader).not.toContain('CLOUD_SHADOW');
   });
 
+  it('puts every preprocessor directive at the start of its own line', () => {
+    // The preprocessor only sees a directive at the start of a line: a chunk
+    // spliced after a neighbour that does not end with a newline would hide
+    // its `#ifdef` behind the neighbour's last brace, and the conditional
+    // would silently not be one. Every hook three's chunks are replaced at,
+    // on the ground and on the deck, in whichever reading this run compiles.
+    const skeleton = '#include <common>\nvoid main() {\n#include <map_fragment>\n#include <roughnessmap_fragment>\n'
+      + '#include <normal_fragment_maps>\n#include <opaque_fragment>\n}';
+    const deck = augmented('cloud');
+    deck.defines = { ...deck.defines, CLOUD_FIELD: '' };
+    for (const mat of [augmented('earth'), deck]) {
+      const shader = {
+        uniforms: {} as Record<string, THREE.IUniform>,
+        vertexShader: '#include <common>\nvoid main() {\n#include <begin_vertex>\n}',
+        fragmentShader: skeleton,
+      };
+      (mat.onBeforeCompile as (s: typeof shader) => void)(shader);
+      for (const text of [shader.vertexShader, shader.fragmentShader]) {
+        const buried = text.split('\n').filter((line) =>
+          /#\s*(ifdef|ifndef|if|elif|else|endif|define|undef)\b/.test(line)
+          && !/^\s*#/.test(line)
+          && !/^\s*\/\//.test(line));
+        expect(buried).toEqual([]);
+      }
+    }
+  });
+
   it('is the text it was with the cloud field\'s define off, after the preprocessor', () => {
     // CLOUD_FIELD (world/cloudField, the 1.2 km field's vertical slice) is a
     // compile-time define on the deck alone, on the dev server alone, off by
@@ -216,8 +245,17 @@ describe('the injected surface shader', () => {
     // switch-ON reading, moves one of the two hashes and not the other.
     const shader = compile(augmented('earth'));
     // The cloud field is development-only text with no production reading:
-    // the shipped text is the text with its define resolved off.
-    const folded = resolveDefine(shader.fragmentShader, 'CLOUD_FIELD', false)
+    // the shipped text is the text with its two chunks deleted, newlines and
+    // all (resolving the define would leave the blank line each one opens
+    // with, which a production build never had).
+    if (import.meta.env.DEV) {
+      for (const chunk of [CLOUD_FIELD_DECLS, CLOUD_FIELD_MIX]) expect(shader.fragmentShader.split(chunk)).toHaveLength(2);
+    } else {
+      expect([CLOUD_FIELD_DECLS, CLOUD_FIELD_MIX]).toEqual(['', '']);
+    }
+    const folded = shader.fragmentShader
+      .replace(CLOUD_FIELD_DECLS, '')
+      .replace(CLOUD_FIELD_MIX, '')
       .replace('uniform float uPerfCloudTaps;\nuniform float uPerfCloudClear;\nuniform float uPerfGlintGate;'
         + '\nuniform float uPerfCloudNoiseFrame;'
         + '\nuniform float uProbeCloudSmooth;\nuniform float uProbeCloudDetail;'
@@ -229,7 +267,7 @@ describe('the injected surface shader', () => {
         + 'uniform float uCloudShadowGamma;\nuniform float uCloudShadowSkyFill;\n', '')
       // The cloud light's knobs are constants there, and so is the ground's
       // sky fill under a shade, with its knob's zero test gone.
-      .replace('#ifdef CLOUD_LIGHT\nuniform float uCloudLightWrap;\nuniform float uCloudLightSky;\n#endif\n', '')
+      .replace('\n#ifdef CLOUD_LIGHT\nuniform float uCloudLightWrap;\nuniform float uCloudLightSky;\n#endif\n', '')
       .replace('uCloudShadowSkyFill > 0.0 && ', '')
       .replace(/uCloudShadowSkyFill/g, CLOUD_SHADOW_SKY_FILL.toFixed(4))
       .replace(/uCloudLightWrap/g, CLOUD_LIGHT_WRAP.toFixed(4))

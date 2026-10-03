@@ -1846,8 +1846,16 @@ const SURFACE_ARCHETYPE_MACROS = /* glsl */ `
  * beside `cloudShadowUniforms`). Every line of this and of the three blocks
  * below is a whole line inside its own conditional, so with the define off
  * the preprocessor leaves the text it was.
+ *
+ * Every chunk that opens with a directive — this one, the cloud light's and the
+ * cloud field's declarations, and the body blocks that open with `#ifdef` —
+ * opens with its own newline and ends with one, so it is a whole line wherever
+ * it is spliced: the preprocessor only sees a directive at the start of a line,
+ * and a neighbour that happens not to end with a newline would otherwise hide
+ * `#ifdef` behind its last brace (aerialPerspective.test.ts scans for that).
  */
-const CLOUD_SHADOW_DECLS = /* glsl */ `#ifdef CLOUD_SHADOW
+const CLOUD_SHADOW_DECLS = /* glsl */ `
+#ifdef CLOUD_SHADOW
 uniform float uCloudAbove;
 uniform float uCloudHeightOverRadius;
 ${import.meta.env.DEV ? 'uniform float uCloudShadowDepth;\nuniform float uCloudShadowAir;\nuniform float uCloudShadowPenumbra;\nuniform float uCloudShadowGamma;\nuniform float uCloudShadowSkyFill;\n' : ''}#endif
@@ -1861,15 +1869,15 @@ ${import.meta.env.DEV ? 'uniform float uCloudShadowDepth;\nuniform float uCloudS
  * the program it was — every line is a whole line inside its conditional
  * (aerialPerspective.test.ts pins both).
  */
-const CLOUD_FIELD_DECLS = import.meta.env.DEV ? cloudFieldGlsl(SMOOTH_TEXEL_FADE) : '';
-const CLOUD_FIELD_MIX = import.meta.env.DEV
+export const CLOUD_FIELD_DECLS = import.meta.env.DEV ? cloudFieldGlsl(SMOOTH_TEXEL_FADE) : '';
+export const CLOUD_FIELD_MIX = import.meta.env.DEV
   ? CLOUD_FIELD_MIX_GLSL(`vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')})`)
   : '';
 
 /** The cloud light's knobs, declared only in a development build and only in a
  *  program compiled with CLOUD_LIGHT; a production build reads constants. */
 const CLOUD_LIGHT_DECLS = import.meta.env.DEV
-  ? '#ifdef CLOUD_LIGHT\nuniform float uCloudLightWrap;\nuniform float uCloudLightSky;\n#endif\n'
+  ? '\n#ifdef CLOUD_LIGHT\nuniform float uCloudLightWrap;\nuniform float uCloudLightSky;\n#endif\n'
   : '';
 
 const SURFACE_FRAGMENT_DECLS = /* glsl */ `
@@ -2099,7 +2107,8 @@ ${CLOUD_CLEAR_RETURN}`;
  * the shadow the true width is sin e of that, and a first look is wanted
  * before the shape is.
  */
-const CLOUD_SHADOW_READ = /* glsl */ `#ifdef CLOUD_SHADOW
+const CLOUD_SHADOW_READ = /* glsl */ `
+#ifdef CLOUD_SHADOW
   // With cloud shadows compiled in, the beam's share is read HERE, for the
   // ground, the sea and the air alike, where the Sun's ray to this point
   // crosses the deck as it is drawn; the straight-down read under the sea's
@@ -2150,7 +2159,8 @@ const CLOUD_SHADOW_READ = /* glsl */ `#ifdef CLOUD_SHADOW
  * sea's own block, which cuts only the mirror term by the beam itself, and
  * before the eclipse factor, which multiplies both.
  */
-const CLOUD_SHADOW_DIFFUSE = /* glsl */ `#ifdef CLOUD_SHADOW
+const CLOUD_SHADOW_DIFFUSE = /* glsl */ `
+#ifdef CLOUD_SHADOW
   float cloudShade = pow(1.0 - cloudSunKeep, ${CLOUD_SHADOW_GAMMA_GLSL}) * cloudShadeHorizon;
   outgoingLight -= reflectedLight.directDiffuse * (cloudShade * ${CLOUD_SHADOW_DEPTH_GLSL});
 #endif
@@ -2160,7 +2170,8 @@ const CLOUD_SHADOW_DIFFUSE = /* glsl */ `#ifdef CLOUD_SHADOW
  *  ground point, the share of that column under the cloud taken with it — and
  *  less of it as the view grazes, measured on the ground's geometric normal
  *  (never the perturbed one) against the line of sight (CLOUD_SHADOW_AIR_GRAZE). */
-const CLOUD_SHADOW_AIR_SCALE = /* glsl */ `#ifdef CLOUD_SHADOW
+const CLOUD_SHADOW_AIR_SCALE = /* glsl */ `
+#ifdef CLOUD_SHADOW
       airS *= 1.0 - cloudShade * ${CLOUD_SHADOW_AIR_GLSL}
           * smoothstep(${CLOUD_SHADOW_AIR_GRAZE[0].toFixed(6)}, ${CLOUD_SHADOW_AIR_GRAZE[1].toFixed(6)}, dot(up, normalize(vAirCam - vAirFrag)));
 #endif
@@ -2176,7 +2187,8 @@ const CLOUD_SHADOW_AIR_SCALE = /* glsl */ `#ifdef CLOUD_SHADOW
  * takes it to nothing where the Sun meets the ground's horizon. Only where the
  * body's air tables are bound: with no tables there is no sky to read.
  */
-const CLOUD_SHADOW_FILL = /* glsl */ `#ifdef CLOUD_SHADOW
+const CLOUD_SHADOW_FILL = /* glsl */ `
+#ifdef CLOUD_SHADOW
   if (${CLOUD_SHADOW_SKY_FILL_GUARD}uAirDensity > 0.0) {
     float fillMuS = clampCosine(dot(normalize(vAirFrag), normalize(uSunDirWorld)));
     outgoingLight += diffuseColor.rgb * RECIPROCAL_PI
@@ -2218,7 +2230,8 @@ const CLOUD_SHADOW_FILL = /* glsl */ `#ifdef CLOUD_SHADOW
  * leaving the deck. No derivative and no mipped fetch: it sits past the deck's
  * clear-sky return, where the lanes are divergent.
  */
-const CLOUD_LIGHT_DECK = /* glsl */ `#ifdef CLOUD_LIGHT
+const CLOUD_LIGHT_DECK = /* glsl */ `
+#ifdef CLOUD_LIGHT
   if (DECK_ON) {
     vec3 cloudGeoIrradiance = vec3(0.0);
     IncidentLight cloudLight;

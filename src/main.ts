@@ -3315,8 +3315,9 @@ function installDevHooks() {
     // `on` moves the switch and relinks the deck; `wrap` (the share of its
     // direct diffuse taken on the shell's own normal), `sky` (the sky's
     // irradiance on it, as a multiple of the table's) and `groundFill` (the
-    // sky's irradiance on the ground in proportion to a cloud's shade, read
-    // only where the shadows are compiled) are uniforms from the next frame.
+    // sky's irradiance on the ground in proportion to a cloud's shade, the
+    // shadows' CLOUD_SHADOW_SKY_FILL, read only where they are compiled) are
+    // uniforms from the next frame.
     cloudLight: (opts?: { on?: boolean; wrap?: number; sky?: number; groundFill?: number }) =>
       devCloudLight(opts),
     // The night side's exposure, live (world/nightExposure): the lit fractions

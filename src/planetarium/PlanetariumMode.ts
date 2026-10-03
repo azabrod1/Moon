@@ -110,6 +110,7 @@ import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU, SUN_RADIUS_AU } from '../astronomy/constants';
 import { horizonDip, mirrorPointOnSphere } from './horizonPose';
 import { SUN_LIGHT_BASELINE } from './sunLight';
+import { writeShadedAlbedo } from './world/albedoGrade';
 import {
   createPlanetariumStarfield,
   setStarfieldGain,
@@ -6956,14 +6957,17 @@ export class PlanetariumMode {
     const material = m.mesh.material as THREE.MeshStandardMaterial;
     const fraction = shading.sunVisibleFraction;
     const isEarthMoon = m.data.name === 'Moon' && m.data.parentPlanet === 'Earth';
+    // The colour is the body's albedo grade times this frame's shade: written
+    // through the grade so a graded Moon stays graded through every frame.
     if (isEarthMoon && shading.inUmbra) {
-      material.color.setRGB(
+      writeShadedAlbedo(material, m.data.name, [
         Math.max(fraction, PlanetariumMode.BLOOD_MOON_FLOOR_R),
         Math.max(fraction, 0.07),
         Math.max(fraction, 0.05),
-      );
+      ]);
     } else {
-      material.color.setScalar(Math.max(fraction, 0.03));
+      const shade = Math.max(fraction, 0.03);
+      writeShadedAlbedo(material, m.data.name, [shade, shade, shade]);
     }
   }
 

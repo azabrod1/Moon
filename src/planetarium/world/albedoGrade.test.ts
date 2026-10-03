@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import {
   BODY_ALBEDO_GRADE, MOON_ALBEDO_SCALE, albedoGradeOf, applyAlbedoGrade, devAlbedoGrade,
-  inheritAlbedoGrade, restoreAlbedoGrade,
+  inheritAlbedoGrade, restoreAlbedoGrade, writeShadedAlbedo,
 } from './albedoGrade';
 import { SUN_LIGHT_AUTHORED_HUE, luminanceOf } from '../sunLight';
 
@@ -55,5 +55,21 @@ describe('the albedo grade', () => {
     devAlbedoGrade('Moon', null);
     expect(painted.color.r).toBeCloseTo(before, 12);
     expect(albedoGradeOf('Moon')).toEqual([...BODY_ALBEDO_GRADE.Moon]);
+  });
+
+  it('composes with a per-frame shade instead of being erased by it', () => {
+    const moon = new THREE.MeshStandardMaterial({ map: new THREE.Texture() });
+    applyAlbedoGrade(moon, 'Moon');
+    const g = BODY_ALBEDO_GRADE.Moon;
+    writeShadedAlbedo(moon, 'Moon', [1, 1, 1]);
+    expect([moon.color.r, moon.color.g, moon.color.b]).toEqual([...g]);
+    writeShadedAlbedo(moon, 'Moon', [0.3, 0.07, 0.05]);
+    expect(moon.color.r).toBeCloseTo(g[0] * 0.3, 12);
+    expect(moon.color.b).toBeCloseTo(g[2] * 0.05, 12);
+    // An ungraded moon's colour is the shade alone, as it always was.
+    const rhea = new THREE.MeshStandardMaterial();
+    applyAlbedoGrade(rhea, 'Rhea');
+    writeShadedAlbedo(rhea, 'Rhea', [0.5, 0.5, 0.5]);
+    expect(rhea.color.r).toBe(0.5);
   });
 });

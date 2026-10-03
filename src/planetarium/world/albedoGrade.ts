@@ -19,8 +19,11 @@
  * The grade is recorded on the material (userData.albedoGrade) and applied
  * wherever the material's colour is set: at the paint, when the real map
  * replaces the placeholder tint, and at every rung swap of the texture
- * ladder, both of which used to reset the colour to white. A streamed sector
- * inherits its globe's. The DEV knob (`__moon.albedoGrade`) overrides a
+ * ladder, both of which used to reset the colour to white; and every frame
+ * for a moon, whose colour is also its eclipse shade (PlanetariumMode's
+ * applyMoonShading writes grade times shade through writeShadedAlbedo, and the
+ * streamer mirrors that colour onto the sectors). A streamed sector inherits
+ * its globe's at creation. The DEV knob (`__moon.albedoGrade`) overrides a
  * body's grade live for every material it has and every one it makes later,
  * which is how a sheet of candidates comes out of one page load.
  */
@@ -79,6 +82,15 @@ export function applyAlbedoGrade(mat: THREE.Material, name: string, now = true):
 export function restoreAlbedoGrade(mat: THREE.Material): void {
   const name = (mat.userData as { albedoBody?: string }).albedoBody;
   writeColor(mat, name ? albedoGradeOf(name) : WHITE);
+}
+
+/** The material's colour as the body's grade times a per-frame shade (a
+ *  moon's sun-visible fraction, the blood-moon floor): the one write for a
+ *  body whose colour is driven every frame, so the shade never erases the
+ *  grade and the grade never erases the shade. */
+export function writeShadedAlbedo(mat: THREE.Material, name: string, shade: RGB): void {
+  const g = albedoGradeOf(name);
+  writeColor(mat, [g[0] * shade[0], g[1] * shade[1], g[2] * shade[2]]);
 }
 
 /** A sector takes its globe's grade. */

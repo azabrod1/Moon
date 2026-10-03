@@ -7,12 +7,12 @@
  * applies, so the tests can pin the addressing without a GPU. The pool that
  * holds the pages and the bridge that drives them are `cloudFieldPool.ts`.
  *
- * DEVELOPMENT ONLY, AND OFF. This is the vertical slice that decides whether
- * HD clouds go ahead: a few hard-wired pages, no streamer, no ground reads. The
- * shader half is a compile-time define, CLOUD_FIELD, set only on the deck's
- * material and only on the dev server with `?cloudtiles=1`; a production build
- * carries none of the text, and a development program without the define is
- * the program it was, after the preprocessor, character for character.
+ * OFF BY DEFAULT. The shader half is a compile-time define, CLOUD_FIELD, set
+ * only on the planetarium's deck and only when `?cloudtiles=1` asked for it at
+ * boot (any build) and the device's profile gives the pool layers; a program
+ * without the define is the program it was, after the preprocessor, but for
+ * the one blank line each of the two chunks below opens with. No residency
+ * yet: pages are made resident by hand, through the development bridge.
  *
  * THE REPRESENTATION is two channels per texel, `(A, P)` — the encoding study
  * (planning/cloud-detail/encoding) chose it: A is the deck's authored opacity,
@@ -43,6 +43,15 @@ type Vec3 = readonly [number, number, number];
 
 /** Pages across the globe, and down it. */
 export const CLOUD_FIELD_GRID: readonly [number, number] = [16, 8];
+
+/**
+ * The tile sets a page's two planes are read from, cut by gen-tiles' `clouds`
+ * job and named in the generated table like every sector set: the key is the
+ * stem of the master they are cut from (`earth-clouds.v2`, the second cut of
+ * the map the deck ships), so a re-cut master ships under a new key and takes
+ * its pages with it; a page is the same cell of both tiers.
+ */
+export const CLOUD_FIELD_SETS = { key: 'earth-clouds.v2', opacity: '32k-a', brightness: '32k-p' } as const;
 /** Content texels on a page's side. */
 export const CLOUD_PAGE_CONTENT = 2032;
 /** Texels of neighbouring content round every page. */
@@ -327,16 +336,57 @@ export function cloudFieldPoolBytes(layers: number): number {
   return texels * 2 * layers;
 }
 
-/** The dev switch: `?cloudtiles=1` on the development server. */
-export function cloudFieldRequested(search?: string): boolean {
-  if (!import.meta.env.DEV) return false;
-  const q = search ?? (typeof location !== 'undefined' ? location.search : '');
-  return new URLSearchParams(q).get('cloudtiles') === '1';
-}
-
 const f6 = (x: number) => x.toFixed(6);
 const [GX, GY] = CLOUD_FIELD_GRID;
 const PAGE_SCALE = f6(CLOUD_PAGE_CONTENT / CLOUD_PAGE_SIZE);
+
+/**
+ * The development build's diagnostics in the field's text (the bridge's
+ * `__moon.cloudField({ diag })`): a uniform, two helpers, and two branches in
+ * the deck's block. A production build compiles none of them, and the fold
+ * test in aerialPerspective.test.ts turns the development text into the
+ * production one by deleting exactly these four pieces.
+ */
+export const CLOUD_FIELD_DIAGNOSTICS: Readonly<Record<'uniform' | 'functions' | 'probe' | 'paint', string>> =
+  import.meta.env.DEV
+    ? {
+      uniform: 'uniform float uCloudFieldDiag;\n',
+      functions: /* glsl */ `// The guard's input at a deck-frame direction, for the diagnostic that paints
+// it: (major in tile-ratio pixels, major in scene pixels, the guard's weight).
+vec3 cloudFieldGuardInput(vec3 deckDir, vec3 dDirX, vec3 dDirY) {
+  vec2 k = vec2(${GX}.0, ${GY}.0) * ${PAGE_SCALE};
+  vec2 lDx = sphereEquirectUvGrad(deckDir, dDirX) * k;
+  vec2 lDy = sphereEquirectUvGrad(deckDir, dDirY) * k;
+  float majorScene;
+  float major = cloudFieldMajor(lDx, lDy, majorScene);
+  return vec3(major, majorScene, cloudFieldGuard(major, majorScene));
+}
+// The diagnostic's colour for a layer: six hues, one per layer of the slice.
+vec3 cloudFieldDiagColour(float layer) {
+  float h = fract(layer / 6.0) * 6.0;
+  return clamp(abs(mod(h + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+}
+`,
+      probe: /* glsl */ `  if (uCloudFieldDiag > 2.5) {
+    // The guard's input, written to the scene target as it stands, unlit, for
+    // a readback (DEV): R the major in tile-ratio pixels, G in scene pixels,
+    // B the guard's weight.
+    gl_FragColor = vec4(cloudFieldGuardInput(dir, ddx, ddy), 1.0);
+    return;
+  }
+`,
+      paint: /* glsl */ `    if (uCloudFieldDiag > 0.5) {
+      vec3 cloudDiag = cloudFieldDiagColour(cloudFieldLayer);
+      if (uCloudFieldDiag < 1.5) {
+        diffuseColor.rgb = cloudDiag;
+        cloudAlpha = cloudFieldW;
+      } else {
+        diffuseColor.rgb *= cloudDiag;
+      }
+    }
+`,
+    }
+    : { uniform: '', functions: '', probe: '', paint: '' };
 
 /**
  * The field's GLSL: declarations and `cloudFieldFine`, every line inside
@@ -353,8 +403,7 @@ export const cloudFieldGlsl = (smoothFade: readonly [number, number]): string =>
 #ifdef CLOUD_FIELD
 uniform highp sampler2DArray uCloudPages;
 uniform highp sampler2D uCloudPageTable;
-uniform float uCloudFieldDiag;
-uniform float uCloudFieldPixelScale;
+${CLOUD_FIELD_DIAGNOSTICS.uniform}uniform float uCloudFieldPixelScale;
 // The deck's smooth magnification filter (textureBSpline) on one layer of an
 // array: the same cubic B-spline folded into four bilinear taps at level zero.
 vec4 textureBSplineLayer(highp sampler2DArray tex, vec2 uv, float layer, vec2 texels) {
@@ -457,22 +506,7 @@ vec2 cloudFieldFine(vec3 deckDir, vec3 dDirX, vec3 dDirY, out float w, out float
   }
   return fine;
 }
-// The guard's input at a deck-frame direction, for the diagnostic that paints
-// it: (major in tile-ratio pixels, major in scene pixels, the guard's weight).
-vec3 cloudFieldGuardInput(vec3 deckDir, vec3 dDirX, vec3 dDirY) {
-  vec2 k = vec2(${GX}.0, ${GY}.0) * ${PAGE_SCALE};
-  vec2 lDx = sphereEquirectUvGrad(deckDir, dDirX) * k;
-  vec2 lDy = sphereEquirectUvGrad(deckDir, dDirY) * k;
-  float majorScene;
-  float major = cloudFieldMajor(lDx, lDy, majorScene);
-  return vec3(major, majorScene, cloudFieldGuard(major, majorScene));
-}
-// The diagnostic's colour for a layer: six hues, one per layer of the slice.
-vec3 cloudFieldDiagColour(float layer) {
-  float h = fract(layer / 6.0) * 6.0;
-  return clamp(abs(mod(h + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
-}
-#endif
+${CLOUD_FIELD_DIAGNOSTICS.functions}#endif
 `;
 
 /**
@@ -486,37 +520,22 @@ vec3 cloudFieldDiagColour(float layer) {
  * brightness P / A, the hue the base's. The erosion is the base's alone: the
  * field's own edges are the 1.2 km map's, so at full weight none of it remains.
  *
- * `uCloudFieldDiag`: 1 paints each resident layer a flat colour at the alpha w
- * (where the pages sit, and how their weights meet); 2 tints the field by its
- * layer's colour (whether the cloud runs on across a page's edge).
+ * In a development build, `uCloudFieldDiag` (CLOUD_FIELD_DIAGNOSTICS): 1
+ * paints each resident layer a flat colour at the alpha w (where the pages
+ * sit, and how their weights meet); 2 tints the field by its layer's colour
+ * (whether the cloud runs on across a page's edge); 3 writes the guard's input.
  */
 export const CLOUD_FIELD_MIX_GLSL = (luminance: string): string => /* glsl */ `
 #ifdef CLOUD_FIELD
   float cloudFieldW = 0.0;
   float cloudFieldLayer = -1.0;
-  if (uCloudFieldDiag > 2.5) {
-    // The guard's input, written to the scene target as it stands, unlit, for
-    // a readback (DEV): R the major in tile-ratio pixels, G in scene pixels,
-    // B the guard's weight.
-    gl_FragColor = vec4(cloudFieldGuardInput(dir, ddx, ddy), 1.0);
-    return;
-  }
-  vec2 cloudFieldAP = cloudFieldFine(dir, ddx, ddy, cloudFieldW, cloudFieldLayer);
+${CLOUD_FIELD_DIAGNOSTICS.probe}  vec2 cloudFieldAP = cloudFieldFine(dir, ddx, ddy, cloudFieldW, cloudFieldLayer);
   if (cloudFieldW > 0.0) {
     float cloudC0 = dot(diffuseColor.rgb, ${luminance});
     vec3 cloudHue = cloudC0 > 1e-4 ? diffuseColor.rgb / cloudC0 : vec3(1.0);
     vec2 cloudAP = mix(vec2(cloudAlpha, cloudAlpha * cloudC0), cloudFieldAP, cloudFieldW);
     cloudAlpha = cloudAP.x;
     diffuseColor.rgb = min(cloudHue * (cloudAP.y / max(cloudAP.x, 1e-4)), vec3(1.0));
-    if (uCloudFieldDiag > 0.5) {
-      vec3 cloudDiag = cloudFieldDiagColour(cloudFieldLayer);
-      if (uCloudFieldDiag < 1.5) {
-        diffuseColor.rgb = cloudDiag;
-        cloudAlpha = cloudFieldW;
-      } else {
-        diffuseColor.rgb *= cloudDiag;
-      }
-    }
-  }
+${CLOUD_FIELD_DIAGNOSTICS.paint}  }
 #endif
 `;

@@ -75,10 +75,14 @@ function cacheKey(pathname) {
  *  carries the hash of its own contents, so these change whenever the tiles
  *  do — which is what lets a tile body be cached with no digest and no
  *  expiry, and what makes a set the app dropped prunable on activate.
- *  Deliberately only the sets the app names at its coarsest level: Cache
- *  Storage for off-origin bodies is charged to THIS origin, and WebKit
- *  evicts a whole origin at once, so an unbounded tile appetite could evict
- *  the boot precache this worker exists for.
+ *  Every set the generated table names is here, at every level it names —
+ *  the finer colour levels and the cloud field's pages included — so what a
+ *  session has fetched stays held until the app stops naming its set. That
+ *  is a cost as well as the point: Cache Storage for off-origin bodies is
+ *  charged to THIS origin, and WebKit evicts a whole origin at once, so an
+ *  appetite large enough could evict the boot precache this worker exists
+ *  for. What a session fetches is bounded by what it visits, not by what a
+ *  level holds.
  *
  *  A prefix is the whole published path, host included, so the path a host
  *  serves tiles under has to stay fixed — a CDN ref that moves (jsDelivr

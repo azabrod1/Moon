@@ -48,6 +48,7 @@ import {
 } from './surfaceShading';
 import { createEarthNightShellMaterial } from './earthNightMaterial';
 import { resolveDefine } from '../testing/glslDefine';
+import { CLOUD_FIELD_DIAGNOSTICS } from './cloudField';
 
 /**
  * Aerial perspective — the air between the camera and everything drawn in front
@@ -107,16 +108,22 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
 const DEV_FRAGMENT_HASH = 'e2ff7fefd39c343b2406de2c5ba6f12b31022fbdfbf909d5929be3b71f072fe3';
-/** The development text with the cloud field's define OFF (world/cloudField,
- *  DEV only), resolved as the preprocessor resolves it: the development text
- *  from before the field existed. A production build carries none of it. */
-const FIELD_OFF_DEV_FRAGMENT_HASH = '894707cf7a6714c1ce4d2dcb1e829c3e2f49a767a765b2c924676de088b59058';
-const PROD_FRAGMENT_HASH = 'cdad27aaf1145418f8b4abf4f8f5b26e7e08408c22f5b3a19a60ffe264918bb8';
+const PROD_FRAGMENT_HASH = '1bb8304a14c726675aa82abdb3bdd80b756d8fc7578d75b088ab7d18e997360a';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
-/** The same two texts with the cloud shadow's define OFF, resolved as the
- *  preprocessor resolves it: the texts from before the switch existed. */
+/** The two texts with the cloud field's define OFF (world/cloudField),
+ *  resolved as the preprocessor resolves it: each of the field's two chunks
+ *  leaves the one blank line it opens with. */
+const FIELD_OFF_DEV_FRAGMENT_HASH = '894707cf7a6714c1ce4d2dcb1e829c3e2f49a767a765b2c924676de088b59058';
+const FIELD_OFF_PROD_FRAGMENT_HASH = '561ccda48bfa57091b45d59f9cff7ee3f4b38cba9b2eda03ba45d04667350865';
+/** The production text from before the field reached a production build:
+ *  the shipped text with the field's two chunks deleted, newlines and all. */
+const PRE_FIELD_PROD_FRAGMENT_HASH = 'cdad27aaf1145418f8b4abf4f8f5b26e7e08408c22f5b3a19a60ffe264918bb8';
+/** The same two texts with the cloud shadow's, the cloud light's and the
+ *  cloud field's defines all OFF, resolved as the preprocessor resolves them:
+ *  the texts from before the switches existed, but for the field's two blank
+ *  lines. */
 const OFF_DEV_FRAGMENT_HASH = '80cc915bb61be519479fd1648fb34ec2c3aa547c810374f8e6432c9dd57f333d';
-const OFF_PROD_FRAGMENT_HASH = 'd6c234b3b4c5d8971279e356c10046928d45ebc21e155af5a1eed0873b70dfcb';
+const OFF_PROD_FRAGMENT_HASH = 'e1a45e4e0da51aee9ce758881aa9f65eb33147b02ef49e9ec91be04bd1e3c054';
 
 describe('the injected surface shader', () => {
   it('is one text for every body and both tiers', () => {
@@ -176,8 +183,8 @@ describe('the injected surface shader', () => {
     // same text — the zero-pixel claim by construction, which the pixel gate
     // then checks.
     const shader = compile(augmented('earth'));
-    // The cloud field's define is resolved off too: it is development text on
-    // the deck alone, off by default (world/cloudField).
+    // The cloud field's define is resolved off too: the deck's alone, off by
+    // default (world/cloudField).
     const off = resolveDefine(resolveDefine(resolveDefine(shader.fragmentShader, 'CLOUD_FIELD', false),
       'CLOUD_SHADOW', false), 'CLOUD_LIGHT', false);
     expect(off).not.toMatch(/CLOUD_SHADOW|CLOUD_LIGHT|CLOUD_FIELD/);
@@ -218,12 +225,8 @@ describe('the injected surface shader', () => {
     // A ground with CLOUD_FIELD (and never CLOUD_DECK) knows it is not the
     // deck: DECK_ON is a constant false there, so the deck's block — its detail
     // tap on uCloudDetail, an active sampler on every ground otherwise — is
-    // dead code the compiler drops. Development builds only, with the field.
+    // dead code the compiler drops.
     const text = compile(augmented('earth')).fragmentShader;
-    if (!import.meta.env.DEV) {
-      expect(text).not.toContain('CLOUD_FIELD');
-      return;
-    }
     const ground = resolveDefine(text, 'CLOUD_FIELD', true);
     const macros = ground.slice(ground.indexOf('#ifdef CLOUD_DECK'), ground.indexOf('uniform vec3 uNightColor;'));
     expect(macros).toContain('#else\n#define DECK_ON false\n#define DECK_OFF true\n#define GROUND_ON(x) (x)\n#endif');
@@ -238,21 +241,32 @@ describe('the injected surface shader', () => {
   });
 
   it('is the text it was with the cloud field\'s define off, after the preprocessor', () => {
-    // CLOUD_FIELD (world/cloudField, the 1.2 km field's vertical slice) is a
-    // compile-time define on the deck alone, on the dev server alone, off by
-    // default. Every line it adds is a whole line inside its own conditional,
-    // so with it off a development program is the development program from
-    // before the field existed, character for character; a production build
-    // carries none of the text at all.
+    // CLOUD_FIELD (world/cloudField, the deck's 1.2 km field) is a compile-time
+    // define on the planetarium's deck alone, off by default. Every line it
+    // adds is a whole line inside its own conditional, and each of its two
+    // chunks opens with its own newline so its directive starts a line
+    // wherever it is spliced: with the define off, a program is the program
+    // from before the field existed with one blank line where each chunk sits,
+    // and nothing else.
     for (const archetype of ['earth', 'cloud'] as SurfaceArchetype[]) {
       const shader = compile(augmented(archetype));
       const off = resolveDefine(shader.fragmentShader, 'CLOUD_FIELD', false);
       expect(off).not.toMatch(/CLOUD_FIELD|cloudField|uCloudPage/);
-      expect(hash(off), archetype).toBe(import.meta.env.DEV ? FIELD_OFF_DEV_FRAGMENT_HASH : PROD_FRAGMENT_HASH);
-      if (!import.meta.env.DEV) expect(shader.fragmentShader).toBe(off);
+      expect(hash(off), archetype).toBe(import.meta.env.DEV ? FIELD_OFF_DEV_FRAGMENT_HASH : FIELD_OFF_PROD_FRAGMENT_HASH);
+      // The blank lines are all of it: each chunk read as its one newline is
+      // the same text...
+      expect(resolveDefine(shader.fragmentShader.replace(CLOUD_FIELD_DECLS, '\n').replace(CLOUD_FIELD_MIX, '\n'),
+        'CLOUD_FIELD', false), archetype).toBe(off);
+      // ...and with both chunks gone, newlines and all, the shipped text is
+      // the one production compiled before the field reached it.
+      if (!import.meta.env.DEV) {
+        const without = resolveDefine(shader.fragmentShader.replace(CLOUD_FIELD_DECLS, '').replace(CLOUD_FIELD_MIX, ''),
+          'CLOUD_FIELD', false);
+        expect(hash(without), archetype).toBe(PRE_FIELD_PROD_FRAGMENT_HASH);
+      }
       expect(shader.vertexShader).not.toContain('CLOUD_FIELD');
     }
-    // ...and no material carries the define unless the dev switch asked for it.
+    // ...and no material carries the define unless the session has the field.
     expect(augmented('cloud').defines?.CLOUD_FIELD).toBeUndefined();
   });
 
@@ -267,20 +281,23 @@ describe('the injected surface shader', () => {
     // A guard written in any other shape, or a cheap path that is not its
     // switch-ON reading, moves one of the two hashes and not the other.
     const shader = compile(augmented('earth'));
-    // The cloud field is development-only text with no production reading:
-    // the shipped text is the text with its two chunks deleted, newlines and
-    // all (resolving the define would leave the blank line each one opens
-    // with, which a production build never had).
+    // The cloud field ships as it is drawn; its diagnostics are development
+    // text with no production reading, so the shipped text is the text with
+    // those four pieces deleted.
+    for (const chunk of [CLOUD_FIELD_DECLS, CLOUD_FIELD_MIX]) expect(shader.fragmentShader.split(chunk)).toHaveLength(2);
     if (import.meta.env.DEV) {
-      for (const chunk of [CLOUD_FIELD_DECLS, CLOUD_FIELD_MIX]) expect(shader.fragmentShader.split(chunk)).toHaveLength(2);
+      for (const piece of Object.values(CLOUD_FIELD_DIAGNOSTICS)) {
+        expect(piece.length).toBeGreaterThan(0);
+        expect(shader.fragmentShader.split(piece)).toHaveLength(2);
+      }
     } else {
-      expect([CLOUD_FIELD_DECLS, CLOUD_FIELD_MIX]).toEqual(['', '']);
+      expect(Object.values(CLOUD_FIELD_DIAGNOSTICS)).toEqual(['', '', '', '']);
     }
-    // The archetype macros' own CLOUD_FIELD arm opens with no blank line, so
-    // it resolves away exactly.
-    const folded = resolveDefine(shader.fragmentShader
-      .replace(CLOUD_FIELD_DECLS, '')
-      .replace(CLOUD_FIELD_MIX, ''), 'CLOUD_FIELD', false)
+    const folded = shader.fragmentShader
+      .replace(CLOUD_FIELD_DIAGNOSTICS.uniform, '')
+      .replace(CLOUD_FIELD_DIAGNOSTICS.functions, '')
+      .replace(CLOUD_FIELD_DIAGNOSTICS.probe, '')
+      .replace(CLOUD_FIELD_DIAGNOSTICS.paint, '')
       .replace('uniform float uPerfCloudTaps;\nuniform float uPerfCloudClear;\nuniform float uPerfGlintGate;'
         + '\nuniform float uPerfCloudNoiseFrame;'
         + '\nuniform float uProbeCloudSmooth;\nuniform float uProbeCloudDetail;'
@@ -318,7 +335,7 @@ describe('the injected surface shader', () => {
       // The glint's tuning uniforms read as the constants they default to.
       .replace(/uGlintCap/g, OCEAN_GLINT_CAP.toFixed(2))
       .replace(/uGlintKeep/g, OCEAN_SPECULAR_KEEP.toFixed(4));
-    expect(folded).not.toMatch(/uPerf|uProbe|uGlint|uCloudShadow(Depth|Air|Penumbra|Gamma)|uCloudLight|uCloudShadowSkyFill/);
+    expect(folded).not.toMatch(/uPerf|uProbe|uGlint|uCloudShadow(Depth|Air|Penumbra|Gamma)|uCloudLight|uCloudShadowSkyFill|uCloudFieldDiag/);
     expect(hash(import.meta.env.DEV ? folded : shader.fragmentShader)).toBe(PROD_FRAGMENT_HASH);
     const night = import.meta.env.DEV
       ? earthNightFragmentShader

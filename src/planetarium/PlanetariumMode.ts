@@ -40,7 +40,8 @@ import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasur
 import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { advanceSurfaceAir, bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, setSurfaceSynthesis, settleSurfaceAir, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
-import { setCloudFieldPixelRatios } from './world/cloudFieldSlots';
+import { cloudFieldRequested, setCloudFieldOn, setCloudFieldPixelRatios } from './world/cloudFieldSlots';
+import type { CloudFieldAllocation, CloudFieldPool } from './world/cloudFieldPool';
 import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
 import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, textureWarmQueueDepth, warmBudgetMs } from './world/textureWarmer';
 import { beginSlicedUpload, stepSlicedUpload } from './world/slicedUpload';
@@ -1287,6 +1288,13 @@ export class PlanetariumMode {
    *  the `?debug=1` memory line read it rather than reassembling the figure
    *  from a profile and a floor at each site. */
   private readonly memory: MemoryEnvelope;
+  /** Earth's cloud field pool (world/cloudFieldPool), in a session that has
+   *  the field; null otherwise, and again if a restore could not allocate it. */
+  private cloudField: CloudFieldPool | null = null;
+  /** The pool's allocation at boot, awaited before the solar system is built
+   *  so the deck compiles the field's define the first time it compiles at
+   *  all; null in a session that did not ask for the field. */
+  private readonly cloudFieldStart: Promise<void> | null;
   private readonly sectorsEnabled = new URLSearchParams(location.search).get('sectors') !== '0';
   /** What `?synth=0` asked for: the close-range detail synthesis held at zero
    *  on every surface. The A/B arm for a look question about it, and the only
@@ -2514,7 +2522,7 @@ export class PlanetariumMode {
     this.rendersThroughComposer = rendersThroughComposer;
     this.scenePixelRatio = scenePixelRatio;
     this.tilePixelRatio = tilePixelRatio;
-    if (import.meta.env.DEV) setCloudFieldPixelRatios(scenePixelRatio(), tilePixelRatio());
+    setCloudFieldPixelRatios(scenePixelRatio(), tilePixelRatio());
     this.quality = quality;
     this.frameRate = frameRate;
     this.nightSides = nightSides;
@@ -2531,6 +2539,10 @@ export class PlanetariumMode {
       devEnvelopeOverride(deviceProfileFor(this.deviceClass, this.deviceFamily)),
     );
     this.memory = new MemoryEnvelope(this.deviceProfile);
+    // Earth's cloud field, only where `?cloudtiles=1` asked for it: its pool
+    // module is imported and allocated now, under the boot cover, and settled
+    // before the first activation builds the deck.
+    this.cloudFieldStart = cloudFieldRequested() ? this.startCloudField() : null;
     // Resolve the bitmap-upload probe during construction: every streamed
     // boot texture awaits its verdict before fetching, so starting it here
     // takes it off the first fetch's critical path. The renderer lets the
@@ -2627,6 +2639,9 @@ export class PlanetariumMode {
       // Dots gate on painted moons — blank them with the same invalidation so a
       // stale dot can't outlive the mesh it belonged to.
       this.moonDots?.clear();
+      // The cloud field's layers went with the context: its table is cleared,
+      // so the deck draws its base sheet until pages are back.
+      this.cloudField?.onContextLost();
     });
     glCanvas.addEventListener('webglcontextrestored', () => {
       this.moonTexturer.onContextRestored();
@@ -2646,6 +2661,8 @@ export class PlanetariumMode {
       this.queueReleasedTierRefetch();
       this.glContextLost = false;
       this.atmosphereLut?.onContextRestored();
+      // Before the re-warm, so it links the deck with the field or without.
+      this.restoreCloudField();
       void this.rewarmShaderProbes();
     });
     this.player = new PlayerShip();
@@ -3040,6 +3057,8 @@ export class PlanetariumMode {
 
       if (!this.solarSystem) {
         const initialWorldUtcMs = savedState?.astroTimeUtcMs ?? this.timeState.currentUtcMs;
+        // The deck reads whether the field is on when it is built.
+        if (this.cloudFieldStart) await this.cloudFieldStart;
         performance.mark('plm:solar-system:start');
         try {
           // The star catalog rides the same gate as the solar system: awaiting
@@ -4283,6 +4302,67 @@ export class PlanetariumMode {
     return bytes;
   }
 
+  /**
+   * Allocate Earth's cloud field pool at boot (world/cloudFieldPool), for a
+   * session that asked for the field. The device's profile says how many
+   * pages it holds, and zero is no field whatever the URL asked. The pool's
+   * bytes are reserved in the envelope from the moment it exists. A GL error
+   * on the allocation turns the field off for the session instead: an array
+   * that did not allocate samples as zero, and every page the table called
+   * resident would draw as clear sky. Never throws into the activation that
+   * awaits it — a field that cannot be had is a deck on its base sheet.
+   */
+  private async startCloudField(): Promise<void> {
+    const layers = this.deviceProfile.cloudFieldLayers;
+    if (layers <= 0) {
+      debugLog('Cloud field off: this device\'s profile gives it no pages', { profile: this.deviceProfile.id });
+      return;
+    }
+    try {
+      const { CloudFieldPool } = await import('./world/cloudFieldPool');
+      const { pool, report } = CloudFieldPool.allocate(this.renderer, layers);
+      if (!pool) {
+        this.cloudFieldOff(report, 'at boot');
+        return;
+      }
+      this.cloudField = pool;
+      this.memory.setFixedBytes(pool.bytes());
+      setCloudFieldOn(true);
+      debugLog('Cloud field pool', {
+        layers, MiB: Math.round((pool.bytes() / (1024 * 1024)) * 10) / 10, allocationMs: Math.round(report.ms * 10) / 10,
+      });
+    } catch (err) {
+      debugWarn('Cloud field off: its pool module did not load', err);
+    }
+  }
+
+  /** The field off for the rest of the session, said once with the figures:
+   *  the define comes off the deck, the reservation off the envelope. */
+  private cloudFieldOff(report: CloudFieldAllocation, when: string): void {
+    this.cloudField = null;
+    this.memory.setFixedBytes(0);
+    setCloudFieldOn(false);
+    debugWarn(`Cloud field off: its pool did not allocate ${when}`, {
+      glError: `0x${report.glError.toString(16)}`, layers: report.layers,
+      MiB: Math.round((report.bytes / (1024 * 1024)) * 10) / 10,
+      envelopeMiB: Math.round(this.memory.envelopeBytes / (1024 * 1024)),
+    });
+  }
+
+  /** After a context restore: the pool allocated again and checked as at
+   *  boot. Every program relinks after a restore anyway, so a pool that
+   *  cannot be had again takes the field off here at no further cost. */
+  private restoreCloudField(): void {
+    const report = this.cloudField?.onContextRestored();
+    if (report && report.glError !== 0) this.cloudFieldOff(report, 'after a context restore');
+  }
+
+  /** The session's cloud field pool, or null where the field is off: the
+   *  development bridge's way in, and the residency's. */
+  cloudFieldPool(): CloudFieldPool | null {
+    return this.cloudField;
+  }
+
   /** The `?debug=1` memory line: what the ladder and the tiles hold against
    *  the envelope they share, on the device's own screen. Once at boot it
    *  also prints the two figures the envelope does NOT count — the boot maps
@@ -4306,6 +4386,7 @@ export class PlanetariumMode {
     const globalBytes = this.liveGlobalMapBytes();
     const envelope = this.memory.figures();
     const transcoder = this.ktx2Loader.state();
+    const field = this.cloudField;
     // Whatever the line below prints, so a figure cannot move without the
     // line being reprinted.
     const figures = [
@@ -4314,6 +4395,7 @@ export class PlanetariumMode {
           envelope.sectorBudget, envelope.floorBytes, envelope.envelopeBytes]
         : [globalBytes, envelope.floorBytes, envelope.envelopeBytes]),
       transcoder.alive ? 1 : 0, transcoder.disposedCount,
+      ...(field ? [envelope.fixedBytes, field.layersUsed()] : []),
     ];
     const previous = this.memoryDebugLast;
     const moved = !previous || previous.length !== figures.length ||
@@ -4349,6 +4431,12 @@ export class PlanetariumMode {
         : { tiles: 'off' }),
       floorMiB: mib(envelope.floorBytes),
       envelopeMiB: mib(envelope.envelopeBytes),
+      // Earth's cloud field pool, held whole for the session and taken off
+      // the envelope before the maps and the tiles share it; absent where the
+      // session has no field.
+      ...(field
+        ? { cloudPoolMiB: mib(envelope.fixedBytes), cloudLayers: `${field.layersUsed()}/${field.layerCount}` }
+        : {}),
       // The compressed rungs' transcoder: its workers keep the memory of the
       // largest container they transcoded, which no GPU figure above counts,
       // so whether they are alive is said here. "idle-freed N" is how many
@@ -4724,7 +4812,7 @@ export class PlanetariumMode {
     // The cloud field's guard is measured in the scene target's own pixels and
     // judged in the tile ratio's (world/cloudField): one uniform, the ratio of
     // the two, so a rung step moves no fragment's weight.
-    if (import.meta.env.DEV) setCloudFieldPixelRatios(sceneRatio, this.tilePixelRatio());
+    setCloudFieldPixelRatios(sceneRatio, this.tilePixelRatio());
   }
 
   /** The safe-area insets as last read, read now if never: the corner chart

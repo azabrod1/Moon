@@ -1,57 +1,71 @@
 /**
- * The cloud field's pages on the GPU, for the vertical slice: one RG8 texture
- * array that holds every resident page, a 16 × 8 page table the deck's shader
- * reads to find them, and the DEV bridge that loads, fades and evicts named
- * pages by hand (`__moon.cloudField`). No streamer: the slice exists to prove
- * the upload path, the addressing and the look before one is built.
- * DEVELOPMENT ONLY; nothing in a production build reaches this module.
+ * The cloud field's pages on the GPU: one RG8 texture array that holds every
+ * resident page, and the 16 × 8 page table the deck's shader reads to find
+ * them (world/cloudFieldSlots), with the path a page takes into a layer — its
+ * two files fetched and decoded off the main thread, its levels uploaded, its
+ * table entry written last. No residency yet: pages are requested, faded and
+ * evicted by hand, through the development bridge (world/cloudFieldDev).
+ * Imported only by a session that asked for the field (`?cloudtiles=1`), so
+ * nothing here is loaded, allocated or fetched otherwise.
  *
  * THE POOL is a `DataArrayTexture` with no data, allocated once with all
  * twelve levels: `source.dataReady = false` and `mipmaps.length = 12` make
  * three's upload call `texStorage3D(levels = 12, RG8, 2048, 2048, N)` and
  * transfer nothing (WebGLTextures: the allocation precedes the dataReady test,
- * and `getMipLevels` reads the count off `mipmaps.length`). three never
- * uploads custom mips for an array texture and `generateMipmap` would rebuild
- * every layer, so each level of each page is written by hand through
- * `renderer.copyTextureToTexture(levelTex, pool, null, (0, 0, layer), 0,
- * level)`, where `levelTex` is a CPU `DataTexture` three has never seen: that
- * takes the renderer's CPU branch, one `texSubImage3D` into the layer at the
- * destination level, through three's own binding state, with the unpack
+ * and `getMipLevels` reads the count off `mipmaps.length`). N is the device
+ * profile's `cloudFieldLayers`. The allocation is checked with `getError`: an
+ * array that failed to allocate is incomplete and samples as zero, so every
+ * page the table called resident would draw as CLEAR sky. A failed allocation
+ * therefore turns the field off for the session instead (PlanetariumMode),
+ * and so does a failed re-allocation after a context restore.
+ *
+ * Three never uploads custom mips for an array texture and `generateMipmap`
+ * would rebuild every layer, so each level of each page is written by hand
+ * through `renderer.copyTextureToTexture(levelTex, pool, null, (0, 0, layer),
+ * 0, level)`, where `levelTex` is a CPU `DataTexture` three has never seen:
+ * that takes the renderer's CPU branch, one `texSubImage3D` into the layer at
+ * the destination level, through three's own binding state, with the unpack
  * alignment, flip and premultiply taken from the pool (1, false, false) and
  * no mip generation for a level above zero.
  *
  * PUBLISHING. A page's table entry is written only after every level of its
  * layer is in, so a draw never samples a layer half written; an eviction
  * clears the entry before the layer can take another page. Levels go up one
- * per animation frame by default (the warm queue uploads whole textures
- * through `initTexture`, which is not this shape of work), or a whole page at
- * once with `perFrame: 12`.
+ * per animation frame by default, or a whole page at once with `perFrame: 12`.
  *
- * CONTEXT LOSS. three re-creates its texture state on a restore and
- * re-allocates the pool empty (dataReady is still false), so a loss clears
- * the table and a restore re-allocates the pool under the cover of the next
- * frame and fetches every page that was resident again into the layer it had.
- * A decode that completes for a generation that has since been evicted or
- * lost is dropped.
+ * THE PAGES are the two sets gen-tiles cuts from the cloud master,
+ * `earth-clouds.v2/32k-a` (opacity) and `32k-p` (premultiplied brightness),
+ * addressed like every sector tile (world/texturePolicy `resolveTileUrl`) at
+ * the hashes the generated table names. A page that fails to arrive leaves
+ * its entry absent, so the deck draws the base sheet there; the first failure
+ * is said once through `debugWarn`, since a field that quietly never arrives
+ * looks like nothing at all.
+ *
+ * CONTEXT LOSS (PlanetariumMode's handlers). A loss clears the table; a
+ * restore re-allocates the pool empty (dataReady is still false), checks the
+ * allocation again, and fetches every page that was resident back into the
+ * layer it had. A decode that completes for a generation that has since been
+ * evicted or lost is dropped.
  *
  * BYTES are the pool's ALLOCATION — every layer, empty or not, all twelve
  * levels — read through `textureGpuBytes`, the accounting the memory envelope
- * uses. The envelope itself is not told in this slice.
+ * uses; the mode reserves them in the envelope as its fixed bytes.
  */
 import * as THREE from 'three';
 import {
   CLOUD_FIELD_ANISOTROPY,
   CLOUD_FIELD_GRID,
+  CLOUD_FIELD_SETS,
   CLOUD_PAGE_LEVELS,
   CLOUD_PAGE_SIZE,
   cloudFieldPoolBytes,
   cloudPageKey,
   parseCloudPageKey,
 } from './cloudField';
-import { cloudFieldMaterials, cloudFieldUniforms } from './cloudFieldSlots';
-import { fieldTexelMajorAt, fieldUnproject, type FieldCamera } from './cloudFieldMeasure';
+import { cloudFieldUniforms } from './cloudFieldSlots';
 import { textureGpuBytes } from './textureBytes';
-import { lensUnwarpNdc } from '../../shared/math/lensProjection';
+import { resolveTileUrl, sectorSetHash } from './texturePolicy';
+import { debugWarn } from '../../shared/debug';
 
 type PageState = 'decoding' | 'uploading' | 'resident' | 'failed';
 
@@ -75,31 +89,35 @@ interface PageRecord {
   error?: string;
 }
 
-export interface CloudFieldRequest {
-  /** Pages to make resident, by key (`col_row`, row 0 the northernmost). */
-  pages?: string | string[];
-  /** Fades to set, 0..1, by key; a page not yet resident takes it on arrival. */
-  fade?: Record<string, number>;
-  /** Pages to evict. */
-  evict?: string | string[] | 'all';
-  /** The diagnostic: 0 off, 1 flat colour per layer, 2 tint by layer, 3 the
-   *  guard's input written unlit to the scene target (read with `probe`). */
-  diag?: number;
-  /** Write a raw R code into a resident page's table entry (DEV): 254 and 255
-   *  are the reserved codes, which must draw the base. */
-  code?: Record<string, number>;
-  /** Levels uploaded per animation frame (1..12). */
-  perFrame?: number;
-  /** Resolve once every requested page is resident or failed. */
-  wait?: boolean;
-  /** Return the state (always returned; kept for the brief's spelling). */
-  state?: boolean;
+/** Where one plane of one page is served from: the opacity or the
+ *  premultiplied brightness, at the hash the generated table names. */
+function pageUrl(col: number, row: number, plane: 'opacity' | 'brightness'): string {
+  const { key } = CLOUD_FIELD_SETS;
+  const tier = CLOUD_FIELD_SETS[plane];
+  return resolveTileUrl(key, tier, sectorSetHash(key, tier), col, row);
 }
 
-const PAGE_URL = (key: string, ch: 'a' | 'p') =>
-  `${import.meta.env.BASE_URL}textures/tiles/earth-clouds.v2/field32k/${key}.${ch}.webp`;
+/** What an allocation reports: the time it took and the GL error after it. */
+export interface CloudFieldAllocation {
+  layers: number;
+  bytes: number;
+  /** The upload call and the `getError` round trip together. */
+  ms: number;
+  /** `gl.getError()` right after the allocation; NO_ERROR (0) is success. */
+  glError: number;
+}
 
-class CloudFieldPool {
+/** Check a GL allocation: drain whatever error an earlier call left, run it,
+ *  and read the one it raised. */
+function allocateChecked(gl: WebGL2RenderingContext, allocate: () => void): { ms: number; glError: number } {
+  for (let n = 0; n < 16 && gl.getError() !== gl.NO_ERROR; n++) { /* drain */ }
+  const t0 = performance.now();
+  allocate();
+  const glError = gl.getError();
+  return { ms: performance.now() - t0, glError };
+}
+
+export class CloudFieldPool {
   readonly pool: THREE.DataArrayTexture;
   readonly table: THREE.DataTexture;
   private readonly layers: (string | null)[];
@@ -111,12 +129,12 @@ class CloudFieldPool {
   private pumping = false;
   private perFrame = 1;
   private lost = false;
+  private warnedFailure = false;
   contextLosses = 0;
   contextRestores = 0;
   private settleWaiters: Array<() => void> = [];
 
-  constructor(private readonly renderer: THREE.WebGLRenderer, layerCount: number) {
-    const u = cloudFieldUniforms();
+  private constructor(private readonly renderer: THREE.WebGLRenderer, layerCount: number) {
     const pool = new THREE.DataArrayTexture(null, CLOUD_PAGE_SIZE, CLOUD_PAGE_SIZE, layerCount);
     pool.format = THREE.RGFormat;
     pool.type = THREE.UnsignedByteType;
@@ -134,16 +152,42 @@ class CloudFieldPool {
     pool.source.dataReady = false;
     pool.needsUpdate = true;
     this.pool = pool;
-    this.table = u.uCloudPageTable.value;
+    this.table = cloudFieldUniforms().uCloudPageTable.value;
     this.layers = Array.from({ length: layerCount }, () => null);
-    u.uCloudPages.value = pool;
-    renderer.initTexture(pool);
-    const canvas = renderer.domElement;
-    canvas.addEventListener('webglcontextlost', () => this.onLost());
-    canvas.addEventListener('webglcontextrestored', () => this.onRestored());
+  }
+
+  /**
+   * Allocate a pool of `layers` pages and check the allocation. On success the
+   * pool is bound into the shader's slot; on a GL error it is deleted again
+   * and only the report comes back, so the caller can turn the field off.
+   */
+  static allocate(renderer: THREE.WebGLRenderer, layers: number): { pool: CloudFieldPool | null; report: CloudFieldAllocation } {
+    const field = new CloudFieldPool(renderer, layers);
+    const checked = allocateChecked(renderer.getContext() as WebGL2RenderingContext, () => renderer.initTexture(field.pool));
+    const report: CloudFieldAllocation = {
+      layers, bytes: cloudFieldPoolBytes(layers), ms: checked.ms, glError: checked.glError,
+    };
+    if (checked.glError !== 0) {
+      field.pool.dispose();
+      return { pool: null, report };
+    }
+    cloudFieldUniforms().uCloudPages.value = field.pool;
+    return { pool: field, report };
   }
 
   get layerCount(): number { return this.layers.length; }
+
+  /** Layers holding a page, in any state. */
+  layersUsed(): number {
+    let n = 0;
+    for (const l of this.layers) if (l !== null) n++;
+    return n;
+  }
+
+  /** The GPU bytes the pool holds: its allocation, whatever is resident. */
+  bytes(): number {
+    return textureGpuBytes(this.pool);
+  }
 
   private workerFor(): Worker {
     if (!this.worker) {
@@ -193,6 +237,12 @@ class CloudFieldPool {
       if (!reply.ok || !reply.levels) {
         rec.state = 'failed';
         rec.error = reply.error ?? 'decode failed';
+        // Fail open, loudly once: the entry stays absent and the deck draws
+        // the base sheet there.
+        if (!this.warnedFailure) {
+          this.warnedFailure = true;
+          debugWarn(`Cloud field page ${rec.key} did not load, the deck stays on its base map there: ${rec.error}`);
+        }
         this.settle();
         return;
       }
@@ -205,7 +255,9 @@ class CloudFieldPool {
       rec.nextLevel = 0;
       this.pump();
     });
-    this.workerFor().postMessage({ id, urlA: PAGE_URL(rec.key, 'a'), urlP: PAGE_URL(rec.key, 'p') });
+    this.workerFor().postMessage({
+      id, urlA: pageUrl(rec.col, rec.row, 'opacity'), urlP: pageUrl(rec.col, rec.row, 'brightness'),
+    });
   }
 
   private pump(): void {
@@ -249,6 +301,8 @@ class CloudFieldPool {
     this.settle();
   }
 
+  /** Write a raw R code into a resident page's table entry (the bridge's
+   *  check that the reserved codes draw the base). */
   setCode(key: string, code: number): void {
     const rec = this.pages.get(key);
     if (!rec || rec.state !== 'resident') return;
@@ -280,7 +334,8 @@ class CloudFieldPool {
     return new Promise((resolve) => this.settleWaiters.push(resolve));
   }
 
-  private onLost(): void {
+  /** The context is gone, and every layer with it. */
+  onContextLost(): void {
     this.lost = true;
     this.contextLosses++;
     const data = this.table.image.data as Uint8Array;
@@ -296,12 +351,28 @@ class CloudFieldPool {
     }
   }
 
-  private onRestored(): void {
+  /**
+   * three has re-created its texture state: allocate the twelve levels again,
+   * still with no data, and check it as at boot. On success every page that
+   * was resident is fetched back into the layer it had; on a GL error the
+   * pool is deleted and the report says so, for the caller to turn the field
+   * off.
+   */
+  onContextRestored(): CloudFieldAllocation {
     this.lost = false;
     this.contextRestores++;
-    // three's texture state was re-created: this allocates the twelve levels
-    // again, still with no data, and re-binds nothing else.
-    this.renderer.initTexture(this.pool);
+    const checked = allocateChecked(this.renderer.getContext() as WebGL2RenderingContext, () => this.renderer.initTexture(this.pool));
+    const report: CloudFieldAllocation = {
+      layers: this.layers.length, bytes: cloudFieldPoolBytes(this.layers.length), ms: checked.ms, glError: checked.glError,
+    };
+    if (checked.glError !== 0) {
+      this.pages.clear();
+      this.layers.fill(null);
+      this.pool.dispose();
+      this.worker?.terminate();
+      this.worker = null;
+      return report;
+    }
     this.table.needsUpdate = true;
     for (const rec of this.pages.values()) {
       rec.uploadMs = [];
@@ -309,8 +380,11 @@ class CloudFieldPool {
       rec.residentAt = undefined;
       this.decode(rec);
     }
+    return report;
   }
 
+  /** Everything the bridge reports: the layers, the allocation, the table as
+   *  the shader reads it, and each page's timings. */
   state(): Record<string, unknown> {
     const data = this.table.image.data as Uint8Array;
     const table: Array<{ page: string; layer: number; fade: number }> = [];
@@ -333,7 +407,7 @@ class CloudFieldPool {
         msToResident: rec.residentAt != null ? +(rec.residentAt - rec.requestedAt).toFixed(1) : undefined,
       };
     }
-    const bytes = textureGpuBytes(this.pool);
+    const bytes = this.bytes();
     return {
       layers: this.layers.length,
       layerOf: [...this.layers],
@@ -345,7 +419,7 @@ class CloudFieldPool {
       poolMiB: +(bytes / 1048576).toFixed(2),
       poolBytesExact: cloudFieldPoolBytes(this.layers.length),
       perLayerMiB: +(cloudFieldPoolBytes(1) / 1048576).toFixed(3),
-      occupied: this.layers.filter((l) => l !== null).length,
+      occupied: this.layersUsed(),
       perFrame: this.perFrame,
       table,
       pages,
@@ -354,177 +428,4 @@ class CloudFieldPool {
       lost: this.lost,
     };
   }
-}
-
-let instance: CloudFieldPool | null = null;
-
-/** Allocate the pool (under the boot cover, on `?cloudtiles=1`). */
-export function installCloudFieldPool(renderer: THREE.WebGLRenderer, layers = 6): void {
-  if (!instance) instance = new CloudFieldPool(renderer, layers);
-}
-
-/** Active samplers of a material's LINKED program, read from GL: the count the
- *  driver holds the program to, not one counted from the source. */
-function linkedSamplers(renderer: THREE.WebGLRenderer, mat: THREE.Material): { count: number; names: string[] } | null {
-  const props = renderer.properties.get(mat) as { currentProgram?: { program: WebGLProgram } };
-  const prog = props.currentProgram?.program;
-  if (!prog) return null;
-  const gl = renderer.getContext() as WebGL2RenderingContext;
-  const samplerTypes = new Set<number>([
-    gl.SAMPLER_2D, gl.SAMPLER_3D, gl.SAMPLER_CUBE, gl.SAMPLER_2D_SHADOW, gl.SAMPLER_2D_ARRAY,
-    gl.SAMPLER_2D_ARRAY_SHADOW, gl.SAMPLER_CUBE_SHADOW, gl.INT_SAMPLER_2D, gl.INT_SAMPLER_3D,
-    gl.INT_SAMPLER_CUBE, gl.INT_SAMPLER_2D_ARRAY, gl.UNSIGNED_INT_SAMPLER_2D, gl.UNSIGNED_INT_SAMPLER_3D,
-    gl.UNSIGNED_INT_SAMPLER_CUBE, gl.UNSIGNED_INT_SAMPLER_2D_ARRAY,
-  ]);
-  const n = gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS) as number;
-  const names: string[] = [];
-  for (let i = 0; i < n; i++) {
-    const info = gl.getActiveUniform(prog, i);
-    if (info && samplerTypes.has(info.type)) names.push(info.name);
-  }
-  return { count: names.length, names };
-}
-
-/** The deck's material, found by its mesh's name (PlanetFactory names it). */
-function deckMaterial(scene: THREE.Object3D | null): THREE.Material | null {
-  const fieldMaterials = cloudFieldMaterials();
-  if (fieldMaterials.size > 0) return [...fieldMaterials][0];
-  let found: THREE.Material | null = null;
-  scene?.traverse((o) => {
-    if (!found && (o as THREE.Mesh).isMesh && o.name === 'Earth clouds') found = (o as THREE.Mesh).material as THREE.Material;
-  });
-  return found;
-}
-
-/** `__moon.cloudField(request)`: load, fade and evict pages by hand, and the
- *  state of the pool, its table and the deck's linked program. */
-export async function devCloudField(
-  renderer: THREE.WebGLRenderer, scene: THREE.Object3D | null, req: CloudFieldRequest = {},
-): Promise<Record<string, unknown>> {
-  const list = (v: string | string[] | undefined): string[] => (v == null ? [] : Array.isArray(v) ? v : [v]);
-  if (instance) {
-    if (req.perFrame != null) instance.setPerFrame(req.perFrame);
-    if (req.evict === 'all') for (const k of instance.state().layerOf as (string | null)[]) { if (k) instance.evict(k); }
-    else for (const k of list(req.evict as string | string[] | undefined)) instance.evict(k);
-    for (const k of list(req.pages)) instance.request(k);
-    for (const [k, f] of Object.entries(req.fade ?? {})) instance.setFade(k, f);
-    for (const [k, c] of Object.entries(req.code ?? {})) instance.setCode(k, c);
-    if (req.wait) await instance.whenSettled();
-  } else if (req.pages || req.evict || req.fade) {
-    throw new Error('cloudField: no pool — boot the dev server with ?cloudtiles=1');
-  }
-  if (req.diag != null) cloudFieldUniforms().uCloudFieldDiag.value = req.diag;
-  const mat = deckMaterial(scene);
-  const defines = (mat as (THREE.Material & { defines?: Record<string, string> }) | null)?.defines ?? {};
-  return {
-    defineOn: defines.CLOUD_FIELD !== undefined,
-    diag: cloudFieldUniforms().uCloudFieldDiag.value,
-    deckProgram: mat ? linkedSamplers(renderer, mat) : null,
-    pool: instance ? instance.state() : null,
-  };
-}
-
-/** One half-float from its bits. */
-function halfToFloat(h: number): number {
-  const s = h & 0x8000 ? -1 : 1;
-  const e = (h >> 10) & 0x1f;
-  const f = h & 0x3ff;
-  if (e === 0) return s * 2 ** -14 * (f / 1024);
-  if (e === 31) return f ? Number.NaN : s * Number.POSITIVE_INFINITY;
-  return s * 2 ** (e - 15) * (1 + f / 1024);
-}
-
-/** Everything the probe needs from the entry point. */
-export interface CloudFieldProbeContext {
-  renderer: THREE.WebGLRenderer;
-  scene: THREE.Object3D;
-  camera: THREE.PerspectiveCamera;
-  sceneTarget: THREE.WebGLRenderTarget | null;
-  /** The sub-rectangle the frame is drawn into, in device pixels. */
-  drawSize: { width: number; height: number };
-  sceneRatio: number;
-  tileRatio: number;
-}
-
-/**
- * `__moon.cloudFieldProbe(points)` (DEV), with `diag: 3` set: at each point —
- * given in DISPLAYED output NDC, or `'limb'` for a point a little inside the
- * deck's limb above the frame's centre — the guard's input as the shader wrote
- * it into the scene target (R the major in tile-ratio pixels, G in scene
- * pixels, B the guard), beside the residency's number for the same deck point
- * (world/cloudFieldMeasure, on the scene target's grid at the tile ratio).
- */
-export function devCloudFieldProbe(
-  ctx: CloudFieldProbeContext, points: Array<[number, number] | 'limb'>,
-): Array<Record<string, unknown>> {
-  const deck = deckMesh(ctx.scene);
-  if (!deck) return [];
-  const cam = ctx.camera;
-  const lens = cam.userData.lens as { designFovDeg: number; effectiveStrength?: number; strength: number } | undefined;
-  const design = lens?.designFovDeg ?? cam.fov;
-  const strength = lens ? lens.effectiveStrength ?? lens.strength : 0;
-  const radius = (deck.geometry as THREE.SphereGeometry).parameters.radius;
-  // The camera in the deck mesh's own frame, in deck radii.
-  deck.updateMatrixWorld();
-  cam.updateMatrixWorld();
-  const inv = new THREE.Matrix4().copy(deck.matrixWorld).invert();
-  const pos = new THREE.Vector3().setFromMatrixPosition(cam.matrixWorld).applyMatrix4(inv).divideScalar(radius);
-  const basis = (i: number) => new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, i)
-    .transformDirection(inv);
-  const cssH = ctx.renderer.domElement.clientHeight;
-  const field: FieldCamera = {
-    pos: [pos.x, pos.y, pos.z], right: basis(0).toArray() as [number, number, number],
-    up: basis(1).toArray() as [number, number, number], back: basis(2).toArray() as [number, number, number],
-    renderFovDeg: cam.fov, designFovDeg: design, lensStrength: strength, aspect: cam.aspect,
-    heightPx: cssH * ctx.tileRatio,
-  };
-  const out: Array<Record<string, unknown>> = [];
-  const resolveNdc = (pt: [number, number] | 'limb'): { x: number; y: number } | null => {
-    if (pt !== 'limb') {
-      return lensUnwarpNdc(pt[0], pt[1], design, cam.fov, cam.aspect, strength, { x: 0, y: 0 });
-    }
-    // Up the centre column of the scene target until the deck is missed, then
-    // back down 12 scene pixels.
-    let last: number | null = null;
-    for (let y = 0; y <= 1; y += 0.0005) {
-      const px = fieldUnproject(field, 0.5 * field.heightPx * field.aspect, (1 - y) * 0.5 * field.heightPx);
-      if (px) last = y; else if (last !== null) break;
-    }
-    if (last === null) return null;
-    return { x: 0, y: last - 24 / (ctx.drawSize.height) };
-  };
-  for (const pt of points) {
-    const ndc = resolveNdc(pt);
-    if (!ndc) { out.push({ point: pt, error: 'no deck there' }); continue; }
-    // The scene target's pixel (GL rows from the bottom of the sub-rectangle).
-    const sx = Math.min(ctx.drawSize.width - 1, Math.max(0, Math.floor((ndc.x + 1) * 0.5 * ctx.drawSize.width)));
-    const sy = Math.min(ctx.drawSize.height - 1, Math.max(0, Math.floor((ndc.y + 1) * 0.5 * ctx.drawSize.height)));
-    let shader: number[] | null = null;
-    if (ctx.sceneTarget) {
-      const buf = new Uint16Array(4);
-      ctx.renderer.readRenderTargetPixels(ctx.sceneTarget, sx, sy, 1, 1, buf);
-      shader = Array.from(buf, halfToFloat);
-    }
-    // The same pixel centre on the residency's grid.
-    const tx = ((sx + 0.5) / ctx.drawSize.width) * field.heightPx * field.aspect;
-    const ty = (1 - (sy + 0.5) / ctx.drawSize.height) * field.heightPx;
-    const d = fieldUnproject(field, tx, ty);
-    const cpu = d ? fieldTexelMajorAt(field, d) : null;
-    out.push({
-      point: pt, scenePx: [sx, sy], ndc: [+ndc.x.toFixed(4), +ndc.y.toFixed(4)],
-      shaderMajor: shader ? +shader[0].toFixed(4) : null,
-      shaderMajorScene: shader ? +shader[1].toFixed(4) : null,
-      shaderGuard: shader ? +shader[2].toFixed(4) : null,
-      residencyMajor: cpu !== null ? +cpu.toFixed(4) : null,
-      ratio: shader && cpu ? +(shader[0] / cpu).toFixed(4) : null,
-      sceneRatio: ctx.sceneRatio, tileRatio: ctx.tileRatio,
-    });
-  }
-  return out;
-}
-
-function deckMesh(scene: THREE.Object3D): THREE.Mesh | null {
-  let found: THREE.Mesh | null = null;
-  scene.traverse((o) => { if (!found && (o as THREE.Mesh).isMesh && o.name === 'Earth clouds') found = o as THREE.Mesh; });
-  return found;
 }

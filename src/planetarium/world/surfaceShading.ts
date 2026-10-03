@@ -162,7 +162,7 @@ import {
   cloudDetailTexture,
 } from './cloudDetailNoise';
 import { CLOUD_FIELD_MIX_GLSL, cloudFieldGlsl } from './cloudField';
-import { cloudFieldUniforms } from './cloudFieldSlots';
+import { cloudFieldDiagUniform, cloudFieldUniforms } from './cloudFieldSlots';
 import { MOON_UP_GLSL, NIGHT_WEIGHT_GLSL, NIGHT_WEIGHT_ZERO_SIN, SUN_DOWN_GLSL } from './nightSources';
 import { gpuSeed } from './proceduralMoon';
 import { SURFACE_TEXEL_FADE } from './surfaceDensity';
@@ -1820,13 +1820,11 @@ const SURFACE_MAP_FRAGMENT = /* glsl */ `
  * block — its detail tap on `uCloudDetail` above all, an active sampler on
  * every ground today only because DECK_ON is a uniform test — is compiled out.
  * One sampler unit back on the program that spends the most. Whole lines inside
- * their own conditional, so a program without CLOUD_FIELD is the text it was;
- * development builds only, with the rest of the field.
+ * their own conditional, opening with no blank line of their own, so a program
+ * without CLOUD_FIELD is the text it was to the character.
  */
-const GROUND_FIELD_ARCHETYPE_OPEN = import.meta.env.DEV
-  ? '#ifdef CLOUD_FIELD\n#define DECK_ON false\n#define DECK_OFF true\n#else\n'
-  : '';
-const GROUND_FIELD_ARCHETYPE_CLOSE = import.meta.env.DEV ? '#endif\n' : '';
+const GROUND_FIELD_ARCHETYPE_OPEN = '#ifdef CLOUD_FIELD\n#define DECK_ON false\n#define DECK_OFF true\n#else\n';
+const GROUND_FIELD_ARCHETYPE_CLOSE = '#endif\n';
 
 /**
  * The cloud deck's archetype, decided when its program compiles.
@@ -1877,17 +1875,16 @@ ${import.meta.env.DEV ? 'uniform float uCloudShadowDepth;\nuniform float uCloudS
 `;
 
 /**
- * The cloud deck's 1.2 km field (world/cloudField: the vertical slice), compiled
- * only with CLOUD_FIELD, which only the deck's material carries and only on the
- * development server with `?cloudtiles=1`. A production build has none of the
- * text; a development program without the define is, after the preprocessor,
- * the program it was — every line is a whole line inside its conditional
- * (aerialPerspective.test.ts pins both).
+ * The cloud deck's 1.2 km field (world/cloudField), compiled only with
+ * CLOUD_FIELD, which only the planetarium's deck carries and only in a session
+ * that has the field (world/cloudFieldSlots). Every line is a whole line inside
+ * its conditional, so a program without the define is, after the
+ * preprocessor, the program it was but for the blank line each chunk opens
+ * with; a development build adds the field's diagnostics inside the same
+ * conditionals (aerialPerspective.test.ts pins both texts and the fold).
  */
-export const CLOUD_FIELD_DECLS = import.meta.env.DEV ? cloudFieldGlsl(SMOOTH_TEXEL_FADE) : '';
-export const CLOUD_FIELD_MIX = import.meta.env.DEV
-  ? CLOUD_FIELD_MIX_GLSL(`vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')})`)
-  : '';
+export const CLOUD_FIELD_DECLS = cloudFieldGlsl(SMOOTH_TEXEL_FADE);
+export const CLOUD_FIELD_MIX = CLOUD_FIELD_MIX_GLSL(`vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')})`);
 
 /** The cloud light's knobs, declared only in a development build and only in a
  *  program compiled with CLOUD_LIGHT; a production build reads constants. */
@@ -3063,13 +3060,13 @@ export function augmentSurfaceMaterial(
     }
     for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];
     // The cloud field's slots (world/cloudFieldSlots), on the one material that
-    // compiles it: the deck, on the dev server with ?cloudtiles=1.
-    if (import.meta.env.DEV && mat.defines?.CLOUD_FIELD !== undefined) {
+    // compiles it: the planetarium's deck, in a session that has the field.
+    if (mat.defines?.CLOUD_FIELD !== undefined) {
       const field = cloudFieldUniforms();
       shader.uniforms.uCloudPages = field.uCloudPages;
       shader.uniforms.uCloudPageTable = field.uCloudPageTable;
-      shader.uniforms.uCloudFieldDiag = field.uCloudFieldDiag;
       shader.uniforms.uCloudFieldPixelScale = field.uCloudFieldPixelScale;
+      if (import.meta.env.DEV) shader.uniforms.uCloudFieldDiag = cloudFieldDiagUniform;
     }
 
     shader.vertexShader = shader.vertexShader

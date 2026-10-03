@@ -19,10 +19,16 @@
  * group is invisible for ordinary frames and never raycast; activation
  * briefly makes it visible only for a one-pixel, load-veiled real draw on
  * drivers where compileAsync cannot guarantee a completed link.
+ *
+ * The deck's probe takes the cloud field's define when the session has the
+ * field (world/cloudFieldSlots, settled before these are built). The cloud
+ * shadow's and the cloud light's defines are not carried: world/surfaceShading
+ * keeps both off every probe.
  */
 import * as THREE from 'three';
 import { applyTextureDefaults, type MapKind } from './texturePolicy';
 import { augmentSurfaceMaterial } from './surfaceShading';
+import { enableCloudField } from './cloudFieldSlots';
 
 export interface WarmupProbes {
   group: THREE.Group;
@@ -70,6 +76,10 @@ export function createShaderWarmupProbes(): WarmupProbes {
     // and the probe has to carry the deck's define or it warms a program the
     // deck never draws with.
     augmentSurfaceMaterial(mat, combo.transparent ? 'cloud' : 'rocky');
+    // ...and the cloud field's, in a session that has the field: the deck's
+    // program after its relief lands carries CLOUD_FIELD too (a no-op
+    // otherwise, so the probe is the program it was).
+    if (combo.transparent) enableCloudField(mat);
     mats.push(mat);
     const mesh = new THREE.Mesh(geo, mat);
     // A probe lives at the origin for the whole session; a scene-wide pick

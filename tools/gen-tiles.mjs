@@ -48,8 +48,8 @@
 // per level (opacity and premultiplied brightness, each a set of grey
 // lossless tiles, tiers `<level>-a` and `<level>-p` under the master's stem)
 // from the cloud master tools/gen-cloudmaster.mjs assembles, into a staging
-// root the app's table does not name yet. Its level, its gate and why its
-// pages are lossless are in the cloud field section below.
+// root. Its level, its gate and why its pages are lossless are in the cloud
+// field section below.
 //
 // Prereq (not a package.json dependency — this runs once per asset drop):
 //   npm i --no-save sharp@0.35.4
@@ -1676,11 +1676,10 @@ export const JOBS = {
   // two sets of grey pages per level under the master's stem, opacity in
   // `<tier>-a` and premultiplied brightness in `<tier>-p` (a page is the same
   // cell in both), each an ordinary set of `<c>_<r>.webp` tiles. Cut into a
-  // staging root (`--root=`), never public/; the app's table does not name
-  // them (`appTable: false`) until the deck reads them from there.
+  // staging root (`--root=`), never public/, and named in the app's table,
+  // which the deck's pool resolves its page URLs through.
   clouds: {
     key: 'earth-clouds.v2',
-    appTable: false,
     // States the transform baked into the cached level (the curve, the albedo
     // rule, the area average); the master's own digest is added to the name.
     rawToken: 'ap-v1',

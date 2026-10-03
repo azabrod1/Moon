@@ -18,7 +18,6 @@ import {
   cloudTableCode,
   cloudFieldGuard,
   cloudFieldPoolBytes,
-  cloudFieldRequested,
   cloudPageAddress,
   cloudPageEdgeWeight,
   cloudPageKey,
@@ -26,6 +25,7 @@ import {
   packCloudPage,
   parseCloudPageKey,
 } from './cloudField';
+import { cloudFieldAsked, cloudFieldRequested } from './cloudFieldSlots';
 import { sphereEquirectUv } from './cloudDeck';
 import { textureBytesPerTexel, textureGpuBytes } from './textureBytes';
 import { resolveDefine } from '../testing/glslDefine';
@@ -334,7 +334,7 @@ describe('the field\'s GLSL', () => {
   });
 });
 
-describe('page keys and the dev switch', () => {
+describe('page keys and the switch', () => {
   it('round-trips', () => {
     expect(cloudPageKey(2, 4)).toBe('2_4');
     expect(parseCloudPageKey('15_4')).toEqual([15, 4]);
@@ -343,9 +343,13 @@ describe('page keys and the dev switch', () => {
     expect(parseCloudPageKey('x')).toBeNull();
   });
 
-  it('is ?cloudtiles=1 and nothing else', () => {
-    expect(cloudFieldRequested('?cloudtiles=1')).toBe(import.meta.env.DEV);
-    expect(cloudFieldRequested('?cloudtiles=0')).toBe(false);
-    expect(cloudFieldRequested('')).toBe(false);
+  it('is ?cloudtiles=1 and nothing else, in any build', () => {
+    expect(cloudFieldAsked('?cloudtiles=1')).toBe(true);
+    expect(cloudFieldAsked('?quality=medium&cloudtiles=1')).toBe(true);
+    expect(cloudFieldAsked('?cloudtiles=0')).toBe(false);
+    expect(cloudFieldAsked('?cloudtiles')).toBe(false);
+    expect(cloudFieldAsked('')).toBe(false);
+    // Read once, at boot: the test runner's page asked for nothing.
+    expect(cloudFieldRequested()).toBe(false);
   });
 });

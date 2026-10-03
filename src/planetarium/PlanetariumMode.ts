@@ -3590,6 +3590,39 @@ export class PlanetariumMode {
   }
 
   /**
+   * The frame's projection values every surface measure reads — the canvas in
+   * CSS pixels, the tile ratio, the focal length in device pixels at the
+   * frame's centre and the lens's largest stretch — once per world frame,
+   * whether or not a streamer exists or the context is lost, so a measure
+   * that is not the sector streamer's (the cloud field's residency) can read
+   * them under `?sectors=0` too. Computed at the moment the sector pass used
+   * to compute them for itself, straight before it, so the tiles read the
+   * same numbers they always did.
+   */
+  private updateSectorFrameValues(): void {
+    const canvasH = this.renderer.domElement.clientHeight;
+    const dpr = this.tilePixelRatio();
+    this.sectorFrameCanvasW = this.renderer.domElement.clientWidth;
+    this.sectorFrameCanvasH = canvasH;
+    this.sectorFrameDpr = dpr;
+    // Device pixels a world unit covers at unit distance at the CENTRE of the
+    // displayed frame. The lens normalises the design FOV onto the frame's
+    // edge, so the conversion is its displayed half-tangent; tan(fov/2) is the
+    // overscan render's scale and reads 8% small at this FOV.
+    const lens = this.camera.userData.lens as
+      | { strength: number; designFovDeg: number; effectiveStrength?: number }
+      | undefined;
+    const lensStrength = lens ? lens.effectiveStrength ?? lens.strength : 0;
+    const designFovDeg = displayFovDeg(this.camera);
+    this.sectorFrameFocalPx = ((canvasH / 2) / lensDisplayHalfTan(designFovDeg, lensStrength)) * dpr;
+    // The lens stretches outward from the axis, so the same patch of surface
+    // draws larger in a corner than at the centre. The skip-the-whole-body
+    // bound in visitSectorBody carries that factor to stay an upper bound on
+    // every sector.
+    this.sectorFrameMaxScale = lensMaxFrameScale(designFovDeg, this.camera.aspect, lensStrength);
+  }
+
+  /**
    * Per-frame sector streaming for the hero bodies. Runs every frame for
    * every registered body, independently of updateBodyLOD's skips: a fully
    * upgraded globe filling the view is exactly the one whose sectors must
@@ -3609,11 +3642,6 @@ export class PlanetariumMode {
       sectors.dropAll();
       return;
     }
-    const canvasH = this.renderer.domElement.clientHeight;
-    const dpr = this.tilePixelRatio();
-    this.sectorFrameCanvasW = this.renderer.domElement.clientWidth;
-    this.sectorFrameCanvasH = canvasH;
-    this.sectorFrameDpr = dpr;
     this.sectorFrameNowMs = performance.now();
     this.sectorFrameChart = this.isMapOpen();
     this.sectorFrameGrounded = this.landedView === 'surface' ? this.landedOn?.name ?? null : null;
@@ -3622,21 +3650,6 @@ export class PlanetariumMode {
     // refreshed it this frame.
     this.camera.updateMatrixWorld();
     this.solarSystem.sun.getWorldPosition(this.sectorSunWorld);
-    // Device pixels a world unit covers at unit distance at the CENTRE of the
-    // displayed frame. The lens normalises the design FOV onto the frame's
-    // edge, so the conversion is its displayed half-tangent; tan(fov/2) is the
-    // overscan render's scale and reads 8% small at this FOV.
-    const lens = this.camera.userData.lens as
-      | { strength: number; designFovDeg: number; effectiveStrength?: number }
-      | undefined;
-    const lensStrength = lens ? lens.effectiveStrength ?? lens.strength : 0;
-    const designFovDeg = displayFovDeg(this.camera);
-    this.sectorFrameFocalPx = ((canvasH / 2) / lensDisplayHalfTan(designFovDeg, lensStrength)) * dpr;
-    // The lens stretches outward from the axis, so the same patch of surface
-    // draws larger in a corner than at the centre. The skip-the-whole-body
-    // bound in visitSectorBody carries that factor to stay an upper bound on
-    // every sector.
-    this.sectorFrameMaxScale = lensMaxFrameScale(designFovDeg, this.camera.aspect, lensStrength);
 
     // Measure every body first, then let the streamer reconcile them together:
     // the bodies are visited in catalog order, and a working set decided body
@@ -3946,6 +3959,7 @@ export class PlanetariumMode {
     this.updateLadderPressure(performance.now());
     if (!mapOpen) {
       this.updateBodyLOD();
+      this.updateSectorFrameValues();
       this.updateSectorStreaming();
     } else {
       this.maintainSectorStreaming();

@@ -108,13 +108,13 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = 'f36ebb9574f94cf1b6a430d9a3286b4f556c402c7cd91996af719d32526c43bf';
+const DEV_FRAGMENT_HASH = 'cb669595398cb8d54b5bad83d437230f4cfac4ff131df6480a1b6a77115f08b4';
 const PROD_FRAGMENT_HASH = '155bd81a3024217e7d43d1d796f87e209e3e4cdae69eb417cd216bb15c14f575';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 /** The two texts with the cloud field's define OFF (world/cloudField),
  *  resolved as the preprocessor resolves it: each of the field's two chunks
  *  leaves the one blank line it opens with. */
-const FIELD_OFF_DEV_FRAGMENT_HASH = '2e5d75090828868208856dfcba2fff278650ea9e12ea9911e98fcd281622d6f5';
+const FIELD_OFF_DEV_FRAGMENT_HASH = '0197fed4b8f20f0f42cf6281236c03f638fe276e8bb96bdc42ff320c8d4bac6b';
 const FIELD_OFF_PROD_FRAGMENT_HASH = 'e39f05402b6d964be77bd3d67a8cacd4947c02602f6ab227ae1eb85ef02dddb8';
 /** The production text from before the field reached a production build:
  *  the shipped text with the field's two chunks deleted, newlines and all. */
@@ -123,7 +123,7 @@ const PRE_FIELD_PROD_FRAGMENT_HASH = '0a67d5fd1325957304982d6035954a12279dd2964a
  *  cloud field's defines all OFF, resolved as the preprocessor resolves them:
  *  the texts from before the switches existed, but for the field's two blank
  *  lines. */
-const OFF_DEV_FRAGMENT_HASH = 'ec3235fb1212ce8dc5f517f7edd8089e3477d63516b396e3187b5b3bde20a340';
+const OFF_DEV_FRAGMENT_HASH = '5815d4a88094938f8d897363aa76e7bc38998d1711ae106426e723952e9d2b02';
 const OFF_PROD_FRAGMENT_HASH = '439e0a2a1544917aa3368753ff4c7f669d809c459f52c64f9270d32ab98c7c14';
 describe('the injected surface shader', () => {
   it('is one text for every body and both tiers', () => {
@@ -303,7 +303,13 @@ describe('the injected surface shader', () => {
         + '\nuniform float uProbeCloudSmooth;\nuniform float uProbeCloudDetail;'
         + '\nuniform float uProbeCloudRelief;\nuniform float uProbeCloudAir;'
         + '\nuniform float uGlintCap;\nuniform float uGlintKeep;\nuniform float uGlintCalm;'
-        + '\nuniform float uBeamKnee;\nuniform float uBeamCap;', '')
+        + '\nuniform float uBeamKnee;\nuniform float uBeamCap;'
+        + '\nuniform vec3 uSeaColour;\nuniform float uSeaMix;', '')
+      // The sea-colour look knob is development text with no cheap reading:
+      // the production text is the text without it.
+      .replace('  if (uSeaMix > 0.0) {\n    float seaPaint = 1.0 - smoothstep(0.012, 0.03,\n'
+        + '        distance(diffuseColor.rgb, vec3(0.000607, 0.012983, 0.088656)));\n'
+        + '    diffuseColor.rgb = mix(diffuseColor.rgb, uSeaColour, seaWater * seaPaint * uSeaMix);\n  }\n', '')
       // The cloud shadow's knobs read as the constants they default to, and
       // the penumbra's as no factor at all.
       .replace('uniform float uCloudShadowDepth;\nuniform float uCloudShadowAir;\nuniform float uCloudShadowPenumbra;\n'
@@ -342,7 +348,7 @@ describe('the injected surface shader', () => {
       .replace(/uBeamKnee/g, OCEAN_BEAM_KNEE.toFixed(2))
       .replace(/uBeamCap/g, OCEAN_BEAM_CAP.toFixed(2))
       .replace(/ \* uGlintKeep/g, '');
-    expect(folded).not.toMatch(/uPerf|uProbe|uGlint|uCloudShadow(Depth|Air|Penumbra|Gamma)|uCloudLight|uCloudShadowSkyFill|uCloudGroundFill|uCloudFieldDiag/);
+    expect(folded).not.toMatch(/uPerf|uProbe|uGlint|uSea(Colour|Mix)|uCloudShadow(Depth|Air|Penumbra|Gamma)|uCloudLight|uCloudShadowSkyFill|uCloudGroundFill|uCloudFieldDiag/);
     expect(hash(import.meta.env.DEV ? folded : shader.fragmentShader)).toBe(PROD_FRAGMENT_HASH);
     const night = import.meta.env.DEV
       ? earthNightFragmentShader

@@ -3529,8 +3529,13 @@ function installDevHooks() {
     glint: (opts?: {
       cap?: number; keep?: number; calm?: number; calmMss?: number; roughness?: number | null;
       beamKnee?: number; beamCap?: number; sunPath?: boolean; seaBeam?: boolean;
+      seaColour?: [number, number, number]; seaMix?: number;
     }) => {
       if (opts?.cap !== undefined) devGlintUniforms.uGlintCap.value = opts.cap;
+      // The sea's own colour as a look knob: a linear reflectance the map's
+      // painted open sea is mixed toward, and the share (0 is the map as is).
+      if (opts?.seaColour !== undefined) devGlintUniforms.uSeaColour.value.fromArray(opts.seaColour);
+      if (opts?.seaMix !== undefined) devGlintUniforms.uSeaMix.value = opts.seaMix;
       if (opts?.keep !== undefined) devGlintUniforms.uGlintKeep.value = opts.keep;
       // The beam chain's shoulder (knee and cap, scene units) and the two
       // switches, live, so a probe reads each term's share from one page load.
@@ -3556,6 +3561,8 @@ function installDevHooks() {
         calmMss: Math.pow(devGlintUniforms.uGlintCalm.value, 4),
         beamKnee: devGlintUniforms.uBeamKnee.value,
         beamCap: devGlintUniforms.uBeamCap.value,
+        seaColour: devGlintUniforms.uSeaColour.value.toArray() as [number, number, number],
+        seaMix: devGlintUniforms.uSeaMix.value,
         sunPath: sunPathOn(),
         seaBeam: seaBeamOn(),
         roughness,

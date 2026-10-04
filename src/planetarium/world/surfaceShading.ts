@@ -555,12 +555,22 @@ export const devGlintUniforms: {
   uGlintCalm: { value: number };
   uBeamKnee: { value: number };
   uBeamCap: { value: number };
+  /** A look knob for the sea's own colour (`__moon.glint({seaColour, seaMix})`):
+   *  the open sea the day map paints — one flat navy texel, sRGB (2, 30, 84),
+   *  everywhere there is deep water — replaced by this linear reflectance in
+   *  the share `uSeaMix` says, where the map's texel IS that paint; a coast or
+   *  a shallow bank painted its own colour keeps it. At zero the diffuse is
+   *  untouched. Development builds only, nothing of it in production text. */
+  uSeaColour: { value: THREE.Vector3 };
+  uSeaMix: { value: number };
 } = {
   uGlintCap: { value: OCEAN_GLINT_CAP },
   uGlintKeep: { value: 1 },
   uGlintCalm: { value: SEA_CALM_LOBE_ROUGHNESS },
   uBeamKnee: { value: OCEAN_BEAM_KNEE },
   uBeamCap: { value: OCEAN_BEAM_CAP },
+  uSeaColour: { value: new THREE.Vector3(0, 0, 0) },
+  uSeaMix: { value: 0 },
 };
 const GLINT_CAP_GLSL = import.meta.env.DEV ? 'uGlintCap' : OCEAN_GLINT_CAP.toFixed(2);
 const BEAM_KNEE_GLSL = import.meta.env.DEV ? 'uBeamKnee' : OCEAN_BEAM_KNEE.toFixed(2);
@@ -1041,7 +1051,17 @@ if (GROUND_ON(uWaterGloss > 0.0)) {
   }
   roughnessFactor = max(${ROUGHNESS_MAP_LAND.toFixed(6)}
       - (${ROUGHNESS_MAP_LAND.toFixed(6)} - roughnessFactor) * waterGain, 0.02);
-}`;
+${import.meta.env.DEV ? `  // The sea-colour look knob (devGlintUniforms.uSeaColour): the day map's
+  // open sea is one flat painted texel, sRGB (2, 30, 84), so a texel within a
+  // small linear distance of it is that paint and nothing else, and is mixed
+  // toward the knob's reflectance by the water fraction; a coast or a bank
+  // the map painted its own colour is left as it is.
+  if (uSeaMix > 0.0) {
+    float seaPaint = 1.0 - smoothstep(0.012, 0.03,
+        distance(diffuseColor.rgb, vec3(0.000607, 0.012983, 0.088656)));
+    diffuseColor.rgb = mix(diffuseColor.rgb, uSeaColour, seaWater * seaPaint * uSeaMix);
+  }
+` : ''}}`;
 
 // Analytic stand-in for Saturn's ring opacity across the annulus (t: 0 inner …
 // 1 outer), used only for the shadow it casts — the major features that read on
@@ -1787,7 +1807,9 @@ const DEV_TUNING_DECLS = /* glsl */ `uniform float uGlintCap;
 uniform float uGlintKeep;
 uniform float uGlintCalm;
 uniform float uBeamKnee;
-uniform float uBeamCap;`;
+uniform float uBeamCap;
+uniform vec3 uSeaColour;
+uniform float uSeaMix;`;
 
 /**
  * The cloud deck's cost probes (app/perfSwitches.ts, `cloud-probe-*`): each
@@ -3456,6 +3478,8 @@ export function augmentSurfaceMaterial(
       shader.uniforms.uGlintCalm = devGlintUniforms.uGlintCalm;
       shader.uniforms.uBeamKnee = devGlintUniforms.uBeamKnee;
       shader.uniforms.uBeamCap = devGlintUniforms.uBeamCap;
+      shader.uniforms.uSeaColour = devGlintUniforms.uSeaColour;
+      shader.uniforms.uSeaMix = devGlintUniforms.uSeaMix;
     }
     shader.uniforms.uFrameSpin = uFrameSpin;
     shader.uniforms.uSynthDetail = uSynthDetail;

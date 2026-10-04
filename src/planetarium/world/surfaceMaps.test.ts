@@ -3,7 +3,7 @@ import {
   COARSE_MAP_HEIGHT, COARSE_MAP_WIDTH, EarthSurfaceMaps, coarseFromRgba, pickCloudCoverage, pickRed, pickWater, sampleCoarse,
   type CoarseMap,
 } from './surfaceMaps';
-import { sphereEquirectUv } from './cloudDeck';
+import { bodyToDeck, sphereEquirectUv } from './cloudDeck';
 import { ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER } from './surfaceShading';
 import { SEA_WIND_MAX_MS } from './seaWind';
 
@@ -118,6 +118,22 @@ describe("Earth's maps together", () => {
     const out = { water: 0, calm: 0, windMs: 0, cloudKeep: 1 };
     maps.sampleAt(1, 0, 0, 0, out);
     expect(out.water).toBe(0);
+  });
+
+  it('samples through the same mapping as the deck module, with the deck turned by its drift', async () => {
+    const maps = new EarthSurfaceMaps(urls, fakeDecode, { width: 72, height: 36 });
+    maps.request();
+    await new Promise((r) => setTimeout(r, 20));
+    const out = { water: 0, calm: 0, windMs: 0, cloudKeep: 1 };
+    for (const [lat, lon, spin] of [[10, 20, 0.7], [-40, -100, 2.9], [60, 170, 5.5]]) {
+      const n = dirAt(lat, lon);
+      maps.sampleAt(n[0], n[1], n[2], spin, out);
+      const uv = sphereEquirectUv(n[0], n[1], n[2]);
+      const d = bodyToDeck(n, spin);
+      const duv = sphereEquirectUv(d[0], d[1], d[2]);
+      expect(out.water).toBeCloseTo(sampleCoarse((maps as unknown as { maps: { water: CoarseMap } }).maps.water, uv[0], uv[1]), 12);
+      expect(out.cloudKeep).toBeCloseTo(1 - sampleCoarse((maps as unknown as { maps: { cloud: CoarseMap } }).maps.cloud, duv[0], duv[1]), 12);
+    }
   });
 
   it('defaults to the coarse grid the meter was designed for', () => {

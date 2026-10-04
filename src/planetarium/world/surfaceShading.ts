@@ -2929,6 +2929,16 @@ export function setSeaBeamEnabled(on: boolean): void {
   seaBeamEnabled = on;
   for (const mat of beamReceivers) applySwitchDefine(mat, 'SEA_BEAM', on);
 }
+/** The beam's shoulder as the sea draws it this frame: the DEV knobs' values
+ *  in a development build, the constants in production. The highlight meter
+ *  reads it so its prediction follows a knob moved live. */
+export function beamShoulderInForce(): { knee: number; cap: number } {
+  if (import.meta.env.DEV) {
+    return { knee: devGlintUniforms.uBeamKnee.value, cap: devGlintUniforms.uBeamCap.value };
+  }
+  return { knee: OCEAN_BEAM_KNEE, cap: OCEAN_BEAM_CAP };
+}
+
 /** Whether every surface compiles the Sun's path right now. */
 export function sunPathOn(): boolean {
   return sunPathEnabled;

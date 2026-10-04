@@ -22,7 +22,7 @@
  * (`sphereEquirectUv` in world/cloudDeck): u wraps, v is the latitude from the
  * south, and a decoded picture is north-up, so rows are read flipped.
  */
-import { cloudCoverageAlpha, bodyToDeck, sphereEquirectUv } from './cloudDeck';
+import { cloudCoverageAlpha } from './cloudDeck';
 import { ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER } from './surfaceShading';
 import { SEA_WIND_MAX_MS } from './seaWind';
 import type { SurfaceSample } from './glintMeter';
@@ -179,12 +179,17 @@ export class EarthSurfaceMaps {
       out.water = 0; out.calm = 0; out.windMs = 0; out.cloudKeep = 1;
       return;
     }
-    const uv = sphereEquirectUv(nx, ny, nz);
-    out.water = sampleCoarse(water, uv[0], uv[1]);
-    out.calm = sampleCoarse(calm, uv[0], uv[1]);
-    out.windMs = sampleCoarse(windy, uv[0], uv[1]) * SEA_WIND_MAX_MS;
-    const d = bodyToDeck([nx, ny, nz], cloudSpin);
-    const duv = sphereEquirectUv(d[0], d[1], d[2]);
-    out.cloudKeep = 1 - sampleCoarse(cloud, duv[0], duv[1]);
+    // sphereEquirectUv and bodyToDeck (world/cloudDeck), inlined so a frame
+    // allocates nothing; the tests hold this against those functions.
+    const u0 = Math.atan2(nz, -nx) / (2 * Math.PI);
+    const u = u0 - Math.floor(u0);
+    const v = 0.5 + Math.asin(Math.min(1, Math.max(-1, ny))) / Math.PI;
+    out.water = sampleCoarse(water, u, v);
+    out.calm = sampleCoarse(calm, u, v);
+    out.windMs = sampleCoarse(windy, u, v) * SEA_WIND_MAX_MS;
+    const c = Math.cos(cloudSpin), sn = Math.sin(cloudSpin);
+    const dx = c * nx - sn * nz, dz = sn * nx + c * nz;
+    const du0 = Math.atan2(dz, -dx) / (2 * Math.PI);
+    out.cloudKeep = 1 - sampleCoarse(cloud, du0 - Math.floor(du0), v);
   }
 }

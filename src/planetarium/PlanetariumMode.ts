@@ -37,9 +37,9 @@ import {
   LIGHT_SPEED_AU_PER_S,
 } from './planets/planetData';
 import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasurementRelevant, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
-import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
+import { PLANET_TEXTURE_FILES, appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
-import { advanceSurfaceAir, bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, holdSeaCloudCut, setSurfaceSynthesis, settleSurfaceAir, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { advanceSurfaceAir, beamShoulderInForce, bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, holdSeaCloudCut, seaBeamOn, seaWindOn, setSurfaceSynthesis, settleSurfaceAir, sunPathOn, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { setCloudFieldPixelRatios } from './world/cloudFieldSlots';
 import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
 import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, textureWarmQueueDepth, warmBudgetMs } from './world/textureWarmer';
@@ -110,6 +110,8 @@ import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU, SUN_RADIUS_AU } from '../astronomy/constants';
 import { horizonDip, mirrorPointOnSphere } from './horizonPose';
 import { SUN_LIGHT_BASELINE } from './sunLight';
+import { HighlightMeter, type HighlightContext, type HighlightTelemetry } from './highlightMeter';
+import { EarthSurfaceMaps } from './world/surfaceMaps';
 import { writeShadedAlbedo } from './world/albedoGrade';
 import {
   createPlanetariumStarfield,
@@ -1167,6 +1169,26 @@ export class PlanetariumMode {
   private tmpInvGroupQuat = new THREE.Quaternion();
   private tmpShadingParentPos = new THREE.Vector3();
   private sunExposure = 1;
+  /** The highlight meter (highlightMeter.ts): the exposure closed down for the
+   *  sea's beam, composed with the Sun's own meter as the smaller of the two
+   *  in takeExposureTarget. Its maps are Earth's shipped pictures decoded
+   *  coarsely on the first approach. */
+  private readonly highlightMeter = new HighlightMeter(
+    new EarthSurfaceMaps({
+      water: resolveTextureUrl(PLANET_TEXTURE_FILES.earthRoughness, '2k'),
+      calm: resolveTextureUrl(PLANET_TEXTURE_FILES.earthSeaCalm, '2k'),
+      windy: resolveTextureUrl(PLANET_TEXTURE_FILES.earthSeaWindy, '2k'),
+      cloud: resolveTextureUrl(PLANET_TEXTURE_FILES.earthClouds, '2k'),
+    }),
+    beamShoulderInForce,
+  );
+  private readonly highlightCtx: HighlightContext = {
+    camera: new THREE.Vector3(), sun: new THREE.Vector3(), lightIntensity: 0, lightLinear: [1, 1, 1],
+    airOn: false, airBlend: 0, hazeClearView: 1, cloudSpin: 0, cloudDrawn: false, fovXDeg: 60, fovYDeg: 40,
+    seaBeamOn: true, sunPathOn: true, windMapsOn: false,
+  };
+  private readonly highlightScratch = { cam: new THREE.Vector3(), earth: new THREE.Vector3(), q: new THREE.Quaternion() };
+  private sunPointLight: THREE.PointLight | null = null;
   private lastSunVisibleFraction = 1;
   private sunEmergenceFlash = 0;
   /** Wall-time envelope behind uDiamondRing. The authored strength is a pure
@@ -5146,6 +5168,7 @@ export class PlanetariumMode {
     // Past every camera writer this frame, beside the Sun's own metering.
     this.syncNightExposures();
     this.updateSunShader(dt);
+    this.updateHighlightMeter(dt);
     this.updateOrbitLineVisibility();
 
     // Update stats/time overlays on a lower cadence than the render loop to avoid
@@ -9112,7 +9135,68 @@ export class PlanetariumMode {
    * on it verbatim, never re-glide it.
    */
   takeExposureTarget(): number {
-    return this.sunExposure;
+    // The smaller of the Sun's meter and the beam's: either closes down on
+    // its own, never both on the same view (the highlight meter holds at
+    // exactly one wherever the beam cannot be in the picture, so the Sun's
+    // meter alone is the picture it was).
+    return Math.min(this.sunExposure, this.highlightMeter.exposure);
+  }
+
+  /**
+   * The highlight meter's frame: Earth's mirror geometry in Earth's own frame
+   * from scene positions (never the heliocentric table), the light as the
+   * point light has it, the air's state, the deck's drift, the displayed field
+   * of view. Cheap when far: the meter holds before it reads anything.
+   */
+  private updateHighlightMeter(dt: number): void {
+    const ctx = this.highlightCtx;
+    const earth = this.solarSystem?.planets.find((p) => p.data.name === 'Earth');
+    if (!earth || !this.solarSystem) {
+      ctx.airOn = false;
+      this.highlightMeter.update(dt, ctx);
+      return;
+    }
+    const sc = this.highlightScratch;
+    earth.group.getWorldPosition(sc.earth);
+    earth.group.getWorldQuaternion(sc.q).invert();
+    this.camera.getWorldPosition(sc.cam);
+    const r = earth.data.radiusAU;
+    ctx.camera.copy(sc.cam).sub(sc.earth).applyQuaternion(sc.q).divideScalar(r);
+    ctx.sun.copy(this.solarSystem.sun.position).sub(sc.earth).applyQuaternion(sc.q).divideScalar(r);
+    if (!this.sunPointLight) this.sunPointLight = (this.solarSystem.sun.getObjectByProperty('isPointLight', true) as THREE.PointLight | undefined) ?? null;
+    const light = this.sunPointLight;
+    ctx.lightIntensity = light?.intensity ?? 0;
+    if (light) { const lin = ctx.lightLinear as [number, number, number]; lin[0] = light.color.r; lin[1] = light.color.g; lin[2] = light.color.b; }
+    const air = earth.fx?.air;
+    ctx.airOn = !!air && (air.uAirDensity.value as number) > 0;
+    ctx.airBlend = air ? (air.uAirBlend.value as number) : 0;
+    ctx.hazeClearView = air ? (air.uSurfaceHaze.value as number) : 1;
+    const cloudArgs = earth.cloudsMesh ? surfaceShadingArgsOf(earth.cloudsMesh.material as THREE.Material) : undefined;
+    ctx.cloudSpin = cloudArgs?.uFrameSpin.value ?? 0;
+    ctx.cloudDrawn = !!earth.cloudsMesh?.visible && !this.devHiddenRoles?.clouds;
+    const fovY = displayFovDeg(this.camera);
+    ctx.fovYDeg = fovY;
+    ctx.fovXDeg = (2 * Math.atan(Math.tan((fovY * Math.PI) / 360) * this.camera.aspect) * 180) / Math.PI;
+    ctx.seaBeamOn = seaBeamOn();
+    ctx.sunPathOn = sunPathOn();
+    ctx.windMapsOn = seaWindOn();
+    this.highlightMeter.update(dt, ctx);
+  }
+
+  /** The highlight meter's knobs and telemetry (`__moon.glintMeter`), DEV. */
+  devGlintMeter(opts?: { target?: number; floor?: number; fadeLo?: number; fadeHi?: number; down?: number; up?: number }): HighlightTelemetry {
+    const m = this.highlightMeter;
+    if (opts) {
+      const k = { ...m.knobs };
+      if (Number.isFinite(opts.target)) k.target = opts.target as number;
+      if (Number.isFinite(opts.floor)) k.floor = opts.floor as number;
+      if (Number.isFinite(opts.fadeLo)) k.fadeLo = opts.fadeLo as number;
+      if (Number.isFinite(opts.fadeHi)) k.fadeHi = opts.fadeHi as number;
+      m.knobs = k;
+      if (Number.isFinite(opts.down)) m.downStopsPerS = opts.down as number;
+      if (Number.isFinite(opts.up)) m.upStopsPerS = opts.up as number;
+    }
+    return m.telemetry();
   }
 
   /** DEV A/B (`__moon.setBeltVisible`): hold the asteroid belt out of every

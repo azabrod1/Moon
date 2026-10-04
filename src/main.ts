@@ -82,6 +82,7 @@ import type { CloudFieldRequest } from './planetarium/world/cloudFieldPool';
 import { SUN_LIGHT_COLOR, SUN_LIGHT_INTENSITY } from './planetarium/PlanetFactory';
 import { AIRLIGHT_SCALE } from './planetarium/world/atmosphereModel';
 import { devAlbedoGrade } from './planetarium/world/albedoGrade';
+import { highlightMeterEnabled, parseGlintMeterParam, setHighlightMeterEnabled } from './planetarium/highlightMeter';
 import { parseNightExposureParam, setDevNightExposure, type NightExposureOverride } from './planetarium/world/nightExposure';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass, parseFusedParam } from './app/FusedOutputPass';
@@ -323,6 +324,9 @@ setSeaWindEnabled(parseSeaWindParam(location.search));
 // any surface is augmented). Each is the picture as it was.
 setSunPathEnabled(parseSunPathParam(location.search));
 setSeaBeamEnabled(parseSeaBeamParam(location.search));
+// `?glintmeter=0`: the exposure never closes down for the sea's beam
+// (planetarium/highlightMeter); the Sun's own meter alone, as it was.
+setHighlightMeterEnabled(parseGlintMeterParam(location.search));
 // `?seawindmap=<url>` (DEV only): the sea's wind maps from a file — a picture
 // carrying both, or a raw byte map of one wind — so a field baked elsewhere
 // is judged in the app. Fetched beside the boot; the sea reads it from the
@@ -3623,6 +3627,14 @@ function installDevHooks() {
     // A body's albedo grade live (world/albedoGrade): a linear RGB over its
     // map, null for the authored one; every material of the body follows.
     albedoGrade: (name: string, rgb?: [number, number, number] | null) => devAlbedoGrade(name, rgb),
+    // The highlight meter (planetarium/highlightMeter): its knobs live and its
+    // telemetry — the hold reason, the predicted beam, its coverage, the
+    // exposure asked for, the scan's cost. `on` flips the switch exactly.
+    glintMeter: (opts?: { on?: boolean; target?: number; floor?: number; fadeLo?: number; fadeHi?: number; down?: number; up?: number }) => {
+      if (opts?.on !== undefined) setHighlightMeterEnabled(opts.on);
+      const t = planetariumMode?.devGlintMeter(opts) ?? null;
+      return t ? { ...t, enabled: highlightMeterEnabled() } : { enabled: highlightMeterEnabled() };
+    },
     // The night side's exposure, live (world/nightExposure): the lit fractions
     // of the visible cap the long exposure holds at (`full`) and is gone by
     // (`none`), the ramp's two speeds in positions per second — toward the

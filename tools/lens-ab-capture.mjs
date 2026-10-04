@@ -351,10 +351,20 @@ try {
   if (LOOK_AROUND) {
     console.log('[2] looks at the park: real drags, every arm');
     // Drags accumulate — OrbitControls keeps the orbit — so the look that
-    // matters most, down past the ship with the horizon at the top of the
-    // frame, comes first from the untouched chase pose.
+    // matters most comes first from the untouched chase pose: a drag UP the
+    // screen of about a seventh of it, which carries the camera over the
+    // ship from the chase's ~19° lift through the nadir to ~36° on the far
+    // side, so it looks down past the bell with the horizon across the TOP of
+    // the frame — the pose of the user's screenshot. The orbit turns about
+    // half a degree a pixel at this height: a tenth of the screen stops
+    // short with the limb in a corner, and a drag DOWN the screen swings the
+    // camera the other way, horizon along the bottom (a 24th puts the limb on
+    // the bottom edge, a quarter puts the camera under the ship).
+    // `--look-down=<px>` sizes it; the later looks start from where it left
+    // the camera.
+    const lookDownPx = Number(arg('look-down', String(Math.round(VIEWPORT_HEIGHT / 7))));
     const drags = [
-      ['down', 0, Math.round(VIEWPORT_HEIGHT / 4)],
+      ['down', 0, -lookDownPx],
       ['quarter', Math.round(VIEWPORT_HEIGHT / 4), 0],
       ['quarter-low', 0, -Math.round(VIEWPORT_HEIGHT / 12)],
       ['up', 0, -Math.round(VIEWPORT_HEIGHT / 2)],

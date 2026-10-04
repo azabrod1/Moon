@@ -30,6 +30,15 @@
 // camera the pose built. PASS: the vector error is within `--tol` (0.2) of the
 // expected length and the peak correlation at least `--mincorr` (0.5).
 //
+// `--scenario=field` is the same three Sun heights with Earth's cloud field
+// on (`?cloudtiles=1`, world/cloudField): the deck draws its 1.2 km pages and
+// the ground's shadow reads the same pages at the pierce point, so the bar is
+// the shadow under the SHARP cloud. After each pose it waits for the field to
+// settle — nothing in the pipe, nothing fading, every page the residency
+// wants (the deck's and the shadows') in the table at full fade — and fails a
+// height whose frame never had a page resident, which would test the base
+// sheet again. No hour: the clock's drift is the base scenario's question.
+//
 // `--hour` (on by default; `--hour=0` skips it) runs the clock: from the
 // middle Sun height's time it runs at `--rate` (default 900×) for four
 // wall-time stretches of a simulated quarter hour each, re-poses after each,
@@ -37,6 +46,7 @@
 // apart from the deck's would show as a growing error.
 //
 //   node tools/cloud-hd-probe.mjs --url=http://localhost:5743 --scenario=shadow
+//   node tools/cloud-hd-probe.mjs --url=http://localhost:5743 --scenario=field
 //
 // GPU flags as every battery; takes /tmp/moon-browser.lock. Captures, signal
 // maps and a JSON of every reading land in /tmp/moon-shots/<label>/.
@@ -291,8 +301,8 @@ async function openPage(browser) {
 /** The lens strength the pass runs at once it is asked for none. */
 let lensStrength = NaN;
 
-async function boot(page) {
-  await page.goto(`${URL}/?auto=planetarium&quality=medium${EXTRA}`, { waitUntil: 'domcontentloaded' });
+async function boot(page, query = '') {
+  await page.goto(`${URL}/?auto=planetarium&quality=medium${EXTRA}${query}`, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => !!window.__moon?.ready?.(), null, { timeout: 90_000 });
   await page.waitForFunction(() => {
     const ls = document.getElementById('loading-screen');
@@ -331,6 +341,34 @@ async function still(page) {
   }
   console.log('[hd-probe] a frame never held still; using the last');
   return last;
+}
+
+/**
+ * Wait for the cloud field to settle at this pose: nothing in the pipe,
+ * nothing fading, every wanted page in the table at full fade, the table
+ * unmoved for a second and a half. Returns what it saw.
+ */
+async function settleField(page, maxMs = 40_000) {
+  return page.evaluate(async (limit) => {
+    const m = window.__moon;
+    const start = performance.now();
+    let lastKey = null;
+    let lastChange = 0;
+    for (;;) {
+      const t = performance.now() - start;
+      const st = await m.cloudField();
+      const r = st.residency;
+      const full = new Set(st.pool.table.filter((e) => e.fade === 1).map((e) => e.page));
+      const key = st.pool.table.map((e) => `${e.page}:${e.fade}`).join(' ');
+      if (key !== lastKey) { lastKey = key; lastChange = t; }
+      const allIn = r.wantedPages.every((w) => full.has(w.page));
+      const settled = r.pipe === 'idle' && r.fading === 0 && allIn && t - lastChange >= 1500;
+      if (settled || t >= limit) {
+        return { settled, ms: Math.round(t), resident: r.resident, full: full.size, wanted: r.wantedPages.map((w) => w.page) };
+      }
+      await new Promise((res) => setTimeout(res, 150));
+    }
+  }, maxMs);
 }
 
 async function deckColour(page, on) {
@@ -437,6 +475,30 @@ let failures = 0;
 try {
   const { page, errors } = await openPage(browser);
   report.errors = errors;
+  if (SCENARIOS.includes('field')) {
+    // Its own boot: the field is settled at boot and cannot be switched on later.
+    await boot(page, '&cloudtiles=1');
+    const on = await page.evaluate(async () => (await window.__moon.cloudField())?.pool?.layers ?? 0);
+    console.log(`[hd-probe] field booted, ${on} pool layers`);
+    if (!on) { failures++; console.log('[hd-probe] field: FAIL, the session has no cloud field'); }
+    for (const cfg of HEIGHTS) {
+      await page.evaluate((t) => window.__moon.setTimeMs(t), Date.parse(TIME));
+      await poseAt(page, cfg);
+      // The shadow's own demand joins only while the shadow is compiled: on
+      // for the wait, then measure() takes its captures.
+      await page.evaluate(() => window.__moon.cloudShadow({ on: true }));
+      const field = await settleField(page);
+      const row = { ...(await measure(page, cfg, `field-${cfg.name}`)), field };
+      const paged = field.settled && field.full > 0;
+      if (!paged) row.pass = false;
+      report.rows.push(row);
+      if (!row.pass || !row.scored) failures++;
+      console.log(`[hd-probe] field-${cfg.name}: ${!paged ? 'FAIL (no page resident: the base sheet, not the field)' : !row.scored ? 'NO CLOUD (a height must be scored)' : row.pass ? 'PASS' : 'FAIL'} `
+        + `pages ${field.full} at full fade (settled ${field.settled}, ${field.ms} ms), sun ${row.sunElevDeg}°, expected ${row.expectedPx} px, `
+        + `measured ${row.measuredPx} px, length x${row.lengthRatio}, angle ${row.angleErrDeg}°, err ${(row.vectorErrFrac * 100).toFixed(1)} %, `
+        + `corr ${row.corr} (at zero shift ${row.corrAtZeroShift})`);
+    }
+  }
   if (SCENARIOS.includes('shadow')) {
     await boot(page);
     console.log('[hd-probe] booted', JSON.stringify(await page.evaluate(() => window.__moon.cloudShadow())));

@@ -404,7 +404,7 @@ export interface GeometryUpgrade {
 // crosses it having shown nothing, and pays one rebuild it did not strictly
 // need — cheaper than carrying a second threshold per segment tier.
 const GEOMETRY_UPGRADE_AT_PX = 1250;
-const GEOMETRY_UPGRADE_SEGMENTS = 256;
+export const GEOMETRY_UPGRADE_SEGMENTS = 256;
 
 export function makeGeometryUpgrade(
   spheres: readonly { mesh: THREE.Mesh; radiusAU: number }[],
@@ -640,7 +640,7 @@ function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig): THREE
 // surface, the cloud deck stands at a cloud top. Both are drawn at the same
 // segment count as the globe, so all three silhouettes coarsen and refine
 // together.
-const EARTH_NIGHT_SHELL_SCALE = 1.001;
+export const EARTH_NIGHT_SHELL_SCALE = 1.001;
 const EARTH_CLOUD_SHELL_SCALE = cloudShellScale(
   PLANETS.find((p) => p.name === 'Earth')!.radiusKm,
 );

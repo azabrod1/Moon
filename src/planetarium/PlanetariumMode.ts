@@ -39,7 +39,7 @@ import {
 import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasurementRelevant, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
 import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
-import { advanceSurfaceAir, bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, setSurfaceSynthesis, settleSurfaceAir, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { advanceSurfaceAir, bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, setCloudShadowDrift, setSurfaceSynthesis, settleSurfaceAir, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { cloudFieldRequested, setCloudFieldOn, setCloudFieldPixelRatios } from './world/cloudFieldSlots';
 import type { CloudFieldAllocation } from './world/cloudFieldPool';
 import type { CloudFieldSession } from './world/cloudFieldSession';
@@ -20212,7 +20212,7 @@ export class PlanetariumMode {
         // sharpness. Written here rather than at build time because the deck
         // climbs its texture ladder on approach and frees the rung it leaves.
         if (body.name === 'Earth') {
-          cloudShadowUniforms.uCloudShadowSpin.value = cloudDrift;
+          setCloudShadowDrift(cloudDrift);
           const deckMap = (planet.cloudsMesh.material as THREE.MeshStandardMaterial).map;
           if (deckMap) cloudShadowUniforms.uCloudShadowMap.value = deckMap;
         }

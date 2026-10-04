@@ -516,16 +516,28 @@ const GLINT_CAP_GLSL = import.meta.env.DEV ? 'uGlintCap' : OCEAN_GLINT_CAP.toFix
 const GLINT_KEEP_GLSL = import.meta.env.DEV ? 'uGlintKeep' : OCEAN_SPECULAR_KEEP.toFixed(4);
 
 /** The cloud deck's colour map, and the drift its own frame carries on top of
- *  the body's. Shared by every augmented surface so the ocean's mirror term can
- *  be cut where cloud stands between it and the Sun; the map is whatever rung
- *  the deck is currently wearing, written each frame by the mode. */
+ *  the body's (with that drift's cosine and sine, `setCloudShadowDrift`).
+ *  Shared by every augmented surface so the ocean's mirror term can be cut
+ *  where cloud stands between it and the Sun; the map is whatever rung the
+ *  deck is currently wearing, written each frame by the mode. */
 export const cloudShadowUniforms: {
   uCloudShadowMap: { value: THREE.Texture | null };
   uCloudShadowSpin: { value: number };
+  uCloudShadowTurn: { value: THREE.Vector2 };
 } = {
   uCloudShadowMap: { value: null },
   uCloudShadowSpin: { value: 0 },
+  uCloudShadowTurn: { value: new THREE.Vector2(1, 0) },
 };
+
+/** The deck's drift, written each frame by the mode: the angle, which the
+ *  sea's straight-down read turns by, and its cosine and sine, which the cloud
+ *  shadow's read takes as they are rather than evaluating both again at every
+ *  fragment of the ground. */
+export function setCloudShadowDrift(drift: number): void {
+  cloudShadowUniforms.uCloudShadowSpin.value = drift;
+  cloudShadowUniforms.uCloudShadowTurn.value.set(Math.cos(drift), Math.sin(drift));
+}
 
 /** Let go of the deck map the frame loop parked above. It is the only
  *  reference to that texture outside the deck's own material, so a session
@@ -534,7 +546,7 @@ export const cloudShadowUniforms: {
  *  augmented material re-installs the 1x1 stand-in. */
 export function resetCloudShadowUniforms(): void {
   cloudShadowUniforms.uCloudShadowMap.value = null;
-  cloudShadowUniforms.uCloudShadowSpin.value = 0;
+  setCloudShadowDrift(0);
 }
 
 // --- Cloud shadows on the ground, the sea and the air (off by default) -------
@@ -1889,7 +1901,10 @@ const CLOUD_SHADOW_DECLS = /* glsl */ `
 #ifdef CLOUD_SHADOW
 uniform float uCloudAbove;
 uniform float uCloudHeightOverRadius;
-${import.meta.env.DEV ? 'uniform float uCloudShadowDepth;\nuniform float uCloudShadowAir;\nuniform float uCloudShadowPenumbra;\nuniform float uCloudShadowGamma;\nuniform float uCloudShadowSkyFill;\n' : ''}#endif
+${import.meta.env.DEV ? 'uniform float uCloudShadowDepth;\nuniform float uCloudShadowAir;\nuniform float uCloudShadowPenumbra;\nuniform float uCloudShadowGamma;\nuniform float uCloudShadowSkyFill;\n' : ''}#ifdef CLOUD_FIELD
+uniform vec2 uCloudShadowTurn;
+#endif
+#endif
 `;
 
 /**
@@ -2152,11 +2167,30 @@ ${CLOUD_CLEAR_RETURN}`;
  * measure in, so a Dynamic rung step moves neither. Each read is taken only
  * where it has a share: the base not at full weight, the page not at none,
  * and neither filter's plain tap where the smooth one takes it all.
+ *
+ * The field's arm also spends less arithmetic getting there, because this
+ * runs at every fragment of the ground and each instruction saved is a share
+ * of the frame that can be measured: the turn into the deck's frame takes the
+ * drift's cosine and sine as uniforms (`setCloudShadowDrift`) rather than
+ * evaluating both at each fragment, and the penumbra widens each gradient
+ * through one reciprocal square root rather than a length and a division —
+ * the same numbers to float rounding. A ground without the field keeps the
+ * read it had: with CLOUD_FIELD off the program is the one from before the
+ * field reached it (aerialPerspective.test.ts pins that text).
  */
+const CLOUD_SHADOW_FIELD_TURN = /* glsl */ `#ifdef CLOUD_FIELD
+    vec3 shadowRay = cloudRayDirection(shadowN, shadowL, uCloudHeightOverRadius);
+    vec3 shadowDir = vec3(uCloudShadowTurn.x * shadowRay.x - uCloudShadowTurn.y * shadowRay.z, shadowRay.y,
+                          uCloudShadowTurn.y * shadowRay.x + uCloudShadowTurn.x * shadowRay.z);
+#else
+`;
 const CLOUD_SHADOW_FIELD_PENUMBRA = /* glsl */ `#ifdef CLOUD_FIELD
     shadowPenumbra /= uCloudFieldPixelScale;
-#endif
+    shadowDx *= max(1.0, shadowPenumbra * inversesqrt(max(dot(shadowDx, shadowDx), 1e-24)));
+    shadowDy *= max(1.0, shadowPenumbra * inversesqrt(max(dot(shadowDy, shadowDy), 1e-24)));
+#else
 `;
+const CLOUD_SHADOW_FIELD_END = '#endif\n';
 const CLOUD_SHADOW_FIELD_READ = /* glsl */ `#ifdef CLOUD_FIELD
       float shadowFieldW = 0.0;
       float shadowFieldLayer = -1.0;
@@ -2178,7 +2212,6 @@ const CLOUD_SHADOW_FIELD_READ = /* glsl */ `#ifdef CLOUD_FIELD
       cloudSunKeep = 1.0 - shadowCover;
 #else
 `;
-const CLOUD_SHADOW_FIELD_READ_END = '#endif\n';
 
 const CLOUD_SHADOW_READ = /* glsl */ `
 #ifdef CLOUD_SHADOW
@@ -2194,14 +2227,14 @@ const CLOUD_SHADOW_READ = /* glsl */ `
     vec3 shadowN = normalize(vObjPos);
     vec3 shadowL = normalize(uSunDirLocal);
     float shadowMu = dot(shadowN, shadowL);
-    vec3 shadowDir = bodyToDeck(cloudRayDirection(shadowN, shadowL, uCloudHeightOverRadius), uCloudShadowSpin);
-    vec3 shadowDx = dFdx(shadowDir);
+${CLOUD_SHADOW_FIELD_TURN}    vec3 shadowDir = bodyToDeck(cloudRayDirection(shadowN, shadowL, uCloudHeightOverRadius), uCloudShadowSpin);
+${CLOUD_SHADOW_FIELD_END}    vec3 shadowDx = dFdx(shadowDir);
     vec3 shadowDy = dFdy(shadowDir);
     float shadowPenumbra = ${CLOUD_SHADOW_PENUMBRA_GUARD}uCloudHeightOverRadius * (2.0 * uSunTan)
         / max(shadowMu * shadowMu, 0.01);
 ${CLOUD_SHADOW_FIELD_PENUMBRA}    shadowDx *= max(1.0, shadowPenumbra / max(length(shadowDx), 1e-12));
     shadowDy *= max(1.0, shadowPenumbra / max(length(shadowDy), 1e-12));
-    vec2 shadowUv = sphereEquirectUv(shadowDir);
+${CLOUD_SHADOW_FIELD_END}    vec2 shadowUv = sphereEquirectUv(shadowDir);
     vec2 shadowUvDx = sphereEquirectUvGrad(shadowDir, shadowDx);
     vec2 shadowUvDy = sphereEquirectUvGrad(shadowDir, shadowDy);
     bool cloudTapWanted = shadowMu > 0.0;
@@ -2217,7 +2250,7 @@ ${CLOUD_SHADOW_FIELD_READ}      vec4 shadowTexel = textureGrad(uCloudShadowMap, 
       }
       cloudSunKeep = 1.0 - cloudCoverage(dot(shadowTexel.rgb,
           vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')})));
-${CLOUD_SHADOW_FIELD_READ_END}    }
+${CLOUD_SHADOW_FIELD_END}    }
   }
 #endif
 `;
@@ -2242,11 +2275,19 @@ const CLOUD_SHADOW_DIFFUSE = /* glsl */ `
 /** The third reader: the Sun's glow in the air between the camera and this
  *  ground point, the share of that column under the cloud taken with it — and
  *  less of it as the view grazes, measured on the ground's geometric normal
- *  (never the perturbed one) against the line of sight (CLOUD_SHADOW_AIR_GRAZE). */
+ *  (never the perturbed one) against the line of sight (CLOUD_SHADOW_AIR_GRAZE).
+ *  With the field compiled the cosine is the one three's lights already hold,
+ *  its unperturbed normal against its view direction (both in view space),
+ *  rather than a second normalization of the sight line in the world's axes. */
 const CLOUD_SHADOW_AIR_SCALE = /* glsl */ `
 #ifdef CLOUD_SHADOW
+#ifdef CLOUD_FIELD
+      airS *= 1.0 - cloudShade * ${CLOUD_SHADOW_AIR_GLSL}
+          * smoothstep(${CLOUD_SHADOW_AIR_GRAZE[0].toFixed(6)}, ${CLOUD_SHADOW_AIR_GRAZE[1].toFixed(6)}, dot(nonPerturbedNormal, geometryViewDir));
+#else
       airS *= 1.0 - cloudShade * ${CLOUD_SHADOW_AIR_GLSL}
           * smoothstep(${CLOUD_SHADOW_AIR_GRAZE[0].toFixed(6)}, ${CLOUD_SHADOW_AIR_GRAZE[1].toFixed(6)}, dot(up, normalize(vAirCam - vAirFrag)));
+#endif
 #endif
 `;
 
@@ -3084,6 +3125,7 @@ export function augmentSurfaceMaterial(
     }
     shader.uniforms.uCloudShadowMap = cloudShadowUniforms.uCloudShadowMap;
     shader.uniforms.uCloudShadowSpin = cloudShadowUniforms.uCloudShadowSpin;
+    shader.uniforms.uCloudShadowTurn = cloudShadowUniforms.uCloudShadowTurn;
     shader.uniforms.uCloudDeck = uCloudDeck;
     shader.uniforms.uCloudDetail = uCloudDetail;
     shader.uniforms.uCloudAlbedo = uCloudAlbedo;

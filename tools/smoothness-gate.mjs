@@ -1154,6 +1154,118 @@ function fpsThrottle({ id, where, device, boot = '&fps=30' }) {
   };
 }
 
+/**
+ * Earth's cloud field arriving (`?cloudtiles=1`), scored against the same
+ * arrival without it.
+ *
+ * A field page is an upload that lands on frames somebody is watching — two
+ * steps into its layer, last in line behind the texture warm queue and on its
+ * repay ledger, never under the veil — so what it costs is read where it
+ * lands: a real `travelTo` Earth, then the trades pose (400 km over the
+ * Pacific by day, where the field wants pages), and the next six seconds,
+ * through which the pages are fetched, decoded, uploaded and faded in. The
+ * `-off` leg flies the same with the field off; the sector tiles the pose
+ * asks for land in both legs alike.
+ *
+ * The frames are read from the rAF callbacks' own entry times, in the page
+ * and in ONE evaluate, because a raf TIMESTAMP goes stale behind a busy main
+ * thread and would under-report the very hitch this looks for. The field leg
+ * passes when its worst interval in that window is within FIELD_WORST_MARGIN_MS
+ * of the off leg's, with at least one page admitted inside it. One run of
+ * each: the two worsts are single frames of two separate boots, so a failure
+ * is first a reason to read the two JSONs side by side (`callbackReading`).
+ */
+function cloudFieldArrival(id) {
+  const FIELD_WORST_MARGIN_MS = 2;
+  const WINDOW_MS = 6_000;
+  const TRADES_TIME = Date.parse('2026-02-01T17:20:00Z');
+  const TRADES = ['frame', 'Earth', 1.7303397579094035, 41.468376555090536, 1.0627155848228285, 0, -2.697731494258438, -77.34841618462669];
+  // Written by run(), read by verify() and kept on the trace, so a re-score
+  // finds it.
+  const readings = new Map();
+  const leg = (legId, field) => ({
+    id: legId,
+    title: `Earth's cloud field ${field ? 'ON' : 'off'}: travelTo Earth, then the trades pose for`
+      + ` ${WINDOW_MS / 1000} s${field ? ' as its pages arrive' : ' (the reference)'}`,
+    device: DESKTOP,
+    window: ['pages'],
+    async run(page, note) {
+      note(`renderer: ${await bootTo(page, `&quality=medium${field ? '&cloudtiles=1' : ''}`, 90)}`);
+      await page.evaluate((t) => {
+        window.__moon.setTimeRate(0);
+        window.__moon.setTimeMs(t);
+        window.__moon.jumpTo('Mars', 0.3);
+      }, TRADES_TIME);
+      await sleep(1_500);
+      note(await travelAndSettle(page, 'Earth', 2_000));
+      const reading = await page.evaluate(async ([call, windowMs]) => {
+        const m = window.__moon;
+        const residency = async () => (await m.cloudField()).residency;
+        const before = await residency();
+        const entries = [];
+        let running = true;
+        const tick = () => {
+          entries.push(performance.now());
+          if (running) requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+        await new Promise((r) => { requestAnimationFrame(r); });
+        // The mark and the pose in one task.
+        m.smoothMark('pages');
+        const [fn, ...a] = call;
+        m[fn](...a);
+        const poseAt = performance.now();
+        await new Promise((r) => { setTimeout(r, windowMs); });
+        running = false;
+        const st = await m.cloudField();
+        const gaps = [];
+        let worst = 0;
+        let worstAtMs = 0;
+        for (let i = 1; i < entries.length; i++) {
+          if (entries[i] <= poseAt) continue;
+          const gap = entries[i] - entries[i - 1];
+          if (gap > worst) { worst = gap; worstAtMs = Math.round(entries[i] - poseAt); }
+          gaps.push(gap);
+        }
+        const sorted = gaps.slice().sort((x, y) => x - y);
+        const at = (q) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))];
+        return {
+          frames: gaps.length,
+          worstMs: Math.round(sorted.at(-1) * 100) / 100,
+          p99Ms: Math.round(at(0.99) * 100) / 100,
+          medianMs: Math.round(at(0.5) * 100) / 100,
+          worstAtMs,
+          field: st.pool !== null,
+          admitted: st.residency ? st.residency.admissions - before.admissions : 0,
+          resident: st.residency?.resident ?? 0,
+          uploadMs: st.pool ? Object.fromEntries(Object.entries(st.pool.pages).map(([k, v]) => [k, v.uploadMs])) : null,
+        };
+      }, [TRADES, WINDOW_MS]);
+      readings.set(legId, reading);
+      note(`callback intervals from the pose: ${JSON.stringify(reading)}`);
+    },
+    verify(analysis, trace, done) {
+      const reading = readings.get(legId) ?? trace.cloudFieldReading ?? null;
+      trace.cloudFieldReading = reading;
+      analysis.callbackReading = reading;
+      if (!reading) return ['no in-page reading: the leg did not reach its window'];
+      const problems = [];
+      if (reading.frames < 300) problems.push(`only ${reading.frames} frames in the window`);
+      if (reading.field !== field) problems.push(`the field is ${reading.field ? 'on' : 'off'} on the ${field ? 'field' : 'reference'} leg`);
+      if (!field) return problems;
+      if (reading.admitted < 1) problems.push('no page arrived in the window, so it measured nothing of the field');
+      const floor = done.find((r) => r.scenario === `${id}-off`)?.callbackReading ?? null;
+      if (!floor) return [...problems, `no ${id}-off reading to compare against — run it in the same battery`];
+      if (reading.worstMs > floor.worstMs + FIELD_WORST_MARGIN_MS) {
+        problems.push(`worst frame ${reading.worstMs} ms with the field against ${floor.worstMs} ms without,`
+          + ` over the ${FIELD_WORST_MARGIN_MS} ms margin`);
+      }
+      return problems;
+    },
+  });
+  return [leg(`${id}-off`, false), { ...leg(id, true), requires: `${id}-off` }];
+}
+
 // ----------------------------------------------------------------- scenarios
 
 const SCENARIOS = [
@@ -1618,6 +1730,7 @@ const SCENARIOS = [
     device: MAC_WINDOW,
     boot: '&quality=dynamic&fps=30',
   }),
+  ...cloudFieldArrival('cloud-field'),
 ];
 
 // ------------------------------------------------------------------ analysis

@@ -3,15 +3,16 @@
  * (world/cloudField), apart from the pool that fills them
  * (world/cloudFieldPool). Always loaded, and small: the surface shader binds
  * these slots on a program compiled with CLOUD_FIELD, and the deck's factory
- * asks here whether to compile it. The pool — and the worker it starts — is a
+ * asks here whether to compile it — as does Earth's ground, whose cloud shadow
+ * reads the field beside its own define (world/surfaceShading). The pool — and the worker it starts — is a
  * module of its own, imported only by a session that asked for the field, so
  * a session that did not loads, allocates, fetches and constructs none of it.
  *
  * THE FIELD IS ON once, at boot and under the cover: the session asked
  * (`?cloudtiles=1`), the device's profile gives the pool layers, and the
  * pool's allocation came back with no GL error (PlanetariumMode). That is
- * settled before the solar system is built, so the deck compiles the define
- * the first time it compiles at all. Until then, and for the whole session if
+ * settled before the solar system is built, so the deck and the ground
+ * compile the define the first time they compile at all. Until then, and for the whole session if
  * any of the three says no, no material carries the define and none of the
  * slots below exists.
  */
@@ -19,7 +20,7 @@ import * as THREE from 'three';
 import { CLOUD_FIELD_GRID } from './cloudField';
 
 /** The shader's slots, one object each, shared by every program that compiles
- *  CLOUD_FIELD (only the deck does). */
+ *  CLOUD_FIELD (the deck, and the ground under it for its shadow's read). */
 export interface CloudFieldUniforms {
   uCloudPages: { value: THREE.DataArrayTexture };
   uCloudPageTable: { value: THREE.DataTexture };
@@ -95,8 +96,14 @@ export function cloudFieldOn(): boolean {
 }
 
 /** The materials compiled with CLOUD_FIELD: the planetarium's deck and the
- *  warm-up probe that stands in for it. */
+ *  warm-up probe that stands in for it, and Earth's ground (the globe and its
+ *  sectors) while its cloud shadow is compiled. */
 const fieldMaterials = new Set<THREE.Material>();
+/** One listener for all of them, so a define switched on and off again does
+ *  not stack listeners on its material. */
+const forgetFieldMaterial = (event: { target: THREE.Material }): void => {
+  fieldMaterials.delete(event.target);
+};
 
 /** Settle the session's answer (PlanetariumMode, at boot under the cover; and
  *  off again if a context restore cannot allocate the pool, when every program
@@ -121,7 +128,21 @@ export function enableCloudField(mat: THREE.Material): void {
   const m = mat as THREE.Material & { defines?: Record<string, string> };
   m.defines = { ...(m.defines ?? {}), CLOUD_FIELD: '' };
   fieldMaterials.add(mat);
-  mat.addEventListener('dispose', () => fieldMaterials.delete(mat));
+  mat.addEventListener('dispose', forgetFieldMaterial);
+  mat.needsUpdate = true;
+}
+
+/** Compile the field into a ground's shadow read, or take it out again
+ *  (world/surfaceShading, beside the shadow's own define: the ground reads the
+ *  field only through its shadow, which a development build switches live). */
+export function setCloudFieldCompiled(mat: THREE.Material, on: boolean): void {
+  if (on) {
+    enableCloudField(mat);
+    return;
+  }
+  if (!fieldMaterials.delete(mat)) return;
+  const m = mat as THREE.Material & { defines?: Record<string, string> };
+  if (m.defines) delete m.defines.CLOUD_FIELD;
   mat.needsUpdate = true;
 }
 

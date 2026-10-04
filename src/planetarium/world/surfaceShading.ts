@@ -162,7 +162,7 @@ import {
   cloudDetailTexture,
 } from './cloudDetailNoise';
 import { CLOUD_FIELD_MIX_GLSL, cloudFieldGlsl } from './cloudField';
-import { cloudFieldDiagUniform, cloudFieldUniforms } from './cloudFieldSlots';
+import { cloudFieldDiagUniform, cloudFieldOn, cloudFieldUniforms, setCloudFieldCompiled } from './cloudFieldSlots';
 import { MOON_UP_GLSL, NIGHT_WEIGHT_GLSL, NIGHT_WEIGHT_ZERO_SIN, SUN_DOWN_GLSL } from './nightSources';
 import { gpuSeed } from './proceduralMoon';
 import { SURFACE_TEXEL_FADE } from './surfaceDensity';
@@ -558,6 +558,15 @@ export function resetCloudShadowUniforms(): void {
 // moving the sea's cut into a second branch on one uniform, with the same
 // arithmetic, was measured changing one bit at one pixel on Metal under ANGLE.
 // Being part of three's program key, it relinks the program when it moves.
+//
+// What the shadow reads is the deck's base sheet, through the deck's smooth
+// filter — and, in a session with the cloud field (`?cloudtiles=1`,
+// world/cloudField), the field's 1.2 km opacity wherever a page is resident at
+// the pierce point, over the sheet at the field's own weight: the ground then
+// compiles CLOUD_FIELD beside CLOUD_SHADOW (never without it), so a shadow is
+// as sharp as the cloud drawn over it and hands over to the sheet with it
+// (CLOUD_SHADOW_READ). With the field there the sky's fill reads its table
+// only where there is a shade; with it absent the program is the one above.
 
 /** The share of the Sun's direct light a cloud takes from the ground in its
  *  shadow, at full coverage. The rest is what the cloud scatters down through
@@ -695,7 +704,16 @@ function receiveCloudShadow(mat: THREE.Material): void {
     cloudShadowReceivers.add(mat);
     mat.addEventListener('dispose', () => cloudShadowReceivers.delete(mat));
   }
-  applySwitchDefine(mat, 'CLOUD_SHADOW', cloudShadowsOn());
+  applyCloudShadow(mat, cloudShadowsOn());
+}
+
+/** The shadow on a receiver, and the cloud field it reads with it: a ground
+ *  compiles CLOUD_FIELD only beside CLOUD_SHADOW, and only in a session that
+ *  has the field (world/cloudFieldSlots), so a ground without the shadow is
+ *  the program it was whether or not the deck has the field. */
+function applyCloudShadow(mat: THREE.Material, on: boolean): void {
+  applySwitchDefine(mat, 'CLOUD_SHADOW', on);
+  setCloudFieldCompiled(mat, on);
 }
 
 /** Set or clear one of the cloud switches' defines on a material. */
@@ -711,7 +729,7 @@ function applySwitchDefine(mat: THREE.Material, name: 'CLOUD_SHADOW' | 'CLOUD_LI
 
 if (import.meta.env.DEV) {
   onPerfSwitch('cloud-shadow', (on) => {
-    for (const mat of cloudShadowReceivers) applySwitchDefine(mat, 'CLOUD_SHADOW', on);
+    for (const mat of cloudShadowReceivers) applyCloudShadow(mat, on);
   });
 }
 
@@ -1877,8 +1895,9 @@ ${import.meta.env.DEV ? 'uniform float uCloudShadowDepth;\nuniform float uCloudS
 /**
  * The cloud deck's 1.2 km field (world/cloudField), compiled only with
  * CLOUD_FIELD, which only the planetarium's deck (and the warm-up probe that
- * stands in for it) carries, and only in a session that has the field
- * (world/cloudFieldSlots). Every line is a whole line inside
+ * stands in for it) and Earth's ground beside its cloud shadow carry, and only
+ * in a session that has the field (world/cloudFieldSlots). Every line is a
+ * whole line inside
  * its conditional, so a program without the define is, after the
  * preprocessor, the program it was but for the blank line each chunk opens
  * with; a development build adds the field's diagnostics inside the same
@@ -2119,7 +2138,48 @@ ${CLOUD_CLEAR_RETURN}`;
  * true one runs on toward the 357 km of the horizon itself. Isotropic: across
  * the shadow the true width is sin e of that, and a first look is wanted
  * before the shape is.
+ *
+ * With the cloud field compiled too (CLOUD_FIELD, which a ground takes only
+ * beside this define, in a session that has the field), the coverage is the
+ * field's wherever a page is resident at the pierce point: `cloudFieldFine`'s
+ * opacity, mixed over the base sheet's at the field's weight exactly as the
+ * deck mixes them, so a shadow sharpens and fades in step with its cloud. The
+ * sheet and the field are cut from one master, so where no page is resident
+ * the base is the same sky, softer. The weight's guard reads this lookup's own
+ * footprint — the displaced direction's derivatives, the penumbra included —
+ * and the penumbra is held in the tile ratio's pixels there, the pixels the
+ * guard and the residency's shadow demand (world/cloudFieldMeasure) both
+ * measure in, so a Dynamic rung step moves neither. Each read is taken only
+ * where it has a share: the base not at full weight, the page not at none,
+ * and neither filter's plain tap where the smooth one takes it all.
  */
+const CLOUD_SHADOW_FIELD_PENUMBRA = /* glsl */ `#ifdef CLOUD_FIELD
+    shadowPenumbra /= uCloudFieldPixelScale;
+#endif
+`;
+const CLOUD_SHADOW_FIELD_READ = /* glsl */ `#ifdef CLOUD_FIELD
+      float shadowFieldW = 0.0;
+      float shadowFieldLayer = -1.0;
+      float shadowCover = cloudFieldFine(shadowDir, shadowDx, shadowDy, shadowFieldW, shadowFieldLayer).x;
+      if (shadowFieldW < 1.0) {
+        vec2 shadowTexels = vec2(textureSize(uCloudShadowMap, 0));
+        float shadowPerPixel = max((abs(shadowUvDx.x) + abs(shadowUvDy.x)) * shadowTexels.x,
+                                   (abs(shadowUvDx.y) + abs(shadowUvDy.y)) * shadowTexels.y);
+        float shadowSmoothW = 1.0 - smoothstep(${SMOOTH_TEXEL_FADE[0].toFixed(6)}, ${SMOOTH_TEXEL_FADE[1].toFixed(6)}, shadowPerPixel);
+        vec4 shadowTexel = vec4(0.0);
+        if (shadowSmoothW < 1.0) shadowTexel = textureGrad(uCloudShadowMap, shadowUv, shadowUvDx, shadowUvDy);
+        if (shadowSmoothW > 0.0) {
+          vec4 shadowSmooth = textureBSpline(uCloudShadowMap, shadowUv, shadowTexels);
+          shadowTexel = shadowSmoothW >= 1.0 ? shadowSmooth : mix(shadowTexel, shadowSmooth, shadowSmoothW);
+        }
+        shadowCover = mix(cloudCoverage(dot(shadowTexel.rgb,
+            vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')}))), shadowCover, shadowFieldW);
+      }
+      cloudSunKeep = 1.0 - shadowCover;
+#else
+`;
+const CLOUD_SHADOW_FIELD_READ_END = '#endif\n';
+
 const CLOUD_SHADOW_READ = /* glsl */ `
 #ifdef CLOUD_SHADOW
   // With cloud shadows compiled in, the beam's share is read HERE, for the
@@ -2139,7 +2199,7 @@ const CLOUD_SHADOW_READ = /* glsl */ `
     vec3 shadowDy = dFdy(shadowDir);
     float shadowPenumbra = ${CLOUD_SHADOW_PENUMBRA_GUARD}uCloudHeightOverRadius * (2.0 * uSunTan)
         / max(shadowMu * shadowMu, 0.01);
-    shadowDx *= max(1.0, shadowPenumbra / max(length(shadowDx), 1e-12));
+${CLOUD_SHADOW_FIELD_PENUMBRA}    shadowDx *= max(1.0, shadowPenumbra / max(length(shadowDx), 1e-12));
     shadowDy *= max(1.0, shadowPenumbra / max(length(shadowDy), 1e-12));
     vec2 shadowUv = sphereEquirectUv(shadowDir);
     vec2 shadowUvDx = sphereEquirectUvGrad(shadowDir, shadowDx);
@@ -2147,7 +2207,7 @@ const CLOUD_SHADOW_READ = /* glsl */ `
     bool cloudTapWanted = shadowMu > 0.0;
     cloudShadeHorizon = smoothstep(0.0, ${CLOUD_SHADOW_HORIZON_SIN.toFixed(6)}, shadowMu);
     if (cloudTapWanted) {
-      vec4 shadowTexel = textureGrad(uCloudShadowMap, shadowUv, shadowUvDx, shadowUvDy);
+${CLOUD_SHADOW_FIELD_READ}      vec4 shadowTexel = textureGrad(uCloudShadowMap, shadowUv, shadowUvDx, shadowUvDy);
       vec2 shadowTexels = vec2(textureSize(uCloudShadowMap, 0));
       float shadowPerPixel = max((abs(shadowUvDx.x) + abs(shadowUvDy.x)) * shadowTexels.x,
                                  (abs(shadowUvDx.y) + abs(shadowUvDy.y)) * shadowTexels.y);
@@ -2157,7 +2217,7 @@ const CLOUD_SHADOW_READ = /* glsl */ `
       }
       cloudSunKeep = 1.0 - cloudCoverage(dot(shadowTexel.rgb,
           vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')})));
-    }
+${CLOUD_SHADOW_FIELD_READ_END}    }
   }
 #endif
 `;
@@ -2198,11 +2258,18 @@ const CLOUD_SHADOW_AIR_SCALE = /* glsl */ `
  * The night weight's complement hands it over to that ambient where every
  * night source hands over, and the shade's own fade at the horizon already
  * takes it to nothing where the Sun meets the ground's horizon. Only where the
- * body's air tables are bound: with no tables there is no sky to read.
+ * body's air tables are bound: with no tables there is no sky to read. A
+ * ground compiled with the cloud field fetches the table only where there is
+ * a shade to fill, which over clear sky is exactly none: the same picture,
+ * without the read.
  */
 const CLOUD_SHADOW_FILL = /* glsl */ `
 #ifdef CLOUD_SHADOW
+#ifdef CLOUD_FIELD
+  if (cloudShade > 0.0 && ${CLOUD_SHADOW_SKY_FILL_GUARD}uAirDensity > 0.0) {
+#else
   if (${CLOUD_SHADOW_SKY_FILL_GUARD}uAirDensity > 0.0) {
+#endif
     float fillMuS = clampCosine(dot(normalize(vAirFrag), normalize(uSunDirWorld)));
     outgoingLight += diffuseColor.rgb * RECIPROCAL_PI
         * (getIrradiance(uIrradiance, clampRadius(length(vAirFrag) / uPlanetRadius), fillMuS)
@@ -3061,9 +3128,12 @@ export function augmentSurfaceMaterial(
     }
     for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];
     // The cloud field's slots (world/cloudFieldSlots), on the materials that
-    // compile it: the planetarium's deck and its warm-up probe, in a session
-    // that has the field.
-    if (mat.defines?.CLOUD_FIELD !== undefined) {
+    // compile it: the planetarium's deck and its warm-up probe, and the ground
+    // under the deck while its shadow reads the field. A ground takes them
+    // whether or not it compiles the define right now: three keeps the
+    // uniforms of a material's LAST new program, and a program the live shadow
+    // switch returns to is found in the material's cache, not built again.
+    if (mat.defines?.CLOUD_FIELD !== undefined || (cloudFieldOn() && cloudShadowReceivers.has(mat))) {
       const field = cloudFieldUniforms();
       shader.uniforms.uCloudPages = field.uCloudPages;
       shader.uniforms.uCloudPageTable = field.uCloudPageTable;

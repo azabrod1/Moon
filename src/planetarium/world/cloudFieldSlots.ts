@@ -70,6 +70,13 @@ export function cloudFieldAsked(search: string): boolean {
   return new URLSearchParams(search).get('cloudtiles') === '1';
 }
 
+/** `?cloudpoolfail=1`, read by development builds only (world/cloudFieldPool):
+ *  whether a query asks for the pool's boot allocation to be reported failed,
+ *  so the field's way off can be driven on a machine with room for the pool. */
+export function cloudPoolFailAsked(search: string): boolean {
+  return new URLSearchParams(search).get('cloudpoolfail') === '1';
+}
+
 /** The page's own query, read once at boot: a define is part of three's
  *  program key, so a switch that moved mid-session would relink. */
 const fieldByUrl = typeof location !== 'undefined' && cloudFieldAsked(location.search);

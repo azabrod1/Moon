@@ -265,12 +265,15 @@ export class CloudFieldSession {
     return this.auto;
   }
 
-  /** Development only: the residency's numbers and the wanted pages with the
-   *  page texels a pixel spans on each. */
+  /** Development only: the residency's numbers, how many pages it keeps (a
+   *  resident outside them is released), and the wanted pages with the page
+   *  texels a pixel spans on each. */
   devState(): Record<string, unknown> {
     const stats = this.residency.stats();
     const wanted: Array<{ page: string; T: number }> = [];
+    let kept = 0;
     for (let p = 0; p < PAGES; p++) {
+      if (this.residency.isKept(p)) kept += 1;
       if (!this.residency.isWanted(p)) continue;
       const col = p % CLOUD_FIELD_GRID[0];
       wanted.push({ page: `${col}_${(p - col) / CLOUD_FIELD_GRID[0]}`, T: +this.measure.wantTexels[p].toFixed(3) });
@@ -279,6 +282,7 @@ export class CloudFieldSession {
     return {
       auto: this.auto,
       ...stats,
+      kept,
       loadsStarted: this.loadsStarted,
       loadsDecoded: this.loadsDecoded,
       droppedAfterDecode: this.loadsDecoded - stats.admissions - inPipe,

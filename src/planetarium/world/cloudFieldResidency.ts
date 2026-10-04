@@ -380,6 +380,12 @@ export class CloudFieldResidency<D> {
     return this.wanted[p] === 1;
   }
 
+  /** Whether a page was kept at the last update; a resident that is not is
+   *  released, the first to give its layer up. */
+  isKept(p: number): boolean {
+    return this.kept[p] === 1;
+  }
+
   /** The numbers now (`wanted` and `updateMicros` as of the last update), in
    *  one object written in place. */
   stats(): Readonly<CloudFieldResidencyStats> {

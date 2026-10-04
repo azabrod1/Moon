@@ -5,6 +5,8 @@
 //   node tools/glint-probe.mjs --deps=mirror,6,12,20 --sunelev=5 --wind=5 --label=calm
 //   node tools/glint-probe.mjs --alt=35786 --deps=90 --fov=20 --label=geo    # the geostationary view, straight down
 //   node tools/glint-probe.mjs --look --extra='&seawindmap=http://localhost:5174/planning/seawind-cand/F.png'
+//   node tools/glint-probe.mjs --meter --assert                    # the highlight meter's prediction against the pixels, the shipped maps
+//   node tools/glint-probe.mjs --meter --clouds --bearings=180,90,0,270 --deps=mirror --run=12 --assert
 //
 // Method. The sea is given ONE wind everywhere — a raw byte wind map served
 // from memory through `?seawindmap=`, so the sea's mixture is one Beckmann
@@ -55,6 +57,26 @@
 // `--look` is the picture arm: the shipped maps (or `--extra='&seawindmap=…'`),
 // the clouds shown, the tiles on, the same poses, PNGs only — the frames that
 // go beside the ISS photographs.
+//
+// `--meter` is the highlight meter's arm (planetarium/highlightMeter): the
+// SHIPPED maps, because the meter predicts from coarse copies of them and a
+// served wind would be a different sea from the one it reads; the clouds
+// hidden unless `--clouds` (then the deck is drawn and the meter's cloud keep
+// at the peak is what it must track). At each pose it reads
+// `__moon.glintMeter()` and holds the predicted drawn peak — its value, its
+// place along the ground and on the frame, its half-maximum widths and its
+// share of the frame — against the keep-on minus keep-off readback, maximum
+// channel per pixel; then releases the exposure pin, lets the meter settle
+// and reads the exposure the renderer applies, so the brightest beam pixel
+// after exposure is held against the meter's target with the non-glint share
+// at that pixel reported; then flips the switch off and reads exactly one.
+// `--bearings=a,b,c` runs the poses at several bearings (a cloud lands over
+// one of them where the sheet's bearing is clear); `--run=<s>` ends with the
+// clock at 1000x for that long at the last pose, the exposure released, the
+// telemetry read every frame, and reports the largest per-frame change of
+// the exposure in stops against the meter's own rate (a coastline sliding
+// under the mirror point must not step it); `--assert` fails on the bars
+// written at the report's end.
 import { chromium } from 'playwright';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -68,7 +90,11 @@ const flag = (name) => process.argv.includes(`--${name}`);
 
 const url = arg('url', 'http://localhost:5174');
 const look = flag('look');
-const label = arg('label', look ? 'look' : 'probe');
+const meter = flag('meter');
+const showClouds = flag('clouds');
+const assertBars = flag('assert');
+const runSeconds = Number(arg('run', '0'));
+const label = arg('label', look ? 'look' : meter ? 'meter' : 'probe');
 const outDir = arg('out', path.join('/tmp/moon-glint-probe', label));
 const extra = arg('extra', '');
 const timeIso = arg('time', '2026-10-03T16:40:00Z');
@@ -76,6 +102,8 @@ const windMs = Number(arg('wind', '7'));
 const altitudeKm = Number(arg('alt', '400'));
 const sunElevDeg = Number(arg('sunelev', '10'));
 const bearingDeg = Number(arg('bearing', '180'));
+const bearings = arg('bearings', '').split(',').map((s) => Number(s.trim())).filter((v) => Number.isFinite(v));
+if (!bearings.length) bearings.push(bearingDeg);
 const azimuthDeg = Number(arg('azimuth', '0'));
 const fovDeg = Number(arg('fov', '40'));
 const depressions = arg('deps', 'mirror,8,16').split(',').map((s) => s.trim()).filter(Boolean);
@@ -285,6 +313,212 @@ const waitFrames = (page, n = 3) => page.evaluate((k) => new Promise((resolve) =
   step(k);
 }), n);
 
+/** The angle between two pixels' rays, degrees: an extent's width as the
+ *  camera sees it, wherever in the frame it sits. */
+function angleBetweenPixels(camera, i0, j0, i1, j1, w, h) {
+  const a = rayFor(camera, i0, j0, w, h);
+  const b = rayFor(camera, i1, j1, w, h);
+  return (Math.acos(Math.min(Math.max(dot(a, b), -1), 1)) * 180) / Math.PI;
+}
+
+const telemetryOf = (page) => page.evaluate(() => {
+  const t = window.__moon.glintMeter();
+  const ex = window.__moon.exposure();
+  return { ...t, applied: ex.current, sunMeter: ex.target, auto: ex.auto };
+});
+
+/**
+ * One pose of the meter arm: the prediction against the drawn beam, the
+ * exposure hand-off, the switch. Returns the pose's summary; bars broken are
+ * pushed onto `failures`.
+ */
+async function meterPose(page, pose, poseLabel, png, capture, failures) {
+  // The meter needs its maps; the first approach decodes them.
+  await page.waitForFunction(() => {
+    const t = window.__moon.glintMeter();
+    return !!t.maps && t.maps.ready.length === 4 && t.hold !== 'maps decoding';
+  }, null, { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(1500);
+  await waitFrames(page, 3);
+  const tel = await telemetryOf(page);
+  const onFull = await capture(1);
+  await page.screenshot({ path: png });
+  const onBase = await capture(0);
+  await page.evaluate(() => window.__moon.glint({ keep: 1 }));
+  const { width, height, camera } = onFull;
+  const px = (frame, i, j) => { const k = (j * width + i) * 4; return [frame.data[k], frame.data[k + 1], frame.data[k + 2]]; };
+  // The drawn beam: the difference, its maximum channel per pixel.
+  const drawn = new Float32Array(width * height);
+  let M = 0; let im = 0; let jm = 0; let cm = 0;
+  for (let j = 0; j < height; j++) for (let i = 0; i < width; i++) {
+    const a = px(onFull, i, j); const b = px(onBase, i, j);
+    let v = 0; let c = 0;
+    for (let k = 0; k < 3; k++) { const d = a[k] - b[k]; if (d > v) { v = d; c = k; } }
+    drawn[j * width + i] = v;
+    if (v > M) { M = v; im = i; jm = j; cm = c; }
+  }
+  const geo = M > 0 ? referenceAt(pose, camera, im, jm, width, height) : null;
+  // Where the prediction puts the peak: along the principal line at its
+  // ground angle, projected through the pose's own camera.
+  const th = (tel.groundAngleDeg * Math.PI) / 180;
+  const n = [0, 1, 2].map((k) => pose.up[k] * Math.cos(th) + pose.sunAzimuth[k] * Math.sin(th));
+  const q = [0, 1, 2].map((k) => pose.bodyScene[k] + pose.radiusAU * n[k]);
+  const predictedPixel = tel.hold === 'metering' ? projectPoint(camera, q, width, height) : null;
+  const pixelGap = predictedPixel ? Math.hypot(predictedPixel.x - (im + 0.5), predictedPixel.y - (jm + 0.5)) : null;
+  // The drawn beam AT the prediction (the brightest pixel within 7 px of it):
+  // under a broken deck the frame's maximum can be a speck through a hole
+  // elsewhere, which the coarse cloud map cannot see and the meter does not
+  // meter for; the local reading says whether the prediction is right where
+  // it points.
+  let atPrediction = null;
+  if (predictedPixel) {
+    const ci = Math.round(predictedPixel.x - 0.5), cj = Math.round(predictedPixel.y - 0.5);
+    let v = 0;
+    for (let j = Math.max(0, cj - 7); j <= Math.min(height - 1, cj + 7); j++) for (let i = Math.max(0, ci - 7); i <= Math.min(width - 1, ci + 7); i++) v = Math.max(v, drawn[j * width + i]);
+    atPrediction = v;
+  }
+  // The extents through the measured peak, in degrees of view.
+  const column = []; for (let j = 0; j < height; j++) column.push(drawn[j * width + im]);
+  const row = []; for (let i = 0; i < width; i++) row.push(drawn[jm * width + i]);
+  const ea = halfMaxExtent(column); const ec = halfMaxExtent(row);
+  const alongDeg = ea ? angleBetweenPixels(camera, im, ea.lo, im, ea.hi, width, height) : null;
+  const acrossDeg = ec ? angleBetweenPixels(camera, ec.lo, jm, ec.hi, jm, width, height) : null;
+  let over = 0; for (let k = 0; k < drawn.length; k++) if (drawn[k] >= M / 2) over++;
+  const coverage = over / (width * height);
+  const total = px(onFull, im, jm);
+  const nonGlintShare = total[cm] > 0 ? 1 - drawn[jm * width + im] / total[cm] : null;
+  // The hand-off: the exposure pin released (near and ratio re-pinned), the
+  // meter given time to settle at its rates, the renderer's exposure read.
+  await page.evaluate(() => { window.__moon.pinCapture(null); window.__moon.pinCapture({ near: 1e-7, pixelRatio: 1 }); });
+  await page.waitForTimeout(3000);
+  await waitFrames(page, 3);
+  const hand = await telemetryOf(page);
+  const afterExposure = M * hand.applied;
+  const core = acesFilmic(total, hand.applied);
+  // The frame as the meter exposes it, beside the pinned one.
+  await page.screenshot({ path: png.replace(/\.png$/, '-metered.png') });
+  // The switch: off is exactly one, at once.
+  const off = await page.evaluate(() => new Promise((resolve) => {
+    window.__moon.glintMeter({ on: false });
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const t = window.__moon.glintMeter();
+      const ex = window.__moon.exposure();
+      window.__moon.glintMeter({ on: true });
+      resolve({ hold: t.hold, exposure: t.exposure, applied: ex.current, sunMeter: ex.target });
+    }));
+  }));
+  await page.evaluate((e) => window.__moon.pinCapture({ near: 1e-7, exposure: e, pixelRatio: 1 }), exposure);
+  const ratio = (a, b) => (a > 0 && b > 0 ? a / b : null);
+  const summary = {
+    key: poseLabel, pose, png,
+    meter: {
+      hold: tel.hold, maps: tel.maps, costUs: tel.costUs, knobs: tel.knobs,
+      predicted: {
+        drawnMax: tel.drawnMax, drawn: tel.drawn, carried: tel.carried, groundAngleDeg: tel.groundAngleDeg,
+        halfWidthAlongDeg: tel.halfWidthAlongDeg, halfWidthAcrossDeg: tel.halfWidthAcrossDeg, coverage: tel.coverage,
+        sample: tel.peakSample, pixel: predictedPixel, target: tel.target,
+      },
+      measured: {
+        drawnMax: M, channel: cm, pixel: { x: im + 0.5, y: jm + 0.5 }, atPrediction, groundAngleDeg: geo?.groundAngleDeg ?? null,
+        viewAngleDeg: geo?.viewAngleDeg ?? null, halfMaxAlongDeg: alongDeg, halfMaxAcrossDeg: acrossDeg, coverage,
+        alongExtent: ea ? { lo: ea.lo, hi: ea.hi } : null, acrossExtent: ec ? { lo: ec.lo, hi: ec.hi } : null,
+        pixelGapFromPrediction: pixelGap, totalAtPeak: total, nonGlintShare,
+      },
+      ratios: {
+        value: ratio(M, tel.drawnMax), valueAtPrediction: ratio(atPrediction, tel.drawnMax), along: ratio(alongDeg, 2 * tel.halfWidthAlongDeg), across: ratio(acrossDeg, 2 * tel.halfWidthAcrossDeg),
+        coverage: ratio(coverage, tel.coverage), groundAngleGapDeg: geo ? geo.groundAngleDeg - tel.groundAngleDeg : null,
+      },
+      handoff: {
+        meterExposure: hand.exposure, meterTarget: hand.target, sunMeter: hand.sunMeter, applied: hand.applied, auto: hand.auto,
+        peakAfterExposure: afterExposure, peakOverTarget: ratio(afterExposure, hand.knobs.target), coreThroughToneCurve: Math.max(...core) * 255,
+        atFloor: hand.exposure <= hand.knobs.floor + 1e-6, fadedIn: tel.coverage >= hand.knobs.fadeHi,
+      },
+      off,
+    },
+  };
+  // The bars. A beam under the fade's own threshold of the frame — a speck
+  // through a hole in the deck, a sparkle from far away — is one the meter
+  // holds at one by construction, so its value and place are reported and
+  // only that hold is checked.
+  const m = summary.meter;
+  const fail = (what) => failures.push(`${poseLabel}: ${what}`);
+  const speck = coverage < tel.knobs.fadeLo || tel.coverage < tel.knobs.fadeLo;
+  summary.meter.speck = speck;
+  if (tel.hold === 'metering' && M > 0 && speck) {
+    if (!(m.handoff.meterTarget > 0.9)) fail(`a speck (coverage ${coverage.toFixed(4)} measured, ${tel.coverage.toFixed(4)} predicted) yet the meter asked ${m.handoff.meterTarget.toFixed(3)}`);
+  } else if (tel.hold === 'metering' && M > 0) {
+    if (!(m.ratios.value > 0.75 && m.ratios.value < 1.33)) fail(`drawn peak measured/predicted ${m.ratios.value?.toFixed(3)} outside 0.75..1.33`);
+    if (predictedPixel && ea && ec && !(predictedPixel.y >= ea.lo && predictedPixel.y <= ea.hi + 1 && predictedPixel.x >= ec.lo && predictedPixel.x <= ec.hi + 1)) {
+      fail(`predicted peak at (${predictedPixel.x.toFixed(0)}, ${predictedPixel.y.toFixed(0)}) outside the measured half-maximum extent (cols ${ec.lo}..${ec.hi}, rows ${ea.lo}..${ea.hi})`);
+    }
+    if (!(m.ratios.coverage > 0.4 && m.ratios.coverage < 2.5)) fail(`coverage measured/predicted ${m.ratios.coverage?.toFixed(3)} outside 0.4..2.5`);
+    const h = m.handoff;
+    if (h.auto && h.sunMeter >= 0.999 && !h.atFloor && h.fadedIn && h.meterTarget < 1 && Math.abs(h.meterExposure - h.meterTarget) < 0.02) {
+      if (!(h.peakOverTarget > 0.85 && h.peakOverTarget < 1.18)) fail(`brightest beam pixel after exposure ${h.peakAfterExposure.toFixed(3)} against the target ${h.knobs?.target ?? hand.knobs.target}: ratio ${h.peakOverTarget?.toFixed(3)} outside 0.85..1.18`);
+    }
+  } else if (tel.hold === 'metering' && M <= 0) {
+    fail('the meter metered a beam the readback does not show');
+  } else if (tel.hold !== 'metering' && M > tel.knobs.target) {
+    fail(`the meter held (${tel.hold}) with a drawn beam at ${M.toFixed(2)} in the frame`);
+  }
+  if (!(off.hold === 'off' && off.exposure === 1)) fail(`switch off: hold ${off.hold}, exposure ${off.exposure} (one exactly expected)`);
+  console.log(`[glint-probe] ${poseLabel} meter: ${tel.hold}${speck ? ' (speck)' : ''}; predicted ${tel.drawnMax.toFixed(3)} at ${tel.groundAngleDeg.toFixed(1)}° (cloud keep ${tel.peakSample?.cloudKeep?.toFixed(2)}, water ${tel.peakSample?.water?.toFixed(2)}); measured ${M.toFixed(3)} at ${geo ? geo.groundAngleDeg.toFixed(1) : '?'}°, ratio ${m.ratios.value?.toFixed(3)} (at the prediction ${m.ratios.valueAtPrediction?.toFixed(3)}); gap ${pixelGap?.toFixed(0)} px; widths along ${m.ratios.along?.toFixed(2)} across ${m.ratios.across?.toFixed(2)} coverage ${m.ratios.coverage?.toFixed(2)}; hand-off applied ${hand.applied.toFixed(3)} -> peak ${afterExposure.toFixed(2)} (${m.handoff.peakOverTarget?.toFixed(3)} of target); off ${off.hold} ${off.exposure}`);
+  return summary;
+}
+
+/** The clock at 1000x at the LAST pose (so a live beam goes last in
+ *  `--bearings`) with the exposure released: the
+ *  telemetry every frame, the exposure's per-frame motion in stops against
+ *  the meter's own rates. */
+async function meterRun(page, seconds, failures) {
+  await page.evaluate(() => { window.__moon.pinCapture(null); window.__moon.pinCapture({ near: 1e-7, pixelRatio: 1 }); window.__moon.setTimeRate(1000); });
+  const series = await page.evaluate((secs) => new Promise((resolve) => {
+    const out = []; const t0 = performance.now();
+    const step = () => {
+      const t = window.__moon.glintMeter(); const ex = window.__moon.exposure();
+      out.push([performance.now() - t0, t.hold === 'metering' ? 1 : 0, t.exposure, t.target, t.drawnMax, t.coverage, t.peakSample ? t.peakSample.cloudKeep : 1, t.peakSample ? t.peakSample.water : 0, ex.current, t.costUs]);
+      if (performance.now() - t0 < secs * 1000) requestAnimationFrame(step); else resolve(out);
+    };
+    requestAnimationFrame(step);
+  }), seconds);
+  await page.evaluate(() => { window.__moon.setTimeRate(0); window.__moon.pinCapture({ near: 1e-7, exposure: 1, pixelRatio: 1 }); });
+  const rates = await page.evaluate(() => { const t = window.__moon.glintMeter(); return { knobs: t.knobs }; });
+  const down = 3; const up = 0.75; // HIGHLIGHT_DOWN_STOPS_PER_S / HIGHLIGHT_UP_STOPS_PER_S
+  let maxStepStops = 0; let maxStepAt = 0; let maxBound = 0; let worstOver = 0; let nonFinite = 0; let metering = 0;
+  let minE = Infinity; let maxE = 0; let maxTargetStep = 0; const targetSteps = [];
+  for (let k = 0; k < series.length; k++) {
+    const s = series[k];
+    if (!Number.isFinite(s[2]) || !Number.isFinite(s[3])) nonFinite++;
+    if (s[1]) metering++;
+    minE = Math.min(minE, s[2]); maxE = Math.max(maxE, s[2]);
+    if (k === 0) continue;
+    const p = series[k - 1];
+    const dt = (s[0] - p[0]) / 1000;
+    const step = Math.abs(Math.log2(s[2] / p[2]));
+    const bound = (s[2] < p[2] ? down : up) * dt + 0.02;
+    if (step > maxStepStops) { maxStepStops = step; maxStepAt = s[0]; maxBound = bound; }
+    if (step - bound > worstOver) worstOver = step - bound;
+    if (p[3] > 0 && s[3] > 0) { const ts = Math.abs(Math.log2(s[3] / p[3])); targetSteps.push(ts); if (ts > maxTargetStep) maxTargetStep = ts; }
+  }
+  targetSteps.sort((a, b) => a - b);
+  const p95 = targetSteps.length ? targetSteps[Math.floor(0.95 * (targetSteps.length - 1))] : 0;
+  const cloudKeeps = series.map((s) => s[6]); const waters = series.map((s) => s[7]);
+  const run = {
+    seconds, frames: series.length, meteringShare: series.length ? metering / series.length : 0, nonFinite,
+    exposure: { first: series[0]?.[2] ?? null, last: series[series.length - 1]?.[2] ?? null, min: minE, max: maxE },
+    maxStepStops, maxStepAtMs: maxStepAt, boundThere: maxBound, worstOverBound: worstOver,
+    target: { maxStepStops: maxTargetStep, p95StepStops: p95 },
+    cloudKeepAtPeak: { min: Math.min(...cloudKeeps), max: Math.max(...cloudKeeps) },
+    waterAtPeak: { min: Math.min(...waters), max: Math.max(...waters) },
+    knobs: rates.knobs,
+    series,
+  };
+  if (nonFinite) failures.push(`run: ${nonFinite} frames with a non-finite exposure or target`);
+  if (worstOver > 0) failures.push(`run: the exposure moved ${maxStepStops.toFixed(3)} stops in one frame at ${(maxStepAt / 1000).toFixed(2)} s, over the rate's bound ${maxBound.toFixed(3)}`);
+  console.log(`[glint-probe] run: ${series.length} frames over ${seconds} s at 1000x; metering ${(run.meteringShare * 100).toFixed(0)}%; exposure ${run.exposure.first?.toFixed(3)} -> ${run.exposure.last?.toFixed(3)} (min ${minE.toFixed(3)}, max ${maxE.toFixed(3)}); largest per-frame step ${maxStepStops.toFixed(3)} stops (bound ${maxBound.toFixed(3)}); target's largest step ${maxTargetStep.toFixed(3)}, p95 ${p95.toFixed(3)}; cloud keep at the peak ${run.cloudKeepAtPeak.min.toFixed(2)}..${run.cloudKeepAtPeak.max.toFixed(2)}; water ${run.waterAtPeak.min.toFixed(2)}..${run.waterAtPeak.max.toFixed(2)}`);
+  return run;
+}
+
 await mkdir(outDir, { recursive: true });
 const release = await takeBrowserLock('glint-probe');
 const browser = await chromium.launch({
@@ -316,7 +550,9 @@ try {
   await page.route('**/__glint-probe/*.raw', (route) => route.fulfill({ body: windMap, contentType: 'application/octet-stream' }));
   const params = look
     ? `&quality=medium${extra}`
-    : `&quality=medium&synth=0&sectors=0&seawindmap=${encodeURIComponent(windUrl)}${extra}`;
+    : meter
+      ? `&quality=medium&synth=0&sectors=0${extra}`
+      : `&quality=medium&synth=0&sectors=0&seawindmap=${encodeURIComponent(windUrl)}${extra}`;
   const target = `${url}/?auto=planetarium${params}`;
   console.log(`[glint-probe] ${target} -> ${outDir}`);
   const t0 = Date.now();
@@ -338,7 +574,7 @@ try {
   // The sea reads its maps once both have landed; with the override, that
   // source. The ground's air arrives with the atmosphere tables a few seconds
   // in; both are waited for so the first reading is the settled picture.
-  const needMap = look ? (/[?&]seawindmap=/.test(extra) ? 'override' : 'shipped') : 'override';
+  const needMap = look || meter ? (/[?&]seawindmap=/.test(extra) ? 'override' : 'shipped') : 'override';
   await page.waitForFunction((need) => {
     const g = window.__moon.glint?.();
     if (!g || !g.seaWind || g.map === 'none') return false;
@@ -363,19 +599,20 @@ try {
   report.airTables = airOn;
   report.chain = { ...chain, beamKnee: glintState.beamKnee ?? null, beamCap: glintState.beamCap ?? null };
   if (!look) {
-    await page.evaluate(() => window.__moon.setRoleHidden('clouds', true));
+    if (!(meter && showClouds)) await page.evaluate(() => window.__moon.setRoleHidden('clouds', true));
     await page.evaluate((e) => window.__moon.pinCapture({ near: 1e-7, exposure: e, pixelRatio: 1 }), exposure);
   } else {
     await page.evaluate((e) => window.__moon.pinCapture({ near: 1e-7, exposure: e, pixelRatio: 1 }), exposure);
   }
 
-  for (const depKey of depressions) {
+  const meterFailures = [];
+  for (const bearing of bearings) for (const depKey of depressions) {
     const depressionDeg = depKey === 'mirror' ? null : Number(depKey);
     const pose = await page.evaluate((o) => window.__moon.horizonView('Earth', o), {
-      altitudeKm, sunElevDeg, bearingDeg, azimuthDeg, depressionDeg, fovDeg,
+      altitudeKm, sunElevDeg, bearingDeg: bearing, azimuthDeg, depressionDeg, fovDeg,
     });
     if (!pose) throw new Error('horizonView refused the pose');
-    const poseLabel = `dep-${depKey}`;
+    const poseLabel = bearings.length > 1 ? `b${bearing}-dep-${depKey}` : `dep-${depKey}`;
     console.log(`[glint-probe] ${poseLabel}: depression ${pose.depressionDeg.toFixed(2)}°, horizon dip ${pose.horizonDipDeg.toFixed(2)}°, mirror ${pose.mirror ? `${pose.mirror.groundAngleDeg.toFixed(2)}° along the ground at depression ${pose.mirror.depressionDeg.toFixed(2)}°, Sun ${pose.mirror.sunElevDeg.toFixed(2)}° high there, ${pose.mirror.slantKm.toFixed(0)} km away` : 'none (Sun below that horizon)'}`);
     await page.waitForTimeout(settle);
     await waitFrames(page, 3);
@@ -390,6 +627,10 @@ try {
       await waitFrames(page, 3);
       return readScene(page);
     };
+    if (meter) {
+      report.poses.push(await meterPose(page, pose, poseLabel, png, capture, meterFailures));
+      continue;
+    }
     const onFull = await capture(1);
     await page.screenshot({ path: png });
     const onBase = await capture(0);
@@ -585,6 +826,8 @@ try {
     report.poses.push(summary);
     console.log(`[glint-probe] ${poseLabel}: peak app ${peakApp.toFixed(3)} (${(peakApp / whiteLum).toFixed(2)} whites) vs reference ${peakRef.toFixed(3)} (${(peakRef / whiteLum).toFixed(2)} whites); air on glint ${summary.window.airTransmittanceOnGlint?.toFixed(3)}; clip ${summary.window.clipFraction === null ? 'n/a' : (summary.window.clipFraction * 100).toFixed(1) + '%'}; cap ${summary.window.capFraction === null ? 'n/a' : (summary.window.capFraction * 100).toFixed(1) + '%'}; half-max along app ${alongApp?.halfMaxViewDeg?.toFixed(2)}° ref ${alongRef?.halfMaxViewDeg?.toFixed(2)}°`);
   }
+  if (meter && runSeconds > 0) report.run = await meterRun(page, runSeconds, meterFailures);
+  if (meter) report.meterFailures = meterFailures;
   if (errors.length) {
     console.log(`[glint-probe] page errors (${errors.length}):`);
     for (const e of errors.slice(0, 10)) console.log('    ', e);
@@ -603,6 +846,15 @@ for (const p of report.poses) {
   lines.push('');
   lines.push(`pose ${p.key}: depression ${p.pose.depressionDeg.toFixed(2)}°, horizon dip ${p.pose.horizonDipDeg.toFixed(2)}°, mirror ${p.pose.mirror ? `${p.pose.mirror.groundAngleDeg.toFixed(2)}° along the ground, depression ${p.pose.mirror.depressionDeg.toFixed(2)}°, Sun ${p.pose.mirror.sunElevDeg.toFixed(2)}° high there, ${p.pose.mirror.slantKm.toFixed(0)} km away` : 'none'}${p.mirrorPixel ? `, in frame at (${p.mirrorPixel.x.toFixed(0)}, ${p.mirrorPixel.y.toFixed(0)} from the bottom)` : ''}`);
   if (look) continue;
+  if (meter) {
+    const m = p.meter; const pr = m.predicted; const me = m.measured; const r = m.ratios; const h = m.handoff;
+    lines.push(`  meter: ${m.hold}, maps ${m.maps.ready.length}/4, scan ${m.costUs.toFixed(0)} µs; predicted drawn max ${pr.drawnMax.toFixed(3)} at ${pr.groundAngleDeg.toFixed(2)}° along the ground (water ${pr.sample.water.toFixed(2)}, calm ${pr.sample.calm.toFixed(2)}, wind ${pr.sample.windMs.toFixed(1)} m/s, cloud keep ${pr.sample.cloudKeep.toFixed(2)}), half-widths ${pr.halfWidthAlongDeg.toFixed(2)}° along ${pr.halfWidthAcrossDeg.toFixed(2)}° across, coverage ${pr.coverage.toFixed(4)}${pr.pixel ? `, at pixel (${pr.pixel.x.toFixed(0)}, ${pr.pixel.y.toFixed(0)})` : ''}`);
+    lines.push(`  measured: drawn max ${me.drawnMax.toFixed(3)} (channel ${'rgb'[me.channel]}) at pixel (${me.pixel.x.toFixed(0)}, ${me.pixel.y.toFixed(0)}), ${me.groundAngleDeg === null ? 'sky' : `${me.groundAngleDeg.toFixed(2)}° along the ground`}, ${me.pixelGapFromPrediction === null ? 'no prediction' : `${me.pixelGapFromPrediction.toFixed(0)} px from the prediction`}${me.atPrediction === null ? '' : `, ${me.atPrediction.toFixed(3)} within 7 px of the prediction`}${m.speck ? ' — a SPECK, under the fade\'s threshold, held at one by construction' : ''}; half-max ${me.halfMaxAlongDeg?.toFixed(2)}° along (rows ${me.alongExtent?.lo}..${me.alongExtent?.hi}) ${me.halfMaxAcrossDeg?.toFixed(2)}° across (cols ${me.acrossExtent?.lo}..${me.acrossExtent?.hi}); coverage ${me.coverage.toFixed(4)} (pixels at or over half the peak)`);
+    lines.push(`  measured / predicted: value ${r.value?.toFixed(3)} (at the prediction ${r.valueAtPrediction?.toFixed(3)}), ground angle gap ${r.groundAngleGapDeg?.toFixed(2)}°, width along ${r.along?.toFixed(3)}, across ${r.across?.toFixed(3)}, coverage ${r.coverage?.toFixed(3)}`);
+    lines.push(`  hand-off: the meter asks ${h.meterExposure.toFixed(4)} (its target ${h.meterTarget.toFixed(4)}${h.atFloor ? ', at the floor' : ''}${h.fadedIn ? '' : ', fade not full'}), the Sun's meter ${h.sunMeter.toFixed(4)}, applied ${h.applied.toFixed(4)}${h.auto ? '' : ' (auto exposure OFF)'} -> the brightest beam pixel after exposure ${h.peakAfterExposure.toFixed(3)} against the target ${m.knobs.target} (${h.peakOverTarget?.toFixed(3)}), its core through the tone curve ${h.coreThroughToneCurve.toFixed(0)}, non-glint share at that pixel ${me.nonGlintShare === null ? 'n/a' : me.nonGlintShare.toFixed(3)}`);
+    lines.push(`  switch off: hold ${m.off.hold}, exposure ${m.off.exposure}, applied ${m.off.applied.toFixed(4)}`);
+    continue;
+  }
   const k = p.peak;
   lines.push(`  peak on the centre column: app ${k.appScene.toFixed(4)} (${k.appWhites.toFixed(2)} whites) as carried to the camera${report.chain?.seaBeam ? `, drawn ${k.drawnScene.toFixed(4)} (${k.drawnWhites.toFixed(2)} whites) after the shoulder` : ''} | reference ${k.refScene.toFixed(4)} (${k.refWhites.toFixed(2)} whites) | app/ref ${k.appOverRef?.toFixed(3)}`);
   lines.push(`    attributed there: limb darkening on the glint x${k.limbFactorThere.toFixed(3)}, Sun's path x${k.sunPathFactorThere.toFixed(3)}, air on the camera leg x${k.airFactorThere?.toFixed(3)}, app-air-off / (chain's expected x limb) ${k.appOffOverExpected?.toFixed(3)} (1 = the shader matches its own equations)`);
@@ -615,6 +867,17 @@ for (const p of report.poses) {
   for (const r of p.profile) {
     lines.push(`    ${String(r.viewDeg ?? 'sky').padStart(7)} ${String(r.groundDeg ?? '').padStart(7)} ${String(r.mu ?? '').padStart(6)} ${String(r.sunElevDeg ?? '').padStart(6)}  ${r.appOn.toFixed(4)}  ${r.appOff.toFixed(4)}  ${r.ref.toFixed(4)}  ${r.appExpected.toFixed(4)}  ${r.limb ?? ''}  ${r.sunPath}  ${r.total.toFixed(4)}`);
   }
+}
+if (meter && report.run) {
+  const r = report.run;
+  lines.push('');
+  lines.push(`run: the clock at 1000x for ${r.seconds} s at the last pose, ${r.frames} frames, metering ${(r.meteringShare * 100).toFixed(0)}% of them, ${r.nonFinite} non-finite; exposure ${r.exposure.first?.toFixed(4)} -> ${r.exposure.last?.toFixed(4)} (min ${r.exposure.min.toFixed(4)}, max ${r.exposure.max.toFixed(4)}); largest per-frame step ${r.maxStepStops.toFixed(4)} stops at ${(r.maxStepAtMs / 1000).toFixed(2)} s against the rate's bound ${r.boundThere.toFixed(4)} there (worst over any bound ${r.worstOverBound.toFixed(4)}); the un-eased target's largest step ${r.target.maxStepStops.toFixed(4)}, p95 ${r.target.p95StepStops.toFixed(4)}; cloud keep at the peak ${r.cloudKeepAtPeak.min.toFixed(2)}..${r.cloudKeepAtPeak.max.toFixed(2)}, water ${r.waterAtPeak.min.toFixed(2)}..${r.waterAtPeak.max.toFixed(2)}`);
+}
+if (meter) {
+  lines.push('');
+  lines.push(`bars (a beam under the fade's threshold of the frame, measured or predicted, is a speck: only the meter's hold near one is checked): drawn peak measured/predicted within 0.75..1.33; the predicted peak inside the measured half-maximum extent; coverage within 0.4..2.5; where the meter settled under one with the fade full, off the floor and the Sun's meter at one, the brightest beam pixel after exposure within 0.85..1.18 of the target; the switch off exactly one; a run's exposure never past its rate in a frame, never non-finite`);
+  lines.push(report.meterFailures.length ? `VERDICT: FAIL (${report.meterFailures.length})\n  ${report.meterFailures.join('\n  ')}` : 'VERDICT: PASS');
+  if (assertBars && report.meterFailures.length) process.exitCode = 1;
 }
 await writeFile(path.join(outDir, 'report.txt'), lines.join('\n') + '\n');
 console.log(lines.join('\n'));

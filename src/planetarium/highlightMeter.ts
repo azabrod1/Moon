@@ -100,6 +100,8 @@ export interface HighlightTelemetry {
   groundAngleDeg: number;
   halfWidthAlongDeg: number;
   halfWidthAcrossDeg: number;
+  /** The surface under the predicted peak: water, calm share, wind, cloud keep. */
+  peakSample: { water: number; calm: number; windMs: number; cloudKeep: number };
   coverage: number;
   maps: { ready: EarthMapKind[]; failed: EarthMapKind[]; loading: EarthMapKind[] };
   /** The scan's cost, an exponential average of the last frames, microseconds. */
@@ -213,6 +215,7 @@ export class HighlightMeter {
       groundAngleDeg: p.groundAngleDeg,
       halfWidthAlongDeg: p.halfWidthAlongDeg,
       halfWidthAcrossDeg: p.halfWidthAcrossDeg,
+      peakSample: { water: p.sample.water, calm: p.sample.calm, windMs: p.sample.windMs, cloudKeep: p.sample.cloudKeep },
       coverage: this.coverage,
       maps: this.maps.state(),
       costUs: this.costUs,

@@ -71,6 +71,9 @@ describe('the highlight meter', () => {
     for (let i = 0; i < 30; i++) meter.update(0.1, ctx);
     expect(meter.exposure).toBeCloseTo(t.target, 6);
     expect(t.coverage).toBeGreaterThan(0.02);
+    expect(t.peakSample.water).toBeCloseTo(1, 1);
+    expect(t.peakSample.windMs).toBeCloseTo(7, 0);
+    expect(t.peakSample.cloudKeep).toBe(1);
     expect(t.costUs).toBeGreaterThan(0);
     expect(t.costUs).toBeLessThan(500);
   });

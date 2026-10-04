@@ -97,6 +97,11 @@ describe('the scan at the probe pose (400 km, Sun 10°, 7.03 m/s, no calm)', () 
     // measured sat at 11.5°, and the reference's at 13.6°.
     expect(peak.groundAngleDeg).toBeGreaterThan(8.4);
     expect(peak.groundAngleDeg).toBeLessThan(16);
+    // The surface under it, as the sampler read it there.
+    expect(peak.sample.water).toBe(1);
+    expect(peak.sample.windMs).toBeCloseTo(7.03, 6);
+    expect(peak.sample.calm).toBe(0);
+    expect(peak.sample.cloudKeep).toBe(1);
   });
 
   it('draws the beam at the level the probe measured, to the air model\'s approximation', () => {

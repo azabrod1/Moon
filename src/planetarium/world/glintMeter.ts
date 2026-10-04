@@ -263,6 +263,10 @@ export interface BeamPeak {
    *  camera, degrees: along the principal line and across it. */
   readonly halfWidthAlongDeg: number;
   readonly halfWidthAcrossDeg: number;
+  /** The surface at the peak as the sampler read it: the water, the calm
+   *  share, the wind and the cloud's keep, so a probe can tell a beam under
+   *  cloud from a beam the prediction missed. */
+  readonly sample: SurfaceSample;
 }
 
 export interface ScanOptions {
@@ -279,6 +283,7 @@ export function createBeamPeak(): BeamPeak {
   return {
     n: [0, 0, 0], groundAngleDeg: 0, carried: [0, 0, 0], drawn: [0, 0, 0], drawnMax: 0,
     halfWidthAlongDeg: 0, halfWidthAcrossDeg: 0,
+    sample: { calm: 0, windMs: 0, water: 0, cloudKeep: 1 },
   };
 }
 
@@ -304,6 +309,7 @@ export function scanBeam(
   o.drawnMax = 0; o.groundAngleDeg = 0; o.halfWidthAlongDeg = 0; o.halfWidthAcrossDeg = 0;
   o.carried[0] = o.carried[1] = o.carried[2] = 0;
   o.drawn[0] = o.drawn[1] = o.drawn[2] = 0;
+  o.sample.calm = 0; o.sample.windMs = 0; o.sample.water = 0; o.sample.cloudKeep = 1;
   const cam = pose.camera;
   const camDist = Math.hypot(cam[0], cam[1], cam[2]);
   if (!(camDist > 1.000001)) return false;
@@ -344,6 +350,10 @@ export function scanBeam(
   const c = Math.cos(bestPhi), s = Math.sin(bestPhi);
   const px = c * e1x + s * e2x, py = c * e1y + s * e2y, pz = c * e1z + s * e2z;
   beamRadianceAt(px, py, pz, pose, light, sea, sampler, table, scratch, o.carried);
+  // The sampler ran for the peak inside that call; keep its reading before
+  // the extent's samples overwrite the scratch.
+  o.sample.calm = scratch.sample.calm; o.sample.windMs = scratch.sample.windMs;
+  o.sample.water = scratch.sample.water; o.sample.cloudKeep = scratch.sample.cloudKeep;
   o.drawn[0] = shoulder(o.carried[0], sea.knee, sea.cap);
   o.drawn[1] = shoulder(o.carried[1], sea.knee, sea.cap);
   o.drawn[2] = shoulder(o.carried[2], sea.knee, sea.cap);

@@ -7,9 +7,16 @@
  * light against a real albedo near 0.12, where Mars's sits at 0.17 against
  * 0.17 and Jupiter's at 0.41 against 0.54: in one calibrated frame holding
  * both (Galileo, 1992) the Moon's disc is half as bright as Earth's, and in
- * the app it was 1.8 times brighter. The grade takes it to 0.3 of its linear
- * value, toward physical and off the tone curve's shoulder, so the maria's
- * contrast against the highlands comes back. Its hue is the cream the Sun was
+ * the app it was 1.8 times brighter. The physical grade is 0.3 of its linear
+ * value, which lands the Earth-and-Moon ratio on Galileo's and brings the
+ * maria's contrast against the highlands back. It ships at 0.5 for now: the
+ * app's exposure is set for the Sun's light and never opens up for a dark
+ * body, so a Moon alone in frame at 0.3 drew as a mid grey (a disc median of
+ * 91 against 144 as it was), darker than any photograph of the Moon, which
+ * is exposed for the Moon. 0.5 keeps most of that brightness (122) with the
+ * cream gone and the contrast back. When an exposure that adapts up for a
+ * dark body filling the view exists, the way the night rule adapts the other
+ * way, this returns to 0.3 and the two views agree. Its hue is the cream the Sun was
  * authored in before it went neutral (sunLight): the map itself is nearly
  * grey (linear blue over red 0.92), and by colour index the real Moon is
  * warmer (B−V 0.92 against the Sun's 0.65), a warmth the cream light had been
@@ -31,8 +38,10 @@ import * as THREE from 'three';
 import type { RGB } from './atmosphereModel';
 import { SUN_LIGHT_AUTHORED_HUE } from '../sunLight';
 
-/** The Moon's grade: 0.3 of the map's luminance, in the cream's hue. */
-export const MOON_ALBEDO_SCALE = 0.3;
+/** The Moon's grade: 0.5 of the map's luminance, in the cream's hue. 0.3 is
+ *  the physical value, held off until the exposure can open up for a dark
+ *  body alone in frame (the header). */
+export const MOON_ALBEDO_SCALE = 0.5;
 
 export const BODY_ALBEDO_GRADE: Readonly<Record<string, RGB>> = {
   Moon: [

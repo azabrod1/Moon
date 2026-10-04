@@ -7,13 +7,13 @@ import {
 import { SUN_LIGHT_AUTHORED_HUE, luminanceOf } from '../sunLight';
 
 describe('the albedo grade', () => {
-  it("takes the Moon to 0.3 of its map's luminance in the cream's hue", () => {
+  it("takes the Moon to 0.5 of its map's luminance in the cream's hue, 0.3 waiting on an adaptive exposure", () => {
     expect(luminanceOf(SUN_LIGHT_AUTHORED_HUE)).toBeCloseTo(1, 12);
     const cream = new THREE.Color(0xfff5e0);
     expect(SUN_LIGHT_AUTHORED_HUE[2] / SUN_LIGHT_AUTHORED_HUE[0]).toBeCloseTo(cream.b / cream.r, 12);
     const moon = BODY_ALBEDO_GRADE.Moon;
     expect(luminanceOf(moon)).toBeCloseTo(MOON_ALBEDO_SCALE, 12);
-    expect(MOON_ALBEDO_SCALE).toBe(0.3);
+    expect(MOON_ALBEDO_SCALE).toBe(0.5);
     expect(albedoGradeOf('Mars')).toEqual([1, 1, 1]);
   });
 

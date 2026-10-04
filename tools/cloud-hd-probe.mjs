@@ -39,8 +39,8 @@
 // height whose frame never had a page resident, which would test the base
 // sheet again. No hour: the clock's drift is the base scenario's question.
 //
-// `--hour` (on by default; `--hour=0` skips it) runs the clock: from the
-// middle Sun height's time it runs at `--rate` (default 900×) for four
+// `--hour` (on by default; `--hour=0` skips it) runs the clock: at the middle
+// Sun height, from an hour of its own, it runs at `--rate` (default 900×) for four
 // wall-time stretches of a simulated quarter hour each, re-poses after each,
 // and holds every stop to the same bar, so a shadow read in a frame that drifts
 // apart from the deck's would show as a growing error.
@@ -72,12 +72,23 @@ const HP = Number(arg('hp', '24'));
 // The cloud signal's RMS (8-bit grey, high-passed) under which a frame is
 // called cloudless and not scored.
 const MIN_CLOUD_RMS = Number(arg('mincloud', '2'));
-// The December solstice, at the hour local noon stands over the Atlantic: the
-// subsolar point is at 23.4 S, 30 W, and limbView's phase swings the stand
-// point north along that meridian, so the three Sun heights below land at
-// 7 N, 47 N and 59 N over open ocean. Ground with texture of its own (snow on
-// a coast) correlates with nothing the deck draws and is kept out of frame.
-const TIME = arg('time', '2025-12-21T14:00:00Z');
+// The December solstice, at an hour local noon stands over the Atlantic: the
+// subsolar point is at 23.4 S, and limbView's phase swings the stand point
+// north along its meridian, so the three Sun heights below land at 7 N, 47 N
+// and 59 N over open ocean. Ground with texture of its own (snow on a coast)
+// correlates with nothing the deck draws and is kept out of frame. Each height
+// names its own hour, because the frame needs cloud with texture at its own
+// scale under it: the deck's base sheet is an area average of the cloud
+// master, soft at these magnifications, and a stop over a smooth veil has no
+// signal to register (noon over 39 W for the two higher Suns, over 30 W for
+// the lowest). `--time=` puts every height at one hour instead.
+const TIME_ARG = arg('time', null);
+/** The hour a height is posed at. */
+const timeOf = (cfg) => Date.parse(TIME_ARG ?? cfg.time);
+/** Where the running hour starts: noon over 160 E, so its five stops at the
+ *  middle height walk west across 15 degrees of textured cloud over the open
+ *  north Pacific. */
+const HOUR_START = Date.parse(TIME_ARG ?? '2025-12-21T01:20:00Z');
 const CLOUD_TOP_KM = 10;
 const KM_PER_AU = 149597870.7;
 const OUT = path.join('/tmp/moon-shots', LABEL);
@@ -86,9 +97,9 @@ mkdirSync(OUT, { recursive: true });
 /** The Sun heights, each with a frame that puts its shadow a readable number
  *  of pixels off without the cloud field blurring into one blob. */
 const HEIGHTS = [
-  { name: 'sun60', elevDeg: 60, altKm: 400, fovDeg: 20 },
-  { name: 'sun20', elevDeg: 20, altKm: 400, fovDeg: 30 },
-  { name: 'sun8', elevDeg: 8, altKm: 600, fovDeg: 40 },
+  { name: 'sun60', elevDeg: 60, altKm: 400, fovDeg: 20, time: '2025-12-21T14:35:00Z' },
+  { name: 'sun20', elevDeg: 20, altKm: 400, fovDeg: 30, time: '2025-12-21T14:35:00Z' },
+  { name: 'sun8', elevDeg: 8, altKm: 600, fovDeg: 40, time: '2025-12-21T14:00:00Z' },
 ];
 
 const GPU_ARGS = ['--use-gl=angle', '--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader'];
@@ -470,7 +481,7 @@ async function measure(page, cfg, tag) {
 // ---------------------------------------------------------------- the run
 const release = await takeBrowserLock(LABEL);
 const browser = await chromium.launch({ headless: true, args: GPU_ARGS });
-const report = { url: URL, extra: EXTRA, time: TIME, tol: TOL, minCorr: MIN_CORR, rows: [], hour: [] };
+const report = { url: URL, extra: EXTRA, time: TIME_ARG ?? Object.fromEntries(HEIGHTS.map((h) => [h.name, h.time])), tol: TOL, minCorr: MIN_CORR, rows: [], hour: [] };
 let failures = 0;
 try {
   const { page, errors } = await openPage(browser);
@@ -482,7 +493,7 @@ try {
     console.log(`[hd-probe] field booted, ${on} pool layers`);
     if (!on) { failures++; console.log('[hd-probe] field: FAIL, the session has no cloud field'); }
     for (const cfg of HEIGHTS) {
-      await page.evaluate((t) => window.__moon.setTimeMs(t), Date.parse(TIME));
+      await page.evaluate((t) => window.__moon.setTimeMs(t), timeOf(cfg));
       await poseAt(page, cfg);
       // The shadow's own demand joins only while the shadow is compiled: on
       // for the wait, then measure() takes its captures.
@@ -503,7 +514,7 @@ try {
     await boot(page);
     console.log('[hd-probe] booted', JSON.stringify(await page.evaluate(() => window.__moon.cloudShadow())));
     for (const cfg of HEIGHTS) {
-      await page.evaluate((t) => window.__moon.setTimeMs(t), Date.parse(TIME));
+      await page.evaluate((t) => window.__moon.setTimeMs(t), timeOf(cfg));
       await poseAt(page, cfg);
       const row = await measure(page, cfg, cfg.name);
       report.rows.push(row);
@@ -516,7 +527,7 @@ try {
       // The clock running: a simulated hour at the middle height, in four
       // stretches, re-posed and measured after each.
       const cfg = HEIGHTS[1];
-      await page.evaluate((t) => window.__moon.setTimeMs(t), Date.parse(TIME));
+      await page.evaluate((t) => window.__moon.setTimeMs(t), HOUR_START);
       await poseAt(page, cfg);
       const first = await measure(page, cfg, 'hour0');
       report.hour.push({ ...first, simMin: 0 });
@@ -528,7 +539,7 @@ try {
         await page.waitForTimeout((15 * 60 * 1000) / RATE);
         await page.evaluate(() => window.__moon.setTimeRate(0));
         // Land the stop on the quarter exactly: the wall wait carries jitter.
-        await page.evaluate((t) => window.__moon.setTimeMs(t), Date.parse(TIME) + k * 15 * 60 * 1000);
+        await page.evaluate((t) => window.__moon.setTimeMs(t), HOUR_START + k * 15 * 60 * 1000);
         await poseAt(page, cfg);
         const row = await measure(page, cfg, `hour${k}`);
         report.hour.push({ ...row, simMin: k * 15, clockBefore: before });

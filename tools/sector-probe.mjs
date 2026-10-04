@@ -87,6 +87,12 @@ const TILES_QUERY = TILES ? `&tiles=${encodeURIComponent(TILES)}` : '';
 // (main.ts getTilePixelRatio), so it asks the streamer for a finer tier inside
 // the same envelope, and only this battery can say what that costs.
 const EXTRA_QUERY = arg('extra', '');
+// `--extra='&cloudtiles=1'` boots with Earth's cloud field, whose pool is held
+// whole in the envelope for the session: every check below then reads what it
+// leaves, and the reservation itself is held to the pool's own bytes.
+const FIELD_ASKED = new URLSearchParams(EXTRA_QUERY.replace(/^&/, '?')).get('cloudtiles') === '1';
+/** One layer of the field's pool: an RG8 2048² page with its eleven mips. */
+const CLOUD_LAYER_BYTES = 11_184_810;
 const ONLY = arg('scenario', '').split(',').map((s) => s.trim()).filter(Boolean);
 const CYCLES = Number(arg('cycles', '8'));
 const TOUR_CONTEXT = arg('context', 'desktop');
@@ -209,10 +215,50 @@ function checkSharedEnvelope(r, where, s, l) {
     r.fail(`${where}: the ladder reads a floor of ${mib(l.floorBytes)} MiB`
       + ` where the tiles are owed ${mib(s.floor)} — two envelopes, not one`);
   }
-  const want = l.envelopeBytes - s.floor;
+  // What the two share is the envelope less what is held whole for the
+  // session (the cloud field's pool) — taken once, here, and nowhere else.
+  if (l.availableBytes !== l.envelopeBytes - l.fixedBytes) {
+    r.fail(`${where}: ${mib(l.availableBytes)} MiB available, envelope ${mib(l.envelopeBytes)}`
+      + ` less the fixed ${mib(l.fixedBytes)} = ${mib(l.envelopeBytes - l.fixedBytes)}`);
+  }
+  const want = l.availableBytes - s.floor;
   if (l.ceilingBytes !== want) {
-    r.fail(`${where}: ladder ceiling ${mib(l.ceilingBytes)} MiB, envelope ${mib(l.envelopeBytes)}`
+    r.fail(`${where}: ladder ceiling ${mib(l.ceilingBytes)} MiB, available ${mib(l.availableBytes)}`
       + ` less the floor ${mib(s.floor)} = ${mib(want)}`);
+  }
+}
+
+/** The cloud field's pool is in the envelope exactly once: the fixed bytes
+ *  are the pool's own allocation as the ledger counts textures
+ *  (textureGpuBytes, within a few bytes of the exact twelve-level sum) where
+ *  the session asked for the field and the row gives it layers, and nothing
+ *  at all otherwise — a row with no layers takes no pool whatever the URL
+ *  asked. */
+async function checkFieldReservation(r, where, page) {
+  const got = await page.evaluate(async () => ({
+    l: window.__moon.ladder(), dev: window.__moon.device(),
+    field: window.__moon.cloudField ? await window.__moon.cloudField() : null,
+  }));
+  const layers = FIELD_ASKED ? got.dev.cloudFieldLayers : 0;
+  const pool = got.field?.pool ?? null;
+  const want = layers * CLOUD_LAYER_BYTES;
+  r.say(`  cloud field: ${FIELD_ASKED ? 'asked' : 'not asked'}, row gives ${got.dev.cloudFieldLayers} layers;`
+    + ` pool ${pool ? `${pool.layers} layers ${pool.poolBytes} B (exact ${pool.poolBytesExact})` : 'none'},`
+    + ` fixed ${mib(got.l.fixedBytes)} MiB, available ${mib(got.l.availableBytes)} of ${mib(got.l.envelopeBytes)} MiB`);
+  if (layers === 0) {
+    if (got.l.fixedBytes !== 0) r.fail(`${where}: fixed ${got.l.fixedBytes} B where no pool is owed`);
+    if (pool) r.fail(`${where}: a pool of ${pool.layers} layers where the row gives none`);
+    return;
+  }
+  if (!pool || pool.layers !== layers) {
+    r.fail(`${where}: ${pool ? `a pool of ${pool.layers}` : 'no pool'} where the row gives ${layers} layers`);
+    return;
+  }
+  if (got.l.fixedBytes !== pool.poolBytes) {
+    r.fail(`${where}: the envelope reserves ${got.l.fixedBytes} B but the pool holds ${pool.poolBytes} B`);
+  }
+  if (pool.poolBytesExact !== want || Math.abs(pool.poolBytes - want) > 1024) {
+    r.fail(`${where}: the pool counts ${pool.poolBytes} B (exact ${pool.poolBytesExact}) for ${layers} layers of ${CLOUD_LAYER_BYTES} B`);
   }
 }
 
@@ -245,6 +291,7 @@ async function budgetGate(r, page, { poses, longSamples = 40, shortSamples = 8, 
   const ceilingBytes = row ? row.ceilingBytes : Infinity;
   r.say(`# ${label}`);
   if (row) r.say(`  row: ${row.deviceClass}/${row.family} ${row.profile} (${row.provenance}) — tiles ${mib(ceilingBytes)} MiB`);
+  await checkFieldReservation(r, label, page);
   let first = true;
   for (const [body, how, mult] of poses) {
     if (!await pose(page, body, how, mult)) { r.fail(`${body} ${mult}: ${how} returned false`); continue; }
@@ -264,6 +311,7 @@ async function budgetGate(r, page, { poses, longSamples = 40, shortSamples = 8, 
       last = s;
       await page.waitForTimeout(250);
     }
+    checkSharedEnvelope(r, `${body} ${mult}`, last, await ladder(page));
     const b = last.bodies[body] ?? { resident: [], byLevel: [] };
     r.say(`${body} ${how} ${mult} (${samples} samples): resident ${last.resident} held ${mib(peak)} MiB`
       + ` of budget ${mib(last.budget)} (${(worst * 100).toFixed(0)}%),`
@@ -583,6 +631,7 @@ const SCENARIOS = {
       for (const [k, v] of Object.entries(want)) {
         if (dev[k] !== v) r.fail(`${label}: ${k} ${JSON.stringify(dev[k])}, wanted ${JSON.stringify(v)}`);
       }
+      await checkFieldReservation(r, label, run.page);
       if (run.errors.length) r.say(`  errors ${run.errors.length} ${JSON.stringify(run.errors.slice(0, 3))}`);
       return { ...run, dev };
     };
@@ -593,7 +642,7 @@ const SCENARIOS = {
       hasTouch: true, isMobile: true, userAgent: IPHONE_UA,
     }, {
       deviceClass: 'phone', family: 'apple', profile: 'apple-phone',
-      envelopeBytes: 1024 * MiB, ceilingBytes: 512 * MiB, cacheOnlyWarm: false,
+      envelopeBytes: 1024 * MiB, ceilingBytes: 512 * MiB, cacheOnlyWarm: false, cloudFieldLayers: 6,
     });
     try {
       await apple.page.evaluate(() => window.__moon.jumpTo('Earth', 0.13));
@@ -660,14 +709,14 @@ const SCENARIOS = {
       hasTouch: true, isMobile: true, userAgent: IPAD_UA,
     }, {
       deviceClass: 'tablet', family: 'apple', profile: 'apple-tablet',
-      envelopeBytes: 1536 * MiB, ceilingBytes: 512 * MiB, cacheOnlyWarm: false,
+      envelopeBytes: 1536 * MiB, ceilingBytes: 512 * MiB, cacheOnlyWarm: false, cloudFieldLayers: 8,
     });
     await ipad.ctx.close();
 
     // 3. An Android phone, which nobody has measured: the unmeasured row.
     const pixel = await readRow('Pixel 412x915 DPR 2.625', CONTEXTS.android, {
       deviceClass: 'phone', family: 'android', profile: 'unmeasured-touch',
-      envelopeBytes: 320 * MiB, ceilingBytes: 144 * MiB, cacheOnlyWarm: true,
+      envelopeBytes: 320 * MiB, ceilingBytes: 144 * MiB, cacheOnlyWarm: true, cloudFieldLayers: 0,
     });
     await pixel.ctx.close();
 

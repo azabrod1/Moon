@@ -82,8 +82,8 @@ export const PLANET_TEXTURE_FILES: Record<string, string> = {
   // A re-based map therefore ships under a new pathname, never the old one.
   earthDay: 'earth-day.v2.webp',
   earthNight: 'earth-night.v2.webp',
-  earthClouds: 'earth-clouds.webp',
-  earthCloudsNormal: 'earth-clouds-normal.webp',
+  earthClouds: 'earth-clouds.v2.webp',
+  earthCloudsNormal: 'earth-clouds-normal.v2.webp',
   earthBump: 'earth-bump.webp',
   earthRoughness: 'earth-roughness.v2.webp',
   // The sea's wind as the pair of maps world/seaWind.ts reads the glint's lobe
@@ -240,8 +240,10 @@ export function upgradeComplete(up: TextureUpgrade): boolean {
 // are both the SVS CGI Moon Kit LROC WAC albedo, colour-matched to the shipped
 // grade via tools/colormatch.mjs — and its relief comes from a separate SVS
 // ldem_16 LOLA normal map, so the albedo carries no baked shading to fight.
-// Earth's 4K clouds are the SSS cloud product (CC BY 4.0) the 2K boot map is
-// downsampled from. Mercury, Venus and Saturn are the same Solar System Scope
+// Earth's cloud deck is NASA's Blue Marble cloud composite: the 2K boot map
+// and both rungs are cut from the one cloud master the deck's HD field pages
+// come from (tools/gen-tiles.mjs, `clouds --base`), so a page arriving over
+// the sheet sharpens the cloud that was already there. Mercury, Venus and Saturn are the same Solar System Scope
 // products as their boot maps (gated: RMS 3.6 / 1.6 / 1.6 against the shipped
 // 2K); Venus and Saturn are low-frequency, so their 4K steps cost ~130 KB each
 // and mainly remove texel blockiness at the wall. Uranus / Neptune stay 2K
@@ -254,8 +256,7 @@ export function upgradeComplete(up: TextureUpgrade): boolean {
 // craters at grazing light). All three of its tiers bake from one source in
 // one run, so each step is a pure sharpen. The cloud deck climbs to 8K because the ground under it is
 // streamed at 16K and a 4K deck is then the soft layer on top; the 8K deck is
-// the SSS product itself (the 4K is its downsample: RMS 7 against it, equal
-// means). Earth's day map has ONE rung and it is 8K: the globe boots on the
+// the master's area average and the 4K and 2K are box averages of that. Earth's day map has ONE rung and it is 8K: the globe boots on the
 // 4096 map, which is where every other body's first rung arrives, so the only
 // step left is the same graded Blue Marble one resample coarser than its 16K
 // sector tiles. There is no 8K product from a different vendor in it — the
@@ -382,8 +383,8 @@ export const TIER_FILE_OVERRIDES: Record<string, Partial<Record<TextureTier, Com
     '8k': { file: 'moon.ktx2', webp: true },
   },
   earthClouds: {
-    '4k': { file: 'earth-clouds.ktx2', webp: true },
-    '8k': { file: 'earth-clouds.ktx2', webp: true },
+    '4k': { file: 'earth-clouds.v2.ktx2', webp: true },
+    '8k': { file: 'earth-clouds.v2.ktx2', webp: true },
   },
   earthDay: { '8k': { file: 'earth-day.v2.ktx2', webp: false } },
   earthNight: {
@@ -734,7 +735,7 @@ export const UPGRADE_TRIGGER_FRACTION: Partial<Record<TextureTier, number>> = { 
  * Per-key overrides of the gates above. The cloud deck's 8K exists for the
  * close approach, not the telescope: a 4K texel of the deck spans one device
  * pixel only once Earth's disc stands about 1.2 viewport heights tall (0.6 on
- * a 2x display), so the Moon's 0.22 gate would pull 4.7 MB and 171 MiB of GPU
+ * a 2x display), so the Moon's 0.22 gate would pull 3.1 MB and 171 MiB of GPU
  * memory for every boot-view Earth. 0.5 is that 2x figure with fetch lead,
  * which is also where the 16K ground sectors start arriving.
  *
@@ -872,6 +873,25 @@ export function materialColorMap(mat: THREE.Material): THREE.Texture | null {
     return ((mat as THREE.ShaderMaterial).uniforms[uniform]?.value as THREE.Texture | null) ?? null;
   }
   return (mat as THREE.MeshStandardMaterial).map ?? null;
+}
+
+// Read once: the per-frame width lookup below allocates nothing.
+const RANKED_TIERS = Object.keys(TIER_RANK) as TextureTier[];
+
+/**
+ * The width of the colour map a material DRAWS: its tier's (the rank the
+ * ladder last applied), never its image's — once a rung's upload is paid the
+ * ladder trims the image to a stand-in a fraction of the size, so the image
+ * says what a restore would re-upload, not what is on the GPU. A material no
+ * tier was applied to reads its image; 0 with neither.
+ */
+export function materialColorWidth(mat: THREE.Material): number {
+  const rank = mat.userData.colorTierRank as number | undefined;
+  for (let i = 0; i < RANKED_TIERS.length; i++) {
+    if (TIER_RANK[RANKED_TIERS[i]] === rank) return TIER_MAP_WIDTH[RANKED_TIERS[i]];
+  }
+  const img = materialColorMap(mat)?.image as { width?: number } | null | undefined;
+  return typeof img?.width === 'number' ? img.width : 0;
 }
 
 function setMaterialColorMap(mat: THREE.Material, tex: THREE.Texture): void {
@@ -1695,8 +1715,8 @@ export const NORMAL_UPGRADE_TIERS: Record<string, TextureTier> = {
   moonNormal: '4k',
   // Earth's cloud relief has no rung, and the reason is bytes rather than
   // taste: a cloud field's normal map is nearly incompressible, so the 4K one
-  // is 15.6 MB lossless and 10.3 MB near-lossless — more than twice the 4.7 MB
-  // 8K COLOUR rung that doubles the resolution of the picture rather than of a
+  // is 13.7 MB lossless and 9.0 MB near-lossless — nearly three times the
+  // 3.1 MB 8K COLOUR rung that doubles the resolution of the picture rather than of a
   // guess at its height. It ships at its boot resolution only, and the band a
   // rung would have added is the band the procedural detail noise covers for
   // no bytes at all (world/cloudDetailNoise). Adding one later is this line

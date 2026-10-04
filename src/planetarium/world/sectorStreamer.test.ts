@@ -417,10 +417,15 @@ describe('SectorStreamer', () => {
   it('bounds fetches in flight', () => {
     const sizes: Record<string, number> = {};
     for (let c = 0; c < 4; c++) sizes[`${c}_1`] = 2 + 0.01 * c;
+    expect(streamer.loadSlotsFull()).toBe(false);
     streamer.update('Earth', new THREE.Vector3(0, 0, 0), measureOf(sizes), 0); // inside: every sector faces
     expect(streamer.stats().loading).toBe(DESKTOP.inflightCap);
     // Largest first (stats list in grid order).
     expect(streamer.stats().bodies.Earth.loading.slice().sort()).toEqual(['2_1', '3_1']);
+    // Every slot taken is what another loader yields to; a slot freed is not.
+    expect(streamer.loadSlotsFull()).toBe(true);
+    streamer.dropAll();
+    expect(streamer.loadSlotsFull()).toBe(false);
   });
 
   it('holds what the tighter of budget and cap holds, and only evicts for a candidate that out-ranks by the margin', () => {

@@ -18,14 +18,15 @@ import {
   cloudTableCode,
   cloudFieldGuard,
   cloudFieldPoolBytes,
-  cloudFieldRequested,
   cloudPageAddress,
   cloudPageEdgeWeight,
+  cloudPageIndexOf,
   cloudPageKey,
   cloudPageNeighbours,
-  packCloudPage,
+  packCloudPlaneRows,
   parseCloudPageKey,
 } from './cloudField';
+import { cloudFieldAsked, cloudFieldRequested } from './cloudFieldSlots';
 import { sphereEquirectUv } from './cloudDeck';
 import { textureBytesPerTexel, textureGpuBytes } from './textureBytes';
 import { resolveDefine } from '../testing/glslDefine';
@@ -75,6 +76,20 @@ describe('a direction\'s page', () => {
     expect(cloudPageAddress(dirAt(-117.8, -22.6))).toMatchObject({ col: 2, row: 5 });
     // Italy, northern hemisphere east of Greenwich.
     expect(cloudPageAddress(dirAt(12.5, 42))).toMatchObject({ col: 8, row: 2 });
+  });
+
+  it('is the same cell, as one index, when the measure asks without allocating', () => {
+    const cases: Array<[number, number, number]> = [[0, 1, 0], [0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]];
+    for (const lon of [-180, -179.999, -135, -112.5, 0, 22.5, 179.999, 180]) {
+      for (const lat of [-90, -67.5, -22.5, -1e-9, 0, 1e-9, 22.5, 45, 89.99, 90]) cases.push(dirAt(lon, lat));
+    }
+    let seed = 7;
+    const r = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    for (let n = 0; n < 2000; n++) cases.push(dirAt(r() * 360 - 180, Math.asin(r() * 2 - 1) * 180 / Math.PI));
+    for (const d of cases) {
+      const a = cloudPageAddress(d);
+      expect(cloudPageIndexOf(d[0], d[1], d[2])).toBe(a.row * CLOUD_FIELD_GRID[0] + a.col);
+    }
   });
 
   it('wraps at the date line: just west of it is the last column, just east the first', () => {
@@ -196,13 +211,35 @@ describe('the hand-over to the base', () => {
 describe('a page\'s layer', () => {
   it('interleaves A and P and puts the file\'s last row first', () => {
     // 2×2: file rows (north-up) are [a0 a1] / [a2 a3].
-    const a = Uint8Array.from([10, 11, 12, 13]);
-    const p = Uint8Array.from([20, 21, 22, 23]);
-    expect([...packCloudPage(a, p, 2)]).toEqual([12, 22, 13, 23, 10, 20, 11, 21]);
+    const out = new Uint8Array(8);
+    packCloudPlaneRows(out, Uint8Array.from([10, 11, 12, 13]), 2, 0, 0, 2);
+    packCloudPlaneRows(out, Uint8Array.from([20, 21, 22, 23]), 2, 1, 0, 2);
+    expect([...out]).toEqual([12, 22, 13, 23, 10, 20, 11, 21]);
     // RGBA readback: the grey is in every colour channel; only R is read.
     const rgba = (g: number[]) => Uint8Array.from(g.flatMap((v) => [v, v, v, 255]));
-    expect([...packCloudPage(rgba([10, 11, 12, 13]), rgba([20, 21, 22, 23]), 2, 4)])
-      .toEqual([12, 22, 13, 23, 10, 20, 11, 21]);
+    const fromRgba = new Uint8Array(8);
+    packCloudPlaneRows(fromRgba, rgba([10, 11, 12, 13]), 2, 0, 0, 2, 4);
+    packCloudPlaneRows(fromRgba, rgba([20, 21, 22, 23]), 2, 1, 0, 2, 4);
+    expect([...fromRgba]).toEqual([12, 22, 13, 23, 10, 20, 11, 21]);
+  });
+
+  it('lands the same layer whether a file comes in whole or a band at a time', () => {
+    const size = 8;
+    const a = Uint8Array.from({ length: size * size }, (_, i) => (i * 7) & 255);
+    const p = Uint8Array.from({ length: size * size }, (_, i) => (i * 13 + 5) & 255);
+    const whole = new Uint8Array(size * size * 2);
+    packCloudPlaneRows(whole, a, size, 0, 0, size);
+    packCloudPlaneRows(whole, p, size, 1, 0, size);
+    const banded = new Uint8Array(size * size * 2);
+    for (let y0 = 0; y0 < size; y0 += 3) {
+      const rows = Math.min(3, size - y0);
+      packCloudPlaneRows(banded, a.subarray(y0 * size, (y0 + rows) * size), size, 0, y0, rows);
+      packCloudPlaneRows(banded, p.subarray(y0 * size, (y0 + rows) * size), size, 1, y0, rows);
+    }
+    expect([...banded]).toEqual([...whole]);
+    // The file's first row is the layer's last.
+    expect(whole[(size - 1) * size * 2]).toBe(a[0]);
+    expect(whole[(size - 1) * size * 2 + 1]).toBe(p[0]);
   });
 
   it('builds its mips as data: 2×2 means per channel, rounded half up', () => {
@@ -334,7 +371,7 @@ describe('the field\'s GLSL', () => {
   });
 });
 
-describe('page keys and the dev switch', () => {
+describe('page keys and the switch', () => {
   it('round-trips', () => {
     expect(cloudPageKey(2, 4)).toBe('2_4');
     expect(parseCloudPageKey('15_4')).toEqual([15, 4]);
@@ -343,9 +380,13 @@ describe('page keys and the dev switch', () => {
     expect(parseCloudPageKey('x')).toBeNull();
   });
 
-  it('is ?cloudtiles=1 and nothing else', () => {
-    expect(cloudFieldRequested('?cloudtiles=1')).toBe(import.meta.env.DEV);
-    expect(cloudFieldRequested('?cloudtiles=0')).toBe(false);
-    expect(cloudFieldRequested('')).toBe(false);
+  it('is ?cloudtiles=1 and nothing else, in any build', () => {
+    expect(cloudFieldAsked('?cloudtiles=1')).toBe(true);
+    expect(cloudFieldAsked('?quality=medium&cloudtiles=1')).toBe(true);
+    expect(cloudFieldAsked('?cloudtiles=0')).toBe(false);
+    expect(cloudFieldAsked('?cloudtiles')).toBe(false);
+    expect(cloudFieldAsked('')).toBe(false);
+    // Read once, at boot: the test runner's page asked for nothing.
+    expect(cloudFieldRequested()).toBe(false);
   });
 });

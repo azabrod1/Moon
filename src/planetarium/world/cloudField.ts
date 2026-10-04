@@ -5,14 +5,16 @@
  * direction lands on a page, how much of the page a fragment may take, how a
  * page's mips are built — with a TypeScript twin of every rule the shader
  * applies, so the tests can pin the addressing without a GPU. The pool that
- * holds the pages and the bridge that drives them are `cloudFieldPool.ts`.
+ * holds the pages is `cloudFieldPool.ts`, the residency that decides which
+ * pages it holds `cloudFieldResidency.ts`, and the session that drives the
+ * two from the live frame `cloudFieldSession.ts`.
  *
- * DEVELOPMENT ONLY, AND OFF. This is the vertical slice that decides whether
- * HD clouds go ahead: a few hard-wired pages, no streamer, no ground reads. The
- * shader half is a compile-time define, CLOUD_FIELD, set only on the deck's
- * material and only on the dev server with `?cloudtiles=1`; a production build
- * carries none of the text, and a development program without the define is
- * the program it was, after the preprocessor, character for character.
+ * OFF BY DEFAULT. The shader half is a compile-time define, CLOUD_FIELD, set
+ * only on the planetarium's deck and only when `?cloudtiles=1` asked for it at
+ * boot (any build) and the device's profile gives the pool layers; a program
+ * without the define is the program it was, after the preprocessor, but for
+ * the one blank line each of the two chunks below opens with. With it, pages
+ * arrive by themselves as the camera moves, and fade in over the sheet.
  *
  * THE REPRESENTATION is two channels per texel, `(A, P)` — the encoding study
  * (planning/cloud-detail/encoding) chose it: A is the deck's authored opacity,
@@ -43,6 +45,16 @@ type Vec3 = readonly [number, number, number];
 
 /** Pages across the globe, and down it. */
 export const CLOUD_FIELD_GRID: readonly [number, number] = [16, 8];
+
+/**
+ * The tile sets a page's two planes are read from, cut by gen-tiles' `clouds`
+ * job and named in the generated table like every sector set: the key is the
+ * stem of the master they are cut from (`earth-clouds.v2`, the stem of the
+ * base sheet too, which is cut from the same master), so a re-cut master ships
+ * under a new key and takes its pages and its sheet with it; a page is the
+ * same cell of both tiers.
+ */
+export const CLOUD_FIELD_SETS = { key: 'earth-clouds.v2', opacity: '32k-a', brightness: '32k-p' } as const;
 /** Content texels on a page's side. */
 export const CLOUD_PAGE_CONTENT = 2032;
 /** Texels of neighbouring content round every page. */
@@ -133,11 +145,22 @@ const smoothstep = (edge0: number, edge1: number, x: number): number => {
 /** three's SphereGeometry UV for a unit direction in the sphere's own frame:
  *  the deck's map UV, which the pages are cut against. The same formula as
  *  `sphereEquirectUv` in cloudDeck.ts, repeated so this module stays free of
- *  everything but arithmetic. */
-function equirectUv(d: Vec3): [number, number] {
-  const u = Math.atan2(d[2], -d[0]) / (2 * Math.PI);
-  return [u - Math.floor(u), 0.5 + Math.asin(Math.min(1, Math.max(-1, d[1]))) / Math.PI];
+ *  everything but arithmetic. In two scalar halves, so a per-frame loop can
+ *  find a page without building a tuple. */
+function equirectU(x: number, z: number): number {
+  const u = Math.atan2(z, -x) / (2 * Math.PI);
+  return u - Math.floor(u);
 }
+function equirectV(y: number): number {
+  return 0.5 + Math.asin(Math.min(1, Math.max(-1, y))) / Math.PI;
+}
+
+/** A map uv's position on the grid, in pages: x from the date line, y from
+ *  the SOUTH pole, v held just inside the grid at the poles. */
+const gridX = (u: number): number => u * CLOUD_FIELD_GRID[0];
+const gridY = (v: number): number => Math.min(Math.max(v, 0), 0.9999999) * CLOUD_FIELD_GRID[1];
+/** The cell a grid position falls in, the last one held on the grid. */
+const cellOf = (g: number, cells: number): number => Math.min(Math.floor(g), cells - 1);
 
 /** Where a deck-frame direction lands in the field. */
 export interface CloudPageAddress {
@@ -155,11 +178,10 @@ export interface CloudPageAddress {
 /** The page under a direction in the deck's own frame, and where on it.
  *  Mirrored exactly by the head of `cloudFieldFine` in CLOUD_FIELD_GLSL. */
 export function cloudPageAddress(dir: Vec3): CloudPageAddress {
-  const [u, v] = equirectUv(dir);
-  const gx = u * CLOUD_FIELD_GRID[0];
-  const gy = Math.min(Math.max(v, 0), 0.9999999) * CLOUD_FIELD_GRID[1];
-  const cx = Math.min(Math.floor(gx), CLOUD_FIELD_GRID[0] - 1);
-  const cy = Math.min(Math.floor(gy), CLOUD_FIELD_GRID[1] - 1);
+  const gx = gridX(equirectU(dir[0], dir[2]));
+  const gy = gridY(equirectV(dir[1]));
+  const cx = cellOf(gx, CLOUD_FIELD_GRID[0]);
+  const cy = cellOf(gy, CLOUD_FIELD_GRID[1]);
   const s: [number, number] = [gx - cx, gy - cy];
   return {
     col: cx,
@@ -170,6 +192,14 @@ export function cloudPageAddress(dir: Vec3): CloudPageAddress {
       (CLOUD_PAGE_GUTTER + s[1] * CLOUD_PAGE_CONTENT) / CLOUD_PAGE_SIZE,
     ],
   };
+}
+
+/** The table cell under a deck-frame direction as one index, `row * 16 +
+ *  col` — the cell `cloudPageAddress` names, found without allocating, for
+ *  the residency's per-frame measure. */
+export function cloudPageIndexOf(x: number, y: number, z: number): number {
+  const cy = cellOf(gridY(equirectV(y)), CLOUD_FIELD_GRID[1]);
+  return (CLOUD_FIELD_GRID[1] - 1 - cy) * CLOUD_FIELD_GRID[0] + cellOf(gridX(equirectU(x, z)), CLOUD_FIELD_GRID[0]);
 }
 
 /** The page across the nearer x edge, the nearer y edge and the corner
@@ -262,25 +292,25 @@ export function parseCloudPageKey(key: string): [number, number] | null {
 }
 
 /**
- * The page's two grey channels as one RG8 layer in GL order. The files are
- * north-up — row 0 is the page's northern edge, as any image is — and a
- * texture's row 0 is t = 0, the SOUTHERN edge in the deck's UV, so the rows
- * are reversed here. `stride` is the bytes a source texel takes (4 for RGBA
- * read back off a canvas, whose grey has R = G = B; 1 for a raw channel).
+ * A band of one of the page's two grey files into its channel of the page's
+ * RG8 layer (`out`, size² × 2), in GL order: channel 0 the opacity A, 1 the
+ * premultiplied brightness P. `src` holds the file's rows `y0` to `y0 + rows`
+ * top-down. The files are north-up — row 0 is the page's northern edge, as
+ * any image is — and a texture's row 0 is t = 0, the SOUTHERN edge in the
+ * deck's UV, so a file row y lands on layer row size − 1 − y. `stride` is the
+ * bytes a source texel takes (4 for RGBA read back off a canvas, whose grey
+ * has R = G = B; 1 for a raw channel). A band at a time, so a decoder never
+ * has to hold a whole file's RGBA readback, four times the channel it wants.
  */
-export function packCloudPage(
-  a: Uint8Array | Uint8ClampedArray, p: Uint8Array | Uint8ClampedArray, size: number, stride = 1,
-): Uint8Array {
-  const out = new Uint8Array(size * size * 2);
-  for (let y = 0; y < size; y++) {
-    const src = (size - 1 - y) * size * stride;
-    const dst = y * size * 2;
-    for (let x = 0; x < size; x++) {
-      out[dst + 2 * x] = a[src + x * stride];
-      out[dst + 2 * x + 1] = p[src + x * stride];
-    }
+export function packCloudPlaneRows(
+  out: Uint8Array, src: Uint8Array | Uint8ClampedArray, size: number, channel: 0 | 1, y0: number, rows: number,
+  stride = 1,
+): void {
+  for (let y = 0; y < rows; y++) {
+    const from = y * size * stride;
+    const to = (size - 1 - (y0 + y)) * size * 2 + channel;
+    for (let x = 0; x < size; x++) out[to + 2 * x] = src[from + x * stride];
   }
-  return out;
 }
 
 /**
@@ -327,16 +357,57 @@ export function cloudFieldPoolBytes(layers: number): number {
   return texels * 2 * layers;
 }
 
-/** The dev switch: `?cloudtiles=1` on the development server. */
-export function cloudFieldRequested(search?: string): boolean {
-  if (!import.meta.env.DEV) return false;
-  const q = search ?? (typeof location !== 'undefined' ? location.search : '');
-  return new URLSearchParams(q).get('cloudtiles') === '1';
-}
-
 const f6 = (x: number) => x.toFixed(6);
 const [GX, GY] = CLOUD_FIELD_GRID;
 const PAGE_SCALE = f6(CLOUD_PAGE_CONTENT / CLOUD_PAGE_SIZE);
+
+/**
+ * The development build's diagnostics in the field's text (the bridge's
+ * `__moon.cloudField({ diag })`): a uniform, two helpers, and two branches in
+ * the deck's block. A production build compiles none of them, and the fold
+ * test in aerialPerspective.test.ts turns the development text into the
+ * production one by deleting exactly these four pieces.
+ */
+export const CLOUD_FIELD_DIAGNOSTICS: Readonly<Record<'uniform' | 'functions' | 'probe' | 'paint', string>> =
+  import.meta.env.DEV
+    ? {
+      uniform: 'uniform float uCloudFieldDiag;\n',
+      functions: /* glsl */ `// The guard's input at a deck-frame direction, for the diagnostic that paints
+// it: (major in tile-ratio pixels, major in scene pixels, the guard's weight).
+vec3 cloudFieldGuardInput(vec3 deckDir, vec3 dDirX, vec3 dDirY) {
+  vec2 k = vec2(${GX}.0, ${GY}.0) * ${PAGE_SCALE};
+  vec2 lDx = sphereEquirectUvGrad(deckDir, dDirX) * k;
+  vec2 lDy = sphereEquirectUvGrad(deckDir, dDirY) * k;
+  float majorScene;
+  float major = cloudFieldMajor(lDx, lDy, majorScene);
+  return vec3(major, majorScene, cloudFieldGuard(major, majorScene));
+}
+// The diagnostic's colour for a layer: six hues, one per layer of the slice.
+vec3 cloudFieldDiagColour(float layer) {
+  float h = fract(layer / 6.0) * 6.0;
+  return clamp(abs(mod(h + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+}
+`,
+      probe: /* glsl */ `  if (uCloudFieldDiag > 2.5) {
+    // The guard's input, written to the scene target as it stands, unlit, for
+    // a readback (DEV): R the major in tile-ratio pixels, G in scene pixels,
+    // B the guard's weight.
+    gl_FragColor = vec4(cloudFieldGuardInput(dir, ddx, ddy), 1.0);
+    return;
+  }
+`,
+      paint: /* glsl */ `    if (uCloudFieldDiag > 0.5) {
+      vec3 cloudDiag = cloudFieldDiagColour(cloudFieldLayer);
+      if (uCloudFieldDiag < 1.5) {
+        diffuseColor.rgb = cloudDiag;
+        cloudAlpha = cloudFieldW;
+      } else {
+        diffuseColor.rgb *= cloudDiag;
+      }
+    }
+`,
+    }
+    : { uniform: '', functions: '', probe: '', paint: '' };
 
 /**
  * The field's GLSL: declarations and `cloudFieldFine`, every line inside
@@ -353,8 +424,7 @@ export const cloudFieldGlsl = (smoothFade: readonly [number, number]): string =>
 #ifdef CLOUD_FIELD
 uniform highp sampler2DArray uCloudPages;
 uniform highp sampler2D uCloudPageTable;
-uniform float uCloudFieldDiag;
-uniform float uCloudFieldPixelScale;
+${CLOUD_FIELD_DIAGNOSTICS.uniform}uniform float uCloudFieldPixelScale;
 // The deck's smooth magnification filter (textureBSpline) on one layer of an
 // array: the same cubic B-spline folded into four bilinear taps at level zero.
 vec4 textureBSplineLayer(highp sampler2DArray tex, vec2 uv, float layer, vec2 texels) {
@@ -457,22 +527,7 @@ vec2 cloudFieldFine(vec3 deckDir, vec3 dDirX, vec3 dDirY, out float w, out float
   }
   return fine;
 }
-// The guard's input at a deck-frame direction, for the diagnostic that paints
-// it: (major in tile-ratio pixels, major in scene pixels, the guard's weight).
-vec3 cloudFieldGuardInput(vec3 deckDir, vec3 dDirX, vec3 dDirY) {
-  vec2 k = vec2(${GX}.0, ${GY}.0) * ${PAGE_SCALE};
-  vec2 lDx = sphereEquirectUvGrad(deckDir, dDirX) * k;
-  vec2 lDy = sphereEquirectUvGrad(deckDir, dDirY) * k;
-  float majorScene;
-  float major = cloudFieldMajor(lDx, lDy, majorScene);
-  return vec3(major, majorScene, cloudFieldGuard(major, majorScene));
-}
-// The diagnostic's colour for a layer: six hues, one per layer of the slice.
-vec3 cloudFieldDiagColour(float layer) {
-  float h = fract(layer / 6.0) * 6.0;
-  return clamp(abs(mod(h + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
-}
-#endif
+${CLOUD_FIELD_DIAGNOSTICS.functions}#endif
 `;
 
 /**
@@ -486,37 +541,22 @@ vec3 cloudFieldDiagColour(float layer) {
  * brightness P / A, the hue the base's. The erosion is the base's alone: the
  * field's own edges are the 1.2 km map's, so at full weight none of it remains.
  *
- * `uCloudFieldDiag`: 1 paints each resident layer a flat colour at the alpha w
- * (where the pages sit, and how their weights meet); 2 tints the field by its
- * layer's colour (whether the cloud runs on across a page's edge).
+ * In a development build, `uCloudFieldDiag` (CLOUD_FIELD_DIAGNOSTICS): 1
+ * paints each resident layer a flat colour at the alpha w (where the pages
+ * sit, and how their weights meet); 2 tints the field by its layer's colour
+ * (whether the cloud runs on across a page's edge); 3 writes the guard's input.
  */
 export const CLOUD_FIELD_MIX_GLSL = (luminance: string): string => /* glsl */ `
 #ifdef CLOUD_FIELD
   float cloudFieldW = 0.0;
   float cloudFieldLayer = -1.0;
-  if (uCloudFieldDiag > 2.5) {
-    // The guard's input, written to the scene target as it stands, unlit, for
-    // a readback (DEV): R the major in tile-ratio pixels, G in scene pixels,
-    // B the guard's weight.
-    gl_FragColor = vec4(cloudFieldGuardInput(dir, ddx, ddy), 1.0);
-    return;
-  }
-  vec2 cloudFieldAP = cloudFieldFine(dir, ddx, ddy, cloudFieldW, cloudFieldLayer);
+${CLOUD_FIELD_DIAGNOSTICS.probe}  vec2 cloudFieldAP = cloudFieldFine(dir, ddx, ddy, cloudFieldW, cloudFieldLayer);
   if (cloudFieldW > 0.0) {
     float cloudC0 = dot(diffuseColor.rgb, ${luminance});
     vec3 cloudHue = cloudC0 > 1e-4 ? diffuseColor.rgb / cloudC0 : vec3(1.0);
     vec2 cloudAP = mix(vec2(cloudAlpha, cloudAlpha * cloudC0), cloudFieldAP, cloudFieldW);
     cloudAlpha = cloudAP.x;
     diffuseColor.rgb = min(cloudHue * (cloudAP.y / max(cloudAP.x, 1e-4)), vec3(1.0));
-    if (uCloudFieldDiag > 0.5) {
-      vec3 cloudDiag = cloudFieldDiagColour(cloudFieldLayer);
-      if (uCloudFieldDiag < 1.5) {
-        diffuseColor.rgb = cloudDiag;
-        cloudAlpha = cloudFieldW;
-      } else {
-        diffuseColor.rgb *= cloudDiag;
-      }
-    }
-  }
+${CLOUD_FIELD_DIAGNOSTICS.paint}  }
 #endif
 `;

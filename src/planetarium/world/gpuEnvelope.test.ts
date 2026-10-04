@@ -26,6 +26,7 @@ import {
   type ReleaseCandidate,
 } from './gpuEnvelope';
 import { SECTOR_SETS, sectorSetGpuBytes } from './sectorStreamer';
+import { cloudFieldPoolBytes } from './cloudField';
 
 const MiB = 1024 * 1024;
 
@@ -558,7 +559,27 @@ describe('the class table', () => {
     // ladder may hold 192 less the tiles' floor, so the arithmetic refuses it
     // before any fill-rate argument is reached.
     expect(LIMITED_PROFILE.tierCaps).toEqual({});
-    expect(ladderCeilingBytes(LIMITED_PROFILE, LIMITED_PROFILE.sectorFloorBytes)).toBeLessThan(171 * MiB);
+    expect(ladderCeilingBytes(LIMITED_PROFILE, LIMITED_PROFILE.sectorFloorBytes, 0)).toBeLessThan(171 * MiB);
+  });
+
+  it('gives the cloud field\'s pool its layers by row, and none where nothing was measured', () => {
+    // The pool is allocated whole at boot and reserved for the session, so its
+    // size is the row's to say: what the pages a frame holds at full weight
+    // need, and nothing at all on a platform nobody has measured — where zero
+    // layers is no field, whatever the URL asks.
+    expect(UNMEASURED_DESKTOP_PROFILE.cloudFieldLayers).toBe(12);
+    expect(APPLE_TABLET_PROFILE.cloudFieldLayers).toBe(8);
+    expect(APPLE_PHONE_PROFILE.cloudFieldLayers).toBe(6);
+    expect(UNMEASURED_TOUCH_PROFILE.cloudFieldLayers).toBe(0);
+    expect(LIMITED_PROFILE.cloudFieldLayers).toBe(0);
+    for (const family of ['apple', 'android', 'other'] as PlatformFamily[]) {
+      for (const cls of ['phone', 'tablet', 'desktop', 'limited'] as DeviceClass[]) {
+        const row = deviceProfileFor(cls, family);
+        // The pool fits beside the floor with room for the ladder's boot maps.
+        expect(cloudFieldPoolBytes(row.cloudFieldLayers) + row.sectorFloorBytes, `${family}/${cls}`)
+          .toBeLessThan(row.envelopeBytes / 4);
+      }
+    }
   });
 
   it('caps the cloud deck on a phone and a tablet of every family', () => {
@@ -605,6 +626,8 @@ describe('the class table', () => {
       // 42.7 MiB rather than the 171 the cap was written against. The cloud
       // deck's cap stays, and is about fill rate rather than memory.
       tierCaps: { earthClouds: '4k' },
+      // The cloud field arrived after these rows and gives them no pool.
+      cloudFieldLayers: 0,
     });
     expect(UNMEASURED_DESKTOP_PROFILE).toEqual({
       id: 'unmeasured-desktop',
@@ -619,6 +642,8 @@ describe('the class table', () => {
       releaseTexelPx: 0.65,
       cacheOnlyWarm: false,
       tierCaps: {},
+      // The one number the cloud field added to this row.
+      cloudFieldLayers: 12,
     });
   });
 
@@ -724,17 +749,17 @@ describe('the envelope arithmetic', () => {
   });
 
   it('gives the tiles the smaller of their ceiling and what the maps leave', () => {
-    expect(sectorBudgetBytes(DESKTOP, 0, DESKTOP.sectorFloorBytes)).toBe(DESKTOP.ceilingBytes);
-    expect(sectorBudgetBytes(DESKTOP, DESKTOP.envelopeBytes - 4 * SET, DESKTOP.sectorFloorBytes))
+    expect(sectorBudgetBytes(DESKTOP, 0, DESKTOP.sectorFloorBytes, 0)).toBe(DESKTOP.ceilingBytes);
+    expect(sectorBudgetBytes(DESKTOP, DESKTOP.envelopeBytes - 4 * SET, DESKTOP.sectorFloorBytes, 0))
       .toBe(4 * SET);
   });
 
   it('never trims the tiles below the floor, whatever the maps have taken', () => {
     for (const ladder of [DESKTOP.envelopeBytes, 2 * DESKTOP.envelopeBytes]) {
-      expect(sectorBudgetBytes(DESKTOP, ladder, DESKTOP.sectorFloorBytes))
+      expect(sectorBudgetBytes(DESKTOP, ladder, DESKTOP.sectorFloorBytes, 0))
         .toBe(DESKTOP.sectorFloorBytes);
     }
-    expect(sectorBudgetBytes(TOUCH, TOUCH.envelopeBytes, TOUCH.sectorFloorBytes))
+    expect(sectorBudgetBytes(TOUCH, TOUCH.envelopeBytes, TOUCH.sectorFloorBytes, 0))
       .toBe(TOUCH.sectorFloorBytes);
   });
 
@@ -742,17 +767,34 @@ describe('the envelope arithmetic', () => {
     // `?sectors=0`: refusing a globe map to reserve memory for tiles that
     // cannot load would be the failure this floor exists to prevent, upside
     // down.
-    expect(sectorBudgetBytes(DESKTOP, DESKTOP.envelopeBytes, 0)).toBe(0);
-    expect(ladderCeilingBytes(DESKTOP, 0)).toBe(DESKTOP.envelopeBytes);
+    expect(sectorBudgetBytes(DESKTOP, DESKTOP.envelopeBytes, 0, 0)).toBe(0);
+    expect(ladderCeilingBytes(DESKTOP, 0, 0)).toBe(DESKTOP.envelopeBytes);
   });
 
   it('leaves the ladder the envelope less the tiles floor', () => {
-    expect(ladderCeilingBytes(TOUCH, TOUCH.sectorFloorBytes))
+    expect(ladderCeilingBytes(TOUCH, TOUCH.sectorFloorBytes, 0))
       .toBe(TOUCH.envelopeBytes - 2 * SET);
     // A floor bigger than the tiles could ever hold is still only the tiles
     // ceiling, either way round.
-    expect(ladderCeilingBytes(TOUCH, 4 * TOUCH.ceilingBytes))
+    expect(ladderCeilingBytes(TOUCH, 4 * TOUCH.ceilingBytes, 0))
       .toBe(TOUCH.envelopeBytes - TOUCH.ceilingBytes);
+  });
+
+  it('takes a fixed reservation off the top of both answers, never off the floor', () => {
+    // The cloud field's pool on a desktop: twelve layers held whole for the
+    // session. The maps and the tiles share what it leaves.
+    const POOL = cloudFieldPoolBytes(DESKTOP.cloudFieldLayers);
+    expect(POOL).toBe(12 * 11_184_810);
+    expect(ladderCeilingBytes(DESKTOP, DESKTOP.sectorFloorBytes, POOL))
+      .toBe(DESKTOP.envelopeBytes - POOL - DESKTOP.sectorFloorBytes);
+    // Cap-bound until the maps leave less than the tiles' own ceiling...
+    expect(sectorBudgetBytes(DESKTOP, 0, DESKTOP.sectorFloorBytes, POOL)).toBe(DESKTOP.ceilingBytes);
+    const ladder = DESKTOP.envelopeBytes - DESKTOP.ceilingBytes;
+    expect(sectorBudgetBytes(DESKTOP, ladder, DESKTOP.sectorFloorBytes, 0)).toBe(DESKTOP.ceilingBytes);
+    expect(sectorBudgetBytes(DESKTOP, ladder, DESKTOP.sectorFloorBytes, POOL)).toBe(DESKTOP.ceilingBytes - POOL);
+    // ...and the floor still holds with the pool and a full ladder both in.
+    expect(sectorBudgetBytes(DESKTOP, DESKTOP.envelopeBytes, DESKTOP.sectorFloorBytes, POOL))
+      .toBe(DESKTOP.sectorFloorBytes);
   });
 
   it('keeps the cloud deck off 8K on a phone and a tablet, and only there', () => {
@@ -858,17 +900,40 @@ describe('the shared memory envelope', () => {
     expect(envelope.ladderCeiling()).toBe(512 * MiB);
   });
 
+  it('holds a fixed reservation apart, and every answer reads what it leaves', () => {
+    const envelope = new MemoryEnvelope(limits);
+    envelope.setFloorBytes(69 * MiB);
+    envelope.setFixedBytes(64 * MiB);
+    expect(envelope.fixedBytes).toBe(64 * MiB);
+    expect(envelope.availableBytes()).toBe(704 * MiB);
+    // The row's own figure does not move: the streamer checks its limits
+    // against it.
+    expect(envelope.envelopeBytes).toBe(768 * MiB);
+    expect(envelope.ladderCeiling()).toBe(635 * MiB);
+    envelope.setLadderBytes(600 * MiB);
+    expect(envelope.sectorBudget()).toBe(104 * MiB);
+    // Taken back (a context restore that could not allocate the pool again).
+    envelope.setFixedBytes(0);
+    expect(envelope.availableBytes()).toBe(768 * MiB);
+    expect(envelope.sectorBudget()).toBe(168 * MiB);
+    envelope.setFixedBytes(-1);
+    expect(envelope.fixedBytes).toBe(0);
+  });
+
   it('states the whole envelope in one object, for the one line a phone can read', () => {
     const envelope = new MemoryEnvelope(limits);
     envelope.setLadderBytes(100 * MiB);
     envelope.setFloorBytes(69 * MiB);
+    envelope.setFixedBytes(64 * MiB);
     expect(envelope.figures()).toEqual({
       envelopeBytes: 768 * MiB,
       ceilingBytes: 256 * MiB,
       ladderBytes: 100 * MiB,
       floorBytes: 69 * MiB,
+      fixedBytes: 64 * MiB,
+      availableBytes: 704 * MiB,
       sectorBudget: 256 * MiB,
-      ladderCeiling: 699 * MiB,
+      ladderCeiling: 635 * MiB,
     });
   });
 });

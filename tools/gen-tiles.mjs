@@ -48,8 +48,9 @@
 // per level (opacity and premultiplied brightness, each a set of grey
 // lossless tiles, tiers `<level>-a` and `<level>-p` under the master's stem)
 // from the cloud master tools/gen-cloudmaster.mjs assembles, into a staging
-// root the app's table does not name yet. Its level, its gate and why its
-// pages are lossless are in the cloud field section below.
+// root. Its level, its gate and why its pages are lossless are in the cloud
+// field section below. The deck's base sheet comes from the same master
+// (`--base`, the section after it), so the sheet and the pages are one sky.
 //
 // Prereq (not a package.json dependency — this runs once per asset drop):
 //   npm i --no-save sharp@0.35.4
@@ -62,6 +63,10 @@
 //   node tools/gen-tiles.mjs --index            # re-hash the sets on disk only
 //   node tools/gen-tiles.mjs clouds --cache=<main checkout>/.moon-data-cache --root=<staging root>
 //                                               # the cloud field (needs the cloud master)
+//   node tools/gen-tiles.mjs clouds --base --cache=<main checkout>/.moon-data-cache
+//                                               # the deck's base sheet only: the 2K, 4K and 8K
+//                                               # rungs into public/textures (add --verify to
+//                                               # gate the ones on disk and write nothing)
 //   --cache=<dir>  source cache (default .moon-data-cache)
 //   --root=<dir>   tiles root (default public/textures/tiles). A level too
 //                  big to ship inside the app is cut into a staging root —
@@ -140,15 +145,16 @@ async function colormatchOp(srcPipeline, refPath) {
  *  A source that fails its digest is refused: the same product re-downloaded
  *  after an upstream change would otherwise re-cut a set silently, and six
  *  months on nobody could say which bytes a tile came from. A source the
- *  manifest does not list is used as is (the WMS cache is many files).
+ *  manifest does not list is used as is (the WMS cache is many files). A
+ *  caller that has already hashed the file hands its digest in.
  *
  *  Streamed, not read whole: the level-1 sources are 45–500 MB each and a
  *  readFile of the set would be gigabytes of resident buffer for a hash. */
-async function checkSourceDigest(srcPath) {
+async function checkSourceDigest(srcPath, known) {
   const manifest = JSON.parse(await readFile(new URL('./gen-tiles.sources.json', import.meta.url), 'utf8'));
   const entry = manifest[path.basename(srcPath)];
   if (!entry) return;
-  const digest = await fileDigest(srcPath);
+  const digest = known ?? (await fileDigest(srcPath));
   if (digest !== entry.sha256) {
     throw new Error(`${path.basename(srcPath)}: sha256 ${digest} is not the manifest's ${entry.sha256} — a different source; update gen-tiles.sources.json together with the assets cut from it`);
   }
@@ -1433,6 +1439,7 @@ async function cloudMaster(job) {
   if (digest !== sha256) {
     throw new Error(`${file}: sha256 ${digest} is not its report's ${sha256} — the master changed under its report; re-run gen-cloudmaster`);
   }
+  await checkSourceDigest(file, digest);
   return { file, width, height, sha256, meanAlpha: report.alpha.masterNative.stored.meanAlpha };
 }
 
@@ -1531,6 +1538,182 @@ async function cloudFieldGate(job, level, rows) {
   console.log(`  field gate ${job.key}/${level.tier}-{a,p}: ${(texels / 1e6).toFixed(0)} Mtexel a set; clear turned cloudy ${clearTurned}, worst opacity ${worstA} codes (${worstAt || 'none'}), worst colour ${worstColour.toFixed(2)} codes -> ${ok ? 'PASS' : 'FAIL'}`);
   if (!ok) {
     throw new Error(`${job.key}/${level.tier}: the pages do not decode to the level within the field's bars (clear turned ${clearTurned}, opacity ${worstA}, colour ${worstColour.toFixed(2)})`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The cloud deck's base sheet: the same master, as the picture the deck reads
+// ---------------------------------------------------------------------------
+//
+// The base sheet (the 2K boot map and its 4K and 8K rungs) is what the deck
+// draws wherever no field page is resident: the whole disc, the far view, and
+// every device the field is off on. It is cut from the field's master so that
+// a page arriving over it sharpens the cloud that was already there; cut from
+// another product, the arrival is a change of weather.
+//
+// The sheet is a picture, not a data map: the deck samples it as sRGB,
+// recovers the stored value as pow(linear, 1 / 2.2) and takes its opacity
+// from that through the curve the field's A is defined by. One channel cannot
+// carry the field's two, so the sheet carries the opacity: a rung texel
+// stores the code whose opacity, read the shader's way, is nearest the area
+// mean of A over the master texels under it. A plain average of the stored
+// values is not that — the curve is a smoothstep, and the curve of a mean is
+// not the mean of the curve; over broken cloud it reads up to 0.02 of opacity
+// thin. Brightness follows the opacity through the deck's albedo rule, as it
+// always has on this sheet.
+//
+// The 8K rung is averaged from the master and the 4K and 2K are box averages
+// of that grid (an 8K cell nests in theirs exactly), so each step up the
+// ladder is a pure sharpen. The rungs are lossy at the deck's own quality
+// (tools/encode-textures.mjs, isCloudDeck: the curve's slope turns 2/255 of
+// encoder error into 0.015 of opacity), so the gate is on what the app will
+// decode: a written rung's mean opacity over the globe, read the shader's
+// way, against the master's. `--base` cuts and gates the rungs and nothing
+// else; with `--verify` it gates the rungs on disk and writes nothing.
+
+/** The opacity the deck's shader reads from each stored sRGB code. */
+function cloudBaseOpacityByCode() {
+  const { low, high, gamma } = FIELD_COVERAGE;
+  const a = new Float64Array(256);
+  for (let c = 0; c < 256; c++) {
+    const v = c / 255;
+    const linear = v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    const t = Math.min(1, Math.max(0, (Math.pow(linear, 1 / gamma) - low) / (high - low)));
+    a[c] = t * t * (3 - 2 * t);
+  }
+  return a;
+}
+
+/** The master's opacity A area-averaged to width x height: the field's own
+ *  average (buildCloudFieldLevel), kept as numbers instead of rounded to
+ *  bytes, and held whole because the coarser rungs are averages of it. */
+async function cloudOpacityGrid(master, width, height) {
+  const { width: mw, height: mh } = master;
+  const r = mw / width;
+  if (Math.abs(mh / height - r) > 1e-12) throw new Error(`${width}x${height} is not the master's ${mw}x${mh} aspect`);
+  const { a: lutA } = cloudFieldLuts();
+  const col = new Int32Array(mw);
+  const colW = new Float64Array(mw);
+  for (let x = 0; x < mw; x++) {
+    const j = Math.floor(x / r);
+    col[x] = j;
+    colW[x] = Math.min(x + 1, (j + 1) * r) - x;
+  }
+  const grid = new Float64Array(width * height);
+  const hA = new Float64Array(width + 1);
+  const BAND = 1080;
+  const band = Buffer.allocUnsafe(mw * BAND);
+  const t0 = Date.now();
+  const file = await open(master.file, 'r');
+  try {
+    for (let y0 = 0; y0 < mh; y0 += BAND) {
+      const rows = Math.min(BAND, mh - y0);
+      await file.read(band, 0, rows * mw, y0 * mw);
+      for (let dy = 0; dy < rows; dy++) {
+        const y = y0 + dy;
+        const o = dy * mw;
+        hA.fill(0);
+        for (let x = 0; x < mw; x++) {
+          const av = lutA[band[o + x]];
+          if (av === 0) continue; // clear sky
+          const j = col[x];
+          const w = colW[x];
+          hA[j] += av * w;
+          if (w < 1) hA[j + 1] += av * (1 - w);
+        }
+        const i = Math.floor(y / r);
+        const b = Math.min(y + 1, (i + 1) * r) - y;
+        const land = (row, wt) => {
+          const q = row * width;
+          for (let j = 0; j < width; j++) grid[q + j] += hA[j] * wt;
+        };
+        land(i, b);
+        if (b < 1 && i + 1 < height) land(i + 1, 1 - b);
+      }
+      process.stdout.write(`  base sheet ${width}x${height}: master rows ${y0 + rows}/${mh} (${((Date.now() - t0) / 1000).toFixed(0)} s)\r`);
+    }
+  } finally {
+    await file.close();
+  }
+  const k = 1 / (r * r);
+  for (let i = 0; i < grid.length; i++) grid[i] *= k;
+  return grid;
+}
+
+/** The f x f box average of a grid whose sides f divides. */
+function boxAverage(grid, width, height, f) {
+  const w = width / f;
+  const out = new Float64Array(w * (height / f));
+  const k = 1 / (f * f);
+  for (let i = 0; i < height; i++) {
+    const o = Math.floor(i / f) * w;
+    const s = i * width;
+    for (let j = 0; j < width; j++) out[o + Math.floor(j / f)] += grid[s + j] * k;
+  }
+  return out;
+}
+
+/** How far a decoded rung's mean opacity may sit from the master's. Rounding
+ *  to a code and the encoder's noise are both nearly unbiased over a globe:
+ *  the three rungs decode 0.00003 to 0.00015 under it. */
+const BASE_MEAN_TOLERANCE = 0.001;
+
+/**
+ * The deck's base rungs, cut from the cloud master and gated as decoded; with
+ * `write` off, the rungs on disk gated and nothing written.
+ */
+async function cutCloudBase(job, { write }) {
+  const master = await cloudMaster(job);
+  const byCode = cloudBaseOpacityByCode();
+  /** The code whose opacity is nearest `a`. Every code up to the curve's low
+   *  end reads clear; 0 is the one a linear filter blends least cloud from. */
+  const codeFor = (a) => {
+    if (a <= 0) return 0;
+    let lo = 0;
+    let hi = 255;
+    while (hi - lo > 1) {
+      const m = (lo + hi) >> 1;
+      if (byCode[m] < a) lo = m; else hi = m;
+    }
+    return Math.abs(byCode[lo] - a) <= Math.abs(byCode[hi] - a) ? lo : hi;
+  };
+  const finest = job.base.rungs.reduce((a, b) => (b.w > a.w ? b : a));
+  const top = await cloudOpacityGrid(master, finest.w, finest.h);
+  for (const rung of job.base.rungs) {
+    const f = finest.w / rung.w;
+    if (!Number.isInteger(f) || finest.h / rung.h !== f) throw new Error(`${rung.out}: ${rung.w}x${rung.h} does not nest in ${finest.w}x${finest.h}`);
+    const grid = f === 1 ? top : boxAverage(top, finest.w, finest.h, f);
+    if (write) {
+      const codes = Buffer.allocUnsafe(grid.length);
+      for (let i = 0; i < grid.length; i++) codes[i] = codeFor(grid[i]);
+      await mkdir(path.dirname(rung.out), { recursive: true });
+      await sharp(codes, { raw: { width: rung.w, height: rung.h, channels: 1 } }).webp(job.base.webp).toFile(rung.out);
+    }
+    const { data, info } = await sharp(rung.out, { limitInputPixels: false }).raw().toBuffer({ resolveWithObject: true });
+    if (info.width !== rung.w || info.height !== rung.h) throw new Error(`${rung.out}: ${info.width}x${info.height}, not ${rung.w}x${rung.h}`);
+    let sum = 0;
+    let sumW = 0;
+    let sq = 0;
+    for (let y = 0; y < rung.h; y++) {
+      const wt = Math.cos(((90 - (180 * (y + 0.5)) / rung.h) * Math.PI) / 180);
+      let s = 0;
+      let e = 0;
+      for (let x = 0, i = y * rung.w; x < rung.w; x++, i++) {
+        const a = byCode[data[i * info.channels]];
+        s += a;
+        e += (a - grid[i]) * (a - grid[i]);
+      }
+      sum += wt * s;
+      sq += wt * e;
+      sumW += wt * rung.w;
+    }
+    const mean = sum / sumW;
+    const off = mean - master.meanAlpha;
+    const rel = path.relative(process.cwd(), rung.out);
+    console.log(`  base rung ${rel}: ${((await stat(rung.out)).size / 1e6).toFixed(2)} MB, mean opacity ${mean.toFixed(5)} against the master's ${master.meanAlpha.toFixed(5)} (Δ ${off.toFixed(5)}), texel RMS ${Math.sqrt(sq / sumW).toFixed(4)}`);
+    if (Math.abs(off) > BASE_MEAN_TOLERANCE) {
+      throw new Error(`${rel}: decodes to a mean opacity of ${mean.toFixed(5)}, not the master's ${master.meanAlpha.toFixed(5)} — this rung is not the master's sky`);
+    }
   }
 }
 
@@ -1676,11 +1859,10 @@ export const JOBS = {
   // two sets of grey pages per level under the master's stem, opacity in
   // `<tier>-a` and premultiplied brightness in `<tier>-p` (a page is the same
   // cell in both), each an ordinary set of `<c>_<r>.webp` tiles. Cut into a
-  // staging root (`--root=`), never public/; the app's table does not name
-  // them (`appTable: false`) until the deck reads them from there.
+  // staging root (`--root=`), never public/, and named in the app's table,
+  // which the deck's pool resolves its page URLs through.
   clouds: {
     key: 'earth-clouds.v2',
-    appTable: false,
     // States the transform baked into the cached level (the curve, the albedo
     // rule, the area average); the master's own digest is added to the name.
     rawToken: 'ap-v1',
@@ -1713,6 +1895,17 @@ export const JOBS = {
       { tier: '16k', grid: GRID_16K },
       { tier: '32k', grid: doubled(GRID_16K, 1) },
     ],
+    // The deck's base sheet (the section above), cut by `--base` alone. `.v2`
+    // like every map re-based under its key: these replaced Solar System
+    // Scope's sheet, which was not NASA's sky everywhere.
+    base: {
+      webp: { quality: 60, effort: 5 },
+      rungs: [
+        { w: 8192, h: 4096, out: path.join(TEX, '8k', 'earth-clouds.v2.webp') },
+        { w: 4096, h: 2048, out: path.join(TEX, '4k', 'earth-clouds.v2.webp') },
+        { w: 2048, h: 1024, out: path.join(TEX, 'earth-clouds.v2.webp') },
+      ],
+    },
   },
 };
 
@@ -1781,7 +1974,7 @@ const levelsOf = (job) => (job.levels ?? []).filter((_, i) => wantedLevel === nu
 async function main() {
   const names = flag('all') ? Object.keys(JOBS) : jobsWanted;
   if (names.length === 0 && !flag('index')) {
-    console.error('usage: node tools/gen-tiles.mjs <job...> | --all | --index  [--verify | --crops | --grey] [--level=n] [--cache=dir] [--root=dir]');
+    console.error('usage: node tools/gen-tiles.mjs <job...> | --all | --index  [--verify | --crops | --grey | --base] [--level=n] [--cache=dir] [--root=dir]');
     process.exit(2);
   }
   for (const name of names) {
@@ -1794,6 +1987,10 @@ async function main() {
       // on; a minute of decoding, against the hour a whole --verify is.
       for (const g of job.grey ?? []) await greyGate(g);
       if (!(job.grey ?? []).length) console.log('  no mask sets in this job');
+    } else if (flag('base')) {
+      // The deck's base sheet alone. No tile set is cut, so no index follows.
+      if (job.base) await cutCloudBase(job, { write: !flag('verify') });
+      else console.log('  no base sheet in this job');
     } else if (job.field && !flag('crops')) {
       // A field set is cut from its own level and held to it texel for texel;
       // the colour gates (a reassembly against a boot map, the seams in RGB,
@@ -1886,10 +2083,10 @@ async function main() {
   }
   // Always last, whatever ran: the app reads its set hashes out of the
   // generated table, so a cut that did not refresh it would leave every URL
-  // pointing at the set it replaced. A --grey run cut nothing and writes
-  // nothing — a rewrite of the same table would still touch a file the dev
-  // server watches.
-  if (flag('grey')) return;
+  // pointing at the set it replaced. A --grey or --base run cut no set and
+  // writes nothing — a rewrite of the same table would still touch a file the
+  // dev server watches.
+  if (flag('grey') || flag('base')) return;
   console.log('== index');
   await indexSets();
 }

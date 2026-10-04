@@ -38,7 +38,6 @@ import {
 } from '../shared/shaders/sun';
 import { debugWarn } from '../shared/debug';
 import { CLOUD_NORMAL_SCALE, cloudShellScale } from './world/cloudDeck';
-import { cloudFieldRequested } from './world/cloudField';
 import { enableCloudField } from './world/cloudFieldSlots';
 import { CLOUD_DECK_DEPTH_BIAS_UNITS } from './world/shellDepthBias';
 import { applyTextureDefaults, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
@@ -1077,10 +1076,10 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     // fraction. The frame spin is fed per frame beside the mesh's own drift, so
     // the eclipse spot on the deck stays over the one on the ground.
     augmentSurfaceMaterial(cloudMat, 'cloud', ringShadow, sunTan, fx);
-    // The 1.2 km field's vertical slice (world/cloudField), on the dev server
-    // with ?cloudtiles=1 only: a define on the deck's program, set before it
-    // first compiles.
-    if (import.meta.env.DEV && cloudFieldRequested()) enableCloudField(cloudMat);
+    // The 1.2 km cloud field (world/cloudField), in a session that has it
+    // (world/cloudFieldSlots, settled before the solar system is built): a
+    // define on this deck's program, set before it first compiles.
+    enableCloudField(cloudMat);
     cloudsMesh = new THREE.Mesh(cloudGeo, cloudMat);
     group.add(cloudsMesh);
     cloudsMesh.name = `${planet.name} clouds`;

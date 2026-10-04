@@ -188,5 +188,13 @@ export function earthNightSectorFamily(shell: THREE.ShaderMaterial): SectorFamil
         | undefined;
       return img && typeof img.width === 'number' ? img.width : 0;
     },
+    // One program by construction — the same text and the shell's own defines
+    // object — and asked rather than assumed, so a sector built any other way
+    // covers nothing.
+    sharesProgram: (coverer, covered) => {
+      const a = coverer as THREE.ShaderMaterial;
+      const b = covered as THREE.ShaderMaterial;
+      return a.vertexShader === b.vertexShader && a.fragmentShader === b.fragmentShader && a.defines === b.defines;
+    },
   };
 }

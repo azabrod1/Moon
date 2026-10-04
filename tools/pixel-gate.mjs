@@ -524,6 +524,11 @@ try {
       const noise = diffPngs(a, b);
       await page.evaluate(([k, v]) => window.__moon.perfArm(k, v), [key, !noiseFloor]);
       const c = await settleUntilStill(`${poseName} with ${key} on`);
+      // What the cut left out of the ON capture, read before the key is put
+      // back: a zero at a pose where nothing was cut is not evidence.
+      const cut = key === 'ground-cull'
+        ? await page.evaluate(() => window.__moon.sectors?.()?.groundCut ?? null)
+        : null;
       // Put it back where the app booted it, so one key's capture is never
       // taken with another one's state changed underneath it.
       await page.evaluate(([k, v]) => window.__moon.perfArm(k, v), [key, bootState[key] ?? true]);
@@ -542,10 +547,13 @@ try {
       if (bad && !unstable && !reportOnly) failures++;
       if (unstable) unstablePoses++;
       const arm = await armState();
-      rows.push({ key, pose: poseName, noise, diff: d, arm });
+      rows.push({ key, pose: poseName, noise, diff: d, arm, cut });
       const noiseNote = noise.pixels === 0 ? '' : `  [pose noise ${noise.pixels} px, max ${noise.maxAbs}]`;
       const uv = arm?.uvScale ? ` [uvScale ${arm.uvScale.map((n) => n.toFixed(4)).join(',')}]` : '';
-      console.log(`[gate] ${engine} ${key} @ ${poseName}: ${verdictOf(d)}${noiseNote}${uv}`);
+      const cutNote = cut
+        ? ` [cut ${cut.cut}/${cut.meshes} meshes, ${((100 * cut.drawnEntries) / Math.max(1, cut.fullEntries)).toFixed(1)}% of their lists drawn, unbacked ${cut.unbacked}]`
+        : '';
+      console.log(`[gate] ${engine} ${key} @ ${poseName}: ${verdictOf(d)}${noiseNote}${uv}${cutNote}`);
     }
     await undoPose(page, pose);
   }

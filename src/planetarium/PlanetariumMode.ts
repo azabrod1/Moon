@@ -53,6 +53,7 @@ import {
 } from './world/sectorStreamer';
 import { earthNightSectorFamily } from './world/earthNightMaterial';
 import { parseGroundCullParam } from './world/groundCull';
+import { onPerfSwitch } from '../app/perfSwitches';
 import { loadBrightStarCatalog } from './world/starCatalogLoader';
 import {
   advancePlanetariumTime,
@@ -1305,6 +1306,10 @@ export class PlanetariumMode {
    *  shaded and then lost to the depth test as before (world/groundCull). The
    *  kill switch, and the A/B across two boots. */
   private readonly groundCullEnabled = parseGroundCullParam(location.search);
+  /** Dev-only: bytes added to the globe maps' ledger (devSectorSqueeze), and
+   *  a squeeze waiting for the end of the next sector pass. */
+  private devLedgerSqueezeBytes = 0;
+  private devLedgerSqueezePending: number | null = null;
   /** What `?synth=0` asked for: the close-range detail synthesis held at zero
    *  on every surface. The A/B arm for a look question about it, and the only
    *  way to see what a magnified surface looks like without it at a pose where
@@ -3568,6 +3573,8 @@ export class PlanetariumMode {
     if (!this.sectorsEnabled || !this.solarSystem) return;
     const groundCull = this.groundCullEnabled;
     const sectors = new SectorStreamer({ limits: this.deviceProfile, envelope: this.memory, groundCull });
+    // The live A/B of the cut, over the layout the kill switch decided at boot.
+    if (import.meta.env.DEV) onPerfSwitch('ground-cull', (on) => sectors.setGroundCut(on));
     for (const planet of this.solarSystem.planets) {
       const fine = () => { upgradeGeometryOnApproach(planet.geometryUpgrade, Number.POSITIVE_INFINITY); };
       const spec = SECTOR_SETS[planet.data.name];
@@ -3717,6 +3724,14 @@ export class PlanetariumMode {
       }
     } finally {
       sectors.endFrame();
+    }
+    // A squeeze asked for at the end of the pass lands here, after the
+    // reconcile and before this frame's draw: where a release can come between
+    // the cut a draw relies on and the draw itself.
+    if (import.meta.env.DEV && this.devLedgerSqueezePending !== null) {
+      this.devLedgerSqueezeBytes = this.devLedgerSqueezePending;
+      this.devLedgerSqueezePending = null;
+      this.onLadderLedgerChange();
     }
   }
 
@@ -3912,6 +3927,7 @@ export class PlanetariumMode {
     // a colour rung. Only what an approach EARNED is in here; the boot relief
     // every device carries regardless is not the ladder's weight.
     this.forEachNormalUpgrade((up) => { bytes += appliedNormalHeldBytes(up); });
+    if (import.meta.env.DEV) bytes += this.devLedgerSqueezeBytes;
     return bytes;
   }
 
@@ -15785,6 +15801,31 @@ export class PlanetariumMode {
    *  one of them resident, so turning it back on costs no re-stream. */
   devSetSectorMeshesVisible(visible: boolean): void {
     this.sectors?.devSetMeshesVisible(visible);
+  }
+
+  /**
+   * Dev-only: `mib` added to what the globe maps hold, so the sector budget
+   * shrinks exactly as it does when a map lands — through the ledger change
+   * the tier ladder raises, the path that trims tiles from outside the frame's
+   * pass. Held until set back to 0. With `afterPass` it lands at the end of
+   * the next sector pass instead, after the reconcile and before that frame's
+   * draw. Returns the bytes in force.
+   */
+  devSectorSqueeze(mib: number, afterPass = false): number {
+    const bytes = Math.max(0, mib) * 1024 * 1024;
+    if (afterPass) {
+      this.devLedgerSqueezePending = bytes;
+    } else {
+      this.devLedgerSqueezeBytes = bytes;
+      this.onLadderLedgerChange();
+    }
+    return bytes;
+  }
+
+  /** Dev-only: release one sector and keep it out, or let every held one
+   *  back (SectorStreamer.devHoldOut). */
+  devSectorHoldOut(which: 'skip' | null): string | null {
+    return this.sectors?.devHoldOut(which) ?? null;
   }
 
   /**

@@ -33,15 +33,18 @@ export interface SectorMaps {
   roughnessMap?: THREE.Texture | null;
 }
 
-/** Draw order of a level-0 sector: before the globe, so early-Z rejects the
- *  globe's fragments under a resident sector instead of shading the largest
- *  thing on screen twice. */
+/** Draw order of a level-0 sector: before the globe. The order is not what
+ *  keeps the globe from being shaded under a resident sector — on Apple GPUs
+ *  the coincident fragments behind it are shaded in full and then fail the
+ *  depth test, whatever the order or the depth state — so the streamer leaves
+ *  the globe's covered ground out of its draw instead (world/groundCull). */
 export const SECTOR_RENDER_ORDER = -1;
 
 /** Draw order of a sector at `level`: each finer level draws before the one
- *  above it (−1, −2, …), so the finest tile over a patch of surface is the
- *  one that fills the depth buffer there and the coarser ones behind it are
- *  rejected rather than shaded. */
+ *  above it (−1, −2, …). The depth offset below, not the order, decides which
+ *  layer a pixel shows; ground a finer drawn tile covers is not submitted at
+ *  all (world/groundCull), because a GPU that shades every coincident fragment
+ *  before testing it would otherwise shade each layer under the tile. */
 export function sectorRenderOrder(level: number): number {
   return SECTOR_RENDER_ORDER - level;
 }
@@ -59,9 +62,12 @@ export function createSectorMaterial(
   });
   // The sector's vertices coincide with the globe's and with every coarser
   // sector's (sectorGrid pins it), so depth ties exactly; a units-only offset
-  // breaks the tie one step per level, finest nearest. The slope FACTOR stays
-  // 0 at every level: it grows without bound at the limb, where it would pull
-  // a sector out through the cloud, night and atmosphere shells above it.
+  // breaks the tie one step per level, finest nearest, which is what decides
+  // the picture wherever two layers are both drawn. It does not stop the layer
+  // behind from being shaded first — the streamer's cut does, by not drawing
+  // it (world/groundCull). The slope FACTOR stays 0 at every level: it grows
+  // without bound at the limb, where it would pull a sector out through the
+  // cloud, night and atmosphere shells above it.
   mat.polygonOffset = true;
   mat.polygonOffsetFactor = 0;
   mat.polygonOffsetUnits = -(level + 1);
@@ -91,6 +97,32 @@ export function createSectorMaterial(
   setSurfaceCraterShare(mat, surfaceCraterShare(base));
   syncSectorMaterial(mat, base);
   return mat;
+}
+
+/** The map slots whose presence decides a ground program, beyond the defines
+ *  the augmentation shares: a sector carries the first four, and any other a
+ *  surface binds is one a sector would lack. */
+const PROGRAM_MAP_SLOTS = [
+  'map', 'bumpMap', 'normalMap', 'roughnessMap',
+  'emissiveMap', 'metalnessMap', 'aoMap', 'alphaMap', 'lightMap', 'displacementMap',
+] as const;
+
+/**
+ * Whether a sector drawn with `coverer` rasterises exactly the pixels
+ * `covered` — the globe under it, or a coarser sector — would have: the two
+ * compile to one program in everything a sector can differ from its base in,
+ * which maps are bound and which relief it draws. The lattice makes their
+ * positions identical bit for bit; one program makes the arithmetic on them
+ * identical. The streamer leaves covered ground out of a draw
+ * (world/groundCull) only under a coverer this answers yes for — a resident
+ * still drawing the set the base had before it gained or lost a map, waiting
+ * on its reload, covers nothing.
+ */
+export function sharesSectorProgram(coverer: THREE.Material, covered: THREE.Material): boolean {
+  const a = coverer as unknown as Partial<Record<(typeof PROGRAM_MAP_SLOTS)[number], THREE.Texture | null>>;
+  const b = covered as unknown as Partial<Record<(typeof PROGRAM_MAP_SLOTS)[number], THREE.Texture | null>>;
+  for (const slot of PROGRAM_MAP_SLOTS) if (!a[slot] !== !b[slot]) return false;
+  return surfaceReliefKind(coverer) === surfaceReliefKind(covered);
 }
 
 /**

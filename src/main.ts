@@ -3182,6 +3182,11 @@ function installDevHooks() {
     observe: (name: string) => planetariumMode?.devObserve(name) ?? false,
     device: () => planetariumMode?.devDeviceProfile() ?? null,
     sectors: () => planetariumMode?.devSectorStats() ?? null,
+    // The cut's capture hooks (tools/ground-cull-probe.mjs): a sector budget
+    // squeezed through the globe maps' ledger, now or at the end of the next
+    // sector pass, and one sector released and held out.
+    sectorSqueeze: (mib: number, afterPass?: boolean) => planetariumMode?.devSectorSqueeze(mib, afterPass) ?? 0,
+    sectorHoldOut: (which: 'skip' | null) => planetariumMode?.devSectorHoldOut(which) ?? null,
     /** Pin the render ratio (null hands it back) — the perf sweep's load amplifier, for a harness that profiles rather than sweeps. */
     pinRatio: (ratio: number | null) => devPinPixelRatio(ratio),
     /** Every surface a frame is drawn into, in device pixels (the perf sweep installs the same under `?perf=1`; here for any harness). */

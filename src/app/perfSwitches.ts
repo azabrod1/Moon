@@ -31,6 +31,15 @@
  * as far as the sweep is concerned: a relink inside a measured hold is measured
  * as the thing being measured.
  *
+ * `ground-cull` is the streamer leaving out of a draw the ground a finer drawn
+ * sector tile covers (world/groundCull): the globe and each coarser level under
+ * a tile are shaded and then lose the depth test on Apple GPUs, so they are not
+ * submitted. Flipped live it puts every full index list back at once — no
+ * upload, no relink — so it sweeps like any exact switch. Like `fused-final` it
+ * has a production door of its own: `?groundcull=0` builds the ground with its
+ * plain indexes and cuts nothing, and this key is only the DEV reading of the
+ * cut on top of the layout.
+ *
  * `cloud-program` is decided when the deck's material compiles — its
  * archetype becomes a compile-time define rather than a uniform, so the
  * compiler drops every branch the deck never takes — which is why it is a
@@ -86,6 +95,7 @@ export type PerfSwitchKey =
   | 'depth-discard'
   | 'fused-final'
   | 'cloud-program'
+  | 'ground-cull'
   | 'cloud-noise-frame'
   | 'cloud-shadow'
   | 'cloud-light'
@@ -101,8 +111,9 @@ export type PerfSwitchKey =
  * The default is also what a production build compiles: a switch that defaults
  * on has its cheap path as the only path there, and one that defaults off has
  * neither path. The exception is a key whose old path is a kill switch reached
- * by a URL parameter of its own — `fused-final` — where both paths are in the
- * production bundle and only this registry's reading of them is DEV.
+ * by a URL parameter of its own — `fused-final`, `ground-cull` — where both
+ * paths are in the production bundle and only this registry's reading of them
+ * is DEV.
  */
 export const PERF_SWITCHES: ReadonlyArray<{
   key: PerfSwitchKey;
@@ -121,6 +132,7 @@ export const PERF_SWITCHES: ReadonlyArray<{
   { key: 'depth-discard', label: 'Scene depth/stencil discard', on: true },
   { key: 'fused-final', label: 'Lens, glow and tone map as one pass', on: true, needsReload: true },
   { key: 'cloud-program', label: 'Cloud deck program of its own', on: true, needsReload: true },
+  { key: 'ground-cull', label: 'Ground under a finer tile left undrawn', on: true },
   { key: 'cloud-noise-frame', label: 'Cloud noise anchored to the sheet', on: true },
   { key: 'cloud-shadow', label: 'Cloud shadows on the ground', on: false, needsReload: true },
   { key: 'cloud-light', label: 'Cloud deck lit as a cloud', on: false, needsReload: true },
@@ -143,6 +155,7 @@ const DEFAULT_ON: Record<PerfSwitchKey, boolean> = {
   'depth-discard': true,
   'fused-final': true,
   'cloud-program': true,
+  'ground-cull': true,
   'cloud-noise-frame': true,
   'cloud-shadow': false,
   'cloud-light': false,

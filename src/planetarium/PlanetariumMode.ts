@@ -36,7 +36,7 @@ import {
   type PlanetData,
   LIGHT_SPEED_AU_PER_S,
 } from './planets/planetData';
-import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasurementRelevant, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
+import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasurementRelevant, markStreamedGround, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
 import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { advanceSurfaceAir, bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, setCloudShadowDrift, setSurfaceSynthesis, settleSurfaceAir, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
@@ -48,10 +48,11 @@ import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pump
 import { beginSlicedUpload, stepSlicedUpload } from './world/slicedUpload';
 import { smoothTraceVeil } from './smoothnessTrace';
 import {
-  SECTOR_NIGHT_SETS, SECTOR_SETS, SectorStreamer, sectorFamilyKey,
+  GROUND_LEAF_SEGMENTS, SECTOR_NIGHT_SETS, SECTOR_SETS, SectorStreamer, sectorFamilyKey,
   type SectorMeasure, type SectorStats,
 } from './world/sectorStreamer';
 import { earthNightSectorFamily } from './world/earthNightMaterial';
+import { parseGroundCullParam } from './world/groundCull';
 import { loadBrightStarCatalog } from './world/starCatalogLoader';
 import {
   advancePlanetariumTime,
@@ -1299,6 +1300,11 @@ export class PlanetariumMode {
    *  all; null in a session that did not ask for the field. */
   private readonly cloudFieldStart: Promise<void> | null;
   private readonly sectorsEnabled = new URLSearchParams(location.search).get('sectors') !== '0';
+  /** What `?groundcull=0` asked for, on any build: every streamed ground mesh
+   *  built with its plain index and drawn whole, the ground under a finer tile
+   *  shaded and then lost to the depth test as before (world/groundCull). The
+   *  kill switch, and the A/B across two boots. */
+  private readonly groundCullEnabled = parseGroundCullParam(location.search);
   /** What `?synth=0` asked for: the close-range detail synthesis held at zero
    *  on every surface. The A/B arm for a look question about it, and the only
    *  way to see what a magnified surface looks like without it at a pose where
@@ -3560,11 +3566,13 @@ export class PlanetariumMode {
    *  same streamer, the same budget, its own lighting gate. */
   private registerSectorBodies(): void {
     if (!this.sectorsEnabled || !this.solarSystem) return;
-    const sectors = new SectorStreamer({ limits: this.deviceProfile, envelope: this.memory });
+    const groundCull = this.groundCullEnabled;
+    const sectors = new SectorStreamer({ limits: this.deviceProfile, envelope: this.memory, groundCull });
     for (const planet of this.solarSystem.planets) {
       const fine = () => { upgradeGeometryOnApproach(planet.geometryUpgrade, Number.POSITIVE_INFINITY); };
       const spec = SECTOR_SETS[planet.data.name];
       if (spec) {
+        if (groundCull) markStreamedGround(planet.geometryUpgrade, planet.mesh, GROUND_LEAF_SEGMENTS);
         const material = planet.mesh.material as THREE.MeshStandardMaterial;
         sectors.register({
           name: planet.data.name,
@@ -3579,6 +3587,7 @@ export class PlanetariumMode {
       const nightSpec = SECTOR_NIGHT_SETS[planet.data.name];
       const nightMat = planet.nightMaterial;
       if (nightSpec && nightMat && planet.nightMesh && planet.nightRadiusAU) {
+        if (groundCull) markStreamedGround(planet.geometryUpgrade, planet.nightMesh, GROUND_LEAF_SEGMENTS);
         sectors.register({
           name: planet.data.name,
           spec: nightSpec,
@@ -3597,6 +3606,7 @@ export class PlanetariumMode {
       for (const m of moons) {
         const spec = SECTOR_SETS[m.data.name];
         if (!spec) continue;
+        if (groundCull) markStreamedGround(m.geometryUpgrade, m.mesh, GROUND_LEAF_SEGMENTS);
         const material = m.mesh.material as THREE.MeshStandardMaterial;
         sectors.register({
           name: m.data.name,

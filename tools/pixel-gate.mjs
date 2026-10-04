@@ -129,6 +129,22 @@ const POSES = {
   // (starPointMapping's pointSpritePixelRatio, shared/three/pointEnergy), so a
   // change to those rules has nothing to move in a frame filled by a planet.
   sky: { call: ['frame', 'Earth', 0.12, 0, 20, 0, 0.15], time: '2026-03-21T09:20:00Z', hold: 2500, optional: true },
+  // Up close, where the streamed ground is drawn in layers: the globe and up to
+  // three levels of sector tile over it. 400 km over Western Australia's coast,
+  // looking along the ground (the frame the tiles are densest in), and straight
+  // down from 400 km over the Pacific; then the Moon and Mars close enough for
+  // their own tiles. Not switch poses for every key, so only a `--poses=` that
+  // names them runs them.
+  coast400: {
+    call: ['frame', 'Earth', 1.4419497982578364, 6.857939438629981, 1.0627155848228285, 0, -1.6303735908928756, 34.39567913386282],
+    time: '2025-12-11T04:34:00Z', hold: 4000, optional: true,
+  },
+  nadir400: {
+    call: ['frame', 'Earth', 1.7303397579094035, 41.468376555090536, 1.0627155848228285, 0, 0, -77.34841618462669],
+    time: '2026-02-01T17:20:00Z', hold: 4000, optional: true,
+  },
+  'moon-close': { call: ['frame', 'Moon', 1.7, 30, 1.08], time: '2026-03-21T09:20:00Z', hold: 4000, optional: true },
+  'mars-close': { call: ['frame', 'Mars', 1.7, 25, 1.08], time: '2026-03-21T09:20:00Z', hold: 4000, optional: true },
   // The two things that draw straight onto the canvas: the System Map and the
   // corner chart. Not switch poses, so only a `--poses=` that names them runs
   // them; `also` runs after the pose is taken and `undo` before the next pose.

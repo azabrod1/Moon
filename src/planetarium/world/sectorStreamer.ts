@@ -145,6 +145,7 @@ import {
   type TileLayout,
 } from './sectorGrid';
 import { createSectorMaterial, sectorRenderOrder, syncSectorMaterial, type SectorMaps } from './sectorMaterial';
+import { layGroundIndex } from './groundCull';
 import { loadStreamedTexture, type TextureLoad } from './textureBitmapLoader';
 import { loadSectorTileTexture, releaseTilePixels, tilePixelStats } from './tilePixels';
 import { applyTextureDefaults, maskBytesPerTexel, resolveTileUrl, sectorSetHash, sectorSetLayout, type MapKind } from './texturePolicy';
@@ -456,6 +457,11 @@ export const SECTOR_SEGMENTS = 32;
  *  sphere and the sector's vertices would stop landing on the globe's
  *  lattice. */
 export const SECTOR_MAX_LEVEL = 2;
+/** The leaf every streamed ground geometry's index is laid out in
+ *  (world/groundCull): the cells under one tile of the deepest level a set may
+ *  declare, so a tile of any level covers a whole, aligned square of leaves on
+ *  every mesh under it — the globe's and each coarser sector's. */
+export const GROUND_LEAF_SEGMENTS = SECTOR_SEGMENTS >> SECTOR_MAX_LEVEL;
 
 /** How a sector reads on screen this frame, from the mode's projection. */
 export interface SectorMeasure {
@@ -672,6 +678,11 @@ export interface SectorStreamerOptions {
    *  injected `load` covers both, so a test drives one loader. */
   loadTile?: TextureLoad;
   warm?: (tex: THREE.Texture, onOutcome: (o: WarmOutcome) => void) => void;
+  /** Lay every sector's index out for the cut (world/groundCull) and leave the
+   *  ground a finer drawn tile covers out of the meshes under it. Omitted is
+   *  on; false is the `?groundcull=0` kill switch, every sector built with its
+   *  plain index and nothing cut. */
+  groundCull?: boolean;
 }
 
 export interface SectorStats {
@@ -905,6 +916,8 @@ export class SectorStreamer {
   private readonly load: TextureLoad;
   private readonly loadTile: TextureLoad;
   private readonly warm: (tex: THREE.Texture, onOutcome: (o: WarmOutcome) => void) => void;
+  /** Whether sector geometry is laid out for the cut at all (the kill switch). */
+  private readonly groundCull: boolean;
   private readonly residentCap: number;
   private readonly inflightCap: number;
   private readonly fetchPool: number;
@@ -933,6 +946,7 @@ export class SectorStreamer {
     this.load = opts.load ?? loadStreamedTexture;
     this.loadTile = opts.loadTile ?? opts.load ?? loadSectorTileTexture;
     this.warm = opts.warm ?? queueTextureWarm;
+    this.groundCull = opts.groundCull ?? true;
     this.residentCap = opts.limits.residentCap;
     this.inflightCap = opts.limits.inflightCap;
     this.fetchPool = opts.limits.fetchPool;
@@ -1824,10 +1838,15 @@ export class SectorStreamer {
     const loaded = loading.loaded;
     // A reload's geometry is the outgoing mesh's: same sector, same globe.
     const previousMesh = slot.mesh;
-    const geometry = previousMesh?.geometry ?? sectorSphereGeometry(
-      handle.radiusAU, body.levels[slot.level].grid, slot.sector,
-      Math.max(3, SECTOR_SEGMENTS >> slot.level),
-    );
+    let geometry = previousMesh?.geometry;
+    if (!geometry) {
+      geometry = sectorSphereGeometry(
+        handle.radiusAU, body.levels[slot.level].grid, slot.sector,
+        Math.max(3, SECTOR_SEGMENTS >> slot.level),
+      );
+      // Laid out where it is built, before its first draw (world/groundCull).
+      if (this.groundCull) layGroundIndex(geometry, GROUND_LEAF_SEGMENTS);
+    }
     const material = body.family.createMaterial({
       map,
       bumpMap: loaded.bumpMap ?? null,

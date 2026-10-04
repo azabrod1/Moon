@@ -169,9 +169,6 @@ const SRC = {
   composite: path.join(CACHE, 'cloud_combined_8192.tif'),
   shipped: path.join(CACHE, 'sss_8k_earth_clouds.jpg'),
 };
-// The 2K rung the app draws first, read for its statistics only (the header
-// of src/planetarium/world/cloudDeck.ts quotes its numbers).
-const SHIPPED_2K = path.resolve('public/textures/earth-clouds.webp');
 
 // The master's grid and the 8K grid every global measurement runs on. The
 // ratio is 5.2734375 on both axes, so an 8K cell is the same patch of sky in
@@ -2091,12 +2088,7 @@ async function main() {
     // is not counted as a change of grade.
     shipped8kSameSky: alphaStats(weightedHistogram(shipped8, W8, H8, blocks.sameSky)),
     master8kSameSky: alphaStats(weightedHistogram(graded8, W8, H8, blocks.sameSky)),
-    appHeaderQuote: { clear: 0.217, opaque: 0.059, meanAlpha: 0.25, of: 'the shipped 2K rung, per src/planetarium/world/cloudDeck.ts' },
   };
-  if (existsSync(SHIPPED_2K)) {
-    const r2 = await loadGrey(SHIPPED_2K, 'shipped 2K rung');
-    alpha.shipped2kRung = { file: SHIPPED_2K, ...alphaStats(weightedHistogram(r2.grey, r2.width, r2.height)) };
-  }
   for (const [name, s] of Object.entries(alpha)) {
     if (s && s.stored) log(`alpha ${name.padEnd(17)} stored: ${fmtAlpha(s.stored)} | recovered: ${fmtAlpha(s.recovered)}`);
   }

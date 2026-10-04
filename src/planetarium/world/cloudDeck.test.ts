@@ -234,12 +234,12 @@ describe('the deck\'s relief', () => {
 
   it('ships at one resolution, with no rung above it', () => {
     // Bytes, not taste: a cloud field's normal map is nearly incompressible, so
-    // the 4K one is 15.6 MB lossless and 10.3 MB near-lossless against the
-    // 4.7 MB of the 8K COLOUR rung that doubles the resolution of the picture
+    // the 4K one is 13.7 MB lossless and 9.0 MB near-lossless against the
+    // 3.1 MB of the 8K COLOUR rung that doubles the resolution of the picture
     // itself. The band a rung would add is the one the detail noise covers.
     expect(NORMAL_UPGRADE_TIERS.earthCloudsNormal).toBeUndefined();
     expect(makeNormalUpgrade('earthCloudsNormal', new THREE.MeshStandardMaterial())).toBeUndefined();
-    expect(PLANET_TEXTURE_FILES.earthCloudsNormal).toBe('earth-clouds-normal.webp');
+    expect(PLANET_TEXTURE_FILES.earthCloudsNormal).toBe('earth-clouds-normal.v2.webp');
   });
 
   it('would be counted in the envelope ledger the moment it earned a rung', () => {

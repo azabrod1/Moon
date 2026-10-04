@@ -124,7 +124,7 @@ const DEFAULT_RDO_DICT = 8192;
  *  key can now have a rung at both. */
 const JOBS = {
   moon: { tier: '8k', source: fromWebp('8k', 'moon.webp'), out: '8k/moon.ktx2' },
-  earthClouds: { tier: '8k', source: fromWebp('8k', 'earth-clouds.webp'), out: '8k/earth-clouds.ktx2' },
+  earthClouds: { tier: '8k', source: fromWebp('8k', 'earth-clouds.v2.webp'), out: '8k/earth-clouds.v2.ktx2' },
   earthDay: { tier: '8k', source: fromLevel('earth'), out: '8k/earth-day.v2.ktx2' },
   earthNight: { tier: '8k', source: fromLevel('earth-night'), out: '8k/earth-night.v2.ktx2' },
   // The 4K rungs whose container earns its place on the wire. A rung a
@@ -179,7 +179,7 @@ const JOBS = {
   // textureTiers.assets.test.ts reads colorModel out of every one and checks
   // it against the mode this table chose for it.
   moon4k: { tier: '4k', rdo: 4.0, rdoDict: 65536, source: fromWebp('4k', 'moon.webp'), out: '4k/moon.ktx2' },
-  earthClouds4k: { tier: '4k', rdo: 4.0, rdoDict: 65536, source: fromWebp('4k', 'earth-clouds.webp'), out: '4k/earth-clouds.ktx2' },
+  earthClouds4k: { tier: '4k', rdo: 4.0, rdoDict: 65536, source: fromWebp('4k', 'earth-clouds.v2.webp'), out: '4k/earth-clouds.v2.ktx2' },
   earthNight4k: { tier: '4k', rdo: 16.0, rdoDict: 65536, source: fromWebp('4k', 'earth-night.v2.webp'), out: '4k/earth-night.v2.ktx2' },
   // ---------------------------------------------------------------------
   // The photo-moon rungs. Every one is ETC1S, and every one ships as a

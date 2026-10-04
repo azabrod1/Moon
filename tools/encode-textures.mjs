@@ -31,7 +31,7 @@ const clean = process.argv.includes('--clean');
 // else is a photo (q85).
 const FILES = [
   'mercury.jpg', 'venus.jpg', 'earth-day.jpg', 'earth-night.jpg', 'earth-clouds.jpg',
-  'earth-bump.png', 'earth-roughness.png', 'earth-clouds-normal.png',
+  'earth-bump.png', 'earth-roughness.png', 'earth-clouds-normal.v2.png',
   'mars.jpg', 'mars-normal.png', 'jupiter.jpg',
   'saturn.jpg', 'uranus.jpg', 'neptune.jpg', 'pluto.jpg', 'moon.jpg', 'moon-normal.png',
   'io.jpg', 'europa.jpg', 'ganymede.jpg', 'callisto.jpg', 'triton.jpg',
@@ -41,7 +41,7 @@ const FILES = [
 const isData = (f) => /normal|bump|roughness/.test(f);
 // The cloud relief is the one data map that does not get plain lossless. It is
 // a height field guessed from a q60 colour map's brightness, and a cloud field
-// is nearly incompressible: 998 KB lossless against 641 KB near-lossless, for
+// is nearly incompressible: 940 KB lossless against 618 KB near-lossless, for
 // two counts of worst-case error — under a degree of tilt on a map the deck
 // reads at 0.6. Every other data map here holds a measurement and keeps its
 // bytes exactly.

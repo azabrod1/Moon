@@ -49,9 +49,10 @@ export const CLOUD_FIELD_GRID: readonly [number, number] = [16, 8];
 /**
  * The tile sets a page's two planes are read from, cut by gen-tiles' `clouds`
  * job and named in the generated table like every sector set: the key is the
- * stem of the master they are cut from (`earth-clouds.v2`, the second cut of
- * the map the deck ships), so a re-cut master ships under a new key and takes
- * its pages with it; a page is the same cell of both tiers.
+ * stem of the master they are cut from (`earth-clouds.v2`, the stem of the
+ * base sheet too, which is cut from the same master), so a re-cut master ships
+ * under a new key and takes its pages and its sheet with it; a page is the
+ * same cell of both tiers.
  */
 export const CLOUD_FIELD_SETS = { key: 'earth-clouds.v2', opacity: '32k-a', brightness: '32k-p' } as const;
 /** Content texels on a page's side. */

@@ -533,11 +533,12 @@ describe('the cloud field\'s sets', () => {
     }
   });
 
-  it('are keyed by the stem of the master they were cut from, the second cut of the deck\'s map', () => {
-    // Not the shipped sheet's own stem: the pages are cut from NASA's master
-    // (gen-cloudmaster), while the deck keeps the sheet it ships as its base.
+  it('are keyed by the stem of the master they were cut from, which the deck\'s base sheet shares', () => {
+    // One master, one stem: the base sheet and the pages are both cut from
+    // NASA's cloud master (gen-tiles `clouds`), so a re-cut master ships both
+    // under a new stem and a page never arrives over a sheet of another sky.
     const stem = (file: string) => file.replace(/^.*\//, '').replace(/\.webp$/, '');
-    expect(CLOUD_FIELD_SETS.key).toBe(`${stem(PLANET_TEXTURE_FILES.earthClouds)}.v2`);
+    expect(CLOUD_FIELD_SETS.key).toBe(stem(PLANET_TEXTURE_FILES.earthClouds));
     // Two tiers of one level, told apart by their plane.
     expect(CLOUD_FIELD_SETS.opacity).toBe('32k-a');
     expect(CLOUD_FIELD_SETS.brightness).toBe('32k-p');

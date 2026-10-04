@@ -19,10 +19,10 @@
  *
  * The curve is authored against the map's STORED luminance — what the eight-bit
  * file holds — not the linear value the sampler returns, because "clear sky"
- * and "thick cloud" are gradings of the file. On the shipped map (2K, the same
- * product every rung is cut from) the authored pair leaves 21.7 % of the globe
- * fully clear, drives 5.9 % to full opacity, and averages 0.25 over the sphere
- * by area.
+ * and "thick cloud" are gradings of the file. On the shipped map (2K, cut from
+ * the same cloud master as every rung and the HD field) the authored pair
+ * leaves 20.6 % of the globe fully clear, drives 0.8 % to full opacity, and
+ * averages 0.256 over the sphere by area.
  *
  * The upper edge is high — 0.75, not the 0.6 the disc's mean alone would
  * suggest — because what the night side needs is GRADATION. At 0.6 a seventh of

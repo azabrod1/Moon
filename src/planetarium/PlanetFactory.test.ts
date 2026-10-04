@@ -1906,7 +1906,7 @@ describe('the compressed tier override', () => {
     // The same key can have a container at both tiers, each under its own
     // tier's folder — the Moon's 4K rung is the boot warm's own upload.
     expect(resolveTierFile('moon', '4k')).toBe('moon.ktx2');
-    expect(resolveTierFile('earthClouds', '4k')).toBe('earth-clouds.ktx2');
+    expect(resolveTierFile('earthClouds', '4k')).toBe('earth-clouds.v2.ktx2');
     // A rung whose container was too big to ship keeps fetching its webp.
     expect(resolveTierFile('saturn', '4k')).toBe('saturn.webp');
     // The boot map is never a rung, so nothing overrides it: a body's first
@@ -2474,7 +2474,7 @@ describe('the rungs that ship only as a compressed container', () => {
     expect(resolveTierFile('earthDay', '8k')).toBe('earth-day.v2.webp');
     bindKtx2TierLoader(() => {}, true);
     expect(resolveTierFile('moon', '8k')).toBe('moon.ktx2');
-    expect(resolveTierFile('earthClouds', '8k')).toBe('earth-clouds.ktx2');
+    expect(resolveTierFile('earthClouds', '8k')).toBe('earth-clouds.v2.ktx2');
     expect(resolveTierFile('earthDay', '8k')).toBe('earth-day.v2.ktx2');
     expect(resolveTierFile('earthNight', '8k')).toBe('earth-night.v2.ktx2');
     // The two toured 4K rungs whose container is small enough on the wire to
@@ -2483,7 +2483,7 @@ describe('the rungs that ship only as a compressed container', () => {
     expect(resolveTierFile('mercury', '4k')).toBe('mercury.ktx2');
     expect(resolveTierFile('mars', '4k')).toBe('mars.v2.ktx2');
     expect(resolveTierFile('moon', '4k')).toBe('moon.ktx2');
-    expect(resolveTierFile('earthClouds', '4k')).toBe('earth-clouds.ktx2');
+    expect(resolveTierFile('earthClouds', '4k')).toBe('earth-clouds.v2.ktx2');
     expect(resolveTierFile('earthNight', '4k')).toBe('earth-night.v2.ktx2');
     // The photo-moon rungs, which ship as containers alone.
     expect(resolveTierFile('enceladus', '4k')).toBe('enceladus.ktx2');

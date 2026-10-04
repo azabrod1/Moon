@@ -45,6 +45,7 @@ import {
   clearSurfaceAir,
   createSurfaceAirFx,
   type SurfaceArchetype, OCEAN_BEAM_CAP, OCEAN_BEAM_KNEE, OCEAN_GLINT_CAP,
+  SEA_WATER_COLOUR,
 } from './surfaceShading';
 import { SEA_CALM_LOBE_ROUGHNESS } from './seaWind';
 import { createEarthNightShellMaterial } from './earthNightMaterial';
@@ -108,23 +109,23 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '7dd73a93afde9956cc81467cd78eb053d602b884ec976c36cfd1811620522c6a';
-const PROD_FRAGMENT_HASH = 'b0c408e23a004c9a6b73e3e6ada34f393e89d4bd92aaedd818f2de68e6ad119a';
+const DEV_FRAGMENT_HASH = '3258eefff0d82adc1287bfc001737c847cfb55b49e69e4a093f035484f705bf7';
+const PROD_FRAGMENT_HASH = '90ccb88ebf8bcd735df0791388c8c390ecb00c1e6a297f20b0d985c5d56e3c33';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 /** The two texts with the cloud field's define OFF (world/cloudField),
  *  resolved as the preprocessor resolves it: each of the field's two chunks
  *  leaves the one blank line it opens with. */
-const FIELD_OFF_DEV_FRAGMENT_HASH = '0197fed4b8f20f0f42cf6281236c03f638fe276e8bb96bdc42ff320c8d4bac6b';
-const FIELD_OFF_PROD_FRAGMENT_HASH = 'e39f05402b6d964be77bd3d67a8cacd4947c02602f6ab227ae1eb85ef02dddb8';
+const FIELD_OFF_DEV_FRAGMENT_HASH = '8d8f6ba5f7c74dafc5f5f2ed49e9b32647dc645b147b0c898c79c2443a5b60db';
+const FIELD_OFF_PROD_FRAGMENT_HASH = '4f72e63e8d6f204c108ca0f8847186abf7574999e0a29555b484042b7e0da498';
 /** The production text from before the field reached a production build:
  *  the shipped text with the field's two chunks deleted, newlines and all. */
-const PRE_FIELD_PROD_FRAGMENT_HASH = '0a67d5fd1325957304982d6035954a12279dd2964ae205582f72f776781a2682';
+const PRE_FIELD_PROD_FRAGMENT_HASH = '84de15f7586a93e6f8353bc4638e111753bec8c2a77c66dbc922be69d7998748';
 /** The same two texts with the cloud shadow's, the cloud light's and the
  *  cloud field's defines all OFF, resolved as the preprocessor resolves them:
  *  the texts from before the switches existed, but for the field's two blank
  *  lines. */
-const OFF_DEV_FRAGMENT_HASH = '5815d4a88094938f8d897363aa76e7bc38998d1711ae106426e723952e9d2b02';
-const OFF_PROD_FRAGMENT_HASH = '439e0a2a1544917aa3368753ff4c7f669d809c459f52c64f9270d32ab98c7c14';
+const OFF_DEV_FRAGMENT_HASH = '4870805861e5038cec316d9a912a81d0772409b987235340b0a715914e6080ce';
+const OFF_PROD_FRAGMENT_HASH = 'fae6ebdd067898a67d7b85327d5e1e2f9c4402d1c8ca4b161261ea4b33e92eef';
 describe('the injected surface shader', () => {
   it('is one text for every body and both tiers', () => {
     // Earth with air, the Moon without, Mars with its own, and the cloud deck.
@@ -304,12 +305,9 @@ describe('the injected surface shader', () => {
         + '\nuniform float uProbeCloudRelief;\nuniform float uProbeCloudAir;'
         + '\nuniform float uGlintCap;\nuniform float uGlintKeep;\nuniform float uGlintCalm;'
         + '\nuniform float uBeamKnee;\nuniform float uBeamCap;'
-        + '\nuniform vec3 uSeaColour;\nuniform float uSeaMix;', '')
-      // The sea-colour look knob is development text with no cheap reading:
-      // the production text is the text without it.
-      .replace('  if (uSeaMix > 0.0) {\n    float seaPaint = 1.0 - smoothstep(0.012, 0.03,\n'
-        + '        distance(diffuseColor.rgb, vec3(0.000607, 0.012983, 0.088656)));\n'
-        + '    diffuseColor.rgb = mix(diffuseColor.rgb, uSeaColour, seaWater * seaPaint * uSeaMix);\n  }\n', '')
+        + '\nuniform vec3 uSeaColour;', '')
+      // The water colour the sea is drawn in reads as its constant.
+      .replace(/uSeaColour/g, `vec3(${SEA_WATER_COLOUR.map((v) => v.toFixed(5)).join(', ')})`)
       // The cloud shadow's knobs read as the constants they default to, and
       // the penumbra's as no factor at all.
       .replace('uniform float uCloudShadowDepth;\nuniform float uCloudShadowAir;\nuniform float uCloudShadowPenumbra;\n'
@@ -348,7 +346,7 @@ describe('the injected surface shader', () => {
       .replace(/uBeamKnee/g, OCEAN_BEAM_KNEE.toFixed(2))
       .replace(/uBeamCap/g, OCEAN_BEAM_CAP.toFixed(2))
       .replace(/ \* uGlintKeep/g, '');
-    expect(folded).not.toMatch(/uPerf|uProbe|uGlint|uSea(Colour|Mix)|uCloudShadow(Depth|Air|Penumbra|Gamma)|uCloudLight|uCloudShadowSkyFill|uCloudGroundFill|uCloudFieldDiag/);
+    expect(folded).not.toMatch(/uPerf|uProbe|uGlint|uSeaColour|uCloudShadow(Depth|Air|Penumbra|Gamma)|uCloudLight|uCloudShadowSkyFill|uCloudGroundFill|uCloudFieldDiag/);
     expect(hash(import.meta.env.DEV ? folded : shader.fragmentShader)).toBe(PROD_FRAGMENT_HASH);
     const night = import.meta.env.DEV
       ? earthNightFragmentShader

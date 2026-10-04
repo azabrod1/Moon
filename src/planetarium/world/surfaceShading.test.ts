@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { paintRing, STRIP_WIDTH } from '../planets/rings';
 import {
   augmentSurfaceMaterial, OCEAN_ROUGHNESS, ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER,
+  SEA_PAINT_COLOUR, SEA_WATER_COLOUR, parseSeaColourParam, seaColourOn, seaColourUniforms, setSeaColourEnabled,
   setSurfaceCraterShare, setSurfaceSynthesis, setSurfaceWaterGloss, surfaceChartWeights,
   SYNTH_CHART_CUT, surfaceCraterShare, surfaceReliefKind, surfaceSynthesisOf, surfaceWaterGloss,
   waterGlossRoughness,
@@ -1533,5 +1534,56 @@ describe('the cloud deck lit as a cloud (CLOUD_LIGHT, off by default)', () => {
     expect(CLOUD_SHADOW_SKY_FILL).toBe(1);
     // Not on the deck, which never compiles the shadow.
     expect(resolveDefine(fragmentOf(globe), 'CLOUD_SHADOW', false)).not.toContain('fillMuS');
+  });
+});
+
+describe("the sea's water colour", () => {
+  function compiled(): { text: string; uniforms: Record<string, unknown> } {
+    const mat = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(mat, 'earth');
+    const shader = {
+      uniforms: {} as Record<string, unknown>,
+      vertexShader: '#include <common>\n#include <begin_vertex>\n',
+      fragmentShader: '#include <common>\n#include <roughnessmap_fragment>\n#include <normal_fragment_maps>\n#include <opaque_fragment>\n',
+    };
+    (mat.onBeforeCompile as (s: typeof shader, r: unknown) => void)(shader, null);
+    return { text: shader.fragmentShader, uniforms: shader.uniforms };
+  }
+  const srgbToLinear = (byte: number): number => {
+    const c = byte / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+
+  it("detects the day map's painted open sea, sRGB (2, 30, 84), in linear light", () => {
+    expect(SEA_PAINT_COLOUR[0]).toBeCloseTo(srgbToLinear(2), 5);
+    expect(SEA_PAINT_COLOUR[1]).toBeCloseTo(srgbToLinear(30), 5);
+    expect(SEA_PAINT_COLOUR[2]).toBeCloseTo(srgbToLinear(84), 5);
+    // Clear ocean water: a dark, blue-led reflectance with a little red, far
+    // under the paint's blue.
+    expect(SEA_WATER_COLOUR[2]).toBeLessThan(SEA_PAINT_COLOUR[2] / 2);
+    expect(SEA_WATER_COLOUR[0]).toBeGreaterThan(SEA_PAINT_COLOUR[0]);
+    expect(SEA_WATER_COLOUR[1] / SEA_WATER_COLOUR[2]).toBeGreaterThan(0.25);
+  });
+
+  it('draws the paint in the water colour behind the share uniform, bound on every augmented surface', () => {
+    const { text, uniforms } = compiled();
+    expect(text).toContain('if (uSeaMix > 0.0)');
+    expect(text).toContain(`vec3(${SEA_PAINT_COLOUR.map((v) => v.toFixed(6)).join(', ')})`);
+    // The colour: a knob in a development build, a literal in production.
+    expect(text).toContain(import.meta.env.DEV ? 'uSeaColour, seaWater * seaPaint * uSeaMix' : `vec3(${SEA_WATER_COLOUR.map((v) => v.toFixed(5)).join(', ')}), seaWater * seaPaint * uSeaMix`);
+    expect(uniforms.uSeaMix).toBe(seaColourUniforms.uSeaMix);
+  });
+
+  it('is the `?seacolour=0` switch, the painted map again at a share of exactly zero', () => {
+    expect(parseSeaColourParam('?seacolour=0')).toBe(false);
+    expect(parseSeaColourParam('?seacolour=1')).toBe(true);
+    expect(parseSeaColourParam('')).toBe(true);
+    expect(seaColourUniforms.uSeaMix.value).toBe(1);
+    expect(seaColourOn()).toBe(true);
+    setSeaColourEnabled(false);
+    expect(seaColourUniforms.uSeaMix.value).toBe(0);
+    expect(seaColourOn()).toBe(false);
+    setSeaColourEnabled(true);
+    expect(seaColourUniforms.uSeaMix.value).toBe(1);
   });
 });

@@ -75,6 +75,7 @@ import {
   seaWindOn,
   setSeaWindEnabled,
   parseSeaBeamParam, parseSunPathParam, seaBeamOn, setSeaBeamEnabled, setSunPathEnabled, sunPathOn,
+  parseSeaColourParam, seaColourUniforms, setSeaColourEnabled,
   surfaceShadingArgsOf,
 } from './planetarium/world/surfaceShading';
 import type { CloudFieldRequest } from './planetarium/world/cloudFieldDev';
@@ -317,6 +318,9 @@ setSeaWindEnabled(parseSeaWindParam(location.search));
 // any surface is augmented). Each is the picture as it was.
 setSunPathEnabled(parseSunPathParam(location.search));
 setSeaBeamEnabled(parseSeaBeamParam(location.search));
+// `?seacolour=0`: the sea drawn in the day map's painted navy again instead
+// of clear ocean water's own colour (world/surfaceShading SEA_WATER_COLOUR).
+setSeaColourEnabled(parseSeaColourParam(location.search));
 // `?glintmeter=0`: the exposure never closes down for the sea's beam
 // (planetarium/highlightMeter); the Sun's own meter alone, as it was.
 setHighlightMeterEnabled(parseGlintMeterParam(location.search));
@@ -3532,10 +3536,10 @@ function installDevHooks() {
       seaColour?: [number, number, number]; seaMix?: number;
     }) => {
       if (opts?.cap !== undefined) devGlintUniforms.uGlintCap.value = opts.cap;
-      // The sea's own colour as a look knob: a linear reflectance the map's
-      // painted open sea is mixed toward, and the share (0 is the map as is).
+      // The water colour the sea is drawn in (SEA_WATER_COLOUR by default) and
+      // its share (1 as shipped, 0 the painted map, `?seacolour=0`'s reading).
       if (opts?.seaColour !== undefined) devGlintUniforms.uSeaColour.value.fromArray(opts.seaColour);
-      if (opts?.seaMix !== undefined) devGlintUniforms.uSeaMix.value = opts.seaMix;
+      if (opts?.seaMix !== undefined) seaColourUniforms.uSeaMix.value = opts.seaMix;
       if (opts?.keep !== undefined) devGlintUniforms.uGlintKeep.value = opts.keep;
       // The beam chain's shoulder (knee and cap, scene units) and the two
       // switches, live, so a probe reads each term's share from one page load.
@@ -3562,7 +3566,7 @@ function installDevHooks() {
         beamKnee: devGlintUniforms.uBeamKnee.value,
         beamCap: devGlintUniforms.uBeamCap.value,
         seaColour: devGlintUniforms.uSeaColour.value.toArray() as [number, number, number],
-        seaMix: devGlintUniforms.uSeaMix.value,
+        seaMix: seaColourUniforms.uSeaMix.value,
         sunPath: sunPathOn(),
         seaBeam: seaBeamOn(),
         roughness,

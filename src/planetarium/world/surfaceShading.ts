@@ -492,6 +492,52 @@ export const SEA_WATER_IOR = 1.33;
 export const SEA_WATER_F0 = ((SEA_WATER_IOR - 1) / (SEA_WATER_IOR + 1)) ** 2;
 
 /**
+ * The colour of the open sea's water, as the sea is drawn in it. Earth's day
+ * map is surface reflectance, and its open sea is painted: one flat texel,
+ * sRGB (2, 30, 84), wherever there is deep water, which in linear light is
+ * three times brighter in blue than clear ocean water reflects and carries no
+ * red at all. Under a white Sun with a third of the air's veil over it that
+ * paint drew a royal blue no photograph of Earth has; every frame measured
+ * (EPIC, GOES-18, Galileo, Worldview's corrected reflectance, ISS nadir
+ * frames) holds its open sea at red 0.15 to 0.48 of blue and green 0.33 to
+ * 0.88 of it, the painted sea at 0.03 to 0.10 and 0.14 to 0.28. So where a
+ * texel of the map IS that paint — within a small linear distance of it, so a
+ * coast or a shallow bank painted its own colour keeps it — the sea is drawn
+ * in this water-leaving reflectance instead, mixed in by the water fraction:
+ * clear open ocean's pi times its remote-sensing reflectance, about 0.035 at
+ * 443 nm, 0.008 at 555 nm and 0.001 at 670 nm, in display primaries. The
+ * terms that would carry the rest of a photograph's slate — the sky reflected
+ * off the water, the aerosol's grey — are not drawn, and this is the water's
+ * own term they would add to, which is why it is the physical value rather
+ * than a teal with those baked in.
+ *
+ * A production build carries the colour as a literal and the share as a
+ * uniform (`seaColourUniforms.uSeaMix`, 1): `?seacolour=0` zeroes it on any
+ * build, under a branch the whole draw takes the same side of, so the sea is
+ * the painted map again, bit for bit — the kill switch, and the A/B. A
+ * development build reads the colour from a uniform too (devGlintUniforms,
+ * `__moon.glint({seaColour, seaMix})`), so a sheet of candidates comes out of
+ * one page load.
+ */
+export const SEA_WATER_COLOUR: readonly [number, number, number] = [0.0015, 0.009, 0.028];
+/** The map's painted open sea, sRGB (2, 30, 84), in linear light: what the
+ *  shader detects as the paint. */
+export const SEA_PAINT_COLOUR: readonly [number, number, number] = [0.000607, 0.012983, 0.088656];
+/** The share of the water colour the sea is drawn in: 1, or 0 on `?seacolour=0`. */
+export const seaColourUniforms: { uSeaMix: { value: number } } = { uSeaMix: { value: 1 } };
+export function setSeaColourEnabled(on: boolean): void {
+  seaColourUniforms.uSeaMix.value = on ? 1 : 0;
+}
+/** Whether the sea is drawn in the water colour right now (the DEV knob can hold a share between). */
+export function seaColourOn(): boolean {
+  return seaColourUniforms.uSeaMix.value > 0;
+}
+/** The `?seacolour=0` kill switch, on any build. */
+export function parseSeaColourParam(search: string): boolean {
+  return new URLSearchParams(search).get('seacolour') !== '0';
+}
+
+/**
  * Where the Sun's image lands on glassy water the mirror term runs past white.
  * The tone mapper clips that to a white patch, which a camera does too, but
  * the bloom pass would then smear the excess over the coast and the clouds
@@ -555,28 +601,24 @@ export const devGlintUniforms: {
   uGlintCalm: { value: number };
   uBeamKnee: { value: number };
   uBeamCap: { value: number };
-  /** A look knob for the sea's own colour (`__moon.glint({seaColour, seaMix})`):
-   *  the open sea the day map paints — one flat navy texel, sRGB (2, 30, 84),
-   *  everywhere there is deep water — replaced by this linear reflectance in
-   *  the share `uSeaMix` says, where the map's texel IS that paint; a coast or
-   *  a shallow bank painted its own colour keeps it. At zero the diffuse is
-   *  untouched. Development builds only, nothing of it in production text. */
+  /** The water colour the sea is drawn in (SEA_WATER_COLOUR), as a uniform so
+   *  `__moon.glint({seaColour})` moves it live; a production build compiles
+   *  the constant. The share is `seaColourUniforms.uSeaMix` in every build. */
   uSeaColour: { value: THREE.Vector3 };
-  uSeaMix: { value: number };
 } = {
   uGlintCap: { value: OCEAN_GLINT_CAP },
   uGlintKeep: { value: 1 },
   uGlintCalm: { value: SEA_CALM_LOBE_ROUGHNESS },
   uBeamKnee: { value: OCEAN_BEAM_KNEE },
   uBeamCap: { value: OCEAN_BEAM_CAP },
-  uSeaColour: { value: new THREE.Vector3(0, 0, 0) },
-  uSeaMix: { value: 0 },
+  uSeaColour: { value: new THREE.Vector3(...SEA_WATER_COLOUR) },
 };
 const GLINT_CAP_GLSL = import.meta.env.DEV ? 'uGlintCap' : OCEAN_GLINT_CAP.toFixed(2);
 const BEAM_KNEE_GLSL = import.meta.env.DEV ? 'uBeamKnee' : OCEAN_BEAM_KNEE.toFixed(2);
 const BEAM_CAP_GLSL = import.meta.env.DEV ? 'uBeamCap' : OCEAN_BEAM_CAP.toFixed(2);
 const GLINT_KEEP_GLSL = import.meta.env.DEV ? ' * uGlintKeep' : '';
 const GLINT_CALM_GLSL = import.meta.env.DEV ? 'uGlintCalm' : SEA_CALM_LOBE_ROUGHNESS.toFixed(5);
+const SEA_COLOUR_GLSL = import.meta.env.DEV ? 'uSeaColour' : `vec3(${SEA_WATER_COLOUR.map((v) => v.toFixed(5)).join(', ')})`;
 
 /** The cloud deck's colour map, and the drift its own frame carries on top of
  *  the body's. Shared by every augmented surface so the ocean's mirror term can
@@ -1069,17 +1111,18 @@ if (GROUND_ON(uWaterGloss > 0.0)) {
   }
   roughnessFactor = max(${ROUGHNESS_MAP_LAND.toFixed(6)}
       - (${ROUGHNESS_MAP_LAND.toFixed(6)} - roughnessFactor) * waterGain, 0.02);
-${import.meta.env.DEV ? `  // The sea-colour look knob (devGlintUniforms.uSeaColour): the day map's
-  // open sea is one flat painted texel, sRGB (2, 30, 84), so a texel within a
-  // small linear distance of it is that paint and nothing else, and is mixed
-  // toward the knob's reflectance by the water fraction; a coast or a bank
-  // the map painted its own colour is left as it is.
+  // The water's own colour (SEA_WATER_COLOUR): the day map's open sea is one
+  // flat painted texel, so a texel within a small linear distance of that
+  // paint is the paint and nothing else, and is mixed toward the water colour
+  // by the water fraction; a coast or a bank the map painted its own colour
+  // is left as it is. Behind the share's uniform branch so ?seacolour=0 is
+  // the painted map again, bit for bit.
   if (uSeaMix > 0.0) {
     float seaPaint = 1.0 - smoothstep(0.012, 0.03,
-        distance(diffuseColor.rgb, vec3(0.000607, 0.012983, 0.088656)));
-    diffuseColor.rgb = mix(diffuseColor.rgb, uSeaColour, seaWater * seaPaint * uSeaMix);
+        distance(diffuseColor.rgb, vec3(${SEA_PAINT_COLOUR.map((v) => v.toFixed(6)).join(', ')})));
+    diffuseColor.rgb = mix(diffuseColor.rgb, ${SEA_COLOUR_GLSL}, seaWater * seaPaint * uSeaMix);
   }
-` : ''}}`;
+}`;
 
 // Analytic stand-in for Saturn's ring opacity across the annulus (t: 0 inner …
 // 1 outer), used only for the shadow it casts — the major features that read on
@@ -1826,8 +1869,7 @@ uniform float uGlintKeep;
 uniform float uGlintCalm;
 uniform float uBeamKnee;
 uniform float uBeamCap;
-uniform vec3 uSeaColour;
-uniform float uSeaMix;`;
+uniform vec3 uSeaColour;`;
 
 /**
  * The cloud deck's cost probes (app/perfSwitches.ts, `cloud-probe-*`): each
@@ -2075,6 +2117,7 @@ uniform float uAirBlend;
 uniform float uSurfaceHaze;
 uniform float uAirLookupRadius;
 uniform float uWaterGloss;
+uniform float uSeaMix;
 uniform sampler2D uSeaCalmMap;
 uniform sampler2D uSeaWindMap;
 uniform float uSeaWindOn;
@@ -3502,6 +3545,7 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uLimbDarkening = uLimbDarkening;
     shader.uniforms.uAirLookupRadius = uAirLookupRadius;
     shader.uniforms.uWaterGloss = uWaterGloss;
+    shader.uniforms.uSeaMix = seaColourUniforms.uSeaMix;
     // A surface with no water mask never samples this, but every program
     // still carries the binding: the injected text is byte-identical for
     // every body, which is what keeps them sharing one compiled program.
@@ -3546,7 +3590,6 @@ export function augmentSurfaceMaterial(
       shader.uniforms.uBeamKnee = devGlintUniforms.uBeamKnee;
       shader.uniforms.uBeamCap = devGlintUniforms.uBeamCap;
       shader.uniforms.uSeaColour = devGlintUniforms.uSeaColour;
-      shader.uniforms.uSeaMix = devGlintUniforms.uSeaMix;
     }
     shader.uniforms.uFrameSpin = uFrameSpin;
     shader.uniforms.uSynthDetail = uSynthDetail;

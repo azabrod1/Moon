@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CLOUD_FIELD_GRID,
   CLOUD_FIELD_GUARD_TEXELS,
+  CLOUD_FIELD_LEVEL_WIDTH,
   CLOUD_FIELD_LOWEST_RUNG,
   CLOUD_FIELD_RELEASE_TEXELS,
   CLOUD_FIELD_SAFETY_TEXELS,
@@ -12,7 +13,9 @@ import {
 import {
   CLOUD_FIELD_KEEP_GRID,
   CLOUD_FIELD_KEEP_RAYS,
+  CLOUD_SHADOW_DEMAND_PENUMBRA_TEXELS,
   CloudFieldMeasure,
+  CloudShadowDemand,
   cloudPageKeepTexelsAll,
   fieldDisplayed,
   fieldPagePoint,
@@ -21,7 +24,8 @@ import {
   fieldUnproject,
   type FieldCamera,
 } from './cloudFieldMeasure';
-import { lensEffectiveStrength, lensOverscanFovDeg } from '../../shared/math/lensProjection';
+import { lensEffectiveStrength, lensOverscanFovDeg, lensUnwarpNdc } from '../../shared/math/lensProjection';
+import { cloudRayDirection } from './cloudDeck';
 
 type V = [number, number, number];
 const norm = (v: V): V => { const l = Math.hypot(v[0], v[1], v[2]); return [v[0] / l, v[1] / l, v[2] / l]; };
@@ -313,5 +317,185 @@ describe('the per-frame measure', () => {
     // A camera inside the deck sees no front face.
     m.measure(lookAt([0.5, 0, 0], [1, 0, 0], 0, 40, 1.6, 1, 1600), mid);
     expect(m.keepTexels.every((t) => t === Number.POSITIVE_INFINITY)).toBe(true);
+  });
+});
+
+/** Earth's deck: 10 km over 6371, the ground's radius in deck radii, and the
+ *  shader's penumbra numerator for a Sun 0.00465 rad in radius. */
+const H_OVER_R = 10 / 6371;
+const GROUND = 1 / (1 + H_OVER_R);
+const PENUMBRA = H_OVER_R * 2 * 0.00465;
+
+/** The ground point (unit direction) under pixel (x, y), or null. */
+function groundUnproject(cam: FieldCamera, x: number, y: number): V | null {
+  const h = cam.heightPx;
+  const w = h * cam.aspect;
+  const t = Math.tan((cam.renderFovDeg * Math.PI) / 360);
+  const rx = ((x / w) * 2 - 1) * t * cam.aspect;
+  const ry = (1 - (y / h) * 2) * t;
+  const d: V = norm([
+    cam.right[0] * rx + cam.up[0] * ry - cam.back[0],
+    cam.right[1] * rx + cam.up[1] * ry - cam.back[1],
+    cam.right[2] * rx + cam.up[2] * ry - cam.back[2],
+  ]);
+  const b = cam.pos[0] * d[0] + cam.pos[1] * d[1] + cam.pos[2] * d[2];
+  const c = cam.pos[0] ** 2 + cam.pos[1] ** 2 + cam.pos[2] ** 2 - GROUND * GROUND;
+  const disc = b * b - c;
+  if (disc < 0) return null;
+  const s = -b - Math.sqrt(disc);
+  if (!(s > 0)) return null;
+  return norm([cam.pos[0] + s * d[0], cam.pos[1] + s * d[1], cam.pos[2] + s * d[2]]);
+}
+
+/**
+ * The shadow's guard input at pixel (x, y), by the reference's method: the
+ * pierce direction (cloudRayDirection) differenced across neighbouring rays,
+ * each column widened to the penumbra as the shader widens it, into page
+ * texels through the map's uv rule. Null where the ground has no Sun or the
+ * penumbra alone is past the demand's line.
+ */
+function shadowMajorAt(cam: FieldCamera, x: number, y: number, sun: V, stepPx = 0.02): { major: number; q: V } | null {
+  const n = groundUnproject(cam, x, y);
+  if (!n) return null;
+  const mu = n[0] * sun[0] + n[1] * sun[1] + n[2] * sun[2];
+  if (!(mu > 0)) return null;
+  const pen = PENUMBRA / Math.max(mu * mu, 0.01);
+  if (pen / ((2 * Math.PI) / CLOUD_FIELD_LEVEL_WIDTH) > CLOUD_SHADOW_DEMAND_PENUMBRA_TEXELS) return null;
+  const pierce = (px: number, py: number): V | null => {
+    const g = groundUnproject(cam, px, py);
+    return g ? cloudRayDirection(g, sun, H_OVER_R) : null;
+  };
+  const q = pierce(x, y)!;
+  const xp = pierce(x + stepPx, y), xm = pierce(x - stepPx, y);
+  const yp = pierce(x, y + stepPx), ym = pierce(x, y - stepPx);
+  if (!xp || !xm || !yp || !ym) return null;
+  const k = 2 * stepPx;
+  const widen = (d: V): V => {
+    const l = Math.hypot(d[0], d[1], d[2]);
+    const f = Math.max(1, pen / Math.max(l, 1e-12));
+    return [d[0] * f, d[1] * f, d[2] * f];
+  };
+  const ddx = widen([(xp[0] - xm[0]) / k, (xp[1] - xm[1]) / k, (xp[2] - xm[2]) / k]);
+  const ddy = widen([(yp[0] - ym[0]) / k, (yp[1] - ym[1]) / k, (yp[2] - ym[2]) / k]);
+  const cosLat = Math.max(Math.hypot(q[0], q[2]), 1e-4);
+  const tu = CLOUD_FIELD_LEVEL_WIDTH;
+  const tv = (CLOUD_FIELD_LEVEL_WIDTH * CLOUD_FIELD_GRID[1]) / CLOUD_FIELD_GRID[0];
+  const uv = (dd: V): [number, number] => [
+    ((q[2] * dd[0] - q[0] * dd[2]) / (cosLat * cosLat) / (2 * Math.PI)) * tu,
+    (dd[1] / cosLat / Math.PI) * tv,
+  ];
+  return { major: cloudFieldMajor(uv(ddx), uv(ddy)), q };
+}
+
+/** Every page's shadow demand by the reference: the frame's rays at the ground. */
+function shadowDemandReference(cam: FieldCamera, sun: V): Float64Array {
+  const [gx, gy] = CLOUD_FIELD_GRID;
+  const out = new Float64Array(gx * gy).fill(Number.POSITIVE_INFINITY);
+  const ndc = { x: 0, y: 0 };
+  const [nx, ny] = CLOUD_FIELD_KEEP_RAYS;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      lensUnwarpNdc((i / (nx - 1)) * 2 - 1, (j / (ny - 1)) * 2 - 1,
+        cam.designFovDeg, cam.renderFovDeg, cam.aspect, cam.lensStrength, ndc);
+      const hit = shadowMajorAt(cam, (ndc.x + 1) * 0.5 * cam.heightPx * cam.aspect, (1 - ndc.y) * 0.5 * cam.heightPx, sun);
+      if (!hit) continue;
+      const p = cloudPageIndexOf(hit.q[0], hit.q[1], hit.q[2]);
+      if (hit.major < out[p]) out[p] = hit.major;
+    }
+  }
+  return out;
+}
+
+describe('the shadow\'s demand', () => {
+  it('reads the reference\'s number for every page a shadow in frame reads', () => {
+    const r = rng(Number(env('CLOUD_FIELD_SEED') ?? 20261003) + 7);
+    const measure = new CloudFieldMeasure();
+    const shadow = new CloudShadowDemand();
+    let compared = 0;
+    let worst = 0;
+    let worstAt = '';
+    const mismatched: string[] = [];
+    for (let pose = 0; pose < 200; pose++) {
+      const { cam } = randomPose(r);
+      // A Sun over the frame's side of the globe, so most poses have a day.
+      const look: V = norm([-cam.back[0] - cam.pos[0] * 0.2, -cam.back[1] - cam.pos[1] * 0.2, -cam.back[2] - cam.pos[2] * 0.2]);
+      const sun = norm([cam.pos[0] + look[0] + (r() - 0.5) * 2, cam.pos[1] + look[1] + (r() - 0.5) * 2, cam.pos[2] + look[2] + (r() - 0.5) * 2]);
+      measure.measure(cam, sun);
+      measure.measureShadow(GROUND, H_OVER_R, PENUMBRA, shadow);
+      const ref = shadowDemandReference(cam, sun);
+      for (let p = 0; p < ref.length; p++) {
+        const a = ref[p];
+        const b = shadow.wantTexels[p];
+        if (shadow.keepTexels[p] !== b && mismatched.length < 5) mismatched.push(`pose ${pose} page ${p}: kept at ${shadow.keepTexels[p]}, wanted at ${b}`);
+        if (!Number.isFinite(a) && !Number.isFinite(b)) continue;
+        if (!Number.isFinite(a) || !Number.isFinite(b)) {
+          if (mismatched.length < 5) mismatched.push(`pose ${pose} page ${p}: reference ${a}, per-frame ${b}`);
+          continue;
+        }
+        // Past the release line a page is neither wanted nor kept, and a
+        // grazing footprint there is beyond what differencing reads well.
+        if (a > CLOUD_FIELD_RELEASE_TEXELS && b > CLOUD_FIELD_RELEASE_TEXELS) continue;
+        compared += 1;
+        const rel = Math.abs(b - a) / a;
+        if (rel > worst) { worst = rel; worstAt = `pose ${pose} page ${p}: reference ${a}, per-frame ${b}`; }
+      }
+    }
+    expect(mismatched).toEqual([]);
+    expect(compared).toBeGreaterThan(100);
+    expect(worst, worstAt).toBeLessThan(1e-4);
+  });
+
+  /** Straight down from 400 km at 11° N, the frame's east edge 20 km short of
+   *  a page's eastern edge, and the Sun `elevDeg` up in the east or west. */
+  function besideAnEdge(elevDeg: number, east: boolean) {
+    const kmPerPage = (Math.PI / 8) * 6381 * Math.cos((11.25 * Math.PI) / 180);
+    // A 40° frame at 1.6:1 spans tan(20°)·1.6 of the 400 km height each side.
+    const halfKm = 400 * Math.tan((20 * Math.PI) / 180) * 1.6;
+    const s = 1 - (halfKm + 20) / kmPerPage;
+    const target = fieldPagePoint(8, 3, s, 0.5);
+    const ahead = fieldPagePoint(8, 3, s + 1e-4, 0.5);
+    const eastward = norm(sub(ahead, target));
+    const e = (elevDeg * Math.PI) / 180;
+    const sign = east ? 1 : -1;
+    const sun = norm([
+      target[0] * Math.sin(e) + sign * eastward[0] * Math.cos(e),
+      target[1] * Math.sin(e) + sign * eastward[1] * Math.cos(e),
+      target[2] * Math.sin(e) + sign * eastward[2] * Math.cos(e),
+    ]);
+    const cam = lookAt(target.map((v) => v * (1 + 400 / 6381)) as V, target, 0, 40, 1.6, 0, 1000);
+    // The camera's right must be east, so the frame's east edge is the one
+    // beside the page edge.
+    if (cam.right[0] * eastward[0] + cam.right[1] * eastward[1] + cam.right[2] * eastward[2] < 0) {
+      cam.right = cam.right.map((v) => -v) as V;
+      cam.up = cam.up.map((v) => -v) as V;
+    }
+    const measure = new CloudFieldMeasure();
+    const shadow = new CloudShadowDemand();
+    measure.measure(cam, sun);
+    measure.measureShadow(GROUND, H_OVER_R, PENUMBRA, shadow);
+    return { deck: measure, shadow, own: 3 * CLOUD_FIELD_GRID[0] + 8, next: 3 * CLOUD_FIELD_GRID[0] + 9 };
+  }
+
+  it('asks for the page across an edge that only a shadow in frame reads', () => {
+    // A low Sun in the east puts the pierce points 57 km east of the cloud
+    // over each ground point: across the page edge 20 km past the frame.
+    const { deck, shadow, own, next } = besideAnEdge(10, true);
+    expect(deck.wantTexels[own]).toBeLessThan(1);
+    expect(deck.wantTexels[next]).toBe(Number.POSITIVE_INFINITY);
+    expect(shadow.wantTexels[next]).toBeLessThan(CLOUD_FIELD_GUARD_TEXELS[0]);
+    expect(shadow.wantTexels[own]).toBeLessThan(CLOUD_FIELD_GUARD_TEXELS[0]);
+    // In the west the shadows read away from that edge.
+    expect(besideAnEdge(10, false).shadow.wantTexels[next]).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('asks for nothing where the penumbra alone would draw the field at under half its weight', () => {
+    // 3.5° at the frame's centre, under 6° at its edge on the Sun's side.
+    const low = besideAnEdge(3.5, true);
+    expect(low.shadow.samples).toBe(0);
+    expect(low.shadow.wantTexels.every((t) => t === Number.POSITIVE_INFINITY)).toBe(true);
+    // The line is the guard's midpoint, about 6.4° of Sun for a 10 km deck.
+    const sinE = Math.sqrt(PENUMBRA / (CLOUD_SHADOW_DEMAND_PENUMBRA_TEXELS * ((2 * Math.PI) / CLOUD_FIELD_LEVEL_WIDTH)));
+    expect((Math.asin(sinE) * 180) / Math.PI).toBeCloseTo(6.4, 1);
+    expect(besideAnEdge(7, true).shadow.samples).toBeGreaterThan(0);
   });
 });

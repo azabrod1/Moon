@@ -14,10 +14,11 @@
  * WHAT IS ENUMERATED, explicitly, rather than whatever programs one session
  * happened to link: the two surfaces that spend the most — Earth's ground (its
  * colour, bump and, where it has its water mask, roughness map) and the cloud
- * deck with its relief — across every define that adds or removes a sampler:
- * CLOUD_SHADOW (the ground), CLOUD_FIELD (both; the deck's in a session with
- * the field, the ground's for the shadow read that follows it), CLOUD_LIGHT
- * (the deck), and the atmosphere tables' sizes (the full and the half tier,
+ * deck with its relief — across every define that adds or removes a sampler,
+ * in the combinations the app compiles: CLOUD_SHADOW on the ground, and
+ * CLOUD_FIELD beside it (the ground takes the field only for its shadow's
+ * read, never alone); CLOUD_FIELD and CLOUD_LIGHT on the deck, in any
+ * combination; and the atmosphere tables' sizes (the full and the half tier,
  * a define set on every surface). The ocean's gloss is a uniform, not a
  * define, so it forks no program; what it rides on is the roughness map, and
  * the ground is counted with and without one. The sea's wind maps live on
@@ -78,6 +79,8 @@ export function linkedSamplers(renderer: THREE.WebGLRenderer, mat: THREE.Materia
 }
 
 const SWITCHES = ['CLOUD_SHADOW', 'CLOUD_FIELD', 'CLOUD_LIGHT'] as const;
+/** The ground's switch combinations: the field only beside the shadow. */
+const GROUND_SWITCHES: string[][] = [[], ['CLOUD_SHADOW'], ['CLOUD_SHADOW', 'CLOUD_FIELD']];
 const TABLE_SIZES = { full: ATMOSPHERE_TABLE_SIZES_FULL, half: ATMOSPHERE_TABLE_SIZES_HALF } as const;
 
 /** Every subset of a list, the empty one first. */
@@ -116,7 +119,7 @@ export function devSamplerCensus(
   const made: Array<{ row: Omit<SamplerCensusRow, 'samplers'>; mat: THREE.MeshStandardMaterial }> = [];
   for (const tables of ['full', 'half'] as const) {
     for (const waterMask of [true, false]) {
-      for (const on of subsets(['CLOUD_SHADOW', 'CLOUD_FIELD'])) {
+      for (const on of GROUND_SWITCHES) {
         const mat = new THREE.MeshStandardMaterial({
           map: texel('color'), bumpMap: texel('data'), roughnessMap: waterMask ? texel('data') : null,
         });

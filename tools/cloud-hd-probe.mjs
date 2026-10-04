@@ -30,13 +30,23 @@
 // camera the pose built. PASS: the vector error is within `--tol` (0.2) of the
 // expected length and the peak correlation at least `--mincorr` (0.5).
 //
-// `--hour` (on by default; `--hour=0` skips it) runs the clock: from the
-// middle Sun height's time it runs at `--rate` (default 900×) for four
+// `--scenario=field` is the same three Sun heights with Earth's cloud field
+// on (`?cloudtiles=1`, world/cloudField): the deck draws its 1.2 km pages and
+// the ground's shadow reads the same pages at the pierce point, so the bar is
+// the shadow under the SHARP cloud. After each pose it waits for the field to
+// settle — nothing in the pipe, nothing fading, every page the residency
+// wants (the deck's and the shadows') in the table at full fade — and fails a
+// height whose frame never had a page resident, which would test the base
+// sheet again. No hour: the clock's drift is the base scenario's question.
+//
+// `--hour` (on by default; `--hour=0` skips it) runs the clock: at the middle
+// Sun height, from an hour of its own, it runs at `--rate` (default 900×) for four
 // wall-time stretches of a simulated quarter hour each, re-poses after each,
 // and holds every stop to the same bar, so a shadow read in a frame that drifts
 // apart from the deck's would show as a growing error.
 //
 //   node tools/cloud-hd-probe.mjs --url=http://localhost:5743 --scenario=shadow
+//   node tools/cloud-hd-probe.mjs --url=http://localhost:5743 --scenario=field
 //
 // GPU flags as every battery; takes /tmp/moon-browser.lock. Captures, signal
 // maps and a JSON of every reading land in /tmp/moon-shots/<label>/.
@@ -62,12 +72,23 @@ const HP = Number(arg('hp', '24'));
 // The cloud signal's RMS (8-bit grey, high-passed) under which a frame is
 // called cloudless and not scored.
 const MIN_CLOUD_RMS = Number(arg('mincloud', '2'));
-// The December solstice, at the hour local noon stands over the Atlantic: the
-// subsolar point is at 23.4 S, 30 W, and limbView's phase swings the stand
-// point north along that meridian, so the three Sun heights below land at
-// 7 N, 47 N and 59 N over open ocean. Ground with texture of its own (snow on
-// a coast) correlates with nothing the deck draws and is kept out of frame.
-const TIME = arg('time', '2025-12-21T14:00:00Z');
+// The December solstice, at an hour local noon stands over the Atlantic: the
+// subsolar point is at 23.4 S, and limbView's phase swings the stand point
+// north along its meridian, so the three Sun heights below land at 7 N, 47 N
+// and 59 N over open ocean. Ground with texture of its own (snow on a coast)
+// correlates with nothing the deck draws and is kept out of frame. Each height
+// names its own hour, because the frame needs cloud with texture at its own
+// scale under it: the deck's base sheet is an area average of the cloud
+// master, soft at these magnifications, and a stop over a smooth veil has no
+// signal to register (noon over 39 W for the two higher Suns, over 30 W for
+// the lowest). `--time=` puts every height at one hour instead.
+const TIME_ARG = arg('time', null);
+/** The hour a height is posed at. */
+const timeOf = (cfg) => Date.parse(TIME_ARG ?? cfg.time);
+/** Where the running hour starts: noon over 160 E, so its five stops at the
+ *  middle height walk west across 15 degrees of textured cloud over the open
+ *  north Pacific. */
+const HOUR_START = Date.parse(TIME_ARG ?? '2025-12-21T01:20:00Z');
 const CLOUD_TOP_KM = 10;
 const KM_PER_AU = 149597870.7;
 const OUT = path.join('/tmp/moon-shots', LABEL);
@@ -76,9 +97,9 @@ mkdirSync(OUT, { recursive: true });
 /** The Sun heights, each with a frame that puts its shadow a readable number
  *  of pixels off without the cloud field blurring into one blob. */
 const HEIGHTS = [
-  { name: 'sun60', elevDeg: 60, altKm: 400, fovDeg: 20 },
-  { name: 'sun20', elevDeg: 20, altKm: 400, fovDeg: 30 },
-  { name: 'sun8', elevDeg: 8, altKm: 600, fovDeg: 40 },
+  { name: 'sun60', elevDeg: 60, altKm: 400, fovDeg: 20, time: '2025-12-21T14:35:00Z' },
+  { name: 'sun20', elevDeg: 20, altKm: 400, fovDeg: 30, time: '2025-12-21T14:35:00Z' },
+  { name: 'sun8', elevDeg: 8, altKm: 600, fovDeg: 40, time: '2025-12-21T14:00:00Z' },
 ];
 
 const GPU_ARGS = ['--use-gl=angle', '--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader'];
@@ -291,8 +312,8 @@ async function openPage(browser) {
 /** The lens strength the pass runs at once it is asked for none. */
 let lensStrength = NaN;
 
-async function boot(page) {
-  await page.goto(`${URL}/?auto=planetarium&quality=medium${EXTRA}`, { waitUntil: 'domcontentloaded' });
+async function boot(page, query = '') {
+  await page.goto(`${URL}/?auto=planetarium&quality=medium${EXTRA}${query}`, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => !!window.__moon?.ready?.(), null, { timeout: 90_000 });
   await page.waitForFunction(() => {
     const ls = document.getElementById('loading-screen');
@@ -331,6 +352,34 @@ async function still(page) {
   }
   console.log('[hd-probe] a frame never held still; using the last');
   return last;
+}
+
+/**
+ * Wait for the cloud field to settle at this pose: nothing in the pipe,
+ * nothing fading, every wanted page in the table at full fade, the table
+ * unmoved for a second and a half. Returns what it saw.
+ */
+async function settleField(page, maxMs = 40_000) {
+  return page.evaluate(async (limit) => {
+    const m = window.__moon;
+    const start = performance.now();
+    let lastKey = null;
+    let lastChange = 0;
+    for (;;) {
+      const t = performance.now() - start;
+      const st = await m.cloudField();
+      const r = st.residency;
+      const full = new Set(st.pool.table.filter((e) => e.fade === 1).map((e) => e.page));
+      const key = st.pool.table.map((e) => `${e.page}:${e.fade}`).join(' ');
+      if (key !== lastKey) { lastKey = key; lastChange = t; }
+      const allIn = r.wantedPages.every((w) => full.has(w.page));
+      const settled = r.pipe === 'idle' && r.fading === 0 && allIn && t - lastChange >= 1500;
+      if (settled || t >= limit) {
+        return { settled, ms: Math.round(t), resident: r.resident, full: full.size, wanted: r.wantedPages.map((w) => w.page) };
+      }
+      await new Promise((res) => setTimeout(res, 150));
+    }
+  }, maxMs);
 }
 
 async function deckColour(page, on) {
@@ -432,16 +481,40 @@ async function measure(page, cfg, tag) {
 // ---------------------------------------------------------------- the run
 const release = await takeBrowserLock(LABEL);
 const browser = await chromium.launch({ headless: true, args: GPU_ARGS });
-const report = { url: URL, extra: EXTRA, time: TIME, tol: TOL, minCorr: MIN_CORR, rows: [], hour: [] };
+const report = { url: URL, extra: EXTRA, time: TIME_ARG ?? Object.fromEntries(HEIGHTS.map((h) => [h.name, h.time])), tol: TOL, minCorr: MIN_CORR, rows: [], hour: [] };
 let failures = 0;
 try {
   const { page, errors } = await openPage(browser);
   report.errors = errors;
+  if (SCENARIOS.includes('field')) {
+    // Its own boot: the field is settled at boot and cannot be switched on later.
+    await boot(page, '&cloudtiles=1');
+    const on = await page.evaluate(async () => (await window.__moon.cloudField())?.pool?.layers ?? 0);
+    console.log(`[hd-probe] field booted, ${on} pool layers`);
+    if (!on) { failures++; console.log('[hd-probe] field: FAIL, the session has no cloud field'); }
+    for (const cfg of HEIGHTS) {
+      await page.evaluate((t) => window.__moon.setTimeMs(t), timeOf(cfg));
+      await poseAt(page, cfg);
+      // The shadow's own demand joins only while the shadow is compiled: on
+      // for the wait, then measure() takes its captures.
+      await page.evaluate(() => window.__moon.cloudShadow({ on: true }));
+      const field = await settleField(page);
+      const row = { ...(await measure(page, cfg, `field-${cfg.name}`)), field };
+      const paged = field.settled && field.full > 0;
+      if (!paged) row.pass = false;
+      report.rows.push(row);
+      if (!row.pass || !row.scored) failures++;
+      console.log(`[hd-probe] field-${cfg.name}: ${!paged ? 'FAIL (no page resident: the base sheet, not the field)' : !row.scored ? 'NO CLOUD (a height must be scored)' : row.pass ? 'PASS' : 'FAIL'} `
+        + `pages ${field.full} at full fade (settled ${field.settled}, ${field.ms} ms), sun ${row.sunElevDeg}°, expected ${row.expectedPx} px, `
+        + `measured ${row.measuredPx} px, length x${row.lengthRatio}, angle ${row.angleErrDeg}°, err ${(row.vectorErrFrac * 100).toFixed(1)} %, `
+        + `corr ${row.corr} (at zero shift ${row.corrAtZeroShift})`);
+    }
+  }
   if (SCENARIOS.includes('shadow')) {
     await boot(page);
     console.log('[hd-probe] booted', JSON.stringify(await page.evaluate(() => window.__moon.cloudShadow())));
     for (const cfg of HEIGHTS) {
-      await page.evaluate((t) => window.__moon.setTimeMs(t), Date.parse(TIME));
+      await page.evaluate((t) => window.__moon.setTimeMs(t), timeOf(cfg));
       await poseAt(page, cfg);
       const row = await measure(page, cfg, cfg.name);
       report.rows.push(row);
@@ -454,7 +527,7 @@ try {
       // The clock running: a simulated hour at the middle height, in four
       // stretches, re-posed and measured after each.
       const cfg = HEIGHTS[1];
-      await page.evaluate((t) => window.__moon.setTimeMs(t), Date.parse(TIME));
+      await page.evaluate((t) => window.__moon.setTimeMs(t), HOUR_START);
       await poseAt(page, cfg);
       const first = await measure(page, cfg, 'hour0');
       report.hour.push({ ...first, simMin: 0 });
@@ -466,7 +539,7 @@ try {
         await page.waitForTimeout((15 * 60 * 1000) / RATE);
         await page.evaluate(() => window.__moon.setTimeRate(0));
         // Land the stop on the quarter exactly: the wall wait carries jitter.
-        await page.evaluate((t) => window.__moon.setTimeMs(t), Date.parse(TIME) + k * 15 * 60 * 1000);
+        await page.evaluate((t) => window.__moon.setTimeMs(t), HOUR_START + k * 15 * 60 * 1000);
         await poseAt(page, cfg);
         const row = await measure(page, cfg, `hour${k}`);
         report.hour.push({ ...row, simMin: k * 15, clockBefore: before });

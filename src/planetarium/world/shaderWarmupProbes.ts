@@ -23,7 +23,10 @@
  * The deck's probe takes the cloud field's define when the session has the
  * field (world/cloudFieldSlots, settled before these are built). The cloud
  * shadow's and the cloud light's defines are not carried: world/surfaceShading
- * keeps both off every probe.
+ * keeps both off every probe. Earth's ground needs no probe for its shadow:
+ * the globe carries CLOUD_SHADOW — and CLOUD_FIELD beside it, in a session
+ * with the field — from its first compile, its sectors share its program, and
+ * the boot compile links it through the globe itself.
  */
 import * as THREE from 'three';
 import { applyTextureDefaults, type MapKind } from './texturePolicy';

@@ -28,7 +28,13 @@
  * Nothing is measured where nothing could be wanted — the deck hidden, the
  * camera on the ground — nor on a frame the chart owns, where the last
  * world frame's demand stands. A frame that will draw the deck starts the
- * dwell of every resident drawn for the first time.
+ * dwell of every resident drawn for the first time. While the ground's cloud
+ * shadow is compiled (world/surfaceShading `cloudShadowsOn`, and with it the
+ * field in the ground's shadow read), the pages its shadows read join the
+ * deck's demand as the residency's second input (world/cloudFieldMeasure
+ * `measureShadow`): a shadow reads the deck h/tan e toward the Sun from the
+ * cloud over its ground, so along the frame's edge on the Sun's side it can
+ * read a page no point of the deck in frame lies on.
  *
  * UPLOADS (`uploadTurn`, in the warm pump's place). A page goes up in two
  * steps, last in line behind the texture queue: a step takes a frame only
@@ -58,12 +64,13 @@
  */
 import * as THREE from 'three';
 import { CLOUD_FIELD_GRID, CLOUD_FIELD_LEVEL_WIDTH } from './cloudField';
-import { CloudFieldMeasure, type FieldCamera } from './cloudFieldMeasure';
+import { CloudFieldMeasure, CloudShadowDemand, type FieldCamera } from './cloudFieldMeasure';
 import { CloudFieldPool, type CloudFieldAllocation, type CloudPage } from './cloudFieldPool';
 import {
   CloudFieldResidency, type CloudFieldFrame, type CloudFieldResidencyStats,
 } from './cloudFieldResidency';
 import { advanceSpinLatch, type SectorSpinLatch } from './sectorSpinGate';
+import { cloudShadowShared, cloudShadowsOn, surfaceShadingArgsOf } from './surfaceShading';
 import { materialColorWidth } from './textureLadder';
 import { takeWarmTurn, textureWarmIdle } from './textureWarmer';
 import { displayFovDeg } from '../../shared/math/lensProjection';
@@ -89,6 +96,10 @@ interface LiveFieldCamera extends FieldCamera {
 export class CloudFieldSession {
   readonly pool: CloudFieldPool;
   private readonly measure = new CloudFieldMeasure();
+  private readonly shadow = new CloudShadowDemand();
+  /** Whether the shadow's demand joins the deck's: the ground's cloud
+   *  shadow compiled (it then reads the field), as of the last world frame. */
+  private shadowRead = false;
   private readonly residency: CloudFieldResidency<CloudPage>;
   private readonly cam: LiveFieldCamera = {
     pos: [0, 0, 2], right: [1, 0, 0], up: [0, 1, 0], back: [0, 0, 1],
@@ -173,9 +184,11 @@ export class CloudFieldSession {
         this.fillCamera(deck, camera, heightPx);
         this.fillSun(deck, sun);
         this.measure.measure(this.cam, this.sun);
+        this.shadowRead = cloudShadowsOn();
+        if (this.shadowRead) this.measureShadow(deck);
       }
     }
-    this.residency.update(f, this.measure, null);
+    this.residency.update(f, this.measure, this.shadowRead ? this.shadow : null);
     if (willDraw && !f.hidden && !chart) this.residency.deckDrawn(nowMs);
     this.frameMicros = (performance.now() - t0) * 1000;
   }
@@ -202,6 +215,17 @@ export class CloudFieldSession {
     c.lensStrength = lens ? lens.effectiveStrength ?? lens.strength : 0;
     c.aspect = camera.aspect;
     c.heightPx = heightPx;
+  }
+
+  /** The pages the ground's cloud shadows read, from the frame `measure` just
+   *  read: the deck's own height and the solar disc the ground's shader reads
+   *  its penumbra from (world/surfaceShading `cloudShadowShared` and the
+   *  deck's `sunTan`, the one Earth's ground takes). */
+  private measureShadow(deck: THREE.Mesh): void {
+    const hOverR = cloudShadowShared.uCloudHeightOverRadius.value;
+    const sunTan = surfaceShadingArgsOf(deck.material as THREE.Material)?.sunTan ?? 0;
+    const penumbra = cloudShadowShared.uCloudShadowPenumbra.value * hOverR * 2 * sunTan;
+    this.measure.measureShadow(1 / (1 + hOverR), hOverR, penumbra, this.shadow);
   }
 
   /** The Sun's direction from the deck's centre, in the deck mesh's frame. */

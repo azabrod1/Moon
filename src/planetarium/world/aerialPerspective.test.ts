@@ -108,8 +108,8 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = 'cb669595398cb8d54b5bad83d437230f4cfac4ff131df6480a1b6a77115f08b4';
-const PROD_FRAGMENT_HASH = '155bd81a3024217e7d43d1d796f87e209e3e4cdae69eb417cd216bb15c14f575';
+const DEV_FRAGMENT_HASH = '7dd73a93afde9956cc81467cd78eb053d602b884ec976c36cfd1811620522c6a';
+const PROD_FRAGMENT_HASH = 'b0c408e23a004c9a6b73e3e6ada34f393e89d4bd92aaedd818f2de68e6ad119a';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 /** The two texts with the cloud field's define OFF (world/cloudField),
  *  resolved as the preprocessor resolves it: each of the field's two chunks
@@ -317,7 +317,7 @@ describe('the injected surface shader', () => {
       // The cloud light's knobs are constants there, and so is the ground's
       // sky fill under a shade, with its knob's zero test gone.
       .replace('\n#ifdef CLOUD_LIGHT\nuniform float uCloudLightWrap;\nuniform float uCloudLightSky;\n#endif\n', '')
-      .replace('uCloudShadowSkyFill > 0.0 && ', '')
+      .replace(/uCloudShadowSkyFill > 0\.0 && /g, '')
       .replace(/uCloudShadowSkyFill/g, CLOUD_SHADOW_SKY_FILL.toFixed(4))
       .replace(/uCloudLightWrap/g, CLOUD_LIGHT_WRAP.toFixed(4))
       .replace(/uCloudLightSky/g, CLOUD_LIGHT_SKY.toFixed(4))

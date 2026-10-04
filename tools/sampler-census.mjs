@@ -11,13 +11,11 @@
 //
 //   - every program within the GPU's fragment texture units;
 //   - Earth's ground with room left for the sea's wind maps (SEA_WIND_SLOT
-//     units, a branch not landed yet) in every combination, counting the
-//     field's two samplers as spent wherever the field is compiled — the
-//     ground declares them now and reads them once its shadow read goes
-//     through the field;
+//     units, a branch not landed yet) in every combination;
 //   - the deck compiled with the field holds exactly the field's two samplers
-//     more; the ground compiled with it drops its dead uCloudDetail tap and
-//     holds nothing else new but those two;
+//     more; the ground, which compiles the field only beside its cloud shadow
+//     (the shadow reads the field), drops its dead uCloudDetail tap and holds
+//     exactly the field's two more;
 //   - the live globe and deck, as this boot linked them, hold exactly what the
 //     census row with their defines holds — the check that the census builds
 //     the app's programs and not some other ones.
@@ -74,14 +72,9 @@ try {
   const key = (r) => `${r.surface} ${r.tables} ${r.waterMask ? 'water' : 'dry'} [${r.defines.join(' ')}]`;
   console.log(`# sampler census @ ${baseUrl}${extra ? ` (${extra})` : ''}`);
   console.log(`  fragment texture units ${census.maxUnits}, sea-wind slot ${census.seaWindSlot}`);
-  // A ground compiled with the field declares its two samplers before it
-  // reads them: what it will spend counts them.
-  const spentBy = (r) => new Set([...r.samplers, ...(r.defines.includes('CLOUD_FIELD') ? FIELD_SAMPLERS : [])]).size;
   for (const r of census.rows) {
-    const spent = spentBy(r);
-    const later = spent > r.samplers.length ? ` (${spent} reading the field)` : '';
-    const room = r.surface === 'ground' && r.waterMask ? `, +${census.seaWindSlot} sea wind = ${spent + census.seaWindSlot}` : '';
-    console.log(`  ${key(r).padEnd(52)} ${String(r.samplers.length).padStart(2)}${later}${room}  ${r.samplers.join(' ')}`);
+    const room = r.surface === 'ground' && r.waterMask ? `, +${census.seaWindSlot} sea wind = ${r.samplers.length + census.seaWindSlot}` : '';
+    console.log(`  ${key(r).padEnd(52)} ${String(r.samplers.length).padStart(2)}${room}  ${r.samplers.join(' ')}`);
   }
 
   const find = (surface, defines, tables, waterMask) => census.rows.find((r) => r.surface === surface
@@ -91,11 +84,10 @@ try {
   for (const r of census.rows) {
     const n = r.samplers.length;
     const field = r.defines.includes('CLOUD_FIELD');
-    const spent = spentBy(r);
     if (n === 0) fail(`${key(r)}: no linked program`);
-    if (spent > census.maxUnits) fail(`${key(r)}: ${spent} samplers, over the ${census.maxUnits} units`);
-    if (r.surface === 'ground' && r.waterMask && spent + census.seaWindSlot > census.maxUnits) {
-      fail(`${key(r)}: ${spent} samplers leave no room for the sea wind's ${census.seaWindSlot}`);
+    if (n > census.maxUnits) fail(`${key(r)}: ${n} samplers, over the ${census.maxUnits} units`);
+    if (r.surface === 'ground' && r.waterMask && n + census.seaWindSlot > census.maxUnits) {
+      fail(`${key(r)}: ${n} samplers leave no room for the sea wind's ${census.seaWindSlot}`);
     }
     if (!field) {
       for (const s of FIELD_SAMPLERS) if (r.samplers.includes(s)) fail(`${key(r)}: ${s} active without the field`);
@@ -109,13 +101,13 @@ try {
         fail(`${key(r)}: holds ${r.samplers.join(' ')}, wanted ${key(without)} and the field's two`);
       }
     } else {
-      // The ground knows it is not the deck: uCloudDetail is gone, and the
-      // field's two are all it may have gained.
+      // The ground knows it is not the deck: uCloudDetail is gone, and its
+      // shadow reads the field: exactly the field's two gained.
       if (r.samplers.includes('uCloudDetail')) fail(`${key(r)}: the deck's uCloudDetail is still active`);
+      if (!r.defines.includes('CLOUD_SHADOW')) fail(`${key(r)}: the ground compiles the field only beside its shadow`);
       const base = without.samplers.filter((s) => s !== 'uCloudDetail');
-      const gained = r.samplers.filter((s) => !base.includes(s));
-      if (gained.some((s) => !FIELD_SAMPLERS.includes(s)) || base.some((s) => !r.samplers.includes(s))) {
-        fail(`${key(r)}: holds ${r.samplers.join(' ')}, wanted ${base.join(' ')} and at most the field's two`);
+      if (!same(r.samplers, [...base, ...FIELD_SAMPLERS])) {
+        fail(`${key(r)}: holds ${r.samplers.join(' ')}, wanted ${base.join(' ')} and the field's two`);
       }
     }
   }

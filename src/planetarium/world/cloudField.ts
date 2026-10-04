@@ -16,6 +16,15 @@
  * the one blank line each of the two chunks below opens with. With it, pages
  * arrive by themselves as the camera moves, and fade in over the sheet.
  *
+ * THE GROUND'S SHADOWS read the same field. Where the ground's cloud shadow is
+ * compiled too (`?cloudshadows=1`, world/surfaceShading), the ground takes the
+ * define beside it and its shadow read calls `cloudFieldFine` at the point the
+ * Sun's ray pierces the deck, with that lookup's own footprint (the penumbra
+ * included) in the guard, and mixes the opacity over the base sheet's at the
+ * weight it returns, as the deck does — so a shadow is as sharp as its cloud,
+ * and hands over with it. The pages a shadow in frame reads join the deck's
+ * demand (world/cloudFieldMeasure `measureShadow`).
+ *
  * THE REPRESENTATION is two channels per texel, `(A, P)` — the encoding study
  * (planning/cloud-detail/encoding) chose it: A is the deck's authored opacity,
  * `smoothstep(0.06, 0.75, s)` of the master's stored value, and P = A·C with C

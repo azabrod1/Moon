@@ -55,6 +55,7 @@ import {
   seaWindTexturesFrom,
 } from './seaWind';
 import { createSectorMaterial } from './sectorMaterial';
+import { setCloudFieldOn } from './cloudFieldSlots';
 import { CLOUD_TOP_KM, cloudCoverageAlpha } from './cloudDeck';
 import { resolveDefine } from '../testing/glslDefine';
 import { NIGHT_WEIGHT_ZERO_SIN } from './nightSources';
@@ -1257,7 +1258,8 @@ describe('cloud shadows on the ground (CLOUD_SHADOW, off by default)', () => {
 
   it('reads the beam once, where the Sun\'s ray to the ground crosses the DRAWN deck, its derivatives taken before the gate', () => {
     const { globe } = earthWithDeck();
-    const on = resolveDefine(fragmentOf(globe), 'CLOUD_SHADOW', true);
+    // The base sheet's read, as a session without the cloud field compiles it.
+    const on = resolveDefine(resolveDefine(fragmentOf(globe), 'CLOUD_SHADOW', true), 'CLOUD_FIELD', false);
     // One read of the deck's map, and it is this one: the straight-down read
     // under the sea alone is the off arm's.
     expect(on.split('textureGrad(uCloudShadowMap').length - 1).toBe(1);
@@ -1282,6 +1284,83 @@ describe('cloud shadows on the ground (CLOUD_SHADOW, off by default)', () => {
     expect(read).not.toContain('directSpecular');
     expect(on).toContain('outgoingLight -= seaGlint * (1.0 - cloudSunKeep);');
     expect(on).not.toMatch(/reflectedLight\.directSpecular \* \(1\.0 - cloudSunKeep/);
+  });
+
+  it('reads the cloud field over the base at the field\'s weight, where the ground compiles the field', () => {
+    const { globe } = earthWithDeck();
+    const text = resolveDefine(fragmentOf(globe), 'CLOUD_SHADOW', true);
+    const field = resolveDefine(text, 'CLOUD_FIELD', true);
+    const readAt = field.indexOf('if (GROUND_ON(uCloudAbove > 0.0)) {');
+    const read = field.slice(readAt, field.indexOf('if (GROUND_ON(uWaterGloss > 0.0)) {', readAt));
+    expect(read.length).toBeGreaterThan(0);
+    // The field at the pierce point, through the shadow lookup's own
+    // footprint: the displaced direction's derivatives, widened by a penumbra
+    // held in the tile ratio's pixels, where the guard measures.
+    const held = read.indexOf('shadowPenumbra /= uCloudFieldPixelScale;');
+    expect(held).toBeGreaterThan(read.indexOf('float shadowPenumbra = '));
+    expect(held).toBeLessThan(read.indexOf('shadowDx *= max('));
+    const fine = read.indexOf('cloudFieldFine(shadowDir, shadowDx, shadowDy, shadowFieldW, shadowFieldLayer).x;');
+    const gate = read.indexOf('if (cloudTapWanted) {');
+    expect(fine).toBeGreaterThan(gate);
+    // The base only where the field leaves it a share, mixed as the deck mixes
+    // them; its plain tap only where the smooth filter does not take it all.
+    const base = read.indexOf('if (shadowFieldW < 1.0) {');
+    expect(base).toBeGreaterThan(fine);
+    expect(read.split('textureGrad(uCloudShadowMap').length - 1).toBe(1);
+    expect(read).toContain('if (shadowSmoothW < 1.0) shadowTexel = textureGrad(uCloudShadowMap, shadowUv, shadowUvDx, shadowUvDy);');
+    expect(read).toContain('shadowCover, shadowFieldW);');
+    expect(read).toContain('cloudSunKeep = 1.0 - shadowCover;');
+    // Under the gate, still nothing that needs an implicit derivative.
+    expect(read.slice(gate)).not.toMatch(/dFd[xy]\(|fwidth\(|texture2D\(|[^a-zA-Z]texture\(/);
+    // The sky's fill reads its table only where there is a shade to fill.
+    expect(field).toContain('if (cloudShade > 0.0 && ');
+    // With the field off the read is the base sheet's alone, as it was.
+    const off = resolveDefine(text, 'CLOUD_FIELD', false);
+    expect(off).not.toMatch(/cloudFieldFine|uCloudFieldPixelScale|shadowCover|cloudShade > 0\.0/);
+  });
+
+  it.runIf(import.meta.env.DEV)('compiles the field into the ground beside the shadow, in a session that has it', () => {
+    const { globe, deck } = earthWithDeck();
+    const sector = createSectorMaterial(globe, { map: new THREE.Texture() });
+    const field = (m: THREE.Material) => (m as THREE.MeshStandardMaterial).defines?.CLOUD_FIELD !== undefined;
+    // Without the field, the shadow alone.
+    setPerfSwitch('cloud-shadow', true);
+    try {
+      expect(field(globe)).toBe(false);
+    } finally {
+      setPerfSwitch('cloud-shadow', false);
+    }
+    setCloudFieldOn(true);
+    try {
+      const late = earthWithDeck();
+      expect(field(late.globe)).toBe(false);
+      setPerfSwitch('cloud-shadow', true);
+      try {
+        for (const m of [late.globe, globe, sector]) expect(field(m)).toBe(true);
+        // A sector cut while it is on takes both at birth, and shares the
+        // globe's program.
+        const cut = createSectorMaterial(late.globe, { map: new THREE.Texture() });
+        expect(cut.defines).toEqual(late.globe.defines);
+        // Never the deck's: its own factory decides that one.
+        expect(field(deck)).toBe(false);
+        // The ground binds the field's slots on every compile, the define in
+        // or out, so a program the switch returns to finds them.
+        const shader = {
+          uniforms: {} as Record<string, unknown>,
+          vertexShader: '#include <common>\n#include <begin_vertex>\n',
+          fragmentShader: '#include <common>\n#include <opaque_fragment>\n',
+        };
+        setPerfSwitch('cloud-shadow', false);
+        (late.globe.onBeforeCompile as (s: typeof shader, r: unknown) => void)(shader, null);
+        expect(field(late.globe)).toBe(false);
+        expect(Object.keys(shader.uniforms)).toEqual(expect.arrayContaining(['uCloudPages', 'uCloudPageTable', 'uCloudFieldPixelScale']));
+      } finally {
+        setPerfSwitch('cloud-shadow', false);
+      }
+      for (const m of [globe, sector]) expect(field(m)).toBe(false);
+    } finally {
+      setCloudFieldOn(false);
+    }
   });
 
   it('cuts the Sun\'s diffuse after the sea\'s block and the air\'s glow before the Moon\'s, and nothing else', () => {

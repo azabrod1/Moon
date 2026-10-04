@@ -33,8 +33,8 @@
  * beside the shader's.
  */
 import {
-  CLOUD_FIELD_GRID, CLOUD_FIELD_LEVEL_WIDTH, CLOUD_FIELD_RELEASE_TEXELS, cloudFieldMajor, cloudPageAddress,
-  cloudPageIndexOf,
+  CLOUD_FIELD_GRID, CLOUD_FIELD_GUARD_TEXELS, CLOUD_FIELD_LEVEL_WIDTH, CLOUD_FIELD_RELEASE_TEXELS, cloudFieldMajor,
+  cloudPageAddress, cloudPageIndexOf,
 } from './cloudField';
 import { lensRadial, lensUnwarpNdc, lensWarpNdc } from '../../shared/math/lensProjection';
 
@@ -280,6 +280,41 @@ const texelsPerU = (cosLat: number): number => CLOUD_FIELD_LEVEL_WIDTH / (2 * Ma
 const texelsPerV = (cosLat: number): number => (CLOUD_FIELD_LEVEL_WIDTH * GRID_Y) / GRID_X / (Math.PI * cosLat);
 
 /**
+ * Page texels of NORTH-SOUTH arc a shadow's penumbra alone may span before the
+ * shadow asks for no page: the guard's midpoint, where the field's weight is a
+ * half. The penumbra grows as the Sun sinks (h·Δθ/sin²e), and past this — under
+ * about 6.4° of Sun for Earth's 10 km deck — a page fetched for the shadow
+ * alone would be drawn at under half its weight.
+ */
+export const CLOUD_SHADOW_DEMAND_PENUMBRA_TEXELS = 0.5 * (CLOUD_FIELD_GUARD_TEXELS[0] + CLOUD_FIELD_GUARD_TEXELS[1]);
+
+/**
+ * The pages the ground's cloud shadows read, in the deck's demand shape, for
+ * the residency to join to the deck's own (`CloudFieldMeasure.measureShadow`
+ * fills it). Every number is +Infinity, 0 or −Infinity for a page no shadow in
+ * frame reads.
+ */
+export class CloudShadowDemand implements CloudPageDemand {
+  readonly wantTexels = new Float64Array(PAGES).fill(Number.POSITIVE_INFINITY);
+  readonly keepTexels = new Float64Array(PAGES).fill(Number.POSITIVE_INFINITY);
+  readonly centrality = new Float32Array(PAGES);
+  readonly sunDot = new Float32Array(PAGES).fill(Number.NEGATIVE_INFINITY);
+  /** Rays of the last reading whose ground point had a shadow to ask for. */
+  samples = 0;
+
+  clear(): void {
+    // By hand: a typed array's fill boxes a double argument on every call.
+    for (let p = 0; p < PAGES; p++) {
+      this.wantTexels[p] = Number.POSITIVE_INFINITY;
+      this.keepTexels[p] = Number.POSITIVE_INFINITY;
+      this.centrality[p] = 0;
+      this.sunDot[p] = Number.NEGATIVE_INFINITY;
+    }
+    this.samples = 0;
+  }
+}
+
+/**
  * The keep measure (`cloudPageKeepTexelsAll`'s numbers, the same points read
  * the same way) and the want measure beside it, at a price a frame can pay:
  * the residency runs it every frame. A number at or under the release line is
@@ -350,6 +385,8 @@ export class CloudFieldMeasure implements CloudPageDemand {
   private readonly pointRadius2 = new Float64Array(LATTICE_U * LATTICE_V);
   private readonly pointShown = new Uint8Array(LATTICE_U * LATTICE_V);
   private frame = 0;
+  /** Whether the last `measure` read the frame (the camera outside the deck). */
+  private measured = false;
   // The rays through the displayed frame, in the camera's own axes (the
   // rectilinear NDC times the half tangents), with each ray's centrality.
   private readonly rayX = new Float64Array(CLOUD_FIELD_KEEP_RAYS[0] * CLOUD_FIELD_KEEP_RAYS[1]);
@@ -431,10 +468,12 @@ export class CloudFieldMeasure implements CloudPageDemand {
     this.pagesRead = 0;
     this.pagesBounded = 0;
     this.pointsRead = 0;
+    this.measured = false;
     const px = cam.pos[0], py = cam.pos[1], pz = cam.pos[2];
     const d2 = px * px + py * py + pz * pz;
     // From inside the deck no front face is drawn.
     if (!(d2 > 1)) return;
+    this.measured = true;
     this.px = px; this.py = py; this.pz = pz;
     this.rx = cam.right[0]; this.ry = cam.right[1]; this.rz = cam.right[2];
     this.ux = cam.up[0]; this.uy = cam.up[1]; this.uz = cam.up[2];
@@ -660,6 +699,110 @@ export class CloudFieldMeasure implements CloudPageDemand {
       if (this.rayCentrality[n] > this.centrality[p]) this.centrality[p] = this.rayCentrality[n];
       const sun = x * this.sx + y * this.sy + z * this.sz;
       if (sun > this.sunDot[p]) this.sunDot[p] = sun;
+    }
+  }
+
+  /**
+   * The pages the ground's cloud shadows read in the frame the last `measure`
+   * read, into `out`. A shadow reads the deck where the ray from its ground
+   * point toward the Sun pierces the deck's shell (cloudDeck
+   * `cloudRayDirection`), which lies h/tan e toward the Sun from the cloud
+   * over that ground — 71 km with the Sun 8° up — so near a page's edge, and
+   * along the frame's edge on the Sun's side, a shadow in frame can read a
+   * page no point of the deck in frame lies on. Everywhere else the deck's own
+   * demand has the page already, at a footprint no coarser (a shadow's
+   * footprint is the ground's, at least the penumbra's). So this reads the
+   * frame's own rays (`CLOUD_FIELD_KEEP_RAYS`, its edges and corners among
+   * them) at the GROUND, and counts each for the page its pierce point lands
+   * on, with the major the shader's guard reads there: the pierce direction's
+   * screen derivatives in closed form — the ground point's, carried through
+   * the displacement's own change with the Sun's height — each widened to the
+   * penumbra in tile-ratio pixels, through `sphereEquirectUvGrad`'s rule into
+   * page texels. A ray whose ground has no Sun, or a Sun so low that the
+   * penumbra alone puts the guard past half (`CLOUD_SHADOW_DEMAND_PENUMBRA_
+   * TEXELS`), asks for nothing.
+   *
+   * `groundRadius` is the ground's radius in deck radii, `hOverR` the deck's
+   * height over the ground's radius, `penumbra` the shader's penumbra before
+   * its 1 / sin²e: the solar disc's angular width times `hOverR`. Allocation
+   * free, like `measure`.
+   */
+  measureShadow(groundRadius: number, hOverR: number, penumbra: number, out: CloudShadowDemand): void {
+    out.clear();
+    if (!this.measured) return;
+    const px = this.px, py = this.py, pz = this.pz;
+    const lx = this.sx, ly = this.sy, lz = this.sz;
+    const g2 = groundRadius * groundRadius;
+    const c = px * px + py * py + pz * pz - g2;
+    const k = hOverR * (2 + hOverR);
+    const step = this.pixelStep / groundRadius;
+    for (let n = 0; n < this.rayX.length; n++) {
+      const rx = this.rayX[n], ry = this.rayY[n];
+      const dx = this.rx * rx + this.ux * ry - this.bx;
+      const dy = this.ry * rx + this.uy * ry - this.by;
+      const dz = this.rz * rx + this.uz * ry - this.bz;
+      const a = dx * dx + dy * dy + dz * dz;
+      const b = px * dx + py * dy + pz * dz;
+      const disc = b * b - a * c;
+      if (disc < 0) continue;
+      // The ray's parameter is its depth: its back component is one.
+      const depth = (-b - Math.sqrt(disc)) / a;
+      if (!(depth > 0)) continue;
+      const gx = px + depth * dx, gy = py + depth * dy, gz = pz + depth * dz;
+      const nx = gx / groundRadius, ny = gy / groundRadius, nz = gz / groundRadius;
+      const mu = nx * lx + ny * ly + nz * lz;
+      if (!(mu > 0)) continue;
+      const pen = penumbra / Math.max(mu * mu, 0.01);
+      if (pen / ARC_PER_TEXEL > CLOUD_SHADOW_DEMAND_PENUMBRA_TEXELS) continue;
+      // The pierce direction (cloudRayDirection), and dt/dmu = -t / root.
+      const root = Math.sqrt(mu * mu + k);
+      const t = k / (root + mu);
+      const tPrime = -t / root;
+      let qx = nx + t * lx, qy = ny + t * ly, qz = nz + t * lz;
+      const ql = Math.sqrt(qx * qx + qy * qy + qz * qz);
+      qx /= ql; qy /= ql; qz /= ql;
+      const cosLat = Math.sqrt(qx * qx + qz * qz);
+      if (cosLat < POLE_EPSILON) continue;
+      // The ground point a pixel right and a pixel up, in direction units:
+      // depth · k (a − v (G·a) / (G·v)) / g for a camera axis a, v = G − C.
+      const vx = gx - px, vy = gy - py, vz = gz - pz;
+      const inv = 1 / (g2 - (gx * px + gy * py + gz * pz));
+      const ar = (gx * this.rx + gy * this.ry + gz * this.rz) * inv;
+      const au = (gx * this.ux + gy * this.uy + gz * this.uz) * inv;
+      const f = depth * step;
+      const n0x = (this.rx - vx * ar) * f, n0y = (this.ry - vy * ar) * f, n0z = (this.rz - vz * ar) * f;
+      const n1x = (this.ux - vx * au) * f, n1y = (this.uy - vy * au) * f, n1z = (this.uz - vz * au) * f;
+      // Through the displacement: d(n + tL) = dn + t' (L·dn) L, then onto the
+      // unit sphere.
+      const s0 = tPrime * (lx * n0x + ly * n0y + lz * n0z);
+      const s1 = tPrime * (lx * n1x + ly * n1y + lz * n1z);
+      let e0x = n0x + s0 * lx, e0y = n0y + s0 * ly, e0z = n0z + s0 * lz;
+      let e1x = n1x + s1 * lx, e1y = n1y + s1 * ly, e1z = n1z + s1 * lz;
+      const r0 = qx * e0x + qy * e0y + qz * e0z;
+      const r1 = qx * e1x + qy * e1y + qz * e1z;
+      e0x = (e0x - qx * r0) / ql; e0y = (e0y - qy * r0) / ql; e0z = (e0z - qz * r0) / ql;
+      e1x = (e1x - qx * r1) / ql; e1y = (e1y - qy * r1) / ql; e1z = (e1z - qz * r1) / ql;
+      // Each widened to the penumbra, as the shader widens it.
+      const l0 = Math.sqrt(e0x * e0x + e0y * e0y + e0z * e0z);
+      const l1 = Math.sqrt(e1x * e1x + e1y * e1y + e1z * e1z);
+      const w0 = Math.max(1, pen / Math.max(l0, 1e-12));
+      const w1 = Math.max(1, pen / Math.max(l1, 1e-12));
+      const held = Math.max(cosLat, 1e-4);
+      const kU = texelsPerU(held), kV = texelsPerV(held);
+      const a0 = (qz * e0x - qx * e0z) * kU * w0, a1 = e0y * kV * w0;
+      const b0 = (qz * e1x - qx * e1z) * kU * w1, b1 = e1y * kV * w1;
+      const aa = a0 * a0 + a1 * a1;
+      const bb = b0 * b0 + b1 * b1;
+      const ab = a0 * b0 + a1 * b1;
+      const half = (aa - bb) * 0.5;
+      const major = Math.sqrt(Math.max((aa + bb) * 0.5 + Math.sqrt(half * half + ab * ab), 0));
+      const p = cloudPageIndexOf(qx, qy, qz);
+      out.samples += 1;
+      if (major < out.wantTexels[p]) out.wantTexels[p] = major;
+      if (major < out.keepTexels[p]) out.keepTexels[p] = major;
+      if (this.rayCentrality[n] > out.centrality[p]) out.centrality[p] = this.rayCentrality[n];
+      const sun = qx * lx + qy * ly + qz * lz;
+      if (sun > out.sunDot[p]) out.sunDot[p] = sun;
     }
   }
 

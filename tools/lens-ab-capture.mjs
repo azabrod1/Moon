@@ -22,8 +22,23 @@
 // too slow to wait out on a software renderer); from there the ship is stepped
 // straight in along its line to the body (`__moon.nudge` moves the ship and
 // nothing else), so the chase camera, the safety pass and the ramp run exactly
-// as in flight. `--lookaround` adds two real mouse drags at the park, both
-// arms, which is the look-away the lens exists for.
+// as in flight. `--lookaround` adds real mouse drags at the park, every arm:
+// a look DOWN past the ship so the horizon sits at the top of the frame (the
+// pose of the user's Moon screenshot that opened the curvature question), a
+// quarter turn to the side (the look-away the lens exists for), a small lift,
+// and a look up. `--zoomout` wheels the camera out from the parked ship and
+// shoots every arm, because the two candidate drivers part exactly there: the
+// ship-plus-boom driver brings the lens back as the boom grows, the ship-only
+// driver holds the pinhole while the disc shrinks.
+//
+// `--arms=` names the arms shot at every stop, comma-separated, default
+// `lens,ramp`: `lens` is the ramp off (the original lens exactly), `ramp` the
+// ramp on under the shipped rule (ship-plus-boom driver, 45/70 band), `ship`
+// the ramp on with the driving angle read from the ship's distance alone
+// (`?lensdrive=ship`), and `band<full>-<off>`, e.g. `band45-58`, the shipped
+// driver under those knees (`?lensband=`). The law each on-arm is held to is
+// read back from the app's own readout (`lensRamp().fullDeg/offDeg`), so the
+// knees are never copied here twice.
 //
 // With --assert the run fails on: a refused jump, travel or pilot; the
 // ramp-off arm reading anything but full strength; the ramp-on arm off the
@@ -63,6 +78,17 @@ const assertMode = process.argv.includes('--assert');
 const useGpu = !process.argv.includes('--software');
 const NO_DETAIL = process.argv.includes('--nodetail');
 const LOOK_AROUND = process.argv.includes('--lookaround');
+const ZOOM_OUT = process.argv.includes('--zoomout');
+const ARMS = arg('arms', 'lens,ramp').split(',').map((name) => name.trim()).filter(Boolean).map(parseArm);
+function parseArm(name) {
+  if (name === 'lens') return { name, on: false, driver: 'ship+boom', fullDeg: 45, offDeg: 70 };
+  if (name === 'ramp') return { name, on: true, driver: 'ship+boom', fullDeg: 45, offDeg: 70 };
+  if (name === 'ship') return { name, on: true, driver: 'ship', fullDeg: 45, offDeg: 70 };
+  const band = /^band(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/.exec(name);
+  if (band) return { name, on: true, driver: 'ship+boom', fullDeg: Number(band[1]), offDeg: Number(band[2]) };
+  throw new Error(`unknown arm '${name}': lens, ramp, ship, or band<full>-<off>`);
+}
+const ON_ARMS = ARMS.filter((arm) => arm.on);
 const SHEET = process.argv.includes('--sheet');
 const FRAME_COUNT = Number(arg('frames', BODY === 'Moon' ? '48' : '60'));
 const TOP_KM = Number(arg('top', BODY === 'Moon' ? '1500' : '8000'));
@@ -75,13 +101,12 @@ const CLOCK = arg('time', '2026-06-14T18:40:00Z');
 const PILOT_SWING_MS = Number(arg('pilot-ms', '45000'));
 const KM_PER_AU = 149_597_870.7;
 
-// --- the ramp, as shared/math/lensProximity.ts defines it ---------------------
-const LENS_PROXIMITY_FULL_DEG = 45;
-const LENS_PROXIMITY_OFF_DEG = 70;
-function lensProximityFactor(angularRadiusDeg) {
-  if (!(angularRadiusDeg > LENS_PROXIMITY_FULL_DEG)) return 1;
-  if (angularRadiusDeg >= LENS_PROXIMITY_OFF_DEG) return 0;
-  const t = (angularRadiusDeg - LENS_PROXIMITY_FULL_DEG) / (LENS_PROXIMITY_OFF_DEG - LENS_PROXIMITY_FULL_DEG);
+// --- the ramp's law, as shared/math/lensProximity.ts defines it, over the knees
+// the app reports it is using ---------------------------------------------------
+function lensProximityFactor(angularRadiusDeg, fullDeg, offDeg) {
+  if (!(angularRadiusDeg > fullDeg)) return 1;
+  if (angularRadiusDeg >= offDeg) return 0;
+  const t = (angularRadiusDeg - fullDeg) / (offDeg - fullDeg);
   return 1 - t * t * (3 - 2 * t);
 }
 
@@ -101,11 +126,12 @@ const check = (condition, message) => { if (!condition) fail(message); };
 const note = (message) => { notes.push(message); console.log(`  note  ${message}`); };
 const records = [];
 const looks = [];
+const zooms = [];
 const pageErrors = [];
 const diagnostics = {};
 const writeRecords = () => writeFile(path.join(outDir, 'records.json'), JSON.stringify({
   baseUrl, body: BODY, viewport: [VIEWPORT_WIDTH, VIEWPORT_HEIGHT], clock: CLOCK, topKm: TOP_KM, bottomKm: BOTTOM_KM,
-  frameCount: FRAME_COUNT, noDetail: NO_DETAIL, diagnostics, records, looks, notes, failures, pageErrors,
+  frameCount: FRAME_COUNT, noDetail: NO_DETAIL, arms: ARMS, diagnostics, records, looks, zooms, notes, failures, pageErrors,
 }, null, 2));
 
 try {
@@ -173,12 +199,18 @@ try {
 
   // The pixels: the body (or the ship on it) against black space — any channel
   // past 32; stars are single pixels and do not move the share.
-  async function shoot(label, arm) {
-    await page.evaluate((on) => window.__moon.setLensRamp(on), arm === 'ramp');
+  async function applyArm(arm) {
+    await page.evaluate((a) => {
+      window.__moon.lensRampConfig({ driver: a.driver, fullDeg: a.fullDeg, offDeg: a.offDeg });
+      window.__moon.setLensRamp(a.on);
+    }, arm);
     await drawn(2);
+  }
+  async function shoot(label, arm) {
+    await applyArm(arm);
     const surface = await surfaceState();
     const buffer = await page.screenshot({ type: 'jpeg', quality: 88 });
-    const file = `${label}-${arm}.jpg`;
+    const file = `${label}-${arm.name}.jpg`;
     await writeFile(path.join(outDir, file), buffer);
     const measured = await page.evaluate(async (base64) => {
       const image = await new Promise((resolve, reject) => {
@@ -202,8 +234,31 @@ try {
       for (let x = 0; x < width; x++) if (lit(bottomRow + x * 4)) bottomLit++;
       return { share: litCount / (width * height), bottomChord: bottomLit / width };
     }, buffer.toString('base64'));
-    return { file, surface, ramp: await rampState(), ...measured };
+    return { file, arm: arm.name, surface, ramp: await rampState(), ...measured };
   }
+  // Every arm at one pose; the pair-retake rule becomes an all-arms rule.
+  async function shootArms(label) {
+    const shots = {};
+    for (const arm of ARMS) shots[arm.name] = await shoot(label, arm);
+    const keys = new Set(ARMS.map((arm) => surfaceKey(shots[arm.name].surface)));
+    return { shots, sameSurface: keys.size === 1 };
+  }
+  const lawOf = (shot) => lensProximityFactor(shot.ramp.angularRadiusDeg, shot.ramp.fullDeg, shot.ramp.offDeg);
+  function checkArms(label, shots) {
+    for (const arm of ARMS) {
+      const shot = shots[arm.name];
+      check(shot.ramp.devPose === false, `${label} ${arm.name}: a dev pose skipped the ramp`);
+      if (!arm.on) {
+        check(Math.abs(shot.ramp.applied - 1) < 1e-6, `${label}: the ramp-off arm read ${shot.ramp.applied.toFixed(4)}, not the original lens`);
+        continue;
+      }
+      check(shot.ramp.driver === arm.driver && shot.ramp.fullDeg === arm.fullDeg && shot.ramp.offDeg === arm.offDeg,
+        `${label} ${arm.name}: the app holds ${shot.ramp.driver} ${shot.ramp.fullDeg}/${shot.ramp.offDeg}, not the arm asked for`);
+      const law = lawOf(shot);
+      check(Math.abs(shot.ramp.applied - law) < 1e-4, `${label} ${arm.name}: read ${shot.ramp.applied.toFixed(4)} against the law's ${law.toFixed(4)} at ${shot.ramp.angularRadiusDeg.toFixed(2)}°`);
+    }
+  }
+  const armSummary = (shots) => ARMS.map((arm) => `${arm.name} ${shots[arm.name].ramp.applied.toFixed(3)}`).join(' | ');
 
   // ---- to the top of the run ---------------------------------------------------
   const first = await bodyProbe();
@@ -263,72 +318,110 @@ try {
     // landed between the shots) is settled again and retaken, twice at most;
     // one that still differs is noted, because the surface is read, not
     // waited for.
-    let lens = null;
-    let ramp = null;
+    let shots = null;
     let sameSurface = false;
     let retakes = 0;
     for (; retakes < 3 && !sameSurface; retakes++) {
       if (retakes > 0) await settleSurface(20000);
-      lens = await shoot(label, 'lens');
-      ramp = await shoot(label, 'ramp');
-      sameSurface = surfaceKey(lens.surface) === surfaceKey(ramp.surface);
+      ({ shots, sameSurface } = await shootArms(label));
     }
     retakes -= 1;
-    lowestRamp = Math.min(lowestRamp, ramp.ramp.applied);
+    for (const arm of ON_ARMS) lowestRamp = Math.min(lowestRamp, shots[arm.name].ramp.applied);
     check(Math.abs(reachedKm - altitudeKm) <= altitudeKm * 0.01 + 0.5, `${label}: sent to ${altitudeKm.toFixed(1)} km, reached ${reachedKm.toFixed(1)}`);
-    check(Math.abs(lens.ramp.applied - 1) < 1e-6, `${label}: the ramp-off arm read ${lens.ramp.applied.toFixed(4)}, not the original lens`);
-    check(lens.ramp.devPose === false && ramp.ramp.devPose === false, `${label}: a dev pose skipped the ramp`);
-    const law = lensProximityFactor(ramp.ramp.angularRadiusDeg);
-    check(Math.abs(ramp.ramp.applied - law) < 1e-4, `${label}: the ramp-on arm read ${ramp.ramp.applied.toFixed(4)} against the law's ${law.toFixed(4)} at ${ramp.ramp.angularRadiusDeg.toFixed(2)}°`);
-    if (!sameSurface) note(`${label}: the two arms still hold different textures after ${retakes} retake(s) (${lens.surface.tiers} | ${ramp.surface.tiers}; ${lens.surface.resident.length}/${ramp.surface.resident.length} tiles)`);
-    records.push({ index, label, altitudeKm, reachedKm, lens, ramp, sameSurface, retakes, wallMs: Date.now() - started });
-    console.log(`  ${label} ${reachedKm.toFixed(0).padStart(5)} km  driving ${ramp.ramp.angularRadiusDeg.toFixed(2)}°  applied ${lens.ramp.applied.toFixed(3)} | ${ramp.ramp.applied.toFixed(4)}  fills ${(lens.share * 100).toFixed(1)}% | ${(ramp.share * 100).toFixed(1)}%  bottom ${(lens.bottomChord * 100).toFixed(0)}% | ${(ramp.bottomChord * 100).toFixed(0)}%${retakes ? `  retaken ×${retakes}` : ''}  ${((Date.now() - started) / 1000).toFixed(1)}s`);
+    checkArms(label, shots);
+    if (!sameSurface) note(`${label}: the arms still hold different textures after ${retakes} retake(s) (${ARMS.map((arm) => `${shots[arm.name].surface.tiers}/${shots[arm.name].surface.resident.length} tiles`).join(' | ')})`);
+    // `lens` and `ramp` stay as named keys so older readers of records.json still find them.
+    records.push({ index, label, altitudeKm, reachedKm, lens: shots.lens, ramp: shots.ramp, shots, sameSurface, retakes, wallMs: Date.now() - started });
+    const first = shots[ARMS[0].name];
+    const drivingText = ON_ARMS.map((arm) => `${arm.name} ${shots[arm.name].ramp.angularRadiusDeg.toFixed(1)}°`).join(', ');
+    console.log(`  ${label} ${reachedKm.toFixed(0).padStart(5)} km  driving ${drivingText}  applied ${armSummary(shots)}  fills ${(first.share * 100).toFixed(1)}%  bottom ${(first.bottomChord * 100).toFixed(0)}%${retakes ? `  retaken ×${retakes}` : ''}  ${((Date.now() - started) / 1000).toFixed(1)}s`);
     await writeRecords();
   }
-  check(lowestRamp < 0.5, `the run never reached the band: the ramp's lowest reading was ${lowestRamp.toFixed(3)}`);
+  if (ON_ARMS.length) check(lowestRamp < 0.5, `the run never reached the band: the lowest on-arm reading was ${lowestRamp.toFixed(3)}`);
 
   // ---- the look-away at the park -------------------------------------------------
+  const centreX = Math.floor(VIEWPORT_WIDTH / 2);
+  const centreY = Math.floor(VIEWPORT_HEIGHT / 2);
+  // What each on-arm read at the park, before any drag: a look must not move it.
+  const parkedByArm = {};
+  for (const arm of ON_ARMS) {
+    await applyArm(arm);
+    parkedByArm[arm.name] = await rampState();
+  }
   if (LOOK_AROUND) {
-    console.log('[2] look-away at the park: real drags, both arms');
-    const centreX = Math.floor(VIEWPORT_WIDTH / 2);
-    const centreY = Math.floor(VIEWPORT_HEIGHT / 2);
-    const parked = await rampState();
-    for (const [name, dx, dy] of [['quarter', Math.round(VIEWPORT_HEIGHT / 4), 0], ['quarter-low', 0, -Math.round(VIEWPORT_HEIGHT / 12)]]) {
-      await page.evaluate(() => window.__moon.setLensRamp(true));
-      await drawn(2);
+    console.log('[2] looks at the park: real drags, every arm');
+    // Drags accumulate — OrbitControls keeps the orbit — so the look that
+    // matters most, down past the ship with the horizon at the top of the
+    // frame, comes first from the untouched chase pose.
+    const drags = [
+      ['down', 0, Math.round(VIEWPORT_HEIGHT / 4)],
+      ['quarter', Math.round(VIEWPORT_HEIGHT / 4), 0],
+      ['quarter-low', 0, -Math.round(VIEWPORT_HEIGHT / 12)],
+      ['up', 0, -Math.round(VIEWPORT_HEIGHT / 2)],
+    ];
+    for (const [name, dx, dy] of drags) {
       await page.mouse.move(centreX, centreY);
       await page.mouse.down();
       await page.mouse.move(centreX + dx, centreY + dy, { steps: 12 });
       await page.mouse.up();
       await page.waitForTimeout(1500);
       await drawn(3);
-      const lens = await shoot(`look-${name}`, 'lens');
-      const ramp = await shoot(`look-${name}`, 'ramp');
-      check(ramp.ramp.camOwner === 'orbit', `look ${name}: the drag did not take the camera (owner ${ramp.ramp.camOwner})`);
-      check(Math.abs(ramp.ramp.applied - parked.applied) < 1e-4, `look ${name}: the look moved the ramp ${parked.applied.toFixed(4)} -> ${ramp.ramp.applied.toFixed(4)}`);
-      looks.push({ look: name, lens, ramp });
-      console.log(`  ${name}: owner ${ramp.ramp.camOwner}, applied ${lens.ramp.applied.toFixed(3)} | ${ramp.ramp.applied.toFixed(4)}, camera's own angle ${ramp.ramp.cameraAngularRadiusDeg.toFixed(2)}°`);
+      const { shots } = await shootArms(`look-${name}`);
+      checkArms(`look-${name}`, shots);
+      for (const arm of ON_ARMS) {
+        const shot = shots[arm.name];
+        check(shot.ramp.camOwner === 'orbit', `look ${name} ${arm.name}: the drag did not take the camera (owner ${shot.ramp.camOwner})`);
+        check(Math.abs(shot.ramp.applied - parkedByArm[arm.name].applied) < 1e-4, `look ${name} ${arm.name}: the look moved the ramp ${parkedByArm[arm.name].applied.toFixed(4)} -> ${shot.ramp.applied.toFixed(4)}`);
+      }
+      looks.push({ look: name, dx, dy, lens: shots.lens, ramp: shots.ramp, shots });
+      const any = shots[(ON_ARMS[0] ?? ARMS[0]).name];
+      console.log(`  ${name}: owner ${any.ramp.camOwner}, applied ${armSummary(shots)}, camera's own angle ${any.ramp.cameraAngularRadiusDeg.toFixed(2)}°`);
       await writeRecords();
     }
+  }
+
+  // ---- the wheel out from the park -------------------------------------------------
+  if (ZOOM_OUT) {
+    console.log('[2b] wheel out from the parked ship, every arm: where the two drivers part');
+    const notches = Number(arg('zoom-notches', '12'));
+    await page.mouse.move(centreX, centreY);
+    for (let i = 0; i < notches; i++) {
+      await page.mouse.wheel(0, 240);
+      await page.waitForTimeout(120);
+    }
+    await page.waitForTimeout(1500);
+    await drawn(3);
+    const { shots } = await shootArms('zoom-out');
+    checkArms('zoom-out', shots);
+    zooms.push({ notches, lens: shots.lens, ramp: shots.ramp, shots });
+    for (const arm of ON_ARMS) {
+      const shot = shots[arm.name];
+      const parked = parkedByArm[arm.name];
+      console.log(`  ${arm.name}: boom ${(shot.ramp.boomAU * KM_PER_AU).toFixed(0)} km (parked ${(parked.boomAU * KM_PER_AU).toFixed(0)}), driving ${shot.ramp.angularRadiusDeg.toFixed(1)}° (parked ${parked.angularRadiusDeg.toFixed(1)}°), applied ${shot.ramp.applied.toFixed(3)} (parked ${parked.applied.toFixed(3)}), camera's own angle ${shot.ramp.cameraAngularRadiusDeg.toFixed(1)}°`);
+    }
+    await writeRecords();
   }
 
   // ---- a contact sheet ------------------------------------------------------------
   if (SHEET && records.length) {
     const picks = Array.from(new Set([0, 1, 2, 3, 4, 5].map((i) => Math.round((i / 5) * (records.length - 1)))));
+    const read = async (file) => (await import('node:fs/promises')).readFile(path.join(outDir, file)).then((b) => b.toString('base64'));
+    const cellOf = async (shot) => ({ image: await read(shot.file), label: shot.arm === 'lens' ? `original lens ${shot.ramp.applied.toFixed(2)}` : `${shot.arm} ${shot.ramp.applied.toFixed(2)}` });
     const rows = [];
     for (const index of picks) {
       const record = records[index];
-      const read = async (file) => (await import('node:fs/promises')).readFile(path.join(outDir, file)).then((b) => b.toString('base64'));
-      rows.push({ label: `${record.reachedKm.toFixed(0)} km`, lens: await read(record.lens.file), ramp: await read(record.ramp.file),
-        lensLabel: `original lens ${record.lens.ramp.applied.toFixed(2)}`, rampLabel: `fade ${record.ramp.ramp.applied.toFixed(2)}` });
+      rows.push({ label: `${record.reachedKm.toFixed(0)} km`, cells: await Promise.all(ARMS.map((arm) => cellOf(record.shots[arm.name]))) });
     }
+    for (const look of looks) rows.push({ label: `look ${look.look}`, cells: await Promise.all(ARMS.map((arm) => cellOf(look.shots[arm.name]))) });
+    for (const zoom of zooms) rows.push({ label: `wheel out ×${zoom.notches}`, cells: await Promise.all(ARMS.map((arm) => cellOf(zoom.shots[arm.name]))) });
     const dataUrl = await page.evaluate(async (sheet) => {
-      const cellWidth = 560;
+      const columns = sheet.rows[0].cells.length;
+      const cellWidth = columns > 2 ? 420 : 560;
       const cellHeight = Math.round(cellWidth * sheet.height / sheet.width);
       const gap = 10;
       const labelHeight = 26;
       const canvas = document.createElement('canvas');
-      canvas.width = gap + 2 * (cellWidth + gap);
+      canvas.width = gap + columns * (cellWidth + gap);
       canvas.height = gap + sheet.rows.length * (labelHeight + cellHeight + gap);
       const ctx = canvas.getContext('2d');
       ctx.fillStyle = '#101216';
@@ -341,12 +434,12 @@ try {
       });
       for (const [rowIndex, row] of sheet.rows.entries()) {
         const top = gap + rowIndex * (labelHeight + cellHeight + gap);
-        for (const [column, key] of [[0, 'lens'], [1, 'ramp']]) {
+        for (const [column, cell] of row.cells.entries()) {
           const left = gap + column * (cellWidth + gap);
           ctx.fillStyle = '#c9ced8';
           ctx.font = '600 15px system-ui, sans-serif';
-          ctx.fillText(`${row.label}  ${row[`${key}Label`]}`, left, top + 18);
-          ctx.drawImage(await load(row[key]), left, top + labelHeight, cellWidth, cellHeight);
+          ctx.fillText(`${row.label}  ${cell.label}`, left, top + 18);
+          ctx.drawImage(await load(cell.image), left, top + labelHeight, cellWidth, cellHeight);
         }
       }
       return canvas.toDataURL('image/jpeg', 0.88);

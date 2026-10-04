@@ -3115,6 +3115,9 @@ function installDevHooks() {
     lensRamp: () => planetariumMode?.devLensRamp() ?? null,
     /** Switch the lens proximity ramp on or off live, as `?lensramp=1` does at boot. */
     setLensRamp: (enabled: boolean) => planetariumMode?.devSetLensRamp(enabled) ?? false,
+    /** The ramp's A/B arm, live: `{driver: 'ship'|'ship+boom', fullDeg, offDeg}`, as `?lensdrive=` and `?lensband=` do at boot; returns the config in force. */
+    lensRampConfig: (patch: { driver?: 'ship+boom' | 'ship'; fullDeg?: number; offDeg?: number } = {}) =>
+      planetariumMode?.devSetLensRampConfig(patch) ?? null,
     travelTo: (name: string) => planetariumMode?.devTravelTo(name) ?? false,
     arrivalPose: () => planetariumMode?.devArrivalPose() ?? null,
     governorOwner: () => planetariumMode?.devGovernorOwner() ?? null,

@@ -249,7 +249,7 @@ import {
   lensDisplayHalfTan,
   lensMaxFrameScale,
 } from '../shared/math/lensProjection';
-import { lensProximityFactor } from '../shared/math/lensProximity';
+import { lensProximityFactor, parseLensRampConfig, type LensRampConfig } from '../shared/math/lensProximity';
 import { SUN_ATMOSPHERE_TINT_RGB, SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../shared/shaders/sun';
 import { landedFrameCamDistAU, landedMinDistanceAU, landedNearAU, LANDED_NEAR_AU } from './landedView';
 import {
@@ -772,6 +772,12 @@ export class PlanetariumMode {
    *  been judged yet — and `__moon.setLensRamp(on)` flips it live. */
   private lensRampEnabled = new URLSearchParams(location.search).get('lensramp') === '1';
 
+  /** The ramp's A/B arms (`?lensdrive=ship`, `?lensband=<full>,<off>`; the
+   *  module header says why each exists): the driver the angle is read from
+   *  and the two knees. The shipped rule unless a URL or
+   *  `__moon.lensRampConfig` says otherwise. */
+  private lensRampConfig: LensRampConfig = parseLensRampConfig(location.search);
+
   /** What the ramp did this frame, for `__moon.lensRamp()`. `applied` is the
    *  strength the shaders read (`effectiveStrength`); `devPose` says the
    *  cruise camera pass was skipped for a dev camera, where the ramp never
@@ -798,6 +804,10 @@ export class PlanetariumMode {
     camOwner: 'chase' as 'chase' | 'orbit' | 'reacquiring',
     body: null as string | null,
     devPose: false,
+    /** The arm in force: the driver and the knees the factor was read with. */
+    driver: 'ship+boom' as 'ship+boom' | 'ship',
+    fullDeg: 45,
+    offDeg: 70,
     applies: 0,
   };
   /** The camera-to-ship distance the cruise rig MEANS to hold — what the lens
@@ -14447,9 +14457,13 @@ export class PlanetariumMode {
     let cameraDeg = 0;
     let discRadiusAU = 0;
     let body: string | null = null;
+    const config = this.lensRampConfig;
     if (this.lensRampEnabled && cruise && !devPose) {
+      // The 'ship' arm reads the disc from the ship's distance alone: a boom
+      // of zero, through the same function, so the readout's camera angle
+      // and the driving body are measured exactly as on the shipped arm.
       const angles = largestDiscAngles(
-        this.camera.position, this.intendedCameraRadiusAU,
+        this.camera.position, config.driver === 'ship' ? 0 : this.intendedCameraRadiusAU,
         this.cameraShellPool, this.cameraShellCount, this.lensRampAngles,
       );
       if (angles.effectiveIndex >= 0) {
@@ -14459,9 +14473,12 @@ export class PlanetariumMode {
       }
       effectiveDeg = angles.effectiveRad * RAD2DEG;
       cameraDeg = angles.cameraRad * RAD2DEG;
-      factor = lensProximityFactor(angles.effectiveRad);
+      factor = lensProximityFactor(angles.effectiveRad, config.band);
     }
     state.enabled = this.lensRampEnabled;
+    state.driver = config.driver;
+    state.fullDeg = config.band.fullDeg;
+    state.offDeg = config.band.offDeg;
     state.factor = factor;
     state.angularRadiusDeg = effectiveDeg;
     state.cameraAngularRadiusDeg = cameraDeg;
@@ -15531,9 +15548,25 @@ export class PlanetariumMode {
     enabled: boolean; factor: number; applied: number; angularRadiusDeg: number;
     cameraAngularRadiusDeg: number; discRadiusAU: number;
     boomAU: number; cameraBoomAU: number; boomFloorAU: number; camOwner: 'chase' | 'orbit' | 'reacquiring';
-    body: string | null; devPose: boolean; applies: number;
+    body: string | null; devPose: boolean; driver: 'ship+boom' | 'ship'; fullDeg: number; offDeg: number; applies: number;
   } {
     return { ...this.lensRampState };
+  }
+
+  /** Dev-only: set the ramp's A/B arm live — the driver and/or the band — as
+   *  `?lensdrive=` and `?lensband=` do at boot, through the same parser so a
+   *  refused band keeps the one in force. Returns the config now in force. */
+  devSetLensRampConfig(patch: { driver?: 'ship+boom' | 'ship'; fullDeg?: number; offDeg?: number }): LensRampConfig {
+    const search = new URLSearchParams();
+    if (patch.driver !== undefined) search.set('lensdrive', patch.driver);
+    if (patch.fullDeg !== undefined || patch.offDeg !== undefined) {
+      search.set('lensband', `${patch.fullDeg ?? this.lensRampConfig.band.fullDeg},${patch.offDeg ?? this.lensRampConfig.band.offDeg}`);
+    }
+    const base: LensRampConfig = patch.driver === undefined
+      ? this.lensRampConfig
+      : { driver: patch.driver, band: this.lensRampConfig.band };
+    this.lensRampConfig = parseLensRampConfig(`?${search.toString()}`, base);
+    return this.lensRampConfig;
   }
 
   /** Dev-only: switch the lens proximity ramp on or off live, as `?lensramp=1` does at boot. */

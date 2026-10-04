@@ -62,6 +62,20 @@
  * departure, a look-around while parked, three projection policies — has not
  * been judged. Pure math only — no three.js — so the ramp is unit-tested in
  * isolation and the probe that measures it predicts from the same two numbers.
+ *
+ * The A/B's two candidate arms ride the same law as switches, any build, so a
+ * phone can fly them from an address bar (`parseLensRampConfig`):
+ * `?lensband=<full>,<off>` moves the two knees — the ship-plus-boom driver
+ * never reads past ~60° at the Moon's clearance shell (ship 41 km up, boom
+ * 233 km), so under the 45/70 band the Moon's park keeps 0.37 of the lens
+ * and nothing smaller than Venus ever reaches a pinhole; a band ending at
+ * 58° gives every park a pinhole and keeps the flyby's 11° margin — and
+ * `?lensdrive=ship` reads the driving angle from the ship's distance ALONE,
+ * no boom, which reaches a pinhole at every park ≥ Europa and cannot move on
+ * a drag or a push, at the price of holding the pinhole while a wheel zooms
+ * the camera far out from a parked ship, where a small disc near the frame
+ * edge is the egg the lens exists for. Neither is the default; the capture
+ * sheet and a recording decide.
  */
 
 import { RAD2DEG } from './angles';
@@ -80,11 +94,60 @@ export const LENS_PROXIMITY_OFF_DEG = 70;
  * below the full knee, exactly 0 at and above the off knee, a smoothstep
  * between. A non-finite input reads as far away (factor 1).
  */
-export function lensProximityFactor(largestAngularRadiusRad: number): number {
+export function lensProximityFactor(
+  largestAngularRadiusRad: number,
+  band: LensRampBand = LENS_PROXIMITY_DEFAULT_BAND,
+): number {
   const angularRadiusDeg = largestAngularRadiusRad * RAD2DEG;
-  if (!Number.isFinite(angularRadiusDeg) || !(angularRadiusDeg > LENS_PROXIMITY_FULL_DEG)) return 1;
-  if (angularRadiusDeg >= LENS_PROXIMITY_OFF_DEG) return 0;
-  return 1 - smoothstepEdges(LENS_PROXIMITY_FULL_DEG, LENS_PROXIMITY_OFF_DEG, angularRadiusDeg);
+  if (!Number.isFinite(angularRadiusDeg) || !(angularRadiusDeg > band.fullDeg)) return 1;
+  if (angularRadiusDeg >= band.offDeg) return 0;
+  return 1 - smoothstepEdges(band.fullDeg, band.offDeg, angularRadiusDeg);
+}
+
+/** The two knees, in degrees of angular radius: full strength at and below
+ *  `fullDeg`, off at and above `offDeg`. */
+export interface LensRampBand {
+  fullDeg: number;
+  offDeg: number;
+}
+
+export const LENS_PROXIMITY_DEFAULT_BAND: LensRampBand = Object.freeze({
+  fullDeg: LENS_PROXIMITY_FULL_DEG,
+  offDeg: LENS_PROXIMITY_OFF_DEG,
+});
+
+/** What the driving angle is read from: the ship's distance plus the boom the
+ *  rig intends (the shipped rule), or the ship's distance alone. */
+export type LensRampDriver = 'ship+boom' | 'ship';
+
+export interface LensRampConfig {
+  driver: LensRampDriver;
+  band: LensRampBand;
+}
+
+export const LENS_RAMP_DEFAULT_CONFIG: LensRampConfig = Object.freeze({
+  driver: 'ship+boom',
+  band: LENS_PROXIMITY_DEFAULT_BAND,
+});
+
+/**
+ * The A/B arms off a URL: `lensdrive=ship` (anything else, or absent, is the
+ * shipped driver) and `lensband=<full>,<off>` in degrees — refused, with the
+ * default kept, unless both numbers are finite, 0 < full < off ≤ 90. Pure,
+ * so a bad value is pinned to fall back rather than to NaN the projection.
+ */
+export function parseLensRampConfig(search: string, base: LensRampConfig = LENS_RAMP_DEFAULT_CONFIG): LensRampConfig {
+  const params = new URLSearchParams(search);
+  const driver: LensRampDriver = params.get('lensdrive') === 'ship' ? 'ship' : base.driver;
+  let band = base.band;
+  const bandText = params.get('lensband');
+  if (bandText !== null) {
+    const parts = bandText.split(',').map((part) => Number(part.trim()));
+    if (parts.length === 2 && parts.every(Number.isFinite) && parts[0] > 0 && parts[0] < parts[1] && parts[1] <= 90) {
+      band = { fullDeg: parts[0], offDeg: parts[1] };
+    }
+  }
+  return { driver, band };
 }
 
 /** The angular radius (rad) a sphere of `radiusAU` subtends from `distanceAU`

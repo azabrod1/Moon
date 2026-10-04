@@ -1,0 +1,59 @@
+[0] default off, then the live switch
+  boot default at k=0.14: enabled=false factor=1 applied=1 alpha=0.0deg
+  after setLensRamp(true): enabled=true factor=0.3609 applied=0.3609 alpha=59.8deg body=Earth
+[1] Earth: applied strength down the ladder
+  k=     1  alpha=  7.15deg  body=Earth     factor=1.0000  applied=1.0000  expected=1.0000  applies=2
+  k=   0.5  alpha= 14.34deg  body=Earth     factor=1.0000  applied=1.0000  expected=1.0000  applies=2
+  k=  0.25  alpha= 29.41deg  body=Earth     factor=1.0000  applied=1.0000  expected=1.0000  applies=2
+  k=   0.2  alpha= 37.67deg  body=Earth     factor=1.0000  applied=1.0000  expected=1.0000  applies=2
+  k=  0.18  alpha= 42.63deg  body=Earth     factor=1.0000  applied=1.0000  expected=1.0000  applies=2
+  k= 0.165  alpha= 47.49deg  body=Earth     factor=0.9722  applied=0.9722  expected=0.9722  applies=3
+  k=  0.15  alpha= 53.97deg  body=Earth     factor=0.7060  applied=0.7060  expected=0.7060  applies=4
+  k=  0.14  alpha= 59.85deg  body=Earth     factor=0.3609  applied=0.3609  expected=0.3609  applies=5
+  k=  0.13  alpha= 68.27deg  body=Earth     factor=0.0137  applied=0.0137  expected=0.0137  applies=6
+  k= 0.126  alpha= 70.19deg  body=Earth     factor=0.0000  applied=0.0000  expected=0.0000  applies=7
+  Sun postcard: body=Sun disc=696340 km alpha=7.18deg factor=1.0000
+[2] Mercury: the drawn disc, ramp on against ramp off at one pose
+  k= 0.165  alpha(cam)= 45.21deg  tilt=18.63deg  off(s=1)= 721.5 px  on(s=1.000)= 721.5 px  predicted= 721.5 px  delta=-0.0
+  k=  0.16  alpha(cam)= 46.93deg  tilt=18.29deg  off(s=1)= 751.5 px  on(s=0.987)= 754.0 px  predicted= 753.8 px  delta=+0.2
+  k= 0.155  alpha(cam)= 48.80deg  tilt=18.36deg  off(s=1)= 786.0 px  on(s=0.945)= 797.5 px  predicted= 797.7 px  delta=-0.2
+  k= 0.152  alpha(cam)= 50.02deg  tilt=18.34deg  off(s=1)= 808.5 px  on(s=0.905)= 830.5 px  predicted= 831.4 px  delta=-0.9
+  k=  0.15  alpha(cam)= 50.88deg  tilt=18.34deg  off(s=1)= 824.5 px  on(s=0.872)= 857.5 px  predicted= 858.2 px  delta=-0.7
+  k= 0.148  alpha=51.48deg  disc overflows the frame — not judged
+  k= 0.145  alpha=52.88deg  disc overflows the frame — not judged
+  k=  0.14  alpha=55.46deg  disc overflows the frame — not judged
+[3] landed: the ramp reads 1; after takeoff it computes again
+  landed readout: factor=1 applied=1 (was 0.0000 in cruise at k=0.126)
+  render 1 (first landed): camera 1.0000, stale 0
+  render 2: camera 1.0000, stale 0
+  render 3: camera 1.0000, stale 0
+  render 4: camera 1.0000, stale 0
+  render 5: camera 1.0000, stale 0
+  render 6: camera 1.0000, stale 0
+  settled landed: factor=1 applied=1
+  after takeoff: body=Earth alpha=27.70deg factor=1.0000 devPose=false
+  jumped back in: factor=0.0000 applied=0.0000
+[4] look-around: real mouse drags, mid-band, through the safety shell and under the floor
+  mid-band: Earth k=0.15: driving alpha=53.973deg camera alpha=54.100deg applied=0.7060 boom=232.8km camera boom=232.8km floor=89.6km owner=chase applies=36
+  drag (220,0): driving alpha=53.973deg camera alpha=55.347deg applied=0.7060 camera boom=232.8km owner=orbit applies=36
+  drag (220,0): driving alpha=53.973deg camera alpha=58.692deg applied=0.7060 camera boom=232.8km owner=orbit applies=36
+  drag (0,140): driving alpha=53.973deg camera alpha=57.767deg applied=0.7060 camera boom=232.8km owner=orbit applies=36
+  drag (-220,0): driving alpha=53.973deg camera alpha=56.677deg applied=0.7060 camera boom=232.8km owner=orbit applies=36
+  settled: driving alpha=53.973deg camera alpha=56.379deg applied=0.7060 camera boom=232.8km intended boom=232.8km owner=orbit applies=36
+  through the shell: Mercury k=0.1332: driving alpha=59.579deg camera alpha=60.004deg applied=0.3764 boom=229.5km camera boom=229.5km floor=89.6km owner=chase applies=37
+  drag (220,0): driving alpha=59.579deg camera alpha=64.508deg applied=0.3764 camera boom=229.5km owner=orbit applies=37
+  drag (220,0): driving alpha=59.579deg camera alpha=76.640deg applied=0.3764 camera boom=184.1km owner=orbit applies=37
+  drag (0,140): driving alpha=59.579deg camera alpha=73.752deg applied=0.3764 camera boom=168.2km owner=orbit applies=37
+  drag (-220,0): driving alpha=59.579deg camera alpha=69.290deg applied=0.3764 camera boom=168.2km owner=orbit applies=37
+  settled: driving alpha=59.579deg camera alpha=68.377deg applied=0.3764 camera boom=168.2km intended boom=229.5km owner=orbit applies=37
+  the safety pass shortened the camera's boom by 61.3 km; the driving angle held at 59.579deg
+  under the floor: Mercury k=0.13: driving alpha=61.860deg camera alpha=62.337deg applied=0.2490 boom=229.5km camera boom=229.5km floor=89.6km owner=chase applies=38
+  after the wheel: driving alpha=68.241deg camera alpha=72.387deg applied=0.0142 boom=89.6km camera boom=89.6km floor=89.6km owner=orbit applies=39
+  drag (220,0): driving alpha=68.241deg camera alpha=76.640deg applied=0.0142 camera boom=88.1km owner=orbit applies=39
+  drag (220,0): driving alpha=68.241deg camera alpha=76.640deg applied=0.0142 camera boom=88.2km owner=orbit applies=39
+  settled: driving alpha=68.241deg camera alpha=76.640deg applied=0.0142 camera boom=89.6km intended boom=89.6km owner=orbit applies=39
+  9 sample(s) read the camera under the 89.6 km floor, the shortest at 87.27 km; the intended boom held at 89.58 km
+[5] dev pose after a ramped frame
+  frame('Earth', 0.6, 0, 6) after applied=0.0000: devPose=true applied=1 factor=1
+
+all checks passed — /tmp/moon-shots/curvature-investigation/regression

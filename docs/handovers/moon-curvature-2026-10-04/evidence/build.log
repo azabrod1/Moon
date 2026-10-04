@@ -1,0 +1,33 @@
+
+> moon@1.0.0 build
+> tsc && vite build
+
+vite v8.0.3 building client environment for production...
+[2Ktransforming...
+fonts/Geist-Variable.woff2 referenced in fonts/Geist-Variable.woff2 didn't resolve at build time, it will remain unchanged to be resolved at runtime
+
+fonts/GeistMono-Variable.woff2 referenced in fonts/GeistMono-Variable.woff2 didn't resolve at build time, it will remain unchanged to be resolved at runtime
+✓ 310 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/assets/tilePixelWorker-_XIGJc2P.js      0.85 kB
+dist/index.html                            306.83 kB │ gzip:  67.77 kB
+dist/assets/constants-DEzs6qZY.js            0.14 kB │ gzip:   0.13 kB
+dist/assets/physicalData-lh_1nD7W.js         6.38 kB │ gzip:   2.71 kB
+dist/assets/moonData-CH9xl7t5.js             7.70 kB │ gzip:   2.82 kB
+dist/assets/MoonFlightMode-DODyZQa3.js      21.03 kB │ gzip:   6.50 kB
+dist/assets/KTX2Loader-CPynjAxp.js          58.67 kB │ gzip:  24.09 kB
+dist/assets/coverageTag-TH7m-43L.js        127.62 kB │ gzip:  35.24 kB
+dist/assets/VolumeCompareMode-C01hPCgv.js  132.18 kB │ gzip:  42.49 kB
+dist/assets/InteriorMode-BJQFwe8_.js       146.85 kB │ gzip:  46.73 kB
+dist/assets/fullscreen-CIeBuSWE.js         325.33 kB │ gzip: 108.71 kB
+dist/assets/three.module-BDxo6iRs.js       556.81 kB │ gzip: 140.49 kB
+dist/assets/index-CzRwms4z.js              906.65 kB │ gzip: 272.42 kB
+
+✓ built in 331ms
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+sw.js: 98 manifest entries, 37 precached, 12 tile sets from https://cdn.jsdelivr.net

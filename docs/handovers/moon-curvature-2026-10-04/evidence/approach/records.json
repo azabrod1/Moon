@@ -1,0 +1,705 @@
+{
+  "baseUrl": "http://localhost:5174",
+  "body": "Moon",
+  "viewport": [
+    1440,
+    902
+  ],
+  "clock": "2026-06-14T18:40:00Z",
+  "topKm": 1500,
+  "bottomKm": 78,
+  "frameCount": 8,
+  "noDetail": false,
+  "diagnostics": {
+    "device": {
+      "deviceClass": "desktop",
+      "family": "apple",
+      "profile": "unmeasured-desktop",
+      "provenance": "derived 2026-08-29 from the iPhone row, no desktop measured",
+      "envelopeBytes": 1073741824,
+      "ceilingBytes": 536870912,
+      "sectorFloorBytes": 68519934,
+      "residentCap": 16,
+      "inflightCap": 2,
+      "fetchPool": 6,
+      "wantTexelPx": 1,
+      "releaseTexelPx": 0.65,
+      "cacheOnlyWarm": false,
+      "tierCaps": {}
+    },
+    "atmoState": "unavailable"
+  },
+  "records": [
+    {
+      "index": 0,
+      "label": "f00",
+      "altitudeKm": 1500,
+      "reachedKm": 1499.999999996136,
+      "lens": {
+        "file": "f00-lens.jpg",
+        "surface": {
+          "loading": 0,
+          "resident": [],
+          "tiers": "moon:8k"
+        },
+        "ramp": {
+          "enabled": false,
+          "factor": 1,
+          "applied": 1,
+          "angularRadiusDeg": 0,
+          "cameraAngularRadiusDeg": 0,
+          "discRadiusAU": 0,
+          "boomAU": 0.000001582553397018437,
+          "cameraBoomAU": 0.0000015825533970184297,
+          "boomFloorAU": 5.988366484149432e-7,
+          "camOwner": "chase",
+          "body": null,
+          "devPose": false,
+          "applies": 0
+        },
+        "share": 0.35042267184035475,
+        "bottomChord": 0
+      },
+      "ramp": {
+        "file": "f00-ramp.jpg",
+        "surface": {
+          "loading": 0,
+          "resident": [],
+          "tiers": "moon:8k"
+        },
+        "ramp": {
+          "enabled": true,
+          "factor": 1,
+          "applied": 1,
+          "angularRadiusDeg": 30.006221488995994,
+          "cameraAngularRadiusDeg": 30.171171471529654,
+          "discRadiusAU": 0.000011613801666229199,
+          "boomAU": 0.0000015825533970184369,
+          "cameraBoomAU": 0.0000015825533970184299,
+          "boomFloorAU": 5.988366484149432e-7,
+          "camOwner": "chase",
+          "body": "Moon",
+          "devPose": false,
+          "applies": 0
+        },
+        "share": 0.35042267184035475,
+        "bottomChord": 0
+      },
+      "sameSurface": true,
+      "retakes": 0,
+      "wallMs": 949
+    },
+    {
+      "index": 1,
+      "label": "f01",
+      "altitudeKm": 983.2482118980065,
+      "reachedKm": 983.2482118946759,
+      "lens": {
+        "file": "f01-lens.jpg",
+        "surface": {
+          "loading": 0,
+          "resident": [],
+          "tiers": "moon:8k"
+        },
+        "ramp": {
+          "enabled": false,
+          "factor": 1,
+          "applied": 1,
+          "angularRadiusDeg": 0,
+          "cameraAngularRadiusDeg": 0,
+          "discRadiusAU": 0,
+          "boomAU": 0.0000015825533970184367,
+          "cameraBoomAU": 0.0000015825533970184292,
+          "boomFloorAU": 5.988366484149432e-7,
+          "camOwner": "chase",
+          "body": null,
+          "devPose": false,
+          "applies": 0
+        },
+        "share": 0.48952790096082777,
+        "bottomChord": 0
+      },
+      "ramp": {
+        "file": "f01-ramp.jpg",
+        "surface": {
+          "loading": 0,
+          "resident": [],
+          "tiers": "moon:8k"
+        },
+        "ramp": {
+          "enabled": true,
+          "factor": 1,
+          "applied": 1,
+          "angularRadiusDeg": 35.978137596862034,
+          "cameraAngularRadiusDeg": 36.21906856243056,
+          "discRadiusAU": 0.000011613801666229199,
+          "boomAU": 0.0000015825533970184367,
+          "cameraBoomAU": 0.0000015825533970184292,
+          "boomFloorAU": 5.988366484149432e-7,
+          "camOwner": "chase",
+          "body": "Moon",
+          "devPose": false,
+          "applies": 0
+        },
+        "share": 0.48952790096082777,
+        "bottomChord": 0
+      },
+      "sameSurface": true,
+      "retakes": 0,
+      "wallMs": 947
+    },
+    {
+      "index": 2,
+      "label": "f02",
+      "altitudeKm": 644.5180308004182,
+      "reachedKm": 644.5180308030776,
+      "lens": {
+        "file": "f02-lens.jpg",
+        "surface": {
+          "loading": 0,
+          "resident": [
+            "0_1",
+            "0_2",
+            "7_1",
+            "7_2"
+          ],
+          "tiers": "moon:8k"
+        },
+        "ramp": {
+          "enabled": false,
+          "factor": 1,
+          "applied": 1,
+          "angularRadiusDeg": 0,
+          "cameraAngularRadiusDeg": 0,
+          "discRadiusAU": 0,
+          "boomAU": 0.0000015825533970184367,
+          "cameraBoomAU": 0.0000015825533970184292,
+          "boomFloorAU": 5.988366484149432e-7,
+          "camOwner": "chase",
+          "body": null,
+          "devPose": false,
+          "applies": 0
+        },
+        "share": 0.6432780549396403,
+        "bottomChord": 0
+      },
+      "ramp": {
+        "file": "f02-ramp.jpg",
+        "surface": {
+          "loading": 0,
+          "resident": [
+            "0_1",
+            "0_2",
+            "7_1",
+            "7_2"
+          ],
+          "tiers": "moon:8k"
+        },
+        "ramp": {
+          "enabled": true,
+          "factor": 1,
+          "applied": 1,
+          "angularRadiusDeg": 41.56489582553485,
+          "cameraAngularRadiusDeg": 41.89418634432841,
+          "discRadiusAU": 0.000011613801666229199,
+          "boomAU": 0.0000015825533970184364,
+          "cameraBoomAU": 0.000001582553397018429,
+          "boomFloorAU": 5.988366484149432e-7,
+          "camOwner": "chase",
+          "body": "Moon",
+          "devPose": false,
+          "applies": 0
+        },
+        "share": 0.6432780549396403,
+        "bottomChord": 0
+      },
+      "sameSurface": true,
+      "retakes": 0,
+      "wallMs": 1354
+    },
+    {
+      "index": 3,
+      "label": "f03",
+      "altitudeKm": 422.4808008803569,
+      "reachedKm": 422.48080087698054,
+      "lens": {
+        "file": "f03-lens.jpg",
+        "surface": {
+          "loading": 0,
+          "resident": [
+            "0_1",
+            "0_2",
+            "7_1",
+            "7_2"
+          ],
+          "tiers": "moon:8k"
+        },
+        "ramp": {
+          "enabled": false,
+          "factor": 1,
+          "applied": 1,
+          "angularRadiusDeg": 0,
+          "cameraAngularRadiusDeg": 0,
+          "discRadiusAU": 0,
+          "boomAU": 0.0000015825533970184362,
+          "cameraBoomAU": 0.0000015825533970184297,
+          "boomFloorAU": 5.988366484149432e-7,
+          "camOwner": "chase",
+          "body": null,
+          "devPose": false,
+          "applies": 2
+        },
+        "share": 0.7751532089184529,
+        "bottomChord": 0
+      },
+      "ramp": {
+        "file": "f03-ramp.jpg",
+        "surface": {
+          "loading": 0,
+          "resident": [
+            "0_1",
+            "0_2",
+            "7_1",
+            "7_2"
+          ],
+          "tiers": "moon:8k"
+        },
+        "ramp": {
+          "enabled": true,
+          "factor": 0.9901207985183893,
+          "applied": 0.9901207985183893,
+          "angularRadiusDeg": 46.46347216555926,
+          "cameraAngularRadiusDeg": 46.88747982264572,
+          "discRadiusAU": 0.000011613801666229199,
+          "boomAU": 0.000001582553397018436,
+          "cameraBoomAU": 0.0000015825533970184292,
+          "boomFloorAU": 5.988366484149432e-7,
+          "camOwner": "chase",
+          "body": "Moon",
+          "devPose": false,
+          "applies": 3
+        },
+        "share": 0.7757221606306972,
+        "bottomChord": 0
+      },
+      "sameSurface": true,
+      "retakes": 0,
+      "wallMs": 951
+    },
+    {
+      "index": 4,
+      "label": "f04",
+      "altitudeKm": 276.9356613512325,
+      "reachedKm": 276.9356613496725,
+      "lens": {
+        "file": "f04-lens.jpg",
+        "surface": {
+          "loading": 0,
+          "resident": [
+            "0_1",
+            "0_2",
+            "1_1",
+            "7_1",
+            "7_2"
+          ],
+          "tiers": "moon:8k"
+        },
+        "ramp": {
+          "enabled": false,
+          "factor": 1,
+          "applied": 1,
+          "angularRadiusDeg": 0,
+          "cameraAngularRadiusDeg": 0,
+          "discRadiusAU": 0,
+          "boomAU": 0.0000015825533970184358,
+          "cameraBoomAU": 0.0000015825533970184292,
+          "boomFloorAU": 5.988366484149432e-7,
+          "camOwner": "chase",
+          "body": null,
+          "devPose": false,
+          "applies": 5
+        },
+        "share": 0.8744826311899483,
+        "bottomChord": 0.22361111111111112
+      },
+      "ramp": {
+        "file": "f04-ramp.jpg",
+        "surface": {
+          "loading": 0,
+          "resident": [
+            "0_1",
+            "0_2",
+            "1_1",
+            "7_1",
+            "7_2"
+          ],
+          "tiers": "moon:8k"
+        },
+        "ramp": {
+          "enabled": true,
+          "factor": 0.8754201961037585,
+          "applied": 0.8754201961037585,
+          "angularRadiusDeg": 50.51639185638444,
+          "cameraAngularRadiusDeg": 51.03448265606946,
+          "discRadiusAU": 0.000011613801666229199,
+          "boomAU": 0.0000015825533970184358,
+          "cameraBoomAU": 0.0000015825533970184292,
+          "boomFloorAU": 5.988366484149432e-7,
+          "camOwner": "chase",
+          "body": "Moon",
+          "devPose": false,
+          "applies": 6
+        },
+        "share": 0.8791982323232324,
+        "bottomChord": 0.22847222222222222
+      },
+      "sameSurface": true,
+      "retakes": 0,
+      "wallMs": 1354
+    },
+    {
+      "index": 5,
+      "label": "f05",
+      "altitudeKm": 181.5309958895941,
+      "reachedKm": 181.53099589476506,
+      "lens": {
+        "file": "f05-lens.jpg",
+        "surface": {
+          "loading": 0,
+          "resident": [
+            "0_1",
+            "0_2",
+            "1_1",
+            "1_2",
+            "7_1",
+            "7_2"
+          ],
+          "tiers": "moon:8k"
+        },
+        "ramp": {
+          "enabled": false,
+          "factor": 1,
+          "applied": 1,
+          "angularRadiusDeg": 0,
+          "cameraAngularRadiusDeg": 0,
+          "discRadiusAU": 0,
+          "boomAU": 0.0000015825533970184356,
+          "cameraBoomAU": 0.0000015825533970184297,
+          "boomFloorAU": 5.988366484149432e-7,
+          "camOwner": "chase",
+          "body": null,
+          "devPose": false,
+          "applies": 8
+        },
+        "share": 0.9254611665434836,
+        "bottomChord": 0.48125
+      },
+      "ramp": {
+        "file": "f05-ramp.jpg",
+        "surface": {
+          "loading": 0,
+          "resident": [
+            "0_1",
+            "0_2",
+            "1_1",
+            "1_2",
+            "7_1",
+            "7_2"
+          ],
+          "tiers": "moon:8k"
+        },
+        "ramp": {
+          "enabled": true,
+          "factor": 0.7207845790297386,
+          "applied": 0.7207845790297386,
+          "angularRadiusDeg": 53.70352193067791,
+          "cameraAngularRadiusDeg": 54.30852006721425,
+          "discRadiusAU": 0.000011613801666229199,
+          "boomAU": 0.0000015825533970184356,
+          "cameraBoomAU": 0.0000015825533970184305,
+          "boomFloorAU": 5.988366484149432e-7,
+          "camOwner": "chase",
+          "body": "Moon",
+          "devPose": false,
+          "applies": 9
+        },
+        "share": 0.9363905826558265,
+        "bottomChord": 0.5118055555555555
+      },
+      "sameSurface": true,
+      "retakes": 0,
+      "wallMs": 1346
+    },
+    {
+      "index": 6,
+      "label": "f06",
+      "altitudeKm": 118.99335140833854,
+      "reachedKm": 118.99335140704511,
+      "lens": {
+        "file": "f06-lens.jpg",
+        "surface": {
+          "loading": 0,
+          "resident": [
+            "0_1",
+            "0_2",
+            "1_2",
+            "7_1",
+            "7_2"
+          ],
+          "tiers": "moon:8k"
+        },
+        "ramp": {
+          "enabled": false,
+          "factor": 1,
+          "applied": 1,
+          "angularRadiusDeg": 0,
+          "cameraAngularRadiusDeg": 0,
+          "discRadiusAU": 0,
+          "boomAU": 0.0000015825533970184356,
+          "cameraBoomAU": 0.0000015825533970184316,
+          "boomFloorAU": 5.988366484149432e-7,
+          "camOwner": "chase",
+          "body": null,
+          "devPose": false,
+          "applies": 11
+        },
+        "share": 0.9533782951465878,
+        "bottomChord": 0.6180555555555556
+      },
+      "ramp": {
+        "file": "f06-ramp.jpg",
+        "surface": {
+          "loading": 0,
+          "resident": [
+            "0_1",
+            "0_2",
+            "1_2",
+            "7_1",
+            "7_2"
+          ],
+          "tiers": "moon:8k"
+        },
+        "ramp": {
+          "enabled": true,
+          "factor": 0.5834507046073456,
+          "applied": 0.5834507046073456,
+          "angularRadiusDeg": 56.10334288970519,
+          "cameraAngularRadiusDeg": 56.783283380858016,
+          "discRadiusAU": 0.000011613801666229199,
+          "boomAU": 0.0000015825533970184356,
+          "cameraBoomAU": 0.0000015825533970184318,
+          "boomFloorAU": 5.988366484149432e-7,
+          "camOwner": "chase",
+          "body": "Moon",
+          "devPose": false,
+          "applies": 12
+        },
+        "share": 0.9682734355752648,
+        "bottomChord": 0.6868055555555556
+      },
+      "sameSurface": true,
+      "retakes": 0,
+      "wallMs": 940
+    },
+    {
+      "index": 7,
+      "label": "f07",
+      "altitudeKm": 78,
+      "reachedKm": 78.0000000004411,
+      "lens": {
+        "file": "f07-lens.jpg",
+        "surface": {
+          "loading": 0,
+          "resident": [
+            "0_1",
+            "0_2",
+            "7_1",
+            "7_2"
+          ],
+          "tiers": "moon:8k"
+        },
+        "ramp": {
+          "enabled": false,
+          "factor": 1,
+          "applied": 1,
+          "angularRadiusDeg": 0,
+          "cameraAngularRadiusDeg": 0,
+          "discRadiusAU": 0,
+          "boomAU": 0.0000015825533970184356,
+          "cameraBoomAU": 0.0000015825533970184318,
+          "boomFloorAU": 5.988366484149432e-7,
+          "camOwner": "chase",
+          "body": null,
+          "devPose": false,
+          "applies": 14
+        },
+        "share": 0.96895017245627,
+        "bottomChord": 0.7055555555555556
+      },
+      "ramp": {
+        "file": "f07-ramp.jpg",
+        "surface": {
+          "loading": 0,
+          "resident": [
+            "0_1",
+            "0_2",
+            "7_1",
+            "7_2"
+          ],
+          "tiers": "moon:8k"
+        },
+        "ramp": {
+          "enabled": true,
+          "factor": 0.4792133301487569,
+          "applied": 0.4792133301487569,
+          "angularRadiusDeg": 57.84653327310537,
+          "cameraAngularRadiusDeg": 58.587166028295904,
+          "discRadiusAU": 0.000011613801666229199,
+          "boomAU": 0.0000015825533970184356,
+          "cameraBoomAU": 0.0000015825533970184318,
+          "boomFloorAU": 5.988366484149432e-7,
+          "camOwner": "chase",
+          "body": "Moon",
+          "devPose": false,
+          "applies": 15
+        },
+        "share": 0.9842241007637349,
+        "bottomChord": 0.8180555555555555
+      },
+      "sameSurface": true,
+      "retakes": 0,
+      "wallMs": 949
+    }
+  ],
+  "looks": [
+    {
+      "look": "quarter",
+      "lens": {
+        "file": "look-quarter-lens.jpg",
+        "surface": {
+          "loading": 0,
+          "resident": [
+            "0_1",
+            "0_2",
+            "7_1",
+            "7_2"
+          ],
+          "tiers": "moon:8k"
+        },
+        "ramp": {
+          "enabled": false,
+          "factor": 1,
+          "applied": 1,
+          "angularRadiusDeg": 0,
+          "cameraAngularRadiusDeg": 0,
+          "discRadiusAU": 0,
+          "boomAU": 0.0000015825533970184356,
+          "cameraBoomAU": 0.0000015825533970184314,
+          "boomFloorAU": 5.988366484149432e-7,
+          "camOwner": "orbit",
+          "body": null,
+          "devPose": false,
+          "applies": 16
+        },
+        "share": 0.3642037755604829,
+        "bottomChord": 0.3590277777777778
+      },
+      "ramp": {
+        "file": "look-quarter-ramp.jpg",
+        "surface": {
+          "loading": 0,
+          "resident": [
+            "0_1",
+            "0_2",
+            "7_1",
+            "7_2"
+          ],
+          "tiers": "moon:8k"
+        },
+        "ramp": {
+          "enabled": true,
+          "factor": 0.4792133301487569,
+          "applied": 0.4792133301487569,
+          "angularRadiusDeg": 57.84653327310537,
+          "cameraAngularRadiusDeg": 73.10048396111921,
+          "discRadiusAU": 0.000011613801666229199,
+          "boomAU": 0.0000015825533970184356,
+          "cameraBoomAU": 0.0000015825533970184316,
+          "boomFloorAU": 5.988366484149432e-7,
+          "camOwner": "orbit",
+          "body": "Moon",
+          "devPose": false,
+          "applies": 17
+        },
+        "share": 0.36636948755851195,
+        "bottomChord": 0.35555555555555557
+      }
+    },
+    {
+      "look": "quarter-low",
+      "lens": {
+        "file": "look-quarter-low-lens.jpg",
+        "surface": {
+          "loading": 0,
+          "resident": [
+            "0_1",
+            "0_2",
+            "7_1",
+            "7_2"
+          ],
+          "tiers": "moon:8k"
+        },
+        "ramp": {
+          "enabled": false,
+          "factor": 1,
+          "applied": 1,
+          "angularRadiusDeg": 0,
+          "cameraAngularRadiusDeg": 0,
+          "discRadiusAU": 0,
+          "boomAU": 0.0000015825533970184356,
+          "cameraBoomAU": 0.000001582553397018436,
+          "boomFloorAU": 5.988366484149432e-7,
+          "camOwner": "orbit",
+          "body": null,
+          "devPose": false,
+          "applies": 18
+        },
+        "share": 0.36456793545208177,
+        "bottomChord": 0.3472222222222222
+      },
+      "ramp": {
+        "file": "look-quarter-low-ramp.jpg",
+        "surface": {
+          "loading": 0,
+          "resident": [
+            "0_1",
+            "0_2",
+            "7_1",
+            "7_2"
+          ],
+          "tiers": "moon:8k"
+        },
+        "ramp": {
+          "enabled": true,
+          "factor": 0.4792133301487569,
+          "applied": 0.4792133301487569,
+          "angularRadiusDeg": 57.84653327310537,
+          "cameraAngularRadiusDeg": 73.11182733354485,
+          "discRadiusAU": 0.000011613801666229199,
+          "boomAU": 0.0000015825533970184356,
+          "cameraBoomAU": 0.000001582553397018436,
+          "boomFloorAU": 5.988366484149432e-7,
+          "camOwner": "orbit",
+          "body": "Moon",
+          "devPose": false,
+          "applies": 19
+        },
+        "share": 0.36668899359448137,
+        "bottomChord": 0.34444444444444444
+      }
+    }
+  ],
+  "notes": [],
+  "failures": [],
+  "pageErrors": []
+}

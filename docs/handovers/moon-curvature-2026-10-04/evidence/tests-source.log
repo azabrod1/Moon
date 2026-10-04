@@ -1,0 +1,15 @@
+
+> moon@1.0.0 test
+> vitest run src --exclude **/planning/** --maxWorkers=4
+
+
+ RUN  v4.1.8 /Users/alex/Developer/Moon
+
+(node:18621) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+ Test Files  198 passed (198)
+      Tests  4318 passed (4318)
+   Start at  08:52:36
+   Duration  27.37s (transform 2.34s, setup 0ms, import 14.89s, tests 38.21s, environment 9ms)
+

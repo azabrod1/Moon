@@ -1,0 +1,44 @@
+{
+  "note": "Fit to lit left limb only, pixels x=80..1590. Radius/altitude inference assumes full stereographic projection and given vertical FOV, not known camera telemetry.",
+  "width": 3456,
+  "height": 2166,
+  "circle": {
+    "cx": 1877.85,
+    "cy": 2874.23,
+    "r": 2643.93
+  },
+  "meanRadialResidualPx": 0.291,
+  "maxRadialResidualPx": 1.946,
+  "fits": [
+    {
+      "fov": 45,
+      "angularRadiusDeg": 48.042419661150845,
+      "inferredCameraAltitudeKm": 598.945477130255
+    },
+    {
+      "fov": 50,
+      "angularRadiusDeg": 52.106447785103114,
+      "inferredCameraAltitudeKm": 464.20037537500735
+    },
+    {
+      "fov": 55,
+      "angularRadiusDeg": 55.92760012848941,
+      "inferredCameraAltitudeKm": 360.0724551981551
+    },
+    {
+      "fov": 60,
+      "angularRadiusDeg": 59.52498868750177,
+      "inferredCameraAltitudeKm": 278.49502323240023
+    },
+    {
+      "fov": 65,
+      "angularRadiusDeg": 62.91819364228624,
+      "inferredCameraAltitudeKm": 213.95119297310345
+    },
+    {
+      "fov": 70,
+      "angularRadiusDeg": 66.1263882619335,
+      "inferredCameraAltitudeKm": 162.55969436950963
+    }
+  ]
+}

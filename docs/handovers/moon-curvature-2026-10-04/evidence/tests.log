@@ -1,0 +1,37 @@
+
+> moon@1.0.0 test
+> vitest run src
+
+
+ RUN  v4.1.8 /Users/alex/Developer/Moon
+
+ ❯ planning/_t2/stepC/src/planetarium/PlanetFactory.test.ts (0 test)
+ ❯ src/app/resolutionController.test.ts (234 tests | 1 failed) 10191ms
+     × stops sampling at Medium after half a minute of refusals, and retries rarely 5471ms
+ ❯ planning/cloud-detail/field-base-s3/src/planetarium/surfaceGrain.test.ts (42 tests | 2 failed) 128211ms
+     × cuts a curve where it runs into ground that was never measured 30889ms
+       × leaves no curve, and the albedo step, under the rule 66786ms
+ ❯ planning/cloud-detail/field-base-s2/src/planetarium/surfaceGrain.test.ts (42 tests | 2 failed) 128165ms
+     × cuts a curve where it runs into ground that was never measured 30825ms
+       × leaves no curve, and the albedo step, under the rule 65758ms
+ ❯ planning/cloud-detail/field-candidate/src/planetarium/surfaceGrain.test.ts (42 tests | 2 failed) 128343ms
+     × cuts a curve where it runs into ground that was never measured 30954ms
+       × leaves no curve, and the albedo step, under the rule 64572ms
+ ❯ planning/cloud-detail/field-base2/src/planetarium/surfaceGrain.test.ts (42 tests | 2 failed) 128147ms
+     × cuts a curve where it runs into ground that was never measured 32126ms
+       × is followed as a boundary and erased as an albedo step with the rule off 70571ms
+ ❯ src/planetarium/surfaceGrain.test.ts (42 tests | 2 failed) 127691ms
+     × leaves nothing straight behind, and the mean where it was 29507ms
+     × closes the curved step, which the straight scan cannot, and leaves the albedo boundary where it was 75215ms
+ ❯ planning/.wt-clouds/src/planetarium/surfaceGrain.test.ts (42 tests | 2 failed) 127649ms
+     × leaves nothing straight behind, and the mean where it was 29446ms
+     × closes the curved step, which the straight scan cannot, and leaves the albedo boundary where it was 75138ms
+ ❯ planning/.wt-base/src/planetarium/surfaceGrain.test.ts (42 tests | 2 failed) 127870ms
+     × leaves nothing straight behind, and the mean where it was 29437ms
+     × closes the curved step, which the straight scan cannot, and leaves the albedo boundary where it was 75053ms
+ ❯ planning/.wt-cloudtiles/src/planetarium/surfaceGrain.test.ts (42 tests | 2 failed) 127697ms
+     × leaves nothing straight behind, and the mean where it was 29410ms
+     × closes the curved step, which the straight scan cannot, and leaves the albedo boundary where it was 75190ms
+ ❯ planning/.wt-downwindow/src/planetarium/surfaceGrain.test.ts (42 tests | 2 failed) 127416ms
+     × closes the step and leaves the ground its detail 29629ms
+     × closes the curved step, which the straight scan cannot, and leaves the albedo boundary where it was 75143ms

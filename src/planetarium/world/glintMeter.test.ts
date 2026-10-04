@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  advanceExposureStops, beamRadianceAt, buildTransmittanceTable, coverageOfBeam, createBeamPeak, createGlintScratch,
-  highlightTarget, lookupTransmittance, meanSquareSlopeOfWind, scanBeam, shoulder,
+  advanceExposureStops, beamRadianceAt, buildTransmittanceTable, coverageOfBeam, createBeamPeak, createBeamPlace, createGlintScratch,
+  highlightTarget, lookupTransmittance, meanSquareSlopeOfWind, placeBeamInFrame, scanBeam, shoulder, type BeamPlace,
   type GlintMeterLight, type GlintMeterPose, type GlintMeterSea, type SurfaceSampler,
 } from './glintMeter';
 import { atmosphereParams, solarIrradianceScale, transmittanceToTopBoundary } from './atmosphereModel';
@@ -184,5 +184,55 @@ describe('the target and the adaptation', () => {
     expect(advanceExposureStops(0.5, 0.25, 10, 3, 0.75)).toBeCloseTo(0.25, 12);
     expect(advanceExposureStops(0.9995, 1, 0.001, 3, 0.75)).toBe(1);
     expect(advanceExposureStops(1, 1, 0.016, 3, 0.75)).toBe(1);
+  });
+});
+
+describe("the beam's share of the frame, placed", () => {
+  const place = (xDeg: number, yDeg: number, alongX = 0, alongY = 1, inFront = true): BeamPlace => ({ xDeg, yDeg, alongX, alongY, inFront });
+  it('counts the whole ellipse in the middle, half at an edge, none past it or behind', () => {
+    const whole = coverageOfBeam(6.59, 2.95, 40, 27);
+    expect(coverageOfBeam(6.59, 2.95, 40, 27, place(0, 0))).toBeCloseTo(whole, 12);
+    // Across axis horizontal (along vertical): half the box past the right edge.
+    expect(coverageOfBeam(6.59, 2.95, 40, 27, place(20, 0))).toBeCloseTo(whole / 2, 6);
+    expect(coverageOfBeam(6.59, 2.95, 40, 27, place(40, 0))).toBe(0);
+    expect(coverageOfBeam(6.59, 2.95, 40, 27, place(0, 0, 0, 1, false))).toBe(0);
+    // The along axis turned flat: the box is wider than tall, the share the same whole.
+    expect(coverageOfBeam(6.59, 2.95, 40, 27, place(0, 0, 1, 0))).toBeCloseTo(whole, 12);
+    // Half off the top with the along axis flat.
+    expect(coverageOfBeam(6.59, 2.95, 40, 27, place(0, 13.5, 1, 0))).toBeCloseTo(whole / 2, 6);
+  });
+
+  it('places the peak where a pinhole frame sees it, and the line along it', () => {
+    const h = 400 / 6371;
+    const pose: GlintMeterPose = { camera: [0, 0, 1 + h], sun: [23000, 0, 1 + 4000], sunVisible: 1 };
+    const scratch = createGlintScratch();
+    const out = createBeamPlace();
+    // Aimed straight at the ground point 10° along the principal line.
+    const phi = 10 * Math.PI / 180;
+    const aim = [Math.sin(phi) - 0, 0, Math.cos(phi) - (1 + h)];
+    const len = Math.hypot(aim[0], aim[1], aim[2]);
+    const view: [number, number, number] = [aim[0] / len, aim[1] / len, aim[2] / len];
+    placeBeamInFrame(pose, 10, view, [0, 0, 1], scratch, out);
+    expect(out.inFront).toBe(true);
+    expect(Math.abs(out.xDeg)).toBeLessThan(1e-6);
+    expect(Math.abs(out.yDeg)).toBeLessThan(1e-6);
+    // Further along the ground is further from the camera's foot: up the frame.
+    expect(out.alongY).toBeGreaterThan(0.99);
+    expect(Math.abs(out.alongX)).toBeLessThan(0.1);
+    // A point 5° further along the ground (556 km) sits above the centre by
+    // the angle the slant makes of it, a few degrees; 5° short, below.
+    placeBeamInFrame(pose, 15, view, [0, 0, 1], scratch, out);
+    expect(out.yDeg).toBeGreaterThan(2);
+    expect(out.yDeg).toBeLessThan(5);
+    placeBeamInFrame(pose, 5, view, [0, 0, 1], scratch, out);
+    expect(out.yDeg).toBeLessThan(-2);
+    // Turned away: behind the camera.
+    placeBeamInFrame(pose, 10, [-view[0], view[1], view[2]], [0, 0, 1], scratch, out);
+    expect(out.inFront).toBe(false);
+    // Level and turned 60° about the vertical: the peak is 60° to one side.
+    placeBeamInFrame(pose, 10, [0.5, Math.sqrt(0.75), 0], [0, 0, 1], scratch, out);
+    expect(out.inFront).toBe(true);
+    expect(Math.abs(out.xDeg)).toBeGreaterThan(55);
+    expect(Math.abs(out.xDeg)).toBeLessThan(65);
   });
 });

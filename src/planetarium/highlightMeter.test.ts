@@ -26,15 +26,23 @@ function openSeaMaps(): EarthSurfaceMaps {
   return new EarthSurfaceMaps({ water: 'rough', calm: 'calm', windy: 'windy', cloud: 'cloud' }, decode, { width: 36, height: 18 });
 }
 
-function probeContext(altitudeKm = 400, sunElevDeg = 10): HighlightContext {
+/** The probe's pose: 400 km over the +z pole, the Sun 10° high toward +x,
+ *  the frame aimed at the ground `aimGroundAngleDeg` along the principal
+ *  line (about where the beam's peak falls), its up the local vertical. */
+function probeContext(altitudeKm = 400, sunElevDeg = 10, aimGroundAngleDeg = 10): HighlightContext {
   const sunDist = KM_PER_AU / EARTH_KM;
+  const camera = new THREE.Vector3(0, 0, 1 + altitudeKm / EARTH_KM);
+  const aim = new THREE.Vector3(Math.sin(aimGroundAngleDeg * DEG), 0, Math.cos(aimGroundAngleDeg * DEG));
+  const view = aim.clone().sub(camera).normalize();
+  const viewUp = new THREE.Vector3(0, 0, 1).addScaledVector(view, -view.z).normalize();
   return {
-    camera: new THREE.Vector3(0, 0, 1 + altitudeKm / EARTH_KM),
+    camera,
     sun: new THREE.Vector3(sunDist * Math.cos(sunElevDeg * DEG), 0, 1 + sunDist * Math.sin(sunElevDeg * DEG)),
     lightIntensity: SUN_LIGHT_INTENSITY,
     lightLinear: SUN_LIGHT_LINEAR,
     airOn: true, airBlend: 1, hazeClearView: 0.35,
     cloudSpin: 0, cloudDrawn: true,
+    view, viewUp,
     fovXDeg: 40, fovYDeg: 27,
     seaBeamOn: true, sunPathOn: true, windMapsOn: true,
   };
@@ -121,5 +129,49 @@ describe('the highlight meter', () => {
     // A deck hidden: the cloud's cut is lifted, so a cloud over the beam does not hold it.
     const t = meter.telemetry();
     expect(t.maps.ready.length).toBe(4);
+  });
+});
+
+describe("the beam's place in the frame", () => {
+  beforeEach(() => setHighlightMeterEnabled(true));
+
+  it('asks nothing for a beam the frame is turned away from, and all of it once the frame holds it', async () => {
+    const meter = new HighlightMeter(openSeaMaps(), () => ({ knee: OCEAN_BEAM_KNEE, cap: OCEAN_BEAM_CAP }));
+    meter.update(0.016, probeContext());
+    await settle();
+    // Turned 180° about the vertical: the beam is behind the camera.
+    const away = probeContext();
+    away.view.x = -away.view.x;
+    for (let i = 0; i < 30; i++) meter.update(0.1, away);
+    let t = meter.telemetry();
+    expect(t.hold).toBe('metering');
+    expect(t.drawnMax).toBeGreaterThan(2.8);
+    expect(t.peakFrame.inFront).toBe(false);
+    expect(t.coverage).toBe(0);
+    expect(t.target).toBe(1);
+    expect(meter.update(0.1, away)).toBe(1);
+    // Aimed at the beam: in the frame's middle, counted whole.
+    const at = probeContext();
+    for (let i = 0; i < 30; i++) meter.update(0.1, at);
+    t = meter.telemetry();
+    expect(t.peakFrame.inFront).toBe(true);
+    expect(Math.abs(t.peakFrame.xDeg)).toBeLessThan(2);
+    expect(Math.abs(t.peakFrame.yDeg)).toBeLessThan(3);
+    expect(t.coverage).toBeGreaterThan(0.02);
+    // Over this uniform 7 m/s sea the beam's red sits a little past the
+    // target, so the ask is a little under one (the older test's bar).
+    expect(t.target).toBeLessThan(1);
+    expect(t.target).toBeGreaterThan(0.5);
+    // Aimed 35° off to the side: the beam sits well past the frame's edge (a
+    // 40° frame reaches 20°), nothing of its ellipse inside.
+    const aside = probeContext();
+    aside.view.applyAxisAngle(new THREE.Vector3(0, 0, 1), 35 * DEG);
+    aside.viewUp.applyAxisAngle(new THREE.Vector3(0, 0, 1), 35 * DEG);
+    for (let i = 0; i < 30; i++) meter.update(0.1, aside);
+    t = meter.telemetry();
+    expect(t.peakFrame.inFront).toBe(true);
+    expect(Math.abs(t.peakFrame.xDeg)).toBeGreaterThan(28);
+    expect(t.coverage).toBeLessThan(0.002);
+    expect(t.target).toBe(1);
   });
 });

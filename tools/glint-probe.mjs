@@ -7,6 +7,7 @@
 //   node tools/glint-probe.mjs --look --extra='&seawindmap=http://localhost:5174/planning/seawind-cand/F.png'
 //   node tools/glint-probe.mjs --meter --assert                    # the highlight meter's prediction against the pixels, the shipped maps
 //   node tools/glint-probe.mjs --meter --clouds --bearings=180,90,0,270 --deps=mirror --run=12 --assert
+//   node tools/glint-probe.mjs --meter --azimuth=180 --deps=mirror --assert   # turned away from the beam: the meter must ask nothing
 //
 // Method. The sea is given ONE wind everywhere — a raw byte wind map served
 // from memory through `?seawindmap=`, so the sea's mixture is one Beckmann

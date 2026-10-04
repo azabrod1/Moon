@@ -30,7 +30,8 @@ import * as THREE from 'three';
 import type { RGB } from './world/atmosphereModel';
 import { atmosphereParams, bodySolarIrradianceScale } from './world/atmosphereModel';
 import {
-  HIGHLIGHT_KNOBS, advanceExposureStops, buildTransmittanceTable, coverageOfBeam, createBeamPeak, createGlintScratch,
+  HIGHLIGHT_KNOBS, advanceExposureStops, buildTransmittanceTable, coverageOfBeam, createBeamPeak, createBeamPlace, createGlintScratch,
+  placeBeamInFrame,
   highlightTarget, scanBeam,
   type BeamPeak, type GlintMeterLight, type GlintMeterPose, type GlintMeterSea, type GlintScratch,
   type HighlightKnobs, type SurfaceSampler, type TransmittanceTable,
@@ -79,6 +80,10 @@ export interface HighlightContext {
   /** The deck's drift this frame, and whether the deck is drawn at all. */
   cloudSpin: number;
   cloudDrawn: boolean;
+  /** The camera's forward and up, unit vectors in the mesh's axes: where the
+   *  frame looks, so the beam is counted only where it falls in the frame. */
+  view: THREE.Vector3;
+  viewUp: THREE.Vector3;
   /** The displayed field of view, degrees, both axes. */
   fovXDeg: number;
   fovYDeg: number;
@@ -103,6 +108,9 @@ export interface HighlightTelemetry {
   /** The surface under the predicted peak: water, calm share, wind, cloud keep. */
   peakSample: { water: number; calm: number; windMs: number; cloudKeep: number };
   coverage: number;
+  /** Where the peak lands in the frame: degrees from its centre, right and
+   *  up, and whether it is in front of the camera at all. */
+  peakFrame: { xDeg: number; yDeg: number; inFront: boolean };
   maps: { ready: EarthMapKind[]; failed: EarthMapKind[]; loading: EarthMapKind[] };
   /** The scan's cost, an exponential average of the last frames, microseconds. */
   costUs: number;
@@ -143,6 +151,9 @@ export class HighlightMeter {
   private hold = 'off';
   private target = 1;
   private coverage = 0;
+  private readonly view: [number, number, number] = [0, 0, 1];
+  private readonly viewUp: [number, number, number] = [0, 1, 0];
+  private readonly place = createBeamPlace();
   private costUs = 0;
 
   constructor(
@@ -179,7 +190,14 @@ export class HighlightMeter {
       this.pose as GlintMeterPose, this.light as GlintMeterLight, this.sea as GlintMeterSea,
       this.sampler, this.table, this.scratch, this.peak,
     );
-    this.coverage = found ? coverageOfBeam(this.peak.halfWidthAlongDeg, this.peak.halfWidthAcrossDeg, ctx.fovXDeg, ctx.fovYDeg) : 0;
+    if (found) {
+      this.view[0] = ctx.view.x; this.view[1] = ctx.view.y; this.view[2] = ctx.view.z;
+      this.viewUp[0] = ctx.viewUp.x; this.viewUp[1] = ctx.viewUp.y; this.viewUp[2] = ctx.viewUp.z;
+      placeBeamInFrame(this.pose as GlintMeterPose, this.peak.groundAngleDeg, this.view, this.viewUp, this.scratch, this.place);
+    } else {
+      this.place.inFront = false; this.place.xDeg = 0; this.place.yDeg = 0;
+    }
+    this.coverage = found ? coverageOfBeam(this.peak.halfWidthAlongDeg, this.peak.halfWidthAcrossDeg, ctx.fovXDeg, ctx.fovYDeg, this.place) : 0;
     this.target = found ? highlightTarget(this.peak.drawnMax, this.coverage, this.knobs) : 1;
     this.exposure = advanceExposureStops(this.exposure, this.target, dt, this.downStopsPerS, this.upStopsPerS);
     if (!Number.isFinite(this.exposure)) this.exposure = 1;
@@ -217,6 +235,7 @@ export class HighlightMeter {
       halfWidthAcrossDeg: p.halfWidthAcrossDeg,
       peakSample: { water: p.sample.water, calm: p.sample.calm, windMs: p.sample.windMs, cloudKeep: p.sample.cloudKeep },
       coverage: this.coverage,
+      peakFrame: { xDeg: this.place.xDeg, yDeg: this.place.yDeg, inFront: this.place.inFront },
       maps: this.maps.state(),
       costUs: this.costUs,
       knobs: { ...this.knobs },

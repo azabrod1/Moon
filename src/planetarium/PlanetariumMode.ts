@@ -1186,10 +1186,13 @@ export class PlanetariumMode {
   );
   private readonly highlightCtx: HighlightContext = {
     camera: new THREE.Vector3(), sun: new THREE.Vector3(), lightIntensity: 0, lightLinear: [1, 1, 1],
-    airOn: false, airBlend: 0, hazeClearView: 1, cloudSpin: 0, cloudDrawn: false, fovXDeg: 60, fovYDeg: 40,
+    airOn: false, airBlend: 0, hazeClearView: 1, cloudSpin: 0, cloudDrawn: false,
+    view: new THREE.Vector3(0, 0, -1), viewUp: new THREE.Vector3(0, 1, 0), fovXDeg: 60, fovYDeg: 40,
     seaBeamOn: true, sunPathOn: true, windMapsOn: false,
   };
-  private readonly highlightScratch = { cam: new THREE.Vector3(), earth: new THREE.Vector3(), q: new THREE.Quaternion() };
+  private readonly highlightScratch = {
+    cam: new THREE.Vector3(), earth: new THREE.Vector3(), q: new THREE.Quaternion(), cq: new THREE.Quaternion(), dir: new THREE.Vector3(),
+  };
   private sunPointLight: THREE.PointLight | null = null;
   private lastSunVisibleFraction = 1;
   private sunEmergenceFlash = 0;
@@ -9340,6 +9343,12 @@ export class PlanetariumMode {
     const fovY = displayFovDeg(this.camera);
     ctx.fovYDeg = fovY;
     ctx.fovXDeg = (2 * Math.atan(Math.tan((fovY * Math.PI) / 360) * this.camera.aspect) * 180) / Math.PI;
+    // Where the frame looks, in Earth's axes: the beam counts only where it
+    // falls inside the frame, so a view turned away from it asks nothing.
+    this.camera.getWorldDirection(sc.dir);
+    ctx.view.copy(sc.dir).applyQuaternion(sc.q).normalize();
+    this.camera.getWorldQuaternion(sc.cq);
+    ctx.viewUp.set(0, 1, 0).applyQuaternion(sc.cq).applyQuaternion(sc.q).normalize();
     ctx.seaBeamOn = seaBeamOn();
     ctx.sunPathOn = sunPathOn();
     ctx.windMapsOn = seaWindOn();

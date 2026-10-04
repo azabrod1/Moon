@@ -176,10 +176,17 @@ export interface GlintScratch {
   sample: SurfaceSample;
   t: [number, number, number];
   tz: [number, number, number];
+  /** The principal plane's axes (principalAxes) and two frame-angle pairs. */
+  axes: Float64Array;
+  place0: [number, number];
+  place1: [number, number];
 }
 
 export function createGlintScratch(): GlintScratch {
-  return { sample: { calm: 0, windMs: 0, water: 0, cloudKeep: 1 }, t: [0, 0, 0], tz: [0, 0, 0] };
+  return {
+    sample: { calm: 0, windMs: 0, water: 0, cloudKeep: 1 }, t: [0, 0, 0], tz: [0, 0, 0],
+    axes: new Float64Array(6), place0: [0, 0], place1: [0, 0],
+  };
 }
 
 /**
@@ -294,6 +301,85 @@ function angleBetweenFrom(cam: Vec3, ax: number, ay: number, az: number, bx: num
   return Math.acos(Math.min(Math.max(d, -1), 1)) / DEG;
 }
 
+/** The principal plane's axes: e1 up through the camera, e2 toward the Sun
+ *  in it, written as six numbers. False when there is no plane: the camera
+ *  inside the body, or the Sun on the camera's zenith. */
+export function principalAxes(pose: GlintMeterPose, out: Float64Array | number[]): boolean {
+  const cam = pose.camera;
+  const camDist = Math.hypot(cam[0], cam[1], cam[2]);
+  if (!(camDist > 1.000001)) return false;
+  const e1x = cam[0] / camDist, e1y = cam[1] / camDist, e1z = cam[2] / camDist;
+  const sd = pose.sun[0] * e1x + pose.sun[1] * e1y + pose.sun[2] * e1z;
+  const e2x = pose.sun[0] - sd * e1x, e2y = pose.sun[1] - sd * e1y, e2z = pose.sun[2] - sd * e1z;
+  const e2Len = Math.hypot(e2x, e2y, e2z);
+  if (!(e2Len > 1e-9)) return false;
+  out[0] = e1x; out[1] = e1y; out[2] = e1z;
+  out[3] = e2x / e2Len; out[4] = e2y / e2Len; out[5] = e2z / e2Len;
+  return true;
+}
+
+/** Where the beam's peak lands in the frame, as a pinhole sees it: its
+ *  angles from the frame's centre toward the right and up, degrees, the
+ *  direction of the principal line there as a unit vector in those axes,
+ *  and whether it is in front of the camera at all. */
+export interface BeamPlace {
+  xDeg: number;
+  yDeg: number;
+  alongX: number;
+  alongY: number;
+  inFront: boolean;
+}
+
+export function createBeamPlace(): BeamPlace {
+  return { xDeg: 0, yDeg: 0, alongX: 0, alongY: 1, inFront: false };
+}
+
+/**
+ * Place the beam's peak in the frame. `view` is the camera's forward and
+ * `viewUp` its up, unit vectors in the body frame; the frame's right is their
+ * cross product. The peak sits on the principal line at `groundAngleDeg`
+ * from the sub-camera point, and the line's direction in the frame is read
+ * from a second point half a degree further along it. A point at or behind
+ * the camera's plane is not in front, and the place is left at the centre.
+ */
+export function placeBeamInFrame(
+  pose: GlintMeterPose, groundAngleDeg: number, view: Vec3, viewUp: Vec3, scratch: GlintScratch, out: BeamPlace,
+): void {
+  out.xDeg = 0; out.yDeg = 0; out.alongX = 0; out.alongY = 1; out.inFront = false;
+  const axes = scratch.axes;
+  if (!principalAxes(pose, axes)) return;
+  const fx = view[0], fy = view[1], fz = view[2];
+  // The frame's up, orthogonal to the forward, and its right.
+  const fu = viewUp[0] * fx + viewUp[1] * fy + viewUp[2] * fz;
+  let ux = viewUp[0] - fu * fx, uy = viewUp[1] - fu * fy, uz = viewUp[2] - fu * fz;
+  const uLen = Math.hypot(ux, uy, uz);
+  if (!(uLen > 1e-9)) return;
+  ux /= uLen; uy /= uLen; uz /= uLen;
+  const rx = fy * uz - fz * uy, ry = fz * ux - fx * uz, rz = fx * uy - fy * ux;
+  const cam = pose.camera;
+  const frameAngles = (phi: number, o: [number, number]): boolean => {
+    const c = Math.cos(phi), s = Math.sin(phi);
+    const dx = c * axes[0] + s * axes[3] - cam[0];
+    const dy = c * axes[1] + s * axes[4] - cam[1];
+    const dz = c * axes[2] + s * axes[5] - cam[2];
+    const depth = dx * fx + dy * fy + dz * fz;
+    if (!(depth > 1e-9)) return false;
+    o[0] = Math.atan2(dx * rx + dy * ry + dz * rz, depth) / DEG;
+    o[1] = Math.atan2(dx * ux + dy * uy + dz * uz, depth) / DEG;
+    return true;
+  };
+  const phi = groundAngleDeg * DEG;
+  const at = scratch.place0, ahead = scratch.place1;
+  if (!frameAngles(phi, at)) return;
+  out.inFront = true;
+  out.xDeg = at[0]; out.yDeg = at[1];
+  if (frameAngles(phi + 0.5 * DEG, ahead)) {
+    const ax = ahead[0] - at[0], ay = ahead[1] - at[1];
+    const len = Math.hypot(ax, ay);
+    if (len > 1e-9) { out.alongX = ax / len; out.alongY = ay / len; }
+  }
+}
+
 /**
  * Scan the principal line for the brightest drawn point of the beam and fit
  * its extent. Returns false, with `out` zeroed, when there is no beam: the
@@ -313,13 +399,10 @@ export function scanBeam(
   const cam = pose.camera;
   const camDist = Math.hypot(cam[0], cam[1], cam[2]);
   if (!(camDist > 1.000001)) return false;
-  // The principal plane: e1 up through the camera, e2 toward the Sun in it.
-  const e1x = cam[0] / camDist, e1y = cam[1] / camDist, e1z = cam[2] / camDist;
-  const sd = pose.sun[0] * e1x + pose.sun[1] * e1y + pose.sun[2] * e1z;
-  let e2x = pose.sun[0] - sd * e1x, e2y = pose.sun[1] - sd * e1y, e2z = pose.sun[2] - sd * e1z;
-  const e2Len = Math.hypot(e2x, e2y, e2z);
-  if (!(e2Len > 1e-9)) return false;
-  e2x /= e2Len; e2y /= e2Len; e2z /= e2Len;
+  const axes = scratch.axes;
+  if (!principalAxes(pose, axes)) return false;
+  const e1x = axes[0], e1y = axes[1], e1z = axes[2];
+  const e2x = axes[3], e2y = axes[4], e2z = axes[5];
   const horizon = Math.acos(1 / camDist);
   const coarse = opts?.coarse ?? 24;
   const refine = opts?.refine ?? 6;
@@ -394,10 +477,31 @@ export function scanBeam(
   return true;
 }
 
-/** The beam's share of a frame from its half-maximum ellipse, as angles. */
-export function coverageOfBeam(halfWidthAlongDeg: number, halfWidthAcrossDeg: number, fovXDeg: number, fovYDeg: number): number {
+/**
+ * The beam's share of a frame from its half-maximum ellipse, as angles.
+ * Given its place, the ellipse sits where the peak lands, turned to the
+ * principal line's direction there, and only the part inside the frame
+ * counts: the ellipse's bounding box is cut by the frame's edges and the
+ * ellipse takes the same share of the cut box as it does of the whole one,
+ * so a beam wholly in view is exactly its area over the frame's, a beam
+ * half off the side is about half, and a beam behind the camera or past
+ * the edge is nothing — which is what keeps the meter from darkening a
+ * frame the beam is not in. Without a place the whole ellipse counts.
+ */
+export function coverageOfBeam(
+  halfWidthAlongDeg: number, halfWidthAcrossDeg: number, fovXDeg: number, fovYDeg: number, place?: BeamPlace,
+): number {
   const area = Math.PI * halfWidthAlongDeg * halfWidthAcrossDeg;
-  return Math.min(Math.max(area / Math.max(fovXDeg * fovYDeg, 1e-6), 0), 1);
+  const frame = Math.max(fovXDeg * fovYDeg, 1e-6);
+  if (!place) return Math.min(Math.max(area / frame, 0), 1);
+  if (!place.inFront) return 0;
+  const hx = Math.hypot(halfWidthAlongDeg * place.alongX, halfWidthAcrossDeg * place.alongY);
+  const hy = Math.hypot(halfWidthAlongDeg * place.alongY, halfWidthAcrossDeg * place.alongX);
+  const box = 4 * hx * hy;
+  if (!(box > 0)) return 0;
+  const ix = Math.max(0, Math.min(place.xDeg + hx, fovXDeg / 2) - Math.max(place.xDeg - hx, -fovXDeg / 2));
+  const iy = Math.max(0, Math.min(place.yDeg + hy, fovYDeg / 2) - Math.max(place.yDeg - hy, -fovYDeg / 2));
+  return Math.min(Math.max((area * ((ix * iy) / box)) / frame, 0), 1);
 }
 
 export interface HighlightKnobs {

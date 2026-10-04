@@ -18,9 +18,10 @@
 //           trades pose (400 km over the Pacific trade cumulus, by day). Pages
 //           must become resident on their own and settle (every wanted page in
 //           the table at full fade, nothing in the pipe); no admission and no
-//           load may start between two frames both under the arrival veil —
-//           reported as not exercised when the arrival was instant, which it
-//           is for a warm Earth. Time to the first page and to settled.
+//           load may start between two frames both under the arrival veil
+//           (an arrival this soon after the boot is held under it; one that
+//           was instant is reported as not exercising the rule). Time to the
+//           first page and to settled.
 //   hidden  The deck hidden by its role switch (`?perf=1`'s `clouds` arm, the
 //           same `visible` flag the range gate writes): every page released —
 //           none wanted, none kept, the pipe idle — and NOT evicted (the table
@@ -45,7 +46,7 @@
 //   node tools/cloud-field-probe.mjs --url=… --scenario=off,fail
 //
 // Three boots at most (off; the field; the failed field), one tab each, at
-// 1600x1000 and `quality=medium`; a few minutes of browser time in all. The
+// 1600x1000 and `quality=medium`; about a minute of browser time in all. The
 // dev server may load the page a second time shortly after the first boot
 // (its dependency pass): a scenario that sees a second load is set up and run
 // again, once. GPU flags as every battery; takes /tmp/moon-browser.lock. A

@@ -526,12 +526,15 @@ describe('suspends', () => {
       const t = await makeResident(w, 1, 0);
       w.demand.set(2, 1);
       w.step(t);
+      expect(w.residency.isKept(1)).toBe(true);
       const load = w.loads.at(-1)!;
       w.frame[state] = true;
       w.run(t + 16, t + 2000);
       expect(load.signal.aborted).toBe(true);
       expect(w.loads.length).toBe(2);
+      // Released, not evicted: the entry and the layer stand.
       expect([w.r(1), w.g(1)]).toEqual([1, 255]);
+      expect(w.residency.isKept(1)).toBe(false);
       expect(w.residency.stats().wanted).toBe(0);
       w.frame[state] = false;
       w.step(t + 2016);

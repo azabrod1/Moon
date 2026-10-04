@@ -18,7 +18,10 @@
  * array that failed to allocate is incomplete and samples as zero, so every
  * page the table called resident would draw as CLEAR sky. A failed allocation
  * therefore turns the field off for the session instead (PlanetariumMode),
- * and so does a failed re-allocation after a context restore.
+ * and so does a failed re-allocation after a context restore. A development
+ * build reports the boot allocation failed where `?cloudpoolfail=1` asks, the
+ * one way to drive that path on a machine with room for the pool
+ * (tools/cloud-field-probe.mjs `fail`).
  *
  * THE LOAD fetches a page's two files on the main thread, as every sector
  * tile is fetched — under the caller's AbortSignal, so a page given up on
@@ -58,7 +61,7 @@ import {
   cloudFieldPoolBytes,
   cloudPageKey,
 } from './cloudField';
-import { cloudFieldUniforms } from './cloudFieldSlots';
+import { cloudFieldUniforms, cloudPoolFailAsked } from './cloudFieldSlots';
 import { textureGpuBytes } from './textureBytes';
 import { resolveTileUrl, sectorSetHash } from './texturePolicy';
 
@@ -107,6 +110,9 @@ export interface CloudFieldAllocation {
   /** `gl.getError()` right after the allocation; NO_ERROR (0) is success. */
   glError: number;
 }
+
+/** What a driver answers for an allocation it cannot make. */
+const GL_OUT_OF_MEMORY = 0x0505;
 
 /** Check a GL allocation: drain whatever error an earlier call left, run it,
  *  and read the one it raised. */
@@ -172,6 +178,12 @@ export class CloudFieldPool {
   static allocate(renderer: THREE.WebGLRenderer, layers: number): { pool: CloudFieldPool | null; report: CloudFieldAllocation } {
     const field = new CloudFieldPool(renderer, layers);
     const checked = allocateChecked(renderer.getContext() as WebGL2RenderingContext, () => renderer.initTexture(field.pool));
+    // Development only: `?cloudpoolfail=1` reports this allocation out of
+    // memory whatever the driver said, so the field's way off — one warning,
+    // nothing reserved, the deck on its base sheet — can be driven on a
+    // machine with room for the pool. The array did allocate, and is freed
+    // below exactly as a real failure's would be.
+    if (import.meta.env.DEV && cloudPoolFailAsked(location.search)) checked.glError = GL_OUT_OF_MEMORY;
     const report: CloudFieldAllocation = {
       layers, bytes: cloudFieldPoolBytes(layers), ms: checked.ms, glError: checked.glError,
     };

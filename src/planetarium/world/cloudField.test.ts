@@ -26,7 +26,7 @@ import {
   packCloudPlaneRows,
   parseCloudPageKey,
 } from './cloudField';
-import { cloudFieldAsked, cloudFieldRequested } from './cloudFieldSlots';
+import { cloudFieldAsked, cloudFieldRequested, cloudPoolFailAsked } from './cloudFieldSlots';
 import { sphereEquirectUv } from './cloudDeck';
 import { textureBytesPerTexel, textureGpuBytes } from './textureBytes';
 import { resolveDefine } from '../testing/glslDefine';
@@ -388,5 +388,13 @@ describe('page keys and the switch', () => {
     expect(cloudFieldAsked('')).toBe(false);
     // Read once, at boot: the test runner's page asked for nothing.
     expect(cloudFieldRequested()).toBe(false);
+  });
+
+  it('reports the pool failed only where ?cloudpoolfail=1 asks', () => {
+    expect(cloudPoolFailAsked('?cloudtiles=1&cloudpoolfail=1')).toBe(true);
+    expect(cloudPoolFailAsked('?cloudpoolfail=0')).toBe(false);
+    expect(cloudPoolFailAsked('?cloudpoolfail')).toBe(false);
+    expect(cloudPoolFailAsked('?cloudtiles=1')).toBe(false);
+    expect(cloudPoolFailAsked('')).toBe(false);
   });
 });

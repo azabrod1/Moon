@@ -41,6 +41,16 @@
 //   gpu       A real GPU-object leak oracle: createTexture/deleteTexture are
 //             counted from before any app code runs, over approach/flee cycles.
 //   sweep     Distance sweep at a fixed display FOV: where admission dies.
+//   field     Earth's cloud field (`?cloudtiles=1`) against the tiles, at the
+//             trades pose (400 km over the Pacific by day, where the field
+//             wants pages and Earth its finest tiles), in three boots: without
+//             the field, with it, and with it under a `?envelope=` squeeze.
+//             The pool is in the envelope exactly once — the fixed bytes are
+//             its own allocation, and what the tiles and the maps share is the
+//             envelope less exactly that — and the tiles still reach the set
+//             they reach without the field. Squeezed, the pool is still held
+//             whole (the row's layer count decides, never the envelope) and
+//             the two shares follow the envelope arithmetic exactly.
 import { chromium, webkit } from 'playwright';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -234,15 +244,15 @@ function checkSharedEnvelope(r, where, s, l) {
  *  the session asked for the field and the row gives it layers, and nothing
  *  at all otherwise — a row with no layers takes no pool whatever the URL
  *  asked. */
-async function checkFieldReservation(r, where, page) {
+async function checkFieldReservation(r, where, page, asked = FIELD_ASKED) {
   const got = await page.evaluate(async () => ({
     l: window.__moon.ladder(), dev: window.__moon.device(),
     field: window.__moon.cloudField ? await window.__moon.cloudField() : null,
   }));
-  const layers = FIELD_ASKED ? got.dev.cloudFieldLayers : 0;
+  const layers = asked ? got.dev.cloudFieldLayers : 0;
   const pool = got.field?.pool ?? null;
   const want = layers * CLOUD_LAYER_BYTES;
-  r.say(`  cloud field: ${FIELD_ASKED ? 'asked' : 'not asked'}, row gives ${got.dev.cloudFieldLayers} layers;`
+  r.say(`  cloud field: ${asked ? 'asked' : 'not asked'}, row gives ${got.dev.cloudFieldLayers} layers;`
     + ` pool ${pool ? `${pool.layers} layers ${pool.poolBytes} B (exact ${pool.poolBytesExact})` : 'none'},`
     + ` fixed ${mib(got.l.fixedBytes)} MiB, available ${mib(got.l.availableBytes)} of ${mib(got.l.envelopeBytes)} MiB`);
   if (layers === 0) {
@@ -260,6 +270,37 @@ async function checkFieldReservation(r, where, page) {
   if (pool.poolBytesExact !== want || Math.abs(pool.poolBytes - want) > 1024) {
     r.fail(`${where}: the pool counts ${pool.poolBytes} B (exact ${pool.poolBytesExact}) for ${layers} layers of ${CLOUD_LAYER_BYTES} B`);
   }
+  return pool;
+}
+
+/** The trades pose: 400 km over 21 S 120 W at 17:20 UTC on 1 February 2026,
+ *  the Sun 48 deg up over open Pacific — where the cloud field wants pages. */
+const TRADES_MS = Date.parse('2026-02-01T17:20:00Z');
+const TRADES = ['Earth', 1.7303397579094035, 41.468376555090536, 1.0627155848228285, 0, -2.697731494258438, -77.34841618462669];
+/** The squeeze the field scenario boots under: the pool's 128 MiB is then
+ *  more than a third of the envelope, so both shares feel it. */
+const FIELD_SQUEEZE_MIB = 320;
+
+/** Pose at trades and wait until the tiles have stopped loading for 2 s, or
+ *  30 s. */
+async function settleAtTrades(page) {
+  await page.evaluate(([t, a]) => {
+    window.__moon.setTimeRate(0);
+    window.__moon.setTimeMs(t);
+    return window.__moon.frame(...a);
+  }, [TRADES_MS, TRADES]);
+  return page.evaluate(async () => {
+    const start = performance.now();
+    let quietSince = null;
+    for (;;) {
+      const s = window.__moon.sectors();
+      const t = performance.now() - start;
+      if (s.loading === 0 && s.inflight === 0) quietSince ??= t; else quietSince = null;
+      if (quietSince !== null && t - quietSince > 2000) return { settled: true, ms: Math.round(t) };
+      if (t > 30_000) return { settled: false, ms: Math.round(t) };
+      await new Promise((res) => setTimeout(res, 200));
+    }
+  });
 }
 
 /** What one scenario reports: its own lines, and the assertions it broke. */
@@ -478,6 +519,78 @@ async function moonTourPass(browser, r, { label, query = '', squeezedToMiB = nul
 }
 
 const SCENARIOS = {
+  async field(browser) {
+    const r = report();
+    const arms = {};
+    for (const [arm, query, asked] of [
+      ['off', '&cloudtiles=0', false],
+      ['on', '&cloudtiles=1', true],
+      ['squeezed', `&cloudtiles=1&envelope=${FIELD_SQUEEZE_MIB}`, true],
+    ]) {
+      const { ctx, page, errors } = await boot(browser, { query });
+      try {
+        r.say(`# ${arm}`);
+        const settle = await settleAtTrades(page);
+        if (!settle.settled) r.fail(`${arm}: the tiles were still loading after ${settle.ms} ms at trades`);
+        const pool = await checkFieldReservation(r, arm, page, asked);
+        // One moment: the streamer's figures and the envelope's, read together.
+        const { s, l, dev } = await page.evaluate(() => ({
+          s: window.__moon.sectors(), l: window.__moon.ladder(), dev: window.__moon.device(),
+        }));
+        checkSharedEnvelope(r, arm, s, l);
+        const earth = s.bodies.Earth ?? { resident: [], byLevel: [] };
+        arms[arm] = { pool, s, l, dev, resident: earth.resident.slice().sort(), byLevel: earth.byLevel.map((x) => x.resident) };
+        r.say(`  tiles at trades: ${earth.resident.length} resident, byLevel ${JSON.stringify(arms[arm].byLevel)},`
+          + ` held ${mib(s.budgetedBytes + s.reserved)} of budget ${mib(s.budget)} MiB (floor ${mib(s.floor)},`
+          + ` maps ${mib(s.ladderBytes)}); envelope ${mib(l.envelopeBytes)}, fixed ${mib(l.fixedBytes)},`
+          + ` available ${mib(l.availableBytes)}, maps' ceiling ${mib(l.ceilingBytes)} MiB`);
+        if (s.budgetedBytes + s.reserved > s.budget) {
+          r.fail(`${arm}: the tiles hold ${mib(s.budgetedBytes + s.reserved)} MiB over their budget of ${mib(s.budget)}`);
+        }
+        r.errors(errors);
+      } finally { await ctx.close(); }
+    }
+    const { off, on, squeezed } = arms;
+    // Exactly once: the field's boot shares the off boot's envelope less the
+    // pool, to the byte, and the envelope's own figure does not move.
+    if (off && on) {
+      if (on.l.envelopeBytes !== off.l.envelopeBytes) {
+        r.fail(`the envelope itself moved with the field: ${on.l.envelopeBytes} B against ${off.l.envelopeBytes} B`);
+      }
+      if (!on.pool || off.l.availableBytes - on.l.availableBytes !== on.pool.poolBytes) {
+        r.fail(`the field takes ${off.l.availableBytes - on.l.availableBytes} B of what the tiles and maps share,`
+          + ` where its pool holds ${on.pool?.poolBytes ?? 0} B`);
+      }
+      const missing = off.resident.filter((id) => !on.resident.includes(id));
+      r.say(`# the tiles with the field against without: ${on.resident.length} resident against ${off.resident.length},`
+        + ` byLevel ${JSON.stringify(on.byLevel)} against ${JSON.stringify(off.byLevel)}`);
+      if (missing.length) r.fail(`with the field the tiles miss ${missing.length} set(s) they reach without it: ${missing.join(', ')}`);
+    }
+    // Squeezed, the rule world/gpuEnvelope.ts implements: the pool held whole
+    // whatever the envelope; what the tiles and the maps share is
+    // max(0, envelope − fixed); the maps' ceiling is that less the tiles'
+    // floor (clamped to the tiles' own ceiling), never below zero; and the
+    // tiles' budget is their floor or what the maps leave of the share,
+    // whichever is more, never past their own ceiling.
+    if (squeezed) {
+      const { s, l, dev, pool } = squeezed;
+      const fixed = pool ? pool.poolBytes : 0;
+      const available = Math.max(0, l.envelopeBytes - fixed);
+      const floor = Math.min(Math.max(0, s.floor), dev.ceilingBytes);
+      const mapsCeiling = Math.max(0, available - floor);
+      const budget = Math.max(0, Math.min(dev.ceilingBytes, Math.max(floor, available - s.ladderBytes)));
+      r.say(`# squeezed to ${FIELD_SQUEEZE_MIB} MiB: fixed ${mib(fixed)}, available ${mib(available)},`
+        + ` maps' ceiling ${mib(mapsCeiling)} (read ${mib(l.ceilingBytes)}), tiles' budget ${mib(budget)}`
+        + ` (read ${mib(s.budget)}) on a floor of ${mib(floor)} MiB`);
+      if (l.envelopeBytes !== FIELD_SQUEEZE_MIB * MiB) r.fail(`squeezed: the envelope reads ${mib(l.envelopeBytes)} MiB, not ${FIELD_SQUEEZE_MIB}`);
+      if (!pool || l.fixedBytes !== pool.poolBytes) r.fail('squeezed: the pool is not held whole under the squeeze');
+      if (l.availableBytes !== available) r.fail(`squeezed: ${l.availableBytes} B available where max(0, envelope − fixed) is ${available} B`);
+      if (l.ceilingBytes !== mapsCeiling) r.fail(`squeezed: the maps' ceiling is ${l.ceilingBytes} B where available less the floor is ${mapsCeiling} B`);
+      if (s.budget !== budget) r.fail(`squeezed: the tiles' budget is ${s.budget} B where the envelope's rule gives ${budget} B`);
+    }
+    return r;
+  },
+
   async budget(browser) {
     const r = report();
     const { ctx, page, errors } = await boot(browser);

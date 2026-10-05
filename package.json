@@ -11,6 +11,7 @@
     "gen:constellations": "node gen-constellations.mjs",
     "gen:maps": "node gen-maps.mjs",
     "gen:ktx2": "node tools/gen-ktx2.mjs --all",
+    "gen:moon-relief": "node tools/gen-moon-relief.mjs",
     "gen:tiles": "node tools/gen-tiles.mjs",
     "gen:moonmaps": "node --max-old-space-size=32768 --initial-old-space-size=12288 tools/gen-moonmaps.mjs",
     "publish:tiles": "node tools/publish-tiles.mjs",

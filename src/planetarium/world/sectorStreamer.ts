@@ -333,10 +333,26 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
     levels: [sectorLevel16k('mars.v2')],
   },
   Moon: {
-    crops: { normalMap: tileSet('moon-normal', '4k') },
+    crops: { normalMap: tileSet('moon-normal', moonReliefTier()) },
     levels: [sectorLevel16k('moon')],
   },
 };
+
+/**
+ * Which relief crop the Moon's sectors bind: the shipped 4k (cut from the
+ * 2880-wide close map, 3.8 km a texel) or, with `?moonrelief=8k` (any build),
+ * the 8k that tools/gen-moon-relief.mjs cuts from NASA's 64 px/deg grid at
+ * the same 1.39× slope (1.3 km a texel; 8.5 MB a sector on the GPU against
+ * the 4k's 1.1). The A/B for how the magnified Moon shades, and off by
+ * default until the 8k set is published to the tiles repo — production
+ * fetches tiles from there, and a set it does not hold fails open to the
+ * globe's own map — and judged near the terminator. In dev the set is served
+ * from .moon-data-cache/tiles-staging (tools/devTilesPlugin.mjs).
+ */
+function moonReliefTier(): '4k' | '8k' {
+  if (typeof location === 'undefined') return '4k';
+  return new URLSearchParams(location.search).get('moonrelief') === '8k' ? '8k' : '4k';
+}
 
 /** The night-lights pyramids, by catalog name: a SECOND family for a body
  *  that draws its night side on a shell of its own, streamed onto that shell

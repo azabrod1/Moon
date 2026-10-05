@@ -41,9 +41,9 @@
 // knees are never copied here twice.
 //
 // With --assert the run fails on: a refused jump, travel or pilot; the
-// ramp-off arm reading anything but full strength; the ramp-on arm off the
-// law at any stop (the two knees are copied here, as approach-probe does: the
-// unit test pins the module, this pins the plumbing); a run that never reached
+// ramp-off arm reading anything but full strength; an on-arm off the law at
+// any stop (the law over the knees the app reports: the unit test pins the
+// module, this pins the plumbing); a run with an on-arm that never reached
 // the band (no stop under 0.5); a stop more than 1 % off the altitude it was
 // sent to; a look-around that moved the ramp; or an uncaught page error. A
 // pair whose two arms hold different textures (a tile or a tier that arrived
@@ -80,10 +80,13 @@ const NO_DETAIL = process.argv.includes('--nodetail');
 const LOOK_AROUND = process.argv.includes('--lookaround');
 const ZOOM_OUT = process.argv.includes('--zoomout');
 const ARMS = arg('arms', 'lens,ramp').split(',').map((name) => name.trim()).filter(Boolean).map(parseArm);
+// An arm names a driver and, for a band arm, two knees; the others take the
+// shipped band, which is read back from the app at boot (`shippedBand`) so
+// this file holds no copy of the module's constants.
 function parseArm(name) {
-  if (name === 'lens') return { name, on: false, driver: 'ship+boom', fullDeg: 45, offDeg: 70 };
-  if (name === 'ramp') return { name, on: true, driver: 'ship+boom', fullDeg: 45, offDeg: 70 };
-  if (name === 'ship') return { name, on: true, driver: 'ship', fullDeg: 45, offDeg: 70 };
+  if (name === 'lens') return { name, on: false, driver: 'ship+boom' };
+  if (name === 'ramp') return { name, on: true, driver: 'ship+boom' };
+  if (name === 'ship') return { name, on: true, driver: 'ship' };
   const band = /^band(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/.exec(name);
   if (band) return { name, on: true, driver: 'ship+boom', fullDeg: Number(band[1]), offDeg: Number(band[2]) };
   throw new Error(`unknown arm '${name}': lens, ramp, ship, or band<full>-<off>`);
@@ -155,6 +158,16 @@ try {
   }, { timeout: 180000 }).catch(() => {});
   const drawn = (frames = 2) => page.evaluate((n) => window.__moon.waitForDraw(n), frames);
   const rampState = () => page.evaluate(() => window.__moon.lensRamp());
+  // The shipped knees, as the app booted with them (no `lensband` on this
+  // URL): every arm without knees of its own is held to these.
+  const shippedBand = await page.evaluate(() => {
+    const state = window.__moon.lensRamp();
+    return { fullDeg: state.fullDeg, offDeg: state.offDeg };
+  });
+  for (const arm of ARMS) {
+    if (arm.fullDeg === undefined) Object.assign(arm, shippedBand);
+  }
+  diagnostics.shippedBand = shippedBand;
   const bodyProbe = () => page.evaluate((name) => window.__moon.probe(name), BODY);
   await page.evaluate((clock) => {
     window.__moon.setChrome(false);
@@ -259,6 +272,9 @@ try {
     }
   }
   const armSummary = (shots) => ARMS.map((arm) => `${arm.name} ${shots[arm.name].ramp.applied.toFixed(3)}`).join(' | ');
+  // `lens` and `ramp` stay as named keys in records.json, so older readers
+  // still find them — only when those arms were shot, never as undefined.
+  const legacyKeys = (shots) => ({ ...(shots.lens ? { lens: shots.lens } : {}), ...(shots.ramp ? { ramp: shots.ramp } : {}) });
 
   // ---- to the top of the run ---------------------------------------------------
   const first = await bodyProbe();
@@ -330,14 +346,14 @@ try {
     check(Math.abs(reachedKm - altitudeKm) <= altitudeKm * 0.01 + 0.5, `${label}: sent to ${altitudeKm.toFixed(1)} km, reached ${reachedKm.toFixed(1)}`);
     checkArms(label, shots);
     if (!sameSurface) note(`${label}: the arms still hold different textures after ${retakes} retake(s) (${ARMS.map((arm) => `${shots[arm.name].surface.tiers}/${shots[arm.name].surface.resident.length} tiles`).join(' | ')})`);
-    // `lens` and `ramp` stay as named keys so older readers of records.json still find them.
-    records.push({ index, label, altitudeKm, reachedKm, lens: shots.lens, ramp: shots.ramp, shots, sameSurface, retakes, wallMs: Date.now() - started });
-    const first = shots[ARMS[0].name];
+    records.push({ index, label, altitudeKm, reachedKm, ...legacyKeys(shots), shots, sameSurface, retakes, wallMs: Date.now() - started });
+    const leadShot = shots[ARMS[0].name];
     const drivingText = ON_ARMS.map((arm) => `${arm.name} ${shots[arm.name].ramp.angularRadiusDeg.toFixed(1)}°`).join(', ');
-    console.log(`  ${label} ${reachedKm.toFixed(0).padStart(5)} km  driving ${drivingText}  applied ${armSummary(shots)}  fills ${(first.share * 100).toFixed(1)}%  bottom ${(first.bottomChord * 100).toFixed(0)}%${retakes ? `  retaken ×${retakes}` : ''}  ${((Date.now() - started) / 1000).toFixed(1)}s`);
+    console.log(`  ${label} ${reachedKm.toFixed(0).padStart(5)} km  driving ${drivingText}  applied ${armSummary(shots)}  fills ${(leadShot.share * 100).toFixed(1)}%  bottom ${(leadShot.bottomChord * 100).toFixed(0)}%${retakes ? `  retaken ×${retakes}` : ''}  ${((Date.now() - started) / 1000).toFixed(1)}s`);
     await writeRecords();
   }
   if (ON_ARMS.length) check(lowestRamp < 0.5, `the run never reached the band: the lowest on-arm reading was ${lowestRamp.toFixed(3)}`);
+  else note('no on-arm was asked for, so nothing could reach the band');
 
   // ---- the look-away at the park -------------------------------------------------
   const centreX = Math.floor(VIEWPORT_WIDTH / 2);
@@ -383,7 +399,7 @@ try {
         check(shot.ramp.camOwner === 'orbit', `look ${name} ${arm.name}: the drag did not take the camera (owner ${shot.ramp.camOwner})`);
         check(Math.abs(shot.ramp.applied - parkedByArm[arm.name].applied) < 1e-4, `look ${name} ${arm.name}: the look moved the ramp ${parkedByArm[arm.name].applied.toFixed(4)} -> ${shot.ramp.applied.toFixed(4)}`);
       }
-      looks.push({ look: name, dx, dy, lens: shots.lens, ramp: shots.ramp, shots });
+      looks.push({ look: name, dx, dy, ...legacyKeys(shots), shots });
       const any = shots[(ON_ARMS[0] ?? ARMS[0]).name];
       console.log(`  ${name}: owner ${any.ramp.camOwner}, applied ${armSummary(shots)}, camera's own angle ${any.ramp.cameraAngularRadiusDeg.toFixed(2)}°`);
       await writeRecords();
@@ -395,6 +411,19 @@ try {
     console.log('[2b] wheel out from the parked ship, every arm: where the two drivers part');
     const notches = Number(arg('zoom-notches', '12'));
     await page.mouse.move(centreX, centreY);
+    // Under the chase a wheel is a transient the follow undoes within a
+    // second and the intended boom ignores it (cruiseView.ts); only under a
+    // drag orbit does the wheel scale the intended boom, which is the path
+    // the two drivers part on. So a run without --lookaround takes the orbit
+    // with a short drag first (a few pixels is under the grab threshold).
+    if ((await rampState()).camOwner !== 'orbit') {
+      await page.mouse.down();
+      await page.mouse.move(centreX + 24, centreY, { steps: 6 });
+      await page.mouse.up();
+      await page.waitForTimeout(1500);
+      await drawn(3);
+      check((await rampState()).camOwner === 'orbit', 'zoom-out: the drag did not take the camera for the wheel');
+    }
     for (let i = 0; i < notches; i++) {
       await page.mouse.wheel(0, 240);
       await page.waitForTimeout(120);
@@ -403,11 +432,11 @@ try {
     await drawn(3);
     const { shots } = await shootArms('zoom-out');
     checkArms('zoom-out', shots);
-    zooms.push({ notches, lens: shots.lens, ramp: shots.ramp, shots });
+    zooms.push({ notches, ...legacyKeys(shots), shots });
     for (const arm of ON_ARMS) {
       const shot = shots[arm.name];
       const parked = parkedByArm[arm.name];
-      console.log(`  ${arm.name}: boom ${(shot.ramp.boomAU * KM_PER_AU).toFixed(0)} km (parked ${(parked.boomAU * KM_PER_AU).toFixed(0)}), driving ${shot.ramp.angularRadiusDeg.toFixed(1)}° (parked ${parked.angularRadiusDeg.toFixed(1)}°), applied ${shot.ramp.applied.toFixed(3)} (parked ${parked.applied.toFixed(3)}), camera's own angle ${shot.ramp.cameraAngularRadiusDeg.toFixed(1)}°`);
+      console.log(`  ${arm.name}: intended boom ${(shot.ramp.intendedBoomAU * KM_PER_AU).toFixed(0)} km (parked ${(parked.intendedBoomAU * KM_PER_AU).toFixed(0)}), driving ${shot.ramp.angularRadiusDeg.toFixed(1)}° (parked ${parked.angularRadiusDeg.toFixed(1)}°), applied ${shot.ramp.applied.toFixed(3)} (parked ${parked.applied.toFixed(3)}), camera's own angle ${shot.ramp.cameraAngularRadiusDeg.toFixed(1)}°`);
     }
     await writeRecords();
   }
@@ -455,7 +484,7 @@ try {
       return canvas.toDataURL('image/jpeg', 0.88);
     }, { rows, width: VIEWPORT_WIDTH, height: VIEWPORT_HEIGHT });
     await writeFile(path.join(outDir, 'sheet.jpg'), Buffer.from(dataUrl.split(',')[1], 'base64'));
-    console.log(`[3] sheet of ${rows.length} stops → ${path.join(outDir, 'sheet.jpg')}`);
+    console.log(`[3] sheet of ${rows.length} rows (${picks.length} stops, ${looks.length} looks, ${zooms.length} zooms) → ${path.join(outDir, 'sheet.jpg')}`);
   }
 
   check(pageErrors.length === 0, `${pageErrors.length} uncaught page error(s): ${pageErrors[0] ?? ''}`);

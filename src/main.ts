@@ -81,6 +81,7 @@ import {
   updateLensPass, type LensParams, type LensUniforms,
 } from './app/LensPass';
 import { applyDesignFov, displayFovDeg, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
+import type { LensRampDriver } from './shared/math/lensProximity';
 import { loadBrightStarCatalog } from './planetarium/world/starCatalogLoader';
 import { debugError, debugLog, debugWarn } from './shared/debug';
 import { safeAreaInsets } from './shared/dom';
@@ -3116,7 +3117,7 @@ function installDevHooks() {
     /** Switch the lens proximity ramp on or off live, as `?lensramp=1` does at boot. */
     setLensRamp: (enabled: boolean) => planetariumMode?.devSetLensRamp(enabled) ?? false,
     /** The ramp's A/B arm, live: `{driver: 'ship'|'ship+boom', fullDeg, offDeg}`, as `?lensdrive=` and `?lensband=` do at boot; returns the config in force. */
-    lensRampConfig: (patch: { driver?: 'ship+boom' | 'ship'; fullDeg?: number; offDeg?: number } = {}) =>
+    lensRampConfig: (patch: { driver?: LensRampDriver; fullDeg?: number; offDeg?: number } = {}) =>
       planetariumMode?.devSetLensRampConfig(patch) ?? null,
     travelTo: (name: string) => planetariumMode?.devTravelTo(name) ?? false,
     arrivalPose: () => planetariumMode?.devArrivalPose() ?? null,

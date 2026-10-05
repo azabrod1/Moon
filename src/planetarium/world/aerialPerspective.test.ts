@@ -109,23 +109,23 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '3258eefff0d82adc1287bfc001737c847cfb55b49e69e4a093f035484f705bf7';
-const PROD_FRAGMENT_HASH = '90ccb88ebf8bcd735df0791388c8c390ecb00c1e6a297f20b0d985c5d56e3c33';
+const DEV_FRAGMENT_HASH = 'ddc1d457f008a52a2909e5b322a13e0f9e27b749cb6f3325e149423b603b5429';
+const PROD_FRAGMENT_HASH = '6f944995a7310613f51ba42fe72c032700d96d6fab00c80ec4a52ae86fbe9de4';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 /** The two texts with the cloud field's define OFF (world/cloudField),
  *  resolved as the preprocessor resolves it: each of the field's two chunks
  *  leaves the one blank line it opens with. */
-const FIELD_OFF_DEV_FRAGMENT_HASH = '8d8f6ba5f7c74dafc5f5f2ed49e9b32647dc645b147b0c898c79c2443a5b60db';
-const FIELD_OFF_PROD_FRAGMENT_HASH = '4f72e63e8d6f204c108ca0f8847186abf7574999e0a29555b484042b7e0da498';
+const FIELD_OFF_DEV_FRAGMENT_HASH = '983723667591bd395952b8aa811b35ed770ded6ef6b4b7a5666cbb90a7d420e4';
+const FIELD_OFF_PROD_FRAGMENT_HASH = '2bd5829c3e56d43e06ce6151edde3f5cdf5e5afd9bf356e7e8c4d2e5709fdeff';
 /** The production text from before the field reached a production build:
  *  the shipped text with the field's two chunks deleted, newlines and all. */
-const PRE_FIELD_PROD_FRAGMENT_HASH = '84de15f7586a93e6f8353bc4638e111753bec8c2a77c66dbc922be69d7998748';
+const PRE_FIELD_PROD_FRAGMENT_HASH = 'b75df58c90c08fe04165a72939c3dda72ff6d5ddc23a78b0c80ab8d42fbd04a1';
 /** The same two texts with the cloud shadow's, the cloud light's and the
  *  cloud field's defines all OFF, resolved as the preprocessor resolves them:
  *  the texts from before the switches existed, but for the field's two blank
  *  lines. */
-const OFF_DEV_FRAGMENT_HASH = '4870805861e5038cec316d9a912a81d0772409b987235340b0a715914e6080ce';
-const OFF_PROD_FRAGMENT_HASH = 'fae6ebdd067898a67d7b85327d5e1e2f9c4402d1c8ca4b161261ea4b33e92eef';
+const OFF_DEV_FRAGMENT_HASH = 'c1529e41101b1b4a04cd060bea810bde5081fa1219aba65261422b8a8885ea7b';
+const OFF_PROD_FRAGMENT_HASH = '967aeed2db2e859034b4ce6fb9729bb3e8a1adfb3ff4d7456fc106bd866b573e';
 describe('the injected surface shader', () => {
   it('is one text for every body and both tiers', () => {
     // Earth with air, the Moon without, Mars with its own, and the cloud deck.
@@ -305,7 +305,9 @@ describe('the injected surface shader', () => {
         + '\nuniform float uProbeCloudRelief;\nuniform float uProbeCloudAir;'
         + '\nuniform float uGlintCap;\nuniform float uGlintKeep;\nuniform float uGlintCalm;'
         + '\nuniform float uBeamKnee;\nuniform float uBeamCap;'
-        + '\nuniform vec3 uSeaColour;', '')
+        + '\nuniform vec3 uSeaColour;\nuniform float uSeaSky;', '')
+      // The sky reflection's scale is a DEV knob at one, not in the text at all.
+      .replace(/ \* uSeaSky/g, '')
       // The water colour the sea is drawn in reads as its constant.
       .replace(/uSeaColour/g, `vec3(${SEA_WATER_COLOUR.map((v) => v.toFixed(5)).join(', ')})`)
       // The cloud shadow's knobs read as the constants they default to, and
@@ -346,7 +348,7 @@ describe('the injected surface shader', () => {
       .replace(/uBeamKnee/g, OCEAN_BEAM_KNEE.toFixed(2))
       .replace(/uBeamCap/g, OCEAN_BEAM_CAP.toFixed(2))
       .replace(/ \* uGlintKeep/g, '');
-    expect(folded).not.toMatch(/uPerf|uProbe|uGlint|uSeaColour|uCloudShadow(Depth|Air|Penumbra|Gamma)|uCloudLight|uCloudShadowSkyFill|uCloudGroundFill|uCloudFieldDiag/);
+    expect(folded).not.toMatch(/uPerf|uProbe|uGlint|uSeaColour|uSeaSky|uCloudShadow(Depth|Air|Penumbra|Gamma)|uCloudLight|uCloudShadowSkyFill|uCloudGroundFill|uCloudFieldDiag/);
     expect(hash(import.meta.env.DEV ? folded : shader.fragmentShader)).toBe(PROD_FRAGMENT_HASH);
     const night = import.meta.env.DEV
       ? earthNightFragmentShader

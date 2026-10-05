@@ -76,6 +76,7 @@ import {
   setSeaWindEnabled,
   parseSeaBeamParam, parseSunPathParam, seaBeamOn, setSeaBeamEnabled, setSunPathEnabled, sunPathOn,
   parseSeaColourParam, seaColourUniforms, setSeaColourEnabled,
+  parseSeaSkyParam, seaSkyOn, setSeaSkyEnabled,
   surfaceShadingArgsOf,
 } from './planetarium/world/surfaceShading';
 import type { CloudFieldRequest } from './planetarium/world/cloudFieldDev';
@@ -321,6 +322,9 @@ setSeaBeamEnabled(parseSeaBeamParam(location.search));
 // `?seacolour=0`: the sea drawn in the day map's painted navy again instead
 // of clear ocean water's own colour (world/surfaceShading SEA_WATER_COLOUR).
 setSeaColourEnabled(parseSeaColourParam(location.search));
+// `?seasky=0`: the sea without the sky reflected off its surface (the
+// SEA_SKY define, world/surfaceShading), the picture as it was.
+setSeaSkyEnabled(parseSeaSkyParam(location.search));
 // `?glintmeter=0`: the exposure never closes down for the sea's beam
 // (planetarium/highlightMeter); the Sun's own meter alone, as it was.
 setHighlightMeterEnabled(parseGlintMeterParam(location.search));
@@ -3534,6 +3538,7 @@ function installDevHooks() {
       cap?: number; keep?: number; calm?: number; calmMss?: number; roughness?: number | null;
       beamKnee?: number; beamCap?: number; sunPath?: boolean; seaBeam?: boolean;
       seaColour?: [number, number, number]; seaMix?: number;
+      seaSky?: boolean; seaSkyScale?: number;
     }) => {
       if (opts?.cap !== undefined) devGlintUniforms.uGlintCap.value = opts.cap;
       // The water colour the sea is drawn in (SEA_WATER_COLOUR by default) and
@@ -3547,6 +3552,10 @@ function installDevHooks() {
       if (opts?.beamCap !== undefined) devGlintUniforms.uBeamCap.value = opts.beamCap;
       if (opts?.sunPath !== undefined) setSunPathEnabled(opts.sunPath);
       if (opts?.seaBeam !== undefined) setSeaBeamEnabled(opts.seaBeam);
+      // The sky reflected off the sea: its define relinked live, and a scale
+      // on the term for a sheet of candidates.
+      if (opts?.seaSky !== undefined) setSeaSkyEnabled(opts.seaSky);
+      if (opts?.seaSkyScale !== undefined) devGlintUniforms.uSeaSky.value = opts.seaSkyScale;
       if (opts?.calm !== undefined) devGlintUniforms.uGlintCalm.value = slopeRoughness(meanSquareSlope(opts.calm));
       if (opts?.calmMss !== undefined) devGlintUniforms.uGlintCalm.value = slopeRoughness(opts.calmMss);
       const roughness = setDevOceanRoughness(opts?.roughness);
@@ -3567,6 +3576,8 @@ function installDevHooks() {
         beamCap: devGlintUniforms.uBeamCap.value,
         seaColour: devGlintUniforms.uSeaColour.value.toArray() as [number, number, number],
         seaMix: seaColourUniforms.uSeaMix.value,
+        seaSky: seaSkyOn(),
+        seaSkyScale: devGlintUniforms.uSeaSky.value,
         sunPath: sunPathOn(),
         seaBeam: seaBeamOn(),
         roughness,

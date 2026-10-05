@@ -4,6 +4,7 @@ import { paintRing, STRIP_WIDTH } from '../planets/rings';
 import {
   augmentSurfaceMaterial, OCEAN_ROUGHNESS, ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER,
   SEA_PAINT_COLOUR, SEA_WATER_COLOUR, parseSeaColourParam, seaColourOn, seaColourUniforms, setSeaColourEnabled,
+  SEA_SKY_GRAZING_COS, parseSeaSkyParam, seaSkyOn, setSeaSkyEnabled, SEA_WATER_IOR,
   setSurfaceCraterShare, setSurfaceSynthesis, setSurfaceWaterGloss, surfaceChartWeights,
   SYNTH_CHART_CUT, surfaceCraterShare, surfaceReliefKind, surfaceSynthesisOf, surfaceWaterGloss,
   waterGlossRoughness,
@@ -1585,5 +1586,64 @@ describe("the sea's water colour", () => {
     expect(seaColourOn()).toBe(false);
     setSeaColourEnabled(true);
     expect(seaColourUniforms.uSeaMix.value).toBe(1);
+  });
+});
+
+describe('the sky reflected off the sea', () => {
+  function fragmentOf(): string {
+    const mat = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(mat, 'earth', undefined, 0, undefined, undefined, 'Earth');
+    const shader = {
+      uniforms: {} as Record<string, unknown>,
+      vertexShader: '#include <common>\n#include <begin_vertex>\n',
+      fragmentShader: '#include <common>\n#include <roughnessmap_fragment>\n#include <normal_fragment_maps>\n#include <opaque_fragment>\n',
+    };
+    (mat.onBeforeCompile as (s: typeof shader, r: unknown) => void)(shader, null);
+    return shader.fragmentShader;
+  }
+  // The exact unpolarised Fresnel the shader's helper computes, in TypeScript.
+  const fresnel = (cosI: number): number => {
+    const g = Math.sqrt(SEA_WATER_IOR * SEA_WATER_IOR - 1 + cosI * cosI);
+    const a = (g - cosI) / (g + cosI);
+    const b = (cosI * (g + cosI) - 1) / (cosI * (g - cosI) + 1);
+    return 0.5 * a * a * (1 + b * b);
+  };
+
+  it('is a define on by default, the switch and the knob relinking it, and its grazing hold is where the exact Fresnel reads a rough sea', () => {
+    expect(parseSeaSkyParam('')).toBe(true);
+    expect(parseSeaSkyParam('?seasky=0')).toBe(false);
+    const mat = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(mat, 'earth', undefined, 0, undefined, undefined, 'Earth');
+    expect(mat.defines?.SEA_SKY).toBe('');
+    setSeaSkyEnabled(false);
+    expect(seaSkyOn()).toBe(false);
+    expect(mat.defines?.SEA_SKY).toBeUndefined();
+    setSeaSkyEnabled(true);
+    expect(mat.defines?.SEA_SKY).toBe('');
+    // Water at normal incidence reflects 2 %; at the hold, 73°, about 0.18,
+    // which is what a 7 m/s sea reflects at 80° where a flat one reads 0.35.
+    expect(fresnel(1)).toBeCloseTo(0.02, 3);
+    expect(fresnel(SEA_SKY_GRAZING_COS)).toBeGreaterThan(0.17);
+    expect(fresnel(SEA_SKY_GRAZING_COS)).toBeLessThan(0.185);
+    expect(fresnel(0.17)).toBeGreaterThan(0.33);
+  });
+
+  it('reads the air table at the surface along the reflected ray in the air frame, its own term held out of the limb, and is no text at all off', () => {
+    const text = fragmentOf();
+    expect(text).toContain('getScattering3DRGBA(uScattering, 1.0, skyCos, skyMuS, skyNu, false)');
+    expect(text).toContain('vec3 skyView = normalize(vAirFrag - vAirCam);');
+    expect(text).toContain('vec3 skySun = normalize(uSunDirWorld);');
+    expect(text).toContain('if (uAirDensity > 0.0 && seaWater > 0.0) {');
+    expect(text).toContain('if (skyMuS > uMuSMin) {');
+    expect(text).toContain(`seaFresnelExact(max(skyCos, ${SEA_SKY_GRAZING_COS.toFixed(2)}))`);
+    expect(text).toContain('seaSky *= sunVisible;');
+    expect(text).toContain('limbHeld += seaSky;');
+    // The term never joins the beam: the cloud cut, the shoulder and the
+    // probe's attribution read seaGlint alone.
+    expect(text).not.toMatch(/seaGlint\s*\+=\s*seaSky|seaGlint = seaGlint \+ seaSky/);
+    const off = resolveDefine(text, 'SEA_SKY', false);
+    expect(off).not.toContain('skyRadiance');
+    expect(off).not.toContain('limbHeld += seaSky');
+    expect(off).not.toContain('seaSky *= sunVisible');
   });
 });

@@ -538,6 +538,34 @@ export function parseSeaColourParam(search: string): boolean {
 }
 
 /**
+ * The sky reflected off the sea's surface (the SEA_SKY define, `?seasky=0`).
+ * Water is a mirror as well as a scatterer: at nadir it hands the camera 2 %
+ * of the zenith sky, at the oblique views an orbital photograph takes the sea
+ * at (50 to 70 degrees from the vertical) 4 to 12 % of a sky several times
+ * brighter near the horizon. That is most of the grey-blue veil every ISS
+ * frame of open sea carries and the renderer did not, once the water's own
+ * colour (SEA_WATER_COLOUR) was right. The sky's radiance along the reflected
+ * ray is the air's own scattering table read at the surface, the same table,
+ * bridge and phase functions the camera leg's in-scatter uses with the far
+ * end gone (the ray leaves the atmosphere), so the two cannot disagree about
+ * the sky; times the water's unpolarised Fresnel reflectance at the view's
+ * incidence, exact rather than Schlick (which reads 15 to 24 % low in that
+ * band). The reflection is about the smooth radial normal: the sea's relief
+ * is zero, its wind is a BRDF and not a normal map, and the one fast-changing
+ * part of the sky, the Mie aureole about the Sun, is what the beam's own lobe
+ * already covers. Below SEA_SKY_GRAZING_COS the incidence is held: a
+ * wind-roughened sea reflects less at grazing than a flat one (Mobley reads
+ * 0.18 at 80 degrees for 7 m/s where the flat surface reads 0.35), and the
+ * exact Fresnel at 73 degrees is that 0.18; the horizon's pixels are the
+ * air's in any case. Its own term, never folded into the beam (which the
+ * cloud cut, the shoulder and the probe's attribution read), held out of the
+ * limb darkening with it, dimmed by an eclipse with it, faded in with the
+ * air, and only where there is water, air and a Sun the table knows. Off it
+ * is the text it was. Development builds scale it live (`uSeaSky`).
+ */
+export const SEA_SKY_GRAZING_COS = 0.29;
+
+/**
  * Where the Sun's image lands on glassy water the mirror term runs past white.
  * The tone mapper clips that to a white patch, which a camera does too, but
  * the bloom pass would then smear the excess over the coast and the clouds
@@ -605,6 +633,8 @@ export const devGlintUniforms: {
    *  `__moon.glint({seaColour})` moves it live; a production build compiles
    *  the constant. The share is `seaColourUniforms.uSeaMix` in every build. */
   uSeaColour: { value: THREE.Vector3 };
+  /** A scale on the sky reflected off the sea (1; folded out of production). */
+  uSeaSky: { value: number };
 } = {
   uGlintCap: { value: OCEAN_GLINT_CAP },
   uGlintKeep: { value: 1 },
@@ -612,6 +642,7 @@ export const devGlintUniforms: {
   uBeamKnee: { value: OCEAN_BEAM_KNEE },
   uBeamCap: { value: OCEAN_BEAM_CAP },
   uSeaColour: { value: new THREE.Vector3(...SEA_WATER_COLOUR) },
+  uSeaSky: { value: 1 },
 };
 const GLINT_CAP_GLSL = import.meta.env.DEV ? 'uGlintCap' : OCEAN_GLINT_CAP.toFixed(2);
 const BEAM_KNEE_GLSL = import.meta.env.DEV ? 'uBeamKnee' : OCEAN_BEAM_KNEE.toFixed(2);
@@ -619,6 +650,7 @@ const BEAM_CAP_GLSL = import.meta.env.DEV ? 'uBeamCap' : OCEAN_BEAM_CAP.toFixed(
 const GLINT_KEEP_GLSL = import.meta.env.DEV ? ' * uGlintKeep' : '';
 const GLINT_CALM_GLSL = import.meta.env.DEV ? 'uGlintCalm' : SEA_CALM_LOBE_ROUGHNESS.toFixed(5);
 const SEA_COLOUR_GLSL = import.meta.env.DEV ? 'uSeaColour' : `vec3(${SEA_WATER_COLOUR.map((v) => v.toFixed(5)).join(', ')})`;
+const SEA_SKY_SCALE_GLSL = import.meta.env.DEV ? ' * uSeaSky' : '';
 
 /** The cloud deck's colour map, and the drift its own frame carries on top of
  *  the body's. Shared by every augmented surface so the ocean's mirror term can
@@ -822,7 +854,7 @@ function applyCloudShadow(mat: THREE.Material, on: boolean): void {
 }
 
 /** Set or clear one of the cloud switches' defines on a material. */
-function applySwitchDefine(mat: THREE.Material, name: 'CLOUD_SHADOW' | 'CLOUD_LIGHT' | 'SUN_PATH' | 'SEA_BEAM', on: boolean): void {
+function applySwitchDefine(mat: THREE.Material, name: 'CLOUD_SHADOW' | 'CLOUD_LIGHT' | 'SUN_PATH' | 'SEA_BEAM' | 'SEA_SKY', on: boolean): void {
   const defines = (mat.defines ??= {});
   if ((defines[name] !== undefined) === on) return;
   if (on) defines[name] = '';
@@ -1869,7 +1901,8 @@ uniform float uGlintKeep;
 uniform float uGlintCalm;
 uniform float uBeamKnee;
 uniform float uBeamCap;
-uniform vec3 uSeaColour;`;
+uniform vec3 uSeaColour;
+uniform float uSeaSky;`;
 
 /**
  * The cloud deck's cost probes (app/perfSwitches.ts, `cloud-probe-*`): each
@@ -2032,6 +2065,15 @@ ${GROUND_FIELD_ARCHETYPE_CLOSE}#define GROUND_ON(x) (x)
  * nothing rather than a division by nothing.
  */
 const SEA_LOBE_GLSL = /* glsl */ `
+// Unpolarised Fresnel reflectance of water at an incidence cosine, exact for
+// its index (SEA_WATER_IOR): Schlick reads 15 to 24 % low between 50 and 60
+// degrees, the band an orbital oblique view meets the sea at.
+float seaFresnelExact(float cosI) {
+  float g = sqrt(max(${(SEA_WATER_IOR * SEA_WATER_IOR - 1).toFixed(6)} + cosI * cosI, 0.0));
+  float a = (g - cosI) / max(g + cosI, 1e-6);
+  float b = (cosI * (g + cosI) - 1.0) / max(cosI * (g - cosI) + 1.0, 1e-6);
+  return 0.5 * a * a * (1.0 + b * b);
+}
 float seaBeckmann(float alpha, float dotNH) {
   float cos2 = max(dotNH * dotNH, 1e-6);
   float alpha2 = alpha * alpha;
@@ -2604,6 +2646,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // the gate is the material's, and the land under it keeps three's own
   // dielectric term and lobe, as it had before the sea was given its own.
   vec3 seaGlint = vec3(0.0);
+  vec3 seaSky = vec3(0.0);
   if (GROUND_ON(uWaterGloss > 0.0)) {
     vec3 glintRaw = reflectedLight.directSpecular;
     vec3 seaViewDir = normalize(vViewPosition);
@@ -2650,6 +2693,37 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
     seaGlint = min(seaGlintFull, vec3(${GLINT_CAP_GLSL}));
 #endif
     outgoingLight -= glintRaw - seaGlint;
+#ifdef SEA_SKY
+    // The sky reflected off the water (SEA_SKY_GRAZING_COS): the air's
+    // scattering table read at the surface along the view ray reflected
+    // about the radial normal, in the air's frame (vAirFrag and vAirCam are
+    // offsets from the body's centre in world axes, so the Sun is
+    // uSunDirWorld), at radius exactly one (a sector's chord sits a little
+    // under or over it), the ray's cosine clamped at the horizon, the
+    // single-Mie term recovered and gated as the camera leg gates it. Only
+    // with water under the fragment, the tables bound, and the Sun above the
+    // table's floor (uMuSMin: below it the table reads its edge row, a
+    // pedestal over the whole night half, and the fetches would be spent on
+    // it). Faded in with the air (uAirBlend), as the camera leg is.
+    if (uAirDensity > 0.0 && seaWater > 0.0) {
+      vec3 skyUp = normalize(vAirFrag);
+      vec3 skySun = normalize(uSunDirWorld);
+      float skyMuS = dot(skyUp, skySun);
+      if (skyMuS > uMuSMin) {
+        vec3 skyView = normalize(vAirFrag - vAirCam);
+        float skyCos = max(-dot(skyView, skyUp), 0.0);
+        vec3 skyRay = skyView + 2.0 * skyCos * skyUp;
+        float skyNu = dot(skyRay, skySun);
+        vec4 skyS = getScattering3DRGBA(uScattering, 1.0, skyCos, skyMuS, skyNu, false);
+        vec3 skyMie = getExtrapolatedSingleMieScattering(skyS) * smoothstep(0.0, 0.01, skyMuS);
+        vec3 skyRadiance = (skyS.rgb * rayleighPhaseFunction(skyNu) + skyMie * miePhaseFunction(uMiePhaseG, skyNu))
+            * uAirlightScale * uSolarIrradiance;
+        seaSky = skyRadiance
+            * (seaWater * uAirBlend * seaFresnelExact(max(skyCos, ${SEA_SKY_GRAZING_COS.toFixed(2)}))${SEA_SKY_SCALE_GLSL});
+        outgoingLight += seaSky;
+      }
+    }
+#endif
   }
   // The deck's alpha, worked out with its colour above where the lights could
   // still see both. A deck at a flat opacity dims clear sky by that fraction
@@ -2843,6 +2917,9 @@ ${CLOUD_SHADOW_DIFFUSE}${CLOUD_SHADOW_FILL}${CLOUD_LIGHT_DECK}  // The sine of t
   }
   outgoingLight *= sunVisible;
   seaGlint *= sunVisible;
+#ifdef SEA_SKY
+  seaSky *= sunVisible;
+#endif
   // Limb darkening: the disc dims toward its edge as the view ray grazes the
   // surface. mu = cos of the view angle — 1 at disc centre, 0 at the limb.
   // Applied last so it shades every lit term equally; 0 disables it. The beam
@@ -2855,6 +2932,10 @@ ${CLOUD_SHADOW_DIFFUSE}${CLOUD_SHADOW_FILL}${CLOUD_LIGHT_DECK}  // The sine of t
     vec3 limbHeld = seaGlint;
 #else
     vec3 limbHeld = vec3(0.0);
+#endif
+#ifdef SEA_SKY
+    // A mirror of the sky brightens toward the limb as the beam does.
+    limbHeld += seaSky;
 #endif
     outgoingLight = (outgoingLight - limbHeld) * (1.0 - uLimbDarkening * (1.0 - mu)) + limbHeld;
   }
@@ -3041,6 +3122,8 @@ export function setSurfaceWaterGloss(mat: THREE.Material, on: boolean): void {
  */
 let sunPathEnabled = true;
 let seaBeamEnabled = true;
+/** `SEA_SKY` (`?seasky=0`): the sky reflected off the sea (SEA_SKY_GRAZING_COS), the same shape of switch. */
+let seaSkyEnabled = true;
 /** Every live augmented surface, so a flip can reach the materials already drawn. */
 const beamReceivers = new Set<THREE.Material>();
 function receiveBeamSwitches(mat: THREE.Material): void {
@@ -3050,6 +3133,7 @@ function receiveBeamSwitches(mat: THREE.Material): void {
   }
   applySwitchDefine(mat, 'SUN_PATH', sunPathEnabled);
   applySwitchDefine(mat, 'SEA_BEAM', seaBeamEnabled);
+  applySwitchDefine(mat, 'SEA_SKY', seaSkyEnabled);
 }
 export function setSunPathEnabled(on: boolean): void {
   sunPathEnabled = on;
@@ -3058,6 +3142,18 @@ export function setSunPathEnabled(on: boolean): void {
 export function setSeaBeamEnabled(on: boolean): void {
   seaBeamEnabled = on;
   for (const mat of beamReceivers) applySwitchDefine(mat, 'SEA_BEAM', on);
+}
+export function setSeaSkyEnabled(on: boolean): void {
+  seaSkyEnabled = on;
+  for (const mat of beamReceivers) applySwitchDefine(mat, 'SEA_SKY', on);
+}
+/** Whether every surface compiles the sky reflected off the sea right now. */
+export function seaSkyOn(): boolean {
+  return seaSkyEnabled;
+}
+/** The `?seasky=0` kill switch, on any build. */
+export function parseSeaSkyParam(search: string): boolean {
+  return new URLSearchParams(search).get('seasky') !== '0';
 }
 /** The beam's shoulder as the sea draws it this frame: the DEV knobs' values
  *  in a development build, the constants in production. The highlight meter
@@ -3590,6 +3686,7 @@ export function augmentSurfaceMaterial(
       shader.uniforms.uBeamKnee = devGlintUniforms.uBeamKnee;
       shader.uniforms.uBeamCap = devGlintUniforms.uBeamCap;
       shader.uniforms.uSeaColour = devGlintUniforms.uSeaColour;
+      shader.uniforms.uSeaSky = devGlintUniforms.uSeaSky;
     }
     shader.uniforms.uFrameSpin = uFrameSpin;
     shader.uniforms.uSynthDetail = uSynthDetail;

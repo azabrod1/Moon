@@ -64,6 +64,7 @@ import {
   applyNightLift,
   devGlintUniforms,
   nightLiftUniform,
+  reliefBalanceUniform,
   setDevOceanRoughness,
   setDevSurfaceHaze,
   SURFACE_HAZE_CLEAR_VIEW,
@@ -3267,6 +3268,17 @@ function installDevHooks() {
     nightLift: (strength: number) => {
       nightLiftUniform.value = Math.max(0, strength);
       return { mode: nightSides, lift: nightLiftUniform.value };
+    },
+    /** The relief frame's balance, live (world/reliefFrame.ts): 0 draws a
+     *  relief map with three's weighting of its east-west and north-south
+     *  slopes, the picture as it was; 1 the physical weighting the maps are
+     *  baked in. Every surface with a relief map reads the one uniform, the
+     *  Look-inside skins included. No argument reads it. */
+    reliefBalance: (balance?: number) => {
+      if (typeof balance === 'number' && Number.isFinite(balance)) {
+        reliefBalanceUniform.value = Math.min(1, Math.max(0, balance));
+      }
+      return reliefBalanceUniform.value;
     },
     /** The last n draws: `{ drawSeq, tickSeq, t, nowMs, busyMs }`, oldest
      *  first. What the pacing gate reads — the intervals between draws, not

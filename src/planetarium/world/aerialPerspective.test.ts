@@ -97,8 +97,8 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '02d65661afc631e95ef0344d1f525d15a2cab3d3df9cfaac1cffb408b7e01ca7';
-const PROD_FRAGMENT_HASH = '46ab7bcb2edc378dc7d7bbda9ae1d268f0632fb390360e26ba1c6bc64e28a119';
+const DEV_FRAGMENT_HASH = '7470e87d0d90c3d83f7a56fa00bcb4ef4096eb6be06dda3f6ca8b9b6dfe0c464';
+const PROD_FRAGMENT_HASH = 'fb2895ad9cc303afab030002955dad8f0e14dbe4ce8c7688dfe9bf1f3e99a353';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 
 describe('the injected surface shader', () => {
@@ -145,7 +145,7 @@ describe('the injected surface shader', () => {
     // alone, and that text has its own pin: the test below ties the two.
     const shader = compile(augmented('earth'));
     expect(hash(shader.vertexShader))
-      .toBe('862f7224fafb480070aebf0c7c125dddbd78c879780eb072e96988333154322a');
+      .toBe('fb0f88934d6953cd220eaa08c60a6b475629e51ae70e4e6180b0855a51e6fe0b');
     expect(hash(shader.fragmentShader))
       .toBe(import.meta.env.DEV ? DEV_FRAGMENT_HASH : PROD_FRAGMENT_HASH);
   });
@@ -176,6 +176,10 @@ describe('the injected surface shader', () => {
       .replace('\t} // cloud relief probe\n', '')
       .replace('uProbeCloudDetail > 0.5 ? 0.0 : ', '')
       .replace(' && (uProbeCloudAir < 0.5 || DECK_OFF)', '')
+      // A DEV deck can be drawn through the ground's program (`cloud-program`
+      // off) and keeps three's relief frame there; production's deck always
+      // has its own program, so its ground program has no such line.
+      .replace('\tif ( DECK_ON ) reliefFrame = tbn;\n', '')
       // The glint's tuning uniforms read as the constants they default to.
       .replace(/uGlintCap/g, OCEAN_GLINT_CAP.toFixed(2))
       .replace(/uGlintKeep/g, OCEAN_SPECULAR_KEEP.toFixed(4));

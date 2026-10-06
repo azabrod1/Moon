@@ -147,17 +147,17 @@ export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = /* table:beg
     "fileCount": 32
   },
   "mars-normal.v2/2k": {
-    "setHash8": "f7efa0d7",
+    "setHash8": "323fe70c",
     "grid": {
       "cols": 8,
       "rows": 4
     },
     "content": 180,
     "gutter": 8,
-    "tileWidth": 392,
+    "tileWidth": 196,
     "tileHeight": 196,
     "baseWidth": 1440,
-    "spanU": 2,
+    "spanU": 1,
     "fileCount": 32
   },
   "mars.v2/16k": {
@@ -189,31 +189,31 @@ export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = /* table:beg
     "fileCount": 32
   },
   "moon-normal/4k": {
-    "setHash8": "09986655",
+    "setHash8": "f2712711",
     "grid": {
       "cols": 8,
       "rows": 4
     },
     "content": 360,
     "gutter": 8,
-    "tileWidth": 752,
+    "tileWidth": 376,
     "tileHeight": 376,
     "baseWidth": 2880,
-    "spanU": 2,
+    "spanU": 1,
     "fileCount": 32
   },
   "moon-normal/8k": {
-    "setHash8": "1c624a84",
+    "setHash8": "c2a4a8be",
     "grid": {
       "cols": 8,
       "rows": 4
     },
     "content": 1016,
     "gutter": 8,
-    "tileWidth": 2064,
+    "tileWidth": 1032,
     "tileHeight": 1032,
     "baseWidth": 8128,
-    "spanU": 2,
+    "spanU": 1,
     "fileCount": 32
   }
 } /* table:end */;

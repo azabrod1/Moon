@@ -16,9 +16,10 @@
  * 1 is the physics.
  *
  * Conventions kept from the shipped generator, so a map from here can sit
- * under the same material: tangent-space, +Y toward the map's south
- * (rows run north to south and the generator writes ny = dh/dy with the
- * three.js / OpenGL sign), longitude wraps, latitude clamps at the poles,
+ * under the same material: tangent-space with +Y north, OpenGL's convention
+ * (rows run north to south, so the generator's ny = dh/d(row) is
+ * −dh/d(north), the green three expects — never negate it), longitude wraps,
+ * latitude clamps at the poles,
  * and the longitude slope's 1/cos(lat) is clamped at 5 so the polar rows
  * do not blow up. Dependency-free on purpose: tools/gen-moon-relief.mjs
  * imports this file through Node's type stripping, and a `.ts` import from

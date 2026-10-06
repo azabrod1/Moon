@@ -227,15 +227,16 @@ describe('sector tile sets: what the app asks for', () => {
     }
   });
 
-  it('normal-map crops span two sectors, scalar crops one', () => {
-    // The tangent frame a normal map is sampled in needs the neighbouring
-    // sector on both sides; bump and roughness are scalars and need none.
-    // The runtime reads spanU from the generated table, so a re-cut at the
-    // wrong span would agree with itself everywhere — this is the one place
-    // the span is stated rather than measured.
+  it('every crop spans one sector', () => {
+    // Normal-map crops once spanned two, so three's frame, read from the
+    // crop's UV derivatives, saw the globe's UV scale; the relief frame now
+    // comes from the sphere itself (world/reliefFrame.ts) and a crop carries
+    // its own sector only. The runtime reads spanU from the generated table,
+    // so a re-cut at the wrong span would agree with itself everywhere — this
+    // is the one place the span is stated rather than measured.
     for (const [body, , spec] of appSpecs()) {
       for (const [slot, crop] of Object.entries(spec.crops)) {
-        const want = slot === 'normalMap' ? 2 : 1;
+        const want = 1;
         expect(crop.spanU, `${body} ${slot}`).toBe(want);
         expect(SECTOR_SET_TABLE[`${crop.key}/${crop.tier}`].spanU, `${body} ${slot}`).toBe(want);
       }

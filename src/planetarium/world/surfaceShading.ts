@@ -162,6 +162,7 @@ import {
 import { MOON_UP_GLSL, NIGHT_WEIGHT_GLSL, SUN_DOWN_GLSL } from './nightSources';
 import { gpuSeed } from './proceduralMoon';
 import { SURFACE_TEXEL_FADE } from './surfaceDensity';
+import { parseReliefBalance, RELIEF_SPHERE_FRAME_GLSL } from './reliefFrame';
 import {
   SURFACE_DETAIL_GRADIENT_SCALE,
   surfaceDetailFieldMean,
@@ -553,6 +554,19 @@ export const NIGHT_LIFT_STRENGTH = 0.045;
  */
 export const nightLiftUniform: { value: number } = { value: 0 };
 
+/**
+ * The one uniform every body's relief frame reads (world/reliefFrame.ts): 0
+ * draws a tangent-space relief map in three's own frame, the picture as it
+ * always was; 1 in the sphere's orthonormal east and north, the physical
+ * balance the maps are baked in; between, a blend of the two. Booted from `?reliefbalance=`; the
+ * DEV bridge's `reliefBalance` writes it live. Shared by the globes, their
+ * sectors, the Look-inside skins and the warm-up probes, so one write moves
+ * every surface on the next frame and no program differs between them.
+ */
+export const reliefBalanceUniform: { value: number } = {
+  value: typeof location === 'undefined' ? 0 : parseReliefBalance(location.search),
+};
+
 /** Apply the reader's Night sides choice to every planetarium body, from the
  *  next frame. Nothing recompiles: the value is a uniform. */
 export function applyNightLift(mode: NightSides): void {
@@ -662,7 +676,11 @@ varying vec3 vMoonViewDir;
 varying vec3 vObjPos;
 varying vec3 vPlanetshineViewDir;
 varying vec3 vAirCam;
-varying vec3 vAirFrag;`;
+varying vec3 vAirFrag;
+#if defined( USE_NORMALMAP_TANGENTSPACE ) && !defined( CLOUD_DECK )
+varying vec2 vReliefUv;
+varying vec3 vReliefPole;
+#endif`;
 
 const SURFACE_VERTEX_BODY = /* glsl */ `
 vSunViewDir = normalize((viewMatrix * vec4(uSunDirWorld, 0.0)).xyz);
@@ -689,7 +707,16 @@ if (uFrameSpin == 0.0) {
 // and back would subtract two numbers of the body's heliocentric size to get
 // one the size of its radius.
 vAirCam = cameraPosition - modelMatrix[3].xyz;
-vAirFrag = mat3(modelMatrix) * position;`;
+vAirFrag = mat3(modelMatrix) * position;
+#if defined( USE_NORMALMAP_TANGENTSPACE ) && !defined( CLOUD_DECK )
+// The relief frame's two inputs (world/reliefFrame.ts): the GLOBE's UV — the
+// attribute three's own transform starts from, before a sector's crop scales
+// it — and the body's pole (SphereGeometry's +Y) in the view space the
+// fragment's normal is in. A sector is a child of its body's mesh, so its
+// normalMatrix carries the same pole.
+vReliefUv = NORMALMAP_UV;
+vReliefPole = normalMatrix * vec3(0.0, 1.0, 0.0);
+#endif`;
 
 /**
  * The hand-over from the smooth magnification filter back to plain bilinear, in
@@ -1477,6 +1504,12 @@ const SURFACE_ARCHETYPE_MACROS = /* glsl */ `
 
 const SURFACE_FRAGMENT_DECLS = /* glsl */ `
 ${SURFACE_ARCHETYPE_MACROS}
+#if defined( USE_NORMALMAP_TANGENTSPACE ) && !defined( CLOUD_DECK )
+varying vec2 vReliefUv;
+varying vec3 vReliefPole;
+uniform float uReliefBalance;
+${RELIEF_SPHERE_FRAME_GLSL}
+#endif
 uniform vec3 uNightColor;
 uniform float uNightStrength;
 uniform float uNightLift;
@@ -1544,7 +1577,20 @@ ${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLS
  * The other paths through the chunk — object-space normals, the bump map — are
  * the include itself, unchanged: they belong to every other body's surface and
  * there is nothing to save on them.
+ *
+ * The frame the relief is turned into a normal with (world/reliefFrame.ts) is
+ * three's own `getTangentFrame` fed the GLOBE's UV rather than the UV the map
+ * is sampled with, so a sector's one-sector-wide crop is drawn in the frame
+ * its globe is; the shared balance blends it toward the sphere's orthonormal
+ * east and north. The deck keeps three's `tbn` exactly: its relief is a
+ * brightness proxy, not a slope, and its crop-free map makes the two UVs one.
  */
+/** The deck drawn through the ground's program — DEV's `cloud-program` switch
+ *  off, the only way a deck reaches a program without CLOUD_DECK — keeps
+ *  three's frame there too, whatever the balance. A production deck always
+ *  has its own program, so production's ground program has no such line. */
+const RELIEF_DECK_FALLBACK = import.meta.env.DEV ? '\tif ( DECK_ON ) reliefFrame = tbn;\n' : '';
+
 const SURFACE_NORMAL_MAPS = /* glsl */ `
 #if defined( USE_NORMALMAP_TANGENTSPACE )
 ${RELIEF_PROBE_OPEN}	vec4 reliefTexel = texture2D( normalMap, vNormalMapUv );
@@ -1558,7 +1604,15 @@ ${RELIEF_PROBE_OPEN}	vec4 reliefTexel = texture2D( normalMap, vNormalMapUv );
 	}
 	vec3 mapN = reliefTexel.xyz * 2.0 - 1.0;
 	mapN.xy *= normalScale;
+#if defined( CLOUD_DECK )
 	normal = normalize( tbn * mapN );
+#else
+	mat3 reliefFrame = getTangentFrame( - vViewPosition, normal, vReliefUv );
+	if ( uReliefBalance > 0.0 ) {
+		reliefFrame += ( reliefSphereFrame( vReliefPole, normal ) - reliefFrame ) * uReliefBalance;
+	}
+${RELIEF_DECK_FALLBACK}	normal = normalize( reliefFrame * mapN );
+#endif
 ${RELIEF_PROBE_CLOSE}#else
 #include <normal_fragment_maps>
 #endif
@@ -2400,6 +2454,7 @@ export function augmentSurfaceMaterial(
       shader.uniforms.uGlintKeep = devGlintUniforms.uGlintKeep;
     }
     shader.uniforms.uFrameSpin = uFrameSpin;
+    shader.uniforms.uReliefBalance = reliefBalanceUniform;
     shader.uniforms.uSynthDetail = uSynthDetail;
     shader.uniforms.uSynthGrain = uSynthGrain;
     shader.uniforms.uSynthRelief = uSynthRelief;

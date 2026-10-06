@@ -88,9 +88,8 @@ const jobsWanted = args.filter((a) => !a.startsWith('--'));
 // and the sector's UV transform maps onto the tile's interior
 // (world/sectorGrid.ts SECTOR_TILE). Data-map crops (bump / normal /
 // roughness) are pure crops of the base maps with the same gutter, so the
-// relief under a sector is exactly the base's relief; normal-map crops are cut
-// two sectors wide so their UV transform is uniform (sectorGrid explains the
-// tangent frame reason). Earth's ocean-gloss mask is not a base map but a
+// relief under a sector is exactly the base's relief; every crop is one sector
+// wide (sectorGrid's header has why normal crops once were two). Earth's ocean-gloss mask is not a base map but a
 // DERIVED one: classified per 16K source pixel (the same classifier that
 // grades the ocean colour, so gloss and blue agree at every coast),
 // area-averaged to 4096 for its crops and to 2048 for the boot file.
@@ -782,7 +781,7 @@ export interface GeneratedSectorSet {
   tileHeight: number;
   /** Width of the equirect the set was cut from: content × cols. */
   baseWidth: number;
-  /** Sectors of longitude one tile spans (normal-map crops: 2). */
+  /** Sectors of longitude one tile spans (every shipped set: 1). */
   spanU: number;
   fileCount: number;
 }
@@ -1374,8 +1373,8 @@ export const JOBS = {
     // world/sectorStreamer.ts SECTOR_SETS; the 8k is cut only when its source
     // is in the cache, so a `--crops` run without it leaves the 4k alone.
     dataCrops: [
-      { src: path.join(TEX, '4k', 'moon-normal.webp'), key: 'moon-normal', tier: '4k', spanU: 2 },
-      { src: cache('moon-normal-8k.webp'), key: 'moon-normal', tier: '8k', spanU: 2, optional: true },
+      { src: path.join(TEX, '4k', 'moon-normal.webp'), key: 'moon-normal', tier: '4k' },
+      { src: cache('moon-normal-8k.webp'), key: 'moon-normal', tier: '8k', optional: true },
     ],
   },
   // USGS Mars Viking MDIM 2.1 colour mosaic via WMS (what NASA Eyes ships).
@@ -1395,7 +1394,7 @@ export const JOBS = {
       { w: 2048, h: 1024, out: path.join(TEX, 'mars.v2.webp') },
     ],
     ref: path.join(TEX, '4k', 'mars.v2.webp'),
-    dataCrops: [{ src: path.join(TEX, 'mars-normal.v2.webp'), key: 'mars-normal.v2', tier: '2k', spanU: 2 }],
+    dataCrops: [{ src: path.join(TEX, 'mars-normal.v2.webp'), key: 'mars-normal.v2', tier: '2k' }],
   },
   // Solar System Scope 4K steps for the planets whose 8K/4K sources passed the
   // same-product gate against the shipped 2K boot maps (RMS 3.6 / 1.6 / 1.6).

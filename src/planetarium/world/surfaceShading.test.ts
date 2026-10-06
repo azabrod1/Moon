@@ -1367,34 +1367,38 @@ describe('cloud shadows on the ground (CLOUD_SHADOW, off by default)', () => {
 
   it('cuts the Sun\'s diffuse after the sea\'s block and the air\'s glow before the Moon\'s, and nothing else', () => {
     const { globe } = earthWithDeck();
-    const on = resolveDefine(fragmentOf(globe), 'CLOUD_SHADOW', true);
-    // The ground and the air take the cloud's SHADE, the beam's loss through
-    // the shade curve; the glint takes the beam itself.
-    const gamma = import.meta.env.DEV ? 'uCloudShadowGamma' : CLOUD_SHADOW_GAMMA.toFixed(4);
-    expect(on).toContain(`float cloudShade = pow(1.0 - cloudSunKeep, ${gamma}) * cloudShadeHorizon;`);
-    // ...faded to nothing where the Sun meets the ground's horizon, so the air
-    // the shade is taken from carries no line along the terminator.
-    expect(on).toContain(`cloudShadeHorizon = smoothstep(0.0, ${CLOUD_SHADOW_HORIZON_SIN.toFixed(6)}, shadowMu);`);
-    expect(CLOUD_SHADOW_HORIZON_SIN).toBe(NIGHT_WEIGHT_ZERO_SIN);
-    const diffuse = on.indexOf('outgoingLight -= reflectedLight.directDiffuse * (cloudShade * ');
-    expect(diffuse).toBeGreaterThan(on.indexOf('outgoingLight -= seaGlint * (1.0 - cloudSunKeep)'));
-    expect(diffuse).toBeLessThan(on.indexOf('float sunElevSin = dot('));
-    // Before the eclipse factor, which multiplies both, and every night term.
-    expect(diffuse).toBeLessThan(on.indexOf('outgoingLight *= sunVisible;'));
-    expect(diffuse).toBeLessThan(on.indexOf('outgoingLight += nightLow;'));
-    const air = on.indexOf('airS *= 1.0 - cloudShade * ');
-    expect(air).toBeGreaterThan(on.indexOf('vec3 airS = aerialInscatter(uScattering, seg, airT)'));
-    expect(air).toBeLessThan(on.indexOf('airS += aerialInscatter('));
-    // The transmittance is the air's and is not touched.
-    expect(on).not.toMatch(/airT \*=|airT = .*cloudSunKeep/);
-    // Three readers: the diffuse cut, the sky's fill, the air's take.
-    expect(on.match(/cloudShade \*/g)).toHaveLength(3);
-    expect(on).toContain('outgoingLight -= seaGlint * (1.0 - cloudSunKeep);');
-    // The air's share fades as the view grazes, on the geometric normal and
-    // the line of sight, never the perturbed normal.
-    expect(on).toContain(`smoothstep(${CLOUD_SHADOW_AIR_GRAZE[0].toFixed(6)}, ${CLOUD_SHADOW_AIR_GRAZE[1].toFixed(6)}, `
-      + 'dot(up, normalize(vAirCam - vAirFrag)));');
-    expect(on.indexOf('vec3 up = normalize(vAirFrag);')).toBeLessThan(air);
+    // Both readings: a session without the cloud field, and one with it, whose
+    // air takes the grazing cosine three's lights already hold.
+    for (const field of [false, true]) {
+      const on = resolveDefine(resolveDefine(fragmentOf(globe), 'CLOUD_SHADOW', true), 'CLOUD_FIELD', field);
+      // The ground and the air take the cloud's SHADE, the beam's loss through
+      // the shade curve; the glint takes the beam itself.
+      const gamma = import.meta.env.DEV ? 'uCloudShadowGamma' : CLOUD_SHADOW_GAMMA.toFixed(4);
+      expect(on).toContain(`float cloudShade = pow(1.0 - cloudSunKeep, ${gamma}) * cloudShadeHorizon;`);
+      // ...faded to nothing where the Sun meets the ground's horizon, so the air
+      // the shade is taken from carries no line along the terminator.
+      expect(on).toContain(`cloudShadeHorizon = smoothstep(0.0, ${CLOUD_SHADOW_HORIZON_SIN.toFixed(6)}, shadowMu);`);
+      expect(CLOUD_SHADOW_HORIZON_SIN).toBe(NIGHT_WEIGHT_ZERO_SIN);
+      const diffuse = on.indexOf('outgoingLight -= reflectedLight.directDiffuse * (cloudShade * ');
+      expect(diffuse).toBeGreaterThan(on.indexOf('outgoingLight -= seaGlint * (1.0 - cloudSunKeep)'));
+      expect(diffuse).toBeLessThan(on.indexOf('float sunElevSin = dot('));
+      // Before the eclipse factor, which multiplies both, and every night term.
+      expect(diffuse).toBeLessThan(on.indexOf('outgoingLight *= sunVisible;'));
+      expect(diffuse).toBeLessThan(on.indexOf('outgoingLight += nightLow;'));
+      const air = on.indexOf('airS *= 1.0 - cloudShade * ');
+      expect(air).toBeGreaterThan(on.indexOf('vec3 airS = aerialInscatter(uScattering, seg, airT)'));
+      expect(air).toBeLessThan(on.indexOf('airS += aerialInscatter('));
+      // The transmittance is the air's and is not touched.
+      expect(on).not.toMatch(/airT \*=|airT = .*cloudSunKeep/);
+      // Three readers: the diffuse cut, the sky's fill, the air's take.
+      expect(on.match(/cloudShade \*/g)).toHaveLength(3);
+      expect(on).toContain('outgoingLight -= seaGlint * (1.0 - cloudSunKeep);');
+      // The air's share fades as the view grazes, on the geometric normal and
+      // the line of sight, never the perturbed normal.
+      expect(on).toContain(`smoothstep(${CLOUD_SHADOW_AIR_GRAZE[0].toFixed(6)}, ${CLOUD_SHADOW_AIR_GRAZE[1].toFixed(6)}, `
+        + (field ? 'dot(nonPerturbedNormal, geometryViewDir));' : 'dot(up, normalize(vAirCam - vAirFrag)));'));
+      if (!field) expect(on.indexOf('vec3 up = normalize(vAirFrag);')).toBeLessThan(air);
+    }
   });
 
   it('shades thin cloud little and solid cloud fully, and the haze not at all where the view grazes', () => {

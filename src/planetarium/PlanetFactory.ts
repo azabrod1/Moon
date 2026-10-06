@@ -51,6 +51,7 @@ import { createAtmosphereShellMaterial } from './world/atmosphereShell';
 import { ATMOSPHERE_TABLE_SIZES_FULL, type AtmosphereTableSizes } from './world/atmosphereModel';
 import { queueTextureWarm } from './world/textureWarmer';
 import { createEarthNightShellMaterial } from './world/earthNightMaterial';
+import { layGroundIndex } from './world/groundCull';
 import { createLensShaderUniforms } from '../shared/three/lensShader';
 import { fetchTextureDurably, type DurableTextureFetch } from './world/textureRetry';
 import {
@@ -387,9 +388,18 @@ export interface GeometryUpgrade {
   /** Every mesh whose silhouette is this body's silhouette, each with the
    *  radius its sphere was built at — the globe, plus any shell drawn just
    *  above it that draws a hard edge of its own. */
-  spheres: readonly { mesh: THREE.Mesh; radiusAU: number }[];
+  spheres: readonly UpgradeSphere[];
   /** One-way: the fine spheres are built once and kept for the session. */
   applied: boolean;
+}
+
+interface UpgradeSphere {
+  mesh: THREE.Mesh;
+  radiusAU: number;
+  /** Set on a sphere streamed sector tiles are drawn over (`markStreamedGround`):
+   *  the leaf, in cells, its fine sphere's index is laid out in so the streamer
+   *  can leave out the ground a tile covers (world/groundCull). */
+  groundLeaf?: number;
 }
 
 // Screen diameter past which the coarsest silhouette in use starts to show its
@@ -397,12 +407,26 @@ export interface GeometryUpgrade {
 // crosses it having shown nothing, and pays one rebuild it did not strictly
 // need — cheaper than carrying a second threshold per segment tier.
 const GEOMETRY_UPGRADE_AT_PX = 1250;
-const GEOMETRY_UPGRADE_SEGMENTS = 256;
+export const GEOMETRY_UPGRADE_SEGMENTS = 256;
 
 export function makeGeometryUpgrade(
-  spheres: readonly { mesh: THREE.Mesh; radiusAU: number }[],
+  spheres: readonly UpgradeSphere[],
 ): GeometryUpgrade {
   return { spheres, applied: false };
+}
+
+/**
+ * Build this mesh's fine sphere with the streamed-ground index (world/groundCull),
+ * so the sector streamer can leave out of its draw the ground a finer tile
+ * covers. Only for a mesh sectors are registered over, and only before the
+ * upgrade: the index is laid out once, where the geometry is built, never
+ * swapped under one that has drawn. A body already upgraded keeps the plain
+ * index, which the streamer reads as nothing to cut.
+ */
+export function markStreamedGround(up: GeometryUpgrade, mesh: THREE.Mesh, leafSegments: number): void {
+  if (up.applied) return;
+  const sphere = up.spheres.find((s) => s.mesh === mesh);
+  if (sphere) sphere.groundLeaf = leafSegments;
 }
 
 /** Has this body grown large enough for its chords to show, with the fine
@@ -427,13 +451,15 @@ export function needsGeometryUpgrade(up: GeometryUpgrade, diameterPx: number): b
 export function upgradeGeometryOnApproach(up: GeometryUpgrade, diameterPx: number): boolean {
   if (!needsGeometryUpgrade(up, diameterPx)) return false;
   up.applied = true;
-  for (const { mesh, radiusAU } of up.spheres) {
+  for (const { mesh, radiusAU, groundLeaf } of up.spheres) {
     const previous = mesh.geometry;
-    mesh.geometry = new THREE.SphereGeometry(
+    const fine = new THREE.SphereGeometry(
       radiusAU,
       GEOMETRY_UPGRADE_SEGMENTS,
       GEOMETRY_UPGRADE_SEGMENTS / 2,
     );
+    if (groundLeaf !== undefined) layGroundIndex(fine, groundLeaf);
+    mesh.geometry = fine;
     previous.dispose();
   }
   return true;
@@ -644,7 +670,7 @@ function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig): THREE
 // surface, the cloud deck stands at a cloud top. Both are drawn at the same
 // segment count as the globe, so all three silhouettes coarsen and refine
 // together.
-const EARTH_NIGHT_SHELL_SCALE = 1.001;
+export const EARTH_NIGHT_SHELL_SCALE = 1.001;
 const EARTH_CLOUD_SHELL_SCALE = cloudShellScale(
   PLANETS.find((p) => p.name === 'Earth')!.radiusKm,
 );

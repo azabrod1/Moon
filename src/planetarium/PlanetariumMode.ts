@@ -36,10 +36,10 @@ import {
   type PlanetData,
   LIGHT_SPEED_AU_PER_S,
 } from './planets/planetData';
-import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasurementRelevant, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
+import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasurementRelevant, markStreamedGround, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
 import { PLANET_TEXTURE_FILES, appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
-import { advanceSurfaceAir, beamShoulderInForce, bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, holdSeaCloudCut, seaBeamOn, seaWindOn, setSurfaceSynthesis, settleSurfaceAir, sunPathOn, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { advanceSurfaceAir, beamShoulderInForce, bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, holdSeaCloudCut, seaBeamOn, seaWindOn, setCloudShadowDrift, setSurfaceSynthesis, settleSurfaceAir, sunPathOn, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { cloudFieldRequested, setCloudFieldOn, setCloudFieldPixelRatios } from './world/cloudFieldSlots';
 import type { CloudFieldAllocation } from './world/cloudFieldPool';
 import type { CloudFieldSession } from './world/cloudFieldSession';
@@ -48,10 +48,12 @@ import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pump
 import { beginSlicedUpload, stepSlicedUpload } from './world/slicedUpload';
 import { smoothTraceVeil } from './smoothnessTrace';
 import {
-  SECTOR_NIGHT_SETS, SECTOR_SETS, SectorStreamer, sectorFamilyKey,
+  GROUND_LEAF_SEGMENTS, SECTOR_NIGHT_SETS, SECTOR_SETS, SectorStreamer, sectorFamilyKey,
   type SectorMeasure, type SectorStats,
 } from './world/sectorStreamer';
 import { earthNightSectorFamily } from './world/earthNightMaterial';
+import { parseGroundCullParam } from './world/groundCull';
+import { onPerfSwitch } from '../app/perfSwitches';
 import { loadBrightStarCatalog } from './world/starCatalogLoader';
 import {
   advancePlanetariumTime,
@@ -1359,6 +1361,15 @@ export class PlanetariumMode {
    *  all; null in a session that did not ask for the field. */
   private readonly cloudFieldStart: Promise<void> | null;
   private readonly sectorsEnabled = new URLSearchParams(location.search).get('sectors') !== '0';
+  /** What `?groundcull=0` asked for, on any build: every streamed ground mesh
+   *  built with its plain index and drawn whole, the ground under a finer tile
+   *  shaded and then lost to the depth test as before (world/groundCull). The
+   *  kill switch, and the A/B across two boots. */
+  private readonly groundCullEnabled = parseGroundCullParam(location.search);
+  /** Dev-only: bytes added to the globe maps' ledger (devSectorSqueeze), and
+   *  a squeeze waiting for the end of the next sector pass. */
+  private devLedgerSqueezeBytes = 0;
+  private devLedgerSqueezePending: number | null = null;
   /** What `?synth=0` asked for: the close-range detail synthesis held at zero
    *  on every surface. The A/B arm for a look question about it, and the only
    *  way to see what a magnified surface looks like without it at a pose where
@@ -3620,11 +3631,15 @@ export class PlanetariumMode {
    *  same streamer, the same budget, its own lighting gate. */
   private registerSectorBodies(): void {
     if (!this.sectorsEnabled || !this.solarSystem) return;
-    const sectors = new SectorStreamer({ limits: this.deviceProfile, envelope: this.memory });
+    const groundCull = this.groundCullEnabled;
+    const sectors = new SectorStreamer({ limits: this.deviceProfile, envelope: this.memory, groundCull });
+    // The live A/B of the cut, over the layout the kill switch decided at boot.
+    if (import.meta.env.DEV) onPerfSwitch('ground-cull', (on) => sectors.setGroundCut(on));
     for (const planet of this.solarSystem.planets) {
       const fine = () => { upgradeGeometryOnApproach(planet.geometryUpgrade, Number.POSITIVE_INFINITY); };
       const spec = SECTOR_SETS[planet.data.name];
       if (spec) {
+        if (groundCull) markStreamedGround(planet.geometryUpgrade, planet.mesh, GROUND_LEAF_SEGMENTS);
         const material = planet.mesh.material as THREE.MeshStandardMaterial;
         sectors.register({
           name: planet.data.name,
@@ -3639,6 +3654,7 @@ export class PlanetariumMode {
       const nightSpec = SECTOR_NIGHT_SETS[planet.data.name];
       const nightMat = planet.nightMaterial;
       if (nightSpec && nightMat && planet.nightMesh && planet.nightRadiusAU) {
+        if (groundCull) markStreamedGround(planet.geometryUpgrade, planet.nightMesh, GROUND_LEAF_SEGMENTS);
         sectors.register({
           name: planet.data.name,
           spec: nightSpec,
@@ -3657,6 +3673,7 @@ export class PlanetariumMode {
       for (const m of moons) {
         const spec = SECTOR_SETS[m.data.name];
         if (!spec) continue;
+        if (groundCull) markStreamedGround(m.geometryUpgrade, m.mesh, GROUND_LEAF_SEGMENTS);
         const material = m.mesh.material as THREE.MeshStandardMaterial;
         sectors.register({
           name: m.data.name,
@@ -3767,6 +3784,14 @@ export class PlanetariumMode {
       }
     } finally {
       sectors.endFrame();
+    }
+    // A squeeze asked for at the end of the pass lands here, after the
+    // reconcile and before this frame's draw: where a release can come between
+    // the cut a draw relies on and the draw itself.
+    if (import.meta.env.DEV && this.devLedgerSqueezePending !== null) {
+      this.devLedgerSqueezeBytes = this.devLedgerSqueezePending;
+      this.devLedgerSqueezePending = null;
+      this.onLadderLedgerChange();
     }
   }
 
@@ -3962,6 +3987,7 @@ export class PlanetariumMode {
     // a colour rung. Only what an approach EARNED is in here; the boot relief
     // every device carries regardless is not the ladder's weight.
     this.forEachNormalUpgrade((up) => { bytes += appliedNormalHeldBytes(up); });
+    if (import.meta.env.DEV) bytes += this.devLedgerSqueezeBytes;
     return bytes;
   }
 
@@ -15914,6 +15940,31 @@ export class PlanetariumMode {
   }
 
   /**
+   * Dev-only: `mib` added to what the globe maps hold, so the sector budget
+   * shrinks exactly as it does when a map lands — through the ledger change
+   * the tier ladder raises, the path that trims tiles from outside the frame's
+   * pass. Held until set back to 0. With `afterPass` it lands at the end of
+   * the next sector pass instead, after the reconcile and before that frame's
+   * draw. Returns the bytes in force.
+   */
+  devSectorSqueeze(mib: number, afterPass = false): number {
+    const bytes = Math.max(0, mib) * 1024 * 1024;
+    if (afterPass) {
+      this.devLedgerSqueezePending = bytes;
+    } else {
+      this.devLedgerSqueezeBytes = bytes;
+      this.onLadderLedgerChange();
+    }
+    return bytes;
+  }
+
+  /** Dev-only: release one sector and keep it out, or let every held one
+   *  back (SectorStreamer.devHoldOut). */
+  devSectorHoldOut(which: 'skip' | null): string | null {
+    return this.sectors?.devHoldOut(which) ?? null;
+  }
+
+  /**
    * Dev-only: what the frame-sliced work is budgeting itself against, and what
    * it is actually taking.
    *
@@ -20475,7 +20526,7 @@ export class PlanetariumMode {
         // sharpness. Written here rather than at build time because the deck
         // climbs its texture ladder on approach and frees the rung it leaves.
         if (body.name === 'Earth') {
-          cloudShadowUniforms.uCloudShadowSpin.value = cloudDrift;
+          setCloudShadowDrift(cloudDrift);
           const deckMap = (planet.cloudsMesh.material as THREE.MeshStandardMaterial).map;
           if (deckMap && !this.devHiddenRoles?.clouds) cloudShadowUniforms.uCloudShadowMap.value = deckMap;
         }

@@ -109,8 +109,8 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = 'ddc1d457f008a52a2909e5b322a13e0f9e27b749cb6f3325e149423b603b5429';
-const PROD_FRAGMENT_HASH = '6f944995a7310613f51ba42fe72c032700d96d6fab00c80ec4a52ae86fbe9de4';
+const DEV_FRAGMENT_HASH = '43929b8f911ac303d99e948634f55ea2da1171bc6288f2f13c338c7b5ec552b8';
+const PROD_FRAGMENT_HASH = 'c6d77d2a2b10d644d2cbf532e21df476c6445c36511c805de15c874aa55846ec';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 /** The two texts with the cloud field's define OFF (world/cloudField),
  *  resolved as the preprocessor resolves it: each of the field's two chunks

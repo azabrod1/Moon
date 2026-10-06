@@ -147,6 +147,43 @@ describe('publish-tiles', () => {
     expect(existsSync(tile)).toBe(true);
   });
 
+  it('merges a later root\'s table into the repo\'s: a root holding one set drops no other', async () => {
+    const repo = fakeRepo();
+    await publishTiles({ root: await fakeRoot(), repo, log: quiet });
+    const before = JSON.parse(readFileSync(join(repo, 'textures', 'tiles', 'sets.v1.json'), 'utf8'));
+
+    // A private root with a re-cut of one set already published and one set
+    // the repo has never had.
+    const root = temp('moon-tiles-root-');
+    const recut = await writeSet(root, 'moon', '16k', { '0_0.webp': 'moon-recut-0-0', '1_0.webp': 'moon-recut-1-0' });
+    const added = await writeSet(root, 'moon-normal', '8k', { '0_0.webp': 'relief-0-0', '1_0.webp': 'relief-1-0' });
+    writeFileSync(join(root, 'sets.v1.json'), `${JSON.stringify({ [recut.id]: recut.entry, [added.id]: added.entry }, null, 2)}\n`);
+    await publishTiles({ root, repo, log: quiet });
+
+    const after = JSON.parse(readFileSync(join(repo, 'textures', 'tiles', 'sets.v1.json'), 'utf8'));
+    expect(Object.keys(after)).toEqual(['earth-day.v2/16k', 'moon/16k', 'moon-normal/8k']);
+    expect(after['earth-day.v2/16k']).toEqual(before['earth-day.v2/16k']);
+    expect(after['moon/16k']).toEqual(recut.entry);
+    expect(after['moon-normal/8k']).toEqual(added.entry);
+    // The cut it replaced is still on disk for the clients still asking for it.
+    expect(existsSync(join(repo, 'textures', 'tiles', 'moon', `16k.${before['moon/16k'].setHash8}`))).toBe(true);
+  });
+
+  it('refuses to merge into a repo table that names a folder the repo does not hold', async () => {
+    const repo = fakeRepo();
+    const first = await publishTiles({ root: await fakeRoot(), repo, log: quiet });
+    const day = first.sets.find((set: { key: string }) => set.key === 'earth-day.v2');
+    if (!day) throw new Error('the fixture root publishes earth-day.v2/16k');
+    rmSync(join(repo, 'textures', 'tiles', 'earth-day.v2', day.folder), { recursive: true });
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'lose a set');
+
+    const root = temp('moon-tiles-root-');
+    const added = await writeSet(root, 'moon-normal', '8k', { '0_0.webp': 'relief-0-0', '1_0.webp': 'relief-1-0' });
+    writeFileSync(join(root, 'sets.v1.json'), `${JSON.stringify({ [added.id]: added.entry }, null, 2)}\n`);
+    await expect(publishTiles({ root, repo, log: quiet })).rejects.toThrow(/"earth-day\.v2\/16k" names .* which is not in the repo/);
+  });
+
   it('refuses a set whose tiles no longer hash to the name they are published under', async () => {
     const root = await fakeRoot();
     const repo = fakeRepo();

@@ -128,13 +128,13 @@ describe('the sphere\'s own frame', () => {
 });
 
 describe('the balance a page boots with', () => {
-  it('is three\'s frame unless the link asks for another', () => {
-    expect(parseReliefBalance('')).toBe(0);
-    expect(parseReliefBalance('?reliefbalance=1')).toBe(1);
+  it('is the physical frame unless the link asks for three\'s', () => {
+    expect(parseReliefBalance('')).toBe(1);
+    expect(parseReliefBalance('?reliefbalance=0')).toBe(0);
     expect(parseReliefBalance('?moonrelief=8k&reliefbalance=0.5')).toBe(0.5);
     expect(parseReliefBalance('?reliefbalance=7')).toBe(1);
     expect(parseReliefBalance('?reliefbalance=-1')).toBe(0);
-    expect(parseReliefBalance('?reliefbalance=yes')).toBe(0);
-    expect(parseReliefBalance('?reliefbalance=')).toBe(0);
+    expect(parseReliefBalance('?reliefbalance=yes')).toBe(1);
+    expect(parseReliefBalance('?reliefbalance=')).toBe(1);
   });
 });

@@ -28,7 +28,9 @@
  *
  * `reliefBalance` (the shared uniform, `?reliefbalance=`) blends from three's
  * frame at 0 toward the sphere's own orthonormal east and north at 1, the
- * balance the maps are baked in. 0 is the default until the look is judged.
+ * balance the maps are baked in. 1 is the default, judged on a sheet of the
+ * Moon, its pole, Mars and Look inside; `?reliefbalance=0` draws the picture
+ * as it was.
  *
  * Contract for the sphere frame: an equirect-mapped sphere in three's
  * SphereGeometry convention, positively and uniformly scaled, its pole the
@@ -40,14 +42,15 @@
  * sphere must opt out the same way.
  */
 
-/** The balance a page boots with, from `?reliefbalance=` (any build): 0 is
- *  three's frame and the default, 1 the sphere's physical frame; a value
- *  between is clamped into [0, 1], and an unreadable one is 0. */
+/** The balance a page boots with, from `?reliefbalance=` (any build): 1, the
+ *  sphere's physical frame, is the default; 0 is three's frame, the picture
+ *  before (the kill switch and the A/B); a value between is clamped into
+ *  [0, 1], and an unreadable one is the default. */
 export function parseReliefBalance(search: string): number {
   const asked = new URLSearchParams(search).get('reliefbalance');
-  if (asked === null || asked.trim() === '') return 0;
+  if (asked === null || asked.trim() === '') return 1;
   const value = Number(asked);
-  return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
+  return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 1;
 }
 
 /** The sphere's own frame in GLSL: unit east and north at `n` about `pole`

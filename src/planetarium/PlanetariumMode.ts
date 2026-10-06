@@ -766,11 +766,10 @@ export class PlanetariumMode {
    *  an orbit line moving when the ship does, and the kill switch. */
   private readonly orbitAnchorEnabled = new URLSearchParams(location.search).get('orbitanchor') !== '0';
 
-  /** `?lensramp=1`: fade the stereographic lens out as one body fills the
-   *  view (shared/math/lensProximity.ts). OFF unless asked — the moving A/B
-   *  (an approach, a departure, a look-away while parked, both arms) has not
-   *  been judged yet — and `__moon.setLensRamp(on)` flips it live. */
-  private lensRampEnabled = new URLSearchParams(location.search).get('lensramp') === '1';
+  /** Fade the stereographic lens out as one body fills the view
+   *  (shared/math/lensProximity.ts). On by default; `?lensramp=0` is the kill
+   *  switch and the A/B, and `__moon.setLensRamp(on)` flips it live. */
+  private lensRampEnabled = new URLSearchParams(location.search).get('lensramp') !== '0';
 
   /** The ramp's A/B arms (`?lensdrive=ship`, `?lensband=<full>,<off>`; the
    *  module header says why each exists): the driver the angle is read from
@@ -15578,7 +15577,7 @@ export class PlanetariumMode {
     return this.lensRampConfig;
   }
 
-  /** Dev-only: switch the lens proximity ramp on or off live, as `?lensramp=1` does at boot. */
+  /** Dev-only: switch the lens proximity ramp on or off live, as `?lensramp=` does at boot. */
   devSetLensRamp(enabled: boolean): boolean {
     this.lensRampEnabled = enabled;
     return this.lensRampEnabled;

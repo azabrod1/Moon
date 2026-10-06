@@ -330,16 +330,25 @@ describe('sector tile sets: what the app asks for', () => {
     // its 4096 resize, the whole-globe file is its 2048 resize (the far view
     // needs no more) — so the shipped width is half the crops' base width,
     // which is all this pins; the crop dimensions are pinned above.
-    const baseFiles: Record<string, { file: string; shippedScale: number }> = {
-      'earth-bump': { file: PLANET_TEXTURE_FILES.earthBump, shippedScale: 1 },
-      'earth-roughness.v2': { file: PLANET_TEXTURE_FILES.earthRoughness, shippedScale: 0.5 },
-      'mars-normal.v2': { file: PLANET_TEXTURE_FILES.marsNormal, shippedScale: 1 },
-      'moon-normal': { file: `4k/${PLANET_TEXTURE_FILES.moonNormal}`, shippedScale: 1 },
+    // The Moon's 8k relief is the one crop not cut from a shipped map: its base
+    // is the master `npm run gen:moon-relief` writes to the source cache from
+    // NASA's grid, eight sectors of 1016 texels, so its width is the
+    // generator's own and is stated here.
+    const baseFiles: Record<string, { file: string; shippedScale: number } | { generatedWidth: number }> = {
+      'earth-bump/2k': { file: PLANET_TEXTURE_FILES.earthBump, shippedScale: 1 },
+      'earth-roughness.v2/4k': { file: PLANET_TEXTURE_FILES.earthRoughness, shippedScale: 0.5 },
+      'mars-normal.v2/2k': { file: PLANET_TEXTURE_FILES.marsNormal, shippedScale: 1 },
+      'moon-normal/4k': { file: `4k/${PLANET_TEXTURE_FILES.moonNormal}`, shippedScale: 1 },
+      'moon-normal/8k': { generatedWidth: 8128 },
     };
     for (const [, , spec] of appSpecs()) {
       for (const crop of Object.values(spec.crops)) {
-        const base = baseFiles[crop.key];
-        expect(base, `no base map known for crop set ${crop.key}`).toBeDefined();
+        const base = baseFiles[`${crop.key}/${crop.tier}`];
+        expect(base, `no base map known for crop set ${crop.key}/${crop.tier}`).toBeDefined();
+        if ('generatedWidth' in base) {
+          expect(crop.baseWidth, `${crop.key}/${crop.tier} baseWidth vs its generator`).toBe(base.generatedWidth);
+          continue;
+        }
         const path = resolve(TEXTURES, base.file);
         expect(existsSync(path), `${base.file} missing on disk`).toBe(true);
         expect(webpSize(path).width, `${crop.key} baseWidth vs ${base.file}`).toBe(crop.baseWidth * base.shippedScale);

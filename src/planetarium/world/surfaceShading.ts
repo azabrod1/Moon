@@ -555,16 +555,16 @@ export const NIGHT_LIFT_STRENGTH = 0.045;
 export const nightLiftUniform: { value: number } = { value: 0 };
 
 /**
- * The one uniform every body's relief frame reads (world/reliefFrame.ts): 0
- * draws a tangent-space relief map in three's own frame, the picture as it
- * always was; 1 in the sphere's orthonormal east and north, the physical
- * balance the maps are baked in; between, a blend of the two. Booted from `?reliefbalance=`; the
+ * The one uniform every body's relief frame reads (world/reliefFrame.ts): 1,
+ * the default, draws a tangent-space relief map in the sphere's orthonormal
+ * east and north, the physical balance the maps are baked in; 0 in three's own
+ * frame, the picture as it was; between, a blend of the two. Booted from `?reliefbalance=`; the
  * DEV bridge's `reliefBalance` writes it live. Shared by the globes, their
  * sectors, the Look-inside skins and the warm-up probes, so one write moves
  * every surface on the next frame and no program differs between them.
  */
 export const reliefBalanceUniform: { value: number } = {
-  value: typeof location === 'undefined' ? 0 : parseReliefBalance(location.search),
+  value: typeof location === 'undefined' ? 1 : parseReliefBalance(location.search),
 };
 
 /** Apply the reader's Night sides choice to every planetarium body, from the

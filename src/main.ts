@@ -3115,7 +3115,7 @@ function installDevHooks() {
     rideState: () => planetariumMode?.devRideState() ?? null,
     /** The lens proximity ramp this frame (shared/math/lensProximity.ts): its factor, the strength the shaders read, the disc that drove it, and whether a dev pose skipped it. */
     lensRamp: () => planetariumMode?.devLensRamp() ?? null,
-    /** Switch the lens proximity ramp on or off live, as `?lensramp=1` does at boot. */
+    /** Switch the lens proximity ramp on or off live, as `?lensramp=` does at boot. */
     setLensRamp: (enabled: boolean) => planetariumMode?.devSetLensRamp(enabled) ?? false,
     /** The ramp's A/B arm, live: `{driver: 'ship'|'ship+boom', fullDeg, offDeg}`, as `?lensdrive=` and `?lensband=` do at boot; returns the config in force. */
     lensRampConfig: (patch: { driver?: LensRampDriver; fullDeg?: number; offDeg?: number } = {}) =>

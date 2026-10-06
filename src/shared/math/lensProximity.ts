@@ -58,24 +58,24 @@
  * 1.55:1 at a 16:9 corner) lose what the lens gave them. A view-aware factor
  * would fix that and swim on every pan; it is not attempted.
  *
- * Off unless `?lensramp=1` asks for it: the moving A/B — an approach, a
- * departure, a look-around while parked, three projection policies — has not
- * been judged. Pure math only — no three.js — so the ramp is unit-tested in
- * isolation and the probe that measures it predicts from the same two numbers.
+ * On by default; `?lensramp=0` (any build) is the kill switch and the A/B.
+ * Pure math only — no three.js — so the ramp is unit-tested in isolation and
+ * the probe that measures it reads the same two numbers off the app.
  *
  * The A/B's two candidate arms ride the same law as switches, any build, so a
  * phone can fly them from an address bar (`parseLensRampConfig`):
  * `?lensband=<full>,<off>` moves the two knees — the ship-plus-boom driver
  * never reads past ~60° at the Moon's clearance shell (ship 41 km up, boom
- * 233 km), so under the 45/70 band the Moon's park keeps 0.37 of the lens
- * and nothing smaller than Venus ever reaches a pinhole; a band ending at
- * 58° gives every park a pinhole and keeps the flyby's 11° margin — and
- * `?lensdrive=ship` reads the driving angle from the ship's distance ALONE,
- * no boom, which reaches a pinhole at every park ≥ Europa and cannot move on
- * a drag or a push, at the price of holding the pinhole while a wheel zooms
- * the camera far out from a parked ship, where a small disc near the frame
- * edge is the egg the lens exists for. Neither is the default; the capture
- * sheet and a recording decide.
+ * 233 km), so the default band ends at 58°: every park reaches a pinhole and
+ * the flyby keeps its 11° margin, where the first band, 45/70 (still
+ * `?lensband=45,70`), left the Moon's park 0.37 of the lens and brought
+ * nothing smaller than Venus to a pinhole — and `?lensdrive=ship` reads the
+ * driving angle from the ship's distance ALONE, no boom, which reaches a
+ * pinhole at every park ≥ Europa and cannot move on a drag or a push, at the
+ * price of holding the pinhole while a wheel zooms the camera far out from a
+ * parked ship, where a small disc near the frame edge is the egg the lens
+ * exists for. The band was judged on the capture sheet; the ship-only driver
+ * stays a switch.
  */
 
 import { RAD2DEG } from './angles';
@@ -85,8 +85,10 @@ import { smoothstepEdges } from './smoothstep';
  *  every far pose, every flyby, byte for byte what it was. */
 export const LENS_PROXIMITY_FULL_DEG = 45;
 
-/** At or above this angular radius the lens is off: a plain pinhole. */
-export const LENS_PROXIMITY_OFF_DEG = 70;
+/** At or above this angular radius the lens is off: a plain pinhole. Under
+ *  the shell-reading the ship-plus-boom driver gives at the Moon (~60°), so
+ *  every park reaches it. */
+export const LENS_PROXIMITY_OFF_DEG = 58;
 
 /**
  * Factor on the requested lens strength for the largest angular radius (rad)

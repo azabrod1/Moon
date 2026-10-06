@@ -339,19 +339,19 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
 };
 
 /**
- * Which relief crop the Moon's sectors bind: the shipped 4k (cut from the
- * 2880-wide close map, 3.8 km a texel) or, with `?moonrelief=8k` (any build),
- * the 8k that tools/gen-moon-relief.mjs cuts from NASA's 64 px/deg grid at
- * the same 1.39× slope (1.3 km a texel; 8.5 MB a sector on the GPU against
- * the 4k's 1.1). The A/B for how the magnified Moon shades, and off by
- * default until the 8k set is published to the tiles repo — production
- * fetches tiles from there, and a set it does not hold fails open to the
- * globe's own map — and judged near the terminator. In dev the set is served
- * from .moon-data-cache/tiles-staging (tools/devTilesPlugin.mjs).
+ * Which relief crop the Moon's sectors bind: the 8k that
+ * tools/gen-moon-relief.mjs cuts from NASA's 64 px/deg grid at 1.39× slope
+ * (1.3 km a texel; 5.4 MiB a sector on the GPU with its mips), or, with
+ * `?moonrelief=4k` (any build), the 4k cut from the globe's 2880-wide close
+ * map (3.8 km a texel, 0.7 MiB) — the A/B for how the magnified Moon shades,
+ * and the kill switch. The 8k set is too big for public/: production fetches
+ * it from the tiles repo, and dev from .moon-data-cache/tiles-staging
+ * (tools/devTilesPlugin.mjs); a set a host does not hold fails open to the
+ * globe's own map.
  */
 function moonReliefTier(): '4k' | '8k' {
-  if (typeof location === 'undefined') return '4k';
-  return new URLSearchParams(location.search).get('moonrelief') === '8k' ? '8k' : '4k';
+  if (typeof location === 'undefined') return '8k';
+  return new URLSearchParams(location.search).get('moonrelief') === '4k' ? '4k' : '8k';
 }
 
 /** The night-lights pyramids, by catalog name: a SECOND family for a body

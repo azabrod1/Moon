@@ -681,13 +681,18 @@ describe('largestDiscAngles (what the lens proximity ramp reads)', () => {
     expect(span(oldFactors)).toBeGreaterThan(0.15);
     expect(span(twoHundred.driving.map((rad) => lensProximityFactor(rad)))).toBe(0);
 
-    // The Moon's own park (~78 km up, a driving angle of 58°): the camera's
-    // boom read the same drag as the lens going from 0.47 to nearly off.
+    // The Moon's own park (~78 km up, a driving angle of 58°). The default
+    // band reaches a pinhole there whatever the camera reads, so the drag is
+    // judged on the first band, 45/70, where the park sat mid-ramp: the
+    // camera's boom read the same drag as the lens going from 0.47 to nearly
+    // off.
+    const firstBand = { fullDeg: 45, offDeg: 70 };
     const park = drag(moonR / Math.sin(58 * DEG2RAD) - intendedBoom);
     for (const r of park.driving) expect(r).toBeCloseTo(park.driving[0], 12);
     expect(deg(park.driving[0])).toBeCloseTo(58, 1);
-    expect(span(park.oldReadings.map((rad) => lensProximityFactor(rad)))).toBeGreaterThan(0.3);
-    expect(span(park.driving.map((rad) => lensProximityFactor(rad)))).toBe(0);
+    expect(span(park.oldReadings.map((rad) => lensProximityFactor(rad, firstBand)))).toBeGreaterThan(0.3);
+    expect(span(park.driving.map((rad) => lensProximityFactor(rad, firstBand)))).toBe(0);
+    expect(park.driving.map((rad) => lensProximityFactor(rad))).toEqual(park.driving.map(() => 0));
   });
 
   it('holds still under the floor: the safety push leaves the camera inside minDistance, the controls\' clamp lifts it back, every frame, and the boom never learns it', () => {

@@ -215,7 +215,7 @@ export async function devCloudField(
       session.setAuto(true);
     }
   } else if (byHand || req.auto != null) {
-    throw new Error('cloudField: no pool — boot with ?cloudtiles=1 on a device whose profile gives it layers');
+    throw new Error('cloudField: no pool — boot without ?cloudtiles=0 on a device whose profile gives it layers');
   }
   if (req.diag != null) cloudFieldDiagUniform.value = req.diag;
   const mat = deckMaterial(scene);

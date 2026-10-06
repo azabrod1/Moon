@@ -176,15 +176,15 @@ describe('the injected surface shader', () => {
 
   it('is the text it was with the cloud shadow\'s and the cloud light\'s defines off, after the preprocessor', () => {
     // CLOUD_SHADOW and CLOUD_LIGHT (world/surfaceShading) are compile-time
-    // defines, off by default, and every line either adds is a whole line
-    // inside its own conditional. So with both off the program the driver
-    // compiles is the program from before the switches existed, character for
-    // character — the ground's and the deck's alike, since the deck takes the
-    // same text — the zero-pixel claim by construction, which the pixel gate
-    // then checks.
+    // defines, on unless their kill switches turn them off, and every line
+    // either adds is a whole line inside its own conditional. So with both off
+    // (`?cloudshadows=0`, `?cloudlight=0`) the program the driver compiles is
+    // the program from before the switches existed, character for character —
+    // the ground's and the deck's alike, since the deck takes the same text —
+    // the zero-pixel claim by construction, which the pixel gate then checks.
     const shader = compile(augmented('earth'));
-    // The cloud field's define is resolved off too: the deck's alone, off by
-    // default (world/cloudField).
+    // The cloud field's define is resolved off too: the deck's alone, off
+    // under `?cloudtiles=0` (world/cloudField).
     const off = resolveDefine(resolveDefine(resolveDefine(shader.fragmentShader, 'CLOUD_FIELD', false),
       'CLOUD_SHADOW', false), 'CLOUD_LIGHT', false);
     expect(off).not.toMatch(/CLOUD_SHADOW|CLOUD_LIGHT|CLOUD_FIELD/);
@@ -242,9 +242,9 @@ describe('the injected surface shader', () => {
 
   it('is the text it was with the cloud field\'s define off, after the preprocessor', () => {
     // CLOUD_FIELD (world/cloudField, the deck's 1.2 km field) is a compile-time
-    // define on the planetarium's deck alone, off by default. Every line it
-    // adds is a whole line inside its own conditional, and each of its two
-    // chunks opens with its own newline so its directive starts a line
+    // define on the planetarium's deck alone, off under `?cloudtiles=0`. Every
+    // line it adds is a whole line inside its own conditional, and each of its
+    // two chunks opens with its own newline so its directive starts a line
     // wherever it is spliced: with the define off, a program is the program
     // from before the field existed with one blank line where each chunk sits,
     // and nothing else.

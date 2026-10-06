@@ -6,8 +6,9 @@
  * thread), its upload, and its table entry. Which page takes which layer, and
  * when, is the residency's (world/cloudFieldResidency), which calls these
  * three; the session (world/cloudFieldSession) wires the two together.
- * Imported only by a session that asked for the field (`?cloudtiles=1`), so
- * nothing here is loaded, allocated or fetched otherwise.
+ * Imported only by a session that asked for the field (every session but one
+ * with `?cloudtiles=0`, the kill switch), so nothing here is loaded, allocated
+ * or fetched otherwise.
  *
  * THE POOL is a `DataArrayTexture` with no data, allocated once with all
  * twelve levels: `source.dataReady = false` and `mipmaps.length = 12` make

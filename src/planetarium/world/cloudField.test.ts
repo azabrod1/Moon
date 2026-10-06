@@ -380,14 +380,15 @@ describe('page keys and the switch', () => {
     expect(parseCloudPageKey('x')).toBeNull();
   });
 
-  it('is ?cloudtiles=1 and nothing else, in any build', () => {
+  it('is on unless ?cloudtiles=0 turns it off, in any build', () => {
+    expect(cloudFieldAsked('')).toBe(true);
+    expect(cloudFieldAsked('?quality=medium')).toBe(true);
     expect(cloudFieldAsked('?cloudtiles=1')).toBe(true);
-    expect(cloudFieldAsked('?quality=medium&cloudtiles=1')).toBe(true);
+    expect(cloudFieldAsked('?cloudtiles')).toBe(true);
     expect(cloudFieldAsked('?cloudtiles=0')).toBe(false);
-    expect(cloudFieldAsked('?cloudtiles')).toBe(false);
-    expect(cloudFieldAsked('')).toBe(false);
-    // Read once, at boot: the test runner's page asked for nothing.
-    expect(cloudFieldRequested()).toBe(false);
+    expect(cloudFieldAsked('?quality=medium&cloudtiles=0')).toBe(false);
+    // Read once, at boot: the test runner's page turned nothing off.
+    expect(cloudFieldRequested()).toBe(true);
   });
 
   it('reports the pool failed only where ?cloudpoolfail=1 asks', () => {

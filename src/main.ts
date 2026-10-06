@@ -3363,7 +3363,7 @@ function installDevHooks() {
       authored: SURFACE_HAZE_CLEAR_VIEW,
     }),
     // Cloud shadows on the ground under Earth's deck (world/surfaceShading,
-    // off by default): `on` moves the switch and relinks the globe and its
+    // on unless `?cloudshadows=0`): `on` moves the switch and relinks the globe and its
     // sectors; `depth` (the share of the Sun's diffuse a full cloud takes),
     // `air` (the share of the air's glow under it), `penumbra` (the solar
     // disc's soft edge, true/false or a scale) and `gamma` (the shade curve:
@@ -3372,8 +3372,8 @@ function installDevHooks() {
     // the shadow and how many compile it now.
     cloudShadow: (opts?: { on?: boolean; depth?: number; air?: number; penumbra?: boolean | number; gamma?: number }) =>
       devCloudShadow(opts),
-    // The cloud deck's 1.2 km field (world/cloudFieldDev; boot with
-    // ?cloudtiles=1), which streams its pages by itself: `auto: false` takes
+    // The cloud deck's 1.2 km field (world/cloudFieldDev; on unless
+    // `?cloudtiles=0`), which streams its pages by itself: `auto: false` takes
     // the pool from the residency for hand requests — `pages` loads named
     // pages (`col_row`, row 0 the northernmost), `fade` sets a page's fade,
     // `evict` drops pages, `wait` resolves once the loads settle — and
@@ -3397,8 +3397,8 @@ function installDevHooks() {
         renderer, scene, camera: planetariumCamera, sceneTarget,
         drawSize: sceneRectsLive.draw, sceneRatio: getScenePixelRatio(), tileRatio: getTilePixelRatio(),
       }, points),
-    // The cloud deck lit as a cloud (world/surfaceShading, off by default):
-    // `on` moves the switch and relinks the deck; `wrap` (the share of its
+    // The cloud deck lit as a cloud (world/surfaceShading, on unless
+    // `?cloudlight=0`): `on` moves the switch and relinks the deck; `wrap` (the share of its
     // direct diffuse taken on the shell's own normal), `sky` (the sky's
     // irradiance on it, as a multiple of the table's) and `groundFill` (the
     // sky's irradiance on the ground in proportion to a cloud's shade, the

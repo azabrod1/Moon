@@ -8,9 +8,10 @@
  * module of its own, imported only by a session that asked for the field, so
  * a session that did not loads, allocates, fetches and constructs none of it.
  *
- * THE FIELD IS ON once, at boot and under the cover: the session asked
- * (`?cloudtiles=1`), the device's profile gives the pool layers, and the
- * pool's allocation came back with no GL error (PlanetariumMode). That is
+ * THE FIELD IS ON once, at boot and under the cover: the session did not turn
+ * it off (`?cloudtiles=0`, the kill switch), the device's profile gives the
+ * pool layers, and the pool's allocation came back with no GL error
+ * (PlanetariumMode). That is
  * settled before the solar system is built, so the deck and the ground
  * compile the define the first time they compile at all. Until then, and for the whole session if
  * any of the three says no, no material carries the define and none of the
@@ -66,9 +67,10 @@ export function cloudFieldUniforms(): CloudFieldUniforms {
  *  development code, so a production build carries none of it. */
 export const cloudFieldDiagUniform = { value: 0 };
 
-/** `?cloudtiles=1`, in any build: whether a query asks for the field. */
+/** Whether a query asks for the field, in any build: every query does but one
+ *  carrying the kill switch, `?cloudtiles=0`. */
 export function cloudFieldAsked(search: string): boolean {
-  return new URLSearchParams(search).get('cloudtiles') === '1';
+  return new URLSearchParams(search).get('cloudtiles') !== '0';
 }
 
 /** `?cloudpoolfail=1`, read by development builds only (world/cloudFieldPool):
@@ -80,7 +82,7 @@ export function cloudPoolFailAsked(search: string): boolean {
 
 /** The page's own query, read once at boot: a define is part of three's
  *  program key, so a switch that moved mid-session would relink. */
-const fieldByUrl = typeof location !== 'undefined' && cloudFieldAsked(location.search);
+const fieldByUrl = typeof location === 'undefined' || cloudFieldAsked(location.search);
 
 /** Whether this session asked for the field. Asking is not having it: the
  *  device's profile may give the pool no layers, and the allocation may fail. */

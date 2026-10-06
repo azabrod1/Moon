@@ -1072,12 +1072,13 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     cloudsMesh = new THREE.Mesh(cloudGeo, cloudMat);
     group.add(cloudsMesh);
     cloudsMesh.name = `${planet.name} clouds`;
-    // The ground under the deck can take its shadows (off by default, the
-    // CLOUD_SHADOW switch in world/surfaceShading): the globe here, and every
-    // sector later cut from it through the fx they share.
+    // The ground under the deck can take its shadows (on unless
+    // `?cloudshadows=0`, the CLOUD_SHADOW switch in world/surfaceShading): the
+    // globe here, and every sector later cut from it through the fx they
+    // share.
     setGroundUnderCloudDeck(mat);
-    // ...and the deck itself can be lit as a cloud (off by default, the
-    // CLOUD_LIGHT switch): this deck, never a tool's.
+    // ...and the deck itself can be lit as a cloud (on unless
+    // `?cloudlight=0`, the CLOUD_LIGHT switch): this deck, never a tool's.
     setPlanetariumCloudDeck(cloudMat);
     // The cloud deck is its own colour map on its own shell, so it carries its
     // own handle: the globe and the clouds sharpen independently.

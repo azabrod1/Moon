@@ -41,10 +41,11 @@
 //   gpu       A real GPU-object leak oracle: createTexture/deleteTexture are
 //             counted from before any app code runs, over approach/flee cycles.
 //   sweep     Distance sweep at a fixed display FOV: where admission dies.
-//   field     Earth's cloud field (`?cloudtiles=1`) against the tiles, at the
-//             trades pose (400 km over the Pacific by day, where the field
-//             wants pages and Earth its finest tiles), in three boots: without
-//             the field, with it, and with it under a `?envelope=` squeeze.
+//   field     Earth's cloud field (on unless `?cloudtiles=0`) against the
+//             tiles, at the trades pose (400 km over the Pacific by day, where
+//             the field wants pages and Earth its finest tiles), in three
+//             boots: without the field (`?cloudtiles=0`), with it (the
+//             default), and with it under a `?envelope=` squeeze.
 //             The pool is in the envelope exactly once — the fixed bytes are
 //             its own allocation, and what the tiles and the maps share is the
 //             envelope less exactly that — and the tiles still reach the set
@@ -97,10 +98,11 @@ const TILES_QUERY = TILES ? `&tiles=${encodeURIComponent(TILES)}` : '';
 // (main.ts getTilePixelRatio), so it asks the streamer for a finer tier inside
 // the same envelope, and only this battery can say what that costs.
 const EXTRA_QUERY = arg('extra', '');
-// `--extra='&cloudtiles=1'` boots with Earth's cloud field, whose pool is held
-// whole in the envelope for the session: every check below then reads what it
-// leaves, and the reservation itself is held to the pool's own bytes.
-const FIELD_ASKED = new URLSearchParams(EXTRA_QUERY.replace(/^&/, '?')).get('cloudtiles') === '1';
+// Every boot has Earth's cloud field unless `--extra='&cloudtiles=0'` turns it
+// off, and its pool is held whole in the envelope for the session: every check
+// below then reads what it leaves, and the reservation itself is held to the
+// pool's own bytes.
+const FIELD_ASKED = new URLSearchParams(EXTRA_QUERY.replace(/^&/, '?')).get('cloudtiles') !== '0';
 /** One layer of the field's pool: an RG8 2048² page with its eleven mips. */
 const CLOUD_LAYER_BYTES = 11_184_810;
 const ONLY = arg('scenario', '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -524,8 +526,8 @@ const SCENARIOS = {
     const arms = {};
     for (const [arm, query, asked] of [
       ['off', '&cloudtiles=0', false],
-      ['on', '&cloudtiles=1', true],
-      ['squeezed', `&cloudtiles=1&envelope=${FIELD_SQUEEZE_MIB}`, true],
+      ['on', '', true],
+      ['squeezed', `&envelope=${FIELD_SQUEEZE_MIB}`, true],
     ]) {
       const { ctx, page, errors } = await boot(browser, { query });
       try {

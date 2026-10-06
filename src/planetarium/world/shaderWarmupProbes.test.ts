@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
+import { setPerfSwitch } from '../../app/perfSwitches';
 import { SHADER_WARMUP_PROBE_COMBOS, createShaderWarmupProbes } from './shaderWarmupProbes';
 
 describe('shader warm-up probes', () => {
@@ -32,5 +33,30 @@ describe('shader warm-up probes', () => {
     }
     expect(group.visible).toBe(false);
     dispose();
+  });
+
+  it('give the deck\'s probe the cloud light as the session compiles it, and the shadow to none', () => {
+    // The planetarium's deck carries CLOUD_LIGHT unless its kill switch turned
+    // it off, so its program once the relief lands does too: a probe without
+    // the define warms a program the deck never draws with, and the deck links
+    // its own in view.
+    const defines = (): Array<{ light: boolean; shadow: boolean }> => {
+      const { group, dispose } = createShaderWarmupProbes();
+      const out = (group.children as THREE.Mesh[]).map((mesh) => {
+        const d = (mesh.material as THREE.MeshStandardMaterial).defines ?? {};
+        return { light: 'CLOUD_LIGHT' in d, shadow: 'CLOUD_SHADOW' in d };
+      });
+      dispose();
+      return out;
+    };
+    const lit = (on: boolean) => SHADER_WARMUP_PROBE_COMBOS.map((c) => ({ light: on && c.transparent === true, shadow: false }));
+    expect(defines()).toEqual(lit(true));
+    if (!import.meta.env.DEV) return;
+    setPerfSwitch('cloud-light', false);
+    try {
+      expect(defines()).toEqual(lit(false));
+    } finally {
+      setPerfSwitch('cloud-light', true);
+    }
   });
 });

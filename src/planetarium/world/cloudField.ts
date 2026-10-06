@@ -9,20 +9,21 @@
  * pages it holds `cloudFieldResidency.ts`, and the session that drives the
  * two from the live frame `cloudFieldSession.ts`.
  *
- * OFF BY DEFAULT. The shader half is a compile-time define, CLOUD_FIELD, set
- * only on the planetarium's deck and only when `?cloudtiles=1` asked for it at
- * boot (any build) and the device's profile gives the pool layers; a program
- * without the define is the program it was, after the preprocessor, but for
- * the one blank line each of the two chunks below opens with. With it, pages
+ * ON BY DEFAULT, `?cloudtiles=0` its kill switch (any build, read at boot). The
+ * shader half is a compile-time define, CLOUD_FIELD, set only on the
+ * planetarium's deck and only when the session did not turn the field off and
+ * the device's profile gives the pool layers; a program without the define is
+ * the program it was before the field, after the preprocessor, but for the one
+ * blank line each of the two chunks below opens with. With it, pages
  * arrive by themselves as the camera moves, and fade in over the sheet.
  *
  * THE GROUND'S SHADOWS read the same field. Where the ground's cloud shadow is
- * compiled too (`?cloudshadows=1`, world/surfaceShading), the ground takes the
- * define beside it and its shadow read calls `cloudFieldFine` at the point the
- * Sun's ray pierces the deck, with that lookup's own footprint (the penumbra
- * included) in the guard, and mixes the opacity over the base sheet's at the
- * weight it returns, as the deck does — so a shadow is as sharp as its cloud,
- * and hands over with it. The pages a shadow in frame reads join the deck's
+ * compiled too (on unless `?cloudshadows=0`, world/surfaceShading), the ground
+ * takes the define beside it and its shadow read calls `cloudFieldFine` at the
+ * point the Sun's ray pierces the deck, with that lookup's own footprint (the
+ * penumbra included) in the guard, and mixes the opacity over the base sheet's
+ * at the weight it returns, as the deck does — so a shadow is as sharp as its
+ * cloud, and hands over with it. The pages a shadow in frame reads join the deck's
  * demand (world/cloudFieldMeasure `measureShadow`).
  *
  * THE REPRESENTATION is two channels per texel, `(A, P)` — the encoding study

@@ -137,8 +137,9 @@ const HIGH_PASS_KNEE_DECLARATION = 'uniform float smoothWidth;';
  * and every body keep the glow they had, bit for bit. The flag is read here
  * and nowhere else: the canvas is opaque, so the alpha never shows, and the
  * finishing passes write their own. Blended layers over the sea move it on
- * purpose: the cloud deck's normal blend pulls it toward its own coverage, so
- * a sea under thin cloud blooms in proportion, and the atmosphere shell's
+ * purpose: the cloud deck's normal blend stores a + (1 - a) x flag for a
+ * coverage a, pulling the flag back toward 1 in proportion, so open sea under
+ * thin cloud reads 2a - 1 and blooms by min(2a, 1); the atmosphere shell's
  * blend leaves the alpha alone (world/atmosphereShell). Continuous, never a
  * test for a value: the multisample resolve and the bilinear read through the
  * lens warp give every coast and silhouette a fraction.
@@ -182,8 +183,6 @@ export function installBloomKnee(material: THREE.ShaderMaterial, knee: number): 
   material.needsUpdate = true;
 }
 
-/** The `?bloomknee=0` kill switch, on any build: three's step back in the
- *  planetarium's bright pass, in the house style of `?fused=0` and `?ride=0`. */
 /**
  * Put the sea's share on three's step high pass — the bright pass as it stands
  * with the knee off (`?bloomknee=0`), so that arm keeps the sea out of the
@@ -201,6 +200,8 @@ export function installSeaBloomShare(material: THREE.ShaderMaterial): void {
   material.needsUpdate = true;
 }
 
+/** The `?bloomknee=0` kill switch, on any build: three's step back in the
+ *  planetarium's bright pass, in the house style of `?fused=0` and `?ride=0`. */
 export function parseBloomKneeParam(search: string): boolean {
   return new URLSearchParams(search).get('bloomknee') !== '0';
 }

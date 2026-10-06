@@ -506,9 +506,10 @@ export const SEA_WATER_F0 = ((SEA_WATER_IOR - 1) / (SEA_WATER_IOR + 1)) ** 2;
  * in this water-leaving reflectance instead, mixed in by the water fraction:
  * clear open ocean's pi times its remote-sensing reflectance, about 0.035 at
  * 443 nm, 0.008 at 555 nm and 0.001 at 670 nm, in display primaries. The
- * terms that would carry the rest of a photograph's slate — the sky reflected
- * off the water, the aerosol's grey — are not drawn, and this is the water's
- * own term they would add to, which is why it is the physical value rather
+ * terms that carry the rest of a photograph's slate add on top of it: the sky
+ * reflected off the water (SEA_SKY, below) and the aerosol's grey in the air
+ * (world/atmosphereModel.ts). This is the water's own term they add to,
+ * which is why it is the physical value rather
  * than a teal with those baked in.
  *
  * A production build carries the colour as a literal and the share as a
@@ -584,6 +585,10 @@ export const SEA_SKY_GRAZING_COS = 0.29;
  * units at baseline 1; it rides SUN_LIGHT_BASELINE with the light, as the
  * bloom's line and the beam's knee and cap do, so it is the same number of
  * whites whatever the baseline.
+ *
+ * Only the old chain applies it: with the beam chain (SEA_BEAM, the default)
+ * the shoulder below caps what reaches the camera instead, so this cap and
+ * the `cap` knob of `__moon.glint` and `?glint=` act only under `?seabeam=0`.
  */
 export const OCEAN_GLINT_CAP = 1.25 * SUN_LIGHT_BASELINE;
 
@@ -592,7 +597,7 @@ export const OCEAN_GLINT_CAP = 1.25 * SUN_LIGHT_BASELINE;
  * after the air): a shoulder, linear up to the knee and an exponential
  * approach to the cap above it, continuous in value and slope at the knee,
  * per channel, in scene units (a white Lambert disc under the Sun reads
- * SUN_LIGHT_INTENSITY / pi, about 0.88). OCEAN_GLINT_CAP flattened the beam's
+ * SUN_LIGHT_INTENSITY / pi, about 1.23 at the 1.4 baseline). OCEAN_GLINT_CAP flattened the beam's
  * top into a plateau before the air and the limb darkening then sloped it
  * down toward the horizon, which is backwards for a mirror; this holds a core
  * past white just past it, where the tone curve is already rolling off (an

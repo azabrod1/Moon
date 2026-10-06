@@ -20,8 +20,9 @@
 //
 // The driver's shader cache survives a fresh browser context, so an ordinary
 // run is a WARM-cache run however new the page is. `--cold-cache` is the other
-// reading: a fresh user data dir with the GPU's disk cache off, which is what a
-// machine's first visit after a deploy pays.
+// reading: a fresh user data dir with the browser's GPU disk cache off. That
+// clears the browser's own caches only: on an Apple GPU macOS keeps Metal's
+// compiled shaders outside the profile, so it is not a cold driver cache.
 //
 //   node tools/interior-open-probe.mjs --url=http://127.0.0.1:5173 --label=dev-desktop
 //   node tools/interior-open-probe.mjs --url=http://127.0.0.1:4173 --phone --repeats=10
@@ -201,8 +202,9 @@ try {
 
   let context;
   if (coldCache) {
-    // A fresh user data dir is the only way to reach the driver's own shader
-    // cache: it outlives a browser context, so a new page is a WARM run.
+    // A fresh user data dir clears the browser's shader caches, which outlive
+    // a browser context (a new page is a WARM run). The OS driver's cache is
+    // outside the profile and stays warm (see the header).
     userDataDir = await mkdtemp(path.join(tmpdir(), 'moon-open-probe-'));
     context = await chromium.launchPersistentContext(userDataDir, { headless: true, args, ...contextOptions });
     browser = context.browser();

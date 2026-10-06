@@ -283,8 +283,9 @@ let upscaleFilter: UpscaleFilter = upscaleParam?.filter ?? 'easu';
 /** RCAS's stops, once something has named them: `?sharpen=` or the bridge.
  *  Unasked, the stops come from the factor the frame is upscaled by
  *  (app/fsr1.ts rcasStopsForFactor) — one stop was matched at 4/3 and
- *  over-sharpens at a shallower rung — so this stays null and nothing here
- *  owns them. */
+ *  over-sharpens at a shallower rung — so this holds RCAS_DEFAULT_STOPS only
+ *  as a placeholder and `upscaleSharpenPinned` stays false: nothing here owns
+ *  them. */
 let upscaleSharpenStops: number | null = upscaleParam?.sharpen === undefined ? RCAS_DEFAULT_STOPS : upscaleParam.sharpen;
 let upscaleSharpenPinned = upscaleParam?.sharpen !== undefined;
 // Which kernel carries a frame drawn LARGER than the canvas down onto it. The
@@ -3557,7 +3558,7 @@ function installDevHooks() {
       requestAnimationFrame(poll);
     }),
     // The ocean glint's knobs, live: the cap on the water's reflection in
-    // units of white, a flat scale on the sea's whole mirror term (one: the
+    // units of white (only the old chain, `?seabeam=0`, applies it), a flat scale on the sea's whole mirror term (one: the
     // Fresnel is water's own now, the knob is an A/B), the calm lobe — the
     // width of every sea's glassy share, as a wind in m/s through Cox-Munk's
     // law (`calm`) or as a mean-square slope outright (`calmMss`, which is
@@ -4051,7 +4052,8 @@ function installDevHooks() {
   installPerfSwitchBridge();
   // `?glint=0.12` draws the whole sea at that roughness for the session, the
   // wind maps set aside, and `?glint=0.12,1,1.25,0.6` sets the mirror term's
-  // scale, the cap and the calm lobe's wind with it — an empty field leaves
+  // scale, the cap (which only `?seabeam=0`'s old chain applies) and the calm
+  // lobe's wind with it — an empty field leaves
   // that knob alone, so `?glint=,,,0.3` moves the calm lobe under the maps:
   // the same knobs as __moon.glint, reachable from a phone's address bar.
   // DEV only.

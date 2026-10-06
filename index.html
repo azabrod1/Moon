@@ -8,8 +8,8 @@
        bands top and bottom where the canvas could not reach — and every
        env(safe-area-inset-*) reads 0. With it the canvas runs edge to edge and
        the edge-anchored chrome keeps out of the bars by those same env() values
-       (the rule is in CLAUDE.md; shared/dom safeAreaInsets reads them for chrome
-       placed by a script). -->
+       (the rule is pinned in app/viewportSize.test.ts; shared/dom safeAreaInsets
+       reads them for chrome placed by a script). -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>Planetarium: Explore Space</title>
   <!-- ?v=3 busts the browser's favicon cache, which ignores page reloads —

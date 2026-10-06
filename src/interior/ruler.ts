@@ -156,7 +156,7 @@ export function rulerLayout(input: RulerInput, out: RulerLayout = createRulerLay
  * ruler goes on the face turned more toward the camera (`rulerSide`), and
  * `rulerFacing` is that face's own normal against the line of sight — 1
  * looking straight down it, 0 edge-on, negative once BOTH faces have turned
- * away. The cut is body-locked, so a reader can orbit round behind it; the
+ * away. A body-locked cut lets a reader orbit round behind it; the
  * caller hides the ruler once the facing drops under its floor (a line of
  * ticks laid on a face seen nearly edge-on is unreadable before the face
  * turns away) rather than draw it over the back of a body they cannot see into.

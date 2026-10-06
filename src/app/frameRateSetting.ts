@@ -4,7 +4,8 @@
  * One standalone synchronous localStorage key, the shape `qualitySetting.ts`
  * uses, and deliberately NOT part of the journey save: that state loads from
  * IndexedDB long after the animation loop starts, and "New Journey" clears it
- * — a frame-rate preference must survive both.
+ * — a frame-rate preference must survive both. It is the reader's setting, so
+ * it is never registered as a perf switch (app/perfSwitches.ts).
  *
  * There is no boot-loop marker here, and there does not need to be one: a
  * target allocates nothing, so no value of it can stop a boot reaching a

@@ -5,6 +5,10 @@
  * Sun ~0.01°; Moon ~0.01° lon / ~0.01° lat / ~25 km — the truncated series
  * far outperform their original ~1° header claim. The planetarium consumes
  * these through planetary.ts, which precesses longitudes to J2000.
+ *
+ * Keep everything here of-date: the goldens in ephemeris.test.ts quote
+ * of-date values, so precession belongs at the planetary.ts seams and never
+ * inside this file.
  */
 
 import { DEG, J2000 } from './constants';

@@ -18,10 +18,11 @@
  * "loud missing source" convention). The floor catches a broken regex, not a
  * body deliberately leaving the boot set.
  *
- * Sector tile sets are injected separately from the manifest: their folder
- * names carry a hash of their own contents, so the worker caches them with
- * no digest and no expiry, and an off-origin set needs its origin on an
- * allowlist before the worker will touch it at all. The sets come from the
+ * Same-origin sector tiles are ordinary manifest entries with a digest, like
+ * every other data file. Sets served from another origin are injected
+ * separately: their folder names carry a hash of their own contents, so the
+ * worker caches them by full URL with no digest and no expiry, and only once
+ * their origin is on the allowlist. The sets come from the
  * table gen-tiles generates and the origin from VITE_TILE_ORIGIN — the same
  * two sources the app resolves its tile URLs through, so the worker cannot
  * end up allowing a different host or a different set than the app fetches.

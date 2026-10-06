@@ -48,6 +48,7 @@
 import { PLANETS } from '../planets/planetData';
 import { AIRLIGHT_SCALE, type RGB } from './atmosphereModel';
 import { SUN_LIGHT_AUTHORED_HUE } from '../sunLight';
+import { DEG2RAD as DEG } from '../../shared/math/angles';
 
 export type Vec3 = readonly [number, number, number];
 
@@ -436,8 +437,6 @@ export const MOONLIGHT_TINT: RGB = unitLuminance([
   MOONLIGHT_TINT_AUTHORED[1] * SUN_LIGHT_AUTHORED_HUE[1],
   MOONLIGHT_TINT_AUTHORED[2] * SUN_LIGHT_AUTHORED_HUE[2],
 ]);
-
-const DEG = Math.PI / 180;
 
 /**
  * Brightness of the Moon relative to full, at a Sun-Moon-observer phase angle

@@ -15617,6 +15617,10 @@ export class PlanetariumMode {
    * this — and a surface term that draws its own ground is at its most exposed
    * over a pole.
    *
+   * It only poses the camera: it never routes through landing, travel or the
+   * collision pass, so a change to any of those is exercised through their own
+   * hooks (land, travelTo, pilotTo), never through this.
+   *
    * Dev bridge only.
    */
   devFrameBody(

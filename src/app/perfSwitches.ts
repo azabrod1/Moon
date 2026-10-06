@@ -82,6 +82,10 @@
  * would be a second writer of the same variable: it would arm itself on every
  * DEV boot the moment a level asked for a ratio, so the sweep would enumerate
  * it by default and `perfArm` would silently overrule the user's own level.
+ *
+ * Nor is a reader's setting ever a key: Graphics quality, Frame rate and Night
+ * sides belong to the reader, live on their own storage keys, and the sweep
+ * must never sweep them.
  */
 
 /** One switchable efficiency change. */

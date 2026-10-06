@@ -12,9 +12,9 @@
  * inside the same wedge. Nothing is stepped and nothing is stitched: the
  * picture is two planes and a sphere, which is what a cut in a solid looks
  * like. The body wears its real pose (IAU pole and spin for planets, the
- * tidal lock for moons) at the planetarium's instant, and the cut is locked
- * to that pose by the mode (the frame it hands applyCut is rebuilt from a
- * body-space anchor every frame); the light is a studio key that rides with
+ * tidal lock for moons) at the planetarium's instant, and the mode hands
+ * applyCut the cut's frame every frame: facing the camera by default, or held
+ * to that pose through a body-space anchor when the reader locks it; the light is a studio key that rides with
  * the camera, so whichever face the reader has turned toward them is lit
  * from a three-quarter. Studio light with real pose, per plan §5.
  *

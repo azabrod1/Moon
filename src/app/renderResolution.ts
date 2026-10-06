@@ -4,8 +4,9 @@
  * many samples, and the ratio the bloom chain is sized at.
  *
  * Two different things antialias this app, one per render path:
- * - the direct (no-float) path draws straight into the canvas backbuffer,
- *   which the renderer creates with `antialias: true`;
+ * - the direct (no-float) path draws onto a screen target that carries its
+ *   own samples and is copied to the canvas byte for byte (app/screenTarget.ts);
+ *   the canvas itself has no samples unless `?canvasaa=1` gives them back;
  * - the composer path draws the scene into an off-screen target. The
  *   backbuffer's multisampling never reaches that target, so it carries its
  *   own sample count (main.ts buildComposer reads composerSamples).
@@ -28,7 +29,7 @@
  * fixed texel counts, so the chain's size decides the glow's width on
  * screen, and sizing it as before keeps every display's glow exactly what it
  * was, at exactly the cost it was. The no-float direct path on a 1× monitor
- * now renders native with the backbuffer's own multisampling instead of the
+ * now renders native with its screen target's multisampling instead of the
  * 1.5× supersample.
  *
  * The upscaler (app/UpscalePass.ts) splits one ratio into two. The OUTPUT

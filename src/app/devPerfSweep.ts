@@ -64,8 +64,11 @@
  * does under thermal and background pressure — and the table says so in words
  * rather than letting the rows be read as costs they are not.
  *
- * Three runs are offered:
+ * Four runs are offered:
  *
+ *  - **Phone** — the preset: the efficiency switches plus the tile layer, half
+ *    the pixels and everything at once, one block each, about two minutes.
+ *    It is the default on a touch device.
  *  - **Sweep** — the paired run above. Minutes, and the ranking it gives is
  *    the one to act on.
  *  - **Quick** — one bracketed pass, A B A C A D, three-second holds: the

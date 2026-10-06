@@ -399,8 +399,7 @@ export class InteriorMode {
   private readonly frame = createCutFrame();
   private readonly cutAnchor = createCutAnchor();
   private readonly cut = createCutTween(CUT_VIEW_ANGLE_DEG.cutaway);
-  /** "Cut faces the camera": the frame follows the camera instead of the body. Session-only. */
-  /** Whether the cut follows the camera. On by default: the cut is a diagram, and a body-locked
+  /** "Cut faces the camera", session-only. Whether the cut follows the camera. On by default: the cut is a diagram, and a body-locked
    *  cut seen from the side, below or behind shows a half section, a crease or nothing (the
    *  lock is the View options row's other state, for those who want a cut in a solid). */
   private cutFollow = true;
@@ -787,8 +786,8 @@ export class InteriorMode {
     );
     this.refreshRemapIfNeeded();
 
-    // The cut is locked to the body: its frame is rebuilt from the anchor under
-    // the body's pose, so an orbit turns the body under a cut that stays put.
+    // The cut's frame for this tick: the camera's own by default, or rebuilt
+    // from the anchor under the body's pose while the reader has it locked.
     this.poseCutFrame(dt);
     this.interiorScene.applyCut(this.frame);
     this.interiorScene.updateForCamera(this.camera);
@@ -2561,7 +2560,7 @@ export class InteriorMode {
     return true;
   }
 
-  /** Open the pinned region's claim of a kind in the popover (null closes it). */
+  /** Open the evidence page on the pinned region's claims of a kind (null goes back to its summary). */
   devEvidence(claimKind: ClaimKind | null): boolean {
     if (!this.active) return false;
     const region = this.drawn.regionsInsideOut[this.pinnedIndex];

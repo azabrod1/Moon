@@ -50,6 +50,8 @@
  */
 import type { AtmosphereParams, RGB } from './atmosphereModel';
 import { transmittanceToTopBoundary } from './atmosphereModel';
+import { SUN_LIGHT_BASELINE } from '../sunLight';
+import { DEG2RAD as DEG } from '../../shared/math/angles';
 
 /** A position or direction in the body's frame, radii as the unit. */
 export type Vec3 = readonly [number, number, number];
@@ -283,8 +285,6 @@ export interface ScanOptions {
   readonly refine?: number;
 }
 
-const DEG = Math.PI / 180;
-
 /** A result holder the caller keeps, so a frame allocates nothing. */
 export function createBeamPeak(): BeamPeak {
   return {
@@ -505,7 +505,9 @@ export function coverageOfBeam(
 }
 
 export interface HighlightKnobs {
-  /** Where the brightest drawn pixel should land after exposure, scene units. */
+  /** Where the brightest drawn pixel should land after exposure, in scene
+   *  units: two at baseline 1, riding SUN_LIGHT_BASELINE like every threshold
+   *  authored in scene units, so it stays the same number of whites. */
   readonly target: number;
   /** The most the meter may lower the exposure (0.25 = two stops). */
   readonly floor: number;
@@ -514,7 +516,7 @@ export interface HighlightKnobs {
   readonly fadeHi: number;
 }
 
-export const HIGHLIGHT_KNOBS: HighlightKnobs = { target: 2.8, floor: 0.25, fadeLo: 0.002, fadeHi: 0.02 };
+export const HIGHLIGHT_KNOBS: HighlightKnobs = { target: 2 * SUN_LIGHT_BASELINE, floor: 0.25, fadeLo: 0.002, fadeHi: 0.02 };
 
 function smoothstep(lo: number, hi: number, x: number): number {
   const t = Math.min(Math.max((x - lo) / Math.max(hi - lo, 1e-9), 0), 1);

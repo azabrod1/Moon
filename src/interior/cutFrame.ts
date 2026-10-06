@@ -19,19 +19,23 @@
  *   Section   θ = 180°  one full disc perpendicular to the view axis; the
  *                       near hemisphere is removed
  *
- * The cut is locked to the body. A frame is chosen from the camera
+ * By default the cut FACES THE CAMERA: the cut is a diagram, and a cut held
+ * to the body and seen from the side, below or behind shows a half section,
+ * a crease or nothing. The frame is computed from the camera every frame
  * (computeCutFrame: the hinge is the camera's own up, so nothing flips at the
- * poles) once — on entry, at a body swap and at Reset view — turned about the
- * hinge by the mode's yaw (yawCutFrame), and kept as two unit axes in the
- * body's own coordinates (CutAnchor, the inverse of the pose the skin wears).
- * Every frame the world frame is rebuilt from the anchor and the pose
- * (frameFromAnchor), so orbiting the camera turns the body under a cut that
- * stays where it is, as a cut in a solid does; the skin, the faces, the pick
- * and the ruler read the rebuilt frame and nothing disagrees. Looked at from
- * behind, the cut disappears behind the exterior, and Reset view brings it
- * back. The camera-following frame remains as an option (the mode's "Cut
- * faces the camera"), and the way between the two is a short slerp
- * (blendCutFrames) rather than a snap.
+ * poles), so orbiting turns the body under a cut that stays put on screen.
+ *
+ * The body lock is the other state of the mode's "Cut faces the camera" row,
+ * for anyone who wants a cut in a solid. The frame is kept as two unit axes in
+ * the body's own coordinates (CutAnchor, the inverse of the pose the skin
+ * wears), anchored from the camera on entry, at a body swap and at Reset view
+ * and kept current while the cut follows the camera, so turning the lock on
+ * freezes the cut where it stands. Every frame the world frame is rebuilt from
+ * the anchor and the pose (frameFromAnchor) and turned about the hinge by the
+ * mode's yaw (yawCutFrame); looked at from behind, the locked cut disappears
+ * behind the exterior. Either way the skin, the faces, the pick and the ruler
+ * read the one frame, and turning the lock off swings the cut back to the
+ * camera by a short slerp (blendCutFrames) rather than a snap.
  *
  * Basis: (view, side, hinge) is right-handed with side = hinge × view. A
  * rotation about the hinge by α carries view to cos α·view + sin α·side.

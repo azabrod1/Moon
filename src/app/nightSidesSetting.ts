@@ -13,7 +13,8 @@
  * One standalone synchronous localStorage key, the shape `frameRateSetting.ts`
  * uses, and deliberately NOT part of the journey save: that state loads from
  * IndexedDB long after the first frame, and "New Journey" clears it — a way of
- * looking at the sky must survive both. There is no boot-loop marker: the
+ * looking at the sky must survive both. It is the reader's setting, so it is
+ * never registered as a perf switch (app/perfSwitches.ts). There is no boot-loop marker: the
  * setting is one uniform and allocates nothing, so no value of it can stop a
  * boot reaching a frame.
  *

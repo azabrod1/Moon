@@ -66,7 +66,12 @@
 //   node tools/gen-tiles.mjs clouds --base --cache=<main checkout>/.moon-data-cache
 //                                               # the deck's base sheet only: the 2K, 4K and 8K
 //                                               # rungs into public/textures (add --verify to
-//                                               # gate the ones on disk and write nothing)
+//                                               # gate the ones on disk and write nothing).
+//                                               # Then re-derive what reads the sheet:
+//                                               # `npm run gen:maps earth-clouds-normal` and
+//                                               # `node tools/encode-textures.mjs --clean` (the
+//                                               # relief), `node tools/gen-ktx2.mjs earthClouds
+//                                               # earthClouds4k` (the compressed rungs)
 //   --cache=<dir>  source cache (default .moon-data-cache)
 //   --root=<dir>   tiles root (default public/textures/tiles). A level too
 //                  big to ship inside the app is cut into a staging root —

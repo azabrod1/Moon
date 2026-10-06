@@ -81,7 +81,14 @@ import {
 } from './planetarium/world/surfaceShading';
 import type { CloudFieldRequest } from './planetarium/world/cloudFieldDev';
 import { SUN_LIGHT_COLOR, SUN_LIGHT_INTENSITY } from './planetarium/PlanetFactory';
-import { AIRLIGHT_SCALE } from './planetarium/world/atmosphereModel';
+import {
+  AIRLIGHT_SCALE,
+  aerosolOpticalDepth,
+  aerosolOverride,
+  atmosphereSpec,
+  parseAerosolParam,
+  setAerosolOverride,
+} from './planetarium/world/atmosphereModel';
 import { devAlbedoGrade } from './planetarium/world/albedoGrade';
 import { highlightMeterEnabled, parseGlintMeterParam, setHighlightMeterEnabled } from './planetarium/highlightMeter';
 import { parseNightExposureParam, setDevNightExposure, type NightExposureOverride } from './planetarium/world/nightExposure';
@@ -325,6 +332,12 @@ setSeaColourEnabled(parseSeaColourParam(location.search));
 // `?seasky=0`: the sea without the sky reflected off its surface (the
 // SEA_SKY define, world/surfaceShading), the picture as it was.
 setSeaSkyEnabled(parseSeaSkyParam(location.search));
+// `?aerosol=<tau550>[,<angstrom>[,<albedo>[,<g>[,<scale height km>]]]]`
+// (DEV only): Earth's air booted with another aerosol for a look sheet, set
+// here before anything reads the air's parameters, because the tables bake
+// from them once (world/atmosphereModel setAerosolOverride). One link per
+// candidate; `__moon.aerosol()` says which air the session is drawing.
+if (import.meta.env.DEV) setAerosolOverride('Earth', parseAerosolParam(location.search));
 // `?glintmeter=0`: the exposure never closes down for the sea's beam
 // (planetarium/highlightMeter); the Sun's own meter alone, as it was.
 setHighlightMeterEnabled(parseGlintMeterParam(location.search));
@@ -3241,6 +3254,20 @@ function installDevHooks() {
     // Precomputed atmosphere tables: tier state, a measurement bake, and table
     // readback through the 8-bit blit.
     atmoState: () => planetariumMode?.devAtmosphereState() ?? null,
+    // The aerosol Earth's air was built from this session: the `?aerosol=`
+    // link's load (null when the shipped spec) and the spec's own numbers.
+    aerosol: () => {
+      const spec = atmosphereSpec('Earth');
+      if (!spec) return null;
+      return {
+        override: aerosolOverride('Earth'),
+        opticalDepth: aerosolOpticalDepth(spec),
+        mieScatteringPerM: spec.mieScatteringPerM,
+        mieSingleScatteringAlbedo: spec.mieSingleScatteringAlbedo,
+        miePhaseG: spec.miePhaseG,
+        mieScaleHeightKm: spec.mieScaleHeightKm,
+      };
+    },
     // What lights a body's night side this frame: the Moon's direction, its
     // irradiance and its phase.
     atmoNight: (body?: string) => planetariumMode?.devAtmosphereNight(body) ?? null,

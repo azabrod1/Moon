@@ -192,6 +192,175 @@ export const ATMOSPHERE_SPECS: Readonly<Record<string, AtmosphereSpec>> = {
   Mars: MARS_SPEC,
 };
 
+// ---------------------------------------------------------------------------
+// Aerosol as observations quote it
+// ---------------------------------------------------------------------------
+
+/** The wavelengths of a spec's three channels, nm (the red, green and blue
+ *  that every `RGB` coefficient in this module is quoted at). */
+export const ATMOSPHERE_WAVELENGTHS_NM: RGB = [680, 550, 440];
+
+/**
+ * An aerosol in the terms sun photometers and satellite retrievals report it:
+ * the vertical EXTINCTION optical depth at 550 nm, its spectral slope as an
+ * Angstrom exponent (tau(lambda) = tau550 * (lambda / 550)^-alpha), the
+ * single-scattering albedo, the asymmetry parameter as retrievals mean it
+ * (the phase function's MEAN COSINE, which is not the parameter `miePhase`
+ * takes: see `cornetteShanksParameter`), and the scale height of one
+ * exponential layer.
+ */
+export interface AerosolLoad {
+  readonly opticalDepth550: number;
+  readonly angstrom: number;
+  readonly singleScatteringAlbedo: number;
+  readonly asymmetry: number;
+  readonly scaleHeightKm: number;
+}
+
+/**
+ * The mean cosine of `miePhase` at parameter g, in closed form: Cornette and
+ * Shanks' function is Henyey-Greenstein times (1 + nu^2) renormalised, and
+ * that factor pulls its mean cosine above g, to 3g(4 + g^2) / (5(2 + g^2)) —
+ * 0.868 at the 0.83 Earth ships, 0.810 at 0.76.
+ */
+export function cornetteShanksMeanCosine(g: number): number {
+  return (3 * g * (4 + g * g)) / (5 * (2 + g * g));
+}
+
+/**
+ * The `miePhase` parameter whose mean cosine is `meanCosine`: the inverse of
+ * cornetteShanksMeanCosine, by Newton's method from the mean cosine itself
+ * (the function is monotonic on (-1, 1) and within a few hundredths of the
+ * identity there, so a handful of steps reach rounding). A measured asymmetry
+ * of 0.76 is a parameter of 0.703.
+ */
+export function cornetteShanksParameter(meanCosine: number): number {
+  let g = meanCosine;
+  for (let i = 0; i < 12; i++) {
+    const f = cornetteShanksMeanCosine(g) - meanCosine;
+    const g2 = g * g;
+    const df = (3 * (8 + 2 * g2 + g2 * g2)) / (5 * (2 + g2) * (2 + g2));
+    const step = f / df;
+    g -= step;
+    if (Math.abs(step) < 1e-15) break;
+  }
+  return g;
+}
+
+/** The four fields of an `AtmosphereSpec` that describe its aerosol. */
+export type AerosolSpecFields = Pick<
+  AtmosphereSpec,
+  'mieScaleHeightKm' | 'mieScatteringPerM' | 'mieSingleScatteringAlbedo' | 'miePhaseG'
+>;
+
+/**
+ * A spec's aerosol fields from an observed load. The column of one
+ * exponential layer is its surface coefficient times its scale height (the
+ * 100 km top sits ~80 aerosol scale heights up, so the truncated tail is
+ * nothing), so the surface SCATTERING coefficient at each channel is
+ * tau(lambda) * albedo / H, and extinction comes back out as scattering over
+ * the albedo where `atmosphereParamsAU` derives it.
+ */
+export function aerosolFromOpticalDepth(load: AerosolLoad): AerosolSpecFields {
+  const heightM = load.scaleHeightKm * 1000;
+  const scattering = (lambdaNm: number): number =>
+    (load.opticalDepth550 * Math.pow(lambdaNm / 550, -load.angstrom) * load.singleScatteringAlbedo) / heightM;
+  const w = ATMOSPHERE_WAVELENGTHS_NM;
+  const albedo = load.singleScatteringAlbedo;
+  return {
+    mieScaleHeightKm: load.scaleHeightKm,
+    mieScatteringPerM: [scattering(w[0]), scattering(w[1]), scattering(w[2])],
+    mieSingleScatteringAlbedo: [albedo, albedo, albedo],
+    miePhaseG: cornetteShanksParameter(load.asymmetry),
+  };
+}
+
+/**
+ * The defaults a DEV `?aerosol=` link fills its empty fields from: a marine
+ * aerosol (sea salt with a little sulphate), whose Angstrom exponent is low
+ * because the particles are large, whose albedo is near one because salt
+ * barely absorbs, and whose asymmetry (a mean cosine) is well under the 0.868
+ * the shipped parameter of 0.83 amounts to. Look-sheet candidates, not
+ * adopted values.
+ */
+export const MARINE_AEROSOL_DEFAULTS: Omit<AerosolLoad, 'opticalDepth550'> = {
+  angstrom: 0.4,
+  singleScatteringAlbedo: 0.98,
+  asymmetry: 0.76,
+  scaleHeightKm: 1.2,
+};
+
+/**
+ * `?aerosol=<tau550>[,<angstrom>[,<albedo>[,<g>[,<scale height km>]]]]`, the
+ * DEV link that boots Earth's air with another aerosol: empty fields take
+ * MARINE_AEROSOL_DEFAULTS, and a link without a finite, positive optical
+ * depth is no override at all (a mistyped link, not a request for clean air).
+ */
+export function parseAerosolParam(search: string): AerosolLoad | null {
+  const raw = new URLSearchParams(search).get('aerosol');
+  if (!raw) return null;
+  const fields = raw.split(',').map((f) => (f.trim() === '' ? NaN : Number(f)));
+  const pick = (i: number, fallback: number): number => (Number.isFinite(fields[i]) ? fields[i] : fallback);
+  const opticalDepth550 = fields[0];
+  if (!(Number.isFinite(opticalDepth550) && opticalDepth550 > 0)) return null;
+  const load: AerosolLoad = {
+    opticalDepth550,
+    angstrom: pick(1, MARINE_AEROSOL_DEFAULTS.angstrom),
+    singleScatteringAlbedo: pick(2, MARINE_AEROSOL_DEFAULTS.singleScatteringAlbedo),
+    asymmetry: pick(3, MARINE_AEROSOL_DEFAULTS.asymmetry),
+    scaleHeightKm: pick(4, MARINE_AEROSOL_DEFAULTS.scaleHeightKm),
+  };
+  const valid = load.singleScatteringAlbedo > 0 && load.singleScatteringAlbedo <= 1
+    && load.asymmetry > -1 && load.asymmetry < 1 && load.scaleHeightKm > 0;
+  return valid ? load : null;
+}
+
+/** A body's aerosol replaced for the session (DEV look sheets only). */
+const aerosolOverrides = new Map<string, { load: AerosolLoad; spec: AtmosphereSpec }>();
+
+/**
+ * Boot a body's air with another aerosol, for a look sheet. It must land
+ * before anything has read that body's parameters: the tables are baked from
+ * them once, the bake validates against the CPU reference of the same
+ * parameters, every shader's uniform block is filled from them and the
+ * highlight meter builds its own transmittance table from them, so an
+ * override after the first read would leave those disagreeing. It throws
+ * there rather than draw a mixed air. DEV only: a production build reads the
+ * shipped specs and nothing else.
+ */
+export function setAerosolOverride(name: string, load: AerosolLoad | null): void {
+  if (!import.meta.env.DEV) return;
+  const spec = ATMOSPHERE_SPECS[name];
+  if (!spec) throw new Error(`atmosphereModel: no atmosphere for ${name}`);
+  if (paramsCache.has(name)) {
+    throw new Error(`atmosphereModel: ${name}'s air has been read already; set its aerosol before the first read`);
+  }
+  if (load === null) aerosolOverrides.delete(name);
+  else aerosolOverrides.set(name, { load, spec: { ...spec, ...aerosolFromOpticalDepth(load) } });
+}
+
+/** The aerosol a body's air was booted with, or null for its shipped spec. */
+export function aerosolOverride(name: string): AerosolLoad | null {
+  return aerosolOverrides.get(name)?.load ?? null;
+}
+
+/** The spec a body's air is built from this session: its own, or (DEV) the
+ *  override a look sheet booted it with. */
+export function atmosphereSpec(name: string): AtmosphereSpec | undefined {
+  if (import.meta.env.DEV) {
+    const override = aerosolOverrides.get(name);
+    if (override) return override.spec;
+  }
+  return ATMOSPHERE_SPECS[name];
+}
+
+/** Vertical extinction optical depth of a spec's aerosol at each channel. */
+export function aerosolOpticalDepth(spec: AtmosphereSpec): RGB {
+  const heightM = spec.mieScaleHeightKm * 1000;
+  const e = (i: number): number => (spec.mieScatteringPerM[i] / spec.mieSingleScatteringAlbedo[i]) * heightM;
+  return [e(0), e(1), e(2)];
+}
+
 const RADIUS_KM_BY_BODY: Readonly<Record<string, number>> = Object.fromEntries(
   PLANETS.map((p) => [p.name, p.radiusKm]),
 );
@@ -327,7 +496,7 @@ const paramsCache = new Map<string, AtmosphereParams>();
 export function atmosphereParamsAU(name: string): AtmosphereParams {
   const cached = paramsCache.get(name);
   if (cached) return cached;
-  const spec = ATMOSPHERE_SPECS[name];
+  const spec = atmosphereSpec(name);
   const radiusKm = RADIUS_KM_BY_BODY[name];
   if (!spec || !radiusKm) throw new Error(`atmosphereModel: no atmosphere for ${name}`);
 

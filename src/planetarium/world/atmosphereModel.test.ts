@@ -1,11 +1,17 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import * as THREE from 'three';
 import {
   ATMOSPHERE_SPECS,
   ATMOSPHERE_TABLE_SIZES_FULL,
   ATMOSPHERE_TABLE_SIZES_HALF,
   ATMOSPHERE_TOP_SCALES,
+  ATMOSPHERE_WAVELENGTHS_NM,
   AIRLIGHT_SCALE,
+  MARINE_AEROSOL_DEFAULTS,
+  aerosolFromOpticalDepth,
+  aerosolOpticalDepth,
+  cornetteShanksMeanCosine,
+  cornetteShanksParameter,
   SOLAR_DISTANCE_DECAY,
   atmosphereParams,
   atmosphereParamsAU,
@@ -17,6 +23,7 @@ import {
   miePhase,
   opticalDepthToTopBoundary,
   opticalLengthToTopBoundary,
+  parseAerosolParam,
   rMuFromTransmittanceUv,
   rMuMuSNuFromScatteringUvwz,
   rMuSFromIrradianceUv,
@@ -378,17 +385,18 @@ describe('CPU reference', () => {
   });
 });
 
+/** The whole solid angle, by Simpson over nu: 2*PI * integral(-1..1) p dnu. */
+const sphereIntegral = (p: (nu: number) => number): number => {
+  const n = 20000;
+  let sum = 0;
+  for (let i = 0; i <= n; i++) {
+    const w = i === 0 || i === n ? 1 : (i % 2 === 1 ? 4 : 2);
+    sum += w * p(-1 + (2 * i) / n);
+  }
+  return 2 * Math.PI * ((sum * (2 / n)) / 3);
+};
+
 describe('phase functions', () => {
-  /** The whole solid angle, by Simpson over nu: 2*PI * integral(-1..1) p dnu. */
-  const sphereIntegral = (p: (nu: number) => number): number => {
-    const n = 20000;
-    let sum = 0;
-    for (let i = 0; i <= n; i++) {
-      const w = i === 0 || i === n ? 1 : (i % 2 === 1 ? 4 : 2);
-      sum += w * p(-1 + (2 * i) / n);
-    }
-    return 2 * Math.PI * ((sum * (2 / n)) / 3);
-  };
 
   it('pins the Rayleigh constant and integrates to one over the sphere', () => {
     expect(rayleighPhase(0)).toBeCloseTo(3 / (16 * Math.PI), 15);
@@ -427,5 +435,111 @@ describe('phase functions', () => {
     const mars = ATMOSPHERE_SPECS.Mars.miePhaseG;
     expect(mars).toBe(0.63);
     expect(miePhase(mars, 1)).toBeLessThan(miePhase(ATMOSPHERE_SPECS.Earth.miePhaseG, 1));
+  });
+});
+
+describe('the aerosol as observations quote it', () => {
+  // Earth's shipped aerosol, restated as a load: 2e-5 /m of scattering over a
+  // 1.2 km column at an albedo of 0.9 is an extinction depth of 0.0267.
+  const SHIPPED_LOAD = {
+    opticalDepth550: (2e-5 * 1200) / 0.9,
+    angstrom: 0,
+    singleScatteringAlbedo: 0.9,
+    asymmetry: cornetteShanksMeanCosine(0.83),
+    scaleHeightKm: 1.2,
+  };
+
+  it('states the asymmetry as a mean cosine, the phase function taking its own parameter', () => {
+    // The closed form against the phase function itself, integrated.
+    for (const g of [0, 0.5, 0.63, 0.703, 0.76, 0.83]) {
+      expect(sphereIntegral((nu) => nu * miePhase(g, nu))).toBeCloseTo(cornetteShanksMeanCosine(g), 6);
+      expect(cornetteShanksParameter(cornetteShanksMeanCosine(g))).toBeCloseTo(g, 12);
+    }
+    // A retrieval's 0.76 is a parameter of 0.703; the shipped 0.83 is a mean
+    // cosine of 0.868, more forward than any measured aerosol.
+    expect(cornetteShanksParameter(0.76)).toBeCloseTo(0.703, 3);
+    expect(cornetteShanksMeanCosine(0.83)).toBeCloseTo(0.868, 3);
+  });
+
+  it('reproduces the shipped spec from its own optical depth', () => {
+    const fields = aerosolFromOpticalDepth(SHIPPED_LOAD);
+    const spec = ATMOSPHERE_SPECS.Earth;
+    for (let i = 0; i < 3; i++) {
+      expect(fields.mieScatteringPerM[i] / spec.mieScatteringPerM[i]).toBeCloseTo(1, 12);
+      expect(fields.mieSingleScatteringAlbedo[i]).toBe(spec.mieSingleScatteringAlbedo[i]);
+    }
+    expect(fields.miePhaseG).toBeCloseTo(spec.miePhaseG, 12);
+    expect(fields.mieScaleHeightKm).toBe(spec.mieScaleHeightKm);
+    const depth = aerosolOpticalDepth(spec);
+    for (let i = 0; i < 3; i++) expect(depth[i]).toBeCloseTo(SHIPPED_LOAD.opticalDepth550, 12);
+  });
+
+  it('slopes with wavelength by the Angstrom exponent, and the column integrates back to the load', () => {
+    const load = { opticalDepth550: 0.12, ...MARINE_AEROSOL_DEFAULTS };
+    const fields = aerosolFromOpticalDepth(load);
+    const [red, green, blue] = ATMOSPHERE_WAVELENGTHS_NM;
+    expect(fields.mieScatteringPerM[0] / fields.mieScatteringPerM[1]).toBeCloseTo((red / green) ** -load.angstrom, 12);
+    expect(fields.mieScatteringPerM[2] / fields.mieScatteringPerM[1]).toBeCloseTo((blue / green) ** -load.angstrom, 12);
+    // The bake's own optical depth, Mie alone, straight up from the ground:
+    // the truncated exponential's tail above the top is nothing.
+    const params = toRadiusUnits({
+      ...atmosphereParamsAU('Earth'),
+      ...(() => {
+        const perM = KM_PER_AU * 1000;
+        const scattering = fields.mieScatteringPerM.map((v) => v * perM) as unknown as [number, number, number];
+        return {
+          mieScattering: scattering,
+          mieExtinction: scattering.map((v) => v / load.singleScatteringAlbedo) as unknown as [number, number, number],
+          mieDensity: [
+            atmosphereParamsAU('Earth').mieDensity[0],
+            { ...atmosphereParamsAU('Earth').mieDensity[1], expScale: -1 / (load.scaleHeightKm / KM_PER_AU) },
+          ] as const,
+          rayleighScattering: [0, 0, 0] as const,
+          absorptionExtinction: [0, 0, 0] as const,
+        };
+      })(),
+    });
+    const tau = opticalDepthToTopBoundary(params, 1, 1, 4000);
+    expect(tau[1] / load.opticalDepth550).toBeCloseTo(1, 3);
+    expect(tau[0] / (load.opticalDepth550 * (red / green) ** -load.angstrom)).toBeCloseTo(1, 3);
+  });
+
+  it('reads a DEV link, filling empty fields with the marine defaults', () => {
+    expect(parseAerosolParam('')).toBeNull();
+    expect(parseAerosolParam('?aerosol=')).toBeNull();
+    expect(parseAerosolParam('?aerosol=0')).toBeNull();
+    expect(parseAerosolParam('?aerosol=abc')).toBeNull();
+    expect(parseAerosolParam('?aerosol=,0.4')).toBeNull();
+    expect(parseAerosolParam('?aerosol=0.12')).toEqual({ opticalDepth550: 0.12, ...MARINE_AEROSOL_DEFAULTS });
+    expect(parseAerosolParam('?x=1&aerosol=0.06,,0.95,,1.5')).toEqual({
+      opticalDepth550: 0.06,
+      angstrom: MARINE_AEROSOL_DEFAULTS.angstrom,
+      singleScatteringAlbedo: 0.95,
+      asymmetry: MARINE_AEROSOL_DEFAULTS.asymmetry,
+      scaleHeightKm: 1.5,
+    });
+    // An albedo past one or an asymmetry of one is a mistyped link.
+    expect(parseAerosolParam('?aerosol=0.1,0.4,1.2')).toBeNull();
+    expect(parseAerosolParam('?aerosol=0.1,0.4,0.98,1')).toBeNull();
+  });
+
+  it('boots a body with an override only before its air is first read', async () => {
+    vi.resetModules();
+    const model = await import('./atmosphereModel');
+    const load = { opticalDepth550: 0.12, ...MARINE_AEROSOL_DEFAULTS };
+    model.setAerosolOverride('Earth', load);
+    expect(model.aerosolOverride('Earth')).toEqual(load);
+    const fields = model.aerosolFromOpticalDepth(load);
+    const earth = model.atmosphereParamsAU('Earth');
+    expect(earth.mieScattering[1] / (fields.mieScatteringPerM[1] * KM_PER_AU * 1000)).toBeCloseTo(1, 12);
+    expect(earth.mieExtinction[2] / earth.mieScattering[2]).toBeCloseTo(1 / load.singleScatteringAlbedo, 12);
+    expect(earth.miePhaseG).toBeCloseTo(model.cornetteShanksParameter(load.asymmetry), 15);
+    // The shipped table of specs is untouched, and a second override after
+    // the air has been read would leave the bake and its readers disagreeing.
+    expect(model.ATMOSPHERE_SPECS.Earth.mieScatteringPerM).toEqual([2.0e-5, 2.0e-5, 2.0e-5]);
+    expect(() => model.setAerosolOverride('Earth', null)).toThrow(/read already/);
+    // Another body's air is its own.
+    expect(model.atmosphereParamsAU('Mars').miePhaseG).toBe(0.63);
+    vi.resetModules();
   });
 });

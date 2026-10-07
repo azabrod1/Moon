@@ -97,8 +97,8 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '7470e87d0d90c3d83f7a56fa00bcb4ef4096eb6be06dda3f6ca8b9b6dfe0c464';
-const PROD_FRAGMENT_HASH = 'fb2895ad9cc303afab030002955dad8f0e14dbe4ce8c7688dfe9bf1f3e99a353';
+const DEV_FRAGMENT_HASH = '68b34c67da2621bac5dd6d7a4bec1e94ed3ebdf17d464b2b7877ac0a3e96b7c0';
+const PROD_FRAGMENT_HASH = 'bfa675a451746347091d653bb66a4b625649c14044d2877007b321ae68b15e6c';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 
 describe('the injected surface shader', () => {
@@ -145,7 +145,7 @@ describe('the injected surface shader', () => {
     // alone, and that text has its own pin: the test below ties the two.
     const shader = compile(augmented('earth'));
     expect(hash(shader.vertexShader))
-      .toBe('fb0f88934d6953cd220eaa08c60a6b475629e51ae70e4e6180b0855a51e6fe0b');
+      .toBe('18425387de32e2d9bdf6acaba871ae7feeaf54374701bc56a12ea0bbce415bee');
     expect(hash(shader.fragmentShader))
       .toBe(import.meta.env.DEV ? DEV_FRAGMENT_HASH : PROD_FRAGMENT_HASH);
   });

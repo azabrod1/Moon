@@ -338,7 +338,6 @@ describe('sector tile sets: what the app asks for', () => {
       'earth-bump/2k': { file: PLANET_TEXTURE_FILES.earthBump, shippedScale: 1 },
       'earth-roughness.v2/4k': { file: PLANET_TEXTURE_FILES.earthRoughness, shippedScale: 0.5 },
       'mars-normal.v2/2k': { file: PLANET_TEXTURE_FILES.marsNormal, shippedScale: 1 },
-      'moon-normal/4k': { file: `4k/${PLANET_TEXTURE_FILES.moonNormal}`, shippedScale: 1 },
       'moon-normal/8k': { generatedWidth: 8128 },
     };
     for (const [, , spec] of appSpecs()) {

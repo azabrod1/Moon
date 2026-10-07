@@ -20,7 +20,7 @@ Each tool's header gives its scenarios, its bars and its control arm. Most take 
 - `cloud-field-probe`: the cloud field's pages. `cloud-hd-probe`: cloud shadows against the drawn deck. `cloud-detail-probe`: the deck's detail rides its cloud. `cloud-magnify-probe`: magnified clouds stay white.
 - `glint-probe`: the sea's glint as linear radiance; `--meter` is the highlight meter's battery.
 - `interior-sweep`, `interior-open-probe`: Look inside, its races and its opening cost.
-- `mini-size-probe`: the corner chart's size and gestures. `fullscreen-probe`: full screen and the safe-area box.
+- `mini-size-probe`: the corner chart's size and gestures. `fullscreen-probe`: full screen, the safe-area box, and the tools framed on the canvas's box.
 - `pixel-gate`: did a switch move a pixel. `visual-sweep`: what the surfaces look like. `atmo-shell-qa`: the atmosphere goldens. `sampler-census`: texture units per switch combination.
 
 ## Performance

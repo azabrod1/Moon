@@ -519,6 +519,7 @@ import {
 import {
   fullscreenAvailable, isFullscreen, isFullscreenKey, onFullscreenChange, toggleFullscreen,
 } from '../app/fullscreen';
+import { viewportSize } from '../app/viewportSize';
 import { setSegmentOffered, setSegmentValue, wireSegmented } from './ui/SegmentedControl';
 
 /** How long a context-restore re-warm may keep the late-link check muted. */
@@ -10688,7 +10689,7 @@ export class PlanetariumMode {
     const btn = document.getElementById('planetarium-btn-tools');
     if (card && btn) {
       const rect = btn.getBoundingClientRect();
-      const left = Math.min(Math.max(rect.left, 14), window.innerWidth - card.offsetWidth - 14);
+      const left = Math.min(Math.max(rect.left, 14), viewportSize().width - card.offsetWidth - 14);
       card.style.left = `${left}px`;
       card.style.right = 'auto';
     }
@@ -12403,7 +12404,7 @@ export class PlanetariumMode {
       ? document.getElementById('map-dock')?.getBoundingClientRect()
       : null;
     el.style.bottom = rect && rect.height > 0
-      ? `${Math.round(window.innerHeight - rect.top + 8)}px`
+      ? `${Math.round(viewportSize().height - rect.top + 8)}px`
       : '';
   }
 
@@ -13569,7 +13570,7 @@ export class PlanetariumMode {
     // is what the chip names, and it stays where it is.
     const halfW = this.mapTpChipHalfW;
     const rawX = Math.round(this.mapTpScreen.x);
-    const maxX = window.innerWidth - halfW - 8;
+    const maxX = viewportSize().width - halfW - 8;
     const x = maxX > halfW + 8 ? Math.round(Math.min(Math.max(rawX, halfW + 8), maxX)) : rawX;
     // The y clamp mirrors it for the top edge: the chip body hangs above the
     // anchor (translateY(-100%) plus the lift), so an anchor high in the frame

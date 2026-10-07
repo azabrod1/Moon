@@ -2559,6 +2559,9 @@ function make3D(width: number, height: number, depth: number): THREE.WebGL3DRend
     magFilter: THREE.LinearFilter,
     wrapS: THREE.ClampToEdgeWrapping,
     wrapT: THREE.ClampToEdgeWrapping,
+    // wrapR is not passed: the options reach a plain Texture first, which has
+    // no wrapR and warns on every boot; the Data3DTexture the target swaps in
+    // is ClampToEdge on wrapR by birth (the test reads it off the texture).
     depthBuffer: false,
     stencilBuffer: false,
     samples: 0,

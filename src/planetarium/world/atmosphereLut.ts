@@ -2559,7 +2559,6 @@ function make3D(width: number, height: number, depth: number): THREE.WebGL3DRend
     magFilter: THREE.LinearFilter,
     wrapS: THREE.ClampToEdgeWrapping,
     wrapT: THREE.ClampToEdgeWrapping,
-    wrapR: THREE.ClampToEdgeWrapping,
     depthBuffer: false,
     stencilBuffer: false,
     samples: 0,

@@ -21,6 +21,7 @@ Each tool's header gives its scenarios, its bars and its control arm. Most take 
 - `glint-probe`: the sea's glint as linear radiance; `--meter` is the highlight meter's battery.
 - `interior-sweep`, `interior-open-probe`: Look inside, its races and its opening cost.
 - `mini-size-probe`: the corner chart's size and gestures. `fullscreen-probe`: full screen, the safe-area box, and the tools framed on the canvas's box.
+- `save-probe`: a save writes the journey the user left, never a historic mission's staged scene.
 - `pixel-gate`: did a switch move a pixel. `visual-sweep`: what the surfaces look like. `atmo-shell-qa`: the atmosphere goldens. `sampler-census`: texture units per switch combination.
 
 ## Performance

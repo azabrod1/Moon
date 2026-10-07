@@ -2382,6 +2382,9 @@ export class PlanetariumMode {
   private historicMilestoneIndex = 0;
   private historicPanelDismissed = false;
   private scriptedTransfer: ScriptedTransfer | null = null;
+  /** The journey a historic mission took over, stashed at its start: what the
+   *  mission's exit restores, and what getState() serves every save meanwhile,
+   *  so the mission's staged scene never overwrites the journey on disk. */
   private preMissionState: PlanetariumState | null = null;
   private preMissionMenuVisible = false;
   /** The pre-tool journey stashed when the volume-compare tool is entered. main.ts
@@ -20061,9 +20064,11 @@ export class PlanetariumMode {
     // (timestamp refreshed): the 30s autosave, the ☰ Save button,
     // and deactivate's final save all keep writing the journey the user left,
     // never the staged showcase — so a reload mid-tutorial resumes the pre-tutorial
-    // state. Any reader that wants the LIVE scene (the way
-    // rememberPreMissionState stashes a mission return point) must run after
-    // the tutorial has stopped; the mission-start hook does exactly that.
+    // state. A historic mission and a tool get the same override below. Any
+    // reader that wants the LIVE scene must run while none of the three is
+    // set: rememberPreMissionState stashes a mission's return point after the
+    // tutorial has stopped (the mission-start hook stops it first) and before
+    // preMissionState is assigned.
     if (this.tutorial) {
       return { ...this.tutorial.snapshot.state, timestamp: Date.now() };
     }
@@ -20074,6 +20079,12 @@ export class PlanetariumMode {
     // the torn-down takeoff. Cleared in activate() on return.
     if (this.preToolState) {
       return { ...this.preToolState, timestamp: Date.now() };
+    }
+    // While a historic mission is staged, every save writes the journey the
+    // mission took over, and a reload mid-mission resumes that journey, as a
+    // reload mid-tutorial does. The mission's exit reads the field itself.
+    if (this.preMissionState) {
+      return { ...this.preMissionState, timestamp: Date.now() };
     }
     // A capture session drives the chrome flags directly (devSetChrome); the
     // save keeps the values the user chose.

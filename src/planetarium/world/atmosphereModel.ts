@@ -101,17 +101,63 @@ export interface AtmosphereSpec {
   readonly groundAlbedo: number;
 }
 
+/** The wavelengths of a spec's three channels, nm (the red, green and blue
+ *  that every `RGB` coefficient in this module is quoted at). */
+export const ATMOSPHERE_WAVELENGTHS_NM: RGB = [680, 550, 440];
+
+/**
+ * An aerosol in the terms sun photometers and satellite retrievals report it:
+ * the vertical EXTINCTION optical depth at 550 nm, its spectral slope as an
+ * Angstrom exponent (tau(lambda) = tau550 * (lambda / 550)^-alpha), the
+ * single-scattering albedo, the asymmetry parameter as retrievals mean it
+ * (the phase function's MEAN COSINE, which is not the parameter `miePhase`
+ * takes: see `cornetteShanksParameter`), and the scale height of one
+ * exponential layer.
+ */
+export interface AerosolLoad {
+  readonly opticalDepth550: number;
+  readonly angstrom: number;
+  readonly singleScatteringAlbedo: number;
+  readonly asymmetry: number;
+  readonly scaleHeightKm: number;
+}
+
+/**
+ * A marine aerosol (sea salt with a little sulphate), as the AERONET island
+ * retrievals quote it: an Angstrom exponent that is low because the particles
+ * are large, an albedo near one because salt barely absorbs, and a mean cosine
+ * of 0.76 (Smirnov et al. 2003). Earth ships it at the optical depth below;
+ * a DEV `?aerosol=` link fills its empty fields from here.
+ */
+export const MARINE_AEROSOL_DEFAULTS: Omit<AerosolLoad, 'opticalDepth550'> = {
+  angstrom: 0.4,
+  singleScatteringAlbedo: 0.98,
+  asymmetry: 0.76,
+  scaleHeightKm: 1.2,
+};
+
+/**
+ * The aerosol Earth's air is baked with: the marine aerosol at a 550 nm
+ * optical depth of 0.06, the remote-ocean mean (AERONET island sites give
+ * 0.06-0.07 at 500 nm; the ocean-wide mean of ~0.12 includes continental
+ * pollution and dust). Chosen on look sheets beside ISS and GOES frames at
+ * 0.027, 0.06, 0.12 and 0.20: 0.027 (the grey 2e-5 /m this shipped with until
+ * 2026-10) left the sea too clean, and from 0.12 up the packed single-Mie
+ * table starts to show cyan specks at the limb.
+ */
+export const EARTH_AEROSOL: AerosolLoad = { opticalDepth550: 0.06, ...MARINE_AEROSOL_DEFAULTS };
+
 /**
  * Earth. Rayleigh coefficients are the standard clear-sky set at
  * (680, 550, 440) nm; the 440 nm value closes the sanity check that the whole
  * unit chain rests on — 3.31e-5 /m × 8000 m = 0.265 vertical optical depth,
  * the right number for a blue sky, and the same product must come out of the
- * per-AU form. Mie is the conventional grey 2e-5 /m with a 0.9 single-scattering
- * albedo (extinction = scattering / 0.9) and a 1.2 km scale height. The
- * asymmetry stays at the 0.83 the analytic shell has used, rather than the
- * 0.76-0.80 usually quoted, so the two tiers keep the same forward-scatter
- * character until a side-by-side says otherwise. Ozone is the standard
- * 10-40 km tent peaking at 25 km. Ground albedo 0.1 is the usual global mean.
+ * per-AU form. Mie is EARTH_AEROSOL, stated as observations quote it and
+ * turned into per-metre coefficients by aerosolFromOpticalDepth (the phase
+ * parameter is the Cornette-Shanks value whose mean cosine is the quoted
+ * asymmetry: 0.76 is a parameter of 0.703). The analytic shell keeps its own
+ * art-directed 0.83. Ozone is the standard 10-40 km tent peaking at 25 km.
+ * Ground albedo 0.1 is the usual global mean.
  *
  * The 100 km top is 12.5 Rayleigh scale heights and sits 27 km inside the
  * shell mesh at scale 1.02 — the taper room the module header requires.
@@ -120,10 +166,7 @@ const EARTH_SPEC: AtmosphereSpec = {
   topKm: 100,
   rayleighScaleHeightKm: 8,
   rayleighScatteringPerM: [5.8e-6, 1.35e-5, 3.31e-5],
-  mieScaleHeightKm: 1.2,
-  mieScatteringPerM: [2.0e-5, 2.0e-5, 2.0e-5],
-  mieSingleScatteringAlbedo: [0.9, 0.9, 0.9],
-  miePhaseG: 0.83,
+  ...aerosolFromOpticalDepth(EARTH_AEROSOL),
   absorption: {
     bottomKm: 10,
     peakKm: 25,
@@ -196,26 +239,7 @@ export const ATMOSPHERE_SPECS: Readonly<Record<string, AtmosphereSpec>> = {
 // Aerosol as observations quote it
 // ---------------------------------------------------------------------------
 
-/** The wavelengths of a spec's three channels, nm (the red, green and blue
- *  that every `RGB` coefficient in this module is quoted at). */
-export const ATMOSPHERE_WAVELENGTHS_NM: RGB = [680, 550, 440];
 
-/**
- * An aerosol in the terms sun photometers and satellite retrievals report it:
- * the vertical EXTINCTION optical depth at 550 nm, its spectral slope as an
- * Angstrom exponent (tau(lambda) = tau550 * (lambda / 550)^-alpha), the
- * single-scattering albedo, the asymmetry parameter as retrievals mean it
- * (the phase function's MEAN COSINE, which is not the parameter `miePhase`
- * takes: see `cornetteShanksParameter`), and the scale height of one
- * exponential layer.
- */
-export interface AerosolLoad {
-  readonly opticalDepth550: number;
-  readonly angstrom: number;
-  readonly singleScatteringAlbedo: number;
-  readonly asymmetry: number;
-  readonly scaleHeightKm: number;
-}
 
 /**
  * The mean cosine of `miePhase` at parameter g, in closed form: Cornette and
@@ -275,20 +299,6 @@ export function aerosolFromOpticalDepth(load: AerosolLoad): AerosolSpecFields {
   };
 }
 
-/**
- * The defaults a DEV `?aerosol=` link fills its empty fields from: a marine
- * aerosol (sea salt with a little sulphate), whose Angstrom exponent is low
- * because the particles are large, whose albedo is near one because salt
- * barely absorbs, and whose asymmetry (a mean cosine) is well under the 0.868
- * the shipped parameter of 0.83 amounts to. Look-sheet candidates, not
- * adopted values.
- */
-export const MARINE_AEROSOL_DEFAULTS: Omit<AerosolLoad, 'opticalDepth550'> = {
-  angstrom: 0.4,
-  singleScatteringAlbedo: 0.98,
-  asymmetry: 0.76,
-  scaleHeightKm: 1.2,
-};
 
 /**
  * `?aerosol=<tau550>[,<angstrom>[,<albedo>[,<g>[,<scale height km>]]]]`, the

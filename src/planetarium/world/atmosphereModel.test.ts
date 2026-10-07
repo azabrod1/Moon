@@ -36,6 +36,7 @@ import {
   transmittanceToTopBoundary,
   transmittanceUvFromRMu,
   toRadiusUnits,
+  EARTH_AEROSOL,
 } from './atmosphereModel';
 import { ATMOSPHERES, SUN_LIGHT_COLOR, SUN_LIGHT_DECAY, SUN_LIGHT_INTENSITY } from '../PlanetFactory';
 import { createAtmosphereShellMaterial } from './atmosphereShell';
@@ -50,14 +51,17 @@ describe('atmosphere parameters', () => {
     expect(earth.rayleighScattering[0]).toBeCloseTo(8.67668e5, -1);
     expect(earth.rayleighScattering[1]).toBeCloseTo(2.01957e6, -2);
     expect(earth.rayleighScattering[2]).toBeCloseTo(4.95169e6, -2);
-    expect(earth.mieScattering[0]).toBeCloseTo(2.99196e6, -2);
-    // Mie extinction is scattering over a 0.9 single-scattering albedo.
-    expect(earth.mieExtinction[0] / earth.mieScattering[0]).toBeCloseTo(1 / 0.9, 12);
+    // Mie is EARTH_AEROSOL turned into per-metre coefficients, then per AU.
+    const perM = KM_PER_AU * 1000;
+    const fields = aerosolFromOpticalDepth(EARTH_AEROSOL);
+    for (let i = 0; i < 3; i++) expect(earth.mieScattering[i] / (fields.mieScatteringPerM[i] * perM)).toBeCloseTo(1, 12);
+    // Mie extinction is scattering over the aerosol's single-scattering albedo.
+    expect(earth.mieExtinction[0] / earth.mieScattering[0]).toBeCloseTo(1 / EARTH_AEROSOL.singleScatteringAlbedo, 12);
     // The survey's ozone triple is quoted to five figures; compare relatively.
     expect(earth.absorptionExtinction[0] / 9.724e4).toBeCloseTo(1, 4);
     expect(earth.absorptionExtinction[1] / 2.8140e5).toBeCloseTo(1, 4);
     expect(earth.absorptionExtinction[2] / 1.2716e4).toBeCloseTo(1, 4);
-    expect(earth.miePhaseG).toBe(0.83);
+    expect(earth.miePhaseG).toBeCloseTo(cornetteShanksParameter(EARTH_AEROSOL.asymmetry), 12);
     expect(earth.groundAlbedo).toBe(0.1);
   });
 
@@ -124,8 +128,10 @@ describe('atmosphere parameters', () => {
 
   it('gives Mars a dust-dominated, spectrally absorbing aerosol', () => {
     const mars = atmosphereParamsAU('Mars');
-    // Dust extinction exceeds Earth's aerosol load and dwarfs Mars' own gas.
-    expect(mars.mieExtinction[0]).toBeGreaterThan(atmosphereParamsAU('Earth').mieExtinction[0]);
+    // Dust's COLUMN exceeds Earth's aerosol load many times over (its 11 km
+    // scale height against the marine layer's 1.2 km; per metre at the
+    // surface the two are alike) and dwarfs Mars' own gas.
+    expect(aerosolOpticalDepth(ATMOSPHERE_SPECS.Mars)[0]).toBeGreaterThan(5 * aerosolOpticalDepth(ATMOSPHERE_SPECS.Earth)[0]);
     expect(mars.mieExtinction[1]).toBeGreaterThan(mars.rayleighScattering[1] * 50);
     // Blue is absorbed hardest — that asymmetry is the butterscotch sky.
     const albedo = ATMOSPHERE_SPECS.Mars.mieSingleScatteringAlbedo;
@@ -417,13 +423,14 @@ describe('phase functions', () => {
     expect(min).toBeGreaterThan(0.059);
   });
 
-  it('normalises Mie and holds its forward-to-back ratio at g = 0.83', () => {
+  it('normalises Mie and holds its forward-to-back ratio at Earth\'s g', () => {
     const g = ATMOSPHERE_SPECS.Earth.miePhaseG;
-    expect(g).toBe(0.83);
+    // The marine aerosol's mean cosine of 0.76 is a Cornette-Shanks parameter of 0.703.
+    expect(g).toBeCloseTo(0.703, 3);
     expect(sphereIntegral((nu) => miePhase(g, nu))).toBeCloseTo(1, 6);
-    // Analytic for this phase function: ((1+g)/(1-g))^3, i.e. 1248x forward.
+    // Analytic for this phase function: ((1+g)/(1-g))^3, i.e. ~190x forward.
     expect(miePhase(g, 1) / miePhase(g, -1)).toBeCloseTo(((1 + g) / (1 - g)) ** 3, 4);
-    expect(miePhase(g, 1) / miePhase(g, -1)).toBeGreaterThan(1000);
+    expect(miePhase(g, 1) / miePhase(g, -1)).toBeGreaterThan(150);
     // At g = 0 the Henyey-Greenstein form IS the Rayleigh phase, which pins
     // both constants against each other.
     for (const nu of [-1, -0.3, 0, 0.25, 1]) {
@@ -439,9 +446,10 @@ describe('phase functions', () => {
 });
 
 describe('the aerosol as observations quote it', () => {
-  // Earth's shipped aerosol, restated as a load: 2e-5 /m of scattering over a
-  // 1.2 km column at an albedo of 0.9 is an extinction depth of 0.0267.
-  const SHIPPED_LOAD = {
+  // Earth's shipped aerosol is EARTH_AEROSOL itself; the old grey one, 2e-5 /m
+  // of scattering over a 1.2 km column at an albedo of 0.9, was an extinction
+  // depth of 0.0267 with no slope.
+  const OLD_LOAD = {
     opticalDepth550: (2e-5 * 1200) / 0.9,
     angstrom: 0,
     singleScatteringAlbedo: 0.9,
@@ -455,23 +463,31 @@ describe('the aerosol as observations quote it', () => {
       expect(sphereIntegral((nu) => nu * miePhase(g, nu))).toBeCloseTo(cornetteShanksMeanCosine(g), 6);
       expect(cornetteShanksParameter(cornetteShanksMeanCosine(g))).toBeCloseTo(g, 12);
     }
-    // A retrieval's 0.76 is a parameter of 0.703; the shipped 0.83 is a mean
-    // cosine of 0.868, more forward than any measured aerosol.
+    // A retrieval's 0.76 is a parameter of 0.703; the 0.83 Earth shipped until
+    // 2026-10 is a mean cosine of 0.868, more forward than any measured aerosol.
     expect(cornetteShanksParameter(0.76)).toBeCloseTo(0.703, 3);
     expect(cornetteShanksMeanCosine(0.83)).toBeCloseTo(0.868, 3);
   });
 
-  it('reproduces the shipped spec from its own optical depth', () => {
-    const fields = aerosolFromOpticalDepth(SHIPPED_LOAD);
+  it('ships Earth with the marine aerosol at 0.06, and reads that depth back off the spec', () => {
     const spec = ATMOSPHERE_SPECS.Earth;
+    const fields = aerosolFromOpticalDepth(EARTH_AEROSOL);
+    expect(EARTH_AEROSOL.opticalDepth550).toBe(0.06);
     for (let i = 0; i < 3; i++) {
-      expect(fields.mieScatteringPerM[i] / spec.mieScatteringPerM[i]).toBeCloseTo(1, 12);
-      expect(fields.mieSingleScatteringAlbedo[i]).toBe(spec.mieSingleScatteringAlbedo[i]);
+      expect(spec.mieScatteringPerM[i]).toBe(fields.mieScatteringPerM[i]);
+      expect(spec.mieSingleScatteringAlbedo[i]).toBe(EARTH_AEROSOL.singleScatteringAlbedo);
     }
-    expect(fields.miePhaseG).toBeCloseTo(spec.miePhaseG, 12);
-    expect(fields.mieScaleHeightKm).toBe(spec.mieScaleHeightKm);
+    expect(spec.miePhaseG).toBe(fields.miePhaseG);
+    expect(spec.mieScaleHeightKm).toBe(EARTH_AEROSOL.scaleHeightKm);
     const depth = aerosolOpticalDepth(spec);
-    for (let i = 0; i < 3; i++) expect(depth[i]).toBeCloseTo(SHIPPED_LOAD.opticalDepth550, 12);
+    const [red, green, blue] = ATMOSPHERE_WAVELENGTHS_NM;
+    expect(depth[1]).toBeCloseTo(0.06, 12);
+    expect(depth[0]).toBeCloseTo(0.06 * (red / green) ** -EARTH_AEROSOL.angstrom, 12);
+    expect(depth[2]).toBeCloseTo(0.06 * (blue / green) ** -EARTH_AEROSOL.angstrom, 12);
+    // The old grey load round-trips through the same functions.
+    const old = aerosolFromOpticalDepth(OLD_LOAD);
+    expect(old.mieScatteringPerM[0]).toBeCloseTo(2e-5, 12);
+    expect(old.miePhaseG).toBeCloseTo(0.83, 12);
   });
 
   it('slopes with wavelength by the Angstrom exponent, and the column integrates back to the load', () => {
@@ -536,7 +552,7 @@ describe('the aerosol as observations quote it', () => {
     expect(earth.miePhaseG).toBeCloseTo(model.cornetteShanksParameter(load.asymmetry), 15);
     // The shipped table of specs is untouched, and a second override after
     // the air has been read would leave the bake and its readers disagreeing.
-    expect(model.ATMOSPHERE_SPECS.Earth.mieScatteringPerM).toEqual([2.0e-5, 2.0e-5, 2.0e-5]);
+    expect(model.ATMOSPHERE_SPECS.Earth.mieScatteringPerM).toEqual(model.aerosolFromOpticalDepth(model.EARTH_AEROSOL).mieScatteringPerM);
     expect(() => model.setAerosolOverride('Earth', null)).toThrow(/read already/);
     // Another body's air is its own.
     expect(model.atmosphereParamsAU('Mars').miePhaseG).toBe(0.63);

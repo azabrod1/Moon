@@ -6,6 +6,11 @@
  * commands, runs the brim/melt/rain transitions off the scene's status, and
  * drives the panel.
  *
+ * Screen space is the canvas's box (app/viewportSize), never the window: the
+ * phone breakpoint, the measured framing and the vessel's projected box all
+ * measure the rectangle the camera draws into, which on an iPad in full
+ * screen is not the window.
+ *
  * Session-only: every activate() starts a fresh session at the default pair and
  * touches no storage keys. Pair changes and Reset run through commitSession /
  * isStale — every async texture resolve checks staleness and, if a newer pick
@@ -14,6 +19,7 @@
 import * as THREE from 'three';
 import { MOBILE_BREAKPOINT_PX, isPhoneViewport } from '../shared/dom';
 import { handleFullscreenKey } from '../app/fullscreen';
+import { viewportSize } from '../app/viewportSize';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { DEG2RAD } from '../shared/math/angles';
 import {
@@ -106,6 +112,9 @@ export interface CompareDevState {
   bandTopPx: number;
   /** The vessel's projected screen box (px) — QA asserts bottom < bandTopPx. */
   vesselBox: { top: number; bottom: number; left: number; right: number };
+  /** The vessel's centre through the live projection, in NDC: a probe places it
+   *  on the canvas's own box without the mode's idea of the viewport. */
+  vesselNdc: { x: number; y: number };
   /** Live cold-open empty-lift (1 empty → 0 early in the pour) — QA probe. */
   emptyLift: number;
   /** Framing QA: the applied orbit distance, target x, and the zoom-out cap. */
@@ -406,7 +415,7 @@ export class VolumeCompareMode {
    * indifferent. Desktop only — the mobile card is a bottom sheet.
    */
   private applyCardPan(dt: number): void {
-    const desktop = window.innerWidth > MOBILE_BREAKPOINT_PX;
+    const desktop = viewportSize().width > MOBILE_BREAKPOINT_PX;
     const want = desktop && this.cardPresented && this.panel.isEndCardShown() ? CARD_PAN_X : 0;
     this.cardPanX += (want - this.cardPanX) * (1 - Math.exp(-dt / 0.1)); // ~300 ms ease
     const delta = this.cardPanX - this.appliedPanX;
@@ -432,11 +441,12 @@ export class VolumeCompareMode {
    */
   private applyMeasuredFraming(dt: number): void {
     this.remeasureBand();
+    const viewport = viewportSize();
     let wantPanY = this.pourPanY; // hold by default (desktop, sub-unity, or mid-drag)
     // Freeze while the user is orbiting so the centring never fights a vertical
     // drag; resume centring the moment they let go.
-    if (window.innerWidth <= MOBILE_BREAKPOINT_PX && !this.comparison.subUnity && !this.dragging) {
-      const vh = window.innerHeight || 1;
+    if (viewport.width <= MOBILE_BREAKPOINT_PX && !this.comparison.subUnity && !this.dragging) {
+      const vh = viewport.height || 1;
       const barTop = this.measuredBandTopPx > 0 ? this.measuredBandTopPx : vh;
       const desiredCentrePx = barTop / 2; // centre of the band [0, barTop]
       // Measure the ACTUAL projected vessel centre (includes the pan applied so
@@ -447,7 +457,7 @@ export class VolumeCompareMode {
       const p11 = this.camera.projectionMatrix.elements[5] || 2.7;
       const worldPerPx = this.lastDefaultDistance / (p11 * vh * 0.5);
       wantPanY = this.pourPanY - errPx * worldPerPx; // pan up (−) to lift a low vessel
-    } else if (window.innerWidth > MOBILE_BREAKPOINT_PX || this.comparison.subUnity) {
+    } else if (viewport.width > MOBILE_BREAKPOINT_PX || this.comparison.subUnity) {
       wantPanY = 0; // desktop / sub-unity: no vertical pan (applyCardPan owns the card)
     }
     this.pourPanY += (wantPanY - this.pourPanY) * (1 - Math.exp(-dt / 0.25)); // ~0.7 s ease
@@ -476,11 +486,12 @@ export class VolumeCompareMode {
     }
     if (!this.bandDirty) return;
     this.bandDirty = false;
-    if (window.innerWidth > MOBILE_BREAKPOINT_PX) {
+    const viewport = viewportSize();
+    if (viewport.width > MOBILE_BREAKPOINT_PX) {
       this.measuredBandTopPx = 0;
       return;
     }
-    const vh = window.innerHeight || 1;
+    const vh = viewport.height || 1;
     if (endCardShown) {
       const card = document.querySelector('.compare-endcard-card') as HTMLElement | null;
       if (card) {
@@ -498,8 +509,9 @@ export class VolumeCompareMode {
 
   /** The vessel's projected screen box (px) — QA asserts it clears the bar. */
   private vesselScreenBox(): { top: number; bottom: number; left: number; right: number } {
-    const vw = window.innerWidth || 1;
-    const vh = window.innerHeight || 1;
+    const { width, height } = viewportSize();
+    const vw = width || 1;
+    const vh = height || 1;
     // Refresh the camera matrices so the projection reflects THIS frame's pose
     // (updateMatrixWorld sets matrixWorld; project reads matrixWorldInverse).
     this.camera.updateMatrixWorld();
@@ -1018,7 +1030,7 @@ export class VolumeCompareMode {
   private updateMobilePreviewLabel(): void {
     const presence = this.compareScene.previewPresence();
     if (
-      window.innerWidth > MOBILE_BREAKPOINT_PX ||
+      viewportSize().width > MOBILE_BREAKPOINT_PX ||
       !this.texturesReady ||
       this.comparison.subUnity ||
       this.comparison.regime === 'sand' ||
@@ -1028,8 +1040,9 @@ export class VolumeCompareMode {
       return;
     }
 
-    const width = this.domElement.clientWidth || window.innerWidth || 1;
-    const height = this.domElement.clientHeight || window.innerHeight || 1;
+    const viewport = viewportSize();
+    const width = viewport.width || 1;
+    const height = viewport.height || 1;
     const b = this.compareScene.previewBounds();
     this.camera.updateMatrixWorld();
     this.camera.matrixWorldInverse.copy(this.camera.matrixWorld).invert();
@@ -1090,7 +1103,7 @@ export class VolumeCompareMode {
     // On a narrow phone the scale preview parks to the RIGHT of the vessel and clips
     // off-frame. Fit BOTH the vessel and the preview's bounding sphere horizontally.
     // Desktop (>640px) keeps the EXACT default numbers — this branch is skipped.
-    if (window.innerWidth <= MOBILE_BREAKPOINT_PX && this.comparison.regime !== 'sand') {
+    if (viewportSize().width <= MOBILE_BREAKPOINT_PX && this.comparison.regime !== 'sand') {
       this.fitPreviewMobile(this.compareScene.previewBounds(), dist);
       return;
     }
@@ -1107,8 +1120,9 @@ export class VolumeCompareMode {
    * pose untouched if it already fits (small previews on a wide-enough phone).
    */
   private fitPreviewMobile(pb: { x: number; y: number; z: number; r: number }, startDist: number): void {
-    const W = window.innerWidth || 1;
-    const vh = window.innerHeight || 1;
+    const viewport = viewportSize();
+    const W = viewport.width || 1;
+    const vh = viewport.height || 1;
     const az = VC_FRAMING.azimuthDeg;
     const el = VC_FRAMING.elevationDeg;
     const ty = VC_FRAMING.target.y;
@@ -1181,8 +1195,9 @@ export class VolumeCompareMode {
       const target = new THREE.Vector3(0, 0.35, 0);
       this.controls.target.copy(target);
       const az = -33; // side azimuth catches the key-lit belly
-      const vhPx = Math.max(1, window.innerHeight);
-      const floorPx = window.innerWidth <= MOBILE_BREAKPOINT_PX ? 60 : 96; // a hair above the 56/90 contract
+      const viewport = viewportSize();
+      const vhPx = Math.max(1, viewport.height);
+      const floorPx = viewport.width <= MOBILE_BREAKPOINT_PX ? 60 : 96; // a hair above the 56/90 contract
       const p11 = 1 / Math.tan(vHalf); // vertical projection factor (screenR = p11·R·vh/2 / dist)
       const dist = Math.min(this.controls.maxDistance, (p11 * R * vhPx * 0.5) / floorPx);
       // Keep the camera OUTSIDE the giant: start near-level (shows the wedge
@@ -1283,6 +1298,8 @@ export class VolumeCompareMode {
 
   devState(): CompareDevState {
     const s = this.lastStatus;
+    // Projects the vessel's centre into vesselCenterScratch, read for vesselNdc.
+    const vesselBox = this.vesselScreenBox();
     return {
       pair: [this.container, this.filler],
       n: this.comparison.n,
@@ -1311,7 +1328,8 @@ export class VolumeCompareMode {
       fallersLive: this.compareScene.fallersLive(),
       liquidLevelY: s?.liquidLevelY ?? 0,
       bandTopPx: this.measuredBandTopPx,
-      vesselBox: this.vesselScreenBox(),
+      vesselBox,
+      vesselNdc: { x: this.vesselCenterScratch.x, y: this.vesselCenterScratch.y },
       frameDist: this.lastDefaultDistance,
       targetX: this.controls.target.x,
       maxDist: this.controls.maxDistance,

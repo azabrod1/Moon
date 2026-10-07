@@ -6,9 +6,12 @@
 //   node tools/oval-probe.mjs
 //   node tools/oval-probe.mjs --url=http://localhost:5174 --out=planning/lens-probe
 //   node tools/oval-probe.mjs --dsf=2        # a Retina-density display
+//
+// Takes /tmp/moon-browser.lock (tools/browserLock.mjs).
 import { chromium } from 'playwright';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import { takeBrowserLock } from './browserLock.mjs';
 
 function arg(name, fallback) {
   const found = process.argv.find(value => value.startsWith(`--${name}=`));
@@ -63,6 +66,7 @@ function slug(value) {
   return value.replace(/[^a-z0-9-]+/gi, '-').toLowerCase();
 }
 
+const release = await takeBrowserLock('oval');
 const browser = await chromium.launch({
   headless: true,
   executablePath: process.env.PW_CHROMIUM || undefined, // pinned-browser environments
@@ -412,6 +416,7 @@ try {
   }
 } finally {
   await browser.close();
+  release();
 }
 
 console.log(`\n[oval-probe] ${rows.length} measurements, ${failures.length} failures; captures: ${outDir}`);

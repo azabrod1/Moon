@@ -77,7 +77,10 @@
  * The framing is stage-aware (interiorLayout): the body is fitted to the
  * rectangle the panel and the strip leave free and centred in it, and the
  * fit follows the sheet's height on a phone, keeping the zoom the reader had
- * relative to it.
+ * relative to it. Every screen-space measure here — the stage, the sheet's
+ * heights, the ruler, the hover card's clamp — is taken on the canvas's box
+ * (app/viewportSize), never the window: on an iPad in full screen the two
+ * differ, and the camera draws into the box.
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -85,6 +88,7 @@ import { DEG2RAD } from '../shared/math/angles';
 import { isPhoneViewport } from '../shared/dom';
 import { debugLog, debugWarn } from '../shared/debug';
 import { handleFullscreenKey } from '../app/fullscreen';
+import { viewportSize } from '../app/viewportSize';
 import { bodyDisplayName } from '../planetarium/surfaceView';
 import { InteriorScene, BODY_RADIUS, type PreparedSkin } from './InteriorScene';
 import { TAP_MAX_MS, TAP_MAX_PX, TapRecognizer, type PointerSample } from './interiorInteraction';
@@ -311,6 +315,10 @@ export interface InteriorDevState {
   /** The projection offset the camera applies right now, px: the disc's centre
    *  is the viewport's centre less this. */
   viewOffset: { x: number; y: number };
+  /** The body's centre through the live projection, offset included, in NDC,
+   *  and the lens: a probe places the disc on the canvas's own box from these. */
+  discNdc: { x: number; y: number };
+  fovDeg: number;
   presentationSeconds: number;
   frozen: boolean;
   loading: boolean;
@@ -782,7 +790,7 @@ export class InteriorMode {
       BODY_RADIUS,
       this.camera.position.distanceTo(ORIGIN),
       this.camera.fov,
-      window.innerHeight,
+      viewportSize().height,
     );
     this.refreshRemapIfNeeded();
 
@@ -905,8 +913,7 @@ export class InteriorMode {
     }
     const side = rulerSide(this.frame, this.cameraDirection);
     const opacity = Math.min(1, this.cut.angleDeg / RULER_FULL_DEG);
-    const width = window.innerWidth;
-    const height = window.innerHeight;
+    const { width, height } = viewportSize();
     const key = this.rulerKey;
     const unchanged = !this.rulerStale
       && key.angleDeg === this.cut.angleDeg && key.remap === this.remap && key.drawn === this.drawn && key.side === side
@@ -1648,13 +1655,14 @@ export class InteriorMode {
   /** The sheet's resting height: down through the Layers row, so the two rows of
    *  buttons and the way to the list are one tap away before anything is dragged. */
   private peekHeightPx(): number {
-    const fractionPx = Math.round(window.innerHeight * SHEET_PEEK_FRACTION);
+    const viewportHeight = viewportSize().height;
+    const fractionPx = Math.round(viewportHeight * SHEET_PEEK_FRACTION);
     const lastRow = document.getElementById('interior-legend-head');
     if (!lastRow || lastRow.offsetHeight <= 0) return fractionPx;
     // offsetTop is measured from the panel, the positioned ancestor, and does
     // not move with the sheet's own scrolling: this is the unscrolled reach.
     const throughRowPx = lastRow.offsetTop + lastRow.offsetHeight + SHEET_PEEK_TAIL_PX;
-    return Math.min(Math.max(fractionPx, throughRowPx), Math.round(window.innerHeight * SHEET_PEEK_MAX_FRACTION));
+    return Math.min(Math.max(fractionPx, throughRowPx), Math.round(viewportHeight * SHEET_PEEK_MAX_FRACTION));
   }
 
   /** The sheet's ceiling: its own content — the grip and everything the page
@@ -1665,7 +1673,7 @@ export class InteriorMode {
     if (!scroll) return this.peekHeightPx();
     const grip = document.getElementById('interior-grip');
     const contentPx = (grip?.offsetHeight ?? 0) + scroll.scrollHeight;
-    return Math.max(this.peekHeightPx(), Math.min(Math.round(window.innerHeight * SHEET_FULL_FRACTION), contentPx));
+    return Math.max(this.peekHeightPx(), Math.min(Math.round(viewportSize().height * SHEET_FULL_FRACTION), contentPx));
   }
 
   /**
@@ -1767,8 +1775,9 @@ export class InteriorMode {
       content.name = region.name;
       content.kicker = familyPhaseText(region);
     }
-    this.hoverViewport.width = window.innerWidth;
-    this.hoverViewport.height = window.innerHeight;
+    const viewport = viewportSize();
+    this.hoverViewport.width = viewport.width;
+    this.hoverViewport.height = viewport.height;
     card.show(content, hoverDepthText(depthKm), clientX, clientY, this.hoverViewport);
   }
 
@@ -2223,8 +2232,7 @@ export class InteriorMode {
   /** The rectangle the body may occupy: the viewport less the strip along the
    *  top and the sheet (phones) or the side panel (desktop), with air around it. */
   private stageRect(): StageRect {
-    const width = window.innerWidth;
-    const height = window.innerHeight;
+    const { width, height } = viewportSize();
     const strip = document.getElementById('interior-top');
     const top = strip ? Math.max(0, Math.round(strip.getBoundingClientRect().bottom)) : 0;
     const obstacles = { top, bottom: 0, left: 0, right: 0 };
@@ -2241,7 +2249,7 @@ export class InteriorMode {
 
   /** The distance that fits the body — its rings included when they show — to the stage. */
   private fitFor(stage: StageRect): number {
-    const fit = fitDistance(stage, window.innerHeight, this.camera.fov, this.interiorScene.boundRadius(), FRAMING.fill);
+    const fit = fitDistance(stage, viewportSize().height, this.camera.fov, this.interiorScene.boundRadius(), FRAMING.fill);
     if (Number.isFinite(fit) && fit > 0) return fit;
     // A stage with no size yet has no fit: the last one, else the distance at which a unit body fills the lens.
     return this.fitDistanceNow > 0 ? this.fitDistanceNow : 1 / Math.sin(FRAMING.fill * (this.camera.fov / 2) * DEG2RAD);
@@ -2285,7 +2293,8 @@ export class InteriorMode {
       this.distanceTargetNow = distance;
       this.distanceSpan = Math.abs(distance - livePosition);
     }
-    const offset = stageViewOffset(stage, window.innerWidth, window.innerHeight);
+    const viewport = viewportSize();
+    const offset = stageViewOffset(stage, viewport.width, viewport.height);
     this.setViewOffsetTarget(offset.x, offset.y, atOnce);
   }
 
@@ -2314,8 +2323,7 @@ export class InteriorMode {
 
   /** Put the offset the camera holds this frame onto its projection. */
   private applyViewOffset(): void {
-    const width = window.innerWidth;
-    const height = window.innerHeight;
+    const { width, height } = viewportSize();
     const x = Math.round(this.viewOffsetXPx);
     const y = Math.round(this.viewOffsetYPx);
     if (x === 0 && y === 0) this.camera.clearViewOffset();
@@ -2607,6 +2615,8 @@ export class InteriorMode {
 
   devState(): InteriorDevState {
     const fractions = outerFractionsInsideOut(this.drawn);
+    this.camera.updateMatrixWorld();
+    const disc = ORIGIN.clone().project(this.camera);
     const regionsInsideOut = this.drawn.regionsInsideOut;
     return {
       bodyId: this.body?.id ?? '',
@@ -2627,6 +2637,8 @@ export class InteriorMode {
       fitDistance: this.fitDistanceNow,
       cameraDistance: this.camera.position.distanceTo(this.controls.target),
       viewOffset: { x: this.viewOffsetXPx, y: this.viewOffsetYPx },
+      discNdc: { x: disc.x, y: disc.y },
+      fovDeg: this.camera.fov,
       presentationSeconds: this.presentationSeconds,
       frozen: this.frozen,
       loading: this.loading,

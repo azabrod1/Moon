@@ -519,6 +519,7 @@ import {
 import {
   fullscreenAvailable, isFullscreen, isFullscreenKey, onFullscreenChange, toggleFullscreen,
 } from '../app/fullscreen';
+import { viewportSize } from '../app/viewportSize';
 import { setSegmentOffered, setSegmentValue, wireSegmented } from './ui/SegmentedControl';
 
 /** How long a context-restore re-warm may keep the late-link check muted. */
@@ -2375,6 +2376,9 @@ export class PlanetariumMode {
   private historicMilestoneIndex = 0;
   private historicPanelDismissed = false;
   private scriptedTransfer: ScriptedTransfer | null = null;
+  /** The journey a historic mission took over, stashed at its start: what the
+   *  mission's exit restores, and what getState() serves every save meanwhile,
+   *  so the mission's staged scene never overwrites the journey on disk. */
   private preMissionState: PlanetariumState | null = null;
   private preMissionMenuVisible = false;
   /** The pre-tool journey stashed when the volume-compare tool is entered. main.ts
@@ -10687,7 +10691,7 @@ export class PlanetariumMode {
     const btn = document.getElementById('planetarium-btn-tools');
     if (card && btn) {
       const rect = btn.getBoundingClientRect();
-      const left = Math.min(Math.max(rect.left, 14), window.innerWidth - card.offsetWidth - 14);
+      const left = Math.min(Math.max(rect.left, 14), viewportSize().width - card.offsetWidth - 14);
       card.style.left = `${left}px`;
       card.style.right = 'auto';
     }
@@ -12402,7 +12406,7 @@ export class PlanetariumMode {
       ? document.getElementById('map-dock')?.getBoundingClientRect()
       : null;
     el.style.bottom = rect && rect.height > 0
-      ? `${Math.round(window.innerHeight - rect.top + 8)}px`
+      ? `${Math.round(viewportSize().height - rect.top + 8)}px`
       : '';
   }
 
@@ -13568,7 +13572,7 @@ export class PlanetariumMode {
     // is what the chip names, and it stays where it is.
     const halfW = this.mapTpChipHalfW;
     const rawX = Math.round(this.mapTpScreen.x);
-    const maxX = window.innerWidth - halfW - 8;
+    const maxX = viewportSize().width - halfW - 8;
     const x = maxX > halfW + 8 ? Math.round(Math.min(Math.max(rawX, halfW + 8), maxX)) : rawX;
     // The y clamp mirrors it for the top edge: the chip body hangs above the
     // anchor (translateY(-100%) plus the lift), so an anchor high in the frame
@@ -20042,9 +20046,11 @@ export class PlanetariumMode {
     // (timestamp refreshed): the 30s autosave, the ☰ Save button,
     // and deactivate's final save all keep writing the journey the user left,
     // never the staged showcase — so a reload mid-tutorial resumes the pre-tutorial
-    // state. Any reader that wants the LIVE scene (the way
-    // rememberPreMissionState stashes a mission return point) must run after
-    // the tutorial has stopped; the mission-start hook does exactly that.
+    // state. A historic mission and a tool get the same override below. Any
+    // reader that wants the LIVE scene must run while none of the three is
+    // set: rememberPreMissionState stashes a mission's return point after the
+    // tutorial has stopped (the mission-start hook stops it first) and before
+    // preMissionState is assigned.
     if (this.tutorial) {
       return { ...this.tutorial.snapshot.state, timestamp: Date.now() };
     }
@@ -20056,6 +20062,12 @@ export class PlanetariumMode {
     if (this.preToolState) {
       return { ...this.preToolState, timestamp: Date.now() };
     }
+    // While a historic mission is staged, every save writes the journey the
+    // mission took over, and a reload mid-mission resumes that journey, as a
+    // reload mid-tutorial does. The mission's exit reads the field itself.
+    if (this.preMissionState) {
+      return { ...this.preMissionState, timestamp: Date.now() };
+    }
     // A capture session drives the chrome flags directly (devSetChrome); the
     // save keeps the values the user chose.
     const chrome = this.devChromeUserState ?? {
@@ -20064,6 +20076,15 @@ export class PlanetariumMode {
       showBodyLabels: this.showBodyLabels,
       showBodyMarkers: this.showBodyMarkers,
     };
+    // The ☰ menu and the help sheet pause a running clock and stop a moving
+    // ship while they are up, and put both back when they close. A save made
+    // meanwhile (Save sits in the menu; the autosave and the page-hide save
+    // run under either) records them as they will be once the sheet closes,
+    // not as the sheet holds them.
+    const menuOpen = this.menuPanel.isOpen();
+    const helpOpen = this.helpModal.isOpen();
+    const clockHeld = (menuOpen && this.resumeTimeAfterMenu) || (helpOpen && this.resumeTimeAfterHelp);
+    const shipHeld = (menuOpen && this.resumeShipAfterMenu) || (helpOpen && this.resumeShipAfterHelp);
     return {
       positionAU: { x: this.player.posX, y: this.player.posY, z: this.player.posZ },
       headingRad: this.player.heading,
@@ -20071,7 +20092,7 @@ export class PlanetariumMode {
       // When landed, speed/autopilot are zeroed — save the pre-land originals
       // so they restore correctly on load.
       speed: this.landedOn ? this.preLandSpeed : this.player.speedMultiplier,
-      moving: this.landedOn ? false : this.player.moving,
+      moving: this.landedOn ? false : this.player.moving || shipHeld,
       visitedPlanets: Array.from(this.player.visitedPlanets),
       distanceTraveled: this.player.distanceTraveled,
       timeElapsed: this.player.timeElapsed,
@@ -20079,7 +20100,7 @@ export class PlanetariumMode {
       autopilot: this.landedOn ? this.preLandAutopilot : this.autopilot,
       astroTimeUtcMs: this.timeState.currentUtcMs,
       astroTimeRate: this.timeState.rate,
-      astroTimePaused: this.timeState.paused,
+      astroTimePaused: this.timeState.paused && !clockHeld,
       showShip: chrome.showShip,
       showConstellations: this.showConstellations,
       showBodyLabels: chrome.showBodyLabels,

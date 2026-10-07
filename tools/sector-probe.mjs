@@ -12,12 +12,13 @@
 //
 //   node tools/sector-probe.mjs
 //   node tools/sector-probe.mjs --scenario=budget,sweep
-//   node tools/sector-probe.mjs --url=http://localhost:5676 --tiles=http://localhost:5622/
+//   node tools/sector-probe.mjs --url=http://localhost:5676 --tiles=https://cdn.jsdelivr.net/gh/azabrod1/moon-tiles@main
 //   node tools/sector-probe.mjs --scenario=budget,envelope,gpu --extra='&quality=high'
 //
-// Prereqs: a dev server for this checkout (`npx vite --port 5676 --strictPort`)
-// and, for the levels the app does not ship inside itself, a tile host
-// (`node planning/_tiles-serve.mjs --port=5622`) named with --tiles.
+// Prereq: a dev server for this checkout (`npx vite --port 5676 --strictPort`).
+// The dev server serves the cut-but-unpublished tile sets itself
+// (docs/running.md), so the tiles come from the app's own origin by default;
+// --tiles=<url> points them at another host instead.
 //
 // Runs ONE browser and ONE tab at a time on the real GPU: a second WebGL tab
 // steals the GPU process and every byte figure below becomes fiction. That is
@@ -87,7 +88,7 @@ function arg(name, fallback) {
 }
 
 const URL_BASE = arg('url', 'http://localhost:5676');
-const TILES = arg('tiles', 'http://localhost:5622/');
+const TILES = arg('tiles', '');
 const TILES_QUERY = TILES ? `&tiles=${encodeURIComponent(TILES)}` : '';
 // Appended to every boot this battery opens, after each scenario's own query.
 // The A/B seam, the same one the smoothness gate carries: a switch given here

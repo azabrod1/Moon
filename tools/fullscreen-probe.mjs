@@ -54,6 +54,12 @@
 //                it, at a desktop window and at 390×844; the hover card stays
 //                inside the box; and on a phone the compare vessel centres in
 //                the band above the pour bar.
+//   tabstops     the tutorial card's buttons are Tab stops only while the card
+//                shows: Tab walked through the whole page never lands on them
+//                before the tutorial or after it is skipped, and does while it
+//                runs; on the way out the card stays visible through its fade
+//                and is hidden once the fade is over; with full and with
+//                reduced motion, whose stylesheet has its own fade.
 //
 // What no Playwright run can show: its Chromium takes a page full screen
 // without resizing the window, and its key presses reach the page without
@@ -70,7 +76,7 @@ import { takeBrowserLock } from './browserLock.mjs';
 const arg = (k, d) => { const m = process.argv.find((a) => a.startsWith(`--${k}=`)); return m ? m.slice(k.length + 3) : d; };
 const URL = arg('url', 'http://localhost:5174');
 const LABEL = arg('label', 'fullscreen');
-const SCENARIOS = new Set(arg('scenario', 'desktop,tools,unavailable,phone,box,safearea,toolbox').split(','));
+const SCENARIOS = new Set(arg('scenario', 'desktop,tools,unavailable,phone,box,safearea,toolbox,tabstops').split(','));
 const SOFTWARE = process.argv.includes('--software');
 const OUT = `/tmp/moon-shots/${LABEL}`;
 mkdirSync(OUT, { recursive: true });
@@ -549,6 +555,65 @@ try {
       const vdetail = { vesselY: round1(vesselY), bandTopPx: round1(vc.state.bandTopPx), bar: vc.bar, boxHeight: vbox.height, modeVesselBox: vc.state.vesselBox };
       check(near(vesselY, vc.state.bandTopPx / 2, 3), `toolbox ${label}: How many fit? centres the vessel in the band above the bar, on the box`, vdetail);
       await page.screenshot({ path: `${OUT}/toolbox-compare-${label}.png` });
+      await context.close();
+    }
+  }
+
+  // ── tabstops ────────────────────────────────────────────────────────────
+  if (SCENARIOS.has('tabstops')) {
+    console.log('[tabstops]');
+    const CARD_BUTTONS = ['tutorial-back', 'tutorial-ghost', 'tutorial-primary'];
+    /** Tab from the top of the page until the focus comes round again: every element it stopped on. */
+    const tabWalk = async (page) => {
+      await page.evaluate(() => { document.activeElement?.blur?.(); window.__tabFirst = null; });
+      const stops = [];
+      for (let i = 0; i < 400; i++) {
+        await page.keyboard.press('Tab');
+        const id = await page.evaluate(() => {
+          const el = document.activeElement;
+          if (window.__tabFirst === el) return null; // round again
+          window.__tabFirst ??= el;
+          return !el || el === document.body ? '(body)' : el.id || `${el.tagName.toLowerCase()}.${el.className}`;
+        });
+        if (id === null) break;
+        stops.push(id);
+      }
+      return stops;
+    };
+    const cardState = (page) => page.evaluate(() => {
+      const card = document.getElementById('tutorial-card');
+      const style = getComputedStyle(card);
+      return { shown: card.classList.contains('visible'), visibility: style.visibility, opacity: Number(style.opacity) };
+    });
+    for (const motion of ['full', 'reduced']) {
+      const at = `tabstops ${motion} motion`;
+      const context = await fresh(DESKTOP);
+      const page = await boot(context);
+      // The reduced-motion stylesheet carries its own, shorter fade.
+      if (motion === 'reduced') await page.emulateMedia({ reducedMotion: 'reduce' });
+      let stops = await tabWalk(page);
+      let landed = stops.filter((id) => CARD_BUTTONS.includes(id));
+      check(stops.length > 5 && landed.length === 0, `${at}: before the tutorial, Tab never lands on the hidden card`, { stops: stops.length, landed });
+
+      await openMenu(page);
+      await page.click('#planetarium-btn-tutorial');
+      await page.waitForFunction(() => document.getElementById('tutorial-card')?.classList.contains('visible'), null, { timeout: 30_000 });
+      await settle(page, 600);
+      stops = await tabWalk(page);
+      landed = stops.filter((id) => CARD_BUTTONS.includes(id));
+      check(landed.includes('tutorial-primary'), `${at}: while the tutorial runs, Tab reaches its buttons`, { landed, card: await cardState(page) });
+
+      await page.click('#tutorial-ghost');
+      await sleep(100);
+      const fading = await cardState(page);
+      check(!fading.shown && fading.visibility === 'visible' && fading.opacity > 0 && fading.opacity < 1,
+        `${at}: skipped, the card still shows through its fade`, fading);
+      await sleep(600);
+      const gone = await cardState(page);
+      check(!gone.shown && gone.visibility === 'hidden' && gone.opacity === 0, `${at}: and is hidden once the fade is over`, gone);
+      stops = await tabWalk(page);
+      landed = stops.filter((id) => CARD_BUTTONS.includes(id));
+      check(landed.length === 0, `${at}: after the tutorial, Tab never lands on the hidden card`, { stops: stops.length, landed });
       await context.close();
     }
   }

@@ -518,10 +518,10 @@ describe('SectorStreamer', () => {
   });
 
   /** A Mars whose relief has not arrived: sectors load colour only. */
-  function marsWithoutRelief(): ReturnType<typeof earthHandle> {
+  function marsWithoutRelief(spec: SectorSetSpec = SECTOR_SETS.Mars): ReturnType<typeof earthHandle> {
     const mars = earthHandle();
     mars.name = 'Mars';
-    mars.spec = SECTOR_SETS.Mars;
+    mars.spec = spec;
     mars.material.bumpMap = null;
     mars.material.roughnessMap = null;
     mars.material.normalMap = null;
@@ -541,7 +541,7 @@ describe('SectorStreamer', () => {
     loader.auto = true;
     streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
     expect(streamer.stats().bodies.Mars.resident).toEqual(['2_1']);
-    expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars\.v2\/16k\.[0-9a-f]{8}\/2_1\.webp$/)]);
+    expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars\.v3\/16k\.[0-9a-f]{8}\/2_1\.webp$/)]);
     loader.requests.length = 0;
     const before = sectorMesh(mars);
     const colourTile = sectorMat(mars).map!;
@@ -780,7 +780,7 @@ describe('SectorStreamer', () => {
     expect(loader.requests.map((r) => r.url).sort()).toEqual([
       expect.stringMatching(/tiles\/mars-normal\.v3\/8k\.[0-9a-f]{8}\/1_1\.webp$/),
       expect.stringMatching(/tiles\/mars-normal\.v3\/8k\.[0-9a-f]{8}\/2_0\.webp$/),
-      expect.stringMatching(/tiles\/mars\.v2\/16k\.[0-9a-f]{8}\/2_0\.webp$/),
+      expect.stringMatching(/tiles\/mars\.v3\/16k\.[0-9a-f]{8}\/2_0\.webp$/),
     ]);
   });
 
@@ -1256,8 +1256,10 @@ describe('SectorStreamer', () => {
     expect(body.resident.slice().sort()).toEqual(['2_1', 'L1/4_2', 'L1/4_3', 'L1/5_2', 'L1/5_3']);
     expect(body.byLevel.map((l) => l.resident)).toEqual([1, 4]);
     expect(body.byLevel[1].measuredGpuBytes).toBe(0); // the fakes carry no image
-    // A single-level body still reports one level and bare ids.
-    const mars = marsWithoutRelief();
+    // A single-level body still reports one level and bare ids. No shipped
+    // body is one any more — Mars grew a pyramid with its Tianwen-1 map — so
+    // the case is pinned on Mars's spec cut to its first level.
+    const mars = marsWithoutRelief({ ...SECTOR_SETS.Mars, levels: [SECTOR_SETS.Mars.levels[0]] });
     streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
     expect(streamer.stats().bodies.Mars.resident).toEqual(['2_1']);
     expect(streamer.stats().bodies.Mars.byLevel).toHaveLength(1);

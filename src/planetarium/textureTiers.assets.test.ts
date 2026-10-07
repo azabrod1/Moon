@@ -124,7 +124,6 @@ const SUPERCOMPRESSION_BY_MODEL: Record<number, number> = {
 const CONTAINER_COLOR_MODEL: Record<string, number> = {
   '4k/mercury.ktx2': DF_MODEL_ETC1S,
   '8k/mercury.ktx2': DF_MODEL_ETC1S,
-  '4k/mars.v2.ktx2': DF_MODEL_UASTC,
   '4k/moon.ktx2': DF_MODEL_UASTC,
   '8k/moon.ktx2': DF_MODEL_UASTC,
   '4k/earth-clouds.ktx2': DF_MODEL_UASTC,
@@ -188,11 +187,14 @@ describe('the files behind the colour ladder', () => {
     // anyone adding a map. The UASTC ones are held to the tight bar: every 8K
     // rung earns one because nothing else answers a 170.7 MiB upload, while a
     // 4K rung earns one only by staying inside four times the webp twin that
-    // has to keep shipping beside it — of the maps a session tours, Mars
-    // alone. Mercury's rungs are cut from the MESSENGER mosaic like a photo
-    // moon's, and its map is grey, so they are ETC1S like theirs. The Moon, the cloud deck and Earth's night lights are
-    // the three the boot warm uploads on every session, downloaded once per
-    // device rather than once per tour, and admitted on that basis.
+    // has to keep shipping beside it — which no toured map clears now: Mars
+    // did while it was the grainy Viking mosaic, and its Tianwen-1 map
+    // compresses so well as webp (0.78 MB at 4K) that the container would be
+    // seven times it. Mercury's rungs are cut from the MESSENGER mosaic like
+    // a photo moon's, and its map is grey, so they are ETC1S like theirs. The
+    // Moon, the cloud deck and Earth's night lights are the three the boot
+    // warm uploads on every session, downloaded once per device rather than
+    // once per tour, and admitted on that basis.
     //
     // The photo moons are ETC1S, and that bar does not apply to them at all:
     // the container is roughly the webp's size on the wire, so there is no
@@ -205,7 +207,6 @@ describe('the files behind the colour ladder', () => {
     expect(shipped).toEqual([
       'mercury 4k: 4k/mercury.ktx2',
       'mercury 8k: 8k/mercury.ktx2',
-      'mars 4k: 4k/mars.v2.ktx2',
       'moon 4k: 4k/moon.ktx2',
       'moon 8k: 8k/moon.ktx2',
       'earthClouds 4k: 4k/earth-clouds.ktx2',

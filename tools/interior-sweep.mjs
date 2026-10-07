@@ -973,7 +973,7 @@ async function lateMapCase(context, viewport) {
   console.log(`\n== ${tag}`);
   const { page, errors } = await openTool(context, 'Earth');
   const held = [];
-  const marsMap = '**/textures/mars.v2.webp';
+  const marsMap = '**/textures/mars.v3.webp';
   await page.route(marsMap, (route) => { held.push(route); });
   await page.evaluate(() => window.__moon.interiorPick('Mars'));
   // The loader gives the fallback after its timeout (8 s) and the swap completes on it.

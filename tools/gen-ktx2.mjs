@@ -133,7 +133,7 @@ const JOBS = {
   // tour of six planets pulling tens of megabytes where it pulled a few is a
   // bill on mobile data that a smoother upload does not settle.
   //
-  // Only two of the toured maps clear it, and the reason is UASTC's shape
+  // Only one of the toured maps clears it, and the reason is UASTC's shape
   // rather than the encoder's settings: the blocks are a fixed 8 bits a texel
   // whatever the picture holds, so a 4096x2048 container has a floor near
   // 1.6 MB however smooth the map is, while a webp of smooth content is a
@@ -147,14 +147,17 @@ const JOBS = {
   // limit of 2 and 6), so it is the wire that rules them out and nothing
   // else. They keep their webp rung.
   //
-  // Mercury clears it at the default lambda. Mars needs lambda 4 (4.53x at 1,
-  // 4.24x at 2, 3.81x at 4) and is unharmed by it.
+  // Mercury clears it at the default lambda. Mars used to, on the Viking
+  // MDIM colour, at lambda 4 (4.53x at 1, 4.24x at 2, 3.81x at 4): that map
+  // was smooth enough for its webp to be large. The Tianwen-1 MoRIC map that
+  // replaced it is all fine texture, which webp keeps in 0.78 MB and UASTC
+  // in 5.78 — 7.4x, far past the cap at every lambda — so Mars keeps its
+  // webp rung again like Venus and Saturn.
   // Mercury's rungs come from the MESSENGER mosaic through gen:moonmaps, like
   // the photo moons, and ETC1S for the same reason: a grey map's chroma is
   // nothing for UASTC's bits to keep.
   mercury4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('mercury-4k'), out: '4k/mercury.ktx2' },
   mercury8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('mercury-8k'), out: '8k/mercury.ktx2' },
-  mars4k: { tier: '4k', rdo: 4.0, source: fromWebp('4k', 'mars.v2.webp'), out: '4k/mars.v2.ktx2' },
   // The three the boot warm uploads, which is why the toured cap does not
   // rule them: the idle after boot fetches these on EVERY session, so a
   // device downloads each one once and the worker serves it thereafter, while

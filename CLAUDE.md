@@ -11,8 +11,8 @@ npm test           # vitest — astronomy + planetarium unit/golden tests
 npm run gen:moons  # Regenerate satellite elements + goldens from JPL (--offline uses .moon-data-cache/)
 npm run gen:maps   # Regenerate derived texture maps (runs in headless Chromium)
 npm run gen:relief # Regenerate Mars's relief — boot map, 4K rung and the 8K crop source — from the HRSC–MOLA blended DEM in .moon-data-cache/ (needs sharp, like gen:tiles); then `npm run gen:tiles -- mars --crops` re-cuts the relief crops
-npm run gen:ktx2   # Regenerate the GPU-compressed colour rungs — 23 jobs, 9 UASTC (planets + Earth) and 14 ETC1S (the photo moons); run BY NAME, not --all (bundled basisu; a shipped webp, sharp, or a gen:moonmaps intermediate per job)
-npm run gen:tiles -- <job|--all> [--verify | --grey]   # Re-cut sector tile sets + rewrite sectorSets.generated.ts (needs `npm i --no-save sharp@0.35.4`); --grey only checks the one-channel mask sets are grey texel for texel
+npm run gen:ktx2   # Regenerate the GPU-compressed colour rungs — 23 jobs, 7 UASTC (Earth, its clouds and the Moon) and 16 ETC1S (Mercury and the photo moons); run BY NAME, not --all (bundled basisu; a shipped webp, sharp, or a gen:moonmaps intermediate per job)
+npm run gen:tiles -- <job|--all> [--verify | --grey]   # Re-cut sector tile sets + rewrite sectorSets.generated.ts (needs `npm i --no-save sharp@0.35.4`); --grey only checks the one-channel mask sets are grey texel for texel. Mars's three colour levels are rendered on demand from the Tianwen-1 HiPS by CDS's hips2fits (84 cutouts of 33 Mpx for the whole pyramid, cached under .moon-data-cache/hips/), so `mars` needs the network and hours; `--level=n` cuts one level
 npm run publish:tiles -- --root=<tiles root> --repo=<tiles repo checkout>  # Copy verified sets into the tiles repo (never pushes)
 ```
 

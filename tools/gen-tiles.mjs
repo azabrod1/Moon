@@ -16,8 +16,9 @@
 // Every body's boot map, 4K step and tiles come from ONE source in ONE pass,
 // so each step up the ladder is a pure sharpen (the same-product rule in
 // PlanetFactory's TEXTURE_UPGRADE_TIERS comment). Sources are cached under
-// .moon-data-cache/ (gitignored); the Mars source is fetched from the USGS WMS
-// as 2048x2048 GetMap tiles (their max is 4096 wide, the 232 m mosaic is 12 GB).
+// .moon-data-cache/ (gitignored); Mars's levels are rendered by CDS's
+// hips2fits service out of the Tianwen-1 HiPS, in blocks of each level's own
+// pixel grid (see hipsBlock), so no source file is ever held whole.
 //
 // A tile's gutter is always its NEIGHBOUR's pixels — wrapping across the ±180°
 // seam, clamped at the poles — never a repeat of its own edge: that is what
@@ -105,7 +106,15 @@ export const CONTENT = 2032;
 const PHOTO_WEBP = { quality: 85, effort: 5 };
 const DATA_WEBP = { lossless: true, effort: 5 };
 
-const USGS_MARS_WMS = 'https://planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/mars/mars_simp_cyl.map';
+/** The HiPS Mars's colour levels are rendered from, and the CDS service that
+ *  renders it: CDS/P/Mars/Tianwen1-MoRIC is the Tianwen-1 MoRIC true-colour
+ *  mosaic (76 m; CNSA's CLPDS, NAOC/GRAS; Liu et al. 2024) as CDS built it
+ *  into a HiPS — order 7, 512-px PNG tiles, status "public master
+ *  clonableOnce", its properties file carrying the data's own credit line. */
+const TIANWEN_HIPS = 'CDS/P/Mars/Tianwen1-MoRIC';
+const HIPS2FITS = 'https://alasky.cds.unistra.fr/hips-image-services/hips2fits';
+/** hips2fits refuses a cutout of more pixels than this. */
+const HIPS2FITS_MAX_PIXELS = 50_000_000;
 
 const exists = async (p) => { try { await access(p); return true; } catch { return false; } };
 const doubled = (grid, times) => ({ cols: grid.cols * 2 ** times, rows: grid.rows * 2 ** times });
@@ -1029,57 +1038,170 @@ async function childGroupGate(key, parentTier, parentGrid, parentContent, childT
   }
 }
 
-/** Fetch one WMS GetMap tile into the cache (skipped when cached). */
-async function wmsTile(base, layer, bbox, w, h, cachePath) {
-  if (await exists(cachePath)) return cachePath;
-  const url = `${base}&service=WMS&request=GetMap&version=1.1.1&layers=${layer}&styles=&srs=EPSG:4326` +
-    `&bbox=${bbox.join(',')}&width=${w}&height=${h}&format=image/png`;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (moon planetarium asset build)' } });
-    if (res.ok && (res.headers.get('content-type') ?? '').startsWith('image/')) {
-      await mkdir(path.dirname(cachePath), { recursive: true });
-      await writeFile(cachePath, Buffer.from(await res.arrayBuffer()));
-      return cachePath;
+/**
+ * One block of a level's equirect, rendered by hips2fits in plate carrée on
+ * the LEVEL's own pixel grid — column k at longitude −180° + (k + ½)·s, row r
+ * from the north at latitude 90° − (r + ½)·s, with s = 360° / width — so a
+ * block is an exact sub-rectangle of the map the level is, and two blocks
+ * meet with no resample between them. Stated as a FITS WCS whose reference
+ * point is on the equator: a CAR projection with CRVAL2 ≠ 0 is an oblique
+ * grid, not a crop. Every cutout asks for the same two things besides:
+ *   min_cut=0, max_cut=255 — without them the service stretches each cutout
+ *   to its own 0.5–99.5 percentiles, per channel, so two blocks of the same
+ *   ground come back at different levels and hues (measured: two aligned
+ *   cutouts four levels apart; with the cuts pinned, byte-identical, and the
+ *   pinned colour is the tiles' own — mean 138,116,100 against the published
+ *   map's 142,114,95);
+ *   inverse_longitude=true — east to the right, as every map here is laid
+ *   out (the service's default for a planetary HiPS, said rather than relied
+ *   on).
+ * Cached under the level's tier and named by its grid position AND size: a
+ * block rendered for another level has the wrong stride, and must never be
+ * read as this one (the WMS cache this replaced was once read that way, and
+ * the whole map turned to streaks).
+ */
+async function hipsBlock(hipsId, dir, c, r, blockW, blockH, width, height) {
+  const file = path.join(dir, `${c}_${r}_${blockW}x${blockH}.png`);
+  if (await exists(file)) return file;
+  const scale = 360 / width;
+  const wcs = {
+    NAXIS1: blockW,
+    NAXIS2: blockH,
+    CTYPE1: 'RA---CAR',
+    CTYPE2: 'DEC--CAR',
+    CRVAL1: 0,
+    CRVAL2: 0,
+    // FITS pixel 1 is the block's first column and its SOUTHERNMOST row.
+    CRPIX1: 0.5 + width / 2 - c * blockW,
+    CRPIX2: 0.5 + (r + 1) * blockH - height / 2,
+    CDELT1: scale,
+    CDELT2: scale,
+    CUNIT1: 'deg',
+    CUNIT2: 'deg',
+  };
+  const params = new URLSearchParams({
+    hips: hipsId,
+    format: 'png',
+    min_cut: '0',
+    max_cut: '255',
+    stretch: 'linear',
+    inverse_longitude: 'true',
+    wcs: JSON.stringify(wcs),
+  });
+  const url = `${HIPS2FITS}?${params}`;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const t0 = Date.now();
+    try {
+      // A 33-megapixel render is minutes of the service's time; the timeout
+      // is for a connection that died, not a slow one.
+      const res = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (moon planetarium asset build)' },
+        signal: AbortSignal.timeout(30 * 60_000),
+      });
+      if (res.ok && (res.headers.get('content-type') ?? '').startsWith('image/png')) {
+        await mkdir(dir, { recursive: true });
+        await writeFile(`${file}.part`, Buffer.from(await res.arrayBuffer()));
+        await rename(`${file}.part`, file);
+        console.log(`  hips2fits block ${c}_${r} (${blockW}x${blockH}): ${((Date.now() - t0) / 1000).toFixed(0)} s`);
+        return file;
+      }
+      console.log(`  hips2fits block ${c}_${r} attempt ${attempt}: HTTP ${res.status} ${res.headers.get('content-type')}`);
+    } catch (err) {
+      console.log(`  hips2fits block ${c}_${r} attempt ${attempt}: ${err.message}`);
     }
-    console.log(`  wms ${path.basename(cachePath)} attempt ${attempt}: HTTP ${res.status} ${res.headers.get('content-type')}`);
+    await new Promise((resolve) => setTimeout(resolve, 20_000 * attempt));
   }
-  throw new Error(`WMS fetch failed: ${url}`);
+  throw new Error(`hips2fits fetch failed: ${url}`);
 }
 
-/** Mars source: the 32 sector tiles straight from the WMS at native 2048 (no
- *  resample — the service renders each bbox at exactly the tile size), then
- *  assembled into the same 16K raw buffer so the rest of the pipeline is
- *  body-agnostic (the boot/4K maps are downsamples of the assembled set). */
-async function marsRaw() {
-  const dir = path.join(CACHE, 'mars-wms');
-  const { width: W, height: H } = gridSize(GRID_16K, CONTENT);
-  const composites = [];
-  for (let r = 0; r < GRID_16K.rows; r++) {
-    for (let c = 0; c < GRID_16K.cols; c++) {
-      const lon0 = -180 + 45 * c;
-      const lat1 = 90 - 45 * r;
-      // The request size is in the cache name: a cached render of another
-      // size would otherwise be read with the wrong row stride and turn the
-      // whole map into streaks (it did, once).
-      const file = await wmsTile(USGS_MARS_WMS, 'MDIM21_color', [lon0, lat1 - 45, lon0 + 45, lat1],
-        CONTENT, CONTENT, path.join(dir, `${c}_${r}_${CONTENT}.png`));
-      const { data, info } = await sharp(file).removeAlpha().raw().toBuffer({ resolveWithObject: true });
-      if (info.width !== CONTENT || info.height !== CONTENT || info.channels !== 3) {
-        throw new Error(`${file}: ${info.width}x${info.height}x${info.channels}, expected ${CONTENT}x${CONTENT}x3`);
+/**
+ * A level rendered from a HiPS: `across × down` blocks of the level's own
+ * equirect, each under hips2fits's pixel ceiling, laid row by row into one
+ * raw file in the source cache and graded on the way where the job grades,
+ * so the rest of the pipeline reads it as it reads a resampled mosaic. The
+ * blocks arrive RGBA: the alpha is the service's own resampling at its tile
+ * joins — 254 on a few per cent of texels in every latitude band — so it is
+ * dropped; the few texels per block it leaves fully transparent (90 of 33
+ * million in the first block cut, in pinholes a texel or two wide at HiPS
+ * tile corners, the HiPS itself covering the whole sphere) are filled from
+ * their nearest valid neighbour along the row and counted aloud, and a block
+ * with more than a pinhole's worth of them is refused rather than laid down
+ * part black: that would be a gap in the data, which this map must never
+ * paint over quietly.
+ */
+const HIPS_HOLE_CEILING = 1e-4;
+async function hipsLevelRaw(job, level) {
+  const { width, height } = gridSize(level.grid, CONTENT);
+  const src = level.source;
+  const blockW = width / src.across;
+  const blockH = height / src.down;
+  if (!Number.isInteger(blockW) || !Number.isInteger(blockH)) {
+    throw new Error(`${job.key}/${level.tier}: ${width}x${height} does not split into ${src.across}x${src.down} whole blocks`);
+  }
+  if (blockW * blockH > HIPS2FITS_MAX_PIXELS) {
+    throw new Error(`${job.key}/${level.tier}: a ${blockW}x${blockH} block is over hips2fits's ceiling of ${HIPS2FITS_MAX_PIXELS} pixels`);
+  }
+  const stem = [job.key, level.tier, `${width}x${height}`, job.rawToken].filter(Boolean).join('.');
+  const out = cache('levels', `${stem}.rgb`);
+  await mkdir(path.dirname(out), { recursive: true });
+  if ((await exists(out)) && (await stat(out)).size === width * height * 3) {
+    console.log(`  rendered equirect already in the cache: ${path.relative(process.cwd(), out)}`);
+    return out;
+  }
+  const dir = cache('hips', src.id.replace(/[^\w.-]+/g, '_'), level.tier);
+  const file = await open(`${out}.part`, 'w');
+  const t0 = Date.now();
+  try {
+    for (let r = 0; r < src.down; r++) {
+      for (let c = 0; c < src.across; c++) {
+        const png = await hipsBlock(src.id, dir, c, r, blockW, blockH, width, height);
+        const { data, info } = await sharp(png, { limitInputPixels: false }).raw().toBuffer({ resolveWithObject: true });
+        if (info.width !== blockW || info.height !== blockH) {
+          throw new Error(`${png}: ${info.width}x${info.height}, expected ${blockW}x${blockH}`);
+        }
+        const rgb = Buffer.allocUnsafe(blockW * blockH * 3);
+        const holes = [];
+        for (let p = 0, q = 0; p < data.length; p += info.channels, q += 3) {
+          if (info.channels === 4 && data[p + 3] === 0) holes.push(q / 3);
+          rgb[q] = data[p];
+          rgb[q + 1] = data[p + 1];
+          rgb[q + 2] = data[p + 2];
+        }
+        if (holes.length > blockW * blockH * HIPS_HOLE_CEILING) {
+          throw new Error(`${png}: ${holes.length} transparent texels — a hole in the HiPS, not a pinhole, which this map has no business drawing black`);
+        }
+        for (const texel of holes) {
+          const x = texel % blockW;
+          const y = (texel - x) / blockW;
+          // The nearest texel along the row the service did render; a pinhole
+          // is a texel or two wide, so the search never goes far.
+          let donor = -1;
+          for (let reach = 1; reach < blockW && donor < 0; reach++) {
+            for (const neighbour of [x - reach, x + reach]) {
+              if (neighbour < 0 || neighbour >= blockW) continue;
+              if (data[(y * blockW + neighbour) * info.channels + 3] !== 0) { donor = y * blockW + neighbour; break; }
+            }
+          }
+          if (donor < 0) throw new Error(`${png}: row ${y} is transparent end to end`);
+          rgb[texel * 3] = data[donor * info.channels];
+          rgb[texel * 3 + 1] = data[donor * info.channels + 1];
+          rgb[texel * 3 + 2] = data[donor * info.channels + 2];
+        }
+        if (holes.length) console.log(`  block ${c}_${r}: ${holes.length} transparent texels filled from their row neighbours`);
+        if (job.grade) job.grade(rgb);
+        for (let y = 0; y < blockH; y++) {
+          await file.write(rgb, y * blockW * 3, blockW * 3, ((r * blockH + y) * width + c * blockW) * 3);
+        }
+        process.stdout.write(`  block ${c}_${r} of ${src.across}x${src.down} laid (${((Date.now() - t0) / 1000).toFixed(0)} s)\r`);
       }
-      composites.push({
-        input: data,
-        raw: { width: CONTENT, height: CONTENT, channels: 3 },
-        left: c * CONTENT,
-        top: r * CONTENT,
-      });
-      process.stdout.write(`  wms tile ${c}_${r}\r`);
     }
+  } finally {
+    await file.close();
   }
   console.log('');
-  // composite() adds an alpha channel; the pipeline's raw contract is 3-channel.
-  return sharp({ create: { width: W, height: H, channels: 3, background: '#000' }, limitInputPixels: false })
-    .composite(composites).removeAlpha().raw().toBuffer();
+  await rename(`${out}.part`, out);
+  console.log(`  rendered -> ${path.relative(process.cwd(), out)} (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
+  return out;
 }
 
 /**
@@ -1364,23 +1486,34 @@ export const JOBS = {
     ref: path.join(TEX, '4k', 'moon.webp'),
     dataCrops: [{ src: path.join(TEX, '4k', 'moon-normal.webp'), key: 'moon-normal', tier: '4k', spanU: 2 }],
   },
-  // USGS Mars Viking MDIM 2.1 colour mosaic via WMS (what NASA Eyes ships).
-  // The service's tone is a muted brown-grey (mean 122,97,95); NASA Eyes
-  // grades the same mosaic to a warmer salmon (164,104,90 on their 4096
-  // faces), and so does this — the gains are that ratio. The old Solar
-  // System Scope map was a far more saturated orange (183,98,71).
+  // Tianwen-1 MoRIC true-colour mosaic: 76 m, 10,572 images with atmospheric,
+  // photometric and colour correction and a bundle adjustment to under a
+  // pixel (Liu et al. 2024, Science Bulletin, doi:10.1016/j.scib.2024.04.045;
+  // dataset doi:10.12350/CLPDS.GRAS.TW1.MoRIC-DOM_076_Global.vA; data
+  // provided by China's Lunar and Planetary Data System, NAOC/GRAS) — through
+  // the HiPS CDS built from it (TIANWEN_HIPS). It replaces the Viking MDIM 2.1
+  // mosaic, whose ~4,600 frames each kept their own sun, haze and resolution,
+  // so that from the Land prompt's altitude Mars read as a patchwork of
+  // squares. The colour is the product's own, ungraded: the lighter, greyer
+  // brown Tianwen measured (mean 138,116,100) rather than the salmon MDIM was
+  // graded to (162,103,89); a taste that wants it warmer is one gradeGains
+  // line here, applied to every level and rung alike — with a rawToken beside
+  // it, because the grade is baked into the cached render and the cache is
+  // keyed on nothing else. Three levels, like Earth's, each rendered at its
+  // own width from the one HiPS, so a child is a sharper picture of its
+  // parent and not another product.
   mars: {
-    key: 'mars.v2',
-    grade: gradeGains([164 / 122, 104 / 97, 90 / 95]),
-    levels: [{ tier: '16k', grid: GRID_16K, source: { kind: 'wms' } }],
-    // The Viking mosaic's grain is not detail: q75 tiles read identically to
-    // q85 at 2× (A/B'd on Kasei Valles) for a third fewer bytes (35 → ~22 MB).
-    webp: { quality: 75, effort: 5 },
-    downsamples: [
-      { w: 4096, h: 2048, out: path.join(TEX, '4k', 'mars.v2.webp') },
-      { w: 2048, h: 1024, out: path.join(TEX, 'mars.v2.webp') },
+    key: 'mars.v3',
+    levels: [
+      { tier: '16k', grid: GRID_16K, source: { kind: 'hips', id: TIANWEN_HIPS, across: 2, down: 2 } },
+      { tier: '32k', grid: doubled(GRID_16K, 1), source: { kind: 'hips', id: TIANWEN_HIPS, across: 4, down: 4 } },
+      { tier: '64k', grid: doubled(GRID_16K, 2), source: { kind: 'hips', id: TIANWEN_HIPS, across: 8, down: 8 } },
     ],
-    ref: path.join(TEX, '4k', 'mars.v2.webp'),
+    downsamples: [
+      { w: 4096, h: 2048, out: path.join(TEX, '4k', 'mars.v3.webp') },
+      { w: 2048, h: 1024, out: path.join(TEX, 'mars.v3.webp') },
+    ],
+    ref: path.join(TEX, '4k', 'mars.v3.webp'),
     // The relief crops come off the 8192-wide map tools/gen-relief.mjs leaves
     // in the cache beside the shipped boot map and 4K rung (all three from the
     // HRSC–MOLA blended DEM in one pass): twice the rung's width, as Earth's
@@ -1413,10 +1546,10 @@ export async function levelRowSource(job, level) {
     const water = job.grade ? job.grade(raw) : undefined;
     return { rows: memoryRowSource(raw, width, height), water };
   }
-  if (src.kind === 'wms') {
-    const raw = await marsRaw();
-    const water = job.grade ? job.grade(raw) : undefined;
-    return { rows: memoryRowSource(raw, width, height), water };
+  if (src.kind === 'hips') {
+    // Rendered to a raw file in the cache whatever its size: level 0 would
+    // fit in memory, but one path for every level is one path to get right.
+    return { rows: await fileRowSource(await hipsLevelRaw(job, level), width, height) };
   }
   // The cached resample's NAME states every transform baked into it, so
   // changing one cannot be silently skipped by a machine that already holds

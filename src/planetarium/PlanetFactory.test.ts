@@ -1626,31 +1626,34 @@ describe('the ladder against the sector memory envelope', () => {
 
   it('leaves a desktop\'s tiles their working set with every rung earned at once', () => {
     // What a desktop session could hold if it toured everything and gave
-    // nothing back: eight 4K containers at 10.7 MiB (Mars, plus the seven
-    // photo moons whose ladder stops at 4K), three 4K webp rungs at 42.7
-    // (Venus, Jupiter, Saturn), and ten 8K containers at 42.7 — the Moon, the
-    // cloud deck, Earth's globe and its night lights, Mercury, and the five
-    // bodies with an 8K photo rung. The 4K containers the boot warm uses are
+    // nothing back: seven 4K containers at 10.7 MiB (the photo moons whose
+    // ladder stops at 4K), four 4K webp rungs at 42.7 (Venus, Jupiter,
+    // Saturn, and Mars, whose Tianwen-1 map is too rich in texture for a
+    // container to clear the wire cap its Viking map cleared), and ten 8K
+    // containers at 42.7 — the Moon, the cloud deck, Earth's globe and its
+    // night lights, Mercury, and the five bodies with an 8K photo rung. The 4K containers the boot warm uses are
     // not in this sum: the Moon, the deck and the night lights all reach 8K
     // on a desktop, so the rung their container serves has been climbed past
     // by the time the ladder is at its heaviest. They buy a frame, not
     // memory, here; Mercury's 4K container is climbed past the same way.
     const real = ladderWorstCaseBytes(false, true);
-    expect(mib(real)).toBeCloseTo(640.0, 1);
+    expect(mib(real)).toBeCloseTo(672.0, 1);
     expect(mib(real)).toBeCloseTo(
-      8 * mib(equirectMapGpuBytes(4096, true))
-      + 3 * mib(equirectMapGpuBytes(4096))
+      7 * mib(equirectMapGpuBytes(4096, true))
+      + 4 * mib(equirectMapGpuBytes(4096))
       + 10 * mib(equirectMapGpuBytes(8192, true)),
       1,
     );
     const budget = UNMEASURED_DESKTOP_PROFILE.envelopeBytes - real;
-    expect(mib(budget)).toBeCloseTo(384.0, 1);
+    expect(mib(budget)).toBeCloseTo(352.0, 1);
     // Twenty-one bodies with a ladder no longer leave the tiles the whole
     // draw-call ceiling to spend, which is the price of the moons having real
     // maps. What has to survive it is the working set: even at the heaviest
     // the ladder can be, what is left over still holds every set the streamer
     // is allowed to keep resident, so a tile is never evicted to pay for a
-    // globe.
+    // globe. Mars's webp rung took 32 MiB off that margin; sixteen Earth sets
+    // still fit, with a few MiB to spare, and the next map to lose its
+    // container would be the one to break this.
     expect(budget / sectorSetGpuBytes(SECTOR_SETS.Earth))
       .toBeGreaterThanOrEqual(UNMEASURED_DESKTOP_PROFILE.residentCap);
     expect(UNMEASURED_DESKTOP_PROFILE.ceilingBytes / sectorSetGpuBytes(SECTOR_SETS.Earth))
@@ -1693,8 +1696,10 @@ describe('the ladder against the sector memory envelope', () => {
     // three quarters off each rung it already had. Neither figure is a thing
     // that happens; both are past a 320 MiB envelope, which is the point: the
     // arithmetic settles a phone's ladder either way.
-    // Mercury's 8K container is 32 MiB more than the 4K one it climbs past.
-    expect(mib(ladderWorstCaseBytes(true, true))).toBeCloseTo(608.0, 1);
+    // Mercury's 8K container is 32 MiB more than the 4K one it climbs past,
+    // and Mars's 4K rung is a webp again (42.7 MiB where its container was
+    // 10.7), another 32.
+    expect(mib(ladderWorstCaseBytes(true, true))).toBeCloseTo(640.0, 1);
     expect(ladderWorstCaseBytes(true, true)).toBeGreaterThan(UNMEASURED_TOUCH_PROFILE.envelopeBytes);
     // It is now unreachable. The rung that would cross the envelope less the
     // tiles' floor is refused before it is fetched, so the ladder settles
@@ -1882,7 +1887,8 @@ describe('the compressed tier override', () => {
     const ktx2Calls: Array<{ url: string; onLoad: (tex: THREE.Texture) => void }> = [];
     bindKtx2TierLoader((url, onLoad) => ktx2Calls.push({ url, onLoad }));
     expect(resolveTierFile('moon', '8k')).toBe('moon.ktx2');
-    expect(resolveTierFile('mars', '4k')).toBe('mars.v2.ktx2');
+    // Mars's 4K rung is webp only: its container failed the wire rule.
+    expect(resolveTierFile('mars', '4k')).toBe('mars.v3.webp');
     // The same key can have a container at both tiers, each under its own
     // tier's folder — the Moon's 4K rung is the boot warm's own upload.
     expect(resolveTierFile('moon', '4k')).toBe('moon.ktx2');
@@ -2070,7 +2076,7 @@ describe('what a release puts on the material', () => {
   it('drops to the boot map when the rung it gives back is the first', async () => {
     const up = onFourK('mars');
     expect(startTierRelease(up, 1_000)).toBe(true);
-    expect(pending[0].url).toMatch(/textures\/mars\.v2\.webp$/);
+    expect(pending[0].url).toMatch(/textures\/mars\.v3\.webp$/);
     pending[0].onLoad(new THREE.Texture());
     await settleRungUpload();
     // The boot map is not a member of the ladder, so the handle is back where
@@ -2457,11 +2463,13 @@ describe('the rungs that ship only as a compressed container', () => {
     expect(resolveTierFile('earthClouds', '8k')).toBe('earth-clouds.ktx2');
     expect(resolveTierFile('earthDay', '8k')).toBe('earth-day.v2.ktx2');
     expect(resolveTierFile('earthNight', '8k')).toBe('earth-night.v2.ktx2');
-    // The two toured 4K rungs whose container is small enough on the wire to
-    // ship, and the three the boot warm uploads, which are downloaded once a
-    // device rather than once a tour and are held to a looser bar for it.
+    // The one toured 4K rung whose container is small enough on the wire to
+    // ship (Mars's Tianwen-1 map compresses so well as webp that its container
+    // is seven times the twin, so it keeps the webp), and the three the boot
+    // warm uploads, which are downloaded once a device rather than once a
+    // tour and are held to a looser bar for it.
     expect(resolveTierFile('mercury', '4k')).toBe('mercury.ktx2');
-    expect(resolveTierFile('mars', '4k')).toBe('mars.v2.ktx2');
+    expect(resolveTierFile('mars', '4k')).toBe('mars.v3.webp');
     expect(resolveTierFile('moon', '4k')).toBe('moon.ktx2');
     expect(resolveTierFile('earthClouds', '4k')).toBe('earth-clouds.ktx2');
     expect(resolveTierFile('earthNight', '4k')).toBe('earth-night.v2.ktx2');
@@ -2504,11 +2512,11 @@ describe('the rungs that ship only as a compressed container', () => {
     }
     // And a quarter of a 4K rung's uncompressed 42.7, for every 4K rung that
     // ships as a container — the rest are charged the webp they fetch.
-    for (const key of ['mercury', 'mars', 'moon', 'earthClouds', 'earthNight',
+    for (const key of ['mercury', 'moon', 'earthClouds', 'earthNight',
       'enceladus', 'charon', 'callisto', 'pluto']) {
       expect(mib(tierUploadBytes(key, '4k'))).toBeCloseTo(10.7, 1);
     }
-    for (const key of ['venus', 'jupiter', 'saturn']) {
+    for (const key of ['venus', 'jupiter', 'saturn', 'mars']) {
       expect(mib(tierUploadBytes(key, '4k'))).toBeCloseTo(42.7, 1);
     }
     // With a transcoder but no compressed format to target, three hands back

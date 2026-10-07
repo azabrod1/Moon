@@ -30,6 +30,26 @@
  *    Fail-closed — anything non-finite, or zero where the reference says it must
  *    not be, marks the tier unavailable for the session.
  *
+ * Four tables stay resident per body: the transmittance (as optical depth),
+ * the sky's irradiance, the scattering table (Rayleigh and every higher order
+ * in rgb, single Mie's RED in alpha) and the single-Mie colour table
+ * (`mieColour`, RG16F: single Mie's GREEN and BLUE). Without the fourth, a
+ * lookup has to rebuild green and blue from rgb by assuming single Mie has the
+ * spectrum of Rayleigh plus the higher orders, which it does not: the higher
+ * orders have their own colour, and the two scatterers weight the
+ * transmittance along a path by different density profiles, so toward a low
+ * Sun the lowest twilight band comes out a third to a half too bright in green
+ * and blue. Red is not stored twice. The combine pass writes it into the
+ * scattering table's alpha and green and blue into the colour table at the
+ * same texel centre, and the order folds add alpha 0, so one fetch of each at
+ * one coordinate is single Mie's rgb through one bilinear filter — which holds
+ * only while the two targets have identical dimensions and filters
+ * (createMieColourTarget). RG16F is colour-renderable under either float
+ * extension the tier accepts, but the capability probe renders only RGBA16F
+ * and three checks no framebuffer: a device that cannot render RG16F writes a
+ * black colour table, its own validation sample fails, and the whole tier
+ * fails closed with it. There is no fallback layout.
+ *
  * Cost and scheduling. Every 3D pass is one draw per layer (WebGL2 has no
  * layered rendering), so a four-order bake is a few hundred draws and the
  * scattering-density pass alone is ~10⁹ dependent fetches. That is far too much
@@ -90,7 +110,6 @@ import {
   transmittanceUvFromRMu,
   type AtmosphereParams,
   type AtmosphereTableSizes,
-  type RGB,
 } from './atmosphereModel';
 
 export type AtmosphereLutState = 'unavailable' | 'baking' | 'ready';
@@ -105,6 +124,9 @@ export interface AtmosphereTables {
   readonly transmittance: THREE.Texture;
   readonly scattering: THREE.Texture;
   readonly irradiance: THREE.Texture;
+  /** Single Mie's green and blue, at the scattering table's own texels; its
+   *  red is the scattering table's alpha. */
+  readonly mieColour: THREE.Texture;
 }
 
 /** What one bake program's link cost, split so a frame's share of it is
@@ -215,7 +237,7 @@ const TOUCH_ORDERS = 2;
 const DEFAULT_DRAWS_PER_SLICE = 8;
 /** Bakes in a row that produce no tables — a failed validation, a throw, or a
  *  context lost mid-flight — after which the session stops trying. Each retry
- *  costs a few hundred draws and 32 MiB of scratch on a device that has already
+ *  costs a few hundred draws and 36 MiB at its peak on a device that has already
  *  shown it cannot hold them, and the analytic shell is a complete look. */
 const MAX_CONSECUTIVE_BAKE_FAILURES = 3;
 /** Submission budget per draw slice — draws only; a link step is a slice of its
@@ -1234,6 +1256,8 @@ uniform sampler3D uSourceB;
 // 0 = fold the single Rayleigh and Mie deltas into the accumulator layout.
 // 1 = add one further order, divided by the Rayleigh phase function so the
 //     lookup's single multiply by that phase recovers every order at once.
+// 2 = single Mie's green and blue into the RG colour table, at the same texel
+//     centre mode 0 wrote its red to.
 uniform int uMode;
 out vec4 fragColor;
 
@@ -1244,6 +1268,8 @@ void main() {
       (uLayer + 0.5) / float(SCATTERING_TEXTURE_R_SIZE));
   if (uMode == 0) {
     fragColor = vec4(texture(uSourceA, uvw).rgb, texture(uSourceB, uvw).r);
+  } else if (uMode == 2) {
+    fragColor = vec4(texture(uSourceB, uvw).gb, 0.0, 1.0);
   } else {
     float r, mu, mu_s, nu;
     bool hitsGround;
@@ -1306,11 +1332,19 @@ interface BakeTargets {
   irradiance: THREE.WebGLRenderTarget;
   deltaIrradiance: THREE.WebGLRenderTarget;
   scattering: THREE.WebGL3DRenderTarget;
+  /** Single Mie's green and blue beside the scattering table's alpha red —
+   *  see the module header. */
+  mieColour: THREE.WebGL3DRenderTarget;
   /** Also serves as the multiple-scattering delta once the order-2 density pass
    *  has read it — see the module header. */
   deltaRayleigh: THREE.WebGL3DRenderTarget;
   deltaMie: THREE.WebGL3DRenderTarget;
   deltaScatteringDensity: THREE.WebGL3DRenderTarget;
+}
+
+/** The targets a baked body keeps for the session: everything but the scratch. */
+function residentTargetsOf(t: BakeTargets): THREE.WebGLRenderTarget[] {
+  return [t.transmittance, t.irradiance, t.scattering, t.mieColour];
 }
 
 let activeLut: AtmosphereLut | null = null;
@@ -1473,13 +1507,13 @@ export class AtmosphereLut {
 
   /**
    * GPU bytes this tier is holding right now, render-target by render-target:
-   * the resident tables of every body that has baked (8.1 MiB at the full
-   * sizes, 2.0 at the half ones) plus, only while a bake is in flight, the
-   * four 3D scratch targets and the one 2D that take the peak to ~32 MiB.
+   * the resident tables of every body that has baked (12.1 MiB at the full
+   * sizes, 3.0 at the half ones) plus, only while a bake is in flight, the
+   * three 3D scratch targets and the one 2D that take the peak to ~36 MiB.
    *
    * It is a live figure rather than a constant because both halves move: the
    * tier may be unavailable for the whole session (0), and a device that
-   * refuses a rung during the bake window is refusing it against a real 32 MiB
+   * refuses a rung during the bake window is refusing it against a real 36 MiB
    * that is really allocated. The mode adds this to the ladder's own weight so
    * the tables, the globe maps and the sector tiles are one envelope — the
    * tables are not releasable, so they are a floor the maps give way to rather
@@ -1535,8 +1569,7 @@ export class AtmosphereLut {
         programsAfter: this.renderer.info.programs?.length ?? 0,
         peakBytes: this.peakBytes,
         residentBytes: targets
-          ? targetBytes(targets.transmittance, 1) + targetBytes(targets.irradiance, 1)
-            + targetBytes(targets.scattering, this.sizes.scatteringR)
+          ? residentTargetsOf(targets).reduce((sum, rt) => sum + renderTargetBytes(rt), 0)
           : 0,
         orders: this.orders,
         validated,
@@ -1637,6 +1670,7 @@ export class AtmosphereLut {
         transmittance: targets.transmittance.texture,
         scattering: targets.scattering.texture,
         irradiance: targets.irradiance.texture,
+        mieColour: targets.mieColour.texture,
       };
       const validated = this.validate(params, targets);
       record(validated, false);
@@ -1648,10 +1682,10 @@ export class AtmosphereLut {
         this.capable = false;
         return false;
       }
-      // Only the scratch goes; the three resident tables live on in `tables`.
+      // Only the scratch goes; the four resident tables live on in `tables`.
       this.disposeScratch(targets);
       this.ready.set(body, tables);
-      this.residentTargets.set(body, [targets.transmittance, targets.irradiance, targets.scattering]);
+      this.residentTargets.set(body, residentTargetsOf(targets));
       targets = null;
       succeeded = true;
       this.consecutiveFailures = 0;
@@ -1798,6 +1832,7 @@ export class AtmosphereLut {
       probe: make(PROBE_FRAGMENT, {
         uTransmittance: { value: null },
         uScattering: { value: null },
+        uMieColour: { value: null },
         uIrradiance: { value: null },
         uMode: { value: 0 },
         uUv: { value: new THREE.Vector2() },
@@ -1826,6 +1861,7 @@ export class AtmosphereLut {
       irradiance: this.track(make2D(s.irradianceW, s.irradianceH)),
       deltaIrradiance: this.track(make2D(s.irradianceW, s.irradianceH)),
       scattering: this.track3D(make3D(w, s.scatteringMu, s.scatteringR)),
+      mieColour: this.track3D(createMieColourTarget(s)),
       deltaRayleigh: this.track3D(make3D(w, s.scatteringMu, s.scatteringR)),
       deltaMie: this.track3D(make3D(w, s.scatteringMu, s.scatteringR)),
       deltaScatteringDensity: this.track3D(make3D(w, s.scatteringMu, s.scatteringR)),
@@ -1861,17 +1897,16 @@ export class AtmosphereLut {
     this.disposeScratch(t);
     if (t.residentGone) return;
     t.residentGone = true;
-    this.liveBytes -= targetBytes(t.transmittance, 1) + targetBytes(t.irradiance, 1)
-      + targetBytes(t.scattering, this.sizes.scatteringR);
-    t.transmittance.dispose();
-    t.irradiance.dispose();
-    t.scattering.dispose();
+    for (const rt of residentTargetsOf(t)) {
+      this.liveBytes -= renderTargetBytes(rt);
+      rt.dispose();
+    }
   }
 
   private dropReady(): void {
     for (const targets of this.residentTargets.values()) {
       for (const rt of targets) {
-        this.liveBytes -= targetBytes(rt, (rt as THREE.WebGL3DRenderTarget).depth ?? 1);
+        this.liveBytes -= renderTargetBytes(rt);
         rt.dispose();
       }
     }
@@ -2039,6 +2074,17 @@ export class AtmosphereLut {
         this.draw(m.combine, t.scattering, layer);
       });
     }
+    // Single Mie's green and blue, which the accumulator has no channel for.
+    // Same program, same per-layer cost as the fold above, and an overwrite,
+    // so the cost probe may re-run it. Nothing writes the Mie delta again, so
+    // this could run anywhere after it; it runs here, beside the red.
+    for (let layer = 0; layer < layers; layer++) {
+      push('combine', true, () => {
+        m.combine.uniforms.uMode.value = 2;
+        m.combine.uniforms.uSourceB.value = t.deltaMie.texture;
+        this.draw(m.combine, t.mieColour, layer);
+      });
+    }
 
     for (let order = 2; order <= this.orders; order++) {
       const k = order;
@@ -2195,10 +2241,12 @@ export class AtmosphereLut {
   }
 
   /**
-   * Read one transmittance sample and one scattering sample back through the
-   * 8-bit blit and hold every channel against the CPU reference's value for the
-   * same coordinate. A non-finite read, or any channel outside its band, fails
-   * the whole tier for the session.
+   * Read one transmittance sample, one scattering sample and one single-Mie
+   * colour sample back through the 8-bit blit and hold every channel against
+   * the CPU reference's value for the same coordinate. A non-finite read, or
+   * any channel outside its band, fails the whole tier for the session — the
+   * colour table included, so a device that cannot render RG16F keeps the
+   * analytic shell rather than drawing every Mie lobe red.
    *
    * Comparing against the reference rather than against the sample's own other
    * channels is what makes this a test: "blue exceeds red" is also true of a
@@ -2209,10 +2257,10 @@ export class AtmosphereLut {
     const check = (
       label: string,
       read: readonly number[],
-      expected: RGB,
+      expected: readonly number[],
       band: { min: number; max: number },
     ): boolean => {
-      for (let c = 0; c < 3; c++) {
+      for (let c = 0; c < expected.length; c++) {
         const v = read[c];
         const ok = Number.isFinite(v) && v >= expected[c] * band.min && v <= expected[c] * band.max;
         if (!ok) {
@@ -2256,7 +2304,34 @@ export class AtmosphereLut {
         params, r, s.mu, s.muS, s.nu, false,
         VALIDATION_SCATTERING_SAMPLES, VALIDATION_TRANSMITTANCE_SAMPLES,
       ).rayleigh;
-      return check('singleScattering', sc, scRef, SCATTERING_VALIDATION_BAND);
+      if (!check('singleScattering', sc, scRef, SCATTERING_VALIDATION_BAND)) return false;
+
+      // Single Mie's green and blue, at a sample of their own: Mie falls off
+      // over about a kilometre, so a few hundredths of the way up the shell it
+      // is already under anything the 8-bit blit or half-float's normals can
+      // hold, and the sample above would read zero here on every device. An
+      // RG texel reads back as (green, blue, 0, 1).
+      const m = MIE_VALIDATION_SAMPLE;
+      const rMie = params.bottomRadius
+        + m.altitudeFraction * (params.topRadius - params.bottomRadius);
+      const mieCoords = scatteringTexture3DCoords(
+        scatteringUvwzFromRMuMuSNu(params, rMie, m.mu, m.muS, m.nu, false, this.sizes),
+        this.sizes,
+      );
+      const mc = this.readSample({
+        mode: 1,
+        params,
+        scattering: t.mieColour.texture,
+        uvw0: mieCoords.uvw0,
+        uvw1: mieCoords.uvw1,
+        nuLerp: mieCoords.lerp,
+        scale: SCATTERING_PROBE_SCALE,
+      });
+      const mieRef = computeSingleScattering(
+        params, rMie, m.mu, m.muS, m.nu, false,
+        VALIDATION_MIE_SAMPLES, VALIDATION_TRANSMITTANCE_SAMPLES,
+      ).mie;
+      return check('singleMieColour', mc, [mieRef[1], mieRef[2]], SCATTERING_VALIDATION_BAND);
     } catch (err) {
       debugWarn('Atmosphere LUT validation threw', { err: String(err) });
       return false;
@@ -2278,6 +2353,11 @@ export class AtmosphereLut {
     uvw0?: readonly [number, number, number];
     uvw1?: readonly [number, number, number];
     nuLerp?: number;
+    /** The single-Mie colour table, which mode 2 reads beside `scattering`
+     *  where the lookups read the exact colour. Left unbound, the sampler
+     *  reads three's empty 3D texture and the combined Mie comes back red
+     *  alone. */
+    mieColour?: THREE.Texture;
     /** Modes 2 and 3 evaluate shader code that reads the body's own
      *  parameters, so they need the same set the bake was given. */
     params?: AtmosphereParams;
@@ -2299,6 +2379,7 @@ export class AtmosphereLut {
     probe.uniforms.uMode.value = sample.mode;
     probe.uniforms.uTransmittance.value = sample.transmittance ?? null;
     probe.uniforms.uScattering.value = sample.scattering ?? null;
+    probe.uniforms.uMieColour.value = sample.mieColour ?? null;
     probe.uniforms.uIrradiance.value = sample.irradiance ?? null;
     probe.uniforms.uNu.value = sample.nu ?? 0;
     probe.uniforms.uProbeR.value = sample.r ?? 0;
@@ -2356,6 +2437,21 @@ export const SCATTERING_VALIDATION_SAMPLE = {
   nu: 0.3,
 } as const;
 
+/** The single-Mie colour texel the tier is validated on: the same sunlit sky
+ *  ray, two hundredths of the way up the shell (2 km on Earth). Mie's density
+ *  falls off over about a kilometre, so at the scattering sample's 20 km its
+ *  single scattering is ~1e-8, under half-float's smallest normal and the 8-bit
+ *  blit's step, and the colour table would read zero there on every device.
+ *  Here Earth's green and blue are ~0.028, which SCATTERING_PROBE_SCALE puts a
+ *  fifth of the way up the readback window. The table holds single scattering
+ *  only, so the reference is the same quantity, not a lower bound. */
+export const MIE_VALIDATION_SAMPLE = {
+  altitudeFraction: 0.02,
+  mu: 0.4,
+  muS: 0.8,
+  nu: 0.3,
+} as const;
+
 /** How far a validated channel may sit from the CPU reference. The table
  *  carries every scattering order and the reference carries one, so the ceiling
  *  is generous by construction — Earth's four-order table reads 1.3-1.5x the
@@ -2376,6 +2472,13 @@ export const OPTICAL_DEPTH_VALIDATION_BAND = { min: 0.85, max: 1.15 } as const;
  *  own defaults — still far inside the bands above, and about a millisecond. */
 const VALIDATION_TRANSMITTANCE_SAMPLES = 200;
 const VALIDATION_SCATTERING_SAMPLES = 20;
+/** The single-Mie colour's reference takes the bake's own step count. Mie's
+ *  density falls off over about a kilometre, and a trapezoid that starts on
+ *  the sample with a step of a dozen kilometres counts that first kilometre
+ *  twice: at 20 steps Earth's reference is 1.7x the 50-step integral the table
+ *  holds, which leaves a healthy table a breath above the band's floor of 0.5.
+ *  At the bake's own 50 the two are the same integral. Under a millisecond. */
+const VALIDATION_MIE_SAMPLES = 50;
 
 /** Add the pass's output to whatever the target already holds. NOT three's
  *  AdditiveBlending: that is `blendFunc(SRC_ALPHA, ONE)` unless the material is
@@ -2535,6 +2638,16 @@ export function createScatteringTarget(sizes: AtmosphereTableSizes): THREE.WebGL
   return make3D(scatteringTextureWidth(sizes), sizes.scatteringMu, sizes.scatteringR);
 }
 
+/** The single-Mie colour table: RG16F, and otherwise the scattering target
+ *  exactly — width, height, depth, filters and wraps all come from the same
+ *  maker. That identity is load-bearing: a lookup reads single Mie's red from
+ *  the scattering table's alpha and its green and blue from here at ONE
+ *  coordinate, which is one bilinear filter over one texel's rgb only while
+ *  the two grids coincide. atmosphereLut.test.ts pins it. */
+export function createMieColourTarget(sizes: AtmosphereTableSizes): THREE.WebGL3DRenderTarget {
+  return make3D(scatteringTextureWidth(sizes), sizes.scatteringMu, sizes.scatteringR, THREE.RGFormat);
+}
+
 function make2D(width: number, height: number): THREE.WebGLRenderTarget {
   return new THREE.WebGLRenderTarget(width, height, {
     type: THREE.HalfFloatType,
@@ -2549,10 +2662,15 @@ function make2D(width: number, height: number): THREE.WebGLRenderTarget {
   });
 }
 
-function make3D(width: number, height: number, depth: number): THREE.WebGL3DRenderTarget {
+function make3D(
+  width: number,
+  height: number,
+  depth: number,
+  format: THREE.PixelFormat = THREE.RGBAFormat,
+): THREE.WebGL3DRenderTarget {
   return new THREE.WebGL3DRenderTarget(width, height, depth, {
     type: THREE.HalfFloatType,
-    format: THREE.RGBAFormat,
+    format,
     // Both filters are passed explicitly: a render target only copies the ones
     // it is given, and a Data3DTexture is born Nearest on both.
     minFilter: THREE.LinearFilter,
@@ -2568,15 +2686,25 @@ function make3D(width: number, height: number, depth: number): THREE.WebGL3DRend
   });
 }
 
+/** The bytes one render target holds, read off its format and type: a channel
+ *  is two bytes at half float and one at 8 bits, and the colour table is two
+ *  channels where every other table is four. */
 function targetBytes(target: THREE.WebGLRenderTarget, depth: number): number {
-  const bytesPerTexel = target.texture.type === THREE.HalfFloatType ? 8 : 4;
-  return target.width * target.height * depth * bytesPerTexel;
+  const format = target.texture.format;
+  const channels = format === THREE.RGFormat ? 2 : format === THREE.RedFormat ? 1 : 4;
+  const bytesPerChannel = target.texture.type === THREE.HalfFloatType ? 2 : 1;
+  return target.width * target.height * depth * channels * bytesPerChannel;
+}
+
+/** The same, for a target that carries its own depth (1 for a 2D table). */
+function renderTargetBytes(target: THREE.WebGLRenderTarget): number {
+  return targetBytes(target, target.depth ?? 1);
 }
 
 /**
- * What one profile's tier costs in GPU memory: `resident`, the three tables a
+ * What one profile's tier costs in GPU memory: `resident`, the four tables a
  * baked body keeps for the session, and `bakePeak`, what is allocated while a
- * bake runs — the resident three plus the four scratch targets Bruneton's
+ * bake runs — the resident four plus the four scratch targets Bruneton's
  * recurrence needs live at once.
  *
  * Arithmetic only, from the sizes. The live figure the memory envelope reads
@@ -2589,12 +2717,15 @@ export function atmosphereTierGpuBytes(
   sizes: AtmosphereTableSizes,
 ): { resident: number; bakePeak: number } {
   const HALF_FLOAT_RGBA = 8;
+  const HALF_FLOAT_RG = 4;
   const table2D = (w: number, h: number): number => w * h * HALF_FLOAT_RGBA;
-  const table3D = (): number =>
-    scatteringTextureWidth(sizes) * sizes.scatteringMu * sizes.scatteringR * HALF_FLOAT_RGBA;
+  const table3D = (bytesPerTexel = HALF_FLOAT_RGBA): number =>
+    scatteringTextureWidth(sizes) * sizes.scatteringMu * sizes.scatteringR * bytesPerTexel;
+  // Transmittance, irradiance, scattering, and the single-Mie colour beside it.
   const resident = table2D(sizes.transmittanceW, sizes.transmittanceH)
     + table2D(sizes.irradianceW, sizes.irradianceH)
-    + table3D();
+    + table3D()
+    + table3D(HALF_FLOAT_RG);
   // deltaIrradiance (2D) + deltaRayleigh, deltaMie, deltaScatteringDensity (3D).
   const scratch = table2D(sizes.irradianceW, sizes.irradianceH) + table3D() * 3;
   return { resident, bakePeak: resident + scratch };

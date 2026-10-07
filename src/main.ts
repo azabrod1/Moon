@@ -3283,9 +3283,11 @@ function installDevHooks() {
     atmoTier: (tier: 'analytic' | null, settle = true) => planetariumMode?.devSetAtmosphereTier(tier, settle) ?? null,
     atmoBake: (options?: { body?: string; orders?: number; half?: boolean; drawsPerSlice?: number }) =>
       planetariumMode?.devAtmosphereBake(options) ?? Promise.resolve(null),
+    // Table texels read back at 16 bits (planetarium devAtmosphereSample):
+    // `mieColour` is single Mie's green and blue beside the scattering texel.
     atmoSample: (
       samples: ReadonlyArray<{
-        kind: 'transmittance' | 'scattering' | 'combined' | 'irradiance';
+        kind: 'transmittance' | 'scattering' | 'mieColour' | 'combined' | 'irradiance';
         r: number; mu: number; muS?: number; nu?: number; hitsGround?: boolean; scale?: number;
       }>,
       body?: string,

@@ -12,8 +12,9 @@
 // ground spacing (the parallel shrinks by cos(lat) on an equirect), times one
 // authored exaggeration. The shipped v2 map (gen-maps, MOLA 16 px/deg,
 // `strength 2.4` on min–max-normalised heights) works out to almost exactly
-// physical slope × 2.4 at its own texel spacing — see the derivation on
-// --strength below — so the default reproduces its macro look, and every
+// physical slope × 2.4 at its own texel spacing — the derivation is at
+// MARS_RELIEF_EXAGGERATION in world/reliefNormals.ts — so the default
+// reproduces its macro look, and every
 // finer output is a sharper map of the same relief rather than a steeper one,
 // which is what the relief ladder's "pure sharpen" rule needs. The tilt
 // statistics of each output are printed beside the shipped map's so that
@@ -42,6 +43,9 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, open, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
+// The relief encoder the Moon's generator (tools/gen-moon-relief.mjs) uses,
+// imported through Node's type stripping: one formula for both bodies' slopes.
+import { MARS_RELIEF_EXAGGERATION, encodeReliefNormals } from '../src/planetarium/world/reliefNormals.ts';
 
 const args = process.argv.slice(2);
 const opt = (name, fallback) => {
@@ -52,19 +56,11 @@ const opt = (name, fallback) => {
 const TEX = path.resolve('public/textures');
 const CACHE = path.resolve(opt('cache', '.moon-data-cache'));
 const SOURCE = path.resolve(opt('src', path.join(CACHE, 'Mars_HRSC_MOLA_BlendDEM_Global_200mp_v2.tif')));
-// Physical slope times this. The v2 map's gen-maps recipe was a central
-// difference of min–max-normalised heights (range ≈ 29.7 km over the whole
-// planet) times 2.4, with no division by the two-texel baseline: per texel of
-// its 1440-wide grid that is 2.4·Δh/29.7 km, and at that grid's equatorial
-// spacing of 14.8 km a physical central difference is Δh/(2·14.8 km) — so the
-// two agree at an exaggeration of 2.4·2·14.8/29.7 ≈ 2.4. The material then
+// Physical slope times this: Mars's authored exaggeration, derived and
+// recorded beside the Moon's in world/reliefNormals.ts. The material then
 // halves it (PlanetFactory authors normalScale 0.5 for Mars).
-const EXAGGERATION = Number(opt('strength', '2.4'));
+const EXAGGERATION = Number(opt('strength', String(MARS_RELIEF_EXAGGERATION)));
 const NODATA = -32768;
-/** cos(lat) is clamped here before it divides the parallel's spacing, as
- *  gen-maps clamps it: the last rows of an equirect are texels a few metres
- *  wide, and an honest division there is a map of noise. */
-const MIN_COS_LAT = 0.2;
 
 /** The three widths of one relief. The boot map and the 4K rung ship; the 8K
  *  map stays in the cache as the source gen-tiles cuts the sector crops from
@@ -337,38 +333,19 @@ function resampleGrid(heights, width, height, targetWidth, targetHeight) {
 }
 
 // ---------------------------------------------------------------------------
-// Heights → tangent-space normals, in gen-maps' convention (x east, y north,
-// z out; ny = +∂h/∂south as the OpenGL maps three reads), from physical slopes.
+// Heights → tangent-space normals, through the one relief encoder
+// (world/reliefNormals.ts): physical slope at each texel's true spacing, the
+// parallel shrunk by cos(lat) and clamped at a fifth, times the exaggeration,
+// in the shipped maps' conventions (x east, y north, z out; ny = +∂h/∂south as
+// the OpenGL maps three reads). The Moon's generator goes through the same
+// function, so the two bodies' relief cannot drift apart in sign, clamp or
+// rounding.
 // ---------------------------------------------------------------------------
 
-function normalsFromHeights(heights, width, height, radiusMetres, exaggeration) {
-  const rgb = new Uint8Array(width * height * 3);
-  const metresPerRow = (Math.PI * radiusMetres) / height;
-  for (let row = 0; row < height; row++) {
-    const latitude = (0.5 - (row + 0.5) / height) * Math.PI;
-    const cosLatitude = Math.max(Math.cos(latitude), MIN_COS_LAT);
-    const metresPerColumn = (2 * Math.PI * radiusMetres * cosLatitude) / width;
-    const rowAbove = Math.max(row - 1, 0) * width;
-    const rowBelow = Math.min(row + 1, height - 1) * width;
-    const rowHere = row * width;
-    for (let column = 0; column < width; column++) {
-      const west = heights[rowHere + ((column - 1 + width) % width)];
-      const east = heights[rowHere + ((column + 1) % width)];
-      const north = heights[rowAbove + column];
-      const south = heights[rowBelow + column];
-      const slopeEast = ((east - west) / (2 * metresPerColumn)) * exaggeration;
-      const slopeSouth = ((south - north) / (2 * metresPerRow)) * exaggeration;
-      const normalX = -slopeEast;
-      const normalY = slopeSouth;
-      const normalZ = 1;
-      const inverseLength = 1 / Math.sqrt(normalX * normalX + normalY * normalY + 1);
-      const index = (rowHere + column) * 3;
-      rgb[index] = Math.round((normalX * inverseLength * 0.5 + 0.5) * 255);
-      rgb[index + 1] = Math.round((normalY * inverseLength * 0.5 + 0.5) * 255);
-      rgb[index + 2] = Math.round((normalZ * inverseLength * 0.5 + 0.5) * 255);
-    }
-  }
-  return rgb;
+function normalsFromHeights(heightsMetres, width, height, radiusMetres, exaggeration) {
+  const heightsKm = new Float32Array(heightsMetres.length);
+  for (let index = 0; index < heightsKm.length; index++) heightsKm[index] = heightsMetres[index] * 0.001;
+  return encodeReliefNormals(heightsKm, width, height, { bodyRadiusKm: radiusMetres * 0.001, exaggeration });
 }
 
 /** Median, 90th and 99th percentile tilt in degrees — the figure gen-maps

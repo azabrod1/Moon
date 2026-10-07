@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   INV_COS_LAT_CLAMP,
+  MARS_RELIEF_EXAGGERATION,
   SHIPPED_RELIEF_EXAGGERATION,
   areaResampleHeights,
   encodeReliefNormals,
@@ -24,6 +25,19 @@ describe('shippedStrengthAsExaggeration', () => {
     const close = shippedStrengthAsExaggeration(6.0, 2880, MOON_RADIUS_KM);
     expect(boot).toBeCloseTo(close, 6);
     expect(close).toBeCloseTo(SHIPPED_RELIEF_EXAGGERATION, 2);
+  });
+
+  it("records Mars's 2.4 as the exaggeration the v2 recipe worked out to", () => {
+    // gen-maps' v2 recipe for Mars: a central difference of heights normalised
+    // by their whole-planet range (29.7 km) times a strength of 2.4, with no
+    // two-texel baseline, on a 1440-wide grid of a 3389.5 km sphere. Against
+    // the physics at that grid's equatorial spacing the ratio is 2.39, which
+    // the constant rounds to the number the material was tuned against.
+    const marsRadiusKm = 3389.5;
+    const rangeKm = 29.7;
+    const v2 = 2.4 * (1 / rangeKm) * 2 * equatorTexelKm(1440, marsRadiusKm);
+    expect(v2).toBeCloseTo(MARS_RELIEF_EXAGGERATION, 1);
+    expect(MARS_RELIEF_EXAGGERATION).toBe(2.4);
   });
 });
 

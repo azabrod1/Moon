@@ -29,6 +29,17 @@
 /** The slope factor the shipped Moon relief tiers carry over the real one. */
 export const SHIPPED_RELIEF_EXAGGERATION = 1.39;
 
+/** The slope factor Mars's relief carries over the real one
+ *  (tools/gen-relief.mjs, from the HRSC–MOLA blended DEM). It is what the
+ *  shipped v2 map worked out to: gen-maps took a central difference of heights
+ *  normalised by their whole-planet range (≈ 29.7 km) times a strength of 2.4,
+ *  with no division by the two-texel baseline, so per texel of its 1440-wide
+ *  grid the slope was 2.4·Δh/29.7 km where the physics at that grid's 14.8 km
+ *  equatorial spacing is Δh/(2·14.8 km) — a ratio of 2.4·2·14.8/29.7 ≈ 2.4,
+ *  which the test pins. The material halves it (PlanetFactory authors
+ *  normalScale 0.5 for Mars), so the drawn relief is 1.2× the real slope. */
+export const MARS_RELIEF_EXAGGERATION = 2.4;
+
 /** The shipped generator's clamp on 1/cos(lat): past it the polar rows'
  *  texels are too narrow for a longitude slope to mean anything. */
 export const INV_COS_LAT_CLAMP = 5;

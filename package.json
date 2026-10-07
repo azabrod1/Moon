@@ -12,6 +12,7 @@
     "gen:maps": "node gen-maps.mjs",
     "gen:seawind": "node tools/gen-seawind.mjs",
     "gen:ktx2": "node tools/gen-ktx2.mjs",
+    "gen:moon-relief": "node tools/gen-moon-relief.mjs",
     "gen:tiles": "node tools/gen-tiles.mjs",
     "gen:cloudmaster": "node --expose-gc tools/gen-cloudmaster.mjs",
     "gen:moonmaps": "node --max-old-space-size=32768 --initial-old-space-size=12288 tools/gen-moonmaps.mjs",

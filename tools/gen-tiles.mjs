@@ -107,9 +107,8 @@ const jobsWanted = args.filter((a) => !a.startsWith('--'));
 // and the sector's UV transform maps onto the tile's interior
 // (world/sectorGrid.ts SECTOR_TILE). Data-map crops (bump / normal /
 // roughness) are pure crops of the base maps with the same gutter, so the
-// relief under a sector is exactly the base's relief; normal-map crops are cut
-// two sectors wide so their UV transform is uniform (sectorGrid explains the
-// tangent frame reason). Earth's ocean-gloss mask is not a base map but a
+// relief under a sector is exactly the base's relief; every crop is one sector
+// wide (sectorGrid's header has why normal crops once were two). Earth's ocean-gloss mask is not a base map but a
 // DERIVED one: classified per 16K source pixel (the same classifier that
 // grades the ocean colour, so gloss and blue agree at every coast),
 // area-averaged to 4096 for its crops and to 2048 for the boot file.
@@ -615,7 +614,11 @@ async function cutGrid(rows, grid, content, key, tier, webpOpts, spanU = 1, plan
  *  the same gutter, losslessly — never resampled, so a sector's relief is
  *  bit-for-bit the base's. Crops belong to level 0, whose grid they are cut
  *  on. `tier` names the base map's tier folder. */
-async function cutDataCrops(srcPath, key, tier, spanU = 1) {
+async function cutDataCrops(srcPath, key, tier, spanU = 1, optional = false) {
+  if (optional && !(await exists(srcPath))) {
+    console.log(`  ${key}/${tier}: no ${path.basename(srcPath)} in the cache — crop skipped`);
+    return;
+  }
   const { data, info } = await sharp(srcPath).removeAlpha().raw().toBuffer({ resolveWithObject: true });
   const content = info.width / GRID_16K.cols;
   const rows = memoryRows(data, info.width, info.height, info.channels);
@@ -813,7 +816,7 @@ export interface GeneratedSectorSet {
   tileHeight: number;
   /** Width of the equirect the set was cut from: content × cols. */
   baseWidth: number;
-  /** Sectors of longitude one tile spans (normal-map crops: 2). */
+  /** Sectors of longitude one tile spans (every shipped set: 1). */
   spanU: number;
   fileCount: number;
 }
@@ -1834,7 +1837,17 @@ export const JOBS = {
     ],
     downsamples: [],
     ref: path.join(TEX, '4k', 'moon.webp'),
-    dataCrops: [{ src: path.join(TEX, '4k', 'moon-normal.webp'), key: 'moon-normal', tier: '4k', spanU: 2 }],
+    // Two relief crops of the same LOLA product: the shipped 4k (2880 wide,
+    // 3.8 km a texel, the globe's own close rung) and the 8k that
+    // tools/gen-moon-relief.mjs writes to the cache from the 64 px/deg grid
+    // (8128 wide, 1.3 km a texel, cut at the shipped 1.39× so the rung is the
+    // same relief sharper). Which one the Moon's sectors bind is
+    // world/sectorStreamer.ts SECTOR_SETS; the 8k is cut only when its source
+    // is in the cache, so a `--crops` run without it leaves the 4k alone.
+    dataCrops: [
+      { src: path.join(TEX, '4k', 'moon-normal.webp'), key: 'moon-normal', tier: '4k' },
+      { src: cache('moon-normal-8k.webp'), key: 'moon-normal', tier: '8k', optional: true },
+    ],
   },
   // USGS Mars Viking MDIM 2.1 colour mosaic via WMS (what NASA Eyes ships).
   // The service's tone is a muted brown-grey (mean 122,97,95); NASA Eyes
@@ -1853,7 +1866,7 @@ export const JOBS = {
       { w: 2048, h: 1024, out: path.join(TEX, 'mars.v2.webp') },
     ],
     ref: path.join(TEX, '4k', 'mars.v2.webp'),
-    dataCrops: [{ src: path.join(TEX, 'mars-normal.v2.webp'), key: 'mars-normal.v2', tier: '2k', spanU: 2 }],
+    dataCrops: [{ src: path.join(TEX, 'mars-normal.v2.webp'), key: 'mars-normal.v2', tier: '2k' }],
   },
   // Solar System Scope 4K steps for the planets whose 8K/4K sources passed the
   // same-product gate against the shipped 2K boot maps (RMS 3.6 / 1.6 / 1.6).
@@ -2034,7 +2047,7 @@ async function main() {
       // Data crops only: a relief / roughness map changed under an unchanged
       // colour set (the tiles and downsamples are left alone). A derived map
       // needs the graded source again, but not its tiles.
-      for (const d of job.dataCrops ?? []) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1);
+      for (const d of job.dataCrops ?? []) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1, d.optional ?? false);
       if (job.derive && job.grade && job.levels?.[0]) {
         const { rows, water } = await levelRowSource(job, job.levels[0]);
         await job.derive(water, rows.width, rows.height);
@@ -2080,7 +2093,7 @@ async function main() {
       // the level-0 ancestor's crop), so a run for a finer level alone leaves
       // them where they are.
       if (wantedLevel === null || Number(wantedLevel) === 0) {
-        for (const d of job.dataCrops ?? []) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1);
+        for (const d of job.dataCrops ?? []) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1, d.optional ?? false);
         for (const g of job.grey ?? []) await greyGate(g);
       }
     }

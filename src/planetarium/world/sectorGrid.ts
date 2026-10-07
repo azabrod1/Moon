@@ -26,14 +26,14 @@
  * as new code reading old paths; sectorTiles.assets.test.ts holds the
  * shipped sets to the numbers here.
  *
- * Normal-map crops are cut TWO sectors wide (the sector centred, half a
- * neighbour each side): three derives the tangent frame from screen-space
- * derivatives of the transformed normal-map UV and normalises it by the
- * larger axis, so a crop whose transform scaled u by 8 and v by 4 would shade
- * relief with a different east–west/north–south balance than the globe under
- * it. A 90°×45° crop has a 4×4 transform — uniform — and the frame cancels
- * exactly. (Bump and roughness crops are unaffected: bump differences are
- * taken per screen pixel, roughness is a plain sample.)
+ * Every crop is cut ONE sector wide. Normal-map crops were once two wide (the
+ * sector centred, half a neighbour each side), because three derived the
+ * relief's tangent frame from screen-space derivatives of the transformed UV
+ * and normalised it by the larger axis: only a uniform transform kept the
+ * globe's east–west/north–south balance. The relief frame is now the sphere's
+ * own (world/reliefFrame.ts) and reads no UV derivative, so the crop holds its
+ * own sector and nothing else — half the bytes and half the download. The
+ * layout below still takes a span, for a set that ever needs one.
  *
  * Geometry convention is three's SphereGeometry: a vertex at parametric
  * (u, v) sits at (−cos φ sin θ, cos θ, sin φ sin θ) with φ = 2πu, θ = πv, and
@@ -83,9 +83,10 @@ export function ancestorSector(s: Sector, levels: number): Sector {
  *  only the interior carries surface; the interior spans `spanU` sectors of
  *  longitude, starting `leadU` sectors before the sector's own western edge,
  *  and exactly the sector's 45° of latitude. Colour tiles: 2048² with an 8-px
- *  gutter (content 2032², one sector). Normal-map crops: two sectors wide,
- *  centred (leadU = 0.5), with the horizontal gutter doubled so the gutter
- *  FRACTION — and with it the UV scale — is the same on both axes. */
+ *  gutter (content 2032², one sector); data crops the same shape at their base
+ *  map's resolution. A span over one is centred (leadU = (spanU − 1)/2), with
+ *  the horizontal gutter scaled so the gutter FRACTION is the same on both
+ *  axes. */
 export interface TileLayout {
   width: number;
   height: number;

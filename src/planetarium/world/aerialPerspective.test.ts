@@ -109,23 +109,23 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '43929b8f911ac303d99e948634f55ea2da1171bc6288f2f13c338c7b5ec552b8';
-const PROD_FRAGMENT_HASH = 'c6d77d2a2b10d644d2cbf532e21df476c6445c36511c805de15c874aa55846ec';
+const DEV_FRAGMENT_HASH = 'cfcc6f283779815525aa8bdf50c5b9dfbc72a5afd9f83e90ed473499c8f9598a';
+const PROD_FRAGMENT_HASH = 'f49da5e37b2696dab4a2bfa55bb8162d8986fedc09aa0745927911ea2d7a26ca';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 /** The two texts with the cloud field's define OFF (world/cloudField),
  *  resolved as the preprocessor resolves it: each of the field's two chunks
  *  leaves the one blank line it opens with. */
-const FIELD_OFF_DEV_FRAGMENT_HASH = '983723667591bd395952b8aa811b35ed770ded6ef6b4b7a5666cbb90a7d420e4';
-const FIELD_OFF_PROD_FRAGMENT_HASH = '2bd5829c3e56d43e06ce6151edde3f5cdf5e5afd9bf356e7e8c4d2e5709fdeff';
+const FIELD_OFF_DEV_FRAGMENT_HASH = 'a542d00afd6da79bffcbd6ed51fba055ab12ffb2dffe3f1366037db905bd99e1';
+const FIELD_OFF_PROD_FRAGMENT_HASH = '76ff957f024ff126b6a58e004c1c5e58b9207190fb7355afe7a749b9245375e1';
 /** The production text from before the field reached a production build:
  *  the shipped text with the field's two chunks deleted, newlines and all. */
-const PRE_FIELD_PROD_FRAGMENT_HASH = 'b75df58c90c08fe04165a72939c3dda72ff6d5ddc23a78b0c80ab8d42fbd04a1';
+const PRE_FIELD_PROD_FRAGMENT_HASH = '54a480aaeb795fbc192a2a616a128c123bb811cb01d12b2ce1fb148c425455fd';
 /** The same two texts with the cloud shadow's, the cloud light's and the
  *  cloud field's defines all OFF, resolved as the preprocessor resolves them:
  *  the texts from before the switches existed, but for the field's two blank
  *  lines. */
-const OFF_DEV_FRAGMENT_HASH = 'c1529e41101b1b4a04cd060bea810bde5081fa1219aba65261422b8a8885ea7b';
-const OFF_PROD_FRAGMENT_HASH = '967aeed2db2e859034b4ce6fb9729bb3e8a1adfb3ff4d7456fc106bd866b573e';
+const OFF_DEV_FRAGMENT_HASH = '2e197086bf9259e800f5f3d089e42d037b19422151d937148417904f97755966';
+const OFF_PROD_FRAGMENT_HASH = '4e569e732cf0f8ea83d225478aec2c36c17bb8cc0740941b232be413bfb2f7c4';
 describe('the injected surface shader', () => {
   it('is one text for every body and both tiers', () => {
     // Earth with air, the Moon without, Mars with its own, and the cloud deck.
@@ -170,7 +170,7 @@ describe('the injected surface shader', () => {
     // alone, and that text has its own pin: the test below ties the two.
     const shader = compile(augmented('earth'));
     expect(hash(shader.vertexShader))
-      .toBe('862f7224fafb480070aebf0c7c125dddbd78c879780eb072e96988333154322a');
+      .toBe('fb0f88934d6953cd220eaa08c60a6b475629e51ae70e4e6180b0855a51e6fe0b');
     expect(hash(shader.fragmentShader))
       .toBe(import.meta.env.DEV ? DEV_FRAGMENT_HASH : PROD_FRAGMENT_HASH);
   });
@@ -339,6 +339,10 @@ describe('the injected surface shader', () => {
       .replace('\t} // cloud relief probe\n', '')
       .replace('uProbeCloudDetail > 0.5 ? 0.0 : ', '')
       .replace(' && (uProbeCloudAir < 0.5 || DECK_OFF)', '')
+      // A DEV deck can be drawn through the ground's program (`cloud-program`
+      // off) and keeps three's relief frame there; production's deck always
+      // has its own program, so its ground program has no such line.
+      .replace('\tif ( DECK_ON ) reliefFrame = tbn;\n', '')
       // The glint's tuning uniforms: the cap and the calm lobe read as the
       // constants they default to, and the scale, a DEV A/B knob at one, is
       // not in the text at all.

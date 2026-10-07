@@ -14,8 +14,10 @@
 //
 // Usage: node tools/flyby-probe.mjs [comma-separated target keys]
 //   MOON_URL=http://localhost:5173/ overrides the dev server.
-// Exit code 0 = every assertion on every target passed.
+// Exit code 0 = every assertion on every target passed. Takes
+// /tmp/moon-browser.lock (tools/browserLock.mjs).
 import { chromium } from 'playwright';
+import { takeBrowserLock } from './browserLock.mjs';
 
 const URL_BASE = process.env.MOON_URL || 'http://localhost:5173/';
 // Fixed epoch for every run (2026-08-22T00:00Z) + a second Mars epoch 10
@@ -66,6 +68,7 @@ const kmS = (text) => {
   return m ? Number(m[1].replaceAll(',', '')) : null;
 };
 
+const release = await takeBrowserLock('flyby');
 const browser = await chromium.launch({
   args: ['--use-gl=angle', '--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'],
 });
@@ -262,5 +265,6 @@ for (const T of TARGETS) {
 }
 
 await browser.close();
+release();
 console.log(failures.length ? `\n${failures.length} FAILURES` : '\nALL PASS');
 process.exit(failures.length ? 1 : 0);

@@ -16,8 +16,9 @@
 // rungs the rule itself asks for — and score the frame each change lands on
 // against two 60 Hz vsyncs. They carry their own verdict for that reason.
 //
-// Needs a dev server (this checkout, `npx vite --port 5656 --strictPort`) and,
-// for the sector tiles, a tile host (`node planning/_tiles-serve.mjs` on 5622).
+// Needs a dev server (this checkout, `npx vite --port 5656 --strictPort`), which
+// serves the sector tiles from the app's own origin; --tiles=<url> points them
+// at another host instead.
 // Runs ONE browser and ONE tab at a time on the real GPU: a second WebGL tab
 // steals the GPU process and every number below becomes fiction. That is
 // enforced machine-wide, not by convention — this takes /tmp/moon-browser.lock
@@ -77,7 +78,7 @@ function arg(name, def) {
 const has = (name) => process.argv.includes(`--${name}`);
 
 const URL_BASE = arg('url', 'http://localhost:5656');
-const TILES = arg('tiles', 'http://localhost:5622/');
+const TILES = arg('tiles', '');
 const LABEL = arg('label', 'baseline');
 const OUT_DIR = join(arg('out', '/tmp/moon-shots/smooth'), LABEL);
 const ONLY = arg('scenario', '').split(',').map((s) => s.trim()).filter(Boolean);

@@ -13,8 +13,8 @@ import { ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER } from './surfaceShading';
 import { PLANET_TEXTURE_FILES } from './textureLadder';
 import {
   COX_MUNK_SLOPE_CALM as GENERATOR_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS as GENERATOR_SLOPE_PER_MS,
-  SEA_WIND_MAX_MS as GENERATOR_WIND_MAX_MS, DEFAULTS, bandStatistics, buildField, calmWeightForWind,
-  encodeCalmGrey, encodeSeaWindRgb, encodeWindyGrey, meanSquareSlope as generatorMeanSquareSlope, pointEvaluator,
+  SEA_WIND_MAX_MS as GENERATOR_WIND_MAX_MS, DEFAULTS, bandStatistics, buildField,
+  encodeWindGrey, meanSquareSlope as generatorMeanSquareSlope, pointEvaluator,
 } from '../../../tools/seaWindField.mjs';
 
 describe('windRoughness', () => {
@@ -43,11 +43,13 @@ describe('windRoughness', () => {
     expect(ROUGHNESS_MAP_LAND).toBeGreaterThan(windRoughness(SEA_WIND_MAX_MS));
   });
 
-  it('holds the calm lobe where the generator measured the calm weight', () => {
-    // A weight of one means "this calm": the shader's lobe and the bake's
-    // reference are one number, or a weight would draw a sea the design did
-    // not put there.
-    expect(SEA_CALM_LOBE_WIND_MS).toBe(DEFAULTS.calmReferenceWindMs);
+  it('holds the calm lobe where the shipped calm map was measured', () => {
+    // A weight of one means "this calm": the calm map the app loads was baked
+    // against a reference lobe at 0.6 m/s, so the shader's lobe stays that
+    // number while that map is read, or a weight would draw a sea the design
+    // did not put there. The generator no longer has a calm reference: its
+    // one map is the wind alone.
+    expect(SEA_CALM_LOBE_WIND_MS).toBe(0.6);
     expect(SEA_CALM_LOBE_ROUGHNESS).toBeCloseTo(windRoughness(SEA_CALM_LOBE_WIND_MS), 12);
     expect(Math.pow(SEA_CALM_LOBE_ROUGHNESS, 4)).toBeCloseTo(0.00607, 5);
     // And the slope law is one law in the three places that carry it.
@@ -187,19 +189,15 @@ describe('the generator (tools/seaWindField.mjs)', () => {
       const lat = sample < 200 ? random() * 8 - 4 : random() * 140 - 70;
       const lon = random() * 360 - 180;
       const here = field(lon, lat);
-      const roundOnce = field(lon + 360, lat);
-      const roundTwiceBack = field(lon - 720, lat);
-      expect(roundOnce.windMs).toBeCloseTo(here.windMs, 9);
-      expect(roundOnce.calmWeight).toBeCloseTo(here.calmWeight, 9);
-      expect(roundOnce.windyMs).toBeCloseTo(here.windyMs, 9);
-      expect(roundTwiceBack.windMs).toBeCloseTo(here.windMs, 9);
+      expect(field(lon + 360, lat)).toBeCloseTo(here, 9);
+      expect(field(lon - 720, lat)).toBeCloseTo(here, 9);
     }
     // And the slope across the date line is a slope, not a crease: the
     // one-sided differences at the seam disagree by the field's own
     // curvature, which halves with the step, where a crease would hold.
     const mismatch = (lat: number, step: number): number => Math.abs(
-      ((field(180, lat).windMs - field(180 - step, lat).windMs)
-        - (field(180 + step, lat).windMs - field(180, lat).windMs)) / step,
+      ((field(180, lat) - field(180 - step, lat))
+        - (field(180 + step, lat) - field(180, lat))) / step,
     );
     for (const lat of [-45, -20, -2, 0, 2, 10, 20, 45]) {
       const coarse = mismatch(lat, 0.01);
@@ -208,183 +206,129 @@ describe('the generator (tools/seaWindField.mjs)', () => {
     }
   });
 
-  it('converts a calm sea into the weight that keeps the glint\'s peak, one for calmer than the lobe and zero at the wind', () => {
-    expect(calmWeightForWind(0.3, 7, 0.6)).toBe(1);
-    expect(calmWeightForWind(0.6, 7, 0.6)).toBeCloseTo(1, 12);
-    expect(calmWeightForWind(7, 7, 0.6)).toBe(0);
-    expect(calmWeightForWind(2, 2, 0.6)).toBe(0);
-    const weight = calmWeightForWind(1.5, 7, 0.6);
-    expect(weight).toBeGreaterThan(0.4);
-    expect(weight).toBeLessThan(0.6);
-    // The peak identity: the mixture's brightness at the centre of the glint
-    // is the single lobe's, since a lobe's peak goes as 1 / mss.
-    const peak = (wind: number): number => 1 / generatorMeanSquareSlope(wind);
-    expect(weight * peak(0.6) + (1 - weight) * peak(7)).toBeCloseTo(peak(1.5), 9);
-    let last = 1;
-    for (let wind = 0.6; wind <= 7; wind += 0.2) {
-      const next = calmWeightForWind(wind, 7, 0.6);
-      expect(next).toBeLessThanOrEqual(last + 1e-12);
-      last = next;
-    }
-  });
 
   it('is the field it was: a few points pinned, so a drift in the arithmetic is a deliberate re-bake', () => {
-    // Move these only with `npm run gen:seawind` and the shipped hashes below.
-    const pins: Array<[number, number, number, number, number]> = [
-      [-160, -12, 3.305083, 0, 3.305083],
-      [30, 0, 1.331001, 0.442952, 3.173800],
-      [120, 25, 1.098598, 0.635078, 5.691913],
-      [-45, -40, 7.210969, 0, 7.210969],
-      [0, 60, 12.334111, 0, 12.334111],
-      [90, -55, 9.641751, 0, 9.641751],
+    // Move these only with `npm run gen:seawind` and the shipped hash below.
+    // They are the open sea's wind the pair before this map carried in its
+    // windy map at the same points: removing the calm lanes and regions left
+    // the wind under them as it was.
+    const pins: Array<[number, number, number]> = [
+      [-160, -12, 3.305083],
+      [30, 0, 3.173800],
+      [120, 25, 5.691913],
+      [-45, -40, 7.210969],
+      [0, 60, 12.334111],
+      [90, -55, 9.641751],
     ];
-    for (const [lon, lat, wind, calm, windy] of pins) {
-      const point = field(lon, lat);
-      expect(point.windMs).toBeCloseTo(wind, 5);
-      expect(point.calmWeight).toBeCloseTo(calm, 5);
-      expect(point.windyMs).toBeCloseTo(windy, 5);
-    }
+    for (const [lon, lat, wind] of pins) expect(field(lon, lat)).toBeCloseTo(wind, 5);
   });
 
-  it('keeps the calm share across the equator, where the two tilts blend', () => {
-    // A blend of two noises has less spread than either, so a mask of the
-    // blended noise under-delivered the table's share by a sixth in the band;
-    // the masks are blended instead. The control is one orientation with no
-    // blend at all (tilt 0), on the same 7200 points of the equator.
-    const blended = pointEvaluator();
-    const control = pointEvaluator({ tilt: 0 });
-    const meanCalm = (field: (lon: number, lat: number) => { calmWeight: number }, lat: number): number => {
-      let sum = 0;
-      for (let i = 0; i < 7200; i++) sum += field(-180 + (360 * i) / 7200, lat).calmWeight;
-      return sum / 7200;
-    };
-    for (const lat of [0, 2]) {
-      expect(meanCalm(blended, lat)).toBeGreaterThan(meanCalm(control, lat) * 0.9);
-      expect(meanCalm(blended, lat)).toBeLessThan(meanCalm(control, lat) * 1.3);
-    }
-  });
-
-  it('blows at the climatology by band, calmest and most often glassy in the tropics, and never glassy in the Southern Ocean', () => {
+  it('blows at the climatology by band, rising from the tropics to the Southern Ocean, and is almost never glassy', () => {
     // A small bake, one point a texel: the statistics are the design's.
     const small = buildField(256, 128, { supersample: 1 });
-    expect(small.calmWeight).toHaveLength(256 * 128);
-    expect(small.windyWidth).toBe(128);
-    expect(small.windyMs).toHaveLength(128 * 64);
+    expect(small.windMs).toHaveLength(256 * 128);
     const tropics = bandStatistics(small, 0, 15);
     const trades = bandStatistics(small, 15, 30);
     const westerlies = bandStatistics(small, 30, 45);
     const roaring = bandStatistics(small, 45, 60);
-    expect(tropics.meanWindMs).toBeGreaterThan(3.5);
-    expect(tropics.meanWindMs).toBeLessThan(5);
+    // The zonal table's own mean over |lat| 0-15 is about 5.2 m/s; the broad
+    // structure moves a band's mean little.
+    expect(tropics.meanWindMs).toBeGreaterThan(4.5);
+    expect(tropics.meanWindMs).toBeLessThan(6);
     expect(tropics.meanWindMs).toBeLessThan(trades.meanWindMs);
     expect(trades.meanWindMs).toBeLessThan(westerlies.meanWindMs);
     expect(westerlies.meanWindMs).toBeLessThan(roaring.meanWindMs);
     expect(roaring.meanWindMs).toBeGreaterThan(9);
-    expect(tropics.meanCalmWeight).toBeGreaterThan(trades.meanCalmWeight);
-    expect(trades.meanCalmWeight).toBeGreaterThan(westerlies.meanCalmWeight);
-    expect(westerlies.meanCalmWeight).toBeGreaterThan(roaring.meanCalmWeight);
-    expect(roaring.meanCalmWeight).toBeLessThan(0.03);
-    expect(tropics.under2Fraction).toBeGreaterThan(0.15);
-    expect(tropics.under2Fraction).toBeLessThan(0.35);
-    // The windy map is the open sea: never a lane's wind.
-    let windyMin = Infinity;
-    for (const wind of small.windyMs) windyMin = Math.min(windyMin, wind);
-    expect(windyMin).toBeGreaterThan(0.09);
-    // Every byte of the encodings is a texel: grey, north-up, three a texel.
-    const calm = encodeCalmGrey(small);
-    expect(calm).toHaveLength(256 * 128 * 3);
-    expect(calm[0]).toBe(calm[1]);
-    expect(calm[1]).toBe(calm[2]);
-    const windy = encodeWindyGrey(small);
-    expect(windy).toHaveLength(128 * 64 * 3);
-    // Both grey pictures are north-up too: their first row is the field's
-    // last, which a hash pin moved on a re-bake could not tell from a map
-    // upside down.
-    expect(calm[0]).toBe(Math.round(Math.min(1, Math.max(0, small.calmWeight[127 * 256])) * 255));
-    expect(windy[0]).toBe(Math.round(Math.min(1, Math.max(0, small.windyMs[63 * 128] / SEA_WIND_MAX_MS)) * 255));
-    expect(calm[calm.length - 3]).toBe(Math.round(Math.min(1, Math.max(0, small.calmWeight[255])) * 255));
-    const both = encodeSeaWindRgb(small);
-    expect(both).toHaveLength(256 * 128 * 3);
-    // The picture's top row is the map's last row, the north.
-    expect(both[0]).toBe(Math.round(Math.min(1, Math.max(0, small.calmWeight[127 * 256])) * 255));
-    expect(both[2]).toBe(0);
+    // With no calm lanes or regions a glassy sea is the broad structure's
+    // rare trough: under a metre a second nearly nowhere, under two over a
+    // few percent of the tropics at most, where the lanes put a fifth to a
+    // third of it.
+    for (const band of [tropics, trades, westerlies, roaring]) expect(band.under1Fraction).toBeLessThan(0.01);
+    expect(tropics.under2Fraction).toBeLessThan(0.05);
+    // The field is floored at 0.1 m/s.
+    let windMin = Infinity;
+    for (const wind of small.windMs) windMin = Math.min(windMin, wind);
+    expect(windMin).toBeGreaterThan(0.09);
+    // Every byte of the encoding is a texel: grey, three a texel, north-up —
+    // its first row is the field's last, which a hash pin moved on a re-bake
+    // could not tell from a map upside down.
+    const grey = encodeWindGrey(small);
+    expect(grey).toHaveLength(256 * 128 * 3);
+    expect(grey[0]).toBe(grey[1]);
+    expect(grey[1]).toBe(grey[2]);
+    const byte = (wind: number): number => Math.round(Math.min(1, Math.max(0, wind / SEA_WIND_MAX_MS)) * 255);
+    expect(grey[0]).toBe(byte(small.windMs[127 * 256]));
+    expect(grey[grey.length - 3]).toBe(byte(small.windMs[255]));
   });
 
-  it('mixes exactly where it matters: a block\'s mixture keeps the glint\'s peak, which a block\'s mean wind loses', () => {
-    // The reason for two maps. Over 2-degree blocks of 16x16 points at the
-    // shipped texel scale, the brightness at the centre of the glint from
-    // the block-averaged calm weight and windy speed against the mean over
-    // the points of the single-wind design, beside the same from the mean
-    // wind alone. A lobe's brightness at a facet tilt goes as
-    // exp(-tan²/mss) / mss; the common factors cancel in a ratio.
+  it('is smooth enough that a block\'s mean wind keeps the glint, which is why a mip of the map is fine', () => {
+    // Averaging winds is biased where a block holds very different winds:
+    // the glint's brightness at a facet tilt goes as exp(-tan²/mss) / mss,
+    // convex in the wind, and over the calm lanes the pair before this map
+    // held, a block's mean wind lost a fifth of the peak. This field has
+    // nothing finer than its broad cells. Over 2-degree blocks of 16x16
+    // points — about six texels of the shipped map, a mip two to three
+    // levels down — the
+    // brightness from the block's mean wind against the mean of its points'
+    // brightnesses, at the centre of the glint and off it.
     const lobe = (mss: number, tiltDeg: number): number => {
       const tan = Math.tan((tiltDeg * Math.PI) / 180);
       return Math.exp((-tan * tan) / mss) / mss;
     };
-    const referenceMss = generatorMeanSquareSlope(DEFAULTS.calmReferenceWindMs);
     let state = 99;
     const random = (): number => {
       state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
       return state / 4294967296;
     };
-    const errors: Record<number, { mixture: number[]; averaged: number[] }> = { 0: { mixture: [], averaged: [] }, 5: { mixture: [], averaged: [] }, 10: { mixture: [], averaged: [] } };
-    let blocks = 0;
-    while (blocks < 60) {
+    const errors: Record<number, number[]> = { 0: [], 5: [], 10: [] };
+    for (let block = 0; block < 60; block++) {
       const lon0 = random() * 360 - 180;
-      const lat0 = random() * 50 - 25;
-      const points = [];
+      const lat0 = random() * 120 - 60;
+      const winds: number[] = [];
       for (let row = 0; row < 16; row++) {
-        for (let column = 0; column < 16; column++) points.push(field(lon0 + (column + 0.5) / 8, lat0 + (row + 0.5) / 8));
+        for (let column = 0; column < 16; column++) winds.push(field(lon0 + (column + 0.5) / 8, lat0 + (row + 0.5) / 8));
       }
-      const calmMean = points.reduce((sum, point) => sum + point.calmWeight, 0) / points.length;
-      if (calmMean < 0.05) continue; // a block with no calm in it mixes nothing
-      blocks++;
-      const windyWeight = points.reduce((sum, point) => sum + 1 - point.calmWeight, 0);
-      const windyMean = points.reduce((sum, point) => sum + (1 - point.calmWeight) * point.windyMs, 0) / Math.max(windyWeight, 1e-9);
-      const windMean = points.reduce((sum, point) => sum + point.windMs, 0) / points.length;
+      const windMean = winds.reduce((sum, wind) => sum + wind, 0) / winds.length;
       for (const tilt of [0, 5, 10]) {
-        const reference = points.reduce((sum, point) => sum + lobe(generatorMeanSquareSlope(point.windMs), tilt), 0) / points.length;
-        const mixture = calmMean * lobe(referenceMss, tilt) + (1 - calmMean) * lobe(generatorMeanSquareSlope(windyMean), tilt);
-        const averaged = lobe(generatorMeanSquareSlope(windMean), tilt);
-        errors[tilt].mixture.push(Math.abs(mixture / reference - 1));
-        errors[tilt].averaged.push(Math.abs(averaged / reference - 1));
+        const reference = winds.reduce((sum, wind) => sum + lobe(generatorMeanSquareSlope(wind), tilt), 0) / winds.length;
+        errors[tilt].push(Math.abs(lobe(generatorMeanSquareSlope(windMean), tilt) / reference - 1));
       }
     }
     const mean = (values: number[]): number => values.reduce((sum, value) => sum + value, 0) / values.length;
-    // At the centre the mixture is within a few percent and the mean wind a
-    // fifth low, which is the dim wash the first map drew.
-    expect(mean(errors[0].mixture)).toBeLessThan(0.08);
-    expect(mean(errors[0].averaged)).toBeGreaterThan(0.15);
-    expect(mean(errors[0].averaged)).toBeGreaterThan(mean(errors[0].mixture) * 3);
-    // Off the centre both are approximations of the same order; the
-    // mixture's is bounded.
-    expect(mean(errors[5].mixture)).toBeLessThan(0.12);
-    expect(mean(errors[10].mixture)).toBeLessThan(0.12);
+    // Within a few percent on average, at the centre and off it, and no
+    // block off by a tenth.
+    for (const tilt of [0, 5, 10]) {
+      expect(mean(errors[tilt])).toBeLessThan(0.03);
+      expect(Math.max(...errors[tilt])).toBeLessThan(0.1);
+    }
   });
 
-  it('ships the pair the generator bakes, under the names the boot loads and warms', () => {
-    // The hashes move only with `npm run gen:seawind`. A re-bake keeps the
-    // pathname: the worker keys the file by its content, and the `.v1` is
-    // for a break in what the bytes MEAN, not a new look.
-    expect(PLANET_TEXTURE_FILES.earthSeaCalm).toBe('earth-seawind-calm.v1.webp');
-    expect(PLANET_TEXTURE_FILES.earthSeaWindy).toBe('earth-seawind-windy.v1.webp');
+  it('ships the map the generator bakes, and the pair the app reads until the shader draws one lobe', () => {
+    // The hash moves only with `npm run gen:seawind`, and a re-bake whose
+    // bytes differ ships under a new name, as every data file the service
+    // worker caches does.
     const hashOf = (file: string): string =>
       createHash('sha256').update(readFileSync(`public/textures/${file}`)).digest('hex');
+    expect(hashOf('earth-seawind.v1.webp'))
+      .toBe('fa489ef7320ee3cdb24f54f73db6d4716d4fbd06812f1817f8f7c682026bc9d6');
+    // Lossless webp, the container the loader decodes as a picture: RIFF,
+    // WEBP, VP8L.
+    const mapBytes = readFileSync('public/textures/earth-seawind.v1.webp');
+    expect(mapBytes.toString('ascii', 0, 4)).toBe('RIFF');
+    expect(mapBytes.toString('ascii', 8, 12)).toBe('WEBP');
+    expect(mapBytes.toString('ascii', 12, 16)).toBe('VP8L');
+    // And the shipped DEFAULTS are what that hash was baked from.
+    expect(DEFAULTS.supersample).toBe(4);
+    expect(DEFAULTS.grain).toBe(0);
+    expect(DEFAULTS.broadSpread).toBe(0.45);
+    // The pair the boot loads and warms today, baked by this generator
+    // before it lost the calm lanes and regions; pinned until the app reads
+    // the one map instead.
+    expect(PLANET_TEXTURE_FILES.earthSeaCalm).toBe('earth-seawind-calm.v1.webp');
+    expect(PLANET_TEXTURE_FILES.earthSeaWindy).toBe('earth-seawind-windy.v1.webp');
     expect(hashOf(PLANET_TEXTURE_FILES.earthSeaCalm))
       .toBe('a0f814051033fc5c6829d359465b2cb839e20282debb999babb791c2482a8e61');
     expect(hashOf(PLANET_TEXTURE_FILES.earthSeaWindy))
       .toBe('383f23550b9992f0e7b1c8a9d7cee2b9dc78be743e8e1b56bc49f940c5a6dd20');
-    // Lossless webp, the container the loader decodes as a picture: RIFF,
-    // WEBP, VP8L.
-    const calmBytes = readFileSync(`public/textures/${PLANET_TEXTURE_FILES.earthSeaCalm}`);
-    expect(calmBytes.toString('ascii', 0, 4)).toBe('RIFF');
-    expect(calmBytes.toString('ascii', 8, 12)).toBe('WEBP');
-    expect(calmBytes.toString('ascii', 12, 16)).toBe('VP8L');
-    // And the shipped DEFAULTS are what those hashes were baked from.
-    expect(DEFAULTS.supersample).toBe(2);
-    expect(DEFAULTS.windyDownsample).toBe(2);
-    expect(DEFAULTS.grain).toBe(0);
-    expect(DEFAULTS.regionGust).toBe(0.5);
-    expect(DEFAULTS.laneEdge).toBe(0.12);
   });
 });

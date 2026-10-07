@@ -15,8 +15,10 @@
  * point, and dark calm lanes off-centre.
  *
  * So the sea reads, per fragment, a baked pair of maps of a bimodal, streaked
- * wind field (tools/seaWindField.mjs, shipped by `npm run gen:seawind`), and
- * the pair holds not one wind but a MIXTURE:
+ * wind field (baked by tools/seaWindField.mjs before it dropped the calm
+ * lanes and regions; `npm run gen:seawind` now bakes the one map
+ * earth-seawind.v1.webp, which nothing reads until the shader draws a single
+ * lobe), and the pair holds not one wind but a MIXTURE:
  *   the CALM map (textures/earth-seawind-calm.v1.webp, 2048x1024): the calm
  *     weight w, the share of the texel's sea that is glassy, held against a
  *     reference lobe (Cox-Munk at SEA_CALM_LOBE_WIND_MS);
@@ -47,10 +49,9 @@
  * `?seawind=0` (any build) draws the whole sea at OCEAN_ROUGHNESS with three's
  * own lobe — the kill switch, and the A/B against the one-width sea. The DEV
  * `?seawindmap=<url>` reads a map from a file instead of the shipped pair (a
- * picture with the calm weight in red and the windy speed in green, as the
- * bake job's `--rgb` writes one, or a raw byte map of one wind a texel), and
- * `?glint=` / `__moon.glint` force one width, or move the calm lobe and the
- * cap, live.
+ * picture with the calm weight in red and the windy speed in green, or a raw
+ * byte map of one wind a texel), and `?glint=` / `__moon.glint` force one
+ * width, or move the calm lobe and the cap, live.
  */
 import * as THREE from 'three';
 import { applyTextureDefaults } from './texturePolicy';
@@ -68,9 +69,9 @@ export const SEA_WIND_MAX_MS = 16;
 /**
  * The glassy lobe the calm weight is measured against: Cox-Munk at this wind,
  * mss 0.00607, whose peak is 0.83 of white at normal incidence and whose
- * half-maximum sits at 3.7 degrees of facet tilt. The generator's reference
- * (tools/seaWindField.mjs DEFAULTS.calmReferenceWindMs) is the same number,
- * so a weight of one draws the sea the design put there; the DEV
+ * half-maximum sits at 3.7 degrees of facet tilt. The shipped calm map was
+ * baked against a reference lobe at the same wind, so a weight of one draws
+ * the sea the design put there; the DEV
  * `__moon.glint({calm})` moves the lobe alone, as a look knob on the cores.
  * Cox-Munk's zero-wind floor is an extrapolation of their fit — a truly
  * glassy sea is calmer than 0.003 — which is why the knob also takes an mss.
@@ -253,8 +254,8 @@ export function disposeRetiredSeaWindMaps(): void {
 
 /** `?seawindmap=<url>` (DEV only): the sea's maps from a file instead of the
  *  shipped pair — a picture with the calm weight in red and the windy speed
- *  over SEA_WIND_MAX_MS in green, north-up (the bake job's `--rgb` form), or
- *  a raw byte map of one wind a texel — so a field baked elsewhere, a real
+ *  over SEA_WIND_MAX_MS in green, north-up, or a raw byte map of one wind a
+ *  texel — so a field baked elsewhere, a real
  *  wind day or a candidate from the offline simulator, is judged in the app
  *  under its own clouds and air. Asking for one refuses the shipped pair from
  *  then on. */

@@ -89,6 +89,7 @@ import {
   parseAerosolParam,
   setAerosolOverride,
 } from './planetarium/world/atmosphereModel';
+import { parseMieExactParam, setMieExactEnabled } from './planetarium/world/atmosphereLut';
 import { devAlbedoGrade } from './planetarium/world/albedoGrade';
 import { highlightMeterEnabled, parseGlintMeterParam, setHighlightMeterEnabled } from './planetarium/highlightMeter';
 import { parseNightExposureParam, setDevNightExposure, type NightExposureOverride } from './planetarium/world/nightExposure';
@@ -330,6 +331,11 @@ setSeaWindEnabled(parseSeaWindParam(location.search));
 // any surface is augmented). Each is the picture as it was.
 setSunPathEnabled(parseSunPathParam(location.search));
 setSeaBeamEnabled(parseSeaBeamParam(location.search));
+// `?mieexact=0`: the haze's single-Mie green and blue rebuilt from the
+// scattering table's rgb again instead of read from their own table (the
+// MIE_EXACT define, world/atmosphereLut). Set here, before any material that
+// compiles the lookup exists; the picture as it was.
+setMieExactEnabled(parseMieExactParam(location.search));
 // `?seacolour=0`: the sea drawn in the day map's painted navy again instead
 // of clear ocean water's own colour (world/surfaceShading SEA_WATER_COLOUR).
 setSeaColourEnabled(parseSeaColourParam(location.search));
@@ -3283,9 +3289,11 @@ function installDevHooks() {
     atmoTier: (tier: 'analytic' | null, settle = true) => planetariumMode?.devSetAtmosphereTier(tier, settle) ?? null,
     atmoBake: (options?: { body?: string; orders?: number; half?: boolean; drawsPerSlice?: number }) =>
       planetariumMode?.devAtmosphereBake(options) ?? Promise.resolve(null),
+    // Table texels read back at 16 bits (planetarium devAtmosphereSample):
+    // `mieColour` is single Mie's green and blue beside the scattering texel.
     atmoSample: (
       samples: ReadonlyArray<{
-        kind: 'transmittance' | 'scattering' | 'combined' | 'irradiance';
+        kind: 'transmittance' | 'scattering' | 'mieColour' | 'combined' | 'irradiance';
         r: number; mu: number; muS?: number; nu?: number; hitsGround?: boolean; scale?: number;
       }>,
       body?: string,

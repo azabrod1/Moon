@@ -2787,8 +2787,14 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
         float skyCos = max(-dot(skyView, skyUp), 0.0);
         vec3 skyRay = skyView + 2.0 * skyCos * skyUp;
         float skyNu = dot(skyRay, skySun);
+#ifdef MIE_EXACT
+        vec2 skyMieGB;
+        vec4 skyS = getScatteringAndMieColour3D(uScattering, 1.0, skyCos, skyMuS, skyNu, false, skyMieGB);
+        vec3 skyMie = vec3(skyS.a, skyMieGB) * smoothstep(0.0, 0.01, skyMuS);
+#else
         vec4 skyS = getScattering3DRGBA(uScattering, 1.0, skyCos, skyMuS, skyNu, false);
         vec3 skyMie = getExtrapolatedSingleMieScattering(skyS) * smoothstep(0.0, 0.01, skyMuS);
+#endif
         vec3 skyRadiance = (skyS.rgb * rayleighPhaseFunction(skyNu) + skyMie * miePhaseFunction(uMiePhaseG, skyNu))
             * uAirlightScale * uSolarIrradiance;
         seaSky = skyRadiance
@@ -3501,6 +3507,7 @@ export function createSurfaceAirFx(): SurfaceAirFx {
   air.uTransmittance.value = dummies.map2D;
   air.uIrradiance.value = dummies.map2D;
   air.uScattering.value = dummies.map3D;
+  air.uMieColour.value = dummies.map3D;
   return air;
 }
 
@@ -3537,6 +3544,7 @@ export function bindSurfaceAir(
   applyAtmosphereParams(air, tables.params);
   air.uTransmittance.value = tables.transmittance;
   air.uScattering.value = tables.scattering;
+  air.uMieColour.value = tables.mieColour;
   air.uIrradiance.value = tables.irradiance;
   air.uPlanetRadius.value = planetRadius;
   air.uSolarIrradiance.value = solarIrradiance;
@@ -3572,13 +3580,15 @@ export function settleSurfaceAir(air: SurfaceAirFx): void {
 /** Switch the air off and let go of the tables: a lost context frees their
  *  textures, and a sampler still pointed at one is a bind of a dead name. */
 export function clearSurfaceAir(air: SurfaceAirFx): void {
-  if (air.uAirDensity.value === 0 && air.uScattering.value === surfaceAirDummies().map3D) return;
   const dummies = surfaceAirDummies();
+  if (air.uAirDensity.value === 0 && air.uScattering.value === dummies.map3D
+    && air.uMieColour.value === dummies.map3D) return;
   air.uAirDensity.value = 0;
   air.uAirBlend.value = 0;
   air.uTransmittance.value = dummies.map2D;
   air.uIrradiance.value = dummies.map2D;
   air.uScattering.value = dummies.map3D;
+  air.uMieColour.value = dummies.map3D;
 }
 
 export function augmentSurfaceMaterial(

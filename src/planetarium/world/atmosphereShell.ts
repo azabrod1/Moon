@@ -117,6 +117,10 @@ void main() {
 }
 `;
 
+// Under MIE_EXACT (atmosphereLut) the sky also reads single Mie's green and
+// blue from the colour table, whose sampler the lookup GLSL declares itself;
+// the text below is left as it was so the program with the define off is the
+// program it was.
 const SHELL_FRAGMENT = /* glsl */`
 // The lookup GLSL takes its tables as parameters, so each consumer declares the
 // samplers it actually reads. Sky radiance needs the scattering table alone:
@@ -234,10 +238,20 @@ void main() {
   if (inAir) {
     float mu = clampCosine(rmu / r);
     float nu = clampCosine(dot(view, sun));
+#ifdef MIE_EXACT
+    vec2 mieGB;
+    vec4 scattering = getScatteringAndMieColour3D(
+        uScattering, r, mu, clampCosine(dot(origin, sun) / r), nu, false, mieGB);
+#else
     vec4 scattering = getScattering3DRGBA(
         uScattering, r, mu, clampCosine(dot(origin, sun) / r), nu, false);
+#endif
     vec3 rayleigh = max(scattering.rgb, vec3(0.0));
+#ifdef MIE_EXACT
+    vec3 mie = max(vec3(scattering.a, mieGB), vec3(0.0));
+#else
     vec3 mie = max(getExtrapolatedSingleMieScattering(scattering), vec3(0.0));
+#endif
 
     // Eclipse: the same casters the ground traces, in the same frame, sampled
     // at the ray's lowest point.
@@ -267,10 +281,20 @@ void main() {
       float moonNight = night * uNightExposure * moonUpWeight(clampCosine(dot(normalize(lowest), moon)));
       if (moonNight > 0.0) {
         float nuMoon = clampCosine(dot(view, moon));
+#ifdef MIE_EXACT
+        vec2 lunarMieGB;
+        vec4 lunar = getScatteringAndMieColour3D(
+            uScattering, r, mu, clampCosine(dot(origin, moon) / r), nuMoon, false, lunarMieGB);
+#else
         vec4 lunar = getScattering3DRGBA(
             uScattering, r, mu, clampCosine(dot(origin, moon) / r), nuMoon, false);
+#endif
         vec3 lunarRayleigh = max(lunar.rgb, vec3(0.0));
+#ifdef MIE_EXACT
+        vec3 lunarMie = max(vec3(lunar.a, lunarMieGB), vec3(0.0));
+#else
         vec3 lunarMie = max(getExtrapolatedSingleMieScattering(lunar), vec3(0.0));
+#endif
         radiance += (lunarRayleigh * rayleighPhaseFunction(nuMoon)
                 + lunarMie * miePhaseFunction(uMiePhaseG, nuMoon))
             * uMoonIrradiance * moonNight;
@@ -356,6 +380,7 @@ export function createAtmosphereShellMaterial(
   uniforms.uTransmittance.value = dummies.map2D;
   uniforms.uIrradiance.value = dummies.map2D;
   uniforms.uScattering.value = dummies.map3D;
+  uniforms.uMieColour.value = dummies.map3D;
 
   const material = new THREE.ShaderMaterial({
     vertexShader: SHELL_VERTEX,
@@ -426,6 +451,7 @@ export function bindAtmosphereShellTables(
   applyAtmosphereParams(material.uniforms, tables.params);
   material.uniforms.uTransmittance.value = tables.transmittance;
   material.uniforms.uScattering.value = tables.scattering;
+  material.uniforms.uMieColour.value = tables.mieColour;
   material.uniforms.uIrradiance.value = tables.irradiance;
 }
 

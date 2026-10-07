@@ -1625,7 +1625,13 @@ describe('the sky reflected off the sea', () => {
 
   it('reads the air table at the surface along the reflected ray in the air frame, its own term held out of the limb, and is no text at all off', () => {
     const text = fragmentOf();
-    expect(text).toContain('getScattering3DRGBA(uScattering, 1.0, skyCos, skyMuS, skyNu, false)');
+    // One lookup at the surface, its single Mie read whole from the tables
+    // under MIE_EXACT and rebuilt from rgb without it — no subtraction here.
+    const exact = resolveDefine(text, 'MIE_EXACT', true);
+    expect(exact).toContain('getScatteringAndMieColour3D(uScattering, 1.0, skyCos, skyMuS, skyNu, false, skyMieGB)');
+    expect(exact).toContain('vec3 skyMie = vec3(skyS.a, skyMieGB) * smoothstep(0.0, 0.01, skyMuS);');
+    expect(resolveDefine(text, 'MIE_EXACT', false))
+      .toContain('getScattering3DRGBA(uScattering, 1.0, skyCos, skyMuS, skyNu, false)');
     expect(text).toContain('vec3 skyView = normalize(vAirFrag - vAirCam);');
     expect(text).toContain('vec3 skySun = normalize(uSunDirWorld);');
     expect(text).toContain('if (uAirDensity > 0.0 && seaWater > 0.0) {');

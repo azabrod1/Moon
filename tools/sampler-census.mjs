@@ -5,9 +5,9 @@
 // under the cloud field's archetype define), so the only honest count is GL's
 // own ACTIVE_UNIFORMS list after a link. The app's DEV bridge builds and links
 // every combination of the switch defines that change a sampler
-// (src/planetarium/world/samplerCensus.ts: CLOUD_SHADOW, CLOUD_FIELD and
-// CLOUD_LIGHT, the full and the half atmosphere tables, the ground with and
-// without its water mask) and this battery holds them to:
+// (src/planetarium/world/samplerCensus.ts: CLOUD_SHADOW, CLOUD_FIELD,
+// CLOUD_LIGHT and MIE_EXACT, the full and the half atmosphere tables, the
+// ground with and without its water mask) and this battery holds them to:
 //
 //   - every program within the GPU's fragment texture units;
 //   - every Earth ground program linking exactly the sea's samplers
@@ -16,15 +16,19 @@
 //     more; the ground, which compiles the field only beside its cloud shadow
 //     (the shadow reads the field), drops its dead uCloudDetail tap and holds
 //     exactly the field's two more;
+//   - every program compiled with MIE_EXACT holds exactly the single-Mie
+//     colour table (uMieColour) more than the same row without it, and no
+//     row without it links uMieColour;
 //   - the live globe and deck, as this boot linked them, hold exactly what the
 //     census row with their defines holds — the check that the census builds
 //     the app's programs and not some other ones.
 //
 //   node tools/sampler-census.mjs --url=http://localhost:5744
 //   node tools/sampler-census.mjs --url=… --extra='&cloudtiles=0&cloudshadows=0&cloudlight=0'
+//   node tools/sampler-census.mjs --url=… --extra='&mieexact=0'
 //
-// The first boot has the three cloud switches on, as they ship; the second
-// turns each off by its kill switch.
+// The first boot has the cloud switches and the exact single-Mie colour on, as
+// they ship; the others turn them off by their kill switches.
 import { chromium } from 'playwright';
 import { takeBrowserLock } from './browserLock.mjs';
 
@@ -35,6 +39,7 @@ function arg(name, fallback) {
 const baseUrl = arg('url', 'http://localhost:5174');
 const extra = arg('extra', '');
 const FIELD_SAMPLERS = ['uCloudPages', 'uCloudPageTable'];
+const MIE_SAMPLER = 'uMieColour';
 
 const failures = [];
 const fail = (message) => { failures.push(message); console.log(`  FAIL  ${message}`); };
@@ -63,6 +68,13 @@ try {
     return !loading || loading.classList.contains('hidden');
   }, { timeout: 180000 }).catch(() => {});
 
+  // Earth's shell on the tables tier, so its live program is the one that
+  // reads the tables (a device with no tier keeps the analytic shell).
+  for (let i = 0; i < 60; i++) {
+    const tier = await page.evaluate(() => window.__moon.atmoTier?.(null, true));
+    if (tier?.Earth === 'lut') break;
+    await page.waitForTimeout(1000);
+  }
   // The deck's live program is the one with its relief: wait for it to land.
   let census = null;
   for (let i = 0; i < 40; i++) {
@@ -88,6 +100,16 @@ try {
     const field = r.defines.includes('CLOUD_FIELD');
     if (n === 0) fail(`${key(r)}: no linked program`);
     if (n > census.maxUnits) fail(`${key(r)}: ${n} samplers, over the ${census.maxUnits} units`);
+    // The exact single-Mie colour: its one table more, and nothing else.
+    if (r.defines.includes('MIE_EXACT')) {
+      const packed = find(r.surface, r.defines.filter((d) => d !== 'MIE_EXACT'), r.tables, r.waterMask);
+      if (!packed) fail(`${key(r)}: no row without MIE_EXACT to hold it to`);
+      else if (!same(r.samplers, [...packed.samplers, MIE_SAMPLER])) {
+        fail(`${key(r)}: holds ${r.samplers.join(' ')}, wanted ${key(packed)} and ${MIE_SAMPLER}`);
+      }
+    } else if (r.samplers.includes(MIE_SAMPLER)) {
+      fail(`${key(r)}: ${MIE_SAMPLER} active without MIE_EXACT`);
+    }
     const sea = r.samplers.filter((s) => s.startsWith('uSea'));
     if (r.surface === 'ground' && sea.length !== census.seaWindSamplers) {
       fail(`${key(r)}: links ${sea.length} sea sampler(s) (${sea.join(' ')}), wanted ${census.seaWindSamplers}`);
@@ -125,6 +147,17 @@ try {
     }
   }
   if (census.live.length < 2) fail(`only ${census.live.length} live surface(s) found`);
+  // The tables-tier shell reads the scattering table, and the colour table
+  // beside it under MIE_EXACT: one sampler, or two.
+  if (!census.shell) {
+    console.log('  live shell                                           -  not on the tables tier');
+  } else {
+    const s = census.shell;
+    const what = `live shell [${s.mieExact ? 'MIE_EXACT' : ''}]`;
+    console.log(`  ${what.padEnd(52)} ${s.samplers ? String(s.samplers.length).padStart(2) : ' -'}  ${s.samplers ? s.samplers.join(' ') : 'not linked'}`);
+    const wanted = s.mieExact ? [MIE_SAMPLER, 'uScattering'] : ['uScattering'];
+    if (!s.samplers || !same(s.samplers, wanted)) fail(`${what}: holds ${s.samplers?.join(' ') ?? 'nothing'}, wanted ${wanted.join(' ')}`);
+  }
   if (pageErrors.length) fail(`${pageErrors.length} page error(s): ${pageErrors[0]}`);
   await context.close();
 } finally {

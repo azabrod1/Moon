@@ -31,6 +31,7 @@ Ground and map tiles
 Earth's sea, air and clouds (in `world/surfaceShading.ts` unless named)
 - `?seawind=0` gives the whole sea one roughness instead of the wind map (`world/seaWind.ts`).
 - `?sunpath=0` stops sunlight dimming and reddening on its way through the air.
+- `?mieexact=0` works out the green and blue of the haze around the Sun from the rest of the sky's colour again, instead of reading them from their own table (`world/atmosphereLut.ts`). It shows most in the low orange band of a twilight limb.
 - `?seabeam=0`, `?seacolour=0` and `?seasky=0` return the sun's reflection on the sea, the sea's colour and the sky's reflection in it to how they were.
 - `?glintmeter=0` stops the camera darkening for the sun's reflection on the sea (`planetarium/highlightMeter.ts`).
 - `?bloomknee=0` returns the glow around bright spots to how it was (`app/bloomConfig.ts`).
@@ -54,3 +55,4 @@ On the dev server, `window.__moon` drives the app from the console or a test scr
 - Look tuning: `setDither`, `glint`, `glintMeter`, `haze`, `aerosol`, `sunLight`, `albedoGrade`, `cloudShadow`, `cloudLight`, `cloudField`, `nightSides`, `nightExposure`.
 - Speed: `quality`, `setQuality`, `setFps`, `upscale`, `pinRatio`, `perfTargets`, `gpuProfile`, `drawLog`, `waitForDraw`. `perfSwitches` and `perfArm` come from `app/perfSwitches.ts`, `perfRun` from `app/devPerfSweep.ts`.
 - State: `viewport`, `sectors`, `renderPath`, `miniState`, `samplerCensus`, `atmoState`.
+- Atmosphere tables: `atmoBake` bakes a set to measure, and `atmoSample` reads table values back. Its kinds are `transmittance`, `scattering`, `mieColour` (the haze's green and blue, beside the red the `scattering` texel keeps), `combined` and `irradiance`.

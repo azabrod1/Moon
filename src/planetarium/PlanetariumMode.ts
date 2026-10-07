@@ -176,7 +176,7 @@ import {
   type ReleaseCandidate,
 } from './world/gpuEnvelope';
 import {
-  AtmosphereLut, lastBakeSliceSample, takeBakeSliceSpendMs, peekBakeSliceSpendMs,
+  AtmosphereLut, lastBakeSliceSample, takeBakeSliceSpendMs, peekBakeSliceSpendMs, mieExactOn,
   type AtmosphereBakeStats, type AtmosphereTables,
 } from './world/atmosphereLut';
 import { bindAtmosphereShellTables, restShellCrossfade, setAtmosphereShellGroundSegments, shellTierAlphas, stepShellCrossfade, type ShellCrossfade } from './world/atmosphereShell';
@@ -3987,8 +3987,8 @@ export class PlanetariumMode {
    * they are allocated out of the one pool the maps and the tiles share. The
    * figure is asked of the LUT per frame rather than added as a constant
    * because the tier may never arrive at all, and because the bake itself
-   * holds ~32 MiB of scratch for the minutes it runs — a rung admitted against
-   * the resident 8 MiB while 32 are really allocated is a rung admitted
+   * holds ~36 MiB for the minutes it runs — a rung admitted against the
+   * resident 12 MiB while 36 are really allocated is a rung admitted
    * against memory that is not there. Unlike a map, the tables cannot be given
    * back, so they act as a floor the ladder's own maps give way to.
    */
@@ -16194,6 +16194,9 @@ export class PlanetariumMode {
       probeMs: lut.probeMs,
       orders: lut.orders,
       sizes: lut.sizes,
+      // Whether the lookups read single Mie's exact colour (`?mieexact=0`
+      // turns it off), so a capture can say which program it came from.
+      mieExact: mieExactOn(),
       programs: this.renderer.info.programs?.length ?? 0,
       textureBytesResident: this.renderer.info.memory.textures,
       stats: lut.stats(),
@@ -16224,12 +16227,15 @@ export class PlanetariumMode {
   }
 
   /** Read table values back through the 8-bit blit path, at the same table
-   *  coordinates the shaders would address. `combined` returns the radiance a
-   *  lookup gives — both phase functions and the single-Mie recovery, evaluated
-   *  in the shader — and `irradiance` reads the sky-irradiance table. */
+   *  coordinates the shaders would address. `scattering` is the raw texel
+   *  (Rayleigh and the higher orders in rgb, single Mie's red in alpha),
+   *  `mieColour` the raw single-Mie colour texel at the same coordinate (its
+   *  green and blue, read back as [G, B, 0, 1]), `combined` the radiance a
+   *  lookup gives — both phase functions and the single-Mie term, evaluated in
+   *  the shader — and `irradiance` reads the sky-irradiance table. */
   devAtmosphereSample(
     samples: ReadonlyArray<{
-      kind: 'transmittance' | 'scattering' | 'combined' | 'irradiance';
+      kind: 'transmittance' | 'scattering' | 'mieColour' | 'combined' | 'irradiance';
       r: number;
       mu: number;
       muS?: number;
@@ -16269,7 +16275,10 @@ export class PlanetariumMode {
       const coords = scatteringTexture3DCoords(uvwz, tables.sizes);
       return lut.readSample({
         mode: s.kind === 'combined' ? 2 : 1,
-        scattering: tables.scattering,
+        scattering: s.kind === 'mieColour' ? tables.mieColour : tables.scattering,
+        // The combined lookup reads single Mie's green and blue from here, as
+        // the drawing programs do; unbound it would read an empty texture.
+        mieColour: tables.mieColour,
         uvw0: coords.uvw0,
         uvw1: coords.uvw1,
         nuLerp: coords.lerp,

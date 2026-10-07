@@ -3166,6 +3166,7 @@ describe('a colour-rung swap and the body\'s air', () => {
       transmittance: fakeTexture('T'),
       scattering: fakeTexture('S'),
       irradiance: fakeTexture('E'),
+      mieColour: fakeTexture('M'),
     };
   }
 

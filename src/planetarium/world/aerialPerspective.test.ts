@@ -21,6 +21,7 @@ import {
   ATMOSPHERE_LOOKUP_GLSL,
   aerialSegmentRay,
   atmosphereTableDefines,
+  parseMieExactParam,
   type AtmosphereTables,
 } from './atmosphereLut';
 import { createAtmosphereShellMaterial } from './atmosphereShell';
@@ -94,6 +95,7 @@ function fakeTables(body: string): AtmosphereTables {
     transmittance: new THREE.DataTexture(),
     scattering: new THREE.Data3DTexture(),
     irradiance: new THREE.DataTexture(),
+    mieColour: new THREE.Data3DTexture(),
   } as unknown as AtmosphereTables;
 }
 
@@ -108,23 +110,30 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = 'ae8347b328c8385eaef023791ba804a9394e0e35f84eeea4a218cf713cd88645';
-const PROD_FRAGMENT_HASH = '0c801a29769b7a54c1c74a521f751029742a991a765e9cba3448b4425a39aaa8';
+const DEV_FRAGMENT_HASH = 'c9cc84676bb52e133a884f2de8f28735fa49b69c57750ddcd7f7316b64de6b00';
+const PROD_FRAGMENT_HASH = 'a201e4037927a3c5a9ffe8843d948839b6dc1cf452775f54916fade4aafb64b2';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 /** The two texts with the cloud field's define OFF (world/cloudField),
  *  resolved as the preprocessor resolves it: each of the field's two chunks
  *  leaves the one blank line it opens with. */
-const FIELD_OFF_DEV_FRAGMENT_HASH = '434f398b0abc7a68085a59a519c0abda263969a69f57bf7410a6fd0444aca2d1';
-const FIELD_OFF_PROD_FRAGMENT_HASH = '082c6317d33db22a54fc6ac32a7dcf3b7b1466008e9c4a5f47c5f03004238445';
+const FIELD_OFF_DEV_FRAGMENT_HASH = '2f2dcabcccf07b6a1ffd2d589124f4437c8f51064317a585511794080d85425e';
+const FIELD_OFF_PROD_FRAGMENT_HASH = '3d94c35cc7349a730d9c8b22a0c06ea6b02dce8c6f30465ac89cca280d575b04';
 /** The production text from before the field reached a production build:
- *  the shipped text with the field's two chunks deleted, newlines and all. */
+ *  the shipped text with the field's two chunks deleted, newlines and all, and
+ *  the later single-Mie colour's define resolved off. */
 const PRE_FIELD_PROD_FRAGMENT_HASH = '46aa2d0112d72a7a82100f90bcbe4dd077643a47ae32fe569911f1acbbcd20a2';
 /** The same two texts with the cloud shadow's, the cloud light's and the
  *  cloud field's defines all OFF, resolved as the preprocessor resolves them:
  *  the texts from before the switches existed, but for the field's two blank
  *  lines. */
-const OFF_DEV_FRAGMENT_HASH = 'e456d320ebaf726bd248e59c7662f7ae485f338611504cafda2544090f5ad316';
-const OFF_PROD_FRAGMENT_HASH = '80a57b393c5a603a34f725532cdfb8500eccb37f67d38956312a7c731976af18';
+const OFF_DEV_FRAGMENT_HASH = '60fa6deaf45f4bf40a21972f85774eb19e07f6b8af4e448b480e27d6a47f6526';
+const OFF_PROD_FRAGMENT_HASH = '7e7bd44bca5a12a23d82f541577972996f76617b788669687e1ae346bcf34d11';
+/** The injected surface text and the LUT shell's with the single-Mie colour's
+ *  define OFF (`?mieexact=0`), resolved as the preprocessor resolves it: the
+ *  hashes these texts carried before the colour table existed, unchanged. */
+const MIE_OFF_DEV_FRAGMENT_HASH = 'ae8347b328c8385eaef023791ba804a9394e0e35f84eeea4a218cf713cd88645';
+const MIE_OFF_PROD_FRAGMENT_HASH = '0c801a29769b7a54c1c74a521f751029742a991a765e9cba3448b4425a39aaa8';
+const MIE_OFF_SHELL_FRAGMENT_HASH = 'e613114e0023b6b45b235dd92c7039cc5ea90113839778b234f4e249acc89b01';
 describe('the injected surface shader', () => {
   it('is one text for every body and both tiers', () => {
     // Earth with air, the Moon without, Mars with its own, and the cloud deck.
@@ -194,6 +203,55 @@ describe('the injected surface shader', () => {
     expect(shader.vertexShader).not.toContain('CLOUD_SHADOW');
   });
 
+  it('is the text it was with the single-Mie colour\'s define off, after the preprocessor', () => {
+    // MIE_EXACT (world/atmosphereLut) is a compile-time define, on unless
+    // `?mieexact=0`. Every line it adds is a whole line inside its own
+    // conditional and every line it replaces stands verbatim in the #else, so
+    // with it off the ground, the deck and the LUT shell compile the programs
+    // from before the colour table existed, character for character.
+    const shader = compile(augmented('earth'));
+    const off = resolveDefine(shader.fragmentShader, 'MIE_EXACT', false);
+    expect(off).not.toMatch(/MIE_EXACT|uMieColour|getScatteringAndMieColour3D|getMieColour3D/);
+    expect(hash(off)).toBe(import.meta.env.DEV ? MIE_OFF_DEV_FRAGMENT_HASH : MIE_OFF_PROD_FRAGMENT_HASH);
+    expect(compile(augmented('cloud')).fragmentShader).toBe(shader.fragmentShader);
+    expect(shader.vertexShader).not.toContain('MIE_EXACT');
+    const shell = createAtmosphereShellMaterial({
+      planetRadius: 4.2635e-5, body: 'Earth', sizes: ATMOSPHERE_TABLE_SIZES_FULL,
+    });
+    const shellOff = resolveDefine(shell.fragmentShader, 'MIE_EXACT', false);
+    expect(shellOff).not.toMatch(/MIE_EXACT|uMieColour/);
+    expect(hash(shellOff)).toBe(MIE_OFF_SHELL_FRAGMENT_HASH);
+    // The define rides with the table sizes, so every program that compiles
+    // the lookup takes it, and it is on unless the URL says otherwise.
+    expect(atmosphereTableDefines(ATMOSPHERE_TABLE_SIZES_FULL).MIE_EXACT).toBe('');
+    expect(shell.defines).toEqual(atmosphereTableDefines(ATMOSPHERE_TABLE_SIZES_FULL));
+    expect(parseMieExactParam('')).toBe(true);
+    expect(parseMieExactParam('?mieexact=0')).toBe(false);
+  });
+
+  it('reads single Mie whole under MIE_EXACT, and subtracts it channel by channel', () => {
+    // With the define on, no lookup rebuilds green and blue from rgb: the
+    // segment's single Mie is near minus far through the segment's own
+    // transmittance in every channel, clamped only after the subtraction, and
+    // its gate on the Sun's elevation is the one it always had.
+    const on = resolveDefine(compile(augmented('earth')).fragmentShader, 'MIE_EXACT', true);
+    expect(on).toContain('uniform sampler3D uMieColour;');
+    expect(on.match(/uniform sampler3D uMieColour;/g)).toHaveLength(1);
+    expect(on).toContain(
+      'vec3 mie = max(vec3(nearEnd.a, nearGB) - transmittance * vec3(farEnd.a, farGB), vec3(0.0));');
+    expect(on).toContain('mie *= smoothstep(0.0, 0.01, seg.muS);');
+    expect(on).not.toMatch(/getExtrapolatedSingleMieScattering\((?!vec4 scattering)/);
+    const shell = resolveDefine(createAtmosphereShellMaterial({
+      planetRadius: 4.2635e-5, body: 'Earth', sizes: ATMOSPHERE_TABLE_SIZES_FULL,
+    }).fragmentShader, 'MIE_EXACT', true);
+    expect(shell).toContain('vec3 mie = max(vec3(scattering.a, mieGB), vec3(0.0));');
+    expect(shell).toContain('vec3 lunarMie = max(vec3(lunar.a, lunarMieGB), vec3(0.0));');
+    expect(shell).not.toMatch(/getExtrapolatedSingleMieScattering\((?!vec4 scattering)/);
+    // Both ends of a segment are read through the one addressing helper, so
+    // the red and the green-blue of each end come from the same coordinate.
+    expect(AERIAL_PERSPECTIVE_GLSL.match(/getScatteringAndMieColour3D\(/g)).toHaveLength(2);
+  });
+
   it('puts every preprocessor directive at the start of its own line', () => {
     // The preprocessor only sees a directive at the start of a line: a chunk
     // spliced after a neighbour that does not end with a newline would hide
@@ -258,10 +316,12 @@ describe('the injected surface shader', () => {
       expect(resolveDefine(shader.fragmentShader.replace(CLOUD_FIELD_DECLS, '\n').replace(CLOUD_FIELD_MIX, '\n'),
         'CLOUD_FIELD', false), archetype).toBe(off);
       // ...and with both chunks gone, newlines and all, the shipped text is
-      // the one production compiled before the field reached it.
+      // the one production compiled before the field reached it — once the
+      // single-Mie colour, which came after, is resolved off as well.
       if (!import.meta.env.DEV) {
-        const without = resolveDefine(shader.fragmentShader.replace(CLOUD_FIELD_DECLS, '').replace(CLOUD_FIELD_MIX, ''),
-          'CLOUD_FIELD', false);
+        const without = resolveDefine(resolveDefine(
+          shader.fragmentShader.replace(CLOUD_FIELD_DECLS, '').replace(CLOUD_FIELD_MIX, ''),
+          'CLOUD_FIELD', false), 'MIE_EXACT', false);
         expect(hash(without), archetype).toBe(PRE_FIELD_PROD_FRAGMENT_HASH);
       }
       expect(shader.vertexShader).not.toContain('CLOUD_FIELD');
@@ -389,6 +449,8 @@ describe('the injected surface shader', () => {
     expect(scattering.image.height).toBe(1);
     expect(scattering.image.depth).toBe(1);
     expect(scattering.magFilter).toBe(THREE.LinearFilter);
+    // The single-Mie colour table's sampler takes the same stand-in.
+    expect(fx.air.uMieColour.value).toBe(scattering);
     expect(fx.air.uTransmittance.value).toBeInstanceOf(THREE.DataTexture);
     expect(fx.air.uIrradiance.value).toBeInstanceOf(THREE.DataTexture);
     // Every one of them reaches the shader.
@@ -401,12 +463,15 @@ describe('the injected surface shader', () => {
     const tables = fakeTables('Earth');
     bindSurfaceAir(fx.air, tables, 4.2635e-5, 0.97);
     expect(fx.air.uScattering.value).toBe(tables.scattering);
+    expect(fx.air.uMieColour.value).toBe(tables.mieColour);
     expect(fx.air.uSolarIrradiance.value).toBeCloseTo(0.97, 12);
     // A lost context frees the tables' textures; a sampler still pointed at one
     // is a bind of a dead name every frame until the re-bake lands.
     clearSurfaceAir(fx.air);
     expect(fx.air.uAirDensity.value).toBe(0);
     expect(fx.air.uScattering.value).not.toBe(tables.scattering);
+    expect(fx.air.uMieColour.value).not.toBe(tables.mieColour);
+    expect(fx.air.uMieColour.value).toBe(fx.air.uScattering.value);
     expect(fx.air.uTransmittance.value).not.toBe(tables.transmittance);
   });
 });

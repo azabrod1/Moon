@@ -8,6 +8,7 @@ import {
   AtmosphereLut,
   BAKE_BUDGET_FRACTION,
   BAKE_DEFAULT_INTERVAL_MS,
+  MIE_VALIDATION_SAMPLE,
   SCATTERING_PROBE_SCALE,
   SCATTERING_VALIDATION_BAND,
   SCATTERING_VALIDATION_SAMPLE,
@@ -16,6 +17,7 @@ import {
   bakePassCostsMs,
   bakeSliceBudgetMs,
   bakeSliceDrawCount,
+  createMieColourTarget,
   createScatteringTarget,
   createTableTarget,
   type AtmospherePass,
@@ -57,6 +59,57 @@ describe('atmosphere table targets', () => {
     } finally {
       target.dispose();
     }
+  });
+
+  it('makes the single-Mie colour table the scattering table\'s twin, two channels wide', () => {
+    // A lookup reads single Mie's red from the scattering table's alpha and its
+    // green and blue from this table at ONE coordinate. That is one filter over
+    // one texel's rgb only while the two grids and their filtering coincide:
+    // any difference in size, filter or wrap and red and green-blue are
+    // interpolated from different texels.
+    for (const sizes of [ATMOSPHERE_TABLE_SIZES_FULL, ATMOSPHERE_TABLE_SIZES_HALF]) {
+      const scattering = createScatteringTarget(sizes);
+      const colour = createMieColourTarget(sizes);
+      try {
+        expect(colour.width).toBe(scattering.width);
+        expect(colour.height).toBe(scattering.height);
+        expect(colour.depth).toBe(scattering.depth);
+        const a = scattering.texture;
+        const b = colour.texture;
+        expect((b as THREE.Data3DTexture).isData3DTexture).toBe(true);
+        expect(colour.textures.length).toBe(1);
+        expect(b.minFilter).toBe(a.minFilter);
+        expect(b.magFilter).toBe(a.magFilter);
+        expect(b.magFilter).toBe(THREE.LinearFilter);
+        expect(b.generateMipmaps).toBe(a.generateMipmaps);
+        expect(b.wrapS).toBe(a.wrapS);
+        expect(b.wrapT).toBe(a.wrapT);
+        expect(b.wrapR).toBe(a.wrapR);
+        expect(b.type).toBe(a.type);
+        // RG16F: three maps RG at half float to it, and it is colour-renderable
+        // under either float extension the tier accepts.
+        expect(b.type).toBe(THREE.HalfFloatType);
+        expect(b.format).toBe(THREE.RGFormat);
+        expect(a.format).toBe(THREE.RGBAFormat);
+        expect(colour.depthBuffer).toBe(false);
+        expect(colour.stencilBuffer).toBe(false);
+        expect(colour.samples).toBe(0);
+      } finally {
+        scattering.dispose();
+        colour.dispose();
+      }
+    }
+  });
+
+  it('writes single Mie\'s red once, beside its green and blue at the same texel', () => {
+    // Read as text: the combine program's two single-Mie modes read the same
+    // delta at the same uvw, mode 0 its red into the accumulator's alpha and
+    // mode 2 its green and blue into the colour table — and the order folds
+    // add alpha 0 with ONE/ONE blending, so the red is never overwritten.
+    const lut = readFileSync(resolve(__dirname, 'atmosphereLut.ts'), 'utf8');
+    expect(lut).toContain('fragColor = vec4(texture(uSourceA, uvw).rgb, texture(uSourceB, uvw).r);');
+    expect(lut).toContain('} else if (uMode == 2) {\n    fragColor = vec4(texture(uSourceB, uvw).gb, 0.0, 1.0);');
+    expect(lut).toContain('fragColor = vec4(texture(uSourceA, uvw).rgb / rayleighPhaseFunction(nu), 0.0);');
   });
 
   it('configures the 2D tables the same way', () => {
@@ -164,13 +217,13 @@ describe('the bake step list', () => {
 
   it('adds no draws and drops none', () => {
     // Bruneton's passes at four orders over the full tables: transmittance and
-    // the direct irradiance, the two single-scattering deltas and their
-    // combine over 32 layers, then per further order a density, two
-    // irradiance steps, a multiple-scattering pass and a combine.
+    // the direct irradiance, the two single-scattering deltas, their combine
+    // and the single-Mie colour over 32 layers, then per further order a
+    // density, two irradiance steps, a multiple-scattering pass and a combine.
     const layers = ATMOSPHERE_TABLE_SIZES_FULL.scatteringR;
     const perOrder = layers + 1 + 1 + layers + layers;
     expect(plan().filter((step) => step.kind === 'draw').length)
-      .toBe(2 + 2 * layers + layers + 3 * perOrder);
+      .toBe(2 + 2 * layers + layers + layers + 3 * perOrder);
   });
 });
 
@@ -346,47 +399,89 @@ describe('table validation probe', () => {
       }
     }
   });
+
+  it('reads the single-Mie colour sample well inside the probe window, on both profiles', () => {
+    // The colour table holds single Mie's green and blue, which fall off with a
+    // ~1.2 km scale height: at the scattering sample's altitude they are a
+    // half-float subnormal and would read zero, failing the tier everywhere.
+    // Their own sample sits low enough to read mid-window through the same
+    // probe scale and band.
+    const earth = atmosphereParams('Earth');
+    const s = MIE_VALIDATION_SAMPLE;
+    const r = earth.bottomRadius + s.altitudeFraction * (earth.topRadius - earth.bottomRadius);
+    // The bake's own 50 steps: what the table holds there.
+    const mie = computeSingleScattering(earth, r, s.mu, s.muS, s.nu, false, 50, 200).mie;
+    const expected = [mie[1], mie[2]];
+    // And the scattering sample is no place for it: there the colour is under
+    // half-float's smallest normal.
+    const v = SCATTERING_VALIDATION_SAMPLE;
+    const high = computeSingleScattering(
+      earth, earth.bottomRadius + v.altitudeFraction * (earth.topRadius - earth.bottomRadius),
+      v.mu, v.muS, v.nu, false, 32, 200,
+    ).mie;
+    expect(Math.max(high[1], high[2])).toBeLessThan(6.1e-5);
+    for (const sizes of [ATMOSPHERE_TABLE_SIZES_FULL, ATMOSPHERE_TABLE_SIZES_HALF]) {
+      const uvwz = scatteringUvwzFromRMuMuSNu(earth, r, s.mu, s.muS, s.nu, false, sizes);
+      expect(uvwz.uMu).toBeGreaterThan(0.5);
+      for (const channel of expected) {
+        const read = channel * SCATTERING_PROBE_SCALE;
+        expect(read).toBeGreaterThan(0.05);
+        expect(read).toBeLessThan(0.95);
+        expect(read * SCATTERING_VALIDATION_BAND.max).toBeLessThan(0.95);
+        expect(read * SCATTERING_VALIDATION_BAND.min).toBeGreaterThan(0.002);
+      }
+    }
+  });
 });
 
 describe('what the tier costs the memory envelope', () => {
   /** The bytes one render target really holds, read off the target the bake
    *  creates rather than off a size table — the same expression the LUT's own
    *  live counter uses. */
-  const bytesOf = (t: THREE.WebGLRenderTarget, depth: number): number =>
-    t.width * t.height * depth * (t.texture.type === THREE.HalfFloatType ? 8 : 4);
+  const bytesOf = (t: THREE.WebGLRenderTarget, depth: number): number => {
+    const channels = t.texture.format === THREE.RGFormat ? 2 : 4;
+    return t.width * t.height * depth * channels * (t.texture.type === THREE.HalfFloatType ? 2 : 1);
+  };
 
   it('states the resident and the peak the bake really allocates', () => {
     for (const sizes of [ATMOSPHERE_TABLE_SIZES_FULL, ATMOSPHERE_TABLE_SIZES_HALF]) {
       const transmittance = createTableTarget(sizes.transmittanceW, sizes.transmittanceH);
       const irradiance = createTableTarget(sizes.irradianceW, sizes.irradianceH);
       const scattering = createScatteringTarget(sizes);
+      const colour = createMieColourTarget(sizes);
       try {
         const resident = bytesOf(transmittance, 1) + bytesOf(irradiance, 1)
-          + bytesOf(scattering, sizes.scatteringR);
-        // The bake holds the resident three plus deltaIrradiance and the three
+          + bytesOf(scattering, sizes.scatteringR) + bytesOf(colour, sizes.scatteringR);
+        // The colour table is half the scattering table: two half floats a
+        // texel where the scattering table has four.
+        expect(bytesOf(colour, sizes.scatteringR) * 2).toBe(bytesOf(scattering, sizes.scatteringR));
+        // The bake holds the resident four plus deltaIrradiance and the three
         // 3D deltas; the multiple-scattering delta aliases the single-Rayleigh
-        // one, which is what keeps the peak at four 3D targets and not five.
+        // one, which is what keeps the scratch at three 3D targets and not four.
         const peak = resident + bytesOf(irradiance, 1) + bytesOf(scattering, sizes.scatteringR) * 3;
         expect(atmosphereTierGpuBytes(sizes)).toEqual({ resident, bakePeak: peak });
       } finally {
         transmittance.dispose();
         irradiance.dispose();
         scattering.dispose();
+        colour.dispose();
       }
     }
   });
 
-  it('is 8 MiB resident and 32 at the peak on a desktop, a quarter of that on touch', () => {
+  it('is 12 MiB resident and 36 at the peak on a desktop, a quarter of the tables on touch', () => {
     // The numbers the envelope was written against. A change to either is a
     // change to what every device may hold beside the tables, so it is stated
-    // here rather than left to be discovered on a phone.
+    // here rather than left to be discovered on a phone. The single-Mie colour
+    // table is 4 MiB on a desktop and 1 on touch, resident, so it adds the same
+    // to the peak.
     const MiB = 1024 * 1024;
     const full = atmosphereTierGpuBytes(ATMOSPHERE_TABLE_SIZES_FULL);
-    expect(full.resident / MiB).toBeCloseTo(8.13, 2);
-    expect(full.bakePeak / MiB).toBeCloseTo(32.14, 2);
+    expect(full.resident / MiB).toBeCloseTo(12.13, 2);
+    expect(full.bakePeak / MiB).toBeCloseTo(36.14, 2);
     const half = atmosphereTierGpuBytes(ATMOSPHERE_TABLE_SIZES_HALF);
-    expect(half.resident / MiB).toBeCloseTo(2.04, 2);
-    expect(half.bakePeak / MiB).toBeCloseTo(8.04, 2);
+    expect(half.resident / MiB).toBeCloseTo(3.04, 2);
+    expect(half.bakePeak / MiB).toBeCloseTo(9.04, 2);
   });
 
   it('is charged to the same envelope the globe maps and the sector tiles share', () => {

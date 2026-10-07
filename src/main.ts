@@ -68,7 +68,6 @@ import {
   devCloudShadow,
   devGlintUniforms,
   nightLiftUniform,
-  reliefBalanceUniform,
   setDevOceanRoughness,
   setDevSurfaceHaze,
   SURFACE_HAZE_CLEAR_VIEW,
@@ -110,7 +109,6 @@ import {
 } from './app/LensPass';
 import { applyDesignFov, displayFovDeg, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
-import type { LensRampDriver } from './shared/math/lensProximity';
 import { loadBrightStarCatalog } from './planetarium/world/starCatalogLoader';
 import { debugError, debugLog, debugWarn } from './shared/debug';
 import { safeAreaInsets } from './shared/dom';
@@ -3386,11 +3384,11 @@ function installDevHooks() {
     rideState: () => planetariumMode?.devRideState() ?? null,
     /** The lens proximity ramp this frame (shared/math/lensProximity.ts): its factor, the strength the shaders read, the disc that drove it, and whether a dev pose skipped it. */
     lensRamp: () => planetariumMode?.devLensRamp() ?? null,
-    /** Switch the lens proximity ramp on or off live, as `?lensramp=` does at boot. */
+    /** Switch the lens proximity ramp off or on live — the approach probe's ramp-off frame; the app has no such switch. */
     setLensRamp: (enabled: boolean) => planetariumMode?.devSetLensRamp(enabled) ?? false,
-    /** The ramp's A/B arm, live: `{driver: 'ship'|'ship+boom', fullDeg, offDeg}`, as `?lensdrive=` and `?lensband=` do at boot; returns the config in force. */
-    lensRampConfig: (patch: { driver?: LensRampDriver; fullDeg?: number; offDeg?: number } = {}) =>
-      planetariumMode?.devSetLensRampConfig(patch) ?? null,
+    /** Move the ramp's knees live, `{fullDeg, offDeg}`, for the approach probe's fixed poses; returns the band in force. */
+    lensRampBand: (patch: { fullDeg?: number; offDeg?: number } = {}) =>
+      planetariumMode?.devSetLensRampBand(patch) ?? null,
     travelTo: (name: string) => planetariumMode?.devTravelTo(name) ?? false,
     arrivalPose: () => planetariumMode?.devArrivalPose() ?? null,
     governorOwner: () => planetariumMode?.devGovernorOwner() ?? null,
@@ -3544,17 +3542,6 @@ function installDevHooks() {
     nightLift: (strength: number) => {
       nightLiftUniform.value = Math.max(0, strength);
       return { mode: nightSides, lift: nightLiftUniform.value };
-    },
-    /** The relief frame's balance, live (world/reliefFrame.ts): 0 draws a
-     *  relief map with three's weighting of its east-west and north-south
-     *  slopes, the picture as it was; 1 the physical weighting the maps are
-     *  baked in. Every surface with a relief map reads the one uniform, the
-     *  Look-inside skins included. No argument reads it. */
-    reliefBalance: (balance?: number) => {
-      if (typeof balance === 'number' && Number.isFinite(balance)) {
-        reliefBalanceUniform.value = Math.min(1, Math.max(0, balance));
-      }
-      return reliefBalanceUniform.value;
     },
     /** The last n draws: `{ drawSeq, tickSeq, t, nowMs, busyMs }`, oldest
      *  first. What the pacing gate reads — the intervals between draws, not

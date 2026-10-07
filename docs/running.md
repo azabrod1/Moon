@@ -38,9 +38,6 @@ Earth's sea, air and clouds (in `world/surfaceShading.ts` unless named)
 
 Night, lens and flight
 - `?nightexposure=0` turns off the dimming of night sides while daylight is in view (`world/nightExposure.ts`). `?nightsides=real|brightened` starts with that Night sides setting.
-- `?lensramp=0` turns off the lens flattening out as a planet fills the view (`shared/math/lensProximity.ts`); `?lensdrive=ship` and `?lensband=45` are its A/B arms.
-- `?moonrelief=4k` binds the Moon's 4k relief instead of the 8k crops (`world/sectorStreamer.ts`).
-- `?reliefbalance=0` draws relief in three's tangent frame instead of the sphere's own east and north (`world/reliefFrame.ts`), the picture as it was.
 - `?ride=0` stops the ship riding along with a nearby planet (`planetarium/rideFrame.ts`).
 - `?orbitanchor=0` draws orbit lines the old way (`planetarium/orbitLineAnchor.ts`).
 - `?lookdrag=eyepiece` makes dragging in the Observatory move the view like an eyepiece (`planetarium/surfaceView.ts`).

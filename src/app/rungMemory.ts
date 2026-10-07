@@ -252,7 +252,7 @@ export function rungMemoryApplies(entry: RungMemoryEntry, facts: RungMemoryFacts
 
 /** The URL switches that change what a pixel costs, or hold the ratio for a
  *  measurement. */
-const MEASUREMENT_KEYS = ['msaa', 'fused', 'alloc', 'canvasaa', 'perfoff', 'ratio', 'refresh', 'envelope', 'upscale', 'sectors', 'synth', 'moonrelief'];
+const MEASUREMENT_KEYS = ['msaa', 'fused', 'alloc', 'canvasaa', 'perfoff', 'ratio', 'refresh', 'envelope', 'upscale', 'sectors', 'synth'];
 
 /** Why this boot's URL keeps the rung memory out of it — the kill switch, a
  *  measurement or render-path switch, or a fixed level — or null. */

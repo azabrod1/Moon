@@ -897,9 +897,9 @@ describe('SectorStreamer', () => {
     streamer.update('Moon', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
     const mat = (moon.mesh.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
     expect(mat.normalMap).not.toBeNull();
-    // The relief frame reads the globe's UV (world/reliefFrame.ts), so the
-    // crop's transform need not scale u and v alike — and one sector wide it
-    // does not.
+    // The relief frame reads no UV (world/reliefFrame.ts), so the crop's
+    // transform need not scale u and v alike — and one sector wide it does
+    // not.
     const expected = sectorTileTransform(G, { c: 2, r: 1 }, dataCropLayout(G, 8128));
     expect(mat.normalMap!.offset.x).toBeCloseTo(expected.offsetX, 12);
     expect(mat.normalMap!.repeat.x).toBeCloseTo(expected.repeatX, 12);

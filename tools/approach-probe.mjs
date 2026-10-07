@@ -20,16 +20,17 @@
 // frame it was applied.
 //
 // With --assert it fails on any of:
-//   - the ramp OFF at boot without ?lensramp=0, or ON after setLensRamp(false)
-//     (the default and the live switch);
+//   - the ramp OFF at boot, or ON after the dev console's setLensRamp(false)
+//     (the probe's own ramp-off frame);
 //   - devPose true on any sample — a run that silently used a dev pose is void;
 //   - applied !== lensProximityFactor(α) at any rung (the probe reads the two
 //     knees off the app at boot and carries its own copy of the law: the unit
 //     test pins the module, this pins the plumbing), α at or under the full
 //     knee without a 1, α at or over the off knee without a 0, applied not monotone
 //     in α down the ladder, or the rebuild counter moving without a change;
-//   - phases 2 and 4 on the first band, 45/70, set live (their fixed poses only
-//     discriminate mid-ramp, and sit past the default band's off knee);
+//   - phases 2 and 4 on the first band, 45/70, set live through the dev
+//     console (their fixed poses only discriminate mid-ramp, and sit past the
+//     app's off knee);
 //   - on the airless --pixels body, the ramp-on width off its prediction, or
 //     not wider than the ramp-off width above 30° (a pinhole draws a big disc
 //     larger than the lens does);
@@ -213,7 +214,7 @@ try {
   const bootRamp = await rampState();
   LENS_PROXIMITY_FULL_DEG = bootRamp.fullDeg;
   LENS_PROXIMITY_OFF_DEG = bootRamp.offDeg;
-  /** Run `body` on another band, set live through the app's own switch, with
+  /** Run `body` on another band, set live through the dev console, with
    *  this file's copy of the law following it; the app's band after. Phases 2
    *  and 4 judge plumbing at fixed poses (a disc drawn ramped, drags through
    *  the shell and under the floor) that only discriminate where the ramp is
@@ -222,17 +223,17 @@ try {
    *  default band's own law. */
   const SENSITIVE_BAND = { fullDeg: 45, offDeg: 70 };
   const onBand = async (band, body) => {
-    await page.evaluate((b) => window.__moon.lensRampConfig(b), band);
+    await page.evaluate((b) => window.__moon.lensRampBand(b), band);
     [LENS_PROXIMITY_FULL_DEG, LENS_PROXIMITY_OFF_DEG] = [band.fullDeg, band.offDeg];
     try {
       await body();
     } finally {
       const restore = { fullDeg: bootRamp.fullDeg, offDeg: bootRamp.offDeg };
-      await page.evaluate((b) => window.__moon.lensRampConfig(b), restore);
+      await page.evaluate((b) => window.__moon.lensRampBand(b), restore);
       [LENS_PROXIMITY_FULL_DEG, LENS_PROXIMITY_OFF_DEG] = [restore.fullDeg, restore.offDeg];
     }
   };
-  console.log(`the app's band: full at ${LENS_PROXIMITY_FULL_DEG}°, off at ${LENS_PROXIMITY_OFF_DEG}°, driver ${bootRamp.driver}`);
+  console.log(`the app's band: full at ${LENS_PROXIMITY_FULL_DEG}°, off at ${LENS_PROXIMITY_OFF_DEG}°`);
   if (!(LENS_PROXIMITY_FULL_DEG > 0 && LENS_PROXIMITY_OFF_DEG > LENS_PROXIMITY_FULL_DEG)) throw new Error('the app reported no usable band');
 
   await page.evaluate(() => {
@@ -355,12 +356,12 @@ try {
   const samples = [];
 
   // ---- 0. the default and the live switch ---------------------------------
-  console.log('[0] default on, then the live switch');
+  console.log('[0] on at boot, then the probe\'s live switch');
   if (PHASES.has(0)) {
     const closeRung = LADDER[Math.max(0, LADDER.length - 3)];
     const booted = await jump(stateBody, closeRung);
     console.log(`  boot default at k=${closeRung}: enabled=${booted.enabled} factor=${booted.factor.toFixed(4)} applied=${booted.applied.toFixed(4)} alpha=${booted.angularRadiusDeg.toFixed(1)}deg`);
-    check(booted.enabled === true, 'the ramp must be ON at boot without ?lensramp=0');
+    check(booted.enabled === true, 'the ramp must be ON at boot');
     check(booted.devPose === false, 'devPose true on a real jump');
     check(booted.angularRadiusDeg > LENS_PROXIMITY_FULL_DEG && booted.factor < 1,
       `at k=${closeRung} the ramp should be engaged at boot (alpha ${booted.angularRadiusDeg.toFixed(1)}deg, factor ${booted.factor})`);
@@ -460,7 +461,7 @@ try {
     const problem = drawnOn.error ?? drawnOff.error ?? (drawnOn.overflow || drawnOff.overflow ? 'disc overflows the frame' : null);
     check(on.devPose === false && off.devPose === false, `${pixelBody} k=${k}: devPose`);
     check(off.applied === 1 && off.enabled === false, `${pixelBody} k=${k}: ramp off but applied ${off.applied}, enabled ${off.enabled}`);
-    // The off state computes no angle (a kill switch does no work); the pose
+    // The off state computes no angle (a ramp that is off does no work); the pose
     // is the same jump, and the ramp-on read after the flip back says so.
     const back = await rampState();
     check(Math.abs(back.cameraAngularRadiusDeg - on.cameraAngularRadiusDeg) < 1e-6, `${pixelBody} k=${k}: the pose moved across the flip (${on.cameraAngularRadiusDeg} -> ${back.cameraAngularRadiusDeg})`);

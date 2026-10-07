@@ -259,7 +259,7 @@ import {
   lensDisplayHalfTan,
   lensMaxFrameScale,
 } from '../shared/math/lensProjection';
-import { LENS_RAMP_DEFAULT_CONFIG, lensProximityFactor, parseLensRampConfig, type LensRampConfig, type LensRampDriver } from '../shared/math/lensProximity';
+import { isLensRampBand, LENS_PROXIMITY_DEFAULT_BAND, lensProximityFactor, type LensRampBand } from '../shared/math/lensProximity';
 import { SUN_ATMOSPHERE_TINT_RGB, SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../shared/shaders/sun';
 import { landedFrameCamDistAU, landedMinDistanceAU, landedNearAU, LANDED_NEAR_AU } from './landedView';
 import {
@@ -809,15 +809,12 @@ export class PlanetariumMode {
   private readonly orbitAnchorEnabled = new URLSearchParams(location.search).get('orbitanchor') !== '0';
 
   /** Fade the stereographic lens out as one body fills the view
-   *  (shared/math/lensProximity.ts). On by default; `?lensramp=0` is the kill
-   *  switch and the A/B, and `__moon.setLensRamp(on)` flips it live. */
-  private lensRampEnabled = new URLSearchParams(location.search).get('lensramp') !== '0';
-
-  /** The ramp's A/B arms (`?lensdrive=ship`, `?lensband=<full>,<off>`; the
-   *  module header says why each exists): the driver the angle is read from
-   *  and the two knees. The shipped rule unless a URL or
-   *  `__moon.lensRampConfig` says otherwise. */
-  private lensRampConfig: LensRampConfig = parseLensRampConfig(location.search);
+   *  (shared/math/lensProximity.ts). Always on in the app; the dev console's
+   *  `__moon.setLensRamp(on)` and `__moon.lensRampBand(band)` exist only so
+   *  tools/approach-probe.mjs can draw a pose with the ramp off, and judge
+   *  fixed poses on a band where they sit mid-ramp. */
+  private lensRampEnabled = true;
+  private lensRampBand: LensRampBand = LENS_PROXIMITY_DEFAULT_BAND;
 
   /** What the ramp did this frame, for `__moon.lensRamp()`. `applied` is the
    *  strength the shaders read (`effectiveStrength`); `devPose` says the
@@ -828,30 +825,27 @@ export class PlanetariumMode {
     factor: 1,
     applied: 1,
     /** The driving angle: the disc from the ship's distance plus the boom
-     *  the driver names (`driver`), which on the 'ship' arm is none. */
+     *  the rig intends. */
     angularRadiusDeg: 0,
     /** The same disc from the camera itself — the readout, never the driver. */
     cameraAngularRadiusDeg: 0,
     /** The driving body's disc radius — the rendered surface, so a probe can
      *  see that the air shell or the Sun's governed surface never drove it. */
     discRadiusAU: 0,
-    /** The boom the driving angle was read with (intendedCameraRadiusAU on
-     *  the shipped driver, 0 on the 'ship' arm), the camera's actual distance
-     *  to the ship, and the controls' distance floor, so a probe can see a
-     *  safety push shorten the second — to under the third, where the
-     *  controls' clamp lifts it back every frame — while the first, and the
-     *  angle, hold. `intendedBoomAU` is the rig's boom whatever the driver. */
+    /** The boom the driving angle was read with (intendedCameraRadiusAU),
+     *  the camera's actual distance to the ship, and the controls' distance
+     *  floor, so a probe can see a safety push shorten the second — to under
+     *  the third, where the controls' clamp lifts it back every frame — while
+     *  the first, and the angle, hold. */
     boomAU: 0,
-    intendedBoomAU: 0,
     cameraBoomAU: 0,
     boomFloorAU: 0,
     camOwner: 'chase' as 'chase' | 'orbit' | 'reacquiring',
     body: null as string | null,
     devPose: false,
-    /** The arm in force: the driver and the knees the factor was read with. */
-    driver: LENS_RAMP_DEFAULT_CONFIG.driver as LensRampDriver,
-    fullDeg: LENS_RAMP_DEFAULT_CONFIG.band.fullDeg,
-    offDeg: LENS_RAMP_DEFAULT_CONFIG.band.offDeg,
+    /** The knees the factor was read with. */
+    fullDeg: LENS_PROXIMITY_DEFAULT_BAND.fullDeg,
+    offDeg: LENS_PROXIMITY_DEFAULT_BAND.offDeg,
     applies: 0,
   };
   /** The camera-to-ship distance the cruise rig MEANS to hold — what the lens
@@ -14762,8 +14756,8 @@ export class PlanetariumMode {
    * exactly what it was. A pure function of the pose — no easing, no memory —
    * recomputed every frame it can run, and 1 wherever it cannot: landed and
    * surface view (the observatory wants the lens, with the Moon off-axis at
-   * a 45° FOV), a dev camera (the capture fleet pins pixels close in), or the
-   * ramp switched off. Called from BOTH branches of update(): the landed
+   * a 45° FOV), a dev camera (the capture fleet pins pixels close in), or a
+   * probe's ramp-off frame. Called from BOTH branches of update(): the landed
    * branch returns before the cruise camera pass, and a ship that landed from
    * the 198 km park would otherwise keep the pinhole it arrived with.
    *
@@ -14790,14 +14784,10 @@ export class PlanetariumMode {
     let cameraDeg = 0;
     let discRadiusAU = 0;
     let body: string | null = null;
-    const config = this.lensRampConfig;
-    // The 'ship' arm reads the disc from the ship's distance alone: a boom of
-    // zero, through the same function, so the readout's camera angle and the
-    // driving body are measured exactly as on the shipped arm.
-    const drivingBoomAU = config.driver === 'ship' ? 0 : this.intendedCameraRadiusAU;
+    const band = this.lensRampBand;
     if (this.lensRampEnabled && cruise && !devPose) {
       const angles = largestDiscAngles(
-        this.camera.position, drivingBoomAU,
+        this.camera.position, this.intendedCameraRadiusAU,
         this.cameraShellPool, this.cameraShellCount, this.lensRampAngles,
       );
       if (angles.effectiveIndex >= 0) {
@@ -14807,18 +14797,16 @@ export class PlanetariumMode {
       }
       effectiveDeg = angles.effectiveRad * RAD2DEG;
       cameraDeg = angles.cameraRad * RAD2DEG;
-      factor = lensProximityFactor(angles.effectiveRad, config.band);
+      factor = lensProximityFactor(angles.effectiveRad, band);
     }
     state.enabled = this.lensRampEnabled;
-    state.driver = config.driver;
-    state.fullDeg = config.band.fullDeg;
-    state.offDeg = config.band.offDeg;
+    state.fullDeg = band.fullDeg;
+    state.offDeg = band.offDeg;
     state.factor = factor;
     state.angularRadiusDeg = effectiveDeg;
     state.cameraAngularRadiusDeg = cameraDeg;
     state.discRadiusAU = discRadiusAU;
-    state.boomAU = drivingBoomAU;
-    state.intendedBoomAU = this.intendedCameraRadiusAU;
+    state.boomAU = this.intendedCameraRadiusAU;
     state.cameraBoomAU = this.camera.position.length();
     state.boomFloorAU = this.controls.minDistance;
     state.camOwner = this.camOwner;
@@ -14848,7 +14836,6 @@ export class PlanetariumMode {
     state.cameraAngularRadiusDeg = 0;
     state.discRadiusAU = 0;
     state.boomAU = 0;
-    state.intendedBoomAU = 0;
     state.cameraBoomAU = 0;
     state.boomFloorAU = 0;
     state.body = null;
@@ -15887,32 +15874,22 @@ export class PlanetariumMode {
   devLensRamp(): {
     enabled: boolean; factor: number; applied: number; angularRadiusDeg: number;
     cameraAngularRadiusDeg: number; discRadiusAU: number;
-    boomAU: number; intendedBoomAU: number; cameraBoomAU: number; boomFloorAU: number; camOwner: 'chase' | 'orbit' | 'reacquiring';
-    body: string | null; devPose: boolean; driver: LensRampDriver; fullDeg: number; offDeg: number; applies: number;
+    boomAU: number; cameraBoomAU: number; boomFloorAU: number; camOwner: 'chase' | 'orbit' | 'reacquiring';
+    body: string | null; devPose: boolean; fullDeg: number; offDeg: number; applies: number;
   } {
     return { ...this.lensRampState };
   }
 
-  /** Dev-only: set the ramp's A/B arm live — the driver and/or the band — as
-   *  `?lensdrive=` and `?lensband=` do at boot, through the same parser so a
-   *  refused band keeps the one in force. Returns the config now in force. */
-  devSetLensRampConfig(patch: { driver?: LensRampDriver; fullDeg?: number; offDeg?: number }): LensRampConfig {
-    // Everything goes through the URL parser, the driver included, so a word
-    // the parser does not know (a console typo) reads as the shipped driver
-    // exactly as it would in an address bar, never as a readout of itself.
-    const search = new URLSearchParams();
-    if (patch.driver !== undefined) search.set('lensdrive', patch.driver);
-    if (patch.fullDeg !== undefined || patch.offDeg !== undefined) {
-      search.set('lensband', `${patch.fullDeg ?? this.lensRampConfig.band.fullDeg},${patch.offDeg ?? this.lensRampConfig.band.offDeg}`);
-    }
-    const base: LensRampConfig = patch.driver === undefined
-      ? this.lensRampConfig
-      : { driver: LENS_RAMP_DEFAULT_CONFIG.driver, band: this.lensRampConfig.band };
-    this.lensRampConfig = parseLensRampConfig(`?${search.toString()}`, base);
-    return this.lensRampConfig;
+  /** Dev-only: move the ramp's knees for a probe — a knee left out keeps its
+   *  value, and a band isLensRampBand refuses keeps the one in force. Returns
+   *  the band now in force. */
+  devSetLensRampBand(patch: { fullDeg?: number; offDeg?: number }): LensRampBand {
+    const band = { fullDeg: patch.fullDeg ?? this.lensRampBand.fullDeg, offDeg: patch.offDeg ?? this.lensRampBand.offDeg };
+    if (isLensRampBand(band)) this.lensRampBand = band;
+    return this.lensRampBand;
   }
 
-  /** Dev-only: switch the lens proximity ramp on or off live, as `?lensramp=` does at boot. */
+  /** Dev-only: switch the lens proximity ramp on or off live, for a probe's ramp-off frame. */
   devSetLensRamp(enabled: boolean): boolean {
     this.lensRampEnabled = enabled;
     return this.lensRampEnabled;

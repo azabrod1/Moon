@@ -334,10 +334,14 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
     // the colour tiles' 16K because a two-sector normal crop costs four bytes
     // a texel: 11 MiB a sector here, 44 at 16K, under a 22 MiB colour tile.
     crops: { normalMap: tileSet('mars-normal.v3', '8k') },
-    // One level today. The Tianwen-1 HiPS this map is rendered from is 76 m,
-    // so the 32K and 64K levels Earth has are a cut away; they follow once
-    // rendered and published.
-    levels: [sectorLevel16k('mars.v3')],
+    // Two levels today, both rendered from the one Tianwen-1 HiPS (76 m, so
+    // even a 64K level's 328 m texels would be a downsample of it), each a
+    // sharper picture of the one above it and not another product. The 64K
+    // level Earth has follows once rendered and published.
+    levels: [
+      sectorLevel16k('mars.v3'),
+      sectorLevel32k('mars.v3'),
+    ],
   },
   Moon: {
     crops: { normalMap: tileSet('moon-normal', '4k') },

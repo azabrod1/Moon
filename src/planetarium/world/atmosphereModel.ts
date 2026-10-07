@@ -900,14 +900,23 @@ export function rMuSFromIrradianceUv(
 // ---------------------------------------------------------------------------
 
 /**
+ * The CPU twin of the shader's packed fallback, which the lookups take only
+ * with `?mieexact=0`: by default they read single Mie's green and blue from
+ * their own table (world/atmosphereLut, MIE_EXACT) and this is not their path.
+ *
  * Recover the single-Mie term from the scattering texel. The layout stores
  * Rayleigh in RGB and only the red Mie channel in alpha, and reconstructs the
- * other two by assuming Mie and Rayleigh have the same spectral shape along the
- * path. The reconstruction divides by the red Rayleigh channel, which goes to
- * zero exactly where the difference-of-two-lookups regime lives — the limb and
- * the far side of the terminator, in half precision, where the two lookups
- * nearly cancel. Without the guard that is coloured speckle along the two
- * features the tables exist to draw.
+ * other two by assuming single Mie has the spectral shape of what RGB holds.
+ * It does not: RGB carries the higher orders with their own colour, and
+ * Rayleigh and Mie weight the transmittance along a path by different density
+ * profiles. Against the exact single Mie it is within 2 % away from the Sun and
+ * from the ground, but toward a low Sun the lowest twilight band comes out a
+ * third to a half too bright in green and blue. The reconstruction divides by
+ * the red Rayleigh channel, which goes to zero exactly where the
+ * difference-of-two-lookups regime lives — the limb and the far side of the
+ * terminator, in half precision, where the two lookups nearly cancel. Without
+ * the guard that is coloured speckle along the two features the tables exist
+ * to draw.
  */
 export function extrapolateSingleMieScattering(
   params: AtmosphereParams,

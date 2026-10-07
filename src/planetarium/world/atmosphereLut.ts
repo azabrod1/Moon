@@ -455,12 +455,17 @@ void main() {
  * ONE text. The conventions here are not recoverable from the textures: the
  * transmittance table holds OPTICAL DEPTH (`T = exp(-texel)`, a segment is a
  * DIFFERENCE of two samples), the scattering table holds Rayleigh in rgb with
- * only the red Mie channel in alpha, both without their phase functions, and
- * the packed nu axis has to be interpolated by hand. A second transcription is
- * the one place those can be got wrong with no test noticing.
+ * only the red Mie channel in alpha and the colour table single Mie's green and
+ * blue, all without their phase functions, and the packed nu axis has to be
+ * interpolated by hand. A second transcription is the one place those can be
+ * got wrong with no test noticing.
  *
  * Requires the table sizes as #defines (atmosphereTableDefines) and the uniform
- * block (atmosphereLookupUniforms + applyAtmosphereParams).
+ * block (atmosphereLookupUniforms + applyAtmosphereParams). MIE_EXACT, one of
+ * those defines unless `?mieexact=0`, makes every lookup read single Mie's
+ * green and blue from the colour table (`uMieColour`, declared here and only
+ * under the define) instead of rebuilding them from rgb; with it off, the text
+ * the driver compiles is the text from before the colour table existed.
  */
 const ATMOSPHERE_LOOKUP_PREAMBLE_GLSL = /* glsl */`
 precision highp float;
@@ -611,12 +616,27 @@ float miePhaseFunction(float g, float nu) {
   return k * (1.0 + nu * nu) / pow(1.0 + g * g - 2.0 * g * nu, 1.5);
 }
 
+#ifdef MIE_EXACT
+// The packed fallback, which the lookups call only with MIE_EXACT off; the
+// #else below is this comment as it stood before, so the text with the define
+// off is unchanged. The accumulator stores Rayleigh in rgb and only the RED Mie channel in alpha, and
+// this recovers the other two by assuming single Mie has the spectral shape of
+// what rgb holds. It does not — rgb carries the higher orders with their own
+// colour, and Rayleigh and Mie weight the transmittance along the path by
+// different density profiles — so toward a low Sun it returns Mie too green
+// and blue: within 2 % away from the Sun and from the ground, but the lowest
+// twilight band comes out a third to a half too bright in green and blue. The
+// division by the red Rayleigh channel goes to zero exactly where the
+// difference form lives — the limb and the far side of the terminator — so a
+// non-positive red returns no Mie at all rather than coloured speckle there.
+#else
 // The accumulator stores Rayleigh in rgb and only the RED Mie channel in alpha;
 // the other two are recovered by assuming Mie and Rayleigh have the same
 // spectral shape along the path. The division by the red Rayleigh channel goes
 // to zero exactly where the difference form lives — the limb and the far side
 // of the terminator — so a non-positive red returns no Mie at all rather than
 // coloured speckle there.
+#endif
 vec3 getExtrapolatedSingleMieScattering(vec4 scattering) {
   if (scattering.r <= 0.0) return vec3(0.0);
   return scattering.rgb * (scattering.a / scattering.r)
@@ -731,6 +751,47 @@ vec4 getScattering3DRGBA(sampler3D tex, float r, float mu, float mu_s, float nu,
 vec3 getScattering3D(sampler3D tex, float r, float mu, float mu_s, float nu, bool hitsGround) {
   return getScattering3DRGBA(tex, r, mu, mu_s, nu, hitsGround).rgb;
 }
+#ifdef MIE_EXACT
+
+// Single Mie's green and blue, at the scattering table's own texels: its red is
+// the scattering table's alpha. Declared here and only here, so a program
+// compiled without the define declares no extra sampler.
+uniform sampler3D uMieColour;
+
+// Where one lookup reads: two texels one nu slab apart and the hand lerp
+// between them, getScattering3DRGBA's addressing written once for both tables.
+struct ScatteringCoords {
+  vec3 uvw0;
+  vec3 uvw1;
+  float lerp;
+};
+
+ScatteringCoords getScatteringCoords(float r, float mu, float mu_s, float nu, bool hitsGround) {
+  vec4 uvwz = getScatteringTextureUvwzFromRMuMuSNu(r, mu, mu_s, nu, hitsGround);
+  float tex_coord_x = uvwz.x * float(SCATTERING_TEXTURE_NU_SIZE - 1);
+  float tex_x = floor(tex_coord_x);
+  ScatteringCoords c;
+  c.lerp = tex_coord_x - tex_x;
+  c.uvw0 = vec3((tex_x + uvwz.y) / float(SCATTERING_TEXTURE_NU_SIZE), uvwz.z, uvwz.w);
+  c.uvw1 = vec3((tex_x + 1.0 + uvwz.y) / float(SCATTERING_TEXTURE_NU_SIZE), uvwz.z, uvwz.w);
+  return c;
+}
+
+vec2 getMieColour3D(sampler3D tex, ScatteringCoords c) {
+  return texture(tex, c.uvw0).rg * (1.0 - c.lerp) + texture(tex, c.uvw1).rg * c.lerp;
+}
+
+// The scattering texel and single Mie's green and blue from one addressing
+// computation, so (scattering.a, mieGB) is single Mie's rgb read at one
+// coordinate through one filter — the bake wrote the two at the same texel
+// centres of two tables of one shape.
+vec4 getScatteringAndMieColour3D(sampler3D tex, float r, float mu, float mu_s, float nu,
+    bool hitsGround, out vec2 mieGB) {
+  ScatteringCoords c = getScatteringCoords(r, mu, mu_s, nu, hitsGround);
+  mieGB = getMieColour3D(uMieColour, c);
+  return texture(tex, c.uvw0) * (1.0 - c.lerp) + texture(tex, c.uvw1) * c.lerp;
+}
+#endif
 
 // --- irradiance table addressing -------------------------------------------
 
@@ -874,10 +935,26 @@ vec3 aerialTransmittance(sampler2D tex, AerialSegment seg) {
  *  irradiance. The caller scales it by the body's own irradiance and by the
  *  bridge to the scene's light. */
 vec3 aerialInscatter(sampler3D tex, AerialSegment seg, vec3 transmittance) {
+#ifdef MIE_EXACT
+  vec2 nearGB;
+  vec4 nearEnd = getScatteringAndMieColour3D(tex, seg.r, seg.mu, seg.muS, seg.nu, seg.hitsGround, nearGB);
+#else
   vec4 nearEnd = getScattering3DRGBA(tex, seg.r, seg.mu, seg.muS, seg.nu, seg.hitsGround);
+#endif
   float rP = clampRadius(safeSqrt(seg.d * seg.d + 2.0 * seg.r * seg.mu * seg.d + seg.r * seg.r));
   float muP = clampCosine((seg.r * seg.mu + seg.d) / rP);
   float muSP = clampCosine((seg.r * seg.muS + seg.d * seg.nu) / rP);
+#ifdef MIE_EXACT
+  vec2 farGB;
+  vec4 farEnd = getScatteringAndMieColour3D(tex, rP, muP, muSP, seg.nu, seg.hitsGround, farGB);
+  // A segment is near minus far carried back through the segment, channel by
+  // channel: the transmittance is a colour, and single Mie's red, green and
+  // blue each take their own channel of it. Interpolation can push a
+  // difference the wrong side of zero where the two ends nearly coincide, so
+  // each is clamped, after the subtraction and never before it.
+  vec4 delta = vec4(max(nearEnd.rgb - transmittance * farEnd.rgb, vec3(0.0)), 0.0);
+  vec3 mie = max(vec3(nearEnd.a, nearGB) - transmittance * vec3(farEnd.a, farGB), vec3(0.0));
+#else
   vec4 farEnd = getScattering3DRGBA(tex, rP, muP, muSP, seg.nu, seg.hitsGround);
   // Interpolation can push the difference the wrong side of zero where the two
   // ends nearly coincide; the Mie recovery divides by the red channel, so a
@@ -885,6 +962,7 @@ vec3 aerialInscatter(sampler3D tex, AerialSegment seg, vec3 transmittance) {
   vec4 delta = vec4(max(nearEnd.rgb - transmittance * farEnd.rgb, vec3(0.0)),
                     max(nearEnd.a - transmittance.r * farEnd.a, 0.0));
   vec3 mie = getExtrapolatedSingleMieScattering(delta);
+#endif
   // Mie's lobe is aimed at the Sun. Below the horizon there is no lobe left to
   // aim, and the difference form's residue reads as a bright seam.
   mie *= smoothstep(0.0, 0.01, seg.muS);
@@ -1289,9 +1367,12 @@ const PROBE_FRAGMENT = /* glsl */`
 uniform sampler2D uTransmittance;
 uniform sampler3D uScattering;
 uniform sampler2D uIrradiance;
-// 0 = a transmittance texel; 1 = a scattering texel with the nu lerp;
+// 0 = a transmittance texel; 1 = a scattering texel with the nu lerp (or a
+//     colour texel, bound in uScattering's place: it reads back [G, B, 0, 1]);
 // 2 = the combined radiance a lookup returns, both phases applied and the
-//     single-Mie term recovered; 3 = an irradiance texel, addressed by (r, mu_s).
+//     single-Mie term read as the lookups read it — red from alpha and green
+//     and blue from the colour table under MIE_EXACT, rebuilt from rgb without
+//     it; 3 = an irradiance texel, addressed by (r, mu_s).
 uniform int uMode;
 uniform vec2 uUv;
 uniform vec3 uUvw0;
@@ -1313,7 +1394,12 @@ void main() {
     vec4 t = mix(texture(uScattering, uUvw0), texture(uScattering, uUvw1), uNuLerp);
     v = uMode == 1 ? t : vec4(
         t.rgb * rayleighPhaseFunction(uNu)
+#ifdef MIE_EXACT
+        + vec3(t.a, mix(texture(uMieColour, uUvw0).rg, texture(uMieColour, uUvw1).rg, uNuLerp))
+            * miePhaseFunction(uMiePhaseG, uNu),
+#else
         + getExtrapolatedSingleMieScattering(t) * miePhaseFunction(uMiePhaseG, uNu),
+#endif
         1.0);
   }
   vec4 s = clamp(v * uScale, 0.0, 1.0);
@@ -2731,10 +2817,34 @@ export function atmosphereTierGpuBytes(
   return { resident, bakePeak: resident + scratch };
 }
 
-/** The table sizes as #defines. ATMOSPHERE_LOOKUP_GLSL addresses the tables
- *  through them, so every material that samples one profile's tables compiles
- *  with the same set — and one profile is chosen per session, so the program
- *  cache never forks over it. */
+/**
+ * `MIE_EXACT` (`?mieexact=0` turns it off, on any build): every lookup reads
+ * single Mie's green and blue from the colour table instead of rebuilding them
+ * from the scattering table's rgb. A compile-time define rather than a uniform
+ * select, so with it off each program is the program it was, byte for byte,
+ * and declares no extra sampler. Set once at boot from the URL, before any
+ * material exists, and never flipped live: a flip would have to reach the
+ * surfaces, the shells, the night shell's shared defines and both bakers'
+ * probes, and the A/B is two page loads.
+ */
+let mieExactEnabled = true;
+export function setMieExactEnabled(on: boolean): void {
+  mieExactEnabled = on;
+}
+/** Whether every lookup compiles the exact single-Mie colour this session. */
+export function mieExactOn(): boolean {
+  return mieExactEnabled;
+}
+/** `?mieexact=0`, any build: single Mie's green and blue rebuilt from rgb again. */
+export function parseMieExactParam(search: string): boolean {
+  return new URLSearchParams(search).get('mieexact') !== '0';
+}
+
+/** The table sizes as #defines, and MIE_EXACT where the session has it.
+ *  ATMOSPHERE_LOOKUP_GLSL addresses the tables through them, so every material
+ *  that samples one profile's tables compiles with the same set — and one
+ *  profile and one Mie reading are chosen per session, so the program cache
+ *  never forks over either. */
 export function atmosphereTableDefines(sizes: AtmosphereTableSizes): Record<string, string> {
   return {
     TRANSMITTANCE_TEXTURE_WIDTH: String(sizes.transmittanceW),
@@ -2745,17 +2855,21 @@ export function atmosphereTableDefines(sizes: AtmosphereTableSizes): Record<stri
     SCATTERING_TEXTURE_NU_SIZE: String(sizes.scatteringNu),
     IRRADIANCE_TEXTURE_WIDTH: String(sizes.irradianceW),
     IRRADIANCE_TEXTURE_HEIGHT: String(sizes.irradianceH),
+    ...(mieExactEnabled ? { MIE_EXACT: '' } : {}),
   };
 }
 
 /** The uniform block ATMOSPHERE_LOOKUP_GLSL declares, samplers included. A
  *  consumer merges this into its own uniforms and fills it with
- *  applyAtmosphereParams + the three table textures. */
+ *  applyAtmosphereParams + the table textures: the transmittance, the
+ *  scattering table, the irradiance, and the single-Mie colour, which a
+ *  program reads only under MIE_EXACT. */
 export function atmosphereLookupUniforms(): Record<string, THREE.IUniform> {
   return {
     ...commonUniforms(),
     uTransmittance: { value: null },
     uScattering: { value: null },
+    uMieColour: { value: null },
     uIrradiance: { value: null },
   };
 }

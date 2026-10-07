@@ -18,7 +18,9 @@
  * in the combinations the app compiles: CLOUD_SHADOW on the ground, and
  * CLOUD_FIELD beside it (the ground takes the field only for its shadow's
  * read, never alone); CLOUD_FIELD and CLOUD_LIGHT on the deck, in any
- * combination; and the atmosphere tables' sizes (the full and the half tier,
+ * combination; MIE_EXACT, the single-Mie colour table's sampler, on and off
+ * across all of those on both surfaces, whichever reading this session booted;
+ * and the atmosphere tables' sizes (the full and the half tier,
  * a define set on every surface). The ocean's gloss is a uniform, not a
  * define, so it forks no program; what it rides on is the roughness map, and
  * the ground is counted with and without one. The sea's wind map is in every
@@ -56,6 +58,10 @@ export interface SamplerCensus {
    *  the census row with their defines — the check that the census builds the
    *  programs the app does. */
   live: Array<{ surface: 'ground' | 'deck'; defines: string[]; tables: 'full' | 'half'; samplers: string[] | null }>;
+  /** Earth's atmosphere shell on the tables tier, as this session linked it —
+   *  the one other program that reads the single-Mie colour — or null while
+   *  the shell still wears the analytic material. */
+  shell: { mieExact: boolean; samplers: string[] | null } | null;
 }
 
 /** Active samplers of a material's LINKED program, read from GL: the count the
@@ -80,9 +86,15 @@ export function linkedSamplers(renderer: THREE.WebGLRenderer, mat: THREE.Materia
   return { count: names.length, names: names.sort() };
 }
 
-const SWITCHES = ['CLOUD_SHADOW', 'CLOUD_FIELD', 'CLOUD_LIGHT'] as const;
-/** The ground's switch combinations: the field only beside the shadow. */
-const GROUND_SWITCHES: string[][] = [[], ['CLOUD_SHADOW'], ['CLOUD_SHADOW', 'CLOUD_FIELD']];
+const SWITCHES = ['CLOUD_SHADOW', 'CLOUD_FIELD', 'CLOUD_LIGHT', 'MIE_EXACT'] as const;
+/** The ground's cloud combinations: the field only beside the shadow. */
+const GROUND_CLOUD_SWITCHES: string[][] = [[], ['CLOUD_SHADOW'], ['CLOUD_SHADOW', 'CLOUD_FIELD']];
+/** The single-Mie colour's two readings, crossed with every other combination
+ *  on both surfaces: the lookup's define, on unless `?mieexact=0`, adds the
+ *  colour table's sampler to whatever else a program holds. */
+const MIE_SWITCHES: string[][] = [[], ['MIE_EXACT']];
+const withMie = (combos: string[][]): string[][] => combos.flatMap((c) => MIE_SWITCHES.map((m) => [...c, ...m]));
+const GROUND_SWITCHES = withMie(GROUND_CLOUD_SWITCHES);
 const TABLE_SIZES = { full: ATMOSPHERE_TABLE_SIZES_FULL, half: ATMOSPHERE_TABLE_SIZES_HALF } as const;
 
 /** Every subset of a list, the empty one first. */
@@ -97,6 +109,16 @@ function texel(kind: 'color' | 'data'): THREE.Texture {
   if (kind === 'color') tex.colorSpace = THREE.SRGBColorSpace;
   tex.needsUpdate = true;
   return tex;
+}
+
+/** A row's table defines, with the session's own MIE_EXACT taken out: the row
+ *  states its own reading of that switch, whichever one this session boots. */
+function tableDefines(
+  defines: Record<string, unknown> | undefined, tables: 'full' | 'half',
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...defines, ...atmosphereTableDefines(TABLE_SIZES[tables]) };
+  delete out.MIE_EXACT;
+  return out;
 }
 
 /** The surface's switch defines and tables tier, as a material carries them. */
@@ -126,15 +148,15 @@ export function devSamplerCensus(
           map: texel('color'), bumpMap: texel('data'), roughnessMap: waterMask ? texel('data') : null,
         });
         augmentSurfaceMaterial(mat, 'earth');
-        mat.defines = { ...mat.defines, ...atmosphereTableDefines(TABLE_SIZES[tables]) };
+        mat.defines = tableDefines(mat.defines, tables);
         for (const d of on) mat.defines[d] = '';
         made.push({ row: { surface: 'ground', defines: on, tables, waterMask }, mat });
       }
     }
-    for (const on of subsets(['CLOUD_FIELD', 'CLOUD_LIGHT'])) {
+    for (const on of withMie(subsets(['CLOUD_FIELD', 'CLOUD_LIGHT']))) {
       const mat = new THREE.MeshStandardMaterial({ map: texel('color'), normalMap: texel('data'), transparent: true });
       augmentSurfaceMaterial(mat, 'cloud');
-      mat.defines = { ...mat.defines, ...atmosphereTableDefines(TABLE_SIZES[tables]) };
+      mat.defines = tableDefines(mat.defines, tables);
       for (const d of on) mat.defines[d] = '';
       made.push({ row: { surface: 'deck', defines: on, tables, waterMask: false }, mat });
     }
@@ -153,13 +175,23 @@ export function devSamplerCensus(
 
   // The live surfaces, as the session linked them.
   const live: SamplerCensus['live'] = [];
+  let shell: SamplerCensus['shell'] = null;
   liveScene.traverse((o) => {
     const mesh = o as THREE.Mesh;
     if (!mesh.isMesh) return;
+    if (mesh.name === 'EarthAtmosphere') {
+      const mat = mesh.material as THREE.ShaderMaterial;
+      if (mat.uniforms?.uScattering) {
+        shell = { mieExact: mat.defines?.MIE_EXACT !== undefined, samplers: linkedSamplers(renderer, mat)?.names ?? null };
+      }
+      return;
+    }
     const surface = mesh.name === 'Earth clouds' ? 'deck' : mesh.name === 'Earth surface' ? 'ground' : null;
     if (!surface) return;
     const mat = mesh.material as THREE.Material;
     live.push({ surface, ...switchesOf(mat), samplers: linkedSamplers(renderer, mat)?.names ?? null });
   });
-  return { maxUnits: gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS) as number, seaWindSamplers: SEA_WIND_SAMPLERS, rows, live };
+  return {
+    maxUnits: gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS) as number, seaWindSamplers: SEA_WIND_SAMPLERS, rows, live, shell,
+  };
 }

@@ -335,10 +335,16 @@ describe('the atmosphere goldens', () => {
     });
     // Table sizes are defines, not text, so one hash covers every profile and
     // every body — the same property that lets one warm-up probe cover them.
+    // The text carries both readings of the single-Mie colour (MIE_EXACT,
+    // world/atmosphereLut). The captures above were taken before it existed,
+    // through the text the define resolves to when off — which
+    // aerialPerspective.test.ts pins at the hash this test held then
+    // (e613114e…): with `?mieexact=0` they are still these captures. Captured
+    // through the shipped arm, the limb's radiances would move, not this hash.
     expect(hash(shell.vertexShader))
       .toBe('604724ecd98c07ab9465d5cce0bbc7285e1ed2627fe5f2d7b69ec6ddbba3b1fc');
     expect(hash(shell.fragmentShader))
-      .toBe('e613114e0023b6b45b235dd92c7039cc5ea90113839778b234f4e249acc89b01');
+      .toBe('2381bcdaf0c1b86879aed4c1782f68a33f718c113dd9d659f298af5075e0411b');
   });
 
   it('shows the LUT tier drawing a different limb from the analytic one', () => {

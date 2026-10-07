@@ -6,10 +6,18 @@
 //
 // The graded comparison is phase-free on both sides by construction, so four
 // detectors sit beside it, each covering something it cannot see: the combined
-// lookup WITH the shader's own phase functions and Mie recovery, the irradiance
-// table (which nothing else reads back), the twilight band at mu_s <= 0, and
-// the multi-order ratio, which is the only place the ground albedo reaches. A
-// last page loses the GPU context mid-bake: the tier has to come back.
+// lookup WITH the shader's own phase functions and single-Mie term, the
+// irradiance table (which nothing else reads back), the twilight band at
+// mu_s <= 0, and the multi-order ratio, which is the only place the ground
+// albedo reaches. A last page loses the GPU context mid-bake: the tier has to
+// come back.
+//
+// Single Mie is graded in all three channels: its red out of the scattering
+// table's alpha, its green and blue out of the colour table beside it. Ahead
+// of everything, on the tables the app booted with, a colour report reads
+// both raw texels at eleven points from the nadir to the twilight band and
+// sets the table's G/R and B/R against the CPU reference's exact single Mie,
+// with the ratios the packed layout's rebuild returns beside them.
 //
 // Samples land on table texel centres: the question is whether the bake is
 // right, and an off-centre sample would fold the lookup's own interpolation
@@ -21,6 +29,7 @@
 //   node tools/atmo-lut-check.mjs
 //   node tools/atmo-lut-check.mjs --browser=webkit --url=http://localhost:5636
 import { chromium, webkit } from 'playwright';
+import { takeBrowserLock } from './browserLock.mjs';
 
 function arg(name, fallback) {
   const found = process.argv.find((value) => value.startsWith(`--${name}=`));
@@ -33,10 +42,12 @@ const tolerancePct = Number(arg('tolerance-pct', '2'));
 // Below half-float's smallest normal a table entry is a subnormal a GPU may
 // flush to zero; nothing there is the bake's fault, or visible.
 const FLOOR_ABS = 6.1e-5;
-// The combined lookup adds the shader's own phase functions and Mie recovery to
-// the 2% the phase-free comparison holds; the Mie recovery is an approximation
-// on the GPU side only, which is what the extra room is for.
-const PHASE_TOLERANCE_PCT = 6;
+// The combined lookup adds the shader's own phase functions to the 2% the
+// phase-free comparison holds, and nothing approximate: single Mie is read
+// whole, red from the scattering table and green and blue from the colour
+// table. The packed rebuild of green and blue from rgb needed 6 % here (it read
+// 5.6 % off at a forward-scattering sample); the exact colour reads 0.1 %.
+const PHASE_TOLERANCE_PCT = 2;
 // The reference integrates the same 16x64 hemisphere the bake does, but with
 // coarser inner sample counts than the shader's 50/500 - that difference, not
 // the table, is what this tolerance holds.
@@ -54,6 +65,8 @@ const HIGH_SUN_RATIO = [1.40, 1.90];
 const VALIDATION_BAND = [0.5, 3.0];
 const skipLadder = process.argv.includes('--no-ladder');
 
+// One browser on the GPU at a time, machine-wide.
+const releaseLock = await takeBrowserLock('atmo-lut-check');
 const launcher = browserName === 'webkit' ? webkit : chromium;
 const browser = await launcher.launch({
   headless: true,
@@ -126,6 +139,76 @@ try {
     );
   } else {
     console.log('boot bake      none recorded');
+  }
+
+  // --- single Mie's colour, on the tables the app booted with ---------------
+  // Eleven points in the tables' own coordinates, from straight down to the
+  // twilight band, where the packed layout's rebuild of green and blue from
+  // the rgb channels was measured furthest out. Each is read raw from the
+  // scattering table (red in alpha) and from the colour table (green, blue),
+  // and set against the reference's exact single Mie at the integration
+  // counts that measurement used. The ratios to red are what the colour is:
+  // where the table's red itself sits off the reference, that is the table's
+  // resolution, which this change does not touch.
+  const colour = await page.evaluate(async () => {
+    const M = await import('/src/planetarium/world/atmosphereModel.ts');
+    const p = M.atmosphereParams('Earth');
+    const top = p.topRadius;
+    const radiusKm = 100 / (top - 1);
+    const tangent = (hKm) => -Math.sqrt(1 - ((1 + hKm / radiusKm) / top) ** 2);
+    const points = [
+      ['nadir', top, -1, 0.819, -0.819, true],
+      ['oblique', top, -0.462, 0.70, -0.30, true],
+      ['hz-toward', top, -0.1785, 0.342, 0.80, true],
+      ['hz-side', top, -0.1785, 0.342, -0.05, true],
+      ['limb1-side', top, tangent(1), 0.5, 0.0, false],
+      ['limb3-toward', top, tangent(3), 0.2, 0.9, false],
+      ['limb8-side', top, tangent(8), 0.5, 0.0, false],
+      ['twilight3', top, tangent(3), -0.05, 0.95, false],
+      ['twilight1', top, tangent(1), 0.0, 0.98, false],
+      ['sky-low', 1.00001, 0.15, 0.5, 0.3, false],
+      ['sky-zenith', 1.00001, 1, 0.82, 0.82, false],
+    ];
+    const read = (kind, q, scale) => window.__moon.atmoSample([{
+      kind, r: q.r, mu: q.mu, muS: q.muS, nu: q.nu, hitsGround: q.ground, scale,
+    }])[0];
+    const ranged = (kind, q, channels) => {
+      const first = read(kind, q, 1);
+      const peak = Math.max(...channels.map((c) => first[c]), 1e-6);
+      return read(kind, q, Math.min(0.9 / peak, 4096));
+    };
+    const br = p.rayleighScattering;
+    const bm = p.mieScattering;
+    return points.map(([label, r, mu, muS, nu, ground]) => {
+      const q = { r, mu, muS, nu, ground };
+      const cpu = M.computeSingleScattering(p, r, mu, muS, nu, ground, 400, 2000).mie;
+      const rgb = ranged('scattering', q, [0, 1, 2]);
+      const a = ranged('scattering', q, [3])[3];
+      const gb = ranged('mieColour', q, [0, 1]);
+      const rebuilt = (i) => (rgb[0] > 0 ? (rgb[i] / rgb[0]) * (bm[i] / br[i]) * (br[0] / bm[0]) : 0);
+      return {
+        label,
+        redVsCpu: a / cpu[0],
+        exact: [cpu[1] / cpu[0], cpu[2] / cpu[0]],
+        table: [gb[0] / a, gb[1] / a],
+        rebuilt: [rebuilt(1), rebuilt(2)],
+        a,
+        cpuRed: cpu[0],
+      };
+    });
+  });
+  console.log('');
+  console.log('Single Mie\'s colour on the boot tables (G/R and B/R; table = colour table over alpha red)');
+  console.log('  point          red/cpu   exact G/R  B/R      table G/R  B/R  (err %)          rebuilt G/R  B/R  (err %)');
+  const pct = (v) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}`;
+  for (const c of colour) {
+    const te = c.table.map((v, i) => v / c.exact[i] - 1);
+    const re = c.rebuilt.map((v, i) => v / c.exact[i] - 1);
+    console.log(
+      `  ${c.label.padEnd(14)} ${c.redVsCpu.toFixed(3).padStart(7)}   ${c.exact[0].toFixed(4)} ${c.exact[1].toFixed(4)}   `
+      + `${c.table[0].toFixed(4)} ${c.table[1].toFixed(4)} (${pct(te[0])}/${pct(te[1])})`.padEnd(36)
+      + `${c.rebuilt[0].toFixed(4)} ${c.rebuilt[1].toFixed(4)} (${pct(re[0])}/${pct(re[1])})`,
+    );
   }
 
   // The comparison bakes ONE order, so the accumulator holds exactly single
@@ -215,6 +298,11 @@ try {
     const sRead = readWithRange(scatteringSamples.map((s) => ({
       kind: 'scattering', r: s.r, mu: s.mu, muS: s.muS, nu: s.nu, hitsGround: s.hitsGround,
     })), 4);
+    // Single Mie's green and blue, from the colour table at the same texels;
+    // an RG texel reads back as [G, B, 0, 1], so only two channels range it.
+    const mRead = readWithRange(scatteringSamples.map((s) => ({
+      kind: 'mieColour', r: s.r, mu: s.mu, muS: s.muS, nu: s.nu, hitsGround: s.hitsGround,
+    })), 2);
 
     // --- CPU reference ------------------------------------------------------
     const rows = [];
@@ -244,6 +332,15 @@ try {
       rows.push({
         table: 'mie', label: `${s.label} a`,
         cpu: cpu.mie[0], gpu: gpu[3], err: relErr(gpu[3], cpu.mie[0]),
+      });
+      const colourTexel = mRead[i].value;
+      rows.push({
+        table: 'mie', label: `${s.label} g`,
+        cpu: cpu.mie[1], gpu: colourTexel[0], err: relErr(colourTexel[0], cpu.mie[1]),
+      });
+      rows.push({
+        table: 'mie', label: `${s.label} b`,
+        cpu: cpu.mie[2], gpu: colourTexel[1], err: relErr(colourTexel[1], cpu.mie[2]),
       });
     });
 
@@ -683,6 +780,7 @@ try {
   await context.close();
 } finally {
   await browser.close();
+  releaseLock();
 }
 
 if (failures.length) {

@@ -176,7 +176,7 @@ import {
   type ReleaseCandidate,
 } from './world/gpuEnvelope';
 import {
-  AtmosphereLut, lastBakeSliceSample, takeBakeSliceSpendMs, peekBakeSliceSpendMs,
+  AtmosphereLut, lastBakeSliceSample, takeBakeSliceSpendMs, peekBakeSliceSpendMs, mieExactOn,
   type AtmosphereBakeStats, type AtmosphereTables,
 } from './world/atmosphereLut';
 import { bindAtmosphereShellTables, restShellCrossfade, setAtmosphereShellGroundSegments, shellTierAlphas, stepShellCrossfade, type ShellCrossfade } from './world/atmosphereShell';
@@ -16194,6 +16194,9 @@ export class PlanetariumMode {
       probeMs: lut.probeMs,
       orders: lut.orders,
       sizes: lut.sizes,
+      // Whether the lookups read single Mie's exact colour (`?mieexact=0`
+      // turns it off), so a capture can say which program it came from.
+      mieExact: mieExactOn(),
       programs: this.renderer.info.programs?.length ?? 0,
       textureBytesResident: this.renderer.info.memory.textures,
       stats: lut.stats(),

@@ -1,13 +1,10 @@
 # CLAUDE.md
 
-Instructions for coding agents in this repo. Claude Code reads this file; Codex reads the same file through `AGENTS.md`.
-
-**Keep this file under 1,000 words. Add only repository-wide commands, silent-failure contracts or where-to-look pointers; each entry is at most two lines.** How a feature works belongs in a comment in its own code, not here.
+**Keep this file under 1,000 words, each entry at most two lines.** Every future session reads all of it, so before adding a line, ask whether it is worth that or belongs in a comment beside its code. Every session thinks its own point is important; most belong in the code. What earns a place: commands, rules that break things quietly, where to look, and conventions that really matter.
 
 ## Commands
 
 ```bash
-npm run dev                # start the dev server
 npm run build              # type-check and build; unused variables fail the build
 npx vitest run --dir src   # run the tests (plain `npm test` also runs the copies in planning/ worktrees)
 npm run gen:moons          # refresh moon orbits and test data from JPL
@@ -29,7 +26,7 @@ The other generators and tile publishing are in `docs/assets.md`.
 - `docs/testing.md` covers screenshots, the test tools in `tools/` (check there before writing a new one) and performance measurement.
 - Run one browser test at a time; most tools take `/tmp/moon-browser.lock`. Put test scripts in `tools/` or `planning/`, never `/tmp`.
 - `__moon.frame()` only moves the camera. It skips landing, travel and collisions, so test those through their own helpers.
-- Check UI changes on a desktop window and at phone size, 390×844.
+- Check UI changes on a desktop window and at phone sizes 390×844 and 320×568.
 
 ## How the app is built
 
@@ -52,7 +49,6 @@ A Three.js app. `src/planetarium/` is the whole solar system at real scale, wher
 
 - The interface is plain HTML in `index.html`. If you rename an element's id, rename it in the code too.
 - Only one menu or panel is open at a time. A new one must close the others, and be closed by them.
-- Space pauses everywhere. S or − stops the ship.
 - Planet colours come from the catalog, and names go through `bodyDisplayName`. Write interface text plainly, like the text around it.
 - Texture paths are built at run time, so the build cannot check them. Open the app to confirm a new one loads.
 

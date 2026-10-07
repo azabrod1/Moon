@@ -6,6 +6,7 @@
 - Run one browser test at a time. Most tools take `/tmp/moon-browser.lock` (`tools/browserLock.mjs`) so two runs never share the GPU; `oval-probe`, `flyby-probe` and `shoot.mjs` do not yet, so never start them beside another browser run. Put Playwright scripts in `tools/` or `planning/`: a script in `/tmp` cannot find the project's packages.
 - Before calling a tree ready for a look, run `tools/visual-sweep.mjs`. To prove a switch moved no pixel, run `tools/pixel-gate.mjs` (`--reload=<key>` across two boots, `--report` for numbers).
 - Playwright cannot show real full screen or what Escape does there. A real browser is the only proof.
+- After a change to glow, glare or post-processing, also look with the glow off (`__moon.setBloom(false)`) and with `?nofloat=1`. The glow hides glare bugs that those paths show.
 
 ## Batteries in tools/
 

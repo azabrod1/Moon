@@ -26,7 +26,7 @@ The other generators and tile publishing are in `docs/assets.md`.
 - `docs/testing.md` covers screenshots, the test tools in `tools/` (check there before writing a new one) and performance measurement.
 - Run one browser test at a time; most tools take `/tmp/moon-browser.lock`. Put test scripts in `tools/` or `planning/`, never `/tmp`.
 - `__moon.frame()` only moves the camera. It skips landing, travel and collisions, so test those through their own helpers.
-- Check UI changes on a desktop window and at phone sizes 390×844 and 320×568.
+- Check UI changes on a desktop window and at phone size, 390×844.
 
 ## How the app is built
 

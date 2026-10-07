@@ -1193,9 +1193,10 @@ describe('SectorStreamer', () => {
     moon.material.normalMap = new THREE.Texture();
     streamer.register(moon);
     // The bytes are committed from the layouts before a byte is fetched: the
-    // NPOT tile plus the parent's normal crop, and nothing rounded to 2048².
+    // NPOT tile plus the parent's normal crop — two bytes a texel, its x and y
+    // (texturePolicy's 'normal' kind) — and nothing rounded to 2048².
     const childBytes = Math.round(1726 * 1726 * 4 * (4 / 3))
-      + Math.round(dataCropLayout(G, 8128).width * dataCropLayout(G, 8128).height * 4 * (4 / 3));
+      + Math.round(dataCropLayout(G, 8128).width * dataCropLayout(G, 8128).height * 2 * (4 / 3));
     expect(sectorSetGpuBytes(spec, 1)).toBe(childBytes);
     expect(sectorSetGpuBytes(spec, 1)).toBeLessThan(sectorSetGpuBytes(spec, 0));
     // Children only: the parent is held back by its cooldown after one

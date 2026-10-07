@@ -16,7 +16,8 @@
  *   counted they are, and one byte a texel is the estimate for the rest. A map
  *   stored as one channel (world/texturePolicy's 'mask' kind: the height map
  *   and the water mask) is also one byte a texel, and its texel really is one
- *   byte rather than an estimate.
+ *   byte rather than an estimate; a tangent normal map stored as its two
+ *   channels (the 'normal' kind) is two.
  * - A mip chain adds a third. A texture that will not be mipped does not pay
  *   it, which is why `textureGpuBytes` asks the texture rather than assuming.
  * - A figure stashed on the texture (`userData.gpuBytes`) wins over anything
@@ -24,7 +25,7 @@
  *   and what is on the GPU has not changed just because the image behind it
  *   is gone.
  */
-import { RedFormat } from 'three';
+import { RGFormat, RedFormat } from 'three';
 import type * as THREE from 'three';
 
 /** A mip chain is every halving of the base image, which sums to a third of it
@@ -67,9 +68,12 @@ type MeasurableTexture = THREE.Texture & {
 };
 
 /** Bytes one texel of this texture holds: one for a map stored as a single
- *  channel, four for everything else. */
+ *  channel, two for a tangent normal stored as its x and y, four for
+ *  everything else. */
 export function textureBytesPerTexel(tex: { format?: number } | null | undefined): number {
-  return tex?.format === RedFormat ? 1 : 4;
+  if (tex?.format === RedFormat) return 1;
+  if (tex?.format === RGFormat) return 2;
+  return 4;
 }
 
 /**

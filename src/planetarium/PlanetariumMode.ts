@@ -9109,6 +9109,10 @@ export class PlanetariumMode {
       const image = standard.normalMap?.image as { width?: number; height?: number } | undefined;
       return {
         normalMap: standard.normalMap ? `${image?.width ?? '?'}×${image?.height ?? '?'}` : null,
+        // How the map is held: two channels (texturePolicy's 'normal' kind) or
+        // four, and what that costs — the storage change's own readout.
+        storage: standard.normalMap ? (standard.normalMap.format === THREE.RGFormat ? 'rg' : 'rgba') : null,
+        gpuBytes: standard.normalMap ? textureGpuBytes(standard.normalMap) : 0,
         rank: (material.userData as { normalTierRank?: number }).normalTierRank ?? 0,
         scale: standard.normalScale?.x ?? null,
         hasRealNormal: (material.userData as { hasRealNormal?: boolean }).hasRealNormal === true,

@@ -677,7 +677,7 @@ export class InteriorScene {
     const normalKey = planet ? PLANET_NORMAL_KEYS[planet.name] : body.moon ? MOON_NORMAL_KEYS[body.moon.name] : undefined;
     if (normalKey) {
       detail.normalScale = MEASURED_NORMAL_SCALE[normalKey] ?? 1;
-      pending.push(loadTexture(normalKey, '2k', 'data').then((map) => { detail.normal = map; }));
+      pending.push(loadTexture(normalKey, '2k', 'normal').then((map) => { detail.normal = map; }));
     }
     if (planet?.name === 'Earth') {
       detail.cloudLate = createLateTextureSlot();
@@ -686,7 +686,7 @@ export class InteriorScene {
       pending.push(loadTexture('earthBump', '2k', 'mask').then((map) => { detail.bump = map; }));
       pending.push(loadTexture('earthRoughness', '2k', 'mask').then((map) => { detail.roughness = map; }));
       pending.push(loadTexture('earthClouds', '2k', 'color', { late: cloudLate }).then((map) => { detail.cloudColor = map; }));
-      pending.push(loadTexture('earthCloudsNormal', '2k', 'data').then((map) => { detail.cloudNormal = map; }));
+      pending.push(loadTexture('earthCloudsNormal', '2k', 'normal').then((map) => { detail.cloudNormal = map; }));
     }
     await Promise.all(pending);
     return detail;

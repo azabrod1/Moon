@@ -147,7 +147,7 @@ import {
 import { createSectorMaterial, sectorRenderOrder, syncSectorMaterial, type SectorMaps } from './sectorMaterial';
 import { loadStreamedTexture, type TextureLoad } from './textureBitmapLoader';
 import { loadSectorTileTexture, releaseTilePixels, tilePixelStats } from './tilePixels';
-import { applyTextureDefaults, maskBytesPerTexel, resolveTileUrl, sectorSetHash, sectorSetLayout, type MapKind } from './texturePolicy';
+import { applyTextureDefaults, maskBytesPerTexel, normalBytesPerTexel, resolveTileUrl, sectorSetHash, sectorSetLayout, type MapKind } from './texturePolicy';
 import { TIER_RANK } from './textureLadder';
 import { debugWarn } from '../../shared/debug';
 import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
@@ -162,19 +162,23 @@ export type CropSlot = (typeof CROP_SLOTS)[number];
 /** What each crop is FOR, which is what decides how it is stored and therefore
  *  what an admission has to reserve for it: the height map and the water mask
  *  are grey images with one channel anything reads, and they are held one byte
- *  a texel (world/texturePolicy's 'mask' kind). A tangent normal map is not. */
+ *  a texel (world/texturePolicy's 'mask' kind); a tangent normal map is its x
+ *  and y, held two bytes a texel (the 'normal' kind). */
 export const CROP_KIND: Record<CropSlot, MapKind> = {
   bumpMap: 'mask',
-  normalMap: 'data',
+  normalMap: 'normal',
   roughnessMap: 'mask',
 };
 
 /** Bytes a texel of a crop of this kind holds — read at reservation time,
- *  because a mask's storage follows the device (and, in DEV, the r8-maps
- *  switch): a crop reserved at one byte and held at four would let the budget
- *  overshoot by the difference. */
+ *  because a mask's or a normal's storage follows the device (and, in DEV, the
+ *  r8-maps and rg-normals switches): a crop reserved at one byte and held at
+ *  four would let the budget overshoot by the difference. */
 function cropBytesPerTexel(slot: CropSlot): number {
-  return CROP_KIND[slot] === 'mask' ? maskBytesPerTexel() : 4;
+  const kind = CROP_KIND[slot];
+  if (kind === 'mask') return maskBytesPerTexel();
+  if (kind === 'normal') return normalBytesPerTexel();
+  return 4;
 }
 
 /** One published tile set: what a tile URL is made of, plus the layout the
@@ -194,7 +198,7 @@ export interface SectorTileSet {
    *  crop's layout (content + gutter) follows from it, and a colour level's
    *  is the source width the level below reads its demand against. */
   baseWidth: number;
-  /** Sectors of longitude one tile spans (normal maps: 2, see sectorGrid). */
+  /** Sectors of longitude one tile spans (every shipped set: 1, see sectorGrid). */
   spanU: number;
 }
 
@@ -333,9 +337,10 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
     // cache — twice the 4K rung's width, never shipped whole — one sector
     // wide like every crop, and physical slope like the Moon's: gen-relief
     // bakes the cos(lat)-corrected slope the sphere's own relief frame draws
-    // (world/reliefFrame.ts). 8K rather than the colour tiles' 16K because a
-    // normal crop costs four bytes a texel: 5.5 MiB a sector here with its
-    // mips, 21.7 at 16K, as much again as the 21.3 MiB colour tile under it.
+    // (world/reliefFrame.ts). 8K rather than the colour tiles' 16K: a normal
+    // crop is held two bytes a texel (texturePolicy's 'normal' kind), 2.75 MiB
+    // a sector here with its mips and 10.9 at 16K, half the 21.3 MiB colour
+    // tile under it.
     crops: { normalMap: tileSet('mars-normal.v3', '8k') },
     // Three levels like Earth's, all rendered from the one Tianwen-1 HiPS
     // (76 m, so even the 64K level's 328 m texels are a downsample of it),
@@ -349,8 +354,8 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
     ],
   },
   // The Moon's relief crop is the 8k that tools/gen-moon-relief.mjs cuts
-  // from NASA's 64 px/deg grid at 1.39× slope: 1.3 km a texel, 5.4 MiB a
-  // sector on the GPU with its mips.
+  // from NASA's 64 px/deg grid at 1.39× slope: 1.3 km a texel, 2.7 MiB a
+  // sector on the GPU with its mips at two bytes a texel.
   Moon: {
     crops: { normalMap: tileSet('moon-normal', '8k') },
     levels: [sectorLevel16k('moon')],

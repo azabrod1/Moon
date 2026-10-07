@@ -1565,6 +1565,14 @@ ${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLS
  * in; it reads no UV, so a sector's crop of any shape is drawn in the frame
  * its globe is. The deck keeps three's `tbn` exactly: its relief is a
  * brightness proxy, not a slope.
+ *
+ * The map's blue is never read. A tangent normal is a unit vector, so its z
+ * is √(1 − x² − y²), and reading x and y alone is what lets every normal map
+ * be stored two bytes a texel (texturePolicy's 'normal' kind, RG8): a
+ * two-channel texture has no blue to read, and the blue a four-channel upload
+ * still carries says the same thing to within half a degree at the steepest
+ * texel — so one text draws both storages, and the DEV A/B between them is a
+ * difference of nothing.
  */
 /** The deck drawn through the ground's program — DEV's `cloud-program` switch
  *  off, the only way a deck reaches a program without CLOUD_DECK — keeps
@@ -1583,7 +1591,10 @@ ${RELIEF_PROBE_OPEN}	vec4 reliefTexel = texture2D( normalMap, vNormalMapUv );
 				textureBSpline( normalMap, vNormalMapUv, reliefTexels ), reliefSmoothW );
 		}
 	}
-	vec3 mapN = reliefTexel.xyz * 2.0 - 1.0;
+	// x and y are the map; z is a unit normal's own, so a two-channel upload
+	// draws exactly as a four-channel one.
+	vec2 reliefXY = reliefTexel.xy * 2.0 - 1.0;
+	vec3 mapN = vec3( reliefXY, sqrt( max( 0.0, 1.0 - dot( reliefXY, reliefXY ) ) ) );
 	mapN.xy *= normalScale;
 #if defined( CLOUD_DECK )
 	normal = normalize( tbn * mapN );

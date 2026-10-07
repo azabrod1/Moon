@@ -51,7 +51,7 @@
  */
 import * as THREE from 'three';
 import { debugLog, debugWarn } from '../../shared/debug';
-import { setSingleChannelUploadUsable } from './texturePolicy';
+import { setSingleChannelUploadUsable, setTwoChannelUploadUsable } from './texturePolicy';
 import { drainErrors } from '../../shared/three/glErrors';
 
 /** The app's texture loader. Shared so every fetch carries the same settings
@@ -343,6 +343,8 @@ let probeVerdict: boolean | null = null;
 /** Whether the one-channel upload path was seen to work on this device; null
  *  until a probe with a complete framebuffer has answered. */
 let redUploadVerdict: boolean | null = null;
+/** The same for the two-channel RG8 upload every 'normal' map takes. */
+let rgUploadVerdict: boolean | null = null;
 
 export type BitmapDecodePath = 'unprobed' | 'worker' | 'main-thread' | 'loader';
 /** DEV telemetry: which path streamed maps take right now. */
@@ -422,18 +424,46 @@ function readsBackInvertedGl(renderer: THREE.WebGLRenderer, bitmap: ImageBitmap)
   }
 }
 
+/** The readback of the probe bitmap — white over black, 1×2 — uploaded as a
+ *  one-channel R8 texture: red carries the row, and the channels the texture
+ *  does not have read as zero with alpha one. Which row is white depends on
+ *  how this platform decoded the bitmap (the flip probe answers that).
+ *  Exported, with its two-channel sibling, for the test that holds the rule. */
+export function redReadbackOk(px: Uint8Array): boolean {
+  const rows = [px[0], px[4]];
+  return rows.includes(255) && rows.includes(0)
+    && px[1] === 0 && px[2] === 0 && px[3] === 255
+    && px[5] === 0 && px[6] === 0 && px[7] === 255;
+}
+
+/** The same bitmap uploaded as a two-channel RG8 texture: red and green both
+ *  carry the row, blue reads zero and alpha one. */
+export function redGreenReadbackOk(px: Uint8Array): boolean {
+  const rows = [px[0], px[4]];
+  return rows.includes(255) && rows.includes(0)
+    && px[1] === px[0] && px[5] === px[4]
+    && px[2] === 0 && px[3] === 255 && px[6] === 0 && px[7] === 255;
+}
+
 /**
- * Upload the probe bitmap as a one-channel R8 texture and read it back: the
- * path every one-channel mask takes (world/texturePolicy's 'mask' kind). A
- * port that takes an RGBA bitmap but mishandles a RED one fails silently — a
- * GL error and a texture of nothing, no exception anywhere — so the exact
- * combination is proved on this device before any mask is stored that way.
+ * Upload the probe bitmap in a storage narrower than the bitmap's RGBA and
+ * read it back. Two storages take this path: one channel (R8/RED, every
+ * 'mask' map — world/texturePolicy) and two (RG8/RG, every 'normal' map). A
+ * port that takes an RGBA bitmap but mishandles a narrower one fails silently
+ * — a GL error and a texture of nothing, no exception anywhere — so the exact
+ * combination is proved on this device before any map is stored that way.
  * Null where no verdict could be reached (no complete framebuffer); otherwise
- * whether the red channel came back as the rows that went in.
+ * whether the readback is the one `ok` expects.
  */
-function uploadsRedGl(renderer: THREE.WebGLRenderer, bitmap: ImageBitmap): boolean | null {
+function uploadsNarrowGl(
+  renderer: THREE.WebGLRenderer,
+  bitmap: ImageBitmap,
+  storage: (gl: WebGL2RenderingContext) => [internal: number | undefined, format: number | undefined],
+  ok: (px: Uint8Array) => boolean,
+): boolean | null {
   const gl = renderer.getContext() as WebGL2RenderingContext;
-  if (typeof gl.R8 !== 'number') return false;
+  const [internal, format] = storage(gl);
+  if (typeof internal !== 'number' || typeof format !== 'number') return false;
   const prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
   const prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
   const prevFlip = gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL) as boolean;
@@ -447,7 +477,7 @@ function uploadsRedGl(renderer: THREE.WebGLRenderer, bitmap: ImageBitmap): boole
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, gl.RED, gl.UNSIGNED_BYTE, bitmap);
+    gl.texImage2D(gl.TEXTURE_2D, 0, internal, format, gl.UNSIGNED_BYTE, bitmap);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     renderer.state.bindFramebuffer(gl.FRAMEBUFFER, fbo);
@@ -456,13 +486,7 @@ function uploadsRedGl(renderer: THREE.WebGLRenderer, bitmap: ImageBitmap): boole
     const px = new Uint8Array(8);
     gl.readPixels(0, 0, 1, 2, gl.RGBA, gl.UNSIGNED_BYTE, px);
     if (gl.getError() !== gl.NO_ERROR) return false;
-    // White over black, whichever way up this platform decoded it (the flip
-    // probe answers that): red carries the row, and the channels the texture
-    // does not have read as zero with alpha one.
-    const rows = [px[0], px[4]];
-    return rows.includes(255) && rows.includes(0)
-      && px[1] === 0 && px[2] === 0 && px[3] === 255
-      && px[5] === 0 && px[6] === 0 && px[7] === 255;
+    return ok(px);
   } catch {
     return null;
   } finally {
@@ -475,6 +499,14 @@ function uploadsRedGl(renderer: THREE.WebGLRenderer, bitmap: ImageBitmap): boole
     gl.deleteTexture(tex);
     drainErrors(gl);
   }
+}
+
+function uploadsRedGl(renderer: THREE.WebGLRenderer, bitmap: ImageBitmap): boolean | null {
+  return uploadsNarrowGl(renderer, bitmap, (gl) => [gl.R8, gl.RED], redReadbackOk);
+}
+
+function uploadsRedGreenGl(renderer: THREE.WebGLRenderer, bitmap: ImageBitmap): boolean | null {
+  return uploadsNarrowGl(renderer, bitmap, (gl) => [gl.RG8, gl.RG], redGreenReadbackOk);
 }
 
 function readsBackInverted2d(bitmap: ImageBitmap): boolean {
@@ -520,6 +552,15 @@ async function decoderHonoursFlip(decoder: BitmapDecoder): Promise<{ ok: boolean
           redUploadVerdict = red;
           setSingleChannelUploadUsable(red);
           if (!red) debugWarn('One-channel texture upload failed its probe: masks stay four channels wide');
+        }
+      }
+      // And the two-channel upload the normal maps take, on the same bitmap.
+      if (probeRenderer && gl !== null && rgUploadVerdict === null) {
+        const rg = uploadsRedGreenGl(probeRenderer, bitmap);
+        if (rg !== null) {
+          rgUploadVerdict = rg;
+          setTwoChannelUploadUsable(rg);
+          if (!rg) debugWarn('Two-channel texture upload failed its probe: normal maps stay four channels wide');
         }
       }
       return { ok: gl ?? readsBackInverted2d(bitmap), viaGl };
@@ -815,6 +856,7 @@ export function setBitmapProbeForTests(result: boolean | null, realms?: { worker
   bitmapFlipProbe = result === null ? null : Promise.resolve(result);
   probeVerdict = result;
   redUploadVerdict = null;
+  rgUploadVerdict = null;
   verified.worker = realms?.worker ?? false;
   verified.main = realms?.main ?? (result === true && !realms?.worker);
   workerDecoder = null;

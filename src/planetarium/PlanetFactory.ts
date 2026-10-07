@@ -496,11 +496,12 @@ function createFallbackTexture(key: string, kind: MapKind = 'color'): THREE.Text
   canvas.height = 128;
   const ctx = canvas.getContext('2d')!;
 
-  if (kind === 'data' || kind === 'mask') {
+  if (kind === 'data' || kind === 'mask' || kind === 'normal') {
     // A failed data map (roughness / bump) should read neutral, not as colour
-    // noise: flat mid-grey in linear space. Stood up under the kind it stands
-    // in for, so a one-channel slot gets a one-channel stand-in and the shader
-    // reading red finds the same grey either way.
+    // noise: flat mid-grey in linear space, which as a tangent normal is x = y
+    // = 0 — flat ground. Stood up under the kind it stands in for, so a
+    // one-channel slot gets a one-channel stand-in, a normal slot a two-channel
+    // one, and the shader finds the same grey either way.
     ctx.fillStyle = '#808080';
     ctx.fillRect(0, 0, 256, 128);
     const tex = new THREE.CanvasTexture(canvas);
@@ -948,7 +949,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
       url: normalUrl,
       context: { map: 'planet normal', name: planet.name },
       onLoad: (nrm) => {
-        applyTextureDefaults(nrm, 'data');
+        applyTextureDefaults(nrm, 'normal');
         // Decode off-thread first: a normal map landing mid-session must not
         // put a synchronous PNG decode on the frame that adopts it.
         afterDecode(nrm, () => {
@@ -1064,7 +1065,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
       url: resolveTextureUrl(PLANET_TEXTURE_FILES.earthCloudsNormal, '2k'),
       context: { map: 'cloud relief', name: planet.name },
       onLoad: (nrm) => {
-        applyTextureDefaults(nrm, 'data');
+        applyTextureDefaults(nrm, 'normal');
         afterDecode(nrm, () => {
           // Through the rank guard, not straight onto the material: a boot map
           // that recovered late would otherwise overwrite (and free) the rung
@@ -1715,7 +1716,7 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
         url: normalUrl,
         context: { map: 'moon normal', name: moonData.name },
         onLoad: (tex) => {
-          applyTextureDefaults(tex, 'data');
+          applyTextureDefaults(tex, 'normal');
           // Decode off-thread before assigning (the moon simply keeps drawing
           // smooth until the normal is cheap to draw); warm the upload only
           // when the player is landed in this system. Rank-guarded: on a bad

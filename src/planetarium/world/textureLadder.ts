@@ -1700,8 +1700,9 @@ export const NORMAL_UPGRADE_TIERS: Record<string, TextureTier> = {
   moonNormal: '4k',
   // Mars's relief ships a 4K rung too, cut by tools/gen-relief.mjs from the
   // same DEM as its boot map and its sector crops, so the step is a sharper
-  // map of the same slopes. A 'data' map like the Moon's: 22.4 MiB resident
-  // while the disc fills the view, handed back with the colour rungs.
+  // map of the same slopes. A 'normal' map like the Moon's: 11.2 MiB resident
+  // at two bytes a texel while the disc fills the view, handed back with the
+  // colour rungs.
   marsNormal: '4k',
   // Earth's cloud relief has no rung, and the reason is bytes rather than
   // taste: a cloud field's normal map is nearly incompressible, so the 4K one
@@ -1841,7 +1842,7 @@ export function upgradeNormalOnApproach(
         tex.dispose();
         return;
       }
-      applyTextureDefaults(tex, 'data');
+      applyTextureDefaults(tex, 'normal');
       const finish = () => {
         if (abandoned()) {
           tex.dispose();

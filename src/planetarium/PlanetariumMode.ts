@@ -3673,9 +3673,14 @@ export class PlanetariumMode {
           mesh: planet.nightMesh,
           material: nightMat,
           family: earthNightSectorFamily(nightMat),
-          // The shell's own radius, not the globe's: a sector built 6 km low
-          // would sit under the shell it is there to replace.
-          radiusAU: planet.nightRadiusAU,
+          // The globe's radius, not the shell's. A night sector writes depth,
+          // so its silhouette is a depth silhouette: built at the shell's radius
+          // it reached 6 km past the ground's limb, and the air behind that
+          // band failed the depth test and drew nothing — a black line along
+          // the horizon wherever night tiles were resident. The shell it
+          // replaces is the farther surface either way, so it still fails the
+          // test under a tile.
+          radiusAU: planet.data.radiusAU,
           topMapWidth: topMapWidthOf(planet.textureUpgrades, nightMat),
           ensureFineGeometry: fine,
         });
@@ -3784,7 +3789,7 @@ export class PlanetariumMode {
           // does not count as hidden here. Only the shell's own range gate does.
           const devHidden = import.meta.env.DEV && this.devHiddenRoles?.nightLights === true;
           this.visitSectorBody(
-            sectors, sectorFamilyKey(name, 'night'), name, planet.nightMesh, planet.nightRadiusAU,
+            sectors, sectorFamilyKey(name, 'night'), name, planet.nightMesh, planet.data.radiusAU,
             !planet.nightMesh.visible && !devHidden,
           );
         }

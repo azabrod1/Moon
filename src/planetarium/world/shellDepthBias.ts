@@ -38,8 +38,9 @@
  * THE ORDER. Larger magnitude is nearer the camera. The globe sits at 0 with
  * its day tiles just in front of it; then the night shell, then the night
  * sectors that replace it (their own per-level step preserved on top of this
- * base, which is the whole mechanism by which a sector's depth beats the
- * shell's), then the deck above all of them. The air needs none: at 128 km it
+ * base; the tiles are also built on the globe's lattice, 6 km inside the
+ * shell, so a tile beats the shell by geometry and by bias), then the deck
+ * above all of them. The air needs none: at 128 km it
  * clears the buffer by a wide margin, and it writes no depth and draws last.
  */
 

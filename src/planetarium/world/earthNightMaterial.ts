@@ -27,10 +27,14 @@
  * one; the night shell writes no depth at all, so a night sector that wrote
  * none either would simply add on top of it and every resident sector would be
  * exactly twice as bright, with a rectangle at its edge. So a night sector
- * material writes depth (at the shell's own radius, pulled one unit nearer per
- * level so the shell's coincident fragments are strictly further and fail the
- * test) while staying `transparent: true` — the flag here is a render-list
- * choice, not a blending one. Additive blending applies either way, but an
+ * material writes depth, pulled one unit nearer per level on top of the
+ * shell's own bias, while staying `transparent: true` — the flag here is a
+ * render-list choice, not a blending one. The tiles are built at the GLOBE's
+ * radius, not the shell's (PlanetariumMode registers the family): the shell
+ * is 6 km further out, so under a tile it fails the test by geometry as well
+ * as by bias, and the tile's depth silhouette is the ground's own. Built at
+ * the shell's radius the tiles wrote depth 6 km past the ground's limb, and
+ * the air behind that band was rejected: a black line along the horizon. Additive blending applies either way, but an
  * opaque-list sector at a negative renderOrder would draw before the globe and
  * punch it out under itself.
  *

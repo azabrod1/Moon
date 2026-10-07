@@ -20,7 +20,7 @@ import {
   sphereDirection,
 } from './sectorGrid';
 import { DEG2RAD } from '../../shared/math/angles';
-import { EARTH_NIGHT_SHELL_SCALE, GEOMETRY_UPGRADE_SEGMENTS } from '../PlanetFactory';
+import { GEOMETRY_UPGRADE_SEGMENTS } from '../PlanetFactory';
 import { PLANETS } from '../planets/planetData';
 import { MOONS } from '../planets/moonData';
 import { SECTOR_MAX_LEVEL, SECTOR_SEGMENTS } from './sectorStreamer';
@@ -383,9 +383,11 @@ describe('every sector triangle is a globe triangle, bit for bit', () => {
   const earth = PLANETS.find((p) => p.name === 'Earth')!;
   const mars = PLANETS.find((p) => p.name === 'Mars')!;
   const moon = MOONS.find((m) => m.name === 'Moon')!;
+  // Earth's night tiles are built at the globe's radius too, not the night
+  // shell's (PlanetariumMode registers the family and says why), so the one
+  // Earth radius covers both families.
   const radii: Array<[string, number]> = [
     ['Earth', earth.radiusAU],
-    ["Earth's night shell", earth.radiusAU * EARTH_NIGHT_SHELL_SCALE],
     ['the Moon', moon.radiusAU],
     ['Mars', mars.radiusAU],
   ];

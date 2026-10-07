@@ -1,10 +1,7 @@
 // The wind over the sea, as the one map Earth's ocean reads its glint from,
 // generated here and baked by tools/gen-seawind.mjs into
 // public/textures/earth-seawind.v1.webp: one byte a texel, the wind at 10 m
-// over SEA_WIND_MAX_MS. Until the surface shader draws its single lobe from
-// this map, the app still loads the pair this generator baked before
-// (earth-seawind-calm.v1.webp, earth-seawind-windy.v1.webp), whose calm
-// weight carried the lanes and regions described below.
+// over SEA_WIND_MAX_MS, read by src/planetarium/world/seaWind.ts.
 //
 // A glint is a picture of the wind. Where the wind field varies faster than
 // the mirror lobe is wide (about 20 degrees of facet tilt at trade winds), the

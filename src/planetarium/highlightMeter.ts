@@ -16,7 +16,7 @@
  * It costs tens of microseconds on the main thread and nothing on the GPU,
  * and it holds EXACTLY one — nothing evaluated, nothing decoded — whenever
  * the beam cannot be in the picture: the switch off (`?glintmeter=0`, any
- * build), the sea's beam chain or the Sun's path compiled out, the wind maps
+ * build), the sea's beam chain or the Sun's path compiled out, the wind map
  * not bound, Earth's air on the tier without tables, the camera far from
  * Earth, or the maps not yet decoded. The hold is bit-identical to the
  * picture before the meter, because the Sun's meter never exceeds one.
@@ -38,7 +38,6 @@ import {
 } from './world/glintMeter';
 import { EarthSurfaceMaps, type EarthMapKind } from './world/surfaceMaps';
 import { SEA_WATER_F0 } from './world/surfaceShading';
-import { SEA_CALM_LOBE_WIND_MS, meanSquareSlope } from './world/seaWind';
 
 /** The rates the exposure moves at, in stops per second: eyes and cameras
  *  clamp down fast and recover slowly. */
@@ -87,10 +86,10 @@ export interface HighlightContext {
   /** The displayed field of view, degrees, both axes. */
   fovXDeg: number;
   fovYDeg: number;
-  /** The chain the surfaces compile: the beam, the Sun's path, the wind maps. */
+  /** The chain the surfaces compile: the beam, the Sun's path, the wind map. */
   seaBeamOn: boolean;
   sunPathOn: boolean;
-  windMapsOn: boolean;
+  windMapOn: boolean;
 }
 
 export interface HighlightTelemetry {
@@ -105,8 +104,8 @@ export interface HighlightTelemetry {
   groundAngleDeg: number;
   halfWidthAlongDeg: number;
   halfWidthAcrossDeg: number;
-  /** The surface under the predicted peak: water, calm share, wind, cloud keep. */
-  peakSample: { water: number; calm: number; windMs: number; cloudKeep: number };
+  /** The surface under the predicted peak: water, wind, cloud keep. */
+  peakSample: { water: number; windMs: number; cloudKeep: number };
   coverage: number;
   /** Where the peak lands in the frame: degrees from its centre, right and
    *  up, and whether it is in front of the camera at all. */
@@ -139,8 +138,8 @@ export class HighlightMeter {
   private readonly light: { intensity: number; linear: RGB; irradianceScale: number } = {
     intensity: 0, linear: [1, 1, 1], irradianceScale: bodySolarIrradianceScale('Earth'),
   };
-  private readonly sea: { waterF0: number; calmMss: number; knee: number; cap: number; hazeClearView: number; airBlend: number } = {
-    waterF0: SEA_WATER_F0, calmMss: meanSquareSlope(SEA_CALM_LOBE_WIND_MS), knee: 0, cap: 0, hazeClearView: 0.35, airBlend: 1,
+  private readonly sea: { waterF0: number; knee: number; cap: number; hazeClearView: number; airBlend: number } = {
+    waterF0: SEA_WATER_F0, knee: 0, cap: 0, hazeClearView: 0.35, airBlend: 1,
   };
   private cloudSpin = 0;
   private cloudDrawn = true;
@@ -209,7 +208,7 @@ export class HighlightMeter {
     if (!meterEnabled) return 'off';
     if (!ctx.seaBeamOn) return 'sea beam off';
     if (!ctx.sunPathOn) return 'sun path off';
-    if (!ctx.windMapsOn) return 'wind maps not bound';
+    if (!ctx.windMapOn) return 'wind map not bound';
     if (!ctx.airOn) return 'air without tables';
     const dist = ctx.camera.length();
     if (!(dist > 1) || dist > HIGHLIGHT_REACH_RADII) return 'far from Earth';
@@ -233,7 +232,7 @@ export class HighlightMeter {
       groundAngleDeg: p.groundAngleDeg,
       halfWidthAlongDeg: p.halfWidthAlongDeg,
       halfWidthAcrossDeg: p.halfWidthAcrossDeg,
-      peakSample: { water: p.sample.water, calm: p.sample.calm, windMs: p.sample.windMs, cloudKeep: p.sample.cloudKeep },
+      peakSample: { water: p.sample.water, windMs: p.sample.windMs, cloudKeep: p.sample.cloudKeep },
       coverage: this.coverage,
       peakFrame: { xDeg: this.place.xDeg, yDeg: this.place.yDeg, inFront: this.place.inFront },
       maps: this.maps.state(),

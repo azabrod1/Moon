@@ -28,13 +28,13 @@ Ground and map tiles
 - DEV `?tiles=<url>` loads tiles from another address.
 
 Earth's sea, air and clouds (in `world/surfaceShading.ts` unless named)
-- `?seawind=0` gives the whole sea one roughness instead of the wind maps (`world/seaWind.ts`).
+- `?seawind=0` gives the whole sea one roughness instead of the wind map (`world/seaWind.ts`).
 - `?sunpath=0` stops sunlight dimming and reddening on its way through the air.
 - `?seabeam=0`, `?seacolour=0` and `?seasky=0` return the sun's reflection on the sea, the sea's colour and the sky's reflection in it to how they were.
 - `?glintmeter=0` stops the camera darkening for the sun's reflection on the sea (`planetarium/highlightMeter.ts`).
 - `?bloomknee=0` returns the glow around bright spots to how it was (`app/bloomConfig.ts`).
 - `?cloudshadows=0`, `?cloudlight=0` and `?cloudtiles=0` turn off cloud shadows, cloud lighting and the sharp cloud tiles (`world/cloudField.ts` for the tiles). DEV `?cloudpoolfail=1` pretends the cloud tiles ran out of memory.
-- DEV tuning: `?glint=` for sea roughness, `?seawindmap=<url>` for another wind map, `?seawindmips=0` to read the wind maps at full detail at every distance, `?haze=<0..1>` for how much haze shows, `?aerosol=<amount>` for the air's dust and salt (`world/atmosphereModel.ts`).
+- DEV tuning: `?glint=<roughness>[,<scale>[,<cap>]]` for one sea roughness, `?seawindmap=<url>` for another wind map (a grey picture or raw bytes), `?seawindmips=0` to read the wind map at full detail at every distance, `?haze=<0..1>` for how much haze shows, `?aerosol=<amount>` for the air's dust and salt (`world/atmosphereModel.ts`).
 
 Night, lens and flight
 - `?nightexposure=0` turns off the dimming of night sides while daylight is in view (`world/nightExposure.ts`). `?nightsides=real|brightened` starts with that Night sides setting.

@@ -47,7 +47,6 @@ import {
   type SurfaceArchetype, OCEAN_BEAM_CAP, OCEAN_BEAM_KNEE, OCEAN_GLINT_CAP,
   SEA_WATER_COLOUR,
 } from './surfaceShading';
-import { SEA_CALM_LOBE_ROUGHNESS } from './seaWind';
 import { createEarthNightShellMaterial } from './earthNightMaterial';
 import { resolveDefine } from '../testing/glslDefine';
 import { CLOUD_FIELD_DIAGNOSTICS } from './cloudField';
@@ -109,23 +108,23 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = 'e62225af2cf3a7eb2dd3841e80366116cf321f77cbbd446d2fbf5a87e9999d98';
-const PROD_FRAGMENT_HASH = '93182b18a9023652064566439bbaedddcdb02de5da4db98ddb646259f7a61952';
+const DEV_FRAGMENT_HASH = 'ae8347b328c8385eaef023791ba804a9394e0e35f84eeea4a218cf713cd88645';
+const PROD_FRAGMENT_HASH = '0c801a29769b7a54c1c74a521f751029742a991a765e9cba3448b4425a39aaa8';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 /** The two texts with the cloud field's define OFF (world/cloudField),
  *  resolved as the preprocessor resolves it: each of the field's two chunks
  *  leaves the one blank line it opens with. */
-const FIELD_OFF_DEV_FRAGMENT_HASH = '4d147c4617884a294e2d5b16b74f769eb3ac6f113423511cbd9868e2609f480f';
-const FIELD_OFF_PROD_FRAGMENT_HASH = 'd4029afeb3acdd03b56f1a92d8ab5dd9233ae1e60b0486e52d8a40059bc78620';
+const FIELD_OFF_DEV_FRAGMENT_HASH = '434f398b0abc7a68085a59a519c0abda263969a69f57bf7410a6fd0444aca2d1';
+const FIELD_OFF_PROD_FRAGMENT_HASH = '082c6317d33db22a54fc6ac32a7dcf3b7b1466008e9c4a5f47c5f03004238445';
 /** The production text from before the field reached a production build:
  *  the shipped text with the field's two chunks deleted, newlines and all. */
-const PRE_FIELD_PROD_FRAGMENT_HASH = '616d0ec8faaee021fbf2edc4b024c8265740d6ac858450a992284bcb4f635ff9';
+const PRE_FIELD_PROD_FRAGMENT_HASH = '46aa2d0112d72a7a82100f90bcbe4dd077643a47ae32fe569911f1acbbcd20a2';
 /** The same two texts with the cloud shadow's, the cloud light's and the
  *  cloud field's defines all OFF, resolved as the preprocessor resolves them:
  *  the texts from before the switches existed, but for the field's two blank
  *  lines. */
-const OFF_DEV_FRAGMENT_HASH = 'ed7a0dd3a3b0340a7276115317e5b58617ccc36f5671c5ff99bc45f027082101';
-const OFF_PROD_FRAGMENT_HASH = '2567e7e2c686085a1e5963f1be52fd356df36c8210be958610a6365bfde2f81f';
+const OFF_DEV_FRAGMENT_HASH = 'e456d320ebaf726bd248e59c7662f7ae485f338611504cafda2544090f5ad316';
+const OFF_PROD_FRAGMENT_HASH = '80a57b393c5a603a34f725532cdfb8500eccb37f67d38956312a7c731976af18';
 describe('the injected surface shader', () => {
   it('is one text for every body and both tiers', () => {
     // Earth with air, the Moon without, Mars with its own, and the cloud deck.
@@ -303,7 +302,7 @@ describe('the injected surface shader', () => {
         + '\nuniform float uPerfCloudNoiseFrame;'
         + '\nuniform float uProbeCloudSmooth;\nuniform float uProbeCloudDetail;'
         + '\nuniform float uProbeCloudRelief;\nuniform float uProbeCloudAir;'
-        + '\nuniform float uGlintCap;\nuniform float uGlintKeep;\nuniform float uGlintCalm;'
+        + '\nuniform float uGlintCap;\nuniform float uGlintKeep;'
         + '\nuniform float uBeamKnee;\nuniform float uBeamCap;'
         + '\nuniform vec3 uSeaColour;\nuniform float uSeaSky;', '')
       // The sky reflection's scale is a DEV knob at one, not in the text at all.
@@ -343,11 +342,10 @@ describe('the injected surface shader', () => {
       // off) and keeps three's relief frame there; production's deck always
       // has its own program, so its ground program has no such line.
       .replace('\tif ( DECK_ON ) reliefFrame = tbn;\n', '')
-      // The glint's tuning uniforms: the cap and the calm lobe read as the
-      // constants they default to, and the scale, a DEV A/B knob at one, is
+      // The glint's tuning uniforms: the cap reads as the constant it
+      // defaults to, and the scale, a DEV A/B knob at one, is
       // not in the text at all.
       .replace(/uGlintCap/g, OCEAN_GLINT_CAP.toFixed(2))
-      .replace(/uGlintCalm/g, SEA_CALM_LOBE_ROUGHNESS.toFixed(5))
       // The beam's shoulder reads as its two constants.
       .replace(/uBeamKnee/g, OCEAN_BEAM_KNEE.toFixed(2))
       .replace(/uBeamCap/g, OCEAN_BEAM_CAP.toFixed(2))

@@ -93,7 +93,7 @@ import {
   seaWindOn,
 } from './world/surfaceShading';
 import { PLANETS } from './planets/planetData';
-import { seaWindTextures } from './world/seaWind';
+import { seaWindTexture } from './world/seaWind';
 import {
   createEarthNightSectorMaterial,
   createEarthNightShellMaterial,
@@ -1225,8 +1225,7 @@ describe('wireEarthLateDetail', () => {
       clouds: createLateTextureSlot(),
       bump: createLateTextureSlot(),
       roughness: createLateTextureSlot(),
-      seaCalm: createLateTextureSlot(),
-      seaWindy: createLateTextureSlot(),
+      seaWind: createLateTextureSlot(),
     };
   }
 
@@ -1270,35 +1269,28 @@ describe('wireEarthLateDetail', () => {
     expect(spies.map((f) => f.disposed)).toEqual([true, true, true, true]);
   });
 
-  it('installs the sea\'s wind maps as they land, wrapped for the sea, and the sea reads them only once both are here — a fallback is freed, never installed', () => {
+  it('installs the sea\'s wind map as it lands, wrapped for the sea, and the sea reads it from then on — a fallback is freed, never installed', () => {
     const s = slots();
     wireEarthLateDetail(s, new THREE.ShaderMaterial({ uniforms: { nightTexture: { value: null } } }),
       new THREE.MeshStandardMaterial(), new THREE.MeshStandardMaterial());
-    expect(seaWindTextures()).toEqual({ calm: null, windy: null });
-    // A loader that timed out hands the slot its mid-grey stand-in: a calm
-    // weight of a half and 8 m/s everywhere is not a sea, so it is freed.
+    expect(seaWindTexture()).toBeNull();
+    // A loader that timed out hands the slot its mid-grey stand-in: 8 m/s
+    // everywhere is not a sea, so it is freed.
     const standIn = fallbackTexture();
     const standInSpy = disposeSpy(standIn);
-    s.seaCalm.deliver(standIn);
+    s.seaWind.deliver(standIn);
     expect(standInSpy.disposed).toBe(true);
-    expect(seaWindTextures().calm).toBeNull();
+    expect(seaWindTexture()).toBeNull();
     expect(seaWindOn()).toBe(false);
-    // The real calm map alone is installed but not read: the sea needs both.
-    const calm = fakeTexture('calm');
-    s.seaCalm.deliver(calm);
-    expect(seaWindTextures().calm).toBe(calm);
-    expect(seaWindOn()).toBe(false);
-    // The windy map lands: both installed, wrapped round the date line and
-    // clamped at the poles (the loader's default is ClampToEdge, which would
-    // smear the last column of sea across the seam), and the sea is on.
-    const windy = fakeTexture('windy');
-    s.seaWindy.deliver(windy);
-    expect(seaWindTextures()).toEqual({ calm, windy });
-    for (const tex of [calm, windy]) {
-      expect(tex.wrapS).toBe(THREE.RepeatWrapping);
-      expect(tex.wrapT).toBe(THREE.ClampToEdgeWrapping);
-      expect(tex.generateMipmaps).toBe(true);
-    }
+    // The map lands: installed, wrapped round the date line and clamped at
+    // the poles (the loader's default is ClampToEdge, which would smear the
+    // last column of sea across the seam), and the sea is on.
+    const wind = fakeTexture('wind');
+    s.seaWind.deliver(wind);
+    expect(seaWindTexture()).toBe(wind);
+    expect(wind.wrapS).toBe(THREE.RepeatWrapping);
+    expect(wind.wrapT).toBe(THREE.ClampToEdgeWrapping);
+    expect(wind.generateMipmaps).toBe(true);
     expect(seaWindOn()).toBe(true);
   });
 
@@ -1602,7 +1594,7 @@ describe('Earth\'s night lights on the colour ladder', () => {
     wireEarthLateDetail(
       {
         night: createLateTextureSlot(), clouds: createLateTextureSlot(), bump: createLateTextureSlot(),
-        roughness: createLateTextureSlot(), seaCalm: createLateTextureSlot(), seaWindy: createLateTextureSlot(),
+        roughness: createLateTextureSlot(), seaWind: createLateTextureSlot(),
       },
       mat, new THREE.MeshStandardMaterial(), new THREE.MeshStandardMaterial(),
     );

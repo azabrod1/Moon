@@ -55,7 +55,7 @@ describe('the coarse decode', () => {
 
 describe("Earth's maps together", () => {
   // A fake decode: a sea everywhere but a land band at the equator's east
-  // (lon 0..90 E), windy at 8 m/s, half calm, cloud over the whole north.
+  // (lon 0..90 E), the wind at 8 m/s, cloud over the whole north.
   const fakeDecode = async (url: string, width: number, height: number) => {
     const rgba = new Uint8ClampedArray(width * height * 4);
     for (let y = 0; y < height; y++) {
@@ -65,32 +65,30 @@ describe("Earth's maps together", () => {
         const north = y < height / 2;
         let r = 0, g = 0, b = 0;
         if (url.includes('rough')) r = lon > 0 && lon < 90 && Math.abs(y - height / 2) < height / 8 ? ROUGHNESS_MAP_LAND * 255 : ROUGHNESS_MAP_WATER * 255;
-        else if (url.includes('calm')) r = 128;
-        else if (url.includes('windy')) r = (8 / SEA_WIND_MAX_MS) * 255;
+        else if (url.includes('wind')) r = (8 / SEA_WIND_MAX_MS) * 255;
         else if (url.includes('cloud')) { const v = north ? 255 : 0; r = v; g = v; b = v; }
         rgba[i] = r; rgba[i + 1] = g; rgba[i + 2] = b; rgba[i + 3] = 255;
       }
     }
     return { rgba, width, height };
   };
-  const urls = { water: 'x/rough.webp', calm: 'x/calm.webp', windy: 'x/windy.webp', cloud: 'x/cloud.webp' } as const;
+  const urls = { water: 'x/rough.webp', wind: 'x/wind.webp', cloud: 'x/cloud.webp' } as const;
 
-  it('holds the meter while a map is missing, then answers from all four', async () => {
+  it('holds the meter while a map is missing, then answers from all three', async () => {
     const maps = new EarthSurfaceMaps(urls, fakeDecode, { width: 72, height: 36 });
-    const out = { water: 0, calm: 0, windMs: 0, cloudKeep: 1 };
+    const out = { water: 0, windMs: 0, cloudKeep: 1 };
     maps.sampleAt(1, 0, 0, 0, out);
     expect(out.water).toBe(0);
     expect(maps.ready).toBe(false);
     maps.request();
-    expect(maps.state().loading.length).toBe(4);
+    expect(maps.state().loading.length).toBe(3);
     await new Promise((r) => setTimeout(r, 20));
     expect(maps.ready).toBe(true);
-    expect(maps.state().ready).toEqual(['water', 'calm', 'windy', 'cloud']);
-    // Open sea in the south-west: water, half calm, 8 m/s, no cloud.
+    expect(maps.state().ready).toEqual(['water', 'wind', 'cloud']);
+    // Open sea in the south-west: water, 8 m/s, no cloud.
     const sw = dirAt(-30, -120);
     maps.sampleAt(sw[0], sw[1], sw[2], 0, out);
     expect(out.water).toBeCloseTo(1, 1);
-    expect(out.calm).toBeCloseTo(0.5, 1);
     expect(out.windMs).toBeCloseTo(8, 0);
     expect(out.cloudKeep).toBeCloseTo(1, 1);
     // The land band: no water.
@@ -115,7 +113,7 @@ describe("Earth's maps together", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(maps.ready).toBe(false);
     expect(maps.state().failed).toEqual(['cloud']);
-    const out = { water: 0, calm: 0, windMs: 0, cloudKeep: 1 };
+    const out = { water: 0, windMs: 0, cloudKeep: 1 };
     maps.sampleAt(1, 0, 0, 0, out);
     expect(out.water).toBe(0);
   });
@@ -124,7 +122,7 @@ describe("Earth's maps together", () => {
     const maps = new EarthSurfaceMaps(urls, fakeDecode, { width: 72, height: 36 });
     maps.request();
     await new Promise((r) => setTimeout(r, 20));
-    const out = { water: 0, calm: 0, windMs: 0, cloudKeep: 1 };
+    const out = { water: 0, windMs: 0, cloudKeep: 1 };
     for (const [lat, lon, spin] of [[10, 20, 0.7], [-40, -100, 2.9], [60, 170, 5.5]]) {
       const n = dirAt(lat, lon);
       maps.sampleAt(n[0], n[1], n[2], spin, out);

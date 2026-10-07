@@ -21,18 +21,20 @@
  * combination; and the atmosphere tables' sizes (the full and the half tier,
  * a define set on every surface). The ocean's gloss is a uniform, not a
  * define, so it forks no program; what it rides on is the roughness map, and
- * the ground is counted with and without one. The sea's wind maps live on
- * another branch: they are a named slot of `SEA_WIND_SLOT` units the ground
- * must have room for, and the battery holds every ground row to that headroom.
+ * the ground is counted with and without one. The sea's wind map is in every
+ * ground program and counted in its row like any other sampler;
+ * `SEA_WIND_SAMPLERS` says how many sea samplers a ground row links, and the
+ * battery holds every ground row to exactly that.
  */
 import * as THREE from 'three';
 import { augmentSurfaceMaterial } from './surfaceShading';
 import { atmosphereTableDefines } from './atmosphereLut';
 import { ATMOSPHERE_TABLE_SIZES_FULL, ATMOSPHERE_TABLE_SIZES_HALF } from './atmosphereModel';
 
-/** Texture units the sea's wind maps will take on Earth's ground (a calm map
- *  and a windy one), reserved here until that branch lands. */
-export const SEA_WIND_SLOT = 2;
+/** The sea's samplers every ground program links: the one wind map
+ *  (uSeaWindMap). A calm map beside it took a second unit until the sea was
+ *  drawn as one lobe. */
+export const SEA_WIND_SAMPLERS = 1;
 
 export interface SamplerCensusRow {
   surface: 'ground' | 'deck';
@@ -48,7 +50,7 @@ export interface SamplerCensusRow {
 export interface SamplerCensus {
   /** The fragment stage's texture units on this GPU. */
   maxUnits: number;
-  seaWindSlot: number;
+  seaWindSamplers: number;
   rows: SamplerCensusRow[];
   /** The live planetarium surfaces, linked as this session drew them, beside
    *  the census row with their defines — the check that the census builds the
@@ -159,5 +161,5 @@ export function devSamplerCensus(
     const mat = mesh.material as THREE.Material;
     live.push({ surface, ...switchesOf(mat), samplers: linkedSamplers(renderer, mat)?.names ?? null });
   });
-  return { maxUnits: gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS) as number, seaWindSlot: SEA_WIND_SLOT, rows, live };
+  return { maxUnits: gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS) as number, seaWindSamplers: SEA_WIND_SAMPLERS, rows, live };
 }

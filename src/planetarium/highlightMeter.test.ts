@@ -13,17 +13,17 @@ import { KM_PER_AU } from '../astronomy/constants';
 const EARTH_KM = 6371;
 const DEG = Math.PI / 180;
 
-/** Maps of an open 7 m/s sea, no calm, no cloud, decoded at once. */
+/** Maps of an open 7 m/s sea, no cloud, decoded at once. */
 function openSeaMaps(): EarthSurfaceMaps {
   const decode = async (url: string, width: number, height: number) => {
     const rgba = new Uint8ClampedArray(width * height * 4);
     for (let i = 0; i < width * height; i++) {
-      const r = url.includes('rough') ? ROUGHNESS_MAP_WATER * 255 : url.includes('windy') ? (7 / SEA_WIND_MAX_MS) * 255 : 0;
+      const r = url.includes('rough') ? ROUGHNESS_MAP_WATER * 255 : url.includes('wind') ? (7 / SEA_WIND_MAX_MS) * 255 : 0;
       rgba[i * 4] = r; rgba[i * 4 + 3] = 255;
     }
     return { rgba, width, height };
   };
-  return new EarthSurfaceMaps({ water: 'rough', calm: 'calm', windy: 'windy', cloud: 'cloud' }, decode, { width: 36, height: 18 });
+  return new EarthSurfaceMaps({ water: 'rough', wind: 'wind', cloud: 'cloud' }, decode, { width: 36, height: 18 });
 }
 
 /** The probe's pose: 400 km over the +z pole, the Sun 10° high toward +x,
@@ -44,7 +44,7 @@ function probeContext(altitudeKm = 400, sunElevDeg = 10, aimGroundAngleDeg = 10)
     cloudSpin: 0, cloudDrawn: true,
     view, viewUp,
     fovXDeg: 40, fovYDeg: 27,
-    seaBeamOn: true, sunPathOn: true, windMapsOn: true,
+    seaBeamOn: true, sunPathOn: true, windMapOn: true,
   };
 }
 
@@ -114,7 +114,7 @@ describe('the highlight meter', () => {
     meter.update(0.016, probeContext());
     await settle();
     for (const [patch, reason] of [
-      [{ seaBeamOn: false }, 'sea beam off'], [{ sunPathOn: false }, 'sun path off'], [{ windMapsOn: false }, 'wind maps not bound'],
+      [{ seaBeamOn: false }, 'sea beam off'], [{ sunPathOn: false }, 'sun path off'], [{ windMapOn: false }, 'wind map not bound'],
       [{ airOn: false }, 'air without tables'],
     ] as const) {
       meter.update(0.016, { ...probeContext(), ...patch });
@@ -128,7 +128,7 @@ describe('the highlight meter', () => {
     expect(Number.isFinite(meter.update(0.1, zenith))).toBe(true);
     // A deck hidden: the cloud's cut is lifted, so a cloud over the beam does not hold it.
     const t = meter.telemetry();
-    expect(t.maps.ready.length).toBe(4);
+    expect(t.maps.ready).toEqual(['water', 'wind', 'cloud']);
   });
 });
 

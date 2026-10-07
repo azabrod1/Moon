@@ -6,7 +6,7 @@ import {
 } from './glintMeter';
 import { atmosphereParams, solarIrradianceScale, transmittanceToTopBoundary } from './atmosphereModel';
 import { SEA_WATER_F0 } from './surfaceShading';
-import { SEA_CALM_LOBE_WIND_MS, meanSquareSlope } from './seaWind';
+import { meanSquareSlope } from './seaWind';
 import { KM_PER_AU } from '../../astronomy/constants';
 
 const EARTH_KM = 6371;
@@ -28,11 +28,11 @@ function probePose(altitudeKm: number, sunElevDeg: number): GlintMeterPose {
 /** The cream Sun at 3 the probe's earlier reports were read under. */
 const OLD_LIGHT: GlintMeterLight = { intensity: 3, linear: [1, 0.9131, 0.7454], irradianceScale: solarIrradianceScale(1) };
 const sea: GlintMeterSea = {
-  waterF0: SEA_WATER_F0, calmMss: meanSquareSlope(SEA_CALM_LOBE_WIND_MS),
+  waterF0: SEA_WATER_F0,
   knee: 3.5, cap: 7.0, hazeClearView: 0.35, airBlend: 1,
 };
-const openSea = (windMs: number, calm = 0, cloudKeep = 1): SurfaceSampler => (_x, _y, _z, out) => {
-  out.calm = calm; out.windMs = windMs; out.water = 1; out.cloudKeep = cloudKeep;
+const openSea = (windMs: number, cloudKeep = 1): SurfaceSampler => (_x, _y, _z, out) => {
+  out.windMs = windMs; out.water = 1; out.cloudKeep = cloudKeep;
 };
 
 describe('the transmittance table', () => {
@@ -66,10 +66,10 @@ describe('the sea equations', () => {
   it('is zero off the sea, under cloud, under the horizon and with the Sun down', () => {
     const pose = probePose(400, 10);
     const out: [number, number, number] = [0, 0, 0];
-    const land: SurfaceSampler = (_x, _y, _z, o) => { o.calm = 0; o.windMs = 7; o.water = 0; o.cloudKeep = 1; };
+    const land: SurfaceSampler = (_x, _y, _z, o) => { o.windMs = 7; o.water = 0; o.cloudKeep = 1; };
     beamRadianceAt(Math.sin(8 * DEG), 0, Math.cos(8 * DEG), pose, OLD_LIGHT, sea, land, table, scratch, out);
     expect(out).toEqual([0, 0, 0]);
-    beamRadianceAt(Math.sin(8 * DEG), 0, Math.cos(8 * DEG), pose, OLD_LIGHT, sea, openSea(7, 0, 0), table, scratch, out);
+    beamRadianceAt(Math.sin(8 * DEG), 0, Math.cos(8 * DEG), pose, OLD_LIGHT, sea, openSea(7, 0), table, scratch, out);
     expect(out).toEqual([0, 0, 0]);
     // Behind the horizon from 400 km (the horizon is 19.8° of ground).
     beamRadianceAt(Math.sin(40 * DEG), 0, Math.cos(40 * DEG), pose, OLD_LIGHT, sea, openSea(7), table, scratch, out);
@@ -80,7 +80,7 @@ describe('the sea equations', () => {
   });
 });
 
-describe('the scan at the probe pose (400 km, Sun 10°, 7.03 m/s, no calm)', () => {
+describe('the scan at the probe pose (400 km, Sun 10°, 7.03 m/s)', () => {
   // The probe's own CPU reference read these at the mirror column, under the
   // cream Sun at 3: the reference peak (no air) 4.88 scene units, the Sun's
   // path on it ×0.78, the air on the camera leg ×0.59, the app drawn 2.23;
@@ -100,7 +100,6 @@ describe('the scan at the probe pose (400 km, Sun 10°, 7.03 m/s, no calm)', () 
     // The surface under it, as the sampler read it there.
     expect(peak.sample.water).toBe(1);
     expect(peak.sample.windMs).toBeCloseTo(7.03, 6);
-    expect(peak.sample.calm).toBe(0);
     expect(peak.sample.cloudKeep).toBe(1);
   });
 
@@ -138,16 +137,18 @@ describe('the scan at the probe pose (400 km, Sun 10°, 7.03 m/s, no calm)', () 
     expect(peak.drawnMax).toBeGreaterThan(2.8);
     expect(plain).toBeLessThan(1);
     expect(plain).toBeGreaterThan(0.6);
-    // A brighter beam (a calm patch under the mirror point) asks for more.
+    // A brighter beam (a calm sea under the mirror point) asks for more. A
+    // 1.5 m/s sea has the peak a texel half glassy at 7 m/s had when the sea
+    // was drawn as two lobes, so the case is the one this pinned before.
     const calmPeak = createBeamPeak();
-    expect(scanBeam(pose, OLD_LIGHT, sea, openSea(7.03, 0.5), table, scratch, calmPeak)).toBe(true);
+    expect(scanBeam(pose, OLD_LIGHT, sea, openSea(1.5), table, scratch, calmPeak)).toBe(true);
     expect(calmPeak.drawnMax).toBeGreaterThan(peak.drawnMax);
     const e = highlightTarget(calmPeak.drawnMax, cov);
     expect(e).toBeLessThan(plain);
     expect(e).toBeGreaterThanOrEqual(0.25);
     // From 35 786 km with the Sun 60° high the sheen is faint: factor 1.
     const geo = createBeamPeak();
-    expect(scanBeam(probePose(35786, 60), OLD_LIGHT, sea, openSea(7.03, 0.5), table, scratch, geo)).toBe(true);
+    expect(scanBeam(probePose(35786, 60), OLD_LIGHT, sea, openSea(1.5), table, scratch, geo)).toBe(true);
     expect(geo.drawnMax).toBeLessThan(2.8);
     expect(highlightTarget(geo.drawnMax, coverageOfBeam(geo.halfWidthAlongDeg, geo.halfWidthAcrossDeg, 20, 14))).toBe(1);
   });
@@ -158,7 +159,7 @@ describe('the scan at the probe pose (400 km, Sun 10°, 7.03 m/s, no calm)', () 
     const inside: GlintMeterPose = { camera: [0, 0, 0.5], sun: [23000, 0, 0], sunVisible: 1 };
     expect(scanBeam(inside, OLD_LIGHT, sea, openSea(7), table, scratch, createBeamPeak())).toBe(false);
     // A pure-land sampler finds nothing either.
-    const land: SurfaceSampler = (_x, _y, _z, o) => { o.calm = 0; o.windMs = 7; o.water = 0; o.cloudKeep = 1; };
+    const land: SurfaceSampler = (_x, _y, _z, o) => { o.windMs = 7; o.water = 0; o.cloudKeep = 1; };
     expect(scanBeam(pose, OLD_LIGHT, sea, land, table, scratch, createBeamPeak())).toBe(false);
   });
 });

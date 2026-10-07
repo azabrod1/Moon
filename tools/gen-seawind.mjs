@@ -4,10 +4,8 @@
 //     -> public/textures/earth-seawind.v1.webp   1024x512, the wind over SEA_WIND_MAX_MS
 //   node tools/gen-seawind.mjs --out=planning/candidate --set=broadSpread:0.6 --png=planning/candidate.png
 //     -> a candidate (<out>.webp) with DEFAULTS overridden, at --width=<n> (the
-//        height half of it) if given, and the same map as a grey PNG: the form
-//        the DEV `?seawindmap=` override reads once the shader draws one lobe
-//        from this map (until then the override reads red as a calm weight
-//        and green as the windy speed, so a grey picture there is misread)
+//        height half of it) if given, and the same map as a grey PNG, the
+//        form the DEV `?seawindmap=` override reads (its red)
 //
 // The map is a GREY picture, lossless: the shader reads it as a number
 // through the one-channel mask path (world/texturePolicy), and a lossy webp

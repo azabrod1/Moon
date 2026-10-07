@@ -1,13 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import {
-  COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_CALM_LOBE_ROUGHNESS, SEA_CALM_LOBE_WIND_MS, SEA_WIND_MAX_MS,
+  COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_WIND_MAX_MS,
   disposeRetiredSeaWindMaps,
-  installSeaWindMap, meanSquareSlope, parseSeaWindMapParam, parseSeaWindParam, seaWindBytesFromRgba,
-  seaWindBytesFromWindMap, seaWindMapDimensions, seaWindMapSource, seaWindTextureFrom, seaWindTextures,
-  seaWindTexturesFrom, setSeaWindMips, slopeRoughness, windRoughness,
+  installSeaWindMap, loadSeaWindMap, meanSquareSlope, parseSeaWindMapParam, parseSeaWindParam, seaWindBytesFromRgba,
+  seaWindMapDimensions, seaWindMapSource, seaWindTexture, seaWindTextureFrom, setSeaWindMips, windRoughness,
 } from './seaWind';
 import { ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER } from './surfaceShading';
 import { PLANET_TEXTURE_FILES } from './textureLadder';
@@ -27,10 +26,9 @@ describe('windRoughness', () => {
     // Alpha squared is the mean-square slope: with the Beckmann lobe the
     // shader draws, the law is exact.
     expect(Math.pow(windRoughness(5), 4)).toBeCloseTo(meanSquareSlope(5), 12);
-    expect(slopeRoughness(meanSquareSlope(5))).toBeCloseTo(windRoughness(5), 12);
-    // A glassy patch is drawn narrow, a gale wide, and nothing in between goes
+    // A glassy sea is drawn narrow, a gale wide, and nothing in between goes
     // the other way.
-    expect(windRoughness(SEA_CALM_LOBE_WIND_MS)).toBeLessThan(0.3);
+    expect(windRoughness(0.6)).toBeLessThan(0.3);
     expect(windRoughness(SEA_WIND_MAX_MS)).toBeGreaterThan(0.5);
     let last = 0;
     for (let wind = 0; wind <= SEA_WIND_MAX_MS; wind += 0.25) {
@@ -43,16 +41,7 @@ describe('windRoughness', () => {
     expect(ROUGHNESS_MAP_LAND).toBeGreaterThan(windRoughness(SEA_WIND_MAX_MS));
   });
 
-  it('holds the calm lobe where the shipped calm map was measured', () => {
-    // A weight of one means "this calm": the calm map the app loads was baked
-    // against a reference lobe at 0.6 m/s, so the shader's lobe stays that
-    // number while that map is read, or a weight would draw a sea the design
-    // did not put there. The generator no longer has a calm reference: its
-    // one map is the wind alone.
-    expect(SEA_CALM_LOBE_WIND_MS).toBe(0.6);
-    expect(SEA_CALM_LOBE_ROUGHNESS).toBeCloseTo(windRoughness(SEA_CALM_LOBE_WIND_MS), 12);
-    expect(Math.pow(SEA_CALM_LOBE_ROUGHNESS, 4)).toBeCloseTo(0.00607, 5);
-    // And the slope law is one law in the three places that carry it.
+  it('is one slope law in the places that carry it', () => {
     expect(GENERATOR_SLOPE_CALM).toBe(COX_MUNK_SLOPE_CALM);
     expect(GENERATOR_SLOPE_PER_MS).toBe(COX_MUNK_SLOPE_PER_MS);
     expect(GENERATOR_WIND_MAX_MS).toBe(SEA_WIND_MAX_MS);
@@ -60,28 +49,18 @@ describe('windRoughness', () => {
   });
 });
 
-describe('the bytes of the maps', () => {
-  it('reads a picture of both maps north-up into row 0 south, red the calm weight and green the windy speed', () => {
-    // A 2x2 picture: the top row is the north.
+describe('the bytes of the map', () => {
+  it('reads a picture north-up into row 0 south, the wind in red', () => {
+    // A 2x2 grey picture as the bake's --png writes one: the top row is the
+    // north, and the other channels are not read.
     const rgba = new Uint8Array([
-      10, 20, 0, 255, 11, 21, 0, 255, // picture row 0 (north)
-      30, 40, 0, 255, 31, 41, 0, 255, // picture row 1 (south)
+      10, 10, 10, 255, 11, 99, 0, 255, // picture row 0 (north)
+      30, 30, 30, 255, 31, 0, 99, 255, // picture row 1 (south)
     ]);
     const map = seaWindBytesFromRgba(rgba, 2, 2);
     expect(map.width).toBe(2);
     expect(map.height).toBe(2);
-    expect(map.windyWidth).toBe(2);
-    expect(Array.from(map.calm)).toEqual([30, 31, 10, 11]);
-    expect(Array.from(map.windy)).toEqual([40, 41, 20, 21]);
-  });
-
-  it('turns a raw map of one wind a texel into the mixture: calmer than the lobe is all calm, the rest is the windy lobe at its wind', () => {
-    const calmByte = Math.round((SEA_CALM_LOBE_WIND_MS / SEA_WIND_MAX_MS) * 255);
-    const map = seaWindBytesFromWindMap(new Uint8Array([0, calmByte - 1, calmByte, 112, 255]), 5, 1);
-    expect(Array.from(map.calm)).toEqual([255, 255, 0, 0, 0]);
-    expect(Array.from(map.windy)).toEqual([calmByte, calmByte, calmByte, 112, 255]);
-    expect(map.windyWidth).toBe(5);
-    expect(map.windyHeight).toBe(1);
+    expect(Array.from(map.data)).toEqual([30, 31, 10, 11]);
   });
 
   it('reads a raw map\'s shape off its size', () => {
@@ -92,11 +71,30 @@ describe('the bytes of the maps', () => {
     expect(seaWindMapDimensions(2048 * 1024 + 1)).toBeNull();
     expect(seaWindMapDimensions(0)).toBeNull();
   });
+
+  describe('a raw map from a file', () => {
+    afterEach(() => { vi.unstubAllGlobals(); });
+
+    it('is the wind a byte, row 0 the south, its shape read off its size, and a byte count with no shape is refused', async () => {
+      // tools/glint-probe.mjs serves one of these from memory: one wind over
+      // the whole sea, as it is, with no conversion on the way.
+      const bytes = new Uint8Array(8 * 4).map((_, index) => index);
+      vi.stubGlobal('fetch', async () => new Response(bytes));
+      const map = await loadSeaWindMap('/__glint-probe/wind-7.raw');
+      expect(map.width).toBe(8);
+      expect(map.height).toBe(4);
+      expect(Array.from(map.data)).toEqual(Array.from(bytes));
+      vi.stubGlobal('fetch', async () => new Response(new Uint8Array(7)));
+      await expect(loadSeaWindMap('/x.raw')).rejects.toThrow(/not a width x width\/2 byte map/);
+      vi.stubGlobal('fetch', async () => new Response('', { status: 404 }));
+      await expect(loadSeaWindMap('/x.raw')).rejects.toThrow(/answered 404/);
+    });
+  });
 });
 
-describe('the textures', () => {
-  it('are one channel, wrapped around the date line, clamped at the poles, mip-chained, and read as data', () => {
-    const tex = seaWindTextureFrom(new Uint8Array([1, 2, 3, 4]), 4, 1);
+describe('the texture', () => {
+  it('is one channel, wrapped around the date line, clamped at the poles, mip-chained, and read as data', () => {
+    const tex = seaWindTextureFrom({ data: new Uint8Array([1, 2, 3, 4]), width: 4, height: 1 });
     expect(tex.format).toBe(THREE.RedFormat);
     expect(tex.type).toBe(THREE.UnsignedByteType);
     expect(tex.wrapS).toBe(THREE.RepeatWrapping);
@@ -109,59 +107,44 @@ describe('the textures', () => {
     // The DEV mip switch: the next texture built samples its full resolution
     // from any distance.
     setSeaWindMips(false);
-    const flat = seaWindTextureFrom(new Uint8Array([1, 2]), 2, 1);
+    const flat = seaWindTextureFrom({ data: new Uint8Array([1, 2]), width: 2, height: 1 });
     expect(flat.generateMipmaps).toBe(false);
     expect(flat.minFilter).toBe(THREE.LinearFilter);
     setSeaWindMips(true);
-    // A pair from bytes keeps each map's own size.
-    const pair = seaWindTexturesFrom({
-      calm: new Uint8Array(8), width: 4, height: 2, windy: new Uint8Array(2), windyWidth: 2, windyHeight: 1,
-    });
-    expect(pair.calm.image.width).toBe(4);
-    expect(pair.windy.image.width).toBe(2);
-    expect(pair.windy.generateMipmaps).toBe(true);
   });
 
-  it('are installed one at a time, the sea reading them once both are here, and an override refuses the shipped pair', () => {
-    expect(seaWindTextures().calm).toBeNull();
+  it('is installed once it lands, a replacement retires the old one, and an override refuses the shipped map', () => {
+    expect(seaWindTexture()).toBeNull();
     expect(seaWindMapSource()).toBe('none');
-    const first = seaWindTexturesFrom({
-      calm: new Uint8Array(2), width: 2, height: 1, windy: new Uint8Array(2), windyWidth: 2, windyHeight: 1,
-    });
-    expect(installSeaWindMap('calm', first.calm, 'shipped')).toBe(first.calm);
-    expect(seaWindMapSource()).toBe('none');
-    expect(installSeaWindMap('windy', first.windy, 'shipped')).toBe(first.windy);
+    const first = seaWindTextureFrom({ data: new Uint8Array(2), width: 2, height: 1 });
+    expect(installSeaWindMap(first, 'shipped')).toBe(first);
     expect(seaWindMapSource()).toBe('shipped');
-    expect(seaWindTextures().calm).toBe(first.calm);
-    expect(seaWindTextures().windy).toBe(first.windy);
-    // A replacement of one kind retires the one it replaces, disposed once
-    // the sea has been rebound to the new one (rebindSeaWindMaps calls this):
-    // disposed while still bound, three would re-upload it from a bitmap its
-    // dispose listener had closed.
+    expect(seaWindTexture()).toBe(first);
+    // A replacement retires the map it replaces, disposed once the sea has
+    // been rebound to the new one (rebindSeaWindMap calls this): disposed
+    // while still bound, three would re-upload it from a bitmap its dispose
+    // listener had closed.
     let disposed = 0;
-    first.calm.addEventListener('dispose', () => { disposed++; });
-    const second = seaWindTextureFrom(new Uint8Array(2), 2, 1);
-    expect(installSeaWindMap('calm', second, 'shipped')).toBe(second);
+    first.addEventListener('dispose', () => { disposed++; });
+    const second = seaWindTextureFrom({ data: new Uint8Array(2), width: 2, height: 1 });
+    expect(installSeaWindMap(second, 'shipped')).toBe(second);
     expect(disposed).toBe(0);
     disposeRetiredSeaWindMaps();
     expect(disposed).toBe(1);
     disposeRetiredSeaWindMaps();
     expect(disposed).toBe(1);
-    expect(seaWindTextures().calm).toBe(second);
-    // Asking for a map from a file refuses the shipped pair from then on,
+    expect(seaWindTexture()).toBe(second);
+    // Asking for a map from a file refuses the shipped map from then on,
     // whichever lands first — a sheet captured through the override never
-    // shows the shipped maps under it.
+    // shows the shipped map under it.
     expect(parseSeaWindMapParam('')).toBeNull();
     expect(parseSeaWindMapParam('?seawindmap=')).toBeNull();
     expect(parseSeaWindMapParam('?seawind=0&seawindmap=/planning/field.png')).toBe('/planning/field.png');
-    const late = seaWindTextureFrom(new Uint8Array(2), 2, 1);
-    expect(installSeaWindMap('calm', late, 'shipped')).toBeNull();
-    expect(seaWindTextures().calm).toBe(second);
-    const override = seaWindTexturesFrom({
-      calm: new Uint8Array(2), width: 2, height: 1, windy: new Uint8Array(2), windyWidth: 2, windyHeight: 1,
-    });
-    expect(installSeaWindMap('calm', override.calm, '/planning/field.png')).toBe(override.calm);
-    expect(installSeaWindMap('windy', override.windy, '/planning/field.png')).toBe(override.windy);
+    const late = seaWindTextureFrom({ data: new Uint8Array(2), width: 2, height: 1 });
+    expect(installSeaWindMap(late, 'shipped')).toBeNull();
+    expect(seaWindTexture()).toBe(second);
+    const override = seaWindTextureFrom({ data: new Uint8Array(2), width: 2, height: 1 });
+    expect(installSeaWindMap(override, '/planning/field.png')).toBe(override);
     expect(seaWindMapSource()).toBe('/planning/field.png');
   });
 });
@@ -303,17 +286,16 @@ describe('the generator (tools/seaWindField.mjs)', () => {
     }
   });
 
-  it('ships the map the generator bakes, and the pair the app reads until the shader draws one lobe', () => {
+  it('ships the map the generator bakes, under the name the boot loads and warms', () => {
     // The hash moves only with `npm run gen:seawind`, and a re-bake whose
     // bytes differ ships under a new name, as every data file the service
     // worker caches does.
-    const hashOf = (file: string): string =>
-      createHash('sha256').update(readFileSync(`public/textures/${file}`)).digest('hex');
-    expect(hashOf('earth-seawind.v1.webp'))
+    expect(PLANET_TEXTURE_FILES.earthSeaWind).toBe('earth-seawind.v1.webp');
+    const mapBytes = readFileSync(`public/textures/${PLANET_TEXTURE_FILES.earthSeaWind}`);
+    expect(createHash('sha256').update(mapBytes).digest('hex'))
       .toBe('fa489ef7320ee3cdb24f54f73db6d4716d4fbd06812f1817f8f7c682026bc9d6');
     // Lossless webp, the container the loader decodes as a picture: RIFF,
     // WEBP, VP8L.
-    const mapBytes = readFileSync('public/textures/earth-seawind.v1.webp');
     expect(mapBytes.toString('ascii', 0, 4)).toBe('RIFF');
     expect(mapBytes.toString('ascii', 8, 12)).toBe('WEBP');
     expect(mapBytes.toString('ascii', 12, 16)).toBe('VP8L');
@@ -321,14 +303,5 @@ describe('the generator (tools/seaWindField.mjs)', () => {
     expect(DEFAULTS.supersample).toBe(4);
     expect(DEFAULTS.grain).toBe(0);
     expect(DEFAULTS.broadSpread).toBe(0.45);
-    // The pair the boot loads and warms today, baked by this generator
-    // before it lost the calm lanes and regions; pinned until the app reads
-    // the one map instead.
-    expect(PLANET_TEXTURE_FILES.earthSeaCalm).toBe('earth-seawind-calm.v1.webp');
-    expect(PLANET_TEXTURE_FILES.earthSeaWindy).toBe('earth-seawind-windy.v1.webp');
-    expect(hashOf(PLANET_TEXTURE_FILES.earthSeaCalm))
-      .toBe('a0f814051033fc5c6829d359465b2cb839e20282debb999babb791c2482a8e61');
-    expect(hashOf(PLANET_TEXTURE_FILES.earthSeaWindy))
-      .toBe('383f23550b9992f0e7b1c8a9d7cee2b9dc78be743e8e1b56bc49f940c5a6dd20');
   });
 });

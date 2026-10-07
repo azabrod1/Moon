@@ -4,13 +4,13 @@
 //   node tools/glint-probe.mjs                       # 400 km up, the Sun 10° high, aimed at the mirror point, then 8° and 16° down
 //   node tools/glint-probe.mjs --deps=mirror,6,12,20 --sunelev=5 --wind=5 --label=calm
 //   node tools/glint-probe.mjs --alt=35786 --deps=90 --fov=20 --label=geo    # the geostationary view, straight down
-//   node tools/glint-probe.mjs --look --extra='&seawindmap=http://localhost:5174/planning/seawind-cand/F.png'
+//   node tools/glint-probe.mjs --look --extra='&seawindmap=http://localhost:5174/planning/candidate.png'   # a grey map from gen-seawind --png
 //   node tools/glint-probe.mjs --meter --assert                    # the highlight meter's prediction against the pixels, the shipped maps
 //   node tools/glint-probe.mjs --meter --clouds --bearings=180,90,0,270 --deps=mirror --run=12 --assert
 //   node tools/glint-probe.mjs --meter --azimuth=180 --deps=mirror --assert   # turned away from the beam: the meter must ask nothing
 //
 // Method. The sea is given ONE wind everywhere — a raw byte wind map served
-// from memory through `?seawindmap=`, so the sea's mixture is one Beckmann
+// from memory through `?seawindmap=`, so the sea is one Beckmann
 // lobe at Cox-Munk's mean-square slope for that wind — the clouds are hidden
 // (the deck and the sea's cut under it), the ground's detail synthesis and the
 // sector tiles are off, the clock is frozen and the exposure pinned. At each
@@ -337,7 +337,7 @@ async function meterPose(page, pose, poseLabel, png, capture, failures) {
   // The meter needs its maps; the first approach decodes them.
   await page.waitForFunction(() => {
     const t = window.__moon.glintMeter();
-    return !!t.maps && t.maps.ready.length === 4 && t.hold !== 'maps decoding';
+    return !!t.maps && t.maps.ready.length === 3 && t.hold !== 'maps decoding';
   }, null, { timeout: 30000 }).catch(() => {});
   await page.waitForTimeout(1500);
   await waitFrames(page, 3);
@@ -849,7 +849,7 @@ for (const p of report.poses) {
   if (look) continue;
   if (meter) {
     const m = p.meter; const pr = m.predicted; const me = m.measured; const r = m.ratios; const h = m.handoff;
-    lines.push(`  meter: ${m.hold}, maps ${m.maps.ready.length}/4, scan ${m.costUs.toFixed(0)} µs; predicted drawn max ${pr.drawnMax.toFixed(3)} at ${pr.groundAngleDeg.toFixed(2)}° along the ground (water ${pr.sample.water.toFixed(2)}, calm ${pr.sample.calm.toFixed(2)}, wind ${pr.sample.windMs.toFixed(1)} m/s, cloud keep ${pr.sample.cloudKeep.toFixed(2)}), half-widths ${pr.halfWidthAlongDeg.toFixed(2)}° along ${pr.halfWidthAcrossDeg.toFixed(2)}° across, coverage ${pr.coverage.toFixed(4)}${pr.pixel ? `, at pixel (${pr.pixel.x.toFixed(0)}, ${pr.pixel.y.toFixed(0)})` : ''}`);
+    lines.push(`  meter: ${m.hold}, maps ${m.maps.ready.length}/3, scan ${m.costUs.toFixed(0)} µs; predicted drawn max ${pr.drawnMax.toFixed(3)} at ${pr.groundAngleDeg.toFixed(2)}° along the ground (water ${pr.sample.water.toFixed(2)}, calm ${pr.sample.calm.toFixed(2)}, wind ${pr.sample.windMs.toFixed(1)} m/s, cloud keep ${pr.sample.cloudKeep.toFixed(2)}), half-widths ${pr.halfWidthAlongDeg.toFixed(2)}° along ${pr.halfWidthAcrossDeg.toFixed(2)}° across, coverage ${pr.coverage.toFixed(4)}${pr.pixel ? `, at pixel (${pr.pixel.x.toFixed(0)}, ${pr.pixel.y.toFixed(0)})` : ''}`);
     lines.push(`  measured: drawn max ${me.drawnMax.toFixed(3)} (channel ${'rgb'[me.channel]}) at pixel (${me.pixel.x.toFixed(0)}, ${me.pixel.y.toFixed(0)}), ${me.groundAngleDeg === null ? 'sky' : `${me.groundAngleDeg.toFixed(2)}° along the ground`}, ${me.pixelGapFromPrediction === null ? 'no prediction' : `${me.pixelGapFromPrediction.toFixed(0)} px from the prediction`}${me.atPrediction === null ? '' : `, ${me.atPrediction.toFixed(3)} within 7 px of the prediction`}${m.speck ? ' — a SPECK, under the fade\'s threshold, held at one by construction' : ''}; half-max ${me.halfMaxAlongDeg?.toFixed(2)}° along (rows ${me.alongExtent?.lo}..${me.alongExtent?.hi}) ${me.halfMaxAcrossDeg?.toFixed(2)}° across (cols ${me.acrossExtent?.lo}..${me.acrossExtent?.hi}); coverage ${me.coverage.toFixed(4)} (pixels at or over half the peak)`);
     lines.push(`  measured / predicted: value ${r.value?.toFixed(3)} (at the prediction ${r.valueAtPrediction?.toFixed(3)}), ground angle gap ${r.groundAngleGapDeg?.toFixed(2)}°, width along ${r.along?.toFixed(3)}, across ${r.across?.toFixed(3)}, coverage ${r.coverage?.toFixed(3)}`);
     lines.push(`  hand-off: the meter asks ${h.meterExposure.toFixed(4)} (its target ${h.meterTarget.toFixed(4)}${h.atFloor ? ', at the floor' : ''}${h.fadedIn ? '' : ', fade not full'}), the Sun's meter ${h.sunMeter.toFixed(4)}, applied ${h.applied.toFixed(4)}${h.auto ? '' : ' (auto exposure OFF)'} -> the brightest beam pixel after exposure ${h.peakAfterExposure.toFixed(3)} against the target ${m.knobs.target} (${h.peakOverTarget?.toFixed(3)}), its core through the tone curve ${h.coreThroughToneCurve.toFixed(0)}, non-glint share at that pixel ${me.nonGlintShare === null ? 'n/a' : me.nonGlintShare.toFixed(3)}`);

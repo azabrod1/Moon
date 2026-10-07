@@ -71,7 +71,7 @@ import {
   setDevOceanRoughness,
   setDevSurfaceHaze,
   SURFACE_HAZE_CLEAR_VIEW,
-  rebindSeaWindMaps,
+  rebindSeaWindMap,
   seaWindOn,
   setSeaWindEnabled,
   parseSeaBeamParam, parseSunPathParam, seaBeamOn, setSeaBeamEnabled, setSunPathEnabled, sunPathOn,
@@ -95,8 +95,8 @@ import { parseNightExposureParam, setDevNightExposure, type NightExposureOverrid
 import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass, parseFusedParam } from './app/FusedOutputPass';
 import {
-  installSeaWindMap, loadSeaWindMap, meanSquareSlope, parseSeaWindMapParam, parseSeaWindParam, seaWindMapSource,
-  seaWindTextures, seaWindTexturesFrom, setSeaWindMips, slopeRoughness,
+  installSeaWindMap, loadSeaWindMap, parseSeaWindMapParam, parseSeaWindParam, seaWindMapSource,
+  seaWindTexture, seaWindTextureFrom, setSeaWindMips,
 } from './planetarium/world/seaWind';
 import type { GpuProfiler, GpuProfileOptions } from './app/devGpuProfile';
 import type { GpuClock, GpuClockOptions } from './app/devGpuClock';
@@ -342,20 +342,19 @@ if (import.meta.env.DEV) setAerosolOverride('Earth', parseAerosolParam(location.
 // `?glintmeter=0`: the exposure never closes down for the sea's beam
 // (planetarium/highlightMeter); the Sun's own meter alone, as it was.
 setHighlightMeterEnabled(parseGlintMeterParam(location.search));
-// `?seawindmap=<url>` (DEV only): the sea's wind maps from a file — a picture
-// carrying both, or a raw byte map of one wind — so a field baked elsewhere
-// is judged in the app. Fetched beside the boot; the sea reads it from the
-// frame it lands, and the shipped pair is refused from here on.
+// `?seawindmap=<url>` (DEV only): the sea's wind map from a file — a picture
+// whose red is the wind, or a raw byte map of one wind a texel — so a field
+// baked elsewhere is judged in the app. Fetched beside the boot; the sea
+// reads it from the frame it lands, and the shipped map is refused from here
+// on.
 if (import.meta.env.DEV) {
   if (new URLSearchParams(location.search).get('seawindmips') === '0') setSeaWindMips(false);
   const seaWindMapUrl = parseSeaWindMapParam(location.search);
   if (seaWindMapUrl) {
     loadSeaWindMap(seaWindMapUrl)
       .then((map) => {
-        const maps = seaWindTexturesFrom(map);
-        installSeaWindMap('calm', maps.calm, seaWindMapUrl);
-        installSeaWindMap('windy', maps.windy, seaWindMapUrl);
-        rebindSeaWindMaps();
+        installSeaWindMap(seaWindTextureFrom(map), seaWindMapUrl);
+        rebindSeaWindMap();
         debugLog(`sea wind map: ${seaWindMapUrl} (${map.width}x${map.height})`);
       })
       .catch((error: unknown) => debugWarn(String(error)));
@@ -3561,17 +3560,14 @@ function installDevHooks() {
       requestAnimationFrame(poll);
     }),
     // The ocean glint's knobs, live: the cap on the water's reflection in
-    // units of white (only the old chain, `?seabeam=0`, applies it), a flat scale on the sea's whole mirror term (one: the
-    // Fresnel is water's own now, the knob is an A/B), the calm lobe — the
-    // width of every sea's glassy share, as a wind in m/s through Cox-Munk's
-    // law (`calm`) or as a mean-square slope outright (`calmMss`, which is
-    // how a sea glassier than the law's zero-wind floor is asked for) — and
-    // a roughness that draws the WHOLE sea at one width with the wind maps
-    // set aside; null hands the sea back to the maps. Returns them all,
-    // the calm lobe as its mss, and whether the maps are being read; a
-    // production build has none of the knobs.
+    // units of white (only the old chain, `?seabeam=0`, applies it), a flat
+    // scale on the sea's whole mirror term (one: the Fresnel is water's own
+    // now, the knob is an A/B), and a roughness that draws the WHOLE sea at
+    // one width with the wind map set aside; null hands the sea back to the
+    // map. Returns them all and whether the map is being read; a production
+    // build has none of the knobs.
     glint: (opts?: {
-      cap?: number; keep?: number; calm?: number; calmMss?: number; roughness?: number | null;
+      cap?: number; keep?: number; roughness?: number | null;
       beamKnee?: number; beamCap?: number; sunPath?: boolean; seaBeam?: boolean;
       seaColour?: [number, number, number]; seaMix?: number;
       seaSky?: boolean; seaSkyScale?: number;
@@ -3592,22 +3588,11 @@ function installDevHooks() {
       // on the term for a sheet of candidates.
       if (opts?.seaSky !== undefined) setSeaSkyEnabled(opts.seaSky);
       if (opts?.seaSkyScale !== undefined) devGlintUniforms.uSeaSky.value = opts.seaSkyScale;
-      if (opts?.calm !== undefined) devGlintUniforms.uGlintCalm.value = slopeRoughness(meanSquareSlope(opts.calm));
-      if (opts?.calmMss !== undefined) devGlintUniforms.uGlintCalm.value = slopeRoughness(opts.calmMss);
       const roughness = setDevOceanRoughness(opts?.roughness);
-      const describe = (tex: THREE.Texture | null) => (tex
-        ? {
-            width: (tex.image as { width?: number } | undefined)?.width ?? 0,
-            height: (tex.image as { height?: number } | undefined)?.height ?? 0,
-            format: tex.format,
-            mips: tex.generateMipmaps,
-            version: tex.version,
-          }
-        : null);
+      const tex = seaWindTexture();
       return {
         cap: devGlintUniforms.uGlintCap.value,
         keep: devGlintUniforms.uGlintKeep.value,
-        calmMss: Math.pow(devGlintUniforms.uGlintCalm.value, 4),
         beamKnee: devGlintUniforms.uBeamKnee.value,
         beamCap: devGlintUniforms.uBeamCap.value,
         seaColour: devGlintUniforms.uSeaColour.value.toArray() as [number, number, number],
@@ -3619,9 +3604,17 @@ function installDevHooks() {
         roughness,
         seaWind: seaWindOn(),
         map: seaWindMapSource(),
-        // Each map as installed: its size, format (1028 is three's RedFormat)
+        // The map as installed: its size, format (1028 is three's RedFormat)
         // and upload version, so a harness log says what the sea is reading.
-        maps: { calm: describe(seaWindTextures().calm), windy: describe(seaWindTextures().windy) },
+        windMap: tex
+          ? {
+              width: (tex.image as { width?: number } | undefined)?.width ?? 0,
+              height: (tex.image as { height?: number } | undefined)?.height ?? 0,
+              format: tex.format,
+              mips: tex.generateMipmaps,
+              version: tex.version,
+            }
+          : null,
       };
     },
     // The grade on a surface's haze, live: how much of the air's haze a direct
@@ -4054,20 +4047,18 @@ function installDevHooks() {
   // without either set of keys erasing the other.
   installPerfSwitchBridge();
   // `?glint=0.12` draws the whole sea at that roughness for the session, the
-  // wind maps set aside, and `?glint=0.12,1,1.25,0.6` sets the mirror term's
-  // scale, the cap (which only `?seabeam=0`'s old chain applies) and the calm
-  // lobe's wind with it — an empty field leaves
-  // that knob alone, so `?glint=,,,0.3` moves the calm lobe under the maps:
-  // the same knobs as __moon.glint, reachable from a phone's address bar.
-  // DEV only.
+  // wind map set aside, and `?glint=0.12,1,1.25` sets the mirror term's scale
+  // and the cap (which only `?seabeam=0`'s old chain applies) with it — an
+  // empty field leaves that knob alone, so `?glint=,0.8` scales the sea under
+  // the map: the same knobs as __moon.glint, reachable from a phone's address
+  // bar. DEV only.
   if (import.meta.env.DEV) {
     const glint = new URLSearchParams(location.search).get('glint');
     if (glint) {
-      const [rough, keep, cap, calm] = glint.split(',').map((field) => (field === '' ? NaN : Number(field)));
+      const [rough, keep, cap] = glint.split(',').map((field) => (field === '' ? NaN : Number(field)));
       if (Number.isFinite(rough)) setDevOceanRoughness(rough);
       if (Number.isFinite(keep)) devGlintUniforms.uGlintKeep.value = keep;
       if (Number.isFinite(cap)) devGlintUniforms.uGlintCap.value = cap;
-      if (Number.isFinite(calm)) devGlintUniforms.uGlintCalm.value = slopeRoughness(meanSquareSlope(calm));
     }
     // `?haze=0.35` shows that much of the air's haze in every direct view of a
     // surface for the session: the __moon.haze knob, reachable from a phone's

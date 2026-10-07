@@ -51,7 +51,9 @@
 //   npm i --no-save sharp@0.35.4
 // Usage:
 //   node tools/gen-tiles.mjs earth              # one job, every level it declares
-//   node tools/gen-tiles.mjs earth --level=1    # one level of it
+//   node tools/gen-tiles.mjs earth --level=1    # one level of it: its tiles, and the crops cut for its sectors
+//   node tools/gen-tiles.mjs mars --crops       # the data crops only (a relief / roughness map changed
+//                                               # under an unchanged colour set); --level=n narrows it to one level's
 //   node tools/gen-tiles.mjs --all              # every job
 //   node tools/gen-tiles.mjs earth --verify     # reassemble + gate only
 //   node tools/gen-tiles.mjs earth --grey       # the mask sets only: every texel r = g = b
@@ -592,13 +594,16 @@ async function cutGrid(rows, grid, content, key, tier, webpOpts, spanU = 1) {
 
 /** Data-map crops: the base map (e.g. 2048×1024) cut into sector crops with
  *  the same gutter, losslessly — never resampled, so a sector's relief is
- *  bit-for-bit the base's. Crops belong to level 0, whose grid they are cut
- *  on. `tier` names the base map's tier folder. */
-async function cutDataCrops(srcPath, key, tier, spanU = 1) {
-  const { data, info } = await sharp(srcPath).removeAlpha().raw().toBuffer({ resolveWithObject: true });
-  const content = info.width / GRID_16K.cols;
+ *  bit-for-bit the base's. A crop is cut on the grid of the level whose
+ *  sectors draw it: level 0's for a base map's crops, a finer level's for a
+ *  map that refines one there (world/sectorStreamer.ts SectorLevel.crops —
+ *  Mars's 16K relief on the 32K level's 16 × 8). `tier` names the map's tier
+ *  folder. */
+async function cutDataCrops(srcPath, key, tier, spanU = 1, grid = GRID_16K) {
+  const { data, info } = await sharp(srcPath, { limitInputPixels: false }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  const content = info.width / grid.cols;
   const rows = memoryRows(data, info.width, info.height, info.channels);
-  await cutGrid(rows, GRID_16K, content, key, tier, DATA_WEBP, spanU);
+  await cutGrid(rows, grid, content, key, tier, DATA_WEBP, spanU);
 }
 
 /** Every texel of a mask set, and of the base map it is cut from, has red
@@ -1555,13 +1560,22 @@ export const JOBS = {
       { w: 2048, h: 1024, out: path.join(TEX, 'mars.v3.webp') },
     ],
     ref: path.join(TEX, '4k', 'mars.v3.webp'),
-    // The relief crops come off the 8192-wide map tools/gen-relief.mjs leaves
-    // in the cache beside the shipped boot map and 4K rung (all three from the
-    // HRSC–MOLA blended DEM in one pass): twice the rung's width, as Earth's
-    // roughness crops are twice their boot map's. One sector wide like every
-    // crop, and physical slope like the Moon's, which is what the sphere's
-    // own relief frame draws (world/reliefFrame.ts).
-    dataCrops: [{ src: cache('mars-normal.v3-8192.png'), key: 'mars-normal.v3', tier: '8k' }],
+    // The relief crops come off the maps tools/gen-relief.mjs leaves in the
+    // cache beside the shipped boot map and 4K rung (all four from the
+    // HRSC–MOLA blended DEM in one pass). Level 0's from the 8192-wide map,
+    // twice the rung's width, as Earth's roughness crops are twice their boot
+    // map's; level 1's from the 16384-wide map, cut on the 32K level's own
+    // 16 × 8 grid so a level-1 sector's crop is the same 1040² as a level-0
+    // sector's (world/sectorStreamer.ts SectorLevel.crops has why the 16K is
+    // not simply level 0's). One sector wide like every crop, and physical
+    // slope like the Moon's, which is what the sphere's own relief frame
+    // draws (world/reliefFrame.ts). The level-1 set is cut into the staging
+    // root and published from the tile host like the level it belongs to:
+    //   node tools/gen-tiles.mjs mars --crops --level=1 --root=.moon-data-cache/tiles-staging
+    dataCrops: [
+      { src: cache('mars-normal.v3-8192.png'), key: 'mars-normal.v3', tier: '8k' },
+      { src: cache('mars-normal.v3-16384.png'), key: 'mars-normal.v3', tier: '16k', level: 1 },
+    ],
   },
   // Solar System Scope 4K steps for the planets whose 8K/4K sources passed the
   // same-product gate against the shipped 2K boot maps (RMS 3.6 / 1.6 / 1.6).
@@ -1627,6 +1641,16 @@ export async function levelRowSource(job, level) {
 
 const wantedLevel = opt('level', null);
 const levelsOf = (job) => (job.levels ?? []).filter((_, i) => wantedLevel === null || Number(wantedLevel) === i);
+/** The data crops a run cuts: every one the job declares, or under --level=n
+ *  those cut for that level's sectors — level 0's unless the entry says
+ *  otherwise (Mars's 16K relief is level 1's) — on that level's grid. */
+const dataCropsOf = (job) => (job.dataCrops ?? []).filter((d) => wantedLevel === null || Number(wantedLevel) === (d.level ?? 0));
+async function cutDataCropsOf(job) {
+  for (const d of dataCropsOf(job)) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1, doubled(GRID_16K, d.level ?? 0));
+}
+/** Whether this run covers level 0, whose sets the derived maps and the grey
+ *  gate belong to. */
+const level0Wanted = wantedLevel === null || Number(wantedLevel) === 0;
 
 /** Everything a run does, once its arguments are known. Wrapped in a function
  *  — rather than left at module scope — so another tool can import this
@@ -1666,15 +1690,17 @@ async function main() {
       for (const g of job.grey ?? []) await greyGate(g);
     } else if (flag('crops')) {
       // Data crops only: a relief / roughness map changed under an unchanged
-      // colour set (the tiles and downsamples are left alone). A derived map
-      // needs the graded source again, but not its tiles.
-      for (const d of job.dataCrops ?? []) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1);
-      if (job.derive && job.grade && job.levels?.[0]) {
+      // colour set (the tiles and downsamples are left alone), --level=n
+      // narrowing it to the crops of that level's sectors. A derived map
+      // needs the graded source again, but not its tiles; it and the grey
+      // gate are level 0's.
+      await cutDataCropsOf(job);
+      if (level0Wanted && job.derive && job.grade && job.levels?.[0]) {
         const { rows, water } = await levelRowSource(job, job.levels[0]);
         await job.derive(water, rows.width, rows.height);
         await rows.close();
       }
-      for (const g of job.grey ?? []) await greyGate(g);
+      if (level0Wanted) for (const g of job.grey ?? []) await greyGate(g);
     } else if (job.flat) {
       await writeWebp(sharp(job.flat.src(), { limitInputPixels: false }).removeAlpha()
         .resize(4096, 2048, { fit: 'fill', kernel: 'lanczos3' }), job.flat.out);
@@ -1710,13 +1736,11 @@ async function main() {
           await rows.close();
         }
       }
-      // Crops belong to level 0 (mesh uvs are global, so every level samples
-      // the level-0 ancestor's crop), so a run for a finer level alone leaves
-      // them where they are.
-      if (wantedLevel === null || Number(wantedLevel) === 0) {
-        for (const d of job.dataCrops ?? []) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1);
-        for (const g of job.grey ?? []) await greyGate(g);
-      }
+      // A crop is cut with the level whose sectors draw it — level 0 unless
+      // its entry says otherwise — so a run for one level leaves the other
+      // levels' crops where they are. The grey gate reads level-0 mask sets.
+      await cutDataCropsOf(job);
+      if (level0Wanted) for (const g of job.grey ?? []) await greyGate(g);
     }
     console.log(`  ${((Date.now() - t0) / 1000).toFixed(0)} s`);
   }

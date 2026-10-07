@@ -148,6 +148,20 @@ export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = /* table:beg
     "spanU": 1,
     "fileCount": 32
   },
+  "mars-normal.v3/16k": {
+    "setHash8": "04d2c30d",
+    "grid": {
+      "cols": 16,
+      "rows": 8
+    },
+    "content": 1024,
+    "gutter": 8,
+    "tileWidth": 1040,
+    "tileHeight": 1040,
+    "baseWidth": 16384,
+    "spanU": 1,
+    "fileCount": 128
+  },
   "mars-normal.v3/8k": {
     "setHash8": "232997f4",
     "grid": {

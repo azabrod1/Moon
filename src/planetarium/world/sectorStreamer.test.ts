@@ -11,6 +11,7 @@ import {
   SECTOR_SEGMENTS,
   SECTOR_SETS,
   SectorStreamer,
+  cropAt,
   daySectorFamily,
   sectorFamilyKey,
   sectorLevel16k,
@@ -24,6 +25,7 @@ import {
   type SectorLevel,
   type SectorMeasure,
   type SectorSetSpec,
+  type SectorTileSet,
 } from './sectorStreamer';
 import {
   APPLE_PHONE_PROFILE,
@@ -1231,6 +1233,102 @@ describe('SectorStreamer', () => {
     expect(mat.normalMap!.repeat.x).toBeCloseTo(cropT.repeatX, 12);
     // Half the segments of the level above, on the globe's own lattice.
     expect(mesh.geometry.getAttribute('position').count).toBe(17 * 17);
+  });
+
+  /** Mars's shape: a relief crop on level 0, refined by a finer cut on the
+   *  32K level's own grid and drawn by the 64K level too. Stated as literals,
+   *  so the test does not turn on which sets the table publishes. */
+  const RELIEF_8K: SectorTileSet = { key: 'relief', tier: '8k', hash: 'aaaaaaaa', baseWidth: 8192, spanU: 1 };
+  const RELIEF_16K: SectorTileSet = { key: 'relief', tier: '16k', hash: 'bbbbbbbb', baseWidth: 16384, spanU: 1 };
+  const LEVEL_2: SectorLevel = { set: tileSet('earth-day.v2', '64k'), grid: finerGrid(G1), layout: SECTOR_TILE };
+  const REFINED_LEVELS: SectorLevel[] = [LEVEL_0, { ...LEVEL_1, crops: { normalMap: RELIEF_16K } }, LEVEL_2];
+  const REFINED_SPEC: SectorSetSpec = { crops: { normalMap: RELIEF_8K }, levels: REFINED_LEVELS };
+
+  /** A body carrying a relief map and nothing else, on a given pyramid. */
+  function reliefHandle(spec: SectorSetSpec = REFINED_SPEC): TestHandle {
+    const h = earthHandle();
+    h.name = 'Mars';
+    h.spec = spec;
+    h.material.bumpMap = null;
+    h.material.roughnessMap = null;
+    h.material.normalMap = new THREE.Texture();
+    return h;
+  }
+
+  it('a level that carries crops of its own refines level 0\'s for its sectors and the levels below, at the bytes a level-0 sector costs', () => {
+    // The crop a sector draws is the deepest level's at or above its own.
+    expect(cropAt(REFINED_SPEC, 'normalMap', 0)).toEqual({ set: RELIEF_8K, level: 0 });
+    expect(cropAt(REFINED_SPEC, 'normalMap', 1)).toEqual({ set: RELIEF_16K, level: 1 });
+    expect(cropAt(REFINED_SPEC, 'normalMap', 2)).toEqual({ set: RELIEF_16K, level: 1 });
+    expect(cropAt(REFINED_SPEC, 'bumpMap', 2)).toBeNull();
+    // Cut on the finer grid, the finer map's crop is the same 1040² as the
+    // base's — a sharper cut over a quarter of the ground, not a wider one —
+    // so a sector costs the same bytes at every level. Widening level 0's
+    // crop to the 16K map instead would be 2064² and 10.8 MiB a sector,
+    // copied into every finer sector too.
+    const tileBytes = Math.round(2048 * 2048 * 4 * (4 / 3));
+    const cropBytes = Math.round(1040 * 1040 * 2 * (4 / 3));
+    for (const level of [0, 1, 2]) expect(sectorSetGpuBytes(REFINED_SPEC, level), `level ${level}`).toBe(tileBytes + cropBytes);
+    const widened: SectorSetSpec = { crops: { normalMap: RELIEF_16K }, levels: [LEVEL_0, LEVEL_1, LEVEL_2] };
+    const wideCropBytes = Math.round(2064 * 2064 * 2 * (4 / 3));
+    for (const level of [0, 1, 2]) expect(sectorSetGpuBytes(widened, level), `widened level ${level}`).toBe(tileBytes + wideCropBytes);
+  });
+
+  it('a level-1 sector fetches its own level\'s crop at its own sector, a level-2 sector its level-1 ancestor\'s, each through that image\'s transform', () => {
+    loader.auto = true;
+    const mars = reliefHandle();
+    streamer.register(mars);
+    // Past the walls of level 0's source and of level 1's: the parent, its
+    // children and grandchildren under the camera are all asked for.
+    const measure = measureLevels(REFINED_LEVELS, { '2_1': 4 * CHILD_WANT_PX });
+    for (let f = 0; f < 24; f++) streamer.update('Mars', overLevel1(5, 3), measure, f * 16);
+    const resident = streamer.stats().bodies.Mars.resident;
+    expect(resident).toContain('2_1');
+    expect(resident).toContain('L1/5_3');
+    const level2 = resident.filter((id) => id.startsWith('L2/'));
+    expect(level2.length).toBeGreaterThan(0);
+    const urls = loader.requests.map((r) => r.url);
+    const meshes = mars.mesh.children as THREE.Mesh[];
+    const reliefOf = (id: string) => (meshes.find((m) => m.name.endsWith(` ${id}`))!.material as THREE.MeshStandardMaterial).normalMap!;
+    const expectTransform = (tex: THREE.Texture, t: ReturnType<typeof sectorTileTransform>) => {
+      expect(tex.offset.x).toBeCloseTo(t.offsetX, 12);
+      expect(tex.offset.y).toBeCloseTo(t.offsetY, 12);
+      expect(tex.repeat.x).toBeCloseTo(t.repeatX, 12);
+      expect(tex.repeat.y).toBeCloseTo(t.repeatY, 12);
+    };
+    // Level 0: the base's crop, at its own sector.
+    expect(urls).toContainEqual(expect.stringMatching(/tiles\/relief\/8k\.aaaaaaaa\/2_1\.webp$/));
+    expectTransform(reliefOf('2_1'), sectorTileTransform(G, { c: 2, r: 1 }, dataCropLayout(G, 8192)));
+    // Level 1: its own level's crop, at its own sector on its own grid.
+    expect(urls).toContainEqual(expect.stringMatching(/tiles\/relief\/16k\.bbbbbbbb\/5_3\.webp$/));
+    expectTransform(reliefOf('L1/5_3'), sectorTileTransform(G1, { c: 5, r: 3 }, dataCropLayout(G1, 16384)));
+    // Level 2: its level-1 ancestor's crop, verbatim — the mesh's uvs are
+    // global, so a quarter of the ancestor's rectangle lands on a quarter of
+    // its crop.
+    for (const id of level2) {
+      const [c, r] = id.slice('L2/'.length).split('_').map(Number);
+      const ancestor = ancestorSector({ c, r }, 1);
+      expect(urls, id).toContainEqual(expect.stringMatching(new RegExp(`tiles/relief/16k\\.bbbbbbbb/${ancestor.c}_${ancestor.r}\\.webp$`)));
+      expectTransform(reliefOf(id), sectorTileTransform(G1, ancestor, dataCropLayout(G1, 16384)));
+    }
+    // And the base's crop reaches no sector below level 0.
+    expect(urls.filter((u) => /tiles\/relief\/8k\./.test(u))).toEqual([expect.stringMatching(/\/2_1\.webp$/)]);
+  });
+
+  it('a finer level may only refine a crop level 0 carries, and level 0 carries none of its own', () => {
+    const orphan = reliefHandle({ crops: {}, levels: [LEVEL_0, { ...LEVEL_1, crops: { normalMap: RELIEF_16K } }] });
+    expect(() => streamer.register(orphan)).toThrow(/level 1 refines a normalMap crop that level 0 does not carry/);
+    const doubled = reliefHandle({ crops: { normalMap: RELIEF_8K }, levels: [{ ...LEVEL_0, crops: { normalMap: RELIEF_8K } }, LEVEL_1] });
+    expect(() => streamer.register(doubled)).toThrow(/level 0 carries crops of its own/);
+  });
+
+  it('Mars refines its relief on its 32K level for the bytes a sector costs on its 16K level', () => {
+    const mars = SECTOR_SETS.Mars;
+    expect(mars.levels[1].crops?.normalMap).toMatchObject({ key: 'mars-normal.v3', tier: '16k', baseWidth: 16384, spanU: 1 });
+    expect(cropAt(mars, 'normalMap', 2)).toEqual({ set: mars.levels[1].crops!.normalMap, level: 1 });
+    // The same 1040² crop at two bytes a texel, under the same 2048² tile.
+    expect(sectorSetGpuBytes(mars, 1)).toBe(sectorSetGpuBytes(mars, 0));
+    expect(sectorSetGpuBytes(mars, 2)).toBe(sectorSetGpuBytes(mars, 0));
   });
 
   it('a finer sector draws before the level above it, on half the segments', () => {

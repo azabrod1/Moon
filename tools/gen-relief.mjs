@@ -1,12 +1,14 @@
 // Mars relief from the USGS HRSC–MOLA blended DEM: the boot normal map, the
-// close-approach 4K rung and the 8K map the sector crops are cut from, all
-// three from ONE elevation model in one pass.
+// close-approach 4K rung and the two maps the sector crops are cut from — 8K
+// for the 16K colour level's sectors, 16K for the 32K level's — all four from
+// ONE elevation model in one pass.
 //
 // Why this exists beside gen-maps.mjs: that tool pushes a height field through
 // a browser canvas, which is fine for a 5760-wide MEGDR and hopeless for the
 // 106,694 × 53,347 int16 blend (11.4 GB). This one streams the DEM a strip at a
-// time, area-averages it onto the widest output grid, derives the narrower
-// grids from that, and writes the normals from Node with no browser at all.
+// time, area-averages it onto both crop-source grids as it goes, derives the
+// shipped maps from the 8K grid, and writes the normals from Node with no
+// browser at all.
 //
 // The relief is PHYSICAL: slope in metres over metres at each texel's true
 // ground spacing (the parallel shrinks by cos(lat) on an equirect), times one
@@ -33,11 +35,13 @@
 //
 // Prereq: npm i --no-save sharp@0.35.4
 // Usage:
-//   node tools/gen-relief.mjs                       # all three outputs
+//   node tools/gen-relief.mjs                       # all four outputs
 //   node tools/gen-relief.mjs --strength=2.4        # the exaggeration (default 2.4)
-//   node tools/gen-relief.mjs --cache=<dir>         # where the DEM sits and the 8K map goes
+//   node tools/gen-relief.mjs --cache=<dir>         # where the DEM sits and the crop sources go
 //   node tools/gen-relief.mjs --src=<file>          # the DEM itself
-// Then: node tools/gen-tiles.mjs mars --crops       # cut the 8K map into sector crops
+// Then: node tools/gen-tiles.mjs mars --crops --level=0   # the 8K map into the level-0 crops (public/)
+//       node tools/gen-tiles.mjs mars --crops --level=1 --root=.moon-data-cache/tiles-staging
+//                                                        # the 16K map into the level-1 crops, published from the tile host
 import sharp from 'sharp';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
@@ -62,17 +66,27 @@ const SOURCE = path.resolve(opt('src', path.join(CACHE, 'Mars_HRSC_MOLA_BlendDEM
 const EXAGGERATION = Number(opt('strength', String(MARS_RELIEF_EXAGGERATION)));
 const NODATA = -32768;
 
-/** The three widths of one relief. The boot map and the 4K rung ship; the 8K
- *  map stays in the cache as the source gen-tiles cuts the sector crops from
- *  (`mars --crops`), exactly as Earth's roughness crops are cut from a 4096
- *  resize that never ships whole. 8192 rather than the colour tiles' 16256:
- *  a normal crop at 16K is 10.9 MiB of GPU memory a sector with its mips at
- *  the two bytes a texel the app holds a normal at, half the colour tile it
- *  sits under, where 8K is 2.7 MiB. */
+/** The four widths of one relief. The boot map and the 4K rung ship; the 8K
+ *  and 16K maps stay in the cache as the sources gen-tiles cuts the sector
+ *  crops from (`mars --crops`), exactly as Earth's roughness crops are cut
+ *  from a 4096 resize that never ships whole. Each is cut on the grid of the
+ *  colour level whose sectors draw it — the 8K on the 16K level's 8 × 4, the
+ *  16K on the 32K level's 16 × 8 (world/sectorStreamer.ts SECTOR_SETS) — so
+ *  a crop is 1040² at either level and 2.75 MiB of GPU memory with its mips
+ *  at the two bytes a texel the app holds a normal at, and a sector costs the
+ *  same bytes whatever its level. A 16K crop on the level-0 grid would be
+ *  10.9 MiB a sector, copied into every finer sector too, at a magnification
+ *  where the 8K crop's texels are already finer than the screen.
+ *
+ *  `from` says where a grid's heights come from: both crop sources are area
+ *  averages taken straight off the DEM in the one pass, and the shipped maps
+ *  are averages of the 8K grid, which keeps them byte for byte what they were
+ *  before the 16K source existed. */
 const OUTPUTS = [
-  { width: 8192, out: path.join(CACHE, 'mars-normal.v3-8192.png'), encode: 'png', role: 'sector crop source' },
-  { width: 4096, out: path.join(TEX, '4k', 'mars-normal.v3.webp'), encode: 'webp', role: 'close-approach rung' },
-  { width: 1440, out: path.join(TEX, 'mars-normal.v3.webp'), encode: 'webp', role: 'boot map' },
+  { width: 16384, out: path.join(CACHE, 'mars-normal.v3-16384.png'), encode: 'png', role: 'level-1 sector crop source', from: 'dem' },
+  { width: 8192, out: path.join(CACHE, 'mars-normal.v3-8192.png'), encode: 'png', role: 'level-0 sector crop source', from: 'dem' },
+  { width: 4096, out: path.join(TEX, '4k', 'mars-normal.v3.webp'), encode: 'webp', role: 'close-approach rung', from: 8192 },
+  { width: 1440, out: path.join(TEX, 'mars-normal.v3.webp'), encode: 'webp', role: 'boot map', from: 8192 },
 ];
 /** The map the new one replaces, for the tilt comparison printed at the end. */
 const PREVIOUS_BOOT_MAP = path.join(TEX, 'mars-normal.v2.webp');
@@ -198,8 +212,8 @@ async function checkSourceDigest(filePath) {
 // ---------------------------------------------------------------------------
 // Area-weighted resampling: every source texel's whole area lands in the
 // target cells it overlaps, nodata texels excluded by weight. Exact for any
-// ratio, which is what the 13.02× shrink to 8192 and the 5.69× to 1440 need —
-// a kernel resize would alias the one and blur the other.
+// ratio, which is what the 6.51× shrink to 16384, the 13.02× to 8192 and the
+// 5.69× to 1440 need — a kernel resize would alias the one and blur the other.
 // ---------------------------------------------------------------------------
 
 /** For each source column (or row) of `sourceCount` texels onto `targetCount`
@@ -243,23 +257,31 @@ function foldRow(values, valid, columns, targetWidth, sums, weights) {
   }
 }
 
-/** Stream the DEM onto a `targetWidth × targetHeight` grid of mean heights.
- *  Returns Float32 heights with nodata cells (no valid source texel at all)
- *  filled from their western neighbour — none exist in this DEM beyond its
- *  duplicated last column, but a hole must never become a cliff. */
-async function resampleDem(header, filePath, targetWidth, targetHeight) {
+/** Stream the DEM onto every grid in `targets` (`{ width, height }` each) of
+ *  mean heights, in ONE pass over the file: reading and decoding the 11 GB
+ *  sample by sample is the cost, and a second grid adds only its fold.
+ *  Returns Float32 heights per target, in order, with nodata cells (no valid
+ *  source texel at all) filled from their western neighbour — none exist in
+ *  this DEM beyond its duplicated last column, but a hole must never become a
+ *  cliff. */
+async function resampleDem(header, filePath, targets) {
   const { width, height, littleEndian, stripOffsets } = header;
-  const columns = binning(width, targetWidth);
-  const rows = binning(height, targetHeight);
-  const sums = new Float64Array(targetWidth * targetHeight);
-  const weights = new Float64Array(targetWidth * targetHeight);
-  const rowSums = new Float64Array(targetWidth);
-  const rowWeights = new Float64Array(targetWidth);
+  const grids = targets.map((target) => ({
+    width: target.width,
+    height: target.height,
+    columns: binning(width, target.width),
+    rows: binning(height, target.height),
+    sums: new Float64Array(target.width * target.height),
+    weights: new Float64Array(target.width * target.height),
+    rowSums: new Float64Array(target.width),
+    rowWeights: new Float64Array(target.width),
+  }));
   const values = new Float64Array(width);
   const valid = new Uint8Array(width);
   const rowBytes = width * 2;
   const handle = await open(filePath, 'r');
   const startedAt = Date.now();
+  const label = grids.map((grid) => `${grid.width}×${grid.height}`).join(' + ');
   try {
     const buffer = Buffer.alloc(rowBytes);
     for (let row = 0; row < height; row++) {
@@ -269,44 +291,50 @@ async function resampleDem(header, filePath, targetWidth, targetHeight) {
         values[column] = sample;
         valid[column] = sample === NODATA ? 0 : 1;
       }
-      foldRow(values, valid, columns, targetWidth, rowSums, rowWeights);
-      const cell = rows.firstCell[row];
-      const part = rows.spill[row];
-      const base = cell * targetWidth;
-      for (let target = 0; target < targetWidth; target++) {
-        sums[base + target] += rowSums[target] * (1 - part);
-        weights[base + target] += rowWeights[target] * (1 - part);
-      }
-      if (part > 0) {
-        const next = (cell + 1) * targetWidth;
-        for (let target = 0; target < targetWidth; target++) {
-          sums[next + target] += rowSums[target] * part;
-          weights[next + target] += rowWeights[target] * part;
+      for (const grid of grids) {
+        foldRow(values, valid, grid.columns, grid.width, grid.rowSums, grid.rowWeights);
+        const cell = grid.rows.firstCell[row];
+        const part = grid.rows.spill[row];
+        const base = cell * grid.width;
+        for (let target = 0; target < grid.width; target++) {
+          grid.sums[base + target] += grid.rowSums[target] * (1 - part);
+          grid.weights[base + target] += grid.rowWeights[target] * (1 - part);
+        }
+        if (part > 0) {
+          const next = (cell + 1) * grid.width;
+          for (let target = 0; target < grid.width; target++) {
+            grid.sums[next + target] += grid.rowSums[target] * part;
+            grid.weights[next + target] += grid.rowWeights[target] * part;
+          }
         }
       }
       if (row % 1000 === 0) {
-        process.stdout.write(`  resampling ${width}×${height} → ${targetWidth}×${targetHeight}: row ${row}/${height} (${((Date.now() - startedAt) / 1000).toFixed(0)} s)\r`);
+        process.stdout.write(`  resampling ${width}×${height} → ${label}: row ${row}/${height} (${((Date.now() - startedAt) / 1000).toFixed(0)} s)\r`);
       }
     }
   } finally {
     await handle.close();
   }
   console.log('');
-  const heights = new Float32Array(targetWidth * targetHeight);
-  let holes = 0;
-  for (let index = 0; index < heights.length; index++) {
-    if (weights[index] > 0) heights[index] = sums[index] / weights[index];
-    else { heights[index] = index > 0 ? heights[index - 1] : 0; holes++; }
-  }
-  if (holes) console.log(`  ${holes} empty cells filled from their neighbour`);
-  return heights;
+  return grids.map((grid) => {
+    const heights = new Float32Array(grid.width * grid.height);
+    let holes = 0;
+    for (let index = 0; index < heights.length; index++) {
+      if (grid.weights[index] > 0) heights[index] = grid.sums[index] / grid.weights[index];
+      else { heights[index] = index > 0 ? heights[index - 1] : 0; holes++; }
+    }
+    if (holes) console.log(`  ${holes} empty cells on the ${grid.width} grid filled from their neighbour`);
+    return heights;
+  });
 }
 
-/** The same fold applied to a grid already in memory (the 8192 map → 4096 and
- *  1440), so every output is one area average of the DEM and not an average of
- *  an average with a different footprint at each step than a direct one would
- *  have — close enough at these ratios, and it saves two more passes over the
- *  11 GB file. */
+/** The same fold applied to a grid already in memory (the 8192 grid → 4096
+ *  and 1440): an average of an average, whose footprint differs from a direct
+ *  one's only by the fractional cells at each step — close enough at these
+ *  ratios, and it saves two more passes over the 11 GB file. The crop sources
+ *  themselves do not go through it: a 16K-to-8K fold is exact, but it would
+ *  move the 8K map by rounding where the direct average had not, and with it
+ *  every map derived from it. */
 function resampleGrid(heights, width, height, targetWidth, targetHeight) {
   const columns = binning(width, targetWidth);
   const rows = binning(height, targetHeight);
@@ -396,22 +424,31 @@ async function main() {
   if (header.nodata.replace(/\0/g, '') !== String(NODATA)) throw new Error(`nodata is ${JSON.stringify(header.nodata)}, not ${NODATA}`);
   console.log(`  ${header.width}×${header.height}, ${header.pixelScale[0].toFixed(6)}°/px, radius ${radiusMetres} m, −180..180 E`);
 
-  const [widest, ...narrower] = OUTPUTS;
-  const widestHeight = widest.width / 2;
-  const heights = await resampleDem(header, SOURCE, widest.width, widestHeight);
-  let minimum = Infinity;
-  let maximum = -Infinity;
-  for (const value of heights) { if (value < minimum) minimum = value; if (value > maximum) maximum = value; }
-  console.log(`  heights ${minimum.toFixed(0)}..${maximum.toFixed(0)} m above the areoid on the ${widest.width} grid`);
-
-  const grids = [{ output: widest, heights, width: widest.width, height: widestHeight }];
-  for (const output of narrower) {
-    const height = output.width / 2;
-    grids.push({ output, heights: resampleGrid(heights, widest.width, widestHeight, output.width, height), width: output.width, height });
+  // The grids read straight off the DEM, in one pass; the rest derive from
+  // the one their `from` names.
+  const direct = OUTPUTS.filter((output) => output.from === 'dem');
+  const heightsByWidth = new Map();
+  const resampled = await resampleDem(header, SOURCE, direct.map((output) => ({ width: output.width, height: output.width / 2 })));
+  direct.forEach((output, index) => heightsByWidth.set(output.width, resampled[index]));
+  for (const output of direct) {
+    let minimum = Infinity;
+    let maximum = -Infinity;
+    for (const value of heightsByWidth.get(output.width)) { if (value < minimum) minimum = value; if (value > maximum) maximum = value; }
+    console.log(`  heights ${minimum.toFixed(0)}..${maximum.toFixed(0)} m above the areoid on the ${output.width} grid`);
   }
-  for (const grid of grids) {
-    const rgb = normalsFromHeights(grid.heights, grid.width, grid.height, radiusMetres, EXAGGERATION);
-    await writeNormalMap(rgb, grid.width, grid.height, grid.output);
+
+  for (const output of OUTPUTS) {
+    const height = output.width / 2;
+    let heights;
+    if (output.from === 'dem') {
+      heights = heightsByWidth.get(output.width);
+    } else {
+      const source = heightsByWidth.get(output.from);
+      if (!source) throw new Error(`${output.out}: derives from a ${output.from} grid no direct output provides`);
+      heights = resampleGrid(source, output.from, output.from / 2, output.width, height);
+    }
+    const rgb = normalsFromHeights(heights, output.width, height, radiusMetres, EXAGGERATION);
+    await writeNormalMap(rgb, output.width, height, output);
     console.log(`    tilt ${tiltStatisticsOfBytes(rgb)}`);
   }
   try {
@@ -419,7 +456,7 @@ async function main() {
   } catch {
     console.log('  (no previous boot map to compare against)');
   }
-  console.log('done — now: node tools/gen-tiles.mjs mars --crops');
+  console.log('done — now: node tools/gen-tiles.mjs mars --crops --level=0, and --level=1 --root=.moon-data-cache/tiles-staging for the 16K');
 }
 
 main().catch((error) => {

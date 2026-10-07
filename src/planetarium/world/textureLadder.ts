@@ -92,8 +92,8 @@ export const PLANET_TEXTURE_FILES: Record<string, string> = {
   // atmosphere, photometry and colour) in place of the Viking MDIM 2.1
   // colourised mosaic, whose thousands of frames each kept their own sun,
   // haze and resolution and read as squares from the Land prompt's altitude.
-  // Its own colour, ungraded: a lighter, greyer brown than the salmon MDIM
-  // was graded to.
+  // Graded half way from the product's own balance toward the salmon the
+  // MDIM was graded to (tools/gen-tiles.mjs says where that lands and why).
   mars: 'mars.v3.webp',
   // `.v3`: relief from the USGS HRSC–MOLA blended DEM at 200 m (tools/
   // gen-relief.mjs), replacing the 16 px/deg MOLA grid. Boot map, 4K rung

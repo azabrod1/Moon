@@ -1494,16 +1494,23 @@ export const JOBS = {
   // the HiPS CDS built from it (TIANWEN_HIPS). It replaces the Viking MDIM 2.1
   // mosaic, whose ~4,600 frames each kept their own sun, haze and resolution,
   // so that from the Land prompt's altitude Mars read as a patchwork of
-  // squares. The colour is the product's own, ungraded: the lighter, greyer
-  // brown Tianwen measured (mean 138,116,100) rather than the salmon MDIM was
-  // graded to (162,103,89); a taste that wants it warmer is one gradeGains
-  // line here, applied to every level and rung alike — with a rawToken beside
-  // it, because the grade is baked into the cached render and the cache is
-  // keyed on nothing else. Three levels, like Earth's, each rendered at its
-  // own width from the one HiPS, so a child is a sharper picture of its
-  // parent and not another product.
+  // squares. The colour is graded part of the way from the product's own
+  // balance — a lighter, greyer brown, mean 138,117,100 on the ungraded 4K
+  // map — toward the salmon the MDIM was graded to (162,103,89): these gains
+  // land it at 148,110,97, a little under half way, a red-to-blue ratio in
+  // the range of published true-colour views (Hubble, OSIRIS, MARCI), where
+  // Tianwen's balance sits on the cool side and the old salmon on the hot
+  // side; the look was chosen off a rendered sheet of the candidates.
+  // Per-channel gains, so black stays black and the albedo contrast is the
+  // product's; applied to every level and rung alike, and named in rawToken
+  // because the grade is baked into the cached render and the cache is keyed
+  // on nothing else. Three levels, like Earth's, each rendered at its own
+  // width from the one HiPS, so a child is a sharper picture of its parent
+  // and not another product.
   mars: {
     key: 'mars.v3',
+    grade: gradeGains([152 / 142, 108 / 114, 92 / 95]),
+    rawToken: 'warm-grade.v1',
     levels: [
       { tier: '16k', grid: GRID_16K, source: { kind: 'hips', id: TIANWEN_HIPS, across: 2, down: 2 } },
       { tier: '32k', grid: doubled(GRID_16K, 1), source: { kind: 'hips', id: TIANWEN_HIPS, across: 4, down: 4 } },

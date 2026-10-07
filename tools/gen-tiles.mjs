@@ -37,8 +37,10 @@
 // under a name something already cached. The hash itself lives in
 // tools/tileSetHash.mjs, shared with tools/publish-tiles.mjs so a set is
 // published under the same name it was cut under. Every run rewrites
-// <root>/sets.v1.json and src/planetarium/world/sectorSets.generated.ts from
-// the folders on disk, which is where the app reads the hashes it puts in URLs.
+// <root>/sets.v1.json from the folders on disk, and
+// src/planetarium/world/sectorSets.generated.ts — where the app reads the
+// hashes it puts in URLs — from those plus the rows it already holds for the
+// sets no root here has (tools/sectorTable.mjs).
 //
 // Every gate here throws, and that is the whole failure discipline: the index
 // step at the bottom is what puts a set's name in front of the app, so a gate
@@ -58,14 +60,18 @@
 //   --root=<dir>   tiles root (default public/textures/tiles). A level too
 //                  big to ship inside the app is cut into a staging root —
 //                  a full tiles root of its own, holding symlinks to the
-//                  published level-0 folders plus the new ones — and
-//                  `--index --root=<staging>` writes the table from THAT
-//                  root, so the app names every set wherever it is served.
+//                  published level-0 folders plus the new ones. Every run
+//                  ends by indexing its root: the root's sets.v1.json from
+//                  the folders in it, the app's table from those plus the
+//                  rows it already holds for sets no root here has (the
+//                  levels published from the tile host), so the app names
+//                  every set wherever it is served (tools/sectorTable.mjs).
 import sharp from 'sharp';
 import { mkdir, writeFile, access, stat, readFile, readdir, rename, rm, open } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fileDigest, setHash8, tileNames } from './tileSetHash.mjs';
+import { TABLE_BEGIN, TABLE_END, mergeSectorTable, parseSectorTable } from './sectorTable.mjs';
 
 sharp.cache(false);
 sharp.concurrency(0);
@@ -760,7 +766,9 @@ const MAX_LEVEL = 2;
 function generatedSource(sets) {
   return `/**
  * GENERATED — written by \`node tools/gen-tiles.mjs\` from the tile sets on
- * disk (and mirrored in that tiles root's sets.v1.json). Never edit by hand.
+ * disk, keeping the rows of the sets published from the tile host that no
+ * root here holds (a tiles root's own sets.v1.json names only the sets in
+ * it; tools/sectorTable.mjs). Never edit by hand.
  *
  * A sector tile set is published under a folder named for its own contents,
  * tiles/<key>/<tier>.<setHash8>/, and this table is where the app reads that
@@ -793,16 +801,36 @@ export interface GeneratedSectorSet {
 }
 
 /** Every shipped set, keyed \`<key>/<tier>\`. */
-export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = /* table:begin */ ${
+export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = ${TABLE_BEGIN} ${
     JSON.stringify(sets, null, 2)
-  } /* table:end */;
+  } ${TABLE_END};
 `;
+}
+
+/** The table the app holds now — nothing, on a checkout that has none yet. */
+async function heldSectorTable() {
+  try {
+    return parseSectorTable(await readFile(GENERATED_TS, 'utf8'));
+  } catch (err) {
+    if (err.code === 'ENOENT') return {};
+    throw err;
+  }
 }
 
 /**
  * Rewrite the tiles root's sets.v1.json and the generated table from the sets
  * on disk, moving any set whose folder name is not its own hash (which is how
  * a set cut before this naming, or edited in place, is adopted).
+ *
+ * Two tables, two scopes (tools/sectorTable.mjs). The root's sets.v1.json is
+ * the table of the sets IN the root — what publish-tiles reads to find the
+ * folders it copies, and holds to their bytes — so it comes from the folders
+ * alone. The app's table also keeps every row it already holds for a set this
+ * root does not: a level published from the tile host has a folder in no
+ * checkout, and a rewrite from one root's folders dropped those rows on every
+ * re-cut until someone put them back by hand. A kept row is printed, so a set
+ * the app has retired is deleted from the table on purpose, never carried
+ * along unnoticed.
  */
 async function indexSets() {
   // Every folder is hashed before any of them is moved. A rename is a
@@ -847,8 +875,12 @@ async function indexSets() {
     sets[set.id] = { setHash8: set.setHash, ...set.layout };
   }
   await writeFile(SETS_JSON, `${JSON.stringify(sets, null, 2)}\n`);
-  await writeFile(GENERATED_TS, generatedSource(sets));
+  const { table, kept } = mergeSectorTable(sets, await heldSectorTable());
+  await writeFile(GENERATED_TS, generatedSource(table));
   console.log(`  indexed ${Object.keys(sets).length} sets -> ${path.relative(process.cwd(), SETS_JSON)}`);
+  for (const id of kept) {
+    console.log(`  kept ${id} ${table[id].setHash8}: no folder under ${path.relative(process.cwd(), TILES)}, published from the tile host`);
+  }
 }
 
 // ---------------------------------------------------------------------------

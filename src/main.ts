@@ -3235,6 +3235,13 @@ function installDevHooks() {
       nightLiftUniform.value = Math.max(0, strength);
       return { mode: nightSides, lift: nightLiftUniform.value };
     },
+    /** A surface's authored relief depth (its material's normalScale, which
+     *  its sectors mirror each frame), as a pin: a sheet of depths from one
+     *  page load. */
+    reliefScale: (name: string, scale: number) => planetariumMode?.devSetReliefScale(name, scale) ?? null,
+    /** What relief a surface and its sectors hold right now: map size, rung
+     *  rank, authored depth. */
+    reliefState: (name: string) => planetariumMode?.devReliefState(name) ?? null,
     /** The last n draws: `{ drawSeq, tickSeq, t, nowMs, busyMs }`, oldest
      *  first. What the pacing gate reads — the intervals between draws, not
      *  between callbacks, and which callback each one landed on. */

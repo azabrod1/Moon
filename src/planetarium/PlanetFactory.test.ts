@@ -590,7 +590,8 @@ describe('what a fetch puts on the material', () => {
     trackMaterial(mat);
     const nu = makeNormalUpgrade('moonNormal', mat);
     expect(nu).toBeDefined();
-    expect(makeNormalUpgrade('marsNormal', mat)).toBeUndefined(); // no tier on disk
+    expect(makeNormalUpgrade('marsNormal', mat)).toBeDefined(); // Mars ships a 4K rung too
+    expect(makeNormalUpgrade('earthCloudsNormal', mat)).toBeUndefined(); // no tier on disk
     expect(makeNormalUpgrade(undefined, mat)).toBeUndefined();
 
     // Below the first colour rung's fraction the relief stays boot-tier.

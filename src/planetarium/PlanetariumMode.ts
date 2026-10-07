@@ -8838,6 +8838,41 @@ export class PlanetariumMode {
     if (import.meta.env.DEV) this.devBeltHidden = !visible;
   }
 
+  /** Dev bridge: a tuning pin for a surface's authored relief depth. Writes
+   *  the body's surface material's normalScale, which its streamed sectors
+   *  mirror every frame (syncSectorMaterial), so a sheet of depths comes out
+   *  of one page load. Returns what is set now, or null for a body with no
+   *  surface material. Session-only: the next build authors it again. */
+  devSetReliefScale(name: string, scale: number): { name: string; scale: number } | null {
+    const planet = this.solarSystem?.planets.find((p) => p.data.name === name);
+    const material = planet?.mesh.material as THREE.MeshStandardMaterial | undefined;
+    if (!material?.normalScale) return null;
+    material.normalScale.set(scale, scale);
+    return { name, scale };
+  }
+
+  /** Dev bridge: what relief a surface and its streamed sectors are actually
+   *  drawing — the bound normal map's size, the rung rank it holds, the
+   *  authored depth — so a capture can say which map a pixel came from. */
+  devReliefState(name: string): unknown {
+    const planet = this.solarSystem?.planets.find((p) => p.data.name === name);
+    if (!planet) return null;
+    const describe = (material: THREE.Material) => {
+      const standard = material as Partial<THREE.MeshStandardMaterial>;
+      const image = standard.normalMap?.image as { width?: number; height?: number } | undefined;
+      return {
+        normalMap: standard.normalMap ? `${image?.width ?? '?'}×${image?.height ?? '?'}` : null,
+        rank: (material.userData as { normalTierRank?: number }).normalTierRank ?? 0,
+        scale: standard.normalScale?.x ?? null,
+        hasRealNormal: (material.userData as { hasRealNormal?: boolean }).hasRealNormal === true,
+      };
+    };
+    const sectors = planet.mesh.children
+      .filter((child): child is THREE.Mesh => (child as THREE.Mesh).isMesh === true)
+      .map((child) => ({ name: child.name, ...describe(child.material as THREE.Material) }));
+    return { globe: describe(planet.mesh.material as THREE.Material), sectors };
+  }
+
   private updateOrbitLineVisibility() {
     if (!this.solarSystem) return;
     // Surface view shows the sky, not the scene furniture — a planet's orbit

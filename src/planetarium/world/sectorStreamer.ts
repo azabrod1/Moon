@@ -329,7 +329,11 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
     ],
   },
   Mars: {
-    crops: { normalMap: tileSet('mars-normal.v2', '2k') },
+    // Relief crops from the 8192-wide map gen-relief writes to the source
+    // cache — twice the 4K rung's width, never shipped whole. 8K rather than
+    // the colour tiles' 16K because a two-sector normal crop costs four bytes
+    // a texel: 11 MiB a sector here, 44 at 16K, under a 22 MiB colour tile.
+    crops: { normalMap: tileSet('mars-normal.v3', '8k') },
     levels: [sectorLevel16k('mars.v2')],
   },
   Moon: {

@@ -1381,7 +1381,11 @@ export const JOBS = {
       { w: 2048, h: 1024, out: path.join(TEX, 'mars.v2.webp') },
     ],
     ref: path.join(TEX, '4k', 'mars.v2.webp'),
-    dataCrops: [{ src: path.join(TEX, 'mars-normal.v2.webp'), key: 'mars-normal.v2', tier: '2k', spanU: 2 }],
+    // The relief crops come off the 8192-wide map tools/gen-relief.mjs leaves
+    // in the cache beside the shipped boot map and 4K rung (all three from the
+    // HRSC–MOLA blended DEM in one pass): twice the rung's width, as Earth's
+    // roughness crops are twice their boot map's.
+    dataCrops: [{ src: cache('mars-normal.v3-8192.png'), key: 'mars-normal.v3', tier: '8k', spanU: 2 }],
   },
   // Solar System Scope 4K steps for the planets whose 8K/4K sources passed the
   // same-product gate against the shipped 2K boot maps (RMS 3.6 / 1.6 / 1.6).

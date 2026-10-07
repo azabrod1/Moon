@@ -921,10 +921,12 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   const surfaceUpgrade = makeTextureUpgrade(planet.textureKey, mat);
   if (surfaceUpgrade) textureUpgrades.push(surfaceUpgrade);
 
-  // Real elevation-derived normal map where one exists (Mars/MOLA): it replaces
-  // the colour-as-bump fallback. No procedural stand-in — the surface stays
-  // flat until the real relief lands, however long the fetch takes.
+  // Real elevation-derived normal map where one exists (Mars: the HRSC–MOLA
+  // blended DEM, tools/gen-relief.mjs): it replaces the colour-as-bump
+  // fallback. No procedural stand-in — the surface stays flat until the real
+  // relief lands, however long the fetch takes.
   const planetNormalKey = PLANET_NORMAL_KEYS[planet.name];
+  let surfaceNormalUpgrade: NormalUpgrade | undefined;
   if (planetNormalKey) {
     mat.bumpMap = null;
     // Marked at REQUEST time, not on arrival: between the two this surface has
@@ -932,6 +934,15 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     // is bound would fill the gap with an invented surface and then step off it
     // the frame the measured one lands.
     mat.userData.hasRealNormal = true;
+    // The depth is authored once, up front, and no arrival touches it: the
+    // boot map and the 4K rung are the same slopes at two sharpnesses, so a
+    // scale reset on either landing would be a pop. Halved, because the
+    // measured slopes at full strength read as harsh facets on crater rims
+    // up close.
+    mat.normalScale.set(0.5, 0.5);
+    // The close-approach rung, where the key ships one (NORMAL_UPGRADE_TIERS);
+    // the mode's LOD pass fetches it once the disc has earned the first rung.
+    surfaceNormalUpgrade = makeNormalUpgrade(planetNormalKey, mat);
     const normalUrl = resolveTextureUrl(PLANET_TEXTURE_FILES[planetNormalKey], '2k');
     fetchTextureDurably({
       url: normalUrl,
@@ -941,12 +952,11 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
         // Decode off-thread first: a normal map landing mid-session must not
         // put a synchronous PNG decode on the frame that adopts it.
         afterDecode(nrm, () => {
-          mat.normalMap = nrm;
-          // Softened: the MOLA rainbow-decoded relief is noisy and over-embossed,
-          // which reads as harsh facets on crater rims up close. Halve it.
-          mat.normalScale.set(0.5, 0.5);
-          mat.needsUpdate = true;
-          queueTextureWarm(nrm); // planet-level (always on screen) — safe to warm
+          // Rank-guarded, like the Moon's: the boot map is durable and can
+          // land minutes late on a bad link, after the rung has already won.
+          if (applyNormalTierTexture(mat, nrm, TIER_RANK['2k'])) {
+            queueTextureWarm(nrm); // planet-level (always on screen) — safe to warm
+          }
         });
       },
     });
@@ -1113,7 +1123,11 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   return {
     group, mesh, data: planet, rings, ringFx, atmosphere, nightMesh, nightMaterial,
     nightRadiusAU: nightMesh ? planet.radiusAU * EARTH_NIGHT_SHELL_SCALE : undefined,
-    cloudsMesh, fx, textureUpgrades, normalUpgrade: cloudsNormalUpgrade, geometryUpgrade,
+    cloudsMesh, fx, textureUpgrades,
+    // One relief rung per body: Earth's is its cloud deck's, Mars's is its
+    // surface's. No body has both.
+    normalUpgrade: cloudsNormalUpgrade ?? surfaceNormalUpgrade,
+    geometryUpgrade,
   };
 }
 

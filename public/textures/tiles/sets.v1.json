@@ -41,17 +41,17 @@
     "spanU": 1,
     "fileCount": 32
   },
-  "mars-normal.v2/2k": {
-    "setHash8": "f7efa0d7",
+  "mars-normal.v3/8k": {
+    "setHash8": "b00b22d6",
     "grid": {
       "cols": 8,
       "rows": 4
     },
-    "content": 180,
+    "content": 1024,
     "gutter": 8,
-    "tileWidth": 392,
-    "tileHeight": 196,
-    "baseWidth": 1440,
+    "tileWidth": 2080,
+    "tileHeight": 1040,
+    "baseWidth": 8192,
     "spanU": 2,
     "fileCount": 32
   },

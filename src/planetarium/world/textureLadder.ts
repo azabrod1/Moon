@@ -86,7 +86,10 @@ export const PLANET_TEXTURE_FILES: Record<string, string> = {
   earthBump: 'earth-bump.webp',
   earthRoughness: 'earth-roughness.v2.webp',
   mars: 'mars.v2.webp',
-  marsNormal: 'mars-normal.v2.webp',
+  // `.v3`: relief from the USGS HRSC–MOLA blended DEM at 200 m (tools/
+  // gen-relief.mjs), replacing the 16 px/deg MOLA grid. Boot map, 4K rung
+  // and the 8K sector crops are one pass over one model.
+  marsNormal: 'mars-normal.v3.webp',
   jupiter: 'jupiter.webp',
   saturn: 'saturn.webp',
   uranus: 'uranus.webp',
@@ -1684,6 +1687,11 @@ export function pumpArrivalWarmGoal(up: TextureUpgrade, nowMs: number): boolean 
 // exactly like the colour ladders above.
 export const NORMAL_UPGRADE_TIERS: Record<string, TextureTier> = {
   moonNormal: '4k',
+  // Mars's relief ships a 4K rung too, cut by tools/gen-relief.mjs from the
+  // same DEM as its boot map and its sector crops, so the step is a sharper
+  // map of the same slopes. A 'data' map like the Moon's: 22.4 MiB resident
+  // while the disc fills the view, handed back with the colour rungs.
+  marsNormal: '4k',
   // Earth's cloud relief has no rung, and the reason is bytes rather than
   // taste: a cloud field's normal map is nearly incompressible, so the 4K one
   // is 15.6 MB lossless and 10.3 MB near-lossless — more than twice the 4.7 MB

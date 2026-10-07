@@ -18,16 +18,6 @@
       "gen-tiles moon"
     ]
   },
-  "megt90n000eb.img": {
-    "sha256": "d18d9b9ab8c5516d02e157dd2cde0f1d0d160c21940e953ba22391269a545e7b",
-    "bytes": 33177600,
-    "width": 5760,
-    "height": 2880,
-    "product": "PDS MOLA MEGDR 16 pixel/degree DEM, big-endian int16 metres, 0-360E",
-    "used_by": [
-      "gen-maps mars-normal"
-    ]
-  },
   "ldem_16_uint.tif": {
     "sha256": "45a2b32d56e81ed30db07fead8abc842b249b6511219d9ca2c53f81bc2dc5d62",
     "bytes": 33201026,
@@ -205,6 +195,16 @@
     "product": "NASA Black Marble 2016 VIIRS night lights, 500 m tile D2 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole; eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/",
     "used_by": [
       "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K maps"
+    ]
+  },
+  "Mars_HRSC_MOLA_BlendDEM_Global_200mp_v2.tif": {
+    "sha256": "e8bfe4c3b9dee9d5fdb8c4d49798869654e552e7b154712c9e12d6d117464419",
+    "bytes": 11384463908,
+    "width": 106694,
+    "height": 53347,
+    "product": "USGS Mars MGS MOLA - MEX HRSC Blended DEM Global 200m v2 (Fergason, Hare & Laura 2018), simple cylindrical -180..180E, int16 metres above the areoid, nodata -32768, uncompressed BigTIFF; MOLA CC0, HRSC CC BY-SA 3.0 IGO",
+    "used_by": [
+      "gen-relief (mars-normal.v3 boot map, 4k rung, 8192 crop source)"
     ]
   }
 }

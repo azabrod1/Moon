@@ -110,9 +110,10 @@ const HELD_AIR_BODY = 'Earth';
 /** Earth's height field, in body radii — the planetarium's own 0.02 of the body. */
 const SKIN_BUMP_SCALE = 0.02;
 /** How deep a measured relief is drawn, by its map key. The planetarium halves
- *  Mars's MOLA — rainbow-decoded, noisy, and harsh on crater rims at full
- *  strength — and leaves the Moon's LOLA at its authored depth; a section's
- *  skin is the same surface, so it is drawn at the same depth. */
+ *  Mars's HRSC–MOLA relief — its measured slopes read as harsh facets on
+ *  crater rims at full strength — and leaves the Moon's LOLA at its authored
+ *  depth; a section's skin is the same surface, so it is drawn at the same
+ *  depth. */
 const MEASURED_NORMAL_SCALE: Record<string, number> = { marsNormal: 0.5 };
 
 // --- lighting --------------------------------------------------------------

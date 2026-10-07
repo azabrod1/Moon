@@ -328,11 +328,13 @@ describe('sector tile sets: what the app asks for', () => {
     // gen-tiles from one full-resolution water score: the crops are cut from
     // its 4096 resize, the whole-globe file is its 2048 resize (the far view
     // needs no more) — so the shipped width is half the crops' base width,
-    // which is all this pins; the crop dimensions are pinned above.
+    // which is all this pins; the crop dimensions are pinned above. Mars's
+    // relief crops are the same shape: gen-relief writes an 8192 map for them
+    // beside the 4096 rung that ships, from one DEM in one pass.
     const baseFiles: Record<string, { file: string; shippedScale: number }> = {
       'earth-bump': { file: PLANET_TEXTURE_FILES.earthBump, shippedScale: 1 },
       'earth-roughness.v2': { file: PLANET_TEXTURE_FILES.earthRoughness, shippedScale: 0.5 },
-      'mars-normal.v2': { file: PLANET_TEXTURE_FILES.marsNormal, shippedScale: 1 },
+      'mars-normal.v3': { file: `4k/${PLANET_TEXTURE_FILES.marsNormal}`, shippedScale: 0.5 },
       'moon-normal': { file: `4k/${PLANET_TEXTURE_FILES.moonNormal}`, shippedScale: 1 },
     };
     for (const [, , spec] of appSpecs()) {

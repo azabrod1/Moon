@@ -551,7 +551,7 @@ describe('SectorStreamer', () => {
     streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 16);
     // Only the crop is fetched — the colour tile is the same URL and the one
     // upload that costs — and the old sector keeps drawing meanwhile.
-    expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars-normal\.v2\/2k\.[0-9a-f]{8}\/2_1\.webp$/)]);
+    expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars-normal\.v3\/8k\.[0-9a-f]{8}\/2_1\.webp$/)]);
     expect(streamer.stats().bodies.Mars.resident).toEqual(['2_1']);
     expect(streamer.stats().bodies.Mars.reloading).toEqual(['2_1']);
     expect(streamer.stats().inflight).toBe(1);
@@ -590,7 +590,7 @@ describe('SectorStreamer', () => {
     expect(loader.requests).toEqual([]);
     // Sunrise: now it reloads.
     streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 32, 'none', sunOver(2, 1));
-    expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars-normal\.v2\/2k\.[0-9a-f]{8}\/2_1\.webp$/)]);
+    expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars-normal\.v3\/8k\.[0-9a-f]{8}\/2_1\.webp$/)]);
   });
 
   it('keeps a resident drawing when its reload fails, and retries after the backoff', () => {
@@ -609,7 +609,7 @@ describe('SectorStreamer', () => {
     streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 32);
     expect(loader.requests).toEqual([]); // cooling down, not hammering
     streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 32 + SECTOR_RETRY_MS);
-    expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars-normal\.v2\/2k\.[0-9a-f]{8}\/2_1\.webp$/)]);
+    expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars-normal\.v3\/8k\.[0-9a-f]{8}\/2_1\.webp$/)]);
   });
 
   it('warns once that a tile did not load, naming the set and the URL', () => {
@@ -778,8 +778,8 @@ describe('SectorStreamer', () => {
     streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2, '3_1': 1.9, '1_1': 1.8, '2_0': 1.7 }), 32);
     // The third reload goes first, then the admission (its tile and crop).
     expect(loader.requests.map((r) => r.url).sort()).toEqual([
-      expect.stringMatching(/tiles\/mars-normal\.v2\/2k\.[0-9a-f]{8}\/1_1\.webp$/),
-      expect.stringMatching(/tiles\/mars-normal\.v2\/2k\.[0-9a-f]{8}\/2_0\.webp$/),
+      expect.stringMatching(/tiles\/mars-normal\.v3\/8k\.[0-9a-f]{8}\/1_1\.webp$/),
+      expect.stringMatching(/tiles\/mars-normal\.v3\/8k\.[0-9a-f]{8}\/2_0\.webp$/),
       expect.stringMatching(/tiles\/mars\.v2\/16k\.[0-9a-f]{8}\/2_0\.webp$/),
     ]);
   });
@@ -1363,7 +1363,7 @@ describe('SectorStreamer', () => {
     // so the only room for it is a child AND the parent that child covers.
     const bigSpec: SectorSetSpec = {
       ...SECTOR_SETS.Earth,
-      crops: { ...SECTOR_SETS.Earth.crops, normalMap: tileSet('mars-normal.v2', '2k') },
+      crops: { ...SECTOR_SETS.Earth.crops, normalMap: tileSet('mars-normal.v3', '8k') },
     };
     const BIG_SET_BYTES = sectorSetGpuBytes(bigSpec);
     expect(BIG_SET_BYTES).toBeGreaterThan(EARTH_SET_BYTES);
@@ -1697,7 +1697,7 @@ describe('SectorStreamer', () => {
       ...SECTOR_SETS.Earth,
       crops: {
         ...SECTOR_SETS.Earth.crops,
-        normalMap: tileSet('mars-normal.v2', '2k'),
+        normalMap: tileSet('mars-normal.v3', '8k'),
       },
     };
     const big = earthHandle();

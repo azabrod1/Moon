@@ -6,7 +6,8 @@
  * jumped to, and a plain search would re-find that event forever.
  *
  * The same park point sets the other question here: which event, of the ones
- * already found, the sky is showing at this instant. Unit-tested in
+ * already found, the sky is showing at this instant — and, for the surface
+ * HUD, how its countdown reads against that event's contacts. Unit-tested in
  * observatoryTime.test.ts.
  */
 
@@ -50,6 +51,26 @@ export function stepperSearchFromUtcMs(
   return direction === 1
     ? last.endUtcMs + OBSERVATORY_STEP_MARGIN_MS
     : spanLeadStartMs(last) - OBSERVATORY_STEP_MARGIN_MS;
+}
+
+/**
+ * The surface HUD's warm countdown against an event's contacts: when it
+ * starts, peaks and ends, and — through the padding hour the HUD keeps
+ * narrating an event after its last contact — how long ago it ended. That
+ * hour used to carry no time cue at all, leaving the present-tense narrative
+ * ("The Moon is crossing the Sun") as the only word on an event that was over.
+ */
+export function eventCountdownText(nowUtcMs: number, span: EventSpanMs): string {
+  const fmt = (ms: number) => {
+    const minutes = Math.max(1, Math.round(ms / 60_000));
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h ${minutes % 60}m`;
+  };
+  if (nowUtcMs < span.startUtcMs) return `starts in ${fmt(span.startUtcMs - nowUtcMs)}`;
+  if (nowUtcMs < span.peakUtcMs) return `peak in ${fmt(span.peakUtcMs - nowUtcMs)}`;
+  if (nowUtcMs <= span.endUtcMs) return `ends in ${fmt(span.endUtcMs - nowUtcMs)}`;
+  return `ended ${fmt(nowUtcMs - span.endUtcMs)} ago`;
 }
 
 /** The minimum an event needs for "is it overhead?": its span and its sky. */

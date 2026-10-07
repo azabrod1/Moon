@@ -227,15 +227,16 @@ describe('sector tile sets: what the app asks for', () => {
     }
   });
 
-  it('normal-map crops span two sectors, scalar crops one', () => {
-    // The tangent frame a normal map is sampled in needs the neighbouring
-    // sector on both sides; bump and roughness are scalars and need none.
-    // The runtime reads spanU from the generated table, so a re-cut at the
-    // wrong span would agree with itself everywhere — this is the one place
-    // the span is stated rather than measured.
+  it('every crop spans one sector', () => {
+    // Normal-map crops once spanned two, so three's frame, read from the
+    // crop's UV derivatives, saw the globe's UV scale; the relief frame now
+    // comes from the sphere itself (world/reliefFrame.ts) and a crop carries
+    // its own sector only. The runtime reads spanU from the generated table,
+    // so a re-cut at the wrong span would agree with itself everywhere — this
+    // is the one place the span is stated rather than measured.
     for (const [body, , spec] of appSpecs()) {
       for (const [slot, crop] of Object.entries(spec.crops)) {
-        const want = slot === 'normalMap' ? 2 : 1;
+        const want = 1;
         expect(crop.spanU, `${body} ${slot}`).toBe(want);
         expect(SECTOR_SET_TABLE[`${crop.key}/${crop.tier}`].spanU, `${body} ${slot}`).toBe(want);
       }
@@ -328,19 +329,27 @@ describe('sector tile sets: what the app asks for', () => {
     // gen-tiles from one full-resolution water score: the crops are cut from
     // its 4096 resize, the whole-globe file is its 2048 resize (the far view
     // needs no more) — so the shipped width is half the crops' base width,
-    // which is all this pins; the crop dimensions are pinned above. Mars's
-    // relief crops are the same shape: gen-relief writes an 8192 map for them
-    // beside the 4096 rung that ships, from one DEM in one pass.
-    const baseFiles: Record<string, { file: string; shippedScale: number }> = {
-      'earth-bump': { file: PLANET_TEXTURE_FILES.earthBump, shippedScale: 1 },
-      'earth-roughness.v2': { file: PLANET_TEXTURE_FILES.earthRoughness, shippedScale: 0.5 },
-      'mars-normal.v3': { file: `4k/${PLANET_TEXTURE_FILES.marsNormal}`, shippedScale: 0.5 },
-      'moon-normal': { file: `4k/${PLANET_TEXTURE_FILES.moonNormal}`, shippedScale: 1 },
+    // which is all this pins; the crop dimensions are pinned above.
+    // Two crops are cut not from a shipped map but from the master a relief
+    // generator writes to the source cache, so their width is the generator's
+    // own and is stated here: the Moon's 8k from NASA's 64 px/deg grid (`npm
+    // run gen:moon-relief`, eight sectors of 1016 texels) and Mars's 8k from
+    // the HRSC–MOLA blended DEM (`npm run gen:relief`, eight of 1024, written
+    // beside the 4K rung that ships, all from one DEM in one pass).
+    const baseFiles: Record<string, { file: string; shippedScale: number } | { generatedWidth: number }> = {
+      'earth-bump/2k': { file: PLANET_TEXTURE_FILES.earthBump, shippedScale: 1 },
+      'earth-roughness.v2/4k': { file: PLANET_TEXTURE_FILES.earthRoughness, shippedScale: 0.5 },
+      'mars-normal.v3/8k': { generatedWidth: 8192 },
+      'moon-normal/8k': { generatedWidth: 8128 },
     };
     for (const [, , spec] of appSpecs()) {
       for (const crop of Object.values(spec.crops)) {
-        const base = baseFiles[crop.key];
-        expect(base, `no base map known for crop set ${crop.key}`).toBeDefined();
+        const base = baseFiles[`${crop.key}/${crop.tier}`];
+        expect(base, `no base map known for crop set ${crop.key}/${crop.tier}`).toBeDefined();
+        if ('generatedWidth' in base) {
+          expect(crop.baseWidth, `${crop.key}/${crop.tier} baseWidth vs its generator`).toBe(base.generatedWidth);
+          continue;
+        }
         const path = resolve(TEXTURES, base.file);
         expect(existsSync(path), `${base.file} missing on disk`).toBe(true);
         expect(webpSize(path).width, `${crop.key} baseWidth vs ${base.file}`).toBe(crop.baseWidth * base.shippedScale);

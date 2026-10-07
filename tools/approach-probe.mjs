@@ -20,13 +20,17 @@
 // frame it was applied.
 //
 // With --assert it fails on any of:
-//   - the ramp ON at boot without ?lensramp=1, or OFF after setLensRamp(true)
-//     (the default and the live switch);
+//   - the ramp OFF at boot, or ON after the dev console's setLensRamp(false)
+//     (the probe's own ramp-off frame);
 //   - devPose true on any sample — a run that silently used a dev pose is void;
-//   - applied !== lensProximityFactor(α) at any rung (the probe carries its own
-//     copy of the two knees: the unit test pins the module, this pins the
-//     plumbing), α ≤ 45° without a 1, α ≥ 70° without a 0, applied not monotone
+//   - applied !== lensProximityFactor(α) at any rung (the probe reads the two
+//     knees off the app at boot and carries its own copy of the law: the unit
+//     test pins the module, this pins the plumbing), α at or under the full
+//     knee without a 1, α at or over the off knee without a 0, applied not monotone
 //     in α down the ladder, or the rebuild counter moving without a change;
+//   - phases 2 and 4 on the first band, 45/70, set live through the dev
+//     console (their fixed poses only discriminate mid-ramp, and sit past the
+//     app's off knee);
 //   - on the airless --pixels body, the ramp-on width off its prediction, or
 //     not wider than the ramp-off width above 30° (a pinhole draws a big disc
 //     larger than the lens does);
@@ -111,9 +115,11 @@ const missingPhases = ALL_PHASES.filter((phase) => !PHASES.has(phase));
 if (assertMode && missingPhases.length) { console.error(`--assert needs every phase (missing ${missingPhases.join(',')}); drop --assert for a partial run`); process.exit(2); }
 
 // --- the ramp, as shared/math/lensProximity.ts defines it ---------------------
+// The two knees are the app's, read from `__moon.lensRamp()` once it boots, so
+// a band moved in the module is the band this run predicts from.
 const DEG = Math.PI / 180;
-const LENS_PROXIMITY_FULL_DEG = 45;
-const LENS_PROXIMITY_OFF_DEG = 70;
+let LENS_PROXIMITY_FULL_DEG = Number.NaN;
+let LENS_PROXIMITY_OFF_DEG = Number.NaN;
 function lensProximityFactor(angularRadiusDeg) {
   if (!(angularRadiusDeg > LENS_PROXIMITY_FULL_DEG)) return 1;
   if (angularRadiusDeg >= LENS_PROXIMITY_OFF_DEG) return 0;
@@ -195,7 +201,7 @@ try {
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(String(error)));
 
-  // Boot WITHOUT ?lensramp=1: the default is off, and the run proves it.
+  // Boot with no lens switch: the ramp is on by default, and the run proves it.
   await page.goto(`${baseUrl}/?auto=planetarium&quality=medium`, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => !!(window.__moon && window.__moon.ready && window.__moon.ready()), { timeout: 120000 });
   await page.waitForFunction(() => {
@@ -205,6 +211,30 @@ try {
   const drawn = (frames = 2) => page.evaluate((n) => window.__moon.waitForDraw(n), frames);
   const rampState = () => page.evaluate(() => window.__moon.lensRamp());
   const setRamp = (on) => page.evaluate((v) => window.__moon.setLensRamp(v), on);
+  const bootRamp = await rampState();
+  LENS_PROXIMITY_FULL_DEG = bootRamp.fullDeg;
+  LENS_PROXIMITY_OFF_DEG = bootRamp.offDeg;
+  /** Run `body` on another band, set live through the dev console, with
+   *  this file's copy of the law following it; the app's band after. Phases 2
+   *  and 4 judge plumbing at fixed poses (a disc drawn ramped, drags through
+   *  the shell and under the floor) that only discriminate where the ramp is
+   *  mid-way, and those poses sit mid-way on the first band, 45/70 — on the
+   *  default band they read a pinhole whatever happens. Phase 1 is the
+   *  default band's own law. */
+  const SENSITIVE_BAND = { fullDeg: 45, offDeg: 70 };
+  const onBand = async (band, body) => {
+    await page.evaluate((b) => window.__moon.lensRampBand(b), band);
+    [LENS_PROXIMITY_FULL_DEG, LENS_PROXIMITY_OFF_DEG] = [band.fullDeg, band.offDeg];
+    try {
+      await body();
+    } finally {
+      const restore = { fullDeg: bootRamp.fullDeg, offDeg: bootRamp.offDeg };
+      await page.evaluate((b) => window.__moon.lensRampBand(b), restore);
+      [LENS_PROXIMITY_FULL_DEG, LENS_PROXIMITY_OFF_DEG] = [restore.fullDeg, restore.offDeg];
+    }
+  };
+  console.log(`the app's band: full at ${LENS_PROXIMITY_FULL_DEG}°, off at ${LENS_PROXIMITY_OFF_DEG}°`);
+  if (!(LENS_PROXIMITY_FULL_DEG > 0 && LENS_PROXIMITY_OFF_DEG > LENS_PROXIMITY_FULL_DEG)) throw new Error('the app reported no usable band');
 
   await page.evaluate(() => {
     window.__moon.setChrome(false);
@@ -326,22 +356,30 @@ try {
   const samples = [];
 
   // ---- 0. the default and the live switch ---------------------------------
-  console.log('[0] default off, then the live switch');
+  console.log('[0] on at boot, then the probe\'s live switch');
   if (PHASES.has(0)) {
     const closeRung = LADDER[Math.max(0, LADDER.length - 3)];
-    const off = await jump(stateBody, closeRung);
-    console.log(`  boot default at k=${closeRung}: enabled=${off.enabled} factor=${off.factor} applied=${off.applied} alpha=${off.angularRadiusDeg.toFixed(1)}deg`);
-    check(off.enabled === false, 'the ramp must be OFF at boot without ?lensramp=1');
-    check(off.factor === 1 && off.applied === 1, `off by default: factor ${off.factor}, applied ${off.applied} (want 1, 1)`);
-    check(off.devPose === false, 'devPose true on a real jump');
-    const switched = await setRamp(true);
-    check(switched === true, 'setLensRamp(true) did not report on');
+    const booted = await jump(stateBody, closeRung);
+    console.log(`  boot default at k=${closeRung}: enabled=${booted.enabled} factor=${booted.factor.toFixed(4)} applied=${booted.applied.toFixed(4)} alpha=${booted.angularRadiusDeg.toFixed(1)}deg`);
+    check(booted.enabled === true, 'the ramp must be ON at boot');
+    check(booted.devPose === false, 'devPose true on a real jump');
+    check(booted.angularRadiusDeg > LENS_PROXIMITY_FULL_DEG && booted.factor < 1,
+      `at k=${closeRung} the ramp should be engaged at boot (alpha ${booted.angularRadiusDeg.toFixed(1)}deg, factor ${booted.factor})`);
+    const switchedOff = await setRamp(false);
+    check(switchedOff === false, 'setLensRamp(false) did not report off');
+    await drawn(2);
+    const off = await rampState();
+    console.log(`  after setLensRamp(false): enabled=${off.enabled} factor=${off.factor} applied=${off.applied}`);
+    check(off.enabled === false, 'the live switch did not disable the ramp');
+    check(off.factor === 1 && off.applied === 1, `switched off: factor ${off.factor}, applied ${off.applied} (want 1, 1)`);
+    const switchedOn = await setRamp(true);
+    check(switchedOn === true, 'setLensRamp(true) did not report on');
     await drawn(2);
     const on = await rampState();
     console.log(`  after setLensRamp(true): enabled=${on.enabled} factor=${on.factor.toFixed(4)} applied=${on.applied.toFixed(4)} alpha=${on.angularRadiusDeg.toFixed(1)}deg body=${on.body}`);
-    check(on.enabled === true, 'the live switch did not enable the ramp');
-    check(on.angularRadiusDeg > LENS_PROXIMITY_FULL_DEG && on.factor < 1,
-      `at k=${closeRung} the ramp should be engaged (alpha ${on.angularRadiusDeg.toFixed(1)}deg, factor ${on.factor})`);
+    check(on.enabled === true, 'the live switch did not enable the ramp again');
+    check(on.factor === booted.factor && on.applied === booted.applied,
+      `back on, the ramp should read what it booted with (factor ${on.factor} vs ${booted.factor})`);
     samples.push({ phase: 'switch', body: stateBody, k: closeRung, off, on });
   }
 
@@ -368,7 +406,7 @@ try {
     // pin the unit tests cannot be.
     check(Math.abs(state.discRadiusAU * KM_PER_AU - 6378) < 20, `k=${k}: the driving disc radius is ${(state.discRadiusAU * KM_PER_AU).toFixed(0)} km, not Earth's 6,378 km surface`);
     if (state.angularRadiusDeg <= LENS_PROXIMITY_FULL_DEG) check(state.applied === 1, `k=${k}: alpha ${state.angularRadiusDeg.toFixed(2)} <= 45 but applied ${state.applied}`);
-    if (state.angularRadiusDeg >= LENS_PROXIMITY_OFF_DEG) check(state.applied === 0, `k=${k}: alpha ${state.angularRadiusDeg.toFixed(2)} >= 70 but applied ${state.applied}`);
+    if (state.angularRadiusDeg >= LENS_PROXIMITY_OFF_DEG) check(state.applied === 0, `k=${k}: alpha ${state.angularRadiusDeg.toFixed(2)} >= ${LENS_PROXIMITY_OFF_DEG} but applied ${state.applied}`);
     if (previousAlpha >= 0) {
       check(state.angularRadiusDeg > previousAlpha, `k=${k}: alpha did not grow down the ladder (${previousAlpha.toFixed(2)} -> ${state.angularRadiusDeg.toFixed(2)})`);
       check(state.applied <= previousApplied + 1e-12, `k=${k}: applied rose down the ladder`);
@@ -396,12 +434,12 @@ try {
   const reachedFull = samples.some((s) => s.phase === 'ladder' && s.angularRadiusDeg <= LENS_PROXIMITY_FULL_DEG);
   check(reachedFull, 'the ladder never sampled at full strength (at or under the full knee)');
   check(reachedBand, 'the ladder never sampled inside the ramp band');
-  check(reachedOff, 'the ladder never reached the off knee (alpha >= 70deg); lengthen the ladder toward the shell');
+  check(reachedOff, `the ladder never reached the off knee (alpha >= ${LENS_PROXIMITY_OFF_DEG}deg); lengthen the ladder toward the shell`);
   }
 
   // ---- 2. the drawn disc: the same pose with the ramp on and off -----------
-  console.log(`[2] ${pixelBody}: the drawn disc, ramp on against ramp off at one pose`);
-  if (PHASES.has(2)) {
+  console.log(`[2] ${pixelBody}: the drawn disc, ramp on against ramp off at one pose (on the ${SENSITIVE_BAND.fullDeg}/${SENSITIVE_BAND.offDeg} band)`);
+  if (PHASES.has(2)) await onBand(SENSITIVE_BAND, async () => {
   let pixelSamplesJudged = 0;
   let pixelSamplesActive = 0;
   for (const k of PIXEL_LADDER) {
@@ -423,7 +461,7 @@ try {
     const problem = drawnOn.error ?? drawnOff.error ?? (drawnOn.overflow || drawnOff.overflow ? 'disc overflows the frame' : null);
     check(on.devPose === false && off.devPose === false, `${pixelBody} k=${k}: devPose`);
     check(off.applied === 1 && off.enabled === false, `${pixelBody} k=${k}: ramp off but applied ${off.applied}, enabled ${off.enabled}`);
-    // The off state computes no angle (a kill switch does no work); the pose
+    // The off state computes no angle (a ramp that is off does no work); the pose
     // is the same jump, and the ramp-on read after the flip back says so.
     const back = await rampState();
     check(Math.abs(back.cameraAngularRadiusDeg - on.cameraAngularRadiusDeg) < 1e-6, `${pixelBody} k=${k}: the pose moved across the flip (${on.cameraAngularRadiusDeg} -> ${back.cameraAngularRadiusDeg})`);
@@ -447,7 +485,7 @@ try {
   }
   check(pixelSamplesJudged >= 3, `only ${pixelSamplesJudged} pixel sample(s) could be judged — widen the frame or move the pixel ladder`);
   check(pixelSamplesActive >= 3, `only ${pixelSamplesActive} judged pixel sample(s) had the ramp meaningfully active (applied < 0.95) — a disc the ramp barely changed proves nothing about it`);
-  }
+  });
 
   // ---- 3. the surface gate, and the ramp after takeoff ----------------------
   console.log('[3] landed: the ramp reads 1; after takeoff it computes again');
@@ -561,7 +599,7 @@ try {
   // 107 km after six drags, and the renderer read 192 km after two).
   // Wheeled to the floor first, its FIRST contact with the shell is under
   // the floor — and the wheel is itself the one input the boom must hear.
-  console.log('[4] look-around: real mouse drags, mid-band, through the safety shell and under the floor');
+  console.log(`[4] look-around: real mouse drags, mid-band, through the safety shell and under the floor (on the ${SENSITIVE_BAND.fullDeg}/${SENSITIVE_BAND.offDeg} band)`);
   async function dragOrbit(dx, dy) {
     const centreX = Math.floor(VIEWPORT_WIDTH / 2);
     const centreY = Math.floor(VIEWPORT_HEIGHT / 2);
@@ -670,7 +708,7 @@ try {
     }
     return { parked, start, cameraMoved, shortenedKm, underFloor };
   }
-  if (PHASES.has(4)) {
+  if (PHASES.has(4)) await onBand(SENSITIVE_BAND, async () => {
     const midRung = LADDER.find((k) => k <= 0.15) ?? LADDER[LADDER.length - 3];
     await lookAround('mid-band', stateBody, midRung, [[220, 0], [220, 0], [0, 140], [-220, 0]], { expectPush: false });
     // Mercury 160 km up: the ship 2,600 km from the centre, the driving angle
@@ -689,7 +727,7 @@ try {
     // the push returns it, every frame of the drag and its coast.
     const floorRung = Number(arg('floor-rung', '0.13'));
     await lookAround('under the floor', 'Mercury', floorRung, [[220, 0], [220, 0]], { expectPush: true, expectFloor: true });
-  }
+  });
 
   // ---- 5. a dev pose after a ramped frame enters at full strength -------------
   // A dev pose bypasses the cruise pass the ramp runs in, and solves its aim

@@ -878,7 +878,7 @@ describe('SectorStreamer', () => {
     expect(streamer.stats().resident).toBe(0);
   });
 
-  it('normal-map crops load with the two-sector-wide uniform transform', () => {
+  it('normal-map crops load one sector wide, through their own transform', () => {
     loader.auto = true;
     const moon = earthHandle();
     moon.name = 'Moon';
@@ -890,10 +890,14 @@ describe('SectorStreamer', () => {
     streamer.update('Moon', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
     const mat = (moon.mesh.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
     expect(mat.normalMap).not.toBeNull();
-    expect(mat.normalMap!.repeat.x).toBeCloseTo(mat.normalMap!.repeat.y, 6);
-    const expected = sectorTileTransform(G, { c: 2, r: 1 }, dataCropLayout(G, 2880, 2));
+    // The relief frame reads no UV (world/reliefFrame.ts), so the crop's
+    // transform need not scale u and v alike — and one sector wide it does
+    // not.
+    const expected = sectorTileTransform(G, { c: 2, r: 1 }, dataCropLayout(G, 8128));
     expect(mat.normalMap!.offset.x).toBeCloseTo(expected.offsetX, 12);
     expect(mat.normalMap!.repeat.x).toBeCloseTo(expected.repeatX, 12);
+    expect(mat.normalMap!.offset.y).toBeCloseTo(expected.offsetY, 12);
+    expect(mat.normalMap!.repeat.y).toBeCloseTo(expected.repeatY, 12);
   });
 
   it('closes the decoded bitmap once a tile is resident', () => {
@@ -1191,7 +1195,7 @@ describe('SectorStreamer', () => {
     // The bytes are committed from the layouts before a byte is fetched: the
     // NPOT tile plus the parent's normal crop, and nothing rounded to 2048².
     const childBytes = Math.round(1726 * 1726 * 4 * (4 / 3))
-      + Math.round(dataCropLayout(G, 2880, 2).width * dataCropLayout(G, 2880, 2).height * 4 * (4 / 3));
+      + Math.round(dataCropLayout(G, 8128).width * dataCropLayout(G, 8128).height * 4 * (4 / 3));
     expect(sectorSetGpuBytes(spec, 1)).toBe(childBytes);
     expect(sectorSetGpuBytes(spec, 1)).toBeLessThan(sectorSetGpuBytes(spec, 0));
     // Children only: the parent is held back by its cooldown after one
@@ -1203,8 +1207,8 @@ describe('SectorStreamer', () => {
     streamer.update('Moon', overLevel1(5, 3), measureLevels(levels, { '2_1': 2 * CHILD_WANT_PX }), 16);
     expect(streamer.stats().reserved).toBe(2 * childBytes); // two loads allowed at once
     expect(loader.requests.map((r) => r.url).sort()).toEqual([
-      expect.stringMatching(/tiles\/moon-normal\/4k\.[0-9a-f]{8}\/2_1\.webp$/),
-      expect.stringMatching(/tiles\/moon-normal\/4k\.[0-9a-f]{8}\/2_1\.webp$/),
+      expect.stringMatching(/tiles\/moon-normal\/8k\.[0-9a-f]{8}\/2_1\.webp$/),
+      expect.stringMatching(/tiles\/moon-normal\/8k\.[0-9a-f]{8}\/2_1\.webp$/),
       expect.stringMatching(/tiles\/moon\/27k\.\/4_2\.webp$/),
       expect.stringMatching(/tiles\/moon\/27k\.\/5_2\.webp$/),
     ]);
@@ -1221,7 +1225,7 @@ describe('SectorStreamer', () => {
     expect(mat.map!.offset.x).toBeCloseTo(tileT.offsetX, 12);
     expect(mat.map!.repeat.x).toBeCloseTo(tileT.repeatX, 12);
     expect(mat.map!.repeat.y).toBeCloseTo(tileT.repeatY, 12);
-    const cropT = sectorTileTransform(G, { c: 2, r: 1 }, dataCropLayout(G, 2880, 2));
+    const cropT = sectorTileTransform(G, { c: 2, r: 1 }, dataCropLayout(G, 8128));
     expect(mat.normalMap!.offset.x).toBeCloseTo(cropT.offsetX, 12);
     expect(mat.normalMap!.repeat.x).toBeCloseTo(cropT.repeatX, 12);
     // Half the segments of the level above, on the globe's own lattice.

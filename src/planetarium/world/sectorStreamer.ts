@@ -330,9 +330,12 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
   },
   Mars: {
     // Relief crops from the 8192-wide map gen-relief writes to the source
-    // cache — twice the 4K rung's width, never shipped whole. 8K rather than
-    // the colour tiles' 16K because a two-sector normal crop costs four bytes
-    // a texel: 11 MiB a sector here, 44 at 16K, under a 22 MiB colour tile.
+    // cache — twice the 4K rung's width, never shipped whole — one sector
+    // wide like every crop, and physical slope like the Moon's: gen-relief
+    // bakes the cos(lat)-corrected slope the sphere's own relief frame draws
+    // (world/reliefFrame.ts). 8K rather than the colour tiles' 16K because a
+    // normal crop costs four bytes a texel: 5.5 MiB a sector here with its
+    // mips, 21.7 at 16K, as much again as the 21.3 MiB colour tile under it.
     crops: { normalMap: tileSet('mars-normal.v3', '8k') },
     // Three levels like Earth's, all rendered from the one Tianwen-1 HiPS
     // (76 m, so even the 64K level's 328 m texels are a downsample of it),
@@ -345,8 +348,11 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
       sectorLevel64k('mars.v3'),
     ],
   },
+  // The Moon's relief crop is the 8k that tools/gen-moon-relief.mjs cuts
+  // from NASA's 64 px/deg grid at 1.39× slope: 1.3 km a texel, 5.4 MiB a
+  // sector on the GPU with its mips.
   Moon: {
-    crops: { normalMap: tileSet('moon-normal', '4k') },
+    crops: { normalMap: tileSet('moon-normal', '8k') },
     levels: [sectorLevel16k('moon')],
   },
 };

@@ -95,9 +95,8 @@ const jobsWanted = args.filter((a) => !a.startsWith('--'));
 // and the sector's UV transform maps onto the tile's interior
 // (world/sectorGrid.ts SECTOR_TILE). Data-map crops (bump / normal /
 // roughness) are pure crops of the base maps with the same gutter, so the
-// relief under a sector is exactly the base's relief; normal-map crops are cut
-// two sectors wide so their UV transform is uniform (sectorGrid explains the
-// tangent frame reason). Earth's ocean-gloss mask is not a base map but a
+// relief under a sector is exactly the base's relief; every crop is one sector
+// wide (sectorGrid's header has why normal crops once were two). Earth's ocean-gloss mask is not a base map but a
 // DERIVED one: classified per 16K source pixel (the same classifier that
 // grades the ocean colour, so gloss and blue agree at every coast),
 // area-averaged to 4096 for its crops and to 2048 for the boot file.
@@ -795,7 +794,7 @@ export interface GeneratedSectorSet {
   tileHeight: number;
   /** Width of the equirect the set was cut from: content × cols. */
   baseWidth: number;
-  /** Sectors of longitude one tile spans (normal-map crops: 2). */
+  /** Sectors of longitude one tile spans (every shipped set: 1). */
   spanU: number;
   fileCount: number;
 }
@@ -1516,7 +1515,10 @@ export const JOBS = {
     ],
     downsamples: [],
     ref: path.join(TEX, '4k', 'moon.webp'),
-    dataCrops: [{ src: path.join(TEX, '4k', 'moon-normal.webp'), key: 'moon-normal', tier: '4k', spanU: 2 }],
+    // The relief crop is the 8k that tools/gen-moon-relief.mjs writes to the
+    // cache from LOLA's 64 px/deg grid (8128 wide, 1.3 km a texel, cut at the
+    // globe maps' 1.39× slope), so run that first.
+    dataCrops: [{ src: cache('moon-normal-8k.webp'), key: 'moon-normal', tier: '8k' }],
   },
   // Tianwen-1 MoRIC true-colour mosaic: 76 m, 10,572 images with atmospheric,
   // photometric and colour correction and a bundle adjustment to under a
@@ -1556,8 +1558,10 @@ export const JOBS = {
     // The relief crops come off the 8192-wide map tools/gen-relief.mjs leaves
     // in the cache beside the shipped boot map and 4K rung (all three from the
     // HRSC–MOLA blended DEM in one pass): twice the rung's width, as Earth's
-    // roughness crops are twice their boot map's.
-    dataCrops: [{ src: cache('mars-normal.v3-8192.png'), key: 'mars-normal.v3', tier: '8k', spanU: 2 }],
+    // roughness crops are twice their boot map's. One sector wide like every
+    // crop, and physical slope like the Moon's, which is what the sphere's
+    // own relief frame draws (world/reliefFrame.ts).
+    dataCrops: [{ src: cache('mars-normal.v3-8192.png'), key: 'mars-normal.v3', tier: '8k' }],
   },
   // Solar System Scope 4K steps for the planets whose 8K/4K sources passed the
   // same-product gate against the shipped 2K boot maps (RMS 3.6 / 1.6 / 1.6).

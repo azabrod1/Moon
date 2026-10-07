@@ -59,6 +59,11 @@
  *    the same point, so a Moon that has set lights nothing whatever the Sun is
  *    doing.
  *
+ * Both are drawn as a long exposure, and both are multiplied by the body's
+ * `uNightExposure` — the one the ground takes, off the shared air block — so
+ * with the sunlit disc in view the airglow and the moonlit air sink with the
+ * moonlit ground (world/nightExposure). The Sun's in-scatter never reads it.
+ *
  * What this tier still does not carry is the city glow — the upward-scattered
  * light that makes a city visible through cloud.
  */
@@ -137,6 +142,10 @@ uniform vec3 uAirlightScale;
 // exactly what a sunlit one does. Zero on a body with no moon worth the second
 // fetch.
 uniform vec3 uMoonIrradiance;
+// The camera's exposure for the night side, off the body's shared air block:
+// 1 with no daylight in view, falling to 0 as the sunlit disc comes into it.
+// Both non-solar sources here take it; the Sun's in-scatter never does.
+uniform float uNightExposure;
 uniform vec4 uMoonShadow[${MAX_MOON_SHADOWS}];
 uniform int uMoonShadowCount;
 uniform float uSunTan;
@@ -195,7 +204,7 @@ void main() {
   // Airglow: emitted in the layer, not scattered from anything, so it is
   // computed on the whole ray — including the rays that pass above the modelled
   // air entirely, which is where the 630 nm fringe lives.
-  vec3 radiance = airglowRadiance(camera, view, night);
+  vec3 radiance = airglowRadiance(camera, view, night * uNightExposure);
 
   // The air itself. The ray is advanced to the entry point first: from out here
   // a lookup at the camera's own radius clamps every ray to the table's top row
@@ -255,7 +264,7 @@ void main() {
     // lights nothing, whatever the Sun is doing.
     if (night > 0.0 && uMoonIrradiance.g > 0.0) {
       vec3 moon = normalize(vMoonObj);
-      float moonNight = night * moonUpWeight(clampCosine(dot(normalize(lowest), moon)));
+      float moonNight = night * uNightExposure * moonUpWeight(clampCosine(dot(normalize(lowest), moon)));
       if (moonNight > 0.0) {
         float nuMoon = clampCosine(dot(view, moon));
         vec4 lunar = getScattering3DRGBA(
@@ -331,6 +340,9 @@ export function createAtmosphereShellMaterial(
     // same Moon, and a second pair of objects is how they stop being.
     uMoonDirWorld: options.fx?.air?.uMoonDirWorld ?? { value: new THREE.Vector3(0, 0, 1) },
     uMoonIrradiance: options.fx?.air?.uMoonIrradiance ?? { value: new THREE.Vector3() },
+    // The night side's exposure comes off the same block for the same reason:
+    // the ground and the air around it are one photograph.
+    uNightExposure: options.fx?.air?.uNightExposure ?? { value: 1 },
     uAirglowBands: { value: new THREE.Vector4(...airglow.bands) },
     uAirglowGreen: { value: new THREE.Vector3(...airglow.green) },
     uAirglowOrange: { value: new THREE.Vector3(...airglow.orange) },

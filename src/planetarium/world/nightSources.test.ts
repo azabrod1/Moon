@@ -119,9 +119,9 @@ describe('the shared night weight', () => {
     // crosses — and hands the one value to the airglow and to the Moon.
     expect(shell).toContain('vec3 lowest = camera + view * max(-rmuCam, 0.0);');
     expect(shell).toContain('float night = nightWeight(clampCosine(dot(normalize(lowest), sun)));');
-    expect(shell).toContain('airglowRadiance(camera, view, night)');
+    expect(shell).toContain('airglowRadiance(camera, view, night * uNightExposure)');
     expect(shell).toContain(
-      'float moonNight = night * moonUpWeight(clampCosine(dot(normalize(lowest), moon)));',
+      'float moonNight = night * uNightExposure * moonUpWeight(clampCosine(dot(normalize(lowest), moon)));',
     );
     // The surfaces read it at the fragment, off the same geometry the air does.
     const surface = surfaceFragment();
@@ -377,8 +377,8 @@ describe('airglow', () => {
     expect(airglowAt).toBeLessThan(airBranchAt);
     expect(shell).toContain('inAir = false;                        // misses the air');
     // And it is emitted, not scattered: no eclipse dims it, no solar
-    // irradiance scales it.
-    expect(shell).toMatch(/vec3 radiance = airglowRadiance\(camera, view, night\);/);
+    // irradiance scales it. The camera's exposure is the one other factor.
+    expect(shell).toMatch(/vec3 radiance = airglowRadiance\(camera, view, night \* uNightExposure\);/);
   });
 });
 
@@ -506,7 +506,7 @@ describe('the night ground', () => {
     expect(surface).toContain('vec3 nightLow = max(nightAmbient, nightFloor);');
     expect(surface).toContain('outgoingLight += nightLow;');
     expect(surface).toContain(
-      `* (uNightStrength * (1.0 - dayFactor) * nightKeep * ${NIGHT_FLOOR_FRACTION.toFixed(6)});`,
+      `* (uNightStrength * (1.0 - dayFactor) * nightKeep * uNightExposure * ${NIGHT_FLOOR_FRACTION.toFixed(6)});`,
     );
     // The floor is the authored fill itself at fraction 1: the look with no
     // tables is the reference the tier with them may not go under.
@@ -584,6 +584,84 @@ describe('the night ground', () => {
     const night = src('../../shared/shaders/atmosphere.ts');
     expect(night).toContain('lit *= mix(vec3(1.0), aerialTransmittance(uTransmittance, seg), airWeight);');
     expect(night).not.toContain('aerialInscatter');
+  });
+});
+
+describe('the camera’s exposure', () => {
+  it('multiplies every night weight on a surface, beside the silhouette', () => {
+    const surface = surfaceFragment();
+    // The sky's own ambient, the Moon's terms, the starlight floor and
+    // planetshine: each weight takes the factor on its own, next to nightKeep
+    // and never folded into it, so the silhouette and the exposure are two
+    // independent facts about one camera.
+    expect(surface).toContain('float nightKeep = 1.0 - uSilhouette;');
+    expect(surface).toContain(
+      'float airNight = uAirDensity > 0.0\n'
+        + '      ? nightWeight(clampCosine(dot(up, normalize(uSunDirWorld)))) * nightKeep * uNightExposure\n'
+        + '      : 0.0;',
+    );
+    expect(surface).toContain(
+      '* sunDownWeight(sunElevSin, uTermWidth) * nightKeep * uNightExposure\n      : 0.0;',
+    );
+    expect(surface).toContain(
+      `* (uNightStrength * (1.0 - dayFactor) * nightKeep * uNightExposure * ${NIGHT_FLOOR_FRACTION.toFixed(6)});`,
+    );
+    expect(surface).toContain(
+      '(uPlanetshineIntensity * pl * (1.0 - dayFactor) * nightKeep * uNightExposure);',
+    );
+    // The Moon's column in the haze rides moonNight, which already carries it.
+    expect(surface).toContain('* uMoonIrradiance * moonNight;');
+    expect(surface).not.toMatch(/float nightKeep = [^;]*uNightExposure/);
+  });
+
+  it('leaves the city glow through the deck, and everything solar, alone', () => {
+    const surface = surfaceFragment();
+    // The deck's night weight is exactly what it was: the cities stay under a
+    // day exposure.
+    expect(surface).toContain(
+      'float cloudNight = DECK_ON\n'
+        + '      ? nightWeight(clampCosine(dot(up, normalize(uSunDirWorld)))) * nightKeep\n'
+        + '      : 0.0;',
+    );
+    // One declaration and the four weights: nothing else in the injection —
+    // the Sun's light, its twilight in-scatter, the eclipse trace, the
+    // reader's lift — reads it.
+    expect(surface.match(/uNightExposure/g)).toHaveLength(5);
+    expect(surface.match(/uniform float uNightExposure;/g)).toHaveLength(1);
+    // The shell: the declaration and its two non-solar consumers. The line
+    // that reads the shared weight is the same line it was.
+    const shell = shellFragment();
+    expect(shell.match(/uNightExposure/g)).toHaveLength(3);
+    expect(shell).toContain('float night = nightWeight(clampCosine(dot(normalize(lowest), sun)));');
+    expect(shell).toContain('* uAirlightScale * (uSolarIrradiance * sunVisible);');
+    // The night-lights shell and its sectors are their own material and never
+    // take it.
+    expect(src('../../shared/shaders/atmosphere.ts')).not.toContain('uNightExposure');
+    expect(src('./earthNightMaterial.ts')).not.toContain('uNightExposure');
+  });
+
+  it('is one slot per body, shared by the ground and the air around it', () => {
+    const mat = new THREE.MeshStandardMaterial();
+    const fx = augmentSurfaceMaterial(mat, 'earth');
+    // Every block starts at the long exposure: a surface nobody meters — a
+    // studio, a tool, a warm-up probe — draws the picture as it was.
+    expect(fx.air.uNightExposure.value).toBe(1);
+    const shader = {
+      uniforms: {} as Record<string, THREE.IUniform>,
+      vertexShader: '#include <common>\nvoid main() {\n#include <begin_vertex>\n}',
+      fragmentShader: '#include <common>\nvoid main() {\n#include <opaque_fragment>\n}',
+    };
+    (mat.onBeforeCompile as (s: typeof shader) => void)(shader);
+    expect(shader.uniforms.uNightExposure).toBe(fx.air.uNightExposure);
+    const shell = createAtmosphereShellMaterial({
+      planetRadius: 4.2635e-5, body: 'Earth', sizes: ATMOSPHERE_TABLE_SIZES_FULL, fx,
+    });
+    expect(shell.uniforms.uNightExposure).toBe(fx.air.uNightExposure);
+    // A shell with no body block has a slot of its own at 1.
+    const lone = createAtmosphereShellMaterial({
+      planetRadius: 4.2635e-5, body: 'Earth', sizes: ATMOSPHERE_TABLE_SIZES_FULL,
+    });
+    expect(lone.uniforms.uNightExposure.value).toBe(1);
   });
 });
 

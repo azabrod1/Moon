@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { DEG2RAD } from './angles';
 import {
+  LENS_PROXIMITY_DEFAULT_BAND,
   LENS_PROXIMITY_FULL_DEG,
   LENS_PROXIMITY_OFF_DEG,
+  isLensRampBand,
   lensProximityFactor,
   sphereAngularRadius,
 } from './lensProximity';
@@ -66,13 +68,17 @@ describe('lensProximityFactor', () => {
 
   it('blends the Sun at its governed park from the photosphere, not the governed surface', () => {
     // The governor holds off at SUN_APPROACH_SURFACE_RADII photosphere radii;
-    // the DISC is the photosphere, so the park sits mid-ramp. Measured against
-    // the 1.2x governed surface it would read 90° and switch the lens fully
-    // off — the two radius classes must never be mixed.
+    // the DISC is the photosphere, 56.4° from the park. Measured against the
+    // 1.2x governed surface it would read 90° — the two radius classes must
+    // never be mixed. They part most where the park sits mid-ramp, which it
+    // did under the first band, 45/70: 0.563 against 0.
+    const firstBand = { fullDeg: 45, offDeg: 70 };
     const park = sphereAngularRadius(1, SUN_APPROACH_SURFACE_RADII);
     expect(park / DEG2RAD).toBeCloseTo(56.44, 1);
-    expect(lensProximityFactor(park)).toBeCloseTo(0.563, 2);
-    expect(lensProximityFactor(sphereAngularRadius(SUN_APPROACH_SURFACE_RADII, SUN_APPROACH_SURFACE_RADII))).toBe(0);
+    expect(lensProximityFactor(park, firstBand)).toBeCloseTo(0.563, 2);
+    expect(lensProximityFactor(sphereAngularRadius(SUN_APPROACH_SURFACE_RADII, SUN_APPROACH_SURFACE_RADII), firstBand)).toBe(0);
+    // Under the default band the park keeps 0.04 of the lens: nearly a pinhole.
+    expect(lensProximityFactor(park)).toBeCloseTo(0.04, 2);
   });
 
   it('reads a non-finite or inside-the-sphere input safely', () => {
@@ -87,5 +93,38 @@ describe('lensProximityFactor', () => {
     expect(sphereAngularRadius(1, Number.NaN)).toBe(0);
     expect(sphereAngularRadius(1, Number.POSITIVE_INFINITY)).toBe(0);
     expect(sphereAngularRadius(1, 2) / DEG2RAD).toBeCloseTo(30, 9);
+  });
+});
+
+describe('the band', () => {
+  const KM = 1 / 149_597_870.7;
+  const MOON_R = 1737.4 * KM;
+  const CLEARANCE = (1737.4 / 64) * 1.5 * KM; // SHIP_CLEARANCE_AU, written out so this file stays off cruiseView
+  const BOOM = 232.8 * KM;
+
+  it('a band moves both knees and nothing else; the default band is the module constants', () => {
+    expect(LENS_PROXIMITY_DEFAULT_BAND).toEqual({ fullDeg: LENS_PROXIMITY_FULL_DEG, offDeg: LENS_PROXIMITY_OFF_DEG });
+    const band = { fullDeg: 45, offDeg: 70 };
+    expect(lensProximityFactor(45 * DEG2RAD, band)).toBe(1);
+    expect(lensProximityFactor(70 * DEG2RAD, band)).toBe(0);
+    expect(lensProximityFactor(57.5 * DEG2RAD, band)).toBeCloseTo(0.5, 12);
+    expect(lensProximityFactor(51.5 * DEG2RAD)).toBeCloseTo(lensProximityFactor(51.5 * DEG2RAD, LENS_PROXIMITY_DEFAULT_BAND), 12);
+  });
+
+  it("the ship-plus-boom driver reaches a pinhole at the Moon's clearance shell, where the first band, 45/70, kept a third of the lens", () => {
+    const shipPlusBoom = sphereAngularRadius(MOON_R, MOON_R + CLEARANCE + BOOM);
+    expect(shipPlusBoom / DEG2RAD).toBeCloseTo(59.8, 0);
+    expect(LENS_PROXIMITY_DEFAULT_BAND).toEqual({ fullDeg: 45, offDeg: 58 });
+    expect(lensProximityFactor(shipPlusBoom)).toBe(0);
+    expect(lensProximityFactor(shipPlusBoom, { fullDeg: 45, offDeg: 70 })).toBeGreaterThan(0.3);
+  });
+
+  it('refuses a band it cannot use', () => {
+    expect(isLensRampBand(LENS_PROXIMITY_DEFAULT_BAND)).toBe(true);
+    expect(isLensRampBand({ fullDeg: 45, offDeg: 70 })).toBe(true);
+    expect(isLensRampBand({ fullDeg: 40, offDeg: 90 })).toBe(true);
+    for (const [fullDeg, offDeg] of [[58, 45], [45, 45], [45, 91], [0, 50], [Number.NaN, 50], [45, Number.POSITIVE_INFINITY]]) {
+      expect(isLensRampBand({ fullDeg, offDeg }), `${fullDeg},${offDeg}`).toBe(false);
+    }
   });
 });

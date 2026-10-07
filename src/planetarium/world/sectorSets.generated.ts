@@ -29,7 +29,7 @@ export interface GeneratedSectorSet {
   tileHeight: number;
   /** Width of the equirect the set was cut from: content × cols. */
   baseWidth: number;
-  /** Sectors of longitude one tile spans (normal-map crops: 2). */
+  /** Sectors of longitude one tile spans (every shipped set: 1). */
   spanU: number;
   fileCount: number;
 }
@@ -149,17 +149,17 @@ export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = /* table:beg
     "fileCount": 32
   },
   "mars-normal.v3/8k": {
-    "setHash8": "b00b22d6",
+    "setHash8": "232997f4",
     "grid": {
       "cols": 8,
       "rows": 4
     },
     "content": 1024,
     "gutter": 8,
-    "tileWidth": 2080,
+    "tileWidth": 1040,
     "tileHeight": 1040,
     "baseWidth": 8192,
-    "spanU": 2,
+    "spanU": 1,
     "fileCount": 32
   },
   "mars.v3/16k": {
@@ -218,18 +218,18 @@ export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = /* table:beg
     "spanU": 1,
     "fileCount": 32
   },
-  "moon-normal/4k": {
-    "setHash8": "09986655",
+  "moon-normal/8k": {
+    "setHash8": "c2a4a8be",
     "grid": {
       "cols": 8,
       "rows": 4
     },
-    "content": 360,
+    "content": 1016,
     "gutter": 8,
-    "tileWidth": 752,
-    "tileHeight": 376,
-    "baseWidth": 2880,
-    "spanU": 2,
+    "tileWidth": 1032,
+    "tileHeight": 1032,
+    "baseWidth": 8128,
+    "spanU": 1,
     "fileCount": 32
   }
 } /* table:end */;

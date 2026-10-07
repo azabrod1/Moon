@@ -206,8 +206,39 @@ place after the app stops naming them, because a browser still running the
 older build keeps asking for them. Pruning is deliberate and by hand, and a
 pruned set 404s those clients (the app falls back to its whole-body map).
 
-\`${REPO_TILES}/${SETS_JSON}\` is the table of what is here, copied from the cut.
+\`${REPO_TILES}/${SETS_JSON}\` is the table of what is here: every <key>/<tier> a
+publish has named, at the latest cut of each, merged in from each root that was
+published (older cuts stay on disk under their own hashes).
 `;
+}
+
+/**
+ * The repo's table as published so far, for the merge: {} before the first
+ * publish. Refused when it is not a table of `<key>/<tier>` entries, or when an
+ * entry the merge would keep names a folder the repo does not hold — a merge
+ * must not carry a name forward that already answers 404.
+ */
+async function readPublishedTable(repoAbs, tablePath, incoming) {
+  if (!(await exists(tablePath))) return {};
+  let published;
+  try {
+    published = JSON.parse(await readFile(tablePath, 'utf8'));
+  } catch (err) {
+    throw new Error(`${tablePath}: not readable JSON (${err.message}) — repair it by hand before publishing`);
+  }
+  if (!published || typeof published !== 'object' || Array.isArray(published)) {
+    throw new Error(`${tablePath}: not a table of <key>/<tier> entries — repair it by hand before publishing`);
+  }
+  for (const [id, entry] of Object.entries(published)) {
+    if (id in incoming) continue;
+    const [key, tier] = id.split('/');
+    if (!key || !tier || !entry?.setHash8) throw new Error(`${tablePath}: "${id}" is not a <key>/<tier> entry with a hash`);
+    const folder = path.join(repoAbs, REPO_TILES, key, `${tier}.${entry.setHash8}`);
+    if (!(await exists(folder))) {
+      throw new Error(`${tablePath}: "${id}" names ${path.join(key, `${tier}.${entry.setHash8}`)}, which is not in the repo`);
+    }
+  }
+  return published;
 }
 
 /**
@@ -286,7 +317,15 @@ export async function publishTiles({
   }
 
   await mkdir(path.join(repoAbs, REPO_TILES), { recursive: true });
-  await writeFile(path.join(repoAbs, REPO_TILES, SETS_JSON), `${JSON.stringify(table, null, 2)}\n`);
+  // The repo's table is MERGED with the root's, never replaced by it: a root
+  // need not hold every set the repo does (one cut into a private root holds
+  // only what it cut), and a set the table stops naming is a set deleted from
+  // the repo in every way but its bytes. A <key>/<tier> the root names again
+  // takes the root's entry, in its old place; one the repo has never named is
+  // added after the rest.
+  const repoTablePath = path.join(repoAbs, REPO_TILES, SETS_JSON);
+  const publishedTable = await readPublishedTable(repoAbs, repoTablePath, table);
+  await writeFile(repoTablePath, `${JSON.stringify({ ...publishedTable, ...table }, null, 2)}\n`);
   await writeFile(path.join(repoAbs, 'README.md'), readmeText(ownerRepo));
 
   const paths = ['README.md', `${REPO_TILES}/${SETS_JSON}`, ...added.map((s) => `${REPO_TILES}/${s.key}/${s.folder}`)];

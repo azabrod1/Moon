@@ -320,6 +320,15 @@ describe('the atmosphere goldens', () => {
     // the edit itself. The two are one pair: change the shell's GLSL and this
     // breaks, re-capture and the radiances break, and the only diff that lands
     // green is one that moves the shader, the captures and the pins together.
+    //
+    // The captures are taken with the night-side exposure rule off
+    // (`--extra='&nightexposure=0'`, world/nightExposure). The rule is a
+    // camera's metering on top of the shader's night terms, not a change to
+    // them, and it would meter these poses by how much sunlit ground they
+    // hold: the terminator poses at 1.5 R are half lit, which is a day
+    // exposure and a night side with no light of its own at all. With it off
+    // every slot is 1 and the radiances are the shader's own night terms —
+    // what these pins exist to hold.
     const hash = (glsl: string): string => createHash('sha256').update(glsl).digest('hex');
     const shell = createAtmosphereShellMaterial({
       planetRadius: 4.2635e-5, body: 'Earth', sizes: ATMOSPHERE_TABLE_SIZES_FULL,
@@ -329,7 +338,7 @@ describe('the atmosphere goldens', () => {
     expect(hash(shell.vertexShader))
       .toBe('604724ecd98c07ab9465d5cce0bbc7285e1ed2627fe5f2d7b69ec6ddbba3b1fc');
     expect(hash(shell.fragmentShader))
-      .toBe('75528772f3eea6f722489849bbb18be0e1c331e9223758d8e68b63f4654a80cb');
+      .toBe('e613114e0023b6b45b235dd92c7039cc5ea90113839778b234f4e249acc89b01');
   });
 
   it('shows the LUT tier drawing a different limb from the analytic one', () => {

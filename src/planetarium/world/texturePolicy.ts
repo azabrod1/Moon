@@ -86,8 +86,8 @@ const TILE_BASE = ((): string => {
  *
  *  The set hash is what the pathname promises: exactly those bytes or a 404.
  *  Everything else the app reads into a pathname — the map's identity through
- *  its stem, the 8×4 grid, the 8-px gutter, the two-sector-wide normal crops
- *  (sectorGrid) — is a layout the set was cut at, so a re-cut set lands on a
+ *  its stem, the 8×4 grid, the 8-px gutter, the one-sector crops (sectorGrid)
+ *  — is a layout the set was cut at, so a re-cut set lands on a
  *  new path by construction and no cache, near or far, can pair an old body
  *  with new code. The stem is the same rule one level up: a re-based base map
  *  ships under a new name and takes its tiles with it. */

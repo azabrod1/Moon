@@ -70,8 +70,8 @@ const MIN_COS_LAT = 0.2;
  *  map stays in the cache as the source gen-tiles cuts the sector crops from
  *  (`mars --crops`), exactly as Earth's roughness crops are cut from a 4096
  *  resize that never ships whole. 8192 rather than the colour tiles' 16256:
- *  a two-sector normal crop at 16K is 44 MiB of GPU memory a sector, three
- *  times the colour tile it sits under, where 8K is 11 MiB. */
+ *  a normal crop at 16K is 21.7 MiB of GPU memory a sector with its mips, as
+ *  much again as the colour tile it sits under, where 8K is 5.5 MiB. */
 const OUTPUTS = [
   { width: 8192, out: path.join(CACHE, 'mars-normal.v3-8192.png'), encode: 'png', role: 'sector crop source' },
   { width: 4096, out: path.join(TEX, '4k', 'mars-normal.v3.webp'), encode: 'webp', role: 'close-approach rung' },

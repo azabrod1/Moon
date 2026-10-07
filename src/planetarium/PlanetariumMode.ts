@@ -97,7 +97,12 @@ import { ShadowVisuals, createShadowVisualsWarmupProbes, type GuideSlotInput } f
 import { createShaderWarmupProbes, type WarmupProbes } from './world/shaderWarmupProbes';
 import { warmUpSceneShaders, type ProgramResolveTiming } from './world/shaderWarmup';
 import { selectMoonShadowCasters, umbraReachesSurface } from './world/moonShadowCasters';
-import { OBSERVATORY_JUMP_LEAD_MS, resolveLiveEvent, stepperSearchFromUtcMs } from './observatoryTime';
+import {
+  eventCountdownText,
+  OBSERVATORY_JUMP_LEAD_MS,
+  resolveLiveEvent,
+  stepperSearchFromUtcMs,
+} from './observatoryTime';
 import { resolveShowVantage } from './observatoryJump';
 import { surfacePerfBeginSpan, surfacePerfEndSpan } from './surfacePerf';
 import { findEvent, type EventType } from '../astronomy/ephemeris';
@@ -179,6 +184,16 @@ import { releaseBootWarmResponses, warmBitmapUploadProbe } from './world/texture
 import { warmTilePixelWorker } from './world/tilePixels';
 import { planetshineIntensity } from './world/planetshine';
 import {
+  advanceNightExposure,
+  makeNightExposureState,
+  nightExposureParams,
+  parseNightExposureParam,
+  setDevNightExposure,
+  visibleCapLitFraction,
+  type NightExposureOverride,
+  type NightExposureState,
+} from './world/nightExposure';
+import {
   advanceSilhouetteOwners,
   makeSilhouetteOwners,
   smoothShadeFraction,
@@ -194,10 +209,10 @@ import { GyroSteering } from './input/GyroSteering';
 import { SurfaceLook } from './input/SurfaceLook';
 import {
   angularDiameterDeg,
+  applySurfaceEyepieceDrag,
+  applySurfaceLookDrag,
   bodyDisplayName,
   clampSurfaceFovDeg,
-  computeAnchoredSpotVantage,
-  computeShadowSpotVantage,
   computeSpotAnchorLocal,
   computeSubTargetVantage,
   entryFovDeg,
@@ -209,14 +224,18 @@ import {
   projectedDiscPx,
   resolveMarkerKind,
   selectSurfaceTarget,
+  spotAnchorFor,
+  standAtSpotAnchor,
   SURFACE_FOV_DEFAULT_DEG,
   SURFACE_FOV_MIN_DEG,
+  SURFACE_SPOT_SUN_DOWN,
   SURFACE_TARGET_ELEVATION_DEG,
   surfaceAltitudeAU,
   surfaceEventExpectation,
   surfaceEventNarrative,
   surfaceTargetKey,
   transportTrackingUp,
+  type SpotAnchor,
   type SurfaceEntryContext,
   type SurfaceLandedInfo,
   type SurfaceMarkerKind,
@@ -230,7 +249,7 @@ import {
   lensDisplayHalfTan,
   lensMaxFrameScale,
 } from '../shared/math/lensProjection';
-import { lensProximityFactor } from '../shared/math/lensProximity';
+import { isLensRampBand, LENS_PROXIMITY_DEFAULT_BAND, lensProximityFactor, type LensRampBand } from '../shared/math/lensProximity';
 import { SUN_ATMOSPHERE_TINT_RGB, SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../shared/shaders/sun';
 import { landedFrameCamDistAU, landedMinDistanceAU, landedNearAU, LANDED_NEAR_AU } from './landedView';
 import {
@@ -316,7 +335,7 @@ import {
 } from './world/surfaceDensity';
 import { applyLensShaderUniforms, type LensShaderUniforms } from '../shared/three/lensShader';
 import { setPointEnergyPixelRatio } from '../shared/three/pointEnergy';
-import { isPhoneViewport, setText } from '../shared/dom';
+import { isPhoneViewport, onSafeAreaChange, safeAreaInsets, setText, type SafeAreaInsets } from '../shared/dom';
 import { Constellations } from './Constellations';
 import { snapConstellations } from './data/constellationGeometry';
 import { getMoonsByPlanet, MOONS, type MoonData } from './planets/moonData';
@@ -747,11 +766,13 @@ export class PlanetariumMode {
    *  an orbit line moving when the ship does, and the kill switch. */
   private readonly orbitAnchorEnabled = new URLSearchParams(location.search).get('orbitanchor') !== '0';
 
-  /** `?lensramp=1`: fade the stereographic lens out as one body fills the
-   *  view (shared/math/lensProximity.ts). OFF unless asked — the moving A/B
-   *  (an approach, a departure, a look-away while parked, both arms) has not
-   *  been judged yet — and `__moon.setLensRamp(on)` flips it live. */
-  private lensRampEnabled = new URLSearchParams(location.search).get('lensramp') === '1';
+  /** Fade the stereographic lens out as one body fills the view
+   *  (shared/math/lensProximity.ts). Always on in the app; the dev console's
+   *  `__moon.setLensRamp(on)` and `__moon.lensRampBand(band)` exist only so
+   *  tools/approach-probe.mjs can draw a pose with the ramp off, and judge
+   *  fixed poses on a band where they sit mid-ramp. */
+  private lensRampEnabled = true;
+  private lensRampBand: LensRampBand = LENS_PROXIMITY_DEFAULT_BAND;
 
   /** What the ramp did this frame, for `__moon.lensRamp()`. `applied` is the
    *  strength the shaders read (`effectiveStrength`); `devPose` says the
@@ -761,24 +782,28 @@ export class PlanetariumMode {
     enabled: false,
     factor: 1,
     applied: 1,
-    /** The driving angle: the disc from the ship's distance plus the boom. */
+    /** The driving angle: the disc from the ship's distance plus the boom
+     *  the rig intends. */
     angularRadiusDeg: 0,
     /** The same disc from the camera itself — the readout, never the driver. */
     cameraAngularRadiusDeg: 0,
     /** The driving body's disc radius — the rendered surface, so a probe can
      *  see that the air shell or the Sun's governed surface never drove it. */
     discRadiusAU: 0,
-    /** The boom the driving angle was read with (intendedCameraRadiusAU), the
-     *  camera's actual distance to the ship, and the controls' distance
+    /** The boom the driving angle was read with (intendedCameraRadiusAU),
+     *  the camera's actual distance to the ship, and the controls' distance
      *  floor, so a probe can see a safety push shorten the second — to under
-     *  the third, where the controls' clamp lifts it back every frame —
-     *  while the first, and the angle, hold. */
+     *  the third, where the controls' clamp lifts it back every frame — while
+     *  the first, and the angle, hold. */
     boomAU: 0,
     cameraBoomAU: 0,
     boomFloorAU: 0,
     camOwner: 'chase' as 'chase' | 'orbit' | 'reacquiring',
     body: null as string | null,
     devPose: false,
+    /** The knees the factor was read with. */
+    fullDeg: LENS_PROXIMITY_DEFAULT_BAND.fullDeg,
+    offDeg: LENS_PROXIMITY_DEFAULT_BAND.offDeg,
     applies: 0,
   };
   /** The camera-to-ship distance the cruise rig MEANS to hold — what the lens
@@ -1191,6 +1216,25 @@ export class PlanetariumMode {
    *  silhouette advance snaps both slots to target so a teleport never shows a
    *  fading ghost of the previous scene's dark disc. */
   private sunSilhouetteSnapPending = true;
+  /** Each body's night-side exposure meter (world/nightExposure), keyed by
+   *  body name and made once per body. */
+  private readonly nightExposureStates = new Map<string, NightExposureState>();
+  /** `?nightexposure=0`: the rule off in any build. Every slot then stays at
+   *  1, the pass never runs, and the picture is the one before the rule. */
+  private nightExposureOff = parseNightExposureParam(location.search).off;
+  /** Whether the rule stood down on the latest pass — the switch above, or
+   *  Night sides: Brightened — so the pass can tell the frame it changes. */
+  private nightExposureStoodDown = this.nightExposureOff;
+  /** Set by noteSunViewDiscontinuity(), consumed by the next exposure pass:
+   *  every body takes its target outright, because frames keep running
+   *  through a jump and no gap in wall time would tell the meter the sky is a
+   *  different one. */
+  private nightExposureSnapPending = true;
+  /** The wall clock of the latest exposure pass: a body whose meter carries
+   *  this stamp was metered this frame (the readback's filter). */
+  private nightExposurePassMs = -1;
+  /** The camera's heliocentric point for the pass in flight, in AU. */
+  private readonly tmpNightExposureCamera = new THREE.Vector3();
   /** The size gate applied to the current dominant occluder this frame (1 for
    *  eclipse-scale, 0 for a horizon-filling body) — readback only. */
   private sunSilhouetteGate = 1;
@@ -1763,8 +1807,13 @@ export class PlanetariumMode {
   private surfaceFovDeg = SURFACE_FOV_DEFAULT_DEG;
   private surfaceTracking = true;
   private surfaceLook: SurfaceLook;
+  /** `?lookdrag=eyepiece`: the look-up view drags in the camera's own frame
+   *  (applySurfaceEyepieceDrag) — no twist, and no level horizon — instead of
+   *  the level pan (applySurfaceLookDrag). Read once: the A/B for how a drag
+   *  should feel. */
+  private readonly surfaceEyepieceDrag =
+    new URLSearchParams(location.search).get('lookdrag') === 'eyepiece';
   private preSurfaceCameraPos = new THREE.Vector3();
-  private preSurfaceAutoRotate = false;
   // Entry/exit/re-point FOV ease. fromPos is set on entry only (the camera
   // glides from its orbit position down to the vantage); finalizeExit runs
   // the orbit-view restore when the ease completes.
@@ -1780,8 +1829,6 @@ export class PlanetariumMode {
   private tmpSurfaceVantage = new THREE.Vector3();
   private tmpSurfaceAxis = new THREE.Vector3();
   private tmpSurfaceZenith = new THREE.Vector3();
-  private tmpSurfaceRight = new THREE.Vector3();
-  private tmpSurfaceQuat = new THREE.Quaternion();
   // Tracking-camera up, parallel-transported frame to frame (see
   // updateSurfaceCamera). Persistent state, not a scratch vector.
   private surfaceUpTangent = new THREE.Vector3(0, 1, 0);
@@ -1792,9 +1839,17 @@ export class PlanetariumMode {
   private tmpSurfacePoleOffset = new THREE.Vector3();
   // Solar-eclipse standing point, pinned at the event's peak in the landed
   // planet's rotating frame (computeSpotAnchorLocal) so the observer stays on
-  // real ground while the eclipse sweeps over. Pinned lazily on the first
-  // spot frame, cleared on every surface entry/re-point/exit.
-  private surfaceSpotAnchor: THREE.Vector3 | null = null;
+  // real ground while the eclipse sweeps over. Keyed to the event it was
+  // pinned for, and stood on only while that event is the sky's story
+  // (spotAnchorFor). Pinned lazily on the first spot frame, kept while the
+  // clock wanders out of the window and back, cleared on every surface
+  // entry/re-point/exit.
+  private surfaceSpotAnchor: SpotAnchor | null = null;
+  // Whether the last surface frame stood on that pin (false: the default
+  // vantage held it). Null until a frame of this entry has decided — the HUD
+  // reads it, and a flip of it is a cut the Sun's optics must not mistake for
+  // a limb clearing.
+  private surfaceSpotPosed: boolean | null = null;
   // Marker over the tracked target — sticky across the hysteresis band.
   private surfaceMarkerKind: SurfaceMarkerKind = 'brackets';
   // Observatory-panel rect, cached per viewport size for the chevron clamp
@@ -1855,6 +1910,11 @@ export class PlanetariumMode {
   private miniRectCanvasH = -1;
   private miniRectSizeScale = -1;
   private miniRectPixelRatio = -1;
+  private miniRectInsetTop = -1;
+  private miniRectInsetLeft = -1;
+  /** The safe-area insets the chrome keeps out of (shared/dom), read on a
+   *  resize and on first use: a computed-style read, never per frame. */
+  private safeInsets: SafeAreaInsets | null = null;
   /** Scratch for getDrawingBufferSize — read only on rect rebuilds. */
   private miniBufferSize = new THREE.Vector2();
   /** Scratch the ship's course is written into for the chart, both charts. The
@@ -2450,6 +2510,11 @@ export class PlanetariumMode {
     this.scene = scene;
     this.camera = camera;
     this.renderer = renderer;
+    // The bars the chrome keeps out of can change while the viewport's size
+    // stands still — a status bar hiding, a notch changing sides — and a
+    // resize would never carry that: the corner chart re-places itself from
+    // the new insets on its next rect check (shared/dom onSafeAreaChange).
+    onSafeAreaChange((insets) => { this.safeInsets = insets; });
     this.useBloom = useBloom;
     this.rendersThroughComposer = rendersThroughComposer;
     this.scenePixelRatio = scenePixelRatio;
@@ -4639,10 +4704,21 @@ export class PlanetariumMode {
     if (this.solarSystem) setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, sceneRatio, outputRatio);
   }
 
+  /** The safe-area insets as last read, read now if never: the corner chart
+   *  places itself from them (map/miniChart.ts), the way the CSS chrome does
+   *  with env(). */
+  private safeAreaInsetsNow(): SafeAreaInsets {
+    if (!this.safeInsets) this.safeInsets = safeAreaInsets();
+    return this.safeInsets;
+  }
+
   /** Called by main.ts after it reapplies the render resolution on a window
    *  resize (which may reclamp the renderer's pixel ratio). The scene ratio
    *  can have moved with it, so the point sizes are retuned here too. */
   onResize(): void {
+    // The bars can change with the viewport: a rotation swaps a notch's side,
+    // and the page's own full screen puts the status bar over the page.
+    this.safeInsets = safeAreaInsets();
     this.onScenePixelRatioChanged();
     // A resize can carry the layout across the breakpoint, and the phone
     // invariant — the expanded sheet and the body card are never up together —
@@ -5032,6 +5108,8 @@ export class PlanetariumMode {
     if (this.autopilotTarget && !this.player.held) {
       this.checkAutopilotArrival();
     }
+    // Past every camera writer this frame, beside the Sun's own metering.
+    this.syncNightExposures();
     this.updateSunShader(dt);
     this.updateOrbitLineVisibility();
 
@@ -6291,6 +6369,172 @@ export class PlanetariumMode {
       : null;
     this.moonlightSource.set(planetName, found);
     return found;
+  }
+
+  /**
+   * The camera's exposure for every body's night side (world/nightExposure):
+   * how much of the cap the camera can see is sunlit, eased in wall time into
+   * the one number the night terms of that body's surfaces and air are
+   * multiplied by. Once a frame, after every camera writer — the cruise
+   * safety, the aim stage, the surface re-pin — because a snap at a jump reads
+   * this frame's camera and no other. Planets always; a moon only while it is
+   * drawn, at the size it is drawn (small moons are drawn larger than life).
+   *
+   * The camera is the player's point plus the camera's own offset from it: the
+   * scene's origin is the player, landed that is the body's centre, and the
+   * chase camera in cruise can stand far from the ship.
+   */
+  private syncNightExposures(): void {
+    if (!this.solarSystem) return;
+    const off = this.nightExposureStandsDown();
+    if (off !== this.nightExposureStoodDown) {
+      this.nightExposureStoodDown = off;
+      this.nightExposureSnapPending = true;
+      if (off) this.resetNightExposureSlots();
+    }
+    if (off) return;
+    const nowMs = performance.now();
+    const snap = this.nightExposureSnapPending;
+    this.nightExposureSnapPending = false;
+    this.nightExposurePassMs = nowMs;
+    this.tmpNightExposureCamera.set(this.player.posX, this.player.posY, this.player.posZ)
+      .add(this.camera.position);
+    for (const planet of this.solarSystem.planets) {
+      const wp = planet.worldPosAU;
+      if (!wp) continue;
+      if (planet.fx) {
+        this.syncNightExposure(planet.fx, planet.data.name, wp.x, wp.y, wp.z, planet.data.radiusAU, nowMs, snap);
+      }
+      const moons = this.planetMoons.get(planet.data.name);
+      if (!moons) continue;
+      for (const m of moons) {
+        if (!m.fx || !m.mesh.visible) continue;
+        // The mesh sits at its offset from the parent inside a system group
+        // placed where the parent is, so this is the moon's heliocentric point.
+        const o = m.mesh.position;
+        this.syncNightExposure(
+          m.fx, m.data.name, wp.x + o.x, wp.y + o.y, wp.z + o.z,
+          m.data.radiusAU * m.mesh.scale.x, nowMs, snap,
+        );
+      }
+    }
+  }
+
+  /** One body's meter, written into its air block's slot. Anything that is not
+   *  a finite reading — a camera at the centre, a body at the Sun — writes 1,
+   *  the picture as it was, and leaves the meter where it stood. */
+  private syncNightExposure(
+    fx: SurfaceShadingFx,
+    name: string,
+    bx: number,
+    by: number,
+    bz: number,
+    radiusAU: number,
+    nowMs: number,
+    snap: boolean,
+  ): void {
+    const slot = fx.air.uNightExposure;
+    if (!slot) return;
+    const cam = this.tmpNightExposureCamera;
+    const vx = cam.x - bx;
+    const vy = cam.y - by;
+    const vz = cam.z - bz;
+    const d = Math.sqrt(vx * vx + vy * vy + vz * vz);
+    const sunD = Math.sqrt(bx * bx + by * by + bz * bz);
+    // The phase angle at the body, between the camera and the Sun; the Sun is
+    // the origin, so body->Sun is minus the body's position.
+    const cosPhase = -(vx * bx + vy * by + vz * bz) / (d * sunD);
+    const rOverD = radiusAU / d;
+    if (!(d > 0) || !(sunD > 0) || !Number.isFinite(cosPhase) || !Number.isFinite(rOverD)) {
+      slot.value = 1;
+      return;
+    }
+    let state = this.nightExposureStates.get(name);
+    if (!state) {
+      state = makeNightExposureState();
+      this.nightExposureStates.set(name, state);
+    }
+    slot.value = advanceNightExposure(
+      state, visibleCapLitFraction(cosPhase, rOverD), nowMs, snap, nightExposureParams(),
+    );
+  }
+
+  /** Whether the rule stands down this frame. Night sides: Brightened is the
+   *  reader asking to see the dark side, so no camera rule takes it away:
+   *  while it is on every slot stays at 1, the authored long exposure the
+   *  lift was made beside, and back at Real the meter takes its targets
+   *  outright. */
+  private nightExposureStandsDown(): boolean {
+    return this.nightExposureOff || this.nightSides.mode() === 'brightened';
+  }
+
+  /** Every body's slot back to 1, the picture as it was. */
+  private resetNightExposureSlots(): void {
+    if (!this.solarSystem) return;
+    for (const planet of this.solarSystem.planets) {
+      if (planet.fx?.air.uNightExposure) planet.fx.air.uNightExposure.value = 1;
+      for (const m of this.planetMoons.get(planet.data.name) ?? []) {
+        if (m.fx?.air.uNightExposure) m.fx.air.uNightExposure.value = 1;
+      }
+    }
+  }
+
+  /** Switch the night-side exposure rule off or on. Off puts every body's slot
+   *  back to 1 at once; either way the next pass takes its targets outright. */
+  setNightExposureOff(off: boolean): void {
+    if (off === this.nightExposureOff) return;
+    this.nightExposureOff = off;
+    this.nightExposureSnapPending = true;
+    if (off) this.resetNightExposureSlots();
+  }
+
+  /** DEV (`__moon.nightExposure`): move the curve's ends, the ramp's two
+   *  speeds and the ceiling (null puts a knob's authored value back), switch
+   *  the rule off or on, and read back every body metered this frame — its lit
+   *  fraction, the ramp position that asks for, the eased position and the
+   *  factor written — so a capture asserts the number instead of guessing it.
+   *  A knob change snaps on the next pass, so the readback a frame later is
+   *  the new curve's. `off` is whether the rule stands down, which Night
+   *  sides: Brightened does too, and then no body is metered. */
+  devNightExposure(opts?: NightExposureOverride & { off?: boolean }): {
+    off: boolean;
+    full: number;
+    none: number;
+    rateToDay: number;
+    rateToNight: number;
+    ceiling: number;
+    bodies: Record<string, { lit: number; target: number; ramp: number; applied: number }>;
+  } {
+    if (opts && (opts.full !== undefined || opts.none !== undefined || opts.rateToDay !== undefined
+      || opts.rateToNight !== undefined || opts.ceiling !== undefined)) {
+      setDevNightExposure({
+        full: opts.full,
+        none: opts.none,
+        rateToDay: opts.rateToDay,
+        rateToNight: opts.rateToNight,
+        ceiling: opts.ceiling,
+      });
+      this.nightExposureSnapPending = true;
+    }
+    if (opts?.off !== undefined) this.setNightExposureOff(opts.off);
+    const params = nightExposureParams();
+    const off = this.nightExposureStandsDown();
+    const bodies: Record<string, { lit: number; target: number; ramp: number; applied: number }> = {};
+    if (!off) {
+      for (const [name, s] of this.nightExposureStates) {
+        if (s.stampMs !== this.nightExposurePassMs) continue;
+        bodies[name] = { lit: s.lit, target: s.target, ramp: s.ramp, applied: s.applied };
+      }
+    }
+    return {
+      off,
+      full: params.fullLit,
+      none: params.noneLit,
+      rateToDay: params.rateToDay,
+      rateToNight: params.rateToNight,
+      ceiling: params.ceiling,
+      bodies,
+    };
   }
 
   private updatePlanetScaling() {
@@ -7698,6 +7942,9 @@ export class PlanetariumMode {
   private noteSunViewDiscontinuity(): void {
     this.sunFlashResetPending = true;
     this.sunSilhouetteSnapPending = true;
+    // The night-side exposure too: a meter still easing out of the sky just
+    // left would show that sky's exposure on this one for half a second.
+    this.nightExposureSnapPending = true;
     // Drop the cross-frame dominant-occluder incumbent: after a scene jump the
     // previous frame's occluder is a different sky, so its ownership hysteresis
     // must not out-vote the new scene's true dominant occluder through the 15%
@@ -10947,16 +11194,20 @@ export class PlanetariumMode {
     const canvasW = Math.max(el.clientWidth, 1);
     const canvasH = Math.max(el.clientHeight, 1);
     const pixelRatio = this.renderer.getPixelRatio();
+    const insets = this.safeAreaInsetsNow();
     if (miniRectStale(
       this.miniRectCanvasW, this.miniRectCanvasH, this.miniRectSizeScale,
       canvasW, canvasH, this.miniSizeScale,
-    ) || this.miniRectPixelRatio !== pixelRatio) {
+    ) || this.miniRectPixelRatio !== pixelRatio
+      || this.miniRectInsetTop !== insets.top || this.miniRectInsetLeft !== insets.left) {
       this.miniRectCanvasW = canvasW;
       this.miniRectCanvasH = canvasH;
       this.miniRectSizeScale = this.miniSizeScale;
       this.miniRectPixelRatio = pixelRatio;
+      this.miniRectInsetTop = insets.top;
+      this.miniRectInsetLeft = insets.left;
       this.miniSizeRangeCache = miniSizeRange(canvasW, canvasH);
-      this.miniRect = miniChartRect(canvasW, canvasH, this.miniSizeScale);
+      this.miniRect = miniChartRect(canvasW, canvasH, this.miniSizeScale, insets);
       this.miniPresentation = miniPresentationScale(this.miniRect.width, this.miniSizeRangeCache.defaultWidthPx);
       writeMiniKeepOut(this.miniRect, this.miniKeepOut);
       // The REAL buffer dims, not css·ratio: the renderer floors that product
@@ -11184,7 +11435,7 @@ export class PlanetariumMode {
     const el = this.renderer.domElement;
     const canvasW = Math.max(el.clientWidth, 1);
     const canvasH = Math.max(el.clientHeight, 1);
-    const ceiling = miniChartRect(canvasW, canvasH, MINI_SIZE_MAX_SCALE);
+    const ceiling = miniChartRect(canvasW, canvasH, MINI_SIZE_MAX_SCALE, this.safeAreaInsetsNow());
     this.renderer.getDrawingBufferSize(this.miniBufferSize);
     const draw = miniDrawRect(
       ceiling, canvasW, canvasH, this.miniBufferSize.x, this.miniBufferSize.y, this.renderer.getPixelRatio(),
@@ -13875,9 +14126,9 @@ export class PlanetariumMode {
    *
    * OrbitControls caches its orbit axis from `object.up` at construction
    * (`_quat`/`_quatInverse`, verified against three r0.183.2), so writing
-   * `camera.up` alone would leave drags — and landed autoRotate — precessing
-   * about the old axis. The cached axis is therefore resynced on EVERY call,
-   * even when the requested up is already in place: the dev framing rigs pose
+   * `camera.up` alone would leave drags precessing about the old axis. The
+   * cached axis is therefore resynced on EVERY call, even when the requested
+   * up is already in place: the dev framing rigs pose
    * the camera themselves and write `camera.up` directly without touching the
    * controls, so "already correct" up is no proof the cache agrees. Two
    * quaternion ops, and this only runs at mode transitions. A rename on a
@@ -14209,8 +14460,8 @@ export class PlanetariumMode {
    * exactly what it was. A pure function of the pose — no easing, no memory —
    * recomputed every frame it can run, and 1 wherever it cannot: landed and
    * surface view (the observatory wants the lens, with the Moon off-axis at
-   * a 45° FOV), a dev camera (the capture fleet pins pixels close in), or the
-   * ramp switched off. Called from BOTH branches of update(): the landed
+   * a 45° FOV), a dev camera (the capture fleet pins pixels close in), or a
+   * probe's ramp-off frame. Called from BOTH branches of update(): the landed
    * branch returns before the cruise camera pass, and a ship that landed from
    * the 198 km park would otherwise keep the pinhole it arrived with.
    *
@@ -14237,6 +14488,7 @@ export class PlanetariumMode {
     let cameraDeg = 0;
     let discRadiusAU = 0;
     let body: string | null = null;
+    const band = this.lensRampBand;
     if (this.lensRampEnabled && cruise && !devPose) {
       const angles = largestDiscAngles(
         this.camera.position, this.intendedCameraRadiusAU,
@@ -14249,9 +14501,11 @@ export class PlanetariumMode {
       }
       effectiveDeg = angles.effectiveRad * RAD2DEG;
       cameraDeg = angles.cameraRad * RAD2DEG;
-      factor = lensProximityFactor(angles.effectiveRad);
+      factor = lensProximityFactor(angles.effectiveRad, band);
     }
     state.enabled = this.lensRampEnabled;
+    state.fullDeg = band.fullDeg;
+    state.offDeg = band.offDeg;
     state.factor = factor;
     state.angularRadiusDeg = effectiveDeg;
     state.cameraAngularRadiusDeg = cameraDeg;
@@ -15321,12 +15575,21 @@ export class PlanetariumMode {
     enabled: boolean; factor: number; applied: number; angularRadiusDeg: number;
     cameraAngularRadiusDeg: number; discRadiusAU: number;
     boomAU: number; cameraBoomAU: number; boomFloorAU: number; camOwner: 'chase' | 'orbit' | 'reacquiring';
-    body: string | null; devPose: boolean; applies: number;
+    body: string | null; devPose: boolean; fullDeg: number; offDeg: number; applies: number;
   } {
     return { ...this.lensRampState };
   }
 
-  /** Dev-only: switch the lens proximity ramp on or off live, as `?lensramp=1` does at boot. */
+  /** Dev-only: move the ramp's knees for a probe — a knee left out keeps its
+   *  value, and a band isLensRampBand refuses keeps the one in force. Returns
+   *  the band now in force. */
+  devSetLensRampBand(patch: { fullDeg?: number; offDeg?: number }): LensRampBand {
+    const band = { fullDeg: patch.fullDeg ?? this.lensRampBand.fullDeg, offDeg: patch.offDeg ?? this.lensRampBand.offDeg };
+    if (isLensRampBand(band)) this.lensRampBand = band;
+    return this.lensRampBand;
+  }
+
+  /** Dev-only: switch the lens proximity ramp on or off live, for a probe's ramp-off frame. */
   devSetLensRamp(enabled: boolean): boolean {
     this.lensRampEnabled = enabled;
     return this.lensRampEnabled;
@@ -15751,7 +16014,7 @@ export class PlanetariumMode {
     const axis = planetHelio.clone().add(offset).normalize();
     const liveSpot = shadowAxisSurfacePoint(offset, axis, body.radiusAU, new THREE.Vector3());
     const anchorWorld = this.surfaceSpotAnchor
-      ? this.surfaceSpotAnchor
+      ? this.surfaceSpotAnchor.local
           .clone()
           .applyQuaternion(parentPlanet.group.quaternion)
           .normalize()
@@ -15767,7 +16030,15 @@ export class PlanetariumMode {
       : null;
     return {
       utc: new Date(t).toISOString(),
+      // A pin is cached. It outlives the event's window (the clock may come
+      // back), so it is not necessarily the ground the camera stands on:
+      // spotPosed says that, and the anchor rows below measure against the
+      // cached pin either way.
       hasAnchor: !!this.surfaceSpotAnchor,
+      // The last surface frame stood on the pin; false while the default
+      // vantage held it (outside the event's window, or the Sun under the
+      // pinned ground's limb), null before a frame of this entry decided.
+      spotPosed: this.surfaceSpotPosed,
       quatDot: Math.abs(stateQ.dot(parentPlanet.group.quaternion)),
       anchorVsLiveSpotKm: anchorWorld ? anchorWorld.distanceTo(liveSpot) * KM : null,
       camVsAnchorDeg: anchorWorld
@@ -16391,6 +16662,9 @@ export class PlanetariumMode {
       view: this.landedView,
       fov: displayFov,
       surfaceFovDeg: this.surfaceFovDeg,
+      // Which drag the look-up view answers with: the level pan, or the
+      // camera-frame A/B behind ?lookdrag=eyepiece.
+      lookDrag: this.surfaceEyepieceDrag ? 'eyepiece' : 'level',
       camLenAU: camLen,
       subjectName,
       subjectAngularDeg,
@@ -16926,18 +17200,17 @@ export class PlanetariumMode {
     return landed ? surfaceEventNarrative(landed, spec) : '';
   }
 
-  /** Warm countdown for the HUD subline — always relative to the engine's peak/contacts. */
-  private static peakCountdown(nowUtcMs: number, event: ShadowEvent): string | null {
-    const fmt = (ms: number) => {
-      const minutes = Math.max(1, Math.round(ms / 60_000));
-      if (minutes < 60) return `${minutes}m`;
-      const hours = Math.floor(minutes / 60);
-      return `${hours}h ${minutes % 60}m`;
-    };
-    if (nowUtcMs < event.startUtcMs) return `starts in ${fmt(event.startUtcMs - nowUtcMs)}`;
-    if (nowUtcMs < event.peakUtcMs) return `peak in ${fmt(event.peakUtcMs - nowUtcMs)}`;
-    if (nowUtcMs <= event.endUtcMs) return `ends in ${fmt(event.endUtcMs - nowUtcMs)}`;
-    return null;
+  /** The eclipse view is watching this event, and its last frame could not
+   *  stand on the event's ground because the Sun was under the limb there
+   *  (standAtSpotAnchor) — the default vantage is showing an uneclipsed Sun. */
+  private surfaceSpotSunDown(event: ShadowEvent): boolean {
+    const target = this.surfaceTarget;
+    return (
+      this.surfaceSpotPosed === false &&
+      target.kind === 'sun-from-spot' &&
+      event.spec.kind === 'shadow-transit' &&
+      event.spec.moonName === target.occluderMoonName
+    );
   }
 
   /** True when the surface view is pointed at the phase hero's own subject —
@@ -16964,10 +17237,13 @@ export class PlanetariumMode {
       headline = PlanetariumMode.shadowEventLabel(event.spec);
       subText = this.surfaceNarrative(event.spec);
       // "What you'll see": without it, an honest penumbral
-      // dimming reads as nothing-happened while you watch.
-      const hint = this.eventExpectation(event);
+      // dimming reads as nothing-happened while you watch. While the eclipse
+      // view's ground has the Sun under its limb the frame shows no eclipse at
+      // all, and saying why beats promising one.
+      const hint = this.surfaceSpotSunDown(event) ? SURFACE_SPOT_SUN_DOWN : this.eventExpectation(event);
       if (hint) subText += ` — ${hint}`;
-      subWarm = PlanetariumMode.peakCountdown(now, event);
+      // Warm countdown — always relative to the engine's peak/contacts.
+      subWarm = eventCountdownText(now, event);
     } else {
       const subject = this.buildObservatorySubject();
       const phase = subject ? observatoryPhaseText(now, subject) : null;
@@ -17024,7 +17300,15 @@ export class PlanetariumMode {
               .distanceTo(this.camera.position),
           );
           discNote += ` · ${occluder.data.name} ∅ ${fmtDeg(moonDeg)}°`;
-          if (event && now >= event.startUtcMs && now <= event.endUtcMs) discNote += ' · transiting';
+          // Not over a Sun seen from the default vantage: nothing crosses it there.
+          if (
+            event &&
+            now >= event.startUtcMs &&
+            now <= event.endUtcMs &&
+            !this.surfaceSpotSunDown(event)
+          ) {
+            discNote += ' · transiting';
+          }
         }
       }
     }
@@ -17423,8 +17707,7 @@ export class PlanetariumMode {
    * next to the landed body — which stays at scene origin: the involved moon
    * when watching from the planet, the parent when watching your own event
    * from that moon, the sibling moon when watching another moon's event. A
-   * side nudge keeps the landed body's limb from occluding the companion;
-   * auto-rotate is stopped so the framed event doesn't drift.
+   * side nudge keeps the landed body's limb from occluding the companion.
    */
   private frameObservatoryEvent(spec?: ShadowEventSpec) {
     // Moonless systems bail on the moonMesh lookup below — no companion to frame.
@@ -17467,7 +17750,6 @@ export class PlanetariumMode {
       .multiplyScalar(moonSide ? camDist : -camDist)
       .addScaledVector(side, camDist / 5);
     this.camera.lookAt(0, 0, 0);
-    this.controls.autoRotate = false;
   }
 
   // ================================================================
@@ -17608,6 +17890,7 @@ export class PlanetariumMode {
     // Fresh standing point per entry/re-point: an event jump routes here, so
     // the next spot frame re-pins from the (possibly new) event's peak.
     this.surfaceSpotAnchor = null;
+    this.surfaceSpotPosed = null;
     // No explicit context: entries derived while an event is live frame the
     // event; plain "Look up" frames the companion subject.
     const context = entryContext ?? (target === undefined && liveEvent ? 'event' : 'companion');
@@ -17664,7 +17947,6 @@ export class PlanetariumMode {
     // must not carry ellipse axes/sectors across it.
     this.syncOrbitDetailsVisibility();
     this.preSurfaceCameraPos.copy(this.camera.position);
-    this.preSurfaceAutoRotate = this.controls.autoRotate;
     this.controls.enabled = false;
     this.surfaceLook.attach();
     this.setSurfaceLabelContainersHidden(true);
@@ -17727,6 +18009,7 @@ export class PlanetariumMode {
     if (this.starfield) setStarfieldGain(this.starfield, 1);
     this.surfaceFovAnim = null;
     this.surfaceSpotAnchor = null;
+    this.surfaceSpotPosed = null;
     this.surfaceLook.detach();
     // Back to the landed orbit view, which is world-up (OrbitControls' cached
     // orbit axis is already world-up from the landing). The cruise basis is
@@ -17738,7 +18021,6 @@ export class PlanetariumMode {
     document.body.classList.remove('surface-view-active');
     if (this.landedOn) {
       this.controls.enabled = true;
-      this.controls.autoRotate = this.preSurfaceAutoRotate;
       this.camera.position.copy(this.preSurfaceCameraPos);
       this.camera.lookAt(0, 0, 0);
       this.controls.target.set(0, 0, 0);
@@ -17773,25 +18055,14 @@ export class PlanetariumMode {
     // A full-viewport-height drag pans one FOV — "grab the sky".
     const radPerPx =
       (displayFovDeg(this.camera) * DEG2RAD) / Math.max(this.renderer.domElement.clientHeight, 1);
+    if (this.surfaceEyepieceDrag) {
+      applySurfaceEyepieceDrag(this.camera.quaternion, dxPx * radPerPx, dyPx * radPerPx);
+      return;
+    }
     const zenith = this.tmpSurfaceZenith.copy(this.camera.position).normalize();
-    // Yaw about the local zenith keeps panning level with the horizon.
-    this.camera.quaternion.premultiply(
-      this.tmpSurfaceQuat.setFromAxisAngle(zenith, dxPx * radPerPx),
-    );
-    // Pitch about the camera's right axis, clamped short of zenith/nadir so
-    // the view can never flip over the pole.
-    const forward = this.camera.getWorldDirection(this.tmpSurfaceAxis);
-    const elevation = Math.asin(THREE.MathUtils.clamp(forward.dot(zenith), -1, 1));
-    const maxElevation = 89 * DEG2RAD;
-    const targetElevation = THREE.MathUtils.clamp(
-      elevation + dyPx * radPerPx,
-      -maxElevation,
-      maxElevation,
-    );
-    const right = this.tmpSurfaceRight.set(1, 0, 0).applyQuaternion(this.camera.quaternion);
-    this.camera.quaternion.premultiply(
-      this.tmpSurfaceQuat.setFromAxisAngle(right, targetElevation - elevation),
-    );
+    // A level pan — yaw about the local zenith, pitch about the horizon —
+    // solved so the sky follows the finger whatever the camera's roll.
+    applySurfaceLookDrag(this.camera.quaternion, zenith, dxPx * radPerPx, dyPx * radPerPx);
   }
 
   /** Wheel/pinch zoom: multiplicative FOV change, clamped to [1.5°, 45°]. */
@@ -17806,43 +18077,30 @@ export class PlanetariumMode {
   }
 
   /**
-   * Lazily pin the stand-still eclipse anchor from the relevant event's peak
-   * geometry, through the same astronomy seams the shadow engine and the
-   * renderer share (allocations are pin-time only). Null when no matching
-   * shadow-transit event is in reach — the caller then rides the live axis
-   * point as a defensive fallback.
+   * Pin the stand-still eclipse anchor at an event's peak, through the same
+   * astronomy seams the shadow engine and the renderer share — spotAnchorFor
+   * calls it only when the event in the sky needs a fresh pin, so its
+   * allocations are pin-time only. Built once as a field: the policy asks for
+   * it every spot frame, and a closure made per frame would allocate there.
+   * The pin is keyed to its peak as defence in depth: every path that changes
+   * the sky's event today leaves the view or re-enters it, clearing the pin.
    */
-  private ensureSurfaceSpotAnchor(occluderMoonName: string): THREE.Vector3 | null {
-    if (this.surfaceSpotAnchor) return this.surfaceSpotAnchor;
+  private readonly pinSurfaceSpotAnchor = (peakUtcMs: number): THREE.Vector3 | null => {
     const landed = this.landedOn;
-    if (landed?.type !== 'planet') return null;
-    const event = this.relevantObservatoryEvent();
-    if (
-      !event ||
-      event.spec.kind !== 'shadow-transit' ||
-      event.spec.parentPlanet !== landed.name ||
-      event.spec.moonName !== occluderMoonName
-    ) {
-      return null;
-    }
+    if (landed?.type !== 'planet' || this.surfaceTarget.kind !== 'sun-from-spot') return null;
+    const occluderMoonName = this.surfaceTarget.occluderMoonName;
     const body = PLANETARIUM_BODIES.find(b => b.name === landed.name);
     if (!body) return null;
-    const offset = computeMoonOffsetEquatorialAU(
-      occluderMoonName,
-      landed.name,
-      event.peakUtcMs,
-      new THREE.Vector3(),
-    );
-    const axis = computeBodyPositionAU(body, event.peakUtcMs).add(offset).normalize();
-    this.surfaceSpotAnchor = computeSpotAnchorLocal(
+    const offset = computeMoonOffsetEquatorialAU(occluderMoonName, landed.name, peakUtcMs, new THREE.Vector3());
+    const axis = computeBodyPositionAU(body, peakUtcMs).add(offset).normalize();
+    return computeSpotAnchorLocal(
       offset,
       axis,
       body.radiusAU,
-      computeBodyState(body, event.peakUtcMs).orientationQuaternion,
+      computeBodyState(body, peakUtcMs).orientationQuaternion,
       new THREE.Vector3(),
     );
-    return this.surfaceSpotAnchor;
-  }
+  };
 
   /**
    * Per-frame surface camera: re-pin the vantage (sub-target point, or the
@@ -17853,6 +18111,8 @@ export class PlanetariumMode {
   private updateSurfaceCamera(dt: number, willDraw = true) {
     const targetPos = this.resolveSurfaceTargetScenePos(this.surfaceTarget, this.tmpSurfaceTargetPos);
     if (!targetPos) {
+      // No frame stood anywhere, so no word on the pin either.
+      this.surfaceSpotPosed = null;
       // Unresolvable target must not stall a pending exit ease forever.
       if (this.surfaceFovAnim?.finalizeExit) this.finalizeSurfaceExit();
       return;
@@ -17861,52 +18121,38 @@ export class PlanetariumMode {
     const radiusAU = this.getLandedBodyRadiusAU(); // true radius — planetScale is 1
     const vantage = this.tmpSurfaceVantage;
     let spotPosed = false;
-    if (this.surfaceTarget.kind === 'sun-from-spot' && this.landedOn?.type === 'planet') {
-      const parentName = this.landedOn.name;
-      const parentPos = this.planetWorldPositions.get(parentName);
-      const occluder = this.moonMeshByName.get(
-        (this.surfaceTarget as { occluderMoonName: string }).occluderMoonName,
+    const target = this.surfaceTarget;
+    if (target.kind === 'sun-from-spot' && this.landedOn?.type === 'planet') {
+      // Stand still and let the eclipse come to you: while the eclipse is the
+      // sky's story, the vantage is the peak's shadow-spot point carried in
+      // the planet's rotating frame. Re-deriving the point from the live
+      // shadow geometry every frame chased maximum cover instead — three
+      // Sun–occluder alignments per event where a real observer sees one
+      // clean pass. Outside the event's window there is no pin to stand on,
+      // and inside it the pinned ground can have turned the Sun under its
+      // limb: either way the Sun is shown from the default vantage every
+      // other target uses.
+      const anchor = spotAnchorFor(
+        this.surfaceSpotAnchor,
+        this.landedOn,
+        target.occluderMoonName,
+        this.relevantObservatoryEvent(),
+        this.pinSurfaceSpotAnchor,
       );
-      if (parentPos && occluder) {
-        // Stand still and let the eclipse come to you: the vantage is the
-        // peak's shadow-spot point carried in the planet's rotating frame.
-        // Re-deriving the point from the live shadow geometry every frame
-        // chased maximum cover instead — three Sun-occluder alignments per
-        // event where a real observer sees one clean pass.
-        const parentPlanet = this.planetMeshByName.get(parentName);
-        let anchor = this.ensureSurfaceSpotAnchor(occluder.data.name);
-        if (!anchor && parentPlanet) {
-          // No pinnable event (defensive) — pin at the CURRENT live spot
-          // instead of riding it per frame: per-frame re-derivation is the
-          // max-cover chase (three Sun–occluder alignments per event) that
-          // stand-still anchoring exists to prevent.
-          const axis = this.tmpSurfaceAxis
-            .set(parentPos.x, parentPos.y, parentPos.z)
-            .add(occluder.mesh.position)
-            .normalize();
-          anchor = this.surfaceSpotAnchor = computeSpotAnchorLocal(
-            occluder.mesh.position,
-            axis,
-            radiusAU,
-            parentPlanet.group.quaternion,
-            new THREE.Vector3(),
-          );
-        }
-        if (anchor && parentPlanet) {
-          computeAnchoredSpotVantage(radiusAU, anchor, parentPlanet.group.quaternion, vantage);
-          spotPosed = true;
-        } else {
-          // No planet entity to express the rotating frame (shouldn't happen)
-          // — the live axis point still beats the sub-target default.
-          const axis = this.tmpSurfaceAxis
-            .set(parentPos.x, parentPos.y, parentPos.z)
-            .add(occluder.mesh.position)
-            .normalize();
-          computeShadowSpotVantage(radiusAU, occluder.mesh.position, axis, vantage);
-          spotPosed = true;
-        }
-      }
+      if (anchor) this.surfaceSpotAnchor = anchor;
+      const parentPlanet = this.planetMeshByName.get(this.landedOn.name);
+      spotPosed =
+        parentPlanet !== undefined &&
+        standAtSpotAnchor(anchor, radiusAU, parentPlanet.group.quaternion, targetPos, vantage);
     }
+    // Swapping one ground for the other is a camera cut: the Sun's exposed
+    // fraction can step within a frame (from half a disc on the pinned
+    // ground's limb to the whole disc high over the default vantage), which
+    // the emergence flash would otherwise take for a limb clearing.
+    if (this.surfaceSpotPosed !== null && spotPosed !== this.surfaceSpotPosed) {
+      this.noteSunViewDiscontinuity();
+    }
+    this.surfaceSpotPosed = spotPosed;
     if (!spotPosed) {
       // Moons: refresh the orbit-normal pole reference (planets cached theirs
       // at landing). Cheap — one element propagation; Earth's Moon is a copy.
@@ -18061,7 +18307,15 @@ export class PlanetariumMode {
       // style writes would force reflow). Desktop docks it right (clamp the
       // right inset); ≤640px it's a bottom sheet (grow the bottom inset).
       let insetRight = insetX;
-      let sheetBottom = insetBottom;
+      let bottomInset = insetBottom;
+      // Keep clear of the bottom band the HUD measures for its own cluster —
+      // headline stack, FOV cluster, transport strip. On a phone it stands far
+      // taller than the fixed inset, and a target below the frame put the
+      // chevron over the headline; on a desktop the band still reaches past
+      // it, so the lowest chevron rises there too, clear of the FOV readout.
+      // 15 px is the chevron's half height, 8 a gap.
+      const bandTopPx = this.observatoryHud.bottomBandTopPx();
+      if (Number.isFinite(bandTopPx)) bottomInset = Math.max(bottomInset, h - bandTopPx + 23);
       if (this.observatoryPanel.isOpen()) {
         if (!this.panelRectCache || this.panelRectCache.w !== w || this.panelRectCache.h !== h) {
           const rect = document.getElementById('observatory-panel')?.getBoundingClientRect();
@@ -18074,11 +18328,11 @@ export class PlanetariumMode {
             Math.max(insetX, w - insetX - 44),
           );
         } else if (cache.top > h * 0.4) {
-          sheetBottom = Math.max(insetBottom, h - cache.top + 12);
+          bottomInset = Math.max(bottomInset, h - cache.top + 12);
         }
       }
       const ex = THREE.MathUtils.clamp(w / 2 + dx * (w + h), insetX, Math.max(insetX + 1, w - insetRight));
-      const ey = THREE.MathUtils.clamp(h / 2 + dy * (w + h), insetTop, Math.max(insetTop + 1, h - sheetBottom));
+      const ey = THREE.MathUtils.clamp(h / 2 + dy * (w + h), insetTop, Math.max(insetTop + 1, h - bottomInset));
       this.observatoryHud.updateMarker({
         mode: 'chevron',
         xPx: ex,
@@ -18645,18 +18899,20 @@ export class PlanetariumMode {
     // planet or moon — exactly at scene origin.
     const renderedRadiusAU = this.getLandedBodyRenderedRadiusAU();
 
+    // The landed camera never circles the body on its own: it moves only for
+    // the reader's drag, wheel or pinch, or for a scripted framing (an event
+    // jump, a vantage swap, the surface view's exit). The body still turns
+    // under it with the clock.
     this.controls.enabled = true;
     this.controls.target.set(0, 0, 0);
     this.controls.minDistance = landedMinDistanceAU(renderedRadiusAU, this.camera.near);
     this.controls.maxDistance = this.landedMaxDistanceAU(trueRadiusAU);
-    this.controls.autoRotate = true;
-    this.controls.autoRotateSpeed = 0.5;
     // The cruise pipeline is dead while landed, so this only matters for the
     // takeoff reset that reads it — a landed drag may later set 'orbit'
     // harmlessly.
     this.camOwner = 'chase';
-    // Landed framing is world-up: the orbit view, its autoRotate precession
-    // and the lit-side opening pose are all authored against celestial north.
+    // Landed framing is world-up: the orbit view's drags and the lit-side
+    // opening pose are both authored against celestial north.
     // Must precede the framing lookAt below (it reads camera.up).
     this.setCameraFrameUp(PlanetariumMode.SCENE_NORTH);
 
@@ -18773,7 +19029,6 @@ export class PlanetariumMode {
       // camera position becomes the exit restore point for the *new* body (the
       // old one was scaled to the previous body's radius).
       this.preSurfaceCameraPos.copy(this.camera.position);
-      this.preSurfaceAutoRotate = this.controls.autoRotate;
       this.controls.enabled = false;
     }
     return wasSurface;
@@ -19163,7 +19418,6 @@ export class PlanetariumMode {
 
     // Reset OrbitControls — disable on touch devices during flight
     this.controls.enabled = !this.isTouchDevice;
-    this.controls.autoRotate = false;
     this.controls.minDistance = CRUISE_CONTROLS_MIN_DISTANCE_AU;
     this.controls.maxDistance = 5;
     this.resetCruiseCamera();
@@ -19304,6 +19558,8 @@ export class PlanetariumMode {
     // Camera.updateMatrixWorld also refreshes matrixWorldInverse, which the
     // NDC projection reads directly.
     this.camera.updateMatrixWorld();
+    // After the surface re-pin for the same reason as the Sun's metering.
+    this.syncNightExposures();
     this.updateSunShader(dt);
     if (!mapOpen && willDraw) {
       // Landed reticle + orbit-detail foci are world-anchored HTML; the map

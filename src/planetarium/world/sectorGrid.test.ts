@@ -171,13 +171,14 @@ describe('sector tile transform', () => {
     expect(t.repeatX * 272).toBeCloseTo(2048, 9);
   });
 
-  it('normal-map crops are two sectors wide with a UNIFORM transform (the tangent frame cancels)', () => {
-    const layout = dataCropLayout(G, 2880, 2); // 4k/moon-normal
+  it('a crop two sectors wide maps its sector into the middle half with a uniform transform', () => {
+    // No shipped set is cut this way any more: normal crops were, while the
+    // relief frame came from the crop's UV derivatives (world/reliefFrame.ts
+    // has why that stopped). The layout stays general, and this is its check.
+    const layout = dataCropLayout(G, 2880, 2);
     expect(layout).toEqual({ width: 752, height: 376, gutterX: 16, gutterY: 8, spanU: 2, leadU: 0.5 });
     for (const s of [{ c: 0, r: 0 }, { c: 3, r: 1 }, { c: 7, r: 3 }]) {
       const t = sectorTileTransform(G, s, layout);
-      // Uniform scale: three normalises its derivative tangent frame by the
-      // larger axis, so only an equal u/v scale shades relief like the globe.
       expect(t.repeatX).toBeCloseTo(t.repeatY, 12);
       // The sector's own rectangle lands in the middle half of the interior.
       const rect = sectorUvRect(G, s);

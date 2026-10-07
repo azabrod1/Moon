@@ -47,9 +47,13 @@
  * clears its giant's collision surface by 1.1×, and Uranus after Cordelia or
  * Jupiter after Metis fills the view to ~65° on the way out — a giant filling
  * the view is the case the ramp is for, and the recording should include one.
- * Why 70°: 409 km over Earth, a plain pinhole well before the 198 km park. The
- * 11 % size deficit the lens still has at 45° (2,639 km over Earth) is the
- * accepted trade.
+ * Why 58°: the ship-plus-boom driver never reads past ~60° at the Moon's
+ * clearance shell (ship 41 km up, boom 233 km), so an off knee under that is
+ * what brings every park to a pinhole; the first band, 45/70, left the Moon's
+ * park at 0.37 of the lens and brought nothing smaller than Venus to a
+ * pinhole. The band was judged on a capture sheet of approaches (2026-10-06).
+ * The 11 % size deficit the lens still has at 45° (2,639 km over Earth) is
+ * the accepted trade.
  *
  * The cost, accepted and stated: parked close and looking AWAY, the whole
  * scene is drawn pinhole, so a small disc near the frame edge (the Moon from
@@ -58,10 +62,10 @@
  * 1.55:1 at a 16:9 corner) lose what the lens gave them. A view-aware factor
  * would fix that and swim on every pan; it is not attempted.
  *
- * Off unless `?lensramp=1` asks for it: the moving A/B — an approach, a
- * departure, a look-around while parked, three projection policies — has not
- * been judged. Pure math only — no three.js — so the ramp is unit-tested in
- * isolation and the probe that measures it predicts from the same two numbers.
+ * Pure math only — no three.js — so the ramp is unit-tested in isolation and
+ * the probe that measures it reads the same two numbers off the app. The band
+ * is a parameter only so that probe can move it from the dev console
+ * (`__moon.lensRampBand`); the app always draws LENS_PROXIMITY_DEFAULT_BAND.
  */
 
 import { RAD2DEG } from './angles';
@@ -71,8 +75,10 @@ import { smoothstepEdges } from './smoothstep';
  *  every far pose, every flyby, byte for byte what it was. */
 export const LENS_PROXIMITY_FULL_DEG = 45;
 
-/** At or above this angular radius the lens is off: a plain pinhole. */
-export const LENS_PROXIMITY_OFF_DEG = 70;
+/** At or above this angular radius the lens is off: a plain pinhole. Under
+ *  the shell-reading the ship-plus-boom driver gives at the Moon (~60°), so
+ *  every park reaches it. */
+export const LENS_PROXIMITY_OFF_DEG = 58;
 
 /**
  * Factor on the requested lens strength for the largest angular radius (rad)
@@ -80,11 +86,34 @@ export const LENS_PROXIMITY_OFF_DEG = 70;
  * below the full knee, exactly 0 at and above the off knee, a smoothstep
  * between. A non-finite input reads as far away (factor 1).
  */
-export function lensProximityFactor(largestAngularRadiusRad: number): number {
+export function lensProximityFactor(
+  largestAngularRadiusRad: number,
+  band: LensRampBand = LENS_PROXIMITY_DEFAULT_BAND,
+): number {
   const angularRadiusDeg = largestAngularRadiusRad * RAD2DEG;
-  if (!Number.isFinite(angularRadiusDeg) || !(angularRadiusDeg > LENS_PROXIMITY_FULL_DEG)) return 1;
-  if (angularRadiusDeg >= LENS_PROXIMITY_OFF_DEG) return 0;
-  return 1 - smoothstepEdges(LENS_PROXIMITY_FULL_DEG, LENS_PROXIMITY_OFF_DEG, angularRadiusDeg);
+  if (!Number.isFinite(angularRadiusDeg) || !(angularRadiusDeg > band.fullDeg)) return 1;
+  if (angularRadiusDeg >= band.offDeg) return 0;
+  return 1 - smoothstepEdges(band.fullDeg, band.offDeg, angularRadiusDeg);
+}
+
+/** The two knees, in degrees of angular radius: full strength at and below
+ *  `fullDeg`, off at and above `offDeg`. */
+export interface LensRampBand {
+  fullDeg: number;
+  offDeg: number;
+}
+
+export const LENS_PROXIMITY_DEFAULT_BAND: LensRampBand = Object.freeze({
+  fullDeg: LENS_PROXIMITY_FULL_DEG,
+  offDeg: LENS_PROXIMITY_OFF_DEG,
+});
+
+/** Whether a band can drive the factor: both knees finite, 0 < full < off ≤ 90.
+ *  The dev console's band is refused otherwise, so a typo keeps the band in
+ *  force rather than NaN the projection. */
+export function isLensRampBand(band: LensRampBand): boolean {
+  return Number.isFinite(band.fullDeg) && Number.isFinite(band.offDeg)
+    && band.fullDeg > 0 && band.fullDeg < band.offDeg && band.offDeg <= 90;
 }
 
 /** The angular radius (rad) a sphere of `radiusAU` subtends from `distanceAU`

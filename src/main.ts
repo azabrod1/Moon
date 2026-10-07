@@ -68,6 +68,7 @@ import {
   setDevSurfaceHaze,
   SURFACE_HAZE_CLEAR_VIEW,
 } from './planetarium/world/surfaceShading';
+import { parseNightExposureParam, setDevNightExposure, type NightExposureOverride } from './planetarium/world/nightExposure';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass, parseFusedParam } from './app/FusedOutputPass';
 import type { GpuProfiler, GpuProfileOptions } from './app/devGpuProfile';
@@ -82,6 +83,9 @@ import {
 import { applyDesignFov, displayFovDeg, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
 import { loadBrightStarCatalog } from './planetarium/world/starCatalogLoader';
 import { debugError, debugLog, debugWarn } from './shared/debug';
+import { safeAreaInsets } from './shared/dom';
+import { onFullscreenChange } from './app/fullscreen';
+import { resolveViewportSize, setViewportSize, viewportDrifted, viewportSize, type ViewportSize } from './app/viewportSize';
 import {
   clearSurfacePerf,
   installSurfacePerfInputTracing,
@@ -164,6 +168,10 @@ try {
 // when it brings a mode up, and no mode writes it for itself.
 applyRenderProfile(renderer, appMode);
 renderer.toneMappingExposure = 1.0;
+// The class is the CSS rule that makes the canvas the fixed-position rect
+// (index.html canvas.scene-canvas): its box is what the renderer is sized to
+// (syncViewport below, app/viewportSize.ts).
+renderer.domElement.classList.add('scene-canvas');
 document.body.appendChild(renderer.domElement);
 /** Set once the context is lost: the GPU frame clock's fences die with it. */
 let contextLost = false;
@@ -365,8 +373,8 @@ function qualityBoundsInput(): QualityBoundsInput {
     outputRatio,
     platform: devicePlatform,
     envelopeBytes: deviceEnvelopeBytes,
-    cssWidth: window.innerWidth,
-    cssHeight: window.innerHeight,
+    cssWidth: viewportSize().width,
+    cssHeight: viewportSize().height,
     // From the output ratio and held there across every level and rung.
     samples: getSceneTargetSamples(outputRatio),
     // The composer's partner is bound, and so costs memory, only on the
@@ -557,7 +565,7 @@ function qualityReadout() {
 function qualityRenderTargetBytes(): number {
   if (!sceneTarget) return 0;
   return renderTargetBytes(
-    window.innerWidth, window.innerHeight, sceneAllocationRatioFor(composerCamera()), sceneTarget.samples,
+    viewportSize().width, viewportSize().height, sceneAllocationRatioFor(composerCamera()), sceneTarget.samples,
     !fusedFinalOn(),
   );
 }
@@ -910,7 +918,8 @@ function getScenePixelRatio(): number {
 function getSceneTargetSamples(pixelRatio: number): number {
   // The scene target's size in device pixels, floored as GL sizes the
   // storage (a GLsizei truncates): the policy's 4K budget reads it.
-  const devicePixels = Math.floor(window.innerWidth * pixelRatio) * Math.floor(window.innerHeight * pixelRatio);
+  const viewport = viewportSize();
+  const devicePixels = Math.floor(viewport.width * pixelRatio) * Math.floor(viewport.height * pixelRatio);
   return composerSamples(pixelRatio, isMobile, devicePixels, msaaOverride, sceneSampleCounts);
 }
 
@@ -928,7 +937,13 @@ function sceneDrawMultisampled(): boolean {
 function applyRenderResolution() {
   const pixelRatio = getTargetPixelRatio();
   renderer.setPixelRatio(pixelRatio);
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  // The canvas's box, and the drawing buffer alone: the stylesheet owns the
+  // box (canvas.scene-canvas is the fixed-position rect), so three must not
+  // write a width and height in px over it — a box pinned in px would stop
+  // following the rect, and the observer in syncViewport would never hear of
+  // the next change.
+  const viewport = viewportSize();
+  renderer.setSize(viewport.width, viewport.height, false);
   if (composer && sceneTarget) {
     // A page zoom, a move to another monitor or a resize across the 4K
     // budget can change the sample count: retarget it and drop the GL
@@ -1002,12 +1017,13 @@ function sceneAllocationRatioFor(cam: THREE.Camera): number {
  */
 function sizeComposerToScene(cam: THREE.Camera): void {
   if (!composer) return;
-  const alloc = sceneTargetSize(window.innerWidth, window.innerHeight, sceneAllocationRatioFor(cam));
+  const viewport = viewportSize();
+  const alloc = sceneTargetSize(viewport.width, viewport.height, sceneAllocationRatioFor(cam));
   if (alloc.width !== sceneAllocSize.width || alloc.height !== sceneAllocSize.height) {
     composer.setSize(alloc.width, alloc.height);
     sceneAllocSize = alloc;
   }
-  const draw = sceneTargetSize(window.innerWidth, window.innerHeight, scenePixelRatioFor(cam, getTargetPixelRatio()));
+  const draw = sceneTargetSize(viewport.width, viewport.height, scenePixelRatioFor(cam, getTargetPixelRatio()));
   applySceneViewports(draw.width, draw.height);
 }
 
@@ -1074,7 +1090,8 @@ function applySceneViewports(width: number, height: number): void {
 // back is the whole cost of a resolution step.
 function sizeBloomPass() {
   const ratio = bloomPixelRatio(window.devicePixelRatio, isMobile);
-  sizeBloomChain?.(window.innerWidth * ratio, window.innerHeight * ratio);
+  const viewport = viewportSize();
+  sizeBloomChain?.(viewport.width * ratio, viewport.height * ratio);
 }
 
 // Bloom radius (shared across modes) and the planetarium threshold live in
@@ -1200,7 +1217,7 @@ function buildComposer(
   // Sized at the scene ratio: the output ratio unless this is the
   // planetarium's composer with the upscaler on (scenePixelRatioFor).
   const outputRatio = getTargetPixelRatio();
-  sceneTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
+  sceneTarget = new THREE.WebGLRenderTarget(viewportSize().width, viewportSize().height, {
     type: THREE.HalfFloatType,
     stencilBuffer: true,
     // From the OUTPUT ratio, and held there across every quality level and
@@ -1276,7 +1293,7 @@ function buildComposer(
   // that ordering by warping the bright pass's own read, so every mip is the
   // picture the blur chain had when a lens pass ran first.
   if (enabled) {
-    const size = new THREE.Vector2(window.innerWidth, window.innerHeight);
+    const size = new THREE.Vector2(viewportSize().width, viewportSize().height);
     bloomPass = fused
       ? new BloomChainPass(size, bloom.strength, BLOOM_RADIUS, bloom.threshold)
       : new UnrealBloomPass(size, bloom.strength, BLOOM_RADIUS, bloom.threshold);
@@ -1688,7 +1705,7 @@ function rungMemoryConfig(): RungMemoryConfig {
   return {
     tick: frameCadence.state().idleCadenceMs,
     outputRatio,
-    pixels: window.innerWidth * window.innerHeight * outputRatio * outputRatio,
+    pixels: viewportSize().width * viewportSize().height * outputRatio * outputRatio,
     renderer: rungMemoryRenderer(),
   };
 }
@@ -3096,8 +3113,11 @@ function installDevHooks() {
     rideState: () => planetariumMode?.devRideState() ?? null,
     /** The lens proximity ramp this frame (shared/math/lensProximity.ts): its factor, the strength the shaders read, the disc that drove it, and whether a dev pose skipped it. */
     lensRamp: () => planetariumMode?.devLensRamp() ?? null,
-    /** Switch the lens proximity ramp on or off live, as `?lensramp=1` does at boot. */
+    /** Switch the lens proximity ramp off or on live — the approach probe's ramp-off frame; the app has no such switch. */
     setLensRamp: (enabled: boolean) => planetariumMode?.devSetLensRamp(enabled) ?? false,
+    /** Move the ramp's knees live, `{fullDeg, offDeg}`, for the approach probe's fixed poses; returns the band in force. */
+    lensRampBand: (patch: { fullDeg?: number; offDeg?: number } = {}) =>
+      planetariumMode?.devSetLensRampBand(patch) ?? null,
     travelTo: (name: string) => planetariumMode?.devTravelTo(name) ?? false,
     arrivalPose: () => planetariumMode?.devArrivalPose() ?? null,
     governorOwner: () => planetariumMode?.devGovernorOwner() ?? null,
@@ -3111,6 +3131,18 @@ function installDevHooks() {
     pinRatio: (ratio: number | null) => devPinPixelRatio(ratio),
     /** Every surface a frame is drawn into, in device pixels (the perf sweep installs the same under `?perf=1`; here for any harness). */
     perfTargets: () => devRenderTargets(),
+    /** The viewport as the app sees it: the size the renderer is sized to (the canvas's box, app/viewportSize.ts), the window, the canvas's rect on the page and the safe-area insets the chrome keeps out of. */
+    viewport: () => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      return {
+        applied: viewportSize(),
+        window: { width: window.innerWidth, height: window.innerHeight },
+        canvas: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+        drawingBuffer: { width: renderer.domElement.width, height: renderer.domElement.height },
+        pixelRatio: renderer.getPixelRatio(),
+        safeArea: safeAreaInsets(),
+      };
+    },
     /** The resample, live (app/UpscalePass.ts): `ratio` = the scene ratio (null = the level's own), `sharpen` = RCAS stops (null = RCAS off, `'auto'` back to the factor's own measured stops), `filter` = 'easu' | 'bilinear' (the upscale control arm) or 'box' | 'tent' (the downsample A/B). No argument reads; null hands the ratio back to the quality level. Returns where it stands. */
     upscale: (opts?: { ratio?: number | null; sharpen?: number | null | 'auto'; filter?: UpscaleFilter | DownsampleFilter } | null) => {
       if (opts !== undefined) {
@@ -3277,6 +3309,17 @@ function installDevHooks() {
       clear: setDevSurfaceHaze(opts?.clear),
       authored: SURFACE_HAZE_CLEAR_VIEW,
     }),
+    // The night side's exposure, live (world/nightExposure): the lit fractions
+    // of the visible cap the long exposure holds at (`full`) and is gone by
+    // (`none`), the ramp's two speeds in positions per second — toward the
+    // day exposure (`rateToDay`) and back toward the long one (`rateToNight`)
+    // — and the long exposure's level as a fraction of the authored one
+    // (`ceiling`), null putting a knob's authored value back, and `off` for
+    // the rule itself. Returns the curve in force and every body metered this
+    // frame — lit fraction, the ramp position it asks for, the eased one, and
+    // the factor written.
+    nightExposure: (opts?: NightExposureOverride & { off?: boolean }) =>
+      planetariumMode?.devNightExposure(opts) ?? null,
     /** A GPU profile of the world frame measured on this device, per pass and per object (app/devGpuProfile.ts). */
     gpuProfile: async (opts?: GpuProfileOptions) => {
       if (!gpuProfiler) {
@@ -3641,6 +3684,22 @@ function installDevHooks() {
     // An empty value is a mistyped link, not a request for zero.
     const haze = new URLSearchParams(location.search).get('haze');
     if (haze && Number.isFinite(Number(haze))) setDevSurfaceHaze(Number(haze));
+    // `?nightexposure=0.1,0.35` sets the night side's exposure curve for the
+    // session, a third and a fourth number its speeds toward the day and back
+    // toward the night, and a fifth its ceiling
+    // (`<full>,<none>[,<rateToDay>[,<rateToNight>[,<ceiling>]]]`): the
+    // __moon.nightExposure knobs as a link, so two curves are two links.
+    // `?nightexposure=0` is read by the mode itself, in any build.
+    const nightExposure = parseNightExposureParam(location.search);
+    if (nightExposure.full !== undefined) {
+      setDevNightExposure({
+        full: nightExposure.full,
+        none: nightExposure.none,
+        rateToDay: nightExposure.rateToDay,
+        rateToNight: nightExposure.rateToNight,
+        ceiling: nightExposure.ceiling,
+      });
+    }
   }
   debugLog('Dev hooks installed (window.__moon)');
 }
@@ -3869,18 +3928,34 @@ async function init() {
 // ================================================================
 // Viewport sync
 // ================================================================
-// The dimensions the cameras/renderer were last synced to. The per-frame
-// drift check below compares live viewport values against these, so viewport
-// changes that never deliver a resize event still get applied.
-let appliedViewportW = window.innerWidth;
-let appliedViewportH = window.innerHeight;
+// The size the cameras and the renderer were last synced to is the canvas's
+// own box (app/viewportSize.ts, where every screen-space consumer reads it):
+// the fixed-position rect the interface is laid out on, which on an iPad in
+// full screen is not where an in-flow block lands, and which a browser can
+// move without a resize event. The window's reading at that sync is kept for
+// the per-frame drift check, which compares the window against ITSELF; the
+// box is compared against what the observer below last reported.
+let windowAtSync: ViewportSize = { width: window.innerWidth, height: window.innerHeight };
+/** The canvas's box as last reported — by the observer, or by a sync's own
+ *  read. Zero until the canvas has been laid out. */
+let observedBox: ViewportSize = { width: 0, height: 0 };
+
+/** The canvas's CSS box now. A layout read: called from a resize, from the
+ *  observer (after layout, so it forces none) and from a drift the poll saw —
+ *  never on a quiet frame. */
+function canvasBox(): ViewportSize {
+  return { width: renderer.domElement.clientWidth, height: renderer.domElement.clientHeight };
+}
 
 function syncViewport() {
-  const w = window.innerWidth;
-  const h = window.innerHeight;
-  if (w === 0 || h === 0) return; // hidden/backgrounded states can report zeros
-  appliedViewportW = w;
-  appliedViewportH = h;
+  const windowNow = { width: window.innerWidth, height: window.innerHeight };
+  observedBox = canvasBox();
+  // The box wherever it has one; the window before the first layout and in
+  // hidden/backgrounded states, which can report zeros for both.
+  const { width: w, height: h } = resolveViewportSize(observedBox, windowNow);
+  if (w === 0 || h === 0) return;
+  windowAtSync = windowNow;
+  setViewportSize({ width: w, height: h });
   planetariumCamera.aspect = w / h;
   // Re-derives the lens overscan for the new aspect (and calls
   // updateProjectionMatrix); the corner coverage is aspect-dependent.
@@ -3910,11 +3985,35 @@ function syncViewport() {
   rungMemoryRecheck();
   debugLog('Resize', {
     width: w, height: h, pixelRatio: renderer.getPixelRatio(),
+    // What the box was resolved from, and the bars the page is laid out
+    // under: a phone with `?debug=1` answers "where did the canvas go" with
+    // these two lines.
+    window: `${windowNow.width}x${windowNow.height}`, safeArea: safeAreaInsets(),
     sceneSamples: sceneTarget?.samples ?? 0, sceneRatio: getScenePixelRatio(),
   });
 }
 
 window.addEventListener('resize', syncViewport);
+
+// The canvas's box, observed. The box is the fixed-position rect the
+// interface is laid out on, and a browser can move that rect with no resize
+// event the page can act on — an iPad's full-screen transition did, and the
+// renderer stayed sized to the old box under an interface that had moved.
+// The observer fires after layout with the new box, so the sync's own read
+// forces none; a report that matches the applied size (the initial one, and
+// a sync's own resize) is dropped here rather than re-synced.
+if (typeof ResizeObserver === 'function') {
+  const canvasObserver = new ResizeObserver((entries) => {
+    const rect = entries[entries.length - 1]?.contentRect;
+    observedBox = rect ? { width: Math.round(rect.width), height: Math.round(rect.height) } : canvasBox();
+    const applied = viewportSize();
+    if (observedBox.width > 0 && observedBox.height > 0
+      && (observedBox.width !== applied.width || observedBox.height !== applied.height)) {
+      syncViewport();
+    }
+  });
+  canvasObserver.observe(renderer.domElement);
+}
 
 // Viewport transitions that DO announce themselves pull the drift poll
 // forward to the next frame (the poll itself runs on a countdown in
@@ -3926,6 +4025,12 @@ let viewportCheckCountdown = 0;
 const armViewportCheck = () => { viewportCheckDirty = true; };
 window.addEventListener('orientationchange', armViewportCheck);
 window.visualViewport?.addEventListener('resize', armViewportCheck);
+// A full-screen change is a viewport transition too, and WebKit dispatches
+// fullscreenchange BEFORE the resize event, with the viewport already at its
+// new values: the canvas observer above and the safe-area probes (shared/dom
+// onSafeAreaChange) follow the box and the bars on their own, and this pulls
+// the poll forward for whatever neither announces.
+onFullscreenChange(armViewportCheck);
 document.addEventListener('visibilitychange', () => {
   armViewportCheck();
   // Coming back: the frames either side of the gap are the browser's throttle
@@ -3964,12 +4069,15 @@ document.addEventListener('click', (e) => {
 // property reads, no layout, and the aspect term re-arms the sync even if
 // some other path ever clobbers a camera.
 function syncViewportIfDrifted() {
-  if (
-    window.innerWidth !== appliedViewportW ||
-    window.innerHeight !== appliedViewportH ||
-    camera.aspect !== appliedViewportW / appliedViewportH ||
-    renderer.getPixelRatio() !== getTargetPixelRatio()
-  ) {
+  if (viewportDrifted({
+    window: { width: window.innerWidth, height: window.innerHeight },
+    windowAtSync,
+    box: observedBox,
+    applied: viewportSize(),
+    cameraAspect: camera.aspect,
+    rendererPixelRatio: renderer.getPixelRatio(),
+    targetPixelRatio: getTargetPixelRatio(),
+  })) {
     syncViewport();
   }
 }

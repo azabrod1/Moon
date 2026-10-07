@@ -25,6 +25,18 @@ const PX_PER_DEG = W / 360;
 const SPEC = { fineDeg: 0.9, coarseDeg: 7.4, windowDeg: 8, wideDeg: 10, refPercentile: 0.6 };
 const PATCH = { x0: W - 300, x1: 300, y0: 250, y1: 750 };
 
+// The budget for a test that runs the measurement over the full raster more
+// than once, which is more than a test's default 5 s allows for when the
+// suite runs it alongside everything else. The traceCurves and smear-rule
+// scenes each build the raster and run the leveller over it: the curved-step
+// scene alone takes ~3 s on a laptop and ran 7 s on the CI runner. The
+// half-smeared frame's contrast check runs the deficit pass four times over
+// — two frames at two settings — and took 6.5 s on a four-core box with the
+// machine otherwise idle. Declared up here with the frame because a describe
+// body runs when the file is collected, which is before a `const` further
+// down has been reached.
+const SLOW = 30000;
+
 /**
  * Ground with structure at every scale, and `smeared` rectangles that have
  * lost the finest of it — which is what a resample from ten times the pixel
@@ -301,7 +313,7 @@ describe('detailDeficit on a frame that is only half smeared', () => {
       .toBeCloseTo(mid(plain, 900), 2);
     expect(detailDeficit(quiet, W, H, SPEC, PX_PER_DEG, null).deficit[500 * W + 900])
       .toBeCloseTo(mid(gated, 900), 2);
-  });
+  }, SLOW);
 
   it('leaves ground that varies the same way in every direction where it was', () => {
     expect(mid(gated, Math.round(0.8 * W))).toBe(0);
@@ -587,12 +599,6 @@ describe('valueNoise', () => {
     expect(std).toBeLessThan(1.05);
   });
 });
-
-// The traceCurves and smear-rule scenes below each build the full raster and
-// run the leveller over it, which is more than a test's default 5 s budget
-// allows for when the suite runs them alongside everything else: the
-// curved-step scene alone takes ~3 s on a laptop and ran 7 s on the CI runner.
-const SLOW = 30000;
 
 describe('traceCurves and the curved boundaries it levels', () => {
   // A frame boundary that is neither a meridian nor a parallel: a sinusoid all

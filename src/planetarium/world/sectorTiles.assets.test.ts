@@ -513,12 +513,12 @@ describe('sector tile sets: the files on disk', () => {
 });
 
 /** Why the cloud field's sets may be absent from a tiles root — and from
- *  public/ they always are. They are read only by a session that asked for the
- *  field (`?cloudtiles=1`, off by default), served from the dev server's
- *  staging until the look has been judged, and published once after that; a
- *  page that is not there leaves the deck on its base sheet, which is the
- *  picture every session without the field draws. */
-export const CLOUD_FIELD_ABSENCE = 'the cloud field is served from staging until its look is judged, never from public/';
+ *  public/ they always are. They are read by every session that has the field
+ *  (on unless `?cloudtiles=0`), from the dev server's staging in development
+ *  and from the tiles host in a production build; a page that is not there
+ *  leaves the deck on its base sheet, which is the picture every session
+ *  without the field draws. */
+export const CLOUD_FIELD_ABSENCE = 'the cloud field is served from staging or the tiles host, never from public/';
 
 describe('the cloud field\'s sets', () => {
   const tiers = [CLOUD_FIELD_SETS.opacity, CLOUD_FIELD_SETS.brightness];

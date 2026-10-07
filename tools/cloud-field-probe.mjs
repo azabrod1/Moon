@@ -1,21 +1,23 @@
-// The cloud field's battery: does Earth's 1.2 km cloud field (`?cloudtiles=1`,
-// world/cloudFieldSession driving world/cloudFieldResidency) cost nothing when
-// it is off, fill its pool by itself when it is on, hold still while the
-// camera pans, stand down while Earth spins or the deck is hidden, and turn
-// itself off cleanly when its pool cannot be had?
+// The cloud field's battery: does Earth's 1.2 km cloud field (on by default,
+// `?cloudtiles=0` its kill switch; world/cloudFieldSession driving
+// world/cloudFieldResidency) cost nothing when it is off, fill its pool by
+// itself when it is on, hold still while the camera pans, stand down while
+// Earth spins or the deck is hidden, and turn itself off cleanly when its pool
+// cannot be had?
 //
 // Every verdict is read from the app's own counters — the residency's state
 // and the pool's table through the DEV bridge (`__moon.cloudField()`), the
 // envelope through `__moon.ladder()` — and from the network, never from a
 // timing guess. Scenarios (all by default; `--scenario=a,b` for some):
 //
-//   off     Booted WITHOUT the switch, posed where the field would want
+//   off     Booted with `?cloudtiles=0`, posed where the field would want
 //           pages: no request under `earth-clouds.v2/`, no pool, session or
 //           worker module fetched, no worker started, no fixed bytes in the
 //           envelope, and the deck's program holds neither of the field's
 //           samplers.
-//   arrive  `?cloudtiles=1`: a real `travelTo` Earth from Mars, then the
-//           trades pose (400 km over the Pacific trade cumulus, by day). Pages
+//   arrive  A plain boot, the field on by default: a real `travelTo` Earth
+//           from Mars, then the trades pose (400 km over the Pacific trade
+//           cumulus, by day). Pages
 //           must become resident on their own and settle (every wanted page in
 //           the table at full fade, nothing in the pipe); no admission and no
 //           load may start between two frames both under the arrival veil
@@ -45,8 +47,9 @@
 //   node tools/cloud-field-probe.mjs --url=http://localhost:5744 --assert
 //   node tools/cloud-field-probe.mjs --url=… --scenario=off,fail
 //
-// Three boots at most (off; the field; the failed field), one tab each, at
-// 1600x1000 and `quality=medium`; about a minute of browser time in all. The
+// Three boots at most (the kill switch; the default; the failed field), one
+// tab each, at 1600x1000 and `quality=medium`; about a minute of browser time
+// in all. The
 // dev server may load the page a second time shortly after the first boot
 // (its dependency pass): a scenario that sees a second load is set up and run
 // again, once. GPU flags as every battery; takes /tmp/moon-browser.lock. A
@@ -302,7 +305,7 @@ const lum = (px, i) => 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2];
 
 // ---------------------------------------------------------------- scenarios
 
-/** Nothing of the field anywhere in a session that did not ask for it. */
+/** Nothing of the field anywhere in a session its kill switch turned off. */
 async function scenarioOff(tab) {
   const { page } = tab;
   await run(tab, 'off', async (r, fail) => {
@@ -667,13 +670,13 @@ const browser = await chromium.launch({
 });
 try {
   if (ASKED.includes('off')) {
-    const tab = await open(browser, '');
+    const tab = await open(browser, '&cloudtiles=0');
     await scenarioOff(tab);
     await tab.context.close();
   }
   const onScenarios = ['arrive', 'hidden', 'spin', 'pan'].filter((s) => ASKED.includes(s));
   if (onScenarios.length) {
-    const tab = await open(browser, '&cloudtiles=1&perf=1');
+    const tab = await open(browser, '&perf=1');
     const pool = await field(tab.page);
     log(`field: pool ${pool.pool ? `${pool.pool.layers} layers, ${pool.pool.poolBytes} B` : 'NONE'}`);
     if (!pool.pool) {
@@ -687,7 +690,7 @@ try {
     await tab.context.close();
   }
   if (ASKED.includes('fail')) {
-    const tab = await open(browser, '&cloudtiles=1&cloudpoolfail=1&perf=1');
+    const tab = await open(browser, '&cloudpoolfail=1&perf=1');
     await scenarioFail(tab);
     await tab.context.close();
   }

@@ -21,7 +21,10 @@
 //     the app's programs and not some other ones.
 //
 //   node tools/sampler-census.mjs --url=http://localhost:5744
-//   node tools/sampler-census.mjs --url=… --extra='&cloudtiles=1&cloudshadows=1'
+//   node tools/sampler-census.mjs --url=… --extra='&cloudtiles=0&cloudshadows=0&cloudlight=0'
+//
+// The first boot has the three cloud switches on, as they ship; the second
+// turns each off by its kill switch.
 import { chromium } from 'playwright';
 import { takeBrowserLock } from './browserLock.mjs';
 

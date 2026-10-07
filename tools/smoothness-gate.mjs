@@ -1155,8 +1155,8 @@ function fpsThrottle({ id, where, device, boot = '&fps=30' }) {
 }
 
 /**
- * Earth's cloud field arriving (`?cloudtiles=1`), scored against the same
- * arrival without it.
+ * Earth's cloud field arriving (on by default), scored against the same
+ * arrival without it (`?cloudtiles=0`).
  *
  * A field page is an upload that lands on frames somebody is watching — two
  * steps into its layer, last in line behind the texture warm queue and on its
@@ -1190,7 +1190,7 @@ function cloudFieldArrival(id) {
     device: DESKTOP,
     window: ['pages'],
     async run(page, note) {
-      note(`renderer: ${await bootTo(page, `&quality=medium${field ? '&cloudtiles=1' : ''}`, 90)}`);
+      note(`renderer: ${await bootTo(page, `&quality=medium${field ? '' : '&cloudtiles=0'}`, 90)}`);
       await page.evaluate((t) => {
         window.__moon.setTimeRate(0);
         window.__moon.setTimeMs(t);

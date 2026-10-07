@@ -2,10 +2,12 @@
 // with the deck as it is drawn?
 //
 // `--scenario=shadow` is the battery for the cloud shadows (world/
-// surfaceShading, the CLOUD_SHADOW switch, `?cloudshadows=1`): a shadow has to
-// lie where the Sun's ray to that ground crosses the cloud as the deck DRAWS
-// it — the 10 km shell, in the deck's own drifting frame — or it reads as a
-// second, offset copy of the cloud pattern rather than as its shadow.
+// surfaceShading, the CLOUD_SHADOW switch, on unless `?cloudshadows=0`), read
+// off the deck's base sheet (`?cloudtiles=0`, so no page lands between two
+// captures of one frame): a shadow has to lie where the Sun's ray to that
+// ground crosses the cloud as the deck DRAWS it — the 10 km shell, in the
+// deck's own drifting frame — or it reads as a second, offset copy of the
+// cloud pattern rather than as its shadow.
 //
 // Each Sun height is one frozen nadir frame (`limbView` straight down, the
 // lens and the bloom off, the exposure pinned), captured three times out of
@@ -31,7 +33,7 @@
 // expected length and the peak correlation at least `--mincorr` (0.5).
 //
 // `--scenario=field` is the same three Sun heights with Earth's cloud field
-// on (`?cloudtiles=1`, world/cloudField): the deck draws its 1.2 km pages and
+// on (the default, world/cloudField): the deck draws its 1.2 km pages and
 // the ground's shadow reads the same pages at the pierce point, so the bar is
 // the shadow under the SHARP cloud. After each pose it waits for the field to
 // settle — nothing in the pipe, nothing fading, every page the residency
@@ -487,8 +489,9 @@ try {
   const { page, errors } = await openPage(browser);
   report.errors = errors;
   if (SCENARIOS.includes('field')) {
-    // Its own boot: the field is settled at boot and cannot be switched on later.
-    await boot(page, '&cloudtiles=1');
+    // Its own boot, the default one: the field is settled at boot and cannot
+    // be switched on later.
+    await boot(page);
     const on = await page.evaluate(async () => (await window.__moon.cloudField())?.pool?.layers ?? 0);
     console.log(`[hd-probe] field booted, ${on} pool layers`);
     if (!on) { failures++; console.log('[hd-probe] field: FAIL, the session has no cloud field'); }
@@ -511,7 +514,9 @@ try {
     }
   }
   if (SCENARIOS.includes('shadow')) {
-    await boot(page);
+    // The base sheet's battery: with the field on, a page fading in between
+    // the three captures of one frame would read as a shadow.
+    await boot(page, '&cloudtiles=0');
     console.log('[hd-probe] booted', JSON.stringify(await page.evaluate(() => window.__moon.cloudShadow())));
     for (const cfg of HEIGHTS) {
       await page.evaluate((t) => window.__moon.setTimeMs(t), timeOf(cfg));

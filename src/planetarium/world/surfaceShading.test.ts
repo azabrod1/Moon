@@ -1188,7 +1188,7 @@ describe('the GPU-efficiency switches', () => {
   });
 });
 
-describe('cloud shadows on the ground (CLOUD_SHADOW, off by default)', () => {
+describe('cloud shadows on the ground (CLOUD_SHADOW, on unless ?cloudshadows=0)', () => {
   /** The whole injected fragment text a ground material compiles. */
   function fragmentOf(mat: THREE.Material): string {
     const shader = {
@@ -1211,10 +1211,10 @@ describe('cloud shadows on the ground (CLOUD_SHADOW, off by default)', () => {
     return { globe, deck, fx };
   }
 
-  it('is off unless asked for', () => {
-    expect(cloudShadowsOn()).toBe(false);
+  it('is on unless switched off, on the ground and never the deck', () => {
+    expect(cloudShadowsOn()).toBe(true);
     const { globe, deck, fx } = earthWithDeck();
-    expect(surfaceCloudShadowCompiled(globe)).toBe(false);
+    expect(surfaceCloudShadowCompiled(globe)).toBe(true);
     expect(surfaceCloudShadowCompiled(deck)).toBe(false);
     // The per-frame gate starts closed on every fresh set; the mode opens it
     // for Earth while the deck is drawn.
@@ -1222,7 +1222,7 @@ describe('cloud shadows on the ground (CLOUD_SHADOW, off by default)', () => {
   });
 
   // The switch moves through the DEV key; a production build reads
-  // `?cloudshadows=1` once at boot and has no key to move.
+  // `?cloudshadows=0` once at boot and has no key to move.
   it.runIf(import.meta.env.DEV)('compiles on Earth\'s ground and its sectors only, and moves with the switch', () => {
     const { globe, deck } = earthWithDeck();
     const sector = createSectorMaterial(globe, { map: new THREE.Texture() });
@@ -1233,29 +1233,33 @@ describe('cloud shadows on the ground (CLOUD_SHADOW, off by default)', () => {
     augmentSurfaceMaterial(new THREE.MeshStandardMaterial({ transparent: true }), 'cloud', undefined, 0, studioFx);
     const mars = new THREE.MeshStandardMaterial();
     augmentSurfaceMaterial(mars, 'rocky', undefined, 0, undefined, undefined, 'Mars');
+    expect(surfaceCloudShadowCompiled(globe)).toBe(true);
+    expect(surfaceCloudShadowCompiled(sector)).toBe(true);
+    // A sector cut while the switch is on takes it at birth, and a globe and
+    // its sectors carry one set of defines, so they share one program.
+    const late = createSectorMaterial(globe, { map: new THREE.Texture() });
+    expect(surfaceCloudShadowCompiled(late)).toBe(true);
+    expect(late.defines).toEqual(globe.defines);
+    expect(sector.defines).toEqual(globe.defines);
+    // Never the deck, never a tool, never another body.
+    expect(surfaceCloudShadowCompiled(deck)).toBe(false);
+    expect(surfaceCloudShadowCompiled(studio)).toBe(false);
+    expect(surfaceCloudShadowCompiled(mars)).toBe(false);
     const v0 = globe.version;
-    setPerfSwitch('cloud-shadow', true);
+    setPerfSwitch('cloud-shadow', false);
     try {
-      expect(cloudShadowsOn()).toBe(true);
-      expect(surfaceCloudShadowCompiled(globe)).toBe(true);
+      expect(cloudShadowsOn()).toBe(false);
       // The define is part of three's program key: the next draw relinks.
       expect(globe.version).toBeGreaterThan(v0);
-      expect(surfaceCloudShadowCompiled(sector)).toBe(true);
-      // A sector cut while the switch is on takes it at birth, and a globe and
-      // its sectors carry one set of defines, so they share one program.
-      const late = createSectorMaterial(globe, { map: new THREE.Texture() });
-      expect(surfaceCloudShadowCompiled(late)).toBe(true);
-      expect(late.defines).toEqual(globe.defines);
-      expect(sector.defines).toEqual(globe.defines);
-      // Never the deck, never a tool, never another body.
-      expect(surfaceCloudShadowCompiled(deck)).toBe(false);
-      expect(surfaceCloudShadowCompiled(studio)).toBe(false);
-      expect(surfaceCloudShadowCompiled(mars)).toBe(false);
+      for (const m of [globe, sector, late]) expect(surfaceCloudShadowCompiled(m)).toBe(false);
+      // A sector cut while the switch is off is born without it.
+      const off = createSectorMaterial(globe, { map: new THREE.Texture() });
+      expect(surfaceCloudShadowCompiled(off)).toBe(false);
+      expect(off.defines).toEqual(globe.defines);
     } finally {
-      setPerfSwitch('cloud-shadow', false);
+      setPerfSwitch('cloud-shadow', true);
     }
-    expect(surfaceCloudShadowCompiled(globe)).toBe(false);
-    expect(surfaceCloudShadowCompiled(sector)).toBe(false);
+    for (const m of [globe, sector, late]) expect(surfaceCloudShadowCompiled(m)).toBe(true);
   });
 
   it('reads the beam once, where the Sun\'s ray to the ground crosses the DRAWN deck, its derivatives taken before the gate', () => {
@@ -1326,25 +1330,18 @@ describe('cloud shadows on the ground (CLOUD_SHADOW, off by default)', () => {
     const sector = createSectorMaterial(globe, { map: new THREE.Texture() });
     const field = (m: THREE.Material) => (m as THREE.MeshStandardMaterial).defines?.CLOUD_FIELD !== undefined;
     // Without the field, the shadow alone.
-    setPerfSwitch('cloud-shadow', true);
-    try {
-      expect(field(globe)).toBe(false);
-    } finally {
-      setPerfSwitch('cloud-shadow', false);
-    }
+    expect(surfaceCloudShadowCompiled(globe)).toBe(true);
+    expect(field(globe)).toBe(false);
     setCloudFieldOn(true);
     try {
+      // A ground built in a session with the field takes both at birth.
       const late = earthWithDeck();
-      expect(field(late.globe)).toBe(false);
-      setPerfSwitch('cloud-shadow', true);
+      expect(field(late.globe)).toBe(true);
+      // Never the field without the shadow: the shadow's kill switch takes
+      // both off every receiver.
+      setPerfSwitch('cloud-shadow', false);
       try {
-        for (const m of [late.globe, globe, sector]) expect(field(m)).toBe(true);
-        // A sector cut while it is on takes both at birth, and shares the
-        // globe's program.
-        const cut = createSectorMaterial(late.globe, { map: new THREE.Texture() });
-        expect(cut.defines).toEqual(late.globe.defines);
-        // Never the deck's: its own factory decides that one.
-        expect(field(deck)).toBe(false);
+        for (const m of [late.globe, globe, sector]) expect(field(m)).toBe(false);
         // The ground binds the field's slots on every compile, the define in
         // or out, so a program the switch returns to finds them.
         const shader = {
@@ -1352,17 +1349,26 @@ describe('cloud shadows on the ground (CLOUD_SHADOW, off by default)', () => {
           vertexShader: '#include <common>\n#include <begin_vertex>\n',
           fragmentShader: '#include <common>\n#include <opaque_fragment>\n',
         };
-        setPerfSwitch('cloud-shadow', false);
         (late.globe.onBeforeCompile as (s: typeof shader, r: unknown) => void)(shader, null);
         expect(field(late.globe)).toBe(false);
         expect(Object.keys(shader.uniforms)).toEqual(expect.arrayContaining(['uCloudPages', 'uCloudPageTable', 'uCloudFieldPixelScale']));
       } finally {
-        setPerfSwitch('cloud-shadow', false);
+        setPerfSwitch('cloud-shadow', true);
       }
-      for (const m of [globe, sector]) expect(field(m)).toBe(false);
+      // Back on, every receiver takes both, the ones built before the field
+      // was settled too.
+      for (const m of [late.globe, globe, sector]) expect(field(m)).toBe(true);
+      // A sector cut while it is on takes both at birth, and shares the
+      // globe's program.
+      const cut = createSectorMaterial(late.globe, { map: new THREE.Texture() });
+      expect(cut.defines).toEqual(late.globe.defines);
+      // Never the deck's: its own factory decides that one.
+      expect(field(deck)).toBe(false);
     } finally {
       setCloudFieldOn(false);
     }
+    for (const m of [globe, sector]) expect(field(m)).toBe(false);
+    expect(surfaceCloudShadowCompiled(globe)).toBe(true);
   });
 
   it('cuts the Sun\'s diffuse after the sea\'s block and the air\'s glow before the Moon\'s, and nothing else', () => {
@@ -1445,7 +1451,7 @@ describe('cloud shadows on the ground (CLOUD_SHADOW, off by default)', () => {
   });
 });
 
-describe('the cloud deck lit as a cloud (CLOUD_LIGHT, off by default)', () => {
+describe('the cloud deck lit as a cloud (CLOUD_LIGHT, on unless ?cloudlight=0)', () => {
   function fragmentOf(mat: THREE.Material): string {
     const shader = {
       uniforms: {} as Record<string, unknown>,
@@ -1467,25 +1473,26 @@ describe('the cloud deck lit as a cloud (CLOUD_LIGHT, off by default)', () => {
     return { globe, deck };
   }
 
-  it('is off unless asked for, and compiles into the planetarium\'s deck alone', () => {
-    expect(cloudLightOn()).toBe(false);
+  it('is on unless switched off, and compiles into the planetarium\'s deck alone', () => {
+    expect(cloudLightOn()).toBe(true);
     const { globe, deck } = earthWithDeck();
-    expect(surfaceCloudLightCompiled(deck)).toBe(false);
+    expect(surfaceCloudLightCompiled(deck)).toBe(true);
+    expect(surfaceCloudLightCompiled(globe)).toBe(false);
     // A tool's deck (Look inside builds its own) is never registered.
     const studioDeck = new THREE.MeshStandardMaterial({ transparent: true });
     augmentSurfaceMaterial(studioDeck, 'cloud');
+    expect(surfaceCloudLightCompiled(studioDeck)).toBe(false);
     if (!import.meta.env.DEV) return;
-    setPerfSwitch('cloud-light', true);
+    setPerfSwitch('cloud-light', false);
     try {
-      expect(surfaceCloudLightCompiled(deck)).toBe(true);
-      expect(surfaceCloudLightCompiled(globe)).toBe(false);
+      expect(surfaceCloudLightCompiled(deck)).toBe(false);
       expect(surfaceCloudLightCompiled(studioDeck)).toBe(false);
       // And it is not the shadow's switch: the ground under it is untouched.
-      expect(surfaceCloudShadowCompiled(globe)).toBe(false);
+      expect(surfaceCloudShadowCompiled(globe)).toBe(true);
     } finally {
-      setPerfSwitch('cloud-light', false);
+      setPerfSwitch('cloud-light', true);
     }
-    expect(surfaceCloudLightCompiled(deck)).toBe(false);
+    expect(surfaceCloudLightCompiled(deck)).toBe(true);
   });
 
   it('mixes the Sun\'s diffuse toward the shell\'s own normal through three\'s own lights, and adds the sky by day', () => {

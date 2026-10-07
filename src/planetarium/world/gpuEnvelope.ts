@@ -144,7 +144,7 @@ export interface DeviceProfile extends SectorStreamerLimits {
   /** Pages of Earth's 1.2 km cloud field (world/cloudFieldPool) the device
    *  holds, each a 10.67 MiB layer of one texture array allocated whole at
    *  boot and reserved in the envelope for the session. Zero is no field at
-   *  all, whatever `?cloudtiles=1` asks. */
+   *  all, whatever the URL asks. */
   cloudFieldLayers: number;
 }
 

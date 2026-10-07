@@ -21,16 +21,18 @@
  * drivers where compileAsync cannot guarantee a completed link.
  *
  * The deck's probe takes the cloud field's define when the session has the
- * field (world/cloudFieldSlots, settled before these are built). The cloud
- * shadow's and the cloud light's defines are not carried: world/surfaceShading
- * keeps both off every probe. Earth's ground needs no probe for its shadow:
- * the globe carries CLOUD_SHADOW — and CLOUD_FIELD beside it, in a session
- * with the field — from its first compile, its sectors share its program, and
- * the boot compile links it through the globe itself.
+ * field (world/cloudFieldSlots, settled before these are built), and the cloud
+ * light's when the session compiles it (world/surfaceShading), so the program
+ * it links is the planetarium deck's own. The cloud shadow's define is never
+ * carried: world/surfaceShading keeps it off every probe. Earth's ground needs
+ * no probe for its shadow: the globe carries CLOUD_SHADOW — and CLOUD_FIELD
+ * beside it, in a session with the field — from its first compile, its
+ * sectors share its program, and the boot compile links it through the globe
+ * itself.
  */
 import * as THREE from 'three';
 import { applyTextureDefaults, type MapKind } from './texturePolicy';
-import { augmentSurfaceMaterial } from './surfaceShading';
+import { augmentSurfaceMaterial, setCloudDeckWarmupProbe } from './surfaceShading';
 import { enableCloudField } from './cloudFieldSlots';
 
 export interface WarmupProbes {
@@ -79,10 +81,14 @@ export function createShaderWarmupProbes(): WarmupProbes {
     // and the probe has to carry the deck's define or it warms a program the
     // deck never draws with.
     augmentSurfaceMaterial(mat, combo.transparent ? 'cloud' : 'rocky');
-    // ...and the cloud field's, in a session that has the field: the deck's
-    // program after its relief lands carries CLOUD_FIELD too (a no-op
-    // otherwise, so the probe is the program it was).
-    if (combo.transparent) enableCloudField(mat);
+    // ...and the cloud field's and the cloud light's, as the session compiles
+    // them into the deck: its program after its relief lands carries both
+    // (each a no-op where the session has it off, so the probe is the program
+    // it was).
+    if (combo.transparent) {
+      enableCloudField(mat);
+      setCloudDeckWarmupProbe(mat);
+    }
     mats.push(mat);
     const mesh = new THREE.Mesh(geo, mat);
     // A probe lives at the origin for the whole session; a scene-wide pick

@@ -2625,7 +2625,7 @@ export class PlanetariumMode {
       devEnvelopeOverride(deviceProfileFor(this.deviceClass, this.deviceFamily)),
     );
     this.memory = new MemoryEnvelope(this.deviceProfile);
-    // Earth's cloud field, only where `?cloudtiles=1` asked for it: its pool
+    // Earth's cloud field, unless `?cloudtiles=0` turned it off: its pool
     // module is imported and allocated now, under the boot cover, and settled
     // before the first activation builds the deck.
     this.cloudFieldStart = cloudFieldRequested() ? this.startCloudField() : null;

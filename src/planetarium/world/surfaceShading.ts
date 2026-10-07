@@ -692,7 +692,7 @@ export function resetCloudShadowUniforms(): void {
   setCloudShadowDrift(0);
 }
 
-// --- Cloud shadows on the ground, the sea and the air (off by default) -------
+// --- Cloud shadows on the ground, the sea and the air (`?cloudshadows=0`) ----
 //
 // With the switch on, the share of the Sun's beam a ground fragment receives
 // through the deck (`cloudSunKeep`) is read where the ray from that fragment
@@ -715,7 +715,7 @@ export function resetCloudShadowUniforms(): void {
 // Being part of three's program key, it relinks the program when it moves.
 //
 // What the shadow reads is the deck's base sheet, through the deck's smooth
-// filter — and, in a session with the cloud field (`?cloudtiles=1`,
+// filter — and, in a session with the cloud field (on unless `?cloudtiles=0`,
 // world/cloudField), the field's 1.2 km opacity wherever a page is resident at
 // the pierce point, over the sheet at the field's own weight: the ground then
 // compiles CLOUD_FIELD beside CLOUD_SHADOW (never without it), so a shadow is
@@ -784,13 +784,14 @@ export const CLOUD_SHADOW_HORIZON_SIN = NIGHT_WEIGHT_ZERO_SIN;
  */
 export const CLOUD_SHADOW_SKY_FILL = 1.0;
 
-/** `?cloudshadows=1`, read once at boot in any build. */
-const cloudShadowsByUrl = typeof location !== 'undefined'
-  && new URLSearchParams(location.search).get('cloudshadows') === '1';
+/** On unless `?cloudshadows=0`, the kill switch, read once at boot in any
+ *  build. */
+const cloudShadowsByUrl = typeof location === 'undefined'
+  || new URLSearchParams(location.search).get('cloudshadows') !== '0';
 // In a development build the switch is the `cloud-shadow` key
 // (app/perfSwitches), so `__moon.perfArm` and the bridge's own knob move it
-// live; the URL arms the key so the two readings never disagree.
-if (import.meta.env.DEV && cloudShadowsByUrl) setPerfSwitch('cloud-shadow', true);
+// live; the kill switch disarms the key so the two readings never disagree.
+if (import.meta.env.DEV && !cloudShadowsByUrl) setPerfSwitch('cloud-shadow', false);
 
 /** Whether the ground under a deck compiles its cloud shadows. */
 export function cloudShadowsOn(): boolean {
@@ -933,7 +934,7 @@ export function devCloudShadow(opts?: {
   };
 }
 
-// --- The deck lit as a cloud (off by default) ---------------------------------
+// --- The deck lit as a cloud (`?cloudlight=0`) -------------------------------
 //
 // By day the deck is lit by the Sun's direct light on its perturbed normal and
 // by nothing else: three has no other light in the planetarium and the sky's
@@ -942,8 +943,8 @@ export function devCloudShadow(opts?: {
 // no colour at all. A real cloud's shaded side is lit from inside, by light
 // scattered through the cloud, and from outside, by the sky. CLOUD_LIGHT, a
 // compile-time define on the planetarium's own deck and nowhere else (not the
-// ground, not a tool's deck, not a warm-up probe), adds those two in
-// `outgoingLight` alone. The deck's alpha is its coverage and nothing here
+// ground, not a tool's deck) but the warm-up probe that stands in for it, adds
+// those two in `outgoingLight` alone. The deck's alpha is its coverage and nothing here
 // writes it: a light term changes how bright the cloud is, never how much of
 // the pixel it owns.
 
@@ -967,10 +968,11 @@ export const CLOUD_LIGHT_WRAP = 0.4;
  */
 export const CLOUD_LIGHT_SKY = 1.0;
 
-/** `?cloudlight=1`, read once at boot in any build. */
-const cloudLightByUrl = typeof location !== 'undefined'
-  && new URLSearchParams(location.search).get('cloudlight') === '1';
-if (import.meta.env.DEV && cloudLightByUrl) setPerfSwitch('cloud-light', true);
+/** On unless `?cloudlight=0`, the kill switch, read once at boot in any
+ *  build. */
+const cloudLightByUrl = typeof location === 'undefined'
+  || new URLSearchParams(location.search).get('cloudlight') !== '0';
+if (import.meta.env.DEV && !cloudLightByUrl) setPerfSwitch('cloud-light', false);
 
 /** Whether the planetarium's deck compiles its cloud light. */
 export function cloudLightOn(): boolean {
@@ -997,8 +999,8 @@ const CLOUD_LIGHT_SKY_GLSL = import.meta.env.DEV ? 'uCloudLightSky' : CLOUD_LIGH
 const cloudLightReceivers = new Set<THREE.Material>();
 
 /** Say this material is the planetarium's own cloud deck, the one surface the
- *  cloud light (CLOUD_LIGHT) compiles into. Any other deck — Look inside's, a
- *  warm-up probe's — is never registered and never compiles it. */
+ *  cloud light (CLOUD_LIGHT) compiles into. Any other deck — Look inside's — is
+ *  never registered and never compiles it. */
 export function setPlanetariumCloudDeck(mat: THREE.Material): void {
   const args = augmentArgs.get(mat);
   if (!args || args.archetype !== 'cloud') return;
@@ -1006,6 +1008,18 @@ export function setPlanetariumCloudDeck(mat: THREE.Material): void {
     cloudLightReceivers.add(mat);
     mat.addEventListener('dispose', () => cloudLightReceivers.delete(mat));
   }
+  applySwitchDefine(mat, 'CLOUD_LIGHT', cloudLightOn());
+}
+
+/** Give the warm-up probe that stands in for the planetarium's deck
+ *  (world/shaderWarmupProbes) the cloud light as the session compiles it, or
+ *  the program it links under the boot cover is one the deck never draws with
+ *  and the deck's own links once its relief lands, in view. Not a receiver: a
+ *  development build's flip relinks the deck on purpose, and the probe keeps
+ *  the boot's answer. */
+export function setCloudDeckWarmupProbe(mat: THREE.Material): void {
+  const args = augmentArgs.get(mat);
+  if (!args || args.archetype !== 'cloud') return;
   applySwitchDefine(mat, 'CLOUD_LIGHT', cloudLightOn());
 }
 

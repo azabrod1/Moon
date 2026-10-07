@@ -449,8 +449,10 @@ const EXPECTED_SWITCHES: Record<string, { off: string; on: string; needsReload?:
   // is only the control a capture of it is held against. Priced like any row,
   // never exact, never in the combined row.
   'cloud-noise-frame': { off: 'Cloud noise anchored to the sky again', on: 'Cloud noise anchored to the sheet', exact: false },
-  // A feature that is off until it has been judged: a compile-time define, so
-  // a flip relinks the ground's program and the sweep never holds it.
+  // The cloud features, on by default: each a compile-time define, so a flip
+  // relinks the ground's or the deck's program and the sweep never holds it;
+  // the number of record is a two-boot `?cloudshadows=0` / `?cloudlight=0` A/B.
+  // They change the picture, so never exact and never in the combined row.
   'cloud-shadow': { off: 'Cloud shadows off', on: 'Cloud shadows on', needsReload: true, exact: false },
   'cloud-light': { off: 'Cloud light off', on: 'Cloud light on', needsReload: true, exact: false },
 };

@@ -100,6 +100,7 @@ import {
   rcasSharpness,
 } from './fsr1';
 import { OUTPUT_UV_ANCHOR, patchUvScale, type SubRectUniforms } from './sceneSubRect';
+import { outputDitherUniform } from './outputDither';
 
 /** An 8-bit colour-only target with raw storage and a linear filter. */
 export function createLdrTarget(): THREE.WebGLRenderTarget {
@@ -191,6 +192,12 @@ export class OutputTargetPass extends OutputPass {
     deltaTime = 0,
     maskActive = false,
   ): void {
+    // The dither (app/outputDither.ts) goes on the write that lands on the
+    // canvas and on no intermediate: EASU resamples a dithered input into a
+    // visible hatching and RCAS sharpens its grain many times over, so a frame
+    // that goes on to be resampled is written clean and dithered at the end.
+    const dither = this.material.uniforms.uDither;
+    if (dither) dither.value = this.renderToScreen ? outputDitherUniform.value : 0;
     if (this.renderToScreen) {
       super.render(renderer, writeBuffer, readBuffer, deltaTime, maskActive);
       return;
@@ -224,6 +231,8 @@ export class UpscalePass extends Pass {
       tInput: { value: null },
       uCon0: { value: new THREE.Vector4() },
       uInputMax: { value: new THREE.Vector2() },
+      // Its own value: on only when this write is the canvas (app/outputDither.ts).
+      uDither: { value: 0 },
     });
     this.quad = new FullScreenQuad(this.material);
   }
@@ -245,6 +254,7 @@ export class UpscalePass extends Pass {
     const u = this.material.uniforms;
     u.tInput.value = input.texture;
     (u.uCon0.value as THREE.Vector4).fromArray(easuConstants(drawn.width, drawn.height, outW, outH));
+    u.uDither.value = this.renderToScreen ? outputDitherUniform.value : 0;
     (u.uInputMax.value as THREE.Vector2).set(drawn.width - 1, drawn.height - 1);
     if (this.renderToScreen) {
       renderer.setRenderTarget(null);
@@ -446,6 +456,8 @@ export class SharpenPass extends Pass {
       tInput: { value: null },
       uInputMax: { value: new THREE.Vector2() },
       uSharpness: { value: rcasSharpness(RCAS_DEFAULT_STOPS) },
+      // Its own value: this pass always draws the canvas, so it follows the switch.
+      uDither: { value: 0 },
     });
     this.quad = new FullScreenQuad(this.material);
   }
@@ -471,6 +483,7 @@ export class SharpenPass extends Pass {
     if (!input) return;
     const u = this.material.uniforms;
     u.tInput.value = input.texture;
+    u.uDither.value = outputDitherUniform.value;
     // The upscale pass's own target, at OUTPUT size and filled edge to edge —
     // never a sub-rectangle of a scene-sized allocation, whatever the rung. Its
     // whole width is the image, and a bound taken from the scene's sub-rect

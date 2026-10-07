@@ -19,6 +19,7 @@ Picture quality and frame rate
 - `?msaa=0` goes back to the older way of smoothing edges, by drawing more pixels (`app/renderResolution.ts`). DEV `?msaa=2|4|8` forces an amount. DEV `?ratio=<n>` forces the pixel ratio.
 - `?canvasaa=1` puts the old edge smoothing back on the page's canvas. It needs a reload.
 - `?fused=0` finishes each frame in three steps instead of one (`app/FusedOutputPass.ts`). This one changes pixels slightly.
+- `?dither=0` turns off the fine fixed grain added wherever the picture is stored in 8 bits (`app/outputDither.ts`); without it, dark gradients show steps.
 - `?alloc=0`, `?gpuclock=0` and `?rungmemory=0` turn off three parts of the Dynamic quality level: its fixed memory, its GPU timer and its memory of the last good level (`app/sceneSubRect.ts`, `app/gpuFrameClock.ts`, `app/rungMemory.ts`).
 - DEV `?envelope=<MiB>` gives the app a phone's memory limit. DEV `?perfoff=<names>` starts with speed-ups off (`app/perfSwitches.ts`). DEV `?perf=1` opens the speed-measuring overlay (see `docs/testing.md`).
 
@@ -50,6 +51,6 @@ On the dev server, `window.__moon` drives the app from the console or a test scr
 - Landing and flight: `land`, `openObservatory`, `lookUp`, `lookAt`, `jumpEvent`, `exitSurface`, `probeLanded`, `pilotTo`, `rideState`, `traceStart`, `traceStop`.
 - Hiding things: `setChrome`, `setShipVisible`, `setBeltVisible`, `setRoleHidden`, `atmoTier`.
 - The tools: `compare…` and `interior…`. A screenshot of Look inside waits for `interiorReady()`.
-- Look tuning: `glint`, `glintMeter`, `haze`, `aerosol`, `sunLight`, `albedoGrade`, `cloudShadow`, `cloudLight`, `cloudField`, `nightSides`, `nightExposure`.
+- Look tuning: `setDither`, `glint`, `glintMeter`, `haze`, `aerosol`, `sunLight`, `albedoGrade`, `cloudShadow`, `cloudLight`, `cloudField`, `nightSides`, `nightExposure`.
 - Speed: `quality`, `setQuality`, `setFps`, `upscale`, `pinRatio`, `perfTargets`, `gpuProfile`, `drawLog`, `waitForDraw`. `perfSwitches` and `perfArm` come from `app/perfSwitches.ts`, `perfRun` from `app/devPerfSweep.ts`.
 - State: `viewport`, `sectors`, `renderPath`, `miniState`, `samplerCensus`, `atmoState`.

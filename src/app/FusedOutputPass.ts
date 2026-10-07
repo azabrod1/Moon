@@ -45,6 +45,8 @@
  *     texel past the displayed corner into the overscan, so a bright source
  *     just outside the frame can contribute at the very corner.
  *  4. At strength 0 there is no warp at all and only (1) applies.
+ *  5. The output dither (app/outputDither.ts): one LSB of fixed grain at the
+ *     write, on this chain only; `?dither=0` takes it out exactly.
  *
  * `?fused=0` on any build puts the old three-pass chain back — the kill switch,
  * and the A/B for anything the four differences might have moved. In DEV
@@ -68,6 +70,7 @@
 import * as THREE from 'three';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputShader } from 'three/addons/shaders/OutputShader.js';
+import { ditherOutputText, outputDitherIsWired } from './outputDither';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import { OutputTargetPass } from './UpscalePass';
 import { bloomHighPassMaterial } from './bloomTargets';
@@ -206,7 +209,9 @@ export function fusedFragmentText(variant: FusedVariant): string {
         .replace('uniform sampler2D tDiffuse;', GLOW_DECLARATION)
         .replace(OUTPUT_UV_ANCHOR, GLOW_LINE)
       : OutputShader.fragmentShader;
-    text = scaleSceneRead(withGlow, OUTPUT_UV_ANCHOR, variant.lens);
+    // The dither goes in last, after the transfer, on every variant: the
+    // write this text makes is an 8-bit one (app/outputDither.ts).
+    text = ditherOutputText(scaleSceneRead(withGlow, OUTPUT_UV_ANCHOR, variant.lens));
     fusedTexts.set(key, text);
   }
   return text;
@@ -231,7 +236,8 @@ export function fusedFragmentIsWired(variant: FusedVariant, material?: THREE.Sha
     && carries('texture2D( tDiffuse, lensSourceUv( vUv ) )', variant.lens)
     && carries('texture2D( tDiffuse, min( vUv * uUvScale, uUvMax ) )', !variant.lens)
     && carries('uniform sampler2D tBloom;', variant.glow)
-    && carries('gl_FragColor.rgb += texture2D( tBloom, vUv ).rgb;', variant.glow);
+    && carries('gl_FragColor.rgb += texture2D( tBloom, vUv ).rgb;', variant.glow)
+    && outputDitherIsWired(text);
 }
 
 /**
@@ -268,6 +274,9 @@ export class FusedOutputPass extends OutputTargetPass {
     this.subRect = installSubRectUniforms(this.material.uniforms);
     if (opts.bloom) this.material.uniforms.tBloom = { value: opts.bloom.compositeTexture };
     if (opts.lens) installLensUniforms(this.material.uniforms, opts.lens);
+    // Its own value, set per render by OutputTargetPass: on only for the write
+    // that lands on the canvas (app/outputDither.ts).
+    this.material.uniforms.uDither = { value: 0 };
     this.material.needsUpdate = true;
   }
 }

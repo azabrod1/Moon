@@ -126,6 +126,7 @@ import {
 } from './planetarium/surfacePerf';
 import { beginSlicedUpload, stepSlicedUpload } from './planetarium/world/slicedUpload';
 import { invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm } from './planetarium/world/textureWarmer';
+import { parseDitherParam, setOutputDither } from './app/outputDither';
 import {
   smoothTraceFrameStart,
   smoothTraceEvent,
@@ -315,6 +316,8 @@ const fixedSceneAllocation = parseAllocParam(location.search);
  * harmless and is the param winning.
  */
 const fusedFinalParam = parseFusedParam(location.search);
+// The output dither's switch, read once: the three passes share its uniform.
+setOutputDither(parseDitherParam(location.search));
 // `?bloomknee=0`: three's whole-pixel step back in the planetarium's bright
 // pass (app/bloomConfig.ts BLOOM_KNEE), the A/B for the ocean glint's halo.
 const bloomKneeParam = parseBloomKneeParam(location.search);
@@ -3350,6 +3353,8 @@ function installDevHooks() {
       };
     },
     setBloom: (on: boolean) => setPlanetariumBloom(on),
+    // The output dither, live: the A/B for the grain at the 8-bit writes.
+    setDither: (on: boolean) => setOutputDither(on),
     // DEV: the planetarium bright pass's threshold, live (app/bloomConfig
     // PLANETARIUM_BLOOM), rebuilt into the composer, so an A/B of what sits
     // between the stars and the Sun — the sea's beam — comes out of one page

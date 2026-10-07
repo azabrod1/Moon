@@ -1187,8 +1187,7 @@ export class PlanetariumMode {
   private readonly highlightMeter = new HighlightMeter(
     new EarthSurfaceMaps({
       water: resolveTextureUrl(PLANET_TEXTURE_FILES.earthRoughness, '2k'),
-      calm: resolveTextureUrl(PLANET_TEXTURE_FILES.earthSeaCalm, '2k'),
-      windy: resolveTextureUrl(PLANET_TEXTURE_FILES.earthSeaWindy, '2k'),
+      wind: resolveTextureUrl(PLANET_TEXTURE_FILES.earthSeaWind, '2k'),
       cloud: resolveTextureUrl(PLANET_TEXTURE_FILES.earthClouds, '2k'),
     }),
     beamShoulderInForce,
@@ -1197,7 +1196,7 @@ export class PlanetariumMode {
     camera: new THREE.Vector3(), sun: new THREE.Vector3(), lightIntensity: 0, lightLinear: [1, 1, 1],
     airOn: false, airBlend: 0, hazeClearView: 1, cloudSpin: 0, cloudDrawn: false,
     view: new THREE.Vector3(0, 0, -1), viewUp: new THREE.Vector3(0, 1, 0), fovXDeg: 60, fovYDeg: 40,
-    seaBeamOn: true, sunPathOn: true, windMapsOn: false,
+    seaBeamOn: true, sunPathOn: true, windMapOn: false,
   };
   private readonly highlightScratch = {
     cam: new THREE.Vector3(), earth: new THREE.Vector3(), q: new THREE.Quaternion(), cq: new THREE.Quaternion(), dir: new THREE.Vector3(),
@@ -9392,7 +9391,7 @@ export class PlanetariumMode {
     ctx.viewUp.set(0, 1, 0).applyQuaternion(sc.cq).applyQuaternion(sc.q).normalize();
     ctx.seaBeamOn = seaBeamOn();
     ctx.sunPathOn = sunPathOn();
-    ctx.windMapsOn = seaWindOn();
+    ctx.windMapOn = seaWindOn();
     this.highlightMeter.update(dt, ctx);
   }
 

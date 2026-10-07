@@ -42,11 +42,11 @@ import { enableCloudField } from './world/cloudFieldSlots';
 import { CLOUD_DECK_DEPTH_BIAS_UNITS } from './world/shellDepthBias';
 import { applyTextureDefaults, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
 import {
-  augmentSurfaceMaterial, nightLiftUniform, rebindSeaWindMaps, seatSurfaceAirRadius, setGroundUnderCloudDeck,
+  augmentSurfaceMaterial, nightLiftUniform, rebindSeaWindMap, seatSurfaceAirRadius, setGroundUnderCloudDeck,
   setPlanetariumCloudDeck, setSurfaceCraterShare, setSurfaceWaterGloss,
   type SurfaceArchetype, type SurfaceShadingFx,
 } from './world/surfaceShading';
-import { applySeaWindSampling, installSeaWindMap, type SeaWindMapKind } from './world/seaWind';
+import { applySeaWindSampling, installSeaWindMap } from './world/seaWind';
 import { createAtmosphereShellMaterial } from './world/atmosphereShell';
 import { ATMOSPHERE_TABLE_SIZES_FULL, type AtmosphereTableSizes } from './world/atmosphereModel';
 import { queueTextureWarm } from './world/textureWarmer';
@@ -824,24 +824,22 @@ export interface EarthLateSlots {
   clouds: LateTextureSlot;
   bump: LateTextureSlot;
   roughness: LateTextureSlot;
-  seaCalm: LateTextureSlot;
-  seaWindy: LateTextureSlot;
+  seaWind: LateTextureSlot;
 }
 
 /**
- * One of the sea's wind maps landed (world/seaWind.ts): the grey stand-in a
- * timeout leaves is no map and is let go; a real one is given the sea's
- * sampling and installed — unless a DEV `?seawindmap=` override stands, in
- * which case it is let go too — and the seas already drawn read the pair from
- * the next frame once both are here.
+ * The sea's wind map landed (world/seaWind.ts): the grey stand-in a timeout
+ * leaves is no map and is let go; a real one is given the sea's sampling and
+ * installed — unless a DEV `?seawindmap=` override stands, in which case it
+ * is let go too — and the seas already drawn read it from the next frame.
  */
-export function installSeaWindArrival(kind: SeaWindMapKind, tex: THREE.Texture): void {
+export function installSeaWindArrival(tex: THREE.Texture): void {
   if (tex.userData?.proceduralFallback === true) {
     tex.dispose();
     return;
   }
-  if (installSeaWindMap(kind, applySeaWindSampling(tex), 'shipped')) {
-    rebindSeaWindMaps();
+  if (installSeaWindMap(applySeaWindSampling(tex), 'shipped')) {
+    rebindSeaWindMap();
     queueTextureWarm(tex);
   } else {
     tex.dispose();
@@ -849,7 +847,7 @@ export function installSeaWindArrival(kind: SeaWindMapKind, tex: THREE.Texture):
 }
 
 /**
- * Wire all four Earth detail slots onto their materials. One function so the
+ * Wire every Earth detail slot onto its material. One function so the
  * complete set is pinnable as a unit — a slot left unconnected would hold its
  * late arrival forever, leaving Earth on flat city lights, a blank cloud deck,
  * or a noise-free ocean for the session while leaking the real texture.
@@ -878,11 +876,10 @@ export function wireEarthLateDetail(
     () => earthMat.roughnessMap,
     (tex) => { earthMat.roughnessMap = tex; setSurfaceWaterGloss(earthMat, isWaterMask(tex)); },
   );
-  // The sea's wind maps are not on the material: they are installed on the
-  // shared uniforms every sea reads, so a late one takes the install path
-  // rather than a slot on earthMat.
-  slots.seaCalm.connect((tex) => afterDecode(tex, () => installSeaWindArrival('calm', tex)));
-  slots.seaWindy.connect((tex) => afterDecode(tex, () => installSeaWindArrival('windy', tex)));
+  // The sea's wind map is not on the material: it is installed on the shared
+  // uniform every sea reads, so a late one takes the install path rather
+  // than a slot on earthMat.
+  slots.seaWind.connect((tex) => afterDecode(tex, () => installSeaWindArrival(tex)));
 }
 
 /** Whether a roughness texture is the graded water mask the ocean's gloss remap
@@ -906,8 +903,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
         clouds: createLateTextureSlot(),
         bump: createLateTextureSlot(),
         roughness: createLateTextureSlot(),
-        seaCalm: createLateTextureSlot(),
-        seaWindy: createLateTextureSlot(),
+        seaWind: createLateTextureSlot(),
       }
     : null;
 
@@ -922,10 +918,9 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
         loadTexture('earthBump', '2k', 'mask', { late: earthLate.bump }),
         // Ocean-glint roughness: linear, and grey the same way.
         loadTexture('earthRoughness', '2k', 'mask', { late: earthLate.roughness }),
-        // The sea's wind, as the pair of grey maps the glint's lobe is read
-        // from (world/seaWind.ts): one channel each, like the height map.
-        loadTexture('earthSeaCalm', '2k', 'mask', { late: earthLate.seaCalm }),
-        loadTexture('earthSeaWindy', '2k', 'mask', { late: earthLate.seaWindy }),
+        // The sea's wind, as the grey map the glint's lobe is read from
+        // (world/seaWind.ts): one channel, like the height map.
+        loadTexture('earthSeaWind', '2k', 'mask', { late: earthLate.seaWind }),
       ])
     : null;
   const texture = await surfaceTexturePromise;
@@ -1045,7 +1040,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   let cloudsNormalUpgrade: NormalUpgrade | undefined;
 
   if (earthLate && earthDetailTexturePromise) {
-    const [nightTex, cloudTex, bumpTex, roughTex, seaCalmTex, seaWindyTex] = await earthDetailTexturePromise;
+    const [nightTex, cloudTex, bumpTex, roughTex, seaWindTex] = await earthDetailTexturePromise;
 
     const nightGeo = new THREE.SphereGeometry(planet.radiusAU * EARTH_NIGHT_SHELL_SCALE, segments, segments / 2);
     // Bound locally as well as returned: the late-detail wiring below needs the
@@ -1156,11 +1151,10 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     earthMat.metalness = 0.0;
     setSurfaceWaterGloss(earthMat, isWaterMask(roughTex));
     earthMat.needsUpdate = true;
-    // The wind maps, once the sea is confirmed: the pair the glint's lobe is
-    // read from (world/seaWind.ts), on the shared uniforms rather than the
+    // The wind map, once the sea is confirmed: the map the glint's lobe is
+    // read from (world/seaWind.ts), on the shared uniform rather than the
     // material, so the streamed sectors read the same sea.
-    installSeaWindArrival('calm', seaCalmTex);
-    installSeaWindArrival('windy', seaWindyTex);
+    installSeaWindArrival(seaWindTex);
 
     // Detail maps that missed their timeout replace the fallback in place —
     // otherwise Earth keeps flat grey city lights, a blank cloud deck, or a

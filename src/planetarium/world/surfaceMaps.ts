@@ -1,6 +1,6 @@
 /**
  * Earth's surface maps on the CPU, coarsely: the water fraction, the sea's
- * calm share and wind, and the cloud deck's coverage, each decoded once per
+ * wind, and the cloud deck's coverage, each decoded once per
  * session to a small equirect grid (360 x 180 by default) and sampled
  * bilinearly, so a term that runs on the main thread each frame — the
  * highlight meter's prediction of the sea's beam (world/glintMeter) — can
@@ -15,10 +15,11 @@
  * stepped when it arrives because the meter eases in stops.
  *
  * The coarse grid is a box of the texture, which is the right estimator for
- * what the shader mixes linearly (the water fraction, the calm share) and
- * near enough for the rest; it also removes the texel-to-texel swing that
- * would otherwise move the exposure from one frame to the next as the ground
- * slides under the mirror point. The equirect convention is the shader's
+ * what the shader mixes linearly (the water fraction) and near enough for
+ * the rest — the wind map has nothing finer than a degree, so a box of it is
+ * the wind the shader's own mips read. It also removes the texel-to-texel
+ * swing that would otherwise move the exposure from one frame to the next as
+ * the ground slides under the mirror point. The equirect convention is the shader's
  * (`sphereEquirectUv` in world/cloudDeck): u wraps, v is the latitude from the
  * south, and a decoded picture is north-up, so rows are read flipped.
  */
@@ -92,7 +93,7 @@ const srgbToLinear = (byte: number): number => {
 /** The water fraction from the roughness map's red, as the shader derives it. */
 export const pickWater = (r: number): number =>
   Math.min(Math.max((ROUGHNESS_MAP_LAND - r / 255) / (ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER), 0), 1);
-/** The calm share and the wind: the one-channel maps as they are. */
+/** The wind: the one-channel map as it is. */
 export const pickRed = (r: number): number => r / 255;
 /** The deck's coverage from the cloud picture's linear luminance. */
 export const pickCloudCoverage = (r: number, g: number, b: number): number =>
@@ -120,9 +121,10 @@ export async function decodePictureRgba(url: string, width: number, height: numb
   return { rgba: image.data, width, height };
 }
 
-export type EarthMapKind = 'water' | 'calm' | 'windy' | 'cloud';
+export type EarthMapKind = 'water' | 'wind' | 'cloud';
+const EARTH_MAP_KINDS: readonly EarthMapKind[] = ['water', 'wind', 'cloud'];
 
-/** The four maps for one body, loaded lazily and sampled together. */
+/** The three maps for one body, loaded lazily and sampled together. */
 export class EarthSurfaceMaps {
   private maps: Partial<Record<EarthMapKind, CoarseMap>> = {};
   private loading: Partial<Record<EarthMapKind, Promise<void>>> = {};
@@ -136,22 +138,21 @@ export class EarthSurfaceMaps {
 
   /** Whether every map is here. */
   get ready(): boolean {
-    return !!(this.maps.water && this.maps.calm && this.maps.windy && this.maps.cloud);
+    return !!(this.maps.water && this.maps.wind && this.maps.cloud);
   }
 
   /** Which maps are here, which failed. */
   state(): { ready: EarthMapKind[]; failed: EarthMapKind[]; loading: EarthMapKind[] } {
-    const kinds: EarthMapKind[] = ['water', 'calm', 'windy', 'cloud'];
     return {
-      ready: kinds.filter((k) => !!this.maps[k]),
-      failed: kinds.filter((k) => this.failed.has(k)),
-      loading: kinds.filter((k) => !!this.loading[k] && !this.maps[k] && !this.failed.has(k)),
+      ready: EARTH_MAP_KINDS.filter((k) => !!this.maps[k]),
+      failed: EARTH_MAP_KINDS.filter((k) => this.failed.has(k)),
+      loading: EARTH_MAP_KINDS.filter((k) => !!this.loading[k] && !this.maps[k] && !this.failed.has(k)),
     };
   }
 
   /** Start the decodes that have not started; returns at once. */
   request(): void {
-    for (const kind of ['water', 'calm', 'windy', 'cloud'] as const) {
+    for (const kind of EARTH_MAP_KINDS) {
       if (this.maps[kind] || this.loading[kind] || this.failed.has(kind)) continue;
       // The source picture is decoded at twice the coarse grid so the box
       // the coarse texel averages holds four source texels, a real box.
@@ -174,9 +175,9 @@ export class EarthSurfaceMaps {
    * reads as no water or no cloud, which is the meter's hold.
    */
   sampleAt(nx: number, ny: number, nz: number, cloudSpin: number, out: SurfaceSample): void {
-    const water = this.maps.water, calm = this.maps.calm, windy = this.maps.windy, cloud = this.maps.cloud;
-    if (!water || !calm || !windy || !cloud) {
-      out.water = 0; out.calm = 0; out.windMs = 0; out.cloudKeep = 1;
+    const water = this.maps.water, wind = this.maps.wind, cloud = this.maps.cloud;
+    if (!water || !wind || !cloud) {
+      out.water = 0; out.windMs = 0; out.cloudKeep = 1;
       return;
     }
     // sphereEquirectUv and bodyToDeck (world/cloudDeck), inlined so a frame
@@ -185,8 +186,7 @@ export class EarthSurfaceMaps {
     const u = u0 - Math.floor(u0);
     const v = 0.5 + Math.asin(Math.min(1, Math.max(-1, ny))) / Math.PI;
     out.water = sampleCoarse(water, u, v);
-    out.calm = sampleCoarse(calm, u, v);
-    out.windMs = sampleCoarse(windy, u, v) * SEA_WIND_MAX_MS;
+    out.windMs = sampleCoarse(wind, u, v) * SEA_WIND_MAX_MS;
     const c = Math.cos(cloudSpin), sn = Math.sin(cloudSpin);
     const dx = c * nx - sn * nz, dz = sn * nx + c * nz;
     const du0 = Math.atan2(dz, -dx) / (2 * Math.PI);

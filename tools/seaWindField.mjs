@@ -1,52 +1,38 @@
-// The wind over the sea, as the pair of maps Earth's ocean reads its glint
-// from (src/planetarium/world/seaWind.ts), generated here and baked by
-// tools/gen-seawind.mjs into public/textures/earth-seawind-calm.v1.webp and
-// earth-seawind-windy.v1.webp.
+// The wind over the sea, as the one map Earth's ocean reads its glint from,
+// generated here and baked by tools/gen-seawind.mjs into
+// public/textures/earth-seawind.v1.webp: one byte a texel, the wind at 10 m
+// over SEA_WIND_MAX_MS, read by src/planetarium/world/seaWind.ts.
 //
 // A glint is a picture of the wind. Where the wind field varies faster than
 // the mirror lobe is wide (about 20 degrees of facet tilt at trade winds), the
 // glint's shape is the field's; where it varies slower, the shape is the
-// lobe's, which on a sphere is a circle. A wind field authored as a zonal mean
-// plus broad noise (the first version of this map) drew the circle: a
-// featureless round glow. What the EPIC frames show instead is a broad faint
-// sheen from the trade-wind sea, a bright irregular core wherever a calm
-// region sits under the specular point, and dark calm lanes off-centre —
-// structure at every scale from a continent down to a few tens of kilometres.
+// lobe's, which on a sphere is a circle.
 //
-// So the field here is bimodal and streaked: a zonal climatology (the
-// doldrums calm, the trades steady, the subtropical highs light, the
-// westerlies and the Southern Ocean strong), domain-warped so nothing runs
-// along a parallel; broad structure and fine grain on top; calm LANES a few
-// texels wide at a per-latitude share of the sea; calm REGIONS hundreds of
-// kilometres across where the sea drops to glassy and the lane mask inverts
-// into gusts. The streaked terms are stretched three to one and tilted
-// 22 degrees, mirrored across the equator, the way wind streaks lie.
+// The field is a zonal climatology (the doldrums calm, the trades steady, the
+// subtropical highs light, the westerlies and the Southern Ocean strong),
+// domain-warped by about five degrees at thirty-degree cells so nothing runs
+// along a parallel, with broad streaked structure on top: eight-degree cells,
+// four octaves, stretched three to one along the streak and tilted 22 degrees
+// from the parallels, mirrored across the equator and blended over eight
+// degrees there, the way wind streaks lie. A finer grain can be added for a
+// candidate (`grain`, off as shipped).
 //
-// What is stored, and why two maps. A texel is not one wind but a MIXTURE
-// of a glassy calm lobe and a windy lobe:
-//   the CALM map: the calm weight w in [0, 1], the share of the texel's sea
-//      that is glassy, measured against a reference lobe (Cox-Munk at
-//      calmReferenceWindMs). Reflectance is linear in w, so a box-filtered mip
-//      of this map is exact at every angle — which averaging a wind is not:
-//      a 4x4 block of 1.5 m/s and 7 m/s texels averaged to 4.25 m/s renders
-//      at two thirds of the brightness the block really has.
-//   the WINDY map: the windy speed U_w / SEA_WIND_MAX_MS of the rest of the
-//      texel — the open-sea field alone (climatology and broad structure),
-//      which has nothing finer than a degree in it and is stored at half the
-//      calm map's size, so its mips are near-exact too.
-// Two files rather than one two-channel file because the bytes said so: the
-// calm weight is 0.4 MB lossless at 2048x1024, and the windy speed beside it
-// at the same size cost a megabyte — a smooth field at 8 bits has a residual
-// in every texel — while at 1024x512 it is 0.2 MB. Each is a grey picture,
-// so each goes through the app's one-channel map path (world/texturePolicy's
-// 'mask' kind) with nothing decoded by hand.
-// The shader mixes two Beckmann lobes, w * lobe(calm) + (1 - w) * lobe(U_w),
-// and a calm lane at half a texel's width is half a texel's calm weight rather
-// than a sharp edge or nothing. The conversion from the single-wind design
-// (a lane textured between 0.3 and 2 m/s, a region sea at 0.18 of its wind)
-// to a weight is a PEAK match: the weight that gives the mixture the same
-// brightness at the centre of the glint as the single lobe would, which is
-// exact there and a little narrow in the tail.
+// Why there are no calm lanes or regions. The pair before this held a calm
+// weight beside the windy speed: lanes a few texels wide and regions hundreds
+// of kilometres across where the sea dropped to glassy, mixed in the shader
+// as a second, glassy lobe. Set beside real GOES, VIIRS and ISS frames of the
+// same day, the sea without them was the one that looked like the real one at
+// every range; the lanes drew dark lines and the regions bright cores that no
+// real frame showed. With no calm share the mixture is one lobe, so the map
+// is one number a texel, the wind, and the sea is drawn with Cox-Munk's slope
+// law at it.
+//
+// Why a mip of this map is fine. Averaging winds is biased where the field
+// varies inside a block (the glint's peak goes as the reciprocal of the slope
+// variance, which is convex in the wind), and that is what the calm weight
+// existed to avoid. This field has nothing finer than its broad cells, so a
+// block's mean wind keeps the glint's peak to within a few percent of the
+// mean of its points' peaks; `seaWind.test.ts` measures it.
 //
 // Periodicity. Every noise is 2-D lattice gradient noise whose lattice hash
 // wraps in BOTH axes with integer periods, so the field is seamless at the
@@ -62,10 +48,10 @@
 //
 // What is authored and what is measured. Cox-Munk's slope law is a fit; its
 // zonal means are approximate values read off scatterometer climatologies;
-// the structure, the lane and region shares and the streak angle are look
-// choices made in an offline simulator against EPIC frames, not measurements.
-// A gridded climatology or a real wind day can replace the field through the
-// same map format (the DEV `?seawindmap=` override reads one).
+// the broad structure's spread, cells and streak angle are look choices made
+// against EPIC frames, not measurements. A gridded climatology or a real wind
+// day can replace the field through the same map format (the DEV
+// `?seawindmap=` override reads one).
 //
 // Everything here is plain arithmetic on plain arrays, so the same code runs
 // under Node for the bake and under vitest for the tests; the types live in
@@ -77,8 +63,8 @@
 export const COX_MUNK_SLOPE_CALM = 0.003;
 export const COX_MUNK_SLOPE_PER_MS = 0.00512;
 
-/** The wind the windy channel's full scale stands for, m/s: past a gale the
- *  sheen has stopped changing. world/seaWind.ts reads the byte back by it. */
+/** The wind the map's full scale stands for, m/s: past a gale the sheen has
+ *  stopped changing. world/seaWind.ts reads the byte back by it. */
 export const SEA_WIND_MAX_MS = 16;
 
 /** Cox-Munk's mean-square slope at a wind. */
@@ -164,20 +150,6 @@ function streakedNoise(lonDeg, latDeg, cellDeg, stretch, tilt, octaves, seed) {
   );
 }
 
-/** The quantile function of a noise over the seas' latitudes, from a fixed
- *  sample, so a share of the sea can be turned into a threshold. */
-function noiseQuantile(sampler, count = 200000) {
-  const samples = new Float32Array(count);
-  let state = 12345;
-  const random = () => {
-    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
-    return state / 4294967296;
-  };
-  for (let index = 0; index < count; index++) samples[index] = sampler(random() * 360 - 180, random() * 140 - 70);
-  samples.sort();
-  return (quantile) => samples[clamp(Math.floor(quantile * count), 0, count - 1)];
-}
-
 /** Linear interpolation in a table of [key, value] rows sorted by key
  *  descending, clamped at both ends. */
 function interpolateTable(table, key) {
@@ -194,8 +166,8 @@ function interpolateTable(table, key) {
 }
 
 /** The field's parameters, as shipped. Every number here is a look choice
- *  made against EPIC frames in the offline simulator except the climatology,
- *  which is read off scatterometer means, good to about a metre a second. */
+ *  made against EPIC frames except the climatology, which is read off
+ *  scatterometer means, good to about a metre a second. */
 export const DEFAULTS = Object.freeze({
   /** Zonal mean wind by latitude, m/s at 10 m, north positive. */
   zonal: [
@@ -204,67 +176,30 @@ export const DEFAULTS = Object.freeze({
     [-3, 3.6], [-8, 5.5], [-15, 7.0], [-25, 6.0], [-35, 8.0], [-45, 10.5], [-55, 11.5], [-65, 10.5],
     [-90, 8.0],
   ],
-  /** The share of the sea that is calm lane, by zonal wind. */
-  laneFractionByWind: [[11, 0], [9, 0.03], [7, 0.09], [5, 0.18], [3, 0.30]],
-  /** The share of the sea inside a calm region, by zonal wind. */
-  regionFractionByWind: [[9, 0.02], [7, 0.07], [5, 0.15], [3, 0.25]],
-  /** One scale on both shares: the calm-frequency knob. */
-  calmScale: 1,
   /** The streaked terms: stretch along the streak and the tangent of the
    *  streak's tilt from the parallels, mirrored across the equator. */
   stretch: 3,
   tilt: 0.4,
   /** Broad structure as a fraction of the zonal mean (four octaves from 8
-   *  degree cells, clamped at two sigma), and a fine grain on the open sea:
-   *  its fraction, its cell and its octaves. Off as shipped — the grain was
-   *  a hair of texture at the disc scale and the whole cost of the windy
-   *  map, which holds nothing finer than a degree without it; a candidate
-   *  with one is `--set=grain:0.1,grainCell:1.2,grainOctaves:1`. */
+   *  degree cells, clamped at two sigma), and a fine grain: its fraction, its
+   *  cell and its octaves. The grain is off as shipped — a hair of texture at
+   *  the disc scale, and the one term finer than a degree, which a mip of the
+   *  map would average into a biased wind; a candidate with one is
+   *  `--set=grain:0.1,grainCell:1.2,grainOctaves:1`. */
   broadSpread: 0.45,
   grain: 0,
   grainCell: 1.2,
   grainOctaves: 1,
-  /** The lanes: their cells and octaves, and the width of their edge in noise
-   *  units (0.04 stamped every lane with the same hard outline; 0.12 grades
-   *  it); the regions the same. */
-  laneCell: 1.5,
-  laneOctaves: 4,
-  laneEdge: 0.12,
-  regionCell: 6,
-  regionEdge: 0.025,
-  /** Inside a region the sea drops to this fraction of its wind, floored by
-   *  the slick texture at 0.3 to 1.2 m/s. */
-  regionWindScale: 0.18,
-  /** How deep the gusts inside a region cut: at 1 a gust lane is the open
-   *  wind with no glassy share, which at the specular point read as flat
-   *  dark ovals of one size and one tilt, five times darker than the calm
-   *  around them; at 0.5 it is half way between the region's calm and the
-   *  open wind, a grey shading of the core; at 0 a region is calm
-   *  throughout, a bald bright blob. */
-  regionGust: 0.5,
-  /** The glassy lobe the calm weight is measured against: Cox-Munk at this
-   *  wind. A weight of one is a sea this calm; a lane textured between 0.3
-   *  and 2 m/s becomes a weight between one and about a half. */
-  calmReferenceWindMs: 0.6,
-  /** The n x n box of points a texel averages, so a lane narrower than a
-   *  texel is a fraction of its calm weight rather than an edge. */
-  supersample: 2,
-  /** The windy map is this many times smaller than the calm map on each
-   *  side, each of its texels the windy-weighted mean of the block. */
-  windyDownsample: 2,
+  /** The n x n box of points a texel averages. At the shipped 1024x512, four
+   *  a side is the same sixteen points each texel of the windy map before it
+   *  averaged. */
+  supersample: 4,
 });
 
-/** The per-latitude terms, computed once per row. */
-function latitudeTerms(params, quantiles, latDeg) {
-  const zonal = interpolateTable(params.zonal, latDeg);
-  const laneFraction = clamp(interpolateTable(params.laneFractionByWind, zonal) * params.calmScale, 0, 0.6);
-  const regionFraction = clamp(interpolateTable(params.regionFractionByWind, zonal) * params.calmScale, 0, 0.6);
+/** The per-latitude terms, computed once per row of points. */
+function latitudeTerms(params, latDeg) {
   return {
-    zonal,
-    laneFraction,
-    laneLevel: laneFraction > 0 ? quantiles.lane(1 - laneFraction) : Infinity,
-    regionFraction,
-    regionLevel: regionFraction > 0 ? quantiles.region(1 - regionFraction) : Infinity,
+    zonal: interpolateTable(params.zonal, latDeg),
     // The streaks tilt one way north of the equator and the other south of
     // it, blended over eight degrees so the seam is not a crease.
     northWeight: smoothstep(-4, 4, latDeg),
@@ -273,201 +208,94 @@ function latitudeTerms(params, quantiles, latDeg) {
 
 /** Every noise term at a point, for one sign of the tilt. */
 function noiseTerms(params, lonDeg, latDeg, tilt) {
-  // A warp of about five degrees at thirty-degree cells on everything, and a
-  // finer one of about a degree on the lanes and the slick texture, so no
-  // structure runs along a parallel.
+  // A warp of about five degrees at thirty-degree cells, so no structure runs
+  // along a parallel; the grain takes a finer one of about a degree on top.
   const warpLon = 5 * streakedNoise(lonDeg, latDeg, 30, 1, 0, 3, 7);
   const warpLat = 5 * streakedNoise(lonDeg, latDeg, 30, 1, 0, 3, 8);
   const lonWarped = lonDeg + warpLon;
   const latWarped = latDeg + warpLat;
-  const laneWarpLon = 1.2 * streakedNoise(lonDeg, latDeg, 5, 1, 0, 2, 9);
-  const laneWarpLat = 1.2 * streakedNoise(lonDeg, latDeg, 5, 1, 0, 2, 10);
-  const lonLane = lonWarped + laneWarpLon;
-  const latLane = latWarped + laneWarpLat;
+  let grain = 0;
+  if (params.grain > 0) {
+    const lonFine = lonWarped + 1.2 * streakedNoise(lonDeg, latDeg, 5, 1, 0, 2, 9);
+    const latFine = latWarped + 1.2 * streakedNoise(lonDeg, latDeg, 5, 1, 0, 2, 10);
+    grain = streakedNoise(lonFine, latFine, params.grainCell, params.stretch, tilt, params.grainOctaves, 5) / 0.3;
+  }
   return {
     broad: streakedNoise(lonWarped, latWarped, 8, params.stretch, tilt, 4, 1) / 0.3,
-    lane: streakedNoise(lonLane, latLane, params.laneCell, params.stretch, tilt, params.laneOctaves, 2),
-    region: streakedNoise(lonWarped, latWarped, params.regionCell, params.stretch, tilt, 3, 4),
-    slick: streakedNoise(lonLane, latLane, 0.5, params.stretch, tilt, 2, 3),
-    grain: params.grain > 0
-      ? streakedNoise(lonLane, latLane, params.grainCell, params.stretch, tilt, params.grainOctaves, 5) / 0.3
-      : 0,
+    grain,
   };
 }
 
-/**
- * The weight of a glassy reference lobe that gives a mixture of it with a
- * windy lobe the same brightness at the centre of the glint as one lobe at
- * `windMs` would: the peak of a Gaussian lobe goes as 1 / mss, so this is a
- * ratio of reciprocals. One for a sea calmer than the reference, zero for one
- * as windy as the windy lobe.
- */
-export function calmWeightForWind(windMs, windyMs, referenceWindMs) {
-  const peak = 1 / meanSquareSlope(windMs);
-  const peakWindy = 1 / meanSquareSlope(windyMs);
-  const peakReference = 1 / meanSquareSlope(referenceWindMs);
-  if (peakReference <= peakWindy) return 0;
-  return clamp((peak - peakWindy) / (peakReference - peakWindy), 0, 1);
-}
-
-/** One point of the field. `windMs` is the single-wind design the mixture
- *  stands in for; `calmWeight` and `windyMs` are what the map stores. */
-function fieldAtPoint(params, latTerms, lonDeg, latDeg) {
+/** The wind at one point, m/s: the climatology with its broad structure and
+ *  grain, floored at 0.1 and capped at the map's full scale. */
+function windAtPoint(params, latTerms, lonDeg, latDeg) {
   const { northWeight } = latTerms;
-  // The lanes and the regions are masks with soft edges, thresholded at the
-  // quantiles of ONE orientation's noise. Across the equator the two tilts
-  // blend, and a blend of two noises has less spread than either, so the
-  // masks are taken per orientation and it is the masks that blend: the
-  // share then comes out at the table's, where a mask of the blended noise
-  // under-delivered it by about a sixth in the band.
-  const masks = (terms) => ({
-    lane: latTerms.laneFraction > 0
-      ? smoothstep(latTerms.laneLevel - params.laneEdge, latTerms.laneLevel + params.laneEdge, terms.lane)
-      : 0,
-    region: latTerms.regionFraction > 0
-      ? smoothstep(latTerms.regionLevel - params.regionEdge, latTerms.regionLevel + params.regionEdge, terms.region)
-      : 0,
-  });
-  let terms;
-  let laneWeight;
-  let regionWeight;
+  let broad;
+  let grain;
   if (northWeight >= 1 || northWeight <= 0) {
-    terms = noiseTerms(params, lonDeg, latDeg, northWeight >= 1 ? params.tilt : -params.tilt);
-    ({ lane: laneWeight, region: regionWeight } = masks(terms));
+    ({ broad, grain } = noiseTerms(params, lonDeg, latDeg, northWeight >= 1 ? params.tilt : -params.tilt));
   } else {
     const north = noiseTerms(params, lonDeg, latDeg, params.tilt);
     const south = noiseTerms(params, lonDeg, latDeg, -params.tilt);
-    terms = {};
-    for (const key of Object.keys(north)) terms[key] = north[key] * northWeight + south[key] * (1 - northWeight);
-    const northMasks = masks(north);
-    const southMasks = masks(south);
-    laneWeight = northMasks.lane * northWeight + southMasks.lane * (1 - northWeight);
-    regionWeight = northMasks.region * northWeight + southMasks.region * (1 - northWeight);
+    broad = north.broad * northWeight + south.broad * (1 - northWeight);
+    grain = north.grain * northWeight + south.grain * (1 - northWeight);
   }
-  // The open sea: the climatology with its broad structure and grain.
-  const blown = clamp(
+  return clamp(
     latTerms.zonal
-      * (1 + params.broadSpread * clamp(terms.broad, -2, 2))
-      * (1 + params.grain * clamp(terms.grain, -2, 2)),
+      * (1 + params.broadSpread * clamp(broad, -2, 2))
+      * (1 + params.grain * clamp(grain, -2, 2)),
     0.1, SEA_WIND_MAX_MS,
   );
-  // A slick texture grades the calm inside the lanes and the regions.
-  const slickUnit = clamp(0.5 + terms.slick, 0, 1);
-  const laneWindMs = 0.3 + 1.7 * slickUnit;
-  const regionSeaMs = Math.max(blown * params.regionWindScale, 0.3 + 0.9 * slickUnit);
-  // Outside a region a lane is calm in a windy sea; inside one the sea is
-  // calm and the lane mask inverts into gusts of the open wind, cut as deep
-  // as `regionGust` says.
-  const gustWeight = laneWeight * params.regionGust;
-  const laneCalm = calmWeightForWind(laneWindMs, blown, params.calmReferenceWindMs);
-  const regionCalm = calmWeightForWind(regionSeaMs, blown, params.calmReferenceWindMs);
-  const calmWeight = clamp(
-    (1 - regionWeight) * laneWeight * laneCalm + regionWeight * (1 - gustWeight) * regionCalm,
-    0, 1,
-  );
-  // The single-wind design is the wind whose lobe peaks where the mixture
-  // does. A lane's graded edge and a half-depth gust interpolate in the
-  // peak, which goes as the reciprocal of the slope variance, so a design
-  // interpolated in the wind would sit under the mixture by its convexity.
-  const peak = calmWeight / meanSquareSlope(params.calmReferenceWindMs) + (1 - calmWeight) / meanSquareSlope(blown);
-  const windMs = clamp((1 / peak - COX_MUNK_SLOPE_CALM) / COX_MUNK_SLOPE_PER_MS, 0.1, SEA_WIND_MAX_MS);
-  return { windMs, calmWeight, windyMs: blown };
-}
-
-function makeQuantiles(params) {
-  return {
-    lane: noiseQuantile((lon, lat) =>
-      streakedNoise(lon, lat, params.laneCell, params.stretch, params.tilt, params.laneOctaves, 2)),
-    region: noiseQuantile((lon, lat) =>
-      streakedNoise(lon, lat, params.regionCell, params.stretch, params.tilt, 3, 4)),
-  };
 }
 
 /**
  * A point evaluator sharing the builder's arithmetic exactly, for the
  * periodicity and the mip tests: (longitude, latitude) in degrees to the
- * point's single-wind design, calm weight and windy speed.
+ * wind there, m/s.
  */
 export function pointEvaluator(params = {}) {
   const merged = { ...DEFAULTS, ...params };
-  const quantiles = makeQuantiles(merged);
-  return (lonDeg, latDeg) => fieldAtPoint(merged, latitudeTerms(merged, quantiles, latDeg), lonDeg, latDeg);
+  return (lonDeg, latDeg) => windAtPoint(merged, latitudeTerms(merged, latDeg), lonDeg, latDeg);
 }
 
 /**
  * The field at `width` x `height`, row 0 the south pole (the layout three
  * samples a picture in with v = 0 at its bottom, and the shader reads): per
- * texel the calm weight and the single-wind design's mean for the statistics,
- * and at `windyDownsample` times fewer texels a side the windy speed — the
- * windy-weighted mean over the block, so a block that is half lane carries the
- * open sea's wind beside it and not the lane's. An n x n box of points per
- * calm texel.
+ * texel the mean wind over an n x n box of points.
  */
 export function buildField(width, height, params = {}) {
   const merged = { ...DEFAULTS, ...params };
-  const quantiles = makeQuantiles(merged);
-  const calmWeight = new Float32Array(width * height);
-  const windMs = new Float32Array(width * height);
-  const windyWeightedSum = new Float32Array(width * height);
-  const windyWeightSum = new Float32Array(width * height);
-  const windyPlainSum = new Float32Array(width * height);
   const n = merged.supersample;
+  if (!Number.isInteger(n) || n < 1) throw new Error(`sea wind field: a supersample of ${n} is not a positive integer`);
+  const windMs = new Float32Array(width * height);
+  const rowSum = new Float64Array(width);
   for (let row = 0; row < height; row++) {
-    for (let column = 0; column < width; column++) {
-      let calmSum = 0;
-      let windSum = 0;
-      const index = row * width + column;
-      for (let subRow = 0; subRow < n; subRow++) {
-        const latDeg = ((row + (subRow + 0.5) / n) / height) * 180 - 90;
-        const latTerms = latitudeTerms(merged, quantiles, latDeg);
+    rowSum.fill(0);
+    for (let subRow = 0; subRow < n; subRow++) {
+      const latDeg = ((row + (subRow + 0.5) / n) / height) * 180 - 90;
+      const latTerms = latitudeTerms(merged, latDeg);
+      for (let column = 0; column < width; column++) {
         for (let subColumn = 0; subColumn < n; subColumn++) {
           const lonDeg = ((column + (subColumn + 0.5) / n) / width) * 360 - 180;
-          const point = fieldAtPoint(merged, latTerms, lonDeg, latDeg);
-          calmSum += point.calmWeight;
-          windSum += point.windMs;
-          windyWeightedSum[index] += (1 - point.calmWeight) * point.windyMs;
-          windyWeightSum[index] += 1 - point.calmWeight;
-          windyPlainSum[index] += point.windyMs;
+          rowSum[column] += windAtPoint(merged, latTerms, lonDeg, latDeg);
         }
       }
-      calmWeight[index] = calmSum / (n * n);
-      windMs[index] = windSum / (n * n);
     }
+    for (let column = 0; column < width; column++) windMs[row * width + column] = rowSum[column] / (n * n);
   }
-  const down = merged.windyDownsample;
-  if (!Number.isInteger(down) || down < 1 || width % down !== 0 || height % down !== 0) {
-    throw new Error(`sea wind field: ${width}x${height} does not divide by a windy downsample of ${down}`);
-  }
-  const windyWidth = width / down;
-  const windyHeight = height / down;
-  const windyMs = new Float32Array(windyWidth * windyHeight);
-  for (let row = 0; row < windyHeight; row++) {
-    for (let column = 0; column < windyWidth; column++) {
-      let weighted = 0;
-      let weight = 0;
-      let plain = 0;
-      for (let subRow = 0; subRow < down; subRow++) {
-        for (let subColumn = 0; subColumn < down; subColumn++) {
-          const index = (row * down + subRow) * width + column * down + subColumn;
-          weighted += windyWeightedSum[index];
-          weight += windyWeightSum[index];
-          plain += windyPlainSum[index];
-        }
-      }
-      windyMs[row * windyWidth + column] = weight > 1e-6 ? weighted / weight : plain / (down * down * n * n);
-    }
-  }
-  return { width, height, calmWeight, windMs, windyWidth, windyHeight, windyMs };
+  return { width, height, windMs };
 }
 
-/** A map as grey picture bytes, three a texel and NORTH-UP — a picture's first
- *  row is its top — for a PNG the app reads as a one-channel mask. */
-function encodeGrey(values, width, height, scale) {
+/** The map as a grey picture, three bytes a texel and NORTH-UP — a picture's
+ *  first row is its top — the wind over SEA_WIND_MAX_MS: the form the app
+ *  reads as a one-channel mask. */
+export function encodeWindGrey(field) {
+  const { width, height, windMs } = field;
   const rgb = new Uint8Array(width * height * 3);
   for (let row = 0; row < height; row++) {
     const pictureRow = height - 1 - row;
     for (let column = 0; column < width; column++) {
-      const byte = Math.round(clamp(values[row * width + column] * scale, 0, 1) * 255);
+      const byte = Math.round(clamp(windMs[row * width + column] / SEA_WIND_MAX_MS, 0, 1) * 255);
       const to = (pictureRow * width + column) * 3;
       rgb[to] = byte;
       rgb[to + 1] = byte;
@@ -477,62 +305,15 @@ function encodeGrey(values, width, height, scale) {
   return rgb;
 }
 
-/** The calm map as a grey picture: the weight over [0, 1]. */
-export function encodeCalmGrey(field) {
-  return encodeGrey(field.calmWeight, field.width, field.height, 1);
-}
-
-/** The windy map as a grey picture: the speed over SEA_WIND_MAX_MS. */
-export function encodeWindyGrey(field) {
-  return encodeGrey(field.windyMs, field.windyWidth, field.windyHeight, 1 / SEA_WIND_MAX_MS);
-}
-
 /**
- * Both maps in one picture at the calm map's size, north-up: red the calm
- * weight, green the windy speed (bilinear between its own texels) over
- * SEA_WIND_MAX_MS, blue nothing. The form the DEV `?seawindmap=` override
- * and the offline simulator read a candidate in.
- */
-export function encodeSeaWindRgb(field) {
-  const { width, height, calmWeight, windyWidth, windyHeight, windyMs } = field;
-  const rgb = new Uint8Array(width * height * 3);
-  const sampleWindy = (u, v) => {
-    const x = u * windyWidth - 0.5;
-    const y = clamp(v * windyHeight - 0.5, 0, windyHeight - 1);
-    const column = Math.floor(x);
-    const row = Math.floor(y);
-    const fractionX = x - column;
-    const fractionY = y - row;
-    const wrap = (index) => ((index % windyWidth) + windyWidth) % windyWidth;
-    const rowNext = Math.min(row + 1, windyHeight - 1);
-    const lower = windyMs[row * windyWidth + wrap(column)] * (1 - fractionX) + windyMs[row * windyWidth + wrap(column + 1)] * fractionX;
-    const upper = windyMs[rowNext * windyWidth + wrap(column)] * (1 - fractionX) + windyMs[rowNext * windyWidth + wrap(column + 1)] * fractionX;
-    return lower + (upper - lower) * fractionY;
-  };
-  for (let row = 0; row < height; row++) {
-    const pictureRow = height - 1 - row;
-    for (let column = 0; column < width; column++) {
-      const from = row * width + column;
-      const to = (pictureRow * width + column) * 3;
-      rgb[to] = Math.round(clamp(calmWeight[from], 0, 1) * 255);
-      rgb[to + 1] = Math.round(clamp(sampleWindy((column + 0.5) / width, (row + 0.5) / height) / SEA_WIND_MAX_MS, 0, 1) * 255);
-      rgb[to + 2] = 0;
-    }
-  }
-  return rgb;
-}
-
-/**
- * Area-weighted statistics of the single-wind design by band of |latitude|,
- * for the bake's log and the tests: the mean wind, the share under one and
- * under two metres a second, and the mean calm weight. Land included — no
- * ocean mask is read here — so the calm shares are upper bounds on the sea's.
+ * Area-weighted statistics of the wind by band of |latitude|, for the bake's
+ * log and the tests: the mean wind, and the share under one and under two
+ * metres a second. Land included — no ocean mask is read here.
  */
 export function bandStatistics(field, latLowDeg, latHighDeg) {
-  const { width, height, calmWeight, windMs } = field;
+  const { width, height, windMs } = field;
   let weight = 0;
   let windSum = 0;
-  let calmSum = 0;
   let under1 = 0;
   let under2 = 0;
   for (let row = 0; row < height; row++) {
@@ -544,14 +325,12 @@ export function bandStatistics(field, latLowDeg, latHighDeg) {
       const index = row * width + column;
       weight += rowWeight;
       windSum += rowWeight * windMs[index];
-      calmSum += rowWeight * calmWeight[index];
       if (windMs[index] < 1) under1 += rowWeight;
       if (windMs[index] < 2) under2 += rowWeight;
     }
   }
   return {
     meanWindMs: windSum / weight,
-    meanCalmWeight: calmSum / weight,
     under1Fraction: under1 / weight,
     under2Fraction: under2 / weight,
   };

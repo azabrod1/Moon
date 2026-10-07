@@ -23,9 +23,9 @@
  *   - the Sun's own path, T(1, μs) / T(1, 1), clamped at 1, blended by the
  *     air's blend;
  *   - water's Fresnel on the half vector, three's exp2 Schlick on SEA_WATER_F0;
- *   - the two Beckmann lobes at the half vector, each with Beckmann's own
- *     Smith visibility (which carries the 1 / (4 cos cos)), mixed by the calm
- *     share: the calm lobe at the calm wind, the windy one at the map's wind;
+ *   - the Beckmann lobe at the half vector, at Cox-Munk's mean-square slope
+ *     for the map's wind, with Beckmann's own Smith visibility (which
+ *     carries the 1 / (4 cos cos));
  *   - the water fraction, which the shader mixes the mirror term by;
  *   - the cloud's keep over the point, which cuts the beam before the deck
  *     covers it;
@@ -71,8 +71,6 @@ export interface GlintMeterLight {
 /** The sea chain's constants in force. */
 export interface GlintMeterSea {
   readonly waterF0: number;
-  /** The calm lobe's mean-square slope (the calm wind through Cox-Munk). */
-  readonly calmMss: number;
   readonly knee: number;
   readonly cap: number;
   /** The haze grade on a direct view (SURFACE_HAZE_CLEAR_VIEW for Earth). */
@@ -83,9 +81,7 @@ export interface GlintMeterSea {
 
 /** What the maps say at a ground point. */
 export interface SurfaceSample {
-  /** The share of the texel that is glassy, 0..1. */
-  calm: number;
-  /** The wind of the rest, m/s. */
+  /** The wind over the sea, m/s. */
   windMs: number;
   /** The water fraction, 0..1. */
   water: number;
@@ -186,7 +182,7 @@ export interface GlintScratch {
 
 export function createGlintScratch(): GlintScratch {
   return {
-    sample: { calm: 0, windMs: 0, water: 0, cloudKeep: 1 }, t: [0, 0, 0], tz: [0, 0, 0],
+    sample: { windMs: 0, water: 0, cloudKeep: 1 }, t: [0, 0, 0], tz: [0, 0, 0],
     axes: new Float64Array(6), place0: [0, 0], place1: [0, 0],
   };
 }
@@ -229,14 +225,9 @@ export function beamRadianceAt(
   const vh = Math.max(vx * hx + vy * hy + vz * hz, 0);
   const tail = Math.pow(2, (-5.55473 * vh - 6.98316) * vh);
   const fresnel = sea.waterF0 + (1 - sea.waterF0) * tail;
-  const mssWindy = meanSquareSlopeOfWind(s.windMs);
-  const windy = beckmannLobe(nh, mssWindy)
-    * beckmannG1(nl, Math.sqrt(mssWindy)) * beckmannG1(nv, Math.sqrt(mssWindy)) / Math.max(4 * nl * nv, 1e-6);
-  const calm = s.calm > 0
-    ? beckmannLobe(nh, sea.calmMss)
-      * beckmannG1(nl, Math.sqrt(sea.calmMss)) * beckmannG1(nv, Math.sqrt(sea.calmMss)) / Math.max(4 * nl * nv, 1e-6)
-    : 0;
-  const lobe = windy * (1 - s.calm) + calm * s.calm;
+  const mss = meanSquareSlopeOfWind(s.windMs);
+  const lobe = beckmannLobe(nh, mss)
+    * beckmannG1(nl, Math.sqrt(mss)) * beckmannG1(nv, Math.sqrt(mss)) / Math.max(4 * nl * nv, 1e-6);
   // The Sun's path, normalised at the zenith, clamped, blended; the camera
   // leg through the haze grade's weight.
   lookupTransmittance(table, nl, scratch.t);
@@ -272,9 +263,9 @@ export interface BeamPeak {
    *  camera, degrees: along the principal line and across it. */
   readonly halfWidthAlongDeg: number;
   readonly halfWidthAcrossDeg: number;
-  /** The surface at the peak as the sampler read it: the water, the calm
-   *  share, the wind and the cloud's keep, so a probe can tell a beam under
-   *  cloud from a beam the prediction missed. */
+  /** The surface at the peak as the sampler read it: the water, the wind
+   *  and the cloud's keep, so a probe can tell a beam under cloud from a
+   *  beam the prediction missed. */
   readonly sample: SurfaceSample;
 }
 
@@ -290,7 +281,7 @@ export function createBeamPeak(): BeamPeak {
   return {
     n: [0, 0, 0], groundAngleDeg: 0, carried: [0, 0, 0], drawn: [0, 0, 0], drawnMax: 0,
     halfWidthAlongDeg: 0, halfWidthAcrossDeg: 0,
-    sample: { calm: 0, windMs: 0, water: 0, cloudKeep: 1 },
+    sample: { windMs: 0, water: 0, cloudKeep: 1 },
   };
 }
 
@@ -395,7 +386,7 @@ export function scanBeam(
   o.drawnMax = 0; o.groundAngleDeg = 0; o.halfWidthAlongDeg = 0; o.halfWidthAcrossDeg = 0;
   o.carried[0] = o.carried[1] = o.carried[2] = 0;
   o.drawn[0] = o.drawn[1] = o.drawn[2] = 0;
-  o.sample.calm = 0; o.sample.windMs = 0; o.sample.water = 0; o.sample.cloudKeep = 1;
+  o.sample.windMs = 0; o.sample.water = 0; o.sample.cloudKeep = 1;
   const cam = pose.camera;
   const camDist = Math.hypot(cam[0], cam[1], cam[2]);
   if (!(camDist > 1.000001)) return false;
@@ -435,7 +426,7 @@ export function scanBeam(
   beamRadianceAt(px, py, pz, pose, light, sea, sampler, table, scratch, o.carried);
   // The sampler ran for the peak inside that call; keep its reading before
   // the extent's samples overwrite the scratch.
-  o.sample.calm = scratch.sample.calm; o.sample.windMs = scratch.sample.windMs;
+  o.sample.windMs = scratch.sample.windMs;
   o.sample.water = scratch.sample.water; o.sample.cloudKeep = scratch.sample.cloudKeep;
   o.drawn[0] = shoulder(o.carried[0], sea.knee, sea.cap);
   o.drawn[1] = shoulder(o.carried[1], sea.knee, sea.cap);

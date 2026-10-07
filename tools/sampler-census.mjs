@@ -10,8 +10,8 @@
 // without its water mask) and this battery holds them to:
 //
 //   - every program within the GPU's fragment texture units;
-//   - Earth's ground with room left for the sea's wind maps (SEA_WIND_SLOT
-//     units, a branch not landed yet) in every combination;
+//   - every Earth ground program linking exactly the sea's samplers
+//     (SEA_WIND_SAMPLERS: the one wind map), in every combination;
 //   - the deck compiled with the field holds exactly the field's two samplers
 //     more; the ground, which compiles the field only beside its cloud shadow
 //     (the shadow reads the field), drops its dead uCloudDetail tap and holds
@@ -74,10 +74,9 @@ try {
 
   const key = (r) => `${r.surface} ${r.tables} ${r.waterMask ? 'water' : 'dry'} [${r.defines.join(' ')}]`;
   console.log(`# sampler census @ ${baseUrl}${extra ? ` (${extra})` : ''}`);
-  console.log(`  fragment texture units ${census.maxUnits}, sea-wind slot ${census.seaWindSlot}`);
+  console.log(`  fragment texture units ${census.maxUnits}, sea samplers per ground program ${census.seaWindSamplers}`);
   for (const r of census.rows) {
-    const room = r.surface === 'ground' && r.waterMask ? `, +${census.seaWindSlot} sea wind = ${r.samplers.length + census.seaWindSlot}` : '';
-    console.log(`  ${key(r).padEnd(52)} ${String(r.samplers.length).padStart(2)}${room}  ${r.samplers.join(' ')}`);
+    console.log(`  ${key(r).padEnd(52)} ${String(r.samplers.length).padStart(2)}  ${r.samplers.join(' ')}`);
   }
 
   const find = (surface, defines, tables, waterMask) => census.rows.find((r) => r.surface === surface
@@ -89,8 +88,9 @@ try {
     const field = r.defines.includes('CLOUD_FIELD');
     if (n === 0) fail(`${key(r)}: no linked program`);
     if (n > census.maxUnits) fail(`${key(r)}: ${n} samplers, over the ${census.maxUnits} units`);
-    if (r.surface === 'ground' && r.waterMask && n + census.seaWindSlot > census.maxUnits) {
-      fail(`${key(r)}: ${n} samplers leave no room for the sea wind's ${census.seaWindSlot}`);
+    const sea = r.samplers.filter((s) => s.startsWith('uSea'));
+    if (r.surface === 'ground' && sea.length !== census.seaWindSamplers) {
+      fail(`${key(r)}: links ${sea.length} sea sampler(s) (${sea.join(' ')}), wanted ${census.seaWindSamplers}`);
     }
     if (!field) {
       for (const s of FIELD_SAMPLERS) if (r.samplers.includes(s)) fail(`${key(r)}: ${s} active without the field`);

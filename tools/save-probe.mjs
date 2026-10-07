@@ -1,8 +1,9 @@
 // Save probe: does a save write the journey the user left — never a scene
-// something else staged over it?
+// something else staged over it, and with the clock and the ship the way the
+// user left them rather than the way a menu holds them?
 //
 //   node tools/save-probe.mjs --url=http://localhost:5174
-//   node tools/save-probe.mjs --scenario=mission
+//   node tools/save-probe.mjs --scenario=mission,menu
 //
 // Scenarios:
 //   mission   a historic mission (Voyager 1, from the Tools popover) stages its
@@ -10,6 +11,12 @@
 //             the journey the mission took over — its clock within a minute of
 //             a save made just before the mission, its position within 0.01 AU
 //             — not the mission's scene; and Exit still puts that journey back.
+//   menu      opening ☰ pauses a running clock and stops a moving ship while
+//             it is up; Save from inside it stores the clock running and the
+//             ship moving, as the user left them. The control: a clock the
+//             user paused (Space) before opening ☰ is stored paused. The help
+//             sheet holds both the same way, and a save made under it (the
+//             page-hide save, fired by hand) stores them running too.
 //
 // The save is read back from localStorage (PlanetariumStore's key). Boots
 // with storage cleared and the first-run help marked seen, so no modal holds
@@ -20,7 +27,7 @@ import { takeBrowserLock } from './browserLock.mjs';
 
 const arg = (k, d) => { const m = process.argv.find((a) => a.startsWith(`--${k}=`)); return m ? m.slice(k.length + 3) : d; };
 const URL = arg('url', 'http://localhost:5174');
-const SCENARIOS = new Set(arg('scenario', 'mission').split(','));
+const SCENARIOS = new Set(arg('scenario', 'mission,menu').split(','));
 const SOFTWARE = process.argv.includes('--software');
 const GPU_ARGS = SOFTWARE
   ? ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist']
@@ -110,6 +117,44 @@ try {
     await context.close();
   }
 
+  // ── menu ────────────────────────────────────────────────────────────────
+  if (SCENARIOS.has('menu')) {
+    console.log('[menu]');
+    const { context, page } = await boot();
+    const t0 = await page.evaluate(() => window.__moon.getTimeMs());
+    await sleep(1200);
+    const t1 = await page.evaluate(() => window.__moon.getTimeMs());
+    check(t1 > t0, 'menu: the clock is running before ☰ opens', { t0: iso(t0), t1: iso(t1) });
+    const saved = await saveFromMenu(page);
+    check(saved.astroTimePaused === false, 'menu: Save from ☰ stores the clock running, as the user left it', { astroTimePaused: saved.astroTimePaused });
+    check(saved.moving === true, 'menu: and the ship moving', { moving: saved.moving });
+    const t2 = await page.evaluate(() => window.__moon.getTimeMs());
+    await sleep(1200);
+    const t3 = await page.evaluate(() => window.__moon.getTimeMs());
+    check(t3 > t2, 'menu: closing ☰ resumes the clock', { t2: iso(t2), t3: iso(t3) });
+    // The control: the user's own pause is kept.
+    await page.keyboard.press('Space');
+    await sleep(400);
+    const paused = await saveFromMenu(page);
+    check(paused.astroTimePaused === true, 'menu: a clock the user paused first is stored paused', { astroTimePaused: paused.astroTimePaused });
+    // The help sheet: running again, then ☰ → Help, and the page-hide save.
+    await page.keyboard.press('Space');
+    await sleep(400);
+    await page.click('#planetarium-btn-menu');
+    await sleep(300);
+    await page.click('#planetarium-btn-help');
+    await sleep(500);
+    const help = await page.evaluate((key) => {
+      localStorage.removeItem(key);
+      const open = document.getElementById('planetarium-help')?.classList.contains('visible') ?? null;
+      window.dispatchEvent(new Event('pagehide'));
+      return { open, saved: JSON.parse(localStorage.getItem(key) ?? 'null') };
+    }, SAVE_KEY);
+    check(help.open === true && help.saved?.astroTimePaused === false && help.saved?.moving === true,
+      'menu: a save under the help sheet stores the clock running and the ship moving',
+      { helpOpen: help.open, astroTimePaused: help.saved?.astroTimePaused, moving: help.saved?.moving });
+    await context.close();
+  }
 } finally {
   await browser.close();
   release();

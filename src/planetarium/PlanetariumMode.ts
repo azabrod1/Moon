@@ -20094,6 +20094,15 @@ export class PlanetariumMode {
       showBodyLabels: this.showBodyLabels,
       showBodyMarkers: this.showBodyMarkers,
     };
+    // The ☰ menu and the help sheet pause a running clock and stop a moving
+    // ship while they are up, and put both back when they close. A save made
+    // meanwhile (Save sits in the menu; the autosave and the page-hide save
+    // run under either) records them as they will be once the sheet closes,
+    // not as the sheet holds them.
+    const menuOpen = this.menuPanel.isOpen();
+    const helpOpen = this.helpModal.isOpen();
+    const clockHeld = (menuOpen && this.resumeTimeAfterMenu) || (helpOpen && this.resumeTimeAfterHelp);
+    const shipHeld = (menuOpen && this.resumeShipAfterMenu) || (helpOpen && this.resumeShipAfterHelp);
     return {
       positionAU: { x: this.player.posX, y: this.player.posY, z: this.player.posZ },
       headingRad: this.player.heading,
@@ -20101,7 +20110,7 @@ export class PlanetariumMode {
       // When landed, speed/autopilot are zeroed — save the pre-land originals
       // so they restore correctly on load.
       speed: this.landedOn ? this.preLandSpeed : this.player.speedMultiplier,
-      moving: this.landedOn ? false : this.player.moving,
+      moving: this.landedOn ? false : this.player.moving || shipHeld,
       visitedPlanets: Array.from(this.player.visitedPlanets),
       distanceTraveled: this.player.distanceTraveled,
       timeElapsed: this.player.timeElapsed,
@@ -20109,7 +20118,7 @@ export class PlanetariumMode {
       autopilot: this.landedOn ? this.preLandAutopilot : this.autopilot,
       astroTimeUtcMs: this.timeState.currentUtcMs,
       astroTimeRate: this.timeState.rate,
-      astroTimePaused: this.timeState.paused,
+      astroTimePaused: this.timeState.paused && !clockHeld,
       showShip: chrome.showShip,
       showConstellations: this.showConstellations,
       showBodyLabels: chrome.showBodyLabels,

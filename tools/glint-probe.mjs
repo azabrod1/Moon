@@ -74,6 +74,18 @@
 // the brightest beam pixel after exposure is held against the meter's target
 // with the non-glint share at that pixel reported; then flips the switch off
 // and reads exactly one.
+// `--moments` adds the beam's SHAPE to the meter arm: the orientation and the
+// axis ratio of the region at or over half the peak, from its second
+// moments, for the drawn beam with the lobe along the wind on and off (the
+// SEA_AXIS define flipped live) and for the meter's twin projected the same
+// way — the twin's drawn value at the ground under every sample of one pixel
+// grid over the region, evaluated in the page by the meter's own functions
+// (`__moon.glintTwin`), with the axis on, off and decoded mirrored — and the
+// tilt ON minus OFF of each. A vitest cannot run GLSL, so this is the check
+// of the shader's handedness: the drawn and predicted tilts must agree in
+// sign, and a mirrored decode must flip the drawn one. Also where the twin's
+// brightest point sits off the principal line, which the scan never leaves
+// over open sea. `--momentstride` and `--momentpad` set the grid.
 // `--bearings=a,b,c` runs the poses at several bearings (a cloud lands over
 // one of them where the sheet's bearing is clear), `--bearing=<deg>` one; the
 // bearing each pose was flown at is read back from its geometry, printed,
@@ -121,6 +133,14 @@ const exposure = Number(arg('exposure', '1'));
 const settle = Number(arg('settle', look ? '7000' : '2500'));
 const bootTimeout = Number(arg('boot', '240000'));
 const useGpu = !flag('software');
+// The meter arm's shape of the beam (`--moments`): second moments of the
+// half-maximum region, drawn and predicted, with the lobe along the wind on
+// and off. The grid the two are compared on: every `--momentstride` pixels
+// over the drawn half-maximum region's box widened by `--momentpad` of its
+// size on each side.
+const moments = flag('moments');
+const momentStride = Number(arg('momentstride', '2'));
+const momentPad = Number(arg('momentpad', '0.6'));
 
 // The app's own numbers (world/seaWind, world/surfaceShading), stated here so
 // the reference is independent of the module graph. The Sun's light and the
@@ -224,6 +244,195 @@ function projectPoint(camera, point, w, h) {
   const x = (f / camera.aspect) * (local[0] / -local[2]);
   const y = f * (local[1] / -local[2]);
   return { x: ((x + 1) / 2) * w, y: ((y + 1) / 2) * h, ndcX: x, ndcY: y };
+}
+
+/** The ground's unit normal (world axes) where the ray through scene pixel
+ *  (i, j) meets the body, or null for the sky. */
+function groundNormalAt(pose, camera, i, j, w, h) {
+  const d = rayFor(camera, i, j, w, h);
+  const B = pose.bodyScene;
+  const R = pose.radiusAU;
+  const db = dot(d, B);
+  const disc = db * db - (dot(B, B) - R * R);
+  if (disc < 0) return null;
+  const t = db - Math.sqrt(disc);
+  if (t <= 0) return null;
+  return scale(sub(scale(d, t), B), 1 / R);
+}
+
+/**
+ * The shape of a beam from its second moments: the region at or over half its
+ * peak, 4-connected to the peak, on a grid of samples (`gw` x `gh`, sample
+ * (a, b) at pixel (x0 + a s, y0 + b s), y up from the bottom row), unweighted.
+ * Returns the region's size and centre, its orientation (the long axis, degrees
+ * counterclockwise from the frame's +x, in (-90, 90]), its axis ratio (long
+ * over short, of the standard deviations), and whether it reaches the grid's
+ * edge (then the grid cut it, and the numbers are not the whole region's).
+ */
+function halfMaxShape(values, gw, gh, x0, y0, s) {
+  let peakAt = 0;
+  for (let k = 1; k < values.length; k++) if (values[k] > values[peakAt]) peakAt = k;
+  const peak = values[peakAt];
+  if (!(peak > 0)) return null;
+  const seen = new Uint8Array(values.length);
+  const stack = [peakAt];
+  seen[peakAt] = 1;
+  let n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, edge = false;
+  let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+  while (stack.length) {
+    const k = stack.pop();
+    const a = k % gw, b = (k - a) / gw;
+    const x = x0 + a * s, y = y0 + b * s;
+    n++; sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y;
+    xMin = Math.min(xMin, x); xMax = Math.max(xMax, x); yMin = Math.min(yMin, y); yMax = Math.max(yMax, y);
+    if (a === 0 || b === 0 || a === gw - 1 || b === gh - 1) edge = true;
+    for (const [da, db] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const na = a + da, nb = b + db;
+      if (na < 0 || nb < 0 || na >= gw || nb >= gh) continue;
+      const nk = nb * gw + na;
+      if (!seen[nk] && values[nk] >= peak / 2) { seen[nk] = 1; stack.push(nk); }
+    }
+  }
+  const cx = sx / n, cy = sy / n;
+  const cxx = sxx / n - cx * cx, cyy = syy / n - cy * cy, cxy = sxy / n - cx * cy;
+  const mean = (cxx + cyy) / 2, half = Math.hypot((cxx - cyy) / 2, cxy);
+  return {
+    pixels: n * s * s, peak, peakSample: peakAt, centre: [cx, cy],
+    orientationDeg: (0.5 * Math.atan2(2 * cxy, cxx - cyy) * 180) / Math.PI,
+    axisRatio: Math.sqrt((mean + half) / Math.max(mean - half, 1e-12)),
+    longSigmaPx: Math.sqrt(mean + half), shortSigmaPx: Math.sqrt(Math.max(mean - half, 0)),
+    box: { xMin, xMax, yMin, yMax },
+    reachesGridEdge: edge,
+  };
+}
+
+/**
+ * The beam's shape, drawn and predicted, with the lobe along the wind on and
+ * off (`--moments`): the drawn beam's half-maximum region found at full
+ * resolution, a grid over its box widened by `momentPad` on each side at
+ * every `momentStride` pixels, and on that one grid the drawn beam with the
+ * define on (this frame's capture) and off (recaptured with
+ * `__moon.glint({seaAxis: false})`), and the meter's twin at the ground
+ * point under each sample (`__moon.glintTwin`, the meter's own functions in
+ * the page) with the axis on, off, and decoded mirrored. Each is thresholded
+ * at half its own peak on the grid and reduced to its second moments
+ * (halfMaxShape); the tilt ON minus OFF is the number the handedness check
+ * reads, drawn against predicted. Also where the twin's brightest sample
+ * sits against the scan's peak on the principal line, in degrees of ground,
+ * and the twin's value there against the line's.
+ */
+async function beamMoments(page, pose, camera, width, height, drawnOn, capture) {
+  const glint = await page.evaluate(() => window.__moon.glint());
+  const hasTwin = await page.evaluate(() => typeof window.__moon.glintTwin === 'function');
+  const full = halfMaxShape(drawnOn, width, height, 0, 0, 1);
+  if (!full) return null;
+  const s = momentStride;
+  const bw = full.box.xMax - full.box.xMin, bh = full.box.yMax - full.box.yMin;
+  const x0 = Math.max(0, Math.floor(full.box.xMin - momentPad * bw));
+  const x1 = Math.min(width - 1, Math.ceil(full.box.xMax + momentPad * bw));
+  const y0 = Math.max(0, Math.floor(full.box.yMin - momentPad * bh));
+  const y1 = Math.min(height - 1, Math.ceil(full.box.yMax + momentPad * bh));
+  const gw = Math.floor((x1 - x0) / s) + 1, gh = Math.floor((y1 - y0) / s) + 1;
+  const onGrid = (frame) => {
+    const v = new Float64Array(gw * gh);
+    for (let b = 0; b < gh; b++) for (let a = 0; a < gw; a++) v[b * gw + a] = frame[(y0 + b * s) * width + (x0 + a * s)];
+    return v;
+  };
+  const result = {
+    grid: { x0, y0, x1, y1, stride: s, samples: gw * gh },
+    seaAxisCompiled: glint.seaAxis ?? null,
+    drawnFull: full,
+    drawn: { on: halfMaxShape(onGrid(drawnOn), gw, gh, x0, y0, s) },
+  };
+  // The drawn beam with the define off, from the same pose and clock.
+  if (glint.seaAxis === true) {
+    await page.evaluate(() => window.__moon.glint({ seaAxis: false }));
+    await page.waitForTimeout(1500);
+    await waitFrames(page, 4);
+    const offFull = await capture(1);
+    const offBase = await capture(0);
+    await page.evaluate(() => window.__moon.glint({ keep: 1, seaAxis: true }));
+    await page.waitForTimeout(1500);
+    await waitFrames(page, 4);
+    const drawnOff = new Float32Array(width * height);
+    for (let k = 0; k < width * height; k++) {
+      let v = 0;
+      for (let c = 0; c < 3; c++) v = Math.max(v, offFull.data[k * 4 + c] - offBase.data[k * 4 + c]);
+      drawnOff[k] = v;
+    }
+    result.drawn.off = halfMaxShape(onGrid(drawnOff), gw, gh, x0, y0, s);
+    result.drawn.tiltOnMinusOffDeg = turnDeg(result.drawn.on.orientationDeg, result.drawn.off.orientationDeg);
+    result.drawn.axisRatioOnOverOff = result.drawn.on.axisRatio / result.drawn.off.axisRatio;
+  }
+  if (!hasTwin) return result;
+  // The twin at the ground under every grid sample (the sky reads zero).
+  const normals = [], where = [];
+  for (let b = 0; b < gh; b++) for (let a = 0; a < gw; a++) {
+    const nrm = groundNormalAt(pose, camera, x0 + a * s, y0 + b * s, width, height);
+    if (nrm) { normals.push(nrm[0], nrm[1], nrm[2]); where.push(b * gw + a); }
+  }
+  const twinGrid = async (opts) => {
+    const t = await twinAt(page, normals, opts);
+    if (!t) return null;
+    const v = new Float64Array(gw * gh);
+    for (let k = 0; k < where.length; k++) v[where[k]] = t.drawn[k];
+    return { values: v, peakWorld: t.peakWorld };
+  };
+  const tOn = await twinGrid({ axis: true });
+  const tOff = await twinGrid({ axis: false });
+  const tMirror = await twinGrid({ axis: true, mirror: true });
+  if (!tOn || !tOff || !tMirror) return result;
+  result.twin = {
+    on: halfMaxShape(tOn.values, gw, gh, x0, y0, s),
+    off: halfMaxShape(tOff.values, gw, gh, x0, y0, s),
+    mirrored: halfMaxShape(tMirror.values, gw, gh, x0, y0, s),
+  };
+  result.twin.tiltOnMinusOffDeg = turnDeg(result.twin.on.orientationDeg, result.twin.off.orientationDeg);
+  result.twin.tiltMirroredMinusOffDeg = turnDeg(result.twin.mirrored.orientationDeg, result.twin.off.orientationDeg);
+  result.twin.axisRatioOnOverOff = result.twin.on.axisRatio / result.twin.off.axisRatio;
+  // The twin's brightest sample against the scan's peak on the line.
+  const best = result.twin.on.peakSample;
+  const bestNormal = groundNormalAt(pose, camera, x0 + (best % gw) * s, y0 + Math.floor(best / gw) * s, width, height);
+  const atLine = await twinAt(page, tOn.peakWorld, { axis: true });
+  if (bestNormal && atLine) {
+    result.offLine = {
+      groundAngleDeg: (Math.acos(Math.min(1, Math.max(-1, dot(bestNormal, tOn.peakWorld)))) * 180) / Math.PI,
+      bestOnGrid: result.twin.on.peak,
+      atLinePeak: atLine.drawn[0],
+      ratio: result.twin.on.peak / atLine.drawn[0],
+    };
+  }
+  return result;
+}
+
+/** One line of a beam's shapes (beamMoments): orientation and axis ratio per
+ *  arm, and the tilts ON minus OFF. */
+function shapeLine(sh) {
+  const f = (x) => (x ? `${x.orientationDeg.toFixed(2)}° x${x.axisRatio.toFixed(3)} (${x.pixels} px${x.reachesGridEdge ? ', CUT BY THE GRID' : ''})` : 'n/a');
+  const d = sh.drawn, t = sh.twin;
+  const parts = [`drawn on ${f(d.on)}`];
+  if (d.off) parts.push(`off ${f(d.off)}, tilt on-off ${d.tiltOnMinusOffDeg.toFixed(2)}°, ratio on/off ${d.axisRatioOnOverOff.toFixed(4)}`);
+  if (t) parts.push(`twin on ${f(t.on)} off ${f(t.off)} mirrored ${f(t.mirrored)}, tilt on-off ${t.tiltOnMinusOffDeg.toFixed(2)}°, mirrored-off ${t.tiltMirroredMinusOffDeg.toFixed(2)}°, ratio on/off ${t.axisRatioOnOverOff.toFixed(4)}`);
+  if (sh.offLine) parts.push(`twin's brightest ${sh.offLine.groundAngleDeg.toFixed(3)}° of ground from the line's peak, ${sh.offLine.ratio.toFixed(4)}x its value`);
+  return parts.join('; ');
+}
+
+/** The difference of two orientations as axes, in (-90, 90]. */
+const turnDeg = (a, b) => { let d = (a - b) % 180; if (d > 90) d -= 180; if (d <= -90) d += 180; return d; };
+
+/** The meter's twin drawn at ground normals (world axes), through the page's
+ *  own functions (`__moon.glintTwin`), in chunks. */
+async function twinAt(page, normals, opts) {
+  const drawn = [];
+  const chunk = 3 * 20000;
+  let last = null;
+  for (let k = 0; k < normals.length || k === 0; k += chunk) {
+    last = await page.evaluate(([n, o]) => window.__moon.glintTwin({ normals: n, ...o }), [normals.slice(k, k + chunk), opts]);
+    if (!last || !last.drawn) return null;
+    drawn.push(...last.drawn);
+    if (normals.length === 0) break;
+  }
+  return { drawn, peakWorld: last.peakWorld };
 }
 
 /** Walter's rational fit of Beckmann's Smith G1, a = 1 / (alpha tan theta). */
@@ -416,6 +625,7 @@ async function meterPose(page, pose, poseLabel, png, capture, failures) {
   const coverage = over / (width * height);
   const total = px(onFull, im, jm);
   const nonGlintShare = total[cm] > 0 ? 1 - drawn[jm * width + im] / total[cm] : null;
+  const shape = moments && M > 0 ? await beamMoments(page, pose, camera, width, height, drawn, capture) : null;
   // The hand-off: the exposure pin released (near and ratio re-pinned), the
   // meter given time to settle at its rates, the renderer's exposure read.
   await page.evaluate(() => { window.__moon.pinCapture(null); window.__moon.pinCapture({ near: 1e-7, pixelRatio: 1 }); });
@@ -463,6 +673,7 @@ async function meterPose(page, pose, poseLabel, png, capture, failures) {
         atFloor: hand.exposure <= hand.knobs.floor + 1e-6, fadedIn: tel.coverage >= hand.knobs.fadeHi,
       },
       off,
+      shape,
     },
   };
   // The bars. A beam under the fade's own threshold of the frame — a speck
@@ -503,6 +714,7 @@ async function meterPose(page, pose, poseLabel, png, capture, failures) {
     fail(`the meter held (${tel.hold}) with a drawn beam at ${M.toFixed(2)} in the frame`);
   }
   if (!(off.hold === 'off' && off.exposure === 1)) fail(`switch off: hold ${off.hold}, exposure ${off.exposure} (one exactly expected)`);
+  if (shape) console.log(`[glint-probe] ${poseLabel} shape: ${shapeLine(shape)}`);
   console.log(`[glint-probe] ${poseLabel} meter: ${tel.hold}${speck ? ' (speck)' : ''}${missed ? ' (MISSED)' : ''}; predicted ${tel.drawnMax.toFixed(3)} at ${tel.groundAngleDeg.toFixed(1)}° (cloud keep ${tel.peakSample?.cloudKeep?.toFixed(2)} on the Sun's side, ${tel.peakSample?.deckKeep?.toFixed(2) ?? '?'} on the camera's, water ${tel.peakSample?.water?.toFixed(2)}); measured ${M.toFixed(3)} at ${geo ? geo.groundAngleDeg.toFixed(1) : '?'}°, ratio ${m.ratios.value?.toFixed(3)} (at the prediction ${m.ratios.valueAtPrediction?.toFixed(3)}); gap ${pixelGap?.toFixed(0)} px; widths along ${m.ratios.along?.toFixed(2)} across ${m.ratios.across?.toFixed(2)} coverage ${m.ratios.coverage?.toFixed(2)}; hand-off applied ${hand.applied.toFixed(3)} -> peak ${afterExposure.toFixed(2)} (${m.handoff.peakOverTarget?.toFixed(3)} of target); off ${off.hold} ${off.exposure}`);
   return summary;
 }
@@ -914,6 +1126,7 @@ for (const p of report.poses) {
     lines.push(`  measured / predicted: value ${r.value?.toFixed(3)} (at the prediction ${r.valueAtPrediction?.toFixed(3)}), ground angle gap ${r.groundAngleGapDeg?.toFixed(2)}°, width along ${r.along?.toFixed(3)}, across ${r.across?.toFixed(3)}, coverage ${r.coverage?.toFixed(3)}`);
     lines.push(`  hand-off: the meter asks ${h.meterExposure.toFixed(4)} (its target ${h.meterTarget.toFixed(4)}${h.atFloor ? ', at the floor' : ''}${h.fadedIn ? '' : ', fade not full'}), the Sun's meter ${h.sunMeter.toFixed(4)}, applied ${h.applied.toFixed(4)}${h.auto ? '' : ' (auto exposure OFF)'} -> the brightest beam pixel after exposure ${h.peakAfterExposure.toFixed(3)} against the target ${m.knobs.target} (${h.peakOverTarget?.toFixed(3)}), its core through the tone curve ${h.coreThroughToneCurve.toFixed(0)}, non-glint share at that pixel ${me.nonGlintShare === null ? 'n/a' : me.nonGlintShare.toFixed(3)}`);
     lines.push(`  switch off: hold ${m.off.hold}, exposure ${m.off.exposure}, applied ${m.off.applied.toFixed(4)}`);
+    if (m.shape) lines.push(`  shape (second moments of the half-maximum region, orientation counterclockwise from the frame's +x): ${shapeLine(m.shape)}`);
     continue;
   }
   const k = p.peak;

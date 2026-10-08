@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { ATMOSPHERE_GOLDEN_PINS, goldenChannelTolerance } from './atmosphereGoldens.pinned';
+import { ATMOSPHERE_GOLDEN_CONTROL_PINS } from './atmosphereGoldens.mieexact0.pinned';
 import { ATMOSPHERE_TABLE_SIZES_FULL } from './atmosphereModel';
 import { createAtmosphereShellMaterial } from './atmosphereShell';
 import { PLANETS } from '../planets/planetData';
@@ -27,8 +28,21 @@ import { MOONS } from '../planets/moonData';
  * the pinned exposure and pixel ratio, and the pinned clock. A pose captured
  * with any of those floating compares against nothing, and the way that fails
  * is silently.
+ *
+ * Two sets. The SHIPPED set (tools/goldens/atmosphere, atmosphereGoldens.pinned)
+ * is every pose on every tier through the program the app ships, single Mie's
+ * exact colour on (world/atmosphereLut MIE_EXACT). The CONTROL set
+ * (tools/goldens/atmosphere-mieexact0, atmosphereGoldens.mieexact0.pinned) is
+ * every pose on the LUT tier under `?mieexact=0`, the colour rebuilt from the
+ * scattering table's rgb: the arm the goldens were captured through before the
+ * colour table existed. The switch reaches only the table lookups, so only the
+ * LUT tier has a control. A change that moves the shipped set and not the
+ * control moved the exact colour; one that moves both moved something else.
+ * Each capture records the arm its session compiled (`mieExact`), and each set
+ * is held to the arm it says it is.
  */
 const DIR = fileURLToPath(new URL('../../../tools/goldens/atmosphere/', import.meta.url));
+const CONTROL_DIR = fileURLToPath(new URL('../../../tools/goldens/atmosphere-mieexact0/', import.meta.url));
 
 const POSES = [
   'limb-8r',
@@ -88,6 +102,7 @@ const SUN_RADIUS_AU = 695_700 / 149_597_870.7;
 interface Golden {
   pose: string;
   tier: string;
+  mieExact: boolean | null;
   body: string;
   kRadii: number | null;
   near: number | null;
@@ -108,6 +123,29 @@ interface Golden {
 }
 
 const read = (name: string): Golden => JSON.parse(readFileSync(`${DIR}${name}.json`, 'utf8'));
+const readControl = (name: string): Golden => JSON.parse(readFileSync(`${CONTROL_DIR}${name}.json`, 'utf8'));
+
+/** Every sampled channel of a capture against its pin, at the set's tolerance. */
+function holdToPins(
+  name: string,
+  golden: Golden,
+  pin: { samples: readonly (readonly number[])[]; limbScan: readonly (readonly number[])[] },
+): void {
+  for (const field of ['samples', 'limbScan'] as const) {
+    const actual = golden[field];
+    const expected = pin[field];
+    expect(actual.length, `${name} ${field}`).toBe(expected.length);
+    for (let i = 0; i < expected.length; i++) {
+      for (let c = 0; c < 3; c++) {
+        const want = expected[i][c];
+        expect(
+          Math.abs(actual[i][c] - want),
+          `${name} ${field}[${i}][${'rgb'[c]}]: ${actual[i][c]} vs pinned ${want}`,
+        ).toBeLessThanOrEqual(goldenChannelTolerance(want));
+      }
+    }
+  }
+}
 
 const CAPTURES = [
   ...POSES.flatMap((pose) => TIERS.map((tier) => `${pose}.${tier}`)),
@@ -185,23 +223,17 @@ describe('the atmosphere goldens', () => {
     // drops the entry-point shift, loses the Mie term or stops multiplying by
     // the solar irradiance changes these numbers; nothing else CI can run does.
     expect(Object.keys(ATMOSPHERE_GOLDEN_PINS).sort()).toEqual([...CAPTURES].sort());
-    for (const name of CAPTURES) {
-      const golden = read(name);
-      const pin = ATMOSPHERE_GOLDEN_PINS[name];
-      for (const field of ['samples', 'limbScan'] as const) {
-        const actual = golden[field];
-        const expected = pin[field];
-        expect(actual.length, `${name} ${field}`).toBe(expected.length);
-        for (let i = 0; i < expected.length; i++) {
-          for (let c = 0; c < 3; c++) {
-            const want = expected[i][c];
-            expect(
-              Math.abs(actual[i][c] - want),
-              `${name} ${field}[${i}][${'rgb'[c]}]: ${actual[i][c]} vs pinned ${want}`,
-            ).toBeLessThanOrEqual(goldenChannelTolerance(want));
-          }
-        }
-      }
+    for (const name of CAPTURES) holdToPins(name, read(name), ATMOSPHERE_GOLDEN_PINS[name]);
+  });
+
+  it('was captured through the arm the app ships', () => {
+    // The tables' lookups read single Mie's exact colour unless `?mieexact=0`:
+    // every LUT capture here says its session compiled that arm, and the
+    // no-float tier, which has no tables, says nothing.
+    for (const pose of POSES) {
+      expect(read(`${pose}.lut`).mieExact, pose).toBe(true);
+      expect(ATMOSPHERE_GOLDEN_PINS[`${pose}.lut`].mieExact, pose).toBe(true);
+      expect(read(`${pose}.nofloat`).mieExact, pose).toBeNull();
     }
   });
 
@@ -245,12 +277,19 @@ describe('the atmosphere goldens', () => {
       const rgb = gibbous.samples[i];
       expect(Math.max(...rgb), `sample ${i} of the terminator band`).toBeGreaterThan(0);
     }
-    // And it is the Moon doing it: the same three points on the tier with no
-    // second source at all are dark.
+    // And it is the Moon doing it: wherever the tier with no second source at
+    // all is dark among those points, the LUT tier is lit. Point 17 is not one
+    // of them — the analytic tier still has sunlight there, and on the LUT
+    // tier the Sun's own path through the air (surfaceShading SUN_PATH) has
+    // put it out (with `?sunpath=0` it reads 58,57,59), which is the Sun's term
+    // and not the Moon's.
     const analytic = read('terminator-1.5r-gibbous.analytic');
-    const sum = (g: Golden): number =>
-      [17, 18, 19].reduce((a, i) => a + g.samples[i].reduce((x, y) => x + y, 0), 0);
-    expect(sum(gibbous)).toBeGreaterThan(sum(analytic));
+    const dark = [17, 18, 19].filter((i) => Math.max(...analytic.samples[i]) <= 2);
+    expect(dark.length).toBeGreaterThanOrEqual(2);
+    for (const i of dark) {
+      expect(Math.max(...gibbous.samples[i]), `sample ${i}, dark without the Moon`)
+        .toBeGreaterThan(Math.max(...analytic.samples[i]) + 2);
+    }
   });
 
   it('shows the Moon lighting the night side it stands over', () => {
@@ -336,11 +375,9 @@ describe('the atmosphere goldens', () => {
     // Table sizes are defines, not text, so one hash covers every profile and
     // every body — the same property that lets one warm-up probe cover them.
     // The text carries both readings of the single-Mie colour (MIE_EXACT,
-    // world/atmosphereLut). The captures above were taken before it existed,
-    // through the text the define resolves to when off — which
-    // aerialPerspective.test.ts pins at the hash this test held then
-    // (e613114e…): with `?mieexact=0` they are still these captures. Captured
-    // through the shipped arm, the limb's radiances would move, not this hash.
+    // world/atmosphereLut), so this one hash stands behind both sets: the
+    // shipped set captured through the define on, the control set through it
+    // off (`?mieexact=0`, the text aerialPerspective.test.ts pins at e613114e…).
     expect(hash(shell.vertexShader))
       .toBe('604724ecd98c07ab9465d5cce0bbc7285e1ed2627fe5f2d7b69ec6ddbba3b1fc');
     expect(hash(shell.fragmentShader))
@@ -357,5 +394,63 @@ describe('the atmosphere goldens', () => {
       (pose) => sum(read(`${pose}.analytic`)) !== sum(read(`${pose}.lut`)),
     );
     expect(differing.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('the ?mieexact=0 control set', () => {
+  const CONTROL = POSES.map((pose) => `${pose}.lut`);
+
+  it('covers every pose on the LUT tier, through the arm it says it is', () => {
+    expect(Object.keys(ATMOSPHERE_GOLDEN_CONTROL_PINS).sort()).toEqual([...CONTROL].sort());
+    for (const name of CONTROL) {
+      const golden = readControl(name);
+      expect(golden.tier, name).toBe('lut');
+      expect(golden.mieExact, name).toBe(false);
+      expect(ATMOSPHERE_GOLDEN_CONTROL_PINS[name].mieExact, name).toBe(false);
+      expect(statSync(`${CONTROL_DIR}${name}.png`).size, name).toBeGreaterThan(1000);
+      expect(golden.samples, name).toHaveLength(20);
+      expect(golden.limbScan, name).toHaveLength(41);
+    }
+  });
+
+  it('was captured at the shipped set\'s own pose, clock, near plane, exposure and ratio', () => {
+    // A control that differs in anything but the switch is a control of nothing.
+    for (const name of CONTROL) {
+      const control = readControl(name);
+      const shipped = read(name);
+      for (const field of ['pose', 'body', 'kRadii', 'near', 'exposure', 'pixelRatio', 'timeUtcMs', 'width', 'height'] as const) {
+        expect(control[field], `${name} ${field}`).toEqual(shipped[field]);
+      }
+      expect(control.moonPhaseDeg!, name).toBeCloseTo(shipped.moonPhaseDeg!, 3);
+      expect(control.casterCount, name).toBe(shipped.casterCount);
+    }
+  });
+
+  it('holds every control radiance to its own pins', () => {
+    for (const name of CONTROL) holdToPins(name, readControl(name), ATMOSPHERE_GOLDEN_CONTROL_PINS[name]);
+  });
+
+  it('sits a little brighter in green and blue than the shipped arm, which is what the exact colour corrects', () => {
+    // Rebuilt from rgb, single Mie's green and blue come out too bright, most
+    // in the lowest twilight band. In these frames the difference is small —
+    // a step or two of 8 bits where it shows, chiefly in the ground's aerial
+    // perspective toward the limb — but it is one-sided: summed over every
+    // sampled point of every pose, the control's green and blue are higher,
+    // and its red, which both arms read from the same texel, is not.
+    const sum = (g: Golden, c: number): number =>
+      [...g.samples, ...g.limbScan].reduce((a, rgb) => a + rgb[c], 0);
+    let red = 0, green = 0, blue = 0, differing = 0;
+    for (const name of CONTROL) {
+      const control = readControl(name);
+      const shipped = read(name);
+      red += sum(control, 0) - sum(shipped, 0);
+      green += sum(control, 1) - sum(shipped, 1);
+      blue += sum(control, 2) - sum(shipped, 2);
+      if (JSON.stringify([control.samples, control.limbScan]) !== JSON.stringify([shipped.samples, shipped.limbScan])) differing++;
+    }
+    expect(differing).toBeGreaterThanOrEqual(5);
+    expect(green).toBeGreaterThan(0);
+    expect(blue).toBeGreaterThan(0);
+    expect(Math.abs(red)).toBeLessThanOrEqual(2);
   });
 });

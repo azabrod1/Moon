@@ -215,7 +215,7 @@ describe('a beam beside the principal line', () => {
     expect(peak.halfWidthAcrossDeg).toBeGreaterThan(0);
   });
 
-  it('places a peak beside the line beside the line in the frame', () => {
+  it("places a peak that sits beside the line off the frame's centre column", () => {
     const peak = createBeamPeak();
     scanBeam(pose, LIGHT, beamSea, strip, table, scratch, peak);
     // The frame aimed at the line's point at the peak's angle along it, its

@@ -130,8 +130,11 @@ export type ScreenRayResolver = (
  * The cone a body occludes from a camera, or null when the camera is inside
  * it (a sphere the camera is inside occludes nothing: its back faces cull and
  * you see out through it). `padRatio` widens the radius the way the screen
- * circle is padded (1.1 for the air's glow), measured in the sine so a body
- * that nearly fills the sky stays a cone short of the whole sphere.
+ * circle is padded (1.1 for the air's glow), but the padded sphere stops
+ * halfway from the surface to the camera: a camera skimming the cloud tops
+ * sits INSIDE a sphere 10 % wider than the world, and a pad that reached it
+ * would turn an 82° cone into the whole half-space below the horizontal —
+ * eight degrees of sky over the horizon with no label in it.
  */
 export function occluderCone(
   camX: number, camY: number, camZ: number,
@@ -145,7 +148,8 @@ export function occluderCone(
   const dz = posZ - camZ;
   const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
   if (!(dist > radiusAU) || !(radiusAU > 0)) return null;
-  const sinHalf = Math.min((radiusAU * padRatio) / dist, 0.999999);
+  const paddedRadius = Math.min(radiusAU * padRatio, (radiusAU + dist) * 0.5);
+  const sinHalf = Math.min(paddedRadius / dist, 0.999999);
   const cone = out ?? { dirX: 0, dirY: 0, dirZ: 0, cosHalfAngle: 1 };
   cone.dirX = dx / dist;
   cone.dirY = dy / dist;

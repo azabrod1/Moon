@@ -132,6 +132,19 @@ describe('occluderCone', () => {
     const cone = occluderCone(0, 0, 0, 1.05, 0, 0, 1, 1.1)!;
     expect(cone.cosHalfAngle).toBeGreaterThan(0);
   });
+
+  it('the pad stops halfway to a camera skimming the surface', () => {
+    // At 1.01 R the true angular radius is 81.9°. A full 1.1× pad would put
+    // the camera inside the padded sphere and the cone at ~90° — the whole
+    // half-space below the horizontal. Halfway (1.005 R) is 84.3°.
+    const cone = occluderCone(0, 0, 0, 1.01, 0, 0, 1, 1.1)!;
+    const halfAngleDeg = THREE.MathUtils.radToDeg(Math.acos(cone.cosHalfAngle));
+    expect(halfAngleDeg).toBeCloseTo(THREE.MathUtils.radToDeg(Math.asin(1.005 / 1.01)), 6);
+    expect(halfAngleDeg).toBeLessThan(85);
+    // Far from the body the pad is the full 1.1×, as the screen circle's is.
+    const far = occluderCone(0, 0, 0, 10, 0, 0, 1, 1.1)!;
+    expect(far.cosHalfAngle).toBeCloseTo(Math.sqrt(1 - 0.11 * 0.11), 12);
+  });
 });
 
 describe('footprintNeedsCone', () => {

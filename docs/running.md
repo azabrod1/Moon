@@ -24,7 +24,7 @@ Picture quality and frame rate
 - DEV `?envelope=<MiB>` gives the app a phone's memory limit. DEV `?perfoff=<names>` starts with speed-ups off (`app/perfSwitches.ts`). DEV `?perf=1` opens the speed-measuring overlay (see `docs/testing.md`).
 
 Ground and map tiles
-- `?sectors=0` turns off the detailed map tiles. `?groundcull=0` draws the ground hidden under them again (`world/groundCull.ts`).
+- `?sectors=0` turns off the detailed map tiles. `?groundcull=0` draws the ground hidden under them again (`world/groundCull.ts`); Earth's night lights stay cut, or they would draw twice.
 - `?tilebytes=0` uploads tiles the old way. `?synth=0` turns off the extra close-up surface detail.
 - DEV `?tiles=<url>` loads tiles from another address.
 

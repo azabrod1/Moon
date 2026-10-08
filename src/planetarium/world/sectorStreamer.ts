@@ -70,7 +70,13 @@
  * (its new material may be another program) and a base that gained or lost a
  * map or a relief, which update() checks per frame against what the cut was
  * read under. `?groundcull=0` builds no layout and cuts nothing; the DEV key
- * `ground-cull` is the live A/B over the layout.
+ * `ground-cull` is the live A/B over the layout. Both are cost switches for
+ * ground a tile beats by DEPTH, where the layers under it were only ever
+ * going to lose the test. A family whose tiles ADD to the surface under them
+ * instead — Earth's night lights, over a shell that is the nearer of the two
+ * (world/earthNightMaterial) — sets `cutAlways`: the cut is the only thing
+ * that keeps its ground from drawing twice, so its layout and its cut stand
+ * whatever either switch says.
  *
  * A body may register more than one FAMILY — one per lighting side. The day
  * family overlays the globe and shades like it; Earth's night family overlays
@@ -544,6 +550,12 @@ export interface SectorFamily {
    *  family's materials can differ in. Ground is left out of a draw only under
    *  a coverer this answers yes for (the header's cut). */
   sharesProgram(coverer: THREE.Material, covered: THREE.Material): boolean;
+  /** Lay this family's ground out and cut it whatever the streamer's
+   *  `groundCull` and `setGroundCut` say. For a family whose tiles add to the
+   *  surface under them rather than beating it in the depth test, where the
+   *  cut decides the picture and not only the cost. Omitted is false: the
+   *  switches decide, which is right wherever the depth test hides the ground. */
+  cutAlways?: boolean;
 }
 
 /** The default family: sectors on the globe, shading exactly like it, wanted
@@ -730,7 +742,8 @@ export interface SectorStreamerOptions {
   /** Lay every sector's index out for the cut (world/groundCull) and leave the
    *  ground a finer drawn tile covers out of the meshes under it. Omitted is
    *  on; false is the `?groundcull=0` kill switch, every sector built with its
-   *  plain index and nothing cut. */
+   *  plain index and nothing cut — except a family that sets `cutAlways`,
+   *  whose cut is what keeps its tiles from adding to the ground under them. */
   groundCull?: boolean;
 }
 
@@ -1477,7 +1490,7 @@ export class SectorStreamer {
     body.cutHost = handle.mesh.geometry;
     body.cutSignature = body.signature;
     body.cutRelief = surfaceReliefKind(handle.material);
-    if (!this.cutting) {
+    if (!this.cuts(body)) {
       this.uncutBody(body);
       return;
     }
@@ -1564,17 +1577,23 @@ export class SectorStreamer {
     slot.owner.cutDirty = true;
   }
 
+  /** Whether one family's ground is being cut right now: the switch, or the
+   *  family's own `cutAlways`, which no switch overrides. */
+  private cuts(body: SectorBody): boolean {
+    return this.cutting || body.family.cutAlways === true;
+  }
+
   /**
    * Leave covered ground out of the draw, or put every full list back — the
    * live A/B behind the kill switch (a session built without the layout has
    * nothing to cut either way). Off is applied at once; on is read at the
-   * next reconcile.
+   * next reconcile. A family that cuts always is left as it is.
    */
   setGroundCut(on: boolean): void {
     const next = on && this.groundCull;
     if (next === this.cutting) return;
     this.cutting = next;
-    for (const body of this.bodies.values()) this.uncutBody(body);
+    for (const body of this.bodies.values()) if (!body.family.cutAlways) this.uncutBody(body);
   }
 
   /** Room for `need` more bytes, freeing the weakest sectors for it if the
@@ -2098,8 +2117,9 @@ export class SectorStreamer {
         handle.radiusAU, body.levels[slot.level].grid, slot.sector,
         Math.max(3, SECTOR_SEGMENTS >> slot.level),
       );
-      // Laid out where it is built, before its first draw (world/groundCull).
-      if (this.groundCull) layGroundIndex(geometry, GROUND_LEAF_SEGMENTS);
+      // Laid out where it is built, before its first draw (world/groundCull),
+      // under the switch or for a family that cuts always.
+      if (this.groundCull || body.family.cutAlways) layGroundIndex(geometry, GROUND_LEAF_SEGMENTS);
     }
     const material = body.family.createMaterial({
       map,

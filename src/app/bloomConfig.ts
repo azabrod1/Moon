@@ -28,6 +28,18 @@ export const STAR_LUMINANCE_CEILING = 1.0;
 export const BLOOM_THRESHOLD = STAR_LUMINANCE_CEILING * SUN_LIGHT_BASELINE;
 
 /**
+ * The knee's width per unit of the Sun's baseline (planetarium/sunLight
+ * SUN_LIGHT_BASELINE). The knee is a width in the same luminance units as the
+ * threshold, so it follows the baseline the way the threshold does: a brighter
+ * Sun moves the line and the ease over it together, and a pixel a given
+ * fraction of the baseline over the line hands the blur the same fraction of
+ * the baseline at any baseline. Chosen so the knee at the baseline of 1.4 is
+ * exactly the 0.25 the bright pass has drawn with since that baseline came in,
+ * and the float the GPU reads is that value bit for bit (a test holds both).
+ */
+export const BLOOM_KNEE_PER_BASELINE = 0.25 / 1.4;
+
+/**
  * How much of a pixel the planetarium's bright pass hands the blur.
  *
  * three's high pass is a step: a pixel whose luminance clears the threshold
@@ -38,15 +50,17 @@ export const BLOOM_THRESHOLD = STAR_LUMINANCE_CEILING * SUN_LIGHT_BASELINE;
  * Earth's radius, from a pixel a camera would merely clip, and the one glow in
  * a frame where nothing else on the disc crosses the line. Here the blur takes
  * the EXCESS above the threshold instead, eased in over a knee so the contour
- * where it starts is not an edge: a pixel at 1.1 hands over a few hundredths,
- * the photosphere hands over all but one unit, and a star under 1.0 still hands
- * over nothing, which is the invariant the threshold exists for.
+ * where it starts is not an edge: a pixel a tenth of the baseline over the
+ * line hands over under three hundredths of the baseline, the photosphere
+ * hands over all but the threshold and half the knee, and a star under its
+ * ceiling still hands over nothing, which is the invariant the threshold
+ * exists for.
  *
  * Only the planetarium's chain: Moon Flight and Volume Compare authored their
  * lower cutoffs against the step and keep it. `?bloomknee=0` (any build) puts
  * the step back here too — the kill switch, and the A/B for the halo.
  */
-export const BLOOM_KNEE = 0.25;
+export const BLOOM_KNEE = BLOOM_KNEE_PER_BASELINE * SUN_LIGHT_BASELINE;
 
 /**
  * The luminance the bright pass keeps of a pixel at `v`: none up to the

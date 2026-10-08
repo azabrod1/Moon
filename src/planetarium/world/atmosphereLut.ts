@@ -2371,10 +2371,15 @@ export class AtmosphereLut {
       );
       if (!check('opticalDepth', tau, tauRef, OPTICAL_DEPTH_VALIDATION_BAND)) return false;
 
-      // A sunlit sky ray a fifth of the way up the shell.
+      // A sunlit sky ray a fifth of the way up the shell. The reference comes
+      // first: the readback is ranged on it (validationProbeScale).
       const s = SCATTERING_VALIDATION_SAMPLE;
       const r = params.bottomRadius
         + s.altitudeFraction * (params.topRadius - params.bottomRadius);
+      const scRef = computeSingleScattering(
+        params, r, s.mu, s.muS, s.nu, false,
+        VALIDATION_SCATTERING_SAMPLES, VALIDATION_TRANSMITTANCE_SAMPLES,
+      ).rayleigh;
       const uvwz = scatteringUvwzFromRMuMuSNu(params, r, s.mu, s.muS, s.nu, false, this.sizes);
       const coords = scatteringTexture3DCoords(uvwz, this.sizes);
       const sc = this.readSample({
@@ -2384,12 +2389,8 @@ export class AtmosphereLut {
         uvw0: coords.uvw0,
         uvw1: coords.uvw1,
         nuLerp: coords.lerp,
-        scale: SCATTERING_PROBE_SCALE,
+        scale: validationProbeScale(scRef),
       });
-      const scRef = computeSingleScattering(
-        params, r, s.mu, s.muS, s.nu, false,
-        VALIDATION_SCATTERING_SAMPLES, VALIDATION_TRANSMITTANCE_SAMPLES,
-      ).rayleigh;
       if (!check('singleScattering', sc, scRef, SCATTERING_VALIDATION_BAND)) return false;
 
       // Single Mie's green and blue, at a sample of their own: Mie falls off
@@ -2400,6 +2401,11 @@ export class AtmosphereLut {
       const m = MIE_VALIDATION_SAMPLE;
       const rMie = params.bottomRadius
         + m.altitudeFraction * (params.topRadius - params.bottomRadius);
+      const mieRef = computeSingleScattering(
+        params, rMie, m.mu, m.muS, m.nu, false,
+        VALIDATION_MIE_SAMPLES, VALIDATION_TRANSMITTANCE_SAMPLES,
+      ).mie;
+      const mieColourRef = [mieRef[1], mieRef[2]];
       const mieCoords = scatteringTexture3DCoords(
         scatteringUvwzFromRMuMuSNu(params, rMie, m.mu, m.muS, m.nu, false, this.sizes),
         this.sizes,
@@ -2411,13 +2417,9 @@ export class AtmosphereLut {
         uvw0: mieCoords.uvw0,
         uvw1: mieCoords.uvw1,
         nuLerp: mieCoords.lerp,
-        scale: SCATTERING_PROBE_SCALE,
+        scale: validationProbeScale(mieColourRef),
       });
-      const mieRef = computeSingleScattering(
-        params, rMie, m.mu, m.muS, m.nu, false,
-        VALIDATION_MIE_SAMPLES, VALIDATION_TRANSMITTANCE_SAMPLES,
-      ).mie;
-      return check('singleMieColour', mc, [mieRef[1], mieRef[2]], SCATTERING_VALIDATION_BAND);
+      return check('singleMieColour', mc, mieColourRef, SCATTERING_VALIDATION_BAND);
     } catch (err) {
       debugWarn('Atmosphere LUT validation threw', { err: String(err) });
       return false;
@@ -2499,14 +2501,6 @@ export class AtmosphereLut {
   }
 }
 
-/** Range selector for the scattering probe. The readback window is [0, 1], and
- *  a channel that clips at the top is then compared against the ceiling rather
- *  than against the table: at 64 the validated sample's green and blue both
- *  read exactly 1/64 and the comparison silently became "red is below 1/64".
- *  Earth's sample is 0.012 / 0.028 / 0.079, so 8 leaves all three inside the
- *  window with room for the band around them. */
-export const SCATTERING_PROBE_SCALE = 8;
-
 /** Optical depth runs to ~22 on a horizon path, which this scale would clip.
  *  It is chosen for the ZENITH texel the validation reads (tau_red 0.083); a
  *  horizon sample needs the ranging ladder the check tool carries. */
@@ -2528,9 +2522,10 @@ export const SCATTERING_VALIDATION_SAMPLE = {
  *  falls off over about a kilometre, so at the scattering sample's 20 km its
  *  single scattering is ~1e-8, under half-float's smallest normal and the 8-bit
  *  blit's step, and the colour table would read zero there on every device.
- *  Here Earth's green and blue are ~0.028, which SCATTERING_PROBE_SCALE puts a
- *  fifth of the way up the readback window. The table holds single scattering
- *  only, so the reference is the same quantity, not a lower bound. */
+ *  Here Earth's green and blue are ~0.028 and Mars's dusty air's fifteen times
+ *  that, which is why the readback is ranged per sample (validationProbeScale).
+ *  The table holds single scattering only, so the reference is the same
+ *  quantity, not a lower bound. */
 export const MIE_VALIDATION_SAMPLE = {
   altitudeFraction: 0.02,
   mu: 0.4,
@@ -2543,10 +2538,54 @@ export const MIE_VALIDATION_SAMPLE = {
  *  is generous by construction — Earth's four-order table reads 1.3-1.5x the
  *  reference here, and a brighter ground or thicker aerosol raises that — while
  *  the floor is what a black, clipped, half-written or wrongly scaled table
- *  falls through. The blue channel can reach the probe's ceiling before the
- *  band's top; red, an eighth of the way up the window, is what carries the
- *  upper test. */
+ *  falls through. The readback is ranged so the whole band of every channel
+ *  reads inside its window (validationProbeScale): each channel carries both
+ *  tests.
+ *
+ *  The ceiling holds only where the higher orders are a fraction of single
+ *  Rayleigh. On Mars the dust's are not: measured on the GPU (2026-10-08) the
+ *  scattering texel at SCATTERING_VALIDATION_SAMPLE is 187 / 68 / 15 times the
+ *  single-Rayleigh reference in red / green / blue, so this check refuses
+ *  Mars's tables there however they are read back, and Mars stays on the
+ *  analytic tier until the check is held to a reference that carries the
+ *  orders. Its single-Mie colour table matches its reference to 0.1 %. */
 export const SCATTERING_VALIDATION_BAND = { min: 0.5, max: 3.0 } as const;
+
+/** How high in the readback window the top of a validated band may reach:
+ *  under the clamp at 1 by a margin the readback's own rounding never crosses. */
+export const PROBE_WINDOW_TOP = 0.95;
+
+/**
+ * The readback scale for one validated sample, ranged on the CPU reference for
+ * that sample: the largest power of two at which the band's top around the
+ * brightest channel (SCATTERING_VALIDATION_BAND) still reads inside the window.
+ *
+ * The probe blit clamps to [0, 1], and a channel that clips at the top is
+ * compared against the ceiling rather than against the table — at 64 Earth's
+ * green and blue both read exactly 1/64 and the check silently became "red is
+ * below 1/64". The scale cannot be one number, because what is validated spans
+ * orders of magnitude: at the scattering sample Earth's Rayleigh is 0.009 /
+ * 0.021 / 0.053 and Mars's a tenth of that; at the Mie sample Earth's
+ * single-Mie green and blue are 0.028 / 0.027 and Mars's dusty air's 0.42 /
+ * 0.30. Earth's fixed 8 read Mars's colour past the clamp, under even the
+ * band's floor, and refused Mars's colour table whatever the GPU had baked
+ * (its scattering sample is refused for another reason, stated at
+ * SCATTERING_VALIDATION_BAND). Ranged per sample, every channel of every body
+ * reads with its whole band in the window, so each is tested from both sides,
+ * and a power of two keeps the scale and the readback's division by it exact.
+ * A reference with no positive finite channel has nothing to range on: it
+ * throws, which validate() turns into a failed tier.
+ */
+export function validationProbeScale(
+  reference: readonly number[],
+  band: { readonly max: number } = SCATTERING_VALIDATION_BAND,
+): number {
+  const brightest = Math.max(...reference);
+  if (!(brightest > 0) || !Number.isFinite(brightest)) {
+    throw new Error(`validationProbeScale: no positive finite channel in [${reference.join(', ')}]`);
+  }
+  return 2 ** Math.floor(Math.log2(PROBE_WINDOW_TOP / (brightest * band.max)));
+}
 
 /** Optical depth has no order structure — both sides integrate the same
  *  quantity — so the band is only the readback's own precision and the coarser

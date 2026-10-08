@@ -1371,7 +1371,9 @@ export class PlanetariumMode {
   /** What `?groundcull=0` asked for, on any build: every streamed ground mesh
    *  built with its plain index and drawn whole, the ground under a finer tile
    *  shaded and then lost to the depth test as before (world/groundCull). The
-   *  kill switch, and the A/B across two boots. */
+   *  kill switch, and the A/B across two boots, of the cost only: Earth's night
+   *  shell is laid out and cut either way, because its tiles add to it rather
+   *  than beating it by depth (world/earthNightMaterial). */
   private readonly groundCullEnabled = parseGroundCullParam(location.search);
   /** Dev-only: bytes added to the globe maps' ledger (devSectorSqueeze), and
    *  a squeeze waiting for the end of the next sector pass. */
@@ -3664,7 +3666,9 @@ export class PlanetariumMode {
       const nightSpec = SECTOR_NIGHT_SETS[planet.data.name];
       const nightMat = planet.nightMaterial;
       if (nightSpec && nightMat && planet.nightMesh && planet.nightRadiusAU) {
-        if (groundCull) markStreamedGround(planet.geometryUpgrade, planet.nightMesh, GROUND_LEAF_SEGMENTS);
+        // Whatever `?groundcull=` says: the cut is what keeps the shell's
+        // lights from adding to the tiles' (the family's cutAlways).
+        markStreamedGround(planet.geometryUpgrade, planet.nightMesh, GROUND_LEAF_SEGMENTS);
         sectors.register({
           name: planet.data.name,
           spec: nightSpec,
@@ -3675,9 +3679,10 @@ export class PlanetariumMode {
           // so its silhouette is a depth silhouette: built at the shell's radius
           // it reached 6 km past the ground's limb, and the air behind that
           // band failed the depth test and drew nothing — a black line along
-          // the horizon wherever night tiles were resident. The shell it
-          // replaces is the farther surface either way, so it still fails the
-          // test under a tile.
+          // the horizon wherever night tiles were resident. The shell is then
+          // the NEARER surface and passes the depth test over a tile; what
+          // leaves it out under one is the streamer's cut, which this family
+          // takes whatever `?groundcull=` says (earthNightSectorFamily).
           radiusAU: planet.data.radiusAU,
           topMapWidth: topMapWidthOf(planet.textureUpgrades, nightMat),
           ensureFineGeometry: fine,

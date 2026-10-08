@@ -38,7 +38,9 @@
  * upload, no relink — so it sweeps like any exact switch. Like `fused-final` it
  * has a production door of its own: `?groundcull=0` builds the ground with its
  * plain indexes and cuts nothing, and this key is only the DEV reading of the
- * cut on top of the layout.
+ * cut on top of the layout. Neither reaches Earth's night shell, which is cut
+ * under its tiles either way: those tiles add to the shell rather than beating
+ * it by depth, so there the cut is the picture, not a cost.
  *
  * `cloud-program` is decided when the deck's material compiles — its
  * archetype becomes a compile-time define rather than a uniform, so the

@@ -243,7 +243,10 @@ export function uncutGround(geometry: THREE.BufferGeometry): void {
 }
 
 /** The production kill switch: `?groundcull=0` builds every ground geometry
- *  with its own index as before and cuts nothing. */
+ *  with its own index as before and cuts nothing, for ground a tile beats by
+ *  depth, where it changes the cost and not the picture. A layer the tiles add
+ *  to instead (Earth's night shell, world/earthNightMaterial) is cut whatever
+ *  it says: there the cut is the picture. */
 export function parseGroundCullParam(search: string): boolean {
   return new URLSearchParams(search).get('groundcull') !== '0';
 }

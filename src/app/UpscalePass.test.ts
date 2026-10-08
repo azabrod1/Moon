@@ -4,6 +4,8 @@ import {
   DownsamplePass, OutputTargetPass, SharpenPass, UpscalePass, createLdrTarget, downsampleAxisWeights,
 } from './UpscalePass';
 import { easuConstants, rcasSharpness, RCAS_DEFAULT_STOPS } from './fsr1';
+import { FusedOutputPass } from './FusedOutputPass';
+import { outputDitherIsWired, setOutputDither } from './outputDither';
 
 /** What the passes ask of a renderer, and nothing else. */
 function stubRenderer(bufferW: number, bufferH: number) {
@@ -320,5 +322,99 @@ describe('DownsamplePass', () => {
     expect(materialOf(pass).uniforms.uFilter.value).toBe(1);
     pass.setFilter('box');
     expect(materialOf(pass).uniforms.uFilter.value).toBe(0);
+  });
+});
+
+describe('the output dither, on every route', () => {
+  type Route = 'direct' | 'easu' | 'easu+rcas' | 'downsample';
+  const ROUTES: Route[] = ['direct', 'easu', 'easu+rcas', 'downsample'];
+
+  /**
+   * One frame through the chain as main builds it — the finishing pass (fused
+   * or `?fused=0`), then EASU, RCAS and the downsample — with three's
+   * composer's one rule: the last ENABLED pass draws the canvas. Each draw is
+   * recorded with the target it landed on and the uDither its pass held then.
+   */
+  function frame(fused: boolean, route: Route) {
+    const draws: { pass: string; canvas: boolean; dither: number; wired: boolean }[] = [];
+    let bound: THREE.WebGLRenderTarget | null = null;
+    let current = { name: '', material: null as unknown as THREE.RawShaderMaterial };
+    const renderer = {
+      setRenderTarget: (t: THREE.WebGLRenderTarget | null) => { bound = t; },
+      getDrawingBufferSize: (v: THREE.Vector2) => v.set(1728, 1117),
+      render: () => {
+        draws.push({
+          pass: current.name,
+          canvas: bound === null,
+          // A pass with no uDither at all draws no dither.
+          dither: (current.material.uniforms.uDither?.value as number | undefined) ?? 0,
+          wired: outputDitherIsWired(current.material.fragmentShader),
+        });
+      },
+      clear: () => {},
+      toneMappingExposure: 1,
+      outputColorSpace: THREE.SRGBColorSpace,
+      toneMapping: THREE.ACESFilmicToneMapping,
+      autoClearColor: true,
+      autoClearDepth: true,
+      autoClearStencil: true,
+    } as unknown as THREE.WebGLRenderer;
+    const finishing = fused ? new FusedOutputPass({ bloom: null, lens: null }) : new OutputTargetPass();
+    const up = new UpscalePass(finishing);
+    const sharpen = new SharpenPass(up);
+    const down = new DownsamplePass(finishing);
+    up.enabled = route === 'easu' || route === 'easu+rcas';
+    sharpen.enabled = route === 'easu+rcas';
+    down.enabled = route === 'downsample';
+    const chain = [
+      { name: 'finishing', pass: finishing, material: finishing.material as THREE.RawShaderMaterial },
+      { name: 'easu', pass: up, material: materialOf(up) },
+      { name: 'rcas', pass: sharpen, material: materialOf(sharpen) },
+      { name: 'downsample', pass: down, material: materialOf(down) },
+    ].filter((c) => c.pass.enabled);
+    chain.forEach((c, i) => { c.pass.renderToScreen = i === chain.length - 1; });
+    // A scene larger than the canvas on the downsample route, smaller on the
+    // upscale ones: the passes read their sizes, not the route.
+    const read = new THREE.WebGLRenderTarget(route === 'downsample' ? 2592 : 1296, route === 'downsample' ? 1676 : 838);
+    for (const c of chain) {
+      current = c;
+      c.pass.render(renderer, read, read, 0, false);
+    }
+    return draws;
+  }
+
+  it('dithers exactly one write a frame, the one that lands on the canvas', () => {
+    // fused on and off × direct, EASU, EASU then RCAS, and the downsample: the
+    // eight ways a frame can leave the chain. Every route draws the canvas once,
+    // that write carries the dither text and a uDither of 1, and every
+    // intermediate before it is written with a uDither of 0.
+    setOutputDither(true);
+    for (const fused of [true, false]) {
+      for (const route of ROUTES) {
+        const label = `${fused ? 'fused' : '?fused=0'} ${route}`;
+        const draws = frame(fused, route);
+        expect(draws.filter((d) => d.canvas), label).toHaveLength(1);
+        const dithered = draws.filter((d) => d.dither !== 0);
+        expect(dithered, label).toHaveLength(1);
+        expect(dithered[0].canvas, label).toBe(true);
+        expect(dithered[0].dither, label).toBe(1);
+        expect(dithered[0].wired, label).toBe(true);
+        const last = { direct: 'finishing', easu: 'easu', 'easu+rcas': 'rcas', downsample: 'downsample' }[route];
+        expect(dithered[0].pass, label).toBe(last);
+      }
+    }
+  });
+
+  it('dithers nothing anywhere with the switch off', () => {
+    setOutputDither(false);
+    try {
+      for (const fused of [true, false]) {
+        for (const route of ROUTES) {
+          expect(frame(fused, route).every((d) => d.dither === 0), `${fused} ${route}`).toBe(true);
+        }
+      }
+    } finally {
+      setOutputDither(true);
+    }
   });
 });

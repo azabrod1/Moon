@@ -51,11 +51,16 @@ import {
   surfaceCloudShadowCompiled,
   seaBeamOn,
   setSeaBeamEnabled,
+  parseSeaAxisParam,
+  seaAxisOn,
+  setSeaAxisEnabled,
 } from './surfaceShading';
 import {
   COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_WIND_MAX_MS, installSeaWindMap,
+  COX_MUNK_CROSSWIND_CALM, COX_MUNK_CROSSWIND_PER_MS, COX_MUNK_UPWIND_PER_MS, SEA_WIND_AXIS_SCALE, SEA_WIND_AXIS_ZERO,
   seaWindTextureFrom,
 } from './seaWind';
+import { axisAlpha, axisLobe } from './glintMeter';
 import { createSectorMaterial } from './sectorMaterial';
 import { setCloudFieldOn } from './cloudFieldSlots';
 import { CLOUD_TOP_KM, cloudCoverageAlpha } from './cloudDeck';
@@ -1043,6 +1048,93 @@ describe('the sea', () => {
     expect(Number.isFinite(beckmann(alpha, 0.001))).toBe(true);
   });
 
+  it('draws the lobe along the wind\'s axis under SEA_AXIS, with the numbers world/seaWind holds and the formula the meter\'s twin evaluates', () => {
+    const text = seaFragment();
+    // One fetch: the wind and the axis from the same filtered texel, the axis
+    // decoded after the filter; the read the define replaces stands in its #else.
+    expect(text).toContain('#ifdef SEA_AXIS\n      vec4 seaWindTexel = textureGrad(uSeaWindMap, seaUv, seaDx, seaDy);\n'
+      + `      float seaWindMs = seaWindTexel.r * ${SEA_WIND_MAX_MS.toFixed(1)};\n`
+      + '      seaAxisWind = vec3(seaWindMs,\n'
+      + `          (seaWindTexel.gb * 255.0 - ${SEA_WIND_AXIS_ZERO.toFixed(1)}) / ${SEA_WIND_AXIS_SCALE.toFixed(1)});\n`
+      + '#else\n'
+      + `      float seaWindMs = textureGrad(uSeaWindMap, seaUv, seaDx, seaDy).r * ${SEA_WIND_MAX_MS.toFixed(1)};\n`
+      + '#endif\n');
+    const on = resolveDefine(text, 'SEA_AXIS', true);
+    expect(on.match(/textureGrad\(uSeaWindMap/g)).toHaveLength(1);
+    // Hoisted with a sentinel: a fragment that never read the map keeps
+    // three's own alpha, round.
+    expect(on).toContain('vec3 seaAxisWind = vec3(-1.0, 0.0, 0.0);\nfloat seaWater = 0.0;');
+    expect(on).toContain('float seaAlphaU = seaAlpha;\n      float seaAlphaC = seaAlpha;\n      if (seaAxisWind.x >= 0.0) {');
+    // The two slopes: the whole law plus and minus d(U) k, d from the bake's
+    // three variances, both floored at the calm sea; each axis's roughness
+    // formed as three forms its own, floor and geometry roughness included.
+    expect(on).toContain(`float seaMss = ${COX_MUNK_SLOPE_CALM.toFixed(5)} + ${COX_MUNK_SLOPE_PER_MS.toFixed(5)} * seaAxisWind.x;`);
+    expect(on).toContain(`float seaSkew = (${COX_MUNK_UPWIND_PER_MS.toFixed(5)} * seaAxisWind.x\n`
+      + `            - (${COX_MUNK_CROSSWIND_CALM.toFixed(5)} + ${COX_MUNK_CROSSWIND_PER_MS.toFixed(5)} * seaAxisWind.x)) * seaAxisK;`);
+    for (const sign of ['+', '-']) {
+      expect(on).toContain(`max(sqrt(sqrt(max(seaMss ${sign} seaSkew, ${COX_MUNK_SLOPE_CALM.toFixed(5)}))), 0.0525)\n`
+        + '            + geometryRoughness, 1.0));');
+    }
+    // The frame: the body's pole in view space, east and north as the relief
+    // frame builds them, the axis's length clamped to one.
+    expect(on).toContain('uniform mat3 normalMatrix;');
+    expect(on).toContain('vec3 seaEast = cross(normalize(normalMatrix[1]), normal);\n      seaEast /= max(length(seaEast), 1e-6);\n'
+      + '      vec3 seaNorth = cross(normal, seaEast);');
+    expect(on).toContain('float seaAxisK = min(length(seaAxisWind.yz), 1.0);');
+    expect(on).toContain('+ (seaAxisWind.z < 0.0 ? -1.0 : 1.0) * sqrt(0.5 - 0.5 * seaAxisCos2) * seaNorth;');
+    // Beckmann's Smith on the projected alpha under the beam chain, three's
+    // on the old; the division by three's own GGX at its own alpha either way.
+    expect(on).toContain('#ifdef SEA_BEAM\n      vec3 seaSunDir = normalize(vSunViewDir);\n      float seaBeamVis = seaBeckmannAxisVis(');
+    expect(on).toContain('seaBeckmannAxis(seaAlphaU, seaAlphaC, dot(seaHalfDir, seaAlong), dot(seaHalfDir, seaAcross), seaDotNH)\n'
+      + '              / (seaVis * D_GGX(seaAlpha, seaDotNH)),');
+    // The lobe and the projected alpha as the GPU runs them, transcribed, are
+    // the meter's twin (world/glintMeter axisLobe, axisAlpha), whose alphas
+    // squared are the slopes.
+    expect(on).toContain('float seaBeckmannAxis(float alphaU, float alphaC, float hu, float hc, float dotNH) {\n'
+      + '  float cos2 = max(dotNH * dotNH, 1e-6);\n'
+      + '  float along2 = hu * hu / max(hu * hu + hc * hc, 1e-12);\n'
+      + '  float invAlpha2 = 1.0 / (alphaC * alphaC) + (1.0 / (alphaU * alphaU) - 1.0 / (alphaC * alphaC)) * along2;\n'
+      + '  return exp((cos2 - 1.0) * invAlpha2 / cos2) / (PI * alphaU * alphaC * cos2 * cos2);\n}');
+    expect(on).toContain('float seaAxisAlpha(float alphaU, float alphaC, float wu, float wc) {\n'
+      + '  float along2 = wu * wu / max(wu * wu + wc * wc, 1e-12);\n'
+      + '  return sqrt(alphaC * alphaC + (alphaU * alphaU - alphaC * alphaC) * along2);\n}');
+    const gpuLobe = (alphaU: number, alphaC: number, hu: number, hc: number, dotNH: number): number => {
+      const cos2 = Math.max(dotNH * dotNH, 1e-6);
+      const along2 = (hu * hu) / Math.max(hu * hu + hc * hc, 1e-12);
+      const invAlpha2 = 1 / (alphaC * alphaC) + (1 / (alphaU * alphaU) - 1 / (alphaC * alphaC)) * along2;
+      return Math.exp(((cos2 - 1) * invAlpha2) / cos2) / (Math.PI * alphaU * alphaC * cos2 * cos2);
+    };
+    const gpuAlpha = (alphaU: number, alphaC: number, wu: number, wc: number): number =>
+      Math.sqrt(alphaC * alphaC + (alphaU * alphaU - alphaC * alphaC) * ((wu * wu) / Math.max(wu * wu + wc * wc, 1e-12)));
+    for (const [along, across] of [[0.05, 0.03], [0.003, 0.006], [0.1018, 0.0681]]) {
+      for (let deg = 0; deg <= 40; deg += 5) {
+        for (let az = 0; az < 180; az += 20) {
+          const s = Math.sin(deg * Math.PI / 180), c = Math.cos(deg * Math.PI / 180);
+          const hu = s * Math.cos(az * Math.PI / 180), hc = s * Math.sin(az * Math.PI / 180);
+          const twin = axisLobe(c, along, across, hu, hc);
+          expect(Math.abs(gpuLobe(Math.sqrt(along), Math.sqrt(across), hu, hc, c) - twin)).toBeLessThanOrEqual(1e-12 * twin);
+          expect(gpuAlpha(Math.sqrt(along), Math.sqrt(across), hu, hc)).toBeCloseTo(axisAlpha(along, across, hu, hc), 14);
+        }
+      }
+    }
+  });
+
+  it('is a define on by default, its switch relinking every surface', () => {
+    const mat = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(mat, 'earth', undefined, 0, undefined, undefined, 'Earth');
+    expect(mat.defines?.SEA_AXIS).toBe('');
+    expect(seaAxisOn()).toBe(true);
+    const version = mat.version;
+    setSeaAxisEnabled(false);
+    expect(mat.defines?.SEA_AXIS).toBeUndefined();
+    expect(mat.version).toBeGreaterThan(version);
+    expect(seaAxisOn()).toBe(false);
+    setSeaAxisEnabled(true);
+    expect(mat.defines?.SEA_AXIS).toBe('');
+    expect(parseSeaAxisParam('?seaaxis=0')).toBe(false);
+    expect(parseSeaAxisParam('?seaaxis=1')).toBe(true);
+  });
+
   it('binds the map on one shared uniform once a sea is confirmed, and the switch and the override hold it off', () => {
     const mat = new THREE.MeshStandardMaterial();
     augmentSurfaceMaterial(mat, 'earth');
@@ -1129,7 +1221,12 @@ describe('the GPU-efficiency switches', () => {
       const declared = [...compiled.matchAll(/uniform\s+\w+\s+(\w+)\s*;/g)]
         .map((match) => match[1]);
       expect(declared.length).toBeGreaterThan(20);
-      const unbound = [...new Set(declared)].filter((name) => !(name in shader.uniforms));
+      // three's own per-object matrix, which the renderer sets on every
+      // program itself: the lobe along the wind (SEA_AXIS) declares it again
+      // in the fragment stage to read the body's pole, and it links to the
+      // vertex stage's one uniform.
+      const threeSets = new Set(['normalMatrix']);
+      const unbound = [...new Set(declared)].filter((name) => !(name in shader.uniforms) && !threeSets.has(name));
       expect(unbound, `${archetype}: declared but never bound`).toEqual([]);
     }
   });

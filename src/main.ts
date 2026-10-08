@@ -77,6 +77,7 @@ import {
   parseSeaBeamParam, parseSunPathParam, seaBeamOn, setSeaBeamEnabled, setSunPathEnabled, sunPathOn,
   parseSeaColourParam, seaColourUniforms, setSeaColourEnabled,
   parseSeaSkyParam, seaSkyOn, setSeaSkyEnabled,
+  parseSeaAxisParam, seaAxisOn, setSeaAxisEnabled,
   surfaceShadingArgsOf,
 } from './planetarium/world/surfaceShading';
 import type { CloudFieldRequest } from './planetarium/world/cloudFieldDev';
@@ -332,6 +333,10 @@ setSeaWindEnabled(parseSeaWindParam(location.search));
 // any surface is augmented). Each is the picture as it was.
 setSunPathEnabled(parseSunPathParam(location.search));
 setSeaBeamEnabled(parseSeaBeamParam(location.search));
+// `?seaaxis=0`: the sea's lobe round again instead of an ellipse along the
+// wind's axis (the SEA_AXIS define, world/surfaceShading), the picture as it
+// was; set before any surface is augmented, like the two above.
+setSeaAxisEnabled(parseSeaAxisParam(location.search));
 // `?mieexact=0`: the haze's single-Mie green and blue rebuilt from the
 // scattering table's rgb again instead of read from their own table (the
 // MIE_EXACT define, world/atmosphereLut). Set here, before any material that
@@ -3599,7 +3604,7 @@ function installDevHooks() {
       cap?: number; keep?: number; roughness?: number | null;
       beamKnee?: number; beamCap?: number; sunPath?: boolean; seaBeam?: boolean;
       seaColour?: [number, number, number]; seaMix?: number;
-      seaSky?: boolean; seaSkyScale?: number;
+      seaSky?: boolean; seaSkyScale?: number; seaAxis?: boolean;
     }) => {
       if (opts?.cap !== undefined) devGlintUniforms.uGlintCap.value = opts.cap;
       // The water colour the sea is drawn in (SEA_WATER_COLOUR by default) and
@@ -3617,6 +3622,8 @@ function installDevHooks() {
       // on the term for a sheet of candidates.
       if (opts?.seaSky !== undefined) setSeaSkyEnabled(opts.seaSky);
       if (opts?.seaSkyScale !== undefined) devGlintUniforms.uSeaSky.value = opts.seaSkyScale;
+      // The lobe along the wind's axis: its define relinked live.
+      if (opts?.seaAxis !== undefined) setSeaAxisEnabled(opts.seaAxis);
       const roughness = setDevOceanRoughness(opts?.roughness);
       const tex = seaWindTexture();
       return {
@@ -3630,6 +3637,7 @@ function installDevHooks() {
         seaSkyScale: devGlintUniforms.uSeaSky.value,
         sunPath: sunPathOn(),
         seaBeam: seaBeamOn(),
+        seaAxis: seaAxisOn(),
         roughness,
         seaWind: seaWindOn(),
         map: seaWindMapSource(),
@@ -3719,6 +3727,13 @@ function installDevHooks() {
       const t = planetariumMode?.devGlintMeter(opts) ?? null;
       return t ? { ...t, enabled: highlightMeterEnabled() } : { enabled: highlightMeterEnabled() };
     },
+    // The meter's twin of the beam at ground points the caller names (unit
+    // directions from Earth's centre in world axes), through the meter's own
+    // functions under its last metered frame: the probe's predicted beam
+    // shape. `axis` and `mirror` set the lobe along the wind and a mirrored
+    // axis for the handedness check (planetarium/highlightMeter devDrawnAt).
+    glintTwin: (opts?: { normals?: number[]; axis?: boolean; mirror?: boolean }) =>
+      planetariumMode?.devGlintTwin(opts) ?? null,
     // The night side's exposure, live (world/nightExposure): the lit fractions
     // of the visible cap the long exposure holds at (`full`) and is gone by
     // (`none`), the ramp's two speeds in positions per second — toward the

@@ -39,7 +39,7 @@ import {
 import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasurementRelevant, markStreamedGround, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
 import { PLANET_TEXTURE_FILES, appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
-import { MAX_MOON_SHADOWS, NIGHT_FILL, advanceSurfaceAir, beamShoulderInForce, bindSurfaceAir, clearSurfaceAir, cloudShadowShared, cloudShadowsOn, cloudShadowUniforms, holdSeaCloudCut, seaBeamOn, seaWindOn, seatSurfaceLook, setCloudShadowDrift, setSurfaceSynthesis, settleSurfaceAir, sunPathOn, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { MAX_MOON_SHADOWS, NIGHT_FILL, advanceSurfaceAir, beamShoulderInForce, bindSurfaceAir, clearSurfaceAir, cloudShadowShared, cloudShadowsOn, cloudShadowUniforms, holdSeaCloudCut, seaAxisOn, seaBeamOn, seaWindOn, seatSurfaceLook, setCloudShadowDrift, setSurfaceSynthesis, settleSurfaceAir, sunPathOn, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { setSurfaceLookOverride, surfaceLookOf, type SurfaceLook as BodySurfaceLook, type SurfaceLookOverride } from './world/surfaceLook';
 import { cloudFieldRequested, setCloudFieldOn, setCloudFieldPixelRatios } from './world/cloudFieldSlots';
 import type { CloudFieldAllocation } from './world/cloudFieldPool';
@@ -1198,7 +1198,7 @@ export class PlanetariumMode {
     airOn: false, airBlend: 0, hazeClearView: 1, cloudSpin: 0, cloudDrawn: false, cloudShadows: true, cloudHeightOverRadius: 0,
     moonShadows: new Float64Array(MAX_MOON_SHADOWS * 4), moonShadowCount: 0, sunTan: 0, termWidth: 0,
     view: new THREE.Vector3(0, 0, -1), viewUp: new THREE.Vector3(0, 1, 0), fovXDeg: 60, fovYDeg: 40,
-    seaBeamOn: true, sunPathOn: true, windMapOn: false,
+    seaBeamOn: true, sunPathOn: true, windMapOn: false, seaAxisOn: true,
   };
   private readonly highlightScratch = {
     cam: new THREE.Vector3(), earth: new THREE.Vector3(), q: new THREE.Quaternion(), cq: new THREE.Quaternion(), dir: new THREE.Vector3(),
@@ -9421,7 +9421,43 @@ export class PlanetariumMode {
     ctx.seaBeamOn = seaBeamOn();
     ctx.sunPathOn = sunPathOn();
     ctx.windMapOn = seaWindOn();
+    ctx.seaAxisOn = seaAxisOn();
     this.highlightMeter.update(dt, ctx);
+  }
+
+  /**
+   * DEV (`__moon.glintTwin`): the highlight meter's twin drawn at ground
+   * points given as unit directions from Earth's centre in WORLD axes (the
+   * axes the scene and a probe's camera are in), turned into Earth's own
+   * frame as the meter's pose is, three numbers apiece; `axis` and `mirror`
+   * as HighlightMeter.devDrawnAt takes them. Returns the drawn values, the
+   * scan's peak, and Earth's orientation (world from Earth, a quaternion
+   * x, y, z, w) so the caller can carry points both ways; before the meter
+   * has metered a frame, the orientation alone. Null without an Earth.
+   */
+  devGlintTwin(opts: { normals?: number[]; axis?: boolean; mirror?: boolean } = {}): {
+    drawn: number[] | null; peakN?: [number, number, number]; peakWorld?: [number, number, number];
+    camera?: [number, number, number]; sun?: [number, number, number]; earthQuaternion: [number, number, number, number];
+  } | null {
+    const earth = this.solarSystem?.planets.find((p) => p.data.name === 'Earth');
+    if (!earth) return null;
+    const toWorld = earth.group.getWorldQuaternion(new THREE.Quaternion());
+    const toEarth = toWorld.clone().invert();
+    const world = opts.normals ?? [];
+    const local: number[] = [];
+    const v = new THREE.Vector3();
+    for (let i = 0; i + 2 < world.length; i += 3) {
+      v.set(world[i], world[i + 1], world[i + 2]).applyQuaternion(toEarth);
+      local.push(v.x, v.y, v.z);
+    }
+    const twin = this.highlightMeter.devDrawnAt(local, opts);
+    if (!twin) return { drawn: null, earthQuaternion: [toWorld.x, toWorld.y, toWorld.z, toWorld.w] };
+    v.set(twin.peakN[0], twin.peakN[1], twin.peakN[2]).applyQuaternion(toWorld);
+    return {
+      ...twin,
+      peakWorld: [v.x, v.y, v.z],
+      earthQuaternion: [toWorld.x, toWorld.y, toWorld.z, toWorld.w],
+    };
   }
 
   /** The highlight meter's knobs and telemetry (`__moon.glintMeter`), DEV. */

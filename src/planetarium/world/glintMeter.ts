@@ -27,7 +27,12 @@
  *   - water's Fresnel on the half vector, three's exp2 Schlick on SEA_WATER_F0;
  *   - the Beckmann lobe at the half vector, at Cox-Munk's mean-square slope
  *     for the map's wind, with Beckmann's own Smith visibility (which
- *     carries the 1 / (4 cos cos));
+ *     carries the 1 / (4 cos cos)); with the sea's lobe along the wind
+ *     compiled (SEA_AXIS, `sea.axis`), the same ellipse the shader draws —
+ *     the wind's frame from the ground point about the body's pole, the
+ *     map's axis, the slopes along and across it (world/seaWind
+ *     axisSlopes), Smith's term on each direction's projected alpha — and
+ *     with it off, the round lobe exactly;
  *   - the water fraction, which the shader mixes the mirror term by;
  *   - the cloud between the Sun and the point, the share of the beam the
  *     deck lets through on its way down (`cloudKeep`), where the ground
@@ -71,7 +76,9 @@
 import type { AtmosphereParams, RGB } from './atmosphereModel';
 import { profileDensity, transmittanceToTopBoundary } from './atmosphereModel';
 import { SUN_LIGHT_BASELINE } from '../sunLight';
-import { SEA_WIND_MAX_MS } from './seaWind';
+import {
+  COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_WIND_MAX_MS, axisSlopes, meanSquareSlope, slopeAnisotropy,
+} from './seaWind';
 import { DEG2RAD as DEG } from '../../shared/math/angles';
 
 /** A position or direction in the body's frame, radii as the unit. */
@@ -98,6 +105,11 @@ export interface GlintMeterSea {
   readonly hazeClearView: number;
   /** The air's blend, 1 once the tables are in. */
   readonly airBlend: number;
+  /** Whether the sea compiles its lobe along the wind's axis (the SEA_AXIS
+   *  define, world/surfaceShading `seaAxisOn`): the twin then draws the same
+   *  ellipse and bounds it with `axisLobeBound`; absent or false, the round
+   *  lobe and its bound, exactly as before the axis. */
+  readonly axis?: boolean;
 }
 
 /** What the maps say at a ground point. */
@@ -114,8 +126,8 @@ export interface SurfaceSample {
    *  after the shoulder. */
   deckKeep: number;
   /** The wind's axis in doubled angle, each in -1..1 (world/seaWind: (0, 0)
-   *  is no axis), as the wind map carries it for the glint's ellipse along
-   *  the wind. Read here, not used by the meter yet. */
+   *  is no axis), as the wind map carries it: the lobe's ellipse along the
+   *  wind (`windFrameAt`, `axisLobe`) when the sea draws one. */
   axisX: number;
   axisY: number;
 }
@@ -212,12 +224,13 @@ export interface ColumnDepthTable {
   readonly values: Float32Array;
 }
 
-export const COX_MUNK_SLOPE_CALM = 0.003;
-export const COX_MUNK_SLOPE_PER_MS = 0.00512;
+/** Cox-Munk's two numbers, world/seaWind's own: the shader's and the twin's
+ *  lobes, and the bound on them, read the one pair. */
+export { COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS };
 
 /** Cox-Munk: the sea's mean-square slope for a wind, as world/seaWind has it. */
 export function meanSquareSlopeOfWind(windMs: number): number {
-  return COX_MUNK_SLOPE_CALM + COX_MUNK_SLOPE_PER_MS * Math.max(windMs, 0);
+  return meanSquareSlope(windMs);
 }
 
 /** The wind the scan sizes its reach across the principal line for: 7 m/s,
@@ -355,6 +368,159 @@ export function beckmannLobeBound(cosNH: number): number {
   return beckmannLobe(cosNH, Math.min(Math.max(tan2, MSS_CALMEST), MSS_ROUGHEST));
 }
 
+/**
+ * The wind's frame at a ground point with unit normal (nx, ny, nz) in the
+ * body frame, for an axis (axisX, axisY) in doubled angle as the map carries
+ * it: into `out` the unit vector along the axis, then the one across it (the
+ * normal crossed into the first), six numbers; returns the axis's length k,
+ * clamped to one. East and north are built about the body's pole, +Y, as
+ * world/reliefFrame and the shader build them (east = pole x n, north = n x
+ * east), so the map's u grows east and its v north; the axis is turned from
+ * east toward north by half its doubled angle, through the half-angle
+ * identities, a zero doubled sine taken as plus so an axis along the meridian
+ * keeps its length. At a pole east is undefined and the frame collapses
+ * toward zero; the map's own averaging has no axis there, and `axisLobe`
+ * then reads the across slope.
+ */
+export function windFrameAt(
+  nx: number, ny: number, nz: number, axisX: number, axisY: number, out: Float64Array | number[],
+): number {
+  let ex = nz, ez = -nx;
+  const eLen = Math.max(Math.hypot(ex, ez), 1e-6);
+  ex /= eLen; ez /= eLen;
+  const northX = ny * ez, northY = nz * ex - nx * ez, northZ = -ny * ex;
+  const k = Math.min(Math.hypot(axisX, axisY), 1);
+  const c2 = Math.min(Math.max(axisX / Math.max(k, 1e-6), -1), 1);
+  const cos = Math.sqrt(0.5 + 0.5 * c2);
+  const sin = (axisY < 0 ? -1 : 1) * Math.sqrt(0.5 - 0.5 * c2);
+  const ux = cos * ex + sin * northX, uy = sin * northY, uz = cos * ez + sin * northZ;
+  out[0] = ux; out[1] = uy; out[2] = uz;
+  out[3] = ny * uz - nz * uy; out[4] = nz * ux - nx * uz; out[5] = nx * uy - ny * ux;
+  return k;
+}
+
+/**
+ * The lobe along the wind, the shader's seaBeckmannAxis: Beckmann with the
+ * mean-square slope `along` along the axis and `across` across it, at a half
+ * vector whose cosine to the normal is cosNH and whose components along and
+ * across the axis are hu and hc. The inverse slope along the half vector's
+ * azimuth is the across one plus the difference times that azimuth's cosine
+ * squared, so with along = across it is `beckmannLobe` at that slope, and a
+ * collapsed frame (hu = hc = 0) reads the across slope.
+ */
+export function axisLobe(cosNH: number, along: number, across: number, hu: number, hc: number): number {
+  const cos2 = Math.max(cosNH * cosNH, 1e-6);
+  const along2 = (hu * hu) / Math.max(hu * hu + hc * hc, 1e-12);
+  const inverse = 1 / across + (1 / along - 1 / across) * along2;
+  return Math.exp(((cos2 - 1) * inverse) / cos2) / (Math.PI * Math.sqrt(along * across) * cos2 * cos2);
+}
+
+/** The alpha Smith's term reads a direction at under the lobe along the wind,
+ *  the shader's seaAxisAlpha: the slope projected on the direction's azimuth,
+ *  its components along and across the axis wu and wc. */
+export function axisAlpha(along: number, across: number, wu: number, wc: number): number {
+  const along2 = (wu * wu) / Math.max(wu * wu + wc * wc, 1e-12);
+  return Math.sqrt(across + (along - across) * along2);
+}
+
+/** The bound's nodes in tan²θ, spaced as the square of their index up to
+ *  AXIS_BOUND_TAN2_MAX (axisLobeBound says why). */
+export const AXIS_BOUND_NODES = 256;
+export const AXIS_BOUND_TAN2_MAX = 1;
+/** The widening over the winds between the build's steps: their own
+ *  shortfall is a few millionths, and the tests hold the bound over a finer
+ *  search of wind and axis. */
+const AXIS_BOUND_MARGIN = 1.002;
+const AXIS_BOUND_WIND_STEPS = 1024;
+let axisBoundTable: { values: Float64Array; roughestAlong: number } | null = null;
+
+/**
+ * The bound on the lobe along the wind at a half-vector cosine: the largest
+ * the lobe can be at that tilt over every wind the map can hold (0 to
+ * SEA_WIND_MAX_MS), every axis length (0 to 1) and every azimuth of the half
+ * vector, which `scanBeam` reads beside the principal line by, as
+ * `beckmannLobeBound` bounds the round lobe. The round bound is not one: at a
+ * tilt tan²θ, slopes A along and B across draw at most exp(-tan²θ / A) /
+ * (pi sqrt(A B) cos⁴θ) (the half vector along the wider axis), and a light
+ * steady wind's A = 0.006, B = 0.003 beats every round lobe at tan²θ = 0.006.
+ * With A = mss + |d| k and B = max(mss - |d| k, COX_MUNK_SLOPE_CALM): where
+ * the floor does not bind the lobe grows with k at every tilt, so a wind's
+ * largest is at the largest k before the floor; where it binds B is the
+ * floor and the largest is at A = 2 tan²θ, clamped to what that wind's k
+ * reaches. So each wind's largest is one of two closed forms, and the bound
+ * is the largest of them over the winds: 1024 even steps from calm to
+ * SEA_WIND_MAX_MS plus the two winds where the laws turn (d = 0, and where
+ * the floor stops binding at k = 1), at AXIS_BOUND_NODES + 1 values of
+ * tan²θ from 0 to AXIS_BOUND_TAN2_MAX spaced as the square of their index
+ * (dense at the mirror, where the calmest lobe is narrowest), read linearly
+ * between them, which over-reads what is a convex function of tan²θ and so
+ * stays a bound, and widened by AXIS_BOUND_MARGIN. Past the last node the
+ * largest is the roughest wind's whole axis (the tests hold that it already
+ * is at the last node), in closed form. Built on the first call, a couple of
+ * milliseconds once a session. With the floor at COX_MUNK_SLOPE_CALM the
+ * bound at the mirror is the round one's, 1 / (pi 0.003); a floor near zero
+ * would let a light wind's across slope shrink without end, and the bound at
+ * the mirror grow forty times, and the scan read beside the line at every
+ * step a coast cuts.
+ */
+export function axisLobeBound(cosNH: number): number {
+  const table = axisBoundTable ?? (axisBoundTable = buildAxisBoundTable());
+  const cos2 = Math.max(cosNH * cosNH, 1e-6);
+  const tan2 = (1 - cos2) / cos2;
+  let g: number;
+  if (tan2 >= AXIS_BOUND_TAN2_MAX) {
+    g = table.values[AXIS_BOUND_NODES] * Math.exp(-(tan2 - AXIS_BOUND_TAN2_MAX) / table.roughestAlong);
+  } else {
+    const x = Math.sqrt(tan2 / AXIS_BOUND_TAN2_MAX) * AXIS_BOUND_NODES;
+    const i = Math.min(Math.floor(x), AXIS_BOUND_NODES - 1);
+    const t0 = AXIS_BOUND_TAN2_MAX * (i / AXIS_BOUND_NODES) ** 2;
+    const t1 = AXIS_BOUND_TAN2_MAX * ((i + 1) / AXIS_BOUND_NODES) ** 2;
+    g = table.values[i] + (table.values[i + 1] - table.values[i]) * ((tan2 - t0) / (t1 - t0));
+  }
+  return (AXIS_BOUND_MARGIN * g) / (cos2 * cos2);
+}
+
+/** The largest lobe without its cos⁴, exp(-tan²θ / A) / (pi sqrt(A B)), over
+ *  the winds and axis lengths at each node (axisLobeBound says how), and the
+ *  roughest wind's along slope for the closed form past the last node. */
+function buildAxisBoundTable(): { values: Float64Array; roughestAlong: number } {
+  const floor = COX_MUNK_SLOPE_CALM;
+  const winds: number[] = [];
+  for (let j = 0; j <= AXIS_BOUND_WIND_STEPS; j++) winds.push((SEA_WIND_MAX_MS * j) / AXIS_BOUND_WIND_STEPS);
+  // Where the anisotropy changes sign, and where mss - |d| at k = 1 meets the
+  // floor; both laws are straight lines in the wind.
+  const d0 = slopeAnisotropy(0), d1 = slopeAnisotropy(1) - d0;
+  const m0 = meanSquareSlope(0), m1 = meanSquareSlope(1) - m0;
+  for (const w of [-d0 / d1, (floor - m0 - d0) / (m1 + d1)]) if (w > 0 && w < SEA_WIND_MAX_MS) winds.push(w);
+  const values = new Float64Array(AXIS_BOUND_NODES + 1);
+  const along = new Float64Array(winds.length), scale = new Float64Array(winds.length);
+  const reachLo = new Float64Array(winds.length), reachHi = new Float64Array(winds.length);
+  const binds = new Uint8Array(winds.length);
+  for (let j = 0; j < winds.length; j++) {
+    const mss = meanSquareSlope(winds[j]);
+    const skew = Math.abs(slopeAnisotropy(winds[j]));
+    const kFloor = skew > 0 ? Math.min(1, (mss - floor) / skew) : 1;
+    along[j] = mss + skew * kFloor;
+    scale[j] = 1 / (Math.PI * Math.sqrt(along[j] * Math.max(mss - skew * kFloor, floor)));
+    binds[j] = kFloor < 1 ? 1 : 0;
+    reachLo[j] = along[j];
+    reachHi[j] = mss + skew;
+  }
+  for (let i = 0; i <= AXIS_BOUND_NODES; i++) {
+    const t = AXIS_BOUND_TAN2_MAX * (i / AXIS_BOUND_NODES) ** 2;
+    let most = 0;
+    for (let j = 0; j < winds.length; j++) {
+      most = Math.max(most, scale[j] * Math.exp(-t / along[j]));
+      if (binds[j]) {
+        const a = Math.min(Math.max(2 * t, reachLo[j]), reachHi[j]);
+        most = Math.max(most, Math.exp(-t / a) / (Math.PI * Math.sqrt(a * floor)));
+      }
+    }
+    values[i] = most;
+  }
+  return { values, roughestAlong: meanSquareSlope(SEA_WIND_MAX_MS) + Math.abs(slopeAnisotropy(SEA_WIND_MAX_MS)) };
+}
+
 /** The shoulder the shader applies after the air: the term to the knee, then
  *  an exponential approach to the cap, per channel. */
 export function shoulder(v: number, knee: number, cap: number): number {
@@ -382,12 +548,17 @@ export interface GlintScratch {
   cut: Uint8Array;
   /** The share of the Sun a moon's shadow left at the last point evaluated. */
   sunVisible: number;
+  /** The wind's frame at the point (windFrameAt) and its two slopes, along
+   *  and across (world/seaWind axisSlopes). */
+  frame: Float64Array;
+  slopes: [number, number];
 }
 
 export function createGlintScratch(): GlintScratch {
   return {
     sample: { windMs: 0, water: 0, cloudKeep: 1, deckKeep: 1, axisX: 0, axisY: 0 }, t: [0, 0, 0], tz: [0, 0, 0], tc: [0, 0, 0],
     axes: new Float64Array(6), place0: [0, 0], place1: [0, 0], cut: new Uint8Array(64), sunVisible: 1,
+    frame: new Float64Array(6), slopes: [0, 0],
   };
 }
 
@@ -397,8 +568,14 @@ export function createGlintScratch(): GlintScratch {
  * deck drawn over it (`scratch.sample.deckKeep` holds the deck's share for
  * the caller). Zero when the point is unlit, below the horizon, or not sea.
  * With `bound`, the maps are not read: the point is taken as open sea under
- * a clear sky and a whole Sun at its brightest wind (beckmannLobeBound) with
- * no shadowing, which no sea the maps can draw there exceeds.
+ * a clear sky and a whole Sun at its brightest wind (beckmannLobeBound, or
+ * axisLobeBound when the sea draws its lobe along the wind) with no
+ * shadowing, which no sea the maps can draw there exceeds. With `sea.axis`
+ * the lobe is the shader's along the wind: the frame from the ground point
+ * about the body's pole, the axis the sampler read, the two slopes floored
+ * where the shader floors them, and Smith's term on each direction's
+ * projected alpha; the relief's geometry roughness is left out as for the
+ * round lobe.
  */
 export function beamRadianceAt(
   nx: number, ny: number, nz: number,
@@ -435,10 +612,22 @@ export function beamRadianceAt(
   const vh = Math.max(vx * hx + vy * hy + vz * hz, 0);
   const tail = Math.pow(2, (-5.55473 * vh - 6.98316) * vh);
   const fresnel = sea.waterF0 + (1 - sea.waterF0) * tail;
-  const mss = meanSquareSlopeOfWind(s.windMs);
-  const lobe = (bound
-    ? beckmannLobeBound(nh)
-    : beckmannLobe(nh, mss) * beckmannG1(nl, Math.sqrt(mss)) * beckmannG1(nv, Math.sqrt(mss))) / Math.max(4 * nl * nv, 1e-6);
+  let lobe: number;
+  if (bound) {
+    lobe = (sea.axis ? axisLobeBound(nh) : beckmannLobeBound(nh)) / Math.max(4 * nl * nv, 1e-6);
+  } else if (sea.axis) {
+    const f = scratch.frame;
+    windFrameAt(nx, ny, nz, s.axisX, s.axisY, f);
+    axisSlopes(s.windMs, s.axisX, s.axisY, scratch.slopes);
+    const along = scratch.slopes[0], across = scratch.slopes[1];
+    lobe = axisLobe(nh, along, across, hx * f[0] + hy * f[1] + hz * f[2], hx * f[3] + hy * f[4] + hz * f[5])
+      * beckmannG1(nl, axisAlpha(along, across, lx * f[0] + ly * f[1] + lz * f[2], lx * f[3] + ly * f[4] + lz * f[5]))
+      * beckmannG1(nv, axisAlpha(along, across, vx * f[0] + vy * f[1] + vz * f[2], vx * f[3] + vy * f[4] + vz * f[5]))
+      / Math.max(4 * nl * nv, 1e-6);
+  } else {
+    const mss = meanSquareSlopeOfWind(s.windMs);
+    lobe = (beckmannLobe(nh, mss) * beckmannG1(nl, Math.sqrt(mss)) * beckmannG1(nv, Math.sqrt(mss))) / Math.max(4 * nl * nv, 1e-6);
+  }
   // The Sun's path, normalised at the zenith, clamped, blended; the camera
   // leg through the haze grade's weight.
   lookupTransmittance(table, nl, scratch.t);

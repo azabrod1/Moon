@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import {
   COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_WIND_AXIS_SCALE, SEA_WIND_AXIS_ZERO, SEA_WIND_MAX_MS,
+  COX_MUNK_CROSSWIND_CALM as APP_CROSSWIND_CALM, COX_MUNK_CROSSWIND_PER_MS as APP_CROSSWIND_PER_MS,
+  COX_MUNK_UPWIND_PER_MS as APP_UPWIND_PER_MS, axisSlopes, slopeAnisotropy as appSlopeAnisotropy,
   disposeRetiredSeaWindMaps,
   installSeaWindMap, loadSeaWindMap, meanSquareSlope, parseSeaWindMapParam, parseSeaWindParam, seaWindAxisFromByte,
   seaWindBytesFromRgba, seaWindMapDimensions, seaWindMapSource, seaWindRgbaFromSpeed, seaWindTexture, seaWindTextureFrom,
@@ -364,6 +366,58 @@ describe('the shipped map (tools/gen-seawind.mjs)', () => {
         expect(row.p99).toBeLessThan(0.1);
       }
     }
+  });
+});
+
+describe('the lobe along the wind\'s slopes', () => {
+  it('are the bake\'s own: the three variances and the anisotropy tools/seaWindMap.mjs bakes the axis with', () => {
+    expect(APP_UPWIND_PER_MS).toBe(COX_MUNK_UPWIND_PER_MS);
+    expect(APP_CROSSWIND_CALM).toBe(COX_MUNK_CROSSWIND_CALM);
+    expect(APP_CROSSWIND_PER_MS).toBe(COX_MUNK_CROSSWIND_PER_MS);
+    for (const wind of [0, 1, 2.42, 3, 7, 12, SEA_WIND_MAX_MS]) expect(appSlopeAnisotropy(wind)).toBe(slopeAnisotropy(wind));
+  });
+
+  it('keep the total law, add d k along the axis and take it off across, floored at the calm sea, k clamped to one', () => {
+    const out: [number, number] = [0, 0];
+    // No axis: both are the whole mean-square slope, exactly.
+    for (const wind of [0, 2, 7, SEA_WIND_MAX_MS]) {
+      expect(axisSlopes(wind, 0, 0, out)).toEqual([meanSquareSlope(wind), meanSquareSlope(wind)]);
+    }
+    // At 7 m/s along a full axis: mss +- d, the ellipse's two slopes; their
+    // mean is the total law, which the lobe keeps.
+    const d7 = appSlopeAnisotropy(7);
+    axisSlopes(7, 0.6, 0.8, out);
+    expect(out[0]).toBeCloseTo(meanSquareSlope(7) + d7, 15);
+    expect(out[1]).toBeCloseTo(meanSquareSlope(7) - d7, 15);
+    expect((out[0] + out[1]) / 2).toBeCloseTo(meanSquareSlope(7), 15);
+    // About 16 % longer along the wind at 7 m/s, in alpha.
+    expect(Math.sqrt(out[0] / out[1])).toBeGreaterThan(1.13);
+    expect(Math.sqrt(out[0] / out[1])).toBeLessThan(1.19);
+    // Half the axis, half the anisotropy.
+    axisSlopes(7, 0.3, 0.4, out);
+    expect(out[0] - meanSquareSlope(7)).toBeCloseTo(d7 / 2, 15);
+    // Byte rounding decodes a full axis past one ((218, 218) is 1.0022 long):
+    // clamped, it draws exactly the full axis.
+    const past = seaWindAxisFromByte(218);
+    expect(Math.hypot(past, past)).toBeGreaterThan(1);
+    const full: [number, number] = [0, 0];
+    axisSlopes(7, past, past, out);
+    axisSlopes(7, Math.SQRT1_2, Math.SQRT1_2, full);
+    expect(out[0]).toBeCloseTo(full[0], 15);
+    expect(out[1]).toBeCloseTo(full[1], 15);
+    // Below 2.42 m/s the crosswind slope is the wider: along is the narrow one.
+    axisSlopes(1, 1, 0, out);
+    expect(out[0]).toBeLessThan(out[1]);
+    // A calm, steady wind would draw a needle across its axis; the floor at
+    // the calm sea's slope holds it there.
+    axisSlopes(0, 1, 0, out);
+    expect(out[0]).toBe(COX_MUNK_SLOPE_CALM);
+    axisSlopes(0.2, 1, 0, out);
+    expect(out[0]).toBe(COX_MUNK_SLOPE_CALM);
+    expect(out[1]).toBeGreaterThan(COX_MUNK_SLOPE_CALM);
+    // The floor is far above three's own roughness floor (0.0525, in alpha²
+    // 0.0525⁴), so the shader's per-axis roughness never reaches it.
+    expect(Math.pow(COX_MUNK_SLOPE_CALM, 0.25)).toBeGreaterThan(0.0525);
   });
 });
 

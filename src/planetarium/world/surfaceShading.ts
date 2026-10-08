@@ -141,7 +141,8 @@ import { AIRLIGHT_SCALE } from './atmosphereModel';
 import { SUN_LIGHT_BASELINE } from '../sunLight';
 import { onPerfSwitch, perfSwitchOn, perfSwitchUniform, setPerfSwitch } from '../../app/perfSwitches';
 import {
-  COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_WIND_MAX_MS, disposeRetiredSeaWindMaps, seaWindTexture,
+  COX_MUNK_CROSSWIND_CALM, COX_MUNK_CROSSWIND_PER_MS, COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, COX_MUNK_UPWIND_PER_MS,
+  SEA_WIND_AXIS_SCALE, SEA_WIND_AXIS_ZERO, SEA_WIND_MAX_MS, disposeRetiredSeaWindMaps, seaWindTexture,
 } from './seaWind';
 import { DEFAULT_ALBEDO_PIVOT, surfaceLookOf } from './surfaceLook';
 import type { NightSides } from '../../app/nightSidesSetting';
@@ -453,7 +454,11 @@ const SYNTH_RELIEF_GAIN: Record<SurfaceArchetype, number> = {
 // width is read per fragment from a map of the wind over the sea
 // (world/seaWind.ts) through Cox-Munk's slope law, and the constant below is
 // the one width the sea falls back to with the map switched off (`?seawind=0`,
-// or a DEV override), kept where it was so the switch is an A/B.
+// or a DEV override), kept where it was so the switch is an A/B. Cox and
+// Munk's slopes are also wider along the wind than across it, and the map
+// carries the wind's axis, so under the SEA_AXIS define (`?seaaxis=0` takes it
+// out) the lobe is two widths, along that axis and across it, and the sheen an
+// ellipse along the wind rather than the sphere's circle.
 //
 // The remap happens where the map is read rather than in the map, so the globe
 // and the streamed sectors cut from the same source move together — a sector
@@ -869,7 +874,7 @@ function applyCloudShadow(mat: THREE.Material, on: boolean): void {
 }
 
 /** Set or clear one of the cloud switches' defines on a material. */
-function applySwitchDefine(mat: THREE.Material, name: 'CLOUD_SHADOW' | 'CLOUD_LIGHT' | 'SUN_PATH' | 'SEA_BEAM' | 'SEA_SKY', on: boolean): void {
+function applySwitchDefine(mat: THREE.Material, name: 'CLOUD_SHADOW' | 'CLOUD_LIGHT' | 'SUN_PATH' | 'SEA_BEAM' | 'SEA_SKY' | 'SEA_AXIS', on: boolean): void {
   const defines = (mat.defines ??= {});
   if ((defines[name] !== undefined) === on) return;
   if (on) defines[name] = '';
@@ -1144,9 +1149,18 @@ function roughnessChunk(): string {
  * because the UV jumps a whole turn at the date line and an implicit
  * derivative across it would pick the coarsest mip down one column of sea;
  * the gradients are taken in the uniform branch, outside the per-fragment
- * gate that spares pure land the fetch.
+ * gate that spares pure land the fetch. Under SEA_AXIS the same fetch's
+ * green and blue are the wind's axis, decoded (byte - 128) / 127 after the
+ * filter (the map is linear data and the decode affine, so that is the
+ * filtered axis), and carried with the wind in `seaAxisWind` down to the
+ * lobe in the sea block; its x stays negative wherever the map was not read
+ * (land under the gate, or the map off), and the lobe there keeps three's
+ * own width, round.
  */
 const WATER_GLOSS_GLSL = /* glsl */ `
+#ifdef SEA_AXIS
+vec3 seaAxisWind = vec3(-1.0, 0.0, 0.0);
+#endif
 float seaWater = 0.0;
 if (GROUND_ON(uWaterGloss > 0.0)) {
   float waterGain = uWaterGloss;
@@ -1158,7 +1172,14 @@ if (GROUND_ON(uWaterGloss > 0.0)) {
     vec2 seaDx = sphereEquirectUvGrad(seaDir, dFdx(seaDir));
     vec2 seaDy = sphereEquirectUvGrad(seaDir, dFdy(seaDir));
     if (roughnessFactor < ${(ROUGHNESS_MAP_LAND - 0.005).toFixed(6)}) {
+#ifdef SEA_AXIS
+      vec4 seaWindTexel = textureGrad(uSeaWindMap, seaUv, seaDx, seaDy);
+      float seaWindMs = seaWindTexel.r * ${SEA_WIND_MAX_MS.toFixed(1)};
+      seaAxisWind = vec3(seaWindMs,
+          (seaWindTexel.gb * 255.0 - ${SEA_WIND_AXIS_ZERO.toFixed(1)}) / ${SEA_WIND_AXIS_SCALE.toFixed(1)});
+#else
       float seaWindMs = textureGrad(uSeaWindMap, seaUv, seaDx, seaDy).r * ${SEA_WIND_MAX_MS.toFixed(1)};
+#endif
       float seaRoughness = sqrt(sqrt(${COX_MUNK_SLOPE_CALM.toFixed(5)}
           + ${COX_MUNK_SLOPE_PER_MS.toFixed(5)} * seaWindMs));
       waterGain = (${ROUGHNESS_MAP_LAND.toFixed(6)} - seaRoughness)
@@ -2096,7 +2117,11 @@ ${GROUND_FIELD_ARCHETYPE_CLOSE}#define GROUND_ON(x) (x)
  * body swaps it in for three's GGX — whose tail at three sigma of facet tilt
  * is eighty times heavier, and was the haze round the sheen — wherever the
  * wind map is on. The cosine is floored so a facet turned away is a lobe of
- * nothing rather than a division by nothing.
+ * nothing rather than a division by nothing. Under SEA_AXIS the lobe is the
+ * same Gaussian with a different variance along the wind's axis than across
+ * it (world/seaWind `axisSlopes`), and Smith's term takes the alpha projected
+ * on each direction's azimuth; world/glintMeter carries the same two
+ * functions on the CPU.
  */
 const SEA_LOBE_GLSL = /* glsl */ `
 // Unpolarised Fresnel reflectance of water at an incidence cosine, exact for
@@ -2125,6 +2150,32 @@ float seaBeckmannG1(float cosTheta, float alpha) {
 float seaBeckmannVis(float alpha, float dotNL, float dotNV) {
   return seaBeckmannG1(dotNL, alpha) * seaBeckmannG1(dotNV, alpha) / max(4.0 * dotNL * dotNV, 1e-6);
 }
+#ifdef SEA_AXIS
+// The same lobe along the wind: Beckmann in the wind's own frame, alphaU along
+// the map's axis and alphaC across it, hu and hc the half vector's components
+// along and across, dotNH its cosine to the normal. The inverse square alpha
+// along the half vector's azimuth is the across one plus the difference times
+// that azimuth's cosine squared, so with alphaU = alphaC it is that alpha's
+// and the lobe is seaBeckmann's, and where the frame has collapsed (hu = hc =
+// 0, at a pole) it reads the across alpha rather than no lobe at all.
+float seaBeckmannAxis(float alphaU, float alphaC, float hu, float hc, float dotNH) {
+  float cos2 = max(dotNH * dotNH, 1e-6);
+  float along2 = hu * hu / max(hu * hu + hc * hc, 1e-12);
+  float invAlpha2 = 1.0 / (alphaC * alphaC) + (1.0 / (alphaU * alphaU) - 1.0 / (alphaC * alphaC)) * along2;
+  return exp((cos2 - 1.0) * invAlpha2 / cos2) / (PI * alphaU * alphaC * cos2 * cos2);
+}
+// Smith's term on the projected alpha: a direction whose components along and
+// across the axis are wu and wc sees alpha² = alphaU² cos² + alphaC² sin² of
+// its azimuth, and Beckmann's own G1 at that alpha.
+float seaAxisAlpha(float alphaU, float alphaC, float wu, float wc) {
+  float along2 = wu * wu / max(wu * wu + wc * wc, 1e-12);
+  return sqrt(alphaC * alphaC + (alphaU * alphaU - alphaC * alphaC) * along2);
+}
+float seaBeckmannAxisVis(float alphaU, float alphaC, vec2 l, vec2 v, float dotNL, float dotNV) {
+  return seaBeckmannG1(dotNL, seaAxisAlpha(alphaU, alphaC, l.x, l.y))
+      * seaBeckmannG1(dotNV, seaAxisAlpha(alphaU, alphaC, v.x, v.y)) / max(4.0 * dotNL * dotNV, 1e-6);
+}
+#endif
 `;
 
 /**
@@ -2223,6 +2274,15 @@ uniform float uWaterGloss;
 uniform float uSeaMix;
 uniform sampler2D uSeaWindMap;
 uniform float uSeaWindOn;
+#ifdef SEA_AXIS
+// The body's pole in view space, for the lobe along the wind. three declares
+// normalMatrix in the vertex stage, and here only for an object-space normal
+// map; the same name, type and precision links to the one uniform three
+// already sets per object.
+#ifndef USE_NORMALMAP_OBJECTSPACE
+uniform mat3 normalMatrix;
+#endif
+#endif
 uniform sampler2D uCloudShadowMap;
 uniform float uCloudShadowSpin;
 uniform float uCloudDeck;
@@ -2778,6 +2838,54 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
       // dark on this lobe at a grazing Sun and eye, which is where the beam
       // is; the old chain keeps three's, which then cancels. The denominator
       // stays three's whichever chain, since that is what is being divided out.
+#ifdef SEA_AXIS
+      // The lobe along the wind (SEA_AXIS, world/seaWind axisSlopes). The
+      // wind's frame on the shading normal: east and north from the body's
+      // pole in view space (the body frame's +Y, the pole the equirect maps
+      // are laid on), as world/reliefFrame builds them, and the axis turned
+      // from east toward north by half its doubled angle, by the half-angle
+      // identities (the sign of the doubled sine picks the side; its zero is
+      // taken as plus, or an axis along the meridian would vanish). At a pole
+      // the frame collapses; the map's own averaging has the axis near zero
+      // there, and the lobe falls back to its across alpha. Each axis's
+      // roughness is formed as three forms the one it lights with, its floor
+      // and this fragment's geometry roughness included, from the water's own
+      // slopes and never from material.roughness, which at a coast is the
+      // blend of water and land. Where the map was not read the lobe keeps
+      // three's alpha, round. The division stays by three's own isotropic
+      // GGX at its own alpha, which is what three put in.
+      vec3 seaEast = cross(normalize(normalMatrix[1]), normal);
+      seaEast /= max(length(seaEast), 1e-6);
+      vec3 seaNorth = cross(normal, seaEast);
+      float seaAxisK = min(length(seaAxisWind.yz), 1.0);
+      float seaAxisCos2 = clamp(seaAxisWind.y / max(seaAxisK, 1e-6), -1.0, 1.0);
+      vec3 seaAlong = sqrt(0.5 + 0.5 * seaAxisCos2) * seaEast
+          + (seaAxisWind.z < 0.0 ? -1.0 : 1.0) * sqrt(0.5 - 0.5 * seaAxisCos2) * seaNorth;
+      vec3 seaAcross = cross(normal, seaAlong);
+      float seaAlphaU = seaAlpha;
+      float seaAlphaC = seaAlpha;
+      if (seaAxisWind.x >= 0.0) {
+        float seaMss = ${COX_MUNK_SLOPE_CALM.toFixed(5)} + ${COX_MUNK_SLOPE_PER_MS.toFixed(5)} * seaAxisWind.x;
+        float seaSkew = (${COX_MUNK_UPWIND_PER_MS.toFixed(5)} * seaAxisWind.x
+            - (${COX_MUNK_CROSSWIND_CALM.toFixed(5)} + ${COX_MUNK_CROSSWIND_PER_MS.toFixed(5)} * seaAxisWind.x)) * seaAxisK;
+        seaAlphaU = pow2(min(max(sqrt(sqrt(max(seaMss + seaSkew, ${COX_MUNK_SLOPE_CALM.toFixed(5)}))), 0.0525)
+            + geometryRoughness, 1.0));
+        seaAlphaC = pow2(min(max(sqrt(sqrt(max(seaMss - seaSkew, ${COX_MUNK_SLOPE_CALM.toFixed(5)}))), 0.0525)
+            + geometryRoughness, 1.0));
+      }
+#ifdef SEA_BEAM
+      vec3 seaSunDir = normalize(vSunViewDir);
+      float seaBeamVis = seaBeckmannAxisVis(seaAlphaU, seaAlphaC,
+          vec2(dot(seaSunDir, seaAlong), dot(seaSunDir, seaAcross)),
+          vec2(dot(seaViewDir, seaAlong), dot(seaViewDir, seaAcross)), seaDotNL, seaDotNV);
+#else
+      float seaBeamVis = seaVis;
+#endif
+      seaLobe = mix(1.0,
+          seaBeamVis * seaBeckmannAxis(seaAlphaU, seaAlphaC, dot(seaHalfDir, seaAlong), dot(seaHalfDir, seaAcross), seaDotNH)
+              / (seaVis * D_GGX(seaAlpha, seaDotNH)),
+          seaWater);
+#else
 #ifdef SEA_BEAM
       float seaBeamVis = seaBeckmannVis(seaAlpha, seaDotNL, seaDotNV);
 #else
@@ -2786,6 +2894,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
       seaLobe = mix(1.0,
           seaBeamVis * seaBeckmann(seaAlpha, seaDotNH) / (seaVis * D_GGX(seaAlpha, seaDotNH)),
           seaWater);
+#endif
     }
     vec3 seaGlintFull = glintRaw * (seaFresnel * seaLobe${GLINT_KEEP_GLSL});
     // The old chain caps the term here, before the air and the limb darkening
@@ -3229,6 +3338,11 @@ let sunPathEnabled = true;
 let seaBeamEnabled = true;
 /** `SEA_SKY` (`?seasky=0`): the sky reflected off the sea (SEA_SKY_GRAZING_COS), the same shape of switch. */
 let seaSkyEnabled = true;
+/** `SEA_AXIS` (`?seaaxis=0`): the sea's lobe as an ellipse along the wind's
+ *  axis (world/seaWind `axisSlopes`), the same shape of switch; off, the
+ *  lobe is round at the wind's whole mean-square slope, the text it was. The
+ *  highlight meter's twin follows it (`seaAxisOn`). */
+let seaAxisEnabled = true;
 /** Every live augmented surface, so a flip can reach the materials already drawn. */
 const beamReceivers = new Set<THREE.Material>();
 function receiveBeamSwitches(mat: THREE.Material): void {
@@ -3239,6 +3353,7 @@ function receiveBeamSwitches(mat: THREE.Material): void {
   applySwitchDefine(mat, 'SUN_PATH', sunPathEnabled);
   applySwitchDefine(mat, 'SEA_BEAM', seaBeamEnabled);
   applySwitchDefine(mat, 'SEA_SKY', seaSkyEnabled);
+  applySwitchDefine(mat, 'SEA_AXIS', seaAxisEnabled);
 }
 export function setSunPathEnabled(on: boolean): void {
   sunPathEnabled = on;
@@ -3259,6 +3374,18 @@ export function seaSkyOn(): boolean {
 /** The `?seasky=0` kill switch, on any build. */
 export function parseSeaSkyParam(search: string): boolean {
   return new URLSearchParams(search).get('seasky') !== '0';
+}
+export function setSeaAxisEnabled(on: boolean): void {
+  seaAxisEnabled = on;
+  for (const mat of beamReceivers) applySwitchDefine(mat, 'SEA_AXIS', on);
+}
+/** Whether every surface compiles the lobe along the wind right now. */
+export function seaAxisOn(): boolean {
+  return seaAxisEnabled;
+}
+/** The `?seaaxis=0` kill switch, on any build. */
+export function parseSeaAxisParam(search: string): boolean {
+  return new URLSearchParams(search).get('seaaxis') !== '0';
 }
 /** The beam's shoulder as the sea draws it this frame: the DEV knobs' values
  *  in a development build, the constants in production. The highlight meter

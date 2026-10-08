@@ -47,7 +47,7 @@ import {
   createSurfaceAirFx,
   seatSurfaceLook,
   type SurfaceArchetype, OCEAN_BEAM_CAP, OCEAN_BEAM_KNEE, OCEAN_GLINT_CAP,
-  SEA_WATER_COLOUR,
+  SEA_WATER_COLOUR, parseSeaAxisParam,
 } from './surfaceShading';
 import { DEFAULT_ALBEDO_PIVOT, resetSurfaceLookForTests, setSurfaceLookOverride } from './surfaceLook';
 import { createEarthNightShellMaterial } from './earthNightMaterial';
@@ -112,8 +112,15 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '097b8c308d47f8d5c1b8ca5c7939e87b77be92a870702f5619c11a951913b875';
-const PROD_FRAGMENT_HASH = '263f7bbaee4f4260308917e758f33435f5a13c2bba8ba826781c9df4c3faac58';
+const DEV_FRAGMENT_HASH = 'e901198c84717b7fc87a4ad6b8d18d70e6a1835a1ca3c57601aa4358cb84c083';
+const PROD_FRAGMENT_HASH = 'ec3b1280b9d7941b621a13907557874cd9bb1301143287854b2a0604fae481ec';
+/** The same two texts with the lobe along the wind's define OFF
+ *  (`?seaaxis=0`, world/surfaceShading SEA_AXIS), resolved as the
+ *  preprocessor resolves it: the hashes the shipped texts carried before the
+ *  lobe had an axis, unchanged. Every pin below is of a text with the define
+ *  resolved off as well, so each holds the text it held before. */
+const SEA_AXIS_OFF_DEV_FRAGMENT_HASH = '097b8c308d47f8d5c1b8ca5c7939e87b77be92a870702f5619c11a951913b875';
+const SEA_AXIS_OFF_PROD_FRAGMENT_HASH = '263f7bbaee4f4260308917e758f33435f5a13c2bba8ba826781c9df4c3faac58';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 /** The two texts with the cloud field's define OFF (world/cloudField),
  *  resolved as the preprocessor resolves it: each of the field's two chunks
@@ -122,7 +129,8 @@ const FIELD_OFF_DEV_FRAGMENT_HASH = '46493ae410716e27f66348c35412af754c921c17866
 const FIELD_OFF_PROD_FRAGMENT_HASH = 'fb520340d5efb6432975f48899626a4cb5444db96e5b54f9cb97f2bd945c0d76';
 /** The production text from before the field reached a production build:
  *  the shipped text with the field's two chunks deleted, newlines and all, and
- *  the later single-Mie colour's define resolved off. */
+ *  the later single-Mie colour's and lobe along the wind's defines resolved
+ *  off. */
 const PRE_FIELD_PROD_FRAGMENT_HASH = 'b87c20440020fd23d602a3703abc87c7c77ac95db567d71ad7ae8d46a75d7023';
 /** The same two texts with the cloud shadow's, the cloud light's and the
  *  cloud field's defines all OFF, resolved as the preprocessor resolves them:
@@ -185,6 +193,27 @@ describe('the injected surface shader', () => {
       .toBe(import.meta.env.DEV ? DEV_FRAGMENT_HASH : PROD_FRAGMENT_HASH);
   });
 
+  it('is the text it was with the lobe along the wind\'s define off, after the preprocessor', () => {
+    // SEA_AXIS (world/surfaceShading) is a compile-time define, on unless
+    // `?seaaxis=0`. Every line it adds is a whole line inside its own
+    // conditional and every line it replaces stands verbatim in its #else, so
+    // with it off the ground and the deck compile the programs from before the
+    // lobe had an axis, character for character, in either build: these are
+    // the two hashes the shipped texts carried then.
+    const shader = compile(augmented('earth'));
+    const off = resolveDefine(shader.fragmentShader, 'SEA_AXIS', false);
+    expect(off).not.toMatch(/SEA_AXIS|seaAxis|seaBeckmannAxis|uniform mat3 normalMatrix/);
+    expect(hash(off)).toBe(import.meta.env.DEV ? SEA_AXIS_OFF_DEV_FRAGMENT_HASH : SEA_AXIS_OFF_PROD_FRAGMENT_HASH);
+    expect(compile(augmented('cloud')).fragmentShader).toBe(shader.fragmentShader);
+    // The vertex stage never had any of it; its pin above holds it unmoved.
+    expect(shader.vertexShader).not.toContain('SEA_AXIS');
+    // On by default on every augmented surface, and the switch's reading.
+    expect(augmented('earth').defines?.SEA_AXIS).toBe('');
+    expect(augmented('cloud').defines?.SEA_AXIS).toBe('');
+    expect(parseSeaAxisParam('')).toBe(true);
+    expect(parseSeaAxisParam('?seaaxis=0')).toBe(false);
+  });
+
   it('is the text it was with the cloud shadow\'s and the cloud light\'s defines off, after the preprocessor', () => {
     // CLOUD_SHADOW and CLOUD_LIGHT (world/surfaceShading) are compile-time
     // defines, on unless their kill switches turn them off, and every line
@@ -196,8 +225,8 @@ describe('the injected surface shader', () => {
     const shader = compile(augmented('earth'));
     // The cloud field's define is resolved off too: the deck's alone, off
     // under `?cloudtiles=0` (world/cloudField).
-    const off = resolveDefine(resolveDefine(resolveDefine(shader.fragmentShader, 'CLOUD_FIELD', false),
-      'CLOUD_SHADOW', false), 'CLOUD_LIGHT', false);
+    const off = resolveDefine(resolveDefine(resolveDefine(resolveDefine(shader.fragmentShader, 'CLOUD_FIELD', false),
+      'CLOUD_SHADOW', false), 'CLOUD_LIGHT', false), 'SEA_AXIS', false);
     expect(off).not.toMatch(/CLOUD_SHADOW|CLOUD_LIGHT|CLOUD_FIELD/);
     expect(compile(augmented('cloud')).fragmentShader).toBe(shader.fragmentShader);
     expect(hash(off)).toBe(import.meta.env.DEV ? OFF_DEV_FRAGMENT_HASH : OFF_PROD_FRAGMENT_HASH);
@@ -212,7 +241,7 @@ describe('the injected surface shader', () => {
     // with it off the ground, the deck and the LUT shell compile the programs
     // from before the colour table existed, character for character.
     const shader = compile(augmented('earth'));
-    const off = resolveDefine(shader.fragmentShader, 'MIE_EXACT', false);
+    const off = resolveDefine(resolveDefine(shader.fragmentShader, 'MIE_EXACT', false), 'SEA_AXIS', false);
     expect(off).not.toMatch(/MIE_EXACT|uMieColour|getScatteringAndMieColour3D|getMieColour3D/);
     expect(hash(off)).toBe(import.meta.env.DEV ? MIE_OFF_DEV_FRAGMENT_HASH : MIE_OFF_PROD_FRAGMENT_HASH);
     expect(compile(augmented('cloud')).fragmentShader).toBe(shader.fragmentShader);
@@ -310,20 +339,20 @@ describe('the injected surface shader', () => {
     // and nothing else.
     for (const archetype of ['earth', 'cloud'] as SurfaceArchetype[]) {
       const shader = compile(augmented(archetype));
-      const off = resolveDefine(shader.fragmentShader, 'CLOUD_FIELD', false);
+      const off = resolveDefine(resolveDefine(shader.fragmentShader, 'CLOUD_FIELD', false), 'SEA_AXIS', false);
       expect(off).not.toMatch(/CLOUD_FIELD|cloudField|uCloudPage/);
       expect(hash(off), archetype).toBe(import.meta.env.DEV ? FIELD_OFF_DEV_FRAGMENT_HASH : FIELD_OFF_PROD_FRAGMENT_HASH);
       // The blank lines are all of it: each chunk read as its one newline is
       // the same text...
-      expect(resolveDefine(shader.fragmentShader.replace(CLOUD_FIELD_DECLS, '\n').replace(CLOUD_FIELD_MIX, '\n'),
-        'CLOUD_FIELD', false), archetype).toBe(off);
+      expect(resolveDefine(resolveDefine(shader.fragmentShader.replace(CLOUD_FIELD_DECLS, '\n').replace(CLOUD_FIELD_MIX, '\n'),
+        'CLOUD_FIELD', false), 'SEA_AXIS', false), archetype).toBe(off);
       // ...and with both chunks gone, newlines and all, the shipped text is
       // the one production compiled before the field reached it — once the
       // single-Mie colour, which came after, is resolved off as well.
       if (!import.meta.env.DEV) {
-        const without = resolveDefine(resolveDefine(
+        const without = resolveDefine(resolveDefine(resolveDefine(
           shader.fragmentShader.replace(CLOUD_FIELD_DECLS, '').replace(CLOUD_FIELD_MIX, ''),
-          'CLOUD_FIELD', false), 'MIE_EXACT', false);
+          'CLOUD_FIELD', false), 'MIE_EXACT', false), 'SEA_AXIS', false);
         expect(hash(without), archetype).toBe(PRE_FIELD_PROD_FRAGMENT_HASH);
       }
       expect(shader.vertexShader).not.toContain('CLOUD_FIELD');

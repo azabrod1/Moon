@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  AXIS_BOUND_TAN2_MAX, axisAlpha, axisLobe, axisLobeBound, windFrameAt,
   HIGHLIGHT_KNOBS, advanceExposureStops, beamRadianceAt, beckmannLobe, beckmannLobeBound, buildColumnDepthTable, buildTransmittanceTable, lookupColumnDepth, coverageOfBeam, createBeamPeak, createBeamPlace, createGlintScratch,
   highlightTarget, lookupTransmittance, meanSquareSlopeOfWind, sunVisibleAt, placeBeamInFrame, scanBeam, shoulder, type BeamPlace,
   type GlintMeterLight, type GlintMeterPose, type GlintMeterSea, type SurfaceSampler,
@@ -9,7 +10,9 @@ import {
 } from './atmosphereModel';
 import { OCEAN_BEAM_CAP, OCEAN_BEAM_KNEE, SEA_WATER_F0 } from './surfaceShading';
 import { SUN_LIGHT_INTENSITY, SUN_LIGHT_LINEAR } from '../sunLight';
-import { meanSquareSlope } from './seaWind';
+import { SEA_WIND_MAX_MS, axisSlopes, meanSquareSlope, seaWindAxisFromByte } from './seaWind';
+import { EarthSurfaceMaps } from './surfaceMaps';
+import { readFileSync } from 'node:fs';
 import { KM_PER_AU } from '../../astronomy/constants';
 
 const EARTH_KM = 6371;
@@ -544,5 +547,224 @@ describe("the beam's share of the frame, placed", () => {
     expect(out.inFront).toBe(true);
     expect(Math.abs(out.xDeg)).toBeGreaterThan(55);
     expect(Math.abs(out.xDeg)).toBeLessThan(65);
+  });
+});
+
+describe('the lobe along the wind', () => {
+  // 400 km up, the Sun 10° high: probePose's principal line runs along the
+  // equator from the sub-camera point (longitude -90°) toward +x, east.
+  const pose = probePose(400, 10);
+  const axisSea: GlintMeterSea = { ...beamSea, axis: true };
+  const steady = (windMs: number, axisX: number, axisY: number): SurfaceSampler => (_x, _y, _z, out) => {
+    out.windMs = windMs; out.water = 1; out.cloudKeep = 1; out.axisX = axisX; out.axisY = axisY;
+  };
+
+  it('is the round lobe where the two slopes are equal, to float precision', () => {
+    for (const mss of [0.003, 0.0389, 0.0849]) {
+      for (let deg = 0; deg <= 70; deg += 2.5) {
+        const cosNH = Math.cos(deg * DEG), sinNH = Math.sin(deg * DEG);
+        const round = beckmannLobe(cosNH, mss);
+        for (let az = 0; az < 360; az += 30) {
+          const hu = sinNH * Math.cos(az * DEG), hc = sinNH * Math.sin(az * DEG);
+          expect(Math.abs(axisLobe(cosNH, mss, mss, hu, hc) - round)).toBeLessThanOrEqual(1e-12 * round);
+          expect(Math.abs(axisAlpha(mss, mss, hu, hc) / Math.sqrt(mss) - 1)).toBeLessThan(1e-12);
+        }
+      }
+    }
+    // A collapsed frame reads the across slope, never a flat lobe.
+    expect(axisLobe(Math.cos(0.3), 0.05, 0.03, 0, 0) / beckmannLobe(Math.cos(0.3), 0.03))
+      .toBeCloseTo(Math.sqrt(0.03 / 0.05), 12);
+  });
+
+  it('is the shader\'s ellipse: the along slope along the axis and the across slope across it', () => {
+    const along = 0.05, across = 0.03, deg = 12;
+    const cosNH = Math.cos(deg * DEG), sinNH = Math.sin(deg * DEG), tan2 = Math.tan(deg * DEG) ** 2;
+    const cos4 = cosNH ** 4;
+    expect(axisLobe(cosNH, along, across, sinNH, 0))
+      .toBeCloseTo(Math.exp(-tan2 / along) / (Math.PI * Math.sqrt(along * across) * cos4), 10);
+    expect(axisLobe(cosNH, along, across, 0, sinNH))
+      .toBeCloseTo(Math.exp(-tan2 / across) / (Math.PI * Math.sqrt(along * across) * cos4), 10);
+    // Smith's alpha on a direction's azimuth: along, across, and between.
+    expect(axisAlpha(along, across, 0.4, 0)).toBeCloseTo(Math.sqrt(along), 15);
+    expect(axisAlpha(along, across, 0, -0.4)).toBeCloseTo(Math.sqrt(across), 15);
+    expect(axisAlpha(along, across, 0.3, 0.3)).toBeCloseTo(Math.sqrt((along + across) / 2), 15);
+  });
+
+  it('draws the round beam where the map has no axis, and with the switch off exactly the round one whatever the axis', () => {
+    const out: [number, number, number] = [0, 0, 0];
+    const round: [number, number, number] = [0, 0, 0];
+    for (let deg = 4; deg <= 18; deg += 0.5) {
+      for (const across of [0, 0.5, -1]) {
+        const a = across * DEG, phi = deg * DEG;
+        const n: [number, number, number] = [Math.cos(a) * Math.sin(phi), Math.sin(a), Math.cos(a) * Math.cos(phi)];
+        beamRadianceAt(n[0], n[1], n[2], pose, LIGHT, axisSea, steady(7, 0, 0), table, scratch, out);
+        beamRadianceAt(n[0], n[1], n[2], pose, LIGHT, beamSea, steady(7, 0, 0), table, scratch, round);
+        for (let c = 0; c < 3; c++) expect(Math.abs(out[c] - round[c])).toBeLessThanOrEqual(1e-12 * round[c]);
+        // Off: bit for bit the round lobe, an oblique axis or not.
+        beamRadianceAt(n[0], n[1], n[2], pose, LIGHT, { ...beamSea, axis: false }, steady(7, 0.6, 0.7), table, scratch, out);
+        expect(out).toEqual(round);
+      }
+    }
+    // And the whole scan, its sampling and its bound included.
+    const off = createBeamPeak(), before = createBeamPeak();
+    expect(scanBeam(pose, LIGHT, { ...beamSea, axis: false }, steady(4, 0.6, 0.7), table, scratch, off)).toBe(true);
+    expect(scanBeam(pose, LIGHT, beamSea, steady(4, 0.6, 0.7), table, scratch, before)).toBe(true);
+    expect(off).toEqual(before);
+  });
+
+  it('stretches the beam along an axis that lies along the line and squeezes it across', () => {
+    // An east-west axis (doubled angle (1, 0)) lies along this pose's line, a
+    // north-south one ((-1, 0)) across it. The carried beam, before the
+    // shoulder, falls from the mirror point (where the half vector is the
+    // normal and the lobe is at its height) more slowly along the axis and
+    // faster across it; over a uniform sea the scan's peak stays on the line
+    // either way.
+    const nhAt = (phi: number): number => {
+      const n = [Math.sin(phi), 0, Math.cos(phi)];
+      const v = [pose.camera[0] - n[0], pose.camera[1] - n[1], pose.camera[2] - n[2]];
+      const l = [pose.sun[0] - n[0], pose.sun[1] - n[1], pose.sun[2] - n[2]];
+      const lv = Math.hypot(v[0], v[1], v[2]), ll = Math.hypot(l[0], l[1], l[2]);
+      const h = [v[0] / lv + l[0] / ll, v[1] / lv + l[1] / ll, v[2] / lv + l[2] / ll];
+      return (h[0] * n[0] + h[1] * n[1] + h[2] * n[2]) / Math.hypot(h[0], h[1], h[2]);
+    };
+    let lo = 2 * DEG, hi = 16 * DEG;
+    for (let i = 0; i < 80; i++) {
+      const a = lo + (hi - lo) / 3, b = hi - (hi - lo) / 3;
+      if (nhAt(a) < nhAt(b)) lo = a; else hi = b;
+    }
+    const mirror = (lo + hi) / 2;
+    expect(mirror / DEG).toBeCloseTo(8.37, 1);
+    const at = (sea: GlintMeterSea, sampler: SurfaceSampler, alongDeg: number, acrossDeg: number): number => {
+      const out: [number, number, number] = [0, 0, 0];
+      const phi = mirror + alongDeg * DEG, a = acrossDeg * DEG;
+      beamRadianceAt(Math.cos(a) * Math.sin(phi), Math.sin(a), Math.cos(a) * Math.cos(phi), pose, LIGHT, sea, sampler, table, scratch, out);
+      return out[0];
+    };
+    const fall = (sea: GlintMeterSea, sampler: SurfaceSampler, alongDeg: number, acrossDeg: number) =>
+      at(sea, sampler, alongDeg, acrossDeg) / at(sea, sampler, 0, 0);
+    const roundSea = steady(9, 0, 0), eastWest = steady(9, 1, 0), northSouth = steady(9, -1, 0);
+    for (const step of [-0.75, 0.75]) {
+      expect(fall(axisSea, eastWest, step, 0)).toBeGreaterThan(fall(beamSea, roundSea, step, 0));
+      expect(fall(axisSea, northSouth, step, 0)).toBeLessThan(fall(beamSea, roundSea, step, 0));
+      expect(fall(axisSea, eastWest, 0, step)).toBeLessThan(fall(beamSea, roundSea, 0, step));
+      expect(fall(axisSea, northSouth, 0, step)).toBeGreaterThan(fall(beamSea, roundSea, 0, step));
+    }
+    for (const sampler of [eastWest, northSouth]) {
+      const peak = createBeamPeak();
+      expect(scanBeam(pose, LIGHT, axisSea, sampler, table, scratch, peak)).toBe(true);
+      expect(peak.acrossAngleDeg).toBe(0);
+    }
+  });
+
+  it('turns the axis from east toward north as the map\'s own u and v grow, and a mirrored decode fails that', () => {
+    // The shipped map's bytes at the NE trades (15° N 150° W), x2 > 0: an axis
+    // about 19° north of east (a wind toward the west-south-west).
+    const points = JSON.parse(readFileSync(new URL('../../../tools/goldens/seawind/earth-seawind.v2.points.json', import.meta.url), 'utf8'));
+    const ne = points.points.find((p: { name: string }) => p.name === 'ne-trades');
+    expect(ne.map.bytes.slice(0, 3)).toEqual([136, 224, 202]);
+    const x1 = seaWindAxisFromByte(ne.map.bytes[1]), x2 = seaWindAxisFromByte(ne.map.bytes[2]);
+    expect(x2).toBeGreaterThan(0);
+    expect(Math.atan2(x2, x1) / 2 / DEG).toBeCloseTo(18.8, 0);
+    // The sampler's own (u, v), read off coarse maps whose bytes ARE u and v:
+    // the wind's grows a byte a column east, the water's a byte a row north.
+    const maps = new EarthSurfaceMaps({ water: 'water', wind: 'wind', cloud: 'cloud' });
+    const size = 256;
+    const byColumn = new Uint8Array(size * size), byRow = new Uint8Array(size * size);
+    for (let row = 0; row < size; row++) {
+      for (let column = 0; column < size; column++) { byColumn[row * size + column] = column; byRow[row * size + column] = row; }
+    }
+    maps.install('wind', { width: size, height: size, data: byColumn });
+    maps.install('water', { width: size, height: size, data: byRow });
+    maps.install('cloud', { width: size, height: size, data: new Uint8Array(size * size) });
+    const uv = (n: readonly number[]): [number, number] => {
+      const s = { windMs: 0, water: 0, cloudKeep: 1, deckKeep: 1, axisX: 0, axisY: 0 };
+      maps.sampleAt(n[0], n[1], n[2], 0, s, false);
+      return [s.windMs, s.water];
+    };
+    // The point from its latitude and its longitude as the map's u.
+    const lat = 15 * DEG, u = (-150 + 180) / 360;
+    const p = [-Math.cos(lat) * Math.cos(2 * Math.PI * u), Math.sin(lat), Math.cos(lat) * Math.sin(2 * Math.PI * u)];
+    const nudged = (axisY: number): [number, number] => {
+      const f = new Float64Array(6);
+      windFrameAt(p[0], p[1], p[2], x1, axisY, f);
+      const e = 1e-3;
+      const q = [p[0] + e * f[0], p[1] + e * f[1], p[2] + e * f[2]];
+      const len = Math.hypot(q[0], q[1], q[2]);
+      const [u0, v0] = uv(p);
+      const [u1, v1] = uv([q[0] / len, q[1] / len, q[2] / len]);
+      return [u1 - u0, v1 - v0];
+    };
+    const [du, dv] = nudged(x2);
+    expect(du).toBeGreaterThan(0);
+    expect(dv).toBeGreaterThan(0);
+    // The mirrored decode (the doubled sine negated) turns the axis south of
+    // east, and the check above fails on it.
+    const [mu, mv] = nudged(-x2);
+    expect(mu).toBeGreaterThan(0);
+    expect(mv).toBeLessThan(0);
+    expect(mu > 0 && mv > 0).toBe(false);
+  });
+
+  it('bounds the lobe over every wind, axis length and azimuth, light winds under 2.42 m/s at a full axis among them', () => {
+    const slopes: [number, number] = [0, 0];
+    // The largest the lobe reaches over its bound anywhere on the grid, and
+    // the loosest the bound is over the grid's own largest at a tilt.
+    let over = 0, loosest = 0;
+    for (let deg = 0; deg <= 60; deg += 0.5) {
+      const cosNH = Math.cos(deg * DEG), sinNH = Math.sin(deg * DEG);
+      const bound = axisLobeBound(cosNH);
+      let most = 0;
+      for (let step = 0; step <= 640; step++) {
+        const wind = (SEA_WIND_MAX_MS * step) / 640;
+        for (const k of [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1]) {
+          axisSlopes(wind, k, 0, slopes);
+          for (let az = 0; az <= 90; az += 7.5) {
+            most = Math.max(most, axisLobe(cosNH, slopes[0], slopes[1], sinNH * Math.cos(az * DEG), sinNH * Math.sin(az * DEG)));
+          }
+        }
+      }
+      over = Math.max(over, most / bound);
+      loosest = Math.max(loosest, bound / most);
+    }
+    // Never under, and not loose: within a few percent of the grid's largest.
+    expect(over).toBeLessThanOrEqual(1);
+    expect(loosest).toBeLessThan(1.03);
+    // At the mirror it is the round bound's, the calm sea's 1 / (pi 0.003),
+    // and it only falls as the tilt grows.
+    expect(axisLobeBound(1) / beckmannLobeBound(1)).toBeCloseTo(1.002, 9);
+    expect(axisLobeBound(1)).toBeCloseTo(1.002 / (Math.PI * 0.003), 6);
+    let last = Infinity;
+    for (let deg = 0; deg <= 89; deg += 0.25) {
+      const b = axisLobeBound(Math.cos(deg * DEG));
+      expect(b).toBeLessThanOrEqual(last);
+      last = b;
+    }
+    // The round bound is not one: a light, steady wind's ellipse beats it.
+    const tilt = Math.atan(Math.sqrt(0.006));
+    axisSlopes(0, 1, 0, slopes);
+    expect(axisLobe(Math.cos(tilt), slopes[0], slopes[1], 0, Math.sin(tilt))).toBeGreaterThan(1.3 * beckmannLobeBound(Math.cos(tilt)));
+    // Past the last node the roughest wind's whole axis is the largest, in
+    // closed form; at the node itself the table already says so.
+    const atLast = Math.cos(Math.atan(Math.sqrt(AXIS_BOUND_TAN2_MAX)));
+    axisSlopes(SEA_WIND_MAX_MS, 1, 0, slopes);
+    const roughest = axisLobe(atLast, slopes[0], slopes[1], Math.sin(Math.acos(atLast)), 0);
+    expect(axisLobeBound(atLast) / roughest).toBeCloseTo(1.002, 9);
+  });
+
+  it('reads beside the line no more often for the ellipse: its bound at the mirror is the round one\'s', () => {
+    const near = probePose(400, 5);
+    const acrossKm = (y: number) => Math.asin(y) * EARTH_KM;
+    const count = (sea: GlintMeterSea, sampler: SurfaceSampler) => {
+      let n = 0;
+      const counted: SurfaceSampler = (...a) => { n++; sampler(...a); };
+      const peak = createBeamPeak();
+      expect(scanBeam(near, LIGHT, sea, counted, table, scratch, peak)).toBe(true);
+      return n;
+    };
+    const nearLand: SurfaceSampler = (x, y, z, o) => {
+      o.windMs = 4; o.cloudKeep = 1; o.axisX = 0.6; o.axisY = 0.7;
+      o.water = Math.atan2(x, z) < 6 * DEG && Math.abs(acrossKm(y)) < 32 ? 0 : 1;
+    };
+    expect(count(axisSea, nearLand)).toBe(count(axisSea, steady(4, 0.6, 0.7)));
   });
 });

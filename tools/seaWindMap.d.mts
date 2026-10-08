@@ -99,6 +99,11 @@ export const W_BINS_PER_MS: number;
 export function rollColumns<T extends Float64Array | Float32Array | Uint8Array>(values: T, width: number, height: number, shift: number): T;
 /** Per cell the index of the nearest filled cell, longitude periodic. */
 export function nearestFilledIndex(filled: ArrayLike<number>, width: number, height: number): Int32Array;
+/** The cells of `mask` in connected bodies (8 ways, longitude periodic) of at
+ *  least `minCells`. */
+export function largeBodies(mask: ArrayLike<number>, width: number, height: number, minCells: number): {
+  kept: Uint8Array; bodiesKept: number; bodiesDropped: number; cellsDropped: number;
+};
 export function fillFromNearest(arrays: Array<Float64Array | Float32Array>, filled: ArrayLike<number>, nearest: ArrayLike<number>): void;
 export interface AreaAveragerGrid {
   srcWidth: number;

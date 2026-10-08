@@ -19,7 +19,7 @@ import {
 import {
   AXIS_SCALE, AXIS_ZERO, COX_MUNK_CROSSWIND_CALM, COX_MUNK_CROSSWIND_PER_MS, COX_MUNK_UPWIND_PER_MS,
   accumulateMonth, areaAverager, axisFromAccumulator, axisToByte, byteToAxis, createAccumulator, decodeWindMap,
-  encodeWindMap, finishAccumulator, nearestFilledIndex, rollColumns, slopeAnisotropy, syntheticAxis,
+  encodeWindMap, finishAccumulator, largeBodies, nearestFilledIndex, rollColumns, slopeAnisotropy, syntheticAxis,
 } from '../../../tools/seaWindMap.mjs';
 
 /** Four bytes a texel from one wind byte a texel: the map with no axis. */
@@ -332,7 +332,7 @@ describe('the shipped map (tools/gen-seawind.mjs)', () => {
     expect(PLANET_TEXTURE_FILES.earthSeaWind).toBe('earth-seawind.v2.webp');
     const mapBytes = readFileSync(`public/textures/${PLANET_TEXTURE_FILES.earthSeaWind}`);
     const sha256 = createHash('sha256').update(mapBytes).digest('hex');
-    expect(sha256).toBe('e3f50c0f0fd314c61281be0ac1785796f5180c04f2c1727fa5083fab92683646');
+    expect(sha256).toBe('c4d96d4e66c67a557cf2aa7cd91101402a6d3726df8ca581ae0058d404e58bd3');
     // Lossless webp, the container the loader decodes as a picture: RIFF,
     // WEBP, VP8L.
     expect(mapBytes.toString('ascii', 0, 4)).toBe('RIFF');
@@ -481,5 +481,23 @@ describe('the map\'s arithmetic (tools/seaWindMap.mjs)', () => {
     expect(nearest[1 * 10 + 0]).toBe(1 * 10 + 9);
     expect(nearest[2 * 10 + 1]).toBe(1 * 10 + 9);
     expect(nearest[0 * 10 + 5]).toBe(1 * 10 + 4);
+  });
+
+  it('seeds the land\'s fill from the open sea alone: a body joined across the date line and corners is kept, an inland lake is not', () => {
+    // 8 x 4: a sea in columns 6..1 across the date line, touching a cell
+    // diagonally at (2, 3); a two-cell lake at columns 3..4 of row 1.
+    const W = 8;
+    const mask = new Uint8Array(W * 4);
+    for (let row = 0; row < 4; row++) for (const column of [6, 7, 0, 1]) mask[row * W + column] = 1;
+    mask[3 * W + 2] = 1;
+    mask[1 * W + 3] = 1;
+    mask[1 * W + 4] = 1;
+    const bodies = largeBodies(mask, W, 4, 5);
+    expect(bodies.bodiesKept).toBe(1);
+    expect(bodies.bodiesDropped).toBe(1);
+    expect(bodies.cellsDropped).toBe(2);
+    expect(bodies.kept[3 * W + 2]).toBe(1);
+    expect(bodies.kept[1 * W + 3]).toBe(0);
+    expect(Array.from(bodies.kept).reduce((sum, value) => sum + value, 0)).toBe(17);
   });
 });

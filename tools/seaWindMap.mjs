@@ -354,6 +354,52 @@ export function nearestFilledIndex(filled, width, height) {
   return out;
 }
 
+/**
+ * The cells of `mask` (non-zero) that belong to a connected body of at least
+ * `minCells` cells, 8-connected, longitude periodic: the open sea, without
+ * the rivers and lakes a product may class as ocean. Returns a 0/1 array and
+ * the number of bodies kept and dropped.
+ */
+export function largeBodies(mask, width, height, minCells) {
+  const kept = new Uint8Array(width * height);
+  const seen = new Uint8Array(width * height);
+  const queue = new Int32Array(width * height);
+  let bodiesKept = 0;
+  let bodiesDropped = 0;
+  let cellsDropped = 0;
+  for (let start = 0; start < width * height; start++) {
+    if (!mask[start] || seen[start]) continue;
+    let head = 0;
+    let tail = 0;
+    queue[tail++] = start;
+    seen[start] = 1;
+    while (head < tail) {
+      const cell = queue[head++];
+      const row = Math.floor(cell / width);
+      const column = cell % width;
+      for (let dy = -1; dy <= 1; dy++) {
+        const y = row + dy;
+        if (y < 0 || y >= height) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          const next = y * width + ((column + dx + width) % width);
+          if (mask[next] && !seen[next]) {
+            seen[next] = 1;
+            queue[tail++] = next;
+          }
+        }
+      }
+    }
+    if (tail >= minCells) {
+      bodiesKept++;
+      for (let index = 0; index < tail; index++) kept[queue[index]] = 1;
+    } else {
+      bodiesDropped++;
+      cellsDropped += tail;
+    }
+  }
+  return { kept, bodiesKept, bodiesDropped, cellsDropped };
+}
+
 /** Every unfilled cell of each array takes its nearest filled cell's value. */
 export function fillFromNearest(arrays, filled, nearest) {
   for (let cell = 0; cell < filled.length; cell++) {

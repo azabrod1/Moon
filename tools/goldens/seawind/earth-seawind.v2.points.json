@@ -1,7 +1,7 @@
 {
  "_": "Written by tools/gen-seawind.mjs: per point the quarter-degree source cell nearest it (its R, its axis x = a / d(R), its steadiness k and the angle its mean wind blows toward, each month), the texel's footprint averaged straight from the unrolled source, beside the shipped map's bytes at the texel holding the point, read back from the decoded webp. surfaceMaps.test.ts holds the bytes to the footprint to within a byte, and to the nearest cell within a few.",
  "map": "earth-seawind.v2.webp",
- "sha256": "e3f50c0f0fd314c61281be0ac1785796f5180c04f2c1727fa5083fab92683646",
+ "sha256": "c4d96d4e66c67a557cf2aa7cd91101402a6d3726df8ca581ae0058d404e58bd3",
  "width": 1024,
  "height": 512,
  "points": [

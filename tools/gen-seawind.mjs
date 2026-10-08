@@ -56,11 +56,16 @@
 //    source's own seam (0 degrees) lands on the map's centre column, over the
 //    open Gulf of Guinea, where the glint goes.
 // 3. Unfilled cells (land, and none else in this file) take R and a from the
-//    nearest filled cell (seaWindMap.mjs `nearestFilledIndex`), never a
-//    constant: a constant leaves a calm fringe along every coast once the
-//    mips blur it. A lake the app's water mask calls water reads its own
-//    values where the product has them (1,827 lake cells), and its nearest
-//    filled cell's where it does not.
+//    nearest cell of the open sea (seaWindMap.mjs `nearestFilledIndex`),
+//    never a constant: a constant leaves a calm fringe along every coast once
+//    the mips blur it. The open sea is the filled ocean cells joined, 8 ways
+//    and around the date line, into a body of at least OPEN_SEA_MIN_CELLS
+//    (`largeBodies`): the product classes inland water as ocean too (the
+//    Amazon, Lake Malawi, Siberia's lakes, at 1-4 m/s), and seeded from it a
+//    continent took those light winds and the coarse mips carried the calm
+//    out over the coast. Every water cell keeps its own values: a lake the
+//    app's water mask calls water reads the product's where the product has
+//    it, and the open sea's nearest where it does not.
 // 4. R and a are area-averaged to the map's grid (cos(latitude) times the
 //    cells' overlap, from the quarter-degree cells' own bounds), and only
 //    then a is divided by d at the speed the map stores (its byte read back),
@@ -78,7 +83,7 @@ import { encodePng } from './pngEncode.mjs';
 import { DEFAULTS, SEA_WIND_MAX_MS, bandStatistics, buildField } from './seaWindField.mjs';
 import {
   AXIS_DIVISOR_FLOOR, MIP_BIAS_BARS, axisFromAccumulator, accumulateMonth, areaAverager, byteToAxis, byteToWind,
-  createAccumulator, decodeWindMap, encodeWindMap, fillFromNearest, finishAccumulator, histogramQuantiles,
+  createAccumulator, decodeWindMap, encodeWindMap, fillFromNearest, finishAccumulator, histogramQuantiles, largeBodies,
   latitudeOfRow, mipBias, nearestFilledIndex, rgbFromRgba, rollColumns, seamNumbers, slopeAnisotropy,
   syntheticAxis, windToByte, SYNTHETIC_STEADINESS, W_BINS_PER_MS,
 } from './seaWindMap.mjs';
@@ -91,6 +96,10 @@ const SOURCE_FILE = 'NBS_v02_wind_climmonthly_s1991_e2020_c20221206.nc';
 const SOURCE_PATH = path.join('.moon-data-cache', SOURCE_FILE);
 /** A cell needs this many valid months to be filled. */
 const MIN_VALID_MONTHS = 6;
+/** The open sea, which alone seeds the land's fill: bodies of filled ocean
+ *  cells at least this many quarter-degree cells (about 770,000 km² at the
+ *  equator), larger than any lake. */
+const OPEN_SEA_MIN_CELLS = 1000;
 
 /** What the file held when the bake was written; any difference stops it. */
 const EXPECTED = Object.freeze({
@@ -338,9 +347,11 @@ const rolled = {
   filled: rollColumns(finished.filled, SRC_WIDTH, SRC_HEIGHT, HALF),
   ocean: rollColumns(Float64Array.from(maskClasses, (cls) => (cls === 1 ? 1 : 0)), SRC_WIDTH, SRC_HEIGHT, HALF),
 };
-const nearest = nearestFilledIndex(rolled.filled, SRC_WIDTH, SRC_HEIGHT);
+const openSea = largeBodies(rolled.filled.map((value, cell) => (value && rolled.ocean[cell] === 1 ? 1 : 0)), SRC_WIDTH, SRC_HEIGHT, OPEN_SEA_MIN_CELLS);
+const nearest = nearestFilledIndex(openSea.kept, SRC_WIDTH, SRC_HEIGHT);
 fillFromNearest([rolled.windMs, rolled.a1, rolled.a2], rolled.filled, nearest);
-log(`rolled by ${HALF} columns to start at -180 and filled from the nearest filled cell (${elapsed()})`);
+log(`rolled by ${HALF} columns to start at -180; the open sea is ${openSea.bodiesKept} bodies of filled ocean cells of ${OPEN_SEA_MIN_CELLS} or more, `
+  + `${openSea.bodiesDropped} smaller ones (${openSea.cellsDropped} cells: inland water the product classes as ocean) keep their values and seed nothing; the unfilled cells filled from the nearest open sea (${elapsed()})`);
 
 const average = areaAverager({
   srcWidth: SRC_WIDTH, srcHeight: SRC_HEIGHT,
@@ -567,6 +578,13 @@ const stats = {
   speedByMonth: monthly.map((entry) => ({ month: entry.month, ...entry.windMs })),
   annualSpeed: annual,
   speedSmoothing: { sigmaSourceCells: 0, note: 'none applied' },
+  fill: {
+    rule: 'unfilled cells (land) take R and a from the nearest open-sea cell, in the quarter-degree grid\'s own metric, longitude periodic; every water cell keeps its own values',
+    openSeaMinCells: OPEN_SEA_MIN_CELLS,
+    openSeaBodies: openSea.bodiesKept,
+    smallerOceanBodies: openSea.bodiesDropped,
+    smallerOceanCells: openSea.cellsDropped,
+  },
   axis: {
     law: 'x = mean over valid months of k_m d(w_m) (cos 2 theta_m, sin 2 theta_m), area-averaged, divided by d(R) at the stored speed, clamped to the unit disc; d(U) = 0.00316 U - (0.003 + 0.00192 U)',
     divisorFloor: AXIS_DIVISOR_FLOOR,

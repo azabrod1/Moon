@@ -224,10 +224,10 @@ function measureLevels(
 
 // --- Earth's night family: a second set of sectors on the night shell -------
 
-/** The night shell's radius. PlanetFactory builds it a thousandth of a radius
- *  above the globe, and the sectors that replace it are built at the same
- *  height — a sector at the globe's radius would sit under the shell it is
- *  there to suppress. */
+/** The night shell's radius: PlanetFactory builds it a thousandth of a radius
+ *  above the globe. The app builds the night sectors at the GLOBE's radius
+ *  (PlanetariumMode says why), under the shell; nothing the streamer decides
+ *  reads which, so the handle here measures them on the shell's. */
 const NIGHT_R = R * 1.001;
 /** Earth's night pyramid: the Black Marble sets, no crops (relief and gloss
  *  are daylight terms), so a night sector costs its colour tile alone. */
@@ -2695,6 +2695,63 @@ describe('SectorStreamer: ground a finer drawn tile covers is left out of the dr
     expect(drawn(night.mesh.geometry)).toEqual({ start: gi.full, count: gi.full - footprint(gi, 0, 2, 1) });
     streamer.dropAll();
     expect(drawn(night.mesh.geometry)).toEqual({ start: 0, count: gi.full });
+  });
+
+  it('cuts the night shell under its tile whatever the switches say, and leaves the day ground to them', () => {
+    // The night tiles sit at the globe's radius, under the shell, and both add
+    // their lights: the shell passes the depth test over a tile, so the cut is
+    // the only thing keeping a resident tile's ground from drawing twice. The
+    // day ground loses the depth test to its tile anyway, so the switches keep
+    // their meaning there — cost, not picture.
+    const plain = makeStreamer(NO_FLOOR, { load: loader.load, warm: warm.warm, groundCull: false });
+    const day = earthHandle();
+    day.mesh.geometry = fineGround(R);
+    const night = earthNightHandle();
+    night.mesh.geometry = fineGround(NIGHT_R);
+    plain.register(day);
+    plain.register(night);
+    plain.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    plain.update(NIGHT_KEY, cameraOver(2, 1), measureNight({ '2_1': 2 }), 0);
+    expect(plain.stats().bodies.Earth.resident).toEqual(expect.arrayContaining(['2_1', 'night/2_1']));
+    const dayGi = hostIndex(day);
+    const nightGi = hostIndex(night);
+    // Under `?groundcull=0`: the day globe drawn whole, its tile on a plain index.
+    expect(drawn(day.mesh.geometry)).toEqual({ start: 0, count: dayGi.full });
+    expect(groundIndexOf(sectorMesh(day, '2_1').geometry)).toBeUndefined();
+    // The night shell cut under its tile all the same, and the tile laid out.
+    expect(drawn(night.mesh.geometry)).toEqual({ start: nightGi.full, count: nightGi.full - footprint(nightGi, 0, 2, 1) });
+    expect(groundIndexOf(sectorMesh(night, 'night/2_1').geometry)).toBeDefined();
+    expect(plain.stats().groundCut.unbacked).toBe(0);
+
+    // The live switch on a streamer built with the cut: off puts the day
+    // ground's full list back at once and leaves the night shell cut, through
+    // the next frame and back on again.
+    const shell = earthNightHandle();
+    shell.mesh.geometry = fineGround(NIGHT_R);
+    streamer.register(shell);
+    const frame = (t: number) => {
+      streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), t);
+      streamer.update(NIGHT_KEY, cameraOver(2, 1), measureNight({ '2_1': 2 }), t);
+    };
+    frame(0);
+    const gi = hostIndex(earth);
+    const shellGi = hostIndex(shell);
+    const shellCut = { start: shellGi.full, count: shellGi.full - footprint(shellGi, 0, 2, 1) };
+    expect(drawn(earth.mesh.geometry)).toEqual({ start: gi.full, count: gi.full - footprint(gi, 0, 2, 1) });
+    expect(drawn(shell.mesh.geometry)).toEqual(shellCut);
+    streamer.setGroundCut(false);
+    expect(drawn(earth.mesh.geometry)).toEqual({ start: 0, count: gi.full });
+    expect(drawn(shell.mesh.geometry)).toEqual(shellCut);
+    frame(16);
+    expect(drawn(earth.mesh.geometry)).toEqual({ start: 0, count: gi.full });
+    expect(drawn(shell.mesh.geometry)).toEqual(shellCut);
+    streamer.setGroundCut(true);
+    frame(32);
+    expect(drawn(earth.mesh.geometry)).toEqual({ start: gi.full, count: gi.full - footprint(gi, 0, 2, 1) });
+    expect(drawn(shell.mesh.geometry)).toEqual(shellCut);
+    // A tile leaving still draws the shell whole at once, switch or no switch.
+    streamer.dropAll();
+    expect(drawn(shell.mesh.geometry)).toEqual({ start: 0, count: shellGi.full });
   });
 
   it('under the kill switch builds every sector with its plain index and cuts nothing', () => {

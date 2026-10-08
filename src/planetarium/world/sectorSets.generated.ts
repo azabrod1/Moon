@@ -177,7 +177,7 @@ export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = /* table:beg
     "fileCount": 32
   },
   "mars.v3/16k": {
-    "setHash8": "3d92e5c4",
+    "setHash8": "5f5887de",
     "grid": {
       "cols": 8,
       "rows": 4
@@ -191,7 +191,7 @@ export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = /* table:beg
     "fileCount": 32
   },
   "mars.v3/32k": {
-    "setHash8": "5f03fe03",
+    "setHash8": "641d29f9",
     "grid": {
       "cols": 16,
       "rows": 8

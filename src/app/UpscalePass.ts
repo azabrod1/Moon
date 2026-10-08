@@ -8,8 +8,8 @@
  *   OutputTargetPass   tone map + display encode — and, as FusedOutputPass on
  *                      the shipped chain, the lens warp and the glow with it
  *                      (app/FusedOutputPass.ts). To the canvas when it is the
- *                      last enabled pass — three's OutputPass, byte for byte —
- *                      else into its own 8-bit target at scene size.
+ *                      last enabled pass — three's OutputPass and the output
+ *                      dither — else into its own 8-bit target at scene size.
  *   UpscalePass        EASU: that target → the canvas at output size, or → its
  *                      own 8-bit target at output size when the sharpen follows.
  *   SharpenPass        RCAS on that target → the canvas.
@@ -39,6 +39,14 @@
  * every render, so disabling the two upscale passes hands the canvas back to
  * the finishing pass with no rebuild — that is how the switch flips live — and
  * a chain with them disabled is the chain that shipped before them.
+ *
+ * Exactly one write a frame is dithered (app/outputDither.ts), on every route:
+ * the one that lands on the canvas. That is the finishing pass's on the direct
+ * route (fused or `?fused=0`, which carry the same dither text), EASU's when it
+ * draws the canvas alone, RCAS's after EASU, and the downsample's on a frame
+ * drawn larger than the canvas. Each of those carries the dither and sets its
+ * own uDither every render from whether its write is the canvas, so an
+ * intermediate is always written clean.
  *
  * Sizes are read at render time: the composer hands every pass the SCENE size
  * through setSize, and the output size is the renderer's drawing buffer. The
@@ -100,7 +108,7 @@ import {
   rcasSharpness,
 } from './fsr1';
 import { OUTPUT_UV_ANCHOR, patchUvScale, type SubRectUniforms } from './sceneSubRect';
-import { outputDitherUniform } from './outputDither';
+import { OUTPUT_DITHER_GLSL, ditherOutputText, outputDitherUniform } from './outputDither';
 
 /** An 8-bit colour-only target with raw storage and a linear filter. */
 export function createLdrTarget(): THREE.WebGLRenderTarget {
@@ -169,6 +177,11 @@ export class OutputTargetPass extends OutputPass {
     super();
     this.needsSwap = false;
     this.subRect = patchUvScale(this.material, OUTPUT_UV_ANCHOR);
+    // The dither after the transfer, the same edit the fused texts carry, so
+    // the `?fused=0` chain's canvas write is dithered too. Its own value, set
+    // per render: on only for the write that lands on the canvas.
+    this.material.fragmentShader = ditherOutputText(this.material.fragmentShader);
+    this.material.uniforms.uDither = { value: 0 };
   }
 
   /**
@@ -196,8 +209,7 @@ export class OutputTargetPass extends OutputPass {
     // canvas and on no intermediate: EASU resamples a dithered input into a
     // visible hatching and RCAS sharpens its grain many times over, so a frame
     // that goes on to be resampled is written clean and dithered at the end.
-    const dither = this.material.uniforms.uDither;
-    if (dither) dither.value = this.renderToScreen ? outputDitherUniform.value : 0;
+    this.material.uniforms.uDither.value = this.renderToScreen ? outputDitherUniform.value : 0;
     if (this.renderToScreen) {
       super.render(renderer, writeBuffer, readBuffer, deltaTime, maskActive);
       return;
@@ -322,6 +334,7 @@ uniform vec2 uInputSize;
 uniform vec2 uOutputSize;
 uniform float uFilter;
 out vec4 fragColor;
+${OUTPUT_DITHER_GLSL}
 
 // The three taps' weights around the middle tap, normalised. 'p' is the
 // output pixel's coordinate on this axis and 'f' the footprint's width in
@@ -373,7 +386,10 @@ void main() {
       sum += texelFetch(tInput, at, 0).rgb * (wi * wj);
     }
   }
-  fragColor = vec4(sum, 1.0);
+  // The dither for this 8-bit write (app/outputDither.ts). The input is the
+  // finishing pass's display-encoded bytes, written clean, and the average is
+  // still display-encoded, so the noise is added in the space it is stored in.
+  fragColor = vec4(sum + outputDither(gl_FragCoord.xy), 1.0);
 }
 `;
 
@@ -381,7 +397,8 @@ void main() {
  * The scene drawn larger than the canvas, averaged down onto it.
  *
  * Always the last pass in the chain, so it draws the canvas itself; the image
- * it reads is the finishing pass's own 8-bit target, at scene size.
+ * it reads is the finishing pass's own 8-bit target, at scene size, and it
+ * carries the frame's one dither.
  */
 export class DownsamplePass extends Pass {
   private readonly material: THREE.RawShaderMaterial;
@@ -397,6 +414,8 @@ export class DownsamplePass extends Pass {
       uInputSize: { value: new THREE.Vector2() },
       uOutputSize: { value: new THREE.Vector2() },
       uFilter: { value: 0 },
+      // Its own value: this pass always draws the canvas, so it follows the switch.
+      uDither: { value: 0 },
     });
     this.quad = new FullScreenQuad(this.material);
   }
@@ -431,6 +450,7 @@ export class DownsamplePass extends Pass {
       Math.max(1, Math.floor(this.bufferSize.x)),
       Math.max(1, Math.floor(this.bufferSize.y)),
     );
+    u.uDither.value = outputDitherUniform.value;
     // Always the last pass: the canvas.
     renderer.setRenderTarget(null);
     this.quad.render(renderer);

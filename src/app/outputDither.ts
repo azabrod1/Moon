@@ -5,7 +5,8 @@
  *
  * Where it matters. The frame is drawn in half-float and leaves the chain
  * through 8-bit storage: the finishing pass's write (the canvas, or its own
- * RGBA8 target when the resample follows), EASU's write, and RCAS's. A dark
+ * RGBA8 target when the resample follows), EASU's write, RCAS's, and the
+ * downsample's on a frame drawn larger than the canvas. A dark
  * sea at a low Sun spans a few dozen 8-bit values across the whole frame,
  * so each value is a band tens of pixels wide, and after the sRGB transfer
  * the steps near black are the widest: the arcs that ring the glint. A dither
@@ -40,14 +41,16 @@
  * LSB and dark pixels to black. Dithered at the end alone, the intermediate's
  * 1 LSB steps arrive under 1 LSB of noise and read as the grain does on the
  * plain chain. Each pass carries its own uDither value and sets it per
- * render from the shared switch: the finishing pass and EASU only when they
- * draw the canvas, RCAS always.
+ * render from the shared switch: the finishing pass (fused or not) and EASU
+ * only when they draw the canvas, RCAS and the downsample always, since each
+ * is enabled only as the canvas's writer. So every route has exactly one
+ * dithered write (app/UpscalePass.ts lists them).
  *
  * `?dither=0` (any build) turns it off: the adds become exactly zero, so the
  * picture is the one the chain drew before the dither existed, byte for byte.
  * `__moon.setDither(on)` (DEV) flips it live, for an A/B inside one page.
  *
- * Pure: the GLSL text, the switch and the one uniform the three passes share.
+ * Pure: the GLSL text, the switch and the one uniform the passes share.
  */
 
 /** The switch, as the value a pass copies into its own uDither when its write

@@ -317,7 +317,8 @@ const fixedSceneAllocation = parseAllocParam(location.search);
  * harmless and is the param winning.
  */
 const fusedFinalParam = parseFusedParam(location.search);
-// The output dither's switch, read once: the three passes share its uniform.
+// The output dither's switch, read once: every pass that can draw the canvas
+// reads its one uniform (app/outputDither.ts).
 setOutputDither(parseDitherParam(location.search));
 // `?bloomknee=0`: three's whole-pixel step back in the planetarium's bright
 // pass (app/bloomConfig.ts BLOOM_KNEE), the A/B for the ocean glint's halo.

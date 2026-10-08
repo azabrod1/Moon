@@ -45,8 +45,10 @@
  *     texel past the displayed corner into the overscan, so a bright source
  *     just outside the frame can contribute at the very corner.
  *  4. At strength 0 there is no warp at all and only (1) applies.
- *  5. The output dither (app/outputDither.ts): one LSB of fixed grain at the
- *     write, on this chain only; `?dither=0` takes it out exactly.
+ *
+ * The output dither (app/outputDither.ts) is not among them: both chains add
+ * the same grain after the same transfer, on whichever write lands on the
+ * canvas, and `?dither=0` takes it out of both exactly.
  *
  * `?fused=0` on any build puts the old three-pass chain back — the kill switch,
  * and the A/B for anything the four differences might have moved. In DEV
@@ -274,9 +276,9 @@ export class FusedOutputPass extends OutputTargetPass {
     this.subRect = installSubRectUniforms(this.material.uniforms);
     if (opts.bloom) this.material.uniforms.tBloom = { value: opts.bloom.compositeTexture };
     if (opts.lens) installLensUniforms(this.material.uniforms, opts.lens);
-    // Its own value, set per render by OutputTargetPass: on only for the write
-    // that lands on the canvas (app/outputDither.ts).
-    this.material.uniforms.uDither = { value: 0 };
+    // uDither stays the one the base constructor installed and sets per
+    // render: on only for the write that lands on the canvas
+    // (app/outputDither.ts). Every variant's text carries the dither.
     this.material.needsUpdate = true;
   }
 }

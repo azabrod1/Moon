@@ -25,9 +25,24 @@ export type TextureTier = (typeof TEXTURE_TIERS)[number];
  * What a map is FOR, which is what decides its colour space and its storage.
  *
  * - `color`: an sRGB image whose three channels are all read.
- * - `data`: a linear image whose channels are all read — a tangent normal
- *   map, or the sea's wind map (its speed in red, the wind's axis in green
- *   and blue: world/seaWind).
+ * - `data`: a linear image whose channels are all read — a noise field with
+ *   its gradient packed beside it, or the sea's wind map (its speed in red,
+ *   the wind's axis in green and blue: world/seaWind).
+ * - `normal`: a linear tangent normal map. Only x and y are read: the shader
+ *   rebuilds z from them (a unit normal's z is √(1 − x² − y²), and the blue
+ *   the files still carry says the same thing to within half a degree at the
+ *   steepest texel), so the map is stored TWO bytes a texel (RG8) wherever
+ *   the device takes that upload from a decoded image — half the bytes of
+ *   RGBA8 for every relief crop, boot map and rung, with x and y bit for bit
+ *   what the file holds. The same discipline as the masks: proved by a
+ *   readback before the first one is stored, four bytes a texel where that
+ *   fails. GPU block formats were measured and refused for this
+ *   (tools/relief-codec-trial.mjs): on the Mars relief a UASTC crop
+ *   transcoded to BC7 or ASTC lands 16 % of its texels more than a degree
+ *   off (p99 3.7°, max 16°), and even BC5, the two-channel format made for
+ *   normals, leaves a 2° tail at the 99th percentile on crater rims — a
+ *   quarter of the bytes was not worth a visible rim, and half of them cost
+ *   nothing.
  * - `mask`: a linear GREY image with ONE channel that anything reads. Earth's
  *   height map is read as red three times by three's bump chunk, and its water
  *   mask as green once by the roughness chunk; both files are grey to the
@@ -42,7 +57,7 @@ export type TextureTier = (typeof TEXTURE_TIERS)[number];
  *   would silently become the answer for green; `gen-tiles.mjs --grey` checks
  *   the shipped sets texel by texel.
  */
-export type MapKind = 'color' | 'data' | 'mask';
+export type MapKind = 'color' | 'data' | 'normal' | 'mask';
 
 // Folder convention: the flat files in public/textures/ are the BOOT tier —
 // whatever ships as a body's first-paint map, which is not literally 2048 wide
@@ -88,8 +103,8 @@ const TILE_BASE = ((): string => {
  *
  *  The set hash is what the pathname promises: exactly those bytes or a 404.
  *  Everything else the app reads into a pathname — the map's identity through
- *  its stem, the 8×4 grid, the 8-px gutter, the two-sector-wide normal crops
- *  (sectorGrid) — is a layout the set was cut at, so a re-cut set lands on a
+ *  its stem, the 8×4 grid, the 8-px gutter, the one-sector crops (sectorGrid)
+ *  — is a layout the set was cut at, so a re-cut set lands on a
  *  new path by construction and no cache, near or far, can pair an old body
  *  with new code. The stem is the same rule one level up: a re-based base map
  *  ships under a new name and takes its tiles with it. */
@@ -181,8 +196,8 @@ export function resetDeviceCapsForTests(): void {
 
 /**
  * Stamp anisotropy + colour space onto a freshly created texture. Colour maps
- * decode from sRGB; data maps (bump / normal / roughness) carry linear values
- * and must not be gamma-decoded. Call at every texture creation site.
+ * decode from sRGB; data, normal and mask maps carry linear values and must
+ * not be gamma-decoded. Call at every texture creation site.
  */
 /** Whether this device has been seen to take a one-channel upload from a
  *  decoded image. The bitmap loader proves the exact R8/RED path with a
@@ -208,6 +223,30 @@ export function maskBytesPerTexel(): 1 | 4 {
   return singleChannelMasks() ? 1 : 4;
 }
 
+/** Whether this device has been seen to take a two-channel upload from a
+ *  decoded image — the RG8/RG path a 'normal' map is stored through, proved
+ *  by the same probe that proves the masks' one-channel path, on the same
+ *  bitmap through the same context. True until proved otherwise, for the
+ *  same reason: the probe answers before any normal map is uploaded. */
+let twoChannelUploadUsable = true;
+export function setTwoChannelUploadUsable(ok: boolean): void {
+  twoChannelUploadUsable = ok;
+}
+
+/** Whether tangent normal maps are stored two channels wide: always where the
+ *  device takes the upload, outside a development build; the DEV A/B
+ *  (`rg-normals`, a reload switch like `r8-maps`) puts the four-channel
+ *  storage back, so the pixel gate can difference the two out of one build. */
+function twoChannelNormals(): boolean {
+  return twoChannelUploadUsable && (import.meta.env.DEV ? perfSwitchOn('rg-normals') : true);
+}
+
+/** Bytes a texel of a 'normal' map holds on this device right now, for the
+ *  accounting that reserves a crop's or a rung's bytes before it is fetched. */
+export function normalBytesPerTexel(): 2 | 4 {
+  return twoChannelNormals() ? 2 : 4;
+}
+
 export function applyTextureDefaults(tex: THREE.Texture, kind: MapKind): void {
   tex.anisotropy = chosenAnisotropy;
   // A GPU-compressed texture (a KTX2 tier) keeps everything else its loader
@@ -221,6 +260,9 @@ export function applyTextureDefaults(tex: THREE.Texture, kind: MapKind): void {
   // so nothing is read back to the CPU to make this happen, and the mip chain
   // is still the GPU's own over the uploaded base.
   if (kind === 'mask' && singleChannelMasks()) tex.format = THREE.RedFormat;
+  // Two channels, two bytes: x and y are all the shader reads of a tangent
+  // normal, and the upload drops blue and alpha as it reads the image.
+  if (kind === 'normal' && twoChannelNormals()) tex.format = THREE.RGFormat;
   // Opt out of three's immutable texStorage2D allocation (the flag is our
   // patches/three escape hatch): for sRGB maps the driver pays a full-image
   // conversion inside the immutable upload — ~200ms frozen main thread for an

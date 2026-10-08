@@ -11,6 +11,7 @@
     "gen:constellations": "node gen-constellations.mjs",
     "gen:maps": "node gen-maps.mjs",
     "gen:seawind": "node --max-old-space-size=6144 tools/gen-seawind.mjs",
+    "gen:relief": "node tools/gen-relief.mjs",
     "gen:ktx2": "node tools/gen-ktx2.mjs",
     "gen:moon-relief": "node tools/gen-moon-relief.mjs",
     "gen:tiles": "node tools/gen-tiles.mjs",

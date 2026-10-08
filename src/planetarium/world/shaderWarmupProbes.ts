@@ -71,7 +71,7 @@ export function createShaderWarmupProbes(): WarmupProbes {
     const mat = new THREE.MeshStandardMaterial({
       map: makeTex('color'),
       bumpMap: combo.bumpMap ? makeTex('data') : null,
-      normalMap: combo.normalMap ? makeTex('data') : null,
+      normalMap: combo.normalMap ? makeTex('normal') : null,
       // Opaque and transparent are two programs in three's cache key.
       transparent: combo.transparent === true,
     });

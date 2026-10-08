@@ -182,7 +182,7 @@ import {
 import { surfaceReliefKind } from './surfaceShading';
 import { loadStreamedTexture, type TextureLoad } from './textureBitmapLoader';
 import { loadSectorTileTexture, releaseTilePixels, tilePixelStats } from './tilePixels';
-import { applyTextureDefaults, maskBytesPerTexel, resolveTileUrl, sectorSetHash, sectorSetLayout, type MapKind } from './texturePolicy';
+import { applyTextureDefaults, maskBytesPerTexel, normalBytesPerTexel, resolveTileUrl, sectorSetHash, sectorSetLayout, type MapKind } from './texturePolicy';
 import { TIER_RANK } from './textureLadder';
 import { debugWarn } from '../../shared/debug';
 import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
@@ -197,19 +197,23 @@ export type CropSlot = (typeof CROP_SLOTS)[number];
 /** What each crop is FOR, which is what decides how it is stored and therefore
  *  what an admission has to reserve for it: the height map and the water mask
  *  are grey images with one channel anything reads, and they are held one byte
- *  a texel (world/texturePolicy's 'mask' kind). A tangent normal map is not. */
+ *  a texel (world/texturePolicy's 'mask' kind); a tangent normal map is its x
+ *  and y, held two bytes a texel (the 'normal' kind). */
 export const CROP_KIND: Record<CropSlot, MapKind> = {
   bumpMap: 'mask',
-  normalMap: 'data',
+  normalMap: 'normal',
   roughnessMap: 'mask',
 };
 
 /** Bytes a texel of a crop of this kind holds — read at reservation time,
- *  because a mask's storage follows the device (and, in DEV, the r8-maps
- *  switch): a crop reserved at one byte and held at four would let the budget
- *  overshoot by the difference. */
+ *  because a mask's or a normal's storage follows the device (and, in DEV, the
+ *  r8-maps and rg-normals switches): a crop reserved at one byte and held at
+ *  four would let the budget overshoot by the difference. */
 function cropBytesPerTexel(slot: CropSlot): number {
-  return CROP_KIND[slot] === 'mask' ? maskBytesPerTexel() : 4;
+  const kind = CROP_KIND[slot];
+  if (kind === 'mask') return maskBytesPerTexel();
+  if (kind === 'normal') return normalBytesPerTexel();
+  return 4;
 }
 
 /** One published tile set: what a tile URL is made of, plus the layout the
@@ -229,7 +233,7 @@ export interface SectorTileSet {
    *  crop's layout (content + gutter) follows from it, and a colour level's
    *  is the source width the level below reads its demand against. */
   baseWidth: number;
-  /** Sectors of longitude one tile spans (normal maps: 2, see sectorGrid). */
+  /** Sectors of longitude one tile spans (every shipped set: 1, see sectorGrid). */
   spanU: number;
 }
 
@@ -244,6 +248,19 @@ export interface SectorLevel {
   grid: SectorGrid;
   /** Pixel layout of one of this level's colour tiles. */
   layout: TileLayout;
+  /** Crops cut on THIS level's grid, refining the base's (SectorSetSpec.crops)
+   *  for this level's sectors and every level below: a sector draws, per
+   *  slot, the crop of the deepest level at or above its own that carries one
+   *  (`cropAt`), through that level's grid at its ancestor there. Only a slot
+   *  level 0 carries a crop for may be refined — a crop is of a map the base
+   *  material has, and that is level 0's question — and level 0 itself never
+   *  carries this field: its crops are the spec's own. Mars's 32K level
+   *  carries the 16K relief this way: a 1040² crop and 2.75 MiB a sector,
+   *  exactly what level 0's 8K costs, twice as fine over a quarter of the
+   *  ground — where a 16K crop on level 0's grid would be 10.9 MiB a sector,
+   *  copied into every finer sector too, at a magnification where the 8K's
+   *  texels are already finer than the screen. */
+  crops?: Partial<Record<CropSlot, SectorTileSet>>;
 }
 
 /** Width of the equirect a level's tiles were cut from: `cols` sectors of
@@ -258,12 +275,14 @@ export function levelSourceWidth(level: SectorLevel): number {
 }
 
 export interface SectorSetSpec {
-  /** Crops for the relief / roughness slots the base material carries. A slot
-   *  the base does not currently have is not loaded; if the base gains one
-   *  later (Mars's relief arrives after boot) resident sectors reload. Crops
-   *  belong to LEVEL 0: mesh uvs are global, so a finer sector samples its
-   *  level-0 ancestor's crop through that ancestor's own transform — the same
-   *  file, the same offset/repeat, no sub-rectangle. */
+  /** Crops for the relief / roughness slots the base material carries, cut on
+   *  LEVEL 0's grid. A slot the base does not currently have is not loaded;
+   *  if the base gains one later (Mars's relief arrives after boot) resident
+   *  sectors reload. Mesh uvs are global, so a finer sector samples an
+   *  ancestor's crop through that ancestor's own transform — the same file,
+   *  the same offset/repeat, no sub-rectangle — and which ancestor's is the
+   *  nearest level at or above it that carries one: level 0 unless a level
+   *  between refines the slot (SectorLevel.crops). */
   crops: Partial<Record<CropSlot, SectorTileSet>>;
   /** The pyramid of colour tiles, coarsest first. Slots exist only for the
    *  levels declared here, so a body with one level costs exactly what it
@@ -364,12 +383,41 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
     ],
   },
   Mars: {
-    crops: { normalMap: tileSet('mars-normal.v2', '2k') },
-    levels: [sectorLevel16k('mars.v2')],
+    // Relief crops from the maps gen-relief writes to the source cache from
+    // the HRSC–MOLA blended DEM — never shipped whole — one sector wide like
+    // every crop, and physical slope like the Moon's: gen-relief bakes the
+    // cos(lat)-corrected slope the sphere's own relief frame draws
+    // (world/reliefFrame.ts). Level 0's is cut from the 8192-wide map, twice
+    // the 4K rung's width: a normal crop is held two bytes a texel
+    // (texturePolicy's 'normal' kind), 2.75 MiB a sector with its mips under
+    // the 21.3 MiB colour tile. Not 16K here: that crop would be 10.9 MiB a
+    // sector and copied into every finer sector too — a hemisphere's sixteen
+    // level-0 sectors alone would overrun the 512 MiB tile ceiling — at a
+    // magnification where the 8K's texels are already finer than the screen.
+    crops: { normalMap: tileSet('mars-normal.v3', '8k') },
+    // Three levels like Earth's, all rendered from the one Tianwen-1 HiPS
+    // (76 m, so even the 64K level's 328 m texels are a downsample of it),
+    // each a sharper picture of the one above it and not another product:
+    // the near band is flown at the same magnification over Mars as over
+    // Earth, where one level once left it four times coarser.
+    levels: [
+      sectorLevel16k('mars.v3'),
+      {
+        ...sectorLevel32k('mars.v3'),
+        // The 16K relief, from the same DEM in the same pass, cut on this
+        // level's own 16 × 8 grid: a level-1 sector's crop is 1040² and
+        // 2.75 MiB like a level-0 sector's, twice as fine over a quarter of
+        // the ground (1.3 km a texel against the 8K's 2.6), and the level-2
+        // sectors under it sample it in place of the 8K. It ships from the
+        // tile host like the level it belongs to.
+        crops: { normalMap: tileSet('mars-normal.v3', '16k') },
+      },
+      sectorLevel64k('mars.v3'),
+    ],
   },
   // The Moon's relief crop is the 8k that tools/gen-moon-relief.mjs cuts
-  // from NASA's 64 px/deg grid at 1.39× slope: 1.3 km a texel, 5.4 MiB a
-  // sector on the GPU with its mips.
+  // from NASA's 64 px/deg grid at 1.39× slope: 1.3 km a texel, 2.7 MiB a
+  // sector on the GPU with its mips at two bytes a texel.
   Moon: {
     crops: { normalMap: tileSet('moon-normal', '8k') },
     levels: [sectorLevel16k('moon')],
@@ -871,10 +919,34 @@ function sectorLightSamples(grid: SectorGrid, s: Sector): THREE.Vector3[] {
   ];
 }
 
+/** The crop a sector at `level` draws in `slot`, with the level it was cut
+ *  on: the deepest level at or above the sector's own that carries one —
+ *  level 0's from the spec's own crops, a finer level's from its refinements
+ *  (SectorLevel.crops). Null when the set names no crop for the slot. */
+export function cropAt(
+  spec: SectorSetSpec,
+  slot: CropSlot,
+  level: number,
+): { set: SectorTileSet; level: number } | null {
+  for (let at = level; at > 0; at--) {
+    const refined = spec.levels[at]?.crops?.[slot];
+    if (refined) return { set: refined, level: at };
+  }
+  const base = spec.crops[slot];
+  return base ? { set: base, level: 0 } : null;
+}
+
+/** Pixel layout of a crop, from the grid of the level it was cut on and the
+ *  width and span the table measured its set at. */
+function cropLayout(spec: SectorSetSpec, crop: { set: SectorTileSet; level: number }): TileLayout {
+  return dataCropLayout(spec.levels[crop.level].grid, crop.set.baseWidth, crop.set.spanU);
+}
+
 /** GPU bytes one sector of a set holds at `level`: its colour tile plus its
- *  own copy of every crop the base material carries (`has`). Sectors are
- *  self-contained — four children of one parent hold four copies of the same
- *  crop — and the budget counts every copy. */
+ *  own copy of every crop the base material carries (`has`), each at the cut
+ *  its level draws (`cropAt`). Sectors are self-contained — four children of
+ *  one parent hold four copies of the same crop — and the budget counts every
+ *  copy. */
 export function sectorSetGpuBytes(
   spec: SectorSetSpec,
   level = 0,
@@ -882,11 +954,9 @@ export function sectorSetGpuBytes(
 ): number {
   let bytes = layoutGpuBytes(spec.levels[level].layout);
   for (const slot of CROP_SLOTS) {
-    const crop = spec.crops[slot];
+    const crop = cropAt(spec, slot, level);
     if (!crop || !has(slot)) continue;
-    bytes += layoutGpuBytes(
-      dataCropLayout(spec.levels[0].grid, crop.baseWidth, crop.spanU), cropBytesPerTexel(slot),
-    );
+    bytes += layoutGpuBytes(cropLayout(spec, crop), cropBytesPerTexel(slot));
   }
   return bytes;
 }
@@ -1058,6 +1128,18 @@ export class SectorStreamer {
     if (levels.length === 0) throw new Error(`${key} declares no sector levels`);
     if (levels.length - 1 > SECTOR_MAX_LEVEL) {
       throw new Error(`${key} declares ${levels.length} sector levels; ${SECTOR_MAX_LEVEL + 1} is the most a set may carry`);
+    }
+    // A refinement is a finer cut of a crop the base carries: a slot level 0
+    // names no crop for has no map on the base to crop, so no finer level
+    // can have one either — and level 0's crops are the spec's own, so a
+    // level-0 refinement would be a second opinion nothing reads.
+    if (levels[0].crops) throw new Error(`${key} level 0 carries crops of its own; its crops are the set's`);
+    for (let level = 1; level < levels.length; level++) {
+      for (const slot of Object.keys(levels[level].crops ?? {}) as CropSlot[]) {
+        if (!handle.spec.crops[slot]) {
+          throw new Error(`${key} level ${level} refines a ${slot} crop that level 0 does not carry`);
+        }
+      }
     }
     this.unregister(key);
     const slots: SectorSlot[] = [];
@@ -1731,12 +1813,8 @@ export class SectorStreamer {
   /** Bytes one of a slot's maps holds, from the layout its image is cut on. */
   private mapBytes(body: SectorBody, slot: SectorSlot, name: MapName): number {
     if (name === 'map') return layoutGpuBytes(body.levels[slot.level].layout);
-    const crop = body.handle.spec.crops[name];
-    return crop
-      ? layoutGpuBytes(
-        dataCropLayout(body.levels[0].grid, crop.baseWidth, crop.spanU), cropBytesPerTexel(name),
-      )
-      : 0;
+    const crop = cropAt(body.handle.spec, name, slot.level);
+    return crop ? layoutGpuBytes(cropLayout(body.handle.spec, crop), cropBytesPerTexel(name)) : 0;
   }
 
   /** Map fetches a load for this slot would put on the wire: its colour tile
@@ -1982,13 +2060,13 @@ export class SectorStreamer {
     const stillWanted = () => slot.gen === gen;
 
     // Every map carries the (grid, sector, layout) triple its own image was
-    // cut on. The colour tile is this slot's level; the crops are level 0's,
-    // sampled at the slot's level-0 ANCESTOR through that ancestor's own
-    // transform — mesh uvs are global, so the transform depends on the image,
-    // not on which mesh reads it, and a finer sector needs no crop of its own.
+    // cut on. The colour tile is this slot's level; each crop is the nearest
+    // level at or above it that carries one (`cropAt` — level 0's unless a
+    // level between refines the slot), sampled at the slot's ANCESTOR on that
+    // level through the ancestor's own transform — mesh uvs are global, so
+    // the transform depends on the image, not on which mesh reads it, and a
+    // sector needs no crop cut for itself.
     const level = body.levels[slot.level];
-    const base = body.levels[0];
-    const baseSector = ancestorSector(slot.sector, slot.level);
     const maps: Array<{ name: MapName; set: string; url: string; kind: MapKind; grid: SectorGrid; sector: Sector; layout: TileLayout }> = [
       {
         name: 'map',
@@ -2001,16 +2079,17 @@ export class SectorStreamer {
       },
     ];
     for (const cropSlot of CROP_SLOTS) {
-      const crop = handle.spec.crops[cropSlot];
+      const crop = cropAt(handle.spec, cropSlot, slot.level);
       if (!crop || !realMapIn(handle.material, cropSlot)) continue;
+      const cropSector = ancestorSector(slot.sector, slot.level - crop.level);
       maps.push({
         name: cropSlot,
-        set: setName(crop),
-        url: tileUrlOf(crop, baseSector),
+        set: setName(crop.set),
+        url: tileUrlOf(crop.set, cropSector),
         kind: CROP_KIND[cropSlot],
-        grid: base.grid,
-        sector: baseSector,
-        layout: dataCropLayout(base.grid, crop.baseWidth, crop.spanU),
+        grid: body.levels[crop.level].grid,
+        sector: cropSector,
+        layout: cropLayout(handle.spec, crop),
       });
     }
     const loading: SectorLoad = {

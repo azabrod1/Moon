@@ -1,6 +1,8 @@
 /**
  * GENERATED — written by `node tools/gen-tiles.mjs` from the tile sets on
- * disk (and mirrored in that tiles root's sets.v1.json). Never edit by hand.
+ * disk, keeping the rows of the sets published from the tile host that no
+ * root here holds (a tiles root's own sets.v1.json names only the sets in
+ * it; tools/sectorTable.mjs). Never edit by hand.
  *
  * A sector tile set is published under a folder named for its own contents,
  * tiles/<key>/<tier>.<setHash8>/, and this table is where the app reads that
@@ -27,7 +29,7 @@ export interface GeneratedSectorSet {
   tileHeight: number;
   /** Width of the equirect the set was cut from: content × cols. */
   baseWidth: number;
-  /** Sectors of longitude one tile spans (normal-map crops: 2). */
+  /** Sectors of longitude one tile spans (every shipped set: 1). */
   spanU: number;
   fileCount: number;
 }
@@ -202,22 +204,36 @@ export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = /* table:beg
     "spanU": 1,
     "fileCount": 32
   },
-  "mars-normal.v2/2k": {
-    "setHash8": "323fe70c",
+  "mars-normal.v3/16k": {
+    "setHash8": "04d2c30d",
+    "grid": {
+      "cols": 16,
+      "rows": 8
+    },
+    "content": 1024,
+    "gutter": 8,
+    "tileWidth": 1040,
+    "tileHeight": 1040,
+    "baseWidth": 16384,
+    "spanU": 1,
+    "fileCount": 128
+  },
+  "mars-normal.v3/8k": {
+    "setHash8": "232997f4",
     "grid": {
       "cols": 8,
       "rows": 4
     },
-    "content": 180,
+    "content": 1024,
     "gutter": 8,
-    "tileWidth": 196,
-    "tileHeight": 196,
-    "baseWidth": 1440,
+    "tileWidth": 1040,
+    "tileHeight": 1040,
+    "baseWidth": 8192,
     "spanU": 1,
     "fileCount": 32
   },
-  "mars.v2/16k": {
-    "setHash8": "917c9862",
+  "mars.v3/16k": {
+    "setHash8": "3d92e5c4",
     "grid": {
       "cols": 8,
       "rows": 4
@@ -229,6 +245,34 @@ export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = /* table:beg
     "baseWidth": 16256,
     "spanU": 1,
     "fileCount": 32
+  },
+  "mars.v3/32k": {
+    "setHash8": "5f03fe03",
+    "grid": {
+      "cols": 16,
+      "rows": 8
+    },
+    "content": 2032,
+    "gutter": 8,
+    "tileWidth": 2048,
+    "tileHeight": 2048,
+    "baseWidth": 32512,
+    "spanU": 1,
+    "fileCount": 128
+  },
+  "mars.v3/64k": {
+    "setHash8": "b98c9e2e",
+    "grid": {
+      "cols": 32,
+      "rows": 16
+    },
+    "content": 2032,
+    "gutter": 8,
+    "tileWidth": 2048,
+    "tileHeight": 2048,
+    "baseWidth": 65024,
+    "spanU": 1,
+    "fileCount": 512
   },
   "moon/16k": {
     "setHash8": "51b7c463",

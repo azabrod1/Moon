@@ -16,8 +16,9 @@
 // Every body's boot map, 4K step and tiles come from ONE source in ONE pass,
 // so each step up the ladder is a pure sharpen (the same-product rule in
 // PlanetFactory's TEXTURE_UPGRADE_TIERS comment). Sources are cached under
-// .moon-data-cache/ (gitignored); the Mars source is fetched from the USGS WMS
-// as 2048x2048 GetMap tiles (their max is 4096 wide, the 232 m mosaic is 12 GB).
+// .moon-data-cache/ (gitignored); Mars's levels are rendered by CDS's
+// hips2fits service out of the Tianwen-1 HiPS, in blocks of each level's own
+// pixel grid (see hipsBlock), so no source file is ever held whole.
 //
 // A tile's gutter is always its NEIGHBOUR's pixels — wrapping across the ±180°
 // seam, clamped at the poles — never a repeat of its own edge: that is what
@@ -36,8 +37,10 @@
 // under a name something already cached. The hash itself lives in
 // tools/tileSetHash.mjs, shared with tools/publish-tiles.mjs so a set is
 // published under the same name it was cut under. Every run rewrites
-// <root>/sets.v1.json and src/planetarium/world/sectorSets.generated.ts from
-// the folders on disk, which is where the app reads the hashes it puts in URLs.
+// <root>/sets.v1.json from the folders on disk, and
+// src/planetarium/world/sectorSets.generated.ts — where the app reads the
+// hashes it puts in URLs — from those plus the rows it already holds for the
+// sets no root here has (tools/sectorTable.mjs).
 //
 // Every gate here throws, and that is the whole failure discipline: the index
 // step at the bottom is what puts a set's name in front of the app, so a gate
@@ -56,7 +59,9 @@
 //   npm i --no-save sharp@0.35.4
 // Usage:
 //   node tools/gen-tiles.mjs earth              # one job, every level it declares
-//   node tools/gen-tiles.mjs earth --level=1    # one level of it
+//   node tools/gen-tiles.mjs earth --level=1    # one level of it: its tiles, and the crops cut for its sectors
+//   node tools/gen-tiles.mjs mars --crops       # the data crops only (a relief / roughness map changed
+//                                               # under an unchanged colour set); --level=n narrows it to one level's
 //   node tools/gen-tiles.mjs --all              # every job
 //   node tools/gen-tiles.mjs earth --verify     # reassemble + gate only
 //   node tools/gen-tiles.mjs earth --grey       # the mask sets only: every texel r = g = b
@@ -76,14 +81,18 @@
 //   --root=<dir>   tiles root (default public/textures/tiles). A level too
 //                  big to ship inside the app is cut into a staging root —
 //                  a full tiles root of its own, holding symlinks to the
-//                  published level-0 folders plus the new ones — and
-//                  `--index --root=<staging>` writes the table from THAT
-//                  root, so the app names every set wherever it is served.
+//                  published level-0 folders plus the new ones. Every run
+//                  ends by indexing its root: the root's sets.v1.json from
+//                  the folders in it, the app's table from those plus the
+//                  rows it already holds for sets no root here has (the
+//                  levels published from the tile host), so the app names
+//                  every set wherever it is served (tools/sectorTable.mjs).
 import sharp from 'sharp';
 import { mkdir, writeFile, access, stat, readFile, readdir, rename, rm, open } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fileDigest, setHash8, tileNames } from './tileSetHash.mjs';
+import { TABLE_BEGIN, TABLE_END, mergeSectorTable, parseSectorTable } from './sectorTable.mjs';
 
 sharp.cache(false);
 sharp.concurrency(0);
@@ -123,7 +132,15 @@ export const CONTENT = 2032;
 const PHOTO_WEBP = { quality: 85, effort: 5 };
 const DATA_WEBP = { lossless: true, effort: 5 };
 
-const USGS_MARS_WMS = 'https://planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/mars/mars_simp_cyl.map';
+/** The HiPS Mars's colour levels are rendered from, and the CDS service that
+ *  renders it: CDS/P/Mars/Tianwen1-MoRIC is the Tianwen-1 MoRIC true-colour
+ *  mosaic (76 m; CNSA's CLPDS, NAOC/GRAS; Liu et al. 2024) as CDS built it
+ *  into a HiPS — order 7, 512-px PNG tiles, status "public master
+ *  clonableOnce", its properties file carrying the data's own credit line. */
+const TIANWEN_HIPS = 'CDS/P/Mars/Tianwen1-MoRIC';
+const HIPS2FITS = 'https://alasky.cds.unistra.fr/hips-image-services/hips2fits';
+/** hips2fits refuses a cutout of more pixels than this. */
+const HIPS2FITS_MAX_PIXELS = 50_000_000;
 
 const exists = async (p) => { try { await access(p); return true; } catch { return false; } };
 const doubled = (grid, times) => ({ cols: grid.cols * 2 ** times, rows: grid.rows * 2 ** times });
@@ -612,13 +629,16 @@ async function cutGrid(rows, grid, content, key, tier, webpOpts, spanU = 1, plan
 
 /** Data-map crops: the base map (e.g. 2048×1024) cut into sector crops with
  *  the same gutter, losslessly — never resampled, so a sector's relief is
- *  bit-for-bit the base's. Crops belong to level 0, whose grid they are cut
- *  on. `tier` names the base map's tier folder. */
-async function cutDataCrops(srcPath, key, tier, spanU = 1) {
-  const { data, info } = await sharp(srcPath).removeAlpha().raw().toBuffer({ resolveWithObject: true });
-  const content = info.width / GRID_16K.cols;
+ *  bit-for-bit the base's. A crop is cut on the grid of the level whose
+ *  sectors draw it: level 0's for a base map's crops, a finer level's for a
+ *  map that refines one there (world/sectorStreamer.ts SectorLevel.crops —
+ *  Mars's 16K relief on the 32K level's 16 × 8). `tier` names the map's tier
+ *  folder. */
+async function cutDataCrops(srcPath, key, tier, spanU = 1, grid = GRID_16K) {
+  const { data, info } = await sharp(srcPath, { limitInputPixels: false }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  const content = info.width / grid.cols;
   const rows = memoryRows(data, info.width, info.height, info.channels);
-  await cutGrid(rows, GRID_16K, content, key, tier, DATA_WEBP, spanU);
+  await cutGrid(rows, grid, content, key, tier, DATA_WEBP, spanU);
 }
 
 /** Every texel of a mask set, and of the base map it is cut from, has red
@@ -785,7 +805,9 @@ const MAX_LEVEL = 2;
 function generatedSource(sets) {
   return `/**
  * GENERATED — written by \`node tools/gen-tiles.mjs\` from the tile sets on
- * disk (and mirrored in that tiles root's sets.v1.json). Never edit by hand.
+ * disk, keeping the rows of the sets published from the tile host that no
+ * root here holds (a tiles root's own sets.v1.json names only the sets in
+ * it; tools/sectorTable.mjs). Never edit by hand.
  *
  * A sector tile set is published under a folder named for its own contents,
  * tiles/<key>/<tier>.<setHash8>/, and this table is where the app reads that
@@ -818,16 +840,36 @@ export interface GeneratedSectorSet {
 }
 
 /** Every shipped set, keyed \`<key>/<tier>\`. */
-export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = /* table:begin */ ${
+export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = ${TABLE_BEGIN} ${
     JSON.stringify(sets, null, 2)
-  } /* table:end */;
+  } ${TABLE_END};
 `;
+}
+
+/** The table the app holds now — nothing, on a checkout that has none yet. */
+async function heldSectorTable() {
+  try {
+    return parseSectorTable(await readFile(GENERATED_TS, 'utf8'));
+  } catch (err) {
+    if (err.code === 'ENOENT') return {};
+    throw err;
+  }
 }
 
 /**
  * Rewrite the tiles root's sets.v1.json and the generated table from the sets
  * on disk, moving any set whose folder name is not its own hash (which is how
  * a set cut before this naming, or edited in place, is adopted).
+ *
+ * Two tables, two scopes (tools/sectorTable.mjs). The root's sets.v1.json is
+ * the table of the sets IN the root — what publish-tiles reads to find the
+ * folders it copies, and holds to their bytes — so it comes from the folders
+ * alone. The app's table also keeps every row it already holds for a set this
+ * root does not: a level published from the tile host has a folder in no
+ * checkout, and a rewrite from one root's folders dropped those rows on every
+ * re-cut until someone put them back by hand. A kept row is printed, so a set
+ * the app has retired is deleted from the table on purpose, never carried
+ * along unnoticed.
  */
 async function indexSets() {
   // Every folder is hashed before any of them is moved. A rename is a
@@ -876,11 +918,17 @@ async function indexSets() {
   // publishes); the app's names only the sets of jobs the app reads, so a set
   // staged ahead of its reader (a job's `appTable: false`) can be cut, hashed
   // and published without the app's table or its tests changing under it.
+  // The app's table also keeps its rows for the sets published from the tile
+  // host that no root here holds (tools/sectorTable.mjs).
   const staged = new Set(Object.values(JOBS).filter((j) => j.appTable === false).map((j) => j.key));
   const app = Object.fromEntries(Object.entries(sets).filter(([id]) => !staged.has(id.split('/')[0])));
-  await writeFile(GENERATED_TS, generatedSource(app));
+  const { table, kept } = mergeSectorTable(app, await heldSectorTable());
+  await writeFile(GENERATED_TS, generatedSource(table));
   const held = Object.keys(sets).length - Object.keys(app).length;
   console.log(`  indexed ${Object.keys(sets).length} sets -> ${path.relative(process.cwd(), SETS_JSON)}${held ? ` (${held} staged, not in the app's table)` : ''}`);
+  for (const id of kept) {
+    console.log(`  kept ${id} ${table[id].setHash8}: no folder under ${path.relative(process.cwd(), TILES)}, published from the tile host`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1070,57 +1118,170 @@ async function childGroupGate(key, parentTier, parentGrid, parentContent, childT
   }
 }
 
-/** Fetch one WMS GetMap tile into the cache (skipped when cached). */
-async function wmsTile(base, layer, bbox, w, h, cachePath) {
-  if (await exists(cachePath)) return cachePath;
-  const url = `${base}&service=WMS&request=GetMap&version=1.1.1&layers=${layer}&styles=&srs=EPSG:4326` +
-    `&bbox=${bbox.join(',')}&width=${w}&height=${h}&format=image/png`;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (moon planetarium asset build)' } });
-    if (res.ok && (res.headers.get('content-type') ?? '').startsWith('image/')) {
-      await mkdir(path.dirname(cachePath), { recursive: true });
-      await writeFile(cachePath, Buffer.from(await res.arrayBuffer()));
-      return cachePath;
+/**
+ * One block of a level's equirect, rendered by hips2fits in plate carrée on
+ * the LEVEL's own pixel grid — column k at longitude −180° + (k + ½)·s, row r
+ * from the north at latitude 90° − (r + ½)·s, with s = 360° / width — so a
+ * block is an exact sub-rectangle of the map the level is, and two blocks
+ * meet with no resample between them. Stated as a FITS WCS whose reference
+ * point is on the equator: a CAR projection with CRVAL2 ≠ 0 is an oblique
+ * grid, not a crop. Every cutout asks for the same two things besides:
+ *   min_cut=0, max_cut=255 — without them the service stretches each cutout
+ *   to its own 0.5–99.5 percentiles, per channel, so two blocks of the same
+ *   ground come back at different levels and hues (measured: two aligned
+ *   cutouts four levels apart; with the cuts pinned, byte-identical, and the
+ *   pinned colour is the tiles' own — mean 138,116,100 against the published
+ *   map's 142,114,95);
+ *   inverse_longitude=true — east to the right, as every map here is laid
+ *   out (the service's default for a planetary HiPS, said rather than relied
+ *   on).
+ * Cached under the level's tier and named by its grid position AND size: a
+ * block rendered for another level has the wrong stride, and must never be
+ * read as this one (the WMS cache this replaced was once read that way, and
+ * the whole map turned to streaks).
+ */
+async function hipsBlock(hipsId, dir, c, r, blockW, blockH, width, height) {
+  const file = path.join(dir, `${c}_${r}_${blockW}x${blockH}.png`);
+  if (await exists(file)) return file;
+  const scale = 360 / width;
+  const wcs = {
+    NAXIS1: blockW,
+    NAXIS2: blockH,
+    CTYPE1: 'RA---CAR',
+    CTYPE2: 'DEC--CAR',
+    CRVAL1: 0,
+    CRVAL2: 0,
+    // FITS pixel 1 is the block's first column and its SOUTHERNMOST row.
+    CRPIX1: 0.5 + width / 2 - c * blockW,
+    CRPIX2: 0.5 + (r + 1) * blockH - height / 2,
+    CDELT1: scale,
+    CDELT2: scale,
+    CUNIT1: 'deg',
+    CUNIT2: 'deg',
+  };
+  const params = new URLSearchParams({
+    hips: hipsId,
+    format: 'png',
+    min_cut: '0',
+    max_cut: '255',
+    stretch: 'linear',
+    inverse_longitude: 'true',
+    wcs: JSON.stringify(wcs),
+  });
+  const url = `${HIPS2FITS}?${params}`;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const t0 = Date.now();
+    try {
+      // A 33-megapixel render is minutes of the service's time; the timeout
+      // is for a connection that died, not a slow one.
+      const res = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (moon planetarium asset build)' },
+        signal: AbortSignal.timeout(30 * 60_000),
+      });
+      if (res.ok && (res.headers.get('content-type') ?? '').startsWith('image/png')) {
+        await mkdir(dir, { recursive: true });
+        await writeFile(`${file}.part`, Buffer.from(await res.arrayBuffer()));
+        await rename(`${file}.part`, file);
+        console.log(`  hips2fits block ${c}_${r} (${blockW}x${blockH}): ${((Date.now() - t0) / 1000).toFixed(0)} s`);
+        return file;
+      }
+      console.log(`  hips2fits block ${c}_${r} attempt ${attempt}: HTTP ${res.status} ${res.headers.get('content-type')}`);
+    } catch (err) {
+      console.log(`  hips2fits block ${c}_${r} attempt ${attempt}: ${err.message}`);
     }
-    console.log(`  wms ${path.basename(cachePath)} attempt ${attempt}: HTTP ${res.status} ${res.headers.get('content-type')}`);
+    await new Promise((resolve) => setTimeout(resolve, 20_000 * attempt));
   }
-  throw new Error(`WMS fetch failed: ${url}`);
+  throw new Error(`hips2fits fetch failed: ${url}`);
 }
 
-/** Mars source: the 32 sector tiles straight from the WMS at native 2048 (no
- *  resample — the service renders each bbox at exactly the tile size), then
- *  assembled into the same 16K raw buffer so the rest of the pipeline is
- *  body-agnostic (the boot/4K maps are downsamples of the assembled set). */
-async function marsRaw() {
-  const dir = path.join(CACHE, 'mars-wms');
-  const { width: W, height: H } = gridSize(GRID_16K, CONTENT);
-  const composites = [];
-  for (let r = 0; r < GRID_16K.rows; r++) {
-    for (let c = 0; c < GRID_16K.cols; c++) {
-      const lon0 = -180 + 45 * c;
-      const lat1 = 90 - 45 * r;
-      // The request size is in the cache name: a cached render of another
-      // size would otherwise be read with the wrong row stride and turn the
-      // whole map into streaks (it did, once).
-      const file = await wmsTile(USGS_MARS_WMS, 'MDIM21_color', [lon0, lat1 - 45, lon0 + 45, lat1],
-        CONTENT, CONTENT, path.join(dir, `${c}_${r}_${CONTENT}.png`));
-      const { data, info } = await sharp(file).removeAlpha().raw().toBuffer({ resolveWithObject: true });
-      if (info.width !== CONTENT || info.height !== CONTENT || info.channels !== 3) {
-        throw new Error(`${file}: ${info.width}x${info.height}x${info.channels}, expected ${CONTENT}x${CONTENT}x3`);
+/**
+ * A level rendered from a HiPS: `across × down` blocks of the level's own
+ * equirect, each under hips2fits's pixel ceiling, laid row by row into one
+ * raw file in the source cache and graded on the way where the job grades,
+ * so the rest of the pipeline reads it as it reads a resampled mosaic. The
+ * blocks arrive RGBA: the alpha is the service's own resampling at its tile
+ * joins — 254 on a few per cent of texels in every latitude band — so it is
+ * dropped; the few texels per block it leaves fully transparent (90 of 33
+ * million in the first block cut, in pinholes a texel or two wide at HiPS
+ * tile corners, the HiPS itself covering the whole sphere) are filled from
+ * their nearest valid neighbour along the row and counted aloud, and a block
+ * with more than a pinhole's worth of them is refused rather than laid down
+ * part black: that would be a gap in the data, which this map must never
+ * paint over quietly.
+ */
+const HIPS_HOLE_CEILING = 1e-4;
+async function hipsLevelRaw(job, level) {
+  const { width, height } = gridSize(level.grid, CONTENT);
+  const src = level.source;
+  const blockW = width / src.across;
+  const blockH = height / src.down;
+  if (!Number.isInteger(blockW) || !Number.isInteger(blockH)) {
+    throw new Error(`${job.key}/${level.tier}: ${width}x${height} does not split into ${src.across}x${src.down} whole blocks`);
+  }
+  if (blockW * blockH > HIPS2FITS_MAX_PIXELS) {
+    throw new Error(`${job.key}/${level.tier}: a ${blockW}x${blockH} block is over hips2fits's ceiling of ${HIPS2FITS_MAX_PIXELS} pixels`);
+  }
+  const stem = [job.key, level.tier, `${width}x${height}`, job.rawToken].filter(Boolean).join('.');
+  const out = cache('levels', `${stem}.rgb`);
+  await mkdir(path.dirname(out), { recursive: true });
+  if ((await exists(out)) && (await stat(out)).size === width * height * 3) {
+    console.log(`  rendered equirect already in the cache: ${path.relative(process.cwd(), out)}`);
+    return out;
+  }
+  const dir = cache('hips', src.id.replace(/[^\w.-]+/g, '_'), level.tier);
+  const file = await open(`${out}.part`, 'w');
+  const t0 = Date.now();
+  try {
+    for (let r = 0; r < src.down; r++) {
+      for (let c = 0; c < src.across; c++) {
+        const png = await hipsBlock(src.id, dir, c, r, blockW, blockH, width, height);
+        const { data, info } = await sharp(png, { limitInputPixels: false }).raw().toBuffer({ resolveWithObject: true });
+        if (info.width !== blockW || info.height !== blockH) {
+          throw new Error(`${png}: ${info.width}x${info.height}, expected ${blockW}x${blockH}`);
+        }
+        const rgb = Buffer.allocUnsafe(blockW * blockH * 3);
+        const holes = [];
+        for (let p = 0, q = 0; p < data.length; p += info.channels, q += 3) {
+          if (info.channels === 4 && data[p + 3] === 0) holes.push(q / 3);
+          rgb[q] = data[p];
+          rgb[q + 1] = data[p + 1];
+          rgb[q + 2] = data[p + 2];
+        }
+        if (holes.length > blockW * blockH * HIPS_HOLE_CEILING) {
+          throw new Error(`${png}: ${holes.length} transparent texels — a hole in the HiPS, not a pinhole, which this map has no business drawing black`);
+        }
+        for (const texel of holes) {
+          const x = texel % blockW;
+          const y = (texel - x) / blockW;
+          // The nearest texel along the row the service did render; a pinhole
+          // is a texel or two wide, so the search never goes far.
+          let donor = -1;
+          for (let reach = 1; reach < blockW && donor < 0; reach++) {
+            for (const neighbour of [x - reach, x + reach]) {
+              if (neighbour < 0 || neighbour >= blockW) continue;
+              if (data[(y * blockW + neighbour) * info.channels + 3] !== 0) { donor = y * blockW + neighbour; break; }
+            }
+          }
+          if (donor < 0) throw new Error(`${png}: row ${y} is transparent end to end`);
+          rgb[texel * 3] = data[donor * info.channels];
+          rgb[texel * 3 + 1] = data[donor * info.channels + 1];
+          rgb[texel * 3 + 2] = data[donor * info.channels + 2];
+        }
+        if (holes.length) console.log(`  block ${c}_${r}: ${holes.length} transparent texels filled from their row neighbours`);
+        if (job.grade) job.grade(rgb);
+        for (let y = 0; y < blockH; y++) {
+          await file.write(rgb, y * blockW * 3, blockW * 3, ((r * blockH + y) * width + c * blockW) * 3);
+        }
+        process.stdout.write(`  block ${c}_${r} of ${src.across}x${src.down} laid (${((Date.now() - t0) / 1000).toFixed(0)} s)\r`);
       }
-      composites.push({
-        input: data,
-        raw: { width: CONTENT, height: CONTENT, channels: 3 },
-        left: c * CONTENT,
-        top: r * CONTENT,
-      });
-      process.stdout.write(`  wms tile ${c}_${r}\r`);
     }
+  } finally {
+    await file.close();
   }
   console.log('');
-  // composite() adds an alpha channel; the pipeline's raw contract is 3-channel.
-  return sharp({ create: { width: W, height: H, channels: 3, background: '#000' }, limitInputPixels: false })
-    .composite(composites).removeAlpha().raw().toBuffer();
+  await rename(`${out}.part`, out);
+  console.log(`  rendered -> ${path.relative(process.cwd(), out)} (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
+  return out;
 }
 
 /**
@@ -1838,24 +1999,57 @@ export const JOBS = {
     // globe maps' 1.39× slope), so run that first.
     dataCrops: [{ src: cache('moon-normal-8k.webp'), key: 'moon-normal', tier: '8k' }],
   },
-  // USGS Mars Viking MDIM 2.1 colour mosaic via WMS (what NASA Eyes ships).
-  // The service's tone is a muted brown-grey (mean 122,97,95); NASA Eyes
-  // grades the same mosaic to a warmer salmon (164,104,90 on their 4096
-  // faces), and so does this — the gains are that ratio. The old Solar
-  // System Scope map was a far more saturated orange (183,98,71).
+  // Tianwen-1 MoRIC true-colour mosaic: 76 m, 10,572 images with atmospheric,
+  // photometric and colour correction and a bundle adjustment to under a
+  // pixel (Liu et al. 2024, Science Bulletin, doi:10.1016/j.scib.2024.04.045;
+  // dataset doi:10.12350/CLPDS.GRAS.TW1.MoRIC-DOM_076_Global.vA; data
+  // provided by China's Lunar and Planetary Data System, NAOC/GRAS) — through
+  // the HiPS CDS built from it (TIANWEN_HIPS). It replaces the Viking MDIM 2.1
+  // mosaic, whose ~4,600 frames each kept their own sun, haze and resolution,
+  // so that from the Land prompt's altitude Mars read as a patchwork of
+  // squares. The colour is graded part of the way from the product's own
+  // balance — a lighter, greyer brown, mean 138,117,100 on the ungraded 4K
+  // map — toward the salmon the MDIM was graded to (162,103,89): these gains
+  // land it at 148,110,97, a little under half way, a red-to-blue ratio in
+  // the range of published true-colour views (Hubble, OSIRIS, MARCI), where
+  // Tianwen's balance sits on the cool side and the old salmon on the hot
+  // side; the look was chosen off a rendered sheet of the candidates.
+  // Per-channel gains, so black stays black and the albedo contrast is the
+  // product's; applied to every level and rung alike, and named in rawToken
+  // because the grade is baked into the cached render and the cache is keyed
+  // on nothing else. Three levels, like Earth's, each rendered at its own
+  // width from the one HiPS, so a child is a sharper picture of its parent
+  // and not another product.
   mars: {
-    key: 'mars.v2',
-    grade: gradeGains([164 / 122, 104 / 97, 90 / 95]),
-    levels: [{ tier: '16k', grid: GRID_16K, source: { kind: 'wms' } }],
-    // The Viking mosaic's grain is not detail: q75 tiles read identically to
-    // q85 at 2× (A/B'd on Kasei Valles) for a third fewer bytes (35 → ~22 MB).
-    webp: { quality: 75, effort: 5 },
-    downsamples: [
-      { w: 4096, h: 2048, out: path.join(TEX, '4k', 'mars.v2.webp') },
-      { w: 2048, h: 1024, out: path.join(TEX, 'mars.v2.webp') },
+    key: 'mars.v3',
+    grade: gradeGains([152 / 142, 108 / 114, 92 / 95]),
+    rawToken: 'warm-grade.v1',
+    levels: [
+      { tier: '16k', grid: GRID_16K, source: { kind: 'hips', id: TIANWEN_HIPS, across: 2, down: 2 } },
+      { tier: '32k', grid: doubled(GRID_16K, 1), source: { kind: 'hips', id: TIANWEN_HIPS, across: 4, down: 4 } },
+      { tier: '64k', grid: doubled(GRID_16K, 2), source: { kind: 'hips', id: TIANWEN_HIPS, across: 8, down: 8 } },
     ],
-    ref: path.join(TEX, '4k', 'mars.v2.webp'),
-    dataCrops: [{ src: path.join(TEX, 'mars-normal.v2.webp'), key: 'mars-normal.v2', tier: '2k' }],
+    downsamples: [
+      { w: 4096, h: 2048, out: path.join(TEX, '4k', 'mars.v3.webp') },
+      { w: 2048, h: 1024, out: path.join(TEX, 'mars.v3.webp') },
+    ],
+    ref: path.join(TEX, '4k', 'mars.v3.webp'),
+    // The relief crops come off the maps tools/gen-relief.mjs leaves in the
+    // cache beside the shipped boot map and 4K rung (all four from the
+    // HRSC–MOLA blended DEM in one pass). Level 0's from the 8192-wide map,
+    // twice the rung's width, as Earth's roughness crops are twice their boot
+    // map's; level 1's from the 16384-wide map, cut on the 32K level's own
+    // 16 × 8 grid so a level-1 sector's crop is the same 1040² as a level-0
+    // sector's (world/sectorStreamer.ts SectorLevel.crops has why the 16K is
+    // not simply level 0's). One sector wide like every crop, and physical
+    // slope like the Moon's, which is what the sphere's own relief frame
+    // draws (world/reliefFrame.ts). The level-1 set is cut into the staging
+    // root and published from the tile host like the level it belongs to:
+    //   node tools/gen-tiles.mjs mars --crops --level=1 --root=.moon-data-cache/tiles-staging
+    dataCrops: [
+      { src: cache('mars-normal.v3-8192.png'), key: 'mars-normal.v3', tier: '8k' },
+      { src: cache('mars-normal.v3-16384.png'), key: 'mars-normal.v3', tier: '16k', level: 1 },
+    ],
   },
   // Solar System Scope 4K steps for the planets whose 8K/4K sources passed the
   // same-product gate against the shipped 2K boot maps (RMS 3.6 / 1.6 / 1.6).
@@ -1935,10 +2129,10 @@ export async function levelRowSource(job, level) {
     const water = job.grade ? job.grade(raw) : undefined;
     return { rows: memoryRowSource(raw, width, height), water };
   }
-  if (src.kind === 'wms') {
-    const raw = await marsRaw();
-    const water = job.grade ? job.grade(raw) : undefined;
-    return { rows: memoryRowSource(raw, width, height), water };
+  if (src.kind === 'hips') {
+    // Rendered to a raw file in the cache whatever its size: level 0 would
+    // fit in memory, but one path for every level is one path to get right.
+    return { rows: await fileRowSource(await hipsLevelRaw(job, level), width, height) };
   }
   // The cached resample's NAME states every transform baked into it, so
   // changing one cannot be silently skipped by a machine that already holds
@@ -1973,6 +2167,16 @@ export async function levelRowSource(job, level) {
 
 const wantedLevel = opt('level', null);
 const levelsOf = (job) => (job.levels ?? []).filter((_, i) => wantedLevel === null || Number(wantedLevel) === i);
+/** The data crops a run cuts: every one the job declares, or under --level=n
+ *  those cut for that level's sectors — level 0's unless the entry says
+ *  otherwise (Mars's 16K relief is level 1's) — on that level's grid. */
+const dataCropsOf = (job) => (job.dataCrops ?? []).filter((d) => wantedLevel === null || Number(wantedLevel) === (d.level ?? 0));
+async function cutDataCropsOf(job) {
+  for (const d of dataCropsOf(job)) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1, doubled(GRID_16K, d.level ?? 0));
+}
+/** Whether this run covers level 0, whose sets the derived maps and the grey
+ *  gate belong to. */
+const level0Wanted = wantedLevel === null || Number(wantedLevel) === 0;
 
 /** Everything a run does, once its arguments are known. Wrapped in a function
  *  — rather than left at module scope — so another tool can import this
@@ -2034,15 +2238,17 @@ async function main() {
       for (const g of job.grey ?? []) await greyGate(g);
     } else if (flag('crops')) {
       // Data crops only: a relief / roughness map changed under an unchanged
-      // colour set (the tiles and downsamples are left alone). A derived map
-      // needs the graded source again, but not its tiles.
-      for (const d of job.dataCrops ?? []) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1);
-      if (job.derive && job.grade && job.levels?.[0]) {
+      // colour set (the tiles and downsamples are left alone), --level=n
+      // narrowing it to the crops of that level's sectors. A derived map
+      // needs the graded source again, but not its tiles; it and the grey
+      // gate are level 0's.
+      await cutDataCropsOf(job);
+      if (level0Wanted && job.derive && job.grade && job.levels?.[0]) {
         const { rows, water } = await levelRowSource(job, job.levels[0]);
         await job.derive(water, rows.width, rows.height);
         await rows.close();
       }
-      for (const g of job.grey ?? []) await greyGate(g);
+      if (level0Wanted) for (const g of job.grey ?? []) await greyGate(g);
     } else if (job.flat) {
       await writeWebp(sharp(job.flat.src(), { limitInputPixels: false }).removeAlpha()
         .resize(4096, 2048, { fit: 'fill', kernel: 'lanczos3' }), job.flat.out);
@@ -2078,13 +2284,11 @@ async function main() {
           await rows.close();
         }
       }
-      // Crops belong to level 0 (mesh uvs are global, so every level samples
-      // the level-0 ancestor's crop), so a run for a finer level alone leaves
-      // them where they are.
-      if (wantedLevel === null || Number(wantedLevel) === 0) {
-        for (const d of job.dataCrops ?? []) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1);
-        for (const g of job.grey ?? []) await greyGate(g);
-      }
+      // A crop is cut with the level whose sectors draw it — level 0 unless
+      // its entry says otherwise — so a run for one level leaves the other
+      // levels' crops where they are. The grey gate reads level-0 mask sets.
+      await cutDataCropsOf(job);
+      if (level0Wanted) for (const g of job.grey ?? []) await greyGate(g);
     }
     console.log(`  ${((Date.now() - t0) / 1000).toFixed(0)} s`);
   }

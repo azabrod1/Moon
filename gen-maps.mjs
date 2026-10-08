@@ -10,8 +10,10 @@
 // Jobs:
 //   moon-normal      ldem_16_uint.tif  -> moon-normal.png      (boot-tier tangent-space normal)
 //   moon-normal-4k   ldem_16_uint.tif  -> 4k/moon-normal.png   (close-approach tier)
-//   mars-normal      megt90n000eb.img  -> mars-normal.v2.png
 //   earth-clouds-normal      8k/earth-clouds.v2.webp -> earth-clouds-normal.v2.png
+//
+// Mars's relief is NOT a job here any more: tools/gen-relief.mjs streams the
+// 11 GB HRSC–MOLA blended DEM in Node, which no canvas round-trip could hold.
 //
 // height->normal jobs need an elevation source dropped in first (USGS/LOLA/MOLA);
 // they no-op with a notice if the source file is absent. Jobs whose source is a
@@ -35,7 +37,6 @@ const srcDir = path.resolve(arg('src', TEX));
 // optional `decode` for sources no browser can read, and transform options.
 // The normal jobs need an elevation source dropped into srcDir (--src=...) first:
 //   ldem_16_uint.tif <- SVS CGI Moon Kit (LOLA), 5760x2880 unsigned 16-bit
-//   megt90n000eb.img <- PDS MOLA MEGDR 16 ppd DEM (pds-geosciences.wustl.edu, mgsl_300x/meg016; 0-360E, rolled by rollU)
 //
 // moon-normal's strength is tied to its output resolution: per-texel height
 // deltas shrink as texels get smaller, so halving the sample spacing needs
@@ -52,12 +53,6 @@ const srcDir = path.resolve(arg('src', TEX));
 const JOBS = {
   'moon-normal':     { src: 'ldem_16_uint.tif', out: 'moon-normal.png', fn: 'normalsFromHeights', scale: 0.25, decode: 'uint16-tiff', opts: { strength: 3.0 } },
   'moon-normal-4k':  { src: 'ldem_16_uint.tif', out: '4k/moon-normal.png', fn: 'normalsFromHeights', scale: 0.5, decode: 'uint16-tiff', opts: { strength: 6.0 } },
-  // MOLA MEGDR 16 pixel/degree DEM (PDS megt90n000eb.img: 5760x2880 big-endian
-  // 16-bit metres, 0–360°E with longitude 0 at its left edge). Every Mars
-  // colour map here (and the tiles) puts −180° at the left, so rollU shifts
-  // the relief by half a turn: Olympus Mons shades where the colour draws it.
-  // 16-bit heights, like the Moon's: no 8-bit terracing across the plains.
-  'mars-normal':     { src: 'megt90n000eb.img', out: 'mars-normal.v2.png', fn: 'normalsFromHeights', scale: 0.25, decode: 'int16be-raw', dims: { width: 5760, height: 2880 }, opts: { strength: 2.4, rollU: 0.5 } },
   // Cloud relief, from the deck's own 8K colour map: brightness stands in for
   // height, so what lights as a bank of cloud is exactly what draws as one and
   // the relief can never drift from the coverage. It is a PROXY and not an

@@ -64,9 +64,12 @@ export function setUpgradeTextureLoader(load: TextureLoad): TextureLoad {
 }
 
 // Texture filenames — bundled locally in public/textures/ (Solar System Scope
-// CC BY 4.0 + NASA; Pluto is New Horizons / USGS, and the higher Moon tiers are
-// NASA SVS — see TEXTURE_UPGRADE_TIERS). The filename stays resolution-
-// agnostic; world/texturePolicy maps it through the active tier to a URL.
+// CC BY 4.0 + NASA; Pluto is New Horizons / USGS; the higher Moon tiers are
+// NASA SVS; Mars is the Tianwen-1 MoRIC true-colour mosaic, data provided by
+// China's Lunar and Planetary Data System (CLPDS, NAOC/GRAS), cut from the
+// HiPS CDS built of it — see TEXTURE_UPGRADE_TIERS). The filename stays
+// resolution-agnostic; world/texturePolicy maps it through the active tier to
+// a URL.
 // Every entry is fetched at boot (planet bases + Earth details blocking, the
 // moon system + normals durably behind the veil), which is why index.html
 // preloads exactly this set — bootTexturePreloads.test.ts pins the two lists
@@ -91,8 +94,17 @@ export const PLANET_TEXTURE_FILES: Record<string, string> = {
   // NOAA's sea-wind climatology. Baked by `npm run gen:seawind`; a re-bake
   // whose bytes differ ships under a new pathname, as the `.v2` maps above do.
   earthSeaWind: 'earth-seawind.v2.webp',
-  mars: 'mars.v2.webp',
-  marsNormal: 'mars-normal.v2.webp',
+  // `.v3`: the Tianwen-1 MoRIC mosaic (76 m, one product corrected for
+  // atmosphere, photometry and colour) in place of the Viking MDIM 2.1
+  // colourised mosaic, whose thousands of frames each kept their own sun,
+  // haze and resolution and read as squares from the Land prompt's altitude.
+  // Graded half way from the product's own balance toward the salmon the
+  // MDIM was graded to (tools/gen-tiles.mjs says where that lands and why).
+  mars: 'mars.v3.webp',
+  // `.v3`: relief from the USGS HRSC–MOLA blended DEM at 200 m (tools/
+  // gen-relief.mjs), replacing the 16 px/deg MOLA grid. Boot map, 4K rung
+  // and the 8K sector crops are one pass over one model.
+  marsNormal: 'mars-normal.v3.webp',
   jupiter: 'jupiter.webp',
   saturn: 'saturn.webp',
   uranus: 'uranus.webp',
@@ -234,8 +246,10 @@ export function upgradeComplete(up: TextureUpgrade): boolean {
 // step must be the SAME albedo product as the map below it (colour-matched if
 // its grading differs) so the on-approach swap reads as a pure sharpen — no
 // brightness/contrast pop — and never double-counts relief against a normal
-// map. Mars is the same source at 2x, and Jupiter's 4K is the same Solar
-// System Scope product as its boot map (needed no match). The Moon's 4K and 8K
+// map. Mars's 4K is its 16K level's own resample (tools/gen-tiles.mjs writes
+// boot map, rung and every tile level from one render), and Jupiter's 4K is
+// the same Solar System Scope product as its boot map (needed no match). The
+// Moon's 4K and 8K
 // are both the SVS CGI Moon Kit LROC WAC albedo, colour-matched to the shipped
 // grade via tools/colormatch.mjs — and its relief comes from a separate SVS
 // ldem_16 LOLA normal map, so the albedo carries no baked shading to fight.
@@ -325,8 +339,9 @@ export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
 // format for a map made of slow gradients, which is what its rival cannot
 // hold. Every 8K UASTC rung is worth that cost — nothing else answers a
 // 170.7 MiB upload. At 4K a UASTC container may cost at most four times its
-// webp twin, which only Mercury and Mars clear on the general rule; the rest
-// keep their webp rung and pay the upload, because a tour of six planets
+// webp twin, which only Mercury clears on the general rule (Mars did on its
+// old Viking colour; its Tianwen-1 map's container is seven times its webp);
+// the rest keep their webp rung and pay the upload, because a tour of six planets
 // pulling tens of megabytes where it pulled a few is a bill on mobile data
 // that a smoother upload does not settle. The three maps the boot warm uploads
 // are the exception, and the rows below say why: their bytes are not per-tour.
@@ -364,7 +379,6 @@ export const TIER_FILE_OVERRIDES: Record<string, Partial<Record<TextureTier, Com
     '4k': { file: 'mercury.ktx2', webp: false },
     '8k': { file: 'mercury.ktx2', webp: false },
   },
-  mars: { '4k': { file: 'mars.v2.ktx2', webp: true } },
   // The Moon, the cloud deck and Earth's night lights are the exception to the
   // 4K cap, and their 4K containers cost 4.8x, 4.9x and 5.3x their twins. The
   // cap exists because a container is an extra download over a webp that has
@@ -1712,6 +1726,12 @@ export function pumpArrivalWarmGoal(up: TextureUpgrade, nowMs: number): boolean 
 // exactly like the colour ladders above.
 export const NORMAL_UPGRADE_TIERS: Record<string, TextureTier> = {
   moonNormal: '4k',
+  // Mars's relief ships a 4K rung too, cut by tools/gen-relief.mjs from the
+  // same DEM as its boot map and its sector crops, so the step is a sharper
+  // map of the same slopes. A 'normal' map like the Moon's: 11.2 MiB resident
+  // at two bytes a texel while the disc fills the view, handed back with the
+  // colour rungs.
+  marsNormal: '4k',
   // Earth's cloud relief has no rung, and the reason is bytes rather than
   // taste: a cloud field's normal map is nearly incompressible, so the 4K one
   // is 13.7 MB lossless and 9.0 MB near-lossless — nearly three times the
@@ -1850,7 +1870,7 @@ export function upgradeNormalOnApproach(
         tex.dispose();
         return;
       }
-      applyTextureDefaults(tex, 'data');
+      applyTextureDefaults(tex, 'normal');
       const finish = () => {
         if (abandoned()) {
           tex.dispose();

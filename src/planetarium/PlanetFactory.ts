@@ -47,6 +47,7 @@ import {
   type SurfaceArchetype, type SurfaceShadingFx,
 } from './world/surfaceShading';
 import { applySeaWindSampling, installSeaWindMap } from './world/seaWind';
+import { surfaceLookOf } from './world/surfaceLook';
 import { createAtmosphereShellMaterial } from './world/atmosphereShell';
 import { ATMOSPHERE_TABLE_SIZES_FULL, type AtmosphereTableSizes } from './world/atmosphereModel';
 import { queueTextureWarm } from './world/textureWarmer';
@@ -517,11 +518,12 @@ function createFallbackTexture(key: string, kind: MapKind = 'color'): THREE.Text
   canvas.height = 128;
   const ctx = canvas.getContext('2d')!;
 
-  if (kind === 'data' || kind === 'mask') {
+  if (kind === 'data' || kind === 'mask' || kind === 'normal') {
     // A failed data map (roughness / bump) should read neutral, not as colour
-    // noise: flat mid-grey in linear space. Stood up under the kind it stands
-    // in for, so a one-channel slot gets a one-channel stand-in and the shader
-    // reading red finds the same grey either way.
+    // noise: flat mid-grey in linear space, which as a tangent normal is x = y
+    // = 0 — flat ground. Stood up under the kind it stands in for, so a
+    // one-channel slot gets a one-channel stand-in, a normal slot a two-channel
+    // one, and the shader finds the same grey either way.
     ctx.fillStyle = '#808080';
     ctx.fillRect(0, 0, 256, 128);
     const tex = new THREE.CanvasTexture(canvas);
@@ -983,10 +985,12 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   const surfaceUpgrade = makeTextureUpgrade(planet.textureKey, mat);
   if (surfaceUpgrade) textureUpgrades.push(surfaceUpgrade);
 
-  // Real elevation-derived normal map where one exists (Mars/MOLA): it replaces
-  // the colour-as-bump fallback. No procedural stand-in — the surface stays
-  // flat until the real relief lands, however long the fetch takes.
+  // Real elevation-derived normal map where one exists (Mars: the HRSC–MOLA
+  // blended DEM, tools/gen-relief.mjs): it replaces the colour-as-bump
+  // fallback. No procedural stand-in — the surface stays flat until the real
+  // relief lands, however long the fetch takes.
   const planetNormalKey = PLANET_NORMAL_KEYS[planet.name];
+  let surfaceNormalUpgrade: NormalUpgrade | undefined;
   if (planetNormalKey) {
     mat.bumpMap = null;
     // Marked at REQUEST time, not on arrival: between the two this surface has
@@ -994,21 +998,32 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     // is bound would fill the gap with an invented surface and then step off it
     // the frame the measured one lands.
     mat.userData.hasRealNormal = true;
+    // The depth is authored once, up front, and no arrival touches it: the
+    // boot map and the 4K rung are the same slopes at two sharpnesses, so a
+    // scale reset on either landing would be a pop. The number is the body's
+    // look (world/surfaceLook.ts: Mars ships at 0.5, half the baked
+    // exaggeration, because the measured slopes at full strength read as
+    // harsh facets on crater rims up close — judged against the Viking map,
+    // which carried its own shading; `?marsrelief=` is the candidate's link).
+    const reliefDepth = surfaceLookOf(planet.name)?.relief ?? 0.5;
+    mat.normalScale.set(reliefDepth, reliefDepth);
+    // The close-approach rung, where the key ships one (NORMAL_UPGRADE_TIERS);
+    // the mode's LOD pass fetches it once the disc has earned the first rung.
+    surfaceNormalUpgrade = makeNormalUpgrade(planetNormalKey, mat);
     const normalUrl = resolveTextureUrl(PLANET_TEXTURE_FILES[planetNormalKey], '2k');
     fetchTextureDurably({
       url: normalUrl,
       context: { map: 'planet normal', name: planet.name },
       onLoad: (nrm) => {
-        applyTextureDefaults(nrm, 'data');
+        applyTextureDefaults(nrm, 'normal');
         // Decode off-thread first: a normal map landing mid-session must not
         // put a synchronous PNG decode on the frame that adopts it.
         afterDecode(nrm, () => {
-          mat.normalMap = nrm;
-          // Softened: the MOLA rainbow-decoded relief is noisy and over-embossed,
-          // which reads as harsh facets on crater rims up close. Halve it.
-          mat.normalScale.set(0.5, 0.5);
-          mat.needsUpdate = true;
-          queueTextureWarm(nrm); // planet-level (always on screen) — safe to warm
+          // Rank-guarded, like the Moon's: the boot map is durable and can
+          // land minutes late on a bad link, after the rung has already won.
+          if (applyNormalTierTexture(mat, nrm, TIER_RANK['2k'])) {
+            queueTextureWarm(nrm); // planet-level (always on screen) — safe to warm
+          }
         });
       },
     });
@@ -1128,7 +1143,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
       url: resolveTextureUrl(PLANET_TEXTURE_FILES.earthCloudsNormal, '2k'),
       context: { map: 'cloud relief', name: planet.name },
       onLoad: (nrm) => {
-        applyTextureDefaults(nrm, 'data');
+        applyTextureDefaults(nrm, 'normal');
         afterDecode(nrm, () => {
           // Through the rank guard, not straight onto the material: a boot map
           // that recovered late would otherwise overwrite (and free) the rung
@@ -1191,7 +1206,11 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   return {
     group, mesh, data: planet, rings, ringFx, atmosphere, nightMesh, nightMaterial,
     nightRadiusAU: nightMesh ? planet.radiusAU * EARTH_NIGHT_SHELL_SCALE : undefined,
-    cloudsMesh, fx, textureUpgrades, normalUpgrade: cloudsNormalUpgrade, geometryUpgrade,
+    cloudsMesh, fx, textureUpgrades,
+    // One relief rung per body: Earth's is its cloud deck's, Mars's is its
+    // surface's. No body has both.
+    normalUpgrade: cloudsNormalUpgrade ?? surfaceNormalUpgrade,
+    geometryUpgrade,
   };
 }
 
@@ -1781,7 +1800,7 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
         url: normalUrl,
         context: { map: 'moon normal', name: moonData.name },
         onLoad: (tex) => {
-          applyTextureDefaults(tex, 'data');
+          applyTextureDefaults(tex, 'normal');
           // Decode off-thread before assigning (the moon simply keeps drawing
           // smooth until the normal is cheap to draw); warm the upload only
           // when the player is landed in this system. Rank-guarded: on a bad

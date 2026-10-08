@@ -19,8 +19,9 @@
  * whatever `TILES_ROOT` names (a staging root holding the levels that are too
  * big to ship inside the app). A set the root does not hold is skipped only
  * for a reason `absenceAllowed` will state — never for a level-0 set or a
- * crop, which ship in the app and whose absence is exactly the bug this
- * suite exists to catch.
+ * level-0 crop, which ship in the app and whose absence is exactly the bug
+ * this suite exists to catch (a finer level's crop ships with that level,
+ * from the tile host).
  */
 import { describe, it, expect } from 'vitest';
 import { closeSync, openSync, readSync, readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
@@ -101,9 +102,29 @@ interface AppSet {
   entry: GeneratedSectorSet;
   /** The grid the app will sample this set on. */
   grid: SectorGrid;
-  /** Which level of the body's colour pyramid this is; null for a crop, which
-   *  belongs to level 0 whatever samples it. */
-  level: number | null;
+  /** Which level of the body's colour pyramid this set belongs to: a colour
+   *  level's own; a crop's the level it is cut for — 0 for the base's, the
+   *  refining level's for a finer cut of one (SectorLevel.crops). */
+  level: number;
+  /** A level's colour tiles, or a crop of a relief / roughness map. The two
+   *  are encoded differently — lossy photo tiles, lossless crops — so a check
+   *  on one kind's encoding has to pick its kind by this and not by level. */
+  kind: 'colour' | 'crop';
+}
+
+/** Every crop a spec names, with the grid it is cut on and the level whose
+ *  sectors draw it: the base's on level 0's grid, and a level's refinements
+ *  (SectorLevel.crops) on its own. A refinement's slot carries its level, so
+ *  the two cuts of one slot are told apart in a failure. */
+function cropsOf(spec: SectorSetSpec): Array<{ slot: string; crop: SectorTileSet; grid: SectorGrid; level: number }> {
+  const out: Array<{ slot: string; crop: SectorTileSet; grid: SectorGrid; level: number }> = [];
+  for (const [slot, crop] of Object.entries(spec.crops)) out.push({ slot, crop, grid: SECTOR_GRID_16K, level: 0 });
+  spec.levels.forEach((l, level) => {
+    const refinements = l.crops;
+    if (level === 0 || !refinements) return;
+    for (const [slot, crop] of Object.entries(refinements)) out.push({ slot: `${slot} L${level}`, crop, grid: l.grid, level });
+  });
+  return out;
 }
 
 /** Every (body, side, spec) the app names — the day pyramids on the globes and
@@ -120,8 +141,9 @@ function appSpecs(): Array<[string, SectorSide, SectorSetSpec]> {
  *  of megabytes published from the tile host. The night family is the host's
  *  at every level: it sharpens a night map the app already ships, so a device
  *  that gets none of it draws exactly what it draws today. A DAY level-0 set
- *  or a crop ships inside the app, so its absence is a 404'd quarter of a
- *  globe, not a configuration.
+ *  or a level-0 crop ships inside the app, so its absence is a 404'd quarter
+ *  of a globe, not a configuration; a finer level's crop is the host's like
+ *  the level whose sectors draw it.
  *
  *  The same list whichever root is read. TILES_ROOT names a full tiles root
  *  of its own — the published level-0 folders beside the levels being staged
@@ -130,7 +152,7 @@ function appSpecs(): Array<[string, SectorSide, SectorSetSpec]> {
  *  empty, and the tests below looping over nothing. */
 export function absenceAllowed(set: Pick<AppSet, 'level' | 'side'>): string | null {
   if (set.side === 'night') return 'the night family is published from the tile host at every level';
-  if (set.level !== null && set.level > 0) return `level ${set.level} is published from the tile host, not from public/`;
+  if (set.level > 0) return `level ${set.level} is published from the tile host, not from public/`;
   return null;
 }
 
@@ -141,15 +163,15 @@ export function absenceAllowed(set: Pick<AppSet, 'level' | 'side'>): string | nu
 function appSets(): AppSet[] {
   const out: AppSet[] = [];
   for (const [body, side, spec] of appSpecs()) {
-    const named: Array<[string, SectorTileSet, SectorGrid, number | null]> = spec.levels.map(
-      (l, level) => [`${side} map L${level}`, l.set, l.grid, level],
+    const named: Array<[string, SectorTileSet, SectorGrid, number, AppSet['kind']]> = spec.levels.map(
+      (l, level) => [`${side} map L${level}`, l.set, l.grid, level, 'colour'],
     );
-    // Crops are cut for level 0 and sampled there by every level above it.
-    for (const [slot, crop] of Object.entries(spec.crops)) named.push([`${side} ${slot}`, crop, SECTOR_GRID_16K, null]);
-    for (const [slot, set, grid, level] of named) {
+    // A crop is cut on the grid of the level whose sectors draw it.
+    for (const { slot, crop, grid, level } of cropsOf(spec)) named.push([`${side} ${slot}`, crop, grid, level, 'crop']);
+    for (const [slot, set, grid, level, kind] of named) {
       const entry = SECTOR_SET_TABLE[`${set.key}/${set.tier}`];
       expect(entry, `${body} ${slot}: no generated entry for ${set.key}/${set.tier}`).toBeDefined();
-      out.push({ body, slot, side, set, entry, grid, level });
+      out.push({ body, slot, side, set, entry, grid, level, kind });
     }
   }
   return out;
@@ -238,7 +260,7 @@ describe('sector tile sets: what the app asks for', () => {
     // so a re-cut at the wrong span would agree with itself everywhere — this
     // is the one place the span is stated rather than measured.
     for (const [body, , spec] of appSpecs()) {
-      for (const [slot, crop] of Object.entries(spec.crops)) {
+      for (const { slot, crop } of cropsOf(spec)) {
         const want = 1;
         expect(crop.spanU, `${body} ${slot}`).toBe(want);
         expect(SECTOR_SET_TABLE[`${crop.key}/${crop.tier}`].spanU, `${body} ${slot}`).toBe(want);
@@ -251,13 +273,32 @@ describe('sector tile sets: what the app asks for', () => {
     // this is the check that the arithmetic reproduces the tile size gen-tiles
     // actually measured on disk.
     for (const [body, , spec] of appSpecs()) {
-      for (const [slot, crop] of Object.entries(spec.crops)) {
+      for (const { slot, crop, grid } of cropsOf(spec)) {
         const entry = SECTOR_SET_TABLE[`${crop.key}/${crop.tier}`];
-        const layout = dataCropLayout(SECTOR_GRID_16K, crop.baseWidth, crop.spanU);
+        const layout = dataCropLayout(grid, crop.baseWidth, crop.spanU);
         expect({ width: entry.tileWidth, height: entry.tileHeight }, `${body} ${slot}`).toEqual({
           width: layout.width,
           height: layout.height,
         });
+      }
+    }
+  });
+
+  it('a finer level refines only a crop level 0 carries, on its own grid, from a wider map', () => {
+    // SectorLevel.crops is a sharper cut of the same slot for that level's
+    // sectors and the levels below (Mars's 16K relief on the 32K level's
+    // 16 × 8). Level 0's crop stays what level 0 draws, so a refinement has
+    // to be of a slot the base names, cut on the refining level's grid, from
+    // a wider map than the base's — one no wider would be a set for nothing.
+    for (const [body, , spec] of appSpecs()) {
+      expect(spec.levels[0].crops, `${body}: level 0's crops are the spec's own`).toBeUndefined();
+      for (const { slot, crop, grid, level } of cropsOf(spec)) {
+        if (level === 0) continue;
+        const baseSlot = slot.replace(/ L\d+$/, '') as keyof SectorSetSpec['crops'];
+        const base = spec.crops[baseSlot];
+        expect(base, `${body} ${slot}: level 0 carries no ${baseSlot} crop to refine`).toBeDefined();
+        expect(grid, `${body} ${slot}`).toEqual(spec.levels[level].grid);
+        expect(crop.baseWidth, `${body} ${slot}`).toBeGreaterThan(base!.baseWidth);
       }
     }
   });
@@ -333,14 +374,16 @@ describe('sector tile sets: what the app asks for', () => {
     // its 4096 resize, the whole-globe file is its 2048 resize (the far view
     // needs no more) — so the shipped width is half the crops' base width,
     // which is all this pins; the crop dimensions are pinned above.
-    // The Moon's 8k relief is the one crop not cut from a shipped map: its base
-    // is the master `npm run gen:moon-relief` writes to the source cache from
-    // NASA's grid, eight sectors of 1016 texels, so its width is the
-    // generator's own and is stated here.
+    // Two crops are cut not from a shipped map but from the master a relief
+    // generator writes to the source cache, so their width is the generator's
+    // own and is stated here: the Moon's 8k from NASA's 64 px/deg grid (`npm
+    // run gen:moon-relief`, eight sectors of 1016 texels) and Mars's 8k from
+    // the HRSC–MOLA blended DEM (`npm run gen:relief`, eight of 1024, written
+    // beside the 4K rung that ships, all from one DEM in one pass).
     const baseFiles: Record<string, { file: string; shippedScale: number } | { generatedWidth: number }> = {
       'earth-bump/2k': { file: PLANET_TEXTURE_FILES.earthBump, shippedScale: 1 },
       'earth-roughness.v2/4k': { file: PLANET_TEXTURE_FILES.earthRoughness, shippedScale: 0.5 },
-      'mars-normal.v2/2k': { file: PLANET_TEXTURE_FILES.marsNormal, shippedScale: 1 },
+      'mars-normal.v3/8k': { generatedWidth: 8192 },
       'moon-normal/8k': { generatedWidth: 8128 },
     };
     for (const [, , spec] of appSpecs()) {
@@ -373,14 +416,12 @@ describe('sector tile sets: the files on disk', () => {
       // The rule as CI sees it, whichever root this run was pointed at.
       delete process.env.TILES_ROOT;
       expect(absenceAllowed({ level: 0, side: 'day' })).toBeNull();
-      expect(absenceAllowed({ level: null, side: 'day' })).toBeNull();
       expect(absenceAllowed({ level: 1, side: 'day' })).toContain('tile host');
       expect(absenceAllowed({ level: 0, side: 'night' })).toContain('tile host');
       // And exactly the same rule under a staging root: naming another root
       // changes which bytes are read, never which of them may be missing.
       process.env.TILES_ROOT = '/somewhere/else';
       expect(absenceAllowed({ level: 0, side: 'day' })).toBeNull();
-      expect(absenceAllowed({ level: null, side: 'day' })).toBeNull();
       expect(absenceAllowed({ level: 1, side: 'day' })).toContain('tile host');
       expect(absenceAllowed({ level: 0, side: 'night' })).toContain('tile host');
     } finally {
@@ -470,7 +511,7 @@ describe('sector tile sets: the files on disk', () => {
     // anything else, so a colour set recut as VP8L or VP8X would not fail, or
     // warn: it would just cost every tile its frame again. This is the pin
     // that makes that a build failure instead.
-    const colour = appSets().filter((s) => s.level !== null);
+    const colour = appSets().filter((s) => s.kind === 'colour');
     expect(colour.length, 'no colour sets to check').toBeGreaterThan(0);
     const { present, skipped } = setsOnDiskForApp();
     let read = 0;

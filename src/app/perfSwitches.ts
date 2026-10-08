@@ -98,6 +98,7 @@ export type PerfSwitchKey =
   | 'cloud-taps'
   | 'glint-gate'
   | 'r8-maps'
+  | 'rg-normals'
   | 'bloom-nodepth'
   | 'depth-discard'
   | 'fused-final'
@@ -135,6 +136,7 @@ export const PERF_SWITCHES: ReadonlyArray<{
   { key: 'cloud-taps', label: 'Cloud deck: dead taps', on: true },
   { key: 'glint-gate', label: 'Ocean glint mask gate', on: true },
   { key: 'r8-maps', label: 'One-channel bump/water maps', on: true, needsReload: true },
+  { key: 'rg-normals', label: 'Two-channel normal maps', on: true, needsReload: true },
   { key: 'bloom-nodepth', label: 'Bloom targets without depth', on: true },
   { key: 'depth-discard', label: 'Scene depth/stencil discard', on: true },
   { key: 'fused-final', label: 'Lens, glow and tone map as one pass', on: true, needsReload: true },
@@ -158,6 +160,7 @@ const DEFAULT_ON: Record<PerfSwitchKey, boolean> = {
   'cloud-taps': true,
   'glint-gate': true,
   'r8-maps': true,
+  'rg-normals': true,
   'bloom-nodepth': true,
   'depth-discard': true,
   'fused-final': true,

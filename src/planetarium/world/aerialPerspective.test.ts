@@ -45,9 +45,11 @@ import {
   bindSurfaceAir,
   clearSurfaceAir,
   createSurfaceAirFx,
+  seatSurfaceLook,
   type SurfaceArchetype, OCEAN_BEAM_CAP, OCEAN_BEAM_KNEE, OCEAN_GLINT_CAP,
   SEA_WATER_COLOUR,
 } from './surfaceShading';
+import { DEFAULT_ALBEDO_PIVOT, resetSurfaceLookForTests, setSurfaceLookOverride } from './surfaceLook';
 import { createEarthNightShellMaterial } from './earthNightMaterial';
 import { resolveDefine } from '../testing/glslDefine';
 import { CLOUD_FIELD_DIAGNOSTICS } from './cloudField';
@@ -110,29 +112,29 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = 'c9cc84676bb52e133a884f2de8f28735fa49b69c57750ddcd7f7316b64de6b00';
-const PROD_FRAGMENT_HASH = 'a201e4037927a3c5a9ffe8843d948839b6dc1cf452775f54916fade4aafb64b2';
+const DEV_FRAGMENT_HASH = '097b8c308d47f8d5c1b8ca5c7939e87b77be92a870702f5619c11a951913b875';
+const PROD_FRAGMENT_HASH = '263f7bbaee4f4260308917e758f33435f5a13c2bba8ba826781c9df4c3faac58';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 /** The two texts with the cloud field's define OFF (world/cloudField),
  *  resolved as the preprocessor resolves it: each of the field's two chunks
  *  leaves the one blank line it opens with. */
-const FIELD_OFF_DEV_FRAGMENT_HASH = '2f2dcabcccf07b6a1ffd2d589124f4437c8f51064317a585511794080d85425e';
-const FIELD_OFF_PROD_FRAGMENT_HASH = '3d94c35cc7349a730d9c8b22a0c06ea6b02dce8c6f30465ac89cca280d575b04';
+const FIELD_OFF_DEV_FRAGMENT_HASH = '46493ae410716e27f66348c35412af754c921c17866de68ca7470e26a3960e50';
+const FIELD_OFF_PROD_FRAGMENT_HASH = 'fb520340d5efb6432975f48899626a4cb5444db96e5b54f9cb97f2bd945c0d76';
 /** The production text from before the field reached a production build:
  *  the shipped text with the field's two chunks deleted, newlines and all, and
  *  the later single-Mie colour's define resolved off. */
-const PRE_FIELD_PROD_FRAGMENT_HASH = '46aa2d0112d72a7a82100f90bcbe4dd077643a47ae32fe569911f1acbbcd20a2';
+const PRE_FIELD_PROD_FRAGMENT_HASH = 'b87c20440020fd23d602a3703abc87c7c77ac95db567d71ad7ae8d46a75d7023';
 /** The same two texts with the cloud shadow's, the cloud light's and the
  *  cloud field's defines all OFF, resolved as the preprocessor resolves them:
  *  the texts from before the switches existed, but for the field's two blank
  *  lines. */
-const OFF_DEV_FRAGMENT_HASH = '60fa6deaf45f4bf40a21972f85774eb19e07f6b8af4e448b480e27d6a47f6526';
-const OFF_PROD_FRAGMENT_HASH = '7e7bd44bca5a12a23d82f541577972996f76617b788669687e1ae346bcf34d11';
+const OFF_DEV_FRAGMENT_HASH = '9b1b882d217285de54bdfc6f0d73ad6fea97b332f4a2107b4916458e1ebd2c9c';
+const OFF_PROD_FRAGMENT_HASH = '8c8e7f18b76c5fd950db2673ea503310819172face8727d5bf246fb319561411';
 /** The injected surface text and the LUT shell's with the single-Mie colour's
  *  define OFF (`?mieexact=0`), resolved as the preprocessor resolves it: the
  *  hashes these texts carried before the colour table existed, unchanged. */
-const MIE_OFF_DEV_FRAGMENT_HASH = 'ae8347b328c8385eaef023791ba804a9394e0e35f84eeea4a218cf713cd88645';
-const MIE_OFF_PROD_FRAGMENT_HASH = '0c801a29769b7a54c1c74a521f751029742a991a765e9cba3448b4425a39aaa8';
+const MIE_OFF_DEV_FRAGMENT_HASH = '7674725c2c7d73b70a6fe5be50b087ae049a367cbeae2dfbd094e85b9a99d9de';
+const MIE_OFF_PROD_FRAGMENT_HASH = 'b0a61776582b89171ca565e5eba8f9f72d84287878f1ae81a8f791791c556731';
 const MIE_OFF_SHELL_FRAGMENT_HASH = 'e613114e0023b6b45b235dd92c7039cc5ea90113839778b234f4e249acc89b01';
 describe('the injected surface shader', () => {
   it('is one text for every body and both tiers', () => {
@@ -518,6 +520,46 @@ describe('the layer rule', () => {
     expect(glsl).toContain('aerialForLight(seg, normalize(uMoonDirWorld))');
   });
 
+  it('grades the ground\'s albedo by the body\'s look, and never the deck\'s', () => {
+    // The contrast grade (world/surfaceLook.ts) in the one text: a uniform
+    // branch that returns the albedo untouched at a gain of 1, the gain in
+    // log luminance about the pivot otherwise, and applied to the ground's
+    // sample alone — the deck shares the globe's air block.
+    // The harness's template carries no map chunk, so this one does: the
+    // grade is applied inside three's <map_fragment>.
+    const withMap = {
+      uniforms: {} as Record<string, THREE.IUniform>,
+      vertexShader: '#include <common>\nvoid main() {\n#include <begin_vertex>\n}',
+      fragmentShader: '#include <common>\nvoid main() {\n#include <map_fragment>\n#include <normal_fragment_maps>\n#include <opaque_fragment>\n}',
+    };
+    const earthMat = augmented('earth');
+    (earthMat.onBeforeCompile as (shader: typeof withMap) => void)(withMap);
+    const glsl = withMap.fragmentShader;
+    expect(glsl).toContain('uniform vec2 uAlbedoContrast;');
+    expect(glsl).toContain('if ( uAlbedoContrast.x == 1.0 ) return albedo;');
+    expect(glsl).toContain('return albedo * pow( luminance / uAlbedoContrast.y, uAlbedoContrast.x - 1.0 );');
+    expect(glsl).toMatch(/diffuseColor \*= sampledDiffuseColor;\s*\n\s*if \( DECK_OFF \) diffuseColor\.rgb = albedoContrast\( diffuseColor\.rgb \);/);
+    expect(glsl.match(/albedoContrast\(/g)).toHaveLength(2); // the definition and the one call
+    // A fresh block is the map as it is. A body the look table names is seated
+    // at augment time, and again whenever the mode seats it — which is how a
+    // switch moved live reaches the next draw.
+    expect((createSurfaceAirFx().uAlbedoContrast.value as THREE.Vector2).toArray()).toEqual([1, DEFAULT_ALBEDO_PIVOT]);
+    const mars = new THREE.MeshStandardMaterial();
+    const fx = augmentSurfaceMaterial(mars, 'rocky', undefined, 0, undefined, undefined, 'Mars');
+    expect((fx.air.uAlbedoContrast.value as THREE.Vector2).toArray()).toEqual([1, DEFAULT_ALBEDO_PIVOT]);
+    try {
+      setSurfaceLookOverride('Mars', { contrast: 1.5 });
+      seatSurfaceLook(fx.air, 'Mars');
+      expect((fx.air.uAlbedoContrast.value as THREE.Vector2).toArray()).toEqual([1.5, DEFAULT_ALBEDO_PIVOT]);
+      // A body with no look is left at the map, whatever is seated.
+      const moon = createSurfaceAirFx();
+      seatSurfaceLook(moon, 'Moon');
+      expect((moon.uAlbedoContrast.value as THREE.Vector2).x).toBe(1);
+    } finally {
+      resetSurfaceLookForTests();
+    }
+  });
+
   it('leaves the shell out of it: its radiance IS the whole sky segment', () => {
     // The shell draws only rays that miss every surface, so there is nothing in
     // front of it to attenuate and nothing behind it to add to.
@@ -591,6 +633,18 @@ describe('the grade on a direct view', () => {
     expect(SURFACE_HAZE_CLEAR_VIEW.Earth).toBeLessThan(1);
     expect(air.uSurfaceHaze.value).toBe(SURFACE_HAZE_CLEAR_VIEW.Earth);
     // Mars keeps its physics: a dusty haze is the look of that planet.
+    bindSurfaceAir(air, fakeTables('Mars'), 2.2e-5, 1);
+    expect(air.uSurfaceHaze.value).toBe(1);
+    // Unless its look says otherwise (world/surfaceLook.ts: the `?marshaze=`
+    // link, or the DEV pin), which stands between the DEV pin on every body
+    // and this file's table.
+    try {
+      setSurfaceLookOverride('Mars', { haze: 0.5 });
+      bindSurfaceAir(air, fakeTables('Mars'), 2.2e-5, 1);
+      expect(air.uSurfaceHaze.value).toBe(0.5);
+    } finally {
+      resetSurfaceLookForTests();
+    }
     bindSurfaceAir(air, fakeTables('Mars'), 2.2e-5, 1);
     expect(air.uSurfaceHaze.value).toBe(1);
     // Its own uniform, apart from the loading fade the shell's crossfade reads.

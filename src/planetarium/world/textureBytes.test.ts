@@ -55,6 +55,27 @@ describe('what a texture costs the device', () => {
       bytes: Math.round(2048 * 2048 * 4 * (4 / 3)),
     },
     {
+      // The 'normal' kind: x and y uploaded as RG8, two bytes a texel, the
+      // mip chain the GPU's own over them.
+      what: 'a 1040-square relief crop stored two channels wide: w x h x 2 x 4/3',
+      tex: () => {
+        const tex = imageTexture(1040, 1040);
+        tex.format = THREE.RGFormat;
+        return tex;
+      },
+      bytes: Math.round(1040 * 1040 * 2 * (4 / 3)),
+    },
+    {
+      // The 'mask' kind: one channel, one byte.
+      what: 'a 528-square water-mask crop stored one channel wide: w x h x 1 x 4/3',
+      tex: () => {
+        const tex = imageTexture(528, 528);
+        tex.format = THREE.RedFormat;
+        return tex;
+      },
+      bytes: Math.round(528 * 528 * 1 * (4 / 3)),
+    },
+    {
       // The claim the module makes about a transcoded rung: a byte a texel
       // plus its mip chain, which is what an uncompressed map a quarter of
       // its width costs. Within a texel of it — the chain stops at 4 px wide

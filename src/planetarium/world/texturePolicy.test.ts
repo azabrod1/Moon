@@ -1,9 +1,14 @@
 import * as THREE from 'three';
 import { afterEach, describe, it, expect } from 'vitest';
 import {
+  applyTextureDefaults,
   captureDeviceCaps,
   deviceTextureProfile,
+  maskBytesPerTexel,
+  normalBytesPerTexel,
   resetDeviceCapsForTests,
+  setSingleChannelUploadUsable,
+  setTwoChannelUploadUsable,
   clampTier,
   resolveTextureUrl,
   resolveTileUrl,
@@ -125,5 +130,48 @@ describe('clampTier', () => {
     // must not be handed 4K on its way down from 8K.
     withMaxTextureSize(2048);
     expect(clampTier('8k')).toBe('2k');
+  });
+});
+
+describe('how a map is stored, by kind', () => {
+  // The storage a kind takes is what the two allocators reserve for it before
+  // a byte is fetched, so the rule and the bytes have to move together.
+  afterEach(() => {
+    setSingleChannelUploadUsable(true);
+    setTwoChannelUploadUsable(true);
+  });
+
+  it('holds a tangent normal map as its two channels, two bytes a texel', () => {
+    const tex = new THREE.Texture();
+    applyTextureDefaults(tex, 'normal');
+    expect(tex.format).toBe(THREE.RGFormat);
+    expect(tex.colorSpace).toBe(THREE.NoColorSpace);
+    expect(normalBytesPerTexel()).toBe(2);
+  });
+
+  it('keeps a normal map four channels wide where the two-channel upload failed its probe', () => {
+    setTwoChannelUploadUsable(false);
+    const tex = new THREE.Texture();
+    applyTextureDefaults(tex, 'normal');
+    expect(tex.format).toBe(THREE.RGBAFormat);
+    expect(normalBytesPerTexel()).toBe(4);
+  });
+
+  it('leaves the other linear kinds alone: a mask is one channel, a data field all four', () => {
+    // A 'data' map packs a field and its gradient across R, G and B (the
+    // detail noise), so narrowing it would read the gradient as nothing.
+    const mask = new THREE.Texture();
+    applyTextureDefaults(mask, 'mask');
+    expect(mask.format).toBe(THREE.RedFormat);
+    expect(maskBytesPerTexel()).toBe(1);
+    const data = new THREE.Texture();
+    applyTextureDefaults(data, 'data');
+    expect(data.format).toBe(THREE.RGBAFormat);
+    expect(data.colorSpace).toBe(THREE.NoColorSpace);
+    // The two probes are separate verdicts: one failing leaves the other's
+    // storage as it was.
+    setSingleChannelUploadUsable(false);
+    expect(maskBytesPerTexel()).toBe(4);
+    expect(normalBytesPerTexel()).toBe(2);
   });
 });

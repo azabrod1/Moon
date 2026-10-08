@@ -17,7 +17,8 @@
  *   stored as one channel (world/texturePolicy's 'mask' kind: the height map
  *   and the water mask) is also one byte a texel, and its texel really is one
  *   byte rather than an estimate; a two-channel one (the cloud field's RG8
- *   pages) is two, and an array texture is priced per layer.
+ *   pages, or a tangent normal map stored as its two channels, the 'normal'
+ *   kind) is two, and an array texture is priced per layer.
  * - A mip chain adds a third. A texture that will not be mipped does not pay
  *   it, which is why `textureGpuBytes` asks the texture rather than assuming.
  * - A figure stashed on the texture (`userData.gpuBytes`) wins over anything
@@ -69,8 +70,8 @@ type MeasurableTexture = THREE.Texture & {
 };
 
 /** Bytes one texel of this texture holds: one for a map stored as a single
- *  channel, two for a two-channel one (the cloud field's RG8 pages), four for
- *  everything else. */
+ *  channel, two for a two-channel one (the cloud field's RG8 pages, or a
+ *  tangent normal stored as its x and y), four for everything else. */
 export function textureBytesPerTexel(tex: { format?: number } | null | undefined): number {
   if (tex?.format === RedFormat) return 1;
   return tex?.format === RGFormat ? 2 : 4;

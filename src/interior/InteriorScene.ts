@@ -110,9 +110,10 @@ const HELD_AIR_BODY = 'Earth';
 /** Earth's height field, in body radii — the planetarium's own 0.02 of the body. */
 const SKIN_BUMP_SCALE = 0.02;
 /** How deep a measured relief is drawn, by its map key. The planetarium halves
- *  Mars's MOLA — rainbow-decoded, noisy, and harsh on crater rims at full
- *  strength — and leaves the Moon's LOLA at its authored depth; a section's
- *  skin is the same surface, so it is drawn at the same depth. */
+ *  Mars's HRSC–MOLA relief — its measured slopes read as harsh facets on
+ *  crater rims at full strength — and leaves the Moon's LOLA at its authored
+ *  depth; a section's skin is the same surface, so it is drawn at the same
+ *  depth. */
 const MEASURED_NORMAL_SCALE: Record<string, number> = { marsNormal: 0.5 };
 
 // --- lighting --------------------------------------------------------------
@@ -676,7 +677,7 @@ export class InteriorScene {
     const normalKey = planet ? PLANET_NORMAL_KEYS[planet.name] : body.moon ? MOON_NORMAL_KEYS[body.moon.name] : undefined;
     if (normalKey) {
       detail.normalScale = MEASURED_NORMAL_SCALE[normalKey] ?? 1;
-      pending.push(loadTexture(normalKey, '2k', 'data').then((map) => { detail.normal = map; }));
+      pending.push(loadTexture(normalKey, '2k', 'normal').then((map) => { detail.normal = map; }));
     }
     if (planet?.name === 'Earth') {
       detail.cloudLate = createLateTextureSlot();
@@ -685,7 +686,7 @@ export class InteriorScene {
       pending.push(loadTexture('earthBump', '2k', 'mask').then((map) => { detail.bump = map; }));
       pending.push(loadTexture('earthRoughness', '2k', 'mask').then((map) => { detail.roughness = map; }));
       pending.push(loadTexture('earthClouds', '2k', 'color', { late: cloudLate }).then((map) => { detail.cloudColor = map; }));
-      pending.push(loadTexture('earthCloudsNormal', '2k', 'data').then((map) => { detail.cloudNormal = map; }));
+      pending.push(loadTexture('earthCloudsNormal', '2k', 'normal').then((map) => { detail.cloudNormal = map; }));
     }
     await Promise.all(pending);
     return detail;

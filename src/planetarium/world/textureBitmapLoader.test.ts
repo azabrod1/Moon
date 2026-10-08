@@ -4,6 +4,8 @@ import {
   bitmapDecodePath,
   loadStreamedTexture,
   PROBE_TIMEOUT_MS,
+  redGreenReadbackOk,
+  redReadbackOk,
   releaseBootWarmResponses,
   setBitmapProbeForTests,
   takeBootWarmResponse,
@@ -802,5 +804,35 @@ describe('WorkerBitmapDecoder', () => {
     const stray = fakeBitmap();
     worker.onmessage!({ data: { id: 1, bitmap: stray } });
     expect(stray.close).toHaveBeenCalled();
+  });
+});
+
+describe('the narrow-upload readback rules', () => {
+  // The probe uploads a white-over-black 1×2 bitmap in a storage narrower than
+  // its RGBA and reads it back; these are the two readbacks a device has to
+  // produce for its masks (one channel) and its normal maps (two) to be stored
+  // that way. A fake context answers every readback alike, so the rules are
+  // held here on the bytes themselves.
+  const whiteThenBlack = (rgbaOfWhite: number[]) => Uint8Array.from([...rgbaOfWhite, 0, 0, 0, 255]);
+  const blackThenWhite = (rgbaOfWhite: number[]) => Uint8Array.from([0, 0, 0, 255, ...rgbaOfWhite]);
+
+  it('one channel: red carries the row, green and blue read zero, alpha one — either way up', () => {
+    expect(redReadbackOk(whiteThenBlack([255, 0, 0, 255]))).toBe(true);
+    expect(redReadbackOk(blackThenWhite([255, 0, 0, 255]))).toBe(true);
+    // The RGBA upload's own readback is not a one-channel pass: green and
+    // blue carry the white too.
+    expect(redReadbackOk(whiteThenBlack([255, 255, 255, 255]))).toBe(false);
+    // Nor is a texture of nothing.
+    expect(redReadbackOk(new Uint8Array(8))).toBe(false);
+  });
+
+  it('two channels: red and green carry the row, blue reads zero, alpha one', () => {
+    expect(redGreenReadbackOk(whiteThenBlack([255, 255, 0, 255]))).toBe(true);
+    expect(redGreenReadbackOk(blackThenWhite([255, 255, 0, 255]))).toBe(true);
+    // A one-channel readback is not a two-channel pass (green lost the row),
+    // and neither is the RGBA one (blue kept it).
+    expect(redGreenReadbackOk(whiteThenBlack([255, 0, 0, 255]))).toBe(false);
+    expect(redGreenReadbackOk(whiteThenBlack([255, 255, 255, 255]))).toBe(false);
+    expect(redGreenReadbackOk(new Uint8Array(8))).toBe(false);
   });
 });

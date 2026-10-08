@@ -178,7 +178,7 @@ export class HighlightMeter {
    *  stands in the line of sight, which it does only for a camera above the
    *  deck. A hidden deck takes neither: the cut is held clear while it is. */
   private readonly sampler: SurfaceSampler = (nx, ny, nz, out, lx, ly, lz, vx, vy, vz) => {
-    this.maps.sampleAt(nx, ny, nz, this.cloudSpin, out);
+    this.maps.sampleAt(nx, ny, nz, this.cloudSpin, out, this.cloudDrawn && !this.cloudShadows);
     // No water, no beam: the cloud over land is never read.
     if (!this.cloudDrawn || !(out.water > 0)) { out.cloudKeep = 1; out.deckKeep = 1; return; }
     if (this.cloudShadows) out.cloudKeep = this.maps.keepToward(nx, ny, nz, lx, ly, lz, this.cloudHeight, this.cloudSpin);
@@ -190,6 +190,7 @@ export class HighlightMeter {
   private readonly view: [number, number, number] = [0, 0, 1];
   private readonly viewUp: [number, number, number] = [0, 1, 0];
   private readonly place = createBeamPlace();
+  private readonly scanOpts: { besideFloor: number } = { besideFloor: 0 };
   private costUs = 0;
 
   constructor(
@@ -234,9 +235,12 @@ export class HighlightMeter {
     this.cloudShadows = ctx.cloudShadows;
     this.cloudHeight = ctx.cloudHeightOverRadius;
     this.cameraOverDeck = ctx.camera.length() > 1 + ctx.cloudHeightOverRadius;
+    // Beside the principal line the scan looks only for a beam past the
+    // target: under it the meter asks for one whatever the beam draws.
+    this.scanOpts.besideFloor = this.knobs.target;
     const found = scanBeam(
       this.pose as GlintMeterPose, this.light as GlintMeterLight, this.sea as GlintMeterSea,
-      this.sampler, this.table, this.scratch, this.peak,
+      this.sampler, this.table, this.scratch, this.peak, this.scanOpts,
     );
     if (found) {
       this.view[0] = ctx.view.x; this.view[1] = ctx.view.y; this.view[2] = ctx.view.z;

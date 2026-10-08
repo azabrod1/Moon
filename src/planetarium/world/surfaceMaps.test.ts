@@ -159,6 +159,21 @@ describe("Earth's maps together", () => {
     expect(bare.keepToward(1, 0, 0, 0, 1, 0, hOverR, 0)).toBe(1);
   });
 
+  it('leaves the deck over the point unread for a caller that reads it elsewhere', async () => {
+    const maps = new EarthSurfaceMaps(urls, fakeDecode, { width: 72, height: 36 });
+    maps.request();
+    await new Promise((r) => setTimeout(r, 20));
+    const north = dirAt(45, -120);
+    const read = { water: 0, windMs: 0, cloudKeep: 1, deckKeep: 1 };
+    const unread = { water: 0, windMs: 0, cloudKeep: 0.3, deckKeep: 1 };
+    maps.sampleAt(north[0], north[1], north[2], 0, read);
+    maps.sampleAt(north[0], north[1], north[2], 0, unread, false);
+    expect(read.cloudKeep).toBeLessThan(0.1);
+    expect(unread.cloudKeep).toBe(1);
+    expect(unread.water).toBe(read.water);
+    expect(unread.windMs).toBe(read.windMs);
+  });
+
   it('defaults to the coarse grid the meter was designed for', () => {
     expect(COARSE_MAP_WIDTH).toBe(360);
     expect(COARSE_MAP_HEIGHT).toBe(180);

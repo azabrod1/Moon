@@ -189,9 +189,11 @@ export class EarthSurfaceMaps {
   /**
    * The sample at a unit direction in the body's own frame (the mesh's local
    * axes), with the deck's drift for the cloud; a surface with a map missing
-   * reads as no water or no cloud, which is the meter's hold.
+   * reads as no water or no cloud, which is the meter's hold. Without
+   * `cloudOver` the deck straight over the point is not read and the keep is
+   * left at one, for a caller that reads the deck elsewhere (keepToward).
    */
-  sampleAt(nx: number, ny: number, nz: number, cloudSpin: number, out: SurfaceSample): void {
+  sampleAt(nx: number, ny: number, nz: number, cloudSpin: number, out: SurfaceSample, cloudOver = true): void {
     const water = this.maps.water, wind = this.maps.wind, cloud = this.maps.cloud;
     if (!water || !wind || !cloud) {
       out.water = 0; out.windMs = 0; out.cloudKeep = 1;
@@ -204,6 +206,7 @@ export class EarthSurfaceMaps {
     const v = 0.5 + Math.asin(Math.min(1, Math.max(-1, ny))) / Math.PI;
     out.water = sampleCoarse(water, u, v);
     out.windMs = sampleCoarse(wind, u, v) * SEA_WIND_MAX_MS;
+    if (!cloudOver) { out.cloudKeep = 1; return; }
     this.turnTo(cloudSpin);
     const c = this.spinCos, sn = this.spinSin;
     const dx = c * nx - sn * nz, dz = sn * nx + c * nz;

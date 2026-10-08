@@ -59,9 +59,9 @@
  * beam's axis only over a uniform sea: a coast, an island or a cloud bank
  * lying along it would hide a bright beam on either side, so wherever the
  * maps cut the line's own sample, and open sea there could still draw more
- * than the line has found, the scan also reads one and two of the lobe's
- * expected half-widths either side of it, and the refinement moves across
- * the line as well as along it. Over open, clear sea the line holds the
+ * than the line has found and more than the caller acts on, the scan also
+ * reads one and two of the lobe's expected half-widths either side of it,
+ * and the refinement moves across the line as well as along it. Over open, clear sea the line holds the
  * brightest point of every step, and the scan is the line's alone.
  * The beam's extent is fitted from one sample along and one across the line
  * as a Gaussian fall from the peak, and handed back as the angles the
@@ -225,6 +225,11 @@ export const SCAN_ACROSS_WIND_MS = 7;
  *  sample the maps cut, in the lobe's expected half-widths there: one and
  *  two out on either side. */
 const SCAN_ACROSS_STEPS = [1, -1, 2, -2];
+
+/** The refinement's steps across the line stop after this many halvings,
+ *  at an eighth of the half-width they started from: finer than that moves
+ *  the drawn peak by about a percent over the shipped maps. */
+const SCAN_REFINE_ACROSS_LEVELS = 3;
 
 /** How far over the open-sea bound at the line the points beside it may
  *  draw: the factors besides the lobe change by a few percent across two
@@ -497,6 +502,11 @@ export interface ScanOptions {
   readonly coarse?: number;
   /** Refinement steps about the best coarse sample. */
   readonly refine?: number;
+  /** The drawn level under which a beam beside the line is not looked for:
+   *  the scan reads beside it only where open sea could draw more than this
+   *  and more than it has already found. The meter passes its target, under
+   *  which it asks for nothing whatever the beam; zero looks for any. */
+  readonly besideFloor?: number;
 }
 
 /** A result holder the caller keeps, so a frame allocates nothing. */
@@ -652,6 +662,7 @@ export function scanBeam(
   const horizon = Math.acos(1 / camDist);
   const coarse = opts?.coarse ?? 24;
   const refine = opts?.refine ?? 6;
+  const besideFloor = opts?.besideFloor ?? 0;
   const lobeHalf = Math.atan(Math.sqrt(meanSquareSlopeOfWind(SCAN_ACROSS_WIND_MS) * Math.LN2));
   const rad = scratch.t; // a free triple while beamRadianceAt is not running
   // A ground point by its angle phi along the line and a across it:
@@ -699,14 +710,20 @@ export function scanBeam(
   }
   // Then beside it, at one and two expected half-widths either side, only at
   // a step the maps cut where open sea could still draw more than the scan
-  // has found. Where the line reads open sea under a clear sky the beam
-  // beside it can only be dimmer at that step, so a uniform sea is scanned
-  // exactly as the line alone scanned it; where the line is land, a coast or
-  // cloud near the beam, the offsets find the beam beside it.
+  // has found and more than the caller's floor. Where the line reads open
+  // sea under a clear sky the beam beside it can only be dimmer at that
+  // step, so a uniform sea is scanned exactly as the line alone scanned it;
+  // where the line is land, a coast or cloud near the beam, the offsets find
+  // the beam beside it. Along a run of such steps every other one is read: a
+  // beam is several steps long, so a read beside it still meets it, and the
+  // refinement, which reaches a whole step either way, finds its peak; a
+  // step on its own is always read.
+  let skip = false;
   for (let i = 1; i <= coarse; i++) {
-    if (!cut[i]) continue;
     const phi = i * step;
-    if (!(boundAt(phi) > best)) continue;
+    if (!cut[i] || !(boundAt(phi) > Math.max(best, besideFloor))) { skip = false; continue; }
+    if (skip) { skip = false; continue; }
+    skip = true;
     const w = halfWidthAcrossAt(phi);
     for (let j = 0; j < SCAN_ACROSS_STEPS.length; j++) {
       const a = SCAN_ACROSS_STEPS[j] * w;
@@ -718,7 +735,8 @@ export function scanBeam(
   // Refine by halving both steps about the best, keeping the best of its
   // neighbours when it is better still: along the line always, across it only
   // from a point off the line or one the maps cut, since on the line over
-  // open, clear sea both sides are dimmer.
+  // open, clear sea both sides are dimmer, and only for the first few
+  // halvings (SCAN_REFINE_ACROSS_LEVELS).
   let h = step, hA = halfWidthAcrossAt(bestPhi);
   for (let k = 0; k < refine; k++) {
     h *= 0.5; hA *= 0.5;
@@ -728,7 +746,7 @@ export function scanBeam(
     if (dLo > next) { next = dLo; nextPhi = lo; nextOpen = bestA === 0 && open(scratch.sample); }
     const dHi = drawnAt(hi, bestA);
     if (dHi > next) { next = dHi; nextPhi = hi; nextOpen = bestA === 0 && open(scratch.sample); }
-    if (bestA !== 0 || !bestOpen) {
+    if ((bestA !== 0 || !bestOpen) && k < SCAN_REFINE_ACROSS_LEVELS) {
       const dNeg = drawnAt(bestPhi, bestA - hA);
       if (dNeg > next) { next = dNeg; nextPhi = bestPhi; nextA = bestA - hA; nextOpen = false; }
       const dPos = drawnAt(bestPhi, bestA + hA);

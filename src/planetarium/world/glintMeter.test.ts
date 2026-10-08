@@ -261,6 +261,16 @@ describe('a beam beside the principal line', () => {
     expect(count(strip).n).toBeGreaterThan(sea.n);
   });
 
+  it("looks beside the line only for a beam its caller would act on", () => {
+    // The strip's beam beside the line draws 7: a floor under it finds it,
+    // a floor over it leaves the line, which is all land, with no beam.
+    const under = createBeamPeak();
+    expect(scanBeam(pose, LIGHT, beamSea, strip, table, scratch, under, { besideFloor: 2.8 })).toBe(true);
+    expect(under.drawnMax).toBeGreaterThan(6);
+    const over = createBeamPeak();
+    expect(scanBeam(pose, LIGHT, beamSea, strip, table, scratch, over, { besideFloor: 20 })).toBe(false);
+  });
+
   it("bounds the lobe at every wind the map can hold", () => {
     for (let deg = 0; deg <= 60; deg += 0.5) {
       const cosNH = Math.cos(deg * DEG);

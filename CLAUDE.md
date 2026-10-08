@@ -43,7 +43,6 @@ A Three.js app. `src/planetarium/` is the whole solar system at real scale, wher
 - **Earth's ground uses the alpha channel** to mark the sea for the glow pass. Anything drawn over Earth must not write alpha, or the sun's reflection on the sea grows a halo.
 - **The Sun's brightness is set in one place**, `src/planetarium/sunLight.ts`. Any brightness threshold you add is multiplied by `SUN_LIGHT_BASELINE`.
 - **User settings** (graphics quality, frame rate, night sides) each have their own `localStorage` key. Never put them in the saved journey.
-- **A shell that beats Earth's ground by a polygon offset** (the night tiles) computes `gl_Position` exactly as three's `project_vertex` does, the view transform first. A different order rounds differently, and the offset loses in patches.
 - **The renderer sizes itself from the canvas element**, never from the window size; on an iPad in full screen the two differ. Anything pinned to a screen edge uses `env(safe-area-inset-…)`, never a fixed pixel offset.
 
 ## Interface

@@ -4,7 +4,7 @@
 //   node tools/glint-probe.mjs                       # 400 km up, the Sun 10° high, aimed at the mirror point, then 8° and 16° down
 //   node tools/glint-probe.mjs --deps=mirror,6,12,20 --sunelev=5 --wind=5 --label=calm
 //   node tools/glint-probe.mjs --alt=35786 --deps=90 --fov=20 --label=geo    # the geostationary view, straight down
-//   node tools/glint-probe.mjs --look --extra='&seawindmap=http://localhost:5174/planning/candidate.png'   # a grey map from gen-seawind --png
+//   node tools/glint-probe.mjs --look --extra='&seawindmap=http://localhost:5174/planning/candidate.png'   # a map from gen-seawind --png (speed in red, axis in green and blue)
 //   node tools/glint-probe.mjs --meter --assert                    # the highlight meter's prediction against the pixels, the shipped maps
 //   node tools/glint-probe.mjs --meter --clouds --bearings=180,90,0,270 --deps=mirror --run=12 --assert
 //   node tools/glint-probe.mjs --meter --azimuth=180 --deps=mirror --assert   # turned away from the beam: the meter must ask nothing

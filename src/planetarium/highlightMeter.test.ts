@@ -6,7 +6,7 @@ import {
 } from './highlightMeter';
 import { EarthSurfaceMaps } from './world/surfaceMaps';
 import { SUN_LIGHT_INTENSITY, SUN_LIGHT_LINEAR } from './sunLight';
-import { OCEAN_BEAM_CAP, OCEAN_BEAM_KNEE, ROUGHNESS_MAP_WATER } from './world/surfaceShading';
+import { NIGHT_FILL, OCEAN_BEAM_CAP, OCEAN_BEAM_KNEE, ROUGHNESS_MAP_WATER } from './world/surfaceShading';
 import { SEA_WIND_MAX_MS } from './world/seaWind';
 import { KM_PER_AU } from '../astronomy/constants';
 import { CLOUD_TOP_KM } from './world/cloudDeck';
@@ -43,6 +43,7 @@ function probeContext(altitudeKm = 400, sunElevDeg = 10, aimGroundAngleDeg = 10)
     lightLinear: SUN_LIGHT_LINEAR,
     airOn: true, airBlend: 1, hazeClearView: 0.35,
     cloudSpin: 0, cloudDrawn: true, cloudShadows: true, cloudHeightOverRadius: CLOUD_TOP_KM / EARTH_KM,
+    moonShadows: [], moonShadowCount: 0, sunTan: 0, termWidth: NIGHT_FILL.earth.termWidth,
     view, viewUp,
     fovXDeg: 40, fovYDeg: 27,
     seaBeamOn: true, sunPathOn: true, windMapOn: true,
@@ -83,8 +84,12 @@ describe('the highlight meter', () => {
     expect(t.peakSample.water).toBeCloseTo(1, 1);
     expect(t.peakSample.windMs).toBeCloseTo(7, 0);
     expect(t.peakSample.cloudKeep).toBe(1);
-    expect(t.costUs).toBeGreaterThan(0);
-    expect(t.costUs).toBeLessThan(500);
+    // The cost as a session pays it, once the frames have settled: the first
+    // runs cold, and a loaded test machine can make it milliseconds.
+    for (let i = 0; i < 200; i++) meter.update(0.1, ctx);
+    const warm = meter.telemetry();
+    expect(warm.costUs).toBeGreaterThan(0);
+    expect(warm.costUs).toBeLessThan(500);
   });
 
   it('recovers slowly when the beam leaves, and at once when the switch goes off', async () => {
@@ -237,6 +242,34 @@ describe('a camera inside the air', () => {
     expect(t.drawnMax).toBeGreaterThan(4.6);
     expect(t.drawnMax).toBeLessThan(6);
     expect(t.drawnMax).toBeGreaterThan(t.knobs.target);
+  });
+});
+
+describe("a moon's shadow over the beam", () => {
+  beforeEach(() => setHighlightMeterEnabled(true));
+
+  it('asks for nothing for a beam the eclipse has put out (400 km, Sun 5°, 4 m/s)', () => {
+    const shoulder = () => ({ knee: OCEAN_BEAM_KNEE, cap: OCEAN_BEAM_CAP });
+    const ctx = probeContext(400, 5, 12);
+    const clear = new HighlightMeter(uniformMaps(4, 0), shoulder);
+    for (let i = 0; i < 40; i++) clear.update(0.1, ctx);
+    const lit = clear.telemetry();
+    expect(lit.target).toBeLessThan(0.5);
+    // The Moon 60 radii sunward of where the clear beam peaks, its shadow's
+    // axis through that point, fed as the ground's casters are fed.
+    const phi = lit.groundAngleDeg * DEG;
+    const n = new THREE.Vector3(Math.sin(phi), 0, Math.cos(phi));
+    const moon = ctx.sun.clone().sub(n).normalize().multiplyScalar(60).add(n);
+    const shadowed: HighlightContext = {
+      ...ctx, moonShadows: [moon.x, moon.y, moon.z, 1737.4 / EARTH_KM], moonShadowCount: 1, sunTan: Math.tan((0.2666 * Math.PI) / 180),
+    };
+    const meter = new HighlightMeter(uniformMaps(4, 0), shoulder);
+    for (let i = 0; i < 40; i++) meter.update(0.1, shadowed);
+    const t = meter.telemetry();
+    expect(t.hold).toBe('metering');
+    expect(t.drawnMax).toBeLessThan(t.knobs.target);
+    expect(t.target).toBe(1);
+    expect(meter.exposure).toBe(1);
   });
 });
 

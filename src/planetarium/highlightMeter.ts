@@ -5,7 +5,8 @@
  * white smear — and for nothing else.
  *
  * Per frame it predicts the brightest drawn point of the beam from the
- * shader's own equations (world/glintMeter) at Earth's mirror geometry, reads
+ * shader's own equations (world/glintMeter) at Earth's mirror geometry and
+ * under the moons' shadows the ground traces, reads
  * the water and the wind there, and the cloud between it and the Sun and
  * between it and the camera, from coarse copies of the maps
  * (world/surfaceMaps), and asks for an exposure that lands that point near a
@@ -94,6 +95,15 @@ export interface HighlightContext {
   /** The displayed field of view, degrees, both axes. */
   fovXDeg: number;
   fovYDeg: number;
+  /** The Moon-shadow casters Earth's ground traces this frame (its
+   *  uMoonShadow): four numbers apiece, a centre in the mesh's axes and a
+   *  radius, in radii; `moonShadowCount` of them. With the Sun's angular
+   *  radius as a tangent and the terminator's half-width in N·L, the ground's
+   *  own uSunTan and uTermWidth, the eclipse is traced as the ground traces it. */
+  moonShadows: ArrayLike<number>;
+  moonShadowCount: number;
+  sunTan: number;
+  termWidth: number;
   /** The chain the surfaces compile: the beam, the Sun's path, the wind map. */
   seaBeamOn: boolean;
   sunPathOn: boolean;
@@ -144,8 +154,11 @@ export class HighlightMeter {
   private table: TransmittanceTable | null = null;
   private readonly peak: BeamPeak = createBeamPeak();
   private readonly scratch: GlintScratch = createGlintScratch();
-  private readonly pose: { camera: [number, number, number]; sun: [number, number, number]; sunVisible: number } = {
-    camera: [0, 0, 0], sun: [0, 0, 0], sunVisible: 1,
+  private readonly pose: {
+    camera: [number, number, number]; sun: [number, number, number];
+    shadows: ArrayLike<number>; shadowCount: number; sunTan: number; termWidth: number;
+  } = {
+    camera: [0, 0, 0], sun: [0, 0, 0], shadows: [], shadowCount: 0, sunTan: 0, termWidth: 0,
   };
   private readonly light: { intensity: number; linear: RGB; irradianceScale: number } = {
     intensity: 0, linear: [1, 1, 1], irradianceScale: bodySolarIrradianceScale('Earth'),
@@ -208,6 +221,8 @@ export class HighlightMeter {
     const t0 = now();
     this.pose.camera[0] = ctx.camera.x; this.pose.camera[1] = ctx.camera.y; this.pose.camera[2] = ctx.camera.z;
     this.pose.sun[0] = ctx.sun.x; this.pose.sun[1] = ctx.sun.y; this.pose.sun[2] = ctx.sun.z;
+    this.pose.shadows = ctx.moonShadows; this.pose.shadowCount = ctx.moonShadowCount;
+    this.pose.sunTan = ctx.sunTan; this.pose.termWidth = ctx.termWidth;
     this.light.intensity = ctx.lightIntensity;
     this.light.linear = ctx.lightLinear;
     const sh = this.shoulder();

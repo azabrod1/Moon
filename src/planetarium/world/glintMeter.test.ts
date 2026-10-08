@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   HIGHLIGHT_KNOBS, advanceExposureStops, beamRadianceAt, beckmannLobe, beckmannLobeBound, buildColumnDepthTable, buildTransmittanceTable, lookupColumnDepth, coverageOfBeam, createBeamPeak, createBeamPlace, createGlintScratch,
-  highlightTarget, lookupTransmittance, meanSquareSlopeOfWind, placeBeamInFrame, scanBeam, shoulder, type BeamPlace,
+  highlightTarget, lookupTransmittance, meanSquareSlopeOfWind, sunVisibleAt, placeBeamInFrame, scanBeam, shoulder, type BeamPlace,
   type GlintMeterLight, type GlintMeterPose, type GlintMeterSea, type SurfaceSampler,
 } from './glintMeter';
 import {
@@ -25,7 +25,7 @@ function probePose(altitudeKm: number, sunElevDeg: number): GlintMeterPose {
   const camera: [number, number, number] = [0, 0, 1 + altitudeKm / EARTH_KM];
   const sunDist = KM_PER_AU / EARTH_KM;
   const sun: [number, number, number] = [sunDist * Math.cos(sunElevDeg * DEG), 0, 1 + sunDist * Math.sin(sunElevDeg * DEG)];
-  return { camera, sun, sunVisible: 1 };
+  return { camera, sun };
 }
 
 /** The cream Sun at 3 the probe's earlier reports were read under. */
@@ -165,9 +165,9 @@ describe('the scan at the probe pose (400 km, Sun 10°, 7.03 m/s)', () => {
   });
 
   it('has no beam with the Sun on the camera\'s zenith, or from inside the body', () => {
-    const zenith: GlintMeterPose = { camera: [0, 0, 1.06], sun: [0, 0, 23000], sunVisible: 1 };
+    const zenith: GlintMeterPose = { camera: [0, 0, 1.06], sun: [0, 0, 23000] };
     expect(scanBeam(zenith, OLD_LIGHT, sea, openSea(7), table, scratch, createBeamPeak())).toBe(false);
-    const inside: GlintMeterPose = { camera: [0, 0, 0.5], sun: [23000, 0, 0], sunVisible: 1 };
+    const inside: GlintMeterPose = { camera: [0, 0, 0.5], sun: [23000, 0, 0] };
     expect(scanBeam(inside, OLD_LIGHT, sea, openSea(7), table, scratch, createBeamPeak())).toBe(false);
     // A pure-land sampler finds nothing either.
     const land: SurfaceSampler = (_x, _y, _z, o) => { o.windMs = 7; o.water = 0; o.cloudKeep = 1; };
@@ -400,6 +400,69 @@ describe('a camera inside the air', () => {
   });
 });
 
+describe("a moon's shadow over the beam", () => {
+  // The Moon's radius and the Sun's angular radius at one AU, as tangent.
+  const MOON_R = 1737.4 / EARTH_KM;
+  const SUN_TAN = Math.tan((0.2666 * Math.PI) / 180);
+  /** moonShadowOcclusion and the day factor as the ground's GLSL states
+   *  them, transcribed here as the reference. */
+  const glslSmooth = (e0: number, e1: number, x: number) => {
+    const t = Math.min(Math.max((x - e0) / (e1 - e0), 0), 1);
+    return t * t * (3 - 2 * t);
+  };
+  const occlusion = (toMoon: number[], r: number, l: number[], tan: number) => {
+    const along = toMoon[0] * l[0] + toMoon[1] * l[1] + toMoon[2] * l[2];
+    if (along <= 0) return 0;
+    const perp = Math.hypot(toMoon[0] - l[0] * along, toMoon[1] - l[1] * along, toMoon[2] - l[2] * along);
+    return 1 - glslSmooth(Math.max(r - along * tan, 0), r + along * tan, perp);
+  };
+
+  it('traces the umbra and the penumbra as the ground traces them', () => {
+    const p = [0, 0, 1];
+    const sunEl = 20 * DEG;
+    const l = [Math.cos(sunEl), 0, Math.sin(sunEl)];
+    const nl = l[2];
+    const day = glslSmooth(-0.16, 0.16, nl);
+    for (const [along, side] of [[60, 0], [60, 0.1], [60, 0.3], [60, 0.6], [20, 0.05], [-5, 0]]) {
+      // A caster `along` radii sunward of the point and `side` radii off the axis.
+      const c = [p[0] + l[0] * along, p[1] + side, p[2] + l[2] * along];
+      const pose: GlintMeterPose = {
+        camera: [0, 0, 1.06], sun: [l[0] * 23000, 0, l[2] * 23000], shadows: [c[0], c[1], c[2], MOON_R], shadowCount: 1, sunTan: SUN_TAN, termWidth: 0.16,
+      };
+      const expected = 1 - occlusion([c[0] - p[0], c[1] - p[1], c[2] - p[2]], MOON_R, l, SUN_TAN) * day;
+      expect(sunVisibleAt(p[0], p[1], p[2], l[0], l[1], l[2], nl, pose)).toBeCloseTo(expected, 12);
+    }
+    // Two casters multiply; none, or a count of none, is the whole Sun.
+    const two: GlintMeterPose = {
+      camera: [0, 0, 1.06], sun: [23000, 0, 0],
+      shadows: [l[0] * 60, 0.2, 1 + l[2] * 60, MOON_R, l[0] * 30, -0.1, 1 + l[2] * 30, MOON_R / 2], shadowCount: 2, sunTan: SUN_TAN, termWidth: 0.16,
+    };
+    const one = (o: number) => 1 - occlusion([two.shadows![o] - p[0], two.shadows![o + 1] - p[1], two.shadows![o + 2] - p[2]], two.shadows![o + 3], l, SUN_TAN) * day;
+    expect(sunVisibleAt(p[0], p[1], p[2], l[0], l[1], l[2], nl, two)).toBeCloseTo(one(0) * one(4), 12);
+    expect(sunVisibleAt(p[0], p[1], p[2], l[0], l[1], l[2], nl, { ...two, shadowCount: 0 })).toBe(1);
+    expect(sunVisibleAt(p[0], p[1], p[2], l[0], l[1], l[2], nl, { camera: [0, 0, 1.06], sun: [23000, 0, 0] })).toBe(1);
+  });
+
+  it('dims the beam it predicts under the shadow, and asks for nothing the shadow took (400 km, Sun 5°, 4 m/s)', () => {
+    const pose = probePose(400, 5);
+    const clear = createBeamPeak();
+    scanBeam(pose, LIGHT, beamSea, openSea(4), table, scratch, clear);
+    expect(highlightTarget(clear.drawnMax, 0.05)).toBeLessThan(1);
+    // The Moon 60 radii sunward of the clear beam's peak, its shadow's axis
+    // through it: the beam stands in the penumbra's dark heart.
+    const n = clear.n;
+    const toSun = [pose.sun[0] - n[0], pose.sun[1] - n[1], pose.sun[2] - n[2]];
+    const len = Math.hypot(toSun[0], toSun[1], toSun[2]);
+    const moon = [n[0] + (60 * toSun[0]) / len, n[1] + (60 * toSun[1]) / len, n[2] + (60 * toSun[2]) / len];
+    const eclipsed: GlintMeterPose = { ...pose, shadows: [moon[0], moon[1], moon[2], MOON_R], shadowCount: 1, sunTan: SUN_TAN, termWidth: 0.16 };
+    const dim = createBeamPeak();
+    expect(scanBeam(eclipsed, LIGHT, beamSea, openSea(4), table, scratch, dim)).toBe(true);
+    expect(dim.drawnMax).toBeLessThan(0.3 * clear.drawnMax);
+    expect(dim.drawnMax).toBeLessThan(HIGHLIGHT_KNOBS.target);
+    expect(highlightTarget(dim.drawnMax, 0.05)).toBe(1);
+  });
+});
+
 describe('the target and the adaptation', () => {
   it('fades in with coverage, holds the floor, and never leaves a NaN', () => {
     expect(highlightTarget(10, 0)).toBe(1);
@@ -441,7 +504,7 @@ describe("the beam's share of the frame, placed", () => {
 
   it('places the peak where a pinhole frame sees it, and the line along it', () => {
     const h = 400 / 6371;
-    const pose: GlintMeterPose = { camera: [0, 0, 1 + h], sun: [23000, 0, 1 + 4000], sunVisible: 1 };
+    const pose: GlintMeterPose = { camera: [0, 0, 1 + h], sun: [23000, 0, 1 + 4000] };
     const scratch = createGlintScratch();
     const out = createBeamPlace();
     // Aimed straight at the ground point 10° along the principal line.

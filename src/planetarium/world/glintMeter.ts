@@ -19,7 +19,9 @@
  * The prediction mirrors the shader term by term (world/surfaceShading, the
  * sea block and the Sun-path block; world/atmosphereLut, the aerial segment):
  *   - the Sun's irradiance, intensity times the authored falloff at the
- *     body's distance, times cos of incidence;
+ *     body's distance, times cos of incidence, times the share of the Sun a
+ *     moon's shadow leaves at the point (the shader's eclipse trace, ramped
+ *     in over the terminator as it ramps it);
  *   - the Sun's own path, T(1, μs) / T(1, 1), clamped at 1, blended by the
  *     air's blend;
  *   - water's Fresnel on the half vector, three's exp2 Schlick on SEA_WATER_F0;
@@ -128,8 +130,46 @@ export interface GlintMeterPose {
   readonly camera: Vec3;
   /** The Sun relative to the body's centre, in radii (finite). */
   readonly sun: Vec3;
-  /** The Sun's visible fraction at the body (its eclipse), 0..1. */
-  readonly sunVisible: number;
+  /** The Moon-shadow casters the surfaces trace this frame (the shader's
+   *  uMoonShadow), four numbers apiece, a centre in the body frame and a
+   *  radius, in radii; `shadowCount` of them, none when absent. */
+  readonly shadows?: ArrayLike<number>;
+  readonly shadowCount?: number;
+  /** The tangent of the Sun's angular radius at the body (uSunTan). */
+  readonly sunTan?: number;
+  /** The terminator's half-width in N·L (uTermWidth), over which the shader
+   *  ramps the eclipse in. */
+  readonly termWidth?: number;
+}
+
+/**
+ * The share of the Sun a moon's shadow leaves at the ground point p, as the
+ * surfaces trace it (MOON_SHADOW_TRACE_GLSL in world/surfaceShading): each
+ * caster sunward of p takes its umbra-to-penumbra share, ramped in by the
+ * day factor at the point's own Sun height, and the shares multiply. One
+ * with no casters.
+ */
+export function sunVisibleAt(
+  px: number, py: number, pz: number, lx: number, ly: number, lz: number, nl: number, pose: GlintMeterPose,
+): number {
+  const count = pose.shadowCount ?? 0;
+  const shadows = pose.shadows;
+  if (!(count > 0) || !shadows) return 1;
+  const tan = pose.sunTan ?? 0;
+  const tw = pose.termWidth ?? 0;
+  const day = smoothstep(-tw, tw, nl);
+  let visible = 1;
+  for (let i = 0; i < count; i++) {
+    const o = i * 4;
+    const tx = shadows[o] - px, ty = shadows[o + 1] - py, tz = shadows[o + 2] - pz;
+    const r = shadows[o + 3];
+    const along = tx * lx + ty * ly + tz * lz;
+    if (along <= 0) continue;
+    const perp = Math.hypot(tx - lx * along, ty - ly * along, tz - lz * along);
+    const occ = 1 - smoothstep(Math.max(r - along * tan, 0), r + along * tan, perp);
+    visible *= 1 - occ * day;
+  }
+  return visible;
 }
 
 /** The transmittance to the top of the air from the ground, per channel, as a
@@ -330,12 +370,14 @@ export interface GlintScratch {
   place1: [number, number];
   /** Per coarse step of the scan, whether the maps cut the line's sample. */
   cut: Uint8Array;
+  /** The share of the Sun a moon's shadow left at the last point evaluated. */
+  sunVisible: number;
 }
 
 export function createGlintScratch(): GlintScratch {
   return {
     sample: { windMs: 0, water: 0, cloudKeep: 1, deckKeep: 1 }, t: [0, 0, 0], tz: [0, 0, 0], tc: [0, 0, 0],
-    axes: new Float64Array(6), place0: [0, 0], place1: [0, 0], cut: new Uint8Array(64),
+    axes: new Float64Array(6), place0: [0, 0], place1: [0, 0], cut: new Uint8Array(64), sunVisible: 1,
   };
 }
 
@@ -345,8 +387,8 @@ export function createGlintScratch(): GlintScratch {
  * deck drawn over it (`scratch.sample.deckKeep` holds the deck's share for
  * the caller). Zero when the point is unlit, below the horizon, or not sea.
  * With `bound`, the maps are not read: the point is taken as open sea under
- * a clear sky at its brightest wind (beckmannLobeBound) with no shadowing,
- * which no sea the maps can draw there exceeds.
+ * a clear sky and a whole Sun at its brightest wind (beckmannLobeBound) with
+ * no shadowing, which no sea the maps can draw there exceeds.
  */
 export function beamRadianceAt(
   nx: number, ny: number, nz: number,
@@ -393,7 +435,8 @@ export function beamRadianceAt(
   lookupTransmittance(table, 1, scratch.tz);
   const grazing = 1 - nv;
   const airWeight = sea.airBlend * (sea.hazeClearView + (1 - sea.hazeClearView) * grazing * grazing);
-  const irradiance = light.intensity * light.irradianceScale * nl * pose.sunVisible;
+  scratch.sunVisible = bound ? 1 : sunVisibleAt(nx, ny, nz, lx, ly, lz, nl, pose);
+  const irradiance = light.intensity * light.irradianceScale * nl * scratch.sunVisible;
   const common = irradiance * fresnel * lobe * s.water * s.cloudKeep;
   const tv = scratch.tz; // reused below for the view leg once the zenith is read
   const tz0 = scratch.tz[0], tz1 = scratch.tz[1], tz2 = scratch.tz[2];
@@ -622,10 +665,12 @@ export function scanBeam(
     );
     return drawnMaxOf(rad, sea) * scratch.sample.deckKeep;
   };
-  // Whether the sample just read is open sea under a clear sky, the maps
-  // taking nothing from it. Read only after a sample that drew something,
-  // which is one that reached the sampler.
-  const open = (q: SurfaceSample): boolean => q.water >= 1 && q.cloudKeep >= 1 && q.deckKeep >= 1;
+  // Whether the sample just read is open sea under a clear sky and a whole
+  // Sun, nothing taken from it that the points beside it might keep. Read
+  // only after a sample that drew something, which is one that reached the
+  // sampler.
+  const open = (q: SurfaceSample): boolean =>
+    q.water >= 1 && q.cloudKeep >= 1 && q.deckKeep >= 1 && scratch.sunVisible >= 1;
   const halfWidthAcrossAt = (phi: number): number => {
     const c = Math.cos(phi), s = Math.sin(phi);
     return acrossHalfWidthAt(c * e1x + s * e2x, c * e1y + s * e2y, c * e1z + s * e2z, pose, lobeHalf);

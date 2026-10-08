@@ -6,11 +6,11 @@
  *
  * Per frame it predicts the brightest drawn point of the beam from the
  * shader's own equations (world/glintMeter) at Earth's mirror geometry and
- * under the moons' shadows the ground traces, reads
- * the water and the wind there, and the cloud between it and the Sun and
- * between it and the camera, from coarse copies of the maps
- * (world/surfaceMaps), and asks for an exposure that lands that point near a
- * target, never under a floor, faded in with the beam's share of the frame.
+ * under the moons' shadows the ground traces, reads the water and the wind
+ * there, and the cloud between it and the Sun and between it and the camera,
+ * from coarse copies of the maps (world/surfaceMaps), and asks for an
+ * exposure that lands that point near a target, never under a floor, faded
+ * in with the beam's share of the frame.
  * The exposure eases in stops, down fast and up slowly, and the mode hands
  * the renderer the smaller of this and the Sun's own coverage meter, so the
  * same view is never darkened twice.

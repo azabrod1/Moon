@@ -53,7 +53,9 @@
 // the air's transmittance on the glint from the on/off pair. Writes
 // <out>/report.json, <out>/report.txt and a PNG of each pose (the frame as
 // the app shows it, air on, clouds hidden). No bar yet: this is the
-// instrument; the energy chain's commit sets the numbers it must hold.
+// instrument; the energy chain's commit sets the numbers it must hold. A
+// beam window whose sums are not finite is the instrument broken, and fails
+// the run (INSTRUMENT: FAIL) in any arm, `--assert` or not.
 //
 // `--look` is the picture arm: the shipped maps (or `--extra='&seawindmap=…'`),
 // the clouds shown, the tiles on, the same poses, PNGs only — the frames that
@@ -72,7 +74,9 @@
 // after exposure is held against the meter's target with the non-glint share
 // at that pixel reported; then flips the switch off and reads exactly one.
 // `--bearings=a,b,c` runs the poses at several bearings (a cloud lands over
-// one of them where the sheet's bearing is clear); `--run=<s>` ends with the
+// one of them where the sheet's bearing is clear), `--bearing=<deg>` one; the
+// bearing each pose was flown at is read back from its geometry, printed,
+// and held to the one asked for; `--run=<s>` ends with the
 // clock at 1000x for that long at the last pose, the exposure released, the
 // telemetry read every frame, and reports the largest per-frame change of
 // the exposure in stops against the meter's own rate (a coastline sliding
@@ -103,7 +107,9 @@ const windMs = Number(arg('wind', '7'));
 const altitudeKm = Number(arg('alt', '400'));
 const sunElevDeg = Number(arg('sunelev', '10'));
 const bearingDeg = Number(arg('bearing', '180'));
-const bearings = arg('bearings', '').split(',').map((s) => Number(s.trim())).filter((v) => Number.isFinite(v));
+// Empty entries go before the conversion: Number('') is 0, so an absent list
+// would otherwise fly bearing 0 and never reach the `--bearing` fallback.
+const bearings = arg('bearings', '').split(',').map((s) => s.trim()).filter(Boolean).map(Number).filter((v) => Number.isFinite(v));
 if (!bearings.length) bearings.push(bearingDeg);
 const azimuthDeg = Number(arg('azimuth', '0'));
 const fovDeg = Number(arg('fov', '40'));
@@ -164,6 +170,23 @@ const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const scale = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
 const norm = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+
+/** The bearing a pose was flown at, read back from its geometry rather than
+ *  from the argument: the stand point's vertical, tilted off the subsolar
+ *  point, measured from east toward north there (devHorizonView's own east,
+ *  celestial north crossed into the subsolar direction). Null with the Sun
+ *  at the zenith, where no bearing is defined. */
+function bearingOfPose(pose) {
+  const subsolar = norm(sub(pose.sunScene, pose.bodyScene));
+  let east = cross([0, 1, 0], subsolar);
+  if (dot(east, east) < 1e-8) east = cross([1, 0, 0], subsolar);
+  east = norm(east);
+  const north = norm(cross(subsolar, east));
+  const toward = sub(pose.up, scale(subsolar, dot(pose.up, subsolar)));
+  if (Math.hypot(...toward) < 1e-9) return null;
+  return ((Math.atan2(dot(toward, north), dot(toward, east)) * 180) / Math.PI + 360) % 360;
+}
 // three's Matrix4.toArray is column-major: element c*4+k is column c, row k.
 const mulMat4 = (m, v) => [0, 1, 2, 3].map((k) => m[k] * v[0] + m[4 + k] * v[1] + m[8 + k] * v[2] + m[12 + k] * v[3]);
 
@@ -440,13 +463,25 @@ async function meterPose(page, pose, poseLabel, png, capture, failures) {
   // The bars. A beam under the fade's own threshold of the frame — a speck
   // through a hole in the deck, a sparkle from far away — is one the meter
   // holds at one by construction, so its value and place are reported and
-  // only that hold is checked.
+  // only that hold is checked. The pixels alone say what a speck is: a
+  // prediction allowed to say it would let a predictor that saw no beam at
+  // all exempt itself from every bar, and its ask of one would pass.
   const m = summary.meter;
   const fail = (what) => failures.push(`${poseLabel}: ${what}`);
-  const speck = coverage < tel.knobs.fadeLo || tel.coverage < tel.knobs.fadeLo;
+  const speck = coverage < tel.knobs.fadeLo;
+  // A beam the meter had to act on — over the target, over the fade's
+  // threshold of the frame, both as measured — that it predicted absent:
+  // held for a reason while the pixels show it, or metering with none of it
+  // in the frame.
+  const missed = !speck && M > tel.knobs.target && (tel.hold !== 'metering' || !(tel.coverage > 0));
   summary.meter.speck = speck;
-  if (tel.hold === 'metering' && M > 0 && speck) {
-    if (!(m.handoff.meterTarget > 0.9)) fail(`a speck (coverage ${coverage.toFixed(4)} measured, ${tel.coverage.toFixed(4)} predicted) yet the meter asked ${m.handoff.meterTarget.toFixed(3)}`);
+  summary.meter.missed = missed;
+  if (missed) {
+    fail(`a missed beam: ${M.toFixed(3)} over ${(coverage * 100).toFixed(2)}% of the frame measured, yet the meter ${tel.hold === 'metering' ? `put none of it in the frame (predicted ${tel.drawnMax.toFixed(3)}, coverage ${tel.coverage.toFixed(4)})` : `held (${tel.hold})`} and asked ${m.handoff.meterTarget.toFixed(3)}`);
+  } else if (tel.hold === 'metering' && M > 0 && (speck || !(tel.coverage > 0))) {
+    // A speck, or a beam under the target the meter saw none of: its ask of
+    // one is right either way, so that is what is checked.
+    if (!(m.handoff.meterTarget > 0.9)) fail(`a beam it need not meter (coverage ${coverage.toFixed(4)} measured, ${tel.coverage.toFixed(4)} predicted, peak ${M.toFixed(3)}) yet the meter asked ${m.handoff.meterTarget.toFixed(3)}`);
   } else if (tel.hold === 'metering' && M > 0) {
     if (!(m.ratios.value > 0.75 && m.ratios.value < 1.33)) fail(`drawn peak measured/predicted ${m.ratios.value?.toFixed(3)} outside 0.75..1.33`);
     if (predictedPixel && ea && ec && !(predictedPixel.y >= ea.lo && predictedPixel.y <= ea.hi + 1 && predictedPixel.x >= ec.lo && predictedPixel.x <= ec.hi + 1)) {
@@ -463,7 +498,7 @@ async function meterPose(page, pose, poseLabel, png, capture, failures) {
     fail(`the meter held (${tel.hold}) with a drawn beam at ${M.toFixed(2)} in the frame`);
   }
   if (!(off.hold === 'off' && off.exposure === 1)) fail(`switch off: hold ${off.hold}, exposure ${off.exposure} (one exactly expected)`);
-  console.log(`[glint-probe] ${poseLabel} meter: ${tel.hold}${speck ? ' (speck)' : ''}; predicted ${tel.drawnMax.toFixed(3)} at ${tel.groundAngleDeg.toFixed(1)}° (cloud keep ${tel.peakSample?.cloudKeep?.toFixed(2)}, water ${tel.peakSample?.water?.toFixed(2)}); measured ${M.toFixed(3)} at ${geo ? geo.groundAngleDeg.toFixed(1) : '?'}°, ratio ${m.ratios.value?.toFixed(3)} (at the prediction ${m.ratios.valueAtPrediction?.toFixed(3)}); gap ${pixelGap?.toFixed(0)} px; widths along ${m.ratios.along?.toFixed(2)} across ${m.ratios.across?.toFixed(2)} coverage ${m.ratios.coverage?.toFixed(2)}; hand-off applied ${hand.applied.toFixed(3)} -> peak ${afterExposure.toFixed(2)} (${m.handoff.peakOverTarget?.toFixed(3)} of target); off ${off.hold} ${off.exposure}`);
+  console.log(`[glint-probe] ${poseLabel} meter: ${tel.hold}${speck ? ' (speck)' : ''}${missed ? ' (MISSED)' : ''}; predicted ${tel.drawnMax.toFixed(3)} at ${tel.groundAngleDeg.toFixed(1)}° (cloud keep ${tel.peakSample?.cloudKeep?.toFixed(2)}, water ${tel.peakSample?.water?.toFixed(2)}); measured ${M.toFixed(3)} at ${geo ? geo.groundAngleDeg.toFixed(1) : '?'}°, ratio ${m.ratios.value?.toFixed(3)} (at the prediction ${m.ratios.valueAtPrediction?.toFixed(3)}); gap ${pixelGap?.toFixed(0)} px; widths along ${m.ratios.along?.toFixed(2)} across ${m.ratios.across?.toFixed(2)} coverage ${m.ratios.coverage?.toFixed(2)}; hand-off applied ${hand.applied.toFixed(3)} -> peak ${afterExposure.toFixed(2)} (${m.handoff.peakOverTarget?.toFixed(3)} of target); off ${off.hold} ${off.exposure}`);
   return summary;
 }
 
@@ -530,9 +565,12 @@ const browser = await chromium.launch({
     : ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
 });
 console.log(`[glint-probe] renderer: ${useGpu ? 'GPU (ANGLE/Metal)' : 'software (SwiftShader)'}`);
+// The instrument's own failures, in any arm: a reading it could not take
+// honestly. They fail the run whether or not `--assert` was given.
+const instrumentFailures = [];
 const report = {
   label, url, timeIso, look, windMs: look ? null : windAsDrawn, mss: look ? null : mss,
-  altitudeKm, sunElevDeg, bearingDeg, azimuthDeg, fovDeg, exposure, frame: { W, H }, whiteLum, poses: [],
+  altitudeKm, sunElevDeg, bearingsRequested: bearings, azimuthDeg, fovDeg, exposure, frame: { W, H }, whiteLum, poses: [],
 };
 try {
   const context = await browser.newContext({ viewport: { width: W, height: H }, deviceScaleFactor: 1 });
@@ -613,8 +651,12 @@ try {
       altitudeKm, sunElevDeg, bearingDeg: bearing, azimuthDeg, depressionDeg, fovDeg,
     });
     if (!pose) throw new Error('horizonView refused the pose');
+    pose.bearingFlownDeg = bearingOfPose(pose);
+    if (pose.bearingFlownDeg !== null && Math.abs(((pose.bearingFlownDeg - bearing + 540) % 360) - 180) > 0.5) {
+      throw new Error(`asked for bearing ${bearing}° but the pose was flown at ${pose.bearingFlownDeg.toFixed(2)}°`);
+    }
     const poseLabel = bearings.length > 1 ? `b${bearing}-dep-${depKey}` : `dep-${depKey}`;
-    console.log(`[glint-probe] ${poseLabel}: depression ${pose.depressionDeg.toFixed(2)}°, horizon dip ${pose.horizonDipDeg.toFixed(2)}°, mirror ${pose.mirror ? `${pose.mirror.groundAngleDeg.toFixed(2)}° along the ground at depression ${pose.mirror.depressionDeg.toFixed(2)}°, Sun ${pose.mirror.sunElevDeg.toFixed(2)}° high there, ${pose.mirror.slantKm.toFixed(0)} km away` : 'none (Sun below that horizon)'}`);
+    console.log(`[glint-probe] ${poseLabel}: bearing flown ${pose.bearingFlownDeg === null ? 'n/a (Sun at the zenith)' : `${pose.bearingFlownDeg.toFixed(2)}°`}, depression ${pose.depressionDeg.toFixed(2)}°, horizon dip ${pose.horizonDipDeg.toFixed(2)}°, mirror ${pose.mirror ? `${pose.mirror.groundAngleDeg.toFixed(2)}° along the ground at depression ${pose.mirror.depressionDeg.toFixed(2)}°, Sun ${pose.mirror.sunElevDeg.toFixed(2)}° high there, ${pose.mirror.slantKm.toFixed(0)} km away` : 'none (Sun below that horizon)'}`);
     await page.waitForTimeout(settle);
     await waitFrames(page, 3);
     const png = path.join(outDir, `${poseLabel}.png`);
@@ -774,8 +816,17 @@ try {
       // the old chain, the limb darkening. The air-off reading carries no Sun
       // path (the term reads the tables the analytic tier unbinds).
       sumAppExpLimb += appExpFrame[k] * limbOnGlint;
-      airNum += lum(on); airDen += lum(off * (lum(noPath) > 1e-6 ? lum(on) / lum(noPath) : 1));
+      // `off` is a colour: its luminance is scaled, never the triple itself,
+      // which would read as NaN and poison the sum.
+      airNum += lum(on); airDen += lum(off) * (lum(noPath) > 1e-6 ? lum(on) / lum(noPath) : 1);
       pathNum += lum(on); pathDen += lum(noPath);
+    }
+    // A populated window whose sums are not numbers is a broken instrument,
+    // not a missing reading: it fails the run rather than reporting a null.
+    if (windowCount > 0) {
+      const sums = { sumApp, sumAppOff, sumRef, sumAppExp, sumAppExpLimb, sumDrawn, airNum, airDen, pathNum, pathDen };
+      const broken = Object.entries(sums).filter(([, v]) => !Number.isFinite(v)).map(([k]) => k);
+      if (broken.length) instrumentFailures.push(`${poseLabel}: ${windowCount} px in the beam window, yet ${broken.join(', ')} not finite`);
     }
     const peakApp = alongApp?.peak ?? 0;
     const peakRow = alongApp?.peakRow ?? 0;
@@ -839,9 +890,12 @@ try {
   await release();
 }
 
+report.instrumentFailures = instrumentFailures;
+// The bearings as flown, read back from each pose's geometry, never the argument.
+report.bearingsFlown = [...new Set(report.poses.map((p) => (p.pose.bearingFlownDeg === null ? 'n/a' : `${p.pose.bearingFlownDeg.toFixed(1)}°`)))];
 await writeFile(path.join(outDir, 'report.json'), JSON.stringify(report, null, 2));
 const lines = [];
-lines.push(`glint-probe ${label}: ${look ? 'look arm' : `wind ${windAsDrawn.toFixed(2)} m/s (mss ${mss.toFixed(5)})`}, chain ${report.chain?.seaBeam ? 'beam' : 'old'} (Sun path ${report.chain?.sunPath ? 'on' : 'off'}), ${altitudeKm} km up, Sun ${sunElevDeg}° high at the stand point, bearing ${bearingDeg}°, azimuth ${azimuthDeg}°, fov ${fovDeg}°, exposure ${exposure}, ${timeIso}`);
+lines.push(`glint-probe ${label}: ${look ? 'look arm' : `wind ${windAsDrawn.toFixed(2)} m/s (mss ${mss.toFixed(5)})`}, chain ${report.chain?.seaBeam ? 'beam' : 'old'} (Sun path ${report.chain?.sunPath ? 'on' : 'off'}), ${altitudeKm} km up, Sun ${sunElevDeg}° high at the stand point, bearing ${report.bearingsFlown.length ? report.bearingsFlown.join(', ') : 'none flown'} (flown), azimuth ${azimuthDeg}°, fov ${fovDeg}°, exposure ${exposure}, ${timeIso}`);
 lines.push(`one white (a Lambert disc under the Sun) = ${whiteLum.toFixed(4)} scene units; sea maps: ${report.seaMaps}; air tables: ${report.airTables}`);
 for (const p of report.poses) {
   lines.push('');
@@ -850,7 +904,7 @@ for (const p of report.poses) {
   if (meter) {
     const m = p.meter; const pr = m.predicted; const me = m.measured; const r = m.ratios; const h = m.handoff;
     lines.push(`  meter: ${m.hold}, maps ${m.maps.ready.length}/3, scan ${m.costUs.toFixed(0)} µs; predicted drawn max ${pr.drawnMax.toFixed(3)} at ${pr.groundAngleDeg.toFixed(2)}° along the ground (water ${pr.sample.water.toFixed(2)}, wind ${pr.sample.windMs.toFixed(1)} m/s, cloud keep ${pr.sample.cloudKeep.toFixed(2)}), half-widths ${pr.halfWidthAlongDeg.toFixed(2)}° along ${pr.halfWidthAcrossDeg.toFixed(2)}° across, coverage ${pr.coverage.toFixed(4)}${pr.pixel ? `, at pixel (${pr.pixel.x.toFixed(0)}, ${pr.pixel.y.toFixed(0)})` : ''}`);
-    lines.push(`  measured: drawn max ${me.drawnMax.toFixed(3)} (channel ${'rgb'[me.channel]}) at pixel (${me.pixel.x.toFixed(0)}, ${me.pixel.y.toFixed(0)}), ${me.groundAngleDeg === null ? 'sky' : `${me.groundAngleDeg.toFixed(2)}° along the ground`}, ${me.pixelGapFromPrediction === null ? 'no prediction' : `${me.pixelGapFromPrediction.toFixed(0)} px from the prediction`}${me.atPrediction === null ? '' : `, ${me.atPrediction.toFixed(3)} within 7 px of the prediction`}${m.speck ? ' — a SPECK, under the fade\'s threshold, held at one by construction' : ''}; half-max ${me.halfMaxAlongDeg?.toFixed(2)}° along (rows ${me.alongExtent?.lo}..${me.alongExtent?.hi}) ${me.halfMaxAcrossDeg?.toFixed(2)}° across (cols ${me.acrossExtent?.lo}..${me.acrossExtent?.hi}); coverage ${me.coverage.toFixed(4)} (pixels at or over half the peak)`);
+    lines.push(`  measured: drawn max ${me.drawnMax.toFixed(3)} (channel ${'rgb'[me.channel]}) at pixel (${me.pixel.x.toFixed(0)}, ${me.pixel.y.toFixed(0)}), ${me.groundAngleDeg === null ? 'sky' : `${me.groundAngleDeg.toFixed(2)}° along the ground`}, ${me.pixelGapFromPrediction === null ? 'no prediction' : `${me.pixelGapFromPrediction.toFixed(0)} px from the prediction`}${me.atPrediction === null ? '' : `, ${me.atPrediction.toFixed(3)} within 7 px of the prediction`}${m.speck ? ' — a SPECK, under the fade\'s threshold, held at one by construction' : ''}${m.missed ? ' — a MISSED BEAM' : ''}; half-max ${me.halfMaxAlongDeg?.toFixed(2)}° along (rows ${me.alongExtent?.lo}..${me.alongExtent?.hi}) ${me.halfMaxAcrossDeg?.toFixed(2)}° across (cols ${me.acrossExtent?.lo}..${me.acrossExtent?.hi}); coverage ${me.coverage.toFixed(4)} (pixels at or over half the peak)`);
     lines.push(`  measured / predicted: value ${r.value?.toFixed(3)} (at the prediction ${r.valueAtPrediction?.toFixed(3)}), ground angle gap ${r.groundAngleGapDeg?.toFixed(2)}°, width along ${r.along?.toFixed(3)}, across ${r.across?.toFixed(3)}, coverage ${r.coverage?.toFixed(3)}`);
     lines.push(`  hand-off: the meter asks ${h.meterExposure.toFixed(4)} (its target ${h.meterTarget.toFixed(4)}${h.atFloor ? ', at the floor' : ''}${h.fadedIn ? '' : ', fade not full'}), the Sun's meter ${h.sunMeter.toFixed(4)}, applied ${h.applied.toFixed(4)}${h.auto ? '' : ' (auto exposure OFF)'} -> the brightest beam pixel after exposure ${h.peakAfterExposure.toFixed(3)} against the target ${m.knobs.target} (${h.peakOverTarget?.toFixed(3)}), its core through the tone curve ${h.coreThroughToneCurve.toFixed(0)}, non-glint share at that pixel ${me.nonGlintShare === null ? 'n/a' : me.nonGlintShare.toFixed(3)}`);
     lines.push(`  switch off: hold ${m.off.hold}, exposure ${m.off.exposure}, applied ${m.off.applied.toFixed(4)}`);
@@ -876,9 +930,14 @@ if (meter && report.run) {
 }
 if (meter) {
   lines.push('');
-  lines.push(`bars (a beam under the fade's threshold of the frame, measured or predicted, is a speck: only the meter's hold near one is checked): drawn peak measured/predicted within 0.75..1.33; the predicted peak inside the measured half-maximum extent; coverage within 0.4..2.5; where the meter settled under one with the fade full, off the floor and the Sun's meter at one, the brightest beam pixel after exposure within 0.85..1.18 of the target; the switch off exactly one; a run's exposure never past its rate in a frame, never non-finite`);
+  lines.push(`bars (a beam under the fade's threshold of the frame, as measured, is a speck: only the meter's hold near one is checked; a measured beam over the target and that threshold which the meter held for, or put none of in the frame, is a missed beam and fails): drawn peak measured/predicted within 0.75..1.33; the predicted peak inside the measured half-maximum extent; coverage within 0.4..2.5; where the meter settled under one with the fade full, off the floor and the Sun's meter at one, the brightest beam pixel after exposure within 0.85..1.18 of the target; the switch off exactly one; a run's exposure never past its rate in a frame, never non-finite`);
   lines.push(report.meterFailures.length ? `VERDICT: FAIL (${report.meterFailures.length})\n  ${report.meterFailures.join('\n  ')}` : 'VERDICT: PASS');
   if (assertBars && report.meterFailures.length) process.exitCode = 1;
+}
+if (instrumentFailures.length) {
+  lines.push('');
+  lines.push(`INSTRUMENT: FAIL (${instrumentFailures.length})\n  ${instrumentFailures.join('\n  ')}`);
+  process.exitCode = 1;
 }
 await writeFile(path.join(outDir, 'report.txt'), lines.join('\n') + '\n');
 console.log(lines.join('\n'));

@@ -46,6 +46,7 @@
  */
 import { KM_PER_AU } from '../../astronomy/constants';
 import { PLANETS } from '../planets/planetData';
+import { SUN_LIGHT_INTENSITY, SUN_LIGHT_LINEAR } from '../sunLight';
 
 export type RGB = readonly [number, number, number];
 
@@ -100,17 +101,63 @@ export interface AtmosphereSpec {
   readonly groundAlbedo: number;
 }
 
+/** The wavelengths of a spec's three channels, nm (the red, green and blue
+ *  that every `RGB` coefficient in this module is quoted at). */
+export const ATMOSPHERE_WAVELENGTHS_NM: RGB = [680, 550, 440];
+
+/**
+ * An aerosol in the terms sun photometers and satellite retrievals report it:
+ * the vertical EXTINCTION optical depth at 550 nm, its spectral slope as an
+ * Angstrom exponent (tau(lambda) = tau550 * (lambda / 550)^-alpha), the
+ * single-scattering albedo, the asymmetry parameter as retrievals mean it
+ * (the phase function's MEAN COSINE, which is not the parameter `miePhase`
+ * takes: see `cornetteShanksParameter`), and the scale height of one
+ * exponential layer.
+ */
+export interface AerosolLoad {
+  readonly opticalDepth550: number;
+  readonly angstrom: number;
+  readonly singleScatteringAlbedo: number;
+  readonly asymmetry: number;
+  readonly scaleHeightKm: number;
+}
+
+/**
+ * A marine aerosol (sea salt with a little sulphate), as the AERONET island
+ * retrievals quote it: an Angstrom exponent that is low because the particles
+ * are large, an albedo near one because salt barely absorbs, and a mean cosine
+ * of 0.76 (Smirnov et al. 2003). Earth ships it at the optical depth below;
+ * a DEV `?aerosol=` link fills its empty fields from here.
+ */
+export const MARINE_AEROSOL_DEFAULTS: Omit<AerosolLoad, 'opticalDepth550'> = {
+  angstrom: 0.4,
+  singleScatteringAlbedo: 0.98,
+  asymmetry: 0.76,
+  scaleHeightKm: 1.2,
+};
+
+/**
+ * The aerosol Earth's air is baked with: the marine aerosol at a 550 nm
+ * optical depth of 0.06, the remote-ocean mean (AERONET island sites give
+ * 0.06-0.07 at 500 nm; the ocean-wide mean of ~0.12 includes continental
+ * pollution and dust). Chosen on look sheets beside ISS and GOES frames at
+ * 0.027, 0.06, 0.12 and 0.20: 0.027 (the grey 2e-5 /m this shipped with until
+ * 2026-10) left the sea too clean, and from 0.12 up the packed single-Mie
+ * table starts to show cyan specks at the limb.
+ */
+export const EARTH_AEROSOL: AerosolLoad = { opticalDepth550: 0.06, ...MARINE_AEROSOL_DEFAULTS };
+
 /**
  * Earth. Rayleigh coefficients are the standard clear-sky set at
  * (680, 550, 440) nm; the 440 nm value closes the sanity check that the whole
  * unit chain rests on — 3.31e-5 /m × 8000 m = 0.265 vertical optical depth,
  * the right number for a blue sky, and the same product must come out of the
- * per-AU form. Mie is the conventional grey 2e-5 /m with a 0.9 single-scattering
- * albedo (extinction = scattering / 0.9) and a 1.2 km scale height. The
- * asymmetry stays at the 0.83 the analytic shell has used, rather than the
- * 0.76-0.80 usually quoted, so the two tiers keep the same forward-scatter
- * character until a side-by-side says otherwise. Ozone is the standard
- * 10-40 km tent peaking at 25 km. Ground albedo 0.1 is the usual global mean.
+ * per-AU form. Mie is EARTH_AEROSOL, stated as observations quote it and
+ * turned into per-metre coefficients by aerosolFromOpticalDepth (the phase
+ * parameter is the Cornette-Shanks value whose mean cosine is the quoted
+ * asymmetry: 0.76 is a parameter of 0.703). The analytic shell keeps its own
+ * art-directed 0.83. Ozone is the standard 10-40 km tent peaking at 25 km.
+ * Ground albedo 0.1 is the usual global mean.
  *
  * The 100 km top is 12.5 Rayleigh scale heights and sits 27 km inside the
  * shell mesh at scale 1.02 — the taper room the module header requires.
@@ -119,10 +166,7 @@ const EARTH_SPEC: AtmosphereSpec = {
   topKm: 100,
   rayleighScaleHeightKm: 8,
   rayleighScatteringPerM: [5.8e-6, 1.35e-5, 3.31e-5],
-  mieScaleHeightKm: 1.2,
-  mieScatteringPerM: [2.0e-5, 2.0e-5, 2.0e-5],
-  mieSingleScatteringAlbedo: [0.9, 0.9, 0.9],
-  miePhaseG: 0.83,
+  ...aerosolFromOpticalDepth(EARTH_AEROSOL),
   absorption: {
     bottomKm: 10,
     peakKm: 25,
@@ -191,6 +235,142 @@ export const ATMOSPHERE_SPECS: Readonly<Record<string, AtmosphereSpec>> = {
   Mars: MARS_SPEC,
 };
 
+// ---------------------------------------------------------------------------
+// Aerosol as observations quote it
+// ---------------------------------------------------------------------------
+
+
+
+/**
+ * The mean cosine of `miePhase` at parameter g, in closed form: Cornette and
+ * Shanks' function is Henyey-Greenstein times (1 + nu^2) renormalised, and
+ * that factor pulls its mean cosine above g, to 3g(4 + g^2) / (5(2 + g^2)) —
+ * 0.868 at the 0.83 Earth ships, 0.810 at 0.76.
+ */
+export function cornetteShanksMeanCosine(g: number): number {
+  return (3 * g * (4 + g * g)) / (5 * (2 + g * g));
+}
+
+/**
+ * The `miePhase` parameter whose mean cosine is `meanCosine`: the inverse of
+ * cornetteShanksMeanCosine, by Newton's method from the mean cosine itself
+ * (the function is monotonic on (-1, 1) and within a few hundredths of the
+ * identity there, so a handful of steps reach rounding). A measured asymmetry
+ * of 0.76 is a parameter of 0.703.
+ */
+export function cornetteShanksParameter(meanCosine: number): number {
+  let g = meanCosine;
+  for (let i = 0; i < 12; i++) {
+    const f = cornetteShanksMeanCosine(g) - meanCosine;
+    const g2 = g * g;
+    const df = (3 * (8 + 2 * g2 + g2 * g2)) / (5 * (2 + g2) * (2 + g2));
+    const step = f / df;
+    g -= step;
+    if (Math.abs(step) < 1e-15) break;
+  }
+  return g;
+}
+
+/** The four fields of an `AtmosphereSpec` that describe its aerosol. */
+export type AerosolSpecFields = Pick<
+  AtmosphereSpec,
+  'mieScaleHeightKm' | 'mieScatteringPerM' | 'mieSingleScatteringAlbedo' | 'miePhaseG'
+>;
+
+/**
+ * A spec's aerosol fields from an observed load. The column of one
+ * exponential layer is its surface coefficient times its scale height (the
+ * 100 km top sits ~80 aerosol scale heights up, so the truncated tail is
+ * nothing), so the surface SCATTERING coefficient at each channel is
+ * tau(lambda) * albedo / H, and extinction comes back out as scattering over
+ * the albedo where `atmosphereParamsAU` derives it.
+ */
+export function aerosolFromOpticalDepth(load: AerosolLoad): AerosolSpecFields {
+  const heightM = load.scaleHeightKm * 1000;
+  const scattering = (lambdaNm: number): number =>
+    (load.opticalDepth550 * Math.pow(lambdaNm / 550, -load.angstrom) * load.singleScatteringAlbedo) / heightM;
+  const w = ATMOSPHERE_WAVELENGTHS_NM;
+  const albedo = load.singleScatteringAlbedo;
+  return {
+    mieScaleHeightKm: load.scaleHeightKm,
+    mieScatteringPerM: [scattering(w[0]), scattering(w[1]), scattering(w[2])],
+    mieSingleScatteringAlbedo: [albedo, albedo, albedo],
+    miePhaseG: cornetteShanksParameter(load.asymmetry),
+  };
+}
+
+
+/**
+ * `?aerosol=<tau550>[,<angstrom>[,<albedo>[,<g>[,<scale height km>]]]]`, the
+ * DEV link that boots Earth's air with another aerosol: empty fields take
+ * MARINE_AEROSOL_DEFAULTS, and a link without a finite, positive optical
+ * depth is no override at all (a mistyped link, not a request for clean air).
+ */
+export function parseAerosolParam(search: string): AerosolLoad | null {
+  const raw = new URLSearchParams(search).get('aerosol');
+  if (!raw) return null;
+  const fields = raw.split(',').map((f) => (f.trim() === '' ? NaN : Number(f)));
+  const pick = (i: number, fallback: number): number => (Number.isFinite(fields[i]) ? fields[i] : fallback);
+  const opticalDepth550 = fields[0];
+  if (!(Number.isFinite(opticalDepth550) && opticalDepth550 > 0)) return null;
+  const load: AerosolLoad = {
+    opticalDepth550,
+    angstrom: pick(1, MARINE_AEROSOL_DEFAULTS.angstrom),
+    singleScatteringAlbedo: pick(2, MARINE_AEROSOL_DEFAULTS.singleScatteringAlbedo),
+    asymmetry: pick(3, MARINE_AEROSOL_DEFAULTS.asymmetry),
+    scaleHeightKm: pick(4, MARINE_AEROSOL_DEFAULTS.scaleHeightKm),
+  };
+  const valid = load.singleScatteringAlbedo > 0 && load.singleScatteringAlbedo <= 1
+    && load.asymmetry > -1 && load.asymmetry < 1 && load.scaleHeightKm > 0;
+  return valid ? load : null;
+}
+
+/** A body's aerosol replaced for the session (DEV look sheets only). */
+const aerosolOverrides = new Map<string, { load: AerosolLoad; spec: AtmosphereSpec }>();
+
+/**
+ * Boot a body's air with another aerosol, for a look sheet. It must land
+ * before anything has read that body's parameters: the tables are baked from
+ * them once, the bake validates against the CPU reference of the same
+ * parameters, every shader's uniform block is filled from them and the
+ * highlight meter builds its own transmittance table from them, so an
+ * override after the first read would leave those disagreeing. It throws
+ * there rather than draw a mixed air. DEV only: a production build reads the
+ * shipped specs and nothing else.
+ */
+export function setAerosolOverride(name: string, load: AerosolLoad | null): void {
+  if (!import.meta.env.DEV) return;
+  const spec = ATMOSPHERE_SPECS[name];
+  if (!spec) throw new Error(`atmosphereModel: no atmosphere for ${name}`);
+  if (paramsCache.has(name)) {
+    throw new Error(`atmosphereModel: ${name}'s air has been read already; set its aerosol before the first read`);
+  }
+  if (load === null) aerosolOverrides.delete(name);
+  else aerosolOverrides.set(name, { load, spec: { ...spec, ...aerosolFromOpticalDepth(load) } });
+}
+
+/** The aerosol a body's air was booted with, or null for its shipped spec. */
+export function aerosolOverride(name: string): AerosolLoad | null {
+  return aerosolOverrides.get(name)?.load ?? null;
+}
+
+/** The spec a body's air is built from this session: its own, or (DEV) the
+ *  override a look sheet booted it with. */
+export function atmosphereSpec(name: string): AtmosphereSpec | undefined {
+  if (import.meta.env.DEV) {
+    const override = aerosolOverrides.get(name);
+    if (override) return override.spec;
+  }
+  return ATMOSPHERE_SPECS[name];
+}
+
+/** Vertical extinction optical depth of a spec's aerosol at each channel. */
+export function aerosolOpticalDepth(spec: AtmosphereSpec): RGB {
+  const heightM = spec.mieScaleHeightKm * 1000;
+  const e = (i: number): number => (spec.mieScatteringPerM[i] / spec.mieSingleScatteringAlbedo[i]) * heightM;
+  return [e(0), e(1), e(2)];
+}
+
 const RADIUS_KM_BY_BODY: Readonly<Record<string, number>> = Object.fromEntries(
   PLANETS.map((p) => [p.name, p.radiusKm]),
 );
@@ -248,18 +428,23 @@ export function bodySolarIrradianceScale(name: string): number {
  * The global multiplier between baked radiance (solar irradiance 1.0, WHITE)
  * and the renderer's display-referred frame. It is the SCENE's solar
  * irradiance at Earth, per channel: the globe is lit by a point light of
- * intensity 3 and colour 0xfff5e0, and three's Lambert term makes
- * `intensity * color` the perpendicular irradiance the ground reflects
- * (radiance = intensity * color * cos * albedo / pi). So air baked at an
- * irradiance of 1 next to it would sit three stops of exposure below the disc
- * it hazes — and, scaled by a single number, would be lit by a WHITE Sun while
- * the ground under it is lit by a warm one: +9.5% green and +34% blue on a limb
- * whose whole reading is its blue. The three values are the light's intensity
- * times its colour decoded to the linear working space; the distance law is the
- * other half of the same bridge (SOLAR_DISTANCE_DECAY). A test holds all three
- * against the light's own constants, for the same reason it holds the decay.
+ * SUN_LIGHT_INTENSITY in SUN_LIGHT_COLOR (planetarium/sunLight), and three's
+ * Lambert term makes `intensity * color` the perpendicular irradiance the
+ * ground reflects (radiance = intensity * color * cos * albedo / pi). So air
+ * baked at an irradiance of 1 next to it would sit stops of exposure below the
+ * disc it hazes, and air scaled by a number other than the light's own colour
+ * would be lit by a different Sun from the ground under it: with the cream
+ * light this replaced, a scalar put +9.5% green and +34% blue on a limb whose
+ * whole reading is its blue. The three values are DERIVED from the light's
+ * constants, per channel, so the light and the air cannot drift apart; the
+ * distance law is the other half of the same bridge (SOLAR_DISTANCE_DECAY),
+ * and a test holds it against the light's decay.
  */
-export const AIRLIGHT_SCALE: RGB = [3.0, 2.739295955374419, 2.2362126286050854];
+export const AIRLIGHT_SCALE: RGB = [
+  SUN_LIGHT_LINEAR[0] * SUN_LIGHT_INTENSITY,
+  SUN_LIGHT_LINEAR[1] * SUN_LIGHT_INTENSITY,
+  SUN_LIGHT_LINEAR[2] * SUN_LIGHT_INTENSITY,
+];
 
 /** Angular radius of the Sun as seen from Earth, radians — softens the
  *  transmittance-to-Sun terminator so the ground does not switch on in one
@@ -321,7 +506,7 @@ const paramsCache = new Map<string, AtmosphereParams>();
 export function atmosphereParamsAU(name: string): AtmosphereParams {
   const cached = paramsCache.get(name);
   if (cached) return cached;
-  const spec = ATMOSPHERE_SPECS[name];
+  const spec = atmosphereSpec(name);
   const radiusKm = RADIUS_KM_BY_BODY[name];
   if (!spec || !radiusKm) throw new Error(`atmosphereModel: no atmosphere for ${name}`);
 
@@ -425,7 +610,7 @@ export interface AtmosphereTableSizes {
 
 /** Desktop tables: transmittance 256×64, scattering 256×128×32, irradiance
  *  64×16 — Bruneton's reference sizes. 8 MiB of RGBA16F for the scattering
- *  accumulator. */
+ *  accumulator, and 4 of RG16F for single Mie's colour beside it. */
 export const ATMOSPHERE_TABLE_SIZES_FULL: AtmosphereTableSizes = {
   transmittanceW: 256,
   transmittanceH: 64,
@@ -437,7 +622,8 @@ export const ATMOSPHERE_TABLE_SIZES_FULL: AtmosphereTableSizes = {
   irradianceH: 16,
 };
 
-/** Touch tables: the scattering table halves on μ_s and μ to 128×64×32 (2 MiB).
+/** Touch tables: the scattering table halves on μ_s and μ to 128×64×32 (2 MiB,
+ *  and 1 for the single-Mie colour).
  *  ν stays at 8 — it is the axis the limb bands on, and halving it is visible
  *  where halving μ_s is not. */
 export const ATMOSPHERE_TABLE_SIZES_HALF: AtmosphereTableSizes = {
@@ -714,14 +900,23 @@ export function rMuSFromIrradianceUv(
 // ---------------------------------------------------------------------------
 
 /**
+ * The CPU twin of the shader's packed fallback, which the lookups take only
+ * with `?mieexact=0`: by default they read single Mie's green and blue from
+ * their own table (world/atmosphereLut, MIE_EXACT) and this is not their path.
+ *
  * Recover the single-Mie term from the scattering texel. The layout stores
  * Rayleigh in RGB and only the red Mie channel in alpha, and reconstructs the
- * other two by assuming Mie and Rayleigh have the same spectral shape along the
- * path. The reconstruction divides by the red Rayleigh channel, which goes to
- * zero exactly where the difference-of-two-lookups regime lives — the limb and
- * the far side of the terminator, in half precision, where the two lookups
- * nearly cancel. Without the guard that is coloured speckle along the two
- * features the tables exist to draw.
+ * other two by assuming single Mie has the spectral shape of what RGB holds.
+ * It does not: RGB carries the higher orders with their own colour, and
+ * Rayleigh and Mie weight the transmittance along a path by different density
+ * profiles. Against the exact single Mie it is within 2 % away from the Sun and
+ * from the ground, but toward a low Sun the lowest twilight band comes out a
+ * third to a half too bright in green and blue. The reconstruction divides by
+ * the red Rayleigh channel, which goes to zero exactly where the
+ * difference-of-two-lookups regime lives — the limb and the far side of the
+ * terminator, in half precision, where the two lookups nearly cancel. Without
+ * the guard that is coloured speckle along the two features the tables exist
+ * to draw.
  */
 export function extrapolateSingleMieScattering(
   params: AtmosphereParams,

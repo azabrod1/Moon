@@ -10,10 +10,12 @@
 //   node tools/shoot.mjs --label=crescent --phase=145   # back-lit crescent
 //
 // Renders on the real GPU (ANGLE/Metal) by default; pass --software to force
-// SwiftShader if a machine's headless GPU path returns black frames.
+// SwiftShader if a machine's headless GPU path returns black frames. Takes
+// /tmp/moon-browser.lock (tools/browserLock.mjs).
 import { chromium } from 'playwright';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import { takeBrowserLock } from './browserLock.mjs';
 
 function arg(name, def) {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
@@ -38,6 +40,7 @@ await mkdir(outDir, { recursive: true });
 // identically here. Pass --software to force SwiftShader if a machine's
 // headless GPU path returns black frames.
 const useGpu = !process.argv.includes('--software');
+const release = await takeBrowserLock('shoot');
 const browser = await chromium.launch({
   headless: true,
   executablePath: process.env.PW_CHROMIUM || undefined, // pinned-browser environments
@@ -113,6 +116,7 @@ try {
   }
 } finally {
   await browser.close();
+  release();
 }
 
 console.log(`[shoot] done: ${captured}/${bodies.length} captured in ${outDir}`);

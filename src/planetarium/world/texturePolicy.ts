@@ -26,7 +26,8 @@ export type TextureTier = (typeof TEXTURE_TIERS)[number];
  *
  * - `color`: an sRGB image whose three channels are all read.
  * - `data`: a linear image whose channels are all read — a noise field with
- *   its gradient packed beside it.
+ *   its gradient packed beside it, or the sea's wind map (its speed in red,
+ *   the wind's axis in green and blue: world/seaWind).
  * - `normal`: a linear tangent normal map. Only x and y are read: the shader
  *   rebuilds z from them (a unit normal's z is √(1 − x² − y²), and the blue
  *   the files still carry says the same thing to within half a degree at the

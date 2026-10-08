@@ -30,6 +30,9 @@ import { SECTOR_GRID_16K, SECTOR_TILE, dataCropLayout, type SectorGrid } from '.
 import { SECTOR_NIGHT_SETS, SECTOR_SETS, levelSourceWidth, type SectorSetSpec, type SectorSide, type SectorTileSet } from './sectorStreamer';
 import { SECTOR_SET_TABLE, type GeneratedSectorSet } from './sectorSets.generated';
 import { PLANET_TEXTURE_FILES } from './textureLadder';
+import {
+  CLOUD_FIELD_GRID, CLOUD_FIELD_LEVEL_WIDTH, CLOUD_FIELD_SETS, CLOUD_PAGE_CONTENT, CLOUD_PAGE_GUTTER, CLOUD_PAGE_SIZE,
+} from './cloudField';
 // The function that names a set on disk, not a copy of its formula: two
 // implementations would be two opinions about what a folder name promises.
 import { setHash8, tileNames } from '../../../tools/tileSetHash.mjs';
@@ -546,5 +549,73 @@ describe('sector tile sets: the files on disk', () => {
       const hash = await setHash8(dir, tileNames(readdirSync(dir)));
       expect(hash, `${body} ${slot} ${set.key}/${set.tier}`).toBe(set.hash);
     }
+  });
+});
+
+/** Why the cloud field's sets may be absent from a tiles root — and from
+ *  public/ they always are. They are read by every session that has the field
+ *  (on unless `?cloudtiles=0`), from the dev server's staging in development
+ *  and from the tiles host in a production build; a page that is not there
+ *  leaves the deck on its base sheet, which is the picture every session
+ *  without the field draws. */
+export const CLOUD_FIELD_ABSENCE = 'the cloud field is served from staging or the tiles host, never from public/';
+
+describe('the cloud field\'s sets', () => {
+  const tiers = [CLOUD_FIELD_SETS.opacity, CLOUD_FIELD_SETS.brightness];
+
+  it('are named in the generated table at the layout the field samples', () => {
+    // The page arithmetic (world/cloudField) is the field's own and the table
+    // is what gen-tiles measured on the files: a page cut at another size or
+    // grid would agree with itself everywhere and land every fetch on the
+    // wrong cell.
+    for (const tier of tiers) {
+      const entry = SECTOR_SET_TABLE[`${CLOUD_FIELD_SETS.key}/${tier}`];
+      expect(entry, `${CLOUD_FIELD_SETS.key}/${tier}: no generated entry`).toBeDefined();
+      expect(entry.setHash8, tier).toMatch(/^[0-9a-f]{8}$/);
+      expect(entry.grid, tier).toEqual({ cols: CLOUD_FIELD_GRID[0], rows: CLOUD_FIELD_GRID[1] });
+      expect(entry.content, tier).toBe(CLOUD_PAGE_CONTENT);
+      expect(entry.gutter, tier).toBe(CLOUD_PAGE_GUTTER);
+      expect({ width: entry.tileWidth, height: entry.tileHeight }, tier)
+        .toEqual({ width: CLOUD_PAGE_SIZE, height: CLOUD_PAGE_SIZE });
+      expect(entry.baseWidth, tier).toBe(CLOUD_FIELD_LEVEL_WIDTH);
+      expect(entry.spanU, tier).toBe(1);
+      expect(entry.fileCount, tier).toBe(CLOUD_FIELD_GRID[0] * CLOUD_FIELD_GRID[1]);
+    }
+  });
+
+  it('are keyed by the stem of the master they were cut from, which the deck\'s base sheet shares', () => {
+    // One master, one stem: the base sheet and the pages are both cut from
+    // NASA's cloud master (gen-tiles `clouds`), so a re-cut master ships both
+    // under a new stem and a page never arrives over a sheet of another sky.
+    const stem = (file: string) => file.replace(/^.*\//, '').replace(/\.webp$/, '');
+    expect(CLOUD_FIELD_SETS.key).toBe(stem(PLANET_TEXTURE_FILES.earthClouds));
+    // Two tiers of one level, told apart by their plane.
+    expect(CLOUD_FIELD_SETS.opacity).toBe('32k-a');
+    expect(CLOUD_FIELD_SETS.brightness).toBe('32k-p');
+  });
+
+  it('are full grids named for their bytes wherever a root holds them, and absent only for the field\'s reason', async () => {
+    let read = 0;
+    for (const tier of tiers) {
+      const entry = SECTOR_SET_TABLE[`${CLOUD_FIELD_SETS.key}/${tier}`];
+      const dir = resolve(TILES_ROOT, CLOUD_FIELD_SETS.key, `${tier}.${entry.setHash8}`);
+      if (!existsSync(dir)) {
+        console.log(`  skipped (not under ${TILES_ROOT}) ${CLOUD_FIELD_SETS.key}/${tier}: ${CLOUD_FIELD_ABSENCE}`);
+        continue;
+      }
+      const files = readdirSync(dir).filter((f) => f.endsWith('.webp')).sort();
+      const expected: string[] = [];
+      for (let r = 0; r < entry.grid.rows; r++) {
+        for (let c = 0; c < entry.grid.cols; c++) expected.push(`${c}_${r}.webp`);
+      }
+      expect(files, tier).toEqual(expected.sort());
+      // One header per set: a set is cut in a single pass by a single encoder.
+      expect(webpSize(resolve(dir, files[0])), tier).toEqual({ width: CLOUD_PAGE_SIZE, height: CLOUD_PAGE_SIZE });
+      expect(await setHash8(dir, tileNames(readdirSync(dir))), tier).toBe(entry.setHash8);
+      read += 1;
+    }
+    // public/ never holds them: a field shipped inside the app would be a few
+    // hundred megabytes in every deploy.
+    if (!process.env.TILES_ROOT) expect(read).toBe(0);
   });
 });

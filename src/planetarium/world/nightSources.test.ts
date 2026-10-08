@@ -45,6 +45,7 @@ import { BLOOM_THRESHOLD } from '../../app/bloomConfig';
 import { EARTH_NIGHT_MIX_SCALE, EARTH_NIGHT_WARM } from '../../shared/shaders/atmosphere';
 import { CLOUD_CITY_GLOW } from './cloudDeck';
 import { PLANETS } from '../planets/planetData';
+import { SUN_LIGHT_AUTHORED_HUE } from '../sunLight';
 
 /**
  * The night side's sources: the shared weight that fades all of them, the
@@ -420,12 +421,12 @@ describe('moonlight', () => {
     const luminance = (c: readonly number[]): number =>
       0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
     expect(luminance(MOONLIGHT_TINT)).toBeCloseTo(1, 12);
-    // ...and it is the authored triple and nothing else: the same ratios, one
-    // divisor apart.
+    // ...and it is the authored triple in the hue it was judged under (the
+    // cream the Sun was authored in, now carried here since the light is
+    // neutral) and nothing else: the same ratios, one divisor apart.
+    const judged = MOONLIGHT_TINT_AUTHORED.map((v, c) => v * SUN_LIGHT_AUTHORED_HUE[c]);
     for (let c = 0; c < 3; c++) {
-      expect(MOONLIGHT_TINT[c]).toBeCloseTo(
-        MOONLIGHT_TINT_AUTHORED[c] / luminance(MOONLIGHT_TINT_AUTHORED), 12,
-      );
+      expect(MOONLIGHT_TINT[c]).toBeCloseTo(judged[c] / luminance(judged), 12);
     }
     // Cool: blue over green over red, which is the direction of the choice.
     expect(MOONLIGHT_TINT[2]).toBeGreaterThan(MOONLIGHT_TINT[1]);
@@ -696,7 +697,10 @@ describe('the bloom threshold', () => {
     const H = p.topRadius - p.bottomRadius;
     let peak = 0;
     for (let i = 0; i <= 8; i++) peak = Math.max(peak, sweep(p.bottomRadius + (H * i) / 8));
-    expect(peak).toBeGreaterThan(1);
+    // The floor only proves the sweep found the aureole: 0.68 with the marine
+    // aerosol's phase parameter of 0.703 (it was 1.3 at the old 0.83, whose
+    // forward peak was six times sharper).
+    expect(peak).toBeGreaterThan(0.5);
     expect(peak * MULTIPLE_SCATTERING_HEADROOM).toBeLessThanOrEqual(PEAK_TABLE_SKY_RADIANCE);
   });
 
@@ -800,10 +804,14 @@ describe('the bloom threshold', () => {
     }
     // The ceiling the module's own comment quotes, re-derived, and where the
     // gain sits under it. Both bounds, so neither a raised gain nor a ceiling
-    // that quietly moved can pass unremarked.
-    expect(maxGain).toBeGreaterThan(1.8e5);
-    expect(maxGain).toBeLessThan(1.9e5);
+    // that quietly moved can pass unremarked. The marine aerosol of 2026-10
+    // (a phase parameter of 0.703 against the old 0.83) lowered the haze
+    // term and lifted the ceiling from 1.85e5 to 2.76e5; the gain stays at
+    // the value the night-side look was judged at, now 0.63 of the ceiling.
+    expect(maxGain).toBeGreaterThan(2.7e5);
+    expect(maxGain).toBeLessThan(2.8e5);
     expect(MOONLIGHT_NIGHT_GAIN).toBeLessThan(maxGain);
-    expect(MOONLIGHT_NIGHT_GAIN / maxGain).toBeGreaterThan(0.9);
+    expect(MOONLIGHT_NIGHT_GAIN / maxGain).toBeGreaterThan(0.6);
+    expect(MOONLIGHT_NIGHT_GAIN / maxGain).toBeLessThan(0.7);
   });
 });

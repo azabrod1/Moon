@@ -21,18 +21,33 @@
  * air's in-scattered light, and an additive layer that added it again would
  * count the night side's airlight twice.
  *
- * Depth is the whole mechanism by which a sector replaces the shell under it,
- * and it is not the mechanism the day tiles use. A day tile replaces the globe
- * because the GLOBE writes depth and the tile, drawn first, writes a nearer
- * one; the night shell writes no depth at all, so a night sector that wrote
- * none either would simply add on top of it and every resident sector would be
- * exactly twice as bright, with a rectangle at its edge. So a night sector
- * material writes depth (at the shell's own radius, pulled one unit nearer per
- * level so the shell's coincident fragments are strictly further and fail the
- * test) while staying `transparent: true` — the flag here is a render-list
- * choice, not a blending one. Additive blending applies either way, but an
- * opaque-list sector at a negative renderOrder would draw before the globe and
- * punch it out under itself.
+ * What replaces the shell under a sector is the CUT (world/groundCull), and it
+ * is not the mechanism the day tiles use. A day tile replaces the globe by
+ * depth: the globe writes depth and the tile, drawn first, writes a nearer
+ * one. Depth cannot do it here. The tiles are built at the GLOBE's radius
+ * (PlanetariumMode registers the family) and the shell 6 km above it, so for
+ * any camera outside the globe the shell is the NEARER surface: it passes the
+ * depth test over a tile by tens of depth units at orbital range, far past
+ * what a units-only offset reaches, and both layers are additive, so the shell
+ * would add its lights again over every resident tile — a rectangle twice as
+ * bright. So the streamer leaves the shell's leaves under every drawn night
+ * tile out of the shell's draw, and the family sets `cutAlways`: that cut
+ * stands under `?groundcull=0` and the DEV switch, which are cost switches for
+ * ground that loses the depth test anyway and would otherwise change this
+ * picture.
+ *
+ * A night sector material still writes depth, pulled one unit nearer per
+ * level on top of the shell's base bias, while staying `transparent: true` —
+ * the flag here is a render-list choice, not a blending one. The depth write
+ * and the offset are there for the tile against the GROUND under it (the
+ * globe's own lattice, where the depths tie exactly and the offset puts the
+ * tile in front of the day tiles over the same ground) and for the night
+ * levels' order among themselves, finest nearest. Its silhouette is the
+ * ground's own: built at the shell's radius the tiles wrote depth 6 km past
+ * the ground's limb, and the air behind that band was rejected, a black line
+ * along the horizon. Additive blending applies either way, but an opaque-list
+ * sector at a negative renderOrder would draw before the globe and punch it
+ * out under itself.
  *
  * The shell keeps `depthWrite: false`: it is the layer being replaced, and
  * writing depth over the whole night hemisphere would reject the cloud deck
@@ -153,11 +168,16 @@ export function createEarthNightSectorMaterial(
   uniforms.uUvRepeat = { value: maps.map.repeat.clone() };
   const mat = nightMaterial(uniforms, (shell.defines ?? {}) as Record<string, string>);
   mat.depthWrite = true;
-  // The sector's vertices coincide with the shell's, so the depth it writes
-  // ties exactly with the shell's fragments and three's LessEqual test passes
-  // on a tie. A units-only offset breaks it one step per level, finest
-  // nearest. The slope factor stays 0: it grows without bound at the limb,
-  // where it would pull a sector out through the cloud deck above it.
+  // The sector's vertices coincide with the GLOBE's (it is built at the
+  // globe's radius on the globe's lattice), so the depth it writes ties exactly
+  // with the ground under it, and three's LessEqual test passes on a tie. The
+  // units-only offset, one step per level on top of the shell's base, puts it
+  // in front of the day tiles over the same ground and orders the night levels
+  // among themselves, finest nearest. It does not put the tile in front of the
+  // shell, which is 6 km further out and the nearer surface: the streamer's
+  // cut leaves the shell out under a drawn tile (the family's cutAlways). The
+  // slope factor stays 0: it grows without bound at the limb, where it would
+  // pull a sector out through the cloud deck above it.
   mat.polygonOffset = true;
   mat.polygonOffsetFactor = 0;
   mat.polygonOffsetUnits = -nightSectorDepthBiasUnits(level);
@@ -188,5 +208,17 @@ export function earthNightSectorFamily(shell: THREE.ShaderMaterial): SectorFamil
         | undefined;
       return img && typeof img.width === 'number' ? img.width : 0;
     },
+    // One program by construction — the same text and the shell's own defines
+    // object — and asked rather than assumed, so a sector built any other way
+    // covers nothing.
+    sharesProgram: (coverer, covered) => {
+      const a = coverer as THREE.ShaderMaterial;
+      const b = covered as THREE.ShaderMaterial;
+      return a.vertexShader === b.vertexShader && a.fragmentShader === b.fragmentShader && a.defines === b.defines;
+    },
+    // The shell is the nearer surface and both layers add, so the cut is the
+    // only thing that keeps a tile's lights from being drawn twice: it is not
+    // the cost switch `?groundcull=0` turns off (the header says why).
+    cutAlways: true,
   };
 }

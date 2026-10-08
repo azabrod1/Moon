@@ -36,6 +36,9 @@
  * - RCAS's noise-detection term (FSR_RCAS_DENOISE) is left out, as the
  *   reference recommends for content without film grain.
  * - Alpha is written as 1: the canvas is opaque.
+ * - Both shaders carry the output dither (app/outputDither.ts): one LSB of
+ *   fixed grain added just before the store, on whichever of the two draws
+ *   the canvas (the pass sets uDither per render); `?dither=0` makes it zero.
  *
  * Input requirements, from the reference: colour in [0, 1], tone-mapped and
  * display-encoded (sRGB), no alpha, no banding, 32-bit-per-pixel storage —
@@ -61,6 +64,7 @@
  * THE SOFTWARE.
  * ---------------------------------------------------------------------------
  */
+import { OUTPUT_DITHER_GLSL } from './outputDither';
 
 /**
  * RCAS's default sharpness, in stops below maximum (0 = sharpest; each stop
@@ -181,6 +185,7 @@ uniform sampler2D tInput;
 uniform vec4 uCon0;
 uniform ivec2 uInputMax;
 out vec4 fragColor;
+${OUTPUT_DITHER_GLSL}
 ${PRX_GLSL}
 vec3 tap(ivec2 p) { return texelFetch(tInput, clamp(p, ivec2(0), uInputMax), 0).rgb; }
 
@@ -310,8 +315,8 @@ void main() {
   easuTap(aC, aW, vec2( 1.0,  0.0) - pp, dir, len2, lob, clp, tG);
   easuTap(aC, aW, vec2( 1.0,  2.0) - pp, dir, len2, lob, clp, tO);
   easuTap(aC, aW, vec2( 0.0,  2.0) - pp, dir, len2, lob, clp, tN);
-  // Normalize and dering.
-  fragColor = vec4(min(max4, max(min4, aC * (1.0 / aW))), 1.0);
+  // Normalize and dering, then the dither for this 8-bit write (app/outputDither.ts).
+  fragColor = vec4(min(max4, max(min4, aC * (1.0 / aW))) + outputDither(gl_FragCoord.xy), 1.0);
 }
 `;
 
@@ -327,6 +332,7 @@ uniform sampler2D tInput;
 uniform ivec2 uInputMax;
 uniform float uSharpness;
 out vec4 fragColor;
+${OUTPUT_DITHER_GLSL}
 ${PRX_GLSL}
 vec3 tap(ivec2 p) { return texelFetch(tInput, clamp(p, ivec2(0), uInputMax), 0).rgb; }
 // FSR_RCAS_LIMIT: the limit of providing unnatural results for sharpening.
@@ -361,7 +367,8 @@ void main() {
   float lobe = max(-RCAS_LIMIT, min(max(lobeRGB.r, max(lobeRGB.g, lobeRGB.b)), 0.0)) * uSharpness;
   // Resolve, which needs the medium precision rcp approximation to avoid visible tonality changes.
   float rcpL = prxMedRcp(4.0 * lobe + 1.0);
-  fragColor = vec4((lobe * (b + d + h + f) + e) * rcpL, 1.0);
+  // The resolve, then the dither for this 8-bit write (app/outputDither.ts).
+  fragColor = vec4((lobe * (b + d + h + f) + e) * rcpL + outputDither(gl_FragCoord.xy), 1.0);
 }
 `;
 

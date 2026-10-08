@@ -20,6 +20,10 @@ import {
   sphereDirection,
 } from './sectorGrid';
 import { DEG2RAD } from '../../shared/math/angles';
+import { GEOMETRY_UPGRADE_SEGMENTS } from '../PlanetFactory';
+import { PLANETS } from '../planets/planetData';
+import { MOONS } from '../planets/moonData';
+import { SECTOR_MAX_LEVEL, SECTOR_SEGMENTS } from './sectorStreamer';
 
 const G = SECTOR_GRID_16K;
 const allSectors = () => {
@@ -366,4 +370,98 @@ describe('sectorNearestDirection', () => {
     const out = sectorNearestDirection(G, { c: 5, r: 0 }, d, new THREE.Vector3());
     expect(out.distanceTo(d)).toBeLessThan(1e-9);
   });
+});
+
+describe('every sector triangle is a globe triangle, bit for bit', () => {
+  // The streamer leaves out of a coarser mesh the cells a finer drawn tile
+  // covers (world/groundCull). That is exact only if the tile rasterises every
+  // one of those cells exactly as the coarser mesh would have: the same float32
+  // vertex positions, the same triangles in the same vertex order (so the same
+  // winding and the same diagonal), and nothing more or less. Pinned here at the
+  // radii the app actually builds, for every sector of every level a set may
+  // declare, poles and the date line included, against the fine globe.
+  const earth = PLANETS.find((p) => p.name === 'Earth')!;
+  const mars = PLANETS.find((p) => p.name === 'Mars')!;
+  const moon = MOONS.find((m) => m.name === 'Moon')!;
+  // Earth's night tiles are built at the globe's radius too, not the night
+  // shell's (PlanetariumMode registers the family and says why), so the one
+  // Earth radius covers both families.
+  const radii: Array<[string, number]> = [
+    ['Earth', earth.radiusAU],
+    ['the Moon', moon.radiusAU],
+    ['Mars', mars.radiusAU],
+  ];
+
+  it('the levels share the fine globe\'s lattice', () => {
+    expect(SECTOR_SEGMENTS * G.cols).toBe(GEOMETRY_UPGRADE_SEGMENTS);
+    expect(SECTOR_SEGMENTS * G.rows).toBe(GEOMETRY_UPGRADE_SEGMENTS / 2);
+    expect(SECTOR_SEGMENTS >> SECTOR_MAX_LEVEL).toBeGreaterThanOrEqual(3);
+  });
+
+  for (const [name, radius] of radii) {
+    it(`at ${name}'s radius`, () => {
+      const W = GEOMETRY_UPGRADE_SEGMENTS;
+      const H = W / 2;
+      const globe = new THREE.SphereGeometry(radius, W, H);
+      const gp = globe.getAttribute('position').array as Float32Array;
+      const gBits = new Uint32Array(gp.buffer, gp.byteOffset, gp.length);
+      const gIndex = globe.index!.array;
+      const globeTris = gIndex.length / 3;
+      // Vertex ids are under 2^16, so a triangle's ordered triple is one exact
+      // number: the same three ids in another order is another key.
+      const triKey = (a: number, b: number, c: number) => (a * 65536 + b) * 65536 + c;
+      const triOf = new Map<number, number>();
+      for (let t = 0; t < globeTris; t++) {
+        triOf.set(triKey(gIndex[3 * t], gIndex[3 * t + 1], gIndex[3 * t + 2]), t);
+      }
+
+      const faults: string[] = [];
+      for (let level = 0; level <= SECTOR_MAX_LEVEL; level++) {
+        let grid = G;
+        for (let k = 0; k < level; k++) grid = finerGrid(grid);
+        const seg = SECTOR_SEGMENTS >> level;
+        const hits = new Uint8Array(globeTris);
+        let positionMismatches = 0;
+        let strayTriangles = 0;
+        for (let r = 0; r < grid.rows; r++) {
+          for (let c = 0; c < grid.cols; c++) {
+            const geo = sectorSphereGeometry(radius, grid, { c, r }, seg);
+            const sp = geo.getAttribute('position').array as Float32Array;
+            const sBits = new Uint32Array(sp.buffer, sp.byteOffset, sp.length);
+            // A sector's vertex (ix, iy) is the globe's (c·seg + ix, r·seg + iy).
+            const globeVertex = (i: number) => {
+              const ix = i % (seg + 1);
+              const iy = (i - ix) / (seg + 1);
+              return (r * seg + iy) * (W + 1) + c * seg + ix;
+            };
+            for (let i = 0; i < sp.length / 3; i++) {
+              const g = globeVertex(i);
+              for (let k = 0; k < 3; k++) {
+                if (sBits[3 * i + k] !== gBits[3 * g + k]) {
+                  positionMismatches++;
+                  if (faults.length < 8) faults.push(`L${level} ${c}_${r} vertex ${i} axis ${k}`);
+                }
+              }
+            }
+            const sIndex = geo.index!.array;
+            for (let t = 0; t < sIndex.length; t += 3) {
+              const hit = triOf.get(triKey(globeVertex(sIndex[t]), globeVertex(sIndex[t + 1]), globeVertex(sIndex[t + 2])));
+              if (hit === undefined) {
+                strayTriangles++;
+                if (faults.length < 8) faults.push(`L${level} ${c}_${r} triangle ${t / 3} is not a globe triangle`);
+              } else {
+                hits[hit]++;
+              }
+            }
+          }
+        }
+        expect(positionMismatches, faults.join('; ')).toBe(0);
+        expect(strayTriangles, faults.join('; ')).toBe(0);
+        // A level's sectors tile the globe: every globe triangle exactly once.
+        let once = 0;
+        for (let t = 0; t < globeTris; t++) if (hits[t] === 1) once++;
+        expect(once, `level ${level}`).toBe(globeTris);
+      }
+    });
+  }
 });

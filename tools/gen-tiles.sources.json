@@ -34,7 +34,18 @@
     "height": 4096,
     "product": "Solar System Scope 8K Earth clouds (CC BY 4.0)",
     "used_by": [
-      "8k/earth-clouds.webp (encode-textures q60)"
+      "the cloud master's grade and longitude reference (tools/gen-cloudmaster.mjs); the deck's own rungs are cut from that master"
+    ]
+  },
+  "earth-clouds.v2.43200x21600.r8": {
+    "sha256": "88854478db0911ed9e0b90a9dc08f23511693d3424b7b7be6d8be408b081537c",
+    "bytes": 933120000,
+    "width": 43200,
+    "height": 21600,
+    "product": "NASA Blue Marble cloud hemispheres (cloud.W/E.2001210, 21600x21600 each) assembled, retouched and graded by tools/gen-cloudmaster.mjs; one byte a texel, row 0 = +90, column 0 = -180",
+    "used_by": [
+      "gen-tiles clouds --base: earth-clouds.v2.webp (2K boot), 4k/ and 8k/earth-clouds.v2.webp (q60), their ktx2 rungs (gen-ktx2) and earth-clouds-normal.v2.webp (gen-maps)",
+      "gen-tiles clouds: the cloud field sets earth-clouds.v2/{16k,32k}-{a,p}"
     ]
   },
   "bmng_200408_21600x21600_A1.jpg": {

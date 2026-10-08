@@ -21,6 +21,7 @@ import {
   ATMOSPHERE_LOOKUP_GLSL,
   aerialSegmentRay,
   atmosphereTableDefines,
+  parseMieExactParam,
   type AtmosphereTables,
 } from './atmosphereLut';
 import { createAtmosphereShellMaterial } from './atmosphereShell';
@@ -30,6 +31,14 @@ import { KM_PER_AU } from '../../astronomy/constants';
 import { CASTER_PERIGEE_MARGIN } from './moonShadowCasters';
 import {
   AIR_LOOKUP_RADIUS,
+  CLOUD_FIELD_DECLS,
+  CLOUD_FIELD_MIX,
+  CLOUD_SHADOW_AIR,
+  CLOUD_SHADOW_DEPTH,
+  CLOUD_SHADOW_GAMMA,
+  CLOUD_SHADOW_SKY_FILL,
+  CLOUD_LIGHT_SKY,
+  CLOUD_LIGHT_WRAP,
   NIGHT_LIGHTS_AIR_LOOKUP_RADIUS,
   SURFACE_HAZE_CLEAR_VIEW,
   augmentSurfaceMaterial,
@@ -37,10 +46,13 @@ import {
   clearSurfaceAir,
   createSurfaceAirFx,
   seatSurfaceLook,
-  type SurfaceArchetype, OCEAN_GLINT_CAP, OCEAN_SPECULAR_KEEP,
+  type SurfaceArchetype, OCEAN_BEAM_CAP, OCEAN_BEAM_KNEE, OCEAN_GLINT_CAP,
+  SEA_WATER_COLOUR,
 } from './surfaceShading';
 import { DEFAULT_ALBEDO_PIVOT, resetSurfaceLookForTests, setSurfaceLookOverride } from './surfaceLook';
 import { createEarthNightShellMaterial } from './earthNightMaterial';
+import { resolveDefine } from '../testing/glslDefine';
+import { CLOUD_FIELD_DIAGNOSTICS } from './cloudField';
 
 /**
  * Aerial perspective — the air between the camera and everything drawn in front
@@ -85,6 +97,7 @@ function fakeTables(body: string): AtmosphereTables {
     transmittance: new THREE.DataTexture(),
     scattering: new THREE.Data3DTexture(),
     irradiance: new THREE.DataTexture(),
+    mieColour: new THREE.Data3DTexture(),
   } as unknown as AtmosphereTables;
 }
 
@@ -99,10 +112,30 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '73ca9256cfef06699d501d4e4d24465f545d72f2ac1b3611e7352f0ae094abe5';
-const PROD_FRAGMENT_HASH = '417a33dbf23e24cbfe5931772822d71bd90ef5a1c9f032058e8537768bd922f5';
+const DEV_FRAGMENT_HASH = '097b8c308d47f8d5c1b8ca5c7939e87b77be92a870702f5619c11a951913b875';
+const PROD_FRAGMENT_HASH = '263f7bbaee4f4260308917e758f33435f5a13c2bba8ba826781c9df4c3faac58';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
-
+/** The two texts with the cloud field's define OFF (world/cloudField),
+ *  resolved as the preprocessor resolves it: each of the field's two chunks
+ *  leaves the one blank line it opens with. */
+const FIELD_OFF_DEV_FRAGMENT_HASH = '46493ae410716e27f66348c35412af754c921c17866de68ca7470e26a3960e50';
+const FIELD_OFF_PROD_FRAGMENT_HASH = 'fb520340d5efb6432975f48899626a4cb5444db96e5b54f9cb97f2bd945c0d76';
+/** The production text from before the field reached a production build:
+ *  the shipped text with the field's two chunks deleted, newlines and all, and
+ *  the later single-Mie colour's define resolved off. */
+const PRE_FIELD_PROD_FRAGMENT_HASH = 'b87c20440020fd23d602a3703abc87c7c77ac95db567d71ad7ae8d46a75d7023';
+/** The same two texts with the cloud shadow's, the cloud light's and the
+ *  cloud field's defines all OFF, resolved as the preprocessor resolves them:
+ *  the texts from before the switches existed, but for the field's two blank
+ *  lines. */
+const OFF_DEV_FRAGMENT_HASH = '9b1b882d217285de54bdfc6f0d73ad6fea97b332f4a2107b4916458e1ebd2c9c';
+const OFF_PROD_FRAGMENT_HASH = '8c8e7f18b76c5fd950db2673ea503310819172face8727d5bf246fb319561411';
+/** The injected surface text and the LUT shell's with the single-Mie colour's
+ *  define OFF (`?mieexact=0`), resolved as the preprocessor resolves it: the
+ *  hashes these texts carried before the colour table existed, unchanged. */
+const MIE_OFF_DEV_FRAGMENT_HASH = '7674725c2c7d73b70a6fe5be50b087ae049a367cbeae2dfbd094e85b9a99d9de';
+const MIE_OFF_PROD_FRAGMENT_HASH = 'b0a61776582b89171ca565e5eba8f9f72d84287878f1ae81a8f791791c556731';
+const MIE_OFF_SHELL_FRAGMENT_HASH = 'e613114e0023b6b45b235dd92c7039cc5ea90113839778b234f4e249acc89b01';
 describe('the injected surface shader', () => {
   it('is one text for every body and both tiers', () => {
     // Earth with air, the Moon without, Mars with its own, and the cloud deck.
@@ -152,6 +185,153 @@ describe('the injected surface shader', () => {
       .toBe(import.meta.env.DEV ? DEV_FRAGMENT_HASH : PROD_FRAGMENT_HASH);
   });
 
+  it('is the text it was with the cloud shadow\'s and the cloud light\'s defines off, after the preprocessor', () => {
+    // CLOUD_SHADOW and CLOUD_LIGHT (world/surfaceShading) are compile-time
+    // defines, on unless their kill switches turn them off, and every line
+    // either adds is a whole line inside its own conditional. So with both off
+    // (`?cloudshadows=0`, `?cloudlight=0`) the program the driver compiles is
+    // the program from before the switches existed, character for character —
+    // the ground's and the deck's alike, since the deck takes the same text —
+    // the zero-pixel claim by construction, which the pixel gate then checks.
+    const shader = compile(augmented('earth'));
+    // The cloud field's define is resolved off too: the deck's alone, off
+    // under `?cloudtiles=0` (world/cloudField).
+    const off = resolveDefine(resolveDefine(resolveDefine(shader.fragmentShader, 'CLOUD_FIELD', false),
+      'CLOUD_SHADOW', false), 'CLOUD_LIGHT', false);
+    expect(off).not.toMatch(/CLOUD_SHADOW|CLOUD_LIGHT|CLOUD_FIELD/);
+    expect(compile(augmented('cloud')).fragmentShader).toBe(shader.fragmentShader);
+    expect(hash(off)).toBe(import.meta.env.DEV ? OFF_DEV_FRAGMENT_HASH : OFF_PROD_FRAGMENT_HASH);
+    // And the vertex stage never had any of it.
+    expect(shader.vertexShader).not.toContain('CLOUD_SHADOW');
+  });
+
+  it('is the text it was with the single-Mie colour\'s define off, after the preprocessor', () => {
+    // MIE_EXACT (world/atmosphereLut) is a compile-time define, on unless
+    // `?mieexact=0`. Every line it adds is a whole line inside its own
+    // conditional and every line it replaces stands verbatim in the #else, so
+    // with it off the ground, the deck and the LUT shell compile the programs
+    // from before the colour table existed, character for character.
+    const shader = compile(augmented('earth'));
+    const off = resolveDefine(shader.fragmentShader, 'MIE_EXACT', false);
+    expect(off).not.toMatch(/MIE_EXACT|uMieColour|getScatteringAndMieColour3D|getMieColour3D/);
+    expect(hash(off)).toBe(import.meta.env.DEV ? MIE_OFF_DEV_FRAGMENT_HASH : MIE_OFF_PROD_FRAGMENT_HASH);
+    expect(compile(augmented('cloud')).fragmentShader).toBe(shader.fragmentShader);
+    expect(shader.vertexShader).not.toContain('MIE_EXACT');
+    const shell = createAtmosphereShellMaterial({
+      planetRadius: 4.2635e-5, body: 'Earth', sizes: ATMOSPHERE_TABLE_SIZES_FULL,
+    });
+    const shellOff = resolveDefine(shell.fragmentShader, 'MIE_EXACT', false);
+    expect(shellOff).not.toMatch(/MIE_EXACT|uMieColour/);
+    expect(hash(shellOff)).toBe(MIE_OFF_SHELL_FRAGMENT_HASH);
+    // The define rides with the table sizes, so every program that compiles
+    // the lookup takes it, and it is on unless the URL says otherwise.
+    expect(atmosphereTableDefines(ATMOSPHERE_TABLE_SIZES_FULL).MIE_EXACT).toBe('');
+    expect(shell.defines).toEqual(atmosphereTableDefines(ATMOSPHERE_TABLE_SIZES_FULL));
+    expect(parseMieExactParam('')).toBe(true);
+    expect(parseMieExactParam('?mieexact=0')).toBe(false);
+  });
+
+  it('reads single Mie whole under MIE_EXACT, and subtracts it channel by channel', () => {
+    // With the define on, no lookup rebuilds green and blue from rgb: the
+    // segment's single Mie is near minus far through the segment's own
+    // transmittance in every channel, clamped only after the subtraction, and
+    // its gate on the Sun's elevation is the one it always had.
+    const on = resolveDefine(compile(augmented('earth')).fragmentShader, 'MIE_EXACT', true);
+    expect(on).toContain('uniform sampler3D uMieColour;');
+    expect(on.match(/uniform sampler3D uMieColour;/g)).toHaveLength(1);
+    expect(on).toContain(
+      'vec3 mie = max(vec3(nearEnd.a, nearGB) - transmittance * vec3(farEnd.a, farGB), vec3(0.0));');
+    expect(on).toContain('mie *= smoothstep(0.0, 0.01, seg.muS);');
+    expect(on).not.toMatch(/getExtrapolatedSingleMieScattering\((?!vec4 scattering)/);
+    const shell = resolveDefine(createAtmosphereShellMaterial({
+      planetRadius: 4.2635e-5, body: 'Earth', sizes: ATMOSPHERE_TABLE_SIZES_FULL,
+    }).fragmentShader, 'MIE_EXACT', true);
+    expect(shell).toContain('vec3 mie = max(vec3(scattering.a, mieGB), vec3(0.0));');
+    expect(shell).toContain('vec3 lunarMie = max(vec3(lunar.a, lunarMieGB), vec3(0.0));');
+    expect(shell).not.toMatch(/getExtrapolatedSingleMieScattering\((?!vec4 scattering)/);
+    // Both ends of a segment are read through the one addressing helper, so
+    // the red and the green-blue of each end come from the same coordinate.
+    expect(AERIAL_PERSPECTIVE_GLSL.match(/getScatteringAndMieColour3D\(/g)).toHaveLength(2);
+  });
+
+  it('puts every preprocessor directive at the start of its own line', () => {
+    // The preprocessor only sees a directive at the start of a line: a chunk
+    // spliced after a neighbour that does not end with a newline would hide
+    // its `#ifdef` behind the neighbour's last brace, and the conditional
+    // would silently not be one. Every hook three's chunks are replaced at,
+    // on the ground and on the deck, in whichever reading this run compiles.
+    const skeleton = '#include <common>\nvoid main() {\n#include <map_fragment>\n#include <roughnessmap_fragment>\n'
+      + '#include <normal_fragment_maps>\n#include <opaque_fragment>\n}';
+    const deck = augmented('cloud');
+    deck.defines = { ...deck.defines, CLOUD_FIELD: '' };
+    for (const mat of [augmented('earth'), deck]) {
+      const shader = {
+        uniforms: {} as Record<string, THREE.IUniform>,
+        vertexShader: '#include <common>\nvoid main() {\n#include <begin_vertex>\n}',
+        fragmentShader: skeleton,
+      };
+      (mat.onBeforeCompile as (s: typeof shader) => void)(shader);
+      for (const text of [shader.vertexShader, shader.fragmentShader]) {
+        const buried = text.split('\n').filter((line) =>
+          /#\s*(ifdef|ifndef|if|elif|else|endif|define|undef)\b/.test(line)
+          && !/^\s*#/.test(line)
+          && !/^\s*\/\//.test(line));
+        expect(buried).toEqual([]);
+      }
+    }
+  });
+
+  it('compiles the deck\'s block out of a ground that carries the cloud field', () => {
+    // A ground with CLOUD_FIELD (and never CLOUD_DECK) knows it is not the
+    // deck: DECK_ON is a constant false there, so the deck's block — its detail
+    // tap on uCloudDetail, an active sampler on every ground otherwise — is
+    // dead code the compiler drops.
+    const text = compile(augmented('earth')).fragmentShader;
+    const ground = resolveDefine(text, 'CLOUD_FIELD', true);
+    const macros = ground.slice(ground.indexOf('#ifdef CLOUD_DECK'), ground.indexOf('uniform vec3 uNightColor;'));
+    expect(macros).toContain('#else\n#define DECK_ON false\n#define DECK_OFF true\n#define GROUND_ON(x) (x)\n#endif');
+    expect(macros).not.toContain('uCloudDeck > 0.0');
+    // The tap sits under that condition.
+    const block = ground.slice(ground.indexOf('if (DECK_ON) {'), ground.indexOf('textureGrad(uCloudDetail'));
+    expect(block.length).toBeGreaterThan(0);
+    expect(ground.indexOf('if (DECK_ON) {')).toBeLessThan(ground.indexOf('textureGrad(uCloudDetail'));
+    // ...while the deck itself, with CLOUD_DECK, still reads it.
+    const deck = resolveDefine(text, 'CLOUD_FIELD', true);
+    expect(deck).toContain('#ifdef CLOUD_DECK\n#define DECK_ON true');
+  });
+
+  it('is the text it was with the cloud field\'s define off, after the preprocessor', () => {
+    // CLOUD_FIELD (world/cloudField, the deck's 1.2 km field) is a compile-time
+    // define on the planetarium's deck alone, off under `?cloudtiles=0`. Every
+    // line it adds is a whole line inside its own conditional, and each of its
+    // two chunks opens with its own newline so its directive starts a line
+    // wherever it is spliced: with the define off, a program is the program
+    // from before the field existed with one blank line where each chunk sits,
+    // and nothing else.
+    for (const archetype of ['earth', 'cloud'] as SurfaceArchetype[]) {
+      const shader = compile(augmented(archetype));
+      const off = resolveDefine(shader.fragmentShader, 'CLOUD_FIELD', false);
+      expect(off).not.toMatch(/CLOUD_FIELD|cloudField|uCloudPage/);
+      expect(hash(off), archetype).toBe(import.meta.env.DEV ? FIELD_OFF_DEV_FRAGMENT_HASH : FIELD_OFF_PROD_FRAGMENT_HASH);
+      // The blank lines are all of it: each chunk read as its one newline is
+      // the same text...
+      expect(resolveDefine(shader.fragmentShader.replace(CLOUD_FIELD_DECLS, '\n').replace(CLOUD_FIELD_MIX, '\n'),
+        'CLOUD_FIELD', false), archetype).toBe(off);
+      // ...and with both chunks gone, newlines and all, the shipped text is
+      // the one production compiled before the field reached it — once the
+      // single-Mie colour, which came after, is resolved off as well.
+      if (!import.meta.env.DEV) {
+        const without = resolveDefine(resolveDefine(
+          shader.fragmentShader.replace(CLOUD_FIELD_DECLS, '').replace(CLOUD_FIELD_MIX, ''),
+          'CLOUD_FIELD', false), 'MIE_EXACT', false);
+        expect(hash(without), archetype).toBe(PRE_FIELD_PROD_FRAGMENT_HASH);
+      }
+      expect(shader.vertexShader).not.toContain('CLOUD_FIELD');
+    }
+    // ...and no material carries the define unless the session has the field.
+    expect(augmented('cloud').defines?.CLOUD_FIELD).toBeUndefined();
+  });
+
   it('folds to the production text by deleting the switch guards, and nothing else', () => {
     // A production build carries neither the switch uniforms nor the guard
     // each cheap path sits behind: `import.meta.env.DEV ? both : cheap` folds
@@ -163,14 +343,56 @@ describe('the injected surface shader', () => {
     // A guard written in any other shape, or a cheap path that is not its
     // switch-ON reading, moves one of the two hashes and not the other.
     const shader = compile(augmented('earth'));
+    // The cloud field ships as it is drawn; its diagnostics are development
+    // text with no production reading, so the shipped text is the text with
+    // those four pieces deleted.
+    for (const chunk of [CLOUD_FIELD_DECLS, CLOUD_FIELD_MIX]) expect(shader.fragmentShader.split(chunk)).toHaveLength(2);
+    if (import.meta.env.DEV) {
+      for (const piece of Object.values(CLOUD_FIELD_DIAGNOSTICS)) {
+        expect(piece.length).toBeGreaterThan(0);
+        expect(shader.fragmentShader.split(piece)).toHaveLength(2);
+      }
+    } else {
+      expect(Object.values(CLOUD_FIELD_DIAGNOSTICS)).toEqual(['', '', '', '']);
+    }
     const folded = shader.fragmentShader
+      .replace(CLOUD_FIELD_DIAGNOSTICS.uniform, '')
+      .replace(CLOUD_FIELD_DIAGNOSTICS.functions, '')
+      .replace(CLOUD_FIELD_DIAGNOSTICS.probe, '')
+      .replace(CLOUD_FIELD_DIAGNOSTICS.paint, '')
       .replace('uniform float uPerfCloudTaps;\nuniform float uPerfCloudClear;\nuniform float uPerfGlintGate;'
+        + '\nuniform float uPerfCloudNoiseFrame;'
         + '\nuniform float uProbeCloudSmooth;\nuniform float uProbeCloudDetail;'
         + '\nuniform float uProbeCloudRelief;\nuniform float uProbeCloudAir;'
-        + '\nuniform float uGlintCap;\nuniform float uGlintKeep;', '')
+        + '\nuniform float uGlintCap;\nuniform float uGlintKeep;'
+        + '\nuniform float uBeamKnee;\nuniform float uBeamCap;'
+        + '\nuniform vec3 uSeaColour;\nuniform float uSeaSky;', '')
+      // The sky reflection's scale is a DEV knob at one, not in the text at all.
+      .replace(/ \* uSeaSky/g, '')
+      // The water colour the sea is drawn in reads as its constant.
+      .replace(/uSeaColour/g, `vec3(${SEA_WATER_COLOUR.map((v) => v.toFixed(5)).join(', ')})`)
+      // The cloud shadow's knobs read as the constants they default to, and
+      // the penumbra's as no factor at all.
+      .replace('uniform float uCloudShadowDepth;\nuniform float uCloudShadowAir;\nuniform float uCloudShadowPenumbra;\n'
+        + 'uniform float uCloudShadowGamma;\nuniform float uCloudShadowSkyFill;\n', '')
+      // The cloud light's knobs are constants there, and so is the ground's
+      // sky fill under a shade, with its knob's zero test gone.
+      .replace('\n#ifdef CLOUD_LIGHT\nuniform float uCloudLightWrap;\nuniform float uCloudLightSky;\n#endif\n', '')
+      .replace(/uCloudShadowSkyFill > 0\.0 && /g, '')
+      .replace(/uCloudShadowSkyFill/g, CLOUD_SHADOW_SKY_FILL.toFixed(4))
+      .replace(/uCloudLightWrap/g, CLOUD_LIGHT_WRAP.toFixed(4))
+      .replace(/uCloudLightSky/g, CLOUD_LIGHT_SKY.toFixed(4))
+      .replace(/uCloudShadowPenumbra \* /g, '')
+      .replace(/uCloudShadowDepth/g, CLOUD_SHADOW_DEPTH.toFixed(4))
+      .replace(/uCloudShadowAir/g, CLOUD_SHADOW_AIR.toFixed(4))
+      .replace(/uCloudShadowGamma/g, CLOUD_SHADOW_GAMMA.toFixed(4))
       .replace(/uPerfCloudTaps < 0\.5 \|\| /g, '')
       .replace(/uPerfCloudClear > 0\.5 && /g, '')
       .replace(/uPerfGlintGate < 0\.5 \|\| /g, '')
+      // The detail's old world frame is a control arm with no cheap reading:
+      // the production text is the text without it.
+      .replace('  if (uPerfCloudNoiseFrame < 0.5) {\n    dir = normalize(vAirFrag);\n    ddx = dFdx(dir);\n'
+        + '    ddy = dFdy(dir);\n  }\n', '')
       // The deck's cost probes have no cheap reading at all: the production
       // text is the text without them.
       .replace(/uProbeCloudSmooth < 0\.5 && /g, '')
@@ -182,10 +404,15 @@ describe('the injected surface shader', () => {
       // off) and keeps three's relief frame there; production's deck always
       // has its own program, so its ground program has no such line.
       .replace('\tif ( DECK_ON ) reliefFrame = tbn;\n', '')
-      // The glint's tuning uniforms read as the constants they default to.
+      // The glint's tuning uniforms: the cap reads as the constant it
+      // defaults to, and the scale, a DEV A/B knob at one, is
+      // not in the text at all.
       .replace(/uGlintCap/g, OCEAN_GLINT_CAP.toFixed(2))
-      .replace(/uGlintKeep/g, OCEAN_SPECULAR_KEEP.toFixed(4));
-    expect(folded).not.toMatch(/uPerf|uProbe|uGlint/);
+      // The beam's shoulder reads as its two constants.
+      .replace(/uBeamKnee/g, OCEAN_BEAM_KNEE.toFixed(2))
+      .replace(/uBeamCap/g, OCEAN_BEAM_CAP.toFixed(2))
+      .replace(/ \* uGlintKeep/g, '');
+    expect(folded).not.toMatch(/uPerf|uProbe|uGlint|uSeaColour|uSeaSky|uCloudShadow(Depth|Air|Penumbra|Gamma)|uCloudLight|uCloudShadowSkyFill|uCloudGroundFill|uCloudFieldDiag/);
     expect(hash(import.meta.env.DEV ? folded : shader.fragmentShader)).toBe(PROD_FRAGMENT_HASH);
     const night = import.meta.env.DEV
       ? earthNightFragmentShader
@@ -224,6 +451,8 @@ describe('the injected surface shader', () => {
     expect(scattering.image.height).toBe(1);
     expect(scattering.image.depth).toBe(1);
     expect(scattering.magFilter).toBe(THREE.LinearFilter);
+    // The single-Mie colour table's sampler takes the same stand-in.
+    expect(fx.air.uMieColour.value).toBe(scattering);
     expect(fx.air.uTransmittance.value).toBeInstanceOf(THREE.DataTexture);
     expect(fx.air.uIrradiance.value).toBeInstanceOf(THREE.DataTexture);
     // Every one of them reaches the shader.
@@ -236,12 +465,15 @@ describe('the injected surface shader', () => {
     const tables = fakeTables('Earth');
     bindSurfaceAir(fx.air, tables, 4.2635e-5, 0.97);
     expect(fx.air.uScattering.value).toBe(tables.scattering);
+    expect(fx.air.uMieColour.value).toBe(tables.mieColour);
     expect(fx.air.uSolarIrradiance.value).toBeCloseTo(0.97, 12);
     // A lost context frees the tables' textures; a sampler still pointed at one
     // is a bind of a dead name every frame until the re-bake lands.
     clearSurfaceAir(fx.air);
     expect(fx.air.uAirDensity.value).toBe(0);
     expect(fx.air.uScattering.value).not.toBe(tables.scattering);
+    expect(fx.air.uMieColour.value).not.toBe(tables.mieColour);
+    expect(fx.air.uMieColour.value).toBe(fx.air.uScattering.value);
     expect(fx.air.uTransmittance.value).not.toBe(tables.transmittance);
   });
 });
@@ -679,6 +911,21 @@ describe('the night-lights shell', () => {
       expect(glsl).toContain('vAirCam = cameraPosition - modelMatrix[3].xyz;');
       expect(glsl).toContain('vAirFrag = mat3(modelMatrix) * position;');
     }
+  });
+
+  it('projects the night tiles in the order three projects the ground under them', () => {
+    // The tiles sit on the globe's surface and beat it by a few depth units
+    // of polygon offset, so their position has to round exactly as the
+    // ground's does: three's project_vertex order, the view transform first
+    // and the projection on its result. Multiplying the matrices first rounds
+    // differently, and at an oblique view the gap exceeded the offset: the
+    // tiles' light failed the depth test in patches that moved from boot to
+    // boot with the near plane.
+    expect(earthNightVertexShader).toContain('vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);');
+    expect(earthNightVertexShader).toContain('gl_Position = projectionMatrix * mvPosition;');
+    expect(earthNightVertexShader).not.toContain('projectionMatrix * modelViewMatrix');
+    expect(THREE.ShaderChunk.project_vertex).toContain('mvPosition = modelViewMatrix * mvPosition;');
+    expect(THREE.ShaderChunk.project_vertex).toContain('gl_Position = projectionMatrix * mvPosition;');
   });
 
   it('is off, and unchanged, wherever there are no tables', () => {

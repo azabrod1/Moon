@@ -43,6 +43,23 @@
 //                shared/dom onSafeAreaChange, not the resize path), and
 //                again through a rotation; captured with the insets on. Read
 //                on `?debug=1` with `__moon.viewport()`.
+//   toolbox      Look inside and How many fit? frame on the canvas's box, not
+//                the window: the page's fixed-position rect is made 64 px
+//                shorter than the window from the first layout (a transform
+//                on the body makes it the containing block of every fixed
+//                layer, canvas and chrome alike, as the iPad's full-screen
+//                rect was), and then the body's disc — projected through the
+//                tool's own camera onto the box — sits centred in the band the
+//                strip and the sheet or the side panel leave, wholly inside
+//                it, at a desktop window and at 390×844; the hover card stays
+//                inside the box; and on a phone the compare vessel centres in
+//                the band above the pour bar.
+//   tabstops     the tutorial card's buttons are Tab stops only while the card
+//                shows: Tab walked through the whole page never lands on them
+//                before the tutorial or after it is skipped, and does while it
+//                runs; on the way out the card stays visible through its fade
+//                and is hidden once the fade is over; with full and with
+//                reduced motion, whose stylesheet has its own fade.
 //
 // What no Playwright run can show: its Chromium takes a page full screen
 // without resizing the window, and its key presses reach the page without
@@ -59,7 +76,7 @@ import { takeBrowserLock } from './browserLock.mjs';
 const arg = (k, d) => { const m = process.argv.find((a) => a.startsWith(`--${k}=`)); return m ? m.slice(k.length + 3) : d; };
 const URL = arg('url', 'http://localhost:5174');
 const LABEL = arg('label', 'fullscreen');
-const SCENARIOS = new Set(arg('scenario', 'desktop,tools,unavailable,phone,box,safearea').split(','));
+const SCENARIOS = new Set(arg('scenario', 'desktop,tools,unavailable,phone,box,safearea,toolbox,tabstops').split(','));
 const SOFTWARE = process.argv.includes('--software');
 const OUT = `/tmp/moon-shots/${LABEL}`;
 mkdirSync(OUT, { recursive: true });
@@ -449,6 +466,154 @@ try {
         await checkInsets(page, 'phone turned', LANDSCAPE, ON_ITS_SIDE);
         await page.screenshot({ path: `${OUT}/safearea-phone-turned.png` });
       }
+      await context.close();
+    }
+  }
+
+  // ── toolbox ─────────────────────────────────────────────────────────────
+  if (SCENARIOS.has('toolbox')) {
+    console.log('[toolbox]');
+    const SHORT_PX = 64;
+    /** A fresh context whose fixed-position rect is SHORT_PX shorter than the
+     *  window from the first layout: the style lands as soon as <head> does. */
+    const shortBoxContext = async (viewport, touch) => {
+      const context = await fresh(viewport, { touch });
+      await context.addInitScript((short) => {
+        const css = `body { transform: translateZ(0); height: calc(100% - ${short}px) !important; }`;
+        const add = () => { const style = document.createElement('style'); style.textContent = css; document.head.appendChild(style); };
+        if (document.head) add();
+        else new MutationObserver((_, observer) => { if (document.head) { observer.disconnect(); add(); } }).observe(document, { childList: true, subtree: true });
+      }, SHORT_PX);
+      return context;
+    };
+    const near = (a, b, tol) => Math.abs(a - b) <= tol;
+    const round1 = (v) => Math.round(v * 10) / 10;
+    for (const [label, viewport, touch] of [['desktop', DESKTOP, false], ['phone', PHONE, true]]) {
+      // Look inside.
+      let context = await shortBoxContext(viewport, touch);
+      let page = await boot(context, '?auto=interior&body=Earth');
+      await page.waitForFunction(() => window.__moon.interiorReady(), null, { timeout: 180_000 });
+      await page.waitForFunction(() => document.getElementById('interior-ui')?.style.display === 'block', null, { timeout: 60_000 });
+      await settle(page, 1500);
+      const read = await page.evaluate(() => {
+        const rect = (id) => { const r = document.getElementById(id)?.getBoundingClientRect(); return r ? { top: r.top, bottom: r.bottom, left: r.left, right: r.right } : null; };
+        return { view: window.__moon.viewport(), state: window.__moon.interiorState(), strip: rect('interior-top'), panel: rect('interior-panel') };
+      });
+      const box = read.view.canvas;
+      check(box.height === viewport.h - SHORT_PX && read.view.applied.height === box.height,
+        `toolbox ${label}: the box is ${SHORT_PX} px shorter than the window and the renderer follows it`, { box, applied: read.view.applied, window: viewport });
+      const s = read.state;
+      const disc = {
+        x: (s.discNdc.x * 0.5 + 0.5) * box.width,
+        y: (1 - (s.discNdc.y * 0.5 + 0.5)) * box.height,
+        r: Math.tan(Math.asin(1 / s.cameraDistance)) / Math.tan((s.fovDeg * Math.PI) / 360) * (box.height / 2),
+      };
+      // The free band: below the strip; above the sheet (phone) or the box's
+      // bottom (desktop); left of the side panel (desktop).
+      const band = {
+        top: read.strip.bottom,
+        bottom: touch ? read.panel.top : box.height,
+        left: 0,
+        right: touch ? box.width : read.panel.left,
+      };
+      const centre = { x: (band.left + band.right) / 2, y: (band.top + band.bottom) / 2 };
+      const detail = { disc: { x: round1(disc.x), y: round1(disc.y), r: round1(disc.r) }, band, bandCentre: centre, projectedRadiusPx: round1(s.projectedRadiusPx) };
+      check(near(disc.x, centre.x, 2) && near(disc.y, centre.y, 2),
+        `toolbox ${label}: Look inside centres the disc in the free band of the box`, detail);
+      check(disc.y - disc.r >= band.top && disc.y + disc.r <= band.bottom && disc.x + disc.r <= band.right,
+        `toolbox ${label}: the whole disc is inside the band`, detail);
+      check(near(s.projectedRadiusPx, disc.r, 1), `toolbox ${label}: the mode's own disc radius is the one drawn on the box`, detail);
+      if (!touch) {
+        // A face point as low on the disc as there is one, so the card's clamp is what places it.
+        const card = await page.evaluate(({ x, y, r }) => {
+          for (let py = Math.floor(y + r) - 2; py > y; py -= 3) {
+            for (const dx of [2, 5, 9, 14, 20, -2, -5, -9, -14, -20]) {
+              const hit = window.__moon.interiorHover(x + dx, py);
+              if (hit && hit.surface !== 'skin') {
+                const host = document.getElementById('interior-hover');
+                const rc = host.getBoundingClientRect();
+                return { pointer: { x: x + dx, y: py }, shown: getComputedStyle(host).display !== 'none', top: rc.top, bottom: rc.bottom, height: rc.height };
+              }
+            }
+          }
+          return null;
+        }, disc);
+        check(card && card.shown && card.bottom <= box.height, `toolbox ${label}: the hover card stays inside the box`, { card, boxHeight: box.height });
+      }
+      await page.screenshot({ path: `${OUT}/toolbox-interior-${label}.png` });
+      await context.close();
+
+      // How many fit? On a phone its vessel centres in the band above the bar.
+      if (!touch) continue;
+      context = await shortBoxContext(viewport, touch);
+      page = await boot(context, '?auto=volumeCompare');
+      await page.waitForFunction(() => window.__moon.compareState()?.texturesReady === true, null, { timeout: 180_000 });
+      await settle(page, 3000);
+      const vc = await page.evaluate(() => ({ view: window.__moon.viewport(), state: window.__moon.compareState(), bar: document.getElementById('compare-panel')?.getBoundingClientRect().top ?? null }));
+      const vbox = vc.view.canvas;
+      const vesselY = (1 - (vc.state.vesselNdc.y * 0.5 + 0.5)) * vbox.height;
+      const vdetail = { vesselY: round1(vesselY), bandTopPx: round1(vc.state.bandTopPx), bar: vc.bar, boxHeight: vbox.height, modeVesselBox: vc.state.vesselBox };
+      check(near(vesselY, vc.state.bandTopPx / 2, 3), `toolbox ${label}: How many fit? centres the vessel in the band above the bar, on the box`, vdetail);
+      await page.screenshot({ path: `${OUT}/toolbox-compare-${label}.png` });
+      await context.close();
+    }
+  }
+
+  // ── tabstops ────────────────────────────────────────────────────────────
+  if (SCENARIOS.has('tabstops')) {
+    console.log('[tabstops]');
+    const CARD_BUTTONS = ['tutorial-back', 'tutorial-ghost', 'tutorial-primary'];
+    /** Tab from the top of the page until the focus comes round again: every element it stopped on. */
+    const tabWalk = async (page) => {
+      await page.evaluate(() => { document.activeElement?.blur?.(); window.__tabFirst = null; });
+      const stops = [];
+      for (let i = 0; i < 400; i++) {
+        await page.keyboard.press('Tab');
+        const id = await page.evaluate(() => {
+          const el = document.activeElement;
+          if (window.__tabFirst === el) return null; // round again
+          window.__tabFirst ??= el;
+          return !el || el === document.body ? '(body)' : el.id || `${el.tagName.toLowerCase()}.${el.className}`;
+        });
+        if (id === null) break;
+        stops.push(id);
+      }
+      return stops;
+    };
+    const cardState = (page) => page.evaluate(() => {
+      const card = document.getElementById('tutorial-card');
+      const style = getComputedStyle(card);
+      return { shown: card.classList.contains('visible'), visibility: style.visibility, opacity: Number(style.opacity) };
+    });
+    for (const motion of ['full', 'reduced']) {
+      const at = `tabstops ${motion} motion`;
+      const context = await fresh(DESKTOP);
+      const page = await boot(context);
+      // The reduced-motion stylesheet carries its own, shorter fade.
+      if (motion === 'reduced') await page.emulateMedia({ reducedMotion: 'reduce' });
+      let stops = await tabWalk(page);
+      let landed = stops.filter((id) => CARD_BUTTONS.includes(id));
+      check(stops.length > 5 && landed.length === 0, `${at}: before the tutorial, Tab never lands on the hidden card`, { stops: stops.length, landed });
+
+      await openMenu(page);
+      await page.click('#planetarium-btn-tutorial');
+      await page.waitForFunction(() => document.getElementById('tutorial-card')?.classList.contains('visible'), null, { timeout: 30_000 });
+      await settle(page, 600);
+      stops = await tabWalk(page);
+      landed = stops.filter((id) => CARD_BUTTONS.includes(id));
+      check(landed.includes('tutorial-primary'), `${at}: while the tutorial runs, Tab reaches its buttons`, { landed, card: await cardState(page) });
+
+      await page.click('#tutorial-ghost');
+      await sleep(100);
+      const fading = await cardState(page);
+      check(!fading.shown && fading.visibility === 'visible' && fading.opacity > 0 && fading.opacity < 1,
+        `${at}: skipped, the card still shows through its fade`, fading);
+      await sleep(600);
+      const gone = await cardState(page);
+      check(!gone.shown && gone.visibility === 'hidden' && gone.opacity === 0, `${at}: and is hidden once the fade is over`, gone);
+      stops = await tabWalk(page);
+      landed = stops.filter((id) => CARD_BUTTONS.includes(id));
+      check(landed.length === 0, `${at}: after the tutorial, Tab never lands on the hidden card`, { stops: stops.length, landed });
       await context.close();
     }
   }

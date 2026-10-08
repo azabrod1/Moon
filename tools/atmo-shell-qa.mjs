@@ -23,12 +23,26 @@
 //
 //   npx vite --port 5640 --strictPort
 //   node tools/atmo-shell-qa.mjs --out=tools/goldens/atmosphere
+//   node tools/atmo-shell-qa.mjs --set=control                 # the ?mieexact=0 control set
 //   node tools/atmo-shell-qa.mjs --out=/tmp/moon-shots/atmo2 --w=1600 --h=900 --hero
 //   node tools/atmo-shell-qa.mjs --poses=eclipse-2.5r          # one pose, re-checked
 //   node tools/atmo-shell-qa.mjs --extra=                      # the rule ON: not the goldens' setting
 //
+// Two sets are pinned. The SHIPPED set (`--set=shipped`, the default) is every
+// pose on all three tiers plus the ghost, through the program the app ships.
+// The CONTROL set (`--set=control`) is every pose on the LUT tier alone under
+// `?mieexact=0`: single Mie's green and blue rebuilt from the scattering
+// table's rgb, the arm the goldens were captured through before the colour
+// table existed (world/atmosphereLut MIE_EXACT). The switch reaches only the
+// table lookups, so the other tiers would capture the shipped set again. The
+// control is what tells a change that moved the exact colour from one that
+// moved everything else: it moves one set or both. Each set has its own
+// directory and its own pin file, and `--set=` picks both (an explicit
+// `--out=`, `--extra=` or `--tiers=` still wins).
+//
 // `--extra=<query>` goes on every URL the tool boots, both tiers and the ghost
-// alike, the way pixel-gate's does, and its default is `&nightexposure=0`: the
+// alike, the way pixel-gate's does, and its default is the set's own —
+// `&nightexposure=0`, and `&mieexact=0` after it for the control set: the
 // goldens are captured with the night-side exposure rule off, because the rule
 // meters a pose by how much sunlit ground it holds and the half-lit terminator
 // poses would otherwise capture a day exposure instead of the shader's own
@@ -44,10 +58,15 @@
 //
 //   node tools/atmo-shell-qa.mjs --pins
 //
-// It re-emits the pinned source from the JSONs already on disk. It is a
-// separate command on purpose: a capture run alone leaves the pins where they
-// were, so a shader change that moves a radiance fails the suite until someone
-// looks at what moved and regenerates deliberately.
+// It re-emits the pinned source from the JSONs already on disk (`--set=control
+// --pins` for the control set's file). It is a separate command on purpose: a
+// capture run alone leaves the pins where they were, so a shader change that
+// moves a radiance fails the suite until someone looks at what moved and
+// regenerates deliberately.
+//
+// Every capture records which arm of the exact colour its session compiled
+// (`mieExact`, from __moon.atmoState; null where no tables were baked, the
+// no-float tier), so the test can hold each set to the arm it says it is.
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -58,14 +77,34 @@ function arg(name, def) {
 const flag = (name) => process.argv.includes(`--${name}`);
 
 const url = arg('url', 'http://localhost:5640');
-// Appended to every URL booted. The default is the goldens' own setting; an
+// The two pinned sets (the header says why both exist).
+const SETS = {
+  shipped: {
+    out: 'tools/goldens/atmosphere',
+    extra: '&nightexposure=0',
+    tiers: 'analytic,lut,nofloat',
+    ghost: true,
+    pins: 'src/planetarium/world/atmosphereGoldens.pinned.ts',
+  },
+  control: {
+    out: 'tools/goldens/atmosphere-mieexact0',
+    extra: '&nightexposure=0&mieexact=0',
+    tiers: 'lut',
+    ghost: false,
+    pins: 'src/planetarium/world/atmosphereGoldens.mieexact0.pinned.ts',
+  },
+};
+const setName = arg('set', 'shipped');
+const set = SETS[setName];
+if (!set) throw new Error(`--set=${setName}: the sets are ${Object.keys(SETS).join(', ')}`);
+// Appended to every URL booted. The default is the set's own setting; an
 // empty `--extra=` captures with the rule on.
-const extraQuery = arg('extra', '&nightexposure=0');
-const outDir = arg('out', 'tools/goldens/atmosphere');
+const extraQuery = arg('extra', set.extra);
+const outDir = arg('out', set.out);
 const W = Number(arg('w', '512'));
 const H = Number(arg('h', '512'));
 const hero = flag('hero'); // wide framing set for the side-by-side, not the goldens
-const only = arg('tiers', 'analytic,lut,nofloat').split(',');
+const only = arg('tiers', set.tiers).split(',');
 // A subset of the poses, for a targeted re-check. The pin file is always
 // re-emitted from every JSON on disk, so a filtered run leaves the rest alone
 // rather than dropping them.
@@ -190,10 +229,11 @@ const TIER_URLS = {
   nofloat: '/?auto=planetarium&nofloat=1',
 };
 
-// The captures a pin file covers: every pose on every tier, plus the ghost.
+// The captures a pin file covers: every pose on every tier of the set, plus
+// the ghost in the shipped set.
 const PIN_NAMES = [
-  ...POSES.flatMap((p) => Object.keys(TIER_URLS).map((t) => `${p.name}.${t}`)),
-  'volume-compare.analytic',
+  ...POSES.flatMap((p) => set.tiers.split(',').map((t) => `${p.name}.${t}`)),
+  ...(set.ghost ? ['volume-compare.analytic'] : []),
 ];
 
 /** Re-emit the pinned source from the JSONs on disk. No browser, no GPU: the
@@ -205,6 +245,7 @@ async function emitPins() {
   for (const name of PIN_NAMES) {
     const g = JSON.parse(await readFile(path.join(outDir, `${name}.json`), 'utf8'));
     blocks.push(`  '${name}': {
+    mieExact: ${g.mieExact ?? 'null'},
     kRadii: ${g.kRadii ?? 'null'},
     near: ${g.near ?? 'null'},
     moonPhaseDeg: ${g.moonPhaseDeg == null ? 'null' : g.moonPhaseDeg.toFixed(4)},
@@ -218,7 +259,7 @@ ${rows(g.limbScan)}
     ],
   },`);
   }
-  const file = `// Generated by \`node tools/atmo-shell-qa.mjs --pins\` — do not hand-edit.
+  const shippedFile = `// Generated by \`node tools/atmo-shell-qa.mjs --pins\` — do not hand-edit.
 //
 // The radiances the atmosphere goldens are held to. They live here, in source,
 // rather than being read back out of the capture JSONs and compared with
@@ -243,6 +284,10 @@ ${rows(g.limbScan)}
 
 /** One capture's numbers: \`<pose>.<tier>\` keys the whole set. */
 export interface AtmosphereGoldenPin {
+  /** Which arm of the exact single-Mie colour the capture's session compiled
+   *  (world/atmosphereLut MIE_EXACT): true for the shipped set, false for the
+   *  \`?mieexact=0\` control set, null where there were no tables. */
+  readonly mieExact: boolean | null;
   /** Camera distance in planet radii — null for the volume-compare ghost, which
    *  is its own mode and frames no body. */
   readonly kRadii: number | null;
@@ -277,7 +322,21 @@ ${blocks.join('\n')}
  *  machine; the slack is for a driver, not for a shader. */
 export const goldenChannelTolerance = (pinned: number): number => Math.max(1, pinned * 0.03);
 `;
-  const dest = 'src/planetarium/world/atmosphereGoldens.pinned.ts';
+  const controlFile = `// Generated by \`node tools/atmo-shell-qa.mjs --set=control --pins\` — do not hand-edit.
+//
+// The control set's radiances: every pose on the LUT tier under \`?mieexact=0\`,
+// single Mie's green and blue rebuilt from the scattering table's rgb. Pinned
+// beside the shipped set (atmosphereGoldens.pinned.ts) for the reason the
+// capture tool's header gives: the pair says which arm a change moved.
+// Recorded on Chromium (ANGLE/Metal), like the shipped set.
+import type { AtmosphereGoldenPin } from './atmosphereGoldens.pinned';
+
+export const ATMOSPHERE_GOLDEN_CONTROL_PINS: Readonly<Record<string, AtmosphereGoldenPin>> = {
+${blocks.join('\n')}
+};
+`;
+  const file = setName === 'control' ? controlFile : shippedFile;
+  const dest = set.pins;
   await writeFile(dest, file);
   console.log(`[atmo-qa] pins re-emitted from ${outDir} -> ${dest} (${PIN_NAMES.length} captures)`);
 }
@@ -383,6 +442,13 @@ try {
       { timeout: BAKE_TIMEOUT_MS },
     ).then((h) => h.jsonValue()).catch(() => null);
     const wearing = await page.evaluate((t) => window.__moon.atmoTier(t === 'lut' ? null : 'analytic'), tier);
+    // Which arm of the exact colour this session compiled: the set's own
+    // promise, recorded so the test can hold it. Null where no tables were
+    // baked (the no-float tier), which have no arm to read.
+    const mieExact = await page.evaluate(() => {
+      const st = window.__moon.atmoState();
+      return st?.state === 'ready' ? st.mieExact : null;
+    });
     console.log(`[atmo-qa] ${tier}: tables ${state ? 'ready' : 'none'}, shell Earth=${wearing?.Earth}`
       + `, programs ${state?.programs ?? (await page.evaluate(() => window.__moon.atmoState()?.programs ?? null))}`);
     if (tier === 'lut' && wearing?.Earth !== 'lut') throw new Error('LUT tier never switched on');
@@ -422,7 +488,7 @@ try {
       // drawn at. Read off the uniforms rather than assumed from the date.
       const shadow = await page.evaluate(() => window.__moon.surfaceCasters?.('Earth') ?? null);
       const samples = await capture(page, path.join(outDir, `${pose.name}.${tier}`), {
-        pose: pose.name, tier, body: 'Earth', kRadii: pose.kRadii, fovDeg: pose.fov,
+        pose: pose.name, tier, mieExact, body: 'Earth', kRadii: pose.kRadii, fovDeg: pose.fov,
         phaseDeg: pose.phase, aimFrac: pose.aim ?? 1,
         near: pinned.near, exposure: pinned.exposure, pixelRatio: 1,
         timeUtcMs: poseTime,
@@ -451,13 +517,13 @@ try {
 
   // The compare ghost: its own mode, its own scene, and a shell that is pinned
   // to the analytic tier in code — captured so that pin cannot rot unnoticed.
-  if (!hero) {
+  if (!hero && set.ghost) {
     const { context, page, errors } = await newSession();
     await page.goto(`${url}/?auto=volumeCompare${extraQuery}`, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => !!window.__moon, { timeout: 60000 });
     await page.waitForTimeout(6000);
     await capture(page, path.join(outDir, 'volume-compare.analytic'), {
-      pose: 'volume-compare', tier: 'analytic', body: 'ghost',
+      pose: 'volume-compare', tier: 'analytic', mieExact: null, body: 'ghost',
       near: null, exposure: 1, pixelRatio: 1, timeUtcMs: null,
       // Its own mode, its own scene, no body and so no Moon over one, and
       // nothing to cast a shadow on.

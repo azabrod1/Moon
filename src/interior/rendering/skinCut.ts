@@ -36,7 +36,8 @@ export interface SkinCutUniforms {
   uCutNormalB: { value: THREE.Vector3 };
   /** Unit vector from the body centre toward the camera THIS FRAME (world): what
    *  a shell drawn from its far side reflects through, and the axis of the disc
-   *  a halo is gated to. The wedge itself is body-locked and does not follow it. */
+   *  a halo is gated to. The wedge need not follow it: locked to the body, it
+   *  stays put while the camera orbits. */
   uCutCamera: { value: THREE.Vector3 };
   /** Half the opening angle, radians; 0 leaves the skin whole. */
   uCutHalfAngle: { value: number };
@@ -214,7 +215,7 @@ ${gate}    if (interiorCutCoverage <= 0.0) discard;
  * points away from the viewer; what matters is the screen position it
  * covers, which its reflection through the plane facing the camera gives —
  * the camera's own direction this frame (uCutCamera), not the wedge's axis,
- * because the wedge is locked to the body and the camera orbits it, and a
+ * because a wedge locked to the body stays put while the camera orbits it, and a
  * reflection through a stale axis hung the shell's far side over the faces
  * as a veil. At the limb, where the fringe lives, the reflected point and
  * the fragment coincide, so the air's edge lands exactly on the skin's. The

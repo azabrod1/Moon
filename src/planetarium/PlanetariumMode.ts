@@ -36,20 +36,25 @@ import {
   type PlanetData,
   LIGHT_SPEED_AU_PER_S,
 } from './planets/planetData';
-import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasurementRelevant, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
-import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
+import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasurementRelevant, markStreamedGround, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
+import { PLANET_TEXTURE_FILES, appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
-import { advanceSurfaceAir, bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, seatSurfaceLook, setSurfaceSynthesis, settleSurfaceAir, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { MAX_MOON_SHADOWS, NIGHT_FILL, advanceSurfaceAir, beamShoulderInForce, bindSurfaceAir, clearSurfaceAir, cloudShadowShared, cloudShadowsOn, cloudShadowUniforms, holdSeaCloudCut, seaBeamOn, seaWindOn, seatSurfaceLook, setCloudShadowDrift, setSurfaceSynthesis, settleSurfaceAir, sunPathOn, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { setSurfaceLookOverride, surfaceLookOf, type SurfaceLook as BodySurfaceLook, type SurfaceLookOverride } from './world/surfaceLook';
+import { cloudFieldRequested, setCloudFieldOn, setCloudFieldPixelRatios } from './world/cloudFieldSlots';
+import type { CloudFieldAllocation } from './world/cloudFieldPool';
+import type { CloudFieldSession } from './world/cloudFieldSession';
 import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
 import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, textureWarmQueueDepth, warmBudgetMs } from './world/textureWarmer';
 import { beginSlicedUpload, stepSlicedUpload } from './world/slicedUpload';
 import { smoothTraceVeil } from './smoothnessTrace';
 import {
-  SECTOR_NIGHT_SETS, SECTOR_SETS, SectorStreamer, sectorFamilyKey,
+  GROUND_LEAF_SEGMENTS, SECTOR_NIGHT_SETS, SECTOR_SETS, SectorStreamer, sectorFamilyKey,
   type SectorMeasure, type SectorStats,
 } from './world/sectorStreamer';
 import { earthNightSectorFamily } from './world/earthNightMaterial';
+import { parseGroundCullParam } from './world/groundCull';
+import { onPerfSwitch } from '../app/perfSwitches';
 import { loadBrightStarCatalog } from './world/starCatalogLoader';
 import {
   advancePlanetariumTime,
@@ -108,6 +113,11 @@ import { resolveShowVantage } from './observatoryJump';
 import { surfacePerfBeginSpan, surfacePerfEndSpan } from './surfacePerf';
 import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU, SUN_RADIUS_AU } from '../astronomy/constants';
+import { horizonDip, mirrorPointOnSphere } from './horizonPose';
+import { SUN_LIGHT_BASELINE } from './sunLight';
+import { HighlightMeter, type HighlightContext, type HighlightTelemetry } from './highlightMeter';
+import { EarthSurfaceMaps } from './world/surfaceMaps';
+import { writeShadedAlbedo } from './world/albedoGrade';
 import {
   createPlanetariumStarfield,
   setStarfieldGain,
@@ -167,7 +177,7 @@ import {
   type ReleaseCandidate,
 } from './world/gpuEnvelope';
 import {
-  AtmosphereLut, lastBakeSliceSample, takeBakeSliceSpendMs, peekBakeSliceSpendMs,
+  AtmosphereLut, lastBakeSliceSample, takeBakeSliceSpendMs, peekBakeSliceSpendMs, mieExactOn,
   type AtmosphereBakeStats, type AtmosphereTables,
 } from './world/atmosphereLut';
 import { bindAtmosphereShellTables, restShellCrossfade, setAtmosphereShellGroundSegments, shellTierAlphas, stepShellCrossfade, type ShellCrossfade } from './world/atmosphereShell';
@@ -510,6 +520,7 @@ import {
 import {
   fullscreenAvailable, isFullscreen, isFullscreenKey, onFullscreenChange, toggleFullscreen,
 } from '../app/fullscreen';
+import { viewportSize } from '../app/viewportSize';
 import { setSegmentOffered, setSegmentValue, wireSegmented } from './ui/SegmentedControl';
 
 /** How long a context-restore re-warm may keep the late-link check muted. */
@@ -719,6 +730,38 @@ function logShaderResolve(
 function loadScreenHidden(): boolean {
   const el = document.getElementById('loading-screen');
   return !el || el.classList.contains('hidden');
+}
+
+/**
+ * What devHorizonView posed, in the camera's own frame (the camera at the
+ * scene origin), so a probe can run the same geometry on the CPU: the body's
+ * centre and the Sun as scene vectors, the stand point's vertical, the aim, the
+ * Sun's azimuth on the horizon, the horizon's dip, and the mirror point — the
+ * place on the sphere whose normal bisects the Sun and the camera, where the
+ * glint is brightest — or null when the Sun is below that horizon.
+ */
+export interface HorizonViewPose {
+  body: string;
+  altitudeKm: number;
+  sunElevDeg: number;
+  bearingDeg: number;
+  azimuthDeg: number;
+  depressionDeg: number;
+  fovDeg: number;
+  horizonDipDeg: number;
+  radiusAU: number;
+  mirror: {
+    groundAngleDeg: number;
+    depressionDeg: number;
+    sunElevDeg: number;
+    slantKm: number;
+  } | null;
+  bodyScene: [number, number, number];
+  sunScene: [number, number, number];
+  up: [number, number, number];
+  aim: [number, number, number];
+  sunAzimuth: [number, number, number];
+  groundHitKm: number | null;
 }
 
 export class PlanetariumMode {
@@ -1138,6 +1181,29 @@ export class PlanetariumMode {
   private tmpInvGroupQuat = new THREE.Quaternion();
   private tmpShadingParentPos = new THREE.Vector3();
   private sunExposure = 1;
+  /** The highlight meter (highlightMeter.ts): the exposure closed down for the
+   *  sea's beam, composed with the Sun's own meter as the smaller of the two
+   *  in takeExposureTarget. Its maps are Earth's shipped pictures decoded
+   *  coarsely on the first approach. */
+  private readonly highlightMeter = new HighlightMeter(
+    new EarthSurfaceMaps({
+      water: resolveTextureUrl(PLANET_TEXTURE_FILES.earthRoughness, '2k'),
+      wind: resolveTextureUrl(PLANET_TEXTURE_FILES.earthSeaWind, '2k'),
+      cloud: resolveTextureUrl(PLANET_TEXTURE_FILES.earthClouds, '2k'),
+    }),
+    beamShoulderInForce,
+  );
+  private readonly highlightCtx: HighlightContext = {
+    camera: new THREE.Vector3(), sun: new THREE.Vector3(), lightIntensity: 0, lightLinear: [1, 1, 1],
+    airOn: false, airBlend: 0, hazeClearView: 1, cloudSpin: 0, cloudDrawn: false, cloudShadows: true, cloudHeightOverRadius: 0,
+    moonShadows: new Float64Array(MAX_MOON_SHADOWS * 4), moonShadowCount: 0, sunTan: 0, termWidth: 0,
+    view: new THREE.Vector3(0, 0, -1), viewUp: new THREE.Vector3(0, 1, 0), fovXDeg: 60, fovYDeg: 40,
+    seaBeamOn: true, sunPathOn: true, windMapOn: false,
+  };
+  private readonly highlightScratch = {
+    cam: new THREE.Vector3(), earth: new THREE.Vector3(), q: new THREE.Quaternion(), cq: new THREE.Quaternion(), dir: new THREE.Vector3(),
+  };
+  private sunPointLight: THREE.PointLight | null = null;
   private lastSunVisibleFraction = 1;
   private sunEmergenceFlash = 0;
   /** Wall-time envelope behind uDiamondRing. The authored strength is a pure
@@ -1293,7 +1359,27 @@ export class PlanetariumMode {
    *  the `?debug=1` memory line read it rather than reassembling the figure
    *  from a profile and a floor at each site. */
   private readonly memory: MemoryEnvelope;
+  /** Earth's cloud field — its pool and the residency that fills it
+   *  (world/cloudFieldSession) — in a session that has the field; null
+   *  otherwise, and again if a restore could not allocate it. Every per-frame
+   *  site pays one null test while it is null. */
+  private cloudField: CloudFieldSession | null = null;
+  /** The pool's allocation at boot, awaited before the solar system is built
+   *  so the deck compiles the field's define the first time it compiles at
+   *  all; null in a session that did not ask for the field. */
+  private readonly cloudFieldStart: Promise<void> | null;
   private readonly sectorsEnabled = new URLSearchParams(location.search).get('sectors') !== '0';
+  /** What `?groundcull=0` asked for, on any build: every streamed ground mesh
+   *  built with its plain index and drawn whole, the ground under a finer tile
+   *  shaded and then lost to the depth test as before (world/groundCull). The
+   *  kill switch, and the A/B across two boots, of the cost only: Earth's night
+   *  shell is laid out and cut either way, because its tiles add to it rather
+   *  than beating it by depth (world/earthNightMaterial). */
+  private readonly groundCullEnabled = parseGroundCullParam(location.search);
+  /** Dev-only: bytes added to the globe maps' ledger (devSectorSqueeze), and
+   *  a squeeze waiting for the end of the next sector pass. */
+  private devLedgerSqueezeBytes = 0;
+  private devLedgerSqueezePending: number | null = null;
   /** What `?synth=0` asked for: the close-range detail synthesis held at zero
    *  on every surface. The A/B arm for a look question about it, and the only
    *  way to see what a magnified surface looks like without it at a pose where
@@ -2293,6 +2379,9 @@ export class PlanetariumMode {
   private historicMilestoneIndex = 0;
   private historicPanelDismissed = false;
   private scriptedTransfer: ScriptedTransfer | null = null;
+  /** The journey a historic mission took over, stashed at its start: what the
+   *  mission's exit restores, and what getState() serves every save meanwhile,
+   *  so the mission's staged scene never overwrites the journey on disk. */
   private preMissionState: PlanetariumState | null = null;
   private preMissionMenuVisible = false;
   /** The pre-tool journey stashed when the volume-compare tool is entered. main.ts
@@ -2520,6 +2609,7 @@ export class PlanetariumMode {
     this.rendersThroughComposer = rendersThroughComposer;
     this.scenePixelRatio = scenePixelRatio;
     this.tilePixelRatio = tilePixelRatio;
+    setCloudFieldPixelRatios(scenePixelRatio(), tilePixelRatio());
     this.quality = quality;
     this.frameRate = frameRate;
     this.nightSides = nightSides;
@@ -2536,6 +2626,10 @@ export class PlanetariumMode {
       devEnvelopeOverride(deviceProfileFor(this.deviceClass, this.deviceFamily)),
     );
     this.memory = new MemoryEnvelope(this.deviceProfile);
+    // Earth's cloud field, unless `?cloudtiles=0` turned it off: its pool
+    // module is imported and allocated now, under the boot cover, and settled
+    // before the first activation builds the deck.
+    this.cloudFieldStart = cloudFieldRequested() ? this.startCloudField() : null;
     // Resolve the bitmap-upload probe during construction: every streamed
     // boot texture awaits its verdict before fetching, so starting it here
     // takes it off the first fetch's critical path. The renderer lets the
@@ -2632,6 +2726,10 @@ export class PlanetariumMode {
       // Dots gate on painted moons — blank them with the same invalidation so a
       // stale dot can't outlive the mesh it belonged to.
       this.moonDots?.clear();
+      // The cloud field's layers went with the context: its table is cleared,
+      // so the deck draws its base sheet until pages are back, and nothing is
+      // admitted or uploaded until the pool is allocated again.
+      this.cloudField?.contextLost();
     });
     glCanvas.addEventListener('webglcontextrestored', () => {
       this.moonTexturer.onContextRestored();
@@ -2651,6 +2749,8 @@ export class PlanetariumMode {
       this.queueReleasedTierRefetch();
       this.glContextLost = false;
       this.atmosphereLut?.onContextRestored();
+      // Before the re-warm, so it links the deck with the field or without.
+      this.restoreCloudField();
       void this.rewarmShaderProbes();
     });
     this.player = new PlayerShip();
@@ -3045,6 +3145,8 @@ export class PlanetariumMode {
 
       if (!this.solarSystem) {
         const initialWorldUtcMs = savedState?.astroTimeUtcMs ?? this.timeState.currentUtcMs;
+        // The deck reads whether the field is on when it is built.
+        if (this.cloudFieldStart) await this.cloudFieldStart;
         performance.mark('plm:solar-system:start');
         try {
           // The star catalog rides the same gate as the solar system: awaiting
@@ -3542,11 +3644,15 @@ export class PlanetariumMode {
    *  same streamer, the same budget, its own lighting gate. */
   private registerSectorBodies(): void {
     if (!this.sectorsEnabled || !this.solarSystem) return;
-    const sectors = new SectorStreamer({ limits: this.deviceProfile, envelope: this.memory });
+    const groundCull = this.groundCullEnabled;
+    const sectors = new SectorStreamer({ limits: this.deviceProfile, envelope: this.memory, groundCull });
+    // The live A/B of the cut, over the layout the kill switch decided at boot.
+    if (import.meta.env.DEV) onPerfSwitch('ground-cull', (on) => sectors.setGroundCut(on));
     for (const planet of this.solarSystem.planets) {
       const fine = () => { upgradeGeometryOnApproach(planet.geometryUpgrade, Number.POSITIVE_INFINITY); };
       const spec = SECTOR_SETS[planet.data.name];
       if (spec) {
+        if (groundCull) markStreamedGround(planet.geometryUpgrade, planet.mesh, GROUND_LEAF_SEGMENTS);
         const material = planet.mesh.material as THREE.MeshStandardMaterial;
         sectors.register({
           name: planet.data.name,
@@ -3561,15 +3667,24 @@ export class PlanetariumMode {
       const nightSpec = SECTOR_NIGHT_SETS[planet.data.name];
       const nightMat = planet.nightMaterial;
       if (nightSpec && nightMat && planet.nightMesh && planet.nightRadiusAU) {
+        // Whatever `?groundcull=` says: the cut is what keeps the shell's
+        // lights from adding to the tiles' (the family's cutAlways).
+        markStreamedGround(planet.geometryUpgrade, planet.nightMesh, GROUND_LEAF_SEGMENTS);
         sectors.register({
           name: planet.data.name,
           spec: nightSpec,
           mesh: planet.nightMesh,
           material: nightMat,
           family: earthNightSectorFamily(nightMat),
-          // The shell's own radius, not the globe's: a sector built 6 km low
-          // would sit under the shell it is there to replace.
-          radiusAU: planet.nightRadiusAU,
+          // The globe's radius, not the shell's. A night sector writes depth,
+          // so its silhouette is a depth silhouette: built at the shell's radius
+          // it reached 6 km past the ground's limb, and the air behind that
+          // band failed the depth test and drew nothing — a black line along
+          // the horizon wherever night tiles were resident. The shell is then
+          // the NEARER surface and passes the depth test over a tile; what
+          // leaves it out under one is the streamer's cut, which this family
+          // takes whatever `?groundcull=` says (earthNightSectorFamily).
+          radiusAU: planet.data.radiusAU,
           topMapWidth: topMapWidthOf(planet.textureUpgrades, nightMat),
           ensureFineGeometry: fine,
         });
@@ -3579,6 +3694,7 @@ export class PlanetariumMode {
       for (const m of moons) {
         const spec = SECTOR_SETS[m.data.name];
         if (!spec) continue;
+        if (groundCull) markStreamedGround(m.geometryUpgrade, m.mesh, GROUND_LEAF_SEGMENTS);
         const material = m.mesh.material as THREE.MeshStandardMaterial;
         sectors.register({
           name: m.data.name,
@@ -3592,6 +3708,39 @@ export class PlanetariumMode {
       }
     }
     this.sectors = sectors;
+  }
+
+  /**
+   * The frame's projection values every surface measure reads — the canvas in
+   * CSS pixels, the tile ratio, the focal length in device pixels at the
+   * frame's centre and the lens's largest stretch — once per world frame,
+   * whether or not a streamer exists or the context is lost, so a measure
+   * that is not the sector streamer's (the cloud field's residency) can read
+   * them under `?sectors=0` too. Computed at the moment the sector pass used
+   * to compute them for itself, straight before it, so the tiles read the
+   * same numbers they always did.
+   */
+  private updateSectorFrameValues(): void {
+    const canvasH = this.renderer.domElement.clientHeight;
+    const dpr = this.tilePixelRatio();
+    this.sectorFrameCanvasW = this.renderer.domElement.clientWidth;
+    this.sectorFrameCanvasH = canvasH;
+    this.sectorFrameDpr = dpr;
+    // Device pixels a world unit covers at unit distance at the CENTRE of the
+    // displayed frame. The lens normalises the design FOV onto the frame's
+    // edge, so the conversion is its displayed half-tangent; tan(fov/2) is the
+    // overscan render's scale and reads 8% small at this FOV.
+    const lens = this.camera.userData.lens as
+      | { strength: number; designFovDeg: number; effectiveStrength?: number }
+      | undefined;
+    const lensStrength = lens ? lens.effectiveStrength ?? lens.strength : 0;
+    const designFovDeg = displayFovDeg(this.camera);
+    this.sectorFrameFocalPx = ((canvasH / 2) / lensDisplayHalfTan(designFovDeg, lensStrength)) * dpr;
+    // The lens stretches outward from the axis, so the same patch of surface
+    // draws larger in a corner than at the centre. The skip-the-whole-body
+    // bound in visitSectorBody carries that factor to stay an upper bound on
+    // every sector.
+    this.sectorFrameMaxScale = lensMaxFrameScale(designFovDeg, this.camera.aspect, lensStrength);
   }
 
   /**
@@ -3614,11 +3763,6 @@ export class PlanetariumMode {
       sectors.dropAll();
       return;
     }
-    const canvasH = this.renderer.domElement.clientHeight;
-    const dpr = this.tilePixelRatio();
-    this.sectorFrameCanvasW = this.renderer.domElement.clientWidth;
-    this.sectorFrameCanvasH = canvasH;
-    this.sectorFrameDpr = dpr;
     this.sectorFrameNowMs = performance.now();
     this.sectorFrameChart = this.isMapOpen();
     this.sectorFrameGrounded = this.landedView === 'surface' ? this.landedOn?.name ?? null : null;
@@ -3627,21 +3771,6 @@ export class PlanetariumMode {
     // refreshed it this frame.
     this.camera.updateMatrixWorld();
     this.solarSystem.sun.getWorldPosition(this.sectorSunWorld);
-    // Device pixels a world unit covers at unit distance at the CENTRE of the
-    // displayed frame. The lens normalises the design FOV onto the frame's
-    // edge, so the conversion is its displayed half-tangent; tan(fov/2) is the
-    // overscan render's scale and reads 8% small at this FOV.
-    const lens = this.camera.userData.lens as
-      | { strength: number; designFovDeg: number; effectiveStrength?: number }
-      | undefined;
-    const lensStrength = lens ? lens.effectiveStrength ?? lens.strength : 0;
-    const designFovDeg = displayFovDeg(this.camera);
-    this.sectorFrameFocalPx = ((canvasH / 2) / lensDisplayHalfTan(designFovDeg, lensStrength)) * dpr;
-    // The lens stretches outward from the axis, so the same patch of surface
-    // draws larger in a corner than at the centre. The skip-the-whole-body
-    // bound in visitSectorBody carries that factor to stay an upper bound on
-    // every sector.
-    this.sectorFrameMaxScale = lensMaxFrameScale(designFovDeg, this.camera.aspect, lensStrength);
 
     // Measure every body first, then let the streamer reconcile them together:
     // the bodies are visited in catalog order, and a working set decided body
@@ -3664,7 +3793,7 @@ export class PlanetariumMode {
           // does not count as hidden here. Only the shell's own range gate does.
           const devHidden = import.meta.env.DEV && this.devHiddenRoles?.nightLights === true;
           this.visitSectorBody(
-            sectors, sectorFamilyKey(name, 'night'), name, planet.nightMesh, planet.nightRadiusAU,
+            sectors, sectorFamilyKey(name, 'night'), name, planet.nightMesh, planet.data.radiusAU,
             !planet.nightMesh.visible && !devHidden,
           );
         }
@@ -3676,6 +3805,14 @@ export class PlanetariumMode {
       }
     } finally {
       sectors.endFrame();
+    }
+    // A squeeze asked for at the end of the pass lands here, after the
+    // reconcile and before this frame's draw: where a release can come between
+    // the cut a draw relies on and the draw itself.
+    if (import.meta.env.DEV && this.devLedgerSqueezePending !== null) {
+      this.devLedgerSqueezeBytes = this.devLedgerSqueezePending;
+      this.devLedgerSqueezePending = null;
+      this.onLadderLedgerChange();
     }
   }
 
@@ -3857,8 +3994,8 @@ export class PlanetariumMode {
    * they are allocated out of the one pool the maps and the tiles share. The
    * figure is asked of the LUT per frame rather than added as a constant
    * because the tier may never arrive at all, and because the bake itself
-   * holds ~32 MiB of scratch for the minutes it runs — a rung admitted against
-   * the resident 8 MiB while 32 are really allocated is a rung admitted
+   * holds ~36 MiB for the minutes it runs — a rung admitted against the
+   * resident 12 MiB while 36 are really allocated is a rung admitted
    * against memory that is not there. Unlike a map, the tables cannot be given
    * back, so they act as a floor the ladder's own maps give way to.
    */
@@ -3871,6 +4008,7 @@ export class PlanetariumMode {
     // a colour rung. Only what an approach EARNED is in here; the boot relief
     // every device carries regardless is not the ladder's weight.
     this.forEachNormalUpgrade((up) => { bytes += appliedNormalHeldBytes(up); });
+    if (import.meta.env.DEV) bytes += this.devLedgerSqueezeBytes;
     return bytes;
   }
 
@@ -3947,14 +4085,41 @@ export class PlanetariumMode {
    * — and what the streamer is owed regardless (its byte budget, its load
    * deadlines) is what `maintain` covers on those frames.
    */
-  private updateMemoryPasses(mapOpen: boolean): void {
+  private updateMemoryPasses(mapOpen: boolean, willDraw: boolean): void {
     this.updateLadderPressure(performance.now());
     if (!mapOpen) {
       this.updateBodyLOD();
+      this.updateSectorFrameValues();
       this.updateSectorStreaming();
     } else {
       this.maintainSectorStreaming();
     }
+    if (this.cloudField) this.updateCloudField(this.cloudField, mapOpen, willDraw);
+  }
+
+  /**
+   * Earth's cloud field's frame (world/cloudFieldSession): after the sectors
+   * have reconciled, so a page can only start behind them, and on chart
+   * frames too, which it keeps but admits nothing on. The deck's frame values
+   * are the ones the sectors measure with (`updateSectorFrameValues`, which
+   * runs whether or not a streamer exists): the canvas's CSS height at the
+   * tile ratio is the scene target's height on the grid the field's guard is
+   * held to.
+   */
+  private updateCloudField(field: CloudFieldSession, chart: boolean, willDraw: boolean): void {
+    let deck: THREE.Mesh | null = null;
+    for (const planet of this.solarSystem!.planets) {
+      if (planet.data.name === 'Earth') {
+        deck = planet.cloudsMesh ?? null;
+        break;
+      }
+    }
+    field.frame(
+      deck, this.camera, this.solarSystem!.sun, performance.now(),
+      this.sectorFrameCanvasH * this.sectorFrameDpr,
+      this.landedView === 'surface' && this.landedOn?.name === 'Earth',
+      chart, this.arrivalVeilUp(), willDraw,
+    );
   }
 
   /**
@@ -4063,7 +4228,7 @@ export class PlanetariumMode {
     if (!plan.releaseDue || this.releasing) return;
     const victim = planRelease(candidates, {
       ladderBytes,
-      envelopeBytes: this.memory.envelopeBytes,
+      envelopeBytes: this.memory.availableBytes(),
     });
     const up = victim ? victims.get(victim.id) : undefined;
     if (!victim || !up) return;
@@ -4274,6 +4439,74 @@ export class PlanetariumMode {
     return bytes;
   }
 
+  /**
+   * Allocate Earth's cloud field at boot (world/cloudFieldSession: the pool
+   * and the residency that fills it), for a session that asked for the field.
+   * The device's profile says how many pages it holds, and zero is no field
+   * whatever the URL asked. The pool's bytes are reserved in the envelope from
+   * the moment it exists; no page is fetched and no worker started until the
+   * residency first wants one. A GL error
+   * on the allocation turns the field off for the session instead: an array
+   * that did not allocate samples as zero, and every page the table called
+   * resident would draw as clear sky. Never throws into the activation that
+   * awaits it — a field that cannot be had is a deck on its base sheet.
+   */
+  private async startCloudField(): Promise<void> {
+    const layers = this.deviceProfile.cloudFieldLayers;
+    if (layers <= 0) {
+      debugLog('Cloud field off: this device\'s profile gives it no pages', { profile: this.deviceProfile.id });
+      return;
+    }
+    try {
+      const { CloudFieldSession } = await import('./world/cloudFieldSession');
+      // Sectors first: a page starts only while a sector load slot is free.
+      const sectorsBusy = () => this.sectors?.loadSlotsFull() ?? false;
+      const { session, report } = CloudFieldSession.allocate(
+        this.renderer, layers, this.deviceProfile.wantTexelPx, sectorsBusy,
+      );
+      if (!session) {
+        this.cloudFieldOff(report, 'at boot');
+        return;
+      }
+      this.cloudField = session;
+      const pool = session.pool;
+      this.memory.setFixedBytes(pool.bytes());
+      setCloudFieldOn(true);
+      debugLog('Cloud field pool', {
+        layers, MiB: Math.round((pool.bytes() / (1024 * 1024)) * 10) / 10, allocationMs: Math.round(report.ms * 10) / 10,
+      });
+    } catch (err) {
+      debugWarn('Cloud field off: its pool module did not load', err);
+    }
+  }
+
+  /** The field off for the rest of the session, said once with the figures:
+   *  the define comes off the deck, the reservation off the envelope. */
+  private cloudFieldOff(report: CloudFieldAllocation, when: string): void {
+    this.cloudField = null;
+    this.memory.setFixedBytes(0);
+    setCloudFieldOn(false);
+    debugWarn(`Cloud field off: its pool did not allocate ${when}`, {
+      glError: `0x${report.glError.toString(16)}`, layers: report.layers,
+      MiB: Math.round((report.bytes / (1024 * 1024)) * 10) / 10,
+      envelopeMiB: Math.round(this.memory.envelopeBytes / (1024 * 1024)),
+    });
+  }
+
+  /** After a context restore: the pool allocated again and checked as at
+   *  boot. Every program relinks after a restore anyway, so a pool that
+   *  cannot be had again takes the field off here at no further cost. */
+  private restoreCloudField(): void {
+    const report = this.cloudField?.contextRestored();
+    if (report && report.glError !== 0) this.cloudFieldOff(report, 'after a context restore');
+  }
+
+  /** The session's cloud field, or null where the field is off: the
+   *  development bridge's way in. */
+  cloudFieldSession(): CloudFieldSession | null {
+    return this.cloudField;
+  }
+
   /** The `?debug=1` memory line: what the ladder and the tiles hold against
    *  the envelope they share, on the device's own screen. Once at boot it
    *  also prints the two figures the envelope does NOT count — the boot maps
@@ -4297,6 +4530,8 @@ export class PlanetariumMode {
     const globalBytes = this.liveGlobalMapBytes();
     const envelope = this.memory.figures();
     const transcoder = this.ktx2Loader.state();
+    const fieldLayers = this.cloudField?.pool.layerCount ?? 0;
+    const field = this.cloudField?.stats() ?? null;
     // Whatever the line below prints, so a figure cannot move without the
     // line being reprinted.
     const figures = [
@@ -4305,6 +4540,7 @@ export class PlanetariumMode {
           envelope.sectorBudget, envelope.floorBytes, envelope.envelopeBytes]
         : [globalBytes, envelope.floorBytes, envelope.envelopeBytes]),
       transcoder.alive ? 1 : 0, transcoder.disposedCount,
+      ...(field ? [envelope.fixedBytes, field.resident, field.pipe === 'idle' ? 0 : 1, field.failed] : []),
     ];
     const previous = this.memoryDebugLast;
     const moved = !previous || previous.length !== figures.length ||
@@ -4340,6 +4576,18 @@ export class PlanetariumMode {
         : { tiles: 'off' }),
       floorMiB: mib(envelope.floorBytes),
       envelopeMiB: mib(envelope.envelopeBytes),
+      // Earth's cloud field pool, held whole for the session and taken off
+      // the envelope before the maps and the tiles share it, and the pages in
+      // it: resident of the layers, the one loading (fetched, decoded or
+      // going up), and those cooling down after a failure. Absent where the
+      // session has no field.
+      ...(field
+        ? {
+          cloudPoolMiB: mib(envelope.fixedBytes),
+          cloudPages: `resident ${field.resident}/${fieldLayers}`
+            + ` loading ${field.pipe === 'idle' ? 0 : 1} failed ${field.failed}`,
+        }
+        : {}),
       // The compressed rungs' transcoder: its workers keep the memory of the
       // largest container they transcoded, which no GPU figure above counts,
       // so whether they are alive is said here. "idle-freed N" is how many
@@ -4367,6 +4615,7 @@ export class PlanetariumMode {
     releaseTexelPx: number;
     cacheOnlyWarm: boolean;
     tierCaps: Record<string, string>;
+    cloudFieldLayers: number;
   } {
     const p = this.deviceProfile;
     return {
@@ -4384,6 +4633,7 @@ export class PlanetariumMode {
       releaseTexelPx: p.releaseTexelPx,
       cacheOnlyWarm: p.cacheOnlyWarm,
       tierCaps: { ...p.tierCaps } as Record<string, string>,
+      cloudFieldLayers: p.cloudFieldLayers,
     };
   }
 
@@ -4407,6 +4657,8 @@ export class PlanetariumMode {
     ceilingBytes: number;
     floorBytes: number;
     envelopeBytes: number;
+    fixedBytes: number;
+    availableBytes: number;
     releasing: string | null;
     restoreQueued: number;
     rungs: LadderRungReadout[];
@@ -4442,7 +4694,12 @@ export class PlanetariumMode {
       heldBytes: this.liveGlobalMapBytes(),
       ceilingBytes: this.memory.ladderCeiling(),
       floorBytes: this.memory.floorBytes,
+      // The device's row, what is held whole out of it for the session (the
+      // cloud field's pool), and what that leaves the maps and the tiles: the
+      // figure the shared-envelope arithmetic is checked against.
       envelopeBytes: this.memory.envelopeBytes,
+      fixedBytes: this.memory.fixedBytes,
+      availableBytes: this.memory.availableBytes(),
       releasing: this.releasing?.key ?? null,
       // Rungs still waiting to fetch back the map a lost context took. Above
       // zero only between a restore and the last re-fetch landing; a figure
@@ -4522,6 +4779,10 @@ export class PlanetariumMode {
     // service-worker cache on the next activation.
     this.sectors?.dropAll();
     this.sectorSpin.clear();
+    // Only this mode pumps uploads, so the cloud field's page in flight is
+    // given up; its resident pages cost nothing more held and are kept for
+    // the return (its pool is allocated whatever it holds).
+    this.cloudField?.cancelInFlight();
     // Nothing is being drawn, so nothing has a drawn density; the next
     // activation measures from scratch rather than reporting the last frame of
     // the previous session. The materials are put back at rest with it — a
@@ -4703,6 +4964,10 @@ export class PlanetariumMode {
     if (this.starfield) setStarfieldPixelRatio(this.starfield, sceneRatio, outputRatio);
     if (this.moonDots) this.moonDots.setPixelRatio(sceneRatio, outputRatio);
     if (this.solarSystem) setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, sceneRatio, outputRatio);
+    // The cloud field's guard is measured in the scene target's own pixels and
+    // judged in the tile ratio's (world/cloudField): one uniform, the ratio of
+    // the two, so a rung step moves no fragment's weight.
+    setCloudFieldPixelRatios(sceneRatio, this.tilePixelRatio());
   }
 
   /** The safe-area insets as last read, read now if never: the corner chart
@@ -4832,7 +5097,11 @@ export class PlanetariumMode {
     // own cost (frameWork), and two clock reads a frame is what that costs.
     const queued = import.meta.env.DEV ? textureWarmQueueDepth() : 0;
     const warmStartedAt = performance.now();
-    pumpTextureWarmQueue(warmBudget, this.frameIntervalMs);
+    // Earth's cloud field uploads its pages beside the queue, last in line:
+    // on a frame it takes, the pump sits out (CloudFieldSession.uploadTurn).
+    if (!this.cloudField?.uploadTurn(warmStartedAt, warmBudget, this.frameIntervalMs)) {
+      pumpTextureWarmQueue(warmBudget, this.frameIntervalMs);
+    }
     const warmSpentMs = performance.now() - warmStartedAt;
     this.frameWorkMs += warmSpentMs;
     if (import.meta.env.DEV && this.devWarmSpend) {
@@ -5044,7 +5313,7 @@ export class PlanetariumMode {
     // the screen, and a phone that fetched half as often would look worse for
     // longer.
     const mapOpen = this.isMapOpen();
-    this.updateMemoryPasses(mapOpen);
+    this.updateMemoryPasses(mapOpen, willDraw);
     this.reportMemoryDebug(performance.now());
 
     // The HTML label/marker projections below read camera.matrixWorldInverse,
@@ -5112,6 +5381,7 @@ export class PlanetariumMode {
     // Past every camera writer this frame, beside the Sun's own metering.
     this.syncNightExposures();
     this.updateSunShader(dt);
+    this.updateHighlightMeter(dt);
     this.updateOrbitLineVisibility();
 
     // Update stats/time overlays on a lower cadence than the render loop to avoid
@@ -6914,10 +7184,12 @@ export class PlanetariumMode {
    *  hold. */
   private static readonly BLOOD_MOON_FLOOR_R = 0.3;
 
-  /** Lift faint physical planetshine to a visible night-side glow. */
-  private static readonly PLANETSHINE_GAIN = 500;
+  /** Lift faint physical planetshine to a visible night-side glow. The Sun's
+   *  light reflected twice, so it rides the Sun's baseline (sunLight), or a
+   *  brighter Sun would leave the earthshine crescent behind the day side. */
+  private static readonly PLANETSHINE_GAIN = 500 * SUN_LIGHT_BASELINE;
   /** Cap well below daylight; large/near parents (Jupiter) sit at the cap. */
-  private static readonly PLANETSHINE_MAX = 0.12;
+  private static readonly PLANETSHINE_MAX = 0.12 * SUN_LIGHT_BASELINE;
   /** A representative parent bond albedo (Earth ~0.3, gas giants ~0.5). */
   private static readonly PLANETSHINE_PARENT_ALBEDO = 0.4;
 
@@ -6925,14 +7197,17 @@ export class PlanetariumMode {
     const material = m.mesh.material as THREE.MeshStandardMaterial;
     const fraction = shading.sunVisibleFraction;
     const isEarthMoon = m.data.name === 'Moon' && m.data.parentPlanet === 'Earth';
+    // The colour is the body's albedo grade times this frame's shade: written
+    // through the grade so a graded Moon stays graded through every frame.
     if (isEarthMoon && shading.inUmbra) {
-      material.color.setRGB(
+      writeShadedAlbedo(material, m.data.name, [
         Math.max(fraction, PlanetariumMode.BLOOD_MOON_FLOOR_R),
         Math.max(fraction, 0.07),
         Math.max(fraction, 0.05),
-      );
+      ]);
     } else {
-      material.color.setScalar(Math.max(fraction, 0.03));
+      const shade = Math.max(fraction, 0.03);
+      writeShadedAlbedo(material, m.data.name, [shade, shade, shade]);
     }
   }
 
@@ -8314,7 +8589,6 @@ export class PlanetariumMode {
       if (glareMat) {
         glareMat.uniforms.uViewportHeight.value = viewportHeight;
         glareMat.uniforms.uPointLike.value = 1 - THREE.MathUtils.smoothstep(solarRadiusPx, 2, 10);
-        glareMat.uniforms.uCameraFx.value = opticalFx;
       }
 
       // One amplitude driver for the wide veil. The ISS reference stills are at
@@ -8360,13 +8634,12 @@ export class PlanetariumMode {
       );
       const veilReachGeom = veilAmplitudeResponse * hugeFade;
       const veilStrength = glareMat ? glareMat.uniforms.uVeilStrength.value : 1.4;
-      // The diffraction arms are a point-source camera artifact, so they fade as
-      // the photosphere resolves into a disc — about three-quarters strength at
-      // Earth's ~3.8 px solar radius, gone past ~8 px (Mercury sits near 10) —
-      // rather than growing with brightness. This stops them reading as
-      // ruler-straight exaggerated lines exactly where the Sun is closest.
-      const armGate = 1 - THREE.MathUtils.smoothstep(solarRadiusPx, 2, 8);
-      veilArmCoeff = 0.28 * armGate;
+      // The diffraction arms are a camera's signature, and the Sun here is an
+      // eye's from a window: a searing point in a soft glare. The coefficient
+      // is zero (it was 0.28, faded out as the disc resolved); the arm terms
+      // stay in the shader and the glare mask, which mirror each other, so a
+      // look round needs only this number.
+      veilArmCoeff = 0;
 
       // Size the billboard from where the wash and arms fall below the visibility
       // floor rather than from an authored amount. This upper bound (full Sun,
@@ -9079,7 +9352,92 @@ export class PlanetariumMode {
    * on it verbatim, never re-glide it.
    */
   takeExposureTarget(): number {
-    return this.sunExposure;
+    // The smaller of the Sun's meter and the beam's: either closes down on
+    // its own, never both on the same view (the highlight meter holds at
+    // exactly one wherever the beam cannot be in the picture, so the Sun's
+    // meter alone is the picture it was).
+    return Math.min(this.sunExposure, this.highlightMeter.exposure);
+  }
+
+  /**
+   * The highlight meter's frame: Earth's mirror geometry in Earth's own frame
+   * from scene positions (never the heliocentric table), the light as the
+   * point light has it, the air's state, the deck's drift, the displayed field
+   * of view. Cheap when far: the meter holds before it reads anything.
+   */
+  private updateHighlightMeter(dt: number): void {
+    const ctx = this.highlightCtx;
+    const earth = this.solarSystem?.planets.find((p) => p.data.name === 'Earth');
+    if (!earth || !this.solarSystem) {
+      ctx.airOn = false;
+      this.highlightMeter.update(dt, ctx);
+      return;
+    }
+    const sc = this.highlightScratch;
+    earth.group.getWorldPosition(sc.earth);
+    earth.group.getWorldQuaternion(sc.q).invert();
+    this.camera.getWorldPosition(sc.cam);
+    const r = earth.data.radiusAU;
+    ctx.camera.copy(sc.cam).sub(sc.earth).applyQuaternion(sc.q).divideScalar(r);
+    ctx.sun.copy(this.solarSystem.sun.position).sub(sc.earth).applyQuaternion(sc.q).divideScalar(r);
+    if (!this.sunPointLight) this.sunPointLight = (this.solarSystem.sun.getObjectByProperty('isPointLight', true) as THREE.PointLight | undefined) ?? null;
+    const light = this.sunPointLight;
+    ctx.lightIntensity = light?.intensity ?? 0;
+    if (light) { const lin = ctx.lightLinear as [number, number, number]; lin[0] = light.color.r; lin[1] = light.color.g; lin[2] = light.color.b; }
+    const air = earth.fx?.air;
+    ctx.airOn = !!air && (air.uAirDensity.value as number) > 0;
+    ctx.airBlend = air ? (air.uAirBlend.value as number) : 0;
+    ctx.hazeClearView = air ? (air.uSurfaceHaze.value as number) : 1;
+    const cloudArgs = earth.cloudsMesh ? surfaceShadingArgsOf(earth.cloudsMesh.material as THREE.Material) : undefined;
+    ctx.cloudSpin = cloudArgs?.uFrameSpin.value ?? 0;
+    ctx.cloudDrawn = !!earth.cloudsMesh?.visible && !this.devHiddenRoles?.clouds;
+    // The switch the ground compiles and the shell it reads, so the meter
+    // cuts the beam where the shader does.
+    ctx.cloudShadows = cloudShadowsOn();
+    ctx.cloudHeightOverRadius = cloudShadowShared.uCloudHeightOverRadius.value;
+    // The eclipse casters the ground traces, in its own frame and in radii,
+    // with the ground's own Sun size and terminator: the beam under a moon's
+    // umbra is dimmed as the shader dims it.
+    const casters = earth.fx?.uMoonShadow.value;
+    const shadowsOut = ctx.moonShadows as Float64Array;
+    const shadowCount = Math.min(earth.fx?.uMoonShadowCount.value ?? 0, casters?.length ?? 0, shadowsOut.length / 4);
+    for (let i = 0; i < shadowCount; i++) {
+      const c = casters![i];
+      shadowsOut[i * 4] = c.x / r; shadowsOut[i * 4 + 1] = c.y / r; shadowsOut[i * 4 + 2] = c.z / r; shadowsOut[i * 4 + 3] = c.w / r;
+    }
+    ctx.moonShadowCount = shadowCount;
+    const groundArgs = surfaceShadingArgsOf(earth.mesh.material as THREE.Material);
+    ctx.sunTan = groundArgs?.sunTan ?? 0;
+    ctx.termWidth = groundArgs ? NIGHT_FILL[groundArgs.archetype].termWidth : 0;
+    const fovY = displayFovDeg(this.camera);
+    ctx.fovYDeg = fovY;
+    ctx.fovXDeg = (2 * Math.atan(Math.tan((fovY * Math.PI) / 360) * this.camera.aspect) * 180) / Math.PI;
+    // Where the frame looks, in Earth's axes: the beam counts only where it
+    // falls inside the frame, so a view turned away from it asks nothing.
+    this.camera.getWorldDirection(sc.dir);
+    ctx.view.copy(sc.dir).applyQuaternion(sc.q).normalize();
+    this.camera.getWorldQuaternion(sc.cq);
+    ctx.viewUp.set(0, 1, 0).applyQuaternion(sc.cq).applyQuaternion(sc.q).normalize();
+    ctx.seaBeamOn = seaBeamOn();
+    ctx.sunPathOn = sunPathOn();
+    ctx.windMapOn = seaWindOn();
+    this.highlightMeter.update(dt, ctx);
+  }
+
+  /** The highlight meter's knobs and telemetry (`__moon.glintMeter`), DEV. */
+  devGlintMeter(opts?: { target?: number; floor?: number; fadeLo?: number; fadeHi?: number; down?: number; up?: number }): HighlightTelemetry {
+    const m = this.highlightMeter;
+    if (opts) {
+      const k = { ...m.knobs };
+      if (Number.isFinite(opts.target)) k.target = opts.target as number;
+      if (Number.isFinite(opts.floor)) k.floor = opts.floor as number;
+      if (Number.isFinite(opts.fadeLo)) k.fadeLo = opts.fadeLo as number;
+      if (Number.isFinite(opts.fadeHi)) k.fadeHi = opts.fadeHi as number;
+      m.knobs = k;
+      if (Number.isFinite(opts.down)) m.downStopsPerS = opts.down as number;
+      if (Number.isFinite(opts.up)) m.upStopsPerS = opts.up as number;
+    }
+    return m.telemetry();
   }
 
   /** DEV A/B (`__moon.setBeltVisible`): hold the asteroid belt out of every
@@ -10429,7 +10787,7 @@ export class PlanetariumMode {
     const btn = document.getElementById('planetarium-btn-tools');
     if (card && btn) {
       const rect = btn.getBoundingClientRect();
-      const left = Math.min(Math.max(rect.left, 14), window.innerWidth - card.offsetWidth - 14);
+      const left = Math.min(Math.max(rect.left, 14), viewportSize().width - card.offsetWidth - 14);
       card.style.left = `${left}px`;
       card.style.right = 'auto';
     }
@@ -12144,7 +12502,7 @@ export class PlanetariumMode {
       ? document.getElementById('map-dock')?.getBoundingClientRect()
       : null;
     el.style.bottom = rect && rect.height > 0
-      ? `${Math.round(window.innerHeight - rect.top + 8)}px`
+      ? `${Math.round(viewportSize().height - rect.top + 8)}px`
       : '';
   }
 
@@ -13310,7 +13668,7 @@ export class PlanetariumMode {
     // is what the chip names, and it stays where it is.
     const halfW = this.mapTpChipHalfW;
     const rawX = Math.round(this.mapTpScreen.x);
-    const maxX = window.innerWidth - halfW - 8;
+    const maxX = viewportSize().width - halfW - 8;
     const x = maxX > halfW + 8 ? Math.round(Math.min(Math.max(rawX, halfW + 8), maxX)) : rawX;
     // The y clamp mirrors it for the top edge: the chip body hangs above the
     // anchor (translateY(-100%) plus the lift), so an anchor high in the frame
@@ -15373,6 +15731,10 @@ export class PlanetariumMode {
    * this — and a surface term that draws its own ground is at its most exposed
    * over a pole.
    *
+   * It only poses the camera: it never routes through landing, travel or the
+   * collision pass, so a change to any of those is exercised through their own
+   * hooks (land, travelTo, pilotTo), never through this.
+   *
    * Dev bridge only.
    */
   devFrameBody(
@@ -15687,6 +16049,11 @@ export class PlanetariumMode {
   devSetRoleHidden(role: 'atmosphere' | 'clouds' | 'nightLights', hidden: boolean): void {
     this.devHiddenRoles ??= { atmosphere: false, clouds: false, nightLights: false };
     this.devHiddenRoles[role] = hidden;
+    // The sea's glint is cut under the deck's clouds through a read of the
+    // deck's own map: hiding the clouds hides that cut with them, so a hidden
+    // deck is a clear sky and not a sky whose shadows stayed behind. The
+    // per-frame write that feeds the map skips while the role is hidden.
+    if (role === 'clouds' && hidden) holdSeaCloudCut();
     if (role !== 'atmosphere' || !this.solarSystem) return;
     for (const planet of this.solarSystem.planets) {
       if (planet.atmosphere) planet.atmosphere.visible = !hidden;
@@ -15697,6 +16064,31 @@ export class PlanetariumMode {
    *  one of them resident, so turning it back on costs no re-stream. */
   devSetSectorMeshesVisible(visible: boolean): void {
     this.sectors?.devSetMeshesVisible(visible);
+  }
+
+  /**
+   * Dev-only: `mib` added to what the globe maps hold, so the sector budget
+   * shrinks exactly as it does when a map lands — through the ledger change
+   * the tier ladder raises, the path that trims tiles from outside the frame's
+   * pass. Held until set back to 0. With `afterPass` it lands at the end of
+   * the next sector pass instead, after the reconcile and before that frame's
+   * draw. Returns the bytes in force.
+   */
+  devSectorSqueeze(mib: number, afterPass = false): number {
+    const bytes = Math.max(0, mib) * 1024 * 1024;
+    if (afterPass) {
+      this.devLedgerSqueezePending = bytes;
+    } else {
+      this.devLedgerSqueezeBytes = bytes;
+      this.onLadderLedgerChange();
+    }
+    return bytes;
+  }
+
+  /** Dev-only: release one sector and keep it out, or let every held one
+   *  back (SectorStreamer.devHoldOut). */
+  devSectorHoldOut(which: 'skip' | null): string | null {
+    return this.sectors?.devHoldOut(which) ?? null;
   }
 
   /**
@@ -15899,6 +16291,9 @@ export class PlanetariumMode {
       probeMs: lut.probeMs,
       orders: lut.orders,
       sizes: lut.sizes,
+      // Whether the lookups read single Mie's exact colour (`?mieexact=0`
+      // turns it off), so a capture can say which program it came from.
+      mieExact: mieExactOn(),
       programs: this.renderer.info.programs?.length ?? 0,
       textureBytesResident: this.renderer.info.memory.textures,
       stats: lut.stats(),
@@ -15929,12 +16324,15 @@ export class PlanetariumMode {
   }
 
   /** Read table values back through the 8-bit blit path, at the same table
-   *  coordinates the shaders would address. `combined` returns the radiance a
-   *  lookup gives — both phase functions and the single-Mie recovery, evaluated
-   *  in the shader — and `irradiance` reads the sky-irradiance table. */
+   *  coordinates the shaders would address. `scattering` is the raw texel
+   *  (Rayleigh and the higher orders in rgb, single Mie's red in alpha),
+   *  `mieColour` the raw single-Mie colour texel at the same coordinate (its
+   *  green and blue, read back as [G, B, 0, 1]), `combined` the radiance a
+   *  lookup gives — both phase functions and the single-Mie term, evaluated in
+   *  the shader — and `irradiance` reads the sky-irradiance table. */
   devAtmosphereSample(
     samples: ReadonlyArray<{
-      kind: 'transmittance' | 'scattering' | 'combined' | 'irradiance';
+      kind: 'transmittance' | 'scattering' | 'mieColour' | 'combined' | 'irradiance';
       r: number;
       mu: number;
       muS?: number;
@@ -15974,7 +16372,10 @@ export class PlanetariumMode {
       const coords = scatteringTexture3DCoords(uvwz, tables.sizes);
       return lut.readSample({
         mode: s.kind === 'combined' ? 2 : 1,
-        scattering: tables.scattering,
+        scattering: s.kind === 'mieColour' ? tables.mieColour : tables.scattering,
+        // The combined lookup reads single Mie's green and blue from here, as
+        // the drawing programs do; unbound it would read an empty texture.
+        mieColour: tables.mieColour,
         uvw0: coords.uvw0,
         uvw1: coords.uvw1,
         nuLerp: coords.lerp,
@@ -16000,6 +16401,7 @@ export class PlanetariumMode {
       emergenceFlash: this.sunEmergenceFlash,
       atmosphereMix: this.sunAtmosphereMix,
       atmosphereColor: `#${this.sunAtmosphereColor.getHexString()}`,
+      armCoeff: glareMat ? (glareMat.uniforms.uArmCoeff.value as number) : 0,
       occluderShade: glareMat ? (glareMat.uniforms.uOccluderShade.value as number) : 0,
       occluderRadii: glareMat ? (glareMat.uniforms.uOccluderRadii.value as number) : 0,
       occluderOffsetSr: offset ? [offset.x, offset.y] : [0, 0],
@@ -16226,6 +16628,132 @@ export class PlanetariumMode {
     // Auto-exposure settles on its own from the smoothed target (same as the
     // sibling dev pose helpers) — no manual snap flag exists on this path.
     return true;
+  }
+
+  /**
+   * Headless-QA pose for the view an astronaut has of the sea: stand
+   * `altitudeKm` above the point on the body where the Sun stands
+   * `sunElevDeg` above the horizon, and look along the Sun's azimuth (turned
+   * by `azimuthDeg`) at `depressionDeg` below the local horizontal. Left
+   * unset, the depression is the one that puts the Sun's MIRROR POINT — the
+   * place on the sphere whose normal bisects the Sun and the camera, the
+   * heart of the glint — at the centre of the frame; 90 is straight down,
+   * which from 35 786 km is the geostationary view. `bearingDeg` is which
+   * way from the subsolar point the stand point lies: 0 east of it (the Sun
+   * in the west, an evening), 180 west of it (a sunrise), 90 north. The
+   * frame's up is the local vertical, so the horizon sits level; looking
+   * straight down, up is the Sun's azimuth. Hides the ship and the chrome
+   * like devLimbView. Returns the geometry it posed, so a probe can run the
+   * same equations on the CPU, or null for an unknown body. Dev bridge only.
+   */
+  devHorizonView(name: string, opts: {
+    altitudeKm?: number;
+    sunElevDeg?: number;
+    bearingDeg?: number;
+    azimuthDeg?: number;
+    depressionDeg?: number | null;
+    fovDeg?: number;
+  } = {}): HorizonViewPose | null {
+    if (!this.solarSystem) return null;
+    const bodyPos = this.planetWorldPositions.get(name);
+    const r = this.solarSystem.planets.find((p) => p.data.name === name)?.data.radiusAU;
+    if (!bodyPos || !r) return null;
+    const altitudeKm = opts.altitudeKm ?? 400;
+    const sunElevDeg = opts.sunElevDeg ?? 10;
+    const bearingDeg = opts.bearingDeg ?? 180;
+    const azimuthDeg = opts.azimuthDeg ?? 0;
+    const fovDeg = opts.fovDeg ?? 40;
+    const h = altitudeKm / KM_PER_AU;
+    if (!(h > 0)) return null;
+    const body = new THREE.Vector3(bodyPos.x, bodyPos.y, bodyPos.z);
+    // The Sun sits at the heliocentric origin of these coordinates, so the
+    // subsolar point lies toward it from the body's centre.
+    const subsolar = body.clone().negate().normalize();
+    // East at the subsolar point: the spin is about celestial north to within
+    // the body's obliquity, which is enough to say which way morning lies.
+    const east = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), subsolar);
+    if (east.lengthSq() < 1e-8) east.crossVectors(new THREE.Vector3(1, 0, 0), subsolar);
+    east.normalize();
+    const north = new THREE.Vector3().crossVectors(subsolar, east).normalize();
+    const bearing = THREE.MathUtils.degToRad(bearingDeg);
+    const toward = east.clone().multiplyScalar(Math.cos(bearing)).addScaledVector(north, Math.sin(bearing));
+    // The stand point: its vertical is the subsolar direction swung by the
+    // Sun's zenith angle along that bearing, so the Sun stands sunElevDeg
+    // above its horizon exactly.
+    const zenith = THREE.MathUtils.degToRad(90 - sunElevDeg);
+    const up = subsolar.clone().multiplyScalar(Math.cos(zenith)).addScaledVector(toward, Math.sin(zenith)).normalize();
+    const camera = body.clone().addScaledVector(up, r + h);
+    // The Sun's azimuth on the stand point's horizon, from the Sun's real
+    // (finite) direction at the camera.
+    const sunAtCamera = camera.clone().negate().normalize();
+    const sunAzimuth = sunAtCamera.clone().addScaledVector(up, -sunAtCamera.dot(up));
+    if (sunAzimuth.lengthSq() < 1e-10) sunAzimuth.copy(toward); else sunAzimuth.normalize();
+    const aimAzimuth = sunAzimuth.clone().applyAxisAngle(up, THREE.MathUtils.degToRad(azimuthDeg)).normalize();
+    const horizonDipDeg = THREE.MathUtils.radToDeg(horizonDip(r, h));
+    // The mirror point, in the plane of the Sun and the vertical: the heart
+    // of the glint, or none when the Sun is below the horizon seen from there.
+    const found = mirrorPointOnSphere(body, r, camera, up, sunAzimuth, new THREE.Vector3(0, 0, 0));
+    const mirror: HorizonViewPose['mirror'] = found
+      ? {
+          groundAngleDeg: THREE.MathUtils.radToDeg(found.groundAngle),
+          depressionDeg: THREE.MathUtils.radToDeg(found.depression),
+          sunElevDeg: THREE.MathUtils.radToDeg(found.sunElevation),
+          slantKm: found.slant * KM_PER_AU,
+        }
+      : null;
+    const depressionDeg = opts.depressionDeg ?? mirror?.depressionDeg ?? horizonDipDeg;
+    const depression = THREE.MathUtils.degToRad(depressionDeg);
+    const aim = aimAzimuth.clone().multiplyScalar(Math.cos(depression)).addScaledVector(up, -Math.sin(depression)).normalize();
+    this.devFreeCamera = true;
+    this.player.posX = camera.x;
+    this.player.posY = camera.y;
+    this.player.posZ = camera.z;
+    this.player.headTowardPoint(camera.x + aim.x, camera.y + aim.y, camera.z + aim.z);
+    this.player.moving = false;
+    const cam = this.camera as THREE.PerspectiveCamera;
+    cam.position.set(0, 0, 0);
+    // applyDesignFov (via setDisplayFov) is the only legal camera.fov writer
+    // under the lens contract; a raw `cam.fov = fovDeg` desyncs the overscan.
+    this.setDisplayFov(fovDeg);
+    // Up is the local vertical, so the horizon is level in the frame; looking
+    // straight down there is no horizon, and the Sun's azimuth points up.
+    cam.up.copy(Math.abs(aim.dot(up)) < 0.999 ? up : aimAzimuth);
+    cam.lookAt(aim);
+    cam.updateMatrixWorld(true);
+    // The orbit target: where the aim meets the ground, else a point along it
+    // as far as the horizon.
+    const cameraFromCentre = camera.clone().sub(body);
+    const b = aim.dot(cameraFromCentre);
+    const c = cameraFromCentre.lengthSq() - r * r;
+    const disc = b * b - c;
+    const hit = disc >= 0 ? -b - Math.sqrt(disc) : -1;
+    const targetDist = hit > 0 ? hit : Math.sqrt(Math.max((r + h) * (r + h) - r * r, 0));
+    this.controls.target.copy(aim).multiplyScalar(targetDist);
+    this.showShip = false;
+    this.player.group.visible = false;
+    for (const id of ['planetarium-ui', 'top-bar']) {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    }
+    return {
+      body: name,
+      altitudeKm,
+      sunElevDeg,
+      bearingDeg,
+      azimuthDeg,
+      depressionDeg,
+      fovDeg,
+      horizonDipDeg,
+      radiusAU: r,
+      mirror,
+      // Scene coordinates: the camera at the origin, the Sun at -camera.
+      bodyScene: [body.x - camera.x, body.y - camera.y, body.z - camera.z],
+      sunScene: [-camera.x, -camera.y, -camera.z],
+      up: [up.x, up.y, up.z],
+      aim: [aim.x, aim.y, aim.z],
+      sunAzimuth: [sunAzimuth.x, sunAzimuth.y, sunAzimuth.z],
+      groundHitKm: hit > 0 ? hit * KM_PER_AU : null,
+    };
   }
 
   /** Peek the coverage meter for the dev bridge — telemetry only (the adapted
@@ -18657,6 +19185,9 @@ export class PlanetariumMode {
     // its dispose hook), and the destination's own sectors stream back in a
     // beat after the reveal — from the cache, for a body seen before.
     this.sectors?.dropAll();
+    // The cloud field's page in flight goes too; its resident pages are whole
+    // and stay, and nothing new is admitted or uploaded under the veil.
+    this.cloudField?.cancelInFlight();
     this.arrivalUpgradeBatch = [];
     const moons = systemName ? this.planetMoons.get(systemName) : undefined;
     const needsPaint = !!moons && moons.some((m) => !m.painted);
@@ -19549,7 +20080,7 @@ export class PlanetariumMode {
     // should fetch for it.
     // World-presentation passes are gated while the map owns the frame.
     const mapOpen = this.isMapOpen();
-    this.updateMemoryPasses(mapOpen);
+    this.updateMemoryPasses(mapOpen, willDraw);
     // Shadow spots/guides live in the world scene, which the map never draws —
     // same gate as the cruise branch, and they rebuild on the first frame back.
     if (!mapOpen && willDraw) this.updateShadowVisuals();
@@ -19620,9 +20151,11 @@ export class PlanetariumMode {
     // (timestamp refreshed): the 30s autosave, the ☰ Save button,
     // and deactivate's final save all keep writing the journey the user left,
     // never the staged showcase — so a reload mid-tutorial resumes the pre-tutorial
-    // state. Any reader that wants the LIVE scene (the way
-    // rememberPreMissionState stashes a mission return point) must run after
-    // the tutorial has stopped; the mission-start hook does exactly that.
+    // state. A historic mission and a tool get the same override below. Any
+    // reader that wants the LIVE scene must run while none of the three is
+    // set: rememberPreMissionState stashes a mission's return point after the
+    // tutorial has stopped (the mission-start hook stops it first) and before
+    // preMissionState is assigned.
     if (this.tutorial) {
       return { ...this.tutorial.snapshot.state, timestamp: Date.now() };
     }
@@ -19634,6 +20167,12 @@ export class PlanetariumMode {
     if (this.preToolState) {
       return { ...this.preToolState, timestamp: Date.now() };
     }
+    // While a historic mission is staged, every save writes the journey the
+    // mission took over, and a reload mid-mission resumes that journey, as a
+    // reload mid-tutorial does. The mission's exit reads the field itself.
+    if (this.preMissionState) {
+      return { ...this.preMissionState, timestamp: Date.now() };
+    }
     // A capture session drives the chrome flags directly (devSetChrome); the
     // save keeps the values the user chose.
     const chrome = this.devChromeUserState ?? {
@@ -19642,6 +20181,15 @@ export class PlanetariumMode {
       showBodyLabels: this.showBodyLabels,
       showBodyMarkers: this.showBodyMarkers,
     };
+    // The ☰ menu and the help sheet pause a running clock and stop a moving
+    // ship while they are up, and put both back when they close. A save made
+    // meanwhile (Save sits in the menu; the autosave and the page-hide save
+    // run under either) records them as they will be once the sheet closes,
+    // not as the sheet holds them.
+    const menuOpen = this.menuPanel.isOpen();
+    const helpOpen = this.helpModal.isOpen();
+    const clockHeld = (menuOpen && this.resumeTimeAfterMenu) || (helpOpen && this.resumeTimeAfterHelp);
+    const shipHeld = (menuOpen && this.resumeShipAfterMenu) || (helpOpen && this.resumeShipAfterHelp);
     return {
       positionAU: { x: this.player.posX, y: this.player.posY, z: this.player.posZ },
       headingRad: this.player.heading,
@@ -19649,7 +20197,7 @@ export class PlanetariumMode {
       // When landed, speed/autopilot are zeroed — save the pre-land originals
       // so they restore correctly on load.
       speed: this.landedOn ? this.preLandSpeed : this.player.speedMultiplier,
-      moving: this.landedOn ? false : this.player.moving,
+      moving: this.landedOn ? false : this.player.moving || shipHeld,
       visitedPlanets: Array.from(this.player.visitedPlanets),
       distanceTraveled: this.player.distanceTraveled,
       timeElapsed: this.player.timeElapsed,
@@ -19657,7 +20205,7 @@ export class PlanetariumMode {
       autopilot: this.landedOn ? this.preLandAutopilot : this.autopilot,
       astroTimeUtcMs: this.timeState.currentUtcMs,
       astroTimeRate: this.timeState.rate,
-      astroTimePaused: this.timeState.paused,
+      astroTimePaused: this.timeState.paused && !clockHeld,
       showShip: chrome.showShip,
       showConstellations: this.showConstellations,
       showBodyLabels: chrome.showBodyLabels,
@@ -20121,6 +20669,9 @@ export class PlanetariumMode {
         // clouds at a longitude of its own.
         const cloudArgs = surfaceShadingArgsOf(planet.cloudsMesh.material as THREE.Material);
         if (cloudArgs) cloudArgs.uFrameSpin.value = cloudDrift;
+        // The ground's cloud shadows, when compiled, only while the deck that
+        // casts them is drawn: the range gate and the DEV role switch hide it.
+        if (planet.fx) planet.fx.uCloudAbove.value = planet.cloudsMesh.visible ? 1 : 0;
         // The same drift, and whichever rung the deck is currently wearing, for
         // the ocean's glint under it: the globe and its sectors read the deck's
         // map to cut the Sun's beam where cloud stands over the sea, and the map
@@ -20128,9 +20679,9 @@ export class PlanetariumMode {
         // sharpness. Written here rather than at build time because the deck
         // climbs its texture ladder on approach and frees the rung it leaves.
         if (body.name === 'Earth') {
-          cloudShadowUniforms.uCloudShadowSpin.value = cloudDrift;
+          setCloudShadowDrift(cloudDrift);
           const deckMap = (planet.cloudsMesh.material as THREE.MeshStandardMaterial).map;
-          if (deckMap) cloudShadowUniforms.uCloudShadowMap.value = deckMap;
+          if (deckMap && !this.devHiddenRoles?.clouds) cloudShadowUniforms.uCloudShadowMap.value = deckMap;
         }
       }
       const localSunDir = this.tmpLocalSunDir

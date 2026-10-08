@@ -16,6 +16,13 @@
  * The upload function is injected (the mode binds renderer.initTexture) so
  * the queue is unit-testable without a GL context — the same seam pattern as
  * MoonPainter's injected paint.
+ *
+ * One loader uploads BESIDE the queue rather than through it: the cloud
+ * field's pages, which are not textures of their own but layers of one array.
+ * It is last in line — it takes a frame only when the queue has nothing to
+ * upload (`textureWarmIdle`), or in the pump's place once its own job has
+ * starved — and its turn (`takeWarmTurn`) answers to this module's repay
+ * ledger exactly as a queued map does.
  */
 import * as THREE from 'three';
 import { debugWarn } from '../../shared/debug';
@@ -314,6 +321,42 @@ export function pumpTextureWarmQueue(budgetMs: number, frameIntervalMs: number):
     }
   }
   warmOwedPumps = 0;
+}
+
+/** Whether the pump has nothing to upload: no texture queued and no slice in
+ *  flight. What a loader uploading beside the queue reads before it takes a
+ *  frame's turn (`takeWarmTurn`). */
+export function textureWarmIdle(): boolean {
+  return queue.length === 0 && activeSlice === null;
+}
+
+/**
+ * The turn of an upload made BESIDE the queue by a loader last in line behind
+ * it (the cloud field's pages), on a frame its caller takes in the pump's
+ * place: one the queue has nothing for (`textureWarmIdle`), or one where the
+ * loader's own job has waited past its starve limit, which the pump then sits
+ * out. So a texture and such an upload never share a frame. The turn answers
+ * to the pump's own ledger: an overrun still owed is sat out here exactly as
+ * the pump would sit it out, and what `upload` spends is charged to it as a
+ * queued map's upload is, so a big page level and a big map never land on
+ * consecutive frames. An unbudgeted call — the arrival veil's drain — is
+ * refused: such a drain belongs to the queue, and nothing beside it may land
+ * under the veil. Returns whether `upload` ran; `label` names it in the frame
+ * trace.
+ */
+export function takeWarmTurn(budgetMs: number, frameIntervalMs: number, label: string, upload: () => void): boolean {
+  if (!Number.isFinite(budgetMs)) return false;
+  const start = performance.now();
+  if (!warmPumpAllowed(start, warmOwedPumps, warmLastUploadAtMs)) {
+    warmOwedPumps -= 1;
+    return false;
+  }
+  upload();
+  warmLastUploadAtMs = performance.now();
+  const spent = warmLastUploadAtMs - start;
+  warmOwedPumps = warmRepayPumps(spent, spent, budgetMs, frameIntervalMs);
+  if (import.meta.env.DEV && smoothTraceArmed()) smoothTraceEvent('upload', label, spent);
+  return true;
 }
 
 /** Take a texture out of the queue and into a slice job. Its dispose listener

@@ -30,6 +30,11 @@
  *    frame read 7.2 ms against a 4.7 ms wall-clock wait — while Chromium's
  *    readback readings agree with WebKit's on the same GPU to a few tenths.
  *
+ * On a phone, drive it over USB from the Mac (safaridriver) rather than by
+ * hand, and profile the phone both cool and after minutes parked: an iPhone
+ * throttles its whole chip within two minutes at Earth's shell, every row then
+ * reads about three times slower, and no per-draw number shows that alone.
+ *
  * Both clocks are intrusive on a tile-based GPU (every Apple GPU): a span
  * boundary inside a render pass ends its encoder, so the next draw reopens
  * the pass and reloads the attachments. That per-boundary overhead is
@@ -41,9 +46,9 @@
  *
  * Three kinds of frame, cycled `frames` times each:
  *  - total: one span over the whole composer frame (plus the corner chart
- *    and a one-pixel readback of the canvas, which forces the canvas's own
- *    multisample resolve — the cost `antialias: true` adds at present time,
- *    invisible to every other span).
+ *    and a one-pixel readback of the canvas, which under `?canvasaa=1` also
+ *    forces the canvas's own multisample resolve, a cost invisible to every
+ *    other span; by default the canvas has no samples).
  *  - passes: one span per enabled composer pass.
  *  - objects: one span per object draw inside the scene pass, through
  *    Object3D's onBeforeRender/onAfterRender.

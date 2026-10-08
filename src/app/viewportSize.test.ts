@@ -1,10 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resolveViewportSize, viewportDrifted, type ViewportDriftInput } from './viewportSize';
 import html from '../../index.html?raw';
 
 // The observer, the canvas's box and the renderer need a browser: a fake DOM
 // would only pin the fake, so the live behaviour is proved by driving the app
-// (tools/fullscreen-probe.mjs, the `box` and `safearea` scenarios). Pinned
+// (tools/fullscreen-probe.mjs: the `box`, `safearea` and `toolbox` scenarios). Pinned
 // here are the two pure decisions — which size the renderer takes, and when
 // the drift poll re-syncs — and, as text, the page's side of the contract:
 // the page covers the whole screen, the canvas is the fixed-position rect,
@@ -180,5 +180,43 @@ describe('the page covers the screen (index.html)', () => {
       expect(rules.some((rule) => /inset:\s*0;|top:\s*0;\s*left:\s*0;\s*right:\s*0;\s*bottom:\s*0;/.test(rule)), selector).toBe(true);
       expect(rules.join('\n'), selector).not.toContain('safe-area-inset');
     }
+  });
+});
+
+// The one reader every mode measures screen space with. The module holds the
+// applied size, so each case loads it fresh: a size set by one case must not
+// be the "before the first sync" of the next.
+describe('viewportSize, the applied size', () => {
+  const load = async () => {
+    vi.resetModules();
+    return import('./viewportSize');
+  };
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('reads the window before the first sync', async () => {
+    vi.stubGlobal('window', { innerWidth: 834, innerHeight: 1210 });
+    const { viewportSize } = await load();
+    expect(viewportSize()).toEqual({ width: 834, height: 1210 });
+  });
+
+  it('is the size the sync applied from then on, not the window', async () => {
+    // An iPad in the page's own full screen: the box 64 pt shorter than the window.
+    vi.stubGlobal('window', { innerWidth: 834, innerHeight: 1210 });
+    const { setViewportSize, viewportSize } = await load();
+    setViewportSize({ width: 834, height: 1146 });
+    expect(viewportSize()).toEqual({ width: 834, height: 1146 });
+    vi.stubGlobal('window', { innerWidth: 1210, innerHeight: 834 });
+    expect(viewportSize()).toEqual({ width: 834, height: 1146 });
+    setViewportSize({ width: 1210, height: 770 });
+    expect(viewportSize()).toEqual({ width: 1210, height: 770 });
+  });
+
+  it('keeps its own copy of what it was handed', async () => {
+    vi.stubGlobal('window', { innerWidth: 1, innerHeight: 1 });
+    const { setViewportSize, viewportSize } = await load();
+    const size = { width: 390, height: 780 };
+    setViewportSize(size);
+    size.height = 844;
+    expect(viewportSize()).toEqual({ width: 390, height: 780 });
   });
 });

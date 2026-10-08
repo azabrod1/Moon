@@ -39,7 +39,10 @@ const goldens = goldensJson as unknown as {
 };
 
 /** Horizons ecliptic-J2000 → scene equatorial (same convention as standish.test.ts):
- *  the proper rotation (x, z, −y) — scene ecliptic longitude runs toward −Z. */
+ *  the proper rotation (x, z, −y) — scene ecliptic longitude runs toward −Z.
+ *  The JSON goldens stay in Horizons' own raw frame; this mapping is the only
+ *  place the scene's convention enters, so a convention change edits it, never
+ *  the goldens. */
 function horizonsToScene(raw: [string, string, string]): THREE.Vector3 {
   return eclipticToEquatorial(new THREE.Vector3(Number(raw[0]), Number(raw[2]), -Number(raw[1])));
 }

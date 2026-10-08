@@ -138,7 +138,11 @@ import {
   type AtmosphereTables,
 } from './atmosphereLut';
 import { AIRLIGHT_SCALE } from './atmosphereModel';
-import { perfSwitchOn, perfSwitchUniform } from '../../app/perfSwitches';
+import { SUN_LIGHT_BASELINE } from '../sunLight';
+import { onPerfSwitch, perfSwitchOn, perfSwitchUniform, setPerfSwitch } from '../../app/perfSwitches';
+import {
+  COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_WIND_MAX_MS, disposeRetiredSeaWindMaps, seaWindTexture,
+} from './seaWind';
 import { DEFAULT_ALBEDO_PIVOT, surfaceLookOf } from './surfaceLook';
 import type { NightSides } from '../../app/nightSidesSetting';
 import { EARTH_NIGHT_COLD_CUT, EARTH_NIGHT_WARM_GLSL } from '../../shared/shaders/atmosphere';
@@ -150,6 +154,8 @@ import {
   CLOUD_DETAIL_ERODE,
   CLOUD_DETAIL_GLSL,
   CLOUD_DETAIL_RELIEF_KM,
+  CLOUD_FRAME_GLSL,
+  CLOUD_TOP_KM,
   cloudShellScale,
   LUMINANCE_WEIGHTS,
   SPHERE_EQUIRECT_UV_GLSL,
@@ -160,7 +166,9 @@ import {
   CLOUD_DETAIL_UV_PER_RADIAN,
   cloudDetailTexture,
 } from './cloudDetailNoise';
-import { MOON_UP_GLSL, NIGHT_WEIGHT_GLSL, SUN_DOWN_GLSL } from './nightSources';
+import { CLOUD_FIELD_MIX_GLSL, cloudFieldGlsl } from './cloudField';
+import { cloudFieldDiagUniform, cloudFieldOn, cloudFieldUniforms, setCloudFieldCompiled } from './cloudFieldSlots';
+import { MOON_UP_GLSL, NIGHT_WEIGHT_GLSL, NIGHT_WEIGHT_ZERO_SIN, SUN_DOWN_GLSL } from './nightSources';
 import { gpuSeed } from './proceduralMoon';
 import { SURFACE_TEXEL_FADE } from './surfaceDensity';
 import { RELIEF_SPHERE_FRAME_GLSL } from './reliefFrame';
@@ -234,6 +242,12 @@ export interface SurfaceShadingFx {
    *  Bound at compile time like every other slot here, so the pointing has to
    *  happen before the material's first compile. */
   uNightLift: { value: number };
+  /** 1 while a cloud deck is drawn over this body's ground, written each frame
+   *  by the mode beside the deck's drift; 0 on every other body and on every
+   *  surface a tool or a warm-up probe builds, whose fx is its own. What the
+   *  ground's cloud shadows (CLOUD_SHADOW) are gated on per frame, so a deck
+   *  the range gate or a role switch has hidden leaves no shadow behind. */
+  uCloudAbove: { value: number };
   /** This body's air. Shared by every material that draws its surface. */
   air: SurfaceAirFx;
 }
@@ -428,17 +442,18 @@ const SYNTH_RELIEF_GAIN: Record<SurfaceArchetype, number> = {
 // Earth's roughness map is a water mask graded into two roughnesses (the pair
 // tools/gen-tiles.mjs writes it with), area-averaged so a coast is a fractional
 // value between them rather than a stair. What it authors for open water is a
-// GGX lobe wide enough to be a physically fair wind-roughened sea — and a lobe
-// that wide integrates the Sun into a broad dim sheen with no core at all,
-// which is what an orbital frame of the glint read as: a flat grey-white wash
-// over most of the visible ocean, dimmer than the sunlit land beside it.
+// GGX lobe about as wide as a 7 m/s sea's, the mean wind over the ocean.
 //
-// A real sea is not one lobe. Its slope distribution has a near-specular core
-// from the calm between the waves and long wind-driven wings, and a photograph
-// shows the core clipped to white with a glitter tail running toward the Sun.
-// One GGX lobe can only be authored at one of those widths, so it is authored
-// at the CORE's: GGX's own tails are heavy enough (they fall as the inverse
-// fourth power of the slope angle) to carry the glitter that reaches out of it.
+// A glint is a picture of the wind, and no one width draws one. At that width
+// the whole sea is a grey-white wash, dimmer than the sunlit land beside it;
+// at a calm width it is a white bead on a glossy globe; and at any width every
+// contour is a circle the sphere's own geometry draws, because nothing but the
+// normal varies. A real ocean holds a glassy patch that clips to white beside a
+// trade-wind sea that reads as a silvery sheen the size of a continent. So the
+// width is read per fragment from a map of the wind over the sea
+// (world/seaWind.ts) through Cox-Munk's slope law, and the constant below is
+// the one width the sea falls back to with the map switched off (`?seawind=0`,
+// or a DEV override), kept where it was so the switch is an A/B.
 //
 // The remap happens where the map is read rather than in the map, so the globe
 // and the streamed sectors cut from the same source move together — a sector
@@ -452,72 +467,216 @@ export const ROUGHNESS_MAP_LAND = 0.92;
 export const ROUGHNESS_MAP_WATER = 0.45;
 
 /**
- * What open water is drawn at instead: a GGX alpha of 0.0144 (three squares
- * the roughness), a far smaller solid angle than the shipped value spreads the
- * Sun over, so the reflection is a core that clips to white rather than a
- * wash that never got past mid-grey.
+ * The one width the whole sea is drawn at when the wind map is off: a GGX
+ * alpha of 0.0144 (three squares the roughness), calmer than any real sea, so
+ * the reflection is a core that clips to white. It is the picture before the
+ * map — `?seawind=0` and the DEV `?glint=` override draw it — and it stays at
+ * the value it had so that switch compares against what shipped and not
+ * against a third width.
  *
- * It was 0.2 (alpha 0.04). From a whole-disc distance that patch, with the
- * bloom spread around its clipped core, read as too strong; one radius out it
- * washed the top third of the frame milky and took the clouds' contrast with
- * it. A sheet of six widths from 0.2 down to 0.08, captured from one page
- * load, had the glow and the patch shrinking together: the width is the one
- * number that moves both. A lower cap turns the core into a flat grey coin,
- * because the tone mapper draws a value of one as light grey, and a lower
- * keep with the core held white leaves the frame as it was. 0.12 halves the
- * patch and keeps blue sea around it close in.
- *
- * Not much lower: the lobe's tails fall with the square of alpha, and by 0.08
- * the sea begins to read as a mirror with a point on it.
+ * How it was chosen, for the record: it was 0.2 (alpha 0.04), and from a
+ * whole-disc distance that patch, with the bloom spread around its clipped
+ * core, read as too strong. A sheet of six widths from 0.2 down to 0.08 had
+ * the glow and the patch shrinking together, because with one lobe the width
+ * is the one number that moves both — which is the reason there is a map now.
  */
 export const OCEAN_ROUGHNESS = 0.12;
 /**
- * Where the Sun's image lands on the sea the mirror lobe runs far past white.
- * The tone-mapper clips that to a white patch, which a camera does too, but
- * the bloom pass would then smear the excess over the coast and the clouds
- * beside it, and land is no mirror: the excess above this cap, in units of
- * white, is taken out of the reflected light before anything downstream sees
- * it. The patch keeps its size and its clipped core; only the halo goes.
+ * The sea's reflectance, as water rather than as three's generic dielectric.
+ * three's Schlick curve starts at 4 % head-on and reaches a perfect mirror at
+ * grazing; seawater's starts at 2 % (an index of 1.33) and reaches the same
+ * place. The shader rescales three's mirror term per fragment by the ratio of
+ * the two curves at that fragment's half vector: a half where the glint is,
+ * one along the limb and the terminator, where a flat half used to darken the
+ * sheen a real sea is brightest.
  */
-export const OCEAN_GLINT_CAP = 2.50;
-
-/** A flat scale on the ocean's WHOLE mirror lobe. three draws a dielectric at
- *  4 % reflectance head-on, climbing to a perfect mirror at grazing angles;
- *  sea water starts at 2 % and climbs to the same place. So a half is exact
- *  where the glint is — its core is near head-on — and too dark along the
- *  limb and the terminator, where the real sea is nearest a mirror and this
- *  halves that sheen with everything else. Getting both ends right means the
- *  two Fresnel curves per fragment, or handing the sea an ior of 1.33. */
-export const OCEAN_SPECULAR_KEEP = 0.5;
+export const SEA_WATER_IOR = 1.33;
+export const SEA_WATER_F0 = ((SEA_WATER_IOR - 1) / (SEA_WATER_IOR + 1)) ** 2;
 
 /**
- * The cap and the keep as the shader reads them. In a development build they
+ * The colour of the open sea's water, as the sea is drawn in it. Earth's day
+ * map is surface reflectance, and its open sea is painted: one flat texel,
+ * sRGB (2, 30, 84), wherever there is deep water, which in linear light is
+ * three times brighter in blue than clear ocean water reflects and carries no
+ * red at all. Under a white Sun with a third of the air's veil over it that
+ * paint drew a royal blue no photograph of Earth has; every frame measured
+ * (EPIC, GOES-18, Galileo, Worldview's corrected reflectance, ISS nadir
+ * frames) holds its open sea at red 0.15 to 0.48 of blue and green 0.33 to
+ * 0.88 of it, the painted sea at 0.03 to 0.10 and 0.14 to 0.28. So where a
+ * texel of the map IS that paint — within a small linear distance of it, so a
+ * coast or a shallow bank painted its own colour keeps it — the sea is drawn
+ * in this water-leaving reflectance instead, mixed in by the water fraction:
+ * clear open ocean's pi times its remote-sensing reflectance, about 0.035 at
+ * 443 nm, 0.008 at 555 nm and 0.001 at 670 nm, in display primaries. The
+ * terms that carry the rest of a photograph's slate add on top of it: the sky
+ * reflected off the water (SEA_SKY, below) and the aerosol's grey in the air
+ * (world/atmosphereModel.ts). This is the water's own term they add to,
+ * which is why it is the physical value rather
+ * than a teal with those baked in.
+ *
+ * A production build carries the colour as a literal and the share as a
+ * uniform (`seaColourUniforms.uSeaMix`, 1): `?seacolour=0` zeroes it on any
+ * build, under a branch the whole draw takes the same side of, so the sea is
+ * the painted map again, bit for bit — the kill switch, and the A/B. A
+ * development build reads the colour from a uniform too (devGlintUniforms,
+ * `__moon.glint({seaColour, seaMix})`), so a sheet of candidates comes out of
+ * one page load.
+ */
+export const SEA_WATER_COLOUR: readonly [number, number, number] = [0.0015, 0.009, 0.028];
+/** The map's painted open sea, sRGB (2, 30, 84), in linear light: what the
+ *  shader detects as the paint. */
+export const SEA_PAINT_COLOUR: readonly [number, number, number] = [0.000607, 0.012983, 0.088656];
+/** The share of the water colour the sea is drawn in: 1, or 0 on `?seacolour=0`. */
+export const seaColourUniforms: { uSeaMix: { value: number } } = { uSeaMix: { value: 1 } };
+export function setSeaColourEnabled(on: boolean): void {
+  seaColourUniforms.uSeaMix.value = on ? 1 : 0;
+}
+/** Whether the sea is drawn in the water colour right now (the DEV knob can hold a share between). */
+export function seaColourOn(): boolean {
+  return seaColourUniforms.uSeaMix.value > 0;
+}
+/** The `?seacolour=0` kill switch, on any build. */
+export function parseSeaColourParam(search: string): boolean {
+  return new URLSearchParams(search).get('seacolour') !== '0';
+}
+
+/**
+ * The sky reflected off the sea's surface (the SEA_SKY define, `?seasky=0`).
+ * Water is a mirror as well as a scatterer: at nadir it hands the camera 2 %
+ * of the zenith sky, at the oblique views an orbital photograph takes the sea
+ * at (50 to 70 degrees from the vertical) 4 to 12 % of a sky several times
+ * brighter near the horizon. That is most of the grey-blue veil every ISS
+ * frame of open sea carries and the renderer did not, once the water's own
+ * colour (SEA_WATER_COLOUR) was right. The sky's radiance along the reflected
+ * ray is the air's own scattering table read at the surface, the same table,
+ * bridge and phase functions the camera leg's in-scatter uses with the far
+ * end gone (the ray leaves the atmosphere), so the two cannot disagree about
+ * the sky; times the water's unpolarised Fresnel reflectance at the view's
+ * incidence, exact rather than Schlick (which reads 15 to 24 % low in that
+ * band). The reflection is about the smooth radial normal: the sea's relief
+ * is zero, its wind is a BRDF and not a normal map, and the one fast-changing
+ * part of the sky, the Mie aureole about the Sun, is what the beam's own lobe
+ * already covers. Below SEA_SKY_GRAZING_COS the incidence is held: a
+ * wind-roughened sea reflects less at grazing than a flat one (Mobley reads
+ * 0.18 at 80 degrees for 7 m/s where the flat surface reads 0.35), and the
+ * exact Fresnel at 73 degrees is that 0.18; the horizon's pixels are the
+ * air's in any case. Its own term, never folded into the beam (which the
+ * cloud cut, the shoulder and the probe's attribution read), held out of the
+ * limb darkening with it, dimmed by an eclipse with it, faded in with the
+ * air, and only where there is water, air and a Sun the table knows. Off it
+ * is the text it was. Development builds scale it live (`uSeaSky`).
+ */
+export const SEA_SKY_GRAZING_COS = 0.29;
+
+/**
+ * Where the Sun's image lands on glassy water the mirror term runs past white.
+ * The tone mapper clips that to a white patch, which a camera does too, but
+ * the bloom pass would then smear the excess over the coast and the clouds
+ * beside it, and land is no mirror: the water's reflection is held to this
+ * cap, in units of white, before anything downstream sees it.
+ *
+ * In units of the WATER's reflection — the ratio above is applied first — so
+ * this is what reaches the tone curve and the bright pass. 1.25 is what the
+ * core reached before (a cap of 2.5 on three's term, then a flat half), so the
+ * clipped core is as bright as it was: 0.92 in sRGB through the ACES curve,
+ * white beside a sea at 0.22 and a sheen at 0.5. Higher is a hair whiter and
+ * hands the bright pass more: with the bloom knee (app/bloomConfig.ts) a
+ * pixel here feeds the blur its excess over the threshold, a few hundredths at
+ * 1.25 and a third of a unit at 1.5. Over a 7 m/s sea the term peaks near
+ * 0.15 and the cap never engages; it holds only the glassy patches. In scene
+ * units at baseline 1; it rides SUN_LIGHT_BASELINE with the light, as the
+ * bloom's line and the beam's knee and cap do, so it is the same number of
+ * whites whatever the baseline.
+ *
+ * Only the old chain applies it: with the beam chain (SEA_BEAM, the default)
+ * the shoulder below caps what reaches the camera instead, so this cap and
+ * the `cap` knob of `__moon.glint` and `?glint=` act only under `?seabeam=0`.
+ */
+export const OCEAN_GLINT_CAP = 1.25 * SUN_LIGHT_BASELINE;
+
+/**
+ * The beam chain's cap, on what REACHES THE CAMERA (SURFACE_FRAGMENT_BODY,
+ * after the air): a shoulder, linear up to the knee and an exponential
+ * approach to the cap above it, continuous in value and slope at the knee,
+ * per channel, in scene units (a white Lambert disc under the Sun reads
+ * SUN_LIGHT_INTENSITY / pi, about 1.23 at the 1.4 baseline). OCEAN_GLINT_CAP flattened the beam's
+ * top into a plateau before the air and the limb darkening then sloped it
+ * down toward the horizon, which is backwards for a mirror; this holds a core
+ * past white just past it, where the tone curve is already rolling off (an
+ * ACES input of 1.3 lands at 0.8 of its white, 2.6 at 0.9), and leaves the
+ * bright pass a bounded excess. Behind `?seabeam=0`, which keeps the old cap.
+ *
+ * The shipped numbers keep the physical range: the beam's core reaches 5 to
+ * 6 whites at a low Sun and the shoulder only begins at 4, as a guard on the
+ * resample and the half-float target rather than a grade, because the tone
+ * curve compresses rather than clips and a capped beam goes grey the moment
+ * the frame is exposed for it, where an uncapped one stays bright over dark
+ * water. What makes that range safe is the sea's flag for the bloom
+ * (SEA_BLOOM_FLAG_GLSL): without it the Sun's glow blurred the beam into a
+ * halo over the limb and into space, and the only honest cap was under 1.1.
+ * The DEV knobs (`__moon.glint({beamKnee, beamCap})`) move both live.
+ */
+export const OCEAN_BEAM_KNEE = 3.5 * SUN_LIGHT_BASELINE;
+export const OCEAN_BEAM_CAP = 7.0 * SUN_LIGHT_BASELINE;
+
+/**
+ * The cap and a scale as the shader reads them. In a development build they
  * are uniforms, so the glint can be tuned live at a pose (`__moon.glint`) and
- * a sheet of candidates captured from one page load; a production build
- * compiles the constants above as literals and carries no uniform, and the
+ * a sheet of candidates captured from one page load: the cap, and a flat
+ * scale on the sea's whole mirror term that defaults to one now that the
+ * Fresnel is water's own, kept as an A/B knob. A production build compiles
+ * the cap as a literal and carries neither uniform nor the scale, and the
  * fold test pins that the two texts are the same text.
  */
 export const devGlintUniforms: {
   uGlintCap: { value: number };
   uGlintKeep: { value: number };
+  uBeamKnee: { value: number };
+  uBeamCap: { value: number };
+  /** The water colour the sea is drawn in (SEA_WATER_COLOUR), as a uniform so
+   *  `__moon.glint({seaColour})` moves it live; a production build compiles
+   *  the constant. The share is `seaColourUniforms.uSeaMix` in every build. */
+  uSeaColour: { value: THREE.Vector3 };
+  /** A scale on the sky reflected off the sea (1; folded out of production). */
+  uSeaSky: { value: number };
 } = {
   uGlintCap: { value: OCEAN_GLINT_CAP },
-  uGlintKeep: { value: OCEAN_SPECULAR_KEEP },
+  uGlintKeep: { value: 1 },
+  uBeamKnee: { value: OCEAN_BEAM_KNEE },
+  uBeamCap: { value: OCEAN_BEAM_CAP },
+  uSeaColour: { value: new THREE.Vector3(...SEA_WATER_COLOUR) },
+  uSeaSky: { value: 1 },
 };
 const GLINT_CAP_GLSL = import.meta.env.DEV ? 'uGlintCap' : OCEAN_GLINT_CAP.toFixed(2);
-const GLINT_KEEP_GLSL = import.meta.env.DEV ? 'uGlintKeep' : OCEAN_SPECULAR_KEEP.toFixed(4);
+const BEAM_KNEE_GLSL = import.meta.env.DEV ? 'uBeamKnee' : OCEAN_BEAM_KNEE.toFixed(2);
+const BEAM_CAP_GLSL = import.meta.env.DEV ? 'uBeamCap' : OCEAN_BEAM_CAP.toFixed(2);
+const GLINT_KEEP_GLSL = import.meta.env.DEV ? ' * uGlintKeep' : '';
+const SEA_COLOUR_GLSL = import.meta.env.DEV ? 'uSeaColour' : `vec3(${SEA_WATER_COLOUR.map((v) => v.toFixed(5)).join(', ')})`;
+const SEA_SKY_SCALE_GLSL = import.meta.env.DEV ? ' * uSeaSky' : '';
 
 /** The cloud deck's colour map, and the drift its own frame carries on top of
- *  the body's. Shared by every augmented surface so the ocean's mirror term can
- *  be cut where cloud stands between it and the Sun; the map is whatever rung
- *  the deck is currently wearing, written each frame by the mode. */
+ *  the body's (with that drift's cosine and sine, `setCloudShadowDrift`).
+ *  Shared by every augmented surface so the ocean's mirror term can be cut
+ *  where cloud stands between it and the Sun; the map is whatever rung the
+ *  deck is currently wearing, written each frame by the mode. */
 export const cloudShadowUniforms: {
   uCloudShadowMap: { value: THREE.Texture | null };
   uCloudShadowSpin: { value: number };
+  uCloudShadowTurn: { value: THREE.Vector2 };
 } = {
   uCloudShadowMap: { value: null },
   uCloudShadowSpin: { value: 0 },
+  uCloudShadowTurn: { value: new THREE.Vector2(1, 0) },
 };
+
+/** The deck's drift, written each frame by the mode: the angle, which the
+ *  sea's straight-down read turns by, and its cosine and sine, which the cloud
+ *  shadow's read takes as they are rather than evaluating both again at every
+ *  fragment of the ground. */
+export function setCloudShadowDrift(drift: number): void {
+  cloudShadowUniforms.uCloudShadowSpin.value = drift;
+  cloudShadowUniforms.uCloudShadowTurn.value.set(Math.cos(drift), Math.sin(drift));
+}
 
 /** Let go of the deck map the frame loop parked above. It is the only
  *  reference to that texture outside the deck's own material, so a session
@@ -526,7 +685,377 @@ export const cloudShadowUniforms: {
  *  augmented material re-installs the 1x1 stand-in. */
 export function resetCloudShadowUniforms(): void {
   cloudShadowUniforms.uCloudShadowMap.value = null;
-  cloudShadowUniforms.uCloudShadowSpin.value = 0;
+  setCloudShadowDrift(0);
+}
+
+// --- Cloud shadows on the ground, the sea and the air (`?cloudshadows=0`) ----
+//
+// With the switch on, the share of the Sun's beam a ground fragment receives
+// through the deck (`cloudSunKeep`) is read where the ray from that fragment
+// toward the Sun pierces the shell the deck is DRAWN on, in the deck's own
+// frame (world/cloudDeck: cloudRayDirection, bodyToDeck), instead of straight
+// down under the sea's glint alone. One height, the drawn one: a shadow traced
+// from any other lies beside its cloud by the difference times the tangent of
+// the view angle, which at 400 km and 60° off nadir is a second copy of the
+// pattern, not a shadow. Its three readers are the Sun's direct diffuse
+// (CLOUD_SHADOW_DEPTH), the sea's glint (the cut that was already there), and
+// the air the camera looks through down to that ground (CLOUD_SHADOW_AIR).
+//
+// The switch is a compile-time define, CLOUD_SHADOW, on the ground materials of
+// a body that has a deck — Earth's globe and every sector cut from it — and
+// nowhere else: not the deck, not another body, not a tool's surface and not a
+// warm-up probe. A define rather than a uniform branch because with it off the
+// program is the text it was, after the preprocessor, character for character:
+// moving the sea's cut into a second branch on one uniform, with the same
+// arithmetic, was measured changing one bit at one pixel on Metal under ANGLE.
+// Being part of three's program key, it relinks the program when it moves.
+//
+// What the shadow reads is the deck's base sheet, through the deck's smooth
+// filter — and, in a session with the cloud field (on unless `?cloudtiles=0`,
+// world/cloudField), the field's 1.2 km opacity wherever a page is resident at
+// the pierce point, over the sheet at the field's own weight: the ground then
+// compiles CLOUD_FIELD beside CLOUD_SHADOW (never without it), so a shadow is
+// as sharp as the cloud drawn over it and hands over to the sheet with it
+// (CLOUD_SHADOW_READ). With the field there the sky's fill reads its table
+// only where there is a shade; with it absent the program is the one above.
+
+/** The share of the Sun's direct light a cloud takes from the ground in its
+ *  shadow, at full coverage. The rest is what the cloud scatters down through
+ *  itself and the skylight around it, neither of which the ground is lit by
+ *  in this renderer by day — so 0.7 is an authored stand-in for both, not a
+ *  measurement of either. Scaled by the coverage the deck draws there, so a
+ *  thin veil takes a little and a solid bank takes all of this. */
+export const CLOUD_SHADOW_DEPTH = 0.7;
+/** The share of the air's own glow between the camera and a shaded ground
+ *  point that the shadow takes with it, at full coverage: about seven tenths of
+ *  the air's mass lies below the 10 km the deck is drawn at, and the column
+ *  under a cloud is in its shadow. Only the Sun's in-scatter; the air's
+ *  transmittance is the air's and is not touched. Over a dark sea this is most
+ *  of what a cloud's shadow is. */
+export const CLOUD_SHADOW_AIR = 0.6;
+
+/**
+ * How the cloud's coverage turns into shade on the ground: the ground and the
+ * air under it take `(1 - cloudSunKeep)^gamma` of the share above, never the
+ * beam's own loss. A thin veil scatters most of the Sun's light it intercepts
+ * on down to the ground — forward, the way a thin cloud does — so the ground
+ * under it dims far less than the direct beam does; only thick cloud takes
+ * most of the light away. At 2, a half-covered texel shades the ground a
+ * quarter as much as a solid bank does. The beam's own share, `cloudSunKeep`,
+ * is unchanged, because the sea's glint IS the direct beam and reads it as is.
+ */
+export const CLOUD_SHADOW_GAMMA = 2.0;
+
+/**
+ * Where the shadow on the air fades out as the view grazes the ground, as the
+ * cosine between the ground's geometric normal and the line of sight: the full
+ * shadow from a half (60° off the vertical) up, none by a tenth (84°). A
+ * grazing ray's air below the cloud tops runs hundreds of kilometres from the
+ * ground point it ends at, and the cloud read at that one point says nothing
+ * about the whole of it: applied there, the limb's haze band went patchy
+ * wherever cloud happened to lie under its last few pixels.
+ */
+export const CLOUD_SHADOW_AIR_GRAZE: readonly [number, number] = [0.10, 0.50];
+
+/**
+ * The sine of the Sun's height at the ground under which the shade fades out,
+ * reaching nothing where the Sun meets that ground's horizon: 2.9°, the same
+ * height every night source is gone by (world/nightSources). Below the horizon
+ * the ray enters the ground before any cloud and there is no shade to read,
+ * and the Sun's own light on the ground is already near zero above it — but
+ * the air's glow is not, and a shade that held its full value to the horizon
+ * and stopped there drew a line along the terminator through the haze.
+ */
+export const CLOUD_SHADOW_HORIZON_SIN = NIGHT_WEIGHT_ZERO_SIN;
+
+/**
+ * The sky's own light on ground in a cloud's shade, as a multiple of the
+ * irradiance table's skylight, in proportion to the shade. By day the ground in
+ * this renderer is lit by the Sun alone — its map is surface reflectance and
+ * the clear-sky look is authored against that — so a shadow that takes the
+ * Sun away leaves the ground with nothing: over a low-Sun sea, near black.
+ * What a shadowed ground really keeps is the sky above it, and that is blue,
+ * so with this the shadow reads blue-grey rather than as a darker copy of the
+ * ground. 1 is the table's own skylight at the shade's full strength.
+ */
+export const CLOUD_SHADOW_SKY_FILL = 1.0;
+
+/** On unless `?cloudshadows=0`, the kill switch, read once at boot in any
+ *  build. */
+const cloudShadowsByUrl = typeof location === 'undefined'
+  || new URLSearchParams(location.search).get('cloudshadows') !== '0';
+// In a development build the switch is the `cloud-shadow` key
+// (app/perfSwitches), so `__moon.perfArm` and the bridge's own knob move it
+// live; the kill switch disarms the key so the two readings never disagree.
+if (import.meta.env.DEV && !cloudShadowsByUrl) setPerfSwitch('cloud-shadow', false);
+
+/** Whether the ground under a deck compiles its cloud shadows. */
+export function cloudShadowsOn(): boolean {
+  return import.meta.env.DEV ? perfSwitchOn('cloud-shadow') : cloudShadowsByUrl;
+}
+
+/**
+ * The shell's height and, in a development build, the three knobs
+ * (`__moon.cloudShadow`), shared by every material that compiles the shadow.
+ * The height is the drawn deck's own (CLOUD_TOP_KM over Earth's radius): the
+ * only body with a deck is Earth, as for the deck's own air lookup. A
+ * production build compiles the depth, the air share and the penumbra as the
+ * constants above and carries no uniform for them; the fold test pins that the
+ * two texts are the same text.
+ */
+export const cloudShadowShared: {
+  uCloudHeightOverRadius: { value: number };
+  uCloudShadowDepth: { value: number };
+  uCloudShadowAir: { value: number };
+  uCloudShadowPenumbra: { value: number };
+  uCloudShadowGamma: { value: number };
+  uCloudShadowSkyFill: { value: number };
+} = {
+  uCloudHeightOverRadius: { value: CLOUD_TOP_KM / EARTH_RADIUS_KM },
+  uCloudShadowDepth: { value: CLOUD_SHADOW_DEPTH },
+  uCloudShadowAir: { value: CLOUD_SHADOW_AIR },
+  uCloudShadowPenumbra: { value: 1 },
+  uCloudShadowGamma: { value: CLOUD_SHADOW_GAMMA },
+  uCloudShadowSkyFill: { value: CLOUD_SHADOW_SKY_FILL },
+};
+const CLOUD_SHADOW_DEPTH_GLSL = import.meta.env.DEV ? 'uCloudShadowDepth' : CLOUD_SHADOW_DEPTH.toFixed(4);
+const CLOUD_SHADOW_AIR_GLSL = import.meta.env.DEV ? 'uCloudShadowAir' : CLOUD_SHADOW_AIR.toFixed(4);
+const CLOUD_SHADOW_GAMMA_GLSL = import.meta.env.DEV ? 'uCloudShadowGamma' : CLOUD_SHADOW_GAMMA.toFixed(4);
+const CLOUD_SHADOW_SKY_FILL_GLSL = import.meta.env.DEV ? 'uCloudShadowSkyFill' : CLOUD_SHADOW_SKY_FILL.toFixed(4);
+// In a development build a fill knobbed to zero skips the table fetch; a
+// production build reads the constant and the plain condition.
+const CLOUD_SHADOW_SKY_FILL_GUARD = import.meta.env.DEV ? 'uCloudShadowSkyFill > 0.0 && ' : '';
+const CLOUD_SHADOW_PENUMBRA_GUARD = import.meta.env.DEV ? 'uCloudShadowPenumbra * ' : '';
+
+/** The fx of every body whose ground a deck stands over: a ground material
+ *  augmented with one of these — the globe, then each sector re-augmented from
+ *  it — is a receiver. Keyed on the fx because a sector shares its globe's. */
+const groundsUnderDeck = new WeakSet<SurfaceShadingFx>();
+/** Every live receiver, so the switch can reach the materials already drawn. */
+const cloudShadowReceivers = new Set<THREE.Material>();
+
+/** Say a deck stands over this ground material's body. Called once, by whoever
+ *  builds the deck, with the body's globe; the sectors later cut from that
+ *  globe follow on their own. The deck itself, and any material of a body
+ *  without this call — another planet, a tool's surface, a warm-up probe —
+ *  never compiles the shadow. */
+export function setGroundUnderCloudDeck(mat: THREE.Material): void {
+  const args = augmentArgs.get(mat);
+  if (!args || args.archetype === 'cloud') return;
+  groundsUnderDeck.add(args.fx);
+  receiveCloudShadow(mat);
+}
+
+/** Whether this material compiles the cloud shadow right now. */
+export function surfaceCloudShadowCompiled(mat: THREE.Material): boolean {
+  return mat.defines?.CLOUD_SHADOW !== undefined;
+}
+
+function receiveCloudShadow(mat: THREE.Material): void {
+  if (!cloudShadowReceivers.has(mat)) {
+    cloudShadowReceivers.add(mat);
+    mat.addEventListener('dispose', () => cloudShadowReceivers.delete(mat));
+  }
+  applyCloudShadow(mat, cloudShadowsOn());
+}
+
+/** The shadow on a receiver, and the cloud field it reads with it: a ground
+ *  compiles CLOUD_FIELD only beside CLOUD_SHADOW, and only in a session that
+ *  has the field (world/cloudFieldSlots), so a ground without the shadow is
+ *  the program it was whether or not the deck has the field. */
+function applyCloudShadow(mat: THREE.Material, on: boolean): void {
+  applySwitchDefine(mat, 'CLOUD_SHADOW', on);
+  setCloudFieldCompiled(mat, on);
+}
+
+/** Set or clear one of the cloud switches' defines on a material. */
+function applySwitchDefine(mat: THREE.Material, name: 'CLOUD_SHADOW' | 'CLOUD_LIGHT' | 'SUN_PATH' | 'SEA_BEAM' | 'SEA_SKY', on: boolean): void {
+  const defines = (mat.defines ??= {});
+  if ((defines[name] !== undefined) === on) return;
+  if (on) defines[name] = '';
+  else delete defines[name];
+  // The define is part of three's program key: the next draw links (or finds)
+  // the program with the other text.
+  mat.needsUpdate = true;
+}
+
+if (import.meta.env.DEV) {
+  onPerfSwitch('cloud-shadow', (on) => {
+    for (const mat of cloudShadowReceivers) applyCloudShadow(mat, on);
+  });
+}
+
+/** The shadow's knobs, live (`__moon.cloudShadow`): `on` moves the switch and
+ *  relinks the receivers, the rest are uniforms from the next frame. Returns
+ *  the values in force. Development builds only. */
+export function devCloudShadow(opts?: {
+  on?: boolean;
+  depth?: number;
+  air?: number;
+  penumbra?: boolean | number;
+  gamma?: number;
+}): {
+  on: boolean;
+  depth: number;
+  air: number;
+  penumbra: number;
+  gamma: number;
+  heightOverRadius: number;
+  receivers: number;
+  compiled: number;
+} | null {
+  if (!import.meta.env.DEV) return null;
+  if (opts?.on !== undefined) setPerfSwitch('cloud-shadow', opts.on);
+  if (opts?.depth !== undefined && Number.isFinite(opts.depth)) cloudShadowShared.uCloudShadowDepth.value = opts.depth;
+  if (opts?.air !== undefined && Number.isFinite(opts.air)) cloudShadowShared.uCloudShadowAir.value = opts.air;
+  if (opts?.penumbra !== undefined) {
+    cloudShadowShared.uCloudShadowPenumbra.value = typeof opts.penumbra === 'boolean'
+      ? (opts.penumbra ? 1 : 0)
+      : opts.penumbra;
+  }
+  if (opts?.gamma !== undefined && Number.isFinite(opts.gamma) && opts.gamma > 0) {
+    cloudShadowShared.uCloudShadowGamma.value = opts.gamma;
+  }
+  let compiled = 0;
+  for (const mat of cloudShadowReceivers) if (surfaceCloudShadowCompiled(mat)) compiled++;
+  return {
+    on: cloudShadowsOn(),
+    depth: cloudShadowShared.uCloudShadowDepth.value,
+    air: cloudShadowShared.uCloudShadowAir.value,
+    penumbra: cloudShadowShared.uCloudShadowPenumbra.value,
+    gamma: cloudShadowShared.uCloudShadowGamma.value,
+    heightOverRadius: cloudShadowShared.uCloudHeightOverRadius.value,
+    receivers: cloudShadowReceivers.size,
+    compiled,
+  };
+}
+
+// --- The deck lit as a cloud (`?cloudlight=0`) -------------------------------
+//
+// By day the deck is lit by the Sun's direct light on its perturbed normal and
+// by nothing else: three has no other light in the planetarium and the sky's
+// own ambient is a night term. So a facet of the relief tilted away from a low
+// Sun draws pure black — darker than the sea under it — and a shaded flank has
+// no colour at all. A real cloud's shaded side is lit from inside, by light
+// scattered through the cloud, and from outside, by the sky. CLOUD_LIGHT, a
+// compile-time define on the planetarium's own deck and nowhere else (not the
+// ground, not a tool's deck) but the warm-up probe that stands in for it, adds
+// those two in `outgoingLight` alone. The deck's alpha is its coverage and nothing here
+// writes it: a light term changes how bright the cloud is, never how much of
+// the pixel it owns.
+
+/**
+ * How much of the deck's direct diffuse is taken on its geometric normal (the
+ * shell's own radial one) instead of the relief's perturbed normal: the light
+ * scattered inside a cloud reaches its far flanks, so the relief shades a
+ * cloud's sides but cannot put a side in the dark. 0 is today's deck; 1 would
+ * light the deck as a smooth sphere and flatten the relief out. A mix, so a
+ * cloud top in full Sun keeps its brightness.
+ */
+export const CLOUD_LIGHT_WRAP = 0.4;
+/**
+ * How much of the sky's own irradiance lights the deck by day, as a multiple
+ * of the table's (the same irradiance table the night side's ambient reads,
+ * at the deck's own radius and the Sun's height there). It joins the night
+ * ambient along one ramp, the night weight's complement, so the two hand over
+ * where every night source does and the sum is the table's irradiance on both
+ * sides of the terminator. Only where a body's air tables are bound: with no
+ * tables there is no sky to read and the deck has none, as before.
+ */
+export const CLOUD_LIGHT_SKY = 1.0;
+
+/** On unless `?cloudlight=0`, the kill switch, read once at boot in any
+ *  build. */
+const cloudLightByUrl = typeof location === 'undefined'
+  || new URLSearchParams(location.search).get('cloudlight') !== '0';
+if (import.meta.env.DEV && !cloudLightByUrl) setPerfSwitch('cloud-light', false);
+
+/** Whether the planetarium's deck compiles its cloud light. */
+export function cloudLightOn(): boolean {
+  return import.meta.env.DEV ? perfSwitchOn('cloud-light') : cloudLightByUrl;
+}
+
+/**
+ * The cloud light's knobs (`__moon.cloudLight`). A production build compiles
+ * the wrap and the sky as the constants above and carries neither uniform.
+ * The same bridge entry also moves the ground's sky fill under a shadow
+ * (`groundFill`), which is CLOUD_SHADOW's term and lives in its uniforms.
+ */
+export const cloudLightShared: {
+  uCloudLightWrap: { value: number };
+  uCloudLightSky: { value: number };
+} = {
+  uCloudLightWrap: { value: CLOUD_LIGHT_WRAP },
+  uCloudLightSky: { value: CLOUD_LIGHT_SKY },
+};
+const CLOUD_LIGHT_WRAP_GLSL = import.meta.env.DEV ? 'uCloudLightWrap' : CLOUD_LIGHT_WRAP.toFixed(4);
+const CLOUD_LIGHT_SKY_GLSL = import.meta.env.DEV ? 'uCloudLightSky' : CLOUD_LIGHT_SKY.toFixed(4);
+
+/** The planetarium's deck, registered by whoever builds it. */
+const cloudLightReceivers = new Set<THREE.Material>();
+
+/** Say this material is the planetarium's own cloud deck, the one surface the
+ *  cloud light (CLOUD_LIGHT) compiles into. Any other deck — Look inside's — is
+ *  never registered and never compiles it. */
+export function setPlanetariumCloudDeck(mat: THREE.Material): void {
+  const args = augmentArgs.get(mat);
+  if (!args || args.archetype !== 'cloud') return;
+  if (!cloudLightReceivers.has(mat)) {
+    cloudLightReceivers.add(mat);
+    mat.addEventListener('dispose', () => cloudLightReceivers.delete(mat));
+  }
+  applySwitchDefine(mat, 'CLOUD_LIGHT', cloudLightOn());
+}
+
+/** Give the warm-up probe that stands in for the planetarium's deck
+ *  (world/shaderWarmupProbes) the cloud light as the session compiles it, or
+ *  the program it links under the boot cover is one the deck never draws with
+ *  and the deck's own links once its relief lands, in view. Not a receiver: a
+ *  development build's flip relinks the deck on purpose, and the probe keeps
+ *  the boot's answer. */
+export function setCloudDeckWarmupProbe(mat: THREE.Material): void {
+  const args = augmentArgs.get(mat);
+  if (!args || args.archetype !== 'cloud') return;
+  applySwitchDefine(mat, 'CLOUD_LIGHT', cloudLightOn());
+}
+
+/** Whether this material compiles the cloud light right now. */
+export function surfaceCloudLightCompiled(mat: THREE.Material): boolean {
+  return mat.defines?.CLOUD_LIGHT !== undefined;
+}
+
+if (import.meta.env.DEV) {
+  onPerfSwitch('cloud-light', (on) => {
+    for (const mat of cloudLightReceivers) applySwitchDefine(mat, 'CLOUD_LIGHT', on);
+  });
+}
+
+/** The cloud light's knobs, live (`__moon.cloudLight`): `on` moves the switch
+ *  and relinks the deck, the rest are uniforms from the next frame. Returns
+ *  the values in force. Development builds only. */
+export function devCloudLight(opts?: {
+  on?: boolean;
+  wrap?: number;
+  sky?: number;
+  groundFill?: number;
+}): { on: boolean; wrap: number; sky: number; groundFill: number; receivers: number; compiled: number } | null {
+  if (!import.meta.env.DEV) return null;
+  if (opts?.on !== undefined) setPerfSwitch('cloud-light', opts.on);
+  if (opts?.wrap !== undefined && Number.isFinite(opts.wrap)) cloudLightShared.uCloudLightWrap.value = opts.wrap;
+  if (opts?.sky !== undefined && Number.isFinite(opts.sky)) cloudLightShared.uCloudLightSky.value = opts.sky;
+  if (opts?.groundFill !== undefined && Number.isFinite(opts.groundFill)) {
+    cloudShadowShared.uCloudShadowSkyFill.value = opts.groundFill;
+  }
+  let compiled = 0;
+  for (const mat of cloudLightReceivers) if (surfaceCloudLightCompiled(mat)) compiled++;
+  return {
+    on: cloudLightOn(),
+    wrap: cloudLightShared.uCloudLightWrap.value,
+    sky: cloudLightShared.uCloudLightSky.value,
+    groundFill: cloudShadowShared.uCloudShadowSkyFill.value,
+    receivers: cloudLightReceivers.size,
+    compiled,
+  };
 }
 
 /**
@@ -605,12 +1134,50 @@ function roughnessChunk(): string {
     : SURFACE_ROUGHNESSMAP_FRAGMENT;
 }
 
-/** The GLSL half of `waterGlossRoughness`, behind the uniform that is zero on
- *  every surface but a globe whose roughness map really is a water mask. */
+/**
+ * The GLSL half of `waterGlossRoughness`, behind the uniform that is zero on
+ * every surface but a globe whose roughness map really is a water mask — and,
+ * with the wind map on, the sea's own lobe under this fragment: the wind
+ * read in the body frame (world/seaWind.ts) and turned into the roughness
+ * three lights the sea at through Cox-Munk's slope law (`windRoughness` in
+ * GLSL). The read takes explicit gradients, as the cloud shadow's does,
+ * because the UV jumps a whole turn at the date line and an implicit
+ * derivative across it would pick the coarsest mip down one column of sea;
+ * the gradients are taken in the uniform branch, outside the per-fragment
+ * gate that spares pure land the fetch.
+ */
 const WATER_GLOSS_GLSL = /* glsl */ `
+float seaWater = 0.0;
 if (GROUND_ON(uWaterGloss > 0.0)) {
+  float waterGain = uWaterGloss;
+  seaWater = clamp((${ROUGHNESS_MAP_LAND.toFixed(6)} - roughnessFactor)
+      / ${(ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER).toFixed(6)}, 0.0, 1.0);
+  if (uSeaWindOn > 0.5) {
+    vec3 seaDir = normalize(vObjPos);
+    vec2 seaUv = sphereEquirectUv(seaDir);
+    vec2 seaDx = sphereEquirectUvGrad(seaDir, dFdx(seaDir));
+    vec2 seaDy = sphereEquirectUvGrad(seaDir, dFdy(seaDir));
+    if (roughnessFactor < ${(ROUGHNESS_MAP_LAND - 0.005).toFixed(6)}) {
+      float seaWindMs = textureGrad(uSeaWindMap, seaUv, seaDx, seaDy).r * ${SEA_WIND_MAX_MS.toFixed(1)};
+      float seaRoughness = sqrt(sqrt(${COX_MUNK_SLOPE_CALM.toFixed(5)}
+          + ${COX_MUNK_SLOPE_PER_MS.toFixed(5)} * seaWindMs));
+      waterGain = (${ROUGHNESS_MAP_LAND.toFixed(6)} - seaRoughness)
+          / ${(ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER).toFixed(6)};
+    }
+  }
   roughnessFactor = max(${ROUGHNESS_MAP_LAND.toFixed(6)}
-      - (${ROUGHNESS_MAP_LAND.toFixed(6)} - roughnessFactor) * uWaterGloss, 0.02);
+      - (${ROUGHNESS_MAP_LAND.toFixed(6)} - roughnessFactor) * waterGain, 0.02);
+  // The water's own colour (SEA_WATER_COLOUR): the day map's open sea is one
+  // flat painted texel, so a texel within a small linear distance of that
+  // paint is the paint and nothing else, and is mixed toward the water colour
+  // by the water fraction; a coast or a bank the map painted its own colour
+  // is left as it is. Behind the share's uniform branch so ?seacolour=0 is
+  // the painted map again, bit for bit.
+  if (uSeaMix > 0.0) {
+    float seaPaint = 1.0 - smoothstep(0.012, 0.03,
+        distance(diffuseColor.rgb, vec3(${SEA_PAINT_COLOUR.map((v) => v.toFixed(6)).join(', ')})));
+    diffuseColor.rgb = mix(diffuseColor.rgb, ${SEA_COLOUR_GLSL}, seaWater * seaPaint * uSeaMix);
+  }
 }`;
 
 // Analytic stand-in for Saturn's ring opacity across the annulus (t: 0 inner …
@@ -1356,6 +1923,7 @@ if (GROUND_ON(uSynthEnvelope > 0.0)) {
 const PERF_SWITCH_DECLS = /* glsl */ `uniform float uPerfCloudTaps;
 uniform float uPerfCloudClear;
 uniform float uPerfGlintGate;
+uniform float uPerfCloudNoiseFrame;
 uniform float uProbeCloudSmooth;
 uniform float uProbeCloudDetail;
 uniform float uProbeCloudRelief;
@@ -1363,7 +1931,11 @@ uniform float uProbeCloudAir;`;
 
 /** The glint's tuning uniforms (devGlintUniforms), development builds only. */
 const DEV_TUNING_DECLS = /* glsl */ `uniform float uGlintCap;
-uniform float uGlintKeep;`;
+uniform float uGlintKeep;
+uniform float uBeamKnee;
+uniform float uBeamCap;
+uniform vec3 uSeaColour;
+uniform float uSeaSky;`;
 
 /**
  * The cloud deck's cost probes (app/perfSwitches.ts, `cloud-probe-*`): each
@@ -1382,6 +1954,23 @@ const DETAIL_PROBE_GUARD = import.meta.env.DEV ? 'uProbeCloudDetail > 0.5 ? 0.0 
 const RELIEF_PROBE_OPEN = import.meta.env.DEV ? '\tif (uProbeCloudRelief < 0.5 || DECK_OFF) {\n' : '';
 const RELIEF_PROBE_CLOSE = import.meta.env.DEV ? '\t} // cloud relief probe\n' : '';
 const AIR_PROBE_GUARD = import.meta.env.DEV ? ' && (uProbeCloudAir < 0.5 || DECK_OFF)' : '';
+
+/**
+ * The deck detail's frame before it was the sheet's own: the world's axes,
+ * where the detail stood still in the sky while the cloud turned under it.
+ * Development builds only, behind `cloud-noise-frame` (app/perfSwitches.ts) —
+ * the control arm, the picture as it was — and a production build has neither
+ * the uniform nor these lines. Everything it swaps is a value the block above
+ * has already set, and the two derivatives it takes are inside a branch on a
+ * uniform, which the whole draw takes the same way.
+ */
+const NOISE_FRAME_OFF_ARM = import.meta.env.DEV
+  ? '  if (uPerfCloudNoiseFrame < 0.5) {\n'
+    + '    dir = normalize(vAirFrag);\n'
+    + '    ddx = dFdx(dir);\n'
+    + '    ddy = dFdy(dir);\n'
+    + '  }\n'
+  : '';
 
 /** The switch a dead cloud tap is removed behind, as the condition that still
  *  takes the tap. Off, the fetch happens exactly where it happened before the
@@ -1461,6 +2050,19 @@ const SURFACE_MAP_FRAGMENT = /* glsl */ `
 `;
 
 /**
+ * A ground compiled with the cloud field (CLOUD_FIELD without CLOUD_DECK: the
+ * ground reads the field in its shadow lookup) knows at compile time that it
+ * is not the deck, so DECK_ON is a constant false there and the deck's own
+ * block — its detail tap on `uCloudDetail` above all, an active sampler on
+ * every ground today only because DECK_ON is a uniform test — is compiled out.
+ * One sampler unit back on the program that spends the most. Whole lines inside
+ * their own conditional, opening with no blank line of their own, so a program
+ * without CLOUD_FIELD is the text it was to the character.
+ */
+const GROUND_FIELD_ARCHETYPE_OPEN = '#ifdef CLOUD_FIELD\n#define DECK_ON false\n#define DECK_OFF true\n#else\n';
+const GROUND_FIELD_ARCHETYPE_CLOSE = '#endif\n';
+
+/**
  * The cloud deck's archetype, decided when its program compiles.
  *
  * Every surface takes one injected text, and a body's class is a set of
@@ -1483,10 +2085,90 @@ const SURFACE_ARCHETYPE_MACROS = /* glsl */ `
 #define DECK_OFF false
 #define GROUND_ON(x) false
 #else
-#define DECK_ON (uCloudDeck > 0.0)
+${GROUND_FIELD_ARCHETYPE_OPEN}#define DECK_ON (uCloudDeck > 0.0)
 #define DECK_OFF (uCloudDeck == 0.0)
-#define GROUND_ON(x) (x)
+${GROUND_FIELD_ARCHETYPE_CLOSE}#define GROUND_ON(x) (x)
 #endif`;
+
+/**
+ * The Gaussian slope law as a microfacet lobe: Beckmann, alpha squared the
+ * mean-square slope. Cox-Munk's sea is this lobe exactly, which is why the
+ * body swaps it in for three's GGX — whose tail at three sigma of facet tilt
+ * is eighty times heavier, and was the haze round the sheen — wherever the
+ * wind map is on. The cosine is floored so a facet turned away is a lobe of
+ * nothing rather than a division by nothing.
+ */
+const SEA_LOBE_GLSL = /* glsl */ `
+// Unpolarised Fresnel reflectance of water at an incidence cosine, exact for
+// its index (SEA_WATER_IOR): Schlick reads 15 to 24 % low between 50 and 60
+// degrees, the band an orbital oblique view meets the sea at.
+float seaFresnelExact(float cosI) {
+  float g = sqrt(max(${(SEA_WATER_IOR * SEA_WATER_IOR - 1).toFixed(6)} + cosI * cosI, 0.0));
+  float a = (g - cosI) / max(g + cosI, 1e-6);
+  float b = (cosI * (g + cosI) - 1.0) / max(cosI * (g - cosI) + 1.0, 1e-6);
+  return 0.5 * a * a * (1.0 + b * b);
+}
+float seaBeckmann(float alpha, float dotNH) {
+  float cos2 = max(dotNH * dotNH, 1e-6);
+  float alpha2 = alpha * alpha;
+  return exp((cos2 - 1.0) / (cos2 * alpha2)) / (PI * alpha2 * cos2 * cos2);
+}
+// Beckmann's own Smith shadowing, Walter's rational fit of its G1 in
+// a = 1 / (alpha tan theta), as the visibility term V = G1(l) G1(v) / (4 n.l n.v)
+// that multiplies the lobe. three's correlated GGX Smith on this lobe read
+// about a third too dark at a grazing Sun and eye, which is where the beam is.
+float seaBeckmannG1(float cosTheta, float alpha) {
+  float sinTheta = sqrt(max(1.0 - cosTheta * cosTheta, 0.0));
+  float a = cosTheta / max(alpha * sinTheta, 1e-6);
+  return a >= 1.6 ? 1.0 : (3.535 * a + 2.181 * a * a) / (1.0 + 2.276 * a + 2.577 * a * a);
+}
+float seaBeckmannVis(float alpha, float dotNL, float dotNV) {
+  return seaBeckmannG1(dotNL, alpha) * seaBeckmannG1(dotNV, alpha) / max(4.0 * dotNL * dotNV, 1e-6);
+}
+`;
+
+/**
+ * Cloud shadows' declarations, compiled only with CLOUD_SHADOW (see the switch
+ * beside `cloudShadowUniforms`). Every line of this and of the three blocks
+ * below is a whole line inside its own conditional, so with the define off
+ * the preprocessor leaves the text it was.
+ *
+ * Every chunk that opens with a directive — this one, the cloud light's and the
+ * cloud field's declarations, and the body blocks that open with `#ifdef` —
+ * opens with its own newline and ends with one, so it is a whole line wherever
+ * it is spliced: the preprocessor only sees a directive at the start of a line,
+ * and a neighbour that happens not to end with a newline would otherwise hide
+ * `#ifdef` behind its last brace (aerialPerspective.test.ts scans for that).
+ */
+const CLOUD_SHADOW_DECLS = /* glsl */ `
+#ifdef CLOUD_SHADOW
+uniform float uCloudAbove;
+uniform float uCloudHeightOverRadius;
+${import.meta.env.DEV ? 'uniform float uCloudShadowDepth;\nuniform float uCloudShadowAir;\nuniform float uCloudShadowPenumbra;\nuniform float uCloudShadowGamma;\nuniform float uCloudShadowSkyFill;\n' : ''}#ifdef CLOUD_FIELD
+uniform vec2 uCloudShadowTurn;
+#endif
+#endif
+`;
+
+/**
+ * The cloud deck's 1.2 km field (world/cloudField), compiled only with
+ * CLOUD_FIELD, which only the planetarium's deck (and the warm-up probe that
+ * stands in for it) and Earth's ground beside its cloud shadow carry, and only
+ * in a session that has the field (world/cloudFieldSlots). Every line is a
+ * whole line inside
+ * its conditional, so a program without the define is, after the
+ * preprocessor, the program it was but for the blank line each chunk opens
+ * with; a development build adds the field's diagnostics inside the same
+ * conditionals (aerialPerspective.test.ts pins both texts and the fold).
+ */
+export const CLOUD_FIELD_DECLS = cloudFieldGlsl(SMOOTH_TEXEL_FADE);
+export const CLOUD_FIELD_MIX = CLOUD_FIELD_MIX_GLSL(`vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')})`);
+
+/** The cloud light's knobs, declared only in a development build and only in a
+ *  program compiled with CLOUD_LIGHT; a production build reads constants. */
+const CLOUD_LIGHT_DECLS = import.meta.env.DEV
+  ? '\n#ifdef CLOUD_LIGHT\nuniform float uCloudLightWrap;\nuniform float uCloudLightSky;\n#endif\n'
+  : '';
 
 /**
  * A presentation grade on the albedo (world/surfaceLook.ts): a contrast gain
@@ -1538,6 +2220,9 @@ uniform float uAirBlend;
 uniform float uSurfaceHaze;
 uniform float uAirLookupRadius;
 uniform float uWaterGloss;
+uniform float uSeaMix;
+uniform sampler2D uSeaWindMap;
+uniform float uSeaWindOn;
 uniform sampler2D uCloudShadowMap;
 uniform float uCloudShadowSpin;
 uniform float uCloudDeck;
@@ -1547,7 +2232,8 @@ uniform float uCloudDetailErode;
 uniform float uCloudDetailRelief;
 uniform sampler2D uNightLights;
 uniform float uCloudCityGlow;
-uniform float uPlanetRadius;
+uniform float uFrameSpin;
+${CLOUD_FRAME_GLSL}${CLOUD_SHADOW_DECLS}${CLOUD_LIGHT_DECLS}uniform float uPlanetRadius;
 uniform float uSolarIrradiance;
 uniform vec3 uAirlightScale;
 uniform sampler2D uTransmittance;
@@ -1561,7 +2247,7 @@ varying vec3 vObjPos;
 varying vec3 vPlanetshineViewDir;
 varying vec3 vAirCam;
 varying vec3 vAirFrag;
-${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}${CLOUD_DETAIL_GLSL}${SPHERE_EQUIRECT_UV_GLSL}${SMOOTH_TEXEL_GLSL}${SURFACE_DETAIL_GLSL}`;
+${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}${CLOUD_DETAIL_GLSL}${SPHERE_EQUIRECT_UV_GLSL}${SMOOTH_TEXEL_GLSL}${SURFACE_DETAIL_GLSL}${SEA_LOBE_GLSL}${CLOUD_FIELD_DECLS}`;
 
 /**
  * three's <normal_fragment_maps>, with the tangent-space branch taken over.
@@ -1648,25 +2334,34 @@ vec2 cloudNightUv = vec2(0.0);
 vec2 cloudNightDx = vec2(0.0);
 vec2 cloudNightDy = vec2(0.0);
 if (DECK_ON) {
-  // Where this fragment is on the deck, as longitude and latitude. Every
-  // derivative the block needs is taken HERE, inside the one branch that is
-  // uniform across the draw: a derivative under a per-fragment condition is
-  // undefined, and the fade below is exactly such a condition.
-  vec3 dir = normalize(vAirFrag);
-  vec3 ddx = dFdx(dir);
-  vec3 ddy = dFdy(dir);
+  // Where this fragment is, in the body's own frame. Every derivative the
+  // block needs is taken HERE, inside the one branch that is uniform across
+  // the draw: a derivative under a per-fragment condition is undefined, and
+  // the fade below is exactly such a condition.
+  vec3 objDir = normalize(vObjPos);
+  vec3 objDx = dFdx(objDir);
+  vec3 objDy = dFdy(objDir);
   vec3 sx = dFdx(-vViewPosition);
   vec3 sy = dFdy(-vViewPosition);
-  // Where this fragment stands over the GROUND, in the body's own frame — the
-  // frame the night map is painted in. The deck drifts on top of the body's
-  // spin, so its own UV is that drift out of register with the cities under it.
-  // The derivatives come with it: the lookup happens under a per-fragment
-  // condition further down, where an implicit one is undefined.
-  vec3 objDir = normalize(vObjPos);
+  // Where this fragment stands over the GROUND — the frame the night map is
+  // painted in. The deck drifts on top of the body's spin, so its own UV is
+  // that drift out of register with the cities under it. The derivatives come
+  // with it: the lookup happens under a per-fragment condition further down,
+  // where an implicit one is undefined.
   cloudNightUv = sphereEquirectUv(objDir);
-  cloudNightDx = sphereEquirectUvGrad(objDir, dFdx(objDir));
-  cloudNightDy = sphereEquirectUvGrad(objDir, dFdy(objDir));
-  float cosLat = max(sqrt(dir.x * dir.x + dir.z * dir.z), 1e-4);
+  cloudNightDx = sphereEquirectUvGrad(objDir, objDx);
+  cloudNightDy = sphereEquirectUvGrad(objDir, objDy);
+  // Where it is on the deck's OWN sheet, which is where the detail belongs:
+  // the body frame turned back by the drift the deck's mesh carries, the frame
+  // the cloud map is painted in. Read off anything else — the world's axes,
+  // say — the detail stands still in the sky while the cloud under it turns
+  // with the planet and drifts on top of that, and every carved edge crawls.
+  // The turn is linear, so it carries the derivatives exactly as it carries
+  // the direction.
+  vec3 dir = bodyToDeck(objDir, uFrameSpin);
+  vec3 ddx = bodyToDeck(objDx, uFrameSpin);
+  vec3 ddy = bodyToDeck(objDy, uFrameSpin);
+${NOISE_FRAME_OFF_ARM}  float cosLat = max(sqrt(dir.x * dir.x + dir.z * dir.z), 1e-4);
   // The angles' screen derivatives, taken analytically from the direction's.
   // atan() has a branch cut at the antimeridian, and reading its derivative
   // through dFdx would put one pixel of enormous gradient down that line — the
@@ -1705,7 +2400,7 @@ if (DECK_ON) {
   diffuseColor.rgb = min(
       diffuseColor.rgb * pow(uCloudAlbedo / max(cloudLum, 0.001), ${CLOUD_ALBEDO_BLEND.toFixed(6)}),
       vec3(1.0));
-  if (cloudDetailW > 0.0) {
+${CLOUD_FIELD_MIX}  if (cloudDetailW > 0.0) {
     // The packed gradient back into a real slope: field per tile of uv, times
     // the height that field's range stands for. The height is stated against
     // the body's own radius, so it is kilometres of cloud top and not a number
@@ -1725,10 +2420,422 @@ if (DECK_ON) {
 ${SURFACE_DETAIL_BODY}
 ${CLOUD_CLEAR_RETURN}`;
 
+/**
+ * The sea's flag for the bloom, in the alpha the opaque ground otherwise
+ * writes as 1 (three's <opaque_fragment>): under the beam chain, water writes
+ * 1 - 2 x its water fraction instead, so open sea reads -1, land 1 and a
+ * coast in between, and the planetarium's bright pass (app/bloomTargets
+ * SEA_BLOOM_SHARE_GLSL) hands the blur none of a negative pixel. That is what
+ * lets the beam carry its physical radiance — several whites at a low Sun —
+ * without the Sun's glow, blurred at the Sun's radius, painting it as a halo
+ * over the limb and into space; the Sun and every other pixel keep an alpha
+ * of zero or more and their glow bit for bit. Only the ground: the deck's
+ * alpha IS its coverage, and its blend over the sea pulls the flag back
+ * toward 1 in proportion, which is the continuous control it should be. The
+ * canvas is opaque and every finishing pass writes its own alpha, so the flag
+ * reaches the bright pass and nothing else. Off with `?seabeam=0`, where the
+ * cap before the air kept the sea under the bloom's threshold anyway.
+ */
+const SEA_BLOOM_FLAG_GLSL = /* glsl */ `
+#ifdef SEA_BEAM
+  if (GROUND_ON(uWaterGloss > 0.0)) gl_FragColor.a = 1.0 - 2.0 * seaWater;
+#endif`;
+
+/**
+ * Where the Sun's beam to this ground point crosses the deck, and how much of
+ * it gets through: `cloudSunKeep`, read once, for its three readers below.
+ *
+ * Everything the lookup needs from the screen is taken first, inside a branch
+ * on a uniform that the whole draw takes the same way, and before the
+ * per-fragment gate: the gate splits quads at the terminator, and a derivative
+ * under it is undefined. The derivatives are of the DISPLACED direction, not
+ * the ground's: near the terminator the pierce point moves across the deck
+ * faster than the ground point under it moves across the ground, so the
+ * ground's own footprint would pick too sharp a mip there.
+ *
+ * The gate is the Sun above this fragment's own geometric horizon. Below it
+ * there is no direct light to shade, and the ray goes into the ground before it
+ * reaches any cloud, so the shell it meets on the far side is no shadow.
+ *
+ * The lookup is the deck's own: the deck draws its map through the smooth
+ * magnification filter (SMOOTH_TEXEL_GLSL), because bilinear under the
+ * coverage curve draws the texel grid, and a shadow drawn without it would be
+ * a square-edged copy of a round cloud. The weight is taken from the explicit
+ * gradients here — the coordinate wraps at the date line, and the read sits
+ * under the gate — where the deck takes it from its own UV.
+ *
+ * The penumbra: the solar disc is half a degree wide, so a cloud's edge throws
+ * a soft edge on the ground h·Δθ/sin²e long along the shadow, which is the
+ * same footprint on the deck seen from the ground point — 3 km with the Sun 10°
+ * up. Each screen step on the deck is widened to at least that, and the mip
+ * chain does the blur. The width stops growing below 5.7° (9 km), where the
+ * true one runs on toward the 357 km of the horizon itself. Isotropic: across
+ * the shadow the true width is sin e of that, and a first look is wanted
+ * before the shape is.
+ *
+ * With the cloud field compiled too (CLOUD_FIELD, which a ground takes only
+ * beside this define, in a session that has the field), the coverage is the
+ * field's wherever a page is resident at the pierce point: `cloudFieldFine`'s
+ * opacity, mixed over the base sheet's at the field's weight exactly as the
+ * deck mixes them, so a shadow sharpens and fades in step with its cloud. The
+ * sheet and the field are cut from one master, so where no page is resident
+ * the base is the same sky, softer. The weight's guard reads this lookup's own
+ * footprint — the displaced direction's derivatives, the penumbra included —
+ * and the penumbra is held in the tile ratio's pixels there, the pixels the
+ * guard and the residency's shadow demand (world/cloudFieldMeasure) both
+ * measure in, so a Dynamic rung step moves neither. Each read is taken only
+ * where it has a share: the base not at full weight, the page not at none,
+ * and neither filter's plain tap where the smooth one takes it all.
+ *
+ * The field's arm also spends less arithmetic getting there, because this
+ * runs at every fragment of the ground and each instruction saved is a share
+ * of the frame that can be measured: the turn into the deck's frame takes the
+ * drift's cosine and sine as uniforms (`setCloudShadowDrift`) rather than
+ * evaluating both at each fragment, and the penumbra widens each gradient
+ * through one reciprocal square root rather than a length and a division —
+ * the same numbers to float rounding. A ground without the field keeps the
+ * read it had: with CLOUD_FIELD off the program is the one from before the
+ * field reached it (aerialPerspective.test.ts pins that text).
+ */
+const CLOUD_SHADOW_FIELD_TURN = /* glsl */ `#ifdef CLOUD_FIELD
+    vec3 shadowRay = cloudRayDirection(shadowN, shadowL, uCloudHeightOverRadius);
+    vec3 shadowDir = vec3(uCloudShadowTurn.x * shadowRay.x - uCloudShadowTurn.y * shadowRay.z, shadowRay.y,
+                          uCloudShadowTurn.y * shadowRay.x + uCloudShadowTurn.x * shadowRay.z);
+#else
+`;
+const CLOUD_SHADOW_FIELD_PENUMBRA = /* glsl */ `#ifdef CLOUD_FIELD
+    shadowPenumbra /= uCloudFieldPixelScale;
+    shadowDx *= max(1.0, shadowPenumbra * inversesqrt(max(dot(shadowDx, shadowDx), 1e-24)));
+    shadowDy *= max(1.0, shadowPenumbra * inversesqrt(max(dot(shadowDy, shadowDy), 1e-24)));
+#else
+`;
+const CLOUD_SHADOW_FIELD_END = '#endif\n';
+const CLOUD_SHADOW_FIELD_READ = /* glsl */ `#ifdef CLOUD_FIELD
+      float shadowFieldW = 0.0;
+      float shadowFieldLayer = -1.0;
+      float shadowCover = cloudFieldFine(shadowDir, shadowDx, shadowDy, shadowFieldW, shadowFieldLayer).x;
+      if (shadowFieldW < 1.0) {
+        vec2 shadowTexels = vec2(textureSize(uCloudShadowMap, 0));
+        float shadowPerPixel = max((abs(shadowUvDx.x) + abs(shadowUvDy.x)) * shadowTexels.x,
+                                   (abs(shadowUvDx.y) + abs(shadowUvDy.y)) * shadowTexels.y);
+        float shadowSmoothW = 1.0 - smoothstep(${SMOOTH_TEXEL_FADE[0].toFixed(6)}, ${SMOOTH_TEXEL_FADE[1].toFixed(6)}, shadowPerPixel);
+        vec4 shadowTexel = vec4(0.0);
+        if (shadowSmoothW < 1.0) shadowTexel = textureGrad(uCloudShadowMap, shadowUv, shadowUvDx, shadowUvDy);
+        if (shadowSmoothW > 0.0) {
+          vec4 shadowSmooth = textureBSpline(uCloudShadowMap, shadowUv, shadowTexels);
+          shadowTexel = shadowSmoothW >= 1.0 ? shadowSmooth : mix(shadowTexel, shadowSmooth, shadowSmoothW);
+        }
+        shadowCover = mix(cloudCoverage(dot(shadowTexel.rgb,
+            vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')}))), shadowCover, shadowFieldW);
+      }
+      cloudSunKeep = 1.0 - shadowCover;
+#else
+`;
+
+const CLOUD_SHADOW_READ = /* glsl */ `
+#ifdef CLOUD_SHADOW
+  // With cloud shadows compiled in, the beam's share is read HERE, for the
+  // ground, the sea and the air alike, where the Sun's ray to this point
+  // crosses the deck as it is drawn; the straight-down read under the sea's
+  // gloss is compiled out below, and the sea's cut reads this value instead.
+  // The shade's fade toward the horizon (CLOUD_SHADOW_HORIZON_SIN) rides
+  // beside it: the beam is the beam, and only what the ground and the air
+  // take from it fades.
+  float cloudShadeHorizon = 0.0;
+  if (GROUND_ON(uCloudAbove > 0.0)) {
+    vec3 shadowN = normalize(vObjPos);
+    vec3 shadowL = normalize(uSunDirLocal);
+    float shadowMu = dot(shadowN, shadowL);
+${CLOUD_SHADOW_FIELD_TURN}    vec3 shadowDir = bodyToDeck(cloudRayDirection(shadowN, shadowL, uCloudHeightOverRadius), uCloudShadowSpin);
+${CLOUD_SHADOW_FIELD_END}    vec3 shadowDx = dFdx(shadowDir);
+    vec3 shadowDy = dFdy(shadowDir);
+    float shadowPenumbra = ${CLOUD_SHADOW_PENUMBRA_GUARD}uCloudHeightOverRadius * (2.0 * uSunTan)
+        / max(shadowMu * shadowMu, 0.01);
+${CLOUD_SHADOW_FIELD_PENUMBRA}    shadowDx *= max(1.0, shadowPenumbra / max(length(shadowDx), 1e-12));
+    shadowDy *= max(1.0, shadowPenumbra / max(length(shadowDy), 1e-12));
+${CLOUD_SHADOW_FIELD_END}    vec2 shadowUv = sphereEquirectUv(shadowDir);
+    vec2 shadowUvDx = sphereEquirectUvGrad(shadowDir, shadowDx);
+    vec2 shadowUvDy = sphereEquirectUvGrad(shadowDir, shadowDy);
+    bool cloudTapWanted = shadowMu > 0.0;
+    cloudShadeHorizon = smoothstep(0.0, ${CLOUD_SHADOW_HORIZON_SIN.toFixed(6)}, shadowMu);
+    if (cloudTapWanted) {
+${CLOUD_SHADOW_FIELD_READ}      vec4 shadowTexel = textureGrad(uCloudShadowMap, shadowUv, shadowUvDx, shadowUvDy);
+      vec2 shadowTexels = vec2(textureSize(uCloudShadowMap, 0));
+      float shadowPerPixel = max((abs(shadowUvDx.x) + abs(shadowUvDy.x)) * shadowTexels.x,
+                                 (abs(shadowUvDx.y) + abs(shadowUvDy.y)) * shadowTexels.y);
+      float shadowSmoothW = 1.0 - smoothstep(${SMOOTH_TEXEL_FADE[0].toFixed(6)}, ${SMOOTH_TEXEL_FADE[1].toFixed(6)}, shadowPerPixel);
+      if (shadowSmoothW > 0.0) {
+        shadowTexel = mix(shadowTexel, textureBSpline(uCloudShadowMap, shadowUv, shadowTexels), shadowSmoothW);
+      }
+      cloudSunKeep = 1.0 - cloudCoverage(dot(shadowTexel.rgb,
+          vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')})));
+${CLOUD_SHADOW_FIELD_END}    }
+  }
+#endif
+`;
+
+/**
+ * The first reader: the Sun's diffuse light on the ground, cut by the cloud's
+ * SHADE — the beam's loss through the shade curve (CLOUD_SHADOW_GAMMA), since
+ * the light a thin veil scatters out of the beam mostly still reaches the
+ * ground. three adds `reflectedLight.directDiffuse` into `outgoingLight` as it
+ * stands — no occlusion map, transmission, sheen or clearcoat reaches it on
+ * these materials — so this removes exactly that much of the Sun. After the
+ * sea's own block, which cuts only the mirror term by the beam itself, and
+ * before the eclipse factor, which multiplies both.
+ */
+const CLOUD_SHADOW_DIFFUSE = /* glsl */ `
+#ifdef CLOUD_SHADOW
+  float cloudShade = pow(1.0 - cloudSunKeep, ${CLOUD_SHADOW_GAMMA_GLSL}) * cloudShadeHorizon;
+  outgoingLight -= reflectedLight.directDiffuse * (cloudShade * ${CLOUD_SHADOW_DEPTH_GLSL});
+#endif
+`;
+
+/** The third reader: the Sun's glow in the air between the camera and this
+ *  ground point, the share of that column under the cloud taken with it — and
+ *  less of it as the view grazes, measured on the ground's geometric normal
+ *  (never the perturbed one) against the line of sight (CLOUD_SHADOW_AIR_GRAZE).
+ *  With the field compiled the cosine is the one three's lights already hold,
+ *  its unperturbed normal against its view direction (both in view space),
+ *  rather than a second normalization of the sight line in the world's axes. */
+const CLOUD_SHADOW_AIR_SCALE = /* glsl */ `
+#ifdef CLOUD_SHADOW
+#ifdef CLOUD_FIELD
+      airS *= 1.0 - cloudShade * ${CLOUD_SHADOW_AIR_GLSL}
+          * smoothstep(${CLOUD_SHADOW_AIR_GRAZE[0].toFixed(6)}, ${CLOUD_SHADOW_AIR_GRAZE[1].toFixed(6)}, dot(nonPerturbedNormal, geometryViewDir));
+#else
+      airS *= 1.0 - cloudShade * ${CLOUD_SHADOW_AIR_GLSL}
+          * smoothstep(${CLOUD_SHADOW_AIR_GRAZE[0].toFixed(6)}, ${CLOUD_SHADOW_AIR_GRAZE[1].toFixed(6)}, dot(up, normalize(vAirCam - vAirFrag)));
+#endif
+#endif
+`;
+
+/**
+ * The second reader of the shade on the ground: the sky's own light, added in
+ * proportion to it (CLOUD_SHADOW_SKY_FILL) — the irradiance table's skylight
+ * at the ground's radius and the Sun's height there, by albedo over pi as the
+ * night side's ambient takes it, so a shadow keeps the blue a real one keeps.
+ * The night weight's complement hands it over to that ambient where every
+ * night source hands over, and the shade's own fade at the horizon already
+ * takes it to nothing where the Sun meets the ground's horizon. Only where the
+ * body's air tables are bound: with no tables there is no sky to read. A
+ * ground compiled with the cloud field fetches the table only where there is
+ * a shade to fill, which over clear sky is exactly none: the same picture,
+ * without the read.
+ */
+const CLOUD_SHADOW_FILL = /* glsl */ `
+#ifdef CLOUD_SHADOW
+#ifdef CLOUD_FIELD
+  if (cloudShade > 0.0 && ${CLOUD_SHADOW_SKY_FILL_GUARD}uAirDensity > 0.0) {
+#else
+  if (${CLOUD_SHADOW_SKY_FILL_GUARD}uAirDensity > 0.0) {
+#endif
+    float fillMuS = clampCosine(dot(normalize(vAirFrag), normalize(uSunDirWorld)));
+    outgoingLight += diffuseColor.rgb * RECIPROCAL_PI
+        * (getIrradiance(uIrradiance, clampRadius(length(vAirFrag) / uPlanetRadius), fillMuS)
+            * uAirlightScale * uSolarIrradiance)
+        * (cloudShade * ${CLOUD_SHADOW_SKY_FILL_GLSL} * (1.0 - nightWeight(fillMuS)));
+  }
+#endif
+`;
+
+/**
+ * The deck lit as a cloud (CLOUD_LIGHT, the planetarium's deck only), both
+ * terms into `outgoingLight` and nothing else — never the alpha, which is the
+ * deck's coverage.
+ *
+ * First, the light scattered inside the cloud: the deck's direct diffuse
+ * becomes a mix of the Lambert term on the relief's perturbed normal — three's
+ * own `reflectedLight.directDiffuse` — and the same lights through the same
+ * BRDF on the shell's geometric normal (`nonPerturbedNormal`, the sphere's own
+ * interpolated radial one). The lights are read the way three's
+ * lights_fragment_begin reads them, every point and directional light the
+ * program was built with, so no light is assumed to be the Sun by its index.
+ * `reflectedLight.directDiffuse` was scaled before this point by the Sun's
+ * path through the air (the body-scope `vec3 sunPath`, set at the top of the
+ * surface body and applied to the direct terms there), so `cloudGeoIrradiance`
+ * is multiplied by that same `sunPath`, exactly as the perturbed-normal term
+ * it is mixed with already has been, or the wrap hands back the light the
+ * path took away.
+ *
+ * Second, the sky: the irradiance table's own skylight at the deck's radius and
+ * the Sun's height there, by albedo over pi as three's diffuse BRDF and the
+ * night side's ambient both take it, weighted by the night weight's
+ * complement so it hands over to that ambient along the same ramp and the two
+ * sum to the table's irradiance through the terminator. Only where the body's
+ * air tables are bound; on the tier without them the deck has no sky light.
+ *
+ * Placed after three's lighting and before the eclipse factor, the limb and
+ * the air, so a moon's umbra dims both terms and the air sees them as light
+ * leaving the deck. No derivative and no mipped fetch: it sits past the deck's
+ * clear-sky return, where the lanes are divergent.
+ */
+const CLOUD_LIGHT_DECK = /* glsl */ `
+#ifdef CLOUD_LIGHT
+  if (DECK_ON) {
+    vec3 cloudGeoIrradiance = vec3(0.0);
+    IncidentLight cloudLight;
+#if NUM_POINT_LIGHTS > 0
+    #pragma unroll_loop_start
+    for ( int i = 0; i < NUM_POINT_LIGHTS; i ++ ) {
+      getPointLightInfo( pointLights[ i ], geometryPosition, cloudLight );
+      cloudGeoIrradiance += saturate( dot( nonPerturbedNormal, cloudLight.direction ) ) * cloudLight.color;
+    }
+    #pragma unroll_loop_end
+#endif
+#if NUM_DIR_LIGHTS > 0
+    #pragma unroll_loop_start
+    for ( int i = 0; i < NUM_DIR_LIGHTS; i ++ ) {
+      getDirectionalLightInfo( directionalLights[ i ], cloudLight );
+      cloudGeoIrradiance += saturate( dot( nonPerturbedNormal, cloudLight.direction ) ) * cloudLight.color;
+    }
+    #pragma unroll_loop_end
+#endif
+    // The Sun's path through the air took its share of the direct diffuse at
+    // the top of the body; the geometric term is the same Sun through the same
+    // air, so it takes the same share, or the wrap would hand a low-Sun cloud
+    // top back the unattenuated, unreddened light the path took away.
+    cloudGeoIrradiance *= sunPath;
+    outgoingLight += ${CLOUD_LIGHT_WRAP_GLSL}
+        * (cloudGeoIrradiance * BRDF_Lambert( material.diffuseContribution ) - reflectedLight.directDiffuse);
+    if (uAirDensity > 0.0) {
+      float skyMuS = clampCosine(dot(normalize(vAirFrag), normalize(uSunDirWorld)));
+      float skyR = clampRadius(uAirLookupRadius > 0.0 ? uAirLookupRadius : length(vAirFrag) / uPlanetRadius);
+      outgoingLight += diffuseColor.rgb * RECIPROCAL_PI
+          * (getIrradiance(uIrradiance, skyR, skyMuS) * uAirlightScale * uSolarIrradiance)
+          * (${CLOUD_LIGHT_SKY_GLSL} * (1.0 - nightWeight(skyMuS)));
+    }
+  }
+#endif
+`;
+
 const SURFACE_FRAGMENT_BODY = /* glsl */ `{
+  // The Sun's own path through this body's air to the fragment. three's point
+  // light reaches every surface at its full strength, but a Sun ten degrees up
+  // has come through several times the zenith's column, and what reaches the
+  // ground is dimmer and redder: the gold on a low-Sun sea, a cloud top and a
+  // coast is that path. The table's transmittance toward the Sun at this
+  // fragment's radius and Sun angle, divided by the same table at the zenith,
+  // so the subsolar picture stays the one that was graded and only the low Sun
+  // moves; on the direct terms alone — the diffuse and the mirror — because
+  // the sky's light is the air's own and comes in through the irradiance
+  // table where that is read. Faded in with the air's own blend, so the
+  // tables' arrival does not step the terminator; skipped where the Sun is
+  // under the fragment's horizon, where three's direct terms are zero
+  // already. The deck takes it at its own altitude. Any build: ?sunpath=0.
+  // Body scope, one everywhere the branch is not taken, so any later term
+  // that reads the Sun's irradiance for itself (the deck's light on its
+  // geometric normal) multiplies by the same factor the direct terms took.
+  vec3 sunPath = vec3(1.0);
+#ifdef SUN_PATH
+  if (uAirDensity > 0.0 && dot(normal, normalize(vSunViewDir)) > 0.0) {
+    float sunPathR = clampRadius(length(vAirFrag) / uPlanetRadius);
+    float sunPathMu = clampCosine(dot(normalize(vAirFrag), normalize(uSunDirWorld)));
+    sunPath = getTransmittanceToSun(uTransmittance, sunPathR, sunPathMu)
+        / max(getTransmittanceToSun(uTransmittance, sunPathR, 1.0), vec3(1e-4));
+    sunPath = mix(vec3(1.0), min(sunPath, vec3(1.0)), uAirBlend);
+    outgoingLight -= (reflectedLight.directDiffuse + reflectedLight.directSpecular) * (1.0 - sunPath);
+    reflectedLight.directDiffuse *= sunPath;
+    reflectedLight.directSpecular *= sunPath;
+  }
+#endif
+  // The sea's mirror term as water rather than as three's generic dielectric
+  // (SEA_WATER_F0): three's term is rescaled by the ratio of the two Schlick
+  // curves at this fragment's half vector, with three's own exp2 approximation
+  // of the fifth power so the division takes out exactly what was put in.
+  // Then, with the wind map on, the lobe: three's GGX is divided out at the
+  // same half vector and one Beckmann lobe at the map's wind put in its
+  // place, because Beckmann with alpha squared as the mean-square slope IS
+  // Cox-Munk's Gaussian slope law, and GGX's heavy tail spread the sheen into
+  // haze. The lobe takes three's own alpha, its geometry roughness and floor
+  // included, so a small disc's normal spread widens it. Then the cap, on
+  // the water's own reflection and in units of white (OCEAN_GLINT_CAP). What
+  // is left is what the cloud mask below can cut. Both the Fresnel and the lobe are the
+  // water's, so both fade with the water fraction the roughness map reads:
+  // the gate is the material's, and the land under it keeps three's own
+  // dielectric term and lobe, as it had before the sea was given its own.
+  vec3 seaGlint = vec3(0.0);
+  vec3 seaSky = vec3(0.0);
   if (GROUND_ON(uWaterGloss > 0.0)) {
-    vec3 glint = reflectedLight.directSpecular;
-    outgoingLight -= glint - min(glint, vec3(${GLINT_CAP_GLSL}));
+    vec3 glintRaw = reflectedLight.directSpecular;
+    vec3 seaViewDir = normalize(vViewPosition);
+    vec3 seaHalfDir = normalize(normalize(vSunViewDir) + seaViewDir);
+    float seaDotVH = clamp(dot(seaViewDir, seaHalfDir), 0.0, 1.0);
+    float seaFresnelTail = exp2((-5.55473 * seaDotVH - 6.98316) * seaDotVH);
+    float seaFresnel = mix(1.0,
+        (${SEA_WATER_F0.toFixed(5)} * (1.0 - seaFresnelTail) + seaFresnelTail)
+            / (0.04 * (1.0 - seaFresnelTail) + seaFresnelTail),
+        seaWater);
+    float seaLobe = 1.0;
+    if (uSeaWindOn > 0.5) {
+      float seaDotNH = saturate(dot(normal, seaHalfDir));
+      float seaDotNL = saturate(dot(normal, normalize(vSunViewDir)));
+      float seaDotNV = saturate(dot(normal, seaViewDir));
+      float seaAlpha = pow2(material.roughness);
+      float seaVis = V_GGX_SmithCorrelated(seaAlpha, seaDotNL, seaDotNV);
+      // The beam chain shadows the Beckmann lobe with Beckmann's own Smith
+      // term, because three's correlated GGX one reads a fifth to a third
+      // dark on this lobe at a grazing Sun and eye, which is where the beam
+      // is; the old chain keeps three's, which then cancels. The denominator
+      // stays three's whichever chain, since that is what is being divided out.
+#ifdef SEA_BEAM
+      float seaBeamVis = seaBeckmannVis(seaAlpha, seaDotNL, seaDotNV);
+#else
+      float seaBeamVis = seaVis;
+#endif
+      seaLobe = mix(1.0,
+          seaBeamVis * seaBeckmann(seaAlpha, seaDotNH) / (seaVis * D_GGX(seaAlpha, seaDotNH)),
+          seaWater);
+    }
+    vec3 seaGlintFull = glintRaw * (seaFresnel * seaLobe${GLINT_KEEP_GLSL});
+    // The old chain caps the term here, before the air and the limb darkening
+    // (OCEAN_GLINT_CAP). The beam chain carries the whole of it to the camera
+    // and shapes it there, after the air (OCEAN_BEAM_KNEE, OCEAN_BEAM_CAP):
+    // seaGlint stays the mirror term as it CURRENTLY sits inside
+    // outgoingLight, scaled below by everything that scales the light.
+#ifdef SEA_BEAM
+    seaGlint = seaGlintFull;
+#else
+    seaGlint = min(seaGlintFull, vec3(${GLINT_CAP_GLSL}));
+#endif
+    outgoingLight -= glintRaw - seaGlint;
+#ifdef SEA_SKY
+    // The sky reflected off the water (SEA_SKY_GRAZING_COS): the air's
+    // scattering table read at the surface along the view ray reflected
+    // about the radial normal, in the air's frame (vAirFrag and vAirCam are
+    // offsets from the body's centre in world axes, so the Sun is
+    // uSunDirWorld), at radius exactly one (a sector's chord sits a little
+    // under or over it), the ray's cosine clamped at the horizon, the
+    // single-Mie term recovered and gated as the camera leg gates it. Only
+    // with water under the fragment, the tables bound, and the Sun above the
+    // table's floor (uMuSMin: below it the table reads its edge row, a
+    // pedestal over the whole night half, and the fetches would be spent on
+    // it). Faded in with the air (uAirBlend), as the camera leg is.
+    if (uAirDensity > 0.0 && seaWater > 0.0) {
+      vec3 skyUp = normalize(vAirFrag);
+      vec3 skySun = normalize(uSunDirWorld);
+      float skyMuS = dot(skyUp, skySun);
+      if (skyMuS > uMuSMin) {
+        vec3 skyView = normalize(vAirFrag - vAirCam);
+        float skyCos = max(-dot(skyView, skyUp), 0.0);
+        vec3 skyRay = skyView + 2.0 * skyCos * skyUp;
+        float skyNu = dot(skyRay, skySun);
+#ifdef MIE_EXACT
+        vec2 skyMieGB;
+        vec4 skyS = getScatteringAndMieColour3D(uScattering, 1.0, skyCos, skyMuS, skyNu, false, skyMieGB);
+        vec3 skyMie = vec3(skyS.a, skyMieGB) * smoothstep(0.0, 0.01, skyMuS);
+#else
+        vec4 skyS = getScattering3DRGBA(uScattering, 1.0, skyCos, skyMuS, skyNu, false);
+        vec3 skyMie = getExtrapolatedSingleMieScattering(skyS) * smoothstep(0.0, 0.01, skyMuS);
+#endif
+        vec3 skyRadiance = (skyS.rgb * rayleighPhaseFunction(skyNu) + skyMie * miePhaseFunction(uMiePhaseG, skyNu))
+            * uAirlightScale * uSolarIrradiance;
+        seaSky = skyRadiance
+            * (seaWater * uAirBlend * seaFresnelExact(max(skyCos, ${SEA_SKY_GRAZING_COS.toFixed(2)}))${SEA_SKY_SCALE_GLSL});
+        outgoingLight += seaSky;
+      }
+    }
+#endif
   }
   // The deck's alpha, worked out with its colour above where the lights could
   // still see both. A deck at a flat opacity dims clear sky by that fraction
@@ -1737,15 +2844,20 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // surface, so the terms below that scale by it are the deck's alone without a
   // second branch.
   diffuseColor.a *= cloudAlpha;
-  // What the Sun's beam went through to reach this sea. The deck blends what
-  // leaves this fragment by (1 - coverage) on the way UP; the beam is cut by the
-  // same coverage on the way DOWN, and only the mirror term notices — ground
-  // under cloud is still lit by what the cloud scattered, a specular highlight
-  // is not, and a full-strength glint reading through a cirrus sheet is what an
-  // orbital frame of it cannot do. Gated on the water gloss, which is nonzero
-  // only where a real water mask says there is sea: one uniform branch, and no
-  // fetch at all, on every other surface in the app.
-  if (GROUND_ON(uWaterGloss > 0.0)) {
+  // The share of the Sun's direct beam that reaches this fragment through the
+  // cloud deck above it: 1 in clear air, and 1 on every surface that reads no
+  // deck. The deck blends what leaves this fragment by (1 - coverage) on the
+  // way UP; the beam is cut by the same coverage on the way DOWN. Anything
+  // else that scales the Sun's direct light under cloud reads this one value,
+  // so a cloud and what it shades cannot disagree about where the cloud is.
+  // Read only under the water gloss, which is nonzero only where a real water
+  // mask says there is sea: one uniform branch, and no fetch at all, on every
+  // other surface in the app. It is also left at 1 wherever cloudTapWanted
+  // below skips the read, so a reader of it must have nothing to scale
+  // wherever the Sun's mirror term is zero, or widen that condition.
+  float cloudSunKeep = 1.0;
+${CLOUD_SHADOW_READ}  if (GROUND_ON(uWaterGloss > 0.0)) {
+#ifndef CLOUD_SHADOW
     float deckC = cos(uCloudShadowSpin);
     float deckS = sin(uCloudShadowSpin);
     // The deck's own object frame, which is the body frame turned back by the
@@ -1762,29 +2874,40 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
     vec2 deckUv = sphereEquirectUv(deckDir);
     vec2 deckDx = sphereEquirectUvGrad(deckDir, dFdx(deckDir));
     vec2 deckDy = sphereEquirectUvGrad(deckDir, dFdy(deckDir));
-    // The glint this mask exists to cut: the CAPPED term, because the cap
-    // above already took the rest off, and cutting the uncapped one here would
-    // drive the light below zero under cloud, which the bloom then paints as a
-    // yellow core in a blue ring.
-    vec3 glintCapped = min(reflectedLight.directSpecular, vec3(${GLINT_CAP_GLSL}));
-    // Wherever the Sun is below this fragment's horizon three's own N·L
-    // saturates to zero and the capped glint is exactly zero in every channel:
-    // the subtraction below is then a subtraction of nothing whatever the
-    // mask says, and the whole cloud-map read is spent on it. Gated on the
-    // term itself rather than on "night side", because it is the perturbed
-    // normal that decides whether there is a highlight, and uWaterGloss is a
-    // material-wide enable rather than a per-fragment test for sea.
-    if (${import.meta.env.DEV
-      ? 'uPerfGlintGate < 0.5 || any(greaterThan(glintCapped, vec3(0.0)))'
-      : 'any(greaterThan(glintCapped, vec3(0.0)))'}) {
+    // The one condition under which the cloud map is read for this fragment:
+    // a term that needs cloudSunKeep somewhere new widens the read here rather
+    // than fetching the map again. Wherever the Sun is below this fragment's
+    // horizon three's own N·L saturates to zero and the water's mirror term
+    // above is exactly zero in every channel: the one reader of the value in
+    // such a fragment is the sea's cut below, which is then a subtraction of
+    // nothing whatever the deck says, and the whole cloud-map read would be
+    // spent on it. Tested on the term itself rather than on "night side",
+    // because it is the perturbed normal that decides whether there is a
+    // highlight, and uWaterGloss is a material-wide enable rather than a
+    // per-fragment test for sea.
+    bool cloudTapWanted = ${import.meta.env.DEV
+      ? 'uPerfGlintGate < 0.5 || any(greaterThan(seaGlint, vec3(0.0)))'
+      : 'any(greaterThan(seaGlint, vec3(0.0)))'};
+    if (cloudTapWanted) {
       float deckLum = dot(textureGrad(uCloudShadowMap, deckUv, deckDx, deckDy).rgb,
           vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')}));
-      float glintKeep = (1.0 - cloudCoverage(deckLum))
-          * ${GLINT_KEEP_GLSL};
-      outgoingLight -= glintCapped * (1.0 - glintKeep);
+      cloudSunKeep = 1.0 - cloudCoverage(deckLum);
     }
+#endif
+    // The sea's glint, cut by what the Sun's beam went through to reach it:
+    // the water's own term above, already rescaled, because cutting three's
+    // raw term here would drive the light below zero under cloud, which the
+    // bloom then paints as a yellow core in a blue ring. Only the mirror term
+    // notices — ground under cloud is still lit by what the cloud scattered,
+    // a specular highlight is not, and a full-strength glint reading through
+    // a cirrus sheet is what an orbital frame of it cannot do. Whichever read
+    // set cloudSunKeep — straight down just above, or at the Sun-ray pierce
+    // point with the cloud shadow's define compiled in — the cut is this one
+    // line, and where no read happened the share is 1 and it subtracts nothing.
+    outgoingLight -= seaGlint * (1.0 - cloudSunKeep);
+    seaGlint *= cloudSunKeep;
   }
-  // The sine of the Sun's elevation at this fragment, off the perturbed normal:
+${CLOUD_SHADOW_DIFFUSE}${CLOUD_SHADOW_FILL}${CLOUD_LIGHT_DECK}  // The sine of the Sun's elevation at this fragment, off the perturbed normal:
   // the Sun's own Lambert term, which is what the day factor and the Moon's
   // weight below both read so the two describe one crossing.
   float sunElevSin = dot(normalize(normal), normalize(vSunViewDir));
@@ -1905,12 +3028,28 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
     sunVisible *= 1.0 - occ * dayFactor;
   }
   outgoingLight *= sunVisible;
+  seaGlint *= sunVisible;
+#ifdef SEA_SKY
+  seaSky *= sunVisible;
+#endif
   // Limb darkening: the disc dims toward its edge as the view ray grazes the
   // surface. mu = cos of the view angle — 1 at disc centre, 0 at the limb.
-  // Applied last so it shades every lit term equally; 0 disables it.
+  // Applied last so it shades every lit term equally; 0 disables it. The beam
+  // chain holds the water's mirror term out of it: a mirror does not darken
+  // toward the limb, it brightens, and the air below is the real limb. Off,
+  // the held share is exactly zero and the product is the one it was.
   if (GROUND_ON(uLimbDarkening > 0.0)) {
     float mu = max(dot(normalize(normal), normalize(vViewPosition)), 0.0);
-    outgoingLight *= 1.0 - uLimbDarkening * (1.0 - mu);
+#ifdef SEA_BEAM
+    vec3 limbHeld = seaGlint;
+#else
+    vec3 limbHeld = vec3(0.0);
+#endif
+#ifdef SEA_SKY
+    // A mirror of the sky brightens toward the limb as the beam does.
+    limbHeld += seaSky;
+#endif
+    outgoingLight = (outgoingLight - limbHeld) * (1.0 - uLimbDarkening * (1.0 - mu)) + limbHeld;
   }
   // Lit from below: the city lights on the ground under this deck fragment,
   // shining up into it. Added after the eclipse factor and the limb term
@@ -1952,7 +3091,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
       vec3 airT = aerialTransmittance(uTransmittance, seg);
       vec3 airS = aerialInscatter(uScattering, seg, airT)
           * uAirlightScale * (uSolarIrradiance * sunVisible);
-      // The Moon lights the same column. One traversal, one transmittance: only
+${CLOUD_SHADOW_AIR_SCALE}      // The Moon lights the same column. One traversal, one transmittance: only
       // the two angles that involve the source change, so the second source is
       // a second pair of lookups and nothing else. Behind the Moon's own weight
       // and behind a uniform branch, so a day fragment, a new Moon and a body
@@ -1966,8 +3105,27 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
       // it fades in over a moment instead.
       float airWeight = uAirBlend * aerialHazeWeight(seg, uSurfaceHaze);
       outgoingLight = mix(outgoingLight, outgoingLight * airT + airS, airWeight);
+      seaGlint = mix(seaGlint, seaGlint * airT, airWeight);
     }
   }
+  // The beam's cap, on what REACHES THE CAMERA: everything above scaled the
+  // mirror term along with the light, so seaGlint is now its share of this
+  // pixel. A shoulder — the term itself up to the knee, then an exponential
+  // approach to the cap, continuous in value and slope at the knee, per
+  // channel — so a core past white is held just past it instead of flattened
+  // to a plateau, and the bright pass is handed a bounded excess. Entered only
+  // past the knee, where the held value differs from the term; below it the
+  // two are equal and the exponential would be paid for nothing on nearly
+  // every sea pixel. The old chain capped before the air and has no shoulder.
+#ifdef SEA_BEAM
+  if (any(greaterThan(seaGlint, vec3(${BEAM_KNEE_GLSL})))) {
+    vec3 beamKnee = vec3(${BEAM_KNEE_GLSL});
+    vec3 beamRange = vec3(${BEAM_CAP_GLSL}) - beamKnee;
+    vec3 beamOver = max(seaGlint - beamKnee, vec3(0.0));
+    vec3 beamHeld = min(seaGlint, beamKnee) + beamRange * (1.0 - exp(-beamOver / beamRange));
+    outgoingLight -= seaGlint - beamHeld;
+  }
+#endif
 }`;
 
 /** What a material was augmented with, kept beside it so a dependent
@@ -2034,6 +3192,9 @@ export function setSurfaceWaterGloss(mat: THREE.Material, on: boolean): void {
   const args = augmentArgs.get(mat);
   if (!args) return;
   args.uWaterGloss.value = on ? waterGlossGain() : 0;
+  // The first sea that really is one brings the wind map in. Every program
+  // already carries the binding, on the stand-in, so this is a value.
+  if (on) installSeaWind();
   if (import.meta.env.DEV) {
     if (on && !glossyMaterials.has(mat)) {
       glossyMaterials.add(mat);
@@ -2044,30 +3205,180 @@ export function setSurfaceWaterGloss(mat: THREE.Material, on: boolean): void {
   }
 }
 
-/** The gain a water mask is read through: OCEAN_ROUGHNESS's, or in a
- *  development build whatever `setDevOceanRoughness` last asked for. */
+/**
+ * The energy chain's two switches, any build, each a compile-time define on
+ * EVERY augmented surface — the globes, their sectors, the decks, the moons, a
+ * tool's surface and a warm-up probe alike, so the program a probe warms is the
+ * program the body draws with. `SUN_PATH` (`?sunpath=0`): the Sun's own path
+ * through the body's air on every surface's direct terms, so a low Sun lights
+ * the ground, the sea and the cloud deck dimmer and redder, normalised to the
+ * zenith so the subsolar picture is the one that was graded. `SEA_BEAM`
+ * (`?seabeam=0`): the sea's beam chain — Beckmann's own shadowing on the sea's
+ * Beckmann lobes, the mirror term held out of the limb darkening, its cap moved
+ * after the air as a shoulder on what reaches the camera, and the sea's flag
+ * for the bloom in the alpha — against the chain as it was, with the cap
+ * before the air. Defines rather than uniforms because a uniform select
+ * compiles both chains into one program and the ground pays for the beam's
+ * terms whether or not it uses them (a fifth of a millisecond on its draw at
+ * Earth's shell on an M5 Max); with the define off the preprocessor leaves the
+ * old expressions and nothing else, so either kill switch is the program it
+ * was. Set at boot from the URL before any surface is augmented; a flip later
+ * (the DEV knob) relinks every live surface through three's program key.
+ */
+let sunPathEnabled = true;
+let seaBeamEnabled = true;
+/** `SEA_SKY` (`?seasky=0`): the sky reflected off the sea (SEA_SKY_GRAZING_COS), the same shape of switch. */
+let seaSkyEnabled = true;
+/** Every live augmented surface, so a flip can reach the materials already drawn. */
+const beamReceivers = new Set<THREE.Material>();
+function receiveBeamSwitches(mat: THREE.Material): void {
+  if (!beamReceivers.has(mat)) {
+    beamReceivers.add(mat);
+    mat.addEventListener('dispose', () => beamReceivers.delete(mat));
+  }
+  applySwitchDefine(mat, 'SUN_PATH', sunPathEnabled);
+  applySwitchDefine(mat, 'SEA_BEAM', seaBeamEnabled);
+  applySwitchDefine(mat, 'SEA_SKY', seaSkyEnabled);
+}
+export function setSunPathEnabled(on: boolean): void {
+  sunPathEnabled = on;
+  for (const mat of beamReceivers) applySwitchDefine(mat, 'SUN_PATH', on);
+}
+export function setSeaBeamEnabled(on: boolean): void {
+  seaBeamEnabled = on;
+  for (const mat of beamReceivers) applySwitchDefine(mat, 'SEA_BEAM', on);
+}
+export function setSeaSkyEnabled(on: boolean): void {
+  seaSkyEnabled = on;
+  for (const mat of beamReceivers) applySwitchDefine(mat, 'SEA_SKY', on);
+}
+/** Whether every surface compiles the sky reflected off the sea right now. */
+export function seaSkyOn(): boolean {
+  return seaSkyEnabled;
+}
+/** The `?seasky=0` kill switch, on any build. */
+export function parseSeaSkyParam(search: string): boolean {
+  return new URLSearchParams(search).get('seasky') !== '0';
+}
+/** The beam's shoulder as the sea draws it this frame: the DEV knobs' values
+ *  in a development build, the constants in production. The highlight meter
+ *  reads it so its prediction follows a knob moved live. */
+export function beamShoulderInForce(): { knee: number; cap: number } {
+  if (import.meta.env.DEV) {
+    return { knee: devGlintUniforms.uBeamKnee.value, cap: devGlintUniforms.uBeamCap.value };
+  }
+  return { knee: OCEAN_BEAM_KNEE, cap: OCEAN_BEAM_CAP };
+}
+
+/** Whether every surface compiles the Sun's path right now. */
+export function sunPathOn(): boolean {
+  return sunPathEnabled;
+}
+/** Whether every surface compiles the sea's beam chain right now. */
+export function seaBeamOn(): boolean {
+  return seaBeamEnabled;
+}
+/** `?sunpath=0`, any build: the Sun's light unattenuated by its path through
+ *  the air again, in the house style of `?seawind=0`. */
+export function parseSunPathParam(search: string): boolean {
+  return new URLSearchParams(search).get('sunpath') !== '0';
+}
+/** `?seabeam=0`, any build: the sea's old chain, its cap before the air. */
+export function parseSeaBeamParam(search: string): boolean {
+  return new URLSearchParams(search).get('seabeam') !== '0';
+}
+
+/**
+ * The wind map's uniforms (world/seaWind.ts), shared by every augmented
+ * material the way the cloud deck's are: the map, and whether the sea reads
+ * it (1) or is drawn at the one width uWaterGloss authors (0). Bound to the
+ * 1x1 stand-in until the map has landed and a sea is confirmed; `?seawind=0`
+ * and a DEV roughness override hold it at 0.
+ */
+export const seaWindUniforms: {
+  uSeaWindMap: { value: THREE.Texture | null };
+  uSeaWindOn: { value: number };
+} = {
+  uSeaWindMap: { value: null },
+  uSeaWindOn: { value: 0 },
+};
+let seaWindEnabled = true;
+let seaWindBound = false;
+
+/** `?seawind=0`: the whole sea at OCEAN_ROUGHNESS, as before the wind map. */
+export function setSeaWindEnabled(on: boolean): void {
+  seaWindEnabled = on;
+  applySeaWindOn();
+}
+
+/** Whether the sea is reading the wind map right now. */
+export function seaWindOn(): boolean {
+  return seaWindUniforms.uSeaWindOn.value > 0;
+}
+
+/** A sea confirmed: bind the map if it has landed (world/seaWind.ts); if
+ *  not, the sea reads the one width until `rebindSeaWindMap` brings it. */
+function installSeaWind(): void {
+  rebindSeaWindMap();
+}
+
+/** The map landed — the shipped one, or a DEV `?seawindmap=` replacement
+ *  (world/seaWind.ts installSeaWindMap): every sea already drawn reads it
+ *  from the next frame, and one not yet confirmed finds it bound when it is. */
+export function rebindSeaWindMap(): void {
+  const map = seaWindTexture();
+  if (map) {
+    seaWindUniforms.uSeaWindMap.value = map;
+    seaWindBound = true;
+  }
+  applySeaWindOn();
+  disposeRetiredSeaWindMaps();
+}
+
+/** The map is read only with the switch on, the map bound, and no DEV override
+ *  forcing one width on the whole sea. */
+function applySeaWindOn(): void {
+  seaWindUniforms.uSeaWindOn.value =
+    seaWindEnabled && seaWindBound && devOceanRoughnessOverride === null ? 1 : 0;
+}
+
+/** The gain a water mask is read through with the map off: OCEAN_ROUGHNESS's,
+ *  or in a development build whatever `setDevOceanRoughness` last asked for. */
 function waterGlossGain(): number {
-  return import.meta.env.DEV
-    ? (ROUGHNESS_MAP_LAND - devOceanRoughness) / (ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER)
+  return import.meta.env.DEV && devOceanRoughnessOverride !== null
+    ? (ROUGHNESS_MAP_LAND - devOceanRoughnessOverride) / (ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER)
     : WATER_GLOSS_GAIN;
 }
-let devOceanRoughness = OCEAN_ROUGHNESS;
+let devOceanRoughnessOverride: number | null = null;
 /** Every material currently reading its map as a water mask, so a live
  *  roughness change reaches the sea already on screen and not only the next
  *  sector to arrive. Development builds only; a disposed material leaves. */
 const glossyMaterials = new Set<THREE.Material>();
 
-/** Draw open water at this GGX roughness from now on, on every sea already
- *  drawn and every one still to come (`__moon.glint`). Development only. */
-export function setDevOceanRoughness(roughness?: number): number {
-  if (!import.meta.env.DEV) return OCEAN_ROUGHNESS;
-  if (roughness === undefined) return devOceanRoughness;
-  devOceanRoughness = roughness;
+/** Draw the whole sea at this one GGX roughness from now on, the wind map set
+ *  aside, on every sea already drawn and every one still to come
+ *  (`__moon.glint`); null hands the sea back to the map. Returns the override
+ *  in force, null for the map. Development only. */
+export function setDevOceanRoughness(roughness?: number | null): number | null {
+  if (!import.meta.env.DEV) return null;
+  if (roughness === undefined) return devOceanRoughnessOverride;
+  devOceanRoughnessOverride = roughness;
   for (const mat of glossyMaterials) {
     const args = augmentArgs.get(mat);
     if (args && args.uWaterGloss.value > 0) args.uWaterGloss.value = waterGlossGain();
   }
-  return devOceanRoughness;
+  applySeaWindOn();
+  return devOceanRoughnessOverride;
+}
+
+/**
+ * Point the sea's cloud cut at a black deck: no cloud over any sea, so the
+ * glint reads as under a clear sky, until the deck's own map is written again
+ * (PlanetariumMode writes it every frame the clouds are shown, and skips the
+ * write while they are hidden). The clear-sky arm of a glint measurement.
+ */
+export function holdSeaCloudCut(): void {
+  cloudShadowUniforms.uCloudShadowMap.value = surfaceAirDummies().map2D;
 }
 
 /**
@@ -2232,6 +3543,7 @@ export function createSurfaceAirFx(): SurfaceAirFx {
   air.uTransmittance.value = dummies.map2D;
   air.uIrradiance.value = dummies.map2D;
   air.uScattering.value = dummies.map3D;
+  air.uMieColour.value = dummies.map3D;
   return air;
 }
 
@@ -2282,6 +3594,7 @@ export function bindSurfaceAir(
   applyAtmosphereParams(air, tables.params);
   air.uTransmittance.value = tables.transmittance;
   air.uScattering.value = tables.scattering;
+  air.uMieColour.value = tables.mieColour;
   air.uIrradiance.value = tables.irradiance;
   air.uPlanetRadius.value = planetRadius;
   air.uSolarIrradiance.value = solarIrradiance;
@@ -2320,13 +3633,15 @@ export function settleSurfaceAir(air: SurfaceAirFx): void {
 /** Switch the air off and let go of the tables: a lost context frees their
  *  textures, and a sampler still pointed at one is a bind of a dead name. */
 export function clearSurfaceAir(air: SurfaceAirFx): void {
-  if (air.uAirDensity.value === 0 && air.uScattering.value === surfaceAirDummies().map3D) return;
   const dummies = surfaceAirDummies();
+  if (air.uAirDensity.value === 0 && air.uScattering.value === dummies.map3D
+    && air.uMieColour.value === dummies.map3D) return;
   air.uAirDensity.value = 0;
   air.uAirBlend.value = 0;
   air.uTransmittance.value = dummies.map2D;
   air.uIrradiance.value = dummies.map2D;
   air.uScattering.value = dummies.map3D;
+  air.uMieColour.value = dummies.map3D;
 }
 
 export function augmentSurfaceMaterial(
@@ -2364,6 +3679,7 @@ export function augmentSurfaceMaterial(
     uPlanetshineIntensity: { value: 0 },
     uSilhouette: { value: 0 },
     uNightLift: { value: 0 },
+    uCloudAbove: { value: 0 },
     air: createSurfaceAirFx(),
   };
   const uFrameSpin = sharedSpin ?? { value: 0 };
@@ -2391,6 +3707,7 @@ export function augmentSurfaceMaterial(
     uSynthEnvelope, uSynthRelief, uSynthBumpFade, uSynthCraterShare,
     relief: 'none', synthReliefGain, seedName,
   });
+  receiveBeamSwitches(mat);
   const uNightColor = { value: new THREE.Color(night.color) };
   const uNightStrength = { value: night.strength };
   const uTermWidth = { value: night.termWidth };
@@ -2459,6 +3776,7 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uLimbDarkening = uLimbDarkening;
     shader.uniforms.uAirLookupRadius = uAirLookupRadius;
     shader.uniforms.uWaterGloss = uWaterGloss;
+    shader.uniforms.uSeaMix = seaColourUniforms.uSeaMix;
     // A surface with no water mask never samples this, but every program
     // still carries the binding: the injected text is byte-identical for
     // every body, which is what keeps them sharing one compiled program.
@@ -2467,6 +3785,15 @@ export function augmentSurfaceMaterial(
     }
     shader.uniforms.uCloudShadowMap = cloudShadowUniforms.uCloudShadowMap;
     shader.uniforms.uCloudShadowSpin = cloudShadowUniforms.uCloudShadowSpin;
+    shader.uniforms.uCloudShadowTurn = cloudShadowUniforms.uCloudShadowTurn;
+    // The wind map the same way: the stand-in until it has landed and a sea
+    // is confirmed, and a shared uniform so the globe and every streamed
+    // sector read one sea.
+    if (!seaWindUniforms.uSeaWindMap.value) {
+      seaWindUniforms.uSeaWindMap.value = surfaceAirDummies().map2D;
+    }
+    shader.uniforms.uSeaWindMap = seaWindUniforms.uSeaWindMap;
+    shader.uniforms.uSeaWindOn = seaWindUniforms.uSeaWindOn;
     shader.uniforms.uCloudDeck = uCloudDeck;
     shader.uniforms.uCloudDetail = uCloudDetail;
     shader.uniforms.uCloudAlbedo = uCloudAlbedo;
@@ -2480,12 +3807,17 @@ export function augmentSurfaceMaterial(
       shader.uniforms.uPerfCloudTaps = perfSwitchUniform('cloud-taps');
       shader.uniforms.uPerfCloudClear = perfSwitchUniform('cloud-clear');
       shader.uniforms.uPerfGlintGate = perfSwitchUniform('glint-gate');
+      shader.uniforms.uPerfCloudNoiseFrame = perfSwitchUniform('cloud-noise-frame');
       shader.uniforms.uProbeCloudSmooth = perfSwitchUniform('cloud-probe-smooth');
       shader.uniforms.uProbeCloudDetail = perfSwitchUniform('cloud-probe-detail');
       shader.uniforms.uProbeCloudRelief = perfSwitchUniform('cloud-probe-relief');
       shader.uniforms.uProbeCloudAir = perfSwitchUniform('cloud-probe-air');
       shader.uniforms.uGlintCap = devGlintUniforms.uGlintCap;
       shader.uniforms.uGlintKeep = devGlintUniforms.uGlintKeep;
+      shader.uniforms.uBeamKnee = devGlintUniforms.uBeamKnee;
+      shader.uniforms.uBeamCap = devGlintUniforms.uBeamCap;
+      shader.uniforms.uSeaColour = devGlintUniforms.uSeaColour;
+      shader.uniforms.uSeaSky = devGlintUniforms.uSeaSky;
     }
     shader.uniforms.uFrameSpin = uFrameSpin;
     shader.uniforms.uSynthDetail = uSynthDetail;
@@ -2496,7 +3828,32 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uSynthSeed = uSynthSeed;
     shader.uniforms.uSynthMid = uSynthMid;
     shader.uniforms.uSynthCraterShare = uSynthCraterShare;
+    // Cloud shadows' slots: read only by a program compiled with CLOUD_SHADOW.
+    shader.uniforms.uCloudAbove = fx.uCloudAbove;
+    shader.uniforms.uCloudHeightOverRadius = cloudShadowShared.uCloudHeightOverRadius;
+    if (import.meta.env.DEV) {
+      shader.uniforms.uCloudShadowDepth = cloudShadowShared.uCloudShadowDepth;
+      shader.uniforms.uCloudShadowAir = cloudShadowShared.uCloudShadowAir;
+      shader.uniforms.uCloudShadowPenumbra = cloudShadowShared.uCloudShadowPenumbra;
+      shader.uniforms.uCloudShadowGamma = cloudShadowShared.uCloudShadowGamma;
+      shader.uniforms.uCloudLightWrap = cloudLightShared.uCloudLightWrap;
+      shader.uniforms.uCloudLightSky = cloudLightShared.uCloudLightSky;
+      shader.uniforms.uCloudShadowSkyFill = cloudShadowShared.uCloudShadowSkyFill;
+    }
     for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];
+    // The cloud field's slots (world/cloudFieldSlots), on the materials that
+    // compile it: the planetarium's deck and its warm-up probe, and the ground
+    // under the deck while its shadow reads the field. A ground takes them
+    // whether or not it compiles the define right now: three keeps the
+    // uniforms of a material's LAST new program, and a program the live shadow
+    // switch returns to is found in the material's cache, not built again.
+    if (mat.defines?.CLOUD_FIELD !== undefined || (cloudFieldOn() && cloudShadowReceivers.has(mat))) {
+      const field = cloudFieldUniforms();
+      shader.uniforms.uCloudPages = field.uCloudPages;
+      shader.uniforms.uCloudPageTable = field.uCloudPageTable;
+      shader.uniforms.uCloudFieldPixelScale = field.uCloudFieldPixelScale;
+      if (import.meta.env.DEV) shader.uniforms.uCloudFieldDiag = cloudFieldDiagUniform;
+    }
 
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>${SURFACE_VERTEX_DECLS}`)
@@ -2507,7 +3864,7 @@ export function augmentSurfaceMaterial(
       .replace('#include <map_fragment>', SURFACE_MAP_FRAGMENT)
       .replace('#include <roughnessmap_fragment>', `${roughnessChunk()}${WATER_GLOSS_GLSL}`)
       .replace('#include <normal_fragment_maps>', `${SURFACE_NORMAL_MAPS}${SURFACE_NORMAL_BODY}`)
-      .replace('#include <opaque_fragment>', `${SURFACE_FRAGMENT_BODY}\n#include <opaque_fragment>`);
+      .replace('#include <opaque_fragment>', `${SURFACE_FRAGMENT_BODY}\n#include <opaque_fragment>${SEA_BLOOM_FLAG_GLSL}`);
   };
   // The table dimensions are #defines, and a define is part of three's program
   // cache key — so every augmented material carries the same set, whether or
@@ -2522,6 +3879,9 @@ export function augmentSurfaceMaterial(
     ...atmosphereTableDefines(atmosphereSessionSizes()),
     ...(deckProgram ? { CLOUD_DECK: '' } : {}),
   };
+  // A sector re-augmented from a globe a deck stands over shares that globe's
+  // fx, and takes the cloud shadow's define with it (setGroundUnderCloudDeck).
+  if (archetype !== 'cloud' && groundsUnderDeck.has(fx)) receiveCloudShadow(mat);
   mat.needsUpdate = true;
   return fx;
 }

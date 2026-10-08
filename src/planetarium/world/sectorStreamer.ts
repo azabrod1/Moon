@@ -48,6 +48,36 @@
  * are built from that mesh's own, share its per-frame uniforms, and mirror
  * its scalar state every frame; they own every texture they draw.
  *
+ * Ground under a drawn tile is not drawn again beneath it. The finest layer
+ * wins every pixel by its depth offset, and the globe and each coarser level
+ * under it were meant to lose the depth test unshaded; on Apple GPUs they are
+ * shaded in full and then lose, so every streamed ground mesh — the host's
+ * fine sphere and each sector — is laid out for a cut (world/groundCull) and
+ * draws only the leaves no finer tile covers. A leaf is left out when a tile
+ * over it is DRAWN — attached under the same host mesh, `visible` and
+ * `material.visible` true — and shares the covered mesh's program: the same
+ * crop signature and SectorFamily.sharesProgram, so a resident still drawing
+ * the set the base had before it gained a map, waiting on its reload, covers
+ * nothing. The host takes cover from any drawn descendant, a sector from its
+ * own, so a level-2 tile over level 0 with no level 1 between cuts both.
+ * Residency is never read for it: the cut follows what is drawn and decides
+ * nothing about what is held, fetched or evicted. A cut may wait for the next
+ * reconcile, which reads again every family whose cover moved (`cutDirty`);
+ * an un-cut never waits. release() draws whole everything the tile may have
+ * covered before its mesh leaves, because a release can come from outside the
+ * frame's pass — the ladder's ledger, an arrival, a lost context — with a draw
+ * before the next reconcile; so do the DEV visibility switch, a reload's swap
+ * (its new material may be another program) and a base that gained or lost a
+ * map or a relief, which update() checks per frame against what the cut was
+ * read under. `?groundcull=0` builds no layout and cuts nothing; the DEV key
+ * `ground-cull` is the live A/B over the layout. Both are cost switches for
+ * ground a tile beats by DEPTH, where the layers under it were only ever
+ * going to lose the test. A family whose tiles ADD to the surface under them
+ * instead — Earth's night lights, over a shell that is the nearer of the two
+ * (world/earthNightMaterial) — sets `cutAlways`: the cut is the only thing
+ * that keeps its ground from drawing twice, so its layout and its cut stand
+ * whatever either switch says.
+ *
  * A body may register more than one FAMILY — one per lighting side. The day
  * family overlays the globe and shades like it; Earth's night family overlays
  * the night-lights shell and glows like it. They are separate handles, keyed
@@ -144,7 +174,12 @@ import {
   type SectorGrid,
   type TileLayout,
 } from './sectorGrid';
-import { createSectorMaterial, sectorRenderOrder, syncSectorMaterial, type SectorMaps } from './sectorMaterial';
+import { createSectorMaterial, sectorRenderOrder, sharesSectorProgram, syncSectorMaterial, type SectorMaps } from './sectorMaterial';
+import {
+  beginGroundCover, commitGroundCover, coverGroundLeaves, groundIndexOf, layGroundIndex, uncutGround,
+  type GroundIndex,
+} from './groundCull';
+import { surfaceReliefKind } from './surfaceShading';
 import { loadStreamedTexture, type TextureLoad } from './textureBitmapLoader';
 import { loadSectorTileTexture, releaseTilePixels, tilePixelStats } from './tilePixels';
 import { applyTextureDefaults, maskBytesPerTexel, normalBytesPerTexel, resolveTileUrl, sectorSetHash, sectorSetLayout, type MapKind } from './texturePolicy';
@@ -507,6 +542,11 @@ export const SECTOR_SEGMENTS = 32;
  *  sphere and the sector's vertices would stop landing on the globe's
  *  lattice. */
 export const SECTOR_MAX_LEVEL = 2;
+/** The leaf every streamed ground geometry's index is laid out in
+ *  (world/groundCull): the cells under one tile of the deepest level a set may
+ *  declare, so a tile of any level covers a whole, aligned square of leaves on
+ *  every mesh under it — the globe's and each coarser sector's. */
+export const GROUND_LEAF_SEGMENTS = SECTOR_SEGMENTS >> SECTOR_MAX_LEVEL;
 
 /** How a sector reads on screen this frame, from the mode's projection. */
 export interface SectorMeasure {
@@ -553,6 +593,17 @@ export interface SectorFamily {
    *  no ladder behind the family — with one, the ladder answers
    *  (SectorBodyHandle.topMapWidth) and the image is a stand-in. */
   drawnColorMapWidth(): number;
+  /** Whether a tile drawn with `coverer` rasterises exactly the pixels
+   *  `covered` would have under it — one program for both, in everything this
+   *  family's materials can differ in. Ground is left out of a draw only under
+   *  a coverer this answers yes for (the header's cut). */
+  sharesProgram(coverer: THREE.Material, covered: THREE.Material): boolean;
+  /** Lay this family's ground out and cut it whatever the streamer's
+   *  `groundCull` and `setGroundCut` say. For a family whose tiles add to the
+   *  surface under them rather than beating it in the depth test, where the
+   *  cut decides the picture and not only the cost. Omitted is false: the
+   *  switches decide, which is right wherever the depth test hides the ground. */
+  cutAlways?: boolean;
 }
 
 /** The default family: sectors on the globe, shading exactly like it, wanted
@@ -575,6 +626,7 @@ export function daySectorFamily(base: THREE.MeshStandardMaterial): SectorFamily 
       const img = base.map?.image as { width?: unknown } | undefined;
       return img && typeof img.width === 'number' ? img.width : 0;
     },
+    sharesProgram: sharesSectorProgram,
   };
 }
 
@@ -623,6 +675,10 @@ type SlotState = 'idle' | 'loading' | 'resident';
 type MapName = 'map' | CropSlot;
 
 interface SectorSlot {
+  /** The family this slot belongs to — the mesh its tile hangs under, and the
+   *  flag that says the cut has to be read again — so a release, which is
+   *  handed a bare slot, can un-cut what the tile was covering. */
+  owner: SectorBody;
   sector: Sector;
   /** Which level of the body's pyramid this slot belongs to (0 = coarsest). */
   level: number;
@@ -703,6 +759,14 @@ interface SectorBody {
   admitting: boolean;
   /** Diagnostic: the largest texel magnification measured this frame. */
   maxTexelPx: number;
+  /** The cut has to be read again at the next reconcile: a tile came, went,
+   *  or changed program, or what the cut was read under has moved. */
+  cutDirty: boolean;
+  /** What the cut in force was read under: the host's geometry (the approach
+   *  upgrade replaces it), the base's crop signature and its relief. */
+  cutHost: THREE.BufferGeometry | null;
+  cutSignature: string;
+  cutRelief: string;
 }
 
 export interface SectorStreamerOptions {
@@ -723,6 +787,12 @@ export interface SectorStreamerOptions {
    *  injected `load` covers both, so a test drives one loader. */
   loadTile?: TextureLoad;
   warm?: (tex: THREE.Texture, onOutcome: (o: WarmOutcome) => void) => void;
+  /** Lay every sector's index out for the cut (world/groundCull) and leave the
+   *  ground a finer drawn tile covers out of the meshes under it. Omitted is
+   *  on; false is the `?groundcull=0` kill switch, every sector built with its
+   *  plain index and nothing cut — except a family that sets `cutAlways`,
+   *  whose cut is what keeps its tiles from adding to the ground under them. */
+  groundCull?: boolean;
 }
 
 export interface SectorStats {
@@ -799,6 +869,19 @@ export interface SectorStats {
      *  is refusing. */
     scores: Record<string, number>;
   }>;
+  /** The streamed ground this streamer can cut (hosts and sectors laid out
+   *  for it, world/groundCull): how many meshes, how many draw part of their
+   *  list, the index entries the next draw submits against the full lists,
+   *  and the leaves left out with no drawn tile of the same program over them
+   *  right now — which must be zero whenever a draw can happen. */
+  groundCut: {
+    on: boolean;
+    meshes: number;
+    cut: number;
+    drawnEntries: number;
+    fullEntries: number;
+    unbacked: number;
+  };
 }
 
 /** A slot's id in the stats: bare `c_r` at level 0 — the ids every probe
@@ -978,6 +1061,11 @@ export class SectorStreamer {
   private readonly load: TextureLoad;
   private readonly loadTile: TextureLoad;
   private readonly warm: (tex: THREE.Texture, onOutcome: (o: WarmOutcome) => void) => void;
+  /** Whether sector geometry is laid out for the cut at all (the kill switch). */
+  private readonly groundCull: boolean;
+  /** Whether covered ground is being left out right now: the kill switch, and
+   *  in DEV the live A/B (setGroundCut). */
+  private cutting: boolean;
   private readonly residentCap: number;
   private readonly inflightCap: number;
   private readonly fetchPool: number;
@@ -1006,6 +1094,8 @@ export class SectorStreamer {
     this.load = opts.load ?? loadStreamedTexture;
     this.loadTile = opts.loadTile ?? opts.load ?? loadSectorTileTexture;
     this.warm = opts.warm ?? queueTextureWarm;
+    this.groundCull = opts.groundCull ?? true;
+    this.cutting = this.groundCull;
     this.residentCap = opts.limits.residentCap;
     this.inflightCap = opts.limits.inflightCap;
     this.fetchPool = opts.limits.fetchPool;
@@ -1053,6 +1143,13 @@ export class SectorStreamer {
     }
     this.unregister(key);
     const slots: SectorSlot[] = [];
+    const texelLens = levels.map((_, i) => (
+      i === 0 ? 0 : (2 * Math.PI * handle.radiusAU) / levelSourceWidth(levels[i - 1])
+    ));
+    const body: SectorBody = {
+      handle, key, family, slots, levels, texelLens, signature: '', admitting: false, maxTexelPx: 0,
+      cutDirty: false, cutHost: null, cutSignature: '', cutRelief: '',
+    };
     // Coarsest level first, so the per-frame pass measures a parent before
     // the children whose visit it gates.
     const byKey = new Map<string, SectorSlot>();
@@ -1064,6 +1161,7 @@ export class SectorStreamer {
           const bsCentre = new THREE.Vector3();
           const bs = sectorBoundingSphere(grid, sector, handle.radiusAU, bsCentre);
           const slot: SectorSlot = {
+            owner: body,
             sector,
             level,
             children: [],
@@ -1098,12 +1196,7 @@ export class SectorStreamer {
         }
       }
     }
-    const texelLens = levels.map((_, i) => (
-      i === 0 ? 0 : (2 * Math.PI * handle.radiusAU) / levelSourceWidth(levels[i - 1])
-    ));
-    this.bodies.set(key, {
-      handle, key, family, slots, levels, texelLens, signature: '', admitting: false, maxTexelPx: 0,
-    });
+    this.bodies.set(key, body);
     this.syncFloor();
   }
 
@@ -1276,6 +1369,14 @@ export class SectorStreamer {
     }
 
     const signature = cropSignature(handle.material, handle.spec);
+    // The cut in force was read under this host geometry, this crop set and
+    // this relief: a geometry rebuilt on approach, or a base that gained or
+    // lost a map or changed its relief, is a different program under every
+    // cover it took. Drawn whole from now, read again at the reconcile.
+    if (handle.mesh.geometry !== body.cutHost || signature !== body.cutSignature
+      || surfaceReliefKind(handle.material) !== body.cutRelief) {
+      this.uncutBody(body);
+    }
     this.camScratch.copy(camLocal);
     this.camDirScratch.copy(camLocal).normalize();
     // The family's gate is read at the sector's extreme point: the point
@@ -1374,7 +1475,12 @@ export class SectorStreamer {
     for (const slot of slots) {
       if (slot.state === 'resident' && slot.mesh) {
         family.syncMaterial(slot.mesh.material as THREE.Material);
-        if (import.meta.env.DEV) slot.mesh.visible = !this.devMeshesHidden;
+        if (import.meta.env.DEV && slot.mesh.visible === this.devMeshesHidden) {
+          slot.mesh.visible = !this.devMeshesHidden;
+          // A tile taken off screen covers nothing from this draw on.
+          if (this.devMeshesHidden) this.uncutUnder(slot);
+          else body.cutDirty = true;
+        }
         if (!slot.presented) {
           slot.presented = true;
           slot.liveSinceMs = nowMs;
@@ -1451,6 +1557,125 @@ export class SectorStreamer {
       if (!this.makeRoom(candidate.slot, this.slotSetBytes(candidate.body, candidate.slot), nowMs)) continue;
       this.admit(candidate.body, candidate.slot, candidate.body.signature);
     }
+    // Last, with every release and materialisation of the frame behind it:
+    // the cover each family's ground draws until something changes again.
+    for (const body of this.bodies.values()) if (body.cutDirty) this.applyCut(body);
+  }
+
+  /** Read one family's cover and apply it: the host's leaves under every drawn
+   *  tile that shares its program, then each resident sector's under its own
+   *  drawn descendants. A leaf grid that is not the one the levels imply — a
+   *  host never laid out, or laid out for another lattice — is left whole. */
+  private applyCut(body: SectorBody): void {
+    const { handle } = body;
+    body.cutDirty = false;
+    body.cutHost = handle.mesh.geometry;
+    body.cutSignature = body.signature;
+    body.cutRelief = surfaceReliefKind(handle.material);
+    if (!this.cuts(body)) {
+      this.uncutBody(body);
+      return;
+    }
+    const host = this.hostIndex(body);
+    if (host) {
+      beginGroundCover(host);
+      this.coverHost(body, host);
+      commitGroundCover(host);
+    }
+    for (const slot of body.slots) {
+      const gi = this.slotIndex(slot);
+      if (!gi) continue;
+      beginGroundCover(gi);
+      this.coverSector(body, gi, slot);
+      commitGroundCover(gi);
+    }
+  }
+
+  /** The host's laid-out index, if its leaf grid is the one level 0's grid
+   *  of blocks implies. */
+  private hostIndex(body: SectorBody): GroundIndex | undefined {
+    const gi = groundIndexOf(body.handle.mesh.geometry);
+    const grid = body.levels[0].grid;
+    return gi && gi.cols === grid.cols << SECTOR_MAX_LEVEL && gi.rows === grid.rows << SECTOR_MAX_LEVEL
+      ? gi : undefined;
+  }
+
+  /** A resident sector's laid-out index, if it has children to be covered by
+   *  and its leaf grid is its level's. */
+  private slotIndex(slot: SectorSlot): GroundIndex | undefined {
+    if (!slot.mesh || slot.children.length === 0) return undefined;
+    const gi = groundIndexOf(slot.mesh.geometry);
+    const span = 1 << (SECTOR_MAX_LEVEL - slot.level);
+    return gi && gi.cols === span && gi.rows === span ? gi : undefined;
+  }
+
+  private coverHost(body: SectorBody, gi: GroundIndex): void {
+    for (const slot of body.slots) {
+      if (slot.level === 0) this.coverBy(body, gi, slot, 0, 0, body.handle.material, body.signature);
+    }
+  }
+
+  private coverSector(body: SectorBody, gi: GroundIndex, over: SectorSlot): void {
+    const span = 1 << (SECTOR_MAX_LEVEL - over.level);
+    const material = over.mesh!.material as THREE.Material;
+    for (const child of over.children) {
+      this.coverBy(body, gi, child, over.sector.c * span, over.sector.r * span, material, over.signature);
+    }
+  }
+
+  /** Leave out of `gi` (leaf origin ox, oy) the ground `slot` covers if it is
+   *  drawn and shares the covered mesh's program; otherwise whatever its own
+   *  descendants cover. */
+  private coverBy(
+    body: SectorBody, gi: GroundIndex, slot: SectorSlot, ox: number, oy: number,
+    material: THREE.Material, signature: string,
+  ): void {
+    const mesh = slot.mesh;
+    if (mesh && mesh.parent === body.handle.mesh && mesh.visible && (mesh.material as THREE.Material).visible
+      && slot.signature === signature && body.family.sharesProgram(mesh.material as THREE.Material, material)) {
+      const span = 1 << (SECTOR_MAX_LEVEL - slot.level);
+      coverGroundLeaves(gi, slot.sector.c * span - ox, slot.sector.r * span - oy, span);
+      return;
+    }
+    for (const child of slot.children) this.coverBy(body, gi, child, ox, oy, material, signature);
+  }
+
+  /** Every mesh of one family drawn whole, at once, with no upload; the cover
+   *  is read again at the next reconcile. */
+  private uncutBody(body: SectorBody): void {
+    uncutGround(body.handle.mesh.geometry);
+    for (const slot of body.slots) if (slot.mesh) uncutGround(slot.mesh.geometry);
+    body.cutDirty = true;
+  }
+
+  /** Everything a tile may have been covering — each coarser sector over it
+   *  and the host — drawn whole at once. The un-cut is synchronous wherever a
+   *  tile stops being drawn, because a release can come from outside the
+   *  frame's pass (a budget shrunk by the globe's ladder, an arrival, a lost
+   *  context) and the next draw may come before the next reconcile. */
+  private uncutUnder(slot: SectorSlot): void {
+    for (let p = slot.parent; p; p = p.parent) if (p.mesh) uncutGround(p.mesh.geometry);
+    uncutGround(slot.owner.handle.mesh.geometry);
+    slot.owner.cutDirty = true;
+  }
+
+  /** Whether one family's ground is being cut right now: the switch, or the
+   *  family's own `cutAlways`, which no switch overrides. */
+  private cuts(body: SectorBody): boolean {
+    return this.cutting || body.family.cutAlways === true;
+  }
+
+  /**
+   * Leave covered ground out of the draw, or put every full list back — the
+   * live A/B behind the kill switch (a session built without the layout has
+   * nothing to cut either way). Off is applied at once; on is read at the
+   * next reconcile. A family that cuts always is left as it is.
+   */
+  setGroundCut(on: boolean): void {
+    const next = on && this.groundCull;
+    if (next === this.cutting) return;
+    this.cutting = next;
+    for (const body of this.bodies.values()) if (!body.family.cutAlways) this.uncutBody(body);
   }
 
   /** Room for `need` more bytes, freeing the weakest sectors for it if the
@@ -1612,6 +1837,22 @@ export class SectorStreamer {
     return this.fetchCount() + fetches <= this.fetchPool;
   }
 
+  /**
+   * Whether every load slot is taken: the in-flight cap of sector loads is
+   * running. For a loader that yields the network to the sectors (the cloud
+   * field's pages), asked after this frame's reconcile — which starts every
+   * candidate a free slot allows, so with a slot still free no sector is
+   * waiting on the network, and one held back for memory is one no slot
+   * would start. Read-only, and allocates nothing of its own.
+   */
+  loadSlotsFull(): boolean {
+    let n = 0;
+    for (const body of this.bodies.values()) {
+      for (const s of body.slots) if (s.loading && ++n >= this.inflightCap) return true;
+    }
+    return false;
+  }
+
   /** Drop everything (an arrival, context loss, mode teardown); bodies stay
    *  registered and stream back in on later frames — from the service-worker
    *  cache when they were resident before. */
@@ -1640,7 +1881,65 @@ export class SectorStreamer {
     this.devMeshesHidden = !visible;
     for (const body of this.bodies.values()) {
       for (const slot of body.slots) if (slot.mesh) slot.mesh.visible = visible;
+      // Hidden tiles cover nothing: every mesh under them is whole for the
+      // very next draw, and the cover is read again once they are back.
+      this.uncutBody(body);
     }
+  }
+
+  /**
+   * Dev-only: release one sector and keep it out — its retry pushed past the
+   * session, the same cooldown a failed load takes — or, with null, let every
+   * held one back. `'skip'` picks a resident level-1 sector, over a resident
+   * parent, with a resident child: what stays is a level-2 tile drawing over
+   * level 0 with nothing between, which the policy allows (a child is admitted
+   * on its own demand) but seldom holds still long enough to capture.
+   * Returns the id held, or null.
+   */
+  devHoldOut(which: 'skip' | null): string | null {
+    if (which === null) {
+      for (const body of this.bodies.values()) {
+        for (const slot of body.slots) if (slot.retryAtMs === Number.POSITIVE_INFINITY) slot.retryAtMs = 0;
+      }
+      return null;
+    }
+    for (const body of this.bodies.values()) {
+      for (const slot of body.slots) {
+        if (slot.level !== 1 || slot.state !== 'resident' || !slot.parent?.mesh) continue;
+        if (!slot.children.some((child) => child.state === 'resident')) continue;
+        this.release(slot);
+        slot.retryAtMs = Number.POSITIVE_INFINITY;
+        return slotId(slot, body.family.side);
+      }
+    }
+    return null;
+  }
+
+  /** How much of the streamed ground the next draw submits, and whether every
+   *  leaf left out is under a drawn tile that shares its program right now. */
+  private groundCutStats(): SectorStats['groundCut'] {
+    const out = { on: this.cutting, meshes: 0, cut: 0, drawnEntries: 0, fullEntries: 0, unbacked: 0 };
+    const tally = (gi: GroundIndex | undefined, assemble: (gi: GroundIndex) => void): void => {
+      if (!gi) return;
+      out.meshes += 1;
+      out.fullEntries += gi.full;
+      const range = gi.geometry.drawRange;
+      if (range.start !== gi.full) {
+        out.drawnEntries += gi.full;
+        return;
+      }
+      out.cut += 1;
+      out.drawnEntries += range.count;
+      // The cover as the meshes stand now, against the one the draw uses.
+      beginGroundCover(gi);
+      assemble(gi);
+      for (let i = 0; i < gi.held.length; i++) if (gi.held[i] && !gi.next[i]) out.unbacked += 1;
+    };
+    for (const body of this.bodies.values()) {
+      tally(this.hostIndex(body), (gi) => this.coverHost(body, gi));
+      for (const slot of body.slots) tally(this.slotIndex(slot), (gi) => this.coverSector(body, gi, slot));
+    }
+    return out;
   }
 
   stats(): SectorStats {
@@ -1657,6 +1956,7 @@ export class SectorStreamer {
       envelope: this.envelope.envelopeBytes,
       ladderBytes: this.envelope.ladderBytes,
       bodies: {},
+      groundCut: this.groundCutStats(),
     };
     for (const body of this.bodies.values()) {
       // Families merge into one entry per BODY: a reader asking what Earth
@@ -1890,10 +2190,16 @@ export class SectorStreamer {
     const loaded = loading.loaded;
     // A reload's geometry is the outgoing mesh's: same sector, same globe.
     const previousMesh = slot.mesh;
-    const geometry = previousMesh?.geometry ?? sectorSphereGeometry(
-      handle.radiusAU, body.levels[slot.level].grid, slot.sector,
-      Math.max(3, SECTOR_SEGMENTS >> slot.level),
-    );
+    let geometry = previousMesh?.geometry;
+    if (!geometry) {
+      geometry = sectorSphereGeometry(
+        handle.radiusAU, body.levels[slot.level].grid, slot.sector,
+        Math.max(3, SECTOR_SEGMENTS >> slot.level),
+      );
+      // Laid out where it is built, before its first draw (world/groundCull),
+      // under the switch or for a family that cuts always.
+      if (this.groundCull || body.family.cutAlways) layGroundIndex(geometry, GROUND_LEAF_SEGMENTS);
+    }
     const material = body.family.createMaterial({
       map,
       bumpMap: loaded.bumpMap ?? null,
@@ -1903,6 +2209,16 @@ export class SectorStreamer {
     const mesh = new THREE.Mesh(geometry, material);
     mesh.name = `${handle.name} sector ${slotId(slot, body.family.side)}`;
     if (import.meta.env.DEV) smoothTraceEvent('tile', mesh.name);
+    if (import.meta.env.DEV && this.devMeshesHidden) mesh.visible = false;
+    // A new tile covers ground at the next reconcile. A reload swaps in a
+    // material that may compile to another program than the meshes it covered
+    // and the descendants covering it, so its own cut and everything under it
+    // are drawn whole from this draw on, and read again there.
+    if (previousMesh) {
+      uncutGround(geometry);
+      this.uncutUnder(slot);
+    }
+    body.cutDirty = true;
     mesh.renderOrder = sectorRenderOrder(slot.level);
     handle.mesh.add(mesh);
     const previousMaps = slot.maps;
@@ -1963,6 +2279,9 @@ export class SectorStreamer {
     this.disposeLoaded(slot);
     slot.loading = undefined;
     if (slot.mesh) {
+      // Here, not in removeMesh: a reload's swap removes a mesh whose ground
+      // the new one goes on covering.
+      this.uncutUnder(slot);
       this.removeMesh(slot.mesh);
       slot.mesh = undefined;
     }

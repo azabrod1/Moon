@@ -63,6 +63,7 @@ import {
   type TierAdmission,
   makeTextureUpgrade,
   materialColorMap,
+  materialColorWidth,
   needsUpgradeCover,
   resolveUpgradeTier,
   setUpgradeTextureLoader,
@@ -79,6 +80,7 @@ import { equirectMapGpuBytes, retainedSourceBytes, textureGpuBytes } from './wor
 import { retryDelayMs, urlSpread } from './world/textureRetryPolicy';
 import { TIER_MAP_WIDTH, type TextureTier } from './world/texturePolicy';
 import { ladderCeilingBytes, UNMEASURED_DESKTOP_PROFILE, UNMEASURED_TOUCH_PROFILE } from './world/gpuEnvelope';
+import { cloudFieldPoolBytes } from './world/cloudField';
 import { SECTOR_SETS, sectorSetGpuBytes } from './world/sectorStreamer';
 import {
   AIR_LOOKUP_RADIUS,
@@ -88,8 +90,10 @@ import {
   createSurfaceAirFx,
   NIGHT_LIFT_STRENGTH,
   nightLiftUniform,
+  seaWindOn,
 } from './world/surfaceShading';
 import { PLANETS } from './planets/planetData';
+import { seaWindTexture } from './world/seaWind';
 import {
   createEarthNightSectorMaterial,
   createEarthNightShellMaterial,
@@ -807,6 +811,21 @@ describe('colour-tier ranking', () => {
     expect(initialColorTierRank({})).toBe(2);
   });
 
+  it('reads the width a material draws from its applied tier, not its trimmed image', () => {
+    const mat = new THREE.MeshStandardMaterial();
+    const tex = new THREE.Texture();
+    tex.image = { width: 1024, height: 512 }; // the stand-in left after the upload
+    mat.map = tex;
+    mat.userData.colorTierRank = TIER_RANK['8k'];
+    expect(materialColorWidth(mat)).toBe(8192);
+    mat.userData.colorTierRank = TIER_RANK['4k'];
+    expect(materialColorWidth(mat)).toBe(4096);
+    // No tier applied (the procedural floor, a hand-built material): its image.
+    mat.userData.colorTierRank = 0;
+    expect(materialColorWidth(mat)).toBe(1024);
+    expect(materialColorWidth(new THREE.MeshStandardMaterial())).toBe(0);
+  });
+
   it('keeps a real construction map safe from a late duplicate', () => {
     const real = initialColorTierRank({ userData: {} });
     expect(shouldApplyColorTier(real, 2)).toBe(false);
@@ -1207,6 +1226,7 @@ describe('wireEarthLateDetail', () => {
       clouds: createLateTextureSlot(),
       bump: createLateTextureSlot(),
       roughness: createLateTextureSlot(),
+      seaWind: createLateTextureSlot(),
     };
   }
 
@@ -1248,6 +1268,31 @@ describe('wireEarthLateDetail', () => {
     s.bump.deliver(fakeTexture('b'));
     s.roughness.deliver(fakeTexture('r'));
     expect(spies.map((f) => f.disposed)).toEqual([true, true, true, true]);
+  });
+
+  it('installs the sea\'s wind map as it lands, wrapped for the sea, and the sea reads it from then on — a fallback is freed, never installed', () => {
+    const s = slots();
+    wireEarthLateDetail(s, new THREE.ShaderMaterial({ uniforms: { nightTexture: { value: null } } }),
+      new THREE.MeshStandardMaterial(), new THREE.MeshStandardMaterial());
+    expect(seaWindTexture()).toBeNull();
+    // A loader that timed out hands the slot its mid-grey stand-in: 8 m/s
+    // everywhere is not a sea, so it is freed.
+    const standIn = fallbackTexture();
+    const standInSpy = disposeSpy(standIn);
+    s.seaWind.deliver(standIn);
+    expect(standInSpy.disposed).toBe(true);
+    expect(seaWindTexture()).toBeNull();
+    expect(seaWindOn()).toBe(false);
+    // The map lands: installed, wrapped round the date line and clamped at
+    // the poles (the loader's default is ClampToEdge, which would smear the
+    // last column of sea across the seam), and the sea is on.
+    const wind = fakeTexture('wind');
+    s.seaWind.deliver(wind);
+    expect(seaWindTexture()).toBe(wind);
+    expect(wind.wrapS).toBe(THREE.RepeatWrapping);
+    expect(wind.wrapT).toBe(THREE.ClampToEdgeWrapping);
+    expect(wind.generateMipmaps).toBe(true);
+    expect(seaWindOn()).toBe(true);
   });
 
   it('keeps the cloud deck on the higher tier when its boot-tier fetch recovers late', () => {
@@ -1548,7 +1593,10 @@ describe('Earth\'s night lights on the colour ladder', () => {
   function nightMaterial(boot: THREE.Texture | null): THREE.ShaderMaterial {
     const mat = new THREE.ShaderMaterial({ uniforms: { nightTexture: { value: boot } } });
     wireEarthLateDetail(
-      { night: createLateTextureSlot(), clouds: createLateTextureSlot(), bump: createLateTextureSlot(), roughness: createLateTextureSlot() },
+      {
+        night: createLateTextureSlot(), clouds: createLateTextureSlot(), bump: createLateTextureSlot(),
+        roughness: createLateTextureSlot(), seaWind: createLateTextureSlot(),
+      },
       mat, new THREE.MeshStandardMaterial(), new THREE.MeshStandardMaterial(),
     );
     return mat;
@@ -1669,8 +1717,11 @@ describe('the ladder against the sector memory envelope', () => {
     const worst = ladderWorstCaseBytes(false, false);
     // One 4K webp fewer than before: Mercury's rungs are containers now.
     expect(mib(worst)).toBeCloseTo(554.7, 1);
+    // ...with the cloud field's pool held out of the envelope too, as a session
+    // that asked for the field holds it.
     expect(worst).toBeLessThanOrEqual(
-      ladderCeilingBytes(UNMEASURED_DESKTOP_PROFILE, UNMEASURED_DESKTOP_PROFILE.sectorFloorBytes),
+      ladderCeilingBytes(UNMEASURED_DESKTOP_PROFILE, UNMEASURED_DESKTOP_PROFILE.sectorFloorBytes,
+        cloudFieldPoolBytes(UNMEASURED_DESKTOP_PROFILE.cloudFieldLayers)),
     );
     const worstBudget = UNMEASURED_DESKTOP_PROFILE.envelopeBytes - worst;
     // Without a transcoder Mercury has no rung at all (both of its rungs are
@@ -1707,7 +1758,8 @@ describe('the ladder against the sector memory envelope', () => {
     // has toured. The line moved up 2.7 MiB when the height and water crops
     // went to one byte a texel: a sector set holds less, so its floor reserves
     // less and the maps are left more.
-    const ceiling = ladderCeilingBytes(UNMEASURED_TOUCH_PROFILE, UNMEASURED_TOUCH_PROFILE.sectorFloorBytes);
+    const ceiling = ladderCeilingBytes(UNMEASURED_TOUCH_PROFILE, UNMEASURED_TOUCH_PROFILE.sectorFloorBytes,
+      cloudFieldPoolBytes(UNMEASURED_TOUCH_PROFILE.cloudFieldLayers));
     expect(mib(ceiling)).toBeCloseTo(276.4, 1);
     expect(UNMEASURED_TOUCH_PROFILE.envelopeBytes - ceiling)
       .toBeGreaterThanOrEqual(2 * sectorSetGpuBytes(SECTOR_SETS.Earth));
@@ -1892,7 +1944,7 @@ describe('the compressed tier override', () => {
     // The same key can have a container at both tiers, each under its own
     // tier's folder — the Moon's 4K rung is the boot warm's own upload.
     expect(resolveTierFile('moon', '4k')).toBe('moon.ktx2');
-    expect(resolveTierFile('earthClouds', '4k')).toBe('earth-clouds.ktx2');
+    expect(resolveTierFile('earthClouds', '4k')).toBe('earth-clouds.v2.ktx2');
     // A rung whose container was too big to ship keeps fetching its webp.
     expect(resolveTierFile('saturn', '4k')).toBe('saturn.webp');
     // The boot map is never a rung, so nothing overrides it: a body's first
@@ -2460,7 +2512,7 @@ describe('the rungs that ship only as a compressed container', () => {
     expect(resolveTierFile('earthDay', '8k')).toBe('earth-day.v2.webp');
     bindKtx2TierLoader(() => {}, true);
     expect(resolveTierFile('moon', '8k')).toBe('moon.ktx2');
-    expect(resolveTierFile('earthClouds', '8k')).toBe('earth-clouds.ktx2');
+    expect(resolveTierFile('earthClouds', '8k')).toBe('earth-clouds.v2.ktx2');
     expect(resolveTierFile('earthDay', '8k')).toBe('earth-day.v2.ktx2');
     expect(resolveTierFile('earthNight', '8k')).toBe('earth-night.v2.ktx2');
     // The one toured 4K rung whose container is small enough on the wire to
@@ -2471,7 +2523,7 @@ describe('the rungs that ship only as a compressed container', () => {
     expect(resolveTierFile('mercury', '4k')).toBe('mercury.ktx2');
     expect(resolveTierFile('mars', '4k')).toBe('mars.v3.webp');
     expect(resolveTierFile('moon', '4k')).toBe('moon.ktx2');
-    expect(resolveTierFile('earthClouds', '4k')).toBe('earth-clouds.ktx2');
+    expect(resolveTierFile('earthClouds', '4k')).toBe('earth-clouds.v2.ktx2');
     expect(resolveTierFile('earthNight', '4k')).toBe('earth-night.v2.ktx2');
     // The photo-moon rungs, which ship as containers alone.
     expect(resolveTierFile('enceladus', '4k')).toBe('enceladus.ktx2');
@@ -3123,6 +3175,7 @@ describe('a colour-rung swap and the body\'s air', () => {
       transmittance: fakeTexture('T'),
       scattering: fakeTexture('S'),
       irradiance: fakeTexture('E'),
+      mieColour: fakeTexture('M'),
     };
   }
 

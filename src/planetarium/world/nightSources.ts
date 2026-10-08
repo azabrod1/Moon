@@ -47,6 +47,8 @@
  */
 import { PLANETS } from '../planets/planetData';
 import { AIRLIGHT_SCALE, type RGB } from './atmosphereModel';
+import { SUN_LIGHT_AUTHORED_HUE } from '../sunLight';
+import { DEG2RAD as DEG } from '../../shared/math/angles';
 
 export type Vec3 = readonly [number, number, number];
 
@@ -368,9 +370,12 @@ export const LUNAR_IRRADIANCE_RATIO = 1 / 4.4e5;
  * ground's own light plus the air in front of it plus the airglow, and all of
  * the moon-sourced part of that scales with this number; the binding channel is
  * red at a low Moon, where the aureole is the longest path the table has. The
- * composed sum reaches 1.0 at 1.85e5, so this sits at 0.95 of the ceiling, and
- * the test below re-derives both rather than remembering either. Raising it
- * further is not a taste question — past that line a night source blooms.
+ * composed sum reached 1.0 at 1.85e5 under the grey aerosol Earth shipped until
+ * 2026-10, so this sat at 0.95 of the ceiling; the marine aerosol's flatter
+ * lobe lifted the ceiling to 2.76e5 and this stays where the picture was
+ * measured, 0.63 of it. The test re-derives both rather than remembering
+ * either. Raising it past the ceiling is not a taste question — past that line
+ * a night source blooms; raising it toward the ceiling is a look call.
  */
 export const MOONLIGHT_NIGHT_GAIN = 1.75e5;
 
@@ -418,15 +423,23 @@ export const MOONLIGHT_TINT_AUTHORED: RGB = [0.8, 0.92, 1.15];
  * (The physical spectrum's own luminance is 0.986, so the swap is a change of
  * hue and not of level.)
  *
+ * The authored triple was judged under the cream Sun the bridge then carried
+ * (AIRLIGHT_SCALE multiplies it per channel), so the moonlight that was
+ * actually drawn was the triple times that cream. The Sun is neutral now, and
+ * the tint carries the cream itself (SUN_LIGHT_AUTHORED_HUE) so the moonlit
+ * picture keeps the colour it was judged in.
+ *
  * Applied once, in `moonIrradiance`, which is the single factor every
  * moon-sourced term is built from: the beam on the ground, the sky's own
  * irradiance on it, the air's in-scatter, and the cloud deck lit by all three.
  * Tinting any one of them on its own is how a moonlit cloud ends up a different
  * colour from the moonlit air around it.
  */
-export const MOONLIGHT_TINT: RGB = unitLuminance(MOONLIGHT_TINT_AUTHORED);
-
-const DEG = Math.PI / 180;
+export const MOONLIGHT_TINT: RGB = unitLuminance([
+  MOONLIGHT_TINT_AUTHORED[0] * SUN_LIGHT_AUTHORED_HUE[0],
+  MOONLIGHT_TINT_AUTHORED[1] * SUN_LIGHT_AUTHORED_HUE[1],
+  MOONLIGHT_TINT_AUTHORED[2] * SUN_LIGHT_AUTHORED_HUE[2],
+]);
 
 /**
  * Brightness of the Moon relative to full, at a Sun-Moon-observer phase angle
@@ -493,8 +506,10 @@ export const MULTIPLE_SCATTERING_HEADROOM = 1.5;
  * The brightest sky radiance a lookup returns at one unit of solar irradiance,
  * anywhere in the table, before the photometry bridge. The worst is the aureole
  * — the horizon looked at along a low Sun FROM THE GROUND, where the Mie lobe
- * is 5.6/sr and the path is the longest the air has — at 1.41 single-scattered,
- * and this is that with the multiple-scattering headroom on top.
+ * is 1.85/sr (the marine aerosol's phase parameter of 0.703; the old 0.83 gave
+ * 5.6/sr) and the path is the longest the air has — at 0.68 single-scattered
+ * (1.41 under the old aerosol), and this is room over that with the
+ * multiple-scattering headroom on top.
  */
 export const PEAK_TABLE_SKY_RADIANCE = 2.2;
 
@@ -504,10 +519,11 @@ export const PEAK_TABLE_SKY_RADIANCE = 2.2;
  * makes starts at the atmosphere ENTRY point: the shell advances its ray there
  * and the aerial segment starts there, because a lookup at the camera's own
  * radius clamps to the top row and comes back flat. At the top row the peak is
- * 0.075. The one way further in is the dev pose inside the air at 51 km, where
- * the table reaches 0.55 — and that is the number here, with the
- * multiple-scattering headroom on top, because a contract that only holds for
- * poses the shipped app can reach is not one worth writing down.
+ * 0.11. The one way further in is the dev pose inside the air at 51 km, where
+ * the table reaches 0.36 (0.55 under the old aerosol) — and that is the number
+ * here, with the multiple-scattering headroom on top and room over it, because
+ * a contract that only holds for poses the shipped app can reach is not one
+ * worth writing down.
  *
  * It exists so that "no night source blooms" is an assertion and not an
  * intention: a test re-derives both sweeps, holds them under these numbers, and

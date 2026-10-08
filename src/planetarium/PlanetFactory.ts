@@ -38,17 +38,21 @@ import {
 } from '../shared/shaders/sun';
 import { debugWarn } from '../shared/debug';
 import { CLOUD_NORMAL_SCALE, cloudShellScale } from './world/cloudDeck';
+import { enableCloudField } from './world/cloudFieldSlots';
 import { CLOUD_DECK_DEPTH_BIAS_UNITS } from './world/shellDepthBias';
 import { applyTextureDefaults, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
 import {
-  augmentSurfaceMaterial, nightLiftUniform, seatSurfaceAirRadius, setSurfaceCraterShare, setSurfaceWaterGloss,
+  augmentSurfaceMaterial, nightLiftUniform, rebindSeaWindMap, seatSurfaceAirRadius, setGroundUnderCloudDeck,
+  setPlanetariumCloudDeck, setSurfaceCraterShare, setSurfaceWaterGloss,
   type SurfaceArchetype, type SurfaceShadingFx,
 } from './world/surfaceShading';
+import { applySeaWindSampling, installSeaWindMap } from './world/seaWind';
 import { surfaceLookOf } from './world/surfaceLook';
 import { createAtmosphereShellMaterial } from './world/atmosphereShell';
 import { ATMOSPHERE_TABLE_SIZES_FULL, type AtmosphereTableSizes } from './world/atmosphereModel';
 import { queueTextureWarm } from './world/textureWarmer';
 import { createEarthNightShellMaterial } from './world/earthNightMaterial';
+import { layGroundIndex } from './world/groundCull';
 import { createLensShaderUniforms } from '../shared/three/lensShader';
 import { fetchTextureDurably, type DurableTextureFetch } from './world/textureRetry';
 import {
@@ -177,20 +181,12 @@ export interface AtmosphereConfig {
   scale: number;
 }
 
-/** The Sun's point light, as the scene actually lights bodies. The decay is
- *  0.3, not the physical 2: at inverse-square the outer planets would be
- *  unreadable, so the falloff is authored. Exported because anything that has
- *  to agree photometrically with the lit ground — a scattering table baked at
- *  unit irradiance, say — must use THIS law rather than a physical one, and a
- *  test holds the two together. */
-export const SUN_LIGHT_INTENSITY = 3;
-export const SUN_LIGHT_DECAY = 0.3;
-/** The light's colour, sRGB. Exported for the same reason: a scattering table
- *  baked at WHITE unit irradiance has to be scaled back by this colour as well
- *  as by the intensity, or the air is lit by a different Sun from the ground
- *  under it — and on a limb whose whole point is its blue, the excess lands in
- *  the one channel nobody would think to doubt. */
-export const SUN_LIGHT_COLOR = 0xfff5e0;
+/** The Sun's light (colour, intensity, decay) lives in planetarium/sunLight,
+ *  beside the baseline every scene-unit threshold rides on; re-exported here
+ *  for the readers that always took it from the factory. */
+export { SUN_LIGHT_COLOR, SUN_LIGHT_DECAY, SUN_LIGHT_INTENSITY } from './sunLight';
+import { SUN_LIGHT_COLOR, SUN_LIGHT_DECAY, SUN_LIGHT_INTENSITY } from './sunLight';
+import { applyAlbedoGrade, restoreAlbedoGrade } from './world/albedoGrade';
 
 // Exported so the volume-compare mode's ghost shell reads the same tuning —
 // a hand-kept copy would drift the moment these numbers get touched.
@@ -393,9 +389,18 @@ export interface GeometryUpgrade {
   /** Every mesh whose silhouette is this body's silhouette, each with the
    *  radius its sphere was built at — the globe, plus any shell drawn just
    *  above it that draws a hard edge of its own. */
-  spheres: readonly { mesh: THREE.Mesh; radiusAU: number }[];
+  spheres: readonly UpgradeSphere[];
   /** One-way: the fine spheres are built once and kept for the session. */
   applied: boolean;
+}
+
+interface UpgradeSphere {
+  mesh: THREE.Mesh;
+  radiusAU: number;
+  /** Set on a sphere streamed sector tiles are drawn over (`markStreamedGround`):
+   *  the leaf, in cells, its fine sphere's index is laid out in so the streamer
+   *  can leave out the ground a tile covers (world/groundCull). */
+  groundLeaf?: number;
 }
 
 // Screen diameter past which the coarsest silhouette in use starts to show its
@@ -403,12 +408,26 @@ export interface GeometryUpgrade {
 // crosses it having shown nothing, and pays one rebuild it did not strictly
 // need — cheaper than carrying a second threshold per segment tier.
 const GEOMETRY_UPGRADE_AT_PX = 1250;
-const GEOMETRY_UPGRADE_SEGMENTS = 256;
+export const GEOMETRY_UPGRADE_SEGMENTS = 256;
 
 export function makeGeometryUpgrade(
-  spheres: readonly { mesh: THREE.Mesh; radiusAU: number }[],
+  spheres: readonly UpgradeSphere[],
 ): GeometryUpgrade {
   return { spheres, applied: false };
+}
+
+/**
+ * Build this mesh's fine sphere with the streamed-ground index (world/groundCull),
+ * so the sector streamer can leave out of its draw the ground a finer tile
+ * covers. Only for a mesh sectors are registered over, and only before the
+ * upgrade: the index is laid out once, where the geometry is built, never
+ * swapped under one that has drawn. A body already upgraded keeps the plain
+ * index, which the streamer reads as nothing to cut.
+ */
+export function markStreamedGround(up: GeometryUpgrade, mesh: THREE.Mesh, leafSegments: number): void {
+  if (up.applied) return;
+  const sphere = up.spheres.find((s) => s.mesh === mesh);
+  if (sphere) sphere.groundLeaf = leafSegments;
 }
 
 /** Has this body grown large enough for its chords to show, with the fine
@@ -433,13 +452,15 @@ export function needsGeometryUpgrade(up: GeometryUpgrade, diameterPx: number): b
 export function upgradeGeometryOnApproach(up: GeometryUpgrade, diameterPx: number): boolean {
   if (!needsGeometryUpgrade(up, diameterPx)) return false;
   up.applied = true;
-  for (const { mesh, radiusAU } of up.spheres) {
+  for (const { mesh, radiusAU, groundLeaf } of up.spheres) {
     const previous = mesh.geometry;
-    mesh.geometry = new THREE.SphereGeometry(
+    const fine = new THREE.SphereGeometry(
       radiusAU,
       GEOMETRY_UPGRADE_SEGMENTS,
       GEOMETRY_UPGRADE_SEGMENTS / 2,
     );
+    if (groundLeaf !== undefined) layGroundIndex(fine, groundLeaf);
+    mesh.geometry = fine;
     previous.dispose();
   }
   return true;
@@ -608,7 +629,18 @@ export function createAtmosphereMaterial(
     transparent: true,
     side: THREE.BackSide,
     depthWrite: false,
-    blending: THREE.AdditiveBlending,
+    // Additive on the colour as three's AdditiveBlending has it, nothing on
+    // the alpha: the ground under the shell carries the sea's flag for the
+    // bloom in the scene target's alpha (world/surfaceShading
+    // SEA_BLOOM_FLAG_GLSL), which an added alpha of 1 would erase across the
+    // disc. The same contract as the table tier's shell (world/atmosphereShell).
+    blending: THREE.CustomBlending,
+    blendEquation: THREE.AddEquation,
+    blendSrc: THREE.SrcAlphaFactor,
+    blendDst: THREE.OneFactor,
+    blendEquationAlpha: THREE.AddEquation,
+    blendSrcAlpha: THREE.ZeroFactor,
+    blendDstAlpha: THREE.OneFactor,
   });
 }
 
@@ -640,7 +672,7 @@ function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig): THREE
 // surface, the cloud deck stands at a cloud top. Both are drawn at the same
 // segment count as the globe, so all three silhouettes coarsen and refine
 // together.
-const EARTH_NIGHT_SHELL_SCALE = 1.001;
+export const EARTH_NIGHT_SHELL_SCALE = 1.001;
 const EARTH_CLOUD_SHELL_SCALE = cloudShellScale(
   PLANETS.find((p) => p.name === 'Earth')!.radiusKm,
 );
@@ -794,10 +826,30 @@ export interface EarthLateSlots {
   clouds: LateTextureSlot;
   bump: LateTextureSlot;
   roughness: LateTextureSlot;
+  seaWind: LateTextureSlot;
 }
 
 /**
- * Wire all four Earth detail slots onto their materials. One function so the
+ * The sea's wind map landed (world/seaWind.ts): the mid-grey stand-in a
+ * timeout leaves is no map and is let go; a real one is given the sea's sampling and
+ * installed — unless a DEV `?seawindmap=` override stands, in which case it
+ * is let go too — and the seas already drawn read it from the next frame.
+ */
+export function installSeaWindArrival(tex: THREE.Texture): void {
+  if (tex.userData?.proceduralFallback === true) {
+    tex.dispose();
+    return;
+  }
+  if (installSeaWindMap(applySeaWindSampling(tex), 'shipped')) {
+    rebindSeaWindMap();
+    queueTextureWarm(tex);
+  } else {
+    tex.dispose();
+  }
+}
+
+/**
+ * Wire every Earth detail slot onto its material. One function so the
  * complete set is pinnable as a unit — a slot left unconnected would hold its
  * late arrival forever, leaving Earth on flat city lights, a blank cloud deck,
  * or a noise-free ocean for the session while leaking the real texture.
@@ -826,6 +878,10 @@ export function wireEarthLateDetail(
     () => earthMat.roughnessMap,
     (tex) => { earthMat.roughnessMap = tex; setSurfaceWaterGloss(earthMat, isWaterMask(tex)); },
   );
+  // The sea's wind map is not on the material: it is installed on the shared
+  // uniform every sea reads, so a late one takes the install path rather
+  // than a slot on earthMat.
+  slots.seaWind.connect((tex) => afterDecode(tex, () => installSeaWindArrival(tex)));
 }
 
 /** Whether a roughness texture is the graded water mask the ocean's gloss remap
@@ -849,6 +905,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
         clouds: createLateTextureSlot(),
         bump: createLateTextureSlot(),
         roughness: createLateTextureSlot(),
+        seaWind: createLateTextureSlot(),
       }
     : null;
 
@@ -863,6 +920,11 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
         loadTexture('earthBump', '2k', 'mask', { late: earthLate.bump }),
         // Ocean-glint roughness: linear, and grey the same way.
         loadTexture('earthRoughness', '2k', 'mask', { late: earthLate.roughness }),
+        // The sea's wind, the map the glint's lobe is read from
+        // (world/seaWind.ts): linear and four channels — the speed in red,
+        // the wind's axis in green and blue — so 'data', never the
+        // one-channel 'mask', which would drop the axis.
+        loadTexture('earthSeaWind', '2k', 'data', { late: earthLate.seaWind }),
       ])
     : null;
   const texture = await surfaceTexturePromise;
@@ -995,7 +1057,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   let cloudsNormalUpgrade: NormalUpgrade | undefined;
 
   if (earthLate && earthDetailTexturePromise) {
-    const [nightTex, cloudTex, bumpTex, roughTex] = await earthDetailTexturePromise;
+    const [nightTex, cloudTex, bumpTex, roughTex, seaWindTex] = await earthDetailTexturePromise;
 
     const nightGeo = new THREE.SphereGeometry(planet.radiusAU * EARTH_NIGHT_SHELL_SCALE, segments, segments / 2);
     // Bound locally as well as returned: the late-detail wiring below needs the
@@ -1052,9 +1114,21 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     // fraction. The frame spin is fed per frame beside the mesh's own drift, so
     // the eclipse spot on the deck stays over the one on the ground.
     augmentSurfaceMaterial(cloudMat, 'cloud', ringShadow, sunTan, fx);
+    // The 1.2 km cloud field (world/cloudField), in a session that has it
+    // (world/cloudFieldSlots, settled before the solar system is built): a
+    // define on this deck's program, set before it first compiles.
+    enableCloudField(cloudMat);
     cloudsMesh = new THREE.Mesh(cloudGeo, cloudMat);
     group.add(cloudsMesh);
     cloudsMesh.name = `${planet.name} clouds`;
+    // The ground under the deck can take its shadows (on unless
+    // `?cloudshadows=0`, the CLOUD_SHADOW switch in world/surfaceShading): the
+    // globe here, and every sector later cut from it through the fx they
+    // share.
+    setGroundUnderCloudDeck(mat);
+    // ...and the deck itself can be lit as a cloud (on unless
+    // `?cloudlight=0`, the CLOUD_LIGHT switch): this deck, never a tool's.
+    setPlanetariumCloudDeck(cloudMat);
     // The cloud deck is its own colour map on its own shell, so it carries its
     // own handle: the globe and the clouds sharpen independently.
     const cloudsUpgrade = makeTextureUpgrade('earthClouds', cloudMat);
@@ -1084,16 +1158,20 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     earthMat.bumpMap = bumpTex;
     earthMat.bumpScale = planet.radiusAU * 0.02;
     // Ocean glint: the map drives roughness (ocean glossy, land/ice matte), so a
-    // tight solar specular reads as the blue-marble sun glint on the seas. Water
-    // is a dielectric — keep metalness 0; the gloss alone makes the highlight.
-    // The map's own water value is widened into a flat sheen with no core, so
-    // the shading seam narrows it (world/surfaceShading's OCEAN_ROUGHNESS) —
-    // but only once the map really is a water mask.
+    // solar specular reads as the sun glint on the seas. Water is a dielectric —
+    // keep metalness 0; the gloss alone makes the highlight, and the shading
+    // seam draws it as seawater rather than three's 4 % dielectric. The width
+    // open water is drawn at is the wind's over it (world/seaWind.ts), read
+    // through the shading seam — but only once the map really is a water mask.
     earthMat.roughnessMap = roughTex;
     earthMat.roughness = 1.0;
     earthMat.metalness = 0.0;
     setSurfaceWaterGloss(earthMat, isWaterMask(roughTex));
     earthMat.needsUpdate = true;
+    // The wind map, once the sea is confirmed: the map the glint's lobe is
+    // read from (world/seaWind.ts), on the shared uniform rather than the
+    // material, so the streamed sectors read the same sea.
+    installSeaWindArrival(seaWindTex);
 
     // Detail maps that missed their timeout replace the fallback in place —
     // otherwise Earth keeps flat grey city lights, a blank cloud deck, or a
@@ -1225,7 +1303,6 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       uShipSunVisibility: { value: 1 },
       uGlareStrength: { value: useBloom ? 1.05 : 1.35 },
       uPointLike: { value: 0 },
-      uCameraFx: { value: 0 },
       uEclipseLike: { value: 0 },
       uOccluderRadii: { value: 1 },
       uOccluderShade: { value: 0 },
@@ -1259,12 +1336,10 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       uVeilWarmth: { value: 0.12 },
       uVeilAmt: { value: 0 },
       uVeilHalfPx: { value: 0 },
-      // Fraction of the fading starburst kept alive once the disc is resolved,
-      // so a mid-range Sun still throws modest diffraction spikes.
-      uSpikeSustain: { value: 0.45 },
       // Veil diffraction-arm decay lengths (CSS px) and coefficient, driven
-      // per frame so the arms shrink with the veil's reach and fade as the disc
-      // resolves. The controller sizes the billboard to the same decay lengths.
+      // per frame. The controller hands a coefficient of zero (the cross is a
+      // camera's signature; the Sun here is an eye's) and sizes the billboard
+      // to the same decay lengths.
       uArmDecayPx: { value: 0 },
       uArmDecayYPx: { value: 0 },
       uArmCoeff: { value: 0 },
@@ -1646,7 +1721,9 @@ export function paintMoonTextures(moon: MoonMesh): void {
     colorTex.dispose();
   } else {
     mat.map = colorTex;
-    mat.color.setRGB(1, 1, 1);
+    // The placeholder tint goes; the body's albedo grade (its own colour
+    // over a map authored brighter than its albedo) stays.
+    restoreAlbedoGrade(mat);
   }
   mat.needsUpdate = true;
   moon.painted = true;
@@ -1702,6 +1779,9 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     const fx = augmentSurfaceMaterial(
       mat, archetype, undefined, 0, undefined, undefined, moonData.name,
     );
+    // The body's albedo grade is recorded now and applied once the real map
+    // replaces the placeholder tint (restoreAlbedoGrade at the paint).
+    applyAlbedoGrade(mat, moonData.name, false);
     // The Night sides lift, as on the planets: the shared object, before the
     // first compile.
     fx.uNightLift = nightLiftUniform;

@@ -50,6 +50,62 @@ export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = /* table:beg
     "spanU": 1,
     "fileCount": 32
   },
+  "earth-clouds.v2/16k-a": {
+    "setHash8": "62dcc6b3",
+    "grid": {
+      "cols": 8,
+      "rows": 4
+    },
+    "content": 2032,
+    "gutter": 8,
+    "tileWidth": 2048,
+    "tileHeight": 2048,
+    "baseWidth": 16256,
+    "spanU": 1,
+    "fileCount": 32
+  },
+  "earth-clouds.v2/16k-p": {
+    "setHash8": "33fc215e",
+    "grid": {
+      "cols": 8,
+      "rows": 4
+    },
+    "content": 2032,
+    "gutter": 8,
+    "tileWidth": 2048,
+    "tileHeight": 2048,
+    "baseWidth": 16256,
+    "spanU": 1,
+    "fileCount": 32
+  },
+  "earth-clouds.v2/32k-a": {
+    "setHash8": "f09371aa",
+    "grid": {
+      "cols": 16,
+      "rows": 8
+    },
+    "content": 2032,
+    "gutter": 8,
+    "tileWidth": 2048,
+    "tileHeight": 2048,
+    "baseWidth": 32512,
+    "spanU": 1,
+    "fileCount": 128
+  },
+  "earth-clouds.v2/32k-p": {
+    "setHash8": "ff42ba7f",
+    "grid": {
+      "cols": 16,
+      "rows": 8
+    },
+    "content": 2032,
+    "gutter": 8,
+    "tileWidth": 2048,
+    "tileHeight": 2048,
+    "baseWidth": 32512,
+    "spanU": 1,
+    "fileCount": 128
+  },
   "earth-day.v2/16k": {
     "setHash8": "62444e44",
     "grid": {

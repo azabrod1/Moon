@@ -7,6 +7,8 @@ import {
   queueTextureWarm,
   resetTextureWarmer,
   abandonSlicedUpload,
+  takeWarmTurn,
+  textureWarmIdle,
   bindSlicedUploader,
   warmBudgetMs,
   warmPumpAllowed,
@@ -129,6 +131,48 @@ describe('textureWarmer', () => {
     bindTextureWarmer(upload);
     pumpTextureWarmQueue(10, 8.33);
     expect(uploaded).toEqual([t]);
+  });
+
+  it('says it is idle only with nothing queued', () => {
+    bindTextureWarmer(upload);
+    expect(textureWarmIdle()).toBe(true);
+    const t = new THREE.Texture();
+    queueTextureWarm(t);
+    expect(textureWarmIdle()).toBe(false);
+    pumpTextureWarmQueue(6, 8.33);
+    expect(textureWarmIdle()).toBe(true);
+  });
+
+  it('gives an upload beside the queue a turn on the same ledger, both ways', () => {
+    bindTextureWarmer(upload);
+    let beside = 0;
+    const big = () => { beside += 1; clock += 10; };
+    // A 10 ms page step against a 6 ms budget owes the next call...
+    expect(takeWarmTurn(6, 8.33, 'page', big)).toBe(true);
+    const t = new THREE.Texture();
+    queueTextureWarm(t);
+    pumpTextureWarmQueue(6, 8.33);
+    expect(uploaded).toEqual([]); // ...which the pump sits out
+    pumpTextureWarmQueue(6, 8.33);
+    expect(uploaded).toEqual([t]);
+    // And a big map owes the next turn beside the queue.
+    uploadCostMs = 10;
+    queueTextureWarm(new THREE.Texture());
+    pumpTextureWarmQueue(6, 8.33);
+    expect(takeWarmTurn(6, 8.33, 'page', big)).toBe(false);
+    expect(beside).toBe(1);
+    expect(takeWarmTurn(6, 8.33, 'page', big)).toBe(true);
+    expect(beside).toBe(2);
+  });
+
+  it('owes nothing for a small upload beside the queue, and never runs one in an unbudgeted drain', () => {
+    bindTextureWarmer(upload);
+    let beside = 0;
+    const small = () => { beside += 1; clock += 1; };
+    expect(takeWarmTurn(6, 8.33, 'page', small)).toBe(true);
+    expect(takeWarmTurn(6, 8.33, 'page', small)).toBe(true);
+    expect(takeWarmTurn(Number.POSITIVE_INFINITY, 8.33, 'page', small)).toBe(false);
+    expect(beside).toBe(2);
   });
 
   it('repays an overrun before paying the next unsliceable upload', () => {

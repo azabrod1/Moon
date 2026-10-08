@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import * as THREE from 'three';
 import {
+  GROUND_LEAF_SEGMENTS,
   SECTOR_ADMIT_MARGIN,
   SECTOR_ATTEMPT_TIMEOUT_MS,
   SECTOR_EVICT_DWELL_MS,
@@ -46,6 +47,7 @@ import {
 } from './textureLadder';
 import { equirectMapGpuBytes } from './textureBytes';
 import { SECTOR_RENDER_ORDER } from './sectorMaterial';
+import { groundIndexOf, layGroundIndex, quadtreeOrdinal, type GroundIndex } from './groundCull';
 import { createEarthNightShellMaterial, earthNightSectorFamily } from './earthNightMaterial';
 import { createSurfaceAirFx } from './surfaceShading';
 import { EARTH_NIGHT_MIX_LIT, earthNightMix } from '../../shared/shaders/atmosphere';
@@ -224,10 +226,10 @@ function measureLevels(
 
 // --- Earth's night family: a second set of sectors on the night shell -------
 
-/** The night shell's radius. PlanetFactory builds it a thousandth of a radius
- *  above the globe, and the sectors that replace it are built at the same
- *  height — a sector at the globe's radius would sit under the shell it is
- *  there to suppress. */
+/** The night shell's radius: PlanetFactory builds it a thousandth of a radius
+ *  above the globe. The app builds the night sectors at the GLOBE's radius
+ *  (PlanetariumMode says why), under the shell; nothing the streamer decides
+ *  reads which, so the handle here measures them on the shell's. */
 const NIGHT_R = R * 1.001;
 /** Earth's night pyramid: the Black Marble sets, no crops (relief and gloss
  *  are daylight terms), so a night sector costs its colour tile alone. */
@@ -419,10 +421,15 @@ describe('SectorStreamer', () => {
   it('bounds fetches in flight', () => {
     const sizes: Record<string, number> = {};
     for (let c = 0; c < 4; c++) sizes[`${c}_1`] = 2 + 0.01 * c;
+    expect(streamer.loadSlotsFull()).toBe(false);
     streamer.update('Earth', new THREE.Vector3(0, 0, 0), measureOf(sizes), 0); // inside: every sector faces
     expect(streamer.stats().loading).toBe(DESKTOP.inflightCap);
     // Largest first (stats list in grid order).
     expect(streamer.stats().bodies.Earth.loading.slice().sort()).toEqual(['2_1', '3_1']);
+    // Every slot taken is what another loader yields to; a slot freed is not.
+    expect(streamer.loadSlotsFull()).toBe(true);
+    streamer.dropAll();
+    expect(streamer.loadSlotsFull()).toBe(false);
   });
 
   it('holds what the tighter of budget and cap holds, and only evicts for a candidate that out-ranks by the margin', () => {
@@ -2645,5 +2652,221 @@ describe('the transient of a globe-map swap', () => {
     expect(up.appliedTier).toBeNull();
     expect(after.budgetedBytes + after.reserved).toBeLessThanOrEqual(after.budget);
     material.dispose();
+  });
+});
+
+describe('SectorStreamer: ground a finer drawn tile covers is left out of the draw', () => {
+  let loader: FakeLoader;
+  let warm: FakeWarm;
+  let streamer: SectorStreamer;
+  let earth: TestHandle;
+
+  /** The fine globe the app builds on approach, laid out for the cut. */
+  function fineGround(radius: number): THREE.SphereGeometry {
+    const geo = new THREE.SphereGeometry(radius, 256, 128);
+    layGroundIndex(geo, GROUND_LEAF_SEGMENTS);
+    return geo;
+  }
+  const hostIndex = (h: TestHandle) => groundIndexOf(h.mesh.geometry)!;
+  /** Index entries of the leaves under a level-j tile (c, r) on a mesh whose
+   *  leaf grid starts at (ox, oy). */
+  function footprint(gi: GroundIndex, level: number, c: number, r: number, ox = 0, oy = 0): number {
+    const span = 1 << (SECTOR_MAX_LEVEL - level);
+    const from = quadtreeOrdinal(c * span - ox, r * span - oy, gi.cols, gi.rows);
+    return gi.start[from + span * span] - gi.start[from];
+  }
+  const drawn = (geo: THREE.BufferGeometry) => ({ ...geo.drawRange });
+  const sectorMesh = (h: TestHandle, id: string) =>
+    (h.mesh.children as THREE.Mesh[]).find((m) => m.name.endsWith(` ${id}`))!;
+  const THREE_LEVELS = SECTOR_SETS.Earth.levels;
+  /** Past the magnification at which level 1's source runs out, so every level is asked for. */
+  const L2_WANT_PX = DESKTOP.wantTexelPx * (levelSourceWidth(THREE_LEVELS[1]) / 4096);
+  const overLevel2 = (c: number, r: number) =>
+    sectorCentreDirection(THREE_LEVELS[2].grid, { c, r }, new THREE.Vector3()).multiplyScalar(1.5 * R);
+
+  beforeEach(() => {
+    loader = new FakeLoader();
+    loader.auto = true;
+    warm = new FakeWarm();
+    streamer = makeStreamer(NO_FLOOR, { load: loader.load, warm: warm.warm });
+    earth = earthHandle();
+    earth.mesh.geometry = fineGround(R);
+    streamer.register(earth);
+  });
+
+  it('leaves the globe\'s ground under a drawn tile out, and draws it whole the moment the tile is trimmed', () => {
+    const gi = hostIndex(earth);
+    expect(drawn(earth.mesh.geometry)).toEqual({ start: 0, count: gi.full });
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    expect(streamer.stats().bodies.Earth.resident).toEqual(['2_1']);
+    expect(drawn(earth.mesh.geometry)).toEqual({ start: gi.full, count: gi.full - footprint(gi, 0, 2, 1) });
+    // A ledger change from outside the frame's pass: the release un-cuts the
+    // globe in the same call, before any frame could draw.
+    streamer.setGlobalMapBytes(Number.MAX_SAFE_INTEGER / 4);
+    expect(streamer.stats().resident).toBe(0);
+    expect(drawn(earth.mesh.geometry)).toEqual({ start: 0, count: gi.full });
+    expect(streamer.stats().groundCut.unbacked).toBe(0);
+  });
+
+  it('a level-2 tile over level 0 with no level 1 between cuts both, and every cut stays backed', () => {
+    const three = earthHandle();
+    three.mesh.geometry = fineGround(R);
+    three.spec = { ...SECTOR_SETS.Earth, levels: THREE_LEVELS };
+    streamer.register(three);
+    const measure = measureLevels(THREE_LEVELS, { '2_1': 2 * L2_WANT_PX });
+    for (let f = 0; f < 8; f++) streamer.update('Earth', overLevel2(10, 5), measure, f * 16);
+    const held = streamer.devHoldOut('skip');
+    expect(held).toMatch(/^L1\//);
+    expect(streamer.stats().groundCut.unbacked).toBe(0);
+    for (let f = 8; f < 10; f++) streamer.update('Earth', overLevel2(10, 5), measure, f * 16);
+    const resident = new Set(streamer.stats().bodies.Earth.resident);
+    expect(resident.has(held!)).toBe(false);
+    const [hc, hr] = held!.slice(3).split('_').map(Number);
+    const orphans = [0, 1].flatMap((dy) => [0, 1].map((dx) => ({ c: 2 * hc + dx, r: 2 * hr + dy })))
+      .filter((s) => resident.has(`L2/${s.c}_${s.r}`));
+    expect(orphans.length).toBeGreaterThan(0);
+    // The globe is cut under the level-0 tile, which covers everything below it.
+    const gi = hostIndex(three);
+    expect(drawn(three.mesh.geometry)).toEqual({ start: gi.full, count: gi.full - footprint(gi, 0, 2, 1) });
+    // Level 0 is cut under its resident level-1 children and under the
+    // level-2 tiles of the one held out.
+    const l0 = sectorMesh(three, '2_1').geometry;
+    const l0gi = groundIndexOf(l0)!;
+    let expected = l0gi.full;
+    for (const id of resident) {
+      const m = /^L1\/(\d+)_(\d+)$/.exec(id);
+      if (m) expected -= footprint(l0gi, 1, +m[1], +m[2], 8, 4);
+    }
+    for (const s of orphans) expected -= footprint(l0gi, 2, s.c, s.r, 8, 4);
+    expect(drawn(l0)).toEqual({ start: l0gi.full, count: expected });
+    expect(streamer.stats().groundCut.unbacked).toBe(0);
+    streamer.devHoldOut(null);
+  });
+
+  it('a hidden tile covers nothing from that draw on', () => {
+    const gi = hostIndex(earth);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    expect(earth.mesh.geometry.drawRange.start).toBe(gi.full);
+    streamer.devSetMeshesVisible(false);
+    expect(drawn(earth.mesh.geometry)).toEqual({ start: 0, count: gi.full });
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 16);
+    expect(drawn(earth.mesh.geometry)).toEqual({ start: 0, count: gi.full });
+    streamer.devSetMeshesVisible(true);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 32);
+    expect(earth.mesh.geometry.drawRange.start).toBe(gi.full);
+  });
+
+  it('the live switch puts every full list back at once, and cuts again at the next reconcile', () => {
+    const gi = hostIndex(earth);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    streamer.setGroundCut(false);
+    expect(drawn(earth.mesh.geometry)).toEqual({ start: 0, count: gi.full });
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 16);
+    expect(drawn(earth.mesh.geometry)).toEqual({ start: 0, count: gi.full });
+    expect(streamer.stats().groundCut.on).toBe(false);
+    streamer.setGroundCut(true);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 32);
+    expect(drawn(earth.mesh.geometry)).toEqual({ start: gi.full, count: gi.full - footprint(gi, 0, 2, 1) });
+  });
+
+  it('a tile still drawing the crop set the base had covers nothing while its reload waits', () => {
+    const gi = hostIndex(earth);
+    earth.material.roughnessMap = null;
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    expect(earth.mesh.geometry.drawRange.start).toBe(gi.full);
+    // The base gains a map: the sector reloads in place, and until the new
+    // set lands it is another program from the globe under it.
+    earth.material.roughnessMap = new THREE.Texture();
+    warm.auto = null;
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 16);
+    expect(streamer.stats().bodies.Earth.reloading).toEqual(['2_1']);
+    expect(drawn(earth.mesh.geometry)).toEqual({ start: 0, count: gi.full });
+    warm.settle('warmed');
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 32);
+    expect(drawn(earth.mesh.geometry)).toEqual({ start: gi.full, count: gi.full - footprint(gi, 0, 2, 1) });
+  });
+
+  it('cuts the night shell under a night tile by the same rule', () => {
+    const night = earthNightHandle();
+    night.mesh.geometry = fineGround(NIGHT_R);
+    streamer.register(night);
+    const gi = hostIndex(night);
+    streamer.update(NIGHT_KEY, cameraOver(2, 1), measureNight({ '2_1': 2 }), 0);
+    expect(streamer.stats().bodies.Earth.resident).toContain('night/2_1');
+    expect(drawn(night.mesh.geometry)).toEqual({ start: gi.full, count: gi.full - footprint(gi, 0, 2, 1) });
+    streamer.dropAll();
+    expect(drawn(night.mesh.geometry)).toEqual({ start: 0, count: gi.full });
+  });
+
+  it('cuts the night shell under its tile whatever the switches say, and leaves the day ground to them', () => {
+    // The night tiles sit at the globe's radius, under the shell, and both add
+    // their lights: the shell passes the depth test over a tile, so the cut is
+    // the only thing keeping a resident tile's ground from drawing twice. The
+    // day ground loses the depth test to its tile anyway, so the switches keep
+    // their meaning there — cost, not picture.
+    const plain = makeStreamer(NO_FLOOR, { load: loader.load, warm: warm.warm, groundCull: false });
+    const day = earthHandle();
+    day.mesh.geometry = fineGround(R);
+    const night = earthNightHandle();
+    night.mesh.geometry = fineGround(NIGHT_R);
+    plain.register(day);
+    plain.register(night);
+    plain.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    plain.update(NIGHT_KEY, cameraOver(2, 1), measureNight({ '2_1': 2 }), 0);
+    expect(plain.stats().bodies.Earth.resident).toEqual(expect.arrayContaining(['2_1', 'night/2_1']));
+    const dayGi = hostIndex(day);
+    const nightGi = hostIndex(night);
+    // Under `?groundcull=0`: the day globe drawn whole, its tile on a plain index.
+    expect(drawn(day.mesh.geometry)).toEqual({ start: 0, count: dayGi.full });
+    expect(groundIndexOf(sectorMesh(day, '2_1').geometry)).toBeUndefined();
+    // The night shell cut under its tile all the same, and the tile laid out.
+    expect(drawn(night.mesh.geometry)).toEqual({ start: nightGi.full, count: nightGi.full - footprint(nightGi, 0, 2, 1) });
+    expect(groundIndexOf(sectorMesh(night, 'night/2_1').geometry)).toBeDefined();
+    expect(plain.stats().groundCut.unbacked).toBe(0);
+
+    // The live switch on a streamer built with the cut: off puts the day
+    // ground's full list back at once and leaves the night shell cut, through
+    // the next frame and back on again.
+    const shell = earthNightHandle();
+    shell.mesh.geometry = fineGround(NIGHT_R);
+    streamer.register(shell);
+    const frame = (t: number) => {
+      streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), t);
+      streamer.update(NIGHT_KEY, cameraOver(2, 1), measureNight({ '2_1': 2 }), t);
+    };
+    frame(0);
+    const gi = hostIndex(earth);
+    const shellGi = hostIndex(shell);
+    const shellCut = { start: shellGi.full, count: shellGi.full - footprint(shellGi, 0, 2, 1) };
+    expect(drawn(earth.mesh.geometry)).toEqual({ start: gi.full, count: gi.full - footprint(gi, 0, 2, 1) });
+    expect(drawn(shell.mesh.geometry)).toEqual(shellCut);
+    streamer.setGroundCut(false);
+    expect(drawn(earth.mesh.geometry)).toEqual({ start: 0, count: gi.full });
+    expect(drawn(shell.mesh.geometry)).toEqual(shellCut);
+    frame(16);
+    expect(drawn(earth.mesh.geometry)).toEqual({ start: 0, count: gi.full });
+    expect(drawn(shell.mesh.geometry)).toEqual(shellCut);
+    streamer.setGroundCut(true);
+    frame(32);
+    expect(drawn(earth.mesh.geometry)).toEqual({ start: gi.full, count: gi.full - footprint(gi, 0, 2, 1) });
+    expect(drawn(shell.mesh.geometry)).toEqual(shellCut);
+    // A tile leaving still draws the shell whole at once, switch or no switch.
+    streamer.dropAll();
+    expect(drawn(shell.mesh.geometry)).toEqual({ start: 0, count: shellGi.full });
+  });
+
+  it('under the kill switch builds every sector with its plain index and cuts nothing', () => {
+    const plain = makeStreamer(NO_FLOOR, { load: loader.load, warm: warm.warm, groundCull: false });
+    const h = earthHandle();
+    h.mesh.geometry = fineGround(R);
+    plain.register(h);
+    plain.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    const tile = h.mesh.children[0] as THREE.Mesh;
+    expect(groundIndexOf(tile.geometry)).toBeUndefined();
+    expect(tile.geometry.drawRange.count).toBe(Infinity);
+    expect(drawn(h.mesh.geometry)).toEqual({ start: 0, count: hostIndex(h).full });
+    plain.setGroundCut(true);
+    plain.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 16);
+    expect(drawn(h.mesh.geometry)).toEqual({ start: 0, count: hostIndex(h).full });
   });
 });

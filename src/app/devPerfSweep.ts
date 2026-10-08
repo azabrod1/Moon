@@ -64,8 +64,11 @@
  * does under thermal and background pressure — and the table says so in words
  * rather than letting the rows be read as costs they are not.
  *
- * Three runs are offered:
+ * Four runs are offered:
  *
+ *  - **Phone** — the preset: the efficiency switches plus the tile layer, half
+ *    the pixels and everything at once, one block each, about two minutes.
+ *    It is the default on a touch device.
  *  - **Sweep** — the paired run above. Minutes, and the ranking it gives is
  *    the one to act on.
  *  - **Quick** — one bracketed pass, A B A C A D, three-second holds: the
@@ -442,6 +445,16 @@ const EXPECTED_SWITCHES: Record<string, { off: string; on: string; needsReload?:
   'cloud-probe-detail': { off: 'Deck detail term back', on: 'Deck detail term off', exact: false },
   'cloud-probe-relief': { off: 'Deck relief map back', on: 'Deck relief map off', exact: false },
   'cloud-probe-air': { off: 'Deck air back', on: 'Deck air off', exact: false },
+  // The visual keys: a fix that changes the picture on purpose, whose OFF arm
+  // is only the control a capture of it is held against. Priced like any row,
+  // never exact, never in the combined row.
+  'cloud-noise-frame': { off: 'Cloud noise anchored to the sky again', on: 'Cloud noise anchored to the sheet', exact: false },
+  // The cloud features, on by default: each a compile-time define, so a flip
+  // relinks the ground's or the deck's program and the sweep never holds it;
+  // the number of record is a two-boot `?cloudshadows=0` / `?cloudlight=0` A/B.
+  // They change the picture, so never exact and never in the combined row.
+  'cloud-shadow': { off: 'Cloud shadows off', on: 'Cloud shadows on', needsReload: true, exact: false },
+  'cloud-light': { off: 'Cloud light off', on: 'Cloud light on', needsReload: true, exact: false },
 };
 
 /**

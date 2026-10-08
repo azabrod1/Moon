@@ -19,10 +19,10 @@
  *
  * The curve is authored against the map's STORED luminance — what the eight-bit
  * file holds — not the linear value the sampler returns, because "clear sky"
- * and "thick cloud" are gradings of the file. On the shipped map (2K, the same
- * product every rung is cut from) the authored pair leaves 21.7 % of the globe
- * fully clear, drives 5.9 % to full opacity, and averages 0.25 over the sphere
- * by area.
+ * and "thick cloud" are gradings of the file. On the shipped map (2K, cut from
+ * the same cloud master as every rung and the HD field) the authored pair
+ * leaves 20.6 % of the globe fully clear, drives 0.8 % to full opacity, and
+ * averages 0.256 over the sphere by area.
  *
  * The upper edge is high — 0.75, not the 0.6 the disc's mean alone would
  * suggest — because what the night side needs is GRADATION. At 0.6 a seventh of
@@ -161,7 +161,10 @@ export function luminance(r: number, g: number, b: number): number {
 // Everything below drives one texel fetch of the tileable noise map
 // (world/cloudDetailNoise) per deck fragment, and nothing at all on any other
 // surface. The map holds the field in R and its own gradient in G and B, so the
-// erosion and the normal perturbation share the fetch.
+// erosion and the normal perturbation share the fetch. It is read on the deck's
+// own sheet (`bodyToDeck`, below), the frame the cloud map is painted in: read
+// in any other, the field stands still while the cloud turns and drifts under
+// it, and every carved edge crawls.
 
 /**
  * How much of the deck's alpha the noise may eat where the coverage is at an
@@ -276,5 +279,83 @@ vec2 sphereEquirectUvGrad(vec3 d, vec3 dd) {
   float cosLat = max(sqrt(d.x * d.x + d.z * d.z), 1e-4);
   return vec2((d.z * dd.x - d.x * dd.z) / (cosLat * cosLat) * ${(1 / (2 * Math.PI)).toFixed(7)},
               dd.y / cosLat * ${(1 / Math.PI).toFixed(7)});
+}
+`;
+
+// --- Frames -----------------------------------------------------------------
+//
+// Three frames meet at the deck. The WORLD's axes, which the air is looked up
+// in. The BODY's, which turns with the planet: the eclipse casters, the ring
+// plane, the Sun's local direction and the ground's own maps are stated in it,
+// and a surface shader has its fragment there as `vObjPos`. And the DECK's,
+// which is the body's turned by the drift its mesh carries on top
+// (`rotation.y`, written each frame beside the body's orientation): the frame
+// the cloud map is painted in, so anything that belongs to a cloud — its
+// detail, the shadow it casts — is read there.
+
+type Vec3 = readonly [number, number, number];
+
+/**
+ * A body-frame vector in the deck's own frame: the drift the deck's mesh
+ * carries, undone. The vertex stage builds `vObjPos` by turning the mesh
+ * position by the drift (three's rotation about y); this is that rotation by
+ * minus the drift, so `bodyToDeck(vObjPos, drift)` is the mesh position back.
+ * Linear, so it turns a derivative of a direction exactly as it turns the
+ * direction. Mirrored exactly by `bodyToDeck` in CLOUD_FRAME_GLSL, and the
+ * same turn the sea's lookup into the deck map has always made.
+ */
+export function bodyToDeck(p: Vec3, spin: number): [number, number, number] {
+  const c = Math.cos(spin);
+  const s = Math.sin(spin);
+  return [c * p[0] - s * p[2], p[1], s * p[0] + c * p[2]];
+}
+
+/**
+ * Where the ray from a ground point toward the Sun pierces the shell the deck
+ * is drawn on, as a direction from the body's centre: the place on the deck
+ * whose cloud stands between that ground and the Sun.
+ *
+ * In units of the body's radius the ground point is the unit vector `n` and the
+ * shell is at 1 + h/R, so the ray n + tL meets it where t² + 2μt − k = 0, with
+ * μ = n·L and k = (h/R)(2 + h/R). The root that matters is t = −μ + √(μ² + k).
+ * With the Sun up that is a difference of two nearly equal numbers — for 10 km
+ * over Earth, √k is 0.056 and μ is near 1 — so it is written k / (√(μ² + k) + μ),
+ * the same number with nothing cancelled. With the Sun down the subtraction is
+ * a sum and needs no rewrite.
+ *
+ * It does not diverge at the horizon: t there is √k, 357 km of ground for a
+ * 10 km shell over Earth. Below the horizon the ray has gone into the ground
+ * before it reaches any cloud, and whether a shadow is drawn there is the
+ * caller's decision; this answers the geometry alone. Radius-normalised, so it
+ * never depends on how far a coarse mesh's chord sags below the sphere.
+ * Mirrored exactly by `cloudRayDirection` in CLOUD_FRAME_GLSL.
+ */
+export function cloudRayDirection(n: Vec3, L: Vec3, hOverR: number): [number, number, number] {
+  const mu = n[0] * L[0] + n[1] * L[1] + n[2] * L[2];
+  const k = hOverR * (2 + hOverR);
+  const root = Math.sqrt(mu * mu + k);
+  const t = mu >= 0 ? k / (root + mu) : root - mu;
+  const q: [number, number, number] = [n[0] + t * L[0], n[1] + t * L[1], n[2] + t * L[2]];
+  const len = Math.hypot(q[0], q[1], q[2]);
+  return [q[0] / len, q[1] / len, q[2] / len];
+}
+
+/** The GLSL halves of `bodyToDeck` and `cloudRayDirection`. */
+export const CLOUD_FRAME_GLSL = /* glsl */`
+// The deck's own frame from the body's: the drift its mesh carries, undone.
+vec3 bodyToDeck(vec3 p, float spin) {
+  float c = cos(spin);
+  float s = sin(spin);
+  return vec3(c * p.x - s * p.z, p.y, s * p.x + c * p.z);
+}
+// Where the ray from a point on the unit sphere toward the Sun pierces the shell
+// at hOverR above it, as a direction. Radius-normalised, and the root is
+// rationalised so a 10 km shell over 6371 km loses nothing to cancellation.
+vec3 cloudRayDirection(vec3 n, vec3 L, float hOverR) {
+  float mu = dot(n, L);
+  float k = hOverR * (2.0 + hOverR);
+  float root = sqrt(mu * mu + k);
+  float t = mu >= 0.0 ? k / (root + mu) : root - mu;
+  return normalize(n + t * L);
 }
 `;

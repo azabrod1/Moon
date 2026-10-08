@@ -215,7 +215,16 @@ void main() {
   // frame-free form the air's geometry is worked out in.
   vAirCam = cameraPosition - modelMatrix[3].xyz;
   vAirFrag = mat3(modelMatrix) * position;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  // The position in three's own order (project_vertex: the view transform
+  // first, the projection on its result). The night tiles are built on the
+  // globe's surface and beat the ground under them by a polygon offset of a
+  // few depth units, and that ground is drawn by three's chunk. Multiplying
+  // the two matrices first rounds differently, and at an oblique view the gap
+  // exceeds the offset: the tiles' light then fails the depth test in patches
+  // that move as the near plane drifts between boots. The same expression
+  // rounds the same, and the offset is a margin again.
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  gl_Position = projectionMatrix * mvPosition;
 }
 `;
 

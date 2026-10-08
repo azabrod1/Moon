@@ -10,7 +10,7 @@
 // Jobs:
 //   moon-normal      ldem_16_uint.tif  -> moon-normal.png      (boot-tier tangent-space normal)
 //   moon-normal-4k   ldem_16_uint.tif  -> 4k/moon-normal.png   (close-approach tier)
-//   earth-clouds-normal      8k/earth-clouds.webp -> earth-clouds-normal.png
+//   earth-clouds-normal      8k/earth-clouds.v2.webp -> earth-clouds-normal.v2.png
 //
 // Mars's relief is NOT a job here any more: tools/gen-relief.mjs streams the
 // 11 GB HRSC–MOLA blended DEM in Node, which no canvas round-trip could hold.
@@ -60,13 +60,14 @@ const JOBS = {
   // why the material that reads it authors a shallow normalScale.
   //
   // ONE tier, and 1024 rather than 4096, because a cloud field's relief map is
-  // nearly incompressible: the same job at 4096 is 15.6 MB lossless, 10.3 MB
-  // near-lossless and 2.9 MB only as ordinary lossy webp, which is YUV420 and
-  // puts 14 counts of RMS error into the two channels that ARE the tilt. For
-  // comparison the deck's own 8K COLOUR rung — which doubles the resolution of
-  // the picture rather than of a guess at its height — is 4.7 MB, and blurring
-  // the height field first only reaches 7.9 MB at a blur that costs the relief
-  // its shape. The band a 4K relief would have added (4 to 40 km) is the band
+  // nearly incompressible: the same job at 4096 is 13.7 MB lossless, 9.0 MB
+  // near-lossless and 2.2 MB only as ordinary lossy webp, which is YUV420 and
+  // puts its error into the two channels that ARE the tilt. For comparison the
+  // deck's own 8K COLOUR rung — which doubles the resolution of the picture
+  // rather than of a guess at its height — is 3.1 MB, and blurring the height
+  // field first does not close that gap before the relief has lost its shape
+  // (tried on the sheet this one replaced: 7.9 MB at a blur that cost it).
+  // The band a 4K relief would have added (4 to 40 km) is the band
   // the procedural detail noise already covers, registered to nothing but
   // costing no bytes at all; this map's job is the macro relief, which is
   // registered to the actual clouds and is what 1024 holds.
@@ -75,9 +76,10 @@ const JOBS = {
   // an eighth-scale map. That rule (halve the spacing, double the strength)
   // holds where the field is smooth at the texel scale; cloud is not, so most
   // of an 8x downsample's gradient is lost to smoothing rather than to the
-  // wider step. 1.6 here lands on the tilt distribution 2.0 does at 4096 —
-  // median 10 degrees, 90th percentile 30 — measured, not derived.
-  'earth-clouds-normal': { src: 'earth-clouds.webp', from: path.join(TEX, '8k'), out: 'earth-clouds-normal.png', fn: 'luminanceToNormal', scale: 0.125, opts: { strength: 1.6 } },
+  // wider step. 1.6 was set, by measurement and not by derivation, to land on
+  // the tilt distribution 2.0 gave at 4096 on the sheet this one replaced; on
+  // today's it gives a median tilt of 10 degrees and a 90th percentile of 29.
+  'earth-clouds-normal': { src: 'earth-clouds.v2.webp', from: path.join(TEX, '8k'), out: 'earth-clouds-normal.v2.png', fn: 'luminanceToNormal', scale: 0.125, opts: { strength: 1.6 } },
 };
 
 async function exists(p) {

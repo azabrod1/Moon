@@ -1,0 +1,168 @@
+// The texture-unit census of Earth's surface programs, asserted on a real link.
+//
+// A program spends its ACTIVE samplers — the ones the compiler kept — and the
+// surface shader relies on the compiler dropping some (the ground's deck block
+// under the cloud field's archetype define), so the only honest count is GL's
+// own ACTIVE_UNIFORMS list after a link. The app's DEV bridge builds and links
+// every combination of the switch defines that change a sampler
+// (src/planetarium/world/samplerCensus.ts: CLOUD_SHADOW, CLOUD_FIELD,
+// CLOUD_LIGHT and MIE_EXACT, the full and the half atmosphere tables, the
+// ground with and without its water mask) and this battery holds them to:
+//
+//   - every program within the GPU's fragment texture units;
+//   - every Earth ground program linking exactly the sea's samplers
+//     (SEA_WIND_SAMPLERS: the one wind map), in every combination;
+//   - the deck compiled with the field holds exactly the field's two samplers
+//     more; the ground, which compiles the field only beside its cloud shadow
+//     (the shadow reads the field), drops its dead uCloudDetail tap and holds
+//     exactly the field's two more;
+//   - every program compiled with MIE_EXACT holds exactly the single-Mie
+//     colour table (uMieColour) more than the same row without it, and no
+//     row without it links uMieColour;
+//   - the live globe and deck, as this boot linked them, hold exactly what the
+//     census row with their defines holds — the check that the census builds
+//     the app's programs and not some other ones.
+//
+//   node tools/sampler-census.mjs --url=http://localhost:5744
+//   node tools/sampler-census.mjs --url=… --extra='&cloudtiles=0&cloudshadows=0&cloudlight=0'
+//   node tools/sampler-census.mjs --url=… --extra='&mieexact=0'
+//
+// The first boot has the cloud switches and the exact single-Mie colour on, as
+// they ship; the others turn them off by their kill switches.
+import { chromium } from 'playwright';
+import { takeBrowserLock } from './browserLock.mjs';
+
+function arg(name, fallback) {
+  const found = process.argv.find((value) => value.startsWith(`--${name}=`));
+  return found ? found.slice(name.length + 3) : fallback;
+}
+const baseUrl = arg('url', 'http://localhost:5174');
+const extra = arg('extra', '');
+const FIELD_SAMPLERS = ['uCloudPages', 'uCloudPageTable'];
+const MIE_SAMPLER = 'uMieColour';
+
+const failures = [];
+const fail = (message) => { failures.push(message); console.log(`  FAIL  ${message}`); };
+
+const releaseLock = await takeBrowserLock('sampler-census');
+const browser = await chromium.launch({
+  headless: true,
+  executablePath: process.env.PW_CHROMIUM || undefined,
+  args: ['--use-gl=angle', '--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader'],
+});
+try {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
+  await context.addInitScript(() => {
+    try {
+      localStorage.setItem('planetarium-help-seen', '1');
+      localStorage.setItem('planetarium-surface-hint-seen', '1');
+    } catch { /* storage blocked — harmless */ }
+  });
+  const page = await context.newPage();
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(String(error)));
+  await page.goto(`${baseUrl}/?auto=planetarium&quality=medium${extra}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => !!(window.__moon && window.__moon.ready && window.__moon.ready()), { timeout: 180000 });
+  await page.waitForFunction(() => {
+    const loading = document.getElementById('loading-screen');
+    return !loading || loading.classList.contains('hidden');
+  }, { timeout: 180000 }).catch(() => {});
+
+  // Earth's shell on the tables tier, so its live program is the one that
+  // reads the tables (a device with no tier keeps the analytic shell).
+  for (let i = 0; i < 60; i++) {
+    const tier = await page.evaluate(() => window.__moon.atmoTier?.(null, true));
+    if (tier?.Earth === 'lut') break;
+    await page.waitForTimeout(1000);
+  }
+  // The deck's live program is the one with its relief: wait for it to land.
+  let census = null;
+  for (let i = 0; i < 40; i++) {
+    census = await page.evaluate(() => window.__moon.samplerCensus());
+    const deck = census.live.find((l) => l.surface === 'deck');
+    if (deck?.samplers?.includes('normalMap')) break;
+    await page.waitForTimeout(500);
+  }
+
+  const key = (r) => `${r.surface} ${r.tables} ${r.waterMask ? 'water' : 'dry'} [${r.defines.join(' ')}]`;
+  console.log(`# sampler census @ ${baseUrl}${extra ? ` (${extra})` : ''}`);
+  console.log(`  fragment texture units ${census.maxUnits}, sea samplers per ground program ${census.seaWindSamplers}`);
+  for (const r of census.rows) {
+    console.log(`  ${key(r).padEnd(52)} ${String(r.samplers.length).padStart(2)}  ${r.samplers.join(' ')}`);
+  }
+
+  const find = (surface, defines, tables, waterMask) => census.rows.find((r) => r.surface === surface
+    && r.tables === tables && r.waterMask === waterMask
+    && r.defines.length === defines.length && defines.every((d) => r.defines.includes(d)));
+  const same = (a, b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+  for (const r of census.rows) {
+    const n = r.samplers.length;
+    const field = r.defines.includes('CLOUD_FIELD');
+    if (n === 0) fail(`${key(r)}: no linked program`);
+    if (n > census.maxUnits) fail(`${key(r)}: ${n} samplers, over the ${census.maxUnits} units`);
+    // The exact single-Mie colour: its one table more, and nothing else.
+    if (r.defines.includes('MIE_EXACT')) {
+      const packed = find(r.surface, r.defines.filter((d) => d !== 'MIE_EXACT'), r.tables, r.waterMask);
+      if (!packed) fail(`${key(r)}: no row without MIE_EXACT to hold it to`);
+      else if (!same(r.samplers, [...packed.samplers, MIE_SAMPLER])) {
+        fail(`${key(r)}: holds ${r.samplers.join(' ')}, wanted ${key(packed)} and ${MIE_SAMPLER}`);
+      }
+    } else if (r.samplers.includes(MIE_SAMPLER)) {
+      fail(`${key(r)}: ${MIE_SAMPLER} active without MIE_EXACT`);
+    }
+    const sea = r.samplers.filter((s) => s.startsWith('uSea'));
+    if (r.surface === 'ground' && sea.length !== census.seaWindSamplers) {
+      fail(`${key(r)}: links ${sea.length} sea sampler(s) (${sea.join(' ')}), wanted ${census.seaWindSamplers}`);
+    }
+    if (!field) {
+      for (const s of FIELD_SAMPLERS) if (r.samplers.includes(s)) fail(`${key(r)}: ${s} active without the field`);
+      continue;
+    }
+    const without = find(r.surface, r.defines.filter((d) => d !== 'CLOUD_FIELD'), r.tables, r.waterMask);
+    if (!without) { fail(`${key(r)}: no row without the field to hold it to`); continue; }
+    if (r.surface === 'deck') {
+      // The deck reads the field: exactly its two samplers more.
+      if (!same(r.samplers, [...without.samplers, ...FIELD_SAMPLERS])) {
+        fail(`${key(r)}: holds ${r.samplers.join(' ')}, wanted ${key(without)} and the field's two`);
+      }
+    } else {
+      // The ground knows it is not the deck: uCloudDetail is gone, and its
+      // shadow reads the field: exactly the field's two gained.
+      if (r.samplers.includes('uCloudDetail')) fail(`${key(r)}: the deck's uCloudDetail is still active`);
+      if (!r.defines.includes('CLOUD_SHADOW')) fail(`${key(r)}: the ground compiles the field only beside its shadow`);
+      const base = without.samplers.filter((s) => s !== 'uCloudDetail');
+      if (!same(r.samplers, [...base, ...FIELD_SAMPLERS])) {
+        fail(`${key(r)}: holds ${r.samplers.join(' ')}, wanted ${base.join(' ')} and the field's two`);
+      }
+    }
+  }
+  for (const l of census.live) {
+    const row = find(l.surface, l.defines, l.tables, l.surface === 'ground');
+    const what = `live ${l.surface} ${l.tables} [${l.defines.join(' ')}]`;
+    console.log(`  ${what.padEnd(52)} ${l.samplers ? String(l.samplers.length).padStart(2) : ' -'}  ${l.samplers ? l.samplers.join(' ') : 'not linked'}`);
+    if (!l.samplers) { fail(`${what}: not linked`); continue; }
+    if (!row) { fail(`${what}: no census row with these defines`); continue; }
+    if (JSON.stringify(l.samplers) !== JSON.stringify(row.samplers)) {
+      fail(`${what}: holds ${l.samplers.join(' ')}, the census row ${row.samplers.join(' ')}`);
+    }
+  }
+  if (census.live.length < 2) fail(`only ${census.live.length} live surface(s) found`);
+  // The tables-tier shell reads the scattering table, and the colour table
+  // beside it under MIE_EXACT: one sampler, or two.
+  if (!census.shell) {
+    console.log('  live shell                                           -  not on the tables tier');
+  } else {
+    const s = census.shell;
+    const what = `live shell [${s.mieExact ? 'MIE_EXACT' : ''}]`;
+    console.log(`  ${what.padEnd(52)} ${s.samplers ? String(s.samplers.length).padStart(2) : ' -'}  ${s.samplers ? s.samplers.join(' ') : 'not linked'}`);
+    const wanted = s.mieExact ? [MIE_SAMPLER, 'uScattering'] : ['uScattering'];
+    if (!s.samplers || !same(s.samplers, wanted)) fail(`${what}: holds ${s.samplers?.join(' ') ?? 'nothing'}, wanted ${wanted.join(' ')}`);
+  }
+  if (pageErrors.length) fail(`${pageErrors.length} page error(s): ${pageErrors[0]}`);
+  await context.close();
+} finally {
+  await browser.close();
+  releaseLock();
+}
+console.log(failures.length ? `\n${failures.length} FAILED` : '\nPASS');
+process.exit(failures.length ? 1 : 0);

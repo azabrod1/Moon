@@ -102,6 +102,9 @@ export interface HighlightTelemetry {
   carried: [number, number, number];
   drawn: [number, number, number];
   groundAngleDeg: number;
+  /** How far across the principal line the peak sits, degrees of ground:
+   *  zero over a uniform sea, off it where land or cloud lies along it. */
+  acrossAngleDeg: number;
   halfWidthAlongDeg: number;
   halfWidthAcrossDeg: number;
   /** The surface under the predicted peak: water, wind, cloud keep. */
@@ -172,9 +175,11 @@ export class HighlightMeter {
       this.exposure = held === 'off' ? 1 : advanceExposureStops(this.exposure, 1, dt, this.downStopsPerS, this.upStopsPerS);
       return this.exposure;
     }
-    const t0 = now();
     this.hold = 'metering';
     if (!this.table) this.table = buildTransmittanceTable(atmosphereParams('Earth'));
+    // Timed from here: the table above is built once a session, and in the
+    // average it would read as the scan's own cost for a hundred frames after.
+    const t0 = now();
     this.pose.camera[0] = ctx.camera.x; this.pose.camera[1] = ctx.camera.y; this.pose.camera[2] = ctx.camera.z;
     this.pose.sun[0] = ctx.sun.x; this.pose.sun[1] = ctx.sun.y; this.pose.sun[2] = ctx.sun.z;
     this.light.intensity = ctx.lightIntensity;
@@ -192,7 +197,9 @@ export class HighlightMeter {
     if (found) {
       this.view[0] = ctx.view.x; this.view[1] = ctx.view.y; this.view[2] = ctx.view.z;
       this.viewUp[0] = ctx.viewUp.x; this.viewUp[1] = ctx.viewUp.y; this.viewUp[2] = ctx.viewUp.z;
-      placeBeamInFrame(this.pose as GlintMeterPose, this.peak.groundAngleDeg, this.view, this.viewUp, this.scratch, this.place);
+      placeBeamInFrame(
+        this.pose as GlintMeterPose, this.peak.groundAngleDeg, this.view, this.viewUp, this.scratch, this.place, this.peak.acrossAngleDeg,
+      );
     } else {
       this.place.inFront = false; this.place.xDeg = 0; this.place.yDeg = 0;
     }
@@ -230,6 +237,7 @@ export class HighlightMeter {
       carried: [p.carried[0], p.carried[1], p.carried[2]],
       drawn: [p.drawn[0], p.drawn[1], p.drawn[2]],
       groundAngleDeg: p.groundAngleDeg,
+      acrossAngleDeg: p.acrossAngleDeg,
       halfWidthAlongDeg: p.halfWidthAlongDeg,
       halfWidthAcrossDeg: p.halfWidthAcrossDeg,
       peakSample: { water: p.sample.water, windMs: p.sample.windMs, cloudKeep: p.sample.cloudKeep },

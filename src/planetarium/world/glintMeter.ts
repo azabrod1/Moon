@@ -43,10 +43,17 @@
  * The brightest drawn point is not the mirror point: the Fresnel, the view
  * cosine and the shadowing move it toward the horizon, so the radiance is
  * scanned along the principal line (the great circle through the sub-camera
- * and sub-Sun points) and the maximum taken, then refined. The beam's extent
- * is fitted from one sample along and one across the line as a Gaussian fall
- * from the peak, and handed back as the angles the half-maximum half-widths
- * subtend at the camera, for the caller to turn into a share of the frame.
+ * and sub-Sun points) and the maximum taken, then refined. The line is the
+ * beam's axis only over a uniform sea: a coast, an island or a cloud bank
+ * lying along it would hide a bright beam on either side, so wherever the
+ * maps cut the line's own sample the scan also reads one and two of the
+ * lobe's expected half-widths either side of it, and the refinement moves
+ * across the line as well as along it. Over open, clear sea the line holds
+ * the brightest point of every step, and the scan is the line's alone.
+ * The beam's extent is fitted from one sample along and one across the line
+ * as a Gaussian fall from the peak, and handed back as the angles the
+ * half-maximum half-widths subtend at the camera, for the caller to turn
+ * into a share of the frame.
  */
 import type { AtmosphereParams, RGB } from './atmosphereModel';
 import { transmittanceToTopBoundary } from './atmosphereModel';
@@ -118,6 +125,17 @@ export const COX_MUNK_SLOPE_PER_MS = 0.00512;
 export function meanSquareSlopeOfWind(windMs: number): number {
   return COX_MUNK_SLOPE_CALM + COX_MUNK_SLOPE_PER_MS * Math.max(windMs, 0);
 }
+
+/** The wind the scan sizes its reach across the principal line for: 7 m/s,
+ *  near the open ocean's mean. Only where the scan looks depends on it, never
+ *  what it reads there: a calmer sea's narrower beam is still met inside two
+ *  of these half-widths, and the refinement then climbs to its own peak. */
+export const SCAN_ACROSS_WIND_MS = 7;
+
+/** The scan's offsets across the principal line at a coarse step whose own
+ *  sample the maps cut, in the lobe's expected half-widths there: one and
+ *  two out on either side. */
+const SCAN_ACROSS_STEPS = [1, -1, 2, -2];
 
 /** The table, built once per body from the CPU atmosphere; a few milliseconds. */
 export function buildTransmittanceTable(params: AtmosphereParams, samples = 256, muMin = -0.25): TransmittanceTable {
@@ -253,6 +271,10 @@ export interface BeamPeak {
   readonly n: [number, number, number];
   /** Ground angle from the sub-camera point along the principal line, degrees. */
   readonly groundAngleDeg: number;
+  /** Ground angle from the principal line to the peak, degrees, toward the
+   *  plane's normal (the camera's vertical crossed into the Sun's side): zero
+   *  over a uniform sea, off it where land or cloud lies along the line. */
+  readonly acrossAngleDeg: number;
   /** The carried radiance at the peak, per channel. */
   readonly carried: [number, number, number];
   /** The drawn radiance at the peak, per channel, after the shoulder. */
@@ -279,7 +301,7 @@ export interface ScanOptions {
 /** A result holder the caller keeps, so a frame allocates nothing. */
 export function createBeamPeak(): BeamPeak {
   return {
-    n: [0, 0, 0], groundAngleDeg: 0, carried: [0, 0, 0], drawn: [0, 0, 0], drawnMax: 0,
+    n: [0, 0, 0], groundAngleDeg: 0, acrossAngleDeg: 0, carried: [0, 0, 0], drawn: [0, 0, 0], drawnMax: 0,
     halfWidthAlongDeg: 0, halfWidthAcrossDeg: 0,
     sample: { windMs: 0, water: 0, cloudKeep: 1 },
   };
@@ -309,6 +331,28 @@ export function principalAxes(pose: GlintMeterPose, out: Float64Array | number[]
   return true;
 }
 
+/**
+ * How far across the principal line the beam at the ground point p falls to
+ * half its height, as a ground angle, for a lobe whose half-maximum is at the
+ * angle `lobeHalf` between the normal and the half vector. Moving p across
+ * the line by a small ground angle d tilts its normal by d, and turns the
+ * view, and with it the half vector, the other way by d / (s |l + v|), s the
+ * slant to the camera in radii, l and v the unit vectors to the Sun and the
+ * camera: the two add, so the half-maximum sits at
+ * d = lobeHalf * s|l + v| / (1 + s|l + v|).
+ */
+export function acrossHalfWidthAt(px: number, py: number, pz: number, pose: GlintMeterPose, lobeHalf: number): number {
+  let vx = pose.camera[0] - px, vy = pose.camera[1] - py, vz = pose.camera[2] - pz;
+  const s = Math.hypot(vx, vy, vz);
+  let lx = pose.sun[0] - px, ly = pose.sun[1] - py, lz = pose.sun[2] - pz;
+  const sunDist = Math.hypot(lx, ly, lz);
+  if (!(s > 1e-12) || !(sunDist > 1e-12)) return 0;
+  vx /= s; vy /= s; vz /= s;
+  lx /= sunDist; ly /= sunDist; lz /= sunDist;
+  const g = s * Math.hypot(lx + vx, ly + vy, lz + vz);
+  return (lobeHalf * g) / (1 + g);
+}
+
 /** Where the beam's peak lands in the frame, as a pinhole sees it: its
  *  angles from the frame's centre toward the right and up, degrees, the
  *  direction of the principal line there as a unit vector in those axes,
@@ -328,13 +372,15 @@ export function createBeamPlace(): BeamPlace {
 /**
  * Place the beam's peak in the frame. `view` is the camera's forward and
  * `viewUp` its up, unit vectors in the body frame; the frame's right is their
- * cross product. The peak sits on the principal line at `groundAngleDeg`
- * from the sub-camera point, and the line's direction in the frame is read
- * from a second point half a degree further along it. A point at or behind
- * the camera's plane is not in front, and the place is left at the centre.
+ * cross product. The peak sits `groundAngleDeg` along the principal line from
+ * the sub-camera point and `acrossAngleDeg` across it (the scan's own two
+ * angles), and the line's direction in the frame is read from a second point
+ * half a degree further along. A point at or behind the camera's plane is not
+ * in front, and the place is left at the centre.
  */
 export function placeBeamInFrame(
   pose: GlintMeterPose, groundAngleDeg: number, view: Vec3, viewUp: Vec3, scratch: GlintScratch, out: BeamPlace,
+  acrossAngleDeg = 0,
 ): void {
   out.xDeg = 0; out.yDeg = 0; out.alongX = 0; out.alongY = 1; out.inFront = false;
   const axes = scratch.axes;
@@ -348,11 +394,16 @@ export function placeBeamInFrame(
   ux /= uLen; uy /= uLen; uz /= uLen;
   const rx = fy * uz - fz * uy, ry = fz * ux - fx * uz, rz = fx * uy - fy * ux;
   const cam = pose.camera;
+  // The plane's normal, and the across angle's share of the point.
+  const nx = axes[1] * axes[5] - axes[2] * axes[4];
+  const ny = axes[2] * axes[3] - axes[0] * axes[5];
+  const nz = axes[0] * axes[4] - axes[1] * axes[3];
+  const ca = Math.cos(acrossAngleDeg * DEG), sa = Math.sin(acrossAngleDeg * DEG);
   const frameAngles = (phi: number, o: [number, number]): boolean => {
     const c = Math.cos(phi), s = Math.sin(phi);
-    const dx = c * axes[0] + s * axes[3] - cam[0];
-    const dy = c * axes[1] + s * axes[4] - cam[1];
-    const dz = c * axes[2] + s * axes[5] - cam[2];
+    const dx = ca * (c * axes[0] + s * axes[3]) + sa * nx - cam[0];
+    const dy = ca * (c * axes[1] + s * axes[4]) + sa * ny - cam[1];
+    const dz = ca * (c * axes[2] + s * axes[5]) + sa * nz - cam[2];
     const depth = dx * fx + dy * fy + dz * fz;
     if (!(depth > 1e-9)) return false;
     o[0] = Math.atan2(dx * rx + dy * ry + dz * rz, depth) / DEG;
@@ -372,10 +423,11 @@ export function placeBeamInFrame(
 }
 
 /**
- * Scan the principal line for the brightest drawn point of the beam and fit
- * its extent. Returns false, with `out` zeroed, when there is no beam: the
- * camera inside the body, the Sun on the camera's zenith (no principal
- * plane), the Sun under the horizon of every visible point, or no sea in it.
+ * Scan the principal line, and a band either side of it, for the brightest
+ * drawn point of the beam and fit its extent. Returns false, with `out`
+ * zeroed, when there is no beam: the camera inside the body, the Sun on the
+ * camera's zenith (no principal plane), the Sun under the horizon of every
+ * visible point, or no sea in it.
  */
 export function scanBeam(
   pose: GlintMeterPose, light: GlintMeterLight, sea: GlintMeterSea,
@@ -383,7 +435,7 @@ export function scanBeam(
   out: BeamPeak, opts?: ScanOptions,
 ): boolean {
   const o = out as { -readonly [K in keyof BeamPeak]: BeamPeak[K] };
-  o.drawnMax = 0; o.groundAngleDeg = 0; o.halfWidthAlongDeg = 0; o.halfWidthAcrossDeg = 0;
+  o.drawnMax = 0; o.groundAngleDeg = 0; o.acrossAngleDeg = 0; o.halfWidthAlongDeg = 0; o.halfWidthAcrossDeg = 0;
   o.carried[0] = o.carried[1] = o.carried[2] = 0;
   o.drawn[0] = o.drawn[1] = o.drawn[2] = 0;
   o.sample.windMs = 0; o.sample.water = 0; o.sample.cloudKeep = 1;
@@ -394,35 +446,82 @@ export function scanBeam(
   if (!principalAxes(pose, axes)) return false;
   const e1x = axes[0], e1y = axes[1], e1z = axes[2];
   const e2x = axes[3], e2y = axes[4], e2z = axes[5];
+  // The plane's normal: the direction across the line.
+  const ax = e1y * e2z - e1z * e2y, ay = e1z * e2x - e1x * e2z, az = e1x * e2y - e1y * e2x;
   const horizon = Math.acos(1 / camDist);
   const coarse = opts?.coarse ?? 24;
   const refine = opts?.refine ?? 6;
+  const lobeHalf = Math.atan(Math.sqrt(meanSquareSlopeOfWind(SCAN_ACROSS_WIND_MS) * Math.LN2));
   const rad = scratch.t; // a free triple while beamRadianceAt is not running
-  const drawnAt = (phi: number): number => {
+  // A ground point by its angle phi along the line and a across it:
+  // cos a (cos phi e1 + sin phi e2) + sin a times the plane's normal.
+  const drawnAt = (phi: number, a: number): number => {
     const c = Math.cos(phi), s = Math.sin(phi);
-    beamRadianceAt(c * e1x + s * e2x, c * e1y + s * e2y, c * e1z + s * e2z, pose, light, sea, sampler, table, scratch, rad);
+    const ca = Math.cos(a), sa = Math.sin(a);
+    beamRadianceAt(
+      ca * (c * e1x + s * e2x) + sa * ax, ca * (c * e1y + s * e2y) + sa * ay, ca * (c * e1z + s * e2z) + sa * az,
+      pose, light, sea, sampler, table, scratch, rad,
+    );
     return Math.max(shoulder(rad[0], sea.knee, sea.cap), shoulder(rad[1], sea.knee, sea.cap), shoulder(rad[2], sea.knee, sea.cap));
   };
-  // Coarse: from just inside the sub-camera point to just inside the horizon.
-  let bestPhi = 0, best = 0;
+  // Whether the sample just read is open sea under a clear sky, the maps
+  // taking nothing from it. Read only after a sample that drew something,
+  // which is one that reached the sampler.
+  const open = (q: SurfaceSample): boolean => q.water >= 1 && q.cloudKeep >= 1;
+  // Coarse: from just inside the sub-camera point to just inside the horizon,
+  // on the line and, where the maps cut the line's own sample, at one and two
+  // expected half-widths either side of it. Where the line reads open sea
+  // under a clear sky the beam beside it can only be dimmer at that step, the
+  // geometry falling away from the line on both sides, so nothing more is
+  // read and a uniform sea is scanned exactly as the line alone scanned it;
+  // where the line is land, a coast or cloud, the offsets find the beam
+  // beside it.
+  const halfWidthAcrossAt = (phi: number): number => {
+    const c = Math.cos(phi), s = Math.sin(phi);
+    return acrossHalfWidthAt(c * e1x + s * e2x, c * e1y + s * e2y, c * e1z + s * e2z, pose, lobeHalf);
+  };
+  let bestPhi = 0, bestA = 0, best = 0, bestOpen = false;
   const step = horizon / (coarse + 1);
   for (let i = 1; i <= coarse; i++) {
     const phi = i * step;
-    const d = drawnAt(phi);
-    if (d > best) { best = d; bestPhi = phi; }
+    const d = drawnAt(phi, 0);
+    const lineOpen = d > 0 && open(scratch.sample);
+    if (d > best) { best = d; bestPhi = phi; bestA = 0; bestOpen = lineOpen; }
+    if (lineOpen) continue;
+    const w = halfWidthAcrossAt(phi);
+    for (let j = 0; j < SCAN_ACROSS_STEPS.length; j++) {
+      const a = SCAN_ACROSS_STEPS[j] * w;
+      const dA = drawnAt(phi, a);
+      if (dA > best) { best = dA; bestPhi = phi; bestA = a; bestOpen = false; }
+    }
   }
   if (!(best > 0)) return false;
-  // Refine by halving the step about the best, keeping the better neighbour.
-  let h = step;
+  // Refine by halving both steps about the best, keeping the best of its
+  // neighbours when it is better still: along the line always, across it only
+  // from a point off the line or one the maps cut, since on the line over
+  // open, clear sea both sides are dimmer.
+  let h = step, hA = halfWidthAcrossAt(bestPhi);
   for (let k = 0; k < refine; k++) {
-    h *= 0.5;
+    h *= 0.5; hA *= 0.5;
     const lo = Math.max(bestPhi - h, step * 0.5), hi = Math.min(bestPhi + h, horizon - step * 0.5);
-    const dLo = drawnAt(lo), dHi = drawnAt(hi);
-    if (dLo > best && dLo >= dHi) { best = dLo; bestPhi = lo; } else if (dHi > best) { best = dHi; bestPhi = hi; }
+    let nextPhi = bestPhi, nextA = bestA, next = best, nextOpen = bestOpen;
+    const dLo = drawnAt(lo, bestA);
+    if (dLo > next) { next = dLo; nextPhi = lo; nextOpen = bestA === 0 && open(scratch.sample); }
+    const dHi = drawnAt(hi, bestA);
+    if (dHi > next) { next = dHi; nextPhi = hi; nextOpen = bestA === 0 && open(scratch.sample); }
+    if (bestA !== 0 || !bestOpen) {
+      const dNeg = drawnAt(bestPhi, bestA - hA);
+      if (dNeg > next) { next = dNeg; nextPhi = bestPhi; nextA = bestA - hA; nextOpen = false; }
+      const dPos = drawnAt(bestPhi, bestA + hA);
+      if (dPos > next) { next = dPos; nextPhi = bestPhi; nextA = bestA + hA; nextOpen = false; }
+    }
+    best = next; bestPhi = nextPhi; bestA = nextA; bestOpen = nextOpen;
   }
   // The peak itself, per channel.
   const c = Math.cos(bestPhi), s = Math.sin(bestPhi);
-  const px = c * e1x + s * e2x, py = c * e1y + s * e2y, pz = c * e1z + s * e2z;
+  const ca = Math.cos(bestA), sa = Math.sin(bestA);
+  const lineX = c * e1x + s * e2x, lineY = c * e1y + s * e2y, lineZ = c * e1z + s * e2z;
+  const px = ca * lineX + sa * ax, py = ca * lineY + sa * ay, pz = ca * lineZ + sa * az;
   beamRadianceAt(px, py, pz, pose, light, sea, sampler, table, scratch, o.carried);
   // The sampler ran for the peak inside that call; keep its reading before
   // the extent's samples overwrite the scratch.
@@ -434,6 +533,7 @@ export function scanBeam(
   o.drawnMax = Math.max(o.drawn[0], o.drawn[1], o.drawn[2]);
   o.n[0] = px; o.n[1] = py; o.n[2] = pz;
   o.groundAngleDeg = bestPhi / DEG;
+  o.acrossAngleDeg = bestA / DEG;
   // The extent: a Gaussian fall fitted from one sample a small ground angle
   // away, the angle widened until the sample has fallen enough to read.
   const peak = o.drawnMax;
@@ -459,12 +559,12 @@ export function scanBeam(
   };
   // Along the line the beam is asymmetric: it falls slowly toward the camera
   // and fast toward the horizon, so both sides are read and averaged. The
-  // tangent of the circle at the peak in the e1/e2 plane points to higher φ.
+  // tangent of the circle at the peak in the e1/e2 plane points to higher φ,
+  // and is square to the peak wherever across the line it sits.
   const tx = -s * e1x + c * e2x, ty = -s * e1y + c * e2y, tz = -s * e1z + c * e2z;
   o.halfWidthAlongDeg = 0.5 * (halfWidthFrom(-tx, -ty, -tz) + halfWidthFrom(tx, ty, tz));
-  // Across: the plane's normal.
-  const ax = e1y * e2z - e1z * e2y, ay = e1z * e2x - e1x * e2z, az = e1x * e2y - e1y * e2x;
-  o.halfWidthAcrossDeg = halfWidthFrom(ax, ay, az);
+  // Across: the plane's normal, turned with the peak when it sits off the line.
+  o.halfWidthAcrossDeg = halfWidthFrom(ca * ax - sa * lineX, ca * ay - sa * lineY, ca * az - sa * lineZ);
   return true;
 }
 

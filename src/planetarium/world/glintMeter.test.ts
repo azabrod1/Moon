@@ -5,7 +5,8 @@ import {
   type GlintMeterLight, type GlintMeterPose, type GlintMeterSea, type SurfaceSampler,
 } from './glintMeter';
 import { atmosphereParams, solarIrradianceScale, transmittanceToTopBoundary } from './atmosphereModel';
-import { SEA_WATER_F0 } from './surfaceShading';
+import { OCEAN_BEAM_CAP, OCEAN_BEAM_KNEE, SEA_WATER_F0 } from './surfaceShading';
+import { SUN_LIGHT_INTENSITY, SUN_LIGHT_LINEAR } from '../sunLight';
 import { meanSquareSlope } from './seaWind';
 import { KM_PER_AU } from '../../astronomy/constants';
 
@@ -34,6 +35,14 @@ const sea: GlintMeterSea = {
 const openSea = (windMs: number, cloudKeep = 1): SurfaceSampler => (_x, _y, _z, out) => {
   out.windMs = windMs; out.water = 1; out.cloudKeep = cloudKeep;
 };
+
+/** The Sun and the beam's shoulder as the app has them now. */
+const LIGHT: GlintMeterLight = { intensity: SUN_LIGHT_INTENSITY, linear: SUN_LIGHT_LINEAR, irradianceScale: solarIrradianceScale(1) };
+const beamSea: GlintMeterSea = {
+  waterF0: SEA_WATER_F0, knee: OCEAN_BEAM_KNEE, cap: OCEAN_BEAM_CAP, hazeClearView: 0.35, airBlend: 1,
+};
+const drawnMaxOf = (rad: readonly number[], s: GlintMeterSea): number =>
+  Math.max(shoulder(rad[0], s.knee, s.cap), shoulder(rad[1], s.knee, s.cap), shoulder(rad[2], s.knee, s.cap));
 
 describe('the transmittance table', () => {
   it('is the CPU atmosphere at the ground, interpolated in the zenith cosine', () => {
@@ -161,6 +170,75 @@ describe('the scan at the probe pose (400 km, Sun 10°, 7.03 m/s)', () => {
     // A pure-land sampler finds nothing either.
     const land: SurfaceSampler = (_x, _y, _z, o) => { o.windMs = 7; o.water = 0; o.cloudKeep = 1; };
     expect(scanBeam(pose, OLD_LIGHT, sea, land, table, scratch, createBeamPeak())).toBe(false);
+  });
+});
+
+describe('a beam beside the principal line', () => {
+  // 400 km up, the Sun 5° high, a 4 m/s sea: the case a land strip lying
+  // along the principal line hid from a scan of the line alone. In probePose
+  // the principal plane is the xz plane, so a ground point's distance across
+  // the line is asin(y) radii.
+  const pose = probePose(400, 5);
+  const acrossKm = (y: number) => Math.asin(y) * EARTH_KM;
+  const strip: SurfaceSampler = (_x, y, _z, o) => {
+    o.windMs = 4; o.cloudKeep = 1; o.water = Math.abs(acrossKm(y)) < 32 ? 0 : 1;
+  };
+  /** The brightest drawn point a fine grid over the ground in front of the
+   *  camera finds: 0.02° along the line by 2 km across it, out to 300 km. */
+  function brightestOnGrid(sampler: SurfaceSampler): number {
+    const out: [number, number, number] = [0, 0, 0];
+    let best = 0;
+    for (let phiDeg = 4; phiDeg <= 19; phiDeg += 0.02) {
+      for (let km = -300; km <= 300; km += 2) {
+        const a = km / EARTH_KM, phi = phiDeg * DEG;
+        beamRadianceAt(Math.cos(a) * Math.sin(phi), Math.sin(a), Math.cos(a) * Math.cos(phi), pose, LIGHT, beamSea, sampler, table, scratch, out);
+        best = Math.max(best, drawnMaxOf(out, beamSea));
+      }
+    }
+    return best;
+  }
+
+  it('finds the beam when a 64 km land strip covers the whole line, at its own brightness', () => {
+    const peak = createBeamPeak();
+    expect(scanBeam(pose, LIGHT, beamSea, strip, table, scratch, peak)).toBe(true);
+    const oracle = brightestOnGrid(strip);
+    // The sea just beside the strip carries nearly the whole beam: well past
+    // the meter's target, which is what a scan of the line alone left at one.
+    expect(oracle).toBeGreaterThan(6);
+    expect(peak.drawnMax).toBeGreaterThan(0.95 * oracle);
+    expect(peak.drawnMax).toBeLessThan(1.02 * oracle);
+    expect(Math.abs(acrossKm(peak.n[1]))).toBeGreaterThan(32);
+    expect(Math.abs(peak.acrossAngleDeg) * DEG * EARTH_KM).toBeCloseTo(Math.abs(acrossKm(peak.n[1])), 6);
+    expect(peak.sample.water).toBe(1);
+    expect(peak.halfWidthAcrossDeg).toBeGreaterThan(0);
+  });
+
+  it('places a peak beside the line beside the line in the frame', () => {
+    const peak = createBeamPeak();
+    scanBeam(pose, LIGHT, beamSea, strip, table, scratch, peak);
+    // The frame aimed at the line's point at the peak's angle along it, its
+    // up the camera's vertical: the peak sits off the centre column by the
+    // angle its distance across subtends at the camera.
+    const phi = peak.groundAngleDeg * DEG;
+    const cam = pose.camera;
+    const aim = [Math.sin(phi) - cam[0], -cam[1], Math.cos(phi) - cam[2]];
+    const len = Math.hypot(aim[0], aim[1], aim[2]);
+    const view: [number, number, number] = [aim[0] / len, aim[1] / len, aim[2] / len];
+    const place = createBeamPlace();
+    placeBeamInFrame(pose, peak.groundAngleDeg, view, [0, 0, 1], scratch, place, peak.acrossAngleDeg);
+    expect(place.inFront).toBe(true);
+    const expectDeg = Math.atan(Math.abs(acrossKm(peak.n[1])) / (len * EARTH_KM)) / DEG;
+    expect(Math.abs(place.xDeg)).toBeGreaterThan(0.8 * expectDeg);
+    expect(Math.abs(place.xDeg)).toBeLessThan(1.2 * expectDeg);
+    placeBeamInFrame(pose, peak.groundAngleDeg, view, [0, 0, 1], scratch, place);
+    expect(Math.abs(place.xDeg)).toBeLessThan(1e-6);
+  });
+
+  it('keeps the peak on the line over a uniform sea', () => {
+    const peak = createBeamPeak();
+    expect(scanBeam(pose, LIGHT, beamSea, openSea(4), table, scratch, peak)).toBe(true);
+    expect(peak.acrossAngleDeg).toBe(0);
+    expect(peak.drawnMax).toBeGreaterThan(0.99 * brightestOnGrid(openSea(4)));
   });
 });
 

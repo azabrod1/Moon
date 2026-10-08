@@ -166,7 +166,8 @@ export class HighlightMeter {
    *  deck. A hidden deck takes neither: the cut is held clear while it is. */
   private readonly sampler: SurfaceSampler = (nx, ny, nz, out, lx, ly, lz, vx, vy, vz) => {
     this.maps.sampleAt(nx, ny, nz, this.cloudSpin, out);
-    if (!this.cloudDrawn) { out.cloudKeep = 1; out.deckKeep = 1; return; }
+    // No water, no beam: the cloud over land is never read.
+    if (!this.cloudDrawn || !(out.water > 0)) { out.cloudKeep = 1; out.deckKeep = 1; return; }
     if (this.cloudShadows) out.cloudKeep = this.maps.keepToward(nx, ny, nz, lx, ly, lz, this.cloudHeight, this.cloudSpin);
     out.deckKeep = this.cameraOverDeck ? this.maps.keepToward(nx, ny, nz, vx, vy, vz, this.cloudHeight, this.cloudSpin) : 1;
   };

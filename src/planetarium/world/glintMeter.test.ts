@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  HIGHLIGHT_KNOBS, advanceExposureStops, beamRadianceAt, buildColumnDepthTable, buildTransmittanceTable, lookupColumnDepth, coverageOfBeam, createBeamPeak, createBeamPlace, createGlintScratch,
+  HIGHLIGHT_KNOBS, advanceExposureStops, beamRadianceAt, beckmannLobe, beckmannLobeBound, buildColumnDepthTable, buildTransmittanceTable, lookupColumnDepth, coverageOfBeam, createBeamPeak, createBeamPlace, createGlintScratch,
   highlightTarget, lookupTransmittance, meanSquareSlopeOfWind, placeBeamInFrame, scanBeam, shoulder, type BeamPlace,
   type GlintMeterLight, type GlintMeterPose, type GlintMeterSea, type SurfaceSampler,
 } from './glintMeter';
@@ -234,6 +234,42 @@ describe('a beam beside the principal line', () => {
     expect(Math.abs(place.xDeg)).toBeLessThan(1.2 * expectDeg);
     placeBeamInFrame(pose, peak.groundAngleDeg, view, [0, 0, 1], scratch, place);
     expect(Math.abs(place.xDeg)).toBeLessThan(1e-6);
+  });
+
+  it('reads nothing beside the line where open sea could not out-draw what it found', () => {
+    // Land on the line between the camera's foot and 6° along the ground,
+    // far short of the beam at 12°: every cut step's open-sea bound sits
+    // under the beam, so the scan reads exactly as many points as it does
+    // over a uniform sea.
+    const count = (sampler: SurfaceSampler) => {
+      let n = 0;
+      const counted: SurfaceSampler = (...a) => { n++; sampler(...a); };
+      const peak = createBeamPeak();
+      expect(scanBeam(pose, LIGHT, beamSea, counted, table, scratch, peak)).toBe(true);
+      return { n, peak };
+    };
+    const nearLand: SurfaceSampler = (x, y, z, o) => {
+      o.windMs = 4; o.cloudKeep = 1;
+      o.water = Math.atan2(x, z) < 6 * DEG && Math.abs(acrossKm(y)) < 32 ? 0 : 1;
+    };
+    const sea = count(openSea(4));
+    const land = count(nearLand);
+    expect(land.n).toBe(sea.n);
+    expect(land.peak.drawnMax).toBe(sea.peak.drawnMax);
+    // The strip along the whole line, the beam's own steps among them, is
+    // read beside.
+    expect(count(strip).n).toBeGreaterThan(sea.n);
+  });
+
+  it("bounds the lobe at every wind the map can hold", () => {
+    for (let deg = 0; deg <= 60; deg += 0.5) {
+      const cosNH = Math.cos(deg * DEG);
+      const bound = beckmannLobeBound(cosNH);
+      let most = 0;
+      for (let k = 0; k <= 320; k++) most = Math.max(most, beckmannLobe(cosNH, meanSquareSlopeOfWind((16 * k) / 320)));
+      expect(bound).toBeGreaterThanOrEqual(most * (1 - 1e-12));
+      expect(bound).toBeLessThan(most * 1.01);
+    }
   });
 
   it('keeps the peak on the line over a uniform sea', () => {

@@ -56,10 +56,11 @@
  * and sub-Sun points) and the maximum taken, then refined. The line is the
  * beam's axis only over a uniform sea: a coast, an island or a cloud bank
  * lying along it would hide a bright beam on either side, so wherever the
- * maps cut the line's own sample the scan also reads one and two of the
- * lobe's expected half-widths either side of it, and the refinement moves
- * across the line as well as along it. Over open, clear sea the line holds
- * the brightest point of every step, and the scan is the line's alone.
+ * maps cut the line's own sample, and open sea there could still draw more
+ * than the line has found, the scan also reads one and two of the lobe's
+ * expected half-widths either side of it, and the refinement moves across
+ * the line as well as along it. Over open, clear sea the line holds the
+ * brightest point of every step, and the scan is the line's alone.
  * The beam's extent is fitted from one sample along and one across the line
  * as a Gaussian fall from the peak, and handed back as the angles the
  * half-maximum half-widths subtend at the camera, for the caller to turn
@@ -68,6 +69,7 @@
 import type { AtmosphereParams, RGB } from './atmosphereModel';
 import { profileDensity, transmittanceToTopBoundary } from './atmosphereModel';
 import { SUN_LIGHT_BASELINE } from '../sunLight';
+import { SEA_WIND_MAX_MS } from './seaWind';
 import { DEG2RAD as DEG } from '../../shared/math/angles';
 
 /** A position or direction in the body's frame, radii as the unit. */
@@ -184,6 +186,11 @@ export const SCAN_ACROSS_WIND_MS = 7;
  *  two out on either side. */
 const SCAN_ACROSS_STEPS = [1, -1, 2, -2];
 
+/** How far over the open-sea bound at the line the points beside it may
+ *  draw: the factors besides the lobe change by a few percent across two
+ *  half-widths, and a quarter holds them with room. */
+const SCAN_BOUND_MARGIN = 1.25;
+
 /** The table, built once per body from the CPU atmosphere; a few milliseconds. */
 export function buildTransmittanceTable(params: AtmosphereParams, samples = 256, muMin = -0.25): TransmittanceTable {
   const values = new Float32Array(samples * 3);
@@ -284,6 +291,20 @@ export function beckmannLobe(cosNH: number, mss: number): number {
   return Math.exp((cos2 - 1) / (cos2 * mss)) / (Math.PI * mss * cos2 * cos2);
 }
 
+const MSS_CALMEST = meanSquareSlopeOfWind(0);
+const MSS_ROUGHEST = meanSquareSlopeOfWind(SEA_WIND_MAX_MS);
+
+/** The Beckmann lobe at a half-vector cosine, at whichever mean-square slope
+ *  the wind map can hold makes it largest: at a slope tan θ from the mirror
+ *  that is tan²θ itself, held between the calm sea's and the strongest
+ *  wind's. A bound on the lobe over every sea the maps can draw, which
+ *  only falls as θ grows. */
+export function beckmannLobeBound(cosNH: number): number {
+  const cos2 = Math.max(cosNH * cosNH, 1e-6);
+  const tan2 = (1 - cos2) / cos2;
+  return beckmannLobe(cosNH, Math.min(Math.max(tan2, MSS_CALMEST), MSS_ROUGHEST));
+}
+
 /** The shoulder the shader applies after the air: the term to the knee, then
  *  an exponential approach to the cap, per channel. */
 export function shoulder(v: number, knee: number, cap: number): number {
@@ -307,12 +328,14 @@ export interface GlintScratch {
   axes: Float64Array;
   place0: [number, number];
   place1: [number, number];
+  /** Per coarse step of the scan, whether the maps cut the line's sample. */
+  cut: Uint8Array;
 }
 
 export function createGlintScratch(): GlintScratch {
   return {
     sample: { windMs: 0, water: 0, cloudKeep: 1, deckKeep: 1 }, t: [0, 0, 0], tz: [0, 0, 0], tc: [0, 0, 0],
-    axes: new Float64Array(6), place0: [0, 0], place1: [0, 0],
+    axes: new Float64Array(6), place0: [0, 0], place1: [0, 0], cut: new Uint8Array(64),
   };
 }
 
@@ -321,12 +344,15 @@ export function createGlintScratch(): GlintScratch {
  * normal (nx, ny, nz), per channel into `out`, before the shoulder and the
  * deck drawn over it (`scratch.sample.deckKeep` holds the deck's share for
  * the caller). Zero when the point is unlit, below the horizon, or not sea.
+ * With `bound`, the maps are not read: the point is taken as open sea under
+ * a clear sky at its brightest wind (beckmannLobeBound) with no shadowing,
+ * which no sea the maps can draw there exceeds.
  */
 export function beamRadianceAt(
   nx: number, ny: number, nz: number,
   pose: GlintMeterPose, light: GlintMeterLight, sea: GlintMeterSea,
   sampler: SurfaceSampler, table: TransmittanceTable, scratch: GlintScratch,
-  out: [number, number, number],
+  out: [number, number, number], bound = false,
 ): void {
   out[0] = 0; out[1] = 0; out[2] = 0;
   // The view: from the point to the camera.
@@ -345,7 +371,8 @@ export function beamRadianceAt(
   if (nl <= 0) return;
   const s = scratch.sample;
   s.cloudKeep = 1; s.deckKeep = 1;
-  sampler(nx, ny, nz, s, lx, ly, lz, vx, vy, vz);
+  if (bound) s.water = 1;
+  else sampler(nx, ny, nz, s, lx, ly, lz, vx, vy, vz);
   if (s.water <= 0 || s.cloudKeep <= 0) return;
   // The half vector and the lobes.
   let hx = lx + vx, hy = ly + vy, hz = lz + vz;
@@ -357,8 +384,9 @@ export function beamRadianceAt(
   const tail = Math.pow(2, (-5.55473 * vh - 6.98316) * vh);
   const fresnel = sea.waterF0 + (1 - sea.waterF0) * tail;
   const mss = meanSquareSlopeOfWind(s.windMs);
-  const lobe = beckmannLobe(nh, mss)
-    * beckmannG1(nl, Math.sqrt(mss)) * beckmannG1(nv, Math.sqrt(mss)) / Math.max(4 * nl * nv, 1e-6);
+  const lobe = (bound
+    ? beckmannLobeBound(nh)
+    : beckmannLobe(nh, mss) * beckmannG1(nl, Math.sqrt(mss)) * beckmannG1(nv, Math.sqrt(mss))) / Math.max(4 * nl * nv, 1e-6);
   // The Sun's path, normalised at the zenith, clamped, blended; the camera
   // leg through the haze grade's weight.
   lookupTransmittance(table, nl, scratch.t);
@@ -598,26 +626,42 @@ export function scanBeam(
   // taking nothing from it. Read only after a sample that drew something,
   // which is one that reached the sampler.
   const open = (q: SurfaceSample): boolean => q.water >= 1 && q.cloudKeep >= 1 && q.deckKeep >= 1;
-  // Coarse: from just inside the sub-camera point to just inside the horizon,
-  // on the line and, where the maps cut the line's own sample, at one and two
-  // expected half-widths either side of it. Where the line reads open sea
-  // under a clear sky the beam beside it can only be dimmer at that step, the
-  // geometry falling away from the line on both sides, so nothing more is
-  // read and a uniform sea is scanned exactly as the line alone scanned it;
-  // where the line is land, a coast or cloud, the offsets find the beam
-  // beside it.
   const halfWidthAcrossAt = (phi: number): number => {
     const c = Math.cos(phi), s = Math.sin(phi);
     return acrossHalfWidthAt(c * e1x + s * e2x, c * e1y + s * e2y, c * e1z + s * e2z, pose, lobeHalf);
   };
+  // What open, clear sea at its brightest wind would draw on the line at φ:
+  // the points beside it at that step stand further from the mirror, where
+  // that bound is lower still, give or take the few percent the Fresnel, the
+  // cosines and the air move across two half-widths, which the margin holds.
+  const boundAt = (phi: number): number => {
+    const c = Math.cos(phi), s = Math.sin(phi);
+    beamRadianceAt(c * e1x + s * e2x, c * e1y + s * e2y, c * e1z + s * e2z, pose, light, sea, sampler, table, scratch, rad, true);
+    return SCAN_BOUND_MARGIN * drawnMaxOf(rad, sea);
+  };
+  // Coarse, first along the line, from just inside the sub-camera point to
+  // just inside the horizon, noting where the maps cut the line's sample.
   let bestPhi = 0, bestA = 0, best = 0, bestOpen = false;
   const step = horizon / (coarse + 1);
+  if (scratch.cut.length <= coarse) scratch.cut = new Uint8Array(coarse + 1);
+  const cut = scratch.cut;
   for (let i = 1; i <= coarse; i++) {
     const phi = i * step;
     const d = drawnAt(phi, 0);
     const lineOpen = d > 0 && open(scratch.sample);
+    cut[i] = lineOpen ? 0 : 1;
     if (d > best) { best = d; bestPhi = phi; bestA = 0; bestOpen = lineOpen; }
-    if (lineOpen) continue;
+  }
+  // Then beside it, at one and two expected half-widths either side, only at
+  // a step the maps cut where open sea could still draw more than the scan
+  // has found. Where the line reads open sea under a clear sky the beam
+  // beside it can only be dimmer at that step, so a uniform sea is scanned
+  // exactly as the line alone scanned it; where the line is land, a coast or
+  // cloud near the beam, the offsets find the beam beside it.
+  for (let i = 1; i <= coarse; i++) {
+    if (!cut[i]) continue;
+    const phi = i * step;
+    if (!(boundAt(phi) > best)) continue;
     const w = halfWidthAcrossAt(phi);
     for (let j = 0; j < SCAN_ACROSS_STEPS.length; j++) {
       const a = SCAN_ACROSS_STEPS[j] * w;

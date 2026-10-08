@@ -132,6 +132,11 @@ const EARTH_MAP_KINDS: readonly EarthMapKind[] = ['water', 'wind', 'cloud'];
 /** The three maps for one body, loaded lazily and sampled together. */
 export class EarthSurfaceMaps {
   private maps: Partial<Record<EarthMapKind, CoarseMap>> = {};
+  /** The deck's drift last turned through, with its cosine and sine: a
+   *  frame asks for one drift a few hundred times. */
+  private spin = 0;
+  private spinCos = 1;
+  private spinSin = 0;
   private loading: Partial<Record<EarthMapKind, Promise<void>>> = {};
   private failed = new Set<EarthMapKind>();
 
@@ -169,6 +174,13 @@ export class EarthSurfaceMaps {
     }
   }
 
+  private turnTo(spin: number): void {
+    if (spin === this.spin) return;
+    this.spin = spin;
+    this.spinCos = Math.cos(spin);
+    this.spinSin = Math.sin(spin);
+  }
+
   /** Install a map decoded elsewhere (a test, a served override). */
   install(kind: EarthMapKind, map: CoarseMap): void {
     this.maps[kind] = map;
@@ -192,7 +204,8 @@ export class EarthSurfaceMaps {
     const v = 0.5 + Math.asin(Math.min(1, Math.max(-1, ny))) / Math.PI;
     out.water = sampleCoarse(water, u, v);
     out.windMs = sampleCoarse(wind, u, v) * SEA_WIND_MAX_MS;
-    const c = Math.cos(cloudSpin), sn = Math.sin(cloudSpin);
+    this.turnTo(cloudSpin);
+    const c = this.spinCos, sn = this.spinSin;
     const dx = c * nx - sn * nz, dz = sn * nx + c * nz;
     const du0 = Math.atan2(dz, -dx) / (2 * Math.PI);
     out.cloudKeep = 1 - sampleCoarse(cloud, du0 - Math.floor(du0), v);
@@ -215,7 +228,8 @@ export class EarthSurfaceMaps {
     let qx = nx + t * dx, qy = ny + t * dy, qz = nz + t * dz;
     const len = Math.hypot(qx, qy, qz);
     qx /= len; qy /= len; qz /= len;
-    const c = Math.cos(cloudSpin), sn = Math.sin(cloudSpin);
+    this.turnTo(cloudSpin);
+    const c = this.spinCos, sn = this.spinSin;
     const ex = c * qx - sn * qz, ez = sn * qx + c * qz;
     const u0 = Math.atan2(ez, -ex) / (2 * Math.PI);
     const v = 0.5 + Math.asin(Math.min(1, Math.max(-1, qy))) / Math.PI;

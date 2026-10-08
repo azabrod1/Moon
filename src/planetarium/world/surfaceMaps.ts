@@ -22,6 +22,11 @@
  * the ground slides under the mirror point. The equirect convention is the shader's
  * (`sphereEquirectUv` in world/cloudDeck): u wraps, v is the latitude from the
  * south, and a decoded picture is north-up, so rows are read flipped.
+ *
+ * The deck is read in two ways: straight over a ground point (`sampleAt`), and
+ * where a ray from the point crosses the deck's shell (`keepToward`), which is
+ * where the ground's cloud shadow reads it on the way to the Sun and where the
+ * drawn deck stands in the line of sight on the way to the camera.
  */
 import { cloudCoverageAlpha } from './cloudDeck';
 import { ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER } from './surfaceShading';
@@ -127,6 +132,11 @@ const EARTH_MAP_KINDS: readonly EarthMapKind[] = ['water', 'wind', 'cloud'];
 /** The three maps for one body, loaded lazily and sampled together. */
 export class EarthSurfaceMaps {
   private maps: Partial<Record<EarthMapKind, CoarseMap>> = {};
+  /** The deck's drift last turned through, with its cosine and sine: a
+   *  frame asks for one drift a few hundred times. */
+  private spin = 0;
+  private spinCos = 1;
+  private spinSin = 0;
   private loading: Partial<Record<EarthMapKind, Promise<void>>> = {};
   private failed = new Set<EarthMapKind>();
 
@@ -164,6 +174,13 @@ export class EarthSurfaceMaps {
     }
   }
 
+  private turnTo(spin: number): void {
+    if (spin === this.spin) return;
+    this.spin = spin;
+    this.spinCos = Math.cos(spin);
+    this.spinSin = Math.sin(spin);
+  }
+
   /** Install a map decoded elsewhere (a test, a served override). */
   install(kind: EarthMapKind, map: CoarseMap): void {
     this.maps[kind] = map;
@@ -172,9 +189,11 @@ export class EarthSurfaceMaps {
   /**
    * The sample at a unit direction in the body's own frame (the mesh's local
    * axes), with the deck's drift for the cloud; a surface with a map missing
-   * reads as no water or no cloud, which is the meter's hold.
+   * reads as no water or no cloud, which is the meter's hold. Without
+   * `cloudOver` the deck straight over the point is not read and the keep is
+   * left at one, for a caller that reads the deck elsewhere (keepToward).
    */
-  sampleAt(nx: number, ny: number, nz: number, cloudSpin: number, out: SurfaceSample): void {
+  sampleAt(nx: number, ny: number, nz: number, cloudSpin: number, out: SurfaceSample, cloudOver = true): void {
     const water = this.maps.water, wind = this.maps.wind, cloud = this.maps.cloud;
     if (!water || !wind || !cloud) {
       out.water = 0; out.windMs = 0; out.cloudKeep = 1;
@@ -187,9 +206,36 @@ export class EarthSurfaceMaps {
     const v = 0.5 + Math.asin(Math.min(1, Math.max(-1, ny))) / Math.PI;
     out.water = sampleCoarse(water, u, v);
     out.windMs = sampleCoarse(wind, u, v) * SEA_WIND_MAX_MS;
-    const c = Math.cos(cloudSpin), sn = Math.sin(cloudSpin);
+    if (!cloudOver) { out.cloudKeep = 1; return; }
+    this.turnTo(cloudSpin);
+    const c = this.spinCos, sn = this.spinSin;
     const dx = c * nx - sn * nz, dz = sn * nx + c * nz;
     const du0 = Math.atan2(dz, -dx) / (2 * Math.PI);
     out.cloudKeep = 1 - sampleCoarse(cloud, du0 - Math.floor(du0), v);
+  }
+
+  /**
+   * The share the deck lets through where the ray from the ground point n
+   * toward the unit direction d crosses its shell, `hOverR` above the ground
+   * in radii, with the deck's drift: 1 with no cloud map. cloudRayDirection,
+   * bodyToDeck and sphereEquirectUv (world/cloudDeck), inlined so a frame
+   * allocates nothing; the tests hold this against those functions.
+   */
+  keepToward(nx: number, ny: number, nz: number, dx: number, dy: number, dz: number, hOverR: number, cloudSpin: number): number {
+    const cloud = this.maps.cloud;
+    if (!cloud) return 1;
+    const mu = nx * dx + ny * dy + nz * dz;
+    const k = hOverR * (2 + hOverR);
+    const root = Math.sqrt(mu * mu + k);
+    const t = mu >= 0 ? k / (root + mu) : root - mu;
+    let qx = nx + t * dx, qy = ny + t * dy, qz = nz + t * dz;
+    const len = Math.hypot(qx, qy, qz);
+    qx /= len; qy /= len; qz /= len;
+    this.turnTo(cloudSpin);
+    const c = this.spinCos, sn = this.spinSin;
+    const ex = c * qx - sn * qz, ez = sn * qx + c * qz;
+    const u0 = Math.atan2(ez, -ex) / (2 * Math.PI);
+    const v = 0.5 + Math.asin(Math.min(1, Math.max(-1, qy))) / Math.PI;
+    return 1 - sampleCoarse(cloud, u0 - Math.floor(u0), v);
   }
 }

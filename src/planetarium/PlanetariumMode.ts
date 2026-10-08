@@ -39,7 +39,7 @@ import {
 import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasurementRelevant, markStreamedGround, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
 import { PLANET_TEXTURE_FILES, appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
-import { advanceSurfaceAir, beamShoulderInForce, bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, holdSeaCloudCut, seaBeamOn, seaWindOn, setCloudShadowDrift, setSurfaceSynthesis, settleSurfaceAir, sunPathOn, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { MAX_MOON_SHADOWS, NIGHT_FILL, advanceSurfaceAir, beamShoulderInForce, bindSurfaceAir, clearSurfaceAir, cloudShadowShared, cloudShadowsOn, cloudShadowUniforms, holdSeaCloudCut, seaBeamOn, seaWindOn, setCloudShadowDrift, setSurfaceSynthesis, settleSurfaceAir, sunPathOn, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { cloudFieldRequested, setCloudFieldOn, setCloudFieldPixelRatios } from './world/cloudFieldSlots';
 import type { CloudFieldAllocation } from './world/cloudFieldPool';
 import type { CloudFieldSession } from './world/cloudFieldSession';
@@ -1194,7 +1194,8 @@ export class PlanetariumMode {
   );
   private readonly highlightCtx: HighlightContext = {
     camera: new THREE.Vector3(), sun: new THREE.Vector3(), lightIntensity: 0, lightLinear: [1, 1, 1],
-    airOn: false, airBlend: 0, hazeClearView: 1, cloudSpin: 0, cloudDrawn: false,
+    airOn: false, airBlend: 0, hazeClearView: 1, cloudSpin: 0, cloudDrawn: false, cloudShadows: true, cloudHeightOverRadius: 0,
+    moonShadows: new Float64Array(MAX_MOON_SHADOWS * 4), moonShadowCount: 0, sunTan: 0, termWidth: 0,
     view: new THREE.Vector3(0, 0, -1), viewUp: new THREE.Vector3(0, 1, 0), fovXDeg: 60, fovYDeg: 40,
     seaBeamOn: true, sunPathOn: true, windMapOn: false,
   };
@@ -9380,6 +9381,24 @@ export class PlanetariumMode {
     const cloudArgs = earth.cloudsMesh ? surfaceShadingArgsOf(earth.cloudsMesh.material as THREE.Material) : undefined;
     ctx.cloudSpin = cloudArgs?.uFrameSpin.value ?? 0;
     ctx.cloudDrawn = !!earth.cloudsMesh?.visible && !this.devHiddenRoles?.clouds;
+    // The switch the ground compiles and the shell it reads, so the meter
+    // cuts the beam where the shader does.
+    ctx.cloudShadows = cloudShadowsOn();
+    ctx.cloudHeightOverRadius = cloudShadowShared.uCloudHeightOverRadius.value;
+    // The eclipse casters the ground traces, in its own frame and in radii,
+    // with the ground's own Sun size and terminator: the beam under a moon's
+    // umbra is dimmed as the shader dims it.
+    const casters = earth.fx?.uMoonShadow.value;
+    const shadowsOut = ctx.moonShadows as Float64Array;
+    const shadowCount = Math.min(earth.fx?.uMoonShadowCount.value ?? 0, casters?.length ?? 0, shadowsOut.length / 4);
+    for (let i = 0; i < shadowCount; i++) {
+      const c = casters![i];
+      shadowsOut[i * 4] = c.x / r; shadowsOut[i * 4 + 1] = c.y / r; shadowsOut[i * 4 + 2] = c.z / r; shadowsOut[i * 4 + 3] = c.w / r;
+    }
+    ctx.moonShadowCount = shadowCount;
+    const groundArgs = surfaceShadingArgsOf(earth.mesh.material as THREE.Material);
+    ctx.sunTan = groundArgs?.sunTan ?? 0;
+    ctx.termWidth = groundArgs ? NIGHT_FILL[groundArgs.archetype].termWidth : 0;
     const fovY = displayFovDeg(this.camera);
     ctx.fovYDeg = fovY;
     ctx.fovXDeg = (2 * Math.atan(Math.tan((fovY * Math.PI) / 360) * this.camera.aspect) * 180) / Math.PI;

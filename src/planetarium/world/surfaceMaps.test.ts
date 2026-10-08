@@ -3,7 +3,7 @@ import {
   COARSE_MAP_HEIGHT, COARSE_MAP_WIDTH, EarthSurfaceMaps, coarseFromRgba, pickCloudCoverage, pickRed, pickWater, sampleCoarse,
   type CoarseMap,
 } from './surfaceMaps';
-import { bodyToDeck, sphereEquirectUv } from './cloudDeck';
+import { bodyToDeck, cloudRayDirection, sphereEquirectUv } from './cloudDeck';
 import { ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER } from './surfaceShading';
 import { SEA_WIND_MAX_MS } from './seaWind';
 
@@ -76,7 +76,7 @@ describe("Earth's maps together", () => {
 
   it('holds the meter while a map is missing, then answers from all three', async () => {
     const maps = new EarthSurfaceMaps(urls, fakeDecode, { width: 72, height: 36 });
-    const out = { water: 0, windMs: 0, cloudKeep: 1 };
+    const out = { water: 0, windMs: 0, cloudKeep: 1, deckKeep: 1 };
     maps.sampleAt(1, 0, 0, 0, out);
     expect(out.water).toBe(0);
     expect(maps.ready).toBe(false);
@@ -113,7 +113,7 @@ describe("Earth's maps together", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(maps.ready).toBe(false);
     expect(maps.state().failed).toEqual(['cloud']);
-    const out = { water: 0, windMs: 0, cloudKeep: 1 };
+    const out = { water: 0, windMs: 0, cloudKeep: 1, deckKeep: 1 };
     maps.sampleAt(1, 0, 0, 0, out);
     expect(out.water).toBe(0);
   });
@@ -122,7 +122,7 @@ describe("Earth's maps together", () => {
     const maps = new EarthSurfaceMaps(urls, fakeDecode, { width: 72, height: 36 });
     maps.request();
     await new Promise((r) => setTimeout(r, 20));
-    const out = { water: 0, windMs: 0, cloudKeep: 1 };
+    const out = { water: 0, windMs: 0, cloudKeep: 1, deckKeep: 1 };
     for (const [lat, lon, spin] of [[10, 20, 0.7], [-40, -100, 2.9], [60, 170, 5.5]]) {
       const n = dirAt(lat, lon);
       maps.sampleAt(n[0], n[1], n[2], spin, out);
@@ -134,11 +134,43 @@ describe("Earth's maps together", () => {
     }
   });
 
+  it("reads the deck where a ray from the ground crosses its shell, through the deck module's own geometry", () => {
+    // A cloud map with structure at every scale the test can reach, so a
+    // read at the wrong point shows.
+    const maps = new EarthSurfaceMaps(urls, fakeDecode, { width: 72, height: 36 });
+    maps.install('cloud', grid(72, 36, (x, y) => ((x * 7 + y * 13) % 17) / 16));
+    const hOverR = 10 / 6371;
+    const cloud = (maps as unknown as { maps: { cloud: CoarseMap } }).maps.cloud;
+    for (const [lat, lon, spin, dLat, dLon, elev] of [
+      [10, 20, 0.7, 0, 1, 5], [-40, -100, 2.9, 1, 0, 30], [60, 170, 5.5, -0.6, 0.8, 80], [0, 0, 0, 0.3, -0.95, 1],
+    ]) {
+      const n = dirAt(lat, lon);
+      // A direction elev above the local horizon, toward (dLat, dLon) on it.
+      const east = norm3([n[2], 0, -n[0]]);
+      const north = norm3(cross3(n, east));
+      const e = (elev * Math.PI) / 180;
+      const d = norm3([0, 1, 2].map((k) => Math.cos(e) * (dLat * north[k] + dLon * east[k]) + Math.sin(e) * n[k]) as [number, number, number]);
+      const pierce = bodyToDeck(cloudRayDirection(n, d, hOverR), spin);
+      const uv = sphereEquirectUv(pierce[0], pierce[1], pierce[2]);
+      expect(maps.keepToward(n[0], n[1], n[2], d[0], d[1], d[2], hOverR, spin)).toBeCloseTo(1 - sampleCoarse(cloud, uv[0], uv[1]), 12);
+    }
+    // No cloud map: nothing in the way.
+    const bare = new EarthSurfaceMaps(urls, fakeDecode, { width: 72, height: 36 });
+    expect(bare.keepToward(1, 0, 0, 0, 1, 0, hOverR, 0)).toBe(1);
+  });
+
   it('defaults to the coarse grid the meter was designed for', () => {
     expect(COARSE_MAP_WIDTH).toBe(360);
     expect(COARSE_MAP_HEIGHT).toBe(180);
   });
 });
+
+const cross3 = (a: readonly number[], b: readonly number[]): [number, number, number] =>
+  [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const norm3 = (a: readonly number[]): [number, number, number] => {
+  const l = Math.hypot(a[0], a[1], a[2]);
+  return [a[0] / l, a[1] / l, a[2] / l];
+};
 
 /** A unit direction in the mesh's frame for a latitude and longitude, through
  *  the shader's own equirect mapping inverted: u = lon from the map's left

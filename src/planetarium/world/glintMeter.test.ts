@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  advanceExposureStops, beamRadianceAt, buildTransmittanceTable, coverageOfBeam, createBeamPeak, createBeamPlace, createGlintScratch,
+  HIGHLIGHT_KNOBS, advanceExposureStops, beamRadianceAt, buildTransmittanceTable, coverageOfBeam, createBeamPeak, createBeamPlace, createGlintScratch,
   highlightTarget, lookupTransmittance, meanSquareSlopeOfWind, placeBeamInFrame, scanBeam, shoulder, type BeamPlace,
   type GlintMeterLight, type GlintMeterPose, type GlintMeterSea, type SurfaceSampler,
 } from './glintMeter';
@@ -239,6 +239,45 @@ describe('a beam beside the principal line', () => {
     expect(scanBeam(pose, LIGHT, beamSea, openSea(4), table, scratch, peak)).toBe(true);
     expect(peak.acrossAngleDeg).toBe(0);
     expect(peak.drawnMax).toBeGreaterThan(0.99 * brightestOnGrid(openSea(4)));
+  });
+});
+
+describe('the cloud on both sides of the beam', () => {
+  // 400 km up, the Sun 5° high, a 4 m/s sea under a uniform deck.
+  const pose = probePose(400, 5);
+  const underDeck = (cloudKeep: number, deckKeep: number): SurfaceSampler => (_x, _y, _z, o) => {
+    o.windMs = 4; o.water = 1; o.cloudKeep = cloudKeep; o.deckKeep = deckKeep;
+  };
+
+  it("takes the deck's share in the line of sight after the shoulder, and the Sun's side before it", () => {
+    const clear = createBeamPeak();
+    expect(scanBeam(pose, LIGHT, beamSea, openSea(4), table, scratch, clear)).toBe(true);
+    // The deck drawn over the ground halves what the shoulder made of the
+    // beam: the carried radiance is the clear sea's, the drawn half of it.
+    const deck = createBeamPeak();
+    expect(scanBeam(pose, LIGHT, beamSea, underDeck(1, 0.5), table, scratch, deck)).toBe(true);
+    for (let c = 0; c < 3; c++) expect(deck.carried[c]).toBeCloseTo(clear.carried[c], 9);
+    expect(deck.drawnMax).toBeCloseTo(0.5 * clear.drawnMax, 9);
+    expect(deck.sample.deckKeep).toBe(0.5);
+    // The same half on the Sun's side is taken before the shoulder, which
+    // then holds less of the beam back: more is drawn than half.
+    const sunSide = createBeamPeak();
+    scanBeam(pose, LIGHT, beamSea, underDeck(0.5, 1), table, scratch, sunSide);
+    expect(sunSide.drawnMax).toBeGreaterThan(0.5 * clear.drawnMax * 1.05);
+    // Both, as a uniform half cover gives them: the review's numbers, the
+    // clear beam well past the target and the covered one under it.
+    const both = createBeamPeak();
+    scanBeam(pose, LIGHT, beamSea, underDeck(0.5, 0.5), table, scratch, both);
+    expect(sunSide.drawnMax).toBeCloseTo(4.26, 1);
+    expect(both.drawnMax).toBeCloseTo(0.5 * sunSide.drawnMax, 9);
+    expect(both.drawnMax).toBeLessThan(HIGHLIGHT_KNOBS.target);
+  });
+
+  it('reads a sampler that says nothing of the deck as no deck', () => {
+    const peak = createBeamPeak();
+    scanBeam(pose, LIGHT, beamSea, underDeck(1, 0.25), table, scratch, peak);
+    scanBeam(pose, LIGHT, beamSea, openSea(4), table, scratch, peak);
+    expect(peak.sample.deckKeep).toBe(1);
   });
 });
 

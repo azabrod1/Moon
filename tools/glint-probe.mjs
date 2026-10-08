@@ -64,15 +64,16 @@
 // `--meter` is the highlight meter's arm (planetarium/highlightMeter): the
 // SHIPPED maps, because the meter predicts from coarse copies of them and a
 // served wind would be a different sea from the one it reads; the clouds
-// hidden unless `--clouds` (then the deck is drawn and the meter's cloud keep
-// at the peak is what it must track). At each pose it reads
-// `__moon.glintMeter()` and holds the predicted drawn peak — its value, its
-// place along the ground and on the frame, its half-maximum widths and its
-// share of the frame — against the keep-on minus keep-off readback, maximum
-// channel per pixel; then releases the exposure pin, lets the meter settle
-// and reads the exposure the renderer applies, so the brightest beam pixel
-// after exposure is held against the meter's target with the non-glint share
-// at that pixel reported; then flips the switch off and reads exactly one.
+// hidden unless `--clouds` (then the deck is drawn and the meter's cloud keeps
+// at the peak, the Sun's side and the camera's, are what it must track).
+// At each pose it reads `__moon.glintMeter()` and holds the predicted drawn
+// peak — its value, its place along the ground and on the frame, its
+// half-maximum widths and its share of the frame — against the keep-on minus
+// keep-off readback, maximum channel per pixel; then releases the exposure
+// pin, lets the meter settle and reads the exposure the renderer applies, so
+// the brightest beam pixel after exposure is held against the meter's target
+// with the non-glint share at that pixel reported; then flips the switch off
+// and reads exactly one.
 // `--bearings=a,b,c` runs the poses at several bearings (a cloud lands over
 // one of them where the sheet's bearing is clear), `--bearing=<deg>` one; the
 // bearing each pose was flown at is read back from its geometry, printed,
@@ -502,7 +503,7 @@ async function meterPose(page, pose, poseLabel, png, capture, failures) {
     fail(`the meter held (${tel.hold}) with a drawn beam at ${M.toFixed(2)} in the frame`);
   }
   if (!(off.hold === 'off' && off.exposure === 1)) fail(`switch off: hold ${off.hold}, exposure ${off.exposure} (one exactly expected)`);
-  console.log(`[glint-probe] ${poseLabel} meter: ${tel.hold}${speck ? ' (speck)' : ''}${missed ? ' (MISSED)' : ''}; predicted ${tel.drawnMax.toFixed(3)} at ${tel.groundAngleDeg.toFixed(1)}° (cloud keep ${tel.peakSample?.cloudKeep?.toFixed(2)}, water ${tel.peakSample?.water?.toFixed(2)}); measured ${M.toFixed(3)} at ${geo ? geo.groundAngleDeg.toFixed(1) : '?'}°, ratio ${m.ratios.value?.toFixed(3)} (at the prediction ${m.ratios.valueAtPrediction?.toFixed(3)}); gap ${pixelGap?.toFixed(0)} px; widths along ${m.ratios.along?.toFixed(2)} across ${m.ratios.across?.toFixed(2)} coverage ${m.ratios.coverage?.toFixed(2)}; hand-off applied ${hand.applied.toFixed(3)} -> peak ${afterExposure.toFixed(2)} (${m.handoff.peakOverTarget?.toFixed(3)} of target); off ${off.hold} ${off.exposure}`);
+  console.log(`[glint-probe] ${poseLabel} meter: ${tel.hold}${speck ? ' (speck)' : ''}${missed ? ' (MISSED)' : ''}; predicted ${tel.drawnMax.toFixed(3)} at ${tel.groundAngleDeg.toFixed(1)}° (cloud keep ${tel.peakSample?.cloudKeep?.toFixed(2)} on the Sun's side, ${tel.peakSample?.deckKeep?.toFixed(2) ?? '?'} on the camera's, water ${tel.peakSample?.water?.toFixed(2)}); measured ${M.toFixed(3)} at ${geo ? geo.groundAngleDeg.toFixed(1) : '?'}°, ratio ${m.ratios.value?.toFixed(3)} (at the prediction ${m.ratios.valueAtPrediction?.toFixed(3)}); gap ${pixelGap?.toFixed(0)} px; widths along ${m.ratios.along?.toFixed(2)} across ${m.ratios.across?.toFixed(2)} coverage ${m.ratios.coverage?.toFixed(2)}; hand-off applied ${hand.applied.toFixed(3)} -> peak ${afterExposure.toFixed(2)} (${m.handoff.peakOverTarget?.toFixed(3)} of target); off ${off.hold} ${off.exposure}`);
   return summary;
 }
 
@@ -516,7 +517,7 @@ async function meterRun(page, seconds, failures) {
     const out = []; const t0 = performance.now();
     const step = () => {
       const t = window.__moon.glintMeter(); const ex = window.__moon.exposure();
-      out.push([performance.now() - t0, t.hold === 'metering' ? 1 : 0, t.exposure, t.target, t.drawnMax, t.coverage, t.peakSample ? t.peakSample.cloudKeep : 1, t.peakSample ? t.peakSample.water : 0, ex.current, t.costUs]);
+      out.push([performance.now() - t0, t.hold === 'metering' ? 1 : 0, t.exposure, t.target, t.drawnMax, t.coverage, t.peakSample ? t.peakSample.cloudKeep : 1, t.peakSample ? t.peakSample.water : 0, ex.current, t.costUs, t.peakSample?.deckKeep ?? 1]);
       if (performance.now() - t0 < secs * 1000) requestAnimationFrame(step); else resolve(out);
     };
     requestAnimationFrame(step);
@@ -542,20 +543,21 @@ async function meterRun(page, seconds, failures) {
   }
   targetSteps.sort((a, b) => a - b);
   const p95 = targetSteps.length ? targetSteps[Math.floor(0.95 * (targetSteps.length - 1))] : 0;
-  const cloudKeeps = series.map((s) => s[6]); const waters = series.map((s) => s[7]);
+  const cloudKeeps = series.map((s) => s[6]); const waters = series.map((s) => s[7]); const deckKeeps = series.map((s) => s[10]);
   const run = {
     seconds, frames: series.length, meteringShare: series.length ? metering / series.length : 0, nonFinite,
     exposure: { first: series[0]?.[2] ?? null, last: series[series.length - 1]?.[2] ?? null, min: minE, max: maxE },
     maxStepStops, maxStepAtMs: maxStepAt, boundThere: maxBound, worstOverBound: worstOver,
     target: { maxStepStops: maxTargetStep, p95StepStops: p95 },
     cloudKeepAtPeak: { min: Math.min(...cloudKeeps), max: Math.max(...cloudKeeps) },
+    deckKeepAtPeak: { min: Math.min(...deckKeeps), max: Math.max(...deckKeeps) },
     waterAtPeak: { min: Math.min(...waters), max: Math.max(...waters) },
     knobs: rates.knobs,
     series,
   };
   if (nonFinite) failures.push(`run: ${nonFinite} frames with a non-finite exposure or target`);
   if (worstOver > 0) failures.push(`run: the exposure moved ${maxStepStops.toFixed(3)} stops in one frame at ${(maxStepAt / 1000).toFixed(2)} s, over the rate's bound ${maxBound.toFixed(3)}`);
-  console.log(`[glint-probe] run: ${series.length} frames over ${seconds} s at 1000x; metering ${(run.meteringShare * 100).toFixed(0)}%; exposure ${run.exposure.first?.toFixed(3)} -> ${run.exposure.last?.toFixed(3)} (min ${minE.toFixed(3)}, max ${maxE.toFixed(3)}); largest per-frame step ${maxStepStops.toFixed(3)} stops (bound ${maxBound.toFixed(3)}); target's largest step ${maxTargetStep.toFixed(3)}, p95 ${p95.toFixed(3)}; cloud keep at the peak ${run.cloudKeepAtPeak.min.toFixed(2)}..${run.cloudKeepAtPeak.max.toFixed(2)}; water ${run.waterAtPeak.min.toFixed(2)}..${run.waterAtPeak.max.toFixed(2)}`);
+  console.log(`[glint-probe] run: ${series.length} frames over ${seconds} s at 1000x; metering ${(run.meteringShare * 100).toFixed(0)}%; exposure ${run.exposure.first?.toFixed(3)} -> ${run.exposure.last?.toFixed(3)} (min ${minE.toFixed(3)}, max ${maxE.toFixed(3)}); largest per-frame step ${maxStepStops.toFixed(3)} stops (bound ${maxBound.toFixed(3)}); target's largest step ${maxTargetStep.toFixed(3)}, p95 ${p95.toFixed(3)}; cloud keep at the peak ${run.cloudKeepAtPeak.min.toFixed(2)}..${run.cloudKeepAtPeak.max.toFixed(2)}, deck ${run.deckKeepAtPeak.min.toFixed(2)}..${run.deckKeepAtPeak.max.toFixed(2)}; water ${run.waterAtPeak.min.toFixed(2)}..${run.waterAtPeak.max.toFixed(2)}`);
   return run;
 }
 
@@ -907,7 +909,7 @@ for (const p of report.poses) {
   if (look) continue;
   if (meter) {
     const m = p.meter; const pr = m.predicted; const me = m.measured; const r = m.ratios; const h = m.handoff;
-    lines.push(`  meter: ${m.hold}, maps ${m.maps.ready.length}/3, scan ${m.costUs.toFixed(0)} µs; predicted drawn max ${pr.drawnMax.toFixed(3)} at ${pr.groundAngleDeg.toFixed(2)}° along the ground and ${pr.acrossAngleDeg.toFixed(2)}° across (water ${pr.sample.water.toFixed(2)}, wind ${pr.sample.windMs.toFixed(1)} m/s, cloud keep ${pr.sample.cloudKeep.toFixed(2)}), half-widths ${pr.halfWidthAlongDeg.toFixed(2)}° along ${pr.halfWidthAcrossDeg.toFixed(2)}° across, coverage ${pr.coverage.toFixed(4)}${pr.pixel ? `, at pixel (${pr.pixel.x.toFixed(0)}, ${pr.pixel.y.toFixed(0)})` : ''}`);
+    lines.push(`  meter: ${m.hold}, maps ${m.maps.ready.length}/3, scan ${m.costUs.toFixed(0)} µs; predicted drawn max ${pr.drawnMax.toFixed(3)} at ${pr.groundAngleDeg.toFixed(2)}° along the ground and ${pr.acrossAngleDeg.toFixed(2)}° across (water ${pr.sample.water.toFixed(2)}, wind ${pr.sample.windMs.toFixed(1)} m/s, cloud keep ${pr.sample.cloudKeep.toFixed(2)} on the Sun's side, ${pr.sample.deckKeep?.toFixed(2) ?? '?'} on the camera's), half-widths ${pr.halfWidthAlongDeg.toFixed(2)}° along ${pr.halfWidthAcrossDeg.toFixed(2)}° across, coverage ${pr.coverage.toFixed(4)}${pr.pixel ? `, at pixel (${pr.pixel.x.toFixed(0)}, ${pr.pixel.y.toFixed(0)})` : ''}`);
     lines.push(`  measured: drawn max ${me.drawnMax.toFixed(3)} (channel ${'rgb'[me.channel]}) at pixel (${me.pixel.x.toFixed(0)}, ${me.pixel.y.toFixed(0)}), ${me.groundAngleDeg === null ? 'sky' : `${me.groundAngleDeg.toFixed(2)}° along the ground`}, ${me.pixelGapFromPrediction === null ? 'no prediction' : `${me.pixelGapFromPrediction.toFixed(0)} px from the prediction`}${me.atPrediction === null ? '' : `, ${me.atPrediction.toFixed(3)} within 7 px of the prediction`}${m.speck ? ' — a SPECK, under the fade\'s threshold, held at one by construction' : ''}${m.missed ? ' — a MISSED BEAM' : ''}; half-max ${me.halfMaxAlongDeg?.toFixed(2)}° along (rows ${me.alongExtent?.lo}..${me.alongExtent?.hi}) ${me.halfMaxAcrossDeg?.toFixed(2)}° across (cols ${me.acrossExtent?.lo}..${me.acrossExtent?.hi}); coverage ${me.coverage.toFixed(4)} (pixels at or over half the peak)`);
     lines.push(`  measured / predicted: value ${r.value?.toFixed(3)} (at the prediction ${r.valueAtPrediction?.toFixed(3)}), ground angle gap ${r.groundAngleGapDeg?.toFixed(2)}°, width along ${r.along?.toFixed(3)}, across ${r.across?.toFixed(3)}, coverage ${r.coverage?.toFixed(3)}`);
     lines.push(`  hand-off: the meter asks ${h.meterExposure.toFixed(4)} (its target ${h.meterTarget.toFixed(4)}${h.atFloor ? ', at the floor' : ''}${h.fadedIn ? '' : ', fade not full'}), the Sun's meter ${h.sunMeter.toFixed(4)}, applied ${h.applied.toFixed(4)}${h.auto ? '' : ' (auto exposure OFF)'} -> the brightest beam pixel after exposure ${h.peakAfterExposure.toFixed(3)} against the target ${m.knobs.target} (${h.peakOverTarget?.toFixed(3)}), its core through the tone curve ${h.coreThroughToneCurve.toFixed(0)}, non-glint share at that pixel ${me.nonGlintShare === null ? 'n/a' : me.nonGlintShare.toFixed(3)}`);
@@ -930,7 +932,7 @@ for (const p of report.poses) {
 if (meter && report.run) {
   const r = report.run;
   lines.push('');
-  lines.push(`run: the clock at 1000x for ${r.seconds} s at the last pose, ${r.frames} frames, metering ${(r.meteringShare * 100).toFixed(0)}% of them, ${r.nonFinite} non-finite; exposure ${r.exposure.first?.toFixed(4)} -> ${r.exposure.last?.toFixed(4)} (min ${r.exposure.min.toFixed(4)}, max ${r.exposure.max.toFixed(4)}); largest per-frame step ${r.maxStepStops.toFixed(4)} stops at ${(r.maxStepAtMs / 1000).toFixed(2)} s against the rate's bound ${r.boundThere.toFixed(4)} there (worst over any bound ${r.worstOverBound.toFixed(4)}); the un-eased target's largest step ${r.target.maxStepStops.toFixed(4)}, p95 ${r.target.p95StepStops.toFixed(4)}; cloud keep at the peak ${r.cloudKeepAtPeak.min.toFixed(2)}..${r.cloudKeepAtPeak.max.toFixed(2)}, water ${r.waterAtPeak.min.toFixed(2)}..${r.waterAtPeak.max.toFixed(2)}`);
+  lines.push(`run: the clock at 1000x for ${r.seconds} s at the last pose, ${r.frames} frames, metering ${(r.meteringShare * 100).toFixed(0)}% of them, ${r.nonFinite} non-finite; exposure ${r.exposure.first?.toFixed(4)} -> ${r.exposure.last?.toFixed(4)} (min ${r.exposure.min.toFixed(4)}, max ${r.exposure.max.toFixed(4)}); largest per-frame step ${r.maxStepStops.toFixed(4)} stops at ${(r.maxStepAtMs / 1000).toFixed(2)} s against the rate's bound ${r.boundThere.toFixed(4)} there (worst over any bound ${r.worstOverBound.toFixed(4)}); the un-eased target's largest step ${r.target.maxStepStops.toFixed(4)}, p95 ${r.target.p95StepStops.toFixed(4)}; cloud keep at the peak ${r.cloudKeepAtPeak.min.toFixed(2)}..${r.cloudKeepAtPeak.max.toFixed(2)}, deck ${r.deckKeepAtPeak.min.toFixed(2)}..${r.deckKeepAtPeak.max.toFixed(2)}, water ${r.waterAtPeak.min.toFixed(2)}..${r.waterAtPeak.max.toFixed(2)}`);
 }
 if (meter) {
   lines.push('');

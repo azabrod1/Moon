@@ -6,7 +6,8 @@
  *
  * Per frame it predicts the brightest drawn point of the beam from the
  * shader's own equations (world/glintMeter) at Earth's mirror geometry, reads
- * the water, the wind and the cloud over it from coarse copies of the maps
+ * the water and the wind there, and the cloud between it and the Sun and
+ * between it and the camera, from coarse copies of the maps
  * (world/surfaceMaps), and asks for an exposure that lands that point near a
  * target, never under a floor, faded in with the beam's share of the frame.
  * The exposure eases in stops, down fast and up slowly, and the mode hands
@@ -79,6 +80,13 @@ export interface HighlightContext {
   /** The deck's drift this frame, and whether the deck is drawn at all. */
   cloudSpin: number;
   cloudDrawn: boolean;
+  /** Whether Earth's ground compiles its cloud shadows (`cloudShadowsOn`):
+   *  the sea's cut under the deck is then read where the Sun's ray crosses
+   *  the deck, and straight over the point without them. */
+  cloudShadows: boolean;
+  /** The deck's height over the ground, in radii: the shell both the cut and
+   *  the drawn deck stand on. */
+  cloudHeightOverRadius: number;
   /** The camera's forward and up, unit vectors in the mesh's axes: where the
    *  frame looks, so the beam is counted only where it falls in the frame. */
   view: THREE.Vector3;
@@ -107,8 +115,9 @@ export interface HighlightTelemetry {
   acrossAngleDeg: number;
   halfWidthAlongDeg: number;
   halfWidthAcrossDeg: number;
-  /** The surface under the predicted peak: water, wind, cloud keep. */
-  peakSample: { water: number; windMs: number; cloudKeep: number };
+  /** The surface under the predicted peak: water, wind, and the cloud's
+   *  keeps on the Sun's side (before the shoulder) and the camera's (after). */
+  peakSample: { water: number; windMs: number; cloudKeep: number; deckKeep: number };
   coverage: number;
   /** Where the peak lands in the frame: degrees from its centre, right and
    *  up, and whether it is in front of the camera at all. */
@@ -146,9 +155,20 @@ export class HighlightMeter {
   };
   private cloudSpin = 0;
   private cloudDrawn = true;
-  private readonly sampler: SurfaceSampler = (nx, ny, nz, out) => {
+  private cloudShadows = true;
+  private cloudHeight = 0;
+  private cameraOverDeck = true;
+  /** The maps as the surfaces read them this frame. The water and the wind
+   *  at the point. The Sun's side of the cloud where the ground's cut reads
+   *  it: where the Sun's ray crosses the deck with cloud shadows compiled,
+   *  straight over the point without. The camera's side where the drawn deck
+   *  stands in the line of sight, which it does only for a camera above the
+   *  deck. A hidden deck takes neither: the cut is held clear while it is. */
+  private readonly sampler: SurfaceSampler = (nx, ny, nz, out, lx, ly, lz, vx, vy, vz) => {
     this.maps.sampleAt(nx, ny, nz, this.cloudSpin, out);
-    if (!this.cloudDrawn) out.cloudKeep = 1;
+    if (!this.cloudDrawn) { out.cloudKeep = 1; out.deckKeep = 1; return; }
+    if (this.cloudShadows) out.cloudKeep = this.maps.keepToward(nx, ny, nz, lx, ly, lz, this.cloudHeight, this.cloudSpin);
+    out.deckKeep = this.cameraOverDeck ? this.maps.keepToward(nx, ny, nz, vx, vy, vz, this.cloudHeight, this.cloudSpin) : 1;
   };
   private hold = 'off';
   private target = 1;
@@ -190,6 +210,9 @@ export class HighlightMeter {
     this.sea.airBlend = ctx.airBlend;
     this.cloudSpin = ctx.cloudSpin;
     this.cloudDrawn = ctx.cloudDrawn;
+    this.cloudShadows = ctx.cloudShadows;
+    this.cloudHeight = ctx.cloudHeightOverRadius;
+    this.cameraOverDeck = ctx.camera.length() > 1 + ctx.cloudHeightOverRadius;
     const found = scanBeam(
       this.pose as GlintMeterPose, this.light as GlintMeterLight, this.sea as GlintMeterSea,
       this.sampler, this.table, this.scratch, this.peak,
@@ -240,7 +263,7 @@ export class HighlightMeter {
       acrossAngleDeg: p.acrossAngleDeg,
       halfWidthAlongDeg: p.halfWidthAlongDeg,
       halfWidthAcrossDeg: p.halfWidthAcrossDeg,
-      peakSample: { water: p.sample.water, windMs: p.sample.windMs, cloudKeep: p.sample.cloudKeep },
+      peakSample: { water: p.sample.water, windMs: p.sample.windMs, cloudKeep: p.sample.cloudKeep, deckKeep: p.sample.deckKeep },
       coverage: this.coverage,
       peakFrame: { xDeg: this.place.xDeg, yDeg: this.place.yDeg, inFront: this.place.inFront },
       maps: this.maps.state(),

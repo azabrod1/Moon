@@ -27,13 +27,20 @@
  *     for the map's wind, with Beckmann's own Smith visibility (which
  *     carries the 1 / (4 cos cos));
  *   - the water fraction, which the shader mixes the mirror term by;
- *   - the cloud's keep over the point, which cuts the beam before the deck
- *     covers it;
+ *   - the cloud between the Sun and the point, the share of the beam the
+ *     deck lets through on its way down (`cloudKeep`), where the ground
+ *     reads it: where the Sun's ray crosses the deck when the ground
+ *     compiles cloud shadows, straight over the point when it does not;
  *   - the camera leg as the shader applies it: not plain transmittance but
  *     mix(1, T(1, μv), airWeight) with airWeight the air's blend times the
  *     haze grade's weight mix(clearView, 1, (1 − μv)²), the camera taken as
  *     above the air (the leg from the top boundary down to the point);
- *   - then the shoulder, per channel.
+ *   - then the shoulder, per channel;
+ *   - then the deck itself, drawn over the ground and blended by its
+ *     coverage where the line of sight crosses it (`deckKeep`): it takes its
+ *     share of what the shoulder left, after the shoulder, so a beam under
+ *     broken cloud is cut twice, once on the way down and once on the way
+ *     up, as the picture cuts it.
  * The air's in-scatter is left out on purpose: the probe's keep-on minus
  * keep-off difference cancels it, so the oracle and the prediction compare
  * like with like, and for a meter that only lowers the exposure the omission
@@ -92,13 +99,24 @@ export interface SurfaceSample {
   windMs: number;
   /** The water fraction, 0..1. */
   water: number;
-  /** The share of the Sun's beam the cloud over the point lets through, 0..1. */
+  /** The share of the Sun's beam the cloud between the Sun and the point
+   *  lets through, 0..1: cut before the shoulder. */
   cloudKeep: number;
+  /** The share of the drawn beam the deck between the point and the camera
+   *  lets through, 0..1: the deck is blended over the ground, so it is cut
+   *  after the shoulder. */
+  deckKeep: number;
 }
 
-/** Fills `out` with the maps' values at the unit direction (body frame);
- *  three numbers rather than a vector so a frame allocates nothing. */
-export type SurfaceSampler = (nx: number, ny: number, nz: number, out: SurfaceSample) => void;
+/** Fills `out` with the maps' values at the unit direction (body frame), the
+ *  unit directions from the point to the Sun (l) and to the camera (v)
+ *  given after it for the cloud along each; numbers rather than vectors so
+ *  a frame allocates nothing. Both keeps read 1 when the sampler sets
+ *  neither: no deck. */
+export type SurfaceSampler = (
+  nx: number, ny: number, nz: number, out: SurfaceSample,
+  lx: number, ly: number, lz: number, vx: number, vy: number, vz: number,
+) => void;
 
 export interface GlintMeterPose {
   /** The camera relative to the body's centre, in radii. */
@@ -187,6 +205,11 @@ export function shoulder(v: number, knee: number, cap: number): number {
   return knee + range * (1 - Math.exp(-(v - knee) / range));
 }
 
+/** The largest channel of a carried radiance once the shoulder holds it. */
+function drawnMaxOf(rad: readonly number[], sea: GlintMeterSea): number {
+  return Math.max(shoulder(rad[0], sea.knee, sea.cap), shoulder(rad[1], sea.knee, sea.cap), shoulder(rad[2], sea.knee, sea.cap));
+}
+
 /** Scratch the evaluation reuses, so a frame allocates nothing. */
 export interface GlintScratch {
   sample: SurfaceSample;
@@ -200,15 +223,16 @@ export interface GlintScratch {
 
 export function createGlintScratch(): GlintScratch {
   return {
-    sample: { windMs: 0, water: 0, cloudKeep: 1 }, t: [0, 0, 0], tz: [0, 0, 0],
+    sample: { windMs: 0, water: 0, cloudKeep: 1, deckKeep: 1 }, t: [0, 0, 0], tz: [0, 0, 0],
     axes: new Float64Array(6), place0: [0, 0], place1: [0, 0],
   };
 }
 
 /**
  * The beam's radiance as carried to the camera at the ground point with unit
- * normal (nx, ny, nz), per channel into `out`, before the shoulder. Zero when
- * the point is unlit, below the horizon, or not sea.
+ * normal (nx, ny, nz), per channel into `out`, before the shoulder and the
+ * deck drawn over it (`scratch.sample.deckKeep` holds the deck's share for
+ * the caller). Zero when the point is unlit, below the horizon, or not sea.
  */
 export function beamRadianceAt(
   nx: number, ny: number, nz: number,
@@ -231,8 +255,9 @@ export function beamRadianceAt(
   lx /= sunDist; ly /= sunDist; lz /= sunDist;
   const nl = nx * lx + ny * ly + nz * lz;
   if (nl <= 0) return;
-  sampler(nx, ny, nz, scratch.sample);
   const s = scratch.sample;
+  s.cloudKeep = 1; s.deckKeep = 1;
+  sampler(nx, ny, nz, s, lx, ly, lz, vx, vy, vz);
   if (s.water <= 0 || s.cloudKeep <= 0) return;
   // The half vector and the lobes.
   let hx = lx + vx, hy = ly + vy, hz = lz + vz;
@@ -277,7 +302,8 @@ export interface BeamPeak {
   readonly acrossAngleDeg: number;
   /** The carried radiance at the peak, per channel. */
   readonly carried: [number, number, number];
-  /** The drawn radiance at the peak, per channel, after the shoulder. */
+  /** The drawn radiance at the peak, per channel, after the shoulder and the
+   *  deck drawn over it. */
   readonly drawn: [number, number, number];
   /** The drawn maximum channel: what the meter protects. */
   readonly drawnMax: number;
@@ -286,8 +312,8 @@ export interface BeamPeak {
   readonly halfWidthAlongDeg: number;
   readonly halfWidthAcrossDeg: number;
   /** The surface at the peak as the sampler read it: the water, the wind
-   *  and the cloud's keep, so a probe can tell a beam under cloud from a
-   *  beam the prediction missed. */
+   *  and the cloud's two keeps, so a probe can tell a beam under cloud from
+   *  a beam the prediction missed. */
   readonly sample: SurfaceSample;
 }
 
@@ -303,7 +329,7 @@ export function createBeamPeak(): BeamPeak {
   return {
     n: [0, 0, 0], groundAngleDeg: 0, acrossAngleDeg: 0, carried: [0, 0, 0], drawn: [0, 0, 0], drawnMax: 0,
     halfWidthAlongDeg: 0, halfWidthAcrossDeg: 0,
-    sample: { windMs: 0, water: 0, cloudKeep: 1 },
+    sample: { windMs: 0, water: 0, cloudKeep: 1, deckKeep: 1 },
   };
 }
 
@@ -438,7 +464,7 @@ export function scanBeam(
   o.drawnMax = 0; o.groundAngleDeg = 0; o.acrossAngleDeg = 0; o.halfWidthAlongDeg = 0; o.halfWidthAcrossDeg = 0;
   o.carried[0] = o.carried[1] = o.carried[2] = 0;
   o.drawn[0] = o.drawn[1] = o.drawn[2] = 0;
-  o.sample.windMs = 0; o.sample.water = 0; o.sample.cloudKeep = 1;
+  o.sample.windMs = 0; o.sample.water = 0; o.sample.cloudKeep = 1; o.sample.deckKeep = 1;
   const cam = pose.camera;
   const camDist = Math.hypot(cam[0], cam[1], cam[2]);
   if (!(camDist > 1.000001)) return false;
@@ -462,12 +488,12 @@ export function scanBeam(
       ca * (c * e1x + s * e2x) + sa * ax, ca * (c * e1y + s * e2y) + sa * ay, ca * (c * e1z + s * e2z) + sa * az,
       pose, light, sea, sampler, table, scratch, rad,
     );
-    return Math.max(shoulder(rad[0], sea.knee, sea.cap), shoulder(rad[1], sea.knee, sea.cap), shoulder(rad[2], sea.knee, sea.cap));
+    return drawnMaxOf(rad, sea) * scratch.sample.deckKeep;
   };
   // Whether the sample just read is open sea under a clear sky, the maps
   // taking nothing from it. Read only after a sample that drew something,
   // which is one that reached the sampler.
-  const open = (q: SurfaceSample): boolean => q.water >= 1 && q.cloudKeep >= 1;
+  const open = (q: SurfaceSample): boolean => q.water >= 1 && q.cloudKeep >= 1 && q.deckKeep >= 1;
   // Coarse: from just inside the sub-camera point to just inside the horizon,
   // on the line and, where the maps cut the line's own sample, at one and two
   // expected half-widths either side of it. Where the line reads open sea
@@ -527,9 +553,11 @@ export function scanBeam(
   // the extent's samples overwrite the scratch.
   o.sample.windMs = scratch.sample.windMs;
   o.sample.water = scratch.sample.water; o.sample.cloudKeep = scratch.sample.cloudKeep;
-  o.drawn[0] = shoulder(o.carried[0], sea.knee, sea.cap);
-  o.drawn[1] = shoulder(o.carried[1], sea.knee, sea.cap);
-  o.drawn[2] = shoulder(o.carried[2], sea.knee, sea.cap);
+  o.sample.deckKeep = scratch.sample.deckKeep;
+  const deck = scratch.sample.deckKeep;
+  o.drawn[0] = shoulder(o.carried[0], sea.knee, sea.cap) * deck;
+  o.drawn[1] = shoulder(o.carried[1], sea.knee, sea.cap) * deck;
+  o.drawn[2] = shoulder(o.carried[2], sea.knee, sea.cap) * deck;
   o.drawnMax = Math.max(o.drawn[0], o.drawn[1], o.drawn[2]);
   o.n[0] = px; o.n[1] = py; o.n[2] = pz;
   o.groundAngleDeg = bestPhi / DEG;
@@ -543,7 +571,7 @@ export function scanBeam(
       const cd = Math.cos(delta), sdl = Math.sin(delta);
       const qx = cd * px + sdl * dirX, qy = cd * py + sdl * dirY, qz = cd * pz + sdl * dirZ;
       beamRadianceAt(qx, qy, qz, pose, light, sea, sampler, table, scratch, rad);
-      const v = Math.max(shoulder(rad[0], sea.knee, sea.cap), shoulder(rad[1], sea.knee, sea.cap), shoulder(rad[2], sea.knee, sea.cap));
+      const v = drawnMaxOf(rad, sea) * scratch.sample.deckKeep;
       const ratio = v / peak;
       if (ratio < 0.9 && ratio > 1e-3) {
         const halfGround = delta * Math.sqrt(Math.LN2 / Math.log(peak / v));

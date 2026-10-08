@@ -77,6 +77,7 @@ import {
   parseSeaBeamParam, parseSunPathParam, seaBeamOn, setSeaBeamEnabled, setSunPathEnabled, sunPathOn,
   parseSeaColourParam, seaColourUniforms, setSeaColourEnabled,
   parseSeaSkyParam, seaSkyOn, setSeaSkyEnabled,
+  foamAlbedoInForce, parseFoamParam, parseWhitecapsParam, setFoamAlbedo, setWhitecapsEnabled, whitecapsOn,
   surfaceShadingArgsOf,
 } from './planetarium/world/surfaceShading';
 import type { CloudFieldRequest } from './planetarium/world/cloudFieldDev';
@@ -343,6 +344,16 @@ setSeaColourEnabled(parseSeaColourParam(location.search));
 // `?seasky=0`: the sea without the sky reflected off its surface (the
 // SEA_SKY define, world/surfaceShading), the picture as it was.
 setSeaSkyEnabled(parseSeaSkyParam(location.search));
+// `?whitecaps=0`: the sea without the foam its wind raises (the WHITECAPS
+// define, world/surfaceShading), the picture as it was. DEV `?foam=0.30`
+// draws the foam at that reflectance for the session (the FOAM_ALBEDO
+// define), so a sheet of candidates is one link apiece; production reads
+// the default.
+setWhitecapsEnabled(parseWhitecapsParam(location.search));
+{
+  const foam = parseFoamParam(location.search);
+  if (foam !== null) setFoamAlbedo(foam);
+}
 // `?aerosol=<tau550>[,<angstrom>[,<albedo>[,<g>[,<scale height km>]]]]`
 // (DEV only): Earth's air booted with another aerosol for a look sheet, set
 // here before anything reads the air's parameters, because the tables bake
@@ -3599,7 +3610,7 @@ function installDevHooks() {
       cap?: number; keep?: number; roughness?: number | null;
       beamKnee?: number; beamCap?: number; sunPath?: boolean; seaBeam?: boolean;
       seaColour?: [number, number, number]; seaMix?: number;
-      seaSky?: boolean; seaSkyScale?: number;
+      seaSky?: boolean; seaSkyScale?: number; whitecaps?: boolean; foam?: number;
     }) => {
       if (opts?.cap !== undefined) devGlintUniforms.uGlintCap.value = opts.cap;
       // The water colour the sea is drawn in (SEA_WATER_COLOUR by default) and
@@ -3617,6 +3628,10 @@ function installDevHooks() {
       // on the term for a sheet of candidates.
       if (opts?.seaSky !== undefined) setSeaSkyEnabled(opts.seaSky);
       if (opts?.seaSkyScale !== undefined) devGlintUniforms.uSeaSky.value = opts.seaSkyScale;
+      // The whitecaps: their define relinked live, and the foam's reflectance
+      // (a valued define, so a new value relinks too).
+      if (opts?.whitecaps !== undefined) setWhitecapsEnabled(opts.whitecaps);
+      if (opts?.foam !== undefined) setFoamAlbedo(opts.foam);
       const roughness = setDevOceanRoughness(opts?.roughness);
       const tex = seaWindTexture();
       return {
@@ -3628,6 +3643,8 @@ function installDevHooks() {
         seaMix: seaColourUniforms.uSeaMix.value,
         seaSky: seaSkyOn(),
         seaSkyScale: devGlintUniforms.uSeaSky.value,
+        whitecaps: whitecapsOn(),
+        foam: foamAlbedoInForce(),
         sunPath: sunPathOn(),
         seaBeam: seaBeamOn(),
         roughness,

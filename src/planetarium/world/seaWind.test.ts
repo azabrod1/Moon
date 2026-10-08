@@ -8,8 +8,9 @@ import {
   installSeaWindMap, loadSeaWindMap, meanSquareSlope, parseSeaWindMapParam, parseSeaWindParam, seaWindAxisFromByte,
   seaWindBytesFromRgba, seaWindMapDimensions, seaWindMapSource, seaWindRgbaFromSpeed, seaWindTexture, seaWindTextureFrom,
   setSeaWindMips, windRoughness,
+  WHITECAP_ALBEDO, WHITECAP_COVER_COEFFICIENT, WHITECAP_COVER_EXPONENT, WHITECAP_MEAN_FACTOR, whitecapCoverage,
 } from './seaWind';
-import { ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER } from './surfaceShading';
+import { ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER, SEA_WATER_COLOUR } from './surfaceShading';
 import { PLANET_TEXTURE_FILES } from './textureLadder';
 import {
   COX_MUNK_SLOPE_CALM as GENERATOR_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS as GENERATOR_SLOPE_PER_MS,
@@ -55,6 +56,64 @@ describe('windRoughness', () => {
     expect(GENERATOR_SLOPE_PER_MS).toBe(COX_MUNK_SLOPE_PER_MS);
     expect(GENERATOR_WIND_MAX_MS).toBe(SEA_WIND_MAX_MS);
     expect(generatorMeanSquareSlope(3)).toBeCloseTo(meanSquareSlope(3), 12);
+  });
+});
+
+describe('whitecapCoverage', () => {
+  /** Γ(x) for x > 0.5, Lanczos (g = 7, nine terms): good to about 1e-13. */
+  const gamma = (x: number): number => {
+    const c = [0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313,
+      -176.61502916214059, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
+    const z = x - 1;
+    let a = c[0];
+    const t = z + 7.5;
+    for (let i = 1; i < 9; i++) a += c[i] / (z + i);
+    return Math.sqrt(2 * Math.PI) * Math.pow(t, z + 0.5) * Math.exp(-t) * a;
+  };
+  /** E[W(U)] / W(E[U]) over a Weibull spread of winds of shape k. */
+  const weibullFactor = (k: number): number =>
+    gamma(1 + WHITECAP_COVER_EXPONENT / k) / Math.pow(gamma(1 + 1 / k), WHITECAP_COVER_EXPONENT);
+
+  it('is Monahan and O\'Muircheartaigh\'s law, raised to the mean over a spread of winds about the annual mean', () => {
+    expect(WHITECAP_COVER_COEFFICIENT).toBe(3.84e-6);
+    expect(WHITECAP_COVER_EXPONENT).toBe(3.41);
+    expect(gamma(5)).toBeCloseTo(24, 10);
+    expect(gamma(1.5)).toBeCloseTo(Math.sqrt(Math.PI) / 2, 12);
+    // The factor the sea takes sits between the open ocean's shapes, 2.34 at
+    // k = 2 and 1.83 at k = 2.5; the steady trades' is about 1.35.
+    expect(weibullFactor(2)).toBeCloseTo(2.34, 2);
+    expect(weibullFactor(2.5)).toBeCloseTo(1.825, 3);
+    expect(WHITECAP_MEAN_FACTOR).toBeLessThan(weibullFactor(2));
+    expect(WHITECAP_MEAN_FACTOR).toBeGreaterThan(weibullFactor(2.5));
+    expect((weibullFactor(3.5) + weibullFactor(4)) / 2).toBeCloseTo(1.37, 1);
+    // The cover the header states.
+    expect(whitecapCoverage(7)).toBeCloseTo(0.0061, 4);
+    expect(whitecapCoverage(10)).toBeCloseTo(0.0207, 4);
+    expect(whitecapCoverage(12)).toBeCloseTo(0.0386, 4);
+    expect(whitecapCoverage(13.38)).toBeCloseTo(0.0559, 4);
+    expect(whitecapCoverage(6)).toBeCloseTo(0.0036, 4);
+    // No wind is no foam, and the share never passes the whole surface.
+    expect(whitecapCoverage(0)).toBe(0);
+    expect(whitecapCoverage(-4)).toBe(0);
+    expect(whitecapCoverage(Number.NaN)).toBe(0);
+    expect(whitecapCoverage(1000)).toBe(1);
+    let last = 0;
+    for (let wind = 0.25; wind <= SEA_WIND_MAX_MS; wind += 0.25) {
+      expect(whitecapCoverage(wind)).toBeGreaterThan(last);
+      last = whitecapCoverage(wind);
+    }
+  });
+
+  it('greys the water colour rather than whitening it', () => {
+    expect(WHITECAP_ALBEDO).toBe(0.22);
+    const at = (cover: number) => SEA_WATER_COLOUR.map((water) => water * (1 - cover) + WHITECAP_ALBEDO * cover);
+    const [red, green, blue] = at(0.04);
+    expect(red / SEA_WATER_COLOUR[0]).toBeCloseTo(6.83, 2);
+    expect(green / SEA_WATER_COLOUR[1]).toBeCloseTo(1.94, 2);
+    expect(blue / SEA_WATER_COLOUR[2]).toBeCloseTo(1.27, 2);
+    // Still darker than every land albedo the map paints and far from white:
+    // at the windiest annual mean the sea's blue is under a tenth.
+    expect(Math.max(...at(whitecapCoverage(13.38)))).toBeLessThan(0.04);
   });
 });
 

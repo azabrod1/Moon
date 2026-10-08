@@ -141,7 +141,8 @@ import { AIRLIGHT_SCALE } from './atmosphereModel';
 import { SUN_LIGHT_BASELINE } from '../sunLight';
 import { onPerfSwitch, perfSwitchOn, perfSwitchUniform, setPerfSwitch } from '../../app/perfSwitches';
 import {
-  COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_WIND_MAX_MS, disposeRetiredSeaWindMaps, seaWindTexture,
+  COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_WIND_MAX_MS, WHITECAP_ALBEDO, WHITECAP_COVER_COEFFICIENT,
+  WHITECAP_COVER_EXPONENT, WHITECAP_MEAN_FACTOR, disposeRetiredSeaWindMaps, seaWindTexture,
 } from './seaWind';
 import { DEFAULT_ALBEDO_PIVOT, surfaceLookOf } from './surfaceLook';
 import type { NightSides } from '../../app/nightSidesSetting';
@@ -868,14 +869,31 @@ function applyCloudShadow(mat: THREE.Material, on: boolean): void {
   setCloudFieldCompiled(mat, on);
 }
 
-/** Set or clear one of the cloud switches' defines on a material. */
-function applySwitchDefine(mat: THREE.Material, name: 'CLOUD_SHADOW' | 'CLOUD_LIGHT' | 'SUN_PATH' | 'SEA_BEAM' | 'SEA_SKY', on: boolean): void {
+/** Set or clear one of the switches' defines on a material. */
+function applySwitchDefine(
+  mat: THREE.Material,
+  name: 'CLOUD_SHADOW' | 'CLOUD_LIGHT' | 'SUN_PATH' | 'SEA_BEAM' | 'SEA_SKY' | 'WHITECAPS',
+  on: boolean,
+): void {
   const defines = (mat.defines ??= {});
   if ((defines[name] !== undefined) === on) return;
   if (on) defines[name] = '';
   else delete defines[name];
   // The define is part of three's program key: the next draw links (or finds)
   // the program with the other text.
+  mat.needsUpdate = true;
+}
+
+/** Set a define that carries a value (`#define NAME value`) on a material,
+ *  or clear it with null: the sibling of `applySwitchDefine` for a number
+ *  the text reads. three writes the defines into the program's prefix and
+ *  keys the program on each name and value, so the shader text the tests pin
+ *  is the same whatever the value, and a new value relinks like a switch. */
+function applyValuedDefine(mat: THREE.Material, name: 'FOAM_ALBEDO', value: string | null): void {
+  const defines = (mat.defines ??= {});
+  if ((defines[name] ?? null) === value) return;
+  if (value === null) delete defines[name];
+  else defines[name] = value;
   mat.needsUpdate = true;
 }
 
@@ -1145,6 +1163,16 @@ function roughnessChunk(): string {
  * derivative across it would pick the coarsest mip down one column of sea;
  * the gradients are taken in the uniform branch, outside the per-fragment
  * gate that spares pure land the fetch.
+ *
+ * Under the WHITECAPS define the same wind greys the sea's diffuse colour by
+ * the foam it raises (WHITECAP_* in world/seaWind), after the water colour,
+ * so a shelf painted its own colour takes foam too and a painted texel is
+ * matched before the foam moves it. Every line it adds is a whole line inside
+ * its own conditional, so with the define off the text is the text it was.
+ * The wind is copied out of the per-fragment read rather than the read moved:
+ * a second declaration outside would be shadowed by the one inside and the
+ * foam would read zero. No read (no map, `?seawind=0`, a DEV `?glint=`
+ * roughness) leaves it at zero, which is no foam.
  */
 const WATER_GLOSS_GLSL = /* glsl */ `
 float seaWater = 0.0;
@@ -1152,6 +1180,9 @@ if (GROUND_ON(uWaterGloss > 0.0)) {
   float waterGain = uWaterGloss;
   seaWater = clamp((${ROUGHNESS_MAP_LAND.toFixed(6)} - roughnessFactor)
       / ${(ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER).toFixed(6)}, 0.0, 1.0);
+#ifdef WHITECAPS
+  float seaFoamWind = 0.0;
+#endif
   if (uSeaWindOn > 0.5) {
     vec3 seaDir = normalize(vObjPos);
     vec2 seaUv = sphereEquirectUv(seaDir);
@@ -1159,6 +1190,9 @@ if (GROUND_ON(uWaterGloss > 0.0)) {
     vec2 seaDy = sphereEquirectUvGrad(seaDir, dFdy(seaDir));
     if (roughnessFactor < ${(ROUGHNESS_MAP_LAND - 0.005).toFixed(6)}) {
       float seaWindMs = textureGrad(uSeaWindMap, seaUv, seaDx, seaDy).r * ${SEA_WIND_MAX_MS.toFixed(1)};
+#ifdef WHITECAPS
+      seaFoamWind = seaWindMs;
+#endif
       float seaRoughness = sqrt(sqrt(${COX_MUNK_SLOPE_CALM.toFixed(5)}
           + ${COX_MUNK_SLOPE_PER_MS.toFixed(5)} * seaWindMs));
       waterGain = (${ROUGHNESS_MAP_LAND.toFixed(6)} - seaRoughness)
@@ -1178,6 +1212,18 @@ if (GROUND_ON(uWaterGloss > 0.0)) {
         distance(diffuseColor.rgb, vec3(${SEA_PAINT_COLOUR.map((v) => v.toFixed(6)).join(', ')})));
     diffuseColor.rgb = mix(diffuseColor.rgb, ${SEA_COLOUR_GLSL}, seaWater * seaPaint * uSeaMix);
   }
+#ifdef WHITECAPS
+  // Whitecaps: the share of the surface that is foam at this annual mean
+  // wind (Monahan and O'Muircheartaigh's law, times the mean over a Weibull
+  // spread of winds), mixed in at the foam's reflectance, one grey. It
+  // multiplies everything the albedo does (the Sun's diffuse, the sky's and
+  // the Moon's light, the night floor) and nothing the mirror term reads.
+  if (seaFoamWind > 0.0) {
+    float seaFoam = clamp(${WHITECAP_MEAN_FACTOR.toFixed(1)} * ${WHITECAP_COVER_COEFFICIENT.toExponential()}
+        * pow(seaFoamWind, ${WHITECAP_COVER_EXPONENT.toFixed(2)}), 0.0, 1.0);
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(FOAM_ALBEDO), seaFoam * seaWater);
+  }
+#endif
 }`;
 
 // Analytic stand-in for Saturn's ring opacity across the annulus (t: 0 inner …
@@ -3229,6 +3275,21 @@ let sunPathEnabled = true;
 let seaBeamEnabled = true;
 /** `SEA_SKY` (`?seasky=0`): the sky reflected off the sea (SEA_SKY_GRAZING_COS), the same shape of switch. */
 let seaSkyEnabled = true;
+/**
+ * `WHITECAPS` (`?whitecaps=0`): the sea's diffuse colour greyed by the foam
+ * the wind raises (WATER_GLOSS_GLSL; the law and the foam's reflectance are
+ * world/seaWind's WHITECAP_*), the same shape of switch, compiled in by
+ * default and out by the kill switch on any build. While it is on, every
+ * surface also carries the valued define `FOAM_ALBEDO`, the foam's
+ * reflectance: WHITECAP_ALBEDO in production, moved in a development build
+ * by `?foam=<reflectance>` at boot and `__moon.glint({ foam })` live, so a
+ * sheet of candidates comes out of one page load. A define rather than a
+ * uniform, so no pinned text moves and a development build carries no
+ * uniform production lacks. With the switch off both defines leave the
+ * material, which is then the program it was, defines and all.
+ */
+let whitecapsEnabled = true;
+let foamAlbedo = WHITECAP_ALBEDO;
 /** Every live augmented surface, so a flip can reach the materials already drawn. */
 const beamReceivers = new Set<THREE.Material>();
 function receiveBeamSwitches(mat: THREE.Material): void {
@@ -3239,6 +3300,52 @@ function receiveBeamSwitches(mat: THREE.Material): void {
   applySwitchDefine(mat, 'SUN_PATH', sunPathEnabled);
   applySwitchDefine(mat, 'SEA_BEAM', seaBeamEnabled);
   applySwitchDefine(mat, 'SEA_SKY', seaSkyEnabled);
+  applyWhitecaps(mat);
+}
+/** A number as a GLSL float literal, which needs a point or an exponent. */
+function glslFloatLiteral(value: number): string {
+  const text = String(value);
+  return /[.e]/.test(text) ? text : `${text}.0`;
+}
+function applyWhitecaps(mat: THREE.Material): void {
+  applySwitchDefine(mat, 'WHITECAPS', whitecapsEnabled);
+  applyValuedDefine(mat, 'FOAM_ALBEDO', whitecapsEnabled ? glslFloatLiteral(foamAlbedo) : null);
+}
+export function setWhitecapsEnabled(on: boolean): void {
+  whitecapsEnabled = on;
+  for (const mat of beamReceivers) applyWhitecaps(mat);
+}
+/** Whether every surface compiles the whitecaps right now. */
+export function whitecapsOn(): boolean {
+  return whitecapsEnabled;
+}
+/** `?whitecaps=0`, any build: the sea without foam, the picture as it was. */
+export function parseWhitecapsParam(search: string): boolean {
+  return new URLSearchParams(search).get('whitecaps') !== '0';
+}
+/** The foam's reflectance every surface compiles: WHITECAP_ALBEDO unless a
+ *  development build moved it. */
+export function foamAlbedoInForce(): number {
+  return foamAlbedo;
+}
+/** Set the foam's reflectance on every surface, relinking them; a value
+ *  outside [0, 1] or not a number is refused. Returns the value in force.
+ *  Only the development build's knobs call it. */
+export function setFoamAlbedo(value: number): number {
+  if (!(Number.isFinite(value) && value >= 0 && value <= 1)) return foamAlbedo;
+  foamAlbedo = value;
+  for (const mat of beamReceivers) applyWhitecaps(mat);
+  return foamAlbedo;
+}
+/** DEV `?foam=<reflectance>`: the foam's reflectance for the session, for a
+ *  sheet of candidates, one link apiece. Null when the link has none or a
+ *  bad one, and always in production, which reads WHITECAP_ALBEDO. */
+export function parseFoamParam(search: string): number | null {
+  if (!import.meta.env.DEV) return null;
+  const raw = new URLSearchParams(search).get('foam');
+  if (!raw) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
 }
 export function setSunPathEnabled(on: boolean): void {
   sunPathEnabled = on;

@@ -51,10 +51,11 @@ import {
   surfaceCloudShadowCompiled,
   seaBeamOn,
   setSeaBeamEnabled,
+  foamAlbedoInForce, parseFoamParam, parseWhitecapsParam, setFoamAlbedo, setWhitecapsEnabled, whitecapsOn,
 } from './surfaceShading';
 import {
   COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_WIND_MAX_MS, installSeaWindMap,
-  seaWindTextureFrom,
+  seaWindTextureFrom, WHITECAP_ALBEDO, WHITECAP_COVER_COEFFICIENT, whitecapCoverage,
 } from './seaWind';
 import { createSectorMaterial } from './sectorMaterial';
 import { setCloudFieldOn } from './cloudFieldSlots';
@@ -992,6 +993,93 @@ describe('the sea', () => {
     expect(gate).toBeGreaterThan(gradients);
     // With the map off the remap is the one-width gain, as it was.
     expect(text).toContain('float waterGain = uWaterGloss;');
+  });
+
+  it('greys its albedo by the foam the same wind raises, the law world/seaWind.ts holds, under WHITECAPS', () => {
+    const text = resolveDefine(seaFragment(), 'WHITECAPS', true);
+    // The wind is copied out of the one read, never read again or moved: the
+    // copy is declared before the map's branch and filled right after the
+    // read, inside it.
+    const declared = text.indexOf('float seaFoamWind = 0.0;');
+    const branch = text.indexOf('if (uSeaWindOn > 0.5) {');
+    const read = `float seaWindMs = textureGrad(uSeaWindMap, seaUv, seaDx, seaDy).r * ${SEA_WIND_MAX_MS.toFixed(1)};`;
+    expect(declared).toBeGreaterThan(0);
+    expect(branch).toBeGreaterThan(declared);
+    expect(text).toContain(`${read}\n      seaFoamWind = seaWindMs;\n`);
+    expect(text.match(/textureGrad\(uSeaWindMap/g)).toHaveLength(1);
+    expect(text.match(/float seaFoamWind/g)).toHaveLength(1);
+    // The foam goes on after the water colour, so a painted texel is matched
+    // first and a shelf painted its own colour takes foam too; no map, or a
+    // map of zeros, is no foam.
+    const paint = text.indexOf('seaWater * seaPaint * uSeaMix);');
+    const foam = text.indexOf('diffuseColor.rgb = mix(diffuseColor.rgb, vec3(FOAM_ALBEDO), seaFoam * seaWater);');
+    expect(paint).toBeGreaterThan(0);
+    expect(foam).toBeGreaterThan(paint);
+    expect(text).toContain('if (seaFoamWind > 0.0) {');
+    // The coefficient is an exponent literal, never a fixed-point string that
+    // would round it to 0.000004.
+    expect(text).toContain(`${WHITECAP_COVER_COEFFICIENT.toExponential()}`);
+    expect(WHITECAP_COVER_COEFFICIENT.toExponential()).toBe('3.84e-6');
+    // The law the shader writes is the law world/seaWind.ts holds: its
+    // three numbers read back out of the text and evaluated in TypeScript.
+    const law = /float seaFoam = clamp\(([\d.e+-]+) \* ([\d.e+-]+)\n\s*\* pow\(seaFoamWind, ([\d.e+-]+)\), 0\.0, 1\.0\);/.exec(text);
+    expect(law).not.toBeNull();
+    const [factor, coefficient, exponent] = law!.slice(1).map(Number);
+    for (const wind of [0.5, 3, 7, 10, 12, 13.38, SEA_WIND_MAX_MS]) {
+      const glsl = Math.min(Math.max(factor * coefficient * Math.pow(wind, exponent), 0), 1);
+      expect(glsl).toBeCloseTo(whitecapCoverage(wind), 12);
+    }
+    // With the define off none of it is there.
+    const off = resolveDefine(seaFragment(), 'WHITECAPS', false);
+    expect(off).not.toMatch(/seaFoam|FOAM_ALBEDO|WHITECAPS/);
+  });
+
+  it('carries the whitecaps as a define on by default with the foam\'s reflectance beside it, the switch and the knob relinking them', () => {
+    expect(parseWhitecapsParam('')).toBe(true);
+    expect(parseWhitecapsParam('?whitecaps=1')).toBe(true);
+    expect(parseWhitecapsParam('?whitecaps=0')).toBe(false);
+    expect(parseFoamParam('')).toBeNull();
+    expect(parseFoamParam('?foam=0.30')).toBe(0.3);
+    expect(parseFoamParam('?foam=')).toBeNull();
+    expect(parseFoamParam('?foam=1.5')).toBeNull();
+    expect(parseFoamParam('?foam=grey')).toBeNull();
+    const mat = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(mat, 'earth', undefined, 0, undefined, undefined, 'Earth');
+    expect(whitecapsOn()).toBe(true);
+    expect(foamAlbedoInForce()).toBe(WHITECAP_ALBEDO);
+    expect(mat.defines?.WHITECAPS).toBe('');
+    expect(mat.defines?.FOAM_ALBEDO).toBe('0.22');
+    // Off, both leave the material, so it is the program it was, defines and
+    // all; a flip relinks through three's program key.
+    let version = mat.version;
+    setWhitecapsEnabled(false);
+    expect(whitecapsOn()).toBe(false);
+    expect(mat.defines?.WHITECAPS).toBeUndefined();
+    expect(mat.defines?.FOAM_ALBEDO).toBeUndefined();
+    expect(mat.version).toBeGreaterThan(version);
+    setWhitecapsEnabled(true);
+    expect(mat.defines?.WHITECAPS).toBe('');
+    expect(mat.defines?.FOAM_ALBEDO).toBe('0.22');
+    // The reflectance is a GLSL float literal, a new value relinks, and a
+    // value that is no reflectance is refused.
+    version = mat.version;
+    expect(setFoamAlbedo(0.3)).toBe(0.3);
+    expect(mat.defines?.FOAM_ALBEDO).toBe('0.3');
+    expect(mat.version).toBeGreaterThan(version);
+    expect(setFoamAlbedo(1)).toBe(1);
+    expect(mat.defines?.FOAM_ALBEDO).toBe('1.0');
+    expect(setFoamAlbedo(-0.1)).toBe(1);
+    expect(setFoamAlbedo(Number.NaN)).toBe(1);
+    expect(setFoamAlbedo(WHITECAP_ALBEDO)).toBe(WHITECAP_ALBEDO);
+    expect(mat.defines?.FOAM_ALBEDO).toBe('0.22');
+    // A surface augmented while the switch is off is born without either.
+    setWhitecapsEnabled(false);
+    const late = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(late, 'airless');
+    expect(late.defines?.WHITECAPS).toBeUndefined();
+    expect(late.defines?.FOAM_ALBEDO).toBeUndefined();
+    setWhitecapsEnabled(true);
+    expect(late.defines?.FOAM_ALBEDO).toBe('0.22');
   });
 
   it('draws one Beckmann lobe in place of three\'s GGX, at three\'s own alpha, only with the map on', () => {

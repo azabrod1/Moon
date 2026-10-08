@@ -136,6 +136,17 @@ const OFF_PROD_FRAGMENT_HASH = '8c8e7f18b76c5fd950db2673ea503310819172face8727d5
 const MIE_OFF_DEV_FRAGMENT_HASH = '7674725c2c7d73b70a6fe5be50b087ae049a367cbeae2dfbd094e85b9a99d9de';
 const MIE_OFF_PROD_FRAGMENT_HASH = 'b0a61776582b89171ca565e5eba8f9f72d84287878f1ae81a8f791791c556731';
 const MIE_OFF_SHELL_FRAGMENT_HASH = 'e613114e0023b6b45b235dd92c7039cc5ea90113839778b234f4e249acc89b01';
+/** A skeleton that also carries the colour map's and the roughness map's
+ *  chunks, so the sea's remap (WATER_GLOSS_GLSL, spliced at
+ *  <roughnessmap_fragment>) is in the text; `compile` above has neither, so
+ *  no hash above holds a line of that block. */
+const SEA_SKELETON = '#include <common>\nvoid main() {\n#include <map_fragment>\n#include <roughnessmap_fragment>\n'
+  + '#include <normal_fragment_maps>\n#include <opaque_fragment>\n}';
+/** The text through SEA_SKELETON with the whitecaps' define OFF, resolved as
+ *  the preprocessor resolves it: the hashes the same skeleton gave at
+ *  2eac15ab, before the whitecaps existed, unchanged. */
+const WHITECAPS_OFF_SEA_DEV_FRAGMENT_HASH = 'abd2fb222d1dca119cf9a7f66dcc9776b35e0026ea9275f47928fef5aa7f279f';
+const WHITECAPS_OFF_SEA_PROD_FRAGMENT_HASH = '6f8962547ffadea8eab0b1a06159381c2afa8cf8ba64f90b1a479702ad23a569';
 describe('the injected surface shader', () => {
   it('is one text for every body and both tiers', () => {
     // Earth with air, the Moon without, Mars with its own, and the cloud deck.
@@ -231,6 +242,33 @@ describe('the injected surface shader', () => {
     expect(parseMieExactParam('?mieexact=0')).toBe(false);
   });
 
+  it('is the text it was with the whitecaps\' define off, through the sea\'s own chunk, after the preprocessor', () => {
+    // WHITECAPS (world/surfaceShading) is a compile-time define, on unless
+    // `?whitecaps=0`, and every line it adds is a whole line inside its own
+    // conditional in the sea's remap. That block is only in a text compiled
+    // with <roughnessmap_fragment>, so the claim is held through the skeleton
+    // that has it: with the define off, the ground compiles the program from
+    // before the whitecaps existed, character for character.
+    const shader = {
+      uniforms: {} as Record<string, THREE.IUniform>,
+      vertexShader: '#include <common>\nvoid main() {\n#include <begin_vertex>\n}',
+      fragmentShader: SEA_SKELETON,
+    };
+    const mat = augmented('earth');
+    (mat.onBeforeCompile as (s: typeof shader) => void)(shader);
+    const off = resolveDefine(shader.fragmentShader, 'WHITECAPS', false);
+    expect(off).not.toMatch(/WHITECAPS|FOAM_ALBEDO|seaFoam/);
+    expect(hash(off)).toBe(import.meta.env.DEV ? WHITECAPS_OFF_SEA_DEV_FRAGMENT_HASH : WHITECAPS_OFF_SEA_PROD_FRAGMENT_HASH);
+    // With it on, the foam is mixed into the albedo at the reflectance the
+    // valued define carries, which three writes in the program's prefix and
+    // so is no part of this text.
+    const on = resolveDefine(shader.fragmentShader, 'WHITECAPS', true);
+    expect(on).toContain('diffuseColor.rgb = mix(diffuseColor.rgb, vec3(FOAM_ALBEDO), seaFoam * seaWater);');
+    expect(mat.defines?.WHITECAPS).toBe('');
+    expect(mat.defines?.FOAM_ALBEDO).toBe('0.22');
+    expect(shader.vertexShader).not.toContain('WHITECAPS');
+  });
+
   it('reads single Mie whole under MIE_EXACT, and subtracts it channel by channel', () => {
     // With the define on, no lookup rebuilds green and blue from rgb: the
     // segment's single Mie is near minus far through the segment's own
@@ -260,8 +298,7 @@ describe('the injected surface shader', () => {
     // its `#ifdef` behind the neighbour's last brace, and the conditional
     // would silently not be one. Every hook three's chunks are replaced at,
     // on the ground and on the deck, in whichever reading this run compiles.
-    const skeleton = '#include <common>\nvoid main() {\n#include <map_fragment>\n#include <roughnessmap_fragment>\n'
-      + '#include <normal_fragment_maps>\n#include <opaque_fragment>\n}';
+    const skeleton = SEA_SKELETON;
     const deck = augmented('cloud');
     deck.defines = { ...deck.defines, CLOUD_FIELD: '' };
     for (const mat of [augmented('earth'), deck]) {

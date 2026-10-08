@@ -25,7 +25,9 @@ export type TextureTier = (typeof TEXTURE_TIERS)[number];
  * What a map is FOR, which is what decides its colour space and its storage.
  *
  * - `color`: an sRGB image whose three channels are all read.
- * - `data`: a linear image whose channels are all read — a tangent normal map.
+ * - `data`: a linear image whose channels are all read — a tangent normal
+ *   map, or the sea's wind map (its speed in red, the wind's axis in green
+ *   and blue: world/seaWind).
  * - `mask`: a linear GREY image with ONE channel that anything reads. Earth's
  *   height map is read as red three times by three's bump chunk, and its water
  *   mask as green once by the roughness chunk; both files are grey to the

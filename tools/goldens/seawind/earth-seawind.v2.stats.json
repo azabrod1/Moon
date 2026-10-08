@@ -1,0 +1,841 @@
+{
+ "_": "Written by tools/gen-seawind.mjs; seaWind.test.ts checks that the shipped map is the file named here and that every bar passed. Every number is measured on the map decoded back from the webp, except the source facts and the source seams.",
+ "arm": "data",
+ "map": {
+  "file": "earth-seawind.v2.webp",
+  "width": 1024,
+  "height": 512,
+  "bytes": 335830,
+  "sha256": "c4d96d4e66c67a557cf2aa7cd91101402a6d3726df8ca581ae0058d404e58bd3",
+  "channelsDecoded": 3
+ },
+ "source": {
+  "file": "NBS_v02_wind_climmonthly_s1991_e2020_c20221206.nc",
+  "sha256": "12f40a7b231bfaf63e11716a0b377f7a3bc384d9778d89ae79bae371dfddff02",
+  "url": "https://www.ncei.noaa.gov/data/blended-global-sea-surface-wind-products/access/climatology/NBS_v02_wind_climmonthly_s1991_e2020_c20221206.nc",
+  "reader": "h5wasm 0.10.3"
+ },
+ "facts": {
+  "datasets": [
+   "crs",
+   "lat",
+   "lon",
+   "mask",
+   "month",
+   "u_wind",
+   "v_wind",
+   "windspeed",
+   "zlev"
+  ],
+  "variables": {
+   "u_wind": {
+    "shape": [
+     12,
+     1,
+     719,
+     1440
+    ],
+    "dtype": "<f",
+    "fillValue": "NaN",
+    "scaleFactor": 1,
+    "addOffset": 0
+   },
+   "v_wind": {
+    "shape": [
+     12,
+     1,
+     719,
+     1440
+    ],
+    "dtype": "<f",
+    "fillValue": "NaN",
+    "scaleFactor": 1,
+    "addOffset": 0
+   },
+   "windspeed": {
+    "shape": [
+     12,
+     1,
+     719,
+     1440
+    ],
+    "dtype": "<f",
+    "fillValue": "NaN",
+    "scaleFactor": 1,
+    "addOffset": 0
+   },
+   "mask": {
+    "shape": [
+     12,
+     1,
+     719,
+     1440
+    ],
+    "dtype": "<d",
+    "fillValue": "NaN",
+    "scaleFactor": 1,
+    "addOffset": 0
+   }
+  },
+  "lat": {
+   "count": 719,
+   "first": -89.75,
+   "last": 89.75
+  },
+  "lon": {
+   "count": 1440,
+   "first": 0,
+   "last": 359.75
+  },
+  "months": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   11,
+   12
+  ],
+  "zlev": [
+   10
+  ],
+  "maskCounts": {
+   "0": 338697,
+   "1": 694835,
+   "2": 1827,
+   "3": 1
+  }
+ },
+ "steadiness": {
+  "note": "k = |(u, v)| / w over the valid cells of each month; clamped at one, the cells over it counted",
+  "pooled": {
+   "p05": 0.1071,
+   "p50": 0.504,
+   "p95": 0.9698
+  },
+  "byMonth": [
+   {
+    "month": 1,
+    "p05": 0.1271,
+    "p50": 0.5346,
+    "p95": 0.9663,
+    "overOne": 0
+   },
+   {
+    "month": 2,
+    "p05": 0.1363,
+    "p50": 0.5298,
+    "p95": 0.9646,
+    "overOne": 0
+   },
+   {
+    "month": 3,
+    "p05": 0.1305,
+    "p50": 0.4908,
+    "p95": 0.9639,
+    "overOne": 0
+   },
+   {
+    "month": 4,
+    "p05": 0.1266,
+    "p50": 0.4946,
+    "p95": 0.9692,
+    "overOne": 0
+   },
+   {
+    "month": 5,
+    "p05": 0.1216,
+    "p50": 0.4655,
+    "p95": 0.9675,
+    "overOne": 0
+   },
+   {
+    "month": 6,
+    "p05": 0.1056,
+    "p50": 0.4666,
+    "p95": 0.9749,
+    "overOne": 0
+   },
+   {
+    "month": 7,
+    "p05": 0.0938,
+    "p50": 0.507,
+    "p95": 0.9757,
+    "overOne": 0
+   },
+   {
+    "month": 8,
+    "p05": 0.0784,
+    "p50": 0.5036,
+    "p95": 0.9748,
+    "overOne": 0
+   },
+   {
+    "month": 9,
+    "p05": 0.0694,
+    "p50": 0.4997,
+    "p95": 0.9706,
+    "overOne": 0
+   },
+   {
+    "month": 10,
+    "p05": 0.1206,
+    "p50": 0.5084,
+    "p95": 0.9658,
+    "overOne": 0
+   },
+   {
+    "month": 11,
+    "p05": 0.1161,
+    "p50": 0.5158,
+    "p95": 0.9646,
+    "overOne": 0
+   },
+   {
+    "month": 12,
+    "p05": 0.131,
+    "p50": 0.5195,
+    "p95": 0.9671,
+    "overOne": 0
+   }
+  ]
+ },
+ "cells": {
+  "minValidMonths": 6,
+  "byClass": {
+   "0": {
+    "cells": 338697,
+    "filled": 0,
+    "unfilled": 338697,
+    "validMonths": 0
+   },
+   "1": {
+    "cells": 694835,
+    "filled": 694835,
+    "unfilled": 0,
+    "validMonths": 8338020
+   },
+   "2": {
+    "cells": 1827,
+    "filled": 1827,
+    "unfilled": 0,
+    "validMonths": 21924
+   },
+   "3": {
+    "cells": 1,
+    "filled": 1,
+    "unfilled": 0,
+    "validMonths": 12
+   }
+  },
+  "unfilled": 338697,
+  "nonFiniteByMonthAndClass": [
+   {
+    "0": 320292,
+    "month": 1
+   },
+   {
+    "0": 320522,
+    "month": 2
+   },
+   {
+    "0": 320419,
+    "month": 3
+   },
+   {
+    "0": 320765,
+    "month": 4
+   },
+   {
+    "0": 320375,
+    "month": 5
+   },
+   {
+    "0": 319392,
+    "month": 6
+   },
+   {
+    "0": 318246,
+    "month": 7
+   },
+   {
+    "0": 318024,
+    "month": 8
+   },
+   {
+    "0": 317746,
+    "month": 9
+   },
+   {
+    "0": 317946,
+    "month": 10
+   },
+   {
+    "0": 318778,
+    "month": 11
+   },
+   {
+    "0": 319386,
+    "month": 12
+   }
+  ]
+ },
+ "speedByMonth": [
+  {
+   "month": 1,
+   "p50": 7.26,
+   "p95": 11.17,
+   "max": 16.04
+  },
+  {
+   "month": 2,
+   "p50": 7.4,
+   "p95": 11.07,
+   "max": 15.93
+  },
+  {
+   "month": 3,
+   "p50": 7.52,
+   "p95": 11,
+   "max": 15.18
+  },
+  {
+   "month": 4,
+   "p50": 7.43,
+   "p95": 11.14,
+   "max": 14.63
+  },
+  {
+   "month": 5,
+   "p50": 7.14,
+   "p95": 11.3,
+   "max": 14.75
+  },
+  {
+   "month": 6,
+   "p50": 7.11,
+   "p95": 11.33,
+   "max": 15.59
+  },
+  {
+   "month": 7,
+   "p50": 7.21,
+   "p95": 11.7,
+   "max": 15.14
+  },
+  {
+   "month": 8,
+   "p50": 7.11,
+   "p95": 11.86,
+   "max": 14.77
+  },
+  {
+   "month": 9,
+   "p50": 7.29,
+   "p95": 11.63,
+   "max": 14.34
+  },
+  {
+   "month": 10,
+   "p50": 7.43,
+   "p95": 11.26,
+   "max": 13.53
+  },
+  {
+   "month": 11,
+   "p50": 7.39,
+   "p95": 10.86,
+   "max": 14.07
+  },
+  {
+   "month": 12,
+   "p50": 7.34,
+   "p95": 11.24,
+   "max": 15.11
+  }
+ ],
+ "annualSpeed": {
+  "medianMs": 7.38,
+  "p95Ms": 10.86,
+  "maxMs": 13.38,
+  "overFullScale": 0
+ },
+ "speedSmoothing": {
+  "sigmaSourceCells": 0,
+  "note": "none applied"
+ },
+ "fill": {
+  "rule": "unfilled cells (land) take R and a from the nearest open-sea cell, in the quarter-degree grid's own metric, longitude periodic; every water cell keeps its own values",
+  "openSeaMinCells": 1000,
+  "openSeaBodies": 1,
+  "smallerOceanBodies": 1112,
+  "smallerOceanCells": 3679
+ },
+ "axis": {
+  "law": "x = mean over valid months of k_m d(w_m) (cos 2 theta_m, sin 2 theta_m), area-averaged, divided by d(R) at the stored speed, clamped to the unit disc; d(U) = 0.00316 U - (0.003 + 0.00192 U)",
+  "divisorFloor": 0.0001
+ },
+ "bands": [
+  {
+   "band": "0-15",
+   "meanWindMs": 6.331,
+   "under1Fraction": 0,
+   "under2Fraction": 0.00017
+  },
+  {
+   "band": "15-30",
+   "meanWindMs": 6.997,
+   "under1Fraction": 0,
+   "under2Fraction": 0
+  },
+  {
+   "band": "30-45",
+   "meanWindMs": 8.107,
+   "under1Fraction": 0,
+   "under2Fraction": 0.00002
+  },
+  {
+   "band": "45-60",
+   "meanWindMs": 9.896,
+   "under1Fraction": 0,
+   "under2Fraction": 0
+  },
+  {
+   "band": "60-90",
+   "meanWindMs": 7.548,
+   "under1Fraction": 0.00002,
+   "under2Fraction": 0.00125
+  },
+  {
+   "band": "0-25",
+   "meanWindMs": 6.577,
+   "under1Fraction": 0,
+   "under2Fraction": 0.00011
+  }
+ ],
+ "seams": {
+  "map": {
+   "edge (+-180)": {
+    "columns": [
+     1023,
+     0
+    ],
+    "lonDeg": -180,
+    "R": {
+     "meanAbsDiff": 0.2697947214076246,
+     "othersMedian": 0.4940828402366864,
+     "othersP95": 1.180094786729858,
+     "othersMax": 2.229813664596273,
+     "percentile": 0.16536203522504891,
+     "pass": true
+    },
+    "G": {
+     "meanAbsDiff": 0.25219941348973607,
+     "othersMedian": 1.1515151515151516,
+     "othersP95": 3.1940298507462686,
+     "othersMax": 12.145299145299145,
+     "percentile": 0.0029354207436399216,
+     "pass": true
+    },
+    "B": {
+     "meanAbsDiff": 0.39882697947214074,
+     "othersMedian": 1.1511111111111112,
+     "othersP95": 3.2753623188405796,
+     "othersMax": 6.017857142857143,
+     "percentile": 0.04207436399217221,
+     "pass": true
+    }
+   },
+   "centre (0)": {
+    "columns": [
+     511,
+     512
+    ],
+    "lonDeg": 0,
+    "R": {
+     "meanAbsDiff": 0.6111111111111112,
+     "othersMedian": 0.4940828402366864,
+     "othersP95": 1.180094786729858,
+     "othersMax": 2.229813664596273,
+     "percentile": 0.6144814090019569,
+     "pass": true
+    },
+    "G": {
+     "meanAbsDiff": 1.7592592592592593,
+     "othersMedian": 1.1515151515151516,
+     "othersP95": 3.1940298507462686,
+     "othersMax": 12.145299145299145,
+     "percentile": 0.7544031311154599,
+     "pass": true
+    },
+    "B": {
+     "meanAbsDiff": 1.2592592592592593,
+     "othersMedian": 1.1511111111111112,
+     "othersP95": 3.2753623188405796,
+     "othersMax": 6.017857142857143,
+     "percentile": 0.5743639921722113,
+     "pass": true
+    }
+   }
+  },
+  "source": {
+   "edge (+-180)": {
+    "columns": [
+     1439,
+     0
+    ],
+    "lonDeg": -180,
+    "R": {
+     "meanAbsDiff": 0.01273171131965747,
+     "othersMedian": 0.02309697881683976,
+     "othersP95": 0.057997122738096415,
+     "othersMax": 0.1183585448802518,
+     "percentile": 0.16620305980528513,
+     "pass": true
+    },
+    "a1": {
+     "meanAbsDiff": 0.000012384296627967698,
+     "othersMedian": 0.00003838962208459611,
+     "othersP95": 0.0000976655897564225,
+     "othersMax": 0.0002729200223338529,
+     "percentile": 0.04450625869262865,
+     "pass": true
+    },
+    "a2": {
+     "meanAbsDiff": 0.000016883981063687338,
+     "othersMedian": 0.000037480524455350256,
+     "othersP95": 0.0000897130512268558,
+     "othersMax": 0.00020137122175400027,
+     "percentile": 0.061196105702364396,
+     "pass": true
+    }
+   },
+   "source seam (0)": {
+    "columns": [
+     719,
+     720
+    ],
+    "lonDeg": 0,
+    "R": {
+     "meanAbsDiff": 0.023840079176861567,
+     "othersMedian": 0.02309697881683976,
+     "othersP95": 0.057997122738096415,
+     "othersMax": 0.1183585448802518,
+     "percentile": 0.5166898470097357,
+     "pass": true
+    },
+    "a1": {
+     "meanAbsDiff": 0.00005491720753804795,
+     "othersMedian": 0.00003838962208459611,
+     "othersP95": 0.0000976655897564225,
+     "othersMax": 0.0002729200223338529,
+     "percentile": 0.7260083449235049,
+     "pass": true
+    },
+    "a2": {
+     "meanAbsDiff": 0.000048003221799013476,
+     "othersMedian": 0.000037480524455350256,
+     "othersP95": 0.0000897130512268558,
+     "othersMax": 0.00020137122175400027,
+     "percentile": 0.6981919332406119,
+     "pass": true
+    }
+   }
+  },
+  "pass": true
+ },
+ "pointsHold": true,
+ "mipBias": {
+  "bars": {
+   "mean": 0.03,
+   "p99": 0.1
+  },
+  "latLimitDeg": 60,
+  "minSea": 0.5,
+  "levels": [
+   {
+    "level": 1,
+    "blockTexels": 2,
+    "blocks": 63739,
+    "speed": [
+     {
+      "tiltDeg": 0,
+      "mean": 0.00010085862534231602,
+      "p99": 0.0013855000753136837,
+      "max": 0.10234692239052412,
+      "maxAtLatLon": [
+       33.3984375,
+       132.5390625
+      ],
+      "over10Percent": 1,
+      "pass": true
+     },
+     {
+      "tiltDeg": 5,
+      "mean": 0.00005317386272813161,
+      "p99": 0.00072441983832916,
+      "max": 0.05089122602154317,
+      "maxAtLatLon": [
+       33.3984375,
+       132.5390625
+      ],
+      "over10Percent": 0,
+      "pass": true
+     },
+     {
+      "tiltDeg": 10,
+      "mean": 0.00005001843448951631,
+      "p99": 0.0006890416116351883,
+      "max": 0.06537343080241986,
+      "maxAtLatLon": [
+       33.3984375,
+       132.5390625
+      ],
+      "over10Percent": 0,
+      "pass": true
+     }
+    ],
+    "anisotropy": [
+     {
+      "component": 1,
+      "mean": 0.00002522100080406798,
+      "p99": 0.0003873977633090251,
+      "max": 0.009457765122225882,
+      "maxAtLatLon": [
+       53.7890625,
+       138.1640625
+      ],
+      "over10Percent": 0,
+      "pass": true
+     },
+     {
+      "component": 2,
+      "mean": 0.000024792415152274685,
+      "p99": 0.00037978862260400973,
+      "max": 0.026711803542371928,
+      "maxAtLatLon": [
+       18.6328125,
+       -73.4765625
+      ],
+      "over10Percent": 0,
+      "pass": true
+     }
+    ]
+   },
+   {
+    "level": 2,
+    "blockTexels": 4,
+    "blocks": 16157,
+    "speed": [
+     {
+      "tiltDeg": 0,
+      "mean": 0.0003895385169921411,
+      "p99": 0.00563173412672846,
+      "max": 0.09036977728654383,
+      "maxAtLatLon": [
+       56.953125,
+       -134.296875
+      ],
+      "over10Percent": 0,
+      "pass": true
+     },
+     {
+      "tiltDeg": 5,
+      "mean": 0.0002125677360581601,
+      "p99": 0.0029887949401876668,
+      "max": 0.044719446671445895,
+      "maxAtLatLon": [
+       56.953125,
+       -134.296875
+      ],
+      "over10Percent": 0,
+      "pass": true
+     },
+     {
+      "tiltDeg": 10,
+      "mean": 0.00017436354563901013,
+      "p99": 0.0029792753601671773,
+      "max": 0.05614881425026974,
+      "maxAtLatLon": [
+       54.140625,
+       138.515625
+      ],
+      "over10Percent": 0,
+      "pass": true
+     }
+    ],
+    "anisotropy": [
+     {
+      "component": 1,
+      "mean": 0.00009758557844965824,
+      "p99": 0.0015781996947499461,
+      "max": 0.015951793063710227,
+      "maxAtLatLon": [
+       54.140625,
+       138.515625
+      ],
+      "over10Percent": 0,
+      "pass": true
+     },
+     {
+      "component": 2,
+      "mean": 0.00009034159135998227,
+      "p99": 0.001338791069181482,
+      "max": 0.019172848112167993,
+      "maxAtLatLon": [
+       -3.515625,
+       -80.859375
+      ],
+      "over10Percent": 0,
+      "pass": true
+     }
+    ]
+   },
+   {
+    "level": 3,
+    "blockTexels": 8,
+    "blocks": 3950,
+    "speed": [
+     {
+      "tiltDeg": 0,
+      "mean": 0.0012873970759484318,
+      "p99": 0.01928818262528642,
+      "max": 0.08693198387370382,
+      "maxAtLatLon": [
+       -12.65625,
+       49.21875
+      ],
+      "over10Percent": 0,
+      "pass": true
+     },
+     {
+      "tiltDeg": 5,
+      "mean": 0.0007025021205434408,
+      "p99": 0.009900469062835593,
+      "max": 0.04942114215830096,
+      "maxAtLatLon": [
+       -12.65625,
+       49.21875
+      ],
+      "over10Percent": 0,
+      "pass": true
+     },
+     {
+      "tiltDeg": 10,
+      "mean": 0.0005540135969281188,
+      "p99": 0.010205956142893546,
+      "max": 0.04974139333680738,
+      "maxAtLatLon": [
+       -1.40625,
+       119.53125
+      ],
+      "over10Percent": 0,
+      "pass": true
+     }
+    ],
+    "anisotropy": [
+     {
+      "component": 1,
+      "mean": 0.00029299743923611273,
+      "p99": 0.003910099661292893,
+      "max": 0.0106701191525097,
+      "maxAtLatLon": [
+       54.84375,
+       139.21875
+      ],
+      "over10Percent": 0,
+      "pass": true
+     },
+     {
+      "component": 2,
+      "mean": 0.0002782189831406278,
+      "p99": 0.0036022982259890156,
+      "max": 0.022645878048022896,
+      "maxAtLatLon": [
+       -12.65625,
+       49.21875
+      ],
+      "over10Percent": 0,
+      "pass": true
+     }
+    ]
+   },
+   {
+    "level": 4,
+    "blockTexels": 16,
+    "blocks": 1035,
+    "speed": [
+     {
+      "tiltDeg": 0,
+      "mean": 0.003343859434454406,
+      "p99": 0.034934535215429,
+      "max": 0.11637966545994571,
+      "maxAtLatLon": [
+       59.0625,
+       -149.0625
+      ],
+      "over10Percent": 1,
+      "pass": true
+     },
+     {
+      "tiltDeg": 5,
+      "mean": 0.0018692320050554601,
+      "p99": 0.017615652411607563,
+      "max": 0.05615114305420443,
+      "maxAtLatLon": [
+       59.0625,
+       -149.0625
+      ],
+      "over10Percent": 0,
+      "pass": true
+     },
+     {
+      "tiltDeg": 10,
+      "mean": 0.0013313312554909108,
+      "p99": 0.016838930207668357,
+      "max": 0.053370369456775535,
+      "maxAtLatLon": [
+       59.0625,
+       -149.0625
+      ],
+      "over10Percent": 0,
+      "pass": true
+     }
+    ],
+    "anisotropy": [
+     {
+      "component": 1,
+      "mean": 0.0007246104724031865,
+      "p99": 0.0060530048859975105,
+      "max": 0.0116704736550521,
+      "maxAtLatLon": [
+       -2.8125,
+       -81.5625
+      ],
+      "over10Percent": 0,
+      "pass": true
+     },
+     {
+      "component": 2,
+      "mean": 0.0007519904527929636,
+      "p99": 0.0065417258006215465,
+      "max": 0.014162840710455291,
+      "maxAtLatLon": [
+       8.4375,
+       75.9375
+      ],
+      "over10Percent": 0,
+      "pass": true
+     }
+    ]
+   }
+  ],
+  "pass": true
+ },
+ "allBarsPassed": true
+}

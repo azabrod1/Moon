@@ -1,11 +1,14 @@
 import { describe, it, expect } from 'vitest';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import {
   COARSE_MAP_HEIGHT, COARSE_MAP_WIDTH, EarthSurfaceMaps, coarseFromRgba, pickCloudCoverage, pickRed, pickWater, sampleCoarse,
   type CoarseMap,
 } from './surfaceMaps';
 import { bodyToDeck, cloudRayDirection, sphereEquirectUv } from './cloudDeck';
 import { ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER } from './surfaceShading';
-import { SEA_WIND_MAX_MS } from './seaWind';
+import { SEA_WIND_MAX_MS, seaWindAxisFromByte } from './seaWind';
+import { PLANET_TEXTURE_FILES } from './textureLadder';
 
 const grid = (w: number, h: number, f: (x: number, y: number) => number): CoarseMap => {
   const data = new Uint8Array(w * h);
@@ -76,7 +79,7 @@ describe("Earth's maps together", () => {
 
   it('holds the meter while a map is missing, then answers from all three', async () => {
     const maps = new EarthSurfaceMaps(urls, fakeDecode, { width: 72, height: 36 });
-    const out = { water: 0, windMs: 0, cloudKeep: 1, deckKeep: 1 };
+    const out = { water: 0, windMs: 0, cloudKeep: 1, deckKeep: 1, axisX: 0, axisY: 0 };
     maps.sampleAt(1, 0, 0, 0, out);
     expect(out.water).toBe(0);
     expect(maps.ready).toBe(false);
@@ -113,7 +116,7 @@ describe("Earth's maps together", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(maps.ready).toBe(false);
     expect(maps.state().failed).toEqual(['cloud']);
-    const out = { water: 0, windMs: 0, cloudKeep: 1, deckKeep: 1 };
+    const out = { water: 0, windMs: 0, cloudKeep: 1, deckKeep: 1, axisX: 0, axisY: 0 };
     maps.sampleAt(1, 0, 0, 0, out);
     expect(out.water).toBe(0);
   });
@@ -122,7 +125,7 @@ describe("Earth's maps together", () => {
     const maps = new EarthSurfaceMaps(urls, fakeDecode, { width: 72, height: 36 });
     maps.request();
     await new Promise((r) => setTimeout(r, 20));
-    const out = { water: 0, windMs: 0, cloudKeep: 1, deckKeep: 1 };
+    const out = { water: 0, windMs: 0, cloudKeep: 1, deckKeep: 1, axisX: 0, axisY: 0 };
     for (const [lat, lon, spin] of [[10, 20, 0.7], [-40, -100, 2.9], [60, 170, 5.5]]) {
       const n = dirAt(lat, lon);
       maps.sampleAt(n[0], n[1], n[2], spin, out);
@@ -164,8 +167,8 @@ describe("Earth's maps together", () => {
     maps.request();
     await new Promise((r) => setTimeout(r, 20));
     const north = dirAt(45, -120);
-    const read = { water: 0, windMs: 0, cloudKeep: 1, deckKeep: 1 };
-    const unread = { water: 0, windMs: 0, cloudKeep: 0.3, deckKeep: 1 };
+    const read = { water: 0, windMs: 0, cloudKeep: 1, deckKeep: 1, axisX: 0, axisY: 0 };
+    const unread = { water: 0, windMs: 0, cloudKeep: 0.3, deckKeep: 1, axisX: 0, axisY: 0 };
     maps.sampleAt(north[0], north[1], north[2], 0, read);
     maps.sampleAt(north[0], north[1], north[2], 0, unread, false);
     expect(read.cloudKeep).toBeLessThan(0.1);
@@ -177,6 +180,138 @@ describe("Earth's maps together", () => {
   it('defaults to the coarse grid the meter was designed for', () => {
     expect(COARSE_MAP_WIDTH).toBe(360);
     expect(COARSE_MAP_HEIGHT).toBe(180);
+  });
+});
+
+describe("the wind's axis", () => {
+  // A wind picture as a decode hands it over (RGBA, north-up): 8 m/s
+  // everywhere, and the axis at each texel's centre from a function of its
+  // latitude and longitude, stored 128 + round(127 x) as the bake stores it.
+  const axisPicture = (axisAt: (latDeg: number, lonDeg: number) => [number, number]) =>
+    async (url: string, width: number, height: number) => {
+      const rgba = new Uint8ClampedArray(width * height * 4);
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const i = (y * width + x) * 4;
+          const lat = 90 - ((y + 0.5) / height) * 180;
+          const lon = ((x + 0.5) / width) * 360 - 180;
+          const [x1, x2] = url.includes('wind') ? axisAt(lat, lon) : [0, 0];
+          rgba[i] = url.includes('wind') ? (8 / SEA_WIND_MAX_MS) * 255 : url.includes('rough') ? ROUGHNESS_MAP_WATER * 255 : 0;
+          rgba[i + 1] = 128 + Math.round(127 * x1);
+          rgba[i + 2] = 128 + Math.round(127 * x2);
+          rgba[i + 3] = 255;
+        }
+      }
+      return { rgba, width, height };
+    };
+  const urls = { water: 'x/rough.webp', wind: 'x/wind.webp', cloud: 'x/cloud.webp' } as const;
+  // The pure trades in doubled angle: the NE trade blows toward the
+  // south-west, theta 225 degrees, 2 theta 90: (0, +1); the SE trade toward
+  // the north-west, theta 135, 2 theta 270: (0, -1). Calm across the equator.
+  const trades = (lat: number): [number, number] => (lat > 5 ? [0, 1] : lat < -5 ? [0, -1] : [0, 0]);
+  /** The axis the CPU reads at the NE trades (15 N 150 W) and at the SE
+   *  trades (15 S 150 W), through the shader's own equirect mapping. */
+  async function readTrades(axisAt: (lat: number, lon: number) => [number, number]): Promise<{ ne: [number, number]; se: [number, number] }> {
+    const maps = new EarthSurfaceMaps(urls, axisPicture(axisAt), { width: 72, height: 36 });
+    maps.request();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(maps.ready).toBe(true);
+    const out = { water: 0, windMs: 0, cloudKeep: 1, deckKeep: 1, axisX: 0, axisY: 0 };
+    const ne = dirAt(15, -150);
+    maps.sampleAt(ne[0], ne[1], ne[2], 0, out);
+    const neAxis: [number, number] = [out.axisX, out.axisY];
+    expect(out.windMs).toBeCloseTo(8, 0);
+    const se = dirAt(-15, -150);
+    maps.sampleAt(se[0], se[1], se[2], 0, out);
+    return { ne: neAxis, se: [out.axisX, out.axisY] };
+  }
+  const handed = ({ ne, se }: { ne: [number, number]; se: [number, number] }): boolean =>
+    Math.abs(ne[0]) < 0.01 && Math.abs(ne[1] - 1) < 0.01 && Math.abs(se[0]) < 0.01 && Math.abs(se[1] + 1) < 0.01;
+
+  it('decodes the NE trades to (0, +1) and the SE trades to (0, -1), and a mirrored or swapped picture fails that', async () => {
+    const read = await readTrades(trades);
+    expect(read.ne[0]).toBeCloseTo(0, 6);
+    expect(read.ne[1]).toBeCloseTo(1, 6);
+    expect(read.se[0]).toBeCloseTo(0, 6);
+    expect(read.se[1]).toBeCloseTo(-1, 6);
+    expect(handed(read)).toBe(true);
+    // The same field written north for south — a picture whose rows were
+    // not flipped — reads each trade as the other's: the check catches it.
+    expect(handed(await readTrades((lat) => trades(-lat)))).toBe(false);
+    // And green and blue swapped: the trades read east-west.
+    expect(handed(await readTrades((lat) => { const [x1, x2] = trades(lat); return [x2, x1]; }))).toBe(false);
+  });
+
+  it('reads no axis from a wind map installed alone, and none while a map is missing', async () => {
+    const maps = new EarthSurfaceMaps(urls, axisPicture(trades), { width: 72, height: 36 });
+    const out = { water: 0, windMs: 0, cloudKeep: 1, deckKeep: 1, axisX: 0.5, axisY: 0.5 };
+    maps.sampleAt(1, 0, 0, 0, out);
+    expect([out.axisX, out.axisY]).toEqual([0, 0]);
+    maps.request();
+    await new Promise((r) => setTimeout(r, 20));
+    maps.install('wind', grid(72, 36, () => 0.5));
+    const ne = dirAt(15, -150);
+    maps.sampleAt(ne[0], ne[1], ne[2], 0, out);
+    expect([out.axisX, out.axisY]).toEqual([0, 0]);
+    expect(out.windMs).toBeCloseTo(8, 1);
+  });
+
+  it("holds the shipped map's bytes at ten named points to the source's axis over each texel, within a byte", () => {
+    // tools/gen-seawind.mjs writes these: per point the shipped map's bytes
+    // at the texel holding it, read back from the decoded webp, beside the
+    // quarter-degree source averaged over that texel's footprint straight
+    // from the unrolled file, and the source cell nearest the point. A roll,
+    // a row flip or a G/B swap in the shipped file moves the bytes away from
+    // both. The footprint is the check (the texel IS its footprint, to the
+    // byte); the nearest cell differs from it by a few bytes where the wind
+    // turns inside a texel (the equator, the doldrums), so it is held more
+    // loosely.
+    interface Point {
+      name: string;
+      latDeg: number;
+      lonDeg: number;
+      nearestCell: { windMs: number; x1: number; x2: number };
+      footprint: { windMs: number; x1: number; x2: number; unfilled: number };
+      map: { column: number; row: number; bytes: [number, number, number, number] };
+    }
+    const golden = JSON.parse(readFileSync('tools/goldens/seawind/earth-seawind.v2.points.json', 'utf8')) as {
+      map: string; sha256: string; width: number; height: number; points: Point[];
+    };
+    // The bytes are the shipped file's.
+    expect(golden.map).toBe(PLANET_TEXTURE_FILES.earthSeaWind);
+    const shipped = readFileSync(`public/textures/${PLANET_TEXTURE_FILES.earthSeaWind}`);
+    expect(createHash('sha256').update(shipped).digest('hex')).toBe(golden.sha256);
+    expect(golden.points).toHaveLength(10);
+    const byte = 1 / 127 + 1e-9;
+    for (const point of golden.points) {
+      const [r, g, b, a] = point.map.bytes;
+      // The texel holding the point, as the shader's u = (lon + 180) / 360
+      // and v from the south read it.
+      expect(point.map.column, point.name).toBe(Math.floor(((point.lonDeg + 180) / 360) * golden.width) % golden.width);
+      expect(point.map.row, point.name).toBe(Math.floor(((point.latDeg + 90) / 180) * golden.height));
+      expect(a, point.name).toBe(255);
+      expect(point.footprint.unfilled, point.name).toBe(0);
+      expect(Math.abs(seaWindAxisFromByte(g) - point.footprint.x1), point.name).toBeLessThanOrEqual(byte);
+      expect(Math.abs(seaWindAxisFromByte(b) - point.footprint.x2), point.name).toBeLessThanOrEqual(byte);
+      expect(Math.abs((r / 255) * SEA_WIND_MAX_MS - point.footprint.windMs), point.name).toBeLessThanOrEqual(SEA_WIND_MAX_MS / 255 + 1e-9);
+      expect(Math.abs(seaWindAxisFromByte(g) - point.nearestCell.x1), point.name).toBeLessThan(0.05);
+      expect(Math.abs(seaWindAxisFromByte(b) - point.nearestCell.x2), point.name).toBeLessThan(0.05);
+    }
+    // And what the data say at them, in the doubled angle's terms: the NE
+    // trades lean north of the parallel (x2 > 0), the SE trades blow nearly
+    // due west (x2 near 0, a mirror at most), the Southern Ocean westerly is
+    // east-west (x1 > 0), and the Arabian Sea's two monsoons, opposite
+    // vectors, keep one strong axis (|x| > 0.85) where a plain mean would
+    // cancel.
+    const at = (name: string): [number, number] => {
+      const bytes = golden.points.find((point) => point.name === name)!.map.bytes;
+      return [seaWindAxisFromByte(bytes[1]), seaWindAxisFromByte(bytes[2])];
+    };
+    expect(at('ne-trades')[1]).toBeGreaterThan(0.3);
+    expect(at('se-trades')[1]).toBeLessThan(at('ne-trades')[1]);
+    expect(at('southern-westerly')[0]).toBeGreaterThan(0.5);
+    expect(Math.abs(at('southern-westerly')[1])).toBeLessThan(0.15);
+    expect(Math.hypot(...at('arabian-sea'))).toBeGreaterThan(0.85);
   });
 });
 

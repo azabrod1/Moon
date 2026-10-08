@@ -1,10 +1,10 @@
 /**
  * Earth's surface maps on the CPU, coarsely: the water fraction, the sea's
- * wind, and the cloud deck's coverage, each decoded once per
- * session to a small equirect grid (360 x 180 by default) and sampled
- * bilinearly, so a term that runs on the main thread each frame — the
- * highlight meter's prediction of the sea's beam (world/glintMeter) — can
- * read what the shader reads without a readback.
+ * wind (its speed, and its axis from the same picture), and the cloud deck's
+ * coverage, each decoded once per session to a small equirect grid (360 x 180
+ * by default) and sampled bilinearly, so a term that runs on the main thread
+ * each frame — the highlight meter's prediction of the sea's beam
+ * (world/glintMeter) — can read what the shader reads without a readback.
  *
  * The shipped textures go to the GPU as image bitmaps and keep no bytes, so
  * these are decoded again from the same files, lazily, on the first call for
@@ -16,8 +16,16 @@
  *
  * The coarse grid is a box of the texture, which is the right estimator for
  * what the shader mixes linearly (the water fraction) and near enough for
- * the rest — the wind map has nothing finer than a degree, so a box of it is
- * the wind the shader's own mips read. It also removes the texel-to-texel
+ * the rest — the bake measures a box of the wind map's speed against the
+ * mean of what its texels draw, under half a percent on average down to
+ * 16-texel blocks (tools/goldens/seawind), so a box of it is the wind the
+ * shader's own mips read. The axis comes from the SAME decode of the wind's
+ * picture as the speed (its green and blue, which with the picture's alpha
+ * opaque come through the canvas exactly): two more coarse maps of the raw
+ * bytes, decoded (byte - 128) / 127 only at sample time, which is exact
+ * because that decode is affine and so commutes with the box and with the
+ * bilinear read. The meter reads the speed alone; the axis is there for the
+ * glint's ellipse along the wind. The box also removes the texel-to-texel
  * swing that would otherwise move the exposure from one frame to the next as
  * the ground slides under the mirror point. The equirect convention is the shader's
  * (`sphereEquirectUv` in world/cloudDeck): u wraps, v is the latitude from the
@@ -30,7 +38,7 @@
  */
 import { cloudCoverageAlpha } from './cloudDeck';
 import { ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER } from './surfaceShading';
-import { SEA_WIND_MAX_MS } from './seaWind';
+import { SEA_WIND_MAX_MS, seaWindAxisFromByte } from './seaWind';
 import type { SurfaceSample } from './glintMeter';
 
 /** One channel of a map, bytes, row 0 the SOUTH (the shader's v = 0). */
@@ -98,8 +106,11 @@ const srgbToLinear = (byte: number): number => {
 /** The water fraction from the roughness map's red, as the shader derives it. */
 export const pickWater = (r: number): number =>
   Math.min(Math.max((ROUGHNESS_MAP_LAND - r / 255) / (ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER), 0), 1);
-/** The wind: the one-channel map as it is. */
+/** The wind's speed: the map's red as it is. */
 export const pickRed = (r: number): number => r / 255;
+/** The wind's axis, its two bytes raw (decoded at sample time). */
+export const pickGreen = (_r: number, g: number): number => g / 255;
+export const pickBlue = (_r: number, _g: number, b: number): number => b / 255;
 /** The deck's coverage from the cloud picture's linear luminance. */
 export const pickCloudCoverage = (r: number, g: number, b: number): number =>
   cloudCoverageAlpha(0.2126 * srgbToLinear(r) + 0.7152 * srgbToLinear(g) + 0.0722 * srgbToLinear(b));
@@ -132,6 +143,9 @@ const EARTH_MAP_KINDS: readonly EarthMapKind[] = ['water', 'wind', 'cloud'];
 /** The three maps for one body, loaded lazily and sampled together. */
 export class EarthSurfaceMaps {
   private maps: Partial<Record<EarthMapKind, CoarseMap>> = {};
+  /** The wind's axis, its green and its blue as raw bytes, from the wind's
+   *  own decode; absent (no axis) for a wind map installed alone. */
+  private windAxis: { x: CoarseMap; y: CoarseMap } | null = null;
   /** The deck's drift last turned through, with its cosine and sine: a
    *  frame asks for one drift a few hundred times. */
   private spin = 0;
@@ -169,7 +183,10 @@ export class EarthSurfaceMaps {
       const w = this.size.width * 2, h = this.size.height * 2;
       this.loading[kind] = this.decode(this.urls[kind], w, h).then((pic) => {
         const pick = kind === 'water' ? pickWater : kind === 'cloud' ? pickCloudCoverage : pickRed;
-        this.maps[kind] = coarseFromRgba(pic.rgba, pic.width, pic.height, pick, this.size.width, this.size.height);
+        const coarse = (picker: typeof pick): CoarseMap =>
+          coarseFromRgba(pic.rgba, pic.width, pic.height, picker, this.size.width, this.size.height);
+        if (kind === 'wind') this.windAxis = { x: coarse(pickGreen), y: coarse(pickBlue) };
+        this.maps[kind] = coarse(pick);
       }).catch(() => { this.failed.add(kind); });
     }
   }
@@ -181,9 +198,11 @@ export class EarthSurfaceMaps {
     this.spinSin = Math.sin(spin);
   }
 
-  /** Install a map decoded elsewhere (a test, a served override). */
+  /** Install a map decoded elsewhere (a test, a served override). A wind
+   *  map installed this way is the speed alone: no axis. */
   install(kind: EarthMapKind, map: CoarseMap): void {
     this.maps[kind] = map;
+    if (kind === 'wind') this.windAxis = null;
   }
 
   /**
@@ -196,7 +215,7 @@ export class EarthSurfaceMaps {
   sampleAt(nx: number, ny: number, nz: number, cloudSpin: number, out: SurfaceSample, cloudOver = true): void {
     const water = this.maps.water, wind = this.maps.wind, cloud = this.maps.cloud;
     if (!water || !wind || !cloud) {
-      out.water = 0; out.windMs = 0; out.cloudKeep = 1;
+      out.water = 0; out.windMs = 0; out.cloudKeep = 1; out.axisX = 0; out.axisY = 0;
       return;
     }
     // sphereEquirectUv and bodyToDeck (world/cloudDeck), inlined so a frame
@@ -206,6 +225,9 @@ export class EarthSurfaceMaps {
     const v = 0.5 + Math.asin(Math.min(1, Math.max(-1, ny))) / Math.PI;
     out.water = sampleCoarse(water, u, v);
     out.windMs = sampleCoarse(wind, u, v) * SEA_WIND_MAX_MS;
+    const axis = this.windAxis;
+    out.axisX = axis ? seaWindAxisFromByte(sampleCoarse(axis.x, u, v) * 255) : 0;
+    out.axisY = axis ? seaWindAxisFromByte(sampleCoarse(axis.y, u, v) * 255) : 0;
     if (!cloudOver) { out.cloudKeep = 1; return; }
     this.turnTo(cloudSpin);
     const c = this.spinCos, sn = this.spinSin;

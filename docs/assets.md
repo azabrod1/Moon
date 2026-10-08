@@ -6,7 +6,7 @@ Each generator's header has its steps and prerequisites. Several need `npm i --n
 - `npm run gen:stars`: the bright-star catalog `public/stardata/bright-stars.v1.bin` and its golden. `npm run gen:constellations`: `src/planetarium/data/constellations.ts`.
 - `npm run gen:moonmaps`: photo maps for the procedural moons (`tools/gen-moonmaps.mjs`).
 - `npm run gen:moon-relief -- [--width=8128 --tier=8k --exaggeration=1.39]`: the Moon's relief map in physical units from NASA's 64 px/deg LOLA grid (`.moon-data-cache/ldem_64_uint.tif`, fetched by hand from svs.gsfc.nasa.gov/4720), for gen-tiles' `moon-normal/8k` crop.
-- `npm run gen:seawind`: the sea's wind map, `public/textures/earth-seawind.v1.webp`; move the hash pin in `seaWind.test.ts` deliberately.
+- `npm run gen:seawind`: the sea's wind map, `public/textures/earth-seawind.v2.webp` (the speed in red, the wind's axis in green and blue), from NOAA's sea-wind climatology in `.moon-data-cache/` (`tools/gen-seawind.sources.json`); it needs `npm i --no-save sharp@0.35.4 h5wasm@0.10.3` and commits its statistics under `tools/goldens/seawind/`. `--synthetic` and `--synthetic-speed` bake the authored field as candidates. Move the hash pin in `seaWind.test.ts` deliberately.
 - `npm run gen:ktx2 -- <job…>`: the GPU-compressed colour rungs for the jobs named. Name the jobs: a run with `--all` rewrites every file. With no job it lists them.
 - `npm run gen:tiles -- <job|--all> [--verify | --grey]`: re-cut sector tile sets and rewrite `sectorSets.generated.ts`. `clouds` cuts the cloud field into a staging root; `clouds --base` cuts the deck's base sheet, and the tool's usage lines say what to regenerate after it.
 - `npm run gen:cloudmaster`: NASA's cloud hemispheres assembled into the cloud master.

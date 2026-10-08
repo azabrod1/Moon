@@ -1,0 +1,679 @@
+{
+ "_": "Written by tools/gen-seawind.mjs: per point the quarter-degree source cell nearest it (its R, its axis x = a / d(R), its steadiness k and the angle its mean wind blows toward, each month), the texel's footprint averaged straight from the unrolled source, beside the shipped map's bytes at the texel holding the point, read back from the decoded webp. surfaceMaps.test.ts holds the bytes to the footprint to within a byte, and to the nearest cell within a few.",
+ "map": "earth-seawind.v2.webp",
+ "sha256": "c4d96d4e66c67a557cf2aa7cd91101402a6d3726df8ca581ae0058d404e58bd3",
+ "width": 1024,
+ "height": 512,
+ "points": [
+  {
+   "name": "ne-trades",
+   "meaning": "the NE trades, central North Pacific: a wind from the north-east to east, x2 > 0",
+   "latDeg": 15,
+   "lonDeg": -150,
+   "nearestCell": {
+    "row": 419,
+    "column": 840,
+    "latDeg": 15,
+    "lonDeg": 210,
+    "filled": true,
+    "validMonths": 12,
+    "windMs": 8.533,
+    "x1": 0.7569,
+    "x2": 0.5769,
+    "anisotropy": 0.007581,
+    "kByMonth": [
+     0.929,
+     0.933,
+     0.954,
+     0.982,
+     0.984,
+     0.989,
+     0.975,
+     0.935,
+     0.931,
+     0.945,
+     0.962,
+     0.958
+    ],
+    "towardDegByMonth": [
+     -166.2,
+     -164.4,
+     -164.1,
+     -161.7,
+     -161.8,
+     -159.5,
+     -157,
+     -156.1,
+     -157.3,
+     -160.8,
+     -161.6,
+     -163.7
+    ]
+   },
+   "footprint": {
+    "cells": 4,
+    "unfilled": 0,
+    "windMs": 8.5326,
+    "x1": 0.7546,
+    "x2": 0.58
+   },
+   "map": {
+    "column": 85,
+    "row": 298,
+    "pictureRow": 213,
+    "bytes": [
+     136,
+     224,
+     202,
+     255
+    ],
+    "windMs": 8.5333,
+    "x1": 0.7559,
+    "x2": 0.5827
+   }
+  },
+  {
+   "name": "se-trades",
+   "meaning": "the SE trades, its mirror across the equator: a wind from the south-east to east, x2 <= 0",
+   "latDeg": -15,
+   "lonDeg": -150,
+   "nearestCell": {
+    "row": 299,
+    "column": 840,
+    "latDeg": -15,
+    "lonDeg": 210,
+    "filled": true,
+    "validMonths": 12,
+    "windMs": 6.5691,
+    "x1": 0.734,
+    "x2": 0.0148,
+    "anisotropy": 0.005146,
+    "kByMonth": [
+     0.726,
+     0.679,
+     0.787,
+     0.78,
+     0.789,
+     0.831,
+     0.874,
+     0.849,
+     0.883,
+     0.828,
+     0.825,
+     0.668
+    ],
+    "towardDegByMonth": [
+     -159.5,
+     -162.5,
+     -174,
+     -177.8,
+     176.5,
+     169.6,
+     172.2,
+     171.9,
+     170.2,
+     176.8,
+     -177.8,
+     -152.2
+    ]
+   },
+   "footprint": {
+    "cells": 4,
+    "unfilled": 0,
+    "windMs": 6.5685,
+    "x1": 0.7318,
+    "x2": 0.018
+   },
+   "map": {
+    "column": 85,
+    "row": 213,
+    "pictureRow": 298,
+    "bytes": [
+     105,
+     221,
+     130,
+     255
+    ],
+    "windMs": 6.5882,
+    "x1": 0.7323,
+    "x2": 0.0157
+   }
+  },
+  {
+   "name": "southern-westerly",
+   "meaning": "a Southern Ocean westerly, toward the east: x1 > 0, x2 near 0",
+   "latDeg": -55,
+   "lonDeg": 90,
+   "nearestCell": {
+    "row": 139,
+    "column": 360,
+    "latDeg": -55,
+    "lonDeg": 90,
+    "filled": true,
+    "validMonths": 12,
+    "windMs": 11.6633,
+    "x1": 0.6442,
+    "x2": -0.0948,
+    "anisotropy": 0.011463,
+    "kByMonth": [
+     0.687,
+     0.744,
+     0.745,
+     0.681,
+     0.619,
+     0.556,
+     0.577,
+     0.667,
+     0.642,
+     0.7,
+     0.639,
+     0.643
+    ],
+    "towardDegByMonth": [
+     -4.2,
+     -3.3,
+     -6.4,
+     -3.4,
+     -7.4,
+     -5.7,
+     1.4,
+     0.8,
+     1.5,
+     -4.7,
+     -10.7,
+     -11
+    ]
+   },
+   "footprint": {
+    "cells": 6,
+    "unfilled": 0,
+    "windMs": 11.6324,
+    "x1": 0.6446,
+    "x2": -0.0958
+   },
+   "map": {
+    "column": 768,
+    "row": 99,
+    "pictureRow": 412,
+    "bytes": [
+     185,
+     210,
+     116,
+     255
+    ],
+    "windMs": 11.6078,
+    "x1": 0.6457,
+    "x2": -0.0945
+   }
+  },
+  {
+   "name": "arabian-sea",
+   "meaning": "the Arabian Sea: the NE monsoon (toward the south-west) and the SW monsoon (toward the north-east), each steady, share one axis in doubled angle, where a plain mean of the vectors would cancel",
+   "latDeg": 15,
+   "lonDeg": 62,
+   "nearestCell": {
+    "row": 419,
+    "column": 248,
+    "latDeg": 15,
+    "lonDeg": 62,
+    "filled": true,
+    "validMonths": 12,
+    "windMs": 6.7175,
+    "x1": 0.15,
+    "x2": 0.8839,
+    "anisotropy": 0.00533,
+    "kByMonth": [
+     0.963,
+     0.934,
+     0.886,
+     0.579,
+     0.78,
+     0.984,
+     0.996,
+     0.994,
+     0.926,
+     0.422,
+     0.927,
+     0.958
+    ],
+    "towardDegByMonth": [
+     -132.6,
+     -130.6,
+     -129.4,
+     -99.2,
+     19.6,
+     33.4,
+     39.6,
+     41.3,
+     29.5,
+     -107.6,
+     -138.7,
+     -133.9
+    ]
+   },
+   "footprint": {
+    "cells": 4,
+    "unfilled": 0,
+    "windMs": 6.7248,
+    "x1": 0.1547,
+    "x2": 0.8827
+   },
+   "map": {
+    "column": 688,
+    "row": 298,
+    "pictureRow": 213,
+    "bytes": [
+     107,
+     148,
+     240,
+     255
+    ],
+    "windMs": 6.7137,
+    "x1": 0.1575,
+    "x2": 0.8819
+   }
+  },
+  {
+   "name": "doldrums",
+   "meaning": "the point the plan named for the doldrums, expected light and unsteady (a small |x|)",
+   "latDeg": 5,
+   "lonDeg": -140,
+   "nearestCell": {
+    "row": 379,
+    "column": 880,
+    "latDeg": 5,
+    "lonDeg": 220,
+    "filled": true,
+    "validMonths": 12,
+    "windMs": 6.8801,
+    "x1": 0.3945,
+    "x2": -0.4401,
+    "anisotropy": 0.005531,
+    "kByMonth": [
+     0.889,
+     0.895,
+     0.923,
+     0.911,
+     0.782,
+     0.814,
+     0.902,
+     0.938,
+     0.924,
+     0.913,
+     0.899,
+     0.906
+    ],
+    "towardDegByMonth": [
+     166.6,
+     -177.1,
+     -163.9,
+     -163.7,
+     170.3,
+     149.4,
+     137.6,
+     131.7,
+     127,
+     129.6,
+     140.3,
+     153.4
+    ]
+   },
+   "footprint": {
+    "cells": 4,
+    "unfilled": 0,
+    "windMs": 6.8982,
+    "x1": 0.3943,
+    "x2": -0.4184
+   },
+   "map": {
+    "column": 113,
+    "row": 270,
+    "pictureRow": 241,
+    "bytes": [
+     110,
+     178,
+     75,
+     255
+    ],
+    "windMs": 6.902,
+    "x1": 0.3937,
+    "x2": -0.4173
+   }
+  },
+  {
+   "name": "south-china-sea",
+   "meaning": "the South China Sea: another monsoon sea whose wind reverses with the season",
+   "latDeg": 12,
+   "lonDeg": 113,
+   "nearestCell": {
+    "row": 407,
+    "column": 452,
+    "latDeg": 12,
+    "lonDeg": 113,
+    "filled": true,
+    "validMonths": 12,
+    "windMs": 7.039,
+    "x1": -0.0264,
+    "x2": 0.7641,
+    "anisotropy": 0.005728,
+    "kByMonth": [
+     0.947,
+     0.925,
+     0.874,
+     0.735,
+     0.523,
+     0.862,
+     0.909,
+     0.917,
+     0.757,
+     0.33,
+     0.801,
+     0.93
+    ],
+    "towardDegByMonth": [
+     -130.1,
+     -137,
+     -153,
+     -171.3,
+     84.6,
+     58.4,
+     49.1,
+     46.9,
+     38.6,
+     -131.6,
+     -136.5,
+     -129.8
+    ]
+   },
+   "footprint": {
+    "cells": 6,
+    "unfilled": 0,
+    "windMs": 7.0346,
+    "x1": -0.0297,
+    "x2": 0.7629
+   },
+   "map": {
+    "column": 833,
+    "row": 290,
+    "pictureRow": 221,
+    "bytes": [
+     112,
+     124,
+     225,
+     255
+    ],
+    "windMs": 7.0275,
+    "x1": -0.0315,
+    "x2": 0.7638
+   }
+  },
+  {
+   "name": "seam-centre-west",
+   "meaning": "the map column just west of 0 degrees, where the source's own seam lands, open Gulf of Guinea",
+   "latDeg": 0,
+   "lonDeg": -0.17578125,
+   "nearestCell": {
+    "row": 359,
+    "column": 1439,
+    "latDeg": 0,
+    "lonDeg": 359.75,
+    "filled": true,
+    "validMonths": 12,
+    "windMs": 5.7558,
+    "x1": -0.8856,
+    "x2": -0.0333,
+    "anisotropy": 0.004137,
+    "kByMonth": [
+     0.88,
+     0.895,
+     0.86,
+     0.862,
+     0.94,
+     0.96,
+     0.959,
+     0.958,
+     0.964,
+     0.958,
+     0.955,
+     0.935
+    ],
+    "towardDegByMonth": [
+     87.5,
+     83.5,
+     87.3,
+     101.6,
+     106.1,
+     102.2,
+     93.8,
+     82,
+     77.5,
+     82.2,
+     97.2,
+     94.3
+    ]
+   },
+   "footprint": {
+    "cells": 4,
+    "unfilled": 0,
+    "windMs": 5.7803,
+    "x1": -0.8873,
+    "x2": 0.0114
+   },
+   "map": {
+    "column": 511,
+    "row": 256,
+    "pictureRow": 255,
+    "bytes": [
+     92,
+     15,
+     129,
+     255
+    ],
+    "windMs": 5.7725,
+    "x1": -0.8898,
+    "x2": 0.0079
+   }
+  },
+  {
+   "name": "seam-centre-east",
+   "meaning": "the map column just east of 0 degrees",
+   "latDeg": 0,
+   "lonDeg": 0.17578125,
+   "nearestCell": {
+    "row": 359,
+    "column": 1,
+    "latDeg": 0,
+    "lonDeg": 0.25,
+    "filled": true,
+    "validMonths": 12,
+    "windMs": 5.7431,
+    "x1": -0.8852,
+    "x2": 0.0146,
+    "anisotropy": 0.004121,
+    "kByMonth": [
+     0.878,
+     0.891,
+     0.86,
+     0.866,
+     0.937,
+     0.959,
+     0.96,
+     0.958,
+     0.964,
+     0.958,
+     0.952,
+     0.933
+    ],
+    "towardDegByMonth": [
+     85.9,
+     82.1,
+     86.7,
+     100.7,
+     104.4,
+     100.4,
+     92,
+     79.9,
+     75.9,
+     80.8,
+     95.7,
+     93
+    ]
+   },
+   "footprint": {
+    "cells": 4,
+    "unfilled": 0,
+    "windMs": 5.7699,
+    "x1": -0.8835,
+    "x2": 0.0408
+   },
+   "map": {
+    "column": 512,
+    "row": 256,
+    "pictureRow": 255,
+    "bytes": [
+     92,
+     16,
+     133,
+     255
+    ],
+    "windMs": 5.7725,
+    "x1": -0.8819,
+    "x2": 0.0394
+   }
+  },
+  {
+   "name": "seam-edge-west",
+   "meaning": "the map's last column, just west of 180 degrees, open North Pacific",
+   "latDeg": 30,
+   "lonDeg": 179.82421875,
+   "nearestCell": {
+    "row": 479,
+    "column": 719,
+    "latDeg": 30,
+    "lonDeg": 179.75,
+    "filled": true,
+    "validMonths": 12,
+    "windMs": 7.3448,
+    "x1": 0.2798,
+    "x2": -0.0275,
+    "anisotropy": 0.006108,
+    "kByMonth": [
+     0.482,
+     0.29,
+     0.048,
+     0.195,
+     0.245,
+     0.399,
+     0.701,
+     0.613,
+     0.419,
+     0.39,
+     0.232,
+     0.138
+    ],
+    "towardDegByMonth": [
+     1.9,
+     6.7,
+     -169.7,
+     175.5,
+     -179.7,
+     138,
+     169.5,
+     155.6,
+     -178.2,
+     -156.5,
+     -166.5,
+     -4.9
+    ]
+   },
+   "footprint": {
+    "cells": 4,
+    "unfilled": 0,
+    "windMs": 7.3604,
+    "x1": 0.2768,
+    "x2": -0.027
+   },
+   "map": {
+    "column": 1023,
+    "row": 341,
+    "pictureRow": 170,
+    "bytes": [
+     117,
+     163,
+     125,
+     255
+    ],
+    "windMs": 7.3412,
+    "x1": 0.2756,
+    "x2": -0.0236
+   }
+  },
+  {
+   "name": "seam-edge-east",
+   "meaning": "the map's first column, just east of -180 degrees",
+   "latDeg": 30,
+   "lonDeg": -179.82421875,
+   "nearestCell": {
+    "row": 479,
+    "column": 721,
+    "latDeg": 30,
+    "lonDeg": 180.25,
+    "filled": true,
+    "validMonths": 12,
+    "windMs": 7.3418,
+    "x1": 0.2783,
+    "x2": -0.0202,
+    "anisotropy": 0.006104,
+    "kByMonth": [
+     0.482,
+     0.285,
+     0.048,
+     0.194,
+     0.248,
+     0.403,
+     0.702,
+     0.622,
+     0.412,
+     0.388,
+     0.232,
+     0.142
+    ],
+    "towardDegByMonth": [
+     2.6,
+     6.7,
+     -153.5,
+     175.9,
+     -177.9,
+     138.7,
+     170.5,
+     156.4,
+     -178.8,
+     -155,
+     -165,
+     -5.9
+    ]
+   },
+   "footprint": {
+    "cells": 4,
+    "unfilled": 0,
+    "windMs": 7.3574,
+    "x1": 0.2758,
+    "x2": -0.0218
+   },
+   "map": {
+    "column": 0,
+    "row": 341,
+    "pictureRow": 170,
+    "bytes": [
+     117,
+     163,
+     125,
+     255
+    ],
+    "windMs": 7.3412,
+    "x1": 0.2756,
+    "x2": -0.0236
+   }
+  }
+ ]
+}

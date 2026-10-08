@@ -52,15 +52,15 @@ export interface SeaWindField {
 /** The field at a size, a box of `supersample` x `supersample` points a texel. */
 export function buildField(width: number, height: number, params?: Partial<SeaWindFieldParams>): SeaWindField;
 
-/** The map as a grey picture, three bytes a texel, north-up, the wind over
- *  SEA_WIND_MAX_MS. */
-export function encodeWindGrey(field: SeaWindField): Uint8Array;
-
 export interface SeaWindBandStatistics {
   meanWindMs: number;
   under1Fraction: number;
   under2Fraction: number;
 }
 
-/** Area-weighted statistics over |latitude| in [low, high), land included. */
-export function bandStatistics(field: SeaWindField, latLowDeg: number, latHighDeg: number): SeaWindBandStatistics;
+/** Area-weighted statistics over |latitude| in [low, high): each texel
+ *  weighs cos(latitude), times its sea share when one is given (row 0
+ *  south, 0..1), else land is included. */
+export function bandStatistics(
+  field: SeaWindField, latLowDeg: number, latHighDeg: number, seaShare?: ArrayLike<number> | null,
+): SeaWindBandStatistics;

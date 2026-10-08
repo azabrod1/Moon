@@ -1,0 +1,15 @@
+{
+  "_": "The source under .moon-data-cache/ that tools/gen-seawind.mjs reads, with the SHA-256 the shipped sea wind map was baked from. The bake refuses a file whose digest or size differs: a re-downloaded product that changed upstream would otherwise re-bake the map silently. Update the digest only together with the map baked from it (under a new name). Read with h5wasm 0.10.3 and written with sharp 0.35.4, both installed for the run: `npm i --no-save sharp@0.35.4 h5wasm@0.10.3`.",
+  "NBS_v02_wind_climmonthly_s1991_e2020_c20221206.nc": {
+    "url": "https://www.ncei.noaa.gov/data/blended-global-sea-surface-wind-products/access/climatology/NBS_v02_wind_climmonthly_s1991_e2020_c20221206.nc",
+    "sha256": "12f40a7b231bfaf63e11716a0b377f7a3bc384d9778d89ae79bae371dfddff02",
+    "bytes": 248533381,
+    "last_modified": "2023-12-19",
+    "product": "NOAA/NCEI Blended Monthly Climatology 0.25-degree Sea Surface Winds, v2.0, 1991–2020, id uvclmMonthly91to20, created 2022-12-06; Saha K and Zhang H-M (2022)",
+    "license": "NOAA public domain; cite the product",
+    "used_by": [
+      "gen-seawind: public/textures/earth-seawind.v2.webp (R the annual mean scalar speed, G and B the wind's axis) and its statistics under tools/goldens/seawind/",
+      "gen-seawind --synthetic-speed: the candidate's axis; gen-seawind --synthetic: the ocean mask its statistics are weighted by"
+    ]
+  }
+}

@@ -113,6 +113,11 @@ export interface SurfaceSample {
    *  lets through, 0..1: the deck is blended over the ground, so it is cut
    *  after the shoulder. */
   deckKeep: number;
+  /** The wind's axis in doubled angle, each in -1..1 (world/seaWind: (0, 0)
+   *  is no axis), as the wind map carries it for the glint's ellipse along
+   *  the wind. Read here, not used by the meter yet. */
+  axisX: number;
+  axisY: number;
 }
 
 /** Fills `out` with the maps' values at the unit direction (body frame), the
@@ -381,7 +386,7 @@ export interface GlintScratch {
 
 export function createGlintScratch(): GlintScratch {
   return {
-    sample: { windMs: 0, water: 0, cloudKeep: 1, deckKeep: 1 }, t: [0, 0, 0], tz: [0, 0, 0], tc: [0, 0, 0],
+    sample: { windMs: 0, water: 0, cloudKeep: 1, deckKeep: 1, axisX: 0, axisY: 0 }, t: [0, 0, 0], tz: [0, 0, 0], tc: [0, 0, 0],
     axes: new Float64Array(6), place0: [0, 0], place1: [0, 0], cut: new Uint8Array(64), sunVisible: 1,
   };
 }
@@ -514,7 +519,7 @@ export function createBeamPeak(): BeamPeak {
   return {
     n: [0, 0, 0], groundAngleDeg: 0, acrossAngleDeg: 0, carried: [0, 0, 0], drawn: [0, 0, 0], drawnMax: 0,
     halfWidthAlongDeg: 0, halfWidthAcrossDeg: 0,
-    sample: { windMs: 0, water: 0, cloudKeep: 1, deckKeep: 1 },
+    sample: { windMs: 0, water: 0, cloudKeep: 1, deckKeep: 1, axisX: 0, axisY: 0 },
   };
 }
 
@@ -650,6 +655,7 @@ export function scanBeam(
   o.carried[0] = o.carried[1] = o.carried[2] = 0;
   o.drawn[0] = o.drawn[1] = o.drawn[2] = 0;
   o.sample.windMs = 0; o.sample.water = 0; o.sample.cloudKeep = 1; o.sample.deckKeep = 1;
+  o.sample.axisX = 0; o.sample.axisY = 0;
   const cam = pose.camera;
   const camDist = Math.hypot(cam[0], cam[1], cam[2]);
   if (!(camDist > 1.000001)) return false;
@@ -765,6 +771,7 @@ export function scanBeam(
   o.sample.windMs = scratch.sample.windMs;
   o.sample.water = scratch.sample.water; o.sample.cloudKeep = scratch.sample.cloudKeep;
   o.sample.deckKeep = scratch.sample.deckKeep;
+  o.sample.axisX = scratch.sample.axisX; o.sample.axisY = scratch.sample.axisY;
   const deck = scratch.sample.deckKeep;
   o.drawn[0] = shoulder(o.carried[0], sea.knee, sea.cap) * deck;
   o.drawn[1] = shoulder(o.carried[1], sea.knee, sea.cap) * deck;

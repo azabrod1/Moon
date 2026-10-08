@@ -39,7 +39,8 @@ import {
 import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasurementRelevant, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
 import { appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
-import { advanceSurfaceAir, bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, setSurfaceSynthesis, settleSurfaceAir, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { advanceSurfaceAir, bindSurfaceAir, clearSurfaceAir, cloudShadowUniforms, seatSurfaceLook, setSurfaceSynthesis, settleSurfaceAir, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { setSurfaceLookOverride, surfaceLookOf, type SurfaceLook as BodySurfaceLook, type SurfaceLookOverride } from './world/surfaceLook';
 import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
 import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, textureWarmQueueDepth, warmBudgetMs } from './world/textureWarmer';
 import { beginSlicedUpload, stepSlicedUpload } from './world/slicedUpload';
@@ -6279,6 +6280,10 @@ export class PlanetariumMode {
   private syncSurfaceAir(planet: PlanetMesh): void {
     const air = planet.fx?.air;
     if (!air) return;
+    // The body's look (world/surfaceLook.ts) every frame, before the tables
+    // question: the albedo grade is drawn with or without air, and a switch
+    // moved live has to reach the next draw.
+    seatSurfaceLook(air, planet.data.name);
     const tables = this.devAtmosphereTier === 'analytic'
       ? null
       : this.atmosphereLut?.tables(planet.data.name) ?? null;
@@ -9090,6 +9095,35 @@ export class PlanetariumMode {
    *  mirror every frame (syncSectorMaterial), so a sheet of depths comes out
    *  of one page load. Returns what is set now, or null for a body with no
    *  surface material. Session-only: the next build authors it again. */
+  /** Dev bridge: a body's presentation look (world/surfaceLook.ts) — read
+   *  it, or move its knobs live: the relief's depth is written onto the
+   *  material (the sectors mirror it), the haze and the contrast reach the
+   *  air block on the next frame's seat. Returns the look in force and what
+   *  the surfaces hold right now. */
+  devSurfaceLook(name: string, override?: SurfaceLookOverride): {
+    name: string;
+    look: BodySurfaceLook | undefined;
+    applied: { relief: number | null; haze: number | null; contrast: number | null };
+  } | null {
+    const planet = this.solarSystem?.planets.find((p) => p.data.name === name);
+    if (!planet) return null;
+    if (override) {
+      const look = setSurfaceLookOverride(name, override);
+      if (look && override.relief !== undefined) this.devSetReliefScale(name, look.relief);
+    }
+    const material = planet.mesh.material as THREE.MeshStandardMaterial | undefined;
+    const air = planet.fx?.air;
+    return {
+      name,
+      look: surfaceLookOf(name),
+      applied: {
+        relief: material?.normalScale?.x ?? null,
+        haze: typeof air?.uSurfaceHaze?.value === 'number' ? air.uSurfaceHaze.value : null,
+        contrast: (air?.uAlbedoContrast?.value as THREE.Vector2 | undefined)?.x ?? null,
+      },
+    };
+  }
+
   devSetReliefScale(name: string, scale: number): { name: string; scale: number } | null {
     const planet = this.solarSystem?.planets.find((p) => p.data.name === name);
     const material = planet?.mesh.material as THREE.MeshStandardMaterial | undefined;

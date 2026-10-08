@@ -44,6 +44,7 @@ import {
   augmentSurfaceMaterial, nightLiftUniform, seatSurfaceAirRadius, setSurfaceCraterShare, setSurfaceWaterGloss,
   type SurfaceArchetype, type SurfaceShadingFx,
 } from './world/surfaceShading';
+import { surfaceLookOf } from './world/surfaceLook';
 import { createAtmosphereShellMaterial } from './world/atmosphereShell';
 import { ATMOSPHERE_TABLE_SIZES_FULL, type AtmosphereTableSizes } from './world/atmosphereModel';
 import { queueTextureWarm } from './world/textureWarmer';
@@ -937,10 +938,13 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     mat.userData.hasRealNormal = true;
     // The depth is authored once, up front, and no arrival touches it: the
     // boot map and the 4K rung are the same slopes at two sharpnesses, so a
-    // scale reset on either landing would be a pop. Halved, because the
-    // measured slopes at full strength read as harsh facets on crater rims
-    // up close.
-    mat.normalScale.set(0.5, 0.5);
+    // scale reset on either landing would be a pop. The number is the body's
+    // look (world/surfaceLook.ts: Mars ships at 0.5, half the baked
+    // exaggeration, because the measured slopes at full strength read as
+    // harsh facets on crater rims up close — judged against the Viking map,
+    // which carried its own shading; `?marsrelief=` is the candidate's link).
+    const reliefDepth = surfaceLookOf(planet.name)?.relief ?? 0.5;
+    mat.normalScale.set(reliefDepth, reliefDepth);
     // The close-approach rung, where the key ships one (NORMAL_UPGRADE_TIERS);
     // the mode's LOD pass fetches it once the disc has earned the first rung.
     surfaceNormalUpgrade = makeNormalUpgrade(planetNormalKey, mat);

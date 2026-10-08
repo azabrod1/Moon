@@ -139,6 +139,7 @@ import {
 } from './atmosphereLut';
 import { AIRLIGHT_SCALE } from './atmosphereModel';
 import { perfSwitchOn, perfSwitchUniform } from '../../app/perfSwitches';
+import { DEFAULT_ALBEDO_PIVOT, surfaceLookOf } from './surfaceLook';
 import type { NightSides } from '../../app/nightSidesSetting';
 import { EARTH_NIGHT_COLD_CUT, EARTH_NIGHT_WARM_GLSL } from '../../shared/shaders/atmosphere';
 import {
@@ -1455,6 +1456,7 @@ const SURFACE_MAP_FRAGMENT = /* glsl */ `
 		sampledDiffuseColor = sRGBTransferEOTF( sampledDiffuseColor );
 	#endif
 	diffuseColor *= sampledDiffuseColor;
+	if ( DECK_OFF ) diffuseColor.rgb = albedoContrast( diffuseColor.rgb );
 #endif
 `;
 
@@ -1485,6 +1487,26 @@ const SURFACE_ARCHETYPE_MACROS = /* glsl */ `
 #define DECK_OFF (uCloudDeck == 0.0)
 #define GROUND_ON(x) (x)
 #endif`;
+
+/**
+ * A presentation grade on the albedo (world/surfaceLook.ts): a contrast gain
+ * in log luminance about the body's own typical albedo, every channel scaled
+ * by the one factor so the hue and the saturation stay the map's. The gain is
+ * 1 for every body but the ones the look table names, and 1 is the map
+ * EXACTLY — the early return, not a pow that rounds — and the branch is
+ * uniform, so the ground pays nothing where it is off. x is the gain, y the
+ * pivot luminance. Applied to the ground's albedo alone: the cloud deck shares
+ * the globe's air block, and a grade meant for the ground would otherwise
+ * read as a grade on the clouds too.
+ */
+const ALBEDO_CONTRAST_GLSL = /* glsl */ `
+uniform vec2 uAlbedoContrast;
+vec3 albedoContrast( vec3 albedo ) {
+	if ( uAlbedoContrast.x == 1.0 ) return albedo;
+	float luminance = max( dot( albedo, vec3( 0.2126, 0.7152, 0.0722 ) ), 1e-5 );
+	return albedo * pow( luminance / uAlbedoContrast.y, uAlbedoContrast.x - 1.0 );
+}
+`;
 
 const SURFACE_FRAGMENT_DECLS = /* glsl */ `
 ${SURFACE_ARCHETYPE_MACROS}
@@ -2184,6 +2206,9 @@ export function createSurfaceAirFx(): SurfaceAirFx {
     // 0 → 1 over SURFACE_AIR_FADE_S after the tables bind; the haze is scaled by it.
     uAirBlend: { value: 0 },
     uSurfaceHaze: { value: 1 },
+    // The albedo's contrast grade (world/surfaceLook.ts): gain and pivot. A
+    // fresh block is the map as it is; seatSurfaceLook writes a body's own.
+    uAlbedoContrast: { value: new THREE.Vector2(1, DEFAULT_ALBEDO_PIVOT) },
     uPlanetRadius: { value: 1 },
     uSolarIrradiance: { value: 1 },
     uAirlightScale: { value: new THREE.Vector3(...AIRLIGHT_SCALE) },
@@ -2228,6 +2253,20 @@ export function seatSurfaceAirRadius(air: SurfaceAirFx, planetRadius: number): v
 }
 
 /**
+ * Write a body's albedo contrast grade (world/surfaceLook.ts) into its air
+ * block: the gain and the pivot the shader's `albedoContrast` reads. Seated
+ * when the surface is augmented, and again every frame by the mode, so a
+ * switch moved live reaches the globe, its sectors and anything else sharing
+ * the block on the next draw. A body the look table does not name is left as
+ * it is — the gain of 1 the block was made with, which is the map exactly.
+ */
+export function seatSurfaceLook(air: SurfaceAirFx, body: string): void {
+  const look = surfaceLookOf(body);
+  if (!look) return;
+  (air.uAlbedoContrast.value as THREE.Vector2).set(look.contrast, look.contrastPivot);
+}
+
+/**
  * Point a body's surfaces at its finished tables and switch the air on.
  * `planetRadius` is the surface radius in the same units the vertex stage hands
  * over (world AU), because that is what the lookup divides by to reach the
@@ -2250,7 +2289,10 @@ export function bindSurfaceAir(
   // uniform, apart from the loading fade: the fade also drives the shell's
   // crossfade, and a grade folded into it would leave the shell stuck part
   // way between its tiers.
+  // The DEV pin on every body first, then the body's own switch or table
+  // entry (world/surfaceLook.ts), then this file's grade, then the physics.
   air.uSurfaceHaze.value = (import.meta.env.DEV ? devSurfaceHaze : undefined)
+    ?? surfaceLookOf(tables.body)?.haze
     ?? SURFACE_HAZE_CLEAR_VIEW[tables.body] ?? 1;
   // Switching on starts the fade; a rebind of live air leaves it where it is.
   if (air.uAirDensity.value === 0) air.uAirBlend.value = 0;
@@ -2325,6 +2367,9 @@ export function augmentSurfaceMaterial(
     air: createSurfaceAirFx(),
   };
   const uFrameSpin = sharedSpin ?? { value: 0 };
+  // The body's own grade on its albedo, if the look table names it; a shared
+  // block already carries it, and the write is the same value again.
+  if (seedName) seatSurfaceLook(fx.air, seedName);
   // Off until whoever owns the roughness map says it really is a water mask:
   // the flat mid-grey stand-in a failed fetch leaves behind is not one, and
   // remapping it would put an ocean's sheen on the whole planet.
@@ -2458,7 +2503,7 @@ export function augmentSurfaceMaterial(
       .replace('#include <begin_vertex>', `#include <begin_vertex>${SURFACE_VERTEX_BODY}`);
 
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', `#include <common>${SURFACE_FRAGMENT_DECLS}`)
+      .replace('#include <common>', `#include <common>${SURFACE_FRAGMENT_DECLS}${ALBEDO_CONTRAST_GLSL}`)
       .replace('#include <map_fragment>', SURFACE_MAP_FRAGMENT)
       .replace('#include <roughnessmap_fragment>', `${roughnessChunk()}${WATER_GLOSS_GLSL}`)
       .replace('#include <normal_fragment_maps>', `${SURFACE_NORMAL_MAPS}${SURFACE_NORMAL_BODY}`)

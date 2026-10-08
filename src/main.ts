@@ -3271,6 +3271,13 @@ function installDevHooks() {
      *  its sectors mirror each frame), as a pin: a sheet of depths from one
      *  page load. */
     reliefScale: (name: string, scale: number) => planetariumMode?.devSetReliefScale(name, scale) ?? null,
+    /** A body's presentation look (world/surfaceLook.ts) — the relief depth,
+     *  the haze a direct view shows and the albedo's contrast gain — read, or
+     *  moved live: `surfaceLook('Mars', { relief: 1, haze: 0.5, contrast: 1.5 })`,
+     *  the same numbers `?marsrelief=&marshaze=&marscontrast=` set as a link
+     *  in any build. Returns the look in force and what the surfaces hold. */
+    surfaceLook: (name: string, override?: { relief?: number; haze?: number; contrast?: number }) =>
+      planetariumMode?.devSurfaceLook(name, override) ?? null,
     /** What relief a surface and its sectors hold right now: map size, rung
      *  rank, authored depth. */
     reliefState: (name: string) => planetariumMode?.devReliefState(name) ?? null,

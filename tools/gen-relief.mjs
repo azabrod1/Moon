@@ -12,14 +12,15 @@
 //
 // The relief is PHYSICAL: slope in metres over metres at each texel's true
 // ground spacing (the parallel shrinks by cos(lat) on an equirect), times one
-// authored exaggeration. The shipped v2 map (gen-maps, MOLA 16 px/deg,
+// authored exaggeration. The v2 map this replaced (gen-maps, MOLA 16 px/deg,
 // `strength 2.4` on min–max-normalised heights) works out to almost exactly
 // physical slope × 2.4 at its own texel spacing — the derivation is at
 // MARS_RELIEF_EXAGGERATION in world/reliefNormals.ts — so the default
 // reproduces its macro look, and every
 // finer output is a sharper map of the same relief rather than a steeper one,
 // which is what the relief ladder's "pure sharpen" rule needs. The tilt
-// statistics of each output are printed beside the shipped map's so that
+// statistics of each output are printed beside the boot map the run replaces
+// so that
 // claim is measured, not assumed.
 //
 // Source (not a package.json dependency — one asset drop):
@@ -88,8 +89,6 @@ const OUTPUTS = [
   { width: 4096, out: path.join(TEX, '4k', 'mars-normal.v3.webp'), encode: 'webp', role: 'close-approach rung', from: 8192 },
   { width: 1440, out: path.join(TEX, 'mars-normal.v3.webp'), encode: 'webp', role: 'boot map', from: 8192 },
 ];
-/** The map the new one replaces, for the tilt comparison printed at the end. */
-const PREVIOUS_BOOT_MAP = path.join(TEX, 'mars-normal.v2.webp');
 
 // ---------------------------------------------------------------------------
 // The DEM: a classic or Big TIFF with one strip per row, read strip by strip.
@@ -424,6 +423,19 @@ async function main() {
   if (header.nodata.replace(/\0/g, '') !== String(NODATA)) throw new Error(`nodata is ${JSON.stringify(header.nodata)}, not ${NODATA}`);
   console.log(`  ${header.width}×${header.height}, ${header.pixelScale[0].toFixed(6)}°/px, radius ${radiusMetres} m, −180..180 E`);
 
+  // The boot map on disk is the one this run is about to overwrite, so it is
+  // measured now, before anything is written, and printed beside the new one
+  // at the end: a change of exaggeration or source is then a number beside
+  // the map it replaces, and a rerun that changed nothing prints the same
+  // figures twice.
+  const bootOutput = OUTPUTS.find((output) => output.role === 'boot map');
+  let replacedBootStatistics = null;
+  try {
+    replacedBootStatistics = await tiltStatisticsOfMap(bootOutput.out);
+  } catch {
+    // No boot map on disk yet: nothing to compare against.
+  }
+
   // The grids read straight off the DEM, in one pass; the rest derive from
   // the one their `from` names.
   const direct = OUTPUTS.filter((output) => output.from === 'dem');
@@ -451,11 +463,9 @@ async function main() {
     await writeNormalMap(rgb, output.width, height, output);
     console.log(`    tilt ${tiltStatisticsOfBytes(rgb)}`);
   }
-  try {
-    console.log(`  shipped ${path.relative(process.cwd(), PREVIOUS_BOOT_MAP)} for comparison — ${await tiltStatisticsOfMap(PREVIOUS_BOOT_MAP)}`);
-  } catch {
-    console.log('  (no previous boot map to compare against)');
-  }
+  console.log(replacedBootStatistics
+    ? `  the boot map this run replaced — ${replacedBootStatistics}`
+    : '  (no boot map on disk before this run, so nothing to compare against)');
   console.log('done — now: node tools/gen-tiles.mjs mars --crops --level=0, and --level=1 --root=.moon-data-cache/tiles-staging for the 16K');
 }
 

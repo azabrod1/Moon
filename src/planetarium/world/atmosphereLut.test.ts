@@ -9,7 +9,7 @@ import {
   BAKE_BUDGET_FRACTION,
   BAKE_DEFAULT_INTERVAL_MS,
   MIE_VALIDATION_SAMPLE,
-  SCATTERING_PROBE_SCALE,
+  PROBE_WINDOW_TOP,
   SCATTERING_VALIDATION_BAND,
   SCATTERING_VALIDATION_SAMPLE,
   atmosphereLutProfile,
@@ -20,15 +20,19 @@ import {
   createMieColourTarget,
   createScatteringTarget,
   createTableTarget,
+  validationProbeScale,
   type AtmospherePass,
 } from './atmosphereLut';
 import {
+  ATMOSPHERE_SPECS,
   ATMOSPHERE_TABLE_SIZES_FULL,
   ATMOSPHERE_TABLE_SIZES_HALF,
   atmosphereParams,
   computeSingleScattering,
+  opticalDepthToTopBoundary,
   scatteringTextureWidth,
   scatteringUvwzFromRMuMuSNu,
+  type AtmosphereParams,
 } from './atmosphereModel';
 
 describe('atmosphere table targets', () => {
@@ -372,65 +376,141 @@ describe('what a slice of the bake may cost', () => {
 });
 
 describe('table validation probe', () => {
-  it('reads the validated sample well inside the probe window, on both profiles', () => {
-    // The probe blit clamps to [0, 1]: a channel that reaches the ceiling is
-    // compared against the ceiling and not against the table, and the tier then
-    // turns on or off for the wrong reason. Nothing about the sample is
-    // size-dependent, so the same margin has to hold for both table profiles.
-    const earth = atmosphereParams('Earth');
-    const s = SCATTERING_VALIDATION_SAMPLE;
-    const r = earth.bottomRadius + s.altitudeFraction * (earth.topRadius - earth.bottomRadius);
-    const expected = computeSingleScattering(earth, r, s.mu, s.muS, s.nu, false, 32, 200).rayleigh;
-    for (const sizes of [ATMOSPHERE_TABLE_SIZES_FULL, ATMOSPHERE_TABLE_SIZES_HALF]) {
-      const uvwz = scatteringUvwzFromRMuMuSNu(earth, r, s.mu, s.muS, s.nu, false, sizes);
-      // A sky ray: the upper half of the folded mu axis.
-      expect(uvwz.uMu).toBeGreaterThan(0.5);
-      // Blue can reach the probe's ceiling before the top of the accepted band;
-      // the upper test is carried by the smallest channel, which must not.
-      const smallest = Math.min(...expected);
-      expect(smallest * SCATTERING_PROBE_SCALE * SCATTERING_VALIDATION_BAND.max)
-        .toBeLessThan(0.95);
-      for (const channel of expected) {
-        const read = channel * SCATTERING_PROBE_SCALE;
-        expect(read).toBeGreaterThan(0.05);
-        expect(read).toBeLessThan(0.95);
-        // The bottom of the accepted band has to stay readable too.
-        expect(read * SCATTERING_VALIDATION_BAND.min).toBeGreaterThan(0.002);
+  // Every body the tables can be baked for: the app bakes Earth's, and the DEV
+  // bake takes any of them — and a body that cannot validate keeps the
+  // analytic shell for the session, silently.
+  const BODIES = Object.keys(ATMOSPHERE_SPECS);
+  const at = (params: AtmosphereParams, fraction: number): number =>
+    params.bottomRadius + fraction * (params.topRadius - params.bottomRadius);
+
+  /** The readback window around one sample's reference, held to what makes the
+   *  comparison a test: the whole band of every channel inside the window, the
+   *  band's floor hundreds of steps of the 16-bit readback above zero, and the
+   *  scale the largest such power of two. */
+  const holdsBand = (label: string, expected: readonly number[]): void => {
+    const scale = validationProbeScale(expected);
+    expect(Number.isInteger(Math.log2(scale)), label).toBe(true);
+    for (const channel of expected) {
+      const read = channel * scale;
+      // The probe blit clamps to [0, 1]: a channel whose band reaches the
+      // ceiling is compared against the ceiling and not against the table, and
+      // the tier then turns on or off for the wrong reason.
+      expect(read * SCATTERING_VALIDATION_BAND.max, label).toBeLessThanOrEqual(PROBE_WINDOW_TOP);
+      expect(read * SCATTERING_VALIDATION_BAND.min * 65025, label).toBeGreaterThan(500);
+    }
+    expect(Math.max(...expected) * 2 * scale * SCATTERING_VALIDATION_BAND.max, label)
+      .toBeGreaterThan(PROBE_WINDOW_TOP);
+  };
+
+  it('reads the scattering sample with its whole band inside the window, for every body and both profiles', () => {
+    // Nothing about the sample is size-dependent, so the same margin has to hold
+    // for both table profiles.
+    for (const body of BODIES) {
+      const params = atmosphereParams(body);
+      const s = SCATTERING_VALIDATION_SAMPLE;
+      const r = at(params, s.altitudeFraction);
+      const expected = computeSingleScattering(params, r, s.mu, s.muS, s.nu, false, 32, 200).rayleigh;
+      for (const sizes of [ATMOSPHERE_TABLE_SIZES_FULL, ATMOSPHERE_TABLE_SIZES_HALF]) {
+        const uvwz = scatteringUvwzFromRMuMuSNu(params, r, s.mu, s.muS, s.nu, false, sizes);
+        // A sky ray: the upper half of the folded mu axis.
+        expect(uvwz.uMu, body).toBeGreaterThan(0.5);
       }
+      holdsBand(`${body} scattering`, expected);
     }
   });
 
-  it('reads the single-Mie colour sample well inside the probe window, on both profiles', () => {
+  it('reads the single-Mie colour sample with its whole band inside the window, for every body and both profiles', () => {
     // The colour table holds single Mie's green and blue, which fall off with a
-    // ~1.2 km scale height: at the scattering sample's altitude they are a
-    // half-float subnormal and would read zero, failing the tier everywhere.
-    // Their own sample sits low enough to read mid-window through the same
-    // probe scale and band.
+    // ~1.2 km scale height on Earth: at the scattering sample's altitude they
+    // are a half-float subnormal and would read zero, failing the tier
+    // everywhere. Their own sample sits low enough to read through the same band.
     const earth = atmosphereParams('Earth');
-    const s = MIE_VALIDATION_SAMPLE;
-    const r = earth.bottomRadius + s.altitudeFraction * (earth.topRadius - earth.bottomRadius);
-    // The bake's own 50 steps: what the table holds there.
-    const mie = computeSingleScattering(earth, r, s.mu, s.muS, s.nu, false, 50, 200).mie;
-    const expected = [mie[1], mie[2]];
-    // And the scattering sample is no place for it: there the colour is under
-    // half-float's smallest normal.
     const v = SCATTERING_VALIDATION_SAMPLE;
-    const high = computeSingleScattering(
-      earth, earth.bottomRadius + v.altitudeFraction * (earth.topRadius - earth.bottomRadius),
-      v.mu, v.muS, v.nu, false, 32, 200,
-    ).mie;
+    const high = computeSingleScattering(earth, at(earth, v.altitudeFraction), v.mu, v.muS, v.nu, false, 32, 200).mie;
     expect(Math.max(high[1], high[2])).toBeLessThan(6.1e-5);
-    for (const sizes of [ATMOSPHERE_TABLE_SIZES_FULL, ATMOSPHERE_TABLE_SIZES_HALF]) {
-      const uvwz = scatteringUvwzFromRMuMuSNu(earth, r, s.mu, s.muS, s.nu, false, sizes);
-      expect(uvwz.uMu).toBeGreaterThan(0.5);
-      for (const channel of expected) {
-        const read = channel * SCATTERING_PROBE_SCALE;
-        expect(read).toBeGreaterThan(0.05);
-        expect(read).toBeLessThan(0.95);
-        expect(read * SCATTERING_VALIDATION_BAND.max).toBeLessThan(0.95);
-        expect(read * SCATTERING_VALIDATION_BAND.min).toBeGreaterThan(0.002);
+    for (const body of BODIES) {
+      const params = atmosphereParams(body);
+      const s = MIE_VALIDATION_SAMPLE;
+      const r = at(params, s.altitudeFraction);
+      // The bake's own 50 steps: what the table holds there.
+      const mie = computeSingleScattering(params, r, s.mu, s.muS, s.nu, false, 50, 200).mie;
+      for (const sizes of [ATMOSPHERE_TABLE_SIZES_FULL, ATMOSPHERE_TABLE_SIZES_HALF]) {
+        const uvwz = scatteringUvwzFromRMuMuSNu(params, r, s.mu, s.muS, s.nu, false, sizes);
+        expect(uvwz.uMu, body).toBeGreaterThan(0.5);
+      }
+      holdsBand(`${body} single-Mie colour`, [mie[1], mie[2]]);
+    }
+  });
+
+  it('cannot range on a reference with nothing in it', () => {
+    expect(() => validationProbeScale([0, 0])).toThrow(/no positive finite channel/);
+    expect(() => validationProbeScale([Number.NaN, 0.1])).toThrow(/no positive finite channel/);
+  });
+
+  describe('validate(), with the readback done on the CPU', () => {
+    // The validator itself, its GPU readback replaced by the blit's own
+    // arithmetic (clamp to [0, 1], two bytes) over a table that holds `gain`
+    // times the CPU reference at each sample: optical depth, the scattering
+    // sample's Rayleigh (Earth's four-order table reads 1.3-1.5x the
+    // single-order reference there) and single Mie's green and blue. The
+    // scattering texel is held at 1.4x on every body so a run reaches the
+    // colour check: Mars's real texel is 15-190x its single-Rayleigh reference
+    // (its dust's higher orders), which that check's band refuses — a separate
+    // limit, stated at SCATTERING_VALIDATION_BAND.
+    const textures = { tau: new THREE.Texture(), scattering: new THREE.Texture(), mieColour: new THREE.Texture() };
+    const blit = (x: number, scale: number): number => {
+      const s = Math.min(1, Math.max(0, x * scale));
+      const hi = Math.floor(s * 255);
+      const lo = Math.round((s * 255 - hi) * 255);
+      return (hi + lo / 255) / 255 / scale;
+    };
+    function validates(body: string, gain: { tau?: number; rayleigh?: number; mie?: readonly [number, number] } = {}): boolean {
+      const params = atmosphereParams(body);
+      const lut = new AtmosphereLut({} as unknown as THREE.WebGLRenderer, { register: false });
+      const sample = (fraction: number, steps: number) => computeSingleScattering(
+        params, at(params, fraction), SCATTERING_VALIDATION_SAMPLE.mu, SCATTERING_VALIDATION_SAMPLE.muS,
+        SCATTERING_VALIDATION_SAMPLE.nu, false, steps, 400,
+      );
+      const tau = opticalDepthToTopBoundary(params, params.bottomRadius, 1, 400);
+      const rayleigh = sample(SCATTERING_VALIDATION_SAMPLE.altitudeFraction, 40).rayleigh;
+      const mie = sample(MIE_VALIDATION_SAMPLE.altitudeFraction, 50).mie;
+      (lut as unknown as { readSample: (s: { mode: number; scattering?: THREE.Texture; scale: number }) => number[] })
+        .readSample = (s) => {
+          let texel: number[];
+          if (s.mode === 0) texel = [...tau].map((c) => c * (gain.tau ?? 1));
+          else if (s.scattering === textures.scattering) texel = rayleigh.map((c) => c * (gain.rayleigh ?? 1.4));
+          else texel = [mie[1] * (gain.mie?.[0] ?? 1), mie[2] * (gain.mie?.[1] ?? 1), 0, 1];
+          while (texel.length < 4) texel.push(1);
+          return texel.map((c) => blit(c, s.scale));
+        };
+      const targets = {
+        transmittance: { texture: textures.tau },
+        scattering: { texture: textures.scattering },
+        mieColour: { texture: textures.mieColour },
+      };
+      try {
+        return (lut as unknown as { validate(p: AtmosphereParams, t: unknown): boolean }).validate(params, targets);
+      } finally {
+        lut.dispose();
       }
     }
+
+    it('passes a correct single-Mie colour table on every body', () => {
+      // Mars at Earth's old fixed scale read its single-Mie colour as the clamp,
+      // under the band's floor: refused whatever the GPU baked.
+      for (const body of BODIES) expect(validates(body), body).toBe(true);
+    });
+
+    it('still refuses a black, a half-written or a saturated table, on every body', () => {
+      for (const body of BODIES) {
+        expect(validates(body, { mie: [0, 0] }), `${body} black colour table`).toBe(false);
+        expect(validates(body, { mie: [1, 0.2] }), `${body} blue under its floor`).toBe(false);
+        expect(validates(body, { mie: [4, 1] }), `${body} green over its ceiling`).toBe(false);
+        expect(validates(body, { rayleigh: 0.3 }), `${body} dim scattering`).toBe(false);
+        expect(validates(body, { rayleigh: 1e3 }), `${body} saturated scattering`).toBe(false);
+        expect(validates(body, { tau: 0.5 }), `${body} wrong optical depth`).toBe(false);
+      }
+    });
   });
 });
 

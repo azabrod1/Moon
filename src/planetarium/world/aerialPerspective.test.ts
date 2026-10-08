@@ -859,6 +859,21 @@ describe('the night-lights shell', () => {
     }
   });
 
+  it('projects the night tiles in the order three projects the ground under them', () => {
+    // The tiles sit on the globe's surface and beat it by a few depth units
+    // of polygon offset, so their position has to round exactly as the
+    // ground's does: three's project_vertex order, the view transform first
+    // and the projection on its result. Multiplying the matrices first rounds
+    // differently, and at an oblique view the gap exceeded the offset: the
+    // tiles' light failed the depth test in patches that moved from boot to
+    // boot with the near plane.
+    expect(earthNightVertexShader).toContain('vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);');
+    expect(earthNightVertexShader).toContain('gl_Position = projectionMatrix * mvPosition;');
+    expect(earthNightVertexShader).not.toContain('projectionMatrix * modelViewMatrix');
+    expect(THREE.ShaderChunk.project_vertex).toContain('mvPosition = modelViewMatrix * mvPosition;');
+    expect(THREE.ShaderChunk.project_vertex).toContain('gl_Position = projectionMatrix * mvPosition;');
+  });
+
   it('is off, and unchanged, wherever there are no tables', () => {
     expect(earthNightFragmentShader).toContain('if (uAirDensity > 0.0) {');
     // The pre-air line, untouched: with the switch at 0 the fallback device

@@ -352,8 +352,9 @@ if (import.meta.env.DEV) setAerosolOverride('Earth', parseAerosolParam(location.
 // (planetarium/highlightMeter); the Sun's own meter alone, as it was.
 setHighlightMeterEnabled(parseGlintMeterParam(location.search));
 // `?seawindmap=<url>` (DEV only): the sea's wind map from a file — a picture
-// whose red is the wind, or a raw byte map of one wind a texel — so a field
-// baked elsewhere is judged in the app. Fetched beside the boot; the sea
+// whose red is the wind and whose green and blue are its axis (a grey one is
+// the wind alone), or a raw byte map of one wind a texel — so a field baked
+// elsewhere is judged in the app. Fetched beside the boot; the sea
 // reads it from the frame it lands, and the shipped map is refused from here
 // on.
 if (import.meta.env.DEV) {
@@ -3617,8 +3618,10 @@ function installDevHooks() {
         roughness,
         seaWind: seaWindOn(),
         map: seaWindMapSource(),
-        // The map as installed: its size, format (1028 is three's RedFormat)
-        // and upload version, so a harness log says what the sea is reading.
+        // The map as installed: its size, format (1023 is three's
+        // RGBAFormat, the one a wind map is built in; 1028 RedFormat would be
+        // an axis dropped) and upload version, so a harness log says what the
+        // sea is reading.
         windMap: tex
           ? {
               width: (tex.image as { width?: number } | undefined)?.width ?? 0,

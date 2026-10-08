@@ -3,18 +3,27 @@ import * as THREE from 'three';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import {
-  COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_WIND_MAX_MS,
+  COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_WIND_AXIS_SCALE, SEA_WIND_AXIS_ZERO, SEA_WIND_MAX_MS,
   disposeRetiredSeaWindMaps,
-  installSeaWindMap, loadSeaWindMap, meanSquareSlope, parseSeaWindMapParam, parseSeaWindParam, seaWindBytesFromRgba,
-  seaWindMapDimensions, seaWindMapSource, seaWindTexture, seaWindTextureFrom, setSeaWindMips, windRoughness,
+  installSeaWindMap, loadSeaWindMap, meanSquareSlope, parseSeaWindMapParam, parseSeaWindParam, seaWindAxisFromByte,
+  seaWindBytesFromRgba, seaWindMapDimensions, seaWindMapSource, seaWindRgbaFromSpeed, seaWindTexture, seaWindTextureFrom,
+  setSeaWindMips, windRoughness,
 } from './seaWind';
 import { ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER } from './surfaceShading';
 import { PLANET_TEXTURE_FILES } from './textureLadder';
 import {
   COX_MUNK_SLOPE_CALM as GENERATOR_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS as GENERATOR_SLOPE_PER_MS,
   SEA_WIND_MAX_MS as GENERATOR_WIND_MAX_MS, DEFAULTS, bandStatistics, buildField,
-  encodeWindGrey, meanSquareSlope as generatorMeanSquareSlope, pointEvaluator,
+  meanSquareSlope as generatorMeanSquareSlope, pointEvaluator,
 } from '../../../tools/seaWindField.mjs';
+import {
+  AXIS_SCALE, AXIS_ZERO, COX_MUNK_CROSSWIND_CALM, COX_MUNK_CROSSWIND_PER_MS, COX_MUNK_UPWIND_PER_MS,
+  accumulateMonth, areaAverager, axisFromAccumulator, axisToByte, byteToAxis, createAccumulator, decodeWindMap,
+  encodeWindMap, finishAccumulator, nearestFilledIndex, rollColumns, slopeAnisotropy, syntheticAxis,
+} from '../../../tools/seaWindMap.mjs';
+
+/** Four bytes a texel from one wind byte a texel: the map with no axis. */
+const speedOnly = (...speed: number[]): Uint8Array => Uint8Array.from(speed.flatMap((byte) => [byte, 128, 128, 255]));
 
 describe('windRoughness', () => {
   it('is Cox-Munk\'s slope law as the roughness three squares into alpha, and lands the map\'s own water value at the mean sea', () => {
@@ -50,17 +59,34 @@ describe('windRoughness', () => {
 });
 
 describe('the bytes of the map', () => {
-  it('reads a picture north-up into row 0 south, the wind in red', () => {
-    // A 2x2 grey picture as the bake's --png writes one: the top row is the
-    // north, and the other channels are not read.
+  it('reads a picture north-up into row 0 south, the wind in red and the axis in green and blue, alpha opaque', () => {
+    // A 2x2 picture as the bake's --png writes one (here with an alpha the
+    // canvas would hand over): the top row is the north.
     const rgba = new Uint8Array([
-      10, 10, 10, 255, 11, 99, 0, 255, // picture row 0 (north)
-      30, 30, 30, 255, 31, 0, 99, 255, // picture row 1 (south)
+      10, 128, 255, 9, 11, 99, 0, 255, // picture row 0 (north)
+      30, 1, 128, 255, 31, 0, 99, 0, // picture row 1 (south)
     ]);
     const map = seaWindBytesFromRgba(rgba, 2, 2);
     expect(map.width).toBe(2);
     expect(map.height).toBe(2);
-    expect(Array.from(map.data)).toEqual([30, 31, 10, 11]);
+    expect(Array.from(map.data)).toEqual([30, 1, 128, 255, 31, 0, 99, 255, 10, 128, 255, 255, 11, 99, 0, 255]);
+  });
+
+  it('reads a picture grey at every texel as the wind alone: green and blue 128, exactly isotropic', () => {
+    // A speed-only picture from before the axis: G = B = R at EVERY texel.
+    const grey = new Uint8Array([10, 10, 10, 255, 11, 11, 11, 255, 30, 30, 30, 255, 31, 31, 31, 255]);
+    expect(Array.from(seaWindBytesFromRgba(grey, 2, 2).data)).toEqual(Array.from(speedOnly(30, 31, 10, 11)));
+    // One texel off grey and the picture carries an axis: kept as it is.
+    const almost = grey.slice();
+    almost[13] = 12;
+    expect(Array.from(seaWindBytesFromRgba(almost, 2, 2).data)).toEqual([30, 30, 30, 255, 31, 12, 31, 255, 10, 10, 10, 255, 11, 11, 11, 255]);
+    // The rule is one function, and 128 is no axis to the last bit.
+    expect(Array.from(seaWindRgbaFromSpeed([7, 200], 2, 1))).toEqual([7, 128, 128, 255, 200, 128, 128, 255]);
+    expect(seaWindAxisFromByte(SEA_WIND_AXIS_ZERO)).toBe(0);
+    expect(seaWindAxisFromByte(255)).toBe(1);
+    expect(seaWindAxisFromByte(1)).toBe(-1);
+    expect(SEA_WIND_AXIS_ZERO).toBe(AXIS_ZERO);
+    expect(SEA_WIND_AXIS_SCALE).toBe(AXIS_SCALE);
   });
 
   it('reads a raw map\'s shape off its size', () => {
@@ -75,15 +101,15 @@ describe('the bytes of the map', () => {
   describe('a raw map from a file', () => {
     afterEach(() => { vi.unstubAllGlobals(); });
 
-    it('is the wind a byte, row 0 the south, its shape read off its size, and a byte count with no shape is refused', async () => {
+    it('is the wind a byte with no axis, row 0 the south, its shape read off its size, and a byte count with no shape is refused', async () => {
       // tools/glint-probe.mjs serves one of these from memory: one wind over
-      // the whole sea, as it is, with no conversion on the way.
+      // the whole sea, as it is, with no axis.
       const bytes = new Uint8Array(8 * 4).map((_, index) => index);
       vi.stubGlobal('fetch', async () => new Response(bytes));
       const map = await loadSeaWindMap('/__glint-probe/wind-7.raw');
       expect(map.width).toBe(8);
       expect(map.height).toBe(4);
-      expect(Array.from(map.data)).toEqual(Array.from(bytes));
+      expect(Array.from(map.data)).toEqual(Array.from(speedOnly(...bytes)));
       vi.stubGlobal('fetch', async () => new Response(new Uint8Array(7)));
       await expect(loadSeaWindMap('/x.raw')).rejects.toThrow(/not a width x width\/2 byte map/);
       vi.stubGlobal('fetch', async () => new Response('', { status: 404 }));
@@ -93,9 +119,9 @@ describe('the bytes of the map', () => {
 });
 
 describe('the texture', () => {
-  it('is one channel, wrapped around the date line, clamped at the poles, mip-chained, and read as data', () => {
-    const tex = seaWindTextureFrom({ data: new Uint8Array([1, 2, 3, 4]), width: 4, height: 1 });
-    expect(tex.format).toBe(THREE.RedFormat);
+  it('is four channels, wrapped around the date line, clamped at the poles, mip-chained, and read as data', () => {
+    const tex = seaWindTextureFrom({ data: speedOnly(1, 2, 3, 4), width: 4, height: 1 });
+    expect(tex.format).toBe(THREE.RGBAFormat);
     expect(tex.type).toBe(THREE.UnsignedByteType);
     expect(tex.wrapS).toBe(THREE.RepeatWrapping);
     expect(tex.wrapT).toBe(THREE.ClampToEdgeWrapping);
@@ -107,16 +133,18 @@ describe('the texture', () => {
     // The DEV mip switch: the next texture built samples its full resolution
     // from any distance.
     setSeaWindMips(false);
-    const flat = seaWindTextureFrom({ data: new Uint8Array([1, 2]), width: 2, height: 1 });
+    const flat = seaWindTextureFrom({ data: speedOnly(1, 2), width: 2, height: 1 });
     expect(flat.generateMipmaps).toBe(false);
     expect(flat.minFilter).toBe(THREE.LinearFilter);
     setSeaWindMips(true);
+    // One byte a texel is refused: the expansion is seaWindRgbaFromSpeed's.
+    expect(() => seaWindTextureFrom({ data: new Uint8Array([1, 2, 3, 4]), width: 4, height: 1 })).toThrow(/not four a texel/);
   });
 
   it('is installed once it lands, a replacement retires the old one, and an override refuses the shipped map', () => {
     expect(seaWindTexture()).toBeNull();
     expect(seaWindMapSource()).toBe('none');
-    const first = seaWindTextureFrom({ data: new Uint8Array(2), width: 2, height: 1 });
+    const first = seaWindTextureFrom({ data: speedOnly(0, 0), width: 2, height: 1 });
     expect(installSeaWindMap(first, 'shipped')).toBe(first);
     expect(seaWindMapSource()).toBe('shipped');
     expect(seaWindTexture()).toBe(first);
@@ -126,7 +154,7 @@ describe('the texture', () => {
     // listener had closed.
     let disposed = 0;
     first.addEventListener('dispose', () => { disposed++; });
-    const second = seaWindTextureFrom({ data: new Uint8Array(2), width: 2, height: 1 });
+    const second = seaWindTextureFrom({ data: speedOnly(0, 0), width: 2, height: 1 });
     expect(installSeaWindMap(second, 'shipped')).toBe(second);
     expect(disposed).toBe(0);
     disposeRetiredSeaWindMaps();
@@ -140,10 +168,10 @@ describe('the texture', () => {
     expect(parseSeaWindMapParam('')).toBeNull();
     expect(parseSeaWindMapParam('?seawindmap=')).toBeNull();
     expect(parseSeaWindMapParam('?seawind=0&seawindmap=/planning/field.png')).toBe('/planning/field.png');
-    const late = seaWindTextureFrom({ data: new Uint8Array(2), width: 2, height: 1 });
+    const late = seaWindTextureFrom({ data: speedOnly(0, 0), width: 2, height: 1 });
     expect(installSeaWindMap(late, 'shipped')).toBeNull();
     expect(seaWindTexture()).toBe(second);
-    const override = seaWindTextureFrom({ data: new Uint8Array(2), width: 2, height: 1 });
+    const override = seaWindTextureFrom({ data: speedOnly(0, 0), width: 2, height: 1 });
     expect(installSeaWindMap(override, '/planning/field.png')).toBe(override);
     expect(seaWindMapSource()).toBe('/planning/field.png');
   });
@@ -191,10 +219,11 @@ describe('the generator (tools/seaWindField.mjs)', () => {
 
 
   it('is the field it was: a few points pinned, so a drift in the arithmetic is a deliberate re-bake', () => {
-    // Move these only with `npm run gen:seawind` and the shipped hash below.
-    // They are the open sea's wind the pair before this map carried in its
-    // windy map at the same points: removing the calm lanes and regions left
-    // the wind under them as it was.
+    // The authored field is the bake's `--synthetic` arm now, whose speed is
+    // byte for byte the old earth-seawind.v1.webp's: move these only with a
+    // deliberate change to the field. They are the open sea's wind the pair
+    // before that map carried in its windy map at the same points: removing
+    // the calm lanes and regions left the wind under them as it was.
     const pins: Array<[number, number, number]> = [
       [-160, -12, 3.305083],
       [30, 0, 3.173800],
@@ -232,16 +261,16 @@ describe('the generator (tools/seaWindField.mjs)', () => {
     let windMin = Infinity;
     for (const wind of small.windMs) windMin = Math.min(windMin, wind);
     expect(windMin).toBeGreaterThan(0.09);
-    // Every byte of the encoding is a texel: grey, three a texel, north-up —
-    // its first row is the field's last, which a hash pin moved on a re-bake
-    // could not tell from a map upside down.
-    const grey = encodeWindGrey(small);
-    expect(grey).toHaveLength(256 * 128 * 3);
-    expect(grey[0]).toBe(grey[1]);
-    expect(grey[1]).toBe(grey[2]);
+    // Every byte of the encoding is a texel: four a texel, north-up — its
+    // first row is the field's last, which a hash pin moved on a re-bake
+    // could not tell from a map upside down — and with no axis given, green
+    // and blue are 128 and alpha opaque.
+    const encoded = encodeWindMap(small);
+    expect(encoded).toHaveLength(256 * 128 * 4);
+    expect(Array.from(encoded.subarray(1, 4))).toEqual([128, 128, 255]);
     const byte = (wind: number): number => Math.round(Math.min(1, Math.max(0, wind / SEA_WIND_MAX_MS)) * 255);
-    expect(grey[0]).toBe(byte(small.windMs[127 * 256]));
-    expect(grey[grey.length - 3]).toBe(byte(small.windMs[255]));
+    expect(encoded[0]).toBe(byte(small.windMs[127 * 256]));
+    expect(encoded[encoded.length - 4]).toBe(byte(small.windMs[255]));
   });
 
   it('is smooth enough that a block\'s mean wind keeps the glint, which is why a mip of the map is fine', () => {
@@ -286,22 +315,171 @@ describe('the generator (tools/seaWindField.mjs)', () => {
     }
   });
 
-  it('ships the map the generator bakes, under the name the boot loads and warms', () => {
+  it('keeps the authored field\'s shape', () => {
+    // The synthetic arm's speed is byte for byte the old v1 map's because it
+    // is these DEFAULTS at the shipped size.
+    expect(DEFAULTS.supersample).toBe(4);
+    expect(DEFAULTS.grain).toBe(0);
+    expect(DEFAULTS.broadSpread).toBe(0.45);
+  });
+});
+
+describe('the shipped map (tools/gen-seawind.mjs)', () => {
+  it('ships the map the bake made, under the name the boot loads and warms, and every bar the bake held it to passed', () => {
     // The hash moves only with `npm run gen:seawind`, and a re-bake whose
-    // bytes differ ships under a new name, as every data file the service
-    // worker caches does.
-    expect(PLANET_TEXTURE_FILES.earthSeaWind).toBe('earth-seawind.v1.webp');
+    // bytes differ after shipping ships under a new name (.v3), as every
+    // data file the service worker caches does.
+    expect(PLANET_TEXTURE_FILES.earthSeaWind).toBe('earth-seawind.v2.webp');
     const mapBytes = readFileSync(`public/textures/${PLANET_TEXTURE_FILES.earthSeaWind}`);
-    expect(createHash('sha256').update(mapBytes).digest('hex'))
-      .toBe('fa489ef7320ee3cdb24f54f73db6d4716d4fbd06812f1817f8f7c682026bc9d6');
+    const sha256 = createHash('sha256').update(mapBytes).digest('hex');
+    expect(sha256).toBe('e3f50c0f0fd314c61281be0ac1785796f5180c04f2c1727fa5083fab92683646');
     // Lossless webp, the container the loader decodes as a picture: RIFF,
     // WEBP, VP8L.
     expect(mapBytes.toString('ascii', 0, 4)).toBe('RIFF');
     expect(mapBytes.toString('ascii', 8, 12)).toBe('WEBP');
     expect(mapBytes.toString('ascii', 12, 16)).toBe('VP8L');
-    // And the shipped DEFAULTS are what that hash was baked from.
-    expect(DEFAULTS.supersample).toBe(4);
-    expect(DEFAULTS.grain).toBe(0);
-    expect(DEFAULTS.broadSpread).toBe(0.45);
+    // The statistics the bake measured on this very file (vitest cannot
+    // decode the webp or read the HDF5 source, so the bake does and commits
+    // them): they name this sha256, the source the manifest names, and
+    // every bar passed.
+    const stats = JSON.parse(readFileSync('tools/goldens/seawind/earth-seawind.v2.stats.json', 'utf8'));
+    const sources = JSON.parse(readFileSync('tools/gen-seawind.sources.json', 'utf8'));
+    expect(stats.arm).toBe('data');
+    expect(stats.map.file).toBe(PLANET_TEXTURE_FILES.earthSeaWind);
+    expect(stats.map.sha256).toBe(sha256);
+    expect(stats.map.bytes).toBe(mapBytes.length);
+    expect([stats.map.width, stats.map.height]).toEqual([1024, 512]);
+    expect(stats.source.sha256).toBe(sources[stats.source.file].sha256);
+    expect(stats.allBarsPassed).toBe(true);
+    expect(stats.mipBias.pass).toBe(true);
+    expect(stats.seams.pass).toBe(true);
+    expect(stats.pointsHold).toBe(true);
+    // Each bar, at every level (2 to 16 texels a side) and tilt, read again
+    // here so a stats file edited by hand cannot pass on its flag alone.
+    expect(stats.mipBias.levels.map((entry: { level: number }) => entry.level)).toEqual([1, 2, 3, 4]);
+    for (const entry of stats.mipBias.levels) {
+      expect(entry.speed.map((row: { tiltDeg: number }) => row.tiltDeg)).toEqual([0, 5, 10]);
+      for (const row of [...entry.speed, ...entry.anisotropy]) {
+        expect(row.mean).toBeLessThan(0.03);
+        expect(row.p99).toBeLessThan(0.1);
+      }
+    }
+  });
+});
+
+describe('the map\'s arithmetic (tools/seaWindMap.mjs)', () => {
+  it('is Cox and Munk\'s anisotropy: sigma_u² - sigma_c², crossing zero at 2.42 m/s, the sum near the slope law', () => {
+    expect(slopeAnisotropy(7)).toBeCloseTo(0.00316 * 7 - (0.003 + 0.00192 * 7), 12);
+    expect(slopeAnisotropy(0.003 / 0.00124)).toBeCloseTo(0, 12);
+    expect(slopeAnisotropy(2)).toBeLessThan(0);
+    expect(slopeAnisotropy(3)).toBeGreaterThan(0);
+    // The two variances add to the total law within its own fit (5.08 against
+    // 5.12 thousandths a metre a second).
+    const sum = (wind: number): number => COX_MUNK_UPWIND_PER_MS * wind + COX_MUNK_CROSSWIND_CALM + COX_MUNK_CROSSWIND_PER_MS * wind;
+    for (const wind of [3, 7, 12]) expect(Math.abs(sum(wind) / meanSquareSlope(wind) - 1)).toBeLessThan(0.01);
+  });
+
+  it('stores the axis 128 + round(127 x), affine, clamped to the unit disc and none where d is near zero', () => {
+    expect(axisToByte(0)).toBe(128);
+    expect(axisToByte(1)).toBe(255);
+    expect(axisToByte(-1)).toBe(1);
+    expect(axisToByte(2)).toBe(255);
+    for (const byte of [1, 64, 128, 200, 255]) expect(axisToByte(byteToAxis(byte))).toBe(byte);
+    // Affine: the decode of a mean of bytes is the mean of the decodes, so a
+    // mip of the bytes is the mip of the axis.
+    expect(byteToAxis((40 + 220) / 2)).toBeCloseTo((byteToAxis(40) + byteToAxis(220)) / 2, 12);
+    // a / d(R), clamped to the unit disc.
+    const d7 = slopeAnisotropy(7);
+    expect(axisFromAccumulator(0.5 * d7, -0.25 * d7, 7)).toEqual([0.5, -0.25]);
+    const [x1, x2] = axisFromAccumulator(3 * d7, 4 * d7, 7);
+    expect(Math.hypot(x1, x2)).toBeCloseTo(1, 12);
+    expect(x2 / x1).toBeCloseTo(4 / 3, 12);
+    expect(axisFromAccumulator(0.001, 0.001, 0.003 / 0.00124)).toEqual([0, 0]);
+  });
+
+  it('keeps a monsoon sea\'s axis in doubled angle, where opposite winds add, and turns the trades\' axis with the wind', () => {
+    // Four cells, two months. Cell 0: toward the south-west in month 1, the
+    // north-east in month 2 — the Arabian Sea's two monsoons, each steady
+    // (k = 1). Cell 1: toward the north-west both months. Cell 2: land.
+    // Cell 3: toward the east, half steady (|mean vector| half the speed).
+    const s = Math.SQRT1_2 * 8;
+    const months = [
+      { u: [-s, -s, NaN, 4], v: [-s, s, NaN, 0], w: [8, 8, NaN, 8], mask: [1, 1, 0, 1] },
+      { u: [s, -s, NaN, 4], v: [s, s, NaN, 0], w: [8, 8, NaN, 8], mask: [1, 1, 0, 1] },
+    ];
+    const acc = createAccumulator(4);
+    for (const month of months) accumulateMonth(acc, month);
+    const done = finishAccumulator(acc, 2);
+    expect(Array.from(done.filled)).toEqual([1, 1, 0, 1]);
+    expect(done.windMs[0]).toBeCloseTo(8, 12);
+    // Opposite directions add: the axis is (0, +1) at full steadiness, where
+    // the mean vector is zero.
+    const monsoon = axisFromAccumulator(done.a1[0], done.a2[0], 8);
+    expect(monsoon[0]).toBeCloseTo(0, 12);
+    expect(monsoon[1]).toBeCloseTo(1, 12);
+    // Toward the north-west, 2 theta = 270 degrees: (0, -1).
+    const northWest = axisFromAccumulator(done.a1[1], done.a2[1], 8);
+    expect(northWest[0]).toBeCloseTo(0, 12);
+    expect(northWest[1]).toBeCloseTo(-1, 12);
+    // East-west at half steadiness: (0.5, 0).
+    const halfSteady = axisFromAccumulator(done.a1[3], done.a2[3], 8);
+    expect(halfSteady[0]).toBeCloseTo(0.5, 12);
+    expect(halfSteady[1]).toBeCloseTo(0, 12);
+  });
+
+  it('writes and reads every arm\'s map through one encoder, north-up, alpha opaque', () => {
+    const fields = { width: 2, height: 2, windMs: [4, 8, 12, 16], axisX: [0, 1, -1, 0.5], axisY: [0, 0, 0.25, -0.5] };
+    const rgba = encodeWindMap(fields);
+    // Picture row 0 is the field's north row (its row 1).
+    expect(Array.from(rgba)).toEqual([
+      191, 1, 160, 255, 255, 192, 65, 255,
+      64, 128, 128, 255, 128, 255, 128, 255,
+    ]);
+    const back = decodeWindMap(rgba, 2, 2);
+    expect(Array.from(back.red)).toEqual([64, 128, 191, 255]);
+    expect(back.axisX[1]).toBe(1);
+    expect(back.axisY[3]).toBeCloseTo(-0.5, 2);
+  });
+
+  it('gives the synthetic arm east-west axes in both belts and none under the subtropical high', () => {
+    expect(syntheticAxis(15)).toEqual(syntheticAxis(-50));
+    expect(syntheticAxis(15)[1]).toBe(0);
+    expect(syntheticAxis(15)[0]).toBeGreaterThan(0.5);
+    expect(syntheticAxis(32.5)[0]).toBeCloseTo(0, 12);
+  });
+
+  it('rolls a grid that starts at 0 degrees to start at -180, and resamples and fills it periodically in longitude', () => {
+    // A source like the product's: points at whole cells from 0 degrees, the
+    // first cell straddling 0. Rolled by half, the field f(lon) = cos(lon)
+    // area-averaged onto a map starting at -180 must be seamless and match
+    // cos at the map's columns, at its edges as in its middle.
+    const srcWidth = 360;
+    const srcHeight = 4;
+    const source = new Float64Array(srcWidth * srcHeight);
+    for (let row = 0; row < srcHeight; row++) {
+      for (let column = 0; column < srcWidth; column++) source[row * srcWidth + column] = Math.cos((column * Math.PI) / 180);
+    }
+    const rolled = rollColumns(source, srcWidth, srcHeight, srcWidth / 2);
+    expect(rolled[0]).toBeCloseTo(-1, 12);
+    expect(rolled[180]).toBeCloseTo(1, 12);
+    const average = areaAverager({
+      srcWidth, srcHeight, srcWestEdgeDeg: -180.5, srcLatCentreDeg: (row) => -1.5 + row, srcRowHeightDeg: 1,
+      dstWidth: 100, dstHeight: 2,
+    });
+    const map = average(rolled);
+    for (let column = 0; column < 100; column++) {
+      const lon = ((column + 0.5) / 100) * 360 - 180;
+      expect(map[column]).toBeCloseTo(Math.cos((lon * Math.PI) / 180), 3);
+    }
+    expect(Math.abs(map[0] - map[99])).toBeLessThan(1e-12);
+    // The fill wraps too: a filled cell just west of the date line is the
+    // nearest for an unfilled one just east of it.
+    const filled = new Uint8Array(10 * 3);
+    filled[1 * 10 + 9] = 1;
+    filled[1 * 10 + 4] = 1;
+    const nearest = nearestFilledIndex(filled, 10, 3);
+    expect(nearest[1 * 10 + 0]).toBe(1 * 10 + 9);
+    expect(nearest[2 * 10 + 1]).toBe(1 * 10 + 9);
+    expect(nearest[0 * 10 + 5]).toBe(1 * 10 + 4);
   });
 });

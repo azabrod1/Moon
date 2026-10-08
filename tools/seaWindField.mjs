@@ -1,7 +1,9 @@
-// The wind over the sea, as the one map Earth's ocean reads its glint from,
-// generated here and baked by tools/gen-seawind.mjs into
-// public/textures/earth-seawind.v1.webp: one byte a texel, the wind at 10 m
-// over SEA_WIND_MAX_MS, read by src/planetarium/world/seaWind.ts.
+// The AUTHORED wind over the sea: the field the shipped map carried before it
+// was baked from measured winds (earth-seawind.v1.webp, its speed only), kept
+// as tools/gen-seawind.mjs's `--synthetic` and `--synthetic-speed` arms,
+// whose speed is this field at 10 m over SEA_WIND_MAX_MS. The shipped map
+// (earth-seawind.v2.webp) is the data arm's; tools/seaWindMap.mjs is the map's
+// form and the arithmetic every arm shares.
 //
 // A glint is a picture of the wind. Where the wind field varies faster than
 // the mirror lobe is wide (about 20 degrees of facet tilt at trade winds), the
@@ -49,9 +51,9 @@
 // What is authored and what is measured. Cox-Munk's slope law is a fit; its
 // zonal means are approximate values read off scatterometer climatologies;
 // the broad structure's spread, cells and streak angle are look choices made
-// against EPIC frames, not measurements. A gridded climatology or a real wind
-// day can replace the field through the same map format (the DEV
-// `?seawindmap=` override reads one).
+// against EPIC frames, not measurements. The gridded climatology the data arm
+// bakes replaced it in the shipped map; the DEV `?seawindmap=` override reads
+// either arm's map.
 //
 // Everything here is plain arithmetic on plain arrays, so the same code runs
 // under Node for the bake and under vitest for the tests; the types live in
@@ -286,31 +288,15 @@ export function buildField(width, height, params = {}) {
   return { width, height, windMs };
 }
 
-/** The map as a grey picture, three bytes a texel and NORTH-UP — a picture's
- *  first row is its top — the wind over SEA_WIND_MAX_MS: the form the app
- *  reads as a one-channel mask. */
-export function encodeWindGrey(field) {
-  const { width, height, windMs } = field;
-  const rgb = new Uint8Array(width * height * 3);
-  for (let row = 0; row < height; row++) {
-    const pictureRow = height - 1 - row;
-    for (let column = 0; column < width; column++) {
-      const byte = Math.round(clamp(windMs[row * width + column] / SEA_WIND_MAX_MS, 0, 1) * 255);
-      const to = (pictureRow * width + column) * 3;
-      rgb[to] = byte;
-      rgb[to + 1] = byte;
-      rgb[to + 2] = byte;
-    }
-  }
-  return rgb;
-}
-
 /**
  * Area-weighted statistics of the wind by band of |latitude|, for the bake's
  * log and the tests: the mean wind, and the share under one and under two
- * metres a second. Land included — no ocean mask is read here.
+ * metres a second. Each texel weighs cos(latitude), times its sea share when
+ * `seaShare` (row 0 south, 0..1 a texel) is given — the bake passes the
+ * product's ocean mask, because the data arm's flood fill puts winds over
+ * land; without it, land is included.
  */
-export function bandStatistics(field, latLowDeg, latHighDeg) {
+export function bandStatistics(field, latLowDeg, latHighDeg, seaShare = null) {
   const { width, height, windMs } = field;
   let weight = 0;
   let windSum = 0;
@@ -323,10 +309,11 @@ export function bandStatistics(field, latLowDeg, latHighDeg) {
     const rowWeight = Math.cos((latDeg * Math.PI) / 180);
     for (let column = 0; column < width; column++) {
       const index = row * width + column;
-      weight += rowWeight;
-      windSum += rowWeight * windMs[index];
-      if (windMs[index] < 1) under1 += rowWeight;
-      if (windMs[index] < 2) under2 += rowWeight;
+      const texelWeight = seaShare ? rowWeight * seaShare[index] : rowWeight;
+      weight += texelWeight;
+      windSum += texelWeight * windMs[index];
+      if (windMs[index] < 1) under1 += texelWeight;
+      if (windMs[index] < 2) under2 += texelWeight;
     }
   }
   return {

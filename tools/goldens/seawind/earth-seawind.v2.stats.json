@@ -1,0 +1,834 @@
+{
+ "_": "Written by tools/gen-seawind.mjs; seaWind.test.ts checks that the shipped map is the file named here and that every bar passed. Every number is measured on the map decoded back from the webp, except the source facts and the source seams.",
+ "arm": "data",
+ "map": {
+  "file": "earth-seawind.v2.webp",
+  "width": 1024,
+  "height": 512,
+  "bytes": 354346,
+  "sha256": "e3f50c0f0fd314c61281be0ac1785796f5180c04f2c1727fa5083fab92683646",
+  "channelsDecoded": 3
+ },
+ "source": {
+  "file": "NBS_v02_wind_climmonthly_s1991_e2020_c20221206.nc",
+  "sha256": "12f40a7b231bfaf63e11716a0b377f7a3bc384d9778d89ae79bae371dfddff02",
+  "url": "https://www.ncei.noaa.gov/data/blended-global-sea-surface-wind-products/access/climatology/NBS_v02_wind_climmonthly_s1991_e2020_c20221206.nc",
+  "reader": "h5wasm 0.10.3"
+ },
+ "facts": {
+  "datasets": [
+   "crs",
+   "lat",
+   "lon",
+   "mask",
+   "month",
+   "u_wind",
+   "v_wind",
+   "windspeed",
+   "zlev"
+  ],
+  "variables": {
+   "u_wind": {
+    "shape": [
+     12,
+     1,
+     719,
+     1440
+    ],
+    "dtype": "<f",
+    "fillValue": "NaN",
+    "scaleFactor": 1,
+    "addOffset": 0
+   },
+   "v_wind": {
+    "shape": [
+     12,
+     1,
+     719,
+     1440
+    ],
+    "dtype": "<f",
+    "fillValue": "NaN",
+    "scaleFactor": 1,
+    "addOffset": 0
+   },
+   "windspeed": {
+    "shape": [
+     12,
+     1,
+     719,
+     1440
+    ],
+    "dtype": "<f",
+    "fillValue": "NaN",
+    "scaleFactor": 1,
+    "addOffset": 0
+   },
+   "mask": {
+    "shape": [
+     12,
+     1,
+     719,
+     1440
+    ],
+    "dtype": "<d",
+    "fillValue": "NaN",
+    "scaleFactor": 1,
+    "addOffset": 0
+   }
+  },
+  "lat": {
+   "count": 719,
+   "first": -89.75,
+   "last": 89.75
+  },
+  "lon": {
+   "count": 1440,
+   "first": 0,
+   "last": 359.75
+  },
+  "months": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   11,
+   12
+  ],
+  "zlev": [
+   10
+  ],
+  "maskCounts": {
+   "0": 338697,
+   "1": 694835,
+   "2": 1827,
+   "3": 1
+  }
+ },
+ "steadiness": {
+  "note": "k = |(u, v)| / w over the valid cells of each month; clamped at one, the cells over it counted",
+  "pooled": {
+   "p05": 0.1071,
+   "p50": 0.504,
+   "p95": 0.9698
+  },
+  "byMonth": [
+   {
+    "month": 1,
+    "p05": 0.1271,
+    "p50": 0.5346,
+    "p95": 0.9663,
+    "overOne": 0
+   },
+   {
+    "month": 2,
+    "p05": 0.1363,
+    "p50": 0.5298,
+    "p95": 0.9646,
+    "overOne": 0
+   },
+   {
+    "month": 3,
+    "p05": 0.1305,
+    "p50": 0.4908,
+    "p95": 0.9639,
+    "overOne": 0
+   },
+   {
+    "month": 4,
+    "p05": 0.1266,
+    "p50": 0.4946,
+    "p95": 0.9692,
+    "overOne": 0
+   },
+   {
+    "month": 5,
+    "p05": 0.1216,
+    "p50": 0.4655,
+    "p95": 0.9675,
+    "overOne": 0
+   },
+   {
+    "month": 6,
+    "p05": 0.1056,
+    "p50": 0.4666,
+    "p95": 0.9749,
+    "overOne": 0
+   },
+   {
+    "month": 7,
+    "p05": 0.0938,
+    "p50": 0.507,
+    "p95": 0.9757,
+    "overOne": 0
+   },
+   {
+    "month": 8,
+    "p05": 0.0784,
+    "p50": 0.5036,
+    "p95": 0.9748,
+    "overOne": 0
+   },
+   {
+    "month": 9,
+    "p05": 0.0694,
+    "p50": 0.4997,
+    "p95": 0.9706,
+    "overOne": 0
+   },
+   {
+    "month": 10,
+    "p05": 0.1206,
+    "p50": 0.5084,
+    "p95": 0.9658,
+    "overOne": 0
+   },
+   {
+    "month": 11,
+    "p05": 0.1161,
+    "p50": 0.5158,
+    "p95": 0.9646,
+    "overOne": 0
+   },
+   {
+    "month": 12,
+    "p05": 0.131,
+    "p50": 0.5195,
+    "p95": 0.9671,
+    "overOne": 0
+   }
+  ]
+ },
+ "cells": {
+  "minValidMonths": 6,
+  "byClass": {
+   "0": {
+    "cells": 338697,
+    "filled": 0,
+    "unfilled": 338697,
+    "validMonths": 0
+   },
+   "1": {
+    "cells": 694835,
+    "filled": 694835,
+    "unfilled": 0,
+    "validMonths": 8338020
+   },
+   "2": {
+    "cells": 1827,
+    "filled": 1827,
+    "unfilled": 0,
+    "validMonths": 21924
+   },
+   "3": {
+    "cells": 1,
+    "filled": 1,
+    "unfilled": 0,
+    "validMonths": 12
+   }
+  },
+  "unfilled": 338697,
+  "nonFiniteByMonthAndClass": [
+   {
+    "0": 320292,
+    "month": 1
+   },
+   {
+    "0": 320522,
+    "month": 2
+   },
+   {
+    "0": 320419,
+    "month": 3
+   },
+   {
+    "0": 320765,
+    "month": 4
+   },
+   {
+    "0": 320375,
+    "month": 5
+   },
+   {
+    "0": 319392,
+    "month": 6
+   },
+   {
+    "0": 318246,
+    "month": 7
+   },
+   {
+    "0": 318024,
+    "month": 8
+   },
+   {
+    "0": 317746,
+    "month": 9
+   },
+   {
+    "0": 317946,
+    "month": 10
+   },
+   {
+    "0": 318778,
+    "month": 11
+   },
+   {
+    "0": 319386,
+    "month": 12
+   }
+  ]
+ },
+ "speedByMonth": [
+  {
+   "month": 1,
+   "p50": 7.26,
+   "p95": 11.17,
+   "max": 16.04
+  },
+  {
+   "month": 2,
+   "p50": 7.4,
+   "p95": 11.07,
+   "max": 15.93
+  },
+  {
+   "month": 3,
+   "p50": 7.52,
+   "p95": 11,
+   "max": 15.18
+  },
+  {
+   "month": 4,
+   "p50": 7.43,
+   "p95": 11.14,
+   "max": 14.63
+  },
+  {
+   "month": 5,
+   "p50": 7.14,
+   "p95": 11.3,
+   "max": 14.75
+  },
+  {
+   "month": 6,
+   "p50": 7.11,
+   "p95": 11.33,
+   "max": 15.59
+  },
+  {
+   "month": 7,
+   "p50": 7.21,
+   "p95": 11.7,
+   "max": 15.14
+  },
+  {
+   "month": 8,
+   "p50": 7.11,
+   "p95": 11.86,
+   "max": 14.77
+  },
+  {
+   "month": 9,
+   "p50": 7.29,
+   "p95": 11.63,
+   "max": 14.34
+  },
+  {
+   "month": 10,
+   "p50": 7.43,
+   "p95": 11.26,
+   "max": 13.53
+  },
+  {
+   "month": 11,
+   "p50": 7.39,
+   "p95": 10.86,
+   "max": 14.07
+  },
+  {
+   "month": 12,
+   "p50": 7.34,
+   "p95": 11.24,
+   "max": 15.11
+  }
+ ],
+ "annualSpeed": {
+  "medianMs": 7.38,
+  "p95Ms": 10.86,
+  "maxMs": 13.38,
+  "overFullScale": 0
+ },
+ "speedSmoothing": {
+  "sigmaSourceCells": 0,
+  "note": "none applied"
+ },
+ "axis": {
+  "law": "x = mean over valid months of k_m d(w_m) (cos 2 theta_m, sin 2 theta_m), area-averaged, divided by d(R) at the stored speed, clamped to the unit disc; d(U) = 0.00316 U - (0.003 + 0.00192 U)",
+  "divisorFloor": 0.0001
+ },
+ "bands": [
+  {
+   "band": "0-15",
+   "meanWindMs": 6.327,
+   "under1Fraction": 0.00002,
+   "under2Fraction": 0.00139
+  },
+  {
+   "band": "15-30",
+   "meanWindMs": 6.995,
+   "under1Fraction": 0,
+   "under2Fraction": 0.00018
+  },
+  {
+   "band": "30-45",
+   "meanWindMs": 8.105,
+   "under1Fraction": 0.00001,
+   "under2Fraction": 0.00031
+  },
+  {
+   "band": "45-60",
+   "meanWindMs": 9.89,
+   "under1Fraction": 0,
+   "under2Fraction": 0.00024
+  },
+  {
+   "band": "60-90",
+   "meanWindMs": 7.545,
+   "under1Fraction": 0.00004,
+   "under2Fraction": 0.00157
+  },
+  {
+   "band": "0-25",
+   "meanWindMs": 6.575,
+   "under1Fraction": 0.00001,
+   "under2Fraction": 0.00096
+  }
+ ],
+ "seams": {
+  "map": {
+   "edge (+-180)": {
+    "columns": [
+     1023,
+     0
+    ],
+    "lonDeg": -180,
+    "R": {
+     "meanAbsDiff": 0.2697947214076246,
+     "othersMedian": 0.49333333333333335,
+     "othersP95": 1.180094786729858,
+     "othersMax": 2.229813664596273,
+     "percentile": 0.1643835616438356,
+     "pass": true
+    },
+    "G": {
+     "meanAbsDiff": 0.25219941348973607,
+     "othersMedian": 1.148936170212766,
+     "othersP95": 3.1940298507462686,
+     "othersMax": 12.145299145299145,
+     "percentile": 0.0029354207436399216,
+     "pass": true
+    },
+    "B": {
+     "meanAbsDiff": 0.39882697947214074,
+     "othersMedian": 1.1473214285714286,
+     "othersP95": 3.2473684210526317,
+     "othersMax": 6.824427480916031,
+     "percentile": 0.04207436399217221,
+     "pass": true
+    }
+   },
+   "centre (0)": {
+    "columns": [
+     511,
+     512
+    ],
+    "lonDeg": 0,
+    "R": {
+     "meanAbsDiff": 0.5462962962962963,
+     "othersMedian": 0.49333333333333335,
+     "othersP95": 1.180094786729858,
+     "othersMax": 2.229813664596273,
+     "percentile": 0.5626223091976517,
+     "pass": true
+    },
+    "G": {
+     "meanAbsDiff": 1.7407407407407407,
+     "othersMedian": 1.148936170212766,
+     "othersP95": 3.1940298507462686,
+     "othersMax": 12.145299145299145,
+     "percentile": 0.7563600782778865,
+     "pass": true
+    },
+    "B": {
+     "meanAbsDiff": 1.1851851851851851,
+     "othersMedian": 1.1473214285714286,
+     "othersP95": 3.2473684210526317,
+     "othersMax": 6.824427480916031,
+     "percentile": 0.5225048923679061,
+     "pass": true
+    }
+   }
+  },
+  "source": {
+   "edge (+-180)": {
+    "columns": [
+     1439,
+     0
+    ],
+    "lonDeg": -180,
+    "R": {
+     "meanAbsDiff": 0.01273171131965747,
+     "othersMedian": 0.02309697881683976,
+     "othersP95": 0.057997122738096415,
+     "othersMax": 0.1183585448802518,
+     "percentile": 0.16620305980528513,
+     "pass": true
+    },
+    "a1": {
+     "meanAbsDiff": 0.000012384296627967698,
+     "othersMedian": 0.00003838962208459611,
+     "othersP95": 0.0000976655897564225,
+     "othersMax": 0.0002729200223338529,
+     "percentile": 0.04450625869262865,
+     "pass": true
+    },
+    "a2": {
+     "meanAbsDiff": 0.000016883981063687338,
+     "othersMedian": 0.000037480524455350256,
+     "othersP95": 0.0000897130512268558,
+     "othersMax": 0.00020137122175400027,
+     "percentile": 0.061196105702364396,
+     "pass": true
+    }
+   },
+   "source seam (0)": {
+    "columns": [
+     719,
+     720
+    ],
+    "lonDeg": 0,
+    "R": {
+     "meanAbsDiff": 0.023840079176861567,
+     "othersMedian": 0.02309697881683976,
+     "othersP95": 0.057997122738096415,
+     "othersMax": 0.1183585448802518,
+     "percentile": 0.5166898470097357,
+     "pass": true
+    },
+    "a1": {
+     "meanAbsDiff": 0.00005491720753804795,
+     "othersMedian": 0.00003838962208459611,
+     "othersP95": 0.0000976655897564225,
+     "othersMax": 0.0002729200223338529,
+     "percentile": 0.7260083449235049,
+     "pass": true
+    },
+    "a2": {
+     "meanAbsDiff": 0.000048003221799013476,
+     "othersMedian": 0.000037480524455350256,
+     "othersP95": 0.0000897130512268558,
+     "othersMax": 0.00020137122175400027,
+     "percentile": 0.6981919332406119,
+     "pass": true
+    }
+   }
+  },
+  "pass": true
+ },
+ "pointsHold": true,
+ "mipBias": {
+  "bars": {
+   "mean": 0.03,
+   "p99": 0.1
+  },
+  "latLimitDeg": 60,
+  "minSea": 0.5,
+  "levels": [
+   {
+    "level": 1,
+    "blockTexels": 2,
+    "blocks": 63739,
+    "speed": [
+     {
+      "tiltDeg": 0,
+      "mean": 0.00009684873750121017,
+      "p99": 0.0013618288063325101,
+      "max": 0.10234692239052412,
+      "maxAtLatLon": [
+       33.3984375,
+       132.5390625
+      ],
+      "over10Percent": 1,
+      "pass": true
+     },
+     {
+      "tiltDeg": 5,
+      "mean": 0.00005150360797150052,
+      "p99": 0.0007088969911240861,
+      "max": 0.05089122602154317,
+      "maxAtLatLon": [
+       33.3984375,
+       132.5390625
+      ],
+      "over10Percent": 0,
+      "pass": true
+     },
+     {
+      "tiltDeg": 10,
+      "mean": 0.00004690031008277584,
+      "p99": 0.0006771277502810591,
+      "max": 0.06537343080241986,
+      "maxAtLatLon": [
+       33.3984375,
+       132.5390625
+      ],
+      "over10Percent": 0,
+      "pass": true
+     }
+    ],
+    "anisotropy": [
+     {
+      "component": 1,
+      "mean": 0.000024646065829931937,
+      "p99": 0.00037546455360231714,
+      "max": 0.009457765122225882,
+      "maxAtLatLon": [
+       53.7890625,
+       138.1640625
+      ],
+      "over10Percent": 0,
+      "pass": true
+     },
+     {
+      "component": 2,
+      "mean": 0.000024188127160274683,
+      "p99": 0.00037361479376279505,
+      "max": 0.026711803542371928,
+      "maxAtLatLon": [
+       18.6328125,
+       -73.4765625
+      ],
+      "over10Percent": 0,
+      "pass": true
+     }
+    ]
+   },
+   {
+    "level": 2,
+    "blockTexels": 4,
+    "blocks": 16157,
+    "speed": [
+     {
+      "tiltDeg": 0,
+      "mean": 0.0004207828340866442,
+      "p99": 0.006082666751491161,
+      "max": 0.1788688429134273,
+      "maxAtLatLon": [
+       -44.296875,
+       168.046875
+      ],
+      "over10Percent": 1,
+      "pass": true
+     },
+     {
+      "tiltDeg": 5,
+      "mean": 0.00022764035510320697,
+      "p99": 0.0031753462683870026,
+      "max": 0.07846582352336962,
+      "maxAtLatLon": [
+       -44.296875,
+       168.046875
+      ],
+      "over10Percent": 0,
+      "pass": true
+     },
+     {
+      "tiltDeg": 10,
+      "mean": 0.00018754114257101128,
+      "p99": 0.0032753058184025186,
+      "max": 0.08600867734145501,
+      "maxAtLatLon": [
+       -44.296875,
+       168.046875
+      ],
+      "over10Percent": 0,
+      "pass": true
+     }
+    ],
+    "anisotropy": [
+     {
+      "component": 1,
+      "mean": 0.00009799949191259011,
+      "p99": 0.0015985643599274748,
+      "max": 0.016278747431045425,
+      "maxAtLatLon": [
+       54.140625,
+       138.515625
+      ],
+      "over10Percent": 0,
+      "pass": true
+     },
+     {
+      "component": 2,
+      "mean": 0.00009138168194804966,
+      "p99": 0.0013808146831077418,
+      "max": 0.019172848112167993,
+      "maxAtLatLon": [
+       -3.515625,
+       -80.859375
+      ],
+      "over10Percent": 0,
+      "pass": true
+     }
+    ]
+   },
+   {
+    "level": 3,
+    "blockTexels": 8,
+    "blocks": 3950,
+    "speed": [
+     {
+      "tiltDeg": 0,
+      "mean": 0.0015161043071471754,
+      "p99": 0.026450296909703686,
+      "max": 0.12755042051972576,
+      "maxAtLatLon": [
+       57.65625,
+       -156.09375
+      ],
+      "over10Percent": 3,
+      "pass": true
+     },
+     {
+      "tiltDeg": 5,
+      "mean": 0.0007828205438469525,
+      "p99": 0.011545125615893492,
+      "max": 0.06356921847922437,
+      "maxAtLatLon": [
+       57.65625,
+       -156.09375
+      ],
+      "over10Percent": 0,
+      "pass": true
+     },
+     {
+      "tiltDeg": 10,
+      "mean": 0.0006682702784642685,
+      "p99": 0.012555110133987135,
+      "max": 0.08151652061704162,
+      "maxAtLatLon": [
+       -1.40625,
+       119.53125
+      ],
+      "over10Percent": 0,
+      "pass": true
+     }
+    ],
+    "anisotropy": [
+     {
+      "component": 1,
+      "mean": 0.0002999883549149358,
+      "p99": 0.004125743712280967,
+      "max": 0.01113623132071151,
+      "maxAtLatLon": [
+       54.84375,
+       139.21875
+      ],
+      "over10Percent": 0,
+      "pass": true
+     },
+     {
+      "component": 2,
+      "mean": 0.0002855419524046086,
+      "p99": 0.003660247579987666,
+      "max": 0.022645878048022896,
+      "maxAtLatLon": [
+       -12.65625,
+       49.21875
+      ],
+      "over10Percent": 0,
+      "pass": true
+     }
+    ]
+   },
+   {
+    "level": 4,
+    "blockTexels": 16,
+    "blocks": 1035,
+    "speed": [
+     {
+      "tiltDeg": 0,
+      "mean": 0.004677778794952122,
+      "p99": 0.06257265046079019,
+      "max": 0.13621296450626152,
+      "maxAtLatLon": [
+       14.0625,
+       -92.8125
+      ],
+      "over10Percent": 6,
+      "pass": true
+     },
+     {
+      "tiltDeg": 5,
+      "mean": 0.002284763062458948,
+      "p99": 0.02355058973033386,
+      "max": 0.06136240810031757,
+      "maxAtLatLon": [
+       -47.8125,
+       -75.9375
+      ],
+      "over10Percent": 0,
+      "pass": true
+     },
+     {
+      "tiltDeg": 10,
+      "mean": 0.002103203259609974,
+      "p99": 0.03914875495615,
+      "max": 0.10055129981450173,
+      "maxAtLatLon": [
+       19.6875,
+       -104.0625
+      ],
+      "over10Percent": 1,
+      "pass": true
+     }
+    ],
+    "anisotropy": [
+     {
+      "component": 1,
+      "mean": 0.0007528241961303284,
+      "p99": 0.006145345552865996,
+      "max": 0.012366680580118342,
+      "maxAtLatLon": [
+       -2.8125,
+       -81.5625
+      ],
+      "over10Percent": 0,
+      "pass": true
+     },
+     {
+      "component": 2,
+      "mean": 0.0008108205119402378,
+      "p99": 0.0077897308227707915,
+      "max": 0.014162840710455291,
+      "maxAtLatLon": [
+       8.4375,
+       75.9375
+      ],
+      "over10Percent": 0,
+      "pass": true
+     }
+    ]
+   }
+  ],
+  "pass": true
+ },
+ "allBarsPassed": true
+}

@@ -828,8 +828,8 @@ export interface EarthLateSlots {
 }
 
 /**
- * The sea's wind map landed (world/seaWind.ts): the grey stand-in a timeout
- * leaves is no map and is let go; a real one is given the sea's sampling and
+ * The sea's wind map landed (world/seaWind.ts): the mid-grey stand-in a
+ * timeout leaves is no map and is let go; a real one is given the sea's sampling and
  * installed — unless a DEV `?seawindmap=` override stands, in which case it
  * is let go too — and the seas already drawn read it from the next frame.
  */
@@ -918,9 +918,11 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
         loadTexture('earthBump', '2k', 'mask', { late: earthLate.bump }),
         // Ocean-glint roughness: linear, and grey the same way.
         loadTexture('earthRoughness', '2k', 'mask', { late: earthLate.roughness }),
-        // The sea's wind, as the grey map the glint's lobe is read from
-        // (world/seaWind.ts): one channel, like the height map.
-        loadTexture('earthSeaWind', '2k', 'mask', { late: earthLate.seaWind }),
+        // The sea's wind, the map the glint's lobe is read from
+        // (world/seaWind.ts): linear and four channels — the speed in red,
+        // the wind's axis in green and blue — so 'data', never the
+        // one-channel 'mask', which would drop the axis.
+        loadTexture('earthSeaWind', '2k', 'data', { late: earthLate.seaWind }),
       ])
     : null;
   const texture = await surfaceTexturePromise;

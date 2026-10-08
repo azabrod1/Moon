@@ -1056,7 +1056,7 @@ describe('the sea', () => {
     // it and turns it on.
     setSurfaceWaterGloss(mat, true);
     expect(seaWindOn()).toBe(false);
-    const map = seaWindTextureFrom({ data: new Uint8Array([100, 100]), width: 2, height: 1 });
+    const map = seaWindTextureFrom({ data: new Uint8Array([100, 128, 128, 255, 100, 128, 128, 255]), width: 2, height: 1 });
     expect(installSeaWindMap(map, 'test')).toBe(map);
     rebindSeaWindMap();
     expect(seaWindUniforms.uSeaWindMap.value).toBe(map);
@@ -1079,7 +1079,7 @@ describe('the sea', () => {
     // the uniform points at its successor.
     let disposed = false;
     map.addEventListener('dispose', () => { disposed = true; });
-    const replacement = seaWindTextureFrom({ data: new Uint8Array([50, 50]), width: 2, height: 1 });
+    const replacement = seaWindTextureFrom({ data: new Uint8Array([50, 128, 128, 255, 50, 128, 128, 255]), width: 2, height: 1 });
     expect(installSeaWindMap(replacement, 'test')).toBe(replacement);
     expect(disposed).toBe(false);
     rebindSeaWindMap();

@@ -7,7 +7,10 @@ import {
   installSeaBloomShare,
   parseBloomKneeParam,
 } from './bloomTargets';
-import { BLOOM_KNEE, BLOOM_THRESHOLD, bloomExcess } from './bloomConfig';
+import {
+  BLOOM_KNEE, BLOOM_KNEE_PER_BASELINE, BLOOM_THRESHOLD, STAR_LUMINANCE_CEILING, bloomExcess,
+} from './bloomConfig';
+import { SUN_LIGHT_BASELINE } from '../planetarium/sunLight';
 import { HIGH_PASS_UV_ANCHOR, patchUvScale } from './sceneSubRect';
 
 /** The first mip the pass blurs — half the requested resolution, and the one
@@ -129,23 +132,53 @@ describe('installBloomKnee', () => {
 });
 
 describe('bloomExcess', () => {
+  // Every amount below is in units of the Sun's baseline, like the threshold
+  // and the knee themselves: the shipped values are these times SUN_LIGHT_BASELINE.
+  const B = SUN_LIGHT_BASELINE;
   const threshold = BLOOM_THRESHOLD;
   const knee = BLOOM_KNEE;
 
+  it('is a width in baseline units, at exactly the value the GPU has always read', () => {
+    expect(knee).toBeCloseTo(BLOOM_KNEE_PER_BASELINE * B, 15);
+    expect(threshold).toBeCloseTo(STAR_LUMINANCE_CEILING * B, 15);
+    // The uniform is a float: bit for bit the 0.25 it was before the knee
+    // followed the baseline.
+    expect(Math.fround(BLOOM_KNEE)).toBe(0.25);
+  });
+
+  it('hands over the same share of the baseline at any baseline', () => {
+    // Threshold and knee both ride the baseline, so a pixel a given fraction of
+    // the baseline over the line hands the blur the same fraction of the
+    // baseline whatever the baseline is. With a fixed knee a brighter Sun
+    // would ease the same excess in over a narrower share of the line.
+    for (const over of [0.02, 0.1, 0.17, 0.5, 3, 40]) {
+      const atUnit = bloomExcess(STAR_LUMINANCE_CEILING + over, STAR_LUMINANCE_CEILING, BLOOM_KNEE_PER_BASELINE);
+      for (const baseline of [1, B, 2]) {
+        const t = STAR_LUMINANCE_CEILING * baseline;
+        const k = BLOOM_KNEE_PER_BASELINE * baseline;
+        expect(bloomExcess(t + over * baseline, t, k) / baseline, `${over} over at ${baseline}`).toBeCloseTo(atUnit, 12);
+      }
+    }
+  });
+
   it('hands over nothing at or under the threshold, which keeps the stars out', () => {
     expect(bloomExcess(0, threshold, knee)).toBe(0);
-    expect(bloomExcess(threshold - 0.001, threshold, knee)).toBe(0);
+    expect(bloomExcess(threshold - 0.001 * B, threshold, knee)).toBe(0);
     expect(bloomExcess(threshold, threshold, knee)).toBe(0);
   });
 
-  it('hands over a few hundredths of a pixel just over the line, and all but one unit of the Sun', () => {
-    // The ocean glint's core after the keep and the air: about a tenth over.
-    expect(bloomExcess(threshold + 0.1, threshold, knee)).toBeCloseTo(0.02, 3);
+  it('hands over a few hundredths of a pixel just over the line, and all but the threshold and half the knee of the Sun', () => {
+    // The ocean glint's core after the keep and the air: about a tenth of the
+    // baseline over, which the square arm hands over as (0.1 B)^2 / 2 knee.
+    const over = 0.1 * B;
+    expect(bloomExcess(threshold + over, threshold, knee) / B)
+      .toBeCloseTo(0.1 ** 2 / (2 * BLOOM_KNEE_PER_BASELINE), 12);
+    expect(bloomExcess(threshold + over, threshold, knee) / B).toBeLessThan(0.03);
     // three's step handed the same pixel over whole.
-    expect(bloomExcess(threshold + 0.1, threshold, knee) / (threshold + 0.1)).toBeLessThan(0.02);
+    expect(bloomExcess(threshold + over, threshold, knee) / (threshold + over)).toBeLessThan(0.03);
     // The photosphere sits far over the line and loses only the threshold
     // and half the knee.
-    expect(bloomExcess(50, threshold, knee)).toBeCloseTo(50 - threshold - knee / 2, 9);
+    expect(bloomExcess(50 * B, threshold, knee)).toBeCloseTo(50 * B - threshold - knee / 2, 9);
   });
 
   it('meets itself at the knee in value and in slope', () => {
@@ -162,12 +195,12 @@ describe('bloomExcess', () => {
 
   it('is monotone, and the pure excess with no knee', () => {
     let last = -1;
-    for (let v = 0; v <= 5; v += 0.01) {
+    for (let v = 0; v <= 5 * B; v += 0.01 * B) {
       const now = bloomExcess(v, threshold, knee);
       expect(now).toBeGreaterThanOrEqual(last);
       last = now;
     }
-    expect(bloomExcess(threshold + 0.5, threshold, 0)).toBeCloseTo(0.5, 12);
+    expect(bloomExcess(threshold + 0.5 * B, threshold, 0)).toBeCloseTo(0.5 * B, 12);
   });
 });
 

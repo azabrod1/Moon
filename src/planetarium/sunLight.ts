@@ -25,9 +25,10 @@
  * the moonlight on Earth's ground through that bridge, and the planetshine
  * through its gain, which reads the baseline. Everything self-luminous keeps
  * its authored radiance by construction. The thresholds authored in scene
- * units — the bloom's high pass, the sea's glint cap and the beam's knee and
- * cap — multiply by the baseline where they are defined, so the sunlit white
- * sits under the bloom's line by the same margin it did.
+ * units — the bloom's high pass and the width of its knee, the sea's glint cap
+ * and the beam's knee and cap — multiply by the baseline where they are
+ * defined, so the sunlit white sits under the bloom's line by the same margin
+ * it did.
  *
  * The decay is 0.3, not the physical 2: at inverse-square the outer planets
  * would be unreadable, so the falloff is authored, and anything that has to

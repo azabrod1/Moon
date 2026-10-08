@@ -17,6 +17,7 @@
  * may hold, only what it is made of.
  */
 import * as THREE from 'three';
+import type { SphereFootprintKind } from '../shared/three/projectToScreen';
 import { PLANETS, type PlanetData, SUN_DATA } from './planets/planetData';
 import { SUN_RADIUS_AU } from '../astronomy/constants';
 import { createPlanetRings, RING_CONFIGS, type RingShadingFx } from './planets/rings';
@@ -1459,6 +1460,9 @@ export interface MoonMesh {
   effProj?: {
     frame: number; x: number; y: number; ndcZ: number;
     radiusPx: number; footprintX: number; footprintY: number;
+    /** How the footprint was arrived at: a `'covering'` one is a guess, not a
+     *  limb, and the occluder pass must not use its circle. */
+    footprintKind: SphereFootprintKind;
   };
   /** Whether the label pass actually drew this moon's name last frame. The pick
    *  list is built before the labels are placed, so it reads a one-frame-old

@@ -1,10 +1,16 @@
 import { describe, it, expect } from 'vitest';
+import * as THREE from 'three';
 import {
+  discOccludesScreenPoint,
   discRadiusPx,
+  footprintNeedsCone,
+  occluderCone,
   pickBodyAtPointer,
   type ForegroundDisc,
   type PickCandidate,
+  type ScreenRayResolver,
 } from './PlanetLabels';
+import { projectSphereToScreen, screenPointToWorldRay } from '../shared/three/projectToScreen';
 
 function candidate(over: Partial<PickCandidate> & { name: string }): PickCandidate {
   return { screenX: 0, screenY: 0, pickRadiusPx: 20, distFromCamera: 10, ...over };
@@ -103,5 +109,142 @@ describe('pickBodyAtPointer', () => {
       candidate({ name: 'Front', screenX: 100, screenY: 100, pickRadiusPx: 40, distFromCamera: 10 }),
     ];
     expect(pickBodyAtPointer(cands, [], 100, 100)).toBe('Front');
+  });
+});
+
+describe('occluderCone', () => {
+  it('points at the body with the padded angular radius', () => {
+    // A unit sphere 2 units down +X: angular radius 30°, padded 1.1× in the sine.
+    const cone = occluderCone(0, 0, 0, 2, 0, 0, 1, 1.1)!;
+    expect(cone.dirX).toBeCloseTo(1, 12);
+    expect(cone.dirY).toBeCloseTo(0, 12);
+    expect(cone.dirZ).toBeCloseTo(0, 12);
+    expect(cone.cosHalfAngle).toBeCloseTo(Math.sqrt(1 - 0.55 * 0.55), 12);
+  });
+
+  it('is null with the camera on or inside the body, and for no radius', () => {
+    expect(occluderCone(0, 0, 0, 1, 0, 0, 1, 1)).toBeNull();
+    expect(occluderCone(0, 0, 0, 0.5, 0, 0, 1, 1)).toBeNull();
+    expect(occluderCone(0, 0, 0, 2, 0, 0, 0, 1)).toBeNull();
+  });
+
+  it('a body that nearly fills the sky stays a cone short of the whole sphere', () => {
+    const cone = occluderCone(0, 0, 0, 1.05, 0, 0, 1, 1.1)!;
+    expect(cone.cosHalfAngle).toBeGreaterThan(0);
+  });
+});
+
+describe('footprintNeedsCone', () => {
+  it('only the covering guess needs one', () => {
+    expect(footprintNeedsCone('covering')).toBe(true);
+    expect(footprintNeedsCone('sampled')).toBe(false);
+    expect(footprintNeedsCone('none')).toBe(false);
+  });
+});
+
+describe('discOccludesScreenPoint', () => {
+  // A resolver that reads the screen point as a direction: x across, y down,
+  // on a unit sphere, so a cone test can be posed in pixels.
+  const rayFromScreen: ScreenRayResolver = (x, y, out) => {
+    const len = Math.hypot(x, y, 100);
+    out.x = x / len; out.y = y / len; out.z = 100 / len;
+    return out;
+  };
+
+  it('a disc without a cone is its screen circle', () => {
+    const disc = blocker({ name: 'Mars', screenX: 100, screenY: 100, radiusPx: 20 });
+    expect(discOccludesScreenPoint(disc, 110, 100, rayFromScreen)).toBe(true);
+    expect(discOccludesScreenPoint(disc, 130, 100, rayFromScreen)).toBe(false);
+  });
+
+  it('a disc with a cone ignores its circle and tests the ray', () => {
+    // The cone looks straight down +Z with a 30° half-angle; the circle is a
+    // dot at the origin that would cover nothing.
+    const disc = blocker({
+      name: 'Mars', screenX: 0, screenY: 0, radiusPx: 0,
+      cone: { dirX: 0, dirY: 0, dirZ: 1, cosHalfAngle: Math.cos(THREE.MathUtils.degToRad(30)) },
+    });
+    // 100·tan(20°) px off the axis is inside the cone; 100·tan(40°) is outside.
+    expect(discOccludesScreenPoint(disc, 100 * Math.tan(THREE.MathUtils.degToRad(20)), 0, rayFromScreen)).toBe(true);
+    expect(discOccludesScreenPoint(disc, 100 * Math.tan(THREE.MathUtils.degToRad(40)), 0, rayFromScreen)).toBe(false);
+  });
+
+  it('a cone disc covers nothing without a resolver — it errs visible, never blank', () => {
+    const disc = blocker({
+      name: 'Mars', screenX: 0, screenY: 0, radiusPx: 5000,
+      cone: { dirX: 0, dirY: 0, dirZ: 1, cosHalfAngle: 0.5 },
+    });
+    expect(discOccludesScreenPoint(disc, 0, 0)).toBe(false);
+  });
+
+  it('pickBodyAtPointer honours a cone blocker through the resolver', () => {
+    const cands = [
+      candidate({ name: 'Saturn', screenX: 10, screenY: 0, distFromCamera: 40 }),
+      candidate({ name: 'Uranus', screenX: 200, screenY: 0, distFromCamera: 60 }),
+    ];
+    const blockers = [blocker({
+      name: 'Mars', screenX: 0, screenY: 0, radiusPx: 5000, distFromCamera: 1,
+      cone: { dirX: 0, dirY: 0, dirZ: 1, cosHalfAngle: Math.cos(THREE.MathUtils.degToRad(30)) },
+    })];
+    expect(pickBodyAtPointer(cands, blockers, 10, 0, rayFromScreen)).toBeNull();
+    expect(pickBodyAtPointer(cands, blockers, 200, 0, rayFromScreen)).toBe('Uranus');
+    // Without the resolver the covering circle is never consulted either.
+    expect(pickBodyAtPointer(cands, blockers, 10, 0)).toBe('Saturn');
+  });
+});
+
+describe('a world that fills half the frame, with the view turned part way off it', () => {
+  // The parked-ship case: Mars at a 55° angular radius, its centre 35° off the
+  // view axis. A rim ray crosses the camera plane, so the projection has no
+  // limb to sample and answers the viewport-covering guess — a circle of the
+  // viewport diagonal that, used as an occluder, hid Saturn in clear sky on
+  // the far side of the frame (and every other marker and label with it).
+  const W = 1600;
+  const H = 900;
+  const camera = new THREE.PerspectiveCamera(60, W / H, 1e-7, 10);
+  const off = THREE.MathUtils.degToRad(35);
+  camera.position.set(0, 0, 0);
+  camera.lookAt(new THREE.Vector3(Math.sin(off), 0, -Math.cos(off)));
+  camera.updateMatrixWorld();
+  camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+  const radiusAU = Math.sin(THREE.MathUtils.degToRad(55));
+  const mars = { x: 0, y: 0, z: -1 };
+  const proj = projectSphereToScreen(mars, radiusAU, camera, W, H);
+  const rayAt: ScreenRayResolver = (x, y, out) => {
+    const ray = screenPointToWorldRay(x, y, camera, W, H, new THREE.Vector3());
+    out.x = ray.x; out.y = ray.y; out.z = ray.z;
+    return out;
+  };
+
+  it('is the case the projection cannot measure', () => {
+    expect(proj.footprintKind).toBe('covering');
+    expect(proj.radiusPx).toBeCloseTo(Math.hypot(W, H), 6);
+  });
+
+  it('as a circle it would hide the whole frame; as a cone it hides the face and nothing else', () => {
+    const circle = blocker({
+      name: 'Mars', screenX: proj.footprintX, screenY: proj.footprintY, radiusPx: proj.radiusPx * 1.1,
+      distFromCamera: 1,
+    });
+    const asCone = blocker({ ...circle, cone: occluderCone(0, 0, 0, mars.x, mars.y, mars.z, radiusAU, 1.1) });
+    // Clear sky at the frame's far edge, 56° from Mars's centre: the circle
+    // swallows it, the cone does not.
+    const clearSkyX = W - 10;
+    expect(discOccludesScreenPoint(circle, clearSkyX, H / 2, rayAt)).toBe(true);
+    expect(discOccludesScreenPoint(asCone, clearSkyX, H / 2, rayAt)).toBe(false);
+    // The face of Mars, left of centre: both hide a point there.
+    expect(discOccludesScreenPoint(asCone, 10, H / 2, rayAt)).toBe(true);
+    // The limb, where the cone's padded edge lies: the test turns over within
+    // a few degrees of 60.5° (55° padded 1.1× in the sine) from the centre.
+    const angleOf = (x: number) => {
+      const ray = rayAt(x, H / 2, { x: 0, y: 0, z: 0 })!;
+      return THREE.MathUtils.radToDeg(Math.acos(-ray.z));
+    };
+    let limbX = 0;
+    for (let x = 0; x < W; x += 1) {
+      if (!discOccludesScreenPoint(asCone, x, H / 2, rayAt)) { limbX = x; break; }
+    }
+    const padded = THREE.MathUtils.radToDeg(Math.asin(Math.min(1.1 * radiusAU, 1)));
+    expect(angleOf(limbX)).toBeCloseTo(padded, 0);
   });
 });

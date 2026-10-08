@@ -24,7 +24,14 @@ import {
 } from './SolarSystem';
 import type { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { PlayerShip, type ShipProfile } from './PlayerShip';
-import { PlanetLabels, pickBodyAtPointer, type PickCandidate } from './PlanetLabels';
+import {
+  PlanetLabels,
+  footprintNeedsCone,
+  occluderCone,
+  pickBodyAtPointer,
+  type OccluderCone,
+  type PickCandidate,
+} from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget, type LabelDistancesMode } from './PlanetariumStore';
 import { solarExposureTarget } from './solarExposure';
 import { computeStats } from './stats';
@@ -325,6 +332,7 @@ import {
   screenPointToWorldRay,
   type ProjectedStepScale,
   type ScreenProjection,
+  type SphereFootprintKind,
   type SphereScreenProjection,
 } from '../shared/three/projectToScreen';
 import {
@@ -7149,7 +7157,10 @@ export class PlanetariumMode {
         this.buildBodyPickList(scenePositions, excludeName);
         // Resolve a just-recognized tap against this fresh pick list.
         if (this.hasPendingTap) {
-          const hit = pickBodyAtPointer(this.bodyPickList, this.planetLabels.foregroundDiscs, this.pendingTapX, this.pendingTapY);
+          const hit = pickBodyAtPointer(
+            this.bodyPickList, this.planetLabels.foregroundDiscs, this.pendingTapX, this.pendingTapY,
+            this.planetLabels.screenRay,
+          );
           if (hit) {
             this.touchRevealBody = hit;
             this.touchRevealUntil = performance.now() + PlanetariumMode.TOUCH_REVEAL_MS;
@@ -7369,6 +7380,7 @@ export class PlanetariumMode {
     if (pickerWanted && this.hoverEligible && this.planetLabels) {
       this.revealedBody = pickBodyAtPointer(
         this.bodyPickList, this.planetLabels.foregroundDiscs, this.hoverClientX, this.hoverClientY,
+        this.planetLabels.screenRay,
       );
       return;
     }
@@ -7442,7 +7454,9 @@ export class PlanetariumMode {
   ): NonNullable<MoonMesh['effProj']> {
     let cache = m.effProj;
     if (!cache) {
-      cache = m.effProj = { frame: -1, x: 0, y: 0, ndcZ: 0, radiusPx: 0, footprintX: 0, footprintY: 0 };
+      cache = m.effProj = {
+        frame: -1, x: 0, y: 0, ndcZ: 0, radiusPx: 0, footprintX: 0, footprintY: 0, footprintKind: 'none',
+      };
     }
     if (cache.frame !== this.frameStamp) {
       const proj = projectSphereToScreen(
@@ -7460,8 +7474,35 @@ export class PlanetariumMode {
       cache.radiusPx = proj.radiusPx;
       cache.footprintX = proj.footprintX;
       cache.footprintY = proj.footprintY;
+      cache.footprintKind = proj.footprintKind;
     }
     return cache;
+  }
+
+  /** Cones for the dynamic occluders whose footprint could not be measured
+   *  this frame (see OccluderCone), pooled in the order they are added. */
+  private occluderConePool: OccluderCone[] = [];
+  private occluderConesUsed = 0;
+
+  /** A cone for a dynamic occluder whose footprint is the covering guess, or
+   *  null for a measured limb (the screen circle stands) and for a camera
+   *  inside the body (nothing to occlude with). `padRatio` is the circle's
+   *  own pad, so the two tests agree about the air's glow. */
+  private dynamicOccluderCone(
+    footprintKind: SphereFootprintKind,
+    pos: { x: number; y: number; z: number },
+    radiusAU: number,
+    padRatio: number,
+  ): OccluderCone | null {
+    if (!footprintNeedsCone(footprintKind)) return null;
+    const slot = this.occluderConesUsed;
+    const cone = occluderCone(
+      this.camera.position.x, this.camera.position.y, this.camera.position.z,
+      pos.x, pos.y, pos.z, radiusAU, padRatio,
+      this.occluderConePool[slot] ??= { dirX: 0, dirY: 0, dirZ: 0, cosHalfAngle: 1 },
+    );
+    if (cone) this.occluderConesUsed = slot + 1;
+    return cone;
   }
 
   private collectDynamicOccluders() {
@@ -7472,6 +7513,7 @@ export class PlanetariumMode {
     const camY = this.camera.position.y;
     const camZ = this.camera.position.z;
     const tempV = this.tmpLabelMoonWorld;
+    this.occluderConesUsed = 0;
 
     // The Sun. No angular-size gate: markers no longer depth-test, so this
     // disc is the only thing keeping a far planet's marker (and label) from
@@ -7483,8 +7525,9 @@ export class PlanetariumMode {
       const proj = this.getSunScreenProjection();
       if (proj.ndcZ < 1 && distFromCamera > 0) {
         const radiusPx = proj.radiusPx * 1.1;
+        const cone = this.dynamicOccluderCone(proj.footprintKind, sunPos, SUN_DATA.radiusAU, 1.1);
         this.planetLabels.addForegroundDisc({
-          screenX: proj.footprintX, screenY: proj.footprintY, radiusPx, distFromCamera, name: 'Sun',
+          screenX: proj.footprintX, screenY: proj.footprintY, radiusPx, distFromCamera, name: 'Sun', cone,
         });
       }
     }
@@ -7522,7 +7565,10 @@ export class PlanetariumMode {
         const screenX = proj.footprintX;
         const screenY = proj.footprintY;
         const radiusPx = proj.radiusPx * 1.1;
-        this.planetLabels.addForegroundDisc({ screenX, screenY, radiusPx, distFromCamera, name: `moon:${m.data.name}` });
+        const cone = this.dynamicOccluderCone(proj.footprintKind, tempV, effectiveRadiusAU, 1.1);
+        this.planetLabels.addForegroundDisc({
+          screenX, screenY, radiusPx, distFromCamera, name: `moon:${m.data.name}`, cone,
+        });
       }
     }
 
@@ -7546,7 +7592,8 @@ export class PlanetariumMode {
             const screenX = proj.footprintX;
             const screenY = proj.footprintY;
             const radiusPx = proj.radiusPx;
-            this.planetLabels.addForegroundDisc({ screenX, screenY, radiusPx, distFromCamera, name: 'ship' });
+            const cone = this.dynamicOccluderCone(proj.footprintKind, tempV, shipSceneRadiusAU, 1);
+            this.planetLabels.addForegroundDisc({ screenX, screenY, radiusPx, distFromCamera, name: 'ship', cone });
           }
         }
       }
@@ -15598,6 +15645,11 @@ export class PlanetariumMode {
     return {
       screenX: disc.screenX, screenY: disc.screenY, radiusPx: disc.radiusPx,
       distFromCamera: disc.distFromCamera,
+      // The cone the disc occludes by when its footprint could not be measured
+      // (null for a measured limb), with its half-angle in degrees.
+      cone: disc.cone
+        ? { ...disc.cone, halfAngleDeg: THREE.MathUtils.radToDeg(Math.acos(disc.cone.cosHalfAngle)) }
+        : null,
       viewport: { w: this.renderer.domElement.clientWidth, h: this.renderer.domElement.clientHeight },
     };
   }

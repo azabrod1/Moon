@@ -8,6 +8,8 @@ import * as THREE from 'three';
 import { type PlanetData, PLANETARIUM_BODIES } from './planets/planetData';
 import {
   projectSphereToScreen,
+  screenPointToWorldRay,
+  type SphereFootprintKind,
   type SphereScreenProjection,
 } from '../shared/three/projectToScreen';
 import {
@@ -86,6 +88,102 @@ export interface ForegroundDisc {
   // (player sits at body center) doesn't collapse the depth comparison.
   distFromCamera: number;
   name: string;
+  /** Set when the body's screen footprint could not be measured (a rim ray
+   *  crossed the camera plane — the body is close and large, and the view has
+   *  turned part way off it). The disc then occludes by this cone instead of
+   *  its screen circle, which would be the viewport-covering guess. */
+  cone?: OccluderCone | null;
+}
+
+/**
+ * A body as a cone of directions from the camera: the unit direction to its
+ * centre, in world space, and the cosine of its padded angular radius. A
+ * screen point is behind the body when the camera ray through it lies inside
+ * the cone — exact for a sphere whatever the lens does, and the one test that
+ * still works once the projection has no circle to offer.
+ *
+ * Why not always: the screen circle is the measured, lens-warped limb, padded
+ * in pixels for the air's glow, and every consumer (labels offset below their
+ * marker, the pointer pick, the moons' names) reasons in that space. A rim
+ * ray crossing the camera plane is the one case where there is no circle, and
+ * the previous answer there was `'covering'` — a circle the size of the
+ * viewport diagonal, which hid every marker and label in the sky in one step
+ * as the view turned off a world that filled half the frame, and brought
+ * them all back one step later (Saturn over Mars's limb, from a parked ship).
+ */
+export interface OccluderCone {
+  dirX: number;
+  dirY: number;
+  dirZ: number;
+  cosHalfAngle: number;
+}
+
+/** A world-space unit ray through a displayed screen point, or null where the
+ *  point maps to no ray (the resolver's own say). */
+export type ScreenRayResolver = (
+  screenX: number,
+  screenY: number,
+  out: { x: number; y: number; z: number },
+) => { x: number; y: number; z: number } | null;
+
+/**
+ * The cone a body occludes from a camera, or null when the camera is inside
+ * it (a sphere the camera is inside occludes nothing: its back faces cull and
+ * you see out through it). `padRatio` widens the radius the way the screen
+ * circle is padded (1.1 for the air's glow), measured in the sine so a body
+ * that nearly fills the sky stays a cone short of the whole sphere.
+ */
+export function occluderCone(
+  camX: number, camY: number, camZ: number,
+  posX: number, posY: number, posZ: number,
+  radiusAU: number,
+  padRatio: number,
+  out?: OccluderCone,
+): OccluderCone | null {
+  const dx = posX - camX;
+  const dy = posY - camY;
+  const dz = posZ - camZ;
+  const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  if (!(dist > radiusAU) || !(radiusAU > 0)) return null;
+  const sinHalf = Math.min((radiusAU * padRatio) / dist, 0.999999);
+  const cone = out ?? { dirX: 0, dirY: 0, dirZ: 0, cosHalfAngle: 1 };
+  cone.dirX = dx / dist;
+  cone.dirY = dy / dist;
+  cone.dirZ = dz / dist;
+  cone.cosHalfAngle = Math.sqrt(1 - sinHalf * sinHalf);
+  return cone;
+}
+
+const screenRayScratch = { x: 0, y: 0, z: 0 };
+
+/**
+ * Whether a foreground disc covers a screen point: inside its screen circle,
+ * or, for a disc that holds a cone, with the camera ray through the point
+ * inside that cone. Without a resolver a cone disc covers nothing — it errs
+ * visible, never blank. Depth is the caller's test, as it always was.
+ */
+export function discOccludesScreenPoint(
+  disc: ForegroundDisc,
+  screenX: number,
+  screenY: number,
+  rayAt?: ScreenRayResolver,
+): boolean {
+  const cone = disc.cone;
+  if (cone) {
+    if (!rayAt) return false;
+    const ray = rayAt(screenX, screenY, screenRayScratch);
+    if (!ray) return false;
+    return ray.x * cone.dirX + ray.y * cone.dirY + ray.z * cone.dirZ > cone.cosHalfAngle;
+  }
+  const ddx = screenX - disc.screenX;
+  const ddy = screenY - disc.screenY;
+  return ddx * ddx + ddy * ddy < disc.radiusPx * disc.radiusPx;
+}
+
+/** Whether a measured footprint is the viewport-covering guess rather than a
+ *  limb: such a disc must occlude by its cone, never by that circle. */
+export function footprintNeedsCone(kind: SphereFootprintKind): boolean {
+  return kind === 'covering';
 }
 
 /**
@@ -117,6 +215,9 @@ export function pickBodyAtPointer(
   blockers: ForegroundDisc[],
   x: number,
   y: number,
+  // Resolves a screen point to a camera ray, for a blocker that occludes by
+  // its cone (see OccluderCone); without it such a blocker occludes nothing.
+  rayAt?: ScreenRayResolver,
 ): string | null {
   let best: string | null = null;
   let bestDist2 = Infinity;
@@ -134,9 +235,7 @@ export function pickBodyAtPointer(
       const bn = b.name.startsWith('moon:') ? b.name.slice(5) : b.name;
       if (bn === c.name) continue;
       if (b.distFromCamera >= c.distFromCamera) continue;
-      const bdx = c.screenX - b.screenX;
-      const bdy = c.screenY - b.screenY;
-      if (bdx * bdx + bdy * bdy < b.radiusPx * b.radiusPx) {
+      if (discOccludesScreenPoint(b, c.screenX, c.screenY, rayAt)) {
         occluded = true;
         break;
       }
@@ -188,6 +287,25 @@ export class PlanetLabels {
     footprintKind: 'none',
   };
   private markerScratch: PlanetMarkerVisual = { sizeMul: 0, brightness: 0 };
+  /** Cones for the planet discs whose footprint could not be measured this
+   *  frame, pooled by disc index (one such body in a frame is the norm). */
+  private conePool: OccluderCone[] = [];
+  private screenRayScratch = new THREE.Vector3();
+  /** The canvas's CSS size as of the last disc pass — the frame the discs and
+   *  every screen point tested against them are measured in. */
+  private viewportW = 1;
+  private viewportH = 1;
+  /** The camera ray through a displayed screen point, through the same lens
+   *  inverse the pointer uses — what a cone disc tests a point against. */
+  readonly screenRay: ScreenRayResolver = (screenX, screenY, out) => {
+    const ray = screenPointToWorldRay(
+      screenX, screenY, this.camera, this.viewportW, this.viewportH, this.screenRayScratch,
+    );
+    out.x = ray.x;
+    out.y = ray.y;
+    out.z = ray.z;
+    return out;
+  };
   // Pooled contest inputs, refilled each frame from the entries' slots.
   private contestants: PlanetLabelContestant[] = [];
   private contestBlockers: LabelRect[] = [];
@@ -377,6 +495,8 @@ export class PlanetLabels {
       pixelRatio,
     );
     this.foregroundDiscs.length = 0;
+    this.viewportW = Math.max(canvasWidth, 1);
+    this.viewportH = Math.max(canvasHeight, 1);
     const camX = this.camera.position.x;
     const camY = this.camera.position.y;
     const camZ = this.camera.position.z;
@@ -409,7 +529,16 @@ export class PlanetLabels {
       // The sampled output-space tangent limb stays correct at frame edges;
       // pad the measured footprint by 1.1x to cover atmosphere glow.
       const radiusPx = proj.radiusPx * 1.1;
-      this.foregroundDiscs.push({ screenX, screenY, radiusPx, distFromCamera, name: entry.planet.name });
+      // No limb to sample (the view has turned part way off a world that
+      // fills the frame): the footprint is the viewport-covering guess, so the
+      // disc occludes by its cone instead — the same 1.1 pad, in the sine.
+      const cone = footprintNeedsCone(proj.footprintKind)
+        ? occluderCone(
+          camX, camY, camZ, pos.x, pos.y, pos.z, entry.planet.radiusAU, 1.1,
+          this.conePool[this.foregroundDiscs.length] ??= { dirX: 0, dirY: 0, dirZ: 0, cosHalfAngle: 1 },
+        )
+        : null;
+      this.foregroundDiscs.push({ screenX, screenY, radiusPx, distFromCamera, name: entry.planet.name, cone });
     }
   }
 
@@ -605,9 +734,7 @@ export class PlanetLabels {
               continue;
             }
             if (distFromCamera <= disc.distFromCamera) continue;
-            const mdx = proj.x - disc.screenX;
-            const mdy = proj.y - disc.screenY;
-            if (mdx * mdx + mdy * mdy < disc.radiusPx * disc.radiusPx) {
+            if (discOccludesScreenPoint(disc, proj.x, proj.y, this.screenRay)) {
               markerOccluded = true;
               break;
             }
@@ -691,9 +818,7 @@ export class PlanetLabels {
       for (const disc of foregroundDiscs) {
         if (disc.name === entry.planet.name) continue;
         if (distFromCamera <= disc.distFromCamera) continue;
-        const ddx = screenX - disc.screenX;
-        const ddy = labelY - disc.screenY;
-        if (ddx * ddx + ddy * ddy < disc.radiusPx * disc.radiusPx) {
+        if (discOccludesScreenPoint(disc, screenX, labelY, this.screenRay)) {
           occluded = true;
           break;
         }
@@ -831,9 +956,7 @@ export class PlanetLabels {
     for (const disc of this.foregroundDiscs) {
       if (excludeName && disc.name === excludeName) continue;
       if (distFromCamera <= disc.distFromCamera) continue;
-      const ddx = screenX - disc.screenX;
-      const ddy = screenY - disc.screenY;
-      if (ddx * ddx + ddy * ddy < disc.radiusPx * disc.radiusPx) return true;
+      if (discOccludesScreenPoint(disc, screenX, screenY, this.screenRay)) return true;
     }
     return false;
   }

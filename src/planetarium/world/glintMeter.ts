@@ -32,9 +32,12 @@
  *     reads it: where the Sun's ray crosses the deck when the ground
  *     compiles cloud shadows, straight over the point when it does not;
  *   - the camera leg as the shader applies it: not plain transmittance but
- *     mix(1, T(1, μv), airWeight) with airWeight the air's blend times the
- *     haze grade's weight mix(clearView, 1, (1 − μv)²), the camera taken as
- *     above the air (the leg from the top boundary down to the point);
+ *     mix(1, T, airWeight) with airWeight the air's blend times the haze
+ *     grade's weight mix(clearView, 1, (1 − μv)²), and T the segment the
+ *     shader's aerial perspective reads: the whole column T(1, μv) from the
+ *     point up to the top of the air for a camera above it, and for a camera
+ *     inside it only the part below the camera, the column above the camera
+ *     taken back out as a difference of optical depths;
  *   - then the shoulder, per channel;
  *   - then the deck itself, drawn over the ground and blended by its
  *     coverage where the line of sight crosses it (`deckKeep`): it takes its
@@ -63,7 +66,7 @@
  * into a share of the frame.
  */
 import type { AtmosphereParams, RGB } from './atmosphereModel';
-import { transmittanceToTopBoundary } from './atmosphereModel';
+import { profileDensity, transmittanceToTopBoundary } from './atmosphereModel';
 import { SUN_LIGHT_BASELINE } from '../sunLight';
 import { DEG2RAD as DEG } from '../../shared/math/angles';
 
@@ -134,6 +137,32 @@ export interface TransmittanceTable {
   readonly samples: number;
   /** samples × 3, channel-interleaved, μ from muMin to 1. */
   readonly values: Float32Array;
+  /** The top of the air, in radii. */
+  readonly topRadius: number;
+  /** The columns above a point inside the air, for a camera there; absent,
+   *  the camera is taken as above the air. */
+  readonly column?: ColumnDepthTable;
+}
+
+/**
+ * The optical depth from a radius inside the air up to its top, per channel,
+ * over the upper half of the directions: the column a camera inside the air
+ * looks out of, which its view leg takes back out of the ground's. Laid out
+ * as the GPU's transmittance table lays out its rays, rows in the distance
+ * to the horizon (ρ, over its value at the ground) and columns in the
+ * distance to the top, from straight up to level, so the steep fall of the
+ * near-level rays has its texels; stored as optical depth, as that table
+ * stores it, so a segment is the difference of two depths. Built once, the
+ * first time a camera is inside the air: a few milliseconds.
+ */
+export interface ColumnDepthTable {
+  readonly rows: number;
+  readonly cols: number;
+  readonly topRadius: number;
+  /** √(top² − 1), the horizon distance at the ground: ρ's unit. */
+  readonly chord: number;
+  /** rows × cols × 3, channel-interleaved. */
+  readonly values: Float32Array;
 }
 
 export const COX_MUNK_SLOPE_CALM = 0.003;
@@ -165,7 +194,65 @@ export function buildTransmittanceTable(params: AtmosphereParams, samples = 256,
     values[i * 3 + 1] = t[1];
     values[i * 3 + 2] = t[2];
   }
-  return { muMin, samples, values };
+  return { muMin, samples, values, topRadius: params.topRadius };
+}
+
+/** The column table (ColumnDepthTable). Each depth is integrated along its
+ *  ray with the samples bunched toward the start, t = d·u² for u uniform,
+ *  where the air is thickest: with the table's interpolation, within about
+ *  a percent of the module's 500-sample reference, at a tenth of its cost. */
+export function buildColumnDepthTable(params: AtmosphereParams, rows = 32, cols = 64, steps = 48): ColumnDepthTable {
+  const top = params.topRadius, bottom = params.bottomRadius;
+  const chord = Math.sqrt(top * top - bottom * bottom);
+  const values = new Float32Array(rows * cols * 3);
+  const rs = params.rayleighScattering, me = params.mieExtinction, ae = params.absorptionExtinction;
+  for (let j = 0; j < rows; j++) {
+    const rho = (chord * j) / (rows - 1);
+    const r = Math.sqrt(rho * rho + bottom * bottom);
+    const dUp = top - r;
+    const dLevel = Math.sqrt(Math.max(top * top - r * r, 0));
+    for (let i = 0; i < cols; i++) {
+      const d = dUp + ((dLevel - dUp) * i) / (cols - 1);
+      const mu = d === 0 ? 1 : Math.min(Math.max((top * top - r * r - d * d) / (2 * r * d), 0), 1);
+      let sR = 0, sM = 0, sO = 0;
+      for (let k = 0; k <= steps; k++) {
+        const u = k / steps;
+        const t = d * u * u;
+        const w = ((k === 0 || k === steps ? 0.5 : 1) * 2 * d * u) / steps;
+        const alt = Math.sqrt(t * t + 2 * r * mu * t + r * r) - bottom;
+        sR += profileDensity(params.rayleighDensity, alt) * w;
+        sM += profileDensity(params.mieDensity, alt) * w;
+        sO += profileDensity(params.absorptionDensity, alt) * w;
+      }
+      const o = (j * cols + i) * 3;
+      for (let c = 0; c < 3; c++) values[o + c] = rs[c] * sR + me[c] * sM + ae[c] * sO;
+    }
+  }
+  return { rows, cols, topRadius: top, chord, values };
+}
+
+/** τ(r, μ) per channel into `out`, bilinear in the table's own coordinates;
+ *  r is held to the air and μ to the upper half. */
+export function lookupColumnDepth(table: ColumnDepthTable, r: number, mu: number, out: [number, number, number]): void {
+  const top = table.topRadius;
+  const rr = Math.min(Math.max(r, 1), top);
+  const rho = Math.sqrt(Math.max(rr * rr - 1, 0));
+  const dUp = top - rr;
+  const dLevel = Math.sqrt(Math.max(top * top - rr * rr, 0));
+  const m = Math.min(Math.max(mu, 0), 1);
+  const d = -rr * m + Math.sqrt(Math.max(rr * rr * (m * m - 1) + top * top, 0));
+  const xm = dLevel > dUp ? Math.min(Math.max((d - dUp) / (dLevel - dUp), 0), 1) : 0;
+  const xr = Math.min(Math.max(rho / table.chord, 0), 1);
+  const fx = xm * (table.cols - 1), fy = xr * (table.rows - 1);
+  const i = Math.min(Math.floor(fx), table.cols - 2), j = Math.min(Math.floor(fy), table.rows - 2);
+  const a = fx - i, b = fy - j;
+  const v = table.values;
+  const o00 = (j * table.cols + i) * 3, o01 = o00 + table.cols * 3;
+  for (let c = 0; c < 3; c++) {
+    const lo = v[o00 + c] + (v[o00 + 3 + c] - v[o00 + c]) * a;
+    const hi = v[o01 + c] + (v[o01 + 3 + c] - v[o01 + c]) * a;
+    out[c] = lo + (hi - lo) * b;
+  }
 }
 
 /** T(1, μ) per channel into `out`, linearly interpolated; μ under the table's
@@ -215,6 +302,7 @@ export interface GlintScratch {
   sample: SurfaceSample;
   t: [number, number, number];
   tz: [number, number, number];
+  tc: [number, number, number];
   /** The principal plane's axes (principalAxes) and two frame-angle pairs. */
   axes: Float64Array;
   place0: [number, number];
@@ -223,7 +311,7 @@ export interface GlintScratch {
 
 export function createGlintScratch(): GlintScratch {
   return {
-    sample: { windMs: 0, water: 0, cloudKeep: 1, deckKeep: 1 }, t: [0, 0, 0], tz: [0, 0, 0],
+    sample: { windMs: 0, water: 0, cloudKeep: 1, deckKeep: 1 }, t: [0, 0, 0], tz: [0, 0, 0], tc: [0, 0, 0],
     axes: new Float64Array(6), place0: [0, 0], place1: [0, 0],
   };
 }
@@ -285,6 +373,22 @@ export function beamRadianceAt(
   const sp1 = 1 + (Math.min(scratch.t[1] / Math.max(tz1, 1e-4), 1) - 1) * sea.airBlend;
   const sp2 = 1 + (Math.min(scratch.t[2] / Math.max(tz2, 1e-4), 1) - 1) * sea.airBlend;
   lookupTransmittance(table, nv, tv);
+  // A camera inside the air sees the point through the segment that ends at
+  // the camera, as the shader's aerial perspective does, not through the
+  // whole column: the column above the camera along the same ray is taken
+  // back out, T(1, μv) · exp(τ(r, μ)), a difference of optical depths.
+  const column = table.column;
+  if (column) {
+    const camR = Math.hypot(pose.camera[0], pose.camera[1], pose.camera[2]);
+    if (camR < table.topRadius) {
+      const muC = (pose.camera[0] * vx + pose.camera[1] * vy + pose.camera[2] * vz) / camR;
+      const tc = scratch.tc;
+      lookupColumnDepth(column, camR, muC, tc);
+      tv[0] = Math.min(tv[0] * Math.exp(tc[0]), 1);
+      tv[1] = Math.min(tv[1] * Math.exp(tc[1]), 1);
+      tv[2] = Math.min(tv[2] * Math.exp(tc[2]), 1);
+    }
+  }
   out[0] = common * light.linear[0] * sp0 * (1 + (tv[0] - 1) * airWeight);
   out[1] = common * light.linear[1] * sp1 * (1 + (tv[1] - 1) * airWeight);
   out[2] = common * light.linear[2] * sp2 * (1 + (tv[2] - 1) * airWeight);

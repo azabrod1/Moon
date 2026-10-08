@@ -224,6 +224,22 @@ describe('the cloud between the sea and the camera', () => {
   });
 });
 
+describe('a camera inside the air', () => {
+  beforeEach(() => setHighlightMeterEnabled(true));
+
+  it('meters the beam from 1 km through the air below the camera (Sun 2°, 4 m/s)', () => {
+    const meter = new HighlightMeter(uniformMaps(4, 0), () => ({ knee: OCEAN_BEAM_KNEE, cap: OCEAN_BEAM_CAP }));
+    for (let i = 0; i < 40; i++) meter.update(0.1, probeContext(1, 2, 0.12));
+    const t = meter.telemetry();
+    expect(t.hold).toBe('metering');
+    // Through the whole column this read 2.36, under the target, and the
+    // meter asked for nothing while the shader drew 4.6 and more.
+    expect(t.drawnMax).toBeGreaterThan(4.6);
+    expect(t.drawnMax).toBeLessThan(6);
+    expect(t.drawnMax).toBeGreaterThan(t.knobs.target);
+  });
+});
+
 describe("the beam's place in the frame", () => {
   beforeEach(() => setHighlightMeterEnabled(true));
 

@@ -31,7 +31,7 @@ import * as THREE from 'three';
 import type { RGB } from './world/atmosphereModel';
 import { atmosphereParams, bodySolarIrradianceScale } from './world/atmosphereModel';
 import {
-  HIGHLIGHT_KNOBS, advanceExposureStops, buildTransmittanceTable, coverageOfBeam, createBeamPeak, createBeamPlace, createGlintScratch,
+  HIGHLIGHT_KNOBS, advanceExposureStops, buildColumnDepthTable, buildTransmittanceTable, coverageOfBeam, createBeamPeak, createBeamPlace, createGlintScratch,
   placeBeamInFrame,
   highlightTarget, scanBeam,
   type BeamPeak, type GlintMeterLight, type GlintMeterPose, type GlintMeterSea, type GlintScratch,
@@ -197,8 +197,13 @@ export class HighlightMeter {
     }
     this.hold = 'metering';
     if (!this.table) this.table = buildTransmittanceTable(atmosphereParams('Earth'));
-    // Timed from here: the table above is built once a session, and in the
-    // average it would read as the scan's own cost for a hundred frames after.
+    // A camera inside the air reads its view leg through the column above it,
+    // whose table is built the first time one is.
+    if (!this.table.column && ctx.camera.length() < this.table.topRadius) {
+      this.table = { ...this.table, column: buildColumnDepthTable(atmosphereParams('Earth')) };
+    }
+    // Timed from here: the tables above are built once a session, and in the
+    // average they would read as the scan's own cost for a hundred frames after.
     const t0 = now();
     this.pose.camera[0] = ctx.camera.x; this.pose.camera[1] = ctx.camera.y; this.pose.camera[2] = ctx.camera.z;
     this.pose.sun[0] = ctx.sun.x; this.pose.sun[1] = ctx.sun.y; this.pose.sun[2] = ctx.sun.z;

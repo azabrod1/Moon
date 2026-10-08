@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
-  HIGHLIGHT_KNOBS, advanceExposureStops, beamRadianceAt, buildTransmittanceTable, coverageOfBeam, createBeamPeak, createBeamPlace, createGlintScratch,
+  HIGHLIGHT_KNOBS, advanceExposureStops, beamRadianceAt, buildColumnDepthTable, buildTransmittanceTable, lookupColumnDepth, coverageOfBeam, createBeamPeak, createBeamPlace, createGlintScratch,
   highlightTarget, lookupTransmittance, meanSquareSlopeOfWind, placeBeamInFrame, scanBeam, shoulder, type BeamPlace,
   type GlintMeterLight, type GlintMeterPose, type GlintMeterSea, type SurfaceSampler,
 } from './glintMeter';
-import { atmosphereParams, solarIrradianceScale, transmittanceToTopBoundary } from './atmosphereModel';
+import {
+  atmosphereParams, opticalDepthToTopBoundary, solarIrradianceScale, transmittanceOverSegment, transmittanceToTopBoundary,
+} from './atmosphereModel';
 import { OCEAN_BEAM_CAP, OCEAN_BEAM_KNEE, SEA_WATER_F0 } from './surfaceShading';
 import { SUN_LIGHT_INTENSITY, SUN_LIGHT_LINEAR } from '../sunLight';
 import { meanSquareSlope } from './seaWind';
@@ -278,6 +280,87 @@ describe('the cloud on both sides of the beam', () => {
     scanBeam(pose, LIGHT, beamSea, underDeck(1, 0.25), table, scratch, peak);
     scanBeam(pose, LIGHT, beamSea, openSea(4), table, scratch, peak);
     expect(peak.sample.deckKeep).toBe(1);
+  });
+});
+
+describe('a camera inside the air', () => {
+  const column = buildColumnDepthTable(params);
+  const withColumn = { ...table, column };
+
+  it("holds the columns above a point inside the air to the model's own integral", () => {
+    const out: [number, number, number] = [0, 0, 0];
+    for (const altKm of [0, 0.5, 1, 5, 20, 60]) {
+      for (const mu of [0.03, 0.1, 0.3, 1]) {
+        const r = 1 + altKm / EARTH_KM;
+        const ref = opticalDepthToTopBoundary(params, r, mu);
+        lookupColumnDepth(column, r, mu, out);
+        for (let c = 0; c < 3; c++) expect(Math.abs(out[c] - ref[c])).toBeLessThan(Math.max(0.015 * ref[c], 1e-4));
+      }
+    }
+  });
+
+  it('sees the beam from 1 km through the air below the camera, not the whole column (Sun 2°, 4 m/s)', () => {
+    const pose = probePose(1, 2);
+    const peak = createBeamPeak();
+    expect(scanBeam(pose, LIGHT, beamSea, openSea(4), withColumn, scratch, peak)).toBe(true);
+    // The same point with the whole column, and the camera leg's
+    // transmittance swapped for the model's own integral over the segment
+    // from the point to the camera: the shader's aerial segment.
+    const n = peak.n;
+    const whole: [number, number, number] = [0, 0, 0];
+    beamRadianceAt(n[0], n[1], n[2], pose, LIGHT, beamSea, openSea(4), table, scratch, whole);
+    const v = [pose.camera[0] - n[0], pose.camera[1] - n[1], pose.camera[2] - n[2]];
+    const dist = Math.hypot(v[0], v[1], v[2]);
+    const nv = (n[0] * v[0] + n[1] * v[1] + n[2] * v[2]) / dist;
+    const columnT: [number, number, number] = [0, 0, 0];
+    lookupTransmittance(table, nv, columnT);
+    const segmentT = transmittanceOverSegment(params, 1, nv, dist);
+    const weight = 0.35 + 0.65 * (1 - nv) * (1 - nv);
+    for (let c = 0; c < 3; c++) {
+      const expected = (whole[c] / (1 + (columnT[c] - 1) * weight)) * (1 + (segmentT[c] - 1) * weight);
+      expect(Math.abs(peak.carried[c] - expected)).toBeLessThan(0.015 * expected + 1e-6);
+    }
+    // The brightest point along the line through the segment, every 0.002°
+    // of ground, the oracle the scan's peak is held to. The whole column
+    // drew 2.36 at its own peak, under the target, and the meter asked for
+    // nothing; through the segment the same point draws 4.62, and the
+    // brightest one more.
+    const at: [number, number, number] = [0, 0, 0];
+    let oracle = 0;
+    for (let phiDeg = 0.02; phiDeg < 1.0; phiDeg += 0.002) {
+      const phi = phiDeg * DEG;
+      const q = [Math.sin(phi), 0, Math.cos(phi)];
+      beamRadianceAt(q[0], q[1], q[2], pose, LIGHT, beamSea, openSea(4), table, scratch, at);
+      const u = [pose.camera[0] - q[0], pose.camera[1] - q[1], pose.camera[2] - q[2]];
+      const len = Math.hypot(u[0], u[1], u[2]);
+      const mu = (q[0] * u[0] + q[2] * u[2]) / len;
+      if (!(mu > 0)) continue;
+      const tc: [number, number, number] = [0, 0, 0];
+      lookupTransmittance(table, mu, tc);
+      const ts = transmittanceOverSegment(params, 1, mu, len);
+      const wt = 0.35 + 0.65 * (1 - mu) * (1 - mu);
+      const seg = [0, 1, 2].map((c) => (at[c] / (1 + (tc[c] - 1) * wt)) * (1 + (ts[c] - 1) * wt));
+      oracle = Math.max(oracle, drawnMaxOf(seg, beamSea));
+    }
+    expect(oracle).toBeGreaterThan(4.62);
+    expect(peak.drawnMax).toBeGreaterThan(0.98 * oracle);
+    expect(peak.drawnMax).toBeLessThan(1.02 * oracle);
+    expect(peak.drawnMax).toBeGreaterThan(HIGHLIGHT_KNOBS.target);
+    const columnPeak = createBeamPeak();
+    scanBeam(pose, LIGHT, beamSea, openSea(4), table, scratch, columnPeak);
+    expect(columnPeak.drawnMax).toBeLessThan(2.5);
+  });
+
+  it('leaves a camera above the air exactly where it was (400 km, Sun 5°)', () => {
+    const pose = probePose(400, 5);
+    const a = createBeamPeak();
+    const b = createBeamPeak();
+    scanBeam(pose, LIGHT, beamSea, openSea(4), table, scratch, a);
+    scanBeam(pose, LIGHT, beamSea, openSea(4), withColumn, scratch, b);
+    expect(b.drawnMax).toBe(a.drawnMax);
+    expect(b.carried).toEqual(a.carried);
+    expect(b.groundAngleDeg).toBe(a.groundAngleDeg);
+    expect(b.halfWidthAlongDeg).toBe(a.halfWidthAlongDeg);
   });
 });
 
